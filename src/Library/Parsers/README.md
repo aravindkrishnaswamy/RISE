@@ -123,12 +123,57 @@ Defined in [ChunkDescriptor.h](ChunkDescriptor.h). Read parameter values inside 
 | `GetUInt(key, def)` | `unsigned int` |
 | `GetInt(key, def)` | `int` |
 | `GetBool(key, def)` | `bool` |
+| `GetVec2(key, double[2])` | `bool` (true if present, fills the array) |
 | `GetVec3(key, double[3])` | `bool` (true if present, fills the array) |
+| `GetVec4(key, double[4])` | `bool` (true if present, fills the array) |
+| `GetMat4(key, double[16])` | `bool` (true if present, fills the array) |
 | `Has(key)` | `bool` (was the param explicitly set?) |
 | `GetRepeatable(key)` | `const std::vector<std::string>&` (for `p.repeatable = true` params) |
 | `Singles()` | `const std::map<std::string,std::string>&` (raw access; useful for composite tokens) |
 
 The default in each `GetX` accessor matches the legacy local-variable initial value used by the pre-migration parser. Use `bag.Has(key)` when you need to distinguish "parameter was explicitly set" from "parameter is absent" (e.g. for unit conversions like `DEG_TO_RAD` that should only apply on explicit input).
+
+**`GetVec2`/`GetVec3`/`GetVec4`/`GetMat4` hard-error on wrong arity (DL-32
+round 2, round 3, [docs/DEBT_LEDGER.md](../../../docs/DEBT_LEDGER.md)).**
+Each accessor requires EXACTLY 2 / 3 / 4 / 16 space-separated finite
+numbers; a value with fewer or more tokens logs `kVectorArityFmt` (names
+the chunk, the parameter, and expected-vs-actual) and latches
+`ParseStateBag::HadHardError()` instead of silently zero-filling the
+missing components or dropping the extras. `IAsciiChunkParser::ParseChunk`'s
+default implementation and Cst.cpp's `Finalize()` call sites AND
+`!bag.HadHardError()` into their success check, so a chunk that trips this
+fails the derive even though `Finalize()` may have already run to
+completion (most `Finalize()`s call `bag.GetVec3(...)` unconditionally and
+never checked its return value, even before this existed — see
+`Finalize()`'s own contract note above and `Cst.h`'s "KEPT LIVE BUT LOUD"
+canonical statement for what that means for a Job the chunk partially
+mutated before the failure was noticed). If a new field genuinely needs a
+shorthand this strict arity would refuse (the way
+`standard_object`/`override_object`'s `scale` and `orthographic_camera`'s
+`viewport_scale` each accept a single number as a uniform broadcast), do
+NOT loosen the shared accessor — write a dedicated resolver that
+pre-validates the shorthand's own arity and only calls
+`GetVec2`/`GetVec3`/`GetVec4`/`GetMat4` once the full arity is already
+confirmed (`ResolveScaleVec3` / `ResolveVec2UniformBroadcast` in
+[ChunkParserRegistry.cpp](ChunkParserRegistry.cpp) are the templates), and
+mark the parameter's descriptor entry with `allowsUniformScalarBroadcast =
+true` so the editor's suggestion engine can advertise it.
+
+**This protection covers only a `Finalize()` that actually calls one of
+these accessors** (DL-32 round 3, 2026-09-17) — a `Finalize()` that
+hand-rolls its own `sscanf` on `bag.GetString(key).c_str()` instead of
+calling `GetVec2`/`GetVec3`/`GetVec4`/`GetMat4` bypasses this arity check
+entirely, and `DispatchChunkParameters` does not catch it either (it
+finite-checks a numeric-kind parameter's tokens but never counts them
+against the declared `ValueKind`). Round 3 found and fixed 15 such
+sites — every one of them a genuinely 2-component field (a UV pair, a
+`(theta, phi)` pair) that had been declared `DoubleVec3` (and so read only
+2 of its "3" components) or, for `orthographic_camera`'s `viewport_scale`,
+declared plain `Double` while being read as 2 components. **When you add a
+new fixed-arity numeric parameter, always read it through the matching
+`GetVecN`/`GetMat4` accessor — never a bare `sscanf` on the bag's raw
+string** — that is what makes this section's guarantee true for your new
+parameter too.
 
 ## Registered Chunk Families
 

@@ -45,6 +45,7 @@
 #include "../src/Library/Materials/FabricMaterial.h"
 #include "../src/Library/Materials/CoatedMaterial.h"
 #include "../src/Library/Materials/GGXMaterial.h"
+#include "../src/Library/Materials/LambertianLuminaireMaterial.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Agent/AgentSession.h"
 #include "../src/Library/Interfaces/ILogPriv.h"
@@ -289,12 +290,92 @@ static void TestClearcoatSheenOrdering()
 	if( pJob ) pJob->release();
 }
 
+//! P1 fix (post-DL-18-review sibling, 2026-09-17): KHR_materials_sheen
+//! combined with a non-black emissiveFactor on the SAME material used
+//! to fail `AddFabricMaterial` outright ("the substrate is a
+//! luminaire"), because the PBR base built for the fabric wrap baked
+//! `emissivePainter` in unconditionally.  This proves the fix keeps
+//! BOTH: the final material carries a real emitter (via
+//! `AddLambertianLuminaireMaterial`) wrapping a genuine `FabricMaterial`
+//! sheen layer, whose own PBR base carries no emitter.
+static void TestSheenWithEmissionCombines()
+{
+	std::printf( "-- sheen + emission on the same material: keep BOTH (P1 fix) --\n" );
+
+	Job* pJob = nullptr;
+	const bool loaded = LoadFixture( pJob, "scenes/Tests/Geometry/assets/SheenEmissiveQuad.gltf",
+	                                  "she", "gltf_sheen_emissive.RISEscene" );
+	Check( loaded, "the sheen+emissive fixture scene parses and derives -- is "
+	               "scenes/Tests/Geometry/assets/SheenEmissiveQuad.gltf committed?" );
+	if( !loaded ) { if( pJob ) pJob->release(); return; }
+
+	// GLTFSceneImporter::MaterialName( prefix, idx ) = "<prefix>.mat.<idx>".
+	IMaterial* mat = pJob->GetMaterials()->GetItem( "she.mat.0" );
+	Check( mat != nullptr, "the imported material `she.mat.0` is registered "
+	                       "(pre-fix, add_material failed outright for this combination)" );
+
+	if( mat ) {
+		Check( mat->GetEmitter() != nullptr,
+		       "MONEY: the final material has a real emitter -- emission was NOT dropped" );
+
+		LambertianLuminaireMaterial* lum = dynamic_cast<LambertianLuminaireMaterial*>( mat );
+		Check( lum != nullptr,
+		       "MONEY: the final material is a `LambertianLuminaireMaterial` -- the outer "
+		       "emissive wrapper the fix re-attaches once the fabric wrap is a legal substrate" );
+
+		Check( dynamic_cast<FabricMaterial*>( mat ) == nullptr,
+		       "the final material is NOT itself a FabricMaterial -- that lives one layer down" );
+	}
+
+	FabricMaterial* fabric = pJob->GetMaterials()->GetItem( "she.mat.0__sheen_emit_base" )
+		? dynamic_cast<FabricMaterial*>( pJob->GetMaterials()->GetItem( "she.mat.0__sheen_emit_base" ) )
+		: nullptr;
+	Check( fabric != nullptr,
+	       "MONEY: the fabric (sheen) layer is registered under the `__sheen_emit_base` "
+	       "intermediate name and IS a live FabricMaterial -- the sheen lobe really landed" );
+	if( fabric ) {
+		Check( fabric->GetEmitter() == nullptr,
+		       "the fabric (sheen) layer itself carries NO emitter -- a legal fabric_material "
+		       "result, not itself the luminaire" );
+
+		GGXMaterial* base = dynamic_cast<GGXMaterial*>( const_cast<IMaterial*>( &fabric->GetBase() ) );
+		Check( base != nullptr, "the fabric material's base is a GGXMaterial" );
+		Check( base != nullptr && base->GetEmitter() == nullptr,
+		       "MONEY: the PBR base does NOT carry the emitter -- it stays a legal "
+		       "fabric_material substrate (FabricMaterial::IsSupportedSubstrate refuses "
+		       "GetEmitter() != 0)" );
+
+		const RayIntersectionGeometric probe = MakeProbe();
+		const RISEPel sheenColor = fabric->GetSheenColor().GetColor( probe );
+		Check( std::fabs( sheenColor.r - 0.9 ) < 1e-3 &&
+		       std::fabs( sheenColor.g - 0.6 ) < 1e-3 &&
+		       std::fabs( sheenColor.b - 0.1 ) < 1e-3,
+		       "the sheen layer still reads back the authored sheenColorFactor (0.9, 0.6, 0.1) "
+		       "with emission also present" );
+	}
+
+	Check( pJob->GetScene() != nullptr, "the imported scene derives a live IScene" );
+	{
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		Agent::AgentRenderParams rp;
+		rp.width = 32; rp.height = 32; rp.samples = 4;
+		const Agent::AgentRenderResult rr = sess->Render( rp );
+		Check( rr.ok, "the sheen+emissive scene renders" );
+		Check( rr.meanR + rr.meanG + rr.meanB > 0.0,
+		       "the sheen+emissive glTF scene renders NON-BLACK" );
+		sess.reset();
+	}
+
+	pJob->release();
+}
+
 int main()
 {
 	std::printf( "=== GLTFSheenImportTest ===\n" );
 	TestBasicSheenImport();
 	TestSheenRoughnessTextureAlphaRouting();
 	TestClearcoatSheenOrdering();
+	TestSheenWithEmissionCombines();
 	std::printf( "\n%d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }

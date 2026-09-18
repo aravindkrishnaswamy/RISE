@@ -46,6 +46,73 @@
 //  parameter set (Phase 2 item 4): an additional R^k would
 //  double-count this very mechanism.
 //
+//  ============================================================
+//  TRANSMISSION THROUGH THE COAT (DL-23, docs/DEBT_LEDGER.md;
+//  mirrors FabricBRDF.h's "TRANSMISSION THROUGH THE FUZZ LAYER",
+//  R8 P1.1 / docs/CLOTH_FABRIC_DESIGN.md 15 debt 22)
+//  ============================================================
+//
+//  A `weave_material` substrate under `transmission thin` carries two
+//  BELOW-HORIZON lobes (a delta gap pass-through and a Lambertian
+//  back-face lobe, WeaveBRDF.h section 2a).  Before DL-23 this BRDF
+//  returned 0 for every opposite-hemisphere (light, view) pair --
+//  `coated_material` could not even NAME such a substrate (DL-23 is
+//  what admits `weave_material`/`fabric_material` to the allowlist at
+//  all), so this was latent rather than shipped-and-silent, unlike
+//  fabric's identical defect.  The fix is the same shape: FORWARD the
+//  substrate's transmission and MODULATE it by the coat's own
+//  two-crossing attenuation.
+//
+//      f(l, v) = f_base(l, v) * K_t(l, v)        for  (n.l)(n.v) < 0
+//
+//      K_t = Ain(|n.l|) * Aout(n.v) * rec * Tin(|n.l|) * Tout(n.v) / eta^2
+//
+//  -- literally `value()`'s existing reflection-branch `K`, with the
+//  LIGHT-side macro cosine `nr` (originally the VIEW's own, by the
+//  reciprocal naming this file already uses) replaced by `|n.l|`,
+//  since the light is now on the far side of the surface from the
+//  viewer.  `rec` (the SAME recycling factor, driven by the
+//  substrate's view-independent `R`) is REUSED, not dropped, for the
+//  reason FabricBRDF.h gives for its own continuum transmit branch:
+//  the coat's multi-bounce series is a property of the LAYER PAIR
+//  (how much the coat intercepts and re-scatters back onto the
+//  substrate before either escapes), not of which side the light
+//  ultimately exits -- and `R` legitimately falls as the substrate's
+//  own transmissiveness rises, so a highly transmissive weave
+//  automatically recycles less.
+//
+//  There is no separate coat term added on the transmit side (the
+//  coat's own GGX lobe is reflection-only and has no transmission of
+//  its own to contribute -- `FabricBRDF.h`'s identical "sheen stays 0"
+//  precedent): only the `(1-c)` uncoated fraction shows the bare
+//  substrate's transmission and the `c` fraction shows it attenuated
+//  by `K_t`, exactly mirroring the reflection formula's
+//  `fBase * (K*c + (1-c)) + fCoat*c` with the `fCoat*c` term dropped.
+//
+//  A SUBSTRATE THAT CANNOT TRANSMIT IS BIT-IDENTICAL.  The branch is
+//  gated on `bBaseFullSphere`, captured at construction from
+//  `IMaterial::ScattersFullSphere()` (the flag cannot change
+//  afterwards -- `base` is not rebindable on this material, and a
+//  weave's `transmission` enum is not rebindable either), so every
+//  Lambertian / Oren-Nayar / GGX / `transmission none` weave stack
+//  answers exactly as before -- the reflection branch below is
+//  untouched by this section.
+//
+//  `CoatedSPF`'s mixture sampler carries the matching fix: its
+//  `PdfImpl` and `ScatterImpl` admit a below-horizon `wo` exactly when
+//  `BaseScattersFullSphere()`, and a DELTA ray the substrate's own SPF
+//  emits (the weave's gap pass-through) is repriced by the coat's
+//  BARE two-crossing attenuation -- no `rec` factor, on FabricSPF's
+//  identical reasoning: a measure-zero direction has zero probability
+//  of receiving a diffusely re-scattered share of the recycling
+//  series.
+//
+//  `hemisphericalAlbedo{,NM}` and `albedo()` are NOT touched by this
+//  section -- both read the substrate's own `hemisphericalAlbedo`
+//  (`R`, a REFLECTANCE, not a reflectance+transmittance sum) exactly
+//  as before, matching FabricBRDF.h's identical choice to leave its
+//  own `hemisphericalAlbedo` untouched by its transmission fix.
+//
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
 //
@@ -110,7 +177,16 @@ namespace RISE
 				const IScalarPainter& coatThickness,
 				const IScalarPainter& coatAbsorption,
 				const IPainter& coatTint,
-				const bool recyclingCompensation = true	///< [in] see kRecycling note below
+				const bool recyclingCompensation = true,	///< [in] see kRecycling note below
+				//! [in] DL-23: the substrate material's `ScattersFullSphere()`.
+				//! Passed in rather than derived because `IBSDF` carries no
+				//! such flag -- it is an `IMaterial` property, and
+				//! `CoatedMaterial` is the only thing that holds both.
+				//! Defaults false so every pre-DL-23 caller (there is
+				//! exactly one production caller, `CoatedMaterial`, but the
+				//! default keeps any test-only direct construction
+				//! bit-identical to its old behaviour) is unaffected.
+				const bool baseScattersFullSphere = false
 				);
 
 			virtual RISEPel value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const;
@@ -129,6 +205,13 @@ namespace RISE
 			//! The substrate as seen by the layer.  CoatedSPF needs
 			//! both to build its mixture.
 			inline const IBSDF& GetBase() const { return *pBase; }
+
+			//! DL-23: does the SUBSTRATE scatter over the full sphere?
+			//! `CoatedSPF` reads it back through here so the sampler and
+			//! the evaluator are gated on literally the same bit -- one
+			//! copy of the state, mirroring `FabricBRDF::
+			//! BaseScattersFullSphere`'s identical contract.
+			inline bool BaseScattersFullSphere() const { return bBaseFullSphere; }
 
 			//! The substrate's VIEW-INDEPENDENT reflectance -- the `R`
 			//! that drives the recycling denominator.  Reads
@@ -187,6 +270,7 @@ namespace RISE
 			const IScalarPainter*	pCoatAbsorption;
 			const IPainter*			pCoatTint;
 			const bool				bRecycling;
+			bool					bBaseFullSphere;	///< DL-23: see the ctor parameter and CoatedBRDF.cpp's transmission section
 		};
 	}
 }

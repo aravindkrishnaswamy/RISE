@@ -1346,7 +1346,9 @@ int main()
 	// real in-process probe (see docs/AUTO_RASTERIZER_DESIGN.md §6.2):
 	//   gi_spheres     -> BDPT  (σ²·T ~480× @128px — the diffuse-GI blind spot)
 	//   ggx_showcase   -> PT    (σ²·T ~0.26× — the glossy blind-spot partner)
-	//   glass_pavilion -> VCM   (median-lum ~2.3× AND reach ~20-32× — a real refractive caustic)
+	//   glass_pavilion -> not VCM (DL-154, 2026-09-17: see below — was VCM pre-debt28
+	//                    thin-lens fix (c3c37e08), NOT debt30-eta2; falls through to
+	//                    PT/BDPT, same coin-flip tail as jewel_vault)
 	//   jewel_vault    -> PT    (median-lum ~2.6-3.1× fires, but reach ~1.0× < 1.50 -> NOT a
 	//                            caustic; the over-fire fixed by the transport-reach gate, §6.2)
 	//   env_only       -> PT    (env-IBL gate kills the +63% VCM env-bias confound)
@@ -1358,8 +1360,77 @@ int main()
 		"scenes/FeatureBased/Combined/gi_spheres.RISEscene", "p4_gi", AutoIntegratorChoice::BDPT );
 	CheckProbeRoute( "ggx_showcase -> PT (glossy blind-spot partner)",
 		"scenes/FeatureBased/Materials/ggx_showcase.RISEscene", "p4_ggx", AutoIntegratorChoice::PT );
-	CheckProbeRoute( "glass_pavilion -> VCM (refractive caustic: median AND reach gates)",
-		"scenes/FeatureBased/Combined/glass_pavilion.RISEscene", "p4_glass", AutoIntegratorChoice::VCM );
+	// DL-154 (2026-09-17, corrected post-review): this fixture asserted VCM
+	// from Phase 4's original authoring (§6.2.1, 2026-06-05), calibrated
+	// against a meanRatio(VCM/PT) of 20-32x. That gap was ALMOST ENTIRELY a
+	// VCM bug, not a real PT-vs-VCM transport-reach difference.
+	//
+	// A first-pass bisect restricted to first-parent MERGES (from fc371041)
+	// wrongly attributed the whole collapse to `debt30-eta2` (commit
+	// 14bc2cb6): 185b0d5f (fisheye-differentials merge) still measured the
+	// old reach ~25-30x, and 14bc2cb6 was the next first-parent MERGE, so it
+	// looked like the single culprit. Review caught the gap: a merge-only
+	// bisect skips every non-merge commit SEQUENCE between two merges, and
+	// 14bc2cb6's actual first parent is the non-merge commit b6c12301, the
+	// end of the debt28-thinlens sequence. Re-bisecting over first-parent
+	// COMMITS (not merges) found the reach was ALREADY collapsed
+	// (~1.02-1.04x) at b6c12301, before debt30-eta2 exists as an ancestor of
+	// this scene's own routing decision; 14bc2cb6 itself moves it by only
+	// ~1% (noise). The real proximate fix is `c3c37e08` ("fix(bdpt,vcm):
+	// sample the camera APERTURE for t==1 -- thin-lens splats were
+	// 1/(cos*A_lens) too bright", debt 28): glass_pavilion uses
+	// `thinlens_camera fstop 1.4` at 85mm (1/A_lens ~ 345), and the pre-fix
+	// VCM max-luminance outliers (2045-2524 at this probe config) are
+	// camera-splat fireflies from the un-normalized aperture term.
+	//
+	// The corrected VCM measurement is NOT an accident: it agrees with this
+	// project's OWN independent RMSE-vs-truth baseline
+	// (docs/UNIFIED_INTEGRATOR_BASELINES.md §5's table row) which has always
+	// listed glass_pavilion's RMSE-decisive winner as **PT**, unlike its
+	// sibling `diamond_teapot` (VCM) -- that matrix's own text notes
+	// glass_pavilion was "pathological for all three" (severe fireflies) and
+	// never actually validated the VCM route it got from the simpler
+	// Tier-1 "dielectric + positional light -> VCM" static rule.
+	//
+	// Production-spp confirmation (256x256, PT vs VCM, oidn_denoise FALSE,
+	// pixel_filter box, measured on this branch): p99 luminance across all
+	// three channels agrees to <6% between PT and VCM at both 64 and 256 spp
+	// (e.g. ch0 p99 2.02 vs 2.01 at spp=64). PT's channel-0 MAX is a genuine,
+	// well-known MC firefly (grows with spp: 520 at 64spp -> 1642 at 256spp,
+	// different pixel each time) from a rare BSDF-sampled specular-diffuse-
+	// specular path finding a bright NEE-lit patch at very low pdf -- this is
+	// PT noise on a path it DOES reach, not energy it structurally misses; VCM
+	// itself shows the same class of merge-firefly instability in its own max
+	// (239 vs 183 at the two spp, different pixel each time). PT is the
+	// correct route for this scene now, matching UNIFIED_INTEGRATOR_BASELINES.
+	//
+	// NOT a mechanical band-widen: the router code and its tauReach=1.50
+	// threshold are unchanged; only this fixture's own EXPECTED integrator is
+	// corrected to match the (now-fixed) physics. See DL-167 for the
+	// residual this uncovers: the transport-reach gate's positive path (a
+	// real caustic actually firing meanRatio>tauReach) now has NO known
+	// corpus scene -- `diamond_teapot_pour`, independently documented as a
+	// real VCM-decisive caustic, ALSO now measures reach ~1.09-1.16x at probe
+	// spp, indistinguishable from glass_pavilion's ~0.86-1.10x. Its collapse
+	// is a SEPARATE, independently-bisected mechanism (commit 7889fa29, the
+	// VCM delta-light NEE MIS partition fix, months before debt28/debt30-eta2
+	// -- NOT debt30-eta2, which was checked and refuted for this scene: its
+	// reach is a stable ~1.10-1.11x at every point on glass_pavilion's own
+	// bisect chain, i.e. already collapsed before debt30-eta2 exists as an
+	// ancestor here). Two unrelated VCM over-count fixes produced the same
+	// symptom on two different scenes; no threshold on this signal can
+	// separate them anymore either way.
+	//
+	// Assertion is "never VCM", not "exactly PT" -- same reasoning as
+	// jewel_vault below. Once the reach gate rejects VCM the decision falls
+	// through to the sigma2T PT-vs-BDPT gate, and measured across repeated
+	// runs on this branch it occasionally resolves BDPT instead of PT (5-run
+	// spot check: 4 PT, 1 BDPT) -- the same multi-thread float-accumulation
+	// nondeterminism documented for jewel_vault's σ²·T reading at cheap probe
+	// spp. Asserting exact PT was a coin flip on that tail; CheckProbeRouteNotVCM
+	// (never VCM) is the stable, meaningful invariant this fixture protects.
+	CheckProbeRouteNotVCM( "glass_pavilion -> not VCM (DL-154: debt28/c3c37e08 closed the VCM-over-bright gap)",
+		"scenes/FeatureBased/Combined/glass_pavilion.RISEscene", "p4_glass" );
 	// Regression lock for the §6.2 jewel_vault over-fire: a dielectric + area-lit
 	// scene whose caustic MEDIAN gate fires at probe spp (PT's hard indirect is
 	// transiently under-converged) but whose transport-reach (mean-lum) gate does
@@ -1369,8 +1440,11 @@ int main()
 	// spp VCM's sparse merge fireflies spiked the raw VCM mean past 1.50 ~2.6%
 	// of the time -> a flaky false VCM route.  Winsorizing the VCM numerator (PT
 	// denominator stays raw) drops jewel_vault's reach to a stable ~0.6-0.9
-	// (< 1.50) while glass_pavilion's BROAD caustic survives at ~25x — see
-	// AutoRasterizer.cpp WinsorizedMeanLuminance.
+	// (< 1.50) -- see AutoRasterizer.cpp WinsorizedMeanLuminance.  (Pre-DL-154
+	// this comment cited glass_pavilion surviving winsorization at ~25x; that
+	// number was itself the debt28 thin-lens VCM-over-bright artifact
+	// (c3c37e08) and no longer holds -- see DL-154's note on the
+	// glass_pavilion fixture above.)
 	//
 	// Assertion is "never VCM", not "exactly PT": after the reach gate rejects
 	// VCM the decision falls through to the σ²·T PT-vs-BDPT gate, and

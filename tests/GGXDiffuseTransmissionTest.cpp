@@ -780,14 +780,15 @@ namespace
 	// this defect ship: the pre-fix error is a GAIN at some (alpha,theta)
 	// and a DEFICIT at others, and a one-sided gate cannot see the
 	// deficit at all.  `expected`/`tolAbs` below are per-row: `expected`
-	// is 1 wherever the fix genuinely restores energy conservation, and
-	// the MEASURED value (with its cause named) on the rows where a
-	// separately-tracked residual keeps the furnace away from 1 -- DL-105
-	// (the LUT's alpha axis: alpha<0.01 clamps to row 0, and row 0
-	// (alpha=0.01) to row 1 (alpha=0.0419) is a 4.2x ratio in a single
-	// interpolation cell).  Writing that measured number down, rather
-	// than widening the band to swallow it, is what keeps this row a
-	// regression gate for BOTH defects.
+	// is 1 wherever the fix genuinely restores energy conservation.
+	// DL-105 (CLOSED 2026-09-17, debt-dl105 slice): the five rows below
+	// used to pin the MEASURED value of a then-unfixed residual (the
+	// LUT's alpha axis: alpha<0.01 clamped to row 0 outright, and row 0
+	// (alpha=0.01) to row 1 (alpha=0.0419) was a 4.2x ratio in a single
+	// interpolation cell) -- now that MicrofacetEnergyLUT.h bakes a
+	// low-alpha sub-grid (ALPHA_SUB_FINE/ALPHA_MID_SIZE, mirroring
+	// DL-86's cosTheta construction), all five return to expected=1.0
+	// like every other row in this table.
 	struct GrazingRow
 	{
 		Case c;
@@ -887,19 +888,19 @@ namespace
 			{ { "GGX Schlick iso a=0.3 F0=1 th=89.60 spec-only",  eFresnelSchlickF0, 0.0, 1.0, 0.3,  0.3,  89.60, 0.0, 0.0 }, 1.0, 0.010, "" },
 			{ { "GGX Schlick iso a=0.05 F0=1 th=89.40 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.05, 0.05, 89.40, 0.0, 0.0 }, 1.0, 0.010, "" },
 			{ { "GGX Schlick iso a=0.02 F0=1 th=89.40 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.02, 0.02, 89.40, 0.0, 0.0 }, 1.0, 0.010, "" },
-			{ { "GGX Schlick iso a=0.02 F0=1 th=89.60 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.02, 0.02, 89.60, 0.0, 0.0 }, 1.01496, 0.010,
-			  "DL-105: +1.50% vs 1, the first alpha cell (0.01 -> 0.0419)" },
+			{ { "GGX Schlick iso a=0.02 F0=1 th=89.60 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.02, 0.02, 89.60, 0.0, 0.0 }, 1.0, 0.010,
+			  "DL-105 CLOSED: was 1.01496 pre-fix" },
 			{ { "GGX Schlick iso a=0.02 F0=1 th=89.80 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.02, 0.02, 89.80, 0.0, 0.0 }, 1.0, 0.010, "" },
 			{ { "GGX Schlick iso a=0.01 F0=1 th=89.40 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.01, 0.01, 89.40, 0.0, 0.0 }, 1.0, 0.010, "" },
 			{ { "GGX Schlick iso a=0.01 F0=1 th=89.60 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.01, 0.01, 89.60, 0.0, 0.0 }, 1.0, 0.010, "" },
 			{ { "GGX Schlick iso a=0.01 F0=1 th=89.80 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.01, 0.01, 89.80, 0.0, 0.0 }, 1.0, 0.010, "" },
-			{ { "GGX Schlick iso a=0.005 F0=1 th=89.40 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.005, 0.005, 89.40, 0.0, 0.0 }, 1.02734, 0.010,
-			  "DL-105: +2.73% vs 1, alpha below the table range (clamps to row 0)" },
+			{ { "GGX Schlick iso a=0.005 F0=1 th=89.40 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.005, 0.005, 89.40, 0.0, 0.0 }, 1.0, 0.010,
+			  "DL-105 CLOSED: was 1.02734 pre-fix" },
 			{ { "GGX Schlick iso a=0.005 F0=1 th=89.60 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.005, 0.005, 89.60, 0.0, 0.0 }, 1.0, 0.010, "" },
-			{ { "GGX Schlick iso a=0.005 F0=1 th=89.80 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.005, 0.005, 89.80, 0.0, 0.0 }, 0.96729, 0.010,
-			  "DL-105: -3.27% vs 1, alpha below the table range (clamps to row 0)" },
-			{ { "GGX Schlick iso a=0.005 F0=1 th=89.89 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.005, 0.005, 89.89, 0.0, 0.0 }, 0.96970, 0.010,
-			  "DL-105: -3.03% vs 1, alpha below the table range (review read -3.17% at its own seed)" },
+			{ { "GGX Schlick iso a=0.005 F0=1 th=89.80 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.005, 0.005, 89.80, 0.0, 0.0 }, 1.0, 0.010,
+			  "DL-105 CLOSED: was 0.96729 pre-fix" },
+			{ { "GGX Schlick iso a=0.005 F0=1 th=89.89 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.005, 0.005, 89.89, 0.0, 0.0 }, 1.0, 0.010,
+			  "DL-105 CLOSED: was 0.96970 pre-fix" },
 		};
 		unsigned int seed = 9101;
 		for( const GrazingRow& r : ggxRows ) passed &= RunGGXGrazingRow( r, seed++ );
@@ -950,8 +951,8 @@ namespace
 			{ { "CT conductor a=0.02 th=89.89 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.02, 0.02, 89.89, 0.0, 0.0 }, 1.0, 0.010, "" },
 			{ { "CT conductor a=0.02 th=89.40 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.02, 0.02, 89.40, 0.0, 0.0 }, 1.0, 0.010, "" },
 			{ { "CT conductor a=0.01 th=89.40 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.01, 0.01, 89.40, 0.0, 0.0 }, 1.0, 0.010, "" },
-			{ { "CT conductor a=0.005 th=89.40 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.005, 0.005, 89.40, 0.0, 0.0 }, 1.03432, 0.010,
-			  "DL-105: +3.43% vs 1 -- the SEPARABLE path's worst (review read +3.65% at its own seed)" },
+			{ { "CT conductor a=0.005 th=89.40 spec-only", eFresnelSchlickF0, 0.0, 1.0, 0.005, 0.005, 89.40, 0.0, 0.0 }, 1.0, 0.010,
+			  "DL-105 CLOSED: was 1.03432 pre-fix" },
 		};
 		seed = 9201;
 		for( const GrazingRow& r : ctRows ) passed &= RunCookTorranceGrazingRow( r, seed++ );

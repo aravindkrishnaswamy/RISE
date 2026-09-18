@@ -940,6 +940,223 @@ reaches the table — while row 0 (`alpha=0.01`) to row 1 (`alpha=0.0419`)
 is a 4.2x ratio inside a single linear interpolation cell. Opened as
 **DL-105** with the measurements above as its evidence.
 
+## DL-105: low-alpha sub-grid (isotropic E_ss/E_avg, both models)
+
+**Status: CLOSED 2026-09-17** — debt-dl105 slice, base `e1772631`.
+
+**Root cause** (confirmed exactly as the ledger row diagnosed): every
+isotropic alpha lookup (`LookupEss`, `LookupEssG2`, `LookupEavg`,
+`LookupEavgG2`, `MSLobeDetail::BuildSegments{,G2}`, `MSLobeZ{,G2}`) maps
+`alpha` via `a = clamp((alpha-0.01)/0.99, 0, 1) * (LUT_SIZE-1)`, so (a)
+`alpha < 0.01` clamps to row 0 outright — and `GGXBRDF.cpp`/`GGXSPF.cpp`
+only floor authored roughness at `1e-4`, so `alpha=0.005` really reaches
+the table — and (b) row 0 (`alpha=0.01`) to row 1 (`alpha=0.0419`) is a
+4.2x ratio inside ONE linear interpolation cell.
+
+**Fix: the SAME construction DL-86 used, applied to the alpha axis.**
+DL-86 baked a sub-grid on `[0, c0]` (the cosTheta axis) anchored at a
+PROVABLE exact boundary (`Ess_G2(cosTheta->0) = 1`). The alpha axis has
+an even cleaner boundary: Smith `Lambda(v) = (-1+sqrt(1+alpha^2*tan^2
+theta))/2 -> 0` as `alpha -> 0` for ANY FIXED `cosTheta > 0` (ordinary
+bin or DL-86 sub-node), so `G1 -> 1` and `G2 -> 1` UNCONDITIONALLY —
+`Ess(alpha->0, cosTheta) = 1` for BOTH the height-correlated G2 model
+AND the separable model (unlike DL-86's cosTheta boundary, which needed
+a baked constant for the separable model's limit). No new limit table
+is needed for this boundary at all.
+
+Two zones are baked below/between the main table's row 0 and row 1,
+covering both (a) and (b) above in one construction:
+  * `ALPHA_SUB_FINE = 7` geometric octaves on `(0, 0.01)`: node `j`
+    stores `alpha = 0.01/2^(8-j)` for `j=1..7`, i.e. `0.005` down to
+    `7.8e-5` — comfortably past `GGXBRDF.cpp`'s `1e-4` roughness floor.
+  * `ALPHA_MID_SIZE - 1 = 3` geometric nodes on `(0.01, 0.0419]`,
+    bridging the coarse first cell.
+
+Each of the 10 stored low-alpha nodes gets its own FULL ordinary
+cosTheta row (32 cells, matching `E_ss_TABLE`/`E_ss_TABLE_G2`) AND its
+own DL-86-style grazing sub-row + separable-model limit constant
+(matching `E_ss_SUB_TABLE{,_G2}`/`E_ss_LIMIT_TABLE`) — necessary because
+the DL-105 furnace rows this closes (`theta=89.40..89.89`) land INSIDE
+the DL-86 grazing cosTheta sub-grid (`cos < c0 = 0.0156`), so a query
+combining a low alpha AND a grazing cosTheta needs a value baked AT that
+alpha, not one blended in from row 0/row 1's already-resolved grazing
+sub-rows. Interpolation is LINEAR IN ALPHA on every interval (node
+PLACEMENT is geometric, the BLEND between two adjacent nodes is not —
+matching `ANISO_SUB_FINE`'s precedent). New tables:
+`E_ss_ALPHA_LOW_TABLE{,_G2}[10][32]`, `E_ss_ALPHA_LOW_SUB_TABLE{,_G2}
+[10][7]`, `E_ss_ALPHA_LOW_LIMIT_TABLE[10]` (separable only — the G2
+model's boundary is exactly 1 at every alpha), `E_avg_ALPHA_LOW_TABLE
+{,_G2}[10]` (same midpoint-rule discretization over the 32 ordinary
+bins the main `E_avg_TABLE{,_G2}` already uses). Drawn from a THIRD
+independently-seeded LCG stream (`rng_state_lowalpha`), so every
+pre-existing table — including the DL-86 sub-grid, already fully baked
+before this stream is touched — stays byte-for-byte identical.
+Regenerating `tools/GenerateMicrofacetEnergyLUT.cpp` reproduces the
+header with every pre-existing line UNCHANGED and only NEW lines added
+(`diff` against the pre-fix header: 0 removed / changed lines, 398
+added).
+
+**MS-sampler consistency**: `BuildSegments`/`BuildSegmentsG2` (the H6
+sampler's segment builder) and `MSLobeZ`/`MSLobeZG2` (the cached Z
+normalization) gained the identical `alpha < ALPHA_LOW_A1` branch,
+sourcing the SAME `BuildLowAlphaRow{,G2}` helper `LookupEss`/`LookupEssG2`
+use — so the sampler, its reported density, and the lookup cannot drift
+apart in the low-alpha regime, the same "cannot disagree" contract
+`SubNodeEss`/`SubNodeEssG2` established for the cosTheta axis. One
+deliberate exception: `MSLobeZ{,G2}`'s cached-affine-per-row optimization
+(precomputing `Z` once per of the 32 main rows and blending) is NOT
+extended to the 10 new low-alpha nodes — below `ALPHA_LOW_A1` these
+functions recompute `Z` directly via `BuildSegmentsFromRow`+`SegTotal`
+every call, a deliberate perf/complexity trade-off for a rare regime
+(very smooth surfaces, `alpha < 0.0419`) rather than precomputing and
+affine-blending `Z` at 13 additional virtual node positions. Correctness
+does not depend on the cache — `MSPdf`/`MSPdfG2` call the (low-alpha-
+aware) `LookupEss`/`LookupEssG2` directly, and `SampleMSCosTheta`/
+`SampleMSCosThetaG2` call the (low-alpha-aware) `BuildSegments`/
+`BuildSegmentsG2` — both read the SAME `BuildLowAlphaRow{,G2}` source.
+
+**Red-proof** (`GGXHeightCorrelatedEnergyLUTTest`, `TestDL86IsotropicEndCap`/
+`TestDL86SeparableEndCap` rows re-tightened from their DL-105-loose
+tolerances): worst relative error against an independent 20M-sample
+VNDF quadrature over `cosTheta in [1e-4, c0]`:
+
+| lookup | alpha | pre-fix % | post-fix % |
+|---|---|---|---|
+| `LookupEssG2` | 0.005 | 5.10 | **0.42** |
+| `LookupEssG2` | 0.02 | 1.59 | **0.03** |
+| `LookupEss` | 0.005 | 5.52 | **0.18** |
+| `LookupEss` | 0.02 | 1.58 | **0.03** |
+
+The above-`c0` control row (`cos=0.03`) at `alpha=0.005` — previously
+untracked because that alpha clamped to row 0 regardless of cosTheta —
+now reads through the SAME low-alpha branch and measures `~1.5%`
+relative, the same order as the OTHER alphas' pre-existing (unrelated,
+DL-105-adjacent but out of this fix's scope) ordinary-interior-grid
+residual at that span; tightened from a `0.060` placeholder to the
+`0.040` band the other alphas already carry.
+
+**New independent cross-check** (review requirement, `TestDL105IndependentVNDFCrossCheck`):
+a THIRD estimator, sharing no code with `LookupEssG2`, the offline
+generator, OR `MonteCarloEssG2`/`UniformHemisphereEssG2` above — its own
+`D_Isotropic`/`Lambda`/`G2_HeightCorrelated` re-implementation (the
+pre-existing `IndependentGGX` namespace) PLUS an own from-scratch
+Heitz-2018 VNDF sampling routine (`IndependentGGX::VNDFSample`), needed
+because `UniformHemisphereEssG2`'s own comment already disqualifies it
+below `alpha=0.01` ("much worse importance sampler ... for peaked
+(low-alpha) configurations"). 9 points: 7 at mid-range `cosWi` (`alpha`
+in `{0.005, 0.0025, 0.00125, 0.0008, 0.0003, 0.0001, 0.008}` — three
+exact sub-grid nodes, three off-node, one in the widest sub-interval
+`[0.005, 0.01]`), 20M samples each — worst diff `0.00155` absolute
+(`alpha=0.008`), every other point within `2e-5` — `Ess(alpha, mu>=0.3)`
+is essentially exactly 1 in this regime, confirming the boundary-
+condition derivation directly rather than only through the furnace/LUT-
+harness rows above; plus 2 points combining a low alpha WITH a grazing
+`cosWi` (`alpha=0.005,mu=0.001` and `alpha=0.02,mu=0.005`) — the
+configuration that actually discriminates this fix from the pre-fix
+clamp-to-row-0 behavior (the alpha boundary alone reads close to 1
+whether it clamps to the true row or to row 0, since row 0's own
+`alpha=0.01` is already small; only a grazing `mu` exposes the alpha
+AXIS defect) — reading `0.42%`/`0.007%` diff respectively, matching the
+LUT-table residuals above measured through an entirely independent
+estimator.
+
+**Production-BRDF furnace** (`GGXDiffuseTransmissionTest`, the row's
+original evidence, F=1 specular-only): the five DL-105-pinned rows all
+return to `expected = 1.0`:
+
+| row | pre-fix (pinned) | post-fix (measured) |
+|---|---|---|
+| GGX Schlick alpha=0.02 theta=89.60 | 1.01496 | **1.00080** |
+| GGX Schlick alpha=0.005 theta=89.40 | 1.02734 | **1.00640** |
+| GGX Schlick alpha=0.005 theta=89.80 | 0.96729 | **1.00526** |
+| GGX Schlick alpha=0.005 theta=89.89 | 0.96970 | **1.00186** |
+| CT conductor alpha=0.005 theta=89.40 | 1.03432 | **1.00681** |
+
+All five pass the same two-sided `3*SE + 0.010` band every other row in
+that table uses (no widened tolerance needed).
+
+**Cost**: bake time grew from the DL-86-slice's baseline to `~6m35s`
+total (single-threaded, no internal parallelism) — the new low-alpha
+bake is `10 stored nodes * (32 ordinary + 7 grazing) cosTheta positions
+* 1,000,000 samples * 2 models ~= 7.8e8 extra samples`, roughly 30-40%
+more than the pre-existing isotropic bakes combined. Table footprint:
+10*32*2 (ordinary) + 10*7*2 (grazing) + 10 (limit) + 10*2 (Eavg) = 820
+new `Scalar` values — negligible next to the DL-77 aniso tables'
+hundreds of thousands. Runtime lookup cost is unchanged for
+`alpha >= ALPHA_LOW_A1` (the pre-existing branch, byte-identical);
+below it, `LookupEss`/`LookupEssG2` do a 13-element linear scan
+(`AlphaLowIndex`) instead of an O(1) formula, and `MSLobeZ{,G2}` pay a
+full segment rebuild instead of the cached-row blend — both scoped to
+the rare `alpha < 0.0419` regime.
+
+**Sibling audit** (`docs/skills/audit-by-bug-pattern.md`): the SAME
+`clamp((alpha-0.01)/0.99, 0, 1)` pattern, on the SAME `[0.01, 1.0]`
+range, was found in two more places, both left OPEN as new debts rather
+than folded into this slice (out of scope: extending either needs its
+own bake, its own boundary-condition derivation, or both):
+  * **DL-160** — `tools/GGXSpecularBihemisphericalGen.cpp`'s
+    `kGGXSpecularQuadWeight[32][8]` table (consumed by
+    `GGXBRDF::hemisphericalAlbedo{,NM}`, DL-123) resolves its OWN,
+    independently-baked alpha axis with the identical uniform
+    `[0.01,1.0]` 32-row mapping and the identical clamp, at
+    `GGXBRDF.cpp:753`. Confirmed present; not measured or fixed here.
+  * **DL-161** — the DL-77 ANISOTROPIC alpha axis (`AnisoAlphaIndex`,
+    consumed by `LookupEssG2Aniso`/`LookupEssG2AnisoDirectional`/
+    `LookupEavgG2Aniso`/`MSLobeZG2Aniso`/`SampleMSCosThetaG2Aniso`) has
+    the SAME defect, independently on both `alphaX` and `alphaY` (node0
+    `0.01` to node1 `0.0530` is a 5.3x ratio, worse than the isotropic
+    table's 4.2x) — deliberately NOT extended by this slice. The
+    isotropic fix improves the aniso ALPHA-DIAGONAL case for free
+    (`LookupEssG2AnisoDirectional`/`LookupEssG2Aniso`/`MSLobeZG2Aniso`/
+    `SampleMSCosThetaG2Aniso` all already forward to their isotropic
+    twin when `fabs(alphaX-alphaY) < 1e-9`, confirmed unchanged and
+    still forwarding), but the OFF-diagonal low-alpha case
+    (`alphaX != alphaY`, one or both `< 0.01`) is untouched — confirmed
+    by re-running `GGXHeightCorrelatedEnergyLUTTest`'s aniso rows
+    (identical numbers before/after, e.g. the debt-ggx3-cited
+    `(0.0361, 0.9627, phi=5)` corner still reads `2.99-4.04%`). Unlike
+    the isotropic case, the anisotropic `alphaX->0` (fixed `alphaY`)
+    boundary is NOT simply `Ess=1`: `Lambda_Aniso`'s effective alpha for
+    a direction `v` is `sqrt((alphaX*cosPhiV)^2+(alphaY*sinPhiV)^2)`,
+    which stays finite (hence `G1<1`, masking persists) whenever `v`'s
+    azimuth is not exactly aligned with the vanishing axis — a genuine,
+    non-constant boundary FUNCTION of `(alphaY, phi, cosTheta)`, not a
+    constant, so extending this needs a bake of comparable scope to the
+    DL-77 slice itself, not an additive sub-grid the isotropic
+    boundary's simplicity allowed here.
+
+**Gate**: `GGXHeightCorrelatedEnergyLUTTest` 261/0 (was 252/0 pre-fix,
+with looser DL-105 tolerances), `GGXDiffuseTransmissionTest` 190/0 (was
+190/0 pre-fix with the five rows pinned at their measured non-1.0
+values), `GGXSampleEvaluationConsistencyTest` 48/0, `GGXWhiteFurnaceTest`
+pass, `GGXMetalRoughGridTest` pass, `LayeredWhiteFurnaceTest` 0/57,
+`CookTorranceMultiscatterTest` 17/0, `CookTorranceSchlickGlossyFilterConsistencyTest`
+22/0, `ThinFilmFurnaceTest` 4/0, `GGXHemisphericalAlbedoTest` 28/0
+(unaffected — DL-123's own table has the DL-160 residual, untouched),
+`FabricRenderTest` 60/0, `CstDeriveGoldenTest` (0 drift), `SourceHygieneTest`
+165/0; clean warning-free rebuild (incremental + full).
+
+**Render sanity**: `scenes/Tests/Materials/ggx_anisotropy_sweep.RISEscene`
+does not exercise `alpha < 0.02` on any of its 9 cells, so a scratch
+copy of `scenes/Tests/Materials/ggx_roughness_sweep.RISEscene` (its
+`alpha=0.01` gold sphere is the lowest alpha this fix touches) was
+rendered instead, patched with `oidn_denoise FALSE`, `pixel_filter box`
+and EXR `Rec709RGB_Linear` output. Before/after (isolated build via a
+temporary header swap + targeted recompile of the 6 dependent `.cpp`
+files, same PT seed both times, 64spp): whole-image luminance mean
+`1.009019 -> 1.008971` (-0.0048%), top-left quadrant (containing the
+`alpha=0.01` sphere) `1.451777 -> 1.451567` (-0.014%), no NaN/Inf either
+render. This is EXPECTED to be small and is reported as a sanity check,
+not a strong regression signal: the fix's effect is confined to extreme
+grazing incidence (`theta > ~89.1` degrees, i.e. a thin band of pixels
+right at the sphere's silhouette) on an alpha the pre-existing DL-86
+sub-grid had already brought to <=0.11% residual at `alpha=0.01`
+specifically (the row least affected by this slice — `alpha=0.005` and
+the `0.01<alpha<0.0419` cell, this fix's main targets, are BELOW this
+scene's smallest authored alpha). The furnace-level and LUT-level tables
+above are the decisive evidence for this fix; the render confirms no
+corruption, not a visible before/after difference at this alpha.
+
 ## DL-77: anisotropic Kulla-Conty compensation (ratio + azimuth)
 
 **Status: CLOSED 2026-09-14** — debt-ggx3 slice, base `a3aa5b8d`.

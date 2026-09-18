@@ -1923,13 +1923,22 @@ load and returns before its own render-freeze assert.
    on a scene of four or fewer objects, where the linear `IntersectRay` loop
    WOULD draw the new object — keeps the flat scan and keeps the check, and
    `ProximitySignalTest` (g) still pins it.
-4. **A scene-language trap found while authoring scene D, and NOT fixed here.**
+4. ~~**A scene-language trap found while authoring scene D, and NOT fixed here.**
    `standard_object`'s `scale` is a `DoubleVec3`. Writing it with ONE number
    (`scale 0.35`) derives to a **degenerate transform with no diagnostic** —
    the object silently disappears from the render and refuses every proximity
    query (`Object::DistanceToSurface` rejects `σ_min ≤ 0`). Verified by
    re-introducing the edit: `MeshClosestPointTest`'s mesh-on-mesh station goes
-   1.0 → 0. This is a parser gap outside Phase 2's scope; recorded in §10.
+   1.0 → 0. This is a parser gap outside Phase 2's scope; recorded in §10.~~
+   **CLOSED 2026-09-14 (DL-32, [docs/DEBT_LEDGER.md](DEBT_LEDGER.md))** — a
+   single number is now an explicit UNIFORM-scale broadcast (with a log
+   warning), and anything else short of three finite numbers is a hard parse
+   error naming DL-32, instead of a silent zero-fill.  `ResolveScaleVec3`
+   (`ChunkParserRegistry.cpp`) is shared by `standard_object` and
+   `override_object` so the two cannot drift apart on it again.
+   `tests/StandardObjectScaleTest.cpp` is the dedicated regression;
+   `CstDeriveGoldenTest` (452/452, 0 drift) and `ProximitySignalTest`
+   (491/0) confirm the corpus is unaffected.
 
 **(a) The differential — `MeshClosestPointTest` (a), 56 checks total in the
 suite.** Traversal vs brute force over EVERY triangle, under the SAME
@@ -3260,6 +3269,26 @@ measured by a harness test against the tracked scene.
   re-introducing it (§8.3, trap 4).  A parser gap, outside this design's
   scope, recorded here because it is a live trap for anyone placing an
   object for a contact scene.
+
+- **A mesh neighbour is a SHEET, and no other shipped family is.**  Every
+  solid family clamps a signed field at zero, so a point inside reads 1;
+  a point inside a closed MESH reads its honest distance to the nearest
+  triangle instead, because a triangle soup carries no inside test.  The
+  direction is safe (an over-report under-paints) but the inconsistency is
+  real: a receiver buried inside a mesh neighbour will not read contact.
+  A signed/inside variant for meshes needs a robustly closed-mesh test.
+  **Phase 3's `interior(r)` did NOT close this**: it is the signed variant for
+  every SOLID family, and a mesh -- being a sheet -- contributes 0 to it, so a
+  receiver buried inside a closed mesh reads `interior` 0 as well as
+  `proximity` its honest distance. The closed-mesh test is still the missing
+  piece.
+- ~~**`standard_object`'s `scale` written with ONE number derives to a
+  DEGENERATE transform, silently.**~~  **CLOSED 2026-09-14 (DL-32,
+  [docs/DEBT_LEDGER.md](DEBT_LEDGER.md))** — `scale 0.35` is now an explicit
+  UNIFORM-scale broadcast (logged); anything else short of three finite
+  numbers is a hard parse error instead of the silent zero-fill found while
+  authoring scene D (§8.3, trap 4).  `override_object`'s identically-claimed
+  `scale` shares the same resolver.
 - `proximity` is unsigned; Phase 3's `interior(r)` **ships** and supplies the
   inside half for the solid families and, since DL-31 (2026-09-14), a
   WATERTIGHT mesh too; every sheet family (plane, disk, open cylinder,
@@ -3289,20 +3318,84 @@ measured by a harness test against the tracked scene.
   `ProximitySignalTest` (g2) asserting all three queries — `IntersectRay`,
   `NearestOtherSurface`, `DeepestOtherContainment` — agree about the 7th
   object at every point in the sequence.
-- **`interior`'s candidate walk is no longer separately LINEAR where a TLAS
-  exists — it now shares `proximity`'s shape, not a worse one.** Before the
-  fix above, `DeepestOtherContainment` walked the flat AABB snapshot with
-  an ordinary containment test on every scene, TLAS or not. It now uses
+- ~~**`interior`'s candidate walk is no longer separately LINEAR where a TLAS
+  exists — it now shares `proximity`'s shape, not a worse one.**~~ **MEASURED,
+  DL-33, 2026-09-17 (`tests/InteriorCandidateWalkCostTest.cpp`, 5652/0;
+  `docs/DEBT_LEDGER.md`'s DL-33 row).** Before the review-round-3 fix
+  above, `DeepestOtherContainment` walked the flat AABB snapshot with an
+  ordinary containment test on every scene, TLAS or not. It now uses
   `ForEachContainingPoint` on a TLAS-backed scene, matching
-  `NearestOtherSurface`'s source. The cost shape is still NOT
-  `NearestOtherSurface`'s: a running MAXIMUM offers no "subtree already
-  worse than best" prune, so `ForEachContainingPoint` visits every node
-  whose box contains the query point rather than shrinking a search
-  radius as candidates are found — on a well-balanced tree that is the
-  handful of nodes along the point's containing spine (bounded by tree
-  depth, not object count), not a full-scene scan, but it is a different
-  and NOT YET MEASURED shape rather than the flat scan's honest `O(n)`.
-  The flat-scan fallback for a ≤4-object scene (or `bUseBSPtree` off) is
+  `NearestOtherSurface`'s source. `BVH::ClosestPointDistance` and
+  `ForEachContainingPoint` gained optional `outNodesVisited`/
+  `outCandidatesVisited` diagnostic counters (both default null, so this
+  costs nothing in production), threaded through
+  `IObjectManager::NearestOtherSurface`/`DeepestOtherContainment` as two
+  more optional trailing out-parameters.
+
+  **The TLAS candidate WALK is the same shape for both queries — this
+  was the open question, and it is now closed in `proximity`'s favour.**
+  On the one shipped scene that calls `interior(` (`tidal_stones.RISEscene`,
+  a production-shape 11-object scene, still TLAS-backed since 11 >
+  `nMaxObjectsPerNode` (4)), `interior` visits 0.49–0.66x the nodes and
+  candidates `proximity` does at the SAME 500 query points. On a sparse
+  synthetic grid (N = 16/64/256/1024 spheres, spacing 10x the diameter)
+  `interior` visits FEWER nodes still (0.11–0.38x) — a point-in-box
+  containment test is a STRONGER prune than a nearest-point search's
+  box-distance one for a point that usually belongs to nobody's box. On a
+  family with no interior-distance fast path (a hand-welded watertight
+  mesh cube, DL-31/DL-143's own shape) the two queries land at an EXACT
+  1.000x candidate/node count at N=256 under heavy overlap — direct proof
+  that the TLAS walk itself, independent of which family answers the
+  per-candidate query, costs the same for both.
+
+  **The apparent worst case — on the order of hundreds of x (328x-550x across three reruns; wall-clock noise, not a bound) wall-clock at N=1024 fully-
+  overlapping spheres — is NOT a walk-shape defect.** It is
+  `SphereGeometry`/`BoxGeometry::DistanceToSurface`'s own DOCUMENTED
+  convention ("a point inside a neighbour is in CONTACT with it, distance
+  0" — `BoxGeometry.cpp`'s own comment on the clamp) letting
+  `ClosestPointDistance` short-circuit to O(1) the INSTANT it evaluates
+  ANY ONE candidate that contains the query point (`best` collapses to 0,
+  the theoretical minimum, and the function returns immediately) —
+  regardless of how many OTHER candidates also contain that point.
+  `DeepestOtherContainment`'s running MAXIMUM has no such shortcut BY
+  DESIGN: leaving the union of overlapping solids needs the DEEPEST
+  value, which could be reported by any one of the overlapping
+  candidates, so it must ask every one of them. This produces a genuine
+  O(1)-vs-O(k) divergence (k = candidates genuinely overlapping the query
+  point) SPECIFIC to solid analytic families whose `DistanceToSurface`
+  has this fast path — not a property of the candidate walk, and not
+  reproduced by any shipped content (the divergence requires k in the
+  hundreds at one exact point, which no scene in this repository
+  constructs).
+
+  **Revised cost model, replacing the "bounded by tree depth, not object
+  count" claim** (measured false in the deep-overlap regime — a
+  well-balanced tree's containing "spine" is not one path when MANY
+  leaves' boxes genuinely straddle the same point, since box containment
+  is a geometric fact the tree cannot partition away): `interior`'s
+  TLAS-backed candidate-walk cost is `O(k)`, `k` = the number of
+  registered candidates whose world AABB contains the query point —
+  small (a handful) on any well-spread scene regardless of tree depth,
+  and bounded above by the scene's object count in a dense-overlap
+  region. `proximity`'s cost is the SAME `O(k)` order, except it
+  collapses to `O(1)` whenever the query point is already inside at least
+  one candidate from a family whose `DistanceToSurface` reports exact
+  containment as 0 (every current solid family: sphere, box, torus,
+  cylinder, CSG composites via their combined field, and a watertight
+  mesh IS NOT in this set — its `DistanceToSurface` has no interior fast
+  path, so it stays `O(k)` too).
+
+  Per `docs/skills/performance-work-with-baselines.md`'s "do not optimise
+  without a measured need": no realistic or shipped scene shows a need
+  for a prune (the "close if within ~2x on a realistic scene" bar this slice set for itself (the original DL-33 row named no numeric threshold) is met with room to spare — the real scene favours
+  `interior`), so none was added. A real, correctness-preserving
+  optimisation opportunity — a farthest-corner upper bound on
+  `ForEachContainingPoint`'s running maximum, mirroring
+  `ClosestPointDistance`'s nearest-corner prune — was identified but not
+  implemented (it would not help the measured worst case, where
+  same-sized overlapping candidates give near-identical farthest-corner
+  bounds with no separation to prune on) and is filed as **DL-162**. The
+  flat-scan fallback for a ≤4-object scene (or `bUseBSPtree` off) is
   unchanged and linear, as it always was.
 - ~~**`interior` UNDER-READS inside a UNION composite's overlap.**~~
   **CLOSED 2026-09-12 for the published DL-34 regression — `cffa254f`,

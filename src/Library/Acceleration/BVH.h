@@ -38,6 +38,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstddef>
 #include <cfloat>
 
 // Phase 3 SIMD selection.  Apple Silicon and arm64 Android (Galaxy Fold)
@@ -1899,13 +1900,31 @@ namespace RISE
 		//! and is never stored, so there is nothing to round outward for).
 		//! \return TRUE and writes `outDist` when some primitive is strictly
 		//!         within `maxDist`, FALSE otherwise (`outDist` untouched).
+		//!
+		//! `outNodesVisited`/`outCandidatesVisited` (both default null, DL-33):
+		//! optional diagnostic counters, incremented rather than assigned so a
+		//! caller can accumulate over several calls.  A "node visited" is one
+		//! `Entry` popped off the stack and NOT immediately skipped by the
+		//! stale-`best` re-check (i.e. one that actually inspects its
+		//! primitives or pushes its children); a "candidate visited" is one
+		//! call to `primDist` -- after `useElementBoxTest`'s pre-test, when
+		//! enabled, has already skipped an out-of-range element -- matching
+		//! the "distance calls" this class's own doc comments and
+		//! docs/CROSS_OBJECT_PROXIMITY_DESIGN.md's §8.3 measurements
+		//! (11.08 / 5.617 candidates per query) already mean by that phrase.
+		//! Null costs one predicted-not-taken pointer compare per node/
+		//! candidate -- the same discipline as `ProximityDemand`'s relaxed
+		//! atomic checks elsewhere in this codebase -- and every existing
+		//! caller passes null implicitly via the default.
 		template< class PrimDistFn >
 		bool ClosestPointDistance(
 			const Point3& p,
 			const Scalar  maxDist,
 			PrimDistFn&&  primDist,
 			Scalar&       outDist,
-			const bool    useElementBoxTest = false ) const
+			const bool    useElementBoxTest = false,
+			std::size_t*  outNodesVisited = 0,
+			std::size_t*  outCandidatesVisited = 0 ) const
 		{
 			if( nodes.empty() || prims.empty() ) return false;
 			if( !( maxDist > Scalar( 0 ) ) ) return false;
@@ -1928,6 +1947,7 @@ namespace RISE
 				stack.pop_back();
 				// `best` may have dropped since this entry was queued.
 				if( !( e.dist < best ) ) continue;
+				if( outNodesVisited ) ++( *outNodesVisited );
 
 				const Node& node = nodes[ e.node ];
 
@@ -1939,6 +1959,7 @@ namespace RISE
 							const Scalar ebDist = PointBoxDistance( p, eb.ll, eb.ur );
 							if( !( ebDist < best ) ) continue;
 						}
+						if( outCandidatesVisited ) ++( *outCandidatesVisited );
 						const Scalar d = primDist( prims[i], p );
 						if( d < best ) {
 							best  = d;
@@ -2014,11 +2035,27 @@ namespace RISE
 		//! "contained" rather than "excluded" -- the safe direction, since it
 		//! can only ADMIT a candidate that then answers or refuses on its own
 		//! merits, never silently drop one.
+		//!
+		//! `outNodesVisited`/`outCandidatesVisited` (both default null, DL-33):
+		//! the same diagnostic counters `ClosestPointDistance` takes, in the
+		//! same units, so the two traversals' cost SHAPES can be compared
+		//! query-for-query -- see docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §10's
+		//! "not yet measured" residual this exists to close.  A "node
+		//! visited" is one entry popped off the stack (there is no stale-
+		//! `best` re-check here, unlike `ClosestPointDistance` -- a running
+		//! MAXIMUM has nothing to re-test a popped entry against); a
+		//! "candidate visited" is one call to `visit`, after the
+		//! `useElementBoxTest` pre-test (when enabled) has already skipped an
+		//! element whose own box excludes `p`.  Null costs one predicted-
+		//! not-taken pointer compare per node/candidate, and every existing
+		//! caller passes null implicitly via the default.
 		template< class VisitFn >
 		void ForEachContainingPoint(
 			const Point3& p,
 			VisitFn&&     visit,
-			const bool    useElementBoxTest = false ) const
+			const bool    useElementBoxTest = false,
+			std::size_t*  outNodesVisited = 0,
+			std::size_t*  outCandidatesVisited = 0 ) const
 		{
 			if( nodes.empty() || prims.empty() ) return;
 
@@ -2036,6 +2073,7 @@ namespace RISE
 			while( !stack.empty() ) {
 				const uint32_t ni = stack.back();
 				stack.pop_back();
+				if( outNodesVisited ) ++( *outNodesVisited );
 				const Node& node = nodes[ni];
 
 				if( node.primCount > 0 ) {
@@ -2045,6 +2083,7 @@ namespace RISE
 							const BoundingBox eb = ep.GetElementBoundingBox( prims[i] );
 							if( !PointInBox( p, eb.ll, eb.ur ) ) continue;
 						}
+						if( outCandidatesVisited ) ++( *outCandidatesVisited );
 						visit( prims[i], p );
 					}
 				} else {

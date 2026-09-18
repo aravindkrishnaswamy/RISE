@@ -1056,6 +1056,36 @@ int main()
     fabricSatinThinMat->addref();
     IBSDF* fabricSatinThinBRDF = fabricSatinThinMat->GetBSDF();
 
+    // DL-23 P2-1: `coated_material` OVER a `transmission thin` weave --
+    // directly, and through the fabric layer above -- for Part E2's
+    // cross-hemisphere reciprocity sweep.  Reuses the coated triad's own
+    // neutral fixtures (`coatWeightSc`=1, `coatIorSc`, `coatRoughSc`,
+    // `coatZeroSc` thickness/absorption, `one` tint) so this is the
+    // SAME coat configuration `coatedLambMat`/`coatedGgxMat` already use
+    // above, over the two `weaveSatinThin`-rooted substrates Part E2
+    // already builds -- "Coated_Weave_thin" wraps the bare weave,
+    // "Coated_Fabric" wraps the fabric-over-weave twin, so a defect
+    // specific to double-wrapping (coat -> fabric -> weave) cannot hide
+    // behind the single-wrap row passing.  CoatedBRDF's below-horizon
+    // branch (CoatedBRDF.cpp's "TRANSMISSION THROUGH THE COAT" section)
+    // multiplies the substrate's OWN (already-reciprocal, per Part E2's
+    // header comment) flat transmit value by `K*weight + (1-weight)`,
+    // where `K = Ain*Aout*rec*(Tin*Tout/eta^2)` is symmetric under an
+    // i/o swap by construction (Ain/Tin and Aout/Tout simply exchange
+    // roles) and `weight`/`rec`/`eta` do not depend on direction at
+    // all -- so the composite is reciprocal PROVIDED the substrate call
+    // it wraps is, which is exactly what these two rows check rather
+    // than assume.
+    CoatedMaterial* coatedWeaveSatinThinMat = new CoatedMaterial(
+        *weaveSatinThin.Material(), *coatWeightSc, *coatIorSc, *coatRoughSc, *coatZeroSc, *coatZeroSc, *one );
+    coatedWeaveSatinThinMat->addref();
+    IBSDF* coatedWeaveSatinThinBRDF = coatedWeaveSatinThinMat->GetBSDF();
+
+    CoatedMaterial* coatedFabricSatinThinMat = new CoatedMaterial(
+        *fabricSatinThinMat, *coatWeightSc, *coatIorSc, *coatRoughSc, *coatZeroSc, *coatZeroSc, *one );
+    coatedFabricSatinThinMat->addref();
+    IBSDF* coatedFabricSatinThinBRDF = coatedFabricSatinThinMat->GetBSDF();
+
     // BARE sheen_material's own triad.  9.9 gate 5(a) is explicit that
     // this is a PRE-EXISTING HOLE this phase closes as a matter of
     // course: SheenBRDF has never been in the reciprocity sweep, even
@@ -1611,6 +1641,17 @@ int main()
         // FabricBRDF banner rejects for the reflect side for exactly
         // this reason) on the way through the surface.
         { "Fabric/Weave_satin_thin (transmission)",   fabricSatinThinBRDF },
+        // DL-23 P2-1 (docs/DEBT_LEDGER.md): `coated_material` newly
+        // admits fabric_material/weave_material substrates and forwards
+        // their transmission (CoatedBRDF.cpp's below-horizon branch) --
+        // these two rows are that branch's OWN reciprocity check, not a
+        // re-measure of the rows above.  "Coated_Weave_thin" wraps the
+        // bare weave directly; "Coated_Fabric" wraps the fabric-over-
+        // weave twin, so a defect specific to the coat sitting on TOP OF
+        // an already-wrapped substrate cannot hide behind the simpler
+        // row passing.
+        { "Coated_Weave_thin (transmission)",         coatedWeaveSatinThinBRDF },
+        { "Coated_Fabric (transmission)",             coatedFabricSatinThinBRDF },
     };
 
     for( const ReciprocityEntry& e : crossHemisphereMaterials )
@@ -1628,6 +1669,132 @@ int main()
         {
             std::cout << " -> FAIL" << std::endl;
             numFailed++;
+        }
+    }
+    std::cout << std::endl;
+
+    // ================================================================
+    //  Part F (DL-112 review P1-1/P1-2): TILTED translucent entry
+    //  front-reflection lobe -- SPF sampler vs BSDF evaluator.
+    //
+    //  Every other translucent row in this file (Part C's furnace, Part
+    //  A's sanity) uses `MakeIntersection`, whose shading normal IS the
+    //  geometric normal, so `P(valid) == 1` and the whole horizon-clip
+    //  mechanism is invisible to it.  DL-112 renormalized the SAMPLER
+    //  and `Pdf()` by `1/P(valid)`; this row is what proves
+    //  `TranslucentBSDF::value` was renormalized WITH them.
+    //
+    //  The invariant is the one the two techniques must agree on:
+    //  over the SPF's own draws,
+    //
+    //      E[ kray ]  ==  E[ value(wo, ri) * |cos(wo, vNormal)| / pdf ]
+    //
+    //  -- the left side is what a BSDF-sampled continuation carries,
+    //  the right side is what PT's NEE (`LightSampler.cpp`, which
+    //  multiplies `brdf.value` by `Dot(vToLight, ri.vNormal)`) and
+    //  BDPT/VCM's connections pay for the same direction.  A ratio != 1
+    //  means two estimators of one integral disagree, and any MIS of
+    //  them is biased (the DL-74 lesson).
+    //
+    //  The NM column (added by the round-3 review, 2026-09-17) is the
+    //  same invariant asked of `valueNM` against `ScatterNM`'s own
+    //  `krayNM`, and it is what proved the NM branch was NOT the twin
+    //  its comment claimed: it carried `GetReflectedSide`'s Phong
+    //  `pow(sd, exponent)` factor, which the RGB branch does not have
+    //  and which the SPF's cosine-density front lobe does not describe.
+    //  Pre-fix the two columns read 1.00000 (RGB) against
+    //  6.05071 / 6.63664 / 11.67190 / 104.08390 / 116.17059 / 26.92116
+    //  (NM) at these six tilts, at this row's own 40000 trials.
+    // ================================================================
+
+    std::cout << "========================================" << std::endl;
+    std::cout << "  Part F: Tilted translucent front lobe (SPF vs BSDF)" << std::endl;
+    std::cout << "========================================" << std::endl;
+
+    {
+        const double tiltsDeg[] = { 0.0, 30.0, 45.0, 60.0, 75.0, 89.0 };
+        const int    numTilts   = 6;
+        const int    kTrials    = 40000;
+        const double kProbeNM   = 550.0;
+
+        for( int mode = 0; mode < 2; mode++ )
+        {
+        const bool bNM = ( mode == 1 );
+        std::cout << "  -- " << ( bNM ? "NM (ScatterNM / valueNM)" : "RGB (Scatter / value)" ) << std::endl;
+        for( int t = 0; t < numTilts; t++ )
+        {
+            const double tiltRad = tiltsDeg[t] * PI / 180.0;
+            const Vector3 n( sin(tiltRad), 0, cos(tiltRad) );
+
+            // MakeClosedEntry's shape (TransmissionPushGateTest): an
+            // analytic primitive struck from outside, true outward +Z,
+            // shading normal tilted in the XZ plane.
+            Ray inRay( Point3(0,0,2), Vector3(0,0,-1) );
+            RasterizerState rs = {0, 0};
+            RayIntersectionGeometric ri( inRay, rs );
+            ri.bHit = true;
+            ri.range = 2.0;
+            ri.ptIntersection = Point3(0,0,0);
+            ri.vNormal = n;
+            ri.onb.CreateFromW( n );
+            ri.vGeomNormal = Vector3(0,0,1);
+            ri.ptCoord = Point2(0.5, 0.5);
+
+            RandomNumberGenerator rng( 4242 );
+            Implementation::IndependentSampler sampler( rng );
+            IORStack iorStack = MakeTestIORStack( g_stubObject );
+
+            double sumKray = 0, sumBsdf = 0;
+            int emitted = 0;
+            for( int i = 0; i < kTrials; i++ )
+            {
+                ScatteredRayContainer scattered;
+                if( bNM ) translucentSPF->ScatterNM( ri, sampler, kProbeNM, scattered, iorStack );
+                else      translucentSPF->Scatter( ri, sampler, scattered, iorStack );
+
+                for( unsigned int j = 0; j < scattered.Count(); j++ )
+                {
+                    const ScatteredRay& s = scattered[j];
+                    // The entry front-reflection lobe is the only
+                    // eRayDiffuse this branch emits (the transmission is
+                    // eRayTranslucent).
+                    if( s.type != ScatteredRay::eRayDiffuse ) continue;
+                    const Vector3 wo = Vector3Ops::Normalize( s.ray.Dir() );
+                    const double cosO = fabs( Vector3Ops::Dot( wo, ri.vNormal ) );
+                    if( s.pdf <= 0 ) continue;
+                    if( bNM ) {
+                        sumKray += s.krayNM;
+                        sumBsdf += translucentBSDF->valueNM( wo, ri, kProbeNM ) * cosO / s.pdf;
+                    } else {
+                        sumKray += ColorMath::MaxValue( s.kray );
+                        sumBsdf += ColorMath::MaxValue( translucentBSDF->value( wo, ri ) ) * cosO / s.pdf;
+                    }
+                    emitted++;
+                }
+            }
+
+            const double meanKray = sumKray / (double)kTrials;
+            const double meanBsdf = sumBsdf / (double)kTrials;
+            const double ratio    = ( meanBsdf > 0 ) ? meanKray / meanBsdf : 0.0;
+            // The closed form the pre-fix mismatch took, printed so a
+            // regression is self-diagnosing: 1/P(valid), P = (1+cos phi)/2.
+            const double oneOverP = 2.0 / ( 1.0 + cos(tiltRad) );
+
+            std::cout << "    tilt " << std::setprecision(0) << std::fixed << tiltsDeg[t] << " deg:"
+                      << "  E[kray]=" << std::setprecision(5) << meanKray
+                      << "  E[value*cos/pdf]=" << meanBsdf
+                      << "  ratio=" << ratio
+                      << "  (1/P(valid)=" << oneOverP << ", emitted=" << emitted << "/" << kTrials << ")";
+
+            const bool ok = ( emitted == kTrials ) && ( fabs( ratio - 1.0 ) < 0.002 );
+            if( ok )
+                std::cout << " -> PASS" << std::endl;
+            else
+            {
+                std::cout << " -> FAIL" << std::endl;
+                numFailed++;
+            }
+        }
         }
     }
     std::cout << std::endl;
@@ -1658,6 +1825,13 @@ int main()
                   << "  maxErr=" << std::setprecision(2) << pr.maxRelError * 100 << "%"
                   << std::endl;
     }
+
+    // DL-23 P2-1: the two coat-over-transmissive-substrate wrappers,
+    // released before the substrates they addref'd (fabricSatinThinMat,
+    // weaveSatinThin's own material) -- same ownership discipline as the
+    // coated triad below.
+    safe_release( coatedFabricSatinThinMat );
+    safe_release( coatedWeaveSatinThinMat );
 
     // Fabric triad: same ownership discipline as the coated one below --
     // the MATERIAL owns the BRDF/SPF the tables above borrowed.

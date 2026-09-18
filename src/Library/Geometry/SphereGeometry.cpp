@@ -48,6 +48,48 @@ bool SphereGeometry::TessellateToMesh(
 	const unsigned int baseIdx = static_cast<unsigned int>( vertices.size() );
 	const unsigned int rowStride = nU + 1;
 
+	// DL-116.  The north (j=0) and south (j=nV) pole ROWS collapse to a
+	// single 3D position with a single normal: `atPole` below canonicalizes
+	// u=0 for every column, so every vertex in a pole row is BIT-IDENTICAL
+	// to every other one in that row (not merely numerically close) --
+	// position, normal, and texcoord all agree, so there is nothing a
+	// second, third, ... index at that row could ever distinguish.  The
+	// pre-fix code nonetheless emitted nU+1 separate (coincident) vertex
+	// indices per pole row, which turns the pole's triangle fan into nU
+	// wedges whose two "radiating" edges are each used by only ONE
+	// neighbouring wedge instead of two under an index-keyed edge-manifold
+	// check -- a genuinely closed sphere then reads as an OPEN SHEET
+	// purely as an artifact of the tessellator's own pole indexing.  Fix:
+	// emit ONE shared vertex per pole (below) and skip the wedge triangle
+	// that pole vertex would make degenerate (in the assembly loop below);
+	// the surviving fan triangle at each pole wedge is unchanged from
+	// before.
+	//
+	// The general u=0 / u=1 SEAM on every OTHER row is a different
+	// situation and is deliberately left duplicated: its two sides carry
+	// genuinely different texcoords (u=0 vs u=1, a real discontinuity).
+	// Any residual seam-only "boundary edge" a watertightness check
+	// reports on a tessellated sphere/torus/cylinder is a job for that
+	// check's own position weld (tolerance or topology aware), not for
+	// this tessellator -- see docs/DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md.
+	//
+	// IMPORTANT: this weld MUST keep vertices[]/normals[]/coords[] a
+	// single combined (position, normal, texcoord) record per index --
+	// `GeometryUtilities::ApplyDisplacementMapToObject` /
+	// `ApplyScalarHeightToObject` (DisplacedGeometry's per-vertex
+	// displacement) look up `vCoords[poly.iVertices[j]]`, i.e. they
+	// assume the SAME index into all three arrays.  That is exactly why
+	// only the POLE rows can be welded here: their texcoord is already
+	// canonicalized to the same (0, v) for every column (see the
+	// `atPole` comment below), so collapsing them to one shared index
+	// loses no (position, normal, uv) information.  The general seam
+	// cannot be welded the same way -- its two texcoords genuinely
+	// differ -- without a SEPARATE per-corner coord index, which would
+	// break that same-index assumption; that is a larger, separate
+	// change and out of this row's scope.
+	unsigned int northPoleIdx = 0;
+	unsigned int southPoleIdx = 0;
+
 	// Parameterization matches GeometricUtilities::SphereTextureCoord(vUp=Y, vForward=-X):
 	//   phi   = v * PI   (0 at north pole (+Y), PI at south pole (-Y))
 	//   theta = u * 2*PI (0 at -X, going through +Z, +X, -Z)
@@ -67,8 +109,29 @@ bool SphereGeometry::TessellateToMesh(
 		// displacement and the cap stays closed.
 		const bool atPole = (j == 0) || (j == nV);
 
+		if( atPole ) {
+			// DL-116: one shared (position, normal, texcoord) entry for the
+			// WHOLE row, instead of rowStride coincident ones -- u is
+			// already forced to 0 for every column here, so no information
+			// is lost.
+			const Scalar u        = 0.0;
+			const Scalar theta    = 0.0;
+			const Scalar sinTheta = sin(theta);
+			const Scalar cosTheta = cos(theta);
+
+			const Vector3 dir( -sinPhi * cosTheta, cosPhi, sinPhi * sinTheta );
+			const Point3  pos( m_dRadius * dir.x, m_dRadius * dir.y, m_dRadius * dir.z );
+
+			const unsigned int poleIdx = static_cast<unsigned int>( vertices.size() );
+			vertices.push_back( pos );
+			normals.push_back( dir );
+			coords.push_back( Point2( u, v ) );
+			if( j == 0 ) { northPoleIdx = poleIdx; } else { southPoleIdx = poleIdx; }
+			continue;
+		}
+
 		for( unsigned int i = 0; i <= nU; i++ ) {
-			const Scalar u        = atPole ? 0.0 : Scalar(i) / Scalar(nU);
+			const Scalar u        = Scalar(i) / Scalar(nU);
 			const Scalar theta    = u * TWO_PI;
 			const Scalar sinTheta = sin(theta);
 			const Scalar cosTheta = cos(theta);
@@ -82,15 +145,43 @@ bool SphereGeometry::TessellateToMesh(
 		}
 	}
 
+	// Combined (position, normal, texcoord) index for (row j, column i):
+	// the pole rows collapse to their single shared entry regardless of
+	// i; every other row keeps the ORIGINAL per-column indexing
+	// (rowStride wide), offset by the two pole rows now contributing one
+	// entry each instead of rowStride.
+	const auto Index = [&]( unsigned int j, unsigned int i ) -> unsigned int {
+		if( j == 0 )  { return northPoleIdx; }
+		if( j == nV ) { return southPoleIdx; }
+		// Row 0 contributed exactly one entry; rows 1..(j-1) contributed a
+		// full rowStride each.
+		return baseIdx + 1 + ( j - 1 ) * rowStride + i;
+	};
+
 	for( unsigned int j = 0; j < nV; j++ ) {
 		for( unsigned int i = 0; i < nU; i++ ) {
-			const unsigned int a = baseIdx + j     * rowStride + i;
-			const unsigned int b = baseIdx + j     * rowStride + (i + 1);
-			const unsigned int c = baseIdx + (j+1) * rowStride + i;
-			const unsigned int d = baseIdx + (j+1) * rowStride + (i + 1);
+			const unsigned int a = Index( j,   i     );
+			const unsigned int b = Index( j,   i + 1 );
+			const unsigned int c = Index( j+1, i     );
+			const unsigned int d = Index( j+1, i + 1 );
 
-			tris.push_back( MakeIndexedTriangleSameIdx( a, c, b ) );
-			tris.push_back( MakeIndexedTriangleSameIdx( b, c, d ) );
+			// At the north pole row (j==0) a==b (the shared pole entry), so
+			// the first triangle (a, c, b) is now fully degenerate (two
+			// corners at the identical index) -- it always contributed zero
+			// area; skip emitting it instead of relying on a downstream
+			// degenerate-triangle filter.  Symmetric at the south pole row
+			// (j+1==nV), where c==d makes the SECOND triangle degenerate
+			// instead.  Away from the poles this is exactly the original
+			// two-triangles-per-wedge assembly.
+			const bool bNorthPoleWedge = ( j == 0 );
+			const bool bSouthPoleWedge = ( j + 1 == nV );
+
+			if( !bNorthPoleWedge ) {
+				tris.push_back( MakeIndexedTriangleSameIdx( a, c, b ) );
+			}
+			if( !bSouthPoleWedge ) {
+				tris.push_back( MakeIndexedTriangleSameIdx( b, c, d ) );
+			}
 		}
 	}
 

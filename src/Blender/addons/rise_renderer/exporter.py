@@ -239,6 +239,18 @@ class MaterialData:
     anisotropy_factor_painter_name: str | None = None
     anisotropy_rotation_painter_name: str | None = None
     emissive_scale: float = 1.0
+    # ABI v12 (DL-18, docs/DEBT_LEDGER.md; source heading
+    # CLOTH_FABRIC_DESIGN.md §15 item 13).  PBR_METALLIC_ROUGHNESS only:
+    # `sheen_color_painter_name` set (non-None) means the bridge wraps
+    # this PBR material in a `fabric_material` sheen layer -- None (the
+    # default) means no sheen, bit-identical to a pre-v12 payload.
+    # `sheen_roughness` is the numeric Charlie-alpha fallback;
+    # `sheen_roughness_texture_painter_name` is set ONLY when Sheen
+    # Roughness is texture-driven (the one v12 texture exception,
+    # mirroring HairMaterialData's v10 beta_m/beta_n/ior fields above).
+    sheen_color_painter_name: str | None = None
+    sheen_roughness: float = 0.5
+    sheen_roughness_texture_painter_name: str | None = None
 
 
 @dataclass
@@ -1011,9 +1023,10 @@ def _warn_unsupported_principled_features(state: _ExportState, material, wrapper
     node = wrapper.node_principled_bsdf
     material_name = material.name_full
     # Anisotropy + specular tint now flow through
-    # AddPBRMetallicRoughnessMaterial so they're not warned anymore.
+    # AddPBRMetallicRoughnessMaterial, and Sheen now flows through
+    # fabric_material (DL-18, docs/DEBT_LEDGER.md), so none of the three
+    # are warned about anymore.
     _check_principled_feature(state, node, material_name, "Coat Weight", 0.0, "clearcoat")
-    _check_principled_feature(state, node, material_name, "Sheen Weight", 0.0, "sheen")
     _check_principled_feature(state, node, material_name, "Subsurface Weight", 0.0, "subsurface")
 
 
@@ -1987,6 +2000,57 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
         (anisotropy_rotation_value, anisotropy_rotation_value, anisotropy_rotation_value),
     ) if abs(anisotropy_rotation_value) > 1e-4 else None
 
+    # Sheen (DL-18, docs/DEBT_LEDGER.md; source heading
+    # CLOTH_FABRIC_DESIGN.md §15 item 13) — Blender 4.x Principled
+    # sockets "Sheen Weight" / "Sheen Tint" (colour) / "Sheen Roughness".
+    # Mirrors GLTFSceneImporter.cpp's KHR_materials_sheen handling:
+    # `sheen_weight * sheen_tint` becomes `fabric_material`'s
+    # `sheen_color` in one slot — the max channel there IS the
+    # energy-split weight (see fabric_material's own descriptor), the
+    # same single-slot contract glTF's `sheenColorFactor` already uses,
+    # so folding Blender's separate Weight into the colour reproduces it
+    # exactly.  "Sheen Weight" is read at its socket default only (like
+    # "Coat Weight"/"Absorption Coefficient" elsewhere in this file) —
+    # RISE has no multiply-painter primitive to combine an independently
+    # textured weight with an independently textured tint, and Blender
+    # artists overwhelmingly paint the TINT, not the weight.
+    sheen_weight = _clamp01(_socket_default_float(principled_node, "Sheen Weight", 0.0))
+    sheen_weight_socket = _node_input(principled_node, "Sheen Weight")
+    if sheen_weight_socket is not None and sheen_weight_socket.is_linked:
+        _warn_once(
+            state,
+            f"RISE reads Principled Sheen Weight on '{material.name_full}' at its socket default; "
+            f"a linked/textured weight is not sampled.",
+        )
+
+    sheen_color_painter = None
+    sheen_roughness_value = 0.5
+    sheen_roughness_texture_painter = None
+    if sheen_weight > 1e-4:
+        sheen_tint = _socket_default_color(principled_node, "Sheen Tint", (1.0, 1.0, 1.0))
+        sheen_tint_texture = _maybe_resolve_socket_texture(
+            principled_node, "Sheen Tint", None, colorspace_is_data=False,
+        )
+        sheen_color_painter = _color_or_texture_painter(
+            state,
+            f"{material.name_full}_sheen_color",
+            sheen_tint,
+            texture_wrapper=sheen_tint_texture,
+            scale=(sheen_weight, sheen_weight, sheen_weight),
+        )
+
+        sheen_roughness_value = _clamp01(_socket_default_float(principled_node, "Sheen Roughness", 0.5))
+        sheen_roughness_texture = _maybe_resolve_socket_texture(
+            principled_node, "Sheen Roughness", None, colorspace_is_data=True,
+        )
+        if sheen_roughness_texture is not None:
+            sheen_roughness_texture_painter = _scalar_or_texture_painter(
+                state,
+                f"{material.name_full}_sheen_roughness",
+                sheen_roughness_value,
+                texture_wrapper=sheen_roughness_texture,
+            )
+
     transmission_texture = _maybe_resolve_socket_texture(
         principled_node, "Transmission Weight",
         wrapper.transmission_texture,
@@ -2154,6 +2218,9 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
             emissive_scale=1.0,
             emission_painter_name=emission_painter,
             double_sided=double_sided,
+            sheen_color_painter_name=sheen_color_painter,
+            sheen_roughness=sheen_roughness_value,
+            sheen_roughness_texture_painter_name=sheen_roughness_texture_painter,
         )
 
     state.materials.append(payload)

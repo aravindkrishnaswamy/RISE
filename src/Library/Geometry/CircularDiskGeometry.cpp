@@ -114,6 +114,19 @@ bool CircularDiskGeometry::TessellateToMesh(
 			break;
 	}
 
+	// DL-116 sibling (sphere pole pattern; see docs/DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md):
+	// the center row (j=0, r=0) collapses to a single 3D position with the
+	// SAME axis normal AND the same canonicalized u=0 texcoord for every
+	// column -- bit-identical in every sense a downstream consumer could
+	// read, since theta is forced to 0 below regardless of i.  Emitting
+	// `nU+1` separate coincident indices for that one point turns the
+	// center's triangle fan into `nU` wedges whose two "radiating" edges
+	// are each shared with only ONE neighbouring wedge instead of two under
+	// an index-keyed edge-manifold check.  Weld it to ONE shared index
+	// (below), exactly like SphereGeometry's pole fix, and drop the wedge
+	// triangle that vertex would otherwise make degenerate.
+	unsigned int centerIdx = 0;
+
 	for( unsigned int j = 0; j <= nV; j++ ) {
 		const Scalar v = Scalar(j) / Scalar(nV);
 		const Scalar r = v * radius;
@@ -125,8 +138,19 @@ bool CircularDiskGeometry::TessellateToMesh(
 		// center so every collapsed vertex gets the same displacement.
 		const bool atCenter = (j == 0);
 
+		if( atCenter ) {
+			// r=0 regardless of chAxis -- the center is the disk's local
+			// origin on every axis.
+			const Scalar u = 0.0;
+			centerIdx = static_cast<unsigned int>( vertices.size() );
+			vertices.push_back( Point3( 0.0, 0.0, 0.0 ) );
+			normals.push_back( axisNormal );
+			coords.push_back( Point2( u, v ) );
+			continue;
+		}
+
 		for( unsigned int i = 0; i <= nU; i++ ) {
-			const Scalar u        = atCenter ? 0.0 : Scalar(i) / Scalar(nU);
+			const Scalar u        = Scalar(i) / Scalar(nU);
 			const Scalar theta    = u * TWO_PI;
 			const Scalar cosTheta = cos(theta);
 			const Scalar sinTheta = sin(theta);
@@ -151,14 +175,32 @@ bool CircularDiskGeometry::TessellateToMesh(
 		}
 	}
 
+	// Combined index for (row j, column i): row 0 (the center) collapses to
+	// its single shared entry regardless of i; every other row keeps the
+	// ORIGINAL per-column indexing (rowStride wide), offset by row 0 now
+	// contributing one entry instead of rowStride.
+	const auto Index = [&]( unsigned int j, unsigned int i ) -> unsigned int {
+		if( j == 0 ) { return centerIdx; }
+		return baseIdx + 1 + ( j - 1 ) * rowStride + i;
+	};
+
 	for( unsigned int j = 0; j < nV; j++ ) {
 		for( unsigned int i = 0; i < nU; i++ ) {
-			const unsigned int a = baseIdx + j     * rowStride + i;
-			const unsigned int b = baseIdx + j     * rowStride + (i + 1);
-			const unsigned int c = baseIdx + (j+1) * rowStride + i;
-			const unsigned int d = baseIdx + (j+1) * rowStride + (i + 1);
+			const unsigned int a = Index( j,   i     );
+			const unsigned int b = Index( j,   i + 1 );
+			const unsigned int c = Index( j+1, i     );
+			const unsigned int d = Index( j+1, i + 1 );
 
-			tris.push_back( MakeIndexedTriangleSameIdx( a, c, b ) );
+			// At the center row (j==0) a==b (the shared center entry), so the
+			// first triangle (a, c, b) is fully degenerate (two corners at
+			// the identical index) -- it always contributed zero area; skip
+			// it.  Away from the center this is exactly the original
+			// two-triangles-per-wedge assembly.
+			const bool bCenterWedge = ( j == 0 );
+
+			if( !bCenterWedge ) {
+				tris.push_back( MakeIndexedTriangleSameIdx( a, c, b ) );
+			}
 			tris.push_back( MakeIndexedTriangleSameIdx( b, c, d ) );
 		}
 	}

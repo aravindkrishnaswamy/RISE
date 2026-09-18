@@ -1388,12 +1388,19 @@ warn-and-skipped, naming both extensions in the message so the drop is
 said, not silent ([docs/GLTF_IMPORT.md](GLTF_IMPORT.md) §15;
 `GLTFSceneImporter.cpp`'s clearcoat/sheen composition warning).
 
-**Unblocks when** `CoatedMaterial` can wrap a `FabricMaterial` substrate
-— its allowlist and its closed-form layered-transport evaluation
-(Weidlich-Wilkie + Kulla-Conty recycling) would need to grow a fourth
-scattering class.  Nobody has scoped that work yet; extending
-`coated_material`'s allowlist to `FabricMaterial` was explicitly out of
-scope for the sheen-import slice (docs/CLOTH_FABRIC_DESIGN.md §7(B)).
+**Blocker REMOVED 2026-09-14 (DL-23, [docs/DEBT_LEDGER.md](DEBT_LEDGER.md)):**
+`CoatedMaterial` now admits `FabricMaterial` (and `WeaveMaterial`) as a
+substrate, with `CoatedBRDF`/`CoatedSPF` forwarding and modulating a
+`transmission thin` weave's below-horizon transport exactly as
+`FabricBRDF`/`FabricSPF` already did.  `docs/CLOTH_FABRIC_DESIGN.md` §15
+item 16's tail and item 22's "one hop out" prediction are both struck
+accordingly.  **This item's OWN remaining scope is narrower than it was**:
+the material-composition machinery is unblocked, but `GLTFSceneImporter.cpp`
+still needs its own follow-up to actually BUILD a `coated_material` wrapping
+a `fabric_material` when both `KHR_materials_sheen` and
+`KHR_materials_clearcoat` are present, instead of warning and dropping the
+clearcoat layer -- that importer-side wiring was outside DL-23's
+parser/Job/material-composition scope and is not yet scheduled.
 
 ---
 

@@ -387,7 +387,9 @@ namespace RISE
 				const Point3& ptWorld,
 				const IObject* self,
 				const Scalar maxDistWorld,
-				Scalar& outDist
+				Scalar& outDist,
+				std::size_t* outNodesVisited = 0,
+				std::size_t* outCandidatesVisited = 0
 				) const;
 
 			//! See IObjectManager::DeepestOtherContainment's contract comment.
@@ -395,7 +397,9 @@ namespace RISE
 				const Point3& ptWorld,
 				const IObject* self,
 				const Scalar maxDepthWorld,
-				Scalar& outDepth
+				Scalar& outDepth,
+				std::size_t* outNodesVisited = 0,
+				std::size_t* outCandidatesVisited = 0
 				) const;
 
 			//! TEST-ONLY: has the proximity AABB snapshot been built?

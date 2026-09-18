@@ -159,7 +159,7 @@ namespace RISE
 		// ---------------------------------------------------------------
 		SurfaceDerivativesInfo	derivatives;	///< dpdu/dpdv/dndu/dndv + scaleHint + the direct SDF curvature + the texcoord chart map
 		SurfaceSignalInfo		signals;		///< the geometry-signal channel: own-surface half (provider, primId, barycentrics) AND cross-object half (pScene/pSelf/ptWorld)
-		TextureFootprint		txFootprint;	///< pixel footprint; all-zero under today's bidirectional rasterizers (they emit no ray differentials) but carried so a future landing cannot silently reopen the gap
+		TextureFootprint		txFootprint;	///< pixel footprint (DL-14, docs/DL14_BIDIRECTIONAL_RAY_DIFFERENTIALS.md): non-zero on the depth-0 EYE vertex, because `ICamera::GenerateRay` unconditionally stamps Igehy differentials onto the camera ray every rasterizer shares, and zero everywhere else -- identical to PT's own footprint, which likewise only ever reaches the primary hit (no ray carries differentials after a scattering bounce, in ANY integrator). An earlier revision of this comment claimed the field was always zero here ("they emit no ray differentials"); that was never true of the depth-0 vertex and was refuted by direct render measurement -- see the doc for the numbers
 
 		RISEPel					throughput;		///< Cumulative throughput from subpath origin (alpha_i)
 		Scalar					throughputNM;	///< Spectral throughput for a single wavelength

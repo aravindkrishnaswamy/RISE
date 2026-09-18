@@ -66,6 +66,7 @@
 #include "../src/Library/Materials/LambertianMaterial.h"
 #include "../src/Library/Materials/GGXMaterial.h"
 #include "../src/Library/Materials/CoatedMaterial.h"
+#include "../src/Library/Materials/CoatedLayer.h"
 #include "../src/Library/Materials/FabricMaterial.h"
 #include "WeaveTestFixture.h"
 
@@ -833,12 +834,22 @@ int main()
     // skipCrossVal:  Skip the cross-validation sub-test entirely.
     //     Cross-validation checks that Scatter().pdf matches Pdf(ri,wo).
     //     For multi-lobe SPFs, the Pdf() method returns a weighted
-    //     mixture of per-lobe PDFs, but the weights are based on color
-    //     magnitude (MaxValue of reflectance painters).  The actual
-    //     selection probability in RandomlySelect is proportional to
-    //     kray magnitude, which is computed at shading time and may
-    //     differ from the static painter weights.  This creates a
-    //     systematic mismatch for multi-lobe materials.
+    //     mixture of per-lobe PDFs, but the weights may be based on
+    //     color magnitude (MaxValue of reflectance painters).  The
+    //     actual selection probability in RandomlySelect is
+    //     proportional to kray magnitude, which is computed at shading
+    //     time and may differ from the static painter weights.  This
+    //     creates a systematic mismatch for multi-lobe materials.
+    //
+    //     NOTE: for the three "draw every lobe, then pick one by its
+    //     realized kray" SPFs -- Schlick (DL-67 Slice 0), IsotropicPhong
+    //     (DL-98) and AshikminShirleyAnisotropicPhong (DL-99) -- that
+    //     description is HISTORICAL: their Pdf() now reports the true
+    //     generating density.  They still skip cross-val, but for a
+    //     STRUCTURAL reason that no fix can remove: a lobe's per-call
+    //     selection probability there is an expectation over the OTHER
+    //     lobe's independent draw, so no aggregate density can satisfy
+    //     a per-call identity.  Their chi2 gates ARE live.
     //
     // skipChi2:  Skip the chi-squared histogram sub-test.
     //     The chi-squared test compares the distribution of directions
@@ -871,17 +882,34 @@ int main()
         //--------------------------------------------------------------
         // IsotropicPhong: diffuse + specular lobes.
         //
-        // Pdf() returns a weighted mixture of cosine-hemisphere PDF
-        // (diffuse) and Phong-lobe PDF (specular).  The weights use
-        // static MaxValue(reflectance) but RandomlySelect picks by
-        // kray, which includes the cos-weighted BRDF evaluation.
-        // This causes massive cross-val divergence (38k-45k mismatches
-        // out of 50k samples) and chi2 failure.
+        // Cross-val: STILL SKIPPED, and for the same structural reason
+        //   as Schlick below, NOT the stale one this comment used to
+        //   give.  Scatter() draws BOTH lobes every call and
+        //   RandomlySelect picks one by the REALIZED MaxValue(kray), so
+        //   a lobe's per-call selection probability is an expectation
+        //   over the OTHER lobe's independent random draw.  Cross-val's
+        //   per-call identity (Scatter().pdf == Pdf(ri,wo)) cannot hold
+        //   for any aggregate density, correct or not.
         //
-        // The PDF integral is fine (~1.0) — only the weighting between
-        // lobes is mismatched.
+        // Integral: passes (0.999924 @ 30deg, 0.999909 @ 60deg).
+        //
+        // Chi2: NOW GATED (was skipped).  820.9 @ 30deg / 786.4 @ 60deg
+        //   against critical 928.3.
+        //
+        //   The old note here -- "the weights use static
+        //   MaxValue(reflectance) but RandomlySelect picks by kray ...
+        //   causes massive cross-val divergence (38k-45k mismatches)
+        //   and chi2 failure" -- described DL-98, fixed 2026-09-17.
+        //   Pdf()/PdfNM() now report the true generating density of
+        //   Scatter+RandomlySelect: C_D*p_D(wo) + sum_i q_i(wo)*p_i(wo),
+        //   with C_D/q_i estimated by a deterministic 16x16 stratified
+        //   replay of the sampler's own inverse-CDF square (the
+        //   dominant term is the specular lobe's geomN REJECTION rate,
+        //   which no static reflectance ratio can see).  See
+        //   docs/DL98_DL99_PHONG_PDF_WEIGHTS.md and the dedicated
+        //   tests/IsotropicPhongSPFPdfConsistencyTest.cpp.
         //--------------------------------------------------------------
-        { "IsotropicPhong",                    phong,       false, false, true,  true,  INTEGRAL_TOL },
+        { "IsotropicPhong",                    phong,       false, false, true,  false, INTEGRAL_TOL },
 
         { "CookTorrance",                      cookTorrance,false, true,  false, false, INTEGRAL_TOL },
         //--------------------------------------------------------------
@@ -985,15 +1013,28 @@ int main()
         //--------------------------------------------------------------
         // Ashikmin-Shirley Anisotropic Phong (2000):
         //
-        // Cross-val: large mismatch (16k-43k) because the model uses
-        //   a Fresnel-weighted blend of diffuse and specular lobes.
-        //   The Fresnel term is direction-dependent, so the effective
-        //   lobe weights at each sample point differ from the static
-        //   weights in Pdf().
-        // Chi2: fails as a direct consequence of the cross-val issue.
-        // Integral: fine (~1.0).
+        // Cross-val: STILL SKIPPED, structurally -- same reason as
+        //   IsotropicPhong and Schlick above (both lobes drawn every
+        //   call, one picked by realized kray, so no per-call identity
+        //   between Scatter().pdf and any aggregate Pdf()).
+        //
+        // Integral: passes (0.997936 @ 30deg, 0.997958 @ 60deg).
+        //
+        // Chi2: NOW GATED (was skipped).  811.0 @ 30deg / 827.0 @ 60deg
+        //   against critical 928.3.
+        //
+        //   The old note here -- "large mismatch (16k-43k) because ...
+        //   the effective lobe weights at each sample point differ from
+        //   the static weights in Pdf()" plus "chi2: fails as a direct
+        //   consequence" -- described DL-99, fixed 2026-09-17.  This
+        //   SPF needs TWO independent quadratures rather than Phong's
+        //   one, because BOTH of its lobes carry a direction-dependent
+        //   realized weight (the diffuse kray is
+        //   Rd*(1-Rs)*(28/23)*fromK1(cos_o)*fromK2(cos_i), not a
+        //   constant).  See docs/DL98_DL99_PHONG_PDF_WEIGHTS.md and
+        //   tests/AshikminShirleySPFPdfConsistencyTest.cpp.
         //--------------------------------------------------------------
-        { "AshikminShirleyAnisotropicPhong",   ashikmin,    false, false, true,  true,  INTEGRAL_TOL },
+        { "AshikminShirleyAnisotropicPhong",   ashikmin,    false, false, true,  false, INTEGRAL_TOL },
 
         { "Translucent",                       translucent, false, false, true,  false, INTEGRAL_TOL },  // Pdf() only covers diffuse lobe, not translucent
 
@@ -1880,6 +1921,157 @@ int main()
         }
 
         safe_release( fabThinMat );
+    }
+    std::cout << std::endl;
+
+    // ================================================================
+    //  DL-23 P2-1 (docs/DEBT_LEDGER.md): `coated_material`'s OWN
+    //  below-horizon transmission branch (CoatedSPF.cpp's DL-23
+    //  additions) -- the SAME full-sphere continuum identity and
+    //  cross-validation the P2-B / R8 P1.1 blocks above prove for the
+    //  bare weave and fabric-over-weave, now for `coated_material`
+    //  wrapping a `transmission thin` weave DIRECTLY
+    //  ("Coated_Weave_thin") and THROUGH a fabric layer
+    //  ("Coated_Fabric", coat -> fabric -> weave).
+    //
+    //  WHY THE SAME FORM APPLIES.  `CoatedSPF`'s mixture is
+    //  structurally identical to `FabricSPF`'s: a reflection-only top
+    //  lobe (VNDF for the coat; cosine sheen for fabric) selected with
+    //  probability `pCoat = cp.weight * CoatedLayer::Fresnel(cosWi,
+    //  cp.eta)` (`CoatedSPF::ScatterImpl`/`PdfImpl`) that places NO
+    //  mass below the horizon (VNDF reflection about the ray-facing
+    //  normal cannot draw a below-horizon direction), mixed with the
+    //  substrate's own density at `(1 - pCoat)`.  The coat lobe
+    //  therefore integrates to exactly 1 over the FULL sphere (0
+    //  below, 1 above), so
+    //
+    //      INT_sphere q  =  pCoat * 1  +  (1 - pCoat) * INT_sphere(qBase)
+    //
+    //  where `INT_sphere(qBase)` is the substrate's OWN full-sphere
+    //  continuum share -- `(1 - gap)` for the bare weave (P2-B above)
+    //  and `w_fab + (1 - w_fab)*(1 - gap)` for the fabric-over-weave
+    //  substrate (R8 P1.1 above) -- giving the two closed forms below.
+    //  `coatWeightSc` is 1.0 (the shared neutral coat fixture the
+    //  Coated_Lambertian/Coated_GGX rows above already use), so
+    //  `pCoat = CoatedLayer::Fresnel(cosWi, coatIorSc)` alone.
+    // ================================================================
+    {
+        std::cout << "=== DL-23 P2-1: coated_material below-horizon transmission -- full-sphere pdf + cross-val ===" << std::endl;
+
+        const double kGapC = 0.2;
+        const double coatEta = 1.33;	// coatIorSc's authored value
+
+        RISE::WeaveTest::PresetWeave weaveThinCoat( "satin", 0.0, -1, false, /*thin=*/true, -1, -1, kGapC );
+        CoatedMaterial* coatedWeaveThinMat = new CoatedMaterial(
+            *weaveThinCoat.Material(), *coatWeightSc, *coatIorSc, *coatRoughSc, *coatZeroSc, *coatZeroSc, *coatTintOne );
+        coatedWeaveThinMat->addref();
+        ISPF* coatedWeaveThinSPF = coatedWeaveThinMat->GetSPF();
+
+        // Same fabric-over-thin-linen substrate the R8 P1.1 block above
+        // built (alpha 0.3, tint 1.0 via `coatTintOne`), wrapped in the
+        // SAME neutral coat -- coat -> fabric -> weave, two layers deep.
+        RISE::WeaveTest::PresetWeave thinBaseC( "linen", 0.0, 0.5, false, /*thin=*/true, -1, -1, kGapC );
+        FabricMaterial* fabThinMatC = new FabricMaterial(
+            *thinBaseC.Material(), *coatTintOne, *fabAlphaSc, *fabZeroSc );
+        fabThinMatC->addref();
+        CoatedMaterial* coatedFabricThinMat = new CoatedMaterial(
+            *fabThinMatC, *coatWeightSc, *coatIorSc, *coatRoughSc, *coatZeroSc, *coatZeroSc, *coatTintOne );
+        coatedFabricThinMat->addref();
+        ISPF* coatedFabricThinSPF = coatedFabricThinMat->GetSPF();
+
+        IORStack iorStack = MakeTestIORStack( g_stubObject );
+
+        struct CoatedRow { const char* name; ISPF* spf; double expected; };
+
+        for( int a = 0; a < 2; a++ )
+        {
+            const double theta = incomingAngles[a];
+            RayIntersectionGeometric ri = MakeIntersection( theta );
+            const double cosWi = std::cos( theta );
+            const double pCoat = (double)CoatedLayer::Fresnel( (Scalar)cosWi, (Scalar)coatEta );	// coatWeightSc == 1.0
+            const double wFab  = (double)FabricBRDF::SheenSelectWeight( 0.3, 1.0, cosWi );	// matches the R8 P1.1 fixture (alpha=0.3, m=1 via coatTintOne)
+
+            CoatedRow rows[] = {
+                { "Coated_Weave_thin", coatedWeaveThinSPF,  pCoat + ( 1.0 - pCoat ) * ( 1.0 - kGapC ) },
+                { "Coated_Fabric",     coatedFabricThinSPF, pCoat + ( 1.0 - pCoat ) * ( wFab + ( 1.0 - wFab ) * ( 1.0 - kGapC ) ) },
+            };
+
+            for( const CoatedRow& row : rows )
+            {
+                const int NT = 200, NP = 200;
+                double integ = 0.0, integNM = 0.0;
+                for( int t = 0; t < NT; t++ )
+                {
+                    const double th = ( t + 0.5 ) * PI / NT;	// 0..pi, the FULL sphere
+                    const double sinT = sin( th ), cosT = cos( th );
+                    const double dTheta = PI / NT;
+                    for( int p = 0; p < NP; p++ )
+                    {
+                        const double phi = ( p + 0.5 ) * TWO_PI / NP;
+                        const double dPhi = TWO_PI / NP;
+                        Vector3 wo( sinT * cos( phi ), sinT * sin( phi ), cosT );
+                        wo = Vector3Ops::Normalize( wo );
+                        integ   += row.spf->Pdf( ri, wo, iorStack )          * sinT * dTheta * dPhi;
+                        integNM += row.spf->PdfNM( ri, wo, 550.0, iorStack ) * sinT * dTheta * dPhi;
+                    }
+                }
+
+                const double tol = 0.05;
+                const bool okRGB = fabs( integ   - row.expected ) <= tol;
+                const bool okNM  = fabs( integNM - row.expected ) <= tol;
+                std::cout << "  " << row.name << " @ " << angleNames[a]
+                          << ": full-sphere integral=" << integ << " (NM " << integNM << ")"
+                          << "  expected=" << row.expected
+                          << "  [pCoat=" << pCoat << "]  "
+                          << ( ( okRGB && okNM ) ? "-> PASS" : "-> FAIL" ) << std::endl;
+                if( !okRGB || !okNM ) numFailed++;
+
+                // ---- cross-validation (sampling matches density), both regimes.
+                RandomNumberGenerator rng;
+                Implementation::IndependentSampler sampler( rng );
+                int checked = 0, mismatches = 0, deltas = 0, belowHorizon = 0;
+                double worst = 0.0;
+                for( int i = 0; i < 20000; i++ )
+                {
+                    const bool bNM = ( i % 2 ) != 0;
+                    ScatteredRayContainer scattered;
+                    if( bNM ) {
+                        row.spf->ScatterNM( ri, sampler, 550.0, scattered, iorStack );
+                    } else {
+                        row.spf->Scatter( ri, sampler, scattered, iorStack );
+                    }
+                    if( scattered.Count() == 0 ) continue;
+                    const ScatteredRay& s = scattered[0];
+                    const Vector3 wo = Vector3Ops::Normalize( s.ray.Dir() );
+                    if( Vector3Ops::Dot( wo, ri.onb.w() ) < 0 ) belowHorizon++;
+                    if( s.isDelta ) { deltas++; continue; }
+                    if( s.pdf <= 0 ) continue;
+
+                    const double q = bNM ? (double)row.spf->PdfNM( ri, wo, 550.0, iorStack )
+                                         : (double)row.spf->Pdf( ri, wo, iorStack );
+                    const double rel = fabs( q - s.pdf ) / std::max( 1e-30, (double)s.pdf );
+                    if( rel > worst ) worst = rel;
+                    if( rel > CROSS_VAL_TOL ) mismatches++;
+                    checked++;
+                }
+
+                // Non-degeneracy: both the transmit continuum AND the
+                // delta gap-pass-through must be LIVE, exactly like R8
+                // P1.1's `live` guard above -- the weave's own delta ray
+                // must survive being forwarded through one (or two)
+                // wrapper layers, or this proves nothing about DL-23.
+                const bool live = ( belowHorizon > 0 ) && ( deltas > 0 );
+                std::cout << "    cross-val " << row.name << " @ " << angleNames[a] << ": checked=" << checked
+                          << " mismatches=" << mismatches << " maxRel=" << worst
+                          << "  (below-horizon draws=" << belowHorizon << ", delta draws=" << deltas << ")  "
+                          << ( ( mismatches == 0 && live ) ? "-> PASS" : "-> FAIL" ) << std::endl;
+                if( mismatches != 0 || !live ) numFailed++;
+            }
+        }
+
+        safe_release( coatedFabricThinMat );
+        safe_release( fabThinMatC );
+        safe_release( coatedWeaveThinMat );
     }
     std::cout << std::endl;
 

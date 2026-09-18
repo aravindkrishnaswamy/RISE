@@ -38,6 +38,19 @@
 //  mode at scene-build time (docs/MATERIALS.md 8), so by the time it
 //  reaches here it IS a GGXMaterial and is admitted by that case.
 //
+//  `fabric_material` and `weave_material` JOINED THE LIST via DL-23
+//  (docs/DEBT_LEDGER.md, docs/CLOTH_FABRIC_DESIGN.md 15 debt 22's own
+//  "sibling wrapper" note) -- a coated fabric (waxed canvas; a
+//  varnished basket weave) is a real, physical composition, and both
+//  satisfy the two criteria above: `FabricBRDF`/`WeaveBRDF` implement
+//  `hemisphericalAlbedo`, and `FabricSPF`/`WeaveSPF` emit at most one
+//  ray per `Scatter` call.  `weave_material`'s `transmission thin` mode
+//  additionally carries BELOW-HORIZON transport (a delta gap
+//  pass-through plus a Lambertian back-face lobe), which
+//  `CoatedBRDF`/`CoatedSPF` now forward and modulate exactly as
+//  `FabricBRDF`/`FabricSPF` do for the identical case -- see
+//  CoatedBRDF.h's "TRANSMISSION THROUGH THE COAT" section.
+//
 //  Anything else is REFUSED at parse time with a message naming the
 //  allowlist, rather than rendering something quietly wrong.  A
 //  material that emits is refused even when its scattering class is on
@@ -84,6 +97,8 @@
 #include "LambertianMaterial.h"
 #include "OrenNayarMaterial.h"
 #include "GGXMaterial.h"
+#include "FabricMaterial.h"
+#include "WeaveMaterial.h"
 
 namespace RISE
 {
@@ -107,10 +122,23 @@ namespace RISE
 			//! Human-readable allowlist, for diagnostics.  Single
 			//! source of truth so the parser message, the API refusal
 			//! and this header can never drift.
+			//!
+			//! DL-23 (docs/DEBT_LEDGER.md) added `fabric_material` and
+			//! `weave_material` -- the same two criteria this header's
+			//! banner states (a substrate `hemisphericalAlbedo` the
+			//! recycling series can consume; a known per-Scatter-call
+			//! lobe budget) are exactly the ones `FabricMaterial.h`
+			//! states for its OWN allowlist admitting `weave_material`,
+			//! and `FabricBRDF`/`FabricSPF` are single-sample estimators
+			//! for the identical reason `CoatedBRDF`/`CoatedSPF` are.
+			//! `coated_material over fabric_material` is the design's
+			//! own named example (waxed canvas); `coated_material over
+			//! weave_material` reaches a `transmission thin` weave
+			//! directly (a waxed sheer curtain).
 			static const char* SubstrateAllowlistText()
 			{
 				return "lambertian_material, orennayar_material, ggx_material, "
-				       "pbr_metallic_roughness_material";
+				       "pbr_metallic_roughness_material, fabric_material, weave_material";
 			}
 
 			//! Allowlist predicate (7.2 / Phase 2 item 4a).  On
@@ -129,7 +157,9 @@ namespace RISE
 				}
 				if( dynamic_cast<const LambertianMaterial*>( &base ) ||
 				    dynamic_cast<const OrenNayarMaterial*>( &base ) ||
-				    dynamic_cast<const GGXMaterial*>( &base ) ) {
+				    dynamic_cast<const GGXMaterial*>( &base ) ||
+				    dynamic_cast<const FabricMaterial*>( &base ) ||
+				    dynamic_cast<const WeaveMaterial*>( &base ) ) {
 					return true;
 				}
 				if( reason ) *reason = "the substrate is not one of the supported scattering classes";
@@ -157,9 +187,18 @@ namespace RISE
 			{
 				pBase->addref();
 
+				// DL-23: `base.ScattersFullSphere()` is captured here,
+				// mirroring FabricMaterial's identical constructor-time
+				// capture -- `IBSDF` carries no such flag (it lives on
+				// `IMaterial`), and this constructor is the one place
+				// both are in hand.  Safe to capture once: `base` is not
+				// rebindable on this material, and the only substrate
+				// that can answer TRUE is a `weave_material`, whose
+				// `transmission` enum is itself not rebindable.
 				pBRDF = new CoatedBRDF(
 					*base.GetBSDF(), coatWeight, coatIOR, coatRoughness,
-					coatThickness, coatAbsorption, coatTint, recyclingCompensation );
+					coatThickness, coatAbsorption, coatTint, recyclingCompensation,
+					base.ScattersFullSphere() );
 				GlobalLog()->PrintNew( pBRDF, __FILE__, __LINE__, "BRDF" );
 
 				pSPF = new CoatedSPF( *pBRDF, *base.GetSPF() );
@@ -172,6 +211,19 @@ namespace RISE
 
 			/// \return The SPF for this material.  Never NULL.
 			inline ISPF* GetSPF() const { return pSPF; }
+
+			//! DL-23: the SUBSTRATE's answer, verbatim -- mirrors
+			//! FabricMaterial's identical forwarding (docs/CLOTH_
+			//! FABRIC_DESIGN.md 15 debt 22/R8 P1.1).  A coat layer
+			//! neither opens nor closes an aperture the substrate does
+			//! not have; it only attenuates whatever passes through it.
+			//! False for every pre-DL-23 substrate and for a
+			//! `transmission none` weave, so this is the committed
+			//! behaviour unchanged on everything that shipped before.
+			inline bool ScattersFullSphere() const { return pBase->ScattersFullSphere(); }
+
+			//! Same forwarding, same reason.
+			inline bool CouldLightPassThrough() const { return pBase->CouldLightPassThrough(); }
 
 			/// \return NULL: a coated surface never emits (the
 			///         allowlist refuses emissive substrates).

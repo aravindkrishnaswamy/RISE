@@ -58,6 +58,34 @@ namespace RISE
 	// never set it are byte-identical to before this existed.
 	inline thread_local std::string* g_cstFinalizeDiagSink = nullptr;
 
+	// FIRST-diagnostic-wins helper for the sink above (DL-32 round-2 review, P3,
+	// docs/DEBT_LEDGER.md).  The sink is armed for the WHOLE duration of one
+	// Finalize call -- including everything that Finalize calls into -- and a
+	// single call can hit more than one failure reason on its way to a final
+	// `return false`: an early, SPECIFIC one (e.g. `ParseStateBag::GetVec3`'s
+	// DL-32 wrong-arity hard-error, which does NOT stop the caller -- it
+	// zero-fills and lets Finalize keep running on the bad value), then a
+	// LATER, less specific one triggered BY that zero-filled value (e.g. a
+	// positivity check, or an unrelated validation a few lines further down).
+	// Every writer of this sink should go through here rather than a raw
+	// `*g_cstFinalizeDiagSink = ...`, so the EARLIEST cause -- the one a human
+	// actually needs to fix -- is what survives to DeriveToJob, not whichever
+	// check happened to run last.  `ParseStateBag::ReportVectorArity` (DL-32,
+	// ChunkDescriptor.h) already used this exact empty-check inline before this
+	// helper existed; it is unchanged, just no longer the only writer that
+	// protects itself this way.
+	//
+	// NOT for a writer that INTENTIONALLY re-wraps an existing message with
+	// more context (e.g. `Job::AddSweepGeometry`/`AddLatheGeometry`/
+	// `AddSkinGeometry` prefixing a nested factory failure with the object's
+	// own name, since the factory cannot know it) -- that is a different,
+	// sanctioned pattern (reads THEN writes, gated on non-empty) and stays a
+	// direct `*g_cstFinalizeDiagSink = ...` write.
+	inline void SetFinalizeDiagIfEmpty( const std::string& msg )
+	{
+		if( g_cstFinalizeDiagSink && g_cstFinalizeDiagSink->empty() ) *g_cstFinalizeDiagSink = msg;
+	}
+
 	template< class T >
 	class GenericManager : public virtual Implementation::Reference, public virtual IManager<T>
 	{

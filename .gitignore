@@ -140,3 +140,6 @@ evals/.secrets.env
 # Per-user node-graph canvas layout sidecars (GUI-authored positions; a
 # curated layout can still be force-added deliberately)
 *.risegraph.json
+
+# agent test suites write transient preview frames into the repo root (AgentProposeRender/AgentViewModeRender); never commit them
+fro_temp_*.png

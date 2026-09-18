@@ -168,6 +168,7 @@ namespace RISE
 				switch( k ) {
 					case ValueKind::UInt:
 					case ValueKind::Double:
+					case ValueKind::DoubleVec2:
 					case ValueKind::DoubleVec3:
 					case ValueKind::DoubleVec4:
 					case ValueKind::DoubleMat4:
@@ -5442,6 +5443,20 @@ namespace RISE
 			//! literal 0.5 the old `n < 3` early return reported.  Only a value
 			//! with NO readable component (`n < 1`, e.g. a stray token that isn't
 			//! a number) has nothing to decode.
+			//!
+			//! SUPERSEDED 2026-09-17 by DL-32 round 2 (docs/DEBT_LEDGER.md): the
+			//! chunk parser no longer zero-fills a short DoubleVec3 -- a `color`
+			//! with fewer than 3 tokens is now a HARD PARSE ERROR at
+			//! `ParseStateBag::GetVec3`, so the document that `item` comes from
+			//! could not have derived successfully in the first place (every
+			//! caller of this function reaches `item` through an already-derived
+			//! `Job`).  The `n == 1`/`n == 2` loop below is therefore no longer
+			//! reachable with a short `color` from any real document -- it is
+			//! kept as harmless defensive code (a CST node's raw text is not
+			//! itself arity-checked, only what a DERIVE does with it), not
+			//! because a short colour is still expected to arrive here.
+			//! tests/AgentAddWearTest.cpp's `N4c` fixture pins the new contract
+			//! (the malformed scene fails to derive) rather than this decode path.
 			double DimLightColorMax_( const NodeRef& item, double fallback )
 			{
 				const std::string s = ChunkParamString_( item, "color" );
@@ -8331,12 +8346,47 @@ namespace RISE
 									break;
 								}
 							}
-							if( wornByWear ) {
+							// DL-26 (docs/DEBT_LEDGER.md, WETNESS_COAT_DESIGN.md sec
+							// 6.4/12 item 6c): a `lambertian_material` target is
+							// the ONE case where "worn, then wet" composes for
+							// free, and this early collision check must not
+							// refuse it before clause (2) below gets a chance to
+							// say so precisely.  Since item 8 (2026-08-31) the
+							// Lambertian branch WRAPS the untouched original in a
+							// new `coated_material` chunk rather than rewriting
+							// its colour slot in place (`BuildWetnessCoatedMaterialText_`'s
+							// own doc: "the author's original lambertian_material
+							// chunk is never edited"), and mints its
+							// `coat_weight`/`coat_roughness` fresh rather than
+							// reading the base colour at all (`hasReadableColor`
+							// is explicitly "guarded off for this branch", see the
+							// `lambertianBranch` emission site) -- so WHATEVER
+							// `add_wear` rebound the `reflectance` slot to is
+							// simply irrelevant to what this verb is about to
+							// build.  Physically: wet grime settles OVER a worn
+							// substrate, which is why this is the direction that
+							// composes and the reverse (`add_wetness` first, then
+							// `add_wear` on the coat wrapper's `base`) is not
+							// attempted here -- the coat WRAP also rebinds the
+							// bound object's own `material` param to the new
+							// coated_material chunk, so a subsequent `add_wear`
+							// naming the original substrate would find no bound
+							// object left to satisfy its own clause (c), a
+							// different and larger gap than this row closes.
+							// GGX / PBR / Oren-Nayar keep the existing refusal:
+							// their in-place darkening branches genuinely need to
+							// read-and-rewrite the SAME colour slot `add_wear`
+							// already claimed, which is the "each verb refuses
+							// what the other has already rewritten" case this
+							// message still names correctly for them.
+							if( wornByWear && pm.kind != "lambertian_material" ) {
 								c.wetDeclineReasons[pm.name] =
 									"it already binds an expression (`" + wearPainterName + "`) reading the "
 									"geometry wear signals -- this material has likely already been worn by "
 									"`add_wear`, and add_wetness / add_wear cannot currently be combined on one "
-									"material (each verb refuses what the other has already rewritten)";
+									"material of this kind (each verb refuses what the other has already "
+									"rewritten) -- a `lambertian_material` is the one exception: re-run add_wetness "
+									"naming it and the coat wraps the worn result";
 								continue;
 							}
 						}
@@ -8389,6 +8439,16 @@ namespace RISE
 						double baseR = 0.0, baseG = 0.0, baseB = 0.0;
 						bool hasReadableColor = false;
 						bool isTexturedAlbedo = false;
+						// DL-26: does the primary slot's non-constant binding
+						// (if any) trace to `add_wear`'s own rewrite?  Tracked
+						// separately from `sawUnreadableBase` so a
+						// `lambertian_material` target can compose past it
+						// below while every other unreadable-base reason
+						// (blackbody / spectral / non-default colorspace) keeps
+						// refusing exactly as before -- see the bypass's own
+						// comment for why this is sound only for Lambertian's
+						// coat-WRAP branch.
+						bool primaryWornByWear = false;
 						if( !isMetallic ) {
 							const std::map<std::string, std::vector<std::string> >::const_iterator slotsIt =
 								ColorMaterialSlotsByKind_().find( pm.kind );
@@ -8425,6 +8485,11 @@ namespace RISE
 								}
 								else if( colorBinding != MicrosurfaceBinding_::Constant ) {
 									sawUnreadableBase = true;
+									const std::map<std::string, std::string>::const_iterator b =
+										expressionBodies.find( value );
+									if( b != expressionBodies.end() && WearBodyReadsGeometrySignals_( b->second ) ) {
+										primaryWornByWear = true;
+									}
 								}
 								else {
 									const std::map<std::string, std::array<double, 3> >::const_iterator u =
@@ -8443,7 +8508,42 @@ namespace RISE
 									}
 								}
 							}
-							if( !hasReadableColor ) {
+							// DL-26: a `lambertian_material` whose primary slot is
+							// unreadable ONLY because `add_wear` rewrote it is let
+							// through here with `hasReadableColor` left FALSE --
+							// safe because the coat-WRAP emission site below
+							// (`if( pick->hasReadableColor && !lambertianBranch )`)
+							// already never reads `baseR`/`baseG`/`baseB` for this
+							// branch (item 8: it mints `coat_weight`/
+							// `coat_roughness` fresh and never touches the
+							// substrate's own colour slot at all), so there is
+							// nothing here for a worn expression to corrupt.
+							// Every other unreadable-base reason -- including a
+							// worn expression on a NON-Lambertian kind, whose
+							// in-place darkening branch genuinely does need to
+							// read-and-rewrite this same slot -- keeps refusing.
+							//
+							// HOW DL-25 AND DL-26 INTERACT, since they landed in
+							// this same block from two branches and the merge has
+							// to keep BOTH.  `add_wear` rebinds the slot to an
+							// `expression_painter`, which `ClassifyColorBinding_`
+							// reports as `Varying` -- so for the ORDINARY worn
+							// case DL-25's branch above now claims it first
+							// (`hasReadableColor = true`, `isTexturedAlbedo =
+							// true`) and this gate is satisfied by its FIRST
+							// clause, never reaching the bypass.  DL-26's
+							// behaviour is unchanged by that: `lambertianBranch`
+							// still suppresses the darkening painter at the
+							// emission site, so a worn Lambertian still composes
+							// into a coat WRAP over its untouched worn substrate.
+							// The bypass is NOT dead -- it is the fallback for a
+							// worn binding that classifies `Opaque` rather than
+							// `Varying` (a pass-through chain whose own inputs are
+							// unreadable or mixed), where DL-25's branch does not
+							// fire and DL-26's reason to compose still holds.
+							const bool lambertianWornBypass =
+								( pm.kind == "lambertian_material" ) && primaryWornByWear;
+							if( !hasReadableColor && !lambertianWornBypass ) {
 								// DL-25: "or something already spatially varying" is
 								// gone from this message -- a Varying base now takes
 								// the `isTexturedAlbedo` branch above and never
@@ -9436,8 +9536,11 @@ namespace RISE
 					"-- changing nothing, costing one call -- when nothing qualifies, when the material is "
 					"already wet, or when its colour is not a plain, readable flat constant (a textured "
 					"albedo gets no darkening in Phase 1 and this verb declines rather than half-deliver "
-					"it). It cannot currently be combined with `add_wear` on one material. For the hand-"
-					"authored form of the same idiom read_skill {\"name\":\"materials-and-media-basics\"}. If "
+					"it). It cannot currently be combined with `add_wear` on a NON-Lambertian material, or in "
+					"the reverse order on any material -- but `add_wear` THEN `add_wetness` on the SAME "
+					"`lambertian_material` composes (the coat wrap never touches the worn colour slot). For "
+					"the hand-authored form of the same idiom read_skill "
+					"{\"name\":\"materials-and-media-basics\"}. If "
 					"a deliberately dry look is the point, this is fine -- ignore and do not churn.";
 			}
 

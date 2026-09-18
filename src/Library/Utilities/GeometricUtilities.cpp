@@ -15,6 +15,7 @@
 #include "GeometricUtilities.h"
 #include "../Utilities/OrthonormalBasis3D.h"
 #include "../Functions/Polynomial.h"
+#include "../Interfaces/ILog.h"
 
 using namespace RISE;
 
@@ -115,6 +116,115 @@ Vector3 GeometricUtilities::Perturb( const Vector3& vec, const Scalar down, cons
 	a = Vector3Ops::Transform( rx, a );
 	a = Vector3Ops::Transform( rback, a );
 	return a;
+}
+
+Vector3 GeometricUtilities::PerturbClipped(
+	const Vector3& vec, const Scalar down, const Vector3& clipN,
+	const Scalar u, Scalar* outHalfArc )
+{
+	// See the header for the derivation and the three preconditions.  This
+	// is DL-68's azimuth-arc construction with the polar angle supplied by
+	// the caller instead of drawn from a cos^N marginal.
+	//
+	// Review P3: `clipN` MUST be unit.  `cosPhiRaw` is read as a cosine
+	// below, so a non-unit `clipN` scales it -- and with |clipN| > 1 the
+	// `r_min(1, .)` clamp then reports `cosPhi == 1`, `sinPhi == 0`,
+	// `denom == 0`, and the clip is SILENTLY DISABLED (`half` stays PI and
+	// the full circle is drawn).  That is a wrong sample, not a loud one,
+	// so normalize and say so -- the same treatment
+	// `Optics::CalculateRefractedRay` gives its own non-unit inputs.
+	Vector3 clipUnit = clipN;
+	{
+		const Scalar len2 = Vector3Ops::SquaredModulus( clipN );
+		if( len2 <= Scalar(1e-24) ) {
+			GlobalLog()->PrintEasyError(
+				"GeometricUtilities::PerturbClipped:: degenerate clip normal "
+				"(|clipN| ~ 0); returning the axis unperturbed." );
+			if( outHalfArc ) *outHalfArc = 0;
+			return vec;
+		}
+		if( fabs( len2 - Scalar(1) ) > Scalar(1e-12) ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"GeometricUtilities::PerturbClipped:: non-unit clip normal passed in "
+				"(|clipN|=%f), normalizing", (double)sqrt(len2) );
+			clipUnit = clipUnit * ( Scalar(1) / sqrt(len2) );
+		}
+	}
+
+	const Scalar cosPhiRaw = Vector3Ops::Dot( vec, clipUnit );
+	if( cosPhiRaw < Scalar(0) ) {
+		// Fail loudly rather than manufacture a direction from a corrupted
+		// frame -- the same choice TranslucentSPFDetail::SampleClippedPhong
+		// made after its own review (a masking clamp there produced a
+		// non-unit vector).  Every caller orients first, so this is
+		// unreachable from production.
+		GlobalLog()->PrintEasyError(
+			"GeometricUtilities::PerturbClipped:: precondition violated -- "
+			"the axis is not inside the clip half-space (Dot(vec,clipN) < 0); "
+			"returning the axis unperturbed." );
+		if( outHalfArc ) *outHalfArc = 0;
+		return vec;
+	}
+
+	const Scalar cosPhi   = r_min( Scalar(1), cosPhiRaw );
+	const Scalar cosTheta = cos( down );
+	const Scalar sinTheta = sin( down );
+
+	// Tangential component of the clip normal in the lobe's frame.
+	Vector3 uAxis = clipUnit - cosPhi*vec;
+	const Scalar uLen2 = Vector3Ops::SquaredModulus( uAxis );
+	if( uLen2 <= Scalar(1e-12) ) {
+		// clipN parallel to the axis: the clip is inactive, the whole cone
+		// is valid.  Reproduce the unclipped draw EXACTLY (same Perturb
+		// call, same azimuth convention) so an untilted surface is
+		// bit-for-bit unchanged.
+		if( outHalfArc ) *outHalfArc = PI;
+		return GeometricUtilities::Perturb( vec, down, TWO_PI * u );
+	}
+	uAxis = uAxis * ( Scalar(1) / sqrt(uLen2) );
+	const Vector3 vAxis = Vector3Ops::Cross( vec, uAxis );
+
+	const Scalar sinPhi = sqrt( r_max( Scalar(0), Scalar(1) - cosPhi*cosPhi ) );
+
+	// Half-width of the valid azimuth arc, written as a ratio comparison
+	// rather than cot(theta)*cot(phi) so that theta -> 0 (cot -> infinity)
+	// needs no special case: the "whole circle" branch is exactly
+	// `num >= denom`.
+	Scalar half = PI;
+	const Scalar denom = sinTheta * sinPhi;
+	const Scalar num   = cosTheta * cosPhi;
+	if( num < denom ) {
+		// Review P3: `-num/denom` can exceed 1 when `down > PI/2` -- then
+		// `cosTheta < 0`, `num < 0`, and a cone that is entirely OUTSIDE
+		// the half-space has no valid azimuth at all.  `acos` of that
+		// argument is NaN, and the NaN propagates straight into the
+		// returned DIRECTION.  Production never reaches it (every caller
+		// gates `down` below PI/2, and `down` is a polar perturbation
+		// angle), but a silent NaN direction is not an acceptable failure
+		// mode for a shared utility.  Detect the empty arc and fail the
+		// same way as a violated axis precondition.
+		const Scalar arg = -num/denom;
+		if( arg > Scalar(1) ) {
+			GlobalLog()->PrintEasyError(
+				"GeometricUtilities::PerturbClipped:: the valid azimuth arc is EMPTY "
+				"(down > PI/2 with the whole cone outside the clip half-space); "
+				"returning the axis unperturbed." );
+			if( outHalfArc ) *outHalfArc = 0;
+			return vec;
+		}
+		half = acos( r_max( Scalar(-1), arg ) );
+	}
+	if( outHalfArc ) *outHalfArc = half;
+
+	if( half >= PI ) {
+		// Same bit-for-bit reproduction as above: with the clip inactive at
+		// this particular theta the arc IS the full circle, so keep the
+		// pre-existing draw rather than an equivalent-but-different one.
+		return GeometricUtilities::Perturb( vec, down, TWO_PI * u );
+	}
+
+	const Scalar psi = ( Scalar(2)*u - Scalar(1) ) * half;
+	return uAxis*(sinTheta*cos(psi)) + vAxis*(sinTheta*sin(psi)) + vec*cosTheta;
 }
 
 Point3 GeometricUtilities::CreatePoint3FromSphericalONB( const OrthonormalBasis3D& onb, const Scalar phi, const Scalar theta )
@@ -670,6 +780,32 @@ Vector3 GeometricUtilities::BilinearPatchNormalAt(
 	return Vector3Ops::Cross( BilinearTanU(patch,v), BilinearTanV(patch,u) );
 }
 
+Vector3 GeometricUtilities::BilinearPatchTangentU( const BilinearPatch& patch, const Scalar v )
+{
+	return BilinearTanU( patch, v );
+}
+
+Vector3 GeometricUtilities::BilinearPatchTangentV( const BilinearPatch& patch, const Scalar u )
+{
+	return BilinearTanV( patch, u );
+}
+
+Vector3 GeometricUtilities::BilinearPatchSecondDerivUV( const BilinearPatch& patch )
+{
+	// d/dv of BilinearTanU(patch, v) = (1-v)*(pts[2]-pts[0]) + v*(pts[3]-pts[1])
+	// is -(pts[2]-pts[0]) + (pts[3]-pts[1]) = pts[0] - pts[1] - pts[2] + pts[3]:
+	// the "saddle term" -- zero for a planar/parallelogram patch, constant
+	// (independent of u, v) in general.  Equivalently d/du of
+	// BilinearTanV(patch, u); both give the same vector by Clairaut's
+	// theorem, which is exactly why a bilinear surface's shape operator only
+	// ever needs this ONE second-derivative quantity (d2P/du2 = d2P/dv2 = 0
+	// identically).
+	return Vector3(
+		patch.pts[0].x - patch.pts[1].x - patch.pts[2].x + patch.pts[3].x,
+		patch.pts[0].y - patch.pts[1].y - patch.pts[2].y + patch.pts[3].y,
+		patch.pts[0].z - patch.pts[1].z - patch.pts[2].z + patch.pts[3].z );
+}
+
 // ============================================================================
 // Convention-agnostic bilinear-surface utilities — canonical (c00, c10, c11, c01)
 // layout (i.e. corners at (u, v) = (0, 0), (1, 0), (1, 1), (0, 1)).
@@ -964,6 +1100,20 @@ namespace {
 		dB[2] =  6.0 * mt * t - 3.0 * t2;    // 3t(2-3t)
 		dB[3] =  3.0 * t2;
 	}
+
+	//! DL-20: second derivatives of the cubic Bernstein basis, obtained by
+	//! differentiating BernsteinCubicDeriv's four expressions once more:
+	//!   B0''(t) = 6(1-t)          B1''(t) = 18t-12
+	//!   B2''(t) = 6-18t           B3''(t) = 6t
+	//! (sums to 0 for any t, as it must -- the basis sums to the constant 1).
+	inline void BernsteinCubicSecondDeriv( const Scalar t, Scalar (&ddB)[4] )
+	{
+		const Scalar mt = 1.0 - t;
+		ddB[0] =  6.0 * mt;
+		ddB[1] = 18.0 * t - 12.0;
+		ddB[2] =  6.0 - 18.0 * t;
+		ddB[3] =  6.0 * t;
+	}
 }
 
 //! Evaluates a bicubic Bezier patch via direct Bernstein sum.
@@ -1049,7 +1199,76 @@ Vector3 GeometricUtilities::BezierPatchNormalAt(
 		BezierPatchTangentV( patch, u, v ) );
 }
 
-char GeometricUtilities::WhichSideOfPlane( 
+Vector3 GeometricUtilities::BezierPatchSecondDerivUU(
+	const BezierPatch& patch,
+	const Scalar u,
+	const Scalar v
+	)
+{
+	Scalar ddBu[4], Bv[4];
+	BernsteinCubicSecondDeriv( u, ddBu );
+	BernsteinCubic( v, Bv );
+
+	Scalar x = 0.0, y = 0.0, z = 0.0;
+	for( int i = 0; i < 4; i++ ) {
+		for( int j = 0; j < 4; j++ ) {
+			const Scalar w = ddBu[i] * Bv[j];
+			const Point3& p = patch.c[i].pts[j];
+			x += w * p.x;
+			y += w * p.y;
+			z += w * p.z;
+		}
+	}
+	return Vector3( x, y, z );
+}
+
+Vector3 GeometricUtilities::BezierPatchSecondDerivUV(
+	const BezierPatch& patch,
+	const Scalar u,
+	const Scalar v
+	)
+{
+	Scalar dBu[4], dBv[4];
+	BernsteinCubicDeriv( u, dBu );
+	BernsteinCubicDeriv( v, dBv );
+
+	Scalar x = 0.0, y = 0.0, z = 0.0;
+	for( int i = 0; i < 4; i++ ) {
+		for( int j = 0; j < 4; j++ ) {
+			const Scalar w = dBu[i] * dBv[j];
+			const Point3& p = patch.c[i].pts[j];
+			x += w * p.x;
+			y += w * p.y;
+			z += w * p.z;
+		}
+	}
+	return Vector3( x, y, z );
+}
+
+Vector3 GeometricUtilities::BezierPatchSecondDerivVV(
+	const BezierPatch& patch,
+	const Scalar u,
+	const Scalar v
+	)
+{
+	Scalar Bu[4], ddBv[4];
+	BernsteinCubic( u, Bu );
+	BernsteinCubicSecondDeriv( v, ddBv );
+
+	Scalar x = 0.0, y = 0.0, z = 0.0;
+	for( int i = 0; i < 4; i++ ) {
+		for( int j = 0; j < 4; j++ ) {
+			const Scalar w = Bu[i] * ddBv[j];
+			const Point3& p = patch.c[i].pts[j];
+			x += w * p.x;
+			y += w * p.y;
+			z += w * p.z;
+		}
+	}
+	return Vector3( x, y, z );
+}
+
+char GeometricUtilities::WhichSideOfPlane(
 	const Plane& p,
 	const PointerTriangle& t
 	)

@@ -148,6 +148,17 @@ static double rand01_sub() {
 	return (double)(rng_state_sub >> 11) / (double)(1ULL << 53);
 }
 
+// DL-105: a THIRD, independently-seeded LCG stream, used exclusively by
+// the DL-105 low-alpha sub-grid bake.  Same isolation rationale as
+// rng_state_sub above -- every pre-existing table (including the DL-86
+// sub-grid tables, which are baked from rng_state_sub before this
+// stream is ever touched) stays byte-for-byte identical.
+static unsigned long long rng_state_lowalpha = 13091977ULL * 1000000007ULL + 42ULL;
+static double rand01_lowalpha() {
+	rng_state_lowalpha = rng_state_lowalpha * 6364136223846793005ULL + 1442695040888963407ULL;
+	return (double)(rng_state_lowalpha >> 11) / (double)(1ULL << 53);
+}
+
 static const int LUT_SIZE = 32;
 static const int NUM_SAMPLES = 1000000;
 
@@ -236,6 +247,64 @@ static const int ANISO_SUB_FINE = 5;
 // ordinary bin center c0.  So ANISO_SUB_TOTAL-1 = 12 values are stored
 // per row (neither the anchor nor bin 0 is).
 static const int ANISO_SUB_TOTAL = SUB_SIZE + ANISO_SUB_FINE;
+
+// DL-105: the ALPHA axis is coarse at its low end in a way the DL-86
+// cosTheta sub-grid does not touch at all -- alpha<0.01 clamps to row 0
+// outright (GGXBRDF.cpp only floors authored roughness at 1e-4, so
+// alpha=0.005 really reaches this table), and row 0 (alpha=0.01) to
+// row 1 (alpha=0.0419) is a 4.2x ratio inside ONE linear interpolation
+// cell.  Both are the SAME construction DL-86 used for the cosTheta
+// end-cap: a baked sub-grid, not an extrapolation, anchored at a
+// PROVABLE exact boundary.  Here the boundary is alpha->0 (a perfectly
+// smooth surface): Smith Lambda(v) = (-1+sqrt(1+alpha^2*tan^2(theta)))/2
+// -> 0 as alpha->0 for ANY FIXED cosTheta>0 (ordinary bin or existing
+// DL-86 grazing sub-node), so G1->1 and G2->1 UNCONDITIONALLY -- i.e.
+// Ess(alpha->0, cosTheta)=1 for BOTH the height-correlated G2 model and
+// the separable model (unlike DL-86's cosTheta->0 case, the separable
+// model needs no baked limit constant here).  Two zones are baked below
+// this boundary and the existing row 0/row 1 data: ALPHA_SUB_FINE
+// geometric octaves on (0, 0.01) (node j stores alpha=0.01/2^(8-j),
+// j=1..7, i.e. 0.005 down to 7.8e-5 -- comfortably past GGXBRDF's 1e-4
+// floor), and ALPHA_MID_SIZE-1 geometric nodes on (0.01, 0.0419]
+// bridging the coarse first cell.  Interpolation is LINEAR IN ALPHA on
+// every interval (matching ANISO_SUB_FINE's precedent: node PLACEMENT
+// is geometric, the BLEND between two adjacent nodes is not).
+static const int ALPHA_SUB_FINE = 7;
+static const int ALPHA_MID_SIZE = 4;
+
+// Total virtual node-index range on [0, A1] is [0, ALPHA_LOW_TOTAL]:
+// index 0 is the exact alpha->0 boundary (not stored), 1..ALPHA_SUB_FINE
+// are the geometric sub-nodes below A0 (stored), ALPHA_SUB_FINE+1 is A0
+// itself (existing row 0, not re-baked), ALPHA_SUB_FINE+2..
+// ALPHA_LOW_TOTAL-1 are the geometric mid-nodes between A0 and A1
+// (stored), and ALPHA_LOW_TOTAL is A1 itself (existing row 1, not
+// re-baked).  ALPHA_SUB_FINE + (ALPHA_MID_SIZE-1) = 10 values are
+// stored per table.
+static const int ALPHA_LOW_TOTAL = ALPHA_SUB_FINE + ALPHA_MID_SIZE;
+static const int ALPHA_LOW_STORED = ALPHA_SUB_FINE + (ALPHA_MID_SIZE - 1);
+
+// alpha value of virtual node `idx` (idx in [0, ALPHA_LOW_TOTAL]).  The
+// emitted header carries a byte-identical twin, AlphaLowNode; the two
+// MUST agree or the baked values land at the wrong abscissae.  A0/A1
+// are the EXACT alpha values of the main table's row 0 / row 1 (see the
+// alpha-mapping comment in main()'s bake loop).
+static double alphaLowNode(int idx, double A0, double A1) {
+	if(idx <= 0) return 0.0;
+	if(idx <= ALPHA_SUB_FINE) return A0 * pow(2.0, (double)(idx - (ALPHA_SUB_FINE + 1)));
+	if(idx == ALPHA_SUB_FINE + 1) return A0;
+	if(idx < ALPHA_LOW_TOTAL) {
+		const double t = (double)(idx - (ALPHA_SUB_FINE + 1)) / (double)ALPHA_MID_SIZE;
+		return A0 * pow(A1 / A0, t);
+	}
+	return A1;
+}
+
+// Map a stored virtual index (1..ALPHA_SUB_FINE, or ALPHA_SUB_FINE+2..
+// ALPHA_LOW_TOTAL-1) to its flat storage slot (0..ALPHA_LOW_STORED-1).
+static int alphaLowSlot(int idx) {
+	if(idx <= ALPHA_SUB_FINE) return idx - 1;
+	return ALPHA_SUB_FINE + (idx - (ALPHA_SUB_FINE + 2));
+}
 
 // cosTheta of aniso sub-grid node `n` (n in [0, ANISO_SUB_TOTAL]).  The
 // emitted header carries a byte-identical twin, AnisoSubNodeCos; the
@@ -529,8 +598,20 @@ R"GGXH6BLOCK(	//////////////////////////////////////////////////////////////////
 
 		// Build the segments for a fixed alphaEff, using EXACTLY LookupEss's
 		// alpha-row blend.
+		//
+		// DL-105: below ALPHA_LOW_A1, source the row from the low-alpha
+		// sub-grid instead -- MUST stay in sync with LookupEss's own
+		// low-alpha branch, which is why both call BuildLowAlphaRow.
 		inline void BuildSegments( const Scalar alphaEff, Segment segs[LUT_SIZE + SUB_SIZE], int& nSegs )
 		{
+			if( alphaEff < ALPHA_LOW_A1 )
+			{
+				Scalar essRow[LUT_SIZE]; Scalar subRow[SUB_SIZE-1]; Scalar essLimit;
+				BuildLowAlphaRow( alphaEff, essRow, subRow, essLimit );
+				BuildSegmentsFromRow( essRow, subRow, essLimit, segs, nSegs );
+				return;
+			}
+
 			Scalar a = r_max(0.0, r_min(1.0, (alphaEff - 0.01) / (1.0 - 0.01))) * (LUT_SIZE - 1);
 			int ai0 = (int)a;
 			int ai1 = r_min(ai0 + 1, LUT_SIZE - 1);
@@ -556,8 +637,20 @@ R"GGXH6BLOCK(	//////////////////////////////////////////////////////////////////
 		// BuildSegmentsFromRow are already table-agnostic (they only see
 		// an already-resolved essRow), so only the alpha-row blend needs
 		// a G2-specific twin.
+		//
+		// DL-105: below ALPHA_LOW_A1, source the row from the low-alpha
+		// sub-grid instead -- MUST stay in sync with LookupEssG2's own
+		// low-alpha branch, which is why both call BuildLowAlphaRowG2.
 		inline void BuildSegmentsG2( const Scalar alphaEff, Segment segs[LUT_SIZE + SUB_SIZE], int& nSegs )
 		{
+			if( alphaEff < ALPHA_LOW_A1 )
+			{
+				Scalar essRow[LUT_SIZE]; Scalar subRow[SUB_SIZE-1];
+				BuildLowAlphaRowG2( alphaEff, essRow, subRow );
+				BuildSegmentsFromRow( essRow, subRow, Scalar(1.0), segs, nSegs );
+				return;
+			}
+
 			Scalar a = r_max(0.0, r_min(1.0, (alphaEff - 0.01) / (1.0 - 0.01))) * (LUT_SIZE - 1);
 			int ai0 = (int)a;
 			int ai1 = r_min(ai0 + 1, LUT_SIZE - 1);
@@ -646,8 +739,33 @@ R"GGXH6BLOCK(	//////////////////////////////////////////////////////////////////
 	/// SAME (1-af)/af blend LookupEss uses for Ess itself -- an O(1)
 	/// lookup that is algebraically IDENTICAL to re-running
 	/// BuildSegments+SegTotal every call, not an approximation.
+	///
+	/// DL-105: below ALPHA_LOW_A1 this does NOT use the cached-affine
+	/// row shortcut above -- it recomputes segments+SegTotal directly
+	/// from BuildLowAlphaRow every call, a deliberate perf/simplicity
+	/// trade-off for a rare regime (very smooth surfaces, alpha<0.0419)
+	/// rather than precomputing and affine-blending Z at the 13 low-
+	/// alpha virtual nodes too.  Correctness does not depend on the
+	/// cache: MSPdf calls LookupEss (also low-alpha-aware) and
+	/// SampleMSCosTheta calls BuildSegments (also low-alpha-aware) --
+	/// as long as this function's Z integrates the SAME row those two
+	/// use, which it does (BuildLowAlphaRow is the single source both
+	/// this function and BuildSegments read).
 	inline Scalar MSLobeZ( const Scalar alphaEff )
 	{
+		if( alphaEff < ALPHA_LOW_A1 )
+		{
+			Scalar essRow[LUT_SIZE]; Scalar subRow[SUB_SIZE-1]; Scalar essLimit;
+			BuildLowAlphaRow( alphaEff, essRow, subRow, essLimit );
+			MSLobeDetail::Segment segs[LUT_SIZE + SUB_SIZE];
+			int nSegs = 0;
+			MSLobeDetail::BuildSegmentsFromRow( essRow, subRow, essLimit, segs, nSegs );
+			Scalar I = 0.0;
+			for( int i = 0; i < nSegs; i++ )
+				I += MSLobeDetail::SegTotal( segs[i] );
+			return 2.0 * I;
+		}
+
 		// Per-alpha-row Z, computed once (C++11 magic-statics: thread-safe
 		// initialization, no locking on the steady-state read path).
 		static const std::array<Scalar, LUT_SIZE> rowZ = []() {
@@ -732,8 +850,25 @@ R"GGXH6BLOCK(	//////////////////////////////////////////////////////////////////
 	//////////////////////////////////////////////////////////////////
 
 	/// DL-63: height-correlated-G2 twin of MSLobeZ above.
+	///
+	/// DL-105: below ALPHA_LOW_A1, recompute directly from
+	/// BuildLowAlphaRowG2 instead of the cached-affine row shortcut --
+	/// see MSLobeZ's own comment for the rationale.
 	inline Scalar MSLobeZG2( const Scalar alphaEff )
 	{
+		if( alphaEff < ALPHA_LOW_A1 )
+		{
+			Scalar essRow[LUT_SIZE]; Scalar subRow[SUB_SIZE-1];
+			BuildLowAlphaRowG2( alphaEff, essRow, subRow );
+			MSLobeDetail::Segment segs[LUT_SIZE + SUB_SIZE];
+			int nSegs = 0;
+			MSLobeDetail::BuildSegmentsFromRow( essRow, subRow, Scalar(1.0), segs, nSegs );
+			Scalar I = 0.0;
+			for( int i = 0; i < nSegs; i++ )
+				I += MSLobeDetail::SegTotal( segs[i] );
+			return 2.0 * I;
+		}
+
 		static const std::array<Scalar, LUT_SIZE> rowZ = []() {
 			std::array<Scalar, LUT_SIZE> z{};
 			for( int row = 0; row < LUT_SIZE; row++ )
@@ -1486,6 +1621,116 @@ int main() {
 		}
 	}
 
+	// DL-105: low-alpha sub-grid bake -- ALPHA_LOW_STORED (10) virtual
+	// alpha rows below the main table's row 1, covering the alpha<0.01
+	// clamp-to-row-0 range AND the coarse row0->row1 (0.01->0.0419)
+	// cell.  Each stored row gets its OWN full ordinary cosTheta row
+	// (matching E_ss_TABLE/E_ss_TABLE_G2) plus its own DL-86-style
+	// grazing sub-row and separable-model limit constant (matching
+	// E_ss_SUB_TABLE/E_ss_SUB_TABLE_G2/E_ss_LIMIT_TABLE), so a query
+	// combining a low alpha AND a grazing cosTheta (the exact
+	// configuration the DL-105 furnace rows probe -- theta=89.4..89.89
+	// is already inside the DL-86 grazing sub-grid) reads a value baked
+	// AT that alpha, not one blended in from row 0/row 1.  Drawn from
+	// rand01_lowalpha, a THIRD independently-seeded stream, so every
+	// table above (including the DL-86 sub-grid, already fully baked at
+	// this point) stays byte-for-byte identical.
+	double E_ss_ALPHA_LOW[ALPHA_LOW_STORED][LUT_SIZE];
+	double E_ss_ALPHA_LOW_G2[ALPHA_LOW_STORED][LUT_SIZE];
+	double E_ss_ALPHA_LOW_SUB[ALPHA_LOW_STORED][SUB_SIZE-1];
+	double E_ss_ALPHA_LOW_SUB_G2[ALPHA_LOW_STORED][SUB_SIZE-1];
+	double E_ss_ALPHA_LOW_LIMIT[ALPHA_LOW_STORED];
+	double E_avg_ALPHA_LOW[ALPHA_LOW_STORED];
+	double E_avg_ALPHA_LOW_G2[ALPHA_LOW_STORED];
+	{
+		const double A0 = 0.01 + (1.0 - 0.01) * 0.0 / (double)(LUT_SIZE - 1);
+		const double A1 = 0.01 + (1.0 - 0.01) * 1.0 / (double)(LUT_SIZE - 1);
+		const double c0 = 0.5 / (double)LUT_SIZE;
+
+		auto bakeIdx = [&](int idx) {
+			const int slot = alphaLowSlot(idx);
+			const double alpha = alphaLowNode(idx, A0, A1);
+
+			// Ordinary row (LUT_SIZE cells) -- identical estimator to
+			// the main E_ss/E_ss_G2 bake loop above.
+			for(int ci = 0; ci < LUT_SIZE; ci++) {
+				const double cosTheta = (double)(ci + 0.5) / LUT_SIZE;
+				const double sinTheta = sqrt(fmax(0.0, 1.0 - cosTheta * cosTheta));
+				const Vec3 wi(sinTheta, 0.0, cosTheta);
+				const double G1wi = 1.0 / (1.0 + GGX_Lambda(alpha, cosTheta));
+
+				double sum = 0.0, sumG2 = 0.0;
+				for(int s = 0; s < NUM_SAMPLES; s++) {
+					const double u1 = rand01_lowalpha();
+					const double u2 = rand01_lowalpha();
+					const Vec3 m = VNDF_Sample_Local(wi, alpha, u1, u2);
+					const double wiDotM = dot(wi, m);
+					if(wiDotM <= 0) continue;
+					Vec3 wo(2.0*wiDotM*m.x - wi.x, 2.0*wiDotM*m.y - wi.y, 2.0*wiDotM*m.z - wi.z);
+					wo = normalize(wo);
+					const double cosWo = wo.z;
+					if(cosWo > 0) {
+						sum += GGX_G1(alpha, cosWo);
+						sumG2 += GGX_G2_HeightCorrelated(alpha, cosTheta, cosWo) / G1wi;
+					}
+				}
+				E_ss_ALPHA_LOW[slot][ci] = sum / (double)NUM_SAMPLES;
+				E_ss_ALPHA_LOW_G2[slot][ci] = sumG2 / (double)NUM_SAMPLES;
+			}
+
+			// Grazing sub-row + separable limit -- identical estimator
+			// to the DL-86 sub-grid bake loop above, at this alpha.
+			for(int k = 0; k < SUB_SIZE; k++) {
+				const double cosTheta = (k == 0) ? SUB_LIMIT_COS : (double)k * c0 / (double)SUB_SIZE;
+				const double sinTheta = sqrt(fmax(0.0, 1.0 - cosTheta * cosTheta));
+				const Vec3 wi(sinTheta, 0.0, cosTheta);
+				const double G1wi = 1.0 / (1.0 + GGX_Lambda(alpha, cosTheta));
+
+				double sum = 0.0, sumG2 = 0.0;
+				for(int s = 0; s < NUM_SAMPLES; s++) {
+					const double u1 = rand01_lowalpha();
+					const double u2 = rand01_lowalpha();
+					const Vec3 m = VNDF_Sample_Local(wi, alpha, u1, u2);
+					const double wiDotM = dot(wi, m);
+					if(wiDotM <= 0) continue;
+					Vec3 wo(2.0*wiDotM*m.x - wi.x, 2.0*wiDotM*m.y - wi.y, 2.0*wiDotM*m.z - wi.z);
+					wo = normalize(wo);
+					const double cosWo = wo.z;
+					if(cosWo > 0) {
+						sum += GGX_G1(alpha, cosWo);
+						sumG2 += GGX_G2_HeightCorrelated(alpha, cosTheta, cosWo) / G1wi;
+					}
+				}
+				if(k == 0) {
+					E_ss_ALPHA_LOW_LIMIT[slot] = sum / (double)NUM_SAMPLES;
+				} else {
+					E_ss_ALPHA_LOW_SUB[slot][k-1] = sum / (double)NUM_SAMPLES;
+					E_ss_ALPHA_LOW_SUB_G2[slot][k-1] = sumG2 / (double)NUM_SAMPLES;
+				}
+			}
+
+			// E_avg via the SAME midpoint rule over the 32 ordinary
+			// bins the main E_avg_TABLE/E_avg_TABLE_G2 bake uses
+			// (deliberately NOT including the grazing sub-grid, for
+			// consistency with those pre-existing tables).
+			double integral = 0.0, integralG2 = 0.0;
+			for(int ci = 0; ci < LUT_SIZE; ci++) {
+				const double mu = (double)(ci + 0.5) / LUT_SIZE;
+				const double dmu = 1.0 / LUT_SIZE;
+				integral += E_ss_ALPHA_LOW[slot][ci] * mu * dmu;
+				integralG2 += E_ss_ALPHA_LOW_G2[slot][ci] * mu * dmu;
+			}
+			E_avg_ALPHA_LOW[slot] = 2.0 * integral;
+			E_avg_ALPHA_LOW_G2[slot] = 2.0 * integralG2;
+
+			fprintf(stderr, "DL-105 low-alpha idx=%d alpha=%.8f E_avg=%.6f E_avg_G2=%.6f\n",
+				idx, alpha, E_avg_ALPHA_LOW[slot], E_avg_ALPHA_LOW_G2[slot]);
+		};
+
+		for(int idx = 1; idx <= ALPHA_SUB_FINE; idx++) bakeIdx(idx);
+		for(int idx = ALPHA_SUB_FINE + 2; idx < ALPHA_LOW_TOTAL; idx++) bakeIdx(idx);
+	}
+
 	// DL-77: anisotropic height-correlated-G2 E_ss/E_avg, resolved DIRECTLY
 	// by (alphaX, alphaY, phi, cosTheta) -- P2-2 (debt-ggx3) replaced the
 	// old (ratio, alphaEff) coupling, which left most nominal grid cells
@@ -1899,6 +2144,38 @@ int main() {
 	printf("\t/// ANISO_SUB_TOTAL-1 = %d values are stored per row.\n", ANISO_SUB_TOTAL - 1);
 	printf("\tstatic const int ANISO_SUB_TOTAL = SUB_SIZE + ANISO_SUB_FINE;\n\n");
 
+	printf("\t/// DL-105: the ALPHA axis is coarse at its low end in a way the\n");
+	printf("\t/// DL-86 cosTheta sub-grid does not touch -- alpha<0.01 clamps to\n");
+	printf("\t/// row 0 outright (GGXBRDF.cpp only floors authored roughness at\n");
+	printf("\t/// 1e-4), and row 0 (alpha=0.01) to row 1 (alpha=%.4f) is a\n", 0.01 + 0.99/(double)(LUT_SIZE-1));
+	printf("\t/// %.1fx ratio inside ONE linear interpolation cell.  Same\n", (0.01 + 0.99/(double)(LUT_SIZE-1)) / 0.01);
+	printf("\t/// construction as DL-86's cosTheta end-cap: a baked sub-grid, not\n");
+	printf("\t/// an extrapolation, anchored at a PROVABLE exact boundary --\n");
+	printf("\t/// alpha->0 (a perfectly smooth surface) makes Smith\n");
+	printf("\t/// Lambda(v)->0 for ANY fixed cosTheta>0, so G1->1 and G2->1\n");
+	printf("\t/// unconditionally: Ess(alpha->0,cosTheta)=1 for BOTH models (no\n");
+	printf("\t/// baked limit constant needed here, unlike DL-86's cosTheta->0\n");
+	printf("\t/// case).  %d geometric octaves resolve (0, 0.01) (node j stores\n", ALPHA_SUB_FINE);
+	printf("\t/// alpha=0.01/2^(8-j)); %d geometric nodes resolve (0.01, %.4f]\n", ALPHA_MID_SIZE - 1, 0.01 + 0.99/(double)(LUT_SIZE-1));
+	printf("\t/// bridging the coarse first cell.  See the generator's\n");
+	printf("\t/// ALPHA_SUB_FINE/ALPHA_MID_SIZE comment for the derivation.\n");
+	printf("\t/// Interpolation is LINEAR IN ALPHA on every interval (node\n");
+	printf("\t/// PLACEMENT is geometric, the BLEND between two adjacent nodes\n");
+	printf("\t/// is not -- matching ANISO_SUB_FINE's precedent).\n");
+	printf("\tstatic const int ALPHA_SUB_FINE = %d;\n", ALPHA_SUB_FINE);
+	printf("\tstatic const int ALPHA_MID_SIZE = %d;\n\n", ALPHA_MID_SIZE);
+
+	printf("\t/// DL-105: total virtual node-index range on [0, A1] (A1 = row\n");
+	printf("\t/// 1's alpha).  Index 0 is the exact alpha->0 boundary (not\n");
+	printf("\t/// stored), 1..ALPHA_SUB_FINE are the geometric sub-nodes below\n");
+	printf("\t/// A0=0.01 (stored), ALPHA_SUB_FINE+1 is A0 itself (row 0, not\n");
+	printf("\t/// re-baked), ALPHA_SUB_FINE+2..ALPHA_LOW_TOTAL-1 are the\n");
+	printf("\t/// geometric mid-nodes between A0 and A1 (stored), and\n");
+	printf("\t/// ALPHA_LOW_TOTAL is A1 itself (row 1, not re-baked).\n");
+	printf("\tstatic const int ALPHA_LOW_TOTAL = ALPHA_SUB_FINE + ALPHA_MID_SIZE;\n");
+	printf("\t/// %d values (ALPHA_SUB_FINE + (ALPHA_MID_SIZE-1)) are stored.\n", ALPHA_LOW_STORED);
+	printf("\tstatic const int ALPHA_LOW_STORED = ALPHA_SUB_FINE + (ALPHA_MID_SIZE - 1);\n\n");
+
 	// Emit E_ss table
 	//
 	// P3-e (debt-ggx3 review): all 7 large tables in this header are
@@ -1987,6 +2264,66 @@ int main() {
 	}
 	printf("\n\t};\n\n");
 
+	// DL-105: low-alpha sub-grid tables.  Indexed by the STORED slot
+	// (0..ALPHA_LOW_STORED-1, via AlphaLowSlot), not the virtual node
+	// index -- slots 0..ALPHA_SUB_FINE-1 are the geometric sub-nodes
+	// below A0=0.01, slots ALPHA_SUB_FINE..ALPHA_LOW_STORED-1 are the
+	// geometric mid-nodes between A0 and A1 (row 1's alpha).
+	printf("\t/// DL-105: low-alpha twin of E_ss_TABLE above, resolved at the\n");
+	printf("\t/// ALPHA_LOW_STORED geometric alpha nodes below/between the main\n");
+	printf("\t/// table's row 0 and row 1 (see ALPHA_SUB_FINE/ALPHA_MID_SIZE).\n");
+	printf("\t/// Indexed as E_ss_ALPHA_LOW_TABLE[AlphaLowSlot(idx)][cosThetaIdx].\n");
+	printf("\t/// inline const, not inline constexpr: MSVC's default /constexpr:steps 100000 can't evaluate a table this large.\n");
+	printf("\tinline const Scalar E_ss_ALPHA_LOW_TABLE[%d][%d] = {\n", ALPHA_LOW_STORED, LUT_SIZE);
+	for(int s = 0; s < ALPHA_LOW_STORED; s++) {
+		printf("\t\t{ ");
+		for(int ci = 0; ci < LUT_SIZE; ci++) {
+			printf("%.8f", E_ss_ALPHA_LOW[s][ci]);
+			if(ci < LUT_SIZE - 1) printf(", ");
+		}
+		printf(" }");
+		if(s < ALPHA_LOW_STORED - 1) printf(",");
+		printf("\n");
+	}
+	printf("\t};\n\n");
+
+	printf("\t/// DL-105: low-alpha twin of E_avg_TABLE above (SAME midpoint-\n");
+	printf("\t/// rule discretization over the 32 ordinary cosTheta bins).\n");
+	printf("\tinline const Scalar E_avg_ALPHA_LOW_TABLE[%d] = {\n\t\t", ALPHA_LOW_STORED);
+	for(int s = 0; s < ALPHA_LOW_STORED; s++) {
+		printf("%.8f", E_avg_ALPHA_LOW[s]);
+		if(s < ALPHA_LOW_STORED - 1) printf(", ");
+	}
+	printf("\n\t};\n\n");
+
+	printf("\t/// DL-105: low-alpha twin of E_ss_SUB_TABLE above (the DL-86\n");
+	printf("\t/// grazing sub-grid, baked AT each low-alpha node instead of\n");
+	printf("\t/// blended in from row 0/row 1).\n");
+	printf("\t/// inline const, not inline constexpr: MSVC's default /constexpr:steps 100000 can't evaluate a table this large.\n");
+	printf("\tinline const Scalar E_ss_ALPHA_LOW_SUB_TABLE[%d][%d] = {\n", ALPHA_LOW_STORED, SUB_SIZE - 1);
+	for(int s = 0; s < ALPHA_LOW_STORED; s++) {
+		printf("\t\t{ ");
+		for(int k = 0; k < SUB_SIZE - 1; k++) {
+			printf("%.8f", E_ss_ALPHA_LOW_SUB[s][k]);
+			if(k < SUB_SIZE - 2) printf(", ");
+		}
+		printf(" }");
+		if(s < ALPHA_LOW_STORED - 1) printf(",");
+		printf("\n");
+	}
+	printf("\t};\n\n");
+
+	printf("\t/// DL-105: low-alpha twin of E_ss_LIMIT_TABLE above (the\n");
+	printf("\t/// SEPARABLE model's cosTheta->0 boundary, baked at this alpha --\n");
+	printf("\t/// the G2 model's boundary is exactly 1 at every alpha, so no G2\n");
+	printf("\t/// twin of this table exists, same as E_ss_LIMIT_TABLE itself).\n");
+	printf("\tinline const Scalar E_ss_ALPHA_LOW_LIMIT_TABLE[%d] = {\n\t\t", ALPHA_LOW_STORED);
+	for(int s = 0; s < ALPHA_LOW_STORED; s++) {
+		printf("%.8f", E_ss_ALPHA_LOW_LIMIT[s]);
+		if(s < ALPHA_LOW_STORED - 1) printf(", ");
+	}
+	printf("\n\t};\n\n");
+
 	// DL-63: height-correlated-G2 twin tables.  E_ss_TABLE/E_avg_TABLE
 	// above are calibrated to the SEPARABLE Smith model
 	// (MicrofacetUtils::GGX_G, G1(wi)*G1(wo)) that CookTorranceBRDF/SPF
@@ -2048,6 +2385,47 @@ int main() {
 	}
 	printf("\t};\n\n");
 
+	// DL-105: G2 twins of the low-alpha tables above.
+	printf("\t/// DL-105: height-correlated-G2 twin of E_ss_ALPHA_LOW_TABLE above.\n");
+	printf("\t/// inline const, not inline constexpr: MSVC's default /constexpr:steps 100000 can't evaluate a table this large.\n");
+	printf("\tinline const Scalar E_ss_ALPHA_LOW_TABLE_G2[%d][%d] = {\n", ALPHA_LOW_STORED, LUT_SIZE);
+	for(int s = 0; s < ALPHA_LOW_STORED; s++) {
+		printf("\t\t{ ");
+		for(int ci = 0; ci < LUT_SIZE; ci++) {
+			printf("%.8f", E_ss_ALPHA_LOW_G2[s][ci]);
+			if(ci < LUT_SIZE - 1) printf(", ");
+		}
+		printf(" }");
+		if(s < ALPHA_LOW_STORED - 1) printf(",");
+		printf("\n");
+	}
+	printf("\t};\n\n");
+
+	printf("\t/// DL-105: height-correlated-G2 twin of E_avg_ALPHA_LOW_TABLE above.\n");
+	printf("\tinline const Scalar E_avg_ALPHA_LOW_TABLE_G2[%d] = {\n\t\t", ALPHA_LOW_STORED);
+	for(int s = 0; s < ALPHA_LOW_STORED; s++) {
+		printf("%.8f", E_avg_ALPHA_LOW_G2[s]);
+		if(s < ALPHA_LOW_STORED - 1) printf(", ");
+	}
+	printf("\n\t};\n\n");
+
+	printf("\t/// DL-105: height-correlated-G2 twin of E_ss_ALPHA_LOW_SUB_TABLE\n");
+	printf("\t/// above.  No G2 twin of E_ss_ALPHA_LOW_LIMIT_TABLE exists: this\n");
+	printf("\t/// model's cosTheta->0 boundary is exactly 1 at every alpha.\n");
+	printf("\t/// inline const, not inline constexpr: MSVC's default /constexpr:steps 100000 can't evaluate a table this large.\n");
+	printf("\tinline const Scalar E_ss_ALPHA_LOW_SUB_TABLE_G2[%d][%d] = {\n", ALPHA_LOW_STORED, SUB_SIZE - 1);
+	for(int s = 0; s < ALPHA_LOW_STORED; s++) {
+		printf("\t\t{ ");
+		for(int k = 0; k < SUB_SIZE - 1; k++) {
+			printf("%.8f", E_ss_ALPHA_LOW_SUB_G2[s][k]);
+			if(k < SUB_SIZE - 2) printf(", ");
+		}
+		printf(" }");
+		if(s < ALPHA_LOW_STORED - 1) printf(",");
+		printf("\n");
+	}
+	printf("\t};\n\n");
+
 	// Emit lookup functions
 	printf("\t/// DL-86: value of the grazing sub-grid model at node k of alpha\n");
 	printf("\t/// row `ai`, for k in [0, SUB_SIZE].  k==0 is the cosTheta->0\n");
@@ -2098,6 +2476,150 @@ int main() {
 	printf("\t\tkf = t - Scalar(k0);\n");
 	printf("\t}\n\n");
 
+	// DL-105: low-alpha sub-grid machinery.  See the ALPHA_SUB_FINE/
+	// ALPHA_MID_SIZE/ALPHA_LOW_TOTAL constant comments above for the
+	// derivation; this block is the runtime counterpart of the
+	// generator's alphaLowNode/alphaLowSlot/BuildLowAlphaRow helpers,
+	// and MUST agree with them or the baked values land at the wrong
+	// abscissae (same discipline as AnisoSubNodeCos/anisoSubNodeCos).
+	printf("\t/// DL-105: alpha value of the main table's row 0 / row 1 -- the\n");
+	printf("\t/// two endpoints the low-alpha sub-grid below is anchored to.\n");
+	printf("\tstatic const Scalar ALPHA_LOW_A0 = Scalar(0.01);\n");
+	printf("\tstatic const Scalar ALPHA_LOW_A1 = Scalar(0.01) + Scalar(1.0 - 0.01) * Scalar(1.0) / Scalar(LUT_SIZE - 1);\n\n");
+
+	printf("\t/// DL-105: alpha value of low-alpha virtual node `idx` (idx in\n");
+	printf("\t/// [0, ALPHA_LOW_TOTAL]).  idx==0 is the exact alpha->0 boundary,\n");
+	printf("\t/// idx==ALPHA_SUB_FINE+1 is A0 (row 0), idx==ALPHA_LOW_TOTAL is A1\n");
+	printf("\t/// (row 1) -- see the ALPHA_SUB_FINE/ALPHA_MID_SIZE comment above.\n");
+	printf("\tinline Scalar AlphaLowNode( const int idx )\n");
+	printf("\t{\n");
+	printf("\t\tif( idx <= 0 ) return Scalar(0.0);\n");
+	printf("\t\tif( idx <= ALPHA_SUB_FINE ) return ALPHA_LOW_A0 * pow( Scalar(2.0), Scalar(idx - (ALPHA_SUB_FINE + 1)) );\n");
+	printf("\t\tif( idx == ALPHA_SUB_FINE + 1 ) return ALPHA_LOW_A0;\n");
+	printf("\t\tif( idx < ALPHA_LOW_TOTAL )\n");
+	printf("\t\t{\n");
+	printf("\t\t\tconst Scalar t = Scalar(idx - (ALPHA_SUB_FINE + 1)) / Scalar(ALPHA_MID_SIZE);\n");
+	printf("\t\t\treturn ALPHA_LOW_A0 * pow( ALPHA_LOW_A1 / ALPHA_LOW_A0, t );\n");
+	printf("\t\t}\n");
+	printf("\t\treturn ALPHA_LOW_A1;\n");
+	printf("\t}\n\n");
+
+	printf("\t/// DL-105: map a STORED virtual index (1..ALPHA_SUB_FINE, or\n");
+	printf("\t/// ALPHA_SUB_FINE+2..ALPHA_LOW_TOTAL-1) to its flat storage slot.\n");
+	printf("\tinline int AlphaLowSlot( const int idx )\n");
+	printf("\t{\n");
+	printf("\t\tif( idx <= ALPHA_SUB_FINE ) return idx - 1;\n");
+	printf("\t\treturn ALPHA_SUB_FINE + ( idx - (ALPHA_SUB_FINE + 2) );\n");
+	printf("\t}\n\n");
+
+	printf("\t/// DL-105: bracket a query alpha in [0, ALPHA_LOW_A1) against the\n");
+	printf("\t/// 13-position AlphaLowNode list.  A plain linear scan (small,\n");
+	printf("\t/// fixed size) rather than a closed-form index -- the geometric\n");
+	printf("\t/// spacing makes a closed form awkward across the alpha->0\n");
+	printf("\t/// boundary, and this runs only for alpha<ALPHA_LOW_A1 (very\n");
+	printf("\t/// smooth surfaces), not the majority-path alpha>=ALPHA_LOW_A1\n");
+	printf("\t/// case below.\n");
+	printf("\tinline void AlphaLowIndex( const Scalar alpha, int& idx0, int& idx1, Scalar& frac )\n");
+	printf("\t{\n");
+	printf("\t\tconst Scalar a = r_max( Scalar(0.0), alpha );\n");
+	printf("\t\tidx0 = 0;\n");
+	printf("\t\tfor( int j = 0; j < ALPHA_LOW_TOTAL; j++ )\n");
+	printf("\t\t{\n");
+	printf("\t\t\tif( a >= AlphaLowNode( j + 1 ) ) idx0 = j + 1; else break;\n");
+	printf("\t\t}\n");
+	printf("\t\tif( idx0 > ALPHA_LOW_TOTAL - 1 ) idx0 = ALPHA_LOW_TOTAL - 1;\n");
+	printf("\t\tidx1 = idx0 + 1;\n");
+	printf("\t\tconst Scalar lo = AlphaLowNode(idx0), hi = AlphaLowNode(idx1);\n");
+	printf("\t\tfrac = (hi > lo) ? r_max( Scalar(0.0), r_min( Scalar(1.0), (a - lo) / (hi - lo) ) ) : Scalar(0.0);\n");
+	printf("\t}\n\n");
+
+	printf("\t/// DL-105: ordinary-row / grazing-subrow / limit accessors for a\n");
+	printf("\t/// low-alpha virtual node, dispatching between the exact\n");
+	printf("\t/// alpha->0 boundary (idx<=0), the reused main-table rows\n");
+	printf("\t/// (idx==A0's or A1's index), and the new baked sub/mid tables.\n");
+	printf("\tinline Scalar AlphaLowOrdinary( const int idx, const int k )\n");
+	printf("\t{\n");
+	printf("\t\tif( idx <= 0 ) return Scalar(1.0);\n");
+	printf("\t\tif( idx == ALPHA_SUB_FINE + 1 ) return E_ss_TABLE[0][k];\n");
+	printf("\t\tif( idx >= ALPHA_LOW_TOTAL ) return E_ss_TABLE[1][k];\n");
+	printf("\t\treturn E_ss_ALPHA_LOW_TABLE[ AlphaLowSlot(idx) ][k];\n");
+	printf("\t}\n\n");
+	printf("\tinline Scalar AlphaLowOrdinaryG2( const int idx, const int k )\n");
+	printf("\t{\n");
+	printf("\t\tif( idx <= 0 ) return Scalar(1.0);\n");
+	printf("\t\tif( idx == ALPHA_SUB_FINE + 1 ) return E_ss_TABLE_G2[0][k];\n");
+	printf("\t\tif( idx >= ALPHA_LOW_TOTAL ) return E_ss_TABLE_G2[1][k];\n");
+	printf("\t\treturn E_ss_ALPHA_LOW_TABLE_G2[ AlphaLowSlot(idx) ][k];\n");
+	printf("\t}\n\n");
+	printf("\tinline Scalar AlphaLowGrazing( const int idx, const int k )\n");
+	printf("\t{\n");
+	printf("\t\tif( idx <= 0 ) return Scalar(1.0);\n");
+	printf("\t\tif( idx == ALPHA_SUB_FINE + 1 ) return E_ss_SUB_TABLE[0][k];\n");
+	printf("\t\tif( idx >= ALPHA_LOW_TOTAL ) return E_ss_SUB_TABLE[1][k];\n");
+	printf("\t\treturn E_ss_ALPHA_LOW_SUB_TABLE[ AlphaLowSlot(idx) ][k];\n");
+	printf("\t}\n\n");
+	printf("\tinline Scalar AlphaLowGrazingG2( const int idx, const int k )\n");
+	printf("\t{\n");
+	printf("\t\tif( idx <= 0 ) return Scalar(1.0);\n");
+	printf("\t\tif( idx == ALPHA_SUB_FINE + 1 ) return E_ss_SUB_TABLE_G2[0][k];\n");
+	printf("\t\tif( idx >= ALPHA_LOW_TOTAL ) return E_ss_SUB_TABLE_G2[1][k];\n");
+	printf("\t\treturn E_ss_ALPHA_LOW_SUB_TABLE_G2[ AlphaLowSlot(idx) ][k];\n");
+	printf("\t}\n\n");
+	printf("\t/// SEPARABLE-model cosTheta->0 boundary at a low-alpha node.  No\n");
+	printf("\t/// G2 twin exists: that model's boundary is exactly 1 (returned\n");
+	printf("\t/// by AlphaLowOrdinaryG2/AlphaLowGrazingG2's own idx<=0 branch).\n");
+	printf("\tinline Scalar AlphaLowLimit( const int idx )\n");
+	printf("\t{\n");
+	printf("\t\tif( idx <= 0 ) return Scalar(1.0);\n");
+	printf("\t\tif( idx == ALPHA_SUB_FINE + 1 ) return E_ss_LIMIT_TABLE[0];\n");
+	printf("\t\tif( idx >= ALPHA_LOW_TOTAL ) return E_ss_LIMIT_TABLE[1];\n");
+	printf("\t\treturn E_ss_ALPHA_LOW_LIMIT_TABLE[ AlphaLowSlot(idx) ];\n");
+	printf("\t}\n\n");
+	printf("\tinline Scalar AlphaLowEavg( const int idx )\n");
+	printf("\t{\n");
+	printf("\t\tif( idx <= 0 ) return Scalar(1.0);\n");
+	printf("\t\tif( idx == ALPHA_SUB_FINE + 1 ) return E_avg_TABLE[0];\n");
+	printf("\t\tif( idx >= ALPHA_LOW_TOTAL ) return E_avg_TABLE[1];\n");
+	printf("\t\treturn E_avg_ALPHA_LOW_TABLE[ AlphaLowSlot(idx) ];\n");
+	printf("\t}\n\n");
+	printf("\tinline Scalar AlphaLowEavgG2( const int idx )\n");
+	printf("\t{\n");
+	printf("\t\tif( idx <= 0 ) return Scalar(1.0);\n");
+	printf("\t\tif( idx == ALPHA_SUB_FINE + 1 ) return E_avg_TABLE_G2[0];\n");
+	printf("\t\tif( idx >= ALPHA_LOW_TOTAL ) return E_avg_TABLE_G2[1];\n");
+	printf("\t\treturn E_avg_ALPHA_LOW_TABLE_G2[ AlphaLowSlot(idx) ];\n");
+	printf("\t}\n\n");
+
+	printf("\t/// DL-105: build an alpha-blended (essRow, subRow, essLimit)\n");
+	printf("\t/// triple for a query alpha < ALPHA_LOW_A1, the SEPARABLE model.\n");
+	printf("\t/// Callers feed this straight into MSLobeDetail::BuildSegmentsFromRow\n");
+	printf("\t/// (the SAME function the main alpha>=ALPHA_LOW_A1 path uses), so\n");
+	printf("\t/// LookupEss/BuildSegments/MSLobeZ cannot drift apart here either.\n");
+	printf("\tinline void BuildLowAlphaRow( const Scalar alpha, Scalar essRow[LUT_SIZE], Scalar subRow[SUB_SIZE-1], Scalar& essLimit )\n");
+	printf("\t{\n");
+	printf("\t\tint idx0, idx1; Scalar f;\n");
+	printf("\t\tAlphaLowIndex( alpha, idx0, idx1, f );\n");
+	printf("\t\tfor( int k = 0; k < LUT_SIZE; k++ )\n");
+	printf("\t\t\tessRow[k] = (1-f) * AlphaLowOrdinary(idx0,k) + f * AlphaLowOrdinary(idx1,k);\n");
+	printf("\t\tfor( int k = 0; k < SUB_SIZE - 1; k++ )\n");
+	printf("\t\t\tsubRow[k] = (1-f) * AlphaLowGrazing(idx0,k) + f * AlphaLowGrazing(idx1,k);\n");
+	printf("\t\tessLimit = (1-f) * AlphaLowLimit(idx0) + f * AlphaLowLimit(idx1);\n");
+	printf("\t}\n\n");
+
+	printf("\t/// DL-105: height-correlated-G2 twin of BuildLowAlphaRow above.\n");
+	printf("\t/// No essLimit output: this model's cosTheta->0 boundary is\n");
+	printf("\t/// exactly 1 at every alpha (matching BuildSegmentsG2's own\n");
+	printf("\t/// Scalar(1.0) literal passed to BuildSegmentsFromRow).\n");
+	printf("\tinline void BuildLowAlphaRowG2( const Scalar alpha, Scalar essRow[LUT_SIZE], Scalar subRow[SUB_SIZE-1] )\n");
+	printf("\t{\n");
+	printf("\t\tint idx0, idx1; Scalar f;\n");
+	printf("\t\tAlphaLowIndex( alpha, idx0, idx1, f );\n");
+	printf("\t\tfor( int k = 0; k < LUT_SIZE; k++ )\n");
+	printf("\t\t\tessRow[k] = (1-f) * AlphaLowOrdinaryG2(idx0,k) + f * AlphaLowOrdinaryG2(idx1,k);\n");
+	printf("\t\tfor( int k = 0; k < SUB_SIZE - 1; k++ )\n");
+	printf("\t\t\tsubRow[k] = (1-f) * AlphaLowGrazingG2(idx0,k) + f * AlphaLowGrazingG2(idx1,k);\n");
+	printf("\t}\n\n");
+
 	printf("\t/// Look up E_ss(cosTheta, alpha) with bilinear interpolation.\n");
 	printf("\t///\n");
 	printf("\t/// DL-86: below the first bin center c0 = 0.5/LUT_SIZE this used\n");
@@ -2116,8 +2638,34 @@ int main() {
 	printf("\t/// left end-cap -- MSPdf calls this function directly while\n");
 	printf("\t/// SampleMSCosTheta inverts that segment's shape; both now read\n");
 	printf("\t/// the same nodes through SubNodeEss, so they cannot disagree.\n");
+	printf("\t///\n");
+	printf("\t/// DL-105: below ALPHA_LOW_A1 (row 1's alpha), source the row\n");
+	printf("\t/// from the low-alpha sub-grid (BuildLowAlphaRow) instead of the\n");
+	printf("\t/// main table -- this covers BOTH the alpha<0.01 clamp-to-row-0\n");
+	printf("\t/// range and the coarse row0->row1 cell; see ALPHA_SUB_FINE/\n");
+	printf("\t/// ALPHA_MID_SIZE above.\n");
 	printf("\tinline Scalar LookupEss( const Scalar cosTheta, const Scalar alpha )\n");
 	printf("\t{\n");
+	printf("\t\tif( alpha < ALPHA_LOW_A1 )\n");
+	printf("\t\t{\n");
+	printf("\t\t\tScalar essRow[LUT_SIZE]; Scalar subRow[SUB_SIZE-1]; Scalar essLimit;\n");
+	printf("\t\t\tBuildLowAlphaRow( alpha, essRow, subRow, essLimit );\n");
+	printf("\t\t\tconst Scalar cc2 = r_max(0.0, r_min(1.0, cosTheta));\n");
+	printf("\t\t\tconst Scalar c02 = Scalar(0.5) / Scalar(LUT_SIZE);\n");
+	printf("\t\t\tif( cc2 < c02 )\n");
+	printf("\t\t\t{\n");
+	printf("\t\t\t\tint k0; Scalar kf;\n");
+	printf("\t\t\t\tSubNodeIndex( cc2, c02, k0, kf );\n");
+	printf("\t\t\t\tconst Scalar s0 = (k0 <= 0) ? essLimit : subRow[k0-1];\n");
+	printf("\t\t\t\tconst Scalar s1 = (k0+1 >= SUB_SIZE) ? essRow[0] : subRow[k0];\n");
+	printf("\t\t\t\treturn r_max( Scalar(0.0), r_min( Scalar(1.0), (1-kf) * s0 + kf * s1 ) );\n");
+	printf("\t\t\t}\n");
+	printf("\t\t\tconst Scalar c2 = cc2 * LUT_SIZE - 0.5;\n");
+	printf("\t\t\tconst int ci02 = (int)c2;\n");
+	printf("\t\t\tconst int ci12 = r_min(ci02 + 1, LUT_SIZE - 1);\n");
+	printf("\t\t\tconst Scalar cf2 = c2 - ci02;\n");
+	printf("\t\t\treturn (1-cf2) * essRow[ci02] + cf2 * essRow[ci12];\n");
+	printf("\t\t}\n\n");
 	printf("\t\t// Map alpha from [0.01, 1.0] to [0, LUT_SIZE-1]\n");
 	printf("\t\tScalar a = r_max(0.0, r_min(1.0, (alpha - 0.01) / (1.0 - 0.01))) * (LUT_SIZE - 1);\n");
 	printf("\t\tint ai0 = (int)a;\n");
@@ -2147,8 +2695,17 @@ int main() {
 	printf("\t}\n\n");
 
 	printf("\t/// Look up E_avg(alpha) with linear interpolation.\n");
+	printf("\t///\n");
+	printf("\t/// DL-105: below ALPHA_LOW_A1, blend the low-alpha Eavg sub-grid\n");
+	printf("\t/// instead -- see LookupEss's own DL-105 comment.\n");
 	printf("\tinline Scalar LookupEavg( const Scalar alpha )\n");
 	printf("\t{\n");
+	printf("\t\tif( alpha < ALPHA_LOW_A1 )\n");
+	printf("\t\t{\n");
+	printf("\t\t\tint idx0, idx1; Scalar f;\n");
+	printf("\t\t\tAlphaLowIndex( alpha, idx0, idx1, f );\n");
+	printf("\t\t\treturn (1-f) * AlphaLowEavg(idx0) + f * AlphaLowEavg(idx1);\n");
+	printf("\t\t}\n");
 	printf("\t\tScalar a = r_max(0.0, r_min(1.0, (alpha - 0.01) / (1.0 - 0.01))) * (LUT_SIZE - 1);\n");
 	printf("\t\tint ai0 = (int)a;\n");
 	printf("\t\tint ai1 = r_min(ai0 + 1, LUT_SIZE - 1);\n");
@@ -2190,8 +2747,32 @@ int main() {
 	printf("\t/// MSLobeDetail::BuildSegmentsFromRow's left end-cap -- see\n");
 	printf("\t/// LookupEss's own comment on why; both read the same nodes\n");
 	printf("\t/// through SubNodeEssG2.\n");
+	printf("\t///\n");
+	printf("\t/// DL-105: below ALPHA_LOW_A1, source the row from the low-alpha\n");
+	printf("\t/// sub-grid (BuildLowAlphaRowG2) instead -- see LookupEss's own\n");
+	printf("\t/// DL-105 comment.\n");
 	printf("\tinline Scalar LookupEssG2( const Scalar cosTheta, const Scalar alpha )\n");
 	printf("\t{\n");
+	printf("\t\tif( alpha < ALPHA_LOW_A1 )\n");
+	printf("\t\t{\n");
+	printf("\t\t\tScalar essRow[LUT_SIZE]; Scalar subRow[SUB_SIZE-1];\n");
+	printf("\t\t\tBuildLowAlphaRowG2( alpha, essRow, subRow );\n");
+	printf("\t\t\tconst Scalar cc2 = r_max(0.0, r_min(1.0, cosTheta));\n");
+	printf("\t\t\tconst Scalar c02 = Scalar(0.5) / Scalar(LUT_SIZE);\n");
+	printf("\t\t\tif( cc2 < c02 )\n");
+	printf("\t\t\t{\n");
+	printf("\t\t\t\tint k0; Scalar kf;\n");
+	printf("\t\t\t\tSubNodeIndex( cc2, c02, k0, kf );\n");
+	printf("\t\t\t\tconst Scalar s0 = (k0 <= 0) ? Scalar(1.0) : subRow[k0-1];\n");
+	printf("\t\t\t\tconst Scalar s1 = (k0+1 >= SUB_SIZE) ? essRow[0] : subRow[k0];\n");
+	printf("\t\t\t\treturn r_max( Scalar(0.0), r_min( Scalar(1.0), (1-kf) * s0 + kf * s1 ) );\n");
+	printf("\t\t\t}\n");
+	printf("\t\t\tconst Scalar c2 = cc2 * LUT_SIZE - 0.5;\n");
+	printf("\t\t\tconst int ci02 = (int)c2;\n");
+	printf("\t\t\tconst int ci12 = r_min(ci02 + 1, LUT_SIZE - 1);\n");
+	printf("\t\t\tconst Scalar cf2 = c2 - ci02;\n");
+	printf("\t\t\treturn (1-cf2) * essRow[ci02] + cf2 * essRow[ci12];\n");
+	printf("\t\t}\n\n");
 	printf("\t\tScalar a = r_max(0.0, r_min(1.0, (alpha - 0.01) / (1.0 - 0.01))) * (LUT_SIZE - 1);\n");
 	printf("\t\tint ai0 = (int)a;\n");
 	printf("\t\tint ai1 = r_min(ai0 + 1, LUT_SIZE - 1);\n");
@@ -2218,8 +2799,17 @@ int main() {
 	printf("\t}\n\n");
 
 	printf("\t/// DL-63: height-correlated-G2 twin of LookupEavg above.\n");
+	printf("\t///\n");
+	printf("\t/// DL-105: below ALPHA_LOW_A1, blend the low-alpha Eavg sub-grid\n");
+	printf("\t/// instead -- see LookupEss's own DL-105 comment.\n");
 	printf("\tinline Scalar LookupEavgG2( const Scalar alpha )\n");
 	printf("\t{\n");
+	printf("\t\tif( alpha < ALPHA_LOW_A1 )\n");
+	printf("\t\t{\n");
+	printf("\t\t\tint idx0, idx1; Scalar f;\n");
+	printf("\t\t\tAlphaLowIndex( alpha, idx0, idx1, f );\n");
+	printf("\t\t\treturn (1-f) * AlphaLowEavgG2(idx0) + f * AlphaLowEavgG2(idx1);\n");
+	printf("\t\t}\n");
 	printf("\t\tScalar a = r_max(0.0, r_min(1.0, (alpha - 0.01) / (1.0 - 0.01))) * (LUT_SIZE - 1);\n");
 	printf("\t\tint ai0 = (int)a;\n");
 	printf("\t\tint ai1 = r_min(ai0 + 1, LUT_SIZE - 1);\n");

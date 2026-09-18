@@ -323,9 +323,30 @@ that extends to `N != 1`. Verified two ways in the regression:
   what it lacks is renormalization (it drops a below-horizon sample) and axis
   orientation. That is a different defect — energy loss, not a false state
   transition — and `Pdf`'s front branch documents the unnormalized
-  restriction as the reviewed design. Filed as **DL-112**.
+  restriction as the reviewed design. Filed as **DL-112**, and **CLOSED
+  2026-09-17** with exactly DL-45's tool (measured: the lobe emitted
+  `0.3·(1+cos φ)/2` of its reflectance, 0.15265 instead of 0.30000 at 89°) —
+  [DL111_DL112_TRANSMISSION_PUSH_GATES.md](DL111_DL112_TRANSMISSION_PUSH_GATES.md) §6.
+  One consequence to know before reading §4's first bullet: the entry and
+  exit branches of `Pdf()` are now the SAME normalized clipped-cosine
+  function wherever `geomN == geomNRaw`, which is what made
+  `PTGuidingMISPartitionTest`'s DL-74 premise probe for this SPF need
+  retargeting.
 * **`DielectricSPF` / `PerfectRefractorSPF` / `SubSurfaceScatteringSPF`.**
-  Same pattern, other files; filed as **DL-111** (§5).
+  Same pattern, other files; filed as **DL-111** (§5), and **CLOSED
+  2026-09-17**. Two findings there bear on this document. (i) For their
+  DELTA lobes the defect is much narrower than "the same pattern" suggests:
+  refraction into a *denser* medium can never land wrong-side, so the delta
+  case needs a grazing, normal-perturbed silhouette refracting into a
+  *rarer* medium. (ii) `DielectricSPF`'s `scattering` warp is a genuine
+  lobe and took **this row's construction verbatim**, as a separate
+  implementation in `GeometricUtilities::PerturbClipped`. `SampleClippedPhong`
+  below is deliberately NOT refactored onto it: this one draws `cos(theta)`
+  from its own `cos^N` inverse CDF and uses that value directly, while
+  `PerturbClipped` takes a polar ANGLE (its callers' marginals — Henyey-
+  Greenstein, Phong-by-`alpha` — produce one), so delegating would insert an
+  `acos`/`cos` round trip into a path whose untilted branch is pinned
+  bit-for-bit. Any change to the arc math belongs in BOTH.
 
 ---
 
@@ -342,11 +363,11 @@ claims.*
 | `TranslucentSPF::Scatter` entering `trans`, per-channel `N` branch | **YES** | same, ×3 channels sharing one canonical pair; 2626/24576 at 60° | fixed |
 | `TranslucentSPF::ScatterNM` entering `trans` | **YES** | NM twin; identical counts | fixed |
 | `TranslucentSPF::Scatter`/`ScatterNM` exit-branch interior backscatter (both `N` branches + NM) | **YES** (row: "shares the pattern… audit it alongside") | "stays inside this object, no stack change" violated — 605/4096 leave the solid at 45° tilt **without** the pop; the row called this "no stack-transition consequence", which understates it: the consequence is the *missing* transition | fixed |
-| `TranslucentSPF` entry front (reflection) lobe | **NO** — gate present | `if( Dot(front.ray.Dir(), geomN) > 0 )` is already there; no stack action; the residual is an unnormalized *drop* plus an unoriented axis | refuted for this pattern; filed **DL-112** |
+| `TranslucentSPF` entry front (reflection) lobe | **NO** — gate present | `if( Dot(front.ray.Dir(), geomN) > 0 )` is already there; no stack action; the residual is an unnormalized *drop* plus an unoriented axis | refuted for this pattern; filed **DL-112**, closed 2026-09-17 |
 | `TranslucentSPF` diffuse exit re-emission | already closed | DL-45 `SampleValidDiffuseExit` + matching `Pdf` | n/a |
-| `DielectricSPF::GenerateScatteredRays*` transmission (`dielectric` lobe) | **YES**, other file | `dielectric.ior_stack->push(rIndex)` (`DielectricSPF.cpp:213`); the only gate on the transmitted direction is `Dot(dielectric.ray.Dir(), ri.onb.w())` — the **shading** normal — while the companion Fresnel reflection lobe is correctly gated against `geomN`. The HG/Phong `scattering` warp (`Perturb` by `alpha`) widens the lobe off the Snell direction, so this is not a delta-only concern. | filed **DL-111** |
-| `PerfectRefractorSPF` transmission (`specular` lobe), RGB `:115` + NM `:289` | **YES**, other file | `specular.ior_stack->push(newIOR)` with **no** geometric gate on the refracted direction at all; only the Fresnel lobe is gated against `geomN` | filed **DL-111** |
-| `SubSurfaceScatteringSPF` exit refraction (`exitRay`), RGB `:310` + NM | **YES**, other file | carries the **popped** `exitStack` with no geometric gate, while the companion back-reflection *is* gated against `geomNBack`. Lower visibility: shipped materials set `bAbsorbBackFace=true` and do not reach this branch (cf. DL-51). | filed **DL-111** |
+| `DielectricSPF::GenerateScatteredRays*` transmission (`dielectric` lobe) | **YES**, other file — **fixed 2026-09-17** | `dielectric.ior_stack->push(rIndex)` (`DielectricSPF.cpp:213`); the only gate on the transmitted direction is `Dot(dielectric.ray.Dir(), ri.onb.w())` — the **shading** normal — while the companion Fresnel reflection lobe is correctly gated against `geomN`. The HG/Phong `scattering` warp (`Perturb` by `alpha`) widens the lobe off the Snell direction, so this is not a delta-only concern. | filed **DL-111**, closed 2026-09-17 |
+| `PerfectRefractorSPF` transmission (`specular` lobe), RGB `:115` + NM `:289` | **YES**, other file — **fixed 2026-09-17** | `specular.ior_stack->push(newIOR)` with **no** geometric gate on the refracted direction at all; only the Fresnel lobe is gated against `geomN` | filed **DL-111**, closed 2026-09-17 |
+| `SubSurfaceScatteringSPF` exit refraction (`exitRay`), RGB `:310` + NM | **YES**, other file — **fixed 2026-09-17** | carries the **popped** `exitStack` with no geometric gate, while the companion back-reflection *is* gated against `geomNBack`. Lower visibility: shipped materials set `bAbsorbBackFace=true` and do not reach this branch (cf. DL-51). | filed **DL-111**, closed 2026-09-17 |
 | `PolishedSPF` | **NO** | never pushes or pops an IOR stack (its refracted ray is used only to evaluate Fresnel); no membership claim to violate | refuted |
 | `CompositeSPF` | **NO** | a composition layer — it forwards whatever a sub-SPF produced (`scat.ior_stack ? *scat.ior_stack : gap_stack`) and makes no geometric claim of its own; it inherits its sub-SPFs' correctness | refuted (inherits) |
 | `RandomWalkSSS` | **NO** | does its own outward-normal orientation from `vGeomNormal` (`RandomWalkSSS.cpp:84-85`, `:311-318`) and never mutates the caller's IOR stack | refuted |

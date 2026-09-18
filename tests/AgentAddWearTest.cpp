@@ -1714,17 +1714,14 @@ static std::string OmniPowerAt( const std::string& name, double power, const cha
 	       "\n\tcolor 1 1 1\n\tposition " + position + "\n}\n\n";
 }
 
-//! N4c's fixture (round-3 P3 fix, DimLightColorMax_): a SHORT `color` (2 of 3 components -- the parser
-//! zero-fills the third) under an explicit non-linear `colorspace`, for the shape the `n < 3` bug used to
-//! shortcut on.  Always a bright, floor-clearing `power` -- N4c is coverage for the SHAPE (short colour +
-//! decode), not a magnitude probe: `DimLightIntensityIsNonTrivial_`'s only colour test is `colorMax > 0.0`,
-//! which a partial-but-positive triple clears identically whether `DimLightColorMax_` returns the raw
-//! literal (the old, buggy `n < 3` early return) or the correctly sRGB-decoded max (0.5 -> ~0.214) -- so
-//! this fixture cannot, on its own, tell the two implementations apart by the note's fire/silent outcome.
-//! What it DOES pin: the short-`color` + explicit-`colorspace` shape reaches `DimLightColorMax_` and
-//! `DimLightIntensityIsNonTrivial_` without an out-of-bounds read or an exception (the old code's `n < 3`
-//! guard, if ever reintroduced with an off-by-one, would read uninitialised `comp[1]`/`comp[2]` on exactly
-//! this input), and that a short-but-positive colour is never mistaken for authored black.
+//! N4c's fixture (originally round-3 P3 fix coverage for `DimLightColorMax_`): a SHORT `color` (2 of 3
+//! components).  SUPERSEDED 2026-09-17 by DL-32 round 2 (docs/DEBT_LEDGER.md): `ParseStateBag::GetVec3`
+//! (the shared accessor every `DoubleVec3`-kind parameter reads through, `color` on `omni_light` included)
+//! now HARD-ERRORS on a token count that is not exactly 3, instead of the round-3 P3 design's "the parser
+//! zero-fills the third component" -- so this fixture's scene can no longer derive AT ALL, and
+//! `DimLightColorMax_`'s `n < 3` tolerance (still present, still harmless) is unreachable from any document
+//! that survives a derive.  N4c is repurposed below as a regression guard for the NEW contract instead: the
+//! malformed scene must fail to derive, with a diagnostic naming DL-32.
 static std::string OmniShortColorAt( const std::string& name, double power, const char* position )
 {
 	char buf[64];
@@ -1965,29 +1962,38 @@ static void TestDimHeroLightNote()
 			std::remove( tmpB.c_str() );
 		}
 
-		// N4c (round-3 P3 fix): a SHORT `color` (2 of 3 components) under an
-		// explicit `colorspace sRGB` -- see OmniShortColorAt's doc for why this
-		// fixture pins the SHAPE (short colour reaches DimLightColorMax_'s
-		// decode path cleanly) rather than the exact colorMax number.
+		// N4c: SUPERSEDED 2026-09-17 by DL-32 round 2 -- a SHORT `color` (2 of
+		// 3 components) is now a HARD PARSE ERROR (ParseStateBag::GetVec3),
+		// not the round-3 P3 design's silent zero-fill this fixture used to
+		// probe.  See OmniShortColorAt's doc above.  Repurposed as a
+		// regression guard for the NEW contract: the malformed scene must
+		// fail to derive, with a diagnostic naming DL-32.
 		{
 			const std::string shortColor = Preamble() + DimLightSlab() +
 				OmniShortColorAt( "candle", 5.0, "0 3 0" );
 			const std::string tmpC = TempPath( "addwear_dim_n4c.RISEscene" );
 			Job* pJobC = LoadScene( shortColor, tmpC );
-			Check( pJobC != nullptr, "N4c short-colour fixture derives" );
-			if( pJobC ) {
-				std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJobC );
-				RecordSoloAudit( *sess, "candle", 0.3, 0.005 );
-				const std::vector<Agent::AgentDiagnostic> diags = sess->Validate( shortColor );
-				const Agent::AgentDiagnostic* d = hasCode( diags, kCode );
-				Check( d != nullptr,
-				       "N4c MONEY: `color 0.5 0.5` + `colorspace sRGB` (the parser zero-fills the third "
-				       "component) is read as a genuine, non-black colour -- DimLightColorMax_ decodes it "
-				       "rather than bailing out on the short triple, and clause (ii) still fires on the "
-				       "SAME authored power/share pair N4b does" );
-				pJobC->release();
-				std::remove( tmpC.c_str() );
+			Check( pJobC == nullptr,
+			       "N4c MONEY: `color 0.5 0.5` (2 of 3 components) on omni_light no longer derives at "
+			       "all -- DL-32 round 2 hard-errors a short DoubleVec3 at the shared accessor instead "
+			       "of the round-3 P3 design's silent zero-fill (RED pre-fix: this fixture derived "
+			       "successfully with color (0.5, 0.5, 0))" );
+			if( pJobC ) { pJobC->release(); }
+			std::remove( tmpC.c_str() );
+
+			// Confirm the diagnostic itself names DL-32, using the same
+			// Cst::ParseToCst + Cst::DeriveToJob seam ParseStateBagArityTest.cpp
+			// uses (LoadScene/LoadAsciiSceneViaCst does not surface diagnostics).
+			RISE::Cst::Document doc = RISE::Cst::ParseToCst( shortColor );
+			Job* pDiagJob = new Job();
+			std::vector<std::string> diags;
+			RISE::Cst::DeriveToJob( doc, *pDiagJob, &diags );
+			bool sawDL32 = false;
+			for( const std::string& diag : diags ) {
+				if( diag.find( "DL-32" ) != std::string::npos ) { sawDL32 = true; break; }
 			}
+			Check( sawDL32, "N4c diagnostic names DL-32" );
+			pDiagJob->release();
 		}
 	}
 

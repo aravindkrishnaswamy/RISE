@@ -20,6 +20,7 @@
 #include "../Utilities/OrthonormalBasis3D.h"
 #include "../Interfaces/ILog.h"
 #include "../Utilities/stl_utils.h"
+#include "../Utilities/SurfaceCurvature.h"
 
 
 using namespace RISE;
@@ -106,6 +107,55 @@ void BezierPatchGeometry::RayElementIntersection( RayIntersectionGeometric& ri, 
 	// -- record it so consumers needing the TRUE surface facing
 	// (RayCaster's x-ray self-hit test) can recover the unflipped sign.
 	ri.bGeomNormalOrientedToRay = bDidFlip;
+
+	// DL-20 (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md 14 item 2, closed):
+	// this hit already knows exactly which PATCH and (u, v) it landed on
+	// (unlike the generic `ComputeSurfaceDerivatives(point, normal)` query
+	// below, which is handed only a point and cannot tell which of
+	// possibly many patches -- or which of a patch's two (u, v) preimages
+	// -- it came from), so the real closed-form Weingarten map is a few
+	// more Bernstein-basis evaluations away.  UNGATED like the analytic
+	// primitives (Sphere/Ellipsoid): this is cheap, exact, data the hit
+	// already produced.  Only `scaleHint` (nothing but `curv` reads it) is
+	// gated.
+	//
+	// CONSERVATIVE on a FLIPPED hit (`bDidFlip`): `dpdu`/`dpdv` are the
+	// patch's OWN parametric tangents, un-flipped -- by construction
+	// `Cross(dpdu, dpdv)` is exactly the direction `N` had BEFORE the
+	// ray-facing flip above, so pairing them with the FLIPPED reported
+	// `ri.vNormal` would hand a consumer a left-handed (dpdu, dpdv, n)
+	// frame while claiming `valid=true`.  Re-deriving a consistent frame
+	// needs a real reparametrization (e.g. swapping the u/v roles, which
+	// also swaps which second derivative is which) that risks disagreeing
+	// with `ptCoord`'s own (u, v) elsewhere -- out of this row's scope.
+	// Reporting honest absence here is strictly better than the fabricated
+	// `valid=true` this replaced (DL-20's whole point).
+	if( !bDidFlip ) {
+		const Vector3 dpdu = GeometricUtilities::BezierPatchTangentU( *elem.pPatch, bh.u, bh.v );
+		const Vector3 dpdv = GeometricUtilities::BezierPatchTangentV( *elem.pPatch, bh.u, bh.v );
+		const Vector3 d2Pduu = GeometricUtilities::BezierPatchSecondDerivUU( *elem.pPatch, bh.u, bh.v );
+		const Vector3 d2Pduv = GeometricUtilities::BezierPatchSecondDerivUV( *elem.pPatch, bh.u, bh.v );
+		const Vector3 d2Pdvv = GeometricUtilities::BezierPatchSecondDerivVV( *elem.pPatch, bh.u, bh.v );
+
+		Vector3 dndu, dndv;
+		if( SurfaceCurvature::ShapeOperatorFromSecondDerivatives( dpdu, dpdv, d2Pduu, d2Pduv, d2Pdvv, dndu, dndv ) ) {
+			// N was NOT flipped in this branch, so dndu/dndv (derivatives of
+			// Normalize(Cross(dpdu,dpdv))) already match the reported `N`
+			// with no further sign correction needed.
+			ri.derivatives.dpdu  = dpdu;
+			ri.derivatives.dpdv  = dpdv;
+			ri.derivatives.dndu  = dndu;
+			ri.derivatives.dndv  = dndv;
+			ri.derivatives.valid = true;
+			// No independently-known texcoord chart here (ptCoord IS (u, v)
+			// already -- see the `ptCoord = Point2(bh.u, bh.v)` stamp above),
+			// so the identity default (`texChartValid=false`) the struct's
+			// own constructor sets is left alone.
+			if( SurfaceCurvatureDemand::Any() ) {
+				ri.derivatives.scaleHint = SurfaceCurvature::ScaleHintFromBoundingBox( GenerateBoundingBox() );
+			}
+		}
+	}
 }
 
 void BezierPatchGeometry::RayElementIntersection( RayIntersection& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const
@@ -410,16 +460,22 @@ void BezierPatchGeometry::UniformRandomPoint( Point3* point, Vector3* normal, Po
 
 SurfaceDerivatives BezierPatchGeometry::ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const
 {
-	SurfaceDerivatives sd;
-	OrthonormalBasis3D onb;
-	onb.CreateFromW( objSpaceNormal );
-	sd.dpdu = onb.u();
-	sd.dpdv = onb.v();
-	sd.dndu = Vector3( 0, 0, 0 );
-	sd.dndv = Vector3( 0, 0, 0 );
-	sd.uv = Point2( 0, 0 );
-	sd.valid = true;
-	return sd;
+	// DL-20: this geometry can hold MANY patches, and a point (with no
+	// accompanying (u, v) or patch index -- unlike the real ray-hit path,
+	// RayElementIntersection above, which knows both for free) cannot be
+	// inverted back to "which patch, which (u, v) preimage" without an
+	// ambiguous, expensive re-solve.  The pre-fix body fabricated an
+	// arbitrary tangent frame around `objSpaceNormal` with `dndu=dndv=0`
+	// and reported it as `valid=true` -- a FLAT curvature answer for a
+	// genuinely curved surface, presented as legitimate.  Conservative
+	// reject instead: report "no analytical derivatives available" (the
+	// default-constructed, `valid=false` struct) exactly like the base
+	// IGeometry contract already documents for a geometry that cannot
+	// answer.  (void)-cast the otherwise-unused parameters to keep this a
+	// real body, not a signature stub.
+	(void)objSpacePoint;
+	(void)objSpaceNormal;
+	return SurfaceDerivatives();
 }
 
 Scalar BezierPatchGeometry::GetArea( ) const

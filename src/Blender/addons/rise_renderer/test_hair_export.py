@@ -621,7 +621,7 @@ class BridgeAbiLayoutTest(unittest.TestCase):
         match = re.search(r"#define RISE_BLENDER_API_VERSION\s+(\d+)", self.source)
         self.assertIsNotNone(match)
         self.assertEqual(int(match.group(1)), bridge._EXPECTED_API_VERSION)
-        self.assertEqual(bridge._EXPECTED_API_VERSION, 11)
+        self.assertEqual(bridge._EXPECTED_API_VERSION, 12)
 
     def test_hair_material_struct_matches(self):
         self._assert_matches(bridge._HairMaterial, "rise_blender_hair_material")
@@ -890,6 +890,129 @@ class BridgeHairMarshallingTest(unittest.TestCase):
         handle = _handle()
         handle._marshal_hair_object(_StubHairObject())
         self.assertGreaterEqual(len(handle.keepalive), 3)
+
+
+class _StubMaterial:
+    """The subset of `exporter.MaterialData` the bridge marshals.
+    Deliberately a stand-in rather than the real dataclass: importing
+    `exporter` pulls in bpy (see `_StubHairMaterial` above, same
+    reasoning)."""
+
+    def __init__(self, **kwargs):
+        self.name = "mat"
+        self.model = 3  # MATERIAL_PBR_METALLIC_ROUGHNESS
+        self.diffuse_painter_name = None
+        self.specular_painter_name = None
+        self.alpha_x_painter_name = None
+        self.alpha_y_painter_name = None
+        self.ior_painter_name = None
+        self.extinction_painter_name = None
+        self.tau_painter_name = None
+        self.scatter_painter_name = None
+        self.emission_painter_name = None
+        self.double_sided = True
+        self.base_color_painter_name = "base"
+        self.metallic_painter_name = "metallic"
+        self.roughness_painter_name = "roughness"
+        self.specular_factor_painter_name = None
+        self.specular_color_painter_name = None
+        self.anisotropy_factor_painter_name = None
+        self.anisotropy_rotation_painter_name = None
+        self.emissive_scale = 1.0
+        # ABI v12 -- DL-18 (docs/DEBT_LEDGER.md; source heading
+        # CLOTH_FABRIC_DESIGN.md §15 item 13).  None / 0.0 means "no
+        # sheen", matching every payload built before this debt closed.
+        self.sheen_color_painter_name = None
+        self.sheen_roughness = 0.0
+        self.sheen_roughness_texture_painter_name = None
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+
+class BridgeMaterialSheenMarshallingTest(unittest.TestCase):
+    """ABI v12's three `sheen_*` fields on `_marshal_material` (DL-18:
+    Principled BSDF Sheen -> `fabric_material`, docs/DEBT_LEDGER.md /
+    CLOTH_FABRIC_DESIGN.md §15 item 13).
+
+    RED-PROOF HISTORY: before this debt closed, `bridge._Material` had
+    no `sheen_*` fields at all, so the assignments in
+    `_marshal_material` this test exercises raised
+    `AttributeError: 'c_char_p' object has no attribute ...` /
+    `ValueError` from ctypes the moment a stub carrying these
+    attributes was marshalled -- there was no sheen slot to set.  See
+    the fix commit message for the captured traceback."""
+
+    def test_no_sheen_sends_null_and_zero(self):
+        payload = _handle()._marshal_material(_StubMaterial())
+        self.assertIsNone(payload.sheen_color_painter_name)
+        self.assertAlmostEqual(payload.sheen_roughness, 0.0, places=6)
+        self.assertIsNone(payload.sheen_roughness_texture_painter_name)
+
+    def test_sheen_color_and_numeric_roughness_travel_through(self):
+        payload = _handle()._marshal_material(
+            _StubMaterial(sheen_color_painter_name="mat_sheen_color", sheen_roughness=0.3)
+        )
+        self.assertEqual(payload.sheen_color_painter_name, b"mat_sheen_color")
+        self.assertAlmostEqual(payload.sheen_roughness, 0.3, places=6)
+        self.assertIsNone(payload.sheen_roughness_texture_painter_name)
+
+    def test_textured_sheen_roughness_travels_as_a_painter_name(self):
+        # The one v12 texture exception, mirroring hair's v10
+        # beta_m/beta_n/ior pattern: `sheen_roughness` is a
+        # `fabric_material` IScalarPainter slot, so a texture-driven
+        # value travels as the NAME of a registered colour painter,
+        # which the native side wraps -- not as a raw number.
+        payload = _handle()._marshal_material(
+            _StubMaterial(
+                sheen_color_painter_name="mat_sheen_color",
+                sheen_roughness=0.5,
+                sheen_roughness_texture_painter_name="mat_sheen_rough_tex",
+            )
+        )
+        self.assertEqual(payload.sheen_roughness_texture_painter_name, b"mat_sheen_rough_tex")
+        self.assertAlmostEqual(payload.sheen_roughness, 0.5, places=6)
+
+    def test_a_pre_v12_exporter_payload_still_marshals(self):
+        # `_marshal_material` reads the three v12 fields with getattr
+        # defaults, so an older exporter object that has never heard of
+        # them marshals as "no sheen" rather than raising -- the same
+        # back-compat contract hair's v10 fields established.
+        stub = _StubMaterial()
+        del stub.sheen_color_painter_name
+        del stub.sheen_roughness
+        del stub.sheen_roughness_texture_painter_name
+        payload = _handle()._marshal_material(stub)
+        self.assertIsNone(payload.sheen_color_painter_name)
+        self.assertAlmostEqual(payload.sheen_roughness, 0.0, places=6)
+        self.assertIsNone(payload.sheen_roughness_texture_painter_name)
+
+    def test_sheen_and_emission_travel_through_together(self):
+        # P1 fix (post-DL-18-review, 2026-09-17): the native side used
+        # to fail `add_material` outright for a material combining
+        # Emission Strength > 0 with Sheen Weight > 0 on the SAME
+        # Principled node (see rise_blender_bridge.cpp's
+        # `add_pbr_metallic_roughness_material` fix commit). That bug
+        # lived entirely on the native side -- `sheen_color_painter_name`
+        # and `emission_painter_name` are independent ctypes fields with
+        # no interaction at the marshalling layer -- but there was no
+        # test proving the two travel through TOGETHER, only each in
+        # isolation (this class's other tests, and the base
+        # emission-only coverage elsewhere in this file). This closes
+        # that gap: both fields must reach the payload unmodified when
+        # BOTH are set on one material, so a future marshalling change
+        # can't silently start dropping one when the other is present.
+        payload = _handle()._marshal_material(
+            _StubMaterial(
+                sheen_color_painter_name="mat_sheen_color",
+                sheen_roughness=0.3,
+                emission_painter_name="mat_emission",
+                emissive_scale=2.0,
+            )
+        )
+        self.assertEqual(payload.sheen_color_painter_name, b"mat_sheen_color")
+        self.assertAlmostEqual(payload.sheen_roughness, 0.3, places=6)
+        self.assertEqual(payload.emission_painter_name, b"mat_emission")
+        self.assertAlmostEqual(payload.emissive_scale, 2.0, places=6)
 
 
 class BridgeWarningDecodeTest(unittest.TestCase):

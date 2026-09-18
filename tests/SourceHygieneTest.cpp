@@ -4726,6 +4726,11 @@ int main()
 					// since a wrapper that forwards the flag inherits the
 					// full weight of the "claiming it wrongly is real bias"
 					// warning without ever writing `true` itself.
+					//
+					// DL-23 (docs/DEBT_LEDGER.md) added a FOURTH claimer,
+					// CoatedMaterial.h, in the SAME delegating form -- so it
+					// is already caught by the existing substring match
+					// below; only the expectation list needed widening.
 					if( window.find( "return true" ) != std::string::npos
 					 || window.find( "eWeaveTransmissionThin" ) != std::string::npos
 					 || window.find( "return pBase->ScattersFullSphere" ) != std::string::npos ) {
@@ -4742,16 +4747,18 @@ int main()
 		for( const std::string& c : claimers ) {
 			std::cout << "  full-sphere material: " << c << std::endl;
 		}
-		Check( claimers.size() == 3
-		    && claimers[0] == "FabricMaterial.h"
-		    && claimers[1] == "HairMaterial.h"
-		    && claimers[2] == "WeaveMaterial.h",
+		Check( claimers.size() == 4
+		    && claimers[0] == "CoatedMaterial.h"
+		    && claimers[1] == "FabricMaterial.h"
+		    && claimers[2] == "HairMaterial.h"
+		    && claimers[3] == "WeaveMaterial.h",
 		       "full-sphere NEE: HairMaterial (unconditional), WeaveMaterial (conditional on "
-		       "`transmission thin`, P2-B) and FabricMaterial (DELEGATING -- it is full-sphere "
-		       "exactly when its substrate is, R8 P1.1 / debt 22) are the ONLY materials claiming "
-		       "ScattersFullSphere() -- adding another is a deliberate act that must update this "
-		       "expectation in the same commit (see IMaterial::ScattersFullSphere's doc for what "
-		       "claiming it wrongly costs)" );
+		       "`transmission thin`, P2-B), FabricMaterial and CoatedMaterial (both DELEGATING -- "
+		       "each is full-sphere exactly when its substrate is; DL-23 added CoatedMaterial "
+		       "alongside FabricMaterial's pre-existing R8 P1.1 / debt 22 forwarding) are the ONLY "
+		       "materials claiming ScattersFullSphere() -- adding another is a deliberate act that "
+		       "must update this expectation in the same commit (see IMaterial::ScattersFullSphere's "
+		       "doc for what claiming it wrongly costs)" );
 	}
 
 	// ---- `signals` is written in a CLOSED set of files, and nowhere else ----

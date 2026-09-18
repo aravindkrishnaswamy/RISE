@@ -47,9 +47,85 @@ namespace RISE
 					const Scalar around									///< [in] Perturbation amount in phi
 					);
 
+		//! Perturbs the given vector by `down` in theta, with the azimuth
+		//! drawn UNIFORMLY on the sub-arc for which the result stays in
+		//! the half-space `Dot(result, clipN) > 0`.
+		//!
+		//! This is DL-68's construction (`TranslucentSPFDetail::
+		//! SampleClippedPhong`, TranslucentSPF.cpp, which carries the full
+		//! derivation), written as a SECOND implementation so DL-111's
+		//! callers can reuse it for
+		//! lobes whose POLAR marginal is not `cos^N` -- `DielectricSPF`'s
+		//! `scattering` warp draws its `down` from either a Phong
+		//! `cos^N` inverse CDF or a Henyey-Greenstein one.  The
+		//! construction does not care: ANY lobe that is azimuthally
+		//! uniform about `vec` at fixed `down` has a clipped conditional
+		//! that is still uniform in azimuth (the clip is a plane through
+		//! the origin and the lobe is azimuthally symmetric), so drawing
+		//! the azimuth uniformly on the valid arc
+		//!
+		//!     halfArc = PI                             if cot(down)cot(phi) >= 1
+		//!             = acos( -cot(down)cot(phi) )     otherwise,
+		//!
+		//! with `phi` the angle between `vec` and `clipN`, is EXACT, uses
+		//! exactly ONE canonical number, and renormalizes the
+		//! clipped-away energy into the valid region rather than dropping
+		//! it.  The caller composes its own density by scaling its
+		//! unclipped azimuth-marginal `1/(2 PI)` to `1/(2 halfArc)`
+		//! (`outHalfArc` reports it); a caller whose lobe is treated as a
+		//! delta (pdf 1) simply ignores it.
+		//!
+		//! The two are deliberately NOT folded into one:
+		//! `SampleClippedPhong` draws `cos(theta)` from its own `cos^N`
+		//! inverse CDF and has that VALUE in hand, while this one takes an
+		//! ANGLE (its callers' marginals hand it one), so delegating would
+		//! insert an `acos`/`cos` round trip into a path whose untilted
+		//! branch is pinned bit-for-bit by `TranslucentSpectralParityTest`.
+		//! **A change to the arc math belongs in BOTH.**
+		//!
+		//! THREE PRECONDITIONS, all checked and reported (review P3,
+		//! 2026-09-17 -- only the first was documented before, and the
+		//! other two failed SILENTLY):
+		//!
+		//!  1. `Dot(vec, clipN) >= 0` -- the axis must already be inside
+		//!     the half-space, or the valid arc can be empty.  Callers
+		//!     orient it first (`OrientedLobeAxis`, or a re-derivation
+		//!     about the clip normal itself).
+		//!  2. `clipN` must be UNIT.  It is read as a cosine, so a
+		//!     non-unit `clipN` scales that cosine -- and at `|clipN| > 1`
+		//!     the internal `min(1, .)` clamp then reports `cos(phi) == 1`
+		//!     / `sin(phi) == 0`, which SILENTLY DISABLES the clip and
+		//!     draws the full circle.  A non-unit normal is now
+		//!     normalized with a warning (the treatment
+		//!     `Optics::CalculateRefractedRay` gives its own inputs); a
+		//!     degenerate one returns the axis unperturbed.
+		//!  3. `down` must leave a non-empty arc.  At `down > PI/2` the
+		//!     cone can lie ENTIRELY outside the half-space, and the
+		//!     arc-half-width `acos(-cot(down)cot(phi))` is then `acos`
+		//!     of an argument `> 1`: a NaN that propagates into the
+		//!     returned DIRECTION.  Production never reaches it (every
+		//!     caller gates `down < PI/2`); it is now detected and
+		//!     returns the axis unperturbed with `outHalfArc = 0`.
+		//!
+		//! On any of the three the function returns `vec` UNPERTURBED and
+		//! sets `outHalfArc` to 0, so a caller that checks it can skip the
+		//! emit rather than trust a manufactured direction.
+		//!
+		//! When the clip is inactive at this `down` (the whole cone is
+		//! valid), `outHalfArc` is exactly PI and the draw covers the full
+		//! circle.
+		/// \return Perturbed vector, guaranteed to satisfy the clip
+		extern Vector3 PerturbClipped(
+					const Vector3& vec,									///< [in] Vector to perturb (must satisfy Dot(vec,clipN) >= 0)
+					const Scalar down,									///< [in] Perturbation amount in theta
+					const Vector3& clipN,								///< [in] Half-space normal the result must satisfy
+					const Scalar u,										///< [in] One canonical random number
+					Scalar* outHalfArc = 0								///< [out] Optional: half-width of the valid azimuth arc
+					);
+
 		//! Generates a random point on a sphere
 		/// \return Point on sphere
-		extern Point3 PointOnSphere( 
+		extern Point3 PointOnSphere(
 					const Point3& ptCenter,								///< [in] Center of the sphere
 					const Scalar radius,								///< [in] Radius of the sphere
 					const Point2& coord									///< [in] Two canonical random numbers
@@ -261,6 +337,34 @@ namespace RISE
 					const Scalar v										///< [in] Evaluation parameter v
 					);
 
+		//! DL-20: public accessors for the per-axis tangents BilinearPatchNormalAt
+		//! already computes internally (RISE's OWN `BilinearPatch` corner
+		//! convention -- see BilinearPatchSecondDerivUV's comment).  dP/du
+		//! depends only on v (and vice versa) because a bilinear surface is
+		//! affine along each parameter held fixed.
+		extern Vector3 BilinearPatchTangentU(
+					const BilinearPatch& patch,							///< [in] The bilinear patch
+					const Scalar v										///< [in] Evaluation parameter v
+					);
+		extern Vector3 BilinearPatchTangentV(
+					const BilinearPatch& patch,							///< [in] The bilinear patch
+					const Scalar u										///< [in] Evaluation parameter u
+					);
+
+		//! DL-20: the second mixed partial derivative d2P/dudv of a bilinear
+		//! patch, in RISE's OWN `BilinearPatch` corner convention (pts[0] ->
+		//! (u,v)=(0,0), pts[1] -> (0,1), pts[2] -> (1,0), pts[3] -> (1,1) --
+		//! matching EvaluateBilinearPatchAt / BilinearPatchNormalAt above,
+		//! NOT the canonical (c00,c10,c11,c01) helpers below).  A bilinear
+		//! surface's own P(u,v) is affine in u and in v separately, so
+		//! d2P/du2 = d2P/dv2 = 0 identically and this "saddle term" (constant
+		//! over the whole patch) is the ENTIRE second-derivative data the
+		//! shape operator needs -- see SurfaceCurvature::
+		//! ShapeOperatorFromSecondDerivatives.
+		extern Vector3 BilinearPatchSecondDerivUV(
+					const BilinearPatch& patch							///< [in] The bilinear patch
+					);
+
 		// =========================================================================
 		// Convention-agnostic bilinear-surface utilities.
 		//
@@ -396,6 +500,29 @@ namespace RISE
 		//! normalize.  At degenerate points (coincident tangents) may return
 		//! the zero vector.
 		extern Vector3 BezierPatchNormalAt(
+					const BezierPatch& patch,							///< [in] The bezier patch
+					const Scalar u,										///< [in] Evaluation parameter u
+					const Scalar v										///< [in] Evaluation parameter v
+					);
+
+		//! DL-20: second partial derivatives of a bicubic Bezier patch, for
+		//! the shape operator (see SurfaceCurvature::ShapeOperatorFromSecondDerivatives).
+		//! Same Bernstein-basis convention as EvaluateBezierPatchAt / the
+		//! tangent functions above -- these are the analogous second
+		//! derivatives of the SAME sum, obtained by differentiating the
+		//! Bernstein basis twice (d2Pduu), once each way (d2Pduv), or twice
+		//! in v (d2Pdvv).
+		extern Vector3 BezierPatchSecondDerivUU(
+					const BezierPatch& patch,							///< [in] The bezier patch
+					const Scalar u,										///< [in] Evaluation parameter u
+					const Scalar v										///< [in] Evaluation parameter v
+					);
+		extern Vector3 BezierPatchSecondDerivUV(
+					const BezierPatch& patch,							///< [in] The bezier patch
+					const Scalar u,										///< [in] Evaluation parameter u
+					const Scalar v										///< [in] Evaluation parameter v
+					);
+		extern Vector3 BezierPatchSecondDerivVV(
 					const BezierPatch& patch,							///< [in] The bezier patch
 					const Scalar u,										///< [in] Evaluation parameter u
 					const Scalar v										///< [in] Evaluation parameter v
