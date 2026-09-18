@@ -68,14 +68,18 @@
 //  what the MIS ratio chain treats as one density.  Section 3 shows
 //  the two disagree by a wide margin on real draws.
 //
-//  Reference-value caveat (deliberate, do not "fix"): `SchlickSPF`'s
-//  `kray` is the Schlick-1994 sampling weight, which equals
-//  `f_I cos / p_I` only approximately -- tests/SPFBSDFConsistencyTest.cpp
-//  documents the resulting MC-vs-quadrature gap for this material
-//  (2.1% at 30 deg, 12.7% at 60 deg) and carries a 15% tolerance for
-//  it.  That gap is a property of the material, NOT of DL-69, so this
-//  test bands (a) against Q at that same 15% and puts its tight
-//  assertions on the RATIO (c)/(a), which the gap cancels out of.
+//  Reference-value note (UPDATED 2026-09-17, DL-127 CLOSED): this block
+//  used to read "`SchlickSPF`'s `kray` is the Schlick-1994 sampling
+//  weight, which equals `f_I cos / p_I` only approximately ... a
+//  property of the material, NOT of DL-69", and banded (a) against Q at
+//  25%.  That gap was NOT a property of the material: it was DL-127,
+//  and it is fixed -- `SchlickSPF`'s specular `kray` is now that lobe's
+//  own `f_S cos / p_S` (docs/DL127_SCHLICK_KRAY_VS_BRDF.md).  Estimator
+//  (a) consequently lands ON Q at every incidence (1.00001 / 1.00014 /
+//  1.00085 at 0 / 30 / 60 deg, against 1.00001 / 0.96142 / 0.80224
+//  before), and its band below is tightened from 0.25 to 0.01.  The
+//  tight assertions on the RATIO (c)/(a) are kept as-is -- they were
+//  always the load-bearing ones for DL-69.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -494,24 +498,31 @@ int main()
 		Check( m.meanLobeCount > 1.5,
 			std::string( "two overlapping non-delta lobes on most draws: " ) + labels[t] );
 
-		// (a) is the material's own sampling convention; it tracks the
-		// BRDF quadrature only to within the Schlick-1994 model gap
-		// SPFBSDFConsistencyTest already documents (it bands that
-		// material at 15% for roughness 0.3; at the roughness 0.5 used
-		// here the measured gap reaches 20% at 60 deg).  This band is
-		// deliberately loose -- the tight assertion is the (c)/(a)
-		// ratio below, which the model gap cancels out of.
-		Check( std::fabs( m.meanPerLobe / Q - 1.0 ) < 0.25,
-			std::string( "(a) per-lobe pairing integrates f_agg*cos within the "
-			             "documented Schlick model gap: " ) + labels[t] );
+		// (a) is the material's own sampling convention, and since
+		// DL-127 it is EXACT in expectation: `sum_I int p_I kray_I dw`
+		// with `kray_I = f_I cos / p_I` is `int f_agg cos dw` = Q.
+		// Measured 1.00001 / 1.00014 / 1.00085 at 0 / 30 / 60 deg (the
+		// drift with incidence is this call's own MC error on a
+		// heavier grazing tail, not a residual convention error -- the
+		// per-draw identity is exact to 1e-9 in
+		// tests/SchlickKrayBRDFConsistencyTest.cpp section 1).
+		Check( std::fabs( m.meanPerLobe / Q - 1.0 ) < 0.01,
+			std::string( "(a) per-lobe pairing integrates f_agg*cos (DL-127): " ) + labels[t] );
 
 		// (b) is NOT exact against the real `SchlickSPF::Pdf` -- see the
 		// comment on `sumB` above.  The 24x50000-draw replicate resolves
 		// a real systematic residual from this call's own MC noise
-		// (measured on this branch, round-2 review P2-1): 0 deg z=+389
-		// (mean 1.010486 +/- 0.000027), 30 deg z=-25 (mean 0.997092 +/-
-		// 0.000114), 60 deg z=-0.4 (mean 0.999922 +/- 0.000186,
-		// consistent with zero).  The largest residual measured here is
+		// (RE-MEASURED 2026-09-17 after DL-127, which changed the shape
+		// of the integrand `C_D`'s quadrature averages): 0 deg z=+389.0
+		// (mean 1.010486 +/- 0.000027), 30 deg z=-31.2 (mean 0.997799
+		// +/- 0.000070), 60 deg z=-9.5 (mean 0.998725 +/- 0.000135).
+		// The 0-deg figure is BIT-IDENTICAL to the pre-DL-127 reading,
+		// which is what the derivation predicts: DL-127's ratio is
+		// identically 1 over the whole lobe at normal incidence with
+		// isotropy 1, so it cannot have moved that row.  The pre-DL-127
+		// 30/60-deg readings were 0.997092 +/- 0.000114 (z=-25) and
+		// 0.999922 +/- 0.000186 (z=-0.4).
+		// The largest residual measured here is
 		// ~1.1%, the same order as `SchlickSPFPdfConsistencyTest`'s own
 		// residual for the same `Pdf()` implementation (that file's mass
 		// gate is `kMassTol=0.01`, widened to 0.015 on two low-roughness

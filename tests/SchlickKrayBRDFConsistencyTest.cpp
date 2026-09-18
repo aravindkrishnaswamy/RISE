@@ -74,6 +74,18 @@
 #include "../src/Library/Painters/RGBScalarPainter.h"
 #include "../src/Library/Materials/SchlickSPF.h"
 #include "../src/Library/Materials/SchlickBRDF.h"
+#include "../src/Library/Materials/CookTorranceSPF.h"
+#include "../src/Library/Materials/CookTorranceBRDF.h"
+#include "../src/Library/Materials/GGXSPF.h"
+#include "../src/Library/Materials/GGXBRDF.h"
+#include "../src/Library/Materials/WardIsotropicGaussianSPF.h"
+#include "../src/Library/Materials/WardIsotropicGaussianBRDF.h"
+#include "../src/Library/Materials/WardAnisotropicEllipticalGaussianSPF.h"
+#include "../src/Library/Materials/WardAnisotropicEllipticalGaussianBRDF.h"
+#include "../src/Library/Materials/IsotropicPhongSPF.h"
+#include "../src/Library/Materials/IsotropicPhongBRDF.h"
+#include "../src/Library/Materials/AshikminShirleyAnisotropicPhongSPF.h"
+#include "../src/Library/Materials/AshikminShirleyAnisotropicPhongBRDF.h"
 #include "TestStubObject.h"
 
 using namespace RISE;
@@ -400,6 +412,73 @@ static double SchlickImpliedBRDF(
 	return S * t * Z * pphi / ( 2.0 * nl * hv );
 }
 
+//! Section 6's generic probe.  `specularOnly` selects the multi-emit
+//! contract (one lobe's own `.pdf`, diffuse painter black so `value()`
+//! IS that lobe) from the single-emit one (aggregate `.pdf`, full
+//! `value()`).
+static RatioStat MeasureAnyPairRatio(
+	ISPF& spf,
+	const IBSDF& brdf,
+	const RayIntersectionGeometric& ri,
+	ISampler& sampler,
+	const IORStack& iorStack,
+	unsigned int nDraws,
+	bool specularOnly )
+{
+	RatioStat st{};
+	st.minR = 1e300;
+	st.maxR = -1e300;
+
+	const Vector3 n = ri.onb.w();
+	double sum = 0;
+
+	for( unsigned int s = 0; s < nDraws; s++ )
+	{
+		ScatteredRayContainer scattered;
+		spf.Scatter( ri, sampler, scattered, iorStack );
+
+		for( unsigned int i = 0; i < scattered.Count(); i++ )
+		{
+			const ScatteredRay& sr = scattered[i];
+			if( sr.isDelta || sr.pdf <= 0 ) {
+				continue;
+			}
+			if( specularOnly && sr.type != ScatteredRay::eRayReflection ) {
+				continue;
+			}
+
+			const Vector3 wo = Vector3Ops::Normalize( sr.ray.Dir() );
+			const double cosO = Vector3Ops::Dot( wo, n );
+			if( cosO <= 0 ) {
+				continue;
+			}
+
+			const double fI = ColorMath::MaxValue( brdf.value( wo, ri ) );
+			const double krayI = ColorMath::MaxValue( sr.kray );
+			if( fI <= 0 || krayI <= 0 ) {
+				continue;
+			}
+
+			const double ratio = ( krayI * sr.pdf ) / ( fI * cosO );
+			if( !std::isfinite( ratio ) ) {
+				continue;
+			}
+
+			sum += ratio;
+			if( ratio < st.minR ) st.minR = ratio;
+			if( ratio > st.maxR ) st.maxR = ratio;
+			st.n++;
+		}
+	}
+
+	if( st.n == 0 ) {
+		st.minR = st.maxR = 0;
+		return st;
+	}
+	st.mean = sum / double( st.n );
+	return st;
+}
+
 int main()
 {
 	GlobalLog();
@@ -563,7 +642,7 @@ int main()
 				// worst cell measures 0.0059 (rho=0.9, roughness=0.3,
 				// isotropy=1.0, 80 deg) -- the grazing tail is heavy
 				// because `kray` now carries the model's own unbounded
-				// 1/(n.v) growth (see DL-177), so this row is the noisiest
+				// 1/(n.v) growth (see DL-178), so this row is the noisiest
 				// in the suite; the sign of the residual is not systematic
 				// across the grid, which is what distinguishes it from a
 				// real convention error.
@@ -729,6 +808,120 @@ int main()
 		rs->release();
 		rough->release();
 		iso->release();
+	}
+
+	//----------------------------------------------------------------
+	// SECTION 6 -- SIBLING AUDIT (DL-177, REPORTING ONLY, NOT GATED).
+	//
+	// "Is this SPF's `kray` the transport weight its own paired BSDF
+	// implies?" asked of every other SPF/BRDF pair in the tree, with the
+	// same probe section 1 uses.  The contract differs by sampler shape:
+	//
+	//   * MULTI-EMIT SPFs (one `ScatteredRay` per lobe, each with its
+	//     OWN `.pdf`) owe `kray_I * p_I == f_I cos` per lobe -- the
+	//     diffuse painter is BLACK so `value()` reduces to the specular
+	//     term and `f_I` is directly readable, exactly as in section 1.
+	//   * SINGLE-EMIT SPFs (one `ScatteredRay` whose `.pdf` is the
+	//     AGGREGATE `mixPdf`; DL-69 lists `GGXSPF` and `CookTorranceSPF`)
+	//     owe `kray * p_agg == f_agg cos` -- so the diffuse painter stays
+	//     lit and the full `value()` is the reference.
+	//
+	// Measured verdicts (2026-09-17, printed below so they stay live):
+	//
+	//   IsotropicPhongSPF                       1.000000 exactly, all 4 angles -- IMMUNE
+	//   AshikminShirleyAnisotropicPhongSPF      1.000000 exactly, all 4 angles -- IMMUNE
+	//   CookTorranceSPF (single-emit)           mean 0.999-1.006  -- IMMUNE
+	//   GGXSPF (single-emit)                    mean 0.990-1.002  -- IMMUNE
+	//   WardIsotropicGaussianSPF                mean 1.10 / 1.39 / 2.95 / 5.88  -- SAME DEFECT
+	//   WardAnisotropicEllipticalGaussianSPF    mean 1.06 / 1.32 / 2.97 / 6.07  -- SAME DEFECT
+	//
+	// The two single-emit rows are not pointwise 1 and are not supposed
+	// to be: their `kray` is the INTERNAL-selection estimator
+	// `f_I cos / (p_agg * pSelect_I)`, whose expectation over that
+	// internal choice is `f_agg cos / p_agg` -- which is why their MEAN
+	// lands on 1 while individual draws span [0.006, 37].
+	//
+	// These rows are PRINTED, not gated.  Closing the two Ward rows
+	// needs the same TWO-SIDED change DL-127 needed (`kray` AND the
+	// selection weights `Ward*::Pdf` is built on -- and Ward's `Pdf` is
+	// a raw-albedo mixture precisely BECAUSE its krays are currently
+	// direction-independent, so it would need the DL-67/DL-98/DL-99
+	// aggregate construction built for it), plus an answer for the
+	// unbounded `1/sqrt(nl nv)` tail the corrected weight would carry
+	// (max 685x / 1085x per draw at 80 degrees, below).  That is
+	// DL-177, deliberately out of this slice.  Gated here only on "the
+	// probe actually ran".
+	//----------------------------------------------------------------
+	std::cout << std::endl
+	          << "-- Section 6: SIBLING AUDIT (DL-177, reporting only): "
+	             "kray * pdf / (f cos) for every other SPF/BRDF pair" << std::endl;
+	{
+		UniformColorPainter*  lit    = new UniformColorPainter( RISEPel( 0.2, 0.2, 0.2 ) ); lit->addref();
+		UniformColorPainter*  spec   = new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) ); spec->addref();
+		UniformScalarPainter* alpha  = new UniformScalarPainter( 0.3 );  alpha->addref();
+		UniformScalarPainter* alphaY = new UniformScalarPainter( 0.12 ); alphaY->addref();
+		UniformScalarPainter* iorSc  = new UniformScalarPainter( 1.5 );  iorSc->addref();
+		UniformScalarPainter* extSc  = new UniformScalarPainter( 0.0 );  extSc->addref();
+		UniformScalarPainter* expSc  = new UniformScalarPainter( 40.0 ); expSc->addref();
+		UniformScalarPainter* nuSc   = new UniformScalarPainter( 100.0 ); nuSc->addref();
+		UniformScalarPainter* nvSc   = new UniformScalarPainter( 20.0 );  nvSc->addref();
+
+		// MULTI-EMIT (per-lobe `.pdf`): probe the specular lobe with a
+		// black diffuse painter.
+		WardIsotropicGaussianSPF*  wiS = new WardIsotropicGaussianSPF( *black, *spec, *alpha ); wiS->addref();
+		WardIsotropicGaussianBRDF* wiB = new WardIsotropicGaussianBRDF( *black, *spec, *alpha ); wiB->addref();
+		WardAnisotropicEllipticalGaussianSPF*  waS = new WardAnisotropicEllipticalGaussianSPF( *black, *spec, *alpha, *alphaY ); waS->addref();
+		WardAnisotropicEllipticalGaussianBRDF* waB = new WardAnisotropicEllipticalGaussianBRDF( *black, *spec, *alpha, *alphaY ); waB->addref();
+		IsotropicPhongSPF*  ipS = new IsotropicPhongSPF( *black, *spec, *expSc ); ipS->addref();
+		IsotropicPhongBRDF* ipB = new IsotropicPhongBRDF( *black, *spec, *expSc ); ipB->addref();
+		AshikminShirleyAnisotropicPhongSPF*  asS = new AshikminShirleyAnisotropicPhongSPF( *nuSc, *nvSc, *black, *spec ); asS->addref();
+		AshikminShirleyAnisotropicPhongBRDF* asB = new AshikminShirleyAnisotropicPhongBRDF( *nuSc, *nvSc, *black, *spec ); asB->addref();
+
+		// SINGLE-EMIT (aggregate `.pdf`): probe every non-delta ray
+		// against the FULL `value()`, diffuse lit.
+		CookTorranceSPF*  ctS = new CookTorranceSPF( *lit, *spec, *alpha, *iorSc, *extSc ); ctS->addref();
+		CookTorranceBRDF* ctB = new CookTorranceBRDF( *lit, *spec, *alpha, *iorSc, *extSc ); ctB->addref();
+		GGXSPF*  ggS = new GGXSPF( *lit, *spec, *alpha, *alpha, *iorSc, *extSc ); ggS->addref();
+		GGXBRDF* ggB = new GGXBRDF( *lit, *spec, *alpha, *alpha, *iorSc, *extSc ); ggB->addref();
+
+		struct AuditEntry { const char* name; ISPF* spf; IBSDF* brdf; bool specularOnly; };
+		const AuditEntry audit[] = {
+			{ "SchlickSPF (this row's subject, FIXED)", 0, 0, true },	// filled below
+			{ "WardIsotropicGaussianSPF",               wiS, wiB, true },
+			{ "WardAnisotropicEllipticalGaussianSPF",   waS, waB, true },
+			{ "IsotropicPhongSPF",                      ipS, ipB, true },
+			{ "AshikminShirleyAnisotropicPhongSPF",     asS, asB, true },
+			{ "CookTorranceSPF (single-emit)",          ctS, ctB, false },
+			{ "GGXSPF (single-emit)",                   ggS, ggB, false },
+		};
+
+		// The control row: the fixed SchlickSPF at the same settings.
+		SchlickSPF*  scS = new SchlickSPF(  *black, *spec, *alpha, *nuSc ); scS->addref();
+		SchlickBRDF* scB = new SchlickBRDF( *black, *spec, *alpha, *nuSc ); scB->addref();
+
+		for( int e = 0; e < 7; e++ ) {
+			ISPF*  spfP  = ( e == 0 ) ? (ISPF*)scS  : audit[e].spf;
+			IBSDF* brdfP = ( e == 0 ) ? (IBSDF*)scB : audit[e].brdf;
+			std::cout << "   " << audit[e].name << std::endl;
+			for( int d = 0; d < 4; d++ ) {
+				const RayIntersectionGeometric ri = MakeIntersection( degs[d] * PI / 180.0 );
+				const RatioStat st = MeasureAnyPairRatio( *spfP, *brdfP, ri, sampler, iorStack,
+				                                          20000, audit[e].specularOnly );
+				std::cout << "      theta=" << std::setw(4) << std::setprecision(1) << degs[d]
+				          << "   mean " << std::setprecision(6) << std::setw(10) << st.mean
+				          << "   [min " << st.minR << ", max " << st.maxR << "]"
+				          << "   (n=" << st.n << ")" << std::endl;
+				Check( st.n > 1000,
+					std::string( "Section 6: sibling probe produced draws: " ) + audit[e].name );
+			}
+		}
+
+		scS->release(); scB->release();
+		wiS->release(); wiB->release(); waS->release(); waB->release();
+		ipS->release(); ipB->release(); asS->release(); asB->release();
+		ctS->release(); ctB->release(); ggS->release(); ggB->release();
+		lit->release(); spec->release(); alpha->release(); alphaY->release();
+		iorSc->release(); extSc->release(); expSc->release(); nuSc->release(); nvSc->release();
 	}
 
 	black->release();

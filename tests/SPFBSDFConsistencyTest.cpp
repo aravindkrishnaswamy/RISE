@@ -1159,17 +1159,26 @@ int main()
         //--------------------------------------------------------------
         // Schlick BRDF (Schlick 1994 approximation)
         //
-        // At grazing incidence (60°+) the denominator in the specular
-        // term  Z = r / (r·t² + 1 - t²)²  shrinks, amplifying the
-        // specular lobe relative to the SPF importance sampling weights.
-        // The quadrature integral then overshoots the MC estimate by
-        // ~13%.  This is a known limitation of the Schlick approximation
-        // at grazing angles, not a sampling bug.
+        // DL-127 (CLOSED 2026-09-17,
+        // docs/DL127_SCHLICK_KRAY_VS_BRDF.md).  This entry used to carry
+        // a 15% tolerance and this explanation: "At grazing incidence
+        // (60+) the denominator in the specular term Z shrinks,
+        // amplifying the specular lobe relative to the SPF importance
+        // sampling weights ... a known limitation of the Schlick
+        // approximation at grazing angles, not a sampling bug.
+        // Observed: 2.1% @ 30, 12.7% @ 60."  It WAS a sampling bug:
+        // `SchlickSPF`'s specular `kray` was Schlick's sampling weight
+        // rather than that lobe's own `f_S cos / p_S`, so the MC sum and
+        // the quadrature were integrating two different BRDFs.  With
+        // `kray` fixed the two agree at the level of every other
+        // well-behaved material here.
         //
-        // Observed: 2.1% @ 30°, 12.7% @ 60°.  Tolerance set to 15%
-        // to cover 60° with headroom.
+        // Observed after: 0.1253% @ 30, 0.1578% @ 60.  Tolerance 1%,
+        // ~6x headroom over the measured worst case -- deliberately not
+        // tighter, since the grazing tail this integrand now carries
+        // (DL-177) makes the MC arm the noisiest of the paired entries.
         //--------------------------------------------------------------
-        { "Schlick",                           schlickSPF,      schlickBRDF,        false, 0.15 },
+        { "Schlick",                           schlickSPF,      schlickBRDF,        false, 0.01 },
 
         //--------------------------------------------------------------
         // Ward Isotropic Gaussian BRDF (Ward 1992)
