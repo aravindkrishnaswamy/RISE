@@ -140,6 +140,42 @@ namespace RISE
 			return PathVertexEval::EvalPdfAtVertexNM( vertex, wi, wo, tag.nm );
 		}
 
+		//////////////////////////////////////////////////////////////
+		// Context-carrying twins.  Same dispatch, same semantics; the
+		// caller supplies a `PathVertexEval::VertexPdfContext` built
+		// once for a vertex so that several queries at that ONE vertex
+		// share a single reconstructed RayIntersectionGeometric and
+		// IORStack.  See that class's comment for the contract (it
+		// holds a reference to the vertex; it must not outlive it).
+		//////////////////////////////////////////////////////////////
+
+		template<class Tag>
+		Scalar EvalPdfAtVertex(
+			PathVertexEval::VertexPdfContext& ctx,
+			const Vector3& wi,
+			const Vector3& wo,
+			const Tag& tag );
+
+		template<>
+		inline Scalar EvalPdfAtVertex<PelTag>(
+			PathVertexEval::VertexPdfContext& ctx,
+			const Vector3& wi,
+			const Vector3& wo,
+			const PelTag& /*tag*/ )
+		{
+			return PathVertexEval::EvalPdfAtVertex( ctx, wi, wo );
+		}
+
+		template<>
+		inline Scalar EvalPdfAtVertex<NMTag>(
+			PathVertexEval::VertexPdfContext& ctx,
+			const Vector3& wi,
+			const Vector3& wo,
+			const NMTag& tag )
+		{
+			return PathVertexEval::EvalPdfAtVertexNM( ctx, wi, wo, tag.nm );
+		}
+
 		// Note: no Scale() helpers here.  Both RISEPel and Scalar
 		// already support operator*(Scalar), so templated code can
 		// write `v * s` directly.  A `Scale` free function would

@@ -3082,10 +3082,20 @@ namespace {
 			// `pdfDirectionIn` training input (see this file's
 			// `segment->pdfDirectionIn` store), which wants the true
 			// sampling density -- role 1, not role 2.
+			// Both of this block's density queries -- this vertex's own
+			// `pdfFwd` and the predecessor's `pdfRev` -- are evaluated at
+			// THIS vertex, differing only in which of the two directions
+			// plays `wi`.  One context reconstructs the record and IOR
+			// stack once and both share it (review P2-5; the duplicated
+			// rebuild was measurable on an all-multi-lobe BDPT render).
+			// It holds a reference to `vertices.back()`, and nothing
+			// between here and its last use pushes to `vertices`.
+			PathVertexEval::VertexPdfContext pdfCtx( vertices.back() );
+
 			pdfFwdPrev = scatterPdf;
 			if( !pScat->isDelta ) {
 				const Scalar misFwdPdf = PathValueOps::EvalPdfAtVertex<Tag>(
-					vertices.back(), -currentRay.Dir(), scatDir, tag );
+					pdfCtx, -currentRay.Dir(), scatDir, tag );
 				if( misFwdPdf > NEARZERO ) {
 					pdfFwdPrev = misFwdPdf;
 				}
@@ -3098,12 +3108,11 @@ namespace {
 
 			// Update previous vertex's pdfRev
 			if( vertices.size() >= 2 ) {
-				const BDPTVertex& curr = vertices.back();
 				BDPTVertex& prev = vertices[ vertices.size() - 2 ];
 
 				// Reverse PDF: returns 0 for delta interactions, handled by remap0 in MISWeight.
 				const Scalar revPdfSA = PathValueOps::EvalPdfAtVertex<Tag>(
-					curr,
+					pdfCtx,
 					scatDir,
 					-currentRay.Dir(),
 					tag );
@@ -6916,10 +6925,15 @@ unsigned int GenerateLightSubpathImpl(
 		// the realization-dependent sampling density and belongs only
 		// to `guidingPdfDirectionIn` (set above, unchanged -- OpenPGL
 		// training input).
+		// One shared reconstruction for both density queries at this
+		// vertex -- see the eye generator's twin block for the rationale
+		// and the lifetime contract (review P2-5).
+		PathVertexEval::VertexPdfContext pdfCtx( vertices.back() );
+
 		pdfFwdPrev = selectProb * effectivePdf;
 		if( !pScat->isDelta ) {
 			const Scalar misFwdPdf = PathValueOps::EvalPdfAtVertex<Tag>(
-				vertices.back(), -currentRay.Dir(), scatDir, tag );
+				pdfCtx, -currentRay.Dir(), scatDir, tag );
 			if( misFwdPdf > NEARZERO ) {
 				pdfFwdPrev = misFwdPdf;
 			}
@@ -6933,7 +6947,6 @@ unsigned int GenerateLightSubpathImpl(
 		// Update the previous vertex's pdfRev
 		// pdfRev of vertex[n-1] = pdf of sampling the reverse direction at vertex[n]
 		if( vertices.size() >= 2 ) {
-			const BDPTVertex& curr = vertices.back();
 			BDPTVertex& prev = vertices[ vertices.size() - 2 ];
 
 			// Reverse PDF: EvalPdfAtVertex returns 0 for delta interactions
@@ -6941,7 +6954,7 @@ unsigned int GenerateLightSubpathImpl(
 			// remap0 in MISWeight maps the zero to 1 so the ratio chain
 			// propagates through delta vertices without dying.
 			const Scalar revPdfSA = PathValueOps::EvalPdfAtVertex<Tag>(
-				curr,
+				pdfCtx,
 				scatDir,
 				-currentRay.Dir(),
 				tag

@@ -308,8 +308,159 @@ namespace RISE
 		}
 
 		//////////////////////////////////////////////////////////////////////
+		// VertexPdfContext
+		//
+		// The reconstructed evaluation state of ONE vertex, shared across
+		// the several `EvalPdfAtVertex` / `EvalPdfAtVertexNM` queries a
+		// caller makes at that same vertex.
+		//
+		// WHY.  `EvalPdfAtVertex` has to rebuild a
+		// `RayIntersectionGeometric` (via `PopulateRIGFromVertex`, which
+		// copies the whole surface-state block including `onb`,
+		// `derivatives`, `signals` and `txFootprint`) and an `IORStack`
+		// from the stored vertex before it can ask the SPF anything.
+		// Since DL-69 both subpath generators query the SAME vertex TWICE
+		// per non-delta scatter -- once for this vertex's own `pdfFwd`
+		// (wi = -incoming, wo = scattered) and once for the predecessor's
+		// `pdfRev` (the same two directions with their roles swapped) --
+		// so that rebuild ran twice per vertex per subpath.  Measured on
+		// an all-`schlick_material` 256x256 / 256-spp BDPT render, the
+		// duplicated rebuild is worth a few percent of whole-render CPU.
+		//
+		// WHAT IS SHARED AND WHAT IS NOT.  Everything
+		// `PopulateRIGFromVertex` writes, plus the IOR stack, is a
+		// function of the VERTEX alone and is built once.  The record's
+		// `ray` is NOT: it encodes `wi` (the SPFs read `ri.ray.Dir()` to
+		// anchor their geometric frame), so it is re-aimed per query by
+		// `RecordFor`.  A context is therefore only valid while the
+		// vertex it was built from is alive and unmodified -- it stores a
+		// reference, so it must not outlive a `push_back` that could
+		// reallocate the vertex array.
+		//
+		// The state is built LAZILY, on the first query that actually
+		// needs it, so a vertex that short-circuits (MEDIUM, no material,
+		// BSSRDF entry, or a material with no SPF) pays nothing -- the
+		// same early-outs the standalone functions have always had.
+		//////////////////////////////////////////////////////////////////////
+		class VertexPdfContext
+		{
+		public:
+			explicit VertexPdfContext( const BDPTVertex& vertex ) :
+			  m_vertex( vertex ),
+			  m_ri( Ray( vertex.position, Vector3( 0, 0, 1 ) ), nullRasterizerState ),
+			  m_stack( 1.0 ),
+			  m_pSPF( 0 ),
+			  m_built( false )
+			{}
+
+			//! The vertex this context was built from.
+			inline const BDPTVertex& Vertex() const { return m_vertex; }
+
+			//! The vertex's SPF, or null when it has no material or the
+			//! material has no SPF.  Builds the shared record and IOR
+			//! stack on the first call that returns non-null.
+			inline const ISPF* PrepareSPF()
+			{
+				if( !m_built ) {
+					m_built = true;
+					if( m_vertex.pMaterial ) {
+						m_pSPF = m_vertex.pMaterial->GetSPF();
+					}
+					if( m_pSPF ) {
+						PopulateRIGFromVertex( m_vertex, m_ri );
+						BuildVertexIORStack( m_vertex, m_stack );
+					}
+				}
+				return m_pSPF;
+			}
+
+			//! The shared record, re-aimed for this query's `wi`.  Only
+			//! call after `PrepareSPF()` returned non-null.
+			inline RayIntersectionGeometric& RecordFor( const Vector3& wi )
+			{
+				m_ri.ray = Ray( m_vertex.position, -wi );
+				return m_ri;
+			}
+
+			inline const IORStack& Stack() const { return m_stack; }
+
+		private:
+			// Non-copyable: it holds a reference and a heavy record, and
+			// every use is a short-lived local.
+			VertexPdfContext( const VertexPdfContext& );
+			VertexPdfContext& operator=( const VertexPdfContext& );
+
+			const BDPTVertex&			m_vertex;
+			RayIntersectionGeometric	m_ri;
+			IORStack					m_stack;
+			const ISPF*					m_pSPF;
+			bool						m_built;
+		};
+
+		//////////////////////////////////////////////////////////////////////
 		// RGB PDF Evaluation
 		//////////////////////////////////////////////////////////////////////
+
+		/// The vertex kinds whose sampling PDF needs no reconstructed
+		/// record at all.  Shared by the Pel and NM evaluators and by both
+		/// their context-carrying and standalone forms, so the standalone
+		/// form never builds a `VertexPdfContext` (and therefore never a
+		/// `RayIntersectionGeometric`) for a vertex that would not use it
+		/// -- which is what the pre-context code did.  The three cases are
+		/// wavelength-independent, which is why one helper serves both.
+		///
+		/// \return true when `outPdf` is the answer; false when the caller
+		///         must go on to query the SPF.
+		inline bool EvalPdfAtVertexShortCircuit(
+			const BDPTVertex& vertex,
+			const Vector3& wi,
+			const Vector3& wo,
+			Scalar& outPdf
+			)
+		{
+			// Medium scatter vertex: phase function sampling PDF.
+			if( vertex.type == BDPTVertex::MEDIUM ) {
+				outPdf = vertex.pPhaseFunc ? vertex.pPhaseFunc->Pdf( -wi, wo ) : Scalar( 0 );
+				return true;
+			}
+
+			if( !vertex.pMaterial ) {
+				outPdf = 0;
+				return true;
+			}
+
+			// BSSRDF entry vertex: cosine-weighted hemisphere PDF.
+			if( vertex.isBSSRDFEntry ) {
+				outPdf = fabs( Vector3Ops::Dot( wo, vertex.normal ) ) * INV_PI;
+				return true;
+			}
+
+			return false;
+		}
+
+		/// Evaluates the SPF sampling PDF at a path vertex, reusing a
+		/// context's already-reconstructed record and IOR stack.
+		///
+		/// Semantically identical to the standalone overload below.
+		inline Scalar EvalPdfAtVertex(
+			VertexPdfContext& ctx,
+			const Vector3& wi,
+			const Vector3& wo
+			)
+		{
+			Scalar shortCircuit = 0;
+			if( EvalPdfAtVertexShortCircuit( ctx.Vertex(), wi, wo, shortCircuit ) ) {
+				return shortCircuit;
+			}
+
+			const ISPF* pSPF = ctx.PrepareSPF();
+			if( !pSPF ) {
+				return 0;
+			}
+
+			// Negate wi to get toward-surface direction for ri.ray.Dir()
+			return pSPF->Pdf( ctx.RecordFor( wi ), wo, ctx.Stack() );
+		}
 
 		/// Evaluates the SPF sampling PDF at a path vertex.
 		///
@@ -323,37 +474,13 @@ namespace RISE
 			const Vector3& wo
 			)
 		{
-			// Medium scatter vertex: phase function sampling PDF.
-			if( vertex.type == BDPTVertex::MEDIUM ) {
-				if( !vertex.pPhaseFunc ) {
-					return 0;
-				}
-				return vertex.pPhaseFunc->Pdf( -wi, wo );
+			Scalar shortCircuit = 0;
+			if( EvalPdfAtVertexShortCircuit( vertex, wi, wo, shortCircuit ) ) {
+				return shortCircuit;
 			}
 
-			if( !vertex.pMaterial ) {
-				return 0;
-			}
-
-			// BSSRDF entry vertex: cosine-weighted hemisphere PDF.
-			if( vertex.isBSSRDFEntry ) {
-				const Scalar cosTheta = fabs( Vector3Ops::Dot( wo, vertex.normal ) );
-				return cosTheta * INV_PI;
-			}
-
-			const ISPF* pSPF = vertex.pMaterial->GetSPF();
-			if( !pSPF ) {
-				return 0;
-			}
-
-			// Negate wi to get toward-surface direction for ri.ray.Dir()
-			Ray evalRay( vertex.position, -wi );
-			RayIntersectionGeometric ri( evalRay, nullRasterizerState );
-			PopulateRIGFromVertex( vertex, ri );
-
-			IORStack stack( 1.0 );
-			BuildVertexIORStack( vertex, stack );
-			return pSPF->Pdf( ri, wo, stack );
+			VertexPdfContext ctx( vertex );
+			return EvalPdfAtVertex( ctx, wi, wo );
 		}
 
 		//////////////////////////////////////////////////////////////////////
@@ -438,6 +565,29 @@ namespace RISE
 		// Spectral (NM) PDF Evaluation
 		//////////////////////////////////////////////////////////////////////
 
+		/// Evaluates the SPF sampling PDF at a vertex for a single
+		/// wavelength, reusing a context's reconstructed record and IOR
+		/// stack.  Semantically identical to the standalone overload below.
+		inline Scalar EvalPdfAtVertexNM(
+			VertexPdfContext& ctx,
+			const Vector3& wi,
+			const Vector3& wo,
+			const Scalar nm
+			)
+		{
+			Scalar shortCircuit = 0;
+			if( EvalPdfAtVertexShortCircuit( ctx.Vertex(), wi, wo, shortCircuit ) ) {
+				return shortCircuit;
+			}
+
+			const ISPF* pSPF = ctx.PrepareSPF();
+			if( !pSPF ) {
+				return 0;
+			}
+
+			return pSPF->PdfNM( ctx.RecordFor( wi ), wo, nm, ctx.Stack() );
+		}
+
 		/// Evaluates the SPF sampling PDF at a vertex for a single wavelength.
 		inline Scalar EvalPdfAtVertexNM(
 			const BDPTVertex& vertex,
@@ -446,36 +596,13 @@ namespace RISE
 			const Scalar nm
 			)
 		{
-			// Medium scatter vertex: phase function PDF
-			if( vertex.type == BDPTVertex::MEDIUM ) {
-				if( !vertex.pPhaseFunc ) {
-					return 0;
-				}
-				return vertex.pPhaseFunc->Pdf( -wi, wo );
+			Scalar shortCircuit = 0;
+			if( EvalPdfAtVertexShortCircuit( vertex, wi, wo, shortCircuit ) ) {
+				return shortCircuit;
 			}
 
-			if( !vertex.pMaterial ) {
-				return 0;
-			}
-
-			// BSSRDF entry vertex: cosine hemisphere PDF
-			if( vertex.isBSSRDFEntry ) {
-				const Scalar cosTheta = fabs( Vector3Ops::Dot( wo, vertex.normal ) );
-				return cosTheta * INV_PI;
-			}
-
-			const ISPF* pSPF = vertex.pMaterial->GetSPF();
-			if( !pSPF ) {
-				return 0;
-			}
-
-			Ray evalRay( vertex.position, -wi );
-			RayIntersectionGeometric ri( evalRay, nullRasterizerState );
-			PopulateRIGFromVertex( vertex, ri );
-
-			IORStack stack( 1.0 );
-			BuildVertexIORStack( vertex, stack );
-			return pSPF->PdfNM( ri, wo, nm, stack );
+			VertexPdfContext ctx( vertex );
+			return EvalPdfAtVertexNM( ctx, wi, wo, nm );
 		}
 		//////////////////////////////////////////////////////////////////////
 		// PT-compatible overloads
