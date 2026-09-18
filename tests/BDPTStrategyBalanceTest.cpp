@@ -2532,6 +2532,69 @@ static void TestSpectralHWSSCompanionLadderControl()
 		"DL-125 control: spectral hwss TRUE achromatic mean stays within 5% of hwss FALSE on topology M" );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Topology N: biospec_skin_material receiver, mesh area emitter
+// (DL-126).
+//
+// `BioSpecSkinMaterial::GetBSDF()` returns null, so this vertex is
+// `!isConnectible` -- neither PT's NEE nor BDPT's connections can price
+// it (both gate their NEE arm on a non-null `IBSDF*` before ever
+// touching `IMaterial::ScattersFullSphere()`, so the emitter's position
+// relative to the surface normal is irrelevant here).  The ENTIRE image
+// is therefore carried by the SPF's own BSDF-sampled continuation:
+// `BioSpecSkinSPF::Scatter`'s front-hit branch runs the layered
+// Krishnaswamy-Baranoski Monte Carlo simulation and, when the photon is
+// not absorbed, emits a re-scattered ray with `kray = 1` unconditionally
+// and no `.pdf` (default 0) -- exactly the DL-126 pattern.  Pre-fix,
+// BDPT's eye-subpath generator `break`s at this vertex's very first
+// non-delta scatter (`effectivePdf <= 0`, and even bypassing that,
+// `PositiveMagnitude(f) <= 0` on the null aggregate BSDF) and the
+// render goes BLACK; PT is unaffected (it prices the continuation from
+// `pS->kray` alone -- `PathTracingIntegrator.cpp`'s own "Specular
+// surfaces (no BSDF -- use SPF)" branch, gated on `!pBRDF`, same as
+// here).  Post-fix both integrators price the identical continuation
+// and should agree within the usual band.  Same geometry, camera and
+// emitter as topology B (`kSceneCommon` + `kLightMesh`) with the
+// receiver material swapped for `biospec_skin_material` at its
+// defaults (every one of its ~20 parameters has a physically
+// reasonable default -- see `spectral_skin_fast.RISEscene`, which also
+// authors none of them).
+//////////////////////////////////////////////////////////////////////
+static const char* kSceneNullBSDFSkin =
+	"film\n"
+	"{\n"
+	"\twidth 32\n"
+	"\theight 32\n"
+	"}\n\n"
+	"pinhole_camera\n"
+	"{\n"
+	"\tlocation 0 0 3.5\n"
+	"\tlookat 0 0 0\n"
+	"\tup 0 1 0\n"
+	"\tfov 30.0\n"
+	"}\n\n"
+	"biospec_skin_material\n"
+	"{\n"
+	"\tname mat_skin\n"
+	"}\n\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname quad_skin\n"
+	"\tpta -1 -1 0\n\tptb 1 -1 0\n\tptc 1 1 0\n\tptd -1 1 0\n"
+	"}\n\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_skin\n"
+	"\tgeometry quad_skin\n"
+	"\tmaterial mat_skin\n"
+	"}\n";
+
+static void TestNullBSDFMaterialContinuation()
+{
+	RunTopologyTest( "biospec_skin_material receiver, mesh area emitter (DL-126)",
+		std::string( kSceneNullBSDFSkin ) + kLightMesh, kStrictTolerances );
+}
+
 int main()
 {
 	std::cout << "=== BDPTStrategyBalanceTest ===" << std::endl;
@@ -2551,6 +2614,7 @@ int main()
 	TestGGXLambertianControl();
 	TestSpectralHWSSCompanionLadder();
 	TestSpectralHWSSCompanionLadderControl();
+	TestNullBSDFMaterialContinuation();
 	TestNonfiniteCandidateRejected();
 
 	std::cout << std::endl;
