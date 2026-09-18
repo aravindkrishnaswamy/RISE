@@ -38,6 +38,8 @@
 #include "pch.h"
 #include "PSSMLTSampler.h"
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -135,29 +137,103 @@ Scalar PSSMLTSampler::Mutate( const Scalar value )
 // 2. Large step: replace with a fresh random (backup the old value).
 // 3. Small step: apply exponential perturbation (backup the old value).
 //
-// In all cases, the modified index is recorded in modifiedIndices
-// so that Reject() can efficiently roll back only the changed entries.
+// In all cases, the touched lane is recorded in modifiedIndices so
+// that Reject() can efficiently roll back only the changed entries.
+//
+// STORAGE (DL-08 follow-up, 2026-09-17): two tiers -- see the class
+// comment above `X`/`XExtra` in PSSMLTSampler.h for the full design
+// rationale (why a single flat vector's lazy-grow loop is
+// catastrophic once a reserved stream sits far above the ordinary
+// ones, and why the two-tier split reproduces the pre-DL-08 base
+// commit's draws bit-for-bit for streamIndex < kLegacyNumStreams).
 //////////////////////////////////////////////////////////////////////
 
 Scalar PSSMLTSampler::Get1D()
 {
-	// Interleaved stream indexing: each stream gets its own contiguous
-	// region of the primary sample vector so mutations to one stream
-	// don't disturb others.  idx = streamIndex + kNumStreams * sampleIndex
-	const unsigned int idx = streamIndex + kNumStreams * sampleIndex;
-	sampleIndex++;
-
-	// Lazy initialization: grow the vector if needed
-	while( idx >= X.size() )
+	// Runtime range check -- deliberately NOT a debug-only `assert`.
+	// `assert` compiles to nothing when NDEBUG is defined, and NDEBUG's
+	// definition is platform/config-specific: Config.OSX and
+	// Config.Linux (build/make/rise/) never define it, so an `assert`
+	// here would already run in EVERY mac/Linux configuration including
+	// Deployment/Opto; only VS2022's Release|x64 config
+	// (build/VS2022/Library/Library.vcxproj) defines NDEBUG, so an
+	// `assert` guard would silently vanish specifically -- and only --
+	// on Windows Release, the one configuration where a runaway
+	// streamIndex would otherwise go uncaught.  This check costs one
+	// branch per Get1D() call (negligible next to the
+	// RandomNumberGenerator draw and PrimarySample bookkeeping this
+	// function already does), so there is no performance reason to gate
+	// it on a build config at all -- it fires identically everywhere.
+	//
+	// Note this is now a SANITY bound, not a collision-avoidance
+	// requirement: with the two-tier storage below, no two distinct
+	// stream numbers can ever alias, at any magnitude, so this only
+	// exists to catch a programming error (a negative or absurdly large
+	// streamIndex, e.g. from an uninitialized or overflowed depth
+	// counter) loudly instead of silently building an unbounded
+	// `XExtra` entry.
+	if( streamIndex < 0 || streamIndex >= kNumStreams )
 	{
-		PrimarySample ps;
-		ps.value = rng.CanonicalRandom();
-		ps.lastModIteration = currentIteration;
-		ps.backupIteration = currentIteration;
-		X.push_back( ps );
+		fprintf( stderr,
+			"FATAL: PSSMLTSampler::Get1D: streamIndex %d is out of the "
+			"sanity bound [0, %d) -- likely an uninitialized or "
+			"overflowed depth counter upstream (DL-08 / debt 29 "
+			"follow-up).  Raise kNumStreams if this stream number is "
+			"intentional.\n", streamIndex, kNumStreams );
+		abort();
 	}
 
-	PrimarySample& sample = X[idx];
+	PrimarySample* pSample;
+	ModifiedLane lane;
+
+	if( streamIndex < kLegacyNumStreams )
+	{
+		// Legacy tier: the ORIGINAL flat vector, row width pinned to
+		// kLegacyNumStreams (49) forever -- bit-identical to the
+		// pre-DL-08 base commit for any chain that never touches a
+		// stream >= kLegacyNumStreams.
+		const unsigned int idx = streamIndex + kLegacyNumStreams * sampleIndex;
+
+		while( idx >= X.size() )
+		{
+			PrimarySample ps;
+			ps.value = rng.CanonicalRandom();
+			ps.lastModIteration = currentIteration;
+			ps.backupIteration = currentIteration;
+			X.push_back( ps );
+		}
+
+		pSample = &X[idx];
+		lane.legacy = true;
+		lane.legacyIdx = idx;
+	}
+	else
+	{
+		// Extra tier: one independently-grown vector per stream,
+		// found (or created) by FindOrCreateExtraStream()'s linear
+		// scan over XExtra.  Touching this stream for N samples costs
+		// exactly N PrimarySample slots -- no multiplicative blow-up,
+		// regardless of how large streamIndex is.
+		std::vector<PrimarySample>& streamVec = FindOrCreateExtraStream( streamIndex );
+
+		while( sampleIndex >= streamVec.size() )
+		{
+			PrimarySample ps;
+			ps.value = rng.CanonicalRandom();
+			ps.lastModIteration = currentIteration;
+			ps.backupIteration = currentIteration;
+			streamVec.push_back( ps );
+		}
+
+		pSample = &streamVec[sampleIndex];
+		lane.legacy = false;
+		lane.stream = streamIndex;
+		lane.sampleIdx = sampleIndex;
+	}
+
+	sampleIndex++;
+
+	PrimarySample& sample = *pSample;
 
 	// Save backup for potential rejection
 	sample.backup = sample.value;
@@ -193,7 +269,7 @@ Scalar PSSMLTSampler::Get1D()
 	}
 
 	sample.lastModIteration = currentIteration;
-	modifiedIndices.push_back( idx );
+	modifiedIndices.push_back( lane );
 
 	return sample.value;
 }
@@ -257,7 +333,10 @@ void PSSMLTSampler::Reject()
 {
 	for( unsigned int i = 0; i < modifiedIndices.size(); i++ )
 	{
-		PrimarySample& sample = X[modifiedIndices[i]];
+		const ModifiedLane& lane = modifiedIndices[i];
+		PrimarySample& sample = lane.legacy
+			? X[lane.legacyIdx]
+			: FindOrCreateExtraStream( lane.stream )[lane.sampleIdx];
 		sample.value = sample.backup;
 		sample.lastModIteration = sample.backupIteration;
 	}

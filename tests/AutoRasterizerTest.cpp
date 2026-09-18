@@ -42,6 +42,7 @@
 #include <sstream>
 #include <vector>
 #include <cmath>
+#include <limits>
 #include <cctype>
 #include <string>
 #include <algorithm>
@@ -157,11 +158,18 @@ static ImageStats ComputeStats( const CapturingRasterizerOutput& cap )
 	// BDPT/VCM's opaque-alpha silhouette convention doesn't show a
 	// spurious edge deficit.  No-op for full-coverage pixels (alpha==1).
 	// See BDPTStrategyBalanceTest / INTEGRATOR_BUGFIX_FINDINGS.md Bug 2.
+	// DL-40: a nonfinite (NaN/Inf) composited component is a broken render,
+	// not a statistic -- reject the whole capture (return invalid) before
+	// sort/sum ever touches it.
 	for( const RISEColor& c : cap.pixels ) {
 		const double cov = c.a;
-		ch[0].push_back( c.base.r * cov );
-		ch[1].push_back( c.base.g * cov );
-		ch[2].push_back( c.base.b * cov );
+		const double r = c.base.r * cov, g = c.base.g * cov, b = c.base.b * cov;
+		if( !std::isfinite( r ) || !std::isfinite( g ) || !std::isfinite( b ) ) {
+			return ImageStats{};   // valid stays false
+		}
+		ch[0].push_back( r );
+		ch[1].push_back( g );
+		ch[2].push_back( b );
 	}
 
 	for( int c = 0; c < 3; c++ ) {
@@ -248,10 +256,71 @@ static ImageStats RenderAndComputeStats( const char* scenePath )
 static bool ChannelsAgree( const double a[3], const double b[3], double relTol, double absFloor )
 {
 	for( int c = 0; c < 3; c++ ) {
+		// DL-40: a nonfinite operand on EITHER side must disagree.  Without
+		// this, fabs(a-b) with a NaN operand is NaN, and "NaN > relTol" is
+		// false under IEEE comparison rules, so the loop fell through and
+		// the function returned true (spurious agreement) for a broken
+		// candidate or reference.
+		if( !std::isfinite( a[c] ) || !std::isfinite( b[c] ) ) return false;
 		const double denom = std::fmax( std::fabs(a[c]), absFloor );
 		if( std::fabs(a[c] - b[c]) / denom > relTol ) return false;
 	}
 	return true;
+}
+
+//////////////////////////////////////////////////////////////////////
+// DL-40 red-proof: nonfinite candidate statistics are rejected, not
+// silently agreed with.  Same two-layer shape as
+// tests/BDPTStrategyBalanceTest.cpp's TestNonfiniteCandidateRejected:
+// (1) ComputeStats must never report valid=true for a capture containing
+// a NaN/Inf composited component; (2) ChannelsAgree must disagree when
+// handed a finite reference against a NaN/Inf candidate directly.
+//////////////////////////////////////////////////////////////////////
+static void TestNonfiniteCandidateRejected()
+{
+	std::cout << std::endl << "-- DL-40: nonfinite candidate statistics are rejected --" << std::endl;
+
+	{
+		CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
+		cap->width = 2; cap->height = 1;
+		cap->pixels.push_back( RISEColor( RISEPel( 0.5, 0.5, 0.5 ), 1.0 ) );
+		cap->pixels.push_back( RISEColor( RISEPel( std::nan(""), 0.2, 0.2 ), 1.0 ) );
+		const ImageStats s = ComputeStats( *cap );
+		Check( !s.valid, "DL-40: ComputeStats rejects a capture with a NaN pixel component (valid==false)" );
+		cap->release();
+	}
+	{
+		CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
+		cap->width = 1; cap->height = 1;
+		cap->pixels.push_back( RISEColor( RISEPel( 0.3, std::numeric_limits<double>::infinity(), 0.3 ), 1.0 ) );
+		const ImageStats s = ComputeStats( *cap );
+		Check( !s.valid, "DL-40: ComputeStats rejects a capture with an Inf pixel component (valid==false)" );
+		cap->release();
+	}
+	{
+		CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
+		cap->width = 1; cap->height = 1;
+		cap->pixels.push_back( RISEColor( RISEPel( 0.4, 0.5, 0.6 ), 1.0 ) );
+		const ImageStats s = ComputeStats( *cap );
+		Check( s.valid, "DL-40: ComputeStats control -- an all-finite capture stays valid" );
+		cap->release();
+	}
+
+	{
+		const double ref[3]  = { 0.5, 0.5, 0.5 };
+		const double bad[3]  = { std::nan(""), 0.5, 0.5 };
+		Check( !ChannelsAgree( ref, bad, 0.5, 1e-6 ), "DL-40: ChannelsAgree rejects a NaN candidate channel" );
+	}
+	{
+		const double ref[3]  = { 0.5, 0.5, 0.5 };
+		const double bad[3]  = { std::numeric_limits<double>::infinity(), 0.5, 0.5 };
+		Check( !ChannelsAgree( ref, bad, 0.5, 1e-6 ), "DL-40: ChannelsAgree rejects an Inf candidate channel" );
+	}
+	{
+		const double ref[3]  = { 0.5, 0.5, 0.5 };
+		const double same[3] = { 0.5, 0.5, 0.5 };
+		Check( ChannelsAgree( ref, same, 0.01, 1e-6 ), "DL-40: ChannelsAgree control -- identical finite channels agree" );
+	}
 }
 
 static void PrintStats( const char* label, const ImageStats& s )
@@ -1364,6 +1433,8 @@ int main()
 	CheckSpectralProbeRouteNotVCM( "spectral_caustic -> not VCM (reach gate defeats VCM-spectral merge; documented)",
 		"scenes/Tests/Spectral/spectral_dispersive_caustic.RISEscene",
 		"\tnmbegin 405\n\tnmend 705\n\tnum_wavelengths 8\n", "as_probe_caustic" );
+
+	TestNonfiniteCandidateRejected();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

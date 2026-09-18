@@ -2053,6 +2053,27 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 						break;
 					}
 
+					// DL-84: pair the training moment below (recorded once this
+					// vertex's continuation either re-scatters again or escapes
+					// to the environment, whichever happens first) with one
+					// `AccumulateCount` HERE -- at the same "one call per sample
+					// attempt" granularity the main surface continuation
+					// (`AccumulateCount` a few hundred lines below, gated on
+					// `!skipContinuation`) and the BSSRDF exit continuation both
+					// use.  Placed BEFORE Russian roulette, so an RR-terminated
+					// attempt (the `break` a few lines down) is still counted --
+					// `OptimalMISAccumulator.h`'s `AccumulateCount` doc: "regardless
+					// of whether the sample contributed non-zero radiance".  This
+					// mirrors `RayCaster.cpp`'s own two volume sites, which gate
+					// the identical call on `effectivePdf > 0` (true here by the
+					// check just above; kept explicit for the same reason those
+					// sites keep it explicit -- symmetry under future edits).
+					if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() && effectivePdf > 0 )
+					{
+						const_cast<OptimalMISAccumulator*>( rc.pOptimalMIS )->AccumulateCount(
+							rast.x, rast.y, kTechniqueBSDF );
+					}
+
 					const Scalar phaseVal = pPhase->Evaluate( wo, wi );
 					const Scalar volScatterScalar = phaseVal / effectivePdf;
 					// Pel multiplies channel-wise by RISEPel(s,s,s); NM
@@ -2068,8 +2089,11 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					}
 #ifdef RISE_ENABLE_OPENPGL
 					const Value preRRVolScatterThroughput = volScatterThroughput;
-					Scalar volRrSurvivalProb = 1.0;
 #endif
+					// DL-84 round 7: needed OUTSIDE the OpenPGL guard now,
+					// because the optimal-MIS moment this vertex trains is
+					// the REALIZED one and therefore carries `1/q`.
+					Scalar volRrSurvivalProb = 1.0;
 					throughput = throughput * volScatterThroughput;
 
 					// Russian roulette on volume scatter
@@ -2090,9 +2114,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 							// (orig spectral used `/=`).  Inlining `*(1/p)` for both
 							// would change the NM path at the ULP level.
 							throughput = PTDivByScalar( throughput, rr.survivalProb );
-#ifdef RISE_ENABLE_OPENPGL
 							volRrSurvivalProb = rr.survivalProb;
-#endif
 						}
 					}
 
@@ -2135,16 +2157,42 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					// VolumeEnvFurnaceTest's floor-in-fog furnace.
 					bsdfPdf = effectivePdf;
 					bsdfMisPdf = phasePdf;
-					// The optimal-MIS moment's numerator must come from the SAME
-					// vertex as its denominator.  The surface `bsdfTimesCos` left
-					// standing here belongs to the previous vertex, so it is
-					// cleared rather than reused: a zero numerator simply does
-					// not train (the `f2 > 0` gate), which is the conservative
-					// state DL-72 round 2 established for sites whose correct
-					// quantity is not yet wired.  Wiring it properly needs a
-					// paired `AccumulateCount` at this site as well -- filed as
-					// DL-84, deliberately not done here.
-					bsdfTimesCos = Traits::zero();
+					// DL-84 (fixed): the optimal-MIS moment's numerator must be
+					// the FULL vertex-local integrand at THIS vertex, matching
+					// its own denominator (`bsdfPdf` above).  A phase function
+					// has no separate cosine term (there is no surface normal in
+					// free space -- DL-72 round 3's derivation for RayCaster.cpp's
+					// sibling sites), so the volume analogue of "BSDF*cos at the
+					// scatter point" is just the phase VALUE at the sampled
+					// direction.  This loop already computes that value
+					// explicitly a few lines above (`phaseVal = pPhase->Evaluate(
+					// wo, wi)`, used for `volScatterScalar`), so it is used
+					// directly here rather than leaning on "for a normalized
+					// phase function this equals Pdf()" the way RayCaster.cpp's
+					// sites do (they have no separate Evaluate() call at hand).
+					// The surface `bsdfTimesCos` left standing here belonged to
+					// the PREVIOUS vertex -- a numerator from one vertex over a
+					// denominator from another -- which is why round 2
+					// conservatively cleared it to zero (the `f2 > 0` gate then
+					// simply skips training) rather than reuse it.  Paired with
+					// the `AccumulateCount` added above.
+					//
+					// ROUND 7 (the realized-moment convention -- see the
+					// ordinary surface continuation's `bsdfTimesCosVal` for the
+					// derivation): this site applies Russian roulette to
+					// `throughput` BETWEEN its `AccumulateCount` and the moment
+					// the escape arm later accumulates, so the AS-CARRIED
+					// numerator is `phaseVal / q`.  Dividing here is what makes
+					// the trained quantity `E_pre/q` -- the same convention the
+					// surface and BSSRDF continuations use -- rather than
+					// `q*E_pre`.  `volRrSurvivalProb` is 1 whenever the roulette
+					// did not fire, so this is a no-op on shallow paths.
+					const Scalar trainedPhaseVal = phaseVal / volRrSurvivalProb;
+					if constexpr ( Traits::is_pel ) {
+						bsdfTimesCos = RISEPel( trainedPhaseVal, trainedPhaseVal, trainedPhaseVal );
+					} else {
+						bsdfTimesCos = trainedPhaseVal;
+					}
 					considerEmission = true;
 					volumeBounces++;
 					continue;  // Re-enter loop: needsIntersection is still true
@@ -2828,8 +2876,15 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 									// non-zero radiance").  Round 2 removed this call
 									// because the paired moment was wrong-shaped; round
 									// 3 derives the correct one below and reinstates it.
-									if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() &&
-										PTSurvivalMagnitude( sssThroughput ) > NEARZERO )
+									// Round-2 review (P2-2): dropped the
+									// `PTSurvivalMagnitude(sssThroughput) > NEARZERO` gate --
+									// it excluded a zero-throughput BSSRDF exit attempt from
+									// the count, the same undercounting pattern fixed at the
+									// main surface continuation's `!skipContinuation` gate.
+									// A zero-throughput attempt gets no matching
+									// `Accumulate()` either way, so counting it here is a
+									// correctly COUNTED ZERO, not a phantom sample.
+									if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() )
 									{
 										const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->AccumulateCount(
 											rast.x, rast.y, kTechniqueBSDF );
@@ -2887,8 +2942,20 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 										// `weightSpatial` scale now given to the NEE arm
 										// at this vertex (its `neeTrainingScale`
 										// argument, a few lines above).
+										//
+										// ROUND 7: `sssThroughput`, not the pre-roulette
+										// `bssrdfWeight`.  The `AccumulateCount` above
+										// sits BEFORE Russian roulette, so the moment
+										// paired with it has to be the AS-CARRIED one --
+										// the realized `E_pre/q` rather than `q*E_pre`.
+										// `sssThroughput` IS `bssrdfWeight` until the
+										// roulette divides it by `rr.survivalProb` a few
+										// lines above, so this is a no-op whenever the
+										// roulette did not fire.  Derivation at the
+										// ordinary surface continuation's
+										// `bsdfTimesCosVal`.
 										rs2.bsdfTimesCos = PTRayStateBsdfTimesCos(
-											PTBssrdfTrainedBsdfTimesCos( bssrdfWeight, bssrdf.cosinePdf ) );
+											PTBssrdfTrainedBsdfTimesCos( sssThroughput, bssrdf.cosinePdf ) );
 
 										PTCastRay<Tag>( caster, rc, rast, continuationRay,
 											cthis, rs2, pRadianceMap, iorStack, tag );
@@ -3062,8 +3129,15 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 									// non-zero radiance").  Round 2 removed this call
 									// because the paired moment was wrong-shaped; round
 									// 3 derives the correct one below and reinstates it.
-									if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() &&
-										PTSurvivalMagnitude( sssThroughput ) > NEARZERO )
+									// Round-2 review (P2-2): dropped the
+									// `PTSurvivalMagnitude(sssThroughput) > NEARZERO` gate --
+									// it excluded a zero-throughput BSSRDF exit attempt from
+									// the count, the same undercounting pattern fixed at the
+									// main surface continuation's `!skipContinuation` gate.
+									// A zero-throughput attempt gets no matching
+									// `Accumulate()` either way, so counting it here is a
+									// correctly COUNTED ZERO, not a phantom sample.
+									if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() )
 									{
 										const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->AccumulateCount(
 											rast.x, rast.y, kTechniqueBSDF );
@@ -3121,8 +3195,20 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 										// `weightSpatial` scale now given to the NEE arm
 										// at this vertex (its `neeTrainingScale`
 										// argument, a few lines above).
+										//
+										// ROUND 7: `sssThroughput`, not the pre-roulette
+										// `bssrdfWeight`.  The `AccumulateCount` above
+										// sits BEFORE Russian roulette, so the moment
+										// paired with it has to be the AS-CARRIED one --
+										// the realized `E_pre/q` rather than `q*E_pre`.
+										// `sssThroughput` IS `bssrdfWeight` until the
+										// roulette divides it by `rr.survivalProb` a few
+										// lines above, so this is a no-op whenever the
+										// roulette did not fire.  Derivation at the
+										// ordinary surface continuation's
+										// `bsdfTimesCosVal`.
 										rs2.bsdfTimesCos = PTRayStateBsdfTimesCos(
-											PTBssrdfTrainedBsdfTimesCos( bssrdfWeight, bssrdf.cosinePdf ) );
+											PTBssrdfTrainedBsdfTimesCos( sssThroughput, bssrdf.cosinePdf ) );
 
 										PTCastRay<Tag>( caster, rc, rast, continuationRay,
 											cthis, rs2, pRadianceMap, iorStack, tag );
@@ -3856,9 +3942,22 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 			bool skipContinuation = PTSurvivalMagnitude( scatterThroughput ) <= NEARZERO;
 
-			// Optimal MIS training
-			if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() &&
-				!pS->isDelta && !skipContinuation )
+			// Optimal MIS training (round-2 review, P2-2): count every
+			// NON-DELTA attempt, INCLUDING a zero-throughput draw (a
+			// below-horizon or zero-value lobe sample) -- gating this on
+			// `!skipContinuation` excluded exactly those, while
+			// `LightSampler.cpp`'s NEE arm counts every attempt including
+			// geometry-rejected zero draws, and
+			// `OptimalMISAccumulator.h`'s own `AccumulateCount` doc says
+			// "regardless of whether the sample contributed [non-zero
+			// radiance]".  A zero-throughput attempt already carries no
+			// matching `Accumulate()` call (the `if(skipContinuation)
+			// break;` below stops before any escape/NEE can fire), so it
+			// is correctly a COUNTED ZERO once counted here -- consistent
+			// with the realized-moment convention (a killed/zero attempt
+			// is a counted zero).  Leaving it uncounted instead estimates
+			// `E[.]/P(throughput>0)`, inflating `M_bsdf` by `1/P`.
+			if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() && !pS->isDelta )
 			{
 				const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->AccumulateCount(
 					rast.x, rast.y, kTechniqueBSDF );
@@ -3868,6 +3967,9 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			// Capture pre-RR throughput so the guiding segment records
 			// scatteringWeight = bsdf*cos/pdf (without RR amplification).
 			// OpenPGL applies RR separately via russianRouletteSurvivalProbability.
+			// NOTE (DL-84 round 7): this is OpenPGL's convention and OpenPGL's
+			// alone.  The optimal-MIS moment below deliberately uses the
+			// POST-RR `scatterThroughput` -- see its own comment.
 			const Value preRRScatterThroughput = scatterThroughput;
 			Scalar rrSurvivalProb = 1.0;
 #endif
@@ -3891,6 +3993,46 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				}
 			}
 
+			// THE REALIZED-MOMENT CONVENTION (DL-84 round 7, docs/
+			// DL72_RAYCASTER_BSDFTIMESCOS_TRAINING.md "Round 7" -- which
+			// RETRACTS round 6's opposite ruling).
+			//
+			// `OptimalMISAccumulator::Solve()` weights each technique by
+			// `1/M_i`, so `M_i` is the second moment of technique `i`'s
+			// OWN single-sample, MIS-UNWEIGHTED estimator (the film's
+			// per-technique MIS weight `w_i` is never part of `M_i` --
+			// see `OptimalMISAccumulator.h`'s own header comment and
+			// `LightSampler.cpp`, which trains `contrib` before
+			// `contrib *= w`), evaluated under that technique's EFFECTIVE
+			// (RR-defective) density `p~ = q * p`.  Russian roulette does
+			// not sit outside that estimator: it makes the density
+			// defective, and the surviving sample is compensated by
+			// `1/q`.  Hence
+			//
+			//     M_bsdf = integral f^2 / (p q) = E_pre / q
+			//
+			// and the estimator of it -- accumulate the AS-CARRIED (post-RR)
+			// numerator for survivors, count EVERY attempt including the
+			// RR-killed ones (a counted zero) -- is exactly what this site
+			// does by reading the post-RR `scatterThroughput` while its
+			// `AccumulateCount` above sits BEFORE the roulette.
+			//
+			// Round 6 replaced `scatterThroughput` here with the PRE-RR
+			// value on the argument that RR is "a separate later estimator";
+			// that combination (pre-RR numerator over an all-attempts
+			// denominator) estimates `q * E_pre`, i.e. the realized moment
+			// scaled by `q^2` -- neither of the two defensible conventions.
+			// Quadrature over two-technique toys
+			// (`tests/OptimalMISTrainingSitesTest.cpp`,
+			// `RunAlphaQualityCheck`) puts the realized moment at the lowest
+			// combined variance in every configuration and round 6's form at
+			// the highest (+9% to +984%).  Round 6's supporting claim that
+			// "NEE undergoes no RR" is also false: `LightSampler`'s
+			// mesh-luminary arm has its own `light_rr_threshold` roulette,
+			// now trained under the SAME realized-moment convention.
+			//
+			// Variance-only either way -- `alpha` cannot bias the rendered
+			// radiance, only how the budget is split between techniques.
 			const Value bsdfTimesCosVal = pS->isDelta ? Traits::zero() :
 				PTBsdfTimesCos( scatterThroughput, effectiveBsdfPdf );
 
@@ -3916,7 +4058,11 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			//    direction was really drawn from and the one
 			//    `scatterThroughput` (and therefore `bsdfTimesCosVal`
 			//    above) was divided by, so the optimal-MIS second moment
-			//    `(f/p)^2` is the true squared contribution.
+			//    `(f/p)^2` is the true squared contribution.  DL-84
+			//    round 7: `scatterThroughput` additionally carries the
+			//    `1/q` Russian-roulette compensation, which is deliberate
+			//    -- RR is part of the BSDF technique's EFFECTIVE density,
+			//    see `bsdfTimesCosVal`'s own derivation above.
 			//  * `bsdfMisPdf` is the lobe-independent nominal density
 			//    LightSampler's NEE arms evaluate for the same direction.
 			//    Under guiding that is `alpha_nom*guide + (1-alpha_nom)*

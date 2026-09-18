@@ -253,9 +253,16 @@ MLTRasterizer::MLTSample MLTRasterizer::EvaluateSample(
 {
 	MLTSample result;
 
-	// Stream 48: film position samples.  Must not conflict with
-	// BDPTIntegrator's internal streams (0-47).
-	sampler.StartStream( 48 );
+	// Film position samples.  Must not conflict with BDPTIntegrator's
+	// internal streams (0-47, and up to 1039 at deep eye/volume bounces
+	// -- see BDPTCameraUtilities::kMaxBdptWalkStreamUnderPSSMLT).  This
+	// used to be the literal stream 48, which the eye walk's own
+	// StartStream(16u+depth) reached at eye depth 32 (DL-08 / debt 29,
+	// docs/DL08_PSSMLT_LANE_LAYOUT.md) -- ordinary scattering-medium
+	// scenes get there with StabilityConfig::maxVolumeBounce's 64
+	// default and no unusual settings.  kPSSMLTFilmLensApertureStream is
+	// chosen comfortably above that ceiling.
+	sampler.StartStream( BDPTCameraUtilities::kPSSMLTFilmLensApertureStream );
 
 	// Use the first 2D sample to pick a film position.
 	// This means mutations to these two values move the path
@@ -300,19 +307,22 @@ MLTRasterizer::MLTSample MLTRasterizer::EvaluateSample(
 	const Point2 lensSample = sampler.Get2D();
 	// Debt 28: the point on the camera's entrance APERTURE that the
 	// t==1 light-tracing connections land on.  It is drawn HERE, as a
-	// third Get2D on stream 48, and not from a stream of its own:
-	// PSSMLTSampler has exactly 49 lanes and multiplexes them as
-	// `idx = stream + 49*sample`, so any stream index >= 49 aliases an
-	// existing lane rather than getting a fresh one (stream 80 is
-	// stream 31's sample 1).  Contiguous here, the aperture occupies
-	// lanes 244/293 against the film's 48/97 and the lens's 146/195,
-	// and every stream-48 lane is == 48 (mod 49), so it can never
-	// collide with an integrator stream 0..47.  Like the lens sample
-	// above it is an independent Markov dimension, so a small mutation
-	// moves the splat aperture point continuously.  A camera whose
-	// aperture is a point consumes NOTHING (see DrawApertureSample),
-	// which keeps every pinhole MLT chain identical to its pre-debt-28
-	// self.
+	// third Get2D on the reserved film/lens stream
+	// (kPSSMLTFilmLensApertureStream), and not from a stream of its
+	// own: PSSMLTSampler multiplexes lanes as
+	// `idx = stream + kNumStreams*sample`, so any stream index >=
+	// kNumStreams aliases an existing lane rather than getting a fresh
+	// one.  Contiguous here, the aperture occupies sample indices 4/5
+	// against the film's 0/1 and the lens's 2/3, and every draw on the
+	// reserved stream keeps that stream's residue mod kNumStreams,
+	// which no lower integrator stream can ever produce -- see
+	// CameraUtilities.h's `kPSSMLTFilmLensApertureStream` doc for why
+	// this stream in particular can never collide with BDPT's own eye
+	// walk (DL-08 / debt 29).  Like the lens sample above it is an
+	// independent Markov dimension, so a small mutation moves the
+	// splat aperture point continuously.  A camera whose aperture is a
+	// point consumes NOTHING (see DrawApertureSample), which keeps
+	// every pinhole MLT chain identical to its pre-debt-28 self.
 	const Point2 cameraLensSample =
 		BDPTCameraUtilities::DrawApertureSample( camera, sampler,
 			BDPTCameraUtilities::APERTURE_CURRENT_STREAM );
@@ -365,9 +375,10 @@ MLTRasterizer::MLTSample MLTRasterizer::EvaluateSample(
 	pIntegrator->GenerateLightSubpath( scene, *pCaster, sampler, lightVerts, lightSubpathStarts, rc.random );
 	pIntegrator->GenerateEyeSubpath( rc, cameraRay, screenPos, scene, *pCaster, sampler, eyeVerts, eyeSubpathStarts );
 
-	// (The aperture sample `cameraLensSample` was drawn from stream 48
-	// alongside the film and lens samples, before the subpath walks
-	// took the sampler through streams 0..47 -- see there for why.)
+	// (The aperture sample `cameraLensSample` was drawn from the
+	// reserved film/lens stream alongside the film and lens samples,
+	// before the subpath walks took the sampler through streams 0..47
+	// -- see there for why.)
 
 	// Evaluate all (s,t) connection strategies via MIS
 	std::vector<BDPTIntegrator::ConnectionResult> results =
