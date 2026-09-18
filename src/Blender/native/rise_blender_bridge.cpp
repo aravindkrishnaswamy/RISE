@@ -1154,9 +1154,28 @@ namespace
 		// Anisotropic set gets fabric-over-anisotropic-GGX for free --
 		// no separate composition step needed.
 		const bool hasSheen = ( material.sheen_color_painter_name && material.sheen_color_painter_name[0] );
+
+		// ABI v13 / DL-186 (docs/DEBT_LEDGER.md).  Coat contributes when
+		// either the numeric fallback is positive or a texture overrides
+		// it -- the same two-way gate `resolve_material_scalar_slot`'s
+		// callers already use for `sheen_roughness_texture_painter_name`
+		// (a texture can drive the weight above zero even when the
+		// numeric fallback field itself is left at its exporter default).
+		const bool hasCoatTexture = ( material.coat_weight_texture_painter_name && material.coat_weight_texture_painter_name[0] );
+		const bool hasCoat = hasCoatTexture || ( material.coat_weight > 0.0 );
+
 		const bool hasEmission = ( material.emission_painter_name && material.emission_painter_name[0] );
 		const std::string finalName = material.name;
-		const std::string pbrRegisterName = hasSheen ? ( finalName + "::pbrbase" ) : finalName;
+
+		// Sheen takes priority over coat for the intermediate-name
+		// choice, mirroring GLTFSceneImporter.cpp's identical
+		// `pbrRegisterName` decision (that file's own comment: "sheen
+		// takes priority over clearcoat when picking the intermediate
+		// name") -- `coated_material`'s substrate allowlist does not
+		// accept a `fabric_material` result, so sheen is always the
+		// OUTERMOST layer when both contribute (see the coat-skip
+		// warning-diagnostic and `hasCoat && !hasSheen` gate below).
+		const std::string pbrRegisterName = ( hasSheen || hasCoat ) ? ( finalName + "::pbrbase" ) : finalName;
 
 		// P1 FIX (post-DL-18 review, 2026-09-17).  `FabricMaterial::-
 		// IsSupportedSubstrate` (FabricMaterial.h) unconditionally
@@ -1190,7 +1209,7 @@ namespace
 		// the GGX base; `add_material`'s own non-PBR branch a few lines
 		// below already wraps an arbitrary surface material this exact
 		// way for every emissive non-PBR material shipped to date.
-		const char* pbrEmissive = hasSheen ? "none" : emissive;
+		const char* pbrEmissive = ( hasSheen || hasCoat ) ? "none" : emissive;
 
 		if( !job.AddPBRMetallicRoughnessMaterial(
 			pbrRegisterName.c_str(),
@@ -1209,38 +1228,115 @@ namespace
 			return false;
 		}
 
-		if( !hasSheen ) {
+		if( !hasSheen && !hasCoat ) {
 			return true;
 		}
 
-		char roughnessLiteral[64];
-		std::snprintf( roughnessLiteral, sizeof( roughnessLiteral ), "%.9g", material.sheen_roughness );
-		const std::string sheenRoughness = resolve_material_scalar_slot(
-			job, material.sheen_roughness_texture_painter_name, roughnessLiteral );
+		// `wrapRegisterName` names whichever layer (sheen, or coat when
+		// sheen doesn't contribute) is the LAST one built over
+		// `pbrRegisterName` -- the substrate the deferred emission
+		// wrapper below re-attaches over.  Set by whichever branch runs.
+		std::string wrapRegisterName;
 
-		// The fabric (sheen) wrap registers under an INTERMEDIATE name
-		// when emission also contributes (a `LambertianLuminaireMaterial`
-		// layer above it then owns `finalName`, see below); otherwise it
-		// registers directly under `finalName` as before.
-		const std::string fabricRegisterName = hasEmission ? ( finalName + "::sheenbase" ) : finalName;
+		if( hasSheen ) {
+			char roughnessLiteral[64];
+			std::snprintf( roughnessLiteral, sizeof( roughnessLiteral ), "%.9g", material.sheen_roughness );
+			const std::string sheenRoughness = resolve_material_scalar_slot(
+				job, material.sheen_roughness_texture_painter_name, roughnessLiteral );
 
-		// `fabric` = "custom" (no preset seeding -- Blender's Principled
-		// Sheen carries no fabric-type concept, matching
-		// GLTFSceneImporter.cpp's identical choice for
-		// KHR_materials_sheen) and `weave_rotation` = "0.0" (Blender's
-		// Sheen model has no weave-direction concept either; the
-		// anisotropic-GGX case above already carries its own
-		// `tangent_rotation`).
-		if( !job.AddFabricMaterial(
-			fabricRegisterName.c_str(),
-			"custom",
-			pbrRegisterName.c_str(),
-			material.sheen_color_painter_name,
-			sheenRoughness.c_str(),
-			"0.0" ) )
-		{
-			write_error( error_message, error_message_size, "Failed to create a fabric (sheen) material wrap" );
-			return false;
+			// The fabric (sheen) wrap registers under an INTERMEDIATE
+			// name when emission also contributes (a
+			// `LambertianLuminaireMaterial` layer above it then owns
+			// `finalName`, see below); otherwise it registers directly
+			// under `finalName` as before.
+			const std::string fabricRegisterName = hasEmission ? ( finalName + "::sheenbase" ) : finalName;
+
+			// `fabric` = "custom" (no preset seeding -- Blender's
+			// Principled Sheen carries no fabric-type concept, matching
+			// GLTFSceneImporter.cpp's identical choice for
+			// KHR_materials_sheen) and `weave_rotation` = "0.0"
+			// (Blender's Sheen model has no weave-direction concept
+			// either; the anisotropic-GGX case above already carries
+			// its own `tangent_rotation`).
+			if( !job.AddFabricMaterial(
+				fabricRegisterName.c_str(),
+				"custom",
+				pbrRegisterName.c_str(),
+				material.sheen_color_painter_name,
+				sheenRoughness.c_str(),
+				"0.0" ) )
+			{
+				write_error( error_message, error_message_size, "Failed to create a fabric (sheen) material wrap" );
+				return false;
+			}
+			wrapRegisterName = fabricRegisterName;
+
+			// LAYERING DECISION (DL-186, docs/BLENDER_MATERIAL_-
+			// TRANSLATION.md "Coat and Subsurface"): glTF's own
+			// KHR_materials_clearcoat + KHR_materials_sheen combination
+			// (GLTFSceneImporter.cpp) skips clearcoat and keeps sheen
+			// for the identical reason -- `coated_material`'s substrate
+			// allowlist does not accept a `fabric_material` result, so
+			// the coat cannot wrap on top of sheen.  Blender's bridge
+			// makes the same call; say so rather than dropping it
+			// silently (exporter.py ALSO warns at export time, from the
+			// Blender-node side of this same decision).
+			if( hasCoat ) {
+				RISE::GlobalLog()->PrintEx( RISE::eLog_Warning,
+					"add_pbr_metallic_roughness_material `%s`: Coat Weight and Sheen both contribute; "
+					"coated_material's substrate allowlist does not accept a fabric_material (the sheen "
+					"result), so the coat layer is skipped, keeping sheen.",
+					finalName.c_str() );
+			}
+		} else {
+			// hasCoat && !hasSheen: coat wraps the PBR base directly.
+			char weightLiteral[64];
+			std::snprintf( weightLiteral, sizeof( weightLiteral ), "%.9g", material.coat_weight );
+			const std::string coatWeight = resolve_material_scalar_slot(
+				job, material.coat_weight_texture_painter_name, weightLiteral );
+
+			// `coat_roughness` arrives as Blender's PERCEPTUAL roughness
+			// [0,1]; `coated_material`'s own `coat_roughness` slot is a
+			// GGX alpha, so it is SQUARED here -- the identical
+			// conversion GLTFSceneImporter.cpp applies to
+			// `clearcoat_roughness_factor` (that file's own comment:
+			// "passing the perceptual value straight through would
+			// silently render a coat about sqrt too rough").  Applied
+			// to the NUMERIC fallback before resolving any texture
+			// override, matching the numeric-then-texture order every
+			// other resolve_material_scalar_slot call site in this file
+			// uses (the texture, when present, is expected to already
+			// encode the desired alpha directly -- same convention as
+			// `sheen_roughness_texture_painter_name`).
+			const double coatRoughSq = material.coat_roughness * material.coat_roughness;
+			char roughLiteral[64];
+			std::snprintf( roughLiteral, sizeof( roughLiteral ), "%.9g", coatRoughSq );
+			const std::string coatRoughness = resolve_material_scalar_slot(
+				job, material.coat_roughness_texture_painter_name, roughLiteral );
+
+			char iorLiteral[64];
+			std::snprintf( iorLiteral, sizeof( iorLiteral ), "%.9g",
+				material.coat_ior > 0.0 ? material.coat_ior : 1.5 );
+
+			const char* coatTint = ( material.coat_tint_painter_name && material.coat_tint_painter_name[0] )
+				? material.coat_tint_painter_name : "none";
+
+			const std::string coatRegisterName = hasEmission ? ( finalName + "::coatbase" ) : finalName;
+
+			if( !job.AddCoatedMaterial(
+				coatRegisterName.c_str(),
+				pbrRegisterName.c_str(),
+				coatWeight.c_str(),
+				iorLiteral,
+				coatRoughness.c_str(),
+				"0.0",			// coat_thickness -- no Blender Principled equivalent, clear film
+				"0.0",			// coat_absorption -- no Blender Principled equivalent, clear film
+				coatTint ) )
+			{
+				write_error( error_message, error_message_size, "Failed to create a coated material wrap" );
+				return false;
+			}
+			wrapRegisterName = coatRegisterName;
 		}
 
 		if( !hasEmission ) {
@@ -1248,15 +1344,81 @@ namespace
 		}
 
 		// Re-attach the emission the PBR base above deliberately did
-		// NOT bake in, now that the sheen wrap is a legal (non-emissive)
-		// IMaterial to layer it over.
+		// NOT bake in, now that the sheen/coat wrap is a legal
+		// (non-emissive) IMaterial to layer it over.
 		if( !job.AddLambertianLuminaireMaterial(
 			finalName.c_str(),
 			material.emission_painter_name,
-			fabricRegisterName.c_str(),
+			wrapRegisterName.c_str(),
 			material.emissive_scale > 0.0 ? material.emissive_scale : 1.0 ) )
 		{
-			write_error( error_message, error_message_size, "Failed to create an emissive wrapper over the fabric (sheen) material" );
+			write_error( error_message, error_message_size, "Failed to create an emissive wrapper over the sheen/coat material" );
+			return false;
+		}
+		return true;
+	}
+
+	//! ABI v13 / DL-186.  Adds a `randomwalk_sss_material` from
+	//! Principled BSDF Subsurface inputs, ALREADY CONVERTED to
+	//! sigma_a/sigma_s inline literals by exporter.py (see the field
+	//! comments on `rise_blender_material` above).  A separate model
+	//! from `add_pbr_metallic_roughness_material` -- it REPLACES the
+	//! surface entirely rather than wrapping a PBR base, matching
+	//! Blender's own diffuse/SSS blend-by-weight behaviour (mirrors
+	//! this file's pre-existing PBR-vs-DIELECTRIC mutual exclusivity
+	//! for Transmission).  Emission still layers on top via the same
+	//! generic `AddLambertianLuminaireMaterial` wrapper every other
+	//! emissive branch in this file uses.
+	bool add_randomwalk_sss_material(
+		RISE::IJobPriv& job,
+		const rise_blender_material& material,
+		char* error_message,
+		const size_t error_message_size
+	)
+	{
+		if( !material.subsurface_absorption || !material.subsurface_absorption[0] ||
+		    !material.subsurface_scattering || !material.subsurface_scattering[0] ) {
+			write_error( error_message, error_message_size,
+				"Random-walk SSS material missing subsurface_absorption/subsurface_scattering" );
+			return false;
+		}
+
+		const bool hasEmission = ( material.emission_painter_name && material.emission_painter_name[0] );
+		const std::string finalName = material.name;
+		const std::string sssRegisterName = hasEmission ? ( finalName + "::sssbase" ) : finalName;
+
+		char iorLiteral[64];
+		std::snprintf( iorLiteral, sizeof( iorLiteral ), "%.9g",
+			material.subsurface_ior > 0.0 ? material.subsurface_ior : 1.4 );
+		char gLiteral[64];
+		std::snprintf( gLiteral, sizeof( gLiteral ), "%.9g", material.subsurface_g );
+		char roughLiteral[64];
+		std::snprintf( roughLiteral, sizeof( roughLiteral ), "%.9g", material.subsurface_roughness );
+
+		if( !job.AddRandomWalkSSSMaterial(
+			sssRegisterName.c_str(),
+			iorLiteral,
+			material.subsurface_absorption,
+			material.subsurface_scattering,
+			gLiteral,
+			roughLiteral,
+			"64" ) )		// max_bounces -- matches scenes/Tests/SubsurfaceScattering's own convention
+		{
+			write_error( error_message, error_message_size, "Failed to create a random-walk SSS material" );
+			return false;
+		}
+
+		if( !hasEmission ) {
+			return true;
+		}
+
+		if( !job.AddLambertianLuminaireMaterial(
+			finalName.c_str(),
+			material.emission_painter_name,
+			sssRegisterName.c_str(),
+			material.emissive_scale > 0.0 ? material.emissive_scale : 1.0 ) )
+		{
+			write_error( error_message, error_message_size, "Failed to create an emissive wrapper over the random-walk SSS material" );
 			return false;
 		}
 		return true;
@@ -1278,6 +1440,12 @@ namespace
 		// Luminaire wrapper needed.
 		if( material.model == RISE_BLENDER_MATERIAL_PBR_METALLIC_ROUGHNESS ) {
 			return add_pbr_metallic_roughness_material( job, material, error_message, error_message_size );
+		}
+
+		// ABI v13 / DL-186: random-walk SSS handles its own emission
+		// wrap internally too (mirrors the PBR-MR branch just above).
+		if( material.model == RISE_BLENDER_MATERIAL_RANDOMWALK_SSS ) {
+			return add_randomwalk_sss_material( job, material, error_message, error_message_size );
 		}
 
 		if( material.emission_painter_name && material.emission_painter_name[0] ) {
