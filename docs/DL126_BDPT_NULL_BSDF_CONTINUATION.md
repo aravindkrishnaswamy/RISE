@@ -450,10 +450,32 @@ companions from the denominator exactly like a dispersion-terminated
 one.
 
 Post-fix on topology N (32x32, 1024spp hero-only / 256spp hwss=TRUE):
-achromatic ratio 1.00415 (+0.4%), B/R ratio 0.225 vs a 0.234 reference
-(was 1.34x / 1.09). Red-proof and fix are `tests/
+one run measured achromatic ratio 1.00415 (+0.4%), B/R ratio 0.225 vs
+a 0.234 reference (was 1.34x / 1.09). Red-proof and fix are `tests/
 BDPTStrategyBalanceTest.cpp`'s `TestNullBSDFHWSSCompanionLadder` plus
 commits `d91ce076` (test) / `f7944713` (fix).
+
+**Correction (review round 4, P3): quote the SPREAD, not that single
+run.** This scene's own run-to-run variance (no fixed seed across
+threads; `BlockRasterizeSequence` shuffles from `std::random_device`)
+is large enough that the one number above understates it. Three fresh
+repeated runs at the current HEAD (post every fix in this document,
+including P1-1's unrelated MLT change, which this scene's BDPT-only
+path never touches) read:
+
+| run | achromatic ratio | achromatic %  | B/R ref  | B/R hwss=TRUE | B/R relative |
+|-----|-------------------|---------------|----------|---------------|--------------|
+| 1   | 1.04754           | +4.75%        | 0.246075 | 0.214039      | -13.0%       |
+| 2   | 1.00867           | +0.87%        | 0.232389 | 0.206951      | -11.0%       |
+| 3   | 1.06087           | +6.09%        | 0.235839 | 0.214039      | -9.2%        |
+
+All three are well inside the 10%/35% bands the test gates on, and all
+three are two orders of magnitude below the pre-fix +34%/grey-ified
+defect -- but none of the three is the earlier +0.4% figure, and the
+B/R relative deviation is consistently in the 9-13% range, not the
+single run's -3.8%. Do not quote a single cherry-picked run for this
+topology's HWSS row (the same rule this document's SS7.5 already
+states for the non-HWSS VCM/PT ratio on the same scene).
 
 ### 7.2 P2-1 (documented, not filed): a medium-vertex `isConnectible`
 asymmetry between light- and eye-rooted derivations
