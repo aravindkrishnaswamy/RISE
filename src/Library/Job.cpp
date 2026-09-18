@@ -305,6 +305,77 @@ static IScalarPainter* ResolveOrDiagnoseScalar(
 	const char* value,
 	bool requireSingle = false );
 
+// DL-16: resolve a rotation-angle-in-radians parameter that accepts EITHER
+// pipe, preferring Scalar over the legacy Color-pipe binding (the
+// documented oddball -- an angle by MEANING, plumbed through IPainter so
+// an expression_function2d painter could drive a spatially-varying
+// direction before IScalarPainter grew its own spatial painters).  Used by
+// `ggx_material`/`ggx_emissive_material`'s `tangent_rotation` and
+// `pbr_metallic_roughness_material`'s `anisotropy_rotation` -- same
+// pattern, same fix, one helper (audit-by-bug-pattern).
+//
+// Resolution order: (1) "none"/empty -> no rotation, both outputs null;
+// (2) a NAMED scalar_painter (single-valued only -- this slot reads one
+// angle) -> *outScalar, Scalar pipe, preferred; (3) a NAMED legacy colour
+// painter -> *outColor, Color pipe, deprecated but kept working; (4) a
+// finite inline literal -> *outScalar (a UniformScalarPainter -- numerically
+// identical to the pre-DL-16 UniformColorPainter fallback since GetValuesAt
+// ().v[0] == MaxValue(GetColor()) for an r==g==b triple, but now the
+// physically-correct pipe).  Exactly one of *outScalar/*outColor is
+// non-null on success with a non-"none" value.  Returns false (diagnostic
+// already logged) when `value` names neither pipe and isn't a literal.
+static bool ResolveRotationPainterDual(
+	IScalarPainterManager* smgr,
+	IPainterManager* pmgr,
+	const char* chunkKind,
+	const char* chunkName,
+	const char* paramName,
+	const char* value,
+	IScalarPainter** outScalar,
+	IPainter** outColor )
+{
+	*outScalar = nullptr;
+	*outColor = nullptr;
+	if( !value || !*value || std::string( value ) == "none" ) {
+		return true;
+	}
+
+	if( smgr ) {
+		IScalarPainter* named = smgr->GetItem( value );
+		if( named ) {
+			if( named->HasPerChannelVariation() ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"%s `%s`: `%s` is bound to per-channel scalar_painter `%s`, but this slot reads a "
+					"single angle -- author a single-valued scalar_painter.",
+					chunkKind, chunkName, paramName, value );
+				return false;
+			}
+			named->addref();
+			*outScalar = named;
+			return true;
+		}
+	}
+
+	IPainter* legacy = pmgr ? pmgr->GetItem( value ) : nullptr;
+	if( legacy ) {
+		legacy->addref();
+		*outColor = legacy;
+		return true;
+	}
+
+	if( ScalarLiteralIsFiniteNumber( value ) ) {
+		IScalarPainter* p = nullptr;
+		RISE_API_CreateUniformScalarPainter( &p, Scalar( atof( value ) ) );
+		*outScalar = p;
+		return true;
+	}
+
+	GlobalLog()->PrintEx( eLog_Error,
+		"%s `%s`: `%s` must be a finite rotation, a scalar_painter name, or a legacy colour-painter "
+		"name (got `%s`)", chunkKind, chunkName, paramName, value );
+	return false;
+}
+
 namespace {
 
 // Adapter that exposes an `IPainter` graph as an `IScalarPainter` —
@@ -4676,14 +4747,21 @@ bool Job::AddGGXMaterial(
 	const char* film_thickness
 	)
 {
-	if( !ScalarLiteralIsFiniteNumber( tangent_rotation ) && pPntManager->GetItem( tangent_rotation ) == 0 ) {
-		GlobalLog()->PrintEx( eLog_Error, "ggx_material `%s`: `tangent_rotation` must be a finite rotation or a painter name (got `%s`)", name, tangent_rotation );
+	// DL-16: tangent_rotation now accepts EITHER pipe -- validate up front
+	// (diagnostic already logged on failure) so a bad name fails before
+	// any allocation below, matching the pre-existing gate's behaviour.
+	IScalarPainter* pTangentRotationScalarProbe = nullptr;
+	IPainter* pTangentRotationColorProbe = nullptr;
+	if( !ResolveRotationPainterDual( pScalarPntManager, pPntManager, "ggx_material", name,
+			"tangent_rotation", tangent_rotation, &pTangentRotationScalarProbe, &pTangentRotationColorProbe ) ) {
 		return false;
 	}
 	IPainter* pRd = pPntManager->GetItem(diffuse);
 	IPainter* pRs = pPntManager->GetItem(specular);
 
 	if( !pRd || !pRs ) {
+		safe_release( pTangentRotationScalarProbe );
+		safe_release( pTangentRotationColorProbe );
 		return false;
 	}
 
@@ -4701,6 +4779,8 @@ bool Job::AddGGXMaterial(
 		safe_release( pAlphaY );
 		safe_release( pIOR );
 		safe_release( pExt );
+		safe_release( pTangentRotationScalarProbe );
+		safe_release( pTangentRotationColorProbe );
 		return false;
 	}
 
@@ -4739,6 +4819,8 @@ bool Job::AddGGXMaterial(
 		safe_release( pAlphaX ); safe_release( pAlphaY );
 		safe_release( pIOR ); safe_release( pExt );
 		safe_release( pFilmIOR ); safe_release( pFilmExt ); safe_release( pFilmThk );
+		safe_release( pTangentRotationScalarProbe );
+		safe_release( pTangentRotationColorProbe );
 		return false;
 	}
 
@@ -4754,27 +4836,20 @@ bool Job::AddGGXMaterial(
 		safe_release( pAlphaX ); safe_release( pAlphaY );
 		safe_release( pIOR ); safe_release( pExt );
 		safe_release( pFilmIOR ); safe_release( pFilmExt ); safe_release( pFilmThk );
+		safe_release( pTangentRotationScalarProbe );
+		safe_release( pTangentRotationColorProbe );
 		return false;
 	}
 
-	// Landing 8: tangent_rotation is "none" (no rotation, default) OR
-	// a painter / scalar string (rotation in radians).  Resolved here
-	// to a temporarily-addref'd IPainter*; the GGX{BRDF,SPF} hold their
-	// own ref so we drop ours before returning.
-	IPainter* pTangentRotation = 0;
-	if( tangent_rotation && std::string( tangent_rotation ) != "none" ) {
-		pTangentRotation = pPntManager->GetItem( tangent_rotation );
-		if( !pTangentRotation ) {
-			const double fa = atof( tangent_rotation );
-			RISE_API_CreateUniformColorPainter( &pTangentRotation, RISEPel( fa, fa, fa ) );
-		} else {
-			pTangentRotation->addref();
-		}
-	}
+	// DL-16: use the dual-resolved tangent rotation probed at the top of
+	// this function (Scalar pipe preferred, legacy Color pipe kept
+	// working).  Exactly one of the two is non-null for a non-"none" value.
+	IPainter* pTangentRotation = pTangentRotationColorProbe;
+	IScalarPainter* pTangentRotationScalar = pTangentRotationScalarProbe;
 
 	IMaterial* pMaterial = 0;
 	RISE_API_CreateGGXMaterialThinFilm( &pMaterial, *pRd, *pRs, *pAlphaX, *pAlphaY, *pIOR, *pExt,
-		resolvedFresnel, pTangentRotation, pFilmIOR, pFilmExt, pFilmThk );
+		resolvedFresnel, pTangentRotation, pFilmIOR, pFilmExt, pFilmThk, pTangentRotationScalar );
 
 	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 
@@ -4784,6 +4859,7 @@ bool Job::AddGGXMaterial(
 	safe_release( pIOR );
 	safe_release( pExt );
 	safe_release( pTangentRotation );
+	safe_release( pTangentRotationScalar );
 	safe_release( pFilmIOR );
 	safe_release( pFilmExt );
 	safe_release( pFilmThk );
@@ -4815,14 +4891,19 @@ bool Job::AddGGXEmissiveMaterial(
 	const char* film_thickness
 	)
 {
-	if( !ScalarLiteralIsFiniteNumber( tangent_rotation ) && pPntManager->GetItem( tangent_rotation ) == 0 ) {
-		GlobalLog()->PrintEx( eLog_Error, "ggx_emissive_material `%s`: `tangent_rotation` must be a finite rotation or a painter name (got `%s`)", name, tangent_rotation );
+	// DL-16: see AddGGXMaterial above for the resolution order.
+	IScalarPainter* pTangentRotationScalarProbe = nullptr;
+	IPainter* pTangentRotationColorProbe = nullptr;
+	if( !ResolveRotationPainterDual( pScalarPntManager, pPntManager, "ggx_emissive_material", name,
+			"tangent_rotation", tangent_rotation, &pTangentRotationScalarProbe, &pTangentRotationColorProbe ) ) {
 		return false;
 	}
 	IPainter* pRd = pPntManager->GetItem(diffuse);
 	IPainter* pRs = pPntManager->GetItem(specular);
 
 	if( !pRd || !pRs ) {
+		safe_release( pTangentRotationScalarProbe );
+		safe_release( pTangentRotationColorProbe );
 		return false;
 	}
 
@@ -4840,6 +4921,8 @@ bool Job::AddGGXEmissiveMaterial(
 		safe_release( pAlphaY );
 		safe_release( pIOR );
 		safe_release( pExt );
+		safe_release( pTangentRotationScalarProbe );
+		safe_release( pTangentRotationColorProbe );
 		return false;
 	}
 
@@ -4855,6 +4938,8 @@ bool Job::AddGGXEmissiveMaterial(
 			safe_release( pAlphaY );
 			safe_release( pIOR );
 			safe_release( pExt );
+			safe_release( pTangentRotationScalarProbe );
+			safe_release( pTangentRotationColorProbe );
 			return false;
 		}
 	}
@@ -4888,6 +4973,8 @@ bool Job::AddGGXEmissiveMaterial(
 		safe_release( pAlphaX ); safe_release( pAlphaY );
 		safe_release( pIOR ); safe_release( pExt );
 		safe_release( pFilmIOR ); safe_release( pFilmExt ); safe_release( pFilmThk );
+		safe_release( pTangentRotationScalarProbe );
+		safe_release( pTangentRotationColorProbe );
 		return false;
 	}
 
@@ -4898,26 +4985,20 @@ bool Job::AddGGXEmissiveMaterial(
 		safe_release( pAlphaX ); safe_release( pAlphaY );
 		safe_release( pIOR ); safe_release( pExt );
 		safe_release( pFilmIOR ); safe_release( pFilmExt ); safe_release( pFilmThk );
+		safe_release( pTangentRotationScalarProbe );
+		safe_release( pTangentRotationColorProbe );
 		return false;
 	}
 
-	// Landing 8: optional tangent_rotation painter (radians).  Same
-	// resolve logic as AddGGXMaterial above.
-	IPainter* pTangentRotation = 0;
-	if( tangent_rotation && std::string( tangent_rotation ) != "none" ) {
-		pTangentRotation = pPntManager->GetItem( tangent_rotation );
-		if( !pTangentRotation ) {
-			const double fa = atof( tangent_rotation );
-			RISE_API_CreateUniformColorPainter( &pTangentRotation, RISEPel( fa, fa, fa ) );
-		} else {
-			pTangentRotation->addref();
-		}
-	}
+	// DL-16: use the dual-resolved tangent rotation probed at the top of
+	// this function.
+	IPainter* pTangentRotation = pTangentRotationColorProbe;
+	IScalarPainter* pTangentRotationScalar = pTangentRotationScalarProbe;
 
 	IMaterial* pMaterial = 0;
 	RISE_API_CreateGGXEmissiveMaterialThinFilm(
 		&pMaterial, *pRd, *pRs, *pAlphaX, *pAlphaY, *pIOR, *pExt, pEmissive, emissive_scale,
-		resolvedFresnel, pTangentRotation, pFilmIOR, pFilmExt, pFilmThk );
+		resolvedFresnel, pTangentRotation, pFilmIOR, pFilmExt, pFilmThk, pTangentRotationScalar );
 
 	const bool added = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 	// Only mark as composed when AddItem actually registered the
@@ -4935,6 +5016,7 @@ bool Job::AddGGXEmissiveMaterial(
 	safe_release( pIOR );
 	safe_release( pExt );
 	safe_release( pTangentRotation );
+	safe_release( pTangentRotationScalar );
 	safe_release( pFilmIOR );
 	safe_release( pFilmExt );
 	safe_release( pFilmThk );
@@ -4966,9 +5048,23 @@ bool Job::AddPBRMetallicRoughnessMaterial(
 	const char* anisotropy_rotation
 	)
 {
-	if( !ScalarLiteralIsFiniteNumber( anisotropy_rotation ) && pPntManager->GetItem( anisotropy_rotation ) == 0 ) {
-		GlobalLog()->PrintEx( eLog_Error, "pbrmetallicroughness_material `%s`: `anisotropy_rotation` must be a finite rotation or a painter name (got `%s`)", name, anisotropy_rotation );
-		return false;
+	// DL-17 sibling fix (same pattern as DL-16's ggx_material.tangent_rotation):
+	// `anisotropy_rotation` now accepts EITHER pipe -- a named scalar_painter
+	// (Scalar, preferred; lets a glTF-importer-built atan2 scalar_painter
+	// drive per-texel KHR_materials_anisotropy rotation), a named legacy
+	// colour painter (Color, deprecated), or a finite literal.  This is a
+	// validate-and-discard probe (mirrors the upfront-validate-then-really-
+	// resolve-later shape the scalar factors below already use); the real
+	// resolution happens where `pTangentRotation` is built further down.
+	{
+		IScalarPainter* probeScalar = nullptr;
+		IPainter* probeColor = nullptr;
+		if( !ResolveRotationPainterDual( pScalarPntManager, pPntManager, "pbrmetallicroughness_material",
+				name, "anisotropy_rotation", anisotropy_rotation, &probeScalar, &probeColor ) ) {
+			return false;
+		}
+		safe_release( probeScalar );
+		safe_release( probeColor );
 	}
 	// The scalar factors (metallic / roughness / specular_factor / anisotropy_factor)
 	// fall back to atof() in resolveOrSynth below when not a painter name, so an
@@ -5196,24 +5292,27 @@ bool Job::AddPBRMetallicRoughnessMaterial(
 		}
 	}
 
-	// Landing 8: optional tangent rotation painter.
-	IPainter* pTangentRotation = 0;
-	if( anisotropy_rotation && std::string( anisotropy_rotation ) != "none" ) {
-		pTangentRotation = pPntManager->GetItem( anisotropy_rotation );
-		if( !pTangentRotation ) {
-			const double fa = atof( anisotropy_rotation );
-			RISE_API_CreateUniformColorPainter( &pTangentRotation, RISEPel( fa, fa, fa ) );
-		} else {
-			pTangentRotation->addref();
-		}
+	// DL-17: dual-pipe resolution (Scalar preferred, legacy Color kept
+	// working) -- see ResolveRotationPainterDual / AddGGXMaterial.  Already
+	// validated above; this call cannot fail here in practice (same inputs),
+	// but a genuine failure still fails the material rather than crashing.
+	IPainter* pTangentRotation = nullptr;
+	IScalarPainter* pTangentRotationScalar = nullptr;
+	if( !ResolveRotationPainterDual( pScalarPntManager, pPntManager, "pbrmetallicroughness_material",
+			name, "anisotropy_rotation", anisotropy_rotation, &pTangentRotationScalar, &pTangentRotation ) ) {
+		safe_release( pAlphaXSc );
+		safe_release( pAlphaYSc );
+		safe_release( pIORSc );
+		safe_release( pExtSc );
+		return false;
 	}
 
 	IMaterial* pMaterial = 0;
-	RISE_API_CreateGGXEmissiveMaterial(
+	RISE_API_CreateGGXEmissiveMaterialThinFilm(
 		&pMaterial, *pRdPnt, *pRsPnt, *pAlphaXSc, *pAlphaYSc, *pIORSc, *pExtSc,
 		pEmissive, emissive_scale,
 		ResolveFresnelMode( "schlick_f0" ),
-		pTangentRotation );
+		pTangentRotation, nullptr, nullptr, nullptr, pTangentRotationScalar );
 
 	const bool added = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 	// Only mark as composed on successful registration — see the
@@ -5228,6 +5327,7 @@ bool Job::AddPBRMetallicRoughnessMaterial(
 	safe_release( pIORSc );
 	safe_release( pExtSc );
 	safe_release( pTangentRotation );
+	safe_release( pTangentRotationScalar );
 
 	return added;
 }
@@ -7102,6 +7202,55 @@ bool Job::AddReliefModifierEx(
 	const bool okRelief = RegisterOrDiag( pModManager, pModifier, name, "modifier" );
 	safe_release( pModifier );
 	return okRelief;
+}
+
+//! Adds an atan2-combinator scalar painter: atan2(y, x) + offset.  See
+//! IJob.h for the DL-17 rationale.  `y`/`x` must already be registered
+//! scalar_painters; `offset` is folded in via an internal AddScalarPainter
+//! so the caller doesn't need a second round-trip through Job.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddAtan2ScalarPainter(
+	const char* name,
+	const char* y,
+	const char* x,
+	const double offset
+	)
+{
+	IScalarPainter* pY = pScalarPntManager->GetItem( y );
+	if( !pY ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddAtan2ScalarPainter:: `%s`: y operand scalar_painter `%s` not found", name, y );
+		return false;
+	}
+	IScalarPainter* pX = pScalarPntManager->GetItem( x );
+	if( !pX ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddAtan2ScalarPainter:: `%s`: x operand scalar_painter `%s` not found", name, x );
+		return false;
+	}
+
+	IScalarPainter* pAtan2 = 0;
+	RISE_API_CreateAtan2ScalarPainter( &pAtan2, pY, pX );
+	if( !pAtan2 ) {
+		return false;
+	}
+
+	IScalarPainter* pFinal = pAtan2;
+	pFinal->addref();
+	if( offset != 0.0 ) {
+		IScalarPainter* pOffset = 0;
+		RISE_API_CreateUniformScalarPainter( &pOffset, Scalar( offset ) );
+		IScalarPainter* pSummed = 0;
+		RISE_API_CreateAddScalarPainter( &pSummed, pAtan2, pOffset, Scalar( 1.0 ), Scalar( 1.0 ) );
+		safe_release( pOffset );
+		safe_release( pFinal );
+		pFinal = pSummed;
+	}
+
+	const bool ok = pFinal ? RegisterOrDiag( pScalarPntManager, pFinal, name, "scalar painter" ) : false;
+	safe_release( pFinal );
+	safe_release( pAtan2 );
+	return ok;
 }
 
 bool Job::AddModifierStack(

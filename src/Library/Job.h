@@ -2069,6 +2069,15 @@ namespace RISE
 			const double maxSlope									///< [in] Tilt bound as a slope; 0 = unclamped, negative refused
 			);
 
+		//! Adds an atan2-combinator scalar painter.  See IJob.h for the DL-17 doc.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddAtan2ScalarPainter(
+			const char* name,										///< [in] Name of the new scalar painter
+			const char* y,											///< [in] Name of a registered IScalarPainter (Y operand)
+			const char* x,											///< [in] Name of a registered IScalarPainter (X operand)
+			const double offset									///< [in] Additive constant in radians
+			);
+
 		//! Creates an ordered composition of previously-registered modifiers.  See IJob.h for the doc.
 		/// \return TRUE if successful, FALSE otherwise
 		bool AddModifierStack(

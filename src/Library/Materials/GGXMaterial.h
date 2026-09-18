@@ -52,13 +52,14 @@ namespace RISE
 				const IPainter* tangent_rotation = nullptr,	///< Landing 8 / KHR_materials_anisotropy.  See GGXBRDF.h for semantics.
 				const IScalarPainter* film_ior = nullptr,		///< Thin-film FILM slots (eFresnelThinFilmConductor).  See GGXBRDF.h.
 				const IScalarPainter* film_extinction = nullptr,
-				const IScalarPainter* film_thickness = nullptr
+				const IScalarPainter* film_thickness = nullptr,
+				const IScalarPainter* tangent_rotation_scalar = nullptr	///< DL-16: Scalar-pipe alias, preferred over `tangent_rotation` when both bound.
 				) : pEmitter( 0 )
 			{
-				pBRDF = new GGXBRDF( diffuse, specular, alphaX, alphaY, ior, ext, fresnel_mode, tangent_rotation, film_ior, film_extinction, film_thickness );
+				pBRDF = new GGXBRDF( diffuse, specular, alphaX, alphaY, ior, ext, fresnel_mode, tangent_rotation, film_ior, film_extinction, film_thickness, tangent_rotation_scalar );
 				GlobalLog()->PrintNew( pBRDF, __FILE__, __LINE__, "BRDF" );
 
-				pSPF = new GGXSPF( diffuse, specular, alphaX, alphaY, ior, ext, fresnel_mode, tangent_rotation, film_ior, film_extinction, film_thickness );
+				pSPF = new GGXSPF( diffuse, specular, alphaX, alphaY, ior, ext, fresnel_mode, tangent_rotation, film_ior, film_extinction, film_thickness, tangent_rotation_scalar );
 				GlobalLog()->PrintNew( pSPF, __FILE__, __LINE__, "SPF" );
 			}
 
@@ -82,13 +83,14 @@ namespace RISE
 				const IPainter* tangent_rotation = nullptr,	///< Landing 8 / KHR_materials_anisotropy.
 				const IScalarPainter* film_ior = nullptr,		///< Thin-film FILM slots (eFresnelThinFilmConductor).  See GGXBRDF.h.
 				const IScalarPainter* film_extinction = nullptr,
-				const IScalarPainter* film_thickness = nullptr
+				const IScalarPainter* film_thickness = nullptr,
+				const IScalarPainter* tangent_rotation_scalar = nullptr	///< DL-16: Scalar-pipe alias, preferred over `tangent_rotation` when both bound.
 				) : pEmitter( 0 )
 			{
-				pBRDF = new GGXBRDF( diffuse, specular, alphaX, alphaY, ior, ext, fresnel_mode, tangent_rotation, film_ior, film_extinction, film_thickness );
+				pBRDF = new GGXBRDF( diffuse, specular, alphaX, alphaY, ior, ext, fresnel_mode, tangent_rotation, film_ior, film_extinction, film_thickness, tangent_rotation_scalar );
 				GlobalLog()->PrintNew( pBRDF, __FILE__, __LINE__, "BRDF" );
 
-				pSPF = new GGXSPF( diffuse, specular, alphaX, alphaY, ior, ext, fresnel_mode, tangent_rotation, film_ior, film_extinction, film_thickness );
+				pSPF = new GGXSPF( diffuse, specular, alphaX, alphaY, ior, ext, fresnel_mode, tangent_rotation, film_ior, film_extinction, film_thickness, tangent_rotation_scalar );
 				GlobalLog()->PrintNew( pSPF, __FILE__, __LINE__, "SPF" );
 
 				if( emissive ) {
@@ -150,6 +152,10 @@ namespace RISE
 			//! Optional anisotropy tangent-rotation painter (nullable);
 			//! read-back for the snapshot clone.
 			inline const IPainter*       GetTangentRotation() const { return pBRDF->GetTangentRotation(); }
+			//! DL-16: Scalar-pipe alias read-back (nullable); read-back for
+			//! the snapshot clone so a GGX clone keeps the same rotation
+			//! source (Color OR Scalar pipe, whichever was bound).
+			inline const IScalarPainter* GetTangentRotationScalar() const { return pBRDF->GetTangentRotationScalar(); }
 			inline void SetDiffuse( const IPainter& v )         { pBRDF->SetDiffuse( v );    pSPF->SetDiffuse( v ); }
 			inline void SetSpecular( const IPainter& v )        { pBRDF->SetSpecular( v );   pSPF->SetSpecular( v ); }
 			inline void SetAlphaX( const IScalarPainter& v )    { pBRDF->SetAlphaX( v );     pSPF->SetAlphaX( v ); }

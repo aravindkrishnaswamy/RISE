@@ -42,7 +42,8 @@ GGXBRDF::GGXBRDF(
 	const IPainter* tangent_rotation,
 	const IScalarPainter* film_ior,
 	const IScalarPainter* film_extinction,
-	const IScalarPainter* film_thickness
+	const IScalarPainter* film_thickness,
+	const IScalarPainter* tangent_rotation_scalar
 	) :
   pDiffuse( &diffuse ),
   pSpecular( &specular ),
@@ -52,6 +53,7 @@ GGXBRDF::GGXBRDF(
   pExtinction( &ext ),
   fresnelMode( fresnel_mode ),
   pTangentRotation( tangent_rotation ),
+  pTangentRotationScalar( tangent_rotation_scalar ),
   pFilmIOR( film_ior ),
   pFilmExtinction( film_extinction ),
   pFilmThickness( film_thickness )
@@ -63,6 +65,7 @@ GGXBRDF::GGXBRDF(
 	pIOR->addref();
 	pExtinction->addref();
 	if( pTangentRotation ) pTangentRotation->addref();
+	if( pTangentRotationScalar ) pTangentRotationScalar->addref();
 	if( pFilmIOR )        pFilmIOR->addref();
 	if( pFilmExtinction ) pFilmExtinction->addref();
 	if( pFilmThickness )  pFilmThickness->addref();
@@ -169,6 +172,7 @@ GGXBRDF::~GGXBRDF()
 	safe_release( pIOR );
 	safe_release( pExtinction );
 	if( pTangentRotation ) pTangentRotation->release();
+	if( pTangentRotationScalar ) pTangentRotationScalar->release();
 	if( pFilmIOR )        pFilmIOR->release();
 	if( pFilmExtinction ) pFilmExtinction->release();
 	if( pFilmThickness )  pFilmThickness->release();
@@ -197,11 +201,21 @@ namespace
 	// and rotate the tangent frame around w by that angle.  When null
 	// (every pre-L8 GGX site), returns ri.onb verbatim — bit-identical
 	// to the pre-L8 path.
+	// DL-16: `pRotationScalar` (the Scalar-pipe alias) is preferred over
+	// `pRotation` (the legacy Color-pipe binding) when both are bound --
+	// see GGXBRDF.h's `pTangentRotationScalar` doc comment.  Falls back to
+	// `source` unchanged when neither is bound (every pre-L8 / pre-DL-16
+	// GGX site), bit-identical to prior behaviour.
 	inline RISE::OrthonormalBasis3D ResolveTangentONB(
 		const RISE::OrthonormalBasis3D& source,
 		const RISE::IPainter* pRotation,
+		const RISE::IScalarPainter* pRotationScalar,
 		const RISE::RayIntersectionGeometric& ri )
 	{
+		if( pRotationScalar ) {
+			const RISE::Scalar angle = pRotationScalar->GetValuesAt( ri ).v[0];
+			return RISE::MicrofacetUtils::RotateTangent( source, angle );
+		}
 		if( !pRotation ) return source;
 		const RISE::Scalar angle = RISE::ColorMath::MaxValue( pRotation->GetColor( ri ) );
 		return RISE::MicrofacetUtils::RotateTangent( source, angle );
@@ -220,7 +234,7 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
 		myonb.FlipW();
 	}
-	const OrthonormalBasis3D effOnb = ResolveTangentONB( myonb, pTangentRotation, ri );
+	const OrthonormalBasis3D effOnb = ResolveTangentONB( myonb, pTangentRotation, pTangentRotationScalar, ri );
 	const Vector3 n = effOnb.w();
 	const Vector3 v = Vector3Ops::Normalize( vLightIn );         // light direction (toward light)
 	const Vector3 r = Vector3Ops::Normalize( -ri.ray.Dir() );    // view direction (toward viewer)
@@ -449,7 +463,7 @@ Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric
 	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
 		myonb.FlipW();
 	}
-	const OrthonormalBasis3D effOnb = ResolveTangentONB( myonb, pTangentRotation, ri );
+	const OrthonormalBasis3D effOnb = ResolveTangentONB( myonb, pTangentRotation, pTangentRotationScalar, ri );
 	const Vector3 n = effOnb.w();
 	const Vector3 v = Vector3Ops::Normalize( vLightIn );
 	const Vector3 r = Vector3Ops::Normalize( -ri.ray.Dir() );
