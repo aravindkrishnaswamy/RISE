@@ -2653,7 +2653,8 @@ static void TestSpectralHWSSChromaticLobeSpectra()
 }
 
 //////////////////////////////////////////////////////////////////////
-// DL-125 KNOWN-DEFECT PROBE, PT-SIDE (DL-103 review round 2, P2-1).
+// DL-125 PT-SIDE COMPANION-LADDER PARITY (was a KNOWN-DEFECT probe;
+// DL-103 review round 2, P2-1, closed 2026-09-18).
 //
 // WHAT IT MEASURES, AND WHY IT IS PT-VS-PT.  The two ladders above
 // compare `bdpt_spectral_rasterizer` at `hwss FALSE` vs `hwss TRUE`.
@@ -2689,10 +2690,10 @@ static void TestSpectralHWSSChromaticLobeSpectra()
 // to within noise across the same A/B.
 //
 // So DL-103 did not create this; it made an open row's cost visible.
-// The number below is what DL-125's closure has to move.  It is a WIDE
-// band around a recorded value, not a correctness claim -- when DL-125
-// closes, this ratio should collapse toward 1 and the band should be
-// tightened then, not "fixed" here.
+// DL-125 CLOSED 2026-09-18 and this ratio duly collapsed from 1.607 to
+// 1.001 (isolated A/B, n = 3 per side -- see the gate below).  The band
+// was tightened around 1.0 at that point; what follows is a real
+// parity gate, no longer a known-defect pin.
 //////////////////////////////////////////////////////////////////////
 static const char* kRasterizerPTSpectralNoHWSS =
 	"standard_shader\n"
@@ -2809,24 +2810,45 @@ static double RunPTSpectralHWSSProbe( const char* topologyLabel, const std::stri
 	return ratio;
 }
 
-static void TestPTSpectralHWSSKnownDefect()
+//! (Renamed 2026-09-18 from `TestPTSpectralHWSSKnownDefect`, which is
+//! what older docs and ledger rows call it -- DL-125 closed and the
+//! band around 1.63 became a parity gate around 1.0.)
+static void TestPTSpectralHWSSCompanionParity()
 {
 	const double ratio = RunPTSpectralHWSSProbe(
-		"topology L (DL-125 KNOWN-DEFECT probe)", kSceneSchlickMultiLobeL );
+		"topology L (DL-125 PT companion-ladder parity)", kSceneSchlickMultiLobeL );
 	if( ratio < 0 ) return;
 
-	// KNOWN DEFECT.  This is NOT a correctness gate -- the target value
-	// is 1.0 and the recorded value is nowhere near it.  The band brackets
-	// the measured 1.64 widely enough to absorb MC noise while still
-	// catching a silent drift in either direction; DL-125's closure should
-	// drive this toward 1.0, at which point tighten it around 1.0 and
-	// delete this comment.
-	Check( ratio > 1.35 && ratio < 1.95,
-		"DL-125 KNOWN DEFECT (topology L): PT spectral hwss TRUE reads ~1.64x PT pel "
-		"-- pinned, not gated; closing DL-125 must move this toward 1.0" );
+	// DL-125 CLOSED 2026-09-18.  This used to be a KNOWN-DEFECT pin
+	// around a measured 1.63-1.64; it is now a real two-sided PARITY
+	// gate around the target value, 1.0.
+	//
+	// What closed it: `SchlickSPF` (and the four other
+	// per-lobe-conditional-density SPFs) now implement
+	// `ISPF::EvaluateKrayNM`, so `PathTracingIntegrator.cpp`'s HWSS
+	// companion loop prices each companion wavelength with the SELECTED
+	// lobe's own `f_I cos / p_I` at THAT wavelength instead of falling
+	// back to the material's AGGREGATE `valueNM` over the hero lobe's
+	// density.  Isolated A/B on the five SPF .cpp/.h pairs alone
+	// (revert to this slice's base commit, rebuild library AND this
+	// test target, n = 3 per side, same scene):
+	//
+	//   pre-fix   1.61176 / 1.60333 / 1.60623   mean 1.60711 +/- 0.00433
+	//   post-fix  1.00131 / 1.00046 / 1.00102   mean 1.00093 +/- 0.00043
+	//
+	// and topology M (the immune control below) is unchanged across the
+	// same A/B: 0.99962 -> 1.00000.
+	//
+	// The band is 3%, not the control's 10%: post-fix this statistic's
+	// own run-to-run sigma is 4.3e-4, so 3% is ~70 sigma of headroom
+	// and still an order of magnitude tighter than the defect it
+	// replaces.
+	Check( ratio > 0.97 && ratio < 1.03,
+		"DL-125 (topology L): PT spectral hwss TRUE tracks PT pel within 3% "
+		"-- the companion ladder prices the selected lobe's own kray" );
 }
 
-static void TestPTSpectralHWSSKnownDefectControl()
+static void TestPTSpectralHWSSCompanionParityControl()
 {
 	// Topology M: `ggx_material` + `lambertian_material`.  `GGXSPF` also
 	// declines `EvaluateKrayNM`, so the companion FALLBACK fires here too
@@ -3179,8 +3201,8 @@ int main()
 	TestSpectralHWSSCompanionLadder();
 	TestSpectralHWSSCompanionLadderControl();
 	TestSpectralHWSSChromaticLobeSpectra();
-	TestPTSpectralHWSSKnownDefect();
-	TestPTSpectralHWSSKnownDefectControl();
+	TestPTSpectralHWSSCompanionParity();
+	TestPTSpectralHWSSCompanionParityControl();
 	TestNonfiniteCandidateRejected();
 	TestNullBSDFMaterialContinuation();
 	TestNullBSDFHWSSCompanionLadder();
