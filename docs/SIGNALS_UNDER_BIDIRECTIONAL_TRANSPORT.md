@@ -571,3 +571,17 @@ Ledger (filled per slice):
   skipping them moves the suite by ≤ 5.7 % / 0 %. Guarding them needs a
   light-tracing-dominated spectral scene (a caustic through glass, or an
   emitter reachable only by t=1 splats); disclosed in the test header.
+  **Re-measured 2026-09-14 (DL-19, debt-cov slice), still open**: a fresh
+  mutation red-proof directly on both named sites, run against Family A
+  (not previously measured for BDPT-spectral/HWSS specifically), moved
+  BDPT-spectral by only 0.32 percentage points and BDPT-spectral/HWSS by a
+  *decrease* — both far inside the 5 % band. `rig`/`rigW`'s `Le` only
+  seeds throughput for light-subpath vertices PAST the root; the root
+  vertex itself (which prices s=0/s=1, the dominant strategies on every
+  scene in this suite) is priced through the already-covered
+  `ls.surface`-copy path (DL-44), so a genuine red-proof needs a scene
+  where an s>=2 connection or a light-tracing splat from a non-root
+  vertex actually dominates the MIS-weighted total — materially harder to
+  construct than an additional direct-NEE emitter family, since BDPT
+  combines that strategy with competing, `rig`/`rigW`-blind strategies for
+  the same physical path. See docs/DEBT_LEDGER.md DL-19 for the numbers.

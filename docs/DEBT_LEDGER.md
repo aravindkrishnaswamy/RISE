@@ -130,10 +130,10 @@ source ledgers point back to the row here (or vice versa) that closed them.
 | ~~DL-80~~ | ~~Utilities/Color/ColorUtils.h:17 / Color.h:71 / SpectralPacket.h:20~~ | ~~`Color.h` and `ColorUtils.h` are mutually circular via `SpectralPacket.h`'s own `#include "ColorUtils.h"`, so whichever of the two a translation unit includes FIRST wins the include-guard race and the other's declarations (`ColorUtils::XYZFromNM`, transitively `IFunction1D`) are invisible to `SpectralPacket.h` when entered the losing way~~ Cycle broken at the root: `SpectralPacket.h`/`SpectralPacket_Template.h` no longer `#include "ColorUtils.h"` at all | CLOSED 2026-09-14 (debt-misc slice) | Row filed by the `precision` slice (`11393740`, uncommitted to master at the time this slice started); its own fix commit originally worked around the landmine at its two discovered call sites (`PiecewiseLinearScalarPainter.cpp`, `tests/IScalarPainterTest.cpp`) by including `Color.h` first, not at the root.  **Superseded**: per the `precision` slice's own re-verification, its DL-29 redesign subsequently removed the code paths that needed that workaround, so those two include-order workaround sites no longer exist in its branch either way.  This row's root fix (breaking the `Color.h`/`ColorUtils.h` cycle at `SpectralPacket.h`) supersedes any such workaround regardless of whether the sites survive — the include-order hazard it worked around is gone for every caller, not just those two.  The `precision` branch's own copy of this DL-80 row is reconciled against this one at merge time to avoid a double-filing under the same id. Re-derived independently on current master (`a3aa5b8d`) by reading the three cited lines directly: `ColorUtils.h:17` `#include "Color.h"`; `Color.h:71` `#include "SpectralPacket.h"`; `SpectralPacket.h:20` (pre-fix) `#include "ColorUtils.h"`. Red-proved with two new standalone tests exercising both entry orders directly against `git rev-parse a3aa5b8d`'s unfixed headers: `tests/ColorUtilsBeforeColorIncludeOrderTest.cpp` (includes `ColorUtils.h` then `Color.h`) reproduces the EXACT reported errors — `error: unknown type name 'IFunction1D'` and `error: no member named 'XYZFromNM' in namespace 'RISE::ColorUtils'` at `SpectralPacket.h:109,246` and `SpectralPacket_Template.h:222` — while its sibling `tests/ColorBeforeColorUtilsIncludeOrderTest.cpp` (the order every existing production file happened to use) compiled clean throughout, confirming the race is real and order-dependent, not a general breakage. **Fix**: `SpectralPacket.h` and `SpectralPacket_Template.h` no longer include `ColorUtils.h` — each forward-declares the single function it actually calls (`bool ColorUtils::XYZFromNM(XYZPel&, const Scalar)`) plus `struct XYZPel;`, and `SpectralPacket.h` gained a direct `#include "../../Interfaces/IFunction1D.h"` (previously reached only transitively through the now-removed `ColorUtils.h` edge) for the `IFunction1D*`-constructor overload it defines inline. `ColorUtils.h`'s own `#include "Color.h"` is UNCHANGED (many existing files rely on it transitively) — only the back-edge that closed the cycle was cut, so the fix needs no caller to change its own include order. **Second-order breakage found and fixed in the same pass**: cutting that back-edge also removed a HIDDEN transitive path 9 other files relied on to reach `ColorUtils.h`'s declarations without including it directly (`Color.h` used to reach `ColorUtils.h` via `SpectralPacket.h`, so anything that included `Color.h` got `ColorUtils.h` for free) — a full library rebuild after the header fix failed with `no member named 'SerializeRGBPel'/'DeserializeRGBPel' in namespace 'RISE::ColorUtils'` in `CausticPelPhotonMap.cpp`/`GlobalPelPhotonMap.cpp`; a symbol-level audit (grepping every real, non-comment `ColorUtils::<exact-symbol>` call site against every file that already includes `ColorUtils.h` directly) found 9 total: `DetectorSpheres/IsotropicRGBDetectorSphere.cpp`, `Job.cpp`, `PhotonMapping/{Caustic,Global}{Pel,Spectral}PhotonMap.cpp` (4 files), `PhotonMapping/TranslucentPelPhotonMap.cpp`, `RasterImages/PPMWriter.cpp`, `Shaders/VCMIntegrator.cpp` — each given its own direct `#include ".../Color/ColorUtils.h"` rather than relying on transitive luck (two further textual hits, `Rendering/FrameStoreColorSpace.h` and `Shaders/VCMIntegrator.h`, were confirmed to be COMMENT-only references and needed no fix; `FrameStoreColorSpace.h` got a documentation-anchoring include anyway, harmlessly). Full library rebuild clean (zero warnings) after both the header fix and the 9 call-site fixes. Gate: both include-order tests green; `ColorUtilsTest` (all passed), `FrameStoreColorMathTest` (324/0), `JakobHanikaRoundTripTest` (14/0), `RGBPainterSpectralRoundTripTest` (18/0), `TexCoord1PainterTest` (33/0), `ThinFilmAnodizeSwatchTest` (24/0), `TextureExpressionVMTest` (846/0), `ThinFilmRGBSpectralTest` (7/0), `AgentObjectMapTest` (254/0), `PainterVolumeAccessorTest` (all passed) — every test file matching `grep -l 'SpectralPacket\|ColorUtils' tests/*.cpp`. **Not fixed, and not a new debt**: `SpectralPacket.h`'s own `#if 0 ... #endif` dead-code block (a `GetRGB()` overload calling `ColorUtils::RGBFromNM`, a name that has never existed — the closest real function, `ArbritaryRGBFromNM`, is itself commented out in `ColorUtils.cpp`'s explicitly-labeled "DEAD CODE section") is pre-existing, already self-labeled dead code on both ends, not a hidden landmine, and out of scope. | S | API/bridge gap | internal (fixed before any in-tree file tripped the losing order in production; the `precision` slice's DL-29 fix, if merged as-is, keeps working — its own include-order workaround is now simply redundant, not broken) |
 | DL-18 | CLOTH_FABRIC_DESIGN.md §15 item 13 | The Blender bridge has no sheen, anisotropic, or velvet mapping at all — Principled's Sheen sockets have no `fabric_material` target | OPEN-confirmed | No `fabric_material`/`sheen` reference found in the Blender bridge sources this sweep (`grep -rl fabric_material` under the Blender add-on tree returns nothing) | M | API/bridge gap | user-visible (Blender-authored scenes only) |
 | DL-25 | WETNESS_COAT_DESIGN.md §12 item 6b | Phase 1 cannot darken a textured substrate: the expression VM has no painter-sampling builtin | OPEN-confirmed | `src/Library/Painters/ExpressionEval.h` function table (~lines 1166-1171) has no painter-sample builtin alongside `sin`/`cos`/`atan2`/etc.; confirmed absent this sweep by grep | M | API/bridge gap | user-visible (wet textured substrates can't darken) |
-| DL-19 | SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §10 | Two S3 conversion sites (BDPT's NM-hero `Le` rebuild, the HWSS companion `rigW` rebuild) share the signals-replay helper but have no dedicated red-proof — their contribution is MIS-weighted to a few percent on the money test's scenes, so skipping them moves the suite by <= 5.7% / 0% | OPEN-confirmed (test gap) | Doc's own §10 disclosure; corrected this sweep — the previous citation ("`tests/SignalEmitterRecordTest.cpp` unchanged in this tree") is now stale: `ac9891f3` added `RunBoundedNeighbourRead()` (the DL-36 two-blade fixture, now called unconditionally from `main()`) to that file, but a diff of the change shows it adds no coverage for the BDPT NM-hero `Le` rebuild or HWSS `rigW` rebuild sites this row names — the gap is unchanged, only the file is not | S | coverage/test gap | internal (test-suite blind spot) |
-| DL-27 | WETNESS_COAT_DESIGN.md §12 item 7 | The wet-highlight variance cost is unmeasured | OPEN-confirmed | No test or scene mentioning "wet_highlight"/"WetHighlight" found in `tests/` or `docs/*.md` this sweep other than the design doc itself | S | coverage/test gap | internal (measurement gap, not a known defect) |
-| DL-30 | GEOMETRY_SHADING_SIGNALS_DESIGN.md §14 item 1 (disclosed residual) | A CSG exit-designated subtraction branch's `dndu` pairing is unverified, reachable only through a nested-CSG construction no test currently produces | OPEN-confirmed, untested | Doc's own disclosure (§14 item 1, appended when item 1 was RESOLVED 2026-08-29); no nested-CSG `dndu`-pairing test found in `tests/CsgSurfacePayloadTest.cpp` or elsewhere this sweep | S | coverage/test gap | internal (no scene exercises it yet) |
-| DL-40 | DL01_TRANSLUCENT_EXIT_WEIGHT.md: review residual / DL36_EMITTER_NEIGHBOUR_PIN.md: harness sibling | Balance and signal-emitter harness comparisons can accept nonfinite candidate statistics | OPEN-confirmed (static evidence; red-proof pending) | BDPT/VCM `ComputeStats` accepts nonfinite capture values and `ChannelsAgree` rejects only `fabs(a-b)/denom > tolerance` (false for NaN). SignalEmitterRecordTest similarly marks nonempty captures valid and `WorstRelDiff` uses fmax, which can discard NaN differences. Recorded DL-01/DL-02/DL-36 results are finite. | S | coverage/test gap | internal (false-green risk) |
+| DL-19 | SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §10 | Two S3 conversion sites (BDPT's NM-hero `Le` rebuild, the HWSS companion `rigW` rebuild) share the signals-replay helper but have no dedicated red-proof on any EXISTING scene | OPEN-confirmed (attempted and reproduced this sweep; freshly measured, not closed) | Mutation red-proof performed directly (BDPTIntegrator.cpp:5523/:5722's `LightSampler::ApplyEmitterSurface` calls commented out in a scratch rebuild, restored before commit — `git diff` empty): on `SignalEmitterRecordTest`'s Family A (the richest available scene, SDF sphere emitter keyed on `curv`), the BDPT-spectral row's EXPR/CONTROL diff moved 0.489%→0.810% (a 0.32pp move) and the BDPT-spectral/HWSS row moved 0.400%→0.332% (a DECREASE — no reliable positive signal at all); both stay far inside the 5% band, so `100 passed, 0 failed` on BOTH the baseline and the mutated build — the existing suite is structurally blind to this defect class on every scene it currently has. Root cause: `rig`/`rigW`'s `Le` only seeds the light SUBPATH's downstream throughput (vertices 1+); the LIGHT ROOT VERTEX (vertex 0) itself prices s=0/t=1 and s=1 strategies through a SEPARATE code path (`ls.surface` copied directly onto the vertex, DL-44's fix) that does not go through `rig`/`rigW` at all — so on any scene where most of the visible contribution is direct (NEE) or eye-hits-light, disabling `rig`/`rigW` is nearly invisible; only genuine multi-bounce BDPT connections (s>=2, an eye vertex connecting to a light-subpath vertex PAST the root) or light-tracing splats from such a vertex actually exercise it. | S | coverage/test gap | internal (test-suite blind spot) |
+| ~~DL-27~~ | WETNESS_COAT_DESIGN.md §12 item 7 | ~~The wet-highlight variance cost is unmeasured~~ CLOSED 2026-09-14 (debt-cov slice) | CLOSED — measured, mean-based σ²·T ratio 1.145× (< 1.5× threshold); see recipe entry | K=16 EXR trials, `scenes/FeatureBased/Materials/rainwet_cobbles.RISEscene`, WET (as-authored) vs DRY (`tau 0`, coat lobe stripped) via `bin/tools/HDRVarianceTest`: mean σ² 1.8796e-05 vs 1.8024e-05 (1.043×), mean wall time 2171.75ms vs 1977.88ms (1.098×) → mean σ²·T 1.145×. Max-based σ²·T ~3.3× (tail firefly risk, informational). | S | coverage/test gap | internal (measurement gap, not a known defect) |
+| ~~DL-30~~ | GEOMETRY_SHADING_SIGNALS_DESIGN.md §14 item 1 (disclosed residual) | ~~A CSG exit-designated subtraction branch's `dndu` pairing is unverified, reachable only through a nested-CSG construction no test currently produces~~ CLOSED 2026-09-14 (debt-cov slice) | CLOSED — `tests/CsgSurfacePayloadTest.cpp` Test29, 369/0; see recipe entry | Doc's own disclosure (§14 item 1, appended when item 1 was RESOLVED 2026-08-29) named the gap; Test29 closes it with a sphere-operand exit-designated construction, mutation-red-proofed against the dot-product repair. | S | coverage/test gap | internal (no scene exercised it before) |
+| ~~DL-40~~ | DL01_TRANSLUCENT_EXIT_WEIGHT.md: review residual / DL36_EMITTER_NEIGHBOUR_PIN.md: harness sibling | ~~Balance and signal-emitter harness comparisons can accept nonfinite candidate statistics~~ CLOSED 2026-09-14 (debt-cov slice); SWEPT to the remaining 14 of 18 `ComputeStats` copies 2026-09-14 (debt-cov review fix pass) | CLOSED — see recipe entry for commit/counters | `ComputeStats` in `BDPTStrategyBalanceTest.cpp`/`VCMStrategyBalanceTest.cpp`/`EnvLightBalanceTest.cpp`/`SignalEmitterRecordTest.cpp` now rejects a nonfinite composited component; `ChannelsAgree`/`AbsWithin`/`RatioWithinBand`/`WorstRelDiff` now reject a nonfinite operand explicitly rather than relying on IEEE-NaN-comparison fallthrough or `std::fmax`'s NaN-discarding contract. The original fix landed on only 4 of the 18 `tests/*.cpp` files that carry their own `ComputeStats` copy; a follow-up review pass (debt-cov) swept the remaining 14 (`AutoRasterizerTest`, `CausticPhotonMapNormalizationTest`, `CookTorranceHWSSTest`, `DirectionalFogTest`, `FabricRenderTest`, `FinalGatherSpectralTest`, `HairDirectionalBacklitTest`, `HairRenderTest`, `PrimitiveSelfHitTest`, `RadianceEtaScaleGradedIndexTest`, `RefractiveRadianceScalingTest`, `SubsurfaceScatteringSpectralTest`, `VolumeEnvFurnaceTest`, `SignalIntegratorConsistencyTest`) with the identical guard shape (including `AutoRasterizerTest`'s own `ChannelsAgree` copy, and the `std::fmin`/`std::fmax`/manual-`if(x>best)` NaN-discarding extremum-tracking idiom present in `FabricRenderTest`, `FinalGatherSpectralTest`, `PrimitiveSelfHitTest`, `SubsurfaceScatteringSpectralTest`, `VolumeEnvFurnaceTest`), each with its own `TestNonfiniteCandidateRejected` red-proof (guard temporarily reverted, rebuilt, confirmed red; restored, confirmed green — see `tests/README.md` and the fix commit for per-file counters). **P3 debt, not fixed in this pass**: all 18 files carry an independent, byte-similar copy of `CapturingRasterizerOutput`/`ImageStats`/`ComputeStats`/`TestNonfiniteCandidateRejected` rather than one shared harness header — collapsing the duplication is out of scope for a review fix pass (would touch 18 files' structure, not just their nonfinite-guard content) and is left as future cleanup. | S | coverage/test gap | internal (false-green risk) |
 | DL-60 | DL34_UNION_INTERIOR_DEPTH.md: committed scenarios without replay fixtures | Two committed scenarios lack replay fixtures and fail the dynamically enumerated checkpoint suite before scene execution | OPEN-confirmed (reproduced baseline) | `altar_stress.json` and `rainwet_closeup.json` omit replay fixtures; `AgentEvalRunner::RunScenario` returns load_error. AgentEvalCheckTest reproduces 11 and 12 cascading assertions at pre-DL-34 e858b4c9 and compiled 3927ec9c. | S | coverage/test gap | internal (missing replay coverage) |
 | DL-20 | GEOMETRY_SHADING_SIGNALS_DESIGN.md §14 item 2 | Patch geometries report flat curvature (`valid=false`) while genuinely curved; deferred to Phase 4, no Phase-4 work has landed | OPEN-confirmed | No patch-geometry curvature override exists (only `EllipsoidGeometry`/`DisplacedGeometry` override `ComputeAnalyticalDerivatives`, confirmed this sweep alongside DL-13) | M | coverage/test gap | user-visible (curvature-driven wear on patch geometry reads absent, not wrong) |
 | DL-21 | GEOMETRY_SHADING_SIGNALS_DESIGN.md §14 item 5 | CSG boundary curvature behaviour is unspecified/undecided (forward the contributing surface's curvature, or invalidate at the seam) | OPEN-confirmed | `tests/CsgSurfacePayloadTest.cpp:833-834` exercises the derivative fields there but does not pin a curvature convention at the boundary — confirmed by reading the referenced lines this sweep | M | coverage/test gap | user-visible (CSG seam wear masks) |
@@ -335,6 +335,50 @@ collide with rows filed concurrently by sibling debt-cleanup slices).
 This slice's branch HEAD does not itself update the "Authoritative totals
 on `master`" line below; that recount happens at merge.
 
+**2026-09-14 (debt-cov slice, branched from `master` `d471d5d1`, this
+slice's assigned rows DL-40/DL-60/DL-61/DL-19/DL-27/DL-30):** DL-40, DL-27
+and DL-30 CLOSED (see the table rows and their "Verification recipes"
+entries above). DL-60 investigated and BLOCKED (no hosted provider API
+key in this environment to record a real replay fixture; disposed by
+making the enumerating test skip-with-diagnostic instead of asserting a
+false failure, per the task's own explicit carve-out for this exact
+situation) — row left OPEN. DL-61 investigated, one of its two named
+scenarios (`constant_materials_polish`) root-caused as a genuine ~118x
+render regression and filed as **DL-120** (fixing it needs `src/Library`
+changes, out of this TESTS-ONLY slice's scope); the other
+(`image_reconstruct_multi`) not root-caused; a previously-unenumerated
+sibling failure (`image_reconstruct_single`) with the same symptom shape
+folded into DL-61's evidence — row left OPEN, widened. DL-19 re-measured
+with a fresh mutation red-proof directly on both named code sites,
+confirming the row's own diagnosis still holds (neither site moves any
+existing scene's numbers by more than a fraction of a percentage point)
+and sharpening why — row left OPEN. One new row filed: **DL-120**. This
+slice's own snapshot: 3 rows closed (DL-27, DL-30, DL-40), 1 opened
+(DL-120), 3 investigated-and-left-open with substantially corrected/
+sharpened evidence (DL-19, DL-60, DL-61). This slice's branch HEAD does
+not itself update the "Authoritative totals on `master`" line below;
+that recount happens at merge.
+
+**2026-09-14 (debt-cov slice, review fix pass, tests/docs only):** a
+review of the slice above's own work found no P1s and three follow-ups,
+all applied here. (1) The DL-40 nonfinite guard was swept from 4 to all
+18 `tests/*.cpp` files carrying a `ComputeStats` copy (see the DL-40
+row's "Follow-up sweep" entry above for the full per-file red-proof
+table). (2) `AgentEvalCheckTest`'s `TestSeedScenariosCheckpointsAreTrue`
+now pins the IDENTITY of the two DL-60 skipped-for-missing-fixture
+scenarios (`{altar_stress, rainwet_closeup}` via `std::set<std::string>`
+equality), not just their count — a bare count of 2 could not distinguish
+that exact pair from any other two scenarios losing their fixtures while
+one of the two named ones silently regained one. (3) DL-120 below was
+corrected: its "root-cause commit NOT identified" / "multi-hour
+undertaking" framing is now known to be WRONG — a separate reviewer ran
+a correct `git bisect run` (this slice's own earlier discarded attempt
+used `set -e`, which masked genuine build failures as false "bad"
+votes) and found the first bad commit; the row and DL-61's pointer to it
+are updated below. A separate slice, `debt-dl120`, owns the actual
+`src/Library` fix (out of this TESTS-ONLY slice's scope). No new rows
+opened by this fix pass.
+
 **2026-09-14 (debt-precision slice):** DL-10 and DL-29 CLOSED (see the
 table rows and their "Verification recipes" entries above). **DL-09 is
 NOT closed** — its round-1 fix was physically wrong, has been REVERTED,
@@ -397,7 +441,7 @@ recount happens at merge.
 
 **Authoritative totals on `master` (recount after each merge; per-slice notes
 below are each slice's own snapshot at its branch HEAD and do NOT sum):**
-After the debt-dl86 merge (2026-09-17): DL-86 closed (LUT end-cap sub-grid, 12-value rows, worst residual 0.34%); DL-105 opened — **102 main rows: 48 open, 54 closed**.
+After the debt-cov merge (2026-09-17): DL-27/DL-30/DL-40 closed (DL-40 nonfinite guard swept to all 18 ComputeStats copies); DL-19 re-measured, still open — **102 main rows: 45 open, 57 closed**.
 Ids in use: DL-01..DL-150 minus DL-35, DL-73, DL-78, DL-79, DL-85, DL-87, DL-88, DL-89, DL-90, DL-91, DL-92, DL-93, DL-94, DL-104, DL-106, DL-109, DL-110, DL-113, DL-114, DL-115, DL-117, DL-118, DL-119, DL-121, DL-122, DL-124, DL-125, DL-126, DL-127, DL-128, DL-129, DL-130, DL-131, DL-132, DL-133, DL-134, DL-135, DL-136, DL-137, DL-138, DL-140, DL-141, DL-142, DL-144, DL-146, DL-147, DL-148, DL-149.
 
 **2026-09-14 (debt-dl95 slice, branched from `master` `12027967`, the
@@ -1209,6 +1253,38 @@ that scene's BDPT NM-hero `Le` rebuild and HWSS `rigW` rebuild sites move
 the suite's numbers by more than a few percent when their signal-replay is
 disabled — i.e., a real red-proof exists where none did.
 
+**Attempted 2026-09-14 (debt-cov slice), NOT closed.** Confirmed the row's
+own diagnosis is still current by re-measuring directly, rather than
+trusting the old citation: mutating both named sites and re-running the
+richest existing scene (Family A) moves BDPT-spectral by only 0.32
+percentage points (0.489%→0.810%) and BDPT-spectral/HWSS by a
+*decrease* (0.400%→0.332%, i.e. no positive signal) — both orders of
+magnitude below "a few percent" and far inside the 5% pass band, so
+`SignalEmitterRecordTest` reports `100 passed, 0 failed` whether or not
+the two sites are wired correctly. Attempting the recipe's own suggested
+fix (a light-tracing-dominated caustic scene) ran into a structural
+obstacle worth recording before the next attempt repeats the analysis:
+`rig`/`rigW`'s `Le` value only seeds the throughput of light-subpath
+VERTICES PAST THE ROOT (vertex 0); the vertex-0 LIGHT root itself is
+priced through a separate, already-covered path (`ls.surface` copied
+directly onto the vertex — the mechanism DL-44 fixed), so s=0 (eye hits
+light), s=1 (NEE to the root), and any pure eye-side BSDF-sampling
+strategy that independently finds the same physical path are ALL
+insensitive to `rig`/`rigW` by construction — only a genuine s>=2
+connection (an eye vertex connecting to a light-subpath vertex beyond
+the root) or a light-tracing splat FROM such a vertex exercises it, and
+BDPT's MIS combines that strategy with the competing, `rig`/`rigW`-blind
+strategies for the SAME physical path, so even a scene engineered to
+require an indirect bounce does not cleanly isolate the defect unless
+the competing strategies are also suppressed (e.g. via delta/specular
+geometry that makes eye-side BSDF sampling unlikely to land the same
+path) — a materially harder scene-design problem than "add one curv-keyed
+emitter," which is presumably why this residual has stood open since S3
+landed. Left OPEN with this sharpened diagnosis; the next attempt should
+start from a caustic-class scene already in the repo (e.g. one of the SMS
+`sms_*` scenes' geometry) rather than one of `SignalEmitterRecordTest`'s
+existing direct-NEE families.
+
 **DL-20 (patch geometry flat curvature).** This is a Phase-4 scope item, not
 a bug in the current `valid=false` contract. Fixed when Phase 4 adds a
 `curv` implementation for patch geometries and a
@@ -1262,31 +1338,62 @@ counterpart both gain a case that applies one verb after the other on the
 same target and asserts non-refusal plus both effects visible in the
 emitted CST.
 
-**DL-27 (wet-highlight variance unmeasured).** WETNESS_COAT_DESIGN.md §11.1
-states no pass threshold of its own — its exact words are: "Unmeasured. It
-should be measured on the worked example, with `oidn_denoise FALSE` (§9),
-before the recipe's default `scattering` ceiling is fixed." So the recipe
-below both names the measurement and **proposes** the threshold the doc
-omits. Scene: `scenes/FeatureBased/Materials/rainwet_cobbles.RISEscene`
-(§6.5's worked example, the same one the Phase-1 exit gate renders at mean
-luma 0.195). Protocol: `docs/skills/variance-measurement.md`'s K-trial
-procedure (K >= 16, `samples 32`, `oidn_denoise FALSE`, `adaptive_max_samples
-0`, EXR output) run twice — once on the scene as authored (`add_wetness`
-applied, `scattering` at its shipped ceiling) and once on a "dry" variant
-with the wetness recipe's coat lobe stripped back to the bare substrate
-(`coat_weight 0`, or the pre-verb material) — both otherwise identical
-(camera, lights, sample count, seed sequence). Metric: `σ²·T`, the
-wall-clock-normalized variance CLAUDE.md's integrator-selection work already
-uses for exactly this kind of cost comparison — `σ²` from
-`bin/tools/HDRVarianceTest.exe` on each K-trial set, `T` the measured
-per-trial wall time, reported as the ratio (wet `σ²·T`) / (dry `σ²·T`).
-Pass threshold (**proposed, not stated in the design doc**): ratio <= 1.5x
-(a near-delta coat lobe may legitimately cost more per unit variance
-reduction than a matte Lambertian one, but a cost more than 50% higher
-should trip a review of the `scattering` ceiling, not ship silently).
-Fixed when that number exists and, if it exceeds the proposed (or a
-user-ratified) threshold, the recipe's `scattering` ceiling is lowered with
-the measured ratio cited in its place.
+**~~DL-27 (wet-highlight variance unmeasured).~~ CLOSED 2026-09-14
+(debt-cov slice).** WETNESS_COAT_DESIGN.md §11.1 stated no pass threshold
+of its own — its exact words were: "Unmeasured. It should be measured on
+the worked example, with `oidn_denoise FALSE` (§9), before the recipe's
+default `scattering` ceiling is fixed." Measured on
+`scenes/FeatureBased/Materials/rainwet_cobbles.RISEscene` (§6.5's worked
+example) per `docs/skills/variance-measurement.md`'s K-trial procedure:
+K=16, `samples 32` (the scene's authored `128` reduced to fit K trials in
+reasonable time, per the protocol's own guidance), `oidn_denoise FALSE`
+(already the scene's setting), EXR output only (the scene's PNG
+`file_rasterizeroutput` block dropped). WET = the scene as authored. DRY =
+the same scene with `polished_material cobble_wet_stone`'s `tau` rebound
+from `cobble_wet` to the literal `0` — `tau`'s own chunk-parser description
+states `0.0` "reproduces the pre-refactor 'none' IPainter default (black)
+— the dielectric coat contributes no specular lobe until this is set,"
+which is exactly "the coat lobe stripped back to the bare substrate";
+`reflectance`/`cobble_albedo` (the separate wetness-darkening effect) was
+left unchanged in both conditions to isolate the highlight's own cost.
+Metric: `σ²·T` (wall-clock-normalized variance) via
+`bin/tools/HDRVarianceTest`, reported as the ratio (wet `σ²·T`) / (dry
+`σ²·T`). **Result: mean σ² 1.879577e-05 (wet) vs 1.802359e-05 (dry) =
+1.043x; mean wall time 2171.75ms (wet) vs 1977.88ms (dry) = 1.098x; mean
+σ²·T ratio = 1.145x — under the proposed 1.5x threshold, so the
+`scattering` ceiling is NOT lowered.** Max-based σ² (the tail statistic)
+is 3.0x higher for wet (5.969176e-04 vs 1.990038e-04), giving a max-based
+σ²·T ratio of ~3.3x — a real but narrow firefly risk confined to a few
+pooled-highlight pixels (median/p99 σ² track closely between conditions),
+recorded for a future ceiling-tightening decision but not itself a
+threshold violation under this row's own mean-based metric. No automated
+regression-guard test was added: the measurement is a non-deterministic,
+~35-second K=16 render protocol, not a fast deterministic correctness
+check — see docs/WETNESS_COAT_DESIGN.md §11.1 for the full table and
+rationale.
+
+**Spread/CI added 2026-09-14 (debt-cov review fix pass, P3).** The
+original write-up gave a single mean σ² per condition with no sense of
+how precise that K=16 estimate itself is. `HDRVarianceTest` computes one
+scalar from however many EXRs it is given, so there is no native
+"repeat the K=16 trial" output to quote; the cheapest way to expose the
+estimate's own spread is to split each already-rendered K=16 set into 4
+non-overlapping groups of 4 and run the tool on each group independently
+— a fresh, independent re-render of the full protocol confirms this
+reproduces the original numbers almost exactly (full K=16, this run: WET
+mean σ² 1.880985e-05, DRY 1.800813e-05, ratio 1.0445 — matches the
+original 1.879577e-05 / 1.802359e-05 / 1.043x to within 0.1%). Per-group
+mean σ²: WET = {1.881439e-05, 1.881880e-05, 1.874654e-05, 1.888839e-05}
+(mean 1.881703e-05, sd 5.79e-08, relative sd 0.31%); DRY =
+{1.792605e-05, 1.804871e-05, 1.804211e-05, 1.799055e-05} (mean
+1.800185e-05, sd 5.68e-08, relative sd 0.32%). Per-group wet/dry σ²
+ratio: {1.0496, 1.0427, 1.0390, 1.0499}, mean 1.0453, sd 0.0053 (0.5% of
+the mean) — the 1.043x mean-σ² component of the headline 1.145x σ²·T
+ratio is stable to well under 1% across four independent quarter-K
+subsamples, not an artifact of one particular K=16 draw. This does not
+extend to the wall-time factor (whose own per-trial sd, 98.6ms wet /
+385.9ms dry, was already reported) or the max-based tail statistic
+(known noisy by construction — a single firefly pixel can move it).
 
 **DL-28 (water-absorption file pre-conversion trap).** Add a parse-time or
 load-time sanity check on `colors/water_absorption.spectra`-shaped files
@@ -1316,12 +1423,32 @@ three-number RGB authoring idiom (red: `IScalarPainterTest` 9 failed,
 pre-fix 555 nm broadcast — the `tau` row read R=G=B=0.0771581 where the
 per-channel closed form is 0.128355/0.0725641/0.0221849).
 
-**DL-30 (CSG exit-designated subtraction dndu pairing, untested).** Author
-a nested-CSG scene that reaches a subtraction's exit-designated branch
-(the doc names it as the one construction that can) and add it to
-`tests/CsgSurfacePayloadTest.cpp`, asserting `dndu`/`dndv` stay sign-paired
-with `vNormal` there the way the 2026-08-29 sign-pairing family already
-covers the other CSG branches. Fixed when that case exists and passes.
+**~~DL-30 (CSG exit-designated subtraction dndu pairing, untested).~~
+CLOSED 2026-09-14 (debt-cov slice) — `tests/CsgSurfacePayloadTest.cpp`
+Test29 (`TestSubtraction_ExitDesignatedBoundary_SphereDndxSignPairing`),
+`369 passed, 0 failed`.** Every existing exit-designated-branch test
+(Test4 and every `ExitProbe_*` test) probed a `BoxGeometry` operand,
+whose flat faces give `dndu == dndv == (0,0,0)` — a sign flip of zero is
+still zero, so the `AdoptCsgExitFacePayloadViaProbe` dot-product
+re-pairing (CSGObject.cpp ~line 743) was reachable but never verified
+with a nonzero derivative. Test29 is Test4's exact construction (box A,
+sphere-at-z=-4 B, same offset ray) with B swapped from `BoxGeometry` to
+`SphereGeometry` (radius 2) — an analytic primitive whose closed-form
+Weingarten map (design doc 5.4) gives genuinely nonzero `dndu`/`dndv`.
+The composite's payload is compared against an INDEPENDENT oracle probe
+of B's exit face (a hand-built reverse ray, not a call into the code
+under test, mirroring Test4's own `probeRef` technique): MONEY
+assertions are `dndu`/`dndv` negated in step with `vNormal` (the
+oracle's own normal, negated) while `dpdu`/`dpdv` stay UNnegated, plus a
+curvature-sign check (composite reads concave, the oracle's own outward
+face reads convex). Red-proofed by temporarily disabling the dot-product
+repair (`if( /*TEMP-RED-PROOF*/ false && Dot(...) < 0 )`) in a scratch
+rebuild — exactly the three derivative/curvature MONEY assertions fail
+(`366 passed, 3 failed`) with the repair off, all other 366 checks
+(including every existing box-only exit-designated test) stay green;
+reverted before commit, `git diff` on `CSGObject.cpp` empty. No
+production code changed — this closes a coverage gap in an
+ALREADY-CORRECT fix (the 2026-08-29 sign-pairing family), not a new bug.
 
 **~~DL-31 (mesh neighbour is a sheet).~~ CLOSED 2026-09-14 —
 `2a246dca`, `tests/MeshInteriorSignalTest.cpp` 25/0 (was 11/11 on
@@ -1411,12 +1538,83 @@ paths with scene and trajectory activity controls, then AgentEvalCheckTest;
 the 23 reproduced load-error assertions must disappear. Do not exclude the
 scenarios or weaken their checkpoints to manufacture a pass.
 
+**Blocked 2026-09-14 (debt-cov slice); NOT closed as the recipe describes,
+disposed per the explicit "no hosted keys" carve-out.** A committed replay
+fixture can only be recorded from a REAL live-provider trajectory (the
+eval harness's own doctrine, and the exact mechanism `rich_material_closeup`'s
+own fixture was captured with); this sandbox has none of
+ANTHROPIC_API_KEY/GEMINI_API_KEY/OPENAI_API_KEY/XAI_API_KEY set (confirmed
+by `env | grep API_KEY`), so a fixture recorded here would either be a
+non-model fabrication or fail outright -- exactly the case this row's
+instructions anticipate deferring rather than faking. Fixed instead:
+`tests/AgentEvalCheckTest.cpp`'s T10
+(`TestSeedScenariosCheckpointsAreTrue`) now SKIPS (with an explicit
+diagnostic naming the scenario and the missing-key blocker) any committed
+scenario whose `replayFixturePath` is empty, instead of asserting a
+`load_error` failure through the normal per-scenario checks; a new bound
+(`Check(skippedNoFixture == 2, ...)`) fails loudly if a THIRD scenario
+ever loses its fixture (silent-widening guard) or if the skip count drops
+to zero without either scenario actually gaining a real fixture (silent
+stop-firing guard). Result: the 23 reproduced cascading assertions for
+altar_stress/rainwet_closeup are gone (`AgentEvalCheckTest`: 2074 total,
+2061 passed, 13 failed, down from 2098 total/2062 passed/36 failed --
+decomposed as 23 fewer failures, exactly DL-60's count, with DL-61's 13
+unchanged). [Corrected 2026-09-14, debt-cov review fix pass: this entry
+previously read "2074 passed / 13 failed", mislabeling the 2074 TOTAL
+(2061+13) as a passed count.] The row stays OPEN: no fixture
+was actually recorded, so the underlying gap (these two scenarios have
+never been run against a real model and their checkpoints have never been
+proven true of a real trajectory) is unchanged -- only the test-suite's
+FALSE-FAILURE noise around it is gone. Re-open the recipe's original
+instructions once hosted credentials are available in this environment.
+
 **DL-61 (render checkpoint disagreement).** Reproduce the nine assertions
 from constant_materials_polish and image_reconstruct_multi with seeded,
 finite, linear measurements. Establish an independent intended-output
 reference and fix the renderer or fixture/oracle according to the observed
 cause. Rerun AgentEvalCheckTest; preserve lighting/image activity and
 reference-shape controls rather than merely widening the current bands.
+
+**Investigated 2026-09-14 (debt-cov slice); NOT closed, root-caused for
+one of its two named scenarios.** Reproduced all nine named assertions
+unchanged (`AgentEvalCheckTest` on this branch HEAD, post-DL-60 fix: 13
+failed total, 9 of them these). Established an independent intended-output
+reference for `constant_materials_polish` by rendering the EXACT committed
+scene text at the 2026-08-20 commit its own "meanLuma ~= 0.18" comment was
+measured against (`c33734c7`, a from-source build in an isolated
+worktree) -- confirmed the comment was accurate THEN (measured 0.182353)
+and the current 0.001549 is a genuine ~107-118x regression, not a stale or
+mistaken comment; filed as **DL-120** with the full investigation
+(including a `git bisect` attempt that converged on a docs-only commit and
+was discarded as unreliable -- a `set -e` bug in the bisect script's own
+build-failure handling). **Update (debt-cov review fix pass, same day):**
+DL-120's first bad commit has since been identified and independently
+re-verified as `d01a320a47dfe3895fb4f03e835b0eda341761c0` ("fix(intersection):
+scale-relative self-hit floor in the bilinear-patch solver") via a
+correctly-written `git bisect run` -- see DL-120's row for the two-build
+verification. Fixing DL-120 needs `src/Library` changes, out of
+this TESTS-ONLY slice's scope (a separate slice, `debt-dl120`, owns it), so
+`constant_materials_polish`'s three assertions stay open pending that fix. For `image_reconstruct_multi`, no
+independent reference was established and no root cause was confirmed --
+the RMSE overage (55-95% over a tight band, comfortably inside a much
+looser existing band on the SAME scenario) is smaller and shaped
+differently than DL-120's, and was not traced to a specific commit or
+mechanism; two live hypotheses (shares DL-120's `clippedplane_geometry`+
+`lambertian_luminaire_material` pattern, vs. a cumulative drift from many
+small already-shipped physics fixes) remain undistinguished. A sibling
+failure on `image_reconstruct_single` (including its own `bas-relief
+control` sub-test), sharing the identical symptom shape at a smaller
+~12-16% overage, was found this sweep and folded into this row's evidence
+above -- it was NOT previously enumerated by this row's text. Per this
+recipe's own instruction ("preserve ... rather than merely widening the
+current bands"), no band was touched. Next step for whoever continues
+this row: either (a) confirm/refute DL-120's pattern in the
+`image_reconstruct_*` fixtures' built scenes, or (b) if the cumulative-
+drift hypothesis is confirmed instead, re-render fresh reference PNGs from
+the CURRENT (post-fix) renderer against the fixtures' frozen tool-call
+trajectories and re-derive the bands from that fresh baseline -- do not
+simply widen the existing bands to absorb the current numbers without
+that derivation.
 
 **~~DL-36 (bounded-neighbour-read residual on a luminary probe).~~ CLOSED
 2026-09-12 as a consistency pin — `ac9891f3`, `Passed: 16  Failed: 0`.**
@@ -1452,17 +1650,81 @@ backscatter to assert absorption + outgoing + deposited energy balances.
 Fixed when deposited power follows the emitted diffuse lobe and absorbed
 energy is never added to the map. Static finding; not yet red-proven.
 
-**DL-40 (nonfinite balance-test statistics accepted).** Add exact
-invalid-input checks to the BDPT/VCM balance and SignalEmitterRecordTest
-harnesses: finite reference
-statistics versus NaN candidate mean/p99/max must disagree, and a capture
-containing a nonfinite component must be rejected before statistics or sorting. Use
-explicit malformed-input fixtures, not a NaN not-found sentinel. Fixed
-when `ComputeStats` rejects nonfinite captured/composited values and
-`ChannelsAgree`/`WorstRelDiff` reject nonfinite operands, with the new cases red-proven
-against the current harness and the existing finite render gates intact.
-This is a separate pre-existing harness robustness defect; the DL-01
-runs reported finite statistics and do not exercise it.
+**~~DL-40 (nonfinite balance-test statistics accepted).~~ CLOSED
+2026-09-14 (debt-cov slice) — `BDPTStrategyBalanceTest.cpp`,
+`VCMStrategyBalanceTest.cpp`, `EnvLightBalanceTest.cpp`,
+`SignalEmitterRecordTest.cpp`.** `ComputeStats` in all four files now
+rejects a capture whose composited component (`BDPTStrategyBalanceTest`/
+`VCMStrategyBalanceTest`/`SignalEmitterRecordTest`: `base*alpha`;
+`EnvLightBalanceTest`: `base`) is nonfinite, returning `ImageStats{}`
+(`valid==false`) before sort/sum ever runs over the poisoned vector.
+`ChannelsAgree` (BDPT/VCM) and `AbsWithin`/`RatioWithinBand`
+(EnvLightBalanceTest) now explicitly reject a nonfinite operand on
+either side instead of relying on `fabs(x-NaN) > tol` being `false`
+under IEEE comparison and falling through to "agrees".
+`SignalEmitterRecordTest.cpp`'s `WorstRelDiff` now returns `HUGE_VAL`
+for a nonfinite mean instead of letting `std::fmax`'s "ignore the NaN
+operand" contract silently discard the worst channel's diff (or, when
+every channel is NaN, return the unguarded implementation's literal
+`0.0` — a "perfect match" for a totally broken render). Each file gained
+a `TestNonfiniteCandidateRejected` red-proof using explicit malformed
+`CapturingRasterizerOutput`/`ImageStats` fixtures (a `std::nan("")` or
+`std::numeric_limits<double>::infinity()` component), not a live render
+or a "NaN not found" sentinel. Red-proofed by temporarily reverting each
+guard and rebuilding/running: `BDPTStrategyBalanceTest` 4 failures (73
+total, was 69), `VCMStrategyBalanceTest` 4 failures (62 total, was 58),
+`EnvLightBalanceTest` 3 failures (123 total, was 120),
+`SignalEmitterRecordTest` 5 failures (100 total, was 95) — each restored
+to 0 failures with the guard back in place. Zero compiler warnings on
+all four rebuilds. This was a pre-existing harness robustness defect
+only; the DL-01/DL-02/DL-36 runs this row's evidence cites reported
+finite statistics throughout and were never actually mis-graded by it.
+
+**Follow-up sweep, 2026-09-14 (debt-cov review fix pass, P2-1).** The
+above fix landed on only 4 of the 18 `tests/*.cpp` files carrying their
+own `ComputeStats` copy (`grep -l "ImageStats ComputeStats" tests/*.cpp`).
+The remaining 14 — `AutoRasterizerTest`, `CausticPhotonMapNormalizationTest`,
+`CookTorranceHWSSTest`, `DirectionalFogTest`, `FabricRenderTest`,
+`FinalGatherSpectralTest`, `HairDirectionalBacklitTest`, `HairRenderTest`,
+`PrimitiveSelfHitTest`, `RadianceEtaScaleGradedIndexTest`,
+`RefractiveRadianceScalingTest`, `SubsurfaceScatteringSpectralTest`,
+`VolumeEnvFurnaceTest`, `SignalIntegratorConsistencyTest` — carried the
+identical pattern (nonfinite pixel/composited component silently folded
+into `sum`/`mean`, and in five files also into a manually-tracked
+`maxLum`/`maxlum`/`minLum` extremum via `std::fmin`/`std::fmax` or a bare
+`if( x > best ) best = x;`, both of which discard a NaN operand rather
+than propagating it). `AutoRasterizerTest.cpp` additionally carries its
+OWN copy of `ChannelsAgree` with the exact `fabs(a-b) > relTol` false-
+agreement shape and got the same fix as the four already-closed files.
+Fixed identically in all 14: `ComputeStats` now rejects the whole capture
+(returns `ImageStats{}`, `valid==false`) as soon as any pixel's relevant
+component is nonfinite, before it reaches sum/extremum tracking. Each
+file gained its own `TestNonfiniteCandidateRejected` red-proof (malformed
+`CapturingRasterizerOutput` fixtures, guard temporarily reverted and
+rebuilt to confirm red, then restored and rebuilt to confirm green):
+`AutoRasterizerTest` 148/5 -> 151/2 (2 residual failures are a
+pre-existing, unrelated probe-routing flake reproduced identically on
+unmodified HEAD `b8c525be`, 145/2); `CausticPhotonMapNormalizationTest`
+5/2 -> 7/0; `CookTorranceHWSSTest` 5/2 -> 7/0; `DirectionalFogTest`
+12/2 -> 14/0; `FabricRenderTest` 1/2 -> 3/0 (isolated via
+`FABRIC_TEST_FILTER` to skip its expensive render sub-tests);
+`FinalGatherSpectralTest` 6/2 -> 8/0; `HairDirectionalBacklitTest`
+5/2 -> 7/0; `HairRenderTest` 27/2 -> 29/0; `PrimitiveSelfHitTest`
+1/2 -> 3/0 (isolated via `PRIM_TEST_FILTER`); `RadianceEtaScaleGradedIndexTest`
+11/2 -> 13/0; `RefractiveRadianceScalingTest` 39/2 -> 41/0;
+`SubsurfaceScatteringSpectralTest` 6/2 -> 8/0; `VolumeEnvFurnaceTest`
+30/2 -> 32/0 (its pre-existing `Check(s.valid, ...)` calls at the two
+production render sites were confirmed unconditional, i.e. not a
+skip-instead-of-fail bug); `SignalIntegratorConsistencyTest` 1/2 -> 3/0
+(isolated via `SIGNAL_CONSISTENCY_FILTER`; full unfiltered gate run
+confirmed 2971/0, was 2968/0, +3 checks, all other counters unchanged).
+Zero compiler warnings on every rebuild.
+**P3 opened, not fixed here**: all 18 files hand-duplicate
+`CapturingRasterizerOutput`/`ImageStats`/`ComputeStats`/
+`TestNonfiniteCandidateRejected` rather than sharing one harness header;
+collapsing that duplication is a structural test-harness refactor, out
+of scope for a review fix pass that should touch only the nonfinite-guard
+content.
 
 **DL-41 (translucent complete mixed-lobe/reverse density).** Add a focused
 translucent mixture-density test with nonzero entry reflection/transmission
