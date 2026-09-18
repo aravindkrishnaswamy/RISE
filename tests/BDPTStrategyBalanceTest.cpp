@@ -778,6 +778,16 @@ struct Tolerances
 
 static const Tolerances kStrictTolerances{ 0.08, 0.25, 1.00 };
 
+//! Topology L only (DL-103 closure, 2026-09-17).  Its MEAN band is
+//! tightened from the shared 8% to 2% -- see that topology's own
+//! comment for the isolated-A/B evidence (BDPT/PT went from
+//! +5.198% +/- 0.011 pp to +0.040% +/- 0.012 pp when the PT-side fix
+//! landed; 2% is ~115x the measured run-to-run sigma, and catches both
+//! a DL-103-class regression (5.2%) and a DL-69-class one (19%)).
+//! p99 and max stay at the shared values: they are noise-dominated on
+//! this topology and neither row moved them materially.
+static const Tolerances kSchlickTopologyLTolerances{ 0.02, 0.25, 1.00 };
+
 //////////////////////////////////////////////////////////////////////
 // RunTopologyTest - shared driver for each (PT, BDPT) comparison.
 //
@@ -1944,36 +1954,43 @@ static void TestSubmergedCeilingMISCombination()
 // this scene has real interreflection and an unequal budget would be
 // a second free variable.
 //
-// THIS TOPOLOGY'S 8% BAND IS PROVISIONAL, PENDING DL-103 (round-2
-// review P2-3/P2-4, 2026-09-17).  The reference this row gates against
-// is PT, and PT is not integrator-free here: DL-103 (OPEN) is that
-// un-guided PT's escape-side MIS partner is the SELECTED lobe's own
-// per-lobe density rather than the material's aggregate, so
-// `w_bsdf + w_nee != 1` at THIS material (measured 1.01-1.07 on a
-// Schlick furnace, docs/DEBT_LEDGER.md's DL-103 row) -- meaning PT's
-// own mean on this scene can be biased, in a direction DL-103's row
-// does not pin down for a full scene (only for a furnace).  There is
-// no closed form or integrator-free reference for this topology: it is
-// a full multi-bounce scene (wall + floor + area emitter, BDPT
-// max_eye_depth/max_light_depth 5), not a furnace, so a quadrature
-// reference is not available the way `SchlickLobePairingTest` has one
-// for a single vertex.  A hashed-sampler independent-MC PT rebuild
-// would still carry the pre-Slice-0 (or post-Slice-0) `SchlickSPF::Pdf`
-// bias into its escape-side MIS weight -- it is not integrator-free
-// either, since DL-103 lives in `PathTracingIntegrator.cpp`, not in the
-// sampler.  So: the 5.2% BDPT-over-PT reading below is real and
-// reproducible, but whether it means "BDPT is 5.2% over the truth" or
-// "PT is under the truth by some amount and BDPT is closer" is NOT
-// resolved by this test.  Cross-reference: this slice's isolated
-// SchlickSPF.cpp-only A/B (revert that one file to its pre-Slice-0
-// state, rebuild, re-render this same topology) measured PT move
-// -6.99% (0.0647011 -> 0.0601765) and BDPT move only -0.21% (0.0634197
-// -> 0.0632883) when `SchlickSPF::Pdf` changed -- i.e. changing ONLY
-// PT's NEE-side density (the escape side was untouched by Slice 0)
-// moved PT's own mean by 7% on this exact scene, which is DL-103's
-// mechanism made concrete at render scale.  Keep the 8% band (it has
-// margin either way) but do not read a pass here as "BDPT is correct
-// to 5.2%" until DL-103 is closed.
+// THIS TOPOLOGY'S BAND WAS PROVISIONAL PENDING DL-103; THAT ROW IS NOW
+// CLOSED AND THE MEAN BAND IS TIGHTENED TO 2%
+// (docs/DL103_PT_ESCAPE_MIS_PARTNER.md, 2026-09-17).
+//
+// The marker existed because the reference this row gates against is
+// PT, and PT was not integrator-free here: un-guided PT's escape-side
+// MIS partner was the SELECTED lobe's own per-lobe density rather than
+// the material's aggregate, so `w_bsdf + w_nee != 1` at THIS material
+// -- a PT-side bias in a direction a furnace could bound but a full
+// scene could not.  There is still no closed form for this topology
+// (wall + floor + area emitter, depth 5 both sides), so the closure
+// evidence is an isolated A/B on `PathTracingIntegrator.cpp` alone
+// (revert that one file to this slice's own pre-fix commit, rebuild,
+// re-render this same topology, n = 4 each side):
+//
+//   pre-fix   PT 0.0601656 +/- 0.0000054   BDPT 0.0632933 +/- 0.0000024
+//             BDPT/PT 1.05198 +/- 0.00011   (+5.198%)
+//   post-fix  PT 0.0632676 +/- 0.0000110   BDPT 0.0632930 +/- 0.0000044
+//             BDPT/PT 1.00040 +/- 0.00012   (+0.040%)
+//
+// PT moved +5.16% and BDPT moved -0.0005%.  That asymmetry is the
+// point: the ONLY file that changed lives in PT, BDPT's `pdfFwd` has
+// been the same aggregate function as its `pdfRev` since DL-69, and the
+// two integrators -- which share no MIS code and weight completely
+// different strategy mixes -- now agree to 0.040%, four times their own
+// run-to-run sigma.  Two independent estimators landing on the same
+// number after only one of them was corrected is evidence about the
+// TRUTH, not merely about their agreement.
+//
+// What the tightened band does NOT claim: DL-127 (`SchlickSPF`'s
+// per-lobe `kray` is the Schlick-1994 sampling weight, not that lobe's
+// `f_I cos / p_I`) is still open, and PT and BDPT BOTH consume `kray`,
+// so a residual from that row can sit inside this agreement rather than
+// show up as a gap.  Read a pass here as "PT and BDPT agree to 2% on a
+// multi-lobe material", which is exactly what a strategy-balance test
+// is for.  Topology M below is the immune control that makes a future
+// L-only residual attributable.
 //////////////////////////////////////////////////////////////////////
 static const char* kSceneSchlickMultiLobeL =
 	"film\n"
@@ -2140,7 +2157,7 @@ static const char* kRasterizerBDPTSchlickL =
 static void TestSchlickMultiLobe()
 {
 	RunTopologyTest( "multi-lobe schlick_material wall + floor, area emitter (DL-69)",
-		std::string( kSceneSchlickMultiLobeL ), kStrictTolerances,
+		std::string( kSceneSchlickMultiLobeL ), kSchlickTopologyLTolerances,
 		kRasterizerPTSchlickL, kRasterizerBDPTSchlickL );
 }
 
