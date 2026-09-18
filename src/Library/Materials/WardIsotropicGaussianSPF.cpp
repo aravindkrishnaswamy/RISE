@@ -80,11 +80,20 @@ static void GenerateSpecularRay(
 
 	const Vector3	a( cos_phi*sin_theta, sin_phi*sin_theta, cos_theta );
 
-	// Generate the actual vector from the half-way vector
+	// Generate the actual vector from the half-way vector.  FRAME (DL-100,
+	// fixed 2026-09-17): `onb`, the caller's SAMPLING frame -- Scatter's
+	// `myonb`, post-FlipW on a back-face hit -- not `ri.onb`.  Before the
+	// fix this `onb` parameter was DEAD: it always read `ri.onb` directly,
+	// so on a back-face hit the half-vector was built around the
+	// UNFLIPPED normal while Scatter's own accept-check tested the
+	// FLIPPED `myonb.w()` -- every specular draw was then on the wrong
+	// side and got rejected, silently losing the whole specular lobe.
+	// See docs/DL100_SCHLICK_BACKFACE_SPECULAR.md (same pattern as
+	// SchlickSPF, fixed in the same slice).
 	const Vector3	h(
-		  ri.onb.u().x*a.x + ri.onb.v().x*a.y + ri.onb.w().x*a.z,
-	   	  ri.onb.u().y*a.x + ri.onb.v().y*a.y + ri.onb.w().y*a.z,
-		  ri.onb.u().z*a.x + ri.onb.v().z*a.y + ri.onb.w().z*a.z );
+		  onb.u().x*a.x + onb.v().x*a.y + onb.w().x*a.z,
+	   	  onb.u().y*a.x + onb.v().y*a.y + onb.w().y*a.z,
+		  onb.u().z*a.x + onb.v().z*a.y + onb.w().z*a.z );
 
 	const Scalar hdotk = Vector3Ops::Dot(h, -ri.ray.Dir());
 

@@ -170,14 +170,22 @@ static inline bool SchlickInvertPhi( const Scalar phi, const Scalar p, Scalar& o
 	return true;
 }
 
-//! Schlick's half-vector warp, (xi,b) -> h.  NOTE: the frame is `ri.onb`,
-//! NOT the caller's (possibly FlipW'd) shading frame -- that is what the
-//! shipped sampler has always done, and `Pdf()` must replay it faithfully
-//! rather than "correct" it here (see DL-100 in docs/DEBT_LEDGER.md: on a
-//! back-face hit the lobe is therefore sampled around the unflipped normal
-//! and every draw is then rejected by Scatter's own accept-check).
+//! Schlick's half-vector warp, (xi,b) -> h.  FRAME (DL-100, fixed
+//! 2026-09-17): `onb`, the caller's (possibly FlipW'd) SAMPLING frame --
+//! NOT `ri.onb`.  Before the fix this always used `ri.onb`, so on a
+//! back-face hit (Scatter's `myonb` FlipW'd to face the incoming ray) the
+//! half-vector was built around the UNFLIPPED normal: the reflected
+//! direction then landed on the wrong side of `myonb.w()`, and
+//! Scatter's own accept-check (`dot(dir, myonb.w()) > 0`) rejected every
+//! specular draw -- the whole specular lobe silently vanished on a
+//! back-face hit, diffuse-only, full diffuse weight.  `Pdf`/`PdfNM` (via
+//! `ComputeSchlickSpecularPdf`, `SchlickInvertSpecular`,
+//! `SchlickReplaySpecular` and `SchlickDiffuseSelectCoefficient` below)
+//! now all take the SAME `onb` and use it consistently, so the sampler
+//! and its density agree in whichever frame Scatter actually sampled.
+//! See docs/DL100_SCHLICK_BACKFACE_SPECULAR.md.
 static inline Vector3 SchlickSampleHalfVector(
-		const RayIntersectionGeometric& ri,
+		const OrthonormalBasis3D& onb,
 		const Point2& random,
 		const Scalar r,
 		const Scalar p
@@ -196,14 +204,15 @@ static inline Vector3 SchlickSampleHalfVector(
 
 	// Generate the actual vector from the half-way vector
 	return Vector3(
-		  ri.onb.u().x*a.x + ri.onb.v().x*a.y + ri.onb.w().x*a.z,
-	   	  ri.onb.u().y*a.x + ri.onb.v().y*a.y + ri.onb.w().y*a.z,
-		  ri.onb.u().z*a.x + ri.onb.v().z*a.y + ri.onb.w().z*a.z );
+		  onb.u().x*a.x + onb.v().x*a.y + onb.w().x*a.z,
+	   	  onb.u().y*a.x + onb.v().y*a.y + onb.w().y*a.z,
+		  onb.u().z*a.x + onb.v().z*a.y + onb.w().z*a.z );
 }
 
 static void GenerateSpecularRay(
 		ScatteredRay& specular,
 		Scalar& fresnel,
+		const OrthonormalBasis3D& onb,								///< [in] Sampling frame (Scatter's `myonb`, post-FlipW) -- DL-100
 		const RayIntersectionGeometric& ri,							///< [in] Ray intersection information
 		const Point2& random,										///< [in] Two random numbers
 		const Scalar r,
@@ -213,7 +222,7 @@ static void GenerateSpecularRay(
 	specular.type = ScatteredRay::eRayReflection;
 
 	// Use the warping function to perturb the reflected ray
-	const Vector3	h = SchlickSampleHalfVector( ri, random, r, p );
+	const Vector3	h = SchlickSampleHalfVector( onb, random, r, p );
 
 	const Scalar hdotk = Vector3Ops::Dot(h, -ri.ray.Dir());
 
@@ -239,6 +248,7 @@ static void GenerateSpecularRay(
 // The outgoing direction PDF is: D(h) / (4 * dot(wo, h))
 static Scalar ComputeSchlickSpecularPdf(
 	const RayIntersectionGeometric& ri,
+	const OrthonormalBasis3D& onb,									///< [in] Sampling frame (Scatter's `myonb`) -- DL-100
 	const Vector3& wo,
 	const Scalar r,
 	const Scalar p
@@ -248,23 +258,21 @@ static Scalar ComputeSchlickSpecularPdf(
 		return 0;
 	}
 
-	// FRAME: `ri.onb`, NEVER a FlipW'd copy.  GenerateSpecularRay builds its
-	// half-vector in ri.onb unconditionally (its `onb` parameter was dead --
-	// see SchlickSampleHalfVector), so this density has to use the same
-	// frame or it describes a distribution nothing draws from.  The earlier
-	// FlipW here was introduced on the premise that the sampler flipped too;
-	// it does not.  Consequence, and it is the RIGHT one: on a back-face hit
-	// wi and wo both lie on the -w side, h with them, so `hdotn <= 0` and
-	// this returns 0 -- exactly matching Scatter, whose every specular draw
-	// is then rejected by its own accept-check.  (That the sampler loses the
-	// whole specular lobe on a back-face hit is a real energy defect, but a
-	// SAMPLER defect: DL-100 in docs/DEBT_LEDGER.md.)
+	// FRAME (DL-100, fixed 2026-09-17): `onb`, the SAME frame
+	// GenerateSpecularRay now samples `h` in (see SchlickSampleHalfVector).
+	// Before the fix `GenerateSpecularRay` always used `ri.onb` regardless
+	// of the caller's frame, and this function mirrored that by reading
+	// `ri.onb` directly -- both now consistently take the caller's `onb`.
+	// On a back-face hit `onb` is Scatter's FlipW'd `myonb`, so a `wo` on
+	// the correct (post-flip) side recovers a half-vector with `hdotn > 0`
+	// and a nonzero density, matching what the fixed sampler now actually
+	// emits there.
 	const Vector3 wi = Vector3Ops::Normalize( -ri.ray.Dir() );
 	const Vector3 woNorm = Vector3Ops::Normalize( wo );
 
 	// Compute half-vector
 	Vector3 h = Vector3Ops::Normalize( wi + woNorm );
-	const Scalar hdotn = Vector3Ops::Dot( h, ri.onb.w() );
+	const Scalar hdotn = Vector3Ops::Dot( h, onb.w() );
 	if( hdotn <= 0 ) {
 		return 0;
 	}
@@ -316,8 +324,8 @@ static Scalar ComputeSchlickSpecularPdf(
 	// histogram of the real sampler -- see
 	// docs/DL67_SLICE0_SCHLICK_PDF_WEIGHTS.md section 4b).  The corrected
 	// form below reproduces that histogram to MC noise at p = 1, .8, .6, .3.
-	const Scalar hu = Vector3Ops::Dot( h, ri.onb.u() );
-	const Scalar hv = Vector3Ops::Dot( h, ri.onb.v() );
+	const Scalar hu = Vector3Ops::Dot( h, onb.u() );
+	const Scalar hv = Vector3Ops::Dot( h, onb.v() );
 
 	Scalar phi_pdf;
 	{
@@ -425,7 +433,7 @@ static inline bool SchlickReplaySpecular(
 	Scalar& outFresnel
 	)
 {
-	const Vector3 h = SchlickSampleHalfVector( ri, random, r, p );
+	const Vector3 h = SchlickSampleHalfVector( myonb, random, r, p );
 	const Scalar hdotk = Vector3Ops::Dot( h, -ri.ray.Dir() );
 	outFresnel = ::pow(1-hdotk,5);
 
@@ -448,6 +456,7 @@ static inline bool SchlickReplaySpecular(
 //! shared random pair.
 static bool SchlickInvertSpecular(
 	const RayIntersectionGeometric& ri,
+	const OrthonormalBasis3D& onb,									///< [in] Sampling frame (Scatter's `myonb`) -- DL-100
 	const Vector3& woNorm,
 	const Scalar r,
 	const Scalar p,
@@ -461,14 +470,14 @@ static bool SchlickInvertSpecular(
 	const Vector3 wi = Vector3Ops::Normalize( -ri.ray.Dir() );
 	const Vector3 h = Vector3Ops::Normalize( wi + woNorm );
 
-	// Project into the frame the sampler built h in (ri.onb -- see
-	// SchlickSampleHalfVector's note).
-	const Scalar hz = Vector3Ops::Dot( h, ri.onb.w() );
+	// Project into the frame the sampler builds h in -- `onb` (Scatter's
+	// `myonb`), post-DL-100 -- see SchlickSampleHalfVector's note.
+	const Scalar hz = Vector3Ops::Dot( h, onb.w() );
 	if( hz <= 0 ) {
 		return false;
 	}
-	const Scalar hx = Vector3Ops::Dot( h, ri.onb.u() );
-	const Scalar hy = Vector3Ops::Dot( h, ri.onb.v() );
+	const Scalar hx = Vector3Ops::Dot( h, onb.u() );
+	const Scalar hy = Vector3Ops::Dot( h, onb.v() );
 
 	// cos^2(theta) = xi/(r + xi(1-r))  =>  xi = c2*r/(1 - c2 + c2*r)
 	const Scalar c2 = r_min( Scalar(1), hz*hz );
@@ -551,9 +560,14 @@ static Scalar SchlickDiffuseSelectCoefficient(
 	SchlickQuadRows rows;
 	SchlickBuildQuadRows( lobes, rows );
 
-	const Vector3& eu = ri.onb.u();
-	const Vector3& ev = ri.onb.v();
-	const Vector3& ew = ri.onb.w();
+	// FRAME (DL-100, fixed 2026-09-17): `myonb`, the SAME frame
+	// GenerateSpecularRay now samples `h` in -- this replay has to build
+	// `h` the same way the sampler does or it isn't replaying it at all.
+	// Before the fix these were `ri.onb`, matching the sampler's
+	// pre-DL-100 (buggy) unconditional-`ri.onb` behaviour.
+	const Vector3& eu = myonb.u();
+	const Vector3& ev = myonb.v();
+	const Vector3& ew = myonb.w();
 	const Vector3& d  = ri.ray.Dir();
 	const Vector3& nW = myonb.w();
 
@@ -650,7 +664,7 @@ static Scalar SchlickSpecularDensity(
 	Scalar sum = 0;
 
 	for( int i = 0; i < lobes.count; i++ ) {
-		const Scalar pdf_i = ComputeSchlickSpecularPdf( ri, woNorm, lobes.r[i], lobes.p[i] );
+		const Scalar pdf_i = ComputeSchlickSpecularPdf( ri, myonb, woNorm, lobes.r[i], lobes.p[i] );
 		if( pdf_i <= 0 ) {
 			continue;
 		}
@@ -664,7 +678,7 @@ static Scalar SchlickSpecularDensity(
 		int nAcceptedSpec = 1;
 		if( lobes.count > 1 ) {
 			Point2 random;
-			if( SchlickInvertSpecular( ri, woNorm, lobes.r[i], lobes.p[i], random ) ) {
+			if( SchlickInvertSpecular( ri, myonb, woNorm, lobes.r[i], lobes.p[i], random ) ) {
 				for( int j = 0; j < lobes.count; j++ ) {
 					if( j == i ) {
 						continue;
@@ -771,13 +785,13 @@ void SchlickSPF::Scatter(
 	if( !pRoughness->HasPerChannelVariation() && !pIsotropy->HasPerChannelVariation() )
 	{
 		Scalar fresnel = 0;
-		GenerateSpecularRay( s, fresnel, ri, Point2(sampler.Get1D(),sampler.Get1D()), rt.v[0], it.v[0] );
+		GenerateSpecularRay( s, fresnel, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), rt.v[0], it.v[0] );
 
 		// Accept-check uses myonb.w() -- see the diffuse-lobe comment above.
 		if( Vector3Ops::Dot( s.ray.Dir(), myonb.w() ) > 0.0 && Vector3Ops::Dot( s.ray.Dir(), geomN ) > 0.0 ) {
 			const RISEPel rho = pSpecular->GetColor(ri);
 			s.kray = rho + (RISEPel(1.0,1.0,1.0)-rho) * fresnel;
-			s.pdf = ComputeSchlickSpecularPdf( ri, s.ray.Dir(), rt.v[0], it.v[0] );
+			s.pdf = ComputeSchlickSpecularPdf( ri, myonb, s.ray.Dir(), rt.v[0], it.v[0] );
 			s.isDelta = false;
 			scattered.AddScatteredRay( s );
 		}
@@ -789,13 +803,13 @@ void SchlickSPF::Scatter(
 
 		for( int i=0; i<3; i++ ) {
 			Scalar fresnel = 0;
-			GenerateSpecularRay( s, fresnel, ri, ptrand, rt.v[i], it.v[i] );
+			GenerateSpecularRay( s, fresnel, myonb, ri, ptrand, rt.v[i], it.v[i] );
 
 			// Accept-check uses myonb.w() -- see the diffuse-lobe comment above.
 			if( Vector3Ops::Dot( s.ray.Dir(), myonb.w() ) > 0.0 && Vector3Ops::Dot( s.ray.Dir(), geomN ) > 0.0 ) {
 				s.kray = 0;
 				s.kray[i] = rho[i] + (1.0-rho[i]) * fresnel;
-				s.pdf = ComputeSchlickSpecularPdf( ri, s.ray.Dir(), rt.v[i], it.v[i] );
+				s.pdf = ComputeSchlickSpecularPdf( ri, myonb, s.ray.Dir(), rt.v[i], it.v[i] );
 				s.isDelta = false;
 				scattered.AddScatteredRay( s );
 			}
@@ -839,7 +853,7 @@ void SchlickSPF::ScatterNM(
 	}
 
 	GenerateDiffuseRay( d, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()) );
-	GenerateSpecularRay( s, fresnel, ri, Point2(sampler.Get1D(),sampler.Get1D()), roughnessNM, isotropyNM );
+	GenerateSpecularRay( s, fresnel, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), roughnessNM, isotropyNM );
 
 	// Accept-checks use myonb.w() -- see Scatter()'s comment: it is the
 	// frame lobes are actually sampled around (post-FlipW), not the raw
@@ -855,7 +869,7 @@ void SchlickSPF::ScatterNM(
 	if( Vector3Ops::Dot( s.ray.Dir(), myonb.w() ) > 0.0 && Vector3Ops::Dot( s.ray.Dir(), geomN ) > 0.0 ) {
 		const Scalar rho = GuardedGetColorNM( *pSpecular, ri, nm );
 		s.krayNM = rho + (1.0-rho) * fresnel;
-		s.pdf = ComputeSchlickSpecularPdf( ri, s.ray.Dir(), roughnessNM, isotropyNM );
+		s.pdf = ComputeSchlickSpecularPdf( ri, myonb, s.ray.Dir(), roughnessNM, isotropyNM );
 		s.isDelta = false;
 		scattered.AddScatteredRay( s );
 	}

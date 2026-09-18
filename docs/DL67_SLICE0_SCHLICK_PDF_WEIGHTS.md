@@ -321,8 +321,14 @@ parameter is now removed so this cannot be misread again.) The density
 now uses `ri.onb` too. As a side effect it returns 0 on a back-face hit,
 which is the right answer — `Scatter`'s every specular draw is rejected
 there. That the *sampler* loses its whole specular lobe on a back-face
-hit is a real energy defect; it is filed as **DL-100**, not fixed here,
-because fixing it changes what renders sample.
+hit is a real energy defect; it was filed as **DL-100**, not fixed here
+(fixing it changes what renders sample and needed its own red-proof) --
+**CLOSED 2026-09-17** in the debt-dl100 slice: `SchlickSampleHalfVector`,
+`GenerateSpecularRay`, and every density helper here now consistently
+take the caller's `myonb` instead of `ri.onb` (so `ComputeSchlickSpecularPdf`
+now correctly reads NONZERO on a back-face hit too, matching what the
+fixed sampler emits there). See
+[DL100_SCHLICK_BACKFACE_SPECULAR.md](DL100_SCHLICK_BACKFACE_SPECULAR.md).
 
 ### 4c. The gate
 
@@ -617,7 +623,10 @@ One-sentence bug pattern: *`Pdf()` reports a density other than the one
 Rows opened by this slice: **DL-98** (`IsotropicPhongSPF`), **DL-99**
 (`AshikminShirleyAnisotropicPhongSPF`), **DL-100** (`GenerateSpecularRay`
 samples the unflipped frame, so a back-face hit loses its whole specular
-lobe), **DL-101** (the per-channel branch reuses one `ScatteredRay`
+lobe -- **CLOSED 2026-09-17**, debt-dl100 slice, also fixed the identical
+pattern found by sibling audit in `WardIsotropicGaussianSPF`; see
+[DL100_SCHLICK_BACKFACE_SPECULAR.md](DL100_SCHLICK_BACKFACE_SPECULAR.md)),
+**DL-101** (the per-channel branch reuses one `ScatteredRay`
 across its three lanes, so a lane whose `hdotk <= 0` can push the
 PREVIOUS lane's direction with its own kray and pdf), **DL-102** (the
 azimuthal-density defect of §4b — recorded as a closed row so the
