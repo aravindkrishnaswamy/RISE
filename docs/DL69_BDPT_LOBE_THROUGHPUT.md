@@ -318,6 +318,31 @@ DL-103 and DL-127:
 Schlick-specific, not a property of this geometry, and the suite's
 standard 8 % band is kept (2.8 pp of margin).
 
+**Re-quoted 2026-09-17 (round-2 review P2-3/P2-4) against the TRUE
+merge target.**  Both rows above predate this branch's merge of master
+`e5a3750b`, which brings **DL-123** (`GGXBRDF::hemisphericalAlbedo`) —
+and topology M's wall is `ggx_material`, the exact consumer DL-123
+changed.  Re-measured on this branch's actual HEAD: PT 0.0471280 /
+BDPT 0.0472026 (channel-averaged over the render's 3 output channels)
+= **+0.16 %** — unchanged within MC noise of the pre-DL-123 +0.19 %, so
+DL-123 does not move this control's conclusion.
+
+**Topology L's 8 % band is PROVISIONAL, pending DL-103.**  PT is not an
+integrator-free reference for a multi-lobe `schlick_material` scene
+while DL-103 (OPEN) stands: the one-file `SchlickSPF.cpp` A/B above
+shows changing only the density DL-103's escape-side partner should
+have used, but doesn't, moves PT's own mean on this exact topology by
+7 % — that is DL-103's mechanism at render scale, not a furnace
+abstraction.  There is no closed form or furnace for topology L's full
+multi-bounce scene (wall + floor + area emitter, depth 5) the way
+`SchlickLobePairingTest` has one for a single vertex, and a
+hashed-sampler independent-MC PT rebuild would not be integrator-free
+either — DL-103 lives in `PathTracingIntegrator.cpp`'s MIS-weight
+construction, not in the sampler, so a different RNG does not remove
+it.  So the 8 % band is kept (it has margin either way), and a pass on
+topology L is evidence BDPT and PT agree to within that band, not that
+either is correct to the residual quoted above.
+
 ### 3.2b Cost (review P2-5)
 
 The `pdfFwd` addition makes both generators evaluate `ISPF::Pdf` one
