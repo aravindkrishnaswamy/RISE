@@ -28,7 +28,17 @@
 //  weight, and a missing `(1-Rs)` plus a spurious `1/pi` (and the wrong
 //  `fromK1*fromK2` vs `fromK^2`) on the diffuse weight.
 //
-//  GATE 1 -- NORMALISATION, TWO-SIDED, 1%.
+//  GATE 1 -- NORMALISATION, TWO-SIDED, 1%.  The quadrature runs over the
+//  FULL SPHERE, matching tests/IsotropicPhongSPFPdfConsistencyTest.cpp.
+//  Unlike Phong, this SPF's own sampler CANNOT emit below the shading
+//  hemisphere (GenerateSpecularRay rejects `Dot(k2, onb.w()) < 0` and the
+//  diffuse lobe is a cosine hemisphere about the same frame), and Pdf()
+//  early-outs at `cosO <= 0` before any quadrature runs -- so the lower
+//  half costs almost nothing and is carried as a guard that the two
+//  supports agree.  The `belowZ` column below is the measured fraction of
+//  emitted directions on the far side of the SAMPLING frame's normal; it
+//  is expected to read 0 on every row here.
+//
 //  GATE 2 -- TOTAL VARIATION vs 600 000 real Scatter()+RandomlySelect()
 //  draws, 12x8 equal-solid-angle bins, threshold 0.012 (same
 //  Cauchy-Schwarz floor as the other two files, K=96 N=600000).
@@ -181,6 +191,7 @@ static void RunConfig( const Config& c, double nm )
 
     std::vector<double> emp( kNBins, 0.0 );
     long emitted = 0;
+    long belowZ  = 0;
 
     for( long i = 0; i < kDraws; i++ ) {
         ScatteredRayContainer scattered;
@@ -193,7 +204,11 @@ static void RunConfig( const Config& c, double nm )
         ScatteredRay* sel = scattered.RandomlySelect( rng.CanonicalRandom(), bNM );
         if( sel ) {
             emitted++;
-            emp[ BinOf( Vector3Ops::Normalize( sel->ray.Dir() ) ) ] += 1.0;
+            const Vector3 d = Vector3Ops::Normalize( sel->ray.Dir() );
+            if( d.z <= 0 ) {
+                belowZ++;
+            }
+            emp[ BinOf( d ) ] += 1.0;
         }
     }
 
@@ -204,10 +219,13 @@ static void RunConfig( const Config& c, double nm )
 
     std::vector<double> quad( kNBins, 0.0 );
     double intPdf = 0;
+    // FULL SPHERE (see the header comment): 2*kQT rows of cos(theta)
+    // spanning [-1,1], per-row weight and upper-hemisphere resolution
+    // unchanged from the old hemisphere-only grid.
     const double dw = (1.0/kQT) * (TWO_PI/kQP);
-    for( int a = 0; a < kQT; a++ ) {
-        const double ct = (a + 0.5)/kQT;
-        const double st = sqrt( 1.0 - ct*ct );
+    for( int a = 0; a < 2*kQT; a++ ) {
+        const double ct = -1.0 + (a + 0.5)/kQT;
+        const double st = sqrt( r_max( 0.0, 1.0 - ct*ct ) );
         for( int b = 0; b < kQP; b++ ) {
             const double ph = (b + 0.5)/kQP * TWO_PI;
             const Vector3 wo( st*cos(ph), st*sin(ph), ct );
@@ -230,6 +248,7 @@ static void RunConfig( const Config& c, double nm )
               << "  emitted=" << massEmp
               << "  |diff|=" << fabs(intPdf - massEmp)
               << "  TVD=" << tvd
+              << "  belowZ=" << (emitted ? (double)belowZ/(double)emitted : 0.0)
               << std::endl;
 
     CHECK( fabs(intPdf - massEmp) <= kMassTol,

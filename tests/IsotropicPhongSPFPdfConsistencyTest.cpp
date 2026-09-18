@@ -20,9 +20,30 @@
 //  law in cos(down), since Perturb()'s azimuth warp is exponent-
 //  independent -- no inversion needed).
 //
-//  GATE 1 -- NORMALISATION, TWO-SIDED.  A hemisphere quadrature of Pdf()
+//  GATE 1 -- NORMALISATION, TWO-SIDED.  A FULL-SPHERE quadrature of Pdf()
 //  must match the measured probability that Scatter() emits ANY ray at
 //  all, to within 1%.
+//
+//  The domain is the full sphere, not the hemisphere about `n`, and that
+//  is load-bearing rather than defensive: IsotropicPhongSPF::Scatter has
+//  NO dot(dir,n) >= 0 accept-check at all (only the geomN gate), and
+//  GeometricUtilities::Perturb around `reflected` reaches down = pi/2, so
+//  at low exponent and grazing incidence a real fraction of emitted
+//  specular rays have dot(dir,n) < 0.  Their kray is r_max(cos_o,0) = 0,
+//  so they never WIN a two-ray RandomlySelect -- but when the diffuse ray
+//  has been dropped by the geomN gate they are the container's only
+//  occupant and RandomlySelect's freeidx==1 short-circuit returns them
+//  regardless of weight.  Pdf() prices exactly that event (the (1-aD)
+//  branch of PhongSpecularDensity's q), so a hemisphere-only quadrature
+//  systematically under-reads its own integrand.  Measured on the
+//  `N1 rd.05 rs.95 tilt30 th45` row: 0.870% of emitted directions are
+//  below the shading horizon, the hemisphere integral read 0.99180
+//  against a measured emission probability of 0.99884, and the full
+//  sphere reads 1.00047.  The same domain error also inflated gate 2
+//  there (TVD 0.01196 of a 0.012 threshold -- 99.7% of the band, on an
+//  artifact; 0.00763 once the domain is right, and the worst row over
+//  the whole file drops from 0.01196 to 0.00855, i.e. 71% of the band).
+//  The `belowZ` column reports that fraction per row.
 //
 //  GATE 2 -- TOTAL VARIATION vs THE REAL SAMPLER.  600 000 real
 //  Scatter()+RandomlySelect() draws, histogrammed into 12x8 equal-solid-
@@ -185,6 +206,7 @@ static void RunConfig( const Config& c, double nm )
 
     std::vector<double> emp( kNBins, 0.0 );
     long emitted = 0;
+    long belowZ  = 0;
 
     for( long i = 0; i < kDraws; i++ ) {
         ScatteredRayContainer scattered;
@@ -197,7 +219,11 @@ static void RunConfig( const Config& c, double nm )
         ScatteredRay* sel = scattered.RandomlySelect( rng.CanonicalRandom(), bNM );
         if( sel ) {
             emitted++;
-            emp[ BinOf( Vector3Ops::Normalize( sel->ray.Dir() ) ) ] += 1.0;
+            const Vector3 d = Vector3Ops::Normalize( sel->ray.Dir() );
+            if( d.z <= 0 ) {
+                belowZ++;
+            }
+            emp[ BinOf( d ) ] += 1.0;
         }
     }
 
@@ -210,10 +236,14 @@ static void RunConfig( const Config& c, double nm )
     const int qp = c.qpOverride > 0 ? c.qpOverride : kQP;
     std::vector<double> quad( kNBins, 0.0 );
     double intPdf = 0;
+    // FULL SPHERE: `a` runs over 2*qt rows of cos(theta) spanning [-1,1],
+    // so the per-row solid-angle weight (and the resolution within the
+    // upper hemisphere) is unchanged from the old hemisphere-only grid.
+    // See the header comment for why the lower half is not optional.
     const double dw = (1.0/qt) * (TWO_PI/qp);
-    for( int a = 0; a < qt; a++ ) {
-        const double ct = (a + 0.5)/qt;
-        const double st = sqrt( 1.0 - ct*ct );
+    for( int a = 0; a < 2*qt; a++ ) {
+        const double ct = -1.0 + (a + 0.5)/qt;
+        const double st = sqrt( r_max( 0.0, 1.0 - ct*ct ) );
         for( int b = 0; b < qp; b++ ) {
             const double ph = (b + 0.5)/qp * TWO_PI;
             const Vector3 wo( st*cos(ph), st*sin(ph), ct );
@@ -236,6 +266,7 @@ static void RunConfig( const Config& c, double nm )
               << "  emitted=" << massEmp
               << "  |diff|=" << fabs(intPdf - massEmp)
               << "  TVD=" << tvd
+              << "  belowZ=" << (emitted ? (double)belowZ/(double)emitted : 0.0)
               << std::endl;
 
     CHECK( fabs(intPdf - massEmp) <= kMassTol,
