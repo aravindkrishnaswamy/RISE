@@ -6,7 +6,7 @@ import sys
 from dataclasses import dataclass, field
 
 
-_EXPECTED_API_VERSION = 12
+_EXPECTED_API_VERSION = 13
 
 # Hair colour tiers -- must match `enum rise_blender_hair_tier` in
 # rise_blender_bridge.h.  The exporter's HairMaterialData.tier is the
@@ -143,6 +143,18 @@ class _Material(ctypes.Structure):
         ("sheen_color_painter_name", ctypes.c_char_p),
         ("sheen_roughness", ctypes.c_double),
         ("sheen_roughness_texture_painter_name", ctypes.c_char_p),
+        # ABI v13 (DL-186, docs/DEBT_LEDGER.md) -- see rise_blender_bridge.h.
+        ("coat_weight_texture_painter_name", ctypes.c_char_p),
+        ("coat_weight", ctypes.c_double),
+        ("coat_tint_painter_name", ctypes.c_char_p),
+        ("coat_roughness_texture_painter_name", ctypes.c_char_p),
+        ("coat_roughness", ctypes.c_double),
+        ("coat_ior", ctypes.c_double),
+        ("subsurface_absorption", ctypes.c_char_p),
+        ("subsurface_scattering", ctypes.c_char_p),
+        ("subsurface_ior", ctypes.c_double),
+        ("subsurface_g", ctypes.c_double),
+        ("subsurface_roughness", ctypes.c_double),
     ]
 
 
@@ -705,6 +717,23 @@ class _SceneHandle:
         payload.sheen_roughness_texture_painter_name = self._cstring(
             getattr(material, "sheen_roughness_texture_painter_name", None)
         )
+        # ABI v13 -- same `getattr` tolerance pattern as v10/v11/v12
+        # above (DL-186, docs/DEBT_LEDGER.md).
+        payload.coat_weight_texture_painter_name = self._cstring(
+            getattr(material, "coat_weight_texture_painter_name", None)
+        )
+        payload.coat_weight = float(getattr(material, "coat_weight", 0.0))
+        payload.coat_tint_painter_name = self._cstring(getattr(material, "coat_tint_painter_name", None))
+        payload.coat_roughness_texture_painter_name = self._cstring(
+            getattr(material, "coat_roughness_texture_painter_name", None)
+        )
+        payload.coat_roughness = float(getattr(material, "coat_roughness", 0.03))
+        payload.coat_ior = float(getattr(material, "coat_ior", 1.5))
+        payload.subsurface_absorption = self._cstring(getattr(material, "subsurface_absorption", None))
+        payload.subsurface_scattering = self._cstring(getattr(material, "subsurface_scattering", None))
+        payload.subsurface_ior = float(getattr(material, "subsurface_ior", 1.4))
+        payload.subsurface_g = float(getattr(material, "subsurface_g", 0.0))
+        payload.subsurface_roughness = float(getattr(material, "subsurface_roughness", 0.0))
         return payload
 
     def _marshal_mesh(self, mesh):

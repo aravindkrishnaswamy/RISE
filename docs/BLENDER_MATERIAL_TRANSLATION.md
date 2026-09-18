@@ -524,6 +524,140 @@ pinned by pattern-matching its source rather than by driving a live
 Blender node graph, the same approach `ExporterHairTextureGatingTest`
 in the same file already uses for `_hair_material_payload`.
 
+## Coat and Subsurface (Principled BSDF -> `coated_material` /
+`randomwalk_sss_material`)
+
+DL-186 (docs/DEBT_LEDGER.md; no source-doc heading — opened by the
+debt-dl151 slice's sibling audit).  Before this closed, `exporter.py`
+warned-and-dropped Coat Weight and Subsurface Weight, and never read
+Coat Tint/Roughness/IOR or Subsurface Radius/Scale/IOR/Anisotropy at
+all — `rise_blender_material` had no field for any of them.  ABI
+v12 -> v13 adds real bridging for both.
+
+### Coat -> `coated_material` (ABI v13)
+
+Mirrors "Anisotropy and sheen" above's `sheen_*` fields exactly, one
+layer further: Blender's Coat sockets -> six new `coat_*` fields,
+consumed by a `coated_material` wrap that
+`add_pbr_metallic_roughness_material` builds over its PBR base using
+the SAME `<name>::pbrbase` intermediate-name + deferred-emission
+mechanism DL-18 established for sheen (see that section's own
+walkthrough — the mechanics are identical, only the wrapped material
+class differs).
+
+| Blender Principled input | `rise_blender_material` field | Notes |
+|---------------------------|-------------------------------|-------|
+| `Coat Weight` | `coat_weight` (numeric) / `coat_weight_texture_painter_name` | Numeric fallback read at the socket default; a linked, image-texture-resolvable weight is wrapped into an `IScalarPainter` channel-R view (the v12 `sheen_roughness_texture_painter_name` texture-exception pattern). `coat_weight <= 0` and no texture = no coat, bit-identical to a pre-v13 payload. |
+| `Coat Tint` | `coat_tint_painter_name` | Constant or texture-linked colour, same `_color_or_texture_painter` helper base colour uses. Default white (or unlinked) sends `None` — `coated_material`'s own "no tint" sentinel. |
+| `Coat Roughness` | `coat_roughness` (numeric) / `coat_roughness_texture_painter_name` | Blender's PERCEPTUAL roughness [0,1]. The native bridge SQUARES it into a GGX alpha before calling `AddCoatedMaterial` — `coated_material`'s own `coat_roughness` slot is directly a GGX alpha, not a perceptual roughness — matching `GLTFSceneImporter.cpp`'s identical `clearcoat_roughness_factor^2` conversion for `KHR_materials_clearcoat`. |
+| `Coat IOR` | `coat_ior` | Plain numeric IOR (>= 1), socket-default only — Blender rarely textures this input and `coated_material`'s own `coat_ior` slot is not texture-driven either. |
+
+**Layering with Sheen.** A material with BOTH Coat Weight > 0 and
+Sheen contributing gets **Sheen only** — `coated_material`'s substrate
+allowlist does not accept a `fabric_material` (the sheen result), so
+the coat cannot wrap ON TOP of sheen.  This is the identical call
+`GLTFSceneImporter.cpp`'s own `KHR_materials_clearcoat` +
+`KHR_materials_sheen` handling already makes (see "Anisotropy and
+sheen" above); the Blender bridge applies it consistently, warning at
+both the exporter layer (`_material_payload`) and the native layer
+(`add_pbr_metallic_roughness_material`) rather than dropping the coat
+silently.  A material with Coat but no Sheen wraps the PBR base
+directly, exactly like the `coated_material.RISEscene` regression
+scene's own `mat_lacquer`/`mat_wet` examples.
+
+**Coat Normal and Tangent are still unread** (no reader, no ABI
+field) — filed as **DL-192**, not attempted here: Coat Normal needs a
+new coat-lobe-specific normal-perturbation slot threaded through
+`CoatedBRDF`/`CoatedSPF` (a `CoatedMaterial`-internal change, not just
+an ABI field), and Tangent needs a per-object/per-vertex
+tangent-override mechanism RISE does not currently have (its GGX
+anisotropy direction derives from the mesh's own UV tangent basis).
+
+### Subsurface -> `randomwalk_sss_material` (ABI v13)
+
+**A SEPARATE model, not a coat-style wrap.** Blender's own Principled
+BSDF blends diffuse and subsurface transport BY WEIGHT rather than
+layering SSS under a separate specular stack, so RISE models it the
+same way: when Subsurface Weight contributes, the whole material
+becomes `RISE_BLENDER_MATERIAL_RANDOMWALK_SSS` (a `randomwalk_sss_-
+material`) instead of `PBR_METALLIC_ROUGHNESS` — mirroring this same
+function's pre-existing PBR-vs-DIELECTRIC mutual exclusivity for a
+heavy Transmission input.  Coat and Sheen do not apply when this
+branch fires (`randomwalk_sss_material` has no substrate to wrap);
+`exporter.py` warns if either was also authored.  Transmission wins
+over Subsurface on conflict (also warned) — glass and skin are not
+the same Principled configuration and RISE has no combined model.
+
+| Blender Principled input | `rise_blender_material` field | Notes |
+|---------------------------|-------------------------------|-------|
+| `Subsurface Weight` | (gates `model = RANDOMWALK_SSS`) | Read at its socket default only; a linked/textured weight warns and falls back to the default, matching `Coat Weight`'s own texture-gate convention above (Subsurface Weight itself has no `IScalarPainter` slot to carry a texture into — the model SWITCH it drives is binary per-material). |
+| `Subsurface Radius` (RGB vector) | (feeds the conversion below) | Read at its socket default; a linked/textured radius warns and falls back to the default. |
+| `Subsurface Scale` | (feeds the conversion below) | Read at its socket default; linked/textured warns and falls back. |
+| `Subsurface IOR` | `subsurface_ior` | Plain numeric IOR (default 1.4, Blender's own default); linked/textured warns and falls back. |
+| `Subsurface Anisotropy` | `subsurface_g` | Henyey-Greenstein asymmetry, clamped to [-1, 1]; linked/textured warns and falls back. |
+| `Base Color` (untextured only) | (feeds the conversion below as the single-scattering albedo) | A TEXTURED base colour with Subsurface Weight > 0 falls back to the socket's DEFAULT colour for this conversion only (warned) — `randomwalk_sss_material` has no base-colour texture slot of its own regardless, so a textured base colour never varies the SSS tint across the surface either way. |
+| Blender's ordinary `Roughness` | `subsurface_roughness` | Reused verbatim as the walk's boundary-Fresnel roughness — Blender has no separate SSS-boundary-roughness concept. |
+
+**THE CONVERSION.** `randomwalk_sss_material` wants `sigma_a`/`sigma_s`
+(absorption/scattering coefficients, 1/length) per RGB channel;
+Blender authors Radius (a mean-free-path-like distance per channel) +
+Scale + a base colour (used here as the single-scattering albedo).
+`exporter.py` (in Python, because that is where the raw untextured
+Base Color triple this conversion needs is already in hand) applies
+the classic single-scattering-albedo relation, per channel:
+
+```
+mfp     = max(radius * scale, epsilon)
+sigma_t = 1 / mfp
+albedo  = clamp(base_color, 0, 0.999)      # avoid the albedo=1 singularity
+sigma_s = albedo * sigma_t
+sigma_a = (1 - albedo) * sigma_t
+```
+
+**This is a documented APPROXIMATION, not PBRT's/Blender's own
+photon-beam-diffusion (Christensen-Burley) inversion**, which needs a
+precomputed lookup-table fit this bridge does not carry.  It
+reproduces the right ORDER OF MAGNITUDE and the right per-channel
+colour bias (a redder Radius channel scatters more, giving a warmer
+overall look — verified by render, see "Testing" below) but will not
+photometrically match Cycles' own diffusion-profile fit.  The two
+already-converted results travel through the ABI as inline `"r g b"`
+numeric literals (`subsurface_absorption` / `subsurface_scattering`)
+— `Job::AddRandomWalkSSSMaterial`'s `ResolveScalarPainterArg` parses a
+3-number literal into a per-channel `IScalarPainter` with no
+colourspace/JH-uplift path (the physical-scalar pipe,
+docs/ISCALARPAINTER_REFACTOR.md), the identical mechanism
+`subsurfacescattering_material`'s own `absorption`/`scattering`
+parameters already document.  `max_bounces` is fixed at 64 by the
+native bridge (`add_randomwalk_sss_material`), matching the
+convention `scenes/Tests/SubsurfaceScattering/rwsss_sphere.RISEscene`
+already uses; there is no Blender socket this would come from anyway.
+
+### Alpha — deliberately left unbridged (DL-193)
+
+Unlike Coat and Subsurface, Alpha is NOT a missing ABI field — it is
+a missing SUBSYSTEM.  RISE has a reachable construction-API alpha
+path (`IJob::AddAlphaTestShaderOp` for cutout, a
+`transparency_shaderop` for blend — both already used by
+`GLTFSceneImporter.cpp`'s `WireAlphaShader`), but both require
+building a per-material `advanced_shader` OP CHAIN
+(`Job::AddAdvancedShader`,
+`[Emission +, DirectLighting +, alpha_test_or_transparency =]`) that
+REPLACES the renderer's always-on default shader for that one
+material — a mechanism the Blender bridge (`rise_blender_bridge.cpp`)
+has none of today; it always renders through the default
+per-rasterizer shader.  A `rise_blender_material` alpha field would
+therefore be a genuinely DEAD ABI field until that shader-op-chain
+bridging exists, which is exactly what the slice that closed DL-186
+was instructed not to add.  `AlphaTestShaderOp.h`'s own
+"integrator-compatibility caveat" is a second reason a real fix needs
+more than a field: even a fully wired version only works under PT and
+the legacy direct shaders — BDPT/VCM/MLT/photon tracers silently
+ignore it — so closing this needs a rasterizer-aware export-time
+warning too.  Filed as **DL-193**.  `exporter.py`'s existing
+warn-and-drop behaviour on a non-default/linked Alpha socket is
+unchanged.
+
 ## Hair / fur export
 
 Slice P2-C of the hair/fur arc (`docs/HAIR_FUR_DESIGN.md`).  Two
@@ -887,6 +1021,57 @@ hair arc's own split:
   response across UV while a numeric-only twin does not; and an
   unresolvable `sheen_color_painter_name` fails the whole material
   (fatal, matching every other required PBR slot in that function).
+
+### Coat and Subsurface (ABI v13) coverage
+
+Same split as Sheen's own coverage immediately above; the bpy-dependent
+Blender-node reading in `_material_payload`'s Coat/Subsurface blocks
+stays manually validated only.
+
+- Python (bpy-free): `BridgeMaterialCoatSubsurfaceMarshallingTest` in
+  `test_hair_export.py` drives `_marshal_material` against a stub
+  carrying all eleven ABI v13 fields — no-coat/no-subsurface sends the
+  documented defaults (NULL painters, `coat_roughness=0.03`,
+  `coat_ior=1.5`, `subsurface_ior=1.4`, everything else 0), a set coat
+  triad (weight/tint/roughness/ior) travels through unchanged, a set
+  subsurface triad (the two already-converted `"r g b"` literal
+  strings plus ior/g/roughness) travels through unchanged, and a
+  pre-v13 stub (all eleven attributes deleted) still marshals via
+  `getattr`'s defaults rather than raising.  A separate
+  `test_stale_dylib_version_fails_loudly` (in `BridgeAbiLayoutTest`,
+  where the version check itself lives) mocks `ctypes.CDLL` to return
+  a fake v12 library and confirms `_load_library` refuses it with a
+  message naming both versions, rather than silently marshalling v13
+  fields into a v12 struct layout the native side never declared. The
+  pre-existing generic `test_all_pointer_target_structs_match` (no
+  changes needed) automatically extended its byte-for-byte
+  `_Material`-vs-header field comparison to cover all eleven new
+  fields the moment they were declared in both places.
+- C++: `tests/BlenderBridgeCoatTest.cpp` and
+  `tests/BlenderBridgeSSSTest.cpp` compile `rise_blender_bridge.cpp`
+  into their own translation unit (the `BlenderBridgeFabricTest.cpp`
+  idiom) and drive the REAL `add_material` /
+  `add_pbr_metallic_roughness_material` / `add_randomwalk_sss_material`.
+  Coat: mirrors the Sheen coverage above one layer over
+  (`coated_material` instead of `fabric_material`) — no-coat is
+  unaffected, coat wraps a real `CoatedMaterial` around a real,
+  separately-registered PBR base with a differing BRDF response,
+  numeric and texture-driven `coat_roughness`/`coat_weight` both
+  change the response, coat+emission keeps both, **coat+sheen together
+  keeps sheen's response EXACTLY** (money check: the two responses
+  agree to `1e-9`, confirming the coat genuinely contributes nothing
+  once skipped, not merely that it registers under a different type),
+  and an unresolvable `coat_tint_painter_name` fails fatally.
+  Subsurface: probes `IMaterial::GetRandomWalkSSSParams()` directly —
+  a far more precise instrument than a BRDF-response comparison, since
+  it reads back the exact baked `sigma_a`/`sigma_s`/`ior`/`g`/
+  `maxBounces` struct rather than inferring the conversion from a
+  rendered value — confirming per-channel absorption/scattering
+  literals are forwarded VERBATIM (a chromatic triple stays in
+  strictly increasing/decreasing per-channel order, not flattened to a
+  scalar), SSS+emission keeps both, missing coefficients fail fatally,
+  and an ordinary PBR material is unaffected by the new model's mere
+  existence.
 
 ### Hair export unit tests
 

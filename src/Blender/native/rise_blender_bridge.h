@@ -10,7 +10,7 @@
 #define RISE_BLENDER_EXPORT
 #endif
 
-#define RISE_BLENDER_API_VERSION 12
+#define RISE_BLENDER_API_VERSION 13
 
 #ifdef __cplusplus
 extern "C" {
@@ -65,7 +65,18 @@ enum rise_blender_material_model {
 	RISE_BLENDER_MATERIAL_LAMBERT = 0,
 	RISE_BLENDER_MATERIAL_GGX = 1,
 	RISE_BLENDER_MATERIAL_DIELECTRIC = 2,
-	RISE_BLENDER_MATERIAL_PBR_METALLIC_ROUGHNESS = 3
+	RISE_BLENDER_MATERIAL_PBR_METALLIC_ROUGHNESS = 3,
+	// ABI v13 (DL-186, docs/DEBT_LEDGER.md).  Principled BSDF Subsurface
+	// -> `randomwalk_sss_material`.  A SEPARATE model, not a PBR wrap
+	// (mirrors the pre-existing PBR-vs-DIELECTRIC mutual exclusivity a
+	// few lines below `add_pbr_metallic_roughness_material` in
+	// rise_blender_bridge.cpp: Blender's own Principled BLENDS
+	// diffuse/SSS by weight rather than layering SSS under a separate
+	// specular stack, so RISE models it the same way, one surface
+	// material).  Reads only the `subsurface_*` fields on
+	// `rise_blender_material` below; `sheen_*`/`coat_*` do not apply --
+	// neither has a PBR base to wrap when this model is selected.
+	RISE_BLENDER_MATERIAL_RANDOMWALK_SSS = 4
 };
 
 // Which of `hair_material`'s three mutually-exclusive colour tiers a
@@ -313,6 +324,94 @@ typedef struct rise_blender_material {
 	// `ior_texture_painter_name` use above.  NULL/empty = use the
 	// numeric `sheen_roughness` field (the common case).
 	const char* sheen_roughness_texture_painter_name;
+
+	// ABI v13 (DL-186, docs/DEBT_LEDGER.md; source heading DL-151's own
+	// sibling audit).  PBR_METALLIC_ROUGHNESS ONLY: Principled BSDF's
+	// Coat layer -> a `coated_material` wrap, exactly the
+	// `sheen_color_painter_name` gating pattern above.  `coat_weight`
+	// (or its texture) <= 0 (and no texture set) = no coat, bit-
+	// identical to a pre-v13 payload.  `coat_weight`/`coat_roughness`
+	// are numeric fallbacks; the `*_texture_painter_name` fields, when
+	// non-NULL/non-empty, name an ordinary already-registered COLOUR
+	// painter that the bridge wraps into an IScalarPainter channel-R
+	// view via RISE_API_CreatePainterChannelScalarPainter -- the same
+	// v12 texture-exception mechanism `sheen_roughness_texture_-
+	// painter_name` uses (`resolve_material_scalar_slot`).
+	// `coat_roughness` is Blender's PERCEPTUAL roughness [0,1]; the
+	// bridge SQUARES it into a GGX alpha before calling
+	// AddCoatedMaterial, matching GLTFSceneImporter.cpp's
+	// KHR_materials_clearcoat `clearcoat_roughness_factor^2`
+	// convention (`coated_material`'s own `coat_roughness` slot is a
+	// GGX alpha, not a perceptual roughness).  `coat_tint_painter_name`
+	// is a colour painter name; NULL/empty = untinted (AddCoatedMaterial's
+	// own "none" sentinel).  `coat_ior` is a plain numeric IOR (>= 1),
+	// socket-default only -- Blender rarely textures this input and
+	// `coated_material`'s own `coat_ior` slot is not texture-driven.
+	//
+	// LAYERING WITH SHEEN (documented decision --
+	// docs/BLENDER_MATERIAL_TRANSLATION.md "Coat and Subsurface"): a
+	// material with BOTH Coat Weight > 0 and Sheen contributing gets
+	// SHEEN ONLY, exactly as GLTFSceneImporter.cpp's own
+	// KHR_materials_clearcoat + KHR_materials_sheen combination already
+	// decides -- `coated_material`'s substrate allowlist does not
+	// accept a `fabric_material` (the sheen result), so the coat
+	// cannot wrap ON TOP of sheen, and the bridge does not attempt the
+	// (unsupported) reverse order either.  The coat layer is silently
+	// skipped in that combination at the native layer; `exporter.py`
+	// warns.
+	const char* coat_weight_texture_painter_name;
+	double coat_weight;
+	const char* coat_tint_painter_name;
+	const char* coat_roughness_texture_painter_name;
+	double coat_roughness;
+	double coat_ior;
+
+	// ABI v13 (DL-186).  RANDOMWALK_SSS ONLY (see that model's own
+	// comment above `rise_blender_material_model`): Principled BSDF's
+	// Subsurface inputs, already converted by exporter.py into
+	// `randomwalk_sss_material`'s physical-scalar slots.
+	// `subsurface_absorption`/`subsurface_scattering` are ALREADY-
+	// CONVERTED inline "r g b" numeric literals (Job.cpp's
+	// ResolveScalarPainterArg parses a 3-number literal into a per-
+	// channel IScalarPainter with no colourspace/JH-uplift path -- the
+	// physical-scalar pipe, docs/ISCALARPAINTER_REFACTOR.md).
+	// exporter.py performs the Radius/Scale/base-colour -> sigma_a/
+	// sigma_s conversion (a single-scattering-albedo approximation,
+	// NOT PBRT's/Blender's own photon-beam-diffusion inversion --
+	// documented limitation, docs/BLENDER_MATERIAL_TRANSLATION.md
+	// "Subsurface") because it already holds the raw (untextured)
+	// base-colour triple that conversion needs -- a textured base
+	// colour with Subsurface Weight > 0 falls back to the socket's
+	// default colour for THIS conversion only, with a warning (the
+	// RandomWalkSSS surface itself has no base-colour texture slot
+	// regardless).  `subsurface_ior` is a plain numeric IOR for the
+	// walk (Blender's own "Subsurface IOR" socket, default 1.4).
+	// `subsurface_g` is Blender's "Subsurface Anisotropy" socket
+	// (HG asymmetry, default 0).  `subsurface_roughness` reuses the
+	// material's ordinary specular Roughness value for the walk's
+	// boundary Fresnel roughness slot -- Blender has no separate
+	// SSS-boundary-roughness concept.  SIBLING-AUDIT NOTE (ABI v13
+	// review P1, alongside the `coat_roughness` squaring fix): this
+	// field has NO texture-driven counterpart at all in this ABI, so
+	// the numeric-vs-texture divergence that hit `coat_roughness`
+	// cannot occur here -- and unlike that slot, no squaring belongs
+	// on the BRIDGE side regardless, because `SubSurfaceScatteringBSDF`
+	// / `SubSurfaceScatteringSPF` already square this value into a GGX
+	// alpha THEMSELVES, uniformly, for any caller (`alpha =
+	// roughness^2`, see those headers) -- squaring it again here would
+	// be a double-square.  `sheen_roughness_texture_painter_name`
+	// (this struct's v12 sibling, above) was ALSO audited: Charlie
+	// alpha is never squared from a perceptual value on either its
+	// numeric or texture path, so it needed no fix either.  Hair's own
+	// `beta_m`/`beta_n` scalar-texture slots (`resolve_hair_scalar_-
+	// slot`, rise_blender_bridge.cpp) were checked too: the Chiang
+	// hair BCSDF consumes them directly with no squaring anywhere, on
+	// either path.
+	const char* subsurface_absorption;
+	const char* subsurface_scattering;
+	double subsurface_ior;
+	double subsurface_g;
+	double subsurface_roughness;
 } rise_blender_material;
 
 typedef struct rise_blender_mesh {

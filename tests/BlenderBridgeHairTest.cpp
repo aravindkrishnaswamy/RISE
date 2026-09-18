@@ -391,7 +391,7 @@ void TestAbiVersionAndLayout()
 	// sheen fields to `rise_blender_material`, not to any struct this
 	// file's own v9/v10/v11 checks below cover -- the version constant
 	// moves to 12, but the growth this function pins is unaffected.
-	Check( RISE_BLENDER_API_VERSION == 12, "RISE_BLENDER_API_VERSION is 12" );
+	Check( RISE_BLENDER_API_VERSION == 13, "RISE_BLENDER_API_VERSION is 13" );
 	Check( rise_blender_api_version() == RISE_BLENDER_API_VERSION,
 		"rise_blender_api_version() reports the compiled-in constant" );
 

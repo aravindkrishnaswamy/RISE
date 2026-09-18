@@ -1101,10 +1101,13 @@ namespace
 	//! Forward declaration -- defined below, near its hair-path sibling
 	//! `resolve_hair_scalar_slot` (ABI v12 / DL-18; see that function's
 	//! own banner and this one's definition for the wrapper mechanism).
+	//! `square` (ABI v13 / DL-186 review P1) -- see the definition's own
+	//! banner.
 	std::string resolve_material_scalar_slot(
 		RISE::IJobPriv& job,
 		const char* painterName,
-		const std::string& fallbackLiteral
+		const std::string& fallbackLiteral,
+		const bool square = false
 	);
 
 	bool add_pbr_metallic_roughness_material(
@@ -1154,9 +1157,28 @@ namespace
 		// Anisotropic set gets fabric-over-anisotropic-GGX for free --
 		// no separate composition step needed.
 		const bool hasSheen = ( material.sheen_color_painter_name && material.sheen_color_painter_name[0] );
+
+		// ABI v13 / DL-186 (docs/DEBT_LEDGER.md).  Coat contributes when
+		// either the numeric fallback is positive or a texture overrides
+		// it -- the same two-way gate `resolve_material_scalar_slot`'s
+		// callers already use for `sheen_roughness_texture_painter_name`
+		// (a texture can drive the weight above zero even when the
+		// numeric fallback field itself is left at its exporter default).
+		const bool hasCoatTexture = ( material.coat_weight_texture_painter_name && material.coat_weight_texture_painter_name[0] );
+		const bool hasCoat = hasCoatTexture || ( material.coat_weight > 0.0 );
+
 		const bool hasEmission = ( material.emission_painter_name && material.emission_painter_name[0] );
 		const std::string finalName = material.name;
-		const std::string pbrRegisterName = hasSheen ? ( finalName + "::pbrbase" ) : finalName;
+
+		// Sheen takes priority over coat for the intermediate-name
+		// choice, mirroring GLTFSceneImporter.cpp's identical
+		// `pbrRegisterName` decision (that file's own comment: "sheen
+		// takes priority over clearcoat when picking the intermediate
+		// name") -- `coated_material`'s substrate allowlist does not
+		// accept a `fabric_material` result, so sheen is always the
+		// OUTERMOST layer when both contribute (see the coat-skip
+		// warning-diagnostic and `hasCoat && !hasSheen` gate below).
+		const std::string pbrRegisterName = ( hasSheen || hasCoat ) ? ( finalName + "::pbrbase" ) : finalName;
 
 		// P1 FIX (post-DL-18 review, 2026-09-17).  `FabricMaterial::-
 		// IsSupportedSubstrate` (FabricMaterial.h) unconditionally
@@ -1190,7 +1212,7 @@ namespace
 		// the GGX base; `add_material`'s own non-PBR branch a few lines
 		// below already wraps an arbitrary surface material this exact
 		// way for every emissive non-PBR material shipped to date.
-		const char* pbrEmissive = hasSheen ? "none" : emissive;
+		const char* pbrEmissive = ( hasSheen || hasCoat ) ? "none" : emissive;
 
 		if( !job.AddPBRMetallicRoughnessMaterial(
 			pbrRegisterName.c_str(),
@@ -1209,38 +1231,124 @@ namespace
 			return false;
 		}
 
-		if( !hasSheen ) {
+		if( !hasSheen && !hasCoat ) {
 			return true;
 		}
 
-		char roughnessLiteral[64];
-		std::snprintf( roughnessLiteral, sizeof( roughnessLiteral ), "%.9g", material.sheen_roughness );
-		const std::string sheenRoughness = resolve_material_scalar_slot(
-			job, material.sheen_roughness_texture_painter_name, roughnessLiteral );
+		// `wrapRegisterName` names whichever layer (sheen, or coat when
+		// sheen doesn't contribute) is the LAST one built over
+		// `pbrRegisterName` -- the substrate the deferred emission
+		// wrapper below re-attaches over.  Set by whichever branch runs.
+		std::string wrapRegisterName;
 
-		// The fabric (sheen) wrap registers under an INTERMEDIATE name
-		// when emission also contributes (a `LambertianLuminaireMaterial`
-		// layer above it then owns `finalName`, see below); otherwise it
-		// registers directly under `finalName` as before.
-		const std::string fabricRegisterName = hasEmission ? ( finalName + "::sheenbase" ) : finalName;
+		if( hasSheen ) {
+			char roughnessLiteral[64];
+			std::snprintf( roughnessLiteral, sizeof( roughnessLiteral ), "%.9g", material.sheen_roughness );
+			const std::string sheenRoughness = resolve_material_scalar_slot(
+				job, material.sheen_roughness_texture_painter_name, roughnessLiteral );
 
-		// `fabric` = "custom" (no preset seeding -- Blender's Principled
-		// Sheen carries no fabric-type concept, matching
-		// GLTFSceneImporter.cpp's identical choice for
-		// KHR_materials_sheen) and `weave_rotation` = "0.0" (Blender's
-		// Sheen model has no weave-direction concept either; the
-		// anisotropic-GGX case above already carries its own
-		// `tangent_rotation`).
-		if( !job.AddFabricMaterial(
-			fabricRegisterName.c_str(),
-			"custom",
-			pbrRegisterName.c_str(),
-			material.sheen_color_painter_name,
-			sheenRoughness.c_str(),
-			"0.0" ) )
-		{
-			write_error( error_message, error_message_size, "Failed to create a fabric (sheen) material wrap" );
-			return false;
+			// The fabric (sheen) wrap registers under an INTERMEDIATE
+			// name when emission also contributes (a
+			// `LambertianLuminaireMaterial` layer above it then owns
+			// `finalName`, see below); otherwise it registers directly
+			// under `finalName` as before.
+			const std::string fabricRegisterName = hasEmission ? ( finalName + "::sheenbase" ) : finalName;
+
+			// `fabric` = "custom" (no preset seeding -- Blender's
+			// Principled Sheen carries no fabric-type concept, matching
+			// GLTFSceneImporter.cpp's identical choice for
+			// KHR_materials_sheen) and `weave_rotation` = "0.0"
+			// (Blender's Sheen model has no weave-direction concept
+			// either; the anisotropic-GGX case above already carries
+			// its own `tangent_rotation`).
+			if( !job.AddFabricMaterial(
+				fabricRegisterName.c_str(),
+				"custom",
+				pbrRegisterName.c_str(),
+				material.sheen_color_painter_name,
+				sheenRoughness.c_str(),
+				"0.0" ) )
+			{
+				write_error( error_message, error_message_size, "Failed to create a fabric (sheen) material wrap" );
+				return false;
+			}
+			wrapRegisterName = fabricRegisterName;
+
+			// LAYERING DECISION (DL-186, docs/BLENDER_MATERIAL_-
+			// TRANSLATION.md "Coat and Subsurface"): glTF's own
+			// KHR_materials_clearcoat + KHR_materials_sheen combination
+			// (GLTFSceneImporter.cpp) skips clearcoat and keeps sheen
+			// for the identical reason -- `coated_material`'s substrate
+			// allowlist does not accept a `fabric_material` result, so
+			// the coat cannot wrap on top of sheen.  Blender's bridge
+			// makes the same call; say so rather than dropping it
+			// silently (exporter.py ALSO warns at export time, from the
+			// Blender-node side of this same decision).
+			if( hasCoat ) {
+				RISE::GlobalLog()->PrintEx( RISE::eLog_Warning,
+					"add_pbr_metallic_roughness_material `%s`: Coat Weight and Sheen both contribute; "
+					"coated_material's substrate allowlist does not accept a fabric_material (the sheen "
+					"result), so the coat layer is skipped, keeping sheen.",
+					finalName.c_str() );
+			}
+		} else {
+			// hasCoat && !hasSheen: coat wraps the PBR base directly.
+			char weightLiteral[64];
+			std::snprintf( weightLiteral, sizeof( weightLiteral ), "%.9g", material.coat_weight );
+			const std::string coatWeight = resolve_material_scalar_slot(
+				job, material.coat_weight_texture_painter_name, weightLiteral );
+
+			// `coat_roughness` arrives as Blender's PERCEPTUAL roughness
+			// [0,1]; `coated_material`'s own `coat_roughness` slot is a
+			// GGX alpha, so it is SQUARED here -- the identical
+			// conversion GLTFSceneImporter.cpp applies to
+			// `clearcoat_roughness_factor` (that file's own comment:
+			// "passing the perceptual value straight through would
+			// silently render a coat about sqrt too rough").  Applied
+			// to the NUMERIC fallback here; the TEXTURE-driven branch
+			// needs the IDENTICAL per-texel squaring, so `square=true` is
+			// passed to resolve_material_scalar_slot below rather than
+			// assuming (as an earlier revision of this comment wrongly
+			// did) that a bound texture "already encodes the desired
+			// alpha directly" -- review found that assumption false
+			// (`CoatedBRDF::GetCoatRoughness()` read alpha 0.25 on the
+			// numeric path vs 0.5 on the texture path for the SAME
+			// authored value 0.5, a 2x divergence) and the review is what
+			// added the `square` parameter.  `sheen_roughness_texture_-
+			// painter_name` below is a genuinely DIFFERENT case, not a
+			// counter-example: Charlie alpha is never squared from a
+			// perceptual value on EITHER its numeric or texture path, so
+			// `square=false` (the default) there is correct, not merely
+			// unaudited.
+			const double coatRoughSq = material.coat_roughness * material.coat_roughness;
+			char roughLiteral[64];
+			std::snprintf( roughLiteral, sizeof( roughLiteral ), "%.9g", coatRoughSq );
+			const std::string coatRoughness = resolve_material_scalar_slot(
+				job, material.coat_roughness_texture_painter_name, roughLiteral, /*square*/ true );
+
+			char iorLiteral[64];
+			std::snprintf( iorLiteral, sizeof( iorLiteral ), "%.9g",
+				material.coat_ior > 0.0 ? material.coat_ior : 1.5 );
+
+			const char* coatTint = ( material.coat_tint_painter_name && material.coat_tint_painter_name[0] )
+				? material.coat_tint_painter_name : "none";
+
+			const std::string coatRegisterName = hasEmission ? ( finalName + "::coatbase" ) : finalName;
+
+			if( !job.AddCoatedMaterial(
+				coatRegisterName.c_str(),
+				pbrRegisterName.c_str(),
+				coatWeight.c_str(),
+				iorLiteral,
+				coatRoughness.c_str(),
+				"0.0",			// coat_thickness -- no Blender Principled equivalent, clear film
+				"0.0",			// coat_absorption -- no Blender Principled equivalent, clear film
+				coatTint ) )
+			{
+				write_error( error_message, error_message_size, "Failed to create a coated material wrap" );
+				return false;
+			}
+			wrapRegisterName = coatRegisterName;
 		}
 
 		if( !hasEmission ) {
@@ -1248,15 +1356,81 @@ namespace
 		}
 
 		// Re-attach the emission the PBR base above deliberately did
-		// NOT bake in, now that the sheen wrap is a legal (non-emissive)
-		// IMaterial to layer it over.
+		// NOT bake in, now that the sheen/coat wrap is a legal
+		// (non-emissive) IMaterial to layer it over.
 		if( !job.AddLambertianLuminaireMaterial(
 			finalName.c_str(),
 			material.emission_painter_name,
-			fabricRegisterName.c_str(),
+			wrapRegisterName.c_str(),
 			material.emissive_scale > 0.0 ? material.emissive_scale : 1.0 ) )
 		{
-			write_error( error_message, error_message_size, "Failed to create an emissive wrapper over the fabric (sheen) material" );
+			write_error( error_message, error_message_size, "Failed to create an emissive wrapper over the sheen/coat material" );
+			return false;
+		}
+		return true;
+	}
+
+	//! ABI v13 / DL-186.  Adds a `randomwalk_sss_material` from
+	//! Principled BSDF Subsurface inputs, ALREADY CONVERTED to
+	//! sigma_a/sigma_s inline literals by exporter.py (see the field
+	//! comments on `rise_blender_material` above).  A separate model
+	//! from `add_pbr_metallic_roughness_material` -- it REPLACES the
+	//! surface entirely rather than wrapping a PBR base, matching
+	//! Blender's own diffuse/SSS blend-by-weight behaviour (mirrors
+	//! this file's pre-existing PBR-vs-DIELECTRIC mutual exclusivity
+	//! for Transmission).  Emission still layers on top via the same
+	//! generic `AddLambertianLuminaireMaterial` wrapper every other
+	//! emissive branch in this file uses.
+	bool add_randomwalk_sss_material(
+		RISE::IJobPriv& job,
+		const rise_blender_material& material,
+		char* error_message,
+		const size_t error_message_size
+	)
+	{
+		if( !material.subsurface_absorption || !material.subsurface_absorption[0] ||
+		    !material.subsurface_scattering || !material.subsurface_scattering[0] ) {
+			write_error( error_message, error_message_size,
+				"Random-walk SSS material missing subsurface_absorption/subsurface_scattering" );
+			return false;
+		}
+
+		const bool hasEmission = ( material.emission_painter_name && material.emission_painter_name[0] );
+		const std::string finalName = material.name;
+		const std::string sssRegisterName = hasEmission ? ( finalName + "::sssbase" ) : finalName;
+
+		char iorLiteral[64];
+		std::snprintf( iorLiteral, sizeof( iorLiteral ), "%.9g",
+			material.subsurface_ior > 0.0 ? material.subsurface_ior : 1.4 );
+		char gLiteral[64];
+		std::snprintf( gLiteral, sizeof( gLiteral ), "%.9g", material.subsurface_g );
+		char roughLiteral[64];
+		std::snprintf( roughLiteral, sizeof( roughLiteral ), "%.9g", material.subsurface_roughness );
+
+		if( !job.AddRandomWalkSSSMaterial(
+			sssRegisterName.c_str(),
+			iorLiteral,
+			material.subsurface_absorption,
+			material.subsurface_scattering,
+			gLiteral,
+			roughLiteral,
+			"64" ) )		// max_bounces -- matches scenes/Tests/SubsurfaceScattering's own convention
+		{
+			write_error( error_message, error_message_size, "Failed to create a random-walk SSS material" );
+			return false;
+		}
+
+		if( !hasEmission ) {
+			return true;
+		}
+
+		if( !job.AddLambertianLuminaireMaterial(
+			finalName.c_str(),
+			material.emission_painter_name,
+			sssRegisterName.c_str(),
+			material.emissive_scale > 0.0 ? material.emissive_scale : 1.0 ) )
+		{
+			write_error( error_message, error_message_size, "Failed to create an emissive wrapper over the random-walk SSS material" );
 			return false;
 		}
 		return true;
@@ -1278,6 +1452,12 @@ namespace
 		// Luminaire wrapper needed.
 		if( material.model == RISE_BLENDER_MATERIAL_PBR_METALLIC_ROUGHNESS ) {
 			return add_pbr_metallic_roughness_material( job, material, error_message, error_message_size );
+		}
+
+		// ABI v13 / DL-186: random-walk SSS handles its own emission
+		// wrap internally too (mirrors the PBR-MR branch just above).
+		if( material.model == RISE_BLENDER_MATERIAL_RANDOMWALK_SSS ) {
+			return add_randomwalk_sss_material( job, material, error_message, error_message_size );
 		}
 
 		if( material.emission_painter_name && material.emission_painter_name[0] ) {
@@ -1587,10 +1767,10 @@ namespace
 	//! IScalarPainter wrappers rather than one mis-scoped one.
 	const char* const kMaterialScalarWrapperSuffix = "::matscalar";
 
-	//! Resolve one OPTIONAL v12 texture-driven IScalarPainter slot on a
-	//! `rise_blender_material` to the string a `Job::Add*Material` scalar
-	//! slot should be handed for it -- the material-path sibling of
-	//! `resolve_hair_scalar_slot` above, same wrapper mechanism
+	//! Resolve one OPTIONAL v12/v13 texture-driven IScalarPainter slot on
+	//! a `rise_blender_material` to the string a `Job::Add*Material`
+	//! scalar slot should be handed for it -- the material-path sibling
+	//! of `resolve_hair_scalar_slot` above, same wrapper mechanism
 	//! (`RISE_API_CreatePainterChannelScalarPainter`, channel R, scale 1,
 	//! bias 0), but SILENT on failure rather than warning: unlike hair's
 	//! `warnings` vector (a channel that reaches the artist through
@@ -1600,10 +1780,29 @@ namespace
 	//! its literal default with no warning when unset or unresolvable,
 	//! and this slot matches that existing convention rather than
 	//! inventing a new one.
+	//!
+	//! `square` (default false, ABI v13 / DL-186 review P1): when true,
+	//! the returned scalar painter reports `channelR(u,v)^2`, not the
+	//! raw channel value -- for slots whose NUMERIC fallback is a
+	//! PERCEPTUAL roughness the caller SQUARES into a GGX alpha before
+	//! handing it here (`coat_roughness`), so the texture-driven branch
+	//! must apply the identical per-texel conversion or a textured coat
+	//! renders at up to 2x the intended alpha wherever the numeric and
+	//! textured paths would otherwise agree (caught by review: reading
+	//! back `CoatedBRDF::GetCoatRoughness()` for the authored value 0.5
+	//! measured numeric alpha 0.25 against textured alpha 0.5 -- the
+	//! square was silently skipped on the texture path only).  Squaring
+	//! is layered onto the SAME shared channel-view wrapper (so two
+	//! slots binding one texture, one squared and one not -- unusual,
+	//! not forbidden -- each get their own correct result) via a
+	//! `RISE_API_CreateMultiplyScalarPainter(view, view)` self-product,
+	//! registered under a further-derived `::sq` name and cached the
+	//! same way.
 	std::string resolve_material_scalar_slot(
 		RISE::IJobPriv& job,
 		const char* painterName,
-		const std::string& fallbackLiteral
+		const std::string& fallbackLiteral,
+		const bool square
 	)
 	{
 		if( !painterName || !painterName[0] ) {
@@ -1640,7 +1839,31 @@ namespace
 			}
 		}
 
-		return wrapperName;
+		if( !square ) {
+			return wrapperName;
+		}
+
+		const std::string squaredName = wrapperName + "::sq";
+		if( !smgr->GetItem( squaredName.c_str() ) ) {
+			RISE::IScalarPainter* view = smgr->GetItem( wrapperName.c_str() );
+			if( !view ) {
+				return fallbackLiteral;
+			}
+			RISE::IScalarPainter* squared = 0;
+			RISE::RISE_API_CreateMultiplyScalarPainter( &squared, view, view );
+			if( !squared ) {
+				return fallbackLiteral;
+			}
+
+			const bool added = smgr->AddItem( squared, squaredName.c_str() );
+			squared->release();
+
+			if( !added ) {
+				return fallbackLiteral;
+			}
+		}
+
+		return squaredName;
 	}
 
 	// Pack the accumulated non-fatal warnings into the fixed result
