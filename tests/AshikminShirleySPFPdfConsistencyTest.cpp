@@ -177,6 +177,16 @@ struct Config
     double tiltDeg;
     bool   runNM;
     bool   backFace;
+    // CHROMATIC reflectances.  When `chromatic` is false (the default for
+    // every row that does not spell these out -- trailing members of an
+    // aggregate initialiser are value-initialised) Rd and Rs are the grey
+    // triples (rd,rd,rd) / (rs,rs,rs).  When true they are
+    // (rd,rdG,rdB) / (rs,rsG,rsB).  A grey row CANNOT see the diffuse
+    // selection weight's per-channel reduction order, because
+    // MaxValue(Rd)*(1-MaxValue(Rs)) and MaxValue(Rd*(1-Rs)) coincide
+    // whenever one channel maximises both.
+    bool   chromatic;
+    double rdG, rdB, rsG, rsB;
 };
 
 static const int kQT = 400;
@@ -189,8 +199,10 @@ static const double kTvdTol  = 0.012;
 
 static void RunConfig( const Config& c, double nm )
 {
-    UniformColorPainter* diff = new UniformColorPainter( RISEPel(c.rd,c.rd,c.rd) ); diff->addref();
-    UniformColorPainter* spec = new UniformColorPainter( RISEPel(c.rs,c.rs,c.rs) ); spec->addref();
+    const RISEPel RD = c.chromatic ? RISEPel(c.rd, c.rdG, c.rdB) : RISEPel(c.rd, c.rd, c.rd);
+    const RISEPel RS = c.chromatic ? RISEPel(c.rs, c.rsG, c.rsB) : RISEPel(c.rs, c.rs, c.rs);
+    UniformColorPainter* diff = new UniformColorPainter( RD ); diff->addref();
+    UniformColorPainter* spec = new UniformColorPainter( RS ); spec->addref();
 
     IScalarPainter* nuP = 0;
     IScalarPainter* nvP = 0;
@@ -345,6 +357,19 @@ int main()
         { "backface th=70 az30 Nu5 Nv5",    70.0, 30.0, 0.5,  0.02, 5.0,  5.0,  false, 0,0,0, 0,0,0,  0.0, false, true  },
         { "backface tilt20 th=45 az60",     45.0, 60.0, 0.5,  0.3,  20.0, 80.0, false, 0,0,0, 0,0,0, 20.0, false, true  },
         { "backface per-channel Nu/Nv",     45.0, 20.0, 0.5,  0.3,  0.0,  0.0,  true,  5,20,80, 80,20,5, 0.0, false, true  },
+        // CHROMATIC Rd/Rs (P1-1).  `Pdf`'s diffuse selection weight used to
+        // read MaxValue(Rd)*(1-MaxValue(Rs)); the weight RandomlySelect
+        // actually uses is MaxValue(Rd*(1-Rs)), because Scatter builds the
+        // whole RISEPel product FIRST and only then reduces.  The two agree
+        // exactly when one channel maximises both (every grey row above),
+        // and diverge by up to 19x when the maxima are on DIFFERENT
+        // channels -- Rd=(.9,.1,.1)/Rs=(.1,.9,.1) gives 0.09 vs 0.81.
+        //                                  th    az    rd    rs    Nu    Nv   perCh  Nur Nug Nub  Nvr Nvg Nvb  tilt  NM     back   chroma rdG   rdB   rsG   rsB
+        { "chroma .9/.1 vs .1/.9 Nu20Nv80", 45.0, 0.0,  0.9,  0.1,  20.0, 80.0, false, 0,0,0, 0,0,0,  0.0, true , false, true,  0.1,  0.1,  0.9,  0.1  },
+        { "chroma .95/.05 Nu20Nv80",        45.0, 0.0,  0.95, 0.05, 20.0, 80.0, false, 0,0,0, 0,0,0,  0.0, true , false, true,  0.05, 0.05, 0.95, 0.05 },
+        { "chroma .9/.1 Nu2Nv2 tilt20",     45.0, 0.0,  0.9,  0.1,  2.0,  2.0,  false, 0,0,0, 0,0,0, 20.0, false, false, true,  0.1,  0.1,  0.9,  0.1  },
+        { "chroma .9/.1 th=70 az30 Nu5Nv5", 70.0, 30.0, 0.9,  0.1,  5.0,  5.0,  false, 0,0,0, 0,0,0,  0.0, false, false, true,  0.1,  0.1,  0.9,  0.1  },
+        { "chroma backface .95/.05",        45.0, 0.0,  0.95, 0.05, 20.0, 80.0, false, 0,0,0, 0,0,0,  0.0, false, true , true,  0.05, 0.05, 0.95, 0.05 },
     };
 
     std::cout << "\n-- Gate 1 (two-sided normalisation) + Gate 2 (TVD vs the real sampler) --" << std::endl;
