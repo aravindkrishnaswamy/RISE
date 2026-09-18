@@ -1344,43 +1344,35 @@ static TriangleMeshGeometryIndexed* BuildWeldedCubeForDisplacement( const Scalar
 // DESIGN.md 5.2, Phase 2"); SignedDistanceLower did not at all -- fixed
 // to forward the same way.
 //
-// WHAT THIS TEST CAN AND CANNOT PROVE, found while writing it (worth
-// recording plainly rather than papering over): a `DisplacedGeometry`'s
-// baked mesh comes from `m_pBase->TessellateToMesh(...)`, and when the
-// base is ITSELF a `TriangleMeshGeometryIndexed` (as it is here -- a
-// hand-welded, genuinely watertight cube, 8 vertices / 12 triangles),
-// that class's OWN `TessellateToMesh` deliberately FLATTENS every
-// triangle corner to its own independent (pos, normal, uv) tuple (see
-// its own doc comment: downstream displacement code indexes normals/UVs
-// by the FLAT vertex index, so a shared position cannot be reused across
-// faces). The baked mesh therefore has 36 vertices for 12 triangles, not
-// 8 -- every edge is used by exactly one triangle, and DL-31's
-// watertightness check correctly reads it as an open sheet (measured:
-// 36 boundary edges), even though the ORIGINAL base was perfectly
-// closed. So this test cannot show a SUCCESSFUL signed answer coming
-// out the far end of a real bake -- that would need TessellateToMesh's
-// flattening contract changed, which is out of DL-31's scope (a
-// separate, apparently deliberate design choice, not the "no signed
-// query at all" bug this row fixes).
+// HISTORY (DL-143 made this pin LIVE): a `DisplacedGeometry`'s baked mesh
+// comes from `m_pBase->TessellateToMesh(...)`, and when the base is
+// ITSELF a `TriangleMeshGeometryIndexed` (as it is here -- a hand-welded,
+// genuinely watertight cube, 8 vertices / 12 triangles), that class's OWN
+// `TessellateToMesh` deliberately FLATTENS every triangle corner to its
+// own independent (pos, normal, uv) tuple (see its own doc comment:
+// downstream displacement code indexes normals/UVs by the FLAT vertex
+// index, so a shared position cannot be reused across faces). The baked
+// mesh therefore has 36 vertices for 12 triangles, not 8. Originally
+// (`ComputeWatertightness` keyed by raw POSITION-ARRAY INDEX) that made
+// every edge look like it was used by exactly one triangle, so the
+// watertightness check read this baked mesh as an open sheet even though
+// the ORIGINAL base was perfectly closed -- this test used to be a
+// CONSISTENCY PIN on the refusal, not a red-proof of a successful signed
+// answer, and said so.
 //
-// A CONSISTENCY PIN, NOT A RED-PROOF (docs/skills/implementation-review-
-// loop.md's own honesty rule): because the baked mesh refuses either
-// way, `DisplacedGeometry::SignedDistanceLower`'s observable behaviour
-// -- `false`, `outExact` cleared, `outSigned` untouched -- is IDENTICAL
-// whether the two-line forwarder below is present or the base
-// `IGeometry::SignedDistanceLower` default answers instead (verified:
-// this exact test passes unmodified with the forwarder reverted). What
-// this DOES pin: the refusal contract itself (matches
-// `IGeometry::SignedDistanceLower`'s documented `\return` exactly) and
-// that `DistanceToSurface`'s pre-existing, already-proven forward to the
-// SAME mesh instance still answers a real, non-zero, non-signed distance
-// for the SAME point -- i.e. a real bake exists and IS reachable, even
-// though this row's own new call cannot yet observe a different outcome
-// through it. The forwarder's correctness rests on being a direct
-// textual mirror of that already-tested `DistanceToSurface` forwarder
-// (same null-check, same single pass-through call, same signature
-// shape) -- confirmed by inspection, not by an independent black-box
-// result, and flagged here rather than left implicit.
+// DL-143 fixed `ComputeWatertightness` to weld corners by POSITION before
+// counting edges -- and `TessellateToMesh`'s flattening copies each
+// corner's position VERBATIM (see that method's own comment: it emits
+// `*src.pVertices[k]`, not a recomputed value), so the 36 flattened
+// corners weld right back down to the original 8 physical positions and
+// the baked mesh is now CORRECTLY read as watertight. This is therefore
+// now a REAL red/green assertion, not a pin: pre-DL-143 this test's own
+// `!ok` assertion passed (the baked mesh refused); on this tree `ok` is
+// now `true` (measured: `SignedDistanceLower` on the baked mesh answers
+// `-half`, exact) -- the forwarder added by this row is exercised
+// end-to-end for the first time, through a REAL bake, not just by
+// inspection of its textual shape against `DistanceToSurface`'s already-
+// proven forwarder.
 //-----------------------------------------------------------------------------
 static void TestSignedDistanceLowerForwardsToBakedMesh()
 {
@@ -1419,15 +1411,17 @@ static void TestSignedDistanceLowerForwardsToBakedMesh()
 	assert( std::fabs( (double)dUnsigned - (double)half ) < 1e-6 );
 
 	// The NEW forward: reaches the SAME mesh, which (per the comment
-	// above) is flattened and therefore correctly REFUSES the signed
-	// query -- not because DisplacedGeometry itself swallows the call,
-	// but because the mesh it forwards to genuinely is not watertight.
-	Scalar outSigned = 12345.0;	// sentinel: must stay untouched on refusal
-	bool outExact = true;			// pre-set to catch a forwarder that forgets to clear it
+	// above) is flattened by TessellateToMesh but welds right back down
+	// to the original 8 physical positions under DL-143's position-keyed
+	// watertightness check, so it correctly ANSWERS the signed query --
+	// the true depth to the nearest face at the centre is exactly
+	// `-half`, same as the standalone base mesh's own answer above.
+	Scalar outSigned = 12345.0;	// sentinel: must be overwritten on success
+	bool outExact = false;
 	const bool ok = pDisp->SignedDistanceLower( centre, Scalar( 1000 ), outSigned, outExact );
-	assert( !ok );
-	assert( !outExact );
-	assert( outSigned == Scalar( 12345.0 ) );	// untouched, per IGeometry's own refusal contract
+	assert( ok );
+	assert( outExact );
+	assert( std::fabs( (double)outSigned - ( -(double)half ) ) < 1e-6 );
 
 	pDisp->release();
 	pWeldedCube->release();

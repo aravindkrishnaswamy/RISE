@@ -52,6 +52,49 @@
 //        DESIGN.md §5.3, §8.3) measure everything else on this signal
 //        in exactly this unit.
 //
+//  DL-143 (review P1 on the DL-31 fix above): `ComputeWatertightness`
+//  keyed edges by the raw POSITION-ARRAY INDEX, which is only the same
+//  thing as "the same physical vertex" on a hand-welded mesh -- section
+//  (a)'s 8-vertex cube is exactly that, and it is the ONLY shape this
+//  file built before this row.  Every per-corner import/tessellation
+//  path (`GLTFSceneImporter::BuildGeometryFromPrimitive`'s one-AddVertex-
+//  per-glTF-vertex convention, every engine `TessellateToMesh` producer)
+//  gives the SAME physical corner a DIFFERENT array slot per triangle
+//  that touches it, so DL-31's own edge-count check read a genuinely
+//  closed solid as an open sheet on essentially every shipped or
+//  imported mesh.  Fixed by welding vertices to a shared id by POSITION
+//  (`WeldVertexPositions` in the .cpp) before counting edges.  New
+//  sections:
+//    (e) MONEY.  A hand-built, FLAT-SHADED 24-vertex cube (6 faces x 4
+//        corners, no vertex shared across faces -- the same convention
+//        `Box.glb` and every triangle-mesh export with per-face normals
+//        uses) reads OPEN under the old index-keyed check and WATERTIGHT
+//        under the new position-welded one.
+//    (f) DL-116, refined not closed.  `SphereGeometry::TessellateToMesh`
+//        still refuses after welding, but for a MORE PRECISELY diagnosed
+//        reason: welding correctly identifies each pole's ring of
+//        coincident-position corners as ONE vertex, which makes the
+//        pole-cell triangles (which were never actually anything but
+//        zero-area) show up as DEGENERATE rather than as spurious open
+//        boundary.  Still no signed answer either way; DL-116 stays
+//        open, its own row updated to record this.
+//    (g) `BoxGeometry::TessellateToMesh` (independently tessellated
+//        per-face, no cross-seam sharing -- 96 boundary edges pre-fix at
+//        detail=4) DOES weld back to watertight: its face seams agree to
+//        float-noise precision, well inside this fix's tolerance.
+//    (h) ONE SHIPPED ASSET, end to end: `Box.glb` loaded through the
+//        real `GLTFSceneImporter`, answering a real signed interior
+//        distance through the exact mechanism `interior(r)` reads from
+//        (`SignedDistanceLower`) -- not a synthetic fixture.  Of the
+//        four assets named in the review (Avocado, DragonAttenuation,
+//        SheenChair, NormalTangentTest), NONE become fully watertight
+//        after welding: see this row's own commit message / the ledger
+//        for the measured per-primitive boundary/non-manifold counts --
+//        each has a genuine remaining defect or open boundary in the
+//        source asset itself (a real, not a testing, residual). `Box.glb`
+//        and `BoxTextured.glb` (both 24 vertices / 12 triangles, the
+//        same per-face convention as (e)) DO close, and are used here.
+//
 //////////////////////////////////////////////////////////////////////
 
 #include <chrono>
@@ -63,6 +106,8 @@
 
 #include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
 #include "../src/Library/Geometry/SphereGeometry.h"
+#include "../src/Library/Geometry/BoxGeometry.h"
+#include "../src/Library/Importers/GLTFSceneImporter.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -315,6 +360,222 @@ static void TestNonWatertightCubeRefuses()
 	mesh->release();
 }
 
+//! DL-143 MONEY red-proof.  Builds a FLAT-SHADED cube: 6 faces, 4
+//! vertices EACH (24 total), no vertex shared across faces -- the same
+//! per-corner convention `Box.glb` and any per-face-normal export use.
+//! Every physical corner of the cube is touched by 3 faces, so it gets 3
+//! DISTINCT array slots here, all at the identical position.  Pre-DL-143
+//! (position-index keying) every one of the cube's 12 true edges is split
+//! into two DIFFERENT keys (one per adjacent face's own local slots),
+//! each used once -- 24 "boundary" edges, an open sheet.  Post-DL-143
+//! (position-welded keying) the two slots per shared corner collapse back
+//! to one id, the two faces' contributions to each true edge become the
+//! SAME key, and the mesh reads correctly as the closed cube it always
+//! was.
+static void TestFlatShadedPerCornerCubeWelds()
+{
+	std::cout << "(e) MONEY -- a flat-shaded, per-corner 24-vertex cube (Box.glb's own convention) welds to watertight" << std::endl;
+
+	const Scalar h = 2.0;
+	std::vector<Point3> corners;
+	CubeCorners( h, corners );
+
+	std::vector<Point3> vertices;
+	IndexTriangleListType tris;
+	auto face = [&]( unsigned int c0, unsigned int c1, unsigned int c2, unsigned int c3 ) {
+		// Four BRAND NEW array slots for this face, copied from the
+		// shared corner positions -- never reused by any other face,
+		// exactly like a per-face-normal glTF export.
+		const unsigned int base = (unsigned int)vertices.size();
+		vertices.push_back( corners[c0] );
+		vertices.push_back( corners[c1] );
+		vertices.push_back( corners[c2] );
+		vertices.push_back( corners[c3] );
+		auto addTri = [&]( unsigned int a, unsigned int b, unsigned int c ) {
+			IndexedTriangle t;
+			t.iVertices[0] = a; t.iVertices[1] = b; t.iVertices[2] = c;
+			t.iNormals[0] = a;  t.iNormals[1] = b;  t.iNormals[2] = c;
+			t.iCoords[0] = a;   t.iCoords[1] = b;   t.iCoords[2] = c;
+			tris.push_back( t );
+		};
+		addTri( base + 0, base + 1, base + 2 );
+		addTri( base + 0, base + 2, base + 3 );
+	};
+	// Same 8 corner indices and face membership as CubeTriangles above,
+	// just each face getting its OWN 4 slots instead of sharing the 8.
+	face( 0, 1, 2, 3 );	// bottom (z=-h)
+	face( 4, 5, 6, 7 );	// top (z=+h)
+	face( 0, 1, 5, 4 );	// front (y=-h)
+	face( 3, 2, 6, 7 );	// back (y=+h)
+	face( 0, 3, 7, 4 );	// left (x=-h)
+	face( 1, 2, 6, 5 );	// right (x=+h)
+
+	Check( vertices.size() == 24, "(e) fixture really has 24 (6x4) per-face vertex slots" );
+	Check( tris.size() == 12, "(e) fixture really has 12 triangles" );
+
+	TriangleMeshGeometryIndexed* mesh = BuildMesh( vertices, tris );
+
+	Scalar outSigned = 12345.0;
+	bool outExact = false;
+	const bool ok = mesh->SignedDistanceLower( Point3( 0, 0, 0 ), Scalar( 1000 ), outSigned, outExact );
+	Check( ok, "(e) MONEY -- the flat-shaded per-corner cube now ANSWERS SignedDistanceLower "
+		"(pre-DL-143 this refused: 24 boundary edges from an entirely closed solid)" );
+	CheckClose( (double)outSigned, -(double)h, 1e-9,
+		"(e) MONEY -- centre depth equals the half-size exactly, same as the hand-welded (a) fixture" );
+	Check( outExact, "(e) MONEY -- exact, same as the hand-welded (a) fixture" );
+
+	mesh->release();
+}
+
+//! DL-116, refined: `SphereGeometry::TessellateToMesh` gives every pole
+//! ROW (not just each pole cell) the SAME position (see that method's
+//! own comment -- `atPole` collapses `u` to 0, and at `phi=0`/`PI` the
+//! direction is independent of `theta` anyway), so DL-143's welding
+//! correctly identifies an entire pole ring as ONE vertex. That turns
+//! each pole-adjacent "quad" -- which was never anything but zero-area,
+//! DL-116's own point -- into a genuinely DEGENERATE (repeated-vertex)
+//! triangle once welded, which `ComputeWatertightness`'s pre-existing
+//! degenerate check (see its own comment) refuses outright rather than
+//! miscounting edges. Still no signed answer -- DL-116 stays open, just
+//! diagnosed more precisely post-weld (open-sheet before, degenerate-
+//! triangle after) than it was pre-fix.
+static void TestSphereTessellationStillRefusesDegenerate()
+{
+	std::cout << "(f) DL-116 -- SphereGeometry::TessellateToMesh still refuses post-weld (now: degenerate poles, not open seams)" << std::endl;
+
+	SphereGeometry* pSphere = new SphereGeometry( 3.0 );
+	pSphere->addref();
+	IndexTriangleListType tris;
+	VerticesListType vertices;
+	NormalsListType normals;
+	TexCoordsListType coords;
+	const bool built = pSphere->TessellateToMesh( tris, vertices, normals, coords, 71 );
+	Check( built, "(f) SphereGeometry::TessellateToMesh(detail=71) succeeds" );
+
+	TriangleMeshGeometryIndexed* mesh = new TriangleMeshGeometryIndexed( false, false );
+	mesh->addref();
+	mesh->BeginIndexedTriangles();
+	mesh->AddVertices( vertices );
+	mesh->AddNormals( normals );
+	mesh->AddTexCoords( coords );
+	mesh->AddIndexedTriangles( tris );
+	mesh->DoneIndexedTriangles();
+
+	Scalar outSigned = 0.0; bool outExact = true;
+	const bool ok = mesh->SignedDistanceLower( Point3( 0, 0, 0 ), Scalar( 1000 ), outSigned, outExact );
+	Check( !ok, "(f) DL-116 -- still refuses SignedDistanceLower post-weld (degenerate pole "
+		"triangles, not the pre-fix miscount -- see the build log for the "
+		"'degenerate (repeated-vertex) triangle' diagnostic)" );
+	Check( !outExact, "(f) ...and clears outExact on refusal" );
+
+	mesh->release();
+	pSphere->release();
+}
+
+//! `BoxGeometry::TessellateToMesh` tessellates its six faces
+//! INDEPENDENTLY -- each face computes its own vertex grid from its own
+//! (origin, edgeU, edgeV) basis, with no explicit seam sharing -- so
+//! pre-DL-143 it read as open (96 boundary edges at detail=4, one full
+//! unshared perimeter per face: this is the SAME underlying pattern as
+//! (e) and DL-116, just at every seam rather than only the two poles).
+//! The seam positions agree to float-noise precision (both sides compute
+//! the same real-valued point from consistent inputs), well inside
+//! DL-143's `1e-6 * bboxDiagonal` weld tolerance, so this DOES close.
+static void TestBoxTessellationWelds()
+{
+	std::cout << "(g) BoxGeometry::TessellateToMesh (independently-tessellated faces) welds to watertight" << std::endl;
+
+	const Scalar halfExtent = 2.0;	// BoxGeometry(w,h,d) takes FULL extents
+	BoxGeometry* pBox = new BoxGeometry( 2.0 * halfExtent, 2.0 * halfExtent, 2.0 * halfExtent );
+	pBox->addref();
+	IndexTriangleListType tris;
+	VerticesListType vertices;
+	NormalsListType normals;
+	TexCoordsListType coords;
+	const bool built = pBox->TessellateToMesh( tris, vertices, normals, coords, 4 );
+	Check( built, "(g) BoxGeometry::TessellateToMesh(detail=4) succeeds" );
+
+	TriangleMeshGeometryIndexed* mesh = new TriangleMeshGeometryIndexed( false, false );
+	mesh->addref();
+	mesh->BeginIndexedTriangles();
+	mesh->AddVertices( vertices );
+	mesh->AddNormals( normals );
+	mesh->AddTexCoords( coords );
+	mesh->AddIndexedTriangles( tris );
+	mesh->DoneIndexedTriangles();
+
+	Scalar outSigned = 12345.0; bool outExact = false;
+	const bool ok = mesh->SignedDistanceLower( Point3( 0, 0, 0 ), Scalar( 1000 ), outSigned, outExact );
+	Check( ok, "(g) MONEY -- the independently-tessellated box now ANSWERS SignedDistanceLower "
+		"(pre-DL-143: 96 boundary edges, one unshared perimeter per face)" );
+	CheckClose( (double)outSigned, -(double)halfExtent, 1e-6,
+		"(g) centre depth equals the half-extent (tessellation is exact for a box, no polyhedral-approximation slack)" );
+	Check( outExact, "(g) exact" );
+
+	mesh->release();
+	pBox->release();
+}
+
+//! (h) ONE SHIPPED ASSET, end to end.  `Box.glb` (the same asset
+//! `GLTFLoaderTest` already covers for its OWN, unrelated reasons: 24
+//! vertices, 6 faces x 4 corners, no vertex shared between faces -- see
+//! that test's own comment) is loaded through the REAL importer, and the
+//! resulting mesh answers a REAL signed interior distance through the
+//! exact mechanism `interior(r)` is built on (`SignedDistanceLower`),
+//! not a synthetic fixture built by this test file. Of the four assets
+//! named in the DL-143 review, NONE fully weld to watertight -- each has
+//! a genuine remaining defect (measured, not asserted here, since these
+//! are real third-party asset properties, not this fix's contract):
+//!   Avocado             38 boundary edges  (was 124 pre-weld)
+//!   DragonAttenuation (Cloth Backdrop, mesh 0)  617 boundary edges (a
+//!                        real open cloth sheet -- correctly stays open)
+//!   DragonAttenuation (Dragon, mesh 1)          0 boundary, 6 NON-
+//!                        MANIFOLD edges (a genuine small defect in the
+//!                        source asset -- refuses for a real reason)
+//!   SheenChair (4 primitives)   400 / 528 / 384 / 32 boundary edges
+//!   NormalTangentTest    128 boundary edges (UNCHANGED from pre-weld --
+//!                        this asset's 128 boundary edges are not a
+//!                        welding artifact at all; it stays open either
+//!                        way)
+//! `Box.glb` and `BoxTextured.glb`, by contrast, use the exact per-face
+//! convention (e) tests and both close.
+static void TestShippedGltfBoxEndToEnd()
+{
+	std::cout << "(h) Box.glb loaded through GLTFSceneImporter -- end-to-end interior() through a real shipped asset" << std::endl;
+
+	TriangleMeshGeometryIndexed* mesh = new TriangleMeshGeometryIndexed( false, false );
+	mesh->addref();
+
+	GLTFSceneImporter imp( "scenes/Tests/Geometry/assets/Box.glb" );
+	Check( imp.IsValid(), "(h) Box.glb parses -- is the asset committed, and is the test running from the repo root?" );
+
+	const bool built = imp.BuildGeometryFromPrimitive( mesh, 0, 0, false );
+	Check( built, "(h) Box.glb builds into a TriangleMeshGeometryIndexed" );
+
+	if( built ) {
+		// Box.glb is the standard glTF-Sample-Assets unit cube: half-
+		// extent 0.5, centred at the origin.
+		Scalar outSigned = 12345.0; bool outExact = false;
+		const bool ok = mesh->SignedDistanceLower( Point3( 0, 0, 0 ), Scalar( 1000 ), outSigned, outExact );
+		Check( ok, "(h) MONEY -- a REAL shipped glTF asset, loaded through the REAL importer, "
+			"now answers a real interior() signed distance end to end" );
+		CheckClose( (double)outSigned, -0.5, 1e-6,
+			"(h) centre depth equals the unit cube's half-extent (-0.5)" );
+		Check( outExact, "(h) exact" );
+
+		// Off-centre, still inside: the same shape of check section (a)
+		// runs on the hand-built cube, now through a real import.
+		Scalar outSigned2 = 12345.0; bool outExact2 = false;
+		const bool ok2 = mesh->SignedDistanceLower( Point3( 0.3, 0, 0 ), Scalar( 1000 ), outSigned2, outExact2 );
+		Check( ok2, "(h) off-centre interior query on the real asset answers" );
+		CheckClose( (double)outSigned2, -(0.5 - 0.3), 1e-6,
+			"(h) off-centre depth on the real asset tracks the true nearest-face distance" );
+		Check( outExact2, "(h) off-centre stays exact too" );
+	}
+
+	mesh->release();
+}
+
 //! A hand-built, WELDED UV-sphere: one shared vertex at each pole (a fan
 //! of triangles there), ordinary quads split into two triangles on the
 //! `n` interior latitude rings.  Deliberately NOT
@@ -479,11 +740,15 @@ static void TestParityCost()
 
 int main()
 {
-	std::cout << "=== MeshInteriorSignalTest (DL-31) ===" << std::endl;
+	std::cout << "=== MeshInteriorSignalTest (DL-31, DL-143) ===" << std::endl;
 
 	TestClosedWatertightCube();
 	TestOpenQuadRefuses();
 	TestNonWatertightCubeRefuses();
+	TestFlatShadedPerCornerCubeWelds();
+	TestSphereTessellationStillRefusesDegenerate();
+	TestBoxTessellationWelds();
+	TestShippedGltfBoxEndToEnd();
 	TestParityCost();
 
 	std::cout << std::endl << "Passed: " << passCount << "   Failed: " << failCount << std::endl;
