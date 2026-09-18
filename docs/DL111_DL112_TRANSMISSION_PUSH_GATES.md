@@ -504,11 +504,14 @@ this row made truthful.
 
 ## 10. Gate
 
-Clean library rebuild, zero warnings. Per-test builds, all green.
+Clean library rebuild (`make clean` + full build), **zero warnings**.
+Per-test builds, all green. Re-run in full after the 2026-09-17 review
+round (§13).
 
 | suite | result |
 |---|---|
-| `TransmissionPushGateTest` (new) | 354 checks / 0 failures (red: 82) |
+| `TransmissionPushGateTest` (new) | **416 checks / 0 failures** (354 / 0 at first closure, red 82; +2c, +12, +2 PerturbClipped guard rows in the review round) |
+| `SPFBSDFConsistencyTest` (Part F added by the review) | all pass |
 | `TranslucentEntryHorizonTest` | 251 checks / 0 failures |
 | `TranslucentTiltedExitTest` | ALL TESTS PASSED |
 | `TranslucentDoubleSidedTest` | 44 passed / 0 failed |
@@ -609,3 +612,20 @@ row is about), rendered against an **isolated build of the slice's parent
 commit** with `oidn_denoise FALSE`, `pixel_filter box`, EXR
 `Rec709RGB_Linear`, and repeats on both sides (renders are not deterministic
 run to run — `BlockRasterizeSequence` shuffles from `std::random_device`).
+
+---
+
+## 13. Review round (2026-09-17)
+
+An independent review of the closed slice found two P1s, three P2s and a
+set of P3s. All are fixed; each has its own commit with the red-proof
+verbatim.
+
+| item | what was wrong | red → green |
+|---|---|---|
+| **P1-1** | The §3 re-derivation's own TIR fallback (`else { ref = 1.0; }`) left `refracted` holding the WRONG-SIDE shading-normal Snell result, and the `scattering` warp below runs unconditionally — so it handed `PerturbClipped` an axis outside the clip half-space and fired its fail-loud precondition on the per-sample scatter path, from a comment calling itself "unreachable from production". Fixed by restoring `refracted = ri.ray.Dir()`, which is what the two ORIGINAL TIR branches already leave in place. | sub-test 12: **320/320** precondition violations across five `(delta, tilt)` exit cells at the descriptor-default `scattering 10000` → **0**; the shipped `sms_veach_egg_bumpmap.RISEscene` at its own 400×400 / 4 spp: **89 / 90 / 98** log lines per render → **0 / 0 / 0** |
+| **P1-2** | DL-112 renormalized the SAMPLER and `Pdf()` but not `TranslucentBSDF::value` / `valueNM`, so `kray` and `value*cos/pdf` — the two techniques PT's NEE and BDPT/VCM's connections MIS together — diverged by `1/P(valid)`. Fixed by renormalizing and clipping the entry front branch (which is `GetReflectedSide`'s **case 2**, not case 1: its comments name the cases from `Dot(n, -ray.Dir())`, the opposite sense from the geometric front face). | `SPFBSDFConsistencyTest` Part F: ratio **1.00000 / 1.07180 / 1.17157 / 1.33333 / 1.58879 / 1.96569** at tilts 0/30/45/60/75/89 → **1.00000** at all six. Render (bump-mapped translucent sphere + area light, 200×200, 256 spp, `oidn_denoise FALSE`, `pixel_filter box`, EXR `Rec709RGB_Linear`): PT `1.15735 ± 0.00015` → `1.24401 ± 0.00004` (**+7.488 %**), BDPT `1.19057 ± 0.00006` → `1.29545 ± 0.00056` (**+8.810 %**), PT/BDPT `0.97210` → `0.96029` (**−1.215 %**) |
+| **P2-1** | §2's denser-medium theorem was stated without its premise (`Dot(d, n_s) < 0`) — see §2a. | sub-test 2c: `PerfectRefractorSPF` **64/64** wrong-side and `DielectricSPF` total emitted energy **0.0000** at all nine denser-entry cells → **0** and **1.0000** |
+| **P2-2** | Four `SubSurfaceScatteringSPF` comment blocks still described the pre-DL-111 "drop unless mandatory". | comment-only |
+| **P2-3** | "Roughly HALF … at any tilt, on a FLAT surface" overstates the `scattering 0` deletion ~2× — see §11. | doc-only; row-3 values are a snapshot lock and did not move |
+| **P3** | `PerturbClipped`'s two undocumented, SILENT preconditions (non-unit `clipN` disables the clip; `down > PI/2` returns a NaN direction); the shading-mirror-direction / `geomN`-Fresnel pairing was undocumented; DL-130's ruling and its third call site; four dead `const bool bEmit = true`; the draw-count citation. | sub-test 11: half-arc **3.141593 vs 1.797187** with 1750 samples below the true clip, and `dir=(nan,nan,nan)` → both guarded |
