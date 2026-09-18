@@ -525,6 +525,16 @@ to 4x.
   the gap grows with roughness beyond that band's roughness-0.3 basis.
   Filed **DL-127**.  It is also one of the two rows §3.2a had to rule
   out before attributing topology L's merge-target residual to DL-103.
+  **CLOSED 2026-09-18** (`debt-dl127`, `53077f5f`,
+  docs/DL127_SCHLICK_KRAY_VS_BRDF.md): `kray` is now that lobe's own
+  `f_S cos / p_S`, ruled by reciprocity (the `kray` convention's implied
+  BRDF is non-reciprocal by exactly `nl/nv`), and §3.1's (a)/Q column
+  re-measures as 1.00001 / 1.00014 / 1.00085 at 0 / 30 / 60 deg.  That
+  suite's Schlick band went 15 % -> 1 %.  The closure MOVED topology L:
+  PT +1.158 % and BDPT +1.547 % (n=4 per build, isolated), so its
+  DL-103 residual widens 5.186 % -> 5.590 % and the numbers in §3.2a
+  below are the pre-DL-127 readings -- re-measure rather than quote
+  them once DL-103 lands.  Topology M is unmoved (+0.18 % both sides).
 * **§4.1's "up to 4x" rests on a premise `DL-101` disputes.**  That
   section counts the per-channel branch's three specular rays as three
   distinct lobes in the container.  **DL-101** records that the

@@ -411,7 +411,25 @@ int main()
         // gate reads Pdf()'s own residual, not the quadrature's.
         { "r.05 rd.6 rs1 i.3 th15",  15.0, 0.6,  1.0,  0.05, 0.3, false, 0,   0,   0,   0.0,  false , kQTFine, kQPFine, 0.0             },
         { "r.05 rd.6 rs1 i.3 th45",  45.0, 0.6,  1.0,  0.05, 0.3, false, 0,   0,   0,   0.0,  false , kQTFine, kQPFine, 0.0             },
-        { "r.05 rd.6 rs1 i.3 th70",  70.0, 0.6,  1.0,  0.05, 0.3, false, 0,   0,   0,   0.0,  false , kQTFine, kQPFine, 0.0             },
+        // DL-127 (2026-09-17): this row moved from |diff| 0.00566 to
+        // 0.01106 when `SchlickSPF`'s specular `kray` became the lobe's
+        // own `f_S cos / p_S`.  That is NOT a modelling error in `Pdf()`
+        // -- it is `kSpecQuadN=16`'s own residual on a now-more-sharply-
+        // varying integrand (the realized selection weight carries a
+        // `1/((n.v)(n.h))` factor it did not before).  Measured on the
+        // SAME fix with `kSpecQuadN=32`: this row reads 0.00230, and
+        // EVERY row in this file reads better than the pre-DL-127 build
+        // did at 16 (th85 0.00834 -> 0.00414, the per-channel grazing row
+        // 0.01216 -> 0.00490, 44/0 overall).  The grid stays at 16 for
+        // the cost reason DL-67 section 4f already recorded (~3.3-4x per
+        // `Pdf()` call, and BDPT pays two per vertex), so this row moves
+        // to the same honestly-widened tolerance its two low-roughness
+        // siblings already use.  Recorded in
+        // docs/DL127_SCHLICK_KRAY_VS_BRDF.md section 5.4 and in
+        // docs/DL67_SLICE0_SCHLICK_PDF_WEIGHTS.md's own grid-size note;
+        // it is a resolution residual with a known lever, not a new
+        // modelling defect, so it gets no ledger row of its own.
+        { "r.05 rd.6 rs1 i.3 th70",  70.0, 0.6,  1.0,  0.05, 0.3, false, 0,   0,   0,   0.0,  false , kQTFine, kQPFine, kMassTolLowRough},
         { "r.02 rd.6 rs1 i.3 th85",  85.0, 0.6,  1.0,  0.02, 0.3, false, 0,   0,   0,   0.0,  false , kQTFine, kQPFine, kMassTolLowRough},
         { "per-channel roughness",   45.0, 0.5,  0.3,  0.3,  0.8, true,  0.2, 0.3, 0.4, 0.0,  false , 0,     0,     0.0    },
         // P2-3 (DL-67 Slice 0 round-2 review) / DL-101 (CLOSED 2026-09-17,
