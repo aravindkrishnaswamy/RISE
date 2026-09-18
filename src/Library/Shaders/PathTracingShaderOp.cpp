@@ -227,5 +227,11 @@ void PathTracingShaderOp::PerformOperationHWSS(
 		0, rs.glossyFilterWidth, result, rc.pAOV,
 		// DL-74 -- see the RGB twin above.  The HWSS body has no guiding
 		// block of its own, but it still CONSUMES the incoming partner.
-		rs.MisPartnerPdf() );
+		rs.MisPartnerPdf(),
+		// DL-196 -- see the RGB/NM twins above (DL-185).  Inert today:
+		// the only production caller of `CastRayHWSS` passes a default-
+		// constructed `RAY_STATE` (`rs.castRRCompensation == 1.0`), so
+		// this closes the training-consistency gap without moving any
+		// rendered pixel.
+		rs.castRRCompensation );
 }

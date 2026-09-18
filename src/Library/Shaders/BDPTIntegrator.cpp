@@ -88,12 +88,18 @@
 #include "../Utilities/IndependentSampler.h"
 #include "../Utilities/Color/SpectralValueTraits.h"
 #include "../Utilities/PathValueOps.h"
+#include "BSSRDFEntryAdapters.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
 using RISE::SpectralDispatch::PelTag;
 using RISE::SpectralDispatch::NMTag;
 using RISE::SpectralDispatch::SpectralValueTraits;
+// DL-207: the zero-exitance-light sweep's BSSRDF-entry-vertex branch
+// prices Sw the same way PathTracingIntegrator's own BSSRDF-entry NEE
+// does, via these stack-local IBSDF adapters (see BSSRDFEntryAdapters.h).
+using RISE::BSSRDFAdapters::BSSRDFEntryBSDF;
+using RISE::BSSRDFAdapters::RandomWalkEntryBSDF;
 
 //
 // Small epsilon for ray offsets to avoid self-intersection
@@ -5226,11 +5232,77 @@ EvaluateAllStrategiesImpl(
 					const BDPTVertex& eyeEnd = eyeVerts[t - 1];
 
 					if( eyeEnd.type != BDPTVertex::SURFACE ) continue;
-					if( !eyeEnd.isConnectible ) continue;
 					if( !eyeEnd.pMaterial ) continue;
 
-					const IBSDF* pBSDF = eyeEnd.pMaterial->GetBSDF();
-					if( !pBSDF ) continue;
+					// DL-207: a BSSRDF entry vertex (`isBSSRDFEntry`, spawned
+					// by the eye subpath's own BSSRDF-sampling block above
+					// when a `subsurfacescattering_material` /
+					// `randomwalk_sss_material` transmits) must be priced
+					// through its Sw(direction) diffusion term -- the SAME
+					// adapter `PathVertexEval::EvalBSDFAtVertex` and PT's own
+					// BSSRDF-entry NEE use -- never through the material's
+					// raw aggregate `IBSDF`.  `SubSurfaceScatteringBSDF`
+					// deliberately returns 0 off its own narrow front-
+					// reflection lobe (see its own header comment), and at
+					// this vertex `eyeEnd.position`/`eyeEnd.normal` are the
+					// diffusion-profile ENTRY point, not the camera-visible
+					// exit point that lobe is defined at -- so the raw
+					// aggregate call was pricing the wrong physical
+					// quantity at the wrong location, not merely evaluating
+					// a legitimate lobe at zero.  Fed a directional/ambient
+					// light delivered EXACTLY ZERO direct light to every
+					// BSSRDF material under BDPT/MLT (docs/DL207_BDPT_ZERO_EXITANCE_BSSRDF.md).
+					//
+					// This branch deliberately BYPASSES the general
+					// `isConnectible` gate below: a random-walk SSS entry
+					// vertex is marked `isConnectible = false` so that the
+					// GENERAL (s>=1) connection strategies -- which divide
+					// by a real area-measure `pdfFwd`/`pdfRev` for MIS --
+					// never target a vertex whose `pdfSurface` is only a
+					// placeholder (see that vertex's own construction
+					// comment, "Mark the vertex as delta + non-connectible").
+					// THIS sweep's MIS weight is unconditionally 1.0 for
+					// every zero-exitance light (the comment above this
+					// block), so no pdf consistency is needed and the
+					// exemption is safe -- it is the same reasoning that
+					// makes a delta light's contribution here immune to
+					// MIS in the first place.
+					const IBSDF* pBSDF = nullptr;
+					BSSRDFEntryBSDF diffusionEntryBSDF( nullptr, 0.0 );
+					RandomWalkEntryBSDF randomWalkEntryBSDF( 1.0 );
+
+					if( eyeEnd.isBSSRDFEntry )
+					{
+						if( ISubSurfaceDiffusionProfile* pProfile =
+							eyeEnd.pMaterial->GetDiffusionProfile() )
+						{
+							diffusionEntryBSDF = BSSRDFEntryBSDF( pProfile, 0.0 );
+							pBSDF = &diffusionEntryBSDF;
+						}
+						else
+						{
+							const RandomWalkSSSParams* pRW =
+								eyeEnd.pMaterial->GetRandomWalkSSSParams();
+							[[maybe_unused]] RandomWalkSSSParams rwParamsNM;
+							if constexpr( !Traits::is_pel ) {
+								if( !pRW && eyeEnd.pMaterial->GetRandomWalkSSSParamsNM(
+									tag.nm, rwParamsNM ) ) {
+									pRW = &rwParamsNM;
+								}
+							}
+							if( pRW ) {
+								randomWalkEntryBSDF = RandomWalkEntryBSDF( pRW->ior );
+								pBSDF = &randomWalkEntryBSDF;
+							}
+						}
+						if( !pBSDF ) continue;
+					}
+					else
+					{
+						if( !eyeEnd.isConnectible ) continue;
+						pBSDF = eyeEnd.pMaterial->GetBSDF();
+						if( !pBSDF ) continue;
+					}
 
 					// Incoming viewer direction (from previous eye vertex)
 					Vector3 wo = Vector3Ops::mkVector3(

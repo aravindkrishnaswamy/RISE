@@ -5245,7 +5245,8 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 	Scalar glossyFilterWidth,
 	Scalar hwssResult[SampledWavelengths::N],
 	PixelAOV* pAOV,
-	Scalar bsdfMisPdf_
+	Scalar bsdfMisPdf_,
+	Scalar castRRCompensation_
 	) const
 {
 	// Initialize results
@@ -5299,7 +5300,12 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					considerEmission, importance, rayType,
 					diffuseBounces, glossyBounces, transmissionBounces,
 					translucentBounces, volumeBounces, glossyFilterWidth,
-						false, false, pAOV, bsdfMisPdf );
+						false, false, pAOV, bsdfMisPdf,
+						// DL-196: this delegation IS `firstHit` at
+						// `startDepth` -- forward the cast-level RR
+						// compensation (see this function's own trailing
+						// parameter doc).
+						castRRCompensation_ );
 			}
 		}
 		return;
@@ -5339,7 +5345,10 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 						considerEmission, importance, rayType,
 						diffuseBounces, glossyBounces, transmissionBounces,
 						translucentBounces, volumeBounces, glossyFilterWidth,
-						false, false, pAOV, bsdfMisPdf );
+						false, false, pAOV, bsdfMisPdf,
+						// DL-196: this delegation IS `firstHit` at
+						// `startDepth` too (see the Fallback 1 site above).
+						castRRCompensation_ );
 				}
 			}
 			return;
@@ -6155,7 +6164,12 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					// pdf still has to be evaluated under the LIVE stack --
 					// this loop's own escape/emitter weights partner against
 					// a density the SPF produced under `iorStack`.
-					/*pGuidedBlend*/ 0, &iorStack );
+					/*pGuidedBlend*/ 0, &iorStack,
+					// DL-196: fold in the cast-level RR compensation ONLY at
+					// the FIRST vertex of this call -- the HWSS twin of the
+					// RGB/NM main loop's identical PART-2 NEE site (DL-185).
+					// 1.0 (no-op) for every deeper iteration of this loop.
+					depth == startDepth ? castRRCompensation_ : Scalar( 1.0 ) );
 				directNM = ClampContribution( directNM, stabilityConfig.directClamp );
 				// GUI render modes P2b `indirect` (HWSS twin): suppress
 				// NEE's direct-lighting contribution at the camera-visible
