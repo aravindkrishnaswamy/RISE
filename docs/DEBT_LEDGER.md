@@ -1370,8 +1370,9 @@ unmodified HEAD `b8c525be`, 145/2); `CausticPhotonMapNormalizationTest`
 30/2 -> 32/0 (its pre-existing `Check(s.valid, ...)` calls at the two
 production render sites were confirmed unconditional, i.e. not a
 skip-instead-of-fail bug); `SignalIntegratorConsistencyTest` 1/2 -> 3/0
-(isolated via `SIGNAL_CONSISTENCY_FILTER`; full unfiltered run unaffected
-in content, +3 checks). Zero compiler warnings on every rebuild.
+(isolated via `SIGNAL_CONSISTENCY_FILTER`; full unfiltered gate run
+confirmed 2971/0, was 2968/0, +3 checks, all other counters unchanged).
+Zero compiler warnings on every rebuild.
 **P3 opened, not fixed here**: all 18 files hand-duplicate
 `CapturingRasterizerOutput`/`ImageStats`/`ComputeStats`/
 `TestNonfiniteCandidateRejected` rather than sharing one harness header;
