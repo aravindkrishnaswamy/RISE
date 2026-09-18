@@ -379,6 +379,18 @@ bool DisplacedGeometry::DistanceToSurface( const Point3& ptObject, const Scalar 
 	return m_pMesh->DistanceToSurface( ptObject, maxDistObject, outDist );
 }
 
+bool DisplacedGeometry::SignedDistanceLower( const Point3& ptObject, const Scalar maxDistObject,
+	Scalar& outSigned, bool& outExact ) const
+{
+	outExact = false;
+	// See the header for why this one realizes and the ray forwarders do not.
+	Realize();
+	if( !m_pMesh ) {
+		return false;
+	}
+	return m_pMesh->SignedDistanceLower( ptObject, maxDistObject, outSigned, outExact );
+}
+
 void DisplacedGeometry::GenerateBoundingSphere( Point3& ptCenter, Scalar& radius ) const
 {
 	if( !m_pMesh ) {
