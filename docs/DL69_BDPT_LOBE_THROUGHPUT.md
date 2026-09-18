@@ -154,6 +154,16 @@ Three deliberate carve-outs:
   its `Pdf`/`PdfNM` deliberately do not cover either Phong `cos^N` lobe
   (the entering transmission and the interior backscatter), which is
   **DL-41** -- so a draw from one of those lobes lands here.
+  **CORRECTION (debt-dl126 slice, 2026-09-18): the parenthetical above is
+  itself wrong about WHICH gate kills `BioSpecSkinSPF` /
+  `GenericHumanTissueSPF`.**  Both SPFs' `Scatter`/`ScatterNM` never
+  populate `ScatteredRay::pdf` either (default 0, same as their `Pdf`),
+  and `effectivePdf = pScat->pdf` is checked (`if( effectivePdf <= 0 )
+  break;`) BEFORE the delta/non-delta branch is even entered -- so the
+  walk actually dies there, not at the `PositiveMagnitude(f) <= 0` gate
+  one block later (which is real, and would ALSO have fired, but never
+  gets the chance).  DL-126's fix bypasses both gates for a `!pScat
+  ->isDelta && !vertices.back().isConnectible` continuation.
 
 The `PositiveMagnitude<Tag>( f ) <= 0 → break` guard is **retained** and
 re-commented as a path-termination gate only.  DL-69 removed `f` from
@@ -453,7 +463,7 @@ defect, because that is what a future reviewer needs.
 | `LambertianSPF`, `OrenNayarSPF`, `SheenSPF` | 1 | n/a | n/a | **IMMUNE** (N = 1) |
 | `TranslucentSPF` | 2 (entry: front-reflect + transmit; exit: exit + interior backscatter) | yes | **no** — `TranslucentBSDF::value` is a `switch` on `GetReflectedSide`, returning exactly ONE lobe's term per direction | **not over-counting**, matches the ledger.  The fix still changes it, for §2.1's reason (its `kray` carries Beer extinction the BSDF value omits) — gated by `TranslucentIORStackTest` |
 | `FabricSPF`, `WeaveSPF` | 1 non-delta (+ an optional delta) | — | delta and non-delta never overlap | **IMMUNE** to the over-count |
-| `BioSpecSkinSPF`, `GenericHumanTissueSPF` | several | — | — | **not reached**: their materials' `GetBSDF()` returns 0, so `EvalBSDFAtVertex` is 0 and BDPT's eye/light walk already `break`s at such a vertex.  Pre-existing energy loss, filed **DL-126** |
+| `BioSpecSkinSPF`, `GenericHumanTissueSPF` | several | — | — | **not reached**: their materials' `GetBSDF()` returns 0, so `EvalBSDFAtVertex` is 0 and BDPT's eye/light walk already `break`s at such a vertex.  **CLOSED as DL-126** (debt-dl126 slice, 2026-09-18) -- the vertex now continues by pricing `KrayValue<Tag>(*pScat)/selectProb` directly (the delta branch's own formula), same as PT already did |
 
 **Why those two are immune, precisely** (this table used to say only
 "all lobes carry `mixPdf`", which mis-describes the mechanism -- it
