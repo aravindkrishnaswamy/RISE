@@ -268,14 +268,41 @@ Scalar DielectricSPF::GenerateScatteredRay(
 	// recomputed at the same normal so direction and weight describe one
 	// interface.
 	//
-	// Reachability, worth stating because it is narrow: refraction into a
-	// DENSER medium bends TOWARD the normal, so the transmitted direction
-	// is angularly BETWEEN the incoming ray and the shading normal's far
-	// side -- both already inside the (convex) crossing half-space -- and
-	// this branch is unreachable.  It needs refraction into a RARER medium
-	// (an ordinary glass->air exit, or entry into a bubble: an `ior 1.0`
-	// object inside a glass block) AND the tilt and the refracted deviation
-	// to add, i.e. a grazing ray at a normal-perturbed silhouette.
+	// Reachability -- CORRECTED by the review's P2-1; an earlier version of
+	// this comment claimed refraction into a DENSER medium could never
+	// reach this branch, and that is FALSE.  There are TWO reachable
+	// families:
+	//
+	//   (1) Refraction into a RARER medium (an ordinary glass->air exit,
+	//       or entry into a bubble: an `ior 1.0` object inside a glass
+	//       block) with the shading tilt and the refracted deviation
+	//       ADDING -- a grazing ray at a normal-perturbed silhouette.
+	//       While `Dot(d, n_s) < 0` (the shading normal still opposes the
+	//       incoming ray) this really is the only family, because a
+	//       DENSER-medium refraction bends TOWARD the normal and so lands
+	//       angularly BETWEEN the incoming ray and the shading normal's
+	//       far side, both already inside the convex crossing half-space.
+	//
+	//   (2) ANY refraction, denser included, once the tilt carries the
+	//       shading normal PAST the grazing incoming ray so that
+	//       `Dot(d, n_s) > 0`.  That is the premise (1)'s argument
+	//       silently assumes, and it is exactly what a bump / normal map
+	//       or `GlintModifier` produces at a silhouette --
+	//       `ReliefModifier` is explicitly NOT a horizon clamp.
+	//       `Optics::CalculateRefractedRay` then flips the normal
+	//       internally to restore its sign convention, so the refraction
+	//       is built about `-n_s`, whose far side is the side the ray
+	//       CAME FROM.  Closed form at geomN = +Z, an air->glass 1.5
+	//       ENTRY arriving 89 deg off the geometric normal with the
+	//       shading normal tilted 30 deg the OTHER way: the transmitted
+	//       direction is (-0.911, 0, +0.412), above the surface.  Pre-fix
+	//       this dropped BOTH lobes (the reflection is wrong-side too) and
+	//       the SPF emitted nothing at all -- total energy 0.0000 instead
+	//       of 1 at every one of nine such cells
+	//       (tests/TransmissionPushGateTest.cpp sub-test 2c).
+	//
+	// So: ordinary glass ENTRY at a bump-mapped silhouette was 100%
+	// broken pre-fix.  The branch is not narrow.
 	if( ref < 1.0 && Vector3Ops::Dot( refracted, throughSurface ) <= 0 ) {
 		Vector3 geomRefracted = ri.ray.Dir();
 		if( Optics::CalculateRefractedRay( geomN, Ni, Nt, geomRefracted ) ) {

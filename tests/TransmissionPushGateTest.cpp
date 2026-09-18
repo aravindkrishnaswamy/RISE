@@ -276,19 +276,39 @@ namespace
 	//! When the ray refracts into a DENSER medium, `thetaT < |delta-phi|`,
 	//! so the emitted direction is angularly BETWEEN the incoming ray and
 	//! the shading normal's far side -- both of which are already inside
-	//! the (convex) crossing half-space -- and the test CANNOT fail.
-	//! **Entering glass from air is therefore safe at every tilt**, which
-	//! is why `MakeClosedEntry` red-proves only the `scattering`-warped
-	//! rows.  The reachable set needs `thetaT > |delta-phi|`, i.e.
-	//! refraction into a RARER medium: an ordinary glass->air EXIT, or an
-	//! ENTRY into a bubble (an `ior 1.0` object inside a glass block).
-	//! Both then need `phi` and `thetaT` to ADD, i.e. the ray tilted the
-	//! SAME way as the shading normal and further out -- the silhouette of
-	//! a normal-mapped / glint-modified refractive object.
+	//! the (convex) crossing half-space -- and the test cannot fail.
+	//!
+	//! **THAT ARGUMENT HAS A PREMISE, and the review's P2-1 found it is
+	//! not always true**: it assumes the tilted shading normal still
+	//! OPPOSES the incoming ray, `Dot(d, n_s) < 0`, i.e. that the incoming
+	//! ray is inside the half-space the transmitted direction is being
+	//! compared against.  `Optics::CalculateRefractedRay` FLIPS the normal
+	//! internally to restore its own sign convention, so once the tilt
+	//! carries `n_s` past the grazing ray (`|phi| + |delta| > 90` with
+	//! opposite signs -- a bump / normal map or `GlintModifier` at a
+	//! silhouette; `ReliefModifier` is explicitly NOT a horizon clamp) the
+	//! refraction is built about `-n_s`, whose far side is the side the
+	//! ray CAME FROM, and a DENSER-medium ENTRY lands wrong-side too.
+	//! Closed form here at (delta 89, tilt -30), air->glass 1.5:
+	//! `t = (-0.911, 0, +0.412)`, above the surface.  Sub-test 2c sweeps
+	//! it; **entering glass from air at a bump-mapped silhouette was 100%
+	//! broken pre-fix** (`DielectricSPF` emitted NOTHING -- both lobes
+	//! wrong-side -- and `PerfectRefractorSPF` pushed 64/64 rays the wrong
+	//! way).
+	//!
+	//! So the two reachable families are:
+	//!   * NEGATIVE tilt (`Dot(d, n_s) > 0`): any index pair, sub-test 2c;
+	//!   * POSITIVE tilt with `thetaT > |delta-phi|`, i.e. refraction into
+	//!     a RARER medium -- an ordinary glass->air EXIT, or an ENTRY into
+	//!     a bubble (an `ior 1.0` object inside a glass block) -- with
+	//!     `phi` and `thetaT` ADDING: sub-test 2b.
 	//!
 	//! `bExit == false` builds the entry shape (ray arriving from angle
 	//! `deltaDeg`), `true` the exit shape (interior ray leaving at
-	//! `deltaDeg`).  Analytic-primitive convention: no double-sided flip.
+	//! `deltaDeg`).  `tiltDeg` is SIGNED: positive tilts the shading
+	//! normal the same way the ray leans, negative the other way (which is
+	//! what produces the back-facing `Dot(d, n_s) > 0` configuration).
+	//! Analytic-primitive convention: no double-sided flip.
 	RayIntersectionGeometric MakeObliqueHit( Scalar deltaDeg, Scalar tiltDeg, bool bExit )
 	{
 		const Scalar d = deltaDeg * PI / 180.0;
@@ -654,6 +674,99 @@ static void TestDeltaRefractionAtSilhouette()
 				snprintf( msg, sizeof(msg), "%s delta %.0f tilt %.0f: %u/%u transitioning rays on the wrong side",
 					rows[r].name, (double)deltas[di], (double)tilts[ti], c.wrongSide, c.transitioned );
 				EXPECT( c.wrongSide == 0, msg );
+			}
+		}
+	}
+
+	obj->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+//  Sub-test 2c (review P2-1): the DENSER-medium entry is NOT safe.
+//
+//  Sub-test 2b's derivation (and the slice's original doc and source
+//  comments) claimed that refraction into a DENSER medium can never
+//  land wrong-side, because the transmitted direction is angularly
+//  BETWEEN the incoming ray and the shading normal's far side, both of
+//  which are already inside the convex crossing half-space.  That
+//  argument silently assumes the tilted shading normal still OPPOSES
+//  the incoming ray (`Dot(d, n_s) < 0`).  It need not:
+//  `Optics::CalculateRefractedRay` flips the normal internally to
+//  restore that convention, so when a bump / normal map / `GlintModifier`
+//  tilts the shading normal PAST the grazing incoming ray -- the
+//  bump-mapped silhouette of ANY refractive object, and `ReliefModifier`
+//  is explicitly NOT A HORIZON CLAMP -- the refraction is built about
+//  `-n_s`, whose far side is the side the ray CAME FROM.
+//
+//  Closed form for the fixture below (geomN = +Z, ray arriving at
+//  `delta` off -Z, shading normal tilted `tilt`, air -> glass 1.5):
+//  at delta 89 / tilt -30 the transmitted direction is
+//  (-0.911, 0, +0.412) -- above the surface, on an ordinary air->glass
+//  ENTRY at `ior 1.5`.  All nine (delta, tilt) cells below are
+//  wrong-side pre-fix, and the companion Fresnel reflection is wrong-side
+//  too, so `DielectricSPF` emitted NOTHING at all in those cells (total
+//  emitted energy 0 instead of 1).
+//
+//  Sub-test 2b sweeps only POSITIVE tilts, which is why it never saw
+//  this; that is the coverage hole this row closes.
+//////////////////////////////////////////////////////////////////////
+static void TestDenserEntryAtBackFacingShadingNormal()
+{
+	std::cout << "Sub-test 2c (P2-1): DENSER-medium entry at a back-facing shading normal" << std::endl;
+
+	StubObject* obj = new StubObject(); obj->addref();
+	const unsigned int kTrials = 64;
+	const Scalar deltas[] = { 80.0, 85.0, 89.0 };
+	const Scalar tilts[]  = { -30.0, -45.0, -60.0 };
+
+	struct Row { const char* name; int spf; };
+	const Row rows[] = {
+		{ "Dielectric       air->glass entry", 0 },
+		{ "PerfectRefractor air->glass entry", 1 },
+	};
+
+	for( int r = 0; r < 2; r++ ) {
+		for( int di = 0; di < 3; di++ ) {
+			for( int ti = 0; ti < 3; ti++ ) {
+				// `bExit = false`: an ENTRY into the denser medium.
+				RayIntersectionGeometric ri = MakeObliqueHit( deltas[di], tilts[ti], false );
+				IORStack stack = MakeOutsideStack( obj, 1.0 );
+
+				RandomNumberGenerator rng( 777 );
+				IndependentSampler sampler( rng );
+
+				DielectricRig dr( 1000000.0, false, false, 1.5 );
+				RefractorRig  rr( false, 1.5 );
+
+				Census c;
+				Scalar energy = 0;
+				for( unsigned int trial = 0; trial < kTrials; trial++ ) {
+					ScatteredRayContainer scattered;
+					if( rows[r].spf == 0 ) dr.spf->Scatter( ri, sampler, scattered, stack );
+					else                   rr.spf->Scatter( ri, sampler, scattered, stack );
+					Tally( scattered, ri, stack, c );
+					for( unsigned int i = 0; i < scattered.Count(); i++ ) {
+						energy += scattered[i].kray[0];
+					}
+				}
+				energy /= (Scalar)kTrials;
+
+				char msg[400];
+				snprintf( msg, sizeof(msg), "%s delta %.0f tilt %.0f: %u/%u transitioning rays on the wrong side",
+					rows[r].name, (double)deltas[di], (double)tilts[ti], c.wrongSide, c.transitioned );
+				EXPECT( c.wrongSide == 0, msg );
+
+				snprintf( msg, sizeof(msg), "%s delta %.0f tilt %.0f: %u/%u reflection rays on the wrong side",
+					rows[r].name, (double)deltas[di], (double)tilts[ti], c.reflectionsWrongSide, c.reflections );
+				EXPECT( c.reflectionsWrongSide == 0, msg );
+
+				// Fresnel + transmission must still partition unity: the
+				// dielectric's `tau` is 1 on entry and `PerfectRefractor`'s
+				// refractivity is white, so both lobes' kray sum to
+				// (1-ref) + ref = 1 per trial when nothing is dropped.
+				snprintf( msg, sizeof(msg), "%s delta %.0f tilt %.0f: total emitted energy %.4f, expected 1.0000",
+					rows[r].name, (double)deltas[di], (double)tilts[ti], (double)energy );
+				EXPECT( fabs( energy - 1.0 ) < 1e-6, msg );
 			}
 		}
 	}
@@ -1315,6 +1428,7 @@ int main()
 	TestDielectricEntry();
 	TestDielectricExit();
 	TestDeltaRefractionAtSilhouette();
+	TestDenserEntryAtBackFacingShadingNormal();
 	TestDielectricDoubleSided();
 	TestDielectricSmoothShaded();
 	TestPerfectRefractor();

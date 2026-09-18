@@ -198,10 +198,25 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 	// tilted shading normal did not, `ref` becomes 1 and the reflection
 	// above carries everything.
 	//
-	// Reachable only when refracting into a RARER medium (a glass->air
-	// exit, or entry into a bubble) at a grazing, normal-perturbed
-	// silhouette -- refraction into a denser medium always crosses.  See
-	// `MakeObliqueHit` in tests/TransmissionPushGateTest.cpp.
+	// Reachability -- CORRECTED by the review's P2-1.  An earlier version
+	// of this comment said "refraction into a denser medium always
+	// crosses"; that holds ONLY while the tilted shading normal still
+	// OPPOSES the incoming ray (`Dot(d, n_s) < 0`).  Two reachable
+	// families:
+	//   (1) refraction into a RARER medium (a glass->air exit, or entry
+	//       into a bubble) at a grazing, normal-perturbed silhouette --
+	//       `MakeObliqueHit` with a POSITIVE tilt builds it
+	//       (tests/TransmissionPushGateTest.cpp sub-test 2b);
+	//   (2) ANY refraction, denser included, once the tilt carries the
+	//       shading normal PAST the grazing incoming ray
+	//       (`Dot(d, n_s) > 0`, a bump / normal map or `GlintModifier` at
+	//       a silhouette): `Optics::CalculateRefractedRay` flips the
+	//       normal internally, so the refraction is built about `-n_s`,
+	//       whose far side is the side the ray CAME FROM.  Measured
+	//       pre-fix: 64/64 wrong-side transmissions on an ordinary
+	//       air->glass 1.5 ENTRY at every (delta, tilt) in
+	//       {80,85,89} x {-30,-45,-60} -- `MakeObliqueHit` with a
+	//       NEGATIVE tilt, sub-test 2c.
 	if( ref < 1.0 && Vector3Ops::Dot( vRefracted, throughSurface ) <= 0 ) {
 		Vector3 geomRefracted = ri.ray.Dir();
 		if( Optics::CalculateRefractedRay( geomN, Ni, Nt, geomRefracted ) ) {
@@ -404,10 +419,25 @@ void PerfectRefractorSPF::ScatterNM(
 	// tilted shading normal did not, `ref` becomes 1 and the reflection
 	// above carries everything.
 	//
-	// Reachable only when refracting into a RARER medium (a glass->air
-	// exit, or entry into a bubble) at a grazing, normal-perturbed
-	// silhouette -- refraction into a denser medium always crosses.  See
-	// `MakeObliqueHit` in tests/TransmissionPushGateTest.cpp.
+	// Reachability -- CORRECTED by the review's P2-1.  An earlier version
+	// of this comment said "refraction into a denser medium always
+	// crosses"; that holds ONLY while the tilted shading normal still
+	// OPPOSES the incoming ray (`Dot(d, n_s) < 0`).  Two reachable
+	// families:
+	//   (1) refraction into a RARER medium (a glass->air exit, or entry
+	//       into a bubble) at a grazing, normal-perturbed silhouette --
+	//       `MakeObliqueHit` with a POSITIVE tilt builds it
+	//       (tests/TransmissionPushGateTest.cpp sub-test 2b);
+	//   (2) ANY refraction, denser included, once the tilt carries the
+	//       shading normal PAST the grazing incoming ray
+	//       (`Dot(d, n_s) > 0`, a bump / normal map or `GlintModifier` at
+	//       a silhouette): `Optics::CalculateRefractedRay` flips the
+	//       normal internally, so the refraction is built about `-n_s`,
+	//       whose far side is the side the ray CAME FROM.  Measured
+	//       pre-fix: 64/64 wrong-side transmissions on an ordinary
+	//       air->glass 1.5 ENTRY at every (delta, tilt) in
+	//       {80,85,89} x {-30,-45,-60} -- `MakeObliqueHit` with a
+	//       NEGATIVE tilt, sub-test 2c.
 	if( ref < 1.0 && Vector3Ops::Dot( vRefracted, throughSurface ) <= 0 ) {
 		Vector3 geomRefracted = ri.ray.Dir();
 		if( Optics::CalculateRefractedRay( geomN, Ni, Nt, geomRefracted ) ) {

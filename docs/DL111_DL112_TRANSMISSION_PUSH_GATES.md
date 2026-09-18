@@ -51,7 +51,7 @@ pop machinery then runs on a lie.
 
 ---
 
-## 2. Reachability — narrower than it looks, and a small theorem
+## 2. Reachability — a small theorem, and the premise it hides
 
 Work in the plane, angles measured from the true outward geometric normal,
 positive toward `+x`. Write `phi` for the shading-normal tilt and `delta`
@@ -67,14 +67,14 @@ phi + sign(delta - phi) * thetaT
 
 and the crossing test is exactly `|phi + sign(delta-phi)*thetaT| < 90 deg`.
 
-**Refraction into a DENSER medium can never fail it.** There
-`thetaT < |delta-phi|`, so the emitted direction is angularly *between* the
-incoming ray and the shading normal's far side — both of which are already
-inside the crossing half-space, which is convex. Entering glass from air is
-therefore safe at every tilt, and no amount of bump mapping changes that.
+**Refraction into a DENSER medium cannot fail it — *while the shading
+normal still opposes the incoming ray*.** There `thetaT < |delta-phi|`, so
+the emitted direction is angularly *between* the incoming ray and the
+shading normal's far side, both of which are already inside the crossing
+half-space, which is convex.
 
-The reachable set needs `thetaT > |delta-phi|`, i.e. refraction into a
-**rarer** medium:
+Under that premise the reachable set needs `thetaT > |delta-phi|`, i.e.
+refraction into a **rarer** medium:
 
 * an ordinary glass → air **exit**, or
 * an **entry into a bubble** (an `ior 1.0` object inside a glass block —
@@ -82,8 +82,50 @@ The reachable set needs `thetaT > |delta-phi|`, i.e. refraction into a
 
 and it additionally needs `phi` and `thetaT` to **add**, i.e. the ray tilted
 the same way as the shading normal and further out — the grazing silhouette
-of a normal-mapped or glint-modified refractive object. `MakeObliqueHit` in
-the regression builds exactly that.
+of a normal-mapped or glint-modified refractive object. `MakeObliqueHit`
+with a **positive** tilt builds exactly that (sub-test 2b).
+
+### 2a. The premise fails, and a denser-medium ENTRY does land wrong-side
+
+*(Review P2-1, 2026-09-17. An earlier revision of this section, of the
+`Reachability` comments in `DielectricSPF` / `PerfectRefractorSPF`, of
+`MakeObliqueHit`'s derivation, of `tests/README.md` and of ledger row
+DL-111's correction (a), all asserted the theorem without its premise —
+"entering glass from air is therefore safe at every tilt". That is
+**false**, and the claim also scoped a coverage hole: sub-test 2b sweeps
+only POSITIVE tilts.)*
+
+The derivation above silently assumes `Dot(d, n_s) < 0` — that the tilted
+shading normal still opposes the incoming ray, so the ray itself lies inside
+the half-space the transmitted direction is tested against.
+`Optics::CalculateRefractedRay` **flips the normal internally** to restore
+that sign convention (its own comment says so). So once a bump / normal map
+or `GlintModifier` carries `n_s` *past* a grazing incoming ray —
+`Dot(d, n_s) > 0`, the silhouette of any normal-perturbed refractive object,
+and `ReliefModifier` is explicitly **not** a horizon clamp — the refraction
+is built about `-n_s`, whose far side is **the side the ray came from**, and
+the theorem's conclusion inverts.
+
+Closed form, `geomN = +Z`, an air → glass `ior 1.5` **entry** arriving 89°
+off the geometric normal with the shading normal tilted 30° the *other* way:
+
+```
+t = (-0.911, 0, +0.412)      # above the surface, on an ENTRY into the denser medium
+```
+
+All nine `(delta, tilt) ∈ {80,85,89} × {-30,-45,-60}` cells are wrong-side.
+Measured against `a4495f94` (sub-test 2c, 64 trials/cell):
+
+| SPF | wrong-side transmissions | total emitted energy |
+|---|---|---|
+| `DielectricSPF` | (lobe dropped outright, so 0 transitioned) | **0.0000** at 9/9 cells, expected 1 |
+| `PerfectRefractorSPF` | **64/64** at 9/9 cells | 0.8290 … 0.9582, expected 1 |
+
+`DielectricSPF` emitted **nothing at all** in those cells: the companion
+Fresnel reflection is wrong-side too, so both lobes were dropped. **Ordinary
+glass ENTRY at a bump-mapped silhouette was 100 % broken pre-fix** — a
+materially larger pre-fix severity than this section originally claimed. All
+27 checks are green after the fix.
 
 **`DielectricSPF`'s `scattering` warp escapes the theorem entirely.** The
 warp (Henyey-Greenstein when `hg`, Phong `cos^N` otherwise) is not a delta:
@@ -354,7 +396,7 @@ at 20.
 
 The **delta** rows, at the silhouette configuration §2 derives (256 trials
 per cell, `scattering 1e6`); `-` is TIR (no transmission emitted) and a
-blank is a cell the theorem says is safe:
+blank is a cell that is green under the (positive-tilt) sweep:
 
 | row | (70,30) | (80,45) | (80,60) | (85,45) | (85,60) |
 |---|---|---|---|---|---|
@@ -364,8 +406,21 @@ blank is a cell the theorem says is safe:
 | PerfectRefractor bubble entry | | 256/256 | 256/256 | — | 256/256 |
 | SSS exit (`ior 1.4`) | 256/256 | 256/256 | | 256/256 | 256/256 |
 
+The **denser-medium entry** rows the theorem wrongly excluded (§2a,
+sub-test 2c, 64 trials per cell, air → glass `ior 1.5`, `scattering 1e6`,
+9 cells `{80,85,89} × {-30,-45,-60}`):
+
+| row | wrong-side transmissions | total emitted energy (expected 1) |
+|---|---|---|
+| Dielectric air→glass entry | lobe dropped outright (0 transitioned) | **0.0000** at all 9 |
+| PerfectRefractor air→glass entry | **64/64** at all 9 | 0.8290 … 0.9582 |
+
 Double-sided dielectric sheet: §4's table.
 DL-112's two tables: §6.
+
+Review follow-ups (P1-1, P1-2, P2-1) added sub-tests 2c and 12 and Part F of
+`SPFBSDFConsistencyTest`; the suite is **414 checks / 0 failures** at the
+head of this slice.
 
 ---
 

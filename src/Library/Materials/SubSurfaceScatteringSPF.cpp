@@ -313,9 +313,15 @@ void SubSurfaceScatteringSPF::Scatter(
 		//
 		// Reachable at a grazing exit off a normal-perturbed silhouette;
 		// refraction into a rarer medium bends AWAY from the normal, so
-		// the tilt and the deviation can add past the horizon.  (An SSS
-		// material with `bAbsorbBackFace = true` -- every shipped one --
-		// returns above and never reaches this branch at all; cf. DL-51.)
+		// the tilt and the deviation can add past the horizon.  It is
+		// ALSO reachable, for any index pair, once the tilt carries the
+		// shading normal past the grazing ray (`Dot(d, n_s) > 0`), since
+		// `Optics::CalculateRefractedRay` then flips the normal
+		// internally and refracts about `-n_s` -- the review's P2-1; see
+		// the corrected note in `DielectricSPF::GenerateScatteredRay`.
+		// (An SSS material with `bAbsorbBackFace = true` -- every shipped
+		// one -- returns above and never reaches this branch at all;
+		// cf. DL-51.)
 		if( R < 1.0 && Vector3Ops::Dot( refracted, geomNBack ) >= 0 ) {
 			Vector3 geomRefracted = ri.ray.Dir();
 			if( Optics::CalculateRefractedRay( geomNBack, n, Nt, geomRefracted ) ) {
@@ -570,9 +576,15 @@ void SubSurfaceScatteringSPF::ScatterNM(
 		//
 		// Reachable at a grazing exit off a normal-perturbed silhouette;
 		// refraction into a rarer medium bends AWAY from the normal, so
-		// the tilt and the deviation can add past the horizon.  (An SSS
-		// material with `bAbsorbBackFace = true` -- every shipped one --
-		// returns above and never reaches this branch at all; cf. DL-51.)
+		// the tilt and the deviation can add past the horizon.  It is
+		// ALSO reachable, for any index pair, once the tilt carries the
+		// shading normal past the grazing ray (`Dot(d, n_s) > 0`), since
+		// `Optics::CalculateRefractedRay` then flips the normal
+		// internally and refracts about `-n_s` -- the review's P2-1; see
+		// the corrected note in `DielectricSPF::GenerateScatteredRay`.
+		// (An SSS material with `bAbsorbBackFace = true` -- every shipped
+		// one -- returns above and never reaches this branch at all;
+		// cf. DL-51.)
 		if( R < 1.0 && Vector3Ops::Dot( refracted, geomNBack ) >= 0 ) {
 			Vector3 geomRefracted = ri.ray.Dir();
 			if( Optics::CalculateRefractedRay( geomNBack, n, Nt, geomRefracted ) ) {
