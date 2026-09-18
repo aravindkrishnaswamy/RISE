@@ -77,6 +77,7 @@
 #include "../src/Library/Utilities/RandomNumbers.h"
 #include "../src/Library/Geometry/SphereGeometry.h"
 #include "../src/Library/Objects/Object.h"
+#include "../src/Library/Utilities/Color/SampledWavelengths.h"
 #include "../src/Library/Painters/UniformScalarPainter.h"
 #include "../src/Library/Painters/RGBScalarPainter.h"
 #include "../src/Library/Materials/SubSurfaceScatteringMaterial.h"
@@ -2659,6 +2660,212 @@ static void RunNeeCastRRTrainingFold()
 		<< std::endl;
 }
 
+//////////////////////////////////////////////////////////////////////
+// DL-196: `PathTracingShaderOp::PerformOperationHWSS` never read
+// `RAY_STATE::castRRCompensation` and `PathTracingIntegrator::
+// IntegrateFromHitHWSS` had no `castRRCompensation_` parameter at all,
+// so the HWSS hero-bundle PART-2 NEE call (`EvaluateDirectLightingNM`)
+// would have dropped DL-185's cast-level RR compensation exactly the
+// way the RGB/NM main loop's PART-2 NEE call did before that fix --
+// the HWSS twin of `RunNeeCastRRTrainingFold` above, driven through
+// `CastRayHWSS` instead of `CastRay`.
+//
+// Same closed-form technique as the RGB fixture: `rs.importance =
+// 0.005` is below `RayCaster.cpp`'s own `RC_RR_THRESHOLD` (0.01),
+// giving an exact, deterministic `pSurvive = 0.5` / `rrCompensation =
+// 2.0` for every SURVIVING cast, and a matched-survivor baseline run
+// (importance = 1.0, one throwaway RNG draw pre-consumed so the
+// post-RR-decision stream is bit-identical to the test run's) isolates
+// exactly the compensation factor.
+//
+// Scene: identical receiver-under-uniform-env geometry as
+// `SurfaceEnvScene()`, but with `shaderop DefaultPathTracing` (so the
+// dispatch reaches `PathTracingShaderOp`, not the legacy
+// `DirectLightingShaderOp` -- DL-196's own row notes that consumer was
+// already correctly wired) and a `pathtracing_spectral_rasterizer`
+// with `hwss TRUE` so the fixture's throwaway `Rasterize()` builds a
+// caster that supports `CastRayHWSS`.
+//////////////////////////////////////////////////////////////////////
+static std::string SurfaceEnvSceneHWSS()
+{
+	return std::string(
+		"RISE ASCII SCENE 7\n"
+		"\n"
+		"uniformcolor_painter\n{\n\tname pnt_env\n\tcolor 1 1 1\n}\n"
+		"uniformcolor_painter\n{\n\tname pnt_white\n\tcolor 1 1 1\n}\n"
+		"\n"
+		"lambertian_material\n{\n\tname mat_receiver\n\treflectance pnt_white\n}\n"
+		"\n"
+		"sphere_geometry\n{\n\tname receiver\n\tradius 1.0\n}\n"
+		"\n"
+		"standard_object\n{\n\tname receiver_object\n\tgeometry receiver\n"
+		"\tmaterial mat_receiver\n\tposition 0 0 5\n}\n"
+		"\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n"
+		"\n"
+		"pathtracing_spectral_rasterizer\n{\n\tsamples 1\n\thwss TRUE\n\tpixel_filter box\n"
+		"\toidn_denoise FALSE\n\tradiance_map pnt_env\n\tradiance_background TRUE\n}\n"
+		"\n"
+		"film\n{\n\twidth 4\n\theight 4\n}\n"
+		"\n"
+		"pinhole_camera\n{\n\tlocation 0 0 0\n\tlookat 0 0 1\n\tup 0 1 0\n\tfov 10.0\n}\n"
+		"\n" );
+}
+
+static void RunNeeCastRRTrainingFoldHWSS()
+{
+	std::cout << "DL-196: RayCaster::CastRayHWSS's cast-level importance-RR "
+		"compensation folded into the HWSS NEE-side trained moment" << std::endl;
+
+	Fixture fx;
+	Check( fx.Build( SurfaceEnvSceneHWSS(), "neecastrrhwss" ), "HWSS NEE-cast-level-RR fixture builds" );
+	if( !fx.pCaster || !fx.pScene ) return;
+	const LightSampler* pLS = fx.pCaster->GetLightSampler();
+	Check( pLS != 0, "HWSS NEE-cast-level-RR fixture has a LightSampler" );
+	if( !pLS ) return;
+
+	const RasterizerState rast{};
+	const Ray ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) );
+	IORStack iorStack( 1.0 );
+
+	// Confirm the probe ray actually hits the receiver (not the
+	// environment) before driving CastRayHWSS through it many times.
+	{
+		RayIntersection probe( ray, rast );
+		fx.pScene->GetObjects()->IntersectRay( probe, true, true, false );
+		Check( probe.geometric.bHit, "HWSS NEE-cast-level-RR fixture's probe ray hits the receiver" );
+		if( !probe.geometric.bHit ) return;
+	}
+
+	OptimalMISAccumulator accTest;
+	accTest.Initialize( 64, 64, MakeConfig() );
+	OptimalMISAccumulator accBase;
+	accBase.Initialize( 64, 64, MakeConfig() );
+
+	static const unsigned int kSamples = 4000;
+	static const Scalar kThreshold = 0.01;			// RayCaster.cpp's RC_RR_THRESHOLD
+	static const Scalar kImportance = 0.005;		// < kThreshold: exact pSurvive = 0.5
+	static const Scalar kPSurvive = kImportance / kThreshold;
+	unsigned int survivors = 0;
+
+	// RENDER-NEUTRALITY CHECK -- same rationale as the RGB/NM fixture:
+	// the RETURNED per-wavelength radiance is legitimately scaled by
+	// rrCompensation LINEARLY; only the TRAINING integrand should square
+	// it.  Summed across all four HWSS lanes.
+	double sumCTest = 0, sumCBase = 0;
+
+	DriveOnFreshThread( 5115u, [&]() {
+		for( unsigned int s = 0; s < kSamples; ++s )
+		{
+			const unsigned int seed = 95000 + s;
+
+			// Peek the exact draw CastRayHWSS's own roulette will consume
+			// for the TEST run, without disturbing it.
+			bool survive = false;
+			{
+				RandomNumberGenerator rngPeek( seed );
+				survive = rngPeek.CanonicalRandom() < (double)kPSurvive;
+			}
+			if( survive ) {
+				++survivors;
+			}
+
+			// TEST run: real cast-level RR fires inside CastRayHWSS.
+			{
+				RandomNumberGenerator rngTest( seed );
+				RuntimeContext rcTest( rngTest, RuntimeContext::PASS_NORMAL, false );
+				rcTest.pOptimalMIS = &accTest;
+				pLS->SetOptimalMIS( &accTest );
+
+				IRayCaster::RAY_STATE rs;
+				rs.depth = 1;
+				rs.importance = kImportance;
+				rs.considerEmission = true;
+
+				SampledWavelengths swl = SampledWavelengths::SampleEquidistant( 0.5, 380.0, 780.0 );
+				Scalar c[SampledWavelengths::N];
+				Scalar dist = 0;
+				fx.pCaster->CastRayHWSS( rcTest, rast, ray, c, rs, swl, &dist, 0, iorStack );
+				for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+					sumCTest += c[w];
+				}
+			}
+
+			// BASELINE run: only for the SAME survivors, pre-consuming one
+			// throwaway draw so the subsequent stream matches the TEST
+			// run's exactly, then importance = 1.0 so CastRayHWSS's own
+			// RR does not fire (no second draw).
+			if( survive )
+			{
+				RandomNumberGenerator rngBase( seed );
+				rngBase.CanonicalRandom();		// discard -- mirrors the RR draw
+				RuntimeContext rcBase( rngBase, RuntimeContext::PASS_NORMAL, false );
+				rcBase.pOptimalMIS = &accBase;
+				pLS->SetOptimalMIS( &accBase );
+
+				IRayCaster::RAY_STATE rs;
+				rs.depth = 1;
+				rs.importance = 1.0;
+				rs.considerEmission = true;
+
+				SampledWavelengths swl = SampledWavelengths::SampleEquidistant( 0.5, 380.0, 780.0 );
+				Scalar c[SampledWavelengths::N];
+				Scalar dist = 0;
+				fx.pCaster->CastRayHWSS( rcBase, rast, ray, c, rs, swl, &dist, 0, iorStack );
+				for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+					sumCBase += c[w];
+				}
+			}
+		}
+	} );
+
+	pLS->SetOptimalMIS( 0 );
+
+	double sumNeeTest = 0, sumBsdfTest = 0;
+	unsigned int countNeeTest = 0, countBsdfTest = 0;
+	accTest.GetTileTraining( 0, 0, sumNeeTest, sumBsdfTest, countNeeTest, countBsdfTest );
+
+	double sumNeeBase = 0, sumBsdfBase = 0;
+	unsigned int countNeeBase = 0, countBsdfBase = 0;
+	accBase.GetTileTraining( 0, 0, sumNeeBase, sumBsdfBase, countNeeBase, countBsdfBase );
+
+	std::cout << "    HWSS NEE-cast-level-RR site: " << survivors << " / " << kSamples
+		<< " test casts survived; test NEE attempts " << countNeeTest
+		<< ", sum(f/p)^2 = " << sumNeeTest << "; baseline (matched survivors) NEE "
+		"attempts " << countNeeBase << ", sum(f/p)^2 = " << sumNeeBase << std::endl;
+
+	Check( survivors > 0 && survivors < kSamples,
+		"HWSS NEE-cast-level-RR site: the roulette actually fired (some survived, some "
+		"did not)" );
+	Check( countNeeTest == countNeeBase && countNeeTest > 0,
+		"HWSS NEE-cast-level-RR site: the test and matched-survivor baseline visited "
+		"exactly the same NEE attempts" );
+
+	// Expected: rrCompensation = 1/kPSurvive = 2.0 exactly, applied to the
+	// NEE integrand (DL-196's fix, mirroring DL-185), so the trained
+	// MOMENT (its square) scales by exactly 4.0 relative to the matched-
+	// survivor baseline.  Pre-fix this ratio reads 1.0 (rrCompensation
+	// never reached the HWSS NEE call at all).
+	const double ratio = sumNeeBase > 0 ? sumNeeTest / sumNeeBase : 0;
+	std::cout << "    HWSS NEE-cast-level-RR site: sum(f/p)^2 ratio (test/baseline) = "
+		<< ratio << " (expect exactly 4.0 = rrCompensation^2; pre-fix reads 1.0)"
+		<< std::endl;
+	Check( std::fabs( ratio - 4.0 ) < 1e-6 * std::fmax( 1.0, ratio ),
+		"HWSS NEE-cast-level-RR site: the trained NEE moment folds in the SAME "
+		"rrCompensation the RGB/NM twins do (DL-196)" );
+
+	// RENDER-NEUTRALITY: the returned per-wavelength radiance sum is
+	// legitimately scaled by rrCompensation LINEARLY, unaffected by this
+	// fix -- confirms the fix touches only the training integrand.
+	const double cRatio = sumCBase > 0 ? sumCTest / sumCBase : 0;
+	std::cout << "    HWSS NEE-cast-level-RR site: returned-radiance sum(c) ratio "
+		"(test/baseline) = " << cRatio << " (expect exactly 2.0 = rrCompensation, "
+		"unaffected by this fix)" << std::endl;
+	Check( std::fabs( cRatio - 2.0 ) < 1e-6 * std::fmax( 1.0, cRatio ),
+		"HWSS NEE-cast-level-RR site: the returned radiance's own rrCompensation "
+		"scaling is unchanged by this fix (render-neutral)" );
+}
+
 int main()
 {
 	GlobalLog();
@@ -2675,6 +2882,7 @@ int main()
 	RunCameraVolumeWalkSite();
 	RunImportanceRRTrainingFold();
 	RunNeeCastRRTrainingFold();
+	RunNeeCastRRTrainingFoldHWSS();
 
 	std::cout << std::endl;
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;

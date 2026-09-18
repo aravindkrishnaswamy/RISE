@@ -484,7 +484,24 @@ namespace RISE
 				//! guiding (`bsdfPdf` = the guided mixture, `bsdfMisPdf` =
 				//! the raw phase pdf that volume NEE weights against), so
 				//! `PathTracingShaderOp` forwards `MisPartnerPdf()` here.
-				Scalar bsdfMisPdf_ = -1 ///< DL-74 -- see the RGB twin
+				Scalar bsdfMisPdf_ = -1, ///< DL-74 -- see the RGB twin
+				//! DL-196: `RayCaster::CastRayHWSS`'s own cast-level RR
+				//! compensation for the call that reached THIS hit -- the
+				//! HWSS twin of the RGB/NM `castRRCompensation_` parameter
+				//! above (DL-185).  Forwarded into the hero-bundle PART-2
+				//! NEE call only at `firstHit` (the two per-wavelength
+				//! NM-delegation fallbacks in this body's own entry
+				//! branches); every mid-path delegation to
+				//! `IntegrateFromHitNM` reached later in this body's own
+				//! loop is a FRESH vertex, not a `RayCaster::CastRay`
+				//! re-entry, and keeps the default 1.0 (no-op).  1.0 for an
+				//! ordinary top-level camera-ray dispatch; only nonzero for
+				//! a re-entry through `RayCaster::CastRayHWSS` (currently
+				//! inert in production -- see DL-196's own doc note: the
+				//! only production caller of `CastRayHWSS` always passes a
+				//! default-constructed `RAY_STATE`, so this is a training-
+				//! consistency fix with no observable effect today).
+				Scalar castRRCompensation_ = 1
 				) const;
 
 			/// Traces one complete path for a single wavelength.
