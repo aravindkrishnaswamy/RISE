@@ -511,8 +511,9 @@ logs. cost% = probe-s / extrapolated full-render-s at that spp.)
 over-fire, is now **fixed** by the transport-reach gate in §6.2.1 → **6/6** —
 though DL-154, 2026-09-17, subsequently found `glass_pavilion`'s own "correct"
 cell in this historical sweep was itself measuring a VCM bug, not a real
-caustic gap; today's probe correctly reads `pt` for it, so read this table as
-a historical record of the sweep's 2026-06-05 measurement, not current
+caustic gap; today's probe correctly avoids VCM for it (mostly `pt`, with the
+same PT/BDPT σ²·T coin flip `jewel_vault` shows at probe spp), so read this
+table as a historical record of the sweep's 2026-06-05 measurement, not current
 behaviour — see §6.2.1's DL-154 note),
 **zero flips at any scale**, and the real in-process cost is **far below the
 emulation**. gi_spheres is **2.4 %@256 half-res vs the emulation's 3 %** (which
@@ -669,7 +670,7 @@ config:
 
 | scene | medRatio (gate 1) | meanRatio (gate 2, post-fix) | route now |
 |---|---|---|---|
-| `glass_pavilion` | ~1.1–1.2 (no fire; was 2.0–2.3) | ~0.86–1.10 (was 20–32) | **PT** |
+| `glass_pavilion` | ~1.1–1.2 (no fire; was 2.0–2.3) | ~0.86–1.10 (was 20–32) | falls through to BDPT-vs-PT check, **not VCM** (mostly PT; ~1-in-5 the σ²·T reading is BDPT — the same multi-thread float-accumulation coin flip documented for `jewel_vault`) |
 | `diamond_teapot_pour` | ~3.2 (fires) | ~1.09–1.16 (was 1.88–1.95) | falls through to BDPT-vs-PT check, **not VCM** |
 
 Both real-caustic scenes in the corpus now measure reach in the same ~0.9–1.2×

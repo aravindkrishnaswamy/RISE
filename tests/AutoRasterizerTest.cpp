@@ -1346,7 +1346,8 @@ int main()
 	// real in-process probe (see docs/AUTO_RASTERIZER_DESIGN.md §6.2):
 	//   gi_spheres     -> BDPT  (σ²·T ~480× @128px — the diffuse-GI blind spot)
 	//   ggx_showcase   -> PT    (σ²·T ~0.26× — the glossy blind-spot partner)
-	//   glass_pavilion -> PT    (DL-154, 2026-09-17: see below — was VCM pre-debt30-eta2)
+	//   glass_pavilion -> not VCM (DL-154, 2026-09-17: see below — was VCM pre-debt30-eta2;
+	//                    falls through to PT/BDPT, same coin-flip tail as jewel_vault)
 	//   jewel_vault    -> PT    (median-lum ~2.6-3.1× fires, but reach ~1.0× < 1.50 -> NOT a
 	//                            caustic; the over-fire fixed by the transport-reach gate, §6.2)
 	//   env_only       -> PT    (env-IBL gate kills the +63% VCM env-bias confound)
@@ -1384,8 +1385,7 @@ int main()
 	// Production-spp confirmation (256x256, PT vs VCM, oidn_denoise FALSE,
 	// pixel_filter box, measured on this branch): p99 luminance across all
 	// three channels agrees to <6% between PT and VCM at both 64 and 256 spp
-	// (e.g. ch0 p99 2.02 vs 2.01 at spp=64), and PT's own probe-time BDPT-vs-
-	// PT sigma2T check favors PT by 3-12x. PT's channel-0 MAX is a genuine,
+	// (e.g. ch0 p99 2.02 vs 2.01 at spp=64). PT's channel-0 MAX is a genuine,
 	// well-known MC firefly (grows with spp: 520 at 64spp -> 1642 at 256spp,
 	// different pixel each time) from a rare BSDF-sampled specular-diffuse-
 	// specular path finding a bright NEE-lit patch at very low pdf -- this is
@@ -1403,8 +1403,17 @@ int main()
 	// real VCM-decisive caustic, ALSO now measures reach ~1.09-1.16x at probe
 	// spp, indistinguishable from glass_pavilion's ~0.86-1.10x, so no
 	// threshold on this signal can separate them anymore.
-	CheckProbeRoute( "glass_pavilion -> PT (DL-154: debt30-eta2 closed the VCM-over-bright gap)",
-		"scenes/FeatureBased/Combined/glass_pavilion.RISEscene", "p4_glass", AutoIntegratorChoice::PT );
+	//
+	// Assertion is "never VCM", not "exactly PT" -- same reasoning as
+	// jewel_vault below. Once the reach gate rejects VCM the decision falls
+	// through to the sigma2T PT-vs-BDPT gate, and measured across repeated
+	// runs on this branch it occasionally resolves BDPT instead of PT (5-run
+	// spot check: 4 PT, 1 BDPT) -- the same multi-thread float-accumulation
+	// nondeterminism documented for jewel_vault's σ²·T reading at cheap probe
+	// spp. Asserting exact PT was a coin flip on that tail; CheckProbeRouteNotVCM
+	// (never VCM) is the stable, meaningful invariant this fixture protects.
+	CheckProbeRouteNotVCM( "glass_pavilion -> not VCM (DL-154: debt30-eta2 closed the VCM-over-bright gap)",
+		"scenes/FeatureBased/Combined/glass_pavilion.RISEscene", "p4_glass" );
 	// Regression lock for the §6.2 jewel_vault over-fire: a dielectric + area-lit
 	// scene whose caustic MEDIAN gate fires at probe spp (PT's hard indirect is
 	// transiently under-converged) but whose transport-reach (mean-lum) gate does
