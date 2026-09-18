@@ -208,18 +208,66 @@ pattern also does not reproduce: both files already sample around
 `myonb`/the ray-facing-flipped normal throughout (visible in their own
 extensive prior-fix comments).
 
-**One accepted, documented approximation, not filed as a new debt.**
-`AshikminShirleyAnisotropicPhongSPF::Pdf`'s `wD` uses
+**~~One accepted, documented approximation, not filed as a new debt.~~
+STRUCK 2026-09-17 (review P1-1): the claim below was wrong on both
+counts — the approximation was neither small nor "the same class" as
+Slice 0's, and it is now FIXED rather than accepted.**
+
+~~`AshikminShirleyAnisotropicPhongSPF::Pdf`'s `wD` uses
 `MaxValue(Rd)*(1-MaxValue(Rs))` as a stand-in for the exact
-`MaxValue(Rd*(1-Rs))` (the real per-channel product `PTScatterSelectWeight`
-would compute from the real `RISEPel` kray) — exact only when the same
-channel maximizes both `Rd` and `1-Rs`. This is the SAME class of
-approximation `SchlickSPF`'s DL-67 Slice-0 fix already accepted for
-`MaxValue(rho+(1-rho)*F) == MaxValue(rho)+(1-MaxValue(rho))*F` (there
-provably exact; here not, in general, but the same "reduce every kray to
-one scalar before comparing" simplification `PTScatterSelectWeight`
-itself makes everywhere) — a systemic simplification of the selection
-machinery, not a defect specific to this fix. Left as-is; not a new row.
+`MaxValue(Rd*(1-Rs))` ... the SAME class of approximation `SchlickSPF`'s
+DL-67 Slice-0 fix already accepted ...~~
+
+Two things were wrong with that.
+
+1. **Slice 0's simplification is PROVABLY EXACT; this one was not even
+   close.** Schlick's is
+   `MaxValue(rho+(1-rho)*F) == MaxValue(rho)+(1-MaxValue(rho))*F`, an
+   identity for a scalar `F in [0,1]` because `x -> x+(1-x)F` is
+   monotone in `x`. Ashikmin's `Rd*(1-Rs)` is a product of two
+   *independently varying* RISEPels, and `max` does not commute past it:
+   with `Rd=(.9,.1,.1)`, `Rs=(.1,.9,.1)` the approximation reads
+   `0.9*(1-0.9) = 0.09` against the true
+   `max(.81,.01,.09) = 0.81` — a factor of **9**; at
+   `Rd=(.95,.05,.05)`, `Rs=(.05,.95,.05)` a factor of **19**. Calling
+   the two "the same class" was the error that let a 19x weight error
+   stand as documented-and-accepted.
+
+2. **Nothing was testing it.** Every configuration in
+   `tests/AshikminShirleySPFPdfConsistencyTest.cpp` used GREY
+   reflectances, on which the two expressions are the same number. Gate
+   1 could not have caught it either even with a chromatic row: moving
+   mass between two lobes that each integrate to the same total leaves
+   the total unchanged, and the measured `|intPdf - emitted|` on the
+   three worst chromatic configurations is 0.00054-0.00467 against a
+   0.01 band. Only the total-variation gate sees it.
+
+**Fixed.** `Pdf` now forms the RISEPel product first and reduces once —
+`wDBase = MaxValue(Rd * (1 - Rs))`, one extra RISEPel multiply — which
+is the exact scalar `RandomlySelect` reads, because `Scatter` itself
+builds `diffuse.kray = Rd*(1-Rs)*(28/23)*fromK1*fromK2` as a RISEPel and
+hands THAT to `MaxValue`. The remaining per-direction factors
+(`diffuseNorm`, `fromK1`, `fromK2`) are channel-independent scalars and
+factor cleanly out of the reduction, so the split into a direction-
+independent `wDBase` and a per-direction tail is itself exact. `PdfNM`
+has a single wavelength lane and so was never affected; its `wDBase` is
+just `rd*(1-rho)`, now read RAW to match `ScatterNM` — the earlier
+`fabs()` was a guard the sampler itself does not apply, so on a negative
+reflectance the density described a distribution nothing draws from.
+
+Measured on the five new chromatic rows (total variation against 600k
+real `Scatter`+`RandomlySelect` draws, threshold 0.012):
+
+| row | TVD before | TVD after |
+|---|---|---|
+| `chroma .9/.1 vs .1/.9 Nu20Nv80` | 0.25208 | 0.00850 |
+| `chroma .95/.05 Nu20Nv80` | 0.29464 | 0.00853 |
+| `chroma .9/.1 Nu2Nv2 tilt20` | 0.07588 | 0.00766 |
+| `chroma .9/.1 th=70 az30 Nu5Nv5` | 0.11131 | 0.00803 |
+| `chroma backface .95/.05` | 0.29467 | 0.00831 |
+
+Every grey row's `intPdf` / `emitted` / `TVD` is unchanged to the
+printed digit, as the algebra requires.
 
 ---
 

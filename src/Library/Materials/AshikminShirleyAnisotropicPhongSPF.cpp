@@ -206,7 +206,7 @@ static Scalar AshikminDiffuseSelectCoefficient(
 //! is rejected and exactly one specular lane remains).
 static Scalar AshikminSpecularSelectCoefficient(
 	const Scalar wNumerator, const Scalar wSTotal, const int nAcceptedSpec,
-	const Scalar rd, const Scalar rho, const Scalar cos_i,
+	const Scalar wDBase, const Scalar cos_i,
 	const Scalar gu, const Scalar gv, const Scalar gw
 	)
 {
@@ -238,7 +238,7 @@ static Scalar AshikminSpecularSelectCoefficient(
 			}
 
 			const Scalar fromK1 = 1.0 - pow( 1.0 - cost*0.5, 5.0 );
-			const Scalar wD = rd * (1.0-rho) * diffuseNorm * fromK1 * fromK2;
+			const Scalar wD = wDBase * diffuseNorm * fromK1 * fromK2;
 			const Scalar total = wSTotal + wD;
 			if( total > NEARZERO ) {
 				accum += wNumerator / total;
@@ -252,14 +252,16 @@ static Scalar AshikminSpecularSelectCoefficient(
 //! sum_i q_i(wo) * p_i(wo) -- the specular half of the aggregate, exact at
 //! the query wo.  `h`'s (hdotk,hn,hu,hv) and `cosO` are the caller's own
 //! (computed once, shared across lanes since h depends only on wi/wo, not
-//! on NU/NV).  `rd,rho` (MaxValue(Rd), MaxValue(Rs) for RGB; the NM
-//! reflectances for spectral) feed AshikminSpecularSelectCoefficient's own
-//! diffuse-side quadrature.
+//! on NU/NV).  `wDBase` is the direction-INDEPENDENT part of the diffuse
+//! lobe's realized selection weight -- `MaxValue(Rd*(1-Rs))` for RGB (the
+//! exact quantity RandomlySelect reduces; see Pdf()'s own comment on why
+//! the reduction order matters), `rd*(1-rho)` for spectral -- and feeds
+//! AshikminSpecularSelectCoefficient's own diffuse-side quadrature.
 static Scalar AshikminSpecularDensity(
 	const Scalar hdotk, const Scalar hn, const Scalar hu, const Scalar hv, const Scalar cosO,
 	const Scalar cos_i, const Scalar wiu, const Scalar wiv,
 	const Scalar wiDotGeomN, const Scalar gu, const Scalar gv, const Scalar gw,
-	const Scalar rd, const Scalar rho,
+	const Scalar wDBase,
 	const AshikminLobeSet& lobes
 	)
 {
@@ -340,7 +342,7 @@ static Scalar AshikminSpecularDensity(
 
 		const Scalar wS = w_i + wOther;
 
-		const Scalar q = AshikminSpecularSelectCoefficient( w_i, wS, nAccepted, rd, rho, cos_i, gu, gv, gw );
+		const Scalar q = AshikminSpecularSelectCoefficient( w_i, wS, nAccepted, wDBase, cos_i, gu, gv, gw );
 
 		sum += q * pdf_i;
 	}
@@ -714,16 +716,28 @@ Scalar AshikminShirleyAnisotropicPhongSPF::Pdf(
 	// direction-dependent here (unlike Schlick/Phong), because
 	// Scatter's diffuse.kray = Rd*(1-Rs)*(28/23)*fromK1(cos_o)*fromK2(cos_i)
 	// -- exact at wo, no averaging needed (fromK2(cos_i) is fixed for the
-	// whole call).  MaxValue(Rd)*(1-MaxValue(Rs)) approximates
-	// MaxValue(Rd*(1-Rs)) -- exact when the same channel maximises both,
-	// the same class of approximation PTScatterSelectWeight already makes
-	// throughout RISE by reducing every kray to one scalar.
-	const Scalar rd  = ColorMath::MaxValue( pRd->GetColor(ri) );
-	const Scalar rho = ColorMath::MaxValue( pRs->GetColor(ri) );
+	// whole call).
+	//
+	// `wDBase` is EXACT, not an approximation: `RandomlySelect` reads
+	// `MaxValue(diffuse.kray)`, and `Scatter` forms the whole RISEPel
+	// product `Rd*(1-Rs)` FIRST and only then hands it to that reduction,
+	// so the scalar is `MaxValue(Rd*(1-Rs))` -- NOT
+	// `MaxValue(Rd)*(1-MaxValue(Rs))`, which is a different number
+	// whenever the two maxima sit on different channels (Rd=(.9,.1,.1)
+	// with Rs=(.1,.9,.1): 0.09 vs 0.81, a factor of 9; at
+	// (.95,.05,.05)/(.05,.95,.05) a factor of 19).  The two agree exactly
+	// on any grey or co-maximal input, which is why every pre-P1-1 row of
+	// AshikminShirleySPFPdfConsistencyTest was blind to it.  The remaining
+	// per-direction scalars (fromK1/fromK2/diffuseNorm) are channel-
+	// independent and factor cleanly out of the reduction.
+	const RISEPel rdCol = pRd->GetColor(ri);
+	const RISEPel rhoCol = pRs->GetColor(ri);
+	const Scalar wDBase = ColorMath::MaxValue( rdCol * ( RISEPel(1,1,1) - rhoCol ) );
+	const Scalar rho = ColorMath::MaxValue( rhoCol );
 	static const Scalar diffuseNorm = 28.0 / 23.0;
 	const Scalar fromK1 = 1.0 - pow( 1.0 - cosO*0.5, 5.0 );
 	const Scalar fromK2 = 1.0 - pow( 1.0 - cos_i*0.5, 5.0 );
-	const Scalar wD = rd * (1.0-rho) * diffuseNorm * fromK1 * fromK2;
+	const Scalar wD = wDBase * diffuseNorm * fromK1 * fromK2;
 
 	const ScalarTriple NUt = pNu->GetValuesAt(ri);
 	const ScalarTriple NVt = pNv->GetValuesAt(ri);
@@ -735,7 +749,6 @@ Scalar AshikminShirleyAnisotropicPhongSPF::Pdf(
 		lobes.Rs[0] = rho;
 	} else {
 		lobes.count = 3;
-		const RISEPel rhoCol = pRs->GetColor(ri);
 		for( int i = 0; i < 3; i++ ) {
 			lobes.NU[i] = NUt.v[i];
 			lobes.NV[i] = NVt.v[i];
@@ -759,7 +772,7 @@ Scalar AshikminShirleyAnisotropicPhongSPF::Pdf(
 		const Scalar hn = Vector3Ops::Dot( h, n );
 		const Scalar hu = Vector3Ops::Dot( h, u );
 		const Scalar hv = Vector3Ops::Dot( h, v );
-		specDensity = AshikminSpecularDensity( hdotk, hn, hu, hv, cosO, cos_i, wiu, wiv, wiDotGeomN, gu, gv, gw, rd, rho, lobes );
+		specDensity = AshikminSpecularDensity( hdotk, hn, hu, hv, cosO, cos_i, wiu, wiv, wiDotGeomN, gu, gv, gw, wDBase, lobes );
 	}
 
 	return cD * diffusePdf + specDensity;
@@ -802,12 +815,20 @@ Scalar AshikminShirleyAnisotropicPhongSPF::PdfNM(
 
 	const Scalar diffusePdf = cosO * INV_PI;
 
-	const Scalar rd  = fabs( GuardedGetColorNM( *pRd, ri, nm ) );
-	const Scalar rho = fabs( GuardedGetColorNM( *pRs, ri, nm ) );
+	// Spectral: one wavelength lane, so there is no MaxValue reduction to
+	// get the order of and `wDBase` is trivially `rd*(1-rho)`.  Note the
+	// values are read RAW, exactly as `ScatterNM` reads them -- the earlier
+	// `fabs()` here was a unilateral guard this density's own sampler does
+	// not apply, so on a (non-physical) negative reflectance it described a
+	// distribution `ScatterNM` does not draw from.  Matching the sampler is
+	// the whole contract of this function.
+	const Scalar rd  = GuardedGetColorNM( *pRd, ri, nm );
+	const Scalar rho = GuardedGetColorNM( *pRs, ri, nm );
 	static const Scalar diffuseNorm = 28.0 / 23.0;
 	const Scalar fromK1 = 1.0 - pow( 1.0 - cosO*0.5, 5.0 );
 	const Scalar fromK2 = 1.0 - pow( 1.0 - cos_i*0.5, 5.0 );
-	const Scalar wD = rd * (1.0-rho) * diffuseNorm * fromK1 * fromK2;
+	const Scalar wDBase = rd * (1.0-rho);
+	const Scalar wD = wDBase * diffuseNorm * fromK1 * fromK2;
 
 	AshikminLobeSet lobes;
 	lobes.count = 1;
@@ -831,7 +852,7 @@ Scalar AshikminShirleyAnisotropicPhongSPF::PdfNM(
 		const Scalar hn = Vector3Ops::Dot( h, n );
 		const Scalar hu = Vector3Ops::Dot( h, u );
 		const Scalar hv = Vector3Ops::Dot( h, v );
-		specDensity = AshikminSpecularDensity( hdotk, hn, hu, hv, cosO, cos_i, wiu, wiv, wiDotGeomN, gu, gv, gw, rd, rho, lobes );
+		specDensity = AshikminSpecularDensity( hdotk, hn, hu, hv, cosO, cos_i, wiu, wiv, wiDotGeomN, gu, gv, gw, wDBase, lobes );
 	}
 
 	return cD * diffusePdf + specDensity;
