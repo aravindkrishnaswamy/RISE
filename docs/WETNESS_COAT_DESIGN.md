@@ -872,7 +872,16 @@ Phase 2 is the principled upgrade, scoped by Phase 1's evidence, and carries a
 second paying customer in the glTF importer. Phase 3 is gated and may be
 declined. §5 states it; §6–§8 specify it.
 
-### (g) A painter-sampling route for the darkening — **ADOPTED as a Phase-1.5 candidate, scoped**
+### (g) A painter-sampling route for the darkening — **SHIPPED 2026-09-17 (debt ledger DL-25)**
+
+**Superseding note (2026-09-17):** the VM-builtin shape below — the SECOND
+of the two candidates this section originally sketched, not the smaller
+painter-`pow` op — is what actually shipped, closing §12 item 6b.
+`sample(name)`/`sample_scalar(name)` and the attach-time `IExpressionPainterRefResolver`
+binding are exactly the "richer... threading painter references into
+CallFunc" route described below; see §12 item 6b's own closure note for
+the implementation account. The rest of this subsection is kept as the
+original design record.
 
 Phase 1's darkening is written as `pow(base_r, k)` over **literal constants** the
 verb reads out of a `uniformcolor_painter`. That works only because the base is a
@@ -1308,17 +1317,19 @@ the worst of §6.2's coverage dip by construction.
 > what an RGB renderer would do. It looks right; it is not the principled form.
 > Phase 2's layered transport is where RISE gets the principled form (§7.1).
 
-> **Honest caveat — the darkening works on flat-colour albedos only.** Notice what
-> `base_r`, `base_g`, `base_b` are: **literal numbers the verb copied out of the
-> base `uniformcolor_painter` at rewrite time.** They have to be, because the
-> expression VM **cannot sample another painter** — there is no texture or
-> painter-reference builtin in its function table
-> ([ExpressionEval.h:728-757](../src/Library/Painters/ExpressionEval.h)). So a
-> substrate whose albedo is a texture or a procedural painter — patterned cobbles,
-> wood grain, anything an author is likely to have already textured — can receive
-> the **coat** but **no darkening whatsoever**, which is the more visible half of
-> the effect. §6.4 clause 2 turns this into an honest refusal rather than a silent
-> half-result, and §4(g) is the cheap fix if the census shows it biting.
+> **Honest caveat, CLOSED 2026-09-17 (DL-25) — the darkening used to work on
+> flat-colour albedos only.** `base_r`, `base_g`, `base_b` were **literal
+> numbers the verb copied out of the base `uniformcolor_painter` at rewrite
+> time**, because the expression VM could not sample another painter — no
+> texture or painter-reference builtin existed in its function table. A
+> substrate whose albedo was a texture or a procedural painter — patterned
+> cobbles, wood grain, anything an author was likely to have already
+> textured — received the **coat** but **no darkening whatsoever**. §4(g)'s
+> `sample(name)`/`sample_scalar(name)` builtins close this: §6.4 clause 2 now
+> ACCEPTS such a base (a `def base_color sample(<substrate>)` line replaces
+> the literal `base_r/g/b` params on the GGX/PBR in-place and Oren-Nayar/
+> metallic-named branches; the Lambertian branch needed no change at all,
+> since `coated_material`'s own transport already darkens any substrate).
 
 ### 6.4 Qualifying predicate and refusals
 
@@ -2345,11 +2356,34 @@ timing exists because no implementation exists.
    while sampled transport sees the wet split (§3.3, §6.9 item 1). **Closed by
    Phase 2's combined `value`/`valueNM`** (§7.1); not otherwise fixable without
    changing `polished_material`'s own semantics, which is out of scope here.
-6b. **Phase 1 cannot darken a textured substrate at all** — the expression VM has
+6b. ~~**Phase 1 cannot darken a textured substrate at all** — the expression VM has
    no painter-sampling builtin
    ([ExpressionEval.h:728-757](../src/Library/Painters/ExpressionEval.h)), so
    §6.4 clause 2 refuses rather than half-delivering. **Open**; §4(g) is the
-   scoped candidate fix.
+   scoped candidate fix.~~ **CLOSED 2026-09-17 (debt ledger DL-25, branch
+   `debt-dl25`)** — the expression VM gained `sample(painter_name)` (vec3,
+   `IPainter::GetColor`) and `sample_scalar(painter_name)` (scalar,
+   `IScalarPainter::GetValuesAt`, no JH uplift), gated on `EnableContextVars`
+   exactly like `occlusion()`/`proximity()` (`ExpressionEval.h`'s
+   `ParseSampleCall`).  The argument is a bare painter NAME, resolved once at
+   ATTACH time (a new `IExpressionPainterRefResolver` parameter on
+   `BuildExpressionProgramFromChunkFields`, `ExpressionPainter.h`) against the
+   same forward-only `GetItem` lookup every other name-referencing chunk form
+   already uses, so a genuine reference cycle is structurally impossible and
+   self-reference gets its own diagnostic.  `CallFunc`/`CallFuncVec3` evaluate
+   the bound painter at a SYNTHETIC hit built from exactly the u,v,P,Po,N
+   fields already in the L2 memo key, so the memo needs no new key field
+   (documented in `ExpressionMemo.h`).  §6.4 clause 2 (`AgentSession.cpp`)
+   now ACCEPTS a genuinely textured/procedural base instead of refusing it:
+   a Lambertian base is WRAPPED as before (`coated_material`'s own layered
+   transport already darkens any substrate, textured included, so no
+   sample()-based painter is even minted there); the GGX/PBR in-place branch
+   and the Oren-Nayar/metallic-named darkening-only paths now emit
+   `def base_color sample(<substrate>)` + `pow(base_color.x/y/z, k)` in place
+   of the literal `base_r/g/b` path.  `tests/TextureExpressionVMTest.cpp`
+   888/0 (was 846/0); `tests/AgentAddWetnessTest.cpp` F4/F4b assert the
+   textured-substrate case applies and the emitted expression samples the
+   named substrate.
 6c. **`add_wetness` and `add_wear` mutually exclude each other on one material**
    (§6.4), and worn-and-wet is the flagship subject. v1 accepts the exclusion with
    cross-naming refusal messages; the census counts the demand. **Open.**

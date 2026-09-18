@@ -825,7 +825,14 @@ static void TestRefusals()
 		std::remove( tmp.c_str() );
 	}
 
-	// F4: textured albedo -- clause 2.
+	// F4 (DL-25, docs/WETNESS_COAT_DESIGN.md sec 4(g)/6.9 item 6b): textured
+	// albedo -- clause 2. Pre-DL-25 this REFUSED outright (Phase 1 could not
+	// darken a textured substrate at all); the expression VM's sample()
+	// builtin now lets it through. Lambertian base: the coat WRAP
+	// (coated_material) fires -- its own layered transport darkens ANY
+	// substrate, textured included, so NO separate sample()-based painter
+	// is even needed on this branch (see F4b below for the branch that DOES
+	// mint one).
 	{
 		std::string body = Preamble();
 		body += SphereGeo( "s" );
@@ -838,11 +845,68 @@ static void TestRefusals()
 			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
 			const std::string before = sess->ReadDocument();
 			const Agent::AgentSession::AgentAddWetnessResult r = sess->AddWetness( "mat_tex" );
-			Check( !r.applied,
-			       "F4 MONEY: a textured albedo REFUSES -- Phase 1 cannot darken a textured substrate "
-			       "(the expression VM cannot sample another painter), so this declines rather than "
-			       "deliver a coat with no darkening" );
-			Check( sess->ReadDocument() == before, "F4: document byte-identical" );
+			Check( r.ok && r.applied,
+			       std::string( "F4 MONEY (DL-25): a textured albedo now APPLIES -- " ) + r.message );
+			Check( r.wrappedInCoat,
+			       "F4: the Lambertian base is WRAPPED -- coated_material's own transport darkens the "
+			       "textured substrate physically, with no separate painter needed" );
+			Check( r.reflectanceSlot.empty() && r.reflectancePainter.empty(),
+			       "F4: no reflectance/darkening painter minted on the Lambertian branch (same as a flat "
+			       "base -- coated_material performs the darkening either way)" );
+			const std::string after = sess->ReadDocument();
+			Check( after != before, "F4: the document really changed" );
+			Check( after.find( "name mat_tex\n\treflectance pnt_textured\n" ) != std::string::npos,
+			       "F4 MONEY: the ORIGINAL textured material chunk is left BYTE-IDENTICAL -- still bound "
+			       "to `pnt_textured`, untouched by the wrap" );
+			Check( after.find( "base\t\t\tmat_tex" ) != std::string::npos,
+			       "F4: the coated_material's `base` names the untouched textured original" );
+			sess.reset(); pJob->release();
+		}
+		std::remove( tmp.c_str() );
+	}
+
+	// F4b (DL-25): textured albedo on the GGX in-place branch, which DOES
+	// mint its own reflectance painter (item 8 only demoted the Lambertian
+	// branch's darkening to coated_material) -- the money assertion is that
+	// the emitted expression actually SAMPLES the substrate painter rather
+	// than copying out a literal it does not have.
+	{
+		std::string body = Preamble();
+		body += SphereGeo( "s" );
+		body += GgxNonMetal( "mat_tex_ggx", "pnt_textured", 0.2 );
+		body += Obj( "o1", "s", "mat_tex_ggx", 0 );
+		const std::string tmp = TempPath( "addwet_f4b.RISEscene" );
+		Job* pJob = LoadScene( body, tmp );
+		Check( pJob != nullptr, "F4b: fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const Agent::AgentSession::AgentAddWetnessResult r = sess->AddWetness( "mat_tex_ggx" );
+			Check( r.ok && r.applied,
+			       std::string( "F4b MONEY (DL-25): a textured GGX albedo applies -- " ) + r.message );
+			Check( !r.wrappedInCoat, "F4b: GGX in-place branch, not a coat wrap" );
+			Check( !r.reflectancePainter.empty(), "F4b: a reflectance painter WAS minted (unlike the Lambertian branch)" );
+			Check( r.texturedAlbedo, "F4b MONEY: texturedAlbedo reports true" );
+			const std::string after = sess->ReadDocument();
+			Check( after.find( "def\t\t\t\tbase_color sample(pnt_textured)" ) != std::string::npos,
+			       "F4b MONEY: the minted reflectance painter's expression SAMPLES the substrate "
+			       "(`sample(pnt_textured)`) instead of copying out a literal base_r/g/b it does not have -- "
+			       "extracted text:\n" + after );
+			Check( after.find( "base_r" ) == std::string::npos,
+			       "F4b: no base_r/g/b literal params on the textured path (there is no single literal to band around)" );
+			Check( after.find( "pow(base_color.x, k)" ) != std::string::npos &&
+			       after.find( "pow(base_color.y, k)" ) != std::string::npos &&
+			       after.find( "pow(base_color.z, k)" ) != std::string::npos,
+			       "F4b: the darkening expression raises the SAMPLED colour's components to k, per-channel" );
+			{
+				const RISE::Cst::Document rt = RISE::Cst::ParseToCst( after );
+				Check( RISE::Cst::DocItemCount( rt ) > 0, "F4b: the emitted document round-trips through ParseToCst" );
+			}
+			{
+				const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( after );
+				bool anyError = false;
+				for( const Agent::AgentDiagnostic& d : diags ) if( d.severity == Agent::AgentDiagnostic::Severity::Error ) anyError = true;
+				Check( !anyError, "F4b: the rewritten document validates with zero error diagnostics" );
+			}
 			sess.reset(); pJob->release();
 		}
 		std::remove( tmp.c_str() );
