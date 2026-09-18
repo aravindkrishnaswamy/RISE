@@ -794,3 +794,52 @@ passed, `SourceHygieneTest` 167/0, `ConnectionLegalityTest` 319/0,
 `CstDeriveGoldenTest` 452 MATCH/0 DRIFT, `BDPTVertexRIGRebuildTest`
 68/0, `SSSRadianceScalingTest` 574017/0,
 `GenericHumanTissueInteriorScatterTest` (new, DL-184) 8/0.
+
+### 7.7 P2-1 (review round 4; filed as DL-201): splat-film active-count
+denominator
+
+`BDPTSpectralRasterizer::GetSplatSampleScale()` and
+`VCMSpectralRasterizer`'s twin return the FIXED `nSpectralSamples *
+SampledWavelengths::N` whenever HWSS is on, independent of any given
+bundle's own termination history. `SplatFilm::Resolve` then divides
+EVERY accumulated pixel by that ONE global scalar
+(`invSamples = 1/sampleCount`) -- confirmed by the function's own
+header comment, which states plainly that `SplatFilm`, unlike
+`FilteredFilm`, does NOT track a per-pixel weight sum. A terminated
+companion's own splat contribution IS correctly skipped at the point
+of deposit (`BDPTSpectralRasterizer.cpp`'s per-companion loop
+`continue`s past `swl.terminated[w]`), so the numerator at any given
+pixel is honest -- but the denominator is not: a pixel whose
+light-tracing energy arrives mostly through high-termination-rate
+bundles (concentrated near a dispersive or null-BSDF object) is
+darkened relative to one reached mostly by low-termination bundles.
+This is the SAME dilution mechanism P1-1 fixed, one layer up, at the
+whole-film level instead of the per-pixel bundle-mean level.
+
+**Attempted measurement, inconclusive.** Rendered
+`scenes/Tests/Spectral/hwss_prism_dispersion_bdpt.RISEscene`
+(dispersive glass sphere, pinhole camera, Cornell box) at 64 spp, hwss
+FALSE vs TRUE, raw (non-denoised) EXR output. Whole-frame achromatic
+ratio 1.020 (+2.0%) -- not diagnostic, dominated by the box's own
+NEE-lit walls. A 4x4 block-grid comparison found every block inside
+roughly 0.92-1.06, noise-level at this spp, with no block showing the
+kind of isolated deficit P1-1's own mechanism would predict if a
+caustic region were cleanly separated from the rest of the image. This
+does NOT rule out the bug -- a Cornell box's light-tracing splat energy
+is a small, spatially diffuse fraction of its total illumination (most
+of the box is lit by ordinary NEE/BSDF-hit strategies this bug does
+not touch), so this scene is the wrong instrument to isolate it, not
+evidence the mechanism is absent.
+
+**Filed as DL-201** rather than attempted as a quick fix: a correct fix
+needs `SplatFilm` to track a per-pixel (or per-splat, accumulated into
+a parallel per-pixel weight buffer) active-count denominator instead
+of one global scalar -- structurally similar to `FilteredFilm`'s
+existing per-pixel weight-sum design, which `SplatFilm` deliberately
+does not share. That is a film-architecture change, not a targeted fix
+scoped to this row, matching this item's own instruction to file
+precisely rather than rush a change to code neither this row's tests
+nor its time budget can adequately validate. See docs/DEBT_LEDGER.md's
+DL-201 row for the full recipe (a purpose-built scene where
+light-tracing energy dominates a spatially isolated region, so hwss
+TRUE vs FALSE there is directly diagnostic).
