@@ -525,7 +525,7 @@ to 4x.
   the gap grows with roughness beyond that band's roughness-0.3 basis.
   Filed **DL-127**.  It is also one of the two rows §3.2a had to rule
   out before attributing topology L's merge-target residual to DL-103.
-  **CLOSED 2026-09-18** (`debt-dl127`, `08f06ac9`,
+  **CLOSED 2026-09-18** (`debt-dl127`, `53077f5f`,
   docs/DL127_SCHLICK_KRAY_VS_BRDF.md): `kray` is now that lobe's own
   `f_S cos / p_S`, ruled by reciprocity (the `kray` convention's implied
   BRDF is non-reciprocal by exactly `nl/nv`), and §3.1's (a)/Q column
