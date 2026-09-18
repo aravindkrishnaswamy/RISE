@@ -277,10 +277,28 @@ static const int ANISO_SUB_TOTAL = SUB_SIZE + ANISO_SUB_FINE;
 // this boundary and the existing row 0/row 1 data: ALPHA_SUB_FINE
 // geometric octaves on (0, 0.01) (node j stores alpha=0.01/2^(8-j),
 // j=1..7, i.e. 0.005 down to 7.8e-5 -- comfortably past GGXBRDF's 1e-4
-// floor), and ALPHA_MID_SIZE-1 geometric nodes on (0.01, 0.0419]
+// floor), and ALPHA_MID_SIZE-2 geometric nodes on (0.01, 0.0419]
 // bridging the coarse first cell.  Interpolation is LINEAR IN ALPHA on
 // every interval (matching ANISO_SUB_FINE's precedent: node PLACEMENT
 // is geometric, the BLEND between two adjacent nodes is not).
+//
+// DL-206 (docs/DEBT_LEDGER.md): the mid-node bake loop below only ever
+// visits idx in [ALPHA_SUB_FINE+2, ALPHA_LOW_TOTAL-1] -- with
+// ALPHA_MID_SIZE=4 that is idx={9,10}, i.e. ALPHA_MID_SIZE-2 = 2
+// values, NOT ALPHA_MID_SIZE-1 = 3.  `ALPHA_LOW_STORED` was originally
+// sized for the LATTER (off by one: it counted the mid-node at
+// idx=ALPHA_LOW_TOTAL, which is A1 itself -- an EXISTING row of the
+// main table, deliberately "not re-baked" per the comment above, and
+// therefore never written through `alphaLowSlot`/`AlphaLowSlot` at
+// all), so every `*_ALPHA_LOW_*` table carried one all-zero row/plane
+// that was baked, stored, and never read (~24,639 stored zeros across
+// the isotropic + DL-77 anisotropic low-alpha tables, ~12.6% of the
+// DL-161 additions).  Fixed by matching the STORED count to what the
+// bake loop and `alphaLowSlot`/`AlphaLowSlot` actually address; the
+// `static_assert` immediately after `AlphaLowSlot`'s own emitted
+// definition (see the printf block below) pins this identity so a
+// future change to either side fails to compile instead of silently
+// drifting again.
 static const int ALPHA_SUB_FINE = 7;
 static const int ALPHA_MID_SIZE = 4;
 
@@ -290,10 +308,11 @@ static const int ALPHA_MID_SIZE = 4;
 // itself (existing row 0, not re-baked), ALPHA_SUB_FINE+2..
 // ALPHA_LOW_TOTAL-1 are the geometric mid-nodes between A0 and A1
 // (stored), and ALPHA_LOW_TOTAL is A1 itself (existing row 1, not
-// re-baked).  ALPHA_SUB_FINE + (ALPHA_MID_SIZE-1) = 10 values are
-// stored per table.
+// re-baked).  ALPHA_SUB_FINE + (ALPHA_MID_SIZE-2) = 9 values are
+// stored per table (DL-206: was `ALPHA_MID_SIZE-1` = 10, one dead slot
+// -- see the comment above).
 static const int ALPHA_LOW_TOTAL = ALPHA_SUB_FINE + ALPHA_MID_SIZE;
-static const int ALPHA_LOW_STORED = ALPHA_SUB_FINE + (ALPHA_MID_SIZE - 1);
+static const int ALPHA_LOW_STORED = ALPHA_SUB_FINE + (ALPHA_MID_SIZE - 2);
 
 // alpha value of virtual node `idx` (idx in [0, ALPHA_LOW_TOTAL]).  The
 // emitted header carries a byte-identical twin, AlphaLowNode; the two
@@ -2797,7 +2816,7 @@ int main() {
 	printf("\t/// unconditionally: Ess(alpha->0,cosTheta)=1 for BOTH models (no\n");
 	printf("\t/// baked limit constant needed here, unlike DL-86's cosTheta->0\n");
 	printf("\t/// case).  %d geometric octaves resolve (0, 0.01) (node j stores\n", ALPHA_SUB_FINE);
-	printf("\t/// alpha=0.01/2^(8-j)); %d geometric nodes resolve (0.01, %.4f]\n", ALPHA_MID_SIZE - 1, 0.01 + 0.99/(double)(LUT_SIZE-1));
+	printf("\t/// alpha=0.01/2^(8-j)); %d geometric nodes resolve (0.01, %.4f]\n", ALPHA_MID_SIZE - 2, 0.01 + 0.99/(double)(LUT_SIZE-1));
 	printf("\t/// bridging the coarse first cell.  See the generator's\n");
 	printf("\t/// ALPHA_SUB_FINE/ALPHA_MID_SIZE comment for the derivation.\n");
 	printf("\t/// Interpolation is LINEAR IN ALPHA on every interval (node\n");
@@ -2814,8 +2833,10 @@ int main() {
 	printf("\t/// geometric mid-nodes between A0 and A1 (stored), and\n");
 	printf("\t/// ALPHA_LOW_TOTAL is A1 itself (row 1, not re-baked).\n");
 	printf("\tstatic const int ALPHA_LOW_TOTAL = ALPHA_SUB_FINE + ALPHA_MID_SIZE;\n");
-	printf("\t/// %d values (ALPHA_SUB_FINE + (ALPHA_MID_SIZE-1)) are stored.\n", ALPHA_LOW_STORED);
-	printf("\tstatic const int ALPHA_LOW_STORED = ALPHA_SUB_FINE + (ALPHA_MID_SIZE - 1);\n\n");
+	printf("\t/// %d values (ALPHA_SUB_FINE + (ALPHA_MID_SIZE-2)) are stored (DL-206:\n", ALPHA_LOW_STORED);
+	printf("\t/// was ALPHA_MID_SIZE-1, one dead slot -- AlphaLowSlot never\n");
+	printf("\t/// addresses the mid-node at idx==ALPHA_LOW_TOTAL, that IS A1/row 1).\n");
+	printf("\tstatic const int ALPHA_LOW_STORED = ALPHA_SUB_FINE + (ALPHA_MID_SIZE - 2);\n\n");
 
 	// Emit E_ss table
 	//
@@ -3147,11 +3168,22 @@ int main() {
 
 	printf("\t/// DL-105: map a STORED virtual index (1..ALPHA_SUB_FINE, or\n");
 	printf("\t/// ALPHA_SUB_FINE+2..ALPHA_LOW_TOTAL-1) to its flat storage slot.\n");
-	printf("\tinline int AlphaLowSlot( const int idx )\n");
+	printf("\t/// `constexpr` (not just `inline`) so the DL-206 static_assert below\n");
+	printf("\t/// can call it directly -- the two must never drift apart again.\n");
+	printf("\tinline constexpr int AlphaLowSlot( const int idx )\n");
 	printf("\t{\n");
 	printf("\t\tif( idx <= ALPHA_SUB_FINE ) return idx - 1;\n");
 	printf("\t\treturn ALPHA_SUB_FINE + ( idx - (ALPHA_SUB_FINE + 2) );\n");
 	printf("\t}\n\n");
+	printf("\t/// DL-206 (docs/DEBT_LEDGER.md): pins `ALPHA_LOW_STORED` to the\n");
+	printf("\t/// highest slot `AlphaLowSlot` ever actually returns, plus one --\n");
+	printf("\t/// the last STORED mid-node virtual index is ALPHA_LOW_TOTAL-1\n");
+	printf("\t/// (ALPHA_LOW_TOTAL itself is A1/row 1, never passed to\n");
+	printf("\t/// AlphaLowSlot at all).  Fails to compile, rather than silently\n");
+	printf("\t/// re-introducing a dead stored slot, if a future change to either\n");
+	printf("\t/// side drifts out of sync.\n");
+	printf("\tstatic_assert( AlphaLowSlot( ALPHA_LOW_TOTAL - 1 ) == ALPHA_LOW_STORED - 1,\n");
+	printf("\t\t\"ALPHA_LOW_STORED must equal the highest slot AlphaLowSlot ever returns, plus one\" );\n\n");
 
 	printf("\t/// DL-105: bracket a query alpha in [0, ALPHA_LOW_A1) against the\n");
 	printf("\t/// 13-position AlphaLowNode list.  A plain linear scan (small,\n");
