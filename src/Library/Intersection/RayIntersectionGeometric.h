@@ -448,7 +448,8 @@ namespace RISE
 		//! condition holds, so the stamp asserted "no interior" on
 		//! precisely the hit that disproves it.  The setter was removed.
 		//!
-		//! NOT forwarded by `CSGObject::AdoptCsgSurfacePayload`, unlike
+		//! Explicitly cleared by `CSGObject::IntersectRay` after operand
+		//! copies and payload adoption, unlike
 		//! `bOpenSheet`: `bOpenSheet` is a property of the SURFACE the
 		//! ray struck and survives compositing, while this is a property
 		//! of the OBJECT -- a CSG tree built from planes can perfectly
@@ -457,8 +458,8 @@ namespace RISE
 		//!
 		//! WHO READS IT: `TranslucentSPFDetail::BuildLobeSet`'s STACKLESS
 		//! side inference only (a caller with a live IOR stack asks the
-		//! stack instead, and every production integrator path is
-		//! stacked).  See DL-157's closure doc section 3.1.
+		//! stack instead; modern PT/BDPT/VCM integrator paths are
+		//! stacked, while photon gathers and SMS still have stackless sites).  See DL-157's closure doc section 3.1.
 		bool						bProvablyNoInterior;
 
 		//! THE shared recovery for the two flags above (DL-70).  Returns

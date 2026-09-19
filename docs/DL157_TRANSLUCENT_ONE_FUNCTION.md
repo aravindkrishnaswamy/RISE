@@ -252,10 +252,29 @@ here.)
   `bezierpatch_geometry` to `translucent_material` — but as authorable as
   the clipped-plane case, and `sms_teapot_close_sms.RISEscene` already
   drives a Bezier teapot through `ManifoldSolver`'s four stackless sites.
-  The flag is deliberately not forwarded by
-  `CSGObject::AdoptCsgSurfacePayload`: `bOpenSheet` is a property of the
+  Round 5 explicitly clears the flag in `CSGObject::IntersectRay`
+  after whole-record copies and payload adoption: `bOpenSheet` is a property of the
   SURFACE and survives compositing, this is a property of the OBJECT, and
-  a CSG tree built from planes can have an interior.
+  a CSG tree built from planes can have an interior. Omitting the field
+  from `AdoptCsgSurfacePayload` alone did not clear the earlier
+  `ri = riObjA/B` copy. `DisplacedGeometry` is conservative too: it
+  constructs its tessellated hit without inheriting the base geometry's
+  certification, so even a displaced clipped plane uses the uncertified
+  fallback. This can retain DL-223's stackless sheet limitation; it cannot
+  falsely certify a closed object.
+
+**Round-5 CSG regression (2026-09-19).** A live union hit from a
+back-facing double-sided plane, with the other operand off the ray,
+exercises the whole-record copy in both operand orders. It deliberately
+isolates certification propagation; it does not certify a closed volume
+for that fixture. The consumer gate supplies an inside stack and sweeps
+six tilts through RGB/NM and both evaluator entry points. Before clearing
+the flag, 24 stackless lobe checks and two operand-order certification
+checks fail: **1196/26**. After clearing, **1222/0**. At RGB tilt zero,
+exit/backscatter ratios move **1.745299 / 0.647376 -> 1.000000 / 1.000000**;
+stacked rows remain 1.000000. Both states explicitly relinked
+`build-test/TranslucentLobeConsistencyTest` after their library state was
+built; library and individual test builds emitted zero warnings.
 
 **What is genuinely left, stated precisely — two residuals, both on
 DL-223, both bounded.**
@@ -273,10 +292,10 @@ DL-223, both bounded.**
    rows read **1.680295** (front reflection) and **1.001460**
    (transmission) at tilt 0 — printed and bounded as a KNOWN-RESIDUAL
    row rather than gated at 1, so its closure is as visible as a
-   regression. **Review round 3, P2-3: the affected set is TEN call
-   sites, not five, and one of them IS a production path** — the round-2
+   regression. **The current affected set is 16 calls in eight files** — the round-2
    list stopped at the families this slice had already converted or
-   inspected and never swept the photon-map layer. The full list:
+   inspected and never swept the photon-map layer. The full list, grouped
+   into ten rows (16 calls, eight distinct files):
 
    | # | site | note |
    |---|---|---|
@@ -291,15 +310,16 @@ DL-223, both bounded.**
    | 9 | `InteractivePelRasterizer.cpp:322` / `:323` / `:368` | preview (three calls, one family) |
    | 10 | `ManifoldSolver.cpp:5684` / `:5798` / `:6624` / `:8085` | the four SMS sites |
 
-   An ELEVENTH, `FinalGatherShaderOp.cpp:215`, was on this list and is
+   `FinalGatherShaderOp.cpp:220` was also on this list and is
    **fixed in round 3 instead of recorded**: the same file's primary
    gather arm at `:521` was converted to `valueStateful` by this slice
    while the gradient-estimator arm was left behind, with the live
    `ior_stack` already a parameter of that helper two lines above the
    call. Final gather IS a production path, so the round-2 sentence
    "none of them a production integrator path" was wrong as written; it
-   is true of the ten that remain. `PathValueOps::EvalBSDF` looks like a
-   twelfth and is not — it has no callers anywhere in the tree.
+   does not describe the remaining photon-gather and SMS calls.
+   `PathValueOps::EvalBSDF` has no production caller; its two callers are
+   test coverage.
 
    The MODERN integrator paths — PT NEE, BDPT/VCM connections, the
    zero-exitance sweep and PT guiding — are all STACKED and correct on
@@ -411,7 +431,9 @@ two of them found things:
   is right), the same hit on a double-sided MESH (`meshBack`, which
   cannot certify — DL-223's stackless residual), a CLOSED but
   uncertified double-sided mesh hit from INSIDE (`dsMeshExit`, review
-  round 2's P1-2 record), and an ordinary entry made while the walk is
+  round 2's P1-2 record), a live multi-patch Bezier back-face record
+  (`bezierExit`), a live CSG plane-operand back-face record (`csgExit`,
+  whose copied certification must be cleared), and an ordinary entry made while the walk is
   inside a DIFFERENT enclosure (`otherEnclosure`, which separates "the
   stack is non-empty" from "the stack contains US").
 * **[F], gate 5**: `EvaluateKrayNM` against `ScatterNM`'s own `krayNM`
@@ -433,7 +455,10 @@ test target was rebuilt on BOTH sides, per COMMON_RULES' stale-binary rule):
 ```
 round-1 file against bb2ccd80 :  Passed:  67   Failed: 173
 round-1 file with the fix     :  Passed: 240   Failed:   0
-current file, HEAD            :  Passed: 1008  Failed:   0
+round-2 file with the fix     :  Passed: 1008  Failed:   0
+round-3/4 file with the fix   :  Passed: 1114  Failed:   0
+round-5 file, copied CSG flag :  Passed: 1196  Failed:  26
+round-5 file, flag cleared    :  Passed: 1222  Failed:   0
 ```
 
 > **⚠ The headline pair is the ROUND-1 FILE against `bb2ccd80`, and it
@@ -441,13 +466,14 @@ current file, HEAD            :  Passed: 1008  Failed:   0
 > against `bb2ccd80` at all — it references `valueStateful`,
 > `EvaluateKrayNM`, `ri.bProvablyNoInterior` and the five-argument
 > `TranslucentBSDF` constructor, none of which exist there. Every
-> number below is therefore a SINGLE-CHANGE A/B at HEAD, with the
+> number below is therefore a historical SINGLE-CHANGE A/B at the
+> stated file revision, with the
 > library and the test target rebuilt on both sides.
 
 **Review round 2 (2026-09-18) found that round 2's own red-proof was
 MIS-ATTRIBUTED, and the cause was a hole in this suite.** Gate 1
 originally drove only the STACKLESS `value(wo, ri)`, while gates 2/3/4
-drive the STACKED `Pdf` — so the entry point every production integrator
+drive the STACKED `Pdf` — so the entry point every modern PT/BDPT/VCM integrator
 actually calls, `valueStateful(wo, ri, &stack)`, had no gate at all, and
 numbers measured on it by hand were written down against a gate that
 could not have produced them. P2-2 closed the hole: **every gate-1 row
@@ -457,7 +483,8 @@ done, the frame split's evidence lands where it belongs — on gate 1, on
 the records where the side and the ray disagree.
 
 **A/B 1 — the `geomN` split rule reverted ALONE** (to round 1's
-side-derived `bEntering ? geomNRaw : -geomNRaw`), everything else held:
+side-derived `bEntering ? geomNRaw : -geomNRaw`), everything else held
+(**round-2 test-file revision**):
 
 ```
 side-derived frame :  Passed: 924   Failed: 84
@@ -482,7 +509,8 @@ entry points, and the gate-3 TVD rows the previous round's A/B actually
 moved are listed alongside it.
 
 **A/B 2 — the stackless side rule's flag, `ri.bProvablyNoInterior`
-replaced by round 2's `ri.bOpenSheet`**, everything else held:
+replaced by round 2's `ri.bOpenSheet`**, everything else held
+(**round-2 test-file revision**):
 
 ```
 bOpenSheet (round 2)     :  Passed: 984   Failed: 24
@@ -924,7 +952,7 @@ available statement, since the two are the same quantity asked twice.
 
 | suite | result |
 |---|---|
-| `TranslucentLobeConsistencyTest` (new) | **1114 / 0** (round-1 file revision: 240 / 0, red 67 / 173 against `bb2ccd80`; round-2 file revision: 1008 / 0. Single-change A/Bs against the CURRENT file: 1030 / 84 without the frame split, 1066 / 48 with `bOpenSheet` in place of the certification, 1089 / 25 with round 2's `BezierPatchGeometry` certification restored) |
+| `TranslucentLobeConsistencyTest` (new) | **1222 / 0** (round-5 CSG red: 1196 / 26; round-3/4: 1114 / 0) (round-1 file revision: 240 / 0, red 67 / 173 against `bb2ccd80`; round-2 file revision: 1008 / 0. Single-change A/Bs against the round-3/4 file: 1030 / 84 without the frame split, 1066 / 48 with `bOpenSheet` in place of the certification, 1089 / 25 with round 2's `BezierPatchGeometry` certification restored) |
 | `TranslucentSpectralParityTest` | 1918 checks, 0 failures |
 | `TranslucentTiltedExitTest` | ALL TESTS PASSED |
 | `TranslucentEntryHorizonTest` | 251 checks, 0 failures |

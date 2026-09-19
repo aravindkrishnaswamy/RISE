@@ -285,14 +285,10 @@ namespace
 		// reported, not of `dst`'s original whole-record copy.  See
 		// RayIntersectionGeometric::bOpenSheet's doc comment.
 		dst.bOpenSheet = src.bOpenSheet;
-		// DL-157 review round 2: `bProvablyNoInterior` is deliberately NOT
-		// forwarded.  `bOpenSheet` is a property of the SURFACE struck and
-		// survives compositing; that flag is a property of the OBJECT, and a
-		// CSG tree built from planes can perfectly well have an interior.
-		// Round 3 found the GENERAL form of that argument the hard way (its
-		// P1): no geometry holding a COLLECTION of interior-free primitives
-		// can certify either, which is why `BezierPatchGeometry`'s own stamp
-		// was removed.
+		// No-interior certification belongs to the complete OBJECT, not
+		// this operand surface. IntersectRay clears it after all whole-
+		// record copies and payload adoption (including nested CSG).
+		// Omitting it here alone does not remove a copied operand flag.
 
 		dst.ptCoord = src.ptCoord;
 		dst.ptCoord1 = src.ptCoord1;
@@ -1773,6 +1769,11 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 		// IOR-stack tracking for dielectric CSG paths.
 		ri.pObject = this;
 	}
+
+	// A primitive's no-interior certification cannot certify a composite.
+	// Clear after every whole-record copy / exit-face payload path; merely
+	// omitting it in AdoptCsgSurfacePayload leaves the copied flag alive.
+	ri.geometric.bProvablyNoInterior = false;
 
 	// Restore the old ray
 	ri.geometric.ray = orig;

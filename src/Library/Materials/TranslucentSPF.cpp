@@ -557,11 +557,11 @@ namespace RISE { namespace Implementation { namespace TranslucentSPFDetail
 		// (`TranslucentPelPhotonMap::RadianceEstimate`, whose shader op
 		// HAS a stack but whose `IPhotonMap` interface does not carry
 		// one), the three global/caustic photon maps and `PhotonMap.h`'s
-		// own gather, `FinalGatherShaderOp`'s secondary-hit arm,
+		// own gather,
 		// `PointSetOctree`'s SSS irradiance cache, the interactive
-		// preview and `ManifoldSolver`'s four SMS sites -- ten call sites
-		// enumerated on DL-223(4), of which FINAL GATHER IS A PRODUCTION
-		// PATH.  The modern integrator paths -- PT NEE, BDPT/VCM
+		// preview and `ManifoldSolver`'s four SMS sites -- sixteen calls
+		// across eight files, enumerated on DL-223(4). Both FinalGather
+		// arms now carry the stack. The modern paths -- PT NEE, BDPT/VCM
 		// connections, the zero-exitance sweep, PT guiding -- are all
 		// STACKED.
 		const bool bEntering = pIorStack

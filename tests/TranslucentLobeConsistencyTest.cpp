@@ -243,7 +243,7 @@ namespace
 	//! "no interior" (`bOpenSheet` there means UNCERTIFIED), so a
 	//! stackless caller has only the ray anchor and reads this as an
 	//! EXIT.  That is DL-223's recorded stackless residual; the STACKED
-	//! entry point -- which is every production integrator path -- is
+	//! entry point -- which is every modern PT/BDPT/VCM integrator path -- is
 	//! correct here and is gated.
 	RayIntersectionGeometric MakeMeshSheetBackFaceFirst( Scalar tiltDeg, Scalar segLen )
 	{
@@ -557,7 +557,7 @@ namespace
 //! gate 1 originally drove only the STACKLESS `value(wo, ri)`, while PT's
 //! NEE (`pMisIorStack`), `PathVertexEval::EvalBSDFAtVertex` and BDPT's
 //! zero-exitance row all call `valueStateful(wo, ri, &stack)` -- so the
-//! entry point every production integrator uses had no gate at all, and
+//! entry point every modern PT/BDPT/VCM integrator uses had no gate at all, and
 //! that hole is what let a mis-attributed red-proof stand for a round.
 //! Both entry points are now driven on every record.
 static void Gate1( const Rig& rig, const IObject* obj, const IObject* other,
@@ -657,7 +657,7 @@ static void Gate1( const Rig& rig, const IObject* obj, const IObject* other,
 			// from that mesh's own interior EXIT without a stack, because
 			// a mesh can never certify "no interior" (`bOpenSheet` there
 			// means UNCERTIFIED -- review round 2, P1-2).  The STACKED
-			// entry point, which is every production integrator path, is
+			// entry point, which is every modern PT/BDPT/VCM integrator path, is
 			// gated normally; the stackless one is PRINTED and bounded so
 			// its closure is as visible as a regression.
 			if( kind == kMeshSheetBack && !bStacked ) {
@@ -1033,12 +1033,14 @@ int main()
 		//                  lobes here.  A geometry holding a COLLECTION of
 		//                  primitives can never certify "no interior",
 		//                  however interior-free each primitive is alone.
+		//   csgExit     -- a live CSG plane-operand hit; the composite must
+		//                  clear the primitive's no-interior certification.
 		//   otherEnclos -- an ordinary entry while the walk is inside a
 		//                  DIFFERENT object: `containsCurrent()` must read
 		//                  false against a NON-EMPTY stack.
 		Rig rig( RISEPel(0.5,0.3,0.2), RISEPel(0.4,0.6,0.3), 0.0, 10.0, 0.3 );
 		std::cout << std::endl << "[E] open sheet (front / BACK-FACE-FIRST), uncertified closed mesh "
-		          << "EXIT, multi-patch Bezier interior EXIT, and entry from inside another enclosure" << std::endl;
+		          << "EXIT, multi-patch Bezier and CSG exit pricing, and entry from another enclosure" << std::endl;
 
 		// FIXTURE SANITY.  The Bezier record imports its flags from a real
 		// geometry hit; if that hit silently missed, or landed on the
