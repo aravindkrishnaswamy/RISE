@@ -118,11 +118,15 @@ changes) and is overridden by `TranslucentBSDF`. The stackless
 never be two code paths. Callers that hold the live stack now hand it
 over: `LightSampler`'s six NEE arms (via the `pMisIorStack` DL-74 P2
 already threaded) and `PathVertexEval::EvalBSDFAtVertex{,NM}` (via
-`BuildVertexIORStack`, from `BDPTVertex::insideObject`). Callers that have
-no stack — an AOV probe, the legacy final-gather / ambient-occlusion ops,
-an interactive preview — keep calling `value` and get a GEOMETRIC
-inference of the side, exact for a closed object and for a double-sided
-mesh (the `UnflippedGeomNormal()` recovery is what makes the latter true).
+`BuildVertexIORStack`, from `BDPTVertex::insideObject`), and so do
+`PathTracingIntegrator`'s HWSS companion fallback and the three legacy ops
+that already take one as a parameter (`FinalGatherShaderOp`,
+`AreaLightShaderOp`, `AmbientOcclusionShaderOp`) — see §9 for the full
+list and for how the first pass of that audit missed them. Callers that
+genuinely have none — `PointSetOctree`'s SSS irradiance cache, the
+interactive preview — keep calling `value` and get a GEOMETRIC inference
+of the side, exact for a closed object and for a double-sided mesh (the
+`UnflippedGeomNormal()` recovery is what makes the latter true).
 
 ### 3.1 The lobe frame is anchored to the SIDE, not to `ri.ray.Dir()` — and this is load-bearing
 
