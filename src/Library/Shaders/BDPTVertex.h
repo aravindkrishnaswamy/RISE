@@ -105,12 +105,13 @@ namespace RISE
 		Point3					position;
 		Vector3					normal;			///< Shading normal (Phong-interpolated, possibly bump/normal-mapped).
 												///< Use for BSDF eval / sample / pdf and the BSDF cosine factor.
-		Vector3					geomNormal;		///< Geometric flat-face normal, independent of Phong / bump.
-												///< Use for side-of-surface tests (entering/exiting, front/back),
-												///< medium-stack push/pop, solid-angle->area Jacobian cosines, and
-												///< any rebuilt RayIntersectionGeometric that downstream code asks
-												///< "which side of the actual surface is this?".
-												///< On analytical primitives equals `normal` by construction.
+		Vector3					geomNormal;		///< Reported geometric normal, independent of Phong / bump.
+												///< May be ray-facing (DL-70), deliberately retained for emitters;
+												///< it is NOT an outward-normal entry/exit certificate.
+												///< Geometric-area density Jacobians use its absolute cosine.
+												///< Area BSDF responses convert the shading measure separately
+												///< (DL-224). Even an analytic primitive differs from `normal`
+												///< after a relief, glint or normal-map modifier.
 		OrthonormalBasis3D		onb;
 		Point2					ptCoord;		///< Texture coordinate at intersection (for painter evaluation)
 		Point2					ptCoord1;		///< Secondary texture coordinate (TEXCOORD_1 from glTF; mirrors RayIntersectionGeometric::ptCoord1)
