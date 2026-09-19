@@ -461,18 +461,36 @@ the two describe lobes the sampler does not draw.
 | `DielectricSPF`, `PerfectRefractorSPF` | **IMMUNE** | both materials' `GetBSDF()` returns `0` (`DielectricMaterial.h:48`, `PerfectRefractorMaterial.h:47`); their lobes are delta. They DO read `containsCurrent()` in `Scatter`, but there is no evaluator to disagree with. |
 | `CompositeSPF` / `CompositeMaterial` | **SAME FAMILY, already tracked as DL-24** | `CompositeMaterial::GetBSDF()` returns the TOP sub-material's BSDF (or the bottom's), while `CompositeSPF::Pdf` is a documented 50/50 placeholder and its transport is a random walk over both layers — so `value` and `Pdf` describe neither. Not fixed here. Note that a `composite_material` whose layer IS translucent now reaches `TranslucentBSDF::valueStateful` correctly for that layer's own lobes; the composite-level mismatch is unchanged and is DL-24's. |
 
-One hop deeper, on the CONSUMED field rather than the producer: every call
-site of `IBSDF::value`/`valueNM` was enumerated
-(`grep -rn -e '->value(' -e '->valueNM(' src`). Sixteen sites; the six in
-`LightSampler.cpp` and the two in `PathVertexEval::EvalBSDFAtVertex{,NM}`
-hold a live or reconstructible stack and now pass it. The rest —
+One hop deeper, on the CONSUMED field rather than the producer: every
+call site of `IBSDF::value`/`valueNM` was enumerated
+(`grep -rn -e '->value(' -e '->valueNM(' src`), and the question asked of
+each was "does this caller HOLD a stack?", not "is this caller important?"
+— the first pass of this audit asked the second question and left four
+sites behind that do hold one.
+
+**Sites that hold a stack and now pass it (12):** `LightSampler.cpp`'s six
+NEE arms (`pMisIorStack`, the DL-74 P2 parameter);
+`PathVertexEval::EvalBSDFAtVertex{,NM}` (reconstructed from
+`BDPTVertex::insideObject` via `BuildVertexIORStack`);
+`PathTracingIntegrator.cpp`'s HWSS companion fallback, whose own `pSPF`
+branch one line above already passes `iorStack` — leaving the BSDF
+fallback stackless would have been a drift inside a single `if/else`;
+`FinalGatherShaderOp`, `AreaLightShaderOp` and
+`AmbientOcclusionShaderOp` (each takes `const IORStack& ior_stack` as a
+parameter and simply was not using it here).
+
+Render-neutral, as expected — the geometric inference and the stack agree
+at a closed-object hit: `cornellbox_fg` -0.166 % (against a run-to-run sd
+of 0.37 %), `sss` -0.005 %, `cornellbox_bdpt_materials_pt` +0.044 %, n = 3
+each.
+
+**Sites with no stack, which keep `value` and the geometric inference:**
 `CoatedBRDF`/`CoatedSPF`/`FabricBRDF` (delegating to a substrate, which
-cannot be translucent: `CoatedMaterial`/`FabricMaterial`'s
-`IsSupportedSubstrate` allowlists exclude it), `ManifoldSolver` (SMS; a
-translucent surface is not a specular caster), `AmbientOcclusionShaderOp`,
-`FinalGatherShaderOp`, `AreaLightShaderOp`, `PointSetOctree`,
-`InteractivePelRasterizer` — have no stack and take the geometric
-inference, which is exact for a closed object.
+cannot be translucent — `CoatedMaterial`/`FabricMaterial`'s
+`IsSupportedSubstrate` allowlists are Lambertian / OrenNayar / GGX /
+Weave), `ManifoldSolver` (SMS; a translucent surface is not a specular
+caster), `PointSetOctree` (the SSS irradiance cache),
+`InteractivePelRasterizer` (preview shading).
 
 ---
 

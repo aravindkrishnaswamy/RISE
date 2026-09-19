@@ -6340,8 +6340,12 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 
 			if( compWeight < 0 && pBRDFCur )
 			{
-				compWeight = pBRDFCur->valueNM(
-					pS->ray.Dir(), ri.geometric, swl.lambda[w] );
+				// DL-157: the SPF branch just above already passes the
+				// live `iorStack`; this fallback must too, or a stateful
+				// BSDF would price the companion through the other side's
+				// lobes.  Every other BSDF ignores the argument.
+				compWeight = pBRDFCur->valueStatefulNM(
+					pS->ray.Dir(), ri.geometric, swl.lambda[w], &iorStack );
 				Scalar cosTheta = fabs( Vector3Ops::Dot(
 					pS->ray.Dir(), ri.geometric.vNormal ) );
 				compWeight *= cosTheta;

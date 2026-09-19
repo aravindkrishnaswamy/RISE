@@ -513,7 +513,7 @@ void FinalGatherShaderOp::PerformOperation(
 								if (t > kMinHitDistance) {
 									rsum += 1.0/t;
 									hits++;
-									sampleIrradiance = lij * pBRDF->value( w, ri.geometric );
+									sampleIrradiance = lij * pBRDF->valueStateful( w, ri.geometric, &ior_stack );
 									c = c + sampleIrradiance;
 								}
 							}
