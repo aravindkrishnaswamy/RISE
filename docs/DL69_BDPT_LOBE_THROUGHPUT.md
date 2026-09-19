@@ -816,19 +816,17 @@ between the two lobes' own ratios.  Isolated A/B, n = 3 per side, BDPT
 and the post-fix image's run-to-run sd stops falling cleanly with spp
 (the last column of the table above).
 
-**Is a bounded form available without re-creating the aggregate
-pairing?  On this material, no — and that is measured, not assumed.**
-`HWSSCompanionKrayTest` section E characterises a synthetic-intersection
-ratio population, not a render-weighted tail distribution: of 1969
-per-draw ratios above 4x, **ZERO have `krayHero < 1e-3`**; the worst is
-**7.40x at `krayHero = 0.127`**, and the smallest hero weight seen at
-all is 0.083.  The heavy ratios are legitimate spectral swings on a
-strongly chromatic material, not a numerical near-zero tail, so the
-existing `krayHero > NEARZERO -> contribute 0` guard is the only clamp
-that is physically defensible; anything tighter would start discarding
-true per-wavelength weight.  (Measured at theta = 0 / 35 / 70 deg on a
-synthetic intersection — a render could still reach smaller heroes at
-extreme grazing.)
+**The synthetic-intersection probe does not justify a near-zero clamp.**
+Recomputed in round 4 with `HWSSCompanionKrayTest`: 1969 of 4017 sampled
+ratios exceed 4x (**49.0167%**, so this is a substantial population,
+not a rare tail); none has `krayHero < 1e-3`. The largest ratio is
+7.3968x at hero weight 0.1269; the smallest observed hero weight is
+0.08292. These are synthetic intersections at incidence 0/35/70 degrees,
+not a render-weighted distribution or a bound on extreme-grazing heroes.
+The large ratios in this population reflect legitimate spectral swings;
+clamping them would discard weight. This observation does not exclude
+smaller heroes elsewhere or prove that every possible reformulation has
+unbounded variance. The existing `NEARZERO` guard is unchanged.
 
 #### Merge-forward: is the gate stable against master's DL-200/201/217?
 
