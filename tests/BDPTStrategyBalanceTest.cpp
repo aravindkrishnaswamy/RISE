@@ -2586,20 +2586,54 @@ static void TestSpectralHWSSCompanionLadderControl()
 // balance here, at the cost of chromatic MC noise the 4x sample count
 // pays down.
 //
-// WHAT THIS ROW IS AND IS NOT (be honest about it).  It is a
-// CONSISTENCY PIN, not a red-proof.  An isolated A/B on
-// `BDPTIntegrator.cpp` alone reads B/R ratio -0.33% pre-fix against
-// -1.03% / -0.45% / -0.88% (mean -0.79%, sd 0.30 pp) post-fix: the two
-// sides are NOT separable above this statistic's own run-to-run noise
-// at 32x32 / 1024-vs-256 spp.  The expression the fix changes IS
-// provably wrong -- `tests/HWSSCompanionKrayTest.cpp` section E
-// measures the per-lobe and aggregate companion ratios disagreeing by
-// up to 12.2x per draw on exactly this material -- but on this scene
-// the disagreement does not survive into a resolvable image
-// difference, because Phase 3 only rescales INTERIOR subpath vertices
-// and BDPT's image here is dominated by short strategies.  This row
-// exists so a future regression in the channel balance is caught, not
-// to claim the fix moved this render.
+// WHAT THIS ROW MEASURES, AND WHY THE MOVEMENT IS SMALL (review round
+// 1 rewrote both halves of this paragraph; the first version was wrong
+// about the magnitude AND about the reason).
+//
+// The fix DOES move this render, and the branch is anything but inert.
+// Isolated A/B on `BDPTIntegrator.cpp` alone, two separately built
+// binaries run INTERLEAVED:
+//
+//   achromatic hwssTRUE/hwssFALSE  pre -0.906%  post -1.437%
+//                                  (n = 8 each, Welch t = -4.43)
+//   B/R channel balance            pre -1.228 pp  post -0.893 pp
+//                                  (n = 14 each, paired t = 0.97 --
+//                                   toward parity, NOT separable at
+//                                   this n in this harness)
+//
+// The FIRST version of this comment said the near-null was because
+// "Phase 3 only rescales INTERIOR subpath vertices and the image is
+// dominated by short strategies".  That is REFUTED by a sensitivity
+// control: a scratch build with `lobeRatio *= 4.0` at that branch
+// takes the achromatic ratio 0.986 -> 3.163 and B/R to -19.8 pp, so
+// the branch carries a 3.2x achromatic and ~20 pp B/R dynamic range
+// on THIS scene.  The real reason is CANCELLATION: section E's 12.2x
+// is a per-draw MAXIMUM, and the aggregate-vs-per-lobe bias has
+// OPPOSITE SIGN at diffuse-selected and specular-selected vertices
+// (the aggregate ratio is a blend, so it always sits BETWEEN the two
+// lobes' own ratios), which very nearly cancels over the path
+// population when the two lobe spectra are near mirror images -- which
+// `0.05 0.10 0.70` and `0.70 0.10 0.05` are, by construction.
+//
+// A CONTROL that makes the attribution airtight: topology L, whose two
+// lobes are the SAME grey, reads post/pre = 0.998..1.002 per channel
+// over three interleaved pairs -- i.e. the change is confined to
+// divergent lobe spectra, exactly as the derivation says.
+//
+// WHAT THIS ROW DOES NOT CLAIM: that either statistic moved "toward
+// truth".  Hero-only is an unbiased per-wavelength estimator but the
+// HWSS bundle carries a separately documented, material-INDEPENDENT
+// offset of its own (topology M, immune, reads about -0.75%
+// achromatic), so this scene has no truth reference for the achromatic
+// mean and cannot adjudicate a 0.5 pp move in it.  The justification
+// for the change is the EXPRESSION-level one (the aggregate ratio is
+// provably not the quantity the hero was priced with) plus the
+// topology-L control; this row is the regression guard.
+//
+// BANDS, and their derivation from the post-fix distributions above:
+// B/R at 5% is |mean| + 4.4 sd (mean -0.89 pp, sd 0.94 pp, n = 14);
+// achromatic at 3% is |mean| + 5.4 sd (mean -1.44%, sd 0.29 pp,
+// n = 8).  Both are real tightenings of the 8% this row shipped with.
 //////////////////////////////////////////////////////////////////////
 static void ReplaceOnceOrFail( std::string& s, const std::string& from, const std::string& to,
 	const char* what )
@@ -2639,17 +2673,14 @@ static void TestSpectralHWSSChromaticLobeSpectra()
 	          << ", ratio = " << brRatio
 	          << "  (" << ( ( brRatio - 1.0 ) * 100.0 ) << "%)" << std::endl;
 
-	// Band: see the DL-125 closure doc for the measured pre/post
-	// figures and the run-to-run spread this is set against.
-	Check( std::fabs( brRatio - 1.0 ) < 0.08,
+	// Bands derived in the block comment above from the post-fix
+	// distributions, not guessed: 5% is |mean| + 4.4 sd on B/R, 3% is
+	// |mean| + 5.4 sd on the achromatic mean.
+	Check( std::fabs( brRatio - 1.0 ) < 0.05,
 		"DL-125 (topology P): the HWSS bundle reproduces the hero-only render's "
 		"channel balance on a material whose two lobes have DIVERGENT spectra" );
-	// The achromatic mean is printed and loosely bounded -- the defect
-	// this topology exists for is a SPECTRAL one, so a mean-only gate
-	// would be the wrong instrument (it is nearly preserved by an error
-	// that only moves energy between wavelengths).
-	Check( std::fabs( achroRatio - 1.0 ) < 0.08,
-		"DL-125 (topology P): achromatic mean stays within 8% of hero-only" );
+	Check( std::fabs( achroRatio - 1.0 ) < 0.03,
+		"DL-125 (topology P): achromatic mean stays within 3% of hero-only" );
 }
 
 //////////////////////////////////////////////////////////////////////

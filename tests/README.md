@@ -660,9 +660,10 @@ stores a PER-LOBE conditional density on each emitted ray must
 implement `ISPF::EvaluateKrayNM`, or the companion ladders in
 `PathTracingIntegrator.cpp` and `BDPTIntegrator.cpp` fall back to the
 material's AGGREGATE `valueNM` over the hero lobe's density — DL-69's
-pairing, surviving on the spectral bundle.  **89 checks, 0 failures;
-red 43/44** against commit `2b44bbbe` (the test plus the inert
-diagnostic hook, no overrides).  Five sections.  (A) For every
+pairing, surviving on the spectral bundle.  **91 checks, 0 failures;
+red 46 passed / 45 failed** against an isolated build with the five SPF
+`.cpp`/`.h` pairs reverted (library AND this test target rebuilt on
+each side; failures by section A 20, B 15, C 8, E 2).  Five sections.  (A) For every
 non-delta lobe `ScatterNM(nm)` emits, `EvaluateKrayNM` at that same
 `nm` must reproduce the ray's own `krayNM` — pre-fix each of the five
 classes reads `checked 0, declined 5992..7183`; post-fix worst
@@ -676,7 +677,12 @@ draw the SAME directions (asserted, `dir drift 0`, not assumed), so
 wavelength must equal the companion run's own `krayNM` — `1.41e-14`,
 with the hero/companion krays measured 0.62–0.89 apart so the check is
 not vacuous.  (C) `EvaluateKrayNM * p_lobe == f_lobe cos` through the
-material's own `IBSDF::valueNM`, `2.73e-14` on every specular row; the
+material's own `IBSDF::valueNM` — NOT the aggregate-vs-per-lobe
+discriminator (A/A2/B are; both sides of C's identity are evaluated at
+the same wavelength, so a contaminated override fails those and passes
+this), but an INDEPENDENT re-derivation that catches a formula which is
+self-consistent between this SPF's sampler and evaluator yet wrong
+about the BRDF — `2.73e-14` on every specular row; the
 three diffuse rows sit at 1.6e-3–3.1e-3, which is the BLACK SPECULAR
 painter's Jakob-Hanika uplift residual (each class's specular term has
 a different closed form, so it is not subtracted) and is why the band
@@ -685,8 +691,10 @@ OWN form** `Rd*(1-Rs)*diffuseFactor`, not `Rd/pi`, or that row reads
 7.65e-3.  (D) Negative controls: `GGXSPF` and `LambertianSPF` must
 keep DECLINING (their fallback is exact, and the ladder must stay
 reachable), an unsupported `rayType` must decline rather than invent a
-number, and `CompositeSPF` must NAME itself through the new
-`ISPF::PerLobeDensityFallbackName()` (DL-221).  (E) A PREMISE for the
+number, and BOTH `CompositeSPF` (DL-221) and `TranslucentSPF` (DL-222)
+must NAME themselves through the new
+`ISPF::PerLobeDensityFallbackName()` — the sixth per-lobe-density class
+was missed on the first pass and stayed silent until review round 1.  (E) A PREMISE for the
 second half of the fix: on a chromatic two-lobe `schlick_material` the
 per-lobe and aggregate companion ratios disagree by up to **12.2249x**
 per draw — if that ever passes trivially,

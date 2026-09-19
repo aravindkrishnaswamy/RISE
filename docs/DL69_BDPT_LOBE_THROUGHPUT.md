@@ -642,18 +642,40 @@ SUBSTITUTED the direction the hero was priced from the aggregate `f`, so
 its companion must be too**, or the two sides of the ratio describe
 different estimators.
 
-**`CompositeSPF` is made AUDIBLE rather than silently wrong.**  A new
-`ISPF::PerLobeDensityFallbackName()` (default 0) names the class; all
-three ladders call the one-shot-per-class
+**The two SPFs that still decline are made AUDIBLE rather than
+silently wrong.**  A new `ISPF::PerLobeDensityFallbackName()` (default 0)
+names the class; all three ladders call the one-shot-per-class
 `RISE::NotePerLobeDensityCompanionFallback`
-(`Materials/ScatteredRayContainer.cpp`).  See DL-221.
+(`Materials/ScatteredRayContainer.cpp`).  `CompositeSPF` (DL-221) and
+`TranslucentSPF` (DL-222) both override it.  **Review round 1 found that
+`TranslucentSPF`'s override was missing** — so the sixth per-lobe class
+was exactly as silent as before — and that the sentence "every
+per-lobe-density SPF implements it now except `CompositeSPF`" was false
+in `ISPF.h`, `PathTracingIntegrator.cpp`, `BDPTIntegrator.cpp` (x2),
+`ScatteredRayContainer.cpp` and this test's own header.  All corrected.
+
+`ISPF::EvaluateKrayNM`'s doc comment also gained two CONTRACT notes that
+did not exist when the method was first extended: that the `ri` may be
+SYNTHETIC at the `RecomputeSubpathThroughputNM` site (see 6.5 on
+DL-222), and that the density convention is `p_I(nm)` rather than
+`p_I(heroNM)` (DL-216).
 
 ### 6.3 Red-proof and measurements
 
-`tests/HWSSCompanionKrayTest.cpp` (new): **89 passed, 0 failed**; red
-**43 passed, 44 failed** against commit `2b44bbbe`, which carries the
-test and the (inert) diagnostic hook but no override.  Pre-fix every
-class reads `checked 0, declined 5992 .. 7183`.
+`tests/HWSSCompanionKrayTest.cpp` (new): **91 passed, 0 failed**; red
+**46 passed, 45 failed** -- isolated A/B with the five SPF `.cpp`/`.h`
+pairs reverted to `9fe42f52`, library AND test target rebuilt on each
+side, the CURRENT 91-check file run on both.  Failures by section:
+A 20, B 15, C 8, E 2.  Pre-fix every class reads
+`checked 0, declined 5992 .. 7183`.
+
+> **An earlier revision of this section, and four other places, said
+> "43/44".**  That is arithmetically impossible on a 91-check file: it
+> was the count from an 87-check draft, kept after section A2's
+> lambda-varying rows and section E landed, and never recomputed.  The
+> `declined` half of the red-proof reproduced exactly, which is what
+> made the stale total easy to miss.  Recompute a counter after every
+> change to the file it counts.
 
 | section | what it asserts | post-fix |
 |---|---|---|
@@ -661,7 +683,7 @@ class reads `checked 0, declined 5992 .. 7183`.
 | A2 | the same with wavelength-VARYING shape painters | `<= 1.24e-14` |
 | B | a COMPANION wavelength queried at the HERO's direction equals the companion run's own `krayNM`; the two identically-seeded samplers provably drew the same directions (`dir drift 0`) and the hero/companion krays genuinely differ (spread 0.62 .. 0.89) | `<= 1.41e-14` |
 | C | `EvaluateKrayNM * p_lobe == f_lobe cos` through the material's own `IBSDF::valueNM` | `<= 2.73e-14` on every specular row |
-| D | `GGXSPF` / `LambertianSPF` must keep DECLINING; an unsupported `rayType` must decline; `CompositeSPF` must NAME itself | pass |
+| D | `GGXSPF` / `LambertianSPF` must keep DECLINING; an unsupported `rayType` must decline; `CompositeSPF` AND `TranslucentSPF` must each NAME themselves | pass |
 | E | PREMISE for §6.2's second half (see below) | 12.2249x |
 
 Section C's three DIFFUSE rows sit at `1.6e-3 / 3.1e-3 / 2.6e-3` rather
@@ -689,28 +711,85 @@ is renamed `TestPTSpectralHWSSCompanionParity` and gates `0.97 .. 1.03`
 (post-fix sigma is `4.3e-4`, so 3% is ~70 sigma of headroom).
 
 **The `RecomputeSubpathThroughputNM` half is proven at the EXPRESSION
-level and is a CONSISTENCY PIN at render level.**  Section E measures the
-per-lobe and aggregate companion ratios disagreeing by up to **12.2249x**
-per draw (4062 real `ScatterNM` draws, `schlick_material` with a BLUE
-diffuse lobe under a RED specular one) — they are not the same function
-of wavelength.  The new render probe, `BDPTStrategyBalanceTest` topology
-P (that same chromatic material, built by string substitution from
-topology L so "identical apart from the two reflectances" is structural,
-gated on B/R channel balance), reads:
+level AND is measurable at render level** — the first version of this
+subsection got the magnitude and the reason both wrong, on an n = 1
+pre-fix sample; review round 1 caught it and the numbers below are
+re-measured at n = 8-14 with two separately built binaries run
+INTERLEAVED.
 
-| | B/R ratio (hwss TRUE / hwss FALSE) |
-|---|---|
-| pre-fix (isolated `BDPTIntegrator.cpp` revert) | -0.33% |
-| post-fix, n = 3 | -1.03% / -0.45% / -0.88% — mean -0.79%, sd 0.30 pp |
+Section E measures the per-lobe and aggregate companion ratios
+disagreeing by up to **12.2249x** per draw (4062 real `ScatterNM` draws,
+`schlick_material` with a BLUE diffuse lobe under a RED specular one) —
+they are not the same function of wavelength.  At render level, on
+`BDPTStrategyBalanceTest` topology P (that same chromatic material,
+built by string substitution from topology L so "identical apart from
+the two reflectances" is structural), isolated A/B on
+`BDPTIntegrator.cpp` alone:
 
-i.e. **not separable above this statistic's own noise at 32x32**.  The
-12x expression error does not survive into a resolvable image difference
-on this scene because Phase 3 only rescales INTERIOR subpath vertices and
-BDPT's image here is dominated by short strategies.  Topology L cannot
-see it at all — its `schlick_material` uses the same grey `0.4 0.4 0.4`
-for `rd` and `rs`, so both ratios are literally the same function.
-Topology P is kept as a regression guard on the channel balance, not as a
-claim that the fix moved this render.
+| statistic | pre-fix | post-fix | test |
+|---|---|---|---|
+| achromatic `hwssTRUE / hwssFALSE` | **-0.906%** (n = 8, sd 0.18 pp) | **-1.437%** (n = 8, sd 0.29 pp) | Welch **t = -4.43** |
+| B/R channel balance vs hero-only | **-1.228 pp** (n = 14, sd 0.60) | **-0.893 pp** (n = 14, sd 0.94) | paired t = 0.97 |
+
+A supervisor-relayed external review measured the B/R pair as
+`-1.216 pp -> -0.271 pp`, Welch t = 3.01, in the TEST harness rather
+than the CLI harness used here.  The two agree on the PRE value to
+0.01 pp; they disagree on the post-fix spread (sd 0.34 there against
+0.94 here), so **the B/R improvement is directionally consistent across
+both harnesses and statistically separable in only one of them** — it is
+reported that way rather than as a settled +0.945 pp.
+
+**Why the net is small — and it is NOT "Phase 3 only touches interior
+vertices".**  That original explanation is refuted by a sensitivity
+control: a scratch build with `lobeRatio *= 4.0` at that branch takes
+topology P's achromatic ratio from `0.986` to **`3.163`** and its B/R to
+**`-19.8 pp`**, so the branch carries a 3.2x achromatic and ~20 pp B/R
+dynamic range on this very scene.  The real cause is **CANCELLATION**:
+section E's 12.2x is a per-draw MAXIMUM, and because `f_agg` is a blend
+its ratio always lies BETWEEN the two lobes' own ratios — so the bias is
+positive at diffuse-selected vertices and negative at specular-selected
+ones (or vice versa), and it very nearly cancels over the path
+population when the two lobe spectra are near mirror images.  Topology
+P's `0.05 0.10 0.70` and `0.70 0.10 0.05` are exactly that, by
+construction.
+
+**Attribution control.**  Topology L, whose two lobes are the SAME grey
+`0.4 0.4 0.4`, reads post/pre = `0.998 .. 1.002` on every channel over
+three interleaved pairs — so the movement really is confined to
+divergent lobe spectra, which is what the derivation predicts and what
+makes the topology-P numbers attributable to this mechanism rather than
+to unrelated drift.
+
+**What is NOT claimed: that either statistic moved "toward truth".**
+Hero-only is an unbiased per-wavelength estimator, but the HWSS bundle
+carries a separately documented material-INDEPENDENT offset of its own
+(topology M, immune to this mechanism, reads about -0.75% achromatic in
+the same harness), so this scene has no truth reference for the
+achromatic mean and cannot adjudicate a 0.5 pp move in it.  The
+justification for the change is the EXPRESSION-level one — the aggregate
+ratio is provably not the quantity the hero was priced with — plus the
+topology-L control.  Topology P is the regression guard.
+
+**Topology P is now a GATE, not a pin**, at 5% on B/R (`|mean| + 4.4 sd`
+of the post-fix distribution) and 3% on the achromatic mean
+(`|mean| + 5.4 sd`), both tightened from the 8% it shipped with; the
+derivation is restated at the check itself.
+
+**A separating probe was attempted and did not come cheap.**  Two
+candidate topologies with lobe spectra asymmetric in MAGNITUDE as well
+as hue — `rd 0.02 0.02 0.80 / rs 0.90 0.60 0.05` and
+`rd 0.80 0.75 0.70 / rs 0.05 0.10 0.60` — were screened through the same
+two binaries and moved post-vs-pre by 0.6-1.4% per channel, no better
+than P.  The recipe for one that should work, from the cancellation
+model: keep MAXIMUM lobe overlap (high roughness, so `f_agg` at each
+lobe's own directions is a genuine blend — narrow lobes make `f_agg`
+locally single-lobe and the bias vanishes), keep divergent lobe spectra,
+and then BREAK the even split of the path population between the two
+lobes — e.g. a strongly grazing-incidence geometry where Schlick's
+Fresnel term makes the specular lobe dominate selection, or a deeper
+bounce budget so the same-signed bias compounds along a path instead of
+alternating.  That needs a real search, not a guess, which is why it is
+a recipe here rather than a third topology.
 
 **Cost**, interleaved separately-built `bin/rise` binaries, n = 3 per
 side, on an all-`schlick_material` 128x128 scene (a worst case — every
@@ -720,6 +799,17 @@ receiver is a multi-lobe SPF):
 |---|---|---|---|
 | PT spectral `hwss TRUE`, 256 spp | 54.55 / 55.94 / 57.27 (mean 55.92 s) | 55.32 / 57.31 / 57.90 (mean 56.84 s) | **+1.65%**, paired t = 4.1 |
 | BDPT spectral `hwss TRUE`, 96 spp | 33.55 / 34.05 / 34.52 (mean 34.04 s) | 34.99 / 35.27 / 34.94 (mean 35.07 s) | **+3.02%**, paired t = 3.3 |
+| BDPT spectral `hwss TRUE` on `scenes/Tests/Hair/hair_styled.RISEscene`, 96x96 / 24 spp, n = 5 | mean 7.700 s | mean 8.394 s | **+9.01%**, paired t = 17.0 |
+
+The hair row is the expensive one and was measured on review round 1's
+prompting.  `HairSPF` has implemented `EvaluateKrayNM` since long before
+this row, so the five new overrides do not touch it — but
+`RecomputeSubpathThroughputNM`'s new branch does: at every interior hair
+vertex it now routes `HairSPF::EvaluateKrayNM` (a four-lobe `EvalFsum`
+plus an `EvalPdf`) twice per companion wavelength, where before it
+called `EvalBSDFAtVertex` twice.  3x the `schlick_material` figure, and
+worth knowing before someone renders fur under `bdpt_spectral_rasterizer
+hwss TRUE`.
 
 ### 6.4 Sibling audit (docs/skills/audit-by-bug-pattern.md)
 
@@ -739,10 +829,11 @@ from the material's AGGREGATE BSDF instead of the SELECTED lobe's own
 | `LambertianSPF`, `OrenNayarSPF`, `SheenSPF` | IMMUNE | single lobe, so aggregate == lobe |
 | `BioSpecSkinSPF`, `GenericHumanTissueSPF` | out of scope | null `IBSDF`; PT delegates (see the next row) and BDPT is DL-126's `nullBSDFContinuation` |
 | `DielectricSPF`, `PerfectReflectorSPF`, `PerfectRefractorSPF` | **REFUTED** | PT's HWSS body never reaches the companion ladder for a material with no `IBSDF` at all: `PathTracingIntegrator.cpp`'s `if( !pBRDFCur )` block DELEGATES every live wavelength to `IntegrateFromHitNM` and `break`s.  Confirmed by render — a `perfectreflector_material` scene reads RMSE `3.70e-3` for `hwss TRUE` against the `pathtracing_pel_rasterizer` reference, TIGHTER than hero-only's `1.67e-2` |
-| `CompositeSPF` | UNCLOSABLE from the method's signature | **DL-221** |
-| `TranslucentSPF` | genuine sibling, PARTIALLY closable | **DL-222** |
+| `CompositeSPF` | UNCLOSABLE from the method's signature; NAMES itself | **DL-221** |
+| `TranslucentSPF` | genuine sibling, recoverable at the three LIVE call sites and lost only at the synthetic-`ri` rebuild site; NAMES itself | **DL-222** |
+| every override's density convention | `p_I(lambda_c)` where the draw used `p_I(lambda_h)` -- identical for reflectance-only chromatic materials, different under a chromatic SHAPE painter | **DL-216** |
 
-### 6.5 Two rows opened
+### 6.5 Three rows opened
 
 **DL-221 — `CompositeSPF`.**  Its emitted `krayNM` is the product of a
 stochastic two-layer random walk (a sequence of sub-SPF krays times
@@ -759,9 +850,44 @@ never named.  `TranslucentMaterial::GetBSDF()` is non-null, so PT does
 NOT take the delegation branch that makes the delta materials immune, and
 the fallback really does fire — wrong for two independently-recorded
 reasons (its `kray` carries Beer extinction the BSDF omits; its
-`Pdf`/`PdfNM` cover neither Phong `cos^N` lobe, DL-41).  The split is
-exact and is what makes it partially fixable: `ScatterNM` branches on
+`Pdf`/`PdfNM` cover neither Phong `cos^N` lobe, DL-41).  It now overrides
+`PerLobeDensityFallbackName()` so the residual is audible.
+
+**How much of it is recoverable depends on the CALL SITE, and the first
+version of this subsection got that wrong.**  `ScatterNM` branches on
 `bEnteringNM = !ior_stack.containsCurrent()`, which `EvaluateKrayNM` also
 receives, so the ENTRY lobes are direction-free and exactly recoverable
-while the INTERIOR ones carry `exp(-extinctionNM * distance)` over a
-SAMPLED distance that is not a function of the outgoing direction.
+everywhere.  The INTERIOR lobes carry
+`exp(-extinctionNM * distance)` with
+`distance = Magnitude(ri.ray.origin -> ri.ptIntersection)` — and BOTH of
+those are fields of the `ri` the method is handed, so the interior half
+is exactly recoverable too at the three LIVE call sites (PT's HWSS body
+and the two BDPT generator ladders).  It is lost at exactly one site:
+DL-125's own new `RecomputeSubpathThroughputNM`, which REBUILDS the `ri`
+from a stored `BDPTVertex` with a fabricated ray origin one unit back
+along the incoming direction and `glossyFilterWidth` left at 0.  That is
+an undocumented widening of `EvaluateKrayNM`'s contract, and it is now
+documented on the method itself: read only the direction, the frame and
+the painter context.  A cleaner future option than declining at that
+site is to pass the true incoming record there.
+
+**DL-216 — the density convention.**  Every override returns
+`f_I(lambda_c) cos / p_I(lambda_c)`, but the direction was DRAWN from
+`p_I(lambda_h)`.  RISE's HWSS carries a uniform wavelength pdf and no
+directional MIS across the bundle, so the unbiased companion weight is
+`f_I(lambda_c) cos / p_I(lambda_h)`.  The two coincide exactly wherever
+the lobe's DENSITY is wavelength-independent — which is every material
+whose only chromatic inputs are REFLECTANCE painters, i.e. the common
+case and everything this row measured, and `HairSPF`'s own stated
+premise for its long-standing override — and differ only under a
+chromatic SHAPE painter.  Closed form at `IsotropicPhongSPF`:
+`shipped / unbiased = (N_h+1)/(N_c+1) * cos^(N_h-N_c)(alpha)`.  At the
+configuration section A2 already builds (`N = 40 + 0.15*(nm-550)`, so
+`N_h = 40`, `N_c = 55`) that is `0.7321 * cos^-15(alpha)`: **0.732x at
+the lobe peak, crossing unity near 13 deg, 1.861x at 20 deg** (where the
+hero lobe still carries `cos^40 = 0.083` of its peak density).  A
+DIFFERENT wrong from the pre-DL-125 aggregate fallback, not obviously a
+smaller one — which is why it is a row and not a footnote, and why the
+convention is deliberately unchanged here.  No shipped scene binds a
+spectral `scalar_painter` to `exponent` / `isotropy` / `alpha`, so it is
+latent.
