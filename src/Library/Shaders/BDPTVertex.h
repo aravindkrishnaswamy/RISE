@@ -280,8 +280,9 @@ namespace RISE
 		/// Consumed by `BDPTIntegrator::RecomputeSubpathThroughputNM`,
 		/// which needs it to ask `ISPF::EvaluateKrayNM` for the SELECTED
 		/// lobe's own companion-wavelength weight instead of forming a
-		/// ratio of the material's AGGREGATE BSDF -- two different
-		/// functions of wavelength at any multi-lobe SPF.
+		/// ratio of the material's AGGREGATE BSDF. Those ratios need not
+		/// have the same wavelength dependence at a multi-lobe SPF;
+		/// common spectral dependence can also make them coincide.
 		ScatteredRay::ScatRayType	scatterType;
 
 		/// Sampler-input distance from the live ray origin to this hit,

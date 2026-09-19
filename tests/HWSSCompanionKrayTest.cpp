@@ -1,10 +1,10 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  HWSSCompanionKrayTest.cpp - Red-proof and regression gate for
-//    DL-125: an SPF that stores a PER-LOBE conditional density on each
-//    emitted ray must implement `ISPF::EvaluateKrayNM`, so that the
-//    HWSS companion ladder can price each companion wavelength with
-//    the SELECTED lobe's own `f_I cos / p_I` at THAT wavelength.
+//    DL-125: aggregate companion evaluation can misprice a selected
+//    lobe when its response is not the one paired with the stored
+//    generating density. `ISPF::EvaluateKrayNM` supplies the selected
+//    lobe's own `f_I cos / p_I` at the queried wavelength.
 //
 //  DL-125 (docs/DL69_BDPT_LOBE_THROUGHPUT.md, "DL-125 outcome").
 //  `PathTracingIntegrator.cpp`'s HWSS body and `BDPTIntegrator.cpp`'s
@@ -15,14 +15,15 @@
 //      if( compWeight < 0 )                       // base-class default
 //          compWeight = pBRDF->valueNM(...) * cos / pS->pdf;
 //
-//  The fallback pairs the material's AGGREGATE spectral BSDF with the
-//  ONE selected lobe's conditional density -- exactly the mismatch
-//  DL-69 removed from the hero/RGB paths.  It is EXACT only for an SPF
-//  whose emitted ray carries the aggregate mixture density (CoatedSPF,
-//  FabricSPF, WeaveSPF, GGXSPF, CookTorranceSPF) and wrong for one that
-//  carries a per-lobe conditional density.
+//  The fallback is valid when the evaluated aggregate response is the
+//  response paired with the stored hero generating density and the
+//  required state is available. Aggregate-density SPFs such as Coated,
+//  Fabric, Weave, GGX and CookTorrance use it. Per-lobe density CAN
+//  mispair overlapping summed response; it does not alone prove a
+//  mismatch (disjoint support can make aggregate and selected response
+//  coincide). Wavelength-dependent proposal shape remains DL-216.
 //
-//  FIVE classes are in that second group and now override the method:
+//  The FIVE DL-125 classes covered here now override the method:
 //  `SchlickSPF`, `WardIsotropicGaussianSPF`,
 //  `WardAnisotropicEllipticalGaussianSPF`, `IsotropicPhongSPF`,
 //  `AshikminShirleyAnisotropicPhongSPF`. TranslucentSPF now also

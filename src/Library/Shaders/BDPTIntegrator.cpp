@@ -7475,18 +7475,22 @@ void BDPTIntegrator::RecomputeSubpathThroughputNM(
 			// DL-125.  THE SELECTED LOBE'S OWN companion/hero kray ratio,
 			// when the SPF can supply it.
 			//
-			// The aggregate-BSDF ratio computed below is correct only
-			// when `kray_I(lambda_c)/kray_I(lambda_h)` equals
-			// `f_agg(lambda_c)/f_agg(lambda_h)`.  At a multi-lobe SPF
-			// those are two different functions of wavelength:
+			// The aggregate-BSDF ratio below reproduces the selected-lobe
+			// kray ratio only when `kray_I(lambda_c)/kray_I(lambda_h)`
+			// equals `f_agg(lambda_c)/f_agg(lambda_h)`. These CAN differ
+			// at a multi-lobe SPF, but common spectral dependence can
+			// make them coincide:
 			// `kray_I = f_I cos / p_I` is the SELECTED lobe's own
 			// spectrum over the SELECTED lobe's own density, while
 			// `f_agg` blends every lobe's spectrum -- so a material
 			// whose diffuse and specular reflectances have different
 			// spectra, or whose lobe density itself varies with
 			// wavelength (a spectral roughness / isotropy / alpha /
-			// exponent painter), is priced with the wrong per-companion
-			// weight.  Same pairing DL-69 removed from the hero path and
+			// exponent painter), can be priced with the wrong companion
+			// weight. A selected-lobe kray ratio still uses each queried
+			// wavelength's own proposal density; DL-216 separately tracks
+			// that shape-dependent bias. The aggregate/lobe pairing is
+			// the one DL-69 removed from the hero path and
 			// DL-125 removed from PT's own HWSS body; THIS function is
 			// the render-visible companion pricing for BDPT, VCM and MLT
 			// alike (all three spectral rasterizers call it), unlike the
