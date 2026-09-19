@@ -23,20 +23,20 @@ static RayIntersectionGeometric Hit(double degrees) {
 }
 // Schlick 1994 Eq.31 supplies G; Geisler-Moroder/Duer 2010 uses
 // |l+v|^2 / (n.(l+v))^4 times the Gaussian / (pi ax ay).
-static double Reference(int model,const Vector3& l,const RayIntersectionGeometric& ri,double r,double p) {
+static double PublishedReference(int model,const Vector3& l,const RayIntersectionGeometric& ri,double r,double p) {
  Vector3 v=-ri.ray.Dir(), H=l+v; double H2=Vector3Ops::SquaredModulus(H), hz=H.z;
  double nv=v.z,nl=l.z;
  if(model==0) {
-  Vector3 h=H/sqrt(H2); double t=h.z, hv=Vector3Ops::Dot(h,v);
-  Vector3 tangent=h-ri.onb.w()*t; double len=Vector3Ops::Modulus(tangent);
+  Vector3 h=H*(1.0/sqrt(H2)); double t=h.z, hv=Vector3Ops::Dot(h,v);
+  Vector3 tangent=h-ri.onb.w()*t; double len=sqrt(Vector3Ops::SquaredModulus(tangent));
   double w=len>0?Vector3Ops::Dot(ri.onb.v(),tangent)/len:0;
   double A=sqrt(p/(p*p+(1-p*p)*w*w));
-  double Z=r/pow(1-(1-r)*t*t,2);
-  return (.9+.1*pow(1-hv,5))*Z*A/(4*PI*(r+(1-r)*nv)*(r+(1-r)*nl));
+  double Z=r/std::pow(1-(1-r)*t*t,2);
+  return (.9+.1*std::pow(1-hv,5))*Z*A/(4*PI*(r+(1-r)*nv)*(r+(1-r)*nl));
  }
  double ax=r,ay=model==1?r:p;
  double x=Vector3Ops::Dot(H,ri.onb.u()),y=Vector3Ops::Dot(H,ri.onb.v());
- return .5*exp(-(x*x/(ax*ax)+y*y/(ay*ay))/(hz*hz))*H2/(PI*ax*ay*pow(hz,4));
+ return .5*exp(-(x*x/(ax*ax)+y*y/(ay*ay))/(hz*hz))*H2/(PI*ax*ay*std::pow(hz,4));
 }
 int main() {
  auto* black=new UniformColorPainter(RISEPel(0,0,0)); black->addref();
@@ -62,12 +62,12 @@ int main() {
    Check(std::isfinite(integral)&&integral <= (model==0?1:.5)+1e-4,"bounded specular integral",integral,model==0?1:.5);
    for(double out:{15.,45.,85.}) for(double phi:{.2,1.0,2.2}) {
     double th=out*PI/180; Vector3 l(sin(th)*cos(phi),sin(th)*sin(phi),cos(th));
-    double expected=Reference(model,l,ri,r,model==2?.12:1), actual=b->value(l,ri)[0];
+    double expected=PublishedReference(model,l,ri,r,model==2?.12:1), actual=b->value(l,ri)[0];
     Check(fabs(actual-expected)<=1e-10*(1+expected),"published RGB formula",actual,expected);
     // UniformColorPainter's scalar spectrum is not its RGB value; compare
     // the directional factor after dividing by its own public spectral input.
     double rho=model==0?GuardedGetColorNM(*spec,ri,550):GuardedGetColorNM(*ws,ri,550);
-    Vector3 h=Vector3Ops::Normalize(l-ri.ray.Dir()); double F=pow(1-Vector3Ops::Dot(h,-ri.ray.Dir()),5);
+    Vector3 h=Vector3Ops::Normalize(l-ri.ray.Dir()); double F=std::pow(1-Vector3Ops::Dot(h,-ri.ray.Dir()),5);
     double nmExpected=expected*(model==0?(rho+(1-rho)*F)/(.9+.1*F):rho/.5);
     double nmActual=b->valueNM(l,ri,550);
     Check(fabs(nmActual-nmExpected)<=1e-10*(1+nmExpected),"published NM formula",nmActual,nmExpected);
