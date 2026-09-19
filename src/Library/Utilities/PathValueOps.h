@@ -5,8 +5,9 @@
 //    be written generically on a tag (PelTag or NMTag) and resolve
 //    at compile time to the right value() / valueNM() call.
 //
-//    Zero new logic here: these are thin dispatchers that forward
-//    to the pre-existing dual-signature helpers.  They exist so the
+//    Raw-value methods are thin dispatchers to the dual-signature
+//    helpers; the area-response adapter also converts the projected
+//    shading measure for path-space estimators. These let the
 //    integrator templatization phase (2a / 2b / 2c) can write one
 //    body per concern instead of two.
 //
