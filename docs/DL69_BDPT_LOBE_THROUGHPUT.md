@@ -856,6 +856,30 @@ matched spp. Before fresh validation, a conservative workload projection
 was roughly 165 s extra at scale 1 (three times the entire former narrow
 run, which also includes L/M). That is a projection, not an observed cost.
 
+#### Fresh validation of the fixed four-repeat rule
+
+After declaring the rule, fresh renders were performed once at each spp
+level. Each topology-P estimator contributes all four independent renders.
+These are new validation batches, separate from the original n=8
+calibration and overlapping subset analysis. SD describes per-render B/R;
+jackknife SE describes the energy-aggregate normalized delta.
+
+| estimator | spp per render | n | aggregate B/R | per-render B/R SD | B/R delta % (jackknife SE pp) | achromatic delta % (jackknife SE pp) |
+|---|---:|---:|---:|---:|---:|---:|
+| PT hero-only | 1024 | 4 | 1.66370 | 0.00549 | -0.154 (0.180) | +0.046 (0.019) |
+| PT HWSS | 1024 | 4 | 1.67098 | 0.00631 | +0.283 (0.191) | +0.058 (0.044) |
+| BDPT hero-only | 1024 | 4 | 1.66411 | 0.00577 | -0.129 (0.114) | -0.104 (0.027) |
+| BDPT HWSS | 1024 | 4 | 1.59560 | 0.00603 | -4.241 (0.228) | -1.066 (0.084) |
+| PT hero-only | 2048 | 4 | 1.66463 | 0.00200 | -0.045 (0.084) | +0.031 (0.026) |
+| PT HWSS | 2048 | 4 | 1.66931 | 0.00437 | +0.236 (0.081) | -0.069 (0.040) |
+| BDPT hero-only | 2048 | 4 | 1.66220 | 0.00337 | -0.191 (0.094) | +0.037 (0.027) |
+| BDPT HWSS | 2048 | 4 | 1.59749 | 0.00322 | -4.077 (0.108) | -1.116 (0.109) |
+
+The full default suite passed 170/0 and took 228.25 s wall / 337.74 s user;
+the 2048-spp narrow mode passed 55/0 and took 327.12 s wall / 324.62 s user.
+These are single observed gate timings, not isolated benchmarks or
+repeat timing estimates. No post-validation band changes were made.
+
 #### Historical four-estimator picture (superseded by round-4 calibration)
 
 These round-2 measurements used mismatched spp on the fourth row;
