@@ -4165,11 +4165,16 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				}
 				else
 #endif
-				// DL-41 guard, guiding-inactive branch only.  A few SPFs
-				// emit a non-delta lobe their own `Pdf()` does not cover
-				// (`TranslucentSPF`'s two Phong `cos^N` lobes are the
-				// documented case), so the aggregate reads 0 at a direction
-				// the technique really did generate.  Handing 0 to both
+				// DL-41 guard, guiding-inactive branch only.  An SPF that
+				// emits a non-delta lobe its own `Pdf()` does not cover
+				// reads 0 at a direction the technique really did generate.
+				// (`TranslucentSPF`'s two Phong `cos^N` lobes WERE the
+				// documented case; DL-41 closed 2026-09-18 and its
+				// aggregate now covers both, so the guard has NO KNOWN
+				// production inhabitant today -- it is kept because the
+				// alternative is silently wrong for the next SPF that
+				// acquires the property, and because it costs one
+				// comparison.)  Handing 0 to both
 				// sides would mean "no BSDF-side partner exists" -- weight
 				// 1 on BOTH, a full double count, strictly worse than the
 				// pre-DL-103 asymmetry.  Fall back to the lobe's own

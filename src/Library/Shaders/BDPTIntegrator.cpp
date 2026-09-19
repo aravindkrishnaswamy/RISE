@@ -3204,10 +3204,15 @@ namespace {
 			// branch (a few lines below) routes those materials around
 			// this whole block instead of reaching it.  The reachable
 			// case is a material whose `Pdf` is real but does not cover
-			// the lobe that was drawn: `TranslucentSPF`, whose `Pdf`/`PdfNM`
-			// deliberately do not cover either Phong `cos^N` lobe (the
-			// entering transmission and the interior backscatter) --
-			// that gap is DL-41.
+			// the lobe that was drawn.  `TranslucentSPF` WAS that case --
+			// its `Pdf`/`PdfNM` covered neither Phong `cos^N` lobe (the
+			// entering transmission and the interior backscatter), which
+			// is what DL-41 named -- but DL-41 closed 2026-09-18 and its
+			// aggregate now covers every lobe the side can emit, so the
+			// fallback has no known production inhabitant today.  It is
+			// kept because it is still the right answer for a genuinely
+			// zero aggregate, and because being silently wrong for the
+			// next SPF that acquires the property is the worse failure.
 			//
 			// `guidingPdfDirectionIn`, set a few lines above, keeps
 			// `scatterPdf` deliberately: it is OpenPGL's
