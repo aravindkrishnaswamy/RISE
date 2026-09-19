@@ -155,7 +155,8 @@ static std::string FlatScene(const char* integrator, double degrees, int spp)
          "pinhole_camera\n{\n location 0 0 -4\n lookat 0 0 0\n up 0 1 0\n fov 30\n}\n"
          "scalar_painter\n{\n name slope\n expression P.x\n}\n"
          "relief_modifier\n{\n name relief\n height slope\n domain surface\n scale " << std::tan(degrees*PI/180) << "\n}\n"
-         "lambertian_material\n{\n name matte\n reflectance 0.8 0.8 0.8\n}\n"
+         "uniformcolor_painter\n{\n name albedo\n color 0.8 0.8 0.8\n colorspace Rec709RGB_Linear\n}\n"
+         "lambertian_material\n{\n name matte\n reflectance albedo\n}\n"
          "clippedplane_geometry\n{\n name plane\n pta -2 -2 0\n ptb -2 2 0\n ptc 2 2 0\n ptd 2 -2 0\n}\n"
          "standard_object\n{\n name target\n geometry plane\n material matte\n modifier relief\n}\n"
          "omni_light\n{\n name key\n power 1000000\n color 1 1 1\n colorspace Rec709RGB_Linear\n position 0 0 -1000\n}\n";
