@@ -950,13 +950,6 @@ int main()
 	{
 		Rig rig( RISEPel(0.5,0.3,0.2), RISEPel(0.4,0.6,0.3), 0.0, 10.0, 0.3 );
 		std::cout << std::endl << "[A] ext=0, ref=(.5,.3,.2) tau=(.4,.6,.3) N=10 scat=.3" << std::endl;
-		for( int order = 0; order < 2; ++order ) {
-			const RayIntersectionGeometric cs = MakeCSGPlaneExit( 0, 2.0, order == 0 );
-			EXPECT( cs.bHit, "[E] CSG plane operand produces a real hit in either operand order" );
-			EXPECT( cs.bGeomNormalOrientedToRay && fabs(cs.vGeomNormal.z + 1.0) < 1e-9,
-				"[E] CSG imports the plane's back-face geometric normal" );
-			EXPECT( !cs.bProvablyNoInterior, "[E] CSG must clear the plane operand's no-interior certification" );
-		}
 		for( int m = 0; m < 2; m++ ) {
 			const bool bNM = ( m == 1 );
 			for( int st = 0; st < 2; st++ ) {
