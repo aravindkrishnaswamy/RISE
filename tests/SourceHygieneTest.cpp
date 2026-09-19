@@ -4731,9 +4731,17 @@ int main()
 					// CoatedMaterial.h, in the SAME delegating form -- so it
 					// is already caught by the existing substring match
 					// below; only the expectation list needed widening.
+					// DL-157 P2-1 added a FIFTH claiming form: a cached
+					// member (`CompositeMaterial`, which does not retain its
+					// two layers and so resolves the flag once, at
+					// construction, from whichever layer's BSDF it ends up
+					// presenting).  A claimer this matcher cannot SEE is
+					// worse than one it lists, so the form is recognised
+					// here rather than left to slip past the closed list.
 					if( window.find( "return true" ) != std::string::npos
 					 || window.find( "eWeaveTransmissionThin" ) != std::string::npos
-					 || window.find( "return pBase->ScattersFullSphere" ) != std::string::npos ) {
+					 || window.find( "return pBase->ScattersFullSphere" ) != std::string::npos
+					 || window.find( "return bScattersFullSphere" ) != std::string::npos ) {
 						claims = true; break;
 					}
 					at += 1;
@@ -4747,17 +4755,20 @@ int main()
 		for( const std::string& c : claimers ) {
 			std::cout << "  full-sphere material: " << c << std::endl;
 		}
-		Check( claimers.size() == 5
+		Check( claimers.size() == 6
 		    && claimers[0] == "CoatedMaterial.h"
-		    && claimers[1] == "FabricMaterial.h"
-		    && claimers[2] == "HairMaterial.h"
-		    && claimers[3] == "TranslucentMaterial.h"
-		    && claimers[4] == "WeaveMaterial.h",
+		    && claimers[1] == "CompositeMaterial.h"
+		    && claimers[2] == "FabricMaterial.h"
+		    && claimers[3] == "HairMaterial.h"
+		    && claimers[4] == "TranslucentMaterial.h"
+		    && claimers[5] == "WeaveMaterial.h",
 		       "full-sphere NEE: HairMaterial (unconditional), WeaveMaterial (conditional on "
 		       "`transmission thin`, P2-B), TranslucentMaterial (unconditional, DL-157 -- its "
 		       "entry TRANSMISSION and interior BACKSCATTER lobes both live below the shading "
 		       "horizon, and DL-157/DL-41 made `value` and `Pdf` describe them, which is the "
-		       "capability's own safety condition), FabricMaterial and CoatedMaterial (both "
+		       "capability's own safety condition), CompositeMaterial (DL-157 P2-1, CACHED at "
+		       "construction from whichever layer's BSDF `GetBSDF()` returned -- it does not "
+		       "retain its layers), FabricMaterial and CoatedMaterial (both "
 		       "DELEGATING -- each is full-sphere exactly when its substrate is; DL-23 added "
 		       "CoatedMaterial alongside FabricMaterial's pre-existing R8 P1.1 / debt 22 "
 		       "forwarding) are the ONLY materials claiming ScattersFullSphere() -- adding another "

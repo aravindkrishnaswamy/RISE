@@ -5404,10 +5404,16 @@ EvaluateAllStrategiesImpl(
 					// BDPT's s==1 row than in PT until that helper is
 					// shared.  No in-tree BDPT scene pairs a directional
 					// light with media today.
+					// DL-157 P1: the vertex's own stack, rebuilt exactly as
+					// `PathValueOps::EvalBSDFAtVertex` does -- this sweep
+					// and the sampled-light arms must price a stateful BSDF
+					// on the same SIDE.
+					IORStack zeroExitStack( 1.0 );
+					PathVertexEval::BuildVertexIORStack( eyeEnd, zeroExitStack );
 					if constexpr( Traits::is_pel ) {
 					RISEPel amount( 0, 0, 0 );
 					l->ComputeDirectLighting( ri, caster, *pBSDF,
-						bReceivesShadows, amount, bFullSphere );
+						bReceivesShadows, amount, bFullSphere, false, &zeroExitStack );
 
 					if( ColorMath::MaxValue( amount ) > 0 )
 					{
@@ -5428,7 +5434,8 @@ EvaluateAllStrategiesImpl(
 						// character; the per-NM virtual queries brdf.valueNM
 						// at the connecting wavelength.
 						const Scalar leNM = l->ComputeDirectLightingNM(
-							ri, caster, *pBSDF, bReceivesShadows, tag.nm, bFullSphere );
+							ri, caster, *pBSDF, bReceivesShadows, tag.nm, bFullSphere,
+							false, &zeroExitStack );
 						if( leNM > 0 )
 						{
 							CR cr;

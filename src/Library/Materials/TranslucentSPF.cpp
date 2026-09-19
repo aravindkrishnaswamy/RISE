@@ -517,35 +517,90 @@ namespace RISE { namespace Implementation { namespace TranslucentSPFDetail
 		// reading of the same question -- which face the incoming ray
 		// struck -- exact for a closed object and for a double-sided mesh
 		// (the un-flip above is what makes the latter true).
+		// Without a stack the side has to be inferred, and the ray anchor
+		// is EXACT for a closed object: a ray entering one travels inward
+		// at its boundary hit.  It is NOT exact on an OPEN sheet, where a
+		// back-face-first hit is a genuine ENTRY with a leaving ray -- so
+		// there, prefer the fact the geometry does give us: a sheet has no
+		// interior, so absent a stack a hit on one is an entry.  That is
+		// right for every first hit and for the camera-ray case DL-157's
+		// P1 review measured; it is wrong only for a ray that has already
+		// transmitted through the sheet and so really is "inside" by the
+		// stack's own bookkeeping, which no stackless caller can see.
+		// The genuinely stackless callers are the translucent photon-map
+		// gather, `PointSetOctree`'s SSS irradiance cache and the
+		// interactive preview; every other one now passes a stack.
 		const bool bEntering = pIorStack
 			? !pIorStack->containsCurrent()
-			: ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 );
+			: ( ri.bOpenSheet || Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 );
 
-		// `geomN` -- the side the INCOMING ray arrived from, which is what
-		// every lobe in `Scatter` is clipped against.  `Scatter` derives it
-		// by anchoring `geomNRaw` to `ri.ray.Dir()`, and that is right
-		// there because it holds the walk's own live intersection record.
+		// `geomN` -- the side the INCOMING ray arrived from -- is what
+		// `Scatter`'s ENTRY lobes are clipped against, and it is NOT
+		// derivable from the side alone.
 		//
-		// AN EVALUATION DOES NOT.  `PathVertexEval::EvalBSDFAtVertex`
-		// rebuilds a record as `Ray(vertex.position, -wo)`, and the two
-		// BDPT generators pass their `(wi, wo)` in OPPOSITE roles -- the
-		// eye walk as `(scatDir, -currentRay.Dir())` (so the rebuilt ray IS
-		// the incoming segment) and the light walk as
-		// `(-currentRay.Dir(), scatDir)` (so it is the REVERSE of the
-		// outgoing one).  Anchoring to that ray therefore inverts the whole
-		// lobe frame on every light-subpath vertex: measured, it clipped
-		// the interior backscatter lobe to the OUTWARD half-space, so the
-		// interior direction the light walk was actually asking about read
-		// `f == 0` and `GenerateLightSubpathImpl`'s `PositiveMagnitude(f)`
-		// gate killed the walk -- `TranslucentIORStackTest`'s BDPT light
-		// rows went from `reached=512` to `reached=0` on every mode.
+		// WHAT `Scatter` ACTUALLY DOES, per branch (read it above, ~:760):
 		//
-		// The side already IS the answer to the same question, so where a
-		// stack is supplied take it from there and leave the ray out of it
-		// entirely; the two agree exactly at a real intersection record.
-		const Vector3 geomN = pIorStack
-			? ( bEntering ? geomNRaw : -geomNRaw )
-			: ( ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw );
+		//   ENTRY  front reflection  clip = geomN   (RAY-anchored)
+		//          transmission      clip = -geomN  (RAY-anchored)
+		//   EXIT   backscatter       clip = geomN   (RAY-anchored)
+		//          diffuse exit      clip = geomNRaw, axis = OrientedExitNormal(n, geomNRaw)
+		//                                           (already ray-INDEPENDENT -- DL-45)
+		//
+		// THE ENTRY SIDE NEEDS THE RAY, and a stack-derived
+		// `bEntering ? geomNRaw : -geomNRaw` is WRONG there on a
+		// reachable record: a camera ray striking the BACK FACE FIRST of
+		// an open double-sided sheet has a not-inside stack (true -- it
+		// never entered) and a leaving ray (true -- it hit the back
+		// face), so the two disagree.  `clippedplane_geometry`'s
+		// `doublesided` DEFAULTS TO TRUE, and translucent is what authors
+		// put on open sheets (DL-46 review round 3(c)), so this is a
+		// first-class authoring case, not a corner.  Measured on that
+		// record with a stack-derived frame: gate 1's
+		// `E[kray]/E[value*cos/pdf]` read 0.840 on the front-reflection
+		// lobe and 1.402 on the transmission lobe at zero tilt, where
+		// both must read 1.000.  So the entry side uses LITERALLY
+		// `Scatter`'s own expression.
+		//
+		// THE EXIT SIDE MUST NOT, and cannot be made to.
+		// `PathVertexEval::EvalBSDFAtVertex` rebuilds a record as
+		// `Ray(vertex.position, -wo)`, and the two BDPT generators pass
+		// their `(wi, wo)` in OPPOSITE roles -- the eye walk as
+		// `(scatDir, -currentRay.Dir())`, so the rebuilt ray IS the
+		// incoming segment, and the light walk as
+		// `(-currentRay.Dir(), scatDir)`, so it is the REVERSE of the
+		// outgoing one.  On the light side that puts BOTH exit-branch
+		// lobes in the same half-space and leaves the interior direction
+		// the walk is actually asking about with no lobe at all, so
+		// `f == 0` and `GenerateLightSubpathImpl`'s
+		// `PositiveMagnitude(f)` gate kills the walk --
+		// `TranslucentIORStackTest`'s BDPT light rows measured
+		// `reached=512 -> 0` on every mode.
+		//
+		// It does not have to: on the EXIT side `Scatter`'s own `geomN`
+		// IS `-geomNRaw` at every record its exit branch can be reached
+		// with.  That branch requires `ior_stack.containsCurrent()` --
+		// the walk is inside the object -- and a ray inside an object
+		// travels outward at its boundary hit, which is exactly
+		// `Dot(geomNRaw, rayDir) > 0`.  So `-geomNRaw` is not an
+		// approximation of Scatter there; it is the same value, computed
+		// without the ray.  (The one record where it is not is a stack
+		// that claims "inside" for a ray that is entering -- the open-
+		// sheet parity failure DL-76 tracks, where the exit branch has no
+		// meaning in the first place.)
+		//
+		// WHAT IS LEFT, stated precisely.  A LIGHT-subpath ENTRY vertex
+		// evaluated through the rebuilt record gets the ray-anchored
+		// frame computed from `-scatDir`, which is inverted relative to
+		// the walk's own incoming segment.  That is not a new defect and
+		// not closable here: it is the caller-convention half of DL-223,
+		// the same role-swap that makes a NON-RECIPROCAL BSDF give two
+		// answers for one direction pair.  The rule below is the one that
+		// is right for PT / NEE and for the eye subpath (both of which
+		// hold a record whose ray IS the incoming ray) and that keeps the
+		// light subpath alive; the residual is measured on DL-223.
+		const Vector3 geomN = bEntering
+			? ( ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw )
+			: -geomNRaw;
 
 		if( bEntering )
 		{
@@ -1220,6 +1275,53 @@ Scalar TranslucentSPF::Pdf(
 	) const
 {
 	return AggregatePdf( ri, wo, false, 0, ior_stack );
+}
+
+//! DL-222: the spectral companion weight, read off the SAME lobe set
+//! `ScatterNM` draws from rather than reconstructed as `value*cos/pdf`.
+//!
+//! `ScatterNM` emits at most two rays and they have DISTINCT types --
+//! `eRayDiffuse` (the entry front reflection on the entry side, the
+//! diffuse exit on the interior side) and `eRayTranslucent` (the entry
+//! transmission, the interior backscatter) -- so `rayType` alone
+//! identifies which lobe a companion is asking about, on either side.
+//! `outDir` is not needed to make that identification and is unused, but
+//! is kept in the signature because it is the interface's and because a
+//! future lobe split would need it.
+//!
+//! The weights themselves are wavelength-dependent through the painters
+//! (`GuardedGetColorNM` on `ref`/`tau`; `GetValueAtNM` on
+//! `ext`/`scattering`), which is exactly what the companion lane wants
+//! and what the `value*cos/pdf` fallback could only approximate.
+Scalar TranslucentSPF::EvaluateKrayNM(
+	const RayIntersectionGeometric& ri,
+	const Vector3& /*outDir*/,
+	ScatteredRay::ScatRayType rayType,
+	Scalar nm,
+	const IORStack& ior_stack
+	) const
+{
+	if( rayType != ScatteredRay::eRayDiffuse && rayType != ScatteredRay::eRayTranslucent ) {
+		return -1;
+	}
+
+	LobeSet set;
+	BuildLobeSet( *pRefFront, *pTrans, *pExtinction, *pN, *pScat,
+		ri, &ior_stack, true, nm, set );
+
+	// The cosine lobe is the `eRayDiffuse` one on BOTH sides (entry front
+	// reflection / interior diffuse exit); the Phong lobe is the
+	// `eRayTranslucent` one (entry transmission / interior backscatter).
+	const bool bWantPhong = ( rayType == ScatteredRay::eRayTranslucent );
+	for( int i = 0; i < set.count; i++ ) {
+		if( set.lobes[i].isPhong == bWantPhong ) {
+			return set.lobes[i].krayNM;
+		}
+	}
+	// The lobe this companion is asking about is not emitted at this
+	// wavelength (a zero painter, a fully extinguished segment, a zero
+	// scattering split).  That is a real answer, not a decline.
+	return 0;
 }
 
 Scalar TranslucentSPF::PdfNM(

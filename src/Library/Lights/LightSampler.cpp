@@ -2169,9 +2169,12 @@ RISEPel LightSampler::EvaluateDirectLighting(
 				// inline (`cosSurface = 1.0` under `isVolumeScatter`);
 				// Step 1 could not, because the arithmetic lives behind
 				// this virtual.  See ILight.h for the derivation.
+				// DL-157 P1: the LIVE stack, so this Step-1 arm prices a
+				// stateful BSDF on the same SIDE the three sampled-light
+				// arms below already do.
 				l->ComputeDirectLighting( ri, caster, brdf,
 					bReceivesShadows,
-					amount, bFullSphere, isVolumeScatter );
+					amount, bFullSphere, isVolumeScatter, pMisIorStack );
 
 				// VOLUME RECEIVER -- part B of 2: MEDIUM ATTENUATION.
 				//
@@ -2980,9 +2983,10 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 				// twin of the RGB Step-1 site; both halves of that fix
 				// (the `isVolumeScatter` flag and the medium
 				// transmittance) are derived in full there.
+				// DL-157 P1 -- see the RGB Step-1 site.
 				Scalar leNM = l->ComputeDirectLightingNM( ri, caster, brdf,
 					bReceivesShadows,
-					nm, bFullSphere, isVolumeScatter );
+					nm, bFullSphere, isVolumeScatter, pMisIorStack );
 
 				if( leNM > 0 &&
 					l->lightType() == ILight::LightType::Directional )

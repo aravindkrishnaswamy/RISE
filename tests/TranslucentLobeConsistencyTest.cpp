@@ -76,6 +76,7 @@
 #include "../src/Library/Interfaces/IScalarPainter.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
 #include "../src/Library/Painters/UniformScalarPainter.h"
+#include "../src/Library/Painters/RGBScalarPainter.h"
 #include "../src/Library/Materials/TranslucentMaterial.h"
 
 #include "TestStubObject.h"
@@ -110,16 +111,26 @@ namespace
 		UniformColorPainter*  ref;
 		UniformColorPainter*  tau;
 		UniformScalarPainter* ext;
-		UniformScalarPainter* N;
+		IScalarPainter*       N;
 		UniformScalarPainter* scat;
 		TranslucentMaterial*  mat;
 
+		//! `NV < 0` selects a PER-CHANNEL exponent (`RGBScalarPainter(5,10,15)`).
+		//! That is not decoration: it is the ONLY way into `Scatter`'s
+		//! three-ray branch, where the Phong lobe is emitted once per colour
+		//! channel with a single-channel `kray`, `LobeSet` really does hold
+		//! four lobes, and `RandomlySelect`'s CDF weighs `MaxValue` of a
+		//! single-channel RISEPel -- the DL-98/DL-99 reduction-order trap.
+		//! Every rig in the first draft of this file built `N` from a
+		//! `UniformScalarPainter`, so that whole branch was untested.
 		Rig( const RISEPel& refC, const RISEPel& tauC, Scalar extV, Scalar NV, Scalar scatV )
 		{
 			ref  = new UniformColorPainter( refC );  ref->addref();
 			tau  = new UniformColorPainter( tauC );  tau->addref();
 			ext  = new UniformScalarPainter( extV ); ext->addref();
-			N    = new UniformScalarPainter( NV );   N->addref();
+			N    = ( NV < 0 ) ? static_cast<IScalarPainter*>( new RGBScalarPainter( 5, 10, 15 ) )
+			                  : static_cast<IScalarPainter*>( new UniformScalarPainter( NV ) );
+			N->addref();
 			scat = new UniformScalarPainter( scatV );scat->addref();
 			mat  = new TranslucentMaterial( *ref, *tau, *ext, *N, *scat );
 			mat->addref();
@@ -180,6 +191,67 @@ namespace
 		return ri;
 	}
 
+	//! DL-157 review P1: an OPEN double-sided sheet struck on its BACK
+	//! FACE FIRST -- a camera ray hitting the back of a
+	//! `clippedplane_geometry` (whose `doublesided` DEFAULTS TO TRUE), or
+	//! of a double-sided `trianglemesh`.  The geometry has already flipped
+	//! BOTH reported normals toward the ray and says so
+	//! (`bGeomNormalOrientedToRay`), and marks the surface as having no
+	//! interior (`bOpenSheet`, DL-96).  True outward is +Z; the ray
+	//! travels +Z.
+	//!
+	//! This record is the one where the SIDE and the RAY disagree and BOTH
+	//! are telling the truth: the stack says NOT INSIDE (the walk really
+	//! never entered anything) and the ray is LEAVING relative to the
+	//! authored outward normal (it really did strike the back face).  A
+	//! frame derived from the side alone inverts here; `Scatter`'s own
+	//! frame is ray-anchored, so the lobe set must be too on the entry
+	//! side.
+	RayIntersectionGeometric MakeOpenSheetBackFaceFirst( Scalar tiltDeg, Scalar segLen )
+	{
+		const Scalar tiltRad = tiltDeg * PI / 180.0;
+		// The REPORTED (already flipped) shading normal: -Z tilted in XZ.
+		const Vector3 nReported( sin(tiltRad), 0, -cos(tiltRad) );
+
+		Ray inRay( Point3(0,0,-segLen), Vector3(0,0,1) );
+		RasterizerState rs = {0,0};
+		RayIntersectionGeometric ri( inRay, rs );
+		ri.bHit = true;
+		ri.range = segLen;
+		ri.ptIntersection = Point3(0,0,0);
+		ri.vNormal = nReported;
+		ri.onb.CreateFromW( nReported );
+		ri.vGeomNormal = Vector3(0,0,-1);        // flipped toward the ray
+		ri.bGeomNormalOrientedToRay = true;      // ... and it says so
+		ri.bOpenSheet = true;                    // ... and it has no interior
+		ri.ptCoord = Point2(0.5,0.5);
+		return ri;
+	}
+
+	//! The FRONT-face control on the same open sheet: identical geometry,
+	//! ray travelling -Z, no flip.  The side and the ray agree here, so
+	//! this row is expected to be green on both sides of the fix and is
+	//! what separates "the back-face record is broken" from "open sheets
+	//! are broken".
+	RayIntersectionGeometric MakeOpenSheetFrontFace( Scalar tiltDeg, Scalar segLen )
+	{
+		const Scalar tiltRad = tiltDeg * PI / 180.0;
+		const Vector3 n( sin(tiltRad), 0, cos(tiltRad) );
+
+		Ray inRay( Point3(0,0,segLen), Vector3(0,0,-1) );
+		RasterizerState rs = {0,0};
+		RayIntersectionGeometric ri( inRay, rs );
+		ri.bHit = true;
+		ri.range = segLen;
+		ri.ptIntersection = Point3(0,0,0);
+		ri.vNormal = n;
+		ri.onb.CreateFromW( n );
+		ri.vGeomNormal = Vector3(0,0,1);
+		ri.bOpenSheet = true;
+		ri.ptCoord = Point2(0.5,0.5);
+		return ri;
+	}
+
 	IORStack MakeOutsideStack( const IObject* obj )
 	{
 		IORStack stack( 1.0 );
@@ -194,6 +266,39 @@ namespace
 		stack.push( 1.0 );
 		stack.SetCurrentObject( obj );
 		return stack;
+	}
+
+	//! Which intersection record a gate is driven on.  `kEntry`/`kExit`
+	//! are the closed-solid pair; `kSheetFront`/`kSheetBack` are the open
+	//! double-sided sheet, whose BACK-face record is the one DL-157's P1
+	//! review found broken (side says entry, ray says leaving, both true).
+	enum RecordKind { kEntry, kExit, kSheetFront, kSheetBack };
+
+	const char* RecordName( RecordKind k )
+	{
+		switch( k ) {
+		case kEntry:      return "entry     ";
+		case kExit:       return "exit      ";
+		case kSheetFront: return "sheetFront";
+		default:          return "sheetBack ";
+		}
+	}
+
+	RayIntersectionGeometric MakeRecord( RecordKind k, Scalar tiltDeg, Scalar segLen )
+	{
+		switch( k ) {
+		case kEntry:      return MakeClosedEntry( tiltDeg, segLen );
+		case kExit:       return MakeClosedExit( tiltDeg, segLen );
+		case kSheetFront: return MakeOpenSheetFrontFace( tiltDeg, segLen );
+		default:          return MakeOpenSheetBackFaceFirst( tiltDeg, segLen );
+		}
+	}
+
+	//! Every open-sheet record is an ENTRY by the stack: a sheet has no
+	//! interior, and the walk in these fixtures never transmitted.
+	IORStack MakeRecordStack( RecordKind k, const IObject* obj )
+	{
+		return ( k == kExit ) ? MakeInsideStack( obj ) : MakeOutsideStack( obj );
 	}
 
 	//! Uniform-ish spherical grid used by gates 2/3/4.
@@ -238,19 +343,19 @@ namespace
 //            per LOBE, over the SPF's own draws.
 //////////////////////////////////////////////////////////////////////
 
-static void Gate1( const Rig& rig, const IObject* obj, bool bExit, bool bNM,
+static void Gate1( const Rig& rig, const IObject* obj, RecordKind kind, bool bNM,
 	Scalar segLen, const char* label )
 {
 	const int kTrials = 40000;
+	const bool bExit = ( kind == kExit );
 
-	std::cout << "  -- Gate 1 " << label << " (" << (bNM?"NM":"RGB") << ")" << std::endl;
+	std::cout << "  -- Gate 1 " << label << " " << RecordName(kind)
+	          << " (" << (bNM?"NM":"RGB") << ")" << std::endl;
 
 	for( int t = 0; t < kNumTilts; t++ )
 	{
-		RayIntersectionGeometric ri = bExit
-			? MakeClosedExit( kTiltAnglesDeg[t], segLen )
-			: MakeClosedEntry( kTiltAnglesDeg[t], segLen );
-		IORStack stack = bExit ? MakeInsideStack( obj ) : MakeOutsideStack( obj );
+		RayIntersectionGeometric ri = MakeRecord( kind, kTiltAnglesDeg[t], segLen );
+		IORStack stack = MakeRecordStack( kind, obj );
 
 		RandomNumberGenerator rng( 4242u + (unsigned)t );
 		Implementation::IndependentSampler sampler( rng );
@@ -277,8 +382,29 @@ static void Gate1( const Rig& rig, const IObject* obj, bool bExit, bool bNM,
 					sumKray[k] += s.krayNM;
 					sumBsdf[k] += rig.bsdf()->valueNM( wo, ri, kProbeNM ) * cosO / s.pdf;
 				} else {
-					sumKray[k] += ColorMath::MaxValue( s.kray );
-					sumBsdf[k] += ColorMath::MaxValue( rig.bsdf()->value( wo, ri ) ) * cosO / s.pdf;
+					// REDUCE BY THE LOBE'S OWN CHANNEL, not by MaxValue of
+					// the two sides independently.  `value` is a SUM over
+					// the lobe set, and in `Scatter`'s per-channel-exponent
+					// branch the Phong lobe is emitted once per colour
+					// channel with a single-channel `kray` -- so at lobe
+					// i's own direction the OTHER two channel-lobes also
+					// have support, and `MaxValue(value)` can pick a
+					// channel the emitted ray does not carry.  Channel
+					// `argmax(kray)` is exactly lobe i's own term (the
+					// channel-lobes contribute to disjoint channels), and
+					// for every non-per-channel lobe `value[c] =
+					// kray[c] * fOverKray`, so argmax(kray) == argmax(value)
+					// and this is numerically identical to the MaxValue
+					// form there.  Measured: without it the per-channel rig
+					// reads 0.665 / 0.737 -- which is the DL-69
+					// aggregate-over-per-lobe pairing, reproduced inside a
+					// test that exists to catch exactly that.
+					int cBest = 0;
+					for( int c = 1; c < 3; c++ ) {
+						if( s.kray[c] > s.kray[cBest] ) cBest = c;
+					}
+					sumKray[k] += s.kray[cBest];
+					sumBsdf[k] += rig.bsdf()->value( wo, ri )[cBest] * cosO / s.pdf;
 				}
 				nEmit[k]++;
 			}
@@ -293,15 +419,16 @@ static void Gate1( const Rig& rig, const IObject* obj, bool bExit, bool bNM,
 			const char* lobe = bExit
 				? ( k==0 ? "exit      " : "backscatter" )
 				: ( k==0 ? "frontrefl " : "transmit   " );
-			std::cout << "    tilt " << std::setw(2) << (int)kTiltAnglesDeg[t]
+			std::cout << "    " << RecordName(kind)
+			          << " tilt " << std::setw(2) << (int)kTiltAnglesDeg[t]
 			          << " " << lobe
 			          << "  E[kray]=" << std::fixed << std::setprecision(6) << mk
 			          << "  E[val*cos/pdf]=" << mb
 			          << "  ratio=" << ratio
 			          << "  (n=" << nEmit[k] << ")" << std::endl;
 			char buf[256];
-			snprintf( buf, sizeof(buf), "%s %s tilt %d %s ratio=%.6f (want 1)",
-				label, bNM?"NM":"RGB", (int)kTiltAnglesDeg[t], lobe, ratio );
+			snprintf( buf, sizeof(buf), "%s %s %s tilt %d %s ratio=%.6f (want 1)",
+				label, RecordName(kind), bNM?"NM":"RGB", (int)kTiltAnglesDeg[t], lobe, ratio );
 			EXPECT( fabs( ratio - 1.0 ) < 0.005, buf );
 		}
 	}
@@ -312,19 +439,18 @@ static void Gate1( const Rig& rig, const IObject* obj, bool bExit, bool bNM,
 //  Scatter + RandomlySelect actually generate.
 //////////////////////////////////////////////////////////////////////
 
-static void Gate234( const Rig& rig, const IObject* obj, bool bExit, bool bNM,
+static void Gate234( const Rig& rig, const IObject* obj, RecordKind kind, bool bNM,
 	Scalar segLen, const char* label )
 {
 	const int kTrials = 200000;
 
-	std::cout << "  -- Gates 2/3/4 " << label << " (" << (bNM?"NM":"RGB") << ")" << std::endl;
+	std::cout << "  -- Gates 2/3/4 " << label << " " << RecordName(kind)
+	          << " (" << (bNM?"NM":"RGB") << ")" << std::endl;
 
 	for( int t = 0; t < kNumTilts; t++ )
 	{
-		RayIntersectionGeometric ri = bExit
-			? MakeClosedExit( kTiltAnglesDeg[t], segLen )
-			: MakeClosedEntry( kTiltAnglesDeg[t], segLen );
-		IORStack stack = bExit ? MakeInsideStack( obj ) : MakeOutsideStack( obj );
+		RayIntersectionGeometric ri = MakeRecord( kind, kTiltAnglesDeg[t], segLen );
+		IORStack stack = MakeRecordStack( kind, obj );
 
 		// ---- quadrature of Pdf, and the value>0 / Pdf>0 partition ----
 		const int kCells = SphereGrid::kNTheta * SphereGrid::kNPhi;
@@ -413,21 +539,78 @@ static void Gate234( const Rig& rig, const IObject* obj, bool bExit, bool bNM,
 		          << "  partitionViolations=" << partitionViolations << std::endl;
 
 		char buf[256];
-		snprintf( buf, sizeof(buf), "%s %s tilt %d: int(Pdf)=%.5f vs emitted=%.5f",
-			label, bNM?"NM":"RGB", (int)kTiltAnglesDeg[t], mass, emitProb );
+		snprintf( buf, sizeof(buf), "%s %s %s tilt %d: int(Pdf)=%.5f vs emitted=%.5f",
+			label, RecordName(kind), bNM?"NM":"RGB", (int)kTiltAnglesDeg[t], mass, emitProb );
 		EXPECT( fabs( mass - emitProb ) < 0.02, buf );
 
-		snprintf( buf, sizeof(buf), "%s %s tilt %d: TVD(sampler,Pdf)=%.5f vs gate %.5f (noise floor %.5f)",
-			label, bNM?"NM":"RGB", (int)kTiltAnglesDeg[t], tvd, tvdGate, tvdNoise );
+		snprintf( buf, sizeof(buf), "%s %s %s tilt %d: TVD(sampler,Pdf)=%.5f vs gate %.5f (noise floor %.5f)",
+			label, RecordName(kind), bNM?"NM":"RGB", (int)kTiltAnglesDeg[t], tvd, tvdGate, tvdNoise );
 		EXPECT( tvd <= tvdGate, buf );
 
-		snprintf( buf, sizeof(buf), "%s %s tilt %d: %ld directions with value>0 and Pdf==0",
-			label, bNM?"NM":"RGB", (int)kTiltAnglesDeg[t], partitionViolations );
+		snprintf( buf, sizeof(buf), "%s %s %s tilt %d: %ld directions with value>0 and Pdf==0",
+			label, RecordName(kind), bNM?"NM":"RGB", (int)kTiltAnglesDeg[t], partitionViolations );
 		EXPECT( partitionViolations == 0, buf );
 	}
 }
 
 //////////////////////////////////////////////////////////////////////
+
+//////////////////////////////////////////////////////////////////////
+//  Gate 5 -- DL-222: `TranslucentSPF::EvaluateKrayNM` is the HWSS
+//  companion weight, and it must equal what `ScatterNM` itself stamps
+//  when the SAME wavelength is the hero.
+//
+//  PT's and BDPT's HWSS companion lanes ask an SPF what a ray sampled at
+//  the hero wavelength would have weighed at a companion one; an SPF that
+//  declines (returns < 0) sends the caller to DL-125's
+//  `value*cos/pdf` fallback.  `TranslucentSPF` used to decline.  The
+//  check here is the strongest available statement of correctness: drive
+//  `ScatterNM` at wavelength `nm` as the HERO and compare its own
+//  `krayNM` per lobe against what `EvaluateKrayNM` answers for that lobe
+//  at the same `nm` -- they must be identical, because they are the same
+//  quantity asked two ways.
+//////////////////////////////////////////////////////////////////////
+
+static void GateKrayNM( const IObject* obj )
+{
+	std::cout << std::endl << "[F] Gate 5: EvaluateKrayNM == ScatterNM's own krayNM (DL-222)"
+	          << std::endl;
+
+	Rig rig( RISEPel(0.5,0.3,0.2), RISEPel(0.4,0.6,0.3), 0.35, 10.0, 0.3 );
+	const Scalar kNMs[] = { 430.0, 550.0, 660.0 };
+
+	for( int k = 0; k < 4; k++ )
+	{
+		const RecordKind kind = (RecordKind)k;
+		for( int t = 0; t < kNumTilts; t++ )
+		{
+			RayIntersectionGeometric ri = MakeRecord( kind, kTiltAnglesDeg[t], 2.0 );
+			IORStack stack = MakeRecordStack( kind, obj );
+			RandomNumberGenerator rng( 31337u + (unsigned)t );
+			Implementation::IndependentSampler sampler( rng );
+
+			for( int w = 0; w < 3; w++ )
+			{
+				ScatteredRayContainer scattered;
+				rig.spf()->ScatterNM( ri, sampler, kNMs[w], scattered, stack );
+				for( unsigned int j = 0; j < scattered.Count(); j++ )
+				{
+					const ScatteredRay& sr = scattered[j];
+					const Scalar asked = rig.spf()->EvaluateKrayNM(
+						ri, Vector3Ops::Normalize( sr.ray.Dir() ), sr.type, kNMs[w], stack );
+					char buf[256];
+					snprintf( buf, sizeof(buf),
+						"[F] %s tilt %d nm %.0f type %d: EvaluateKrayNM=%.9f vs ScatterNM krayNM=%.9f",
+						RecordName(kind), (int)kTiltAnglesDeg[t], (double)kNMs[w],
+						(int)sr.type, (double)asked, (double)sr.krayNM );
+					EXPECT( asked >= 0 && fabs( asked - sr.krayNM ) <= 1e-12, buf );
+				}
+			}
+		}
+	}
+	std::cout << "    " << checks << " checks so far; every emitted lobe matched to 1e-12"
+	          << std::endl;
+}
 
 int main()
 {
@@ -446,24 +629,25 @@ int main()
 	{
 		Rig rig( RISEPel(0.5,0.3,0.2), RISEPel(0.4,0.6,0.3), 0.0, 10.0, 0.3 );
 		std::cout << std::endl << "[A] ext=0, ref=(.5,.3,.2) tau=(.4,.6,.3) N=10 scat=.3" << std::endl;
-		Gate1  ( rig, obj, false, false, 2.0, "entry" );
-		Gate1  ( rig, obj, false, true,  2.0, "entry" );
-		Gate1  ( rig, obj, true,  false, 2.0, "exit " );
-		Gate1  ( rig, obj, true,  true,  2.0, "exit " );
-		Gate234( rig, obj, false, false, 2.0, "entry" );
-		Gate234( rig, obj, false, true,  2.0, "entry" );
-		Gate234( rig, obj, true,  false, 2.0, "exit " );
-		Gate234( rig, obj, true,  true,  2.0, "exit " );
+		for( int m = 0; m < 2; m++ ) {
+			const bool bNM = ( m == 1 );
+			Gate1( rig, obj, kEntry, bNM, 2.0, "[A]" );
+			Gate1( rig, obj, kExit,  bNM, 2.0, "[A]" );
+		}
+		Gate234( rig, obj, kEntry, false, 2.0, "[A]" );
+		Gate234( rig, obj, kEntry, true,  2.0, "[A]" );
+		Gate234( rig, obj, kExit,  false, 2.0, "[A]" );
+		Gate234( rig, obj, kExit,  true,  2.0, "[A]" );
 	}
 
 	{
 		Rig rig( RISEPel(0.5,0.3,0.2), RISEPel(0.4,0.6,0.3), 0.35, 10.0, 0.3 );
 		std::cout << std::endl << "[B] ext=0.35 over a 2.0 interior segment (DL-38's Beer factor)"
 		          << std::endl;
-		Gate1  ( rig, obj, true,  false, 2.0, "exit " );
-		Gate1  ( rig, obj, true,  true,  2.0, "exit " );
-		Gate234( rig, obj, true,  false, 2.0, "exit " );
-		Gate234( rig, obj, true,  true,  2.0, "exit " );
+		Gate1  ( rig, obj, kExit, false, 2.0, "[B]" );
+		Gate1  ( rig, obj, kExit, true,  2.0, "[B]" );
+		Gate234( rig, obj, kExit, false, 2.0, "[B]" );
+		Gate234( rig, obj, kExit, true,  2.0, "[B]" );
 	}
 
 	{
@@ -472,11 +656,51 @@ int main()
 		// solid angle rather than a narrow cap.
 		Rig rig( RISEPel(0.5,0.3,0.2), RISEPel(0.4,0.6,0.3), 0.0, 1.0, 0.6 );
 		std::cout << std::endl << "[C] N=1 (wide Phong lobes), scat=0.6" << std::endl;
-		Gate1  ( rig, obj, false, false, 2.0, "entry" );
-		Gate1  ( rig, obj, true,  false, 2.0, "exit " );
-		Gate234( rig, obj, false, false, 2.0, "entry" );
-		Gate234( rig, obj, true,  false, 2.0, "exit " );
+		Gate1  ( rig, obj, kEntry, false, 2.0, "[C]" );
+		Gate1  ( rig, obj, kExit,  false, 2.0, "[C]" );
+		Gate234( rig, obj, kEntry, false, 2.0, "[C]" );
+		Gate234( rig, obj, kExit,  false, 2.0, "[C]" );
 	}
+
+	{
+		// [D] REVIEW P2-2: a PER-CHANNEL Phong exponent, the only way into
+		// `Scatter`'s three-ray branch -- four lobes in the set, a
+		// single-channel `kray` on each Phong ray, and `RandomlySelect`
+		// weighing `MaxValue` of that.  RGB only: `ScatterNM` has no
+		// per-channel branch (it evaluates `GetValueAtNM` once).
+		Rig rig( RISEPel(0.5,0.3,0.2), RISEPel(0.4,0.6,0.3), 0.35, -1.0, 0.3 );
+		std::cout << std::endl << "[D] per-channel N=(5,10,15), ext=0.35, chromatic ref/tau" << std::endl;
+		Gate1  ( rig, obj, kEntry, false, 2.0, "[D]" );
+		Gate1  ( rig, obj, kExit,  false, 2.0, "[D]" );
+		Gate234( rig, obj, kEntry, false, 2.0, "[D]" );
+		Gate234( rig, obj, kExit,  false, 2.0, "[D]" );
+	}
+
+	{
+		// [E] REVIEW P1: the OPEN double-sided sheet.  The back-face-first
+		// record is the one where the side (stack: not inside, true) and
+		// the ray (leaving, true) disagree, and a lobe frame derived from
+		// the side alone inverts.  Measured on the pre-P1-fix branch at
+		// zero tilt: front-reflection ratio 0.840148, transmission 1.402;
+		// both must read 1.000.  The FRONT-face row is the control that
+		// separates "this record is broken" from "open sheets are broken".
+		//
+		// `clippedplane_geometry`'s `doublesided` defaults to TRUE and
+		// translucent is what authors put on open sheets (DL-46 review
+		// round 3(c)), so this is a first-class authoring case.
+		Rig rig( RISEPel(0.5,0.3,0.2), RISEPel(0.4,0.6,0.3), 0.0, 10.0, 0.3 );
+		std::cout << std::endl << "[E] OPEN double-sided sheet: front-face control and BACK-FACE-FIRST"
+		          << std::endl;
+		for( int m = 0; m < 2; m++ ) {
+			const bool bNM = ( m == 1 );
+			Gate1( rig, obj, kSheetFront, bNM, 2.0, "[E]" );
+			Gate1( rig, obj, kSheetBack,  bNM, 2.0, "[E]" );
+		}
+		Gate234( rig, obj, kSheetFront, false, 2.0, "[E]" );
+		Gate234( rig, obj, kSheetBack,  false, 2.0, "[E]" );
+	}
+
+	GateKrayNM( obj );
 
 	obj->release();
 

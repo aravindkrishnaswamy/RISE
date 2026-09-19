@@ -130,9 +130,11 @@ namespace RISE
 			//! an accepted limitation of an ambient light, not a defect
 			//! this parameter can fix.  Part B of the same fix likewise
 			//! skips ambient: it is a constant with no ray to attenuate.
-			inline void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool, RISEPel& amount, const bool = false, const bool = false ) const override
+			inline void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool, RISEPel& amount, const bool = false, const bool = false, const IORStack* pIORStack = 0 ) const override
 			{
-				amount = cColor * radiantEnergy * brdf.value( ri.vNormal, ri );
+				// DL-157 P1: a stateful BSDF prices a hit by which side of
+				// the surface the walk is on; null reproduces `value`.
+				amount = cColor * radiantEnergy * brdf.valueStateful( ri.vNormal, ri, pIORStack );
 			}
 
 			//! Per-wavelength evaluation: sample the light's own illuminant
@@ -151,10 +153,11 @@ namespace RISE
 				const bool,
 				const Scalar nm,
 				const bool = false,				///< bFullSphereReceiver: no-op, see the RGB override above
-				const bool = false				///< bVolumeReceiver: no-op, see the RGB override above
+				const bool = false,				///< bVolumeReceiver: no-op, see the RGB override above
+				const IORStack* pIORStack = 0	///< DL-157 P1: live stack for a stateful BSDF
 				) const override
 			{
-				return cSpectrum.Eval( nm ) * radiantEnergy * brdf.valueNM( ri.vNormal, ri, nm );
+				return cSpectrum.Eval( nm ) * radiantEnergy * brdf.valueStatefulNM( ri.vNormal, ri, nm, pIORStack );
 			}
 
 			// No light-specific state to refresh; the base composition is all an

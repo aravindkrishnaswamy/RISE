@@ -260,6 +260,24 @@ namespace RISE
 				const IORStack& ior_stack
 				) const;
 
+			//! DL-222 (opened on the concurrent `debt-dl125` branch; see the
+			//! definition's own comment).  PT's and BDPT's HWSS COMPANION
+			//! lanes ask an SPF what a ray it already sampled at the hero
+			//! wavelength would have weighed at a companion one, and fall
+			//! back to `value*cos/pdf` when the SPF declines.  That
+			//! fallback is DL-125's, and for this material it was the one
+			//! place a per-wavelength `kray` was reconstructed from a
+			//! function rather than read off the lobe that produced it.
+			//! `BuildLobeSet` makes the direct answer nearly free, so give
+			//! it.
+			Scalar	EvaluateKrayNM(
+				const RayIntersectionGeometric& ri,
+				const Vector3& outDir,
+				ScatteredRay::ScatRayType rayType,
+				Scalar nm,
+				const IORStack& ior_stack
+				) const;
+
 			//! Spectral version of Pdf
 			Scalar	PdfNM(
 				const RayIntersectionGeometric& ri,

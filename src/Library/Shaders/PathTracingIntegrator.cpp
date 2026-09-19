@@ -1294,14 +1294,22 @@ namespace
 
 	// BSDF value at a surface (guiding RIS / one-sample MIS).
 	template<class Tag>
+	// DL-157 P1: `pIORStack` is the LIVE stack.  The guiding candidate
+	// sites below already hand the SAME `iorStack` to `PTEvalPdfAtSurface`
+	// one line away, so leaving the BSDF evaluation stackless was a drift
+	// inside a single block; a stateful BSDF (`translucent_material`)
+	// prices a hit by which side of the surface the walk is on.
 	inline typename SpectralValueTraits<Tag>::value_type PTEvalBSDFAtSurface(
-		const IBSDF* pBRDF, const Vector3& wi, const RayIntersectionGeometric& ri, const Tag& tag );
+		const IBSDF* pBRDF, const Vector3& wi, const RayIntersectionGeometric& ri, const Tag& tag,
+		const IORStack* pIORStack );
 	template<> inline RISEPel PTEvalBSDFAtSurface<PelTag>(
-		const IBSDF* pBRDF, const Vector3& wi, const RayIntersectionGeometric& ri, const PelTag& )
-	{ return PathVertexEval::EvalBSDFAtSurface( pBRDF, wi, ri ); }
+		const IBSDF* pBRDF, const Vector3& wi, const RayIntersectionGeometric& ri, const PelTag&,
+		const IORStack* pIORStack )
+	{ return PathVertexEval::EvalBSDFAtSurface( pBRDF, wi, ri, pIORStack ); }
 	template<> inline Scalar PTEvalBSDFAtSurface<NMTag>(
-		const IBSDF* pBRDF, const Vector3& wi, const RayIntersectionGeometric& ri, const NMTag& tag )
-	{ return PathVertexEval::EvalBSDFAtSurfaceNM( pBRDF, wi, ri, tag.nm ); }
+		const IBSDF* pBRDF, const Vector3& wi, const RayIntersectionGeometric& ri, const NMTag& tag,
+		const IORStack* pIORStack )
+	{ return PathVertexEval::EvalBSDFAtSurfaceNM( pBRDF, wi, ri, tag.nm, pIORStack ); }
 
 	// Pdf at a surface (always Scalar).  Guiding RIS / one-sample MIS.
 	template<class Tag>
@@ -3787,7 +3795,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 							PathTransportUtilities::GuidingRISCandidate<Value>& c = candidates[0];
 							c.direction = pS->ray.Dir();
 							c.bsdfEval = PTEvalBSDFAtSurface<Tag>(
-								pBRDF, c.direction, ri.geometric, tag );
+								pBRDF, c.direction, ri.geometric, tag, &iorStack );
 							c.bsdfPdf = pS->pdf;
 							c.guidePdf = rc.pGuidingField->Pdf( guideDist, c.direction );
 							c.incomingRadPdf = rc.pGuidingField->IncomingRadiancePdf( guideDist, c.direction );
@@ -3816,7 +3824,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 							if( guidePdf > NEARZERO )
 							{
 								c.bsdfEval = PTEvalBSDFAtSurface<Tag>(
-									pBRDF, c.direction, ri.geometric, tag );
+									pBRDF, c.direction, ri.geometric, tag, &iorStack );
 								c.bsdfPdf = PTEvalPdfAtSurface<Tag>(
 									pSPF, ri.geometric, c.direction, iorStack, tag );
 								c.incomingRadPdf = rc.pGuidingField->IncomingRadiancePdf( guideDist, c.direction );
@@ -3905,7 +3913,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 							if( guidePdf > NEARZERO )
 							{
 								const Value fGuided = PTEvalBSDFAtSurface<Tag>(
-									pBRDF, guidedDir, ri.geometric, tag );
+									pBRDF, guidedDir, ri.geometric, tag, &iorStack );
 								const Scalar bsdfPdfGuided = PTEvalPdfAtSurface<Tag>(
 									pSPF, ri.geometric, guidedDir, iorStack, tag );
 								const Scalar combinedPdf =

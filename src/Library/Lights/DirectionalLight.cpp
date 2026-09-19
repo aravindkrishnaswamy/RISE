@@ -54,7 +54,8 @@ void DirectionalLight::ComputeDirectLighting(
 	const bool bReceivesShadows,
 	RISEPel& amount,
 	const bool bFullSphereReceiver,
-	const bool bVolumeReceiver
+	const bool bVolumeReceiver,
+	const IORStack* pIORStack
 	) const
 {
 	amount = RISEPel(0.0);
@@ -139,7 +140,7 @@ void DirectionalLight::ComputeDirectLighting(
 		}
 	}
 
-	amount = (cColor * brdf.value( vDirection, ri )) * (fDot * radiantEnergy) * shadowT;
+	amount = (cColor * brdf.valueStateful( vDirection, ri , pIORStack)) * (fDot * radiantEnergy) * shadowT;
 }
 
 Scalar DirectionalLight::ComputeDirectLightingNM(
@@ -149,7 +150,8 @@ Scalar DirectionalLight::ComputeDirectLightingNM(
 	const bool bReceivesShadows,
 	const Scalar nm,
 	const bool bFullSphereReceiver,
-	const bool bVolumeReceiver
+	const bool bVolumeReceiver,
+	const IORStack* pIORStack
 	) const
 {
 	// Same geometry as the RGB ComputeDirectLighting: cosine of angle
@@ -185,7 +187,7 @@ Scalar DirectionalLight::ComputeDirectLightingNM(
 	// Stage C slice 2: the light's own spectrum at `nm`, not a flat Rec.709
 	// luma projection.  See PointLight::ComputeDirectLightingNM.
 	const Scalar lightSpec = cSpectrum.Eval( nm );
-	return lightSpec * brdf.valueNM( vDirection, ri, nm ) * fDot * radiantEnergy * shadowT;
+	return lightSpec * brdf.valueStatefulNM( vDirection, ri, nm , pIORStack) * fDot * radiantEnergy * shadowT;
 }
 
 static const unsigned int DIRECTION_ID = 100;

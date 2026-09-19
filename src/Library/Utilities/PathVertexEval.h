@@ -640,10 +640,17 @@ namespace RISE
 		inline RISEPel EvalBSDFAtSurface(
 			const IBSDF* pBRDF,
 			const Vector3& wi,
-			const RayIntersectionGeometric& ri
+			const RayIntersectionGeometric& ri,
+			//! DL-157 P1: the LIVE stack where the caller has one.  A
+			//! stateful BSDF (`translucent_material`) prices a hit by which
+			//! side of the surface the walk is on, and PT's guiding
+			//! candidate sites hold the same `iorStack` they already hand
+			//! to `EvalPdfAtSurface` one line away.  Null reproduces
+			//! `value` exactly (IBSDF's default forwards).
+			const IORStack* pIORStack = 0
 			)
 		{
-			return pBRDF->value( wi, ri );
+			return pBRDF->valueStateful( wi, ri, pIORStack );
 		}
 
 		/// Evaluate PDF at a PT surface point.
@@ -674,10 +681,12 @@ namespace RISE
 			const IBSDF* pBRDF,
 			const Vector3& wi,
 			const RayIntersectionGeometric& ri,
-			const Scalar nm
+			const Scalar nm,
+			//! DL-157 P1 -- see the RGB twin.
+			const IORStack* pIORStack = 0
 			)
 		{
-			return pBRDF->valueNM( wi, ri, nm );
+			return pBRDF->valueStatefulNM( wi, ri, nm, pIORStack );
 		}
 
 		/// Evaluate PDF at a PT surface point (spectral).
