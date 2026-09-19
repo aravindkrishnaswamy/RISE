@@ -256,11 +256,16 @@ namespace RISE
 		/// etc.) so the match is correct even if the container layout
 		/// changes across wavelengths.
 		///
-		/// @return  krayNM >= 0 on success, or < 0 if not implemented
-		///          (caller should fall back to BSDF evaluation).
+		/// @return krayNM >= 0 on success, or < 0 if unimplemented or
+		///         this lobe is unsupported (caller falls back to BSDF).
 		///
-		/// Default: returns -1 (not implemented).  SPFs whose lobes are
-		/// not fully represented by the material's IBSDF must override.
+		/// Default: returns -1. Override when the aggregate BSDF paired
+		/// with the emitted ray's density cannot recover its response.
+		/// Per-lobe conditional densities can require selected-lobe
+		/// evaluation even when IBSDF represents every lobe (DL-125);
+		/// sampler response absent from IBSDF also requires an override.
+		/// Aggregate-density rays with matching aggregate response may
+		/// use the fallback.
 		///
 		/// TWO CONTRACT NOTES AN IMPLEMENTER MUST READ (DL-125 review
 		/// round 1).
@@ -308,12 +313,11 @@ namespace RISE
 		///
 		/// The fallback is aggregate BSDF evaluation times `cos / pS->pdf` --
 		/// the material's AGGREGATE spectral BSDF over the ONE selected
-		/// lobe's density.  That is the correct `f_I cos / p_I` exactly
-		/// when the emitted ray's `pdf` is the AGGREGATE mixture
-		/// density (CoatedSPF / FabricSPF / WeaveSPF, which say so in
-		/// their own headers, and the single-emit GGXSPF /
-		/// CookTorranceSPF), and wrong when it is a PER-LOBE
-		/// conditional density. CompositeSPF still declines (DL-221):
+		/// lobe's density. Aggregate-density rays with response matching
+		/// the aggregate BSDF use this pairing (CoatedSPF / FabricSPF /
+		/// WeaveSPF and the single-emit GGXSPF / CookTorranceSPF).
+		/// A per-lobe conditional density can instead mispair that summed
+		/// response. CompositeSPF still declines (DL-221):
 		/// its stochastic two-layer walk cannot be recovered from these
 		/// arguments. TranslucentSPF now evaluates its normal entry/exit
 		/// lobes (DL-222 closed), but retains a diagnostic identity for

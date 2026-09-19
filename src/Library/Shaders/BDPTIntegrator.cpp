@@ -3048,21 +3048,16 @@ namespace {
 						hwssBetaNM[0] = beta;
 						for( unsigned int w = 1; w < SampledWavelengths::N; w++ ) {
 							if( pSwlHWSS->terminated[w] ) continue;
-							// DL-69, HWSS companions.  Same pairing rule
-							// per wavelength, and the same fallback
-							// ladder PT's HWSS body uses: ask the SPF for
-							// the SELECTED lobe's kray at this companion
-							// wavelength (`ISPF::EvaluateKrayNM`), and
-							// only if the SPF declines (-1, the
-							// base-class default) fall back to the
-							// aggregate `fw * invScale`.  That fallback
-							// carries the DL-69 pattern for any SPF that
-							// does not implement `EvaluateKrayNM` --
-							// `SchlickSPF` among them -- and is tracked
-							// as DL-125 (PT's own HWSS companion path has
-							// the identical residual, same fallback, and
-							// is the reason this site mirrors rather than
-							// diverges from it).
+							// DL-125 closed: like PT, ask EvaluateKrayNM
+							// for the selected lobe at this companion
+							// wavelength. Schlick and the other repaired
+							// per-lobe SPFs now supply that weight.
+							// Aggregate evaluation remains appropriate for
+							// aggregate-density rays with matching BSDF
+							// response, or a guiding-substituted direction.
+							// CompositeSPF still declines (DL-221).
+							// TranslucentSPF supports its entry/exit lobes;
+							// unsupported types can still decline and warn.
 							Scalar compScale = -1;
 							if( useKray && pSPF ) {
 								const Scalar krayW = pSPF->EvaluateKrayNM(
@@ -3073,11 +3068,10 @@ namespace {
 								}
 							}
 							if( compScale < 0 ) {
-								// DL-125.  The fallback is EXACT only for
-								// an SPF whose emitted ray carries the
-								// AGGREGATE mixture density; a per-lobe
-								// conditional density makes it the DL-69
-								// mispairing. CompositeSPF still declines
+								// Match aggregate response with aggregate
+								// density; a per-lobe density can instead
+								// produce DL-69's summed-response mismatch.
+								// CompositeSPF still declines
 								// (DL-221) and names itself. TranslucentSPF
 								// now evaluates its normal entry/exit lobes.
 								if( useKray ) {
@@ -7100,10 +7094,12 @@ unsigned int GenerateLightSubpathImpl(
 					hwssBetaNM[0] = beta;
 					for( unsigned int w = 1; w < SampledWavelengths::N; w++ ) {
 						if( pSwlHWSS->terminated[w] ) continue;
-						// DL-69 HWSS companions -- see the eye twin:
-						// per-lobe `ISPF::EvaluateKrayNM` first, the
-						// aggregate `fw * invScale` only where the SPF
-						// declines to answer (DL-125).
+						// Same selected-lobe contract as PT and the eye twin:
+						// EvaluateKrayNM first (DL-125 closed), aggregate
+						// fallback for matching aggregate-density response
+						// or guiding substitution. CompositeSPF remains
+						// DL-221; Translucent's entry/exit lobes are supported,
+						// while unsupported types may decline and warn.
 						Scalar compScale = -1;
 						if( useKray && pSPF ) {
 							const Scalar krayW = pSPF->EvaluateKrayNM(
@@ -7499,10 +7495,10 @@ void BDPTIntegrator::RecomputeSubpathThroughputNM(
 			// Russian roulette and guiding training.
 			//
 			// The aggregate fallback below is KEPT for every SPF that
-			// declines (`EvaluateKrayNM` < 0) -- it is exact wherever the
-			// emitted ray carries the AGGREGATE mixture density, which is
-			// why CoatedSPF / FabricSPF / WeaveSPF / GGXSPF /
-			// CookTorranceSPF deliberately never override the method --
+			// declines (`EvaluateKrayNM` < 0). It matches aggregate-density
+			// sampling whose response is represented by the aggregate BSDF:
+			// CoatedSPF / FabricSPF / WeaveSPF / GGXSPF / CookTorranceSPF
+			// deliberately use this path rather than an override --
 			// and for a guiding-SUBSTITUTED direction, where
 			// `scatterType` is deliberately left `eRayUnknown`.
 			//

@@ -228,11 +228,11 @@ ScatteredRay* ScatteredRayContainer::RandomlySelectDiffuse(
 //
 // The three HWSS companion loops (PathTracingIntegrator.cpp's HWSS
 // body and BDPTIntegrator.cpp's eye and light subpath generators) price
-// a companion wavelength with the SELECTED lobe's own kray when the SPF
-// implements `EvaluateKrayNM`, and otherwise fall back to
-// `IBSDF::valueNM(outDir) * cos / pS->pdf`.  That fallback is EXACT for
-// an SPF whose emitted ray carries the AGGREGATE mixture density and
-// wrong for one that carries a PER-LOBE conditional density.
+// a companion wavelength with the SELECTED lobe's own kray when
+// EvaluateKrayNM accepts that lobe, and otherwise use aggregate BSDF
+// evaluation times cos / the stored density. This matches a sampled
+// aggregate-density ray when its response matches the aggregate BSDF;
+// a per-lobe conditional density can instead mispair the summed response.
 // CompositeSPF still declines (DL-221). TranslucentSPF now evaluates
 // its normal entry/exit lobes (DL-222 closed), retaining its diagnostic
 // identity only in case an unsupported lobe reaches the fallback.
@@ -276,13 +276,14 @@ namespace RISE
 					continue;				// lost the race; look again
 				}
 				GlobalLog()->PrintEx( eLog_Warning,
-					"%s:: an HWSS companion wavelength was priced through the AGGREGATE-BSDF "
-					"fallback because this SPF does not implement ISPF::EvaluateKrayNM, and it "
-					"stores a PER-LOBE conditional density on each emitted ray -- so the "
-					"companion's throughput pairs the material's summed BSDF with one lobe's "
-					"density (DL-125/DL-221).  Affects `hwss TRUE` spectral renders under PT, "
-					"BDPT, VCM and MLT only; the hero wavelength and every RGB render are "
-					"unaffected.  Render with `hwss FALSE` to avoid it.",
+					"%s:: ISPF::EvaluateKrayNM declined this lobe for an HWSS companion. "
+					"The AGGREGATE-BSDF fallback is paired with a PER-LOBE conditional "
+					"density, so the summed response may not match the selected lobe. "
+					"CompositeSPF's unresolved walk is DL-221; TranslucentSPF supports its "
+					"normal entry/exit lobes and retains this diagnostic for unsupported "
+					"types. This fallback concerns companion lanes in `hwss TRUE` spectral "
+					"transport; the hero wavelength and RGB rendering are unaffected. "
+					"Using `hwss FALSE` skips companion evaluation.",
 					name );
 				return;
 			}
