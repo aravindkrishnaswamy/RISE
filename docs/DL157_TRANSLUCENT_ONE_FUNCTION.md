@@ -314,8 +314,7 @@ DL-223, both bounded.**
    **fixed in round 3 instead of recorded**: the same file's primary
    gather arm at `:521` was converted to `valueStateful` by this slice
    while the gradient-estimator arm was left behind, with the live
-   `ior_stack` already a parameter of that helper two lines above the
-   call. Final gather IS a production path, so the round-2 sentence
+   `ior_stack` already a parameter of that helper. Final gather IS a production path, so the round-2 sentence
    "none of them a production integrator path" was wrong as written; it
    does not describe the remaining photon-gather and SMS calls.
    `PathValueOps::EvalBSDF` has no production caller; its two callers are
@@ -939,7 +938,7 @@ BDPT's HWSS companion lanes stop falling back to DL-125's
 nearly free, so it is implemented here: `ScatterNM` emits at most two
 rays with DISTINCT types, so `rayType` alone identifies the lobe on
 either side. Gated at **1e-12** against `ScatterNM`'s own `krayNM` with
-the same wavelength as hero, over four record kinds x six tilts x three
+the same wavelength as hero, over nine record kinds x six tilts x three
 wavelengths (`TranslucentLobeConsistencyTest` gate 5) — the strongest
 available statement, since the two are the same quantity asked twice.
 **DL-222 can be struck at merge.** Expect a trivial conflict in
