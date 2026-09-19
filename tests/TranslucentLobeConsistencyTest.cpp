@@ -81,6 +81,9 @@
 #include "../src/Library/Materials/CompositeMaterial.h"
 #include "../src/Library/Materials/LambertianMaterial.h"
 #include "../src/Library/Geometry/BezierPatchGeometry.h"
+#include "../src/Library/Geometry/ClippedPlaneGeometry.h"
+#include "../src/Library/Geometry/SphereGeometry.h"
+#include "../src/Library/Objects/CSGObject.h"
 
 #include "TestStubObject.h"
 
@@ -293,8 +296,8 @@ namespace
 	//! are the closed-solid pair; `kSheetFront`/`kSheetBack` are the open
 	//! double-sided sheet, whose BACK-face record is the one DL-157's P1
 	//! review found broken (side says entry, ray says leaving, both true).
-	enum RecordKind { kEntry, kExit, kSheetFront, kSheetBack, kMeshSheetBack, kDSExit, kBezierExit, kOtherEnclosure };
-	const int kNumRecordKinds = 8;
+	enum RecordKind { kEntry, kExit, kSheetFront, kSheetBack, kMeshSheetBack, kDSExit, kBezierExit, kCSGExit, kOtherEnclosure };
+	const int kNumRecordKinds = 9;
 
 	const char* RecordName( RecordKind k )
 	{
@@ -306,6 +309,7 @@ namespace
 		case kMeshSheetBack: return "meshBack   ";
 		case kDSExit:     return "dsMeshExit ";
 		case kBezierExit: return "bezierExit ";
+		case kCSGExit:    return "csgExit    ";
 		default:          return "otherEnclos";
 		}
 	}
@@ -373,7 +377,7 @@ namespace
 		bool bProvablyNoInterior;
 	};
 
-	const BezierStamp& BezierBackFaceStamp( Scalar segLen )
+	const BezierStamp& BezierBackFaceStamp()
 	{
 		static bool bBuilt = false;
 		static BezierStamp stamped = { false, Vector3(0,0,-1), false, false, false };
@@ -402,7 +406,7 @@ namespace
 			// Travelling +Z, so the centre's +Z normal faces AWAY: the
 			// back-face condition `dotND > 0` holds and the geometry
 			// flips, which is the condition round 2 certified on.
-			RayIntersectionGeometric probe( Ray( Point3(0,0,-segLen), Vector3(0,0,1) ), rs );
+			RayIntersectionGeometric probe( Ray( Point3(0,0,-2.0), Vector3(0,0,1) ), rs );
 			g->IntersectRay( probe, true, true, false );
 
 			stamped.bHit                      = probe.bHit;
@@ -418,7 +422,7 @@ namespace
 
 	RayIntersectionGeometric MakeBezierInteriorExit( Scalar tiltDeg, Scalar segLen )
 	{
-		const BezierStamp& stamp = BezierBackFaceStamp( segLen );
+		const BezierStamp& stamp = BezierBackFaceStamp();
 
 		const Scalar tiltRad = tiltDeg * PI / 180.0;
 		// Reported (already flipped toward the outward-travelling ray).
@@ -441,6 +445,36 @@ namespace
 		return ri;
 	}
 
+	// A real CSG whole-record copy from a double-sided plane.  The second
+	// operand is off the ray, isolating certification from interval algebra.
+	// This does not prove that this particular union encloses a volume:
+	// it proves CSG cannot inherit an operand's object-wide certification.
+	// The exiting ray and inside stack exercise the consumer's exit pricing.
+	RayIntersectionGeometric MakeCSGPlaneExit( Scalar tiltDeg, Scalar segLen, bool planeIsA = true )
+	{
+		const Point3 corners[4] = { Point3(-2,-2,0), Point3(2,-2,0),
+			Point3(2,2,0), Point3(-2,2,0) };
+		ClippedPlaneGeometry* plane = new ClippedPlaneGeometry( corners, true );
+		SphereGeometry* sphere = new SphereGeometry( 1.0 );
+		Object* a = new Object( plane );
+		Object* b = new Object( sphere );
+		plane->release(); sphere->release();
+		a->FinalizeTransformations();
+		b->SetPosition( Point3(10,0,0) );
+		b->FinalizeTransformations();
+		CSGObject* csg = new CSGObject( CSG_UNION );
+		const bool assigned = csg->AssignObjects( planeIsA ? a : b, planeIsA ? b : a );
+		csg->FinalizeTransformations();
+		RayIntersection hit( Ray(Point3(0,0,-segLen), Vector3(0,0,1)), nullRasterizerState );
+		if( assigned ) csg->IntersectRay( hit, RISE_INFINITY, true, true, true );
+		RayIntersectionGeometric ri( hit.geometric );
+		const Scalar tilt = tiltDeg * PI / 180.0;
+		ri.vNormal = Vector3( sin(tilt), 0, -cos(tilt) );
+		ri.onb.CreateFromW( ri.vNormal );
+		csg->release(); a->release(); b->release();
+		return ri;
+	}
+
 	RayIntersectionGeometric MakeRecord( RecordKind k, Scalar tiltDeg, Scalar segLen )
 	{
 		switch( k ) {
@@ -451,13 +485,14 @@ namespace
 		case kMeshSheetBack: return MakeMeshSheetBackFaceFirst( tiltDeg, segLen );
 		case kDSExit:     return MakeDoubleSidedMeshExit( tiltDeg, segLen );
 		case kBezierExit: return MakeBezierInteriorExit( tiltDeg, segLen );
+		case kCSGExit:    return MakeCSGPlaneExit( tiltDeg, segLen );
 		// `kOtherEnclosure` is an ordinary ENTRY hit on our object; what
 		// differs is the STACK (see MakeRecordStack).
 		default:          return MakeClosedEntry( tiltDeg, segLen );
 		}
 	}
 
-	//! `kExit`, `kDSExit` and `kBezierExit` are interior exits; every
+	//! `kExit`, `kDSExit`, `kBezierExit` and `kCSGExit` use inside stacks; every
 	//! other record is an ENTRY by the stack.  `kOtherEnclosure` is the one that separates
 	//! "the stack is non-empty" from "the stack contains US": the walk is
 	//! inside a DIFFERENT object (water, say) and entering ours, so
@@ -465,7 +500,7 @@ namespace
 	//! frame on it.
 	IORStack MakeRecordStack( RecordKind k, const IObject* obj, const IObject* other )
 	{
-		if( k == kExit || k == kDSExit || k == kBezierExit ) return MakeInsideStack( obj );
+		if( k == kExit || k == kDSExit || k == kBezierExit || k == kCSGExit ) return MakeInsideStack( obj );
 		if( k == kOtherEnclosure ) {
 			IORStack stack( 1.0 );
 			stack.SetCurrentObject( other );
@@ -529,7 +564,7 @@ static void Gate1( const Rig& rig, const IObject* obj, const IObject* other,
 	RecordKind kind, bool bNM, bool bStacked, Scalar segLen, const char* label )
 {
 	const int kTrials = 40000;
-	const bool bExit = ( kind == kExit || kind == kDSExit || kind == kBezierExit );
+	const bool bExit = ( kind == kExit || kind == kDSExit || kind == kBezierExit || kind == kCSGExit );
 
 	std::cout << "  -- Gate 1 " << label << " " << RecordName(kind)
 	          << " (" << (bNM?"NM":"RGB") << ", " << (bStacked?"STACKED value":"stackless value")
@@ -915,6 +950,13 @@ int main()
 	{
 		Rig rig( RISEPel(0.5,0.3,0.2), RISEPel(0.4,0.6,0.3), 0.0, 10.0, 0.3 );
 		std::cout << std::endl << "[A] ext=0, ref=(.5,.3,.2) tau=(.4,.6,.3) N=10 scat=.3" << std::endl;
+		for( int order = 0; order < 2; ++order ) {
+			const RayIntersectionGeometric cs = MakeCSGPlaneExit( 0, 2.0, order == 0 );
+			EXPECT( cs.bHit, "[E] CSG plane operand produces a real hit in either operand order" );
+			EXPECT( cs.bGeomNormalOrientedToRay && fabs(cs.vGeomNormal.z + 1.0) < 1e-9,
+				"[E] CSG imports the plane's back-face geometric normal" );
+			EXPECT( !cs.bProvablyNoInterior, "[E] CSG must clear the plane operand's no-interior certification" );
+		}
 		for( int m = 0; m < 2; m++ ) {
 			const bool bNM = ( m == 1 );
 			for( int st = 0; st < 2; st++ ) {
@@ -1009,7 +1051,7 @@ int main()
 		// geometry hit; if that hit silently missed, or landed on the
 		// FRONT face, the row would carry the defaults and gate nothing.
 		{
-			const BezierStamp& bs = BezierBackFaceStamp( 2.0 );
+			const BezierStamp& bs = BezierBackFaceStamp();
 			EXPECT( bs.bHit, "[E] bezier fixture: the probe ray really hits the patch" );
 			EXPECT( bs.bGeomNormalOrientedToRay,
 				"[E] bezier fixture: it is a BACK-face hit (the geometry flipped the normal) "
@@ -1020,6 +1062,13 @@ int main()
 			EXPECT( fabs( bs.vGeomNormal.z + 1.0 ) < 1e-9,
 				"[E] bezier fixture: the stamped geometric normal is the canonical -Z" );
 		}
+		for( int order = 0; order < 2; ++order ) {
+			const RayIntersectionGeometric cs = MakeCSGPlaneExit( 0, 2.0, order == 0 );
+			EXPECT( cs.bHit, "[E] CSG plane operand produces a real hit in either operand order" );
+			EXPECT( cs.bGeomNormalOrientedToRay && fabs(cs.vGeomNormal.z + 1.0) < 1e-9,
+				"[E] CSG imports the plane's back-face geometric normal" );
+			EXPECT( !cs.bProvablyNoInterior, "[E] CSG must clear the plane operand's no-interior certification" );
+		}
 		for( int m = 0; m < 2; m++ ) {
 			const bool bNM = ( m == 1 );
 			for( int st = 0; st < 2; st++ ) {
@@ -1028,6 +1077,7 @@ int main()
 				Gate1( rig, obj, other, kMeshSheetBack,  bNM, st==1, 2.0, "[E]" );
 				Gate1( rig, obj, other, kDSExit,         bNM, st==1, 2.0, "[E]" );
 				Gate1( rig, obj, other, kBezierExit,     bNM, st==1, 2.0, "[E]" );
+				Gate1( rig, obj, other, kCSGExit,        bNM, st==1, 2.0, "[E]" );
 				Gate1( rig, obj, other, kOtherEnclosure, bNM, st==1, 2.0, "[E]" );
 			}
 		}
@@ -1036,6 +1086,7 @@ int main()
 		Gate234( rig, obj, other, kMeshSheetBack,  false, 2.0, "[E]" );
 		Gate234( rig, obj, other, kDSExit,         false, 2.0, "[E]" );
 		Gate234( rig, obj, other, kBezierExit,     false, 2.0, "[E]" );
+		Gate234( rig, obj, other, kCSGExit,        false, 2.0, "[E]" );
 		Gate234( rig, obj, other, kOtherEnclosure, false, 2.0, "[E]" );
 	}
 
