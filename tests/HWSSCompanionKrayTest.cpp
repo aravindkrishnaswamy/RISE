@@ -721,6 +721,8 @@ int main()
 		// caller could bound) or a legitimately large spectral swing (a
 		// real quantity that must not be clamped).  Printed, not gated:
 		// it is a characterisation of a recorded cost, not a contract.
+		// Synthetic ri at 0/35/70 degrees only: this population is not a
+		// render-weighted tail distribution or a bound on grazing heroes.
 		{
 			unsigned int nBig = 0, nBigFromSmallHero = 0, nTot = 0;
 			double worstRatio = 0, heroAtWorst = 0;
@@ -754,7 +756,7 @@ int main()
 				}
 			}
 			}
-			std::cout << "   tail: " << nTot << " ratios, " << nBig << " over 4x ("
+			std::cout << "   synthetic-ri ratio population (0/35/70 degrees): " << nTot << " ratios, " << nBig << " over 4x ("
 			          << ( nTot ? 100.0 * double(nBig) / double(nTot) : 0.0 ) << "%), of which "
 			          << nBigFromSmallHero << " have krayHero < 1e-3;  worst ratio "
 			          << worstRatio << "x at krayHero " << std::scientific

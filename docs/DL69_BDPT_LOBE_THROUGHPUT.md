@@ -386,9 +386,14 @@ true generating density of `Scatter` + `RandomlySelect`.  On a material
 with an ordinary closed-form `Pdf` the residual is correspondingly
 smaller.
 
-### 3.2c Spectral / HWSS companions (review P2-6)
+### 3.2c Historical spectral / HWSS companions (pre-DL-125 review P2-6)
 
-`SchlickSPF` does not override `ISPF::EvaluateKrayNM`, so §2's companion
+**Historical measurements below used the default 10-wavelength grid. The
+claimed material-independent bias and the old 5% band were superseded:
+DL-125 supplied Schlick's override, and §6.3 now matches 160 wavelengths
+and calibrates the current parity checks.**
+
+At that revision `SchlickSPF` did not override `ISPF::EvaluateKrayNM`, so §2's companion
 fallback is taken on **every** companion wavelength at every non-delta
 vertex of topology L — the `compScale < 0` branch is reachable 100 % of
 the time there, which is what DL-125 records.
@@ -662,6 +667,10 @@ DL-222), and that the density convention is `p_I(nm)` rather than
 
 ### 6.3 Red-proof and measurements
 
+Except for the round-4 calibration explicitly marked below, numerical
+A/B results in this section are historical measurements from rounds 1–2.
+They are retained as provenance, not represented as new round-4 runs.
+
 `tests/HWSSCompanionKrayTest.cpp` (new): **91 passed, 0 failed**; red
 **46 passed, 45 failed** -- isolated A/B with the five SPF `.cpp`/`.h`
 pairs reverted to `9fe42f52`, library AND test target rebuilt on each
@@ -743,10 +752,11 @@ wavelength grid, ~4% chroma at N = 10".
 
 Topology P's renders are now pinned at `num_wavelengths 160`.
 
-#### The four-estimator picture, and DL-219
+#### Historical four-estimator picture (superseded by round-4 calibration)
 
-With the quadrature matched, four estimators of the same image are
-rendered (CLI `bin/rise`, nw 160, n = 6 interleaved):
+These round-2 measurements used mismatched spp on the fourth row;
+they are historical evidence, not the current pin calibration.
+CLI `bin/rise`, nw 160, n = 6 interleaved:
 
 | estimator | B/R mean (sd) | vs the 3-estimator reference |
 |---|---|---|
@@ -755,11 +765,9 @@ rendered (CLI `bin/rise`, nw 160, n = 6 interleaved):
 | BDPT spectral `hwss FALSE`, 1024 spp | 1.66348 (0.0064) | +0.02% |
 | **BDPT spectral `hwss TRUE`, 256 spp** | **1.60474 (0.0111)** | **-3.51%** |
 
-Three independent estimators agree to within 0.26% of their own mean;
-the fourth is 3.5% away.  The same probe inside
-`BDPTStrategyBalanceTest` reads -3.37%.  (PT `hwss TRUE` must be
-rendered at 1024 spp to be usable: at 256 its own B/R sd is 0.045,
-ten times the others', and it reads 1.645 purely from noise.)
+In this historical table the three 1024-spp reference means are within
+0.26% of their mean; the 256-spp BDPT HWSS row differs by -3.51%.
+These are not matched-spp estimates and cannot set the current band.
 
 **That outlier is PRE-EXISTING and is not what DL-125 fixed.**  An
 isolated A/B on `BDPTIntegrator.cpp` at the same nw 160, n = 12
@@ -789,7 +797,8 @@ on both sides), pre/post interleaved, nw 160:
 | 1024 | 6 | 0.99990 (-0.010%) | -0.16 | 0.193% |
 | 2048 | 6 | 0.99979 (-0.021%) | -0.34 | 0.145% |
 
-The two builds converge to the **same mean**.  Nothing is biased.
+These historical measurements did not resolve a persistent change in the
+achromatic mean; they do not prove absolute unbiasedness (DL-219 remains).
 
 #### What DID change: the tail
 
@@ -809,7 +818,8 @@ and the post-fix image's run-to-run sd stops falling cleanly with spp
 
 **Is a bounded form available without re-creating the aggregate
 pairing?  On this material, no — and that is measured, not assumed.**
-`HWSSCompanionKrayTest` section E now characterises the tail: of 1969
+`HWSSCompanionKrayTest` section E characterises a synthetic-intersection
+ratio population, not a render-weighted tail distribution: of 1969
 per-draw ratios above 4x, **ZERO have `krayHero < 1e-3`**; the worst is
 **7.40x at `krayHero = 0.127`**, and the smallest hero weight seen at
 all is 0.083.  The heavy ratios are legitimate spectral swings on a
@@ -842,9 +852,9 @@ have different reasons:
   but whoever lands such a change should expect this row to fire and
   should re-state the reference rather than widen the band.
 
-So: no band here is "derived from this branch's absolute level" any
-more.  Both gates are stated relative to a reference measured in the
-same run, which is what makes them survive a merge that moves levels.
+Both gates use a reference measured in the same run. The known-defect
+band still depends on this branch's measured relative level; a merge
+that changes the estimators differently requires recalibration.
 
 #### The B/R delta is not separable in either direction
 
@@ -852,8 +862,8 @@ Four independent measurements of the pre-vs-post B/R delta on topology
 P: **+0.335 pp** (t = 0.97, n = 14, round 1, CLI at the default nw),
 **+0.079 pp** (t = 0.27, n = 12, round 2, CLI at nw 160), and the
 relayed external review's **-0.075 pp** (t = -0.25, n = 10) and
-**+0.189 pp** (t = 1.36, n = 13).  The honest statement is
-`|delta| < 0.2 pp`; round 1's "directionally consistent" is withdrawn.
+**+0.189 pp** (t = 1.36, n = 13).  These historical runs do not resolve a sign; they do not establish a
+hard bound on the true delta. Round 1's "directionally consistent" is withdrawn.
 The B/R LEVEL is itself sample-count-dependent (a ratio-of-ratios bias
 from the noisy small-R denominator), so no absolute B/R at one spp is a
 stable quantity either.
@@ -936,7 +946,7 @@ from the material's AGGREGATE BSDF instead of the SELECTED lobe's own
 | `CompositeSPF` | UNCLOSABLE from the method's signature; NAMES itself | **DL-221** |
 | `TranslucentSPF` | genuine sibling, recoverable at the three LIVE call sites and lost only at the synthetic-`ri` rebuild site; NAMES itself | **DL-222** |
 | every override's density convention | `p_I(lambda_c)` where the draw used `p_I(lambda_h)` -- identical for reflectance-only chromatic materials, different under a chromatic SHAPE painter | **DL-216** |
-| BDPT's `hwss TRUE` bundle on a chromatic multi-lobe material | -3.4% B/R against three agreeing estimators; PRE-EXISTING (A/B moves it +0.079 pp, t = 0.27); PT's HWSS is clean on the same scene | **DL-219** |
+| BDPT's `hwss TRUE` bundle on a chromatic multi-lobe material | Channel-balance discrepancy against three reference estimators; matched-spp repeat calibration in §6.3, historical isolated A/B there | **DL-219** |
 
 ### 6.5 Four rows opened
 

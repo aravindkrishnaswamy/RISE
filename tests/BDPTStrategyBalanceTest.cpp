@@ -105,6 +105,8 @@
 //////////////////////////////////////////////////////////////////////
 
 #include <cstdio>
+#include <cstring>
+#include <utility>
 #include <cstdlib>
 #include <iostream>
 #include <fstream>
@@ -2377,6 +2379,7 @@ static const char* kRasterizerBDPTSpectralNoHWSS =
 	"\tmax_light_depth 5\n"
 	"\tsamples 1024\n"
 	"\thwss FALSE\n"
+	"\tnum_wavelengths 160\n"
 	"\tpixel_filter box\n"
 	"\toidn_denoise FALSE\n"
 	"}\n"
@@ -2402,6 +2405,7 @@ static const char* kRasterizerBDPTSpectralHWSS =
 	"\tmax_light_depth 5\n"
 	"\tsamples 256\n"
 	"\thwss TRUE\n"
+	"\tnum_wavelengths 160\n"
 	"\tpixel_filter box\n"
 	"\toidn_denoise FALSE\n"
 	"}\n"
@@ -2418,6 +2422,20 @@ static const char* kRasterizerBDPTSpectralHWSS =
 // render failure (already `Check`-flagged).  Shared by topology L's own
 // probe and topology M's control (round-2 review P3-4) so the two use
 // IDENTICAL rasterizer strings and statistics.
+static unsigned int spectralSampleScale = 1;
+
+static std::string ScaleSpectralSamples( std::string scene )
+{
+	if( spectralSampleScale == 2 ) {
+		for( const auto& counts : { std::make_pair("\tsamples 1024\n", "\tsamples 2048\n"),
+			std::make_pair("\tsamples 256\n", "\tsamples 512\n") } ) {
+			const size_t pos = scene.find( counts.first );
+			if( pos != std::string::npos ) scene.replace( pos, std::strlen(counts.first), counts.second );
+		}
+	}
+	return scene;
+}
+
 static double RunSpectralHWSSLadder( const char* topologyLabel, const std::string& sceneBody,
 	ImageStats* outNoHWSS = 0, ImageStats* outHWSS = 0 )
 {
@@ -2425,9 +2443,9 @@ static double RunSpectralHWSSLadder( const char* topologyLabel, const std::strin
 	std::cout << "Testing " << name << std::endl;
 
 	const std::string sceneNo = std::string("RISE ASCII SCENE 7\n")
-		+ kRasterizerBDPTSpectralNoHWSS + sceneBody;
+		+ ScaleSpectralSamples(kRasterizerBDPTSpectralNoHWSS) + sceneBody;
 	const std::string sceneHW = std::string("RISE ASCII SCENE 7\n")
-		+ kRasterizerBDPTSpectralHWSS   + sceneBody;
+		+ ScaleSpectralSamples(kRasterizerBDPTSpectralHWSS) + sceneBody;
 
 	const std::string pathNo = WriteSceneToTempFile( sceneNo.c_str(), "spec_nohwss" );
 	const std::string pathHW = WriteSceneToTempFile( sceneHW.c_str(), "spec_hwss"   );
@@ -2476,189 +2494,44 @@ static double RunSpectralHWSSLadder( const char* topologyLabel, const std::strin
 
 static void TestSpectralHWSSCompanionLadder()
 {
-	// DL-69's throughput fix prices the SELECTED lobe's own `kray`.  On
-	// the HWSS COMPANION wavelengths it asks the SPF for that same
-	// lobe's kray at the companion wavelength via `ISPF::EvaluateKrayNM`,
-	// and falls back to the OLD aggregate-BSDF-over-per-lobe-pdf pairing
-	// when the SPF declines (returns -1, the base-class default).  Only
-	// `PolishedSPF` and `HairBSDF`'s `HairSPF` implement that method
-	// today, so on `schlick_material` the fallback is REACHABLE ON EVERY
-	// COMPANION WAVELENGTH -- which is exactly what DL-125 records (PT's
-	// own HWSS companion body has the identical ladder and the identical
-	// residual).
-	//
-	// This is a MEASUREMENT, not a gate on correctness: `hwss FALSE`
-	// (hero wavelength only) takes the DL-69-fixed per-lobe path on
-	// every bounce, so any systematic gap between the two is (at least
-	// in part) the companions' un-fixed pairing -- see
-	// `TestSpectralHWSSCompanionLadderControl` below for how much of it
-	// is actually material-independent HWSS noise instead.  The band is
-	// deliberately wide and exists only so the recorded magnitude cannot
-	// drift silently -- tighten it when DL-125 closes, don't "fix" the
-	// number here.
-	//
-	// TWO MEASUREMENT NOTES, both load-bearing.
-	//
-	//   * The GATED statistic is the ACHROMATIC mean (the average of the
-	//     three channel means), not a per-channel ratio.  The scene is
-	//     grey under a white emitter, so its true image is neutral; an
-	//     `hwss FALSE` render draws ONE wavelength per path, which leaves
-	//     several percent of purely chromatic MC noise on each individual
-	//     channel (measured spread 0.0662 / 0.0623 / 0.0639 at 256 spp)
-	//     that the achromatic mean averages away.  Per-channel ratios are
-	//     still printed, but reading a bias off one of them would be
-	//     reading noise.
-	//   * The two renders deliberately do NOT use the same sample count.
-	//     `hwss TRUE` carries SampledWavelengths::N wavelengths per path,
-	//     so at equal `samples` its spectral estimate is several times
-	//     less noisy than `hwss FALSE`'s.  The hero-only render gets 4x
-	//     the samples to bring the two to comparable precision; both are
-	//     unbiased estimates of the same quantity, so an unequal count
-	//     costs only time.  Depth budget, geometry, filter and denoise
-	//     settings are identical.
+	// DL-125 closed: Schlick now supplies the selected lobe's kray at
+	// each companion wavelength. This achromatic BDPT ladder is a parity
+	// control; equal grey lobe spectra make the old and new recomputation
+	// ratios identical, so it is not a red-proof of the repair.
+	// Both rasterizers use num_wavelengths 160. Hero-only gets 4x the
+	// samples because its single wavelength has greater chromatic noise.
 	const double achroRatio = RunSpectralHWSSLadder( "topology L (DL-125 probe)", kSceneSchlickMultiLobeL );
 	if( achroRatio < 0 ) return;
 
-	// Recorded magnitude of the DL-125 companion residual on this scene.
-	// See the block comment: a wide band that pins the number, not a
-	// correctness claim about the companions.
-	Check( std::fabs( achroRatio - 1.0 ) < 0.05,
-		"DL-125 probe: spectral hwss TRUE achromatic mean stays within 5% of hwss FALSE on topology L" );
+	// Calibration and tolerance derivation: DL69_BDPT_LOBE_THROUGHPUT.md §6.3.
+	Check( std::fabs( achroRatio - 1.0 ) < 0.01,
+		"DL-125 parity control: spectral hwss TRUE achromatic mean stays within 1% of hwss FALSE on topology L" );
 }
 
-// P3-4 (round-2 review): topology L's ladder above cannot by itself say
-// how much of its hwss-FALSE/TRUE gap is DL-125 (the companion fallback)
-// versus HWSS spectral-bundling noise/bias that has nothing to do with
-// this material.  Topology M is `ggx_material` + `lambertian_material`
-// -- `GGXSPF` does not override `EvaluateKrayNM` either, so it ALSO
-// takes the companion fallback on every companion wavelength, but
-// `GGXSPF`'s selected-lobe density already equals the aggregate `mixPdf`
-// (see `TestGGXLambertianControl`'s own comment) and each lobe's `kray`
-// already matches its own BRDF/pdf ratio -- so the "fallback pairing" on
-// this material computes the SAME thing the DL-69-fixed per-lobe path
-// would have, i.e. the fallback is EXACT here, not merely reachable.  A
-// residual on M is therefore NOT DL-125 (there is nothing for the
-// fallback to get wrong) -- it isolates whatever HWSS gap exists for
-// reasons independent of the companion-kray pairing.
+// GGX and Lambertian use aggregate sampling densities, so the aggregate
+// fallback is appropriate here. This material control is immune to DL-125.
 static void TestSpectralHWSSCompanionLadderControl()
 {
 	const double achroRatio = RunSpectralHWSSLadder(
 		"topology M (DL-125 control, exact companion fallback)", kSceneGGXLambertianControlM );
 	if( achroRatio < 0 ) return;
 
-	// Same band as topology L's probe -- this is a measurement, not a
-	// pass/fail claim about DL-125 (which this material is immune to).
-	Check( std::fabs( achroRatio - 1.0 ) < 0.05,
-		"DL-125 control: spectral hwss TRUE achromatic mean stays within 5% of hwss FALSE on topology M" );
+	// Same achromatic parity band as topology L; neither is a red-proof.
+	Check( std::fabs( achroRatio - 1.0 ) < 0.01,
+		"DL-125 control: spectral hwss TRUE achromatic mean stays within 1% of hwss FALSE on topology M" );
 }
 
 //////////////////////////////////////////////////////////////////////
-// TOPOLOGY P -- DL-125's RENDER-VISIBLE half, on BDPT/VCM/MLT.
-//
-// The two ladders above cannot see DL-125 on the BDPT side, and the
-// reason is worth stating so the next reader does not mistake their
-// flatness for evidence.  `BDPTIntegrator.cpp`'s two HWSS companion
-// loops (the ones that run the `EvaluateKrayNM` ladder) write
-// `hwssBetaNM`, which DL-126's review round 2 established is read ONLY
-// for Russian roulette and guiding training -- never for the rendered
-// image.  What actually prices a companion wavelength in an image is
-// `BDPTIntegrator::RecomputeSubpathThroughputNM`, called once per
-// companion by all three spectral rasterizers (BDPT, VCM, MLT), and it
-// rescales the hero throughput by the ratio
-// `f_agg(lambda_c)/f_agg(lambda_h)` of the material's AGGREGATE BSDF.
-//
-// That ratio equals the correct `kray_I(lambda_c)/kray_I(lambda_h)`
-// only when the SELECTED lobe's spectrum is the aggregate's spectrum.
-// Topology L cannot tell the difference: its `schlick_material` uses
-// the SAME grey `0.4 0.4 0.4` for `rd` and `rs`, so both ratios are
-// the same function of wavelength and the defect is exactly zero
-// there.
-//
-// Topology P is topology L with ONLY those two colour lines changed --
-// built by string substitution from `kSceneSchlickMultiLobeL` itself,
-// so "identical apart from the two reflectances" is structural rather
-// than a claim -- to a strongly DIVERGENT pair (a blue diffuse lobe
-// under a red specular one).  The gated statistic is therefore a
-// CHANNEL-BALANCE one, not a mean: B/R of the `hwss TRUE` render
-// against B/R of the `hwss FALSE` (hero-only) render of the same
-// scene.  Hero-only draws one wavelength per path and so has no
-// companion pricing at all -- it is the unbiased reference for channel
-// balance here, at the cost of chromatic MC noise the 4x sample count
-// pays down.
-//
-// WHAT THIS ROW MEASURES (review round 2 replaced this paragraph for
-// the second time; rounds 1 and 2 each found the previous version's
-// headline claim false, so read the history as well as the conclusion).
-//
-// `num_wavelengths` IS LOAD-BEARING HERE.  At the default 10,
-// `hwss FALSE` and `hwss TRUE` are not estimating the same integral:
-// `BDPTSpectralRasterizer.cpp`'s non-HWSS branch draws
-// `lambda_begin + int(xi * num_wavelengths) * wavelength_steps` -- a
-// DISCRETE 10-point LEFT-ENDPOINT grid -- while the HWSS branch calls
-// `SampledWavelengths::SampleEquidistant`, which is
-// continuous-stratified and never consults `num_wavelengths` at all.
-// Every hwssTRUE-vs-hwssFALSE comparison at the default therefore
-// carries about -1% of pure quadrature difference (measured on this
-// scene, post-fix, n = 6: topology L reads -1.028% / +0.128% / +0.047%
-// achromatic at `num_wavelengths` 10 / 40 / 160).  Same family as
-// CLAUDE.md's "PT spectral fixed-N wavelength grid, ~4% chroma at
-// N = 10".  All four renders below therefore set
-// `num_wavelengths 160`.
-//
-// An earlier version of this row gated "the HWSS bundle REPRODUCES the
-// hero-only render's channel balance".  That assertion is FALSE once
-// the quadrature is matched -- it passed at the default only because
-// the 10-bin grid's own error partially cancelled a real defect.  So
-// the row now renders FOUR estimators of the same image and gates the
-// structure they actually have:
-//
-//   PT   spectral hwss FALSE |
-//   PT   spectral hwss TRUE  |  agree to <= 0.5% on B/R  -> gated to parity
-//   BDPT spectral hwss FALSE |
-//   BDPT spectral hwss TRUE  -> -3.5% B/R  -> pinned as DL-219
-//
-// Measured here (nw 160, n = 6 interleaved, CLI): B/R 1.65895 (sd
-// 0.0043) / 1.66718 (sd 0.0051, at 1024 spp -- at 256 spp its own sd
-// is 0.045 and it is useless as a reference) / 1.66348 (sd 0.0064) /
-// 1.60474 (sd 0.0111).
-//
-// DL-219 IS PRE-EXISTING AND IS NOT WHAT DL-125 FIXED.  Isolated A/B on
-// `BDPTIntegrator.cpp` at this same `num_wavelengths 160`, n = 12
-// interleaved: B/R deviation -4.130% pre vs -4.051% post, paired delta
-// +0.079 pp, t = 0.27.  PT's own HWSS is clean on the identical scene,
-// which is what localises the defect to the BDPT/VCM/MLT bundle path.
-//
-// AND THE ACHROMATIC MOVE THIS ROW USED TO REPORT AS A SYSTEMATIC WAS A
-// LOW-SPP ARTIFACT.  hwssTRUE-only, pre/post interleaved, nw 160:
-// post/pre = 0.99484 (t = -5.67) at 256 spp, 1.00077 (t = +1.49) at
-// 512, 0.99990 (t = -0.16) at 1024, 0.99979 (t = -0.34) at 2048 -- the
-// two builds converge to the SAME mean, so the -0.5% at 256 spp is not
-// a bias.  What genuinely changed is the TAIL: `lobeRatio =
-// krayComp/krayHero` is unbounded as `krayHero -> 0`, where the
-// aggregate ratio it replaced was a convex blend bounded between the
-// two lobes' ratios, so the post-fix image's run-to-run sd stops
-// falling cleanly with spp (0.320 / 0.123 / 0.193 / 0.145 % relative at
-// 256 / 512 / 1024 / 2048).  Recorded on the DL-125 row as a variance
-// cost, not a bias.
-//
-// THE B/R PRE-VS-POST DELTA IS NOT SEPARABLE IN EITHER DIRECTION and no
-// claim is made about it: four independent measurements read +0.335 pp
-// (t = 0.97), +0.079 pp (t = 0.27), and the relayed external review's
-// -0.075 pp (t = -0.25) and +0.189 pp (t = 1.36).  The honest statement
-// is |delta| < 0.2 pp.  The B/R LEVEL is itself spp-dependent (a
-// ratio-of-ratios bias from the noisy small-R denominator), so no
-// absolute B/R at one sample count is a stable quantity either.
-//
-// Topology M is NOT a valid reference for this scene (different
-// material AND different geometry -- and post-fix L and M differ by
-// 0.206 pp, t = 3.87, in the relayed measurement).  Topology L is, and
-// it reads post/pre 0.998..1.002 per channel: the attribution control
-// that says the DL-125 change is confined to divergent lobe spectra, as
-// derived.
-//
-// A separating probe for the DL-125 mechanism itself was attempted and
-// did not come cheap -- see `docs/DL69_BDPT_LOBE_THROUGHPUT.md` 6.3 for
-// the two screened candidates and the recipe.
+// TOPOLOGY P -- four-estimator calibration of the remaining DL-219 defect.
+// DL-125 added per-lobe companion ratios to RecomputeSubpathThroughputNM,
+// the render-visible BDPT/VCM/MLT path. The generator hwssBetaNM ladders
+// feed RR/guiding, not the image. Equal grey lobe spectra in topology L
+// cannot distinguish aggregate and per-lobe ratios; P uses divergent
+// diffuse/specular colours. DL-219's remaining bundle discrepancy is
+// distinct from that fix. All four estimators here use matched spp and
+// num_wavelengths 160 (hero-only otherwise samples a coarse discrete grid).
+// See docs/DL69_BDPT_LOBE_THROUGHPUT.md §6.3 for repeat statistics at two
+// sample counts and the historical isolated A/B evidence.
 //////////////////////////////////////////////////////////////////////
 static void ReplaceOnceOrFail( std::string& s, const std::string& from, const std::string& to,
 	const char* what )
@@ -2721,12 +2594,12 @@ static void TestSpectralHWSSChromaticLobeSpectra()
 		{ "PT   spectral hwss FALSE", false, false, 1024, ImageStats() },
 		{ "PT   spectral hwss TRUE ", false, true,  1024, ImageStats() },
 		{ "BDPT spectral hwss FALSE", true,  false, 1024, ImageStats() },
-		{ "BDPT spectral hwss TRUE ", true,  true,   256, ImageStats() },
+		{ "BDPT spectral hwss TRUE ", true,  true,  1024, ImageStats() },
 	};
 
 	for( int i = 0; i < 4; i++ ) {
 		const std::string scene = std::string("RISE ASCII SCENE 7\n")
-			+ TopologyPRasterizer( rows[i].bdpt, rows[i].hwss, rows[i].samples ) + body;
+			+ TopologyPRasterizer( rows[i].bdpt, rows[i].hwss, rows[i].samples * spectralSampleScale ) + body;
 		const std::string path = WriteSceneToTempFile( scene.c_str(), "topP" );
 		if( path.empty() ) {
 			Check( false, "temp file write: topology P" );
@@ -2754,16 +2627,15 @@ static void TestSpectralHWSSChromaticLobeSpectra()
 
 	for( int i = 0; i < 4; i++ ) {
 		std::cout << "    " << rows[i].label
+		          << "  spp = " << rows[i].samples * spectralSampleScale
 		          << "  B/R = " << br[i]
 		          << "  (" << ( ( br[i] / brRef - 1.0 ) * 100.0 ) << "% vs reference)"
 		          << "   achromatic = " << achro[i]
 		          << "  (" << ( ( achro[i] / achroRef - 1.0 ) * 100.0 ) << "%)" << std::endl;
 	}
 
-	// GATE 1 -- the three agreeing estimators must stay agreed.  Band
-	// 1.5%: the widest measured deviation from their own mean is 0.46%
-	// (BDPT hwss FALSE) over n = 6 interleaved runs, with per-estimator
-	// run-to-run sd 0.26-0.38% on B/R, so 1.5% is ~4 sd of headroom.
+	// GATE 1: parity of the three reference estimators. The 1.5% band
+	// is calibrated from repeated in-suite measurements; see §6.3.
 	for( int i = 0; i < 3; i++ ) {
 		Check( std::fabs( br[i] / brRef - 1.0 ) < 0.015,
 			( std::string("DL-125 (topology P): ") + rows[i].label +
@@ -2773,21 +2645,15 @@ static void TestSpectralHWSSChromaticLobeSpectra()
 			  " agrees with the other two clean estimators on the achromatic mean" ).c_str() );
 	}
 
-	// GATE 2 -- DL-219, pinned as a KNOWN DEFECT at its measured value.
-	// BDPT's `hwss TRUE` bundle reads -3.5% B/R against three estimators
-	// that agree to 0.5%.  It is PRE-EXISTING: an isolated A/B on
-	// `BDPTIntegrator.cpp` at this same `num_wavelengths 160` moves it by
-	// +0.079 pp (n = 12 interleaved, paired t = 0.27) -- i.e. DL-125 did
-	// not create it and does not close it.  Band -6% .. -1%: the measured
-	// centre is -3.5% with run-to-run sd 0.67% on B/R, so each side is
-	// ~3.7 sd away, and the band excludes parity so a silent FIX also
-	// trips it and forces the row to be re-read.
+	// GATE 2: known DL-219 discrepancy, distinct from DL-125. The band
+	// excludes parity so an eventual fix forces this pin to be retired.
+	// Calibration at matched spp and nw=160 is documented in §6.3.
 	const double brDefect = br[3] / brRef - 1.0;
 	std::cout << "    DL-219 KNOWN DEFECT: BDPT hwss TRUE B/R is "
 	          << ( brDefect * 100.0 ) << "% of the three-estimator reference" << std::endl;
-	Check( brDefect > -0.06 && brDefect < -0.01,
+	Check( brDefect > -0.07 && brDefect < -0.015,
 		"DL-219 KNOWN DEFECT (topology P): BDPT `hwss TRUE` mis-renders a chromatic "
-		"multi-lobe material's channel balance by ~-3.5% B/R -- pinned, PRE-EXISTING, "
+		"multi-lobe material's channel balance -- pinned, PRE-EXISTING, "
 		"and NOT what DL-125 fixed" );
 	Check( std::fabs( achro[3] / achroRef - 1.0 ) < 0.04,
 		"DL-219 (topology P): BDPT `hwss TRUE`'s achromatic mean stays within 4% "
@@ -2808,34 +2674,10 @@ static void TestSpectralHWSSChromaticLobeSpectra()
 // defect in the HWSS body itself and cannot be an integrator-balance
 // question.
 //
-// THE DEFECT IT PINS is DL-125: `PathTracingIntegrator.cpp`'s HWSS
-// companion loop asks the SPF for the SELECTED lobe's kray at each
-// companion wavelength via `ISPF::EvaluateKrayNM`, and falls back to
-// `pBRDFCur->valueNM(...)` -- the material's AGGREGATE BSDF -- paired
-// with the hero's per-lobe `pS->pdf` and `invSelectProb` when the SPF
-// declines.  `SchlickSPF` does not override `EvaluateKrayNM`, so on
-// topology L the fallback fires on EVERY companion wavelength, and the
-// aggregate-over-per-lobe mispairing compounds once per bounce -- the
-// same pattern DL-69 fixed on the hero/RGB paths.
-//
-// WHY THIS PROBE EXISTS NOW.  DL-103 made PT's un-guided escape-side MIS
-// partner the material's aggregate pdf.  That is correct and its sign is
-// right (see topology L's own comment), but it RAISES the weight the
-// BSDF-sampling strategy carries at a multi-lobe vertex -- and on the
-// HWSS path that strategy's companion throughput is already inflated by
-// DL-125, so the product moves further from the truth.  Measured on this
-// scene (n = 3 per side, isolated `PathTracingIntegrator.cpp`-only A/B):
-// PT pel moved +5.14 % and PT spectral `hwss FALSE` +5.09 % (both the
-// intended DL-103 correction, and both agreeing with each other), while
-// PT spectral `hwss TRUE` moved +12.66 % -- from 1.533x the pel
-// reference to 1.643x it.  The Lambertian/GGX control below is unchanged
-// to within noise across the same A/B.
-//
-// So DL-103 did not create this; it made an open row's cost visible.
-// DL-125 CLOSED 2026-09-18 and this ratio duly collapsed from 1.607 to
-// 1.001 (isolated A/B, n = 3 per side -- see the gate below).  The band
-// was tightened around 1.0 at that point; what follows is a real
-// parity gate, no longer a known-defect pin.
+// DL-125 repaired Schlick's missing EvaluateKrayNM override: the old
+// aggregate-BSDF/per-lobe-density fallback inflated companion throughput.
+// This probe now gates parity after that repair. The historical isolated
+// A/B and the earlier DL-103 interaction are recorded in the DL-69 doc.
 //////////////////////////////////////////////////////////////////////
 static const char* kRasterizerPTSpectralNoHWSS =
 	"standard_shader\n"
@@ -2848,6 +2690,7 @@ static const char* kRasterizerPTSpectralNoHWSS =
 	"{\n"
 	"\tsamples 1024\n"
 	"\thwss FALSE\n"
+	"\tnum_wavelengths 160\n"
 	"\trr_min_depth 8\n"
 	"\tmax_diffuse_bounce 5\n"
 	"\tmax_glossy_bounce 5\n"
@@ -2874,6 +2717,7 @@ static const char* kRasterizerPTSpectralHWSS =
 	"{\n"
 	"\tsamples 256\n"
 	"\thwss TRUE\n"
+	"\tnum_wavelengths 160\n"
 	"\trr_min_depth 8\n"
 	"\tmax_diffuse_bounce 5\n"
 	"\tmax_glossy_bounce 5\n"
@@ -3323,8 +3167,22 @@ static void TestGenericHumanTissueOriginFix()
 		sceneTissue, kStrictTolerances, kRasterizerPTNullBSDF, kRasterizerBDPTNullBSDF );
 }
 
-int main()
+int main( int argc, char** argv )
 {
+	if( argc > 1 ) {
+		if( argc != 3 || std::strcmp(argv[1], "--spectral-only") != 0 ||
+			(std::strcmp(argv[2], "1") != 0 && std::strcmp(argv[2], "2") != 0) ) {
+			std::cerr << "Usage: BDPTStrategyBalanceTest [--spectral-only 1|2]" << std::endl;
+			return 2;
+		}
+		spectralSampleScale = std::strcmp(argv[2], "2") == 0 ? 2 : 1;
+		std::cout << "Spectral sample scale = " << spectralSampleScale << std::endl;
+		TestSpectralHWSSCompanionLadder();
+		TestSpectralHWSSCompanionLadderControl();
+		TestSpectralHWSSChromaticLobeSpectra();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
 	std::cout << "=== BDPTStrategyBalanceTest ===" << std::endl;
 
 	TestDeltaOmniLight();
