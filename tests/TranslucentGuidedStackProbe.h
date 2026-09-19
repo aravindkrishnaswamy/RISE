@@ -297,13 +297,14 @@ static void RunBDPT(PathGuidingField& guide, const IPainter& front, const IPaint
 					integrator->SetLightSampler(0);
 					lightSampler->release(); scene->release(); manager->release(); material->release();
 				}
-				Check( distanceChecks > 0 && badDistance == 0,
+				EXPECT( distanceChecks > 0 && badDistance == 0,
 					"DL-222: eye/light RGB/NM generator records the sampler's actual incoming distance" );
 				std::cout << "  BDPT " << (side ? "light" : "eye") << " " << (spectral ? "NM" : "RGB")
 					<< " mode=" << mode << " reached=" << reached << " substituted_out=" << outwardSub
 					<< " substituted_in=" << inwardSub << " retained_spf=" << retained
 					<< " exit_pdf_queries=" << exitQueries << " bad_initial=" << badInitial << " bad_out=" << badOut << " bad_in=" << badIn
-					<< " bad_medium=" << badMedium << " bad_pdf_value=" << badPdfValue << std::endl;
+					<< " bad_medium=" << badMedium << " bad_pdf_value=" << badPdfValue
+					<< " distance_checks=" << distanceChecks << " bad_distance=" << badDistance << std::endl;
 				EXPECT(badInitial==0,"DL-03 BDPT real entry leads to real exit with a popped SPF stack");
 				EXPECT(reached>0,"DL-03 BDPT continuation reached same-object observer");
 				EXPECT(badOut==0,"DL-03 BDPT outward exit carries popped stack and next same-object Scatter enters");

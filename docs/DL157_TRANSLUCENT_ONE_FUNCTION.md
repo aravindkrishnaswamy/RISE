@@ -894,10 +894,11 @@ non-reciprocity was the EVIDENCE that decided which of two disagreeing
 sides was wrong. Here the non-reciprocity is in the MODEL itself and
 neither side is wrong, which is why this is a residual rather than a fix.
 
-All three need a change to what a connection is allowed to ask a
-stateful, non-reciprocal BSDF — an adjoint-BSDF convention and a per-vertex incoming
-segment length on `BDPTVertex` — which is materially larger than this row
-and is deliberately not attempted here.
+These connection residuals need an adjoint-BSDF/state convention beyond
+this row. DL-222 integration now stores incoming distance on BDPTVertex
+for companion throughput replay, but deliberately does not inject that
+sampling state into arbitrary connection records; the connection defects
+remain open as DL-223.
 
 **DL-224 — `relief_modifier` produces a large, material-independent
 PT-vs-BDPT disagreement.** §6.2: a plain `lambertian_material` sphere
