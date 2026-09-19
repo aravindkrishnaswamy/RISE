@@ -21,6 +21,7 @@
 namespace RISE
 {
 	class RayIntersectionGeometric;
+	class IORStack;
 
 	//! Represents the Bi-Directional Scattering Distribution Function 
 	//! The BSDF describes how light is reflected/transmitted from a surface.
@@ -63,6 +64,47 @@ namespace RISE
 			const RayIntersectionGeometric& ri,				///< [in] Geometric intersection information
 			const Scalar nm									///< [in] Wavelength of spectral packet we are processing
 			) const = 0;
+
+		/// STATEFUL evaluation: the same BRDF value, but told which media
+		/// the walk is currently inside (DL-157/DL-38, 2026-09-18).
+		///
+		/// WHY THIS EXISTS.  Almost every BSDF in RISE is a pure function
+		/// of `(vLightIn, ri)` and correctly ignores the extra argument --
+		/// which is why this is a DEFAULTED virtual rather than a change to
+		/// `value`'s signature.  `TranslucentBSDF` is not: which two lobes
+		/// exist at a hit (an entry front reflection + a transmission, or
+		/// an interior exit + a backscatter) is decided by
+		/// `IORStack::containsCurrent()`, exactly as
+		/// `TranslucentSPF::Scatter`/`Pdf` decide it, and pricing a hit
+		/// through the wrong side's lobes is what DL-157(b) measured at a
+		/// double-sided exit hit.
+		///
+		/// CONTRACT.  Passing a null stack must give the SAME answer as
+		/// `value` (the default below makes that automatic), so a call site
+		/// with no stack in hand -- an AOV probe, the legacy final-gather /
+		/// ambient-occlusion ops, an interactive preview -- loses nothing by
+		/// continuing to call `value`.  An implementation that overrides
+		/// this MUST make its own stackless `value` a null-stack call to it
+		/// rather than a second code path.
+		virtual RISEPel valueStateful(
+			const Vector3& vLightIn,						///< [in] Incoming vector from the light source
+			const RayIntersectionGeometric& ri,				///< [in] Geometric intersection information
+			const IORStack* /*pIORStack*/					///< [in] LIVE index-of-refraction stack, or null when the caller has none
+			) const
+		{
+			return value( vLightIn, ri );
+		}
+
+		/// Spectral twin of `valueStateful`.
+		virtual Scalar valueStatefulNM(
+			const Vector3& vLightIn,						///< [in] Incoming vector from the light source
+			const RayIntersectionGeometric& ri,				///< [in] Geometric intersection information
+			const Scalar nm,								///< [in] Wavelength of spectral packet we are processing
+			const IORStack* /*pIORStack*/					///< [in] LIVE index-of-refraction stack, or null when the caller has none
+			) const
+		{
+			return valueNM( vLightIn, ri, nm );
+		}
 
 		/// Approximate directional-hemispherical reflectance at the
 		/// outgoing direction implied by `ri.ray` — i.e., the fraction

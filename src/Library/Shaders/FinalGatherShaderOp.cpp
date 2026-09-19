@@ -212,7 +212,12 @@ namespace
 			if( tGrad > kMinHitDistance ) {
 				sample.bHit = true;
 				sample.dDistance = tGrad;
-				sample.cIrradiance = lijGrad * brdf.value( wGrad, shading );
+				// DL-38/DL-157 review round 3 (P2-3): the stateful form,
+				// like the primary gather arm below -- the live stack is
+				// already a parameter of this helper, and a translucent
+				// BSDF's side (and therefore its whole lobe set) is a
+				// function of it.
+				sample.cIrradiance = lijGrad * brdf.valueStateful( wGrad, shading, &ior_stack );
 
 				if( tGrad > kMinTranslationalGradientDistance && pScene && pScene->GetObjects() ) {
 					RayIntersection gradRI( fgGradRay, rast );
@@ -513,7 +518,7 @@ void FinalGatherShaderOp::PerformOperation(
 								if (t > kMinHitDistance) {
 									rsum += 1.0/t;
 									hits++;
-									sampleIrradiance = lij * pBRDF->value( w, ri.geometric );
+									sampleIrradiance = lij * pBRDF->valueStateful( w, ri.geometric, &ior_stack );
 									c = c + sampleIrradiance;
 								}
 							}

@@ -2169,9 +2169,12 @@ RISEPel LightSampler::EvaluateDirectLighting(
 				// inline (`cosSurface = 1.0` under `isVolumeScatter`);
 				// Step 1 could not, because the arithmetic lives behind
 				// this virtual.  See ILight.h for the derivation.
+				// DL-157 P1: the LIVE stack, so this Step-1 arm prices a
+				// stateful BSDF on the same SIDE the three sampled-light
+				// arms below already do.
 				l->ComputeDirectLighting( ri, caster, brdf,
 					bReceivesShadows,
-					amount, bFullSphere, isVolumeScatter );
+					amount, bFullSphere, isVolumeScatter, pMisIorStack );
 
 				// VOLUME RECEIVER -- part B of 2: MEDIUM ATTENUATION.
 				//
@@ -2421,7 +2424,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
 			// emittedRadiance expects the outgoing direction FROM the
 			// light; -vToLight is the light-to-surface direction.
 			const RISEPel Le = entry.pLight->emittedRadiance( -vToLight );
-			const RISEPel fBSDF = brdf.value( vToLight, ri );
+			const RISEPel fBSDF = brdf.valueStateful( vToLight, ri, pMisIorStack );
 			const Scalar invDistSq = 1.0 / (dist * dist);
 
 			// Delta-position light: w = 1 (no MIS needed).  Fold in the
@@ -2605,7 +2608,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
 					const RISEPel Le = pEmitter->emittedRadiance( lumri, -vToLight, lumNormal );
 
 					const Scalar geom = area * cosLight / (dist * dist);
-					RISEPel contrib = Le * cosSurface * geom * brdf.value( vToLight, ri ) * meshShadowT;
+					RISEPel contrib = Le * cosSurface * geom * brdf.valueStateful( vToLight, ri, pMisIorStack ) * meshShadowT;
 
 					// Apply medium transmittance along shadow ray.
 					// Multi-medium shadow transmittance.
@@ -2790,7 +2793,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
 			{
 				const Ray envRay( ri.ptIntersection, envDir );
 				const RISEPel Le = pEnvironmentMap->GetRadiance( envRay, nullRasterizerState );
-				const RISEPel f = brdf.value( envDir, ri );
+				const RISEPel f = brdf.valueStateful( envDir, ri, pMisIorStack );
 				RISEPel envContrib = Le * f * (cosEnv / envPdf) * envShadowT;
 
 				// Apply medium transmittance for environment ray.
@@ -2980,9 +2983,10 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 				// twin of the RGB Step-1 site; both halves of that fix
 				// (the `isVolumeScatter` flag and the medium
 				// transmittance) are derived in full there.
+				// DL-157 P1 -- see the RGB Step-1 site.
 				Scalar leNM = l->ComputeDirectLightingNM( ri, caster, brdf,
 					bReceivesShadows,
-					nm, bFullSphere, isVolumeScatter );
+					nm, bFullSphere, isVolumeScatter, pMisIorStack );
 
 				if( leNM > 0 &&
 					l->lightType() == ILight::LightType::Directional )
@@ -3157,7 +3161,7 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 			// delta-position lights.
 			const Scalar LeNM = entry.pLight->emittedRadianceNM( -vToLight, nm );
 			const Scalar invDistSq = 1.0 / (dist * dist);
-			const Scalar fBSDF = brdf.valueNM( vToLight, ri, nm );
+			const Scalar fBSDF = brdf.valueStatefulNM( vToLight, ri, nm, pMisIorStack );
 
 			// Delta-position light: w = 1 (no MIS needed).  Fold in the
 			// transparent-shadow Fresnel transmittance (1.0 when off).
@@ -3271,7 +3275,7 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 		const Scalar Le = pEmitter->emittedRadianceNM( lumri, -vToLight, lumNormal, nm );
 
 		const Scalar geom = area * cosLight / (dist * dist);
-		Scalar contrib = Le * cosSurface * geom * brdf.valueNM( vToLight, ri, nm ) * meshShadowTNM;
+		Scalar contrib = Le * cosSurface * geom * brdf.valueStatefulNM( vToLight, ri, nm, pMisIorStack ) * meshShadowTNM;
 
 		// Multi-medium shadow transmittance.
 		{
@@ -3380,7 +3384,7 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 			{
 				const Ray envRay( ri.ptIntersection, envDir );
 				const Scalar Le = pEnvironmentMap->GetRadianceNM( envRay, nullRasterizerState, nm );
-				const Scalar f = brdf.valueNM( envDir, ri, nm );
+				const Scalar f = brdf.valueStatefulNM( envDir, ri, nm, pMisIorStack );
 				Scalar envContrib = Le * f * cosEnv / envPdf * envShadowTNM;
 
 				// Apply medium transmittance for environment ray.

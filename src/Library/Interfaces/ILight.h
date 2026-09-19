@@ -26,6 +26,7 @@
 
 namespace RISE
 {
+	class IORStack;
 	class IRayCaster;
 
 	//! This is a 'hacky' light that are not physically based, such as point lights
@@ -228,7 +229,18 @@ namespace RISE
 			const bool bReceivesShadows,					///< [in] Should shadow checking be performed?
 			RISEPel& amount,								///< [out] Amount of lighting
 			const bool bFullSphereReceiver = false,			///< [in] When true, use |cos| instead of the signed cosine (a full-sphere-scattering receiver, e.g. hair); see IMaterial::ScattersFullSphere()
-			const bool bVolumeReceiver = false				///< [in] When true, the receiver is a phase-function (medium scatter) vertex: NO receiver cosine and NO hemisphere rejection; overrides bFullSphereReceiver.  See the block comment above.
+			const bool bVolumeReceiver = false,				///< [in] When true, the receiver is a phase-function (medium scatter) vertex: NO receiver cosine and NO hemisphere rejection; overrides bFullSphereReceiver.  See the block comment above.
+			//! DL-157 P1 (2026-09-18): the LIVE index-of-refraction stack,
+			//! or null when the caller has none.  A stateful BSDF
+			//! (`translucent_material`) prices a hit by which SIDE of the
+			//! surface the walk is on, and this is the one NEE arm that
+			//! was still inferring that geometrically while
+			//! `LightSampler`'s other three got the stack -- so a
+			//! zero-exitance (directional / ambient) light and a sampled
+			//! one disagreed about the same vertex.  Null reproduces the
+			//! pre-DL-157 behaviour exactly (IBSDF's default forwards to
+			//! `value`), and every BSDF but the translucent one ignores it.
+			const IORStack* pIORStack = 0
 			) const = 0;
 
 		//! Per-wavelength direct-lighting contribution at wavelength
@@ -269,7 +281,8 @@ namespace RISE
 			const bool bReceivesShadows,					///< [in] Should shadow checking be performed?
 			const Scalar nm,								///< [in] Wavelength (nm) at which to evaluate
 			const bool bFullSphereReceiver = false,			///< [in] See the RGB ComputeDirectLighting's doc
-			const bool bVolumeReceiver = false				///< [in] See the RGB ComputeDirectLighting's doc
+			const bool bVolumeReceiver = false,				///< [in] See the RGB ComputeDirectLighting's doc
+			const IORStack* pIORStack = 0					///< [in] DL-157 P1 -- see the RGB ComputeDirectLighting's doc
 			) const;
 	};
 }

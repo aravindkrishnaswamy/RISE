@@ -89,7 +89,16 @@ Paths below are relative to `src/Library/`.
 | `PhotonMapping/TranslucentPelPhotonTracer.cpp` | VERIFIED density-independent; CLOSED DL-39 (`1fe5c760`) | Deposition error concerned absorbed power, not the exit density; now deposits the diffuse lobe's own kray directly. |
 | `ior_stack` / `delete_stack` | VERIFIED unchanged | Exit still pops the object; backscatter retains the input stack; no lifetime or allocation changes. |
 
-## Independent residual: DL-41
+## ~~Independent residual: DL-41~~ — CLOSED 2026-09-18
+
+**DL-41 CLOSED 2026-09-18 (`debt-dl157` slice)** — `TranslucentSPF::Pdf`/
+`PdfNM` now report the density of what `Scatter` + `RandomlySelect`
+actually generate: `sum_I q_I p_I(w)` over every lobe the side can emit,
+both Phong lobes included, with `q_I` exactly `RandomlySelect`'s
+realized weights and no replay quadrature needed. See
+[DL157_TRANSLUCENT_ONE_FUNCTION.md](DL157_TRANSLUCENT_ONE_FUNCTION.md).
+
+### (struck) original text
 
 **Complete translucent mixture/reverse density and state reconstruction.**
 The legacy Pdf/PdfNM API describes only the diffuse conditional lobe:

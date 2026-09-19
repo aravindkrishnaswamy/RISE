@@ -163,6 +163,27 @@ static bool DensityNear(Scalar actual, Scalar expected)
     return std::isfinite(actual) && std::fabs(actual - expected) <= 1e-10;
 }
 
+// DL-41 (2026-09-18): `Pdf`/`PdfNM` are no longer ONE lobe's density -- they
+// are the density of the direction `Scatter` + `RandomlySelect` actually
+// return, i.e. every lobe this side of the surface can emit, each weighted
+// by its own realized selection probability.  This helper reproduces
+// `ScatteredRayContainer::RandomlySelect`'s own CDF weights, from the rays
+// the sampler really produced, so the checks below state the new contract
+// without transcribing the mixture formula a second time.
+static Scalar SelectProbOfType(const ScatteredRayContainer& rays,
+    ScatteredRay::ScatRayType type, bool bNM)
+{
+    if (rays.Count() == 0) return 0;
+    if (rays.Count() == 1) return rays[0].type == type ? Scalar(1) : Scalar(0);
+    Scalar total = 0, mine = 0;
+    for (unsigned i = 0; i < rays.Count(); ++i) {
+        const Scalar w = bNM ? rays[i].krayNM : ColorMath::MaxValue(rays[i].kray);
+        total += w;
+        if (rays[i].type == type) mine += w;
+    }
+    return total > NEARZERO ? mine / total : Scalar(0);
+}
+
 static void RunExitDensity(Scalar exponent, Scalar scatter, bool tilted)
 {
     std::printf("density N=%g scatter=%g tilted=%d\n", exponent, scatter, int(tilted));
@@ -201,6 +222,7 @@ static void RunExitDensity(Scalar exponent, Scalar scatter, bool tilted)
         const Scalar nm = 450 + 100 * (pipe - 1);
         bool support = true, stored = true, evaluated = true, cdf = true, popped = true;
         Scalar secondMoment = 0;
+        Scalar qExitSel = 1;
         for (int i = 0; i < 8; ++i) {
             const Scalar u = (i + 0.5) / 8;
             FixedSampler sampler(u);
@@ -218,7 +240,13 @@ static void RunExitDensity(Scalar exponent, Scalar scatter, bool tilted)
                     : spf->PdfNM(ri, ray.ray.Dir(), nm, inside);
                 support &= mu > 0 && ray.pdf > 0 && !ray.isDelta;
                 stored &= DensityNear(ray.pdf, expected);
-                evaluated &= DensityNear(pdf, ray.pdf);
+                // DL-41: the aggregate density is this lobe's own stored
+                // density SCALED BY ITS SELECTION PROBABILITY.  Before
+                // DL-41 the two coincided only because `Pdf` returned the
+                // exit lobe alone and ignored the backscatter lobe the
+                // sampler had just emitted alongside it.
+                qExitSel = SelectProbOfType(rays, ScatteredRay::eRayDiffuse, pipe != 0);
+                evaluated &= DensityNear(pdf, qExitSel * ray.pdf);
                 // P1 (same debt-cleanup slice, 2026-09-13): `cdf` and `secondMoment` pin the UNCLIPPED
                 // plain-cosine sampler's inverse-CDF identity
                 // (mu^2 == u, hence E[mu^2] == 1/2) under a FixedSampler
@@ -306,22 +334,66 @@ static void RunExitDensity(Scalar exponent, Scalar scatter, bool tilted)
         // (1+cosPhi)/2, e.g. ~0.90 for this fixture's tilt -- NOT cosPhi
         // itself, ~0.80, which this comment previously and incorrectly
         // cited), which is what a regression of DL-45 would produce here.
+        // DL-41: the exit hemisphere now carries the exit lobe's SHARE of
+        // the aggregate -- its selection probability -- and the backscatter
+        // hemisphere carries the rest.  The two must still sum to one,
+        // which is the statement that used to be made (wrongly) about the
+        // exit hemisphere alone.
+        //
+        // The backscatter half is a cos^N lobe rather than a cosine, so the
+        // 32x8 midpoint rule in mu carries a real O(N^2/n^2) discretisation
+        // error there; the exit half stays exact untilted.
         const Scalar positiveTol = tilted ? 0.05 : 1e-10;
         ++checks;
-        if (!(std::isfinite(positive) && std::fabs(positive - 1) <= positiveTol)) {
+        if (!(std::isfinite(positive) && std::fabs(positive - qExitSel) <= positiveTol)) {
             ++failures;
-            std::printf("FAIL: exit PDF integrates to one on exit hemisphere got %.9f\n", positive);
+            std::printf("FAIL: exit PDF integrates to its selection share on exit hemisphere "
+                "got %.9f expected %.9f\n", positive, qExitSel);
         }
-        // This API describes the diffuse lobe only; backscatter has a
-        // separate stored Phong density, not a complete Pdf/PdfNM mixture.
-        Check(DensityNear(negative, 0), "diffuse PDF excludes backscatter hemisphere");
+        ++checks;
+        if (!(std::isfinite(negative) && std::fabs(positive + negative - 1) <= 0.02)) {
+            ++failures;
+            std::printf("FAIL: aggregate PDF integrates to one over the sphere got %.9f "
+                "(exit %.9f + backscatter %.9f)\n", positive + negative, positive, negative);
+        }
+        // DL-41's own symptom, inverted: the backscatter hemisphere used to
+        // be required to read EXACTLY zero, which is what made `Pdf` report
+        // nothing for a direction the sampler had just generated (and is
+        // why DL-69's `pdfFwd` and DL-103's escape-side MIS partner both
+        // carry a `misFwdPdf <= NEARZERO` fallback naming this class).  It
+        // must now carry the backscatter lobe's own share.
+        ++checks;
+        if (!(std::isfinite(negative)
+              && (scatter <= 0 ? negative <= 1e-10 : negative > 0))) {
+            ++failures;
+            std::printf("FAIL: aggregate PDF covers the backscatter hemisphere got %.9f "
+                "(scatter=%.3f)\n", negative, scatter);
+        }
     }
     auto entry = Hit(1, false);
     IORStack outside = MakeTestIORStack(object, 1.33);
-    Check(DensityNear(spf->Pdf(entry, entry.onb.w(), outside), INV_PI),
-          "entry reflection PDF retains front hemisphere");
-    Check(DensityNear(spf->Pdf(entry, -entry.onb.w(), outside), 0),
-          "entry reflection PDF excludes back hemisphere");
+    {
+        // DL-41: same restatement on the ENTRY side.  The front reflection
+        // is still `INV_PI` at the axis, now times its selection share, and
+        // the back hemisphere -- which the transmission lobe occupies and
+        // which this check used to require be exactly zero -- now carries
+        // that lobe's own clipped-Phong density.
+        RandomNumberGenerator erng;
+        IndependentSampler esampler(erng);
+        ScatteredRayContainer erays;
+        spf->Scatter(entry, esampler, erays, outside);
+        const Scalar qFront = SelectProbOfType(erays, ScatteredRay::eRayDiffuse, false);
+        const Scalar qTrans = SelectProbOfType(erays, ScatteredRay::eRayTranslucent, false);
+        Check(DensityNear(spf->Pdf(entry, entry.onb.w(), outside), qFront * INV_PI),
+              "entry reflection PDF retains front hemisphere at its selection share");
+        ++checks;
+        const Scalar backPdf = spf->Pdf(entry, -entry.onb.w(), outside);
+        if (!(std::isfinite(backPdf) && (qTrans > 0 ? backPdf > 0 : backPdf <= 1e-10))) {
+            ++failures;
+            std::printf("FAIL: entry transmission PDF covers the back hemisphere got %.9f "
+                "(qTrans=%.6f)\n", backPdf, qTrans);
+        }
+    }
     entry.vGeomNormal = Vector3Ops::Normalize(Vector3(1, 0, 1));
     const Vector3 belowGeometry = Vector3Ops::Normalize(Vector3(-1, 0, 0.1));
     Check(DensityNear(spf->Pdf(entry, belowGeometry, outside), 0),

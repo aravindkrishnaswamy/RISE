@@ -141,7 +141,7 @@ namespace RISE
 			//! delivers RADIANCE ONLY -- the phase function, handed in as
 			//! `brdf`, carries the entire angular term.  Takes precedence
 			//! over `bFullSphereReceiver`.  Full derivation in the .cpp.
-			void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, RISEPel& amount, const bool bFullSphereReceiver = false, const bool bVolumeReceiver = false ) const;
+			void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, RISEPel& amount, const bool bFullSphereReceiver = false, const bool bVolumeReceiver = false, const IORStack* pIORStack = 0 /* DL-157 P1: live stack for a stateful BSDF */ ) const;
 
 			//! Per-wavelength direct-lighting evaluation.  Mirrors the
 			//! RGB ComputeDirectLighting (cosine, shadow check) but
@@ -157,7 +157,9 @@ namespace RISE
 				const bool bReceivesShadows,
 				const Scalar nm,
 				const bool bFullSphereReceiver = false,
-				const bool bVolumeReceiver = false
+				const bool bVolumeReceiver = false,
+				//! DL-157 P1: live stack for a stateful BSDF.
+				const IORStack* pIORStack = 0
 				) const;
 
 			// For keyframamble interface

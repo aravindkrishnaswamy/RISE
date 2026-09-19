@@ -1294,14 +1294,22 @@ namespace
 
 	// BSDF value at a surface (guiding RIS / one-sample MIS).
 	template<class Tag>
+	// DL-157 P1: `pIORStack` is the LIVE stack.  The guiding candidate
+	// sites below already hand the SAME `iorStack` to `PTEvalPdfAtSurface`
+	// one line away, so leaving the BSDF evaluation stackless was a drift
+	// inside a single block; a stateful BSDF (`translucent_material`)
+	// prices a hit by which side of the surface the walk is on.
 	inline typename SpectralValueTraits<Tag>::value_type PTEvalBSDFAtSurface(
-		const IBSDF* pBRDF, const Vector3& wi, const RayIntersectionGeometric& ri, const Tag& tag );
+		const IBSDF* pBRDF, const Vector3& wi, const RayIntersectionGeometric& ri, const Tag& tag,
+		const IORStack* pIORStack );
 	template<> inline RISEPel PTEvalBSDFAtSurface<PelTag>(
-		const IBSDF* pBRDF, const Vector3& wi, const RayIntersectionGeometric& ri, const PelTag& )
-	{ return PathVertexEval::EvalBSDFAtSurface( pBRDF, wi, ri ); }
+		const IBSDF* pBRDF, const Vector3& wi, const RayIntersectionGeometric& ri, const PelTag&,
+		const IORStack* pIORStack )
+	{ return PathVertexEval::EvalBSDFAtSurface( pBRDF, wi, ri, pIORStack ); }
 	template<> inline Scalar PTEvalBSDFAtSurface<NMTag>(
-		const IBSDF* pBRDF, const Vector3& wi, const RayIntersectionGeometric& ri, const NMTag& tag )
-	{ return PathVertexEval::EvalBSDFAtSurfaceNM( pBRDF, wi, ri, tag.nm ); }
+		const IBSDF* pBRDF, const Vector3& wi, const RayIntersectionGeometric& ri, const NMTag& tag,
+		const IORStack* pIORStack )
+	{ return PathVertexEval::EvalBSDFAtSurfaceNM( pBRDF, wi, ri, tag.nm, pIORStack ); }
 
 	// Pdf at a surface (always Scalar).  Guiding RIS / one-sample MIS.
 	template<class Tag>
@@ -3787,7 +3795,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 							PathTransportUtilities::GuidingRISCandidate<Value>& c = candidates[0];
 							c.direction = pS->ray.Dir();
 							c.bsdfEval = PTEvalBSDFAtSurface<Tag>(
-								pBRDF, c.direction, ri.geometric, tag );
+								pBRDF, c.direction, ri.geometric, tag, &iorStack );
 							c.bsdfPdf = pS->pdf;
 							c.guidePdf = rc.pGuidingField->Pdf( guideDist, c.direction );
 							c.incomingRadPdf = rc.pGuidingField->IncomingRadiancePdf( guideDist, c.direction );
@@ -3816,7 +3824,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 							if( guidePdf > NEARZERO )
 							{
 								c.bsdfEval = PTEvalBSDFAtSurface<Tag>(
-									pBRDF, c.direction, ri.geometric, tag );
+									pBRDF, c.direction, ri.geometric, tag, &iorStack );
 								c.bsdfPdf = PTEvalPdfAtSurface<Tag>(
 									pSPF, ri.geometric, c.direction, iorStack, tag );
 								c.incomingRadPdf = rc.pGuidingField->IncomingRadiancePdf( guideDist, c.direction );
@@ -3905,7 +3913,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 							if( guidePdf > NEARZERO )
 							{
 								const Value fGuided = PTEvalBSDFAtSurface<Tag>(
-									pBRDF, guidedDir, ri.geometric, tag );
+									pBRDF, guidedDir, ri.geometric, tag, &iorStack );
 								const Scalar bsdfPdfGuided = PTEvalPdfAtSurface<Tag>(
 									pSPF, ri.geometric, guidedDir, iorStack, tag );
 								const Scalar combinedPdf =
@@ -4165,11 +4173,16 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				}
 				else
 #endif
-				// DL-41 guard, guiding-inactive branch only.  A few SPFs
-				// emit a non-delta lobe their own `Pdf()` does not cover
-				// (`TranslucentSPF`'s two Phong `cos^N` lobes are the
-				// documented case), so the aggregate reads 0 at a direction
-				// the technique really did generate.  Handing 0 to both
+				// DL-41 guard, guiding-inactive branch only.  An SPF that
+				// emits a non-delta lobe its own `Pdf()` does not cover
+				// reads 0 at a direction the technique really did generate.
+				// (`TranslucentSPF`'s two Phong `cos^N` lobes WERE the
+				// documented case; DL-41 closed 2026-09-18 and its
+				// aggregate now covers both, so the guard has NO KNOWN
+				// production inhabitant today -- it is kept because the
+				// alternative is silently wrong for the next SPF that
+				// acquires the property, and because it costs one
+				// comparison.)  Handing 0 to both
 				// sides would mean "no BSDF-side partner exists" -- weight
 				// 1 on BOTH, a full double count, strictly worse than the
 				// pre-DL-103 asymmetry.  Fall back to the lobe's own
@@ -6335,22 +6348,16 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 
 			if( compWeight < 0 && pBRDFCur )
 			{
-				// DL-125.  This fallback pairs the material's AGGREGATE
-				// spectral BSDF with the ONE selected lobe's density.
-				// That is EXACT for an SPF whose emitted ray carries the
-				// aggregate mixture density (CoatedSPF / FabricSPF /
-				// WeaveSPF, and the single-emit GGXSPF /
-				// CookTorranceSPF), and the DL-69 mispairing for one
-				// that carries a PER-LOBE conditional density.  TWO
-				// such SPFs still decline -- `CompositeSPF` (DL-221,
-				// not closable from the method's signature) and
-				// `TranslucentSPF` (DL-222, partially closable and not
-				// yet closed) -- and both NAME themselves so this
-				// one-shot-per-class warning can report which.
+				// DL-125: aggregate BSDF / selected density is exact for
+				// aggregate-density SPFs. CompositeSPF still declines with
+				// per-lobe density (DL-221); report its diagnostic identity.
+				// TranslucentSPF now handles its normal companion lobes.
 				NotePerLobeDensityCompanionFallback( pSPF );
 
-				compWeight = pBRDFCur->valueNM(
-					pS->ray.Dir(), ri.geometric, swl.lambda[w] );
+				// DL-157: stateful fallback needs the live stack, just as
+				// the SPF branch above does, to price the correct side.
+				compWeight = pBRDFCur->valueStatefulNM(
+					pS->ray.Dir(), ri.geometric, swl.lambda[w], &iorStack );
 				Scalar cosTheta = fabs( Vector3Ops::Dot(
 					pS->ray.Dir(), ri.geometric.vNormal ) );
 				compWeight *= cosTheta;

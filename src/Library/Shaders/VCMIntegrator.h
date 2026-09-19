@@ -341,7 +341,8 @@ namespace RISE
 				SplatFilm& splatFilm,
 				const VCMNormalization& norm,
 				const Scalar nm,
-				const IPixelFilter* pixelFilter	///< [in] Reconstruction kernel; null = round-to-nearest point splat
+				const IPixelFilter* pixelFilter,	///< [in] Reconstruction kernel; null = round-to-nearest point splat
+				const Scalar splatScale = 1.0		///< [in] DL-201/DL-217 spectral splat scale: (SampledWavelengths::N / surviving lanes) * mYNormalization at the spectral call sites -- so ~3.74 (not 1.0) when nothing terminated; 1.0 only for the Pel instantiation.
 				) const;
 
 			Scalar EvaluateInteriorConnectionsNM(

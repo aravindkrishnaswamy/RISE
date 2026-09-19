@@ -101,6 +101,7 @@
 #include "../src/Library/Utilities/IndependentSampler.h"
 #include "../src/Library/Utilities/RandomNumbers.h"
 #include "../src/Library/Intersection/RayIntersection.h"
+#include "TestStubObject.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -623,39 +624,43 @@ static void TestExitFrameOrientationOnDoubleSidedMesh()
 }
 
 //////////////////////////////////////////////////////////////////////
-//  Sub-test 4 (P3-1, review round 3, 2026-09-17): at a DOUBLE-SIDED
-//  EXIT hit, `TranslucentBSDF::value` and `TranslucentSPF::Pdf` /
-//  `Scatter` do not agree on which branch they are even in.
+//  Sub-test 4: at a DOUBLE-SIDED EXIT hit, `TranslucentBSDF::value`
+//  and `TranslucentSPF::Pdf` / `Scatter` must agree on which branch
+//  they are in, and on which directions have support at all.
 //
-//  `Pdf`/`Scatter` ask the IOR STACK (`ior_stack.containsCurrent()`);
-//  `value` has no stack to ask and classifies by the GEOMETRIC sign
-//  tests in `GetReflectedSide`.  At an exit hit through a double-sided
-//  face both reported normals already oppose the ray, so
-//  `Dot(n, -ray.Dir()) > 0` -- `GetReflectedSide`'s "viewer back" --
-//  and every direction on the shading normal's own side is classified
-//  **case 2**, the ENTRY front-reflection branch, while the SPF is
-//  running its EXIT branch (diffuse exit + interior backscatter).
+//  HISTORY (this row was written as a DEFECT PIN and is now a real
+//  gate).  `Pdf`/`Scatter` ask the IOR STACK
+//  (`ior_stack.containsCurrent()`); `value` used to have no stack to
+//  ask and classified by the geometric sign tests in a four-way
+//  `GetReflectedSide` switch.  At an exit hit through a double-sided
+//  face both reported normals already oppose the ray, so every
+//  direction on the shading normal's own side was classified **case
+//  2** -- the ENTRY front-reflection branch -- while the SPF was
+//  running its EXIT branch.  DL-112's clip then zeroed `value` over
+//  the lune between the shading normal's hemisphere and the
+//  ray-anchored geometric one, and this row pinned that fraction
+//  (`phi / 180 degrees`) as CURRENT, not correct, behaviour.
 //
-//  DL-112's fix gave case 2 the entry lobe's geometric horizon clip,
-//  so on that same configuration `value` now returns ZERO over the
-//  lune between the shading normal's hemisphere and the ray-anchored
-//  geometric one -- directions it used to price at
-//  `pRefFront * INV_PI`.  Nothing in BDPT/VCM stops a connection from
-//  landing there: `PathVertexEval::EvalBSDFAtVertex`'s surface path
-//  calls `pBSDF->value` with no hemisphere gate at all, and
-//  `BDPTUtilities::GeometricTerm` takes `fabs` of both cosines.
+//  DL-157 (2026-09-18) replaced the switch: `value` reads the SAME
+//  per-hit lobe set `Scatter` draws from and `Pdf` reports the density
+//  of, and recovers the side either from a LIVE stack (`valueStateful`)
+//  or -- as here -- geometrically, through `UnflippedGeomNormal()`,
+//  which is exact for a double-sided mesh.  Both now agree they are on
+//  the EXIT side.
 //
-//  This row PINS the current behaviour rather than asserting it is
-//  right.  The clip is a strict improvement over the pre-DL-112 state
-//  for the branch `value` THINKS it is in, and the underlying
-//  disagreement -- `value`'s four branches do not describe the lobes
-//  `TranslucentSPF` samples on either side (measured
-//  `E[kray]/E[value*cos/pdf]` of 6.00 for the entry transmission,
-//  10.43 for the interior exit and 0.674 for the interior backscatter
-//  at zero tilt) -- is ledger row DL-157, the `value()` side of
-//  DL-41's structural hole.  When DL-157 is fixed, this row's
-//  expectations are expected to CHANGE, and that is the point: it is
-//  here so the change is noticed.
+//  THE MEASURED FRACTION IS UNCHANGED, AND THAT IS NOT A NULL RESULT --
+//  the mechanism is different and now correct.  In the lune, the exit
+//  lobe (a clipped cosine about the OUTWARD-oriented shading normal)
+//  requires `Dot(w, -nReported) > 0`, which the lune violates, and the
+//  interior backscatter lobe (clipped to the side the interior ray
+//  arrived from) requires `Dot(w, -geomNRaw) > 0`, which it also
+//  violates.  So the sampler genuinely cannot emit there and zero is
+//  the right value -- where before it was the right value for the
+//  wrong branch's reason.  The second check below is what distinguishes
+//  the two: `value` and `Pdf` must now have the SAME support at this
+//  hit, which they did not before (`value` priced the whole
+//  `nReported` hemisphere through case 1/2 while `Pdf` covered only the
+//  exit lobe).
 //
 //  The zeroed fraction is the lune's solid-angle share of the
 //  classified half-space, which for a tilt of `phi` is exactly
@@ -689,14 +694,24 @@ static void CheckDoubleSidedExitValueGate( Scalar tiltDeg )
 	ri.bGeomNormalOrientedToRay = true;     // ... and it says so
 	ri.ptCoord = Point2(0.5,0.5);
 
-	// `GetReflectedSide`'s own classification, transcribed: case 2 is
-	// `Dot(n,-rayDir) >= NEARZERO && Dot(n,w) >= NEARZERO`.
+	// The region the old four-way switch classified as "case 2": the
+	// reported shading normal's own hemisphere at a hit whose reported
+	// normals both already oppose the ray.  Kept verbatim so the
+	// fraction below is comparable with the pre-DL-157 pin.
 	const Vector3 r = Vector3Ops::Normalize( -ri.ray.Dir() );
 	const Scalar nr = Vector3Ops::Dot( nReported, r );
 
+	// The live EXIT stack, so `Pdf` runs the branch the SPF would.
+	StubObject* obj = new StubObject(); obj->addref();
+	IORStack insideStack( 1.0 );
+	insideStack.SetCurrentObject( obj );
+	insideStack.push( 1.0 );
+	insideStack.SetCurrentObject( obj );
+	const ISPF* pSPF = mat->GetSPF();
+
 	RandomNumberGenerator rng( 991 );
 	const int kTrials = 40000;
-	int numCase2 = 0, numZeroed = 0;
+	int numCase2 = 0, numZeroed = 0, numSupportDisagree = 0, numSphere = 0;
 	for( int i = 0; i < kTrials; i++ ) {
 		const Scalar u = rng.CanonicalRandom();
 		const Scalar v = rng.CanonicalRandom();
@@ -704,9 +719,20 @@ static void CheckDoubleSidedExitValueGate( Scalar tiltDeg )
 		const Scalar rad = sqrt( std::max( Scalar(0), Scalar(1) - z*z ) );
 		const Scalar phi = 2.0 * PI * v;
 		const Vector3 w( rad*cos(phi), rad*sin(phi), z );
+
+		// DL-157(b): over the WHOLE sphere, `value` and the aggregate
+		// `Pdf` must have the same support at this hit -- the statement
+		// that the two are reading one lobe set on one side.  Pre-fix
+		// `value` priced the entire `nReported` hemisphere (case 1/2)
+		// while `Pdf` covered the exit lobe alone.
+		numSphere++;
+		const bool vPos = ColorMath::MaxValue( pBSDF->value( w, ri ) ) > 0;
+		const bool pPos = pSPF->Pdf( ri, w, insideStack ) > 0;
+		if( vPos != pPos ) numSupportDisagree++;
+
 		if( !( nr >= NEARZERO && Vector3Ops::Dot( nReported, w ) >= NEARZERO ) ) continue;
 		numCase2++;
-		if( ColorMath::MaxValue( pBSDF->value( w, ri ) ) <= 0 ) numZeroed++;
+		if( !vPos ) numZeroed++;
 	}
 
 	const double measured = numCase2 > 0 ? double(numZeroed)/double(numCase2) : 0.0;
@@ -714,21 +740,25 @@ static void CheckDoubleSidedExitValueGate( Scalar tiltDeg )
 
 	char msg[256];
 	snprintf( msg, sizeof(msg),
-		"double-sided exit, tilt %.0f: value() case-2 zeroed %d/%d = %.4f (lune share %.4f)",
-		(double)tiltDeg, numZeroed, numCase2, measured, expected );
+		"double-sided exit, tilt %.0f: value() zeroed %d/%d = %.4f (lune share %.4f), "
+		"value/Pdf support disagreements %d/%d",
+		(double)tiltDeg, numZeroed, numCase2, measured, expected,
+		numSupportDisagree, numSphere );
 	std::cout << "  " << msg << std::endl;
 
 	// 0.02 absolute is ~6 binomial sigma at n ~ 20000 and p ~ 1/3.
-	Check( numCase2 > 15000, "double-sided exit: case-2 classification covers a hemisphere" );
+	Check( numCase2 > 15000, "double-sided exit: classified region covers a hemisphere" );
 	Check( fabs( measured - expected ) < 0.02, msg );
+	Check( numSupportDisagree == 0, msg );
 
+	obj->release();
 	mat->release();
 	scSc->release(); nSc->release(); extSc->release(); tau->release(); ref->release();
 }
 
 static void TestDoubleSidedExitValueGate()
 {
-	std::cout << "Sub-test 4 (P3-1): TranslucentBSDF::value's case-2 gate at a double-sided EXIT" << std::endl;
+	std::cout << "Sub-test 4: TranslucentBSDF::value vs Pdf at a double-sided EXIT (DL-157(b))" << std::endl;
 	// Zero tilt: the shading normal and the ray-anchored geometric
 	// normal coincide, so the clip removes nothing -- the pin that says
 	// the gate is not simply always-on.

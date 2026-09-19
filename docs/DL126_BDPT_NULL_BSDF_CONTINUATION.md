@@ -650,6 +650,111 @@ to confirm the triggering vertex configuration (`MEDIUM` type,
 actually reached before drawing any conclusion from the resulting
 image-level ratio.
 
+### 7.2 outcome (2026-09-18, debt-dl200 slice): DL-200 CLOSED --
+reachable on the first try, and the predicted mechanism measured ZERO
+
+**Reachability, which is what two prior attempts failed at.**  The scene
+is a dielectric sphere shell (radius 1.2, `scattering 1000000` -- the
+delta pass-through spelling, so the boundary really is a delta vertex
+with `GetBSDF() == 0`) carrying a strongly scattering `interior_medium`,
+with a small emissive sphere INSIDE it, viewed from outside.  Scratch
+instrumentation (counters in both generators' medium blocks and at every
+`isConnectible` connection gate; never committed) reached the
+configuration on the FIRST variant:
+
+    medium verts:  LIGHT-rooted enclosed  conn=4683400  nonconn=2132904
+                   EYE-rooted   enclosed  conn=0        nonconn=2197533
+    conn attempts at a MEDIUM endpoint:
+                   light-side  ok=27474287  skipped=12942973
+                   eye-side    ok=0         skipped=32085651
+
+against the 0/0 both earlier attempts recorded.  What made it work is
+`IORStackSeeding::SeedFromPoint`, which BOTH walks call
+(`BDPTIntegrator.cpp` at the eye root and at the light root): a light
+inside the shell therefore has the shell on its IOR stack from its very
+first segment, so `MediumTracking::GetCurrentMediumWithObject` reports
+the interior medium with `pMedObj != 0` while `vertices.back()` is still
+the LIGHT vertex.  That is the whole recipe -- put the emitter inside a
+CLOSED delta enclosure that carries an `interior_medium`, and keep the
+camera outside it.
+
+**The mechanism this section predicted is worth nothing, and that is the
+correction.**  §7.2 argued a partition-of-unity violation from the
+ASYMMETRY.  The fix the DL-200 row prescribes for it -- derive
+connectibility from the ENCLOSURE BOUNDARY's own material, applied
+identically from either root, which for a delta boundary is `false` on
+both sides -- was implemented and measured.  It leaves the rendered image
+**bit-identical** to the pre-fix baseline (0.033181734 RGB / 0.030185761
+spectral, on the same four seeds, to eight significant figures).  So the
+light-side connections it removes contribute exactly zero, the asymmetry
+costs nothing on its own, and applying the prescription as written would
+have closed none of the gap while deleting some wasted shadow rays.
+
+**What the defect actually is.**  `isConnectible` is a statement about
+the vertex's OWN SCATTERING FUNCTION -- "can a connection through it
+carry nonzero density" -- and a phase function is never a delta, so a
+MEDIUM vertex is always connectible.  The derivation was instead carrying
+a VISIBILITY heuristic, and visibility is a property of the PAIR of
+endpoints: two points inside the SAME enclosure are perfectly
+connectible, and only a connection LEAVING it is blocked.  A light inside
+a fog-filled glass shell is exactly that case, and NEE from an interior
+medium vertex to it was being dropped wholesale.  Two further asymmetries
+confirm the reading: SURFACE vertices were never demoted this way (a
+diffuse surface inside the same shell reads `GetBSDF() != 0` = true
+regardless of enclosure), and PT's own volume NEE connects out of
+interior medium vertices through the boundary using the same
+transparent-shadow transmittance BDPT would -- so only MEDIUM vertices
+disagreed with the PT reference.
+
+Fixed by `mv.isConnectible = true` at both generator sites.  Measured
+(48x48, 32 spp, PT the reference, isolated A/B against `caa0432a`):
+
+| row | pre-fix | post-fix |
+|-----|---------|----------|
+| BDPT / PT, RGB (n=4)      | 0.90338 | 1.00356 |
+| BDPT / PT, RGB (n=3)      | 0.91476 | 1.00827 |
+| BDPT / PT, spectral (n=4) | 0.79556 | 0.98217 |
+| BDPT / PT, spectral (n=3) | 0.78357 | 0.98905 |
+
+BDPT's own run-to-run sd also falls 2.94% -> 0.37% on the RGB row: the
+dropped eye-side NEE was a variance cost as well as a bias.  Red-proof
+and regression: `tests/MediumEnclosureConnectibilityTest.cpp`, 12/0 (red
+8/4).
+
+**Cost, measured.**  On this deliberately adversarial scene -- a strongly
+scattering medium entirely inside a delta enclosure, i.e. 100% affected
+vertices -- a 48x48 / 32-spp BDPT render goes from **1.07 s to 2.15 s**
+user CPU (n=3 each, isolated A/B, +101%): NEE and interior connections
+are now ATTEMPTED from every interior medium vertex, which is exactly the
+work PT was already doing and BDPT was skipping.  It buys back far more
+than it costs even on this scene, because the same change drops BDPT's
+run-to-run sd 2.94% -> 0.37% -- roughly 8x lower standard error, i.e.
+~64x fewer samples for equal noise, against a 2x per-sample cost.  Every
+other scene is unaffected BY CONSTRUCTION, not merely by measurement: a
+global medium (`pMedObj == 0`) took the old derivation's own early-out,
+and a medium behind a non-delta boundary had `prev.isConnectible == true`,
+so the flag was already `true` in both cases.
+
+**Sibling audit.**  `isConnectible` is ASSIGNED at seven sites in
+`BDPTIntegrator.cpp` (env, surface, two BSSRDF entry vertices, the light
+root, and these two medium sites); only the two medium ones carried an
+enclosure-dependent rule.  `VCMIntegrator.cpp` assigns it NOWHERE -- it
+only reads the flag the shared generator sets, and its own
+`ConvertLightSubpath`/`ConvertEyeSubpath` key on `v.type`, `v.isDelta`
+and the area-measure Jacobian rather than on a re-derived connectibility
+-- so the fix reaches VCM and MLT by construction.  That is the check
+DL-200's recipe asked for after this document's own §3.3 found DL-126's
+second instance in exactly that recurrence.
+
+**Residual, filed as DL-218, not fixed:** two bidirectional-vs-PT
+MEDIUM-transport disagreements that are not this mechanism and do not
+move with it -- VCM at 6.0% of PT on the enclosed scene (0.060729 pre,
+0.060248 post) and BDPT at 1.73-1.82x of PT on the same medium bound as
+the scene's GLOBAL medium with no shell (1.79333 pre, 1.73429/1.81976
+post; provably untouched, since `pMedObj == 0` took the pre-fix
+derivation's own early-out).  Both are pinned at their measured values in
+the new test.
+
 ### 7.3 P2-2: stale comment corrected
 
 `BDPTIntegrator.cpp`'s "WHICH MATERIALS REACH THAT FALLBACK" comment
@@ -845,3 +950,110 @@ nor its time budget can adequately validate. See docs/DEBT_LEDGER.md's
 DL-201 row for the full recipe (a purpose-built scene where
 light-tracing energy dominates a spatially isolated region, so hwss
 TRUE vs FALSE there is directly diagnostic).
+
+### 7.7 outcome (2026-09-18, debt-dl200 slice): DL-201 CLOSED, and its
+sibling audit opened and closed DL-217 -- a bigger defect at the same
+three lines
+
+**DL-201.**  Each bundle's t==1 splat deposits are now scaled by
+`SampledWavelengths::N / swl.NumActive()` at the deposit site, which is
+identical to dividing that bundle's splat energy by the lanes it actually
+ran instead of by `N`.  Both termination checks were hoisted above the
+hero block in `BDPTSpectralRasterizer` and `VCMSpectralRasterizer` so the
+scale is final before the hero's own splat; they read only the two vertex
+arrays and the bundle's wavelengths, none of which the hero block writes,
+so hoisting changes no value.  VCM's deposit happens inside
+`VCMIntegrator::SplatLightSubpathToCameraImpl`, so that template and its
+NM forwarder take a trailing `splatScale` (the Pel forwarder passes 1.0).
+
+**This section's own proposed fix was rejected on derivation.**  §7.7
+prescribed a per-pixel (or per-splat) active-count weight buffer in
+`SplatFilm`, "structurally similar to `FilteredFilm`'s existing per-pixel
+weight-sum design".  That is not a correct denominator for a splat
+estimator: a light subpath may land at ANY pixel, so every lane that ran
+is a sample "for" every pixel, and the lanes that happened to deposit at
+a given pixel are a biased subset of them.  A weight accumulated AT
+DEPOSIT TIME computes a mean over CONTRIBUTING samples and over-brightens
+sparse splat regions without bound.  `SplatPixel::weight` already counts
+deposits for precisely this reason and is deliberately consumed only as a
+nonzero flag -- that field is the evidence, not a missing feature.
+Correcting per BUNDLE at the source is exact, is bit-identical whenever
+nothing terminated (so every non-HWSS spectral render and every Pel
+render is untouched), and is strictly FINER-grained than any per-pixel
+scheme: termination is a per-bundle property, and the spatial correlation
+this row is about disappears once each bundle is renormalized before its
+energy is pooled at a pixel.
+
+**The instrument.**  A floor lit by one small emitter through TWO
+horizontal glass slabs -- the left one DISPERSIVE (Sellmeier BK7), the
+right one the same glass pinned to its own d-line index -- so the two
+halves of the receiver are a matched pair differing ONLY in whether
+`HasDispersiveDeltaVertex` terminates their bundles.  The gated statistic
+is the left/right BALANCE,
+`(hwTRUE_left/hwTRUE_right) / (hwFALSE_left/hwFALSE_right)`, in which the
+hwss TRUE vs FALSE estimator offset the control rows measure at ~0.95
+cancels exactly.  `max_eye_depth 0` truncates the NM eye subpath to the
+camera vertex, so the whole image IS the splat film.
+
+| row | balance pre | balance post |
+|-----|-------------|--------------|
+| BDPT pure-splat (eye0), dispersive + flat slabs | 0.2661 | ~1.01 |
+| VCM pure-splat (eye0), dispersive + flat slabs  | 0.2984 | ~1.01 |
+| VCM at an ORDINARY `max_eye_depth 5`            | 0.6307 | ~1.01 |
+| CONTROL BDPT eye0, both slabs flat              | 1.0038 | ~1.00 |
+| CONTROL VCM eye5, both slabs flat               | 1.0058 | ~1.01 |
+
+0.2661 is `1/SampledWavelengths::N` to within noise -- exactly what the
+measured termination fraction predicts, since essentially every bundle
+depositing in that half is dispersion-terminated.  Both CONTROL rows are
+green in the PRE-fix build too, which is what makes the signal
+"termination" rather than "a render with glass in it".
+`tests/SpectralSplatActiveCountTest.cpp`: 30/0 (red 24/6).  MLT needed no
+change -- `MLTSpectralRasterizer` has scaled every strategy, splat and
+non-splat alike, by `1/activeWavelengthCount` since §7.1's P1-1, and
+never consults `GetSplatSampleScale()`.
+
+**DL-217, found by the sibling audit at the same three lines, and larger
+than the row that led to it.**  The spectral splat deposits never applied
+`mYNormalization`, the `(lambda_end - lambda_begin) / k_y` INTEGRAL scale
+(~3.74 over the default [380, 780] nm) that every NON-splat spectral
+contribution in the same render carries.  `SplatFilm::Resolve`'s divisor
+is a SAMPLE COUNT and nothing more -- the splat analogue of the
+`/ nSpectralSamples` in the non-splat return, not of the integral scale.
+A pre-fix comment at the non-HWSS splat site asserted the opposite
+("don't apply mYNormalization here -- the splat film's own Resolve
+normalizes by sample count"); it conflated the two normalisations and is
+corrected in place.
+
+Because VCM's balance-heuristic MIS gives its t==1 strategy a large share
+of ORDINARY images (not only caustics), `vcm_spectral_rasterizer`
+rendered at **45-68% of its own Pel twin**.  BDPT's power-2 MIS leaves
+its splat layer at ~1e-6 of the image on a plain lit floor -- a pure-splat
+`max_eye_depth 0` render reads 1.0e-8 against a full render's 9.3e-3 --
+which is why this survived undetected.
+
+| row (spectral / Pel of the SAME integrator) | pre-fix | post-fix |
+|---------------------------------------------|---------|----------|
+| VCM hwss FALSE, through-glass caustics       | 0.4469  | 0.9505 |
+| VCM hwss TRUE, through-glass caustics        | 0.4399  | 0.9275 |
+| BDPT hwss FALSE, through-glass caustics (pin)| 0.8630  | 0.9753 |
+| VCM hwss FALSE, NO glass                     | 0.6805  | 0.9760 |
+| CONTROL BDPT hwss FALSE, NO glass            | 1.0094  | 1.0122 |
+
+`tests/SpectralSplatIntegralNormalizationTest.cpp`: 15/0 (red 12/3).  The
+Pel rasterizer is an independent reference by construction -- it has no
+wavelength bundle and no `mYNormalization` at all, and
+`GetSplatSampleScale()` returns 1.0 for it.
+
+**A methodological note that cost a round.**  The "no glass" row above
+was DRAFTED as a control, on the assumption that removing the glass would
+collapse VCM's splat share the way it demonstrably does under BDPT.  It
+measured 0.6805 pre-fix, so it is a third money row; the label was
+corrected and a genuine control (BDPT with no glass) was added rather
+than the row being dropped or the assumption quietly kept.
+
+**Gate movement to disclose.**  `EnvLightBalanceTest` stayed 123/0 and no
+band needed re-deriving, but its SPECTRAL VCM rows DID move under DL-217,
+by up to +4.7% (topology means 0.579766 -> 0.606845, 0.601256 -> 0.619435,
+0.615919 -> 0.626362; another row 0.605476 -> 0.627115).  Its RGB rows are
+unchanged to 4-5 significant figures.

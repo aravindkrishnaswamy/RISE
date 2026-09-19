@@ -48,11 +48,12 @@ Scalar ILight::ComputeDirectLightingNM(
 	const bool bReceivesShadows,
 	const Scalar nm,
 	const bool bFullSphereReceiver,
-	const bool bVolumeReceiver
+	const bool bVolumeReceiver,
+	const IORStack* pIORStack
 	) const
 {
 	RISEPel amount( 0, 0, 0 );
-	ComputeDirectLighting( ri, pCaster, brdf, bReceivesShadows, amount, bFullSphereReceiver, bVolumeReceiver );
+	ComputeDirectLighting( ri, pCaster, brdf, bReceivesShadows, amount, bFullSphereReceiver, bVolumeReceiver, pIORStack );
 	// `amount` is a computed RADIANCE, so it uplifts as an illuminant and
 	// round-trips through the film back to itself.  (Pre-Stage-C this was a
 	// Rec.709 luma projection that discarded `nm` entirely.)  EnsurePositve
@@ -86,7 +87,8 @@ void PointLight::ComputeDirectLighting(
 	const bool bReceivesShadows,
 	RISEPel& amount,
 	const bool /*bFullSphereReceiver*/,	// no-op here; see the .h doc
-	const bool bVolumeReceiver			// implemented; see the .h doc
+	const bool bVolumeReceiver,			// implemented; see the .h doc
+	const IORStack* pIORStack			// DL-157 P1: live stack for a stateful BSDF
 	) const
 {
 	//
@@ -142,7 +144,7 @@ void PointLight::ComputeDirectLighting(
 	// Irradiance at surface = emittedRadiance * cos / d^2
 	const Scalar invDistSq = 1.0 / (fDistFromLight * fDistFromLight);
 
-	amount = (cColor * brdf.value( vToLight, ri )) * (invDistSq * fDot * radiantEnergy) * shadowT;
+	amount = (cColor * brdf.valueStateful( vToLight, ri , pIORStack)) * (invDistSq * fDot * radiantEnergy) * shadowT;
 }
 
 Scalar PointLight::ComputeDirectLightingNM(
@@ -152,7 +154,8 @@ Scalar PointLight::ComputeDirectLightingNM(
 	const bool bReceivesShadows,
 	const Scalar nm,
 	const bool /*bFullSphereReceiver*/,	// no-op here; see the .h doc
-	const bool bVolumeReceiver			// implemented; see the .h doc
+	const bool bVolumeReceiver,			// implemented; see the .h doc
+	const IORStack* pIORStack			// DL-157 P1: live stack for a stateful BSDF
 	) const
 {
 	// Same geometry as the RGB ComputeDirectLighting; only the BSDF eval and
@@ -190,7 +193,7 @@ Scalar PointLight::ComputeDirectLightingNM(
 	// collapse made every coloured point light spectrally grey and tinted
 	// even a white one by the flat-spectrum chromaticity.
 	const Scalar lightSpec = cSpectrum.Eval( nm );
-	return lightSpec * brdf.valueNM( vToLight, ri, nm ) * invDistSq * fDot * radiantEnergy * shadowT;
+	return lightSpec * brdf.valueStatefulNM( vToLight, ri, nm , pIORStack) * invDistSq * fDot * radiantEnergy * shadowT;
 }
 
 void PointLight::RefreshSpectrum()

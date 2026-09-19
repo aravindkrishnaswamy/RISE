@@ -97,7 +97,9 @@ namespace RISE
 			//!        partner" would put weight 1 on each and double
 			//!        count, so the producer substitutes the selected
 			//!        lobe's own density instead (DL-41's SPFs, whose
-			//!        `Pdf()` does not cover their own lobes).  With
+			//!        `Pdf()` did not cover their own lobes; DL-41 itself
+			//!        closed 2026-09-18, so this has no known production
+			//!        inhabitant today and guards the next such SPF).  With
 			//!        guiding ACTIVE the producer folds in
 			//!        `alpha_nom * guide` for the same reason (review
 			//!        round 4 of DL-74, rows (h)/(i)).  The weight is 1

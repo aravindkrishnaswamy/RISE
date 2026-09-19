@@ -684,6 +684,19 @@ commit.
 
 ### 14.2 P2-1 — the sibling audit stopped one lobe short: DL-157
 
+> **DL-157 CLOSED 2026-09-18** (`debt-dl157` slice), together with DL-41
+> and DL-38 — see
+> [DL157_TRANSLUCENT_ONE_FUNCTION.md](DL157_TRANSLUCENT_ONE_FUNCTION.md).
+> Recipe option **(a)** was taken (plumb the side, via a DEFAULTED
+> `IBSDF::valueStateful{,NM}` pair), and `TranslucentMaterial` now
+> overrides `ScattersFullSphere()`.  Every ratio in the table below reads
+> 1.000 post-fix.  **One correction to the table's own framing**: the
+> interior-exit row's `10.427` at zero tilt was measured with that
+> slice's painters; on the closure slice's own rig (chromatic
+> reflectance/transmittance, `ext 0`) the same cell reads `6.977667`.
+> Both are the same defect; neither is canonical.
+
+
 Over the SPF's own draws (200000 trials/cell, `ref 0.5 / tau 0.4 / N 10
 / scattering 0.3 / ext 0`), the same invariant on the other three lobes:
 
@@ -717,6 +730,24 @@ bit `Pdf`/`Scatter` get from the IOR stack, and `IBSDF::value` takes no
 stack — an interface change DL-41 needs too.
 
 ### 14.3 P2-2 — "pre-existing and unrelated" retracted
+
+> **⚠ THE RETRACTION IN THIS SECTION WAS ITSELF WRONG, and was retracted
+> in turn on 2026-09-18** (`debt-dl157` slice).  §14.3 concluded that the
+> tilt-driven PT-vs-BDPT gap on this fixture is "consistent with DL-157",
+> while noting that the measurement does not by itself attribute it.  It
+> does not, and the attribution is wrong: replacing the translucent
+> material with a plain `lambertian_material` and changing NOTHING else --
+> same sphere, same `relief_modifier`, same light, same rasterizer pair,
+> 200x200 / 256 spp, `oidn_denoise FALSE`, `pixel_filter box`, EXR linear,
+> central 80x80, n = 3 -- reads PT/BDPT **0.999956 (-0.004 %)** at
+> `scale 0` and **1.634924 (+63.492 %)** / **1.632881 (+63.288 %)** at
+> `scale -0.20` / `+0.20`.  The tilt term is a MATERIAL-INDEPENDENT
+> `relief_modifier` artifact, opened as **DL-224**.  What DL-157 does move
+> is the ZERO-relief cell, the one with no shading-normal tilt at all:
+> PT/BDPT **+35.421 % -> -8.772 %** at `ext 0`.  The lesson is the general
+> one -- before attributing a render gap to the material under repair,
+> render the simplest material in the tree through the same rig.
+
 
 §13's P1-2 row reported a residual PT-vs-BDPT gap at the measurement cell
 and the slice called it pre-existing and unrelated.  Measured, it is

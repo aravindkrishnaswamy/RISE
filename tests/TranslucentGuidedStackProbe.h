@@ -261,8 +261,21 @@ static void RunBDPT(PathGuidingField& guide, const IPainter& front, const IPaint
 						// See PathValueOpsTest.cpp's Test H for a wi-DEPENDENT
 						// SPF (SchlickSPF's specular half-vector lobe)
 						// discriminator that closes that gap.
+						//
+						// DL-41 (2026-09-18): `Pdf` is no longer ONE lobe's
+						// density -- it is the density of what `Scatter` +
+						// `RandomlySelect` actually return, so the exit lobe's
+						// own `cos/pi` is scaled by its SELECTION SHARE.  This
+						// rig has extinction 0 (Beer factor exactly 1) and
+						// scattering 0.3, so the exit branch emits two rays
+						// weighing 0.7 (exit) and 0.3 (backscatter) and that
+						// share is exactly 0.7.  The check is still the DL-43
+						// one -- the density evaluated for the substituted
+						// candidate must be ITS OWN, not some other
+						// direction's -- only the constant in front changed.
+						const Scalar kExitSelectShare = Scalar(0.7);
 						if(substituted && outward && observation.pdfQueries>0 && observation.lastQueriedPdfReturn >= 0) {
-							const Scalar expected = std::fabs(Vector3Ops::Dot(
+							const Scalar expected = kExitSelectShare * std::fabs(Vector3Ops::Dot(
 								observation.tracedDirection, observation.exitNormal)) * INV_PI;
 							if(std::fabs(observation.lastQueriedPdfReturn - expected) > 1e-9) ++badPdfValue;
 						}
@@ -323,7 +336,20 @@ static void Run()
 	UniformColorPainter* trans = new UniformColorPainter(RISEPel(.5,.5,.5));
 	UniformScalarPainter* extinction = new UniformScalarPainter(0);
 	UniformScalarPainter* exponent = new UniformScalarPainter(1);
-	UniformScalarPainter* scattering = new UniformScalarPainter(0);
+	// DL-157 (2026-09-18): `scattering` was 0, which means the SPF's exit
+	// branch emits ONLY the outward diffuse exit lobe -- there is no
+	// interior backscatter lobe at all.  Pre-DL-157 `TranslucentBSDF::value`
+	// nonetheless returned `pRefFront * INV_PI` for an INWARD direction
+	// there (its `GetReflectedSide` case 1, a lobe that does not exist),
+	// which is what let the guided one-sample branch accept 371 of 512
+	// inward candidates on the strength of a phantom BSDF value -- the
+	// `substitutedIn > 0` controls below were pinning that.  With `value`
+	// describing the lobes the sampler actually has, an inward candidate at
+	// a `scattering 0` exit vertex correctly reads `f == 0` and is
+	// rejected.  Give the rig a real backscatter lobe instead, so the
+	// controls keep exercising DL-03's inward-substitution path against a
+	// direction the material genuinely scatters into.
+	UniformScalarPainter* scattering = new UniformScalarPainter(0.3);
 	StubObject* water = new StubObject();
 	StubObject* object = new StubObject();
 	StandardShader* shader = new StandardShader(std::vector<IShaderOp*>());

@@ -404,6 +404,64 @@ namespace RISE
 		//! all, not "two legitimate sides of one winding").
 		bool						bOpenSheet;
 
+		//! DL-157 review round 2 (2026-09-18): the surface's OBJECT
+		//! PROVABLY HAS NO INTERIOR.
+		//!
+		//! `bOpenSheet` does NOT mean this, and conflating the two is a
+		//! measured defect.  For the two mesh classes it means
+		//! "UNCERTIFIED": `TriangleMeshGeometryIndexed` sets it whenever
+		//! DL-143's build-time weld could not certify watertightness --
+		//! which, per DL-143's own audit, is all four glTF assets it
+		//! examined, every one of them a closed solid -- and the
+		//! non-indexed twin sets it on every double-sided hit because it
+		//! has no certification at all.  A consumer that reads
+		//! `bOpenSheet` as "no interior" therefore misreads a genuine
+		//! interior EXIT on an ordinary closed mesh as an entry.
+		//!
+		//! Only a geometry whose SHAPE forbids an interior can set this,
+		//! and today that is exactly ONE class: `ClippedPlaneGeometry`
+		//! -- four corners spanning one bilinear sheet with a boundary,
+		//! which cannot enclose a volume however it is transformed, so
+		//! the claim needs no build-time check and cannot be wrong.  Set
+		//! under the SAME back-face condition as `bOpenSheet` there, so
+		//! a front-face hit leaves it false and the ordinary ray anchor
+		//! applies.
+		//!
+		//! TWO CLASSES OF GEOMETRY CAN NEVER SET IT.
+		//!
+		//! (1) Anything MESH-LIKE.  "Not certified closed" is not
+		//! "certified open", and `bOpenSheet` on the two mesh classes
+		//! means only the former.
+		//!
+		//! (2) Anything holding a COLLECTION of primitives, however
+		//! interior-free each one is on its own -- an interior is a
+		//! property of the whole surface, and N open sheets can bound a
+		//! volume that no single sheet can.  `BezierPatchGeometry` is
+		//! the concrete case (DL-157 review round 3, P1): it reads as
+		//! "one patch" from its name only.  `patches` is a vector with a
+		//! BSP/Octree over it, and `Job.cpp`'s `.bezier` loader puts
+		//! every patch of a file into ONE geometry --
+		//! `models/raw/teapot.bezier` declares 28,
+		//! `models/bezier/aphrodite.bezier` and `f16.bezier` are closed
+		//! solids.  Round 2 stamped this flag there on the back-face
+		//! condition; at a genuine interior exit on such an object that
+		//! condition holds, so the stamp asserted "no interior" on
+		//! precisely the hit that disproves it.  The setter was removed.
+		//!
+		//! Explicitly cleared by `CSGObject::IntersectRay` after operand
+		//! copies and payload adoption, unlike
+		//! `bOpenSheet`: `bOpenSheet` is a property of the SURFACE the
+		//! ray struck and survives compositing, while this is a property
+		//! of the OBJECT -- a CSG tree built from planes can perfectly
+		//! well have an interior, so the wrapper must not inherit an
+		//! operand's claim.
+		//!
+		//! WHO READS IT: `TranslucentSPFDetail::BuildLobeSet`'s STACKLESS
+		//! side inference only (a caller with a live IOR stack asks the
+		//! stack instead; modern PT/BDPT/VCM integrator paths are
+		//! stacked, while photon gathers and SMS still have stackless sites).  See DL-157's closure doc section 3.1.
+		bool						bProvablyNoInterior;
+
 		//! THE shared recovery for the two flags above (DL-70).  Returns
 		//! the TRUE, ray-independent, winding-order geometric normal: the
 		//! reported `vGeomNormal` with the double-sided / back-face
@@ -762,6 +820,7 @@ namespace RISE
 		  bGeomNormalOrientedToRay( false ),
 		  bGeomNormalRayDerived( false ),
 		  bOpenSheet( false ),
+		  bProvablyNoInterior( false ),
 		  bHasTexCoord1( false ),
 		  bUVGeneratorApplied( false ),
 		  pmxWorldToObject( 0 ),
@@ -795,6 +854,7 @@ namespace RISE
 		  bGeomNormalOrientedToRay( r.bGeomNormalOrientedToRay ),
 		  bGeomNormalRayDerived( r.bGeomNormalRayDerived ),
 		  bOpenSheet( r.bOpenSheet ),
+		  bProvablyNoInterior( r.bProvablyNoInterior ),
 		  ptCoord( r.ptCoord ),
 		  ptCoord1( r.ptCoord1 ),
 		  bHasTexCoord1( r.bHasTexCoord1 ),
@@ -842,6 +902,7 @@ namespace RISE
 			bGeomNormalOrientedToRay = r.bGeomNormalOrientedToRay;
 			bGeomNormalRayDerived = r.bGeomNormalRayDerived;
 			bOpenSheet = r.bOpenSheet;
+			bProvablyNoInterior = r.bProvablyNoInterior;
 			ptCoord = r.ptCoord;
 			ptCoord1 = r.ptCoord1;
 			bHasTexCoord1 = r.bHasTexCoord1;

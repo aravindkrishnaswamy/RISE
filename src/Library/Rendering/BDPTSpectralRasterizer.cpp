@@ -197,12 +197,21 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 					// Replaces the channel-relabel "RISEPel(X, Y, Z)" hack
 					// which bypassed the colour-space matrix entirely
 					// (post Stage B: XYZtoRec709RGB, D65→D65, matrix-only).
-					// Splat path: don't apply mYNormalization here — the
-					// splat film's own Resolve normalizes by sample count
-					// (see SplatFilm.Resolve), and the per-sample value
-					// already encodes the spectral radiance estimate.
+					// DL-217: the splat path DOES need mYNormalization.
+					// `SplatFilm::Resolve`'s own divisor is a SAMPLE COUNT
+					// (`GetSplatSampleScale()` x spp) and nothing more --
+					// it is the splat analogue of the `/ nSpectralSamples`
+					// the non-splat return below carries, NOT of the
+					// `(lambda_end - lambda_begin) / k_y` INTEGRAL scale
+					// that turns an MC average of XYZ(lambda)*L(lambda)
+					// into a properly normalised tristimulus value.
+					// Omitting it made every spectral t==1 deposit
+					// mYNormalization (~3.74 over [380, 780] nm) times too
+					// dim relative to the same render's non-splat layer.
+					// The pre-fix comment here claimed the opposite and was
+					// wrong; see the file header / the DL-217 ledger row.
 					SplatContributionToFilm( fx, fy,
-						RISEPel( thisXYZ ),
+						RISEPel( thisXYZ ) * mYNormalization,
 						filmW, filmH );
 				}
 			}
@@ -315,6 +324,86 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 				// The first hero bundle receives the same trace-time AOV capture
 				// inside GenerateEyeSubpathNM.
 
+			// DL-126 P1.  A null-BSDF continuation vertex (biospec_skin_
+			// material / generic_human_tissue_material) gives
+			// RecomputeSubpathThroughputNM no way to form a companion/hero
+			// ratio, so it zeroes every companion from that vertex on --
+			// wavelength-INDEPENDENT of which companion (the material's
+			// GetBSDF() is null regardless of wavelength), unlike
+			// dispersion, so one path-wide check suffices.  Terminate
+			// secondaries exactly as the dispersive check does, so those
+			// always-zero companions are excluded from the sample-count
+			// denominator below instead of silently diluting the bundle
+			// mean.
+			//
+			// DL-201: BOTH termination checks run BEFORE the hero block, not
+			// after it.  They read only the two vertex arrays and the bundle's
+			// own wavelengths -- every input already exists here, and the hero
+			// block writes none of them, so hoisting them changes no value --
+			// and the hero's own SPLAT deposit below needs `splatLaneScale`,
+			// which is not final until the surviving-lane count is.
+			if( BDPTIntegrator::HasNullBSDFContinuationVertex( lightVerts ) ||
+				BDPTIntegrator::HasNullBSDFContinuationVertex( eyeVerts ) )
+			{
+				swl.TerminateSecondary();
+			}
+
+			// Check for dispersive delta vertices in either subpath.
+			// If any delta vertex has wavelength-dependent IOR,
+			// companions cannot share the hero's geometric path.
+			for( unsigned int w = 1; w < SampledWavelengths::N && !swl.SecondaryTerminated(); w++ )
+			{
+				if( BDPTIntegrator::HasDispersiveDeltaVertex( lightVerts, heroNM, swl.lambda[w] ) ||
+					BDPTIntegrator::HasDispersiveDeltaVertex( eyeVerts, heroNM, swl.lambda[w] ) )
+				{
+					swl.TerminateSecondary();
+					break;
+				}
+			}
+
+			// DL-201.  `SplatFilm::Resolve` divides EVERY pixel by ONE global
+			// scalar -- `GetSplatSampleScale()`, which is
+			// `nSpectralSamples * SampledWavelengths::N` under HWSS -- i.e. it
+			// assumes every bundle deposited all N of its lanes.  A bundle
+			// whose companions were just terminated deposits only its hero, so
+			// with no compensation it contributes one lane's worth of splat
+			// energy where the denominator has reserved N, and a pixel reached
+			// mostly through high-termination bundles darkens toward 1/N
+			// relative to one reached by low-termination bundles.
+			//
+			// The per-pixel weight accumulator DL-201's own recipe proposed
+			// CANNOT be the fix: a splat estimator's denominator must count
+			// every lane that COULD have deposited at a pixel, not the ones
+			// that did (a light subpath may land anywhere on the film), so a
+			// weight summed AT DEPOSIT TIME turns the estimator into "mean over
+			// contributing samples" and over-brightens every sparse splat
+			// region by orders of magnitude.  `SplatPixel::weight` already
+			// counts deposits for exactly this reason and is deliberately read
+			// only as a nonzero flag; see `SplatFilm::Resolve`.
+			//
+			// Correcting at the SOURCE is both exact and strictly FINER-grained
+			// than any per-pixel scheme: termination is a property of the
+			// BUNDLE, and the spatial correlation the row is about (bundles
+			// reaching one region terminate more often than those reaching
+			// another) disappears exactly when each bundle is renormalized
+			// before its energy is pooled at a pixel.  Scaling a bundle's
+			// deposits by N/activeLanes IS "divide that bundle's splat energy
+			// by the lanes it actually ran instead of by N" -- the same
+			// renormalization `totalActive` performs for the non-splat path
+			// below, applied per bundle rather than pooled per pixel sample
+			// (pooling would need the deposits deferred until the whole
+			// spectral loop finished; per-bundle is the sample mean of
+			// per-bundle estimates, which is if anything the cleaner
+			// estimator).
+			//
+			// Exactly 1.0 whenever nothing terminated, so a render with no
+			// dispersive / null-BSDF vertex is bit-identical -- as is every
+			// non-HWSS spectral render and every Pel (RGB) render, neither of
+			// which reaches this branch at all.
+			const Scalar splatLaneScale =
+				static_cast<Scalar>( SampledWavelengths::N ) /
+				static_cast<Scalar>( swl.NumActive() );
+
 			// Evaluate all strategies at hero wavelength.  Single
 			// subpath each (no branching) — one EvaluateAllStrategiesNM
 			// call.
@@ -343,8 +432,12 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 								const Scalar fx = cr.rasterPos.x;
 								const Scalar fy = static_cast<Scalar>( filmH ) - cr.rasterPos.y;
 								// Proper XYZ -> ROMM RGB conversion (hero).
+								// DL-201: * splatLaneScale -- see its
+								// declaration above.  DL-217:
+								// * mYNormalization -- see the non-HWSS
+								// splat site in IntegratePixelNM above.
 								SplatContributionToFilm( fx, fy,
-									RISEPel( splatXYZ ),
+									RISEPel( splatXYZ ) * ( splatLaneScale * mYNormalization ),
 									filmW, filmH );
 							}
 						} else {
@@ -357,36 +450,6 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 				if( ColorUtils::XYZFromNM( heroXYZ, heroNM ) ) {
 					spectralSum = spectralSum + heroXYZ * heroValue;
 					totalActive++;
-				}
-			}
-
-			// DL-126 P1.  A null-BSDF continuation vertex (biospec_skin_
-			// material / generic_human_tissue_material) gives
-			// RecomputeSubpathThroughputNM no way to form a companion/hero
-			// ratio, so it zeroes every companion from that vertex on --
-			// wavelength-INDEPENDENT of which companion (the material's
-			// GetBSDF() is null regardless of wavelength), unlike
-			// dispersion, so one path-wide check suffices.  Terminate
-			// secondaries exactly as the dispersive check does, so those
-			// always-zero companions are excluded from the sample-count
-			// denominator below instead of silently diluting the bundle
-			// mean.
-			if( BDPTIntegrator::HasNullBSDFContinuationVertex( lightVerts ) ||
-				BDPTIntegrator::HasNullBSDFContinuationVertex( eyeVerts ) )
-			{
-				swl.TerminateSecondary();
-			}
-
-			// Check for dispersive delta vertices in either subpath.
-			// If any delta vertex has wavelength-dependent IOR,
-			// companions cannot share the hero's geometric path.
-			for( unsigned int w = 1; w < SampledWavelengths::N && !swl.SecondaryTerminated(); w++ )
-			{
-				if( BDPTIntegrator::HasDispersiveDeltaVertex( lightVerts, heroNM, swl.lambda[w] ) ||
-					BDPTIntegrator::HasDispersiveDeltaVertex( eyeVerts, heroNM, swl.lambda[w] ) )
-				{
-					swl.TerminateSecondary();
-					break;
 				}
 			}
 
@@ -448,8 +511,14 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 								const Scalar fx = cr.rasterPos.x;
 								const Scalar fy = static_cast<Scalar>( filmH ) - cr.rasterPos.y;
 								// Proper XYZ -> ROMM RGB conversion (companion).
+								// DL-201: * splatLaneScale -- see its
+								// declaration above.  A companion only reaches
+								// this line when it survived, so the scale is
+								// the same one its hero used.  DL-217:
+								// * mYNormalization, as at every other
+								// spectral splat site.
 								SplatContributionToFilm( fx, fy,
-									RISEPel( splatXYZ ),
+									RISEPel( splatXYZ ) * ( splatLaneScale * mYNormalization ),
 									filmW, filmH );
 							}
 						} else {
