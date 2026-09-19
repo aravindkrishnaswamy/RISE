@@ -42,7 +42,10 @@ namespace RISE
 		public:
 			TranslucentMaterial( const IPainter& rF, const IPainter& T, const IScalarPainter& ext, const IScalarPainter& N_, const IScalarPainter& scat )
 			{
-				pBRDF = new TranslucentBSDF( rF, T, N_ );
+				// DL-157/DL-38: the BSDF now prices the interior lobes too,
+				// which ARE the Beer-attenuated / scattering-split pair, so
+				// it needs `ext` and `scat` as well.
+				pBRDF = new TranslucentBSDF( rF, T, N_, ext, scat );
 				GlobalLog()->PrintNew( pBRDF, __FILE__, __LINE__, "BRDF" );
 
 				pSPF = new TranslucentSPF( rF, T, ext, N_, scat );
@@ -102,9 +105,34 @@ namespace RISE
 				return info;
 			}
 
-			//! Read-back + rebind for the interactive editor.  `ref`/`tau`/`N`
-			//! exist on both BSDF and SPF — Material forwards in lockstep.
-			//! `ext`/`scat` exist only on the SPF (BSDF doesn't carry them).
+			//! DL-157 (2026-09-18): `translucent_material`'s BSDF genuinely
+			//! transmits -- `TranslucentBSDF::value` now prices the entry
+			//! transmission lobe and, on the interior side, the backscatter
+			//! lobe, both of which live BELOW the shading horizon.  Without
+			//! this override `LightSampler.cpp`'s three NEE arms `break` at
+			//! `cosSurface <= 0` and never light them, while PT's own
+			//! BSDF-sampling side still multiplies its below-horizon
+			//! emitter hits by `w_bsdf = PowerHeuristic(p_b, p_l) < 1` --
+			//! the two strategies then sum to less than 1 over the whole
+			//! transmissive half-space and the estimator reads
+			//! systematically UNDER.  BDPT/VCM never had that gate
+			//! (`PathVertexEval::EvalBSDFAtVertex` has no hemisphere test and
+			//! `BDPTUtilities::GeometricTerm` takes `fabs` of both cosines),
+			//! which is exactly the PT-vs-BDPT asymmetry DL-157 recorded.
+			//!
+			//! The capability's own safety condition (see IMaterial.h and
+			//! LightSampler.cpp's FULL-SPHERE NEE block) is that the
+			//! material's `value()` must really transmit and its aggregate
+			//! `Pdf()` must really have support there, so the MIS partition
+			//! closes.  Both became true in the same slice: DL-157 for
+			//! `value`, DL-41 for `Pdf`.  Granting it BEFORE those would
+			//! have lit back faces at full weight against a zero partner
+			//! density.
+			inline bool ScattersFullSphere() const { return true; }
+
+			//! Read-back + rebind for the interactive editor.  All five
+			//! parameters now exist on both BSDF and SPF — Material forwards
+			//! in lockstep.
 			inline const IPainter&       GetRefFront()   const { return pSPF->GetRefFront(); }
 			inline const IPainter&       GetTrans()      const { return pSPF->GetTrans(); }
 			inline const IScalarPainter& GetExtinction() const { return pSPF->GetExtinction(); }
@@ -112,9 +140,9 @@ namespace RISE
 			inline const IScalarPainter& GetScat()       const { return pSPF->GetScat(); }
 			inline void SetRefFront( const IPainter& v )         { pBRDF->SetRefFront( v ); pSPF->SetRefFront( v ); }
 			inline void SetTrans( const IPainter& v )            { pBRDF->SetTrans( v );    pSPF->SetTrans( v ); }
-			inline void SetExtinction( const IScalarPainter& v ) { pSPF->SetExtinction( v ); }
+			inline void SetExtinction( const IScalarPainter& v ) { pBRDF->SetExtinction( v ); pSPF->SetExtinction( v ); }
 			inline void SetN( const IScalarPainter& v )          { pBRDF->SetN( v );        pSPF->SetN( v ); }
-			inline void SetScat( const IScalarPainter& v )       { pSPF->SetScat( v ); }
+			inline void SetScat( const IScalarPainter& v )       { pBRDF->SetScat( v );     pSPF->SetScat( v ); }
 		};
 	}
 }

@@ -406,6 +406,344 @@ namespace RISE { namespace Implementation { namespace TranslucentSPFDetail
 		outPdf = (N + Scalar(1)) * pow( cosTheta, N ) / ( Scalar(2) * half );
 		return true;
 	}
+
+	//////////////////////////////////////////////////////////////////////
+	//  DL-157 / DL-41 / DL-38 -- the shared per-hit lobe set.
+	//
+	//  `Scatter`/`ScatterNM` DRAW from these lobes; `Pdf`/`PdfNM` report
+	//  the density of what `RandomlySelect` returns from them; and
+	//  `TranslucentBSDF::value`/`valueNM` return each one's own
+	//  `kray * pdf / |cos|`.  All three read the set built here, so the
+	//  sampler, its density and its evaluator describe one function per
+	//  side by construction rather than by three parallel transcriptions
+	//  (which is precisely how DL-41 and DL-157 arose).
+	//////////////////////////////////////////////////////////////////////
+
+	bool EvalLobe( const Lobe& lobe, const Vector3& w,
+		Scalar& outPdf, Scalar& outFOverKray )
+	{
+		const Scalar cosTheta = Vector3Ops::Dot( w, lobe.axis );
+		if( cosTheta <= 0 ) return false;
+		if( Vector3Ops::Dot( w, lobe.clipN ) <= 0 ) return false;
+
+		if( !lobe.isPhong ) {
+			// DL-45 / DL-112's clipped cosine: `cos/pi` renormalized by the
+			// exact valid fraction `(1+cos phi)/2` its 2-draw Malley remap
+			// covers.  `f = kray * pdf / cos` cancels the cosine outright.
+			const Scalar pValid = ExitValidFraction( lobe.axis, lobe.clipN );
+			if( pValid < kExitVanishThreshold ) return false;
+			outFOverKray = INV_PI / pValid;
+			outPdf       = cosTheta * outFOverKray;
+			return true;
+		}
+
+		// DL-68's clipped Phong.  `half` is transcribed from
+		// SampleClippedPhong above -- deliberately the same arithmetic, so
+		// the density this reports is the one that sampler realizes.
+		// WHICH GATE CHECKS WHAT: gate 1 in
+		// TranslucentLobeConsistencyTest pairs this density with the
+		// lobe's own `kray` and `value`, so it catches a NORMALISATION
+		// error (a wrong constant in front); only gate 3, a total
+		// variation against a histogram of directions the real sampler
+		// produced, can catch a wrong SHAPE.  The first draft of this
+		// comment claimed gate 1 does both.
+		const Scalar cosPhi = r_max( Scalar(0), r_min( Scalar(1),
+			Vector3Ops::Dot( lobe.axis, lobe.clipN ) ) );
+		Scalar half = PI;
+		{
+			const Vector3 uAxis = lobe.clipN - cosPhi*lobe.axis;
+			if( Vector3Ops::SquaredModulus( uAxis ) > Scalar(1e-12) ) {
+				const Scalar sinPhi   = sqrt( r_max( Scalar(0), Scalar(1) - cosPhi*cosPhi ) );
+				const Scalar sinTheta = sqrt( r_max( Scalar(0), Scalar(1) - cosTheta*cosTheta ) );
+				const Scalar denom = sinTheta * sinPhi;
+				const Scalar num   = cosTheta * cosPhi;
+				if( num < denom ) {
+					half = acos( -num/denom );
+				}
+			}
+		}
+		// pow(cosTheta, N-1) rather than pow(cosTheta,N)/cosTheta: the
+		// cosine the integrators multiply back in is cancelled in closed
+		// form, so a grazing direction never divides by a vanishing number.
+		outFOverKray = (lobe.N + Scalar(1)) * pow( cosTheta, lobe.N - Scalar(1) ) / ( Scalar(2)*half );
+		outPdf       = cosTheta * outFOverKray;
+		return true;
+	}
+
+	namespace
+	{
+		inline void AddLobe( LobeSet& set, bool isPhong, const Vector3& axis,
+			const Vector3& clipN, Scalar N, const RISEPel& kray, Scalar krayNM, bool bNM )
+		{
+			if( set.count >= 4 ) return;
+			Lobe& L = set.lobes[set.count++];
+			L.isPhong = isPhong;
+			L.axis    = axis;
+			L.clipN   = clipN;
+			L.N       = N;
+			L.kray    = kray;
+			L.krayNM  = krayNM;
+			// EXACTLY what ScatteredRayContainer::RandomlySelect's CDF uses
+			// (ColorMath::MaxValue of the RISEPel the sampler built, or the
+			// raw krayNM on the spectral pipe).  DL-98/DL-99 review lesson
+			// (3): reduce in the SAME order the sampler does.
+			L.selectWeight = bNM ? krayNM : ColorMath::MaxValue( kray );
+			set.totalSelectWeight += L.selectWeight;
+		}
+	}
+
+	void BuildLobeSet(
+		const IPainter& refFront,
+		const IPainter& trans,
+		const IScalarPainter& extinction,
+		const IScalarPainter& phongN,
+		const IScalarPainter& scattering,
+		const RayIntersectionGeometric& ri,
+		const IORStack* pIorStack,
+		const bool bNM,
+		const Scalar nm,
+		LobeSet& out )
+	{
+		out.count = 0;
+		out.totalSelectWeight = 0;
+
+		// The two geometric references, recovered exactly as Scatter() does
+		// (DL-70's un-flip first; hair and a degenerate normal fall back to
+		// the shading normal, which makes every gate a no-op there).
+		const Vector3 n = ri.onb.w();
+		out.n = n;
+		const Vector3 trueGeomNormal = ri.HasTrueGeomSide() ? ri.UnflippedGeomNormal() : n;
+		const Vector3 geomNRaw = ( Vector3Ops::SquaredModulus( trueGeomNormal ) > Scalar(1e-12) )
+			? trueGeomNormal : n;
+
+		// The side.  With a live stack this is bit-for-bit Scatter()'s own
+		// `!ior_stack.containsCurrent()`.  Without one it is the geometric
+		// reading of the same question -- which face the incoming ray
+		// struck -- exact for a closed object and for a double-sided mesh
+		// (the un-flip above is what makes the latter true).
+		// Without a stack the side has to be inferred, and the ray anchor
+		// is EXACT for a closed object: a ray entering one travels inward
+		// at its boundary hit.  It is NOT exact on an OPEN sheet, where a
+		// back-face-first hit is a genuine ENTRY with a leaving ray.
+		//
+		// ⚠ `ri.bOpenSheet` IS NOT THE FLAG TO ASK, and review round 2
+		// measured what asking it costs.  For the two mesh classes that
+		// flag means UNCERTIFIED, not open: `TriangleMeshGeometryIndexed`
+		// sets it whenever DL-143's build-time weld could not certify
+		// watertightness -- all four glTF assets DL-143 audited, every one
+		// a closed solid -- and the non-indexed twin sets it on every
+		// double-sided hit.  Round 2 briefly used it here, and at a
+		// genuine interior EXIT on such a mesh the stackless path then
+		// priced the ENTRY lobes: measured `E[kray]/E[value*cos/pdf]`
+		// 0.866690 / 0.865710 / 0.865039 on the diffuse exit and
+		// 0.321477 / 0.310505 / 0.313584 on the backscatter at tilt
+		// 0/30/60, against 1.000000 everywhere with the clause gone.
+		//
+		// `ri.bProvablyNoInterior` is the flag that means what is needed,
+		// and exactly one class sets it: `ClippedPlaneGeometry`, whose
+		// four corners span ONE bounded bilinear sheet.  A mesh can never
+		// set it, because "not certified closed" is not "certified open";
+		// neither can any geometry holding a COLLECTION of primitives,
+		// since N interior-free sheets can bound a volume no single sheet
+		// can -- `BezierPatchGeometry` stamped it in round 2 and was
+		// removed in round 3 for exactly that reason (its `patches` is a
+		// vector, and a `.bezier` file's 28 patches load into one
+		// geometry).  Where the flag is absent the ray anchor is what is
+		// left, and it is right for the interior exit and wrong for the
+		// sheet's back face (the residual on DL-223).
+		//
+		// MOST but not all callers are stacked.  The stackless ones are
+		// the translucent photon-map gather
+		// (`TranslucentPelPhotonMap::RadianceEstimate`, whose shader op
+		// HAS a stack but whose `IPhotonMap` interface does not carry
+		// one), the three global/caustic photon maps and `PhotonMap.h`'s
+		// own gather,
+		// `PointSetOctree`'s SSS irradiance cache, the interactive
+		// preview and `ManifoldSolver`'s four SMS sites -- sixteen calls
+		// across eight files, enumerated on DL-223(4). Both FinalGather
+		// arms now carry the stack. The modern paths -- PT NEE, BDPT/VCM
+		// connections, the zero-exitance sweep, PT guiding -- are all
+		// STACKED.
+		const bool bEntering = pIorStack
+			? !pIorStack->containsCurrent()
+			: ( ri.bProvablyNoInterior || Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 );
+
+		// `geomN` -- the side the INCOMING ray arrived from -- is what
+		// `Scatter`'s ENTRY lobes are clipped against, and it is NOT
+		// derivable from the side alone.
+		//
+		// WHAT `Scatter` ACTUALLY DOES, per branch (read it above, ~:760):
+		//
+		//   ENTRY  front reflection  clip = geomN   (RAY-anchored)
+		//          transmission      clip = -geomN  (RAY-anchored)
+		//   EXIT   backscatter       clip = geomN   (RAY-anchored)
+		//          diffuse exit      clip = geomNRaw, axis = OrientedExitNormal(n, geomNRaw)
+		//                                           (already ray-INDEPENDENT -- DL-45)
+		//
+		// THE ENTRY SIDE NEEDS THE RAY, and a stack-derived
+		// `bEntering ? geomNRaw : -geomNRaw` is WRONG there on a
+		// reachable record: a camera ray striking the BACK FACE FIRST of
+		// an open double-sided sheet has a not-inside stack (true -- it
+		// never entered) and a leaving ray (true -- it hit the back
+		// face), so the two disagree.  `clippedplane_geometry`'s
+		// `doublesided` DEFAULTS TO TRUE, and translucent is what authors
+		// put on open sheets (DL-46 review round 3(c)), so this is a
+		// first-class authoring case, not a corner.  Measured on that
+		// record with a stack-derived frame (round 3's re-measurement,
+		// superseding round 1's 0.840 / 1.402 -- which came from a gate
+		// that drove only the stackless entry point): gate 1's
+		// `E[kray]/E[value*cos/pdf]` read 1.260222 on the front-reflection
+		// lobe and 2.336741 on the transmission lobe at zero tilt, on
+		// BOTH entry points, where all four must read 1.000.  So the entry side uses LITERALLY
+		// `Scatter`'s own expression.
+		//
+		// THE EXIT SIDE MUST NOT, and cannot be made to.
+		// `PathVertexEval::EvalBSDFAtVertex` rebuilds a record as
+		// `Ray(vertex.position, -wo)`, and the two BDPT generators pass
+		// their `(wi, wo)` in OPPOSITE roles -- the eye walk as
+		// `(scatDir, -currentRay.Dir())`, so the rebuilt ray IS the
+		// incoming segment, and the light walk as
+		// `(-currentRay.Dir(), scatDir)`, so it is the REVERSE of the
+		// outgoing one.  On the light side that puts BOTH exit-branch
+		// lobes in the same half-space and leaves the interior direction
+		// the walk is actually asking about with no lobe at all, so
+		// `f == 0` and `GenerateLightSubpathImpl`'s
+		// `PositiveMagnitude(f)` gate kills the walk --
+		// `TranslucentIORStackTest`'s BDPT light rows measured
+		// `reached=512 -> 0` on every mode.
+		//
+		// It does not have to: on the EXIT side `Scatter`'s own `geomN`
+		// IS `-geomNRaw` at every record its exit branch can be reached
+		// with.  That branch requires `ior_stack.containsCurrent()` --
+		// the walk is inside the object -- and a ray inside an object
+		// travels outward at its boundary hit, which is exactly
+		// `Dot(geomNRaw, rayDir) > 0`.  So `-geomNRaw` is not an
+		// approximation of Scatter there; it is the same value, computed
+		// without the ray.  (The one record where it is not is a stack
+		// that claims "inside" for a ray that is entering -- the open-
+		// sheet parity failure DL-76 tracks, where the exit branch has no
+		// meaning in the first place.)
+		//
+		// WHAT IS LEFT, stated precisely.  A LIGHT-subpath ENTRY vertex
+		// evaluated through the rebuilt record gets the ray-anchored
+		// frame computed from `-scatDir`, which is inverted relative to
+		// the walk's own incoming segment.  That is not a new defect and
+		// not closable here: it is the caller-convention half of DL-223,
+		// the same role-swap that makes a NON-RECIPROCAL BSDF give two
+		// answers for one direction pair.  The rule below is the one that
+		// is right for PT / NEE and for the eye subpath (both of which
+		// hold a record whose ray IS the incoming ray) and that keeps the
+		// light subpath alive; the residual is measured on DL-223.
+		const Vector3 geomN = bEntering
+			? ( ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw )
+			: -geomNRaw;
+
+		if( bEntering )
+		{
+			// --- entry front reflection (clipped cosine, kray = ref) ---
+			const RISEPel refC = bNM ? RISEPel(0,0,0) : refFront.GetColor(ri);
+			const Scalar  refN = bNM ? GuardedGetColorNM( refFront, ri, nm ) : Scalar(0);
+			if( bNM ? (refN > 0) : (ColorMath::MaxValue(refC) > 0) ) {
+				const Vector3 nFront = OrientedLobeAxis( n, geomN );
+				if( ExitValidFraction( nFront, geomN ) >= kExitVanishThreshold ) {
+					AddLobe( out, false, nFront, geomN, Scalar(1), refC, refN, bNM );
+				}
+			}
+
+			// --- entry transmission (clipped Phong, kray = tau) ---
+			const RISEPel tauC = bNM ? RISEPel(0,0,0) : trans.GetColor(ri);
+			const Scalar  tauN = bNM ? GuardedGetColorNM( trans, ri, nm ) : Scalar(0);
+			if( bNM ? (tauN > 0) : (ColorMath::MaxValue(tauC) > 0) ) {
+				const Vector3 intoSolid = -geomN;
+				const Vector3 nEnter = OrientedLobeAxis( n, intoSolid );
+				if( bNM ) {
+					AddLobe( out, true, nEnter, intoSolid, phongN.GetValueAtNM(ri,nm),
+						RISEPel(0,0,0), tauN, bNM );
+				} else {
+					const ScalarTriple Nt = phongN.GetValuesAt(ri);
+					if( (Nt.v[0] == Nt.v[1]) && (Nt.v[1] == Nt.v[2]) ) {
+						AddLobe( out, true, nEnter, intoSolid, Nt.v[0], tauC, 0, bNM );
+					} else {
+						for( int i = 0; i < 3; i++ ) {
+							RISEPel chan( 0, 0, 0 );
+							chan[i] = tauC[i];
+							AddLobe( out, true, nEnter, intoSolid, Nt.v[i], chan, 0, bNM );
+						}
+					}
+				}
+			}
+			return;
+		}
+
+		// --- exit side ---
+		const Scalar distance = Vector3Ops::Magnitude(
+			Vector3Ops::mkVector3( ri.ray.origin, ri.ptIntersection ) );
+
+		// DL-38: the interior segment's Beer extinction is part of what this
+		// side of the BSDF is, and it is a function of `ri` -- the incoming
+		// ray's own origin -- so a reverse / NEE evaluation at a REAL
+		// intersection record sees exactly the attenuation the sampler
+		// charged.  (A BDPT / VCM connection evaluates through a record
+		// rebuilt by `PathVertexEval::PopulateRIGFromVertex`, whose ray
+		// origin IS the vertex, so `distance == 0` and `B == 1` there:
+		// DL-223, recorded not closed.)
+		RISEPel B( 1, 1, 1 );
+		Scalar  Bnm = 1;
+		if( bNM ) {
+			Bnm = exp( -( extinction.GetValueAtNM(ri,nm) * distance ) );
+		} else {
+			const ScalarTriple abt = extinction.GetValuesAt(ri);
+			const RISEPel ab( abt.v[0], abt.v[1], abt.v[2] );
+			B = ColorMath::exponential( -distance*ab );
+		}
+
+		RISEPel exitKray  = B;
+		Scalar  exitKrayNM = Bnm;
+
+		if( bNM ? (Bnm > 0) : (ColorMath::MaxValue(B) > 0) )
+		{
+			const Vector3 stayInside = geomN;
+			const Vector3 nBack = OrientedLobeAxis( n, stayInside );
+
+			if( bNM ) {
+				const Scalar scat = scattering.GetValueAtNM(ri,nm);
+				if( scat > 0 ) {
+					AddLobe( out, true, nBack, stayInside, phongN.GetValueAtNM(ri,nm),
+						RISEPel(0,0,0), Bnm*scat, bNM );
+					exitKrayNM = Bnm * (Scalar(1)-scat);
+				}
+			} else {
+				const ScalarTriple scat_t = scattering.GetValuesAt(ri);
+				const RISEPel scat( scat_t.v[0], scat_t.v[1], scat_t.v[2] );
+				if( ColorMath::MaxValue(scat) > 0 ) {
+					const ScalarTriple Nt = phongN.GetValuesAt(ri);
+					if( (Nt.v[0] == Nt.v[1]) && (Nt.v[1] == Nt.v[2]) ) {
+						AddLobe( out, true, nBack, stayInside, Nt.v[0], B*scat, 0, bNM );
+						exitKray = B * (RISEPel(1.0,1.0,1.0)-scat);
+					} else {
+						for( int i = 0; i < 3; i++ ) {
+							RISEPel chan( 0, 0, 0 );
+							chan[i] = B[i]*scat[i];
+							AddLobe( out, true, nBack, stayInside, Nt.v[i], chan, 0, bNM );
+							exitKray[i] = B[i] * (Scalar(1)-scat[i]);
+						}
+					}
+				}
+			}
+		}
+
+		// --- diffuse exit re-emission (clipped cosine) ---
+		// Emitted whatever its weight, matching Scatter(): the exit ray is
+		// added after the scattering block with no `kray > 0` gate of its
+		// own, so a fully extinguished segment still produces a (zero-weight)
+		// ray, which `RandomlySelect` can still return when it is the only one.
+		{
+			const Vector3 nExit = OrientedExitNormal( n, geomNRaw );
+			if( ExitValidFraction( nExit, geomNRaw ) >= kExitVanishThreshold ) {
+				AddLobe( out, false, nExit, geomNRaw, Scalar(1), exitKray, exitKrayNM, bNM );
+			}
+		}
+	}
 } } }
 
 using namespace RISE::Implementation::TranslucentSPFDetail;
@@ -972,82 +1310,54 @@ Scalar TranslucentSPF::Pdf(
 	const IORStack& ior_stack
 	) const
 {
-	// For the front hemisphere diffuse component, return cosine-weighted PDF
-	// For the translucent (back hemisphere) component, return 0
-	// (translucent paths have a complex mixed PDF that we approximate as 0)
-	//
-	// Both the entry reflection and inside-state exit re-emission
-	// sample around +onb.w(). Membership only controls which one is being
-	// evaluated; it must not reverse which hemisphere has support.
-	const bool bFrontFace = !ior_stack.containsCurrent();
-	const Vector3& n = ri.onb.w();
+	return AggregatePdf( ri, wo, false, 0, ior_stack );
+}
 
-	// Geometric-horizon gate: a wo the sampler could not have geometrically
-	// emitted contributes zero density, in EITHER membership state.  Entry
-	// reflection and DL-45's exit re-emission both need this, but against
-	// DIFFERENT references -- see the long comment in Scatter() for why:
-	// the entry reflection needs `geomN` (ray-anchored, the incident
-	// side); the exit re-emission needs the recovered TRUE, UNFLIPPED
-	// `geomNRaw` (the object's actual outward direction, independent of
-	// which side the evaluated ray happens to approach from -- P2-1:
-	// `ri.vGeomNormal` itself is NOT unconditionally that direction
-	// on a double-sided triangle mesh, see Scatter()'s long comment).
-	// P2-4 (review round 3): the un-flip only recovers a real surface
-	// facing when the reported normal IS a surface property.  A hair
-	// strand's is derived from the ray itself (HairGeometry sets
-	// `bGeomNormalRayDerived`), so un-flipping yields "always away from
-	// the ray" -- no geometric truth to gate against.  Fall back to the
-	// shading normal there, which makes both gates no-ops, exactly like
-	// the degenerate-normal fallback below.
-	const Vector3 trueGeomNormal = ri.HasTrueGeomSide() ? ri.UnflippedGeomNormal() : n;
-	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( trueGeomNormal ) > Scalar(1e-12) )
-		? trueGeomNormal : n;
-
-	if( bFrontFace )
-	{
-		// Entry reflection lobe.  DL-112 (2026-09-17): Scatter() no longer
-		// DROPS a below-horizon sample -- it draws the same exact 2-draw
-		// remap onto the geometrically valid region that DL-45 gave the
-		// exit lobe -- so this must report the matching NORMALIZED
-		// conditional density (it used to return the UNNORMALIZED cosine
-		// restricted to the valid sub-hemisphere, which integrated to
-		// P(valid) < 1 and said so in its own comment).  Evaluate the
-		// cosine against the SAME oriented axis the sampler used, and
-		// divide by the same valid fraction.  Identity at zero tilt.
-		const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
-		const Vector3 nFront = OrientedLobeAxis( n, geomN );
-		// Sampler support == density support, as on the exit branch below.
-		const Scalar pValid = ExitValidFraction( nFront, geomN );
-		if( pValid < kExitVanishThreshold ) return 0;
-		const Scalar cosTheta = Vector3Ops::Dot( wo, nFront );
-		if( cosTheta <= 0 ) return 0;
-		if( Vector3Ops::Dot( wo, geomN ) <= 0 ) return 0;
-		return ( cosTheta * INV_PI ) / pValid;
+//! DL-222: the spectral companion weight, read off the SAME lobe set
+//! `ScatterNM` draws from rather than reconstructed as `value*cos/pdf`.
+//!
+//! `ScatterNM` emits at most two rays and they have DISTINCT types --
+//! `eRayDiffuse` (the entry front reflection on the entry side, the
+//! diffuse exit on the interior side) and `eRayTranslucent` (the entry
+//! transmission, the interior backscatter) -- so `rayType` alone
+//! identifies which lobe a companion is asking about, on either side.
+//! `outDir` is not needed to make that identification and is unused, but
+//! is kept in the signature because it is the interface's and because a
+//! future lobe split would need it.
+//!
+//! The weights themselves are wavelength-dependent through the painters
+//! (`GuardedGetColorNM` on `ref`/`tau`; `GetValueAtNM` on
+//! `ext`/`scattering`), which is exactly what the companion lane wants
+//! and what the `value*cos/pdf` fallback could only approximate.
+Scalar TranslucentSPF::EvaluateKrayNM(
+	const RayIntersectionGeometric& ri,
+	const Vector3& /*outDir*/,
+	ScatteredRay::ScatRayType rayType,
+	Scalar nm,
+	const IORStack& ior_stack
+	) const
+{
+	if( rayType != ScatteredRay::eRayDiffuse && rayType != ScatteredRay::eRayTranslucent ) {
+		return -1;
 	}
 
-	// Inside-state diffuse exit re-emission (DL-45, P1 exact-remap follow-up): Scatter()/
-	// ScatterNM() draw an exact closed-form remap onto the geometrically-
-	// valid region rather than dropping (or, historically, rejection-
-	// sampling) an invalid trial, so this must report the matching
-	// NORMALIZED conditional density -- see ExitValidFraction's
-	// derivation above.  Gate against the (recovered, TRUE) UNFLIPPED
-	// `geomNRaw`, matching SampleValidDiffuseExit's own call sites, and
-	// evaluate the cosine against the same OUTWARD-oriented lobe axis the
-	// sampler used (P1, review round 3 -- `ri.onb.w()` is the INWARD
-	// normal at a double-sided mesh's exit hit).
-	const Vector3 nExit = OrientedExitNormal( n, geomNRaw );
-	const Scalar pValid = ExitValidFraction( nExit, geomNRaw );
-	// Sampler support == density support: `SampleValidDiffuseExit`
-	// emits NO lobe below this same threshold, so the density must report
-	// no support there either rather than dividing by a near-zero
-	// fraction (P2-1, review round 3 -- the previous code divided by an
-	// unclamped ExitValidFraction and claimed support the sampler did not
-	// have).
-	if( pValid < kExitVanishThreshold ) return 0;
-	const Scalar cosTheta = Vector3Ops::Dot( wo, nExit );
-	if( cosTheta <= 0 ) return 0;
-	if( Vector3Ops::Dot( wo, geomNRaw ) <= 0 ) return 0;
-	return ( cosTheta * INV_PI ) / pValid;
+	LobeSet set;
+	BuildLobeSet( *pRefFront, *pTrans, *pExtinction, *pN, *pScat,
+		ri, &ior_stack, true, nm, set );
+
+	// The cosine lobe is the `eRayDiffuse` one on BOTH sides (entry front
+	// reflection / interior diffuse exit); the Phong lobe is the
+	// `eRayTranslucent` one (entry transmission / interior backscatter).
+	const bool bWantPhong = ( rayType == ScatteredRay::eRayTranslucent );
+	for( int i = 0; i < set.count; i++ ) {
+		if( set.lobes[i].isPhong == bWantPhong ) {
+			return set.lobes[i].krayNM;
+		}
+	}
+	// The lobe this companion is asking about is not emitted at this
+	// wavelength (a zero painter, a fully extinguished segment, a zero
+	// scattering split).  That is a real answer, not a decline.
+	return 0;
 }
 
 Scalar TranslucentSPF::PdfNM(
@@ -1057,6 +1367,57 @@ Scalar TranslucentSPF::PdfNM(
 	const IORStack& ior_stack
 	) const
 {
-	return Pdf( ri, wo, ior_stack );
+	return AggregatePdf( ri, wo, true, nm, ior_stack );
 }
 
+//! DL-41 (2026-09-18): the density of what `Scatter`/`ScatterNM` plus
+//! `ScatteredRayContainer::RandomlySelect` actually generate.
+//!
+//! Before this, `Pdf` returned ONE lobe -- the entry front reflection or
+//! the diffuse exit, whichever side the stack said -- at its full,
+//! unweighted density, and reported ZERO over the entire half-space the
+//! two Phong lobes (entry transmission, interior backscatter) occupy.
+//! That is why DL-69's BDPT `pdfFwd` and DL-103's PT escape-side MIS
+//! partner both carry a `misFwdPdf <= NEARZERO` fallback naming this
+//! class: the aggregate really did report nothing for a direction the
+//! sampler had just generated.  It also integrated to 1 over the sphere,
+//! so a mass check could not see it -- only a shape (total-variation)
+//! check against the real sampler can, which is
+//! `TranslucentLobeConsistencyTest`'s gate 3.
+//!
+//! The mixture weights are EXACT rather than quadrature-estimated
+//! (contrast DL-67/DL-98/DL-99): every lobe's `kray` here is
+//! direction-independent, so `RandomlySelect`'s realized probability IS
+//! the raw weight ratio.  See the `BuildLobeSet` contract in
+//! TranslucentSPF.h.
+Scalar TranslucentSPF::AggregatePdf(
+	const RayIntersectionGeometric& ri,
+	const Vector3& wo,
+	const bool bNM,
+	const Scalar nm,
+	const IORStack& ior_stack
+	) const
+{
+	LobeSet set;
+	BuildLobeSet( *pRefFront, *pTrans, *pExtinction, *pN, *pScat,
+		ri, &ior_stack, bNM, nm, set );
+
+	if( set.count == 0 ) return 0;
+
+	// Mirror RandomlySelect exactly: a single emitted ray is returned with
+	// probability 1 whatever its weight, and a degenerate all-zero weight
+	// total with two or more rays selects NOTHING at all.
+	if( set.count == 1 ) {
+		Scalar pdf = 0, fOverKray = 0;
+		return EvalLobe( set.lobes[0], wo, pdf, fOverKray ) ? pdf : Scalar(0);
+	}
+	if( set.totalSelectWeight <= NEARZERO ) return 0;
+
+	Scalar total = 0;
+	for( int i = 0; i < set.count; i++ ) {
+		Scalar pdf = 0, fOverKray = 0;
+		if( !EvalLobe( set.lobes[i], wo, pdf, fOverKray ) ) continue;
+		total += ( set.lobes[i].selectWeight / set.totalSelectWeight ) * pdf;
+	}
+	return total;
+}

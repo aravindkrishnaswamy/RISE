@@ -61,7 +61,8 @@ void SpotLight::ComputeDirectLighting(
 	const bool bReceivesShadows,
 	RISEPel& amount,
 	const bool /*bFullSphereReceiver*/,	// no-op here; see the .h doc
-	const bool bVolumeReceiver			// implemented; see the .h doc
+	const bool bVolumeReceiver,			// implemented; see the .h doc
+	const IORStack* pIORStack			// DL-157 P1: live stack for a stateful BSDF
 	) const
 {
 	//
@@ -122,11 +123,11 @@ void SpotLight::ComputeDirectLighting(
 		const Scalar invDistSq = 1.0 / (fDistFromLight * fDistFromLight);
 
 		if( fAngleOfIncidence <= dInnerAngle/2.0 ) {
-			amount = (cColor * brdf.value( vToLight, ri )) * (invDistSq * fDot * radiantEnergy) * shadowT;
+			amount = (cColor * brdf.valueStateful( vToLight, ri , pIORStack)) * (invDistSq * fDot * radiantEnergy) * shadowT;
 		} else {
 			// Quadratic falloff between inner and outer half-angles
 			const Scalar t = (dOuterAngle/2.0 - fAngleOfIncidence) / (dOuterAngle/2.0 - dInnerAngle/2.0);
-			amount = (cColor * brdf.value( vToLight, ri )) * (invDistSq * t * t * fDot * radiantEnergy) * shadowT;
+			amount = (cColor * brdf.valueStateful( vToLight, ri , pIORStack)) * (invDistSq * t * t * fDot * radiantEnergy) * shadowT;
 		}
 	}
 }
@@ -138,7 +139,8 @@ Scalar SpotLight::ComputeDirectLightingNM(
 	const bool bReceivesShadows,
 	const Scalar nm,
 	const bool /*bFullSphereReceiver*/,	// no-op here; see the .h doc
-	const bool bVolumeReceiver			// implemented; see the .h doc
+	const bool bVolumeReceiver,			// implemented; see the .h doc
+	const IORStack* pIORStack			// DL-157 P1: live stack for a stateful BSDF
 	) const
 {
 	// Same geometry / cone falloff as the RGB ComputeDirectLighting; only the
@@ -178,7 +180,7 @@ Scalar SpotLight::ComputeDirectLightingNM(
 	// Stage C slice 2: the light's own spectrum at `nm`, not a flat Rec.709
 	// luma projection of its RGB colour.  See PointLight::ComputeDirectLightingNM.
 	const Scalar lightSpec = cSpectrum.Eval( nm );
-	const Scalar base = lightSpec * brdf.valueNM( vToLight, ri, nm ) * invDistSq * fDot * radiantEnergy * shadowT;
+	const Scalar base = lightSpec * brdf.valueStatefulNM( vToLight, ri, nm , pIORStack) * invDistSq * fDot * radiantEnergy * shadowT;
 
 	if( fAngleOfIncidence <= dInnerAngle/2.0 ) {
 		return base;

@@ -1936,28 +1936,109 @@ static void RealMaterialStackPremise()
 			"DL-112: at an entry-shaped hit on a non-flipping geometry the entry and "
 			"exit branches are the same normalized clipped-cosine function" );
 
-		// (b) Exit-shaped hit: an interior ray travelling OUTWARD, so the
-		// ray-anchored `geomN` the entry branch clips to and the unflipped
-		// `geomNRaw` the exit branch clips to are opposite.  The two
-		// branches' supports are then disjoint, and `band` lands in the
-		// exit branch's.
-		RayIntersectionGeometric leaving( Ray( Point3( 0, 0, -1 ), Vector3( 0, 0, 1 ) ), rast );
-		leaving.bHit = true;
-		leaving.range = 1;
-		leaving.ptIntersection = Point3( 0, 0, 0 );
-		leaving.vNormal = Vector3Ops::Normalize( Vector3( 0.0, 0.6, 0.8 ) );
-		leaving.vGeomNormal = Vector3( 0, 0, 1 );
-		leaving.onb.CreateFromW( leaving.vNormal );
+		// (b0) THE LEAVING-SHAPED RECORD, RESTORED (DL-157 review round 1).
+		//
+		// This probe was DELETED by DL-157's first round on the claim that
+		// a leaving ray paired with a not-inside stack is
+		// self-contradictory and "no real walk produces" it.  THAT CLAIM
+		// IS FALSE, and the review that found it also found the bug it was
+		// hiding: a camera ray striking the BACK FACE FIRST of an open
+		// double-sided sheet has exactly that pair, and both halves are
+		// true -- the walk never entered anything, and it really did hit
+		// the back face.  `clippedplane_geometry`'s `doublesided` defaults
+		// to TRUE.  So the record is restored, and with it the premise in
+		// the form the deletion removed.
+		//
+		// What the premise reads here now: the two branches put a COSINE
+		// lobe and a PHONG lobe on opposite sides of the surface, and the
+		// stack decides WHICH -- entry puts the Phong transmission
+		// outward, exit puts the cosine exit lobe outward.  So at an
+		// outward `band` the sentinel and the live stack do not merely
+		// scale one density, they evaluate two different lobe SHAPES.
+		{
+			RayIntersectionGeometric leaving( Ray( Point3( 0, 0, -1 ), Vector3( 0, 0, 1 ) ), rast );
+			leaving.bHit = true;
+			leaving.range = 1;
+			leaving.ptIntersection = Point3( 0, 0, 0 );
+			leaving.vNormal = Vector3Ops::Normalize( Vector3( 0.0, 0.6, 0.8 ) );
+			leaving.onb.CreateFromW( leaving.vNormal );
+			leaving.vGeomNormal = Vector3( 0, 0, 1 );
 
-		const Scalar qOut = spf->Pdf( leaving, band, outsideT );
-		const Scalar qIn  = spf->Pdf( leaving, band, insideT );
-		std::cout << "    TranslucentSPF::Pdf (exit-shaped hit)   not-in-stack -> " << qOut
+			UniformColorPainter* rfL = new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) );
+			UniformColorPainter* trL = new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) );
+			UniformScalarPainter* extL = new UniformScalarPainter( 1.0 );
+			UniformScalarPainter* nnL = new UniformScalarPainter( 10.0 );
+			UniformScalarPainter* scL = new UniformScalarPainter( 0.5 );
+			TranslucentSPF* spfL = new TranslucentSPF( *rfL, *trL, *extL, *nnL, *scL );
+			GlobalLog()->PrintNew( spfL, __FILE__, __LINE__, "translucent spf (leaving record)" );
+
+			IORStack outL( 1.0 );
+			outL.SetCurrentObject( enclosing );
+			IORStack inL( 1.0 );
+			inL.SetCurrentObject( enclosing );
+			inL.push( kInsideIOR );
+
+			const Vector3 bandOut = Vector3Ops::Normalize( Vector3( 0.0, 0.92, 0.02 ) );
+			const Scalar lOut = spfL->Pdf( leaving, bandOut, outL );
+			const Scalar lIn  = spfL->Pdf( leaving, bandOut, inL );
+			std::cout << "    TranslucentSPF::Pdf (leaving-shaped record)  not-in-stack -> " << lOut
+				<< " ,  in-stack -> " << lIn << std::endl;
+			Check( lOut > 1e-6 && lIn > 1e-6,
+				"premise: both branches carry positive density at the leaving record's outward band "
+				"(else the difference below is the trivial one)" );
+			Check( std::fabs( (double)lOut - (double)lIn ) > 1e-6,
+				"premise: at a leaving-shaped record the sentinel and the live stack evaluate "
+				"DIFFERENT lobes (Phong transmission vs cosine exit)" );
+
+			spfL->release(); scL->release(); nnL->release(); extL->release();
+			trL->release(); rfL->release();
+		}
+
+		// (b) THE PREMISE IN ITS STRONGEST FORM, added by DL-157 round 1.
+		//
+		//
+		// A rig whose ENTRY side has
+		// NO front-reflection lobe at all (`ref == 0`, an authored
+		// lampshade-style pure transmitter).  The entry side then has
+		// density only BELOW the geometric horizon while the exit side
+		// keeps its outward diffuse exit lobe, so the `IORStack(1.0)`
+		// sentinel really does return ZERO where the live stack is
+		// positive -- the strongest form of the premise, on an ordinary
+		// entry-shaped hit.
+		UniformColorPainter* rf0 = new UniformColorPainter( RISEPel( 0.0, 0.0, 0.0 ) );
+		TranslucentSPF* spf0 = new TranslucentSPF( *rf0, *tr, *ext, *nn, *sc );
+		GlobalLog()->PrintNew( spf0, __FILE__, __LINE__, "translucent spf (no front lobe)" );
+
+		const Scalar qOut = spf0->Pdf( tilted, band, outsideT );
+		const Scalar qIn  = spf0->Pdf( tilted, band, insideT );
+		std::cout << "    TranslucentSPF::Pdf (ref=0, outward band)  not-in-stack -> " << qOut
 			<< " ,  in-stack -> " << qIn << std::endl;
 		Check( std::fabs( (double)qOut - (double)qIn ) > 1e-6,
 			"premise: TranslucentSPF::Pdf differs between the defaultIOR sentinel and the live stack" );
 		Check( qIn > 1e-6 && qOut == 0.0,
 			"premise: the sentinel stack returns ZERO where the live stack is positive" );
 
+		// And the ordinary (both-lobes-present) rig still differs between
+		// the two stacks whenever the entry side's reflection/transmission
+		// split and the exit side's `(1-s)/s` split disagree -- which is
+		// the general case; they coincide in (a) only because that rig has
+		// `ref == tau` AND `scattering == 0.5`.
+		UniformScalarPainter* sc2 = new UniformScalarPainter( 0.2 );
+		TranslucentSPF* spf2 = new TranslucentSPF( *rf, *tr, *ext, *nn, *sc2 );
+		GlobalLog()->PrintNew( spf2, __FILE__, __LINE__, "translucent spf (asymmetric split)" );
+		const Scalar rOut = spf2->Pdf( tilted, band, outsideT );
+		const Scalar rIn  = spf2->Pdf( tilted, band, insideT );
+		std::cout << "    TranslucentSPF::Pdf (scattering 0.2)       not-in-stack -> " << rOut
+			<< " ,  in-stack -> " << rIn << std::endl;
+		Check( rOut > 1e-6 && rIn > 1e-6 &&
+			std::fabs( (double)rOut - (double)rIn ) > 1e-6,
+			"premise: the two branches' SELECTION shares differ, so the sentinel shifts "
+			"the density even where both are positive" );
+
+		spf2->release();
+		sc2->release();
+		spf0->release();
+		rf0->release();
 		spf->release();
 		sc->release();
 		nn->release();

@@ -213,14 +213,14 @@ namespace RISE
 			//! not of the receiver's orientation.  A volume element inside
 			//! the cone is lit by exactly the cone-shaped emission a
 			//! surface patch there would see.
-			void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, RISEPel& amount, const bool bFullSphereReceiver = false, const bool bVolumeReceiver = false ) const override;
+			void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, RISEPel& amount, const bool bFullSphereReceiver = false, const bool bVolumeReceiver = false, const IORStack* pIORStack = 0 /* DL-157 P1: live stack for a stateful BSDF */ ) const override;
 
 			//! Per-wavelength direct lighting (cone falloff + wavelength-
 			//! specific transparent-shadow Fresnel).  See PointLight /
 			//! DirectionalLight; overrides the ILight RGB-projection default.
 			//! `bFullSphereReceiver`: no-op, see the RGB override above.
 			//! `bVolumeReceiver`: implemented, see the RGB override above.
-			Scalar	ComputeDirectLightingNM( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, const Scalar nm, const bool bFullSphereReceiver = false, const bool bVolumeReceiver = false ) const override;
+			Scalar	ComputeDirectLightingNM( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, const Scalar nm, const bool bFullSphereReceiver = false, const bool bVolumeReceiver = false, const IORStack* pIORStack = 0 /* DL-157 P1: live stack for a stateful BSDF */ ) const override;
 
 			// Overrides the PARENT-COMPOSED overload only -- Transformable's
 			// no-argument form delegates here, so ptPosition / vDirection are

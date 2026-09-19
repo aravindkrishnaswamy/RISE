@@ -111,6 +111,21 @@ void BezierPatchGeometry::RayElementIntersection( RayIntersectionGeometric& ri, 
 	// here is always an open sheet (both faces are legitimate physical
 	// sides) -- see RayIntersectionGeometric::bOpenSheet's doc comment.
 	ri.bOpenSheet = bDidFlip;
+	// DL-157 review round 3 (P1): this geometry deliberately does NOT set
+	// `ri.bProvablyNoInterior`.  Round 2 did, on the premise that "a
+	// single patch cannot enclose a volume" -- but this class is not a
+	// single patch: `patches` is a `BezierPatchList` (a vector) with a
+	// BSP/Octree over it, `AddPatch` appends, and `Job.cpp`'s `.bezier`
+	// loader puts EVERY patch of a file into ONE geometry
+	// (`models/raw/teapot.bezier` declares 28; `aphrodite.bezier` and
+	// `f16.bezier` are closed solids).  At a genuine interior exit on
+	// such an object `dotND > 0` and `bDidFlip` is true, so the round-2
+	// stamp claimed "no interior" on exactly the hit that proves there
+	// is one.  Note also that the flip above is a WINDING artifact (the
+	// comment on it says so: the teapot file traverses some patches CCW
+	// and others CW), which is a second reason it cannot carry a
+	// topological claim.  See `RayIntersectionGeometric::
+	// bProvablyNoInterior`'s contract.
 
 	// DL-20 (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md 14 item 2, closed):
 	// this hit already knows exactly which PATCH and (u, v) it landed on

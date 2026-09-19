@@ -145,7 +145,7 @@ namespace RISE
 			//! This is the same shape as LightSampler's own inline
 			//! delta-light row, which forces `cosSurface = 1.0` under
 			//! `isVolumeScatter` and keeps its `invDistSq`.
-			void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, RISEPel& amount, const bool bFullSphereReceiver = false, const bool bVolumeReceiver = false ) const override;
+			void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, RISEPel& amount, const bool bFullSphereReceiver = false, const bool bVolumeReceiver = false, const IORStack* pIORStack = 0 /* DL-157 P1: live stack for a stateful BSDF */ ) const override;
 
 			//! Per-wavelength direct lighting.  Overrides the ILight default
 			//! (which projects the RGB ComputeDirectLighting to luminance and
@@ -156,7 +156,7 @@ namespace RISE
 			//! AmbientLight; keeps every light's spectral NEE consistent.
 			//! `bFullSphereReceiver`: no-op, see the RGB override above.
 			//! `bVolumeReceiver`: implemented, see the RGB override above.
-			Scalar	ComputeDirectLightingNM( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, const Scalar nm, const bool bFullSphereReceiver = false, const bool bVolumeReceiver = false ) const override;
+			Scalar	ComputeDirectLightingNM( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, const Scalar nm, const bool bFullSphereReceiver = false, const bool bVolumeReceiver = false, const IORStack* pIORStack = 0 /* DL-157 P1: live stack for a stateful BSDF */ ) const override;
 
 			// Overrides the PARENT-COMPOSED overload only -- see SpotLight.h.
 			void	FinalizeTransformations( const Matrix4& parentWorld ) override;

@@ -3204,10 +3204,15 @@ namespace {
 			// branch (a few lines below) routes those materials around
 			// this whole block instead of reaching it.  The reachable
 			// case is a material whose `Pdf` is real but does not cover
-			// the lobe that was drawn: `TranslucentSPF`, whose `Pdf`/`PdfNM`
-			// deliberately do not cover either Phong `cos^N` lobe (the
-			// entering transmission and the interior backscatter) --
-			// that gap is DL-41.
+			// the lobe that was drawn.  `TranslucentSPF` WAS that case --
+			// its `Pdf`/`PdfNM` covered neither Phong `cos^N` lobe (the
+			// entering transmission and the interior backscatter), which
+			// is what DL-41 named -- but DL-41 closed 2026-09-18 and its
+			// aggregate now covers every lobe the side can emit, so the
+			// fallback has no known production inhabitant today.  It is
+			// kept because it is still the right answer for a genuinely
+			// zero aggregate, and because being silently wrong for the
+			// next SPF that acquires the property is the worse failure.
 			//
 			// `guidingPdfDirectionIn`, set a few lines above, keeps
 			// `scatterPdf` deliberately: it is OpenPGL's
@@ -5399,10 +5404,16 @@ EvaluateAllStrategiesImpl(
 					// BDPT's s==1 row than in PT until that helper is
 					// shared.  No in-tree BDPT scene pairs a directional
 					// light with media today.
+					// DL-157 P1: the vertex's own stack, rebuilt exactly as
+					// `PathValueOps::EvalBSDFAtVertex` does -- this sweep
+					// and the sampled-light arms must price a stateful BSDF
+					// on the same SIDE.
+					IORStack zeroExitStack( 1.0 );
+					PathVertexEval::BuildVertexIORStack( eyeEnd, zeroExitStack );
 					if constexpr( Traits::is_pel ) {
 					RISEPel amount( 0, 0, 0 );
 					l->ComputeDirectLighting( ri, caster, *pBSDF,
-						bReceivesShadows, amount, bFullSphere );
+						bReceivesShadows, amount, bFullSphere, false, &zeroExitStack );
 
 					if( ColorMath::MaxValue( amount ) > 0 )
 					{
@@ -5423,7 +5434,8 @@ EvaluateAllStrategiesImpl(
 						// character; the per-NM virtual queries brdf.valueNM
 						// at the connecting wavelength.
 						const Scalar leNM = l->ComputeDirectLightingNM(
-							ri, caster, *pBSDF, bReceivesShadows, tag.nm, bFullSphere );
+							ri, caster, *pBSDF, bReceivesShadows, tag.nm, bFullSphere,
+							false, &zeroExitStack );
 						if( leNM > 0 )
 						{
 							CR cr;

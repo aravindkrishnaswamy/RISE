@@ -39,10 +39,12 @@ void LightManager::ComputeDirectLighting(
 	for( i=items.begin(), e=items.end(); i!=e; i++ ) {
 		// Accrue the light values.  NOTE: forwards WITHOUT the
 		// bFullSphereReceiver / bVolumeReceiver flags (both default
-		// false).  This virtual has no in-tree caller today; a future
-		// caller handing it a medium vertex or a full-sphere receiver
-		// must widen this forward or the receiver silently loses the
-		// wave-5 semantics.
+		// false) and WITHOUT DL-157 P1's `pIORStack` (default null, so a
+		// stateful BSDF infers its side geometrically).  This virtual has
+		// no in-tree caller today; a future caller handing it a medium
+		// vertex, a full-sphere receiver or a `translucent_material`
+		// receiver must widen this forward or the receiver silently loses
+		// the wave-5 / DL-157 semantics.
 		RISEPel p;
 		i->second.first->ComputeDirectLighting( ri, pCaster, brdf, bReceivesShadows, p );
 		amount = amount + p;

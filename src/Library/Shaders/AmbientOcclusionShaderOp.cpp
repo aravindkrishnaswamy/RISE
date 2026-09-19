@@ -136,7 +136,7 @@ void AmbientOcclusionShaderOp::PerformOperation(
 						if( !newri.geometric.bHit ) {
 							// Accumulate
 							if( pBRDF && bMultiplyBRDF ) {
-								accum = accum + pBRDF->value( dir, ri.geometric ) * (pRadianceMap?pRadianceMap->GetRadiance(ray,ri.geometric.rast) : RISEPel(1,1,1));
+								accum = accum + pBRDF->valueStateful( dir, ri.geometric, &ior_stack ) * (pRadianceMap?pRadianceMap->GetRadiance(ray,ri.geometric.rast) : RISEPel(1,1,1));
 							} else if( !bMultiplyBRDF ) {
 								accum = accum + (pRadianceMap?pRadianceMap->GetRadiance(ray,ri.geometric.rast) : RISEPel(1,1,1));
 							}
@@ -152,7 +152,7 @@ void AmbientOcclusionShaderOp::PerformOperation(
 						if( !caster.CastOcclusionRay( ray, RISE_INFINITY ) ) {
 							// Accumulate
 							if( pBRDF && bMultiplyBRDF ) {
-								accum = accum + pBRDF->value( dir, ri.geometric ) * (pRadianceMap?pRadianceMap->GetRadiance(ray,ri.geometric.rast) : RISEPel(1,1,1));
+								accum = accum + pBRDF->valueStateful( dir, ri.geometric, &ior_stack ) * (pRadianceMap?pRadianceMap->GetRadiance(ray,ri.geometric.rast) : RISEPel(1,1,1));
 							} else if( !bMultiplyBRDF ) {
 								accum = accum + (pRadianceMap?pRadianceMap->GetRadiance(ray,ri.geometric.rast) : RISEPel(1,1,1));
 							}
@@ -248,7 +248,7 @@ Scalar AmbientOcclusionShaderOp::PerformOperationNM(
 				if( !caster.CastOcclusionRay( ray, RISE_INFINITY ) ) {
 					// Accumulate
 					if( pBRDF && bMultiplyBRDF ) {
-						accum += pBRDF->valueNM( dir, ri.geometric, nm ) * (pRadianceMap?pRadianceMap->GetRadianceNM(ray,ri.geometric.rast,nm) : 1.0);
+						accum += pBRDF->valueStatefulNM( dir, ri.geometric, nm, &ior_stack ) * (pRadianceMap?pRadianceMap->GetRadianceNM(ray,ri.geometric.rast,nm) : 1.0);
 					} else if( !bMultiplyBRDF ) {
 						accum += (pRadianceMap?pRadianceMap->GetRadianceNM(ray,ri.geometric.rast,nm) : 1.0);
 					}

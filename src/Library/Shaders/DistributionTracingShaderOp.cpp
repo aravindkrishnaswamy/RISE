@@ -79,6 +79,9 @@ static Scalar LegacyChainMisPartner(
 	// partner" on BOTH sides, which is a full double count -- fall back
 	// to the selected lobe's own density instead, reproducing the
 	// pre-DL-171 (no-partner) behaviour only at those SPFs.
+	// (DL-41 itself closed 2026-09-18 -- `TranslucentSPF`, the one
+	// documented inhabitant, now covers all of its lobes -- so this is a
+	// guard against a future SPF rather than a live workaround.)
 	return aggregatePdf > 0 ? aggregatePdf : scat.pdf;
 }
 

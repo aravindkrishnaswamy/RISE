@@ -304,7 +304,21 @@ namespace RISE
 			RayIntersectionGeometric ri( evalRay, nullRasterizerState );
 			PopulateRIGFromVertex( vertex, ri );
 
-			return pBSDF->value( wi, ri );
+			// DL-157: a stateful BSDF (`translucent_material`) prices a hit
+			// by which side of the surface the walk is on, and the vertex
+			// carries that -- `BDPTVertex::insideObject`, the same bit
+			// `EvalPdfAtVertex` already rebuilds a stack from.  Handing it
+			// over matters MORE here than it does for PT, because the
+			// rebuilt `evalRay` above is NOT the walk's own incoming
+			// segment on the light side (`GenerateLightSubpathImpl` passes
+			// `(wi, wo)` in the opposite roles from the eye walk), so a
+			// stateful BSDF that inferred the side from that ray would
+			// invert its whole lobe frame there.  Every other BSDF ignores
+			// the argument (IBSDF's default forwards to `value`).
+			IORStack vertexStack( 1.0 );
+			BuildVertexIORStack( vertex, vertexStack );
+
+			return pBSDF->valueStateful( wi, ri, &vertexStack );
 		}
 
 		//////////////////////////////////////////////////////////////////////
@@ -558,7 +572,11 @@ namespace RISE
 			RayIntersectionGeometric ri( evalRay, nullRasterizerState );
 			PopulateRIGFromVertex( vertex, ri );
 
-			return pBSDF->valueNM( wi, ri, nm );
+			// DL-157, spectral twin of the RGB path above.
+			IORStack vertexStack( 1.0 );
+			BuildVertexIORStack( vertex, vertexStack );
+
+			return pBSDF->valueStatefulNM( wi, ri, nm, &vertexStack );
 		}
 
 		//////////////////////////////////////////////////////////////////////
@@ -622,10 +640,17 @@ namespace RISE
 		inline RISEPel EvalBSDFAtSurface(
 			const IBSDF* pBRDF,
 			const Vector3& wi,
-			const RayIntersectionGeometric& ri
+			const RayIntersectionGeometric& ri,
+			//! DL-157 P1: the LIVE stack where the caller has one.  A
+			//! stateful BSDF (`translucent_material`) prices a hit by which
+			//! side of the surface the walk is on, and PT's guiding
+			//! candidate sites hold the same `iorStack` they already hand
+			//! to `EvalPdfAtSurface` one line away.  Null reproduces
+			//! `value` exactly (IBSDF's default forwards).
+			const IORStack* pIORStack = 0
 			)
 		{
-			return pBRDF->value( wi, ri );
+			return pBRDF->valueStateful( wi, ri, pIORStack );
 		}
 
 		/// Evaluate PDF at a PT surface point.
@@ -656,10 +681,12 @@ namespace RISE
 			const IBSDF* pBRDF,
 			const Vector3& wi,
 			const RayIntersectionGeometric& ri,
-			const Scalar nm
+			const Scalar nm,
+			//! DL-157 P1 -- see the RGB twin.
+			const IORStack* pIORStack = 0
 			)
 		{
-			return pBRDF->valueNM( wi, ri, nm );
+			return pBRDF->valueStatefulNM( wi, ri, nm, pIORStack );
 		}
 
 		/// Evaluate PDF at a PT surface point (spectral).

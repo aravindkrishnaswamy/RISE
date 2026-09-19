@@ -1139,7 +1139,7 @@ int main()
     WardIsotropicGaussianBRDF* wardIsoBRDF = new WardIsotropicGaussianBRDF( *gray, *spec, *alphaSmallSc );  wardIsoBRDF->addref();
     WardAnisotropicEllipticalGaussianBRDF* wardAnisoBRDF = new WardAnisotropicEllipticalGaussianBRDF( *gray, *spec, *alphaSmallSc, *alphaSmallYSc );  wardAnisoBRDF->addref();
     AshikminShirleyAnisotropicPhongBRDF* ashikminBRDF = new AshikminShirleyAnisotropicPhongBRDF( *ashNuSc, *ashNvSc, *gray, *spec );  ashikminBRDF->addref();
-    TranslucentBSDF* translucentBSDF = new TranslucentBSDF( *gray, *trans, *phongNSc );  translucentBSDF->addref();
+    TranslucentBSDF* translucentBSDF = new TranslucentBSDF( *gray, *trans, *phongNSc, *extinctionSc, *scatFactorSc );  // DL-157: the BSDF prices the interior lobes too, so it now needs ext/scat  translucentBSDF->addref();
     SubSurfaceScatteringBSDF* sssBSDF = new SubSurfaceScatteringBSDF( *iorScalar, 0.8, 0.3 );  sssBSDF->addref();
 
     std::cout << " done." << std::endl;

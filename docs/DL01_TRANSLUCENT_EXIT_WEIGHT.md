@@ -69,7 +69,17 @@ The audit searched consumed `kray`/`krayNM`, then the adjacent
 
 Paths in this table are relative to `src/Library/`.
 
-## Independent residuals
+## ~~Independent residuals~~ — CLOSED 2026-09-18
+
+**DL-38 CLOSED 2026-09-18 (`debt-dl157` slice)** — the stateful factors
+(the interior Beer extinction, the `(1-s)`/`s` split, and the IOR-stack
+side test) are now part of what `TranslucentBSDF::value`/`valueNM`
+return, read from the SAME `ri` and the SAME stack the sampler reads
+them from. See [DL157_TRANSLUCENT_ONE_FUNCTION.md](DL157_TRANSLUCENT_ONE_FUNCTION.md).
+The residual that remains is the BDPT/VCM CONNECTION, whose rebuilt
+record has a zero-length incoming segment (`B == 1`): DL-223.
+
+### (struck) original text
 
 **DL-38 — stateful translucent BSDF/HWSS repricing.**
 `TranslucentSPF` has no `EvaluateKrayNM` override. PT HWSS reads the hero's
