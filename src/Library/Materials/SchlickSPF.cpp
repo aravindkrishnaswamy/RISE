@@ -237,22 +237,16 @@ static inline Scalar SchlickAzimuthFactorA(
 //! and VCM's since DL-69, and the MIS partner NEE evaluates through
 //! `SchlickBRDF::value`).
 //!
-//! Derivation (docs/DL127_SCHLICK_KRAY_VS_BRDF.md section 2).  With
-//! `Z = r/den^2`, `den = sin^2(theta_h) + r cos^2(theta_h)`:
-//!
-//!     f_S cos = S * Z * A / (4 pi nv)
-//!     p_S     = t * Z * p_phi / (2 (h.v))
-//!     =>  f_S cos / p_S = S * A * (h.v) / ( 2 pi * nv * t * p_phi )
-//!
-//! `Z` (and therefore the whole roughness dependence) CANCELS.  The
-//! bracket is identically 1 when `h == n` and when the incidence is
-//! normal AND `p == 1`, which is why the defect was invisible in the
-//! one configuration DL-69's table happened to read as 1.00001.
+//! DL-178: Schlick 1994 Eq.31 adds G(nv)G(nl), G(c)=c/(r+(1-r)c).
+//! Dividing f_S cos by p_S cancels Z, but roughness remains in G:
+//! R = A(h.wi)*nl / (2 pi t p_phi [r+(1-r)nv][r+(1-r)nl]).
+//! This cancelled form is finite at grazing; nl=2(h.wi)t-nv.
 static inline Scalar SchlickKrayRatioFromH(
 		const Vector3& h,											///< [in] Unit half-vector
 		const Vector3& wi,											///< [in] Unit direction toward the viewer
 		const OrthonormalBasis3D& onb,								///< [in] Sampling frame (Scatter's `myonb`)
 		const Scalar nv,											///< [in] Dot(onb.w(), wi)
+		const Scalar r,
 		const Scalar p
 		)
 {
@@ -268,7 +262,10 @@ static inline Scalar SchlickKrayRatioFromH(
 	if( pphi < NEARZERO ) {
 		return 0;
 	}
-	return SchlickAzimuthFactorA( h, t, onb, p ) * hdotk / ( TWO_PI * nv * t * pphi );
+	const Scalar nl = 2.0 * hdotk * t - nv;
+	if( nl <= 0 ) return 0;
+	return SchlickAzimuthFactorA( h, t, onb, p ) * hdotk * nl
+		/ ( TWO_PI * t * pphi * (r + (1.0-r)*nv) * (r + (1.0-r)*nl) );
 }
 
 //! `SchlickKrayRatioFromH` at a QUERIED outgoing direction.  Recovers `h`
@@ -278,12 +275,13 @@ static inline Scalar SchlickKrayRatio(
 		const RayIntersectionGeometric& ri,
 		const OrthonormalBasis3D& onb,								///< [in] Sampling frame (Scatter's `myonb`)
 		const Vector3& woNorm,										///< [in] Unit outgoing direction
+		const Scalar r,
 		const Scalar p
 		)
 {
 	const Vector3 wi = Vector3Ops::Normalize( -ri.ray.Dir() );
 	const Vector3 h  = Vector3Ops::Normalize( wi + woNorm );
-	return SchlickKrayRatioFromH( h, wi, onb, Vector3Ops::Dot( onb.w(), wi ), p );
+	return SchlickKrayRatioFromH( h, wi, onb, Vector3Ops::Dot( onb.w(), wi ), r, p );
 }
 
 //! Schlick's half-vector warp, (xi,b) -> h.  FRAME (DL-100, fixed
@@ -552,7 +550,7 @@ static inline bool SchlickReplaySpecular(
 
 	// DL-127: this lane's realized selection weight is `S * ratio`.
 	const Vector3 wi = Vector3Ops::Normalize( -ri.ray.Dir() );
-	outKrayRatio = SchlickKrayRatioFromH( h, wi, myonb, Vector3Ops::Dot( myonb.w(), wi ), p );
+	outKrayRatio = SchlickKrayRatioFromH( h, wi, myonb, Vector3Ops::Dot( myonb.w(), wi ), r, p );
 	return true;
 }
 
@@ -748,8 +746,11 @@ static Scalar SchlickDiffuseSelectCoefficient(
 				// DL-127: `kray = S * ratio`, and `RandomlySelect` reads
 				// `MaxValue(kray) = ratio * (rho_max + (1-rho_max) F)`
 				// because `ratio` is a nonnegative scalar.
-				const Scalar ratio = ( az > NEARZERO && nvView > NEARZERO )
-					? ( rows.azim[j][bIdx] * hdotk / (nvView * az) )
+				const Scalar nl = 2.0 * hdotk * az - nvView;
+				const Scalar r = lobes.r[j];
+				const Scalar ratio = ( az > NEARZERO && nvView > NEARZERO && nl > 0 )
+					? ( rows.azim[j][bIdx] * hdotk * nl
+					    / (az * (r+(1.0-r)*nvView) * (r+(1.0-r)*nl)) )
 					: Scalar(0);
 
 				wS += (lobes.rho[j] + (1.0 - lobes.rho[j]) * fresnel) * ratio;
@@ -812,7 +813,7 @@ static Scalar SchlickSpecularDensity(
 		// the fix `kray = S * ratio` -- so the realized weight carries the
 		// same ratio `Scatter` now stamps on the lobe.
 		const Scalar w_i = (lobes.rho[i] + (1.0 - lobes.rho[i]) * fresnelAtWo)
-		                 * SchlickKrayRatioFromH( h, wi, myonb, nv, lobes.p[i] );
+		                 * SchlickKrayRatioFromH( h, wi, myonb, nv, lobes.r[i], lobes.p[i] );
 
 		// What the OTHER lanes drew.  They share lane i's random pair, so
 		// they are a deterministic function of the query direction -- but
@@ -938,7 +939,7 @@ void SchlickSPF::Scatter(
 			const Vector3 woNorm = Vector3Ops::Normalize( s.ray.Dir() );
 			// DL-127: `kray` is this lobe's `f_S cos / p_S`, not Schlick's
 			// bare sampling weight -- see SchlickKrayRatioFromH.
-			const Scalar krayRatio = SchlickKrayRatio( ri, myonb, woNorm, it.v[0] );
+			const Scalar krayRatio = SchlickKrayRatio( ri, myonb, woNorm, rt.v[0], it.v[0] );
 			s.kray = (rho + (RISEPel(1.0,1.0,1.0)-rho) * fresnel) * krayRatio;
 			s.pdf = ComputeSchlickSpecularPdf( ri, myonb, woNorm, rt.v[0], it.v[0] );
 			s.isDelta = false;
@@ -969,7 +970,7 @@ void SchlickSPF::Scatter(
 				const Vector3 woNorm = Vector3Ops::Normalize( s.ray.Dir() );
 				// DL-127, per lane: this lane's own (r,p) give its own
 				// density, so its own ratio.
-				const Scalar krayRatio = SchlickKrayRatio( ri, myonb, woNorm, it.v[i] );
+				const Scalar krayRatio = SchlickKrayRatio( ri, myonb, woNorm, rt.v[i], it.v[i] );
 				s.kray = 0;
 				s.kray[i] = (rho[i] + (1.0-rho[i]) * fresnel) * krayRatio;
 				s.pdf = ComputeSchlickSpecularPdf( ri, myonb, woNorm, rt.v[i], it.v[i] );
@@ -1033,7 +1034,7 @@ void SchlickSPF::ScatterNM(
 		const Scalar rho = GuardedGetColorNM( *pSpecular, ri, nm );
 		const Vector3 woNorm = Vector3Ops::Normalize( s.ray.Dir() );
 		// DL-127, spectral twin of Scatter's single-lane branch above.
-		const Scalar krayRatio = SchlickKrayRatio( ri, myonb, woNorm, isotropyNM );
+		const Scalar krayRatio = SchlickKrayRatio( ri, myonb, woNorm, roughnessNM, isotropyNM );
 		s.krayNM = (rho + (1.0-rho) * fresnel) * krayRatio;
 		s.pdf = ComputeSchlickSpecularPdf( ri, myonb, woNorm, roughnessNM, isotropyNM );
 		s.isDelta = false;
@@ -1187,11 +1188,9 @@ Scalar SchlickSPF::PdfNM(
 // mirror of `-wi` about `h`, so `wi + wo` is parallel to `h`), and `R`
 // the DL-127 ratio `SchlickKrayRatio`.
 //
-// ROUGHNESS DOES NOT APPEAR, and that is not an omission: DL-127's
-// derivation shows `Z(t) = r/den^2` cancels between `f_S cos` and
-// `p_S`, so the lobe's TRANSPORT WEIGHT is roughness-free even though
-// its density is not.  The isotropy `p` does appear, through the
-// azimuthal density inside `R`, and is read at `nm`.
+// DL-178: Z still cancels, but the geometric factors depend on the
+// wavelength's roughness. Read and filter it exactly as ScatterNM does.
+// Isotropy also enters R through the azimuthal factor and density.
 //
 // Every wavelength-dependent input is read at `nm`; no sampler draw is
 // consumed, so this is safe to call once per companion wavelength per
@@ -1230,8 +1229,12 @@ Scalar SchlickSPF::EvaluateKrayNM(
 	}
 
 	const Scalar isotropyNM = pIsotropy->GetValueAtNM( ri, nm );
+	Scalar roughnessNM = pRoughness->GetValueAtNM( ri, nm );
+	if( ri.glossyFilterWidth > 0 ) {
+		roughnessNM = r_min( roughnessNM + ri.glossyFilterWidth, Scalar(1.0) );
+	}
 	const Scalar krayRatio = SchlickKrayRatioFromH(
-		h, wi, myonb, Vector3Ops::Dot( myonb.w(), wi ), isotropyNM );
+		h, wi, myonb, Vector3Ops::Dot( myonb.w(), wi ), roughnessNM, isotropyNM );
 	if( krayRatio <= 0 ) {
 		return 0;
 	}

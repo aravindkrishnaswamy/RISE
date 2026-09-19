@@ -251,7 +251,7 @@ static double RefHalfDensityAniso( double cosThetaH, double phi, double ax, doub
 static double RefKrayRatio( double hdotwo, double cosThetaH, double cosO, double cosI )
 {
 	if( cosThetaH <= 0 || cosO <= 0 || cosI <= 0 ) return 0;
-	return hdotwo * cosThetaH * cosThetaH * cosThetaH * sqrt( cosO / cosI );
+	return cosO / (hdotwo * cosThetaH);
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -997,7 +997,7 @@ int main()
 					Check( fabs( st.minR - 1.0 ) < 1e-6 && fabs( st.maxR - 1.0 ) < 1e-6,
 					       "Section F: kray_S * p_S == f_S cos per draw" );
 					Check( stRef.n > 1000 && fabs( stRef.minR - 1.0 ) < 1e-6 && fabs( stRef.maxR - 1.0 ) < 1e-6,
-					       "Section F: kray_S == Rs * (h.wo) cos^3(th_h) sqrt(nl/nv), BRDF-free" );
+					       "Section F: kray_S == Rs * cos_o / ((h.wo) cos_h), BRDF-free" );
 				}
 
 				isoS->release(); isoB->release(); anS->release(); anB->release();
@@ -1021,7 +1021,7 @@ int main()
 	// reports the furnace estimator's own relative standard error.
 	//----------------------------------------------------------------
 	std::cout << std::endl << "-- Section G: grazing tail of the corrected kray" << std::endl;
-	std::cout << "   model  alpha  theta   E[sum kray]      max      p99.9   bound Rs/sqrt(nv)"
+	std::cout << "   model  alpha  theta   E[sum kray]      max      p99.9   bound 2Rs"
 	             "   rel.s.e." << std::endl;
 	{
 		UniformScalarPainter* ay = new UniformScalarPainter( 0.12 ); ay->addref();
@@ -1038,8 +1038,7 @@ int main()
 
 				for( int d = 0; d < nTailDegs; d++ ) {
 					const RayIntersectionGeometric ri = MakeIntersection( tailDegs[d] * PI / 180.0 );
-					const double nv = cos( tailDegs[d] * PI / 180.0 );
-					const double bound = 0.5 / sqrt( nv );
+					const double bound = 2.0 * 0.5; // published weight < 2 Rs globally
 
 					RandomNumberGenerator rng( kSeedA + 30000u + 1000u*unsigned(model) + 10u*unsigned(ai) + unsigned(d) );
 					IndependentSampler sampler( rng );
@@ -1060,7 +1059,10 @@ int main()
 						sumSq += perCall * perCall;
 					}
 					// Independent reference: the BRDF's OWN directional
-					// albedo, `int max(value()) cos dw` on a 400x800 grid.
+					// albedo, `int max(value()) cos dw`, on a 400x800 HALF-
+					// VECTOR grid with dwo=4(h.wi)dh. The new bounded
+					// model concentrates outgoing energy at grazing; this
+					// change of variables resolves it without weakening a gate.
 					// `E[sum kray]` must land on it -- that is what
 					// "the sampled continuation integrates the BRDF"
 					// MEANS, and it is the DL-127 section-3 check.
@@ -1079,9 +1081,10 @@ int main()
 							for( int q = 0; q < QP; q++ ) {
 								const double ph = ( q + 0.5 ) * TWO_PI / QP;
 								const double dP = TWO_PI / QP;
-								Vector3 wo( sT*cos(ph), sT*sin(ph), cT );
-								wo = Vector3Ops::Normalize( wo );
-								Q += ColorMath::MaxValue( brdfQ->value( wo, ri ) ) * cT * sT * dT * dP;
+								const Vector3 h(sT*cos(ph),sT*sin(ph),cT);
+								const Scalar hv=Vector3Ops::Dot(h,-ri.ray.Dir());
+								const Vector3 wo=ri.ray.Dir()+2*hv*h;
+								if(hv>0 && wo.z>0) Q += ColorMath::MaxValue(brdfQ->value(wo,ri))*wo.z*4*hv*sT*dT*dP;
 							}
 						}
 						isoB->release(); anB->release();
@@ -1110,9 +1113,10 @@ int main()
 					// cannot exceed Rs/sqrt(nv), which is 1.29 at 80deg,
 					// 1.70 at 85deg and 3.79 at 89deg for Rs = 0.5.
 					Check( mx <= bound * 1.000001,
-					       "Section G: per-draw kray is bounded by Rs/sqrt(nv)" );
+					       "Section G: per-draw kray is bounded by 2Rs" );
 					// 1.5%: the estimator's own relative s.e. is <= 0.4%
 					// here and the quadrature's grid error is the rest.
+					Check( Q <= 0.5+1e-4, "DL-212: specular directional albedo <= Rs" );
 					Check( Q > 0 && fabs( mean/Q - 1.0 ) < 0.015,
 					       "Section G: E[sum kray] == int max(value()) cos dw" );
 				}

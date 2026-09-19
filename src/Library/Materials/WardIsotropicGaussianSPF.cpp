@@ -51,7 +51,7 @@ void WardIsotropicGaussianSPF::SetAlpha( const IScalarPainter& v )  { v.addref()
 //! the same cost/accuracy note applies: the integrand is bounded in
 //! [0,1] but not smooth (the accept test is a step), so the error is
 //! O(1/kWardQuadN), not O(1/kWardQuadN^2).
-static const int kWardQuadN = 16;
+static const int kWardQuadN = 32;
 
 //! THE TRUE solid-angle density of the half-vector `GenerateSpecularRay`
 //! draws.
@@ -81,22 +81,11 @@ static inline Scalar WardIsoHalfDensity( const Scalar cosThetaH, const Scalar al
 	return exp( -tan2 / alphaSq ) / ( PI * alphaSq * c2 * cosThetaH );
 }
 
-//! `f_S cos_o / p_S` divided by the specular reflectance -- the factor
-//! the specular lobe's `kray` must carry (DL-177 defect 3; the same
-//! shape as DL-127's `R` for Schlick).
-//!
-//! `WardIsotropicGaussianBRDF::ComputeFactors` returns
-//! `Rs exp(-tan^2/alpha^2) / (4 PI alpha^2 sqrt(nr nv))` with
-//! `nr = (n.wi)` and `nv = (n.wo)`, and `p_S = p_h / (4 (h.wo))` with
-//! `p_h` above, so the exponential AND the whole `alpha` dependence
-//! cancel:
-//!
-//!     f_S cos_o / p_S = Rs * (h.wo) * cos^3(theta_h) * sqrt(cos_o/cos_i)
-//!
-//! Every factor but the last is at most 1 and `cos_o <= 1`, so the
-//! weight is bounded above by `Rs / sqrt(cos_i)` -- a per-shading-point
-//! constant, not a per-draw divergence.  The anisotropic twin's ratio is
-//! the SAME expression (its `ax*ay` prefactor cancels identically).
+//! DL-212, Geisler-Moroder & Duer (2010):
+//! f_S = Rs exp(-slope^2) / (4 pi ax ay (h.wi)^2 (n.h)^4).
+//! The unchanged p_S = exp(-slope^2)/(4 pi ax ay (n.h)^3 (h.wi))
+//! gives kray/Rs = cos_o/((h.wi)(n.h)) = 2 cos_o/(cos_i+cos_o).
+//! Roughness cancels; the weight is globally bounded by 2 Rs.
 static inline Scalar WardKrayRatio(
 	const Scalar hdotwo,
 	const Scalar cosThetaH,
@@ -107,7 +96,7 @@ static inline Scalar WardKrayRatio(
 	if( hdotwo <= 0 || cosThetaH <= 0 || cosO <= 0 || cosI <= 0 ) {
 		return 0;
 	}
-	return hdotwo * cosThetaH * cosThetaH * cosThetaH * sqrt( cosO / cosI );
+	return 2.0 * cosO / (cosI + cosO);
 }
 
 //! Probability `Scatter`'s diffuse ray survives its geometric-horizon
@@ -694,7 +683,7 @@ Scalar WardIsotropicGaussianSPF::PdfNM(
 // ALPHA DOES NOT APPEAR, and that is not an omission: DL-177's
 // derivation shows the `exp(-tan^2/alpha^2)` and the whole `alpha`
 // dependence cancel between `f_S cos_o` and `p_S`, leaving
-// `Rs (h.wo) cos^3(theta_h) sqrt(cos_o/cos_i)`.  So only the
+// `Rs * 2 cos_o/(cos_i+cos_o)` after DL-212. So only the
 // reflectance painters are read at `nm`.  The half-vector is recovered
 // exactly (`wo` is the mirror of `-wi` about `h`, so `wi + wo` is
 // parallel to `h`); no sampler draw is consumed.

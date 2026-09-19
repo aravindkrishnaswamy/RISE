@@ -52,7 +52,7 @@ void WardAnisotropicEllipticalGaussianSPF::SetAlphaY( const IScalarPainter& v ) 
 //! Stratified grid `Pdf()`/`PdfNM()` replay the specular sampler's own
 //! `(xi1, xi2)` square on.  Same constant and same cost/accuracy note as
 //! the isotropic twin's `kWardQuadN` and `SchlickSPF`'s `kSpecQuadN`.
-static const int kWardQuadN = 16;
+static const int kWardQuadN = 32;
 
 //! Ward's azimuthal warp, extracted VERBATIM from `GenerateSpecularRay`
 //! so the sampler and everything that replays it cannot drift apart.
@@ -136,12 +136,11 @@ static inline Scalar WardAnisoHalfDensity(
 	return exp( -tan2D ) / ( PI * ax * ay * c2 * cosThetaH );
 }
 
-//! `f_S cos_o / p_S` divided by the specular reflectance.  IDENTICAL to
-//! the isotropic twin's `WardKrayRatio`: the anisotropic BRDF's
-//! `1/(4 PI ax ay sqrt(nr nl))` and the density's `1/(PI ax ay cos^3)`
-//! cancel the `ax ay` and the exponential the same way, leaving
-//!
-//!     f_S cos_o / p_S = Rs (h.wo) cos^3(theta_h) sqrt(cos_o/cos_i)
+//! DL-212, Geisler-Moroder & Duer (2010):
+//! f_S = Rs exp(-slope^2) / (4 pi ax ay (h.wi)^2 (n.h)^4).
+//! The unchanged p_S = exp(-slope^2)/(4 pi ax ay (n.h)^3 (h.wi))
+//! gives kray/Rs = cos_o/((h.wi)(n.h)) = 2 cos_o/(cos_i+cos_o).
+//! Roughness cancels; the weight is globally bounded by 2 Rs.
 static inline Scalar WardKrayRatio(
 	const Scalar hdotwo,
 	const Scalar cosThetaH,
@@ -152,7 +151,7 @@ static inline Scalar WardKrayRatio(
 	if( hdotwo <= 0 || cosThetaH <= 0 || cosO <= 0 || cosI <= 0 ) {
 		return 0;
 	}
-	return hdotwo * cosThetaH * cosThetaH * cosThetaH * sqrt( cosO / cosI );
+	return 2.0 * cosO / (cosI + cosO);
 }
 
 //! See the isotropic twin: Malley's exact clipped-cosine fraction.
@@ -725,9 +724,9 @@ Scalar WardAnisotropicEllipticalGaussianSPF::PdfNM(
 
 //////////////////////////////////////////////////////////////////////
 // EvaluateKrayNM -- DL-125.  Isotropic twin's derivation, verbatim:
-// DL-177 shows the anisotropic BRDF's `1/(4 PI ax ay sqrt(nr nl))` and
-// the density's `1/(PI ax ay cos^3)` cancel `ax ay` and the
-// exponential the same way, so `WardKrayRatio` is the SAME expression
+// DL-212 changes the BRDF normalization; ax ay and the Gaussian
+// still cancel against p_S, leaving 2 cos_o/(cos_i+cos_o).
+// Thus `WardKrayRatio` is the SAME expression
 // here and NEITHER `alphaX` nor `alphaY` appears in the transport
 // weight.  Only the reflectance painters are read at `nm`.
 //////////////////////////////////////////////////////////////////////

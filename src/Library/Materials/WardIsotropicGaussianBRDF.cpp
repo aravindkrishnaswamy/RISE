@@ -81,7 +81,9 @@ static void ComputeFactors(
 		const Vector3 h = Vector3Ops::Normalize(v+r);
 		const Scalar hn = Vector3Ops::Dot(n,h);
 
-		const Scalar first = 1.0 / (sqrt(nr*nv));
+		// Geisler-Moroder & Duer 2010 bounded-albedo normalization.
+		const Scalar hv = Vector3Ops::Dot(h,r);
+		const Scalar first = 1.0 / (hv*hv*hn*hn*hn*hn);
 		const Scalar tanh = tan(acos(hn));
 		const T sqralpha = alpha*alpha;
 		const T second = exp( -(tanh*tanh)/sqralpha ) / (FOUR_PI*sqralpha);
@@ -119,20 +121,10 @@ Scalar WardIsotropicGaussianBRDF::valueNM( const Vector3& vLightIn, const RayInt
 
 RISEPel WardIsotropicGaussianBRDF::albedo( const RayIntersectionGeometric& ri ) const
 {
-	// APPROXIMATION, and one that can exceed the `IBSDF::albedo`
-	// contract's [0,1].  The old comment here read "Ward's Gaussian
-	// normalization makes the spec lobe integrate to ~ Rs over the
-	// hemisphere, so total reflectance ~ Rd + Rs"; DL-177 measured that
-	// integral directly (`tests/WardDensityKrayTest.cpp` section G
-	// prints `int max(value()) cos dw` at 7 incidences) and it holds
-	// only away from grazing.  At `Rs = 0.5` and alpha 0.6 the specular
-	// term alone reads 0.2474 at 0 deg but 0.7877 at 89.9 deg, i.e.
-	// 1.58x `Rs` -- Ward 1992 carries no shadowing/masking correction,
-	// so its own directional albedo grows past ~60 deg.  That is
-	// DL-212, tracked and deliberately not changed here: correcting it
-	// means adopting a bounded Ward variant on `value()` AND on the
-	// SPF's `kray` in lockstep, which changes the shipped look of the
-	// material.  The VALUE below is left as it was; only this claim
-	// about it is corrected.
-	return pDiffuse->GetColor( ri ) + pSpecular->GetColor( ri );
+	// Conservative approximation: the bounded specular variant integrates
+	// to at most Rs. Saturate only this OIDN AOV, whose contract is [0,1];
+	// additive authored reflectances remain unchanged in transport.
+	RISEPel result=pDiffuse->GetColor(ri)+pSpecular->GetColor(ri);
+	for(int ch=0;ch<3;++ch) result[ch]=r_max(Scalar(0),r_min(Scalar(1),result[ch]));
+	return result;
 }
