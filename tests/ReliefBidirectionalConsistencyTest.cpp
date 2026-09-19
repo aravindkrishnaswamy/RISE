@@ -141,6 +141,7 @@ static CapturingRasterizerOutput* RenderScene( const std::string& sceneText, con
 
 
 #include <sstream>
+#include <iomanip>
 #include "../src/Library/Interfaces/IScenePriv.h"
 #include "../src/Library/Rendering/RayCaster.h"
 #include "../src/Library/Shaders/StandardShader.h"
@@ -155,6 +156,7 @@ static CapturingRasterizerOutput* RenderScene( const std::string& sceneText, con
 static std::string FlatScene(const char* integrator, double degrees, int spp)
 {
     std::ostringstream s;
+    s << std::setprecision(17);
     s << "RISE ASCII SCENE 7\nstandard_shader\n{\n name global\n shaderop DefaultDirectLighting\n}\n";
     s << integrator << "\n{\n samples " << spp << "\n oidn_denoise FALSE\n pixel_filter box\n}\n";
     s << "film\n{\n width 32\n height 32\n}\n"
@@ -379,7 +381,7 @@ static void LightWalk()
 // hemisphere on this legitimate grazing hit; NEE must use that same frame.
 static void GrazingView()
 {
-    for(const char* mode:{"pathtracing_pel_rasterizer","bdpt_pel_rasterizer","vcm_pel_rasterizer"}) {
+    for(const char* mode:{"pixelpel_rasterizer","pathtracing_pel_rasterizer","bdpt_pel_rasterizer","vcm_pel_rasterizer"}) {
         std::string scene=FlatScene(mode,45,64);
         auto replace=[&](const std::string& from,const std::string& to) { scene.replace(scene.find(from),from.size(),to); };
         replace("location 0 0 -4","location 4 0 -1");
@@ -393,6 +395,38 @@ static void GrazingView()
         std::printf("GRAZING mode=%s mean=%.12g expected=%.12g relative=%+.6f\n",mode,mean,expected,mean/expected-1);
         Check(std::fabs(mean/expected-1)<.02,"grazing flipped shading frame follows cosine law");
         safe_release(cap);
+        replace("position 866.025403784 0 -500","position 0 0 -1000");
+        cap=RenderScene(scene,mode);
+        Check(cap!=nullptr,"opposite shading hemisphere scene renders");
+        if(cap) {
+            Check(Mean(*cap)<1e-12,"opposite shading hemisphere remains dark");
+            safe_release(cap);
+        }
+    }
+}
+
+
+static void ModifierSiblings()
+{
+    for(const char* kind:{"normalmap","displacement"}) for(const char* mode:{"pathtracing_pel_rasterizer","bdpt_pel_rasterizer","vcm_pel_rasterizer"}) {
+        std::string scene=FlatScene(mode,0,64);
+        const std::string binding="modifier relief";
+        if(std::string(kind)=="normalmap") {
+            scene+="uniformcolor_painter\n{\n name normal_field\n color 0.8535533905932737 0.5 0.8535533905932737\n colorspace Rec709RGB_Linear\n}\n"
+                   "normal_map_modifier\n{\n name normal_mod\n normal_map normal_field\n}\n";
+            scene.replace(scene.find(binding),binding.size(),"modifier normal_mod");
+        } else {
+            scene+="displaced_geometry\n{\n name displaced\n base_geometry plane\n detail 8\n height slope\n disp_scale 1\n}\n";
+            scene.erase(scene.find(binding),binding.size());
+            scene.replace(scene.find("geometry plane"),14,"geometry displaced");
+        }
+        auto* cap=RenderScene(scene,kind);
+        Check(cap!=nullptr,"sibling modifier scene renders");
+        if(!cap) continue;
+        const double mean=Mean(*cap),expected=.8/(PI*std::sqrt(2.));
+        std::printf("SIBLING kind=%s mode=%s mean=%.12g expected=%.12g relative=%+.6f\n",kind,mode,mean,expected,mean/expected-1);
+        Check(std::fabs(mean/expected-1)<.02,"normal-map/displacement follows same independent cosine law");
+        safe_release(cap);
     }
 }
 
@@ -401,6 +435,12 @@ static void EndpointFactors()
     BDPTVertex v;
     v.type=BDPTVertex::SURFACE;
     v.geomNormal=Vector3(0,0,1);
+    RayIntersectionGeometric ri(Ray(Point3(0,0,1),Vector3(0,0,-1)),nullRasterizerState);
+    ri.vNormal=Vector3(0,0,-1);
+    Check(ri.RayFacingShadingCosine(Vector3(0,0,1))==1,"back-facing Ns orients toward view");
+    Check(ri.RayFacingShadingCosine(Vector3(0,0,-1))==-1,"opposite shading hemisphere retains negative support gate");
+    ri.vNormal=Vector3(0,0,1);
+    Check(ri.RayFacingShadingCosine(Vector3(0,0,1))==1,"untilted signed cosine is unchanged");
     for(double degrees:{0.,1.,10.,20.,30.,45.}) {
         double theta=degrees*PI/180;
         v.normal=Vector3(std::sin(theta),0,std::cos(theta));
@@ -413,6 +453,7 @@ int main(int argc, char** argv)
 {
     if(argc==1 || std::string(argv[1])=="light") LightWalk();
     EndpointFactors();
+    if(argc==1 || std::string(argv[1])=="siblings") ModifierSiblings();
     if(argc==1 || std::string(argv[1])=="grazing") GrazingView();
     const char* modes[]={"pixelpel_rasterizer", "pathtracing_pel_rasterizer", "bdpt_pel_rasterizer", "vcm_pel_rasterizer"};
     if(argc==1 || std::string(argv[1])=="flat") for(double tilt:{0.,10.,20.,30.,45.}) {

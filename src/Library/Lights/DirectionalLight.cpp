@@ -112,7 +112,7 @@ void DirectionalLight::ComputeDirectLighting(
 	// With both flags false the expression below reduces TEXTUALLY to the
 	// pre-existing one -- `fDotSigned` used verbatim, gate unchanged --
 	// so every surface receiver is byte-identical, not merely close.
-	const Scalar fDotSigned = Vector3Ops::Dot( vDirection, ri.vNormal );
+	const Scalar fDotSigned = ri.RayFacingShadingCosine( vDirection );
 	const Scalar fDot = bVolumeReceiver ? Scalar(1.0) :
 		( bFullSphereReceiver ? std::fabs( fDotSigned ) : fDotSigned );
 
@@ -160,7 +160,7 @@ Scalar DirectionalLight::ComputeDirectLightingNM(
 	// FULL-SPHERE NEE and VOLUME RECEIVER: see the RGB overload above for
 	// both derivations; byte-identical to before when both flags are
 	// false.
-	const Scalar fDotSigned = Vector3Ops::Dot( vDirection, ri.vNormal );
+	const Scalar fDotSigned = ri.RayFacingShadingCosine( vDirection );
 	const Scalar fDot = bVolumeReceiver ? Scalar(1.0) :
 		( bFullSphereReceiver ? std::fabs( fDotSigned ) : fDotSigned );
 	if( !bVolumeReceiver && fDot <= 0.0 ) {

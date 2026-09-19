@@ -113,7 +113,7 @@ void PointLight::ComputeDirectLighting(
 	// deliberately KEPT -- it is emitter geometry, not receiver
 	// orientation.  With the flag false this reduces TEXTUALLY to the
 	// pre-existing expression and gate.  See ILight.h for the derivation.
-	const Scalar fDotSigned = Vector3Ops::Dot( vToLight, ri.vNormal );
+	const Scalar fDotSigned = ri.RayFacingShadingCosine( vToLight );
 	const Scalar fDot = bVolumeReceiver ? Scalar(1.0) : fDotSigned;
 
 	if( !bVolumeReceiver && fDot <= 0.0 ) {
@@ -166,7 +166,7 @@ Scalar PointLight::ComputeDirectLightingNM(
 	Vector3 vToLight = Vector3Ops::mkVector3( ptPosition, ri.ptIntersection );
 	const Scalar fDistFromLight = Vector3Ops::NormalizeMag( vToLight );
 
-	const Scalar fDotSigned = Vector3Ops::Dot( vToLight, ri.vNormal );
+	const Scalar fDotSigned = ri.RayFacingShadingCosine( vToLight );
 	const Scalar fDot = bVolumeReceiver ? Scalar(1.0) : fDotSigned;
 	if( !bVolumeReceiver && fDot <= 0.0 ) {
 		return Scalar(0);
