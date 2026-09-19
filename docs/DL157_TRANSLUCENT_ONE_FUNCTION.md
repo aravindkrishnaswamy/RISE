@@ -128,33 +128,94 @@ interactive preview — keep calling `value` and get a GEOMETRIC inference
 of the side, exact for a closed object and for a double-sided mesh (the
 `UnflippedGeomNormal()` recovery is what makes the latter true).
 
-### 3.1 The lobe frame is anchored to the SIDE, not to `ri.ray.Dir()` — and this is load-bearing
+### 3.1 The lobe frame, derived per side — and the assertion that was wrong
 
-`Scatter` derives `geomN` by anchoring `geomNRaw` against `ri.ray.Dir()`,
-which is right there because it holds the walk's own live intersection
-record. **An evaluation does not.**
+> **This section was rewritten by review round 1 (2026-09-18). Its first
+> version derived the frame from the SIDE alone and asserted, three times
+> over, that a leaving ray paired with a not-inside stack is
+> self-contradictory and "no real walk produces" it. That is false, and
+> the assertion was hiding a 26 % error on a first-class authoring case.**
+
+`Scatter` derives its frame like this (read it, ~:760):
+
+```
+geomNRaw = UnflippedGeomNormal()          // the TRUE outward normal, DL-70
+geomN    = Dot(geomNRaw, ri.ray.Dir()) < 0 ? geomNRaw : -geomNRaw   // RAY-anchored
+bEntering = !ior_stack.containsCurrent()                            // STACK
+
+ENTRY  front reflection  clip = geomN     transmission  clip = -geomN
+EXIT   backscatter       clip = geomN     diffuse exit  clip = geomNRaw,
+                                          axis = OrientedExitNormal(n, geomNRaw)
+```
+
+So the side comes from the stack and the frame from the ray — and the two
+are NOT redundant.
+
+**The record where they disagree, and both are right.** A camera ray
+striking the BACK FACE FIRST of an open double-sided sheet has a
+not-inside stack (true — the walk never entered anything) and a leaving
+ray (true — it really did hit the back face). This is not a corner:
+`clippedplane_geometry`'s `doublesided` defaults to TRUE
+(`ChunkParserRegistry.cpp`), non-indexed `TriangleMeshGeometry` and
+`BezierPatchGeometry` behave the same way, and translucent is the
+material authors put on open sheets (DL-46 review round 3(c)). Measured
+on that record with a side-derived frame, gate 1's
+`E[kray]/E[value*cos/pdf]` at tilt 0: **1.260222** on the front-reflection
+lobe and **2.336741** on the transmission lobe, where both must read
+1.000000 — and the FRONT-face control on the same sheet reads 1.000000 in
+both builds, which is what says the record and not the sheet is the
+problem. The support gate cannot see it, because the two lobes tile the
+sphere and an inverted frame merely swaps which lobe prices which
+half-space.
+
+**Why a pure ray anchor is not the answer either.**
 `PathVertexEval::EvalBSDFAtVertex` rebuilds a record as
 `Ray(vertex.position, -wo)`, and the two BDPT generators pass their
 `(wi, wo)` in OPPOSITE roles — the eye walk as
 `(scatDir, -currentRay.Dir())`, so the rebuilt ray IS the incoming
 segment, and the light walk as `(-currentRay.Dir(), scatDir)`, so it is
-the REVERSE of the outgoing one.
+the REVERSE of the outgoing one. On the light side a ray-anchored EXIT
+frame puts BOTH exit-branch lobes in the same half-space and leaves the
+interior direction the walk is actually asking about with no lobe at all,
+so `f == 0` and `GenerateLightSubpathImpl`'s `PositiveMagnitude(f)` gate
+kills the walk: `TranslucentIORStackTest`'s BDPT light rows measured
+`reached=512 -> 0` on every mode.
 
-Anchoring to that ray inverts the whole lobe frame on every light-subpath
-vertex. Measured: it clipped the interior backscatter lobe to the OUTWARD
-half-space, so the interior direction the light walk was actually asking
-about read `f == 0` and `GenerateLightSubpathImpl`'s
-`PositiveMagnitude(f)` gate killed the walk —
-`TranslucentIORStackTest`'s BDPT light rows went from `reached=512` to
-`reached=0` on every mode. Taking the side from the stack (and `geomN`
-from the side) removes the ray from the derivation entirely; the two
-agree exactly at a real intersection record.
+**The rule, split by side, each half derived from what `Scatter` does.**
 
-The only inputs on which the two derivations differ are
-SELF-CONTRADICTORY ones — a ray that says "leaving" together with a stack
-that says "not inside" — which no real walk produces. That is why
-`PTGuidingMISPartitionTest`'s DL-74 premise probe had to be retargeted
-(§7).
+```
+bEntering = stack ? !containsCurrent() : (bOpenSheet || Dot(geomNRaw, rayDir) < 0)
+geomN     = bEntering ? (Dot(geomNRaw, rayDir) < 0 ? geomNRaw : -geomNRaw)   // Scatter's own expression
+                      : -geomNRaw
+```
+
+* **Entry** uses literally `Scatter`'s expression, so the back-face-first
+  record matches exactly.
+* **Exit** uses `-geomNRaw`, and that is not an approximation: `Scatter`'s
+  own `geomN` IS `-geomNRaw` at every record its exit branch can be
+  reached with, because that branch requires
+  `ior_stack.containsCurrent()` — the walk is inside the object — and a
+  ray inside an object travels outward at its boundary hit. It is also
+  ray-INDEPENDENT, which is the property that survives the rebuild. (The
+  one record where the identity fails is a stack claiming "inside" for an
+  entering ray — the open-sheet parity failure DL-76 tracks, where the
+  exit branch has no meaning to begin with.)
+* **Stackless** callers infer the side. That is exact for a closed object;
+  on an open sheet it prefers the fact the geometry does supply
+  (`ri.bOpenSheet` — a sheet has no interior, so absent a stack a hit on
+  one is an entry), which is right for every first hit and wrong only for
+  a ray that has already transmitted through the sheet.
+
+**What is genuinely left, stated precisely.** A LIGHT-subpath ENTRY
+vertex evaluated through the rebuilt record gets the ray-anchored frame
+computed from `-scatDir`, which is inverted relative to the walk's own
+incoming segment. It does not kill the walk (the inverted transmission
+lobe still has support at the queried direction) and it is not new — the
+pre-DL-157 `GetReflectedSide` was equally ray-anchored — but it is the
+caller-convention half of DL-223, the same role-swap that makes a
+NON-RECIPROCAL BSDF give two answers for one direction pair. The rule
+above is the one that is right for PT / NEE and for the eye subpath, both
+of which hold a record whose ray IS the incoming ray.
 
 ---
 
@@ -183,6 +244,41 @@ support there. Both became true in the SAME slice: DL-157 for `value`,
 DL-41 for `Pdf`. Granting it before those would have lit back faces at
 full weight against a zero partner density.
 
+### 4.1 `CompositeMaterial` has to forward it (review round 1, P2-1)
+
+`CompositeMaterial::GetBSDF()` returns the TOP material's BSDF when it
+has one, else the BOTTOM's — and that is the `value()` NEE calls.
+`FabricMaterial` and `CoatedMaterial` both forward
+`ScattersFullSphere()`; `CompositeMaterial` did not, so
+`composite { top = translucent }` — which is `mat_wax_gold` in
+`scenes/Tests/Materials/composite_material.RISEscene` — presented a
+transmitting `TranslucentBSDF` to a `bFullSphere == false` NEE and lost
+the whole transmissive half-space, exactly the under-reading §4 derives.
+
+It forwards from **whichever layer's BSDF the composite presents**, not
+an OR over both: a Lambertian TOP over a translucent BOTTOM presents the
+LAMBERTIAN BSDF, which does not transmit, and granting the flag there
+would light its back faces at full weight — the failure mode
+`IMaterial::ScattersFullSphere`'s own doc warns about. Both directions
+are gated (`TranslucentLobeConsistencyTest` gate 6).
+
+Rendered, isolating that one file (n = 3, same hygiene as §6):
+
+| | forwarding OFF | forwarding ON | delta |
+|---|---|---|---|
+| `composite_material` PT | 1.041349 (1.6e-5) | 1.043799 (6.0e-6) | **+0.2352 %** |
+| `composite_material` BDPT | 1.059352 (1.3e-5) | 1.059336 (7.1e-6) | -0.0015 % |
+| PT/BDPT | 0.983006 (-1.699 %) | 0.985333 (-1.467 %) | |
+
+BDPT does not move, as predicted — it never had the hemisphere gate — and
+the PT-vs-BDPT disagreement narrows by 0.23 pp. The effect is small
+because that scene's `ext 2 3 5` extinguishes most of the interior.
+
+`SourceHygieneTest`'s closed claimer list grows to SIX and learns a fifth
+claiming form (a cached member — `CompositeMaterial` does not retain its
+layers, so it resolves the flag once at construction). A claimer that
+matcher cannot SEE is worse than one it lists.
+
 ---
 
 ## 5. Red-proof
@@ -200,6 +296,31 @@ segment; `N 1` wide lobes with `scattering 0.6`):
 | 3 | total variation between a histogram of directions `Scatter` + `RandomlySelect` produced and `Pdf` (SHAPE) |
 | 4 | `Pdf(w) > 0` wherever `value(w) != 0` (the DL-74 partition side condition) |
 
+**Review round 1 (2026-09-18) added three rigs and a sixth gate**, and
+two of them found things:
+
+* **[D], a PER-CHANNEL Phong exponent** (`RGBScalarPainter(5,10,15)`).
+  Every round-1 rig built `N` from a `UniformScalarPainter`, so
+  `Scatter`'s three-ray branch — four lobes in the set, a single-channel
+  `kray` on each Phong ray, `RandomlySelect` weighing `MaxValue` of that
+  — was entirely untested. It immediately failed at **0.664694** (entry
+  transmission) and **0.736752** (interior backscatter), and the defect
+  was in the TEST: reducing both sides by `MaxValue` independently is the
+  DL-69 aggregate-over-per-lobe pairing in miniature, because `value` is
+  a SUM and at lobe *i*'s direction the other two channel-lobes also have
+  support. Reducing by the lobe's OWN channel (`argmax(kray)`) isolates
+  its term and is numerically identical on every non-per-channel rig
+  (`[A]` reads 0.500000 / 0.600000, ratio 1.000000, before and after).
+  The rig now reads 1.000000 with `E[kray] = 1.300000 = tau_R+tau_G+tau_B`
+  over `n = 120000` emitted rays, which is what says the three-ray branch
+  is really being exercised.
+* **[E], the OPEN double-sided sheet**, front-face control and
+  BACK-FACE-FIRST — §3.1's record.
+* **[F], gate 5**: `EvaluateKrayNM` against `ScatterNM`'s own `krayNM`
+  (DL-222; see §10).
+* **[G], gate 6**: `CompositeMaterial`'s forwarding, both directions
+  (§4.1).
+
 **Isolated A/B** (`git checkout bb2ccd80 -- <the eight source files>`,
 `make -C build/make/rise -j8 all`, then
 `make -C build/make/rise build-test/TranslucentLobeConsistencyTest` — the
@@ -207,8 +328,25 @@ test target was rebuilt on BOTH sides, per COMMON_RULES' stale-binary rule):
 
 ```
 against bb2ccd80 :  Passed:  67   Failed: 173
-with the fix     :  Passed: 240   Failed:   0
+with the fix     :  Passed: 240   Failed:   0     (round 1)
+                    Passed: 534   Failed:   0     (after review round 1's rigs [D]-[G])
 ```
+
+And the P1 frame fix has its OWN isolated A/B, with only the `geomN`
+expression reverted to round 1's side-derived form and everything else
+(including all the new rigs) held constant:
+
+```
+side-derived frame :  Passed: 498   Failed: 30
+split-by-side rule :  Passed: 534   Failed:  0
+```
+
+| [E] open sheet, tilt 0, RGB | side-derived | split rule |
+|---|---|---|
+| BACK-FACE-FIRST, front reflection | 1.260222 | **1.000000** |
+| BACK-FACE-FIRST, transmission | 2.336741 | **1.000000** |
+| front-face CONTROL, front reflection | 1.000000 | 1.000000 |
+| front-face CONTROL, transmission | 1.000000 | 1.000000 |
 
 Gate 1, rig [A] (`ext 0`, `ref (.5,.3,.2)`, `tau (.4,.6,.3)`, `N 10`,
 `scattering .3`), ratio `E[kray]/E[value*cos/pdf]` at tilt 0/30/45/60/75/89:
@@ -472,7 +610,22 @@ each was "does this caller HOLD a stack?", not "is this caller important?"
 — the first pass of this audit asked the second question and left four
 sites behind that do hold one.
 
-**Sites that hold a stack and now pass it (12):** `LightSampler.cpp`'s six
+> **Review round 1 (2026-09-18) found this audit had asked the wrong
+> question a SECOND time.** Round 1's own text already records that it
+> first asked "is this caller important?" instead of "does this caller
+> HOLD a stack?"; the review found four MORE sites that answer yes to the
+> second — PT's three guiding `PTEvalBSDFAtSurface` candidate sites
+> (which already hand the same `iorStack` to `PTEvalPdfAtSurface` one
+> line away) and, through `ILight::ComputeDirectLighting{,NM}`, the
+> zero-exitance light sweep. That virtual carried no stack at all, so
+> `LightSampler`'s Step-1 arm and BDPT's mirroring `s == 1` row inferred
+> the side geometrically while the other three NEE arms got the live
+> stack. It now takes a trailing defaulted `const IORStack*` — the same
+> pattern `bFullSphereReceiver` / `bVolumeReceiver` already established
+> on it — threaded through all four light types, both pipes, and both
+> call sites.
+
+**Sites that hold a stack and now pass it (18):** `LightSampler.cpp`'s six
 NEE arms (`pMisIorStack`, the DL-74 P2 parameter);
 `PathVertexEval::EvalBSDFAtVertex{,NM}` (reconstructed from
 `BDPTVertex::insideObject` via `BuildVertexIORStack`);
@@ -481,20 +634,29 @@ branch one line above already passes `iorStack` — leaving the BSDF
 fallback stackless would have been a drift inside a single `if/else`;
 `FinalGatherShaderOp`, `AreaLightShaderOp` and
 `AmbientOcclusionShaderOp` (each takes `const IORStack& ior_stack` as a
-parameter and simply was not using it here).
+parameter and simply was not using it here); PT's three guiding
+`PTEvalBSDFAtSurface` candidate sites; and the three `brdf.value` /
+`brdf.valueNM` calls inside `PointLight` / `SpotLight` /
+`DirectionalLight` / `AmbientLight`, reached through
+`ILight::ComputeDirectLighting{,NM}`.
 
 Render-neutral, as expected — the geometric inference and the stack agree
 at a closed-object hit: `cornellbox_fg` -0.166 % (against a run-to-run sd
 of 0.37 %), `sss` -0.005 %, `cornellbox_bdpt_materials_pt` +0.044 %, n = 3
 each.
 
-**Sites with no stack, which keep `value` and the geometric inference:**
+**Sites with no stack, which keep `value` and the geometric inference**
+(exact for a closed object; on an open sheet `BuildLobeSet` prefers
+`ri.bOpenSheet` — see §3.1)**:**
 `CoatedBRDF`/`CoatedSPF`/`FabricBRDF` (delegating to a substrate, which
 cannot be translucent — `CoatedMaterial`/`FabricMaterial`'s
 `IsSupportedSubstrate` allowlists are Lambertian / OrenNayar / GGX /
 Weave), `ManifoldSolver` (SMS; a translucent surface is not a specular
 caster), `PointSetOctree` (the SSS irradiance cache),
-`InteractivePelRasterizer` (preview shading).
+`InteractivePelRasterizer` (preview shading), `TranslucentPelPhotonMap`'s
+own gather, and `ILightManager::ComputeDirectLighting`'s forwarding loop
+— which has no in-tree caller at all and whose comment now says the stack
+is one of the three things it drops.
 
 ---
 
@@ -521,8 +683,22 @@ same site:
    every lobe direction-constant, so the residual is the SIDE asymmetry
    alone, not the Phong shape).
 
-Both need a change to what a connection is allowed to ask a stateful,
-non-reciprocal BSDF — an adjoint-BSDF convention and a per-vertex incoming
+3. *The light-subpath ENTRY frame* (added by review round 1). §3.1's
+   rule anchors the ENTRY side to `ri.ray.Dir()` because that is what
+   `Scatter` does and because a side-derived frame is wrong on the
+   back-face-first open-sheet record; at a LIGHT-subpath entry vertex the
+   rebuilt record's ray is `-scatDir`, so that frame is inverted there.
+   It does not kill the walk and it is not new (the pre-DL-157
+   `GetReflectedSide` was equally ray-anchored), and it is the same
+   caller-convention defect as (2).
+
+DL-127 is the precedent worth citing on (2): there the implied BRDF's
+non-reciprocity was the EVIDENCE that decided which of two disagreeing
+sides was wrong. Here the non-reciprocity is in the MODEL itself and
+neither side is wrong, which is why this is a residual rather than a fix.
+
+All three need a change to what a connection is allowed to ask a
+stateful, non-reciprocal BSDF — an adjoint-BSDF convention and a per-vertex incoming
 segment length on `BDPTVertex` — which is materially larger than this row
 and is deliberately not attempted here.
 
@@ -535,11 +711,29 @@ the tilt-driven gap on that same fixture to DL-157.
 
 ---
 
+### 10.1 DL-222 closed in passing
+
+`DL-222` (opened on the concurrent `debt-dl125` branch, not in this
+tree) asks for a `TranslucentSPF::EvaluateKrayNM` override so PT's and
+BDPT's HWSS companion lanes stop falling back to DL-125's
+`value*cos/pdf` reconstruction. `BuildLobeSet` makes the direct answer
+nearly free, so it is implemented here: `ScatterNM` emits at most two
+rays with DISTINCT types, so `rayType` alone identifies the lobe on
+either side. Gated at **1e-12** against `ScatterNM`'s own `krayNM` with
+the same wavelength as hero, over four record kinds x six tilts x three
+wavelengths (`TranslucentLobeConsistencyTest` gate 5) — the strongest
+available statement, since the two are the same quantity asked twice.
+**DL-222 can be struck at merge.** Expect a trivial conflict in
+`TranslucentSPF.h`, where `debt-dl125` adds a one-line
+`PerLobeDensityFallbackName` override.
+
+---
+
 ## 11. Gate
 
 | suite | result |
 |---|---|
-| `TranslucentLobeConsistencyTest` (new) | 240 / 0 (red 67 / 173) |
+| `TranslucentLobeConsistencyTest` (new) | 534 / 0 (red 67 / 173 against `bb2ccd80`; 498 / 30 against the round-1 frame rule alone) |
 | `TranslucentSpectralParityTest` | 1918 checks, 0 failures |
 | `TranslucentTiltedExitTest` | ALL TESTS PASSED |
 | `TranslucentEntryHorizonTest` | 251 checks, 0 failures |
@@ -551,7 +745,7 @@ the tilt-driven gap on that same fixture to DL-157.
 | `TranslucentSamplerDimensionCountTest` | 65589 checks, 0 failures |
 | `SPFBSDFConsistencyTest` | all passed (Part F 1.00000 at all six tilts, both pipes) |
 | `SPFPdfConsistencyTest` | all passed |
-| `PTGuidingMISPartitionTest` | 99 / 0 |
+| `PTGuidingMISPartitionTest` | 101 / 0 |
 | `BDPTStrategyBalanceTest` | 123 / 0 |
 | `VCMStrategyBalanceTest` | 74 / 0 |
 | `PathValueOpsTest` | all passed |

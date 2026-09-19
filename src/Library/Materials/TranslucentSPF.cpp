@@ -439,10 +439,14 @@ namespace RISE { namespace Implementation { namespace TranslucentSPFDetail
 
 		// DL-68's clipped Phong.  `half` is transcribed from
 		// SampleClippedPhong above -- deliberately the same arithmetic, so
-		// the density this reports is the one that sampler realizes; the
-		// two are gated against each other per-sample by
-		// TranslucentLobeConsistencyTest's gate 1 and, in distribution, by
-		// its gate 3.
+		// the density this reports is the one that sampler realizes.
+		// WHICH GATE CHECKS WHAT: gate 1 in
+		// TranslucentLobeConsistencyTest pairs this density with the
+		// lobe's own `kray` and `value`, so it catches a NORMALISATION
+		// error (a wrong constant in front); only gate 3, a total
+		// variation against a histogram of directions the real sampler
+		// produced, can catch a wrong SHAPE.  The first draft of this
+		// comment claimed gate 1 does both.
 		const Scalar cosPhi = r_max( Scalar(0), r_min( Scalar(1),
 			Vector3Ops::Dot( lobe.axis, lobe.clipN ) ) );
 		Scalar half = PI;

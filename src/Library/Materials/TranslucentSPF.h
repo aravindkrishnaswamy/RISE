@@ -116,8 +116,23 @@ namespace RISE
 			//! that a BSDF-sampled continuation and an NEE / BDPT
 			//! connection estimate the same integral) are therefore two
 			//! readings of ONE per-hit lobe set.  `BuildLobeSet` below is
-			//! that set, rebuilt without sampling; both readings go through
-			//! it, so they cannot drift from each other or from the sampler.
+			//! that set, rebuilt without sampling.
+			//!
+			//! WHAT THAT DOES AND DOES NOT GUARANTEE (review P3).  `Pdf`
+			//! and `value` both go through `BuildLobeSet`, so those two
+			//! cannot drift from EACH OTHER.  `Scatter`/`ScatterNM` do
+			//! NOT call it -- they still build their lobes inline, because
+			//! they interleave the construction with the sampler draws and
+			//! with the IOR-stack push/pop, and `TranslucentSpectralParityTest`
+			//! pins several of those draws bit-for-bit -- so the sampler
+			//! and this set are kept in step by TESTS, not by construction:
+			//! `TranslucentLobeConsistencyTest`'s gate 1 (per-lobe
+			//! `kray == value*cos/pdf` over the sampler's own draws), gate
+			//! 3 (a total variation against a histogram of what
+			//! `Scatter` + `RandomlySelect` really returned) and gate 5
+			//! (`EvaluateKrayNM` against `ScatterNM`'s own `krayNM`).
+			//! A change to any lobe here must be made in BOTH places; the
+			//! gates are what catch it if it is not.
 			//!
 			//! TWO PROPERTIES THIS MATERIAL HAS THAT MAKE THE DENSITY EXACT
 			//! IN CLOSED FORM, where `SchlickSPF` / `IsotropicPhongSPF` /

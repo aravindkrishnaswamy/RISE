@@ -78,6 +78,8 @@
 #include "../src/Library/Painters/UniformScalarPainter.h"
 #include "../src/Library/Painters/RGBScalarPainter.h"
 #include "../src/Library/Materials/TranslucentMaterial.h"
+#include "../src/Library/Materials/CompositeMaterial.h"
+#include "../src/Library/Materials/LambertianMaterial.h"
 
 #include "TestStubObject.h"
 
@@ -612,6 +614,73 @@ static void GateKrayNM( const IObject* obj )
 	          << std::endl;
 }
 
+//////////////////////////////////////////////////////////////////////
+//  Gate 6 -- DL-157 review P2-1: `CompositeMaterial` must forward the
+//  full-sphere capability, and must forward it from WHICHEVER LAYER'S
+//  BSDF it actually presents.
+//
+//  `CompositeMaterial::GetBSDF()` returns the TOP material's BSDF when
+//  it has one, else the BOTTOM's -- and that is the `value()`
+//  `LightSampler`'s NEE arms will call.  `FabricMaterial` and
+//  `CoatedMaterial` both forward `ScattersFullSphere()`; `CompositeMaterial`
+//  did not, so `composite { top = translucent }` (which is
+//  `mat_wax_gold` in scenes/Tests/Materials/composite_material.RISEscene)
+//  presented a transmitting `TranslucentBSDF` to a `bFullSphere == false`
+//  NEE and lost the whole transmissive half-space -- the exact
+//  under-reading DL-157's own `ScattersFullSphere` derivation names.
+//
+//  The CONTROL is the other order.  A Lambertian TOP over a translucent
+//  BOTTOM presents the LAMBERTIAN BSDF, which does not transmit, so the
+//  flag must stay FALSE there -- an OR over both layers would grant it
+//  and light that material's back faces at full weight, which is the
+//  failure mode `IMaterial::ScattersFullSphere`'s own doc warns about.
+//////////////////////////////////////////////////////////////////////
+
+static void GateCompositeFullSphere()
+{
+	std::cout << std::endl << "[G] Gate 6: CompositeMaterial forwards ScattersFullSphere (DL-157 P2-1)"
+	          << std::endl;
+
+	UniformColorPainter* c = new UniformColorPainter( RISEPel(0.5,0.4,0.3) ); c->addref();
+	UniformScalarPainter* z = new UniformScalarPainter( 0.0 ); z->addref();
+	UniformScalarPainter* n10 = new UniformScalarPainter( 10.0 ); n10->addref();
+	UniformScalarPainter* s3 = new UniformScalarPainter( 0.3 ); s3->addref();
+
+	TranslucentMaterial* tr = new TranslucentMaterial( *c, *c, *z, *n10, *s3 ); tr->addref();
+	LambertianMaterial*  lm = new LambertianMaterial( *c ); lm->addref();
+
+	EXPECT( tr->ScattersFullSphere(),
+		"[G] translucent_material claims the full-sphere capability (DL-157)" );
+	EXPECT( !lm->ScattersFullSphere(),
+		"[G] lambertian_material does NOT claim it (control)" );
+
+	CompositeMaterial* topTrans = new CompositeMaterial( *tr, *lm, 4, 2, 2, 2, 2, 0.1, *z );
+	topTrans->addref();
+	CompositeMaterial* topLamb  = new CompositeMaterial( *lm, *tr, 4, 2, 2, 2, 2, 0.1, *z );
+	topLamb->addref();
+
+	std::cout << "    composite{top=translucent} GetBSDF()==translucent's: "
+	          << ( topTrans->GetBSDF() == tr->GetBSDF() ? "yes" : "no" )
+	          << "  ScattersFullSphere=" << ( topTrans->ScattersFullSphere() ? "true" : "false" )
+	          << std::endl;
+	std::cout << "    composite{top=lambertian}  GetBSDF()==lambertian's:  "
+	          << ( topLamb->GetBSDF() == lm->GetBSDF() ? "yes" : "no" )
+	          << "  ScattersFullSphere=" << ( topLamb->ScattersFullSphere() ? "true" : "false" )
+	          << std::endl;
+
+	EXPECT( topTrans->GetBSDF() == tr->GetBSDF(),
+		"[G] composite{top=translucent} presents the TRANSLUCENT BSDF" );
+	EXPECT( topTrans->ScattersFullSphere(),
+		"[G] ... so it must claim the full-sphere capability too" );
+	EXPECT( topLamb->GetBSDF() == lm->GetBSDF(),
+		"[G] composite{top=lambertian} presents the LAMBERTIAN BSDF" );
+	EXPECT( !topLamb->ScattersFullSphere(),
+		"[G] ... so it must NOT claim it, even though its BOTTOM layer does" );
+
+	topLamb->release(); topTrans->release(); lm->release(); tr->release();
+	s3->release(); n10->release(); z->release(); c->release();
+}
+
 int main()
 {
 	std::cout << "TranslucentLobeConsistencyTest (DL-157 / DL-41 / DL-38)" << std::endl;
@@ -701,6 +770,7 @@ int main()
 	}
 
 	GateKrayNM( obj );
+	GateCompositeFullSphere();
 
 	obj->release();
 
