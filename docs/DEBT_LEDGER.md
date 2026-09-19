@@ -592,11 +592,12 @@ all, so the emission side takes weight 1 against an NEE side that still
 weights -- an ABSENT partner, not a wrong one).
 
 Review round 2 of the same slice changed NO row's open/closed state but
-UPGRADED one: **DL-125** goes from "OPEN-confirmed (static)" to a
+UPGRADED one at that historical revision: **DL-125** went from "OPEN-confirmed (static)" to a
 MEASURED row, because DL-103's fix amplifies it and the magnitude is now
 pinned by a new regression probe
 (`tests/BDPTStrategyBalanceTest.cpp`'s `TestPTSpectralHWSSKnownDefect`
-plus its immune control, `a255981f`). No new rows were opened by round
+plus its immune control, `a255981f`). DL-125 subsequently CLOSED on
+2026-09-18 and that probe became a parity gate. No new rows were opened by round
 2. This slice's branch HEAD does not itself update the "Authoritative
 totals on `master`" line below; that recount happens at merge.
 

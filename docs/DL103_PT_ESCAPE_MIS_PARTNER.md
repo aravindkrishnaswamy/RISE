@@ -221,7 +221,14 @@ DL-103 and DL-127) is unmoved: PT 0.0471266 / BDPT 0.0472119 = +0.18 %,
 against the +0.16 % recorded before this slice.  The residual really was
 Schlick-specific.
 
-### 5.1 It amplifies an open row on the HWSS path (review P2-1)
+### 5.1 Historical amplification of DL-125 (review P2-1)
+
+**This section records the pre-DL-125 state, not the current implementation.
+DL-125 closed on 2026-09-18: Schlick now supplies `EvaluateKrayNM`, the
+probe is `TestPTSpectralHWSSCompanionParity`, and it gates parity. The
+old hero-only grid also differed from the HWSS continuum; current
+comparisons set `num_wavelengths 160` on both scene strings. See
+[DL69_BDPT_LOBE_THROUGHPUT.md](DL69_BDPT_LOBE_THROUGHPUT.md) §6.3.**
 
 The fix is correct and its sign is right, but it is worth stating
 plainly that it makes **DL-125** cost more, not less.

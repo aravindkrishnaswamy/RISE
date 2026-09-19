@@ -2327,44 +2327,14 @@ static void TestGGXLambertianControl()
 
 
 //////////////////////////////////////////////////////////////////////
-// DL-125 probe: spectral BDPT on topology L, hwss FALSE vs hwss TRUE.
-//
-// DL-69's throughput fix prices the SELECTED lobe's own `kray`.  On the
-// HWSS COMPANION wavelengths it asks the SPF for that same lobe's kray
-// at the companion wavelength via `ISPF::EvaluateKrayNM`, and falls
-// back to the OLD aggregate-BSDF-over-per-lobe-pdf pairing when the SPF
-// declines (returns -1, the base-class default).  Only `PolishedSPF`
-// and `HairBSDF`'s `HairSPF` implement that method today, so on
-// `schlick_material` the fallback is REACHABLE ON EVERY COMPANION
-// WAVELENGTH -- which is exactly what DL-125 records (PT's own HWSS
-// companion body has the identical ladder and the identical residual).
-//
-// This is a MEASUREMENT, not a gate on correctness: `hwss FALSE`
-// (hero wavelength only) takes the DL-69-fixed per-lobe path on every
-// bounce, so any systematic gap between the two is the companions'
-// un-fixed pairing.  The band below is deliberately wide and exists
-// only so the recorded magnitude cannot drift silently -- tighten it
-// when DL-125 closes, don't "fix" the number here.
-//
-// TWO MEASUREMENT NOTES, both load-bearing.
-//
-//   * The GATED statistic is the ACHROMATIC mean (the average of the
-//     three channel means), not a per-channel ratio.  The scene is
-//     grey under a white emitter, so its true image is neutral; an
-//     `hwss FALSE` render draws ONE wavelength per path, which leaves
-//     several percent of purely chromatic MC noise on each individual
-//     channel (measured spread 0.0662 / 0.0623 / 0.0639 at 256 spp)
-//     that the achromatic mean averages away.  Per-channel ratios are
-//     still printed, but reading a bias off one of them would be
-//     reading noise.
-//   * The two renders deliberately do NOT use the same sample count.
-//     `hwss TRUE` carries SampledWavelengths::N wavelengths per path,
-//     so at equal `samples` its spectral estimate is several times
-//     less noisy than `hwss FALSE`'s.  The hero-only render gets 4x
-//     the samples to bring the two to comparable precision; both are
-//     unbiased estimates of the same quantity, so an unequal count
-//     costs only time.  Depth budget, geometry, filter and denoise
-//     settings are identical.
+// DL-125 achromatic parity controls: spectral BDPT hero versus bundle.
+// Schlick supplies EvaluateKrayNM after DL-125; aggregate-density GGX
+// and Lambertian still use an appropriate aggregate fallback. Equal
+// grey lobe spectra make these controls insensitive to the per-lobe
+// ratio repair itself. Both strings use 160 wavelengths to match the
+// hero grid to the continuous bundle; hero-only gets 4x the spp to
+// reduce its larger chromatic noise. The achromatic statistic, not any
+// one channel, is gated. Calibration is recorded in DL69 §6.3.
 //////////////////////////////////////////////////////////////////////
 static const char* kRasterizerBDPTSpectralNoHWSS =
 	"standard_shader\n"
