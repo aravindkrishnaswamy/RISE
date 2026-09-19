@@ -25,14 +25,11 @@
 //  FIVE classes are in that second group and now override the method:
 //  `SchlickSPF`, `WardIsotropicGaussianSPF`,
 //  `WardAnisotropicEllipticalGaussianSPF`, `IsotropicPhongSPF`,
-//  `AshikminShirleyAnisotropicPhongSPF`.  TWO more remain and both NAME
-//  themselves through `ISPF::PerLobeDensityFallbackName()` rather than
-//  declining silently: `CompositeSPF` CANNOT be covered from
-//  `(ri, outDir, type, nm)` -- its emitted `krayNM` is the product of a
-//  STOCHASTIC random walk between two sub-layers, and neither the
-//  intermediate directions nor the layer crossings are recoverable from
-//  the final outgoing direction (DL-221) -- while `TranslucentSPF` is
-//  PARTIALLY closable and simply not closed yet (DL-222).
+//  `AshikminShirleyAnisotropicPhongSPF`. TranslucentSPF now also
+//  answers (DL-222, integrated 2026-09-19); section D independently
+//  checks entry painters, interior Beer/scattering and live-distance
+//  replay. CompositeSPF remains unresolved (DL-221): its stochastic
+//  layer walk cannot be recovered from (ri, outDir, type, nm).
 //
 //  SECTIONS
 //    A. SAMPLER <-> EVALUATOR, SAME WAVELENGTH.  For every non-delta
@@ -85,10 +82,11 @@
 //       aggregate (`LambertianSPF`) must still return -1, so the
 //       fallback ladder stays reachable; and an unknown / unsupported
 //       `rayType` on the five must return -1 rather than a wrong
-//       number.  `CompositeSPF` AND `TranslucentSPF` must each return
-//       -1 AND report themselves through
-//       `ISPF::PerLobeDensityFallbackName()` so the one-shot diagnostic
-//       at the ladders can name which class fell through.
+//       number. CompositeSPF names its unresolved fallback. Translucent
+//       entry/exit weights have independent painter/Beer oracles; both
+//       eye/light replay must consume recorded non-unit incoming
+//       distance and apply the ratio only to downstream throughput.
+//       Its unsupported types retain the diagnostic identity.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -779,7 +777,7 @@ int main()
 	}
 
 	//----------------------------------------------------------------
-	std::cout << std::endl << "-- Section D: negative controls" << std::endl;
+	std::cout << std::endl << "-- Section D: controls and Translucent lobe/replay oracles" << std::endl;
 	{
 		const RayIntersectionGeometric ri = MakeIntersection( 30.0 * PI / 180.0 );
 		const Vector3 wo = Vector3Ops::Normalize( Vector3( 0.3, 0.2, 0.9 ) );
@@ -866,6 +864,9 @@ int main()
 						// The geometric predecessor is deliberately 0.125 further
 						// away than the actual live origin: using predecessor
 						// position instead of recorded distance must fail too.
+						// A neutral root isolates scatter replay from light emission.
+						// Both isLightPath modes exercise the shared consumer; real
+						// light/eye producers are checked in TranslucentIORStackTest.
 						vertices[0].type = BDPTVertex::CAMERA;
 						vertices[0].position = Point3( 0, 0, -distance-0.125 );
 						vertices[1].position = Point3( 0, 0, 0 );

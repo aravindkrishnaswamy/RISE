@@ -653,15 +653,17 @@ normal incidence with isotropy 1).  See also DL-101 (CLOSED 2026-09-17)
 on the per-channel branch, whose three specular lanes used to share one
 `ScatteredRay`.  27 checks, 0 failures.
 
-`HWSSCompanionKrayTest` (DL-125, CLOSED 2026-09-18,
+`HWSSCompanionKrayTest` (DL-125, integrated closure 2026-09-19,
 [DL69_BDPT_LOBE_THROUGHPUT.md](../docs/DL69_BDPT_LOBE_THROUGHPUT.md)
 §6) gates the HWSS **companion**-wavelength contract: an SPF that
 stores a PER-LOBE conditional density on each emitted ray must
 implement `ISPF::EvaluateKrayNM`, or the companion ladders in
 `PathTracingIntegrator.cpp` and `BDPTIntegrator.cpp` fall back to the
 material's AGGREGATE `valueNM` over the hero lobe's density — DL-69's
-pairing, surviving on the spectral bundle.  **91 checks, 0 failures;
-red 46 passed / 45 failed** against an isolated build with the five SPF
+pairing, surviving on the spectral bundle. **Current integrated gate: 169/0;
+replay-distance red proof 153/16** on committed `a90899b1`, library and
+exact target rebuilt in both states. **Historical standalone revision:
+91/0, red 46/45** against an isolated build with the five SPF
 `.cpp`/`.h` pairs reverted (library AND this test target rebuilt on
 each side; failures by section A 20, B 15, C 8, E 2).  Five sections.  (A) For every
 non-delta lobe `ScatterNM(nm)` emits, `EvaluateKrayNM` at that same
@@ -691,10 +693,13 @@ OWN form** `Rd*(1-Rs)*diffuseFactor`, not `Rd/pi`, or that row reads
 7.65e-3.  (D) Negative controls: `GGXSPF` and `LambertianSPF` must
 keep DECLINING (their fallback is exact, and the ladder must stay
 reachable), an unsupported `rayType` must decline rather than invent a
-number, and BOTH `CompositeSPF` (DL-221) and `TranslucentSPF` (DL-222)
-must NAME themselves through the new
-`ISPF::PerLobeDensityFallbackName()` — the sixth per-lobe-density class
-was missed on the first pass and stayed silent until review round 1.  (E) A PREMISE for the
+number, and CompositeSPF names its unresolved fallback (DL-221).
+The integrated Translucent oracle independently checks entry painters
+and exit Beer/scattering at three wavelengths and two non-unit distances.
+Both eye/light throughput replay must use the recorded live distance,
+not the deliberately different predecessor position, and affect only
+downstream vertices. Unsupported types retain their diagnostic identity.
+DL-222 closed 2026-09-19; ordinary connection state remains DL-223.  (E) A PREMISE for the
 second half of the fix: on a chromatic two-lobe `schlick_material` the
 per-lobe and aggregate companion ratios disagree by up to **12.2249x**
 per draw — if that ever passes trivially,

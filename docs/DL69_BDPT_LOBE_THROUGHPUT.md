@@ -576,7 +576,7 @@ to 4x.
 
 ---
 
-## 6. DL-125 outcome (closed 2026-09-18, `debt-dl125` slice)
+## 6. DL-125 outcome (implemented 2026-09-18; integrated closure 2026-09-19)
 
 DL-125 was §5's first residual: the HWSS **companion**-wavelength half of
 DL-69's pairing, surviving wherever an SPF declined `ISPF::EvaluateKrayNM`.
@@ -647,23 +647,19 @@ SUBSTITUTED the direction the hero was priced from the aggregate `f`, so
 its companion must be too**, or the two sides of the ratio describe
 different estimators.
 
-**The two SPFs that still decline are made AUDIBLE rather than
-silently wrong.**  A new `ISPF::PerLobeDensityFallbackName()` (default 0)
-names the class; all three ladders call the one-shot-per-class
-`RISE::NotePerLobeDensityCompanionFallback`
-(`Materials/ScatteredRayContainer.cpp`).  `CompositeSPF` (DL-221) and
-`TranslucentSPF` (DL-222) both override it.  **Review round 1 found that
-`TranslucentSPF`'s override was missing** — so the sixth per-lobe class
-was exactly as silent as before — and that the sentence "every
-per-lobe-density SPF implements it now except `CompositeSPF`" was false
-in `ISPF.h`, `PathTracingIntegrator.cpp`, `BDPTIntegrator.cpp` (x2),
-`ScatteredRayContainer.cpp` and this test's own header.  All corrected.
+**Fallback diagnostics remain explicit.** `CompositeSPF` still cannot
+recover its stochastic layer walk (DL-221). `TranslucentSPF` now answers
+its normal entry/exit lobes (DL-222 closed 2026-09-19), retaining the
+class name for unsupported-type fallback. Historically both declined;
+round 1 added the then-missing Translucent diagnostic. The integrated
+PT fallback uses stateful BSDF evaluation with the live stack.
 
-`ISPF::EvaluateKrayNM`'s doc comment also gained two CONTRACT notes that
-did not exist when the method was first extended: that the `ri` may be
-SYNTHETIC at the `RecomputeSubpathThroughputNM` site (see 6.5 on
-DL-222), and that the density convention is `p_I(nm)` rather than
-`p_I(heroNM)` (DL-216).
+`EvaluateKrayNM` receives live records at PT and the two generators.
+Throughput replay rebuilds the frame/painter state but now preserves
+incoming distance explicitly, including the generator ray advance.
+`glossyFilterWidth` still defaults to zero. Connection BSDF records
+remain a separate zero-length reconstruction (DL-223). The companion
+versus hero density convention remains DL-216.
 
 ### 6.3 Red-proof and measurements
 
@@ -671,7 +667,7 @@ Round-4 recomputations are explicitly marked. Other numerical A/B
 tables in this section are historical measurements from rounds 1–2,
 retained as provenance rather than represented as new round-4 runs.
 
-**Round-4 red/green recomputation:** `tests/HWSSCompanionKrayTest.cpp`
+**Standalone round-4 red/green recomputation (historical 91-check revision):** `tests/HWSSCompanionKrayTest.cpp`
 read **91 passed, 0 failed**; red **46 passed, 45 failed**. WIP was
 committed at `a4820d20` before restoring the five SPF `.cpp`/`.h` pairs
 to `9fe42f52`; both the library and `build-test/HWSSCompanionKrayTest`
@@ -695,7 +691,7 @@ A 20, B 15, C 8, E 2.  Pre-fix every class reads
 | A2 | the same with wavelength-VARYING shape painters | `<= 1.24e-14` |
 | B | a COMPANION wavelength queried at the HERO's direction equals the companion run's own `krayNM`; the two identically-seeded samplers provably drew the same directions (`dir drift 0`) and the hero/companion krays genuinely differ (spread 0.62 .. 0.89) | `<= 1.41e-14` |
 | C | `EvaluateKrayNM * p_lobe == f_lobe cos` through the material's own `IBSDF::valueNM` | `<= 2.73e-14` on every specular row |
-| D | `GGXSPF` / `LambertianSPF` must keep DECLINING; an unsupported `rayType` must decline; `CompositeSPF` AND `TranslucentSPF` must each NAME themselves | pass |
+| D (standalone revision) | `GGXSPF` / `LambertianSPF` decline; unsupported types decline; then-unimplemented Composite/Translucent name themselves | pass; superseded by integrated oracle below |
 | E | PREMISE for §6.2's second half (see below) | 12.2249x |
 
 Section C's three DIFFUSE rows sit at `1.6e-3 / 3.1e-3 / 2.6e-3` rather
@@ -1070,11 +1066,11 @@ from the material's AGGREGATE BSDF instead of the SELECTED lobe's own
 | `BioSpecSkinSPF`, `GenericHumanTissueSPF` | out of scope | null `IBSDF`; PT delegates (see the next row) and BDPT is DL-126's `nullBSDFContinuation` |
 | `DielectricSPF`, `PerfectReflectorSPF`, `PerfectRefractorSPF` | **REFUTED** | PT's HWSS body never reaches the companion ladder for a material with no `IBSDF` at all: `PathTracingIntegrator.cpp`'s `if( !pBRDFCur )` block DELEGATES every live wavelength to `IntegrateFromHitNM` and `break`s.  Confirmed by render — a `perfectreflector_material` scene reads RMSE `3.70e-3` for `hwss TRUE` against the `pathtracing_pel_rasterizer` reference, TIGHTER than hero-only's `1.67e-2` |
 | `CompositeSPF` | UNCLOSABLE from the method's signature; NAMES itself | **DL-221** |
-| `TranslucentSPF` | genuine sibling, recoverable at the three LIVE call sites and lost only at the synthetic-`ri` rebuild site; NAMES itself | **DL-222** |
+| `TranslucentSPF` | selected-lobe override plus explicit live incoming-distance preservation in companion replay; unsupported types retain diagnostic identity | **DL-222 CLOSED 2026-09-19**; connection reconstruction remains DL-223 |
 | every override's density convention | `p_I(lambda_c)` where the draw used `p_I(lambda_h)` -- identical for reflectance-only chromatic materials, different under a chromatic SHAPE painter | **DL-216** |
 | BDPT's `hwss TRUE` bundle on a chromatic multi-lobe material | Channel-balance discrepancy against three reference estimators; matched-spp repeat calibration in §6.3, historical isolated A/B there | **DL-219** |
 
-### 6.5 Four rows opened
+### 6.5 Four historical openings; three remain open after integration
 
 **DL-221 — `CompositeSPF`.**  Its emitted `krayNM` is the product of a
 stochastic two-layer random walk (a sequence of sub-SPF krays times
@@ -1086,31 +1082,47 @@ closure needs per-emitted-ray state — either a recipe payload on
 `kCapacity` array, so measure first) or a `ScatterNM` that takes the
 companion wavelengths up front.  Made audible in the meantime.
 
-**DL-222 — `TranslucentSPF`.**  A sixth per-lobe-density SPF the row
-never named.  `TranslucentMaterial::GetBSDF()` is non-null, so PT does
-NOT take the delegation branch that makes the delta materials immune, and
-the fallback really does fire — wrong for two independently-recorded
-reasons (its `kray` carries Beer extinction the BSDF omits; its
-`Pdf`/`PdfNM` cover neither Phong `cos^N` lobe, DL-41).  It now overrides
-`PerLobeDensityFallbackName()` so the residual is audible.
+**DL-222 — `TranslucentSPF`, CLOSED 2026-09-19.** The integrated
+DL-157 override returns entry reflection/transmission painters and
+interior `exp(-sigma(nm)*distance)*(1-scattering(nm))` or
+`exp(-sigma(nm)*distance)*scattering(nm)`, selected by stack membership
+and scatter type. Unsupported types decline and retain the diagnostic.
+The old opening evidence (missing override, omitted BSDF Beer and absent
+Phong density) described pre-DL-157 code; DL-38/DL-41 closed those latter
+issues. The earlier recipe to decline at synthetic records is superseded.
 
-**How much of it is recoverable depends on the CALL SITE, and the first
-version of this subsection got that wrong.**  `ScatterNM` branches on
-`bEnteringNM = !ior_stack.containsCurrent()`, which `EvaluateKrayNM` also
-receives, so the ENTRY lobes are direction-free and exactly recoverable
-everywhere.  The INTERIOR lobes carry
-`exp(-extinctionNM * distance)` with
-`distance = Magnitude(ri.ray.origin -> ri.ptIntersection)` — and BOTH of
-those are fields of the `ri` the method is handed, so the interior half
-is exactly recoverable too at the three LIVE call sites (PT's HWSS body
-and the two BDPT generator ladders).  It is lost at exactly one site:
-DL-125's own new `RecomputeSubpathThroughputNM`, which REBUILDS the `ri`
-from a stored `BDPTVertex` with a fabricated ray origin one unit back
-along the incoming direction and `glossyFilterWidth` left at 0.  That is
-an undocumented widening of `EvaluateKrayNM`'s contract, and it is now
-documented on the method itself: read only the direction, the frame and
-the painter context.  A cleaner future option than declining at that
-site is to pass the true incoming record there.
+Integration exposed a remaining replay seam: the reconstructed ray was
+one unit long. Each generator now records the live incoming distance in
+`BDPTVertex::scatterIncomingDistance`; replay consumes that scalar when
+placing the reconstructed origin. Predecessor position is insufficient:
+both generators advance the next ray by `BDPT_RAY_EPSILON`. This field
+is sampling state, deliberately not copied by `PopulateRIGFromVertex`
+into connection records. Endpoints, media, delta vertices and BSSRDF
+entries do not consume it. Vector copies preserve it. DL-223's separate
+connection zero-length/role-swap residual remains open.
+
+The new direct oracle derives weights from painter values and Beer law
+at 450/550/650 nm and lengths 0.4/2.5. The replay oracle uses chromatic
+extinction/scattering, both eye/light modes, both lobe types, and checks
+that the scatter changes subsequent vertices only. Its geometric
+predecessor is deliberately 0.125 farther away than the recorded live
+origin, rejecting a predecessor-position shortcut. Live generator tests
+separately compare stored distance with the actual Scatter/ScatterNM
+record across eye/light, RGB/NM and guiding modes. These establish
+producer and consumer behavior separately; they do not close DL-223.
+
+The committed red state `a90899b1` already stored live distance but still
+replayed a unit segment: **153 passed, 16 failed**, all failures in the
+chromatic downstream-ratio assertions. Consuming the scalar gives
+**169/0**, with library and exact HWSS target rebuilt in each state and
+zero compilation warnings. Direct lobe weights, same-wavelength controls
+and upstream-placement checks pass on both sides. The neutral endpoint
+isolates scattering in both replay modes; real light/eye generation is
+covered separately by the producer checks. `sizeof(BDPTVertex)` measured
+1024 bytes before and 1032 after (+8 bytes, 0.78125% per vertex), rather
+than inferring struct size from the new scalar. No runtime benchmark is
+claimed for this metadata change.
+
 
 **DL-216 — the density convention.**  Every override returns
 `f_I(lambda_c) cos / p_I(lambda_c)`, but the direction was DRAWN from

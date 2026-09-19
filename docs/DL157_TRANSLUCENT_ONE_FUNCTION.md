@@ -944,9 +944,14 @@ either side. Gated at **1e-12** against `ScatterNM`'s own `krayNM` with
 the same wavelength as hero, over nine record kinds x six tilts x three
 wavelengths (`TranslucentLobeConsistencyTest` gate 5) — the strongest
 available statement, since the two are the same quantity asked twice.
-**DL-222 can be struck at merge.** Expect a trivial conflict in
-`TranslucentSPF.h`, where `debt-dl125` adds a one-line
-`PerLobeDensityFallbackName` override.
+**DL-222 CLOSED 2026-09-19 at integration.** The combined gate also
+found that DL-125 throughput replay used a unit-length synthetic ray.
+Both generators now store their live incoming distance and replay uses
+it for Beer attenuation. Independent entry/exit and replay oracles are
+in `HWSSCompanionKrayTest`; producer stamps are checked against live
+sampler records by `TranslucentIORStackTest`. Unsupported scatter types
+retain the diagnostic name. Ordinary connection reconstruction remains
+zero-length (DL-223), unchanged by the replay fix.
 
 ---
 

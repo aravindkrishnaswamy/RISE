@@ -265,23 +265,16 @@ namespace RISE
 		/// TWO CONTRACT NOTES AN IMPLEMENTER MUST READ (DL-125 review
 		/// round 1).
 		///
-		/// 1. THE `ri` MAY BE SYNTHETIC.  Three of the four call sites
-		///    hand over the LIVE `RayIntersectionGeometric` the sampler
-		///    itself saw (`PathTracingIntegrator.cpp`'s HWSS body and
-		///    `BDPTIntegrator.cpp`'s two subpath-generator ladders), but
-		///    `BDPTIntegrator::RecomputeSubpathThroughputNM` REBUILDS one
-		///    from a stored `BDPTVertex` via
-		///    `PathVertexEval::PopulateRIGFromVertex`, with a fabricated
-		///    ray whose ORIGIN sits one unit back along the incoming
-		///    direction and with `glossyFilterWidth` left at 0.  So read
-		///    only `ri.ray.Dir()`, the surface frame, and the painter
-		///    context (`ptIntersection`, `ptCoord`, ...) -- NOT
-		///    `ri.ray.origin`, any distance derived from it, or
-		///    `ri.glossyFilterWidth`.  `TranslucentSPF`'s interior lobes
-		///    are exactly the case this excludes: their `kray` is
-		///    `exp(-extinction * |origin - ptIntersection|)`, a real
-		///    field of a LIVE record and a meaningless one of a rebuilt
-		///    one (DL-222).
+		/// 1. THE `ri` MAY BE SYNTHETIC. PT's HWSS body and the two
+		///    BDPT generator ladders pass the live sampler record.
+		///    RecomputeSubpathThroughputNM rebuilds the frame/painter
+		///    state and places its ray origin at the stored live incoming
+		///    distance (including ray advances), so Translucent's Beer
+		///    factor is recoverable there too (DL-222 closed). This is
+		///    distance preservation, not a claim of every original field:
+		///    glossyFilterWidth remains 0. Ordinary connection records
+		///    still have zero-length incoming rays (DL-223); that separate
+		///    BSDF path does not inherit this replay-only reconstruction.
 		///
 		/// 2. THE DENSITY CONVENTION IS `p_I(nm)`, NOT `p_I(heroNM)`, AND
 		///    THAT IS A KNOWN RESIDUAL (DL-216).  The direction was drawn
@@ -313,22 +306,19 @@ namespace RISE
 		/// fallback is NOT exact for; 0 (the default) for every SPF
 		/// where it IS exact or unreachable.
 		///
-		/// The fallback is `IBSDF::valueNM(outDir) * cos / pS->pdf` --
+		/// The fallback is aggregate BSDF evaluation times `cos / pS->pdf` --
 		/// the material's AGGREGATE spectral BSDF over the ONE selected
 		/// lobe's density.  That is the correct `f_I cos / p_I` exactly
 		/// when the emitted ray's `pdf` is the AGGREGATE mixture
 		/// density (CoatedSPF / FabricSPF / WeaveSPF, which say so in
 		/// their own headers, and the single-emit GGXSPF /
 		/// CookTorranceSPF), and wrong when it is a PER-LOBE
-		/// conditional density.  TWO classes in the tree store a per-lobe
-		/// conditional density and do NOT implement `EvaluateKrayNM`,
-		/// and both name themselves here: `CompositeSPF`, whose emitted
-		/// `krayNM` is the product of a STOCHASTIC two-layer random walk
-		/// and is not a function of `(ri, outDir, type, nm)` at all
-		/// (DL-221), and `TranslucentSPF`, which is PARTIALLY closable
-		/// (note 1 above says which half) and simply has not been closed
-		/// yet (DL-222).  Overriding this method is how such a class
-		/// stays VISIBLE instead of silently taking a wrong number.
+		/// conditional density. CompositeSPF still declines (DL-221):
+		/// its stochastic two-layer walk cannot be recovered from these
+		/// arguments. TranslucentSPF now evaluates its normal entry/exit
+		/// lobes (DL-222 closed), but retains a diagnostic identity for
+		/// unsupported lobe types. Overriding this method keeps any such
+		/// fallback visible instead of silently taking a wrong number.
 		virtual const char* PerLobeDensityFallbackName() const
 		{
 			return 0;

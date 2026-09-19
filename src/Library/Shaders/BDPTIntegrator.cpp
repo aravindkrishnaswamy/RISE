@@ -2219,8 +2219,8 @@ namespace {
 			BDPTVertex v;
 			v.type = BDPTVertex::SURFACE;
 			v.position = ri.geometric.ptIntersection;
-		v.scatterIncomingDistance = Vector3Ops::Magnitude(
-			Vector3Ops::mkVector3( ri.geometric.ray.origin, ri.geometric.ptIntersection ) );
+			v.scatterIncomingDistance = Vector3Ops::Magnitude(
+				Vector3Ops::mkVector3( ri.geometric.ray.origin, ri.geometric.ptIntersection ) );
 			v.normal = ri.geometric.vNormal;
 			v.geomNormal = ri.geometric.vGeomNormal;
 			v.onb = ri.geometric.onb;
@@ -3077,11 +3077,9 @@ namespace {
 								// an SPF whose emitted ray carries the
 								// AGGREGATE mixture density; a per-lobe
 								// conditional density makes it the DL-69
-								// mispairing.  TWO such SPFs still
-								// decline -- `CompositeSPF` (DL-221) and
-								// `TranslucentSPF` (DL-222) -- and both
-								// NAME themselves for this one-shot
-								// warning.
+								// mispairing. CompositeSPF still declines
+								// (DL-221) and names itself. TranslucentSPF
+								// now evaluates its normal entry/exit lobes.
 								if( useKray ) {
 									NotePerLobeDensityCompanionFallback( pSPF );
 								}
@@ -7539,7 +7537,11 @@ void BDPTIntegrator::RecomputeSubpathThroughputNM(
 					const Vector3 dirOut = Vector3Ops::Normalize(
 						Vector3Ops::mkVector3( verts[i+1].position, v.position ) );
 
-					Ray inRay( Point3Ops::mkPoint3( v.position, -dirIn ), dirIn );
+					// Preserve the sampler's live Beer distance, including ray
+					// advances. Predecessor position is not the live origin.
+					// This does not change connection reconstruction (DL-223).
+					Ray inRay( Point3Ops::mkPoint3( v.position,
+						-dirIn * v.scatterIncomingDistance ), dirIn );
 					RayIntersectionGeometric rig( inRay, nullRasterizerState );
 					PathVertexEval::PopulateRIGFromVertex( v, rig );
 
