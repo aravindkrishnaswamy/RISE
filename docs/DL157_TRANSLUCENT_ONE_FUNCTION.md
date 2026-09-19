@@ -261,7 +261,10 @@ here.)
   constructs its tessellated hit without inheriting the base geometry's
   certification, so even a displaced clipped plane uses the uncertified
   fallback. This can retain DL-223's stackless sheet limitation; it cannot
-  falsely certify a closed object.
+  falsely certify a closed object. An open CSG wrapper also loses the
+  primitive certification even if its particular surface is still open;
+  it shares that conservative stackless-side limitation. The CSG class
+  does not prove the topology of each assembled composite.
 
 **Round-5 CSG regression (2026-09-19).** A live union hit from a
 back-facing double-sided plane, with the other operand off the ray,
