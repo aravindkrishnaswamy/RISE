@@ -3034,10 +3034,11 @@ namespace {
 								// an SPF whose emitted ray carries the
 								// AGGREGATE mixture density; a per-lobe
 								// conditional density makes it the DL-69
-								// mispairing.  Every such SPF implements
-								// `EvaluateKrayNM` now except
-								// `CompositeSPF` (DL-221), which names
-								// itself for this one-shot warning.
+								// mispairing.  TWO such SPFs still
+								// decline -- `CompositeSPF` (DL-221) and
+								// `TranslucentSPF` (DL-222) -- and both
+								// NAME themselves for this one-shot
+								// warning.
 								if( useKray ) {
 									NotePerLobeDensityCompanionFallback( pSPF );
 								}
@@ -7471,8 +7472,21 @@ void BDPTIntegrator::RecomputeSubpathThroughputNM(
 			// CookTorranceSPF deliberately never override the method --
 			// and for a guiding-SUBSTITUTED direction, where
 			// `scatterType` is deliberately left `eRayUnknown`.
+			//
+			// `isBSSRDFEntry` is excluded explicitly (review round 1,
+			// P3).  It is a belt-and-braces guard, not a live fix: a
+			// BSSRDF entry vertex is pushed by the eye walk's own
+			// diffusion block and never passes through the scatter
+			// branch that stamps `scatterType`, so it still carries the
+			// default `eRayUnknown` and would take the aggregate branch
+			// anyway.  Naming it here means a future stamp at that site
+			// cannot silently start pricing a diffusion-profile ENTRY
+			// vertex through the surface SPF's lobes (DL-207's own
+			// lesson: the entry vertex's position/normal are the entry
+			// point, not the camera-visible exit hit).
 			Scalar lobeRatio = -1;
-			if( v.pMaterial && v.scatterType != ScatteredRay::eRayUnknown )
+			if( v.pMaterial && !v.isBSSRDFEntry &&
+			    v.scatterType != ScatteredRay::eRayUnknown )
 			{
 				const ISPF* pVertSPF = v.pMaterial->GetSPF();
 				if( pVertSPF )

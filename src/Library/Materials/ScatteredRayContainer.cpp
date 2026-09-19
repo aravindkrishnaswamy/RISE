@@ -232,9 +232,10 @@ ScatteredRay* ScatteredRayContainer::RandomlySelectDiffuse(
 // implements `EvaluateKrayNM`, and otherwise fall back to
 // `IBSDF::valueNM(outDir) * cos / pS->pdf`.  That fallback is EXACT for
 // an SPF whose emitted ray carries the AGGREGATE mixture density and
-// wrong for one that carries a PER-LOBE conditional density; the latter
-// all implement the method now except `CompositeSPF` (DL-221), which
-// names itself here instead of failing silently.
+// wrong for one that carries a PER-LOBE conditional density.  Two of
+// the latter still decline -- `CompositeSPF` (DL-221) and
+// `TranslucentSPF` (DL-222) -- and both name themselves here instead of
+// failing silently.
 //
 // Warn ONCE per process per class (the CompositeSPF.cpp /
 // SplatFilm.cpp log-once idiom): this sits inside the per-sample

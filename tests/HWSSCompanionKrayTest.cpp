@@ -25,11 +25,14 @@
 //  FIVE classes are in that second group and now override the method:
 //  `SchlickSPF`, `WardIsotropicGaussianSPF`,
 //  `WardAnisotropicEllipticalGaussianSPF`, `IsotropicPhongSPF`,
-//  `AshikminShirleyAnisotropicPhongSPF`.  `CompositeSPF` is the sixth
-//  and CANNOT be covered from `(ri, outDir, type, nm)` -- its emitted
-//  `krayNM` is the product of a STOCHASTIC random walk between two
-//  sub-layers, and neither the intermediate directions nor the layer
-//  crossings are recoverable from the final outgoing direction (DL-221).
+//  `AshikminShirleyAnisotropicPhongSPF`.  TWO more remain and both NAME
+//  themselves through `ISPF::PerLobeDensityFallbackName()` rather than
+//  declining silently: `CompositeSPF` CANNOT be covered from
+//  `(ri, outDir, type, nm)` -- its emitted `krayNM` is the product of a
+//  STOCHASTIC random walk between two sub-layers, and neither the
+//  intermediate directions nor the layer crossings are recoverable from
+//  the final outgoing direction (DL-221) -- while `TranslucentSPF` is
+//  PARTIALLY closable and simply not closed yet (DL-222).
 //
 //  SECTIONS
 //    A. SAMPLER <-> EVALUATOR, SAME WAVELENGTH.  For every non-delta
@@ -45,7 +48,16 @@
 //       at the HERO's direction and the COMPANION's wavelength must
 //       then equal the companion run's own `krayNM`.  That is precisely
 //       what the HWSS companion ladder asks of it.
-//    C. AGAINST THE BRDF.  `EvaluateKrayNM * p_lobe == f_lobe * cos`,
+//    C. AGAINST THE BRDF.  NOT the aggregate-vs-per-lobe discriminator
+//       -- sections A/A2/B are (a contaminated override fails those and
+//       would pass this one, because both sides of C's identity are
+//       evaluated at the SAME wavelength).  What C adds is an
+//       INDEPENDENT implementation: it re-derives the lobe weight from
+//       the material's separately-written `IBSDF::valueNM` and the
+//       density the SPF stored on the ray, so a formula that is
+//       self-consistent between this SPF's sampler and its evaluator
+//       but wrong about the BRDF is still caught.
+//       `EvaluateKrayNM * p_lobe == f_lobe * cos`,
 //       with `f_lobe` read from the material's own (separately
 //       implemented) `IBSDF::valueNM` and `p_lobe` the density the SPF
 //       stored on the ray.  Checked on the SPECULAR lobe of all five
@@ -73,9 +85,10 @@
 //       aggregate (`LambertianSPF`) must still return -1, so the
 //       fallback ladder stays reachable; and an unknown / unsupported
 //       `rayType` on the five must return -1 rather than a wrong
-//       number.  `CompositeSPF` must return -1 AND report itself
-//       through `ISPF::PerLobeDensityFallbackName()` so the one-shot
-//       diagnostic at the three call sites can name it.
+//       number.  `CompositeSPF` AND `TranslucentSPF` must each return
+//       -1 AND report themselves through
+//       `ISPF::PerLobeDensityFallbackName()` so the one-shot diagnostic
+//       at the ladders can name which class fell through.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -113,6 +126,7 @@
 #include "../src/Library/Materials/AshikminShirleyAnisotropicPhongSPF.h"
 #include "../src/Library/Materials/AshikminShirleyAnisotropicPhongBRDF.h"
 #include "../src/Library/Materials/CompositeSPF.h"
+#include "../src/Library/Materials/TranslucentSPF.h"
 #include "../src/Library/Materials/GGXSPF.h"
 #include "../src/Library/Materials/LambertianSPF.h"
 #include "TestStubObject.h"
@@ -748,7 +762,24 @@ int main()
 		Check( comp->PerLobeDensityFallbackName() != 0 &&
 		       std::string( comp->PerLobeDensityFallbackName() ) == "CompositeSPF",
 			"DL-125 section D (CompositeSPF): names itself to the fallback diagnostic" );
-		comp->release(); ext->release(); lam->release();
+		comp->release();
+
+		// TranslucentSPF: DL-222.  A SIXTH per-lobe-conditional-density
+		// SPF, and one the DL-125 row never named.  It does not
+		// implement `EvaluateKrayNM` either, and unlike `CompositeSPF`
+		// it is PARTIALLY closable -- but until it is, it must be
+		// AUDIBLE for exactly the same reason.
+		UniformScalarPainter* tN = new UniformScalarPainter( 8.0 ); tN->addref();
+		UniformScalarPainter* tS = new UniformScalarPainter( 0.3 ); tS->addref();
+		TranslucentSPF* trans = new TranslucentSPF( *diff, *spec, *ext, *tN, *tS ); trans->addref();
+		Check( trans->EvaluateKrayNM( ri, wo, ScatteredRay::eRayDiffuse, 550.0, iorStack ) < 0,
+			"DL-125 section D (TranslucentSPF): declines -- DL-222, not closed yet" );
+		Check( trans->PerLobeDensityFallbackName() != 0 &&
+		       std::string( trans->PerLobeDensityFallbackName() ) == "TranslucentSPF",
+			"DL-125 section D (TranslucentSPF): names itself to the fallback diagnostic" );
+		trans->release(); tN->release(); tS->release();
+
+		ext->release(); lam->release();
 
 		// And the five that now answer must NOT name themselves.
 		for( size_t i = 0; i < subjects.size(); i++ ) {

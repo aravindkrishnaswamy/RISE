@@ -6341,10 +6341,12 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 				// aggregate mixture density (CoatedSPF / FabricSPF /
 				// WeaveSPF, and the single-emit GGXSPF /
 				// CookTorranceSPF), and the DL-69 mispairing for one
-				// that carries a PER-LOBE conditional density.  Every
-				// such SPF implements `EvaluateKrayNM` now except
-				// `CompositeSPF` (DL-221), which names itself so this
-				// one-shot-per-class warning can report it.
+				// that carries a PER-LOBE conditional density.  TWO
+				// such SPFs still decline -- `CompositeSPF` (DL-221,
+				// not closable from the method's signature) and
+				// `TranslucentSPF` (DL-222, partially closable and not
+				// yet closed) -- and both NAME themselves so this
+				// one-shot-per-class warning can report which.
 				NotePerLobeDensityCompanionFallback( pSPF );
 
 				compWeight = pBRDFCur->valueNM(

@@ -261,6 +261,42 @@ namespace RISE
 		///
 		/// Default: returns -1 (not implemented).  SPFs whose lobes are
 		/// not fully represented by the material's IBSDF must override.
+		///
+		/// TWO CONTRACT NOTES AN IMPLEMENTER MUST READ (DL-125 review
+		/// round 1).
+		///
+		/// 1. THE `ri` MAY BE SYNTHETIC.  Three of the four call sites
+		///    hand over the LIVE `RayIntersectionGeometric` the sampler
+		///    itself saw (`PathTracingIntegrator.cpp`'s HWSS body and
+		///    `BDPTIntegrator.cpp`'s two subpath-generator ladders), but
+		///    `BDPTIntegrator::RecomputeSubpathThroughputNM` REBUILDS one
+		///    from a stored `BDPTVertex` via
+		///    `PathVertexEval::PopulateRIGFromVertex`, with a fabricated
+		///    ray whose ORIGIN sits one unit back along the incoming
+		///    direction and with `glossyFilterWidth` left at 0.  So read
+		///    only `ri.ray.Dir()`, the surface frame, and the painter
+		///    context (`ptIntersection`, `ptCoord`, ...) -- NOT
+		///    `ri.ray.origin`, any distance derived from it, or
+		///    `ri.glossyFilterWidth`.  `TranslucentSPF`'s interior lobes
+		///    are exactly the case this excludes: their `kray` is
+		///    `exp(-extinction * |origin - ptIntersection|)`, a real
+		///    field of a LIVE record and a meaningless one of a rebuilt
+		///    one (DL-222).
+		///
+		/// 2. THE DENSITY CONVENTION IS `p_I(nm)`, NOT `p_I(heroNM)`, AND
+		///    THAT IS A KNOWN RESIDUAL (DL-216).  The direction was drawn
+		///    from the HERO wavelength's density, so the strictly
+		///    unbiased companion weight is `f_I(nm) cos / p_I(heroNM)`;
+		///    every implementation here returns `f_I(nm) cos / p_I(nm)`.
+		///    The two COINCIDE wherever the lobe's DENSITY is
+		///    wavelength-independent -- every reflectance-only chromatic
+		///    material, i.e. the overwhelmingly common case and the one
+		///    DL-125's measurements exercise -- and differ only under a
+		///    chromatic SHAPE painter (`exponent`, `isotropy`, `alpha`,
+		///    `roughness`).  `HairSPF`'s own override states the same
+		///    premise.  Do not "fix" this in isolation: closing it means
+		///    carrying the hero density alongside (an extra argument),
+		///    and is tracked as DL-216.
 		virtual Scalar EvaluateKrayNM(
 			const RayIntersectionGeometric& ri,
 			const Vector3& outDir,
@@ -284,13 +320,15 @@ namespace RISE
 		/// density (CoatedSPF / FabricSPF / WeaveSPF, which say so in
 		/// their own headers, and the single-emit GGXSPF /
 		/// CookTorranceSPF), and wrong when it is a PER-LOBE
-		/// conditional density.  Every per-lobe-density SPF in the tree
-		/// therefore implements `EvaluateKrayNM` -- except
-		/// `CompositeSPF`, whose emitted `krayNM` is the product of a
-		/// STOCHASTIC two-layer random walk and is not a function of
-		/// `(ri, outDir, type, nm)` at all (DL-221).  Overriding this
-		/// method is how such a class stays VISIBLE instead of silently
-		/// taking a wrong number.
+		/// conditional density.  TWO classes in the tree store a per-lobe
+		/// conditional density and do NOT implement `EvaluateKrayNM`,
+		/// and both name themselves here: `CompositeSPF`, whose emitted
+		/// `krayNM` is the product of a STOCHASTIC two-layer random walk
+		/// and is not a function of `(ri, outDir, type, nm)` at all
+		/// (DL-221), and `TranslucentSPF`, which is PARTIALLY closable
+		/// (note 1 above says which half) and simply has not been closed
+		/// yet (DL-222).  Overriding this method is how such a class
+		/// stays VISIBLE instead of silently taking a wrong number.
 		virtual const char* PerLobeDensityFallbackName() const
 		{
 			return 0;

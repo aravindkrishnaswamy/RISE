@@ -151,6 +151,20 @@ namespace RISE
 				const Scalar nm,
 				const IORStack& ior_stack
 				) const;
+
+			//! DL-222.  This SPF emits TWO lobes per call, each carrying its
+			//! OWN conditional density, and does not implement
+			//! `ISPF::EvaluateKrayNM` -- so the HWSS companion ladder's
+			//! aggregate-BSDF fallback is not exact for it (its `kray`
+			//! carries Beer extinction `TranslucentBSDF` omits, and
+			//! `Pdf`/`PdfNM` cover neither Phong `cos^N` lobe, DL-41).
+			//! Naming ourselves here makes that residual AUDIBLE -- one log
+			//! line per process -- instead of silent.  See DL-222 for the
+			//! partial-closure recipe.
+			const char* PerLobeDensityFallbackName() const
+			{
+				return "TranslucentSPF";
+			}
 		};
 	}
 }
