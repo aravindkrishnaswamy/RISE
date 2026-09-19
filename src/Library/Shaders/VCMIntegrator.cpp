@@ -1370,7 +1370,7 @@ namespace
 
 			// BSDF eval in sampled wi (env) or dirToLight (explicit).
 			const typename Traits::value_type fEye =
-				RISE::PathValueOps::EvalBSDFAtVertex<Tag>( v, wiForLight_vcm, woAtEye, tag );
+				RISE::PathValueOps::EvalAreaBSDFAtVertex<Tag>( v, wiForLight_vcm, woAtEye, tag );
 			if( PositiveMagnitude( fEye ) <= 0 ) {
 				continue;
 			}
@@ -1811,7 +1811,7 @@ namespace
 				wiAtLight = wiAtLight * ( Scalar( 1 ) / wiDist );
 
 				const typename Traits::value_type fLight =
-					RISE::PathValueOps::EvalBSDFAtVertex<Tag>( v, wiAtLight, dirToCam, tag );
+					RISE::PathValueOps::EvalAreaBSDFAtVertex<Tag>( v, wiAtLight, dirToCam, tag );
 				if( PositiveMagnitude( fLight ) <= 0 ) {
 					continue;
 				}
@@ -2011,12 +2011,12 @@ namespace
 				}
 
 				const typename Traits::value_type fLight =
-					RISE::PathValueOps::EvalBSDFAtVertex<Tag>( lv, wiAtLight, lightToEye, tag );
+					RISE::PathValueOps::EvalAreaBSDFAtVertex<Tag>( lv, wiAtLight, lightToEye, tag );
 				if( PositiveMagnitude( fLight ) <= 0 ) {
 					continue;
 				}
 				const typename Traits::value_type fEye =
-					RISE::PathValueOps::EvalBSDFAtVertex<Tag>( ev, -lightToEye, woAtEye, tag );
+					RISE::PathValueOps::EvalAreaBSDFAtVertex<Tag>( ev, -lightToEye, woAtEye, tag );
 				if( PositiveMagnitude( fEye ) <= 0 ) {
 					continue;
 				}
@@ -2364,7 +2364,7 @@ namespace
 				const Vector3 wiAtEye = -lv.wi;
 
 				const typename Traits::value_type cameraBsdf =
-					RISE::PathValueOps::EvalBSDFAtVertex<Tag>( v, wiAtEye, woAtEye, tag );
+					RISE::PathValueOps::EvalAreaBSDFAtVertex<Tag>( v, wiAtEye, woAtEye, tag );
 				if( PositiveMagnitude( cameraBsdf ) <= 0 ) {
 					continue;
 				}

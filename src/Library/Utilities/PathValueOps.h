@@ -106,6 +106,18 @@ namespace RISE
 			return PathVertexEval::EvalBSDFAtVertexNM( vertex, wi, wo, tag.nm );
 		}
 
+		// Area-measure surface response for connections, light tracing and
+		// photon merging. Sampling/guiding callers keep EvalBSDFAtVertex's
+		// raw material value, whose cosine is in the shading frame.
+		template<class Tag>
+		inline typename SpectralValueTraits<Tag>::value_type EvalAreaBSDFAtVertex(
+			const BDPTVertex& vertex, const Vector3& wi, const Vector3& wo,
+			const Tag& tag )
+		{
+			return EvalBSDFAtVertex<Tag>( vertex, wi, wo, tag ) *
+				PathVertexEval::RadianceShadingNormalFactor( vertex, wi );
+		}
+
 		//////////////////////////////////////////////////////////////
 		// PDF evaluation at a path vertex.  PDFs are wavelength-
 		// independent in their return type (always Scalar) but the
