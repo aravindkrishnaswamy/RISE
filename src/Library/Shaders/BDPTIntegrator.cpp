@@ -2219,6 +2219,8 @@ namespace {
 			BDPTVertex v;
 			v.type = BDPTVertex::SURFACE;
 			v.position = ri.geometric.ptIntersection;
+		v.scatterIncomingDistance = Vector3Ops::Magnitude(
+			Vector3Ops::mkVector3( ri.geometric.ray.origin, ri.geometric.ptIntersection ) );
 			v.normal = ri.geometric.vNormal;
 			v.geomNormal = ri.geometric.vGeomNormal;
 			v.onb = ri.geometric.onb;
@@ -6356,6 +6358,8 @@ unsigned int GenerateLightSubpathImpl(
 		BDPTVertex v;
 		v.type = BDPTVertex::SURFACE;
 		v.position = ri.geometric.ptIntersection;
+		v.scatterIncomingDistance = Vector3Ops::Magnitude(
+			Vector3Ops::mkVector3( ri.geometric.ray.origin, ri.geometric.ptIntersection ) );
 		v.normal = ri.geometric.vNormal;
 		v.geomNormal = ri.geometric.vGeomNormal;
 		v.onb = ri.geometric.onb;

@@ -283,6 +283,12 @@ namespace RISE
 		/// ratio of the material's AGGREGATE BSDF -- two different
 		/// functions of wavelength at any multi-lobe SPF.
 		ScatteredRay::ScatRayType	scatterType;
+
+		/// Sampler-input distance from the live ray origin to this hit,
+		/// including the generators' ray advance. Used ONLY by companion
+		/// throughput replay (DL-222), not connection BSDF reconstruction
+		/// (DL-223). Endpoints, media and BSSRDF entries do not consume it.
+		Scalar scatterIncomingDistance;
 		bool					isConnectible;	///< True if material has at least one non-delta BxDF component
 		bool					isBSSRDFEntry;	///< True if this vertex is a BSSRDF re-emission point (Sw vertex)
 		Scalar					mediumIOR;		///< Top-of-stack IOR seen at this vertex before scattering
@@ -366,6 +372,7 @@ namespace RISE
 
 		isDelta( false ),
 		scatterType( ScatteredRay::eRayUnknown ),
+		scatterIncomingDistance( 0 ),
 		isConnectible( true ),
 		isBSSRDFEntry( false ),
 		mediumIOR( 1.0 ),

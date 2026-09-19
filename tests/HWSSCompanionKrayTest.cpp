@@ -129,6 +129,11 @@
 #include "../src/Library/Materials/TranslucentSPF.h"
 #include "../src/Library/Materials/GGXSPF.h"
 #include "../src/Library/Materials/LambertianSPF.h"
+#include "../src/Library/Materials/TranslucentMaterial.h"
+#include "../src/Library/Shaders/BDPTIntegrator.h"
+#include "../src/Library/Shaders/StandardShader.h"
+#include "../src/Library/Rendering/RayCaster.h"
+#include "../src/Library/Scene.h"
 #include "TestStubObject.h"
 
 using namespace RISE;
@@ -819,20 +824,80 @@ int main()
 			"DL-125 section D (CompositeSPF): names itself to the fallback diagnostic" );
 		comp->release();
 
-		// TranslucentSPF: DL-222.  A SIXTH per-lobe-conditional-density
-		// SPF, and one the DL-125 row never named.  It does not
-		// implement `EvaluateKrayNM` either, and unlike `CompositeSPF`
-		// it is PARTIALLY closable -- but until it is, it must be
-		// AUDIBLE for exactly the same reason.
+		// DL-222 integration: derive from painter and Beer/scattering
+		// inputs, independently of ScatterNM and BuildLobeSet.
 		UniformScalarPainter* tN = new UniformScalarPainter( 8.0 ); tN->addref();
-		UniformScalarPainter* tS = new UniformScalarPainter( 0.3 ); tS->addref();
-		TranslucentSPF* trans = new TranslucentSPF( *diff, *spec, *ext, *tN, *tS ); trans->addref();
-		Check( trans->EvaluateKrayNM( ri, wo, ScatteredRay::eRayDiffuse, 550.0, iorStack ) < 0,
-			"DL-125 section D (TranslucentSPF): declines -- DL-222, not closed yet" );
+		LambdaRampScalarPainter* tExt = new LambdaRampScalarPainter( 0.2, 0.0005 ); tExt->addref();
+		LambdaRampScalarPainter* tS = new LambdaRampScalarPainter( 0.3, 0.0005 ); tS->addref();
+		TranslucentMaterial* transMat = new TranslucentMaterial( *diff, *spec, *tExt, *tN, *tS ); transMat->addref();
+		const ISPF* trans = transMat->GetSPF();
+		IORStack inside = iorStack;
+		inside.push( inside.top() );
+		Check( !iorStack.containsCurrent() && inside.containsCurrent(),
+			"DL-222: entry and exit oracle stacks differ in actual object membership" );
+		Scene* scene = new Scene();
+		StandardShader* shader = new StandardShader( std::vector<IShaderOp*>() );
+		RayCaster* caster = new RayCaster( false, 8, *shader, false );
+		BDPTIntegrator* integrator = new BDPTIntegrator( 4, 4, StabilityConfig() );
+		const Scalar distances[] = { 0.4, 2.5 };
+		const Scalar wavelengths[] = { 450, 550, 650 };
+		for( Scalar distance : distances ) {
+			RayIntersectionGeometric entry = MakeIntersection( 0 );
+			entry.ray.Set( Point3( 0, 0, distance ), Vector3( 0, 0, -1 ) );
+			RayIntersectionGeometric exit = MakeIntersection( 0 );
+			exit.ray.Set( Point3( 0, 0, -distance ), Vector3( 0, 0, 1 ) );
+			for( Scalar nm : wavelengths ) {
+				const Scalar sigma = 0.2 + 0.0005 * ( nm - 550 );
+				const Scalar split = 0.3 + 0.0005 * ( nm - 550 );
+				const Scalar beer = std::exp( -sigma * distance );
+				Check( RelDiff( trans->EvaluateKrayNM( entry, Vector3(0,0,1), ScatteredRay::eRayDiffuse, nm, iorStack ), diff->GetColorNM(entry,nm) ) < 1e-12,
+					"DL-222 entry: diffuse lobe equals reflection painter" );
+				Check( RelDiff( trans->EvaluateKrayNM( entry, Vector3(0,0,-1), ScatteredRay::eRayTranslucent, nm, iorStack ), spec->GetColorNM(entry,nm) ) < 1e-12,
+					"DL-222 entry: Phong lobe equals transmission painter" );
+				Check( RelDiff( trans->EvaluateKrayNM( exit, Vector3(0,0,1), ScatteredRay::eRayDiffuse, nm, inside ), beer*(1-split) ) < 1e-12,
+					"DL-222 exit: diffuse lobe equals Beer times one minus scattering" );
+				Check( RelDiff( trans->EvaluateKrayNM( exit, Vector3(0,0,-1), ScatteredRay::eRayTranslucent, nm, inside ), beer*split ) < 1e-12,
+					"DL-222 exit: backscatter lobe equals Beer times scattering" );
+				Check( trans->EvaluateKrayNM( exit, wo, ScatteredRay::eRayRefraction, nm, inside ) < 0,
+					"DL-222: unsupported scatter type still declines" );
+				for( bool light : { false, true } ) {
+					for( ScatteredRay::ScatRayType lobe : { ScatteredRay::eRayDiffuse, ScatteredRay::eRayTranslucent } ) {
+						std::vector<BDPTVertex> vertices( 4 );
+						// The geometric predecessor is deliberately 0.125 further
+						// away than the actual live origin: using predecessor
+						// position instead of recorded distance must fail too.
+						vertices[0].type = BDPTVertex::CAMERA;
+						vertices[0].position = Point3( 0, 0, -distance-0.125 );
+						vertices[1].position = Point3( 0, 0, 0 );
+						vertices[1].normal = vertices[1].geomNormal = Vector3( 0, 0, 1 );
+						vertices[1].onb.CreateFromW( Vector3( 0, 0, 1 ) );
+						vertices[1].pMaterial = transMat;
+						vertices[1].pObject = g_stubObject;
+						vertices[1].insideObject = true;
+						vertices[1].scatterType = lobe;
+						vertices[1].scatterIncomingDistance = distance;
+						vertices[2].position = Point3( 0, 0, lobe == ScatteredRay::eRayDiffuse ? 1 : -1 );
+						vertices[2].isDelta = true;
+						vertices[3].position = Point3( 0, 0, 2 );
+						for( size_t j=0; j<vertices.size(); ++j ) vertices[j].throughputNM = j+1;
+						integrator->RecomputeSubpathThroughputNM( vertices, light, 550, nm, *scene, *caster );
+						const Scalar splitRatio = lobe == ScatteredRay::eRayDiffuse ? (1-split)/0.7 : split/0.3;
+						const Scalar expectedRatio = std::exp( -(sigma-0.2)*distance ) * splitRatio;
+						Check( vertices[0].throughputNM == 1 && vertices[1].throughputNM == 2,
+							"DL-222 replay: scatter ratio does not affect its own vertex or predecessor" );
+						Check( RelDiff( vertices[2].throughputNM, 3*expectedRatio ) < 1e-12 &&
+						       RelDiff( vertices[3].throughputNM, 4*expectedRatio ) < 1e-12,
+							"DL-222 replay: eye/light downstream throughput uses recorded non-unit Beer distance" );
+					}
+				}
+			}
+		}
 		Check( trans->PerLobeDensityFallbackName() != 0 &&
 		       std::string( trans->PerLobeDensityFallbackName() ) == "TranslucentSPF",
-			"DL-125 section D (TranslucentSPF): names itself to the fallback diagnostic" );
-		trans->release(); tN->release(); tS->release();
+			"DL-222: unsupported lobe retains its diagnostic identity" );
+		std::cout << "   BDPTVertex storage: " << sizeof(BDPTVertex) << " bytes" << std::endl;
+		integrator->release(); caster->release(); shader->release(); scene->release();
+		transMat->release(); tExt->release(); tN->release(); tS->release();
 
 		ext->release(); lam->release();
 

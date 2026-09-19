@@ -45,6 +45,7 @@ struct Observation {
 	// deliberately queries wo=-currentRay.Dir() regardless of guiding);
 	// capturing that one instead would silently test the wrong call.
 	bool capturedExitQuery = false;
+	std::vector<Scalar> liveIncomingDistances;
 };
 
 class ObservedSPF : public virtual ISPF, public virtual Reference {
@@ -54,6 +55,8 @@ class ObservedSPF : public virtual ISPF, public virtual Reference {
 		const ScatteredRayContainer& rays ) const
 	{
 		const unsigned int index = observed.scatters++;
+		observed.liveIncomingDistances.push_back( Vector3Ops::Magnitude(
+			Vector3Ops::mkVector3( ri.ray.origin, ri.ptIntersection ) ) );
 		if( observed.hasEntryPrefix && index == 0 ) {
 			observed.forceEntryChoice = true;
 			return;
@@ -199,6 +202,7 @@ static void RunBDPT(PathGuidingField& guide, const IPainter& front, const IPaint
 			unsigned int baselineExitQueries = 0;
 			for(unsigned int mode=0; mode<3; ++mode) {
 				unsigned int reached=0,outwardSub=0,inwardSub=0,retained=0,badOut=0,badIn=0,badInitial=0,badMedium=0,exitQueries=0,badPdfValue=0;
+				unsigned int distanceChecks=0, badDistance=0;
 				for(unsigned int trial=0; trial<512; ++trial) {
 					Observation observation;
 					observation.hasEntryPrefix = true;
@@ -224,6 +228,16 @@ static void RunBDPT(PathGuidingField& guide, const IPainter& front, const IPaint
 						const Ray cameraRay(Point3(0,0,-2),Vector3(0,0,1));
 						if(spectral) integrator->GenerateEyeSubpathNM(rc,cameraRay,Point2(.5,.5),*scene,caster,sampler,vertices,starts,550,0);
 						else integrator->GenerateEyeSubpath(rc,cameraRay,Point2(.5,.5),*scene,caster,sampler,vertices,starts);
+					}
+					// Match generator stamps to the actual sampler inputs, not
+					// predecessor positions (the live ray has been advanced).
+					size_t hitIndex = 0;
+					for( const BDPTVertex& vertex : vertices ) {
+						if( vertex.type != BDPTVertex::SURFACE || vertex.pMaterial != material ) continue;
+						if( hitIndex >= observation.liveIncomingDistances.size() ) break;
+						++distanceChecks;
+						if( std::fabs( vertex.scatterIncomingDistance - observation.liveIncomingDistances[hitIndex] ) > 1e-12 ) ++badDistance;
+						++hitIndex;
 					}
 					exitQueries += observation.exitPdfQueries;
 					if(!observation.initialExit || !observation.poppedSPFStack) ++badInitial;
@@ -283,6 +297,8 @@ static void RunBDPT(PathGuidingField& guide, const IPainter& front, const IPaint
 					integrator->SetLightSampler(0);
 					lightSampler->release(); scene->release(); manager->release(); material->release();
 				}
+				Check( distanceChecks > 0 && badDistance == 0,
+					"DL-222: eye/light RGB/NM generator records the sampler's actual incoming distance" );
 				std::cout << "  BDPT " << (side ? "light" : "eye") << " " << (spectral ? "NM" : "RGB")
 					<< " mode=" << mode << " reached=" << reached << " substituted_out=" << outwardSub
 					<< " substituted_in=" << inwardSub << " retained_spf=" << retained
