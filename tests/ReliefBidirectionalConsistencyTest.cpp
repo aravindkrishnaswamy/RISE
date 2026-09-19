@@ -150,8 +150,9 @@ static CapturingRasterizerOutput* RenderScene( const std::string& sceneText, con
 #include "../src/Library/Utilities/PathValueOps.h"
 
 // A Lambertian plane under an on-axis point light at distance D has
-// L=rho*I*cos(theta)/(pi*D^2). The symmetric image removes the odd
-// off-axis x term exactly; D=1000 makes inverse-square variation <4e-6.
+// L=rho*I*cos(theta)/(pi*D^2) at the center. Every point on this
+// bounded plane differs from the head-on value by <0.21% through 45deg
+// at D=1000, safely below the 2% gate without an integrator reference.
 // This oracle is independent of every renderer and BSDF helper.
 static std::string FlatScene(const char* integrator, double degrees, int spp)
 {
@@ -183,7 +184,7 @@ static double Mean(const CapturingRasterizerOutput& cap)
 }
 
 
-static void Sphere()
+static void Sphere(int spp=256)
 {
     const std::string body=R"SCENE(RISE ASCII SCENE 7
 standard_shader
@@ -303,7 +304,7 @@ standard_object
         for(int m=0;m<3;++m) {
             std::string scene=body;
             scene.replace(scene.find("SCALE"),5,std::to_string(scale));
-            scene+=std::string(modes[m])+"\n{\n samples 256\n oidn_denoise FALSE\n pixel_filter box\n}\n";
+            scene+=std::string(modes[m])+"\n{\n samples "+std::to_string(spp)+"\n oidn_denoise FALSE\n pixel_filter box\n}\n";
             double sum=0,sum2=0;
             for(int r=0;r<3;++r) {
                 auto* cap=RenderScene(scene,modes[m]);
@@ -319,7 +320,7 @@ standard_object
                 safe_release(cap);
             }
             refs[m]=sum/3;
-            std::printf("SPHERE mode=%s scale=%.2f spp=256 n=3 mean=%.9f sd=%.12g\n",modes[m],scale,refs[m],std::sqrt(std::max(0.,(sum2-sum*sum/3)/2)));
+            std::printf("SPHERE mode=%s scale=%.2f spp=%d n=3 mean=%.9f sd=%.12g\n",modes[m],scale,spp,refs[m],std::sqrt(std::max(0.,(sum2-sum*sum/3)/2)));
             if(m) Check(refs[0]>0 && refs[m]>0 && std::fabs(refs[m]/refs[0]-1)<.08,"sphere PT/bidirectional within 8%");
         }
     }
@@ -412,13 +413,14 @@ static void ModifierSiblings()
         std::string scene=FlatScene(mode,0,64);
         const std::string binding="modifier relief";
         if(std::string(kind)=="normalmap") {
-            scene+="uniformcolor_painter\n{\n name normal_field\n color 0.8535533905932737 0.5 0.8535533905932737\n colorspace Rec709RGB_Linear\n}\n"
-                   "normal_map_modifier\n{\n name normal_mod\n normal_map normal_field\n}\n";
+            scene.insert(scene.find("standard_object\n"),"uniformcolor_painter\n{\n name normal_field\n color 0.8535533905932737 0.5 0.8535533905932737\n colorspace Rec709RGB_Linear\n}\n"
+                   "normal_map_modifier\n{\n name normal_mod\n normal_map normal_field\n}\n");
             scene.replace(scene.find(binding),binding.size(),"modifier normal_mod");
         } else {
-            scene+="displaced_geometry\n{\n name displaced\n base_geometry plane\n detail 8\n height slope\n disp_scale 1\n}\n";
+            scene.insert(scene.find("standard_object\n"),"displaced_geometry\n{\n name displaced\n base_geometry plane\n detail 8\n height slope\n disp_scale 1\n}\n");
             scene.erase(scene.find(binding),binding.size());
-            scene.replace(scene.find("geometry plane"),14,"geometry displaced");
+            const std::string geomBinding="\n geometry plane\n";
+            scene.replace(scene.find(geomBinding),geomBinding.size(),"\n geometry displaced\n");
         }
         auto* cap=RenderScene(scene,kind);
         Check(cap!=nullptr,"sibling modifier scene renders");
@@ -427,6 +429,28 @@ static void ModifierSiblings()
         std::printf("SIBLING kind=%s mode=%s mean=%.12g expected=%.12g relative=%+.6f\n",kind,mode,mean,expected,mean/expected-1);
         Check(std::fabs(mean/expected-1)<.02,"normal-map/displacement follows same independent cosine law");
         safe_release(cap);
+    }
+}
+
+
+static void Spectral()
+{
+    for(int spp:{64,128}) for(const char* mode:{"pathtracing_spectral_rasterizer","bdpt_spectral_rasterizer","vcm_spectral_rasterizer"}) for(bool hwss:{false,true}) {
+        std::string scene=FlatScene(mode,30,spp);
+        const size_t at=scene.find("\n{\n",scene.find(mode));
+        scene.insert(at+3,std::string(" num_wavelengths 160\n hwss ")+(hwss?"TRUE":"FALSE")+"\n");
+        double sum=0,sum2=0;
+        for(int r=0;r<3;++r) {
+            auto* cap=RenderScene(scene,mode);
+            Check(cap!=nullptr,"matched-grid spectral scene renders");
+            if(!cap) continue;
+            const double mean=Mean(*cap);sum+=mean;sum2+=mean*mean;
+            std::printf("SPECTRAL_RAW mode=%s hwss=%d spp=%d repeat=%d mean=%.12g\n",mode,hwss,spp,r,mean);
+            safe_release(cap);
+        }
+        const double mean=sum/3,expected=.8*std::sqrt(.75)/PI;
+        std::printf("SPECTRAL mode=%s hwss=%d nw=160 spp=%d n=3 mean=%.12g sd=%.12g expected=%.12g\n",mode,hwss,spp,mean,std::sqrt(std::max(0.,(sum2-sum*sum/3)/2)),expected);
+        Check(std::fabs(mean/expected-1)<.02,"spectral hero/bundle follows independent cosine law");
     }
 }
 
@@ -453,6 +477,7 @@ int main(int argc, char** argv)
 {
     if(argc==1 || std::string(argv[1])=="light") LightWalk();
     EndpointFactors();
+    if(argc==1 || std::string(argv[1])=="spectral") Spectral();
     if(argc==1 || std::string(argv[1])=="siblings") ModifierSiblings();
     if(argc==1 || std::string(argv[1])=="grazing") GrazingView();
     const char* modes[]={"pixelpel_rasterizer", "pathtracing_pel_rasterizer", "bdpt_pel_rasterizer", "vcm_pel_rasterizer"};
@@ -477,6 +502,7 @@ int main(int argc, char** argv)
         }
     }
     if(argc==1 || std::string(argv[1])=="sphere") Sphere();
+    if(argc>1 && std::string(argv[1])=="sphere512") Sphere(512);
     std::printf("ReliefBidirectionalConsistencyTest: %d passed, %d failed\n",passCount,failCount);
     return failCount?1:0;
 }
