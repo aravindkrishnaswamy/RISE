@@ -26,19 +26,20 @@ importance weight needs
 This independent derivation agrees with the shading-normal adjoint in
 [PBRT's path-space measurement equation](https://pbr-book.org/3ed-2018/Light_Transport_III_Bidirectional_Methods/The_Path-Space_Measurement_Equation).
 Its direction names differ from RISE's light-walk convention. No epsilon,
-clamp, altered MIS weight, or material-specific normalization is introduced.
+clamp, or material-specific normalization is introduced. The separate VCM
+recurrence correction below restores the densities used by MIS.
 Exactly zero denominator cosines are zero-measure directions and return zero.
 The reported ray-facing geometric normal is deliberately preserved (DL-70);
 absolute projected measures are invariant to its sign.
 
-## Three defects and separating witnesses
+## Four defects and separating witnesses
 
 1. **Endpoint response.** BDPT and VCM used raw `fs` with geometric `G`, so
    the constant-tilt plane's response did not change at all with tilt.
    `PathValueOps::EvalAreaBSDFAtVertex` now supplies `fA` at NEE, interior
    connections, light-to-camera splats and VCM merges. Raw material
    evaluations remain available to sampling and guiding. Medium vertices
-   retain unit conversion. Density Jacobians and `geomNormal` are untouched.
+   retain unit conversion. The geometric Jacobian contract and `geomNormal` are preserved.
 2. **Importance continuation.** The shared BDPT light generator priced its
    selected SPF lobe exactly as a radiance walk. It now applies `C` before
    roulette, including the local guiding weight and all HWSS companions.
@@ -54,6 +55,16 @@ absolute projected measures are invariant to its sign.
    full-sphere materials retain their explicit absolute-cosine opt-in.
    Modern Pel/NM (and HWSS callers) and legacy point/spot/directional
    Pel/NM direct-light consumers share the correction.
+
+4. **VCM density recurrence.** `ConvertEyeSubpath`, `ConvertLightSubpath`
+   and their BSSRDF entry helper passed `|Ns.wo|` into the onward sampling
+   update. That update transports geometric area-density ratios, whose
+   Jacobian is `|Ng.wo|`. The stored incoming `cosAtGen` and PDF inversions
+   already used Ng, so mixing in Ns changed MIS weights even with every
+   path density held fixed. The three surface cosine producers now use
+   `AreaToSolidAngleFactor`; the two medium callers still use `sigma_t`.
+   Delta and diffuse branches share the corrected producers. Pel/NM/HWSS
+   share the same postpass. No sampling distribution is changed.
 
 The direct-only legacy shader is a suitable independent estimator only for
 these delta-light single-plane fixtures; it is not used as a GI reference.
@@ -100,6 +111,19 @@ light below Ns but above Ng. Expected `.8*sin(15°)/pi = .065907728631`:
 PT **0**, BDPT **.0659077747726**, VCM **.0659087067273**. The view-facing
 cosine makes PT match; a second light direction in the opposite shading
 hemisphere remains dark. This rules out an unconditional fabs repair.
+
+The density witness was committed at `9254607c` before the recurrence fix.
+Three vertices are at x=0,2,5, with geometric normals along x and fixed
+area PDFs .1/.2 at the two surfaces. Rotating only the middle shading
+normal to 60° must leave every density ratio unchanged. Instead dVC/dVM
+halved: eye diffuse dVC **11111.1111111 → 5555.55555556**, light diffuse
+**9.77777777778 → 4.88888888889**, light delta **8 → 4**, and eye/light
+BSSRDF entries **5.55555555556 → 2.77777777778**. The eye diffuse number
+is independently `10000/2 * 4 / (.2*9)`; no BSDF response participates.
+Red **16/5**, green at `1782074c` **21/0**, all discrepancies exactly zero.
+The seven production recurrence callers consist of those five surface
+branches and two medium branches; the latter retain their extinction
+measure.
 
 ## Legacy photon sibling: DL-239
 

@@ -22,7 +22,7 @@
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
 
-// Explicit render seeding (rise-render-seeding.md): renders are NOT
+// Explicit render seeding: library renders are NOT
 // wall-clock seeded, and this file compares raw pixel statistics
 // across three separate renders, so each must srand() explicitly.
 static unsigned int g_renderSeed = 2240001u;

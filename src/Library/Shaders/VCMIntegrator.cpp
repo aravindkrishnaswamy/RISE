@@ -178,8 +178,8 @@ namespace
 		}
 
 		// The recurrence tracks geometric area densities. The BSDF PDF
-			// already contains its shading-frame sampling distribution.
-			const Scalar cosThetaOut = AreaToSolidAngleFactor( v, wo );
+		// already contains its shading-frame sampling distribution.
+		const Scalar cosThetaOut = AreaToSolidAngleFactor( v, wo );
 		const Scalar bsdfDirPdfW = next.pdfFwd * nextDistSq / nextFactor;
 		return ApplyBsdfSamplingUpdate(
 			mis, cosThetaOut, bsdfDirPdfW, Scalar( 0 ), false, norm );
@@ -808,8 +808,8 @@ void VCMIntegrator::ConvertLightSubpath(
 			const Scalar nextDist = std::sqrt( nextDistSq );
 			const Vector3 wo = nextStep * ( Scalar( 1 ) / nextDist );
 			// The recurrence tracks geometric area densities. The BSDF PDF
-			// already contains its shading-frame sampling distribution.
-			const Scalar cosThetaOut = AreaToSolidAngleFactor( v, wo );
+		// already contains its shading-frame sampling distribution.
+		const Scalar cosThetaOut = AreaToSolidAngleFactor( v, wo );
 
 			// DL-126.  `v.isDelta` used to be the sole gate here, but a
 			// vertex can also have NO finite solid-angle density for an
@@ -2240,8 +2240,8 @@ void VCMIntegrator::ConvertEyeSubpath(
 			const Scalar nextDist = std::sqrt( nextDistSq );
 			const Vector3 wo = nextStep * ( Scalar( 1 ) / nextDist );
 			// The recurrence tracks geometric area densities. The BSDF PDF
-			// already contains its shading-frame sampling distribution.
-			const Scalar cosThetaOut = AreaToSolidAngleFactor( v, wo );
+		// already contains its shading-frame sampling distribution.
+		const Scalar cosThetaOut = AreaToSolidAngleFactor( v, wo );
 
 			// DL-126: also treat a null-BSDF, non-connectible vertex as
 			// opaque here -- see the light-subpath twin's comment above

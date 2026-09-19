@@ -731,6 +731,18 @@ stack — an interface change DL-41 needs too.
 
 ### 14.3 P2-2 — "pre-existing and unrelated" retracted
 
+> **DL-224 follow-up, 2026-09-19:** the material-independent tilt term was
+> reproduced with Lambertian closed forms. It combines missing
+> shading-to-geometric area response at BDPT/VCM endpoints, missing
+> adjoint correction on light continuation, PT's incorrectly oriented
+> signed NEE cosine at grazing views, and VCM's use of a shading cosine
+> in its geometric-density recurrence. The relief modifier itself is
+> not the origin of those convention errors. See
+> [the derivation and separate red witnesses](DL224_RELIEF_BIDIRECTIONAL_COSINE.md).
+> This does not close DL-223's nonreciprocal translucent transport or
+> missing segment attenuation; the older tables below are historical.
+
+
 > **⚠ THE RETRACTION IN THIS SECTION WAS ITSELF WRONG, and was retracted
 > in turn on 2026-09-18** (`debt-dl157` slice).  §14.3 concluded that the
 > tilt-driven PT-vs-BDPT gap on this fixture is "consistent with DL-157",
