@@ -4,6 +4,8 @@
 #include <cmath>
 #include <cstdio>
 #include "../src/Library/Materials/SchlickBRDF.h"
+#include "../src/Library/Materials/IsotropicPhongBRDF.h"
+#include "../src/Library/Materials/AshikminShirleyAnisotropicPhongBRDF.h"
 #include "../src/Library/Materials/WardIsotropicGaussianBRDF.h"
 #include "../src/Library/Materials/WardAnisotropicEllipticalGaussianBRDF.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
@@ -78,7 +80,8 @@ int main() {
   }
   b->release();rough->release();iso->release();
  }
- // Independent outgoing-solid-angle reference for the auxiliary estimate,
+ // Independent half-angle solid-angle reference (with reflection Jacobian)
+ // for the auxiliary estimate. This resolves the outgoing grazing peak,
  // including chromatic reflectance, anisotropy and view azimuth.
  auto* ar=new RGBScalarPainter(.02,.1,.8);ar->addref();
  auto* ap=new RGBScalarPainter(.3,.1,1);ap->addref();
@@ -92,7 +95,9 @@ int main() {
    double ot=(t+.5)*PI/800,ct=cos(ot),st=sin(ot);
    for(int k=0;k<800;++k) {
     double ph=(k+.5)*TWO_PI/800;
-    q=q+ab->value(Vector3(st*cos(ph),st*sin(ph),ct),ri)*(ct*st*(PI/800)*(TWO_PI/800));
+    Vector3 h(st*cos(ph),st*sin(ph),ct);
+    double hv=Vector3Ops::Dot(h,-ri.ray.Dir());Vector3 wo=ri.ray.Dir()+2*hv*h;
+    if(hv>0&&wo.z>0) q=q+ab->value(wo,ri)*(wo.z*4*hv*st*(PI/800)*(TWO_PI/800));
    }
   }
   RISEPel a=ab->albedo(ri);
@@ -103,6 +108,28 @@ int main() {
   }
  }
  ab->release();ac->release();ar->release();ap->release();
+ // Sibling audit: integrate the two Phong families directly. Their own
+ // normalizations contain the energy bound; neither needs Schlick's G.
+ for(int model=0;model<2;++model) for(double exponent:{10.,40.,100.}) {
+  auto* nu=new UniformScalarPainter(exponent);nu->addref();
+  auto* nv=new UniformScalarPainter(3*exponent);nv->addref();
+  IBSDF* sibling=model==0?static_cast<IBSDF*>(new IsotropicPhongBRDF(*black,*spec,*nu)):
+   static_cast<IBSDF*>(new AshikminShirleyAnisotropicPhongBRDF(*nu,*nv,*black,*spec));sibling->addref();
+  for(double angle:{0.,60.,80.,89.9}) {
+   auto ri=Hit(angle);double q=0;
+   for(int t=0;t<400;++t) {
+    double theta=(t+.5)*PI/800,ct=cos(theta),st=sin(theta);
+    for(int j=0;j<800;++j) {
+     double phi=(j+.5)*TWO_PI/800;
+     Vector3 wo(st*cos(phi),st*sin(phi),ct);
+     q+=sibling->value(wo,ri)[0]*ct*st*(PI/800)*(TWO_PI/800);
+    }
+   }
+   printf("SIBLING model=%d exponent=%.0f theta=%.1f Q=%.9f\n",model,exponent,angle,q);
+   Check(std::isfinite(q)&&q<=1.0001,"Phong sibling energy bound",q,1);
+  }
+  sibling->release();nu->release();nv->release();
+ }
  auto* rd=new UniformColorPainter(RISEPel(.4,.4,.4));rd->addref();
  auto* rough=new UniformScalarPainter(.8);rough->addref();
  auto* iso=new UniformScalarPainter(1);iso->addref();

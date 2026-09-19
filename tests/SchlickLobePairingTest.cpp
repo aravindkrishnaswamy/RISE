@@ -551,9 +551,12 @@ int main()
 		// The pdfFwd half of DL-69: the per-lobe density BDPT stored as
 		// pdfFwd is not the aggregate density pdfRev and every
 		// connection strategy evaluate.
-		Check( m.maxPdfFwdRatio / ( m.minPdfFwdRatio > 0 ? m.minPdfFwdRatio : 1.0 ) > 10.0,
+		// DL-178 removes the old grazing-tail spread. The density
+		// convention error remains measurable in the mean; its size
+		// must not depend on preserving an unshadowed model's extrema.
+		Check( m.meanPdfFwdRatio < 0.9,
 			std::string( "RED (DL-69 pdfFwd): per-lobe q_I*p_I and aggregate "
-			             "ISPF::Pdf disagree by over an order of magnitude "
+			             "ISPF::Pdf disagree by more than 10% in mean "
 			             "across draws: " ) + labels[t] );
 	}
 

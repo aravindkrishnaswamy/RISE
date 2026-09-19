@@ -467,7 +467,8 @@ static Scalar ComputeSchlickSpecularPdf(
 //  Writing p_D / p_i for the diffuse / i-th specular sampling density,
 //  w_D = MaxValue(rd) for the diffuse ray's (direction-INDEPENDENT)
 //  realized selection weight and w_i(omega) = rho_i + (1-rho_i)*
-//  fresnel(omega) for the i-th specular ray's (direction-DEPENDENT)
+//  fresnel(omega), multiplied by the DL-178 geometric ratio R, for
+//  the i-th specular ray's (direction-DEPENDENT)
 //  one, the density of the selected direction is
 //
 //      f(omega) = C_D * p_D(omega) * 1{omega above the horizon}
@@ -695,8 +696,8 @@ static Scalar SchlickDiffuseSelectCoefficient(
 	const Vector3& nW = myonb.w();
 
 	// DL-127: the realized selection weight is now `S * ratio`, and
-	// `ratio`'s view-dependent part is `1/(nv * t)` with `nv` constant
-	// over the whole quadrature.
+	// DL-178 cancels nv against G(nv); r+(1-r)nv is constant over
+	// the quadrature, while G(nl) depends on each accepted direction.
 	const Vector3 wiView = Vector3Ops::Normalize( -d );
 	const Scalar  nvView = Vector3Ops::Dot( nW, wiView );
 
@@ -1181,7 +1182,7 @@ Scalar SchlickSPF::PdfNM(
 // direction.  Both lobes are recoverable from `(ri, outDir, nm)`:
 //
 //   diffuse:   Rd(nm)                                 -- direction-free
-//   specular:  (rho(nm) + (1-rho(nm)) * F) * R(wo, p(nm))
+//   specular:  (rho(nm) + (1-rho(nm)) * F) * R(wo, r(nm), p(nm))
 //
 // with `F = (1 - (h.wi))^5` at the half-vector `h = normalize(wi + wo)`
 // that `GenerateSpecularRay` sampled (recovered exactly: `wo` is the

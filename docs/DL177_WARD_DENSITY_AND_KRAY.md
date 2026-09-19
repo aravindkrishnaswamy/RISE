@@ -1,5 +1,7 @@
 # DL-177 — Ward's stored density, aggregate `Pdf`, and `kray`
 
+> **Model update, 2026-09-19 (DL-178 / DL-212):** The formulas and measurements below describe the historical model. [Current model derivation and validation](DL178_DL212_BOUNDED_SCHLICK_WARD.md) supersede the Schlick weight with its Eq.31 geometric product and both Ward weights with `2 Rs cos_o/(cos_i+cos_o)`. The sampler and per-lobe densities remain unchanged; aggregate selection weights follow the new krays. Schlick retains a finite energy-conservation residual tracked as DL-225.
+
 **Status: CLOSED 2026-09-18** (slice `debt-dl176`).
 Red-proof and regression gate: `tests/WardDensityKrayTest.cpp`.
 

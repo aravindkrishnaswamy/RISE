@@ -44,12 +44,14 @@
 //      geometric-horizon gate.
 //
 //  (3) `kray` WAS THE REFLECTANCE PAINTER'S OWN COLOUR.  `Ward*BRDF`'s
-//      specular term is `Rs exp(...)/(4 PI a^2 sqrt(nl nv))`, so
+//      pre-DL-212 term was `Rs exp(...)/(4 PI a^2 sqrt(nl nv))`, so
 //
 //          f_S cos_o / p_S = Rs * (h.wo) * cos^3(th_h) * sqrt(nl/nv)
 //
-//      -- the whole roughness dependence cancels, exactly as it does in
-//      DL-127's Schlick derivation.  Section F measures
+//      -- its roughness dependence cancelled. DL-212 replaces the model
+//      with Geisler-Moroder/Duer 2010: the current ratio is
+//      Rs*cos_o/[(h.wo)(n.h)] = Rs*2*cos_o/(cos_i+cos_o).
+//      Section F measures
 //      `kray * pdf / (f cos)` per draw (RGB, NM, and the per-channel
 //      alpha branch).  Section G characterises that weight's grazing
 //      tail, which is the question DL-177 was held open on.
@@ -760,7 +762,7 @@ int main()
 
 			// 1% band: the quadrature and the 200k-draw estimate each
 			// carry their own error, and (per DL-98/DL-99's review) a
-			// deterministic 16x16 selection quadrature inside `Pdf`
+			// deterministic 32x32 selection quadrature inside `Pdf`
 			// contributes a systematic residual that does not shrink
 			// with the draw count.
 			Check( fabs( integral - emission ) < 0.01,
@@ -837,6 +839,62 @@ int main()
 		}
 
 		rd->release(); rs->release(); ayp->release(); alphaRGB->release();
+	}
+
+	// DL-212: independently identified worst C_D quadrature states.
+	// View and geometric normal are specified in the sampling frame, so
+	// these reproduce the formula-only sweep without conflating world
+	// incidence with incidence relative to the tilted shading normal.
+	{
+		auto* rd = new UniformColorPainter( RISEPel(.4,.4,.4) ); rd->addref();
+		auto* rs = new UniformColorPainter( RISEPel(.5,.5,.5) ); rs->addref();
+		for( int state=0; state<3; ++state ) {
+			auto* ax = new UniformScalarPainter( state==0 ? .1 : .3 ); ax->addref();
+			auto* ay = new UniformScalarPainter( .12 ); ay->addref();
+			ISPF* spf = state==2
+				? static_cast<ISPF*>(new WardAnisotropicEllipticalGaussianSPF(*rd,*rs,*ax,*ay))
+				: static_cast<ISPF*>(new WardIsotropicGaussianSPF(*rd,*rs,*ax)); spf->addref();
+			IBSDF* brdf = state==2
+				? static_cast<IBSDF*>(new WardAnisotropicEllipticalGaussianBRDF(*rd,*rs,*ax,*ay))
+				: static_cast<IBSDF*>(new WardIsotropicGaussianBRDF(*rd,*rs,*ax)); brdf->addref();
+			auto ri = MakeIntersection(0);
+			ri.ray.SetDir( -(ri.onb.u()*sin(PI/3)+ri.onb.w()*cos(PI/3)) );
+			ri.vGeomNormal = ri.onb.u()*sin(PI/6)+ri.onb.w()*cos(PI/6);
+			if( state==0 ) {
+				// Here the alpha=.1 Gaussian is below 1e-100, isolating
+				// C_D through the public Pdf. Independent boundary-split
+				// integration converges to .720097153229 (also approached
+				// by 4096-square sampler-domain quadrature).
+				const Vector3 probe=Vector3Ops::Normalize(ri.onb.v()+ri.onb.w()*.01);
+				const double coefficient=spf->Pdf(ri,probe,iorStack)/(Vector3Ops::Dot(probe,ri.onb.w())*INV_PI);
+				std::cout << "   DL212 isolated C_D=" << std::setprecision(12) << coefficient << std::endl;
+				Check(fabs(coefficient-.720097153229)<1e-5,"DL212 converged C_D accuracy");
+			}
+			const double mass = IntegratePdfFullSphere(*spf,ri,iorStack,400,800);
+			const double emission = MeasureEmissionProbability(*spf,ri,iorStack,kSeedA+9200u+state,600000);
+			double sampledMass=0,pdfMass=0;
+			const double tvd = MeasureTVD(*spf,ri,iorStack,kSeedA+9300u+state,600000,sampledMass,pdfMass);
+			RandomNumberGenerator rng(kSeedA+9400u+state);
+			IndependentSampler sampler(rng);
+			double perLobe=0,aggregate=0;
+			for( int draw=0; draw<600000; ++draw ) {
+				ScatteredRayContainer sc; spf->Scatter(ri,sampler,sc,iorStack);
+				for( unsigned int j=0; j<sc.Count(); ++j ) perLobe += sc[j].kray[0];
+				ScatteredRay* selected=sc.RandomlySelect(rng.CanonicalRandom(),false);
+				if( !selected ) continue;
+				const Vector3 wo=selected->ray.Dir();
+				const double pdf=spf->Pdf(ri,wo,iorStack);
+				if( pdf>0 ) aggregate += brdf->value(wo,ri)[0]*Vector3Ops::Dot(wo,ri.onb.w())/pdf;
+			}
+			std::cout << "   DL212 worst C_D state=" << state << " mass=" << mass
+				<< " emission=" << emission << " TVD=" << tvd
+				<< " aggregate/per-lobe=" << aggregate/perLobe << std::endl;
+			Check(fabs(mass-emission)<.01,"DL212 worst-state Pdf mass");
+			Check(tvd<.02,"DL212 worst-state Pdf shape");
+			Check(fabs(aggregate/perLobe-1)<.01,"DL212 worst-state aggregate estimator");
+			brdf->release();spf->release();ax->release();ay->release();
+		}
+		rd->release();rs->release();
 	}
 
 	//----------------------------------------------------------------
@@ -1012,13 +1070,11 @@ int main()
 	//----------------------------------------------------------------
 	// SECTION G -- the GRAZING TAIL (the question DL-177 was held on).
 	//
-	// The corrected weight is `Rs (h.wo) cos^3(th_h) sqrt(nl/nv)`.
-	// Every factor but the last is at most 1, and `nl = cos_o` is the
-	// SAMPLED direction's own cosine, so the weight is bounded above by
-	// `Rs / sqrt(nv)` -- a per-shading-point constant, NOT a per-draw
-	// divergence.  This section measures the realized distribution at
-	// 80/85/89 degrees so the claim is data and not algebra, and
-	// reports the furnace estimator's own relative standard error.
+	// DL-212 changes the model and its weight in lockstep. The published
+	// Geisler-Moroder/Duer weight is 2 Rs cos_o/(cos_i+cos_o), so its
+	// global bound is 2 Rs, including grazing incidence. The quadrature
+	// reference independently evaluates the BRDF under the half-vector
+	// change of variables; no production SPF ratio enters that reference.
 	//----------------------------------------------------------------
 	std::cout << std::endl << "-- Section G: grazing tail of the corrected kray" << std::endl;
 	std::cout << "   model  alpha  theta   E[sum kray]      max      p99.9   bound 2Rs"
@@ -1109,9 +1165,8 @@ int main()
 					          << "   E/Q = " << std::setw(9) << ( Q > 0 ? mean/Q : 0.0 )
 					          << std::endl;
 
-					// The bound is the whole point: the corrected weight
-					// cannot exceed Rs/sqrt(nv), which is 1.29 at 80deg,
-					// 1.70 at 85deg and 3.79 at 89deg for Rs = 0.5.
+					// Both cosines are positive, so the published weight
+					// remains below 2 Rs at every incidence.
 					Check( mx <= bound * 1.000001,
 					       "Section G: per-draw kray is bounded by 2Rs" );
 					// 1.5%: the estimator's own relative s.e. is <= 0.4%

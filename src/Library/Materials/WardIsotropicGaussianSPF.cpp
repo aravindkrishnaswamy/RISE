@@ -47,8 +47,8 @@ void WardIsotropicGaussianSPF::SetAlpha( const IScalarPainter& v )  { v.addref()
 //! Stratified grid `Pdf()`/`PdfNM()` replay the specular sampler's own
 //! `(xi1, xi2)` square on to estimate `C_D` (see
 //! WardIsoDiffuseSelectCoefficient).  kWardQuadN^2 replays per call.
-//! Matches `SchlickSPF`'s `kSpecQuadN` and the DL-98/DL-99 grids, and
-//! the same cost/accuracy note applies: the integrand is bounded in
+//! DL-212 raises the grid from 16 to 32: the new realized weight
+//! otherwise misses the tilted-horizon mass gate. The integrand is bounded in
 //! [0,1] but not smooth (the accept test is a step), so the error is
 //! O(1/kWardQuadN), not O(1/kWardQuadN^2).
 static const int kWardQuadN = 32;
