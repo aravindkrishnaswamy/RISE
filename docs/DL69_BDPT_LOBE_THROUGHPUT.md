@@ -667,14 +667,17 @@ DL-222), and that the density convention is `p_I(nm)` rather than
 
 ### 6.3 Red-proof and measurements
 
-Except for the round-4 calibration explicitly marked below, numerical
-A/B results in this section are historical measurements from rounds 1–2.
-They are retained as provenance, not represented as new round-4 runs.
+Round-4 recomputations are explicitly marked. Other numerical A/B
+tables in this section are historical measurements from rounds 1–2,
+retained as provenance rather than represented as new round-4 runs.
 
-`tests/HWSSCompanionKrayTest.cpp` (new): **91 passed, 0 failed**; red
-**46 passed, 45 failed** -- isolated A/B with the five SPF `.cpp`/`.h`
-pairs reverted to `9fe42f52`, library AND test target rebuilt on each
-side, the CURRENT 91-check file run on both.  Failures by section:
+**Round-4 red/green recomputation:** `tests/HWSSCompanionKrayTest.cpp`
+read **91 passed, 0 failed**; red **46 passed, 45 failed**. WIP was
+committed at `a4820d20` before restoring the five SPF `.cpp`/`.h` pairs
+to `9fe42f52`; both the library and `build-test/HWSSCompanionKrayTest`
+were rebuilt in the red state and again after restoring the committed
+fix. All four build logs were warning-free. The same 91-check file ran
+in both states.  Failures by section:
 A 20, B 15, C 8, E 2.  Pre-fix every class reads
 `checked 0, declined 5992 .. 7183`.
 
@@ -751,6 +754,107 @@ L achromatic: **-1.028% / +0.128% / +0.047%** at `num_wavelengths`
 wavelength grid, ~4% chroma at N = 10".
 
 Topology P's renders are now pinned at `num_wavelengths 160`.
+
+#### Round-4 in-suite calibration (2026-09-19)
+
+Measured on the standalone DL-125 branch before integrating landed master.
+The original single-render topology-P harness ran in eight independent
+processes at each of 1024 and 2048 spp, with **all four estimators at the
+same spp**. L/M use 1024/256 hero/bundle spp at scale 1 and 2048/512 at
+scale 2. Both spectral scene strings now set `num_wavelengths 160`;
+captures are linear, box-filtered and undenoised. The fixed libc seed
+does not remove block-shuffle randomness. All sixteen trials are retained:
+fifteen passed 26 checks; **2048-spp trial 7 passed 24 and failed 2**.
+
+The following table describes those original individual renders. SD is
+sample SD with denominator n-1, not standard error. Each delta uses that
+trial's three-reference arithmetic mean before taking the eight-trial
+mean; these are not the subsequent energy-aggregate point estimates.
+
+| estimator | spp per render | n | B/R mean (SD) | B/R delta %, mean (SD pp) | achromatic delta %, mean (SD pp) |
+|---|---:|---:|---:|---:|---:|
+| PT hero-only | 1024 | 8 | 1.66653 (0.00928) | +0.035 (0.377) | +0.022 (0.136) |
+| PT HWSS | 1024 | 8 | 1.66465 (0.00471) | -0.078 (0.095) | -0.094 (0.118) |
+| BDPT hero-only | 1024 | 8 | 1.66666 (0.00488) | +0.043 (0.419) | +0.072 (0.082) |
+| BDPT HWSS (DL-219) | 1024 | 8 | 1.59899 (0.00608) | -4.019 (0.297) | -1.111 (0.196) |
+| PT hero-only | 2048 | 8 | 1.66659 (0.00293) | +0.195 (0.436) | -0.063 (0.207) |
+| PT HWSS | 2048 | 8 | 1.65842 (0.02440) | -0.302 (1.038) | +0.134 (0.378) |
+| BDPT hero-only | 2048 | 8 | 1.66510 (0.00477) | +0.106 (0.657) | -0.071 (0.179) |
+| BDPT HWSS (DL-219) | 2048 | 8 | 1.59350 (0.00418) | -4.199 (0.479) | -1.148 (0.256) |
+
+In the failed trial, PT HWSS had red mean 0.0468733, median 0.0448281
+and maximum 2.14104. Its B/R delta was -2.83089%; the shared reference
+then put BDPT hero-only at +1.63846%. Both exceeded the 1.5% reference
+gate. The DL-219 row remained inside its pin at -3.17954%. No sample
+was removed, clipped or rerun to replace this failure. This is consistent
+with the already documented Schlick grazing-energy behavior in DL-178
+and companion-ratio variance; image statistics alone do not identify the
+individual path that generated the high-energy sample. No distinct new
+material defect is established by this observation.
+
+The gate now declares **four interleaved repeats per topology-P
+estimator** before rendering. It averages raw RGB energy across repeats,
+then forms B/R and the three-estimator reference; it does not average
+per-render B/R ratios or use medians. All reference bands stay at 1.5%,
+the DL-219 achromatic band stays at 4%, and the calibrated DL-219 B/R
+pin is **-7% < delta < -1.5%**, excluding parity. The original DL-219
+means (-4.019% and -4.199%) and sample SDs (0.297 and 0.479 pp) motivate
+this interval; they are empirical headroom, not a Gaussian guarantee.
+Printed SDs describe individual-render B/R (ratio units) and achromatic
+energy (linear radiance). Delete-one-repeat jackknife SE describes each
+aggregate normalized delta in percentage points, recomputing the shared
+reference on every deletion. Uncertainty never widens acceptance bands.
+
+A deterministic aggregation oracle keeps one red-energy spike: three
+replicates have RGB (1,1,2), the fourth has (5,1,2), while the other
+estimators remain (1,1,2). Summed blue/red is 8/8 = 1, not the mean of
+ratios 1.6 or a clipped ratio 2. The three-reference mean is 5/3, so the
+delta is -40%. Independent expectations for ratio SD (0.8) and delta
+jackknife SE (6/17 in fraction units) also pass. The standalone
+`--spectral-aggregate-unit` mode passes 5 checks without rendering.
+
+As an **overlapping sensitivity analysis**, all 70 four-of-eight subsets
+at each spp were aggregated from raw energies. Their maximum absolute
+clean-reference B/R deltas were 0.392% (1024 spp) and 0.818% (2048 spp);
+DL-219 ranged [-4.261%, -3.778%] and [-4.525%, -3.864%]. Four passes all
+tested subsets; two does not: among the 28 two-of-eight subsets at 2048
+spp the worst clean-reference delta was 1.533%. These overlapping subsets
+are not 70 independent validation runs, and three repeats were not tested.
+
+For completeness, combining all eight original raw-energy renders gives:
+
+| estimator | spp per render | n | aggregate B/R delta % (jackknife SE pp) | aggregate achromatic delta % (jackknife SE pp) |
+|---|---:|---:|---:|---:|
+| PT hero-only | 1024 | 8 | +0.035 (0.133) | +0.022 (0.048) |
+| PT HWSS | 1024 | 8 | -0.078 (0.034) | -0.094 (0.042) |
+| BDPT hero-only | 1024 | 8 | +0.043 (0.148) | +0.072 (0.029) |
+| BDPT HWSS (DL-219) | 1024 | 8 | -4.020 (0.105) | -1.111 (0.069) |
+| PT hero-only | 2048 | 8 | +0.200 (0.159) | -0.063 (0.074) |
+| PT HWSS | 2048 | 8 | -0.311 (0.376) | +0.135 (0.134) |
+| BDPT hero-only | 2048 | 8 | +0.110 (0.236) | -0.071 (0.064) |
+| BDPT HWSS (DL-219) | 2048 | 8 | -4.194 (0.173) | -1.148 (0.091) |
+
+The older grey-lobe ladders measure:
+
+| grey ladder | hero/bundle spp | n | achromatic delta %, mean (SD pp) | observed range % |
+|---|---:|---:|---:|---:|
+| L (Schlick) | 1024/256 | 8 | +0.141 (0.134) | -0.052 to +0.351 |
+| M (GGX/Lambertian) | 1024/256 | 8 | +0.357 (0.111) | +0.180 to +0.481 |
+| L (Schlick) | 2048/512 | 8 | +0.048 (0.096) | -0.131 to +0.179 |
+| M (GGX/Lambertian) | 2048/512 | 8 | +0.133 (0.080) | +0.006 to +0.243 |
+
+The largest grey-ladder `abs(mean)+4*SD` is 0.799%, motivating
+the tightened 1% parity band. These are controls, not red-proofs of the
+DL-125 ratio repair. Matching the wavelength grid removes their former
+coarse-quadrature confound.
+
+The original single-render narrow runs took 54.885 s (SD 2.196, n=8)
+at scale 1 and 108.345 s (SD 2.264, n=8) at scale 2, observed under
+shared machine load; these are not isolated performance benchmarks.
+The remedy increases topology P from four to sixteen renders, all at
+matched spp. Before fresh validation, a conservative workload projection
+was roughly 165 s extra at scale 1 (three times the entire former narrow
+run, which also includes L/M). That is a projection, not an observed cost.
 
 #### Historical four-estimator picture (superseded by round-4 calibration)
 
@@ -997,10 +1101,9 @@ chromatic SHAPE painter.  Closed form at `IsotropicPhongSPF`:
 `shipped / unbiased = (N_h+1)/(N_c+1) * cos^(N_h-N_c)(alpha)`.  At the
 configuration section A2 already builds (`N = 40 + 0.15*(nm-550)`, so
 `N_h = 40`, `N_c = 55`) that is `0.7321 * cos^-15(alpha)`: **0.732x at
-the lobe peak, crossing unity at 11.64 deg, 1.861x at 20 deg** (where the
-hero lobe still carries `cos^40 = 0.083` of its peak density).  (An
-earlier revision said "near 13 deg"; 13 deg reads 1.081 — the crossing
-solves `cos^15(alpha) = 0.7321`.)  A DIFFERENT wrong from the
+the lobe peak, crossing unity at 11.6415 deg, 1.861x at 20 deg** (where the
+hero lobe still carries `cos^40 = 0.083` of its peak density).  (Independently recomputed in round 4: the crossing solves
+`cos^15(alpha) = 41/56`, hence `alpha = acos((41/56)^(1/15))`.)  A DIFFERENT wrong from the
 pre-DL-125 aggregate fallback, not obviously a smaller one — which is
 why it is a row and not a footnote, and why the convention is
 deliberately unchanged here.  No shipped scene binds a spectral

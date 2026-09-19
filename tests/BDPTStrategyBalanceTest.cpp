@@ -2546,8 +2546,112 @@ static std::string TopologyPRasterizer( bool bdpt, bool hwss, unsigned int sampl
 	return s;
 }
 
+// Fixed before rendering: every replicate contributes its full energy.
+// A single chromatic firefly can defeat a one-render ratio gate even at
+// 2048 spp. Four repeats passed the retained calibration subsets; two
+// did not. This is finite-sample stabilization, not an outlier filter.
+static const unsigned int kTopologyPRepeats = 4;
+struct SpectralRepeatComparison
+{
+	double energy[4][3];
+	double br[4], achro[4], brDelta[4], achroDelta[4];
+};
+
+static SpectralRepeatComparison SummarizeSpectralRepeats(
+	const ImageStats (&trials)[kTopologyPRepeats][4], int omit = -1 )
+{
+	SpectralRepeatComparison out{};
+	const double n = kTopologyPRepeats - ( omit >= 0 ? 1 : 0 );
+	for( unsigned int r = 0; r < kTopologyPRepeats; ++r ) {
+		if( int(r) == omit ) continue;
+		for( int i = 0; i < 4; ++i ) {
+			for( int c = 0; c < 3; ++c ) out.energy[i][c] += trials[r][i].mean[c] / n;
+		}
+	}
+	double brRef = 0, achroRef = 0;
+	for( int i = 0; i < 4; ++i ) {
+		out.br[i] = out.energy[i][2] / out.energy[i][0];
+		out.achro[i] = ( out.energy[i][0] + out.energy[i][1] + out.energy[i][2] ) / 3.0;
+		if( i < 3 ) { brRef += out.br[i] / 3.0; achroRef += out.achro[i] / 3.0; }
+	}
+	for( int i = 0; i < 4; ++i ) {
+		out.brDelta[i] = out.br[i] / brRef - 1.0;
+		out.achroDelta[i] = out.achro[i] / achroRef - 1.0;
+	}
+	return out;
+}
+
+struct SpectralRepeatUncertainty
+{
+	double brSD[4], achroSD[4], brDeltaSE[4], achroDeltaSE[4];
+};
+
+static SpectralRepeatUncertainty SpectralRepeatErrors(
+	const ImageStats (&trials)[kTopologyPRepeats][4] )
+{
+	SpectralRepeatUncertainty out{};
+	SpectralRepeatComparison leaveOne[kTopologyPRepeats];
+	for( unsigned int r = 0; r < kTopologyPRepeats; ++r )
+		leaveOne[r] = SummarizeSpectralRepeats( trials, int(r) );
+	for( int i = 0; i < 4; ++i ) {
+		double meanBR = 0, meanAchro = 0, meanLeaveBR = 0, meanLeaveAchro = 0;
+		for( unsigned int r = 0; r < kTopologyPRepeats; ++r ) {
+			meanBR += trials[r][i].mean[2] / trials[r][i].mean[0] / kTopologyPRepeats;
+			meanAchro += ( trials[r][i].mean[0] + trials[r][i].mean[1] + trials[r][i].mean[2] ) / ( 3.0 * kTopologyPRepeats );
+			meanLeaveBR += leaveOne[r].brDelta[i] / kTopologyPRepeats;
+			meanLeaveAchro += leaveOne[r].achroDelta[i] / kTopologyPRepeats;
+		}
+		for( unsigned int r = 0; r < kTopologyPRepeats; ++r ) {
+			const double dBR = trials[r][i].mean[2] / trials[r][i].mean[0] - meanBR;
+			const double dAchro = ( trials[r][i].mean[0] + trials[r][i].mean[1] + trials[r][i].mean[2] ) / 3.0 - meanAchro;
+			out.brSD[i] += dBR * dBR / ( kTopologyPRepeats - 1 );
+			out.achroSD[i] += dAchro * dAchro / ( kTopologyPRepeats - 1 );
+			const double dLeaveBR = leaveOne[r].brDelta[i] - meanLeaveBR;
+			const double dLeaveAchro = leaveOne[r].achroDelta[i] - meanLeaveAchro;
+			out.brDeltaSE[i] += dLeaveBR * dLeaveBR * ( kTopologyPRepeats - 1.0 ) / kTopologyPRepeats;
+			out.achroDeltaSE[i] += dLeaveAchro * dLeaveAchro * ( kTopologyPRepeats - 1.0 ) / kTopologyPRepeats;
+		}
+		out.brSD[i] = std::sqrt( out.brSD[i] );
+		out.achroSD[i] = std::sqrt( out.achroSD[i] );
+		out.brDeltaSE[i] = std::sqrt( out.brDeltaSE[i] );
+		out.achroDeltaSE[i] = std::sqrt( out.achroDeltaSE[i] );
+	}
+	return out;
+}
+
+static void TestSpectralRepeatAggregation()
+{
+	ImageStats trials[kTopologyPRepeats][4]{};
+	for( unsigned int r = 0; r < kTopologyPRepeats; ++r ) {
+		for( int i = 0; i < 4; ++i ) {
+			trials[r][i].mean[0] = trials[r][i].mean[1] = 1.0;
+			trials[r][i].mean[2] = 2.0;
+		}
+	}
+	trials[3][0].mean[0] = 5.0;
+	const SpectralRepeatComparison c = SummarizeSpectralRepeats( trials );
+	const SpectralRepeatUncertainty e = SpectralRepeatErrors( trials );
+	// Independent arithmetic: sum R=8, sum B=8, so B/R=1 (averaging
+	// the four ratios instead would give 1.6; dropping the spike gives 2).
+	// Reference B/R=(1+2+2)/3=5/3, hence delta=-2/5.
+	Check( std::fabs( c.energy[0][0] - 2.0 ) < 1e-12,
+		"repeat aggregation: high-energy replicate remains in the arithmetic energy mean" );
+	Check( std::fabs( c.br[0] - 1.0 ) < 1e-12,
+		"repeat aggregation: ratio of summed energies, not a mean of ratios" );
+	Check( std::fabs( c.brDelta[0] + 0.4 ) < 1e-12,
+		"repeat aggregation: reference includes the retained high-energy contribution" );
+	// Raw ratios {2,2,2,0.4} have sample SD 0.8. Delete-one deltas
+	// {-8/17,-8/17,-8/17,0} have mean -6/17; (3/4)*sum squared
+	// deviations = 36/289, giving jackknife SE 6/17 (fraction units).
+	Check( std::fabs( e.brSD[0] - 0.8 ) < 1e-12,
+		"repeat uncertainty: sample SD is reported rather than standard error" );
+	Check( std::fabs( e.brDeltaSE[0] - 6.0 / 17.0 ) < 1e-12,
+		"repeat uncertainty: delete-one jackknife includes reference covariance" );
+}
+
 static void TestSpectralHWSSChromaticLobeSpectra()
 {
+	TestSpectralRepeatAggregation();
 	std::string body( kSceneSchlickMultiLobeL );
 	ReplaceOnceOrFail( body,
 		"\tname pnt_rd\n\tcolor 0.4 0.4 0.4\n",
@@ -2559,58 +2663,55 @@ static void TestSpectralHWSSChromaticLobeSpectra()
 	std::cout << "Testing topology P (DL-125 chromatic lobe spectra, "
 	             "four estimators at num_wavelengths 160)" << std::endl;
 
-	struct Row { const char* label; bool bdpt; bool hwss; unsigned int samples; ImageStats st; };
-	Row rows[4] = {
-		{ "PT   spectral hwss FALSE", false, false, 1024, ImageStats() },
-		{ "PT   spectral hwss TRUE ", false, true,  1024, ImageStats() },
-		{ "BDPT spectral hwss FALSE", true,  false, 1024, ImageStats() },
-		{ "BDPT spectral hwss TRUE ", true,  true,  1024, ImageStats() },
+	struct Row { const char* label; bool bdpt; bool hwss; unsigned int samples; };
+	const Row rows[4] = {
+		{ "PT   spectral hwss FALSE", false, false, 1024 },
+		{ "PT   spectral hwss TRUE ", false, true,  1024 },
+		{ "BDPT spectral hwss FALSE", true,  false, 1024 },
+		{ "BDPT spectral hwss TRUE ", true,  true,  1024 },
 	};
-
-	for( int i = 0; i < 4; i++ ) {
-		const std::string scene = std::string("RISE ASCII SCENE 7\n")
-			+ TopologyPRasterizer( rows[i].bdpt, rows[i].hwss, rows[i].samples * spectralSampleScale ) + body;
-		const std::string path = WriteSceneToTempFile( scene.c_str(), "topP" );
-		if( path.empty() ) {
-			Check( false, "temp file write: topology P" );
-			return;
+	ImageStats trials[kTopologyPRepeats][4]{};
+	for( unsigned int r = 0; r < kTopologyPRepeats; ++r ) {
+		std::cout << "    Fixed repeat " << (r + 1) << "/" << kTopologyPRepeats << std::endl;
+		for( int i = 0; i < 4; ++i ) {
+			const std::string scene = std::string("RISE ASCII SCENE 7\n")
+				+ TopologyPRasterizer( rows[i].bdpt, rows[i].hwss, rows[i].samples * spectralSampleScale ) + body;
+			const std::string path = WriteSceneToTempFile( scene.c_str(), "topP" );
+			if( path.empty() ) {
+				Check( false, "temp file write: topology P" );
+				return;
+			}
+			trials[r][i] = RenderAndComputeStats( path.c_str() );
+			std::remove( path.c_str() );
+			PrintStats( rows[i].label, trials[r][i] );
+			Check( trials[r][i].valid, "topology P: every fixed-repeat render produced output" );
+			if( !trials[r][i].valid ) return;
+			Check( trials[r][i].mean[0] > 1e-6, "topology P: every fixed-repeat red channel is non-zero" );
+			if( trials[r][i].mean[0] <= 1e-6 ) return;
 		}
-		rows[i].st = RenderAndComputeStats( path.c_str() );
-		std::remove( path.c_str() );
-		PrintStats( rows[i].label, rows[i].st );
-		Check( rows[i].st.valid, "topology P: render produced output" );
-		if( !rows[i].st.valid ) return;
-		Check( rows[i].st.mean[0] > 1e-6, "topology P: the red channel is non-zero" );
-		if( rows[i].st.mean[0] <= 1e-6 ) return;
 	}
-
-	double br[4], achro[4];
-	for( int i = 0; i < 4; i++ ) {
-		br[i]    = rows[i].st.mean[2] / rows[i].st.mean[0];
-		achro[i] = ( rows[i].st.mean[0] + rows[i].st.mean[1] + rows[i].st.mean[2] ) / 3.0;
-	}
-
-	// The three estimators that AGREE are the reference; BDPT hwss TRUE
-	// is the outlier being pinned (DL-219).
-	const double brRef    = ( br[0] + br[1] + br[2] ) / 3.0;
-	const double achroRef = ( achro[0] + achro[1] + achro[2] ) / 3.0;
-
-	for( int i = 0; i < 4; i++ ) {
-		std::cout << "    " << rows[i].label
-		          << "  spp = " << rows[i].samples * spectralSampleScale
-		          << "  B/R = " << br[i]
-		          << "  (" << ( ( br[i] / brRef - 1.0 ) * 100.0 ) << "% vs reference)"
-		          << "   achromatic = " << achro[i]
-		          << "  (" << ( ( achro[i] / achroRef - 1.0 ) * 100.0 ) << "%)" << std::endl;
+	const SpectralRepeatComparison comparison = SummarizeSpectralRepeats( trials );
+	const SpectralRepeatUncertainty errors = SpectralRepeatErrors( trials );
+	for( int i = 0; i < 4; ++i ) {
+		std::cout << "    " << rows[i].label << "  n = " << kTopologyPRepeats
+		          << "  spp/render = " << rows[i].samples * spectralSampleScale
+		          << "  B/R = " << comparison.br[i]
+		          << "  (" << comparison.brDelta[i] * 100.0 << "% vs reference)"
+		          << "   achromatic = " << comparison.achro[i]
+		          << "  (" << comparison.achroDelta[i] * 100.0 << "%)" << std::endl;
+		std::cout << "      per-render SD: B/R " << errors.brSD[i] << " (ratio units), achromatic "
+		          << errors.achroSD[i] << " (linear radiance); delta jackknife SE: B/R "
+		          << errors.brDeltaSE[i] * 100.0 << " pp, achromatic "
+		          << errors.achroDeltaSE[i] * 100.0 << " pp" << std::endl;
 	}
 
 	// GATE 1: parity of the three reference estimators. The 1.5% band
 	// is calibrated from repeated in-suite measurements; see §6.3.
 	for( int i = 0; i < 3; i++ ) {
-		Check( std::fabs( br[i] / brRef - 1.0 ) < 0.015,
+		Check( std::fabs( comparison.brDelta[i] ) < 0.015,
 			( std::string("DL-125 (topology P): ") + rows[i].label +
 			  " agrees with the other two clean estimators on B/R" ).c_str() );
-		Check( std::fabs( achro[i] / achroRef - 1.0 ) < 0.015,
+		Check( std::fabs( comparison.achroDelta[i] ) < 0.015,
 			( std::string("DL-125 (topology P): ") + rows[i].label +
 			  " agrees with the other two clean estimators on the achromatic mean" ).c_str() );
 	}
@@ -2618,14 +2719,14 @@ static void TestSpectralHWSSChromaticLobeSpectra()
 	// GATE 2: known DL-219 discrepancy, distinct from DL-125. The band
 	// excludes parity so an eventual fix forces this pin to be retired.
 	// Calibration at matched spp and nw=160 is documented in §6.3.
-	const double brDefect = br[3] / brRef - 1.0;
-	std::cout << "    DL-219 KNOWN DEFECT: BDPT hwss TRUE B/R is "
-	          << ( brDefect * 100.0 ) << "% of the three-estimator reference" << std::endl;
+	const double brDefect = comparison.brDelta[3];
+	std::cout << "    DL-219 KNOWN DEFECT: BDPT hwss TRUE B/R differs by "
+	          << ( brDefect * 100.0 ) << "% from the three-estimator reference" << std::endl;
 	Check( brDefect > -0.07 && brDefect < -0.015,
 		"DL-219 KNOWN DEFECT (topology P): BDPT `hwss TRUE` mis-renders a chromatic "
 		"multi-lobe material's channel balance -- pinned, PRE-EXISTING, "
 		"and NOT what DL-125 fixed" );
-	Check( std::fabs( achro[3] / achroRef - 1.0 ) < 0.04,
+	Check( std::fabs( comparison.achroDelta[3] ) < 0.04,
 		"DL-219 (topology P): BDPT `hwss TRUE`'s achromatic mean stays within 4% "
 		"of the three-estimator reference" );
 }
@@ -2972,7 +3073,7 @@ static void TestNullBSDFHWSSCompanionLadder()
 		&noHWSS, &hwss );
 	if( achroRatio < 0 ) return;
 
-	// 10%, not L/M's 5%: measured run-to-run spread on this scene is
+	// 10%, wider than L/M's 1%: historical run-to-run spread on this scene is
 	// wider than L/M's (0.4% / 4.7% / 5.3% across three otherwise-
 	// identical runs) -- still >3x inside this band even at the noisy
 	// end, and two orders of magnitude below the +34% this row red-
@@ -3139,10 +3240,15 @@ static void TestGenericHumanTissueOriginFix()
 
 int main( int argc, char** argv )
 {
+	if( argc == 2 && std::strcmp(argv[1], "--spectral-aggregate-unit") == 0 ) {
+		TestSpectralRepeatAggregation();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
 	if( argc > 1 ) {
 		if( argc != 3 || std::strcmp(argv[1], "--spectral-only") != 0 ||
 			(std::strcmp(argv[2], "1") != 0 && std::strcmp(argv[2], "2") != 0) ) {
-			std::cerr << "Usage: BDPTStrategyBalanceTest [--spectral-only 1|2]" << std::endl;
+			std::cerr << "Usage: BDPTStrategyBalanceTest [--spectral-only 1|2 | --spectral-aggregate-unit]" << std::endl;
 			return 2;
 		}
 		spectralSampleScale = std::strcmp(argv[2], "2") == 0 ? 2 : 1;
