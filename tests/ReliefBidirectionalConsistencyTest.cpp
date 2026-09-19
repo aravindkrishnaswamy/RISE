@@ -368,6 +368,10 @@ static void LightWalk()
         const double expected=.8*std::fabs((.5*wi.x+std::sqrt(.75)*wi.z)*wo.z /
                         (wi.z*(.5*wo.x+std::sqrt(.75)*wo.z)));
         const double got=verts[2].throughput.r/v.throughput.r;
+        // Preserve every accepted sample, including the large grazing
+        // adjoint factors. This is evidence, never an outlier filter.
+        std::printf("LIGHT_RAW path=%u wi=(%.17g,%.17g,%.17g) wo=(%.17g,%.17g,%.17g) expected=%.17g got=%.17g\n",
+            i,wi.x,wi.y,wi.z,wo.x,wo.y,wo.z,expected,got);
         worst=std::max(worst,std::fabs(got/expected-1));
         ++count;
     }
