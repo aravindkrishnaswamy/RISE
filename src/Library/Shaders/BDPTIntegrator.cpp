@@ -7124,6 +7124,24 @@ unsigned int GenerateLightSubpathImpl(
 			}
 		}
 
+		// DL-224: light throughput transports importance. SPF kray is a
+		// radiance-mode f_s*cos(Ns,out)/pdf weight, so changing to the
+		// adjoint geometric-area kernel needs this projected-area ratio.
+		// It changes contributions only: the sampler and every MIS density
+		// retain their geometric-area Jacobians. Apply before roulette so
+		// its survival probability observes the actual transported weight.
+		const Scalar shadingAdjoint = PathVertexEval::ImportanceShadingNormalFactor(
+			vertices.back(), -currentRay.Dir(), scatDir );
+		beta = beta * shadingAdjoint;
+		localScatteringWeight = localScatteringWeight * shadingAdjoint;
+		if constexpr( Traits::is_nm ) {
+			if( pSwlHWSS ) {
+				for( unsigned int w = 0; w < SampledWavelengths::N; ++w ) {
+					hwssBetaNM[w] *= shadingAdjoint;
+				}
+			}
+		}
+
 		// Russian Roulette — configurable depth threshold and floor.  HWSS
 		// uses MAX throughput over active wavelengths (prevents hero-driven RR
 		// from amplifying companions on rare survival).
