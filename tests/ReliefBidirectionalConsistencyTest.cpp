@@ -317,7 +317,7 @@ standard_object
                 safe_release(cap);
             }
             refs[m]=sum/3;
-            std::printf("SPHERE mode=%s scale=%.2f spp=256 n=3 mean=%.9f sd=%.9f\n",modes[m],scale,refs[m],std::sqrt(std::max(0.,(sum2-sum*sum/3)/2)));
+            std::printf("SPHERE mode=%s scale=%.2f spp=256 n=3 mean=%.9f sd=%.12g\n",modes[m],scale,refs[m],std::sqrt(std::max(0.,(sum2-sum*sum/3)/2)));
             if(m) Check(refs[0]>0 && refs[m]>0 && std::fabs(refs[m]/refs[0]-1)<.08,"sphere PT/bidirectional within 8%");
         }
     }
@@ -373,6 +373,29 @@ static void LightWalk()
     safe_release(bdpt);safe_release(caster);safe_release(shader);safe_release(job);
 }
 
+
+// Both the camera and light lie below the perturbed shading normal, but
+// above the physical plane. LambertianSPF samples the flipped shading
+// hemisphere on this legitimate grazing hit; NEE must use that same frame.
+static void GrazingView()
+{
+    for(const char* mode:{"pathtracing_pel_rasterizer","bdpt_pel_rasterizer","vcm_pel_rasterizer"}) {
+        std::string scene=FlatScene(mode,45,64);
+        auto replace=[&](const std::string& from,const std::string& to) { scene.replace(scene.find(from),from.size(),to); };
+        replace("location 0 0 -4","location 4 0 -1");
+        replace("fov 30","fov 3");
+        replace("position 0 0 -1000","position 866.025403784 0 -500");
+        auto* cap=RenderScene(scene,mode);
+        Check(cap!=nullptr,"grazing scene renders");
+        if(!cap) continue;
+        const double mean=Mean(*cap);
+        const double expected=.8*std::sin(PI/12)/PI;
+        std::printf("GRAZING mode=%s mean=%.12g expected=%.12g relative=%+.6f\n",mode,mean,expected,mean/expected-1);
+        Check(std::fabs(mean/expected-1)<.02,"grazing flipped shading frame follows cosine law");
+        safe_release(cap);
+    }
+}
+
 static void EndpointFactors()
 {
     BDPTVertex v;
@@ -390,6 +413,7 @@ int main(int argc, char** argv)
 {
     if(argc==1 || std::string(argv[1])=="light") LightWalk();
     EndpointFactors();
+    if(argc==1 || std::string(argv[1])=="grazing") GrazingView();
     const char* modes[]={"pixelpel_rasterizer", "pathtracing_pel_rasterizer", "bdpt_pel_rasterizer", "vcm_pel_rasterizer"};
     if(argc==1 || std::string(argv[1])=="flat") for(double tilt:{0.,10.,20.,30.,45.}) {
         const double expected=.8*std::cos(tilt*PI/180)/PI;
@@ -407,7 +431,7 @@ int main(int argc, char** argv)
             if(!means.empty()) mean/=means.size();
             for(double x:means) sd+=(x-mean)*(x-mean);
             sd=means.size()>1?std::sqrt(sd/(means.size()-1)):0;
-            std::printf("FLAT mode=%s tilt=%.0f spp=64 n=%zu mean=%.9f sd=%.9f expected=%.9f relative=%+.6f\n",mode,tilt,means.size(),mean,sd,expected,mean/expected-1);
+            std::printf("FLAT mode=%s tilt=%.0f spp=64 n=%zu mean=%.9f sd=%.12g expected=%.9f relative=%+.6f\n",mode,tilt,means.size(),mean,sd,expected,mean/expected-1);
             Check(means.size()==3 && std::fabs(mean/expected-1)<.02,"flat tilt radiance within 2% of independent closed form");
         }
     }
