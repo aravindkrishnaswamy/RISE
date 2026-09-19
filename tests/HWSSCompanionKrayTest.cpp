@@ -709,6 +709,59 @@ int main()
 
 		std::cout << "   draws " << n << "   worst |per-lobe ratio / aggregate ratio| "
 		          << std::fixed << std::setprecision( 4 ) << worstDisagree << "x" << std::endl;
+
+		// DL-125 review round 2, P2 -- WHERE THE VARIANCE COST COMES
+		// FROM.  `RecomputeSubpathThroughputNM`'s per-lobe branch forms
+		// `lobeRatio = krayComp / krayHero`, which is UNBOUNDED as
+		// `krayHero -> 0`; the aggregate ratio it replaced was a convex
+		// blend and so was bounded between the two lobes' own ratios.
+		// The post-fix render's run-to-run sd duly stops falling cleanly
+		// with sample count.  This block asks WHICH population the heavy
+		// ratios come from -- a near-zero hero (a numerical tail the
+		// caller could bound) or a legitimately large spectral swing (a
+		// real quantity that must not be clamped).  Printed, not gated:
+		// it is a characterisation of a recorded cost, not a contract.
+		{
+			unsigned int nBig = 0, nBigFromSmallHero = 0, nTot = 0;
+			double worstRatio = 0, heroAtWorst = 0;
+			double minHero = 1e300;
+			for( int li = 0; li < 3; li++ ) {
+				if( kLambdas[li] == heroNM ) continue;
+			for( int di = 0; di < 3; di++ ) {
+				const RayIntersectionGeometric ri = MakeIntersection( kDegrees[di] * PI / 180.0 );
+				RandomNumberGenerator rng( 9911u + li * 17u + di );
+				IndependentSampler sampler( rng );
+				for( unsigned int k = 0; k < 400; k++ ) {
+					ScatteredRayContainer scattered;
+					chSPF->ScatterNM( ri, sampler, heroNM, scattered, iorStack );
+					for( unsigned int i = 0; i < scattered.Count(); i++ ) {
+						const ScatteredRay& sr = scattered[i];
+						if( sr.isDelta ) continue;
+						const Scalar kh = chSPF->EvaluateKrayNM( ri, sr.ray.Dir(), sr.type, heroNM, iorStack );
+						const Scalar kc = chSPF->EvaluateKrayNM( ri, sr.ray.Dir(), sr.type, kLambdas[li], iorStack );
+						if( kh <= 0 || kc < 0 ) continue;
+						nTot++;
+						if( kh < minHero ) minHero = kh;
+						const double r = kc / kh;
+						if( r > worstRatio ) { worstRatio = r; heroAtWorst = kh; }
+						if( r > 4.0 ) {
+							nBig++;
+							// "small hero" = two orders below the median
+							// hero weight this material produces (~0.1).
+							if( kh < 1e-3 ) nBigFromSmallHero++;
+						}
+					}
+				}
+			}
+			}
+			std::cout << "   tail: " << nTot << " ratios, " << nBig << " over 4x ("
+			          << ( nTot ? 100.0 * double(nBig) / double(nTot) : 0.0 ) << "%), of which "
+			          << nBigFromSmallHero << " have krayHero < 1e-3;  worst ratio "
+			          << worstRatio << "x at krayHero " << std::scientific
+			          << std::setprecision( 3 ) << heroAtWorst
+			          << ", min krayHero seen " << minHero << std::fixed
+			          << std::setprecision( 4 ) << std::endl;
+		}
 		Check( n > 2000, "DL-125 section E: enough chromatic draws" );
 		Check( worstDisagree > 1.2,
 			"DL-125 section E (PREMISE): the per-lobe and aggregate companion ratios are "
