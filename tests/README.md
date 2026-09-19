@@ -713,7 +713,7 @@ per-draw ratios above 4x, ZERO have `krayHero < 1e-3` (worst 7.40x at
 `lobeRatio = krayComp/krayHero` values are legitimate spectral swings
 rather than a near-zero numerical tail — which is what says a tighter
 clamp than the existing `krayHero > NEARZERO` guard would discard
-true weight.  ~3 s.
+true weight.
 
 `SchlickKrayBRDFConsistencyTest` (DL-127, CLOSED 2026-09-18,
 [DL127_SCHLICK_KRAY_VS_BRDF.md](../docs/DL127_SCHLICK_KRAY_VS_BRDF.md))

@@ -943,8 +943,9 @@ nearly free, so it is implemented here: `ScatterNM` emits at most two
 rays with DISTINCT types, so `rayType` alone identifies the lobe on
 either side. Gated at **1e-12** against `ScatterNM`'s own `krayNM` with
 the same wavelength as hero, over nine record kinds x six tilts x three
-wavelengths (`TranslucentLobeConsistencyTest` gate 5) — the strongest
-available statement, since the two are the same quantity asked twice.
+wavelengths (`TranslucentLobeConsistencyTest` gate 5). This establishes
+sampler/evaluator consistency; the integrated independent weight and
+replay oracles below add checks against separately derived expectations.
 **DL-222 CLOSED 2026-09-19 at integration.** The combined gate also
 found that DL-125 throughput replay used a unit-length synthetic ray.
 Both generators now store their live incoming distance and replay uses

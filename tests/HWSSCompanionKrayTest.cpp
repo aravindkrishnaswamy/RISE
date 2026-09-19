@@ -824,10 +824,10 @@ int main()
 
 		// DL-222 integration: derive from painter and Beer/scattering
 		// inputs, independently of ScatterNM and BuildLobeSet.
-		UniformScalarPainter* tN = new UniformScalarPainter( 8.0 ); tN->addref();
-		LambdaRampScalarPainter* tExt = new LambdaRampScalarPainter( 0.2, 0.0005 ); tExt->addref();
-		LambdaRampScalarPainter* tS = new LambdaRampScalarPainter( 0.3, 0.0005 ); tS->addref();
-		TranslucentMaterial* transMat = new TranslucentMaterial( *diff, *spec, *tExt, *tN, *tS ); transMat->addref();
+		UniformScalarPainter* tN = new UniformScalarPainter( 8.0 );
+		LambdaRampScalarPainter* tExt = new LambdaRampScalarPainter( 0.2, 0.0005 );
+		LambdaRampScalarPainter* tS = new LambdaRampScalarPainter( 0.3, 0.0005 );
+		TranslucentMaterial* transMat = new TranslucentMaterial( *diff, *spec, *tExt, *tN, *tS );
 		const ISPF* trans = transMat->GetSPF();
 		IORStack inside = iorStack;
 		inside.push( inside.top() );
