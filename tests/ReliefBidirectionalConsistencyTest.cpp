@@ -174,10 +174,153 @@ static double Mean(const CapturingRasterizerOutput& cap)
     return cap.pixels.empty() ? -1 : sum/cap.pixels.size();
 }
 
-int main()
+
+static void Sphere()
+{
+    const std::string body=R"SCENE(RISE ASCII SCENE 7
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+film
+{
+	width			200
+	height			200
+}
+
+pinhole_camera
+{
+	location		0 0 6
+	lookat			0 0 0
+	up			0 1 0
+	fov			40.0
+}
+
+# ---- the relief field: a smooth low-frequency uv bump, DL-157's tilt knob ----
+expression_function2d
+{
+	name	bump_field
+	param	nu 8.0
+	param	nv 6.0
+	expr	0.5 + 0.25*sin(tau*nu*u)*sin(tau*nv*v)
+}
+
+scalar_painter
+{
+	name	bump_height
+	function2d	bump_field
+}
+
+relief_modifier
+{
+	name	bumps
+	height	bump_height
+	domain	uv
+	step	0.004
+	scale	SCALE
+}
+
+uniformcolor_painter
+{
+	name			p_ref
+	color			0.5 0.3 0.2
+}
+
+uniformcolor_painter
+{
+	name			p_tau
+	color			0.4 0.6 0.3
+}
+
+uniformcolor_painter
+{
+	name			p_emit
+	color			1.0 1.0 1.0
+}
+
+lambertian_material
+{
+	name			mat_translucent
+	reflectance		p_ref
+}
+
+lambertian_luminaire_material
+{
+	name			mat_light
+	exitance		p_emit
+	scale			40.0
+	material		none
+}
+
+sphere_geometry
+{
+	name			sph
+	radius			1.2
+}
+
+# A ceiling quad at y = 3 whose winding puts its normal at -Y (down at
+# the sphere).  It is outside the 40-degree frame (half-height 2.18 at
+# z = 0), so no emitter pixel enters the measured region directly.
+clippedplane_geometry
+{
+	name			quad
+	pta			-1.2 3.0 -1.2
+	ptb			 1.2 3.0 -1.2
+	ptc			 1.2 3.0  1.2
+	ptd			-1.2 3.0  1.2
+}
+
+standard_object
+{
+	name			o_sphere
+	geometry		sph
+	material		mat_translucent
+	modifier		bumps
+	position		0 0 0
+}
+
+standard_object
+{
+	name			o_light
+	geometry		quad
+	material		mat_light
+	position		0 0 0
+}
+)SCENE";
+    for(double scale:{0.,-.2,.2}) {
+        double refs[3]={};
+        const char* modes[]={"pathtracing_pel_rasterizer", "bdpt_pel_rasterizer", "vcm_pel_rasterizer"};
+        for(int m=0;m<3;++m) {
+            std::string scene=body;
+            scene.replace(scene.find("SCALE"),5,std::to_string(scale));
+            scene+=std::string(modes[m])+"\n{\n samples 256\n oidn_denoise FALSE\n pixel_filter box\n}\n";
+            double sum=0,sum2=0;
+            for(int r=0;r<3;++r) {
+                auto* cap=RenderScene(scene,modes[m]);
+                Check(cap!=nullptr,"sphere scene renders");
+                if(!cap) continue;
+                double mean=0;
+                for(unsigned y=60;y<140;++y) for(unsigned x=60;x<140;++x) {
+                    const auto& c=cap->pixels[y*cap->width+x];
+                    mean+=(c.base.r+c.base.g+c.base.b)*c.a/(3*6400);
+                }
+                std::printf("SPHERE_RAW mode=%s scale=%.2f repeat=%d mean=%.9f\n",modes[m],scale,r,mean);
+                sum+=mean;sum2+=mean*mean;
+                safe_release(cap);
+            }
+            refs[m]=sum/3;
+            std::printf("SPHERE mode=%s scale=%.2f spp=256 n=3 mean=%.9f sd=%.9f\n",modes[m],scale,refs[m],std::sqrt(std::max(0.,(sum2-sum*sum/3)/2)));
+            if(m) Check(refs[0]>0 && refs[m]>0 && std::fabs(refs[m]/refs[0]-1)<.08,"sphere PT/bidirectional within 8%");
+        }
+    }
+}
+
+int main(int argc, char** argv)
 {
     const char* modes[]={"pixelpel_rasterizer", "pathtracing_pel_rasterizer", "bdpt_pel_rasterizer", "vcm_pel_rasterizer"};
-    for(double tilt:{0.,10.,20.,30.,45.}) {
+    if(argc==1 || std::string(argv[1])=="flat") for(double tilt:{0.,10.,20.,30.,45.}) {
         const double expected=.8*std::cos(tilt*PI/180)/PI;
         for(const char* mode:modes) {
             std::vector<double> means;
@@ -197,6 +340,7 @@ int main()
             Check(means.size()==3 && std::fabs(mean/expected-1)<.02,"flat tilt radiance within 2% of independent closed form");
         }
     }
+    if(argc==1 || std::string(argv[1])=="sphere") Sphere();
     std::printf("ReliefBidirectionalConsistencyTest: %d passed, %d failed\n",passCount,failCount);
     return failCount?1:0;
 }
