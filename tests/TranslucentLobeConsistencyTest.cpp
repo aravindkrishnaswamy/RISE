@@ -80,6 +80,7 @@
 #include "../src/Library/Materials/TranslucentMaterial.h"
 #include "../src/Library/Materials/CompositeMaterial.h"
 #include "../src/Library/Materials/LambertianMaterial.h"
+#include "../src/Library/Geometry/BezierPatchGeometry.h"
 
 #include "TestStubObject.h"
 
@@ -292,8 +293,8 @@ namespace
 	//! are the closed-solid pair; `kSheetFront`/`kSheetBack` are the open
 	//! double-sided sheet, whose BACK-face record is the one DL-157's P1
 	//! review found broken (side says entry, ray says leaving, both true).
-	enum RecordKind { kEntry, kExit, kSheetFront, kSheetBack, kMeshSheetBack, kDSExit, kOtherEnclosure };
-	const int kNumRecordKinds = 7;
+	enum RecordKind { kEntry, kExit, kSheetFront, kSheetBack, kMeshSheetBack, kDSExit, kBezierExit, kOtherEnclosure };
+	const int kNumRecordKinds = 8;
 
 	const char* RecordName( RecordKind k )
 	{
@@ -304,6 +305,7 @@ namespace
 		case kSheetBack:  return "planeBack  ";
 		case kMeshSheetBack: return "meshBack   ";
 		case kDSExit:     return "dsMeshExit ";
+		case kBezierExit: return "bezierExit ";
 		default:          return "otherEnclos";
 		}
 	}
@@ -318,8 +320,106 @@ namespace
 	//! `bProvablyNoInterior` stays false, because a mesh can never prove
 	//! it.  This is the record that a `bOpenSheet`-based stackless rule
 	//! got wrong.
+	//!
+	//! REVIEW ROUND 3, P3: this record and `MakeMeshSheetBackFaceFirst`'s
+	//! are byte-identical -- physically so, which is the whole point (a
+	//! stackless caller CANNOT tell an uncertified mesh's interior exit
+	//! from that same mesh's open-sheet back face; only the STACK
+	//! separates them, and `MakeRecordStack` is where that happens).
+	//! Derived from it rather than rebuilt, so the two cannot drift apart
+	//! and quietly turn a real pair of cases into two spellings of one.
 	RayIntersectionGeometric MakeDoubleSidedMeshExit( Scalar tiltDeg, Scalar segLen )
 	{
+		return MakeMeshSheetBackFaceFirst( tiltDeg, segLen );
+	}
+
+	//! A genuine INTERIOR EXIT on a closed, MULTI-PATCH
+	//! `BezierPatchGeometry` object -- review round 3's P1 record.
+	//!
+	//! Round 2 had `BezierPatchGeometry` stamping `bProvablyNoInterior`
+	//! on its back-face condition, on the premise that "a single patch
+	//! cannot enclose a volume".  The class is not a single patch: it
+	//! holds a `BezierPatchList` (a vector) behind a BSP/Octree, and
+	//! `Job.cpp`'s `.bezier` loader puts EVERY patch of a file into ONE
+	//! geometry -- `models/raw/teapot.bezier` declares 28, and
+	//! `models/bezier/aphrodite.bezier` / `f16.bezier` are closed solids.
+	//! At an interior exit on such an object the ray leaves, the patch
+	//! normal flips, and the round-2 stamp therefore asserted "no
+	//! interior" on precisely the hit that disproves it -- after which
+	//! `BuildLobeSet`'s STACKLESS arm infers ENTRY and prices the entry
+	//! lobes at a genuine exit.
+	//!
+	//! THE FLAGS ON THIS RECORD COME FROM PRODUCTION CODE, not from this
+	//! file: a real two-patch `BezierPatchGeometry` is built and really
+	//! intersected from behind, and whatever `RayElementIntersection`
+	//! stamps is what the gate runs on.  That is what makes reverting
+	//! `BezierPatchGeometry.cpp` alone a genuine single-change A/B.  Only
+	//! the SHADING normal is overlaid, with the same tilt sweep every
+	//! other record uses, so this row is comparable to its mesh twin.
+	//!
+	//! The hit is at the patch centre `(u,v) = (0.5,0.5)`, where the
+	//! control grid below puts the surface point at the origin and the
+	//! true patch normal at exactly `+Z` -- so the stamped frame is the
+	//! canonical one and nothing but the flags is imported.
+	//! The four flags a live Bezier back-face hit stamps, plus whether
+	//! the hit happened at all (asserted by the caller -- a fixture that
+	//! silently missed would gate nothing).
+	struct BezierStamp
+	{
+		bool bHit;
+		Vector3 vGeomNormal;
+		bool bGeomNormalOrientedToRay;
+		bool bOpenSheet;
+		bool bProvablyNoInterior;
+	};
+
+	const BezierStamp& BezierBackFaceStamp( Scalar segLen )
+	{
+		static bool bBuilt = false;
+		static BezierStamp stamped = { false, Vector3(0,0,-1), false, false, false };
+		if( !bBuilt ) {
+			// TWO patches, so this is literally the multi-patch case the
+			// removed certification could not see.  Shape and indexing
+			// follow `tests/PatchCurvatureTest.cpp`'s saddle fixture, so
+			// the winding is the known one: Cross(TangentU,TangentV) at
+			// the centre is +Z.
+			BezierPatchGeometry* g = new BezierPatchGeometry( 10, 8, false );
+			for( int patchIdx = 0; patchIdx < 2; patchIdx++ ) {
+				const Scalar xOff = ( patchIdx == 0 ) ? 0.0 : 8.0;
+				BezierPatch patch;
+				for( int i = 0; i < 4; i++ ) {
+					const Scalar X = -1.5 + Scalar(i);
+					for( int j = 0; j < 4; j++ ) {
+						const Scalar Y = -1.5 + Scalar(j);
+						patch.c[i].pts[j] = Point3( X + xOff, Y, 0.4 * X * Y );
+					}
+				}
+				g->AddPatch( patch );
+			}
+			g->Prepare();
+
+			RasterizerState rs = {0,0};
+			// Travelling +Z, so the centre's +Z normal faces AWAY: the
+			// back-face condition `dotND > 0` holds and the geometry
+			// flips, which is the condition round 2 certified on.
+			RayIntersectionGeometric probe( Ray( Point3(0,0,-segLen), Vector3(0,0,1) ), rs );
+			g->IntersectRay( probe, true, true, false );
+
+			stamped.bHit                      = probe.bHit;
+			stamped.vGeomNormal               = probe.vGeomNormal;
+			stamped.bGeomNormalOrientedToRay  = probe.bGeomNormalOrientedToRay;
+			stamped.bOpenSheet                = probe.bOpenSheet;
+			stamped.bProvablyNoInterior       = probe.bProvablyNoInterior;
+			bBuilt = true;
+			g->release();
+		}
+		return stamped;
+	}
+
+	RayIntersectionGeometric MakeBezierInteriorExit( Scalar tiltDeg, Scalar segLen )
+	{
+		const BezierStamp& stamp = BezierBackFaceStamp( segLen );
+
 		const Scalar tiltRad = tiltDeg * PI / 180.0;
 		// Reported (already flipped toward the outward-travelling ray).
 		const Vector3 nReported( sin(tiltRad), 0, -cos(tiltRad) );
@@ -332,10 +432,11 @@ namespace
 		ri.ptIntersection = Point3(0,0,0);
 		ri.vNormal = nReported;
 		ri.onb.CreateFromW( nReported );
-		ri.vGeomNormal = Vector3(0,0,-1);        // flipped toward the ray
-		ri.bGeomNormalOrientedToRay = true;
-		ri.bOpenSheet = true;                    // UNCERTIFIED, not open
-		ri.bProvablyNoInterior = false;          // ... and a mesh cannot certify
+		// --- imported verbatim from the live geometry hit ---
+		ri.vGeomNormal              = stamp.vGeomNormal;
+		ri.bGeomNormalOrientedToRay = stamp.bGeomNormalOrientedToRay;
+		ri.bOpenSheet               = stamp.bOpenSheet;
+		ri.bProvablyNoInterior      = stamp.bProvablyNoInterior;
 		ri.ptCoord = Point2(0.5,0.5);
 		return ri;
 	}
@@ -349,21 +450,22 @@ namespace
 		case kSheetBack:  return MakeOpenSheetBackFaceFirst( tiltDeg, segLen );
 		case kMeshSheetBack: return MakeMeshSheetBackFaceFirst( tiltDeg, segLen );
 		case kDSExit:     return MakeDoubleSidedMeshExit( tiltDeg, segLen );
+		case kBezierExit: return MakeBezierInteriorExit( tiltDeg, segLen );
 		// `kOtherEnclosure` is an ordinary ENTRY hit on our object; what
 		// differs is the STACK (see MakeRecordStack).
 		default:          return MakeClosedEntry( tiltDeg, segLen );
 		}
 	}
 
-	//! `kExit` and `kDSExit` are interior exits; every other record is an
-	//! ENTRY by the stack.  `kOtherEnclosure` is the one that separates
+	//! `kExit`, `kDSExit` and `kBezierExit` are interior exits; every
+	//! other record is an ENTRY by the stack.  `kOtherEnclosure` is the one that separates
 	//! "the stack is non-empty" from "the stack contains US": the walk is
 	//! inside a DIFFERENT object (water, say) and entering ours, so
 	//! `containsCurrent()` must read false even though the stack has a
 	//! frame on it.
 	IORStack MakeRecordStack( RecordKind k, const IObject* obj, const IObject* other )
 	{
-		if( k == kExit || k == kDSExit ) return MakeInsideStack( obj );
+		if( k == kExit || k == kDSExit || k == kBezierExit ) return MakeInsideStack( obj );
 		if( k == kOtherEnclosure ) {
 			IORStack stack( 1.0 );
 			stack.SetCurrentObject( other );
@@ -427,7 +529,7 @@ static void Gate1( const Rig& rig, const IObject* obj, const IObject* other,
 	RecordKind kind, bool bNM, bool bStacked, Scalar segLen, const char* label )
 {
 	const int kTrials = 40000;
-	const bool bExit = ( kind == kExit || kind == kDSExit );
+	const bool bExit = ( kind == kExit || kind == kDSExit || kind == kBezierExit );
 
 	std::cout << "  -- Gate 1 " << label << " " << RecordName(kind)
 	          << " (" << (bNM?"NM":"RGB") << ", " << (bStacked?"STACKED value":"stackless value")
@@ -888,12 +990,36 @@ int main()
 		//                  (that flag means "uncertified", not "open"), so
 		//                  it is the record that a `bOpenSheet`-based
 		//                  stackless rule priced as an ENTRY.
+		//   bezierExit  -- ROUND 3 P1: a genuine interior exit on a
+		//                  CLOSED, MULTI-PATCH `BezierPatchGeometry`.  Its
+		//                  flags are stamped by the real geometry, so
+		//                  round 2's certification (removed in round 3)
+		//                  would make the stackless arm price the ENTRY
+		//                  lobes here.  A geometry holding a COLLECTION of
+		//                  primitives can never certify "no interior",
+		//                  however interior-free each primitive is alone.
 		//   otherEnclos -- an ordinary entry while the walk is inside a
 		//                  DIFFERENT object: `containsCurrent()` must read
 		//                  false against a NON-EMPTY stack.
 		Rig rig( RISEPel(0.5,0.3,0.2), RISEPel(0.4,0.6,0.3), 0.0, 10.0, 0.3 );
 		std::cout << std::endl << "[E] open sheet (front / BACK-FACE-FIRST), uncertified closed mesh "
-		          << "EXIT, and entry from inside another enclosure" << std::endl;
+		          << "EXIT, multi-patch Bezier interior EXIT, and entry from inside another enclosure" << std::endl;
+
+		// FIXTURE SANITY.  The Bezier record imports its flags from a real
+		// geometry hit; if that hit silently missed, or landed on the
+		// FRONT face, the row would carry the defaults and gate nothing.
+		{
+			const BezierStamp& bs = BezierBackFaceStamp( 2.0 );
+			EXPECT( bs.bHit, "[E] bezier fixture: the probe ray really hits the patch" );
+			EXPECT( bs.bGeomNormalOrientedToRay,
+				"[E] bezier fixture: it is a BACK-face hit (the geometry flipped the normal) "
+				"-- this is round 2's certification condition" );
+			EXPECT( !bs.bProvablyNoInterior,
+				"[E] bezier fixture: a multi-patch geometry must NOT certify 'no interior' "
+				"(round 3 P1: patches is a vector; a .bezier file's 28 patches load into one geometry)" );
+			EXPECT( fabs( bs.vGeomNormal.z + 1.0 ) < 1e-9,
+				"[E] bezier fixture: the stamped geometric normal is the canonical -Z" );
+		}
 		for( int m = 0; m < 2; m++ ) {
 			const bool bNM = ( m == 1 );
 			for( int st = 0; st < 2; st++ ) {
@@ -901,6 +1027,7 @@ int main()
 				Gate1( rig, obj, other, kSheetBack,      bNM, st==1, 2.0, "[E]" );
 				Gate1( rig, obj, other, kMeshSheetBack,  bNM, st==1, 2.0, "[E]" );
 				Gate1( rig, obj, other, kDSExit,         bNM, st==1, 2.0, "[E]" );
+				Gate1( rig, obj, other, kBezierExit,     bNM, st==1, 2.0, "[E]" );
 				Gate1( rig, obj, other, kOtherEnclosure, bNM, st==1, 2.0, "[E]" );
 			}
 		}
@@ -908,6 +1035,7 @@ int main()
 		Gate234( rig, obj, other, kSheetBack,      false, 2.0, "[E]" );
 		Gate234( rig, obj, other, kMeshSheetBack,  false, 2.0, "[E]" );
 		Gate234( rig, obj, other, kDSExit,         false, 2.0, "[E]" );
+		Gate234( rig, obj, other, kBezierExit,     false, 2.0, "[E]" );
 		Gate234( rig, obj, other, kOtherEnclosure, false, 2.0, "[E]" );
 	}
 

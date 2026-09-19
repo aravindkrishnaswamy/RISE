@@ -289,6 +289,10 @@ namespace
 		// forwarded.  `bOpenSheet` is a property of the SURFACE struck and
 		// survives compositing; that flag is a property of the OBJECT, and a
 		// CSG tree built from planes can perfectly well have an interior.
+		// Round 3 found the GENERAL form of that argument the hard way (its
+		// P1): no geometry holding a COLLECTION of interior-free primitives
+		// can certify either, which is why `BezierPatchGeometry`'s own stamp
+		// was removed.
 
 		dst.ptCoord = src.ptCoord;
 		dst.ptCoord1 = src.ptCoord1;

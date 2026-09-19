@@ -418,16 +418,35 @@ namespace RISE
 		//! `bOpenSheet` as "no interior" therefore misreads a genuine
 		//! interior EXIT on an ordinary closed mesh as an entry.
 		//!
-		//! Only a geometry whose SHAPE forbids an interior can set this:
-		//! `ClippedPlaneGeometry` (a plane) and `BezierPatchGeometry` (a
-		//! single patch) -- neither can enclose a volume at any
-		//! tessellation, so the claim needs no build-time check and
-		//! cannot be wrong.  A mesh can never set it, because "not
-		//! certified closed" is not "certified open".
+		//! Only a geometry whose SHAPE forbids an interior can set this,
+		//! and today that is exactly ONE class: `ClippedPlaneGeometry`
+		//! -- four corners spanning one bilinear sheet with a boundary,
+		//! which cannot enclose a volume however it is transformed, so
+		//! the claim needs no build-time check and cannot be wrong.  Set
+		//! under the SAME back-face condition as `bOpenSheet` there, so
+		//! a front-face hit leaves it false and the ordinary ray anchor
+		//! applies.
 		//!
-		//! Set under the SAME back-face condition as `bOpenSheet` on
-		//! those two, so a front-face hit leaves it false and the
-		//! ordinary ray anchor applies.
+		//! TWO CLASSES OF GEOMETRY CAN NEVER SET IT.
+		//!
+		//! (1) Anything MESH-LIKE.  "Not certified closed" is not
+		//! "certified open", and `bOpenSheet` on the two mesh classes
+		//! means only the former.
+		//!
+		//! (2) Anything holding a COLLECTION of primitives, however
+		//! interior-free each one is on its own -- an interior is a
+		//! property of the whole surface, and N open sheets can bound a
+		//! volume that no single sheet can.  `BezierPatchGeometry` is
+		//! the concrete case (DL-157 review round 3, P1): it reads as
+		//! "one patch" from its name only.  `patches` is a vector with a
+		//! BSP/Octree over it, and `Job.cpp`'s `.bezier` loader puts
+		//! every patch of a file into ONE geometry --
+		//! `models/raw/teapot.bezier` declares 28,
+		//! `models/bezier/aphrodite.bezier` and `f16.bezier` are closed
+		//! solids.  Round 2 stamped this flag there on the back-face
+		//! condition; at a genuine interior exit on such an object that
+		//! condition holds, so the stamp asserted "no interior" on
+		//! precisely the hit that disproves it.  The setter was removed.
 		//!
 		//! NOT forwarded by `CSGObject::AdoptCsgSurfacePayload`, unlike
 		//! `bOpenSheet`: `bOpenSheet` is a property of the SURFACE the

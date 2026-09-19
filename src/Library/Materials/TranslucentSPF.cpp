@@ -540,21 +540,30 @@ namespace RISE { namespace Implementation { namespace TranslucentSPFDetail
 		// 0/30/60, against 1.000000 everywhere with the clause gone.
 		//
 		// `ri.bProvablyNoInterior` is the flag that means what is needed,
-		// and only a geometry whose SHAPE forbids an interior sets it --
-		// `ClippedPlaneGeometry` and `BezierPatchGeometry`, neither of
-		// which can enclose a volume at any tessellation.  A mesh can
-		// never set it, because "not certified closed" is not "certified
-		// open"; on one, the ray anchor is what is left, and it is right
-		// for the interior exit and wrong for the sheet's back face (the
-		// residual on DL-223).
+		// and exactly one class sets it: `ClippedPlaneGeometry`, whose
+		// four corners span ONE bounded bilinear sheet.  A mesh can never
+		// set it, because "not certified closed" is not "certified open";
+		// neither can any geometry holding a COLLECTION of primitives,
+		// since N interior-free sheets can bound a volume no single sheet
+		// can -- `BezierPatchGeometry` stamped it in round 2 and was
+		// removed in round 3 for exactly that reason (its `patches` is a
+		// vector, and a `.bezier` file's 28 patches load into one
+		// geometry).  Where the flag is absent the ray anchor is what is
+		// left, and it is right for the interior exit and wrong for the
+		// sheet's back face (the residual on DL-223).
 		//
-		// The genuinely stackless callers are the translucent photon-map
-		// gather (`TranslucentPelPhotonMap::RadianceEstimate`, whose
-		// shader op HAS a stack but whose `IPhotonMap` interface does not
-		// carry one), `PointSetOctree`'s SSS irradiance cache, the
-		// interactive preview and `ManifoldSolver`'s four SMS sites;
-		// every production integrator path -- PT NEE, BDPT/VCM
-		// connections, the zero-exitance sweep, PT guiding -- is STACKED.
+		// MOST but not all callers are stacked.  The stackless ones are
+		// the translucent photon-map gather
+		// (`TranslucentPelPhotonMap::RadianceEstimate`, whose shader op
+		// HAS a stack but whose `IPhotonMap` interface does not carry
+		// one), the three global/caustic photon maps and `PhotonMap.h`'s
+		// own gather, `FinalGatherShaderOp`'s secondary-hit arm,
+		// `PointSetOctree`'s SSS irradiance cache, the interactive
+		// preview and `ManifoldSolver`'s four SMS sites -- ten call sites
+		// enumerated on DL-223(4), of which FINAL GATHER IS A PRODUCTION
+		// PATH.  The modern integrator paths -- PT NEE, BDPT/VCM
+		// connections, the zero-exitance sweep, PT guiding -- are all
+		// STACKED.
 		const bool bEntering = pIorStack
 			? !pIorStack->containsCurrent()
 			: ( ri.bProvablyNoInterior || Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 );
@@ -580,10 +589,12 @@ namespace RISE { namespace Implementation { namespace TranslucentSPFDetail
 		// `doublesided` DEFAULTS TO TRUE, and translucent is what authors
 		// put on open sheets (DL-46 review round 3(c)), so this is a
 		// first-class authoring case, not a corner.  Measured on that
-		// record with a stack-derived frame: gate 1's
-		// `E[kray]/E[value*cos/pdf]` read 0.840 on the front-reflection
-		// lobe and 1.402 on the transmission lobe at zero tilt, where
-		// both must read 1.000.  So the entry side uses LITERALLY
+		// record with a stack-derived frame (round 3's re-measurement,
+		// superseding round 1's 0.840 / 1.402 -- which came from a gate
+		// that drove only the stackless entry point): gate 1's
+		// `E[kray]/E[value*cos/pdf]` read 1.260222 on the front-reflection
+		// lobe and 2.336741 on the transmission lobe at zero tilt, on
+		// BOTH entry points, where all four must read 1.000.  So the entry side uses LITERALLY
 		// `Scatter`'s own expression.
 		//
 		// THE EXIT SIDE MUST NOT, and cannot be made to.

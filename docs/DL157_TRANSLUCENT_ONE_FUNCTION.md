@@ -184,10 +184,16 @@ kills the walk: `TranslucentIORStackTest`'s BDPT light rows measured
 **The rule, split by side, each half derived from what `Scatter` does.**
 
 ```
-bEntering = stack ? !containsCurrent() : (bOpenSheet || Dot(geomNRaw, rayDir) < 0)
+bEntering = stack ? !containsCurrent()
+                  : (bProvablyNoInterior || Dot(geomNRaw, rayDir) < 0)
 geomN     = bEntering ? (Dot(geomNRaw, rayDir) < 0 ? geomNRaw : -geomNRaw)   // Scatter's own expression
                       : -geomNRaw
 ```
+
+(Review round 3, P2-2: this block read `bOpenSheet` in the round-2
+revision of this document, three lines above prose saying that flag is
+not the one. The shipped rule is above; `bOpenSheet` is never consulted
+here.)
 
 * **Entry** uses literally `Scatter`'s expression, so the back-face-first
   record matches exactly.
@@ -211,17 +217,45 @@ geomN     = bEntering ? (Dot(geomNRaw, rayDir) < 0 ? geomNRaw : -geomNRaw)   // 
   at a genuine interior EXIT on such a mesh the stackless path then
   priced the ENTRY lobes: gate 1's `dsMeshExit` stackless rows read
   **1.745299** (diffuse exit) and **0.647376** (backscatter) at tilt 0,
-  against 1.000000 with the certification flag (984/24 vs 1008/0, the
-  24 being exactly those rows).
+  against 1.000000 with the certification flag. Re-run against the
+  round-3 suite (which adds the `bezierExit` record below) that A/B reads
+  **1066/48 vs 1114/0**, the 48 being the `dsMeshExit` AND `bezierExit`
+  stackless rows, which carry the identical ratios because they are the
+  identical record.
   `ri.bProvablyNoInterior` is set only by a geometry whose SHAPE forbids
-  an interior — `ClippedPlaneGeometry` and `BezierPatchGeometry`, neither
-  of which can enclose a volume at any tessellation, so the claim needs
-  no build-time check and cannot be wrong. **A mesh can never set it,
-  because "not certified closed" is not "certified open."** It is
-  deliberately not forwarded by `CSGObject::AdoptCsgSurfacePayload`:
-  `bOpenSheet` is a property of the SURFACE and survives compositing,
-  this is a property of the OBJECT, and a CSG tree built from planes can
-  have an interior.
+  an interior, and **round 3's P1 cut that set to exactly one class**:
+  `ClippedPlaneGeometry` — four corners spanning one bounded bilinear
+  sheet, which cannot enclose a volume however it is transformed, so the
+  claim needs no build-time check and cannot be wrong. **Two kinds of
+  geometry can never set it.** A MESH cannot, because "not certified
+  closed" is not "certified open." And neither can a geometry holding a
+  COLLECTION of primitives, however interior-free each primitive is on
+  its own — an interior is a property of the whole surface, and N open
+  sheets can bound a volume no single sheet can. Round 2 stamped the flag
+  in `BezierPatchGeometry` on the premise that "a single patch cannot
+  enclose a volume"; the class is not a single patch. `patches` is a
+  `BezierPatchList` (a `std::vector`) behind a BSP/Octree, `AddPatch`
+  appends, and `Job.cpp`'s `.bezier` loader puts EVERY patch of a file
+  into ONE geometry — `models/raw/teapot.bezier` declares 28, and
+  `models/bezier/aphrodite.bezier` and `f16.bezier` are closed solids.
+  At a genuine interior exit on such an object `Dot(N, rayDir) > 0`, the
+  patch normal flips, and the round-2 stamp therefore asserted "no
+  interior" on precisely the hit that disproves it; the stackless arm
+  then priced the ENTRY lobes at an exit. (A second reason the flip
+  cannot carry a topological claim: `RayElementIntersection`'s own
+  comment says the flip exists because patch WINDING varies inside one
+  file — the teapot traverses some patches CCW and others CW.) The
+  setter was removed and the new `bezierExit` gate row measures what it
+  cost: **1.745299** (diffuse exit) / **0.647376** (backscatter) at tilt
+  0 stackless, bit-for-bit the `dsMeshExit` pair, 1089/25 against
+  1114/0. This was LATENT — no shipped scene binds
+  `bezierpatch_geometry` to `translucent_material` — but as authorable as
+  the clipped-plane case, and `sms_teapot_close_sms.RISEscene` already
+  drives a Bezier teapot through `ManifoldSolver`'s four stackless sites.
+  The flag is deliberately not forwarded by
+  `CSGObject::AdoptCsgSurfacePayload`: `bOpenSheet` is a property of the
+  SURFACE and survives compositing, this is a property of the OBJECT, and
+  a CSG tree built from planes can have an interior.
 
 **What is genuinely left, stated precisely — two residuals, both on
 DL-223, both bounded.**
@@ -239,13 +273,37 @@ DL-223, both bounded.**
    rows read **1.680295** (front reflection) and **1.001460**
    (transmission) at tilt 0 — printed and bounded as a KNOWN-RESIDUAL
    row rather than gated at 1, so its closure is as visible as a
-   regression. The affected caller families are exactly five, and none
-   is a production integrator path: `TranslucentPelPhotonMap::RadianceEstimate`
-   (whose shader op HAS a stack but whose `IPhotonMap` interface does not
-   carry one), `PointSetOctree`'s SSS irradiance cache,
-   `InteractivePelRasterizer`'s preview, and `ManifoldSolver`'s four SMS
-   sites. PT NEE, BDPT/VCM connections, the zero-exitance sweep and PT
-   guiding are all STACKED and correct on both records.
+   regression. **Review round 3, P2-3: the affected set is TEN call
+   sites, not five, and one of them IS a production path** — the round-2
+   list stopped at the families this slice had already converted or
+   inspected and never swept the photon-map layer. The full list:
+
+   | # | site | note |
+   |---|---|---|
+   | 1 | `TranslucentPelPhotonMap::RadianceEstimate` (`TranslucentPelPhotonMap.cpp:91`) | its shader op HAS a stack; the `IPhotonMap` interface does not carry one |
+   | 2 | `GlobalPelPhotonMap.cpp:97` | global photon gather, RGB |
+   | 3 | `GlobalSpectralPhotonMap.cpp:82` | global gather, spectral XYZ arm |
+   | 4 | `GlobalSpectralPhotonMap.cpp:135` | global gather, NM arm |
+   | 5 | `CausticSpectralPhotonMap.cpp:82` | caustic gather, spectral XYZ arm |
+   | 6 | `CausticSpectralPhotonMap.cpp:137` | caustic gather, NM arm |
+   | 7 | `PhotonMap.h:705` | the shared templated gather |
+   | 8 | `PointSetOctree.cpp:271` / `:287` | SSS irradiance cache (two calls, one family) |
+   | 9 | `InteractivePelRasterizer.cpp:322` / `:323` / `:368` | preview (three calls, one family) |
+   | 10 | `ManifoldSolver.cpp:5684` / `:5798` / `:6624` / `:8085` | the four SMS sites |
+
+   An ELEVENTH, `FinalGatherShaderOp.cpp:215`, was on this list and is
+   **fixed in round 3 instead of recorded**: the same file's primary
+   gather arm at `:521` was converted to `valueStateful` by this slice
+   while the gradient-estimator arm was left behind, with the live
+   `ior_stack` already a parameter of that helper two lines above the
+   call. Final gather IS a production path, so the round-2 sentence
+   "none of them a production integrator path" was wrong as written; it
+   is true of the ten that remain. `PathValueOps::EvalBSDF` looks like a
+   twelfth and is not — it has no callers anywhere in the tree.
+
+   The MODERN integrator paths — PT NEE, BDPT/VCM connections, the
+   zero-exitance sweep and PT guiding — are all STACKED and correct on
+   both records.
 
 The rule above is the one that is right for PT / NEE and for the eye
 subpath, both of which hold a record whose ray IS the incoming ray.
@@ -866,7 +924,7 @@ available statement, since the two are the same quantity asked twice.
 
 | suite | result |
 |---|---|
-| `TranslucentLobeConsistencyTest` (new) | **1008 / 0** (round-1 file: 240 / 0, red 67 / 173 against `bb2ccd80`; single-change A/Bs at HEAD: 924 / 84 without the frame split, 984 / 24 with `bOpenSheet` in place of the certification) |
+| `TranslucentLobeConsistencyTest` (new) | **1114 / 0** (round-1 file revision: 240 / 0, red 67 / 173 against `bb2ccd80`; round-2 file revision: 1008 / 0. Single-change A/Bs against the CURRENT file: 1030 / 84 without the frame split, 1066 / 48 with `bOpenSheet` in place of the certification, 1089 / 25 with round 2's `BezierPatchGeometry` certification restored) |
 | `TranslucentSpectralParityTest` | 1918 checks, 0 failures |
 | `TranslucentTiltedExitTest` | ALL TESTS PASSED |
 | `TranslucentEntryHorizonTest` | 251 checks, 0 failures |
