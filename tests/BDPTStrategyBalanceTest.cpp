@@ -2388,10 +2388,6 @@ static const char* kRasterizerBDPTSpectralHWSS =
 	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
-// Returns the achromatic hwss-TRUE/hwss-FALSE mean ratio, or -1 on a
-// render failure (already `Check`-flagged).  Shared by topology L's own
-// probe and topology M's control (round-2 review P3-4) so the two use
-// IDENTICAL rasterizer strings and statistics.
 static unsigned int spectralSampleScale = 1;
 
 static std::string ScaleSpectralSamples( std::string scene )
@@ -2406,6 +2402,10 @@ static std::string ScaleSpectralSamples( std::string scene )
 	return scene;
 }
 
+// Returns the achromatic hwss-TRUE/hwss-FALSE mean ratio, or -1 on a
+// render failure (already `Check`-flagged).  Shared by topology L's own
+// probe and topology M's control (round-2 review P3-4) so the two use
+// IDENTICAL rasterizer strings and statistics.
 static double RunSpectralHWSSLadder( const char* topologyLabel, const std::string& sceneBody,
 	ImageStats* outNoHWSS = 0, ImageStats* outHWSS = 0 )
 {
