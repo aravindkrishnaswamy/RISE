@@ -404,6 +404,44 @@ namespace RISE
 		//! all, not "two legitimate sides of one winding").
 		bool						bOpenSheet;
 
+		//! DL-157 review round 2 (2026-09-18): the surface's OBJECT
+		//! PROVABLY HAS NO INTERIOR.
+		//!
+		//! `bOpenSheet` does NOT mean this, and conflating the two is a
+		//! measured defect.  For the two mesh classes it means
+		//! "UNCERTIFIED": `TriangleMeshGeometryIndexed` sets it whenever
+		//! DL-143's build-time weld could not certify watertightness --
+		//! which, per DL-143's own audit, is all four glTF assets it
+		//! examined, every one of them a closed solid -- and the
+		//! non-indexed twin sets it on every double-sided hit because it
+		//! has no certification at all.  A consumer that reads
+		//! `bOpenSheet` as "no interior" therefore misreads a genuine
+		//! interior EXIT on an ordinary closed mesh as an entry.
+		//!
+		//! Only a geometry whose SHAPE forbids an interior can set this:
+		//! `ClippedPlaneGeometry` (a plane) and `BezierPatchGeometry` (a
+		//! single patch) -- neither can enclose a volume at any
+		//! tessellation, so the claim needs no build-time check and
+		//! cannot be wrong.  A mesh can never set it, because "not
+		//! certified closed" is not "certified open".
+		//!
+		//! Set under the SAME back-face condition as `bOpenSheet` on
+		//! those two, so a front-face hit leaves it false and the
+		//! ordinary ray anchor applies.
+		//!
+		//! NOT forwarded by `CSGObject::AdoptCsgSurfacePayload`, unlike
+		//! `bOpenSheet`: `bOpenSheet` is a property of the SURFACE the
+		//! ray struck and survives compositing, while this is a property
+		//! of the OBJECT -- a CSG tree built from planes can perfectly
+		//! well have an interior, so the wrapper must not inherit an
+		//! operand's claim.
+		//!
+		//! WHO READS IT: `TranslucentSPFDetail::BuildLobeSet`'s STACKLESS
+		//! side inference only (a caller with a live IOR stack asks the
+		//! stack instead, and every production integrator path is
+		//! stacked).  See DL-157's closure doc section 3.1.
+		bool						bProvablyNoInterior;
+
 		//! THE shared recovery for the two flags above (DL-70).  Returns
 		//! the TRUE, ray-independent, winding-order geometric normal: the
 		//! reported `vGeomNormal` with the double-sided / back-face
@@ -762,6 +800,7 @@ namespace RISE
 		  bGeomNormalOrientedToRay( false ),
 		  bGeomNormalRayDerived( false ),
 		  bOpenSheet( false ),
+		  bProvablyNoInterior( false ),
 		  bHasTexCoord1( false ),
 		  bUVGeneratorApplied( false ),
 		  pmxWorldToObject( 0 ),
@@ -795,6 +834,7 @@ namespace RISE
 		  bGeomNormalOrientedToRay( r.bGeomNormalOrientedToRay ),
 		  bGeomNormalRayDerived( r.bGeomNormalRayDerived ),
 		  bOpenSheet( r.bOpenSheet ),
+		  bProvablyNoInterior( r.bProvablyNoInterior ),
 		  ptCoord( r.ptCoord ),
 		  ptCoord1( r.ptCoord1 ),
 		  bHasTexCoord1( r.bHasTexCoord1 ),
@@ -842,6 +882,7 @@ namespace RISE
 			bGeomNormalOrientedToRay = r.bGeomNormalOrientedToRay;
 			bGeomNormalRayDerived = r.bGeomNormalRayDerived;
 			bOpenSheet = r.bOpenSheet;
+			bProvablyNoInterior = r.bProvablyNoInterior;
 			ptCoord = r.ptCoord;
 			ptCoord1 = r.ptCoord1;
 			bHasTexCoord1 = r.bHasTexCoord1;

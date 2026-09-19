@@ -285,6 +285,10 @@ namespace
 		// reported, not of `dst`'s original whole-record copy.  See
 		// RayIntersectionGeometric::bOpenSheet's doc comment.
 		dst.bOpenSheet = src.bOpenSheet;
+		// DL-157 review round 2: `bProvablyNoInterior` is deliberately NOT
+		// forwarded.  `bOpenSheet` is a property of the SURFACE struck and
+		// survives compositing; that flag is a property of the OBJECT, and a
+		// CSG tree built from planes can perfectly well have an interior.
 
 		dst.ptCoord = src.ptCoord;
 		dst.ptCoord1 = src.ptCoord1;

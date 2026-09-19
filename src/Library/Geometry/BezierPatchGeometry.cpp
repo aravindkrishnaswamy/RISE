@@ -111,6 +111,9 @@ void BezierPatchGeometry::RayElementIntersection( RayIntersectionGeometric& ri, 
 	// here is always an open sheet (both faces are legitimate physical
 	// sides) -- see RayIntersectionGeometric::bOpenSheet's doc comment.
 	ri.bOpenSheet = bDidFlip;
+	// DL-157 review round 2: a single patch cannot enclose a volume -- see
+	// the flag's doc for why a MESH can never make the same claim.
+	ri.bProvablyNoInterior = bDidFlip;
 
 	// DL-20 (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md 14 item 2, closed):
 	// this hit already knows exactly which PATCH and (u, v) it landed on

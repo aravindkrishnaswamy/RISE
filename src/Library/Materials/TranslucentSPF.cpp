@@ -524,19 +524,40 @@ namespace RISE { namespace Implementation { namespace TranslucentSPFDetail
 		// Without a stack the side has to be inferred, and the ray anchor
 		// is EXACT for a closed object: a ray entering one travels inward
 		// at its boundary hit.  It is NOT exact on an OPEN sheet, where a
-		// back-face-first hit is a genuine ENTRY with a leaving ray -- so
-		// there, prefer the fact the geometry does give us: a sheet has no
-		// interior, so absent a stack a hit on one is an entry.  That is
-		// right for every first hit and for the camera-ray case DL-157's
-		// P1 review measured; it is wrong only for a ray that has already
-		// transmitted through the sheet and so really is "inside" by the
-		// stack's own bookkeeping, which no stackless caller can see.
+		// back-face-first hit is a genuine ENTRY with a leaving ray.
+		//
+		// ⚠ `ri.bOpenSheet` IS NOT THE FLAG TO ASK, and review round 2
+		// measured what asking it costs.  For the two mesh classes that
+		// flag means UNCERTIFIED, not open: `TriangleMeshGeometryIndexed`
+		// sets it whenever DL-143's build-time weld could not certify
+		// watertightness -- all four glTF assets DL-143 audited, every one
+		// a closed solid -- and the non-indexed twin sets it on every
+		// double-sided hit.  Round 2 briefly used it here, and at a
+		// genuine interior EXIT on such a mesh the stackless path then
+		// priced the ENTRY lobes: measured `E[kray]/E[value*cos/pdf]`
+		// 0.866690 / 0.865710 / 0.865039 on the diffuse exit and
+		// 0.321477 / 0.310505 / 0.313584 on the backscatter at tilt
+		// 0/30/60, against 1.000000 everywhere with the clause gone.
+		//
+		// `ri.bProvablyNoInterior` is the flag that means what is needed,
+		// and only a geometry whose SHAPE forbids an interior sets it --
+		// `ClippedPlaneGeometry` and `BezierPatchGeometry`, neither of
+		// which can enclose a volume at any tessellation.  A mesh can
+		// never set it, because "not certified closed" is not "certified
+		// open"; on one, the ray anchor is what is left, and it is right
+		// for the interior exit and wrong for the sheet's back face (the
+		// residual on DL-223).
+		//
 		// The genuinely stackless callers are the translucent photon-map
-		// gather, `PointSetOctree`'s SSS irradiance cache and the
-		// interactive preview; every other one now passes a stack.
+		// gather (`TranslucentPelPhotonMap::RadianceEstimate`, whose
+		// shader op HAS a stack but whose `IPhotonMap` interface does not
+		// carry one), `PointSetOctree`'s SSS irradiance cache, the
+		// interactive preview and `ManifoldSolver`'s four SMS sites;
+		// every production integrator path -- PT NEE, BDPT/VCM
+		// connections, the zero-exitance sweep, PT guiding -- is STACKED.
 		const bool bEntering = pIorStack
 			? !pIorStack->containsCurrent()
-			: ( ri.bOpenSheet || Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 );
+			: ( ri.bProvablyNoInterior || Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 );
 
 		// `geomN` -- the side the INCOMING ray arrived from -- is what
 		// `Scatter`'s ENTRY lobes are clipped against, and it is NOT

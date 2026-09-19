@@ -225,8 +225,26 @@ namespace
 		ri.onb.CreateFromW( nReported );
 		ri.vGeomNormal = Vector3(0,0,-1);        // flipped toward the ray
 		ri.bGeomNormalOrientedToRay = true;      // ... and it says so
-		ri.bOpenSheet = true;                    // ... and it has no interior
+		ri.bOpenSheet = true;                    // two legitimate faces
+		// A `clippedplane_geometry`: a PLANE cannot enclose a volume, so
+		// this geometry really does certify "no interior" and a stackless
+		// caller can use it.  The MESH twin below cannot.
+		ri.bProvablyNoInterior = true;
 		ri.ptCoord = Point2(0.5,0.5);
+		return ri;
+	}
+
+	//! The same back-face-first hit on a double-sided MESH open sheet.
+	//! Identical in every respect except that a mesh can never certify
+	//! "no interior" (`bOpenSheet` there means UNCERTIFIED), so a
+	//! stackless caller has only the ray anchor and reads this as an
+	//! EXIT.  That is DL-223's recorded stackless residual; the STACKED
+	//! entry point -- which is every production integrator path -- is
+	//! correct here and is gated.
+	RayIntersectionGeometric MakeMeshSheetBackFaceFirst( Scalar tiltDeg, Scalar segLen )
+	{
+		RayIntersectionGeometric ri = MakeOpenSheetBackFaceFirst( tiltDeg, segLen );
+		ri.bProvablyNoInterior = false;
 		return ri;
 	}
 
@@ -274,16 +292,52 @@ namespace
 	//! are the closed-solid pair; `kSheetFront`/`kSheetBack` are the open
 	//! double-sided sheet, whose BACK-face record is the one DL-157's P1
 	//! review found broken (side says entry, ray says leaving, both true).
-	enum RecordKind { kEntry, kExit, kSheetFront, kSheetBack };
+	enum RecordKind { kEntry, kExit, kSheetFront, kSheetBack, kMeshSheetBack, kDSExit, kOtherEnclosure };
+	const int kNumRecordKinds = 7;
 
 	const char* RecordName( RecordKind k )
 	{
 		switch( k ) {
-		case kEntry:      return "entry     ";
-		case kExit:       return "exit      ";
-		case kSheetFront: return "sheetFront";
-		default:          return "sheetBack ";
+		case kEntry:      return "entry      ";
+		case kExit:       return "exit       ";
+		case kSheetFront: return "sheetFront ";
+		case kSheetBack:  return "planeBack  ";
+		case kMeshSheetBack: return "meshBack   ";
+		case kDSExit:     return "dsMeshExit ";
+		default:          return "otherEnclos";
 		}
+	}
+
+	//! A CLOSED but UNCERTIFIED double-sided mesh hit from INSIDE (a
+	//! genuine interior exit).  Review round 2's P1-2 record: the
+	//! geometry flips both reported normals toward the outward-travelling
+	//! ray AND stamps `bOpenSheet`, because
+	//! `TriangleMeshGeometryIndexed` sets that flag whenever DL-143's
+	//! weld could not CERTIFY watertightness -- which, per DL-143's own
+	//! audit, is every glTF asset it examined, all of them closed solids.
+	//! `bProvablyNoInterior` stays false, because a mesh can never prove
+	//! it.  This is the record that a `bOpenSheet`-based stackless rule
+	//! got wrong.
+	RayIntersectionGeometric MakeDoubleSidedMeshExit( Scalar tiltDeg, Scalar segLen )
+	{
+		const Scalar tiltRad = tiltDeg * PI / 180.0;
+		// Reported (already flipped toward the outward-travelling ray).
+		const Vector3 nReported( sin(tiltRad), 0, -cos(tiltRad) );
+
+		Ray inRay( Point3(0,0,-segLen), Vector3(0,0,1) );
+		RasterizerState rs = {0,0};
+		RayIntersectionGeometric ri( inRay, rs );
+		ri.bHit = true;
+		ri.range = segLen;
+		ri.ptIntersection = Point3(0,0,0);
+		ri.vNormal = nReported;
+		ri.onb.CreateFromW( nReported );
+		ri.vGeomNormal = Vector3(0,0,-1);        // flipped toward the ray
+		ri.bGeomNormalOrientedToRay = true;
+		ri.bOpenSheet = true;                    // UNCERTIFIED, not open
+		ri.bProvablyNoInterior = false;          // ... and a mesh cannot certify
+		ri.ptCoord = Point2(0.5,0.5);
+		return ri;
 	}
 
 	RayIntersectionGeometric MakeRecord( RecordKind k, Scalar tiltDeg, Scalar segLen )
@@ -292,15 +346,32 @@ namespace
 		case kEntry:      return MakeClosedEntry( tiltDeg, segLen );
 		case kExit:       return MakeClosedExit( tiltDeg, segLen );
 		case kSheetFront: return MakeOpenSheetFrontFace( tiltDeg, segLen );
-		default:          return MakeOpenSheetBackFaceFirst( tiltDeg, segLen );
+		case kSheetBack:  return MakeOpenSheetBackFaceFirst( tiltDeg, segLen );
+		case kMeshSheetBack: return MakeMeshSheetBackFaceFirst( tiltDeg, segLen );
+		case kDSExit:     return MakeDoubleSidedMeshExit( tiltDeg, segLen );
+		// `kOtherEnclosure` is an ordinary ENTRY hit on our object; what
+		// differs is the STACK (see MakeRecordStack).
+		default:          return MakeClosedEntry( tiltDeg, segLen );
 		}
 	}
 
-	//! Every open-sheet record is an ENTRY by the stack: a sheet has no
-	//! interior, and the walk in these fixtures never transmitted.
-	IORStack MakeRecordStack( RecordKind k, const IObject* obj )
+	//! `kExit` and `kDSExit` are interior exits; every other record is an
+	//! ENTRY by the stack.  `kOtherEnclosure` is the one that separates
+	//! "the stack is non-empty" from "the stack contains US": the walk is
+	//! inside a DIFFERENT object (water, say) and entering ours, so
+	//! `containsCurrent()` must read false even though the stack has a
+	//! frame on it.
+	IORStack MakeRecordStack( RecordKind k, const IObject* obj, const IObject* other )
 	{
-		return ( k == kExit ) ? MakeInsideStack( obj ) : MakeOutsideStack( obj );
+		if( k == kExit || k == kDSExit ) return MakeInsideStack( obj );
+		if( k == kOtherEnclosure ) {
+			IORStack stack( 1.0 );
+			stack.SetCurrentObject( other );
+			stack.push( 1.33 );          // we are inside `other`
+			stack.SetCurrentObject( obj );   // ... and now hitting ours
+			return stack;
+		}
+		return MakeOutsideStack( obj );
 	}
 
 	//! Uniform-ish spherical grid used by gates 2/3/4.
@@ -345,19 +416,27 @@ namespace
 //            per LOBE, over the SPF's own draws.
 //////////////////////////////////////////////////////////////////////
 
-static void Gate1( const Rig& rig, const IObject* obj, RecordKind kind, bool bNM,
-	Scalar segLen, const char* label )
+//! `bStacked` selects the ENTRY POINT under test.  Review round 2's P2-2:
+//! gate 1 originally drove only the STACKLESS `value(wo, ri)`, while PT's
+//! NEE (`pMisIorStack`), `PathVertexEval::EvalBSDFAtVertex` and BDPT's
+//! zero-exitance row all call `valueStateful(wo, ri, &stack)` -- so the
+//! entry point every production integrator uses had no gate at all, and
+//! that hole is what let a mis-attributed red-proof stand for a round.
+//! Both entry points are now driven on every record.
+static void Gate1( const Rig& rig, const IObject* obj, const IObject* other,
+	RecordKind kind, bool bNM, bool bStacked, Scalar segLen, const char* label )
 {
 	const int kTrials = 40000;
-	const bool bExit = ( kind == kExit );
+	const bool bExit = ( kind == kExit || kind == kDSExit );
 
 	std::cout << "  -- Gate 1 " << label << " " << RecordName(kind)
-	          << " (" << (bNM?"NM":"RGB") << ")" << std::endl;
+	          << " (" << (bNM?"NM":"RGB") << ", " << (bStacked?"STACKED value":"stackless value")
+	          << ")" << std::endl;
 
 	for( int t = 0; t < kNumTilts; t++ )
 	{
 		RayIntersectionGeometric ri = MakeRecord( kind, kTiltAnglesDeg[t], segLen );
-		IORStack stack = MakeRecordStack( kind, obj );
+		IORStack stack = MakeRecordStack( kind, obj, other );
 
 		RandomNumberGenerator rng( 4242u + (unsigned)t );
 		Implementation::IndependentSampler sampler( rng );
@@ -382,7 +461,9 @@ static void Gate1( const Rig& rig, const IObject* obj, RecordKind kind, bool bNM
 				const double cosO = fabs( Vector3Ops::Dot( wo, ri.vNormal ) );
 				if( bNM ) {
 					sumKray[k] += s.krayNM;
-					sumBsdf[k] += rig.bsdf()->valueNM( wo, ri, kProbeNM ) * cosO / s.pdf;
+					sumBsdf[k] += ( bStacked
+						? rig.bsdf()->valueStatefulNM( wo, ri, kProbeNM, &stack )
+						: rig.bsdf()->valueNM( wo, ri, kProbeNM ) ) * cosO / s.pdf;
 				} else {
 					// REDUCE BY THE LOBE'S OWN CHANNEL, not by MaxValue of
 					// the two sides independently.  `value` is a SUM over
@@ -406,7 +487,9 @@ static void Gate1( const Rig& rig, const IObject* obj, RecordKind kind, bool bNM
 						if( s.kray[c] > s.kray[cBest] ) cBest = c;
 					}
 					sumKray[k] += s.kray[cBest];
-					sumBsdf[k] += rig.bsdf()->value( wo, ri )[cBest] * cosO / s.pdf;
+					sumBsdf[k] += ( bStacked
+						? rig.bsdf()->valueStateful( wo, ri, &stack )
+						: rig.bsdf()->value( wo, ri ) )[cBest] * cosO / s.pdf;
 				}
 				nEmit[k]++;
 			}
@@ -429,9 +512,26 @@ static void Gate1( const Rig& rig, const IObject* obj, RecordKind kind, bool bNM
 			          << "  ratio=" << ratio
 			          << "  (n=" << nEmit[k] << ")" << std::endl;
 			char buf[256];
-			snprintf( buf, sizeof(buf), "%s %s %s tilt %d %s ratio=%.6f (want 1)",
-				label, RecordName(kind), bNM?"NM":"RGB", (int)kTiltAnglesDeg[t], lobe, ratio );
-			EXPECT( fabs( ratio - 1.0 ) < 0.005, buf );
+			snprintf( buf, sizeof(buf), "%s %s %s %s tilt %d %s ratio=%.6f (want 1)",
+				label, RecordName(kind), bNM?"NM":"RGB", bStacked?"STACKED":"stackless",
+				(int)kTiltAnglesDeg[t], lobe, ratio );
+			// DL-223's recorded stackless residual: a double-sided MESH
+			// open sheet struck back-face-first cannot be distinguished
+			// from that mesh's own interior EXIT without a stack, because
+			// a mesh can never certify "no interior" (`bOpenSheet` there
+			// means UNCERTIFIED -- review round 2, P1-2).  The STACKED
+			// entry point, which is every production integrator path, is
+			// gated normally; the stackless one is PRINTED and bounded so
+			// its closure is as visible as a regression.
+			if( kind == kMeshSheetBack && !bStacked ) {
+				char rbuf[320];
+				snprintf( rbuf, sizeof(rbuf),
+					"%s KNOWN-RESIDUAL (DL-223, stackless mesh open sheet): %s",
+					label, buf );
+				EXPECT( ratio > 0.5 && ratio < 2.5, rbuf );
+			} else {
+				EXPECT( fabs( ratio - 1.0 ) < 0.005, buf );
+			}
 		}
 	}
 }
@@ -441,8 +541,8 @@ static void Gate1( const Rig& rig, const IObject* obj, RecordKind kind, bool bNM
 //  Scatter + RandomlySelect actually generate.
 //////////////////////////////////////////////////////////////////////
 
-static void Gate234( const Rig& rig, const IObject* obj, RecordKind kind, bool bNM,
-	Scalar segLen, const char* label )
+static void Gate234( const Rig& rig, const IObject* obj, const IObject* other,
+	RecordKind kind, bool bNM, Scalar segLen, const char* label )
 {
 	const int kTrials = 200000;
 
@@ -452,7 +552,7 @@ static void Gate234( const Rig& rig, const IObject* obj, RecordKind kind, bool b
 	for( int t = 0; t < kNumTilts; t++ )
 	{
 		RayIntersectionGeometric ri = MakeRecord( kind, kTiltAnglesDeg[t], segLen );
-		IORStack stack = MakeRecordStack( kind, obj );
+		IORStack stack = MakeRecordStack( kind, obj, other );
 
 		// ---- quadrature of Pdf, and the value>0 / Pdf>0 partition ----
 		const int kCells = SphereGrid::kNTheta * SphereGrid::kNPhi;
@@ -470,9 +570,14 @@ static void Gate234( const Rig& rig, const IObject* obj, RecordKind kind, bool b
 						const Scalar p = bNM
 							? rig.spf()->PdfNM( ri, w, kProbeNM, stack )
 							: rig.spf()->Pdf( ri, w, stack );
+						// Gate 4 pairs the STACKED `Pdf` above with the
+						// STACKED `value`: comparing a stacked density's
+						// support against a STACKLESS value's would be a
+						// cross-entry-point check, which is P2-1's own
+						// mis-attribution in miniature.
 						const double v = bNM
-							? rig.bsdf()->valueNM( w, ri, kProbeNM )
-							: ColorMath::MaxValue( rig.bsdf()->value( w, ri ) );
+							? rig.bsdf()->valueStatefulNM( w, ri, kProbeNM, &stack )
+							: ColorMath::MaxValue( rig.bsdf()->valueStateful( w, ri, &stack ) );
 						if( v > 1e-12 && p <= 0 ) partitionViolations++;
 						cell += p * dW;
 						mass += p * dW;
@@ -573,7 +678,7 @@ static void Gate234( const Rig& rig, const IObject* obj, RecordKind kind, bool b
 //  quantity asked two ways.
 //////////////////////////////////////////////////////////////////////
 
-static void GateKrayNM( const IObject* obj )
+static void GateKrayNM( const IObject* obj, const IObject* other )
 {
 	std::cout << std::endl << "[F] Gate 5: EvaluateKrayNM == ScatterNM's own krayNM (DL-222)"
 	          << std::endl;
@@ -581,13 +686,13 @@ static void GateKrayNM( const IObject* obj )
 	Rig rig( RISEPel(0.5,0.3,0.2), RISEPel(0.4,0.6,0.3), 0.35, 10.0, 0.3 );
 	const Scalar kNMs[] = { 430.0, 550.0, 660.0 };
 
-	for( int k = 0; k < 4; k++ )
+	for( int k = 0; k < kNumRecordKinds; k++ )
 	{
 		const RecordKind kind = (RecordKind)k;
 		for( int t = 0; t < kNumTilts; t++ )
 		{
 			RayIntersectionGeometric ri = MakeRecord( kind, kTiltAnglesDeg[t], 2.0 );
-			IORStack stack = MakeRecordStack( kind, obj );
+			IORStack stack = MakeRecordStack( kind, obj, other );
 			RandomNumberGenerator rng( 31337u + (unsigned)t );
 			Implementation::IndependentSampler sampler( rng );
 
@@ -688,6 +793,11 @@ int main()
 
 	StubObject* obj = new StubObject();
 	obj->addref();
+	// A SECOND object, so `kOtherEnclosure` can put a frame on the stack
+	// that is not ours -- the record that separates "the stack is
+	// non-empty" from "the stack contains US".
+	StubObject* other = new StubObject();
+	other->addref();
 
 	// Chromatic reflectance and transmittance (DL-98/DL-99 review lesson
 	// (3): grey inputs hide a MaxValue reduction-order error), the
@@ -695,28 +805,37 @@ int main()
 	// and TWO extinction settings -- 0 (the pre-existing tables' value)
 	// and 0.35 over a unit interior segment, which is what makes the
 	// exit/backscatter split's Beer factor (DL-38) visible at all.
+	//
+	// EVERY gate-1 row is run through BOTH entry points -- the stackless
+	// `value(wo, ri)` and the STACKED `valueStateful(wo, ri, &stack)` that
+	// PT's NEE, `EvalBSDFAtVertex` and BDPT's zero-exitance row actually
+	// call (review round 2, P2-2).
 	{
 		Rig rig( RISEPel(0.5,0.3,0.2), RISEPel(0.4,0.6,0.3), 0.0, 10.0, 0.3 );
 		std::cout << std::endl << "[A] ext=0, ref=(.5,.3,.2) tau=(.4,.6,.3) N=10 scat=.3" << std::endl;
 		for( int m = 0; m < 2; m++ ) {
 			const bool bNM = ( m == 1 );
-			Gate1( rig, obj, kEntry, bNM, 2.0, "[A]" );
-			Gate1( rig, obj, kExit,  bNM, 2.0, "[A]" );
+			for( int st = 0; st < 2; st++ ) {
+				Gate1( rig, obj, other, kEntry, bNM, st==1, 2.0, "[A]" );
+				Gate1( rig, obj, other, kExit,  bNM, st==1, 2.0, "[A]" );
+			}
 		}
-		Gate234( rig, obj, kEntry, false, 2.0, "[A]" );
-		Gate234( rig, obj, kEntry, true,  2.0, "[A]" );
-		Gate234( rig, obj, kExit,  false, 2.0, "[A]" );
-		Gate234( rig, obj, kExit,  true,  2.0, "[A]" );
+		Gate234( rig, obj, other, kEntry, false, 2.0, "[A]" );
+		Gate234( rig, obj, other, kEntry, true,  2.0, "[A]" );
+		Gate234( rig, obj, other, kExit,  false, 2.0, "[A]" );
+		Gate234( rig, obj, other, kExit,  true,  2.0, "[A]" );
 	}
 
 	{
 		Rig rig( RISEPel(0.5,0.3,0.2), RISEPel(0.4,0.6,0.3), 0.35, 10.0, 0.3 );
 		std::cout << std::endl << "[B] ext=0.35 over a 2.0 interior segment (DL-38's Beer factor)"
 		          << std::endl;
-		Gate1  ( rig, obj, kExit, false, 2.0, "[B]" );
-		Gate1  ( rig, obj, kExit, true,  2.0, "[B]" );
-		Gate234( rig, obj, kExit, false, 2.0, "[B]" );
-		Gate234( rig, obj, kExit, true,  2.0, "[B]" );
+		for( int st = 0; st < 2; st++ ) {
+			Gate1( rig, obj, other, kExit, false, st==1, 2.0, "[B]" );
+			Gate1( rig, obj, other, kExit, true,  st==1, 2.0, "[B]" );
+		}
+		Gate234( rig, obj, other, kExit, false, 2.0, "[B]" );
+		Gate234( rig, obj, other, kExit, true,  2.0, "[B]" );
 	}
 
 	{
@@ -725,53 +844,77 @@ int main()
 		// solid angle rather than a narrow cap.
 		Rig rig( RISEPel(0.5,0.3,0.2), RISEPel(0.4,0.6,0.3), 0.0, 1.0, 0.6 );
 		std::cout << std::endl << "[C] N=1 (wide Phong lobes), scat=0.6" << std::endl;
-		Gate1  ( rig, obj, kEntry, false, 2.0, "[C]" );
-		Gate1  ( rig, obj, kExit,  false, 2.0, "[C]" );
-		Gate234( rig, obj, kEntry, false, 2.0, "[C]" );
-		Gate234( rig, obj, kExit,  false, 2.0, "[C]" );
+		for( int st = 0; st < 2; st++ ) {
+			Gate1( rig, obj, other, kEntry, false, st==1, 2.0, "[C]" );
+			Gate1( rig, obj, other, kExit,  false, st==1, 2.0, "[C]" );
+		}
+		Gate234( rig, obj, other, kEntry, false, 2.0, "[C]" );
+		Gate234( rig, obj, other, kExit,  false, 2.0, "[C]" );
 	}
 
 	{
-		// [D] REVIEW P2-2: a PER-CHANNEL Phong exponent, the only way into
-		// `Scatter`'s three-ray branch -- four lobes in the set, a
+		// [D] REVIEW P2-2 (round 1): a PER-CHANNEL Phong exponent, the only
+		// way into `Scatter`'s three-ray branch -- four lobes in the set, a
 		// single-channel `kray` on each Phong ray, and `RandomlySelect`
 		// weighing `MaxValue` of that.  RGB only: `ScatterNM` has no
 		// per-channel branch (it evaluates `GetValueAtNM` once).
 		Rig rig( RISEPel(0.5,0.3,0.2), RISEPel(0.4,0.6,0.3), 0.35, -1.0, 0.3 );
 		std::cout << std::endl << "[D] per-channel N=(5,10,15), ext=0.35, chromatic ref/tau" << std::endl;
-		Gate1  ( rig, obj, kEntry, false, 2.0, "[D]" );
-		Gate1  ( rig, obj, kExit,  false, 2.0, "[D]" );
-		Gate234( rig, obj, kEntry, false, 2.0, "[D]" );
-		Gate234( rig, obj, kExit,  false, 2.0, "[D]" );
+		for( int st = 0; st < 2; st++ ) {
+			Gate1( rig, obj, other, kEntry, false, st==1, 2.0, "[D]" );
+			Gate1( rig, obj, other, kExit,  false, st==1, 2.0, "[D]" );
+		}
+		Gate234( rig, obj, other, kEntry, false, 2.0, "[D]" );
+		Gate234( rig, obj, other, kExit,  false, 2.0, "[D]" );
 	}
 
 	{
-		// [E] REVIEW P1: the OPEN double-sided sheet.  The back-face-first
-		// record is the one where the side (stack: not inside, true) and
-		// the ray (leaving, true) disagree, and a lobe frame derived from
-		// the side alone inverts.  Measured on the pre-P1-fix branch at
-		// zero tilt: front-reflection ratio 0.840148, transmission 1.402;
-		// both must read 1.000.  The FRONT-face row is the control that
-		// separates "this record is broken" from "open sheets are broken".
+		// [E] REVIEW round 1 P1 / round 2 P1-2: the records where the SIDE
+		// and the RAY disagree, and the record where they must NOT be
+		// confused.
 		//
-		// `clippedplane_geometry`'s `doublesided` defaults to TRUE and
-		// translucent is what authors put on open sheets (DL-46 review
-		// round 3(c)), so this is a first-class authoring case.
+		//   sheetFront  -- open sheet, front face: side and ray agree.
+		//   planeBack   -- a CLIPPED PLANE struck BACK FACE FIRST: the
+		//                  stack says not-inside (true, it never entered)
+		//                  and the ray says leaving (true, it hit the back
+		//                  face).  `clippedplane_geometry`'s `doublesided`
+		//                  DEFAULTS TO TRUE.  A plane PROVES it has no
+		//                  interior, so even the stackless path is right.
+		//   meshBack    -- the same hit on a double-sided MESH, which can
+		//                  never prove it.  STACKED is gated; stackless is
+		//                  DL-223's recorded residual.
+		//   dsMeshExit  -- a CLOSED but UNCERTIFIED double-sided mesh hit
+		//                  from inside.  It also carries `bOpenSheet`
+		//                  (that flag means "uncertified", not "open"), so
+		//                  it is the record that a `bOpenSheet`-based
+		//                  stackless rule priced as an ENTRY.
+		//   otherEnclos -- an ordinary entry while the walk is inside a
+		//                  DIFFERENT object: `containsCurrent()` must read
+		//                  false against a NON-EMPTY stack.
 		Rig rig( RISEPel(0.5,0.3,0.2), RISEPel(0.4,0.6,0.3), 0.0, 10.0, 0.3 );
-		std::cout << std::endl << "[E] OPEN double-sided sheet: front-face control and BACK-FACE-FIRST"
-		          << std::endl;
+		std::cout << std::endl << "[E] open sheet (front / BACK-FACE-FIRST), uncertified closed mesh "
+		          << "EXIT, and entry from inside another enclosure" << std::endl;
 		for( int m = 0; m < 2; m++ ) {
 			const bool bNM = ( m == 1 );
-			Gate1( rig, obj, kSheetFront, bNM, 2.0, "[E]" );
-			Gate1( rig, obj, kSheetBack,  bNM, 2.0, "[E]" );
+			for( int st = 0; st < 2; st++ ) {
+				Gate1( rig, obj, other, kSheetFront,     bNM, st==1, 2.0, "[E]" );
+				Gate1( rig, obj, other, kSheetBack,      bNM, st==1, 2.0, "[E]" );
+				Gate1( rig, obj, other, kMeshSheetBack,  bNM, st==1, 2.0, "[E]" );
+				Gate1( rig, obj, other, kDSExit,         bNM, st==1, 2.0, "[E]" );
+				Gate1( rig, obj, other, kOtherEnclosure, bNM, st==1, 2.0, "[E]" );
+			}
 		}
-		Gate234( rig, obj, kSheetFront, false, 2.0, "[E]" );
-		Gate234( rig, obj, kSheetBack,  false, 2.0, "[E]" );
+		Gate234( rig, obj, other, kSheetFront,     false, 2.0, "[E]" );
+		Gate234( rig, obj, other, kSheetBack,      false, 2.0, "[E]" );
+		Gate234( rig, obj, other, kMeshSheetBack,  false, 2.0, "[E]" );
+		Gate234( rig, obj, other, kDSExit,         false, 2.0, "[E]" );
+		Gate234( rig, obj, other, kOtherEnclosure, false, 2.0, "[E]" );
 	}
 
-	GateKrayNM( obj );
+	GateKrayNM( obj, other );
 	GateCompositeFullSphere();
 
+	other->release();
 	obj->release();
 
 	std::cout << std::endl << "Passed: " << (checks-failed) << "  Failed: " << failed << std::endl;

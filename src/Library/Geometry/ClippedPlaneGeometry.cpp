@@ -192,6 +192,9 @@ void ClippedPlaneGeometry::IntersectRay( RayIntersectionGeometric& ri, const boo
 	// physical sides) -- see RayIntersectionGeometric::bOpenSheet's
 	// doc comment.
 	ri.bOpenSheet = isBackFaceHit;
+	// DL-157 review round 2: a PLANE cannot enclose a volume, so this is a
+	// real certification rather than "uncertified" -- see the flag's doc.
+	ri.bProvablyNoInterior = isBackFaceHit;
 	ri.ptCoord = Point2( h.u, h.v );
 
 	// docs/CLOTH_FABRIC_DESIGN.md 9.1: `dpdu` above is the bilinear

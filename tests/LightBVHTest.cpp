@@ -81,7 +81,8 @@ public:
 		const RayIntersectionGeometric&, const IRayCaster&,
 		const IBSDF&, const bool, RISEPel& amount,
 		const bool /*bFullSphereReceiver*/,
-		const bool /*bVolumeReceiver*/ ) const
+		const bool /*bVolumeReceiver*/,
+		const IORStack* /*pIORStack*/ ) const      // DL-157 P2-3 added this
 	{
 		amount = RISEPel( 0, 0, 0 );
 	}
