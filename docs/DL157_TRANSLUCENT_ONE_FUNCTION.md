@@ -200,22 +200,55 @@ geomN     = bEntering ? (Dot(geomNRaw, rayDir) < 0 ? geomNRaw : -geomNRaw)   // 
   one record where the identity fails is a stack claiming "inside" for an
   entering ray — the open-sheet parity failure DL-76 tracks, where the
   exit branch has no meaning to begin with.)
-* **Stackless** callers infer the side. That is exact for a closed object;
-  on an open sheet it prefers the fact the geometry does supply
-  (`ri.bOpenSheet` — a sheet has no interior, so absent a stack a hit on
-  one is an entry), which is right for every first hit and wrong only for
-  a ray that has already transmitted through the sheet.
+* **Stackless** callers infer the side. That is exact for a closed
+  object; on a sheet it additionally asks `ri.bProvablyNoInterior`.
+  **`ri.bOpenSheet` is NOT that flag, and review round 2 measured what
+  asking it costs.** For the two mesh classes `bOpenSheet` means
+  *uncertified*: `TriangleMeshGeometryIndexed` sets it whenever DL-143's
+  build-time weld could not certify watertightness — all four glTF assets
+  DL-143 audited, every one a closed solid — and the non-indexed twin
+  sets it on every double-sided hit. A round-2 revision used it here, and
+  at a genuine interior EXIT on such a mesh the stackless path then
+  priced the ENTRY lobes: gate 1's `dsMeshExit` stackless rows read
+  **1.745299** (diffuse exit) and **0.647376** (backscatter) at tilt 0,
+  against 1.000000 with the certification flag (984/24 vs 1008/0, the
+  24 being exactly those rows).
+  `ri.bProvablyNoInterior` is set only by a geometry whose SHAPE forbids
+  an interior — `ClippedPlaneGeometry` and `BezierPatchGeometry`, neither
+  of which can enclose a volume at any tessellation, so the claim needs
+  no build-time check and cannot be wrong. **A mesh can never set it,
+  because "not certified closed" is not "certified open."** It is
+  deliberately not forwarded by `CSGObject::AdoptCsgSurfacePayload`:
+  `bOpenSheet` is a property of the SURFACE and survives compositing,
+  this is a property of the OBJECT, and a CSG tree built from planes can
+  have an interior.
 
-**What is genuinely left, stated precisely.** A LIGHT-subpath ENTRY
-vertex evaluated through the rebuilt record gets the ray-anchored frame
-computed from `-scatDir`, which is inverted relative to the walk's own
-incoming segment. It does not kill the walk (the inverted transmission
-lobe still has support at the queried direction) and it is not new — the
-pre-DL-157 `GetReflectedSide` was equally ray-anchored — but it is the
-caller-convention half of DL-223, the same role-swap that makes a
-NON-RECIPROCAL BSDF give two answers for one direction pair. The rule
-above is the one that is right for PT / NEE and for the eye subpath, both
-of which hold a record whose ray IS the incoming ray.
+**What is genuinely left, stated precisely — two residuals, both on
+DL-223, both bounded.**
+
+1. *A LIGHT-subpath ENTRY vertex* evaluated through the rebuilt record
+   gets the ray-anchored frame computed from `-scatDir`, which is
+   inverted relative to the walk's own incoming segment. It does not kill
+   the walk (the inverted transmission lobe still has support at the
+   queried direction) and it is not new — the pre-DL-157
+   `GetReflectedSide` was equally ray-anchored — but it is the
+   caller-convention half of DL-223.
+2. *A STACKLESS caller on a double-sided MESH open sheet struck
+   back-face-first* cannot be told apart from that same mesh's interior
+   EXIT, because a mesh cannot certify. Gate 1's `meshBack` stackless
+   rows read **1.680295** (front reflection) and **1.001460**
+   (transmission) at tilt 0 — printed and bounded as a KNOWN-RESIDUAL
+   row rather than gated at 1, so its closure is as visible as a
+   regression. The affected caller families are exactly five, and none
+   is a production integrator path: `TranslucentPelPhotonMap::RadianceEstimate`
+   (whose shader op HAS a stack but whose `IPhotonMap` interface does not
+   carry one), `PointSetOctree`'s SSS irradiance cache,
+   `InteractivePelRasterizer`'s preview, and `ManifoldSolver`'s four SMS
+   sites. PT NEE, BDPT/VCM connections, the zero-exitance sweep and PT
+   guiding are all STACKED and correct on both records.
+
+The rule above is the one that is right for PT / NEE and for the eye
+subpath, both of which hold a record whose ray IS the incoming ray.
 
 ---
 
@@ -314,12 +347,25 @@ two of them found things:
   The rig now reads 1.000000 with `E[kray] = 1.300000 = tau_R+tau_G+tau_B`
   over `n = 120000` emitted rays, which is what says the three-ray branch
   is really being exercised.
-* **[E], the OPEN double-sided sheet**, front-face control and
-  BACK-FACE-FIRST — §3.1's record.
+* **[E], the records where the SIDE and the RAY disagree** — an open
+  sheet's front face (control), a CLIPPED PLANE struck back-face-first
+  (`planeBack`, which certifies "no interior" so even the stackless path
+  is right), the same hit on a double-sided MESH (`meshBack`, which
+  cannot certify — DL-223's stackless residual), a CLOSED but
+  uncertified double-sided mesh hit from INSIDE (`dsMeshExit`, review
+  round 2's P1-2 record), and an ordinary entry made while the walk is
+  inside a DIFFERENT enclosure (`otherEnclosure`, which separates "the
+  stack is non-empty" from "the stack contains US").
 * **[F], gate 5**: `EvaluateKrayNM` against `ScatterNM`'s own `krayNM`
   (DL-222; see §10).
 * **[G], gate 6**: `CompositeMaterial`'s forwarding, both directions
   (§4.1).
+* **Both ENTRY POINTS on every gate-1 row** (review round 2, P2-2): the
+  stackless `value(wo, ri)` and the STACKED
+  `valueStateful(wo, ri, &stack)` that PT's NEE (`pMisIorStack`),
+  `PathVertexEval::EvalBSDFAtVertex` and BDPT's zero-exitance row
+  actually call. That entry point previously had no gate at all, which
+  is what let round 2's mis-attributed red-proof stand.
 
 **Isolated A/B** (`git checkout bb2ccd80 -- <the eight source files>`,
 `make -C build/make/rise -j8 all`, then
@@ -327,26 +373,75 @@ two of them found things:
 test target was rebuilt on BOTH sides, per COMMON_RULES' stale-binary rule):
 
 ```
-against bb2ccd80 :  Passed:  67   Failed: 173
-with the fix     :  Passed: 240   Failed:   0     (round 1)
-                    Passed: 534   Failed:   0     (after review round 1's rigs [D]-[G])
+round-1 file against bb2ccd80 :  Passed:  67   Failed: 173
+round-1 file with the fix     :  Passed: 240   Failed:   0
+current file, HEAD            :  Passed: 1008  Failed:   0
 ```
 
-And the P1 frame fix has its OWN isolated A/B, with only the `geomN`
-expression reverted to round 1's side-derived form and everything else
-(including all the new rigs) held constant:
+> **⚠ The headline pair is the ROUND-1 FILE against `bb2ccd80`, and it
+> is quoted that way deliberately.** The current file cannot be built
+> against `bb2ccd80` at all — it references `valueStateful`,
+> `EvaluateKrayNM`, `ri.bProvablyNoInterior` and the five-argument
+> `TranslucentBSDF` constructor, none of which exist there. Every
+> number below is therefore a SINGLE-CHANGE A/B at HEAD, with the
+> library and the test target rebuilt on both sides.
+
+**Review round 2 (2026-09-18) found that round 2's own red-proof was
+MIS-ATTRIBUTED, and the cause was a hole in this suite.** Gate 1
+originally drove only the STACKLESS `value(wo, ri)`, while gates 2/3/4
+drive the STACKED `Pdf` — so the entry point every production integrator
+actually calls, `valueStateful(wo, ri, &stack)`, had no gate at all, and
+numbers measured on it by hand were written down against a gate that
+could not have produced them. P2-2 closed the hole: **every gate-1 row
+now runs through BOTH entry points**, and gate 4 pairs the stacked `Pdf`
+with the stacked `value` rather than crossing entry points. With that
+done, the frame split's evidence lands where it belongs — on gate 1, on
+the records where the side and the ray disagree.
+
+**A/B 1 — the `geomN` split rule reverted ALONE** (to round 1's
+side-derived `bEntering ? geomNRaw : -geomNRaw`), everything else held:
 
 ```
-side-derived frame :  Passed: 498   Failed: 30
-split-by-side rule :  Passed: 534   Failed:  0
+side-derived frame :  Passed: 924   Failed: 84
+split-by-side rule :  Passed: 1008  Failed:  0
 ```
 
-| [E] open sheet, tilt 0, RGB | side-derived | split rule |
-|---|---|---|
-| BACK-FACE-FIRST, front reflection | 1.260222 | **1.000000** |
-| BACK-FACE-FIRST, transmission | 2.336741 | **1.000000** |
-| front-face CONTROL, front reflection | 1.000000 | 1.000000 |
-| front-face CONTROL, transmission | 1.000000 | 1.000000 |
+| gate | record | entry point | side-derived | split rule |
+|---|---|---|---|---|
+| 1 | `planeBack` front reflection, tilt 0 RGB | stackless | 1.260222 | **1.000000** |
+| 1 | `planeBack` transmission, tilt 0 RGB | stackless | 2.336741 | **1.000000** |
+| 1 | `planeBack` front reflection, tilt 0 RGB | **STACKED** | 1.260222 | **1.000000** |
+| 1 | `planeBack` transmission, tilt 0 RGB | **STACKED** | 2.336741 | **1.000000** |
+| 1 | `meshBack` front reflection, tilt 0 RGB | **STACKED** | 1.260222 | **1.000000** |
+| 1 | `meshBack` transmission, tilt 0 RGB | **STACKED** | 2.336741 | **1.000000** |
+| 3 | `planeBack` TVD, tilt 0 RGB | (stacked `Pdf`) | 0.57972 vs a 0.08999 floor | 0.04–0.05 |
+| 1 | `sheetFront` CONTROL, both lobes | both | 1.000000 | 1.000000 |
+
+So the `1.260222 / 2.336741` pair IS real and IS reproducible — round 2
+measured it by hand on the stacked path and then attributed it to a gate
+that was stackless-only. It is now produced by a gated row, on both
+entry points, and the gate-3 TVD rows the previous round's A/B actually
+moved are listed alongside it.
+
+**A/B 2 — the stackless side rule's flag, `ri.bProvablyNoInterior`
+replaced by round 2's `ri.bOpenSheet`**, everything else held:
+
+```
+bOpenSheet (round 2)     :  Passed: 984   Failed: 24
+bProvablyNoInterior      :  Passed: 1008  Failed:  0
+```
+
+All 24 are the `dsMeshExit` STACKLESS rows — a CLOSED but uncertified
+double-sided mesh hit from inside, which `bOpenSheet` misreads as an
+open sheet and therefore prices through the ENTRY lobes:
+
+| record | lobe | tilt | `bOpenSheet` | certification |
+|---|---|---|---|---|
+| `dsMeshExit` stackless | diffuse exit | 0 | 1.745299 | **1.000000** |
+| `dsMeshExit` stackless | backscatter | 0 | 0.647376 | **1.000000** |
+| `dsMeshExit` stackless | diffuse exit | 30 | 1.755305 | **1.000000** |
+| `dsMeshExit` stackless | backscatter | 30 | 0.631976 | **1.000000** |
+| `dsMeshExit` **STACKED** | both | all | 1.000000 | 1.000000 |
 
 Gate 1, rig [A] (`ext 0`, `ref (.5,.3,.2)`, `tau (.4,.6,.3)`, `N 10`,
 `scattering .3`), ratio `E[kray]/E[value*cos/pdf]` at tilt 0/30/45/60/75/89:
@@ -646,8 +741,8 @@ of 0.37 %), `sss` -0.005 %, `cornellbox_bdpt_materials_pt` +0.044 %, n = 3
 each.
 
 **Sites with no stack, which keep `value` and the geometric inference**
-(exact for a closed object; on an open sheet `BuildLobeSet` prefers
-`ri.bOpenSheet` — see §3.1)**:**
+(exact for a closed object, and for a geometry that PROVES it has no
+interior — see §3.1)**:**
 `CoatedBRDF`/`CoatedSPF`/`FabricBRDF` (delegating to a substrate, which
 cannot be translucent — `CoatedMaterial`/`FabricMaterial`'s
 `IsSupportedSubstrate` allowlists are Lambertian / OrenNayar / GGX /
@@ -657,6 +752,20 @@ caster), `PointSetOctree` (the SSS irradiance cache),
 own gather, and `ILightManager::ComputeDirectLighting`'s forwarding loop
 — which has no in-tree caller at all and whose comment now says the stack
 is one of the three things it drops.
+
+**And one implementer outside `src/`** (review round 2, P1-1):
+`tests/LightBVHTest.cpp`'s `MockSpotLight` is the only `ILightPriv`
+subclass in the tests tree, and it deliberately does not mark its
+overrides `override` — so the round-1 `ComputeDirectLighting` parameter
+left it abstract and the failure surfaced at three `new MockSpotLight`
+sites rather than at the declaration. **`make -C build/make/rise all`
+does not build tests, so a library-only build is not evidence that the
+tree compiles**; the mock's own comment says it is the site to update
+when that virtual changes, and this slice walked past it. A grep of
+`tests/` confirms it is the only one: no other file subclasses `ILight`,
+`ILightPriv`, `IBSDF` or `ISPF` in a way this slice's signatures reach
+(the four test-side `IBSDF` subclasses are unaffected, because
+`valueStateful{,NM}` are DEFAULTED).
 
 ---
 
@@ -711,6 +820,30 @@ the tilt-driven gap on that same fixture to DL-157.
 
 ---
 
+### 10.0 Two deferred cases that are MISPRICINGS, not no-ops
+
+Review round 2's P3 asked these to be stated honestly, because calling
+them "no-ops" understates them: in both, `BuildLobeSet` still returns a
+lobe set and `value`/`Pdf` still return a number — just the wrong side's.
+
+* **`HasTrueGeomSide()` false** (`HairGeometry`, whose geometric normal
+  is ray-derived, and a degenerate `vGeomNormal`). `geomNRaw` falls back
+  to the shading normal, so an EXIT hit's `-geomNRaw` is `-n` and the
+  exit lobe is built about the wrong axis. `Scatter` has the same
+  fallback, so the sampler and the evaluator still agree with EACH OTHER
+  — which is why no gate in this suite can see it — but both describe a
+  lobe the surface does not have. `translucent_material` on hair is an
+  unusual but not forbidden combination (DL-75's own verdict).
+* **A stale "inside" stack at an inward re-hit.** If the stack claims
+  containment for a ray that is entering (the open-sheet parity failure
+  DL-76 tracks), the EXIT branch runs and prices the interior pair.
+  `Scatter` does the same thing, so again the two agree; the pricing is
+  simply of the other side's lobes.
+
+Both are deferred, and both are recorded here rather than in a ledger
+row because they are properties of `Scatter`'s own side/frame contract
+that this row inherits rather than introduces.
+
 ### 10.1 DL-222 closed in passing
 
 `DL-222` (opened on the concurrent `debt-dl125` branch, not in this
@@ -733,7 +866,7 @@ available statement, since the two are the same quantity asked twice.
 
 | suite | result |
 |---|---|
-| `TranslucentLobeConsistencyTest` (new) | 534 / 0 (red 67 / 173 against `bb2ccd80`; 498 / 30 against the round-1 frame rule alone) |
+| `TranslucentLobeConsistencyTest` (new) | **1008 / 0** (round-1 file: 240 / 0, red 67 / 173 against `bb2ccd80`; single-change A/Bs at HEAD: 924 / 84 without the frame split, 984 / 24 with `bOpenSheet` in place of the certification) |
 | `TranslucentSpectralParityTest` | 1918 checks, 0 failures |
 | `TranslucentTiltedExitTest` | ALL TESTS PASSED |
 | `TranslucentEntryHorizonTest` | 251 checks, 0 failures |
@@ -746,6 +879,7 @@ available statement, since the two are the same quantity asked twice.
 | `SPFBSDFConsistencyTest` | all passed (Part F 1.00000 at all six tilts, both pipes) |
 | `SPFPdfConsistencyTest` | all passed |
 | `PTGuidingMISPartitionTest` | 101 / 0 |
+| `LightBVHTest` | 20 / 0 (**did not COMPILE** at the round-1 HEAD -- review round 2's P1-1) |
 | `BDPTStrategyBalanceTest` | 123 / 0 |
 | `VCMStrategyBalanceTest` | 74 / 0 |
 | `PathValueOpsTest` | all passed |
