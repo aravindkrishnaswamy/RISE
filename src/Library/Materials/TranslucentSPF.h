@@ -275,16 +275,10 @@ namespace RISE
 				const IORStack& ior_stack
 				) const;
 
-			//! DL-222 (opened on the concurrent `debt-dl125` branch; see the
-			//! definition's own comment).  PT's and BDPT's HWSS COMPANION
-			//! lanes ask an SPF what a ray it already sampled at the hero
-			//! wavelength would have weighed at a companion one, and fall
-			//! back to `value*cos/pdf` when the SPF declines.  That
-			//! fallback is DL-125's, and for this material it was the one
-			//! place a per-wavelength `kray` was reconstructed from a
-			//! function rather than read off the lobe that produced it.
-			//! `BuildLobeSet` makes the direct answer nearly free, so give
-			//! it.
+			//! DL-222 closed: selected entry reflection/transmission weights
+			//! are the painters; interior weights are Beer*(1-scattering)
+			//! and Beer*scattering. The caller must preserve the incoming
+			//! distance; companion throughput replay stores it explicitly.
 			Scalar	EvaluateKrayNM(
 				const RayIntersectionGeometric& ri,
 				const Vector3& outDir,
@@ -300,6 +294,14 @@ namespace RISE
 				const Scalar nm,
 				const IORStack& ior_stack
 				) const;
+
+			//! Diagnostic identity if an unsupported lobe declines companion
+			//! evaluation. DL-157 implements the normal entry/exit lobes
+			//! through EvaluateKrayNM, closing DL-222.
+			const char* PerLobeDensityFallbackName() const
+			{
+				return "TranslucentSPF";
+			}
 
 		private:
 			//! The shared body of `Pdf`/`PdfNM` (DL-41): the aggregate

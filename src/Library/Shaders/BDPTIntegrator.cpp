@@ -2219,6 +2219,8 @@ namespace {
 			BDPTVertex v;
 			v.type = BDPTVertex::SURFACE;
 			v.position = ri.geometric.ptIntersection;
+			v.scatterIncomingDistance = Vector3Ops::Magnitude(
+				Vector3Ops::mkVector3( ri.geometric.ray.origin, ri.geometric.ptIntersection ) );
 			v.normal = ri.geometric.vNormal;
 			v.geomNormal = ri.geometric.vGeomNormal;
 			v.onb = ri.geometric.onb;
@@ -3029,27 +3031,33 @@ namespace {
 				} else {
 					localScatteringWeight = f * invScale;
 				}
+				// DL-125.  Record WHICH lobe priced this vertex, so
+				// `RecomputeSubpathThroughputNM` can ask the SPF for
+				// that lobe's own companion-wavelength kray instead of
+				// forming a ratio of the material's AGGREGATE BSDF.
+				// `eRayUnknown` when guiding SUBSTITUTED the direction
+				// (`!useKray`): the hero was then priced from the
+				// aggregate `f`, so its companion must be too, or the
+				// two sides of the ratio would describe different
+				// estimators.
+				vertices.back().scatterType =
+					useKray ? pScat->type : ScatteredRay::eRayUnknown;
 				beta = beta * localScatteringWeight;
 				if constexpr( Traits::is_nm ) {
 					if( pSwlHWSS ) {
 						hwssBetaNM[0] = beta;
 						for( unsigned int w = 1; w < SampledWavelengths::N; w++ ) {
 							if( pSwlHWSS->terminated[w] ) continue;
-							// DL-69, HWSS companions.  Same pairing rule
-							// per wavelength, and the same fallback
-							// ladder PT's HWSS body uses: ask the SPF for
-							// the SELECTED lobe's kray at this companion
-							// wavelength (`ISPF::EvaluateKrayNM`), and
-							// only if the SPF declines (-1, the
-							// base-class default) fall back to the
-							// aggregate `fw * invScale`.  That fallback
-							// carries the DL-69 pattern for any SPF that
-							// does not implement `EvaluateKrayNM` --
-							// `SchlickSPF` among them -- and is tracked
-							// as DL-125 (PT's own HWSS companion path has
-							// the identical residual, same fallback, and
-							// is the reason this site mirrors rather than
-							// diverges from it).
+							// DL-125 closed: like PT, ask EvaluateKrayNM
+							// for the selected lobe at this companion
+							// wavelength. Schlick and the other repaired
+							// per-lobe SPFs now supply that weight.
+							// Aggregate evaluation remains appropriate for
+							// aggregate-density rays with matching BSDF
+							// response, or a guiding-substituted direction.
+							// CompositeSPF still declines (DL-221).
+							// TranslucentSPF supports its entry/exit lobes;
+							// unsupported types can still decline and warn.
 							Scalar compScale = -1;
 							if( useKray && pSPF ) {
 								const Scalar krayW = pSPF->EvaluateKrayNM(
@@ -3060,6 +3068,15 @@ namespace {
 								}
 							}
 							if( compScale < 0 ) {
+								// Match aggregate response with aggregate
+								// density; a per-lobe density can instead
+								// produce DL-69's summed-response mismatch.
+								// CompositeSPF still declines
+								// (DL-221) and names itself. TranslucentSPF
+								// now evaluates its normal entry/exit lobes.
+								if( useKray ) {
+									NotePerLobeDensityCompanionFallback( pSPF );
+								}
 								const Scalar fw = PathVertexEval::EvalBSDFAtVertexNM(
 									vertices.back(), scatDir, -currentRay.Dir(), pSwlHWSS->lambda[w] );
 								compScale = fw * invScale;
@@ -6333,6 +6350,8 @@ unsigned int GenerateLightSubpathImpl(
 		BDPTVertex v;
 		v.type = BDPTVertex::SURFACE;
 		v.position = ri.geometric.ptIntersection;
+		v.scatterIncomingDistance = Vector3Ops::Magnitude(
+			Vector3Ops::mkVector3( ri.geometric.ray.origin, ri.geometric.ptIntersection ) );
 		v.normal = ri.geometric.vNormal;
 		v.geomNormal = ri.geometric.vGeomNormal;
 		v.onb = ri.geometric.onb;
@@ -7065,6 +7084,9 @@ unsigned int GenerateLightSubpathImpl(
 				const Scalar wHero = useKray ?
 					( KrayValue<Tag>( *pScat ) * krayScale ) :
 					( f * bssrdfReflectCompensation * cosTheta / scatterPdf );
+				// DL-125 -- see the eye twin.
+				vertices.back().scatterType =
+					useKray ? pScat->type : ScatteredRay::eRayUnknown;
 				localScatteringWeight = RISEPel( wHero, wHero, wHero );
 				beta = beta * wHero;
 				if( pSwlHWSS ) {
@@ -7072,10 +7094,12 @@ unsigned int GenerateLightSubpathImpl(
 					hwssBetaNM[0] = beta;
 					for( unsigned int w = 1; w < SampledWavelengths::N; w++ ) {
 						if( pSwlHWSS->terminated[w] ) continue;
-						// DL-69 HWSS companions -- see the eye twin:
-						// per-lobe `ISPF::EvaluateKrayNM` first, the
-						// aggregate `fw * invScale` only where the SPF
-						// declines to answer (DL-125).
+						// Same selected-lobe contract as PT and the eye twin:
+						// EvaluateKrayNM first (DL-125 closed), aggregate
+						// fallback for matching aggregate-density response
+						// or guiding substitution. CompositeSPF remains
+						// DL-221; Translucent's entry/exit lobes are supported,
+						// while unsupported types may decline and warn.
 						Scalar compScale = -1;
 						if( useKray && pSPF ) {
 							const Scalar krayW = pSPF->EvaluateKrayNM(
@@ -7086,6 +7110,10 @@ unsigned int GenerateLightSubpathImpl(
 							}
 						}
 						if( compScale < 0 ) {
+							// DL-125 -- see the eye twin's comment.
+							if( useKray ) {
+								NotePerLobeDensityCompanionFallback( pSPF );
+							}
 							const Scalar fw = PathVertexEval::EvalBSDFAtVertexNM(
 								vertices.back(), -currentRay.Dir(), scatDir, pSwlHWSS->lambda[w] );
 							compScale = fw * invScale;
@@ -7444,7 +7472,98 @@ void BDPTIntegrator::RecomputeSubpathThroughputNM(
 		if( i + 1 < verts.size() && i > 0 &&
 			v.type == BDPTVertex::SURFACE && !v.isDelta )
 		{
-			if( v.pMaterial && v.pMaterial->GetBSDF() )
+			// DL-125.  THE SELECTED LOBE'S OWN companion/hero kray ratio,
+			// when the SPF can supply it.
+			//
+			// The aggregate-BSDF ratio below reproduces the selected-lobe
+			// kray ratio only when `kray_I(lambda_c)/kray_I(lambda_h)`
+			// equals `f_agg(lambda_c)/f_agg(lambda_h)`. These CAN differ
+			// at a multi-lobe SPF, but common spectral dependence can
+			// make them coincide:
+			// `kray_I = f_I cos / p_I` is the SELECTED lobe's own
+			// spectrum over the SELECTED lobe's own density, while
+			// `f_agg` blends every lobe's spectrum -- so a material
+			// whose diffuse and specular reflectances have different
+			// spectra, or whose lobe density itself varies with
+			// wavelength (a spectral roughness / isotropy / alpha /
+			// exponent painter), can be priced with the wrong companion
+			// weight. A selected-lobe kray ratio still uses each queried
+			// wavelength's own proposal density; DL-216 separately tracks
+			// that shape-dependent bias. The aggregate/lobe pairing is
+			// the one DL-69 removed from the hero path and
+			// DL-125 removed from PT's own HWSS body; THIS function is
+			// the render-visible companion pricing for BDPT, VCM and MLT
+			// alike (all three spectral rasterizers call it), unlike the
+			// two `hwssBetaNM` ladders in the subpath generators, which
+			// DL-126's review round 2 established are read only for
+			// Russian roulette and guiding training.
+			//
+			// The aggregate fallback below is KEPT for every SPF that
+			// declines (`EvaluateKrayNM` < 0). It matches aggregate-density
+			// sampling whose response is represented by the aggregate BSDF:
+			// CoatedSPF / FabricSPF / WeaveSPF / GGXSPF / CookTorranceSPF
+			// deliberately use this path rather than an override --
+			// and for a guiding-SUBSTITUTED direction, where
+			// `scatterType` is deliberately left `eRayUnknown`.
+			//
+			// `isBSSRDFEntry` is excluded explicitly (review round 1,
+			// P3).  It is a belt-and-braces guard, not a live fix: a
+			// BSSRDF entry vertex is pushed by the eye walk's own
+			// diffusion block and never passes through the scatter
+			// branch that stamps `scatterType`, so it still carries the
+			// default `eRayUnknown` and would take the aggregate branch
+			// anyway.  Naming it here means a future stamp at that site
+			// cannot silently start pricing a diffusion-profile ENTRY
+			// vertex through the surface SPF's lobes (DL-207's own
+			// lesson: the entry vertex's position/normal are the entry
+			// point, not the camera-visible exit hit).
+			Scalar lobeRatio = -1;
+			if( v.pMaterial && !v.isBSSRDFEntry &&
+			    v.scatterType != ScatteredRay::eRayUnknown )
+			{
+				const ISPF* pVertSPF = v.pMaterial->GetSPF();
+				if( pVertSPF )
+				{
+					// The walk travelled prev -> v -> next on BOTH
+					// subpaths, so the sampler's own incoming direction
+					// at `v` is `v - prev` and its outgoing is
+					// `next - v`, whichever side generated the subpath.
+					// (`EvalBSDFAtVertex`'s wi/wo swap below is about the
+					// BSDF's radiance-vs-importance argument convention;
+					// `kray` is defined by the SAMPLER, which always
+					// measured against `ri.ray.Dir()`.)
+					const Vector3 dirIn = Vector3Ops::Normalize(
+						Vector3Ops::mkVector3( v.position, verts[i-1].position ) );
+					const Vector3 dirOut = Vector3Ops::Normalize(
+						Vector3Ops::mkVector3( verts[i+1].position, v.position ) );
+
+					// Preserve the sampler's live Beer distance, including ray
+					// advances. Predecessor position is not the live origin.
+					// This does not change connection reconstruction (DL-223).
+					Ray inRay( Point3Ops::mkPoint3( v.position,
+						-dirIn * v.scatterIncomingDistance ), dirIn );
+					RayIntersectionGeometric rig( inRay, nullRasterizerState );
+					PathVertexEval::PopulateRIGFromVertex( v, rig );
+
+					IORStack vertexIor( 1.0 );
+					BuildVertexIORStack( v, vertexIor );
+
+					const Scalar krayHero = pVertSPF->EvaluateKrayNM(
+						rig, dirOut, v.scatterType, heroNM, vertexIor );
+					const Scalar krayComp = pVertSPF->EvaluateKrayNM(
+						rig, dirOut, v.scatterType, companionNM, vertexIor );
+
+					if( krayHero >= 0 && krayComp >= 0 ) {
+						lobeRatio = ( krayHero > NEARZERO ) ? ( krayComp / krayHero ) : 0;
+					}
+				}
+			}
+
+			if( lobeRatio >= 0 )
+			{
+				cumulativeRatio *= lobeRatio;
+			}
+			else if( v.pMaterial && v.pMaterial->GetBSDF() )
 			{
 				// EvalBSDFAtVertex expects wi and wo BOTH pointing AWAY from
 				// the surface (wi toward light, wo toward viewer); it

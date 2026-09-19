@@ -1118,10 +1118,11 @@ static void RunMultiLobeAreaRow()
 //  distinguishable by TYPE so `EvaluateKrayNM` can report each lobe's
 //  own per-wavelength kray (`c_I(nm)`, direction-independent by
 //  construction, matching DL-127's `kray_I == f_I cos/p_I` contract)
-//  WITHOUT the aggregate/per-lobe DL-125 companion-fallback mismatch
-//  contaminating this row's own closed form -- DL-125 is a separate,
-//  already-open residual and this row must not accidentally re-measure
-//  it.  With `EvaluateKrayNM` supplying the exact per-lobe companion
+//  WITHOUT the historical aggregate/per-lobe DL-125 mismatch
+//  contaminating this row's closed form. DL-125 is now closed; this
+//  fixture's explicit override still isolates the MIS-partner test
+//  from companion-fallback behavior. With `EvaluateKrayNM` supplying
+//  the exact per-lobe companion
 //  kray, the reweighted escape-side estimator is unbiased for
 //  `f_nm(w) cos(w)` regardless of which mixture the shared DIRECTION
 //  was drawn from -- a standard importance-sampling identity (summing

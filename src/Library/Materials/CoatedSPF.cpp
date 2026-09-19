@@ -415,8 +415,10 @@ void CoatedSPF::ScatterNM(
 // that value and `value`/`valueNM` are the same closed form the
 // integrator re-evaluates, the default path is exact.
 //
-// The general rule this is an instance of: override EvaluateKrayNM
-// only when the SPF's lobes are NOT fully represented by the
-// material's IBSDF (the contract in ISPF.h).  Here they are -- that is
-// the entire point of Phase 2 -- so there is nothing for an override
-// to add and one thing for it to get wrong.
+// The criterion is the emitted ray's density AND response: an
+// aggregate BSDF divided by a per-lobe conditional density can require
+// selected-lobe evaluation even when IBSDF represents every lobe
+// (DL-125). Response absent from IBSDF also requires an override.
+// CoatedSPF instead emits the aggregate hero mixture density and its
+// response matches the aggregate BSDF, so its fallback is appropriate;
+// an override using the companion density would change the estimator.

@@ -256,11 +256,45 @@ namespace RISE
 		/// etc.) so the match is correct even if the container layout
 		/// changes across wavelengths.
 		///
-		/// @return  krayNM >= 0 on success, or < 0 if not implemented
-		///          (caller should fall back to BSDF evaluation).
+		/// @return krayNM >= 0 on success, or < 0 if unimplemented or
+		///         this lobe is unsupported (caller falls back to BSDF).
 		///
-		/// Default: returns -1 (not implemented).  SPFs whose lobes are
-		/// not fully represented by the material's IBSDF must override.
+		/// Default: returns -1. Override when the aggregate BSDF paired
+		/// with the emitted ray's density cannot recover its response.
+		/// Per-lobe conditional densities can require selected-lobe
+		/// evaluation even when IBSDF represents every lobe (DL-125);
+		/// sampler response absent from IBSDF also requires an override.
+		/// Aggregate-density rays with matching aggregate response may
+		/// use the fallback.
+		///
+		/// TWO CONTRACT NOTES AN IMPLEMENTER MUST READ (DL-125 review
+		/// round 1).
+		///
+		/// 1. THE `ri` MAY BE SYNTHETIC. PT's HWSS body and the two
+		///    BDPT generator ladders pass the live sampler record.
+		///    RecomputeSubpathThroughputNM rebuilds the frame/painter
+		///    state and places its ray origin at the stored live incoming
+		///    distance (including ray advances), so Translucent's Beer
+		///    factor is recoverable there too (DL-222 closed). This is
+		///    distance preservation, not a claim of every original field:
+		///    glossyFilterWidth remains 0. Ordinary connection records
+		///    still have zero-length incoming rays (DL-223); that separate
+		///    BSDF path does not inherit this replay-only reconstruction.
+		///
+		/// 2. THE DENSITY CONVENTION IS `p_I(nm)`, NOT `p_I(heroNM)`, AND
+		///    THAT IS A KNOWN RESIDUAL (DL-216).  The direction was drawn
+		///    from the HERO wavelength's density, so the strictly
+		///    unbiased companion weight is `f_I(nm) cos / p_I(heroNM)`;
+		///    every implementation here returns `f_I(nm) cos / p_I(nm)`.
+		///    The two COINCIDE wherever the lobe's DENSITY is
+		///    wavelength-independent -- every reflectance-only chromatic
+		///    material, i.e. the overwhelmingly common case and the one
+		///    DL-125's measurements exercise -- and differ only under a
+		///    chromatic SHAPE painter (`exponent`, `isotropy`, `alpha`,
+		///    `roughness`).  `HairSPF`'s own override states the same
+		///    premise.  Do not "fix" this in isolation: closing it means
+		///    carrying the hero density alongside (an extra argument),
+		///    and is tracked as DL-216.
 		virtual Scalar EvaluateKrayNM(
 			const RayIntersectionGeometric& ri,
 			const Vector3& outDir,
@@ -271,7 +305,37 @@ namespace RISE
 		{
 			return -1;
 		}
+
+		/// DL-125.  The class name to report when the HWSS companion
+		/// ladder's `EvaluateKrayNM` fallback is reached for an SPF the
+		/// fallback is NOT exact for; 0 (the default) for every SPF
+		/// where it IS exact or unreachable.
+		///
+		/// The fallback is aggregate BSDF evaluation times `cos / pS->pdf` --
+		/// the material's AGGREGATE spectral BSDF over the ONE selected
+		/// lobe's density. Aggregate-density rays with response matching
+		/// the aggregate BSDF use this pairing (CoatedSPF / FabricSPF /
+		/// WeaveSPF and the single-emit GGXSPF / CookTorranceSPF).
+		/// A per-lobe conditional density can instead mispair that summed
+		/// response. CompositeSPF still declines (DL-221):
+		/// its stochastic two-layer walk cannot be recovered from these
+		/// arguments. TranslucentSPF now evaluates its normal entry/exit
+		/// lobes (DL-222 closed), but retains a diagnostic identity for
+		/// unsupported lobe types. Overriding this method keeps any such
+		/// fallback visible instead of silently taking a wrong number.
+		virtual const char* PerLobeDensityFallbackName() const
+		{
+			return 0;
+		}
 	};
+
+	//! DL-125.  One-shot (per process, per class) warning when the HWSS
+	//! companion ladder falls back to the aggregate-BSDF pairing for an
+	//! SPF that names itself through `PerLobeDensityFallbackName()`.
+	//! A no-op for every other SPF, and never more than one log line per
+	//! class however many million vertices are shaded.
+	//! Defined in Materials/ScatteredRayContainer.cpp.
+	void NotePerLobeDensityCompanionFallback( const ISPF* pSPF );
 }
 
 #include "../Intersection/RayIntersectionGeometric.h"

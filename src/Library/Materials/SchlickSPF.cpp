@@ -1171,3 +1171,72 @@ Scalar SchlickSPF::PdfNM(
 	return cD * diffusePdf
 	     + SchlickSpecularDensity( ri, myonb, geomN, woNorm, wD, aD, lobes );
 }
+
+//////////////////////////////////////////////////////////////////////
+// EvaluateKrayNM -- DL-125.
+//
+// Returns the `krayNM` `ScatterNM` itself would have stamped on this
+// lobe had `nm` been the hero wavelength, for the SAME outgoing
+// direction.  Both lobes are recoverable from `(ri, outDir, nm)`:
+//
+//   diffuse:   Rd(nm)                                 -- direction-free
+//   specular:  (rho(nm) + (1-rho(nm)) * F) * R(wo, p(nm))
+//
+// with `F = (1 - (h.wi))^5` at the half-vector `h = normalize(wi + wo)`
+// that `GenerateSpecularRay` sampled (recovered exactly: `wo` is the
+// mirror of `-wi` about `h`, so `wi + wo` is parallel to `h`), and `R`
+// the DL-127 ratio `SchlickKrayRatio`.
+//
+// ROUGHNESS DOES NOT APPEAR, and that is not an omission: DL-127's
+// derivation shows `Z(t) = r/den^2` cancels between `f_S cos` and
+// `p_S`, so the lobe's TRANSPORT WEIGHT is roughness-free even though
+// its density is not.  The isotropy `p` does appear, through the
+// azimuthal density inside `R`, and is read at `nm`.
+//
+// Every wavelength-dependent input is read at `nm`; no sampler draw is
+// consumed, so this is safe to call once per companion wavelength per
+// bounce.
+//////////////////////////////////////////////////////////////////////
+Scalar SchlickSPF::EvaluateKrayNM(
+	const RayIntersectionGeometric& ri,
+	const Vector3& outDir,
+	ScatteredRay::ScatRayType rayType,
+	Scalar nm,
+	const IORStack& /* ior_stack */
+	) const
+{
+	if( rayType == ScatteredRay::eRayDiffuse ) {
+		return GuardedGetColorNM( *pDiffuse, ri, nm );
+	}
+
+	if( rayType != ScatteredRay::eRayReflection ) {
+		return -1;						// not a lobe this SPF emits
+	}
+
+	// Rebuild ScatterNM's sampling frame exactly (post-FlipW on a
+	// back-face hit -- DL-100).
+	OrthonormalBasis3D myonb = ri.onb;
+	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
+		myonb.FlipW();
+	}
+
+	const Vector3 wi = Vector3Ops::Normalize( -ri.ray.Dir() );
+	const Vector3 woNorm = Vector3Ops::Normalize( outDir );
+	const Vector3 h = Vector3Ops::Normalize( wi + woNorm );
+
+	const Scalar hdotk = Vector3Ops::Dot( h, wi );
+	if( hdotk <= 0 ) {
+		return 0;						// a genuine zero, not "unimplemented"
+	}
+
+	const Scalar isotropyNM = pIsotropy->GetValueAtNM( ri, nm );
+	const Scalar krayRatio = SchlickKrayRatioFromH(
+		h, wi, myonb, Vector3Ops::Dot( myonb.w(), wi ), isotropyNM );
+	if( krayRatio <= 0 ) {
+		return 0;
+	}
+
+	const Scalar fresnel = ::pow( 1.0 - hdotk, 5 );
+	const Scalar rho = GuardedGetColorNM( *pSpecular, ri, nm );
+	return ( rho + (1.0 - rho) * fresnel ) * krayRatio;
+}

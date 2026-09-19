@@ -617,3 +617,49 @@ Scalar IsotropicPhongSPF::PdfNM(
 	return cD * diffusePdf
 	     + PhongSpecularDensity( woNorm, U,V,W, nu,nv,nw, gu,gv,gw, wD, aD, lobes );
 }
+
+//////////////////////////////////////////////////////////////////////
+// EvaluateKrayNM -- DL-125.
+//
+// Returns the `krayNM` `ScatterNM` itself would have stamped on this
+// lobe had `nm` been the hero wavelength, for the SAME outgoing
+// direction:
+//
+//   diffuse:   Rd(nm)                                 -- direction-free
+//   specular:  Rs(nm) * (N(nm)+2)/(N(nm)+1) * max(cos_o, 0)
+//
+// The exponent DOES appear here (unlike Schlick's roughness and Ward's
+// alpha): `f_S = Rs (N+2)/(2 PI) cos^N(alpha)` over
+// `p_S = (N+1)/(2 PI) cos^N(alpha)` cancels the `cos^N` but leaves
+// `(N+2)/(N+1)`, so a wavelength-varying `exponent` painter genuinely
+// moves the companion's weight -- and both f and p must be evaluated
+// at the SAME `nm` for the `cos^N` to cancel at all, which is exactly
+// what "the kray ScatterNM would produce at this wavelength" means.
+//
+// FRAME: `n` is picked by the GEOMETRIC normal's side, matching
+// ScatterNM (NOT the FlipW idiom the other four use).
+//////////////////////////////////////////////////////////////////////
+Scalar IsotropicPhongSPF::EvaluateKrayNM(
+	const RayIntersectionGeometric& ri,
+	const Vector3& outDir,
+	ScatteredRay::ScatRayType rayType,
+	Scalar nm,
+	const IORStack& /* ior_stack */
+	) const
+{
+	if( rayType == ScatteredRay::eRayDiffuse ) {
+		return GuardedGetColorNM( *pRd, ri, nm );
+	}
+
+	if( rayType != ScatteredRay::eRayReflection ) {
+		return -1;						// not a lobe this SPF emits
+	}
+
+	const Scalar rdotn = Vector3Ops::Dot( ri.ray.Dir(), ri.vGeomNormal );
+	const Vector3 n = rdotn > 0 ? -ri.onb.w() : ri.onb.w();
+
+	const Scalar N = pExponent->GetValueAtNM( ri, nm );
+	const Scalar cos_o = Vector3Ops::Dot( Vector3Ops::Normalize( outDir ), n );
+
+	return GuardedGetColorNM( *pRs, ri, nm ) * ((N+2.0)/(N+1.0)) * r_max( cos_o, 0.0 );
+}

@@ -6348,10 +6348,14 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 
 			if( compWeight < 0 && pBRDFCur )
 			{
-				// DL-157: the SPF branch just above already passes the
-				// live `iorStack`; this fallback must too, or a stateful
-				// BSDF would price the companion through the other side's
-				// lobes.  Every other BSDF ignores the argument.
+				// DL-125: aggregate-density sampling with matching aggregate
+				// BSDF response uses this fallback. CompositeSPF declines with
+				// per-lobe density (DL-221); report its diagnostic identity.
+				// TranslucentSPF now handles its normal companion lobes.
+				NotePerLobeDensityCompanionFallback( pSPF );
+
+				// DL-157: stateful fallback needs the live stack, just as
+				// the SPF branch above does, to price the correct side.
 				compWeight = pBRDFCur->valueStatefulNM(
 					pS->ray.Dir(), ri.geometric, swl.lambda[w], &iorStack );
 				Scalar cosTheta = fabs( Vector3Ops::Dot(

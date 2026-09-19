@@ -680,3 +680,60 @@ Scalar WardIsotropicGaussianSPF::PdfNM(
 
 	return WardIsotropicPdf( ri, wo, lobes, wDiff );
 }
+
+//////////////////////////////////////////////////////////////////////
+// EvaluateKrayNM -- DL-125.
+//
+// Returns the `krayNM` `ScatterNM` itself would have stamped on this
+// lobe had `nm` been the hero wavelength, for the SAME outgoing
+// direction:
+//
+//   diffuse:   Rd(nm)                                 -- direction-free
+//   specular:  Rs(nm) * WardKrayRatio(h.wo, cos_h, cos_o, cos_i)
+//
+// ALPHA DOES NOT APPEAR, and that is not an omission: DL-177's
+// derivation shows the `exp(-tan^2/alpha^2)` and the whole `alpha`
+// dependence cancel between `f_S cos_o` and `p_S`, leaving
+// `Rs (h.wo) cos^3(theta_h) sqrt(cos_o/cos_i)`.  So only the
+// reflectance painters are read at `nm`.  The half-vector is recovered
+// exactly (`wo` is the mirror of `-wi` about `h`, so `wi + wo` is
+// parallel to `h`); no sampler draw is consumed.
+//////////////////////////////////////////////////////////////////////
+Scalar WardIsotropicGaussianSPF::EvaluateKrayNM(
+	const RayIntersectionGeometric& ri,
+	const Vector3& outDir,
+	ScatteredRay::ScatRayType rayType,
+	Scalar nm,
+	const IORStack& /* ior_stack */
+	) const
+{
+	if( rayType == ScatteredRay::eRayDiffuse ) {
+		return GuardedGetColorNM( *pDiffuse, ri, nm );
+	}
+
+	if( rayType != ScatteredRay::eRayReflection ) {
+		return -1;						// not a lobe this SPF emits
+	}
+
+	// Rebuild ScatterNM's sampling frame exactly (post-FlipW on a
+	// back-face hit -- DL-100).
+	OrthonormalBasis3D myonb = ri.onb;
+	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
+		myonb.FlipW();
+	}
+
+	const Vector3 wi = Vector3Ops::Normalize( -ri.ray.Dir() );
+	const Vector3 woNorm = Vector3Ops::Normalize( outDir );
+	const Vector3 h = Vector3Ops::Normalize( wi + woNorm );
+
+	const Scalar ratio = WardKrayRatio(
+		Vector3Ops::Dot( h, woNorm ),
+		Vector3Ops::Dot( h, myonb.w() ),
+		Vector3Ops::Dot( woNorm, myonb.w() ),
+		Vector3Ops::Dot( wi, myonb.w() ) );
+	if( ratio <= 0 ) {
+		return 0;						// a genuine zero, not "unimplemented"
+	}
+
+	return GuardedGetColorNM( *pSpecular, ri, nm ) * ratio;
+}

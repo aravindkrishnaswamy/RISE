@@ -722,3 +722,48 @@ Scalar WardAnisotropicEllipticalGaussianSPF::PdfNM(
 
 	return WardAnisotropicPdf( ri, wo, lobes, wDiff );
 }
+
+//////////////////////////////////////////////////////////////////////
+// EvaluateKrayNM -- DL-125.  Isotropic twin's derivation, verbatim:
+// DL-177 shows the anisotropic BRDF's `1/(4 PI ax ay sqrt(nr nl))` and
+// the density's `1/(PI ax ay cos^3)` cancel `ax ay` and the
+// exponential the same way, so `WardKrayRatio` is the SAME expression
+// here and NEITHER `alphaX` nor `alphaY` appears in the transport
+// weight.  Only the reflectance painters are read at `nm`.
+//////////////////////////////////////////////////////////////////////
+Scalar WardAnisotropicEllipticalGaussianSPF::EvaluateKrayNM(
+	const RayIntersectionGeometric& ri,
+	const Vector3& outDir,
+	ScatteredRay::ScatRayType rayType,
+	Scalar nm,
+	const IORStack& /* ior_stack */
+	) const
+{
+	if( rayType == ScatteredRay::eRayDiffuse ) {
+		return GuardedGetColorNM( *pDiffuse, ri, nm );
+	}
+
+	if( rayType != ScatteredRay::eRayReflection ) {
+		return -1;						// not a lobe this SPF emits
+	}
+
+	OrthonormalBasis3D myonb = ri.onb;
+	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
+		myonb.FlipW();
+	}
+
+	const Vector3 wi = Vector3Ops::Normalize( -ri.ray.Dir() );
+	const Vector3 woNorm = Vector3Ops::Normalize( outDir );
+	const Vector3 h = Vector3Ops::Normalize( wi + woNorm );
+
+	const Scalar ratio = WardKrayRatio(
+		Vector3Ops::Dot( h, woNorm ),
+		Vector3Ops::Dot( h, myonb.w() ),
+		Vector3Ops::Dot( woNorm, myonb.w() ),
+		Vector3Ops::Dot( wi, myonb.w() ) );
+	if( ratio <= 0 ) {
+		return 0;						// a genuine zero, not "unimplemented"
+	}
+
+	return GuardedGetColorNM( *pSpecular, ri, nm ) * ratio;
+}

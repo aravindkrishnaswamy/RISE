@@ -52,6 +52,7 @@
 #include "../Utilities/OrthonormalBasis3D.h"
 #include "../Utilities/Color/Color.h"
 #include "../Intersection/RayIntersectionGeometric.h"	// SurfaceDerivativesInfo / TextureFootprint, and (transitively) SurfaceSignalInfo
+#include "../Interfaces/ISPF.h"						// ScatteredRay::ScatRayType (DL-125, `scatterType` below)
 
 namespace RISE
 {
@@ -265,6 +266,30 @@ namespace RISE
 		bool					lightSamplingStrategyAbsent;
 
 		bool					isDelta;		///< True if the sampled interaction at this vertex is a delta distribution
+		/// DL-125.  WHICH LOBE the sampler actually selected at this vertex
+		/// (`ScatteredRay::type` of the chosen `ScatteredRay`), or
+		/// `eRayUnknown` where no scatter was recorded (endpoints, medium
+		/// vertices, the last vertex of a walk).
+		///
+		/// A SAMPLING RECORD, not surface state: `PathVertexEval::
+		/// PopulateRIGFromVertex` deliberately does NOT copy it (there is
+		/// no `RayIntersectionGeometric` field for it), so the
+		/// BDPTVertex/RIG field-parity contract above does not apply and
+		/// `tests/BDPTVertexRIGRebuildTest.cpp` needs no sentinel for it.
+		///
+		/// Consumed by `BDPTIntegrator::RecomputeSubpathThroughputNM`,
+		/// which needs it to ask `ISPF::EvaluateKrayNM` for the SELECTED
+		/// lobe's own companion-wavelength weight instead of forming a
+		/// ratio of the material's AGGREGATE BSDF. Those ratios need not
+		/// have the same wavelength dependence at a multi-lobe SPF;
+		/// common spectral dependence can also make them coincide.
+		ScatteredRay::ScatRayType	scatterType;
+
+		/// Sampler-input distance from the live ray origin to this hit,
+		/// including the generators' ray advance. Used ONLY by companion
+		/// throughput replay (DL-222), not connection BSDF reconstruction
+		/// (DL-223). Endpoints, media and BSSRDF entries do not consume it.
+		Scalar scatterIncomingDistance;
 		bool					isConnectible;	///< True if material has at least one non-delta BxDF component
 		bool					isBSSRDFEntry;	///< True if this vertex is a BSSRDF re-emission point (Sw vertex)
 		Scalar					mediumIOR;		///< Top-of-stack IOR seen at this vertex before scattering
@@ -347,6 +372,8 @@ namespace RISE
 		lightSamplingStrategyAbsent( false ),
 
 		isDelta( false ),
+		scatterType( ScatteredRay::eRayUnknown ),
+		scatterIncomingDistance( 0 ),
 		isConnectible( true ),
 		isBSSRDFEntry( false ),
 		mediumIOR( 1.0 ),
