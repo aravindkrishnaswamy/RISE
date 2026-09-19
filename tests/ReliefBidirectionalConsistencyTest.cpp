@@ -141,6 +141,12 @@ static CapturingRasterizerOutput* RenderScene( const std::string& sceneText, con
 
 
 #include <sstream>
+#include "../src/Library/Interfaces/IScenePriv.h"
+#include "../src/Library/Rendering/RayCaster.h"
+#include "../src/Library/Shaders/StandardShader.h"
+#include "../src/Library/Shaders/BDPTIntegrator.h"
+#include "../src/Library/Utilities/IndependentSampler.h"
+#include "../src/Library/Utilities/PathValueOps.h"
 
 // A Lambertian plane under an on-axis point light at distance D has
 // L=rho*I*cos(theta)/(pi*D^2). The symmetric image removes the odd
@@ -317,8 +323,73 @@ standard_object
     }
 }
 
+
+// Inspect a LIVE generated light path, independently pricing one Lambertian
+// bounce by differential power on the geometric receiving area. The large
+// sphere only catches continuations so the post-bounce beta is observable.
+static void LightWalk()
+{
+    std::string scene=FlatScene("bdpt_pel_rasterizer",30,1);
+    const std::string far="position 0 0 -1000";
+    scene.replace(scene.find(far),far.size(),"position 0 0 -1");
+    scene+="sphere_geometry\n{\n name catcher\n radius 10\n}\n"
+           "standard_object\n{\n name catch_object\n geometry catcher\n material matte\n}\n";
+    const std::string path=WriteSceneToTempFile(scene,"lightwalk");
+    IJobPriv* job=nullptr;
+    Check(RISE_CreateJobPriv(&job) && job && job->LoadAsciiSceneViaCst(path.c_str()),"light-walk scene loads");
+    if(!job) return;
+    StandardShader* shader=new StandardShader(std::vector<IShaderOp*>());
+    RayCaster* caster=new RayCaster(false,8,*shader,false);
+    caster->AttachScene(job->GetScene());
+    StabilityConfig cfg;
+    cfg.rrMinDepth=20;
+    BDPTIntegrator* bdpt=new BDPTIntegrator(4,4,cfg);
+    bdpt->SetLightSampler(caster->GetLightSampler());
+    RandomNumberGenerator rng(224001);
+    IndependentSampler sampler(rng);
+    unsigned count=0;
+    double worst=0;
+    for(unsigned i=0;i<2048;++i) {
+        std::vector<BDPTVertex> verts;
+        std::vector<uint32_t> starts;
+        bdpt->GenerateLightSubpath(*job->GetScene(),*caster,sampler,verts,starts,rng);
+        if(verts.size()<3 || std::fabs(verts[1].position.z)>1e-6 || std::fabs(verts[1].normal.x)<.1) continue;
+        const auto& v=verts[1];
+        const Vector3 wi=Vector3Ops::Normalize(Vector3Ops::mkVector3(verts[0].position,v.position));
+        const Vector3 wo=Vector3Ops::Normalize(Vector3Ops::mkVector3(verts[2].position,v.position));
+        // With Ng=-Z and Ns=(-sin30,0,-cos30), projected input flux
+        // changes by (sin30*wi.x+cos30*wi.z)/wi.z. The sampled output
+        // has cosine density about Ns, whereas received power projects
+        // onto Ng. No production correction helper enters this oracle.
+        const double expected=.8*std::fabs((.5*wi.x+std::sqrt(.75)*wi.z)*wo.z /
+                        (wi.z*(.5*wo.x+std::sqrt(.75)*wo.z)));
+        const double got=verts[2].throughput.r/v.throughput.r;
+        worst=std::max(worst,std::fabs(got/expected-1));
+        ++count;
+    }
+    std::printf("LIGHT_WALK count=%u worst_relative=%.9g\n",count,worst);
+    Check(count>100,"live light walk visits tilted surface and next receiver");
+    Check(worst<1e-5,"importance throughput equals independent projected-power oracle");
+    safe_release(bdpt);safe_release(caster);safe_release(shader);safe_release(job);
+}
+
+static void EndpointFactors()
+{
+    BDPTVertex v;
+    v.type=BDPTVertex::SURFACE;
+    v.geomNormal=Vector3(0,0,1);
+    for(double degrees:{0.,1.,10.,20.,30.,45.}) {
+        double theta=degrees*PI/180;
+        v.normal=Vector3(std::sin(theta),0,std::cos(theta));
+        const double factor=PathVertexEval::RadianceShadingNormalFactor(v,Vector3(0,0,1));
+        Check(std::fabs(factor-std::cos(theta))<1e-14,"endpoint factor follows cosine law, including small tilt");
+    }
+}
+
 int main(int argc, char** argv)
 {
+    if(argc==1 || std::string(argv[1])=="light") LightWalk();
+    EndpointFactors();
     const char* modes[]={"pixelpel_rasterizer", "pathtracing_pel_rasterizer", "bdpt_pel_rasterizer", "vcm_pel_rasterizer"};
     if(argc==1 || std::string(argv[1])=="flat") for(double tilt:{0.,10.,20.,30.,45.}) {
         const double expected=.8*std::cos(tilt*PI/180)/PI;
