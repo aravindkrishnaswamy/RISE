@@ -146,6 +146,7 @@ static CapturingRasterizerOutput* RenderScene( const std::string& sceneText, con
 #include "../src/Library/Rendering/RayCaster.h"
 #include "../src/Library/Shaders/StandardShader.h"
 #include "../src/Library/Shaders/BDPTIntegrator.h"
+#include "../src/Library/Shaders/VCMIntegrator.h"
 #include "../src/Library/Utilities/IndependentSampler.h"
 #include "../src/Library/Utilities/PathValueOps.h"
 
@@ -473,10 +474,46 @@ static void EndpointFactors()
     }
 }
 
+// These are fixed path-space densities, not BSDF evaluations. Changing Ns
+// while keeping positions, Ng and all sampling densities fixed cannot change
+// any MIS density ratio. Exercise both walks, delta transport and BSSRDF entry.
+static void DensityMeasures()
+{
+    const auto norm=ComputeNormalization(100,100,0,true,false);
+    for(bool light:{false,true}) for(int kind=0;kind<3;++kind) {
+        std::vector<BDPTVertex> v(3);
+        for(int i=0;i<3;++i) {
+            v[i].type=i?BDPTVertex::SURFACE:(light?BDPTVertex::LIGHT:BDPTVertex::CAMERA);
+            v[i].position=Point3(i==0?0:i==1?2:5,0,0);
+            v[i].normal=v[i].geomNormal=Vector3(i?-1:1,0,0);
+            v[i].cosAtGen=1;
+            v[i].isConnectible=true;
+            v[i].pdfFwd=i==0?(light?.25:1):i==1?.1:.2;
+            v[i].pdfRev=i==0?.3:i==1?.5:0;
+            v[i].emissionPdfW=i==0?(light?.125:2):0;
+        }
+        v[1].isDelta=kind==1;
+        v[1].isBSSRDFEntry=kind==2;
+        std::vector<VCMMisQuantities> base,tilted;
+        std::vector<LightVertex> store;
+        if(light) VCMIntegrator::ConvertLightSubpath(v,norm,store,&base);
+        else VCMIntegrator::ConvertEyeSubpath(v,norm,base);
+        v[1].normal=Vector3(-.5,std::sqrt(.75),0);
+        if(light) VCMIntegrator::ConvertLightSubpath(v,norm,store,&tilted);
+        else VCMIntegrator::ConvertEyeSubpath(v,norm,tilted);
+        Check(base.size()==3 && tilted.size()==3,"density arrays complete");
+        if(base.size()!=3 || tilted.size()!=3) continue;
+        const double error=std::max(std::fabs(base[2].dVC-tilted[2].dVC),std::fabs(base[2].dVM-tilted[2].dVM));
+        std::printf("DENSITY light=%d kind=%d base=(%.12g,%.12g,%.12g) tilted=(%.12g,%.12g,%.12g) error=%.12g\n",light,kind,base[2].dVCM,base[2].dVC,base[2].dVM,tilted[2].dVCM,tilted[2].dVC,tilted[2].dVM,error);
+        Check(error<1e-10,"fixed geometric densities independent of shading frame");
+    }
+}
+
 int main(int argc, char** argv)
 {
     if(argc==1 || std::string(argv[1])=="light") LightWalk();
     EndpointFactors();
+    DensityMeasures();
     if(argc==1 || std::string(argv[1])=="spectral") Spectral();
     if(argc==1 || std::string(argv[1])=="siblings") ModifierSiblings();
     if(argc==1 || std::string(argv[1])=="grazing") GrazingView();
