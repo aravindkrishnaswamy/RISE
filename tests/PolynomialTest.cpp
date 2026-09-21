@@ -513,6 +513,16 @@ static void TestQuarticClassificationAndCallers()
     }
     CheckQuarticOracle("fourfold_zero",{{1,0,0,0,0}},{0});
     CheckQuarticOracle("fourfold_one",{{1,-4,6,-4,1}},{1},1e-6);
+    // Equal-error factor candidates must not split an exactly squared
+    // quadratic. Dyadic coefficients keep these identities exact as inputs.
+    for(double r:{-4.0,-0.5,0.25,1.0,2.0}) {
+        CheckQuarticOracle("squared_repeated_real",MultiplyQuadratics(1,-2*r,r*r,1,-2*r,r*r),{r},1e-6);
+        CheckQuarticOracle("squared_positive",MultiplyQuadratics(1,-2*r,r*r+.25,1,-2*r,r*r+.25),{});
+    }
+    // These stored coefficients are exactly (x-1)^4 + delta > 0;
+    // unlike expanding a tiny complex-pair square, delta is not rounded away.
+    for(int exponent:{-4,-20,-40,-48})
+        CheckQuarticOracle("positive_near_fourfold",{{1,-4,6,-4,1+std::ldexp(1.0,exponent)}},{});
     CheckQuarticOracle("two_double_real",{{1,0,-2,0,1}},{-1,1});
     CheckQuarticOracle("zero_and_triple",{{1,-1,0,0,0}},{0,1});
     for(double r:{-4.0,-1.0,0.0,0.25,2.0})
