@@ -82,9 +82,7 @@ namespace RISE
 			);
 
 		//! Returns ∫Ȳ(λ)dλ over [lambda_begin, lambda_end] using the
-		//! CIE 1931 2° piecewise-linear table, clipped to [380,780] nm.
-		//! Empty/reversed intervals or nonfinite endpoints return zero.
-		//! Used by spectral rasterizers
+		//! CIE 1931 2° standard observer.  Used by spectral rasterizers
 		//! to normalize the MC luminance estimator so a perfect-white
 		//! reflector under flat illuminant integrates to Y = 1
 		//! (matching the RGB rasterizer's white = 1 convention).

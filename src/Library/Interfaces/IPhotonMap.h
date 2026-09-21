@@ -94,12 +94,6 @@ namespace RISE
 		virtual ~ISpectralPhotonMap(){};
 
 	public:
-        //! Declare the producer's uniform [begin,end) wavelength law before
-        //! insertion. count<10000 selects its finite grid, otherwise continuous.
-        //! Existing external implementations may decline this new capability.
-        virtual bool ConfigureWavelengthSampling(Scalar,Scalar,unsigned) { return false; }
-        virtual bool GetWavelengthSampling(Scalar&,Scalar&,unsigned&) const { return false; }
-
 		//! Sets gather parameters
 		virtual void SetGatherParamsNM( 
 			const Scalar radius,									///< [in] Gather radius

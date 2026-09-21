@@ -673,8 +673,7 @@ void FinalGatherShaderOp::PerformOperation(
 							pSPF->Scatter( ri.geometric, scatterSampler, scattered, ior_stack );
 						}
 
-						Scalar selectProb;
-						ScatteredRay* scat = scattered.RandomlySelectDiffuse( rc.random.CanonicalRandom(), false, &selectProb );
+						ScatteredRay* scat = scattered.RandomlySelectDiffuse( rc.random.CanonicalRandom(), false );
 						RISEPel sampleIrradiance( 0, 0, 0 );
 
 						if( scat ) {
@@ -692,7 +691,7 @@ void FinalGatherShaderOp::PerformOperation(
 								if (t > kMinHitDistance) {
 									rsum += 1.0/t;
 									hits++;
-									sampleIrradiance = cthis * scat->kray * (etaScale / selectProb);
+									sampleIrradiance = cthis * scat->kray * etaScale;
 									c = c + sampleIrradiance;
 								}
 							}

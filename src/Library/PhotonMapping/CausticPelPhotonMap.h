@@ -48,8 +48,6 @@ namespace RISE
 				IWriteBuffer&			buffer					///< [in] Buffer to serialize to
 				) const;
 
-			bool DeserializeChecked(IReadBuffer& buffer);
-
 			void Deserialize(
 				IReadBuffer&			buffer					///< [in] Buffer to deserialize from
 				);

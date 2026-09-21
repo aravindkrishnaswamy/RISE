@@ -73,9 +73,7 @@ PixelBasedSpectralIntegratingRasterizer::PixelBasedSpectralIntegratingRasterizer
 	// illuminant weighting belongs in THIS integral -- it would double-
 	// apply D65.  See docs/SPECTRAL_ILLUMINANT_CONVENTION.md.
 	const Scalar k_y = ColorUtils::CIE_Y_Integral( lambda_begin_, lambda_end_ );
-	// Every positive observer area defines a normalization, even for a
-	// narrow representable interval. Zero/nonfinite intervals return zero.
-	if( k_y > 0 ) {
+	if( k_y > NEARZERO ) {
 		mYNormalization = lambda_diff / k_y;
 	}
 }

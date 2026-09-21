@@ -310,7 +310,7 @@ Scalar DistributionTracingShaderOp::PerformOperationNM(
 			{
 				IndependentSampler fallbackSampler( rc.random );
 				ISampler& scatterSampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
-				pSPF->ScatterNM( ri.geometric, scatterSampler, nm, scattered, ior_stack );
+				pSPF->Scatter( ri.geometric, scatterSampler, scattered, ior_stack );
 			}
 
 			if( scattered.Count() > 1 ) {
