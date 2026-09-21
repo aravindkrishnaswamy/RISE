@@ -99,6 +99,7 @@ using RISE::SpectralDispatch::SpectralValueTraits;
 // prices Sw the same way PathTracingIntegrator's own BSSRDF-entry NEE
 // does, via these stack-local IBSDF adapters (see BSSRDFEntryAdapters.h).
 using RISE::BSSRDFAdapters::BSSRDFEntryBSDF;
+using RISE::BSSRDFAdapters::EntryEvaluationRay;
 using RISE::BSSRDFAdapters::RandomWalkEntryBSDF;
 
 //

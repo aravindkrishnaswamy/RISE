@@ -142,6 +142,7 @@ namespace {
 #include "BSSRDFEntryAdapters.h"
 #include "../Utilities/FireflyTrace.h"
 using RISE::BSSRDFAdapters::BSSRDFEntryBSDF;
+using RISE::BSSRDFAdapters::EntryEvaluationRay;
 using RISE::BSSRDFAdapters::RandomWalkEntryBSDF;
 using RISE::BSSRDFAdapters::BSSRDFEntryMaterial;
 
