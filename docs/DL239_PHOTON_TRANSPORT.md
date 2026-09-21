@@ -139,7 +139,16 @@ incident field and are rejected with a regeneration diagnostic. Checked parsing
 commits only after the entire map is valid. A failed Job load retains the
 previously installed valid map. New-format roundtrip, truncated-input retention, legacy raw load, mixed
 incident directions/colors and insertion/rebuild tests pass in the direct suite.
-The measured result is 297 checks / 0 failures at source 05421e34.
+The historical result before the final compatibility regression was 297 checks /
+0 failures at source 05421e34. A later source audit found that legacy `Store`
+allowed exactly one packet beyond `MaxPhotons`. The old CLI successfully loaded
+an independently written max0/count1 raw file; the first checked loader rejected
+it. The committed regression at 53e858ca reproduced 302 checks / 1 failure.
+The loader now preserves that one recoverable packet and the original maximum,
+including a converted flag2 file without geometric-normal provenance. Two extra
+records, modern geometric-normal over-capacity maps and scalar-only caches
+remain rejected transactionally. This exception changes loading only; newly
+stored maps keep the strict capacity limit.
 
 ## Scope boundaries
 
