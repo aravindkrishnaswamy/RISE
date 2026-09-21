@@ -1982,3 +1982,56 @@ Report this honestly as "no measurable win", not as a speedup — the
 footprint reduction (disk/repo size, and one fewer dead value for every
 future low-alpha table family to inherit) is the real benefit here, not
 compile time.
+
+## DL-139: anisotropic bihemispherical single-scatter quadrature
+
+**CLOSED 2026-09-21.** DL-123's single-scatter quadrature collapsed
+`alphaX != alphaY` to `sqrt(alphaX*alphaY)`. On current HEAD, an
+independent black-box estimator of the real `GGXBRDF::value()` measured
+relative errors from **7.84% to 24.01%** over six ordinary off-diagonal
+rows, and **21.24%** at the one-axis-low `(0.005, 0.5)` corner. The
+historical 11.9%/0.47353 figure was not reused as an expectation: the
+current mixture oracle measures `(0.05,0.5)` at 0.46221 and the old
+guide reports 0.52971.
+
+The fix bakes the eight Fresnel-kernel moments on the same reachable
+24x24 independent-roughness grid and DL-161 low-axis construction used
+by the current anisotropic energy LUT. This deliberately supersedes the
+row's stale "ratio axis" recipe: DL-77's current source documents why a
+ratio/`alphaEff` rectangle contains mostly unreachable high-ratio cells.
+The bihemispherical quantity needs no phi axis. It integrates incident
+and outgoing azimuth over complete hemispheres, so rotating the material
+tangent frame is only a change of integration variables; the result
+depends on the unordered pair `(alphaX,alphaY)`. Axis-exchange symmetry
+halves the bake work.
+
+The off-diagonal `alphaX -> 0` boundary is not the isotropic perfect
+mirror boundary: the orthogonal finite roughness remains in Smith
+Lambda and the VNDF. It therefore has no applicable closed-form
+isotropic anchor and is baked at the low nodes. The virtual zero node
+folds to low node 1, exactly as DL-161 does; production floors roughness
+at `1e-4`, between low nodes 1 and 2, so the virtual zero is unreachable.
+On the isotropic diagonal the new lookup forwards to the original
+`LookupGGXSpecularQuadWeight` path before any new arithmetic. A
+generator-side copy of that diagonal is populated by interpolation from
+the preserved isotropic weights rather than an independent rebake. A
+slot-by-slot comparison found all **344** pre-existing node/ordinary/
+low-axis float literals identical between base HEAD, regenerated output,
+and the fixed source.
+
+`TestAnisotropicFallback` now uses its own anisotropic D/Lambda/G1/VNDF
+implementation and an independently seeded, randomized low-discrepancy
+50/50 VNDF-plus-cosine proposal. The cosine half is required because the
+real BRDF numerator includes a broad Kulla-Conty multiscatter term; a
+VNDF-only proposal has a heavy tail at the one-axis-smooth boundary.
+Each RGB and NM row uses `n=4,800,000` samples and prints mean, sample SD,
+and standard error. Post-fix relative residual is **0.0094%–0.0263%**
+over eight off-diagonal cells including both axis orderings and the low
+corner, against the strict 0.5% gate. `GGXHemisphericalAlbedoTest` is
+**62/0** (the same final test is **62/16** on the unfixed lookup: one RGB
+and one NM failure for each of the eight cells).
+
+The anisotropic bake uses its own fixed RNG stream and 100,000 samples
+per `(alphaX,alphaY,mu_i)` cell; the foreground functional bake completed
+in about one minute on this checkout, but this was not a coordinated
+quiet timing and is not a performance claim.
