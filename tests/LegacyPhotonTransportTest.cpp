@@ -7,6 +7,7 @@
 #include "../src/Library/PhotonMapping/CausticPelPhotonMap.h"
 #include "../src/Library/PhotonMapping/CausticPelPhotonTracer.h"
 #include "../src/Library/PhotonMapping/CausticSpectralPhotonTracer.h"
+#include "../src/Library/PhotonMapping/TranslucentPelPhotonTracer.h"
 #include "../src/Library/Materials/LambertianMaterial.h"
 #include "../src/Library/DetectorSpheres/CircularDiskDetector.h"
 #include "../src/Library/DetectorSpheres/DetectorSphere.h"
@@ -275,12 +276,14 @@ void TestShaderSelection() {
     scene->release();map->release();bsdf->release();paint->release();
 }
 #ifdef RISE_TEST_SMS_PRIVATE_PROBE
-void TestSMSSelection() {
+void TestSMSSelection(double degrees=0) {
+    const double angle=degrees*PI/180;const double expected=std::cos(angle)*.8/(.6*std::sin(angle)+.8*std::cos(angle));
+    std::printf("LIVE_SMS tilt=%.17g expectedAdjoint=%.17g\n",degrees,expected);
     auto* split=new SplitMaterial(2,false,ScatteredRay::eRayReflection);auto* paint=new UniformColorPainter(RISEPel(.5));auto* sink=new LambertianMaterial(*paint);auto* object=new StubObject();
-    auto* manager=new TwoPlaneManager(*object,*split,*sink);auto* scene=new Scene();scene->SetObjectManager(manager);
+    auto* manager=new TwoPlaneManager(*object,*split,*sink,degrees);auto* scene=new Scene();scene->SetObjectManager(manager);
     RandomNumberGenerator rng;IORStack stack(1);double sum=0;bool structure=true;
     for(int i=0;i<16;++i){SMSPhoton out;bool hit=TraceSMSPhoton(*scene,Ray(Point3(0,0,1),Vector3(0,0,-1)),RISEPel(1),rng,stack,out);structure=structure&&hit&&out.chainLen==1&&out.entryObject==object&&out.chain[0].flags==2;if(hit)sum+=out.power.r;}
-    Check(structure,"SMS actual walk keeps reflection chain and hit",structure,1);Near(sum/16,1,"DL271 SMS actual walk selected flux");
+    Check(structure,"SMS actual walk keeps reflection chain and hit",structure,1);Near(sum/16,expected,"DL271 SMS actual walk selected flux");
     scene->release();manager->release();object->release();sink->release();paint->release();split->release();
 }
 #endif
@@ -347,6 +350,21 @@ void TestRareIntegratorSelection() {
     bdpt->release();pt->release();emitter->release();nullMat->release();bsdf->release();paint->release();object->release();
 }
 
+
+class TranslucentTracerProbe:public TranslucentPelPhotonTracer {
+public:
+ TranslucentTracerProbe():PhotonTracer<TranslucentPelPhotonMap>(true,1,1,false),TranslucentPelPhotonTracer(2,1e-12,true,true,true,true,1,1,false){}
+ void Run(TranslucentPelPhotonMap& map){IORStack stack(1);TracePhoton(Ray(Point3(0,0,1),Vector3(0,0,-1)),RISEPel(1),false,map,stack,0);}
+};
+class TranslucentMapProbe:public TranslucentPelPhotonMap {
+public:TranslucentMapProbe():TranslucentPelPhotonMap(128,nullptr){} double Sum()const{double s=0;for(const auto& p:vphotons)s+=p.power.r;return s;}
+};
+void TestTranslucentContinuation(){
+ auto* split=new SplitMaterial(2,false,ScatteredRay::eRayTranslucent);auto* paint=new UniformColorPainter(RISEPel(.5));auto* sink=new LambertianMaterial(*paint);auto* object=new StubObject();
+ for(double degrees:{0.,-30.,30.}){const double angle=degrees*PI/180;const double expected=std::cos(angle)*.8/(.6*std::sin(angle)+.8*std::cos(angle));auto* manager=new TwoPlaneManager(*object,*split,*sink,degrees);auto* scene=new Scene();scene->SetObjectManager(manager);auto* tracer=new TranslucentTracerProbe();tracer->AttachScene(scene);TranslucentMapProbe map;tracer->Run(map);std::printf("LIVE_TRANSLUCENT tilt=%.17g expectedAdjoint=%.17g\n",degrees,expected);Near(map.Sum(),expected,"DL239 translucent tracer branch continuation flux");tracer->release();scene->release();manager->release();}
+ object->release();sink->release();paint->release();split->release();
+}
+
 void TestGather() {
     auto* map=new CausticPelPhotonMap(4096,nullptr);
     auto* paint=new UniformColorPainter(RISEPel(.8));auto* bsdf=new LambertianBRDF(*paint);
@@ -365,8 +383,8 @@ void TestGather() {
     map->release();bsdf->release();paint->release();
 }
 }
-int main() { TestLiveSelection();TestCausticSelection();for(double tilt:{-30.,30.}){TestLiveSelection(tilt);TestCausticSelection(tilt);}TestDetector();TestOtherDetectors();TestShaderSelection();TestRareIntegratorSelection();
+int main() { TestLiveSelection();TestCausticSelection();for(double tilt:{-30.,30.}){TestLiveSelection(tilt);TestCausticSelection(tilt);}TestDetector();TestOtherDetectors();TestShaderSelection();TestTranslucentContinuation();TestRareIntegratorSelection();
 #ifdef RISE_TEST_SMS_PRIVATE_PROBE
-TestSMSSelection();
+for(double tilt:{0.,-30.,30.})TestSMSSelection(tilt);
 #endif
 TestGather();std::printf("LegacyPhotonTransportTest checks=%d failures=%d\n",checks,failures);return failures?1:0; }
