@@ -41,6 +41,13 @@ namespace
   return IsFiniteDouble(n.x) && IsFiniteDouble(n.y) && IsFiniteDouble(n.z)
    && Vector3Ops::SquaredModulus(n)>0;
  }
+ unsigned int AvailableBytes( const IReadBuffer& buffer )
+ {
+  // MemoryBuffer::HowFarToEnd is a legacy last-index distance, not the
+  // number of readable bytes. Bounds checks use the actual size/cursor.
+  const unsigned int cursor=buffer.getCurPos(),size=buffer.Size();
+  return cursor<=size ? size-cursor : 0;
+ }
  bool LoadError( const char* message )
  {
   GlobalLog()->PrintEx(eLog_Error,"GlobalPelPhotonMap: %s; existing map retained",message);
@@ -197,7 +204,7 @@ void GlobalPelPhotonMap::Serialize( IWriteBuffer& buffer ) const
 
 bool GlobalPelPhotonMap::DeserializeChecked( IReadBuffer& buffer )
 {
- if(buffer.HowFarToEnd()<41) return LoadError("truncated header");
+ if(AvailableBytes(buffer)<41) return LoadError("truncated header");
  const unsigned int maximum=buffer.getUInt(),scaled=buffer.getUInt();
  const Scalar radius=buffer.getDouble(),ellipse=buffer.getDouble();
  const unsigned int minimum=buffer.getUInt(),gather=buffer.getUInt();
@@ -206,15 +213,15 @@ bool GlobalPelPhotonMap::DeserializeChecked( IReadBuffer& buffer )
  if(format!=0 && format!=2) return LoadError("unsupported format");
  bool geometry=false;unsigned int spacing=0;
  if(format==2) {
-  if(buffer.HowFarToEnd()<5) return LoadError("truncated directional header");
+  if(AvailableBytes(buffer)<5) return LoadError("truncated directional header");
   const unsigned char state=buffer.getUChar();if(state>1) return LoadError("invalid normal provenance");
   geometry=state!=0;spacing=buffer.getUInt();
   if(!geometry && spacing) return LoadError("anchors require geometric normals");
  }
- if(buffer.HowFarToEnd()<52) return LoadError("truncated bounds/count");
+ if(AvailableBytes(buffer)<52) return LoadError("truncated bounds/count");
  BoundingBox ignored;ignored.Deserialize(buffer);const unsigned int count=buffer.getUInt();
  const unsigned int recordBytes=format==2?75:77;
- if(count>maximum || scaled>count || count>buffer.HowFarToEnd()/recordBytes)
+ if(count>maximum || scaled>count || count>AvailableBytes(buffer)/recordBytes)
   return LoadError("invalid or truncated packet count");
  if(!IsFiniteDouble(radius) || radius<0 || !IsFiniteDouble(ellipse) || ellipse<0 || !IsFiniteDouble(power))
   return LoadError("nonfinite/negative gather parameters");

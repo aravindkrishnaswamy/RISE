@@ -11312,6 +11312,7 @@ bool Job::LoadGlobalPelPhotonmap(
 	RISE_API_CreateDiskFileReadBuffer( &buffer, file_name );
 
 	GlobalPelPhotonMap* pmap = new GlobalPelPhotonMap( 0, nullptr );
+	GlobalLog()->PrintNew( pmap, __FILE__, __LINE__, "GlobalPelPhotonMap" );
 
 	const bool loaded = buffer && pmap->DeserializeChecked( *buffer );
 	if( loaded ) pScene->SetGlobalPelMap( pmap );
