@@ -17,6 +17,13 @@
 #include "../src/Library/Managers/ObjectManager.h"
 #include "../src/Library/Scene.h"
 #include "TestStubObject.h"
+// Circular/adaptive implementations are Xcode/VS sidecars, absent from
+// make/Android. The isolated sidecar probe explicitly compiles their real
+// sources; the ordinary named target keeps the production inventory intact.
+#ifdef RISE_TEST_LEGACY_DETECTOR_SIDECARS
+#include "../src/Library/DetectorSpheres/CircularDiskDetector.cpp"
+#include "../src/Library/DetectorSpheres/AdaptiveDetectorSphere.cpp"
+#endif
 using namespace RISE;
 using namespace RISE::Implementation;
 namespace {
@@ -133,27 +140,38 @@ void TestCausticSelection() {
 }
 double OtherDetectorSum(int count,int kind) {
     SplitMaterial material(count);PointSample emitter(Point3(0,0,1)),specimen(Point3(0,0,0));double sum=0;
+#ifdef RISE_TEST_LEGACY_DETECTOR_SIDECARS
     if(kind==0) {
         auto* d=new CircularDiskDetector();d->InitPatches(16,1,.4);
         d->PerformMeasurement(emitter,specimen,1,material,16,1,nullptr,1);
         for(unsigned i=0;i<d->numPatches();++i)sum+=d->getPatches()[i].dRatio*d->getPatches()[i].dSolidProjectedAngle;
         d->release();
-    } else if(kind==1) {
+    } else
+#endif
+    if(kind==1) {
         auto* d=new DetectorSphere();d->InitPatches(8,8,1,DetectorSphere::eEqualAngles);
         d->PerformMeasurement(emitter,specimen,1,material,16,1,nullptr,1);
         for(unsigned i=0;i<d->numPatches()/2;++i)sum+=d->getTopPatches()[i].dRatio*d->getTopPatches()[i].dSolidProjectedAngle+d->getBottomPatches()[i].dRatio*d->getBottomPatches()[i].dSolidProjectedAngle;
         d->release();
-    } else {
+    }
+#ifdef RISE_TEST_LEGACY_DETECTOR_SIDECARS
+    else {
         auto* d=new AdaptiveDetectorSphere();d->InitPatches(32,1,.1);
         d->PerformMeasurement(emitter,specimen,1,material,16,1,nullptr,1);
         for(const auto& patch:d->getTopPatches())sum+=patch.dRatio*patch.dSolidProjectedAngle;
         d->release();
     }
+#endif
     return sum;
 }
 void TestOtherDetectors() {
     const char* names[]={"DL271 circular detector","DL271 sphere detector","DL271 adaptive detector"};
-    for(int kind=0;kind<3;++kind){const double one=OtherDetectorSum(1,kind),two=OtherDetectorSum(2,kind);Check(one>0,"other detector positive control",one,1);Near(two/one,1,names[kind]);}
+#ifdef RISE_TEST_LEGACY_DETECTOR_SIDECARS
+    const int kinds[]={0,1,2};
+#else
+    const int kinds[]={1};
+#endif
+    for(int kind:kinds){const double one=OtherDetectorSum(1,kind),two=OtherDetectorSum(2,kind);Check(one>0,"other detector positive control",one,1);Near(two/one,1,names[kind]);}
 }
 double DetectorSum(int count,bool spectral) {
     SplitMaterial material(count);
