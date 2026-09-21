@@ -20,7 +20,6 @@
 #include "../src/Library/Shaders/PathTracingIntegrator.h"
 #include "../src/Library/Shaders/BDPTIntegrator.h"
 #include "../src/Library/Materials/LambertianLuminaireMaterial.h"
-#include "../src/Library/Materials/NullMaterial.h"
 #include "../src/Library/Shaders/FinalGatherShaderOp.h"
 #include "../src/Library/Shaders/DistributionTracingShaderOp.h"
 #ifdef RISE_TEST_SMS_PRIVATE_PROBE
@@ -294,7 +293,7 @@ public:
 };
 void TestRareIntegratorSelection() {
     auto* object=new StubObject();auto* paint=new UniformColorPainter(RISEPel(1));auto* bsdf=new LambertianBRDF(*paint);
-    auto* nullMat=new NullMaterial();auto* emitter=new LambertianLuminaireMaterial(*paint,1,*nullMat);
+    auto* nullMat=new SplitMaterial(0);auto* emitter=new LambertianLuminaireMaterial(*paint,1,*nullMat);
     RandomNumberGenerator rng;RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);ZeroSampler sampler;IORStack stack(1);
     auto* pt=new PathTracingIntegrator(ManifoldSolverConfig(),StabilityConfig());pt->SetMaxPathDepth(2);
     auto* bdpt=new BDPTIntegrator(2,2,StabilityConfig());
@@ -311,7 +310,7 @@ void TestRareIntegratorSelection() {
         const Scalar emittedNM=emitter->GetEmitter()->emittedRadianceNM(hit.geometric,Vector3(0,0,1),Vector3(0,0,1),550);
         std::printf("rare hasBSDF=%d first=%.17g second=%.17g NMsource=%.17g\n",hasBSDF,a,b,emittedNM);
         Near(pel.r/(a+b),1,"DL271 actual PT Pel selected conditional response");Near(nm/((a+b)*emittedNM),1,"DL271 actual PT NM selected conditional response");
-        SampledWavelengths swl;swl.SampleUniform(.5,400,700);Scalar bundle[SampledWavelengths::N];
+        SampledWavelengths swl=SampledWavelengths::SampleEquidistant(.5,400,700);Scalar bundle[SampledWavelengths::N];
         pt->IntegrateFromHitHWSS(rc,nullRasterizerState,hit,swl,*scene,caster,sampler,nullptr,0,stack,0,true,1,IRayCaster::RAY_STATE::eRayView,0,0,0,0,0,0,bundle);
         for(unsigned w=0;w<SampledWavelengths::N;++w){const Scalar e=emitter->GetEmitter()->emittedRadianceNM(hit.geometric,Vector3(0,0,1),Vector3(0,0,1),swl.lambda[w]);Near(bundle[w]/((a+b)*e),1,"DL271 actual PT HWSS selected conditional response");}
         std::vector<BDPTVertex> verts;std::vector<uint32_t> starts;
