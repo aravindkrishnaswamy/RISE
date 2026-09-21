@@ -80,6 +80,8 @@ void TranslucentPelPhotonMap::RadianceEstimate( RISEPel& rad,
  if(heap.size()<=nMinPhotonsOnGather) return;
  if(heap.size()<nMaxPhotonsOnGather) std::make_heap(heap.begin(),heap.end());
  const Scalar radius2=heap[0].distance;
+ // Co-located packets define no finite-area density, for either kind.
+ if(radius2<=0) return;
  const Vector3 wo=-query.ray.Dir();
  // The dedicated exit packet already contains Beer*(1-scattering). Its
  // remaining angular law is the material's clipped cosine exit lobe, whose

@@ -835,7 +835,9 @@ namespace RISE
                 if(ReadableBytes(b)<32)return PacketLoadError("truncated wavelength law");
                 const Scalar a=b.getDouble(),end=b.getDouble();const unsigned n=b.getUInt();const Scalar width=b.getDouble();
                 SpectralPhotonSamplingLaw law;
-                if(!law.Configure(a,end,n)||!IsFiniteDouble(width)||width<0)return PacketLoadError("invalid wavelength law or kernel");
+                // An unconfigured empty map is a valid serializable state. It
+                // still cannot accept a packet until explicitly configured.
+                if((n ? !law.Configure(a,end,n) : a!=0||end!=0)||!IsFiniteDouble(width)||width<0)return PacketLoadError("invalid wavelength law or kernel");
                 const unsigned gridCount=b.getUInt();
                 if(gridCount!=(n<10000?n:0)||gridCount>ReadableBytes(b)/8)return PacketLoadError("invalid or truncated represented wavelength grid");
                 // The finite law is uniform over these exact representatives.
@@ -846,6 +848,7 @@ namespace RISE
                     law.representatives[i]=value;
                 }
                 ExactPacketState state;if(!ReadExactBody(b,state))return false;
+                if(!n&&!state.packets.empty())return PacketLoadError("unconfigured map contains packets");
                 for(const auto& packet:state.packets)if(!law.Contains(packet.nm))return PacketLoadError("packet wavelength outside declared sampling law");
                 CommitExactBody(state);samplingLaw=law;halfWidth=width;return true;
             }
