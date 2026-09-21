@@ -64,6 +64,7 @@ namespace RISE
 				const IBSDF&					brdf					// BRDF of the surface to estimate irradiance from
 				) const;
 
+			// N is the unit geometric surface normal, not the shading normal.
 			bool Store( const RISEPel& power, const Point3& pos, const Vector3& N, const Vector3& dir );
 
 			void SetGatherParams( const Scalar radius, const Scalar ellipse_ratio,

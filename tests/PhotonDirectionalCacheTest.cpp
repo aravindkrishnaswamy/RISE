@@ -27,6 +27,7 @@ class CacheProbe:public GlobalPelPhotonMap {
 public:
  CacheProbe(unsigned n):GlobalPelPhotonMap(n,nullptr){}
  size_t AnchorCount()const{return anchors.size();}
+ std::vector<std::pair<Point3,Vector3>> AnchorSnapshot()const{std::vector<std::pair<Point3,Vector3>> out;for(const auto& a:anchors)out.emplace_back(a.position,a.geometricNormal);return out;}
  void RawParams(){PhotonMapCore<IrradPhoton>::SetGatherParams(.2,.05,10,400,nullptr);}
  Vector3 FirstDirection()const{return PhotonDir(vphotons[0].theta,vphotons[0].phi);}
  std::vector<double> Distances(const Point3& p)const{PhotonDistListType heap;LocatePhotons(p,dGatherRadius,nMaxPhotonsOnGather,heap,0,static_cast<int>(vphotons.size())-1);std::vector<double> d;for(const auto& h:heap)d.push_back(h.distance);std::sort(d.begin(),d.end());return d;}
@@ -77,6 +78,28 @@ void DirectGathers(){
   }
  }
  bsdf->release();paint->release();
+}
+
+class PositionPainter:public UniformColorPainter {
+public:
+ PositionPainter():UniformColorPainter(RISEPel(.5)){}
+ RISEPel GetColor(const RayIntersectionGeometric& q)const override{return RISEPel(.6+.2*sin(100*q.ptIntersection.x),.4+.2*sin(100*q.ptIntersection.y),.3+.1*cos(100*q.ptIntersection.z));}
+};
+void ObliqueAnchorQuery(){
+ const double angle=PI/6;const Vector3 normal(sin(angle),0,cos(angle));const Vector3 incident(0,0,1);CacheProbe map(2601);std::vector<Deposit> deposits;
+ for(int y=-25;y<=25;++y)for(int x=-25;x<=25;++x){const Point3 p(x*.01*cos(angle),y*.01,-x*.01*sin(angle));map.Store(RISEPel(1.),p,normal,incident);deposits.push_back({p,RISEPel(1.)});}
+ const Vector3 decoded=map.FirstDirection();map.Balance();map.RawParams();map.PrecomputeIrradiance(4,nullptr);
+ RayIntersectionGeometric query(Ray(Point3(0,0,1),Vector3(0,0,-1)),nullRasterizerState);query.ptIntersection=Point3(.0007,.0002,0);query.vGeomNormal=Vector3(sin(angle+.1),0,cos(angle+.1));query.vNormal=Vector3(sin(angle-.2),0,cos(angle-.2));query.onb.CreateFromW(query.vNormal);
+ Point3 expectedAnchor;Vector3 expectedNormal;double best=.04;
+ for(const auto& a:map.AnchorSnapshot()){const double d2=Vector3Ops::SquaredModulus(Vector3Ops::mkVector3(a.first,query.ptIntersection));if(d2<best&&Vector3Ops::Dot(a.second,query.vGeomNormal)>.9){best=d2;expectedAnchor=a.first;expectedNormal=a.second;}}
+ Check(map.HasAnchor(query.ptIntersection,query.vGeomNormal),"oblique query has compatible geometric anchor",map.HasAnchor(query.ptIntersection,query.vGeomNormal),1);
+ if(map.HasAnchor(query.ptIntersection,query.vGeomNormal))Near(Vector3Ops::SquaredModulus(Vector3Ops::mkVector3(map.NearestPosition(query.ptIntersection,query.vGeomNormal),expectedAnchor)),0,"anchor KD lookup equals exhaustive normal-filtered nearest search");
+ auto* painter=new PositionPainter();auto* black=new UniformColorPainter(RISEPel(0.));auto* exponent=new UniformScalarPainter(12.);auto* lambert=new LambertianBRDF(*painter);auto* phong=new IsotropicPhongBRDF(*black,*painter,*exponent);
+ for(const IBSDF* f:{static_cast<IBSDF*>(lambert),static_cast<IBSDF*>(phong)}){RISEPel got;map.RadianceEstimate(got,query,*f);const RISEPel expected=Reference(deposits,expectedAnchor,expectedNormal,decoded,query,*f,true);for(int c=0;c<3;++c)Near(got[c],expected[c],"anchor geometric area and query position/material/shading frame stay separate");}
+ // Reversing only the query geometric side makes every anchor incompatible;
+ // it must not choose one using incident direction or shading normal.
+ Check(!map.HasAnchor(query.ptIntersection,-query.vGeomNormal),"opposite geometric side rejects cache anchors",map.HasAnchor(query.ptIntersection,-query.vGeomNormal),0);
+ phong->release();lambert->release();exponent->release();black->release();painter->release();
 }
 
 void LegacyCacheLoad(){
@@ -154,4 +177,4 @@ void Run(){
  phong->release();lambert->release();exp->release();black->release();paint->release();
 }
 }
-int main(){Run();DirectGathers();LegacyCacheLoad();std::printf("PhotonDirectionalCacheTest checks=%d failures=%d\n",checks,failures);return failures?1:0;}
+int main(){Run();DirectGathers();ObliqueAnchorQuery();LegacyCacheLoad();std::printf("PhotonDirectionalCacheTest checks=%d failures=%d\n",checks,failures);return failures?1:0;}
