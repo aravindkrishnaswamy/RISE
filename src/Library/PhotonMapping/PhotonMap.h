@@ -218,7 +218,9 @@ namespace RISE
 					// Build the heap
 					if( heap.size() == nPhotons-1 ) {
 						std::make_heap( heap.begin(), heap.end() );
-						md = heap[0].distance;
+						// Build before the next push, but keep the original search
+						// radius until all k candidates exist. Shrinking at k-1
+						// can exclude the required kth (more distant) record.
 					} else if( heap.size() >= nPhotons ) {
 						std::push_heap( heap.begin(), heap.end() );
 
