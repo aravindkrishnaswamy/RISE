@@ -68,6 +68,21 @@ roots, mixed-scale and reciprocal root families, finite-input assertions,
 and normal/subnormal output boundaries. See
 [the derivation and committed red/green evidence](../docs/DL226_QUARTIC_FACTORIZATION.md).
 
+The private exponent-preserving FMA has a separate exact-rational regression:
+
+```sh
+python3 tests/PolynomialWideArithmeticTest.py --output-dir /tmp/polynomial-wide-evidence
+```
+
+This Python 3 test uses the selected `--compiler` (default `c++`, Clang/GCC
+command-line flags) to compile the actual private production implementation.
+It writes generated code, executable, logs and JSON only to the specified
+evidence directory. No public API or library build entry is added. The
+5,762 checks compare exact Fraction nearest-53/ties-even results, including
+remote addends that decide exact product ties; 12 hand-derived oracle
+sentinels and fixed family counts guard the reference and completeness.
+Return status is nonzero for build, run, count, warning, or arithmetic failure.
+
 ## Test Map
 
 There are 219 standalone `tests/*.cpp` executables as of 2026-07-24. Do not

@@ -4,7 +4,9 @@ Closed 2026-09-21 alongside [DL226](DL226_QUARTIC_FACTORIZATION.md).
 Independent review of the first DL226 candidate found three pre-existing
 boundary defects. This revision reproduced each with committed public-API
 and actual torus tests before changing the formulation. Production source
-is frozen at `4b17e660cabc194b634407cb616954b4bb26c10a`; the final test
+is frozen at `5986bcdef2bedc567469aa9df31b9e279b1dbc01` after the
+wide-FMA rounding correction described below. The prior measured source was
+`4b17e660cabc194b634407cb616954b4bb26c10a`; its final public test
 addition is `04b203ca`, with a stricter near-contact value band at
 `537da86f`. All inputs discussed below have finite stored
 coefficients and finite expected roots. Nonfinite input coefficients are
@@ -76,7 +78,9 @@ Finite nonzero values have `.5<=abs(m)<1`; zero has exponent zero.
 Products and quotients operate on bounded significands. Addition aligns
 exponents; terms beyond alignment range cannot affect 53-bit rounding.
 FMA aligns the addend to the product's binade and uses one hardware FMA,
-with dominance handled before an overflowing shift. Square/cube roots
+with dominance handled before an overflowing shift. For a remote addend,
+a signed sticky surrogate preserves which side of an exact product
+midpoint the true result occupies; dropping that addend is incorrect. Square/cube roots
 split the exponent into quotient and remainder, including negative
 exponents. Trigonometric conversion occurs only for bounded resolvent
 angle arguments. Final root conversion explicitly handles normal,
@@ -118,7 +122,7 @@ lost tangent cases adds twelve such checks. The earlier DL226 528/90,
 466/3 and 521/0 results remain historical evidence for that selection fix.
 
 `revision1-{red,first,spread-red,wide}-status.json` index these runs.
-`revision2-final-gates-status.json` records the final fresh clean library and all
+`revision2-final-gates-status.json` records the historical `4b17e660` clean library and all
 11 exact named build/run pairs: 24 stages, all rc0 and zero warnings.
 The suites are PolynomialTest, BezierClippingUnitsTest,
 GeometryUVRoundtripTest, GeometrySurfaceDerivativesTest,
@@ -130,7 +134,7 @@ separately relinked in `revision1-contact-final-status.json`, also rc0 and
 zero warnings; its 1e-10 absolute band is well below the smallest root
 separation (about 1.69e-7).
 
-Supervisor-run clean Deployment and Opto on frozen production also passed,
+Supervisor-run clean Deployment and Opto on historical `4b17e660` also passed,
 each rc0, two documented OIDN-path/AppIntents notices and zero actionable
 warnings. Their supervisor-produced logs and manifest are in
 `/private/tmp/rise-debt-codex-20260919/dl226_xcode_revision2/`.
@@ -148,7 +152,11 @@ compiled with O3/LTO/fast-math and `-fno-finite-math-only`. Seed 273274275
 uses full 53-bit significands and exponents from −5000 to +5000, including
 same-binade sums and cancelling products. An independent Python Fraction
 oracle checked 2,000 additions, 1,000 products, 1,000 divisions and 2,013
-FMAs to at most .5 output ULP. A 90-digit Decimal oracle checked thirteen
+FMAs. The original checker converted a rational error to float before
+comparing it with .5 ULP; this could silently accept an error infinitesimally
+larger than .5. Independent review and this revision's stricter recheck of
+all original rows compare exact rational nearest-53/ties-even values and
+still pass all supplied rows. They lacked the midpoint witness below. A 90-digit Decimal oracle checked thirteen
 square roots and thirteen cube roots across positive/negative exponents;
 maximum observed relative error was below 6.85e-17. All **6,039 checks
 passed**. Another **500 checks passed** for known-root double/extended
@@ -232,7 +240,9 @@ scene and +1.07% for the non-torus control. Small sample counts and observed
 variation limit precise slowdown claims. Process times retain startup,
 including the slower first launches; frame times use the renderer's
 millisecond-resolution Rasterize timer. All twelve valid outputs were fresh,
-finite 192×192 EXRs. CLI rc1 is the explicit `ParseQuit::exit(1)` convention;
+finite 192×192 EXRs. For these stdin command-console runs, `quit` is
+intercepted by `commandconsole.cpp` before `ParseCommand`; the loop breaks
+and `main` returns 1. The `ParseQuit::exit(1)` path is not called here;
 it was accepted only alongside completion, no partial-load diagnostic,
 and a newly written validated EXR. The failed setup also returned rc1 and
 was rejected, demonstrating that status alone was not normalized to success.
@@ -245,3 +255,80 @@ commands, asset hashes, scenes, logs and images are in `whole-cost/`,
 particularly `binary-manifest.json`, `scene-manifest.json`,
 `asset-path-only.patch`, `resolved-assets.json`, `whole-raw.json`,
 `whole-summary.json` and `whole-initial-with-failed-setup.json`.
+
+
+## Review correction: exact wide-FMA midpoint rounding
+
+At committed red `d336ddec`, the compiled private helper drops a remote
+nonzero addend. For `a=1+2^-27`, `b=1+2^-26`, `c=2^-1100`, the exact product
+is `1+3*2^-27+2^-53`, exactly halfway between two binary64 significands.
+Positive c requires the upper neighbor. The old answer chooses the lower
+even neighbor, giving exact error `1/2+2^-1048` ULP. No public quartic-root
+or image failure has been demonstrated from this helper defect.
+
+For normalized p-bit significands, the exact product is an integer
+multiple of `2^(-2p)`. Product-binade rounding midpoints lie on that same
+lattice. If the aligned addend's exponent is below `-2p`, its magnitude
+is less than one lattice step: it cannot cross a non-midpoint boundary,
+but its sign resolves a midpoint. Replacing only such an addend by
+`copysign(2^(-2p-2),c)` preserves the exact nearest/ties-even decision.
+Zero remains exact zero. All other alignments are normal, exact power-of-two
+scalings; the hardware FMA rounds once. The opposite dominance branch may
+return c because c is already representable, not a product midpoint.
+The cutoff and surrogate use `DBL_MANT_DIG`; no root tolerance changes.
+
+The durable `tests/PolynomialWideArithmeticTest.py` compiles a probe that
+includes the actual private production helper using release O3/LTO/
+fast-math flags. It generates 5,762 cases with both product/addend signs,
+both midpoint parities, adjacent non-midpoints, zero, cancellation,
+subnormal-alignment ranges, huge exponent shifts, and random full-width
+significands. Its Fraction oracle compares the exact result with the
+nearest 53-bit significand using integer quotient/remainder and ties-even;
+no float error is used for acceptance. Twelve exact oracle sentinels and
+fixed per-family counts check the reference and completeness.
+Committed red **5,762/240** becomes **5,762/0** at `5986bcde`.
+The red public PolynomialTest remains **1057/0** after explicit library and
+exact-target relinks, distinguishing this arithmetic finding from a public
+root failure. The first private probe build missed the library include
+path; its setup failure is retained separately and was corrected before
+red measurement. All measured private probe builds have zero warnings.
+
+`revision3-red2/`, `revision3-green-nosuppression/`, and
+`revision3-red-gates.json` retain exact operands, rational expected values,
+source hashes, compiler arguments, process statuses, and red results.
+A fresh compiled run also retains the earlier **6,039/0** arithmetic and
+**500/0** known-root checks under `revision3-arithmetic-*`, now with exact
+nearest-53 comparisons via `check-revision3-arithmetic-v2.py`. The first
+strict checker hit Python's decimal-string digit limit while formatting
+an exact fraction; its failure remains in the original status/stderr.
+Only reporting capacity changed; the saved operands were rechecked.
+
+The 100 micro samples and twelve whole-render measurements above remain
+measurements of `4b17e660`, not of the final binary. The ordinary double
+FMA overload and OQS path are unchanged by this correction. No rerender
+was needed for the corrected command-console exit attribution. Exceptional
+wide-path renewed cost and final source-sensitive gates are recorded below.
+
+
+At frozen `5986bcde`, the renewed clean library and eleven exact named
+build/run pairs again pass all **24 stages**, rc0 and zero warnings;
+PolynomialTest remains **1057/0**. `revision3-final-gates-status.json` lists
+every command and raw log. Supervisor-run clean Deployment (67.02 s) and
+Opto (100.25 s) also pass, each rc0 with exactly the two documented
+OIDN-path/AppIntents exclusions and zero actionable warnings. Their manifest
+is `/private/tmp/rise-debt-codex-20260919/dl226_xcode_revision3/results.json`.
+The final durable probe has no warning-suppression option and builds with
+zero warnings. Its `--compiler` interface supports GNU/Clang-style flags;
+this is not a claim of an MSVC runtime test.
+
+A coordinated quiet n=5 alternating 4b17/5986 comparison remeasured the two
+exceptional wide-path inputs at 500,000 solves per sample. CPU ns/solve
+(mean ± sample SD): normalization overflow **644.410 ± 17.772 →
+639.395 ± 23.286** (ratio .99222); wide root spread **924.284 ± 6.971 →
+938.899 ± 13.114** (ratio 1.01581). These small differences and finite
+samples do not establish a general speedup or worst-case bound. All ten
+processes returned0. Every sample, inner CPU/wall timing, startup-inclusive
+process wall, root count, and checksum is retained; none was excluded.
+Separate binaries link the saved 4b17 object and the final clean-make 5986
+object, with object/source hashes and exact link commands recorded.
+`revision3-cost-{build-status,processes,raw,summary}.json` index this evidence.

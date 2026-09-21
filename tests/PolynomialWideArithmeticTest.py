@@ -86,7 +86,7 @@ def main():
     probe.write_text(PROBE.replace('@SOURCE@', str(source)))
     command = [args.compiler, '-O3', '-flto', '-ffast-math', '-fno-finite-math-only',
                '-funroll-loops', '-std=gnu++17', '-Wall', '-pedantic',
-               '-Wno-c++11-long-long', '-I'+str(source.parents[1]), str(probe), '-o', str(out/'probe')]
+               '-I'+str(source.parents[1]), str(probe), '-o', str(out/'probe')]
     build = subprocess.run(command, capture_output=True, text=True)
     (out/'build.log').write_text(build.stdout + build.stderr)
     report = dict(command=command, source_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
@@ -97,6 +97,14 @@ def main():
     run = subprocess.run([str(out/'probe')], capture_output=True, text=True)
     (out/'raw.log').write_text(run.stdout)
     (out/'run.stderr').write_text(run.stderr)
+    # Exact hand-derived oracle sentinels include both tie parities and signs.
+    unit, half, remote = Fraction(2)**-52, Fraction(2)**-53, Fraction(2)**-1100
+    sentinels = [(1+half, 1), (1+half+remote, 1+unit),
+                 (1+half-remote, 1), (1+3*half, 1+2*unit),
+                 (1+3*half-remote, 1+unit), (1+3*half+remote, 1+2*unit)]
+    for value, expected in sentinels:
+        if nearest53(value) != expected or nearest53(-value) != -expected:
+            raise AssertionError('Exact nearest-53 reference sentinel failed')
     failures, counts = [], {}
     for index, line in enumerate(run.stdout.splitlines()):
         family, *fields = line.split()
@@ -108,7 +116,12 @@ def main():
         if actual != expected:
             failures.append(dict(index=index, raw=line, actual=str(actual),
                                  expected=str(expected), exact_error=str(abs(actual-exact))))
-    report.update(run_rc=run.returncode, counts=counts, checks=sum(counts.values()), failures=failures)
+    expected_counts = dict(midpoint=1872, neighbor=1872, cancel=6,
+                           zero_product=6, power_boundary=6, random=2000)
+    if counts != expected_counts:
+        failures.append(dict(incomplete_probe=counts, expected_counts=expected_counts))
+    report.update(run_rc=run.returncode, counts=counts, checks=sum(counts.values()),
+                  oracle_sentinels=2*len(sentinels), failures=failures)
     (out/'result.json').write_text(json.dumps(report, indent=2))
     print(json.dumps({k:v for k,v in report.items() if k != 'failures'}, indent=2))
     print(f"Exact nearest-53 checks: {sum(counts.values())}, failures: {len(failures)}")
