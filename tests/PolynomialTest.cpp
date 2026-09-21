@@ -556,7 +556,7 @@ static void TestQuarticClassificationAndCallers()
         CheckQuarticOracle("positive_near_two_double",{{1,-12,52,-96,64+delta}},{});
         const double outer=std::sqrt(1+q),inner=std::sqrt(1-q);
         CheckQuarticOracle("four_real_near_two_double",{{1,-12,52,-96,64-delta}},
-            {3-outer,3-inner,3+inner,3+outer},1e-7);
+            {3-outer,3-inner,3+inner,3+outer},1e-10);
     }
     {
         const double h=std::ldexp(1.0,1023),tiny=std::ldexp(1.0,-1074);
