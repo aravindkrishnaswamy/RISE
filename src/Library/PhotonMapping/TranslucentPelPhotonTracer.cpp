@@ -170,11 +170,10 @@ void TranslucentPelPhotonTracer::TracePhoton(
 			// diffuse hit -- see `bTranslucentExit` above for why (the
 			// Jensen gather needs ARRIVING flux, and a non-exit diffuse
 			// kray is a reflectance, not a transport attenuation).  At
-			// every other hit the deposit stays exactly what it was before
-			// DL-39: incoming power less whatever was traced onward, which
-			// for an ordinary diffuse surface (nothing traced) is the full
-			// arriving power the estimator wants.
-			RISEPel accum_scattered;
+			// every other hit the deposit is the full incident power. DL280:
+			// a sampled glossy continuation weight is not a flux partition
+			// to subtract before the gather evaluates the complete BSDF.
+			// DL39's pure-Lambertian control did not exercise that subtraction.
 			RISEPel diffuse_deposit;
 			for( unsigned int i=0; i<scattered.Count(); i++ ) {
 				ScatteredRay& scat = scattered[i];
@@ -189,9 +188,6 @@ void TranslucentPelPhotonTracer::TracePhoton(
 					(scat.type==ScatteredRay::eRayReflection && bTraceReflections) ||
 					(scat.type==ScatteredRay::eRayRefraction && bTraceRefractions) ) {
 					TracePhoton( scat.ray, power*scat.kray*PathVertexEval::ImportanceShadingNormalFactor( ri.geometric.vNormal, ri.geometric.vGeomNormal, -ray.Dir(), scat.ray.Dir() ), scat.type==ScatteredRay::eRayTranslucent, pPhotonMap, scat.ior_stack?*scat.ior_stack:ior_stack, depth+1 );
-					if( bFromTranslucent ) {
-						accum_scattered = accum_scattered + scat.kray;
-					}
 				} else if( scat.type==ScatteredRay::eRayDiffuse ) {
 					diffuse_deposit = diffuse_deposit + scat.kray;
 				}
@@ -201,7 +197,7 @@ void TranslucentPelPhotonTracer::TracePhoton(
 			if( bFromTranslucent ) {
 				pPhotonMap.Store(
 					bTranslucentExit ? power*diffuse_deposit
-						: power*(RISEPel(1,1,1)-accum_scattered),
+						: power,
 					ri.geometric.ptIntersection );
 			}
 		}
