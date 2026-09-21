@@ -30,12 +30,14 @@ namespace RISE
 		Point3			ptPosition;			// Location of the photon in three space
 		unsigned char	plane;				// splitting plane used in the kd-tree
 		RISEPel			power;				// photon power
-		unsigned char	theta, phi;			// incoming direction of the photon
+		unsigned char	theta, phi;			// legacy compressed fields; not used for transport
+		Vector3 incomingDirection;		// exact incident direction preserves geometric support
 
 		Photon() : 
 		plane( 0 ),
 		theta( 0 ),
-		phi( 0 )
+		phi( 0 ),
+		incomingDirection(0,0,0)
 		{};
 	};
 
@@ -53,13 +55,15 @@ namespace RISE
 		Point3			ptPosition;			// Location of the photon in three space
 		unsigned char	plane;				// splitting plane used in the kd-tree
 		Scalar			power;				// photon power
-		unsigned char	theta, phi;			// incoming direction of the photon
+		unsigned char	theta, phi;			// legacy compressed fields; not used for transport
+		Vector3 incomingDirection;		// exact incident direction preserves geometric support
 		Scalar			nm;					// wavelength of the photon
 
 		SpectralPhoton() : 
 		plane( 0 ),
 		theta( 0 ),
 		phi( 0 ),
+		incomingDirection(0,0,0),
 		nm( 400 )
 		{};
 	};

@@ -145,7 +145,7 @@ void GlobalPelPhotonMap::RadianceAtAnchor( RISEPel& rad,const CacheAnchor& ancho
   const IrradPhoton& photon=item.element;
   const Scalar height=Vector3Ops::Dot(Vector3Ops::mkVector3(photon.ptPosition,anchor.position),anchor.geometricNormal);
   if(fabs(height)>=radius2*dEllipseRatio) continue;
-  const Vector3 wi=PhotonDir(photon.theta,photon.phi);
+  const Vector3 wi=photon.incomingDirection;
   // The anchor owns area and spatial kernel; the query owns the material,
   // BSDF support, shading frame and position. Do not rebuild the query at
   // the anchor or replace its geometric support normal.
@@ -168,7 +168,7 @@ bool GlobalPelPhotonMap::Store( const RISEPel& power,const Point3& pos,
 {
  if(vphotons.size()>=nMaxPhotons) return false;
  IrradPhoton photon;
- photon.ptPosition=pos;photon.power=power;photon.geometricNormal=geometricNormal;
+ photon.incomingDirection=dir;photon.ptPosition=pos;photon.power=power;photon.geometricNormal=geometricNormal;
  int theta=int(acos(dir.z)*(256.0/PI));
  photon.theta=theta>255?255:static_cast<unsigned char>(theta);
  int phi=int(atan2(dir.y,dir.x)*(256.0/TWO_PI));
@@ -189,15 +189,16 @@ void GlobalPelPhotonMap::Serialize( IWriteBuffer& buffer ) const
  buffer.setDouble(dGatherRadius);buffer.setDouble(dEllipseRatio);
  buffer.setUInt(nMinPhotonsOnGather);buffer.setUInt(nMaxPhotonsOnGather);
  buffer.setDouble(maxPower);
- // Legacy flag0=full packets, flag1=irreversible scalar cache. Flag2 adds
- // exact geometric normals and anchor state, and always retains all packets.
- buffer.setUChar(2);buffer.setUChar(hasGeometricNormals?1:0);buffer.setUInt(anchorSpacing);
+ // Flag3 preserves exact incident directions as well as geometric normals.
+ // Earlier formats lose incident support and require regeneration.
+ buffer.setUChar(3);buffer.setUChar(hasGeometricNormals?1:0);buffer.setUInt(anchorSpacing);
  bbox.Serialize(buffer);
- buffer.ResizeForMore(static_cast<unsigned int>(4+75*vphotons.size()));
+ buffer.ResizeForMore(static_cast<unsigned int>(4+97*vphotons.size()));
  buffer.setUInt(static_cast<unsigned int>(vphotons.size()));
  for(const auto& p:vphotons) {
   Point3Ops::Serialize(p.ptPosition,buffer);buffer.setUChar(p.plane);
-  ColorUtils::SerializeRGBPel(p.power,buffer);buffer.setUChar(p.theta);buffer.setUChar(p.phi);
+  ColorUtils::SerializeRGBPel(p.power,buffer);
+  buffer.setDouble(p.incomingDirection.x);buffer.setDouble(p.incomingDirection.y);buffer.setDouble(p.incomingDirection.z);
   buffer.setDouble(p.geometricNormal.x);buffer.setDouble(p.geometricNormal.y);buffer.setDouble(p.geometricNormal.z);
  }
 }
@@ -210,9 +211,10 @@ bool GlobalPelPhotonMap::DeserializeChecked( IReadBuffer& buffer )
  const unsigned int minimum=buffer.getUInt(),gather=buffer.getUInt();
  const Scalar power=buffer.getDouble();const unsigned char format=buffer.getUChar();
  if(format==1) return LoadError("legacy scalar irradiance cache lacks incident directions; regenerate from its scene");
- if(format!=0 && format!=2) return LoadError("unsupported format");
+ if(format==0 || format==2) return LoadError("legacy compressed directions cannot recover incident support; regenerate from its scene");
+ if(format!=3) return LoadError("unsupported format");
  bool geometry=false;unsigned int spacing=0;
- if(format==2) {
+ if(format==3) {
   if(AvailableBytes(buffer)<5) return LoadError("truncated directional header");
   const unsigned char state=buffer.getUChar();if(state>1) return LoadError("invalid normal provenance");
   geometry=state!=0;spacing=buffer.getUInt();
@@ -220,13 +222,8 @@ bool GlobalPelPhotonMap::DeserializeChecked( IReadBuffer& buffer )
  }
  if(AvailableBytes(buffer)<52) return LoadError("truncated bounds/count");
  BoundingBox ignored;ignored.Deserialize(buffer);const unsigned int count=buffer.getUInt();
- const unsigned int recordBytes=format==2?75:77;
- // Old Store rejected size>maximum rather than size>=maximum, allowing
- // exactly one extra raw packet. Preserve that recoverable record and the
- // original maximum, including after conversion to flag2 without Ng data.
- // Geometric-normal maps use the current strict capacity contract.
- const bool legacyOverflow=!geometry && count>maximum && count-maximum==1;
- if((count>maximum && !legacyOverflow) || scaled>count || count>AvailableBytes(buffer)/recordBytes)
+ const unsigned int recordBytes=97;
+ if(count>maximum || scaled>count || count>AvailableBytes(buffer)/recordBytes)
   return LoadError("invalid or truncated packet count");
  if(!IsFiniteDouble(radius) || radius<0 || !IsFiniteDouble(ellipse) || ellipse<0 || !IsFiniteDouble(power))
   return LoadError("nonfinite/negative gather parameters");
@@ -234,16 +231,10 @@ bool GlobalPelPhotonMap::DeserializeChecked( IReadBuffer& buffer )
  BoundingBox bounds(Point3(RISE_INFINITY,RISE_INFINITY,RISE_INFINITY),Point3(-RISE_INFINITY,-RISE_INFINITY,-RISE_INFINITY));
  for(unsigned int i=0;i<count;++i) {
   IrradPhoton p;Point3Ops::Deserialize(p.ptPosition,buffer);p.plane=buffer.getUChar();
-  ColorUtils::DeserializeRGBPel(p.power,buffer);p.theta=buffer.getUChar();p.phi=buffer.getUChar();
-  if(format==2) {
-   p.geometricNormal.x=buffer.getDouble();p.geometricNormal.y=buffer.getDouble();p.geometricNormal.z=buffer.getDouble();
-  } else {
-   // Old unprecomputed files have all directions, but their stored normal
-   // was a shading normal. Consume the old fields without relabelling it.
-   RISEPel oldIrradiance;ColorUtils::DeserializeRGBPel(oldIrradiance,buffer);buffer.getUChar();buffer.getUChar();
-   p.geometricNormal=Vector3(0,0,0);
-  }
-  if(!FinitePoint(p.ptPosition) || p.plane>2 || !IsFiniteDouble(p.power.r) || !IsFiniteDouble(p.power.g) || !IsFiniteDouble(p.power.b) || (geometry && !FiniteNormal(p.geometricNormal)))
+  ColorUtils::DeserializeRGBPel(p.power,buffer);
+  p.incomingDirection.x=buffer.getDouble();p.incomingDirection.y=buffer.getDouble();p.incomingDirection.z=buffer.getDouble();
+  p.geometricNormal.x=buffer.getDouble();p.geometricNormal.y=buffer.getDouble();p.geometricNormal.z=buffer.getDouble();
+  if(!FiniteNormal(p.incomingDirection) || !FinitePoint(p.ptPosition) || p.plane>2 || !IsFiniteDouble(p.power.r) || !IsFiniteDouble(p.power.g) || !IsFiniteDouble(p.power.b) || (geometry && !FiniteNormal(p.geometricNormal)))
    return LoadError("invalid packet data");
   bounds.Include(p.ptPosition);packets.push_back(p);
  }

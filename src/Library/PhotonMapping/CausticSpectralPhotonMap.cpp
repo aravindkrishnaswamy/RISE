@@ -25,7 +25,7 @@ CausticSpectralPhotonMap::CausticSpectralPhotonMap(
 	const unsigned int max_photons,
 	const IPhotonTracer* tracer
 	) : 
-  PhotonMapDirectionalHelper<SpectralPhoton>( max_photons, tracer ), 
+  PhotonMapDirectionalSpectralHelper( max_photons, tracer ),
   nm_range( 1.0 )
 {
 }
@@ -74,13 +74,13 @@ void CausticSpectralPhotonMap::RadianceEstimate(
 			const Scalar pcos = Vector3Ops::Dot( vec, ri.vGeomNormal );
 
 			if( (pcos < maxNDist) && (pcos > -maxNDist) ) {
-				const Vector3 vPhotonDir = PhotonDir(p.theta,p.phi);
+				const Vector3 vPhotonDir = p.incomingDirection;
 				const Scalar response = PathVertexEval::RadianceShadingNormalFactor( ri.vNormal, ri.vGeomNormal, vPhotonDir );
 				if( response > 0 ) {
 					// Compute XYZ valye from spectra
 					XYZPel thisNM( 0, 0, 0 );
 					if( ColorUtils::XYZFromNM( thisNM, p.nm ) ) {
-						sumPel = sumPel + (thisNM * (p.power * response) * XYZPel(brdf.value(vPhotonDir,ri)));
+						sumPel = sumPel + (thisNM * (p.power * response) * brdf.valueNM(vPhotonDir,ri,p.nm));
 					}
 				}
 			}
@@ -88,7 +88,7 @@ void CausticSpectralPhotonMap::RadianceEstimate(
 
 		// I chose not to filter this, because some blurring with the spectral photonmap is good, perhaps
 		// I will change my mind later.
-		rad = RISEPel( sumPel ) * (1.0/(PI*farthest_away));
+		rad = RISEPel( sumPel ) * (samplingLaw.IntegralScale()/(PI*farthest_away));
 	}
 }
 
@@ -101,6 +101,8 @@ void CausticSpectralPhotonMap::RadianceEstimateNM(
 			) const
 {
 	rad = 0;
+	const Scalar mass=samplingLaw.WindowMass(nm,nm_range);
+	if(mass<=0)return;
 
 	// locate the nearest photons
 	PhotonDistListType heap;
@@ -131,7 +133,7 @@ void CausticSpectralPhotonMap::RadianceEstimateNM(
 			const Scalar pcos = Vector3Ops::Dot( vec, ri.vGeomNormal );
 
 			if( (pcos < maxNDist) && (pcos > -maxNDist) ) {
-				const Vector3 vPhotonDir = PhotonDir(p.theta,p.phi);
+				const Vector3 vPhotonDir = p.incomingDirection;
 				const Scalar response = PathVertexEval::RadianceShadingNormalFactor( ri.vNormal, ri.vGeomNormal, vPhotonDir );
 				if( response > 0 ) {
 					// Only take samples that are within the range we want
@@ -148,95 +150,19 @@ void CausticSpectralPhotonMap::RadianceEstimateNM(
 	}
 }
 
-bool CausticSpectralPhotonMap::Store( const Scalar power, const Scalar nm, const Point3& pos, const Vector3& dir )
+bool CausticSpectralPhotonMap::Store(Scalar power,Scalar nm,const Point3& position,const Vector3& direction)
 {
-	if( vphotons.size() > nMaxPhotons ) {
-		return false;
-	}
-
-	SpectralPhoton p;
-
-	p.ptPosition = pos;
-	p.power = power;
-	p.nm = nm;
-
-	int theta = int( acos( dir.z ) * (256.0 / PI) );
-	theta = theta > 255 ? 255 : theta;
-	p.theta = (unsigned char)(theta);
-
-	int phi = int( atan2( dir.y, dir.x ) * (256.0/TWO_PI) );
-	phi = phi > 255 ? 255 : phi;
-	phi = phi < 0 ? phi+256 : phi;
-
-	p.phi = (unsigned char)(phi);
-
-	bbox.Include( p.ptPosition );
-	vphotons.push_back( p );
-	maxPower = r_max( maxPower, power );
-
-	return true;
+ return StoreSpectral(power,nm,position,direction);
 }
-
-void CausticSpectralPhotonMap::Serialize( 
-	IWriteBuffer&			buffer					///< [in] Buffer to serialize to
-	) const
+void CausticSpectralPhotonMap::Serialize(IWriteBuffer& buffer)const
 {
-	buffer.ResizeForMore( sizeof( unsigned int ) * 4 + sizeof( Scalar ) * 5 );
-
-	buffer.setUInt( nMaxPhotons );
-	buffer.setUInt( nPrevScale );
-	buffer.setDouble( dGatherRadius );
-	buffer.setDouble( dEllipseRatio );
-	buffer.setUInt( nMinPhotonsOnGather );
-	buffer.setUInt( nMaxPhotonsOnGather );
-	buffer.setDouble( maxPower );
-	buffer.setDouble( nm_range );
-
-	// Serialize the bounding box
-	bbox.Serialize( buffer );
-
-	// Serialize number of stored photons
-	buffer.ResizeForMore( static_cast<unsigned int>(sizeof( unsigned int ) + sizeof( SpectralPhoton ) * vphotons.size()) );
-	buffer.setUInt( static_cast<unsigned int>(vphotons.size()) );
-
-	for( unsigned int i=0; i<vphotons.size(); i++ ) {
-		const SpectralPhoton& p = vphotons[i];
-		Point3Ops::Serialize( p.ptPosition, buffer );
-		buffer.setUChar( p.plane );
-		buffer.setDouble( p.power );
-		buffer.setUChar( p.theta );
-		buffer.setUChar( p.phi );
-		buffer.setDouble( p.nm );
-	}
+ WriteSpectralMap(buffer,3,nm_range);
 }
-
-void CausticSpectralPhotonMap::Deserialize(
-	IReadBuffer&			buffer					///< [in] Buffer to deserialize from
-	)
+bool CausticSpectralPhotonMap::DeserializeChecked(IReadBuffer& buffer)
 {
-	nMaxPhotons = buffer.getUInt();
-	nPrevScale = buffer.getUInt();
-	dGatherRadius = buffer.getDouble();
-	dEllipseRatio = buffer.getDouble();
-	nMinPhotonsOnGather = buffer.getUInt();
-	nMaxPhotonsOnGather = buffer.getUInt();
-	maxPower = buffer.getDouble();
-	nm_range = buffer.getDouble();
-
-	bbox.Deserialize( buffer );
-
-	const unsigned int numphot = buffer.getUInt();
-	vphotons.reserve( numphot );
-
-	for( unsigned int i=0; i<numphot; i++ ) {
-		SpectralPhoton p;
-		Point3Ops::Deserialize( p.ptPosition, buffer );
-		p.plane = buffer.getUChar();
-		p.power = buffer.getDouble();
-		p.theta = buffer.getUChar();
-		p.phi = buffer.getUChar();
-		p.nm = buffer.getDouble();
-		vphotons.push_back( p );
-	}
+ return ReadSpectralMap(buffer,3,nm_range);
 }
-
+void CausticSpectralPhotonMap::Deserialize(IReadBuffer& buffer)
+{
+ DeserializeChecked(buffer);
+}

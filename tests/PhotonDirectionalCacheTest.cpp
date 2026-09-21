@@ -29,8 +29,8 @@ public:
  size_t AnchorCount()const{return anchors.size();}
  std::vector<std::pair<Point3,Vector3>> AnchorSnapshot()const{std::vector<std::pair<Point3,Vector3>> out;for(const auto& a:anchors)out.emplace_back(a.position,a.geometricNormal);return out;}
  void RawParams(){PhotonMapCore<IrradPhoton>::SetGatherParams(.2,.05,10,400,nullptr);}
- Vector3 FirstDirection()const{return PhotonDir(vphotons[0].theta,vphotons[0].phi);}
- Vector3 LastDirection()const{return PhotonDir(vphotons.back().theta,vphotons.back().phi);}
+ Vector3 FirstDirection()const{return vphotons[0].incomingDirection;}
+ Vector3 LastDirection()const{return vphotons.back().incomingDirection;}
  std::vector<double> Distances(const Point3& p)const{PhotonDistListType heap;LocatePhotons(p,dGatherRadius,nMaxPhotonsOnGather,heap,0,static_cast<int>(vphotons.size())-1);std::vector<double> d;for(const auto& h:heap)d.push_back(h.distance);std::sort(d.begin(),d.end());return d;}
  Point3 NearestPosition(const Point3& p,const Vector3& n)const{return FindAnchor(p,n)->position;}
  bool HasAnchor(const Point3& p,const Vector3& n)const{return FindAnchor(p,n)!=nullptr;}
@@ -54,6 +54,7 @@ void DirectGathers(){
  auto* paint=new UniformColorPainter(RISEPel(.8,.5,.2));auto* bsdf=new LambertianBRDF(*paint);
  for(double incidence:{-80.,0.,45.,180.}){
   CacheProbe global(2601);CausticPelPhotonMap caustic(2601,nullptr);GlobalSpectralPhotonMap globalNM(2601,nullptr);CausticSpectralPhotonMap causticNM(2601,nullptr);
+  globalNM.ConfigureWavelengthSampling(550,551,1);causticNM.ConfigureWavelengthSampling(550,551,1);
   const double a=incidence*PI/180;const Vector3 incoming(std::sin(a),0,std::cos(a));const Vector3 ng(0,0,1);std::vector<Deposit> deposits;
   for(int y=-25;y<=25;++y)for(int x=-25;x<=25;++x){Point3 p(x*.01,y*.01,0);RISEPel power(1);global.Store(power,p,ng,incoming);caustic.Store(power,p,incoming);globalNM.Store(1,550,p,incoming);causticNM.Store(1,550,p,incoming);deposits.push_back({p,power});}
   const Vector3 wi=global.FirstDirection();global.Balance();global.RawParams();caustic.Balance();caustic.SetGatherParams(.2,.05,10,400,nullptr);globalNM.Balance();globalNM.SetGatherParamsNM(.2,.05,10,400,1,nullptr);causticNM.Balance();causticNM.SetGatherParamsNM(.2,.05,10,400,1,nullptr);
@@ -65,7 +66,7 @@ void DirectGathers(){
   for(double tilt:{0.,30.,60.}){
    const double t=tilt*PI/180;q.vNormal=Vector3(std::sin(t),0,std::cos(t));q.onb.CreateFromW(q.vNormal);
    const RISEPel expected=Reference(deposits,q.ptIntersection,ng,wi,q,*bsdf,true,true);RISEPel g,c;global.RadianceEstimate(g,q,*bsdf);caustic.RadianceEstimate(c,q,*bsdf);
-   std::printf("DIRECT incidence=%.17g view=%.17g tilt=%.17g encodedWi=(%.17g,%.17g,%.17g)\n",incidence,view*180/PI,tilt,wi.x,wi.y,wi.z);
+   std::printf("DIRECT incidence=%.17g view=%.17g tilt=%.17g exactWi=(%.17g,%.17g,%.17g)\n",incidence,view*180/PI,tilt,wi.x,wi.y,wi.z);
    for(int channel=0;channel<3;++channel){Near(g[channel],expected[channel],"DL239 raw global Pel area response");Near(c[channel],expected[channel],"DL239 caustic Pel area response");}
    // Spectral maps retain their own uniform spatial kernel. Price NM
    // directly, then independently check their spectral-to-Pel angular ratio.
@@ -158,49 +159,17 @@ void LegacyCacheLoad(){
  const bool loaded=written&&job->LoadGlobalPelPhotonmap(path.string().c_str());Check(!loaded,"legacy scalar cache reports unsupported directional reconstruction",loaded,0);Check(job->GetScene()->GetGlobalPelMap()==installed,"failed cache load retains installed valid map",job->GetScene()->GetGlobalPelMap()==installed,1);
  std::filesystem::remove(path);
  const bool missing=job->LoadGlobalPelPhotonmap(path.string().c_str());Check(!missing,"missing cache file reports failure",missing,0);Check(job->GetScene()->GetGlobalPelMap()==installed,"missing cache load retains installed valid map",job->GetScene()->GetGlobalPelMap()==installed,1);
- // The old raw flag0 is recoverable as directional packets, but its
- // compressed normal must never be promoted from Ns provenance to Ng.
- const unsigned used=buffer->getCurPos();buffer->seek(IBuffer::START,40);buffer->setUChar(0);buffer->seek(IBuffer::START,used);
- Check(buffer->DumpToFileToCursor(path.string().c_str()),"legacy raw fixture written",1,1);
- const bool rawLoaded=job->LoadGlobalPelPhotonmap(path.string().c_str());Check(rawLoaded,"legacy full-direction map still loads",rawLoaded,1);
- if(rawLoaded){
-  auto* loaded=job->GetScene()->GetGlobalPelMapMutable();loaded->SetGatherParams(.2,.05,0,1,nullptr);
-  auto* paint=new UniformColorPainter(RISEPel(.8));auto* bsdf=new LambertianBRDF(*paint);
-  RayIntersectionGeometric q(Ray(Point3(0,0,1),Vector3(0,0,-1)),nullRasterizerState);q.ptIntersection=Point3(.1,0,0);q.vGeomNormal=Vector3(0,0,1);q.vNormal=Vector3(.5,0,sqrt(.75));q.onb.CreateFromW(q.vNormal);
-  RISEPel got;loaded->RadianceEstimate(got,q,*bsdf);const double alpha=.918,beta=1.953,D=1-exp(-beta),norm=2*alpha*(.5*(1-1/D)+(1-exp(-beta*.5))/(beta*D));const double weight=alpha*(1-(1-exp(-beta*.5))/D);const double expected=.8*sqrt(.75)*weight/(PI*PI*.01*norm);
-  for(int c=0;c<3;++c)Near(got[c],expected,"legacy raw load stays on directional direct gather after parameter update");
-  bsdf->release();paint->release();
+ // Both raw compressed packets and the provisional flag2 layout lose
+ // exact incident support. This supersedes the earlier max+1 raw-load
+ // acceptance test; its committed red/green evidence remains historical.
+ const unsigned used=buffer->getCurPos();
+ for(unsigned flag:{0u,2u}){
+  buffer->seek(IBuffer::START,40);buffer->setUChar(static_cast<unsigned char>(flag));buffer->seek(IBuffer::START,used);
+  Check(buffer->DumpToFileToCursor(path.string().c_str()),"legacy compressed fixture written",1,1);
+  const bool compressed=job->LoadGlobalPelPhotonmap(path.string().c_str());
+  Check(!compressed&&job->GetScene()->GetGlobalPelMap()==installed,"compressed direction load rejects without replacing installed map",compressed,0);
  }
- // Historical Store allowed one packet beyond its nominal maximum. These
- // legacy raw packets still carry all directions and must survive loading.
- buffer->seek(IBuffer::START,0);buffer->setUInt(0);buffer->seek(IBuffer::START,used);
- Check(buffer->DumpToFileToCursor(path.string().c_str()),"legacy one-over-capacity fixture written",1,1);
- const bool overfull=job->LoadGlobalPelPhotonmap(path.string().c_str());
- Check(overfull,"recoverable legacy one-over-capacity map loads",overfull,1);
- if(overfull){
-  auto* current=job->GetScene()->GetGlobalPelMapMutable();
-  Check(current->NumStored()==1&&current->MaxPhotons()==0,"legacy record/count metadata preserved",current->NumStored(),1);
-  auto* roundtrip=new MemoryBuffer();current->Serialize(*roundtrip);roundtrip->seek(IBuffer::START,0);
-  CacheProbe restored(0);const bool reload=restored.DeserializeChecked(*roundtrip);
-  Check(reload&&restored.NumStored()==1&&restored.MaxPhotons()==0,"converted directional format retains legacy overflow provenance",restored.NumStored(),1);
-  roundtrip->release();
- }
- // Two extra packets cannot be produced by the old Store contract. Supply
- // all bytes so rejection cannot be attributed to a truncated record list.
- const std::vector<char> packet(buffer->Pointer()+93,buffer->Pointer()+used);
- buffer->ResizeForMore(static_cast<unsigned>(packet.size()));buffer->setBytes(packet.data(),static_cast<unsigned>(packet.size()));
- const unsigned twoUsed=buffer->getCurPos();buffer->seek(IBuffer::START,89);buffer->setUInt(2);buffer->seek(IBuffer::START,twoUsed);
- Check(buffer->DumpToFileToCursor(path.string().c_str()),"two-over-capacity fixture written",1,1);
- const IPhotonMap* beforeInvalid=job->GetScene()->GetGlobalPelMap();
- const bool invalid=job->LoadGlobalPelPhotonmap(path.string().c_str());
- Check(!invalid&&job->GetScene()->GetGlobalPelMap()==beforeInvalid,"unproducible legacy count rejected without replacement",invalid,0);
- // Current geometric-normal records have no historical capacity exception.
- CacheProbe currentFormat(1);currentFormat.Store(RISEPel(1.),Point3(0,0,0),Vector3(0,0,1),Vector3(0,0,1));
- auto* modern=new MemoryBuffer();currentFormat.Serialize(*modern);modern->seek(IBuffer::START,0);modern->setUInt(0);modern->seek(IBuffer::START,0);
- CacheProbe untouched(2);untouched.Store(RISEPel(1.),Point3(1,0,0),Vector3(0,0,1),Vector3(0,0,1));
- const bool modernLoaded=untouched.DeserializeChecked(*modern);
- Check(!modernLoaded&&untouched.NumStored()==1,"modern over-capacity records rejected transactionally",modernLoaded,0);
- modern->release();
+
  std::filesystem::remove(path);
  buffer->release();installed->release();job->release();
 }
@@ -212,7 +181,7 @@ void Run(){
  for(double incident:{-45.,0.,45.}){
   CacheProbe map(2601);std::vector<Deposit> deposits;const double a=incident*PI/180;const Vector3 wi(std::sin(a),0,std::cos(a));
   for(int y=-25;y<=25;++y)for(int x=-25;x<=25;++x){Point3 p(x*.01,y*.01,0);RISEPel power(1);map.Store(power,p,areaNormal,wi);deposits.push_back({p,power});}
-  // Price the encoded direction actually stored, so angular quantization is
+  // Price the exact incident direction stored, so the original support is
   // explicit and cannot masquerade as a transport-factor error.
   const Vector3 decoded=map.FirstDirection();map.Balance();map.RawParams();
   const auto actualDistances=map.Distances(anchor);std::vector<double> expectedDistances;for(const auto& d:deposits){double d2=Vector3Ops::SquaredModulus(Vector3Ops::mkVector3(d.p,anchor));if(d2<.04)expectedDistances.push_back(d2);}std::sort(expectedDistances.begin(),expectedDistances.end());expectedDistances.resize(400);

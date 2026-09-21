@@ -110,7 +110,7 @@ public:
 };
 class NMMap : public GlobalSpectralPhotonMap {
 public:
-    NMMap():GlobalSpectralPhotonMap(128,nullptr) {}
+    NMMap():GlobalSpectralPhotonMap(128,nullptr) {ConfigureWavelengthSampling(400,700,160);}
     double Sum() const { double total=0;for(const auto& p:vphotons)total+=p.power;return total; }
 };
 void TestLiveSelection(double degrees=0) {
@@ -143,7 +143,7 @@ public: CausticPelMap():CausticPelPhotonMap(128,nullptr) {}
     double Sum() const {double s=0;for(const auto& p:vphotons)s+=p.power.r;return s;}
 };
 class CausticNMMap : public CausticSpectralPhotonMap {
-public: CausticNMMap():CausticSpectralPhotonMap(128,nullptr) {}
+public: CausticNMMap():CausticSpectralPhotonMap(128,nullptr) {ConfigureWavelengthSampling(400,700,160);}
     double Sum() const {double s=0;for(const auto& p:vphotons)s+=p.power;return s;}
 };
 void TestCausticSelection(double degrees=0) {

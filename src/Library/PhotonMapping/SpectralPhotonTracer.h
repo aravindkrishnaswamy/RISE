@@ -94,7 +94,6 @@ namespace RISE
 				const LuminaryManager::LuminariesList& lum = pLumManager->getLuminaries();
 				LuminaryManager::LuminariesList::const_iterator	i, e;
 
-				const Scalar wavelength_steps = (nm_end-nm_begin)/Scalar(num_wavelengths);
 				for( i=lum.begin(), e=lum.end(); i!=e; i++ )
 				{
 					const IEmitter* pEmitter = i->pLum->GetMaterial()->GetEmitter();
@@ -143,9 +142,7 @@ namespace RISE
 						r.SetDir(pEmitter->getEmmittedPhotonDir( rig, Point2( geomsampler.CanonicalRandom(), geomsampler.CanonicalRandom() ) ));
 
 						// Each photon gets a different wavelength...
-						const Scalar nm = num_wavelengths < 10000 ? 
-							nm_begin + int(random.CanonicalRandom()*Scalar(num_wavelengths)) * wavelength_steps : 
-							nm_begin + random.CanonicalRandom() * (nm_end-nm_begin);
+						const Scalar nm = pPhotonMap->SampleWavelength(random.CanonicalRandom());
 						const Scalar power = pEmitter->averageRadiantExitanceNM(nm) * area_premul;
 
 						// Fresh per-photon stack seeded from THIS photon's
@@ -214,6 +211,10 @@ namespace RISE
 					return false;
 				}
 
+                if(!pPhotonMap->ConfigureWavelengthSampling(nm_begin,nm_end,num_wavelengths)){
+                    GlobalLog()->PrintEasyError("TracePhotons:: invalid wavelength sampling law");safe_release(pPhotonMap);return false;
+                }
+
 				if( pFunc ) {
 					pFunc->Progress(0.0,1.0);
 				}
@@ -273,6 +274,7 @@ namespace RISE
 				}
 
 				// After shooting, scale the values in the photon map
+                GlobalLog()->PrintEx(eLog_Event,"TracePhotons:: Stored %d of %d requested photons (%d shot)",pPhotonMap->NumStored(),numPhotons,numshot);
 				pPhotonMap->ScalePhotonPower( 1.0/Scalar(numshot) ); 
 
 				// Tell the photon map to balance itself!

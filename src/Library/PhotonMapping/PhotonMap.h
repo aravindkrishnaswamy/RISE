@@ -28,6 +28,13 @@
 #include "../Utilities/PathVertexEval.h"
 #include <vector>
 #include <algorithm>
+#include <limits>
+#include <type_traits>
+#include "../Interfaces/IReadBuffer.h"
+#include "../Interfaces/IWriteBuffer.h"
+#include "../Interfaces/ILog.h"
+#include "../Utilities/Color/ColorUtils.h"
+#include "../Utilities/FiniteMath.h"
 
 namespace RISE
 {
@@ -36,6 +43,55 @@ namespace RISE
 	//
 	namespace Implementation
 	{
+        // The producer samples one declared uniform wavelength law per map.
+        // Stored power is conditional spectral power divided by all shots.
+        struct SpectralPhotonSamplingLaw {
+            Scalar begin=0,end=0,yIntegral=0;
+            unsigned count=0;
+            bool Configure(Scalar a,Scalar b,unsigned n) {
+                if(!IsFiniteDouble(a)||!IsFiniteDouble(b)||a<=0||b<=a||n==0||!IsFiniteDouble(b-a))return false;
+                const Scalar integral=ColorUtils::CIE_Y_Integral(a,b);
+                if(!IsFiniteDouble(integral)||integral<=0)return false;
+                if(n<10000){
+                    const Scalar step=(b-a)/n;Scalar previous=a;
+                    for(unsigned i=1;i<n;++i){const Scalar value=a+i*step;if(value<=previous||value>=b)return false;previous=value;}
+                }
+                begin=a;end=b;count=n;yIntegral=integral;return true;
+            }
+            bool Configured()const{return count!=0;}
+            Scalar GridValue(unsigned i)const{return begin+i*((end-begin)/count);}
+            Scalar Sample(Scalar u)const {
+                if(count<10000)return GridValue(static_cast<unsigned>(u*count));
+                const Scalar value=begin+u*(end-begin);
+                // A rounded addition can land exactly on the excluded upper
+                // endpoint. Keep the same draw in its representable interval.
+                return value<end?value:std::nextafter(end,begin);
+            }
+            bool Contains(Scalar nm)const {
+                if(!Configured()||!IsFiniteDouble(nm)||nm<begin||nm>=end)return false;
+                if(count>=10000)return true;
+                unsigned lo=0,hi=count;
+                while(lo<hi){const unsigned mid=lo+(hi-lo)/2;if(GridValue(mid)<nm)lo=mid+1;else hi=mid;}
+                return lo<count&&GridValue(lo)==nm;
+            }
+            Scalar WindowMass(Scalar nm,Scalar halfWidth)const {
+                if(!Configured()||!IsFiniteDouble(nm)||nm<begin||nm>=end||!IsFiniteDouble(halfWidth)||halfWidth<0)return 0;
+                if(count>=10000){
+                    const Scalar left=halfWidth>=nm-begin?begin:nm-halfWidth;
+                    const Scalar right=halfWidth>=end-nm?end:nm+halfWidth;
+                    return (right-left)/(end-begin);
+                }
+                // Binary searches use the same subtraction predicate as the
+                // gather, avoiding ceil/floor errors at represented grid edges.
+                unsigned lo=0,hi=count;
+                while(lo<hi){const unsigned mid=lo+(hi-lo)/2;const Scalar v=GridValue(mid);if(v<nm&&nm-v>halfWidth)lo=mid+1;else hi=mid;}
+                const unsigned first=lo;hi=count;
+                while(lo<hi){const unsigned mid=lo+(hi-lo)/2;const Scalar v=GridValue(mid);if(v<=nm||v-nm<=halfWidth)lo=mid+1;else hi=mid;}
+                return Scalar(lo-first)/count;
+            }
+            Scalar IntegralScale()const{return Configured()?(end-begin)/yIntegral:0;}
+        };
+
 		template< class PhotType >
 		class PhotonMapCore :
 			public virtual IPhotonMap,
@@ -452,6 +508,79 @@ namespace RISE
 			typedef std::vector< distance_container< PhotType > >	PhotonDistListType;
 			typedef std::vector< PhotType >							PhotonListType;
 
+            // Shared transactional format body for exact-direction Pel and
+            // spectral maps. Derived maps serialize their own sampling law.
+            struct ExactPacketState {
+                unsigned maximum,scaled,minimum,gather;
+                Scalar radius,ellipse,power;
+                BoundingBox bounds;
+                PhotonListType packets;
+            };
+            static unsigned ReadableBytes(const IReadBuffer& b) {
+                return b.getCurPos()<=b.Size()?b.Size()-b.getCurPos():0;
+            }
+            static bool PacketLoadError(const char* message) {
+                GlobalLog()->PrintEx(eLog_Error,"DirectionalPhotonMap: %s; existing map retained",message);
+                return false;
+            }
+            static bool ValidDirection(const Vector3& w) {
+                return IsFiniteDouble(w.x)&&IsFiniteDouble(w.y)&&IsFiniteDouble(w.z)
+                    && Vector3Ops::SquaredModulus(w)>0;
+            }
+            static void WriteExactPrefix(IWriteBuffer& b,unsigned kind) {
+                b.ResizeForMore(16);b.setUInt(0);b.setUInt(std::numeric_limits<unsigned>::max());b.setUInt(1);b.setUInt(kind);
+            }
+            static bool ReadExactPrefix(IReadBuffer& b,unsigned kind) {
+                if(ReadableBytes(b)<16)return PacketLoadError("truncated format header");
+                const unsigned maximum=b.getUInt(),marker=b.getUInt();
+                if(maximum!=0||marker!=std::numeric_limits<unsigned>::max())
+                    return PacketLoadError("legacy compressed directions cannot recover incident support; regenerate from its scene");
+                const unsigned version=b.getUInt(),storedKind=b.getUInt();
+                if(version!=1||storedKind!=kind)return PacketLoadError("unsupported format or photon-map kind");
+                return true;
+            }
+            void WriteExactBody(IWriteBuffer& b)const {
+                constexpr unsigned recordBytes=std::is_same<PhotType,SpectralPhoton>::value?65:73;
+                b.ResizeForMore(static_cast<unsigned>(92+recordBytes*this->vphotons.size()));
+                b.setUInt(this->nMaxPhotons);b.setUInt(this->nPrevScale);b.setDouble(this->dGatherRadius);b.setDouble(this->dEllipseRatio);
+                b.setUInt(this->nMinPhotonsOnGather);b.setUInt(this->nMaxPhotonsOnGather);b.setDouble(this->maxPower);this->bbox.Serialize(b);
+                b.setUInt(static_cast<unsigned>(this->vphotons.size()));
+                for(const auto& p:this->vphotons){
+                    Point3Ops::Serialize(p.ptPosition,b);b.setUChar(p.plane);
+                    if constexpr(std::is_same<PhotType,SpectralPhoton>::value)b.setDouble(p.power);
+                    else ColorUtils::SerializeRGBPel(p.power,b);
+                    b.setDouble(p.incomingDirection.x);b.setDouble(p.incomingDirection.y);b.setDouble(p.incomingDirection.z);
+                    if constexpr(std::is_same<PhotType,SpectralPhoton>::value)b.setDouble(p.nm);
+                }
+            }
+            static bool ReadExactBody(IReadBuffer& b,ExactPacketState& state) {
+                if(ReadableBytes(b)<92)return PacketLoadError("truncated packet header");
+                state.maximum=b.getUInt();state.scaled=b.getUInt();state.radius=b.getDouble();state.ellipse=b.getDouble();
+                state.minimum=b.getUInt();state.gather=b.getUInt();state.power=b.getDouble();BoundingBox ignored;ignored.Deserialize(b);
+                const unsigned count=b.getUInt();constexpr unsigned recordBytes=std::is_same<PhotType,SpectralPhoton>::value?65:73;
+                if(count>state.maximum||state.scaled>count||count>ReadableBytes(b)/recordBytes)return PacketLoadError("invalid or truncated packet count");
+                if(!IsFiniteDouble(state.radius)||state.radius<0||!IsFiniteDouble(state.ellipse)||state.ellipse<0||!IsFiniteDouble(state.power))return PacketLoadError("invalid gather parameters");
+                state.bounds=BoundingBox(Point3(RISE_INFINITY,RISE_INFINITY,RISE_INFINITY),Point3(-RISE_INFINITY,-RISE_INFINITY,-RISE_INFINITY));
+                state.packets.reserve(count);
+                for(unsigned i=0;i<count;++i){
+                    PhotType p;Point3Ops::Deserialize(p.ptPosition,b);p.plane=b.getUChar();
+                    if constexpr(std::is_same<PhotType,SpectralPhoton>::value)p.power=b.getDouble();
+                    else ColorUtils::DeserializeRGBPel(p.power,b);
+                    p.incomingDirection.x=b.getDouble();p.incomingDirection.y=b.getDouble();p.incomingDirection.z=b.getDouble();
+                    if constexpr(std::is_same<PhotType,SpectralPhoton>::value){
+                        p.nm=b.getDouble();if(!IsFiniteDouble(p.power)||!IsFiniteDouble(p.nm))return PacketLoadError("nonfinite spectral packet");
+                    }else if(!IsFiniteDouble(p.power.r)||!IsFiniteDouble(p.power.g)||!IsFiniteDouble(p.power.b))return PacketLoadError("nonfinite Pel packet");
+                    if(!IsFiniteDouble(p.ptPosition.x)||!IsFiniteDouble(p.ptPosition.y)||!IsFiniteDouble(p.ptPosition.z)||p.plane>2||!ValidDirection(p.incomingDirection))return PacketLoadError("invalid packet geometry");
+                    state.bounds.Include(p.ptPosition);state.packets.push_back(p);
+                }
+                return true;
+            }
+            void CommitExactBody(ExactPacketState& state) {
+                this->vphotons.swap(state.packets);this->bbox=state.bounds;this->nMaxPhotons=state.maximum;this->nPrevScale=state.scaled;
+                this->dGatherRadius=state.radius;this->dEllipseRatio=state.ellipse;this->nMinPhotonsOnGather=state.minimum;
+                this->nMaxPhotonsOnGather=state.gather;this->maxPower=state.power;this->Balance();
+            }
+
 			// These look up tables are to speed up the computation of sin and cos
 			Scalar		costheta[256];
 			Scalar		sintheta[256];
@@ -557,7 +686,7 @@ namespace RISE
 						const Scalar pcos = Vector3Ops::Dot( vec, normal );
 
 						if( (pcos < maxNDist) && (pcos > -maxNDist) ) {
-							const Vector3 vPhotonDir = this->PhotonDir(p.theta,p.phi);
+							const Vector3 vPhotonDir = p.incomingDirection;
 							if( Vector3Ops::Dot(vPhotonDir,normal) > 0 ) {
 								irrad = irrad + p.power;
 							}
@@ -613,7 +742,7 @@ namespace RISE
 					for( i=heap.begin(), e=heap.end(); i!=e; i++ )
 					{
 						const PhotType& p = (*i).element;
-						const Vector3 vPhotonDir = this->PhotonDir( p.theta, p.phi );
+						const Vector3 vPhotonDir = p.incomingDirection;
 						const Scalar response = PathVertexEval::RadianceShadingNormalFactor(
 							ri.vNormal, ri.vGeomNormal, vPhotonDir );
 
@@ -660,6 +789,7 @@ namespace RISE
 
 				p.ptPosition = pos;
 				p.power = power;
+				p.incomingDirection = dir;
 
 				int theta = int( acos( dir.z ) * (256.0 / PI) );
 				theta = theta > 255 ? 255 : theta;
@@ -678,6 +808,51 @@ namespace RISE
 				return true;
 			}
 		};
+        class PhotonMapDirectionalSpectralHelper : public ISpectralPhotonMap,
+            public PhotonMapDirectionalHelper<SpectralPhoton>
+        {
+        protected:
+            SpectralPhotonSamplingLaw samplingLaw;
+            PhotonMapDirectionalSpectralHelper(unsigned maximum,const IPhotonTracer* tracer)
+                :PhotonMapDirectionalHelper<SpectralPhoton>(maximum,tracer){}
+            void WriteSpectralMap(IWriteBuffer& b,unsigned kind,Scalar halfWidth)const {
+                WriteExactPrefix(b,kind);b.ResizeForMore(28);
+                b.setDouble(samplingLaw.begin);b.setDouble(samplingLaw.end);b.setUInt(samplingLaw.count);b.setDouble(halfWidth);
+                WriteExactBody(b);
+            }
+            bool ReadSpectralMap(IReadBuffer& b,unsigned kind,Scalar& halfWidth) {
+                if(!ReadExactPrefix(b,kind))return false;
+                if(ReadableBytes(b)<28)return PacketLoadError("truncated wavelength law");
+                const Scalar a=b.getDouble(),end=b.getDouble();const unsigned n=b.getUInt();const Scalar width=b.getDouble();
+                SpectralPhotonSamplingLaw law;
+                if(!law.Configure(a,end,n)||!IsFiniteDouble(width)||width<0)return PacketLoadError("invalid wavelength law or kernel");
+                ExactPacketState state;if(!ReadExactBody(b,state))return false;
+                for(const auto& packet:state.packets)if(!law.Contains(packet.nm))return PacketLoadError("packet wavelength outside declared sampling law");
+                CommitExactBody(state);samplingLaw=law;halfWidth=width;return true;
+            }
+            bool StoreSpectral(Scalar power,Scalar nm,const Point3& position,const Vector3& direction) {
+                if(!samplingLaw.Contains(nm)){
+                    GlobalLog()->PrintEasyError("SpectralPhotonMap::Store requires a configured sampling law and a wavelength in its support; no photon stored");return false;
+                }
+                if(vphotons.size()>=nMaxPhotons)return false;
+                SpectralPhoton p;p.ptPosition=position;p.power=power;p.nm=nm;p.incomingDirection=direction;
+                const int theta=int(acos(direction.z)*(256.0/PI));p.theta=static_cast<unsigned char>(theta>255?255:theta);
+                int phi=int(atan2(direction.y,direction.x)*(256.0/TWO_PI));phi=phi>255?255:phi;p.phi=static_cast<unsigned char>(phi<0?phi+256:phi);
+                bbox.Include(position);vphotons.push_back(p);maxPower=r_max(maxPower,power);return true;
+            }
+        public:
+            bool ConfigureWavelengthSampling(Scalar begin,Scalar end,unsigned count) override {
+                SpectralPhotonSamplingLaw next;
+                if(!vphotons.empty()||!next.Configure(begin,end,count))return false;
+                samplingLaw=next;return true;
+            }
+            bool GetWavelengthSampling(Scalar& begin,Scalar& end,unsigned& count)const override {
+                if(!samplingLaw.Configured())return false;
+                begin=samplingLaw.begin;end=samplingLaw.end;count=samplingLaw.count;return true;
+            }
+            Scalar SampleWavelength(Scalar u)const{return samplingLaw.Sample(u);}
+        };
+
 	}
 }
 
