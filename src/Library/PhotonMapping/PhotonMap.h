@@ -156,7 +156,9 @@ namespace RISE
 				Scalar distance2 = loc[axis] - vphotons[median].ptPosition[axis];
 				Scalar sqrD2 = distance2*distance2;
 
-				if( sqrD2 > maxDist ) {
+				// At tangency the far half cannot contribute (strict radius),
+				// but the near half still can. Never skip both.
+				if( sqrD2 >= maxDist ) {
 					if( distance2 <= 0 ) {
 						CountPhotonsAt( loc, maxDist, max, from, median-1, cnt );
 					} else {
@@ -235,7 +237,7 @@ namespace RISE
 				const Scalar distance2 = loc[axis] - vphotons[median].ptPosition[axis];
 				const Scalar sqrD2 = distance2*distance2;
 
-				if( sqrD2 > md ) {
+				if( sqrD2 >= md ) {
 					if( distance2 <= 0 ) {
 						LocatePhotons( loc, md, nPhotons, heap, from, median-1 );
 					} else {
@@ -293,7 +295,7 @@ namespace RISE
 				const Scalar distance2 = loc[axis] - vphotons[median].ptPosition[axis];
 				const Scalar sqrD2 = distance2*distance2;
 
-				if( sqrD2 > maxDist ) {
+				if( sqrD2 >= maxDist ) {
 					if( distance2 <= 0 ) {
 						LocateAllPhotons( loc, maxDist, photons, from, median-1 );
 					} else {
@@ -341,18 +343,20 @@ namespace RISE
 					median = to-median + 1;
 				}
 
+				// Recursive bounds include to; nth_element takes an exclusive end.
+				// Omitting that record breaks the KD half-space invariant.
 				// Now sort
 				switch( axis )
 				{
 				case 0:
-					std::nth_element( vphotons.begin()+from, vphotons.begin()+median, vphotons.begin()+to, less_than_X );
+					std::nth_element( vphotons.begin()+from, vphotons.begin()+median, vphotons.begin()+to+1, less_than_X );
 					break;
 				case 1:
-					std::nth_element( vphotons.begin()+from, vphotons.begin()+median, vphotons.begin()+to, less_than_Y );
+					std::nth_element( vphotons.begin()+from, vphotons.begin()+median, vphotons.begin()+to+1, less_than_Y );
 					break;
 				case 2:
 				default:
-					std::nth_element( vphotons.begin()+from, vphotons.begin()+median, vphotons.begin()+to, less_than_Z );
+					std::nth_element( vphotons.begin()+from, vphotons.begin()+median, vphotons.begin()+to+1, less_than_Z );
 					break;
 				}
 
@@ -543,7 +547,7 @@ namespace RISE
 				const Scalar distance2 = loc[axis] - this->vphotons[median].ptPosition[axis];
 				const Scalar sqrD2 = distance2*distance2;
 
-				if( sqrD2 > md ) {
+				if( sqrD2 >= md ) {
 					if( distance2 <= 0 ) {
 						LocateNearestPhotonRecursive( loc, normal, md, from, median-1, nearest );
 					} else {
