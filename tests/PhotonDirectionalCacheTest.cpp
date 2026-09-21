@@ -54,7 +54,7 @@ void DirectGathers(){
  auto* paint=new UniformColorPainter(RISEPel(.8,.5,.2));auto* bsdf=new LambertianBRDF(*paint);
  for(double incidence:{-80.,0.,45.,180.}){
   CacheProbe global(2601);CausticPelPhotonMap caustic(2601,nullptr);GlobalSpectralPhotonMap globalNM(2601,nullptr);CausticSpectralPhotonMap causticNM(2601,nullptr);
-  globalNM.ConfigureWavelengthSampling(550,551,1);causticNM.ConfigureWavelengthSampling(550,551,1);
+  globalNM.ConfigureWavelengthSampling(550,555,1);causticNM.ConfigureWavelengthSampling(550,555,1);
   const double a=incidence*PI/180;const Vector3 incoming(std::sin(a),0,std::cos(a));const Vector3 ng(0,0,1);std::vector<Deposit> deposits;
   for(int y=-25;y<=25;++y)for(int x=-25;x<=25;++x){Point3 p(x*.01,y*.01,0);RISEPel power(1);global.Store(power,p,ng,incoming);caustic.Store(power,p,incoming);globalNM.Store(1,550,p,incoming);causticNM.Store(1,550,p,incoming);deposits.push_back({p,power});}
   const Vector3 wi=global.FirstDirection();global.Balance();global.RawParams();caustic.Balance();caustic.SetGatherParams(.2,.05,10,400,nullptr);globalNM.Balance();globalNM.SetGatherParamsNM(.2,.05,10,400,1,nullptr);causticNM.Balance();causticNM.SetGatherParamsNM(.2,.05,10,400,1,nullptr);
@@ -181,8 +181,7 @@ void Run(){
  for(double incident:{-45.,0.,45.}){
   CacheProbe map(2601);std::vector<Deposit> deposits;const double a=incident*PI/180;const Vector3 wi(std::sin(a),0,std::cos(a));
   for(int y=-25;y<=25;++y)for(int x=-25;x<=25;++x){Point3 p(x*.01,y*.01,0);RISEPel power(1);map.Store(power,p,areaNormal,wi);deposits.push_back({p,power});}
-  // Price the exact incident direction stored, so the original support is
-  // explicit and cannot masquerade as a transport-factor error.
+  // Use the original stored direction in the independent finite-kernel oracle.
   const Vector3 decoded=map.FirstDirection();map.Balance();map.RawParams();
   const auto actualDistances=map.Distances(anchor);std::vector<double> expectedDistances;for(const auto& d:deposits){double d2=Vector3Ops::SquaredModulus(Vector3Ops::mkVector3(d.p,anchor));if(d2<.04)expectedDistances.push_back(d2);}std::sort(expectedDistances.begin(),expectedDistances.end());expectedDistances.resize(400);
   bool same=actualDistances.size()==expectedDistances.size();double maxError=0;for(unsigned i=0;i<std::min(actualDistances.size(),expectedDistances.size());++i)maxError=std::max(maxError,std::fabs(actualDistances[i]-expectedDistances[i]));same=same&&maxError<1e-15;

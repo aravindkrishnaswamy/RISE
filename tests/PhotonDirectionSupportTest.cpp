@@ -32,11 +32,11 @@ void Run(){
    const double gaussian=bsdf*area*weight/(PI*.25*norm);
    CausticPelPhotonMap cp(1,nullptr);cp.Store(RISEPel(1),position,wi);cp.Balance();cp.SetGatherParams(1,.05,0,1,nullptr);RISEPel v;cp.RadianceEstimate(v,q,*brdf);Near(v.r,gaussian,"caustic Pel original direction",angle,z);
    GlobalPelPhotonMap gp(1,nullptr);gp.Store(RISEPel(1),position,ng,wi);gp.Balance();gp.SetGatherParams(1,.05,0,1,nullptr);gp.PrecomputeIrradiance(0,nullptr);gp.RadianceEstimate(v,q,*brdf);Near(v.r,gaussian,"global direct original direction",angle,z);
-   CausticSpectralPhotonMap cs(1,nullptr);cs.ConfigureWavelengthSampling(550,551,1);cs.Store(1,550,position,wi);cs.Balance();cs.SetGatherParamsNM(1,.05,0,1,1,nullptr);double scalar=0;cs.RadianceEstimateNM(550,scalar,q,*brdf);
+   CausticSpectralPhotonMap cs(1,nullptr);cs.ConfigureWavelengthSampling(550,555,1);cs.Store(1,550,position,wi);cs.Balance();cs.SetGatherParamsNM(1,.05,0,1,1,nullptr);double scalar=0;cs.RadianceEstimateNM(550,scalar,q,*brdf);
    // Painter's scalar spectrum is evaluated independently of map storage.
    const double scalarExpected=ngwi>0&&nswi>0?brdf->valueNM(wi,q,550)*area/(PI*.25):0;
    Near(scalar,scalarExpected,"caustic spectral original direction",angle,z);
-   GlobalSpectralPhotonMap gs(1,nullptr);gs.ConfigureWavelengthSampling(550,551,1);gs.Store(1,550,position,wi);gs.Balance();gs.SetGatherParamsNM(1,.05,0,1,1,nullptr);gs.RadianceEstimateNM(550,scalar,q,*brdf);Near(scalar,scalarExpected,"global spectral original direction",angle,z);
+   GlobalSpectralPhotonMap gs(1,nullptr);gs.ConfigureWavelengthSampling(550,555,1);gs.Store(1,550,position,wi);gs.Balance();gs.SetGatherParamsNM(1,.05,0,1,1,nullptr);gs.RadianceEstimateNM(550,scalar,q,*brdf);Near(scalar,scalarExpected,"global spectral original direction",angle,z);
    GlobalPelPhotonMap cache(9,nullptr);
    for(int y=-1;y<=1;++y)for(int x=-1;x<=1;++x)cache.Store(RISEPel(1),Point3(t.x*x*.1,y*.1,t.z*x*.1),ng,wi);
    cache.Balance();cache.SetGatherParams(1,.05,0,9,nullptr);cache.PrecomputeIrradiance(1,nullptr);cache.RadianceEstimate(v,q,*brdf);Near(v.r,9*bsdf*area/(PI*.02),"anchor original direction",angle,z);
@@ -50,8 +50,8 @@ void Run(){
  // This is a degenerate neighborhood, not a tiny-radius threshold.
  CausticPelPhotonMap zero(1,nullptr);zero.Store(RISEPel(1),Point3(0,0,0),Vector3(0,0,1));zero.Balance();zero.SetGatherParams(1,.05,0,1,nullptr);zero.RadianceEstimate(v,q,*brdf);Near(v.r,0,"co-located caustic Pel has no finite area",0,0);
  GlobalPelPhotonMap zeroGlobal(1,nullptr);zeroGlobal.Store(RISEPel(1),Point3(0,0,0),Vector3(0,0,1),Vector3(0,0,1));zeroGlobal.Balance();zeroGlobal.SetGatherParams(1,.05,0,1,nullptr);zeroGlobal.RadianceEstimate(v,q,*brdf);Near(v.r,0,"co-located anchored global has no finite area",0,0);zeroGlobal.PrecomputeIrradiance(0,nullptr);zeroGlobal.RadianceEstimate(v,q,*brdf);Near(v.r,0,"co-located direct global has no finite area",0,0);
- CausticSpectralPhotonMap zeroCS(1,nullptr);zeroCS.ConfigureWavelengthSampling(550,551,1);zeroCS.Store(1,550,Point3(0,0,0),Vector3(0,0,1));zeroCS.Balance();zeroCS.SetGatherParamsNM(1,.05,0,1,1,nullptr);zeroCS.RadianceEstimate(v,q,*brdf);Near(v.r,0,"co-located caustic spectral Pel has no finite area",0,0);double n=0;zeroCS.RadianceEstimateNM(550,n,q,*brdf);Near(n,0,"co-located caustic spectral NM has no finite area",0,0);
- GlobalSpectralPhotonMap zeroGS(1,nullptr);zeroGS.ConfigureWavelengthSampling(550,551,1);zeroGS.Store(1,550,Point3(0,0,0),Vector3(0,0,1));zeroGS.Balance();zeroGS.SetGatherParamsNM(1,.05,0,1,1,nullptr);zeroGS.RadianceEstimate(v,q,*brdf);Near(v.r,0,"co-located global spectral Pel has no finite area",0,0);zeroGS.RadianceEstimateNM(550,n,q,*brdf);Near(n,0,"co-located global spectral NM has no finite area",0,0);
+ CausticSpectralPhotonMap zeroCS(1,nullptr);zeroCS.ConfigureWavelengthSampling(550,555,1);zeroCS.Store(1,550,Point3(0,0,0),Vector3(0,0,1));zeroCS.Balance();zeroCS.SetGatherParamsNM(1,.05,0,1,1,nullptr);zeroCS.RadianceEstimate(v,q,*brdf);Near(v.r,0,"co-located caustic spectral Pel has no finite area",0,0);double n=0;zeroCS.RadianceEstimateNM(550,n,q,*brdf);Near(n,0,"co-located caustic spectral NM has no finite area",0,0);
+ GlobalSpectralPhotonMap zeroGS(1,nullptr);zeroGS.ConfigureWavelengthSampling(550,555,1);zeroGS.Store(1,550,Point3(0,0,0),Vector3(0,0,1));zeroGS.Balance();zeroGS.SetGatherParamsNM(1,.05,0,1,1,nullptr);zeroGS.RadianceEstimate(v,q,*brdf);Near(v.r,0,"co-located global spectral Pel has no finite area",0,0);zeroGS.RadianceEstimateNM(550,n,q,*brdf);Near(n,0,"co-located global spectral NM has no finite area",0,0);
  brdf->release();paint->release();
 }
 }

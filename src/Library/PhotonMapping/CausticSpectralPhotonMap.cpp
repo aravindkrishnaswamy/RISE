@@ -146,7 +146,7 @@ void CausticSpectralPhotonMap::RadianceEstimateNM(
 
 		// I chose not to filter this, because some blurring with the spectral photonmap is good, perhaps
 		// I will change my mind later.
-		rad /= (PI*farthest_away);
+		rad /= (PI*farthest_away)*mass;
 	}
 }
 

@@ -48,18 +48,20 @@ namespace RISE
         struct SpectralPhotonSamplingLaw {
             Scalar begin=0,end=0,yIntegral=0;
             unsigned count=0;
+            std::vector<Scalar> representatives;
             bool Configure(Scalar a,Scalar b,unsigned n) {
                 if(!IsFiniteDouble(a)||!IsFiniteDouble(b)||a<=0||b<=a||n==0||!IsFiniteDouble(b-a))return false;
                 const Scalar integral=ColorUtils::CIE_Y_Integral(a,b);
                 if(!IsFiniteDouble(integral)||integral<=0)return false;
+                std::vector<Scalar> grid;
                 if(n<10000){
-                    const Scalar step=(b-a)/n;Scalar previous=a;
-                    for(unsigned i=1;i<n;++i){const Scalar value=a+i*step;if(value<=previous||value>=b)return false;previous=value;}
+                    const Scalar step=(b-a)/n;grid.reserve(n);grid.push_back(a);
+                    for(unsigned i=1;i<n;++i){const Scalar value=a+i*step;if(value<=grid.back()||value>=b)return false;grid.push_back(value);}
                 }
-                begin=a;end=b;count=n;yIntegral=integral;return true;
+                begin=a;end=b;count=n;yIntegral=integral;representatives.swap(grid);return true;
             }
             bool Configured()const{return count!=0;}
-            Scalar GridValue(unsigned i)const{return begin+i*((end-begin)/count);}
+            Scalar GridValue(unsigned i)const{return representatives[i];}
             Scalar Sample(Scalar u)const {
                 if(count<10000)return GridValue(static_cast<unsigned>(u*count));
                 const Scalar value=begin+u*(end-begin);
@@ -77,9 +79,11 @@ namespace RISE
             Scalar WindowMass(Scalar nm,Scalar halfWidth)const {
                 if(!Configured()||!IsFiniteDouble(nm)||nm<begin||nm>=end||!IsFiniteDouble(halfWidth)||halfWidth<0)return 0;
                 if(count>=10000){
-                    const Scalar left=halfWidth>=nm-begin?begin:nm-halfWidth;
-                    const Scalar right=halfWidth>=end-nm?end:nm+halfWidth;
-                    return (right-left)/(end-begin);
+                    // Add clipped half-widths rather than subtracting two
+                    // nearby wavelengths (which loses narrow-band mass).
+                    const Scalar left=std::min(halfWidth,nm-begin);
+                    const Scalar right=std::min(halfWidth,end-nm);
+                    return (left+right)/(end-begin);
                 }
                 // Binary searches use the same subtraction predicate as the
                 // gather, avoiding ceil/floor errors at represented grid edges.
@@ -528,7 +532,7 @@ namespace RISE
                     && Vector3Ops::SquaredModulus(w)>0;
             }
             static void WriteExactPrefix(IWriteBuffer& b,unsigned kind) {
-                b.ResizeForMore(16);b.setUInt(0);b.setUInt(std::numeric_limits<unsigned>::max());b.setUInt(1);b.setUInt(kind);
+                b.ResizeForMore(16);b.setUInt(0);b.setUInt(std::numeric_limits<unsigned>::max());b.setUInt(2);b.setUInt(kind);
             }
             static bool ReadExactPrefix(IReadBuffer& b,unsigned kind) {
                 if(ReadableBytes(b)<16)return PacketLoadError("truncated format header");
@@ -536,7 +540,7 @@ namespace RISE
                 if(maximum!=0||marker!=std::numeric_limits<unsigned>::max())
                     return PacketLoadError("legacy compressed directions cannot recover incident support; regenerate from its scene");
                 const unsigned version=b.getUInt(),storedKind=b.getUInt();
-                if(version!=1||storedKind!=kind)return PacketLoadError("unsupported format or photon-map kind");
+                if(version!=2||storedKind!=kind)return PacketLoadError("unsupported format or photon-map kind");
                 return true;
             }
             void WriteExactBody(IWriteBuffer& b)const {
@@ -816,16 +820,27 @@ namespace RISE
             PhotonMapDirectionalSpectralHelper(unsigned maximum,const IPhotonTracer* tracer)
                 :PhotonMapDirectionalHelper<SpectralPhoton>(maximum,tracer){}
             void WriteSpectralMap(IWriteBuffer& b,unsigned kind,Scalar halfWidth)const {
-                WriteExactPrefix(b,kind);b.ResizeForMore(28);
+                WriteExactPrefix(b,kind);b.ResizeForMore(static_cast<unsigned>(32+8*samplingLaw.representatives.size()));
                 b.setDouble(samplingLaw.begin);b.setDouble(samplingLaw.end);b.setUInt(samplingLaw.count);b.setDouble(halfWidth);
+                b.setUInt(static_cast<unsigned>(samplingLaw.representatives.size()));
+                for(Scalar value:samplingLaw.representatives)b.setDouble(value);
                 WriteExactBody(b);
             }
             bool ReadSpectralMap(IReadBuffer& b,unsigned kind,Scalar& halfWidth) {
                 if(!ReadExactPrefix(b,kind))return false;
-                if(ReadableBytes(b)<28)return PacketLoadError("truncated wavelength law");
+                if(ReadableBytes(b)<32)return PacketLoadError("truncated wavelength law");
                 const Scalar a=b.getDouble(),end=b.getDouble();const unsigned n=b.getUInt();const Scalar width=b.getDouble();
                 SpectralPhotonSamplingLaw law;
                 if(!law.Configure(a,end,n)||!IsFiniteDouble(width)||width<0)return PacketLoadError("invalid wavelength law or kernel");
+                const unsigned gridCount=b.getUInt();
+                if(gridCount!=(n<10000?n:0)||gridCount>ReadableBytes(b)/8)return PacketLoadError("invalid or truncated represented wavelength grid");
+                // The finite law is uniform over these exact representatives.
+                // Retain them across compiler/platform rounding differences.
+                for(unsigned i=0;i<gridCount;++i){
+                    const Scalar value=b.getDouble();
+                    if(!IsFiniteDouble(value)||value<a||value>=end||(i&&value<=law.representatives[i-1]))return PacketLoadError("invalid represented wavelength grid");
+                    law.representatives[i]=value;
+                }
                 ExactPacketState state;if(!ReadExactBody(b,state))return false;
                 for(const auto& packet:state.packets)if(!law.Contains(packet.nm))return PacketLoadError("packet wavelength outside declared sampling law");
                 CommitExactBody(state);samplingLaw=law;halfWidth=width;return true;

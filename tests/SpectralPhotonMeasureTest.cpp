@@ -21,18 +21,19 @@ template<class Map>void Run(const char* family){
   auto* paint=new UniformColorPainter(colored?RISEPel(.15,.7,.35):RISEPel(1));auto* brdf=new LambertianBRDF(*paint);
   RayIntersectionGeometric q(Ray(Point3(0,0,1),Vector3(0,0,-1)),nullRasterizerState);q.ptIntersection=Point3(0,0,0);q.vNormal=q.vGeomNormal=Vector3(0,0,1);q.onb.CreateFromW(q.vNormal);
   const Vector3 wi(0,0,1);const double area=PI*.25;
-  for(unsigned i=0;i<160;++i){const double nm=400+i*300./160,power=colored?1+.005*(nm-400):1;Check(map.Store(power/160,nm,Point3(.5,0,0),wi),"grid packet stored");}
+  std::vector<double> wavelengths;for(unsigned i=0;i<160;++i)wavelengths.push_back(map.SampleWavelength((i+.5)/160));
+  for(unsigned i=0;i<160;++i){const double nm=wavelengths[i],power=colored?1+.005*(nm-400):1;Check(map.Store(power/160,nm,Point3(.5,0,0),wi),"grid packet stored");}
   Check(!map.ConfigureWavelengthSampling(380,780,160)&&map.NumStored()==160,"changing populated map law rejects without mutation");map.Balance();
   XYZPel expectedXYZ(0,0,0);
-  for(unsigned i=0;i<160;++i){const double nm=400+i*300./160,power=colored?1+.005*(nm-400):1;XYZPel cmf;ColorUtils::XYZFromNM(cmf,nm);expectedXYZ=expectedXYZ+cmf*(power*brdf->valueNM(wi,q,nm)/160);}
+  for(unsigned i=0;i<160;++i){const double nm=wavelengths[i],power=colored?1+.005*(nm-400):1;XYZPel cmf;ColorUtils::XYZFromNM(cmf,nm);expectedXYZ=expectedXYZ+cmf*(power*brdf->valueNM(wi,q,nm)/160);}
   const double norm=300/ColorUtils::CIE_Y_Integral(400,700);const RISEPel expectedPel(expectedXYZ*(norm/area));
   for(double width:{0.,1.,10.,20.,300.}){
    map.SetGatherParamsNM(1,.05,0,160,width,nullptr);RISEPel rgb;map.RadianceEstimate(rgb,q,*brdf);
    for(unsigned c=0;c<3;++c)Near(rgb[c],expectedPel[c],"Pel CMF integral uses scalar material at each photon wavelength");
    double observedY=0,expectedY=0;
    for(unsigned j=0;j<160;++j){
-    const double nm=400+j*300./160;double sum=0;unsigned accepted=0;
-    for(unsigned i=0;i<160;++i){const double stored=400+i*300./160;if(std::fabs(stored-nm)<=width){sum+=colored?1+.005*(stored-400):1;++accepted;}}
+    const double nm=wavelengths[j];double sum=0;unsigned accepted=0;
+    for(unsigned i=0;i<160;++i){const double stored=wavelengths[i];if(std::fabs(stored-nm)<=width){sum+=colored?1+.005*(stored-400):1;++accepted;}}
     const double expected=accepted?sum/accepted*brdf->valueNM(wi,q,nm)/area:0;double got=0;map.RadianceEstimateNM(nm,got,q,*brdf);Near(got,expected,"NM kernel divides exact discrete sampling mass including clipped edges");
     XYZPel cmf;ColorUtils::XYZFromNM(cmf,nm);observedY+=cmf.Y*got/160*norm;expectedY+=cmf.Y*expected/160*norm;
    }
@@ -47,10 +48,10 @@ void SamplingBoundaries(){
  for(unsigned n:{1u,2u,160u,9999u}){
   Check(law.Configure(400,700,n),"valid finite grid");
   for(double u:{0.,.5,std::nextafter(1.,0.)}){
-   const double old=400+static_cast<unsigned>(u*n)*(300./n);Near(law.Sample(u),old,"discrete sampling preserves original draw mapping");Check(law.Contains(law.Sample(u)),"sample lies in represented grid");
+   const unsigned index=static_cast<unsigned>(u*n);Near(law.Sample(u),law.representatives[index],"discrete sampling selects its represented atom without another random draw");Check(law.Contains(law.Sample(u)),"sample lies in represented grid");
   }
   for(double query:{400.,std::nextafter(400.,700.),550.,std::nextafter(700.,400.)})for(double width:{0.,std::nextafter(300./n,0.),300./n,std::nextafter(300./n,300.),300.}){
-   unsigned k=0;for(unsigned i=0;i<n;++i)if(std::fabs((400+i*(300./n))-query)<=width)++k;
+   unsigned k=0;for(unsigned i=0;i<n;++i)if(std::fabs(law.representatives[i]-query)<=width)++k;
    Near(law.WindowMass(query,width),double(k)/n,"binary count agrees with full represented-grid enumeration");
   }
  }

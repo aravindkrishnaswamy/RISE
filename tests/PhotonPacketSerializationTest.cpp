@@ -32,11 +32,11 @@ template<class Base>void Install(Job& job,Base* map){
  else if constexpr(std::is_same<Base,GlobalSpectralPhotonMap>::value)job.GetScene()->SetGlobalSpectralMap(map);
  else job.GetScene()->SetCausticSpectralMap(map);
 }
-template<class Base>const IPhotonMap* Installed(Job& job){
- if constexpr(std::is_same<Base,GlobalPelPhotonMap>::value)return job.GetScene()->GetGlobalPelMap();
- else if constexpr(std::is_same<Base,CausticPelPhotonMap>::value)return job.GetScene()->GetCausticPelMap();
- else if constexpr(std::is_same<Base,GlobalSpectralPhotonMap>::value)return job.GetScene()->GetGlobalSpectralMap();
- else return job.GetScene()->GetCausticSpectralMap();
+template<class Base>IPhotonMap* Installed(Job& job){
+ if constexpr(std::is_same<Base,GlobalPelPhotonMap>::value)return job.GetScene()->GetGlobalPelMapMutable();
+ else if constexpr(std::is_same<Base,CausticPelPhotonMap>::value)return job.GetScene()->GetCausticPelMapMutable();
+ else if constexpr(std::is_same<Base,GlobalSpectralPhotonMap>::value)return job.GetScene()->GetGlobalSpectralMapMutable();
+ else return job.GetScene()->GetCausticSpectralMapMutable();
 }
 template<class Base>bool Load(Job& job,const char* path){
  if constexpr(std::is_same<Base,GlobalPelPhotonMap>::value)return job.LoadGlobalPelPhotonmap(path);
@@ -65,7 +65,7 @@ template<class Base>void Run(const char* name){
  auto* truncated=new MemoryBuffer(used-1);truncated->setBytes(buffer->Pointer(),used-1);truncated->seek(IBuffer::START,0);
  const unsigned before=restored.NumStored();Check(!restored.DeserializeChecked(*truncated)&&restored.NumStored()==before,"truncated load retains prior records");truncated->release();
  // Alter the first exact direction, using the documented serialized byte fields.
- const unsigned directionOffset=std::is_same<Base,GlobalPelPhotonMap>::value?147:Spectral<Base>()?169:157;
+ const unsigned directionOffset=std::is_same<Base,GlobalPelPhotonMap>::value?147:Spectral<Base>()?(169+4+160*8):157;
  buffer->seek(IBuffer::START,directionOffset);buffer->setDouble(0);buffer->setDouble(0);buffer->setDouble(0);buffer->seek(IBuffer::START,0);
  Check(!restored.DeserializeChecked(*buffer)&&restored.NumStored()==before,"invalid direction load is transactional");
  // Independent old-format writer: a real complete compressed record, not a
@@ -77,7 +77,7 @@ template<class Base>void Run(const char* name){
  if constexpr(Spectral<Base>())legacy->setDouble(1);else ColorUtils::SerializeRGBPel(RISEPel(1),*legacy);
  legacy->setUChar(0);legacy->setUChar(0);
  if constexpr(Spectral<Base>())legacy->setDouble(550);
- if constexpr(std::is_same<Base,GlobalPelPhotonMap>::value){ColorUtils::SerializeRGBPel(RISEPel(0),*legacy);legacy->setUChar(0);legacy->setUChar(0);}
+ if constexpr(std::is_same<Base,GlobalPelPhotonMap>::value){ColorUtils::SerializeRGBPel(RISEPel(0.0),*legacy);legacy->setUChar(0);legacy->setUChar(0);}
  const auto path=std::filesystem::temp_directory_path()/(std::string("rise_exact_packet_")+name+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())+".pmap");Check(legacy->DumpToFileToCursor(path.string().c_str()),"legacy complete fixture written");
  auto* job=new Job();auto* installed=new Base(0,nullptr);Install<Base>(*job,installed);
  Check(!Load<Base>(*job,path.string().c_str())&&Installed<Base>(*job)==installed,"legacy Job load fails and retains installed map");
