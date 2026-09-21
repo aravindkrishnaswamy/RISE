@@ -148,10 +148,11 @@ void GlobalPelPhotonTracer::TracePhoton(
 					TracePhoton( scat.ray, power*scat.kray, pPhotonMap, scat.type==ScatteredRay::eRayDiffuse, scat.ior_stack?*scat.ior_stack:ior_stack, depth+1 );
 				}
 			} else {
-				ScatteredRay* pScat = scattered.RandomlySelect( random.CanonicalRandom(), false );
+				Scalar selectedProbability=0;
+				ScatteredRay* pScat = scattered.RandomlySelect( random.CanonicalRandom(), false, &selectedProbability );
 				if( pScat ) {
 					pScat->ray.Advance( 1e-8 );
-					TracePhoton( pScat->ray, power*pScat->kray, pPhotonMap, pScat->type==ScatteredRay::eRayDiffuse, pScat->ior_stack?*pScat->ior_stack:ior_stack, depth+1 );
+					TracePhoton( pScat->ray, power*pScat->kray/selectedProbability, pPhotonMap, pScat->type==ScatteredRay::eRayDiffuse, pScat->ior_stack?*pScat->ior_stack:ior_stack, depth+1 );
 				}
 			}
 		}
