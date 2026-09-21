@@ -332,11 +332,14 @@ ConnectionLegality **319/0, 0 skipped**, ReliefModifier **158/0**, and CST
 zero; every named relink had zero warnings. See `mandatory-final-status.json`
 and `final2-run-status-ReliefBidirectionalConsistencyTest.json`.
 
-The first full unfiltered SignalIntegratorConsistency run returned **0**,
+The historical first full unfiltered SignalIntegratorConsistency run at
+`98eb3998` returned **0**,
 **2971 passed / 0 failed**. Counters: blow-up skips **0**, masked precision
 skips **0**, reference-incomplete rows **2**, no-complete-reference skips
 **1**, whole-image-insensitive showcases **4**, mask coverage drops **0**.
-All six asserted adaptive masked rows stopped at **12** sub-renders:
+Its log reported all six asserted adaptive masked rows at **12** sub-renders.
+The following are historical reported aggregates, not independently
+reconstructable masked statistics from that log:
 
 | Showcase | Integrator | Mean masked contrast | Standard error |
 |---|---|---:|---:|
@@ -358,8 +361,79 @@ strategy limitation (with its separate radiance-scaling defect already
 fixed), not an open DL224 MIS defect. The older reference-rule account is
 in [SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §6.2](SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md). Neither
 that skip nor four insensitive whole-image rows proves showcase correctness.
-Raw sub-render means, SE and counts are retained in the full log and
-`signal-adaptive-summary.txt`; no retry or threshold change was used.
+The first log and `signal-adaptive-summary.txt` retain whole-image means
+and reported masked aggregates, but **not the raw masked operands**. The
+earlier raw-retention claim is withdrawn: that first run cannot independently
+reconstruct masked mean/SD/SE or stopping counts. No retry or threshold change
+was used in that historical run. The corrective evidence below is separate.
+
+## Review follow-up: independently reconstructable masked evidence
+
+The supervisor relayed the independent contracts review's **P2 evidence
+finding** on `98eb3998`; this was an external review finding, not an author
+measurement. It correctly identified the missing raw masked operands in
+the historical 2971/0 record above. Logging-only test commit `350c2638` adds
+round-trip (17-digit) `MASK_AUDIT` records for the complete fixed mask pixel
+indices/dimensions, every masked numerator E/B and paired PT denominator,
+zero-based sample and attempt indices, explicit null/failure records,
+and each adaptive row's actual count/mean/SD/SE, limits and stopping reason.
+The alternate PT-independent self-contrast loop has the same tracing.
+Its denominator fields are null because that estimator has no PT pair.
+
+The exact source patch is `mask-audit-source.patch`. Removing only the
+explicitly added serializers, mask-serialization block, logging calls and
+diagnostic counters reproduces the original test text ignoring whitespace
+(`mask-audit-semantic-check.json`). Sampling, RNG calls, failure increments,
+thresholds, return paths and stop predicates are unchanged. No production
+`src/build` file changed; the Deployment/Opto source identity remains valid.
+
+The exact named target was relinked with **rc0 / zero warnings**. One new run
+was made, with **no retries**, using:
+
+```sh
+SIGNAL_CONSISTENCY_FILTER='plank,bunny,pavilion' ./bin/tests/SignalIntegratorConsistencyTest
+```
+
+The filter uses substring matching (`find(keyword)`), not a comma-list
+parser; that value nevertheless selects exactly the three named showcases.
+The optional positional argument sets the seed base only. It was omitted,
+retaining default **1000**. Resolution **160×120**, **32 spp**, minimum **12**,
+attempt cap **48**, band **.2**, SE target **.05**, mask threshold **.2** and
+coverage floor **.01** are unchanged. Filtering changes the render-index
+sequence relative to the first full run, so these are separately labelled
+measurements. Unit fixtures and tidal were excluded from this corrective
+run; their first full-run coverage and limitations remain historical.
+
+Result: **rc0, 2836 passed / 0 failed**, 141.85 seconds. All six adaptive rows
+were asserted, **12 samples / 12 attempts / 0 failures**, each stopping at
+`precision_target`. Whole-image-insensitive count **3**; all other skip
+counters **0**. The raw log contains **72 paired sample records**, **36 PT-pool
+records**, **three complete mask index lists**, and **six stopping records**.
+No failure occurred in this run; failure paths now explicitly serialize
+missing operands as null rather than losing the attempt.
+
+The separate Python reader `recompute-mask-audit.py` computes each contrast
+as `E*PT_B/(B*PT_E)-1`, then sample SD and SE from all samples. It checks
+mask indices/count/dimensions, exact shared PT-pool operand identity,
+sequential attempt/sample indices, failure counts, and every prefix against
+the unchanged stopping rule: no row continues after its first eligible
+precision stop. It also recomputes each operand stream's mean/sample SD.
+All six rows reconstructed successfully; the largest difference from a
+logged aggregate is below **6e-17**. Full operands, derived contrasts,
+prefix decisions and mask identities are retained in
+`mask-audit-records.json` and `mask-audit-recomputed.json`.
+
+| Showcase | Mode | n | Recomputed mean contrast | Sample SD | SE |
+|---|---|---:|---:|---:|---:|
+| plank | BDPT | 12 | -0.0380110817792 | 0.0648754060914 | 0.0187279165853 |
+| plank | VCM | 12 | 0.00952887794583 | 0.0165876829349 | 0.00478845160386 |
+| bunny | BDPT | 12 | 0.00554136808178 | 0.00335845350708 | 0.000969502018187 |
+| bunny | VCM | 12 | 0.00730307776415 | 0.00481832117635 | 0.0013909295141 |
+| pavilion | BDPT | 12 | 0.00490249241503 | 0.0125225420684 | 0.00361494651707 |
+| pavilion | VCM | 12 | 0.00334451516647 | 0.0142366022136 | 0.00410975306018 |
+
+The earlier six aggregate values are not retroactively treated as verified
+by these new samples. Their missing raw-data limitation is preserved.
 
 ## Every shipped relief scene: before/after
 
