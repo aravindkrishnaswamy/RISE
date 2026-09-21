@@ -300,66 +300,141 @@ namespace
 	static const double oqs_macheps = 2.2204460492503131e-16; // DBL_EPSILON
 	static const double oqs_cubic_rescal_fact = 3.488062113727083e102; // pow(DBL_MAX, 1/3) / phi
 
+	// Binary64 significand with a separate exponent for exceptionally wide
+	// root scales. This preserves nonzero coefficients and Vieta products
+	// that a single double variable transformation cannot represent.
+	struct oqs_wide
+	{
+		double m;
+		std::int64_t e;
+		oqs_wide( double x=0 ) : m(0), e(0) { int exponent; m=std::frexp(x,&exponent); e=exponent; }
+		static oqs_wide scaled( double x, std::int64_t exponent ) { oqs_wide r(x); if(r.m!=0) r.e+=exponent; return r; }
+		double unscale( int exponent=0 ) const {
+			const std::int64_t total=e+exponent;
+			if(m==0) return m;
+			if(total>DBL_MAX_EXP) return std::copysign(HUGE_VAL,m);
+			if(total<DBL_MIN_EXP-DBL_MANT_DIG) return std::copysign(0.0,m);
+			return std::scalbn(m,static_cast<int>(total));
+		}
+		oqs_wide operator-() const { return scaled(-m,e); }
+		oqs_wide& operator+=(oqs_wide x);
+		oqs_wide& operator*=(oqs_wide x);
+	};
+	oqs_wide operator+(oqs_wide a,oqs_wide b) {
+		if(a.m==0)return b;if(b.m==0)return a;
+		if(a.e<b.e){const oqs_wide t=a;a=b;b=t;}
+		const std::int64_t gap=b.e-a.e;
+		if(gap<DBL_MIN_EXP-DBL_MANT_DIG) return a;
+		return oqs_wide::scaled(a.m+std::scalbn(b.m,static_cast<int>(gap)),a.e);
+	}
+	oqs_wide operator-(oqs_wide a,oqs_wide b){return a+(-b);}
+	oqs_wide operator*(oqs_wide a,oqs_wide b){return oqs_wide::scaled(a.m*b.m,a.e+b.e);}
+	oqs_wide operator/(oqs_wide a,oqs_wide b){return oqs_wide::scaled(a.m/b.m,a.e-b.e);}
+	oqs_wide& oqs_wide::operator+=(oqs_wide x){return *this=*this+x;}
+	oqs_wide& oqs_wide::operator*=(oqs_wide x){return *this=*this*x;}
+	bool operator==(oqs_wide a,oqs_wide b){return a.m==b.m && (a.m==0 || a.e==b.e);}
+	bool operator!=(oqs_wide a,oqs_wide b){return !(a==b);}
+	bool operator<(oqs_wide a,oqs_wide b){
+		if(a.m<=0 && b.m>=0)return a.m<b.m;
+		if(a.m>=0 && b.m<=0)return false;
+		if(a.e==b.e)return a.m<b.m;
+		return a.m>0 ? a.e<b.e : a.e>b.e;
+	}
+	bool operator>(oqs_wide a,oqs_wide b){return b<a;}
+	bool operator<=(oqs_wide a,oqs_wide b){return !(a>b);}
+	bool operator>=(oqs_wide a,oqs_wide b){return !(a<b);}
+	double oqs_round(double x){volatile double r=x;return r;}
+	oqs_wide oqs_round(oqs_wide x){x.m=oqs_round(x.m);return x;}
+	double oqs_fabs(double x){return std::fabs(x);}
+	oqs_wide oqs_fabs(oqs_wide x){return oqs_wide::scaled(std::fabs(x.m),x.e);}
+	double oqs_sqrt(double x){return std::sqrt(x);}
+	oqs_wide oqs_sqrt(oqs_wide x){std::int64_t q=x.e/2;int r=static_cast<int>(x.e-2*q);return oqs_wide::scaled(std::sqrt(std::scalbn(x.m,r)),q);}
+	double oqs_cbrt(double x){return cbrt(x);}
+	oqs_wide oqs_cbrt(oqs_wide x){std::int64_t q=x.e/3;int r=static_cast<int>(x.e-3*q);return oqs_wide::scaled(oqs_cbrt(std::scalbn(x.m,r)),q);}
+	double oqs_acos(double x){return std::acos(x);}
+	oqs_wide oqs_acos(oqs_wide x){return oqs_wide(std::acos(x.unscale()));}
+	double oqs_cos(double x){return std::cos(x);}
+	oqs_wide oqs_cos(oqs_wide x){return oqs_wide(std::cos(x.unscale()));}
+	double oqs_copysign(double a,double b){return std::copysign(a,b);}
+	oqs_wide oqs_copysign(double a,oqs_wide b){return oqs_wide(std::copysign(a,b.m));}
+	bool oqs_finite(double x){return RISE::IsFiniteDouble(x);}
+	bool oqs_finite(oqs_wide x){return RISE::IsFiniteDouble(x.m);}
+	double oqs_fma(double a,double b,double c){return std::fma(a,b,c);}
+	oqs_wide oqs_fma(oqs_wide a,oqs_wide b,oqs_wide c){
+		if(a.m==0 || b.m==0) return c;
+		const std::int64_t exponent=a.e+b.e;
+		const std::int64_t gap=c.e-exponent;
+		// Product significands lie in [1/4,1). Align c to that binade and
+		// perform one hardware FMA, retaining its single rounding. Extremely
+		// remote terms cannot affect rounding; never form an overflowing shift.
+		if(c.m!=0 && gap>DBL_MAX_EXP-2) return c;
+		const double aligned=(c.m==0 || gap<DBL_MIN_EXP-DBL_MANT_DIG)
+			? 0.0 : std::scalbn(c.m,static_cast<int>(gap));
+		return oqs_wide::scaled(std::fma(a.m,b.m,aligned),exponent);
+	}
+
 	// Dominant real root of depressed cubic x^3 + b x + c = 0, handles
 	// b or c near DBL_MAX without overflow.  Reference: eq. 85/86.
-	void oqs_solve_cubic_analytic_depressed_handle_inf( double b, double c, double* sol )
+	template<class T>
+	void oqs_solve_cubic_analytic_depressed_handle_inf( T b, T c, T* sol )
 	{
-		const double PI2 = oqs_pi / 2.0, TWOPI = 2.0 * oqs_pi;
-		double Q = -b / 3.0;
-		double R = 0.5 * c;
+		const T PI2 = oqs_pi / 2.0, TWOPI = 2.0 * oqs_pi;
+		T Q = -b / 3.0;
+		T R = 0.5 * c;
 		if( R == 0 ) {
-			*sol = ( b <= 0 ) ? sqrt( -b ) : 0.0;
+			*sol = ( b <= 0 ) ? oqs_sqrt( -b ) : 0.0;
 			return;
 		}
-		double KK;
-		if( fabs( Q ) < fabs( R ) ) {
-			double QR = Q / R;
-			double QRSQ = QR * QR;
+		T KK;
+		if( oqs_fabs( Q ) < oqs_fabs( R ) ) {
+			T QR = Q / R;
+			T QRSQ = QR * QR;
 			KK = 1.0 - Q * QRSQ;
 		} else {
-			double RQ = R / Q;
-			KK = copysign( 1.0, Q ) * ( RQ * RQ / Q - 1.0 );
+			T RQ = R / Q;
+			KK = oqs_copysign( 1.0, Q ) * ( RQ * RQ / Q - 1.0 );
 		}
 		if( KK < 0.0 ) {
-			double sqrtQ = sqrt( Q );
-			double theta = acos( ( R / fabs( Q ) ) / sqrtQ );
+			T sqrtQ = oqs_sqrt( Q );
+			T theta = oqs_acos( ( R / oqs_fabs( Q ) ) / sqrtQ );
 			*sol = ( theta < PI2 )
-				? -2.0 * sqrtQ * cos( theta / 3.0 )
-				: -2.0 * sqrtQ * cos( ( theta + TWOPI ) / 3.0 );
+				? -2.0 * sqrtQ * oqs_cos( theta / 3.0 )
+				: -2.0 * sqrtQ * oqs_cos( ( theta + TWOPI ) / 3.0 );
 		} else {
-			double A;
-			if( fabs( Q ) < fabs( R ) ) {
-				A = -copysign( 1.0, R ) * cbrt( fabs( R ) * ( 1.0 + sqrt( KK ) ) );
+			T A;
+			if( oqs_fabs( Q ) < oqs_fabs( R ) ) {
+				A = -oqs_copysign( 1.0, R ) * oqs_cbrt( oqs_fabs( R ) * ( 1.0 + oqs_sqrt( KK ) ) );
 			} else {
-				A = -copysign( 1.0, R ) * cbrt( fabs( R ) + sqrt( fabs( Q ) ) * fabs( Q ) * sqrt( KK ) );
+				A = -oqs_copysign( 1.0, R ) * oqs_cbrt( oqs_fabs( R ) + oqs_sqrt( oqs_fabs( Q ) ) * oqs_fabs( Q ) * oqs_sqrt( KK ) );
 			}
-			double B = ( A == 0.0 ) ? 0.0 : Q / A;
+			T B = ( A == 0.0 ) ? 0.0 : Q / A;
 			*sol = A + B;
 		}
 	}
 
 	// Dominant real root of depressed cubic x^3 + b x + c = 0.
-	void oqs_solve_cubic_analytic_depressed( double b, double c, double* sol )
+	template<class T>
+	void oqs_solve_cubic_analytic_depressed( T b, T c, T* sol )
 	{
-		double Q = -b / 3.0;
-		double R = 0.5 * c;
-		if( fabs( Q ) > 1e102 || fabs( R ) > 1e154 ) {
+		T Q = -b / 3.0;
+		T R = 0.5 * c;
+		if( oqs_fabs( Q ) > 1e102 || oqs_fabs( R ) > 1e154 ) {
 			oqs_solve_cubic_analytic_depressed_handle_inf( b, c, sol );
 			return;
 		}
-		double Q3 = Q * Q * Q;
-		double R2 = R * R;
+		T Q3 = Q * Q * Q;
+		T R2 = R * R;
 		if( R2 < Q3 ) {
-			double theta = acos( R / sqrt( Q3 ) );
-			double sqrtQ = -2.0 * sqrt( Q );
+			T theta = oqs_acos( R / oqs_sqrt( Q3 ) );
+			T sqrtQ = -2.0 * oqs_sqrt( Q );
 			if( theta < oqs_pi / 2.0 ) {
-				*sol = sqrtQ * cos( theta / 3.0 );
+				*sol = sqrtQ * oqs_cos( theta / 3.0 );
 			} else {
-				*sol = sqrtQ * cos( ( theta + 2.0 * oqs_pi ) / 3.0 );
+				*sol = sqrtQ * oqs_cos( ( theta + 2.0 * oqs_pi ) / 3.0 );
 			}
 		} else {
-			double A = -copysign( 1.0, R ) * cbrt( fabs( R ) + sqrt( R2 - Q3 ) );
-			double B = ( A == 0.0 ) ? 0.0 : Q / A;
+			T A = -oqs_copysign( 1.0, R ) * oqs_cbrt( oqs_fabs( R ) + oqs_sqrt( R2 - Q3 ) );
+			T B = ( A == 0.0 ) ? 0.0 : Q / A;
 			*sol = A + B;
 		}
 	}
@@ -367,158 +442,167 @@ namespace
 	// phi0 = dominant root of the depressed-shifted cubic derived
 	// from the quartic (eq. 79 in the paper).  Includes an optional
 	// internal-rescale branch when the cubic itself over/underflows.
-	void oqs_calc_phi0( double a, double b, double c, double d, double* phi0, int scaled )
+	template<class T>
+	void oqs_calc_phi0( T a, T b, T c, T d, T* phi0, int scaled )
 	{
-		double diskr = 9.0 * a * a - 24.0 * b;
-		double s;
+		T diskr = 9.0 * a * a - 24.0 * b;
+		T s;
 		if( diskr > 0.0 ) {
-			diskr = sqrt( diskr );
+			diskr = oqs_sqrt( diskr );
 			s = ( a > 0.0 ) ? ( -2.0 * b / ( 3.0 * a + diskr ) )
 				            : ( -2.0 * b / ( 3.0 * a - diskr ) );
 		} else {
 			s = -a / 4.0;
 		}
-		double aq = a + 4.0 * s;
-		double bq = b + 3.0 * s * ( a + 2.0 * s );
-		double cq = c + s * ( 2.0 * b + s * ( 3.0 * a + 4.0 * s ) );
-		double dq = d + s * ( c + s * ( b + s * ( a + s ) ) );
-		double gg = bq * bq / 9.0;
-		double hh = aq * cq;
-		double g = hh - 4.0 * dq - 3.0 * gg;
-		double h = ( 8.0 * dq + hh - 2.0 * gg ) * bq / 3.0 - cq * cq - dq * aq * aq;
-		double rmax;
+		T aq = a + 4.0 * s;
+		T bq = b + 3.0 * s * ( a + 2.0 * s );
+		T cq = c + s * ( 2.0 * b + s * ( 3.0 * a + 4.0 * s ) );
+		T dq = d + s * ( c + s * ( b + s * ( a + s ) ) );
+		T gg = bq * bq / 9.0;
+		T hh = aq * cq;
+		T g = hh - 4.0 * dq - 3.0 * gg;
+		T h = ( 8.0 * dq + hh - 2.0 * gg ) * bq / 3.0 - cq * cq - dq * aq * aq;
+		T rmax;
 		oqs_solve_cubic_analytic_depressed( g, h, &rmax );
-		if( !RISE::IsFiniteDouble( rmax ) ) {
+		if( !oqs_finite( rmax ) ) {
 			oqs_solve_cubic_analytic_depressed_handle_inf( g, h, &rmax );
-			if( !RISE::IsFiniteDouble( rmax ) && scaled ) {
-				double rfact = oqs_cubic_rescal_fact;
-				double rfactsq = rfact * rfact;
-				double ggss = gg / rfactsq;
-				double hhss = hh / rfactsq;
-				double dqss = dq / rfactsq;
-				double aqs = aq / rfact;
-				double bqs = bq / rfact;
-				double cqs = cq / rfact;
+			if( !oqs_finite( rmax ) && scaled ) {
+				T rfact = oqs_cubic_rescal_fact;
+				T rfactsq = rfact * rfact;
+				T ggss = gg / rfactsq;
+				T hhss = hh / rfactsq;
+				T dqss = dq / rfactsq;
+				T aqs = aq / rfact;
+				T bqs = bq / rfact;
+				T cqs = cq / rfact;
 				ggss = bqs * bqs / 9.0;
 				hhss = aqs * cqs;
-				double g2 = hhss - 4.0 * dqss - 3.0 * ggss;
-				double h2 = ( 8.0 * dqss + hhss - 2.0 * ggss ) * bqs / 3.0 - cqs * ( cqs / rfact ) - ( dq / rfact ) * aqs * aqs;
+				T g2 = hhss - 4.0 * dqss - 3.0 * ggss;
+				T h2 = ( 8.0 * dqss + hhss - 2.0 * ggss ) * bqs / 3.0 - cqs * ( cqs / rfact ) - ( dq / rfact ) * aqs * aqs;
 				oqs_solve_cubic_analytic_depressed( g2, h2, &rmax );
-				if( !RISE::IsFiniteDouble( rmax ) ) {
+				if( !oqs_finite( rmax ) ) {
 					oqs_solve_cubic_analytic_depressed_handle_inf( g2, h2, &rmax );
 				}
 				rmax *= rfact;
 			}
 		}
 		// Newton-Raphson polish of phi0 on the depressed cubic x^3 + g x + h.
-		double x = rmax;
-		double xsq = x * x;
-		double xxx = x * xsq;
-		double gx = g * x;
-		double f = x * ( xsq + g ) + h;
-		double maxtt = fabs( xxx ) > fabs( gx ) ? fabs( xxx ) : fabs( gx );
-		if( fabs( h ) > maxtt ) maxtt = fabs( h );
-		if( fabs( f ) > oqs_macheps * maxtt ) {
+		T x = rmax;
+		T xsq = x * x;
+		T xxx = x * xsq;
+		T gx = g * x;
+		T f = x * ( xsq + g ) + h;
+		T maxtt = oqs_fabs( xxx ) > oqs_fabs( gx ) ? oqs_fabs( xxx ) : oqs_fabs( gx );
+		if( oqs_fabs( h ) > maxtt ) maxtt = oqs_fabs( h );
+		if( oqs_fabs( f ) > oqs_macheps * maxtt ) {
 			for( int iter = 0; iter < 8; iter++ ) {
-				double df = 3.0 * xsq + g;
+				T df = 3.0 * xsq + g;
 				if( df == 0 ) break;
-				double xold = x;
+				T xold = x;
 				x += -f / df;
-				double fold = f;
+				T fold = f;
 				xsq = x * x;
 				f = x * ( xsq + g ) + h;
 				if( f == 0 ) break;
-				if( fabs( f ) >= fabs( fold ) ) { x = xold; break; }
+				if( oqs_fabs( f ) >= oqs_fabs( fold ) ) { x = xold; break; }
 			}
 		}
 		*phi0 = x;
 	}
 
 	// Relative-error metrics (eq. 29, 48-51, 68-69 in the manuscript).
-	double oqs_calc_err_ldlt( double b, double c, double d, double d2, double l1, double l2, double l3 )
+	template<class T>
+	T oqs_calc_err_ldlt( T b, T c, T d, T d2, T l1, T l2, T l3 )
 	{
-		double s = ( b == 0 ) ? fabs( d2 + l1 * l1 + 2.0 * l3 ) : fabs( ( ( d2 + l1 * l1 + 2.0 * l3 ) - b ) / b );
-		s += ( c == 0 ) ? fabs( 2.0 * d2 * l2 + 2.0 * l1 * l3 ) : fabs( ( ( 2.0 * d2 * l2 + 2.0 * l1 * l3 ) - c ) / c );
-		s += ( d == 0 ) ? fabs( d2 * l2 * l2 + l3 * l3 ) : fabs( ( ( d2 * l2 * l2 + l3 * l3 ) - d ) / d );
+		T s = ( b == 0 ) ? oqs_fabs( d2 + l1 * l1 + 2.0 * l3 ) : oqs_fabs( ( ( d2 + l1 * l1 + 2.0 * l3 ) - b ) / b );
+		s += ( c == 0 ) ? oqs_fabs( 2.0 * d2 * l2 + 2.0 * l1 * l3 ) : oqs_fabs( ( ( 2.0 * d2 * l2 + 2.0 * l1 * l3 ) - c ) / c );
+		s += ( d == 0 ) ? oqs_fabs( d2 * l2 * l2 + l3 * l3 ) : oqs_fabs( ( ( d2 * l2 * l2 + l3 * l3 ) - d ) / d );
 		return s;
 	}
-	double oqs_calc_err_abcd( double a, double b, double c, double d, double aq, double bq, double cq, double dq )
+	template<class T>
+	T oqs_calc_err_abcd( T a, T b, T c, T d, T aq, T bq, T cq, T dq )
 	{
-		double s = ( d == 0 ) ? fabs( bq * dq ) : fabs( ( bq * dq - d ) / d );
-		s += ( c == 0 ) ? fabs( bq * cq + aq * dq ) : fabs( ( ( bq * cq + aq * dq ) - c ) / c );
-		s += ( b == 0 ) ? fabs( bq + aq * cq + dq ) : fabs( ( ( bq + aq * cq + dq ) - b ) / b );
-		s += ( a == 0 ) ? fabs( aq + cq ) : fabs( ( ( aq + cq ) - a ) / a );
+		T s = ( d == 0 ) ? oqs_fabs( bq * dq ) : oqs_fabs( ( bq * dq - d ) / d );
+		s += ( c == 0 ) ? oqs_fabs( bq * cq + aq * dq ) : oqs_fabs( ( ( bq * cq + aq * dq ) - c ) / c );
+		s += ( b == 0 ) ? oqs_fabs( bq + aq * cq + dq ) : oqs_fabs( ( ( bq + aq * cq + dq ) - b ) / b );
+		s += ( a == 0 ) ? oqs_fabs( aq + cq ) : oqs_fabs( ( ( aq + cq ) - a ) / a );
 		return s;
 	}
-	double oqs_calc_err_abc( double a, double b, double c, double aq, double bq, double cq, double dq )
+	template<class T>
+	T oqs_calc_err_abc( T a, T b, T c, T aq, T bq, T cq, T dq )
 	{
-		double s = ( c == 0 ) ? fabs( bq * cq + aq * dq ) : fabs( ( ( bq * cq + aq * dq ) - c ) / c );
-		s += ( b == 0 ) ? fabs( bq + aq * cq + dq ) : fabs( ( ( bq + aq * cq + dq ) - b ) / b );
-		s += ( a == 0 ) ? fabs( aq + cq ) : fabs( ( ( aq + cq ) - a ) / a );
+		T s = ( c == 0 ) ? oqs_fabs( bq * cq + aq * dq ) : oqs_fabs( ( ( bq * cq + aq * dq ) - c ) / c );
+		s += ( b == 0 ) ? oqs_fabs( bq + aq * cq + dq ) : oqs_fabs( ( ( bq + aq * cq + dq ) - b ) / b );
+		s += ( a == 0 ) ? oqs_fabs( aq + cq ) : oqs_fabs( ( ( aq + cq ) - a ) / a );
 		return s;
 	}
-	double oqs_calc_err_d( double errmin, double d, double bq, double dq )
+	template<class T>
+	T oqs_calc_err_d( T errmin, T d, T bq, T dq )
 	{
-		return ( ( d == 0 ) ? fabs( bq * dq ) : fabs( ( bq * dq - d ) / d ) ) + errmin;
+		return ( ( d == 0 ) ? oqs_fabs( bq * dq ) : oqs_fabs( ( bq * dq - d ) / d ) ) + errmin;
 	}
 
 	// Error-free summation must retain the individual roundings even under
 	// the renderer's fast-math flags. Volatile materializes those operations.
-	double oqs_sum_error( double a, double b, double& error )
+	template<class T>
+	T oqs_sum_error( T a, T b, T& error )
 	{
-		volatile double sum = a + b;
-		volatile double bv = sum - a;
-		volatile double av = sum - bv;
-		volatile double br = b - bv;
-		volatile double ar = a - av;
+		const T sum = oqs_round( a + b );
+		const T bv = oqs_round( sum - a );
+		const T av = oqs_round( sum - bv );
+		const T br = oqs_round( b - bv );
+		const T ar = oqs_round( a - av );
 		error = ar + br;
 		return sum;
 	}
-	double oqs_sum4( double a, double b, double c, double d )
+	template<class T>
+	T oqs_sum4( T a, T b, T c, T d )
 	{
-		double e1, e2, e3;
-		const double s1 = oqs_sum_error( a, b, e1 );
-		const double s2 = oqs_sum_error( s1, c, e2 );
-		const double s3 = oqs_sum_error( s2, d, e3 );
+		T e1, e2, e3;
+		const T s1 = oqs_sum_error( a, b, e1 );
+		const T s2 = oqs_sum_error( s1, c, e2 );
+		const T s3 = oqs_sum_error( s2, d, e3 );
 		return s3 + ( e1 + e2 + e3 );
 	}
-	void oqs_factor_residual( const double x[4], double a, double b, double c, double d, double f[4] )
+	template<class T>
+	void oqs_factor_residual( const T x[4], T a, T b, T c, T d, T f[4] )
 	{
-		f[0] = std::fma( x[1], x[3], -d );
-		volatile double p = x[1] * x[2];
-		volatile double q = x[0] * x[3];
-		f[1] = oqs_sum4( p, q, -c, std::fma( x[1], x[2], -p ) + std::fma( x[0], x[3], -q ) );
-		volatile double r = x[0] * x[2];
-		f[2] = oqs_sum4( r, x[1], x[3], -b ) + std::fma( x[0], x[2], -r );
-		f[3] = oqs_sum4( x[0], x[2], -a, 0.0 );
+		f[0] = oqs_fma( x[1], x[3], -d );
+		const T p = oqs_round( x[1] * x[2] );
+		const T q = oqs_round( x[0] * x[3] );
+		f[1] = oqs_sum4( p, q, -c, oqs_fma( x[1], x[2], -p ) + oqs_fma( x[0], x[3], -q ) );
+		const T r = oqs_round( x[0] * x[2] );
+		f[2] = oqs_sum4( r, x[1], x[3], -b ) + oqs_fma( x[0], x[2], -r );
+		f[3] = oqs_sum4( x[0], x[2], -a, T(0.0) );
 	}
 
 	// Newton-Raphson refine (alpha1, beta1, alpha2, beta2) against the
 	// original quartic coefficients.  Converges in typically 2-4
 	// iterations and drives total forward error below macheps.
-	void oqs_NRabcd( double a, double b, double c, double d,
-		double* AQ, double* BQ, double* CQ, double* DQ )
+	template<class T>
+	void oqs_NRabcd( T a, T b, T c, T d,
+		T* AQ, T* BQ, T* CQ, T* DQ )
 	{
 		const int NITERMAX = 20;
-		double x[4] = { *AQ, *BQ, *CQ, *DQ };
-		double vr[4] = { d, c, b, a };
-		double fvec[4];
+		T x[4] = { *AQ, *BQ, *CQ, *DQ };
+		T vr[4] = { d, c, b, a };
+		T fvec[4];
 		oqs_factor_residual( x, a, b, c, d, fvec );
-		double errf = 0, errfa = 0, errfmin;
-		double xmin[4] = { x[0], x[1], x[2], x[3] };
+		T errf = 0, errfa = 0, errfmin;
+		T xmin[4] = { x[0], x[1], x[2], x[3] };
 		for( int k1 = 0; k1 < 4; k1++ ) {
-			double fveca = fabs( fvec[k1] );
-			errf += ( vr[k1] == 0 ) ? fveca : fabs( fveca / vr[k1] );
+			T fveca = oqs_fabs( fvec[k1] );
+			errf += ( vr[k1] == 0 ) ? fveca : oqs_fabs( fveca / vr[k1] );
 			errfa += fveca;
 		}
 		errfmin = errfa;
 		if( errfa == 0 ) return;
 
 		for( int iter = 0; iter < NITERMAX; iter++ ) {
-			double x02 = x[0] - x[2];
-			double det = x[1] * x[1] + x[1] * ( -x[2] * x02 - 2.0 * x[3] ) + x[3] * ( x[0] * x02 + x[3] );
+			T x02 = x[0] - x[2];
+			T det = x[1] * x[1] + x[1] * ( -x[2] * x02 - 2.0 * x[3] ) + x[3] * ( x[0] * x02 + x[3] );
 			if( det == 0.0 ) break;
-			double Jinv[4][4];
+			T Jinv[4][4];
 			Jinv[0][0] = x02;
 			Jinv[0][1] = x[3] - x[1];
 			Jinv[0][2] = x[1] * x[2] - x[0] * x[3];
@@ -535,18 +619,18 @@ namespace
 			Jinv[3][1] = Jinv[0][0] * x[3];
 			Jinv[3][2] = x[3] * Jinv[0][1];
 			Jinv[3][3] = x[3] * Jinv[0][2];
-			double dx[4] = { 0, 0, 0, 0 };
+			T dx[4] = { 0, 0, 0, 0 };
 			for( int k1 = 0; k1 < 4; k1++ )
 				for( int k2 = 0; k2 < 4; k2++ )
 					dx[k1] += Jinv[k1][k2] * fvec[k2];
 			for( int k1 = 0; k1 < 4; k1++ )
 				x[k1] += -dx[k1] / det;
 			oqs_factor_residual( x, a, b, c, d, fvec );
-			double errfold = errf;
+			T errfold = errf;
 			errf = 0; errfa = 0;
 			for( int k1 = 0; k1 < 4; k1++ ) {
-				double fveca = fabs( fvec[k1] );
-				errf += ( vr[k1] == 0 ) ? fveca : fabs( fveca / vr[k1] );
+				T fveca = oqs_fabs( fvec[k1] );
+				errf += ( vr[k1] == 0 ) ? fveca : oqs_fabs( fveca / vr[k1] );
 				errfa += fveca;
 			}
 			if( errfa < errfmin ) { errfmin = errfa; for( int k1 = 0; k1 < 4; k1++ ) xmin[k1] = x[k1]; }
@@ -559,64 +643,32 @@ namespace
 	// Vieta-stable quadratic: returns number of real roots (0 or 2).
 	// For x^2 + a x + b = 0, compute the larger-magnitude root via the
 	// stable formula and the smaller via b / larger.
-	int oqs_solve_quadratic_real( double a, double b, double out[2] )
+	template<class T>
+	int oqs_solve_quadratic_real( T a, T b, T out[2] )
 	{
-		double diskr = a * a - 4.0 * b;
+		T diskr = a * a - 4.0 * b;
 		if( diskr < 0.0 ) return 0;
-		double sq = sqrt( diskr );
-		double div = ( a >= 0.0 ) ? ( -a - sq ) : ( -a + sq );
-		double zmax = div / 2.0;
-		double zmin = ( zmax == 0.0 ) ? 0.0 : ( b / zmax );
+		T sq = oqs_sqrt( diskr );
+		T div = ( a >= 0.0 ) ? ( -a - sq ) : ( -a + sq );
+		T zmax = div / 2.0;
+		T zmin = ( zmax == 0.0 ) ? 0.0 : ( b / zmax );
 		out[0] = zmax;
 		out[1] = zmin;
 		return 2;
 	}
-}
-
-int Polynomial::SolveQuartic( const Scalar (&coeff)[ 5 ], Scalar (&sol)[ 4 ] )
-{
-	// Degenerate leading coefficient — fall through to cubic.
-	if( IsReallyZero( coeff[0] ) )
+	template<class T>
+	int oqs_factor_quartic( T A, T B, T C, T D, T sol[4] )
 	{
-		Scalar coeffs[4] = { coeff[1], coeff[2], coeff[3], coeff[4] };
-		Scalar sols[3];
-		int n = SolveCubic( coeffs, sols );
-		for( int i = 0; i < n; i++ ) sol[i] = sols[i];
-		return n;
-	}
-
-	// Normalize x=2^scaleExponent*y before division by the leading
-	// coefficient. Exponent decomposition avoids overflowing monic ratios,
-	// and moves both tiny and large root scales into the resolvent's range.
-	int leadingExponent;
-	const double leadingMantissa = std::frexp( coeff[0], &leadingExponent );
-	int scaleExponent = -2147483647;
-	int exponents[4] = {};
-	double mantissas[4] = {};
-	for( int i = 1; i <= 4; ++i ) {
-		if( coeff[i] == 0 ) continue;
-		mantissas[i-1] = std::frexp( coeff[i], &exponents[i-1] );
-		const int difference = exponents[i-1] - leadingExponent;
-		const int bound = difference >= 0 ? ( difference + i - 1 ) / i : difference / i;
-		if( bound > scaleExponent ) scaleExponent = bound;
-	}
-	if( scaleExponent == -2147483647 ) scaleExponent = 0;
-	double normalized[4];
-	for( int i = 1; i <= 4; ++i )
-		normalized[i-1] = std::scalbn( mantissas[i-1] / leadingMantissa,
-			exponents[i-1] - leadingExponent - i * scaleExponent );
-	const double A = normalized[0], B = normalized[1], C = normalized[2], D = normalized[3];
-	double phi0 = 0;
+	T phi0=0;
 	oqs_calc_phi0( A, B, C, D, &phi0, 0 );
-
 	// Build the LDL^T decomposition (eqs. 16-28).
-	const double l1 = A / 2.0;
-	const double l3 = B / 6.0 + phi0 / 2.0;
-	const double del2 = C - A * l3;
-	const double bl311 = 2.0 * B / 3.0 - phi0 - l1 * l1;
-	const double dml3l3 = D - l3 * l3;
+	const T l1 = A / 2.0;
+	const T l3 = B / 6.0 + phi0 / 2.0;
+	const T del2 = C - A * l3;
+	const T bl311 = 2.0 * B / 3.0 - phi0 - l1 * l1;
+	const T dml3l3 = D - l3 * l3;
 
-	double l2m[4], d2m[4], res[4];
+	T l2m[4], d2m[4], res[4];
 	int nsol = 0;
 	if( bl311 != 0.0 ) {
 		d2m[nsol] = bl311;
@@ -636,10 +688,10 @@ int Polynomial::SolveQuartic( const Scalar (&coeff)[ 5 ], Scalar (&sol)[ 4 ] )
 		res[nsol] = oqs_calc_err_ldlt( B, C, D, d2m[nsol], l1, l2m[nsol], l3 );
 		nsol++;
 	}
-	double d2 = 0, l2 = 0;
+	T d2 = 0, l2 = 0;
 	if( nsol > 0 ) {
 		int kmin = 0;
-		double resmin = res[0];
+		T resmin = res[0];
 		for( int k = 1; k < nsol; k++ ) {
 			if( res[k] < resmin ) { resmin = res[k]; kmin = k; }
 		}
@@ -652,21 +704,21 @@ int Polynomial::SolveQuartic( const Scalar (&coeff)[ 5 ], Scalar (&sol)[ 4 ] )
 	// conjugate-complex coefficients, but its reconstruction error is still
 	// essential when comparing the alternative real factorisation below.
 	int realcase0 = ( d2 < 0.0 ) ? 1 : ( d2 > 0.0 ? 0 : -1 );
-	double aq = 0, bq = 0, cq = 0, dq = 0;
-	double errmin = 0;
+	T aq = 0, bq = 0, cq = 0, dq = 0;
+	T errmin = 0;
 
 	if( realcase0 == 1 ) {
-		double gamma = sqrt( -d2 );
+		T gamma = oqs_sqrt( -d2 );
 		aq = l1 + gamma;
 		bq = l3 + gamma * l2;
 		cq = l1 - gamma;
 		dq = l3 - gamma * l2;
-		if( fabs( dq ) < fabs( bq ) ) dq = D / bq;
-		else if( fabs( dq ) > fabs( bq ) ) bq = D / dq;
+		if( oqs_fabs( dq ) < oqs_fabs( bq ) ) dq = D / bq;
+		else if( oqs_fabs( dq ) > oqs_fabs( bq ) ) bq = D / dq;
 
-		double aqv[3], cqv[3], errv[3];
+		T aqv[3], cqv[3], errv[3];
 		int kmin = 0;
-		if( fabs( aq ) < fabs( cq ) ) {
+		if( oqs_fabs( aq ) < oqs_fabs( cq ) ) {
 			int n = 0;
 			if( dq != 0 ) { aqv[n] = ( C - bq * cq ) / dq; errv[n] = oqs_calc_err_abc( A, B, C, aqv[n], bq, cq, dq ); n++; }
 			if( cq != 0 ) { aqv[n] = ( B - dq - bq ) / cq; errv[n] = oqs_calc_err_abc( A, B, C, aqv[n], bq, cq, dq ); n++; }
@@ -699,20 +751,20 @@ int Polynomial::SolveQuartic( const Scalar (&coeff)[ 5 ], Scalar (&sol)[ 4 ] )
 	// factor Newton system could not repair it (DL226).
 	int whichcase = 0;
 	{
-		double d3 = D - l3 * l3;
+		T d3 = D - l3 * l3;
 		if( d3 <= 0 ) {
-			const double err0 = ( realcase0 == 1 )
+			const T err0 = ( realcase0 == 1 )
 				? oqs_calc_err_d( errmin, D, bq, dq )
 				: oqs_calc_err_ldlt( B, C, D, d2, l1, l2, l3 );
-			double sqrtd3 = sqrt( -d3 );
-			double aq1 = l1, bq1 = l3 + sqrtd3, cq1 = l1, dq1 = l3 - sqrtd3;
-			if( fabs( dq1 ) < fabs( bq1 ) ) dq1 = D / bq1;
-			else if( fabs( dq1 ) > fabs( bq1 ) ) bq1 = D / dq1;
-			double err1 = oqs_calc_err_abcd( A, B, C, D, aq1, bq1, cq1, dq1 );
+			T sqrtd3 = oqs_sqrt( -d3 );
+			T aq1 = l1, bq1 = l3 + sqrtd3, cq1 = l1, dq1 = l3 - sqrtd3;
+			if( oqs_fabs( dq1 ) < oqs_fabs( bq1 ) ) dq1 = D / bq1;
+			else if( oqs_fabs( dq1 ) > oqs_fabs( bq1 ) ) bq1 = D / dq1;
+			T err1 = oqs_calc_err_abcd( A, B, C, D, aq1, bq1, cq1, dq1 );
 			// Equal rounded coefficient errors do not imply equally conditioned
 			// roots. When d3==0 this alternative is one quadratic squared:
 			// prefer its exact coalescence over a numerically split primary.
-			// Example: (x-1)^4 can give d2=-epsilon, alpha=-2+/-sqrt(epsilon)
+			// Example: (x-1)^4 can give d2=-epsilon, alpha=-2+/-oqs_sqrt(epsilon)
 			// with both errors rounding to zero. Newton's singular system need
 			// not repair that split. This tie rule introduces no error band;
 			// an incompatible positive-quartic fallback still has larger error.
@@ -734,7 +786,7 @@ int Polynomial::SolveQuartic( const Scalar (&coeff)[ 5 ], Scalar (&sol)[ 4 ] )
 		// Refine (alpha1, beta1, alpha2, beta2) via Newton-Raphson.
 		oqs_NRabcd( A, B, C, D, &aq, &bq, &cq, &dq );
 
-		double qr[2];
+		T qr[2];
 		if( oqs_solve_quadratic_real( aq, bq, qr ) == 2 ) {
 			sol[num++] = qr[0];
 			sol[num++] = qr[1];
@@ -746,11 +798,63 @@ int Polynomial::SolveQuartic( const Scalar (&coeff)[ 5 ], Scalar (&sol)[ 4 ] )
 	}
 	(void)whichcase;
 
-	// Unscale back to the original variable if we rescaled phi0.
-	if( scaleExponent != 0 ) {
-		for( int i = 0; i < num; i++ ) sol[i] = std::scalbn( sol[i], scaleExponent );
+	return num;
 	}
 
+}
+
+int Polynomial::SolveQuartic( const Scalar (&coeff)[ 5 ], Scalar (&sol)[ 4 ] )
+{
+	// Degenerate leading coefficient — fall through to cubic.
+	if( IsReallyZero( coeff[0] ) )
+	{
+		Scalar coeffs[4] = { coeff[1], coeff[2], coeff[3], coeff[4] };
+		Scalar sols[3];
+		int n = SolveCubic( coeffs, sols );
+		for( int i = 0; i < n; i++ ) sol[i] = sols[i];
+		return n;
+	}
+
+	// Normalize x=2^scaleExponent*y before division by the leading
+	// coefficient. Exponent decomposition avoids overflowing monic ratios,
+	// and moves both tiny and large root scales into the resolvent's range.
+	int leadingExponent;
+	const double leadingMantissa = std::frexp( coeff[0], &leadingExponent );
+	int scaleExponent = -2147483647;
+	int exponents[4] = {};
+	double mantissas[4] = {};
+	for( int i = 1; i <= 4; ++i ) {
+		if( coeff[i] == 0 ) continue;
+		mantissas[i-1] = std::frexp( coeff[i], &exponents[i-1] );
+		const int difference = exponents[i-1] - leadingExponent;
+		const int bound = difference >= 0 ? ( difference + i - 1 ) / i : difference / i;
+		if( bound > scaleExponent ) scaleExponent = bound;
+	}
+	if( scaleExponent == -2147483647 ) scaleExponent = 0;
+	// The resolvent's discriminant reaches degree twelve in the variable.
+	// Use separate exponents before that product range can become subnormal,
+	// not merely after a normalized coefficient has already become zero.
+	bool extended = false;
+	for( int i = 1; i <= 4; ++i ) {
+		const int exponent = exponents[i-1] - leadingExponent - i * scaleExponent;
+		if( mantissas[i-1] != 0 && exponent < DBL_MIN_EXP / 12 ) extended = true;
+	}
+	int num;
+	if( extended ) {
+		oqs_wide normalized[4], roots[4];
+		for( int i = 1; i <= 4; ++i )
+			normalized[i-1] = oqs_wide::scaled( mantissas[i-1] / leadingMantissa,
+				exponents[i-1] - leadingExponent - i * scaleExponent );
+		num = oqs_factor_quartic( normalized[0], normalized[1], normalized[2], normalized[3], roots );
+		for( int i = 0; i < num; ++i ) sol[i] = roots[i].unscale( scaleExponent );
+	} else {
+		double normalized[4], roots[4];
+		for( int i = 1; i <= 4; ++i )
+			normalized[i-1] = std::scalbn( mantissas[i-1] / leadingMantissa,
+				exponents[i-1] - leadingExponent - i * scaleExponent );
+		num = oqs_factor_quartic( normalized[0], normalized[1], normalized[2], normalized[3], roots );
+		for( int i = 0; i < num; ++i ) sol[i] = std::scalbn( roots[i], scaleExponent );
+	}
 	return num;
 }
 

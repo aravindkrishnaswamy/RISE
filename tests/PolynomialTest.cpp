@@ -544,7 +544,7 @@ static void TestQuarticClassificationAndCallers()
         CheckQuarticOracle("wide_root_spread",{{1,-h,6*h,-11*h,6*h}},{1,2,3,h},1e-10,true);
         CheckQuarticOracle("reciprocal_wide_spread",{{6*h,-11*h,6*h,-h,1}},{1/h,1.0/3,.5,1},1e-10,true);
     }
-    for(int exponent:{-260,-255,255}) {
+    for(int exponent:{-260,-255,254}) {
         const double r=std::ldexp(1.0,exponent),r2=r*r;
         CheckQuarticOracle("representable_scale_edge",{{1,-10*r,35*r2,-50*r2*r,24*r2*r2}},{r,2*r,3*r,4*r},1e-8,true);
     }
