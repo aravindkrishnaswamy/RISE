@@ -806,6 +806,7 @@
 #include <cstring>
 #include <iostream>
 #include <iomanip>
+#include <optional>
 #include <fstream>
 #include <sstream>
 #include <vector>
@@ -2390,6 +2391,45 @@ static bool RenderShowcaseVariant(
 	return renderedE && renderedB;
 }
 
+// DL224 evidence follow-up: log the actual masked operands at round-trip
+// precision, independently of cout's human-readable formatting. Missing
+// operands are explicit nulls; failed attempts never disappear from the trace.
+// These helpers only serialize observations and do not drive test decisions.
+static void LogMaskedSample( const char* scene, const char* kind, Integrator integ,
+	std::size_t attempt, std::size_t sample, const char* status,
+	std::optional<double> e = {}, std::optional<double> b = {},
+	std::optional<double> ptE = {}, std::optional<double> ptB = {} )
+{
+	std::ostringstream out;
+	out << std::setprecision( std::numeric_limits<double>::max_digits10 )
+		<< "MASK_AUDIT event=sample scene=" << scene << " kind=" << kind
+		<< " integrator=" << IntegratorName( integ ) << " attempt=" << attempt
+		<< " sample=" << sample << " status=" << status;
+	auto value = [&]( const char* key, std::optional<double> v ) {
+		out << " " << key << "=";
+		if( v ) out << *v; else out << "null";
+	};
+	value( "e", e ); value( "b", b ); value( "pt_e", ptE ); value( "pt_b", ptB );
+	std::cout << out.str() << std::endl;
+}
+
+static void LogMaskedStop( const char* scene, const char* kind, Integrator integ,
+	const std::vector<double>& values, int failures, double se, double target,
+	const char* reason )
+{
+	std::ostringstream out;
+	out << std::setprecision( std::numeric_limits<double>::max_digits10 )
+		<< "MASK_AUDIT event=stop scene=" << scene << " kind=" << kind
+		<< " integrator=" << IntegratorName( integ ) << " reason=" << reason
+		<< " n=" << values.size() << " failures=" << failures
+		<< " attempts=" << ( values.size() + std::size_t(failures) )
+		<< " minimum=" << kLayer2MaskedSubRenders << " cap=" << kLayer2MaskedSubRendersCap
+		<< " target=" << target << " band=" << kLayer2MaskedBand
+		<< " mean=" << VectorMean( values ) << " sd=" << ( se * std::sqrt(double(values.size())) )
+		<< " se=" << se;
+	std::cout << out.str() << std::endl;
+}
+
 static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 {
 	const fs::path scenePath = root / spec.relPath;
@@ -2528,6 +2568,23 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 		if( std::fabs( e - b ) / std::max( b, kMaskEps ) > kLayer2MaskThreshold ) { mask[i] = true; maskCount++; }
 	}
 	const double maskFrac = double( maskCount ) / double( N );
+	// The complete index list identifies the fixed mask without a hash collision
+	// or dependence on a later render. Linear index = y * width + x.
+	{
+		std::ostringstream out;
+		out << std::setprecision( std::numeric_limits<double>::max_digits10 )
+			<< "MASK_AUDIT event=mask scene=" << spec.keyword
+			<< " width=" << targetW << " height=" << targetH << " pixels=" << N
+			<< " count=" << maskCount << " seed_base=" << g_seedBase
+			<< " spp=" << kLayer2Samples << " threshold=" << kLayer2MaskThreshold
+			<< " epsilon=" << kMaskEps << " indices=";
+		bool first = true;
+		for( std::size_t i = 0; i < N; ++i ) if( mask[i] ) {
+			if( !first ) out << ',';
+			out << i; first = false;
+		}
+		std::cout << out.str() << std::endl;
+	}
 	// (F4) 3 decimal places on the printed coverage percentage: plank's
 	// coverage (~2.1%, see BAND DERIVATION -- MASKED LAYER in the file
 	// header) sits at roughly 2x the 1% floor, and that headroom is only
@@ -2585,6 +2642,8 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 	// average over a different quantity each time.
 	std::vector< std::pair<double,double> > ptDenomPool;
 	ptDenomPool.push_back( std::make_pair( maskedPT_E, maskedPT_B ) );
+	LogMaskedSample( spec.keyword, "pt_pool", Integrator::PT, 0, 0, "initial", maskedPT_E, maskedPT_B );
+	std::size_t ptAttempts = 1;
 
 	//! Returns the i-th independent PT denominator pair, rendering it
 	//! if the pool has not reached that far.  Returns (0,0) if the
@@ -2592,14 +2651,18 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 	//! counts as a sub-render failure exactly like an integrator-side one.
 	auto ptDenominators = [&]( std::size_t i ) -> std::pair<double,double> {
 		while( ptDenomPool.size() <= i ) {
+			const std::size_t attempt = ptAttempts++;
 			Layer2Row ptSub;
 			bool ptDerived = false;
 			RenderShowcaseVariant( variantEText, variantBText, Integrator::PT, kLayer2Samples, spec.keyword, targetW, targetH, &ptSub, &ptDerived );
 			if( !ptDerived || ptSub.valsE.size() != N || ptSub.valsB.size() != N ) {
+				LogMaskedSample( spec.keyword, "pt_pool", Integrator::PT, attempt, ptDenomPool.size(), "derive_or_array_failure" );
 				return std::make_pair( 0.0, 0.0 );
 			}
 			const double e = maskedMean( ptSub.valsE );
 			const double b = maskedMean( ptSub.valsB );
+			LogMaskedSample( spec.keyword, "pt_pool", Integrator::PT, attempt, ptDenomPool.size(),
+				( e == 0.0 || b == 0.0 ) ? "zero_mean" : "accepted", e, b );
 			if( e == 0.0 || b == 0.0 ) return std::make_pair( 0.0, 0.0 );
 			ptDenomPool.push_back( std::make_pair( e, b ) );
 		}
@@ -2680,6 +2743,8 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 		// just summed) so the standard error below is computable.
 		std::vector<double> ratios;
 		ratios.push_back( R_E / R_B - 1.0 );
+		LogMaskedSample( spec.keyword, "paired", integ, 0, 0, "accepted",
+			info.maskedE, info.maskedB, maskedPT_E, maskedPT_B );
 		int subRenderFailures = 0;
 
 		// Standard error of the mean of `ratios`.  Returns -1 until
@@ -2717,14 +2782,24 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 					const double se = standardError();
 					if( se >= 0.0 && se <= seTarget ) break;
 				}
+				const std::size_t attempt = ratios.size() + std::size_t(subRenderFailures);
 				Layer2Row subRow;
 				bool subDerived = false;
 				RenderShowcaseVariant( variantEText, variantBText, integ, kLayer2Samples, spec.keyword, targetW, targetH, &subRow, &subDerived );
-				if( !subDerived || subRow.valsE.size() != N || subRow.valsB.size() != N ) { subRenderFailures++; continue; }
+				if( !subDerived || subRow.valsE.size() != N || subRow.valsB.size() != N ) {
+					LogMaskedSample( spec.keyword, "paired", integ, attempt, ratios.size(), "derive_or_array_failure" );
+					subRenderFailures++; continue;
+				}
 				const double subMaskedE = maskedMean( subRow.valsE );
 				const double subMaskedB = maskedMean( subRow.valsB );
-				if( subMaskedE == 0.0 || subMaskedB == 0.0 ) { subRenderFailures++; continue; }
+				if( subMaskedE == 0.0 || subMaskedB == 0.0 ) {
+					LogMaskedSample( spec.keyword, "paired", integ, attempt, ratios.size(), "zero_mean", subMaskedE, subMaskedB );
+					subRenderFailures++; continue;
+				}
 				const std::pair<double,double> den = ptDenominators( ratios.size() );
+				LogMaskedSample( spec.keyword, "paired", integ, attempt, ratios.size(),
+					( den.first == 0.0 || den.second == 0.0 ) ? "pt_denominator_failure" : "accepted",
+					subMaskedE, subMaskedB, den.first, den.second );
 				if( den.first == 0.0 || den.second == 0.0 ) { subRenderFailures++; continue; }
 				ratios.push_back( ( subMaskedE / den.first ) / ( subMaskedB / den.second ) - 1.0 );
 			}
@@ -2756,6 +2831,10 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 
 		const bool loopedRow = ( integ == Integrator::BDPT || integ == Integrator::VCM );
 		const bool insufficient = loopedRow && se > seTarget;
+		LogMaskedStop( spec.keyword, "paired", integ, ratios, subRenderFailures, se, seTarget,
+			!loopedRow ? "single_sample" :
+			( ratios.size() + std::size_t(subRenderFailures) >= std::size_t(kLayer2MaskedSubRendersCap)
+				? "attempt_cap" : "precision_target" ) );
 
 		std::cout << "  MASKED " << IntegratorName(integ) << ": R_E=" << R_E << " R_B=" << R_B
 		          << " R_E/R_B-1(sub-render 1)=" << ( R_E / R_B - 1.0 )
@@ -2874,21 +2953,32 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 			//! this invariant.
 			auto adaptiveSelfContrast = [&]( const MaskedRowInfo& info, std::vector<double>* outContrasts, int* outFailures ) {
 				outContrasts->push_back( info.maskedE / info.maskedB - 1.0 );
+				LogMaskedSample( spec.keyword, "self", info.integ, 0, 0, "accepted", info.maskedE, info.maskedB );
 				*outFailures = 0;
 				while( outContrasts->size() + (std::size_t)*outFailures < (std::size_t)kLayer2MaskedSubRendersCap ) {
 					if( outContrasts->size() >= (std::size_t)kLayer2MaskedSubRenders ) {
 						const double se = standardErrorOf( *outContrasts );
 						if( se >= 0.0 && se <= seTarget ) break;
 					}
+					const std::size_t attempt = outContrasts->size() + std::size_t(*outFailures);
 					Layer2Row subRow;
 					bool subDerived = false;
 					RenderShowcaseVariant( variantEText, variantBText, info.integ, kLayer2Samples, spec.keyword, targetW, targetH, &subRow, &subDerived );
-					if( !subDerived || subRow.valsE.size() != N || subRow.valsB.size() != N ) { (*outFailures)++; continue; }
+					if( !subDerived || subRow.valsE.size() != N || subRow.valsB.size() != N ) {
+						LogMaskedSample( spec.keyword, "self", info.integ, attempt, outContrasts->size(), "derive_or_array_failure" );
+						(*outFailures)++; continue;
+					}
 					const double subE = maskedMean( subRow.valsE );
 					const double subB = maskedMean( subRow.valsB );
+					LogMaskedSample( spec.keyword, "self", info.integ, attempt, outContrasts->size(),
+						( subE == 0.0 || subB == 0.0 ) ? "zero_mean" : "accepted", subE, subB );
 					if( subE == 0.0 || subB == 0.0 ) { (*outFailures)++; continue; }
 					outContrasts->push_back( subE / subB - 1.0 );
 				}
+				LogMaskedStop( spec.keyword, "self", info.integ, *outContrasts, *outFailures,
+					standardErrorOf( *outContrasts ), seTarget,
+					outContrasts->size() + std::size_t(*outFailures) >= std::size_t(kLayer2MaskedSubRendersCap)
+						? "attempt_cap" : "precision_target" );
 			};
 
 			std::vector<double> bdptContrasts, vcmContrasts;
