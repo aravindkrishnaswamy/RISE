@@ -25,7 +25,6 @@
 #include "../Utilities/Reference.h"
 #include "../Utilities/BoundingBox.h"
 #include "Photon.h"
-#include "../Utilities/PathVertexEval.h"
 #include <vector>
 #include <algorithm>
 
@@ -157,9 +156,7 @@ namespace RISE
 				Scalar distance2 = loc[axis] - vphotons[median].ptPosition[axis];
 				Scalar sqrD2 = distance2*distance2;
 
-				// At tangency the far half cannot contribute (strict radius),
-				// but the near half still can. Never skip both.
-				if( sqrD2 >= maxDist ) {
+				if( sqrD2 > maxDist ) {
 					if( distance2 <= 0 ) {
 						CountPhotonsAt( loc, maxDist, max, from, median-1, cnt );
 					} else {
@@ -185,7 +182,7 @@ namespace RISE
 			) const
 			{
 				// sanity check
-				if( nPhotons == 0 || to-from < 0 ) {
+				if( to-from < 0 ) {
 					return;
 				}
 
@@ -219,9 +216,7 @@ namespace RISE
 					// Build the heap
 					if( heap.size() == nPhotons-1 ) {
 						std::make_heap( heap.begin(), heap.end() );
-						// Build before the next push, but keep the original search
-						// radius until all k candidates exist. Shrinking at k-1
-						// can exclude the required kth (more distant) record.
+						md = heap[0].distance;
 					} else if( heap.size() >= nPhotons ) {
 						std::push_heap( heap.begin(), heap.end() );
 
@@ -240,7 +235,7 @@ namespace RISE
 				const Scalar distance2 = loc[axis] - vphotons[median].ptPosition[axis];
 				const Scalar sqrD2 = distance2*distance2;
 
-				if( sqrD2 >= md ) {
+				if( sqrD2 > md ) {
 					if( distance2 <= 0 ) {
 						LocatePhotons( loc, md, nPhotons, heap, from, median-1 );
 					} else {
@@ -298,7 +293,7 @@ namespace RISE
 				const Scalar distance2 = loc[axis] - vphotons[median].ptPosition[axis];
 				const Scalar sqrD2 = distance2*distance2;
 
-				if( sqrD2 >= maxDist ) {
+				if( sqrD2 > maxDist ) {
 					if( distance2 <= 0 ) {
 						LocateAllPhotons( loc, maxDist, photons, from, median-1 );
 					} else {
@@ -346,20 +341,18 @@ namespace RISE
 					median = to-median + 1;
 				}
 
-				// Recursive bounds include to; nth_element takes an exclusive end.
-				// Omitting that record breaks the KD half-space invariant.
 				// Now sort
 				switch( axis )
 				{
 				case 0:
-					std::nth_element( vphotons.begin()+from, vphotons.begin()+median, vphotons.begin()+to+1, less_than_X );
+					std::nth_element( vphotons.begin()+from, vphotons.begin()+median, vphotons.begin()+to, less_than_X );
 					break;
 				case 1:
-					std::nth_element( vphotons.begin()+from, vphotons.begin()+median, vphotons.begin()+to+1, less_than_Y );
+					std::nth_element( vphotons.begin()+from, vphotons.begin()+median, vphotons.begin()+to, less_than_Y );
 					break;
 				case 2:
 				default:
-					std::nth_element( vphotons.begin()+from, vphotons.begin()+median, vphotons.begin()+to+1, less_than_Z );
+					std::nth_element( vphotons.begin()+from, vphotons.begin()+median, vphotons.begin()+to, less_than_Z );
 					break;
 				}
 
@@ -487,6 +480,83 @@ namespace RISE
 					costheta[ theta ] );
 			}
 
+			// Finds the nearest photon facing the right direction
+			void LocateNearestPhoton(
+				const Point3&			loc,								// the location from which to search for photons
+				const Vector3&			normal,								// the normal
+				const Scalar			maxDist,							// the maximum radius to look for photons
+				distance_container<PhotType>&		nearest					// the nearest photon
+				) const
+			{
+				LocateNearestPhotonRecursive( loc, normal, maxDist, 0, static_cast<int>(this->vphotons.size())-1, nearest );
+			}
+
+			// Locate nearest photon recursive algorithm
+			void LocateNearestPhotonRecursive(
+				const Point3&			loc,								// the location from which to search for photons
+				const Vector3&			normal,								// the normal
+				const Scalar			maxDist,							// the maximum radius to look for photons
+				const int				from,								// index to search from
+				const int				to,									// index to search to
+				distance_container<PhotType>&		nearest					// the nearest photon
+				) const
+			{
+				// sanity check
+				if( to-from < 0 ) {
+					return;
+				}
+
+				// Compute a new median
+				int median = 1;
+
+				while( (4*median) <= (to-from+1) ) {
+					median += median;
+				}
+
+				if( (3*median) <= (to-from+1) ) {
+					median += median;
+					median += from - 1;
+				} else {
+					median = to-median + 1;
+				}
+
+				// Compute the distance to the photon
+				const Vector3 v = Vector3Ops::mkVector3( loc, this->vphotons[ median ].ptPosition );
+				const Scalar distanceToPhoton = Vector3Ops::SquaredModulus(v);
+
+				Scalar md = maxDist;
+
+				if( distanceToPhoton < md &&
+					distanceToPhoton < nearest.distance )
+				{
+					// Only accept if the photon's normal is similar to ours
+					const Vector3 vPhotonDir = this->PhotonDir(this->vphotons[median].theta,this->vphotons[median].phi);
+					const Scalar dirdiff = Vector3Ops::Dot( vPhotonDir, normal );
+					if( dirdiff > 0 && dirdiff < 0.9) {
+						md = distanceToPhoton;
+						nearest = distance_container<PhotType>( this->vphotons[median], distanceToPhoton );
+					}
+				}
+
+				const int axis = this->vphotons[median].plane;
+
+				const Scalar distance2 = loc[axis] - this->vphotons[median].ptPosition[axis];
+				const Scalar sqrD2 = distance2*distance2;
+
+				if( sqrD2 > md ) {
+					if( distance2 <= 0 ) {
+						LocateNearestPhotonRecursive( loc, normal, md, from, median-1, nearest );
+					} else {
+						LocateNearestPhotonRecursive( loc, normal, md, median+1, to, nearest );
+					}
+				}
+
+				// Search both sides of the tree
+				if( sqrD2 < md ) {
+					LocateNearestPhotonRecursive( loc, normal, md, from, median-1, nearest );
+					LocateNearestPhotonRecursive( loc, normal, md, median+1, to, nearest );
+				}
+			}
 
 		public:
 
@@ -614,11 +684,9 @@ namespace RISE
 					{
 						const PhotType& p = (*i).element;
 						const Vector3 vPhotonDir = this->PhotonDir( p.theta, p.phi );
-						const Scalar response = PathVertexEval::RadianceShadingNormalFactor(
-							ri.vNormal, ri.vGeomNormal, vPhotonDir );
+						const Scalar cos = Vector3Ops::Dot( vPhotonDir, ri.vNormal );
 
-						// Material evaluation owns reflection/transmission support.
-						if( response > 0 ) {
+						if( cos > 0.001 ) {
 							const Vector3 vec = Vector3Ops::mkVector3( p.ptPosition, ri.ptIntersection );
 							// Thin-surface "ellipsoid" clamp: rejects
 							// photons stored on the OTHER side of a thin
@@ -634,7 +702,7 @@ namespace RISE
 							if( (pcos < maxNDist) && (pcos > -maxNDist) ) {
 								// Filter the samples using a gaussian filter as described in Jensen's course notes
 								const Scalar wpg = alpha * ( 1.0 - ((1-exp(-beta * (i->distance/(2.0*farthest_away))))/(1-exp(-beta))));
-								rad = rad + (p.power * (wpg * response) * brdf.value( vPhotonDir, ri ));
+								rad = rad + (p.power * wpg * brdf.value( vPhotonDir, ri ));
 							}
 						}
 					}

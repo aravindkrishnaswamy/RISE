@@ -13,7 +13,6 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
-#include "../Utilities/PathVertexEval.h"
 #include "GlobalPelPhotonTracer.h"
 #include "../Utilities/RandomNumbers.h"
 #include "../Utilities/IndependentSampler.h"
@@ -127,24 +126,32 @@ void GlobalPelPhotonTracer::TracePhoton(
 			}
 
 			if( bDiffuseComponentAvailable && bStorePhoton ) {
-				// Store incident flux before this surface response. The cache
-				// retains directions and the geometric anchor plane; the query
-				// supplies the BSDF, shading frame and material position.
-				pPhotonMap.Store( power, ri.geometric.ptIntersection, ri.geometric.vGeomNormal, -ray.Dir() );
+				// Photon storage normal: SHADING.  The deposited normal
+				// is consumed at gather time as the BSDF-frame axis for
+				// `brdf.value(vPhotonDir, ri)` (see PhotonMap.h:684 /
+				// GlobalPelPhotonMap.cpp:96), which IS shading-frame.
+				// The thin-surface "ellipsoid" clamp at gather (which
+				// asks "is this photon on the same physical surface")
+				// already uses `ri.vGeomNormal` per the audit fix in
+				// PhotonMap.h:678.  Storing both normals on the photon
+				// record (Jensen 2001 §6.1) would be the strictly-correct
+				// extension, but `IrradPhoton` currently encodes one
+				// normal as compressed Ntheta/Nphi for a 16-byte stride
+				// — a wider record is out of scope for this audit pass.
+				pPhotonMap.Store( power, ri.geometric.ptIntersection, ri.geometric.vNormal, -ray.Dir() );
 			}
 
 			if( bBranch ) {
 				for( unsigned int i=0; i<scattered.Count(); i++ ) {
 					ScatteredRay& scat = scattered[i];
 					scat.ray.Advance( 1e-8 );
-					TracePhoton( scat.ray, power*scat.kray*PathVertexEval::ImportanceShadingNormalFactor( ri.geometric.vNormal, ri.geometric.vGeomNormal, -ray.Dir(), scat.ray.Dir() ), pPhotonMap, scat.type==ScatteredRay::eRayDiffuse, scat.ior_stack?*scat.ior_stack:ior_stack, depth+1 );
+					TracePhoton( scat.ray, power*scat.kray, pPhotonMap, scat.type==ScatteredRay::eRayDiffuse, scat.ior_stack?*scat.ior_stack:ior_stack, depth+1 );
 				}
 			} else {
-				Scalar selectedProbability=0;
-				ScatteredRay* pScat = scattered.RandomlySelect( random.CanonicalRandom(), false, &selectedProbability );
+				ScatteredRay* pScat = scattered.RandomlySelect( random.CanonicalRandom(), false );
 				if( pScat ) {
 					pScat->ray.Advance( 1e-8 );
-					TracePhoton( pScat->ray, power*pScat->kray*(PathVertexEval::ImportanceShadingNormalFactor( ri.geometric.vNormal, ri.geometric.vGeomNormal, -ray.Dir(), pScat->ray.Dir() )/selectedProbability), pPhotonMap, pScat->type==ScatteredRay::eRayDiffuse, pScat->ior_stack?*pScat->ior_stack:ior_stack, depth+1 );
+					TracePhoton( pScat->ray, power*pScat->kray, pPhotonMap, pScat->type==ScatteredRay::eRayDiffuse, pScat->ior_stack?*pScat->ior_stack:ior_stack, depth+1 );
 				}
 			}
 		}

@@ -2342,9 +2342,19 @@ namespace {
 			Scalar selectProb = 1.0;
 
 			{
-				pScat = scattered.RandomlySelect( lobeSelectXi, Traits::is_nm, &selectProb );
+				pScat = scattered.RandomlySelect( lobeSelectXi, Traits::is_nm );
 				if( !pScat ) {
 					break;
+				}
+				if( scattered.Count() > 1 ) {
+					Scalar totalKray = 0;
+					for( unsigned int i = 0; i < scattered.Count(); i++ ) {
+						totalKray += Traits::max_value( KrayValue<Tag>( scattered[i] ) );
+					}
+					const Scalar selectedKray = Traits::max_value( KrayValue<Tag>( *pScat ) );
+					if( totalKray > NEARZERO && selectedKray > NEARZERO ) {
+						selectProb = selectedKray / totalKray;
+					}
 				}
 			}
 
@@ -6461,9 +6471,19 @@ unsigned int GenerateLightSubpathImpl(
 		Scalar selectProb = 1.0;
 
 		{
-			pScat = scattered.RandomlySelect( lobeSelectXi, Traits::is_nm, &selectProb );
+			pScat = scattered.RandomlySelect( lobeSelectXi, Traits::is_nm );
 			if( !pScat ) {
 				break;
+			}
+			if( scattered.Count() > 1 ) {
+				Scalar totalKray = 0;
+				for( unsigned int i = 0; i < scattered.Count(); i++ ) {
+					totalKray += Traits::max_value( KrayValue<Tag>( scattered[i] ) );
+				}
+				const Scalar selectedKray = Traits::max_value( KrayValue<Tag>( *pScat ) );
+				if( totalKray > NEARZERO && selectedKray > NEARZERO ) {
+					selectProb = selectedKray / totalKray;
+				}
 			}
 		}
 

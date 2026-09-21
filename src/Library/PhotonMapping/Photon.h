@@ -39,12 +39,16 @@ namespace RISE
 		{};
 	};
 
-	// Full incident packet plus exact geometric normal for cache anchors.
-	// Scalar precomputed irradiance cannot represent a changed query BSDF.
 	class IrradPhoton : public Photon
 	{
 	public:
-		Vector3 geometricNormal;
+		RISEPel			irrad;				// precomputed irradiance
+		unsigned char	Ntheta, Nphi;		// direction of the normal 
+
+		IrradPhoton() : 
+		Ntheta( 0 ),
+		Nphi( 0 )
+		{};
 	};
 
 	class SpectralPhoton
@@ -67,15 +71,13 @@ namespace RISE
 	class TranslucentPhoton
 	{
 	public:
-		Point3 ptPosition;
-		unsigned char plane;
-		RISEPel power;
-		Vector3 incomingDirection;
-		// Ordinary packets carry incident flux. Exit packets already include
-		// Beer*(1-scattering) and retain the diffuse-exit angular response.
-		bool diffuseExit;
+		Point3			ptPosition;			// Location of the photon in three space
+		unsigned char	plane;				// splitting plane used in the kd-tree
+		RISEPel			power;				// photon power
 
-		TranslucentPhoton() : plane(0), incomingDirection(0,0,0), diffuseExit(false) {}
+		TranslucentPhoton() : 
+		plane( 0 )
+		{};
 	};
 
 	class ShadowPhoton

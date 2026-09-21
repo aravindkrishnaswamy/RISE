@@ -12,7 +12,6 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
-#include "../Utilities/PathVertexEval.h"
 #include "GlobalSpectralPhotonTracer.h"
 #include "../Utilities/RandomNumbers.h"
 #include "../Utilities/IndependentSampler.h"
@@ -134,14 +133,13 @@ void GlobalSpectralPhotonTracer::TracePhoton(
 				for( unsigned int i=0; i<scattered.Count(); i++ ) {
 					ScatteredRay& scat = scattered[i];
 					scat.ray.Advance( 1e-8 );
-					TracePhoton( scat.ray, power*scat.krayNM*PathVertexEval::ImportanceShadingNormalFactor( ri.geometric.vNormal, ri.geometric.vGeomNormal, -ray.Dir(), scat.ray.Dir() ), nm, scat.type==ScatteredRay::eRayDiffuse, pPhotonMap, scat.ior_stack?*scat.ior_stack:ior_stack, depth+1 );
+					TracePhoton( scat.ray, power*scat.krayNM, nm, scat.type==ScatteredRay::eRayDiffuse, pPhotonMap, scat.ior_stack?*scat.ior_stack:ior_stack, depth+1 );
 				}
 			} else {
-				Scalar selectedProbability=0;
-				ScatteredRay* pScat = scattered.RandomlySelect( random.CanonicalRandom(), true, &selectedProbability );
+				ScatteredRay* pScat = scattered.RandomlySelect( random.CanonicalRandom(), true );
 				if( pScat ) {
 					pScat->ray.Advance( 1e-8 );
-					TracePhoton( pScat->ray, power*pScat->krayNM*(PathVertexEval::ImportanceShadingNormalFactor( ri.geometric.vNormal, ri.geometric.vGeomNormal, -ray.Dir(), pScat->ray.Dir() )/selectedProbability), nm, pScat->type==ScatteredRay::eRayDiffuse, pPhotonMap, pScat->ior_stack?*pScat->ior_stack:ior_stack, depth+1 );
+					TracePhoton( pScat->ray, power*pScat->krayNM, nm, pScat->type==ScatteredRay::eRayDiffuse, pPhotonMap, pScat->ior_stack?*pScat->ior_stack:ior_stack, depth+1 );
 				}
 			}
 		}
