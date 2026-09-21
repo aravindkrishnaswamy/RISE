@@ -4,6 +4,12 @@
 #include <cmath>
 #include <cstdio>
 #include <vector>
+#include <chrono>
+#include <filesystem>
+#include "../src/Library/Job.h"
+#include "../src/Library/Interfaces/IScenePriv.h"
+#include "../src/Library/Utilities/MemoryBuffer.h"
+#include "../src/Library/Utilities/Color/ColorUtils.h"
 #include "../src/Library/PhotonMapping/GlobalPelPhotonMap.h"
 #include "../src/Library/PhotonMapping/CausticPelPhotonMap.h"
 #include "../src/Library/PhotonMapping/GlobalSpectralPhotonMap.h"
@@ -72,6 +78,24 @@ void DirectGathers(){
  bsdf->release();paint->release();
 }
 
+void LegacyCacheLoad(){
+ // Write the old byte format independently of GlobalPelPhotonMap::Serialize.
+ // A scalar-precomputed record cannot restore the discarded angular field.
+ auto* job=new Job();auto* installed=new GlobalPelPhotonMap(1,nullptr);
+ installed->Store(RISEPel(1.),Point3(0,0,0),Vector3(0,0,1),Vector3(0,0,1));
+ job->GetScene()->SetGlobalPelMap(installed);
+ auto* buffer=new MemoryBuffer(512);
+ buffer->setUInt(1);buffer->setUInt(0);buffer->setDouble(.04);buffer->setDouble(.05);buffer->setUInt(0);buffer->setUInt(1);buffer->setDouble(1);buffer->setUChar(1);
+ BoundingBox(Point3(-1,-1,-1),Point3(1,1,1)).Serialize(*buffer);buffer->setUInt(1);
+ Point3Ops::Serialize(Point3(0,0,0),*buffer);buffer->setUChar(0);ColorUtils::SerializeRGBPel(RISEPel(1.),*buffer);buffer->setUChar(0);buffer->setUChar(0);ColorUtils::SerializeRGBPel(RISEPel(1.),*buffer);buffer->setUChar(0);buffer->setUChar(0);
+ const auto path=std::filesystem::temp_directory_path()/("rise_dl239_cache_"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())+".pmap");
+ const bool written=buffer->DumpToFileToCursor(path.string().c_str());Check(written,"legacy scalar fixture written",written,1);
+ const bool loaded=written&&job->LoadGlobalPelPhotonmap(path.string().c_str());Check(!loaded,"legacy scalar cache reports unsupported directional reconstruction",loaded,0);Check(job->GetScene()->GetGlobalPelMap()==installed,"failed cache load retains installed valid map",job->GetScene()->GetGlobalPelMap()==installed,1);
+ std::filesystem::remove(path);
+ const bool missing=job->LoadGlobalPelPhotonmap(path.string().c_str());Check(!missing,"missing cache file reports failure",missing,0);Check(job->GetScene()->GetGlobalPelMap()==installed,"missing cache load retains installed valid map",job->GetScene()->GetGlobalPelMap()==installed,1);
+ buffer->release();installed->release();job->release();
+}
+
 void Run(){
  auto* paint=new UniformColorPainter(RISEPel(.8,.5,.2));auto* black=new UniformColorPainter(RISEPel(0.0));auto* exp=new UniformScalarPainter(12);auto* lambert=new LambertianBRDF(*paint);auto* phong=new IsotropicPhongBRDF(*black,*paint,*exp);
  const Point3 anchor(0,0,0);const Vector3 areaNormal(0,0,1);
@@ -98,4 +122,4 @@ void Run(){
  phong->release();lambert->release();exp->release();black->release();paint->release();
 }
 }
-int main(){Run();DirectGathers();std::printf("PhotonDirectionalCacheTest checks=%d failures=%d\n",checks,failures);return failures?1:0;}
+int main(){Run();DirectGathers();LegacyCacheLoad();std::printf("PhotonDirectionalCacheTest checks=%d failures=%d\n",checks,failures);return failures?1:0;}
