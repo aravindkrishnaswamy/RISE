@@ -404,3 +404,33 @@ Clean library rebuild, zero warnings. Per-test builds, all green:
 | `CompositeExtinctionTest` | all checks passed |
 | `CstDeriveGoldenTest` | 0 drift |
 | `SourceHygieneTest` | 165 passed / 0 failed (341 test files scanned) |
+
+## 7. DL-130 closure — clipped density does not scale lobe energy
+
+**CLOSED 2026-09-21 as documentation-only; production behavior was
+already correct.** The current post-DL-157 one-function contract makes
+the answer algebraic. For a lobe with normalized clipped directional
+density `q(w)`, the evaluator is
+
+`f(w) = kray * q(w) / |cos(w,n)|`.
+
+Therefore `integral f(w)|cos(w,n)| dw = kray * integral q(w) dw = kray`.
+The clipped-away directions cannot exist; their probability is
+renormalized over the valid arc, while the lobe's painter-authored total
+energy remains `kray`. Multiplying `kray` by `halfArc/PI` would apply the
+clip twice, delete energy as tilt grows, and make `BuildLobeSet`'s
+selection weights cease to be proportional to the lobe energies they
+already represent. The same reasoning covers both the entry
+transmission lobe and the interior backscatter lobe. No source behavior
+changed.
+
+`TranslucentEntryHorizonTest` sub-test 10 now pins that contract at
+tilts 0°, 30°, 60°, and 85°, for RGB split-N and NM on both lobes. Each
+row uses 4,096 real samples and prints count, mean, and sample SD. Every
+sample has the same direction-independent `kray`, so sample SD is
+exactly zero: entry means are `(0.4,0.4,0.4)` RGB and `0.399936` NM;
+backscatter means are `(0.491238,0.491238,0.491238)` RGB and `0.491238`
+NM at every tilt. The suite moves from **251/0 to 283/0**. There is no
+red behavior count to claim: this row was an unresolved contract
+question, and the present shared lobe-set/evaluator contract proves the
+existing implementation rather than requiring a repair.
