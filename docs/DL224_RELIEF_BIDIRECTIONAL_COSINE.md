@@ -176,10 +176,42 @@ excluded from the successful batch for that explicit setup reason.
 | +0.20 | vcm | 0.041287226 (2.20025e-05) | 0.042152183 (7.00636e-06) |
 
 The VCM discrepancy collapses under the independently proved density fix.
-The earlier 256-spp in-process PT table differs from this CLI table;
-that harness/sample-count distinction is being characterized separately.
-The density correction cannot causally change PT, and this table does not
-claim it did.
+The earlier 256-spp in-process PT value at scale −.20 is `.042136507`
+(SD `2.03024e-5`). Matched CLI256 reproduces it with both minimal options
+`.042145846` (SD `1.91790e-5`) and shipped global options `.042122270`
+(SD `1.63687e-5`), n=3 each. The serialized geometry/material/light/camera
+and rasterizer inputs are identical after whitespace, scale formatting and
+sample-count normalization. Central-region EXR alpha is one. This excludes
+an output/harness/options explanation; the density fix cannot change PT.
+
+The sample-count effect is **finite fixed-QMC integration error**, not an
+error bound given by the tiny render-repeat SD. `PathTracingPelRasterizer.cpp`
+derives the Owen scramble solely from pixel coordinates (around lines305–329),
+and ZSobol selects a different Morton sample block as `log2(spp)` changes
+(around lines413–421). Calling `srand` randomizes camera jitter and other
+random work, but does not randomize that transport quadrature. The following
+controls retain every raw result, n=3, and report conditional repeat SD:
+
+| PT sampler / spp | Scale −.20 mean (SD) | Scale +.20 mean (SD) |
+|---|---:|---:|
+| sobol256 | 0.042493443 (1.4464e-05) | 0.042265137 (2.07785e-05) |
+| z1024 | 0.042504855 (9.7126e-06) | 0.042148820 (1.05095e-06) |
+| z4096 | 0.042493665 (3.78006e-06) | 0.042150197 (2.73585e-06) |
+
+The larger budgets converge to the BDPT/VCM512 values; changing the sampler
+also removes the negative-scale discrepancy at256. The positive-scale
+Sobol256 cell still has finite quadrature error and is not discarded.
+No RNG API, test band or estimator normalization was changed. The original
+256-spp broad parity gate remains, backed by the closed-form plane and these
+higher-budget controls, not by treating repeat SD as the full integration error.
+
+The full new regression is **213 passed / 0 failed**. A subsequent test-only
+logging change preserves all530 accepted live-light samples (direct invocation
+**24/0**): projected SPF weight min `.01055217595376469`, mean `.7112194679039587`,
+sample SD `.672095478272167`, max `7.714286818685685`; three exceed4. No sample
+is clipped. Each row records wi, wo, independently expected weight and actual
+weight with17 digits.
+
 
 ## Legacy photon sibling: DL-239
 
