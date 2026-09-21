@@ -1,8 +1,8 @@
 # Legacy photon transport and directional gathers
 
-Work in progress, 2026-09-21. DL239, DL271, DL272 and DL279 have independent
-mechanisms and separate direct proofs. Closure, final gates and reviewed cost
-claims are pending. DL280 has a separate actual mixed-material deposit proof.
+Work in progress, 2026-09-21. Owned rows DL239, DL271, DL272 and DL279–282
+have distinct mechanisms and committed direct proofs. Final source-sensitive
+gates, render validation, costs and independent review remain pending.
 
 ## Measures
 
@@ -107,10 +107,12 @@ frame or non-Lambertian query BSDF. The old cache also selected anchors using
 incident photon direction instead of the surface normal. The replacement uses
 exact geometric normals with the existing intended 0.9 similarity policy.
 
-Record sizes in the bounded prototype are 88 bytes per full packet and 56 bytes
+Historical record sizes in the bounded prototype were 88 bytes per full packet and 56 bytes
 per anchor, versus 96 bytes per old irradiance record. At sizes divisible by
-four, retained record storage is therefore 4.25 times the old quarter cache,
-and 1.15909 times the full directional array alone. These are record/vector
+four, that prototype retained record storage was therefore 4.25 times the old quarter cache,
+and 1.15909 times its full directional array alone. The final exact-direction
+layout is larger and needs renewed measurements; these prototype figures are
+not final-production costs. These are record/vector
 bytes, not total allocation or RSS. The old scalar query evaluated one BSDF;
 the directional estimator evaluates up to k, a real cost.
 
@@ -131,24 +133,89 @@ remains the authoritative stored/count/scaling population.
 
 ## Serialized compatibility
 
-Global map format flag2 retains all directions, exact geometric normals,
-normal provenance and anchor spacing. Legacy flag0 maps contain full directions
-and load as direct gathers; their old stored shading normals are not relabelled
-geometric normals. Legacy flag1 scalar caches irreversibly discarded the
-incident field and are rejected with a regeneration diagnostic. Checked parsing
-commits only after the entire map is valid. A failed Job load retains the
-previously installed valid map. New-format roundtrip, truncated-input retention, legacy raw load, mixed
-incident directions/colors and insertion/rebuild tests pass in the direct suite.
-The historical result before the final compatibility regression was 297 checks /
-0 failures at source 05421e34. A later source audit found that legacy `Store`
-allowed exactly one packet beyond `MaxPhotons`. The old CLI successfully loaded
-an independently written max0/count1 raw file; the first checked loader rejected
-it. The committed regression at 53e858ca reproduced 302 checks / 1 failure.
-The loader now preserves that one recoverable packet and the original maximum,
-including a converted flag2 file without geometric-normal provenance. Two extra
-records, modern geometric-normal over-capacity maps and scalar-only caches
-remain rejected transactionally. This exception changes loading only; newly
-stored maps keep the strict capacity limit.
+The final Global Pel format flag3 stores exact incident vectors, exact geometric
+normals, normal provenance and anchor spacing. Caustic Pel and both spectral
+maps use an exact-direction version2 envelope with a checked map-kind tag.
+Spectral streams additionally preserve the wavelength interval, branch/count,
+NM half-width and all exact discrete representatives. Loads validate the whole
+stream into temporary records before replacing the map. Failed Job loads
+return false and retain the installed map; command parsing propagates that
+failure. Public constructors/factories and Store entry points remain, but packet
+layout and spectral virtual-interface additions require clients to rebuild.
+There is no ABI-compatibility claim.
+
+All older compressed-direction Global raw/flag2, Caustic Pel and spectral
+streams are intentionally rejected with a regenerate-from-scene diagnostic.
+Their quantization can change the side of the geometric horizon, so they cannot
+supply the corrected area response even when they retain theta/phi. Scalar-only
+Global flag1 caches also lack the incident field. An earlier intermediate
+loader accepted legacy raw max+1 packets; its committed red/green evidence is
+retained historically, but that policy is superseded by the exact-support
+requirement. No incompatible map is silently installed as empty or relabelled.
+
+The repository scene/test/asset census found no committed photon cache files
+or shipped load/save commands requiring regeneration. Runtime-generated legacy
+fixtures remain deliberate rejection tests. New exact-format roundtrip,
+insertion, truncation and invalid-direction tests exercise each packet family.
+
+## Exact incident support (DL239)
+
+An eight-bit polar direction can map a below-surface incident ray to a tiny
+positive cosine at the horizon. The projected-area division then magnifies the
+lost sign. Actual caustic gathering of a below-support packet produced about
+1.77e15 instead of zero; the shipped normal-map candidate retained a bright
+outlier rather than treating it as statistical noise. All directional packets
+now retain the original vector, without horizon snapping or an epsilon clamp.
+Rotated geometric normals, positive/negative near-horizon directions and exact
+tangency are tested independently. The full cache uses those same vectors.
+
+A neighborhood whose selected radius squared is zero has no finite-area density
+estimate. DL279 returns zero before any reciprocal for this exact degeneracy.
+Seven committed co-located gather controls failed with NaN before the guard;
+positive-radius cases retain their established kernels and weights.
+
+## Wavelength measure (DL281)
+
+Each spectral map declares one uniform producer law. Counts below10000 sample
+uniformly among stored, strictly ordered representable atoms in [a,b); larger
+counts use the continuous branch. The actual stored atoms drive sampling,
+packet membership and window probability, and survive serialization exactly.
+An empty unconfigured map cannot Store until its valid law is set. A nonempty
+map cannot change laws. The continuous branch maps a rounded upper endpoint to
+its preceding representable value using the same draw; this enforces support in
+finite arithmetic and is not a claim of exact continuous sampling on a machine.
+
+Packet power is conditional spectral power divided by the total shot count.
+An NM gather with half-width h divides by the producer probability of its
+clipped wavelength window: k/N for discrete atoms or clipped length/(b-a) for
+the continuous branch. Zero-mass and out-of-support queries return zero. Spatial
+neighbor selection is independent of that spectral window. A Pel gather instead
+sums CMF(lambda) times packet power times the actual scalar valueNM BSDF, then
+multiplies by (b-a)/integral(Ybar). Multiplying XYZ channels by an RGB BSDF is
+not this spectral integral. Finite windows smooth spectra; this correction does
+not claim exact evaluation for arbitrary nonsmooth spectral functions.
+
+The independent flat and colored fixed-deposit oracle covers both global and
+caustic families, five window widths and clipped boundaries. The first committed
+measure red exposed eight normalization failures; after represented-grid and
+caustic-denominator corrections, the expanded oracle passes4069 checks. The
+first failed candidate and all operands remain in the external evidence index.
+
+## Partial CIE cells (DL282)
+
+CIE_Y_Integral formerly truncated interval endpoints to five-nanometre table
+indices. For example [550,551] returned zero instead of .9955. The corrected
+helper integrates each clipped linear table segment, including partial boundary
+cells. Empty/reversed intervals and nonfinite endpoints return zero; values
+outside [380,780] contribute zero. Standard aligned ranges retain their integral.
+
+The helper sets the constructor scale in PixelBasedSpectralIntegratingRasterizer
+and its PT/BDPT/VCM spectral subclasses, including HWSS and splats, as well as
+new spectral-photon metadata. MLT uses a separate normalization path and is not
+an affected caller of this helper. Committed ordinary/HWSS constructor controls
+fail for unaligned ranges and pass for aligned400..700 and380..780 before the
+fix. This is integration of the tabulated observer, not a correction for arbitrary
+nonsmooth scene spectra.
 
 ## Scope boundaries
 
