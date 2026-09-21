@@ -2430,6 +2430,13 @@ static void LogMaskedStop( const char* scene, const char* kind, Integrator integ
 	std::cout << out.str() << std::endl;
 }
 
+// Eligibility is independent of precision: failed or undersized adaptive rows
+// must retain their accounting failures and cannot supply a correctness result.
+static bool MaskedAdaptiveRowEligible( std::size_t n, int failures )
+{
+	return failures == 0 && n >= std::size_t(kLayer2MaskedSubRenders);
+}
+
 static double MaskedStandardError( const std::vector<double>& v )
 {
 	const std::size_t n = v.size();
@@ -2457,9 +2464,8 @@ static void CheckMaskedSelfContrast( const char* keyword,
 	// Keep failed-render and minimum checks above as failures. Such a row
 	// supplies no eligible correctness estimate, even if its SE is unavailable
 	// (-1 for fewer than two samples) or happens to be small.
-	if( bdptFailures != 0 || vcmFailures != 0
-		|| bdptContrasts.size() < std::size_t(kLayer2MaskedSubRenders)
-		|| vcmContrasts.size() < std::size_t(kLayer2MaskedSubRenders) ) return;
+	if( !MaskedAdaptiveRowEligible(bdptContrasts.size(), bdptFailures)
+		|| !MaskedAdaptiveRowEligible(vcmContrasts.size(), vcmFailures) ) return;
 
 	const double meanBdpt = VectorMean( bdptContrasts );
 	const double meanVcm  = VectorMean( vcmContrasts );
@@ -2528,9 +2534,6 @@ static void CheckMaskedPairedContrast( const char* keyword, Integrator integ,
 			+ " sub-renders (got " + std::to_string(ratios.size()) + ")" );
 	}
 
-	double ratio = 0.0;
-	for( double v : ratios ) ratio += v;
-	ratio /= double( ratios.size() );
 	const double se = MaskedStandardError( ratios );
 
 	const bool loopedRow = ( integ == Integrator::BDPT || integ == Integrator::VCM );
@@ -2539,6 +2542,19 @@ static void CheckMaskedPairedContrast( const char* keyword, Integrator integ,
 		!loopedRow ? "single_sample" :
 		( ratios.size() + std::size_t(subRenderFailures) >= std::size_t(kLayer2MaskedSubRendersCap)
 			? "attempt_cap" : "precision_target" ) );
+
+	// Serialize every stop before rejecting an unusable row. Accounting checks
+	// above already failed; neither a correctness result nor precision skip is
+	// appropriate. PT's intentional single-sample comparison bypasses this.
+	if( loopedRow && !MaskedAdaptiveRowEligible(ratios.size(), subRenderFailures) ) {
+		std::cout << "  INVALID MASKED ROW: " << keyword << " " << IntegratorName(integ)
+			<< " failed/minimum accounting; correctness is NOT asserted." << std::endl;
+		return;
+	}
+
+	double ratio = 0.0;
+	for( double v : ratios ) ratio += v;
+	ratio /= double( ratios.size() );
 
 	std::cout << "  MASKED " << IntegratorName(integ) << ": R_E=" << R_E << " R_B=" << R_B
 	          << " R_E/R_B-1(sub-render 1)=" << ( R_E / R_B - 1.0 )
