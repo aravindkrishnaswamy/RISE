@@ -33,8 +33,16 @@
 //    (f) TestAnisotropicFallback -- DL-139 red-proof.  Eight strongly
 //        anisotropic cells (including alpha-axis swaps and a low-alpha
 //        corner) are checked against an independent anisotropic-VNDF
-//        importance sampler to <=0.5% relative error.
-//    (g) TestLowAlphaVNDF -- DL-160 red-proof.  `kGGXSpecularQuadWeight`
+//        importance sampler to <=0.5% relative error.  Four additional
+//        near-diagonal cells cover both axis orders at low-grid and ordinary
+//        off-node coordinates with Schlick F0=0.
+//    (g) TestAnisotropicDiagonalContinuity -- the anisotropic interpolation
+//        must approach the preserved isotropic curve from both sides of the
+//        diagonal.  One-ULP probes use a roundoff-derived bound; finite
+//        probes verify first-order convergence at low-grid midpoints and
+//        ordinary off-node coordinates in RGB/NM and Schlick/conductor/
+//        thin-film Fresnel modes.
+//    (h) TestLowAlphaVNDF -- DL-160 red-proof.  `kGGXSpecularQuadWeight`
 //        (GGXBRDF.cpp's own baked moment-matched quadrature, consumed
 //        by hemisphericalAlbedo{,NM}) resolves its alpha axis with the
 //        SAME uniform [0.01,1.0] 32-row mapping and clamp DL-105 fixed
@@ -64,6 +72,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <random>
 
 #include "../src/Library/Utilities/Math3D/Math3D.h"
@@ -624,17 +633,19 @@ namespace
 	void TestAnisotropicFallback()
 	{
 		std::cout << "--- TestAnisotropicFallback (DL-139 red-proof) ---" << std::endl;
-		struct Row { double alphaX; double alphaY; };
+		struct Row { double alphaX; double alphaY; double F0; };
 		const Row rows[] = {
-			{ 0.05, 0.50 }, { 0.50, 0.05 },
-			{ 0.10, 0.80 }, { 0.80, 0.10 },
-			{ 0.20, 0.60 }, { 0.60, 0.20 },
-			{ 0.005, 0.50 }, { 0.50, 0.005 },
+			{ 0.05, 0.50, 0.5 }, { 0.50, 0.05, 0.5 },
+			{ 0.10, 0.80, 0.5 }, { 0.80, 0.10, 0.5 },
+			{ 0.20, 0.60, 0.5 }, { 0.60, 0.20, 0.5 },
+			{ 0.005, 0.50, 0.5 }, { 0.50, 0.005, 0.5 },
+			{ 0.023, 0.0231, 0.0 }, { 0.0231, 0.023, 0.0 },
+			{ 0.20, 0.2005, 0.0 }, { 0.2005, 0.20, 0.0 },
 		};
 
 		for( const Row& row : rows )
 		{
-			Owned<UniformColorPainter> spec( new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) ) );
+			Owned<UniformColorPainter> spec( new UniformColorPainter( RISEPel( row.F0, row.F0, row.F0 ) ) );
 			Owned<UniformColorPainter> diff( new UniformColorPainter( RISEPel( 0, 0, 0 ) ) );
 			Owned<UniformScalarPainter> alphaX( new UniformScalarPainter( row.alphaX ) );
 			Owned<UniformScalarPainter> alphaY( new UniformScalarPainter( row.alphaY ) );
@@ -659,8 +670,8 @@ namespace
 			brdf->hemisphericalAlbedoNM( dummyRi, 550.0, reportedNM );
 			const double relativeErrorNM = fabs( reportedNM - referenceNM.mean ) / referenceNM.mean;
 
-			printf( "  alphaX=%.4f alphaY=%.4f n=%llu mean=%.8f sampleSD=%.8f SE=%.8f reported=%.8f relerr=%.4f%%\n",
-				row.alphaX, row.alphaY, reference.count, reference.mean, reference.sampleSD,
+			printf( "  alphaX=%.4f alphaY=%.4f F0=%.2f n=%llu mean=%.8f sampleSD=%.8f SE=%.8f reported=%.8f relerr=%.4f%%\n",
+				row.alphaX, row.alphaY, row.F0, reference.count, reference.mean, reference.sampleSD,
 				reference.standardError, reported, 100.0 * relativeError );
 			printf( "    NM550 n=%llu mean=%.8f sampleSD=%.8f SE=%.8f reported=%.8f relerr=%.4f%%\n",
 				referenceNM.count, referenceNM.mean, referenceNM.sampleSD,
@@ -672,6 +683,113 @@ namespace
 				"DL-139 anisotropic hemisphericalAlbedo matches independent VNDF estimator to <=0.5%" );
 			Check( relativeErrorNM <= 0.005,
 				"DL-139 anisotropic hemisphericalAlbedoNM matches independent VNDF estimator to <=0.5%" );
+		}
+	}
+
+	struct ReportedAlbedo
+	{
+		double rgb;
+		double nm;
+	};
+
+	ReportedAlbedo EvaluateReportedAlbedo(
+		double alphaXValue, double alphaYValue, FresnelMode mode, double specularValue )
+	{
+		Owned<UniformColorPainter> spec( new UniformColorPainter(
+			RISEPel( specularValue, specularValue, specularValue ) ) );
+		Owned<UniformColorPainter> diff( new UniformColorPainter( RISEPel( 0, 0, 0 ) ) );
+		Owned<UniformScalarPainter> alphaX( new UniformScalarPainter( alphaXValue ) );
+		Owned<UniformScalarPainter> alphaY( new UniformScalarPainter( alphaYValue ) );
+		Owned<UniformScalarPainter> iorP( new UniformScalarPainter( 0.47 ) );
+		Owned<UniformScalarPainter> extP( new UniformScalarPainter( 2.63 ) );
+		Owned<UniformScalarPainter> filmIOR( new UniformScalarPainter( 1.45 ) );
+		Owned<UniformScalarPainter> filmExtinction( new UniformScalarPainter( 0.02 ) );
+		Owned<UniformScalarPainter> filmThickness( new UniformScalarPainter( 310.0 ) );
+		const bool thinFilm = mode == eFresnelThinFilmConductor;
+		Owned<GGXBRDF> brdf( new GGXBRDF(
+			*diff, *spec, *alphaX, *alphaY, *iorP, *extP, mode, nullptr,
+			thinFilm ? filmIOR.get() : nullptr,
+			thinFilm ? filmExtinction.get() : nullptr,
+			thinFilm ? filmThickness.get() : nullptr ) );
+
+		RayIntersectionGeometric dummyRi = MakeRIForView( Vector3( 0, 0, 1 ) );
+		RISEPel rgb;
+		Scalar nm = 0;
+		brdf->hemisphericalAlbedo( dummyRi, rgb );
+		brdf->hemisphericalAlbedoNM( dummyRi, 550.0, nm );
+		const ReportedAlbedo result = { ColorMath::MaxValue( rgb ), nm };
+		return result;
+	}
+
+	void CheckDiagonalApproach(
+		double alpha, FresnelMode mode, double specularValue, const char* label )
+	{
+		const ReportedAlbedo exact = EvaluateReportedAlbedo( alpha, alpha, mode, specularValue );
+		const double above = std::nextafter( alpha, std::numeric_limits<double>::infinity() );
+		const double below = std::nextafter( alpha, 0.0 );
+		const ReportedAlbedo ulpRows[] = {
+			EvaluateReportedAlbedo( alpha, above, mode, specularValue ),
+			EvaluateReportedAlbedo( above, alpha, mode, specularValue ),
+			EvaluateReportedAlbedo( alpha, below, mode, specularValue ),
+			EvaluateReportedAlbedo( below, alpha, mode, specularValue ),
+		};
+		// One lookup evaluates fewer than 256 elementary arithmetic operations.
+		// Allowing 4096 ulps of unit-scale accumulated error is therefore a
+		// deliberately conservative floating-point bound, while remaining many
+		// orders below any table/interpolation discontinuity.
+		const double roundoffBound = 4096.0 * std::numeric_limits<double>::epsilon()
+			* r_max( 1.0, r_max( fabs(exact.rgb), fabs(exact.nm) ) );
+		for( const ReportedAlbedo& row : ulpRows )
+		{
+			CheckClose( row.rgb, exact.rgb, roundoffBound,
+				std::string("DL-139 RGB one-ULP diagonal continuity: ") + label );
+			CheckClose( row.nm, exact.nm, roundoffBound,
+				std::string("DL-139 NM one-ULP diagonal continuity: ") + label );
+		}
+
+		// Keep all probes inside one interpolation interval.  A continuous
+		// piecewise-affine surface has O(delta) error from its diagonal trace,
+		// so shrinking delta by 16 must shrink the difference by substantially
+		// more than 2 (the loose factor leaves room for the smooth Fresnel/MS
+		// arithmetic and floating-point roundoff).
+		const double coarseDelta = alpha * 1.0e-3;
+		const double fineDelta = coarseDelta / 16.0;
+		const double convergenceSlack = 32.0 * roundoffBound;
+		const double signs[] = { -1.0, 1.0 };
+		for( double sign : signs )
+		{
+			const ReportedAlbedo coarse = EvaluateReportedAlbedo(
+				alpha, alpha + sign * coarseDelta, mode, specularValue );
+			const ReportedAlbedo fine = EvaluateReportedAlbedo(
+				alpha, alpha + sign * fineDelta, mode, specularValue );
+			const ReportedAlbedo fineSwap = EvaluateReportedAlbedo(
+				alpha + sign * fineDelta, alpha, mode, specularValue );
+			Check( fabs(fine.rgb - exact.rgb) <= 0.5 * fabs(coarse.rgb - exact.rgb) + convergenceSlack,
+				std::string("DL-139 RGB finite diagonal approach converges: ") + label );
+			Check( fabs(fine.nm - exact.nm) <= 0.5 * fabs(coarse.nm - exact.nm) + convergenceSlack,
+				std::string("DL-139 NM finite diagonal approach converges: ") + label );
+			CheckClose( fineSwap.rgb, fine.rgb, roundoffBound,
+				std::string("DL-139 RGB swapped-axis symmetry near diagonal: ") + label );
+			CheckClose( fineSwap.nm, fine.nm, roundoffBound,
+				std::string("DL-139 NM swapped-axis symmetry near diagonal: ") + label );
+		}
+	}
+
+	void TestAnisotropicDiagonalContinuity()
+	{
+		std::cout << "--- TestAnisotropicDiagonalContinuity (DL-139 review correction) ---" << std::endl;
+		struct Row { double alpha; FresnelMode mode; double specular; const char* label; };
+		const Row rows[] = {
+			{ 0.00046875, eFresnelSchlickF0, 0.0, "low octave midpoint 0.00046875, Schlick F0=0" },
+			{ 0.00375, eFresnelSchlickF0, 0.0, "low octave midpoint 0.00375, Schlick F0=0" },
+			{ 0.019, eFresnelSchlickF0, 0.0, "low bridge midpoint 0.019, Schlick F0=0" },
+			{ 0.023, eFresnelSchlickF0, 0.0, "low off-node 0.023, Schlick F0=0" },
+			{ 0.2, eFresnelSchlickF0, 0.0, "ordinary off-node 0.2, Schlick F0=0" },
+			{ 0.37, eFresnelConductor, 1.0, "ordinary off-node 0.37, conductor" },
+			{ 0.61, eFresnelThinFilmConductor, 1.0, "ordinary off-node 0.61, thin film" },
+		};
+		for( const Row& row : rows ) {
+			CheckDiagonalApproach( row.alpha, row.mode, row.specular, row.label );
 		}
 	}
 
@@ -784,6 +902,7 @@ int main()
 	TestMomentZeroCrossCheck();
 	TestSmoothLimit();
 	TestAnisotropicFallback();
+	TestAnisotropicDiagonalContinuity();
 	TestLowAlphaVNDF();
 
 	std::cout << std::endl << g_numChecks << " checks, " << g_numFailures << " failures" << std::endl;
