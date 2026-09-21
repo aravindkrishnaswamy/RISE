@@ -86,7 +86,7 @@ def main():
     probe.write_text(PROBE.replace('@SOURCE@', str(source)))
     command = [args.compiler, '-O3', '-flto', '-ffast-math', '-fno-finite-math-only',
                '-funroll-loops', '-std=gnu++17', '-Wall', '-pedantic',
-               '-Wno-c++11-long-long', str(probe), '-o', str(out/'probe')]
+               '-Wno-c++11-long-long', '-I'+str(source.parents[1]), str(probe), '-o', str(out/'probe')]
     build = subprocess.run(command, capture_output=True, text=True)
     (out/'build.log').write_text(build.stdout + build.stderr)
     report = dict(command=command, source_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
