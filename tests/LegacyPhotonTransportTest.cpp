@@ -75,14 +75,16 @@ class TwoPlaneManager : public ObjectManager {
     const IObject& object;
     const IMaterial& split;
     const IMaterial& sink;
+    double tilt;
 public:
-    TwoPlaneManager(const IObject& o,const IMaterial& a,const IMaterial& b):ObjectManager(false,false,4,8),object(o),split(a),sink(b) {}
+    TwoPlaneManager(const IObject& o,const IMaterial& a,const IMaterial& b,double degrees=0):ObjectManager(false,false,4,8),object(o),split(a),sink(b),tilt(degrees*PI/180) {}
     void IntersectRay(RayIntersection& ri,bool,bool,bool) const override {
         const bool first=ri.geometric.ray.Dir().z<0;
         ri.geometric.bHit=true;ri.geometric.range=1;
         ri.geometric.ptIntersection=Point3(0,0,first?0:1);
         ri.geometric.vNormal=Vector3(0,0,first?1:-1);
         ri.geometric.vGeomNormal=ri.geometric.vNormal;
+        if(first)ri.geometric.vNormal=Vector3(std::sin(tilt),0,std::cos(tilt));
         ri.geometric.onb.CreateFromW(ri.geometric.vNormal);
         ri.pMaterial=first?&split:&sink;ri.pObject=&object;
     }
@@ -107,16 +109,18 @@ public:
     NMMap():GlobalSpectralPhotonMap(128,nullptr) {}
     double Sum() const { double total=0;for(const auto& p:vphotons)total+=p.power;return total; }
 };
-void TestLiveSelection() {
+void TestLiveSelection(double degrees=0) {
+    const double angle=degrees*PI/180;const double expected=std::cos(angle)*.8/(.6*std::sin(angle)+.8*std::cos(angle));
+    std::printf("LIVE_GLOBAL tilt=%.17g expectedAdjoint=%.17g\n",degrees,expected);
     auto* split=new SplitMaterial(2);auto* sink=new SplitMaterial(1,true);auto* object=new StubObject();
-    auto* manager=new TwoPlaneManager(*object,*split,*sink);auto* scene=new Scene();scene->SetObjectManager(manager);
+    auto* manager=new TwoPlaneManager(*object,*split,*sink,degrees);auto* scene=new Scene();scene->SetObjectManager(manager);
     for(bool branch:{false,true}) {
         auto* tracer=new PelTracer(branch);tracer->AttachScene(scene);PelMap map;
         for(int i=0;i<16;++i)tracer->Run(map);
-        Near(map.Sum()/16,1,branch?"DL271 live Pel branch sum":"DL271 live Pel selected response");tracer->release();
+        Near(map.Sum()/16,expected,branch?"DL271 live Pel branch sum":"DL271 live Pel selected response");tracer->release();
         auto* spectral=new NMTracer(branch);spectral->AttachScene(scene);NMMap nm;
         for(int i=0;i<16;++i)spectral->Run(nm);
-        Near(nm.Sum()/16,1,branch?"DL271 live NM branch sum":"DL271 live NM selected response");spectral->release();
+        Near(nm.Sum()/16,expected,branch?"DL271 live NM branch sum":"DL271 live NM selected response");spectral->release();
     }
     scene->release();manager->release();object->release();sink->release();split->release();
 }
@@ -138,16 +142,18 @@ class CausticNMMap : public CausticSpectralPhotonMap {
 public: CausticNMMap():CausticSpectralPhotonMap(128,nullptr) {}
     double Sum() const {double s=0;for(const auto& p:vphotons)s+=p.power;return s;}
 };
-void TestCausticSelection() {
+void TestCausticSelection(double degrees=0) {
+    const double angle=degrees*PI/180;const double expected=std::cos(angle)*.8/(.6*std::sin(angle)+.8*std::cos(angle));
+    std::printf("LIVE_CAUSTIC tilt=%.17g expectedAdjoint=%.17g\n",degrees,expected);
     auto* split=new SplitMaterial(2,false,ScatteredRay::eRayReflection);auto* paint=new UniformColorPainter(RISEPel(.5));auto* sink=new LambertianMaterial(*paint);auto* object=new StubObject();
-    auto* manager=new TwoPlaneManager(*object,*split,*sink);auto* scene=new Scene();scene->SetObjectManager(manager);
+    auto* manager=new TwoPlaneManager(*object,*split,*sink,degrees);auto* scene=new Scene();scene->SetObjectManager(manager);
     for(bool branch:{false,true}) {
         auto* tracer=new CausticPelTracer(branch);tracer->AttachScene(scene);CausticPelMap map;
         for(int i=0;i<16;++i)tracer->Run(map);
-        Near(map.Sum()/16,1,branch?"DL271 caustic Pel branch sum":"DL271 caustic Pel filtered selected response");tracer->release();
+        Near(map.Sum()/16,expected,branch?"DL271 caustic Pel branch sum":"DL271 caustic Pel filtered selected response");tracer->release();
         auto* spectral=new CausticNMTracer(branch);spectral->AttachScene(scene);CausticNMMap nm;
         for(int i=0;i<16;++i)spectral->Run(nm);
-        Near(nm.Sum()/16,1,branch?"DL271 caustic NM branch sum":"DL271 caustic NM filtered selected response");spectral->release();
+        Near(nm.Sum()/16,expected,branch?"DL271 caustic NM branch sum":"DL271 caustic NM filtered selected response");spectral->release();
     }
     scene->release();manager->release();object->release();sink->release();paint->release();split->release();
 }
@@ -359,7 +365,7 @@ void TestGather() {
     map->release();bsdf->release();paint->release();
 }
 }
-int main() { TestLiveSelection();TestCausticSelection();TestDetector();TestOtherDetectors();TestShaderSelection();TestRareIntegratorSelection();
+int main() { TestLiveSelection();TestCausticSelection();for(double tilt:{-30.,30.}){TestLiveSelection(tilt);TestCausticSelection(tilt);}TestDetector();TestOtherDetectors();TestShaderSelection();TestRareIntegratorSelection();
 #ifdef RISE_TEST_SMS_PRIVATE_PROBE
 TestSMSSelection();
 #endif
