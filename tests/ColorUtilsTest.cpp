@@ -1,6 +1,10 @@
 #include <iostream>
 #include <cassert>
 #include <cmath>
+#include <limits>
+#include "../src/Library/RISE_API.h"
+#include "../src/Library/Shaders/StandardShader.h"
+#include "../src/Library/Rendering/PixelBasedSpectralIntegratingRasterizer.h"
 #include "../src/Library/Utilities/Math3D/Math3D.h"
 #include "../src/Library/Utilities/Color/Color.h"
 #include "../src/Library/Utilities/Color/ColorUtils.h"
@@ -288,6 +292,14 @@ void TestApplySPDFunction() {
 
 // Integral of the public piecewise-linear CMF, split independently at its
 // five-nanometre knots. Partial boundary cells must contribute their area.
+class SpectralScaleProbe : public RISE::Implementation::PixelBasedSpectralIntegratingRasterizer {
+public:
+    SpectralScaleProbe(IRayCaster* caster,Scalar a,Scalar b,bool hwss):
+      Rasterizer(nullptr),PixelBasedRasterizerHelper(caster,nullptr),
+      PixelBasedSpectralIntegratingRasterizer(caster,a,b,160,4,StabilityConfig(),false,hwss) {}
+    Scalar Scale()const{return mYNormalization;}
+};
+
 int TestCIEPartialCellIntegral() {
     int failed=0,checks=0;
     const Scalar intervals[][2]={{550,551},{552,553},{552,558},{399,701},{400,700},{380,780},{370,382},{778,790},{780,790},{370,380},{550,550},{560,550}};
@@ -303,6 +315,28 @@ int TestCIEPartialCellIntegral() {
         ++checks;if(!ok)++failed;
         std::cout<<(ok?"PASS ":"FAIL ")<<"CIE partial interval ["<<interval[0]<<","<<interval[1]<<"] got="<<got<<" expected="<<expected<<std::endl;
     }
+    // The actual inherited rasterizer constructor must cache this integral.
+    // An empty shader is sufficient: these controls construct but never render.
+    auto* shader=new RISE::Implementation::StandardShader(std::vector<IShaderOp*>());
+    IRayCaster* caster=nullptr;
+    const bool created=RISE_API_CreateRayCaster(&caster,false,10,*shader,true);
+    ++checks;if(!created||!caster)++failed;
+    if(caster){
+        const Scalar ranges[][3]={{550,551,.9955},{552,558,5.991},{400,700,0},{380,780,0}};
+        for(const auto& r:ranges)for(bool hwss:{false,true}){
+            SpectralScaleProbe probe(caster,r[0],r[1],hwss);
+            Scalar area=r[2];
+            if(area==0)for(int nm=int(r[0]);nm<int(r[1]);nm+=5){XYZPel a,b;ColorUtils::XYZFromNM(a,nm);ColorUtils::XYZFromNM(b,nm+5);area+=(a.Y+b.Y)*2.5;}
+            const Scalar expected=(r[1]-r[0])/area;
+            const bool ok=std::isfinite(probe.Scale())&&std::fabs(probe.Scale()-expected)<=1e-12*expected;
+            ++checks;if(!ok)++failed;
+            std::cout<<(ok?"PASS ":"FAIL ")<<"spectral constructor ["<<r[0]<<","<<r[1]<<"] hwss="<<hwss<<" got="<<probe.Scale()<<" expected="<<expected<<std::endl;
+        }
+        caster->release();
+    }
+    shader->release();
+    const Scalar split=ColorUtils::CIE_Y_Integral(552,554)+ColorUtils::CIE_Y_Integral(554,558);
+    ++checks;if(std::fabs(split-5.991)>1e-12*5.991)++failed;
     std::cout<<"CIE partial-cell checks="<<checks<<" failures="<<failed<<std::endl;
     return failed;
 }
