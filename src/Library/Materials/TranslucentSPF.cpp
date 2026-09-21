@@ -293,6 +293,12 @@ namespace
 	// construction, so the clipped-away energy is RENORMALIZED into the
 	// valid region (DL-45's choice) rather than dropped.
 	//
+	// DL-130 CLOSED 2026-09-21: this renormalizes the DIRECTION density,
+	// not the lobe's total transport weight.  Under the shared DL-157
+	// contract, `f = kray*q/|cos|` and integral(q)=1, hence
+	// integral(f*|cos|)=kray at every tilt.  Scaling `kray` by
+	// halfArc/PI here would apply the clip twice and delete energy.
+	//
 	// DL-111 (2026-09-17) needed this same arc construction for a lobe
 	// whose POLAR marginal is not cos^N (DielectricSPF's `scattering` warp
 	// draws its angle from either a Phong or a Henyey-Greenstein inverse
