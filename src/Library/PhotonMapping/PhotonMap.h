@@ -679,6 +679,8 @@ namespace RISE
 					}
 
 					const Scalar farthest_away = heap[0].distance;
+					// A zero-radius neighborhood has no finite-area density estimate.
+					if( farthest_away <= 0 ) return;
 
 					typename PhotonDistListType::const_iterator i, e;
 
@@ -723,6 +725,8 @@ namespace RISE
 					}
 
 					const Scalar farthest_away = heap[0].distance;
+					// A zero-radius neighborhood has no finite-area density estimate.
+					if( farthest_away <= 0 ) return;
 					const Scalar alpha = 0.918;
 					const Scalar beta = 1.953;
 					// Jensen's Gaussian gather filter (RISURPM 2001, eq. 7.7) reshapes the

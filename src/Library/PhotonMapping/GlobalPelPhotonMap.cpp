@@ -141,6 +141,8 @@ void GlobalPelPhotonMap::RadianceAtAnchor( RISEPel& rad,const CacheAnchor& ancho
  if(heap.size()<=nMinPhotonsOnGather) return;
  if(heap.size()<nMaxPhotonsOnGather) std::make_heap(heap.begin(),heap.end());
  const Scalar radius2=heap[0].distance;
+ // No reciprocal area exists for co-located records.
+ if(radius2<=0) return;
  for(const auto& item:heap) {
   const IrradPhoton& photon=item.element;
   const Scalar height=Vector3Ops::Dot(Vector3Ops::mkVector3(photon.ptPosition,anchor.position),anchor.geometricNormal);

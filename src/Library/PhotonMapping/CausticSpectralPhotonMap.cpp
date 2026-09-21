@@ -57,6 +57,8 @@ void CausticSpectralPhotonMap::RadianceEstimate(
 		}
 
 		const Scalar farthest_away = heap[0].distance;
+		// A zero-radius neighborhood has no finite-area density estimate.
+		if( farthest_away <= 0 ) return;
 		const Scalar maxNDist = farthest_away * dEllipseRatio;
 
 		// Sum irradiance from all photons
@@ -116,6 +118,8 @@ void CausticSpectralPhotonMap::RadianceEstimateNM(
 		}
 
 		const Scalar farthest_away = (heap.size()<nMaxPhotonsOnGather ? dGatherRadius : heap[0].distance);
+		// A zero-radius neighborhood has no finite-area density estimate.
+		if( farthest_away <= 0 ) return;
 		const Scalar maxNDist = farthest_away * dEllipseRatio;
 
 		// Sum irradiance from all photons

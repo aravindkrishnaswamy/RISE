@@ -57,6 +57,8 @@ void GlobalSpectralPhotonMap::RadianceEstimate(
 		}
 
 		const Scalar farthest_away = (heap.size()<nMaxPhotonsOnGather ? dGatherRadius : heap[0].distance);
+		// A zero-radius neighborhood has no finite-area density estimate.
+		if( farthest_away <= 0 ) return;
 		const Scalar maxNDist = farthest_away * dEllipseRatio;
 
 		// Sum irradiance from all photons
@@ -114,6 +116,8 @@ void GlobalSpectralPhotonMap::RadianceEstimateNM(
 		}
 
 		const Scalar farthest_away = (heap.size()<nMaxPhotonsOnGather ? dGatherRadius : heap[0].distance);
+		// A zero-radius neighborhood has no finite-area density estimate.
+		if( farthest_away <= 0 ) return;
 		const Scalar maxNDist = farthest_away * dEllipseRatio;
 
 		// Sum irradiance from all photons
