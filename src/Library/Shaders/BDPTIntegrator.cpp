@@ -5372,7 +5372,11 @@ EvaluateAllStrategiesImpl(
 						eyeVerts[t - 2].position, eyeEnd.position );
 					wo = Vector3Ops::Normalize( wo );
 
-					Ray evalRay( eyeEnd.position, -wo );
+					// A BSSRDF's previous vertex is a nonlocal exit, not a local
+					// viewer. Its entry adapter always supports the outward side.
+					Ray evalRay = eyeEnd.isBSSRDFEntry
+						? EntryEvaluationRay( eyeEnd.position, eyeEnd.normal )
+						: Ray( eyeEnd.position, -wo );
 					RayIntersectionGeometric ri( evalRay, nullRasterizerState );
 					PathVertexEval::PopulateRIGFromVertex( eyeEnd, ri );
 

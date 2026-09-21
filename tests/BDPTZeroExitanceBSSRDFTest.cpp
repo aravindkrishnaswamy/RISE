@@ -124,6 +124,9 @@
 #include "../src/Library/Interfaces/IRasterizerOutput.h"
 #include "../src/Library/Interfaces/IRasterImage.h"
 #include "../src/Library/Utilities/Reference.h"
+#include "../src/Library/Shaders/BSSRDFEntryAdapters.h"
+#include "../src/Library/Materials/BurleyNormalizedDiffusionProfile.h"
+#include "../src/Library/Painters/UniformScalarPainter.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
 
 using namespace RISE;
@@ -563,10 +566,46 @@ static void TestRandomWalkDirectional()
 	}
 }
 
+// DL224: both adapter families use fixed outward support, including every
+// spectral/HWSS lane. A diffusion chord can point inward and must not orient it.
+static void TestEntryEvaluationFrame()
+{
+	using namespace BSSRDFAdapters;
+	UniformScalarPainter* eta = new UniformScalarPainter( 1.3 );
+	UniformScalarPainter* absorption = new UniformScalarPainter( 0.1 );
+	UniformScalarPainter* scattering = new UniformScalarPainter( 1.0 );
+	BurleyNormalizedDiffusionProfile* profile =
+		new BurleyNormalizedDiffusionProfile( *eta, *absorption, *scattering, 0.0 );
+	BSSRDFEntryBSDF diffusion( profile, 0.0 );
+	RandomWalkEntryBSDF randomWalk( 1.3 );
+	const IBSDF* adapters[] = { &diffusion, &randomWalk };
+	const Vector3 normal( 0, 0, 1 );
+	RayIntersectionGeometric ri( EntryEvaluationRay( Point3(0,0,0), normal ), nullRasterizerState );
+	ri.vNormal = ri.vGeomNormal = normal;
+	Check( Vector3Ops::Dot( ri.ray.Dir(), normal ) == -1.0,
+		"entry evaluation ray is incoming through fixed outward hemisphere" );
+	Check( ri.RayFacingShadingCosine( normal ) == 1.0 &&
+		ri.RayFacingShadingCosine( -normal ) == -1.0,
+		"entry frame keeps outward light and rejects inward light" );
+	for( const IBSDF* adapter : adapters ) {
+		const Scalar pel = adapter->value( normal, ri )[0];
+		Check( pel > 0 && adapter->value( -normal, ri )[0] == 0,
+			"diffusion/random-walk Pel adapter has fixed outward support" );
+		for( Scalar nm : { Scalar(400), Scalar(500), Scalar(600), Scalar(700) } ) {
+			Check( fabs( adapter->valueNM( normal, ri, nm ) - pel ) < 1e-14 &&
+				adapter->valueNM( -normal, ri, nm ) == 0,
+				"NM/HWSS companion entry support matches Pel at every lane" );
+		}
+	}
+	profile->release();
+	eta->release(); absorption->release(); scattering->release();
+}
+
 int main()
 {
 	std::cout << "=== BDPTZeroExitanceBSSRDFTest (DL-207) ===" << std::endl;
 
+	TestEntryEvaluationFrame();
 	TestLambertianControl();
 	TestSSSDirectional();
 	TestSSSAmbient();

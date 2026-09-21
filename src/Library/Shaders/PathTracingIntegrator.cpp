@@ -2870,9 +2870,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 							const Value bssrdfWeightSpatial = PTBssrdfWeightSpatial<Tag>( bssrdf );
 
 							RayIntersectionGeometric entryRI(
-								// A RIG stores an incoming ray. The sampled continuation
-								// leaves the entry hemisphere, so reverse it for NEE.
-								Ray( bssrdf.entryPoint, -bssrdf.scatteredRay.Dir() ),
+								EntryEvaluationRay( bssrdf.entryPoint, bssrdf.entryNormal ),
 								rast );
 							entryRI.bHit = true;
 							entryRI.ptIntersection = bssrdf.entryPoint;
@@ -3140,9 +3138,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 							const Value bssrdfWeightSpatial = PTBssrdfWeightSpatial<Tag>( bssrdf ) * Ft * bf;
 
 							RayIntersectionGeometric entryRI(
-								// A RIG stores an incoming ray. The sampled continuation
-								// leaves the entry hemisphere, so reverse it for NEE.
-								Ray( bssrdf.entryPoint, -bssrdf.scatteredRay.Dir() ),
+								EntryEvaluationRay( bssrdf.entryPoint, bssrdf.entryNormal ),
 								rast );
 							entryRI.bHit = true;
 							entryRI.ptIntersection = bssrdf.entryPoint;

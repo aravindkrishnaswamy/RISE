@@ -3,7 +3,7 @@
 //  BSSRDFEntryAdapters.h - Stack-local IBSDF/IMaterial adapters for
 //    NEE at subsurface scattering entry points.
 //
-//    These are used by both PathTracingShaderOp and
+//    These are used by both BDPTIntegrator and
 //    PathTracingIntegrator for direct lighting evaluation at
 //    BSSRDF entry points.  The IReference stubs are safe because
 //    EvaluateDirectLighting never ref-counts its arguments.
@@ -28,6 +28,15 @@ namespace RISE
 {
 namespace BSSRDFAdapters
 {
+	/// Entry adapters have fixed outward support, Sw(wi) for Ns.wi > 0,
+	/// independent of the nonlocal chord to the diffusion exit. A RIG stores
+	/// an incoming ray; this frame makes view-facing light gates use that same
+	/// outward hemisphere. Do not use it for ordinary surface BSDF vertices.
+	inline Ray EntryEvaluationRay( const Point3& position, const Vector3& normal )
+	{
+		return Ray( position, -normal );
+	}
+
 	/// Adapter BSDF for NEE at disk-projection BSSRDF entry points.
 	/// Uses the diffusion profile's FresnelTransmission for Sw.
 	class BSSRDFEntryBSDF : public IBSDF
