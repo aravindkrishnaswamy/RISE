@@ -2444,19 +2444,37 @@ static double MaskedStandardError( const std::vector<double>& v )
 }
 
 // Shared by the rendered self-contrast branch and direct control-flow regressions.
+template<typename CheckFn, typename SkipFn>
 static void CheckMaskedSelfContrast( const char* keyword,
 	const std::vector<double>& bdptContrasts, const std::vector<double>& vcmContrasts,
-	int bdptFailures, int vcmFailures )
+	int bdptFailures, int vcmFailures, CheckFn check, SkipFn precisionSkip )
 {
-	Check( bdptFailures == 0, std::string( keyword ) + " BDPT (masked cross-check): every sub-render succeeded (failures: " + std::to_string(bdptFailures) + ")" );
-	Check( vcmFailures == 0,  std::string( keyword ) + " VCM (masked cross-check): every sub-render succeeded (failures: "  + std::to_string(vcmFailures)  + ")" );
-	Check( bdptContrasts.size() >= (std::size_t)kLayer2MaskedSubRenders, std::string( keyword ) + " BDPT (masked cross-check): at least " + std::to_string(kLayer2MaskedSubRenders) + " sub-renders (got " + std::to_string(bdptContrasts.size()) + ")" );
-	Check( vcmContrasts.size()  >= (std::size_t)kLayer2MaskedSubRenders, std::string( keyword ) + " VCM (masked cross-check): at least "  + std::to_string(kLayer2MaskedSubRenders) + " sub-renders (got " + std::to_string(vcmContrasts.size())  + ")" );
+	check( bdptFailures == 0, std::string( keyword ) + " BDPT (masked cross-check): every sub-render succeeded (failures: " + std::to_string(bdptFailures) + ")" );
+	check( vcmFailures == 0,  std::string( keyword ) + " VCM (masked cross-check): every sub-render succeeded (failures: "  + std::to_string(vcmFailures)  + ")" );
+	check( bdptContrasts.size() >= (std::size_t)kLayer2MaskedSubRenders, std::string( keyword ) + " BDPT (masked cross-check): at least " + std::to_string(kLayer2MaskedSubRenders) + " sub-renders (got " + std::to_string(bdptContrasts.size()) + ")" );
+	check( vcmContrasts.size()  >= (std::size_t)kLayer2MaskedSubRenders, std::string( keyword ) + " VCM (masked cross-check): at least "  + std::to_string(kLayer2MaskedSubRenders) + " sub-renders (got " + std::to_string(vcmContrasts.size())  + ")" );
+
+	// Keep failed-render and minimum checks above as failures. Such a row
+	// supplies no eligible correctness estimate, even if its SE is unavailable
+	// (-1 for fewer than two samples) or happens to be small.
+	if( bdptFailures != 0 || vcmFailures != 0
+		|| bdptContrasts.size() < std::size_t(kLayer2MaskedSubRenders)
+		|| vcmContrasts.size() < std::size_t(kLayer2MaskedSubRenders) ) return;
 
 	const double meanBdpt = VectorMean( bdptContrasts );
 	const double meanVcm  = VectorMean( vcmContrasts );
 	const double seBdpt = MaskedStandardError( bdptContrasts );
 	const double seVcm  = MaskedStandardError( vcmContrasts );
+
+	const double seTarget = kLayer2MaskedBand * kLayer2MaskedSEFraction;
+	if( seBdpt > seTarget || seVcm > seTarget ) {
+		std::cout << "  INSUFFICIENT PRECISION: " << keyword
+			<< " BDPT<->VCM (masked cross-check) SE(BDPT)=" << seBdpt
+			<< " SE(VCM)=" << seVcm << " (target <= " << seTarget
+			<< "). Cross-check is NOT asserted; counted as one precision skip." << std::endl;
+		precisionSkip();
+		return;
+	}
 
 	const double bdptSelfRatio = 1.0 + meanBdpt;	// mean_mask(BDPT,E)/mean_mask(BDPT,B)
 	const double vcmSelfRatio  = 1.0 + meanVcm;	// mean_mask(VCM,E)/mean_mask(VCM,B)
@@ -2479,7 +2497,7 @@ static void CheckMaskedSelfContrast( const char* keyword,
 	std::cout << "  CROSS-CHECK (BDPT/VCM masked self-ratio) - 1 = " << crossValue
 	          << "  SE~=" << crossSE
 	          << ( std::fabs(crossValue) < kLayer2MaskedBand ? "  [pass]" : "  [FAIL]" ) << std::endl;
-	Check( std::fabs( crossValue ) < kLayer2MaskedBand,
+	check( std::fabs( crossValue ) < kLayer2MaskedBand,
 		std::string( keyword ) + " BDPT<->VCM (masked cross-check): | (mean_mask(BDPT,E)/mean_mask(VCM,E)) / (mean_mask(BDPT,B)/mean_mask(VCM,B)) - 1 | < " + std::to_string(kLayer2MaskedBand) );
 }
 
@@ -3029,14 +3047,14 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 			adaptiveSelfContrast( *bdptInfo, &bdptContrasts, &bdptFailures );
 			adaptiveSelfContrast( *vcmInfo,  &vcmContrasts,  &vcmFailures );
 
-			CheckMaskedSelfContrast( spec.keyword, bdptContrasts, vcmContrasts, bdptFailures, vcmFailures );
+			CheckMaskedSelfContrast( spec.keyword, bdptContrasts, vcmContrasts, bdptFailures, vcmFailures,
+				Check, [] { ++g_maskedPrecisionSkipCount; } );
 		}
 	}
 }
 
 // Invoke the same final gate as live renders. Nested assertions are observed
-// locally, so an expected input failure cannot masquerade as a suite failure
-// or inflate the suite's pass count. No render, seed, or sampling state changes.
+// through callbacks, so expected input failures never alter the suite counters. No render, seed, or sampling state changes.
 static void TestMaskedSelfContrastPrecision()
 {
 	std::cout << "\n-- DL224: self-contrast precision and failure accounting --" << std::endl;
@@ -3044,18 +3062,17 @@ static void TestMaskedSelfContrastPrecision()
 	auto observe = []( const char* name, const std::vector<double>& bdpt,
 		const std::vector<double>& vcm, int bf, int vf,
 		int expectedPass, int expectedFail, int expectedSkip ) {
-		const int oldPass = passCount, oldFail = failCount;
-		const int oldSkip = g_maskedPrecisionSkipCount;
-		std::ostringstream captured;
-		std::streambuf* saved = std::cout.rdbuf( captured.rdbuf() );
-		CheckMaskedSelfContrast( name, bdpt, vcm, bf, vf );
-		std::cout.rdbuf( saved );
-		const int passes = passCount-oldPass, failures = failCount-oldFail;
-		const int skips = g_maskedPrecisionSkipCount-oldSkip;
-		passCount = oldPass; failCount = oldFail; g_maskedPrecisionSkipCount = oldSkip;
-		std::cout << "SELF_CONTROL case=" << name << " bdpt_n=" << bdpt.size()
+		int passes = 0, failures = 0, skips = 0;
+		CheckMaskedSelfContrast( name, bdpt, vcm, bf, vf,
+			[&]( bool condition, const std::string& ) { condition ? ++passes : ++failures; },
+			[&] { ++skips; } );
+		std::ostringstream raw;
+		raw << std::setprecision(std::numeric_limits<double>::max_digits10)
+			<< "SELF_CONTROL case=" << name << " bdpt_n=" << bdpt.size()
 			<< " vcm_n=" << vcm.size() << " bdpt_failures=" << bf << " vcm_failures=" << vf
-			<< " nested_pass=" << passes << " nested_fail=" << failures << " precision_skip=" << skips << std::endl;
+			<< " bdpt_se=" << MaskedStandardError(bdpt) << " vcm_se=" << MaskedStandardError(vcm)
+			<< " nested_pass=" << passes << " nested_fail=" << failures << " precision_skip=" << skips;
+		std::cout << raw.str() << std::endl;
 		Check( passes == expectedPass, std::string(name)+": only eligible correctness assertions execute" );
 		Check( failures == expectedFail, std::string(name)+": failure/minimum accounting is retained" );
 		Check( skips == expectedSkip, std::string(name)+": precision skip count is exact" );
