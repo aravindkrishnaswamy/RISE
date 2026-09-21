@@ -2501,6 +2501,67 @@ static void CheckMaskedSelfContrast( const char* keyword,
 		std::string( keyword ) + " BDPT<->VCM (masked cross-check): | (mean_mask(BDPT,E)/mean_mask(VCM,E)) / (mean_mask(BDPT,B)/mean_mask(VCM,B)) - 1 | < " + std::to_string(kLayer2MaskedBand) );
 }
 
+// The live paired branch and direct controls share accounting, stop records,
+// precision disposition and correctness assertion. PT intentionally has K=1.
+template<typename CheckFn, typename SkipFn>
+static void CheckMaskedPairedContrast( const char* keyword, Integrator integ,
+	const std::vector<double>& ratios, int subRenderFailures, double R_E, double R_B,
+	CheckFn check, SkipFn precisionSkip )
+{
+	const double seTarget = kLayer2MaskedBand * kLayer2MaskedSEFraction;
+	// (round-3 fix, task item 4; kept under adaptive K) A sub-render
+	// that fails to derive, or comes back with a mismatched or
+	// degenerate pixel array, used to be `continue`d past silently,
+	// so a bad run could average over fewer sub-renders than the
+	// estimator was measured at.  Under adaptive K the count is no
+	// longer fixed, so what is asserted is the thing that was
+	// actually wrong: NO sub-render failed, and the minimum sample
+	// size was reached.
+	if( integ == Integrator::BDPT || integ == Integrator::VCM ) {
+		check( subRenderFailures == 0,
+			std::string( keyword ) + " " + IntegratorName(integ)
+			+ " (masked): every sub-render succeeded (failures: "
+			+ std::to_string(subRenderFailures) + ")" );
+		check( ratios.size() >= (std::size_t)kLayer2MaskedSubRenders,
+			std::string( keyword ) + " " + IntegratorName(integ)
+			+ " (masked): at least " + std::to_string(kLayer2MaskedSubRenders)
+			+ " sub-renders (got " + std::to_string(ratios.size()) + ")" );
+	}
+
+	double ratio = 0.0;
+	for( double v : ratios ) ratio += v;
+	ratio /= double( ratios.size() );
+	const double se = MaskedStandardError( ratios );
+
+	const bool loopedRow = ( integ == Integrator::BDPT || integ == Integrator::VCM );
+	const bool insufficient = loopedRow && se > seTarget;
+	LogMaskedStop( keyword, "paired", integ, ratios, subRenderFailures, se, seTarget,
+		!loopedRow ? "single_sample" :
+		( ratios.size() + std::size_t(subRenderFailures) >= std::size_t(kLayer2MaskedSubRendersCap)
+			? "attempt_cap" : "precision_target" ) );
+
+	std::cout << "  MASKED " << IntegratorName(integ) << ": R_E=" << R_E << " R_B=" << R_B
+	          << " R_E/R_B-1(sub-render 1)=" << ( R_E / R_B - 1.0 )
+	          << "  avg over " << ratios.size() << " sub-render(s)=" << ratio;
+	if( loopedRow ) {
+		std::cout << "  SE=" << se << " (target <= " << seTarget << ")";
+	}
+	if( insufficient ) {
+		std::cout << "  [INSUFFICIENT PRECISION]" << std::endl;
+		std::cout << "  INSUFFICIENT PRECISION: " << keyword << " "
+		          << IntegratorName(integ)
+		          << " (masked) reached the " << kLayer2MaskedSubRendersCap
+		          << "-sub-render cap with SE=" << se << " > " << seTarget
+		          << ".  The estimate (" << ratio << ") is NOT asserted either way "
+		          << "-- counted as a skip, not a pass and not a failure." << std::endl;
+		precisionSkip();
+		return;
+	}
+	std::cout << ( std::fabs(ratio) < kLayer2MaskedBand ? "  [pass]" : "  [FAIL]" ) << std::endl;
+	check( std::fabs( ratio ) < kLayer2MaskedBand,
+		std::string( keyword ) + " " + IntegratorName(integ) + " (masked): | R_E/R_B - 1 | < " + std::to_string(kLayer2MaskedBand) );
+}
+
 static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 {
 	const fs::path scenePath = root / spec.relPath;
@@ -2876,57 +2937,8 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 			}
 		}
 
-		// (round-3 fix, task item 4; kept under adaptive K) A sub-render
-		// that fails to derive, or comes back with a mismatched or
-		// degenerate pixel array, used to be `continue`d past silently,
-		// so a bad run could average over fewer sub-renders than the
-		// estimator was measured at.  Under adaptive K the count is no
-		// longer fixed, so what is asserted is the thing that was
-		// actually wrong: NO sub-render failed, and the minimum sample
-		// size was reached.
-		if( integ == Integrator::BDPT || integ == Integrator::VCM ) {
-			Check( subRenderFailures == 0,
-				std::string( spec.keyword ) + " " + IntegratorName(integ)
-				+ " (masked): every sub-render succeeded (failures: "
-				+ std::to_string(subRenderFailures) + ")" );
-			Check( ratios.size() >= (std::size_t)kLayer2MaskedSubRenders,
-				std::string( spec.keyword ) + " " + IntegratorName(integ)
-				+ " (masked): at least " + std::to_string(kLayer2MaskedSubRenders)
-				+ " sub-renders (got " + std::to_string(ratios.size()) + ")" );
-		}
-
-		double ratio = 0.0;
-		for( double v : ratios ) ratio += v;
-		ratio /= double( ratios.size() );
-		const double se = standardError();
-
-		const bool loopedRow = ( integ == Integrator::BDPT || integ == Integrator::VCM );
-		const bool insufficient = loopedRow && se > seTarget;
-		LogMaskedStop( spec.keyword, "paired", integ, ratios, subRenderFailures, se, seTarget,
-			!loopedRow ? "single_sample" :
-			( ratios.size() + std::size_t(subRenderFailures) >= std::size_t(kLayer2MaskedSubRendersCap)
-				? "attempt_cap" : "precision_target" ) );
-
-		std::cout << "  MASKED " << IntegratorName(integ) << ": R_E=" << R_E << " R_B=" << R_B
-		          << " R_E/R_B-1(sub-render 1)=" << ( R_E / R_B - 1.0 )
-		          << "  avg over " << ratios.size() << " sub-render(s)=" << ratio;
-		if( loopedRow ) {
-			std::cout << "  SE=" << se << " (target <= " << seTarget << ")";
-		}
-		if( insufficient ) {
-			std::cout << "  [INSUFFICIENT PRECISION]" << std::endl;
-			std::cout << "  INSUFFICIENT PRECISION: " << spec.keyword << " "
-			          << IntegratorName(integ)
-			          << " (masked) reached the " << kLayer2MaskedSubRendersCap
-			          << "-sub-render cap with SE=" << se << " > " << seTarget
-			          << ".  The estimate (" << ratio << ") is NOT asserted either way "
-			          << "-- counted as a skip, not a pass and not a failure." << std::endl;
-			g_maskedPrecisionSkipCount++;
-			continue;
-		}
-		std::cout << ( std::fabs(ratio) < kLayer2MaskedBand ? "  [pass]" : "  [FAIL]" ) << std::endl;
-		Check( std::fabs( ratio ) < kLayer2MaskedBand,
-			std::string( spec.keyword ) + " " + IntegratorName(integ) + " (masked): | R_E/R_B - 1 | < " + std::to_string(kLayer2MaskedBand) );
+		CheckMaskedPairedContrast( spec.keyword, integ, ratios, subRenderFailures, R_E, R_B,
+			Check, [] { ++g_maskedPrecisionSkipCount; } );
 	}
 
 	// (supervisor ruling, debt 28 round 2) CROSS-INTEGRATOR MASKED
@@ -3097,6 +3109,62 @@ static void TestMaskedSelfContrastPrecision()
 	Check( g_renderIndex == renderIndexBefore, "self-contrast controls never render" );
 }
 
+// Observe the real paired gate for both adaptive integrators and PT's K=1
+// exception. Local callback outcomes never assign or rewind suite counters.
+static void TestMaskedPairedEligibility()
+{
+	std::cout << "\n-- DL224: paired eligibility and precision accounting --" << std::endl;
+	const unsigned int renderIndexBefore = g_renderIndex;
+	auto observe = []( const char* name, Integrator integ, const std::vector<double>& ratios,
+		int failures, int expectedPass, int expectedFail, int expectedSkip ) {
+		int p=0, f=0, skips=0;
+		CheckMaskedPairedContrast( name, integ, ratios, failures, 1.0+ratios.front(), 1.0,
+			[&]( bool ok, const std::string& ) { ok ? ++p : ++f; }, [&] { ++skips; } );
+		std::ostringstream raw;
+		raw << std::setprecision(std::numeric_limits<double>::max_digits10)
+			<< "PAIRED_CONTROL case=" << name << " integrator=" << IntegratorName(integ)
+			<< " n=" << ratios.size() << " failures=" << failures
+			<< " se=" << MaskedStandardError(ratios) << " nested_pass=" << p
+			<< " nested_fail=" << f << " precision_skip=" << skips;
+		std::cout << raw.str() << std::endl;
+		Check( p == expectedPass, std::string(name)+": only eligible paired results are asserted" );
+		Check( f == expectedFail, std::string(name)+": paired accounting failures retained" );
+		Check( skips == expectedSkip, std::string(name)+": paired precision skip count" );
+	};
+	std::vector<double> noisy;
+	for( int i=0; i<48; ++i ) noisy.push_back((i%2 ? 3.0 : 1.0)/2.0-1.0);
+	const std::vector<double> precise(12, 0.0);
+	// Balanced +/-a gives SE=a/sqrt(n-1). Choose a nearby representable
+	// amplitude whose computed SE equals the actual double target exactly;
+	// this tests <= at the boundary without treating a rounding neighbor as =.
+	std::vector<double> boundary;
+	const double target=kLayer2MaskedBand*kLayer2MaskedSEFraction;
+	bool exact=false;
+	for( int n=12; n<=48 && !exact; n+=2 ) {
+		boundary.resize(n);
+		double amplitude=target*std::sqrt(double(n-1));
+		for( int j=0; j<16; ++j ) {
+			for( int i=0; i<n; ++i ) boundary[i]=i%2 ? amplitude : -amplitude;
+			const double se=MaskedStandardError(boundary);
+			if( se==target ) { exact=true; break; }
+			amplitude=std::nextafter(amplitude, se<target ? 1.0 : 0.0);
+		}
+	}
+	Check( exact, "paired boundary fixture has SE exactly equal to target" );
+	for( Integrator integ : {Integrator::BDPT, Integrator::VCM} ) {
+		observe("failed_attempt_cap",integ,std::vector<double>(1,0),47,0,2,0);
+		observe("failures_with_minimum",integ,precise,1,1,1,0);
+		observe("minimum_missing",integ,std::vector<double>(11,0),0,1,1,0);
+		observe("noisy_cap",integ,noisy,0,2,0,1);
+		observe("precise_match",integ,precise,0,3,0,0);
+		observe("precise_disagreement",integ,std::vector<double>(12,.5),0,2,1,0);
+		if( exact ) observe("exact_se_boundary",integ,boundary,0,3,0,0);
+	}
+	observe("pt_single_match",Integrator::PT,std::vector<double>(1,0),0,1,0,0);
+	observe("pt_single_disagreement",Integrator::PT,std::vector<double>(1,.5),0,0,1,0);
+	Check( g_renderIndex==renderIndexBefore, "paired eligibility controls never render" );
+}
+
 //======================================================================
 // main
 //======================================================================
@@ -3158,6 +3226,7 @@ int main( int argc, char** argv )
 
 	TestNonfiniteCandidateRejected();
 	TestMaskedSelfContrastPrecision();
+	TestMaskedPairedEligibility();
 
 	std::cout << "\n========================================" << std::endl;
 	std::cout << "Passed: " << passCount << "  Failed: " << failCount
