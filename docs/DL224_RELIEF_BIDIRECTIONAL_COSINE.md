@@ -213,6 +213,52 @@ is clipped. Each row records wi, wo, independently expected weight and actual
 weight with17 digits.
 
 
+## Synthetic BSSRDF entry frames (2026-09-20)
+
+The view-facing NEE correction exposed two pre-existing malformed synthetic
+records. A RIG's ray is incoming. PT's diffusion and random-walk entry
+constructors instead stored the outgoing sampled continuation. BDPT's
+zero-exitance sweep used the chord toward the nonlocal diffusion exit as
+its local view direction. Neither represents the entry adapter's contract:
+`Sw(wi)` has fixed outward support `Ns.wi > 0`, independent of that chord.
+`BSSRDFAdapters::EntryEvaluationRay(position, Ns)` now supplies incoming
+`-Ns` at those three consumers only. Ordinary BDPT vertices retain `-wo`.
+Geometric normals, entry area densities, continuation rays and weights are
+unchanged.
+
+The trained NEE moment for a fixed sample is `(Rd * K / p)^2`; doubling
+`Rd` must multiply it by four when the sampling and other factors are held
+fixed. At committed `a423ea7c`, `OptimalMISTrainingSitesTest` was **110/1**:
+BSDF moments 1325.8→5302.7 (3.99962), but NEE 5.15149→5.15149 (1).
+The separately rebuilt committed raw-cosine diagnostic `ee55e57b` was
+**111/0**, NEE ratio **3.99567**. Restoring the final view-facing helper and
+correcting the two PT producers (`bc227c9b`) was also **111/0**. Thus this
+was a producer-frame regression, not a tolerance or training-law change.
+
+Separately, `BDPTZeroExitanceBSSRDFTest` at `bc227c9b` was **21/4**:
+diffusion PT mean luminance **1.37202**, BDPT **0**, and MLT zero-luminance
+bootstrap; random-walk PT **0.288554**, BDPT **0**, MLT likewise zero.
+The ambient and ordinary Lambertian controls remained lit. The fixed-frame
+helper is checked directly for incoming direction and outward/inward
+signed cosines, then against real diffusion and random-walk adapters in
+Pel and NM at 400/500/600/700 nm. These assertions do not depend on render
+noise. The PT Pel/NM producers share the template; HWSS entry and mid-path
+SSS fallback delegate each surviving wavelength to NM. BDPT's tagged
+zero-exitance sweep shares the adapter construction across Pel/NM and
+HWSS companion evaluation. Legacy SSS and Donner-Jensen irradiance sampling already construct
+`Ray(samplePosition, -normal)` and need no change. Other legacy direct-light
+callers use live hit records; volume callers retain the explicit volume
+cosine of one.
+
+At final production `d68e5674`, the frame suite is **41/0**, including
+12 exact assertions: diffusion PT/BDPT/MLT luminance
+**1.37330 / 1.37581 / 1.36713**; random walk
+**0.288907 / 0.289501 / 0.288304** (one gate run, not a repeated-mean claim).
+Optimal MIS is **111/0**, NEE moment **3565.15→14245.1**, ratio **3.99567**.
+The initially failed test-launch command addressed the make target rather
+than the `bin/tests` executable; its orchestration failure is retained
+separately from these actual successful runs.
+
 ## Legacy photon sibling: DL-239
 
 This is a separate, confirmed pipeline gap; none of the bidirectional

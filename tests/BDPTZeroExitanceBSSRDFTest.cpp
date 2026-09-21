@@ -49,7 +49,8 @@
 //
 //  WHAT EACH PART OF THIS FILE PROVES
 //
-//    All parts are RENDER-LEVEL, END-TO-END money tests (construction
+//    DL224 adds exact fixed-outward entry-frame and Pel/NM support checks.
+//    Parts A-D are RENDER-LEVEL, END-TO-END money tests (construction
 //    API via `RISE_CreateJobPriv`+`LoadAsciiSceneViaCst`, the same
 //    idiom `tests/BSSRDFOpenSheetEntryTest.cpp` Part B uses).  Parts
 //    A-C use a flat, DOUBLE-sided `clippedplane_geometry` quad viewed
