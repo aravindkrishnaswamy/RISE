@@ -221,7 +221,12 @@ bool GlobalPelPhotonMap::DeserializeChecked( IReadBuffer& buffer )
  if(AvailableBytes(buffer)<52) return LoadError("truncated bounds/count");
  BoundingBox ignored;ignored.Deserialize(buffer);const unsigned int count=buffer.getUInt();
  const unsigned int recordBytes=format==2?75:77;
- if(count>maximum || scaled>count || count>AvailableBytes(buffer)/recordBytes)
+ // Old Store rejected size>maximum rather than size>=maximum, allowing
+ // exactly one extra raw packet. Preserve that recoverable record and the
+ // original maximum, including after conversion to flag2 without Ng data.
+ // Geometric-normal maps use the current strict capacity contract.
+ const bool legacyOverflow=!geometry && count>maximum && count-maximum==1;
+ if((count>maximum && !legacyOverflow) || scaled>count || count>AvailableBytes(buffer)/recordBytes)
   return LoadError("invalid or truncated packet count");
  if(!IsFiniteDouble(radius) || radius<0 || !IsFiniteDouble(ellipse) || ellipse<0 || !IsFiniteDouble(power))
   return LoadError("nonfinite/negative gather parameters");
