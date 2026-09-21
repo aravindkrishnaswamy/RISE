@@ -226,6 +226,7 @@ void Cases() {
     Check(New(c,mode,u,nm,nullptr)==expected,"probability omitted preserves pointer");
     double want=0;
     if(got){const bool shortcut=mode==0?n==1:(n<=2&&eligible==1);want=shortcut?1:Weight(*got,nm)/total;}
+    if(q!=want) std::printf("QDIAG n=%u scenario=%d mode=%d nm=%d u=%a q=%a want=%a total=%a weight=%a\n",n,scenario,mode,int(nm),u,q,want,total,got?Weight(*got,nm):0);
     Check(q==want,"probability is shortcut1 or selected eligible weight/total");
     for(unsigned i=0;i<n;++i){Check(c[i].pdf==.125*(i+1)&&c[i].isDelta==(i%2==0)&&c[i].ray.origin.x==i&&c[i].ray.Dir().z==1&&c[i].ior_stack==savedStack[i]&&c[i].ior_stack->top()==1.0+i*.125&&c[i].krayNM==savedNM[i]&&c[i].kray.r==savedPel[i].r&&c[i].kray.g==savedPel[i].g&&c[i].kray.b==savedPel[i].b,"selection preserves ray/pdf/IOR metadata");}
    }
