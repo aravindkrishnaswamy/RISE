@@ -171,6 +171,36 @@ void LegacyCacheLoad(){
   for(int c=0;c<3;++c)Near(got[c],expected,"legacy raw load stays on directional direct gather after parameter update");
   bsdf->release();paint->release();
  }
+ // Historical Store allowed one packet beyond its nominal maximum. These
+ // legacy raw packets still carry all directions and must survive loading.
+ buffer->seek(IBuffer::START,0);buffer->setUInt(0);buffer->seek(IBuffer::START,used);
+ Check(buffer->DumpToFileToCursor(path.string().c_str()),"legacy one-over-capacity fixture written",1,1);
+ const bool overfull=job->LoadGlobalPelPhotonmap(path.string().c_str());
+ Check(overfull,"recoverable legacy one-over-capacity map loads",overfull,1);
+ if(overfull){
+  auto* current=job->GetScene()->GetGlobalPelMapMutable();
+  Check(current->NumStored()==1&&current->MaxPhotons()==0,"legacy record/count metadata preserved",current->NumStored(),1);
+  auto* roundtrip=new MemoryBuffer();current->Serialize(*roundtrip);roundtrip->seek(IBuffer::START,0);
+  CacheProbe restored(0);const bool reload=restored.DeserializeChecked(*roundtrip);
+  Check(reload&&restored.NumStored()==1&&restored.MaxPhotons()==0,"converted directional format retains legacy overflow provenance",restored.NumStored(),1);
+  roundtrip->release();
+ }
+ // Two extra packets cannot be produced by the old Store contract. Supply
+ // all bytes so rejection cannot be attributed to a truncated record list.
+ const std::vector<char> packet(buffer->Pointer()+93,buffer->Pointer()+used);
+ buffer->ResizeForMore(static_cast<unsigned>(packet.size()));buffer->setBytes(packet.data(),static_cast<unsigned>(packet.size()));
+ const unsigned twoUsed=buffer->getCurPos();buffer->seek(IBuffer::START,89);buffer->setUInt(2);buffer->seek(IBuffer::START,twoUsed);
+ Check(buffer->DumpToFileToCursor(path.string().c_str()),"two-over-capacity fixture written",1,1);
+ const IPhotonMap* beforeInvalid=job->GetScene()->GetGlobalPelMap();
+ const bool invalid=job->LoadGlobalPelPhotonmap(path.string().c_str());
+ Check(!invalid&&job->GetScene()->GetGlobalPelMap()==beforeInvalid,"unproducible legacy count rejected without replacement",invalid,0);
+ // Current geometric-normal records have no historical capacity exception.
+ CacheProbe currentFormat(1);currentFormat.Store(RISEPel(1.),Point3(0,0,0),Vector3(0,0,1),Vector3(0,0,1));
+ auto* modern=new MemoryBuffer();currentFormat.Serialize(*modern);modern->seek(IBuffer::START,0);modern->setUInt(0);modern->seek(IBuffer::START,0);
+ CacheProbe untouched(2);untouched.Store(RISEPel(1.),Point3(1,0,0),Vector3(0,0,1),Vector3(0,0,1));
+ const bool modernLoaded=untouched.DeserializeChecked(*modern);
+ Check(!modernLoaded&&untouched.NumStored()==1,"modern over-capacity records rejected transactionally",modernLoaded,0);
+ modern->release();
  std::filesystem::remove(path);
  buffer->release();installed->release();job->release();
 }
