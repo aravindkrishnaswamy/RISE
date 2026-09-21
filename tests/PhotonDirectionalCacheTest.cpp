@@ -29,13 +29,13 @@ RISEPel Reference(const std::vector<Deposit>& deposits,const Point3& anchor,cons
  std::vector<std::pair<double,const Deposit*> > sorted;
  for(const auto& p:deposits){const Vector3 d=Vector3Ops::mkVector3(p.p,anchor);const double d2=Vector3Ops::SquaredModulus(d);if(d2<.04)sorted.emplace_back(d2,&p);}
  std::sort(sorted.begin(),sorted.end(),[](const auto& a,const auto& b){return a.first<b.first;});if(sorted.size()>400)sorted.resize(400);
- RISEPel sum(0);if(sorted.size()<=10)return sum;const double r2=sorted.back().first;
+ RISEPel sum(0.0);if(sorted.size()<=10)return sum;const double r2=sorted.back().first;
  for(const auto& p:sorted){const double height=Vector3Ops::Dot(Vector3Ops::mkVector3(p.second->p,anchor),areaNormal);if(std::fabs(height)<r2*.05&&Vector3Ops::Dot(wi,areaNormal)>0)sum=sum+p.second->power;}
  double factor=angular?std::fabs(Vector3Ops::Dot(query.vNormal,wi)/Vector3Ops::Dot(areaNormal,wi)):1;
  return sum*brdf.value(wi,query)*(factor/(PI*r2));
 }
 void Run(){
- auto* paint=new UniformColorPainter(RISEPel(.8,.5,.2));auto* black=new UniformColorPainter(RISEPel(0));auto* exp=new UniformScalarPainter(12);auto* lambert=new LambertianBRDF(*paint);auto* phong=new IsotropicPhongBRDF(*black,*paint,*exp);
+ auto* paint=new UniformColorPainter(RISEPel(.8,.5,.2));auto* black=new UniformColorPainter(RISEPel(0.0));auto* exp=new UniformScalarPainter(12);auto* lambert=new LambertianBRDF(*paint);auto* phong=new IsotropicPhongBRDF(*black,*paint,*exp);
  const Point3 anchor(0,0,0);const Vector3 areaNormal(0,0,1);
  RayIntersectionGeometric query(Ray(Point3(0,0,1),Vector3(0,0,-1)),nullRasterizerState);query.ptIntersection=anchor;query.vGeomNormal=areaNormal;
  for(double incident:{-45.,0.,45.}){
