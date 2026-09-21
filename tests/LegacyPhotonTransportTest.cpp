@@ -19,6 +19,9 @@
 #include "TestStubObject.h"
 #include "../src/Library/Shaders/PathTracingIntegrator.h"
 #include "../src/Library/Shaders/BDPTIntegrator.h"
+#include "../src/Library/Lights/LightSampler.h"
+#include "../src/Library/Lights/PointLight.h"
+#include "../src/Library/Managers/LightManager.h"
 #include "../src/Library/Materials/LambertianLuminaireMaterial.h"
 #include "../src/Library/Shaders/FinalGatherShaderOp.h"
 #include "../src/Library/Shaders/DistributionTracingShaderOp.h"
@@ -280,6 +283,10 @@ void TestSMSSelection() {
 class ZeroSampler : public ISampler {
 public: Scalar Get1D() override {return 0;} Point2 Get2D() override {return Point2(0,0);}
 };
+class LightPrefixSampler : public ISampler {
+    unsigned n=0;
+public: Scalar Get1D() override {return n++<4?.75:0;} Point2 Get2D() override {return Point2(0,0);}
+};
 class RareMaterial : public SplitMaterial {
     double first,second;bool delta;
     void EmitRare(const RayIntersectionGeometric& ri,ScatteredRayContainer& out,bool nm) const {
@@ -302,6 +309,7 @@ void TestRareIntegratorSelection() {
         // Control, tiny selected weight, and selected weight above NEARZERO with
         // tiny probability (total100 stays below PT's independent 1e6 cap). xi=0 selects the first nonzero interval exactly.
         double a=extreme==1?1e-14:extreme==2?1e-11:1,b=extreme==2?100:1;
+        bdpt->SetLightSampler(nullptr);
         RareMaterial material(a,b,hasBSDF?bsdf:nullptr);
         auto* manager=new TwoPlaneManager(*object,material,*emitter);auto* scene=new Scene();scene->SetObjectManager(manager);ConstantCaster caster(scene);
         RayIntersection hit(ray,nullRasterizerState);manager->IntersectRay(hit,true,true,false);
@@ -318,6 +326,16 @@ void TestRareIntegratorSelection() {
         Check(verts.size()>=3,"BDPT eye reaches receiver",verts.size(),3);if(verts.size()>=3)Near(verts[2].throughput.r/(a+b),1,"DL271 actual BDPT Pel selected conditional response");
         bdpt->GenerateEyeSubpathNM(rc,ray,Point2(0,0),*scene,caster,sampler,verts,starts,550,nullptr);
         Check(verts.size()>=3,"BDPT NM eye reaches receiver",verts.size(),3);if(verts.size()>=3)Near(verts[2].throughputNM/(a+b),1,"DL271 actual BDPT NM selected conditional response");
+        auto* light=new PointLight(1,RISEPel(1),true);light->SetPosition(Point3(0,0,1));light->FinalizeTransformations();
+        auto* lights=new LightManager();lights->AddItem(light,"conditional-point");scene->SetLightManager(lights);
+        auto* lightSampler=new LightSampler();LuminaryManager::LuminariesList luminaries;lightSampler->Prepare(*scene,luminaries);bdpt->SetLightSampler(lightSampler);
+        LightPrefixSampler lightSamples;
+        bdpt->GenerateLightSubpath(*scene,caster,lightSamples,verts,starts,rng);
+        Check(verts.size()>=3,"BDPT light reaches receiver",verts.size(),3);if(verts.size()>=3)Near(verts[2].throughput.r/(verts[1].throughput.r*(a+b)),1,"DL271 actual BDPT Pel light selected conditional response");
+        LightPrefixSampler nmLightSamples;
+        bdpt->GenerateLightSubpathNM(*scene,caster,nmLightSamples,verts,starts,550,rng,nullptr);
+        Check(verts.size()>=3,"BDPT NM light reaches receiver",verts.size(),3);if(verts.size()>=3)Near(verts[2].throughputNM/(verts[1].throughputNM*(a+b)),1,"DL271 actual BDPT NM light selected conditional response");
+        bdpt->SetLightSampler(nullptr);lightSampler->release();lights->release();light->release();
         scene->release();manager->release();
     }
     bdpt->release();pt->release();emitter->release();nullMat->release();bsdf->release();paint->release();object->release();
