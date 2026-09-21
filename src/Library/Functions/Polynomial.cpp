@@ -286,7 +286,8 @@ int Polynomial::SolveCubic( const Scalar (&coeff)[ 4 ], Scalar (&sol)[ 3 ] )
 //     Orellana & De Michele, "Algorithm 1010: Boosting Efficiency
 //     in Solving Quartic Equations with No Compromise in Accuracy",
 //     ACM TOMS, Vol. 46, No. 2, 2020, DOI 10.1145/3386241.
-//   Source: https://github.com/cridemichel/quartic_C (MIT-like).
+//   Reference source: https://github.com/cridemichel/quartic_C.
+//   See the upstream copyright/permission notice; no MIT license is implied.
 //
 //   API: This function keeps RISE's signature — coeff[0] is the
 //   LEADING coefficient (x^4), coeff[4] is the constant term.
@@ -621,8 +622,9 @@ int Polynomial::SolveQuartic( const Scalar (&coeff)[ 5 ], Scalar (&sol)[ 4 ] )
 	}
 
 	// Build candidate (alpha1, beta1, alpha2, beta2) factorisation.  We
-	// only care about the fully-real case (d2 <= 0) — complex roots
-	// mean no ray-surface intersection, which the caller treats as miss.
+	// real coefficients arise for d2 < 0. The d2 > 0 candidate has
+	// conjugate-complex coefficients, but its reconstruction error is still
+	// essential when comparing the alternative real factorisation below.
 	int realcase0 = ( d2 < 0.0 ) ? 1 : ( d2 > 0.0 ? 0 : -1 );
 	double aq = 0, bq = 0, cq = 0, dq = 0;
 	double errmin = 0;
@@ -657,49 +659,31 @@ int Polynomial::SolveQuartic( const Scalar (&coeff)[ 5 ], Scalar (&sol)[ 4 ] )
 		}
 	}
 
-	// Real-case-II fallback: identical-alpha / split-beta factorisation.
+	// Identical-alpha / split-beta alternative (OQS case III).
+	// Evaluate it even away from d2=0 to retain the alternate-factor recovery
+	// used by ill-conditioned torus rays, but compare against the ACTUAL
+	// primary factorisation, including the conjugate-complex case.
 	//
-	// The published OQS algorithm only consults this fallback when d2 is
-	// "near zero" — the original gate compared |d2| against
-	// oqs_fact_d0 * (|2B/3| + |phi0| + l1²).  In practice that gate is
-	// too aggressive for the torus quartic: rotated tori produce ill-
-	// conditioned quartics where d2 is positive and well outside the
-	// "near zero" window (so realcase0 = 0 → algorithm gives up,
-	// returning 0 real roots) yet four real roots exist that the
-	// identical-alpha factorisation does recover.  The downstream symptom
-	// is black-pixel speckle on rotated tori — primary rays that should
-	// hit the surface returning no roots.
-	//
-	// Always evaluate the d3 ≤ 0 path; pick whichever forward-error is
-	// lower (or take it unconditionally if the primary path failed).
+	// For d2>0 the primary product is
+	//   (x^2+l1*x+l3)^2 + d2*(x+l2)^2.
+	// oqs_calc_err_ldlt reconstructs its B/C/D coefficients directly without
+	// complex arithmetic; A=2*l1 already matches. Treating this error as
+	// infinity would allow an incompatible real alternative to win. For
+	// (x^2+1)^2 it replaced +2*x^2 by -2*x^2, then the singular repeated-
+	// factor Newton system could not repair it (DL226).
 	int whichcase = 0;
 	{
 		double d3 = D - l3 * l3;
 		if( d3 <= 0 ) {
-			// `err0` is a "least-error" sentinel: when the primary path
-			// (realcase0 == 1) didn't pick this branch, we want the
-			// identical-alpha alternative to win unconditionally.  Using
-			// `numeric_limits<double>::infinity()` is the textbook
-			// sentinel, but the build enables `-ffast-math`
-			// (-ffinite-math-only), under which `infinity()` was UB.  macOS pairs
-			// -fno-finite-math-only since 2026-07-29, so it no longer is -- but the
-			// finite-sentinel convention below is repo-wide and stays.
-			// `numeric_limits<double>::max()` is the right finite-math
-			// equivalent: any real-valued error is < max, so the
-			// alternative still always wins when realcase0 != 1.  The
-			// comparison `err1 < err0` below short-circuits on
-			// `realcase0 != 1` anyway, so this branch is effectively
-			// dead — but keeping the value finite preserves correctness
-			// if a future refactor evaluates it.
-			double err0 = ( realcase0 == 1 )
+			const double err0 = ( realcase0 == 1 )
 				? oqs_calc_err_d( errmin, D, bq, dq )
-				: std::numeric_limits<double>::max();
+				: oqs_calc_err_ldlt( B, C, D, d2, l1, l2, l3 );
 			double sqrtd3 = sqrt( -d3 );
 			double aq1 = l1, bq1 = l3 + sqrtd3, cq1 = l1, dq1 = l3 - sqrtd3;
 			if( fabs( dq1 ) < fabs( bq1 ) ) dq1 = D / bq1;
 			else if( fabs( dq1 ) > fabs( bq1 ) ) bq1 = D / dq1;
 			double err1 = oqs_calc_err_abcd( A, B, C, D, aq1, bq1, cq1, dq1 );
-			if( realcase0 != 1 || err1 < err0 ) {
+			if( realcase0 == -1 || err1 < err0 ) {
 				whichcase = 1;
 				aq = aq1; bq = bq1; cq = cq1; dq = dq1;
 				realcase0 = 1;  // swapped to the identical-alpha real case
@@ -709,8 +693,8 @@ int Polynomial::SolveQuartic( const Scalar (&coeff)[ 5 ], Scalar (&sol)[ 4 ] )
 		// roots from this branch.  Leave realcase0 as-is.
 	}
 
-	// Extract real roots.  If realcase0 != 1 at this point the quartic
-	// has all-complex roots (from our caller's standpoint, no ray hit).
+	// Extract real roots from the selected real-coefficient factors; their
+	// quadratic discriminants still decide whether each pair is real.
 	int num = 0;
 	if( realcase0 == 1 ) {
 		// Refine (alpha1, beta1, alpha2, beta2) via Newton-Raphson.
