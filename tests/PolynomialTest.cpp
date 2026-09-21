@@ -537,6 +537,24 @@ static void TestQuarticClassificationAndCallers()
         const double g=(1+std::sqrt(5.0))/2;
         CheckQuarticOracle("normalization_boundary_odd",{{a,-a,-4,4,4}},{-big,1-g,g,big},1e-12,true);
     }
+    for(int exponent:{400,500,600,800,1000}) {
+        const double h=std::ldexp(1.0,exponent);
+        // Rounded expansion of (x-h)(x-1)(x-2)(x-3). Dropped input
+        // corrections are O(1/h), far below the relative oracle band.
+        CheckQuarticOracle("wide_root_spread",{{1,-h,6*h,-11*h,6*h}},{1,2,3,h},1e-10,true);
+        CheckQuarticOracle("reciprocal_wide_spread",{{6*h,-11*h,6*h,-h,1}},{1/h,1.0/3,.5,1},1e-10,true);
+    }
+    for(int exponent:{-260,-255,255}) {
+        const double r=std::ldexp(1.0,exponent),r2=r*r;
+        CheckQuarticOracle("representable_scale_edge",{{1,-10*r,35*r2,-50*r2*r,24*r2*r2}},{r,2*r,3*r,4*r},1e-8,true);
+    }
+    for(int exponent:{-20,-40,-45}) {
+        const double delta=std::ldexp(1.0,exponent),q=std::sqrt(delta);
+        CheckQuarticOracle("positive_near_two_double",{{1,-12,52,-96,64+delta}},{});
+        const double outer=std::sqrt(1+q),inner=std::sqrt(1-q);
+        CheckQuarticOracle("four_real_near_two_double",{{1,-12,52,-96,64-delta}},
+            {3-outer,3-inner,3+inner,3+outer},1e-7);
+    }
     CheckQuarticOracle("fourfold_zero",{{1,0,0,0,0}},{0});
     CheckQuarticOracle("fourfold_one",{{1,-4,6,-4,1}},{1},1e-6);
     // Equal-error factor candidates must not split an exactly squared
