@@ -621,8 +621,8 @@ int Polynomial::SolveQuartic( const Scalar (&coeff)[ 5 ], Scalar (&sol)[ 4 ] )
 		l2 = l2m[kmin];
 	}
 
-	// Build candidate (alpha1, beta1, alpha2, beta2) factorisation.  We
-	// real coefficients arise for d2 < 0. The d2 > 0 candidate has
+	// Build candidate (alpha1, beta1, alpha2, beta2) factorisation.
+	// Real coefficients arise for d2 < 0. The d2 > 0 candidate has
 	// conjugate-complex coefficients, but its reconstruction error is still
 	// essential when comparing the alternative real factorisation below.
 	int realcase0 = ( d2 < 0.0 ) ? 1 : ( d2 > 0.0 ? 0 : -1 );
@@ -683,7 +683,15 @@ int Polynomial::SolveQuartic( const Scalar (&coeff)[ 5 ], Scalar (&sol)[ 4 ] )
 			if( fabs( dq1 ) < fabs( bq1 ) ) dq1 = D / bq1;
 			else if( fabs( dq1 ) > fabs( bq1 ) ) bq1 = D / dq1;
 			double err1 = oqs_calc_err_abcd( A, B, C, D, aq1, bq1, cq1, dq1 );
-			if( realcase0 == -1 || err1 < err0 ) {
+			// Equal rounded coefficient errors do not imply equally conditioned
+			// roots. When d3==0 this alternative is one quadratic squared:
+			// prefer its exact coalescence over a numerically split primary.
+			// Example: (x-1)^4 can give d2=-epsilon, alpha=-2+/-sqrt(epsilon)
+			// with both errors rounding to zero. Newton's singular system need
+			// not repair that split. This tie rule introduces no error band;
+			// an incompatible positive-quartic fallback still has larger error.
+			const bool coalescedTie = ( d3 == 0.0 && err1 == err0 );
+			if( realcase0 == -1 || err1 < err0 || coalescedTie ) {
 				whichcase = 1;
 				aq = aq1; bq = bq1; cq = cq1; dq = dq1;
 				realcase0 = 1;  // swapped to the identical-alpha real case
