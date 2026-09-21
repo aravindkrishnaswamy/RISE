@@ -85,6 +85,9 @@
 
 #include <iostream>
 #include <cmath>
+#include <algorithm>
+#include <cstdio>
+#include <vector>
 
 #include "../src/Library/Utilities/Math3D/Math3D.h"
 #include "../src/Library/Utilities/Ray.h"
@@ -144,10 +147,12 @@ namespace
 		const IObject& object;
 		const IMaterial& material;
 		mutable int callCount;
+		Scalar tilt;
 	public:
-		SingleHitThenMissManager( const IObject& obj, const IMaterial& mat ) :
-			ObjectManager( false, false, 4, 8 ), object( obj ), material( mat ), callCount( 0 )
+		SingleHitThenMissManager( const IObject& obj, const IMaterial& mat, Scalar angle = 0 ) :
+			ObjectManager( false, false, 4, 8 ), object( obj ), material( mat ), callCount( 0 ), tilt( angle )
 		{}
+		void Reset() const { callCount = 0; }
 		void IntersectRay( RayIntersection& ri, bool, bool, bool ) const override
 		{
 			if( callCount++ != 0 ) {
@@ -158,9 +163,9 @@ namespace
 			ri.geometric.bHit = true;
 			ri.geometric.range = 1;
 			ri.geometric.ptIntersection = ri.geometric.ray.PointAtLength( 1 );
-			ri.geometric.vNormal = normal;
+			ri.geometric.vNormal = Vector3( sin(tilt), 0, cos(tilt) );
 			ri.geometric.vGeomNormal = normal;
-			ri.geometric.onb.CreateFromW( normal );
+			ri.geometric.onb.CreateFromW( ri.geometric.vNormal );
 			ri.pObject = &object;
 			ri.pMaterial = &material;
 		}
@@ -492,6 +497,63 @@ static void TestLambertianWallDeposit()
 	}
 }
 
+// DL239: drive actual deposits through the public gather. The two packet
+// meanings have different responses: ordinary incident flux receives the
+// query BSDF; an exit packet already paid Beer*(1-s) and represents a
+// clipped-cosine re-emission lobe, not another front-reflection interaction.
+static void TestDirectionalGathers()
+{
+ for( bool exit : {false,true} ) for( double angle : {0.,30.,60.} ) {
+  const double tilt=angle*PI/180;
+  auto* front=new UniformColorPainter(RISEPel(.2,.4,.7));
+  auto* transmission=new UniformColorPainter(RISEPel(.4));
+  auto* extinction=new UniformScalarPainter(.5);
+  auto* exponent=new UniformScalarPainter(1.);
+  auto* scattering=new UniformScalarPainter(.3);
+  auto* trans=new TranslucentMaterial(*front,*transmission,*extinction,*exponent,*scattering);
+  auto* wall=new LambertianMaterial(*front);
+  IMaterial* material=exit?static_cast<IMaterial*>(trans):static_cast<IMaterial*>(wall);
+  auto* object=new StubObject();
+  auto* manager=new SingleHitThenMissManager(*object,*material,tilt);
+  auto* scene=new Scene();scene->SetObjectManager(manager);
+  auto* tracer=new TestTranslucentPelPhotonTracer();tracer->AttachScene(scene);
+  InspectableTranslucentPelPhotonMap map(2601);
+  // The interior packet arrives outward, opposite the ordinary-wall case.
+  const Vector3 wi=exit?Vector3(0,0,-1):Vector3(.6,0,.8);
+  std::vector<double> distances;
+  for(int y=-25;y<=25;++y)for(int x=-25;x<=25;++x){
+   const Point3 p(x*.01,y*.01,0);
+   manager->Reset();IORStack stack=exit?MakeInsideStack(object):IORStack(1.0);
+   const Ray incoming(p+wi,-wi);
+   tracer->TestTrace(incoming,RISEPel(1.),true,map,stack,1);
+   const double d2=p.x*p.x+p.y*p.y;if(d2<.04)distances.push_back(d2);
+  }
+  EXPECT(map.StoredCount()==2601,"directional gather has every live tracer deposit");
+  map.Balance();map.SetGatherParams(.2,.05,10,400,nullptr);
+  std::sort(distances.begin(),distances.end());const double density=400/(PI*distances[399]);
+  for(double view:{0.,70.,150.}){
+   const double v=view*PI/180;const Vector3 wo(sin(v),0,cos(v));
+   RayIntersectionGeometric query(Ray(Point3(0,0,1),-wo),nullRasterizerState);
+   query.ptIntersection=Point3(0,0,0);query.vNormal=Vector3(sin(tilt),0,cos(tilt));query.vGeomNormal=Vector3(0,0,1);query.onb.CreateFromW(query.vNormal);
+   RISEPel got;map.RadianceEstimate(got,query,*material->GetBSDF());
+   RISEPel expected(0.);
+   const double incomingResponse=fabs(Vector3Ops::Dot(query.vNormal,wi)/wi.z);
+   if(exit){
+    // Independently cancel p_exit(wo) * adjoint / |Ng.wo|.
+    // p_exit = max(Ns.wo,0)/(pi * (1+Ns.Ng)/2), clipped to Ng.wo>0.
+    if(wo.z>0 && Vector3Ops::Dot(query.vNormal,wo)>0)
+     expected=RISEPel(density*exp(-.5)*.7*incomingResponse/(PI*((1+cos(tilt))*.5)));
+   }else expected=material->GetBSDF()->value(wi,query)*(density*incomingResponse);
+   for(int c=0;c<3;++c){
+    const bool ok=std::isfinite(got[c])&&fabs(got[c]-expected[c])<1e-9*std::max(1.,fabs(expected[c]));
+    ++checks;if(!ok)++failed;
+    std::printf("%s DL239 translucent gather kind=%s tilt=%.17g view=%.17g channel=%d got=%.17g expected=%.17g density=%.17g\n",ok?"PASS":"FAIL",exit?"exit-lobe":"incident-flux",angle,view,c,got[c],expected[c],density);
+   }
+  }
+  tracer->release();scene->release();manager->release();object->release();wall->release();trans->release();front->release();transmission->release();extinction->release();exponent->release();scattering->release();
+ }
+}
+
 int main()
 {
 	GlobalLog();
@@ -499,6 +561,7 @@ int main()
 	TestExtinctionSweep();
 	TestBackscatterBalance();
 	TestLambertianWallDeposit();
+	TestDirectionalGathers();
 
 	std::cout << std::endl;
 	std::cout << "TranslucentPhotonEnergyTest: " << checks << " checks, " << failed << " failures" << std::endl;
