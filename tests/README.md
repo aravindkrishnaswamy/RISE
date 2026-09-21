@@ -44,6 +44,27 @@ MSVC build yet, so the first Windows run of each should expect to fix them:
   command string handed to `std::system`), added 2026-09-07. The POSIX
   branch is exercised on every macOS/Linux run.
 
+## Shared quartic factorization (DL226)
+
+Build the library and exact target, then run `./bin/tests/PolynomialTest`:
+
+```sh
+make -C build/make/rise -j8 all
+make -C build/make/rise build-test/PolynomialTest
+./bin/tests/PolynomialTest
+```
+
+The explicit DL226 checks remain active under `NDEBUG`. Independent
+positive-polynomial and factored-root oracles cover invented roots,
+missing real roots, repeated and near-multiple roots, common coefficient
+and variable scaling, and leading-zero cubic/quadratic/linear dispatch.
+Direct torus and transformed `Object` primary/shadow fixtures distinguish
+central-hole misses from four-crossing and grazing hits. The final
+measured suite has **521 explicit checks, 0 failures**, plus the existing
+assert-based polynomial tests; per-returned-root diagnostics make totals
+vary between defective and corrected solvers. See
+[the derivation and committed red/green evidence](../docs/DL226_QUARTIC_FACTORIZATION.md).
+
 ## Test Map
 
 There are 219 standalone `tests/*.cpp` executables as of 2026-07-24. Do not

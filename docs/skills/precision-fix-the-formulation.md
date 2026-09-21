@@ -199,12 +199,24 @@ Why wrong:
   committed to its real-vs-complex verdict, even when another would
   have found real roots.
 
-Right fix: drop the gate.  Always evaluate the identical-α fallback
-when `d3 ≤ 0` (the regime where it produces real roots), compute
-its forward error, pick whichever factorisation has lower error.
-When the primary path was already valid with lower error we keep
-it; when the fallback wins we switch.  Both branches evaluated, no
-threshold guesswork, no missed roots.
+Right fix: evaluate the identical-α alternative whenever `d3 ≤ 0`,
+then compare coefficient reconstruction errors against the **actual**
+primary factorization, including a conjugate-complex primary. Real
+quadratic coefficients do not guarantee real roots: their discriminants
+still decide. DL226 found that assigning the complex primary infinite
+error made the fallback turn `(x²+1)²` into `(x²−1)²`, inventing real
+roots. The existing LDLT reconstruction metric evaluates the complex
+primary without complex arithmetic. Only `d2 == 0`, where no primary
+candidate was constructed, requires unconditional fallback selection.
+
+At exactly equal rounded errors and `d3 == 0`, prefer the coalesced
+quadratic-square alternative: `(x−1)^4` otherwise depended on singular
+Newton refinement to reunite split factors. This tie rule adds no error
+band. Positive-square, near-multiple-positive, repeated-real, scaled-root
+and live torus hit/miss controls are documented in
+[DL226_QUARTIC_FACTORIZATION.md](../DL226_QUARTIC_FACTORIZATION.md).
+Evaluating both candidates preserves the recovery opportunity; it is
+not a guarantee of resolving every ill-conditioned floating-point root.
 
 ### Bilinear-patch shadow-ray self-shadowing (masqueraded as an MIS bug)
 
