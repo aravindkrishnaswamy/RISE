@@ -30,6 +30,7 @@ public:
  std::vector<std::pair<Point3,Vector3>> AnchorSnapshot()const{std::vector<std::pair<Point3,Vector3>> out;for(const auto& a:anchors)out.emplace_back(a.position,a.geometricNormal);return out;}
  void RawParams(){PhotonMapCore<IrradPhoton>::SetGatherParams(.2,.05,10,400,nullptr);}
  Vector3 FirstDirection()const{return PhotonDir(vphotons[0].theta,vphotons[0].phi);}
+ Vector3 LastDirection()const{return PhotonDir(vphotons.back().theta,vphotons.back().phi);}
  std::vector<double> Distances(const Point3& p)const{PhotonDistListType heap;LocatePhotons(p,dGatherRadius,nMaxPhotonsOnGather,heap,0,static_cast<int>(vphotons.size())-1);std::vector<double> d;for(const auto& h:heap)d.push_back(h.distance);std::sort(d.begin(),d.end());return d;}
  Point3 NearestPosition(const Point3& p,const Vector3& n)const{return FindAnchor(p,n)->position;}
  bool HasAnchor(const Point3& p,const Vector3& n)const{return FindAnchor(p,n)!=nullptr;}
@@ -99,6 +100,46 @@ void ObliqueAnchorQuery(){
  // Reversing only the query geometric side makes every anchor incompatible;
  // it must not choose one using incident direction or shading normal.
  Check(!map.HasAnchor(query.ptIntersection,-query.vGeomNormal),"opposite geometric side rejects cache anchors",map.HasAnchor(query.ptIntersection,-query.vGeomNormal),0);
+ phong->release();lambert->release();exponent->release();black->release();painter->release();
+}
+
+// A spatially varying angular/color field cannot be represented by one scalar
+// irradiance or one representative direction, even at a fixed anchor.
+void MixedFieldLifecycle(){
+ struct Packet {Point3 p; Vector3 wi; RISEPel power;};
+ CacheProbe map(2602);std::vector<Packet> packets;
+ const Vector3 ng(0,0,1);
+ for(int y=-25;y<=25;++y)for(int x=-25;x<=25;++x){
+  const Point3 p(x*.01+std::sin(double(x*y))*.0001,y*.01+std::sin(double(x+2*y))*.0001,0);
+  const double angle=((x-y+102)%3-1)*PI/3;
+  const Vector3 wi(std::sin(angle),0,std::cos(angle));
+  const RISEPel power(.2+.01*(x+25),.3+.01*(y+25),.9-.01*(x+25));
+  map.Store(power,p,ng,wi);packets.push_back({p,map.LastDirection(),power});
+ }
+ map.Balance();map.RawParams();map.PrecomputeIrradiance(1,nullptr);
+ auto* painter=new PositionPainter();auto* black=new UniformColorPainter(RISEPel(0.));
+ auto* exponent=new UniformScalarPainter(12.);auto* lambert=new LambertianBRDF(*painter);
+ auto* phong=new IsotropicPhongBRDF(*black,*painter,*exponent);
+ RayIntersectionGeometric q(Ray(Point3(0,0,1),Vector3(0,0,-1)),nullRasterizerState);
+ q.ptIntersection=Point3(0,0,0);q.vGeomNormal=ng;
+ for(double tilt:{-.3,.4})for(const IBSDF* f:{static_cast<IBSDF*>(lambert),static_cast<IBSDF*>(phong)}){
+  q.vNormal=Vector3(std::sin(tilt),0,std::cos(tilt));q.onb.CreateFromW(q.vNormal);
+  std::vector<std::pair<double,const Packet*>> sorted;
+  for(const auto& p:packets){const double d2=Vector3Ops::SquaredModulus(Vector3Ops::mkVector3(p.p,q.ptIntersection));if(d2<.04)sorted.emplace_back(d2,&p);}
+  std::sort(sorted.begin(),sorted.end(),[](const auto& a,const auto& b){return a.first<b.first;});sorted.resize(400);
+  const double r2=sorted.back().first;RISEPel expected(0.);
+  for(const auto& p:sorted){const double area=std::fabs(Vector3Ops::Dot(ng,p.second->wi));const double shading=std::fabs(Vector3Ops::Dot(q.vNormal,p.second->wi));expected=expected+p.second->power*f->value(p.second->wi,q)*(shading/area);}
+  expected=expected/(PI*r2);RISEPel got;map.RadianceEstimate(got,q,*f);
+  for(int c=0;c<3;++c)Near(got[c],expected[c],"mixed incident directions/colors use each packet at the query material");
+ }
+ const bool stored=map.Store(RISEPel(1.),Point3(2,2,0),ng,ng);
+ Check(stored,"post-cache packet insertion succeeds",stored,1);
+ Check(map.AnchorCount()==0,"successful insertion invalidates existing anchors",map.AnchorCount(),0);
+ map.Balance();map.PrecomputeIrradiance(1,nullptr);
+ Check(map.AnchorCount()==2602,"rebuild includes the newly inserted packet",map.AnchorCount(),2602);
+ const bool overflow=map.Store(RISEPel(1.),Point3(3,3,0),ng,ng);
+ Check(!overflow,"capacity rejection reports false",overflow,0);
+ Check(map.AnchorCount()==2602,"rejected insertion preserves valid anchors",map.AnchorCount(),2602);
  phong->release();lambert->release();exponent->release();black->release();painter->release();
 }
 
@@ -177,4 +218,4 @@ void Run(){
  phong->release();lambert->release();exp->release();black->release();paint->release();
 }
 }
-int main(){Run();DirectGathers();ObliqueAnchorQuery();LegacyCacheLoad();std::printf("PhotonDirectionalCacheTest checks=%d failures=%d\n",checks,failures);return failures?1:0;}
+int main(){Run();DirectGathers();ObliqueAnchorQuery();MixedFieldLifecycle();LegacyCacheLoad();std::printf("PhotonDirectionalCacheTest checks=%d failures=%d\n",checks,failures);return failures?1:0;}
