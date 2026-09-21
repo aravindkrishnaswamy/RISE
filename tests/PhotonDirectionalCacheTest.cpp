@@ -19,6 +19,8 @@ public:
  CacheProbe(unsigned n):GlobalPelPhotonMap(n,nullptr){}
  void RawParams(){PhotonMapCore<IrradPhoton>::SetGatherParams(.2,.05,10,400,nullptr);}
  Vector3 FirstDirection()const{return PhotonDir(vphotons[0].theta,vphotons[0].phi);}
+ std::vector<double> Distances(const Point3& p)const{PhotonDistListType heap;LocatePhotons(p,dGatherRadius,nMaxPhotonsOnGather,heap,0,static_cast<int>(vphotons.size())-1);std::vector<double> d;for(const auto& h:heap)d.push_back(h.distance);std::sort(d.begin(),d.end());return d;}
+ Point3 NearestPosition(const Point3& p,const Vector3& n)const{IrradPhoton dummy;distance_container<IrradPhoton> nearest(dummy,RISE_INFINITY);LocateNearestPhoton(p,n,dGatherRadius,nearest);return nearest.element.ptPosition;}
  bool HasAnchor(const Point3& p,const Vector3& n)const{IrradPhoton dummy;distance_container<IrradPhoton> nearest(dummy,RISE_INFINITY);LocateNearestPhoton(p,n,dGatherRadius,nearest);return nearest.distance<RISE_INFINITY;}
 };
 // Independent finite-kernel oracle: sort all deposits by Euclidean distance,
@@ -43,7 +45,12 @@ void Run(){
   for(int y=-25;y<=25;++y)for(int x=-25;x<=25;++x){Point3 p(x*.01,y*.01,0);RISEPel power(1);map.Store(power,p,areaNormal,wi);deposits.push_back({p,power});}
   // Price the encoded direction actually stored, so angular quantization is
   // explicit and cannot masquerade as a transport-factor error.
-  const Vector3 decoded=map.FirstDirection();map.Balance();map.RawParams();map.PrecomputeIrradiance(1,nullptr);
+  const Vector3 decoded=map.FirstDirection();map.Balance();map.RawParams();
+  const auto actualDistances=map.Distances(anchor);std::vector<double> expectedDistances;for(const auto& d:deposits){double d2=Vector3Ops::SquaredModulus(Vector3Ops::mkVector3(d.p,anchor));if(d2<.04)expectedDistances.push_back(d2);}std::sort(expectedDistances.begin(),expectedDistances.end());expectedDistances.resize(400);
+  bool same=actualDistances.size()==expectedDistances.size();double maxError=0;for(unsigned i=0;i<std::min(actualDistances.size(),expectedDistances.size());++i)maxError=std::max(maxError,std::fabs(actualDistances[i]-expectedDistances[i]));same=same&&maxError<1e-15;
+  std::printf("KNN n=%zu r2=%.17g expectedN=%zu expectedR2=%.17g maxDistanceError=%.17g\n",actualDistances.size(),actualDistances.back(),expectedDistances.size(),expectedDistances.back(),maxError);Check(same,"actual photon KD distances match independent exhaustive search",maxError,0);
+  map.PrecomputeIrradiance(1,nullptr);
+  if(map.HasAnchor(anchor,areaNormal)){Point3 found=map.NearestPosition(anchor,areaNormal);std::printf("ANCHOR chosen=(%.17g,%.17g,%.17g) expected=(0,0,0)\n",found.x,found.y,found.z);Near(Vector3Ops::SquaredModulus(Vector3Ops::mkVector3(found,anchor)),0,"nearest cache anchor at exact stored query point");}
   std::printf("CACHE incident=%.17g decoded=(%.17g,%.17g,%.17g)\n",incident,decoded.x,decoded.y,decoded.z);
   Check(map.HasAnchor(anchor,areaNormal),"cache anchor is chosen by surface normal",map.HasAnchor(anchor,areaNormal),1);
   for(double tilt:{0.,-10.})for(const IBSDF* bsdf:{static_cast<IBSDF*>(lambert),static_cast<IBSDF*>(phong)}){
