@@ -309,7 +309,7 @@ void TestRareIntegratorSelection() {
         Scalar nm=pt->IntegrateFromHitNM(rc,nullRasterizerState,hit,550,*scene,caster,sampler,nullptr,0,stack,0,1,true,1,IRayCaster::RAY_STATE::eRayView,0,0,0,0,0,0,false,false);
         const Scalar emittedNM=emitter->GetEmitter()->emittedRadianceNM(hit.geometric,Vector3(0,0,1),Vector3(0,0,1),550);
         std::printf("rare hasBSDF=%d first=%.17g second=%.17g NMsource=%.17g\n",hasBSDF,a,b,emittedNM);
-        Near(pel.r/(a+b),1,"DL271 actual PT Pel selected conditional response");Near(nm/((a+b)*emittedNM),1,"DL271 actual PT NM selected conditional response");
+        Near(pel.r/((a+b)*INV_PI),1,"DL271 actual PT Pel selected conditional response");Near(nm/((a+b)*emittedNM),1,"DL271 actual PT NM selected conditional response");
         SampledWavelengths swl=SampledWavelengths::SampleEquidistant(.5,400,700);Scalar bundle[SampledWavelengths::N];
         pt->IntegrateFromHitHWSS(rc,nullRasterizerState,hit,swl,*scene,caster,sampler,nullptr,0,stack,0,true,1,IRayCaster::RAY_STATE::eRayView,0,0,0,0,0,0,bundle);
         for(unsigned w=0;w<SampledWavelengths::N;++w){const Scalar e=emitter->GetEmitter()->emittedRadianceNM(hit.geometric,Vector3(0,0,1),Vector3(0,0,1),swl.lambda[w]);Near(bundle[w]/((a+b)*e),1,"DL271 actual PT HWSS selected conditional response");}
