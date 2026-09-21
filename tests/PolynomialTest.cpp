@@ -459,7 +459,7 @@ static std::array<double,5> MultiplyQuadratics( double a, double b, double c,
 }
 
 static void CheckQuarticOracle( const char* name, const std::array<double,5>& c,
-                               const std::vector<double>& expected, double rootTolerance=1e-7 )
+                               const std::vector<double>& expected, double rootTolerance=1e-7, bool relative=false )
 {
     const Scalar coeff[5]={c[0],c[1],c[2],c[3],c[4]};
     Scalar roots[4]={0,0,0,0};
@@ -474,7 +474,7 @@ static void CheckQuarticOracle( const char* name, const std::array<double,5>& c,
     QuarticCheck(expected.empty() ? n==0 : n>=int(expected.size()),"all expected real roots, no invented positive-polynomial roots");
     for( int i=0;i<n;++i ) {
         bool known=false;
-        for(double x:expected) known |= std::fabs(roots[i]-x)<=rootTolerance;
+        for(double x:expected) known |= std::fabs(roots[i]-x)<=(relative ? rootTolerance*std::fabs(x) : rootTolerance);
         QuarticCheck(std::isfinite(roots[i]) && known,"every returned root matches the independent factor oracle");
         // Diagnostic residual only; it never decides which roots to retain.
         long double v=c[0], scale=std::fabs(c[0]);
@@ -483,7 +483,7 @@ static void CheckQuarticOracle( const char* name, const std::array<double,5>& c,
     }
     for(double x:expected) {
         bool found=false;
-        for(int i=0;i<n;++i) found |= std::fabs(roots[i]-x)<=rootTolerance;
+        for(int i=0;i<n;++i) found |= std::fabs(roots[i]-x)<=(relative ? rootTolerance*std::fabs(x) : rootTolerance);
         QuarticCheck(found,"each independent root is represented");
     }
 }
@@ -510,6 +510,32 @@ static void TestQuarticClassificationAndCallers()
     for(int exponent:{-100,-20,0,20,100}) {
         const double r=std::ldexp(1.0,exponent), r2=r*r;
         CheckQuarticOracle("variable_scale_four_real",{{1,0,-5*r2,0,4*r2*r2}},{-2*r,-r,r,2*r},r*1e-8);
+    }
+    // DL273–275: independently derived exact tangencies and exponent boundaries.
+    for(double scale:{0.125,1.0,8.0}) {
+        CheckQuarticOracle("translated_two_double",MultiplyQuadratics(1,-6*scale,8*scale*scale,1,-6*scale,8*scale*scale),{2*scale,4*scale},1e-10,true);
+        for(double offset:{-0x1p-20,0.0,0x1p-20}) {
+            const double R=scale,r=.25*R,y=r+offset*R;
+            HIT hit; RayTorusIntersection(Ray(Point3(-3*R,y,0),Vector3(1,0,0)),hit,R,r,R*R);
+            std::cout << "TANGENT R=" << R << " offset=" << offset << " hit=" << hit.bHit << " range=" << hit.dRange << '\n';
+            QuarticCheck(hit.bHit==(offset<=0),"exact torus tangent/inside hits, outside misses");
+            if(offset<=0) {
+                const double chord=std::sqrt(r*r-y*y);
+                QuarticCheck(hit.bHit && std::fabs(hit.dRange-(2*R-chord))<R*1e-8,"torus tangent range matches circle oracle");
+            }
+        }
+    }
+    for(int exponent:{-250,-200,-150,150,200,250}) {
+        const double r=std::ldexp(1.0,exponent), r2=r*r;
+        CheckQuarticOracle("extreme_variable_even",{{1,0,-5*r2,0,4*r2*r2}},{-2*r,-r,r,2*r},1e-8,true);
+        CheckQuarticOracle("extreme_variable_odd",{{1,-10*r,35*r2,-50*r2*r,24*r2*r2}},{r,2*r,3*r,4*r},1e-8,true);
+    }
+    for(int exponent:{-1022,-1000,-900}) {
+        const double a=std::ldexp(1.0,exponent),big=2/std::sqrt(a);
+        CheckQuarticOracle("normalization_boundary_even",{{a,0,-4,0,4}},{-big,-1,1,big},1e-12,true);
+        // (a*x²-4)(x²-x-1), stored rounded coefficient of x² is -4.
+        const double g=(1+std::sqrt(5.0))/2;
+        CheckQuarticOracle("normalization_boundary_odd",{{a,-a,-4,4,4}},{-big,1-g,g,big},1e-12,true);
     }
     CheckQuarticOracle("fourfold_zero",{{1,0,0,0,0}},{0});
     CheckQuarticOracle("fourfold_one",{{1,-4,6,-4,1}},{1},1e-6);
