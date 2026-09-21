@@ -75,7 +75,7 @@ PixelBasedSpectralIntegratingRasterizer::PixelBasedSpectralIntegratingRasterizer
 	const Scalar k_y = ColorUtils::CIE_Y_Integral( lambda_begin_, lambda_end_ );
 	// Every positive observer area defines a normalization, even for a
 	// narrow representable interval. Zero/nonfinite intervals return zero.
-	if( k_y > 0 ) {
+	if( k_y > NEARZERO ) {
 		mYNormalization = lambda_diff / k_y;
 	}
 }
