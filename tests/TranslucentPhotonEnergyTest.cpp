@@ -99,6 +99,7 @@
 #include "../src/Library/Painters/UniformScalarPainter.h"
 #include "../src/Library/Materials/TranslucentMaterial.h"
 #include "../src/Library/Materials/LambertianMaterial.h"
+#include "../src/Library/Materials/IsotropicPhongMaterial.h"
 #include "../src/Library/PhotonMapping/TranslucentPelPhotonTracer.h"
 #include "../src/Library/PhotonMapping/TranslucentPelPhotonMap.h"
 #include "../src/Library/Managers/ObjectManager.h"
@@ -554,6 +555,24 @@ static void TestDirectionalGathers()
  }
 }
 
+// A sampled glossy continuation is not a subtraction from the incident
+// flux used by a photon-density BSDF estimate at this same surface.
+static void TestMixedMaterialIncidentDeposit()
+{
+ auto* diffuse=new UniformColorPainter(RISEPel(.2,.3,.4));
+ auto* glossy=new UniformColorPainter(RISEPel(.3,.2,.1));
+ auto* exponent=new UniformScalarPainter(4.);
+ auto* material=new IsotropicPhongMaterial(*diffuse,*glossy,*exponent);
+ auto* object=new StubObject();auto* manager=new SingleHitThenMissManager(*object,*material);
+ auto* scene=new Scene();scene->SetObjectManager(manager);
+ auto* tracer=new TestTranslucentPelPhotonTracer();tracer->AttachScene(scene);
+ InspectableTranslucentPelPhotonMap map(32);
+ for(int i=0;i<32;++i){manager->Reset();IORStack stack(1.0);tracer->TestTrace(Ray(Point3(i*.01,0,1),Vector3(0,0,-1)),RISEPel(1.),true,map,stack,1);}
+ EXPECT(map.StoredCount()==32,"mixed diffuse/glossy receiver stores every arriving packet");
+ for(unsigned i=0;i<map.StoredCount();++i)for(int c=0;c<3;++c){const double got=map.StoredPower(i)[c];const bool ok=std::isfinite(got)&&fabs(got-1.)<1e-12;++checks;if(!ok)++failed;std::printf("%s DL280 actual mixed-material incident packet sample=%u channel=%d got=%.17g expected=1\n",ok?"PASS":"FAIL",i,c,got);}
+ tracer->release();scene->release();manager->release();object->release();material->release();diffuse->release();glossy->release();exponent->release();
+}
+
 int main()
 {
 	GlobalLog();
@@ -562,6 +581,7 @@ int main()
 	TestBackscatterBalance();
 	TestLambertianWallDeposit();
 	TestDirectionalGathers();
+	TestMixedMaterialIncidentDeposit();
 
 	std::cout << std::endl;
 	std::cout << "TranslucentPhotonEnergyTest: " << checks << " checks, " << failed << " failures" << std::endl;
