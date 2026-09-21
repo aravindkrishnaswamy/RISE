@@ -54,12 +54,23 @@ rejected by that oracle.
 The deficient consumers include global/caustic Pel and NM photon tracers, SMS,
 the non-gradient FinalGather selector and four detector families. IsotropicRGB
 spectral measurement also selected with RGB weights after ScatterNM (DL272).
+DistributionTracing's NM method separately called RGB Scatter and then read
+krayNM; it now calls ScatterNM. Its default HWSS implementation delegates each
+active wavelength to that method. Standard/Advanced shader NM and HWSS dispatch
+were already correct, as were Reflection/Refraction's supplied-record consumers.
+FinalGather's existing NM implementation intentionally uplifts its RGB gather;
+this slice does not turn it into a wavelength-resolved final gather.
 Five PT/BDPT manual probability reconstructions now use the same selector
 result. PT's positive-small-probability termination was separately reproduced
 and removed; its existing throughput-above-1e6 termination remains unchanged.
 This slice does not claim arbitrary-throughput unbiasedness. DistributionTracing
-is a negative control: multiple records are traced as branches, and its selector
-is only used for at most one record.
+is a selection-probability negative control: multiple records are traced as
+branches, and its selector is only used for at most one record. That conclusion
+is separate from its corrected NM dispatch. The expanded actual-material and
+synthetic mode proof is 136/10 in the committed red mode state and 136/0 after
+the two mode corrections. The actual Phong control uses a physical zero SPD
+for Rs; an earlier RGB-black setup had a small nonzero spectral uplift and its
+failed exact-equality observation is retained as a setup correction.
 
 ## Spatial search (DL279)
 

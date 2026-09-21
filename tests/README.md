@@ -1092,3 +1092,28 @@ finite nonnegative diffuse throughput and checks BRDF/NM siblings plus the
 public directional/hemispherical guide agreement under independent quadrature.
 The forced-sample failure was committed before the range fix; the guide and NM
 controls are supplemental consistency coverage.
+
+
+### Legacy photon transport regressions (DL239 / DL271 / DL272 / DL279 / DL280)
+
+- `ScatteredRaySelectionTest`: preserved pointer/CDF/shortcut behavior and the
+  continuous legacy selection law, with explicit normal-arithmetic bounds and
+  finite-grid limitations. Includes a wrong-probability mutation control.
+- `LegacyPhotonTransportTest`: actual Pel/NM global/caustic light walks,
+  selected versus branched weights, tilted-normal adjoint factors, final gather,
+  detectors, PT/BDPT rare positive selection probability, and DistributionTracing
+  spectral/HWSS dispatch. External private probes execute SMS and the two legacy
+  detector sidecars with their actual production sources.
+- `PhotonMapSpatialSearchTest`: exact records, distances and counts against
+  exhaustive search across five record families, partition tangency and k=0.
+  The zero-k red traps with libc++ extensive hardening; ordinary output alone
+  cannot detect the old empty-vector read.
+- `PhotonDirectionalCacheTest`: independent finite-kernel area-response sums,
+  mixed directions/colors, distinct anchor/query frames and material positions,
+  exact serialization, legacy compatibility, and cache lifecycle.
+- `TranslucentPhotonEnergyTest`: preserves the historical DL39 Beer tests and
+  adds actual mixed-material incoming-flux, tagged exit/incident gather,
+  directional format and intentional legacy Store/load rejection controls.
+
+See [the transport derivation and scope](../docs/DL239_PHOTON_TRANSPORT.md).
+Final full-slice rendering, cost and review gates are still pending.
