@@ -1944,11 +1944,13 @@ int main()
     //      UNCONDITIONALLY (no kray>0 gate), and for an authored
     //      pure-black diffuse painter `pDiffuse->GetColor(ri)` is
     //      EXACTLY (0,0,0), so diffuse.kray is exactly (0,0,0) on every
-    //      fire. The multiscatter branch only ever adds a ray when
-    //      `MaxValue(kray) > 0` STRICTLY (see the `if` gate in
-    //      CookTorranceSPF.cpp) -- so an added eRayDiffuse ray with
-    //      MaxValue(kray) exactly 0 can only have come from the diffuse
-    //      branch.
+    //      fire. The multiscatter branch is also unconditional after
+    //      DL-211 (a selected zero-throughput event must remain in the
+    //      mixture), but this fixture's NONBLACK specular painter gives
+    //      every sampled in-support multiscatter event positive kray.
+    //      Thus an added eRayDiffuse ray with MaxValue(kray) exactly 0
+    //      identifies the authored-black diffuse branch here; this does
+    //      not rely on a positive-kray gate in production.
     //    * Diffuse vs multiscatter, on the NM pipe, needs a different
     //      test: GuardedGetColorNM's black-cell leak means krayNM is
     //      NOT exactly 0, so the exact-zero trick doesn't apply. But

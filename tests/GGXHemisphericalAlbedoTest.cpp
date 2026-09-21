@@ -750,7 +750,7 @@ namespace
 		// Keep all probes inside one interpolation interval.  A continuous
 		// piecewise-affine surface has O(delta) error from its diagonal trace,
 		// so shrinking delta by 16 must shrink the difference by substantially
-		// more than 2 (the loose factor leaves room for the smooth Fresnel/MS
+		// more than 2 (the loose factor leaves room for smooth Fresnel/MS
 		// arithmetic and floating-point roundoff).
 		const double coarseDelta = alpha * 1.0e-3;
 		const double fineDelta = coarseDelta / 16.0;
@@ -764,6 +764,8 @@ namespace
 				alpha, alpha + sign * fineDelta, mode, specularValue );
 			const ReportedAlbedo fineSwap = EvaluateReportedAlbedo(
 				alpha + sign * fineDelta, alpha, mode, specularValue );
+			printf( "  %s sign=%+.0f RGB coarse=%.17g fine=%.17g exact=%.17g; NM coarse=%.17g fine=%.17g exact=%.17g\n",
+				label, sign, coarse.rgb, fine.rgb, exact.rgb, coarse.nm, fine.nm, exact.nm );
 			Check( fabs(fine.rgb - exact.rgb) <= 0.5 * fabs(coarse.rgb - exact.rgb) + convergenceSlack,
 				std::string("DL-139 RGB finite diagonal approach converges: ") + label );
 			Check( fabs(fine.nm - exact.nm) <= 0.5 * fabs(coarse.nm - exact.nm) + convergenceSlack,
