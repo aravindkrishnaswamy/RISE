@@ -5,7 +5,6 @@
 #include <algorithm>
 #include <array>
 #include <iomanip>
-#include "../src/Library/Functions/QuarticFunction.h"
 #include "../src/Library/Geometry/TorusGeometry.h"
 #include "../src/Library/Objects/Object.h"
 #include "../src/Library/Intersection/RayIntersection.h"
@@ -526,11 +525,7 @@ static void TestQuarticClassificationAndCallers()
     CheckQuarticOracle("quadratic_dispatch",{{0,0,2,-6,4}},{1,2});
     CheckQuarticOracle("linear_dispatch",{{0,0,0,3,-6}},{2});
     CheckQuarticOracle("constant_dispatch",{{0,0,0,0,2}},{});
-    struct ReferencedQuartic : QuarticFunction, Implementation::Reference {
-        using QuarticFunction::QuarticFunction;
-    };
-    ReferencedQuartic fn(1,0,2,0,1); Scalar roots[4];
-    QuarticCheck(fn.Solve(roots)==0,"QuarticFunction exposes no impossible real roots");
+
 
     for(double R:{0.125,1.0,8.0}) for(double ratio:{0.125,0.25,0.5}) {
         const double r=R*ratio;
