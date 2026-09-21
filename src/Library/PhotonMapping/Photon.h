@@ -39,16 +39,12 @@ namespace RISE
 		{};
 	};
 
+	// Full incident packet plus exact geometric normal for cache anchors.
+	// Scalar precomputed irradiance cannot represent a changed query BSDF.
 	class IrradPhoton : public Photon
 	{
 	public:
-		RISEPel			irrad;				// precomputed irradiance
-		unsigned char	Ntheta, Nphi;		// direction of the normal 
-
-		IrradPhoton() : 
-		Ntheta( 0 ),
-		Nphi( 0 )
-		{};
+		Vector3 geometricNormal;
 	};
 
 	class SpectralPhoton

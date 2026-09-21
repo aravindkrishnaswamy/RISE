@@ -26,20 +26,21 @@ void Near(double a,double e,const char* label){Check(std::isfinite(a)&&std::fabs
 class CacheProbe:public GlobalPelPhotonMap {
 public:
  CacheProbe(unsigned n):GlobalPelPhotonMap(n,nullptr){}
+ size_t AnchorCount()const{return anchors.size();}
  void RawParams(){PhotonMapCore<IrradPhoton>::SetGatherParams(.2,.05,10,400,nullptr);}
  Vector3 FirstDirection()const{return PhotonDir(vphotons[0].theta,vphotons[0].phi);}
  std::vector<double> Distances(const Point3& p)const{PhotonDistListType heap;LocatePhotons(p,dGatherRadius,nMaxPhotonsOnGather,heap,0,static_cast<int>(vphotons.size())-1);std::vector<double> d;for(const auto& h:heap)d.push_back(h.distance);std::sort(d.begin(),d.end());return d;}
- Point3 NearestPosition(const Point3& p,const Vector3& n)const{IrradPhoton dummy;distance_container<IrradPhoton> nearest(dummy,RISE_INFINITY);LocateNearestPhoton(p,n,dGatherRadius,nearest);return nearest.element.ptPosition;}
- bool HasAnchor(const Point3& p,const Vector3& n)const{IrradPhoton dummy;distance_container<IrradPhoton> nearest(dummy,RISE_INFINITY);LocateNearestPhoton(p,n,dGatherRadius,nearest);return nearest.distance<RISE_INFINITY;}
+ Point3 NearestPosition(const Point3& p,const Vector3& n)const{return FindAnchor(p,n)->position;}
+ bool HasAnchor(const Point3& p,const Vector3& n)const{return FindAnchor(p,n)!=nullptr;}
 };
 // Independent finite-kernel oracle: sort all deposits by Euclidean distance,
 // retain400, use the legacy uniform disk with geometric anchor area. Query
 // material evaluation remains at query (including its shading/view frame).
 struct Deposit {Point3 p;RISEPel power;};
-RISEPel Reference(const std::vector<Deposit>& deposits,const Point3& anchor,const Vector3& areaNormal,const Vector3& wi,const RayIntersectionGeometric& query,const IBSDF& brdf,bool angular,bool gaussian=false){
+RISEPel Reference(const std::vector<Deposit>& deposits,const Point3& anchor,const Vector3& areaNormal,const Vector3& wi,const RayIntersectionGeometric& query,const IBSDF& brdf,bool angular,bool gaussian=false,unsigned limit=400,double searchRadius2=.04){
  std::vector<std::pair<double,const Deposit*> > sorted;
- for(const auto& p:deposits){const Vector3 d=Vector3Ops::mkVector3(p.p,anchor);const double d2=Vector3Ops::SquaredModulus(d);if(d2<.04)sorted.emplace_back(d2,&p);}
- std::sort(sorted.begin(),sorted.end(),[](const auto& a,const auto& b){return a.first<b.first;});if(sorted.size()>400)sorted.resize(400);
+ for(const auto& p:deposits){const Vector3 d=Vector3Ops::mkVector3(p.p,anchor);const double d2=Vector3Ops::SquaredModulus(d);if(d2<searchRadius2)sorted.emplace_back(d2,&p);}
+ std::sort(sorted.begin(),sorted.end(),[](const auto& a,const auto& b){return a.first<b.first;});if(sorted.size()>limit)sorted.resize(limit);
  RISEPel sum(0.0);if(sorted.size()<=10)return sum;const double r2=sorted.back().first;
  const double alpha=.918,beta=1.953,D=1-std::exp(-beta);const double norm=gaussian?2*alpha*(.5*(1-1/D)+(1-std::exp(-beta*.5))/(beta*D)):1;
  for(const auto& p:sorted){const double height=Vector3Ops::Dot(Vector3Ops::mkVector3(p.second->p,anchor),areaNormal);if(std::fabs(height)<r2*.05){const double weight=gaussian?alpha*(1-(1-std::exp(-beta*p.first/(2*r2)))/D):1;sum=sum+p.second->power*weight;}}
@@ -93,6 +94,20 @@ void LegacyCacheLoad(){
  const bool loaded=written&&job->LoadGlobalPelPhotonmap(path.string().c_str());Check(!loaded,"legacy scalar cache reports unsupported directional reconstruction",loaded,0);Check(job->GetScene()->GetGlobalPelMap()==installed,"failed cache load retains installed valid map",job->GetScene()->GetGlobalPelMap()==installed,1);
  std::filesystem::remove(path);
  const bool missing=job->LoadGlobalPelPhotonmap(path.string().c_str());Check(!missing,"missing cache file reports failure",missing,0);Check(job->GetScene()->GetGlobalPelMap()==installed,"missing cache load retains installed valid map",job->GetScene()->GetGlobalPelMap()==installed,1);
+ // The old raw flag0 is recoverable as directional packets, but its
+ // compressed normal must never be promoted from Ns provenance to Ng.
+ const unsigned used=buffer->getCurPos();buffer->seek(IBuffer::START,40);buffer->setUChar(0);buffer->seek(IBuffer::START,used);
+ Check(buffer->DumpToFileToCursor(path.string().c_str()),"legacy raw fixture written",1,1);
+ const bool rawLoaded=job->LoadGlobalPelPhotonmap(path.string().c_str());Check(rawLoaded,"legacy full-direction map still loads",rawLoaded,1);
+ if(rawLoaded){
+  auto* loaded=job->GetScene()->GetGlobalPelMapMutable();loaded->SetGatherParams(.2,.05,0,1,nullptr);
+  auto* paint=new UniformColorPainter(RISEPel(.8));auto* bsdf=new LambertianBRDF(*paint);
+  RayIntersectionGeometric q(Ray(Point3(0,0,1),Vector3(0,0,-1)),nullRasterizerState);q.ptIntersection=Point3(.1,0,0);q.vGeomNormal=Vector3(0,0,1);q.vNormal=Vector3(.5,0,sqrt(.75));q.onb.CreateFromW(q.vNormal);
+  RISEPel got;loaded->RadianceEstimate(got,q,*bsdf);const double alpha=.918,beta=1.953,D=1-exp(-beta),norm=2*alpha*(.5*(1-1/D)+(1-exp(-beta*.5))/(beta*D));const double weight=alpha*(1-(1-exp(-beta*.5))/D);const double expected=.8*sqrt(.75)*weight/(PI*PI*.01*norm);
+  for(int c=0;c<3;++c)Near(got[c],expected,"legacy raw load stays on directional direct gather after parameter update");
+  bsdf->release();paint->release();
+ }
+ std::filesystem::remove(path);
  buffer->release();installed->release();job->release();
 }
 
@@ -118,6 +133,23 @@ void Run(){
    RISEPel got;map.RadianceEstimate(got,query,*bsdf);const RISEPel expected=Reference(deposits,anchor,areaNormal,decoded,query,*bsdf,true);
    std::printf("CACHE tilt=%.17g material=%s\n",tilt,bsdf==lambert?"Lambertian":"Phong");for(int c=0;c<3;++c)Near(got[c],expected[c],"DL239 cached directional query response");
   }
+  auto* serialized=new MemoryBuffer();map.Serialize(*serialized);const unsigned bytes=serialized->getCurPos();serialized->seek(IBuffer::START,0);
+  CacheProbe restored(0);restored.Deserialize(*serialized);
+  Check(restored.NumStored()==2601,"directional roundtrip retains every incident packet",restored.NumStored(),2601);
+  Check(restored.AnchorCount()==2601,"directional roundtrip restores explicit anchor spacing",restored.AnchorCount(),2601);
+  RISEPel roundtrip;restored.RadianceEstimate(roundtrip,query,*phong);const RISEPel expected=Reference(deposits,anchor,areaNormal,decoded,query,*phong,true);
+  for(int c=0;c<3;++c)Near(roundtrip[c],expected[c],"directional serialized response");
+  restored.ScalePhotonPower(.25);restored.RadianceEstimate(roundtrip,query,*phong);
+  for(int c=0;c<3;++c)Near(roundtrip[c],expected[c]*.25,"anchor gather reads newly scaled live packet powers");
+  auto* truncated=new MemoryBuffer(serialized->Pointer(),bytes-1,false);restored.Deserialize(*truncated);restored.RadianceEstimate(roundtrip,query,*phong);
+  for(int c=0;c<3;++c)Near(roundtrip[c],expected[c]*.25,"truncated load leaves prior map response intact");
+  restored.PrecomputeIrradiance(4,nullptr);Check(restored.NumStored()==2601,"quarter anchor preparation preserves full packet field",restored.NumStored(),2601);Check(restored.AnchorCount()==651,"quarter anchor population",restored.AnchorCount(),651);
+  // Rebuild at every packet to make the exact chosen anchor independent of
+  // tie ordering, then change the finite spatial gather itself.
+  restored.PrecomputeIrradiance(1,nullptr);restored.SetGatherParams(.05,.05,10,20,nullptr);restored.RadianceEstimate(roundtrip,query,*phong);
+  const RISEPel changed=Reference(deposits,anchor,areaNormal,decoded,query,*phong,true,false,20,.0025)*.25;
+  for(int c=0;c<3;++c)Near(roundtrip[c],changed[c],"changed gather parameters immediately alter anchored kernel");
+  truncated->release();serialized->release();
  }
  phong->release();lambert->release();exp->release();black->release();paint->release();
 }
