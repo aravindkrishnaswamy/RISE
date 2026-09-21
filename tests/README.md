@@ -224,12 +224,22 @@ DL-139 (2026-09-21) replaces the single-scatter term's anisotropic
 independent-roughness bake plus DL-161-style low-axis sub-grids. Exact
 isotropic queries forward to the old path; all 344 pre-existing float
 literals compare slot-for-slot identical. `TestAnisotropicFallback` now
-checks eight off-diagonal cells (axis swaps and `(0.005,0.5)` included)
+checks eight strongly off-diagonal cells (axis swaps and `(0.005,0.5)` included)
 for both RGB and NM against an independent 50/50 anisotropic-VNDF/
 cosine-mixture estimator of the real BRDF, 4,800,000 samples per row
-with raw mean/sample SD/SE printed. The strengthened suite is **62/16**
-on the unfixed library (7.84%–24.01% ordinary residual; 21.24% at the
-low corner) and **62/0** after (0.0094%–0.0263%, gate <=0.5%).
+with raw mean/sample SD/SE printed. The initial closure's historical suite
+was **62/16** on the pre-DL-139 library and **62/0** at `98c024f2`.
+Independent review then found that its full-weight bilinear grid was
+discontinuous at exact isotropy. The corrected table stores the anisotropic
+correction relative to the full legacy curve and triangulates cells along
+the exact zero-correction diagonal. `TestAnisotropicDiagonalContinuity`
+checks one-ULP and finite approaches from both sides at several low-grid
+midpoints and ordinary off-node coordinates, swapped axes, RGB/NM, and
+Schlick/conductor/thin-film public paths. Four near-diagonal independent
+VNDF cells extend the accuracy oracle; all 12 physical cells read
+0.0111%–0.0807% error against the unchanged <=0.5% gate. Corrected suite:
+**186/0**; the committed old-source count is recorded in the correction
+evidence rather than replacing the historical initial-closure labels.
 
 `SheenDirectionalAlbedoTest` gained two functions for DL-11 (2026-09-14):
 `TestMiddleBandInterpolationError` (a consistency pin against this file's

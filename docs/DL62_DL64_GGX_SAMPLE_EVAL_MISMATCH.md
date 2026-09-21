@@ -2011,13 +2011,39 @@ Lambda and the VNDF. It therefore has no applicable closed-form
 isotropic anchor and is baked at the low nodes. The virtual zero node
 folds to low node 1, exactly as DL-161 does; production floors roughness
 at `1e-4`, between low nodes 1 and 2, so the virtual zero is unreachable.
-On the isotropic diagonal the new lookup forwards to the original
-`LookupGGXSpecularQuadWeight` path before any new arithmetic. A
-generator-side copy of that diagonal is populated by interpolation from
-the preserved isotropic weights rather than an independent rebake. A
-slot-by-slot comparison found all **344** pre-existing node/ordinary/
-low-axis float literals identical between base HEAD, regenerated output,
-and the fixed source.
+On the isotropic diagonal the lookup forwards to the original
+`LookupGGXSpecularQuadWeight` path before any new arithmetic. The initial
+DL-139 representation stored full weights on a rectangular grid and used
+bilinear interpolation. That was not a valid diagonal boundary construction:
+inside a diagonal cell, bilinear interpolation mixes both off-diagonal
+corners into its diagonal trace, which generally differs from the independent
+legacy one-dimensional interpolant. The low/low generator also copied two
+isotropic midpoint rows by storage index even though the isotropic and
+anisotropic grids declare different physical roughness coordinates there.
+
+The corrected representation stores the anisotropic correction
+
+`C(alphaX,alphaY) = W_aniso(alphaX,alphaY)
+                     - W_iso(sqrt(alphaX*alphaY))`.
+
+Its mathematical boundary condition is `C(a,a)=0`. Every diagonal anchor is
+therefore a literal zero correction at its own declared coordinate. Cells
+touching the diagonal are split into triangles along that zero edge; cells
+strictly away from it remain bilinear. Runtime adds the complete preserved
+`W_iso(sqrt(alphaX*alphaY))` curve after interpolating `C`. Consequently the
+unequal-axis limit is the legacy isotropic curve at every coordinate and at
+every legacy knot, while off-diagonal bake nodes reconstruct their physical
+anisotropic weights. Low/low, low/ordinary, and ordinary/ordinary pieces
+share their endpoint values, so knot transitions are continuous. This uses
+no epsilon band, near-equal-axis switch, or tolerance-based isotropization.
+The albedo's `Eavg`/multiscatter term uses the same constrained construction
+locally. The older shared energy-LUT API retains a `1e-9` forwarding band;
+calling it directly would only move the public albedo jump to that band's
+edge. The local wrapper changes no GGX sampler/evaluator contract outside
+`hemisphericalAlbedo{,NM}`.
+A slot-by-slot comparison found all **344** pre-existing node/ordinary/
+low-axis float literals identical between base HEAD, regenerated output, and
+the corrected source.
 
 `TestAnisotropicFallback` now uses its own anisotropic D/Lambda/G1/VNDF
 implementation and an independently seeded, randomized low-discrepancy
@@ -2025,18 +2051,26 @@ implementation and an independently seeded, randomized low-discrepancy
 real BRDF numerator includes a broad Kulla-Conty multiscatter term; a
 VNDF-only proposal has a heavy tail at the one-axis-smooth boundary.
 Each RGB and NM row uses `n=4,800,000` samples and prints mean, sample SD,
-and standard error. Post-fix relative residual is **0.0094%–0.0263%**
-over eight off-diagonal cells including both axis orderings and the low
-corner, against the strict 0.5% gate. `GGXHemisphericalAlbedoTest` is
-**62/0** (the same final test is **62/16** on the unfixed lookup: one RGB
-and one NM failure for each of the eight cells).
+and standard error. The initial closure measured **0.0094%–0.0263%** over
+eight strongly anisotropic cells; those figures and its **62/16 -> 62/0**
+red/green are historical for source `98c024f2`. The correction regression
+adds low and ordinary near-diagonal physical cells at Schlick F0=0, exact
+one-ULP approaches from both sides, finite two-sided approaches, axis swaps,
+RGB/NM, and Schlick/conductor/thin-film public paths. On the corrected
+representation the 12 physical cells read **0.0111%–0.0807%** relative error,
+inside the unchanged 0.5% accuracy gate, and the complete suite is **186/0**.
+The exact committed old-source red count is recorded in the correction
+evidence report rather than relabelling the initial 62/16 run.
 
 The anisotropic bake uses its own fixed RNG stream and 100,000 samples
-per `(alphaX,alphaY,mu_i)` cell. In a granted quiet slot on this checkout,
+per `(alphaX,alphaY,mu_i)` cell. For the initial full-weight representation
+at `98c024f2`, in a granted quiet slot on this checkout,
 three foreground bakes took 66.46, 66.23, and 66.03 seconds (mean 66.24 s,
 sample SD 0.215 s); all three emitted byte-identical tables. Interleaved
 single-file compiles of the old and fixed `GGXBRDF.cpp` measured
 0.9567 +/- 0.0115 s and 0.9633 +/- 0.0153 s respectively (n=3, sample
 SD), so the observed 0.0067 s difference is below run-to-run noise.
 The object grew by 52,832 bytes (1.65%) and the fully linked CLI by
-49,744 bytes (0.193%); no whole-render cost is claimed.
+49,744 bytes (0.193%). Those timings and sizes are historical and are not
+claimed for the corrected generator/source representation; no updated quiet
+cost slot or whole-render cost is claimed.
