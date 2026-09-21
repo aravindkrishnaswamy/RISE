@@ -17,6 +17,10 @@
 #include "../src/Library/Managers/ObjectManager.h"
 #include "../src/Library/Scene.h"
 #include "TestStubObject.h"
+#include "../src/Library/Shaders/PathTracingIntegrator.h"
+#include "../src/Library/Shaders/BDPTIntegrator.h"
+#include "../src/Library/Materials/LambertianLuminaireMaterial.h"
+#include "../src/Library/Materials/NullMaterial.h"
 #include "../src/Library/Shaders/FinalGatherShaderOp.h"
 #include "../src/Library/Shaders/DistributionTracingShaderOp.h"
 #ifdef RISE_TEST_SMS_PRIVATE_PROBE
@@ -273,6 +277,53 @@ void TestSMSSelection() {
 }
 #endif
 
+
+class ZeroSampler : public ISampler {
+public: Scalar Get1D() override {return 0;} Point2 Get2D() override {return Point2(0,0);}
+};
+class RareMaterial : public SplitMaterial {
+    double first,second;bool delta;
+    void EmitRare(const RayIntersectionGeometric& ri,ScatteredRayContainer& out,bool nm) const {
+        for(int i=0;i<2;++i){ScatteredRay r;r.type=delta?ScatteredRay::eRayReflection:ScatteredRay::eRayDiffuse;r.isDelta=delta;r.pdf=1;r.ray=Ray(ri.ptIntersection,Vector3(i==0?.6:-.6,0,.8));if(nm)r.krayNM=i==0?first:second;else r.kray=RISEPel(i==0?first:second);out.AddScatteredRay(r);}
+    }
+public:
+    RareMaterial(double a,double b,IBSDF* response):SplitMaterial(2,false,ScatteredRay::eRayDiffuse,response),first(a),second(b),delta(response==nullptr){}
+    void Scatter(const RayIntersectionGeometric& ri,ISampler&,ScatteredRayContainer& out,const IORStack&) const override {EmitRare(ri,out,false);}
+    void ScatterNM(const RayIntersectionGeometric& ri,ISampler&,Scalar,ScatteredRayContainer& out,const IORStack&) const override {EmitRare(ri,out,true);}
+    Scalar EvaluateKrayNM(const RayIntersectionGeometric&,const Vector3& dir,ScatteredRay::ScatRayType,Scalar,const IORStack&) const override {return dir.x>0?first:second;}
+};
+void TestRareIntegratorSelection() {
+    auto* object=new StubObject();auto* paint=new UniformColorPainter(RISEPel(1));auto* bsdf=new LambertianBRDF(*paint);
+    auto* nullMat=new NullMaterial();auto* emitter=new LambertianLuminaireMaterial(*paint,1,*nullMat);
+    RandomNumberGenerator rng;RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);ZeroSampler sampler;IORStack stack(1);
+    auto* pt=new PathTracingIntegrator(ManifoldSolverConfig(),StabilityConfig());pt->SetMaxPathDepth(2);
+    auto* bdpt=new BDPTIntegrator(2,2,StabilityConfig());
+    const Ray ray(Point3(0,0,1),Vector3(0,0,-1));
+    for(bool hasBSDF:{false,true})for(int extreme:{0,1,2}) {
+        // Control, tiny selected weight, and ordinary selected weight with
+        // tiny probability. xi=0 selects the first nonzero interval exactly.
+        double a=extreme==1?1e-14:1,b=extreme==2?1e14:1;
+        RareMaterial material(a,b,hasBSDF?bsdf:nullptr);
+        auto* manager=new TwoPlaneManager(*object,material,*emitter);auto* scene=new Scene();scene->SetObjectManager(manager);ConstantCaster caster(scene);
+        RayIntersection hit(ray,nullRasterizerState);manager->IntersectRay(hit,true,true,false);
+        RISEPel pel=pt->IntegrateFromHit(rc,nullRasterizerState,hit,*scene,caster,sampler,nullptr,0,stack,0,RISEPel(1),true,1,IRayCaster::RAY_STATE::eRayView,0,0,0,0,0,0,false,false);
+        Scalar nm=pt->IntegrateFromHitNM(rc,nullRasterizerState,hit,550,*scene,caster,sampler,nullptr,0,stack,0,1,true,1,IRayCaster::RAY_STATE::eRayView,0,0,0,0,0,0,false,false);
+        const Scalar emittedNM=emitter->GetEmitter()->emittedRadianceNM(hit.geometric,Vector3(0,0,1),Vector3(0,0,1),550);
+        std::printf("rare hasBSDF=%d first=%.17g second=%.17g NMsource=%.17g\n",hasBSDF,a,b,emittedNM);
+        Near(pel.r/(a+b),1,"DL271 actual PT Pel selected conditional response");Near(nm/((a+b)*emittedNM),1,"DL271 actual PT NM selected conditional response");
+        SampledWavelengths swl;swl.SampleUniform(.5,400,700);Scalar bundle[SampledWavelengths::N];
+        pt->IntegrateFromHitHWSS(rc,nullRasterizerState,hit,swl,*scene,caster,sampler,nullptr,0,stack,0,true,1,IRayCaster::RAY_STATE::eRayView,0,0,0,0,0,0,bundle);
+        for(unsigned w=0;w<SampledWavelengths::N;++w){const Scalar e=emitter->GetEmitter()->emittedRadianceNM(hit.geometric,Vector3(0,0,1),Vector3(0,0,1),swl.lambda[w]);Near(bundle[w]/((a+b)*e),1,"DL271 actual PT HWSS selected conditional response");}
+        std::vector<BDPTVertex> verts;std::vector<uint32_t> starts;
+        bdpt->GenerateEyeSubpath(rc,ray,Point2(0,0),*scene,caster,sampler,verts,starts);
+        Check(verts.size()>=3,"BDPT eye reaches receiver",verts.size(),3);if(verts.size()>=3)Near(verts[2].throughput.r/(a+b),1,"DL271 actual BDPT Pel selected conditional response");
+        bdpt->GenerateEyeSubpathNM(rc,ray,Point2(0,0),*scene,caster,sampler,verts,starts,550,nullptr);
+        Check(verts.size()>=3,"BDPT NM eye reaches receiver",verts.size(),3);if(verts.size()>=3)Near(verts[2].throughputNM/(a+b),1,"DL271 actual BDPT NM selected conditional response");
+        scene->release();manager->release();
+    }
+    bdpt->release();pt->release();emitter->release();nullMat->release();bsdf->release();paint->release();object->release();
+}
+
 void TestGather() {
     auto* map=new CausticPelPhotonMap(4096,nullptr);
     auto* paint=new UniformColorPainter(RISEPel(.8));auto* bsdf=new LambertianBRDF(*paint);
@@ -291,7 +342,7 @@ void TestGather() {
     map->release();bsdf->release();paint->release();
 }
 }
-int main() { TestLiveSelection();TestCausticSelection();TestDetector();TestOtherDetectors();TestShaderSelection();
+int main() { TestLiveSelection();TestCausticSelection();TestDetector();TestOtherDetectors();TestShaderSelection();TestRareIntegratorSelection();
 #ifdef RISE_TEST_SMS_PRIVATE_PROBE
 TestSMSSelection();
 #endif
