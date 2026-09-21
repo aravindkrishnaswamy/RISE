@@ -471,7 +471,7 @@ namespace RISE
 		inline Scalar RayFacingShadingCosine( const Vector3& direction ) const
 		{
 			const Scalar c = Vector3Ops::Dot( vNormal, direction );
-			return c; // Diagnostic A/B: restore the pre-DL224 raw cosine.
+			return Vector3Ops::Dot( vNormal, ray.Dir() ) > Scalar(0) ? -c : c;
 		}
 
 		//! THE shared recovery for the two flags above (DL-70).  Returns
