@@ -17,6 +17,12 @@
 #include "../src/Library/Managers/ObjectManager.h"
 #include "../src/Library/Scene.h"
 #include "TestStubObject.h"
+#include "../src/Library/Shaders/FinalGatherShaderOp.h"
+#include "../src/Library/Shaders/DistributionTracingShaderOp.h"
+#ifdef RISE_TEST_SMS_PRIVATE_PROBE
+// Isolated actual-source probe; its link omits SMSPhotonMap.o.
+#include "../src/Library/Utilities/SMSPhotonMap.cpp"
+#endif
 // Circular/adaptive implementations are Xcode/VS sidecars, absent from
 // make/Android. The isolated sidecar probe explicitly compiles their real
 // sources; the ordinary named target keeps the production inventory intact.
@@ -38,6 +44,7 @@ void Near(double a,double b,const char* label) { Check(std::isfinite(a)&&std::fa
 // in a stochastic mean. NM leaves RGB fields zero, as real NM SPFs do.
 class SplitMaterial : public IMaterial, public ISPF, public Reference {
     int count;
+    IBSDF* response;
     bool sink;
     ScatteredRay::ScatRayType rayType;
     void Emit(const RayIntersectionGeometric& ri,ScatteredRayContainer& out,bool nm) const {
@@ -51,8 +58,8 @@ class SplitMaterial : public IMaterial, public ISPF, public Reference {
         }
     }
 public:
-    SplitMaterial(int n,bool stop=false,ScatteredRay::ScatRayType type=ScatteredRay::eRayDiffuse):count(n),sink(stop),rayType(type) {}
-    IBSDF* GetBSDF() const override { return nullptr; }
+    SplitMaterial(int n,bool stop=false,ScatteredRay::ScatRayType type=ScatteredRay::eRayDiffuse,IBSDF* bsdf=nullptr):count(n),response(bsdf),sink(stop),rayType(type) {}
+    IBSDF* GetBSDF() const override { return response; }
     ISPF* GetSPF() const override { return const_cast<SplitMaterial*>(this); }
     IEmitter* GetEmitter() const override { return nullptr; }
     void Scatter(const RayIntersectionGeometric& ri,ISampler&,ScatteredRayContainer& out,const IORStack&) const override { Emit(ri,out,false); }
@@ -191,6 +198,81 @@ void TestDetector() {
         Near(split/single,1,nm?"DL272 live spectral selection mode and compensation":"DL271 live RGB detector compensation");
     }
 }
+	class ConstantCaster :
+		public virtual IRayCaster,
+		public virtual Reference
+	{
+	const IScene* scene;
+	public:
+		ConstantCaster(const IScene* s):scene(s) {}
+		virtual ~ConstantCaster() {}
+
+	public:
+		bool CastRay( const RuntimeContext&, const RasterizerState&, const Ray&, RISEPel&,
+			const RAY_STATE&, Scalar*, const IRadianceMap* ) const override { return false; }
+
+		bool CastRayNM( const RuntimeContext&, const RasterizerState&, const Ray&, Scalar&,
+			const RAY_STATE&, const Scalar, Scalar*, const IRadianceMap* ) const override { return false; }
+
+		bool CastRay( const RuntimeContext&, const RasterizerState&, const Ray&, RISEPel& c,
+			const RAY_STATE&, Scalar* distance, const IRadianceMap*, const IORStack& ) const override { c=RISEPel(1);if(distance)*distance=1;return true; }
+
+		bool CastRayNM( const RuntimeContext&, const RasterizerState&, const Ray&, Scalar&,
+			const RAY_STATE&, const Scalar, Scalar*, const IRadianceMap*, const IORStack& ) const override { return false; }
+
+		bool CastShadowRay( const Ray&, const Scalar ) const override
+		{
+			// Unoccluded -- see class comment.
+			return false;
+		}
+
+		bool CastOcclusionRay( const Ray&, const Scalar ) const override
+		{
+			// Not exercised by this test (AreaLightShaderOp only calls
+			// CastShadowRay); stub to satisfy the pure-virtual interface.
+			return false;
+		}
+
+		void AttachScene( const IScene* ) override {}
+		const IScene* GetAttachedScene() const override { return scene; }
+		void SetLuminaireSampling( ISampling2D* ) override {}
+		const ILuminaryManager* GetLuminaries() const override { return nullptr; }
+		const Implementation::LightSampler* GetLightSampler() const override { return nullptr; }
+		void SetRISCandidates( const unsigned int ) override {}
+		void SetLightSampleRRThreshold( const Scalar ) override {}
+		void SetUseLightBVH( const bool ) override {}
+		bool IsRadianceMapVisibleAsBackground() const override { return false; }
+	};
+
+void TestShaderSelection() {
+    auto* scene=new Scene();auto* map=new GlobalPelPhotonMap(1,nullptr);scene->SetGlobalPelMap(map);
+    auto* paint=new UniformColorPainter(RISEPel(.5));auto* bsdf=new LambertianBRDF(*paint);
+    ConstantCaster caster(scene);RandomNumberGenerator rng;RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
+    IRayCaster::RAY_STATE rs;IORStack stack(1);
+    RayIntersection ri(Ray(Point3(0,0,1),Vector3(0,0,-1)),nullRasterizerState);
+    ri.geometric.vNormal=ri.geometric.vGeomNormal=Vector3(0,0,1);ri.geometric.onb.CreateFromW(ri.geometric.vNormal);
+    for(int n:{1,2}) {
+        SplitMaterial material(n,false,ScatteredRay::eRayDiffuse,bsdf);ri.pMaterial=&material;
+        auto* gather=new FinalGatherShaderOp(4,4,false,1,1,false);RISEPel result;
+        gather->PerformOperation(rc,ri,caster,rs,result,stack,nullptr);
+        Near(result.r,1,n==1?"FinalGather single response control":"DL271 actual FinalGather filtered response");gather->release();
+        auto* distribution=new DistributionTracingShaderOp(1,false,false,true,true,true,true);
+        distribution->PerformOperation(rc,ri,caster,rs,result,stack,nullptr);
+        Near(result.r,1,n==1?"DistributionTracing single selector control":"DistributionTracing branch-all negative control");distribution->release();
+    }
+    scene->release();map->release();bsdf->release();paint->release();
+}
+#ifdef RISE_TEST_SMS_PRIVATE_PROBE
+void TestSMSSelection() {
+    auto* split=new SplitMaterial(2,false,ScatteredRay::eRayReflection);auto* paint=new UniformColorPainter(RISEPel(.5));auto* sink=new LambertianMaterial(*paint);auto* object=new StubObject();
+    auto* manager=new TwoPlaneManager(*object,*split,*sink);auto* scene=new Scene();scene->SetObjectManager(manager);
+    RandomNumberGenerator rng;IORStack stack(1);double sum=0;bool structure=true;
+    for(int i=0;i<16;++i){SMSPhoton out;bool hit=TraceSMSPhoton(*scene,Ray(Point3(0,0,1),Vector3(0,0,-1)),RISEPel(1),rng,stack,out);structure=structure&&hit&&out.chainLen==1&&out.entryObject==object&&out.chain[0].flags==2;if(hit)sum+=out.power.r;}
+    Check(structure,"SMS actual walk keeps reflection chain and hit",structure,1);Near(sum/16,1,"DL271 SMS actual walk selected flux");
+    scene->release();manager->release();object->release();sink->release();paint->release();split->release();
+}
+#endif
+
 void TestGather() {
     auto* map=new CausticPelPhotonMap(4096,nullptr);
     auto* paint=new UniformColorPainter(RISEPel(.8));auto* bsdf=new LambertianBRDF(*paint);
@@ -209,4 +291,8 @@ void TestGather() {
     map->release();bsdf->release();paint->release();
 }
 }
-int main() { TestLiveSelection();TestCausticSelection();TestDetector();TestOtherDetectors();TestGather();std::printf("LegacyPhotonTransportTest checks=%d failures=%d\n",checks,failures);return failures?1:0; }
+int main() { TestLiveSelection();TestCausticSelection();TestDetector();TestOtherDetectors();TestShaderSelection();
+#ifdef RISE_TEST_SMS_PRIVATE_PROBE
+TestSMSSelection();
+#endif
+TestGather();std::printf("LegacyPhotonTransportTest checks=%d failures=%d\n",checks,failures);return failures?1:0; }
