@@ -11,6 +11,7 @@ int checks=0,failures=0;
 void Check(bool ok,const char* text){++checks;if(!ok){++failures;std::printf("FAIL %s\n",text);}}
 template<class P> class Tree:public PhotonMapCore<P>{
 public:
+ using PhotonMapCore<P>::CountPhotonsAt;
  Tree():PhotonMapCore<P>(0,nullptr){}
  void Serialize(IWriteBuffer&)const override{} void Deserialize(IReadBuffer&)override{}
  void RadianceEstimate(RISEPel&,const RayIntersectionGeometric&,const IBSDF&)const override{}
