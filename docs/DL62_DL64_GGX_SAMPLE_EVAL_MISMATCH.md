@@ -2073,5 +2073,39 @@ single-file compiles of the old and fixed `GGXBRDF.cpp` measured
 SD), so the observed 0.0067 s difference is below run-to-run noise.
 The object grew by 52,832 bytes (1.65%) and the fully linked CLI by
 49,744 bytes (0.193%). Those timings and sizes are historical and are not
-claimed for the corrected generator/source representation; no updated quiet
-cost slot or whole-render cost is claimed.
+claimed for the corrected generator/source representation.
+
+**Corrected-source cost refresh (2026-09-21, quiet slot).** The exact
+corrected candidate was `3c07250e`; its source blob was `6ebc17ca`. The
+committed control was `290d4188`: the complete candidate tree with only
+`src/Library/Materials/GGXBRDF.cpp` replaced by the exact `b8be6e7` blob
+`bdc03583`. It is therefore a source-only compile/link control, not a
+whole-baseline comparison. The library, CLI, and exact
+`GGXHemisphericalAlbedoTest` target were rebuilt and relinked for each linked
+state outside the compile intervals.
+
+Single-source compiles used the project's actual make target and flags in the
+interleaved order old,new/new,old/old,new. The control samples were
+`0.948362`, `0.951115`, `0.950048` seconds (mean **0.949842 s**, sample SD
+**0.001388 s**); corrected samples were `0.963508`, `0.975672`, `0.989390`
+seconds (mean **0.976190 s**, sample SD **0.012949 s**). The observed
+`+0.026349 s` / `+2.77%` is a compile-cost measurement only; with three
+samples and the corrected side's larger spread it is not a runtime or render
+claim.
+
+The corrected `GGXBRDF.cpp` is **178,012 bytes** versus **51,739 bytes** in
+the source-only control (`+126,273`). Its object is **3,257,808 bytes** versus
+**3,200,736** (`+57,072`, `+1.78%`), and the source-only-linked CLI is
+**25,892,840 bytes** versus **25,826,424** (`+66,416`, `+0.257%`). The
+generator source is **35,809 bytes** versus **22,430** at base `b8be6e7`
+(`+13,379`); its one functional `-O3 -std=c++17` compile took 0.398776 s.
+Three untrimmed functional bakes took `66.248197`, `66.081205`, and
+`65.851441` seconds (mean **66.060281 s**, sample SD **0.199204 s**). An
+initializer parser, rather than a hard-coded success flag, found all **344**
+legacy literals and all **6,984** correction literals identical in each bake
+and the corrected source; the three complete outputs were byte-identical.
+Since `Scalar` is `double`, the correction literals' direct scalar payload is
+**55,872 bytes** (58,624 bytes including the 344 preserved legacy literals).
+All 20 measured build/compile/link/bake return codes were zero and all 20
+warning counts were zero. No test executable or renderer was run; these are
+compile, generator, and storage costs only, with no runtime/render claim.
