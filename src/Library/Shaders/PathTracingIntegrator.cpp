@@ -1344,11 +1344,11 @@ namespace
 	// spectral weights (bNM=true), matching the original RandomlySelect
 	// so the selection distribution matches the selectProb compensation.
 	template<class Tag>
-	inline ScatteredRay* PTRandomlySelect( const ScatteredRayContainer& scattered, Scalar xi );
-	template<> inline ScatteredRay* PTRandomlySelect<PelTag>( const ScatteredRayContainer& scattered, Scalar xi )
-	{ return scattered.RandomlySelect( xi, false ); }
-	template<> inline ScatteredRay* PTRandomlySelect<NMTag>( const ScatteredRayContainer& scattered, Scalar xi )
-	{ return scattered.RandomlySelect( xi, true ); }
+	inline ScatteredRay* PTRandomlySelect( const ScatteredRayContainer& scattered, Scalar xi, Scalar* selectedProbability );
+	template<> inline ScatteredRay* PTRandomlySelect<PelTag>( const ScatteredRayContainer& scattered, Scalar xi, Scalar* selectedProbability )
+	{ return scattered.RandomlySelect( xi, false, selectedProbability ); }
+	template<> inline ScatteredRay* PTRandomlySelect<NMTag>( const ScatteredRayContainer& scattered, Scalar xi, Scalar* selectedProbability )
+	{ return scattered.RandomlySelect( xi, true, selectedProbability ); }
 
 	// Scatter-ray kray in the value type (throughput multiply).
 	template<class Tag>
@@ -1356,13 +1356,6 @@ namespace
 	template<> inline RISEPel PTScatterKray<PelTag>( const ScatteredRay& pS ) { return pS.kray; }
 	template<> inline Scalar  PTScatterKray<NMTag>( const ScatteredRay& pS ) { return pS.krayNM; }
 
-	// Lobe selection weight (selectProb numerator/denominator terms).
-	// Pel -> signed-max channel of kray (ColorMath::MaxValue); NM -> raw
-	// krayNM (matches the CDF inside RandomlySelect with bNM=true).
-	template<class Tag>
-	inline Scalar PTScatterSelectWeight( const ScatteredRay& pS );
-	template<> inline Scalar PTScatterSelectWeight<PelTag>( const ScatteredRay& pS ) { return ColorMath::MaxValue( pS.kray ); }
-	template<> inline Scalar PTScatterSelectWeight<NMTag>( const ScatteredRay& pS ) { return pS.krayNM; }
 
 	// BSSRDF entry weights (diffusion + random-walk).
 	template<class Tag>
@@ -3337,30 +3330,21 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			// multi-lobe delta vertices).  Branching was excised in 2026-05;
 			// matches PBRT/Mitsuba/Arnold/Cycles X.  Pel selects with RGB-max
 			// weights (bNM=false), NM with spectral weights (bNM=true) via
-			// PTRandomlySelect / PTScatterSelectWeight, so the selection and
+			// PTRandomlySelect and its returned probability, so the selection and
 			// the selectProb compensation stay in the same domain.  The Pel
 			// multi-lobe and single-lobe branches are unified here: for a
 			// single lobe selectProb stays 1.0 and the `* (1/selectProb)`
 			// factor is an exact multiply by 1.0.
 			{
 				const Scalar xi = sampler.Get1D();
-				const ScatteredRay* pS = PTRandomlySelect<Tag>( scattered, xi );
+				Scalar selectProb;
+				const ScatteredRay* pS = PTRandomlySelect<Tag>( scattered, xi, &selectProb );
 				if( !pS ) {
 					break;
 				}
 
-				Scalar selectProb = 1.0;
-				if( scattered.Count() > 1 ) {
-					Scalar totalKray = 0;
-					for( unsigned int li = 0; li < scattered.Count(); li++ ) {
-						totalKray += PTScatterSelectWeight<Tag>( scattered[li] );
-					}
-					const Scalar pSWeight = PTScatterSelectWeight<Tag>( *pS );
-					if( totalKray > NEARZERO && pSWeight > NEARZERO ) {
-						selectProb = pSWeight / totalKray;
-					}
-				}
-				if( selectProb < NEARZERO ) {
+				// Every positive selected probability contributes; a small q is not extinction.
+				if( selectProb <= 0 ) {
 					break;
 				}
 
@@ -3746,23 +3730,14 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		// estimator is biased low at every multi-lobe vertex.
 		{
 			const Scalar xi = sampler.Get1D();
-			const ScatteredRay* pS = PTRandomlySelect<Tag>( scattered, xi );
+			Scalar selectProb;
+			const ScatteredRay* pS = PTRandomlySelect<Tag>( scattered, xi, &selectProb );
 			if( !pS ) {
 				break;
 			}
 
-			Scalar selectProb = 1.0;
-			if( scattered.Count() > 1 ) {
-				Scalar totalKrayMax = 0;
-				for( unsigned int li = 0; li < scattered.Count(); li++ ) {
-					totalKrayMax += PTScatterSelectWeight<Tag>( scattered[li] );
-				}
-				const Scalar pSMax = PTScatterSelectWeight<Tag>( *pS );
-				if( totalKrayMax > NEARZERO && pSMax > NEARZERO ) {
-					selectProb = pSMax / totalKrayMax;
-				}
-			}
-			if( selectProb < NEARZERO ) {
+			// Every positive selected probability contributes; a small q is not extinction.
+			if( selectProb <= 0 ) {
 				break;
 			}
 
@@ -6259,30 +6234,18 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 
 		// HWSS single-sample continuation (no branching).  Select with
 		// bNM=true so selection uses hero-wavelength krayNM weights —
-		// matches the selectProb computation below.  Companion
+		// reports the corresponding selectProb. Companion
 		// wavelengths inherit the hero's selection and divide by the
 		// same hero-based selectProb.
 		const Scalar xi = sampler.Get1D();
-		const ScatteredRay* pS = scattered.RandomlySelect( xi, true );
+		Scalar selectProb;
+		const ScatteredRay* pS = scattered.RandomlySelect( xi, true, &selectProb );
 		if( !pS ) {
 			break;
 		}
 
-		// RandomlySelect with bNM=true picks lobe i with prob
-		// krayNM_i / sum_j krayNM_j (raw, not fabs — matches the CDF
-		// inside ScatteredRayContainer::RandomlySelect).
-		Scalar selectProb = 1.0;
-		if( scattered.Count() > 1 )
-		{
-			Scalar totalKrayNM = 0;
-			for( unsigned int li = 0; li < scattered.Count(); li++ ) {
-				totalKrayNM += scattered[li].krayNM;
-			}
-			if( totalKrayNM > NEARZERO && pS->krayNM > NEARZERO ) {
-				selectProb = pS->krayNM / totalKrayNM;
-			}
-		}
-		if( selectProb < NEARZERO ) {
+		// Companions use the exact hero selection experiment, including shortcuts.
+		if( selectProb <= 0 ) {
 			break;
 		}
 

@@ -482,7 +482,8 @@ void AdaptiveDetectorSphere::PerformMeasurement(
 			IORStack iorStack( 1.0 );
 			// NO eta^2 factor -- flux measurement rig, see DetectorSphere.cpp.
 			pSPF->Scatter( ri, samplerWrapper, scattered, iorStack );
-			ScatteredRay* pScat = scattered.RandomlySelect( random.CanonicalRandom(), false );
+			Scalar selectedProbability=0;
+			ScatteredRay* pScat = scattered.RandomlySelect( random.CanonicalRandom(), false, &selectedProbability );
 
 			if( pScat )
 			{
@@ -529,7 +530,7 @@ void AdaptiveDetectorSphere::PerformMeasurement(
 						}
 #endif
 
-						m_pRoot->DepositSample( m_MaxPatches, m_nNumPatches, m_dThreshold, theta, phi, power_each_sample*ColorMath::MaxValue(pScat->kray) );
+						m_pRoot->DepositSample( m_MaxPatches, m_nNumPatches, m_dThreshold, theta, phi, (power_each_sample/selectedProbability)*ColorMath::MaxValue(pScat->kray) );
 					}
 				}
 			}

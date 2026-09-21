@@ -250,7 +250,8 @@ void IsotropicRGBDetectorSphere::PerformMeasurement(
 				pSPF->Scatter( ri, samplerWrapper, scattered, iorStack );
 			}
 
-			ScatteredRay* pScat = scattered.RandomlySelect( random.CanonicalRandom(), false );
+			Scalar selectedProbability=0;
+			ScatteredRay* pScat = scattered.RandomlySelect( random.CanonicalRandom(), bSpectral, &selectedProbability );
 
 			if( pScat )
 			{
@@ -294,10 +295,10 @@ void IsotropicRGBDetectorSphere::PerformMeasurement(
 							if( bSpectral ) {
 								XYZPel thisNM( 0, 0, 0 );
 								if( ColorUtils::XYZFromNM( thisNM, nm ) ) {
-									patch->dRatio = patch->dRatio + thisNM * power_each_sample*pScat->krayNM;
+									patch->dRatio = patch->dRatio + thisNM * (power_each_sample/selectedProbability)*pScat->krayNM;
 								}
 							} else {
-								patch->dRatio = patch->dRatio + XYZPel(power_each_sample*pScat->kray);
+								patch->dRatio = patch->dRatio + XYZPel((power_each_sample/selectedProbability)*pScat->kray);
 							}
 						}
 					}

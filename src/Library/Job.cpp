@@ -12,6 +12,8 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "PhotonMapping/GlobalPelPhotonMap.h"
+#include "PhotonMapping/TranslucentPelPhotonMap.h"
 #include <cerrno>    // errno / ERANGE for non-finite + overflow rejection
 #include <climits>   // UINT_MAX for max_bounces validation
 #include "Scene.h"   // P2a: bump light-topology generation on Job-level emitter/env edits
@@ -11310,15 +11312,15 @@ bool Job::LoadGlobalPelPhotonmap(
 	IReadBuffer* buffer = 0;
 	RISE_API_CreateDiskFileReadBuffer( &buffer, file_name );
 
-	IPhotonMap* pmap = 0;
-	RISE_API_CreateGlobalPelPhotonMap( &pmap, 0 );
+	GlobalPelPhotonMap* pmap = new GlobalPelPhotonMap( 0, nullptr );
+	GlobalLog()->PrintNew( pmap, __FILE__, __LINE__, "GlobalPelPhotonMap" );
 
-	pmap->Deserialize( *buffer );
-	pScene->SetGlobalPelMap( pmap );
+	const bool loaded = buffer && pmap->DeserializeChecked( *buffer );
+	if( loaded ) pScene->SetGlobalPelMap( pmap );
 
 	safe_release( pmap );
 	safe_release( buffer );
-	return true;
+	return loaded;
 }
 
 //! Loads the translucent pel photon map from disk
@@ -11333,15 +11335,15 @@ bool Job::LoadTranslucentPelPhotonmap(
 	IReadBuffer* buffer = 0;
 	RISE_API_CreateDiskFileReadBuffer( &buffer, file_name );
 
-	IPhotonMap* pmap = 0;
-	RISE_API_CreateTranslucentPelPhotonMap( &pmap, 0 );
+	TranslucentPelPhotonMap* pmap = new TranslucentPelPhotonMap( 0, nullptr );
+	GlobalLog()->PrintNew( pmap, __FILE__, __LINE__, "TranslucentPelPhotonMap" );
 
-	pmap->Deserialize( *buffer );
-	pScene->SetTranslucentPelMap( pmap );
+	const bool loaded = buffer && pmap->DeserializeChecked( *buffer );
+	if( loaded ) pScene->SetTranslucentPelMap( pmap );
 
 	safe_release( pmap );
 	safe_release( buffer );
-	return true;
+	return loaded;
 }
 
 //! Loads the caustic spectral photon map from disk
