@@ -506,10 +506,9 @@ void Intersect_Resultant(
 		const SmallPolynomial fV = F1( u );
 
 		// Pack as a monic-ready quartic (RISE coefficient convention:
-		// coeff[0] leading, coeff[4] constant).  With coeff[0]=0 the OQS
-		// SolveQuartic dispatches to the OQS-stabilised cubic path,
-		// which shares the numerics (Vieta-stable quadratic, Newton polish)
-		// that made the torus rewrite worthwhile.
+		// coeff[0] leading, coeff[4] constant). With coeff[0]=0,
+		// SolveQuartic dispatches to the separate classical SolveCubic;
+		// its OQS quartic factorisation is not used for these v seeds.
 		const Scalar quartCoeff[5] = {
 			0.0,
 			fV.coef[3],

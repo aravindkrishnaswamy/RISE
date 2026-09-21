@@ -44,6 +44,45 @@ MSVC build yet, so the first Windows run of each should expect to fix them:
   command string handed to `std::system`), added 2026-09-07. The POSIX
   branch is exercised on every macOS/Linux run.
 
+## Shared quartic factorization (DL226)
+
+Build the library and exact target, then run `./bin/tests/PolynomialTest`:
+
+```sh
+make -C build/make/rise -j8 all
+make -C build/make/rise build-test/PolynomialTest
+./bin/tests/PolynomialTest
+```
+
+The explicit DL226 checks remain active under `NDEBUG`. Independent
+positive-polynomial and factored-root oracles cover invented roots,
+missing real roots, repeated and near-multiple roots, common coefficient
+and variable scaling, and leading-zero cubic/quadratic/linear dispatch.
+Direct torus and transformed `Object` primary/shadow fixtures distinguish
+central-hole misses from four-crossing and grazing hits. The final
+measured suite has **1057 explicit checks, 0 failures**, plus the existing
+assert-based polynomial tests; per-returned-root diagnostics make totals
+vary between defective and corrected solvers. DL273–DL275 add exact torus
+tangencies, strict positive/negative contact perturbations, non-even tiny
+roots, mixed-scale and reciprocal root families, finite-input assertions,
+and normal/subnormal output boundaries. See
+[the derivation and committed red/green evidence](../docs/DL226_QUARTIC_FACTORIZATION.md).
+
+The private exponent-preserving FMA has a separate exact-rational regression:
+
+```sh
+python3 tests/PolynomialWideArithmeticTest.py --output-dir /tmp/polynomial-wide-evidence
+```
+
+This Python 3 test uses the selected `--compiler` (default `c++`, Clang/GCC
+command-line flags) to compile the actual private production implementation.
+It writes generated code, executable, logs and JSON only to the specified
+evidence directory. No public API or library build entry is added. The
+5,762 checks compare exact Fraction nearest-53/ties-even results, including
+remote addends that decide exact product ties; 12 hand-derived oracle
+sentinels and fixed family counts guard the reference and completeness.
+Return status is nonzero for build, run, count, warning, or arithmetic failure.
+
 ## Test Map
 
 There are 219 standalone `tests/*.cpp` executables as of 2026-07-24. Do not

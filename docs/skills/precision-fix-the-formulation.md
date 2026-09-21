@@ -199,12 +199,41 @@ Why wrong:
   committed to its real-vs-complex verdict, even when another would
   have found real roots.
 
-Right fix: drop the gate.  Always evaluate the identical-α fallback
-when `d3 ≤ 0` (the regime where it produces real roots), compute
-its forward error, pick whichever factorisation has lower error.
-When the primary path was already valid with lower error we keep
-it; when the fallback wins we switch.  Both branches evaluated, no
-threshold guesswork, no missed roots.
+Right fix: evaluate the identical-α alternative whenever `d3 ≤ 0`,
+then compare coefficient reconstruction errors against the **actual**
+primary factorization, including a conjugate-complex primary. Real
+quadratic coefficients do not guarantee real roots: their discriminants
+still decide. DL226 found that assigning the complex primary infinite
+error made the fallback turn `(x²+1)²` into `(x²−1)²`, inventing real
+roots. The existing LDLT reconstruction metric evaluates the complex
+primary without complex arithmetic. Only `d2 == 0`, where no primary
+candidate was constructed, requires unconditional fallback selection.
+
+At exactly equal rounded errors and `d3 == 0`, prefer the coalesced
+quadratic-square alternative: `(x−1)^4` otherwise depended on singular
+Newton refinement to reunite split factors. This tie rule adds no error
+band. Positive-square, near-multiple-positive, repeated-real, scaled-root
+and live torus hit/miss controls are documented in
+[DL226_QUARTIC_FACTORIZATION.md](../DL226_QUARTIC_FACTORIZATION.md).
+Evaluating both candidates preserves the recovery opportunity; it is
+not a guarantee of resolving every ill-conditioned floating-point root.
+
+### Quartic contact and exponent range (DL273–DL275)
+
+Exact torus tangencies require accurate factor coefficients, not a relaxed
+quadratic discriminant. Compensated coefficient residuals let Newton reach
+the exact contact factors when rounded multiply/add residuals prematurely
+look zero. Strictly positive and negative contact perturbations distinguish
+true contact from invented intersections.
+
+Normalize coefficient exponents before dividing by the leading coefficient;
+otherwise finite coefficients can overflow into a broken monic polynomial.
+Scale tiny roots up as well as large roots down. When one binary64 scale
+cannot represent all coefficients, preserve a separate exponent through
+the same factorization, including Vieta recovery, rather than silently
+turning small coefficients into zero. Range extension does not add
+significand precision. See [the derivation, finite boundary oracles and
+renewed gates](../DL273_DL274_DL275_QUARTIC_RANGE.md).
 
 ### Bilinear-patch shadow-ray self-shadowing (masqueraded as an MIS bug)
 
