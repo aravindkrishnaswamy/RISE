@@ -461,6 +461,9 @@ static std::array<double,5> MultiplyQuadratics( double a, double b, double c,
 static void CheckQuarticOracle( const char* name, const std::array<double,5>& c,
                                const std::vector<double>& expected, double rootTolerance=1e-7, bool relative=false )
 {
+    const bool finiteInput=std::all_of(c.begin(),c.end(),[](double x){return std::isfinite(x);});
+    QuarticCheck(finiteInput,"independent oracle fixture has finite coefficients");
+    if(!finiteInput) return;
     const Scalar coeff[5]={c[0],c[1],c[2],c[3],c[4]};
     Scalar roots[4]={0,0,0,0};
     const int n=Polynomial::SolveQuartic(coeff,roots);

@@ -302,13 +302,27 @@ namespace
 
 	// Binary64 significand with a separate exponent for exceptionally wide
 	// root scales. This preserves nonzero coefficients and Vieta products
-	// that a single double variable transformation cannot represent.
+	// that a single double variable transformation cannot represent. Finite
+	// nonzero values have .5 <= |m| < 1; zero has e=0. The 64-bit exponent
+	// leaves ample range for the finite binary64 inputs and bounded OQS
+	// iterations. Only final root conversion returns to binary64 range.
+	// This extends range, not significand precision or root multiplicity
+	// guarantees. Rounding a tiny addend away does not erase its independent
+	// coefficient storage, unlike underflowing normalization into a zero.
 	struct oqs_wide
 	{
 		double m;
 		std::int64_t e;
-		oqs_wide( double x=0 ) : m(0), e(0) { int exponent; m=std::frexp(x,&exponent); e=exponent; }
-		static oqs_wide scaled( double x, std::int64_t exponent ) { oqs_wide r(x); if(r.m!=0) r.e+=exponent; return r; }
+		oqs_wide( double x=0 ) : m(0), e(0) {
+			int exponent;
+			m=std::frexp( x, &exponent );
+			e=exponent;
+		}
+		static oqs_wide scaled( double x, std::int64_t exponent ) {
+			oqs_wide r(x);
+			if( r.m != 0 ) r.e += exponent;
+			return r;
+		}
 		double unscale( int exponent=0 ) const {
 			const std::int64_t total=e+exponent;
 			if(m==0) return m;
@@ -321,8 +335,9 @@ namespace
 		oqs_wide& operator*=(oqs_wide x);
 	};
 	oqs_wide operator+(oqs_wide a,oqs_wide b) {
-		if(a.m==0)return b;if(b.m==0)return a;
-		if(a.e<b.e){const oqs_wide t=a;a=b;b=t;}
+		if( a.m == 0 ) return b;
+		if( b.m == 0 ) return a;
+		if( a.e < b.e ) { const oqs_wide t=a; a=b; b=t; }
 		const std::int64_t gap=b.e-a.e;
 		if(gap<DBL_MIN_EXP-DBL_MANT_DIG) return a;
 		return oqs_wide::scaled(a.m+std::scalbn(b.m,static_cast<int>(gap)),a.e);
@@ -348,9 +363,17 @@ namespace
 	double oqs_fabs(double x){return std::fabs(x);}
 	oqs_wide oqs_fabs(oqs_wide x){return oqs_wide::scaled(std::fabs(x.m),x.e);}
 	double oqs_sqrt(double x){return std::sqrt(x);}
-	oqs_wide oqs_sqrt(oqs_wide x){std::int64_t q=x.e/2;int r=static_cast<int>(x.e-2*q);return oqs_wide::scaled(std::sqrt(std::scalbn(x.m,r)),q);}
+	oqs_wide oqs_sqrt( oqs_wide x ) {
+		const std::int64_t q=x.e/2;
+		const int r=static_cast<int>(x.e-2*q);
+		return oqs_wide::scaled( std::sqrt(std::scalbn(x.m,r)), q );
+	}
 	double oqs_cbrt(double x){return cbrt(x);}
-	oqs_wide oqs_cbrt(oqs_wide x){std::int64_t q=x.e/3;int r=static_cast<int>(x.e-3*q);return oqs_wide::scaled(oqs_cbrt(std::scalbn(x.m,r)),q);}
+	oqs_wide oqs_cbrt( oqs_wide x ) {
+		const std::int64_t q=x.e/3;
+		const int r=static_cast<int>(x.e-3*q);
+		return oqs_wide::scaled( oqs_cbrt(std::scalbn(x.m,r)), q );
+	}
 	double oqs_acos(double x){return std::acos(x);}
 	oqs_wide oqs_acos(oqs_wide x){return oqs_wide(std::acos(x.unscale()));}
 	double oqs_cos(double x){return std::cos(x);}
@@ -659,146 +682,146 @@ namespace
 	template<class T>
 	int oqs_factor_quartic( T A, T B, T C, T D, T sol[4] )
 	{
-	T phi0=0;
-	oqs_calc_phi0( A, B, C, D, &phi0, 0 );
-	// Build the LDL^T decomposition (eqs. 16-28).
-	const T l1 = A / 2.0;
-	const T l3 = B / 6.0 + phi0 / 2.0;
-	const T del2 = C - A * l3;
-	const T bl311 = 2.0 * B / 3.0 - phi0 - l1 * l1;
-	const T dml3l3 = D - l3 * l3;
+		T phi0=0;
+		oqs_calc_phi0( A, B, C, D, &phi0, 0 );
+		// Build the LDL^T decomposition (eqs. 16-28).
+		const T l1 = A / 2.0;
+		const T l3 = B / 6.0 + phi0 / 2.0;
+		const T del2 = C - A * l3;
+		const T bl311 = 2.0 * B / 3.0 - phi0 - l1 * l1;
+		const T dml3l3 = D - l3 * l3;
 
-	T l2m[4], d2m[4], res[4];
-	int nsol = 0;
-	if( bl311 != 0.0 ) {
-		d2m[nsol] = bl311;
-		l2m[nsol] = del2 / ( 2.0 * d2m[nsol] );
-		res[nsol] = oqs_calc_err_ldlt( B, C, D, d2m[nsol], l1, l2m[nsol], l3 );
-		nsol++;
-	}
-	if( del2 != 0 ) {
-		l2m[nsol] = 2.0 * dml3l3 / del2;
-		if( l2m[nsol] != 0 ) {
-			d2m[nsol] = del2 / ( 2.0 * l2m[nsol] );
+		T l2m[4], d2m[4], res[4];
+		int nsol = 0;
+		if( bl311 != 0.0 ) {
+			d2m[nsol] = bl311;
+			l2m[nsol] = del2 / ( 2.0 * d2m[nsol] );
 			res[nsol] = oqs_calc_err_ldlt( B, C, D, d2m[nsol], l1, l2m[nsol], l3 );
 			nsol++;
 		}
-		d2m[nsol] = bl311;
-		l2m[nsol] = 2.0 * dml3l3 / del2;
-		res[nsol] = oqs_calc_err_ldlt( B, C, D, d2m[nsol], l1, l2m[nsol], l3 );
-		nsol++;
-	}
-	T d2 = 0, l2 = 0;
-	if( nsol > 0 ) {
-		int kmin = 0;
-		T resmin = res[0];
-		for( int k = 1; k < nsol; k++ ) {
-			if( res[k] < resmin ) { resmin = res[k]; kmin = k; }
+		if( del2 != 0 ) {
+			l2m[nsol] = 2.0 * dml3l3 / del2;
+			if( l2m[nsol] != 0 ) {
+				d2m[nsol] = del2 / ( 2.0 * l2m[nsol] );
+				res[nsol] = oqs_calc_err_ldlt( B, C, D, d2m[nsol], l1, l2m[nsol], l3 );
+				nsol++;
+			}
+			d2m[nsol] = bl311;
+			l2m[nsol] = 2.0 * dml3l3 / del2;
+			res[nsol] = oqs_calc_err_ldlt( B, C, D, d2m[nsol], l1, l2m[nsol], l3 );
+			nsol++;
 		}
-		d2 = d2m[kmin];
-		l2 = l2m[kmin];
-	}
-
-	// Build candidate (alpha1, beta1, alpha2, beta2) factorisation.
-	// Real coefficients arise for d2 < 0. The d2 > 0 candidate has
-	// conjugate-complex coefficients, but its reconstruction error is still
-	// essential when comparing the alternative real factorisation below.
-	int realcase0 = ( d2 < 0.0 ) ? 1 : ( d2 > 0.0 ? 0 : -1 );
-	T aq = 0, bq = 0, cq = 0, dq = 0;
-	T errmin = 0;
-
-	if( realcase0 == 1 ) {
-		T gamma = oqs_sqrt( -d2 );
-		aq = l1 + gamma;
-		bq = l3 + gamma * l2;
-		cq = l1 - gamma;
-		dq = l3 - gamma * l2;
-		if( oqs_fabs( dq ) < oqs_fabs( bq ) ) dq = D / bq;
-		else if( oqs_fabs( dq ) > oqs_fabs( bq ) ) bq = D / dq;
-
-		T aqv[3], cqv[3], errv[3];
-		int kmin = 0;
-		if( oqs_fabs( aq ) < oqs_fabs( cq ) ) {
-			int n = 0;
-			if( dq != 0 ) { aqv[n] = ( C - bq * cq ) / dq; errv[n] = oqs_calc_err_abc( A, B, C, aqv[n], bq, cq, dq ); n++; }
-			if( cq != 0 ) { aqv[n] = ( B - dq - bq ) / cq; errv[n] = oqs_calc_err_abc( A, B, C, aqv[n], bq, cq, dq ); n++; }
-			aqv[n] = A - cq; errv[n] = oqs_calc_err_abc( A, B, C, aqv[n], bq, cq, dq ); n++;
-			errmin = errv[0];
-			for( int k = 1; k < n; k++ ) if( errv[k] < errmin ) { errmin = errv[k]; kmin = k; }
-			aq = aqv[kmin];
-		} else {
-			int n = 0;
-			if( bq != 0 ) { cqv[n] = ( C - aq * dq ) / bq; errv[n] = oqs_calc_err_abc( A, B, C, aq, bq, cqv[n], dq ); n++; }
-			if( aq != 0 ) { cqv[n] = ( B - bq - dq ) / aq; errv[n] = oqs_calc_err_abc( A, B, C, aq, bq, cqv[n], dq ); n++; }
-			cqv[n] = A - aq; errv[n] = oqs_calc_err_abc( A, B, C, aq, bq, cqv[n], dq ); n++;
-			errmin = errv[0];
-			for( int k = 1; k < n; k++ ) if( errv[k] < errmin ) { errmin = errv[k]; kmin = k; }
-			cq = cqv[kmin];
+		T d2 = 0, l2 = 0;
+		if( nsol > 0 ) {
+			int kmin = 0;
+			T resmin = res[0];
+			for( int k = 1; k < nsol; k++ ) {
+				if( res[k] < resmin ) { resmin = res[k]; kmin = k; }
+			}
+			d2 = d2m[kmin];
+			l2 = l2m[kmin];
 		}
-	}
 
-	// Identical-alpha / split-beta alternative (OQS case III).
-	// Evaluate it even away from d2=0 to retain the alternate-factor recovery
-	// used by ill-conditioned torus rays, but compare against the ACTUAL
-	// primary factorisation, including the conjugate-complex case.
-	//
-	// For d2>0 the primary product is
-	//   (x^2+l1*x+l3)^2 + d2*(x+l2)^2.
-	// oqs_calc_err_ldlt reconstructs its B/C/D coefficients directly without
-	// complex arithmetic; A=2*l1 already matches. Treating this error as
-	// infinity would allow an incompatible real alternative to win. For
-	// (x^2+1)^2 it replaced +2*x^2 by -2*x^2, then the singular repeated-
-	// factor Newton system could not repair it (DL226).
-	int whichcase = 0;
-	{
-		T d3 = D - l3 * l3;
-		if( d3 <= 0 ) {
-			const T err0 = ( realcase0 == 1 )
-				? oqs_calc_err_d( errmin, D, bq, dq )
-				: oqs_calc_err_ldlt( B, C, D, d2, l1, l2, l3 );
-			T sqrtd3 = oqs_sqrt( -d3 );
-			T aq1 = l1, bq1 = l3 + sqrtd3, cq1 = l1, dq1 = l3 - sqrtd3;
-			if( oqs_fabs( dq1 ) < oqs_fabs( bq1 ) ) dq1 = D / bq1;
-			else if( oqs_fabs( dq1 ) > oqs_fabs( bq1 ) ) bq1 = D / dq1;
-			T err1 = oqs_calc_err_abcd( A, B, C, D, aq1, bq1, cq1, dq1 );
-			// Equal rounded coefficient errors do not imply equally conditioned
-			// roots. When d3==0 this alternative is one quadratic squared:
-			// prefer its exact coalescence over a numerically split primary.
-			// Example: (x-1)^4 can give d2=-epsilon, alpha=-2+/-oqs_sqrt(epsilon)
-			// with both errors rounding to zero. Newton's singular system need
-			// not repair that split. This tie rule introduces no error band;
-			// an incompatible positive-quartic fallback still has larger error.
-			const bool coalescedTie = ( d3 == 0.0 && err1 == err0 );
-			if( realcase0 == -1 || err1 < err0 || coalescedTie ) {
-				whichcase = 1;
-				aq = aq1; bq = bq1; cq = cq1; dq = dq1;
-				realcase0 = 1;  // swapped to the identical-alpha real case
+		// Build candidate (alpha1, beta1, alpha2, beta2) factorisation.
+		// Real coefficients arise for d2 < 0. The d2 > 0 candidate has
+		// conjugate-complex coefficients, but its reconstruction error is still
+		// essential when comparing the alternative real factorisation below.
+		int realcase0 = ( d2 < 0.0 ) ? 1 : ( d2 > 0.0 ? 0 : -1 );
+		T aq = 0, bq = 0, cq = 0, dq = 0;
+		T errmin = 0;
+
+		if( realcase0 == 1 ) {
+			T gamma = oqs_sqrt( -d2 );
+			aq = l1 + gamma;
+			bq = l3 + gamma * l2;
+			cq = l1 - gamma;
+			dq = l3 - gamma * l2;
+			if( oqs_fabs( dq ) < oqs_fabs( bq ) ) dq = D / bq;
+			else if( oqs_fabs( dq ) > oqs_fabs( bq ) ) bq = D / dq;
+
+			T aqv[3], cqv[3], errv[3];
+			int kmin = 0;
+			if( oqs_fabs( aq ) < oqs_fabs( cq ) ) {
+				int n = 0;
+				if( dq != 0 ) { aqv[n] = ( C - bq * cq ) / dq; errv[n] = oqs_calc_err_abc( A, B, C, aqv[n], bq, cq, dq ); n++; }
+				if( cq != 0 ) { aqv[n] = ( B - dq - bq ) / cq; errv[n] = oqs_calc_err_abc( A, B, C, aqv[n], bq, cq, dq ); n++; }
+				aqv[n] = A - cq; errv[n] = oqs_calc_err_abc( A, B, C, aqv[n], bq, cq, dq ); n++;
+				errmin = errv[0];
+				for( int k = 1; k < n; k++ ) if( errv[k] < errmin ) { errmin = errv[k]; kmin = k; }
+				aq = aqv[kmin];
+			} else {
+				int n = 0;
+				if( bq != 0 ) { cqv[n] = ( C - aq * dq ) / bq; errv[n] = oqs_calc_err_abc( A, B, C, aq, bq, cqv[n], dq ); n++; }
+				if( aq != 0 ) { cqv[n] = ( B - bq - dq ) / aq; errv[n] = oqs_calc_err_abc( A, B, C, aq, bq, cqv[n], dq ); n++; }
+				cqv[n] = A - aq; errv[n] = oqs_calc_err_abc( A, B, C, aq, bq, cqv[n], dq ); n++;
+				errmin = errv[0];
+				for( int k = 1; k < n; k++ ) if( errv[k] < errmin ) { errmin = errv[k]; kmin = k; }
+				cq = cqv[kmin];
 			}
 		}
-		// d3 > 0: identical-alpha factorisation has complex β, no real
-		// roots from this branch.  Leave realcase0 as-is.
-	}
 
-	// Extract real roots from the selected real-coefficient factors; their
-	// quadratic discriminants still decide whether each pair is real.
-	int num = 0;
-	if( realcase0 == 1 ) {
-		// Refine (alpha1, beta1, alpha2, beta2) via Newton-Raphson.
-		oqs_NRabcd( A, B, C, D, &aq, &bq, &cq, &dq );
-
-		T qr[2];
-		if( oqs_solve_quadratic_real( aq, bq, qr ) == 2 ) {
-			sol[num++] = qr[0];
-			sol[num++] = qr[1];
+		// Identical-alpha / split-beta alternative (OQS case III).
+		// Evaluate it even away from d2=0 to retain the alternate-factor recovery
+		// used by ill-conditioned torus rays, but compare against the ACTUAL
+		// primary factorisation, including the conjugate-complex case.
+		//
+		// For d2>0 the primary product is
+		//   (x^2+l1*x+l3)^2 + d2*(x+l2)^2.
+		// oqs_calc_err_ldlt reconstructs its B/C/D coefficients directly without
+		// complex arithmetic; A=2*l1 already matches. Treating this error as
+		// infinity would allow an incompatible real alternative to win. For
+		// (x^2+1)^2 it replaced +2*x^2 by -2*x^2, then the singular repeated-
+		// factor Newton system could not repair it (DL226).
+		int whichcase = 0;
+		{
+			T d3 = D - l3 * l3;
+			if( d3 <= 0 ) {
+				const T err0 = ( realcase0 == 1 )
+					? oqs_calc_err_d( errmin, D, bq, dq )
+					: oqs_calc_err_ldlt( B, C, D, d2, l1, l2, l3 );
+				T sqrtd3 = oqs_sqrt( -d3 );
+				T aq1 = l1, bq1 = l3 + sqrtd3, cq1 = l1, dq1 = l3 - sqrtd3;
+				if( oqs_fabs( dq1 ) < oqs_fabs( bq1 ) ) dq1 = D / bq1;
+				else if( oqs_fabs( dq1 ) > oqs_fabs( bq1 ) ) bq1 = D / dq1;
+				T err1 = oqs_calc_err_abcd( A, B, C, D, aq1, bq1, cq1, dq1 );
+				// Equal rounded coefficient errors do not imply equally conditioned
+				// roots. When d3==0 this alternative is one quadratic squared:
+				// prefer its exact coalescence over a numerically split primary.
+				// Example: (x-1)^4 can give d2=-epsilon, alpha=-2+/-oqs_sqrt(epsilon)
+				// with both errors rounding to zero. Newton's singular system need
+				// not repair that split. This tie rule introduces no error band;
+				// an incompatible positive-quartic fallback still has larger error.
+				const bool coalescedTie = ( d3 == 0.0 && err1 == err0 );
+				if( realcase0 == -1 || err1 < err0 || coalescedTie ) {
+					whichcase = 1;
+					aq = aq1; bq = bq1; cq = cq1; dq = dq1;
+					realcase0 = 1;  // swapped to the identical-alpha real case
+				}
+			}
+			// d3 > 0: identical-alpha factorisation has complex β, no real
+			// roots from this branch.  Leave realcase0 as-is.
 		}
-		if( oqs_solve_quadratic_real( cq, dq, qr ) == 2 ) {
-			sol[num++] = qr[0];
-			sol[num++] = qr[1];
-		}
-	}
-	(void)whichcase;
 
-	return num;
+		// Extract real roots from the selected real-coefficient factors; their
+		// quadratic discriminants still decide whether each pair is real.
+		int num = 0;
+		if( realcase0 == 1 ) {
+			// Refine (alpha1, beta1, alpha2, beta2) via Newton-Raphson.
+			oqs_NRabcd( A, B, C, D, &aq, &bq, &cq, &dq );
+
+			T qr[2];
+			if( oqs_solve_quadratic_real( aq, bq, qr ) == 2 ) {
+				sol[num++] = qr[0];
+				sol[num++] = qr[1];
+			}
+			if( oqs_solve_quadratic_real( cq, dq, qr ) == 2 ) {
+				sol[num++] = qr[0];
+				sol[num++] = qr[1];
+			}
+		}
+		(void)whichcase;
+
+		return num;
 	}
 
 }
@@ -820,7 +843,8 @@ int Polynomial::SolveQuartic( const Scalar (&coeff)[ 5 ], Scalar (&sol)[ 4 ] )
 	// and moves both tiny and large root scales into the resolvent's range.
 	int leadingExponent;
 	const double leadingMantissa = std::frexp( coeff[0], &leadingExponent );
-	int scaleExponent = -2147483647;
+	int scaleExponent = 0;
+	bool hasScale = false;
 	int exponents[4] = {};
 	double mantissas[4] = {};
 	for( int i = 1; i <= 4; ++i ) {
@@ -828,9 +852,9 @@ int Polynomial::SolveQuartic( const Scalar (&coeff)[ 5 ], Scalar (&sol)[ 4 ] )
 		mantissas[i-1] = std::frexp( coeff[i], &exponents[i-1] );
 		const int difference = exponents[i-1] - leadingExponent;
 		const int bound = difference >= 0 ? ( difference + i - 1 ) / i : difference / i;
-		if( bound > scaleExponent ) scaleExponent = bound;
+		if( !hasScale || bound > scaleExponent ) scaleExponent = bound;
+		hasScale = true;
 	}
-	if( scaleExponent == -2147483647 ) scaleExponent = 0;
 	// The resolvent's discriminant reaches degree twelve in the variable.
 	// Use separate exponents before that product range can become subnormal,
 	// not merely after a normalized coefficient has already become zero.
