@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/PathVertexEval.h"
 #include "CausticPelPhotonTracer.h"
 #include "../Utilities/RandomNumbers.h"
 #include "../Utilities/IndependentSampler.h"
@@ -141,7 +142,7 @@ void CausticPelPhotonTracer::TracePhoton(
 						) {
 						// Trace all non-diffuse rays
 						scat.ray.Advance( 1e-8 );
-						TracePhoton( scat.ray, power*scat.kray, true, pPhotonMap, scat.ior_stack?*scat.ior_stack:ior_stack, depth+1 );
+						TracePhoton( scat.ray, power*scat.kray*PathVertexEval::ImportanceShadingNormalFactor( ri.geometric.vNormal, ri.geometric.vGeomNormal, -ray.Dir(), scat.ray.Dir() ), true, pPhotonMap, scat.ior_stack?*scat.ior_stack:ior_stack, depth+1 );
 					}
 				}
 			} else {
@@ -153,7 +154,7 @@ void CausticPelPhotonTracer::TracePhoton(
 						(bTraceRefractions&&pScat->type==ScatteredRay::eRayRefraction)
 						) {
 						pScat->ray.Advance( 1e-8 );
-						TracePhoton( pScat->ray, power*pScat->kray/selectedProbability, true, pPhotonMap, pScat->ior_stack?*pScat->ior_stack:ior_stack, depth+1 );
+						TracePhoton( pScat->ray, power*pScat->kray*(PathVertexEval::ImportanceShadingNormalFactor( ri.geometric.vNormal, ri.geometric.vGeomNormal, -ray.Dir(), pScat->ray.Dir() )/selectedProbability), true, pPhotonMap, pScat->ior_stack?*pScat->ior_stack:ior_stack, depth+1 );
 					}
 				}
 			}

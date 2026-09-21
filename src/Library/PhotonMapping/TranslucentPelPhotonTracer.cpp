@@ -13,6 +13,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/PathVertexEval.h"
 #include "TranslucentPelPhotonTracer.h"
 #include "../Utilities/RandomNumbers.h"
 #include "../Utilities/IndependentSampler.h"
@@ -187,7 +188,7 @@ void TranslucentPelPhotonTracer::TracePhoton(
 				if( (scat.type==ScatteredRay::eRayTranslucent && bTraceTranslucent) ||
 					(scat.type==ScatteredRay::eRayReflection && bTraceReflections) ||
 					(scat.type==ScatteredRay::eRayRefraction && bTraceRefractions) ) {
-					TracePhoton( scat.ray, power*scat.kray, scat.type==ScatteredRay::eRayTranslucent, pPhotonMap, scat.ior_stack?*scat.ior_stack:ior_stack, depth+1 );
+					TracePhoton( scat.ray, power*scat.kray*PathVertexEval::ImportanceShadingNormalFactor( ri.geometric.vNormal, ri.geometric.vGeomNormal, -ray.Dir(), scat.ray.Dir() ), scat.type==ScatteredRay::eRayTranslucent, pPhotonMap, scat.ior_stack?*scat.ior_stack:ior_stack, depth+1 );
 					if( bFromTranslucent ) {
 						accum_scattered = accum_scattered + scat.kray;
 					}

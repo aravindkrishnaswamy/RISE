@@ -75,11 +75,12 @@ void CausticSpectralPhotonMap::RadianceEstimate(
 
 			if( (pcos < maxNDist) && (pcos > -maxNDist) ) {
 				const Vector3 vPhotonDir = PhotonDir(p.theta,p.phi);
-				if( Vector3Ops::Dot(vPhotonDir,ri.vNormal) > 0 ) {
+				const Scalar response = PathVertexEval::RadianceShadingNormalFactor( ri.vNormal, ri.vGeomNormal, vPhotonDir );
+				if( response > 0 ) {
 					// Compute XYZ valye from spectra
 					XYZPel thisNM( 0, 0, 0 );
 					if( ColorUtils::XYZFromNM( thisNM, p.nm ) ) {
-						sumPel = sumPel + (thisNM * p.power * XYZPel(brdf.value(vPhotonDir,ri)));
+						sumPel = sumPel + (thisNM * (p.power * response) * XYZPel(brdf.value(vPhotonDir,ri)));
 					}
 				}
 			}
@@ -131,10 +132,11 @@ void CausticSpectralPhotonMap::RadianceEstimateNM(
 
 			if( (pcos < maxNDist) && (pcos > -maxNDist) ) {
 				const Vector3 vPhotonDir = PhotonDir(p.theta,p.phi);
-				if( Vector3Ops::Dot(vPhotonDir,ri.vNormal) > 0 ) {
+				const Scalar response = PathVertexEval::RadianceShadingNormalFactor( ri.vNormal, ri.vGeomNormal, vPhotonDir );
+				if( response > 0 ) {
 					// Only take samples that are within the range we want
 					if( fabs(p.nm-nm) <= nm_range ) {
-						rad += p.power * brdf.valueNM( vPhotonDir, ri, nm );
+						rad += (p.power * response) * brdf.valueNM( vPhotonDir, ri, nm );
 					}
 				}
 			}

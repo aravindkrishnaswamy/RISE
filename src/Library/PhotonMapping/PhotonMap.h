@@ -25,6 +25,7 @@
 #include "../Utilities/Reference.h"
 #include "../Utilities/BoundingBox.h"
 #include "Photon.h"
+#include "../Utilities/PathVertexEval.h"
 #include <vector>
 #include <algorithm>
 
@@ -690,9 +691,11 @@ namespace RISE
 					{
 						const PhotType& p = (*i).element;
 						const Vector3 vPhotonDir = this->PhotonDir( p.theta, p.phi );
-						const Scalar cos = Vector3Ops::Dot( vPhotonDir, ri.vNormal );
+						const Scalar response = PathVertexEval::RadianceShadingNormalFactor(
+							ri.vNormal, ri.vGeomNormal, vPhotonDir );
 
-						if( cos > 0.001 ) {
+						// Material evaluation owns reflection/transmission support.
+						if( response > 0 ) {
 							const Vector3 vec = Vector3Ops::mkVector3( p.ptPosition, ri.ptIntersection );
 							// Thin-surface "ellipsoid" clamp: rejects
 							// photons stored on the OTHER side of a thin
@@ -708,7 +711,7 @@ namespace RISE
 							if( (pcos < maxNDist) && (pcos > -maxNDist) ) {
 								// Filter the samples using a gaussian filter as described in Jensen's course notes
 								const Scalar wpg = alpha * ( 1.0 - ((1-exp(-beta * (i->distance/(2.0*farthest_away))))/(1-exp(-beta))));
-								rad = rad + (p.power * wpg * brdf.value( vPhotonDir, ri ));
+								rad = rad + (p.power * (wpg * response) * brdf.value( vPhotonDir, ri ));
 							}
 						}
 					}
