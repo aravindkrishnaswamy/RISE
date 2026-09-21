@@ -286,6 +286,27 @@ void TestApplySPDFunction() {
     std::cout << "ApplySPDFunction Passed!" << std::endl;
 }
 
+// Integral of the public piecewise-linear CMF, split independently at its
+// five-nanometre knots. Partial boundary cells must contribute their area.
+int TestCIEPartialCellIntegral() {
+    int failed=0,checks=0;
+    const Scalar intervals[][2]={{550,551},{552,553},{552,558},{399,701},{400,700},{380,780},{370,382},{778,790},{780,790},{370,380},{550,550},{560,550}};
+    for(const auto& interval:intervals){
+        const Scalar lo=std::max(interval[0],Scalar(380)),hi=std::min(interval[1],Scalar(780));
+        Scalar expected=0;
+        for(int knot=380;knot<780;knot+=5){
+            const Scalar a=std::max(lo,Scalar(knot)),b=std::min(hi,Scalar(knot+5));
+            if(b>a){XYZPel left,right;ColorUtils::XYZFromNM(left,a);ColorUtils::XYZFromNM(right,b);expected+=(left.Y+right.Y)*((b-a)*.5);}
+        }
+        const Scalar got=ColorUtils::CIE_Y_Integral(interval[0],interval[1]);
+        const bool ok=std::isfinite(got)&&std::fabs(got-expected)<=1e-12*std::fabs(expected);
+        ++checks;if(!ok)++failed;
+        std::cout<<(ok?"PASS ":"FAIL ")<<"CIE partial interval ["<<interval[0]<<","<<interval[1]<<"] got="<<got<<" expected="<<expected<<std::endl;
+    }
+    std::cout<<"CIE partial-cell checks="<<checks<<" failures="<<failed<<std::endl;
+    return failed;
+}
+
 int main() {
     TestSRGBTransferFunction();
     TestSRGBTransferFunctionInverse();
@@ -294,6 +315,7 @@ int main() {
     TestXYZFromNM();
     TestInterpCIE_SPDIndices();
     TestApplySPDFunction();
-    std::cout << "All ColorUtils tests passed!" << std::endl;
-    return 0;
+    const int failures=TestCIEPartialCellIntegral();
+    if(!failures)std::cout << "All ColorUtils tests passed!" << std::endl;
+    return failures?1:0;
 }
