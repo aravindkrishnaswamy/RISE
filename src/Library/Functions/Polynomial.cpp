@@ -387,12 +387,20 @@ namespace
 		if(a.m==0 || b.m==0) return c;
 		const std::int64_t exponent=a.e+b.e;
 		const std::int64_t gap=c.e-exponent;
-		// Product significands lie in [1/4,1). Align c to that binade and
-		// perform one hardware FMA, retaining its single rounding. Extremely
-		// remote terms cannot affect rounding; never form an overflowing shift.
+		// Product significands lie in [1/4,1). Their exact product is an
+		// integer multiple of 2^(-2p), p=DBL_MANT_DIG. Every binary64
+		// rounding midpoint in this binade is on that lattice. An addend
+		// smaller than one lattice step cannot cross a non-tie boundary,
+		// but its sign still resolves an exact product tie. Preserve that
+		// sign with a surrogate below the lattice instead of underflowing
+		// alignment to zero (or rounding it through a subnormal). Hardware
+		// FMA then makes the same nearest/ties-even decision in one rounding.
+		// In the opposite dominance case c is already representable, so
+		// the remote product cannot resolve a midpoint or change c.
 		if(c.m!=0 && gap>DBL_MAX_EXP-2) return c;
-		const double aligned=(c.m==0 || gap<DBL_MIN_EXP-DBL_MANT_DIG)
-			? 0.0 : std::scalbn(c.m,static_cast<int>(gap));
+		const double aligned=c.m==0 ? 0.0 : gap < -2*DBL_MANT_DIG
+			? std::copysign(std::scalbn(1.0,-2*DBL_MANT_DIG-2),c.m)
+			: std::scalbn(c.m,static_cast<int>(gap));
 		return oqs_wide::scaled(std::fma(a.m,b.m,aligned),exponent);
 	}
 
