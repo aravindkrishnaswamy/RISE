@@ -90,7 +90,7 @@ void ObliqueAnchorQuery(){
  for(int y=-25;y<=25;++y)for(int x=-25;x<=25;++x){const Point3 p(x*.01*cos(angle),y*.01,-x*.01*sin(angle));map.Store(RISEPel(1.),p,normal,incident);deposits.push_back({p,RISEPel(1.)});}
  const Vector3 decoded=map.FirstDirection();map.Balance();map.RawParams();map.PrecomputeIrradiance(4,nullptr);
  RayIntersectionGeometric query(Ray(Point3(0,0,1),Vector3(0,0,-1)),nullRasterizerState);query.ptIntersection=Point3(.0007,.0002,0);query.vGeomNormal=Vector3(sin(angle+.1),0,cos(angle+.1));query.vNormal=Vector3(sin(angle-.2),0,cos(angle-.2));query.onb.CreateFromW(query.vNormal);
- Point3 expectedAnchor;Vector3 expectedNormal;double best=.04;
+ Point3 expectedAnchor(0,0,0);Vector3 expectedNormal(0,0,1);double best=.04;
  for(const auto& a:map.AnchorSnapshot()){const double d2=Vector3Ops::SquaredModulus(Vector3Ops::mkVector3(a.first,query.ptIntersection));if(d2<best&&Vector3Ops::Dot(a.second,query.vGeomNormal)>.9){best=d2;expectedAnchor=a.first;expectedNormal=a.second;}}
  Check(map.HasAnchor(query.ptIntersection,query.vGeomNormal),"oblique query has compatible geometric anchor",map.HasAnchor(query.ptIntersection,query.vGeomNormal),1);
  if(map.HasAnchor(query.ptIntersection,query.vGeomNormal))Near(Vector3Ops::SquaredModulus(Vector3Ops::mkVector3(map.NearestPosition(query.ptIntersection,query.vGeomNormal),expectedAnchor)),0,"anchor KD lookup equals exhaustive normal-filtered nearest search");
