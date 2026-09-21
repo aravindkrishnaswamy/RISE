@@ -558,6 +558,14 @@ static void TestQuarticClassificationAndCallers()
         CheckQuarticOracle("four_real_near_two_double",{{1,-12,52,-96,64-delta}},
             {3-outer,3-inner,3+inner,3+outer},1e-7);
     }
+    {
+        const double h=std::ldexp(1.0,1023),tiny=std::ldexp(1.0,-1074);
+        CheckQuarticOracle("largest_binade_finite_root",{{1,-h,.875*h,-.21875*h,.015625*h}},{.125,.25,.5,h},1e-12,true);
+        CheckQuarticOracle("subnormal_reciprocal_root",{{.015625*h,-.21875*h,.875*h,-h,1}},{1/h,2,4,8},1e-12,true);
+        // The relative band rounds to zero at the minimum subnormal:
+        // its representation must be exact, rather than silently flushed.
+        CheckQuarticOracle("minimum_subnormal_root",{{1,-6,11,-6,6*tiny}},{tiny,1,2,3},1e-12,true);
+    }
     CheckQuarticOracle("fourfold_zero",{{1,0,0,0,0}},{0});
     CheckQuarticOracle("fourfold_one",{{1,-4,6,-4,1}},{1},1e-6);
     // Equal-error factor candidates must not split an exactly squared
