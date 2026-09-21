@@ -185,7 +185,7 @@ namespace RISE
 			) const
 			{
 				// sanity check
-				if( to-from < 0 ) {
+				if( nPhotons == 0 || to-from < 0 ) {
 					return;
 				}
 
