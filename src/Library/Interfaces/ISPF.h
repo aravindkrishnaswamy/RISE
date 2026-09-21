@@ -158,7 +158,8 @@ namespace RISE
 		// The optional probability result is the probability of this returned
 		// component in the intended continuous legacy weight law; null reports0.
 		// Finite CDF sums and random grids can lose intervals at extreme ratios;
-		// this output does not redesign those existing admission decisions. Legacy one-ray
+		// this output does not redesign those existing admission decisions or
+		// guarantee relative probability accuracy after quotient underflow. Legacy one-ray
 		// and filtered two-record sole-eligible shortcuts report1 even for
 		// zero response. No ray, density, throughput or IOR metadata is changed.
 		// Keep two-argument overload symbols for existing binary callers.

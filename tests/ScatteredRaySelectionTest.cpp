@@ -203,6 +203,16 @@ ScatteredRay* New(const ScatteredRayContainer& c,int mode,double u,bool nm,doubl
 }
 bool Eligible(const ScatteredRay& r,int mode) {return mode==0||(mode==1?(r.type!=ScatteredRay::eRayDiffuse):(r.type==ScatteredRay::eRayDiffuse));}
 double Weight(const ScatteredRay& r,bool nm) {return nm?r.krayNM:ColorMath::MaxValue(r.kray);}
+bool ProbabilityLaw(double q,double total,double weight,unsigned n) {
+ // This relative-error oracle is scoped to normal operands, quotient and
+ // product. Subnormal underflow needs an absolute-error model; these
+ // controlled fixtures do not claim that regime. Admission is tested
+ // separately against the frozen legacy decisions.
+ if(!std::isnormal(q)||!std::isnormal(total)||!std::isnormal(weight)||!std::isnormal(q*total))return false;
+ const double roundoff=std::numeric_limits<double>::epsilon()/2;
+ const double gamma=(n+3)*roundoff/(1-(n+3)*roundoff);
+ return q>0&&std::fabs(q*total-weight)<=gamma*weight;
+}
 void Cases() {
  for(unsigned n=0;n<=ScatteredRayContainer::kCapacity;++n) for(int scenario=0;scenario<6;++scenario) {
   FrozenLegacy c;
@@ -232,11 +242,11 @@ void Cases() {
     // plus multiplication takes at most3 more under release fast-math.
     // gamma(n+3) bounds those operations; it is not a sampling/noise band.
     // Null and deterministic shortcuts retain exact0/1 assertions.
-    const double roundoff=std::numeric_limits<double>::epsilon()/2;
-    const double gamma=(n+3)*roundoff/(1-(n+3)*roundoff);
     const bool shortcut=got && (mode==0?n==1:(n<=2&&eligible==1));
-    Check(!got||shortcut ? q==want : q>0&&std::fabs(q*total-Weight(*got,nm))<=gamma*Weight(*got,nm),
+    Check(!got||shortcut ? q==want : ProbabilityLaw(q,total,Weight(*got,nm),n),
           "nominal continuous probability law with derived floating bound");
+    if(got&&!shortcut) Check(!ProbabilityLaw(q*.5,total,Weight(*got,nm),n),
+                            "same oracle rejects intentional half-q mutation");
     for(unsigned i=0;i<n;++i){Check(c[i].pdf==.125*(i+1)&&c[i].isDelta==(i%2==0)&&c[i].ray.origin.x==i&&c[i].ray.Dir().z==1&&c[i].ior_stack==savedStack[i]&&c[i].ior_stack->top()==1.0+i*.125&&c[i].krayNM==savedNM[i]&&c[i].kray.r==savedPel[i].r&&c[i].kray.g==savedPel[i].g&&c[i].kray.b==savedPel[i].b,"selection preserves ray/pdf/IOR metadata");}
    }
    // Stratified CDF frequencies provide a separate distribution check.
