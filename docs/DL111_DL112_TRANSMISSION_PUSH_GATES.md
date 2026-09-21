@@ -739,6 +739,8 @@ stack — an interface change DL-41 needs too.
 > in its geometric-density recurrence. The relief modifier itself is
 > not the origin of those convention errors. See
 > [the derivation and separate red witnesses](DL224_RELIEF_BIDIRECTIONAL_COSINE.md).
+> DL-224 closed on 2026-09-20 after the analytic, repeated-render, shipped-scene
+> and final build gates; the proof also records the synthetic BSSRDF-frame regression.
 > This does not close DL-223's nonreciprocal translucent transport or
 > missing segment attenuation; the older tables below are historical.
 

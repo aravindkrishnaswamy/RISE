@@ -1,6 +1,6 @@
 # DL-224: shading-normal transport measures
 
-Status: implementation and validation in progress, 2026-09-19. Independent
+Status: **CLOSED 2026-09-20** for implementation and measured gates; independent
 campaign review is required before merge. DL-239 records the separately
 confirmed legacy photon-map pipeline; DL-223's nonreciprocal translucent
 model and connection-distance limitations are not closed by this work.
@@ -285,3 +285,193 @@ does not independently prove its transport-mode correction.
 
 External evidence is under `/private/tmp/rise-debt-codex-20260919/dl224`;
 `photon-proof.cpp`, build log and run log preserve the direct witness.
+
+## Final build and gate provenance
+
+The final production source is `d68e5674`; `0d1dde5b` adds only documentation
+and a test-header correction. The clean make library build and 14 selected
+named relinks all returned **0**, with **zero compiler warnings** in each
+log (`final2-build-status.json`). The supervisor's isolated clean macOS
+Deployment and Opto builds both returned **0**, each with two documented
+build-system exclusions and **zero actionable warnings**; their raw logs
+and `results.json` are in the adjacent `dl224_xcode_final` evidence directory.
+The earlier `a423ea7c` platform run is historical, superseded by this gate
+after the synthetic BSSRDF frame correction.
+
+Before that narrow frame correction, the recovered broad batch passed
+BDPTStrategyBalance **170/0**, VCMStrategyBalance **74/0**, EnvLightBalance
+**123/0**, PTGuidingMISPartition **101/0**, VolumeEnvFurnace **32/0**,
+HairDirectionalBacklit **7/0**, DirectionalFog **14/0**, HairRender **29/0**,
+TransparentShadow **40/0**, LegacyChainMISPartner **20/0**,
+BidirectionalTextureFootprintParity **7/0**, and GeomNormalOrientationSites
+**72/0**. The only failure was OptimalMIS **110/1**, retained and resolved
+by the committed frame A/B above. The source-sensitive core gates are run
+again on the final library; the earlier raw logs are not overwritten.
+
+Other direct gates on the corrected transport source passed MISWeights
+**59/0**, ConnectionLegality **319/0**, ReliefModifier **158/0**,
+SourceHygiene **167/0**, BDPTVertexRIGRebuild **68/0**,
+GlintModifierSceneParse **19/0**, LightColorSpace **133/0**,
+HWSSCompanionKray **169/0**, TranslucentLobeConsistency **1222/0**,
+VCMRecurrence **75/0**, eye postpass **31/0**, light postpass **34/0**, and
+spectral recurrence **38/0**. PathValueOps, GlintModifier, DisplacedGeometry
+and LightExitance reported all passed. CstDeriveGolden reported **452
+MATCH / 0 DRIFT**, **459** corpus files, **0** uncovered and **0** stale.
+Their named build/run logs and manifests retain exact source-stage
+provenance. No new library source file was added.
+
+On the final library, the complete relief suite is **213/0**. The repeated
+strategy/caller batch is also green: BDPT **170/0**, VCM **74/0**, OptimalMIS
+**111/0**, BSSRDF frame **41/0**, EnvLightBalance **123/0**, PTGuiding
+**101/0**, VolumeEnvFurnace **32/0**, footprint parity **7/0**, normal
+orientation **72/0**, SourceHygiene **167/0**, HWSS companion **169/0**, and
+Translucent lobe **1222/0**. The four explicitly required direct targets
+were additionally relinked against this library: MISWeights **59/0**,
+ConnectionLegality **319/0, 0 skipped**, ReliefModifier **158/0**, and CST
+**452 MATCH / 0 DRIFT** with the same 459/0/0 coverage counts. All returned
+zero; every named relink had zero warnings. See `mandatory-final-status.json`
+and `final2-run-status-ReliefBidirectionalConsistencyTest.json`.
+
+The first full unfiltered SignalIntegratorConsistency run returned **0**,
+**2971 passed / 0 failed**. Counters: blow-up skips **0**, masked precision
+skips **0**, reference-incomplete rows **2**, no-complete-reference skips
+**1**, whole-image-insensitive showcases **4**, mask coverage drops **0**.
+All six asserted adaptive masked rows stopped at **12** sub-renders:
+
+| Showcase | Integrator | Mean masked contrast | Standard error |
+|---|---|---:|---:|
+| plank | BDPT | .0273271 | .0258162 |
+| plank | VCM | .00965227 | .00508000 |
+| bunny | BDPT | .00737977 | .000887211 |
+| bunny | VCM | .00655691 | .00109975 |
+| pavilion | BDPT | −.00308900 | .00397448 |
+| pavilion | VCM | −.00214093 | .00370744 |
+
+**Tidal's masked transport is unvalidated by this suite.** Its neutral
+masked means were PT **.00127229**, BDPT **.00311716**, VCM **.054681**;
+BDPT/VCM **.0570062** triggers the existing symmetric incomplete-reference
+rule. This is the documented delta-light-through-dielectric-water caustic
+case. [RENDERING_INTEGRATORS.md debt 30](RENDERING_INTEGRATORS.md)
+diagnoses the structural gap: the E–S–D–S–L path has no connectible BDPT
+split, while VCM merges at the diffuse stone. That debt is resolved as a
+strategy limitation (with its separate radiance-scaling defect already
+fixed), not an open DL224 MIS defect. The older reference-rule account is
+in [SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §6.2](SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md). Neither
+that skip nor four insensitive whole-image rows proves showcase correctness.
+Raw sub-render means, SE and counts are retained in the full log and
+`signal-adaptive-summary.txt`; no retry or threshold change was used.
+
+## Every shipped relief scene: before/after
+
+All ten scenes declaring `relief_modifier` were rendered in both PT and
+BDPT, **128×96, 32 spp, n=3 per state/integrator/scene**, OIDN off, box
+filter, 32-bit EXR `Rec709RGB_Linear`. Each table reports the arithmetic
+mean of stored linear RGB, averaged over pixels, **mean ± sample SD**
+across the three renders. The center region is the central half-width and
+half-height (64×48); four quadrant means/SD, per-channel means and every
+raw value are retained in `ship-raw.jsonl` / `ship-summary.json` alongside
+all 120 EXRs. This low-budget sweep is a descriptive change measurement,
+not an independent correctness oracle or a claim of converged radiance.
+Repeated SD is conditional on fixed transport QMC, as discussed above.
+
+Separate binaries were interleaved AB/BA/AB within each scene/integrator.
+The baseline `rise-base` was built at committed `af276131`, whose `src` and
+`build` trees are identical to original `8ea9cd8d`; final
+`rise-final-d68e5674` is the clean final production build. SHA256 values and
+source identity are in `binary-provenance.json`. The runner refused an
+existing output, checked clean scene derivation (no partial-scene fallthrough),
+expected dimensions, render completion and finite freshly written EXRs.
+All **120/120** passed; the runner returned **0**. Interactive CLI `quit`
+returns **1** by design, retained for each successful child rather than
+silently normalized. No sample or setup failure was discarded in this sweep.
+
+Scene geometry, materials, camera and environment are preserved; the
+rasterizer is replaced by plain PT or BDPT at the stated budget, retaining
+its environment/default-shader settings. Engine-specific options such as
+SMS are not carried into that plain-integrator comparison. The two
+`ChunkCoverage` files are grammar fragments without camera/light: their
+unchanged objects are placed in an explicit common harness, camera
+(0,0,5) looking at the origin, fov40, and a unit-white point light of power100
+at (0,3,4), with `DefaultDirectLighting` as the legacy fallback shader.
+Those rows are labelled as fragment measurements, not original showcases.
+
+### Whole image
+
+| Scene | Mode | Before mean ± SD | After mean ± SD | Change |
+|---|---|---:|---:|---:|
+| [sculptors_studio](../scenes/FeatureBased/Combined/sculptors_studio.RISEscene) | PT | 0.17830557 ± 5.24e-05 | 0.17845589 ± 0.000482 | +0.0843% |
+| [sculptors_studio](../scenes/FeatureBased/Combined/sculptors_studio.RISEscene) | BDPT | 0.17268845 ± 0.00291 | 0.17465479 ± 0.00154 | +1.1387% |
+| [velvet_cushion](../scenes/FeatureBased/Materials/velvet_cushion.RISEscene) | PT | 0.10558953 ± 2.54e-05 | 0.10561862 ± 1.23e-05 | +0.0276% |
+| [velvet_cushion](../scenes/FeatureBased/Materials/velvet_cushion.RISEscene) | BDPT | 0.1094287 ± 1.53e-05 | 0.10933319 ± 1.71e-05 | -0.0873% |
+| [plank_closeup](../scenes/FeatureBased/Textures/plank_closeup.RISEscene) | PT | 0.18813113 ± 8.41e-05 | 0.18819344 ± 9.3e-05 | +0.0331% |
+| [plank_closeup](../scenes/FeatureBased/Textures/plank_closeup.RISEscene) | BDPT | 0.19473284 ± 0.00143 | 0.19524236 ± 0.000779 | +0.2616% |
+| [weathered_workbench](../scenes/FeatureBased/Textures/weathered_workbench.RISEscene) | PT | 0.3242208 ± 7.71e-05 | 0.32420709 ± 8.49e-05 | -0.0042% |
+| [weathered_workbench](../scenes/FeatureBased/Textures/weathered_workbench.RISEscene) | BDPT | 0.33230456 ± 4.32e-05 | 0.33227614 ± 0.000151 | -0.0086% |
+| [cc_modifier_stack](../scenes/Tests/ChunkCoverage/cc_modifier_stack.RISEscene) | PT | 0.10796264 ± 7.89e-06 | 0.10794664 ± 6.41e-06 | -0.0148% |
+| [cc_modifier_stack](../scenes/Tests/ChunkCoverage/cc_modifier_stack.RISEscene) | BDPT | 0.10757548 ± 5.25e-06 | 0.10794438 ± 7.49e-06 | +0.3429% |
+| [cc_relief_modifier](../scenes/Tests/ChunkCoverage/cc_relief_modifier.RISEscene) | PT | 0.10728028 ± 6.88e-06 | 0.10727424 ± 9.06e-06 | -0.0056% |
+| [cc_relief_modifier](../scenes/Tests/ChunkCoverage/cc_relief_modifier.RISEscene) | BDPT | 0.10690722 ± 1.37e-05 | 0.10727179 ± 8.92e-06 | +0.3410% |
+| [displaced_plus_relief_shared_field](../scenes/Tests/Painters/displaced_plus_relief_shared_field.RISEscene) | PT | 0.1379224 ± 1.57e-05 | 0.13792691 ± 2.2e-05 | +0.0033% |
+| [displaced_plus_relief_shared_field](../scenes/Tests/Painters/displaced_plus_relief_shared_field.RISEscene) | BDPT | 0.13792676 ± 2.25e-06 | 0.13791193 ± 1.11e-05 | -0.0108% |
+| [relief_crackle_glaze](../scenes/Tests/Painters/relief_crackle_glaze.RISEscene) | PT | 0.058832375 ± 9.15e-05 | 0.058793613 ± 2.48e-05 | -0.0659% |
+| [relief_crackle_glaze](../scenes/Tests/Painters/relief_crackle_glaze.RISEscene) | BDPT | 0.058806328 ± 4.07e-05 | 0.058821628 ± 5.92e-05 | +0.0260% |
+| [relief_sphere_no_uv](../scenes/Tests/Painters/relief_sphere_no_uv.RISEscene) | PT | 0.12870221 ± 1.08e-05 | 0.12868684 ± 1.71e-05 | -0.0119% |
+| [relief_sphere_no_uv](../scenes/Tests/Painters/relief_sphere_no_uv.RISEscene) | BDPT | 0.12870065 ± 1.28e-05 | 0.12868881 ± 6.75e-06 | -0.0092% |
+| [sms_veach_egg_bumpmap](../scenes/Tests/SMS/sms_veach_egg_bumpmap.RISEscene) | PT | 0.76127026 ± 0.0124 | 0.75892208 ± 0.0042 | -0.3085% |
+| [sms_veach_egg_bumpmap](../scenes/Tests/SMS/sms_veach_egg_bumpmap.RISEscene) | BDPT | 0.76893112 ± 0.00571 | 0.7689226 ± 0.00165 | -0.0011% |
+
+### Center region
+
+| Scene | Mode | Before mean ± SD | After mean ± SD | Change |
+|---|---|---:|---:|---:|
+| sculptors_studio | PT | 0.49376857 ± 0.000551 | 0.49458035 ± 0.00196 | +0.1644% |
+| sculptors_studio | BDPT | 0.46719271 ± 0.0115 | 0.47510182 ± 0.00636 | +1.6929% |
+| velvet_cushion | PT | 0.056692581 ± 4.93e-05 | 0.056707634 ± 3.6e-05 | +0.0266% |
+| velvet_cushion | BDPT | 0.061479709 ± 5.71e-05 | 0.061275264 ± 7.69e-05 | -0.3325% |
+| plank_closeup | PT | 0.27039662 ± 0.000158 | 0.27044171 ± 0.000278 | +0.0167% |
+| plank_closeup | BDPT | 0.27683549 ± 0.00542 | 0.28084211 ± 0.00196 | +1.4473% |
+| weathered_workbench | PT | 0.26630252 ± 5.91e-05 | 0.26638091 ± 8.05e-05 | +0.0294% |
+| weathered_workbench | BDPT | 0.27819556 ± 0.000102 | 0.27802797 ± 0.000281 | -0.0602% |
+| cc_modifier_stack | PT | 0.42033142 ± 2.57e-05 | 0.42030186 ± 2.16e-05 | -0.0070% |
+| cc_modifier_stack | BDPT | 0.41883227 ± 2.63e-05 | 0.42029138 ± 6.35e-06 | +0.3484% |
+| cc_relief_modifier | PT | 0.41765297 ± 2.21e-05 | 0.41763705 ± 3.05e-05 | -0.0038% |
+| cc_relief_modifier | BDPT | 0.41613394 ± 3.72e-05 | 0.41761437 ± 2.54e-05 | +0.3558% |
+| displaced_plus_relief_shared_field | PT | 0.28262998 ± 5.41e-06 | 0.28263137 ± 3.03e-05 | +0.0005% |
+| displaced_plus_relief_shared_field | BDPT | 0.28262243 ± 1.41e-05 | 0.28262656 ± 1.91e-05 | +0.0015% |
+| relief_crackle_glaze | PT | 0.19919133 ± 0.000338 | 0.19905131 ± 4.41e-05 | -0.0703% |
+| relief_crackle_glaze | BDPT | 0.19913186 ± 0.000112 | 0.19915158 ± 0.000227 | +0.0099% |
+| relief_sphere_no_uv | PT | 0.25088377 ± 8.18e-07 | 0.25088423 ± 5.24e-07 | +0.0002% |
+| relief_sphere_no_uv | BDPT | 0.25088306 ± 1.24e-06 | 0.25088238 ± 1.36e-06 | -0.0003% |
+| sms_veach_egg_bumpmap | PT | 1.881016 ± 0.00953 | 1.8619568 ± 0.023 | -1.0132% |
+| sms_veach_egg_bumpmap | BDPT | 1.8954616 ± 0.0206 | 1.8884196 ± 0.00456 | -0.3715% |
+
+The controlled 45° plane's 41.4% pre-fix error does not imply a comparable
+whole-image change in every showcase. For example, sculptor BDPT's +1.139%
+change is small against its run-to-run SD; plank's +.262% is likewise
+noise-sized. The two fragment BDPT means move +.341–.343% toward PT, whose
+means remain nearly unchanged. No significance or all-scene integrator
+parity claim is inferred from the low-budget sweep. Its timing fields are
+retained as raw provenance only; isolated cost is measured separately below.
+
+## Isolated cost
+
+`plank_closeup`, **256×192, 128 spp, n=3 per state/mode**, the same OIDN-off,
+box-filter, linear EXR settings and separate committed binaries as the
+shipped sweep. The supervisor and other worker explicitly confirmed CPU
+idle before this batch. Order was AB/BA/AB for each integrator. Each sample
+starts a new CLI process; wall time and child user+system CPU include
+startup, scene loading, rendering and EXR writing. No warmup or outlier
+sample was removed. All **12/12** clean-load/fresh-output checks passed;
+runner return code **0**, expected interactive-child return code **1**.
+
+| Mode | Before wall, s | After wall, s | Wall change | Before CPU, s | After CPU, s | CPU change |
+|---|---:|---:|---:|---:|---:|---:|
+| PT | 8.940530 ± 0.346139 | 9.026567 ± 0.157538 | +0.962% | 118.178464 ± 4.462684 | 118.781658 ± 2.184177 | +0.510% |
+| BDPT | 10.064183 ± 0.097408 | 10.023340 ± 0.166401 | -0.406% | 142.016799 ± 1.134015 | 140.566649 ± 2.026149 | -1.021% |
+
+Numbers are mean ± sample SD. These end-to-end observations show no material
+slowdown in this fixture; three samples cannot establish zero overhead or
+a precise sub-percent cost change. The complete raw timing and image values
+are in `cost-raw.jsonl`, with aggregation in `cost-summary.json` and the
+process convention in `cost-status.json`. The source remains identical to
+the final Deployment/Opto gate's `d68e5674` production tree.
