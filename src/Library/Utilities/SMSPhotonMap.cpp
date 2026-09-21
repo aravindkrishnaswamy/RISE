@@ -396,7 +396,7 @@ namespace
 			ray = pScat->ray;
 			ray.Advance( 1e-8 );
 			power = power * pScat->kray * (PathVertexEval::ImportanceShadingNormalFactor(
-				ri.geometric.vNormal, ri.geometric.vGeomNormal, -ray.Dir(), pScat->ray.Dir() ) / selectProb);
+				ri.geometric.vNormal, ri.geometric.vGeomNormal, -ri.geometric.ray.Dir(), pScat->ray.Dir() ) / selectProb);
 			if( pScat->ior_stack ) {
 				ior_stack = *pScat->ior_stack;
 			}
