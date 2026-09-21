@@ -435,6 +435,63 @@ prefix decisions and mask identities are retained in
 The earlier six aggregate values are not retroactively treated as verified
 by these new samples. Their missing raw-data limitation is preserved.
 
+
+## Review follow-up: self-contrast precision exhaustion
+
+The next independent reviewer closed the missing-operands finding for the
+new six-row dataset, then reported a separate **P2** in the alternate
+PT-independent self-contrast branch. This external finding is recorded in
+`review-evidence2.md`: the branch could reach 48 attempts with SE above .05
+and still count its cross-check as a correctness pass or failure. The
+2836/0 corrective render did not execute this branch; it is not evidence
+for the precision-exhaustion case.
+
+Committed red `33df3cb6` extracts the existing final assertion gate into a
+helper called by both the live branch and deterministic controls. Positive
+operands B=2, E alternating 1 and 3 produce 48 contrasts of ±.5, mean zero,
+sample variance 12/47 and **SE = .5/sqrt(47) = .072932495748947279**. The
+unchanged target is .05. The direct run returned **rc1, 21 passed / 9 failed**:
+BDPT-only, VCM-only and both-row exhaustion all incorrectly executed a
+correctness assertion; failed/minimum-invalid rows also executed an extra
+correctness assertion after their accounting checks failed.
+
+Fixed test commit `585ec414` retains all four failure/minimum checks and
+returns immediately for an invalid row. Otherwise **both** SEs must meet
+the unchanged target before the cross-check is asserted. One or both
+insufficient rows produce one precision skip for the cross-check. Existing
+adaptive loops, attempt/failure counting and full-precision stop records
+are preserved; the paired estimator is unchanged. Precise disagreement
+still fails rather than being skipped.
+
+The shared gate accepts check/skip callbacks: live rendering uses the real
+suite counters; direct controls use local counters and assert their exact
+outcomes. No suite failure counters are rewound. Eight scenarios cover
+BDPT/VCM/both exhaustion, precise agreement/disagreement, failed attempts
+with sufficient samples, missing minimum and a 48-attempt row with 47
+failures (one accepted sample, unavailable SE=-1). Their expected local
+failures are control inputs, not hidden render failures.
+
+Both committed states were rebuilt through the exact named target
+`make -C build/make/rise build-test/SignalIntegratorConsistencyTest`, each
+**rc0 / zero warnings**, against the unchanged production library. One
+direct invocation on each state used:
+
+```sh
+SIGNAL_CONSISTENCY_FILTER=self_precision ./bin/tests/SignalIntegratorConsistencyTest
+```
+
+This string matches no unit/showcase keyword, so only the always-on
+nonfinite checks and new direct controls execute. Green: **rc0, 30 passed /
+0 failed**, comprising three existing checks and 27 new checks; no render
+or RNG call. The default full dispatch is unchanged and additionally runs
+these direct checks. No production render, threshold change or broad gate
+rerun was needed. The historical 2971/0 and six-row 2836/0 render records
+remain separate, with their earlier qualifications.
+
+Raw build/run/status files: `self-cap-red-*` and `self-cap-green-*`; exact
+committed patches: `self-cap-red.patch`, `self-cap-green.patch`. Production
+`src/build` still matches frozen `d68e5674`, retaining platform provenance.
+
 ## Every shipped relief scene: before/after
 
 All ten scenes declaring `relief_modifier` were rendered in both PT and
