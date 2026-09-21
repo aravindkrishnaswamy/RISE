@@ -147,13 +147,14 @@ void CausticSpectralPhotonTracer::TracePhoton(
 					}
 				}
 			} else {
-				ScatteredRay* pScat = scattered.RandomlySelectNonDiffuse( random.CanonicalRandom(), true );
+				Scalar selectedProbability=0;
+				ScatteredRay* pScat = scattered.RandomlySelectNonDiffuse( random.CanonicalRandom(), true, &selectedProbability );
 				if( pScat ) {
 					if( (bTraceReflections&&pScat->type==ScatteredRay::eRayReflection) ||
 						(bTraceRefractions&&pScat->type==ScatteredRay::eRayRefraction)
 						) {
 						pScat->ray.Advance( 1e-8 );
-						TracePhoton( pScat->ray, power*pScat->krayNM, nm, true, pPhotonMap, pScat->ior_stack?*pScat->ior_stack:ior_stack, depth+1 );
+						TracePhoton( pScat->ray, power*pScat->krayNM/selectedProbability, nm, true, pPhotonMap, pScat->ior_stack?*pScat->ior_stack:ior_stack, depth+1 );
 					}
 				}
 			}
