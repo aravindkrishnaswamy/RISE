@@ -156,7 +156,9 @@ namespace RISE
 		// Selection assumes random in [0,1), finite nonnegative reduction
 		// weights and finite totals. Pel reduces by max channel, NM by krayNM.
 		// The optional probability result is the probability of this returned
-		// component in the existing experiment; null reports0. Legacy one-ray
+		// component in the intended continuous legacy weight law; null reports0.
+		// Finite CDF sums and random grids can lose intervals at extreme ratios;
+		// this output does not redesign those existing admission decisions. Legacy one-ray
 		// and filtered two-record sole-eligible shortcuts report1 even for
 		// zero response. No ray, density, throughput or IOR metadata is changed.
 		// Keep two-argument overload symbols for existing binary callers.

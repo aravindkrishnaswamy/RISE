@@ -5,6 +5,7 @@
 #include <cmath>
 #include <vector>
 #include <algorithm>
+#include <limits>
 #include "../src/Library/Interfaces/ISPF.h"
 using namespace RISE;
 class FrozenLegacy : public ScatteredRayContainer {
@@ -226,8 +227,16 @@ void Cases() {
     Check(New(c,mode,u,nm,nullptr)==expected,"probability omitted preserves pointer");
     double want=0;
     if(got){const bool shortcut=mode==0?n==1:(n<=2&&eligible==1);want=shortcut?1:Weight(*got,nm)/total;}
-    if(q!=want) std::printf("QDIAG n=%u scenario=%d mode=%d nm=%d u=%a q=%a want=%a total=%a weight=%a\n",n,scenario,mode,int(nm),u,q,want,total,got?Weight(*got,nm):0);
-    Check(q==want,"probability is shortcut1 or selected eligible weight/total");
+    // Independent real-valued law: q*sum(weights)=selected weight.
+    // Nonnegative summation takes at most n roundings; reciprocal/division
+    // plus multiplication takes at most3 more under release fast-math.
+    // gamma(n+3) bounds those operations; it is not a sampling/noise band.
+    // Null and deterministic shortcuts retain exact0/1 assertions.
+    const double roundoff=std::numeric_limits<double>::epsilon()/2;
+    const double gamma=(n+3)*roundoff/(1-(n+3)*roundoff);
+    const bool shortcut=got && (mode==0?n==1:(n<=2&&eligible==1));
+    Check(!got||shortcut ? q==want : q>0&&std::fabs(q*total-Weight(*got,nm))<=gamma*Weight(*got,nm),
+          "nominal continuous probability law with derived floating bound");
     for(unsigned i=0;i<n;++i){Check(c[i].pdf==.125*(i+1)&&c[i].isDelta==(i%2==0)&&c[i].ray.origin.x==i&&c[i].ray.Dir().z==1&&c[i].ior_stack==savedStack[i]&&c[i].ior_stack->top()==1.0+i*.125&&c[i].krayNM==savedNM[i]&&c[i].kray.r==savedPel[i].r&&c[i].kray.g==savedPel[i].g&&c[i].kray.b==savedPel[i].b,"selection preserves ray/pdf/IOR metadata");}
    }
    // Stratified CDF frequencies provide a separate distribution check.
@@ -241,4 +250,11 @@ void Cases() {
  }
 }
 }
-int main(){Cases();std::printf("ScatteredRaySelectionTest checks=%d failures=%d\n",checks,failures);return failures?1:0;}
+void FiniteGridBoundary() {
+ FrozenLegacy c;
+ for(double w:{1.,0x1p-70}){ScatteredRay r;r.kray=RISEPel(w);r.krayNM=w;r.type=ScatteredRay::eRayDiffuse;c.AddScatteredRay(r);}
+ double q=0;
+ Check(New(c,0,std::nextafter(1.,0.),false,&q)==&c[0],"late tiny weight has no representable CDF interval");
+ Check(Old(c,0,std::nextafter(1.,0.),false)==&c[0],"finite-grid limitation is inherited unchanged");
+}
+int main(){Cases();FiniteGridBoundary();std::printf("ScatteredRaySelectionTest checks=%d failures=%d\n",checks,failures);return failures?1:0;}
