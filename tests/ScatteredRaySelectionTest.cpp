@@ -205,11 +205,14 @@ double Weight(const ScatteredRay& r,bool nm) {return nm?r.krayNM:ColorMath::MaxV
 void Cases() {
  for(unsigned n=0;n<=ScatteredRayContainer::kCapacity;++n) for(int scenario=0;scenario<6;++scenario) {
   FrozenLegacy c;
+  std::vector<RISEPel> savedPel;std::vector<double> savedNM;std::vector<const IORStack*> savedStack;
   for(unsigned i=0;i<n;++i) {
    ScatteredRay r; r.type=(scenario==5 ? (i==0?ScatteredRay::eRayDiffuse:ScatteredRay::eRayReflection) : (i%2?ScatteredRay::eRayDiffuse:ScatteredRay::eRayReflection));
    const double w=scenario==0?0:scenario==1?NEARZERO/(4*(n+1)):scenario==2?(i==0?0x1p-70:1):scenario==3?(i==0?1:0):double(i+1)/16;
    r.kray=RISEPel(w,w/2,w/4);r.krayNM=(scenario==4?double(n-i)/16:w);
    r.pdf=.125*(i+1);r.isDelta=(i%2==0);r.ray=Ray(Point3(i,0,0),Vector3(0,0,1));
+   r.ior_stack=new IORStack(1.0+i*.125);
+   savedPel.push_back(r.kray);savedNM.push_back(r.krayNM);savedStack.push_back(r.ior_stack);
    Check(c.AddScatteredRay(r),"fixture admitted");
   }
   for(int mode=0;mode<3;++mode) for(bool nm:{false,true}) {
@@ -224,7 +227,7 @@ void Cases() {
     double want=0;
     if(got){const bool shortcut=mode==0?n==1:(n<=2&&eligible==1);want=shortcut?1:Weight(*got,nm)/total;}
     Check(q==want,"probability is shortcut1 or selected eligible weight/total");
-    for(unsigned i=0;i<n;++i){Check(c[i].pdf==.125*(i+1)&&c[i].isDelta==(i%2==0)&&c[i].ray.Origin().x==i&&c[i].ray.Dir().z==1&&c[i].ior_stack==nullptr,"selection preserves ray/pdf/IOR metadata");}
+    for(unsigned i=0;i<n;++i){Check(c[i].pdf==.125*(i+1)&&c[i].isDelta==(i%2==0)&&c[i].ray.origin.x==i&&c[i].ray.Dir().z==1&&c[i].ior_stack==savedStack[i]&&c[i].ior_stack->top()==1.0+i*.125&&c[i].krayNM==savedNM[i]&&c[i].kray.r==savedPel[i].r&&c[i].kray.g==savedPel[i].g&&c[i].kray.b==savedPel[i].b,"selection preserves ray/pdf/IOR metadata");}
    }
    // Stratified CDF frequencies provide a separate distribution check.
    // Finite sampling bounds each outcome's count error by at most two.
