@@ -2,6 +2,7 @@
 #include <cassert>
 #include <cmath>
 #include <limits>
+#include <iomanip>
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/Shaders/StandardShader.h"
 #include "../src/Library/Rendering/PixelBasedSpectralIntegratingRasterizer.h"
@@ -302,6 +303,7 @@ public:
 
 int TestCIEPartialCellIntegral() {
     int failed=0,checks=0;
+    std::cout<<std::setprecision(17);
     const Scalar intervals[][2]={{550,551},{552,553},{552,558},{399,701},{400,700},{380,780},{370,382},{778,790},{780,790},{370,380},{550,550},{560,550}};
     for(const auto& interval:intervals){
         const Scalar lo=std::max(interval[0],Scalar(380)),hi=std::min(interval[1],Scalar(780));
@@ -322,7 +324,7 @@ int TestCIEPartialCellIntegral() {
     const bool created=RISE_API_CreateRayCaster(&caster,false,10,*shader,true);
     ++checks;if(!created||!caster)++failed;
     if(caster){
-        const Scalar ranges[][3]={{550,std::nextafter(550.0,551.0),.995*(std::nextafter(550.0,551.0)-550.0)},{550,551,.9955},{552,558,5.991},{400,700,0},{380,780,0}};
+        const Scalar ranges[][3]={{550,551,.9955},{552,558,5.991},{400,700,0},{380,780,0}};
         for(const auto& r:ranges)for(bool hwss:{false,true}){
             SpectralScaleProbe probe(caster,r[0],r[1],hwss);
             Scalar area=r[2];
@@ -331,6 +333,17 @@ int TestCIEPartialCellIntegral() {
             const bool ok=std::isfinite(probe.Scale())&&std::fabs(probe.Scale()-expected)<=1e-12*expected;
             ++checks;if(!ok)++failed;
             std::cout<<(ok?"PASS ":"FAIL ")<<"spectral constructor ["<<r[0]<<","<<r[1]<<"] hwss="<<hwss<<" got="<<probe.Scale()<<" expected="<<expected<<std::endl;
+        }
+        const Scalar narrowEnd=std::nextafter(550.0,551.0);
+        // Store the represented width before the analytic area arithmetic:
+        // fast-math must not distribute .995*(b-a) into nearby products.
+        volatile Scalar representedWidth=narrowEnd-550.0;
+        const Scalar narrowExpected=1/(.995+.0005*representedWidth);
+        for(bool hwss:{false,true}){
+            SpectralScaleProbe probe(caster,550,narrowEnd,hwss);
+            const bool ok=std::isfinite(probe.Scale())&&std::fabs(probe.Scale()-narrowExpected)<=1e-12*narrowExpected;
+            ++checks;if(!ok)++failed;
+            std::cout<<(ok?"PASS ":"FAIL ")<<"spectral nextafter constructor width="<<representedWidth<<" hwss="<<hwss<<" got="<<probe.Scale()<<" expected="<<narrowExpected<<std::endl;
         }
         caster->release();
     }
