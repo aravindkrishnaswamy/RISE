@@ -5,8 +5,9 @@
 //    be written generically on a tag (PelTag or NMTag) and resolve
 //    at compile time to the right value() / valueNM() call.
 //
-//    Zero new logic here: these are thin dispatchers that forward
-//    to the pre-existing dual-signature helpers.  They exist so the
+//    Raw-value methods are thin dispatchers to the dual-signature
+//    helpers; the area-response adapter also converts the projected
+//    shading measure for path-space estimators. These let the
 //    integrator templatization phase (2a / 2b / 2c) can write one
 //    body per concern instead of two.
 //
@@ -104,6 +105,18 @@ namespace RISE
 			const NMTag& tag )
 		{
 			return PathVertexEval::EvalBSDFAtVertexNM( vertex, wi, wo, tag.nm );
+		}
+
+		// Area-measure surface response for connections, light tracing and
+		// photon merging. Sampling/guiding callers keep EvalBSDFAtVertex's
+		// raw material value, whose cosine is in the shading frame.
+		template<class Tag>
+		inline typename SpectralValueTraits<Tag>::value_type EvalAreaBSDFAtVertex(
+			const BDPTVertex& vertex, const Vector3& wi, const Vector3& wo,
+			const Tag& tag )
+		{
+			return EvalBSDFAtVertex<Tag>( vertex, wi, wo, tag ) *
+				PathVertexEval::RadianceShadingNormalFactor( vertex, wi );
 		}
 
 		//////////////////////////////////////////////////////////////

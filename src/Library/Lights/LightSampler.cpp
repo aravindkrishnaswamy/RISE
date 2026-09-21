@@ -2036,9 +2036,11 @@ RISEPel LightSampler::EvaluateDirectLighting(
 	// FULL-SPHERE NEE (see IMaterial::ScattersFullSphere).
 	// ================================================================
 	// Every `cosSurface` / `cosEnv` below is the SIGNED cosine between
-	// the shadow direction and the shading normal, and every gate that
-	// consumes it rejects `<= 0`.  That is correct for an ordinary BRDF,
-	// whose `value()` is zero below the horizon anyway -- the rejected
+	// the shadow direction and the VIEW-FACING shading normal, and every
+	// gate that consumes it rejects `<= 0`. A two-sided BRDF/SPF flips
+	// its shading hemisphere when relief puts the viewer below Ns;
+	// RayFacingShadingCosine reproduces that orientation (DL-224).
+	// An ordinary BRDF's `value()` is zero below this oriented horizon -- the rejected
 	// directions carry no transport, so NEE loses nothing by skipping
 	// them and the BSDF-sampling strategy has nothing to partner with.
 	//
@@ -2086,10 +2088,9 @@ RISEPel LightSampler::EvaluateDirectLighting(
 	//     reach this transport and PT could not).
 	//
 	// SAFETY.  The capability defaults FALSE, and where it is FALSE
-	// every expression below is TEXTUALLY the pre-change one: the local
-	// `cosXxx` is initialized from `cosXxxSigned` with no arithmetic
-	// applied, so non-full-sphere materials are bit-identical, not
-	// merely numerically close.  Granting the capability to a material
+	// the opposite VIEW-FACING shading hemisphere remains rejected.
+	// The DL-224 orientation change is neutral when Ns faces the view;
+	// a tilted Ns facing away now follows the SPF's flipped frame.  Granting the capability to a material
 	// whose `value()` does NOT transmit would be a real bias (NEE would
 	// light its back faces at full weight), which is why this is opt-in
 	// per material rather than a blanket `fabs`.
@@ -2401,7 +2402,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
 			Vector3 vToLight = Vector3Ops::mkVector3( lightPos, ri.ptIntersection );
 			const Scalar dist = Vector3Ops::NormalizeMag( vToLight );
 			const Scalar cosSurfaceSigned = isVolumeScatter ? Scalar(1.0) :
-				Vector3Ops::Dot( vToLight, ri.vNormal );
+				ri.RayFacingShadingCosine( vToLight );
 			// FULL-SPHERE NEE site 1 of 3 (RGB): delta-position light.
 			// No MIS partner exists for a delta light, so the relaxed
 			// gate simply restores the below-horizon direct term at
@@ -2466,7 +2467,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
 			// cosSurface is forced to 1.0 to cancel the multiplication below
 			// and skip hemisphere rejection.
 			const Scalar cosSurfaceSigned = isVolumeScatter ? Scalar(1.0) :
-				Vector3Ops::Dot( vToLight, ri.vNormal );
+				ri.RayFacingShadingCosine( vToLight );
 			// FULL-SPHERE NEE site 2 of 3 (RGB): mesh area light.  The
 			// |cos| feeds THREE consumers below, and all three need it:
 			// the `cosSurface > 0` gate (else the row never fires), the
@@ -2759,7 +2760,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
 		pEnvSampler->Sample( sampler.Get1D(), sampler.Get1D(), envDir, envPdf );
 
 		const Scalar cosEnvSigned = isVolumeScatter ? Scalar(1.0) :
-			Vector3Ops::Dot( envDir, ri.vNormal );
+			ri.RayFacingShadingCosine( envDir );
 		// FULL-SPHERE NEE site 3 of 3 (RGB): environment map.  This is
 		// the site the hair white-furnace measures directly -- with the
 		// gate on, a sigma_a == 0 groom reads ~0.988 instead of 1.0
@@ -3133,7 +3134,7 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 			Vector3 vToLight = Vector3Ops::mkVector3( lightPos, ri.ptIntersection );
 			const Scalar dist = Vector3Ops::NormalizeMag( vToLight );
 			const Scalar cosSurfaceSigned = isVolumeScatter ? Scalar(1.0) :
-				Vector3Ops::Dot( vToLight, ri.vNormal );
+				ri.RayFacingShadingCosine( vToLight );
 			// FULL-SPHERE NEE site 1 of 3 (NM): delta-position light.
 			const Scalar cosSurface = bFullSphere ?
 				std::fabs( cosSurfaceSigned ) : cosSurfaceSigned;
@@ -3193,7 +3194,7 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 		Vector3 vToLight = Vector3Ops::mkVector3( ptOnLum, ri.ptIntersection );
 		const Scalar dist = Vector3Ops::NormalizeMag( vToLight );
 		const Scalar cosSurfaceSigned = isVolumeScatter ? Scalar(1.0) :
-			Vector3Ops::Dot( vToLight, ri.vNormal );
+			ri.RayFacingShadingCosine( vToLight );
 		// FULL-SPHERE NEE site 2 of 3 (NM): mesh area light.  Same three
 		// consumers as the RGB twin -- the `cosSurface <= 0` bail below,
 		// the RR `estimate`, and `contrib`.  `cosLight` stays signed.
@@ -3354,7 +3355,7 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 		pEnvSampler->Sample( sampler.Get1D(), sampler.Get1D(), envDir, envPdf );
 
 		const Scalar cosEnvSigned = isVolumeScatter ? Scalar(1.0) :
-			Vector3Ops::Dot( envDir, ri.vNormal );
+			ri.RayFacingShadingCosine( envDir );
 		// FULL-SPHERE NEE site 3 of 3 (NM): environment map.
 		const Scalar cosEnv = bFullSphere ?
 			std::fabs( cosEnvSigned ) : cosEnvSigned;

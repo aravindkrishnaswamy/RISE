@@ -806,6 +806,7 @@
 #include <cstring>
 #include <iostream>
 #include <iomanip>
+#include <optional>
 #include <fstream>
 #include <sstream>
 #include <vector>
@@ -2390,6 +2391,193 @@ static bool RenderShowcaseVariant(
 	return renderedE && renderedB;
 }
 
+// DL224 evidence follow-up: log the actual masked operands at round-trip
+// precision, independently of cout's human-readable formatting. Missing
+// operands are explicit nulls; failed attempts never disappear from the trace.
+// These helpers only serialize observations and do not drive test decisions.
+static void LogMaskedSample( const char* scene, const char* kind, Integrator integ,
+	std::size_t attempt, std::size_t sample, const char* status,
+	std::optional<double> e = {}, std::optional<double> b = {},
+	std::optional<double> ptE = {}, std::optional<double> ptB = {} )
+{
+	std::ostringstream out;
+	out << std::setprecision( std::numeric_limits<double>::max_digits10 )
+		<< "MASK_AUDIT event=sample scene=" << scene << " kind=" << kind
+		<< " integrator=" << IntegratorName( integ ) << " attempt=" << attempt
+		<< " sample=" << sample << " status=" << status;
+	auto value = [&]( const char* key, std::optional<double> v ) {
+		out << " " << key << "=";
+		if( v ) out << *v; else out << "null";
+	};
+	value( "e", e ); value( "b", b ); value( "pt_e", ptE ); value( "pt_b", ptB );
+	std::cout << out.str() << std::endl;
+}
+
+static void LogMaskedStop( const char* scene, const char* kind, Integrator integ,
+	const std::vector<double>& values, int failures, double se, double target,
+	const char* reason )
+{
+	std::ostringstream out;
+	out << std::setprecision( std::numeric_limits<double>::max_digits10 )
+		<< "MASK_AUDIT event=stop scene=" << scene << " kind=" << kind
+		<< " integrator=" << IntegratorName( integ ) << " reason=" << reason
+		<< " n=" << values.size() << " failures=" << failures
+		<< " attempts=" << ( values.size() + std::size_t(failures) )
+		<< " minimum=" << kLayer2MaskedSubRenders << " cap=" << kLayer2MaskedSubRendersCap
+		<< " target=" << target << " band=" << kLayer2MaskedBand
+		<< " mean=" << VectorMean( values ) << " sd=" << ( se * std::sqrt(double(values.size())) )
+		<< " se=" << se;
+	std::cout << out.str() << std::endl;
+}
+
+// Eligibility is independent of precision: failed or undersized adaptive rows
+// must retain their accounting failures and cannot supply a correctness result.
+static bool MaskedAdaptiveRowEligible( std::size_t n, int failures )
+{
+	return failures == 0 && n >= std::size_t(kLayer2MaskedSubRenders);
+}
+
+static double MaskedStandardError( const std::vector<double>& v )
+{
+	const std::size_t n = v.size();
+	if( n < 2 ) return -1.0;
+	double mean = 0.0;
+	for( double x : v ) mean += x;
+	mean /= double( n );
+	double ss = 0.0;
+	for( double x : v ) ss += ( x - mean ) * ( x - mean );
+	const double sd = std::sqrt( ss / double( n - 1 ) );
+	return sd / std::sqrt( double( n ) );
+}
+
+// Shared by the rendered self-contrast branch and direct control-flow regressions.
+template<typename CheckFn, typename SkipFn>
+static void CheckMaskedSelfContrast( const char* keyword,
+	const std::vector<double>& bdptContrasts, const std::vector<double>& vcmContrasts,
+	int bdptFailures, int vcmFailures, CheckFn check, SkipFn precisionSkip )
+{
+	check( bdptFailures == 0, std::string( keyword ) + " BDPT (masked cross-check): every sub-render succeeded (failures: " + std::to_string(bdptFailures) + ")" );
+	check( vcmFailures == 0,  std::string( keyword ) + " VCM (masked cross-check): every sub-render succeeded (failures: "  + std::to_string(vcmFailures)  + ")" );
+	check( bdptContrasts.size() >= (std::size_t)kLayer2MaskedSubRenders, std::string( keyword ) + " BDPT (masked cross-check): at least " + std::to_string(kLayer2MaskedSubRenders) + " sub-renders (got " + std::to_string(bdptContrasts.size()) + ")" );
+	check( vcmContrasts.size()  >= (std::size_t)kLayer2MaskedSubRenders, std::string( keyword ) + " VCM (masked cross-check): at least "  + std::to_string(kLayer2MaskedSubRenders) + " sub-renders (got " + std::to_string(vcmContrasts.size())  + ")" );
+
+	// Keep failed-render and minimum checks above as failures. Such a row
+	// supplies no eligible correctness estimate, even if its SE is unavailable
+	// (-1 for fewer than two samples) or happens to be small.
+	if( !MaskedAdaptiveRowEligible(bdptContrasts.size(), bdptFailures)
+		|| !MaskedAdaptiveRowEligible(vcmContrasts.size(), vcmFailures) ) return;
+
+	const double meanBdpt = VectorMean( bdptContrasts );
+	const double meanVcm  = VectorMean( vcmContrasts );
+	const double seBdpt = MaskedStandardError( bdptContrasts );
+	const double seVcm  = MaskedStandardError( vcmContrasts );
+
+	const double seTarget = kLayer2MaskedBand * kLayer2MaskedSEFraction;
+	if( seBdpt > seTarget || seVcm > seTarget ) {
+		std::cout << "  INSUFFICIENT PRECISION: " << keyword
+			<< " BDPT<->VCM (masked cross-check) SE(BDPT)=" << seBdpt
+			<< " SE(VCM)=" << seVcm << " (target <= " << seTarget
+			<< "). Cross-check is NOT asserted; counted as one precision skip." << std::endl;
+		precisionSkip();
+		return;
+	}
+
+	const double bdptSelfRatio = 1.0 + meanBdpt;	// mean_mask(BDPT,E)/mean_mask(BDPT,B)
+	const double vcmSelfRatio  = 1.0 + meanVcm;	// mean_mask(VCM,E)/mean_mask(VCM,B)
+	const double crossRatio = ( vcmSelfRatio != 0.0 ) ? bdptSelfRatio / vcmSelfRatio : 0.0;
+	const double crossValue = crossRatio - 1.0;
+
+	// Delta-method propagation: the relative SE of a ratio of two
+	// INDEPENDENT means is the root-sum-square of their own
+	// relative SEs (first order).  BDPT's and VCM's sub-renders
+	// are drawn independently of each other (and of PT), so this
+	// is the right combination rule.
+	const double relSeBdpt = ( bdptSelfRatio != 0.0 && seBdpt >= 0.0 ) ? std::fabs( seBdpt / bdptSelfRatio ) : 0.0;
+	const double relSeVcm  = ( vcmSelfRatio  != 0.0 && seVcm  >= 0.0 ) ? std::fabs( seVcm  / vcmSelfRatio  ) : 0.0;
+	const double crossSE = std::fabs( crossRatio ) * std::sqrt( relSeBdpt * relSeBdpt + relSeVcm * relSeVcm );
+
+	std::cout << "  CROSS-CHECK masked self-ratio: BDPT mean_mask(E)/mean_mask(B)=" << bdptSelfRatio
+	          << " (K=" << bdptContrasts.size() << " SE=" << seBdpt << ")"
+	          << "  VCM mean_mask(E)/mean_mask(B)=" << vcmSelfRatio
+	          << " (K=" << vcmContrasts.size() << " SE=" << seVcm << ")" << std::endl;
+	std::cout << "  CROSS-CHECK (BDPT/VCM masked self-ratio) - 1 = " << crossValue
+	          << "  SE~=" << crossSE
+	          << ( std::fabs(crossValue) < kLayer2MaskedBand ? "  [pass]" : "  [FAIL]" ) << std::endl;
+	check( std::fabs( crossValue ) < kLayer2MaskedBand,
+		std::string( keyword ) + " BDPT<->VCM (masked cross-check): | (mean_mask(BDPT,E)/mean_mask(VCM,E)) / (mean_mask(BDPT,B)/mean_mask(VCM,B)) - 1 | < " + std::to_string(kLayer2MaskedBand) );
+}
+
+// The live paired branch and direct controls share accounting, stop records,
+// precision disposition and correctness assertion. PT intentionally has K=1.
+template<typename CheckFn, typename SkipFn>
+static void CheckMaskedPairedContrast( const char* keyword, Integrator integ,
+	const std::vector<double>& ratios, int subRenderFailures, double R_E, double R_B,
+	CheckFn check, SkipFn precisionSkip )
+{
+	const double seTarget = kLayer2MaskedBand * kLayer2MaskedSEFraction;
+	// (round-3 fix, task item 4; kept under adaptive K) A sub-render
+	// that fails to derive, or comes back with a mismatched or
+	// degenerate pixel array, used to be `continue`d past silently,
+	// so a bad run could average over fewer sub-renders than the
+	// estimator was measured at.  Under adaptive K the count is no
+	// longer fixed, so what is asserted is the thing that was
+	// actually wrong: NO sub-render failed, and the minimum sample
+	// size was reached.
+	if( integ == Integrator::BDPT || integ == Integrator::VCM ) {
+		check( subRenderFailures == 0,
+			std::string( keyword ) + " " + IntegratorName(integ)
+			+ " (masked): every sub-render succeeded (failures: "
+			+ std::to_string(subRenderFailures) + ")" );
+		check( ratios.size() >= (std::size_t)kLayer2MaskedSubRenders,
+			std::string( keyword ) + " " + IntegratorName(integ)
+			+ " (masked): at least " + std::to_string(kLayer2MaskedSubRenders)
+			+ " sub-renders (got " + std::to_string(ratios.size()) + ")" );
+	}
+
+	const double se = MaskedStandardError( ratios );
+
+	const bool loopedRow = ( integ == Integrator::BDPT || integ == Integrator::VCM );
+	const bool insufficient = loopedRow && se > seTarget;
+	LogMaskedStop( keyword, "paired", integ, ratios, subRenderFailures, se, seTarget,
+		!loopedRow ? "single_sample" :
+		( ratios.size() + std::size_t(subRenderFailures) >= std::size_t(kLayer2MaskedSubRendersCap)
+			? "attempt_cap" : "precision_target" ) );
+
+	// Serialize every stop before rejecting an unusable row. Accounting checks
+	// above already failed; neither a correctness result nor precision skip is
+	// appropriate. PT's intentional single-sample comparison bypasses this.
+	if( loopedRow && !MaskedAdaptiveRowEligible(ratios.size(), subRenderFailures) ) {
+		std::cout << "  INVALID MASKED ROW: " << keyword << " " << IntegratorName(integ)
+			<< " failed/minimum accounting; correctness is NOT asserted." << std::endl;
+		return;
+	}
+
+	double ratio = 0.0;
+	for( double v : ratios ) ratio += v;
+	ratio /= double( ratios.size() );
+
+	std::cout << "  MASKED " << IntegratorName(integ) << ": R_E=" << R_E << " R_B=" << R_B
+	          << " R_E/R_B-1(sub-render 1)=" << ( R_E / R_B - 1.0 )
+	          << "  avg over " << ratios.size() << " sub-render(s)=" << ratio;
+	if( loopedRow ) {
+		std::cout << "  SE=" << se << " (target <= " << seTarget << ")";
+	}
+	if( insufficient ) {
+		std::cout << "  [INSUFFICIENT PRECISION]" << std::endl;
+		std::cout << "  INSUFFICIENT PRECISION: " << keyword << " "
+		          << IntegratorName(integ)
+		          << " (masked) reached the " << kLayer2MaskedSubRendersCap
+		          << "-sub-render cap with SE=" << se << " > " << seTarget
+		          << ".  The estimate (" << ratio << ") is NOT asserted either way "
+		          << "-- counted as a skip, not a pass and not a failure." << std::endl;
+		precisionSkip();
+		return;
+	}
+	std::cout << ( std::fabs(ratio) < kLayer2MaskedBand ? "  [pass]" : "  [FAIL]" ) << std::endl;
+	check( std::fabs( ratio ) < kLayer2MaskedBand,
+		std::string( keyword ) + " " + IntegratorName(integ) + " (masked): | R_E/R_B - 1 | < " + std::to_string(kLayer2MaskedBand) );
+}
+
 static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 {
 	const fs::path scenePath = root / spec.relPath;
@@ -2528,6 +2716,23 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 		if( std::fabs( e - b ) / std::max( b, kMaskEps ) > kLayer2MaskThreshold ) { mask[i] = true; maskCount++; }
 	}
 	const double maskFrac = double( maskCount ) / double( N );
+	// The complete index list identifies the fixed mask without a hash collision
+	// or dependence on a later render. Linear index = y * width + x.
+	{
+		std::ostringstream out;
+		out << std::setprecision( std::numeric_limits<double>::max_digits10 )
+			<< "MASK_AUDIT event=mask scene=" << spec.keyword
+			<< " width=" << targetW << " height=" << targetH << " pixels=" << N
+			<< " count=" << maskCount << " seed_base=" << g_seedBase
+			<< " spp=" << kLayer2Samples << " threshold=" << kLayer2MaskThreshold
+			<< " epsilon=" << kMaskEps << " indices=";
+		bool first = true;
+		for( std::size_t i = 0; i < N; ++i ) if( mask[i] ) {
+			if( !first ) out << ',';
+			out << i; first = false;
+		}
+		std::cout << out.str() << std::endl;
+	}
 	// (F4) 3 decimal places on the printed coverage percentage: plank's
 	// coverage (~2.1%, see BAND DERIVATION -- MASKED LAYER in the file
 	// header) sits at roughly 2x the 1% floor, and that headroom is only
@@ -2585,6 +2790,8 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 	// average over a different quantity each time.
 	std::vector< std::pair<double,double> > ptDenomPool;
 	ptDenomPool.push_back( std::make_pair( maskedPT_E, maskedPT_B ) );
+	LogMaskedSample( spec.keyword, "pt_pool", Integrator::PT, 0, 0, "initial", maskedPT_E, maskedPT_B );
+	std::size_t ptAttempts = 1;
 
 	//! Returns the i-th independent PT denominator pair, rendering it
 	//! if the pool has not reached that far.  Returns (0,0) if the
@@ -2592,14 +2799,18 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 	//! counts as a sub-render failure exactly like an integrator-side one.
 	auto ptDenominators = [&]( std::size_t i ) -> std::pair<double,double> {
 		while( ptDenomPool.size() <= i ) {
+			const std::size_t attempt = ptAttempts++;
 			Layer2Row ptSub;
 			bool ptDerived = false;
 			RenderShowcaseVariant( variantEText, variantBText, Integrator::PT, kLayer2Samples, spec.keyword, targetW, targetH, &ptSub, &ptDerived );
 			if( !ptDerived || ptSub.valsE.size() != N || ptSub.valsB.size() != N ) {
+				LogMaskedSample( spec.keyword, "pt_pool", Integrator::PT, attempt, ptDenomPool.size(), "derive_or_array_failure" );
 				return std::make_pair( 0.0, 0.0 );
 			}
 			const double e = maskedMean( ptSub.valsE );
 			const double b = maskedMean( ptSub.valsB );
+			LogMaskedSample( spec.keyword, "pt_pool", Integrator::PT, attempt, ptDenomPool.size(),
+				( e == 0.0 || b == 0.0 ) ? "zero_mean" : "accepted", e, b );
 			if( e == 0.0 || b == 0.0 ) return std::make_pair( 0.0, 0.0 );
 			ptDenomPool.push_back( std::make_pair( e, b ) );
 		}
@@ -2680,6 +2891,8 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 		// just summed) so the standard error below is computable.
 		std::vector<double> ratios;
 		ratios.push_back( R_E / R_B - 1.0 );
+		LogMaskedSample( spec.keyword, "paired", integ, 0, 0, "accepted",
+			info.maskedE, info.maskedB, maskedPT_E, maskedPT_B );
 		int subRenderFailures = 0;
 
 		// Standard error of the mean of `ratios`.  Returns -1 until
@@ -2717,66 +2930,31 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 					const double se = standardError();
 					if( se >= 0.0 && se <= seTarget ) break;
 				}
+				const std::size_t attempt = ratios.size() + std::size_t(subRenderFailures);
 				Layer2Row subRow;
 				bool subDerived = false;
 				RenderShowcaseVariant( variantEText, variantBText, integ, kLayer2Samples, spec.keyword, targetW, targetH, &subRow, &subDerived );
-				if( !subDerived || subRow.valsE.size() != N || subRow.valsB.size() != N ) { subRenderFailures++; continue; }
+				if( !subDerived || subRow.valsE.size() != N || subRow.valsB.size() != N ) {
+					LogMaskedSample( spec.keyword, "paired", integ, attempt, ratios.size(), "derive_or_array_failure" );
+					subRenderFailures++; continue;
+				}
 				const double subMaskedE = maskedMean( subRow.valsE );
 				const double subMaskedB = maskedMean( subRow.valsB );
-				if( subMaskedE == 0.0 || subMaskedB == 0.0 ) { subRenderFailures++; continue; }
+				if( subMaskedE == 0.0 || subMaskedB == 0.0 ) {
+					LogMaskedSample( spec.keyword, "paired", integ, attempt, ratios.size(), "zero_mean", subMaskedE, subMaskedB );
+					subRenderFailures++; continue;
+				}
 				const std::pair<double,double> den = ptDenominators( ratios.size() );
+				LogMaskedSample( spec.keyword, "paired", integ, attempt, ratios.size(),
+					( den.first == 0.0 || den.second == 0.0 ) ? "pt_denominator_failure" : "accepted",
+					subMaskedE, subMaskedB, den.first, den.second );
 				if( den.first == 0.0 || den.second == 0.0 ) { subRenderFailures++; continue; }
 				ratios.push_back( ( subMaskedE / den.first ) / ( subMaskedB / den.second ) - 1.0 );
 			}
 		}
 
-		// (round-3 fix, task item 4; kept under adaptive K) A sub-render
-		// that fails to derive, or comes back with a mismatched or
-		// degenerate pixel array, used to be `continue`d past silently,
-		// so a bad run could average over fewer sub-renders than the
-		// estimator was measured at.  Under adaptive K the count is no
-		// longer fixed, so what is asserted is the thing that was
-		// actually wrong: NO sub-render failed, and the minimum sample
-		// size was reached.
-		if( integ == Integrator::BDPT || integ == Integrator::VCM ) {
-			Check( subRenderFailures == 0,
-				std::string( spec.keyword ) + " " + IntegratorName(integ)
-				+ " (masked): every sub-render succeeded (failures: "
-				+ std::to_string(subRenderFailures) + ")" );
-			Check( ratios.size() >= (std::size_t)kLayer2MaskedSubRenders,
-				std::string( spec.keyword ) + " " + IntegratorName(integ)
-				+ " (masked): at least " + std::to_string(kLayer2MaskedSubRenders)
-				+ " sub-renders (got " + std::to_string(ratios.size()) + ")" );
-		}
-
-		double ratio = 0.0;
-		for( double v : ratios ) ratio += v;
-		ratio /= double( ratios.size() );
-		const double se = standardError();
-
-		const bool loopedRow = ( integ == Integrator::BDPT || integ == Integrator::VCM );
-		const bool insufficient = loopedRow && se > seTarget;
-
-		std::cout << "  MASKED " << IntegratorName(integ) << ": R_E=" << R_E << " R_B=" << R_B
-		          << " R_E/R_B-1(sub-render 1)=" << ( R_E / R_B - 1.0 )
-		          << "  avg over " << ratios.size() << " sub-render(s)=" << ratio;
-		if( loopedRow ) {
-			std::cout << "  SE=" << se << " (target <= " << seTarget << ")";
-		}
-		if( insufficient ) {
-			std::cout << "  [INSUFFICIENT PRECISION]" << std::endl;
-			std::cout << "  INSUFFICIENT PRECISION: " << spec.keyword << " "
-			          << IntegratorName(integ)
-			          << " (masked) reached the " << kLayer2MaskedSubRendersCap
-			          << "-sub-render cap with SE=" << se << " > " << seTarget
-			          << ".  The estimate (" << ratio << ") is NOT asserted either way "
-			          << "-- counted as a skip, not a pass and not a failure." << std::endl;
-			g_maskedPrecisionSkipCount++;
-			continue;
-		}
-		std::cout << ( std::fabs(ratio) < kLayer2MaskedBand ? "  [pass]" : "  [FAIL]" ) << std::endl;
-		Check( std::fabs( ratio ) < kLayer2MaskedBand,
-			std::string( spec.keyword ) + " " + IntegratorName(integ) + " (masked): | R_E/R_B - 1 | < " + std::to_string(kLayer2MaskedBand) );
+		CheckMaskedPairedContrast( spec.keyword, integ, ratios, subRenderFailures, R_E, R_B,
+			Check, [] { ++g_maskedPrecisionSkipCount; } );
 	}
 
 	// (supervisor ruling, debt 28 round 2) CROSS-INTEGRATOR MASKED
@@ -2855,17 +3033,7 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 				return;
 			}
 
-			auto standardErrorOf = []( const std::vector<double>& v ) -> double {
-				const std::size_t n = v.size();
-				if( n < 2 ) return -1.0;
-				double mean = 0.0;
-				for( double x : v ) mean += x;
-				mean /= double( n );
-				double ss = 0.0;
-				for( double x : v ) ss += ( x - mean ) * ( x - mean );
-				const double sd = std::sqrt( ss / double( n - 1 ) );
-				return sd / std::sqrt( double( n ) );
-			};
+
 			const double seTarget = kLayer2MaskedBand * kLayer2MaskedSEFraction;
 
 			//! selfContrast_i = mean_mask(I,E)_i / mean_mask(I,B)_i - 1
@@ -2874,21 +3042,32 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 			//! this invariant.
 			auto adaptiveSelfContrast = [&]( const MaskedRowInfo& info, std::vector<double>* outContrasts, int* outFailures ) {
 				outContrasts->push_back( info.maskedE / info.maskedB - 1.0 );
+				LogMaskedSample( spec.keyword, "self", info.integ, 0, 0, "accepted", info.maskedE, info.maskedB );
 				*outFailures = 0;
 				while( outContrasts->size() + (std::size_t)*outFailures < (std::size_t)kLayer2MaskedSubRendersCap ) {
 					if( outContrasts->size() >= (std::size_t)kLayer2MaskedSubRenders ) {
-						const double se = standardErrorOf( *outContrasts );
+						const double se = MaskedStandardError( *outContrasts );
 						if( se >= 0.0 && se <= seTarget ) break;
 					}
+					const std::size_t attempt = outContrasts->size() + std::size_t(*outFailures);
 					Layer2Row subRow;
 					bool subDerived = false;
 					RenderShowcaseVariant( variantEText, variantBText, info.integ, kLayer2Samples, spec.keyword, targetW, targetH, &subRow, &subDerived );
-					if( !subDerived || subRow.valsE.size() != N || subRow.valsB.size() != N ) { (*outFailures)++; continue; }
+					if( !subDerived || subRow.valsE.size() != N || subRow.valsB.size() != N ) {
+						LogMaskedSample( spec.keyword, "self", info.integ, attempt, outContrasts->size(), "derive_or_array_failure" );
+						(*outFailures)++; continue;
+					}
 					const double subE = maskedMean( subRow.valsE );
 					const double subB = maskedMean( subRow.valsB );
+					LogMaskedSample( spec.keyword, "self", info.integ, attempt, outContrasts->size(),
+						( subE == 0.0 || subB == 0.0 ) ? "zero_mean" : "accepted", subE, subB );
 					if( subE == 0.0 || subB == 0.0 ) { (*outFailures)++; continue; }
 					outContrasts->push_back( subE / subB - 1.0 );
 				}
+				LogMaskedStop( spec.keyword, "self", info.integ, *outContrasts, *outFailures,
+					MaskedStandardError( *outContrasts ), seTarget,
+					outContrasts->size() + std::size_t(*outFailures) >= std::size_t(kLayer2MaskedSubRendersCap)
+						? "attempt_cap" : "precision_target" );
 			};
 
 			std::vector<double> bdptContrasts, vcmContrasts;
@@ -2896,41 +3075,110 @@ static void RunLayer2Showcase( const fs::path& root, const ShowcaseSpec& spec )
 			adaptiveSelfContrast( *bdptInfo, &bdptContrasts, &bdptFailures );
 			adaptiveSelfContrast( *vcmInfo,  &vcmContrasts,  &vcmFailures );
 
-			Check( bdptFailures == 0, std::string( spec.keyword ) + " BDPT (masked cross-check): every sub-render succeeded (failures: " + std::to_string(bdptFailures) + ")" );
-			Check( vcmFailures == 0,  std::string( spec.keyword ) + " VCM (masked cross-check): every sub-render succeeded (failures: "  + std::to_string(vcmFailures)  + ")" );
-			Check( bdptContrasts.size() >= (std::size_t)kLayer2MaskedSubRenders, std::string( spec.keyword ) + " BDPT (masked cross-check): at least " + std::to_string(kLayer2MaskedSubRenders) + " sub-renders (got " + std::to_string(bdptContrasts.size()) + ")" );
-			Check( vcmContrasts.size()  >= (std::size_t)kLayer2MaskedSubRenders, std::string( spec.keyword ) + " VCM (masked cross-check): at least "  + std::to_string(kLayer2MaskedSubRenders) + " sub-renders (got " + std::to_string(vcmContrasts.size())  + ")" );
-
-			const double meanBdpt = VectorMean( bdptContrasts );
-			const double meanVcm  = VectorMean( vcmContrasts );
-			const double seBdpt = standardErrorOf( bdptContrasts );
-			const double seVcm  = standardErrorOf( vcmContrasts );
-
-			const double bdptSelfRatio = 1.0 + meanBdpt;	// mean_mask(BDPT,E)/mean_mask(BDPT,B)
-			const double vcmSelfRatio  = 1.0 + meanVcm;	// mean_mask(VCM,E)/mean_mask(VCM,B)
-			const double crossRatio = ( vcmSelfRatio != 0.0 ) ? bdptSelfRatio / vcmSelfRatio : 0.0;
-			const double crossValue = crossRatio - 1.0;
-
-			// Delta-method propagation: the relative SE of a ratio of two
-			// INDEPENDENT means is the root-sum-square of their own
-			// relative SEs (first order).  BDPT's and VCM's sub-renders
-			// are drawn independently of each other (and of PT), so this
-			// is the right combination rule.
-			const double relSeBdpt = ( bdptSelfRatio != 0.0 && seBdpt >= 0.0 ) ? std::fabs( seBdpt / bdptSelfRatio ) : 0.0;
-			const double relSeVcm  = ( vcmSelfRatio  != 0.0 && seVcm  >= 0.0 ) ? std::fabs( seVcm  / vcmSelfRatio  ) : 0.0;
-			const double crossSE = std::fabs( crossRatio ) * std::sqrt( relSeBdpt * relSeBdpt + relSeVcm * relSeVcm );
-
-			std::cout << "  CROSS-CHECK masked self-ratio: BDPT mean_mask(E)/mean_mask(B)=" << bdptSelfRatio
-			          << " (K=" << bdptContrasts.size() << " SE=" << seBdpt << ")"
-			          << "  VCM mean_mask(E)/mean_mask(B)=" << vcmSelfRatio
-			          << " (K=" << vcmContrasts.size() << " SE=" << seVcm << ")" << std::endl;
-			std::cout << "  CROSS-CHECK (BDPT/VCM masked self-ratio) - 1 = " << crossValue
-			          << "  SE~=" << crossSE
-			          << ( std::fabs(crossValue) < kLayer2MaskedBand ? "  [pass]" : "  [FAIL]" ) << std::endl;
-			Check( std::fabs( crossValue ) < kLayer2MaskedBand,
-				std::string( spec.keyword ) + " BDPT<->VCM (masked cross-check): | (mean_mask(BDPT,E)/mean_mask(VCM,E)) / (mean_mask(BDPT,B)/mean_mask(VCM,B)) - 1 | < " + std::to_string(kLayer2MaskedBand) );
+			CheckMaskedSelfContrast( spec.keyword, bdptContrasts, vcmContrasts, bdptFailures, vcmFailures,
+				Check, [] { ++g_maskedPrecisionSkipCount; } );
 		}
 	}
+}
+
+// Invoke the same final gate as live renders. Nested assertions are observed
+// through callbacks, so expected input failures never alter the suite counters. No render, seed, or sampling state changes.
+static void TestMaskedSelfContrastPrecision()
+{
+	std::cout << "\n-- DL224: self-contrast precision and failure accounting --" << std::endl;
+	const unsigned int renderIndexBefore = g_renderIndex;
+	auto observe = []( const char* name, const std::vector<double>& bdpt,
+		const std::vector<double>& vcm, int bf, int vf,
+		int expectedPass, int expectedFail, int expectedSkip ) {
+		int passes = 0, failures = 0, skips = 0;
+		CheckMaskedSelfContrast( name, bdpt, vcm, bf, vf,
+			[&]( bool condition, const std::string& ) { condition ? ++passes : ++failures; },
+			[&] { ++skips; } );
+		std::ostringstream raw;
+		raw << std::setprecision(std::numeric_limits<double>::max_digits10)
+			<< "SELF_CONTROL case=" << name << " bdpt_n=" << bdpt.size()
+			<< " vcm_n=" << vcm.size() << " bdpt_failures=" << bf << " vcm_failures=" << vf
+			<< " bdpt_se=" << MaskedStandardError(bdpt) << " vcm_se=" << MaskedStandardError(vcm)
+			<< " nested_pass=" << passes << " nested_fail=" << failures << " precision_skip=" << skips;
+		std::cout << raw.str() << std::endl;
+		Check( passes == expectedPass, std::string(name)+": only eligible correctness assertions execute" );
+		Check( failures == expectedFail, std::string(name)+": failure/minimum accounting is retained" );
+		Check( skips == expectedSkip, std::string(name)+": precision skip count is exact" );
+	};
+	// Positive operands: B=2, E alternates 1 and 3. The contrast is +/-1/2,
+	// sample mean=0, sample variance=12/47, SE=1/(2*sqrt(47)).
+	std::vector<double> noisy;
+	for( int i=0; i<48; ++i ) noisy.push_back( (i%2 ? 3.0 : 1.0)/2.0-1.0 );
+	const std::vector<double> precise(12, 2.0/2.0-1.0);
+	Check( std::fabs(MaskedStandardError(noisy)-0.5/std::sqrt(47.0)) < 1e-15,
+		"cap fixture: independently derived SE is above 0.05" );
+	Check( MaskedStandardError(noisy) > kLayer2MaskedBand*kLayer2MaskedSEFraction,
+		"cap fixture: unchanged precision target discriminates noisy samples" );
+	observe( "bdpt_cap", noisy, precise, 0, 0, 4, 0, 1 );
+	observe( "vcm_cap", precise, noisy, 0, 0, 4, 0, 1 );
+	observe( "both_cap", noisy, noisy, 0, 0, 4, 0, 1 );
+	observe( "precise_match", precise, precise, 0, 0, 5, 0, 0 );
+	observe( "precise_disagreement", std::vector<double>(12,3.0/2.0-1.0), precise, 0, 0, 4, 1, 0 );
+	observe( "failed_attempts_with_minimum", precise, precise, 1, 2, 2, 2, 0 );
+	observe( "minimum_missing", std::vector<double>(11,0), precise, 0, 0, 3, 1, 0 );
+	observe( "failed_attempt_cap", std::vector<double>(1,0), precise, 47, 0, 2, 2, 0 );
+	Check( g_renderIndex == renderIndexBefore, "self-contrast controls never render" );
+}
+
+// Observe the real paired gate for both adaptive integrators and PT's K=1
+// exception. Local callback outcomes never assign or rewind suite counters.
+static void TestMaskedPairedEligibility()
+{
+	std::cout << "\n-- DL224: paired eligibility and precision accounting --" << std::endl;
+	const unsigned int renderIndexBefore = g_renderIndex;
+	auto observe = []( const char* name, Integrator integ, const std::vector<double>& ratios,
+		int failures, int expectedPass, int expectedFail, int expectedSkip ) {
+		int p=0, f=0, skips=0;
+		CheckMaskedPairedContrast( name, integ, ratios, failures, 1.0+ratios.front(), 1.0,
+			[&]( bool ok, const std::string& ) { ok ? ++p : ++f; }, [&] { ++skips; } );
+		std::ostringstream raw;
+		raw << std::setprecision(std::numeric_limits<double>::max_digits10)
+			<< "PAIRED_CONTROL case=" << name << " integrator=" << IntegratorName(integ)
+			<< " n=" << ratios.size() << " failures=" << failures
+			<< " se=" << MaskedStandardError(ratios) << " nested_pass=" << p
+			<< " nested_fail=" << f << " precision_skip=" << skips;
+		std::cout << raw.str() << std::endl;
+		Check( p == expectedPass, std::string(name)+": only eligible paired results are asserted" );
+		Check( f == expectedFail, std::string(name)+": paired accounting failures retained" );
+		Check( skips == expectedSkip, std::string(name)+": paired precision skip count" );
+	};
+	std::vector<double> noisy;
+	for( int i=0; i<48; ++i ) noisy.push_back((i%2 ? 3.0 : 1.0)/2.0-1.0);
+	const std::vector<double> precise(12, 0.0);
+	// Balanced +/-a gives SE=a/sqrt(n-1). Choose a nearby representable
+	// amplitude whose computed SE equals the actual double target exactly;
+	// this tests <= at the boundary without treating a rounding neighbor as =.
+	std::vector<double> boundary;
+	const double target=kLayer2MaskedBand*kLayer2MaskedSEFraction;
+	bool exact=false;
+	for( int n=12; n<=48 && !exact; n+=2 ) {
+		boundary.resize(n);
+		double amplitude=target*std::sqrt(double(n-1));
+		for( int j=0; j<16; ++j ) {
+			for( int i=0; i<n; ++i ) boundary[i]=i%2 ? amplitude : -amplitude;
+			const double se=MaskedStandardError(boundary);
+			if( se==target ) { exact=true; break; }
+			amplitude=std::nextafter(amplitude, se<target ? 1.0 : 0.0);
+		}
+	}
+	Check( exact, "paired boundary fixture has SE exactly equal to target" );
+	for( Integrator integ : {Integrator::BDPT, Integrator::VCM} ) {
+		observe("failed_attempt_cap",integ,std::vector<double>(1,0),47,0,2,0);
+		observe("failures_with_minimum",integ,precise,1,1,1,0);
+		observe("minimum_missing",integ,std::vector<double>(11,0),0,1,1,0);
+		observe("noisy_cap",integ,noisy,0,2,0,1);
+		observe("precise_match",integ,precise,0,3,0,0);
+		observe("precise_disagreement",integ,std::vector<double>(12,.5),0,2,1,0);
+		if( exact ) observe("exact_se_boundary",integ,boundary,0,3,0,0);
+	}
+	observe("pt_single_match",Integrator::PT,std::vector<double>(1,0),0,1,0,0);
+	observe("pt_single_disagreement",Integrator::PT,std::vector<double>(1,.5),0,0,1,0);
+	Check( g_renderIndex==renderIndexBefore, "paired eligibility controls never render" );
 }
 
 //======================================================================
@@ -2993,6 +3241,8 @@ int main( int argc, char** argv )
 	}
 
 	TestNonfiniteCandidateRejected();
+	TestMaskedSelfContrastPrecision();
+	TestMaskedPairedEligibility();
 
 	std::cout << "\n========================================" << std::endl;
 	std::cout << "Passed: " << passCount << "  Failed: " << failCount

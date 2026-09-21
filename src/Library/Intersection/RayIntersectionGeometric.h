@@ -462,6 +462,18 @@ namespace RISE
 		//! stacked, while photon gathers and SMS still have stackless sites).  See DL-157's closure doc section 3.1.
 		bool						bProvablyNoInterior;
 
+		//! Signed cosine in the shading hemisphere facing the incoming
+		//! view ray. Ordinary two-sided BRDFs/SPFs orient this hemisphere
+		//! to -ray.Dir(); a strong normal perturbation can cross the view
+		//! horizon even while the geometric face still points at the view.
+		//! Keep the sign toward the opposite shading hemisphere so NEE can
+		//! reject it; full-sphere materials explicitly take the magnitude.
+		inline Scalar RayFacingShadingCosine( const Vector3& direction ) const
+		{
+			const Scalar c = Vector3Ops::Dot( vNormal, direction );
+			return Vector3Ops::Dot( vNormal, ray.Dir() ) > Scalar(0) ? -c : c;
+		}
+
 		//! THE shared recovery for the two flags above (DL-70).  Returns
 		//! the TRUE, ray-independent, winding-order geometric normal: the
 		//! reported `vGeomNormal` with the double-sided / back-face

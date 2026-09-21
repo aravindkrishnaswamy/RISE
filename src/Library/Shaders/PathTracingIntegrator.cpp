@@ -142,6 +142,7 @@ namespace {
 #include "BSSRDFEntryAdapters.h"
 #include "../Utilities/FireflyTrace.h"
 using RISE::BSSRDFAdapters::BSSRDFEntryBSDF;
+using RISE::BSSRDFAdapters::EntryEvaluationRay;
 using RISE::BSSRDFAdapters::RandomWalkEntryBSDF;
 using RISE::BSSRDFAdapters::BSSRDFEntryMaterial;
 
@@ -2870,7 +2871,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 							const Value bssrdfWeightSpatial = PTBssrdfWeightSpatial<Tag>( bssrdf );
 
 							RayIntersectionGeometric entryRI(
-								Ray( bssrdf.entryPoint, bssrdf.scatteredRay.Dir() ),
+								EntryEvaluationRay( bssrdf.entryPoint, bssrdf.entryNormal ),
 								rast );
 							entryRI.bHit = true;
 							entryRI.ptIntersection = bssrdf.entryPoint;
@@ -3138,7 +3139,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 							const Value bssrdfWeightSpatial = PTBssrdfWeightSpatial<Tag>( bssrdf ) * Ft * bf;
 
 							RayIntersectionGeometric entryRI(
-								Ray( bssrdf.entryPoint, bssrdf.scatteredRay.Dir() ),
+								EntryEvaluationRay( bssrdf.entryPoint, bssrdf.entryNormal ),
 								rast );
 							entryRI.bHit = true;
 							entryRI.ptIntersection = bssrdf.entryPoint;

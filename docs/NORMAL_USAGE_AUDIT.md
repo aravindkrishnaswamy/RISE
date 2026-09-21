@@ -18,8 +18,11 @@ this document audits the remaining 300+ consumer sites.
 
 - **BSDF eval / sample / pdf and the BSDF cosine factor `cos θ` in
   `f · cos θ / pdf`** → SHADING. BRDF lives in the shading frame and Veach's
-  "shading normals" trick is energy-preserving when the cos couples to
-  `f` consistently ([PBRT 4e §9.1](https://pbr-book.org/4ed/Reflection_Models/BSDF_Representation);
+  shading-normal model uses that projected measure; it is NOT generally
+  energy-preserving. Importance transport additionally needs the adjoint
+  projected-area ratio, and an area-measure connection needs
+  `f_A = f_s * |Ns.wi| / |Ng.wi|` (DL-224,
+  [derivation](DL224_RELIEF_BIDIRECTIONAL_COSINE.md)) ([PBRT 4e §9.1](https://pbr-book.org/4ed/Reflection_Models/BSDF_Representation);
   [Veach 1997 §5.3.6](https://graphics.stanford.edu/papers/veach_thesis/);
   Mitsuba 3 [`SurfaceInteraction.sh_frame`](https://mitsuba.readthedocs.io/en/stable/src/key_topics/shape_normals.html)).
 - **Side-of-surface tests** — front-back, entering vs exiting,

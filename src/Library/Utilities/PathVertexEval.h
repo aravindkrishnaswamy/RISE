@@ -51,6 +51,37 @@ namespace RISE
 {
 	namespace PathVertexEval
 	{
+		// Radiance is integrated against the shading-frame projected solid
+		// angle: f_s(wi,wo) |Ns.wi| dwi. Connections and photon density
+		// estimates instead carry geometric-area measure, so their response
+		// is f_A = f_s |Ns.wi|/|Ng.wi|. Keep the geometric Jacobians intact.
+		// A zero geometric cosine is a zero-measure direction, not a place
+		// to clamp a finite ratio. Medium vertices have no surface measure.
+		inline Scalar RadianceShadingNormalFactor(
+			const BDPTVertex& vertex, const Vector3& wi )
+		{
+			if( vertex.type != BDPTVertex::SURFACE ) return Scalar(1);
+			const Scalar ng = fabs( Vector3Ops::Dot( vertex.geomNormal, wi ) );
+			return ng > Scalar(0)
+				? fabs( Vector3Ops::Dot( vertex.normal, wi ) ) / ng : Scalar(0);
+		}
+
+		// A light walk samples wo, whereas the radiance kernel's cosine is
+		// on wi. Its SPF kray already contains |Ns.wo|/pdf(wo); the adjoint
+		// weight therefore needs |Ns.wi||Ng.wo|/(|Ng.wi||Ns.wo|).
+		// This is wavelength-independent and belongs to importance walks
+		// only. PDFs remain densities of the unmodified sampling procedure.
+		inline Scalar ImportanceShadingNormalFactor(
+			const BDPTVertex& vertex, const Vector3& wi, const Vector3& wo )
+		{
+			if( vertex.type != BDPTVertex::SURFACE ) return Scalar(1);
+			const Scalar ngIn = fabs( Vector3Ops::Dot( vertex.geomNormal, wi ) );
+			const Scalar nsOut = fabs( Vector3Ops::Dot( vertex.normal, wo ) );
+			if( ngIn == Scalar(0) || nsOut == Scalar(0) ) return Scalar(0);
+			return ( fabs( Vector3Ops::Dot( vertex.normal, wi ) ) *
+				fabs( Vector3Ops::Dot( vertex.geomNormal, wo ) ) ) / ( ngIn * nsOut );
+		}
+
 		//////////////////////////////////////////////////////////////////////
 		// IOR Stack Reconstruction
 		//////////////////////////////////////////////////////////////////////
@@ -169,12 +200,10 @@ namespace RISE
 		//     too.  A DELTA light's root, and an env root, still carry the
 		//     defaults -- correctly: neither has a surface.
 		//
-		// `txFootprint` is carried although it is all-zero under today's
-		// bidirectional rasterizers -- BDPT / VCM / MLT emit no ray
-		// differentials, so nothing stamps it there.  The contract is
-		// "every field a painter consumer reads", and carrying it now
-		// means a future bidirectional ray-differential landing cannot
-		// silently reopen the gap.
+		// Camera rays carry differentials under PT, BDPT, VCM and MLT.
+		// The first eye hit therefore has a live footprint; subsequent
+		// scattering rays currently carry none (DL-14). Forward either
+		// state verbatim so relief and filtered painters see the real hit.
 		//////////////////////////////////////////////////////////////////////
 		inline void PopulateRIGFromVertex(
 			const BDPTVertex& vertex,

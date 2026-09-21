@@ -72,9 +72,9 @@ void DirectionalLight::ComputeDirectLighting(
 	// (same as LightSampler's delta-position light row) -- so when the
 	// receiver scatters over the full sphere (e.g. hair), `fabs` simply
 	// restores the below-horizon term at full weight instead of
-	// rejecting it.  When `bFullSphereReceiver` is false this reduces
-	// TEXTUALLY to the pre-existing expression -- `fDotSigned` used
-	// verbatim -- so every non-full-sphere receiver is byte-identical.
+	// rejecting it. Ordinary receivers retain the signed gate in the
+	// view-facing shading frame. DL-224 makes that frame agree with the
+	// SPF when a strong perturbation puts the viewer below the stored Ns.
 	//
 	// VOLUME RECEIVER (residual-ledger item 10 of
 	// docs/PT_ENV_MIS_DOUBLECOUNT.md).  `bVolumeReceiver` says the
@@ -109,10 +109,9 @@ void DirectionalLight::ComputeDirectLighting(
 	// the former removes the cosine outright.  No cosine at all beats an
 	// unsigned cosine, so the volume branch is tested first.
 	//
-	// With both flags false the expression below reduces TEXTUALLY to the
-	// pre-existing one -- `fDotSigned` used verbatim, gate unchanged --
-	// so every surface receiver is byte-identical, not merely close.
-	const Scalar fDotSigned = Vector3Ops::Dot( vDirection, ri.vNormal );
+	// With both flags false, reject only the opposite shading hemisphere.
+	// RayFacingShadingCosine is unchanged when Ns already faces the view.
+	const Scalar fDotSigned = ri.RayFacingShadingCosine( vDirection );
 	const Scalar fDot = bVolumeReceiver ? Scalar(1.0) :
 		( bFullSphereReceiver ? std::fabs( fDotSigned ) : fDotSigned );
 
@@ -158,9 +157,8 @@ Scalar DirectionalLight::ComputeDirectLightingNM(
 	// between light direction and surface normal, shadow ray test.
 	// Only the BSDF eval differs (per-NM scalar instead of per-RGB).
 	// FULL-SPHERE NEE and VOLUME RECEIVER: see the RGB overload above for
-	// both derivations; byte-identical to before when both flags are
-	// false.
-	const Scalar fDotSigned = Vector3Ops::Dot( vDirection, ri.vNormal );
+	// both derivations, including the view-facing shading frame.
+	const Scalar fDotSigned = ri.RayFacingShadingCosine( vDirection );
 	const Scalar fDot = bVolumeReceiver ? Scalar(1.0) :
 		( bFullSphereReceiver ? std::fabs( fDotSigned ) : fDotSigned );
 	if( !bVolumeReceiver && fDot <= 0.0 ) {

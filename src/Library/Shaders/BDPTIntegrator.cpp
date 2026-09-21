@@ -99,6 +99,7 @@ using RISE::SpectralDispatch::SpectralValueTraits;
 // prices Sw the same way PathTracingIntegrator's own BSSRDF-entry NEE
 // does, via these stack-local IBSDF adapters (see BSSRDFEntryAdapters.h).
 using RISE::BSSRDFAdapters::BSSRDFEntryBSDF;
+using RISE::BSSRDFAdapters::EntryEvaluationRay;
 using RISE::BSSRDFAdapters::RandomWalkEntryBSDF;
 
 //
@@ -3997,7 +3998,7 @@ ConnectAndEvaluateImpl(
 			}
 
 			if( s >= 2 ) {
-				fLight = PathValueOps::EvalBSDFAtVertex<Tag>( lightEnd, wiAtLight, dirToCam, tag );
+				fLight = PathValueOps::EvalAreaBSDFAtVertex<Tag>( lightEnd, wiAtLight, dirToCam, tag );
 			}
 		}
 
@@ -4104,7 +4105,7 @@ ConnectAndEvaluateImpl(
 		if( lightEnd.type == BDPTVertex::SURFACE && lightEnd.pMaterial && s >= 2 ) {
 			Vector3 wiAtLight = Vector3Ops::mkVector3( lightVerts[s - 2].position, lightEnd.position );
 			wiAtLight = Vector3Ops::Normalize( wiAtLight );
-			fLightNM = PathValueOps::EvalBSDFAtVertex<Tag>( lightEnd, wiAtLight, dirToCam, tag );
+			fLightNM = PathValueOps::EvalAreaBSDFAtVertex<Tag>( lightEnd, wiAtLight, dirToCam, tag );
 		}
 
 		const Scalar distSq = dist * dist;
@@ -4265,7 +4266,7 @@ ConnectAndEvaluateImpl(
 
 		// BSDF eval in the actually-sampled direction (wi for env,
 		// dirToLight for explicit lights).
-		const V fEye = PathValueOps::EvalBSDFAtVertex<Tag>( eyeEnd, wiForLight, woAtEye, tag );
+		const V fEye = PathValueOps::EvalAreaBSDFAtVertex<Tag>( eyeEnd, wiForLight, woAtEye, tag );
 
 		if( PositiveMagnitude<Tag>( fEye ) <= 0 ) {
 			return result;
@@ -4607,7 +4608,7 @@ ConnectAndEvaluateImpl(
 			}
 
 			if( s >= 2 ) {
-				fLight = PathValueOps::EvalBSDFAtVertex<Tag>( lightEnd, wiAtLight, dirToCam, tag );
+				fLight = PathValueOps::EvalAreaBSDFAtVertex<Tag>( lightEnd, wiAtLight, dirToCam, tag );
 			}
 		} else if( lightEnd.type == BDPTVertex::LIGHT ) {
 			// s == 1: the light source directly connects to the camera.
@@ -4832,7 +4833,7 @@ ConnectAndEvaluateImpl(
 		// wo at lightEnd = direction toward eye vertex (connection)
 		const Vector3 woAtLight = -dConnect;
 
-		const V fLight = PathValueOps::EvalBSDFAtVertex<Tag>( lightEnd, wiAtLight, woAtLight, tag );
+		const V fLight = PathValueOps::EvalAreaBSDFAtVertex<Tag>( lightEnd, wiAtLight, woAtLight, tag );
 
 		if( PositiveMagnitude<Tag>( fLight ) <= 0 ) {
 			return result;
@@ -4847,7 +4848,7 @@ ConnectAndEvaluateImpl(
 		// wi at eyeEnd = connection direction (from light side)
 		const Vector3 wiAtEye = dConnect;
 
-		const V fEye = PathValueOps::EvalBSDFAtVertex<Tag>( eyeEnd, wiAtEye, woAtEye, tag );
+		const V fEye = PathValueOps::EvalAreaBSDFAtVertex<Tag>( eyeEnd, wiAtEye, woAtEye, tag );
 
 		if( PositiveMagnitude<Tag>( fEye ) <= 0 ) {
 			return result;
@@ -5372,7 +5373,11 @@ EvaluateAllStrategiesImpl(
 						eyeVerts[t - 2].position, eyeEnd.position );
 					wo = Vector3Ops::Normalize( wo );
 
-					Ray evalRay( eyeEnd.position, -wo );
+					// A BSSRDF's previous vertex is a nonlocal exit, not a local
+					// viewer. Its entry adapter always supports the outward side.
+					Ray evalRay = eyeEnd.isBSSRDFEntry
+						? EntryEvaluationRay( eyeEnd.position, eyeEnd.normal )
+						: Ray( eyeEnd.position, -wo );
 					RayIntersectionGeometric ri( evalRay, nullRasterizerState );
 					PathVertexEval::PopulateRIGFromVertex( eyeEnd, ri );
 
@@ -7120,6 +7125,24 @@ unsigned int GenerateLightSubpathImpl(
 						}
 						hwssBetaNM[w] = hwssBetaNM[w] * compScale;
 					}
+				}
+			}
+		}
+
+		// DL-224: light throughput transports importance. SPF kray is a
+		// radiance-mode f_s*cos(Ns,out)/pdf weight, so changing to the
+		// adjoint geometric-area kernel needs this projected-area ratio.
+		// It changes contributions only: the sampler and every MIS density
+		// retain their geometric-area Jacobians. Apply before roulette so
+		// its survival probability observes the actual transported weight.
+		const Scalar shadingAdjoint = PathVertexEval::ImportanceShadingNormalFactor(
+			vertices.back(), -currentRay.Dir(), scatDir );
+		beta = beta * shadingAdjoint;
+		localScatteringWeight = localScatteringWeight * shadingAdjoint;
+		if constexpr( Traits::is_nm ) {
+			if( pSwlHWSS ) {
+				for( unsigned int w = 0; w < SampledWavelengths::N; ++w ) {
+					hwssBetaNM[w] *= shadingAdjoint;
 				}
 			}
 		}

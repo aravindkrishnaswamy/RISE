@@ -177,7 +177,9 @@ namespace
 			return mis;
 		}
 
-		const Scalar cosThetaOut = fabs( Vector3Ops::Dot( v.normal, wo ) );
+		// The recurrence tracks geometric area densities. The BSDF PDF
+		// already contains its shading-frame sampling distribution.
+		const Scalar cosThetaOut = AreaToSolidAngleFactor( v, wo );
 		const Scalar bsdfDirPdfW = next.pdfFwd * nextDistSq / nextFactor;
 		return ApplyBsdfSamplingUpdate(
 			mis, cosThetaOut, bsdfDirPdfW, Scalar( 0 ), false, norm );
@@ -805,7 +807,9 @@ void VCMIntegrator::ConvertLightSubpath(
 			}
 			const Scalar nextDist = std::sqrt( nextDistSq );
 			const Vector3 wo = nextStep * ( Scalar( 1 ) / nextDist );
-			const Scalar cosThetaOut = fabs( Vector3Ops::Dot( v.normal, wo ) );
+			// The recurrence tracks geometric area densities. The BSDF PDF
+		// already contains its shading-frame sampling distribution.
+		const Scalar cosThetaOut = AreaToSolidAngleFactor( v, wo );
 
 			// DL-126.  `v.isDelta` used to be the sole gate here, but a
 			// vertex can also have NO finite solid-angle density for an
@@ -1370,7 +1374,7 @@ namespace
 
 			// BSDF eval in sampled wi (env) or dirToLight (explicit).
 			const typename Traits::value_type fEye =
-				RISE::PathValueOps::EvalBSDFAtVertex<Tag>( v, wiForLight_vcm, woAtEye, tag );
+				RISE::PathValueOps::EvalAreaBSDFAtVertex<Tag>( v, wiForLight_vcm, woAtEye, tag );
 			if( PositiveMagnitude( fEye ) <= 0 ) {
 				continue;
 			}
@@ -1811,7 +1815,7 @@ namespace
 				wiAtLight = wiAtLight * ( Scalar( 1 ) / wiDist );
 
 				const typename Traits::value_type fLight =
-					RISE::PathValueOps::EvalBSDFAtVertex<Tag>( v, wiAtLight, dirToCam, tag );
+					RISE::PathValueOps::EvalAreaBSDFAtVertex<Tag>( v, wiAtLight, dirToCam, tag );
 				if( PositiveMagnitude( fLight ) <= 0 ) {
 					continue;
 				}
@@ -2011,12 +2015,12 @@ namespace
 				}
 
 				const typename Traits::value_type fLight =
-					RISE::PathValueOps::EvalBSDFAtVertex<Tag>( lv, wiAtLight, lightToEye, tag );
+					RISE::PathValueOps::EvalAreaBSDFAtVertex<Tag>( lv, wiAtLight, lightToEye, tag );
 				if( PositiveMagnitude( fLight ) <= 0 ) {
 					continue;
 				}
 				const typename Traits::value_type fEye =
-					RISE::PathValueOps::EvalBSDFAtVertex<Tag>( ev, -lightToEye, woAtEye, tag );
+					RISE::PathValueOps::EvalAreaBSDFAtVertex<Tag>( ev, -lightToEye, woAtEye, tag );
 				if( PositiveMagnitude( fEye ) <= 0 ) {
 					continue;
 				}
@@ -2235,7 +2239,9 @@ void VCMIntegrator::ConvertEyeSubpath(
 			}
 			const Scalar nextDist = std::sqrt( nextDistSq );
 			const Vector3 wo = nextStep * ( Scalar( 1 ) / nextDist );
-			const Scalar cosThetaOut = fabs( Vector3Ops::Dot( v.normal, wo ) );
+			// The recurrence tracks geometric area densities. The BSDF PDF
+		// already contains its shading-frame sampling distribution.
+		const Scalar cosThetaOut = AreaToSolidAngleFactor( v, wo );
 
 			// DL-126: also treat a null-BSDF, non-connectible vertex as
 			// opaque here -- see the light-subpath twin's comment above
@@ -2364,7 +2370,7 @@ namespace
 				const Vector3 wiAtEye = -lv.wi;
 
 				const typename Traits::value_type cameraBsdf =
-					RISE::PathValueOps::EvalBSDFAtVertex<Tag>( v, wiAtEye, woAtEye, tag );
+					RISE::PathValueOps::EvalAreaBSDFAtVertex<Tag>( v, wiAtEye, woAtEye, tag );
 				if( PositiveMagnitude( cameraBsdf ) <= 0 ) {
 					continue;
 				}
