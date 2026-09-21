@@ -9,6 +9,8 @@
 #include "../src/Library/PhotonMapping/CausticSpectralPhotonTracer.h"
 #include "../src/Library/PhotonMapping/TranslucentPelPhotonTracer.h"
 #include "../src/Library/Materials/LambertianMaterial.h"
+#include "../src/Library/Materials/IsotropicPhongMaterial.h"
+#include "../src/Library/Painters/UniformScalarPainter.h"
 #include "../src/Library/DetectorSpheres/CircularDiskDetector.h"
 #include "../src/Library/DetectorSpheres/DetectorSphere.h"
 #include "../src/Library/DetectorSpheres/AdaptiveDetectorSphere.h"
@@ -211,6 +213,25 @@ void TestDetector() {
         Near(split/single,1,nm?"DL272 live spectral selection mode and compensation":"DL271 live RGB detector compensation");
     }
 }
+void TestRealSpectralDetector(){
+    auto* diffuse=new UniformColorPainter(RISEPel(.7,.3,.2));
+    auto* black=new UniformColorPainter(RISEPel(0.));auto* exponent=new UniformScalarPainter(12.);
+    auto* lambert=new LambertianMaterial(*diffuse);auto* phong=new IsotropicPhongMaterial(*diffuse,*black,*exponent);
+    double measured[2];int mode=0;
+    for(const IMaterial* material:{static_cast<IMaterial*>(lambert),static_cast<IMaterial*>(phong)}){
+        IsotropicRGBDetectorSphere detector;detector.InitPatches(8,IsotropicRGBDetectorSphere::eEqualAngles);
+        detector.PerformMeasurement(0,1,*material,256,1,true,550,550,nullptr,1);
+        double sum=0;for(unsigned i=0;i<detector.numPatches()/2;++i){const auto& a=detector.getTopPatches()[i];const auto& b=detector.getBottomPatches()[i];sum+=a.dRatio[1]*a.dSolidProjectedAngle+b.dRatio[1]*b.dSolidProjectedAngle;}
+        measured[mode++]=sum;
+    }
+    // At normal incidence black Rs gives a zero-response specular record,
+    // which Phong still stores. Its diffuse energy must equal Lambertian's;
+    // using RGB selection after ScatterNM drops the two-record population.
+    Check(measured[0]>0,"real Lambertian spectral detector positive control",measured[0],1);
+    Near(measured[1]/measured[0],1,"DL272 real Phong spectral detector uses NM selection domain");
+    phong->release();lambert->release();exponent->release();black->release();diffuse->release();
+}
+
 	class ConstantCaster :
 		public virtual IRayCaster,
 		public virtual Reference
@@ -275,6 +296,13 @@ void TestShaderSelection() {
         const Scalar nmResult=distribution->PerformOperationNM(rc,ri,caster,rs,0,550,stack,nullptr);
         Near(nmResult,1,n==1?"DistributionTracing NM single selector control":"DistributionTracing NM branch-all negative control");distribution->release();
     }
+    auto* realMaterial=new LambertianMaterial(*paint);ri.pMaterial=realMaterial;
+    auto* realDistribution=new DistributionTracingShaderOp(1,false,false,true,true,true,true);
+    for(double wavelength:{450.,650.}){
+        const Scalar got=realDistribution->PerformOperationNM(rc,ri,caster,rs,0,wavelength,stack,nullptr);
+        Near(got,paint->GetColorNM(ri.geometric,wavelength),"DL272 actual Lambertian spectral distribution response");
+    }
+    realDistribution->release();realMaterial->release();
     scene->release();map->release();bsdf->release();paint->release();
 }
 #ifdef RISE_TEST_SMS_PRIVATE_PROBE
@@ -385,7 +413,7 @@ void TestGather() {
     map->release();bsdf->release();paint->release();
 }
 }
-int main() { TestLiveSelection();TestCausticSelection();for(double tilt:{-30.,30.}){TestLiveSelection(tilt);TestCausticSelection(tilt);}TestDetector();TestOtherDetectors();TestShaderSelection();TestTranslucentContinuation();TestRareIntegratorSelection();
+int main() { TestLiveSelection();TestCausticSelection();for(double tilt:{-30.,30.}){TestLiveSelection(tilt);TestCausticSelection(tilt);}TestDetector();TestRealSpectralDetector();TestOtherDetectors();TestShaderSelection();TestTranslucentContinuation();TestRareIntegratorSelection();
 #ifdef RISE_TEST_SMS_PRIVATE_PROBE
 for(double tilt:{0.,-30.,30.})TestSMSSelection(tilt);
 #endif
