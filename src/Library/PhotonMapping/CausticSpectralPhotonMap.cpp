@@ -82,7 +82,7 @@ void CausticSpectralPhotonMap::RadianceEstimate(
 					// Compute XYZ valye from spectra
 					XYZPel thisNM( 0, 0, 0 );
 					if( ColorUtils::XYZFromNM( thisNM, p.nm ) ) {
-						sumPel = sumPel + (thisNM * (p.power * response) * XYZPel(brdf.value(vPhotonDir,ri)));
+						sumPel = sumPel + (thisNM * (p.power * response) * brdf.valueNM(vPhotonDir,ri,p.nm));
 					}
 				}
 			}
