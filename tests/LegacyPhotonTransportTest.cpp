@@ -5,6 +5,12 @@
 #include "../src/Library/PhotonMapping/GlobalPelPhotonTracer.h"
 #include "../src/Library/PhotonMapping/GlobalSpectralPhotonTracer.h"
 #include "../src/Library/PhotonMapping/CausticPelPhotonMap.h"
+#include "../src/Library/PhotonMapping/CausticPelPhotonTracer.h"
+#include "../src/Library/PhotonMapping/CausticSpectralPhotonTracer.h"
+#include "../src/Library/Materials/LambertianMaterial.h"
+#include "../src/Library/DetectorSpheres/CircularDiskDetector.h"
+#include "../src/Library/DetectorSpheres/DetectorSphere.h"
+#include "../src/Library/DetectorSpheres/AdaptiveDetectorSphere.h"
 #include "../src/Library/Materials/LambertianBRDF.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
 #include "../src/Library/DetectorSpheres/IsotropicRGBDetectorSphere.h"
@@ -26,10 +32,11 @@ void Near(double a,double b,const char* label) { Check(std::isfinite(a)&&std::fa
 class SplitMaterial : public IMaterial, public ISPF, public Reference {
     int count;
     bool sink;
+    ScatteredRay::ScatRayType rayType;
     void Emit(const RayIntersectionGeometric& ri,ScatteredRayContainer& out,bool nm) const {
         for(int i=0;i<count;++i) {
             ScatteredRay r;
-            r.type=ScatteredRay::eRayDiffuse;
+            r.type=rayType;
             r.ray=Ray(ri.ptIntersection,Vector3(.6,0,.8));
             const double w=sink?0:count==1?1:nm?(i==0?.3:.7):(i==0?.2:.8);
             if(nm) r.krayNM=w; else r.kray=RISEPel(w);
@@ -37,7 +44,7 @@ class SplitMaterial : public IMaterial, public ISPF, public Reference {
         }
     }
 public:
-    SplitMaterial(int n,bool stop=false):count(n),sink(stop) {}
+    SplitMaterial(int n,bool stop=false,ScatteredRay::ScatRayType type=ScatteredRay::eRayDiffuse):count(n),sink(stop),rayType(type) {}
     IBSDF* GetBSDF() const override { return nullptr; }
     ISPF* GetSPF() const override { return const_cast<SplitMaterial*>(this); }
     IEmitter* GetEmitter() const override { return nullptr; }
@@ -93,6 +100,61 @@ void TestLiveSelection() {
     }
     scene->release();manager->release();object->release();sink->release();split->release();
 }
+class CausticPelTracer : public CausticPelPhotonTracer {
+public:
+    CausticPelTracer(bool branch):PhotonTracer<CausticPelPhotonMap>(true,1,1,false),CausticPelPhotonTracer(2,1e-12,branch,true,true,true,1,1,false) {}
+    void Run(CausticPelPhotonMap& map) { const IORStack stack(1);TracePhoton(Ray(Point3(0,0,1),Vector3(0,0,-1)),RISEPel(1),false,map,stack,0); }
+};
+class CausticNMTracer : public CausticSpectralPhotonTracer {
+public:
+    CausticNMTracer(bool branch):SpectralPhotonTracer<CausticSpectralPhotonMap>(400,700,160,1,1,false),CausticSpectralPhotonTracer(2,1e-12,400,700,160,branch,true,true,1,1,false) {}
+    void Run(CausticSpectralPhotonMap& map) { const IORStack stack(1);TracePhoton(Ray(Point3(0,0,1),Vector3(0,0,-1)),1,550,false,map,stack,0); }
+};
+class CausticPelMap : public CausticPelPhotonMap {
+public: CausticPelMap():CausticPelPhotonMap(128,nullptr) {}
+    double Sum() const {double s=0;for(const auto& p:vphotons)s+=p.power.r;return s;}
+};
+class CausticNMMap : public CausticSpectralPhotonMap {
+public: CausticNMMap():CausticSpectralPhotonMap(128,nullptr) {}
+    double Sum() const {double s=0;for(const auto& p:vphotons)s+=p.power;return s;}
+};
+void TestCausticSelection() {
+    auto* split=new SplitMaterial(2,false,ScatteredRay::eRayReflection);auto* paint=new UniformColorPainter(RISEPel(.5));auto* sink=new LambertianMaterial(*paint);auto* object=new StubObject();
+    auto* manager=new TwoPlaneManager(*object,*split,*sink);auto* scene=new Scene();scene->SetObjectManager(manager);
+    for(bool branch:{false,true}) {
+        auto* tracer=new CausticPelTracer(branch);tracer->AttachScene(scene);CausticPelMap map;
+        for(int i=0;i<16;++i)tracer->Run(map);
+        Near(map.Sum()/16,1,branch?"DL271 caustic Pel branch sum":"DL271 caustic Pel filtered selected response");tracer->release();
+        auto* spectral=new CausticNMTracer(branch);spectral->AttachScene(scene);CausticNMMap nm;
+        for(int i=0;i<16;++i)spectral->Run(nm);
+        Near(nm.Sum()/16,1,branch?"DL271 caustic NM branch sum":"DL271 caustic NM filtered selected response");spectral->release();
+    }
+    scene->release();manager->release();object->release();sink->release();paint->release();split->release();
+}
+double OtherDetectorSum(int count,int kind) {
+    SplitMaterial material(count);PointSample emitter(Point3(0,0,1)),specimen(Point3(0,0,0));double sum=0;
+    if(kind==0) {
+        auto* d=new CircularDiskDetector();d->InitPatches(16,1,.4);
+        d->PerformMeasurement(emitter,specimen,1,material,16,1,nullptr,1);
+        for(unsigned i=0;i<d->numPatches();++i)sum+=d->getPatches()[i].dRatio*d->getPatches()[i].dSolidProjectedAngle;
+        d->release();
+    } else if(kind==1) {
+        auto* d=new DetectorSphere();d->InitPatches(8,8,1,DetectorSphere::eEqualAngles);
+        d->PerformMeasurement(emitter,specimen,1,material,16,1,nullptr,1);
+        for(unsigned i=0;i<d->numPatches()/2;++i)sum+=d->getTopPatches()[i].dRatio*d->getTopPatches()[i].dSolidProjectedAngle+d->getBottomPatches()[i].dRatio*d->getBottomPatches()[i].dSolidProjectedAngle;
+        d->release();
+    } else {
+        auto* d=new AdaptiveDetectorSphere();d->InitPatches(32,1,.1);
+        d->PerformMeasurement(emitter,specimen,1,material,16,1,nullptr,1);
+        for(const auto& patch:d->getTopPatches())sum+=patch.dRatio*patch.dSolidProjectedAngle;
+        d->release();
+    }
+    return sum;
+}
+void TestOtherDetectors() {
+    const char* names[]={"DL271 circular detector","DL271 sphere detector","DL271 adaptive detector"};
+    for(int kind=0;kind<3;++kind){const double one=OtherDetectorSum(1,kind),two=OtherDetectorSum(2,kind);Check(one>0,"other detector positive control",one,1);Near(two/one,1,names[kind]);}
+}
 double DetectorSum(int count,bool spectral) {
     SplitMaterial material(count);
     IsotropicRGBDetectorSphere detector;detector.InitPatches(8,IsotropicRGBDetectorSphere::eEqualAngles);
@@ -129,4 +191,4 @@ void TestGather() {
     map->release();bsdf->release();paint->release();
 }
 }
-int main() { TestLiveSelection();TestDetector();TestGather();std::printf("LegacyPhotonTransportTest checks=%d failures=%d\n",checks,failures);return failures?1:0; }
+int main() { TestLiveSelection();TestCausticSelection();TestDetector();TestOtherDetectors();TestGather();std::printf("LegacyPhotonTransportTest checks=%d failures=%d\n",checks,failures);return failures?1:0; }
