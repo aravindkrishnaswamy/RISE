@@ -4,6 +4,7 @@
 #include <cstdio>
 #include "../src/Library/PhotonMapping/CausticPelPhotonMap.h"
 #include "../src/Library/PhotonMapping/GlobalPelPhotonMap.h"
+#include "../src/Library/PhotonMapping/TranslucentPelPhotonMap.h"
 #include "../src/Library/PhotonMapping/CausticSpectralPhotonMap.h"
 #include "../src/Library/PhotonMapping/GlobalSpectralPhotonMap.h"
 #include "../src/Library/Materials/LambertianBRDF.h"
@@ -52,6 +53,9 @@ void Run(){
  GlobalPelPhotonMap zeroGlobal(1,nullptr);zeroGlobal.Store(RISEPel(1),Point3(0,0,0),Vector3(0,0,1),Vector3(0,0,1));zeroGlobal.Balance();zeroGlobal.SetGatherParams(1,.05,0,1,nullptr);zeroGlobal.RadianceEstimate(v,q,*brdf);Near(v.r,0,"co-located anchored global has no finite area",0,0);zeroGlobal.PrecomputeIrradiance(0,nullptr);zeroGlobal.RadianceEstimate(v,q,*brdf);Near(v.r,0,"co-located direct global has no finite area",0,0);
  CausticSpectralPhotonMap zeroCS(1,nullptr);zeroCS.ConfigureWavelengthSampling(550,555,1);zeroCS.Store(1,550,Point3(0,0,0),Vector3(0,0,1));zeroCS.Balance();zeroCS.SetGatherParamsNM(1,.05,0,1,1,nullptr);zeroCS.RadianceEstimate(v,q,*brdf);Near(v.r,0,"co-located caustic spectral Pel has no finite area",0,0);double n=0;zeroCS.RadianceEstimateNM(550,n,q,*brdf);Near(n,0,"co-located caustic spectral NM has no finite area",0,0);
  GlobalSpectralPhotonMap zeroGS(1,nullptr);zeroGS.ConfigureWavelengthSampling(550,555,1);zeroGS.Store(1,550,Point3(0,0,0),Vector3(0,0,1));zeroGS.Balance();zeroGS.SetGatherParamsNM(1,.05,0,1,1,nullptr);zeroGS.RadianceEstimate(v,q,*brdf);Near(v.r,0,"co-located global spectral Pel has no finite area",0,0);zeroGS.RadianceEstimateNM(550,n,q,*brdf);Near(n,0,"co-located global spectral NM has no finite area",0,0);
+ for(bool exit:{false,true}){
+  TranslucentPelPhotonMap zeroT(1,nullptr);zeroT.Store(RISEPel(1),Point3(0,0,0),Vector3(0,0,1),exit);zeroT.Balance();zeroT.SetGatherParams(1,.05,0,1,nullptr);zeroT.RadianceEstimate(v,q,*brdf);Near(v.r,0,exit?"co-located translucent exit has no finite area":"co-located translucent incident has no finite area",0,0);
+ }
  brdf->release();paint->release();
 }
 }

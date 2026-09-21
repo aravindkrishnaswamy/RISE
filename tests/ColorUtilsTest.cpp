@@ -322,7 +322,7 @@ int TestCIEPartialCellIntegral() {
     const bool created=RISE_API_CreateRayCaster(&caster,false,10,*shader,true);
     ++checks;if(!created||!caster)++failed;
     if(caster){
-        const Scalar ranges[][3]={{550,551,.9955},{552,558,5.991},{400,700,0},{380,780,0}};
+        const Scalar ranges[][3]={{550,std::nextafter(550.0,551.0),.995*(std::nextafter(550.0,551.0)-550.0)},{550,551,.9955},{552,558,5.991},{400,700,0},{380,780,0}};
         for(const auto& r:ranges)for(bool hwss:{false,true}){
             SpectralScaleProbe probe(caster,r[0],r[1],hwss);
             Scalar area=r[2];
