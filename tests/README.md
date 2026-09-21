@@ -238,8 +238,9 @@ midpoints and ordinary off-node coordinates, swapped axes, RGB/NM, and
 Schlick/conductor/thin-film public paths. Four near-diagonal independent
 VNDF cells extend the accuracy oracle; all 12 physical cells read
 0.0111%–0.0807% error against the unchanged <=0.5% gate. Corrected suite:
-**186/0**; the committed old-source count is recorded in the correction
-evidence rather than replacing the historical initial-closure labels.
+**186/0**; the same final regression rebuilt against committed old relevant
+source is **186/84**. That correction red count does not replace the
+historical initial-closure labels above.
 
 `SheenDirectionalAlbedoTest` gained two functions for DL-11 (2026-09-14):
 `TestMiddleBandInterpolationError` (a consistency pin against this file's

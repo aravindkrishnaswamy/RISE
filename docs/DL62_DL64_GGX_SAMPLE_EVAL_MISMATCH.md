@@ -2059,8 +2059,9 @@ one-ULP approaches from both sides, finite two-sided approaches, axis swaps,
 RGB/NM, and Schlick/conductor/thin-film public paths. On the corrected
 representation the 12 physical cells read **0.0111%–0.0807%** relative error,
 inside the unchanged 0.5% accuracy gate, and the complete suite is **186/0**.
-The exact committed old-source red count is recorded in the correction
-evidence report rather than relabelling the initial 62/16 run.
+The same final regression rebuilt against the committed old relevant source
+is **186/84** red. This correction count is distinct from, and does not
+relabel, the initial closure's historical 62/16 run.
 
 The anisotropic bake uses its own fixed RNG stream and 100,000 samples
 per `(alphaX,alphaY,mu_i)` cell. For the initial full-weight representation
