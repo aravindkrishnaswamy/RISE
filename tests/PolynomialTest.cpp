@@ -6,6 +6,9 @@
 #include <array>
 #include <iomanip>
 #include "../src/Library/Functions/QuarticFunction.h"
+#include "../src/Library/Geometry/TorusGeometry.h"
+#include "../src/Library/Objects/Object.h"
+#include "../src/Library/Intersection/RayIntersection.h"
 #include "../src/Library/Intersection/RayPrimitiveIntersections.h"
 #include "../src/Library/Utilities/Math3D/Math3D.h"
 #include "../src/Library/Functions/Polynomial.h"
@@ -547,6 +550,35 @@ static void TestQuarticClassificationAndCallers()
                 QuarticCheck(std::fabs(hit.dRange2-(L-R+chord))<1e-8*R,"torus first exit matches circle cross-section");
             }
         }
+    }
+    // Exercise actual Object inverse transforms and both primary/shadow paths.
+    for(double angle:{0.0,0.37,1.11}) {
+        auto* geometry=new Implementation::TorusGeometry(1.0,.25);
+        auto* object=new Implementation::Object(geometry); geometry->release();
+        object->SetOrientation(Vector3(angle,angle*.7,-angle*.3));
+        object->TranslateObject(Vector3(3,-5,7)); object->FinalizeTransformations();
+        const Matrix4 transform=object->GetFinalTransformMatrix();
+        auto worldRay=[&](const Point3& o,const Vector3& d) {
+            return Ray(Point3Ops::Transform(transform,o),Vector3Ops::Transform(transform,d));
+        };
+        const Ray hole=worldRay(Point3(0,0,0),Vector3(0,1,0));
+        RayIntersection miss(hole,nullRasterizerState);
+        object->IntersectRay(miss,RISE_INFINITY,true,true,true);
+        QuarticCheck(!miss.geometric.bHit,"translated rotated torus primary axial ray misses");
+        QuarticCheck(!object->IntersectRay_IntersectionOnly(hole,100,true,true),"translated rotated torus shadow axial ray misses");
+        for(double height:{0.0,.125,.249}) {
+            const double chord=std::sqrt(.0625-height*height);
+            const Ray ray=worldRay(Point3(-3,height,0),Vector3(1,0,0));
+            RayIntersection hit(ray,nullRasterizerState);
+            object->IntersectRay(hit,RISE_INFINITY,true,true,true);
+            QuarticCheck(hit.geometric.bHit,"rotated translated grazing primary retains real hit");
+            QuarticCheck(object->IntersectRay_IntersectionOnly(ray,100,true,true),"rotated translated grazing shadow retains real hit");
+            if(hit.geometric.bHit) {
+                QuarticCheck(std::fabs(hit.geometric.range-(2-chord))<1e-8,"rigid torus first range matches circle oracle");
+                QuarticCheck(std::fabs(hit.geometric.range2-(2+chord))<1e-8,"rigid torus exit range matches circle oracle");
+            }
+        }
+        object->release();
     }
     std::cout << "DL226 checks=" << quarticChecks << " failures=" << quarticFailures << '\n';
 }
