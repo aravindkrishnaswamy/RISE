@@ -46,16 +46,21 @@ bool ScatteredRayContainer::AddScatteredRay( ScatteredRay& ray )
 }
 
 //! From the rays stored, randomly returns one given a value
-ScatteredRay* ScatteredRayContainer::RandomlySelect(
-		const double random,										///< [in] Random number to use in ray selection
-		const bool bNM												///< [in] Should the spectral values be used when selecting?
-		) const
+ScatteredRay* ScatteredRayContainer::RandomlySelect(double random, bool bNM) const
 {
+	return RandomlySelect(random,bNM,nullptr);
+}
+
+ScatteredRay* ScatteredRayContainer::RandomlySelect(double random, bool bNM, Scalar* selectedProbability) const
+{
+	if(selectedProbability) *selectedProbability=0;
+
 	if( freeidx == 0 ) {
 		return 0;
 	}
 
 	if( freeidx == 1 ) {
+		if(selectedProbability) *selectedProbability=1;
 		return &rays[0];
 	}
 
@@ -67,8 +72,10 @@ ScatteredRay* ScatteredRayContainer::RandomlySelect(
 
 		if( total > NEARZERO ) {
 			if( random < (eventA/total) ) {
+				if(selectedProbability) *selectedProbability=eventA/total;
 				return &rays[0];
 			} else {
+				if(selectedProbability) *selectedProbability=eventB/total;
 				return &rays[1];
 			}
 		}
@@ -88,6 +95,7 @@ ScatteredRay* ScatteredRayContainer::RandomlySelect(
 	if( total > NEARZERO ) {
 		for( unsigned int i=0; i<freeidx; i++ ) {
 			if( random < (cdf[i]/total) ) {
+				if(selectedProbability) *selectedProbability=(bNM ? rays[i].krayNM : ColorMath::MaxValue(rays[i].kray))/total;
 				return &rays[i];
 			}
 		}
@@ -97,21 +105,27 @@ ScatteredRay* ScatteredRayContainer::RandomlySelect(
 }
 
 //! From the rays stored, randomly returns a non diffuse ray
-ScatteredRay* ScatteredRayContainer::RandomlySelectNonDiffuse(
-	const double random,										///< [in] Random number to use in ray selection
-	const bool bNM												///< [in] Should the spectral values be used when selecting?
-	) const
+ScatteredRay* ScatteredRayContainer::RandomlySelectNonDiffuse(double random, bool bNM) const
 {
+	return RandomlySelectNonDiffuse(random,bNM,nullptr);
+}
+
+ScatteredRay* ScatteredRayContainer::RandomlySelectNonDiffuse(double random, bool bNM, Scalar* selectedProbability) const
+{
+	if(selectedProbability) *selectedProbability=0;
+
 	if( freeidx == 0 ) {
 		return 0;
 	}
 
 	if( (freeidx==1&&rays[0].type!=ScatteredRay::eRayDiffuse) || (freeidx==2 && rays[0].type!=ScatteredRay::eRayDiffuse && rays[1].type==ScatteredRay::eRayDiffuse) )
 	{
+		if(selectedProbability) *selectedProbability=1;
 		return &rays[0];
 	}
 	else if( freeidx==2 && rays[0].type==ScatteredRay::eRayDiffuse && rays[1].type!=ScatteredRay::eRayDiffuse )
 	{
+		if(selectedProbability) *selectedProbability=1;
 		return &rays[1];
 	}
 	else if( freeidx==2 && rays[0].type!=ScatteredRay::eRayDiffuse && rays[1].type!=ScatteredRay::eRayDiffuse )
@@ -123,8 +137,10 @@ ScatteredRay* ScatteredRayContainer::RandomlySelectNonDiffuse(
 
 		if( total > NEARZERO ) {
 			if( random < (eventA/total) ) {
+				if(selectedProbability) *selectedProbability=eventA/total;
 				return &rays[0];
 			} else {
+				if(selectedProbability) *selectedProbability=eventB/total;
 				return &rays[1];
 			}
 		}
@@ -149,6 +165,7 @@ ScatteredRay* ScatteredRayContainer::RandomlySelectNonDiffuse(
 		for( unsigned int i=0; i<freeidx; i++ ) {
 			if( valid[i] ) {
 				if( random < (cdf[i]/total) ) {
+					if(selectedProbability) *selectedProbability=(bNM ? rays[i].krayNM : ColorMath::MaxValue(rays[i].kray))/total;
 					return &rays[i];
 				}
 			}
@@ -161,21 +178,27 @@ ScatteredRay* ScatteredRayContainer::RandomlySelectNonDiffuse(
 
 
 //! From the rays stored, randomly returns a diffuse ray
-ScatteredRay* ScatteredRayContainer::RandomlySelectDiffuse(
-	const double random,										///< [in] Random number to use in ray selection
-	const bool bNM												///< [in] Should the spectral values be used when selecting?
-	) const
+ScatteredRay* ScatteredRayContainer::RandomlySelectDiffuse(double random, bool bNM) const
 {
+	return RandomlySelectDiffuse(random,bNM,nullptr);
+}
+
+ScatteredRay* ScatteredRayContainer::RandomlySelectDiffuse(double random, bool bNM, Scalar* selectedProbability) const
+{
+	if(selectedProbability) *selectedProbability=0;
+
 	if( freeidx == 0 ) {
 		return 0;
 	}
 
 	if( (freeidx==1&&rays[0].type==ScatteredRay::eRayDiffuse) || (freeidx==2 && rays[0].type==ScatteredRay::eRayDiffuse && rays[1].type!=ScatteredRay::eRayDiffuse) )
 	{
+		if(selectedProbability) *selectedProbability=1;
 		return &rays[0];
 	}
 	else if( freeidx==2 && rays[0].type!=ScatteredRay::eRayDiffuse && rays[1].type==ScatteredRay::eRayDiffuse )
 	{
+		if(selectedProbability) *selectedProbability=1;
 		return &rays[1];
 	}
 	else if( freeidx==2 && rays[0].type==ScatteredRay::eRayDiffuse && rays[1].type==ScatteredRay::eRayDiffuse )
@@ -187,8 +210,10 @@ ScatteredRay* ScatteredRayContainer::RandomlySelectDiffuse(
 
 		if( total > NEARZERO ) {
 			if( random < (eventA/total) ) {
+				if(selectedProbability) *selectedProbability=eventA/total;
 				return &rays[0];
 			} else {
+				if(selectedProbability) *selectedProbability=eventB/total;
 				return &rays[1];
 			}
 		}
@@ -213,6 +238,7 @@ ScatteredRay* ScatteredRayContainer::RandomlySelectDiffuse(
 		for( unsigned int i=0; i<freeidx; i++ ) {
 			if( valid[i] ) {
 				if( random < (cdf[i]/total) ) {
+					if(selectedProbability) *selectedProbability=(bNM ? rays[i].krayNM : ColorMath::MaxValue(rays[i].kray))/total;
 					return &rays[i];
 				}
 			}

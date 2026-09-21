@@ -31,11 +31,19 @@ namespace RISE
 				);
 			virtual ~TranslucentPelPhotonMap( );
 
-			// Stores the given photon with no direction
+			// Retained legacy overload: directionless deposits are unsupported.
+			// Reports a diagnostic and returns false without modifying this map.
 			bool Store( 
 				const RISEPel& power, 
 				const Point3& pos 
 				);
+
+			// wi is a unit direction away from the receiving surface toward
+			// the previous photon vertex. diffuseExit identifies a packet
+			// already weighted by the translucent exit lobe's Beer*(1-s).
+			bool Store( const RISEPel& power, const Point3& pos,
+				const Vector3& wi, const bool diffuseExit );
+			bool DeserializeChecked( IReadBuffer& buffer );
 
 			void RadianceEstimate( 
 				RISEPel&						rad,					// returned radiance

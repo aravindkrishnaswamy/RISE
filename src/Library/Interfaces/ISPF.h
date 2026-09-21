@@ -153,23 +153,36 @@ namespace RISE
 		//! Returns the requested ray
 		inline ScatteredRay& operator[] ( const unsigned int i ) const { return rays[i]; };
 
+		// Selection assumes random in [0,1), finite nonnegative reduction
+		// weights and finite totals. Pel reduces by max channel, NM by krayNM.
+		// The optional probability result is the probability of this returned
+		// component in the intended continuous legacy weight law; null reports0.
+		// Finite CDF sums and random grids can lose intervals at extreme ratios;
+		// this output does not redesign those existing admission decisions or
+		// guarantee relative probability accuracy after quotient underflow. Legacy one-ray
+		// and filtered two-record sole-eligible shortcuts report1 even for
+		// zero response. No ray, density, throughput or IOR metadata is changed.
+		// Keep two-argument overload symbols for existing binary callers.
 		//! From the rays stored, randomly returns one given a value
 		ScatteredRay* RandomlySelect(
 			const double random,										///< [in] Random number to use in ray selection
 			const bool bNM												///< [in] Should the spectral values be used when selecting?
 			) const;
+		ScatteredRay* RandomlySelect( double random, bool bNM, Scalar* selectedProbability ) const;
 
 		//! From the rays stored, randomly returns a non diffuse ray
 		ScatteredRay* RandomlySelectNonDiffuse( 
 			const double random,										///< [in] Random number to use in ray selection
 			const bool bNM												///< [in] Should the spectral values be used when selecting?
 			) const;
+		ScatteredRay* RandomlySelectNonDiffuse( double random, bool bNM, Scalar* selectedProbability ) const;
 
 		//! From the rays stored, randomly returns a diffuse ray
 		ScatteredRay* RandomlySelectDiffuse( 
 			const double random,										///< [in] Random number to use in ray selection
 			const bool bNM												///< [in] Should the spectral values be used when selecting?
 			) const;
+		ScatteredRay* RandomlySelectDiffuse( double random, bool bNM, Scalar* selectedProbability ) const;
 	};
 
 	//! Represents the Scattering Probability Function

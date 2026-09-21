@@ -58,12 +58,20 @@ namespace RISE
 		// A zero geometric cosine is a zero-measure direction, not a place
 		// to clamp a finite ratio. Medium vertices have no surface measure.
 		inline Scalar RadianceShadingNormalFactor(
+			const Vector3& shadingNormal, const Vector3& geometricNormal,
+			const Vector3& wi )
+		{
+			const Scalar ng = fabs( Vector3Ops::Dot( geometricNormal, wi ) );
+			return ng > Scalar(0)
+				? fabs( Vector3Ops::Dot( shadingNormal, wi ) ) / ng : Scalar(0);
+		}
+
+		inline Scalar RadianceShadingNormalFactor(
 			const BDPTVertex& vertex, const Vector3& wi )
 		{
-			if( vertex.type != BDPTVertex::SURFACE ) return Scalar(1);
-			const Scalar ng = fabs( Vector3Ops::Dot( vertex.geomNormal, wi ) );
-			return ng > Scalar(0)
-				? fabs( Vector3Ops::Dot( vertex.normal, wi ) ) / ng : Scalar(0);
+			return vertex.type == BDPTVertex::SURFACE
+				? RadianceShadingNormalFactor( vertex.normal, vertex.geomNormal, wi )
+				: Scalar(1);
 		}
 
 		// A light walk samples wo, whereas the radiance kernel's cosine is
@@ -72,14 +80,22 @@ namespace RISE
 		// This is wavelength-independent and belongs to importance walks
 		// only. PDFs remain densities of the unmodified sampling procedure.
 		inline Scalar ImportanceShadingNormalFactor(
+			const Vector3& shadingNormal, const Vector3& geometricNormal,
+			const Vector3& wi, const Vector3& wo )
+		{
+			const Scalar ngIn = fabs( Vector3Ops::Dot( geometricNormal, wi ) );
+			const Scalar nsOut = fabs( Vector3Ops::Dot( shadingNormal, wo ) );
+			if( ngIn == Scalar(0) || nsOut == Scalar(0) ) return Scalar(0);
+			return ( fabs( Vector3Ops::Dot( shadingNormal, wi ) ) *
+				fabs( Vector3Ops::Dot( geometricNormal, wo ) ) ) / ( ngIn * nsOut );
+		}
+
+		inline Scalar ImportanceShadingNormalFactor(
 			const BDPTVertex& vertex, const Vector3& wi, const Vector3& wo )
 		{
-			if( vertex.type != BDPTVertex::SURFACE ) return Scalar(1);
-			const Scalar ngIn = fabs( Vector3Ops::Dot( vertex.geomNormal, wi ) );
-			const Scalar nsOut = fabs( Vector3Ops::Dot( vertex.normal, wo ) );
-			if( ngIn == Scalar(0) || nsOut == Scalar(0) ) return Scalar(0);
-			return ( fabs( Vector3Ops::Dot( vertex.normal, wi ) ) *
-				fabs( Vector3Ops::Dot( vertex.geomNormal, wo ) ) ) / ( ngIn * nsOut );
+			return vertex.type == BDPTVertex::SURFACE
+				? ImportanceShadingNormalFactor( vertex.normal, vertex.geomNormal, wi, wo )
+				: Scalar(1);
 		}
 
 		//////////////////////////////////////////////////////////////////////
