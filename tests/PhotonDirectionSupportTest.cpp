@@ -59,4 +59,4 @@ void Run(){
  brdf->release();paint->release();
 }
 }
-int main(){Run();std::printf("PhotonDirectionSupportTest checks=%u failures=%u\n",checks,failures);return failures?1:0;}
+int main(){std::printf("record bytes: Photon=%zu IrradPhoton=%zu SpectralPhoton=%zu TranslucentPhoton=%zu samplingLaw=%zu\n",sizeof(Photon),sizeof(IrradPhoton),sizeof(SpectralPhoton),sizeof(TranslucentPhoton),sizeof(SpectralPhotonSamplingLaw));Run();std::printf("PhotonDirectionSupportTest checks=%u failures=%u\n",checks,failures);return failures?1:0;}

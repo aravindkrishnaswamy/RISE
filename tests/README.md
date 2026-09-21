@@ -1094,7 +1094,7 @@ The forced-sample failure was committed before the range fix; the guide and NM
 controls are supplemental consistency coverage.
 
 
-### Legacy photon transport regressions (DL239 / DL271 / DL272 / DL279 / DL280)
+### Legacy photon transport regressions (DL239 / DL271 / DL272 / DL279–282)
 
 - `ScatteredRaySelectionTest`: preserved pointer/CDF/shortcut behavior and the
   continuous legacy selection law, with explicit normal-arithmetic bounds and
@@ -1110,10 +1110,26 @@ controls are supplemental consistency coverage.
   cannot detect the old empty-vector read.
 - `PhotonDirectionalCacheTest`: independent finite-kernel area-response sums,
   mixed directions/colors, distinct anchor/query frames and material positions,
-  exact serialization, legacy compatibility, and cache lifecycle.
+  exact serialization, explicit compressed-legacy rejection, and cache lifecycle.
 - `TranslucentPhotonEnergyTest`: preserves the historical DL39 Beer tests and
   adds actual mixed-material incoming-flux, tagged exit/incident gather,
   directional format and intentional legacy Store/load rejection controls.
+
+- `PhotonDirectionSupportTest`: exact original incident support across rotated
+  normals and near-horizon signs, plus finite-area eligibility for co-located
+  global/caustic Pel/NM, anchored/direct and translucent incident/exit gathers.
+- `SpectralPhotonMeasureTest`: independent per-packet wavelength integration and
+  clipped-window probability for white/colored actual materials, both spectral
+  map families, discrete/continuous boundaries and metadata failure behavior.
+- `PhotonPacketSerializationTest`: exact direction and represented wavelength
+  law roundtrips, malformed/truncated transactional rejection, post-load insertion,
+  configured/unconfigured empty maps and Job replacement behavior.
+- `ColorUtilsTest`: clipped piecewise-linear CIE observer areas, partial-cell
+  additivity and ordinary/HWSS inherited constructor normalization. The tiny
+  interval oracle stores its represented width before arithmetic to prevent
+  fast-math distribution into nearby products; nonfinite endpoints return zero.
+- `SpectralSplatIntegralNormalizationTest`: existing rendered BDPT/VCM spectral
+  and HWSS splat normalization regression, run as a focused CIE consumer gate.
 
 See [the transport derivation and scope](../docs/DL239_PHOTON_TRANSPORT.md).
 Final full-slice rendering, cost and review gates are still pending.

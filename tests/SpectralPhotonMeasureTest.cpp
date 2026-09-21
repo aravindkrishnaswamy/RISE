@@ -47,6 +47,7 @@ void SamplingBoundaries(){
  SpectralPhotonSamplingLaw law;
  for(unsigned n:{1u,2u,160u,9999u}){
   Check(law.Configure(400,700,n),"valid finite grid");
+  std::printf("represented grid N=%u size=%zu capacity=%zu retained_bytes=%zu\n",n,law.representatives.size(),law.representatives.capacity(),law.representatives.capacity()*sizeof(Scalar));
   for(double u:{0.,.5,std::nextafter(1.,0.)}){
    const unsigned index=static_cast<unsigned>(u*n);Near(law.Sample(u),law.representatives[index],"discrete sampling selects its represented atom without another random draw");Check(law.Contains(law.Sample(u)),"sample lies in represented grid");
   }
