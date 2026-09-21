@@ -299,9 +299,9 @@ void TestRareIntegratorSelection() {
     auto* bdpt=new BDPTIntegrator(2,2,StabilityConfig());
     const Ray ray(Point3(0,0,1),Vector3(0,0,-1));
     for(bool hasBSDF:{false,true})for(int extreme:{0,1,2}) {
-        // Control, tiny selected weight, and ordinary selected weight with
-        // tiny probability. xi=0 selects the first nonzero interval exactly.
-        double a=extreme==1?1e-14:1,b=extreme==2?1e14:1;
+        // Control, tiny selected weight, and selected weight above NEARZERO with
+        // tiny probability (total100 stays below PT's independent 1e6 cap). xi=0 selects the first nonzero interval exactly.
+        double a=extreme==1?1e-14:extreme==2?1e-11:1,b=extreme==2?100:1;
         RareMaterial material(a,b,hasBSDF?bsdf:nullptr);
         auto* manager=new TwoPlaneManager(*object,material,*emitter);auto* scene=new Scene();scene->SetObjectManager(manager);ConstantCaster caster(scene);
         RayIntersection hit(ray,nullRasterizerState);manager->IntersectRay(hit,true,true,false);
