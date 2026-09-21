@@ -104,26 +104,11 @@ void TranslucentPelPhotonTracer::TracePhoton(
 		// Set the current object on the IOR stack
 		ior_stack.SetCurrentObject( ri.pObject );
 
-		// P2-2 (DL-39 over-generalisation, review round 3): is THIS hit a
-		// translucent interior EXIT?  `TranslucentPelPhotonMap::
-		// RadianceEstimate` is the Jensen estimator --
-		// `sum(power_i) * brdf.value(...) / (pi*r^2)` -- so the stored
-		// quantity must be the flux ARRIVING at the surface; the gather
-		// applies the surface's own BSDF itself.  Depositing the diffuse
-		// lobe's kray is right ONLY where that kray is a TRANSPORT
-		// attenuation, which it is exactly at a translucent exit (Beer
-		// extinction times (1-scattering), the fraction of the interior
-		// segment's flux that reaches the boundary).  Everywhere else the
-		// diffuse kray is a REFLECTANCE: a Lambertian wall's eRayDiffuse
-		// kray IS its albedo (LambertianSPF.cpp), and TranslucentSPF's own
-		// ENTERING branch uses `pRefFront`, also a reflectance -- storing
-		// those makes the gather read `power * albedo^2`.
-		//
-		// `hasInterior` (DL-46) + `containsCurrent()` is exactly
-		// TranslucentSPF::Scatter's own entry-vs-exit test.  Capture it
-		// BEFORE the trace loop below: a recursive TracePhoton call that
-		// inherits THIS stack (`scat.ior_stack` null) re-points its
-		// current object, so the answer is no longer available afterwards.
+		// Separate incident-flux packets from translucent diffuse-exit
+		// packets, whose SPF weight already includes Beer*(1-scattering).
+		// Capture this pre-scatter state before recursive walks change the
+		// stack's current object. The gather must not price that transport
+		// attenuation again as a front-reflection material response.
 		bool bTranslucentExit = false;
 		if( ri.pMaterial ) {
 			const SpecularInfo info =
@@ -148,32 +133,12 @@ void TranslucentPelPhotonTracer::TracePhoton(
 		// it was.  See docs/REFRACTIVE_RADIANCE_SCALING.md.
 		pSPF->Scatter( ri.geometric, samplerWrapper, scattered, ior_stack );
 
-			// DL-39: at a translucent interior EXIT the deposited flux
-			// must be the diffuse exit lobe's own (Beer-attenuated) kray,
-			// not "incoming power minus whatever got traced further".  The
-			// original `power*(1-accum_scattered)` formula assumed the
-			// SPF's non-diffuse (traced) kray plus its diffuse kray always
-			// summed to exactly 1 -- true only when nothing is absorbed.
-			// TranslucentSPF's diffuse exit lobe is type eRayDiffuse,
-			// which the trace-selection `if` below never matches, so
-			// `accum_scattered` never contained it: at an interior exit
-			// with scattering=0 (no backscatter `trans` ray either)
-			// accum_scattered stayed exactly 0 and the old code deposited
-			// the FULL incoming power, discarding the Beer extinction the
-			// SPF had already folded into the diffuse ray's own kray.
-			// TranslucentSPF emits at most one eRayDiffuse ray per
-			// Scatter()/ScatterNM() call, so summing them is that lobe's
-			// transport weight.
-			//
-			// P2-2 (review round 3): that rule is specific to the
-			// translucent exit lobe and must NOT be generalised to every
-			// diffuse hit -- see `bTranslucentExit` above for why (the
-			// Jensen gather needs ARRIVING flux, and a non-exit diffuse
-			// kray is a reflectance, not a transport attenuation).  At
-			// every other hit the deposit is the full incident power. DL280:
-			// a sampled glossy continuation weight is not a flux partition
-			// to subtract before the gather evaluates the complete BSDF.
-			// DL39's pure-Lambertian control did not exercise that subtraction.
+			// DL39: preserve the diffuse exit lobe's Beer-weighted packet,
+			// rather than treating absorption as deposited flux. At ordinary
+			// receivers the entire arriving packet is retained (DL280): a
+			// sampled glossy continuation is not a flux partition to subtract
+			// before the query BSDF is evaluated. DL39's historical pure-wall
+			// control did not exercise that mixed-material subtraction.
 			RISEPel diffuse_deposit;
 			for( unsigned int i=0; i<scattered.Count(); i++ ) {
 				ScatteredRay& scat = scattered[i];
@@ -198,7 +163,7 @@ void TranslucentPelPhotonTracer::TracePhoton(
 				pPhotonMap.Store(
 					bTranslucentExit ? power*diffuse_deposit
 						: power,
-					ri.geometric.ptIntersection );
+					ri.geometric.ptIntersection, -ri.geometric.ray.Dir(), bTranslucentExit );
 			}
 		}
 	}

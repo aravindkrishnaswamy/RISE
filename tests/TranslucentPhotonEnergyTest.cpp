@@ -88,6 +88,12 @@
 #include <algorithm>
 #include <cstdio>
 #include <vector>
+#include <chrono>
+#include <filesystem>
+#include "../src/Library/Job.h"
+#include "../src/Library/Interfaces/IScenePriv.h"
+#include "../src/Library/Utilities/MemoryBuffer.h"
+#include "../src/Library/Utilities/Color/ColorUtils.h"
 
 #include "../src/Library/Utilities/Math3D/Math3D.h"
 #include "../src/Library/Utilities/Ray.h"
@@ -219,6 +225,10 @@ namespace
 		{}
 		unsigned int StoredCount() const { return static_cast<unsigned int>( vphotons.size() ); }
 		RISEPel StoredPower( unsigned int i ) const { return vphotons[i].power; }
+		bool AllPayloads( const Vector3& wi, bool exit ) const {
+			for(const auto& p:vphotons) if(p.diffuseExit!=exit || p.incomingDirection.x!=wi.x || p.incomingDirection.y!=wi.y || p.incomingDirection.z!=wi.z) return false;
+			return !vphotons.empty();
+		}
 	};
 
 	// DL-39 P3 follow-up: reports TWO hits -- the translucent interior
@@ -518,7 +528,7 @@ static void TestDirectionalGathers()
   auto* manager=new SingleHitThenMissManager(*object,*material,tilt);
   auto* scene=new Scene();scene->SetObjectManager(manager);
   auto* tracer=new TestTranslucentPelPhotonTracer();tracer->AttachScene(scene);
-  InspectableTranslucentPelPhotonMap map(2601);
+  InspectableTranslucentPelPhotonMap map(2602);
   // The interior packet arrives outward, opposite the ordinary-wall case.
   const Vector3 wi=exit?Vector3(0,0,-1):Vector3(.6,0,.8);
   std::vector<double> distances;
@@ -530,13 +540,26 @@ static void TestDirectionalGathers()
    const double d2=p.x*p.x+p.y*p.y;if(d2<.04)distances.push_back(d2);
   }
   EXPECT(map.StoredCount()==2601,"directional gather has every live tracer deposit");
+  EXPECT(map.AllPayloads(wi,exit),"every live producer records exact incident direction and response kind");
+  EXPECT(!map.Store(RISEPel(99.),Point3(9,9,9)),"legacy directionless Store fails explicitly with spare capacity");
+  EXPECT(map.StoredCount()==2601 && map.AllPayloads(wi,exit),"legacy directionless Store leaves existing packets unchanged");
   map.Balance();map.SetGatherParams(.2,.05,10,400,nullptr);
+  auto* serialized=new MemoryBuffer();map.Serialize(*serialized);const unsigned serializedBytes=serialized->getCurPos();serialized->seek(IBuffer::START,0);
+  InspectableTranslucentPelPhotonMap restored(0);const bool loaded=restored.DeserializeChecked(*serialized);
+  EXPECT(loaded && restored.StoredCount()==2601,"tagged translucent map roundtrip retains every packet");
+  EXPECT(restored.AllPayloads(wi,exit),"tagged roundtrip retains exact direction and kind");
+  auto* truncated=new MemoryBuffer(serialized->Pointer(),serializedBytes-1,false);
+  EXPECT(!restored.DeserializeChecked(*truncated),"truncated tagged map reports failure");
+  EXPECT(restored.StoredCount()==2601 && restored.AllPayloads(wi,exit),"truncated tagged load retains prior packet field");
+  truncated->release();
   std::sort(distances.begin(),distances.end());const double density=400/(PI*distances[399]);
   for(double view:{0.,70.,150.}){
    const double v=view*PI/180;const Vector3 wo(sin(v),0,cos(v));
    RayIntersectionGeometric query(Ray(Point3(0,0,1),-wo),nullRasterizerState);
    query.ptIntersection=Point3(0,0,0);query.vNormal=Vector3(sin(tilt),0,cos(tilt));query.vGeomNormal=Vector3(0,0,1);query.onb.CreateFromW(query.vNormal);
    RISEPel got;map.RadianceEstimate(got,query,*material->GetBSDF());
+   RISEPel roundtrip;restored.RadianceEstimate(roundtrip,query,*material->GetBSDF());
+   EXPECT_NEAR_PEL(roundtrip,got,1e-12,"tagged roundtrip preserves directional query response");
    RISEPel expected(0.);
    const double incomingResponse=fabs(Vector3Ops::Dot(query.vNormal,wi)/wi.z);
    if(exit){
@@ -551,6 +574,21 @@ static void TestDirectionalGathers()
     std::printf("%s DL239 translucent gather kind=%s tilt=%.17g view=%.17g channel=%d got=%.17g expected=%.17g density=%.17g\n",ok?"PASS":"FAIL",exit?"exit-lobe":"incident-flux",angle,view,c,got[c],expected[c],density);
    }
   }
+  // Real Job load: unsupported old directionless data must not replace
+  // an installed, populated directional map. The new format must load.
+  if(angle==0){
+   auto* job=new Job();job->GetScene()->SetTranslucentPelMap(&map);
+   auto* old=new MemoryBuffer(512);old->setUInt(1);old->setUInt(0);old->setDouble(.04);old->setDouble(.05);old->setUInt(0);old->setUInt(1);old->setDouble(1.);BoundingBox(Point3(-1,-1,-1),Point3(1,1,1)).Serialize(*old);old->setUInt(1);Point3Ops::Serialize(Point3(0,0,0),*old);old->setUChar(0);ColorUtils::SerializeRGBPel(RISEPel(1.),*old);
+   const auto path=std::filesystem::temp_directory_path()/("rise_dl239_trans_"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())+".pmap");
+   EXPECT(old->DumpToFileToCursor(path.string().c_str()),"legacy translucent fixture written");
+   EXPECT(!job->LoadTranslucentPelPhotonmap(path.string().c_str()),"legacy directionless file reports unsupported reconstruction");
+   EXPECT(job->GetScene()->GetTranslucentPelMap()==&map && map.StoredCount()==2601,"failed legacy load preserves installed valid map");
+   EXPECT(serialized->DumpToFileToCursor(path.string().c_str()),"new tagged fixture written");
+   EXPECT(job->LoadTranslucentPelPhotonmap(path.string().c_str()),"Job loads tagged directional map");
+   EXPECT(job->GetScene()->GetTranslucentPelMapMutable()->NumStored()==2601,"Job replacement retains full tagged population");
+   std::filesystem::remove(path);old->release();job->release();
+  }
+  serialized->release();
   tracer->release();scene->release();manager->release();object->release();wall->release();trans->release();front->release();transmission->release();extinction->release();exponent->release();scattering->release();
  }
 }
