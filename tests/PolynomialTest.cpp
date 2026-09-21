@@ -3,6 +3,10 @@
 #include <cassert>
 #include <cmath>
 #include <algorithm>
+#include <array>
+#include <iomanip>
+#include "../src/Library/Functions/QuarticFunction.h"
+#include "../src/Library/Intersection/RayPrimitiveIntersections.h"
 #include "../src/Library/Utilities/Math3D/Math3D.h"
 #include "../src/Library/Functions/Polynomial.h"
 
@@ -436,12 +440,124 @@ void TestBessi0() {
     std::cout << "bessi0 Passed!" << std::endl;
 }
 
+// DL226: explicit checks remain live even when legacy assert() is disabled.
+// Oracles are factored polynomials and the torus cross-section, independent
+// of the quartic solver and its internal factor/error selection.
+static int quarticChecks = 0, quarticFailures = 0;
+static void QuarticCheck( bool ok, const char* contract )
+{
+    ++quarticChecks;
+    if( !ok ) { ++quarticFailures; std::cout << "FAIL DL226: " << contract << '\n'; }
+}
+
+static std::array<double,5> MultiplyQuadratics( double a, double b, double c,
+                                              double d, double e, double f )
+{
+    return {{a*d, a*e+b*d, a*f+b*e+c*d, b*f+c*e, c*f}};
+}
+
+static void CheckQuarticOracle( const char* name, const std::array<double,5>& c,
+                               const std::vector<double>& expected, double rootTolerance=1e-7 )
+{
+    const Scalar coeff[5]={c[0],c[1],c[2],c[3],c[4]};
+    Scalar roots[4]={0,0,0,0};
+    const int n=Polynomial::SolveQuartic(coeff,roots);
+    std::cout << std::setprecision(17) << "QUARTIC case=" << name << " coefficients=";
+    for( double x:c ) std::cout << x << ',';
+    std::cout << " n=" << n << " roots=";
+    for( int i=0;i<n && i<4;++i ) std::cout << roots[i] << ',';
+    std::cout << '\n';
+    QuarticCheck(n>=0 && n<=4,"root count fits public output");
+    if(n<0 || n>4) return;
+    QuarticCheck(expected.empty() ? n==0 : n>=int(expected.size()),"all expected real roots, no invented positive-polynomial roots");
+    for( int i=0;i<n;++i ) {
+        bool known=false;
+        for(double x:expected) known |= std::fabs(roots[i]-x)<=rootTolerance;
+        QuarticCheck(std::isfinite(roots[i]) && known,"every returned root matches the independent factor oracle");
+        // Diagnostic residual only; it never decides which roots to retain.
+        long double v=c[0], scale=std::fabs(c[0]);
+        for(int j=1;j<5;++j) { v=v*roots[i]+c[j]; scale=scale*std::fabs(roots[i])+std::fabs(c[j]); }
+        std::cout << "ROOT residual=" << v << " normalized=" << (scale ? std::fabs(v)/scale : 0) << '\n';
+    }
+    for(double x:expected) {
+        bool found=false;
+        for(int i=0;i<n;++i) found |= std::fabs(roots[i]-x)<=rootTolerance;
+        QuarticCheck(found,"each independent root is represented");
+    }
+}
+
+static void TestQuarticClassificationAndCallers()
+{
+    CheckQuarticOracle("positive_square",{{1,0,2,0,1}},{});
+    CheckQuarticOracle("positive_even_external_shape",{{.664615,0,1,0,.165264}},{});
+    for(double b:{0.0,0.25,1.0,2.0,4.0,16.0})
+        for(double d:{0.0625,1.0,16.0})
+            CheckQuarticOracle("strictly_positive_even",{{1,0,b,0,d}},{});
+    for(double shift:{-3.0,0.0,2.0}) {
+        // ((x-shift)^2+1)^2 > 0, including translated/non-even cases.
+        const auto c=MultiplyQuadratics(1,-2*shift,shift*shift+1,1,-2*shift,shift*shift+1);
+        CheckQuarticOracle("translated_positive_square",c,{});
+    }
+    for(int exponent:{-600,-200,0,200,600}) {
+        const double scale=std::ldexp(1.0,exponent);
+        for(double sign:{-1.0,1.0}) {
+            CheckQuarticOracle("common_scale_no_real",{{sign*scale,0,2*sign*scale,0,sign*scale}},{});
+            CheckQuarticOracle("common_scale_four_real",{{sign*scale,0,-5*sign*scale,0,4*sign*scale}},{-2,-1,1,2});
+        }
+    }
+    for(int exponent:{-100,-20,0,20,100}) {
+        const double r=std::ldexp(1.0,exponent), r2=r*r;
+        CheckQuarticOracle("variable_scale_four_real",{{1,0,-5*r2,0,4*r2*r2}},{-2*r,-r,r,2*r},r*1e-8);
+    }
+    CheckQuarticOracle("fourfold_zero",{{1,0,0,0,0}},{0});
+    CheckQuarticOracle("fourfold_one",{{1,-4,6,-4,1}},{1},1e-6);
+    CheckQuarticOracle("two_double_real",{{1,0,-2,0,1}},{-1,1});
+    CheckQuarticOracle("zero_and_triple",{{1,-1,0,0,0}},{0,1});
+    for(double r:{-4.0,-1.0,0.0,0.25,2.0})
+        CheckQuarticOracle("double_real_complex_pair",MultiplyQuadratics(1,-2*r,r*r,1,0,1),{r},1e-6);
+    for(int exponent:{-4,-12,-24}) {
+        const double delta=std::ldexp(1.0,exponent);
+        CheckQuarticOracle("near_real_complex_pair",MultiplyQuadratics(1,0,delta*delta,1,-3,2),{1,2});
+    }
+    CheckQuarticOracle("cubic_dispatch",{{0,1,-6,11,-6}},{1,2,3});
+    CheckQuarticOracle("quadratic_dispatch",{{0,0,2,-6,4}},{1,2});
+    CheckQuarticOracle("linear_dispatch",{{0,0,0,3,-6}},{2});
+    CheckQuarticOracle("constant_dispatch",{{0,0,0,0,2}},{});
+    QuarticFunction fn(1,0,2,0,1); Scalar roots[4];
+    QuarticCheck(fn.Solve(roots)==0,"QuarticFunction exposes no impossible real roots");
+
+    for(double R:{0.125,1.0,8.0}) for(double ratio:{0.125,0.25,0.5}) {
+        const double r=R*ratio;
+        for(double radial:{0.0,0.25,0.5}) {
+            // Radial distance<R-r: the entire y-parallel line misses.
+            const double x=radial*(R-r);
+            HIT hit; RayTorusIntersection(Ray(Point3(x,-2*R,0),Vector3(0,1,0)),hit,R,r,R*R);
+            std::cout << "TORUS hole R=" << R << " r=" << r << " x=" << x
+                      << " hit=" << hit.bHit << " near=" << hit.dRange << '\n';
+            QuarticCheck(!hit.bHit,"axial line wholly inside torus hole must miss");
+        }
+        HIT axis; RayTorusIntersection(Ray(Point3(0,0,0),Vector3(0,1,0)),axis,R,r,R*R);
+        QuarticCheck(!axis.bHit,"origin-centered axial torus ray must miss");
+        for(double height:{0.0,0.5,0.99}) {
+            const double y=height*r, chord=std::sqrt(r*r-y*y), L=3*R;
+            HIT hit; RayTorusIntersection(Ray(Point3(-L,y,0),Vector3(1,0,0)),hit,R,r,R*R);
+            QuarticCheck(hit.bHit,"four-crossing torus ray, including grazing, must hit");
+            if(hit.bHit) {
+                QuarticCheck(std::fabs(hit.dRange-(L-R-chord))<1e-8*R,"torus first entry matches circle cross-section");
+                QuarticCheck(std::fabs(hit.dRange2-(L-R+chord))<1e-8*R,"torus first exit matches circle cross-section");
+            }
+        }
+    }
+    std::cout << "DL226 checks=" << quarticChecks << " failures=" << quarticFailures << '\n';
+}
+
 int main() {
+    TestQuarticClassificationAndCallers();
     TestSolveQuadric();
     TestSolveQuadricWithinRange();
     TestSolveCubic();
     TestSolveQuartic();
     TestBessi0();
     std::cout << "All Polynomial tests passed!" << std::endl;
-    return 0;
+    return quarticFailures ? 1 : 0;
 }
