@@ -71,10 +71,17 @@
 //      `pRefFront`, a reflectance).  A round-2 revision of this test
 //      asserted the albedo-weighted deposit as "an accuracy
 //      improvement"; that was wrong, and this sub-test now asserts the
-//      full arriving power at the Lambertian wall.  The tracer keeps the
-//      pre-DL-39 `power*(1-accum_scattered)` formula at every
-//      non-translucent-exit hit, which for a wall that traces nothing
-//      onward IS the full arriving power.
+//      full arriving power at the Lambertian wall. That historical scope
+//      control had no non-diffuse continuation. DL280 adds a mixed Phong
+//      receiver: subtracting traced specular power was still wrong there,
+//      since the gather itself applies the query BSDF. All ordinary
+//      receivers now store full incoming power.
+//
+//    DL239 additionally prices the real deposit-to-gather response for
+//      tilted frames. Tagged exit packets already contain Beer*(1-s), so
+//      their gather uses the clipped cosine exit law, not front reflectance.
+//      Ordinary incident packets retain their direction and use the BSDF.
+//      Exact tagged roundtrip and legacy failure/no-mutation are covered.
 //
 //  Author: Aravind Krishnaswamy (RISE debt-cleanup, slice `translucent`)
 //  Tabs: 4

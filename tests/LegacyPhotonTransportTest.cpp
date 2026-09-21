@@ -230,8 +230,8 @@ void TestDetector() {
 		bool CastRay( const RuntimeContext&, const RasterizerState&, const Ray&, RISEPel& c,
 			const RAY_STATE&, Scalar* distance, const IRadianceMap*, const IORStack& ) const override { c=RISEPel(1);if(distance)*distance=1;return true; }
 
-		bool CastRayNM( const RuntimeContext&, const RasterizerState&, const Ray&, Scalar&,
-			const RAY_STATE&, const Scalar, Scalar*, const IRadianceMap*, const IORStack& ) const override { return false; }
+		bool CastRayNM( const RuntimeContext&, const RasterizerState&, const Ray&, Scalar& c,
+			const RAY_STATE&, const Scalar, Scalar* distance, const IRadianceMap*, const IORStack& ) const override { c=1;if(distance)*distance=1;return true; }
 
 		bool CastShadowRay( const Ray&, const Scalar ) const override
 		{
@@ -271,7 +271,9 @@ void TestShaderSelection() {
         Near(result.r,1,n==1?"FinalGather single response control":"DL271 actual FinalGather filtered response");gather->release();
         auto* distribution=new DistributionTracingShaderOp(1,false,false,true,true,true,true);
         distribution->PerformOperation(rc,ri,caster,rs,result,stack,nullptr);
-        Near(result.r,1,n==1?"DistributionTracing single selector control":"DistributionTracing branch-all negative control");distribution->release();
+        Near(result.r,1,n==1?"DistributionTracing single selector control":"DistributionTracing branch-all negative control");
+        const Scalar nmResult=distribution->PerformOperationNM(rc,ri,caster,rs,0,550,stack,nullptr);
+        Near(nmResult,1,n==1?"DistributionTracing NM single selector control":"DistributionTracing NM branch-all negative control");distribution->release();
     }
     scene->release();map->release();bsdf->release();paint->release();
 }

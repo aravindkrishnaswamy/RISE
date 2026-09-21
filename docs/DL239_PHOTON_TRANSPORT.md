@@ -2,7 +2,7 @@
 
 Work in progress, 2026-09-21. DL239, DL271, DL272 and DL279 have independent
 mechanisms and separate direct proofs. Closure, final gates and reviewed cost
-claims are pending. DL280 is reserved pending the mixed-material deposit proof.
+claims are pending. DL280 has a separate actual mixed-material deposit proof.
 
 ## Measures
 
@@ -69,7 +69,10 @@ A query exactly tangent to a partition must still visit the near subtree.
 Finally, a k-neighbor search must not contract its radius after collecting only
 k-1 records. The independent exhaustive-record oracle covers five record
 families, empty/small/large sets, several k values, capped counts, and exact
-partition tangency with adjacent representable radii.
+partition tangency with adjacent representable radii. Zero-neighbor requests
+return immediately: the old path popped its sole candidate then read the empty
+heap. The committed zero-k test traps under libc++ extensive hardening before
+that guard and passes 3390 checks afterward.
 
 The initial spatial proof was 3000 checks / 390 failures. Partition/tangency
 corrections left 40 failures; raw distances showed k-1 premature contraction.
@@ -123,14 +126,57 @@ and load as direct gathers; their old stored shading normals are not relabelled
 geometric normals. Legacy flag1 scalar caches irreversibly discarded the
 incident field and are rejected with a regeneration diagnostic. Checked parsing
 commits only after the entire map is valid. A failed Job load retains the
-previously installed valid map. New-format roundtrip and malformed-input gates
-are required before closure.
+previously installed valid map. New-format roundtrip, truncated-input retention, legacy raw load, mixed
+incident directions/colors and insertion/rebuild tests pass in the direct suite.
+The measured result is 297 checks / 0 failures at source 05421e34.
 
 ## Scope boundaries
 
 Translucent nonreciprocity and stackless/reconstructed state limitations remain
 separate DL223 concerns. A normal-measure conversion alone does not prove
 reciprocity, arbitrary material conservation, or agreement of every estimator.
-Dedicated translucent photon records additionally mix incident flux and
-Beer-weighted exit-lobe packets; their producer-to-gather proof and correction
-are still in progress.
+
+## Translucent packet meaning and DL280
+
+Ordinary receivers store full incident flux. Subtracting the traced specular
+continuation at a mixed Phong receiver removed part of that flux before its
+query BSDF was evaluated. The new actual-material proof exposed all 96 affected
+channel samples; this is DL280, separate from lobe-selection compensation and
+normal conversion. The earlier DL39 pure Lambertian wall had no traced
+non-diffuse lobe and could not distinguish that subtraction from full flux.
+Its Beer-weighted interior-exit fix remains valid.
+
+A translucent interior exit instead stores `power * Beer * (1-scattering)`.
+That packet already includes the exit lobe weight. Its remaining clipped-cosine
+law has density `|Ns.wo| / (pi * valid)` on the exterior support, where
+`valid=(1+dot(orientedNs,NgExterior))/2`. Multiplying this density by the adjoint
+factor and dividing by the outgoing geometric projection gives
+
+```
+exit_area = |Ns.wi| / (|Ng.wi| * pi * valid).
+```
+
+The gather therefore retains incident direction and an explicit exit/incident
+kind. Incident packets evaluate the query BSDF; exit packets apply this law and
+its exterior support without multiplying front reflectance or Beer again.
+The real tracer tests sweep exit shading tilt, view, per-channel front colors,
+Beer and scattering. Together with compatibility tests they pass 243/0 at
+213e2fe5. The initial exit-to-gather red was 74 checks / 39 failures; adding the
+mixed-material deposit proof gave 171/135, and fixing only DL280 gave 171/39.
+This isolates the two mechanisms.
+
+The old `TranslucentPelPhotonMap::Store(power,pos)` symbol remains, but now
+reports an error and returns false without mutation because it cannot provide
+the missing direction/type. This is an intentional behavior change. The sole
+in-tree production caller is `TranslucentPelPhotonTracer::TracePhoton`, migrated
+to the directional overload. Public factory/Job construction is unchanged;
+`IPhotonMap` exposes no Store method. The shader uses the Pel map; its existing
+NM entry remains unsupported and returns zero, so there is no new claim of a
+translucent spectral photon-map implementation.
+
+New translucent files carry an impossible legacy header marker, version1,
+and exact incident direction/kind per record. Directionless legacy files are
+rejected with a regenerate diagnostic. Checked Job loading preserves the
+installed valid map on failure. Tests cover old Store rejection with spare
+capacity, unchanged records, exact tagged roundtrip, truncation retention,
+legacy Job-load rejection, and successful new-format Job load.
