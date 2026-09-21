@@ -524,7 +524,7 @@ static void TestDirectionalGathers()
   for(int y=-25;y<=25;++y)for(int x=-25;x<=25;++x){
    const Point3 p(x*.01,y*.01,0);
    manager->Reset();IORStack stack=exit?MakeInsideStack(object):IORStack(1.0);
-   const Ray incoming(p+wi,-wi);
+   const Ray incoming(Point3(p.x+wi.x,p.y+wi.y,p.z+wi.z),-wi);
    tracer->TestTrace(incoming,RISEPel(1.),true,map,stack,1);
    const double d2=p.x*p.x+p.y*p.y;if(d2<.04)distances.push_back(d2);
   }
