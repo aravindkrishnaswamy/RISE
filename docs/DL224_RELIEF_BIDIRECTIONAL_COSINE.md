@@ -492,6 +492,51 @@ Raw build/run/status files: `self-cap-red-*` and `self-cap-green-*`; exact
 committed patches: `self-cap-red.patch`, `self-cap-green.patch`. Production
 `src/build` still matches frozen `d68e5674`, retaining platform provenance.
 
+
+## Review follow-up: paired invalid-row eligibility
+
+The next independent reviewer closed the self-contrast cap finding and
+identified a sibling **P2**: the paired BDPT/VCM path preserved failed-render
+and minimum checks but still asserted a correctness result afterward.
+This did not make the overall suite green; it falsely labelled an unusable
+row as a pass. External provenance: `review-cap3.md` and its evidence file.
+
+Committed red `e042707d` moves the unchanged paired final gate (including
+stop serialization) into a helper used by live rendering and direct
+controls. Named relink: **rc0, zero warnings**; direct run: **rc1, 74/6**.
+For each BDPT/VCM, n1+47 failed attempts, failures with n12, and n11 without
+the minimum all incorrectly added a correctness pass. The other controls
+already behaved correctly.
+
+Green test `a141b1d2` preserves accounting and the full stop record, then
+requires adaptive eligibility before either correctness or precision
+classification. Self and paired paths share that eligibility predicate;
+PT intentionally bypasses it for its existing single-sample comparison.
+Named relink: **rc0, zero warnings**; direct run: **rc0, 80/0** (the earlier
+30 direct checks plus 50 new checks). Sixteen paired controls cover both
+integrators' invalid/minimum cases, noisy cap, precise agreement and
+disagreement, exact SE=.05, and PT single-sample agreement/disagreement.
+The exact boundary uses a representable balanced16-sample fixture; it
+remains eligible. Local callbacks preserve expected failures without
+rewinding suite counters. All sixteen stop records were retained and
+independently recounted against their n/failure/SE fields.
+
+Both direct invocations used
+`SIGNAL_CONSISTENCY_FILTER=paired_eligibility ./bin/tests/SignalIntegratorConsistencyTest`;
+this matches no rendered keyword. No render, seed, threshold or budget
+changed. The paired sampling/failure loop, self adaptive loop/stop and PT
+pool are unchanged from `16a22448` (`paired-cap-sibling-audit.json`). The PT
+pool logs failure, returns its zero sentinel without accepting a sample,
+and the paired caller increments the failed-attempt count; it makes no
+standalone correctness claim. Initial invalid operands are rejected before
+adaptive rows are constructed. The synthetic n11/no-failure control tests
+the gate's minimum contract, not a newly claimed reachable loop stopping
+state. Historical render records remain unchanged and qualified.
+
+Evidence: `paired-cap-{red,green}-{build.log,run.log,status.json}`, the two
+committed patches, `paired-cap-stop-recount.json` and sibling audit. No
+production changes; frozen-source platform evidence remains applicable.
+
 ## Every shipped relief scene: before/after
 
 All ten scenes declaring `relief_modifier` were rendered in both PT and
