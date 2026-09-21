@@ -337,6 +337,10 @@ int TestCIEPartialCellIntegral() {
     shader->release();
     const Scalar split=ColorUtils::CIE_Y_Integral(552,554)+ColorUtils::CIE_Y_Integral(554,558);
     ++checks;if(std::fabs(split-5.991)>1e-12*5.991)++failed;
+    for(Scalar invalid:{std::numeric_limits<Scalar>::infinity(),-std::numeric_limits<Scalar>::infinity(),std::numeric_limits<Scalar>::quiet_NaN()}){
+        ++checks;if(ColorUtils::CIE_Y_Integral(invalid,700)!=0)++failed;
+        ++checks;if(ColorUtils::CIE_Y_Integral(400,invalid)!=0)++failed;
+    }
     std::cout<<"CIE partial-cell checks="<<checks<<" failures="<<failed<<std::endl;
     return failed;
 }

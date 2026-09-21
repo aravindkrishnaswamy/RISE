@@ -15,6 +15,7 @@
 #include "Color.h"
 #include "ColorUtils.h"
 #include "CIE_xyY.h"
+#include "../FiniteMath.h"
 
 using namespace RISE;
 
@@ -326,24 +327,23 @@ bool ColorUtils::XYZFromNM( XYZPel& p, const Scalar nm )
 
 Scalar ColorUtils::CIE_Y_Integral( const Scalar lambda_begin, const Scalar lambda_end )
 {
-	// Trapezoidal integration of Ȳ over [lambda_begin, lambda_end]
-	// using the CIE 1931 2° table at 5nm steps.  Endpoints outside
-	// the table range contribute 0.  Cached for the standard
-	// [380, 780] range; recomputed on a slow path for any other.
+	// Integrate the piecewise-linear table, including partial boundary cells.
+	// Reject nonfinite endpoints before comparisons or integer conversions.
+	if( !IsFiniteDouble(lambda_begin) || !IsFiniteDouble(lambda_end) ) return 0;
 	using namespace CIE_DATA;
-	const Scalar lo = lambda_begin < min_wavelength ? Scalar( min_wavelength ) : lambda_begin;
-	const Scalar hi = lambda_end   > max_wavelength ? Scalar( max_wavelength ) : lambda_end;
-	if( hi <= lo ) return Scalar( 0 );
-
-	const Scalar step = Scalar( wavelength_step );
-	const int firstIdx = static_cast<int>( ( lo - min_wavelength ) / step );
-	const int lastIdx  = static_cast<int>( ( hi - min_wavelength ) / step );
-	if( lastIdx <= firstIdx ) return Scalar( 0 );
-
-	Scalar sum = Scalar( 0 );
-	for( int i = firstIdx; i < lastIdx; ++i ) {
-		// Trapezoidal: 0.5 × (y_i + y_{i+1}) × step.
-		sum += Scalar( 0.5 ) * ( y_2[i] + y_2[i + 1] ) * step;
+	const Scalar lo = std::max(lambda_begin,Scalar(min_wavelength));
+	const Scalar hi = std::min(lambda_end,Scalar(max_wavelength));
+	if( hi <= lo ) return 0;
+	const Scalar step = Scalar(wavelength_step);
+	Scalar sum = 0;
+	for( int i=0; i<(max_wavelength-min_wavelength)/wavelength_step; ++i ) {
+		const Scalar left = min_wavelength+i*step;
+		const Scalar a = std::max(lo,left), b = std::min(hi,left+step);
+		if( b <= a ) continue;
+		const Scalar slope = (y_2[i+1]-y_2[i])/step;
+		const Scalar ya = y_2[i]+slope*(a-left);
+		const Scalar yb = y_2[i]+slope*(b-left);
+		sum += Scalar(.5)*(ya+yb)*(b-a);
 	}
 	return sum;
 }
