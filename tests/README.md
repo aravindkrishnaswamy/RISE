@@ -60,9 +60,12 @@ missing real roots, repeated and near-multiple roots, common coefficient
 and variable scaling, and leading-zero cubic/quadratic/linear dispatch.
 Direct torus and transformed `Object` primary/shadow fixtures distinguish
 central-hole misses from four-crossing and grazing hits. The final
-measured suite has **521 explicit checks, 0 failures**, plus the existing
+measured suite has **1057 explicit checks, 0 failures**, plus the existing
 assert-based polynomial tests; per-returned-root diagnostics make totals
-vary between defective and corrected solvers. See
+vary between defective and corrected solvers. DL273–DL275 add exact torus
+tangencies, strict positive/negative contact perturbations, non-even tiny
+roots, mixed-scale and reciprocal root families, finite-input assertions,
+and normal/subnormal output boundaries. See
 [the derivation and committed red/green evidence](../docs/DL226_QUARTIC_FACTORIZATION.md).
 
 ## Test Map

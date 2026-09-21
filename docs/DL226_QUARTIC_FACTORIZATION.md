@@ -1,6 +1,11 @@
 # DL226 — compare real and complex quartic candidates consistently
 
-Closed 2026-09-21. The public `Polynomial::SolveQuartic` no longer replaces
+Closed 2026-09-21. The final slice also fixes review-discovered
+[DL273–DL275 tangency and exponent-range defects](DL273_DL274_DL275_QUARTIC_RANGE.md),
+with final **1057/0** checks and renewed gates/cost evidence. The 521/0
+candidate and timing table below are retained historical DL226 evidence.
+
+The public `Polynomial::SolveQuartic` no longer replaces
 an accurate conjugate-complex factorization with an incompatible real
 alternative. The independent witness `[1,0,2,0,1]`, in the API's descending
 coefficient order, is `(x²+1)² > 0`; the old solver returned four roots
@@ -76,7 +81,7 @@ First correction `080ecc55ec170de0a9c497125971b743a52e49aa` produced
 The count changed because corrected positive cases emitted 60 fewer
 per-returned-root checks and the fourfold case emitted 2 fewer:
 `528-60-2=466`. Fixed semantic count/coverage and torus checks stayed in
-place. Final production `3afbb16d845c2bf97c5251c8f758750118d13993`
+place. First review candidate `3afbb16d845c2bf97c5251c8f758750118d13993`
 produced **521 checks, 0 failures**, rc0: restored fourfold roots give 468
 original checks, plus 53 added repeated/positive-near-multiple checks.
 Existing assert-based polynomial tests also completed. No failed result
@@ -116,7 +121,7 @@ and `tie-test-status.json` record commands, return codes and raw logs.
 All successful library/test builds had zero warnings. Initial setup
 failures remain in `red-build-status.json` and `red2-build-status.json`.
 
-At final production, `final-gates-status.json` records **24 successful
+At that first review candidate, `final-gates-status.json` records **24 successful
 stages**, zero warnings: clean library plus exact build/run pairs for
 PolynomialTest, BezierClippingUnitsTest, GeometryUVRoundtripTest,
 GeometrySurfaceDerivativesTest, GeometryShadingTangentTest,
@@ -133,8 +138,8 @@ production source, each rc0, two documented notices (OIDN path and
 AppIntents), zero actionable warnings. The worker inspected the supervisor's
 results manifest; these are supervisor-produced measurements:
 `/private/tmp/rise-debt-codex-20260919/dl226_xcode_candidate/results.json`,
-with `Deployment.log` and `Opto.log` adjacent. Documentation-only closure
-commits preserve source/build identity to the stated production commit.
+with `Deployment.log` and `Opto.log` adjacent. Those platform measurements apply only to the first candidate; the linked
+DL273–DL275 note records renewed gates for the changed production.
 
 Additional reconstruction evidence: `initial-oracle.md`,
 `factor-comparison-derivation.md`, `factor-{red,candidate}-run.log`,
@@ -143,7 +148,7 @@ and binaries. Instrumented diagnostic copies are external and explicitly
 separate from production executables; they show each candidate's error,
 coefficients, pre/post-refinement values and returned roots.
 
-## Quiet solver cost
+## Historical first-candidate quiet solver cost
 
 A coordinated idle window measured five alternating AB/BA process pairs,
 500,000 calls per input per sample. Separate binaries link the saved red

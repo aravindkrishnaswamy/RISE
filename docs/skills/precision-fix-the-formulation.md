@@ -218,6 +218,23 @@ and live torus hit/miss controls are documented in
 Evaluating both candidates preserves the recovery opportunity; it is
 not a guarantee of resolving every ill-conditioned floating-point root.
 
+### Quartic contact and exponent range (DL273–DL275)
+
+Exact torus tangencies require accurate factor coefficients, not a relaxed
+quadratic discriminant. Compensated coefficient residuals let Newton reach
+the exact contact factors when rounded multiply/add residuals prematurely
+look zero. Strictly positive and negative contact perturbations distinguish
+true contact from invented intersections.
+
+Normalize coefficient exponents before dividing by the leading coefficient;
+otherwise finite coefficients can overflow into a broken monic polynomial.
+Scale tiny roots up as well as large roots down. When one binary64 scale
+cannot represent all coefficients, preserve a separate exponent through
+the same factorization, including Vieta recovery, rather than silently
+turning small coefficients into zero. Range extension does not add
+significand precision. See [the derivation, finite boundary oracles and
+renewed gates](../DL273_DL274_DL275_QUARTIC_RANGE.md).
+
 ### Bilinear-patch shadow-ray self-shadowing (masqueraded as an MIS bug)
 
 Symptom: a `weave_material` curtain (`transmission thin`,
