@@ -30,9 +30,10 @@
 //        supports) must approach the pre-fix mirror-limit answer
 //        (interfaceFresnel.Mean()) -- the derivation's own stated
 //        smooth-limit consistency check.
-//    (f) TestAnisotropicFallback -- alphaX != alphaY does not crash
-//        and stays a plausible reflectance (residual is documented as
-//        an approximation, not gated tightly here -- see DL-139).
+//    (f) TestAnisotropicFallback -- DL-139 red-proof.  Eight strongly
+//        anisotropic cells (including alpha-axis swaps and a low-alpha
+//        corner) are checked against an independent anisotropic-VNDF
+//        importance sampler to <=0.5% relative error.
 //    (g) TestLowAlphaVNDF -- DL-160 red-proof.  `kGGXSpecularQuadWeight`
 //        (GGXBRDF.cpp's own baked moment-matched quadrature, consumed
 //        by hemisphericalAlbedo{,NM}) resolves its alpha axis with the
@@ -418,39 +419,7 @@ namespace
 		CheckClose( reported, meanClosedForm, 0.01, "alpha->0.01 hemisphericalAlbedo approaches Mean() (mirror limit)" );
 	}
 
-	//////////////////////////////////////////////////////////////////
-	//  (f) Anisotropic fallback -- sanity only
-	//////////////////////////////////////////////////////////////////
-
-	void TestAnisotropicFallback()
-	{
-		std::cout << "--- TestAnisotropicFallback ---" << std::endl;
-
-		Owned<UniformColorPainter> spec( new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) ) );
-		Owned<UniformColorPainter> diff( new UniformColorPainter( RISEPel( 0, 0, 0 ) ) );
-		Owned<UniformScalarPainter> alphaX( new UniformScalarPainter( 0.05 ) );
-		Owned<UniformScalarPainter> alphaY( new UniformScalarPainter( 0.5 ) );
-		Owned<UniformScalarPainter> iorP( new UniformScalarPainter( 1.5 ) );
-		Owned<UniformScalarPainter> extP( new UniformScalarPainter( 0.0 ) );
-		Owned<GGXBRDF> brdf( new GGXBRDF( *diff, *spec, *alphaX, *alphaY, *iorP, *extP, eFresnelSchlickF0 ) );
-
-		// min(alphaX,alphaY)=0.05 needs the finer resolution -- see
-		// PickResolution's convergence note.
-		const double trueBi = Bihemispherical( *brdf, 300, 600 );
-
-		RayIntersectionGeometric dummyRi = MakeRIForView( Vector3( 0, 0, 1 ) );
-		RISEPel out;
-		brdf->hemisphericalAlbedo( dummyRi, out );
-		const double reported = ColorMath::MaxValue( out );
-
-		printf( "  alphaX=0.05 alphaY=0.5: bihemispherical_true=%.5f  hemisphericalAlbedo()=%.5f  |diff|=%.5f\n",
-			trueBi, reported, fabs(reported - trueBi) );
-
-		Check( reported > 0.0 && reported < 1.5, "anisotropic hemisphericalAlbedo stays a plausible reflectance" );
-		// Loose bound only -- DL-139 tracks the isotropic-alphaEff
-		// approximation's residual for genuinely anisotropic materials.
-		Check( fabs( reported - trueBi ) < 0.15, "anisotropic hemisphericalAlbedo within a loose (DL-139-tracked) bound" );
-	}
+	void TestAnisotropicFallback();
 
 	//////////////////////////////////////////////////////////////////
 	//  (g) DL-160 red-proof: low alpha, VNDF-importance-sampled
@@ -485,6 +454,25 @@ namespace
 			return ( -1.0 + sqrt( 1.0 + alpha * alpha * tan2 ) ) * 0.5;
 		}
 		static double G1( double alpha, double cosTheta ) { return 1.0 / ( 1.0 + Lambda( alpha, cosTheta ) ); }
+		static double D_Anisotropic( double alphaX, double alphaY, const Vector3& m )
+		{
+			if( m.z <= 0 ) return 0.0;
+			const double sx = m.x / alphaX;
+			const double sy = m.y / alphaY;
+			const double d = sx * sx + sy * sy + m.z * m.z;
+			return 1.0 / ( PI * alphaX * alphaY * d * d );
+		}
+		static double LambdaAnisotropic( double alphaX, double alphaY, const Vector3& v )
+		{
+			if( v.z >= 1.0 - 1e-10 ) return 0.0;
+			if( v.z < 1e-10 ) return 1e10;
+			const double projected = alphaX * alphaX * v.x * v.x + alphaY * alphaY * v.y * v.y;
+			return ( -1.0 + sqrt( 1.0 + projected / ( v.z * v.z ) ) ) * 0.5;
+		}
+		static double G1Anisotropic( double alphaX, double alphaY, const Vector3& v )
+		{
+			return 1.0 / ( 1.0 + LambdaAnisotropic( alphaX, alphaY, v ) );
+		}
 
 		// Heitz 2018 "Sampling the GGX Distribution of Visible Normals"
 		// -- transcribed independently (own variable names/structure),
@@ -507,6 +495,183 @@ namespace
 
 			const Vector3 Nh = T1 * t1 + T2 * t2 + wiStd * sqrt( r_max( 0.0, 1.0 - t1 * t1 - t2 * t2 ) );
 			return Vector3Ops::Normalize( Vector3( alpha * Nh.x, alpha * Nh.y, r_max( 0.0, Nh.z ) ) );
+		}
+
+		static Vector3 VNDFSampleAnisotropic( const Vector3& wi, double alphaX, double alphaY, double u1, double u2 )
+		{
+			const Vector3 wiStd = Vector3Ops::Normalize( Vector3( alphaX * wi.x, alphaY * wi.y, wi.z ) );
+			const double lensq = wiStd.x * wiStd.x + wiStd.y * wiStd.y;
+			const Vector3 T1 = ( lensq > 0 )
+				? Vector3( -wiStd.y, wiStd.x, 0 ) * ( 1.0 / sqrt( lensq ) )
+				: Vector3( 1, 0, 0 );
+			const Vector3 T2 = Vector3Ops::Cross( wiStd, T1 );
+
+			const double r = sqrt( u1 );
+			const double phi = 2.0 * PI * u2;
+			double t1 = r * cos( phi );
+			double t2 = r * sin( phi );
+			const double s = 0.5 * ( 1.0 + wiStd.z );
+			t2 = ( 1.0 - s ) * sqrt( r_max( 0.0, 1.0 - t1 * t1 ) ) + s * t2;
+
+			const Vector3 Nh = T1 * t1 + T2 * t2 + wiStd * sqrt( r_max( 0.0, 1.0 - t1 * t1 - t2 * t2 ) );
+			return Vector3Ops::Normalize( Vector3( alphaX * Nh.x, alphaY * Nh.y, r_max( 0.0, Nh.z ) ) );
+		}
+	}
+
+	struct BihemisphericalStats
+	{
+		double mean;
+		double sampleSD;
+		double standardError;
+		unsigned long long count;
+	};
+
+	double RadicalInverse( unsigned long long index, unsigned int base )
+	{
+		double reversed = 0.0;
+		double scale = 1.0 / base;
+		while( index )
+		{
+			reversed += ( index % base ) * scale;
+			index /= base;
+			scale /= base;
+		}
+		return reversed;
+	}
+
+	BihemisphericalStats BihemisphericalVNDFAnisotropic(
+		IBSDF& brdf, double alphaX, double alphaY, int numMuI, int numSamples,
+		unsigned long long seed, double nm )
+	{
+		std::mt19937_64 rng( seed );
+		std::uniform_real_distribution<double> uni( 0.0, 1.0 );
+		const double dmu = 1.0 / numMuI;
+		double sum = 0.0;
+		double sumSquared = 0.0;
+		unsigned long long count = 0;
+
+		for( int bi = 0; bi < numMuI; bi++ )
+		{
+			const double muI = ( bi + 0.5 ) * dmu;
+			const double sinI = sqrt( r_max( 0.0, 1.0 - muI * muI ) );
+			// A randomized low-discrepancy product sequence resolves the
+			// rare high-weight paths at the one-axis-smooth boundary far
+			// more reliably than pseudorandom draws.  The rotations come
+			// from this test's private RNG stream, so the oracle remains
+			// independent of the generator's stream.
+			const double phiShift = uni( rng );
+			const double u1Shift = uni( rng );
+			const double u2Shift = uni( rng );
+			for( int s = 0; s < numSamples; s++ )
+			{
+				// Exactly stratify a 50/50 mixture: visible-normal GGX for
+				// the single-scatter peak, cosine hemisphere for the broad
+				// Kulla-Conty multiscatter term.  Using the VNDF proposal
+				// alone gives the broad term a pathological heavy tail when
+				// only one roughness axis approaches zero.
+				const bool sampleVNDF = ( s & 1 ) == 0;
+				const unsigned long long sequenceIndex = static_cast<unsigned long long>( s / 2 ) + 1;
+				const double phiUnit = fmod( RadicalInverse( sequenceIndex, 2 ) + phiShift, 1.0 );
+				const double u1 = fmod( RadicalInverse( sequenceIndex, 3 ) + u1Shift, 1.0 );
+				const double u2 = fmod( RadicalInverse( sequenceIndex, 5 ) + u2Shift, 1.0 );
+				const double phiI = 2.0 * PI * phiUnit;
+				const Vector3 wi( sinI * cos( phiI ), sinI * sin( phiI ), muI );
+				const double G1wi = IndependentGGX::G1Anisotropic( alphaX, alphaY, wi );
+				Vector3 wo;
+				if( sampleVNDF )
+				{
+					const Vector3 sampledM = IndependentGGX::VNDFSampleAnisotropic( wi, alphaX, alphaY, u1, u2 );
+					const double wiDotM = Vector3Ops::Dot( wi, sampledM );
+					wo = Vector3Ops::Normalize( sampledM * ( 2.0 * wiDotM ) - wi );
+				}
+				else
+				{
+					const double radius = sqrt( u1 );
+					const double phiO = 2.0 * PI * u2;
+					wo = Vector3( radius * cos( phiO ), radius * sin( phiO ), sqrt( 1.0 - u1 ) );
+				}
+				double contribution = 0.0;
+				if( wo.z > 0 )
+				{
+					const Vector3 m = Vector3Ops::Normalize( wi + wo );
+					const double Dm = IndependentGGX::D_Anisotropic( alphaX, alphaY, m );
+					if( Dm > 0 )
+					{
+						const double pdfVNDF = G1wi * Dm / ( 4.0 * muI );
+						const double pdfCosine = wo.z / PI;
+						const double mixturePdf = 0.5 * ( pdfVNDF + pdfCosine );
+						RayIntersectionGeometric ri = MakeRIForView( wo );
+						const double f = nm > 0.0
+							? brdf.valueNM( wi, ri, nm )
+							: ColorMath::MaxValue( brdf.value( wi, ri ) );
+						const double directional = f * wo.z / mixturePdf;
+						contribution = 2.0 * muI * directional;
+					}
+				}
+				sum += contribution;
+				sumSquared += contribution * contribution;
+				++count;
+			}
+		}
+
+		const double mean = sum / count;
+		const double variance = ( sumSquared - sum * sum / count ) / ( count - 1 );
+		BihemisphericalStats stats = { mean, sqrt( r_max( 0.0, variance ) ), 0.0, count };
+		stats.standardError = stats.sampleSD / sqrt( static_cast<double>( count ) );
+		return stats;
+	}
+
+	void TestAnisotropicFallback()
+	{
+		std::cout << "--- TestAnisotropicFallback (DL-139 red-proof) ---" << std::endl;
+		struct Row { double alphaX; double alphaY; };
+		const Row rows[] = {
+			{ 0.05, 0.50 }, { 0.50, 0.05 },
+			{ 0.10, 0.80 }, { 0.80, 0.10 },
+			{ 0.20, 0.60 }, { 0.60, 0.20 },
+			{ 0.005, 0.50 }, { 0.50, 0.005 },
+		};
+
+		for( const Row& row : rows )
+		{
+			Owned<UniformColorPainter> spec( new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) ) );
+			Owned<UniformColorPainter> diff( new UniformColorPainter( RISEPel( 0, 0, 0 ) ) );
+			Owned<UniformScalarPainter> alphaX( new UniformScalarPainter( row.alphaX ) );
+			Owned<UniformScalarPainter> alphaY( new UniformScalarPainter( row.alphaY ) );
+			Owned<UniformScalarPainter> iorP( new UniformScalarPainter( 1.5 ) );
+			Owned<UniformScalarPainter> extP( new UniformScalarPainter( 0.0 ) );
+			Owned<GGXBRDF> brdf( new GGXBRDF( *diff, *spec, *alphaX, *alphaY, *iorP, *extP, eFresnelSchlickF0 ) );
+
+			const unsigned long long seed = 0xD1139ULL
+				+ static_cast<unsigned long long>( row.alphaX * 1.0e6 ) * 1000003ULL
+				+ static_cast<unsigned long long>( row.alphaY * 1.0e6 ) * 1000033ULL;
+			const BihemisphericalStats reference = BihemisphericalVNDFAnisotropic(
+				*brdf, row.alphaX, row.alphaY, 48, 100000, seed, -1.0 );
+			const BihemisphericalStats referenceNM = BihemisphericalVNDFAnisotropic(
+				*brdf, row.alphaX, row.alphaY, 48, 100000, seed ^ 0x550ULL, 550.0 );
+
+			RayIntersectionGeometric dummyRi = MakeRIForView( Vector3( 0, 0, 1 ) );
+			RISEPel out;
+			brdf->hemisphericalAlbedo( dummyRi, out );
+			const double reported = ColorMath::MaxValue( out );
+			const double relativeError = fabs( reported - reference.mean ) / reference.mean;
+			Scalar reportedNM = 0.0;
+			brdf->hemisphericalAlbedoNM( dummyRi, 550.0, reportedNM );
+			const double relativeErrorNM = fabs( reportedNM - referenceNM.mean ) / referenceNM.mean;
+
+			printf( "  alphaX=%.4f alphaY=%.4f n=%llu mean=%.8f sampleSD=%.8f SE=%.8f reported=%.8f relerr=%.4f%%\n",
+				row.alphaX, row.alphaY, reference.count, reference.mean, reference.sampleSD,
+				reference.standardError, reported, 100.0 * relativeError );
+			printf( "    NM550 n=%llu mean=%.8f sampleSD=%.8f SE=%.8f reported=%.8f relerr=%.4f%%\n",
+				referenceNM.count, referenceNM.mean, referenceNM.sampleSD,
+				referenceNM.standardError, reportedNM, 100.0 * relativeErrorNM );
+
+			Check( reported > 0.0 && reported < 1.5,
+				"DL-139 anisotropic hemisphericalAlbedo stays a plausible reflectance" );
+			Check( relativeError <= 0.005,
+				"DL-139 anisotropic hemisphericalAlbedo matches independent VNDF estimator to <=0.5%" );
+			Check( relativeErrorNM <= 0.005,
+				"DL-139 anisotropic hemisphericalAlbedoNM matches independent VNDF estimator to <=0.5%" );
 		}
 	}
 
