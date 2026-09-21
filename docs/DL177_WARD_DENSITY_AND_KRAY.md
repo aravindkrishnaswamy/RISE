@@ -282,7 +282,7 @@ connection evaluate.
 
 ---
 
-## 4. The tail — decision and data
+## 4. Historical pre-DL-212 model residual — The tail — decision and data
 
 DL-177 was deliberately held open because "the corrected weight carries
 Ward's unbounded `1/sqrt(nl nv)` tail, which needs an answer of its own

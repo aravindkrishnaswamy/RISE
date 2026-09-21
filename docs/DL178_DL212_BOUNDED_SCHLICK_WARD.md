@@ -117,3 +117,94 @@ samples, `AOVBuffers` can supersample a separate guide pass, the interactive
 material preview evaluates it per visible hit, and Fabric's auxiliary albedo
 can delegate to its base BRDF. Accuracy and cost must be judged on those
 consumers. Ward retains a conservative saturated `Rd+Rs` auxiliary estimate.
+
+## Aggregate Pdf: integrate the selection domain
+
+Changing `kray` changes `RandomlySelect`'s realized weights. The aggregate
+remains `C_D p_D + sum q_j p_j`, with the same exact query-direction
+specular coefficients and clipped-cosine diffuse acceptance. An initial
+32×32 sampler replay was insufficient: an independently converged state
+(`Rd=.4,Rs=.5,alpha=.1`, view60° in the shading frame, view azimuth0,
+geometric tilt30°) has `C_D=.720097153229`, whereas replay32 returns
+`.713337220462`. Its diffuse mass discrepancy alone is
+`.006759933*(1+cos30°)/2=.0063066`. The public regression now isolates that
+coefficient through a direction where the specular Gaussian is below
+`1e-100`; the old approximation fails its `1e-5` accuracy requirement.
+
+`WardSelectionQuadrature.h` instead transforms the shared sampler draw to
+an elliptical slope and a Gaussian radial coordinate:
+
+```
+x_j = alphaX_j cos(psi), y_j = alphaY_j sin(psi)
+h_j = (s x_j, s y_j, 1) / sqrt(1+s²(x_j²+y_j²))
+p(s) ds = 2s exp(-s²) ds
+```
+
+This is a measure-preserving reordering of Ward's quadrant-folded azimuth,
+shared by all lanes, so their random-number correlation is preserved. At a
+fixed `psi`, write `a²=x²+y²`, `sv=x vx+y vy`, `sg=x gx+y gy`, and `vg=v.g`.
+The shading and geometric acceptance boundaries are quadratics in `s`:
+
+```
+cos_o numerator = nv (1-a²s²) + 2 sv s
+geom_o numerator = 2(nv+sv s)(ng+sg s) - vg(1+a²s²)
+```
+
+The union of every lane's positive roots splits the radial integral into
+regions with constant acceptance sets. Rejected regions integrate
+analytically. Accepted regions use eight-point Gauss–Legendre quadrature;
+additional fixed radial cuts at 2 and 4.5 resolve the Gaussian. A further
+quadratic split where `cos_o=4 nv` resolves the grazing transition in
+`2 cos_o/(nv+cos_o)` without altering that weight. The omitted
+tail has total probability `exp(-4.5²)<1.61e-9`; including it with coefficient
+one bounds that tail error by the same amount. A scaled, cancellation-safe
+quadratic solver handles linear and repeated-root cases.
+
+Angular cuts include each lane's geometric discriminant zeros, the two
+shading/geometric horizon intersections, and view-aligned quadrants. A
+`sin²` change of variable regularizes interval endpoints; each interval uses
+32 Gauss–Legendre nodes. This has fixed work, no recursive convergence loop
+and no fallback to the biased midpoint grid. At most 35 angular cuts and
+24 radial cuts give a conservative cap of 200,192 numeric radial nodes;
+all-rejected pieces cost no numeric nodes. The final 472-state suite combines the original 112-state roughness,
+anisotropy, chromatic, incidence and tilt grid with 360 extreme states
+through 89.99° and axes .01 through 1. It observes at most 29,016 numeric
+nodes and maximum absolute error `6.9047e-6` (axes 1/.01, view 89.9°,
+azimuth 0°, no tilt). The worst reference converges from `.643360592079`
+at 128 angular nodes to `.643360591407` at both 256 and 512, with 32 radial
+nodes. The earlier 24×8 rule missed the preserved `1e-5` target on some
+untilted grazing states; the final 32×8 rule and radial transition split
+resolve them. The cold
+coefficient accuracy target is `1e-5`, substantially below the sampling
+error in the public mass, TVD, and estimator tests. The aggregate mass error
+from this coefficient is at most its absolute error, because `int p_D<=1`.
+
+The coefficient depends on the incoming view and material state, not the
+outgoing query direction. PT uses it for NEE/guiding and continuation; BDPT
+also queries forward/reverse and connection endpoints. Four thread-local
+memo entries reuse identical values. The complete key is the view and
+geometric normal in the sampling frame, diffuse selection weight, lane
+count, and all live lane axes and weights. It contains no object, material,
+or intersection pointers; an edit or different wavelength changes its
+numeric key. Pure cold evaluation remains available to tests. Storage is
+616 bytes per thread and disappears with the thread. The cache follows
+[const-correctness guidance](skills/const-correctness-over-escape-hatches.md):
+it changes evaluation cost only, with no shared material mutation.
+
+A quiet standalone benchmark of the preliminary 24-angular-node prototype
+(before the additional grazing transition split) retained all three alternating-order
+replicates, including first-replicate warmup variation:
+
+| Algorithm | ns/call mean ± sample SD (n=3) |
+|---|---:|
+| Midpoint16 | 1027.9 ± 579.2 |
+| Midpoint32 | 3286.8 ± 1088.5 |
+| Boundary method, cold | 21563.9 ± 1027.3 |
+| Boundary method, changing 112-state sequence | 19601.4 ± 168.9 |
+| Boundary method, identical-key warm | 3.187 ± .012 |
+
+Cold state means ranged 7993–134018 ns. The changing-state sequence contains
+some identical keys (normal-view azimuth variants); it is not advertised as
+100% cache misses. These are algorithm-selection microbenchmarks, not whole
+renderer overhead. Cold/changing-hit production Pdf and scene timings must
+remain visible alongside cache-hit results.

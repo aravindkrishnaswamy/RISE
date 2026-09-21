@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "WardSelectionQuadrature.h"
 #include "WardIsotropicGaussianSPF.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "../Utilities/Optics.h"
@@ -44,14 +45,8 @@ void WardIsotropicGaussianSPF::SetDiffuse( const IPainter& v )      { v.addref()
 void WardIsotropicGaussianSPF::SetSpecular( const IPainter& v )     { v.addref(); safe_release( pSpecular ); pSpecular = &v; }
 void WardIsotropicGaussianSPF::SetAlpha( const IScalarPainter& v )  { v.addref(); safe_release( pAlpha );    pAlpha    = &v; }
 
-//! Stratified grid `Pdf()`/`PdfNM()` replay the specular sampler's own
-//! `(xi1, xi2)` square on to estimate `C_D` (see
-//! WardIsoDiffuseSelectCoefficient).  kWardQuadN^2 replays per call.
-//! DL-212 raises the grid from 16 to 32: the new realized weight
-//! otherwise misses the tilted-horizon mass gate. The integrand is bounded in
-//! [0,1] but not smooth (the accept test is a step), so the error is
-//! O(1/kWardQuadN), not O(1/kWardQuadN^2).
-static const int kWardQuadN = 32;
+//! DL-212 integrates realized selection weights over their exact horizon
+//! domains; see WardSelectionQuadrature.h. No midpoint rejection grid.
 
 //! THE TRUE solid-angle density of the half-vector `GenerateSpecularRay`
 //! draws.
@@ -348,9 +343,9 @@ void WardIsotropicGaussianSPF::ScatterNM(
 //! REJECTION rate (`hdotk <= 0`, or a reflected direction below a
 //! horizon), which leaves `RandomlySelect` holding one ray that it
 //! returns with probability 1 whatever its weight.  No closed form over
-//! reflectances can see that, so this is the DL-67/DL-98/DL-99
-//! deterministic stratified replay of the sampler's own `(xi1, xi2)`
-//! square.
+//! reflectances can see that. DL-212 integrates the same joint sampler
+//! measure after splitting its actual horizon domains, avoiding the
+//! former midpoint replay's geometric-boundary mass bias.
 static Scalar WardIsoDiffuseSelectCoefficient(
 	const RayIntersectionGeometric& ri,
 	const OrthonormalBasis3D& myonb,
@@ -359,102 +354,22 @@ static Scalar WardIsoDiffuseSelectCoefficient(
 	const WardIsoLobeSet& lobes
 	)
 {
-	// Rows: the azimuth is shared by every lane (this sampler draws
-	// `phi = 2 PI xi1` with no alpha dependence at all), and the polar
-	// angle is `atan(alpha_j sqrt(-ln xi2))`, so each lane's row is the
-	// same `sqrt(-ln xi2)` scaled by its own alpha.
-	Scalar cosP[kWardQuadN], sinP[kWardQuadN];
-	Scalar cosT[3][kWardQuadN], sinT[3][kWardQuadN];
-
-	const Scalar inv = 1.0 / Scalar(kWardQuadN);
-	for( int b = 0; b < kWardQuadN; b++ ) {
-		const Scalar phi = TWO_PI * ( Scalar(b) + 0.5 ) * inv;
-		cosP[b] = cos( phi );
-		sinP[b] = sin( phi );
+	const Vector3 v = Vector3Ops::Normalize( -ri.ray.Dir() );
+	WardSelection::Input input = {};
+	input.vx = Vector3Ops::Dot( v, myonb.u() );
+	input.vy = Vector3Ops::Dot( v, myonb.v() );
+	input.nv = Vector3Ops::Dot( v, myonb.w() );
+	input.gx = Vector3Ops::Dot( geomN, myonb.u() );
+	input.gy = Vector3Ops::Dot( geomN, myonb.v() );
+	input.ng = Vector3Ops::Dot( geomN, myonb.w() );
+	input.wD = wD;
+	input.count = lobes.count;
+	for( int j = 0; j < lobes.count; ++j ) {
+		input.ax[j] = lobes.alpha[j];
+		input.ay[j] = lobes.alpha[j];
+		input.weight[j] = lobes.w[j];
 	}
-	for( int a = 0; a < kWardQuadN; a++ ) {
-		const Scalar xi = ( Scalar(a) + 0.5 ) * inv;
-		const Scalar root = sqrt( -log( xi ) );
-		for( int j = 0; j < lobes.count; j++ ) {
-			const Scalar t = lobes.alpha[j] * root;
-			const Scalar ct = 1.0 / sqrt( 1.0 + t*t );
-			cosT[j][a] = ct;
-			sinT[j][a] = t * ct;
-		}
-	}
-
-	const Vector3& eu = myonb.u();
-	const Vector3& ev = myonb.v();
-	const Vector3& ew = myonb.w();
-	// The sampler reflects about `h` and NORMALIZES; normalising the
-	// INCOMING direction once instead makes every reflected direction
-	// unit by construction, which lets the inner loop below drop the
-	// per-node `Normalize` (a sqrt and three divides) and read the two
-	// quantities it needs off closed forms:
-	//     (h . wo)  ==  (h . wi)            (reflection about a unit h)
-	//     (n . wo)  ==  (n . d) + 2 (h.wi) (n . h)
-	// Both are EXACT for a unit `d`, not approximations, and the two
-	// accept gates only need signs.  `(n . d)` is exactly `-nvView`
-	// below, since `nvView` is `(n . wi)` and `wi == -d`.
-	const Vector3  dHat = Vector3Ops::Normalize( ri.ray.Dir() );
-	const Scalar   nvView = -Vector3Ops::Dot( ew, dHat );
-	const Scalar   dDotG  = Vector3Ops::Dot( dHat, geomN );
-
-	Scalar accum = 0;
-
-	for( int a = 0; a < kWardQuadN; a++ ) {
-		for( int b = 0; b < kWardQuadN; b++ ) {
-			Scalar wS = 0;
-			int nAcceptedSpec = 0;
-
-			for( int j = 0; j < lobes.count; j++ ) {
-				const Scalar st = sinT[j][a];
-				const Scalar lx = cosP[b] * st;
-				const Scalar ly = sinP[b] * st;
-				const Scalar lz = cosT[j][a];
-
-				const Scalar hx = eu.x*lx + ev.x*ly + ew.x*lz;
-				const Scalar hy = eu.y*lx + ev.y*ly + ew.y*lz;
-				const Scalar hz = eu.z*lx + ev.z*ly + ew.z*lz;
-
-				const Scalar hdotk = -( hx*dHat.x + hy*dHat.y + hz*dHat.z );
-				if( hdotk <= 0 ) {
-					// GenerateSpecularRay leaves the ray untouched and
-					// Scatter's accept-check drops it.
-					continue;
-				}
-
-				// (n . wo) = (n . d) + 2 (h.wi) (n . h), and (n . d) is
-				// exactly -nvView.
-				const Scalar cosO = -nvView + 2.0 * hdotk * lz;
-				if( cosO <= 0 ) {
-					continue;
-				}
-				const Scalar hDotG = hx*geomN.x + hy*geomN.y + hz*geomN.z;
-				if( dDotG + 2.0 * hdotk * hDotG <= 0 ) {
-					continue;
-				}
-
-				wS += lobes.w[j] * WardKrayRatio( hdotk, lz, cosO, nvView );
-				nAcceptedSpec++;
-			}
-
-			if( nAcceptedSpec == 0 ) {
-				// RandomlySelect's freeidx==1 short-circuit: the lone
-				// diffuse ray is returned whatever its weight.
-				accum += 1.0;
-				continue;
-			}
-
-			const Scalar total = wD + wS;
-			if( total > NEARZERO ) {
-				accum += wD / total;
-			}
-			// else RandomlySelect returns nothing at all -- contributes 0.
-		}
-	}
-
-	return accum / Scalar(kWardQuadN*kWardQuadN);
+	return WardSelection::Evaluate( input );
 }
 
 //! `sum_i q_i(wo) p_i(wo)` -- the specular half of the aggregate.  `aD`

@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "WardSelectionQuadrature.h"
 #include "WardAnisotropicEllipticalGaussianSPF.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "../Utilities/Optics.h"
@@ -49,10 +50,8 @@ void WardAnisotropicEllipticalGaussianSPF::SetSpecular( const IPainter& v )     
 void WardAnisotropicEllipticalGaussianSPF::SetAlphaX( const IScalarPainter& v ) { v.addref(); safe_release( pAlphaX );   pAlphaX   = &v; }
 void WardAnisotropicEllipticalGaussianSPF::SetAlphaY( const IScalarPainter& v ) { v.addref(); safe_release( pAlphaY );   pAlphaY   = &v; }
 
-//! Stratified grid `Pdf()`/`PdfNM()` replay the specular sampler's own
-//! `(xi1, xi2)` square on.  Same constant and same cost/accuracy note as
-//! the isotropic twin's `kWardQuadN` and `SchlickSPF`'s `kSpecQuadN`.
-static const int kWardQuadN = 32;
+//! DL-212 integrates realized selection weights over their exact horizon
+//! domains; see WardSelectionQuadrature.h. No midpoint rejection grid.
 
 //! Ward's azimuthal warp, extracted VERBATIM from `GenerateSpecularRay`
 //! so the sampler and everything that replays it cannot drift apart.
@@ -437,98 +436,22 @@ static Scalar WardAnisoDiffuseSelectCoefficient(
 	const WardAnisoLobeSet& lobes
 	)
 {
-	const Vector3& eu = myonb.u();
-	const Vector3& ev = myonb.v();
-	const Vector3& ew = myonb.w();
-	// Same two closed forms the isotropic twin's quadrature uses -- see
-	// WardIsoDiffuseSelectCoefficient -- so the inner loop needs no
-	// `Normalize`.
-	const Vector3  dHat   = Vector3Ops::Normalize( ri.ray.Dir() );
-	const Scalar   nvView = -Vector3Ops::Dot( ew, dHat );
-	const Scalar   dDotG  = Vector3Ops::Dot( dHat, geomN );
-
-	const Scalar inv = 1.0 / Scalar(kWardQuadN);
-
-	Scalar xi2Log[kWardQuadN];
-	for( int a = 0; a < kWardQuadN; a++ ) {
-		xi2Log[a] = -log( ( Scalar(a) + 0.5 ) * inv );
+	const Vector3 v = Vector3Ops::Normalize( -ri.ray.Dir() );
+	WardSelection::Input input = {};
+	input.vx = Vector3Ops::Dot( v, myonb.u() );
+	input.vy = Vector3Ops::Dot( v, myonb.v() );
+	input.nv = Vector3Ops::Dot( v, myonb.w() );
+	input.gx = Vector3Ops::Dot( geomN, myonb.u() );
+	input.gy = Vector3Ops::Dot( geomN, myonb.v() );
+	input.ng = Vector3Ops::Dot( geomN, myonb.w() );
+	input.wD = wD;
+	input.count = lobes.count;
+	for( int j = 0; j < lobes.count; ++j ) {
+		input.ax[j] = lobes.ax[j];
+		input.ay[j] = lobes.ay[j];
+		input.weight[j] = lobes.w[j];
 	}
-
-	// Ward's azimuthal warp depends on `xi1` and the LANE's alpha ratio
-	// only -- never on `xi2` -- so `phi`, its sine/cosine and the
-	// resulting `D(phi)` are hoisted out of the `a` loop.  Leaving them
-	// inside cost an `atan`, a `tan`, a `cos` and a `sin` at every one of
-	// the kWardQuadN^2 nodes and made this function ~8x the isotropic
-	// twin's; hoisted, the two are within ~20% of each other.
-	Scalar rowCosP[3][kWardQuadN];
-	Scalar rowSinP[3][kWardQuadN];
-	Scalar rowDen [3][kWardQuadN];
-	for( int j = 0; j < lobes.count; j++ ) {
-		const Scalar axj = lobes.ax[j], ayj = lobes.ay[j];
-		for( int b = 0; b < kWardQuadN; b++ ) {
-			if( axj <= 0 || ayj <= 0 ) {
-				rowCosP[j][b] = 1; rowSinP[j][b] = 0; rowDen[j][b] = 0;
-				continue;
-			}
-			const Scalar phi = WardAnisoPhiFromXi( ( Scalar(b) + 0.5 ) * inv, axj, ayj );
-			const Scalar cp = cos( phi ), sp = sin( phi );
-			rowCosP[j][b] = cp;
-			rowSinP[j][b] = sp;
-			rowDen [j][b] = (cp*cp)/(axj*axj) + (sp*sp)/(ayj*ayj);
-		}
-	}
-
-	Scalar accum = 0;
-
-	for( int a = 0; a < kWardQuadN; a++ ) {
-		for( int b = 0; b < kWardQuadN; b++ ) {
-			Scalar wS = 0;
-			int nAcceptedSpec = 0;
-			for( int j = 0; j < lobes.count; j++ ) {
-				const Scalar den = rowDen[j][b];
-				if( den <= 0 ) {
-					continue;
-				}
-				const Scalar t  = sqrt( xi2Log[a] / den );
-				const Scalar ct = 1.0 / sqrt( 1.0 + t*t );
-				const Scalar st = t * ct;
-				const Scalar lx = rowCosP[j][b] * st;
-				const Scalar ly = rowSinP[j][b] * st;
-
-				const Scalar hx = eu.x*lx + ev.x*ly + ew.x*ct;
-				const Scalar hy = eu.y*lx + ev.y*ly + ew.y*ct;
-				const Scalar hz = eu.z*lx + ev.z*ly + ew.z*ct;
-
-				const Scalar hdotk = -( hx*dHat.x + hy*dHat.y + hz*dHat.z );
-				if( hdotk <= 0 ) {
-					continue;
-				}
-				const Scalar cosO = -nvView + 2.0 * hdotk * ct;
-				if( cosO <= 0 ) {
-					continue;
-				}
-				const Scalar hDotG = hx*geomN.x + hy*geomN.y + hz*geomN.z;
-				if( dDotG + 2.0 * hdotk * hDotG <= 0 ) {
-					continue;
-				}
-
-				wS += lobes.w[j] * WardKrayRatio( hdotk, ct, cosO, nvView );
-				nAcceptedSpec++;
-			}
-
-			if( nAcceptedSpec == 0 ) {
-				accum += 1.0;		// RandomlySelect's freeidx==1 short-circuit
-				continue;
-			}
-
-			const Scalar total = wD + wS;
-			if( total > NEARZERO ) {
-				accum += wD / total;
-			}
-		}
-	}
-
-	return accum / Scalar(kWardQuadN*kWardQuadN);
+	return WardSelection::Evaluate( input );
 }
 
 //! `sum_i q_i(wo) p_i(wo)` -- see the isotropic twin.

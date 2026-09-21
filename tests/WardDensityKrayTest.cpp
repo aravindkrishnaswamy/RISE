@@ -762,7 +762,7 @@ int main()
 
 			// 1% band: the quadrature and the 200k-draw estimate each
 			// carry their own error, and (per DL-98/DL-99's review) a
-			// deterministic 32x32 selection quadrature inside `Pdf`
+			// boundary-aware deterministic selection quadrature inside `Pdf`
 			// contributes a systematic residual that does not shrink
 			// with the draw count.
 			Check( fabs( integral - emission ) < 0.01,
@@ -871,6 +871,12 @@ int main()
 				Check(fabs(coefficient-.720097153229)<1e-5,"DL212 converged C_D accuracy");
 			}
 			const double mass = IntegratePdfFullSphere(*spf,ri,iorStack,400,800);
+			if( state==0 ) {
+				for( int resolution : {800,1600} ) {
+					std::cout << "   DL212 outgoing mass convergence " << resolution << "x" << 2*resolution
+						<< " mass=" << IntegratePdfFullSphere(*spf,ri,iorStack,resolution,2*resolution) << std::endl;
+				}
+			}
 			const double emission = MeasureEmissionProbability(*spf,ri,iorStack,kSeedA+9200u+state,600000);
 			double sampledMass=0,pdfMass=0;
 			const double tvd = MeasureTVD(*spf,ri,iorStack,kSeedA+9300u+state,600000,sampledMass,pdfMass);

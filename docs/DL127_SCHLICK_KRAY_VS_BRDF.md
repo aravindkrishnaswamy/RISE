@@ -434,7 +434,7 @@ tolerance.
 
 ---
 
-## 7. New debts opened
+## 7. Historical pre-DL-178 model residual — New debts opened
 
 **DL-177** — `WardIsotropicGaussianSPF` and
 `WardAnisotropicEllipticalGaussianSPF` carry the DL-127 pattern: their
