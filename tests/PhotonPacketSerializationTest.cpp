@@ -4,6 +4,7 @@
 #include <chrono>
 #include <filesystem>
 #include <type_traits>
+#include <limits>
 #include "../src/Library/Job.h"
 #include "../src/Library/Scene.h"
 #include "../src/Library/Utilities/MemoryBuffer.h"
@@ -61,6 +62,24 @@ template<class Base>void Run(const char* name){
    Check(!restored.ConfigureWavelengthSampling(380,780,160),"loaded nonempty map cannot change law");Check(!restored.Store(1,401,Point3(0,0,0),wi)&&restored.NumStored()==1,"loaded law rejects incompatible insertion");
   }else Check(p.power.r==2&&p.power.g==3&&p.power.b==4,"Pel packet power retained");
   Check(Insert(restored,wi)&&restored.NumStored()==2,"compatible insertion after load succeeds");
+ }
+ if constexpr(Spectral<Base>()){
+  // The serialized atom population, not a recomputed ideal grid, is the law.
+  for(Scalar invalid:{400.0,700.0,std::numeric_limits<Scalar>::infinity(),std::numeric_limits<Scalar>::quiet_NaN()}){
+   auto* bad=new MemoryBuffer(used);bad->setBytes(buffer->Pointer(),used);bad->seek(IBuffer::START,48+8);bad->setDouble(invalid);bad->seek(IBuffer::START,0);
+   const auto count=restored.NumStored();const Scalar atom=restored.SampleWavelength(1.5/160);
+   Check(!restored.DeserializeChecked(*bad)&&restored.NumStored()==count&&restored.SampleWavelength(1.5/160)==atom,"malformed atom grid retains records and sampling law");bad->release();
+  }
+  auto* exact=new MemoryBuffer(used);exact->setBytes(buffer->Pointer(),used);exact->seek(IBuffer::START,48+8);const Scalar atom=std::nextafter(401.875,402.0);exact->setDouble(atom);exact->seek(IBuffer::START,0);
+  Probe<Base> custom(0);Check(custom.DeserializeChecked(*exact)&&custom.SampleWavelength(1.5/160)==atom,"represented atom is authoritative across load");
+  auto* again=new MemoryBuffer();custom.Serialize(*again);again->seek(IBuffer::START,0);Probe<Base> twice(0);Check(twice.DeserializeChecked(*again)&&twice.SampleWavelength(1.5/160)==atom,"represented atom survives second roundtrip");again->release();exact->release();
+  for(unsigned n:{0u,160u,10000u}){
+   Probe<Base> empty(4);if(n)Check(empty.ConfigureWavelengthSampling(400,700,n),"empty source sampling law configured");
+   auto* bytes=new MemoryBuffer();empty.Serialize(*bytes);bytes->seek(IBuffer::START,0);Probe<Base> copy(0);
+   const bool ok=copy.DeserializeChecked(*bytes);Check(ok&&copy.NumStored()==0&&copy.MaxPhotons()==4,"empty exact spectral map roundtrip");
+   if(ok){double a=0,b=0;unsigned count=0;Check(copy.GetWavelengthSampling(a,b,count)==(n!=0)&&(!n||(a==400&&b==700&&count==n)),"empty map preserves configured state");}
+   bytes->release();
+  }
  }
  auto* truncated=new MemoryBuffer(used-1);truncated->setBytes(buffer->Pointer(),used-1);truncated->seek(IBuffer::START,0);
  const unsigned before=restored.NumStored();Check(!restored.DeserializeChecked(*truncated)&&restored.NumStored()==before,"truncated load retains prior records");truncated->release();
