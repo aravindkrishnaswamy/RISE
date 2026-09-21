@@ -251,7 +251,7 @@ void IsotropicRGBDetectorSphere::PerformMeasurement(
 			}
 
 			Scalar selectedProbability=0;
-			ScatteredRay* pScat = scattered.RandomlySelect( random.CanonicalRandom(), bSpectral, &selectedProbability );
+			ScatteredRay* pScat = scattered.RandomlySelect( random.CanonicalRandom(), false, &selectedProbability );
 
 			if( pScat )
 			{
