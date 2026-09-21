@@ -11,6 +11,7 @@
 #include "../src/Library/Materials/LambertianMaterial.h"
 #include "../src/Library/Materials/IsotropicPhongMaterial.h"
 #include "../src/Library/Painters/UniformScalarPainter.h"
+#include "../src/Library/Painters/SpectralColorPainter.h"
 #include "../src/Library/DetectorSpheres/CircularDiskDetector.h"
 #include "../src/Library/DetectorSpheres/DetectorSphere.h"
 #include "../src/Library/DetectorSpheres/AdaptiveDetectorSphere.h"
@@ -215,7 +216,8 @@ void TestDetector() {
 }
 void TestRealSpectralDetector(){
     auto* diffuse=new UniformColorPainter(RISEPel(.7,.3,.2));
-    auto* black=new UniformColorPainter(RISEPel(0.));auto* exponent=new UniformScalarPainter(12.);
+    Scalar zero=0;SpectralPacket zeroSpectrum(400,700,31,zero);
+    auto* black=new SpectralColorPainter(zeroSpectrum,1.);auto* exponent=new UniformScalarPainter(12.);
     auto* lambert=new LambertianMaterial(*diffuse);auto* phong=new IsotropicPhongMaterial(*diffuse,*black,*exponent);
     double measured[2];int mode=0;
     for(const IMaterial* material:{static_cast<IMaterial*>(lambert),static_cast<IMaterial*>(phong)}){
@@ -302,6 +304,10 @@ void TestShaderSelection() {
         const Scalar got=realDistribution->PerformOperationNM(rc,ri,caster,rs,0,wavelength,stack,nullptr);
         Near(got,paint->GetColorNM(ri.geometric,wavelength),"DL272 actual Lambertian spectral distribution response");
     }
+    SampledWavelengths swl=SampledWavelengths::SampleEquidistant(.5,400,700);
+    Scalar accumulated[SampledWavelengths::N]={},bundle[SampledWavelengths::N];
+    realDistribution->PerformOperationHWSS(rc,ri,caster,rs,accumulated,swl,stack,nullptr,bundle);
+    for(unsigned i=0;i<SampledWavelengths::N;++i)Near(bundle[i],paint->GetColorNM(ri.geometric,swl.lambda[i]),"DL272 actual Lambertian HWSS distribution fallback");
     realDistribution->release();realMaterial->release();
     scene->release();map->release();bsdf->release();paint->release();
 }
