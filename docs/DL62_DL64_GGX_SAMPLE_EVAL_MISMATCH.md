@@ -2032,6 +2032,11 @@ corner, against the strict 0.5% gate. `GGXHemisphericalAlbedoTest` is
 and one NM failure for each of the eight cells).
 
 The anisotropic bake uses its own fixed RNG stream and 100,000 samples
-per `(alphaX,alphaY,mu_i)` cell; the foreground functional bake completed
-in about one minute on this checkout, but this was not a coordinated
-quiet timing and is not a performance claim.
+per `(alphaX,alphaY,mu_i)` cell. In a granted quiet slot on this checkout,
+three foreground bakes took 66.46, 66.23, and 66.03 seconds (mean 66.24 s,
+sample SD 0.215 s); all three emitted byte-identical tables. Interleaved
+single-file compiles of the old and fixed `GGXBRDF.cpp` measured
+0.9567 +/- 0.0115 s and 0.9633 +/- 0.0153 s respectively (n=3, sample
+SD), so the observed 0.0067 s difference is below run-to-run noise.
+The object grew by 52,832 bytes (1.65%) and the fully linked CLI by
+49,744 bytes (0.193%); no whole-render cost is claimed.
