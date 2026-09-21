@@ -299,7 +299,6 @@ namespace
 	static const double oqs_pi = 3.14159265358979323846;
 	static const double oqs_macheps = 2.2204460492503131e-16; // DBL_EPSILON
 	static const double oqs_cubic_rescal_fact = 3.488062113727083e102; // pow(DBL_MAX, 1/3) / phi
-	static const double oqs_quart_rescal_fact = 7.156344627944542e76;  // pow(DBL_MAX, 1/4) / phi
 
 	// Dominant real root of depressed cubic x^3 + b x + c = 0, handles
 	// b or c near DBL_MAX without overflow.  Reference: eq. 85/86.
@@ -463,6 +462,37 @@ namespace
 		return ( ( d == 0 ) ? fabs( bq * dq ) : fabs( ( bq * dq - d ) / d ) ) + errmin;
 	}
 
+	// Error-free summation must retain the individual roundings even under
+	// the renderer's fast-math flags. Volatile materializes those operations.
+	double oqs_sum_error( double a, double b, double& error )
+	{
+		volatile double sum = a + b;
+		volatile double bv = sum - a;
+		volatile double av = sum - bv;
+		volatile double br = b - bv;
+		volatile double ar = a - av;
+		error = ar + br;
+		return sum;
+	}
+	double oqs_sum4( double a, double b, double c, double d )
+	{
+		double e1, e2, e3;
+		const double s1 = oqs_sum_error( a, b, e1 );
+		const double s2 = oqs_sum_error( s1, c, e2 );
+		const double s3 = oqs_sum_error( s2, d, e3 );
+		return s3 + ( e1 + e2 + e3 );
+	}
+	void oqs_factor_residual( const double x[4], double a, double b, double c, double d, double f[4] )
+	{
+		f[0] = std::fma( x[1], x[3], -d );
+		volatile double p = x[1] * x[2];
+		volatile double q = x[0] * x[3];
+		f[1] = oqs_sum4( p, q, -c, std::fma( x[1], x[2], -p ) + std::fma( x[0], x[3], -q ) );
+		volatile double r = x[0] * x[2];
+		f[2] = oqs_sum4( r, x[1], x[3], -b ) + std::fma( x[0], x[2], -r );
+		f[3] = oqs_sum4( x[0], x[2], -a, 0.0 );
+	}
+
 	// Newton-Raphson refine (alpha1, beta1, alpha2, beta2) against the
 	// original quartic coefficients.  Converges in typically 2-4
 	// iterations and drives total forward error below macheps.
@@ -473,10 +503,7 @@ namespace
 		double x[4] = { *AQ, *BQ, *CQ, *DQ };
 		double vr[4] = { d, c, b, a };
 		double fvec[4];
-		fvec[0] = x[1] * x[3] - d;
-		fvec[1] = x[1] * x[2] + x[0] * x[3] - c;
-		fvec[2] = x[1] + x[0] * x[2] + x[3] - b;
-		fvec[3] = x[0] + x[2] - a;
+		oqs_factor_residual( x, a, b, c, d, fvec );
 		double errf = 0, errfa = 0, errfmin;
 		double xmin[4] = { x[0], x[1], x[2], x[3] };
 		for( int k1 = 0; k1 < 4; k1++ ) {
@@ -514,10 +541,7 @@ namespace
 					dx[k1] += Jinv[k1][k2] * fvec[k2];
 			for( int k1 = 0; k1 < 4; k1++ )
 				x[k1] += -dx[k1] / det;
-			fvec[0] = x[1] * x[3] - d;
-			fvec[1] = x[1] * x[2] + x[0] * x[3] - c;
-			fvec[2] = x[1] + x[0] * x[2] + x[3] - b;
-			fvec[3] = x[0] + x[2] - a;
+			oqs_factor_residual( x, a, b, c, d, fvec );
 			double errfold = errf;
 			errf = 0; errfa = 0;
 			for( int k1 = 0; k1 < 4; k1++ ) {
@@ -561,27 +585,29 @@ int Polynomial::SolveQuartic( const Scalar (&coeff)[ 5 ], Scalar (&sol)[ 4 ] )
 		return n;
 	}
 
-	// Translate from RISE's [leading ... constant] ordering into the
-	// OQS monic form x^4 + a x^3 + b x^2 + c x + d = 0.
-	const double a = coeff[1] / coeff[0];
-	const double b = coeff[2] / coeff[0];
-	const double c = coeff[3] / coeff[0];
-	const double d = coeff[4] / coeff[0];
-
-	// Solve for phi0; rescale if we overflow in the dominant-root step.
-	double phi0 = 0;
-	oqs_calc_phi0( a, b, c, d, &phi0, 0 );
-	double rfact = 1.0;
-	double A = a, B = b, C = c, D = d;
-	if( !RISE::IsFiniteDouble( phi0 ) ) {
-		rfact = oqs_quart_rescal_fact;
-		A = a / rfact;
-		double rfactsq = rfact * rfact;
-		B = b / rfactsq;
-		C = c / ( rfactsq * rfact );
-		D = d / ( rfactsq * rfactsq );
-		oqs_calc_phi0( A, B, C, D, &phi0, 1 );
+	// Normalize x=2^scaleExponent*y before division by the leading
+	// coefficient. Exponent decomposition avoids overflowing monic ratios,
+	// and moves both tiny and large root scales into the resolvent's range.
+	int leadingExponent;
+	const double leadingMantissa = std::frexp( coeff[0], &leadingExponent );
+	int scaleExponent = -2147483647;
+	int exponents[4] = {};
+	double mantissas[4] = {};
+	for( int i = 1; i <= 4; ++i ) {
+		if( coeff[i] == 0 ) continue;
+		mantissas[i-1] = std::frexp( coeff[i], &exponents[i-1] );
+		const int difference = exponents[i-1] - leadingExponent;
+		const int bound = difference >= 0 ? ( difference + i - 1 ) / i : difference / i;
+		if( bound > scaleExponent ) scaleExponent = bound;
 	}
+	if( scaleExponent == -2147483647 ) scaleExponent = 0;
+	double normalized[4];
+	for( int i = 1; i <= 4; ++i )
+		normalized[i-1] = std::scalbn( mantissas[i-1] / leadingMantissa,
+			exponents[i-1] - leadingExponent - i * scaleExponent );
+	const double A = normalized[0], B = normalized[1], C = normalized[2], D = normalized[3];
+	double phi0 = 0;
+	oqs_calc_phi0( A, B, C, D, &phi0, 0 );
 
 	// Build the LDL^T decomposition (eqs. 16-28).
 	const double l1 = A / 2.0;
@@ -721,8 +747,8 @@ int Polynomial::SolveQuartic( const Scalar (&coeff)[ 5 ], Scalar (&sol)[ 4 ] )
 	(void)whichcase;
 
 	// Unscale back to the original variable if we rescaled phi0.
-	if( rfact != 1.0 ) {
-		for( int i = 0; i < num; i++ ) sol[i] *= rfact;
+	if( scaleExponent != 0 ) {
+		for( int i = 0; i < num; i++ ) sol[i] = std::scalbn( sol[i], scaleExponent );
 	}
 
 	return num;
