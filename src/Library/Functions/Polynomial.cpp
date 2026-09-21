@@ -567,17 +567,35 @@ namespace
 
 	// Error-free summation must retain the individual roundings even under
 	// the renderer's fast-math flags. Volatile materializes those operations.
+// Clang and MSVC preserve the five roundings without stack barriers in
+// this precise scope. Reassociation would algebraically erase the low
+// error term. Other compilers retain the explicit round-trip equivalent.
+#if defined(__clang__) || defined(_MSC_VER)
+#pragma float_control(precise, on, push)
+#endif
 	template<class T>
 	T oqs_sum_error( T a, T b, T& error )
 	{
+#if defined(__clang__) || defined(_MSC_VER)
+		const T sum = a + b;
+		const T bv = sum - a;
+		const T av = sum - bv;
+		const T br = b - bv;
+		const T ar = a - av;
+#else
 		const T sum = oqs_round( a + b );
 		const T bv = oqs_round( sum - a );
 		const T av = oqs_round( sum - bv );
 		const T br = oqs_round( b - bv );
 		const T ar = oqs_round( a - av );
+#endif
 		error = ar + br;
 		return sum;
 	}
+#if defined(__clang__) || defined(_MSC_VER)
+#pragma float_control(pop)
+#endif
+
 	template<class T>
 	T oqs_sum4( T a, T b, T c, T d )
 	{
