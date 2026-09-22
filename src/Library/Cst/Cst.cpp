@@ -3699,6 +3699,15 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 		switch( cat ) {                                          // categories the apply handles
 			case ChunkCategory::Material: case ChunkCategory::Geometry:
 			case ChunkCategory::Object:  case ChunkCategory::Light: case ChunkCategory::Modifier: break;
+			case ChunkCategory::Painter:
+				// DL-194: Targeted structural guard. ExpressionProgram::BindPainterRefs holds raw
+				// addrefs on sampled IPainter*/IScalarPainter* instances without re-resolution.
+				// Admitting Painter-category chunks incrementally would leave referencing expression
+				// programs pointing to stale/freed painter objects unless a reverse-dependency walk
+				// (via kColorPainterSubCat/kScalarPainterSubCat) re-runs BindPainterRefs on all
+				// referencing programs. Refuse -> fall back to full derive.
+				diags.push_back( node->role + " '" + name + "': incremental derive refuses Painter category: ExpressionProgram holds raw addrefs on sampled painters; admitting painters incrementally requires re-binding all referencing programs (DL-194) -- fall back to a full derive" );
+				return 0;
 			default: diags.push_back( node->role + ": incremental cannot fully drop this category (e.g. a scalar_painter has no colour-painter-manager entry for RemovePainter to drop); fall back to a full derive" ); return 0;
 		}
 		// Reversibility is PER-PARSER, not per-category (review P1.3/P1.5): refuse the

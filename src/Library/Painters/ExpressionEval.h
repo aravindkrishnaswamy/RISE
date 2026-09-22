@@ -992,24 +992,24 @@ namespace RISE
 			//! name failed to resolve, which the caller -- not this function
 			//! -- knows the name of).
 			//!
-			//! DL-164 (docs/DEBT_LEDGER.md) STALE-POINTER WARNING: the addref this
+			//! DL-164 / DL-194 (docs/DEBT_LEDGER.md) STALE-POINTER WARNING: the addref this
 			//! function takes is a snapshot of "the painter object live at attach
 			//! time" -- there is no re-resolution hook, and nothing here notices if
 			//! the pointer it holds is later replaced (a same-name chunk re-Finalized
 			//! in place). That is safe TODAY only because Cst.cpp's
 			//! DeriveToJobIncremental refuses every ChunkCategory::Painter chunk
-			//! outright (its own `default:` arm), so the ONLY way any chunk's
+			//! outright via an explicit targeted guard (DL-194), so the ONLY way any chunk's
 			//! painter bindings are ever rebuilt is a FULL DeriveToJob, which always
 			//! reconstructs this ExpressionProgram (and re-runs BindPainterRefs)
 			//! from scratch. If a future change ever admits Painter-category chunks
-			//! to that incremental path, it MUST also either (a) re-run
-			//! BindPainterRefs on every program that references a re-Finalized
-			//! painter (which first needs a colour/scalar-painter reverse-dependency
-			//! walk analogous to the one this row's reference-graph fix added -- see
-			//! Cst.cpp's kColorPainterSubCat/kScalarPainterSubCat), or (b) refuse the
-			//! incremental path specifically for a re-Finalized chunk that is the
-			//! TARGET of any live sample()/sample_scalar() binding. See
-			//! tests/CstIncrementalSafetyTest.cpp's DL-164 cases, which pin the
+			//! to that incremental path, it MUST provide a `RebindPainterRefs` hook:
+			//! (a) atomically replacing `m_boundRefs` with a newly constructed
+			//! `BoundPainterRefs` snapshot (releasing old addrefs and acquiring new ones),
+			//! (b) driven by a colour/scalar-painter reverse-dependency walk across all
+			//! referencing programs (using Cst.cpp's kColorPainterSubCat/kScalarPainterSubCat),
+			//! or alternatively refusing incremental apply specifically for any painter
+			//! chunk that is the target of any live sample()/sample_scalar() binding. See
+			//! tests/CstIncrementalSafetyTest.cpp's DL-164/DL-194 cases, which pin the
 			//! current refusal and will need updating (not merely re-passing) if this
 			//! ever changes.
 			bool BindPainterRefs( const std::vector<IPainter*>& colorPtrs, const std::vector<IScalarPainter*>& scalarPtrs )
