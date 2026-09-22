@@ -71,10 +71,17 @@
 //      `pRefFront`, a reflectance).  A round-2 revision of this test
 //      asserted the albedo-weighted deposit as "an accuracy
 //      improvement"; that was wrong, and this sub-test now asserts the
-//      full arriving power at the Lambertian wall.  The tracer keeps the
-//      pre-DL-39 `power*(1-accum_scattered)` formula at every
-//      non-translucent-exit hit, which for a wall that traces nothing
-//      onward IS the full arriving power.
+//      full arriving power at the Lambertian wall. That historical scope
+//      control had no non-diffuse continuation. DL280 adds a mixed Phong
+//      receiver: subtracting traced specular power was still wrong there,
+//      since the gather itself applies the query BSDF. All ordinary
+//      receivers now store full incoming power.
+//
+//    DL239 additionally prices the real deposit-to-gather response for
+//      tilted frames. Tagged exit packets already contain Beer*(1-s), so
+//      their gather uses the clipped cosine exit law, not front reflectance.
+//      Ordinary incident packets retain their direction and use the BSDF.
+//      Exact tagged roundtrip and legacy failure/no-mutation are covered.
 //
 //  Author: Aravind Krishnaswamy (RISE debt-cleanup, slice `translucent`)
 //  Tabs: 4
@@ -85,6 +92,15 @@
 
 #include <iostream>
 #include <cmath>
+#include <algorithm>
+#include <cstdio>
+#include <vector>
+#include <chrono>
+#include <filesystem>
+#include "../src/Library/Job.h"
+#include "../src/Library/Interfaces/IScenePriv.h"
+#include "../src/Library/Utilities/MemoryBuffer.h"
+#include "../src/Library/Utilities/Color/ColorUtils.h"
 
 #include "../src/Library/Utilities/Math3D/Math3D.h"
 #include "../src/Library/Utilities/Ray.h"
@@ -96,6 +112,7 @@
 #include "../src/Library/Painters/UniformScalarPainter.h"
 #include "../src/Library/Materials/TranslucentMaterial.h"
 #include "../src/Library/Materials/LambertianMaterial.h"
+#include "../src/Library/Materials/IsotropicPhongMaterial.h"
 #include "../src/Library/PhotonMapping/TranslucentPelPhotonTracer.h"
 #include "../src/Library/PhotonMapping/TranslucentPelPhotonMap.h"
 #include "../src/Library/Managers/ObjectManager.h"
@@ -144,10 +161,12 @@ namespace
 		const IObject& object;
 		const IMaterial& material;
 		mutable int callCount;
+		Scalar tilt;
 	public:
-		SingleHitThenMissManager( const IObject& obj, const IMaterial& mat ) :
-			ObjectManager( false, false, 4, 8 ), object( obj ), material( mat ), callCount( 0 )
+		SingleHitThenMissManager( const IObject& obj, const IMaterial& mat, Scalar angle = 0 ) :
+			ObjectManager( false, false, 4, 8 ), object( obj ), material( mat ), callCount( 0 ), tilt( angle )
 		{}
+		void Reset() const { callCount = 0; }
 		void IntersectRay( RayIntersection& ri, bool, bool, bool ) const override
 		{
 			if( callCount++ != 0 ) {
@@ -158,9 +177,9 @@ namespace
 			ri.geometric.bHit = true;
 			ri.geometric.range = 1;
 			ri.geometric.ptIntersection = ri.geometric.ray.PointAtLength( 1 );
-			ri.geometric.vNormal = normal;
+			ri.geometric.vNormal = Vector3( sin(tilt), 0, cos(tilt) );
 			ri.geometric.vGeomNormal = normal;
-			ri.geometric.onb.CreateFromW( normal );
+			ri.geometric.onb.CreateFromW( ri.geometric.vNormal );
 			ri.pObject = &object;
 			ri.pMaterial = &material;
 		}
@@ -213,6 +232,10 @@ namespace
 		{}
 		unsigned int StoredCount() const { return static_cast<unsigned int>( vphotons.size() ); }
 		RISEPel StoredPower( unsigned int i ) const { return vphotons[i].power; }
+		bool AllPayloads( const Vector3& wi, bool exit ) const {
+			for(const auto& p:vphotons) if(p.diffuseExit!=exit || p.incomingDirection.x!=wi.x || p.incomingDirection.y!=wi.y || p.incomingDirection.z!=wi.z) return false;
+			return !vphotons.empty();
+		}
 	};
 
 	// DL-39 P3 follow-up: reports TWO hits -- the translucent interior
@@ -492,6 +515,109 @@ static void TestLambertianWallDeposit()
 	}
 }
 
+// DL239: drive actual deposits through the public gather. The two packet
+// meanings have different responses: ordinary incident flux receives the
+// query BSDF; an exit packet already paid Beer*(1-s) and represents a
+// clipped-cosine re-emission lobe, not another front-reflection interaction.
+static void TestDirectionalGathers()
+{
+ for( bool exit : {false,true} ) for( double angle : {0.,30.,60.} ) {
+  const double tilt=angle*PI/180;
+  auto* front=new UniformColorPainter(RISEPel(.2,.4,.7));
+  auto* transmission=new UniformColorPainter(RISEPel(.4));
+  auto* extinction=new UniformScalarPainter(.5);
+  auto* exponent=new UniformScalarPainter(1.);
+  auto* scattering=new UniformScalarPainter(.3);
+  auto* trans=new TranslucentMaterial(*front,*transmission,*extinction,*exponent,*scattering);
+  auto* wall=new LambertianMaterial(*front);
+  IMaterial* material=exit?static_cast<IMaterial*>(trans):static_cast<IMaterial*>(wall);
+  auto* object=new StubObject();
+  auto* manager=new SingleHitThenMissManager(*object,*material,tilt);
+  auto* scene=new Scene();scene->SetObjectManager(manager);
+  auto* tracer=new TestTranslucentPelPhotonTracer();tracer->AttachScene(scene);
+  InspectableTranslucentPelPhotonMap map(2602);
+  // The interior packet arrives outward, opposite the ordinary-wall case.
+  const Vector3 wi=exit?Vector3(0,0,-1):Vector3(.6,0,.8);
+  std::vector<double> distances;
+  for(int y=-25;y<=25;++y)for(int x=-25;x<=25;++x){
+   const Point3 p(x*.01,y*.01,0);
+   manager->Reset();IORStack stack=exit?MakeInsideStack(object):IORStack(1.0);
+   const Ray incoming(Point3(p.x+wi.x,p.y+wi.y,p.z+wi.z),-wi);
+   tracer->TestTrace(incoming,RISEPel(1.),true,map,stack,1);
+   const double d2=p.x*p.x+p.y*p.y;if(d2<.04)distances.push_back(d2);
+  }
+  EXPECT(map.StoredCount()==2601,"directional gather has every live tracer deposit");
+  EXPECT(map.AllPayloads(wi,exit),"every live producer records exact incident direction and response kind");
+  EXPECT(!map.Store(RISEPel(99.),Point3(9,9,9)),"legacy directionless Store fails explicitly with spare capacity");
+  EXPECT(map.StoredCount()==2601 && map.AllPayloads(wi,exit),"legacy directionless Store leaves existing packets unchanged");
+  map.Balance();map.SetGatherParams(.2,.05,10,400,nullptr);
+  auto* serialized=new MemoryBuffer();map.Serialize(*serialized);const unsigned serializedBytes=serialized->getCurPos();serialized->seek(IBuffer::START,0);
+  InspectableTranslucentPelPhotonMap restored(0);const bool loaded=restored.DeserializeChecked(*serialized);
+  EXPECT(loaded && restored.StoredCount()==2601,"tagged translucent map roundtrip retains every packet");
+  EXPECT(restored.AllPayloads(wi,exit),"tagged roundtrip retains exact direction and kind");
+  auto* truncated=new MemoryBuffer(serialized->Pointer(),serializedBytes-1,false);
+  EXPECT(!restored.DeserializeChecked(*truncated),"truncated tagged map reports failure");
+  EXPECT(restored.StoredCount()==2601 && restored.AllPayloads(wi,exit),"truncated tagged load retains prior packet field");
+  truncated->release();
+  std::sort(distances.begin(),distances.end());const double density=400/(PI*distances[399]);
+  for(double view:{0.,70.,150.}){
+   const double v=view*PI/180;const Vector3 wo(sin(v),0,cos(v));
+   RayIntersectionGeometric query(Ray(Point3(0,0,1),-wo),nullRasterizerState);
+   query.ptIntersection=Point3(0,0,0);query.vNormal=Vector3(sin(tilt),0,cos(tilt));query.vGeomNormal=Vector3(0,0,1);query.onb.CreateFromW(query.vNormal);
+   RISEPel got;map.RadianceEstimate(got,query,*material->GetBSDF());
+   RISEPel roundtrip;restored.RadianceEstimate(roundtrip,query,*material->GetBSDF());
+   EXPECT_NEAR_PEL(roundtrip,got,1e-12,"tagged roundtrip preserves directional query response");
+   RISEPel expected(0.);
+   const double incomingResponse=fabs(Vector3Ops::Dot(query.vNormal,wi)/wi.z);
+   if(exit){
+    // Independently cancel p_exit(wo) * adjoint / |Ng.wo|.
+    // p_exit = max(Ns.wo,0)/(pi * (1+Ns.Ng)/2), clipped to Ng.wo>0.
+    if(wo.z>0 && Vector3Ops::Dot(query.vNormal,wo)>0)
+     expected=RISEPel(density*exp(-.5)*.7*incomingResponse/(PI*((1+cos(tilt))*.5)));
+   }else expected=material->GetBSDF()->value(wi,query)*(density*incomingResponse);
+   for(int c=0;c<3;++c){
+    const bool ok=std::isfinite(got[c])&&fabs(got[c]-expected[c])<1e-9*std::max(1.,fabs(expected[c]));
+    ++checks;if(!ok)++failed;
+    std::printf("%s DL239 translucent gather kind=%s tilt=%.17g view=%.17g channel=%d got=%.17g expected=%.17g density=%.17g\n",ok?"PASS":"FAIL",exit?"exit-lobe":"incident-flux",angle,view,c,got[c],expected[c],density);
+   }
+  }
+  // Real Job load: unsupported old directionless data must not replace
+  // an installed, populated directional map. The new format must load.
+  if(angle==0){
+   auto* job=new Job();job->GetScene()->SetTranslucentPelMap(&map);
+   auto* old=new MemoryBuffer(512);old->setUInt(1);old->setUInt(0);old->setDouble(.04);old->setDouble(.05);old->setUInt(0);old->setUInt(1);old->setDouble(1.);BoundingBox(Point3(-1,-1,-1),Point3(1,1,1)).Serialize(*old);old->setUInt(1);Point3Ops::Serialize(Point3(0,0,0),*old);old->setUChar(0);ColorUtils::SerializeRGBPel(RISEPel(1.),*old);
+   const auto path=std::filesystem::temp_directory_path()/("rise_dl239_trans_"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())+".pmap");
+   EXPECT(old->DumpToFileToCursor(path.string().c_str()),"legacy translucent fixture written");
+   EXPECT(!job->LoadTranslucentPelPhotonmap(path.string().c_str()),"legacy directionless file reports unsupported reconstruction");
+   EXPECT(job->GetScene()->GetTranslucentPelMap()==&map && map.StoredCount()==2601,"failed legacy load preserves installed valid map");
+   EXPECT(serialized->DumpToFileToCursor(path.string().c_str()),"new tagged fixture written");
+   EXPECT(job->LoadTranslucentPelPhotonmap(path.string().c_str()),"Job loads tagged directional map");
+   EXPECT(job->GetScene()->GetTranslucentPelMapMutable()->NumStored()==2601,"Job replacement retains full tagged population");
+   std::filesystem::remove(path);old->release();job->release();
+  }
+  serialized->release();
+  tracer->release();scene->release();manager->release();object->release();wall->release();trans->release();front->release();transmission->release();extinction->release();exponent->release();scattering->release();
+ }
+}
+
+// A sampled glossy continuation is not a subtraction from the incident
+// flux used by a photon-density BSDF estimate at this same surface.
+static void TestMixedMaterialIncidentDeposit()
+{
+ auto* diffuse=new UniformColorPainter(RISEPel(.2,.3,.4));
+ auto* glossy=new UniformColorPainter(RISEPel(.3,.2,.1));
+ auto* exponent=new UniformScalarPainter(4.);
+ auto* material=new IsotropicPhongMaterial(*diffuse,*glossy,*exponent);
+ auto* object=new StubObject();auto* manager=new SingleHitThenMissManager(*object,*material);
+ auto* scene=new Scene();scene->SetObjectManager(manager);
+ auto* tracer=new TestTranslucentPelPhotonTracer();tracer->AttachScene(scene);
+ InspectableTranslucentPelPhotonMap map(32);
+ for(int i=0;i<32;++i){manager->Reset();IORStack stack(1.0);tracer->TestTrace(Ray(Point3(i*.01,0,1),Vector3(0,0,-1)),RISEPel(1.),true,map,stack,1);}
+ EXPECT(map.StoredCount()==32,"mixed diffuse/glossy receiver stores every arriving packet");
+ for(unsigned i=0;i<map.StoredCount();++i)for(int c=0;c<3;++c){const double got=map.StoredPower(i)[c];const bool ok=std::isfinite(got)&&fabs(got-1.)<1e-12;++checks;if(!ok)++failed;std::printf("%s DL280 actual mixed-material incident packet sample=%u channel=%d got=%.17g expected=1\n",ok?"PASS":"FAIL",i,c,got);}
+ tracer->release();scene->release();manager->release();object->release();material->release();diffuse->release();glossy->release();exponent->release();
+}
+
 int main()
 {
 	GlobalLog();
@@ -499,6 +625,8 @@ int main()
 	TestExtinctionSweep();
 	TestBackscatterBalance();
 	TestLambertianWallDeposit();
+	TestDirectionalGathers();
+	TestMixedMaterialIncidentDeposit();
 
 	std::cout << std::endl;
 	std::cout << "TranslucentPhotonEnergyTest: " << checks << " checks, " << failed << " failures" << std::endl;

@@ -23,8 +23,7 @@ namespace RISE
 	namespace Implementation
 	{
 		class CausticSpectralPhotonMap : 
-			public ISpectralPhotonMap,
-			public PhotonMapDirectionalHelper<SpectralPhoton>
+			public PhotonMapDirectionalSpectralHelper
 		{
 		protected:
 			Scalar			nm_range;							// range of wavelengths to search for a NM irradiance estimate
@@ -67,6 +66,8 @@ namespace RISE
 			void Serialize( 
 				IWriteBuffer&			buffer					///< [in] Buffer to serialize to
 				) const;
+
+			bool DeserializeChecked(IReadBuffer& buffer);
 
 			void Deserialize(
 				IReadBuffer&			buffer					///< [in] Buffer to deserialize from

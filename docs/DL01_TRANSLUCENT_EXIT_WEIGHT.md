@@ -108,6 +108,21 @@ which never included that lobe's weight at all. See
 [DL-39's ledger row](DEBT_LEDGER.md) and
 [the closure test](../tests/TranslucentPhotonEnergyTest.cpp).
 
+## Subsequent photon scope correction (2026-09-21)
+
+The DL39 Lambertian receiver control established full arriving flux only where
+no non-diffuse continuation was traced. It did not establish the old subtraction
+formula for mixed materials. DL280's actual Phong receiver proof shows that
+subtracting its traced specular weight removes incident flux before the gather
+applies the BSDF. Ordinary receivers now retain full arriving power.
+
+DL239 also separates tagged exit-lobe packets from ordinary incident packets.
+The former already include Beer and `(1-s)` and use the clipped exit angular law;
+the latter use their stored incident direction and the query BSDF. This avoids
+applying front reflectance or transport attenuation twice. Historical DL39
+measurements above are preserved; current scope and compatibility are described
+in [the photon transport note](DL239_PHOTON_TRANSPORT.md).
+
 ## Corrections to the original ledger
 
 - The scene descriptor accepts `tau`; `transmittance` was explanatory

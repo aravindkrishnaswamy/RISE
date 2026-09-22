@@ -12,6 +12,11 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "PhotonMapping/GlobalPelPhotonMap.h"
+#include "PhotonMapping/GlobalSpectralPhotonMap.h"
+#include "PhotonMapping/CausticSpectralPhotonMap.h"
+#include "PhotonMapping/CausticPelPhotonMap.h"
+#include "PhotonMapping/TranslucentPelPhotonMap.h"
 #include <cerrno>    // errno / ERANGE for non-finite + overflow rejection
 #include <climits>   // UINT_MAX for max_bounces validation
 #include "Scene.h"   // P2a: bump light-topology generation on Job-level emitter/env edits
@@ -11287,15 +11292,13 @@ bool Job::LoadCausticPelPhotonmap(
 	IReadBuffer* buffer = 0;
 	RISE_API_CreateDiskFileReadBuffer( &buffer, file_name );
 
-	IPhotonMap* pmap = 0;
-	RISE_API_CreateCausticPelPhotonMap( &pmap, 0 );
-
-	pmap->Deserialize( *buffer );
-	pScene->SetCausticPelMap( pmap );
+	CausticPelPhotonMap* pmap = new CausticPelPhotonMap(0,nullptr);
+	const bool loaded=buffer && pmap->DeserializeChecked(*buffer);
+	if(loaded)pScene->SetCausticPelMap(pmap);
 
 	safe_release( pmap );
 	safe_release( buffer );
-	return true;
+	return loaded;
 }
 
 //! Loads the global pel photon map from disk
@@ -11310,15 +11313,15 @@ bool Job::LoadGlobalPelPhotonmap(
 	IReadBuffer* buffer = 0;
 	RISE_API_CreateDiskFileReadBuffer( &buffer, file_name );
 
-	IPhotonMap* pmap = 0;
-	RISE_API_CreateGlobalPelPhotonMap( &pmap, 0 );
+	GlobalPelPhotonMap* pmap = new GlobalPelPhotonMap( 0, nullptr );
+	GlobalLog()->PrintNew( pmap, __FILE__, __LINE__, "GlobalPelPhotonMap" );
 
-	pmap->Deserialize( *buffer );
-	pScene->SetGlobalPelMap( pmap );
+	const bool loaded = buffer && pmap->DeserializeChecked( *buffer );
+	if( loaded ) pScene->SetGlobalPelMap( pmap );
 
 	safe_release( pmap );
 	safe_release( buffer );
-	return true;
+	return loaded;
 }
 
 //! Loads the translucent pel photon map from disk
@@ -11333,15 +11336,15 @@ bool Job::LoadTranslucentPelPhotonmap(
 	IReadBuffer* buffer = 0;
 	RISE_API_CreateDiskFileReadBuffer( &buffer, file_name );
 
-	IPhotonMap* pmap = 0;
-	RISE_API_CreateTranslucentPelPhotonMap( &pmap, 0 );
+	TranslucentPelPhotonMap* pmap = new TranslucentPelPhotonMap( 0, nullptr );
+	GlobalLog()->PrintNew( pmap, __FILE__, __LINE__, "TranslucentPelPhotonMap" );
 
-	pmap->Deserialize( *buffer );
-	pScene->SetTranslucentPelMap( pmap );
+	const bool loaded = buffer && pmap->DeserializeChecked( *buffer );
+	if( loaded ) pScene->SetTranslucentPelMap( pmap );
 
 	safe_release( pmap );
 	safe_release( buffer );
-	return true;
+	return loaded;
 }
 
 //! Loads the caustic spectral photon map from disk
@@ -11357,15 +11360,13 @@ bool Job::LoadCausticSpectralPhotonmap(
 	IReadBuffer* buffer = 0;
 	RISE_API_CreateDiskFileReadBuffer( &buffer, file_name );
 
-	ISpectralPhotonMap* pmap = 0;
-	RISE_API_CreateCausticSpectralPhotonMap( &pmap, 0 );
-
-	pmap->Deserialize( *buffer );
-	pScene->SetCausticSpectralMap( pmap );
+	CausticSpectralPhotonMap* pmap = new CausticSpectralPhotonMap(0,nullptr);
+	const bool loaded=buffer && pmap->DeserializeChecked(*buffer);
+	if(loaded)pScene->SetCausticSpectralMap(pmap);
 
 	safe_release( pmap );
 	safe_release( buffer );
-	return true;
+	return loaded;
 }
 
 //! Loads the caustic spectral photon map from disk
@@ -11381,15 +11382,13 @@ bool Job::LoadGlobalSpectralPhotonmap(
 	IReadBuffer* buffer = 0;
 	RISE_API_CreateDiskFileReadBuffer( &buffer, file_name );
 
-	ISpectralPhotonMap* pmap = 0;
-	RISE_API_CreateGlobalSpectralPhotonMap( &pmap, 0 );
-
-	pmap->Deserialize( *buffer );
-	pScene->SetGlobalSpectralMap( pmap );
+	GlobalSpectralPhotonMap* pmap = new GlobalSpectralPhotonMap(0,nullptr);
+	const bool loaded=buffer && pmap->DeserializeChecked(*buffer);
+	if(loaded)pScene->SetGlobalSpectralMap(pmap);
 
 	safe_release( pmap );
 	safe_release( buffer );
-	return true;
+	return loaded;
 }
 
 //! Loads the shadow photon map from disk

@@ -47,62 +47,17 @@ void CausticPelPhotonMap::RadianceEstimate(
 	RadianceEstimateFromSearch( rad, ri, brdf );
 }
 
-void CausticPelPhotonMap::Serialize( 
-	IWriteBuffer&			buffer					///< [in] Buffer to serialize to
-	) const
+void CausticPelPhotonMap::Serialize(IWriteBuffer& buffer)const
 {
-	buffer.ResizeForMore( sizeof( unsigned int ) * 4 + sizeof( Scalar ) * 4 );
-
-	buffer.setUInt( nMaxPhotons );
-	buffer.setUInt( nPrevScale );
-	buffer.setDouble( dGatherRadius );
-	buffer.setDouble( dEllipseRatio );
-	buffer.setUInt( nMinPhotonsOnGather );
-	buffer.setUInt( nMaxPhotonsOnGather );
-	buffer.setDouble( maxPower );
-
-	// Serialize the bounding box
-	bbox.Serialize( buffer );
-
-	// Serialize number of stored photons
-	buffer.ResizeForMore( static_cast<unsigned int>(sizeof( unsigned int ) + sizeof( Photon ) * vphotons.size()) );
-	buffer.setUInt( static_cast<unsigned int>(vphotons.size()) );
-
-	for( unsigned int i=0; i<vphotons.size(); i++ ) {
-		const Photon& p = vphotons[i];
-		Point3Ops::Serialize( p.ptPosition, buffer );
-		buffer.setUChar( p.plane );
-		ColorUtils::SerializeRGBPel( p.power, buffer );
-		buffer.setUChar( p.theta );
-		buffer.setUChar( p.phi );
-	}
+ WriteExactPrefix(buffer,1);WriteExactBody(buffer);
 }
-
-void CausticPelPhotonMap::Deserialize(
-	IReadBuffer&			buffer					///< [in] Buffer to deserialize from
-	)
+bool CausticPelPhotonMap::DeserializeChecked(IReadBuffer& buffer)
 {
-	nMaxPhotons = buffer.getUInt();
-	nPrevScale = buffer.getUInt();
-	dGatherRadius = buffer.getDouble();
-	dEllipseRatio = buffer.getDouble();
-	nMinPhotonsOnGather = buffer.getUInt();
-	nMaxPhotonsOnGather = buffer.getUInt();
-	maxPower = buffer.getDouble();
-
-	bbox.Deserialize( buffer );
-
-	const unsigned int numphot = buffer.getUInt();
-	vphotons.reserve( numphot );
-
-	for( unsigned int i=0; i<numphot; i++ ) {
-		Photon p;
-		Point3Ops::Deserialize( p.ptPosition, buffer );
-		p.plane = buffer.getUChar();
-		ColorUtils::DeserializeRGBPel( p.power, buffer );
-		p.theta = buffer.getUChar();
-		p.phi = buffer.getUChar();
-		vphotons.push_back( p );
-	}
+ if(!ReadExactPrefix(buffer,1))return false;
+ ExactPacketState state;if(!ReadExactBody(buffer,state))return false;
+ CommitExactBody(state);return true;
 }
-
+void CausticPelPhotonMap::Deserialize(IReadBuffer& buffer)
+{
+ DeserializeChecked(buffer);
+}

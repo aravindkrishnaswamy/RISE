@@ -29,7 +29,22 @@ namespace RISE
 			public PhotonMapDirectionalPelHelper<IrradPhoton>
 		{		
 		protected:
-			bool	bPrecomputedIrrad;							// Has irradiance been precomputed ?
+			struct CacheAnchor
+			{
+				Point3 position;
+				Vector3 geometricNormal;
+				unsigned char plane;
+			};
+			std::vector<CacheAnchor> anchors;
+			unsigned int anchorSpacing;
+			bool hasGeometricNormals;
+
+			void BalanceAnchors( int from, int to, BoundingBox bounds );
+			void FindAnchor( const Point3& point, const Vector3& normal,
+				int from, int to, Scalar& distance, const CacheAnchor*& nearest ) const;
+			const CacheAnchor* FindAnchor( const Point3& point, const Vector3& normal ) const;
+			void RadianceAtAnchor( RISEPel& rad, const CacheAnchor& anchor,
+				const RayIntersectionGeometric& query, const IBSDF& bsdf ) const;
 
 		public:
 			GlobalPelPhotonMap( 
@@ -49,15 +64,16 @@ namespace RISE
 				const IBSDF&					brdf					// BRDF of the surface to estimate irradiance from
 				) const;
 
+			// N is the unit geometric surface normal, not the shading normal.
 			bool Store( const RISEPel& power, const Point3& pos, const Vector3& N, const Vector3& dir );
 
-			void SetGatherParams( const Scalar radius, const Scalar ellipse_ratio, const unsigned int nminphotons, const unsigned int nmaxphotons, IProgressCallback* pFunc )
-			{
-				PhotonMapCore<IrradPhoton>::SetGatherParams( radius, ellipse_ratio, nminphotons, nmaxphotons, pFunc );
-				if( !bPrecomputedIrrad ) {
-					PrecomputeIrradiance( 4, pFunc );
-				}
-			}
+			void SetGatherParams( const Scalar radius, const Scalar ellipse_ratio,
+				const unsigned int nminphotons, const unsigned int nmaxphotons,
+				IProgressCallback* pFunc );
+
+			// Loading is transactional. Legacy full directional maps can be
+			// gathered directly; legacy scalar caches cannot be reconstructed.
+			bool DeserializeChecked( IReadBuffer& buffer );
 
 			void Serialize( 
 				IWriteBuffer&			buffer					///< [in] Buffer to serialize to
