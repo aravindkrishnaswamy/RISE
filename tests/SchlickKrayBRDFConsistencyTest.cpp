@@ -14,7 +14,7 @@
 //  MIS partners at a `schlick_material` vertex are pricing different
 //  BRDFs and the sampled estimator does not integrate the BRDF.
 //
-//  The exact discrepancy (derived in the doc, section 2):
+//  Historical DL-127 discrepancy (before DL-178, derived in section 2):
 //
 //      f_S cos / p_S = S * A(phi) * (h.v)
 //                        / ( 2 pi * (n.v) * (n.h) * p_phi(phi) )
@@ -23,6 +23,10 @@
 //  draws from (DL-67 corrected it to
 //  `p^2 / (2 pi (p^2 + t_q^2 (1-p^2))^{3/2})`).  The bracket is 1 only
 //  when `h == n`; it departs from 1 with roughness and incidence.
+//
+//  DL-178 additionally multiplies the BRDF and this weight by
+//  G(nv)G(nl), G(c)=c/[r+(1-r)c]. Z still cancels; roughness
+//  remains through G. The identities below use the live BRDF.
 //
 //  SECTIONS
 //    1. Per-draw identity `kray_I * p_I == f_I * cos` on real

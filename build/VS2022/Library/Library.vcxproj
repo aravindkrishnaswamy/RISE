@@ -799,6 +799,7 @@
     <ClInclude Include="..\..\..\src\Library\Materials\WardIsotropicGaussianBRDF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\WardIsotropicGaussianMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\WardIsotropicGaussianSPF.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\WardSelectionQuadrature.h" />
     <ClInclude Include="..\..\..\src\Library\Modifiers\GlintModifier.h" />
     <ClInclude Include="..\..\..\src\Library\Modifiers\ModifierFrame.h" />
     <ClInclude Include="..\..\..\src\Library\Modifiers\ModifierStack.h" />

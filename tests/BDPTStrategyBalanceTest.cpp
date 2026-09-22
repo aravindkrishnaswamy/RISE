@@ -3240,6 +3240,14 @@ static void TestGenericHumanTissueOriginFix()
 
 int main( int argc, char** argv )
 {
+	// Focused repeated A/B measurement uses the exact shipped topology
+	// fixtures and unchanged gates without rerendering unrelated spectra.
+	if( argc == 2 && std::strcmp(argv[1], "--materials-only") == 0 ) {
+		TestSchlickMultiLobe();
+		TestGGXLambertianControl();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
 	if( argc == 2 && std::strcmp(argv[1], "--spectral-aggregate-unit") == 0 ) {
 		TestSpectralRepeatAggregation();
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
@@ -3248,7 +3256,7 @@ int main( int argc, char** argv )
 	if( argc > 1 ) {
 		if( argc != 3 || std::strcmp(argv[1], "--spectral-only") != 0 ||
 			(std::strcmp(argv[2], "1") != 0 && std::strcmp(argv[2], "2") != 0) ) {
-			std::cerr << "Usage: BDPTStrategyBalanceTest [--spectral-only 1|2 | --spectral-aggregate-unit]" << std::endl;
+			std::cerr << "Usage: BDPTStrategyBalanceTest [--spectral-only 1|2 | --spectral-aggregate-unit | --materials-only]" << std::endl;
 			return 2;
 		}
 		spectralSampleScale = std::strcmp(argv[2], "2") == 0 ? 2 : 1;

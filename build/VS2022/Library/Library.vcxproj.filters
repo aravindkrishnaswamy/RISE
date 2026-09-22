@@ -2160,6 +2160,9 @@
     <ClInclude Include="..\..\..\src\Library\Materials\WardIsotropicGaussianSPF.h">
       <Filter>Materials\Ward</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\WardSelectionQuadrature.h">
+      <Filter>Materials\Ward</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\CookTorranceBRDF.h">
       <Filter>Materials\Cook Torrance</Filter>
     </ClInclude>

@@ -1,5 +1,7 @@
 # DL-67 Slice 0 — `SchlickSPF::Pdf`/`PdfNM` is the density of what `Scatter` emits
 
+> **Model update, 2026-09-19 (DL-178 / DL-212):** The formulas and measurements below describe the historical model. [Current model derivation and validation](DL178_DL212_BOUNDED_SCHLICK_WARD.md) supersede the Schlick weight with its Eq.31 geometric product and both Ward weights with `2 Rs cos_o/(cos_i+cos_o)`. The sampler and per-lobe densities remain unchanged; aggregate selection weights follow the new krays. Schlick retains a finite energy-conservation residual tracked as DL-225.
+
 Scope: make `SchlickSPF::Pdf`/`PdfNM` return the actual probability
 density of the direction the integrator continues along. That is the
 shared prerequisite the DL-67/DL-69 design note calls "Slice 0"; it does

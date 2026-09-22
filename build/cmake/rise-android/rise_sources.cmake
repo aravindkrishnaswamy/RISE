@@ -1,3 +1,4 @@
+# Ward SPFs share header-only Materials/WardSelectionQuadrature.h.
 # -----------------------------------------------------------------------------
 # rise_sources.cmake
 #

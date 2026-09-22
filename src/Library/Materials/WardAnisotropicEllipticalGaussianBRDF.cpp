@@ -91,7 +91,9 @@ static void ComputeFactors(
 
 		const Scalar phi = acos(Vector3Ops::Dot(u,Vector3Ops::Normalize(h-(nh*n))));
 
-		const Scalar first = 1.0 / (sqrt(nr*nl));
+		// Geisler-Moroder & Duer 2010, same normalization as isotropic.
+		const Scalar hv = Vector3Ops::Dot(h,r);
+		const Scalar first = 1.0 / (hv*hv*nh*nh*nh*nh);
 		const Scalar tanh = tan(acos(nh));
 
 		const T inside = (cos(phi)*cos(phi))/(alphax*alphax) + (sin(phi)*sin(phi))/(alphay*alphay);
@@ -142,11 +144,10 @@ Scalar WardAnisotropicEllipticalGaussianBRDF::valueNM( const Vector3& vLightIn, 
 
 RISEPel WardAnisotropicEllipticalGaussianBRDF::albedo( const RayIntersectionGeometric& ri ) const
 {
-	// Same APPROXIMATION as the isotropic variant, and the same DL-177
-	// correction to the claim about it -- see
-	// `WardIsotropicGaussianBRDF::albedo`.  Measured here at
-	// `Rs = 0.5`, alphaX 0.6 / alphaY 0.12: the specular term's own
-	// `int value() cos dw` reads 0.3442 at 0 deg and 0.9957 at 89.9 deg,
-	// i.e. 1.99x `Rs` (DL-212).  The VALUE is unchanged.
-	return pDiffuse->GetColor( ri ) + pSpecular->GetColor( ri );
+	// Conservative approximation: the bounded specular variant integrates
+	// to at most Rs. Saturate only this OIDN AOV, whose contract is [0,1];
+	// additive authored reflectances remain unchanged in transport.
+	RISEPel result=pDiffuse->GetColor(ri)+pSpecular->GetColor(ri);
+	for(int ch=0;ch<3;++ch) result[ch]=r_max(Scalar(0),r_min(Scalar(1),result[ch]));
+	return result;
 }

@@ -572,14 +572,22 @@ int main()
 
 	// The DIFFUSE half of section C needs the specular painter black
 	// instead, and only works where the specular BRDF term is
-	// proportional to that painter (Ward x2, Phong).
+	// proportional to that painter (Ward x2, Phong). Use a zero-scale
+	// unbounded spectrum: RGB black in albedo mode uplifts to ~2.5e-5
+	// and therefore does NOT isolate the diffuse lobe (DL-212 exposed it).
+	UniformColorPainter* zeroSpec = new UniformColorPainter( RISEPel(0,0,0), eSpectrumKind_Unbounded );
+	zeroSpec->addref();
+	for( Scalar nm : kLambdas ) {
+		Check( GuardedGetColorNM(*zeroSpec,MakeIntersection(0),nm) == 0,
+			"diffuse-isolation fixture has exactly zero spectral reflectance" );
+	}
 	UniformScalarPainter* alphaXD = alphaX;
-	WardIsotropicGaussianSPF*  wiSPFd = new WardIsotropicGaussianSPF( *diff, *black, *alphaXD ); wiSPFd->addref();
-	WardIsotropicGaussianBRDF* wiBRDFd = new WardIsotropicGaussianBRDF( *diff, *black, *alphaXD ); wiBRDFd->addref();
-	WardAnisotropicEllipticalGaussianSPF*  waSPFd = new WardAnisotropicEllipticalGaussianSPF( *diff, *black, *alphaX, *alphaY ); waSPFd->addref();
-	WardAnisotropicEllipticalGaussianBRDF* waBRDFd = new WardAnisotropicEllipticalGaussianBRDF( *diff, *black, *alphaX, *alphaY ); waBRDFd->addref();
-	IsotropicPhongSPF*  ipSPFd  = new IsotropicPhongSPF( *diff, *black, *expo ); ipSPFd->addref();
-	IsotropicPhongBRDF* ipBRDFd = new IsotropicPhongBRDF( *diff, *black, *expo ); ipBRDFd->addref();
+	WardIsotropicGaussianSPF*  wiSPFd = new WardIsotropicGaussianSPF( *diff, *zeroSpec, *alphaXD ); wiSPFd->addref();
+	WardIsotropicGaussianBRDF* wiBRDFd = new WardIsotropicGaussianBRDF( *diff, *zeroSpec, *alphaXD ); wiBRDFd->addref();
+	WardAnisotropicEllipticalGaussianSPF*  waSPFd = new WardAnisotropicEllipticalGaussianSPF( *diff, *zeroSpec, *alphaX, *alphaY ); waSPFd->addref();
+	WardAnisotropicEllipticalGaussianBRDF* waBRDFd = new WardAnisotropicEllipticalGaussianBRDF( *diff, *zeroSpec, *alphaX, *alphaY ); waBRDFd->addref();
+	IsotropicPhongSPF*  ipSPFd  = new IsotropicPhongSPF( *diff, *zeroSpec, *expo ); ipSPFd->addref();
+	IsotropicPhongBRDF* ipBRDFd = new IsotropicPhongBRDF( *diff, *zeroSpec, *expo ); ipBRDFd->addref();
 
 	std::vector<Subject> dSubjects;
 	{
@@ -920,6 +928,7 @@ int main()
 	rExp->release(); rNu->release(); rNv->release();
 	rough->release(); iso->release(); alphaX->release(); alphaY->release();
 	expo->release();  nu->release();  nv->release();
+	zeroSpec->release();
 	black->release(); spec->release(); diff->release();
 	g_stubObject->release();
 

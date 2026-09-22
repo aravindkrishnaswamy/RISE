@@ -1,6 +1,6 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  SchlickBRDF.cpp - Implements the lambertian BRDF
+//  SchlickBRDF.cpp - Implements the Schlick BRDF
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: June 12, 2004
@@ -102,7 +102,9 @@ static T ComputeFactor(
 		const Scalar sqr_w = w*w;
 		const T A = sqrt<T>(p/(sqr_p-sqr_p*sqr_w+sqr_w));
 
-		return (Z*A)/(4.0*PI*nl*nv);	
+		// Schlick 1994 Eq.31: G(c)=c/(r+(1-r)c). Cancel nl*nv
+		// analytically, avoiding the grazing singularity before evaluation.
+		return (Z*A)/(4.0*PI*(r + (1.0-r)*nl)*(r + (1.0-r)*nv));
 	}
    
 	return 0.0;
@@ -168,7 +170,58 @@ Scalar SchlickBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeome
 
 RISEPel SchlickBRDF::albedo( const RayIntersectionGeometric& ri ) const
 {
-	// Schlick's spec lobe is already Fresnel-weighted at the BRDF
-	// level: integrated reflectance simplifies to Rd + Rs.
-	return pDiffuse->GetColor( ri ) + pSpecular->GetColor( ri );
+	// Deterministic half-vector quadrature of the corrected directional
+	// reflectance, for the noise-free OIDN/preview AOV only. Sampling
+	// p_h=t*Z/pi cancels the sharp Z peak analytically; uniform azimuth
+	// leaves A in the weight. Substitute xi=u^2 (Jacobian 2u) to
+	// remove the 1/sqrt(xi) endpoint at grazing. No transport clamp.
+	OrthonormalBasis3D onb = ri.onb;
+	if( Vector3Ops::Dot(ri.ray.Dir(),onb.w()) > NEARZERO ) onb.FlipW();
+	const Vector3 v = Vector3Ops::Normalize(-ri.ray.Dir());
+	const Scalar nv = Vector3Ops::Dot(v,onb.w());
+	if( nv <= 0 ) return RISEPel(0,0,0);
+	const Vector3& rawG = Vector3Ops::SquaredModulus(ri.vGeomNormal)>Scalar(1e-12)
+		? ri.vGeomNormal : onb.w();
+	const Vector3 g = Vector3Ops::Dot(rawG,ri.ray.Dir())<0 ? rawG : -rawG;
+	const Scalar vx=Vector3Ops::Dot(v,onb.u()), vy=Vector3Ops::Dot(v,onb.v());
+	const Scalar gx=Vector3Ops::Dot(g,onb.u()), gy=Vector3Ops::Dot(g,onb.v());
+	const Scalar gz=Vector3Ops::Dot(g,onb.w()), vg=Vector3Ops::Dot(v,g);
+	const RISEPel rd=pDiffuse->GetColor(ri), rho=pSpecular->GetColor(ri);
+	ScalarTriple rough=pRoughness->GetValuesAt(ri);
+	const ScalarTriple iso=pIsotropy->GetValuesAt(ri);
+	const int nt=16, np=32;
+	Scalar cp[np],sp[np];
+	for(int j=0;j<np;++j) { const Scalar ph=TWO_PI*(j+0.5)/np; cp[j]=cos(ph);sp[j]=sin(ph); }
+	RISEPel result(0,0,0);
+	Scalar m0[3]={0,0,0}, m5[3]={0,0,0}, effectiveR[3];
+	for(int ch=0;ch<3;++ch) {
+		const Scalar r=ri.glossyFilterWidth>0 ? r_min(rough.v[ch]+ri.glossyFilterWidth,Scalar(1)) : rough.v[ch];
+		const Scalar p=iso.v[ch];
+		effectiveR[ch]=r;
+		int reuse=-1;
+		for(int prev=0;prev<ch;++prev) if(effectiveR[prev]==r && iso.v[prev]==p) { reuse=prev; break; }
+		if(reuse>=0) { m0[ch]=m0[reuse];m5[ch]=m5[reuse]; } else {
+		Scalar az[np];
+		for(int j=0;j<np;++j) az[j]=sqrt(p/(p*p+(1-p*p)*sp[j]*sp[j]));
+		for(int i=0;i<nt;++i) {
+			const Scalar u=(i+0.5)/nt, x=u*u;
+			const Scalar t=sqrt(x/(r+(1-r)*x)), st=sqrt(1-t*t);
+			for(int j=0;j<np;++j) {
+				const Scalar hx=st*cp[j],hy=st*sp[j];
+				const Scalar hv=hx*vx+hy*vy+t*nv, nl=2*hv*t-nv;
+				if(hv<=0 || nl<=0 || 2*hv*(hx*gx+hy*gy+t*gz)-vg<=0) continue;
+				const Scalar f=1-hv, f2=f*f, F=f2*f2*f;
+				const Scalar weight=2*u*az[j]*hv*nl
+					/(t*(r+(1-r)*nv)*(r+(1-r)*nl));
+				m0[ch]+=weight;m5[ch]+=weight*F;
+			}
+		}
+		m0[ch]/=nt*np;m5[ch]/=nt*np;
+		}
+		const Scalar reflected=rd[ch]*(1+gz)*0.5+rho[ch]*m0[ch]+(1-rho[ch])*m5[ch];
+		// IBSDF::albedo is a bounded auxiliary estimate. Authored additive
+		// Rd plus specular can exceed one; transport still evaluates it.
+		result[ch]=r_max(Scalar(0),r_min(Scalar(1),reflected));
+	}
+	return result;
 }
