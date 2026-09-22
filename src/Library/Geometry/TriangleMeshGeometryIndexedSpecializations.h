@@ -466,7 +466,8 @@ namespace RISE
 
 				// Enforce right-handedness against shading normal.
 				const Vector3 cross = Vector3Ops::Cross( dpdu, dpdv );
-				if( Vector3Ops::Dot( cross, shadingNormal ) < 0.0 ) {
+				const bool bMirroredUV = ( Vector3Ops::Dot( cross, shadingNormal ) < 0.0 );
+				if( bMirroredUV ) {
 					dpdv = Vector3( -dpdv.x, -dpdv.y, -dpdv.z );
 					dndv = Vector3( -dndv.x, -dndv.y, -dndv.z );
 					// dpdv now points down -d/dv, so the chart map must say so:
@@ -499,10 +500,14 @@ namespace RISE
 				if( ri.bHasTangent ) {
 					ri.bShadingTangentFromGeometry = true;
 					ri.vShadingTangent             = ri.vTangent;	// object space
+					ri.shadingBitangentSign        = ri.bitangentSign;
 					ri.bHasShadingTangent          = true;
 				} else if( useUVJacobian ) {
 					ri.bShadingTangentFromGeometry = true;
 					ri.vShadingTangent             = dpdu;	// object space
+					const Scalar sign              = bMirroredUV ? -1.0 : 1.0;
+					ri.shadingBitangentSign        = sign;
+					ri.bitangentSign               = sign;
 					ri.bHasShadingTangent          = true;
 				}
 				// Phase-1 geometry-derived shading signals

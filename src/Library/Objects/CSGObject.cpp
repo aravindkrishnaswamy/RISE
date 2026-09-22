@@ -333,6 +333,7 @@ namespace
 		// "true" flag with the WRONG (or absent) supplied tangent -- exactly
 		// the mixed-surface contamination this function exists to prevent.
 		dst.vShadingTangent = src.vShadingTangent;
+		dst.shadingBitangentSign = src.shadingBitangentSign;
 		dst.bHasShadingTangent = src.bHasShadingTangent;
 
 		// Wireframe view-mode edge info is per-surface payload too (GUI
@@ -1555,9 +1556,9 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 			// (the supplied-tangent branch) gets once it carries a real UV
 			// tangent.  U is untouched -- it is the promoted tangent
 			// direction itself, which needs no correction.  A no-op
-			// (m_tangentFrameSign == +1) for an orientation-preserving transform;
-			// the legacy CreateFromW `else` branch is unaffected either way.
-			if( m_tangentFrameSign < Scalar( 0 ) ) {
+			// DL-12: Combined sign folds geometry-level chirality (shadingBitangentSign)
+			// with CSG object-level transform reflection (m_tangentFrameSign).
+			if( (ri.geometric.shadingBitangentSign * m_tangentFrameSign) < Scalar( 0 ) ) {
 				ri.geometric.onb.FlipV();
 			}
 		} else {
@@ -1592,6 +1593,7 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 		// It initialises to 1.0 and each nesting level multiplies its own, so the
 		// composition through a CSG chain is unchanged for the tangented case.
 		ri.geometric.bitangentSign *= m_tangentFrameSign;
+		ri.geometric.shadingBitangentSign *= m_tangentFrameSign;
 
 		// Transform surface derivatives (P2-d) from THIS CSG object's local
 		// frame to world space -- mirrors Object::IntersectRay's derivatives

@@ -1220,9 +1220,12 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 			// to exactly that value, mirrored transforms included.
 			// m_tangentFrameSign is +1 whenever this Object's own transform
 			// is orientation-preserving, so this is a no-op there -- the
-			// legacy `else` branch (CreateFromW, no geometry-supplied
-			// tangent at all) is untouched either way.
-			if( m_tangentFrameSign < Scalar( 0 ) ) {
+			// DL-12: Combined sign folds geometry-level chirality (shadingBitangentSign)
+			// with object-level transform reflection (m_tangentFrameSign).
+			// When negative, cross(W, t) points opposite the UV bitangent direction (+dpdv),
+			// so FlipV() is required to ensure onb.v() aligns with +dpdv and MicrofacetUtils::RotateTangent
+			// rotates in the correct sense relative to the UV chart.
+			if( (ri.geometric.shadingBitangentSign * m_tangentFrameSign) < Scalar( 0 ) ) {
 				ri.geometric.onb.FlipV();
 			}
 		} else {
@@ -1263,6 +1266,7 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 		// asset renders with its green channel inverted -- lathe / sweep / skin
 		// bakes, which carry derivatives but no TANGENT, are exactly that case.
 		ri.geometric.bitangentSign *= m_tangentFrameSign;
+		ri.geometric.shadingBitangentSign *= m_tangentFrameSign;
 
 		// Transform surface derivatives from object space to world space.
 		// dpdu, dpdv are tangent vectors -- transform like positions (use
