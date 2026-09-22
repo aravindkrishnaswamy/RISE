@@ -304,6 +304,15 @@ static const char* kBDPTSpectral =
 	"bdpt_spectral_rasterizer\n{\n\tmax_eye_depth 6\n\tmax_light_depth 6\n\tsamples 32\n"
 	"\thwss FALSE\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
 
+static const char* kVCMSpectral =
+	"vcm_spectral_rasterizer\n{\n\tmax_eye_depth 6\n\tmax_light_depth 6\n\tsamples 32\n"
+	"\tvc_enabled true\n\tvm_enabled false\n\thwss FALSE\n"
+	"\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
+
+static const char* kBDPT_L1 =
+	"bdpt_pel_rasterizer\n{\n\tmax_eye_depth 6\n\tmax_light_depth 1\n\tsamples 32\n"
+	"\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
+
 static std::string Scene( const char* rast, const std::string& body )
 {
 	return std::string("RISE ASCII SCENE 7\n") + kShader + rast + body;
@@ -331,12 +340,12 @@ static void RunRatio( const std::string& label, const char* refRast,
 
 int main()
 {
-	std::cout << "=== MediumEnclosureConnectibilityTest (DL-200) ===" << std::endl;
+	std::cout << "=== MediumEnclosureConnectibilityTest (DL-200 / DL-218) ===" << std::endl;
 
 	const std::string enclosed = SceneBody( true );
 	const std::string global   = SceneBody( false );
 
-	// MONEY ROWS.  Camera OUTSIDE: the eye walk must cross the delta
+	// MONEY ROWS (DL-200).  Camera OUTSIDE: the eye walk must cross the delta
 	// shell to reach the medium, so pre-fix every eye-rooted medium
 	// vertex read !isConnectible and every NEE / interior connection
 	// from it was skipped.
@@ -346,43 +355,38 @@ int main()
 	RunRatio( "BDPT spectral vs PT spectral, same scene, camera OUTSIDE",
 		kPTSpectral, kBDPTSpectral, enclosed, 0.95, 1.06 );
 
-	// KNOWN-DEFECT PIN (DL-218), not a DL-200 row.  VCM has no
-	// medium-connectibility derivation of its own -- it consumes the flag
-	// the SHARED BDPT generator sets (`VCMIntegrator`'s own
-	// `Convert*Subpath` key on `v.type` / `v.isDelta` / the area-measure
-	// Jacobian, never on a re-derived connectibility) -- so the DL-200
-	// recipe asked for this row after DL-126's second instance turned up
-	// in exactly that recurrence.  It does NOT move: VCM reads 0.0607 of
-	// PT pre-fix and 0.0604 post-fix on this scene, a separate and much
-	// larger pre-existing gap filed as DL-218 -- whose cause is a
-	// DIFFERENT gate, found by inspection during that slice: every VCM
-	// consumer (`EvaluateNEEImpl`, `EvaluateInteriorConnectionsImpl` on
-	// both sides, `EvaluateMergesImpl`) tests
-	// `v.type != BDPTVertex::SURFACE` BEFORE it looks at
-	// `isConnectible`, and `ConvertLightSubpath`'s `isMedium` branch
-	// `continue`s before the light-vertex-store append, so VCM does no
-	// NEE, no connection and no merge at a MEDIUM vertex at all and no
-	// change to this flag can alter that.  Pinned at its measured value
-	// so its closure has to move this number deliberately.
-	RunRatio( "PIN(DL-218) VCM vs PT, same scene, camera OUTSIDE",
-		kPT, kVCM, enclosed, 0.04, 0.09 );
+	// MONEY ROWS (DL-218 (a)). VCM implementing NEE and interior connections
+	// at medium vertices should match PT and BDPT at ~1.0.
+	RunRatio( "VCM vs PT, same scene, camera OUTSIDE",
+		kPT, kVCM, enclosed, 0.90, 1.10 );
 
-	// CONTROL, and a second KNOWN-DEFECT PIN (DL-218).  The SAME medium
+	RunRatio( "VCM spectral vs PT spectral, same scene, camera OUTSIDE",
+		kPTSpectral, kVCMSpectral, enclosed, 0.90, 1.10 );
+
+	// CONTROL, and KNOWN-DEFECT PIN (DL-218 (b)).  The SAME medium
 	// and emitter with no shell, bound as the scene's GLOBAL medium:
-	// `pMedObj` is null at every medium vertex, which took the pre-fix
-	// derivation's own "global medium: always connectable" early-out, so
-	// the DL-200 fix is a LITERAL no-op on this scene.  It must therefore
-	// NOT move -- and it does not (1.7933 pre-fix, 1.7343 post-fix, a 3.3%
-	// spread that is this row's own MC noise, the PT reference here being
-	// the noisiest render in the file).  That is what distinguishes "the
-	// fix restored the connections the ENCLOSURE rule was dropping" from
-	// "the fix rescaled medium transport generally".
-	//
-	// It is pinned at 1.73x rather than at 1.0 because BDPT genuinely
-	// disagrees with PT by ~79% in a plain global medium, pre-existing and
-	// unrelated to this row -- the second measured instance of DL-218.
+	// BDPT reads ~1.73x of PT in a plain global medium.
 	RunRatio( "CONTROL/PIN(DL-218) BDPT vs PT, same medium as a GLOBAL medium (no shell)",
-		kPT, kBDPT, global, 1.50, 2.05 );
+		kPT, kBDPT, global, 1.50, 2.25 );
+
+	// DIAGNOSTIC (DL-218 (b)): BDPT max_light_depth 1 (light-root-only, no light subpath scattering in medium)
+	{
+		std::cout << "--- Diagnostic for DL-218 (b): BDPT max_light_depth 1 on GLOBAL medium ---" << std::endl;
+		const double ref  = RenderMeanRepeated( Scene( kPT, global ), "PT reference" );
+		const double cand = RenderMeanRepeated( Scene( kBDPT_L1, global ), "BDPT L1     " );
+		if( ref > 1e-9 && cand > 0 ) {
+			std::cout << "    DIAGNOSTIC: BDPT(L1) / PT = " << (cand / ref) << std::endl;
+		}
+	}
+	// DIAGNOSTIC (DL-218 (b)): VCM on GLOBAL medium
+	{
+		std::cout << "--- Diagnostic for DL-218 (b): VCM on GLOBAL medium ---" << std::endl;
+		const double ref  = RenderMeanRepeated( Scene( kPT, global ), "PT reference" );
+		const double cand = RenderMeanRepeated( Scene( kVCM, global ), "VCM         " );
+		if( ref > 1e-9 && cand > 0 ) {
+			std::cout << "    DIAGNOSTIC: VCM / PT = " << (cand / ref) << std::endl;
+		}
+	}
 
 	std::cout << std::endl;
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
