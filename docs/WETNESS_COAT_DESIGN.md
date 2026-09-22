@@ -2559,6 +2559,14 @@ timing exists because no implementation exists.
    thumbnail of a sampled TEXTURE shows its unfiltered base level.  That is
    correct (there is no footprint to honour in a thumbnail) and it is
    pinned by `TextureExpressionVMTest` Test 78 row (h).
+
+    **SCALAR-PIPE SINGLE-CHANNEL LIMITATION (DL-195)**: `sample_scalar(name)` reads
+    only the 549 nm `ScalarPainterRGB::kSingleSampleChannel` lane of the bound painter's
+    RGB-wavelength triple, so a genuinely wavelength-varying scalar painter (Sellmeier,
+    piecewise-linear, polynomial dispersion) reads achromatic through `sample_scalar()`.
+    This is a documented single-representative-channel design choice, pinned by Test 77(b2)
+    in `tests/TextureExpressionVMTest.cpp`. Extending `sample_scalar()` to a per-channel
+    vec3-of-scalars form is recorded as a future feature.
 6c. ~~**`add_wetness` and `add_wear` mutually exclude each other on one material**
    (§6.4), and worn-and-wet is the flagship subject. v1 accepts the exclusion with
    cross-naming refusal messages; the census counts the demand.~~ **PARTIALLY
