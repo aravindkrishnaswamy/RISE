@@ -538,7 +538,6 @@ namespace RISE
 		void SetSingle( const std::string& key, const std::string& value )      { mSingles[key] = value; }
 		void AppendRepeatable( const std::string& key, const std::string& value ){ mRepeatables[key].push_back( value ); }
 
-	private:
 		// Counts whitespace-separated tokens in `s`, stopping at an inline
 		// `#` comment marker -- mirrors ChunkParserRegistry.cpp's
 		// `AllTokensAreFiniteNumbers` tokenization (the DispatchChunkParameters
@@ -546,7 +545,9 @@ namespace RISE
 		// before Finalize() reaches this accessor) so a legitimate trailing
 		// comment (`position 1 2 3 # meters`) is not miscounted as extra
 		// arity.  A pure lexical count, deliberately not re-validating
-		// numeric-ness a second time.
+		// numeric-ness a second time.  Public so preflight passes (e.g.
+		// Cst.cpp's DeriveToJobIncremental object-arity check, DL-156) can
+		// validate token counts before mutation.
 		static int CountValueTokens( const std::string& s )
 		{
 			int n = 0;
@@ -559,6 +560,8 @@ namespace RISE
 			}
 			return n;
 		}
+
+	private:
 		// Logs the DL-32 arity diagnostic (kVectorArityFmt: names the
 		// chunk, the parameter, expected vs. got) and latches mHardError so
 		// the chunk's Finalize() is treated as failed by its caller even

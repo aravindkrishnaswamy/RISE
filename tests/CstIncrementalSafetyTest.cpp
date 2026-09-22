@@ -490,7 +490,7 @@ int main()
 		// DL-156: matrix-arity case. A malformed 12-token matrix (needs 16) on parentObj is refused
 		// before mutation, leaving parent and child bboxes unchanged.
 		{
-			Document docMat = DocSetParamValue( doc, pId, "matrix", 0, "1 0 0 0  0 1 0 0  0 0 1 0" ); // 12 tokens, not 16
+			Document docMat = DocSetOrAddParamValue( doc, pId, "matrix", 0, "1 0 0 0  0 1 0 0  0 0 1 0" ); // 12 tokens, not 16
 			std::vector<NodeId> closureMat = DocEditClosure( docMat, pId );
 			std::vector<std::string> diMat;
 			int appliedMat = DeriveToJobIncremental( docMat, *j, closureMat, &diMat );
@@ -506,7 +506,7 @@ int main()
 		// DL-156: quaternion-arity case. A malformed 5-token quaternion (needs 4) on parentObj is refused
 		// before mutation, leaving parent and child bboxes unchanged.
 		{
-			Document docQuat = DocSetParamValue( doc, pId, "quaternion", 0, "0 0 0 1 0" ); // 5 tokens, not 4
+			Document docQuat = DocSetOrAddParamValue( doc, pId, "quaternion", 0, "0 0 0 1 0" ); // 5 tokens, not 4
 			std::vector<NodeId> closureQuat = DocEditClosure( docQuat, pId );
 			std::vector<std::string> diQuat;
 			int appliedQuat = DeriveToJobIncremental( docQuat, *j, closureQuat, &diQuat );
