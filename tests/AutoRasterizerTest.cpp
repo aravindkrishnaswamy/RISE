@@ -1238,7 +1238,7 @@ int main()
 		    << "auto_probe_spp 4\n"
 		    << "auto_probe_scale 4\n"          // §6.2 default (quarter-res)
 		    << "auto_probe_tau_caustic 1.30\n"
-		    << "auto_probe_tau_reach 1.50\n"   // §6.2 transport-reach gate (jewel_vault over-fire fix)
+		    << "auto_probe_tau_reach 0.10\n"   // §6.2 transport-reach gate (jewel_vault over-fire fix; DL-167)
 		    << "auto_probe_reach_winsor_pct 0.99\n" // §6.2 firefly-robust reach: winsorize VCM mean (jewel_vault flake fix)
 		    << "auto_probe_tau_bdpt 1.35\n"
 		    << "auto_probe_variance_renders 2\n";
@@ -1429,6 +1429,11 @@ int main()
 	// nondeterminism documented for jewel_vault's σ²·T reading at cheap probe
 	// spp. Asserting exact PT was a coin flip on that tail; CheckProbeRouteNotVCM
 	// (never VCM) is the stable, meaningful invariant this fixture protects.
+	// DL-167: diamond_teapot_pour is an RMSE-truth VCM caustic scene (UNIFIED_INTEGRATOR_BASELINES.md §5).
+	// With the merge-flux reach gate (vcmMergeShare > 0.10), it correctly routes to VCM.
+	CheckProbeRoute( "diamond_teapot_pour -> VCM (refractive caustic)",
+		"scenes/FeatureBased/Combined/diamond_teapot_pour.RISEscene", "p4_teapot", AutoIntegratorChoice::VCM );
+
 	CheckProbeRouteNotVCM( "glass_pavilion -> not VCM (DL-154: debt28/c3c37e08 closed the VCM-over-bright gap)",
 		"scenes/FeatureBased/Combined/glass_pavilion.RISEscene", "p4_glass" );
 	// Regression lock for the §6.2 jewel_vault over-fire: a dielectric + area-lit

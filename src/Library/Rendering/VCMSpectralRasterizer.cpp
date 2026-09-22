@@ -289,6 +289,7 @@ void VCMSpectralRasterizer::IntegratePixel(
 			// each either HWSS (hero + companions sharing the path)
 			// or a single independent-wavelength evaluation.
 			XYZPel spectralSum( 0, 0, 0 );
+			XYZPel spectralMerge( 0, 0, 0 );
 			unsigned int totalActive = 0;
 
 			for( unsigned int ss = 0; ss < nSpectralSamples; ss++ )
@@ -493,9 +494,11 @@ void VCMSpectralRasterizer::IntegratePixel(
 					}
 				}
 
+				Scalar heroMerge = 0;
 				if( pLightVertexStore && mVCMNormalization.mEnableVM ) {
-					heroValue += pIntegrator->EvaluateMergesNM(
+					heroMerge = pIntegrator->EvaluateMergesNM(
 						eyeVerts, eyeMis, *pLightVertexStore, mVCMNormalization, heroNM );
+					heroValue += heroMerge;
 				}
 
 				{
@@ -509,6 +512,7 @@ void VCMSpectralRasterizer::IntegratePixel(
 				XYZPel heroXYZ( 0, 0, 0 );
 				if( ColorUtils::XYZFromNM( heroXYZ, heroNM ) ) {
 					spectralSum = spectralSum + heroXYZ * heroValue;
+					spectralMerge = spectralMerge + heroXYZ * heroMerge;
 					totalActive++;
 				}
 
@@ -586,9 +590,11 @@ void VCMSpectralRasterizer::IntegratePixel(
 						}
 					}
 
+					Scalar compMerge = 0;
 					if( pLightVertexStore && mVCMNormalization.mEnableVM ) {
-						compValue += pIntegrator->EvaluateMergesNM(
+						compMerge = pIntegrator->EvaluateMergesNM(
 							compEye, eyeMis, *pLightVertexStore, mVCMNormalization, companionNM );
+						compValue += compMerge;
 					}
 
 					{
@@ -602,6 +608,7 @@ void VCMSpectralRasterizer::IntegratePixel(
 					XYZPel compXYZ( 0, 0, 0 );
 					if( ColorUtils::XYZFromNM( compXYZ, companionNM ) ) {
 						spectralSum = spectralSum + compXYZ * compValue;
+						spectralMerge = spectralMerge + compXYZ * compMerge;
 						totalActive++;
 					}
 				}
@@ -612,8 +619,12 @@ void VCMSpectralRasterizer::IntegratePixel(
 				// scale into a properly-normalized integral (white = 1).
 				// Inherited mYNormalization = (b-a)/k_y; uniform scale =>
 				// chromaticity preserved.
-				spectralSum = spectralSum * ( mYNormalization / Scalar( totalActive ) );
+				const Scalar normScale = mYNormalization / Scalar( totalActive );
+				spectralSum = spectralSum * normScale;
+				spectralMerge = spectralMerge * normScale;
 			}
+
+			AccumulateSampleFlux( spectralSum.Y, spectralMerge.Y );
 
 			// Defer XYZ -> ROMM RGB to per-pixel resolve.  FilteredFilm
 			// now accumulates XYZ; no per-sample chromaticity clip.

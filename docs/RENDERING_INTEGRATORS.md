@@ -72,7 +72,7 @@ GUI bridges (macOS / Windows / Android) — see
 
 ## 2. Quick decision tree
 
-**Matrix-backed routing (2026-06-04 — [UNIFIED_INTEGRATOR_BASELINES.md](UNIFIED_INTEGRATOR_BASELINES.md) + [UNIFIED_INTEGRATOR_DECISION.md](UNIFIED_INTEGRATOR_DECISION.md)).** The Phase-1 wall-clock-normalized variance (σ²·T) measurement gives a default-and-route rule — **the policy the planned [`auto_rasterizer`](AUTO_RASTERIZER_DESIGN.md) will encode; until it ships, pick by hand per this map:**
+**Matrix-backed routing (2026-06-04 — [UNIFIED_INTEGRATOR_BASELINES.md](UNIFIED_INTEGRATOR_BASELINES.md) + [UNIFIED_INTEGRATOR_DECISION.md](UNIFIED_INTEGRATOR_DECISION.md)).** The Phase-1 wall-clock-normalized variance (σ²·T) measurement gives a default-and-route rule — **the policy the shipping [`auto_rasterizer`](AUTO_RASTERIZER_DESIGN.md) encodes (using a two-gate render-time probe with merge flux share reach discrimination, DL-167); or pick by hand per this map:**
 
 - **Default → PT** (`pathtracing_pel_rasterizer`) — wins σ²·T on 10/13 converged classes (diffuse, glossy-metal, mixed, many-light, most env); **3–7× cheaper per sample** than BDPT, which outweighs BDPT/VCM's lower *raw* variance on the bulk.
 - **Strong-indirect / glossy interreflection → BDPT** (`bdpt_pel_rasterizer`) — the only regime where BDPT's connections beat its 3–7× per-sample penalty: gi_spheres-class (**56× σ²·T** over PT), alchemists, env+mesh. Signal: indirect dominates direct; glossy bounces; enclosed geometry.

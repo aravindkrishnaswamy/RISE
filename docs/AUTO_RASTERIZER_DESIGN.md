@@ -846,6 +846,33 @@ the same band the over-fire class occupies, for two unrelated reasons. New knob
 Implementation: `WinsorizedMeanLuminance` + `ProbeResult::robustMeanLum` in
 `AutoRasterizer.cpp`; the gate at `RunProbe`'s two-gate caustic test.
 
+### 6.2.4 The reach signal after the VCM fixes (DL-167 resolution, 2026-09-22)
+
+Following the two VCM over-count bug fixes (`c3c37e08` and `7889fa29`), both raw
+and winsorized `meanRatio(VCM/PT)` collapsed to ~1.0–1.2× across both true caustics
+(`diamond_teapot_pour` 1.23±0.05) and converging dielectrics (`glass_pavilion` 1.07±0.01,
+`crystal_garden` 0.67±0.03, `jewel_vault` 0.92±0.20), eliminating all discriminating
+margin for `tau_reach = 1.50`.
+
+A comprehensive measurement harness (`tests/CausticReachHarnessTest.cpp`) evaluated
+multiple candidate signals across the 18 baseline matrix scenes plus 4 named scenes
+($N=3$ trials each at scale 1/4, 4 spp):
+
+| Candidate Signal | Formulation | Outcome |
+|---|---|---|
+| **(a) VCM merge flux share** (`vcmMergeShare`) | $\Phi_{\text{merge}} / \Phi_{\text{total}}$ in VCM | **WINNER:** Decisive separation with **9.60σ margin**. True caustics: `diamond_teapot` $0.2287 \pm 0.0529$, `pool_caustics` $0.5846 \pm 0.0471$. Converging dielectrics: `glass_pavilion` $0.0454 \pm 0.0099$, `crystal_garden` $0.0474 \pm 0.0115$, `jewel_vault` $0.0000 \pm 0.0000$. Non-dielectrics: $0.0000 \pm 0.0000$. Threshold $\tau_{\text{reach}} = 0.10$ provides $>2.1\times$ margin against the highest false-positive dielectric. |
+| **(b) Per-pixel ratio percentiles** (`p95Ratio`, `fracGt2`) | 95th percentile of $(V+\epsilon)/(P+\epsilon)$ | **REJECTED:** Dark diffuse alcoves under-converged at 4 spp produce near-zero PT denominators, giving high false-positive spatial ratios on non-caustic scenes (`jewel_vault` $p95 = 115.14$, `fracGt2 = 0.493`). |
+| **(c) PT SDS-unreachable path detection** | Direct path-classification flag | **REJECTED:** Invasive to PT core paths and unnecessary given the clean separation of candidate (a). |
+
+**Adopted Design:**
+Gate 2 in `AutoRasterizer::RunProbe` tests `vcm.vcmMergeShare > cfg.tauReach` with
+default `cfg.tauReach = 0.10` (knob `auto_probe_tau_reach`). Strategy flux accumulators
+in `VCMRasterizerBase` (`ResetFluxAccumulators`, `AccumulateSampleFlux`, `GetMergeFluxShare`)
+track photon merge flux vs total sample flux during the probe render at zero runtime cost
+(lock-free atomic updates during the existing single VCM probe render).
+`tests/AutoRasterizerTest.cpp` pins `diamond_teapot_pour -> VCM` alongside `glass_pavilion -> not VCM`
+and `jewel_vault -> not VCM`.
+
 ---
 
 ## 7. UI integration (to design with the GUI bridges)

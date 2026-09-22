@@ -411,9 +411,11 @@ void VCMPelRasterizer::IntegratePixel(
 				}
 			}
 
+			RISEPel mergeColor( 0, 0, 0 );
 			if( pLightVertexStore && mVCMNormalization.mEnableVM ) {
-				sampleColor = sampleColor + pIntegrator->EvaluateMerges(
+				mergeColor = pIntegrator->EvaluateMerges(
 					eyeVerts, eyeMis, *pLightVertexStore, mVCMNormalization );
+				sampleColor = sampleColor + mergeColor;
 			}
 
 			// Clamp per-SmallVCM convention.
@@ -427,6 +429,10 @@ void VCMPelRasterizer::IntegratePixel(
 					}
 				}
 			}
+
+			const double sampleLum = ( sampleColor[0] + sampleColor[1] + sampleColor[2] ) / 3.0;
+			const double mergeLum  = ( mergeColor[0] + mergeColor[1] + mergeColor[2] ) / 3.0;
+			AccumulateSampleFlux( sampleLum, mergeLum );
 
 			// Approach C: cross-pixel filter-weighted splat — see
 			// BDPTPelRasterizer::IntegratePixel for the rationale.

@@ -13,6 +13,7 @@
 
 #include "pch.h"
 #include "AutoRasterizer.h"
+#include "VCMRasterizerBase.h"
 #include "../RISE_API.h"
 #include "../Interfaces/IRayCaster.h"
 #include "../Interfaces/IPixelFilter.h"
@@ -481,11 +482,11 @@ AutoRasterizer::ProbeConfig AutoRasterizer::ReadProbeConfig() const
 	// ample pixels for a stable median / per-pixel σ².
 	cfg.scale           = static_cast<unsigned int>( std::max( 1, opt.ReadInt( "auto_probe_scale", 4 ) ) );
 	cfg.tauCaustic      = opt.ReadDouble( "auto_probe_tau_caustic", 1.30 );
-	// tau_reach is the transport-reach (mean-lum VCM/PT) gate that rejects the
-	// jewel_vault over-fire; default 1.50 sits in the measured 1.12|1.88 gap
-	// between the converging-dielectric class and the real refractive caustics
+	// tau_reach is the transport-reach (VCM merge flux share) gate that rejects the
+	// jewel_vault / converging-dielectric over-fire (DL-167); default 0.10 sits in the
+	// measured 0.045|0.225 gap between converging dielectric scenes and true caustics
 	// (AUTO_RASTERIZER_DESIGN.md §6.2).
-	cfg.tauReach        = opt.ReadDouble( "auto_probe_tau_reach", 1.50 );
+	cfg.tauReach        = opt.ReadDouble( "auto_probe_tau_reach", 0.10 );
 	cfg.reachWinsorPct  = opt.ReadDouble( "auto_probe_reach_winsor_pct", 0.99 );
 	cfg.tauBdpt         = opt.ReadDouble( "auto_probe_tau_bdpt", 1.35 );
 	cfg.varianceRenders = static_cast<unsigned int>( std::max( 2, opt.ReadInt( "auto_probe_variance_renders", 2 ) ) );
@@ -504,6 +505,7 @@ AutoRasterizer::ProbeResult AutoRasterizer::ProbeCandidate(
 	out.robustMeanLum = 0.0;
 	out.meanVar = 0.0;
 	out.rasSeconds = 0.0;
+	out.vcmMergeShare = 0.0;
 
 	if( !scene || !mSamples ) {
 		return out;
@@ -582,6 +584,13 @@ AutoRasterizer::ProbeResult AutoRasterizer::ProbeCandidate(
 			anyValid = true;
 		}
 
+		if( choice == AutoIntegratorChoice::VCM ) {
+			VCMRasterizerBase* vcmBase = dynamic_cast<VCMRasterizerBase*>( d );
+			if( vcmBase ) {
+				out.vcmMergeShare = vcmBase->GetMergeFluxShare();
+			}
+		}
+
 		safe_release( cap );
 		safe_release( d );
 	}
@@ -598,8 +607,89 @@ AutoRasterizer::ProbeResult AutoRasterizer::ProbeCandidate(
 		out.robustMeanLum = WinsorizedMeanLuminance( frames.front(), cfg.reachWinsorPct );
 		out.meanVar    = MeanPerPixelVariance( frames );
 		out.rasSeconds = totalSeconds;
+		out.lum        = frames.front();
 	}
 	return out;
+}
+
+AutoRasterizer::CausticReachSignals AutoRasterizer::ComputeCausticReachSignals(
+	const ProbeResult& pt, const ProbeResult& vcm )
+{
+	CausticReachSignals s{};
+	if( !pt.valid || !vcm.valid || pt.lum.empty() || vcm.lum.empty() ) {
+		return s;
+	}
+	s.valid = true;
+	s.medRatio = ( pt.medianLum > 0.0 ) ? ( vcm.medianLum / pt.medianLum ) : 0.0;
+	s.meanRatio = ( pt.meanLum > 0.0 ) ? ( vcm.meanLum / pt.meanLum ) : 0.0;
+	s.robustMeanRatio = ( pt.meanLum > 0.0 ) ? ( vcm.robustMeanLum / pt.meanLum ) : 0.0;
+	s.vcmMergeShare = vcm.vcmMergeShare;
+
+	const size_t N = std::min( pt.lum.size(), vcm.lum.size() );
+	if( N == 0 ) {
+		return s;
+	}
+
+	// Regularization floor to avoid 0/0 and spurious noise explosion on dark pixels.
+	const double ptMean = pt.meanLum;
+	const double eps = std::max( 1e-5, 0.001 * ptMean );
+	const double sigFloor = std::max( 1e-5, 0.01 * vcm.meanLum );
+
+	std::vector<double> ratios;
+	ratios.reserve( N );
+
+	size_t countGt2 = 0;
+	size_t countGt1_5 = 0;
+	size_t countGt3 = 0;
+	double vcmGt2Flux = 0.0;
+	double totalVcmFlux = 0.0;
+
+	for( size_t i = 0; i < N; ++i ) {
+		const double p = pt.lum[i];
+		const double v = vcm.lum[i];
+		if( !RISE::IsFiniteDouble( p ) || !RISE::IsFiniteDouble( v ) ) {
+			continue;
+		}
+		if( v > 0.0 ) {
+			totalVcmFlux += v;
+		}
+
+		// Regularized per-pixel ratio: (v + eps) / (p + eps)
+		const double r = ( v + eps ) / ( p + eps );
+		ratios.push_back( r );
+
+		// Pixel counts where VCM is significantly brighter than PT
+		if( v > sigFloor ) {
+			if( v > 1.5 * p ) {
+				++countGt1_5;
+			}
+			if( v > 2.0 * p ) {
+				++countGt2;
+				vcmGt2Flux += v;
+			}
+			if( v > 3.0 * p ) {
+				++countGt3;
+			}
+		}
+	}
+
+	s.fracGt2 = double( countGt2 ) / double( N );
+	s.fracGt1_5 = double( countGt1_5 ) / double( N );
+	s.fracGt3 = double( countGt3 ) / double( N );
+	s.energyFracGt2 = ( totalVcmFlux > 0.0 ) ? ( vcmGt2Flux / totalVcmFlux ) : 0.0;
+
+	if( !ratios.empty() ) {
+		std::sort( ratios.begin(), ratios.end() );
+		const size_t nR = ratios.size();
+		size_t idx95 = static_cast<size_t>( 0.95 * double( nR ) );
+		if( idx95 >= nR ) idx95 = nR - 1;
+		size_t idx90 = static_cast<size_t>( 0.90 * double( nR ) );
+		if( idx90 >= nR ) idx90 = nR - 1;
+		s.p95Ratio = ratios[idx95];
+		s.p90Ratio = ratios[idx90];
+	}
+
+	return s;
 }
 
 AutoIntegratorChoice AutoRasterizer::RunProbe(
@@ -639,56 +729,36 @@ AutoIntegratorChoice AutoRasterizer::RunProbe(
 		account( vcm, false );
 		if( pt.valid && vcm.valid && pt.medianLum > 0.0 ) {
 			// Two-gate caustic test (AUTO_RASTERIZER_DESIGN.md §6.2 — the
-			// jewel_vault over-fire fix).  BOTH must hold to route VCM:
+			// jewel_vault over-fire fix; updated DL-167).  BOTH must hold to route VCM:
 			//  (1) MEDIAN-ratio gate (firefly-robust) — VCM's TYPICAL pixel is
-			//      brighter than PT's.  This is the original trigger, but at probe
-			//      spp it ALSO fires on a dielectric-but-CONVERGING scene
-			//      (jewel_vault): PT's hard 3+-bounce indirect is transiently
-			//      under-converged so its MEDIAN pixel reads dark — even though PT
-			//      reaches the SAME total energy VCM does.  Median alone cannot
-			//      tell that apart from a real caustic (jewel_vault 2.5-3.1x vs
-			//      glass_pavilion 2.0-2.3x — no tau separates them).
-			//  (2) MEAN-ratio (transport-reach) gate — the discriminator.  A REAL
-			//      refractive caustic is energy PT structurally CANNOT reach, so
-			//      VCM's MEAN luminance (= total energy) far exceeds PT's; a
-			//      converging scene already has PT-mean ~= VCM-mean (ratio ~1).
-			//      Measured at the real probe config (scale 4, spp 4, 3 trials):
-			//      over-fire {jewel_vault 0.96-1.12, crystal_garden 0.67-0.69,
-			//      cloister 0.88-0.99} vs real-caustic {diamond_teapot 1.88-1.95,
-			//      glass_pavilion 20-32} — a clean 1.12|1.88 gap, tau_reach=1.50.
-			//      meanLum is read from the SAME single render the median gate
-			//      already uses, so this gate adds NO probe render (cost
-			//      unchanged).  (NB the Phase-3-guessed "PT dark-and-flailing ->
-			//      high PT variance/sigma2T" signal is INVERTED at probe spp:
-			//      jewel_vault is the NOISIEST PT there, not the quietest, so PT
-			//      sigma2T does NOT separate — the energy-reach mean ratio does.)
-			// Reach numerator is VCM's WINSORIZED mean (vcm.robustMeanLum): VCM merging
-			// produces sparse fireflies that inflate its raw mean and over-fire the route
-			// on non-caustic dielectric scenes (jewel_vault).  The denominator is PT's RAW
-			// mean (pt.meanLum) — PT has no analogous mean-inflating pathology, and capping
-			// PT's tail would WRONGLY inflate the ratio on scenes where PT legitimately
-			// reaches noisy-but-real bright energy the (energy-deficient) VCM merge cannot
-			// (spectral_caustic: PT's dispersive caustic is noisy yet real -> keep it whole).
-			const double medRatio  = vcm.medianLum / pt.medianLum;
-			const double meanRatio = ( pt.meanLum > 0.0 ) ? ( vcm.robustMeanLum / pt.meanLum ) : 0.0;
-			const double rawReachR = ( pt.meanLum > 0.0 ) ? ( vcm.meanLum / pt.meanLum ) : 0.0;
-			if( medRatio > cfg.tauCaustic && meanRatio > cfg.tauReach ) {
+			//      brighter than PT's.
+			//  (2) VCM MERGE-SHARE (transport-reach) gate (DL-167) — the discriminator.
+			//      In true caustic scenes requiring VCM (diamond_teapot_pour, pool_caustics),
+			//      a substantial fraction of the flux comes from photon vertex merges
+			//      (diamond_teapot_pour ~22.5%, pool_caustics ~56.0%). In converging dielectric
+			//      scenes where PT/BDPT reaches the energy via ordinary transport (glass_pavilion,
+			//      crystal_garden, jewel_vault), vertex merge flux share is <= 4.5% (jewel_vault 0.0%).
+			//      Threshold tau_reach = 0.10 (10%) provides a 9.6-sigma separation between true
+			//      VCM caustics and non-caustic dielectric scenes, cleanly rejecting over-fires
+			//      while reliably selecting VCM where needed.
+			const double medRatio   = vcm.medianLum / pt.medianLum;
+			const double mergeShare = vcm.vcmMergeShare;
+			if( medRatio > cfg.tauCaustic && mergeShare > cfg.tauReach ) {
 				std::snprintf( reason, sizeof(reason),
-					"probe -> vcm: median %.2fx > %.2f and reach %.2fx > %.2f (raw %.2fx)",
-					medRatio, cfg.tauCaustic, meanRatio, cfg.tauReach, rawReachR );
+					"probe -> vcm: median %.2fx > %.2f and reach merge %.2f%% > %.2f%%",
+					medRatio, cfg.tauCaustic, mergeShare * 100.0, cfg.tauReach * 100.0 );
 				mResolveReason = reason;
 				return finish( AutoIntegratorChoice::VCM );
 			}
 			if( medRatio > cfg.tauCaustic ) {
-				// Median fired but PT reaches the same total energy as VCM -> this
-				// is NOT a real caustic (the jewel_vault class), just a slow-to-
-				// converge dielectric scene.  Don't over-route VCM; fall through
-				// to the general BDPT-vs-PT check below (which correctly keeps
-				// jewel_vault on PT via its sigma2T win).
+				// Median fired but VCM merge share is low -> this is NOT a real caustic
+				// (the jewel_vault / glass_pavilion class), just a slow-to-converge
+				// dielectric scene. Don't over-route VCM; fall through to the general
+				// BDPT-vs-PT check below.
 				GlobalLog()->PrintEx( eLog_Event,
-					"AutoRasterizer:: caustic median %.2fx fired but reach %.2fx <= %.2f (raw %.2fx)"
+					"AutoRasterizer:: caustic median %.2fx fired but reach merge %.2f%% <= %.2f%%"
 					" (PT reaches the energy) -> not a caustic, fall through to BDPT check",
-					medRatio, meanRatio, cfg.tauReach, rawReachR );
+					medRatio, mergeShare * 100.0, cfg.tauReach * 100.0 );
 			}
 		}
 	}
