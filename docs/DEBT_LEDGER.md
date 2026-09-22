@@ -1192,6 +1192,7 @@ debt-dl218 slice note (2026-09-22, does NOT sum into the totals below -- recompu
 
 **Authoritative totals on `master` (recount after each merge; per-slice notes
 below are each slice's own snapshot at its branch HEAD and do NOT sum):**
+2026-09-22 BDPT HWSS companion density evaluation parity reviewed and merged — **172 main rows: 14 open, 158 closed**.
 2026-09-22 spectral splat matrix-only Rec.709 conversion reviewed and merged — **172 main rows: 15 open, 157 closed**.
 2026-09-22 HWSS companion wavelength density convention and per-lobe f-ratio evaluation reviewed and merged — **172 main rows: 16 open, 156 closed**.
 2026-09-22 BezierPatchGeometry open-sheet flag removal on interior hits reviewed and merged — **172 main rows: 17 open, 155 closed**.
