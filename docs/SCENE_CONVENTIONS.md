@@ -1146,6 +1146,20 @@ to draw in the first place, and §9.9 gate 9b for the measurement.
 
 ---
 
+## 8.8. Dielectric material transmittance (`tau`) is unit transmittance, not absorption coefficient
+
+`dielectric_material`'s `tau` parameter specifies the internal transmittance of the medium over one unit of ray travel distance. In the shader evaluation ([DielectricSPF.cpp](../src/Library/Materials/DielectricSPF.cpp)), it is applied via Beer's Law as:
+$$\text{attenuation} = \tau^{\text{distance}} = \text{pow}(\tau, \text{distance})$$
+
+Consequently:
+1. **$\tau$ must lie in $[0, 1]$** across all channels and visible wavelengths ($380\text{--}780\text{ nm}$). Values $> 1.0$ violate energy conservation and produce exponential gain with travel distance; `Job::AddDielectricMaterial` emits a diagnostic warning whenever any channel or visible sample exceeds $1.0$.
+2. **$\tau$ is NOT an absorption coefficient ($\sigma_a$).** If you are working from a published physical absorption table (e.g. Pope & Fry 1997 for pure water), values are typically given as an absorption coefficient $\sigma_a(\lambda)$ in units of $\text{m}^{-1}$ (often exceeding $1.0$ at long visible wavelengths). Pasting these raw values directly into a `.spectra` file bound to `tau` will produce wrong attenuation and render artifacts.
+3. **Conversion formula:** convert raw absorption coefficients $\sigma_a(\lambda)$ to unit transmittance $\tau(\lambda)$ via:
+   $$\tau(\lambda) = \exp\left(-\sigma_a(\lambda) \cdot \text{unitLength}\right)$$
+   where $\text{unitLength}$ is the physical length of 1 world unit in metres (e.g. $1.0$ if 1 world unit = 1 metre, or $0.01$ if 1 world unit = 1 centimetre).
+
+---
+
 ## 9. Sanity-check workflow
 
 When a new scene renders unexpectedly:

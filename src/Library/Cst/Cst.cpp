@@ -3699,6 +3699,15 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 		switch( cat ) {                                          // categories the apply handles
 			case ChunkCategory::Material: case ChunkCategory::Geometry:
 			case ChunkCategory::Object:  case ChunkCategory::Light: case ChunkCategory::Modifier: break;
+			case ChunkCategory::Painter:
+				// DL-194: Targeted structural guard. ExpressionProgram::BindPainterRefs holds raw
+				// addrefs on sampled IPainter*/IScalarPainter* instances without re-resolution.
+				// Admitting Painter-category chunks incrementally would leave referencing expression
+				// programs pointing to stale/freed painter objects unless a reverse-dependency walk
+				// (via kColorPainterSubCat/kScalarPainterSubCat) re-runs BindPainterRefs on all
+				// referencing programs. Refuse -> fall back to full derive.
+				diags.push_back( node->role + " '" + name + "': incremental derive refuses Painter category: ExpressionProgram holds raw addrefs on sampled painters; admitting painters incrementally requires re-binding all referencing programs (DL-194) -- fall back to a full derive" );
+				return 0;
 			default: diags.push_back( node->role + ": incremental cannot fully drop this category (e.g. a scalar_painter has no colour-painter-manager entry for RemovePainter to drop); fall back to a full derive" ); return 0;
 		}
 		// Reversibility is PER-PARSER, not per-category (review P1.3/P1.5): refuse the
@@ -3835,6 +3844,41 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 			return 0;
 		}
 		for( const ParameterDescriptor& pd : p.parser->Describe().parameters ) {
+			// DL-156: preflight the arity of every declared vector/matrix parameter on an
+			// OBJECT chunk before any mutation or Finalize runs.  An object's Finalize calls
+			// AddObject/AddObjectMatrix with zero-filled values BEFORE the apply loop's
+			// HadHardError() check aborts, and EntCap captures only non-object entities, so
+			// nothing rolls back an object's local transform and ComposeObjectHierarchy()
+			// corrupts parent-chained descendants too.  Preflighting arity here ensures
+			// atomic refusal: return 0 with nothing mutated.
+			if( p.cat == ChunkCategory::Object ) {
+				int expected = 0;
+				switch( pd.kind ) {
+					case ValueKind::DoubleVec2: expected = 2;  break;
+					case ValueKind::DoubleVec3: expected = 3;  break;
+					case ValueKind::DoubleVec4: expected = 4;  break;
+					case ValueKind::DoubleMat4: expected = 16; break;
+					default: break;
+				}
+				if( expected > 0 ) {
+					std::string val;
+					if( ParamValue( p.node.get(), pd.name.c_str(), val ) ) {
+						const int actual = ParseStateBag::CountValueTokens( val );
+						const bool ok = pd.allowsUniformScalarBroadcast
+							? ( actual == 1 || actual == expected )
+							: ( actual == expected );
+						if( !ok ) {
+							const char* kw = p.parser->Describe().keyword.empty() ? p.node->role.c_str() : p.parser->Describe().keyword.c_str();
+							GlobalLog()->PrintEx( eLog_Error, kVectorArityFmt, pd.name.c_str(), kw, expected, actual, val.c_str() );
+							char buf[1024];
+							snprintf( buf, sizeof(buf), kVectorArityFmt, pd.name.c_str(), kw, expected, actual, val.c_str() );
+							diags.push_back( std::string(buf) );
+							return 0;
+						}
+					}
+				}
+			}
+
 			if( pd.kind != ValueKind::Reference || pd.referenceCategories.empty() ) continue;   // tuple refs do not occur in the incremental's allowed categories
 			std::string val;
 			if( !ParamValue( p.node.get(), pd.name.c_str(), val ) ) continue;     // param absent
@@ -3855,33 +3899,11 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 			// SLOT-PRECISE resolution for the radiance_map {Painter} slot: AddObject binds it
 			// via the COLOUR painter manager ONLY, so a scalar-only painter there does NOT
 			// resolve.  Check colour-only rather than EntityExists(Painter) (which accepts
-			// EITHER manager) -- this narrows (but, see below, no longer eliminates) an
-			// OBJECT re-point's ability to fail mid-apply (Part A atomicity: objects are
-			// re-pointed AFTER the entities are recreated; an object failure would strand
-			// already-re-pointed prior objects, which the entity-only rollback below cannot
-			// restore; see the 87 caveat at the apply loop about `parent`).
+			// EITHER manager) -- this narrows an OBJECT re-point's ability to fail mid-apply.
 			//
-			// REVISED (DL-32 round-2 review, P2-2, docs/DEBT_LEDGER.md DL-156): this preflight
-			// only validates REFERENCE-kind params.  It does NOT validate a DoubleVec3/
-			// DoubleVec4/DoubleMat4 param's ARITY, so a malformed `position`/`orientation`/
-			// `quaternion`/`scale`/`matrix` on the object BEING EDITED sails past it and can
-			// only be caught inside that object's own Finalize (`ParseStateBag::GetVec3`'s
-			// DL-32 hard-error latch) -- AFTER Finalize has already called
-			// `pJob.AddObject`/`AddObjectMatrix` with the zero-filled value.  "Objects must
-			// never fail" is therefore FALSE as an absolute; what actually holds (proven by
-			// `CstIncrementalSafetyTest`'s "arity-parent-chain" case) is narrower: the
-			// EDITED object is always the index-minimal object in its own closure (no
-			// forward references in the grammar -- a dependent, e.g. a `parent`-linked
-			// child, is always declared LATER), so the entities-first-then-by-index apply
-			// loop always reaches it FIRST among objects and breaks there -- no OTHER,
-			// downstream object's Finalize is ever CALLED.  That does NOT mean a downstream
-			// object is left visibly correct, though: `ComposeObjectHierarchy()` still runs
-			// on the failure path below and recomposes every child's WORLD transform from
-			// its parent's now-corrupted LOCAL transform, so a `parent`-chained descendant's
-			// world bbox is corrupted too, without its own Finalize ever running.  DL-156
-			// tracks the fix (snapshot + restore each closure object's pre-edit local
-			// transform, mirroring `rollbackEntities()`, before `ComposeObjectHierarchy()`
-			// runs on failure); not fixed here.
+			// DL-156 CLOSED: the preflight above now also validates vector/matrix arity for
+			// every declared DoubleVec2/3/4/Mat4 parameter on object chunks before mutation,
+			// eliminating the DL-32 partial-mutation gap on objects.
 			if( pd.name == "radiance_map" )
 				resolves = ( priv->GetPainters() != 0 && priv->GetPainters()->GetItem( val.c_str() ) != 0 );
 			else
@@ -3960,28 +3982,12 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 	// entity is recreated -- so restoring the entities is ENOUGH to undo an entity-level
 	// failure with the Job back to its pre-edit state.
 	//
-	// REVISED (DL-32 round-2 review, P2-2, docs/DEBT_LEDGER.md DL-156): "a failure can only
-	// occur at an entity, before any object is touched" is no longer true -- DL-32 gave a
-	// wrong-arity position/orientation/quaternion/scale/matrix on the object BEING EDITED a
-	// second way to fail, one the preflight above cannot see (it only checks Reference-kind
-	// params) and one that does NOT stop `ParseStateBag::GetVec3` et al. from letting the
-	// object's own Finalize run to completion on a zero-filled value before the apply loop's
-	// `!bag.HadHardError()` check notices.  So an object CAN fail, and IS partially mutated
-	// (re-pointed to the zero-filled value) before that is caught.  What is NOT captured
-	// stays not captured, and the reason the Job still comes back reasonably (not perfectly)
-	// intact is narrower than the old claim: the EDITED object is always index-minimal among
-	// the objects in its own closure (no forward references in the grammar -- any object
-	// that depends on it, e.g. a `parent`-linked child, is declared LATER), so this loop
-	// always reaches it FIRST among objects and breaks there, and NO OTHER object's own
-	// Finalize is ever CALLED.  A `parent`-chained descendant's WORLD transform can still be
-	// wrong afterward, though: `ComposeObjectHierarchy()` runs on the failure path below
-	// regardless, and recomposes it from the edited object's now-corrupted LOCAL transform
-	// even though the descendant's own params were never touched --
-	// `CstIncrementalSafetyTest`'s "arity-parent-chain" case measures and pins exactly this.
-	// DL-156 tracks the fix (snapshot + restore each closure object's pre-edit local
-	// transform, mirroring this entity capture, before recomposing on failure); not fixed
-	// here -- this comment states the invariant that actually holds today, not the one
-	// design intended.
+	// DL-156 CLOSED: the whole-plan preflight above now validates vector/matrix arity for
+	// every declared DoubleVec2/3/4/Mat4 parameter on object chunks before mutation or
+	// Finalize runs.  Preflighting is cheaper and safer than snapshotting and restoring object
+	// transforms: zero runtime allocations, no local/world transform snapshot overhead, and no
+	// need to un-recompose a modified object hierarchy.  So "a failure can only occur at an
+	// entity, before any object is touched" is restored as an invariant.
 	struct EntCap { ChunkCategory cat; std::string name; IReference* old; };   // old addref'd (or null)
 	std::vector<EntCap> entCaps;
 	entCaps.reserve( pending.size() );

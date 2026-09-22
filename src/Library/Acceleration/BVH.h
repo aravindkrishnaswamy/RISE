@@ -2049,6 +2049,29 @@ namespace RISE
 		//! element whose own box excludes `p`.  Null costs one predicted-
 		//! not-taken pointer compare per node/candidate, and every existing
 		//! caller passes null implicitly via the default.
+		//!
+		//! DL-162 design note (farthest-corner upper-bound prune, DECLINED ON MEASUREMENT):
+		//! `DeepestOtherContainment` tracks a running MAXIMUM depth. A theoretically
+		//! sound prune exists: a node's FARTHEST-corner Euclidean distance from the query
+		//! point `p` is a valid, zero-precomputation upper bound on any depth an element
+		//! confined to that box could possibly report (a `SignedDistanceLower` answer never
+		//! overstates true depth, and the depth of a point inside a solid confined to an
+		//! AABB cannot exceed the AABB's farthest corner from `p`). Any node whose farthest-
+		//! corner distance is <= the running best could therefore be pruned, mirroring
+		//! `ClosestPointDistance`'s nearest-corner prune for a running minimum.
+		//!
+		//! Why declined on measurement:
+		//! 1. Identical-size overlap: `tests/InteriorCandidateWalkCostTest.cpp` fixtures (b)/(c)
+		//!    show that for same-sized overlapping candidates, all nodes yield near-identical
+		//!    farthest-corner bounds, giving zero pruning separation in the worst-case regime.
+		//! 2. Production scenes: On the showcase scene calling `interior()` (`tidal_stones.RISEscene`,
+		//!    fixture (f)), `ForEachContainingPoint` already visits 0.49x candidates and 0.66x nodes
+		//!    at 0.57x the time of `ClosestPointDistance` (43% faster). No shipped scene exhibits
+		//!    a performance deficit.
+		//! 3. Per `performance-work-with-baselines.md`, speculative optimization without a
+		//!    measured production regression is rejected. If a future heterogeneous-size heavy-overlap
+		//!    scene ever demonstrates a bottleneck, implement as a new `BVH::DeepestContainingPoint`
+		//!    rather than modifying `ForEachContainingPoint`'s clean visitor contract.
 		template< class VisitFn >
 		void ForEachContainingPoint(
 			const Point3& p,

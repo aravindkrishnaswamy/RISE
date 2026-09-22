@@ -18,6 +18,8 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <mutex>
+#include <vector>
 #ifdef _WIN32
 #include <process.h>
 #define getpid _getpid
@@ -27,6 +29,8 @@
 
 #include "../src/Library/Interfaces/IJob.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
+#include "../src/Library/Interfaces/ILogPriv.h"
+#include "../src/Library/Interfaces/ILogPrinter.h"
 #include "../src/Library/Interfaces/IScalarPainter.h"
 #include "../src/Library/Interfaces/IScalarPainterManager.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
@@ -38,6 +42,47 @@ namespace RISE
 {
 	bool RISE_CreateJobPriv( IJobPriv** ppi );
 }
+
+class CapturingLogPrinter : public virtual RISE::ILogPrinter,
+                            public virtual RISE::Implementation::Reference
+{
+public:
+	explicit CapturingLogPrinter( std::string needle ) : mNeedle( std::move( needle ) ) {}
+
+	void Print( const RISE::LogEvent& event ) override
+	{
+		const std::string msg( event.szMessage );
+		if( msg.find( mNeedle ) != std::string::npos ) {
+			std::lock_guard<std::mutex> lk( mMutex );
+			mTypes.push_back( event.eType );
+		}
+	}
+	void Flush() override {}
+
+	int  Count() const
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		return (int)mTypes.size();
+	}
+	bool AllOfType( RISE::LOG_ENUM want ) const
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		if( mTypes.empty() ) return false;
+		for( RISE::LOG_ENUM t : mTypes ) { if( t != want ) return false; }
+		return true;
+	}
+	void Reset()
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		mTypes.clear();
+	}
+
+private:
+	std::string                 mNeedle;
+	mutable std::mutex          mMutex;
+	std::vector<RISE::LOG_ENUM> mTypes;
+};
+
 
 static int passCount = 0;
 static int failCount = 0;
@@ -845,6 +890,96 @@ static void TestRejectInlineScalarOverflow()
 	}
 }
 
+//! DL-28: `dielectric_material`'s `tau` is a base transmittance in [0, 1]
+//! applied as `pow(tau, distance)` (Beer's law), NOT an absorption
+//! coefficient sigma_a. An author who pastes a published sigma_a curve
+//! directly gets values > 1.0 (water sigma_a can reach 2.5+ m^-1).
+//! Test that tau values > 1.0 emit a diagnostic warning naming the
+//! material and explaining the unit transmittance convention, while
+//! valid values <= 1.0 emit no warning.
+static void TestDielectricTauPreconversionWarning()
+{
+	std::cout << "TestDielectricTauPreconversionWarning" << std::endl;
+
+	CapturingLogPrinter* pPrinter = new CapturingLogPrinter( "dielectric tau is a unit transmittance base" );
+	RISE::GlobalLogPriv()->AddPrinter( pPrinter );
+
+	// 1. Spectral curve with values > 1.0 (raw sigma_a table) bound to tau.
+	{
+		pPrinter->Reset();
+		char path[512];
+		std::snprintf( path, sizeof( path ),
+			"/tmp/scalar_painter_test_tau_sigma_%d.spectra", (int)::getpid() );
+		std::ofstream f( path );
+		f << "380 0.05\n500 2.50\n700 0.80\n";
+		f.close();
+
+		std::ostringstream scene;
+		scene << "scalar_painter\n{\n\tname water_sigma\n\tfile " << path << "\n}\n\n"
+		      << "dielectric_material\n{\n\tname water_mat\n\ttau water_sigma\n\tior 1.333\n}\n";
+
+		IJobPriv* pJob = LoadScene( scene.str().c_str(), "tau_sigma" );
+		Check( pJob != nullptr, "tau-sigma: scene loads (warning, not hard error)" );
+		if( pJob ) {
+			Check( pJob->GetMaterials()->GetItem( "water_mat" ) != nullptr,
+				"tau-sigma: dielectric material created" );
+			safe_release( pJob );
+		}
+		Check( pPrinter->Count() == 1, "tau-sigma: warning logged for tau > 1.0" );
+		Check( pPrinter->AllOfType( RISE::eLog_Warning ), "tau-sigma: emitted diagnostic is a WARNING" );
+		std::remove( path );
+	}
+
+	// 2. Inline scalar > 1.0 bound to tau.
+	{
+		pPrinter->Reset();
+		const char* scene =
+			"dielectric_material\n{\n\tname bad_inline_tau\n\ttau 1.5\n\tior 1.5\n}\n";
+		IJobPriv* pJob = LoadScene( scene, "tau_inline_bad" );
+		Check( pJob != nullptr, "inline-tau-bad: scene loads" );
+		if( pJob ) safe_release( pJob );
+		Check( pPrinter->Count() == 1, "inline-tau-bad: warning logged for inline tau > 1.0" );
+		Check( pPrinter->AllOfType( RISE::eLog_Warning ), "inline-tau-bad: emitted diagnostic is a WARNING" );
+	}
+
+	// 3. Inline triple with channel > 1.0 bound to tau.
+	{
+		pPrinter->Reset();
+		const char* scene =
+			"dielectric_material\n{\n\tname bad_triple_tau\n\ttau 0.8 1.2 0.9\n\tior 1.5\n}\n";
+		IJobPriv* pJob = LoadScene( scene, "tau_triple_bad" );
+		Check( pJob != nullptr, "triple-tau-bad: scene loads" );
+		if( pJob ) safe_release( pJob );
+		Check( pPrinter->Count() == 1, "triple-tau-bad: warning logged for triple tau > 1.0" );
+		Check( pPrinter->AllOfType( RISE::eLog_Warning ), "triple-tau-bad: emitted diagnostic is a WARNING" );
+	}
+
+	// 4. CONTROL: valid tau <= 1.0 (spectral file and inline) emits NO warning.
+	{
+		pPrinter->Reset();
+		char path[512];
+		std::snprintf( path, sizeof( path ),
+			"/tmp/scalar_painter_test_tau_valid_%d.spectra", (int)::getpid() );
+		std::ofstream f( path );
+		f << "380 0.05\n500 0.85\n700 0.95\n";
+		f.close();
+
+		std::ostringstream scene;
+		scene << "scalar_painter\n{\n\tname water_valid\n\tfile " << path << "\n}\n\n"
+		      << "dielectric_material\n{\n\tname valid_mat\n\ttau water_valid\n\tior 1.333\n}\n"
+		      << "dielectric_material\n{\n\tname valid_inline\n\ttau 0.9 0.9 0.9\n\tior 1.5\n}\n"
+		      << "dielectric_material\n{\n\tname valid_boundary\n\ttau 1.0\n\tior 1.5\n}\n";
+
+		IJobPriv* pJob = LoadScene( scene.str().c_str(), "tau_valid" );
+		Check( pJob != nullptr, "valid-tau: scene loads" );
+		if( pJob ) safe_release( pJob );
+		Check( pPrinter->Count() == 0, "valid-tau: no warning logged when tau <= 1.0" );
+		std::remove( path );
+	}
+
+	safe_release( pPrinter );
+}
+
 int main()
 {
 	std::cout << "ScalarPainterParserTest" << std::endl;
@@ -866,6 +1001,7 @@ int main()
 	TestRejectOverspecifiedMultiplyAndAdd();
 	TestRejectPolynomialGarbage();
 	TestRejectInlineScalarOverflow();
+	TestDielectricTauPreconversionWarning();
 	std::cout << "\nResults: " << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount > 0 ? 1 : 0;
 }
