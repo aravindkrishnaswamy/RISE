@@ -107,10 +107,25 @@ void BezierPatchGeometry::RayElementIntersection( RayIntersectionGeometric& ri, 
 	// -- record it so consumers needing the TRUE surface facing
 	// (RayCaster's x-ray self-hit test) can recover the unflipped sign.
 	ri.bGeomNormalOrientedToRay = bDidFlip;
-	// DL-96: a patch never encloses a volume, so a double-sided hit
-	// here is always an open sheet (both faces are legitimate physical
-	// sides) -- see RayIntersectionGeometric::bOpenSheet's doc comment.
-	ri.bOpenSheet = bDidFlip;
+
+	// DL-220: this geometry deliberately does NOT set `ri.bOpenSheet`.
+	// DL-96 originally stamped `ri.bOpenSheet = bDidFlip` on the premise
+	// that "a patch never encloses a volume, so a double-sided hit here
+	// is always an open sheet". That premise is false for the identical
+	// reason DL-157 review round 3 removed `bProvablyNoInterior` below:
+	// this class is not a single patch -- `patches` is a `BezierPatchList`
+	// (a vector) with a BSP/Octree over it, `AddPatch` appends, and
+	// `Job.cpp`'s `.bezier` loader puts EVERY patch of a file into ONE
+	// geometry (`models/raw/teapot.bezier` declares 28; `aphrodite.bezier`
+	// and `f16.bezier` are closed solids). At a genuine interior exit on
+	// a closed Bezier solid, `dotND > 0` and `bDidFlip` is true; stamping
+	// `bOpenSheet = true` causes `RayIntersectionGeometric::BSSRDFEntryFacing()`
+	// to treat the interior wall hit as an open sheet and admit it as a
+	// subsurface entry seeded from inside the object. Removing the setter
+	// allows Bezier geometry to fall back to the DL-70 closed-solid gate
+	// (`bOpenSheet == false`), which is the correct default for any geometry
+	// that might enclose a volume.
+	//
 	// DL-157 review round 3 (P1): this geometry deliberately does NOT set
 	// `ri.bProvablyNoInterior`.  Round 2 did, on the premise that "a
 	// single patch cannot enclose a volume" -- but this class is not a

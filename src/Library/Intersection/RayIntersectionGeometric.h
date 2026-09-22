@@ -364,7 +364,7 @@ namespace RISE
 		//! `bGeomNormalOrientedToRay` flip happens on an OPEN 2-D SHEET
 		//! rather than a closed, watertight solid -- i.e. a surface where
 		//! BOTH faces are legitimate physical sides (a leaf, a cloth
-		//! card, a bare `clipped_plane`/Bezier patch) rather than the
+		//! card, a bare `clipped_plane`) rather than the
 		//! inside/outside of a solid volume.  Default false.
 		//!
 		//! DL-96: the BSSRDF front-face admission gate
@@ -393,11 +393,17 @@ namespace RISE
 		//!     watertightness certification at all, so every
 		//!     double-sided non-indexed mesh is treated as an open
 		//!     sheet.
-		//!   * `ClippedPlaneGeometry`, `BezierPatchGeometry` -- on a
-		//!     back-face hit (the same condition each already uses for
-		//!     `bGeomNormalOrientedToRay`): a plane or patch never
-		//!     encloses a volume, so a double-sided hit on one is always
-		//!     an open sheet.
+		//!   * `ClippedPlaneGeometry` -- on a back-face hit (the same
+		//!     condition it already uses for `bGeomNormalOrientedToRay`):
+		//!     a single clipped plane never encloses a volume, so a
+		//!     double-sided hit on one is always an open sheet.
+		//! `BezierPatchGeometry` does NOT set it (DL-220): a patch
+		//! list can enclose a volume (`models/raw/teapot.bezier` declares
+		//! 28 patches in one geometry; `aphrodite.bezier` and `f16.bezier`
+		//! are closed solids). Stamping `bOpenSheet = bDidFlip` caused an
+		//! interior wall hit to be admitted by `BSSRDFEntryFacing()` as a
+		//! subsurface entry seeded from inside the object. Bezier geometries
+		//! fall back to the DL-70 closed-solid gate (`bOpenSheet == false`).
 		//! `HairGeometry` does NOT set it -- it is already excluded from
 		//! the recovery via `bGeomNormalRayDerived`/`HasTrueGeomSide()`,
 		//! for an orthogonal reason (no genuine two-sided winding at
