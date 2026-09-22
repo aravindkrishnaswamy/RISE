@@ -332,6 +332,8 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 		return;
 	}
 
+	ResetFluxAccumulators();
+
 	// Plumb the ray caster's light sampler into the BDPT
 	// generator that VCM wraps.  Mirrors what BDPTRasterizerBase
 	// does at the top of its RasterizeScene, which never runs for

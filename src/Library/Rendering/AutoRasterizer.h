@@ -59,6 +59,7 @@
 #include "../Utilities/SpectralConfig.h"        // SpectralConfig (auto_spectral domain)
 #include <mutex>
 #include <string>
+#include <vector>
 
 namespace RISE
 {
@@ -210,7 +211,6 @@ namespace RISE
 			//! isolation must restore both wrapper and delegate immediately.
 			FrameStore* ForTest_GetDelegateFrameStore() const;
 
-		private:
 			//! Render-time probe tunables.  Read from `GlobalOptions` at
 			//! selection time (so the Phase-4 resolution/cost sweep can
 			//! vary them without recompiling) with the Phase-3 experiment
@@ -220,7 +220,7 @@ namespace RISE
 				unsigned int spp;				///< probe samples-per-pixel (default 4)
 				unsigned int scale;				///< resolution divisor: 2=half, 4=quarter, 8=eighth (default 4 — §6.2)
 				double       tauCaustic;		///< median-lum VCM/PT ratio gate 1/2 -> caustic candidate (default 1.30)
-				double       tauReach;			///< mean-lum VCM/PT (transport-reach) gate 2/2 -> VCM (default 1.50; rejects the jewel_vault over-fire)
+				double       tauReach;			///< VCM merge flux share (transport-reach) gate 2/2 -> VCM (default 0.10; DL-167)
 				double       reachWinsorPct;	///< upper-tail winsorize pct for the reach mean (default 0.99; clips VCM merge fireflies so the gate sees broad caustic energy, not sparse spikes)
 				double       tauBdpt;			///< σ²·T PT/BDPT ratio -> BDPT (default 1.35)
 				unsigned int varianceRenders;	///< sub-renders for the per-pixel σ² estimate (default 2)
@@ -236,11 +236,50 @@ namespace RISE
 			{
 				bool   valid;
 				double medianLum;
-				double meanLum;		///< mean per-pixel luminance (the μ in σ/μ; brightness-normalizer for the PT-struggling discriminator)
+				double meanLum;			///< mean per-pixel luminance (the μ in σ/μ; brightness-normalizer for the PT-struggling discriminator)
 				double robustMeanLum;	///< firefly-robust (upper-tail-winsorized) mean luminance — the transport-reach statistic (the raw mean is spiked by VCM merge fireflies at probe spp)
 				double meanVar;
 				double rasSeconds;
+				double vcmMergeShare;	///< Fraction of VCM flux contributed by VM merges (candidate a)
+				std::vector<double> lum; ///< per-pixel luminance array (row-major)
 			};
+
+			//! Caustic transport-reach candidate signals evaluated between
+			//! PT and VCM probe renders (DL-167).
+			struct CausticReachSignals
+			{
+				bool   valid;
+				double medRatio;		///< VCM median / PT median
+				double meanRatio;		///< VCM raw mean / PT raw mean
+				double robustMeanRatio;	///< VCM winsorized mean / PT raw mean
+				double vcmMergeShare;	///< Merge share of total flux in VCM (candidate a)
+				double p95Ratio;		///< 95th percentile of per-pixel VCM/PT ratio (candidate b)
+				double p90Ratio;		///< 90th percentile of per-pixel VCM/PT ratio
+				double fracGt2;			///< Fraction of pixels with VCM > 2*PT (significant pixels)
+				double fracGt1_5;		///< Fraction of pixels with VCM > 1.5*PT (significant pixels)
+				double fracGt3;			///< Fraction of pixels with VCM > 3*PT (significant pixels)
+				double energyFracGt2;	///< Fraction of VCM flux in pixels where VCM > 2*PT
+			};
+
+			//! Compute candidate reach signals from PT and VCM probe outcomes.
+			static CausticReachSignals ComputeCausticReachSignals(
+				const ProbeResult& pt, const ProbeResult& vcm );
+
+			//! Test-only helper: probe one candidate directly.
+			ProbeResult ForTest_ProbeCandidate(
+				const IScene* scene, AutoIntegratorChoice choice,
+				const ProbeConfig& cfg, bool needVariance ) const
+			{
+				return ProbeCandidate( scene, choice, cfg, needVariance );
+			}
+
+			//! Test-only helper: read the probe config from GlobalOptions.
+			ProbeConfig ForTest_ReadProbeConfig() const
+			{
+				return ReadProbeConfig();
+			}
+
+		private:
 
 			//! Integrator selection.  Tier 0: an explicit author pin always
 			//! wins.  Tier 2 (Phase 4): when the probe is enabled and the

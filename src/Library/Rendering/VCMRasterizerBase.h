@@ -137,6 +137,36 @@ namespace RISE
 			/// Light vertex store built during the light pass and
 			/// queried by EvaluateMerges during the eye pass.
 			const LightVertexStore* GetLightVertexStore() const { return pLightVertexStore; }
+
+			/// Flux tracking for strategy split / reach diagnostics (DL-167 candidate a).
+			void ResetFluxAccumulators() const
+			{
+				mTotalLum.store( 0.0, std::memory_order_relaxed );
+				mMergeLum.store( 0.0, std::memory_order_relaxed );
+			}
+
+			void AccumulateSampleFlux( double total, double merge ) const
+			{
+				if( total > 0.0 ) {
+					double cur = mTotalLum.load( std::memory_order_relaxed );
+					while( !mTotalLum.compare_exchange_weak( cur, cur + total, std::memory_order_relaxed ) ) {}
+				}
+				if( merge > 0.0 ) {
+					double cur = mMergeLum.load( std::memory_order_relaxed );
+					while( !mMergeLum.compare_exchange_weak( cur, cur + merge, std::memory_order_relaxed ) ) {}
+				}
+			}
+
+			double GetMergeFluxShare() const
+			{
+				const double tot = mTotalLum.load( std::memory_order_relaxed );
+				const double mrg = mMergeLum.load( std::memory_order_relaxed );
+				return ( tot > 0.0 ) ? ( mrg / tot ) : 0.0;
+			}
+
+		protected:
+			mutable std::atomic<double> mTotalLum{ 0.0 };
+			mutable std::atomic<double> mMergeLum{ 0.0 };
 		};
 	}
 }
