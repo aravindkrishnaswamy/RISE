@@ -1590,7 +1590,7 @@ static const char* kRasterizerBDPTSubmergedJ =
 	"\n"
 	"bdpt_pel_rasterizer\n"
 	"{\n"
-	"\tmax_eye_depth 5\n"
+	"\tmax_eye_depth 8\n"
 	"\tmax_light_depth 5\n"
 	"\tsamples 2048\n"
 	"\tpixel_filter box\n"

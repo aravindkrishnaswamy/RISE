@@ -1727,10 +1727,9 @@ namespace {
 		unsigned int eyeTransmissionBounces = 0;
 		unsigned int eyeTranslucentBounces = 0;
 		unsigned int eyeVolumeBounces = 0;
-		// NM-only: the spectral eye subpath caps SURFACE vertices at
-		// maxEyeDepth explicitly (the Pel path relies on the loop bound
-		// only) -- a preserved Pel/NM asymmetry, NOT fixed here.
-		[[maybe_unused]] unsigned int eyeSurfaceBounces = 0;
+		// Unified surface-bounce cap (DL-210): caps surface vertices to
+		// maxEyeDepth on both Pel and NM walks, matching GenerateLightSubpathImpl.
+		unsigned int eyeSurfaceBounces = 0;
 
 		// HWSS per-wavelength throughput tracking (NM bundle only).  When
 		// pSwlHWSS is non-null the RR site below uses max over active
@@ -2201,15 +2200,13 @@ namespace {
 				break;
 			}
 
-			// NM-only surface-bounce cap: the spectral eye subpath bounds SURFACE
-			// vertices to maxEyeDepth (Pel relies on the loop bound only).
-			// Preserved Pel/NM asymmetry, NOT fixed here.
-			if constexpr( Traits::is_nm ) {
-				if( eyeSurfaceBounces >= maxEyeDepth ) {
-					break;
-				}
-				eyeSurfaceBounces++;
+			// Check surface depth limit (medium scatters don't count).
+			// Unified surface-bounce cap (DL-210): bounds SURFACE vertices to
+			// maxEyeDepth on both Pel and NM walks, matching GenerateLightSubpathImpl.
+			if( eyeSurfaceBounces >= maxEyeDepth ) {
+				break;
 			}
+			eyeSurfaceBounces++;
 
 			// Apply intersection modifier if present
 			if( ri.pModifier ) {
