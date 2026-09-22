@@ -4798,26 +4798,21 @@ yet known (§10.1).
     not attempted.** §2's table. It is a genuine RISE-specific opportunity given
     the hair σ_a machinery already in tree, and it depends on a yarn model rather
     than a sheen lobe.
-15. **Mirrored UV seams flip the weave direction.** §9.1. A `dpdu`-derived
+15. ~~**Mirrored UV seams flip the weave direction.** §9.1. A `dpdu`-derived
     tangent is coherent within a UV island but can mirror across a seam, and
     `vShadingTangent` has no `bitangentSign` companion to recover the chirality
     the way `vTangent` does
     ([RayIntersectionGeometric.h:296-299](../src/Library/Intersection/RayIntersectionGeometric.h)
-    vs [:344-345](../src/Library/Intersection/RayIntersectionGeometric.h)).
-    Accepted as a known limitation on `NormalMap`'s own precedent
-    ([NormalMap.cpp:109-120](../src/Library/Modifiers/NormalMap.cpp)); the
-    remedy is the same one that comment prescribes, re-export with a `TANGENT`
-    accessor. **That remedy is only real because of §9.1's tangent-precedence
-    branch** — an earlier draft prescribed it while writing `dpdu`
-    unconditionally, and since `Object::IntersectRay` builds the ONB solely from
-    `vShadingTangent` ([Object.cpp:699-772](../src/Library/Objects/Object.cpp))
-    and never consults `vTangent`, re-exporting with a `TANGENT` accessor would
-    have changed nothing at all. The indexed-mesh site now prefers
-    `ri.bHasTangent ? ri.vTangent : dpdu`, which is what makes the advice
-    actionable. §9.9 gate 1 puts a mirrored-UV asset in bucket A so the residual
-    severity is measured rather than assumed. A `bitangentSign` companion on
-    `vShadingTangent` — for meshes with mirrored UVs and *no* authored tangent —
-    is the complete fix and is not in Phase 1's scope.
+    vs [:344-345](../src/Library/Intersection/RayIntersectionGeometric.h)).~~
+    **CLOSED 2026-09-22 (DL-12)**: `RayIntersectionGeometric` now carries
+    `shadingBitangentSign` alongside `vShadingTangent`, populated from authored
+    glTF tangents (`ri.shadingBitangentSign = ri.bitangentSign`) or the UV Jacobian
+    chirality (`cross(dpdu, dpdv) . shadingNormal < 0`). `Object::IntersectRay` and
+    `CSGObject::IntersectRay` evaluate `(ri.geometric.shadingBitangentSign * m_tangentFrameSign) < 0`
+    and apply `FlipV()` so `onb.v()` consistently points along `+dpdv`. Downstream
+    anisotropic rotations (`WeaveBRDF`, `FabricBRDF`, `GGXBRDF`, `GGXSPF`) preserve
+    frame alignment and rotate symmetrically across mirrored UV seams. Red-proof:
+    `tests/MirroredUVWeaveDirectionTest.cpp` (24/0 post-fix, 16/8 red unfixed).
 16. **REWRITTEN 2026-09-02 (round 5), and now a small, measured debt.**
     `fabric_material`'s `hemisphericalAlbedo` **is** a closed form —
     `substrate.hemisphericalAlbedo() · (1 − m·Ē) + sheenColor · Ē` — because

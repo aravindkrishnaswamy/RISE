@@ -164,6 +164,9 @@ namespace RISE
 			// the cheap CanTessellate() capability check, not deferred to bake.)
 			bool IsValid() const { return m_pBase != 0 && m_pBase->CanTessellate(); }
 
+			//! Direct access to base geometry (e.g. for base curvature queries, DL-13).
+			const IGeometry* GetBaseGeometry() const { return m_pBase; }
+
 			// IRealizable (IGeometry): deferred-realization entry point.  Realize()
 			// bakes the mesh once (idempotent via the internal m_bRealized flag).  A
 			// failed bake (base TessellateToMesh false) leaves m_pMesh null and every
@@ -260,9 +263,10 @@ namespace RISE
 			//! either route.
 			//! At smoothing=1 the displacement contribution vanishes and the
 			//! result equals the base's analytical (recursing for nested
-			//! displaceds).  At smoothing=0 the result matches the actual
-			//! tessellated mesh.  Used by SMS two-stage solver — see
-			//! `docs/SMS_TWO_STAGE_SOLVER.md`.
+			//! displaceds) — exposing the base surface curvature.
+			//! At smoothing=0 the result matches the actual displaced surface
+			//! (what ray intersections and expression curv/curvR report by default).
+			//! Used by SMS two-stage solver — see `docs/SMS_TWO_STAGE_SOLVER.md`.
 			bool ComputeAnalyticalDerivatives(
 				const Point2& uv,
 				Scalar        smoothing,

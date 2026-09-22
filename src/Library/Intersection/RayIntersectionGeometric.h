@@ -784,6 +784,7 @@ namespace RISE
 		//! intersection (e.g. `HairBSDF`) therefore always see this field
 		//! in world space, never object space.
 		Vector3						vShadingTangent;
+		Scalar						shadingBitangentSign;	// +1 or -1 companion to vShadingTangent (DL-12)
 		bool						bHasShadingTangent;
 
 		//! Wireframe view-mode edge info (GUI render modes P1,
@@ -843,6 +844,7 @@ namespace RISE
 		  bitangentSign( 1.0 ),
 		  bHasTangent( false ),
 		  bShadingTangentFromGeometry( false ),
+		  shadingBitangentSign( 1.0 ),
 		  bHasShadingTangent( false ),
 		  bHasWireEdgeInfo( false ),
 		  bWantsWireEdgeInfo( false )
@@ -890,6 +892,7 @@ namespace RISE
 		  bHasTangent( r.bHasTangent ),
 		  bShadingTangentFromGeometry( r.bShadingTangentFromGeometry ),
 		  vShadingTangent( r.vShadingTangent ),
+		  shadingBitangentSign( r.shadingBitangentSign ),
 		  bHasShadingTangent( r.bHasShadingTangent ),
 		  ptWireNearestEdge( r.ptWireNearestEdge ),
 		  bHasWireEdgeInfo( r.bHasWireEdgeInfo ),
@@ -937,6 +940,7 @@ namespace RISE
 			bHasTangent = r.bHasTangent;
 			bShadingTangentFromGeometry = r.bShadingTangentFromGeometry;
 			vShadingTangent = r.vShadingTangent;
+			shadingBitangentSign = r.shadingBitangentSign;
 			bHasShadingTangent = r.bHasShadingTangent;
 			ptWireNearestEdge = r.ptWireNearestEdge;
 			bHasWireEdgeInfo = r.bHasWireEdgeInfo;
