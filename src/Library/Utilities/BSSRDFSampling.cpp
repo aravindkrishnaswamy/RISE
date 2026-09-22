@@ -144,6 +144,15 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 		Vector3 normal;		///< Shading normal at probe-ray hit (post-modifier)
 		Vector3 geomNormal;	///< Geometric normal — area Jacobian and entry front-face gate
 		OrthonormalBasis3D onb;
+		SurfaceDerivativesInfo derivatives;
+		SurfaceSignalInfo signals;
+		TextureFootprint txFootprint;
+		Point2 ptCoord;
+		Point2 ptCoord1;
+		bool bHasTexCoord1;
+		Point3 ptObjIntersec;
+		RISEPel vColor;
+		bool bHasVertexColor;
 	};
 	std::vector<ProbeHit> hits;
 	hits.reserve( 8 );
@@ -185,6 +194,23 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 			h.normal = probeRI.geometric.vNormal;
 			h.geomNormal = probeRI.geometric.vGeomNormal;
 			h.onb = probeRI.geometric.onb;
+			h.derivatives = probeRI.geometric.derivatives;
+			h.signals = probeRI.geometric.signals;
+			h.txFootprint = probeRI.geometric.txFootprint;
+			h.ptCoord = probeRI.geometric.ptCoord;
+			h.ptCoord1 = probeRI.geometric.ptCoord1;
+			h.bHasTexCoord1 = probeRI.geometric.bHasTexCoord1;
+			h.ptObjIntersec = probeRI.geometric.ptObjIntersec;
+			h.vColor = probeRI.geometric.vColor;
+			h.bHasVertexColor = probeRI.geometric.bHasVertexColor;
+
+			// Cross-object signals triple (DL-22):
+			// Stamped with exactly the values ObjectManager::IntersectRay stamps:
+			// pScene = ri.signals.pScene (forwarded from exit hit), pSelf = pObject,
+			// ptWorld = h.point.
+			h.signals.pScene = ri.signals.pScene;
+			h.signals.pSelf = pObject;
+			h.signals.ptWorld = h.point;
 
 			// DL-71/DL-75 (P1): recover the TRUE, ray-independent winding
 			// normal from a geometry that re-orients its reported normal
@@ -284,6 +310,23 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 				// PathTracingIntegrator.cpp, BDPTIntegrator.cpp -- would
 				// otherwise receive as a mismatched W-vs-U/V pair).
 				h.onb.CreateFromWU( h.normal, h.onb.u() );
+			}
+
+			// If the shading normal was flipped relative to the raw probe hit normal,
+			// re-pair derivatives, direct curvature, and signal provider normal
+			// (CSGObject.cpp / TriangleMeshGeometryIndexed.cpp invariant):
+			if( Vector3Ops::Dot( probeRI.geometric.vNormal, h.normal ) < Scalar( 0 ) ) {
+				if( h.derivatives.valid ) {
+					h.derivatives.dndu = -h.derivatives.dndu;
+					h.derivatives.dndv = -h.derivatives.dndv;
+				}
+				if( h.derivatives.curvatureValid ) {
+					h.derivatives.curvature = -h.derivatives.curvature;
+				}
+				if( h.signals.pProvider ) {
+					h.signals.nObject = -h.signals.nObject;
+					h.signals.bComplementedField = !h.signals.bComplementedField;
+				}
 			}
 
 			hits.push_back( h );
@@ -408,9 +451,28 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 	//
 	// Step 9: Compute entry Fresnel and Sw normalization
 	//
-	const Scalar eta = pProfile->GetIOR( ri );
+	// Reconstruct entry hit record so entry IOR and Fresnel are evaluated
+	// at the sampled entry hit rather than the exit point (DL-22).
+	RayIntersectionGeometric entryRig(
+		Ray( entryPoint, -entryNormal ), nullRasterizerState );
+	entryRig.bHit = true;
+	entryRig.ptIntersection = entryPoint;
+	entryRig.vNormal = entryNormal;
+	entryRig.vGeomNormal = entryGeomNormal;
+	entryRig.onb = entryONB;
+	entryRig.derivatives = hits[sel].derivatives;
+	entryRig.signals = hits[sel].signals;
+	entryRig.txFootprint = hits[sel].txFootprint;
+	entryRig.ptCoord = hits[sel].ptCoord;
+	entryRig.ptCoord1 = hits[sel].ptCoord1;
+	entryRig.bHasTexCoord1 = hits[sel].bHasTexCoord1;
+	entryRig.ptObjIntersec = hits[sel].ptObjIntersec;
+	entryRig.vColor = hits[sel].vColor;
+	entryRig.bHasVertexColor = hits[sel].bHasVertexColor;
+
+	const Scalar eta = pProfile->GetIOR( entryRig );
 	const Scalar SwNorm = SchlickTransmissionNormalization( eta );
-	const Scalar FtEntry = pProfile->FresnelTransmission( cosTheta, ri );
+	const Scalar FtEntry = pProfile->FresnelTransmission( cosTheta, entryRig );
 
 	// Full BSSRDF weight (for continuation path):
 	//   Rd(r) * Ft(exit) * Ft(entry) / (c * pdfSurface)
@@ -454,6 +516,16 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 	result.entryNormal = entryNormal;
 	result.entryGeomNormal = entryGeomNormal;
 	result.entryONB = entryONB;
+	result.derivatives = hits[sel].derivatives;
+	result.signals = hits[sel].signals;
+	result.signals.ptWorld = result.entryPoint;
+	result.txFootprint = hits[sel].txFootprint;
+	result.ptCoord = hits[sel].ptCoord;
+	result.ptCoord1 = hits[sel].ptCoord1;
+	result.bHasTexCoord1 = hits[sel].bHasTexCoord1;
+	result.ptObjIntersec = hits[sel].ptObjIntersec;
+	result.vColor = hits[sel].vColor;
+	result.bHasVertexColor = hits[sel].bHasVertexColor;
 	result.scatteredRay = Ray( result.entryPoint, cosineDir );
 	result.cosinePdf = cosTheta * INV_PI;
 	result.pdfSurface = pdfSurface;

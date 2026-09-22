@@ -4888,6 +4888,12 @@ int main()
 		//                                              sample against a neutral
 		//                                              one, which is a bias, not
 		//                                              a flat mask.
+		//   BSSRDFSampling.cpp                         probe hits capture the live
+		//                                              surface's `signals`, stamp the
+		//                                              cross-object triple (pScene/pSelf/
+		//                                              ptWorld), and re-pair nObject/
+		//                                              bComplementedField on normal flip,
+		//                                              forwarding to SampleResult (DL-22).
 		//   CSGObject.cpp                              adoption + the three
 		//                                              nObject / bComplementedField
 		//                                              flips
@@ -4934,6 +4940,9 @@ int main()
 		//                                              under PT as well as under the
 		//                                              bidirectional families.
 		//   ObjectManager.cpp                          THE cross-object stamp
+		//   PathTracingIntegrator.cpp                  `entryRI.signals = bssrdf.signals`
+		//                                              at diffusion profile and random
+		//                                              walk SSS entry sites (DL-22).
 		//   PathVertexEval.h                           `ri.signals = vertex
 		//                                              .signals` in
 		//                                              PopulateRIGFromVertex --
@@ -4948,17 +4957,25 @@ int main()
 		//                                              later, never a
 		//                                              default-constructed
 		//                                              channel over a stamp.
+		//   RandomWalkSSS.cpp                          boundary exit hits capture the
+		//                                              live surface's `signals`, stamp the
+		//                                              cross-object triple, and re-pair on
+		//                                              normal flip, forwarding to
+		//                                              SampleResult (DL-22).
 		//   RayIntersectionGeometric.h                 the record's own operator=
 		//   SDFGeometry.cpp                            the SDF intersector's stamp
 		//   TriangleMeshGeometryIndexedSpecializations.h   the mesh intersector's
 		const char* kAllowedSignalWriters[] = {
 			"BDPTIntegrator.cpp",
+			"BSSRDFSampling.cpp",
 			"CSGObject.cpp",
 			"ExpressionEval.h",
 			"ExpressionPainter.cpp",
 			"LightSampler.cpp",
 			"ObjectManager.cpp",
+			"PathTracingIntegrator.cpp",
 			"PathVertexEval.h",
+			"RandomWalkSSS.cpp",
 			"RayIntersectionGeometric.h",
 			"SDFGeometry.cpp",
 			"TriangleMeshGeometryIndexedSpecializations.h",
@@ -4969,11 +4986,12 @@ int main()
 			setMatches = ( writers[i] == kAllowedSignalWriters[i] );
 		}
 		Check( setMatches,
-		       "cross-object signal channel: `signals` is assigned ONLY in the ten files "
+		       "cross-object signal channel: `signals` is assigned ONLY in the thirteen files "
 		       "docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.1 sanctions (seven that stamp or "
 		       "adopt it, the two that FORWARD the stamp onto a BDPTVertex and back out "
-		       "of it per docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §3.1, and the one "
-		       "that stamps a PROBED emitter record per that document's §5) -- a new writer "
+		       "of it per docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §3.1, the one "
+		       "that stamps a PROBED emitter record per that document's §5, and the three "
+		       "that stamp/forward live BSSRDF entry records per DL-22) -- a new writer "
 		       "would clobber ObjectManager::IntersectRay's pScene/pSelf/ptWorld stamp and "
 		       "silently turn every proximity() in the frame into its neutral 0" );
 		if( !setMatches ) {
