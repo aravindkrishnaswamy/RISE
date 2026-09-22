@@ -24,6 +24,7 @@ namespace RISE
 
 		XYZPel Rec709RGBtoXYZ( const Rec709RGBPel& p );
 		Rec709RGBPel XYZtoRec709RGB( const XYZPel& xyz );
+		Rec709RGBPel XYZtoRec709RGBMatrixOnly( const XYZPel& xyz );
 
 		// sRGB linearization/non-linearization
 		Rec709RGBPel Linearize_sRGB( const sRGBPel& srgb );
