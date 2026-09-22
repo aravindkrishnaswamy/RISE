@@ -7492,6 +7492,41 @@ void BDPTIntegrator::RecomputeSubpathThroughputNM(
 		if( i + 1 < verts.size() && i > 0 &&
 			v.type == BDPTVertex::SURFACE && !v.isDelta )
 		{
+			const Vector3 dirIn = Vector3Ops::Normalize(
+				Vector3Ops::mkVector3( v.position, verts[i-1].position ) );
+			const Vector3 dirOut = Vector3Ops::Normalize(
+				Vector3Ops::mkVector3( verts[i+1].position, v.position ) );
+
+			// DL-219: Re-evaluate forward and reverse sampling PDFs at companionNM.
+			// Subpath vertices were generated at heroNM, so verts[i+1].pdfFwd and
+			// verts[i-1].pdfRev reflect hero proposal densities. For companion MIS
+			// weights (e.g. s=0 vs s=1 or general connections) to form a consistent
+			// partition of unity at companionNM, these densities must be scaled by
+			// p(companionNM) / p(heroNM). Geometric Jacobians (|cos|/dist^2) cancel
+			// identically between hero and companion.
+			{
+				PathVertexEval::VertexPdfContext pdfCtx( v );
+
+				const Vector3 dirToPrev = -dirIn;
+				const Vector3 dirToNext = dirOut;
+
+				const Scalar fwdPdfHero = PathVertexEval::EvalPdfAtVertexNM( pdfCtx, dirToPrev, dirToNext, heroNM );
+				const Scalar fwdPdfComp = PathVertexEval::EvalPdfAtVertexNM( pdfCtx, dirToPrev, dirToNext, companionNM );
+				if( fwdPdfHero > NEARZERO ) {
+					verts[i+1].pdfFwd *= ( fwdPdfComp / fwdPdfHero );
+				} else if( fwdPdfComp <= NEARZERO ) {
+					verts[i+1].pdfFwd = 0;
+				}
+
+				const Scalar revPdfHero = PathVertexEval::EvalPdfAtVertexNM( pdfCtx, dirToNext, dirToPrev, heroNM );
+				const Scalar revPdfComp = PathVertexEval::EvalPdfAtVertexNM( pdfCtx, dirToNext, dirToPrev, companionNM );
+				if( revPdfHero > NEARZERO ) {
+					verts[i-1].pdfRev *= ( revPdfComp / revPdfHero );
+				} else if( revPdfComp <= NEARZERO ) {
+					verts[i-1].pdfRev = 0;
+				}
+			}
+
 			// DL-125.  THE SELECTED LOBE'S OWN companion/hero kray ratio,
 			// when the SPF can supply it.
 			//
@@ -7552,10 +7587,6 @@ void BDPTIntegrator::RecomputeSubpathThroughputNM(
 					// BSDF's radiance-vs-importance argument convention;
 					// `kray` is defined by the SAMPLER, which always
 					// measured against `ri.ray.Dir()`.)
-					const Vector3 dirIn = Vector3Ops::Normalize(
-						Vector3Ops::mkVector3( v.position, verts[i-1].position ) );
-					const Vector3 dirOut = Vector3Ops::Normalize(
-						Vector3Ops::mkVector3( verts[i+1].position, v.position ) );
 
 					// Preserve the sampler's live Beer distance, including ray
 					// advances. Predecessor position is not the live origin.
