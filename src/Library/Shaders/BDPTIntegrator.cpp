@@ -3058,7 +3058,8 @@ namespace {
 							if( useKray && pSPF ) {
 								const Scalar krayW = pSPF->EvaluateKrayNM(
 									ri.geometric, pScat->ray.Dir(), pScat->type,
-									pSwlHWSS->lambda[w], iorStack );
+									pSwlHWSS->lambda[w], iorStack,
+									pScat->isDelta ? -1.0 : pScat->pdf );
 								if( krayW >= 0 ) {
 									compScale = krayW * krayScale;
 								}
@@ -7104,7 +7105,8 @@ unsigned int GenerateLightSubpathImpl(
 						if( useKray && pSPF ) {
 							const Scalar krayW = pSPF->EvaluateKrayNM(
 								ri.geometric, pScat->ray.Dir(), pScat->type,
-								pSwlHWSS->lambda[w], iorStack );
+								pSwlHWSS->lambda[w], iorStack,
+								pScat->isDelta ? -1.0 : pScat->pdf );
 							if( krayW >= 0 ) {
 								compScale = krayW * krayScale;
 							}
@@ -7566,13 +7568,25 @@ void BDPTIntegrator::RecomputeSubpathThroughputNM(
 					IORStack vertexIor( 1.0 );
 					BuildVertexIORStack( v, vertexIor );
 
-					const Scalar krayHero = pVertSPF->EvaluateKrayNM(
+					// DL-216: form pure BSDF ratio f_comp / f_hero through EvaluateLobeFNM
+					// where hero density cancels out completely, avoiding redundant
+					// density evaluations. Fall back to EvaluateKrayNM ratio if unimplemented.
+					const Scalar fHero = pVertSPF->EvaluateLobeFNM(
 						rig, dirOut, v.scatterType, heroNM, vertexIor );
-					const Scalar krayComp = pVertSPF->EvaluateKrayNM(
+					const Scalar fComp = pVertSPF->EvaluateLobeFNM(
 						rig, dirOut, v.scatterType, companionNM, vertexIor );
 
-					if( krayHero >= 0 && krayComp >= 0 ) {
-						lobeRatio = ( krayHero > NEARZERO ) ? ( krayComp / krayHero ) : 0;
+					if( fHero >= 0 && fComp >= 0 ) {
+						lobeRatio = ( fHero > NEARZERO ) ? ( fComp / fHero ) : 0;
+					} else {
+						const Scalar krayHero = pVertSPF->EvaluateKrayNM(
+							rig, dirOut, v.scatterType, heroNM, vertexIor );
+						const Scalar krayComp = pVertSPF->EvaluateKrayNM(
+							rig, dirOut, v.scatterType, companionNM, vertexIor );
+
+						if( krayHero >= 0 && krayComp >= 0 ) {
+							lobeRatio = ( krayHero > NEARZERO ) ? ( krayComp / krayHero ) : 0;
+						}
 					}
 				}
 			}

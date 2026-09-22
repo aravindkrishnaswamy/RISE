@@ -275,6 +275,16 @@ namespace RISE
 				const IORStack& ior_stack
 				) const;
 
+			//! DL-216. The SELECTED lobe's own spectral BSDF value f_I(wo; nm)
+			//! in [1/sr], without cosine or density division.
+			Scalar EvaluateLobeFNM(
+				const RayIntersectionGeometric& ri,
+				const Vector3& outDir,
+				ScatteredRay::ScatRayType rayType,
+				Scalar nm,
+				const IORStack& ior_stack
+				) const;
+
 			//! DL-222 closed: selected entry reflection/transmission weights
 			//! are the painters; interior weights are Beer*(1-scattering)
 			//! and Beer*scattering. The caller must preserve the incoming
@@ -285,6 +295,17 @@ namespace RISE
 				ScatteredRay::ScatRayType rayType,
 				Scalar nm,
 				const IORStack& ior_stack
+				) const;
+
+			//! DL-216. Unbiased companion weight evaluated with the HERO
+			//! wavelength's sampling density: f_I(nm) * cos_o / pdfHero.
+			Scalar EvaluateKrayNM(
+				const RayIntersectionGeometric& ri,
+				const Vector3& outDir,
+				ScatteredRay::ScatRayType rayType,
+				Scalar nm,
+				const IORStack& ior_stack,
+				Scalar pdfHero
 				) const;
 
 			//! Spectral version of Pdf

@@ -723,8 +723,8 @@ stores a PER-LOBE conditional density on each emitted ray must
 implement `ISPF::EvaluateKrayNM`, or the companion ladders in
 `PathTracingIntegrator.cpp` and `BDPTIntegrator.cpp` fall back to the
 material's AGGREGATE `valueNM` over the hero lobe's density — DL-69's
-pairing, surviving on the spectral bundle. **Current integrated gate: 169/0;
-replay-distance red proof 153/16** on committed `a90899b1`, library and
+pairing, surviving on the spectral bundle. **Current integrated gate: 189/0;
+DL-216 hero-density red proof 177/12** (replay-distance red proof 153/16 on committed `a90899b1`), library and
 exact target rebuilt in both states. **Historical standalone revision:
 91/0, red 46/45** against an isolated build with the five SPF
 `.cpp`/`.h` pairs reverted (library AND this test target rebuilt on
@@ -734,7 +734,14 @@ non-delta lobe `ScatterNM(nm)` emits, `EvaluateKrayNM` at that same
 classes reads `checked 0, declined 5992..7183`; post-fix worst
 relative difference `1.21e-14`.  (A2) The same with wavelength-VARYING
 shape painters (a test-local `LambdaRampScalarPainter`), which section
-B cannot use — `1.24e-14`.  (B) The cross-wavelength case the ladder
+B cannot use — `1.24e-14`.  (A2 DL-216) Cross-wavelength with hero
+sampling density: verifies `EvaluateKrayNM(..., pdfHero)` produces the
+unbiased companion weight $f_I(\lambda_c)\cos\theta_o / p_I(\lambda_h)$,
+`EvaluateLobeFNM` evaluates pure $f_I(\lambda_c)$ without density division,
+and matches closed-form analytical unbiased weights and BSDF ratios to machine
+precision ($1.75\times 10^{-14}$ and $6.58\times 10^{-16}$). Legacy 5-parameter
+`EvaluateKrayNM` demonstrated up to 9.4x / 86% bias under chromatic shape painters.
+(B) The cross-wavelength case the ladder
 actually asks for: two identically-seeded `ScatterNM` runs at
 `lambda_h` and `lambda_c` with wavelength-INDEPENDENT shape painters
 draw the SAME directions (asserted, `dir drift 0`, not assumed), so

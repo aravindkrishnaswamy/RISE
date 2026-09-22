@@ -653,6 +653,74 @@ Scalar WardAnisotropicEllipticalGaussianSPF::PdfNM(
 // here and NEITHER `alphaX` nor `alphaY` appears in the transport
 // weight.  Only the reflectance painters are read at `nm`.
 //////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////
+// EvaluateLobeFNM -- DL-216.
+//
+// Evaluates the SELECTED lobe's own spectral BSDF value f_I(wo; nm)
+// in [1/sr], without multiplying by cosine and without dividing by
+// any sampling density.
+//////////////////////////////////////////////////////////////////////
+Scalar WardAnisotropicEllipticalGaussianSPF::EvaluateLobeFNM(
+	const RayIntersectionGeometric& ri,
+	const Vector3& outDir,
+	ScatteredRay::ScatRayType rayType,
+	Scalar nm,
+	const IORStack& /* ior_stack */
+	) const
+{
+	if( rayType == ScatteredRay::eRayDiffuse ) {
+		return GuardedGetColorNM( *pDiffuse, ri, nm ) * INV_PI;
+	}
+
+	if( rayType != ScatteredRay::eRayReflection ) {
+		return -1;						// not a lobe this SPF emits
+	}
+
+	OrthonormalBasis3D myonb = ri.onb;
+	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
+		myonb.FlipW();
+	}
+
+	const Vector3 wi = Vector3Ops::Normalize( -ri.ray.Dir() );
+	const Vector3 woNorm = Vector3Ops::Normalize( outDir );
+	const Vector3 h = Vector3Ops::Normalize( wi + woNorm );
+
+	const Scalar hdotwo = Vector3Ops::Dot( h, woNorm );
+	const Scalar cos_h = Vector3Ops::Dot( h, myonb.w() );
+	const Scalar cos_o = Vector3Ops::Dot( woNorm, myonb.w() );
+	const Scalar cos_i = Vector3Ops::Dot( wi, myonb.w() );
+
+	if( hdotwo <= 0 || cos_h <= 0 || cos_o <= 0 || cos_i <= 0 ) {
+		return 0;
+	}
+
+	const Scalar ratio = WardKrayRatio( hdotwo, cos_h, cos_o, cos_i );
+	if( ratio <= 0 ) {
+		return 0;
+	}
+
+	const Scalar ax = pAlphaX->GetValueAtNM( ri, nm );
+	const Scalar ay = pAlphaY->GetValueAtNM( ri, nm );
+	if( ax <= 0 || ay <= 0 ) {
+		return 0;
+	}
+
+	const Scalar hu = Vector3Ops::Dot( h, myonb.u() );
+	const Scalar hv = Vector3Ops::Dot( h, myonb.v() );
+	Scalar phi = atan2( hv, hu );
+	if( phi < 0 ) {
+		phi += TWO_PI;
+	}
+	const Scalar tan2 = ( 1.0 - cos_h * cos_h ) / ( cos_h * cos_h );
+	const Scalar cp = cos( phi ), sp = sin( phi );
+	const Scalar denom = (cp*cp)/(ax*ax) + (sp*sp)/(ay*ay);
+	const Scalar pdf_h = WardAnisoHalfDensity( cos_h, tan2 * denom, ax, ay );
+	const Scalar pdf = pdf_h / ( 4.0 * hdotwo );
+
+	const Scalar kray = GuardedGetColorNM( *pSpecular, ri, nm ) * ratio;
+	return ( kray * pdf ) / cos_o;
+}
+
 Scalar WardAnisotropicEllipticalGaussianSPF::EvaluateKrayNM(
 	const RayIntersectionGeometric& ri,
 	const Vector3& outDir,
@@ -688,4 +756,44 @@ Scalar WardAnisotropicEllipticalGaussianSPF::EvaluateKrayNM(
 	}
 
 	return GuardedGetColorNM( *pSpecular, ri, nm ) * ratio;
+}
+
+Scalar WardAnisotropicEllipticalGaussianSPF::EvaluateKrayNM(
+	const RayIntersectionGeometric& ri,
+	const Vector3& outDir,
+	ScatteredRay::ScatRayType rayType,
+	Scalar nm,
+	const IORStack& ior_stack,
+	Scalar pdfHero
+	) const
+{
+	if( pdfHero <= 0 ) {
+		return EvaluateKrayNM( ri, outDir, rayType, nm, ior_stack );
+	}
+
+	if( rayType == ScatteredRay::eRayDiffuse ) {
+		return GuardedGetColorNM( *pDiffuse, ri, nm );
+	}
+
+	if( rayType != ScatteredRay::eRayReflection ) {
+		return -1;
+	}
+
+	OrthonormalBasis3D myonb = ri.onb;
+	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
+		myonb.FlipW();
+	}
+
+	const Vector3 woNorm = Vector3Ops::Normalize( outDir );
+	const Scalar cos_o = Vector3Ops::Dot( woNorm, myonb.w() );
+	if( cos_o <= 0 ) {
+		return 0;
+	}
+
+	const Scalar f = EvaluateLobeFNM( ri, outDir, rayType, nm, ior_stack );
+	if( f <= 0 ) {
+		return 0;
+	}
+
+	return ( f * cos_o ) / pdfHero;
 }

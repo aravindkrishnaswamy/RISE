@@ -6320,12 +6320,13 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 
 			Scalar compWeight = -1;
 
-			// Try SPF-provided companion evaluation first
+			// Try SPF-provided companion evaluation first (DL-216: passing hero density)
 			if( pSPF )
 			{
 				compWeight = pSPF->EvaluateKrayNM(
 					ri.geometric, pS->ray.Dir(), pS->type,
-					swl.lambda[w], iorStack );
+					swl.lambda[w], iorStack,
+					pS->isDelta ? -1.0 : pS->pdf );
 			}
 
 			if( compWeight < 0 && pBRDFCur )

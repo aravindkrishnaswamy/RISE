@@ -885,12 +885,36 @@ namespace RISE
 			//! dispatch through the BRDF.  Exact because `Pdf` is
 			//! wavelength independent, so the pdf reconstructed here IS
 			//! the hero's pdf.
+			//! DL-216. The SELECTED lobe's own spectral BSDF value f_I(wo; nm)
+			//! in [1/sr], without cosine or density division.
+			//! Avoids EvalPdf entirely, speeding up subpath throughput ratio.
+			Scalar EvaluateLobeFNM(
+				const RayIntersectionGeometric& ri,
+				const Vector3& outDir,
+				ScatteredRay::ScatRayType rayType,
+				Scalar nm,
+				const IORStack& ior_stack
+				) const;
+
 			Scalar EvaluateKrayNM(
 				const RayIntersectionGeometric& ri,
 				const Vector3& outDir,
 				ScatteredRay::ScatRayType rayType,
 				Scalar nm,
 				const IORStack& ior_stack
+				) const;
+
+			//! DL-216. Unbiased companion weight evaluated with the HERO
+			//! wavelength's sampling density: f_I(nm) / pdfHero.
+			//! Note: curve geometry incorporates projected area directly,
+			//! so no cosine factor is multiplied here.
+			Scalar EvaluateKrayNM(
+				const RayIntersectionGeometric& ri,
+				const Vector3& outDir,
+				ScatteredRay::ScatRayType rayType,
+				Scalar nm,
+				const IORStack& ior_stack,
+				Scalar pdfHero
 				) const;
 		};
 	}
