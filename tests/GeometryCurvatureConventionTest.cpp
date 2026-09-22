@@ -309,6 +309,43 @@ static void TestRayHitReflectsDisplacedCurvature()
 	safe_release( base );
 }
 
+// Test 5: Base geometry accessor
+static void TestBaseGeometryAccessor()
+{
+	std::cout << "Test 5: Base geometry accessor GetBaseGeometry()...\n";
+
+	EllipsoidGeometry* base = new EllipsoidGeometry( Vector3( 2.0, 2.0, 2.0 ) );
+	ConstantFunc2D* func = new ConstantFunc2D( 1.0 );
+
+	DisplacedGeometry* disp = new DisplacedGeometry(
+		base,
+		16,
+		func,
+		0.2,
+		false,
+		false,
+		true
+	);
+
+	CHECK( disp->GetBaseGeometry() == base, "GetBaseGeometry() returns base geometry pointer" );
+
+	// Query base directly via GetBaseGeometry
+	Point3 P;
+	Vector3 N, dpdu, dpdv, dndu, dndv;
+	const bool ok = disp->GetBaseGeometry()->ComputeAnalyticalDerivatives(
+		Point2( 0.25, 0.5 ), 0.0, P, N, dpdu, dpdv, dndu, dndv );
+	CHECK( ok, "base ComputeAnalyticalDerivatives via GetBaseGeometry succeeded" );
+	if( ok ) {
+		Scalar H = 0.0;
+		SurfaceCurvature::MeanCurvatureFromDerivatives( dpdu, dpdv, dndu, dndv, H );
+		CHECK( std::fabs( H - 0.5 ) < 1e-5, "base curvature via GetBaseGeometry matches base sphere closed form (0.5)" );
+	}
+
+	safe_release( disp );
+	safe_release( func );
+	safe_release( base );
+}
+
 int main()
 {
 	std::cout << "=== GeometryCurvatureConventionTest (DL-13) ===\n";
@@ -317,6 +354,7 @@ int main()
 	TestUniformDisplacedSphereClosedForm();
 	TestNonUniformDisplacementOracle();
 	TestRayHitReflectsDisplacedCurvature();
+	TestBaseGeometryAccessor();
 
 	std::cout << "\nResults: " << g_passed << " passed, " << g_failed << " failed.\n";
 	return g_failed == 0 ? 0 : 1;
