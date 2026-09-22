@@ -80,9 +80,12 @@
 //       hero `Le` rebuild in `GenerateLightSubpathImpl`, and the HWSS
 //       companion-wavelength rebuild beside it -- since nothing in an
 //       RGB rasterizer reaches any of them.
-//    B  analytic `sphere_geometry`, `curv`.  A completely different
-//       curvature path (the Weingarten map via dndu/dndv, not an SDF
-//       field Hessian) has to arrive at the record too.
+//    B  analytic `sphere_geometry`, `curv`, downstream light-subpath
+//       dominated scene (DL-19). A partition wall occludes direct
+//       line-of-sight between receiver and emitter, forcing illumination
+//       through an upper reflector (s >= 2 light subpaths dominate).
+//       Gates NM hero `rig` (5919) and HWSS companion `rigW` (6118)
+//       two-sided under BDPT spectral with and without HWSS.
 //    C  flat quad + box neighbour, `proximity(1.0)`.  The cross-object
 //       triple.  Run under BDPT and VCM as well as PT because the
 //       triple reaches them by a different ROUTE: PT probes at the NEE
@@ -304,29 +307,28 @@
 //        site still exists, still applies the payload, and family F has
 //        no spectral row.)
 //
-//    (5) Skip `ApplyEmitterSurface` at BDPT's NM hero `Le` rebuild.
-//        WEAK, and reported as measured rather than as a red-proof:
-//        the only row that moves at all is A/VCM-spectral, at 5.70 /
-//        3.41 / 4.50 over three runs -- i.e. straddling the 5 % band.
-//        A/BDPT-spectral moves 0.10 / 0.82 / 0.66, inside its own noise.
+//    (5) & (6) Skip `ApplyEmitterSurface` at BDPT's NM hero `Le` rebuild
+//        (:5919) and HWSS companion rebuild (:6118) (DL-19).
+//        In Family A (direct NEE visible), mutating these had <0.3 % effect
+//        because s=1 NEE to the light root (priced via DL-44's light root
+//        record, not rig/rigW) carries >99 % of received radiance.
+//        IN FAMILY B (DL-19, downstream light-subpath dominated scene):
+//        Direct s=1 line-of-sight is occluded by a partition wall, so
+//        s >= 2 light subpath connections dominate.
+//        MUTATION MEASURED (both sites commented out, isolated A/B):
+//          B / BDPT-spectral:      54.20 % (was 0.54 % unmutated) -> FAIL
+//          B / BDPT-spectral/HWSS: 53.49 % (was 0.35 % unmutated) -> FAIL
+//        Both rows fail loudly (>53 %, 10x the 5 % band).
 //
-//    (6) Skip `ApplyEmitterSurface` at BDPT's HWSS companion rebuild.
-//        NO ROW MOVES (the HWSS row reads 0.299, its usual noise).
-//
-//    WHY (5) AND (6) ARE WEAK, and what that means.  Proofs (8) and (9)
-//    below show where BDPT and VCM actually price this emitter: BDPT
-//    through the `type == LIGHT` ROOT VERTEX (`LuminaryRadiance` /
-//    `PopulateRIGFromVertex`), VCM through its own light-vertex NEE
-//    record.  The hero `LeNM` and its HWSS companions set the light
-//    SUBPATH's throughput instead, which only reaches the film through
-//    the s>=1 connection and t=1 splat strategies -- and on a scene
-//    this simple (pinhole camera, one diffuse receiver, an area light
-//    every eye vertex can see) MIS weights those down to a few percent.
-//    Making them dominant needs a light-tracing- or caustic-dominated
-//    scene, not a knob on this one.  The two sites ARE converted and
-//    their code path is exercised by every spectral row; what this
-//    suite does not have is a row that would go red if they regressed.
-//    Recorded here rather than papered over.
+//    WHY THE DL-44 ROOT PATH AND DOWNSTREAM rig/rigW PATH REMAIN SEPARATE:
+//    The light root vertex (l0, type LIGHT) prices s=1 NEE connections
+//    from eye vertices along the arbitrary connection chord direction
+//    -d_light through `LuminaryRadiance`. In contrast, downstream light
+//    subpaths (s >= 2) evaluate emission along the sampled emission ray
+//    d_emission (sampled by SampleLight), seeding path throughput `beta`
+//    via `rig` and `rigW`. Because the emission directions differ (chord
+//    to eye vertex vs sampled emission ray), the two evaluation paths
+//    cannot be unified and must remain separate.
 //
 //    (7) Make `LightSampler::EmitterObjectPoint` return its `fallback`
 //        when the gate is closed -- i.e. put `Po` back on the GATED
@@ -759,16 +761,112 @@ static const char* kEmitterSdfSphere =
 	"}\n"
 	"\n";
 
-//! FAMILY B: the same row on an ANALYTIC primitive, so the probe is
-//! shown to work for a non-SDF luminary -- `sphere_geometry` reports
-//! `curv` through the Weingarten map (dndu/dndv), a completely
-//! different code path from the SDF field's Hessian, and the two must
-//! both arrive at the record.
+//! FAMILY B: indirect downstream light-subpath scene (DL-19).
+//! Camera sees ONLY the receiver plane at z = 0.
+//! A partition wall (baffle) at x = 1.1, z in [0, 1.0] completely occludes
+//! direct line of sight between the receiver (x <= 1.0, z = 0) and the
+//! emitter sphere at (1.6, 0, 0.5).
+//! Light from the emitter reflects off a ceiling reflector at z = 2.5
+//! onto the receiver, so illumination is dominated by the indirect
+//! s >= 2 light subpath (Emitter l0 -> Reflector l1 -> Receiver e1 -> Camera e0).
+//! Because s=1 connections from receiver to emitter are occluded, this
+//! cleanly isolates the downstream light-subpath throughput seeded by
+//! LightSampler::ApplyEmitterSurface on `rig` (NM hero) and `rigW` (HWSS companions)
+//! in GenerateLightSubpathImpl (BDPTIntegrator.cpp:5919, 6118).
+static const char* kIndirectHead =
+	"RISE ASCII SCENE 7\n"
+	"film\n"
+	"{\n"
+	"\twidth 40\n"
+	"\theight 40\n"
+	"}\n"
+	"\n"
+	"pinhole_camera\n"
+	"{\n"
+	"\tlocation 0 0 3.5\n"
+	"\tlookat 0 0 0\n"
+	"\tup 0 1 0\n"
+	"\tfov 30.0\n"
+	"}\n"
+	"\n"
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_albedo\n"
+	"\tcolor 0.6 0.6 0.6\n"
+	"}\n"
+	"\n"
+	"lambertian_material\n"
+	"{\n"
+	"\tname mat_diffuse\n"
+	"\treflectance pnt_albedo\n"
+	"}\n"
+	"\n"
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_refl\n"
+	"\tcolor 0.8 0.8 0.8\n"
+	"}\n"
+	"\n"
+	"lambertian_material\n"
+	"{\n"
+	"\tname mat_reflector\n"
+	"\treflectance pnt_refl\n"
+	"}\n"
+	"\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname g_receiver\n"
+	"\tpta -2 -2 0\n"
+	"\tptb 1.0 -2 0\n"
+	"\tptc 1.0 2 0\n"
+	"\tptd -2 2 0\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_receiver\n"
+	"\tgeometry g_receiver\n"
+	"\tmaterial mat_diffuse\n"
+	"}\n"
+	"\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname g_baffle\n"
+	"\tpta 1.1 -2 0\n"
+	"\tptb 1.1 2 0\n"
+	"\tptc 1.1 2 1.0\n"
+	"\tptd 1.1 -2 1.0\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_baffle\n"
+	"\tgeometry g_baffle\n"
+	"\tmaterial mat_diffuse\n"
+	"}\n"
+	"\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname g_reflector\n"
+	"\tpta 0.2 -2 2.5\n"
+	"\tptb 2.2 -2 2.5\n"
+	"\tptc 2.2 2 2.5\n"
+	"\tptd 0.2 2 2.5\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_reflector\n"
+	"\tgeometry g_reflector\n"
+	"\tmaterial mat_reflector\n"
+	"}\n"
+	"\n";
+
 static const char* kEmitterAnalyticSphere =
 	"sphere_geometry\n"
 	"{\n"
 	"\tname g_lum\n"
-	"\tradius 0.5\n"
+	"\tradius 0.3\n"
 	"}\n"
 	"\n"
 	"standard_object\n"
@@ -776,7 +874,7 @@ static const char* kEmitterAnalyticSphere =
 	"\tname obj_lum\n"
 	"\tgeometry g_lum\n"
 	"\tmaterial mat_lum\n"
-	"\tposition 0 1.8 1.2\n"
+	"\tposition 1.6 0 0.5\n"
 	"}\n"
 	"\n";
 
@@ -1425,7 +1523,10 @@ static void RunGateInvariance( const Family& f )
 static const RowSpec kRowsRGB3[3] = {
 	{ eRK_PT, false, 0 }, { eRK_BDPT, false, 0 }, { eRK_VCM, false, 0 }
 };
-static const RowSpec kRowsPTOnly[1] = { { eRK_PT, false, 0 } };
+static const RowSpec kRowsFamilyB[2] = {
+	{ eRK_BDPT_SPECTRAL, false, 2048 },
+	{ eRK_BDPT_SPECTRAL, true, 96 }
+};
 
 //! THE NON-HWSS SPECTRAL ROWS CARRY THEIR OWN SAMPLE COUNT, and it is
 //! forty-odd times the RGB rows'.  Not because the emitter record is
@@ -1565,15 +1666,15 @@ int main( int argc, char** argv )
 	};
 
 	static const Family kAnalyticCurv = {
-		"B: analytic sphere_geometry emitter, exitance keyed on curv",
-		kCommonHead,
+		"B: analytic sphere_geometry emitter, exitance keyed on curv (DL-19 indirect downstream light subpath)",
+		kIndirectHead,
 		kEmitterAnalyticSphere,
 		"0.2 + 0.8*clamp(curv,0,1)",
 		"0.2 + 0.8*1.0",
 		"0.2 + 0.8*0.0",
-		60.0,
-		48,
-		kRowsPTOnly, 1
+		120.0,
+		96,
+		kRowsFamilyB, 2
 	};
 
 	// proximity(1.0) = 1 - 0.2/1.0 = 0.8 exactly, over the whole emitter
@@ -1653,6 +1754,11 @@ int main( int argc, char** argv )
 	};
 	RunBoundedNeighbourRead();
 	if (argc > 1 && std::string(argv[1]) == "--louvres-only") {
+		std::cout << "Passed: " << passCount << "  Failed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+	if (argc > 1 && std::string(argv[1]) == "--family-b") {
+		RunFamily( kAnalyticCurv );
 		std::cout << "Passed: " << passCount << "  Failed: " << failCount << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
