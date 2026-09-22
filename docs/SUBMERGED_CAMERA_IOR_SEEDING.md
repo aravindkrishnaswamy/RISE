@@ -82,7 +82,7 @@ tone-mapping of the original PNG protocol amplifying small shifts).
 
 | illumination | PT | VCM | VCM/PT | attribution |
 |---|---|---|---|---|
-| env only | 0.03383 | 0.02889 | 0.854 | VCM does no NEE, no connections and no merges at MEDIUM vertices (docs/VCM.md "surface-only merging"; every VCM consumer gates on `type != SURFACE` -- DL-218a); BDPT DOES connect at medium vertices since DL-200 (2026-09-18), and reads 1.73-1.82x PT in a scattering global medium (DL-218b, open) -- the BDPT half of the earlier "VCM/BDPT" wording here was corrected at the debt-dl200 merge; env in-scatter through the water medium is reachable only via phase-sampling continuation.  BDPT measures 0.02891 — identical, same structural gap. |
+| env only | 0.03383 | 0.02889 | 0.854 | VCM now evaluates NEE and connections at MEDIUM vertices (DL-218 closed; merges remain surface-only per docs/VCM.md); BDPT DOES connect at medium vertices since DL-200 (2026-09-18), and reads ~1.8-2.1x PT in a scattering global medium (DL-247, open) -- env in-scatter through the water medium is reachable via phase-sampling continuation, NEE, and bidirectional connections.  BDPT measures 0.02891. |
 | sun+omni+emissives, no env | 0.01940 | 0.01260 | 0.649 | (a) VCM never samples **directional lights** — `DirectionalLight::radiantExitance()==0` keeps it out of the alias table, and VCM lacks the deterministic zero-exitance NEE loop PT (`LightSampler::EvaluateDirectLighting` Step 1) and BDPT (`EvaluateAllStrategies`) both run; the sun contributes nothing to VCM.  (b) The omni's glow through the medium hits the same medium-vertex gap as env. |
 | full scene | 0.05330 | 0.04151 | 0.779 | components sum linearly (PT 0.0532, VCM 0.0415). |
 
@@ -98,9 +98,10 @@ boundary, not bias.
    zero-exitance-light loops; VCM's hand-written strategy functions
    never got one.  A real fix needs an emission model (bbox-disc) plus
    MIS bookkeeping — feature-sized work.
-2. **VCM/BDPT medium-vertex strategy gap** — no NEE/merge at MEDIUM
-   vertices (already documented in docs/VCM.md; quantified here at
-   ~15% of frame energy on this scene class).
+2. **VCM medium-vertex photon merge gap** — VCM now connects and performs
+   NEE at MEDIUM vertices (DL-218 closed), but photon merges remain
+   surface-only (documented in docs/VCM.md). Global medium PT discrepancy
+   is tracked under DL-247.
 3. **`dielectric_material` finite `scattering` drops perturbed rays**
    that cross the tangent plane without renormalizing
    ([DielectricSPF.cpp](../src/Library/Materials/DielectricSPF.cpp)
