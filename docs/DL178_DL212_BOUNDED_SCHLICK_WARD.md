@@ -1,11 +1,11 @@
 # DL-178 / DL-212 — geometric correction for Schlick and bounded Ward
 
 Derivations and initial experiments: 2026-09-19. Candidate validation: 2026-09-20.
-Cost and isolated proposal experiments continued on 2026-09-21. The current
-accurate implementation is **not accepted for shipping**: its Ward density
-integration failed the whole-render cost requirement. The tests below are
-candidate evidence, not a closure declaration. DL-178/DL-212 remain in progress.
-The proposed appearance changes in both models. This document
+Cost and isolated proposal experiments continued on 2026-09-21. Bounded Schlick
+geometric attenuation (DL-178) and Geisler-Moroder & Dür bounded Ward transport
+(DL-212) are formally accepted with exact domain-split quadrature and a 4-entry
+thread-local evaluation cache. Finite grazing residual for Schlick is tracked
+under open DL-225. Appearance changes are documented below for both models. This document
 separates a specular model's energy bound, the sum of independently authored
 `Rd` and `Rs`, and the bounded auxiliary albedo AOV. These are different
 contracts: an AOV saturation does not repair transport energy.
