@@ -80,9 +80,12 @@
 //       hero `Le` rebuild in `GenerateLightSubpathImpl`, and the HWSS
 //       companion-wavelength rebuild beside it -- since nothing in an
 //       RGB rasterizer reaches any of them.
-//    B  analytic `sphere_geometry`, `curv`.  A completely different
-//       curvature path (the Weingarten map via dndu/dndv, not an SDF
-//       field Hessian) has to arrive at the record too.
+//    B  analytic `sphere_geometry`, `curv`, downstream light-subpath
+//       dominated scene (DL-19). A partition wall occludes direct
+//       line-of-sight between receiver and emitter, forcing illumination
+//       through an upper reflector (s >= 2 light subpaths dominate).
+//       Gates NM hero `rig` (5919) and HWSS companion `rigW` (6118)
+//       two-sided under BDPT spectral with and without HWSS.
 //    C  flat quad + box neighbour, `proximity(1.0)`.  The cross-object
 //       triple.  Run under BDPT and VCM as well as PT because the
 //       triple reaches them by a different ROUTE: PT probes at the NEE
@@ -304,29 +307,28 @@
 //        site still exists, still applies the payload, and family F has
 //        no spectral row.)
 //
-//    (5) Skip `ApplyEmitterSurface` at BDPT's NM hero `Le` rebuild.
-//        WEAK, and reported as measured rather than as a red-proof:
-//        the only row that moves at all is A/VCM-spectral, at 5.70 /
-//        3.41 / 4.50 over three runs -- i.e. straddling the 5 % band.
-//        A/BDPT-spectral moves 0.10 / 0.82 / 0.66, inside its own noise.
+//    (5) & (6) Skip `ApplyEmitterSurface` at BDPT's NM hero `Le` rebuild
+//        (:5919) and HWSS companion rebuild (:6118) (DL-19).
+//        In Family A (direct NEE visible), mutating these had <0.3 % effect
+//        because s=1 NEE to the light root (priced via DL-44's light root
+//        record, not rig/rigW) carries >99 % of received radiance.
+//        IN FAMILY B (DL-19, downstream light-subpath dominated scene):
+//        Direct s=1 line-of-sight is occluded by a partition wall, so
+//        s >= 2 light subpath connections dominate.
+//        MUTATION MEASURED (both sites commented out, isolated A/B):
+//          B / BDPT-spectral:      54.20 % (was 0.54 % unmutated) -> FAIL
+//          B / BDPT-spectral/HWSS: 53.49 % (was 0.35 % unmutated) -> FAIL
+//        Both rows fail loudly (>53 %, 10x the 5 % band).
 //
-//    (6) Skip `ApplyEmitterSurface` at BDPT's HWSS companion rebuild.
-//        NO ROW MOVES (the HWSS row reads 0.299, its usual noise).
-//
-//    WHY (5) AND (6) ARE WEAK, and what that means.  Proofs (8) and (9)
-//    below show where BDPT and VCM actually price this emitter: BDPT
-//    through the `type == LIGHT` ROOT VERTEX (`LuminaryRadiance` /
-//    `PopulateRIGFromVertex`), VCM through its own light-vertex NEE
-//    record.  The hero `LeNM` and its HWSS companions set the light
-//    SUBPATH's throughput instead, which only reaches the film through
-//    the s>=1 connection and t=1 splat strategies -- and on a scene
-//    this simple (pinhole camera, one diffuse receiver, an area light
-//    every eye vertex can see) MIS weights those down to a few percent.
-//    Making them dominant needs a light-tracing- or caustic-dominated
-//    scene, not a knob on this one.  The two sites ARE converted and
-//    their code path is exercised by every spectral row; what this
-//    suite does not have is a row that would go red if they regressed.
-//    Recorded here rather than papered over.
+//    WHY THE DL-44 ROOT PATH AND DOWNSTREAM rig/rigW PATH REMAIN SEPARATE:
+//    The light root vertex (l0, type LIGHT) prices s=1 NEE connections
+//    from eye vertices along the arbitrary connection chord direction
+//    -d_light through `LuminaryRadiance`. In contrast, downstream light
+//    subpaths (s >= 2) evaluate emission along the sampled emission ray
+//    d_emission (sampled by SampleLight), seeding path throughput `beta`
+//    via `rig` and `rigW`. Because the emission directions differ (chord
+//    to eye vertex vs sampled emission ray), the two evaluation paths
+//    cannot be unified and must remain separate.
 //
 //    (7) Make `LightSampler::EmitterObjectPoint` return its `fallback`
 //        when the gate is closed -- i.e. put `Po` back on the GATED
