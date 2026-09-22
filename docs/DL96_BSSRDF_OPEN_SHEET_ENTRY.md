@@ -70,7 +70,7 @@ point — is unchanged; see §5 for why.
 | `TriangleMeshGeometryIndexed` | `bDoubleSided && !m_bWatertight` | DL-143's build-time position-weld watertightness certification is exactly "does this mesh have one true outside" |
 | `TriangleMeshGeometry` (non-indexed) | `bDoubleSided` unconditionally | this class has no watertightness certification at all |
 | `ClippedPlaneGeometry` | on a back-face hit (`isBackFaceHit`, same condition as `bGeomNormalOrientedToRay`) | a plane never encloses a volume — front-face hits never flip, so the flag is a no-op there either way |
-| `BezierPatchGeometry` | on a back-face hit (`bDidFlip`, same condition as `bGeomNormalOrientedToRay`) | same reasoning as `ClippedPlaneGeometry` |
+| `BezierPatchGeometry` | does NOT set it (DL-220; was `bDidFlip` in DL-96) | removed in DL-220: a patch list can enclose a volume (`teapot.bezier`, `aphrodite.bezier`), so stamping `bOpenSheet` on interior hits admitted them as BSSRDF entries; falls back to closed-solid gate |
 | `HairGeometry` | never sets it | already excluded from the DL-70 recovery via the orthogonal `bGeomNormalRayDerived` reason (no genuine two-sided winding at all, not "two legitimate sides of one winding") |
 | `CSGObject::AdoptCsgSurfacePayload` | forwards whichever operand's surface is actually being reported | same category as the two sibling fields it already forwards |
 | `DisplacedGeometry` | inherited for free | delegates its `IntersectRay` straight into its internal `TriangleMeshGeometryIndexed` |
