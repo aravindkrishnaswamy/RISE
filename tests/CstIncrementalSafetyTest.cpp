@@ -480,12 +480,44 @@ int main()
 		int applied = DeriveToJobIncremental( docM, *j, closure, &di );
 		Check( applied == 0 && !di.empty(), "arity-parent-chain: malformed parent position REFUSED (applied 0 + diagnosed)" );
 		const std::string after = DumpJob( *j );
-		// DL-156 KNOWN GAP: both assertions below pin the CURRENT, confirmed-
-		// buggy state -- a correct atomic refusal would leave `after == before`.
-		Check( after.find( "parentObj geometry=g material=(none) modifier=(none) shader=(none) radiance_map=(none) interior_medium=(none) visible=1 bbox=[-1 -1 -1 .. 1 1 1]" ) != std::string::npos,
-		       "arity-parent-chain: DL-156 -- parentObj was silently re-pointed to the zero-filled (0,0,0) position despite the \"refused\" result" );
-		Check( after.find( "childObj geometry=g material=(none) modifier=(none) shader=(none) radiance_map=(none) interior_medium=(none) visible=1 bbox=[0 -1 -1 .. 2 1 1]" ) != std::string::npos,
-		       "arity-parent-chain: DL-156 -- childObj's own Finalize never ran, yet its WORLD bbox moved too (ComposeObjectHierarchy recomposed it from the corrupted parent)" );
+		Check( after == before,
+		       "arity-parent-chain: DL-156 -- atomic refusal: dump after == dump before (neither parent nor child moved)" );
+		Check( after.find( "parentObj geometry=g material=(none) modifier=(none) shader=(none) radiance_map=(none) interior_medium=(none) visible=1 bbox=[4 -1 -1 .. 6 1 1]" ) != std::string::npos,
+		       "arity-parent-chain: DL-156 -- parentObj bbox is unchanged at authored position (5,0,0)" );
+		Check( after.find( "childObj geometry=g material=(none) modifier=(none) shader=(none) radiance_map=(none) interior_medium=(none) visible=1 bbox=[5 -1 -1 .. 7 1 1]" ) != std::string::npos,
+		       "arity-parent-chain: DL-156 -- childObj bbox is unchanged at parent+local (6,0,0)" );
+
+		// DL-156: matrix-arity case. A malformed 12-token matrix (needs 16) on parentObj is refused
+		// before mutation, leaving parent and child bboxes unchanged.
+		{
+			Document docMat = DocSetParamValue( doc, pId, "matrix", 0, "1 0 0 0  0 1 0 0  0 0 1 0" ); // 12 tokens, not 16
+			std::vector<NodeId> closureMat = DocEditClosure( docMat, pId );
+			std::vector<std::string> diMat;
+			int appliedMat = DeriveToJobIncremental( docMat, *j, closureMat, &diMat );
+			Check( appliedMat == 0 && !diMat.empty(), "arity-parent-chain: malformed parent matrix REFUSED (applied 0 + diagnosed)" );
+			const std::string afterMat = DumpJob( *j );
+			Check( afterMat == before, "arity-parent-chain: malformed matrix refusal mutated NOTHING" );
+			Check( afterMat.find( "parentObj geometry=g material=(none) modifier=(none) shader=(none) radiance_map=(none) interior_medium=(none) visible=1 bbox=[4 -1 -1 .. 6 1 1]" ) != std::string::npos,
+			       "arity-parent-chain: parentObj bbox unchanged after malformed matrix refusal" );
+			Check( afterMat.find( "childObj geometry=g material=(none) modifier=(none) shader=(none) radiance_map=(none) interior_medium=(none) visible=1 bbox=[5 -1 -1 .. 7 1 1]" ) != std::string::npos,
+			       "arity-parent-chain: childObj bbox unchanged after malformed matrix refusal" );
+		}
+
+		// DL-156: quaternion-arity case. A malformed 5-token quaternion (needs 4) on parentObj is refused
+		// before mutation, leaving parent and child bboxes unchanged.
+		{
+			Document docQuat = DocSetParamValue( doc, pId, "quaternion", 0, "0 0 0 1 0" ); // 5 tokens, not 4
+			std::vector<NodeId> closureQuat = DocEditClosure( docQuat, pId );
+			std::vector<std::string> diQuat;
+			int appliedQuat = DeriveToJobIncremental( docQuat, *j, closureQuat, &diQuat );
+			Check( appliedQuat == 0 && !diQuat.empty(), "arity-parent-chain: malformed parent quaternion REFUSED (applied 0 + diagnosed)" );
+			const std::string afterQuat = DumpJob( *j );
+			Check( afterQuat == before, "arity-parent-chain: malformed quaternion refusal mutated NOTHING" );
+			Check( afterQuat.find( "parentObj geometry=g material=(none) modifier=(none) shader=(none) radiance_map=(none) interior_medium=(none) visible=1 bbox=[4 -1 -1 .. 6 1 1]" ) != std::string::npos,
+			       "arity-parent-chain: parentObj bbox unchanged after malformed quaternion refusal" );
+			Check( afterQuat.find( "childObj geometry=g material=(none) modifier=(none) shader=(none) radiance_map=(none) interior_medium=(none) visible=1 bbox=[5 -1 -1 .. 7 1 1]" ) != std::string::npos,
+			       "arity-parent-chain: childObj bbox unchanged after malformed quaternion refusal" );
+		}
 		j->release();
 	}
 
