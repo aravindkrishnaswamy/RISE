@@ -759,16 +759,112 @@ static const char* kEmitterSdfSphere =
 	"}\n"
 	"\n";
 
-//! FAMILY B: the same row on an ANALYTIC primitive, so the probe is
-//! shown to work for a non-SDF luminary -- `sphere_geometry` reports
-//! `curv` through the Weingarten map (dndu/dndv), a completely
-//! different code path from the SDF field's Hessian, and the two must
-//! both arrive at the record.
+//! FAMILY B: indirect downstream light-subpath scene (DL-19).
+//! Camera sees ONLY the receiver plane at z = 0.
+//! A partition wall (baffle) at x = 1.1, z in [0, 1.0] completely occludes
+//! direct line of sight between the receiver (x <= 1.0, z = 0) and the
+//! emitter sphere at (1.6, 0, 0.5).
+//! Light from the emitter reflects off a ceiling reflector at z = 2.5
+//! onto the receiver, so illumination is dominated by the indirect
+//! s >= 2 light subpath (Emitter l0 -> Reflector l1 -> Receiver e1 -> Camera e0).
+//! Because s=1 connections from receiver to emitter are occluded, this
+//! cleanly isolates the downstream light-subpath throughput seeded by
+//! LightSampler::ApplyEmitterSurface on `rig` (NM hero) and `rigW` (HWSS companions)
+//! in GenerateLightSubpathImpl (BDPTIntegrator.cpp:5919, 6118).
+static const char* kIndirectHead =
+	"RISE ASCII SCENE 7\n"
+	"film\n"
+	"{\n"
+	"\twidth 40\n"
+	"\theight 40\n"
+	"}\n"
+	"\n"
+	"pinhole_camera\n"
+	"{\n"
+	"\tlocation 0 0 3.5\n"
+	"\tlookat 0 0 0\n"
+	"\tup 0 1 0\n"
+	"\tfov 30.0\n"
+	"}\n"
+	"\n"
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_albedo\n"
+	"\tcolor 0.6 0.6 0.6\n"
+	"}\n"
+	"\n"
+	"lambertian_material\n"
+	"{\n"
+	"\tname mat_diffuse\n"
+	"\treflectance pnt_albedo\n"
+	"}\n"
+	"\n"
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_refl\n"
+	"\tcolor 0.8 0.8 0.8\n"
+	"}\n"
+	"\n"
+	"lambertian_material\n"
+	"{\n"
+	"\tname mat_reflector\n"
+	"\treflectance pnt_refl\n"
+	"}\n"
+	"\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname g_receiver\n"
+	"\tpta -2 -2 0\n"
+	"\tptb 1.0 -2 0\n"
+	"\tptc 1.0 2 0\n"
+	"\tptd -2 2 0\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_receiver\n"
+	"\tgeometry g_receiver\n"
+	"\tmaterial mat_diffuse\n"
+	"}\n"
+	"\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname g_baffle\n"
+	"\tpta 1.1 -2 0\n"
+	"\tptb 1.1 2 0\n"
+	"\tptc 1.1 2 1.0\n"
+	"\tptd 1.1 -2 1.0\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_baffle\n"
+	"\tgeometry g_baffle\n"
+	"\tmaterial mat_diffuse\n"
+	"}\n"
+	"\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname g_reflector\n"
+	"\tpta 0.2 -2 2.5\n"
+	"\tptb 2.2 -2 2.5\n"
+	"\tptc 2.2 2 2.5\n"
+	"\tptd 0.2 2 2.5\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_reflector\n"
+	"\tgeometry g_reflector\n"
+	"\tmaterial mat_reflector\n"
+	"}\n"
+	"\n";
+
 static const char* kEmitterAnalyticSphere =
 	"sphere_geometry\n"
 	"{\n"
 	"\tname g_lum\n"
-	"\tradius 0.5\n"
+	"\tradius 0.3\n"
 	"}\n"
 	"\n"
 	"standard_object\n"
@@ -776,7 +872,7 @@ static const char* kEmitterAnalyticSphere =
 	"\tname obj_lum\n"
 	"\tgeometry g_lum\n"
 	"\tmaterial mat_lum\n"
-	"\tposition 0 1.8 1.2\n"
+	"\tposition 1.6 0 0.5\n"
 	"}\n"
 	"\n";
 
@@ -1425,7 +1521,10 @@ static void RunGateInvariance( const Family& f )
 static const RowSpec kRowsRGB3[3] = {
 	{ eRK_PT, false, 0 }, { eRK_BDPT, false, 0 }, { eRK_VCM, false, 0 }
 };
-static const RowSpec kRowsPTOnly[1] = { { eRK_PT, false, 0 } };
+static const RowSpec kRowsFamilyB[2] = {
+	{ eRK_BDPT_SPECTRAL, false, 2048 },
+	{ eRK_BDPT_SPECTRAL, true, 96 }
+};
 
 //! THE NON-HWSS SPECTRAL ROWS CARRY THEIR OWN SAMPLE COUNT, and it is
 //! forty-odd times the RGB rows'.  Not because the emitter record is
@@ -1565,15 +1664,15 @@ int main( int argc, char** argv )
 	};
 
 	static const Family kAnalyticCurv = {
-		"B: analytic sphere_geometry emitter, exitance keyed on curv",
-		kCommonHead,
+		"B: analytic sphere_geometry emitter, exitance keyed on curv (DL-19 indirect downstream light subpath)",
+		kIndirectHead,
 		kEmitterAnalyticSphere,
 		"0.2 + 0.8*clamp(curv,0,1)",
 		"0.2 + 0.8*1.0",
 		"0.2 + 0.8*0.0",
-		60.0,
-		48,
-		kRowsPTOnly, 1
+		120.0,
+		96,
+		kRowsFamilyB, 2
 	};
 
 	// proximity(1.0) = 1 - 0.2/1.0 = 0.8 exactly, over the whole emitter
@@ -1653,6 +1752,11 @@ int main( int argc, char** argv )
 	};
 	RunBoundedNeighbourRead();
 	if (argc > 1 && std::string(argv[1]) == "--louvres-only") {
+		std::cout << "Passed: " << passCount << "  Failed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+	if (argc > 1 && std::string(argv[1]) == "--family-b") {
+		RunFamily( kAnalyticCurv );
 		std::cout << "Passed: " << passCount << "  Failed: " << failCount << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
