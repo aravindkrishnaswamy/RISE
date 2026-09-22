@@ -1982,3 +1982,130 @@ Report this honestly as "no measurable win", not as a speedup — the
 footprint reduction (disk/repo size, and one fewer dead value for every
 future low-alpha table family to inherit) is the real benefit here, not
 compile time.
+
+## DL-139: anisotropic bihemispherical single-scatter quadrature
+
+**CLOSED 2026-09-21.** DL-123's single-scatter quadrature collapsed
+`alphaX != alphaY` to `sqrt(alphaX*alphaY)`. On current HEAD, an
+independent black-box estimator of the real `GGXBRDF::value()` measured
+relative errors from **7.84% to 24.01%** over six ordinary off-diagonal
+rows, and **21.24%** at the one-axis-low `(0.005, 0.5)` corner. The
+historical 11.9%/0.47353 figure was not reused as an expectation: the
+current mixture oracle measures `(0.05,0.5)` at 0.46221 and the old
+guide reports 0.52971.
+
+The fix bakes the eight Fresnel-kernel moments on the same reachable
+24x24 independent-roughness grid and DL-161 low-axis construction used
+by the current anisotropic energy LUT. This deliberately supersedes the
+row's stale "ratio axis" recipe: DL-77's current source documents why a
+ratio/`alphaEff` rectangle contains mostly unreachable high-ratio cells.
+The bihemispherical quantity needs no phi axis. It integrates incident
+and outgoing azimuth over complete hemispheres, so rotating the material
+tangent frame is only a change of integration variables; the result
+depends on the unordered pair `(alphaX,alphaY)`. Axis-exchange symmetry
+halves the bake work.
+
+The off-diagonal `alphaX -> 0` boundary is not the isotropic perfect
+mirror boundary: the orthogonal finite roughness remains in Smith
+Lambda and the VNDF. It therefore has no applicable closed-form
+isotropic anchor and is baked at the low nodes. The virtual zero node
+folds to low node 1, exactly as DL-161 does; production floors roughness
+at `1e-4`, between low nodes 1 and 2, so the virtual zero is unreachable.
+On the isotropic diagonal the lookup forwards to the original
+`LookupGGXSpecularQuadWeight` path before any new arithmetic. The initial
+DL-139 representation stored full weights on a rectangular grid and used
+bilinear interpolation. That was not a valid diagonal boundary construction:
+inside a diagonal cell, bilinear interpolation mixes both off-diagonal
+corners into its diagonal trace, which generally differs from the independent
+legacy one-dimensional interpolant. The low/low generator also copied two
+isotropic midpoint rows by storage index even though the isotropic and
+anisotropic grids declare different physical roughness coordinates there.
+
+The corrected representation stores the anisotropic correction
+
+`C(alphaX,alphaY) = W_aniso(alphaX,alphaY)
+                     - W_iso(sqrt(alphaX*alphaY))`.
+
+Its mathematical boundary condition is `C(a,a)=0`. Every diagonal anchor is
+therefore a literal zero correction at its own declared coordinate. Cells
+touching the diagonal are split into triangles along that zero edge; cells
+strictly away from it remain bilinear. Runtime adds the complete preserved
+`W_iso(sqrt(alphaX*alphaY))` curve after interpolating `C`. Consequently the
+unequal-axis limit is the legacy isotropic curve at every coordinate and at
+every legacy knot, while off-diagonal bake nodes reconstruct their physical
+anisotropic weights. Low/low, low/ordinary, and ordinary/ordinary pieces
+share their endpoint values, so knot transitions are continuous. This uses
+no epsilon band, near-equal-axis switch, or tolerance-based isotropization.
+The albedo's `Eavg`/multiscatter term uses the same constrained construction
+locally. The older shared energy-LUT API retains a `1e-9` forwarding band;
+calling it directly would only move the public albedo jump to that band's
+edge. The local wrapper changes no GGX sampler/evaluator contract outside
+`hemisphericalAlbedo{,NM}`.
+A slot-by-slot comparison found all **344** pre-existing node/ordinary/
+low-axis float literals identical between base HEAD, regenerated output, and
+the corrected source.
+
+`TestAnisotropicFallback` now uses its own anisotropic D/Lambda/G1/VNDF
+implementation and an independently seeded, randomized low-discrepancy
+50/50 VNDF-plus-cosine proposal. The cosine half is required because the
+real BRDF numerator includes a broad Kulla-Conty multiscatter term; a
+VNDF-only proposal has a heavy tail at the one-axis-smooth boundary.
+Each RGB and NM row uses `n=4,800,000` samples and prints mean, sample SD,
+and standard error. The initial closure measured **0.0094%–0.0263%** over
+eight strongly anisotropic cells; those figures and its **62/16 -> 62/0**
+red/green are historical for source `98c024f2`. The correction regression
+adds low and ordinary near-diagonal physical cells at Schlick F0=0, exact
+one-ULP approaches from both sides, finite two-sided approaches, axis swaps,
+RGB/NM, and Schlick/conductor/thin-film public paths. On the corrected
+representation the 12 physical cells read **0.0111%–0.0807%** relative error,
+inside the unchanged 0.5% accuracy gate, and the complete suite is **186/0**.
+The same final regression rebuilt against the committed old relevant source
+is **186/84** red. This correction count is distinct from, and does not
+relabel, the initial closure's historical 62/16 run.
+
+The anisotropic bake uses its own fixed RNG stream and 100,000 samples
+per `(alphaX,alphaY,mu_i)` cell. For the initial full-weight representation
+at `98c024f2`, in a granted quiet slot on this checkout,
+three foreground bakes took 66.46, 66.23, and 66.03 seconds (mean 66.24 s,
+sample SD 0.215 s); all three emitted byte-identical tables. Interleaved
+single-file compiles of the old and fixed `GGXBRDF.cpp` measured
+0.9567 +/- 0.0115 s and 0.9633 +/- 0.0153 s respectively (n=3, sample
+SD), so the observed 0.0067 s difference is below run-to-run noise.
+The object grew by 52,832 bytes (1.65%) and the fully linked CLI by
+49,744 bytes (0.193%). Those timings and sizes are historical and are not
+claimed for the corrected generator/source representation.
+
+**Corrected-source cost refresh (2026-09-21, quiet slot).** The exact
+corrected candidate was `3c07250e`; its source blob was `6ebc17ca`. The
+committed control was `290d4188`: the complete candidate tree with only
+`src/Library/Materials/GGXBRDF.cpp` replaced by the exact `b8be6e7` blob
+`bdc03583`. It is therefore a source-only compile/link control, not a
+whole-baseline comparison. The library, CLI, and exact
+`GGXHemisphericalAlbedoTest` target were rebuilt and relinked for each linked
+state outside the compile intervals.
+
+Single-source compiles used the project's actual make target and flags in the
+interleaved order old,new/new,old/old,new. The control samples were
+`0.948362`, `0.951115`, `0.950048` seconds (mean **0.949842 s**, sample SD
+**0.001388 s**); corrected samples were `0.963508`, `0.975672`, `0.989390`
+seconds (mean **0.976190 s**, sample SD **0.012949 s**). The observed
+`+0.026349 s` / `+2.77%` is a compile-cost measurement only; with three
+samples and the corrected side's larger spread it is not a runtime or render
+claim.
+
+The corrected `GGXBRDF.cpp` is **178,012 bytes** versus **51,739 bytes** in
+the source-only control (`+126,273`). Its object is **3,257,808 bytes** versus
+**3,200,736** (`+57,072`, `+1.78%`), and the source-only-linked CLI is
+**25,892,840 bytes** versus **25,826,424** (`+66,416`, `+0.257%`). The
+generator source is **35,809 bytes** versus **22,430** at base `b8be6e7`
+(`+13,379`); its one functional `-O3 -std=c++17` compile took 0.398776 s.
+Three untrimmed functional bakes took `66.248197`, `66.081205`, and
+`65.851441` seconds (mean **66.060281 s**, sample SD **0.199204 s**). An
+initializer parser, rather than a hard-coded success flag, found all **344**
+legacy literals and all **6,984** correction literals identical in each bake
+and the corrected source; the three complete outputs were byte-identical.
+Since `Scalar` is `double`, the correction literals' direct scalar payload is
+**55,872 bytes** (58,624 bytes including the 344 preserved legacy literals).
+All 20 measured build/compile/link/bake return codes were zero and all 20
+warning counts were zero. No test executable or renderer was run; these are
+compile, generator, and storage costs only, with no runtime/render claim.

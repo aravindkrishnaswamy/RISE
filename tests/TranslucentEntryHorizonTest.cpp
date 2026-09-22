@@ -361,6 +361,22 @@ namespace
 			ext->release(); trans->release(); front->release();
 		}
 	};
+
+	struct SampleStats
+	{
+		unsigned int n;
+		Scalar sum;
+		Scalar sum2;
+		SampleStats() : n(0), sum(0), sum2(0) {}
+		void Add( Scalar x ) { n++; sum += x; sum2 += x*x; }
+		Scalar Mean() const { return n ? sum/Scalar(n) : Scalar(0); }
+		Scalar SampleSD() const
+		{
+			if( n < 2 ) return 0;
+			const Scalar variance = (sum2 - sum*sum/Scalar(n)) / Scalar(n-1);
+			return sqrt( r_max( Scalar(0), variance ) );
+		}
+	};
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -938,6 +954,102 @@ static void TestSampleClippedPhongContract()
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+//  Sub-test 10 (DL-130): clipped-lobe ENERGY contract.
+//
+//  SampleClippedPhong conditions each theta ring onto its valid azimuth
+//  arc and reports a density q that integrates to one (sub-tests 5/6).
+//  The corresponding BSDF lobe is f = kray*q/|cos|, so
+//
+//      integral f(w)*|cos(w)| dw = kray * integral q(w) dw = kray.
+//
+//  Therefore the painter/Beer-split energy is deliberately invariant
+//  with shading-normal tilt.  Multiplying kray by halfArc/PI would count
+//  the geometric clip twice and delete up to half the lobe's energy.
+//  RGB uses the per-channel-N path so summing the three emitted rays is
+//  also covered; NM exercises the single spectral lobe.
+//////////////////////////////////////////////////////////////////////
+static void TestClippedLobeEnergyContract()
+{
+	std::cout << "Sub-test 10: DL-130 clipped-lobe emitted-energy contract" << std::endl;
+
+	StubObject* obj = new StubObject(); obj->addref();
+	const Scalar tilts[] = { 0.0, 30.0, 60.0, 85.0 };
+	const unsigned int kTrials = 4096;
+	const Scalar kNM = 550.0;
+
+	for( int side = 0; side < 2; side++ ) {
+		const bool entering = (side == 0);
+		for( int spectral = 0; spectral < 2; spectral++ ) {
+			for( int t = 0; t < 4; t++ ) {
+				SPFRig rig( 0.1, 1.0, entering ? 0.0 : 0.6, !spectral );
+				RandomNumberGenerator rng( 20260921 );
+				IndependentSampler sampler( rng );
+				RayIntersectionGeometric ri = entering
+					? MakeClosedEntry( tilts[t] ) : MakeClosedExit( tilts[t] );
+				IORStack stack = entering ? MakeOutsideStack( obj ) : MakeInsideStack( obj );
+
+				SampleStats stats[3];
+				for( unsigned int trial = 0; trial < kTrials; trial++ ) {
+					ScatteredRayContainer scattered;
+					if( spectral ) rig.spf->ScatterNM( ri, sampler, kNM, scattered, stack );
+					else           rig.spf->Scatter( ri, sampler, scattered, stack );
+
+					RISEPel energyRGB(0,0,0);
+					Scalar energyNM = 0;
+					for( unsigned int i = 0; i < scattered.Count(); i++ ) {
+						const ScatteredRay& ray = scattered[i];
+						if( ray.type != ScatteredRay::eRayTranslucent ) continue;
+						if( entering != (ray.ior_stack != 0) ) continue;
+						if( spectral ) energyNM += ray.krayNM;
+						else           energyRGB = energyRGB + ray.kray;
+					}
+					if( spectral ) {
+						stats[0].Add( energyNM );
+					} else {
+						for( int c = 0; c < 3; c++ ) stats[c].Add( energyRGB[c] );
+					}
+				}
+
+				const Scalar distance = Vector3Ops::Magnitude(
+					Vector3Ops::mkVector3(ri.ray.origin, ri.ptIntersection) );
+				const Scalar expectedNM = entering
+					? GuardedGetColorNM( *rig.trans, ri, kNM )
+					: exp( -Scalar(0.1)*distance ) * Scalar(0.6);
+				const RISEPel expectedRGB = entering
+					? RISEPel(0.4,0.4,0.4)
+					: RISEPel( exp(-Scalar(0.1)*distance) * Scalar(0.6) );
+
+				bool meanOK = true;
+				bool sdOK = true;
+				if( spectral ) {
+					meanOK = fabs(stats[0].Mean()-expectedNM) < 1e-12;
+					sdOK = stats[0].SampleSD() < 1e-12;
+					std::cout << "  " << (entering ? "entry" : "backscatter")
+						<< " NM tilt=" << tilts[t] << " n=" << stats[0].n
+						<< " mean=" << stats[0].Mean()
+						<< " sampleSD=" << stats[0].SampleSD()
+						<< " expected=" << expectedNM << std::endl;
+				} else {
+					for( int c = 0; c < 3; c++ ) {
+						meanOK = meanOK && fabs(stats[c].Mean()-expectedRGB[c]) < 1e-12;
+						sdOK = sdOK && stats[c].SampleSD() < 1e-12;
+					}
+					std::cout << "  " << (entering ? "entry" : "backscatter")
+						<< " RGB-splitN tilt=" << tilts[t] << " n=" << stats[0].n
+						<< " mean=(" << stats[0].Mean() << "," << stats[1].Mean() << "," << stats[2].Mean() << ")"
+						<< " sampleSD=(" << stats[0].SampleSD() << "," << stats[1].SampleSD() << "," << stats[2].SampleSD() << ")"
+						<< " expected=(" << expectedRGB[0] << "," << expectedRGB[1] << "," << expectedRGB[2] << ")" << std::endl;
+				}
+
+				EXPECT( meanOK, "clipped Phong lobe retains its painter/Beer-split energy at every tilt" );
+				EXPECT( sdOK, "emitted lobe energy is direction-independent (sample SD is zero)" );
+			}
+		}
+	}
+	obj->release();
+}
+
 int main()
 {
 	std::cout << "TranslucentEntryHorizonTest (DL-68)" << std::endl;
@@ -951,6 +1063,7 @@ int main()
 	TestDoubleSidedFrontFaceEntry();
 	TestDoubleSidedExitBackscatter();
 	TestSampleClippedPhongContract();
+	TestClippedLobeEnergyContract();
 
 	std::cout << "checks=" << checks << " failed=" << failed << std::endl;
 	if( failed ) {

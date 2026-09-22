@@ -247,16 +247,19 @@ void CookTorranceSPF::Scatter(
 						const RISEPel specColor = pSpecular->GetColor(ri);
 						const RISEPel kray = specColor * fresnel * (G1wo / pSpecSelect);
 
-						if( ColorMath::MaxValue( kray ) > 0 )
-						{
-							ScatteredRay specular;
-							specular.type = ScatteredRay::eRayReflection;
-							specular.ray.Set( ri.ptIntersection, wo );
-							specular.kray = kray;
-							specular.pdf = mixPdf;
-							specular.isDelta = false;
-							scattered.AddScatteredRay( specular );
-						}
+						// The lobe-selection floor deliberately gives an
+						// authored-black slot nonzero mixture mass so its
+						// small spectral reconstruction residual remains
+						// reachable.  Therefore an exactly-zero RGB kray is
+						// still a real terminating sample: dropping it would
+						// make Pdf price an event Scatter cannot emit (DL-211).
+						ScatteredRay specular;
+						specular.type = ScatteredRay::eRayReflection;
+						specular.ray.Set( ri.ptIntersection, wo );
+						specular.kray = kray;
+						specular.pdf = mixPdf;
+						specular.isDelta = false;
+						scattered.AddScatteredRay( specular );
 					}
 				}
 			}
@@ -307,16 +310,16 @@ void CookTorranceSPF::Scatter(
 				const RISEPel kray = (msPdfHere > 1e-14) ?
 					f_ms * (cosTheta / (msPdfHere * pMSSelect)) : RISEPel(0,0,0);
 
-				if( ColorMath::MaxValue( kray ) > 0 )
-				{
-					ScatteredRay ms;
-					ms.type = ScatteredRay::eRayDiffuse;
-					ms.ray.Set( ri.ptIntersection, wo );
-					ms.kray = kray;
-					ms.pdf = mixPdf;
-					ms.isDelta = false;
-					scattered.AddScatteredRay( ms );
-				}
+				// As for the floored single-scatter lobe above, keep a
+				// selected zero-throughput event as a terminating sample so
+				// the wms term in the reported mixture remains generative.
+				ScatteredRay ms;
+				ms.type = ScatteredRay::eRayDiffuse;
+				ms.ray.Set( ri.ptIntersection, wo );
+				ms.kray = kray;
+				ms.pdf = mixPdf;
+				ms.isDelta = false;
+				scattered.AddScatteredRay( ms );
 			}
 		}
 	}
@@ -454,16 +457,16 @@ void CookTorranceSPF::ScatterNM(
 						// wsValNM already holds the guarded pSpecular sample for this call
 						const Scalar krayNM = wsValNM * fresnel * G1wo / pSpecSelect;
 
-						if( krayNM > 0 )
-						{
-							ScatteredRay specular;
-							specular.type = ScatteredRay::eRayReflection;
-							specular.ray.Set( ri.ptIntersection, wo );
-							specular.krayNM = krayNM;
-							specular.pdf = mixPdf;
-							specular.isDelta = false;
-							scattered.AddScatteredRay( specular );
-						}
+						// Keep the RGB/NM twins structurally identical: a
+						// selected mixture component emits even when its
+						// evaluated throughput is exactly zero.
+						ScatteredRay specular;
+						specular.type = ScatteredRay::eRayReflection;
+						specular.ray.Set( ri.ptIntersection, wo );
+						specular.krayNM = krayNM;
+						specular.pdf = mixPdf;
+						specular.isDelta = false;
+						scattered.AddScatteredRay( specular );
 					}
 				}
 			}
@@ -506,16 +509,13 @@ void CookTorranceSPF::ScatterNM(
 				const Scalar krayNM = (msPdfHere > 1e-14) ?
 					f_ms * cosTheta / (msPdfHere * pMSSelect) : 0;
 
-				if( krayNM > 0 )
-				{
-					ScatteredRay ms;
-					ms.type = ScatteredRay::eRayDiffuse;
-					ms.ray.Set( ri.ptIntersection, wo );
-					ms.krayNM = krayNM;
-					ms.pdf = mixPdf;
-					ms.isDelta = false;
-					scattered.AddScatteredRay( ms );
-				}
+				ScatteredRay ms;
+				ms.type = ScatteredRay::eRayDiffuse;
+				ms.ray.Set( ri.ptIntersection, wo );
+				ms.krayNM = krayNM;
+				ms.pdf = mixPdf;
+				ms.isDelta = false;
+				scattered.AddScatteredRay( ms );
 			}
 		}
 	}

@@ -911,14 +911,16 @@ static LobeDiscrimination MeasureLobeDiscrimination(
     return d;
 }
 
-//! Part 2b's per-row band.  SUBDENSITY_TOL everywhere except the rows
-//! listed as documented open defects, which are gated by their own
-//! two-sided pin instead (a very wide band here disables the plain
-//! check for them without disabling the pin).
+//! Part 2b's per-row band.  CookTorrance_BlackSpecular is the direct
+//! DL-211 regression: its aggregate density must match the probability
+//! that Scatter actually returns a sample to 5e-5.  Other rows retain
+//! the historical broad harness band unless listed as documented open
+//! defects, which are gated by their own two-sided pin instead.
 struct SubDensityPinRef { const char* name; double lo; double hi; const char* why; };
 template< class PinT >
 static double SubDensityTolFor( const std::string& name, const PinT* pins, int n )
 {
+    if( name == "CookTorrance_BlackSpecular" ) return 5e-5;
     for( int i = 0; i < n; i++ ) {
         // A null `name` is the empty-table sentinel (the array cannot
         // legally have zero elements in C++), not a row.
@@ -1286,19 +1288,15 @@ int main()
         //   the normalisation of (a) in place the row reads z = +0.54.
         //   NOTHING IN `CookTorranceSPF` CHANGED.
         //
-        //   `_BlackSpecular` is a DIFFERENT, genuine and much smaller
-        //   residual, and it is the one row this file does not close:
-        //   `int Pdf = 1.00001` against an emission rate of 0.998014,
-        //   i.e. `Pdf` prices ~0.2% of mass on a specular lobe that
-        //   `Scatter` can never emit (the `kSelFloor` keeps the lobe
-        //   SELECTABLE while its literal-black `kray` keeps it from
-        //   producing a ray).  That is a real shape mismatch and it
-        //   reads z = +3.58 at 60deg / +2.10 at 30deg inside the |z|<=4
-        //   band -- filed as DL-211, deliberately not fixed here.  The
-        //   value is DETERMINISTIC now (fixed seeds), so the remaining
-        //   0.4 sd of margin is not a coin-flip the way the pre-DL-176
-        //   927.52 was; it moves only if `CookTorranceSPF` or this
-        //   harness moves.
+        //   DL-211 closes the `_BlackSpecular` residual by requiring a
+        //   selected, floored zero-throughput RGB lobe to remain a real
+        //   terminating sample.  That preserves the achromatic mixture
+        //   shared with ScatterNM (where the authored-black spectrum has
+        //   a small nonzero reconstruction residual) and makes `Pdf`'s
+        //   mass describe exactly what Scatter emits.  The dedicated
+        //   Part 2b row above tightens that equality to 5e-5; the normal
+        //   |z| <= 4 shape gate below replaces the old [1.5,2.7] /
+        //   [3.0,4.0] known-defect pins.
         //--------------------------------------------------------------
         { "CookTorrance_BlackDiffuse",          cookTorranceBlackDiffuse,  false, true, false, false, INTEGRAL_TOL },
         { "CookTorrance_BlackSpecular",         cookTorranceBlackSpecular, false, true, false, false, INTEGRAL_TOL },
@@ -1660,28 +1658,6 @@ int main()
                 }
             }
 
-            // DL-211 KNOWN-DEFECT control (review round 1, P2-4).  This
-            // row's chi2 seed-mean z sits at ~90% of the |z| <= 4 band
-            // -- the same fragility shape DL-176 was filed for -- so it
-            // is pinned two-sided at its measured value rather than
-            // left to drift inside a band it nearly fills.  Closure of
-            // DL-211 must move it, and so must a regression.
-            if( spfs[s].name == "CookTorrance_BlackSpecular" && r.chi2Dof > 0 )
-            {
-                const double lo = ( a == 0 ) ? 1.5 : 3.0;
-                const double hi = ( a == 0 ) ? 2.7 : 4.0;
-                const bool inBand = ( r.chi2Z >= lo && r.chi2Z <= hi );
-                std::cout << ( inBand ? "  PASS" : "  FAIL" )
-                          << " DL-211 KNOWN-DEFECT (Pdf prices the kSelFloor-floored specular "
-                             "lobe that a literal-black kray stops Scatter emitting): chi2 z "
-                          << r.chi2Z << "  pinned band [" << lo << ", " << hi << "]"
-                          << "   (int Pdf " << r.fullSphereIntegral
-                          << " vs emission probability " << r.emissionProb << ")" << std::endl;
-                if( !inBand ) {
-                    numFailed++;
-                }
-            }
-
             // Report chi-squared
             if( spfs[s].skipChi2 )
             {
@@ -1968,11 +1944,13 @@ int main()
     //      UNCONDITIONALLY (no kray>0 gate), and for an authored
     //      pure-black diffuse painter `pDiffuse->GetColor(ri)` is
     //      EXACTLY (0,0,0), so diffuse.kray is exactly (0,0,0) on every
-    //      fire. The multiscatter branch only ever adds a ray when
-    //      `MaxValue(kray) > 0` STRICTLY (see the `if` gate in
-    //      CookTorranceSPF.cpp) -- so an added eRayDiffuse ray with
-    //      MaxValue(kray) exactly 0 can only have come from the diffuse
-    //      branch.
+    //      fire. The multiscatter branch is also unconditional after
+    //      DL-211 (a selected zero-throughput event must remain in the
+    //      mixture), but this fixture's NONBLACK specular painter gives
+    //      every sampled in-support multiscatter event positive kray.
+    //      Thus an added eRayDiffuse ray with MaxValue(kray) exactly 0
+    //      identifies the authored-black diffuse branch here; this does
+    //      not rely on a positive-kray gate in production.
     //    * Diffuse vs multiscatter, on the NM pipe, needs a different
     //      test: GuardedGetColorNM's black-cell leak means krayNM is
     //      NOT exactly 0, so the exact-zero trick doesn't apply. But
@@ -2095,23 +2073,11 @@ int main()
         // Unambiguous by TYPE alone (eRayReflection), so both pipes share
         // one loop shape; no value-matching trick needed here.
         //
-        // THE RGB AND NM EXPECTATIONS ARE DELIBERATELY DIFFERENT, and that
-        // asymmetry is a PRE-EXISTING, UNRELATED-TO-THIS-FIX design point,
-        // not a gap in the floor.  CookTorranceSPF::Scatter's specular
-        // branch only calls AddScatteredRay when `MaxValue(kray) > 0`
-        // STRICTLY (unlike the diffuse branch above, which adds
-        // unconditionally) -- a correct optimisation, since a ray that is
-        // KNOWN to contribute exactly zero need not be traced further. For
-        // an authored pure-black specular painter, RGB `kray` is the exact
-        // literal (0,0,0) (no JH uplift in the RGB pipe), so the branch is
-        // ENTERED at the floored selection rate (consuming the sampler's
-        // randoms, as `Pdf()`'s matching mixture weight above assumes) but
-        // never ADDS a ray -- fires == 0 is therefore the CORRECT RGB
-        // expectation, not a regression of the floor.  On the NM pipe the
-        // JH black-cell leaves `wsValNM` at ~2.5e-5 (not exactly 0), so
-        // `krayNM > 0` is true and the branch DOES add a ray -- this is the
-        // actual case the P1 fix was for, and it is asserted against the
-        // floor-based rate exactly like the diffuse rows above.
+        // Both pipes must emit the selected lobe at the floor-based rate.
+        // RGB carries the authored literal-zero throughput and terminates;
+        // NM carries the small nonzero JH black-cell reconstruction.  The
+        // shared achromatic mixture therefore remains honest in both
+        // regimes instead of pricing an RGB event Scatter silently drops.
         {
             int specFiresRGB = 0;
             for( int i = 0; i < kReachTrials; i++ )
@@ -2123,12 +2089,15 @@ int main()
                     if( scattered[j].type == ScatteredRay::eRayReflection ) specFiresRGB++;
                 }
             }
-            const bool ok = ( specFiresRGB == 0 );
+            const double observedRate = (double)specFiresRGB / (double)kReachTrials;
+            const bool ok = ( specFiresRGB > 0 )
+                          && ( observedRate > pSpecSelectPred * 0.3 )
+                          && ( observedRate < pSpecSelectPred * 3.0 );
             std::cout << "  CookTorrance_BlackSpecular RGB: specular-lobe fires=" << specFiresRGB
-                      << "/" << kReachTrials << " (expected exactly 0: RGB kray is the literal"
-                      << " (0,0,0), no JH leak, and Scatter's specular branch only adds a ray"
-                      << " when kray>0 strictly -- the lobe is still ENTERED at the floored rate,"
-                      << " it just correctly contributes nothing) " << ( ok ? "-> PASS" : "-> FAIL" )
+                      << "/" << kReachTrials << "  observedRate=" << observedRate
+                      << "  predicted pSpecSelect=" << pSpecSelectPred
+                      << " (kray is exactly (0,0,0): a terminating sample whose existence"
+                      << " keeps the shared mixture density honest) " << ( ok ? "-> PASS" : "-> FAIL" )
                       << std::endl;
             if( !ok ) numFailed++;
         }

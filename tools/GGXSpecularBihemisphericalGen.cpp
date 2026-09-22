@@ -94,27 +94,51 @@
 //  disagreement additionally gated in
 //  tests/GGXHemisphericalAlbedoTest.cpp.
 //
-//  ISOTROPIC ONLY.  For alphaX != alphaY, GGXBRDF.cpp evaluates this
-//  table at alphaEff = sqrt(alphaX*alphaY) -- an approximation for the
-//  single-scatter term specifically (the multiscatter term already uses
-//  the exact anisotropic Eavg lookup, no approximation there).  Residual
-//  tracked as a new debt row rather than extending this table to a
-//  third (ratio) axis in this slice -- see the DL-123 closure entry.
+//  DL-139 ANISOTROPY.  The original bake was isotropic-only and runtime
+//  collapsed alphaX != alphaY to alphaEff=sqrt(alphaX*alphaY), producing
+//  double-digit residuals.  This tool now additionally bakes the full
+//  reachable 24x24 alphaX/alphaY grid and DL-161 low-alpha sub-grids.
+//  It deliberately does NOT use the obsolete ratio/alphaEff layout:
+//  current MicrofacetEnergyLUT documents why that layout wastes most
+//  high-ratio cells on physically unreachable pairs.  No phi axis is
+//  needed because the bihemispherical white-sky integral averages the
+//  complete incident azimuth; rotating the tangent axes is a change of
+//  integration variables.  alphaX/alphaY exchange symmetry halves bake
+//  work.  Off-diagonal alpha->0 has no isotropic closed form, so low
+//  nodes are baked and the unreachable virtual zero node folds to node 1
+//  exactly as DL-161's production lookup does.
 //
-//  PROVENANCE: this exact file reproduces byte-for-byte via the fixed
+//  DIAGONAL CONSTRAINT.  A rectangular bilinear interpolation of full
+//  weights cannot reproduce the independent legacy isotropic interpolant
+//  between nodes: its diagonal trace also mixes the off-diagonal corners.
+//  The emitted anisotropic arrays therefore store
+//      C(ax,ay) = W_aniso(ax,ay) - W_iso(sqrt(ax*ay)).
+//  C(a,a)=0 exactly.  Runtime triangulates every grid cell touching the
+//  diagonal along that zero boundary and uses bilinear interpolation only
+//  away from it, then adds the complete legacy W_iso curve back.  This is
+//  a continuous piecewise-affine boundary construction, not a near-equal
+//  roughness band; exact equal axes still take the old path byte-for-byte.
+//  Low-grid diagonal anchors are literal zero corrections at their own
+//  declared AnisoAlphaLowNode coordinates, so they cannot alias the
+//  differently-spaced isotropic low-grid rows.
+//
+//  PROVENANCE: the pre-existing isotropic arrays reproduce byte-for-byte via the fixed
 //  RNG seed baked into rng_state's initializer (1234567890123456789ULL,
 //  the SAME constant GenerateMicrofacetEnergyLUT.cpp seeds with -- an
 //  arbitrary but fixed choice, not a shared stream) with NUM_SAMPLES=
 //  200000 samples per (alpha,mu_i) cell and NUM_MU_I=48 outer bins.
+//  The anisotropic tables use a separate fixed stream so adding them
+//  cannot perturb a single isotropic literal, 100000 samples per
+//  (alphaX,alphaY,mu_i) cell, and the same 48 outer bins.
 //
 //  Build (from project root):
 //      c++ -O3 -std=c++17 -o /tmp/GGXSpecularBihemisphericalGen \
 //          tools/GGXSpecularBihemisphericalGen.cpp
 //  Run:
 //      /tmp/GGXSpecularBihemisphericalGen
-//  and paste the printed `kGGXSpecularQuadNodes` / `kGGXSpecularQuadWeight`
-//  arrays into src/Library/Materials/GGXBRDF.cpp's anonymous namespace,
-//  replacing the previous ones verbatim.
+//  and paste the printed arrays into src/Library/Materials/GGXBRDF.cpp's
+//  anonymous namespace.  Verify the isotropic literals slot-by-slot
+//  before accepting an anisotropic regeneration.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -125,6 +149,7 @@
 
 #include <cstdio>
 #include <cmath>
+#include <algorithm>
 #include <vector>
 
 static const double PI = 3.14159265358979323846;
@@ -161,6 +186,22 @@ static double GGX_G2( double alpha, double cosWi, double cosWo )
 	return 1.0 / ( 1.0 + GGX_Lambda( alpha, cosWi ) + GGX_Lambda( alpha, cosWo ) );
 }
 
+static double GGX_Lambda_Aniso( double alphaX, double alphaY, const Vec3& v )
+{
+	if( v.z >= 1.0 - 1e-10 ) return 0.0;
+	if( v.z < 1e-10 ) return 1e10;
+	const double projected = alphaX*alphaX*v.x*v.x + alphaY*alphaY*v.y*v.y;
+	return ( -1.0 + sqrt( 1.0 + projected / (v.z*v.z) ) ) * 0.5;
+}
+static double GGX_G1_Aniso( double alphaX, double alphaY, const Vec3& v )
+{
+	return 1.0 / ( 1.0 + GGX_Lambda_Aniso( alphaX, alphaY, v ) );
+}
+static double GGX_G2_Aniso( double alphaX, double alphaY, const Vec3& wi, const Vec3& wo )
+{
+	return 1.0 / ( 1.0 + GGX_Lambda_Aniso( alphaX, alphaY, wi ) + GGX_Lambda_Aniso( alphaX, alphaY, wo ) );
+}
+
 // VNDF sampling (Dupuy-Benyoub spherical cap), transcribed verbatim from
 // GenerateMicrofacetEnergyLUT.cpp's own VNDF_Sample_Local.  wi must
 // point away from the surface (toward the viewer); normal is (0,0,1).
@@ -178,6 +219,18 @@ static Vec3 VNDF_Sample_Local( const Vec3& wi, double alpha, double u1, double u
 	return normalize( Vec3{ alpha * c.x, alpha * c.y, c.z } );
 }
 
+static Vec3 VNDF_Sample_Local_Aniso( const Vec3& wi, double alphaX, double alphaY, double u1, double u2 )
+{
+	Vec3 wi_h = normalize( Vec3{ alphaX * wi.x, alphaY * wi.y, wi.z } );
+	double phi = TWO_PI * u1;
+	double z = ( 1.0 - u2 ) * ( 1.0 + wi_h.z ) - wi_h.z;
+	double sinTheta = sqrt( r_max( 0.0, 1.0 - z*z ) );
+	double x = sinTheta * cos( phi );
+	double y = sinTheta * sin( phi );
+	Vec3 c{ x + wi_h.x, y + wi_h.y, z + wi_h.z };
+	return normalize( Vec3{ alphaX * c.x, alphaY * c.y, c.z } );
+}
+
 // Simple LCG random number generator -- identical form to
 // GenerateMicrofacetEnergyLUT.cpp's own rand01, independent stream
 // (this tool's own rng_state instance).
@@ -186,6 +239,16 @@ static double rand01()
 {
 	rng_state = rng_state * 6364136223846793005ULL + 1442695040888963407ULL;
 	return (double)( rng_state >> 11 ) / (double)( 1ULL << 53 );
+}
+
+// DL-139's anisotropic bake has its own independently seeded stream.
+// Keeping it separate is load-bearing: adding or reordering anisotropic
+// cells must never perturb any pre-existing isotropic literal.
+static unsigned long long aniso_rng_state = 0xD1139A7E5C4B321FULL;
+static double aniso_rand01()
+{
+	aniso_rng_state = aniso_rng_state * 6364136223846793005ULL + 1442695040888963407ULL;
+	return (double)( aniso_rng_state >> 11 ) / (double)( 1ULL << 53 );
 }
 
 // Solve the (N+1)x(N+1) linear system V*w = m via Gauss-Jordan with
@@ -267,6 +330,46 @@ static void Moments( double alpha, int numMuI, int numSamples, int numMoments, s
 	for( int k = 0; k < numMoments; k++ ) outMoments[k] *= 2.0;
 }
 
+// Anisotropic twin of Moments().  A white-sky bihemispherical integral
+// averages incident azimuth over the complete circle; rotating the
+// material tangent axes is therefore only a change of integration
+// variables.  Sampling phi_i here removes any runtime phi dimension:
+// the result depends only on the unordered pair (alphaX,alphaY).
+static void MomentsAniso( double alphaX, double alphaY, int numMuI, int numSamples,
+	int numMoments, std::vector<double>& outMoments )
+{
+	outMoments.assign( numMoments, 0.0 );
+	const double dmuI = 1.0 / numMuI;
+
+	for( int bi = 0; bi < numMuI; bi++ ) {
+		const double muI = ( bi + 0.5 ) * dmuI;
+		const double sinI = sqrt( r_max( 0.0, 1.0 - muI*muI ) );
+		std::vector<double> innerSum( numMoments, 0.0 );
+		for( int s = 0; s < numSamples; s++ ) {
+			const double phiI = TWO_PI * aniso_rand01();
+			const Vec3 wi{ sinI*cos(phiI), sinI*sin(phiI), muI };
+			const double G1wi = GGX_G1_Aniso( alphaX, alphaY, wi );
+			const Vec3 m = VNDF_Sample_Local_Aniso( wi, alphaX, alphaY, aniso_rand01(), aniso_rand01() );
+			const double wiDotM = dot( wi, m );
+			if( wiDotM <= 0 ) continue;
+
+			const Vec3 wo{ 2.0*wiDotM*m.x - wi.x, 2.0*wiDotM*m.y - wi.y, 2.0*wiDotM*m.z - wi.z };
+			if( wo.z <= 0 ) continue;
+			const double u = r_max( 0.0, r_min( 1.0, 1.0 - wiDotM ) );
+			const double perSampleWeight = GGX_G2_Aniso( alphaX, alphaY, wi, wo ) / G1wi;
+			double upow = 1.0;
+			for( int k = 0; k < numMoments; k++ ) {
+				innerSum[k] += upow * perSampleWeight;
+				upow *= u;
+			}
+		}
+		for( int k = 0; k < numMoments; k++ ) {
+			outMoments[k] += ( innerSum[k] / (double)numSamples ) * muI * dmuI;
+		}
+	}
+	for( int k = 0; k < numMoments; k++ ) outMoments[k] *= 2.0;
+}
+
 int main()
 {
 	// E_avg_TABLE_G2's own alpha axis: uniform 32 nodes, [0.01, 1.0].
@@ -315,6 +418,9 @@ int main()
 	printf( "static const Scalar kGGXSpecularQuadWeight[ %d ][ kGGXSpecularQuadNumNodes ] =\n{\n", kNumAlphaBins );
 
 	fprintf( stderr, "Spot checks (alpha, N0=moment0, should track E_avg_TABLE_G2):\n" );
+	std::vector<std::vector<double>> isotropicWeights( kNumAlphaBins );
+	std::vector<std::vector<double>> isotropicLowWeights;
+	std::vector<double> isotropicZeroWeights;
 
 	for( int a = 0; a < kNumAlphaBins; a++ ) {
 		const double frac = (double)a / (double)( kNumAlphaBins - 1 );
@@ -324,6 +430,7 @@ int main()
 		Moments( alpha, numMuI, numSamples, numNodes, moments );
 
 		const std::vector<double> w = SolveVandermonde( V, moments );
+		isotropicWeights[a] = w;
 
 		printf( "\t{ " );
 		for( int i = 0; i < numNodes; i++ ) {
@@ -429,6 +536,7 @@ int main()
 			for( int k = 0; k < numNodes; k++ ) momentsZero[k] *= 2.0;
 		}
 		const std::vector<double> wZero = SolveVandermonde( V, momentsZero );
+		isotropicZeroWeights = wZero;
 
 		double sumZero = 0.0;
 		for( double w : wZero ) sumZero += w;
@@ -458,6 +566,7 @@ int main()
 			std::vector<double> momentsLow;
 			Moments( alphaLow, numMuI, numSamples, numNodes, momentsLow );
 			const std::vector<double> wLow = SolveVandermonde( V, momentsLow );
+			isotropicLowWeights.push_back( wLow );
 			printf( "\t{ " );
 			for( int i = 0; i < numNodes; i++ ) printf( "%.10ff%s", wLow[i], ( i + 1 < numNodes ) ? ", " : "" );
 			printf( " },\t// slot %d, idx=%d, alpha=%.8f\n", AlphaLowSlot( idx ), idx, alphaLow );
@@ -471,6 +580,180 @@ int main()
 		for( int i = 0; i < numNodes; i++ ) printf( "0.0000000000f%s", ( i + 1 < numNodes ) ? ", " : "" );
 		printf( " },\n" );
 		printf( "};\n" );
+	}
+
+	// ------------------------------------------------------------------
+	// DL-139: azimuth-averaged anisotropic table.  Unlike the obsolete
+	// ratio/alphaEff layout originally proposed for DL-77, both roughness
+	// eigenvalues use the reachable 24x24 grid now shipped by
+	// MicrofacetEnergyLUT.  No phi axis is needed: MomentsAniso performs
+	// the complete white-sky incident-azimuth average.
+	{
+		const int ANISO_ALPHA_SIZE = 24;
+		const int ALPHA_SUB_FINE = 7;
+		const int ALPHA_MID_SIZE = 4;
+		const int ALPHA_LOW_TOTAL = ALPHA_SUB_FINE + ALPHA_MID_SIZE;
+		const int ALPHA_LOW_STORED = ALPHA_SUB_FINE + ( ALPHA_MID_SIZE - 2 );
+		const double A0 = 0.01;
+		const double A1 = A0 + ( 1.0 - A0 ) / ( ANISO_ALPHA_SIZE - 1 );
+		const int anisoSamples = 100000;
+
+		auto AlphaNode = [&]( int idx ) -> double {
+			return A0 + ( 1.0 - A0 ) * idx / ( ANISO_ALPHA_SIZE - 1 );
+		};
+		auto IsotropicWeightAtOrdinary = [&]( double alpha, int node ) -> double {
+			const double position = ( alpha - kAlphaMin ) / ( kAlphaMax - kAlphaMin ) * ( kNumAlphaBins - 1 );
+			const int i0 = (int)position;
+			const int i1 = i0 + 1 < kNumAlphaBins ? i0 + 1 : kNumAlphaBins - 1;
+			const double f = position - i0;
+			return ( 1.0 - f ) * isotropicWeights[i0][node] + f * isotropicWeights[i1][node];
+		};
+		const double ISOTROPIC_ALPHA_LOW_A1 = kAlphaMin
+			+ ( kAlphaMax - kAlphaMin ) / ( kNumAlphaBins - 1 );
+		auto IsotropicAlphaLowNode = [&]( int idx ) -> double {
+			if( idx <= 0 ) return 0.0;
+			if( idx <= ALPHA_SUB_FINE ) return A0 * pow( 2.0, double( idx - ( ALPHA_SUB_FINE + 1 ) ) );
+			if( idx == ALPHA_SUB_FINE + 1 ) return A0;
+			if( idx < ALPHA_LOW_TOTAL ) {
+				const double t = double( idx - ( ALPHA_SUB_FINE + 1 ) ) / double( ALPHA_MID_SIZE );
+				return A0 * pow( ISOTROPIC_ALPHA_LOW_A1 / A0, t );
+			}
+			return ISOTROPIC_ALPHA_LOW_A1;
+		};
+		auto AlphaLowSlot = [&]( int idx ) -> int {
+			if( idx <= ALPHA_SUB_FINE ) return idx - 1;
+			return ALPHA_SUB_FINE + ( idx - ( ALPHA_SUB_FINE + 2 ) );
+		};
+		auto IsotropicLowWeightAtIndex = [&]( int idx, int node ) -> double {
+			if( idx <= 0 ) return isotropicZeroWeights[node];
+			if( idx == ALPHA_SUB_FINE + 1 ) return isotropicWeights[0][node];
+			if( idx >= ALPHA_LOW_TOTAL ) return isotropicWeights[1][node];
+			return isotropicLowWeights[AlphaLowSlot(idx)][node];
+		};
+		auto IsotropicWeightAt = [&]( double alpha, int node ) -> double {
+			if( alpha >= ISOTROPIC_ALPHA_LOW_A1 ) {
+				return IsotropicWeightAtOrdinary( alpha, node );
+			}
+			int i0 = 0;
+			for( int j = 0; j < ALPHA_LOW_TOTAL; j++ ) {
+				if( alpha >= IsotropicAlphaLowNode( j + 1 ) ) i0 = j + 1; else break;
+			}
+			if( i0 > ALPHA_LOW_TOTAL - 1 ) i0 = ALPHA_LOW_TOTAL - 1;
+			const int i1 = i0 + 1;
+			const double lo = IsotropicAlphaLowNode(i0);
+			const double hi = IsotropicAlphaLowNode(i1);
+			const double f = hi > lo ? std::max( 0.0, std::min( 1.0, ( alpha - lo ) / ( hi - lo ) ) ) : 0.0;
+			return ( 1.0 - f ) * IsotropicLowWeightAtIndex( i0, node )
+				+ f * IsotropicLowWeightAtIndex( i1, node );
+		};
+		auto AlphaLowNode = [&]( int idx ) -> double {
+			if( idx <= 0 ) return 0.0;
+			if( idx <= ALPHA_SUB_FINE ) return A0 * pow( 2.0, double( idx - ( ALPHA_SUB_FINE + 1 ) ) );
+			if( idx == ALPHA_SUB_FINE + 1 ) return A0;
+			if( idx < ALPHA_LOW_TOTAL ) {
+				const double t = double( idx - ( ALPHA_SUB_FINE + 1 ) ) / double( ALPHA_MID_SIZE );
+				return A0 * pow( A1 / A0, t );
+			}
+			return A1;
+		};
+		std::vector<int> lowIndices;
+		for( int idx = 1; idx < ALPHA_LOW_TOTAL; idx++ ) {
+			if( idx != ALPHA_SUB_FINE + 1 ) lowIndices.push_back( idx );
+		}
+
+		using Weight = std::vector<double>;
+		using WeightRow = std::vector<Weight>;
+		using WeightGrid = std::vector<WeightRow>;
+		WeightGrid ordinary( ANISO_ALPHA_SIZE, WeightRow( ANISO_ALPHA_SIZE, Weight( numNodes ) ) );
+		WeightGrid lowOrd( ALPHA_LOW_STORED, WeightRow( ANISO_ALPHA_SIZE, Weight( numNodes ) ) );
+		WeightGrid lowLow( ALPHA_LOW_STORED, WeightRow( ALPHA_LOW_STORED, Weight( numNodes ) ) );
+
+		fprintf( stderr, "\nDL-139 anisotropic ordinary grid (%d samples/cell):\n", anisoSamples );
+		for( int xi = 0; xi < ANISO_ALPHA_SIZE; xi++ ) {
+			for( int yi = xi; yi < ANISO_ALPHA_SIZE; yi++ ) {
+				if( xi == yi ) {
+					// The stored quantity is the anisotropic correction relative
+					// to the preserved isotropic curve at sqrt(alphaX*alphaY).
+					// Its diagonal boundary condition is therefore exactly zero.
+					ordinary[xi][yi] = Weight( numNodes, 0.0 );
+				} else {
+					std::vector<double> moments;
+					MomentsAniso( AlphaNode(xi), AlphaNode(yi), numMuI, anisoSamples, numNodes, moments );
+					ordinary[xi][yi] = SolveVandermonde( V, moments );
+					const double alphaEff = sqrt( AlphaNode(xi) * AlphaNode(yi) );
+					for( int node = 0; node < numNodes; node++ ) {
+						ordinary[xi][yi][node] -= IsotropicWeightAt( alphaEff, node );
+					}
+				}
+				ordinary[yi][xi] = ordinary[xi][yi];
+			}
+			fprintf( stderr, "  ordinary row %d/%d complete\n", xi + 1, ANISO_ALPHA_SIZE );
+		}
+
+		fprintf( stderr, "DL-139 anisotropic low/ordinary grid:\n" );
+		for( int li = 0; li < ALPHA_LOW_STORED; li++ ) {
+			const double ax = AlphaLowNode( lowIndices[li] );
+			for( int yi = 0; yi < ANISO_ALPHA_SIZE; yi++ ) {
+				std::vector<double> moments;
+				MomentsAniso( ax, AlphaNode(yi), numMuI, anisoSamples, numNodes, moments );
+				lowOrd[li][yi] = SolveVandermonde( V, moments );
+				const double alphaEff = sqrt( ax * AlphaNode(yi) );
+				for( int node = 0; node < numNodes; node++ ) {
+					lowOrd[li][yi][node] -= IsotropicWeightAt( alphaEff, node );
+				}
+			}
+			fprintf( stderr, "  low/ordinary row %d/%d complete (alpha=%.8f)\n", li + 1, ALPHA_LOW_STORED, ax );
+		}
+
+		fprintf( stderr, "DL-139 anisotropic low/low grid:\n" );
+		for( int xi = 0; xi < ALPHA_LOW_STORED; xi++ ) {
+			for( int yi = xi; yi < ALPHA_LOW_STORED; yi++ ) {
+				if( xi == yi ) {
+					// Every diagonal anchor has the exact zero-correction value
+					// at its declared anisotropic low-grid coordinate.
+					lowLow[xi][yi] = Weight( numNodes, 0.0 );
+				} else {
+					const double ax = AlphaLowNode(lowIndices[xi]);
+					const double ay = AlphaLowNode(lowIndices[yi]);
+					std::vector<double> moments;
+					MomentsAniso( ax, ay, numMuI, anisoSamples, numNodes, moments );
+					lowLow[xi][yi] = SolveVandermonde( V, moments );
+					const double alphaEff = sqrt( ax * ay );
+					for( int node = 0; node < numNodes; node++ ) {
+						lowLow[xi][yi][node] -= IsotropicWeightAt( alphaEff, node );
+					}
+				}
+				lowLow[yi][xi] = lowLow[xi][yi];
+			}
+			fprintf( stderr, "  low/low row %d/%d complete\n", xi + 1, ALPHA_LOW_STORED );
+		}
+
+		auto PrintGrid = [&]( const char* name, const WeightGrid& grid, int nx, int ny ) {
+			printf( "\nstatic const Scalar %s[ %d ][ %d ][ kGGXSpecularQuadNumNodes ] =\n{\n", name, nx, ny );
+			for( int xi = 0; xi < nx; xi++ ) {
+				printf( "\t{\n" );
+				for( int yi = 0; yi < ny; yi++ ) {
+					printf( "\t\t{ " );
+					for( int i = 0; i < numNodes; i++ ) printf( "%.10ff%s", grid[xi][yi][i], ( i + 1 < numNodes ) ? ", " : "" );
+					printf( " },\n" );
+				}
+				printf( "\t},\n" );
+			}
+			printf( "};\n" );
+		};
+
+		printf( "\n// DL-139: azimuth-averaged anisotropic single-scatter correction.\n" );
+		printf( "// Both ordinary alpha axes use MicrofacetEnergyLUT::ANISO_ALPHA_SIZE=24;\n" );
+		printf( "// low axes use its AnisoAlphaLowNode/AlphaLowSlot layout.  The virtual\n" );
+		printf( "// alpha->0 node folds to low slot 0 because production alpha is floored\n" );
+		printf( "// at 1e-4 and the off-diagonal limit has no isotropic closed form.\n" );
+		printf( "// Each value is W_aniso(alphaX,alphaY)-W_iso(sqrt(alphaX*alphaY));\n" );
+		printf( "// diagonal anchors are therefore exactly zero at their declared coordinates.\n" );
+		printf( "// Off-diagonal cells use the independent anisotropic stream.\n" );
+		printf( "// Independently seeded stream, numMuI=%d, numSamples=%d. DO NOT HAND-EDIT.\n", numMuI, anisoSamples );
+		PrintGrid( "kGGXSpecularQuadCorrectionAniso", ordinary, ANISO_ALPHA_SIZE, ANISO_ALPHA_SIZE );
+		PrintGrid( "kGGXSpecularQuadCorrectionAnisoLowOrd", lowOrd, ALPHA_LOW_STORED, ANISO_ALPHA_SIZE );
+		PrintGrid( "kGGXSpecularQuadCorrectionAnisoLowLow", lowLow, ALPHA_LOW_STORED, ALPHA_LOW_STORED );
 	}
 
 	return 0;

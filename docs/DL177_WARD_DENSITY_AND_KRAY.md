@@ -779,6 +779,39 @@ band.  With fixed seeds that value is DETERMINISTIC, so the remaining
 0.4 sd of margin is not a coin flip the way the pre-DL-176 927.52 was:
 it moves only if `CookTorranceSPF` or the harness moves.
 
+### 8.1 DL-211 closure — a selected zero-throughput event still terminates
+
+**CLOSED 2026-09-21.** `ComputeLobeWeights` floors each lobe's selection
+weight because a lobe may have nonzero directional energy even when a
+single coarse/achromatic proxy is zero; the floor prevents that energy
+from becoming unreachable. An authored literally-black Cook-Torrance
+specular painter is different: its selected specular event carries
+exactly zero throughput. Removing the floor only for that corner would
+make the lobe-selection measure depend on a special value test and would
+also discard the reason the floor exists. The consistent contract is
+instead that selecting the zero-throughput lobe emits a terminating
+`ScatteredRay`: it remains part of the mixture measure priced by `Pdf`,
+but cannot contribute radiance.
+
+The RGB and NM specular/multiscatter branches therefore add their
+selected ray even when `kray == 0`; the integrator's ordinary
+zero-throughput handling terminates it. Before the repair, the current
+fixed-seed rows measured `int Pdf/emission = 1.00002/0.998025` at 30°
+and `1.00001/0.997995` at 60°, with seed-mean z `+2.09632` and
+`+3.58481`; RGB specular reachability was 0/200,000 despite predicted
+`p=0.00199595`. Afterward they read `1.00002/1.00000` (difference
+`1.98058e-5`, z `+0.447427`) and `1.00001/0.99998` (difference
+`2.92967e-5`, z `+0.409920`). Reachability is 407/200,000 RGB and
+398/200,000 NM. The two DL-211 known-defect z bands are deleted; both
+rows use the ordinary `|z| <= 4` gate and in fact read `|z| < 0.45`.
+
+The sibling audit found no GGX analogue. `GGXSPF` has no selection
+floor; Schlick F0=0 deliberately remains selectable through its nonzero
+hemispherical Schlick mean, while conductor/thin-film selection uses the
+tint and a zero tint is a genuinely zero lobe. `SPFPdfConsistencyTest`
+is green with the strict `5e-5` mass bound; the multiscatter and glossy-
+filter suites remain the downstream guards.
+
 ---
 
 ## 9. New debts opened
