@@ -363,24 +363,25 @@ int main()
 	RunRatio( "VCM spectral vs PT spectral, same scene, camera OUTSIDE",
 		kPTSpectral, kVCMSpectral, enclosed, 0.90, 1.10 );
 
-	// CONTROL, and KNOWN-DEFECT PIN (DL-218 (b)).  The SAME medium
+	// CONTROL, and KNOWN-DEFECT PIN (DL-247).  The SAME medium
 	// and emitter with no shell, bound as the scene's GLOBAL medium:
-	// BDPT reads ~1.73x of PT in a plain global medium.
-	RunRatio( "CONTROL/PIN(DL-218) BDPT vs PT, same medium as a GLOBAL medium (no shell)",
+	// BDPT and VCM read ~1.8-2.1x of PT in a plain global medium.
+	// Independent defect in PT volumetric continuation vs BDPT/VCM eye-walk.
+	RunRatio( "CONTROL/PIN(DL-247) BDPT vs PT, same medium as a GLOBAL medium (no shell)",
 		kPT, kBDPT, global, 1.50, 2.25 );
 
-	// DIAGNOSTIC (DL-218 (b)): BDPT max_light_depth 1 (light-root-only, no light subpath scattering in medium)
+	// DIAGNOSTIC (DL-247): BDPT max_light_depth 1 (light-root-only, no light subpath scattering in medium)
 	{
-		std::cout << "--- Diagnostic for DL-218 (b): BDPT max_light_depth 1 on GLOBAL medium ---" << std::endl;
+		std::cout << "--- Diagnostic for DL-247: BDPT max_light_depth 1 on GLOBAL medium ---" << std::endl;
 		const double ref  = RenderMeanRepeated( Scene( kPT, global ), "PT reference" );
 		const double cand = RenderMeanRepeated( Scene( kBDPT_L1, global ), "BDPT L1     " );
 		if( ref > 1e-9 && cand > 0 ) {
 			std::cout << "    DIAGNOSTIC: BDPT(L1) / PT = " << (cand / ref) << std::endl;
 		}
 	}
-	// DIAGNOSTIC (DL-218 (b)): VCM on GLOBAL medium
+	// DIAGNOSTIC (DL-247): VCM on GLOBAL medium
 	{
-		std::cout << "--- Diagnostic for DL-218 (b): VCM on GLOBAL medium ---" << std::endl;
+		std::cout << "--- Diagnostic for DL-247: VCM on GLOBAL medium ---" << std::endl;
 		const double ref  = RenderMeanRepeated( Scene( kPT, global ), "PT reference" );
 		const double cand = RenderMeanRepeated( Scene( kVCM, global ), "VCM         " );
 		if( ref > 1e-9 && cand > 0 ) {
