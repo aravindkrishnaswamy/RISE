@@ -31,10 +31,13 @@
 //      - `TriangleMeshGeometry` (non-indexed): `bDoubleSided`
 //        unconditionally -- this class has no watertightness
 //        certification at all.
-//      - `ClippedPlaneGeometry` / `BezierPatchGeometry`: on a
-//        BACK-FACE hit (same condition each already uses for
-//        `bGeomNormalOrientedToRay`) -- a plane/patch never encloses
+//      - `ClippedPlaneGeometry`: on a
+//        BACK-FACE hit (same condition it already uses for
+//        `bGeomNormalOrientedToRay`) -- a plane never encloses
 //        a volume, so a double-sided hit is always an open sheet.
+//      - `BezierPatchGeometry` does NOT set it (DL-220): a patch list
+//        can enclose a volume (like teapot, aphrodite, f16), so it
+//        falls back to the closed-solid gate (bOpenSheet == false).
 //      - `HairGeometry` does NOT set it (already excluded from the
 //        recovery via `bGeomNormalRayDerived`, an orthogonal reason).
 //      - `CSGObject::AdoptCsgSurfacePayload` forwards whichever
@@ -415,12 +418,17 @@ static void TestClippedPlaneGateDivergence()
 }
 
 //////////////////////////////////////////////////////////////////////
-// A5: BezierPatchGeometry -- same shape as ClippedPlaneGeometry (a
-// flat patch, so a back-face hit is unambiguous).
+// A5: BezierPatchGeometry -- does NOT set bOpenSheet (DL-220).
+// A BezierPatchGeometry holds a patch list behind a BSP/Octree, and
+// can enclose a volume (closed solid). A back-face hit on a patch
+// (e.g. interior ray hitting an exterior wall from inside) must NOT
+// be stamped bOpenSheet = true, which would admit interior hits as
+// BSSRDF subsurface entries. BezierPatchGeometry falls back to the
+// closed-solid gate (bOpenSheet == false).
 //////////////////////////////////////////////////////////////////////
 static void TestBezierPatchOpenSheet()
 {
-	std::cout << "Part A5: BezierPatchGeometry, flat patch, front vs back" << std::endl;
+	std::cout << "Part A5: BezierPatchGeometry, flat patch, front vs back, and interior exit gate check (DL-220)" << std::endl;
 
 	// A genuinely FLAT 4x4-control-point patch at z=0, X,Y in [-1.5,1.5]
 	// (the TestBezierSaddle() pattern from tests/PatchCurvatureTest.cpp
@@ -443,16 +451,119 @@ static void TestBezierPatchOpenSheet()
 		g->IntersectRay( ri, true, true, false );
 		Check( ri.bHit, "A5: front ray hits the flat Bezier patch" );
 		Check( ri.bOpenSheet == false, "A5: FRONT hit, bOpenSheet == false" );
+
+		const Vector3 wo = Vector3Ops::Normalize( -ri.ray.Dir() );
+		const Scalar gated = ri.BSSRDFEntryFacing( wo );
+		const Scalar closedSolid = ri.TrueGeomFacing( wo );
+		Check( std::fabs( gated - closedSolid ) < 1e-9,
+			"A5: FRONT hit, BSSRDFEntryFacing() agrees with TrueGeomFacing()" );
+		Check( gated > 0, "A5: FRONT hit, gate admits BSSRDF entry" );
 	}
 	{
 		RayIntersectionGeometric ri( Ray( Point3( 0, 0, -5 ), Vector3( 0, 0, 1 ) ), nullRasterizerState );
 		g->IntersectRay( ri, true, true, false );
 		Check( ri.bHit, "A5: back ray hits the flat Bezier patch" );
 		Check( ri.bGeomNormalOrientedToRay, "A5: (sanity) the back hit really is a flip" );
-		Check( ri.bOpenSheet == true, "A5 MONEY: BACK hit, bOpenSheet == true" );
+		Check( ri.bOpenSheet == false, "A5 MONEY (DL-220): BACK hit, bOpenSheet == false (Bezier geometry can enclose a volume)" );
+
+		const Vector3 wo = Vector3Ops::Normalize( -ri.ray.Dir() );
+		const Scalar gated = ri.BSSRDFEntryFacing( wo );
+		const Scalar closedSolid = ri.TrueGeomFacing( wo );
+		std::cout << "    BACK hit: BSSRDFEntryFacing=" << (double)gated
+			<< "  TrueGeomFacing=" << (double)closedSolid << std::endl;
+		Check( std::fabs( gated - closedSolid ) < 1e-9,
+			"A5 MONEY (DL-220): BSSRDFEntryFacing agrees with TrueGeomFacing (falls back to closed-solid gate)" );
+		Check( gated <= 0, "A5 MONEY (DL-220): BACK hit, BSSRDFEntryFacing() REJECTS entry (must not seed SSS walk from interior)" );
+		Check( closedSolid < 0, "A5: (sanity) TrueGeomFacing() rejects interior/back hit" );
 	}
 
 	safe_release( g );
+
+	// Multi-patch closed solid check (DL-220):
+	// A two-patch enclosure around the origin (top patch at z=+1 with outward normal +Z,
+	// bottom patch at z=-1 with outward normal -Z).
+	// Rays starting inside the volume at (0,0,0) travelling outward hit the interior faces.
+	// DL-220 ensures these interior hits do NOT get stamped bOpenSheet=true, and
+	// BSSRDFEntryFacing() correctly rejects them as subsurface entries.
+	{
+		BezierPatchGeometry* solid = new BezierPatchGeometry( 10, 8, false );
+		solid->addref();
+
+		// Top patch at z=+1, outward normal +Z
+		BezierPatch topPatch;
+		for( int i = 0; i < 4; i++ ) {
+			const Scalar X = -1.5 + Scalar(i);
+			for( int j = 0; j < 4; j++ ) {
+				const Scalar Y = -1.5 + Scalar(j);
+				topPatch.c[i].pts[j] = Point3( X, Y, 1.0 );
+			}
+		}
+		solid->AddPatch( topPatch );
+
+		// Bottom patch at z=-1, outward normal -Z
+		// Inverted Y winding so dX/du x dY/dv points in -Z
+		BezierPatch bottomPatch;
+		for( int i = 0; i < 4; i++ ) {
+			const Scalar X = -1.5 + Scalar(i);
+			for( int j = 0; j < 4; j++ ) {
+				const Scalar Y = 1.5 - Scalar(j);
+				bottomPatch.c[i].pts[j] = Point3( X, Y, -1.0 );
+			}
+		}
+		solid->AddPatch( bottomPatch );
+		solid->Prepare();
+
+		// Ray from interior (0,0,0) towards top patch (+Z)
+		{
+			RayIntersectionGeometric ri( Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ), nullRasterizerState );
+			solid->IntersectRay( ri, true, true, false );
+			Check( ri.bHit, "A5 solid: ray from interior hits top patch" );
+			Check( ri.bGeomNormalOrientedToRay, "A5 solid: (sanity) hit from interior flips the normal" );
+			Check( ri.bOpenSheet == false, "A5 solid (DL-220): interior hit, bOpenSheet == false" );
+
+			const Vector3 wo = Vector3Ops::Normalize( -ri.ray.Dir() );
+			const Scalar gated = ri.BSSRDFEntryFacing( wo );
+			const Scalar closedSolid = ri.TrueGeomFacing( wo );
+			Check( std::fabs( gated - closedSolid ) < 1e-9,
+				"A5 solid (DL-220): top patch interior hit, BSSRDFEntryFacing agrees with TrueGeomFacing" );
+			Check( gated <= 0,
+				"A5 solid (DL-220): top patch interior hit, BSSRDFEntryFacing() rejects SSS entry from inside" );
+			Check( closedSolid < 0, "A5 solid: (sanity) top patch interior TrueGeomFacing is negative" );
+		}
+
+		// Ray from interior (0,0,0) towards bottom patch (-Z)
+		{
+			RayIntersectionGeometric ri( Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, -1 ) ), nullRasterizerState );
+			solid->IntersectRay( ri, true, true, false );
+			Check( ri.bHit, "A5 solid: ray from interior hits bottom patch" );
+			Check( ri.bGeomNormalOrientedToRay, "A5 solid: (sanity) hit from interior flips the normal" );
+			Check( ri.bOpenSheet == false, "A5 solid (DL-220): bottom patch interior hit, bOpenSheet == false" );
+
+			const Vector3 wo = Vector3Ops::Normalize( -ri.ray.Dir() );
+			const Scalar gated = ri.BSSRDFEntryFacing( wo );
+			const Scalar closedSolid = ri.TrueGeomFacing( wo );
+			Check( std::fabs( gated - closedSolid ) < 1e-9,
+				"A5 solid (DL-220): bottom patch interior hit, BSSRDFEntryFacing agrees with TrueGeomFacing" );
+			Check( gated <= 0,
+				"A5 solid (DL-220): bottom patch interior hit, BSSRDFEntryFacing() rejects SSS entry from inside" );
+			Check( closedSolid < 0, "A5 solid: (sanity) bottom patch interior TrueGeomFacing is negative" );
+		}
+
+		// Ray from exterior (0,0,5) hitting top patch from outside (+Z)
+		{
+			RayIntersectionGeometric ri( Ray( Point3( 0, 0, 5 ), Vector3( 0, 0, -1 ) ), nullRasterizerState );
+			solid->IntersectRay( ri, true, true, false );
+			Check( ri.bHit, "A5 solid: ray from exterior hits top patch" );
+			Check( !ri.bGeomNormalOrientedToRay, "A5 solid: front-face hit does not flip" );
+			Check( ri.bOpenSheet == false, "A5 solid: exterior hit, bOpenSheet == false" );
+
+			const Vector3 wo = Vector3Ops::Normalize( -ri.ray.Dir() );
+			const Scalar gated = ri.BSSRDFEntryFacing( wo );
+			Check( gated > 0, "A5 solid: exterior hit, BSSRDFEntryFacing admits SSS entry from outside" );
+		}
+
+		safe_release( solid );
+	}
 }
 
 //////////////////////////////////////////////////////////////////////
