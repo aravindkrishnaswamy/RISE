@@ -1247,12 +1247,17 @@ namespace
 		for( std::size_t i = 1; i < eyeVerts.size(); i++ )
 		{
 			const BDPTVertex& v = eyeVerts[i];
-			if( v.type != BDPTVertex::SURFACE || !v.pMaterial ) {
+			if( v.type != BDPTVertex::SURFACE && v.type != BDPTVertex::MEDIUM ) {
+				continue;
+			}
+			if( v.type == BDPTVertex::SURFACE && !v.pMaterial ) {
 				continue;
 			}
 			if( !v.isConnectible ) {
 				continue;
 			}
+
+			const bool eyeIsMedium_vcm = ( v.type == BDPTVertex::MEDIUM );
 
 			sampler.StartStream( 48 + static_cast<unsigned int>( i ) );
 
@@ -1405,17 +1410,21 @@ namespace
 			// emitter it is a shading normal, and that inherited
 			// approximation is pre-existing and out of this slice's scope
 			// (an earlier comment here asserted it was geometric).
-			const Scalar cosAtEye = fabs( Vector3Ops::Dot( v.geomNormal, dirForMIS_vcm ) );
+			// Medium vertices have no surface normal; eye-side cosine is omitted.
+			const Scalar cosAtEye = eyeIsMedium_vcm
+				? Scalar( 1.0 )
+				: fabs( Vector3Ops::Dot( v.geomNormal, dirForMIS_vcm ) );
 			Scalar cosAtLight = 0;
 			Scalar G = 0;
 			if( ls.isDelta ) {
 				cosAtLight = 1;
-				G = cosAtEye / distSq;
+				G = eyeIsMedium_vcm ? ( Scalar( 1.0 ) / distSq ) : ( cosAtEye / distSq );
 			} else {
 				cosAtLight = fabs( Vector3Ops::Dot( ls.normal, -dirForMIS_vcm ) );
-				G = ( cosAtEye * cosAtLight ) / distSq;
+				G = eyeIsMedium_vcm ? BDPTUtilities::GeometricTermSurfaceMedium( ls.position, ls.normal, v.position )
+				                    : ( ( cosAtEye * cosAtLight ) / distSq );
 			}
-			if( cosAtEye <= 0 || G <= 0 ) {
+			if( ( !eyeIsMedium_vcm && cosAtEye <= 0 ) || G <= 0 ) {
 				continue;
 			}
 
@@ -1517,7 +1526,7 @@ namespace
 			Scalar wCamera = 0;
 			if( emissionDirPdfSA > 0 && distSq > 0 ) {
 				const Scalar camFactor =
-					( emissionDirPdfSA * cosAtEye ) / distSq;
+					( emissionDirPdfSA * ( eyeIsMedium_vcm ? v.sigma_t_scalar : cosAtEye ) ) / distSq;
 				wCamera = camFactor * (
 					norm.mMisVmWeightFactor
 					+ eyeMis[i].dVCM
@@ -1558,8 +1567,9 @@ namespace
 				if( !pEnvSamp ) continue;
 				const Scalar pdfSA = pEnvSamp->Pdf( wiForLight_vcm );
 				if( pdfSA <= 0 ) continue;
-				const Scalar cosEyeWi =
-					fabs( Vector3Ops::Dot( v.geomNormal, wiForLight_vcm ) );
+				const Scalar cosEyeWi = eyeIsMedium_vcm
+					? Scalar( 1.0 )
+					: fabs( Vector3Ops::Dot( v.geomNormal, wiForLight_vcm ) );
 				// Continuous-PMF env-NEE rescale — see BDPT twin
 				// (BDPTIntegrator.cpp ~line 3965) for the full
 				// rationale.  ls.pdfSelect equals
@@ -1727,9 +1737,10 @@ namespace
 			if( i == 0 || v.type == BDPTVertex::LIGHT ) {
 				continue;
 			}
-			if( v.type != BDPTVertex::SURFACE ) {
+			if( v.type != BDPTVertex::SURFACE && v.type != BDPTVertex::MEDIUM ) {
 				continue;
 			}
+			const bool lightIsMedium_t1 = ( v.type == BDPTVertex::MEDIUM );
 
 			Point2 rasterPos;
 			if( !BDPTCameraUtilities::RasterizeThrough(
@@ -1758,8 +1769,11 @@ namespace
 			// Light-tracing connection cosine: GEOMETRIC normal at the
 			// light-vertex hit; this is the area-element Jacobian for
 			// the camera connection (Veach §8.2.2).
-			const Scalar cosAtLight = fabs( Vector3Ops::Dot( v.geomNormal, dirToCam ) );
-			if( cosAtLight <= 0 ) {
+			// Medium vertices have no surface normal; omit cosine (use 1.0).
+			const Scalar cosAtLight = lightIsMedium_t1
+				? Scalar( 1.0 )
+				: fabs( Vector3Ops::Dot( v.geomNormal, dirToCam ) );
+			if( !lightIsMedium_t1 && cosAtLight <= 0 ) {
 				continue;
 			}
 			const Scalar G = cosAtLight / distSq;
@@ -1768,7 +1782,9 @@ namespace
 			if( camPdfDirSA <= 0 ) {
 				continue;
 			}
-			const Scalar cameraPdfA = camPdfDirSA * cosAtLight / distSq;
+			const Scalar cameraPdfA = lightIsMedium_t1
+				? BDPTUtilities::SolidAngleToAreaMedium( camPdfDirSA, v.sigma_t_scalar, distSq )
+				: ( camPdfDirSA * cosAtLight / distSq );
 
 			typename Traits::value_type contribution = Traits::zero();
 			Scalar bsdfRevPdfW = 0;
@@ -1800,7 +1816,7 @@ namespace
 			}
 			else
 			{
-				if( !v.pMaterial ) {
+				if( v.type == BDPTVertex::SURFACE && !v.pMaterial ) {
 					continue;
 				}
 				if( i < 1 ) {
@@ -1969,12 +1985,16 @@ namespace
 		for( std::size_t i = 1; i < lightVerts.size(); i++ )
 		{
 			const BDPTVertex& lv = lightVerts[i];
-			if( lv.type != BDPTVertex::SURFACE || !lv.pMaterial ) {
+			if( lv.type != BDPTVertex::SURFACE && lv.type != BDPTVertex::MEDIUM ) {
+				continue;
+			}
+			if( lv.type == BDPTVertex::SURFACE && !lv.pMaterial ) {
 				continue;
 			}
 			if( !lv.isConnectible ) {
 				continue;
 			}
+			const bool lightIsMedium = ( lv.type == BDPTVertex::MEDIUM );
 
 			const BDPTVertex& lvPrev = lightVerts[i - 1];
 			Vector3 wiAtLight = Vector3Ops::mkVector3( lvPrev.position, lv.position );
@@ -1987,12 +2007,16 @@ namespace
 			for( std::size_t j = 1; j < eyeVerts.size(); j++ )
 			{
 				const BDPTVertex& ev = eyeVerts[j];
-				if( ev.type != BDPTVertex::SURFACE || !ev.pMaterial ) {
+				if( ev.type != BDPTVertex::SURFACE && ev.type != BDPTVertex::MEDIUM ) {
+					continue;
+				}
+				if( ev.type == BDPTVertex::SURFACE && !ev.pMaterial ) {
 					continue;
 				}
 				if( !ev.isConnectible ) {
 					continue;
 				}
+				const bool eyeIsMedium = ( ev.type == BDPTVertex::MEDIUM );
 
 				const BDPTVertex& evPrev = eyeVerts[j - 1];
 				Vector3 woAtEye = Vector3Ops::mkVector3( evPrev.position, ev.position );
@@ -2028,12 +2052,26 @@ namespace
 				// Merge geometry term: GEOMETRIC normals on both sides
 				// (the area-pdf <-> solid-angle Jacobian uses the actual
 				// surface element, not the BSDF-frame shading normal).
-				const Scalar cosAtLight = fabs( Vector3Ops::Dot( lv.geomNormal, lightToEye ) );
-				const Scalar cosAtEye   = fabs( Vector3Ops::Dot( ev.geomNormal, -lightToEye ) );
-				if( cosAtLight <= 0 || cosAtEye <= 0 ) {
+				// Medium vertices have no surface normal; omit cosine (use 1.0).
+				const Scalar cosAtLight = lightIsMedium ? Scalar( 1.0 ) : fabs( Vector3Ops::Dot( lv.geomNormal, lightToEye ) );
+				const Scalar cosAtEye   = eyeIsMedium   ? Scalar( 1.0 ) : fabs( Vector3Ops::Dot( ev.geomNormal, -lightToEye ) );
+				if( ( !lightIsMedium && cosAtLight <= 0 ) || ( !eyeIsMedium && cosAtEye <= 0 ) ) {
 					continue;
 				}
-				const Scalar G = ( cosAtLight * cosAtEye ) / distSq;
+
+				Scalar G = 0;
+				if( lightIsMedium && eyeIsMedium ) {
+					G = BDPTUtilities::GeometricTermMediumMedium( lv.position, ev.position );
+				} else if( lightIsMedium ) {
+					G = BDPTUtilities::GeometricTermSurfaceMedium( ev.position, ev.geomNormal, lv.position );
+				} else if( eyeIsMedium ) {
+					G = BDPTUtilities::GeometricTermSurfaceMedium( lv.position, lv.geomNormal, ev.position );
+				} else {
+					G = BDPTUtilities::GeometricTerm( lv.position, lv.geomNormal, ev.position, ev.geomNormal );
+				}
+				if( G <= 0 ) {
+					continue;
+				}
 
 				const Scalar lightBsdfDirPdfW =
 					RISE::PathValueOps::EvalPdfAtVertex<Tag>( lv, wiAtLight, lightToEye, tag );
@@ -2045,10 +2083,12 @@ namespace
 				const Scalar cameraBsdfRevPdfW =
 					RISE::PathValueOps::EvalPdfAtVertex<Tag>( ev, -lightToEye, woAtEye, tag );
 
-				const Scalar cameraBsdfDirPdfA =
-					BDPTUtilities::SolidAngleToArea( cameraBsdfDirPdfW, cosAtLight, distSq );
-				const Scalar lightBsdfDirPdfA =
-					BDPTUtilities::SolidAngleToArea( lightBsdfDirPdfW, cosAtEye, distSq );
+				const Scalar cameraBsdfDirPdfA = lightIsMedium
+					? BDPTUtilities::SolidAngleToAreaMedium( cameraBsdfDirPdfW, lv.sigma_t_scalar, distSq )
+					: BDPTUtilities::SolidAngleToArea( cameraBsdfDirPdfW, cosAtLight, distSq );
+				const Scalar lightBsdfDirPdfA = eyeIsMedium
+					? BDPTUtilities::SolidAngleToAreaMedium( lightBsdfDirPdfW, ev.sigma_t_scalar, distSq )
+					: BDPTUtilities::SolidAngleToArea( lightBsdfDirPdfW, cosAtEye, distSq );
 
 				const Scalar wLight = cameraBsdfDirPdfA
 					* ( norm.mMisVmWeightFactor
