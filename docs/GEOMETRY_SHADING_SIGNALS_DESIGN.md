@@ -1968,15 +1968,18 @@ is the comparison to beat.
    `ComputeSurfaceDerivatives(point, normal)` query, and a Bezier hit that
    needed the ray-facing winding-consistency flip) — see
    [DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md](DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md).
-3. **Displaced geometry: which curvature?** The baked path reports **only** the
-   displaced surface, at a fidelity bounded by tessellation. The analytic
-   escape hatch (`ComputeAnalyticalDerivatives`, `DisplacedGeometry.cpp:407+`)
-   can produce base (`smoothing = 1`) or displaced (`smoothing = 0`) curvature
-   tessellation-independently — but **only for analytic bases**, and only
-   `EllipsoidGeometry` and `DisplacedGeometry` override that method today.
-   Base and displaced curvature genuinely differ, and lookdev often wants the
-   *base* (wear follows the form, not the bumps). Unresolved; note it in the
-   descriptor rather than pretending there is one answer.
+3. ~~**Displaced geometry: which curvature?**~~ **RESOLVED 2026-09-22 (DL-13).**
+   Convention established and pinned in `tests/GeometryCurvatureConventionTest.cpp`
+   (52 checks, 0 failures; red: 48 passed, 1 failed):
+   - Ray intersections and shading expressions (`curv`, `curvR`) report the
+     displaced surface curvature by default (`smoothing=0`, what rays hit and
+     wear masks see).
+   - Base surface curvature is accessible via the analytical query
+     `ComputeAnalyticalDerivatives` at `smoothing=1` (or base geometry query
+     via `GetBaseGeometry()`), while `smoothing=0` evaluates the full displaced
+     analytic surface (verified against closed forms and finite-difference oracles).
+   - Documented explicitly in `displaced_geometry` chunk descriptor and
+     `DisplacedGeometry.h`.
 4. **Vertex-normal quality is loader-dependent** (`GLTFSceneImporter.cpp:2663-2724`
    carries authored normals; PLY may synthesize them). Mesh curvature quality
    follows. No fix proposed; document it.
