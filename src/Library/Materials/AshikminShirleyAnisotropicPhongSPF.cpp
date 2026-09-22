@@ -899,6 +899,64 @@ Scalar AshikminShirleyAnisotropicPhongSPF::PdfNM(
 // `NU`, `NV` and both reflectances are read at `nm`; no sampler draw
 // is consumed.
 //////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////
+// EvaluateLobeFNM -- DL-216.
+//
+// Evaluates the SELECTED lobe's own spectral BSDF value f_I(wo; nm)
+// in [1/sr], without multiplying by cosine and without dividing by
+// any sampling density.
+//////////////////////////////////////////////////////////////////////
+Scalar AshikminShirleyAnisotropicPhongSPF::EvaluateLobeFNM(
+	const RayIntersectionGeometric& ri,
+	const Vector3& outDir,
+	ScatteredRay::ScatRayType rayType,
+	Scalar nm,
+	const IORStack& /* ior_stack */
+	) const
+{
+	// Rebuild ScatterNM's sampling frame exactly (post-FlipW on a
+	// back-face hit -- DL-100).
+	OrthonormalBasis3D myonb = ri.onb;
+	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
+		myonb.FlipW();
+	}
+
+	const Scalar rho = GuardedGetColorNM( *pRs, ri, nm );
+
+	if( rayType == ScatteredRay::eRayDiffuse ) {
+		const Scalar cos_o_diff = Vector3Ops::Dot( outDir, myonb.w() );
+		const Scalar cos_i = Vector3Ops::Dot(
+			Vector3Ops::Normalize( -ri.ray.Dir() ), myonb.w() );
+		const Scalar fromK1 = 1.0 - pow( 1.0 - r_max(0.0, cos_o_diff) * 0.5, 5.0 );
+		const Scalar fromK2 = 1.0 - pow( 1.0 - r_max(0.0, cos_i) * 0.5, 5.0 );
+		static const Scalar diffuseNorm = 28.0 / 23.0;
+		return GuardedGetColorNM( *pRd, ri, nm ) * (1.0 - rho) * (diffuseNorm * fromK1 * fromK2) * INV_PI;
+	}
+
+	if( rayType != ScatteredRay::eRayReflection ) {
+		return -1;						// not a lobe this SPF emits
+	}
+
+	const Scalar NU = pNu->GetValueAtNM( ri, nm );
+	const Scalar NV = pNv->GetValueAtNM( ri, nm );
+
+	const Vector3 wi = Vector3Ops::Normalize( -ri.ray.Dir() );
+	const Vector3 k2 = Vector3Ops::Normalize( outDir );
+	const Vector3 h = Vector3Ops::Normalize( wi + k2 );
+
+	const Scalar hdotk = Vector3Ops::Dot( h, wi );
+	const Scalar hdotn = Vector3Ops::Dot( myonb.w(), h );
+	if( hdotk <= 0 || hdotn <= 0 ) {
+		return 0;						// a genuine zero, not "unimplemented"
+	}
+
+	Scalar diffuseFactor = 0, brdf = 0;
+	AshikminShirleyAnisotropicPhongBRDF::ComputeDiffuseSpecularFactors(
+		diffuseFactor, brdf, k2, ri, myonb.w(), myonb.u(), myonb.v(), NU, NV, rho );
+
+	return brdf;
+}
+
 Scalar AshikminShirleyAnisotropicPhongSPF::EvaluateKrayNM(
 	const RayIntersectionGeometric& ri,
 	const Vector3& outDir,
@@ -965,4 +1023,44 @@ Scalar AshikminShirleyAnisotropicPhongSPF::EvaluateKrayNM(
 
 	const Scalar cos_o = Vector3Ops::Dot( k2, myonb.w() );
 	return ( brdf / density ) * cos_o;
+}
+
+Scalar AshikminShirleyAnisotropicPhongSPF::EvaluateKrayNM(
+	const RayIntersectionGeometric& ri,
+	const Vector3& outDir,
+	ScatteredRay::ScatRayType rayType,
+	Scalar nm,
+	const IORStack& ior_stack,
+	Scalar pdfHero
+	) const
+{
+	if( pdfHero <= 0 ) {
+		return EvaluateKrayNM( ri, outDir, rayType, nm, ior_stack );
+	}
+
+	if( rayType == ScatteredRay::eRayDiffuse ) {
+		return EvaluateKrayNM( ri, outDir, rayType, nm, ior_stack );
+	}
+
+	if( rayType != ScatteredRay::eRayReflection ) {
+		return -1;
+	}
+
+	OrthonormalBasis3D myonb = ri.onb;
+	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
+		myonb.FlipW();
+	}
+
+	const Vector3 k2 = Vector3Ops::Normalize( outDir );
+	const Scalar cos_o = Vector3Ops::Dot( k2, myonb.w() );
+	if( cos_o <= 0 ) {
+		return 0;
+	}
+
+	const Scalar f = EvaluateLobeFNM( ri, outDir, rayType, nm, ior_stack );
+	if( f <= 0 ) {
+		return 0;
+	}
+
+	return ( f * cos_o ) / pdfHero;
 }

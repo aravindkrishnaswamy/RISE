@@ -133,6 +133,16 @@ namespace RISE
 				const IORStack& ior_stack
 				) const;
 
+			//! DL-216. The SELECTED lobe's own spectral BSDF value f_I(wo; nm)
+			//! in [1/sr], without cosine or density division.
+			Scalar EvaluateLobeFNM(
+				const RayIntersectionGeometric& ri,
+				const Vector3& outDir,
+				ScatteredRay::ScatRayType rayType,
+				Scalar nm,
+				const IORStack& ior_stack
+				) const;
+
 			/// HWSS companion evaluation: returns the exact krayNM
 			/// for the coat or diffuse lobe at the given wavelength.
 			/// Both lobes are direction-independent (krayNM depends
@@ -143,6 +153,17 @@ namespace RISE
 				ScatteredRay::ScatRayType rayType,
 				Scalar nm,
 				const IORStack& ior_stack
+				) const;
+
+			//! DL-216. Unbiased companion weight evaluated with the HERO
+			//! wavelength's sampling density: f_I(nm) * cos_o / pdfHero.
+			Scalar EvaluateKrayNM(
+				const RayIntersectionGeometric& ri,
+				const Vector3& outDir,
+				ScatteredRay::ScatRayType rayType,
+				Scalar nm,
+				const IORStack& ior_stack,
+				Scalar pdfHero
 				) const;
 		};
 	}

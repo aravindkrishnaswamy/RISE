@@ -332,6 +332,64 @@ void PolishedSPF::ScatterNM(
 //   diffuse: Rd(nm) * (1 - Rs(nm, theta_i))
 // where Rs is the Fresnel reflectance at the incident angle.
 //////////////////////////////////////////////////////////////////////
+Scalar PolishedSPF::EvaluateLobeFNM(
+	const RayIntersectionGeometric& ri,
+	const Vector3& outDir,
+	ScatteredRay::ScatRayType rayType,
+	Scalar nm,
+	const IORStack& ior_stack
+	) const
+{
+	const bool bBackface = Vector3Ops::Dot( ri.vGeomNormal, ri.ray.Dir() ) > 0;
+	const Vector3 n = bBackface ? -ri.vNormal : ri.vNormal;
+	Vector3 vRefracted = ri.ray.Dir();
+	Scalar Rs = 0.0;
+	const Scalar iorTop = ior_stack.top();
+	const Scalar iorCoat = pNt->GetValueAtNM( ri, nm );
+	if( Optics::CalculateRefractedRay( n, iorTop, iorCoat, vRefracted ) ) {
+		Rs = Optics::CalculateDielectricReflectance(
+			ri.ray.Dir(), vRefracted, n, iorTop, iorCoat );
+	}
+
+	if( rayType == ScatteredRay::eRayDiffuse ) {
+		return GuardedGetColorNM( *pRd, ri, nm ) * ( 1.0 - Rs ) * INV_PI;
+	}
+
+	if( rayType != ScatteredRay::eRayReflection ) {
+		return -1;
+	}
+
+	const Scalar scatfunc = pScat->GetValueAtNM( ri, nm );
+	const bool is_delta = bHG ? (scatfunc >= 1.0) : (scatfunc >= 1000000.0);
+	if( is_delta ) {
+		return -1;
+	}
+
+	const Vector3 woNorm = Vector3Ops::Normalize( outDir );
+	const Vector3 rv = Optics::CalculateReflectedRay( ri.ray.Dir(), n );
+	const Scalar cos_alpha = Vector3Ops::Dot( woNorm, rv );
+	if( cos_alpha <= 0.0 ) {
+		return 0;
+	}
+
+	Scalar pdf_specular = 0.0;
+	if( bHG ) {
+		const Scalar& g = scatfunc;
+		const Scalar denom = 1.0 + g*g - 2.0*g*cos_alpha;
+		pdf_specular = (1.0 - g*g) / (FOUR_PI * denom * sqrt(denom));
+	} else {
+		pdf_specular = (scatfunc + 1.0) / TWO_PI * pow(cos_alpha, scatfunc);
+	}
+
+	const Scalar cos_o = Vector3Ops::Dot( woNorm, n );
+	if( cos_o <= 0.0 ) {
+		return 0;
+	}
+
+	const Scalar kray = pTau->GetValueAtNM( ri, nm ) * Rs;
+	return ( kray * pdf_specular ) / cos_o;
+}
+
 Scalar PolishedSPF::EvaluateKrayNM(
 	const RayIntersectionGeometric& ri,
 	const Vector3& outDir,
@@ -363,6 +421,49 @@ Scalar PolishedSPF::EvaluateKrayNM(
 	}
 
 	return -1;
+}
+
+Scalar PolishedSPF::EvaluateKrayNM(
+	const RayIntersectionGeometric& ri,
+	const Vector3& outDir,
+	ScatteredRay::ScatRayType rayType,
+	Scalar nm,
+	const IORStack& ior_stack,
+	Scalar pdfHero
+	) const
+{
+	if( pdfHero <= 0 ) {
+		return EvaluateKrayNM( ri, outDir, rayType, nm, ior_stack );
+	}
+
+	if( rayType == ScatteredRay::eRayDiffuse ) {
+		return EvaluateKrayNM( ri, outDir, rayType, nm, ior_stack );
+	}
+
+	if( rayType != ScatteredRay::eRayReflection ) {
+		return -1;
+	}
+
+	const Scalar scatfunc = pScat->GetValueAtNM( ri, nm );
+	const bool is_delta = bHG ? (scatfunc >= 1.0) : (scatfunc >= 1000000.0);
+	if( is_delta ) {
+		return EvaluateKrayNM( ri, outDir, rayType, nm, ior_stack );
+	}
+
+	const bool bBackface = Vector3Ops::Dot( ri.vGeomNormal, ri.ray.Dir() ) > 0;
+	const Vector3 n = bBackface ? -ri.vNormal : ri.vNormal;
+	const Vector3 woNorm = Vector3Ops::Normalize( outDir );
+	const Scalar cos_o = Vector3Ops::Dot( woNorm, n );
+	if( cos_o <= 0.0 ) {
+		return 0;
+	}
+
+	const Scalar f = EvaluateLobeFNM( ri, outDir, rayType, nm, ior_stack );
+	if( f <= 0.0 ) {
+		return 0;
+	}
+
+	return ( f * cos_o ) / pdfHero;
 }
 
 // Computes the Polished SPF PDF for a given direction

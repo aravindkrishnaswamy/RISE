@@ -1197,6 +1197,66 @@ Scalar SchlickSPF::PdfNM(
 // consumed, so this is safe to call once per companion wavelength per
 // bounce.
 //////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////
+// EvaluateLobeFNM -- DL-216.
+//
+// Evaluates the SELECTED lobe's own spectral BSDF value f_I(wo; nm)
+// in [1/sr], without multiplying by cosine and without dividing by
+// any sampling density.
+//////////////////////////////////////////////////////////////////////
+Scalar SchlickSPF::EvaluateLobeFNM(
+	const RayIntersectionGeometric& ri,
+	const Vector3& outDir,
+	ScatteredRay::ScatRayType rayType,
+	Scalar nm,
+	const IORStack& /* ior_stack */
+	) const
+{
+	if( rayType == ScatteredRay::eRayDiffuse ) {
+		return GuardedGetColorNM( *pDiffuse, ri, nm ) * INV_PI;
+	}
+
+	if( rayType != ScatteredRay::eRayReflection ) {
+		return -1;						// not a lobe this SPF emits
+	}
+
+	// Rebuild ScatterNM's sampling frame exactly (post-FlipW on a
+	// back-face hit -- DL-100).
+	OrthonormalBasis3D myonb = ri.onb;
+	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
+		myonb.FlipW();
+	}
+
+	const Vector3 wi = Vector3Ops::Normalize( -ri.ray.Dir() );
+	const Vector3 woNorm = Vector3Ops::Normalize( outDir );
+	const Vector3 h = Vector3Ops::Normalize( wi + woNorm );
+
+	const Scalar hdotk = Vector3Ops::Dot( h, wi );
+	const Scalar hdotn = Vector3Ops::Dot( h, myonb.w() );
+	const Scalar cos_o = Vector3Ops::Dot( woNorm, myonb.w() );
+	if( hdotk <= 0 || hdotn <= 0 || cos_o <= 0 ) {
+		return 0;
+	}
+
+	const Scalar isotropyNM = pIsotropy->GetValueAtNM( ri, nm );
+	Scalar roughnessNM = pRoughness->GetValueAtNM( ri, nm );
+	if( ri.glossyFilterWidth > 0 ) {
+		roughnessNM = r_min( roughnessNM + ri.glossyFilterWidth, Scalar(1.0) );
+	}
+	const Scalar krayRatio = SchlickKrayRatioFromH(
+		h, wi, myonb, Vector3Ops::Dot( myonb.w(), wi ), roughnessNM, isotropyNM );
+	if( krayRatio <= 0 ) {
+		return 0;
+	}
+
+	const Scalar fresnel = ::pow( 1.0 - hdotk, 5 );
+	const Scalar rho = GuardedGetColorNM( *pSpecular, ri, nm );
+	const Scalar kray = ( rho + (1.0 - rho) * fresnel ) * krayRatio;
+	const Scalar pdf = ComputeSchlickSpecularPdf( ri, myonb, woNorm, roughnessNM, isotropyNM );
+
+	return ( kray * pdf ) / cos_o;
+}
+
 Scalar SchlickSPF::EvaluateKrayNM(
 	const RayIntersectionGeometric& ri,
 	const Vector3& outDir,
@@ -1243,4 +1303,44 @@ Scalar SchlickSPF::EvaluateKrayNM(
 	const Scalar fresnel = ::pow( 1.0 - hdotk, 5 );
 	const Scalar rho = GuardedGetColorNM( *pSpecular, ri, nm );
 	return ( rho + (1.0 - rho) * fresnel ) * krayRatio;
+}
+
+Scalar SchlickSPF::EvaluateKrayNM(
+	const RayIntersectionGeometric& ri,
+	const Vector3& outDir,
+	ScatteredRay::ScatRayType rayType,
+	Scalar nm,
+	const IORStack& ior_stack,
+	Scalar pdfHero
+	) const
+{
+	if( pdfHero <= 0 ) {
+		return EvaluateKrayNM( ri, outDir, rayType, nm, ior_stack );
+	}
+
+	if( rayType == ScatteredRay::eRayDiffuse ) {
+		return GuardedGetColorNM( *pDiffuse, ri, nm );
+	}
+
+	if( rayType != ScatteredRay::eRayReflection ) {
+		return -1;
+	}
+
+	OrthonormalBasis3D myonb = ri.onb;
+	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
+		myonb.FlipW();
+	}
+
+	const Vector3 woNorm = Vector3Ops::Normalize( outDir );
+	const Scalar cos_o = Vector3Ops::Dot( woNorm, myonb.w() );
+	if( cos_o <= 0 ) {
+		return 0;
+	}
+
+	const Scalar f = EvaluateLobeFNM( ri, outDir, rayType, nm, ior_stack );
+	if( f <= 0 ) {
+		return 0;
+	}
+
+	return ( f * cos_o ) / pdfHero;
 }

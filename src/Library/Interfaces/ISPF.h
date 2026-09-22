@@ -308,6 +308,28 @@ namespace RISE
 		///    premise.  Do not "fix" this in isolation: closing it means
 		///    carrying the hero density alongside (an extra argument),
 		///    and is tracked as DL-216.
+		/// DL-216: Evaluates the selected lobe's spectral BSDF value
+		/// f_I(wo; nm) [1/sr], without multiplying by cosine and without
+		/// dividing by any sampling density.
+		///
+		/// BDPTIntegrator::RecomputeSubpathThroughputNM uses this method to
+		/// form the exact throughput ratio f_I(lambda_c) / f_I(lambda_h),
+		/// where the hero sampling density cancels out completely, avoiding
+		/// unnecessary density evaluations.
+		///
+		/// @return f_I >= 0 on success, or < 0 if unimplemented or
+		///         this lobe is unsupported.
+		virtual Scalar EvaluateLobeFNM(
+			const RayIntersectionGeometric& ri,
+			const Vector3& outDir,
+			ScatteredRay::ScatRayType rayType,
+			Scalar nm,
+			const IORStack& ior_stack
+			) const
+		{
+			return -1;
+		}
+
 		virtual Scalar EvaluateKrayNM(
 			const RayIntersectionGeometric& ri,
 			const Vector3& outDir,
@@ -317,6 +339,32 @@ namespace RISE
 			) const
 		{
 			return -1;
+		}
+
+		/// DL-216: 6-parameter overload takes @a pdfHero (the sampling
+		/// density p_I(wo; lambda_h) the direction was drawn from at the
+		/// hero wavelength). When pdfHero > 0, returns the unbiased companion
+		/// weight f_I(wo; nm) * |cos(wo, n)| / pdfHero.
+		/// When pdfHero <= 0, forwards to the 5-parameter EvaluateKrayNM,
+		/// preserving backwards compatibility with legacy callers.
+		virtual Scalar EvaluateKrayNM(
+			const RayIntersectionGeometric& ri,
+			const Vector3& outDir,
+			ScatteredRay::ScatRayType rayType,
+			Scalar nm,
+			const IORStack& ior_stack,
+			const Scalar pdfHero
+			) const
+		{
+			if( pdfHero <= 0 ) {
+				return EvaluateKrayNM( ri, outDir, rayType, nm, ior_stack );
+			}
+			const Scalar f = EvaluateLobeFNM( ri, outDir, rayType, nm, ior_stack );
+			if( f >= 0 ) {
+				const Scalar cos_o = fabs( Vector3Ops::Dot( Vector3Ops::Normalize( outDir ), ri.vNormal ) );
+				return ( f * cos_o ) / pdfHero;
+			}
+			return EvaluateKrayNM( ri, outDir, rayType, nm, ior_stack );
 		}
 
 		/// DL-125.  The class name to report when the HWSS companion

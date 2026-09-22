@@ -639,6 +639,41 @@ Scalar IsotropicPhongSPF::PdfNM(
 // FRAME: `n` is picked by the GEOMETRIC normal's side, matching
 // ScatterNM (NOT the FlipW idiom the other four use).
 //////////////////////////////////////////////////////////////////////
+Scalar IsotropicPhongSPF::EvaluateLobeFNM(
+	const RayIntersectionGeometric& ri,
+	const Vector3& outDir,
+	ScatteredRay::ScatRayType rayType,
+	Scalar nm,
+	const IORStack& /* ior_stack */
+	) const
+{
+	if( rayType == ScatteredRay::eRayDiffuse ) {
+		return GuardedGetColorNM( *pRd, ri, nm ) * INV_PI;
+	}
+
+	if( rayType != ScatteredRay::eRayReflection ) {
+		return -1;
+	}
+
+	const Scalar rdotn = Vector3Ops::Dot( ri.ray.Dir(), ri.vGeomNormal );
+	const Vector3 n = rdotn > 0 ? -ri.onb.w() : ri.onb.w();
+
+	const Vector3 wo = Vector3Ops::Normalize( outDir );
+	const Scalar cos_o = Vector3Ops::Dot( wo, n );
+	if( cos_o <= 0 ) {
+		return 0;
+	}
+
+	const Vector3 reflected = Optics::CalculateReflectedRay( ri.ray.Dir(), n );
+	const Scalar cosAlpha = Vector3Ops::Dot( wo, Vector3Ops::Normalize( reflected ) );
+	if( cosAlpha <= 0 ) {
+		return 0;
+	}
+
+	const Scalar N = pExponent->GetValueAtNM( ri, nm );
+	return GuardedGetColorNM( *pRs, ri, nm ) * ((N + 2.0) * (INV_PI * 0.5)) * pow( cosAlpha, N );
+}
+
 Scalar IsotropicPhongSPF::EvaluateKrayNM(
 	const RayIntersectionGeometric& ri,
 	const Vector3& outDir,
@@ -663,3 +698,40 @@ Scalar IsotropicPhongSPF::EvaluateKrayNM(
 
 	return GuardedGetColorNM( *pRs, ri, nm ) * ((N+2.0)/(N+1.0)) * r_max( cos_o, 0.0 );
 }
+
+Scalar IsotropicPhongSPF::EvaluateKrayNM(
+	const RayIntersectionGeometric& ri,
+	const Vector3& outDir,
+	ScatteredRay::ScatRayType rayType,
+	Scalar nm,
+	const IORStack& ior_stack,
+	Scalar pdfHero
+	) const
+{
+	if( pdfHero <= 0 ) {
+		return EvaluateKrayNM( ri, outDir, rayType, nm, ior_stack );
+	}
+
+	if( rayType == ScatteredRay::eRayDiffuse ) {
+		return GuardedGetColorNM( *pRd, ri, nm );
+	}
+
+	if( rayType != ScatteredRay::eRayReflection ) {
+		return -1;
+	}
+
+	const Scalar rdotn = Vector3Ops::Dot( ri.ray.Dir(), ri.vGeomNormal );
+	const Vector3 n = rdotn > 0 ? -ri.onb.w() : ri.onb.w();
+	const Scalar cos_o = Vector3Ops::Dot( Vector3Ops::Normalize( outDir ), n );
+	if( cos_o <= 0 ) {
+		return 0;
+	}
+
+	const Scalar f = EvaluateLobeFNM( ri, outDir, rayType, nm, ior_stack );
+	if( f <= 0 ) {
+		return 0;
+	}
+
+	return ( f * cos_o ) / pdfHero;
+}
+

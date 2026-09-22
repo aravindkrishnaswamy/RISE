@@ -1335,6 +1335,43 @@ Scalar TranslucentSPF::Pdf(
 //! (`GuardedGetColorNM` on `ref`/`tau`; `GetValueAtNM` on
 //! `ext`/`scattering`), which is exactly what the companion lane wants
 //! and what the `value*cos/pdf` fallback could only approximate.
+//////////////////////////////////////////////////////////////////////
+// EvaluateLobeFNM -- DL-216.
+//
+// Evaluates the SELECTED lobe's own spectral BSDF value f_I(wo; nm)
+// in [1/sr], without multiplying by cosine and without dividing by
+// any sampling density.
+//////////////////////////////////////////////////////////////////////
+Scalar TranslucentSPF::EvaluateLobeFNM(
+	const RayIntersectionGeometric& ri,
+	const Vector3& outDir,
+	ScatteredRay::ScatRayType rayType,
+	Scalar nm,
+	const IORStack& ior_stack
+	) const
+{
+	if( rayType != ScatteredRay::eRayDiffuse && rayType != ScatteredRay::eRayTranslucent ) {
+		return -1;
+	}
+
+	LobeSet set;
+	BuildLobeSet( *pRefFront, *pTrans, *pExtinction, *pN, *pScat,
+		ri, &ior_stack, true, nm, set );
+
+	const bool bWantPhong = ( rayType == ScatteredRay::eRayTranslucent );
+	const Vector3 wo = Vector3Ops::Normalize( outDir );
+	for( int i = 0; i < set.count; i++ ) {
+		if( set.lobes[i].isPhong == bWantPhong ) {
+			Scalar pdf = 0, fOverKray = 0;
+			if( EvalLobe( set.lobes[i], wo, pdf, fOverKray ) ) {
+				return set.lobes[i].krayNM * fOverKray;
+			}
+			return 0;
+		}
+	}
+	return 0;
+}
+
 Scalar TranslucentSPF::EvaluateKrayNM(
 	const RayIntersectionGeometric& ri,
 	const Vector3& /*outDir*/,
@@ -1363,6 +1400,41 @@ Scalar TranslucentSPF::EvaluateKrayNM(
 	// The lobe this companion is asking about is not emitted at this
 	// wavelength (a zero painter, a fully extinguished segment, a zero
 	// scattering split).  That is a real answer, not a decline.
+	return 0;
+}
+
+Scalar TranslucentSPF::EvaluateKrayNM(
+	const RayIntersectionGeometric& ri,
+	const Vector3& outDir,
+	ScatteredRay::ScatRayType rayType,
+	Scalar nm,
+	const IORStack& ior_stack,
+	Scalar pdfHero
+	) const
+{
+	if( pdfHero <= 0 ) {
+		return EvaluateKrayNM( ri, outDir, rayType, nm, ior_stack );
+	}
+
+	if( rayType != ScatteredRay::eRayDiffuse && rayType != ScatteredRay::eRayTranslucent ) {
+		return -1;
+	}
+
+	LobeSet set;
+	BuildLobeSet( *pRefFront, *pTrans, *pExtinction, *pN, *pScat,
+		ri, &ior_stack, true, nm, set );
+
+	const bool bWantPhong = ( rayType == ScatteredRay::eRayTranslucent );
+	const Vector3 wo = Vector3Ops::Normalize( outDir );
+	for( int i = 0; i < set.count; i++ ) {
+		if( set.lobes[i].isPhong == bWantPhong ) {
+			Scalar pdf = 0, fOverKray = 0;
+			if( EvalLobe( set.lobes[i], wo, pdf, fOverKray ) ) {
+				return ( set.lobes[i].krayNM * pdf ) / pdfHero;
+			}
+			return 0;
+		}
+	}
 	return 0;
 }
 

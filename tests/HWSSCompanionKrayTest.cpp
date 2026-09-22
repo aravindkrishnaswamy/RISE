@@ -106,6 +106,7 @@
 #include "../src/Library/Utilities/RandomNumbers.h"
 #include "../src/Library/Utilities/IndependentSampler.h"
 #include "../src/Library/Utilities/GeometricUtilities.h"
+#include "../src/Library/Utilities/Optics.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Interfaces/ISPF.h"
 #include "../src/Library/Interfaces/IBSDF.h"
@@ -301,6 +302,163 @@ static void SectionA( const Subject& s, const IORStack& iorStack, unsigned int n
 		"DL-125 section A (" + s.name + "): enough lobes exercised" );
 	Check( worst < 1e-9,
 		"DL-125 section A (" + s.name + "): EvaluateKrayNM reproduces ScatterNM's own krayNM" );
+}
+
+//////////////////////////////////////////////////////////////////////
+// SECTION A2 (DL-216) -- cross-wavelength with hero sampling density.
+//
+// Under HWSS, the companion throughput weight for direction wo drawn
+// from hero conditional density p_I(wo; lambda_h) is:
+//     W_I(lambda_c) = f_I(wo; lambda_c) * |cos(wo, n)| / p_I(wo; lambda_h)
+// When shape parameters (roughness, alpha, exponent, etc.) vary across
+// wavelengths, p_I(lambda_c) != p_I(lambda_h), so dividing by
+// p_I(lambda_c) (the legacy EvaluateKrayNM convention) biases the weight by
+//     shipped / unbiased = p_I(lambda_h) / p_I(lambda_c).
+//
+// This section tests:
+//   1. EvaluateKrayNM(..., sr.pdf) accounts for the hero density sr.pdf.
+//   2. EvaluateLobeFNM evaluates f_I(wo; nm) without density division.
+//   3. For IsotropicPhongSPF, verifies exact agreement with closed-form
+//      unbiased companion weight and BSDF ratio f(lambda_c)/f(lambda_h).
+//   4. W_I(lambda_c) * p_I(lambda_h) == f_I(lambda_c) * cos(wo, n).
+//////////////////////////////////////////////////////////////////////
+static void SectionA2_HeroDensity(
+	const Subject& s,
+	const IORStack& iorStack,
+	unsigned int nDraws,
+	const IPainter* pRsPainter = 0,
+	const IScalarPainter* pExpPainter = 0
+	)
+{
+	double worstUnbiasedDiff = 0;
+	double worstFRatioDiff = 0;
+	double worstProductDiff = 0;
+	double minShippedOverUnbiased = 1e9;
+	double maxShippedOverUnbiased = 0;
+	unsigned int nChecked = 0;
+	unsigned int nDeclined = 0;
+	unsigned int nCheckedFRatio = 0;
+	unsigned int nCheckedProd = 0;
+
+	const Scalar heroNM = 550.0;
+
+	for( int li = 0; li < 3; li++ ) {
+		if( kLambdas[li] == heroNM ) continue;
+		const Scalar compNM = kLambdas[li];
+
+		for( int di = 0; di < 3; di++ ) {
+			const RayIntersectionGeometric ri = MakeIntersection( kDegrees[di] * PI / 180.0 );
+			RandomNumberGenerator rng( 9901u + li * 43u + di * 17u );
+			IndependentSampler sampler( rng );
+
+			for( unsigned int k = 0; k < nDraws; k++ ) {
+				ScatteredRayContainer scattered;
+				s.spf->ScatterNM( ri, sampler, heroNM, scattered, iorStack );
+
+				for( unsigned int i = 0; i < scattered.Count(); i++ ) {
+					const ScatteredRay& sr = scattered[i];
+					if( sr.isDelta || sr.pdf <= 0 ) continue;
+
+					// 1. Evaluate companion weight with hero density passed
+					const Scalar gotUnbiased = s.spf->EvaluateKrayNM(
+						ri, sr.ray.Dir(), sr.type, compNM, iorStack, sr.pdf );
+					if( gotUnbiased < 0 ) nDeclined++;
+
+					// 2. Evaluate pure lobe BSDF query f_I(wo; lambda)
+					const Scalar fComp = s.spf->EvaluateLobeFNM(
+						ri, sr.ray.Dir(), sr.type, compNM, iorStack );
+					const Scalar fHero = s.spf->EvaluateLobeFNM(
+						ri, sr.ray.Dir(), sr.type, heroNM, iorStack );
+
+					if( fComp < 0 || fHero < 0 ) nDeclined++;
+
+					// 3. For IsotropicPhongSPF, verify exact closed-form
+					if( pExpPainter && pRsPainter ) {
+						const Scalar rdotn = Vector3Ops::Dot( ri.ray.Dir(), ri.vGeomNormal );
+						const Vector3 n = rdotn > 0 ? -ri.onb.w() : ri.onb.w();
+						const Vector3 wo = Vector3Ops::Normalize( sr.ray.Dir() );
+						const Scalar cos_o = Vector3Ops::Dot( wo, n );
+
+						if( sr.type == ScatteredRay::eRayReflection && cos_o > 0 ) {
+							const Vector3 reflected = Optics::CalculateReflectedRay( ri.ray.Dir(), n );
+							const Scalar cosAlpha = Vector3Ops::Dot( wo, Vector3Ops::Normalize( reflected ) );
+							if( cosAlpha > 0 ) {
+								const Scalar Nh = pExpPainter->GetValueAtNM( ri, heroNM );
+								const Scalar Nc = pExpPainter->GetValueAtNM( ri, compNM );
+								const Scalar RsHero = GuardedGetColorNM( *pRsPainter, ri, heroNM );
+								const Scalar RsComp = GuardedGetColorNM( *pRsPainter, ri, compNM );
+
+								// Closed-form unbiased companion weight:
+								// W_S(lc) = Rs(lc) * ((Nc+2)/(Nh+1)) * cos^(Nc-Nh)(alpha) * cos_o
+								const Scalar expectedUnbiased = RsComp * ((Nc + 2.0)/(Nh + 1.0)) *
+									pow( cosAlpha, Nc - Nh ) * cos_o;
+
+								if( gotUnbiased >= 0 ) {
+									const double dU = RelDiff( gotUnbiased, expectedUnbiased );
+									if( dU > worstUnbiasedDiff ) worstUnbiasedDiff = dU;
+								}
+
+								// Closed-form BSDF ratio f(lc) / f(lh):
+								const Scalar expectedFRatio = (RsComp / RsHero) * ((Nc + 2.0)/(Nh + 2.0)) *
+									pow( cosAlpha, Nc - Nh );
+								if( fHero > 0 && fComp >= 0 ) {
+									const Scalar gotFRatio = fComp / fHero;
+									const double dF = RelDiff( gotFRatio, expectedFRatio );
+									if( dF > worstFRatioDiff ) worstFRatioDiff = dF;
+									nCheckedFRatio++;
+								}
+
+								// Measure shipped (legacy 5-arg EvaluateKrayNM) vs unbiased ratio:
+								const Scalar krayLegacy = s.spf->EvaluateKrayNM(
+									ri, sr.ray.Dir(), sr.type, compNM, iorStack );
+								if( expectedUnbiased > 1e-12 ) {
+									const double shippedOverUnbiased = krayLegacy / expectedUnbiased;
+									if( shippedOverUnbiased < minShippedOverUnbiased ) minShippedOverUnbiased = shippedOverUnbiased;
+									if( shippedOverUnbiased > maxShippedOverUnbiased ) maxShippedOverUnbiased = shippedOverUnbiased;
+								}
+							}
+						}
+					}
+
+					// 4. Fundamental identity: W_I(lc) * p_I(lh) == f_I(lc) * cos_o
+					if( gotUnbiased >= 0 && fComp >= 0 ) {
+						const Scalar cos_o_gen = fabs( Vector3Ops::Dot( Vector3Ops::Normalize( sr.ray.Dir() ), ri.vNormal ) );
+						const double dProd = RelDiff( gotUnbiased * sr.pdf, fComp * cos_o_gen );
+						if( dProd > worstProductDiff ) worstProductDiff = dProd;
+						nCheckedProd++;
+					}
+
+					if( gotUnbiased >= 0 ) nChecked++;
+				}
+			}
+		}
+	}
+
+	std::cout << "   " << std::setw( 42 ) << std::left << s.name << std::right
+	          << "  checked " << std::setw( 6 ) << nChecked
+	          << "  declined " << std::setw( 6 ) << nDeclined;
+	if( pExpPainter && pRsPainter ) {
+		std::cout << "  worst unbiased diff " << std::scientific << std::setprecision( 3 ) << worstUnbiasedDiff
+		          << "  worst f-ratio diff " << worstFRatioDiff
+		          << "  legacy/unbiased [" << std::fixed << std::setprecision( 4 )
+		          << minShippedOverUnbiased << ", " << maxShippedOverUnbiased << "]";
+	} else {
+		std::cout << "  worst prod diff " << std::scientific << std::setprecision( 3 ) << worstProductDiff;
+	}
+	std::cout << std::fixed << std::endl;
+
+	Check( nDeclined == 0,
+		"DL-216 section A2 (" + s.name + "): EvaluateKrayNM(..., pdfHero) and EvaluateLobeFNM answer every lobe" );
+	Check( nChecked > 300,
+		"DL-216 section A2 (" + s.name + "): enough companion queries exercised" );
+	if( pExpPainter && pRsPainter ) {
+		Check( worstUnbiasedDiff < 1e-9,
+			"DL-216 section A2 (" + s.name + "): EvaluateKrayNM(..., pdfHero) matches analytical unbiased weight" );
+		Check( nCheckedFRatio > 300 && worstFRatioDiff < 1e-9,
+			"DL-216 section A2 (" + s.name + "): EvaluateLobeFNM ratio matches analytical BSDF ratio f(lc)/f(lh)" );
+	}
+	Check( nCheckedProd > 300 && worstProductDiff < 1e-9,
+		"DL-216 section A2 (" + s.name + "): W_I(lc) * p_I(lh) == f_I(lc) * cos_o" );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -634,6 +792,15 @@ int main()
 		rSubjects.push_back( MakeSubject( "IsotropicPhongSPF (lambda-varying shape)", ipR, 0, diff, false, false ) );
 		rSubjects.push_back( MakeSubject( "AshikminShirleyAnisotropicPhongSPF (lambda-varying shape)", asR, 0, diff, false, false ) );
 		for( size_t i = 0; i < rSubjects.size(); i++ ) SectionA( rSubjects[i], iorStack, 400 );
+
+		std::cout << std::endl
+		          << "-- Section A2 (DL-216): cross-wavelength with hero sampling density"
+		          << std::endl;
+		for( size_t i = 0; i < rSubjects.size(); i++ ) {
+			const IPainter* pRs = ( i == 3 ) ? spec : 0;
+			const IScalarPainter* pExp = ( i == 3 ) ? rExp : 0;
+			SectionA2_HeroDensity( rSubjects[i], iorStack, 400, pRs, pExp );
+		}
 	}
 
 	//----------------------------------------------------------------

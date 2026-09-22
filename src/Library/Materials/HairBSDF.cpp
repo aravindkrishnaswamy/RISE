@@ -1555,6 +1555,26 @@ Scalar HairSPF::PdfNM(
 	return Pdf( ri, wo, ior_stack );
 }
 
+Scalar HairSPF::EvaluateLobeFNM(
+	const RayIntersectionGeometric& ri,
+	const Vector3& outDir,
+	ScatteredRay::ScatRayType rayType,
+	Scalar nm,
+	const IORStack& /*ior_stack*/
+	) const
+{
+	if( rayType != ScatteredRay::eRayReflection ) {
+		return -1;			// not one of ours; let the caller fall back
+	}
+
+	Resolved R;
+	Resolve( ri, R );
+
+	Scalar fsum[3];
+	EvalFsum( ri, R, outDir, true, nm, fsum );
+	return fsum[0];
+}
+
 Scalar HairSPF::EvaluateKrayNM(
 	const RayIntersectionGeometric& ri,
 	const Vector3& outDir,
@@ -1584,4 +1604,29 @@ Scalar HairSPF::EvaluateKrayNM(
 	Scalar fsum[3];
 	EvalFsum( ri, R, outDir, true, nm, fsum );
 	return fsum[0] / pdf;
+}
+
+Scalar HairSPF::EvaluateKrayNM(
+	const RayIntersectionGeometric& ri,
+	const Vector3& outDir,
+	ScatteredRay::ScatRayType rayType,
+	Scalar nm,
+	const IORStack& ior_stack,
+	Scalar pdfHero
+	) const
+{
+	if( pdfHero <= 0 ) {
+		return EvaluateKrayNM( ri, outDir, rayType, nm, ior_stack );
+	}
+
+	if( rayType != ScatteredRay::eRayReflection ) {
+		return -1;
+	}
+
+	const Scalar f = EvaluateLobeFNM( ri, outDir, rayType, nm, ior_stack );
+	if( f <= 0 ) {
+		return 0;
+	}
+
+	return f / pdfHero;
 }
