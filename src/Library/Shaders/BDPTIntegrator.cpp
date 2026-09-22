@@ -2442,13 +2442,17 @@ namespace {
 							entryV.normal = bssrdf.entryNormal;
 							entryV.geomNormal = bssrdf.entryGeomNormal;
 							entryV.onb = bssrdf.entryONB;
-							// derivatives / signals / txFootprint stay at their
-							// defaults here: the entry point comes from
-							// BSSRDFSampling::SampleResult (position, normals, ONB
-							// only), not from a stamped hit -- the same hand-built
-							// record PT uses, so this is integrator-consistent and
-							// not a PT-vs-BDPT disagreement.  Disclosed residual:
-							// docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §10.
+							// DL-22: forward live derivatives, signals, texture coordinates,
+							// and vertex color from BSSRDFSampling::SampleResult.
+							entryV.derivatives = bssrdf.derivatives;
+							entryV.signals = bssrdf.signals;
+							entryV.txFootprint = bssrdf.txFootprint;
+							entryV.ptCoord = bssrdf.ptCoord;
+							entryV.ptCoord1 = bssrdf.ptCoord1;
+							entryV.bHasTexCoord1 = bssrdf.bHasTexCoord1;
+							entryV.ptObjIntersec = bssrdf.ptObjIntersec;
+							entryV.vColor = bssrdf.vColor;
+							entryV.bHasVertexColor = bssrdf.bHasVertexColor;
 							entryV.pMaterial = ri.pMaterial;
 							entryV.pObject = ri.pObject;
 							entryV.pMediumObject = pMedObj_eye;
@@ -2590,13 +2594,17 @@ namespace {
 							entryV.normal = bssrdf.entryNormal;
 							entryV.geomNormal = bssrdf.entryGeomNormal;
 							entryV.onb = bssrdf.entryONB;
-							// derivatives / signals / txFootprint stay at their
-							// defaults here: the entry point comes from
-							// BSSRDFSampling::SampleResult (position, normals, ONB
-							// only), not from a stamped hit -- the same hand-built
-							// record PT uses, so this is integrator-consistent and
-							// not a PT-vs-BDPT disagreement.  Disclosed residual:
-							// docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §10.
+							// DL-22: forward live derivatives, signals, texture coordinates,
+							// and vertex color from RandomWalkSSS::SampleExit.
+							entryV.derivatives = bssrdf.derivatives;
+							entryV.signals = bssrdf.signals;
+							entryV.txFootprint = bssrdf.txFootprint;
+							entryV.ptCoord = bssrdf.ptCoord;
+							entryV.ptCoord1 = bssrdf.ptCoord1;
+							entryV.bHasTexCoord1 = bssrdf.bHasTexCoord1;
+							entryV.ptObjIntersec = bssrdf.ptObjIntersec;
+							entryV.vColor = bssrdf.vColor;
+							entryV.bHasVertexColor = bssrdf.bHasVertexColor;
 							entryV.pMaterial = ri.pMaterial;
 							entryV.pObject = ri.pObject;
 							entryV.pMediumObject = pMedObj_eye;
@@ -6570,12 +6578,17 @@ unsigned int GenerateLightSubpathImpl(
 						entryV.normal = bssrdf.entryNormal;
 						entryV.geomNormal = bssrdf.entryGeomNormal;
 						entryV.onb = bssrdf.entryONB;
-						// derivatives / signals / txFootprint stay at their
-						// defaults here -- see the eye-subpath BSSRDF entry
-						// sites: a SampleResult is not a stamped hit, PT builds
-						// its entry record the same way, and the residual is
-						// disclosed in
-						// docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §10.
+						// DL-22: forward live derivatives, signals, texture coordinates,
+						// and vertex color from BSSRDFSampling::SampleResult.
+						entryV.derivatives = bssrdf.derivatives;
+						entryV.signals = bssrdf.signals;
+						entryV.txFootprint = bssrdf.txFootprint;
+						entryV.ptCoord = bssrdf.ptCoord;
+						entryV.ptCoord1 = bssrdf.ptCoord1;
+						entryV.bHasTexCoord1 = bssrdf.bHasTexCoord1;
+						entryV.ptObjIntersec = bssrdf.ptObjIntersec;
+						entryV.vColor = bssrdf.vColor;
+						entryV.bHasVertexColor = bssrdf.bHasVertexColor;
 						entryV.pMaterial = ri.pMaterial;
 						entryV.pObject = ri.pObject;
 						entryV.pMediumObject = pMedObj_light;
@@ -6719,12 +6732,17 @@ unsigned int GenerateLightSubpathImpl(
 						entryV.normal = bssrdf.entryNormal;
 						entryV.geomNormal = bssrdf.entryGeomNormal;
 						entryV.onb = bssrdf.entryONB;
-						// derivatives / signals / txFootprint stay at their
-						// defaults here -- see the eye-subpath BSSRDF entry
-						// sites: a SampleResult is not a stamped hit, PT builds
-						// its entry record the same way, and the residual is
-						// disclosed in
-						// docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §10.
+						// DL-22: forward live derivatives, signals, texture coordinates,
+						// and vertex color from RandomWalkSSS::SampleExit.
+						entryV.derivatives = bssrdf.derivatives;
+						entryV.signals = bssrdf.signals;
+						entryV.txFootprint = bssrdf.txFootprint;
+						entryV.ptCoord = bssrdf.ptCoord;
+						entryV.ptCoord1 = bssrdf.ptCoord1;
+						entryV.bHasTexCoord1 = bssrdf.bHasTexCoord1;
+						entryV.ptObjIntersec = bssrdf.ptObjIntersec;
+						entryV.vColor = bssrdf.vColor;
+						entryV.bHasVertexColor = bssrdf.bHasVertexColor;
 						entryV.pMaterial = ri.pMaterial;
 						entryV.pObject = ri.pObject;
 						entryV.pMediumObject = pMedObj_light;

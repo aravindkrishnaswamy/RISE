@@ -309,6 +309,7 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 			const Point3 exitPoint = exitRI.geometric.ptIntersection;
 			Vector3 exitNormal = exitRI.geometric.vNormal;
 			Vector3 exitGeomNormal = exitRI.geometric.vGeomNormal;
+			const Vector3 rawNormal = exitNormal;
 
 			// Ensure exit normal points outward (away from interior).
 			// Side-of-surface decision uses the GEOMETRIC normal — the
@@ -433,6 +434,36 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 			result.entryNormal = exitNormal;
 			result.entryGeomNormal = exitGeomNormal;
 			result.entryONB = exitONB;
+			result.derivatives = exitRI.geometric.derivatives;
+			result.signals = exitRI.geometric.signals;
+			result.txFootprint = exitRI.geometric.txFootprint;
+			result.ptCoord = exitRI.geometric.ptCoord;
+			result.ptCoord1 = exitRI.geometric.ptCoord1;
+			result.bHasTexCoord1 = exitRI.geometric.bHasTexCoord1;
+			result.ptObjIntersec = exitRI.geometric.ptObjIntersec;
+			result.vColor = exitRI.geometric.vColor;
+			result.bHasVertexColor = exitRI.geometric.bHasVertexColor;
+
+			// Cross-object signals triple (DL-22):
+			result.signals.pScene = ri.signals.pScene;
+			result.signals.pSelf = pObject;
+			result.signals.ptWorld = result.entryPoint;
+
+			// Re-pairing if normal was flipped:
+			if( Vector3Ops::Dot( rawNormal, exitNormal ) < Scalar( 0 ) ) {
+				if( result.derivatives.valid ) {
+					result.derivatives.dndu = -result.derivatives.dndu;
+					result.derivatives.dndv = -result.derivatives.dndv;
+				}
+				if( result.derivatives.curvatureValid ) {
+					result.derivatives.curvature = -result.derivatives.curvature;
+				}
+				if( result.signals.pProvider ) {
+					result.signals.nObject = -result.signals.nObject;
+					result.signals.bComplementedField = !result.signals.bComplementedField;
+				}
+			}
+
 			result.scatteredRay = Ray( result.entryPoint, cosineDir );
 			result.cosinePdf = cosTheta * INV_PI;
 

@@ -1983,11 +1983,21 @@ is the comparison to beat.
 4. **Vertex-normal quality is loader-dependent** (`GLTFSceneImporter.cpp:2663-2724`
    carries authored normals; PLY may synthesize them). Mesh curvature quality
    follows. No fix proposed; document it.
-5. **CSG behaviour is unspecified.** Curvature at a CSG boundary edge is
-   genuinely undefined, and the record's derivative fields are already
-   exercised there (`tests/CsgSurfacePayloadTest.cpp:833-834`). Decide whether
-   the composite forwards the contributing surface's curvature (likely) or
-   invalidates at the seam.
+5. ~~**CSG behaviour is unspecified.**~~ **CLOSED 2026-09-22 (DL-21, `debt-dl21`).**
+   Convention decided and pinned in `tests/CsgSurfacePayloadTest.cpp` (Test 30)
+   and `tests/CSGCurvatureConventionTest.cpp` (37 checks, 0 failures):
+   - The CSG composite forwards the contributing surface's differential curvature
+     (`ri.derivatives.curvature` and Weingarten map `dndu`/`dndv`) directly.
+   - On inverted/subtracted boundaries (where the outward normal is flipped relative
+     to raw hit normal, e.g. CSG_SUBTRACTION interior cavity walls), the Weingarten
+     map and principal curvatures invert sign ($k \to -k$), transforming convex
+     surfaces into concave cavities.
+   - SDF primitives evaluate analytical differential curvature directly from the
+     distance field Hessian.
+   - Non-uniform instance transforms preserve curvature transformation rules under scale.
+   - Boundary seams maintain continuity: each operand surface's curvature remains continuous
+     right up to the seam on its side, and rays hitting either operand report that operand's
+     differential curvature.
 6. ~~**Modifier and bump-map interaction — an implementation requirement, not
    a preference.**~~ **CLOSED (debt-ledger sweep) — implemented as
    specified.** `SurfaceCurvature.h:68` documents the requirement in force

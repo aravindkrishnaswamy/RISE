@@ -3538,6 +3538,106 @@ void TestSubtraction_ExitDesignatedBoundary_SphereDndxSignPairing()
 	safe_release( oB );
 }
 
+//
+// Test 30 (DL-21): CSG boundary curvature convention:
+// At a CSG intersection, the composite forwards the contributing surface's
+// curvature from whichever operand generated the active boundary hit.
+// Sphere A (radius 1.5, center (0,0,-0.5)) and Sphere B (radius 1.0, center (0,0,0.5))
+// intersect. A ray along +Z enters A first and then B, so the entry boundary
+// is wholly B's surface and forwards B's curvature (H = 1.0).
+// A ray along -Z enters B first and then A, so the entry boundary is wholly
+// A's surface and forwards A's curvature (H = 1/1.5 = 0.666667).
+//
+void TestIntersection_CurvatureConvention_ContributingSurfaceForwarded()
+{
+	std::cout << "CSG_INTERSECTION: boundary curvature convention forwards contributing surface (DL-21)..." << std::endl;
+
+	SurfaceCurvatureDemand::Registration reg( true );
+
+	const Scalar rA = 1.5;
+	const Scalar rB = 1.0;
+	SphereGeometry* gA = new SphereGeometry( rA );
+	SphereGeometry* gB = new SphereGeometry( rB );
+	Object* oA = new Object( gA );
+	Object* oB = new Object( gB );
+	safe_release( gA );
+	safe_release( gB );
+
+	oA->SetPosition( Point3( 0, 0, -0.5 ) );
+	oB->SetPosition( Point3( 0, 0,  0.5 ) );
+	oA->FinalizeTransformations();
+	oB->FinalizeTransformations();
+
+	CSGObject* csg = new CSGObject( CSG_INTERSECTION );
+	const bool assigned = csg->AssignObjects( oA, oB );
+	Check( assigned, "Test30 (DL-21): composite takes sphere A and sphere B operands" );
+	csg->FinalizeTransformations();
+
+	// Case 1: Ray along +Z (from (0.1, 0.05, -5))
+	// Enters A at z = -0.5 - 1.5 = -2.0.
+	// Enters B at z = 0.5 - 1.0 = -0.5 while inside A.
+	// Entry boundary is wholly B's surface!
+	{
+		Ray rFwd( Point3( 0.1, 0.05, -5.0 ), Vector3( 0, 0, 1 ) );
+		RayIntersection ri( rFwd, nullRasterizerState );
+		Hit( csg, rFwd, ri );
+
+		RayIntersection refB( rFwd, nullRasterizerState );
+		Hit( oB, rFwd, refB );
+
+		Check( ri.geometric.bHit, "Test30 (DL-21): +Z ray hits composite intersection" );
+		Check( refB.geometric.bHit, "Test30 (DL-21): +Z ray hits standalone B" );
+		Check( ri.geometric.derivatives.valid, "Test30 (DL-21): composite +Z entry derivatives valid" );
+
+		Scalar H_comp = 0, H_refB = 0;
+		const bool okComp = SurfaceCurvature::MeanCurvatureFromDerivatives(
+			ri.geometric.derivatives.dpdu, ri.geometric.derivatives.dpdv,
+			ri.geometric.derivatives.dndu, ri.geometric.derivatives.dndv, H_comp );
+		const bool okRefB = SurfaceCurvature::MeanCurvatureFromDerivatives(
+			refB.geometric.derivatives.dpdu, refB.geometric.derivatives.dpdv,
+			refB.geometric.derivatives.dndu, refB.geometric.derivatives.dndv, H_refB );
+
+		Check( okComp && okRefB, "Test30 (DL-21): curvature well-defined on composite and refB" );
+		Check( Close( H_comp, 1.0 / rB, 1e-4 ), "Test30 (DL-21): composite curvature matches 1/rB = 1.0" );
+		Check( Close( H_comp, H_refB, 1e-4 ), "Test30 (DL-21): composite curvature matches standalone B" );
+		Check( VecClose( ri.geometric.vNormal, refB.geometric.vNormal, 1e-5 ), "Test30 (DL-21): composite vNormal matches B's" );
+	}
+
+	// Case 2: Ray along -Z (from (0.1, 0.05, 5))
+	// Enters B at z = 0.5 + 1.0 = 1.5.
+	// Enters A at z = -0.5 + 1.5 = 1.0 while inside B.
+	// Entry boundary is wholly A's surface!
+	{
+		Ray rRev( Point3( 0.1, 0.05, 5.0 ), Vector3( 0, 0, -1 ) );
+		RayIntersection ri( rRev, nullRasterizerState );
+		Hit( csg, rRev, ri );
+
+		RayIntersection refA( rRev, nullRasterizerState );
+		Hit( oA, rRev, refA );
+
+		Check( ri.geometric.bHit, "Test30 (DL-21): -Z ray hits composite intersection" );
+		Check( refA.geometric.bHit, "Test30 (DL-21): -Z ray hits standalone A" );
+		Check( ri.geometric.derivatives.valid, "Test30 (DL-21): composite -Z entry derivatives valid" );
+
+		Scalar H_comp = 0, H_refA = 0;
+		const bool okComp = SurfaceCurvature::MeanCurvatureFromDerivatives(
+			ri.geometric.derivatives.dpdu, ri.geometric.derivatives.dpdv,
+			ri.geometric.derivatives.dndu, ri.geometric.derivatives.dndv, H_comp );
+		const bool okRefA = SurfaceCurvature::MeanCurvatureFromDerivatives(
+			refA.geometric.derivatives.dpdu, refA.geometric.derivatives.dpdv,
+			refA.geometric.derivatives.dndu, refA.geometric.derivatives.dndv, H_refA );
+
+		Check( okComp && okRefA, "Test30 (DL-21): curvature well-defined on composite and refA" );
+		Check( Close( H_comp, 1.0 / rA, 1e-4 ), "Test30 (DL-21): composite curvature matches 1/rA = 0.666667" );
+		Check( Close( H_comp, H_refA, 1e-4 ), "Test30 (DL-21): composite curvature matches standalone A" );
+		Check( VecClose( ri.geometric.vNormal, refA.geometric.vNormal, 1e-5 ), "Test30 (DL-21): composite vNormal matches A's" );
+	}
+
+	safe_release( csg );
+	safe_release( oA );
+	safe_release( oB );
+}
+
 int main()
 {
 	TestIntersection_AEntersFirst_EntryIsWhollyB();
@@ -3569,6 +3669,7 @@ int main()
 	TestSubtraction_ExitProbe_ClearsOperandPrimitiveRootFloor();
 	TestSubtraction_NestedCsgOperandExitProbeUsesChildFrameRootFloor();
 	TestSubtraction_ExitDesignatedBoundary_SphereDndxSignPairing();
+	TestIntersection_CurvatureConvention_ContributingSurfaceForwarded();
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }

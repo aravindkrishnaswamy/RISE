@@ -91,6 +91,15 @@ namespace RISE
 												///< Independent of smooth interpolation and shading modifiers,
 												///< including normal maps on analytical primitives.
 			OrthonormalBasis3D	entryONB;		///< ONB at entry point
+			SurfaceDerivativesInfo derivatives;	///< Surface derivatives at entry point (DL-22)
+			SurfaceSignalInfo	signals;		///< Surface signals at entry point (DL-22)
+			TextureFootprint	txFootprint;	///< Texture footprint at entry point (DL-22)
+			Point2				ptCoord;		///< Texture coordinates at entry point (DL-22)
+			Point2				ptCoord1;		///< Secondary texture coordinates (DL-22)
+			bool				bHasTexCoord1;	///< True if secondary texture coordinates exist (DL-22)
+			Point3				ptObjIntersec;	///< Object-space intersection point (DL-22)
+			RISEPel				vColor;			///< Vertex color at entry point (DL-22)
+			bool				bHasVertexColor;///< True if vertex color exists (DL-22)
 			Ray					scatteredRay;	///< Cosine-weighted ray from entry point
 			RISEPel				weight;			///< Full BSSRDF weight: Rd * Ft(exit) * Ft(entry) / (c * pdfSurface)
 			RISEPel				weightSpatial;	///< Spatial-only weight: Rd * Ft(exit) / pdfSurface (no entry Sw)
@@ -101,6 +110,9 @@ namespace RISE
 			bool				valid;			///< True if sampling succeeded
 
 			SampleResult() :
+			bHasTexCoord1( false ),
+			vColor( RISEPel(0,0,0) ),
+			bHasVertexColor( false ),
 			weight( RISEPel(0,0,0) ), weightSpatial( RISEPel(0,0,0) ),
 			weightNM(0), weightSpatialNM(0),
 			cosinePdf(0), pdfSurface(0), valid(false) {}

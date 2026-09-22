@@ -2871,8 +2871,17 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 							entryRI.vNormal = bssrdf.entryNormal;
 							entryRI.vGeomNormal = bssrdf.entryGeomNormal;
 							entryRI.onb = bssrdf.entryONB;
+							entryRI.derivatives = bssrdf.derivatives;
+							entryRI.signals = bssrdf.signals;
+							entryRI.txFootprint = bssrdf.txFootprint;
+							entryRI.ptCoord = bssrdf.ptCoord;
+							entryRI.ptCoord1 = bssrdf.ptCoord1;
+							entryRI.bHasTexCoord1 = bssrdf.bHasTexCoord1;
+							entryRI.ptObjIntersec = bssrdf.ptObjIntersec;
+							entryRI.vColor = bssrdf.vColor;
+							entryRI.bHasVertexColor = bssrdf.bHasVertexColor;
 
-							const Scalar eta = pProfile->GetIOR( ri.geometric );
+							const Scalar eta = pProfile->GetIOR( entryRI );
 							BSSRDFEntryBSDF entryBSDF( pProfile, eta );
 							BSSRDFEntryMaterial entryMaterial;
 
@@ -3139,6 +3148,15 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 							entryRI.vNormal = bssrdf.entryNormal;
 							entryRI.vGeomNormal = bssrdf.entryGeomNormal;
 							entryRI.onb = bssrdf.entryONB;
+							entryRI.derivatives = bssrdf.derivatives;
+							entryRI.signals = bssrdf.signals;
+							entryRI.txFootprint = bssrdf.txFootprint;
+							entryRI.ptCoord = bssrdf.ptCoord;
+							entryRI.ptCoord1 = bssrdf.ptCoord1;
+							entryRI.bHasTexCoord1 = bssrdf.bHasTexCoord1;
+							entryRI.ptObjIntersec = bssrdf.ptObjIntersec;
+							entryRI.vColor = bssrdf.vColor;
+							entryRI.bHasVertexColor = bssrdf.bHasVertexColor;
 
 							RandomWalkEntryBSDF entryBSDF( pRWParams->ior );
 							BSSRDFEntryMaterial entryMaterial;
