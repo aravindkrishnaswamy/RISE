@@ -4167,6 +4167,34 @@ bool Job::AddDielectricMaterial(
 		return false;
 	}
 
+	// DL-28: Check if tau values exceed 1.0 (transmittance base must be in [0, 1]).
+	// A published sigma_a (absorption coefficient) table pasted directly without
+	// converting via tau = exp(-sigma_a * unitLength) will have values > 1.
+	{
+		const RayIntersectionGeometric dummyRi( Ray(), nullRasterizerState );
+		const ScalarTriple rgb = pTau->GetValuesAt( dummyRi );
+		bool tauExceedsOne = (rgb.v[0] > 1.0 || rgb.v[1] > 1.0 || rgb.v[2] > 1.0);
+		Scalar maxVal = rgb.v[0];
+		if( rgb.v[1] > maxVal ) maxVal = rgb.v[1];
+		if( rgb.v[2] > maxVal ) maxVal = rgb.v[2];
+		if( !tauExceedsOne ) {
+			for( Scalar nm = 380.0; nm <= 780.0; nm += 10.0 ) {
+				const Scalar val = pTau->GetValueAtNM( dummyRi, nm );
+				if( val > 1.0 ) {
+					tauExceedsOne = true;
+					if( val > maxVal ) maxVal = val;
+				}
+			}
+		}
+		if( tauExceedsOne ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"Job::AddDielectricMaterial: material '%s' tau painter '%s' has value %lf (> 1.0); "
+				"dielectric tau is a unit transmittance base applied as pow(tau, distance) in [0, 1], "
+				"not an absorption coefficient (convert via tau = exp(-sigma_a * unitLength))",
+				name, tau, maxVal );
+		}
+	}
+
 	IMaterial* pMaterial = 0;
 	RISE_API_CreateDielectricMaterial( &pMaterial, *pTau, *pIor, *pScat, hg, arN, arK, arThickness, arNLayers );
 
