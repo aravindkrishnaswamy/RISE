@@ -193,25 +193,14 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 					thisXYZ = thisXYZ * weighted;
 					const Scalar fx = cr.rasterPos.x;
 					const Scalar fy = static_cast<Scalar>( filmH ) - cr.rasterPos.y;
-					// Proper XYZ → RISEPel via implicit RISEPel(XYZPel).
-					// Replaces the channel-relabel "RISEPel(X, Y, Z)" hack
-					// which bypassed the colour-space matrix entirely
-					// (post Stage B: XYZtoRec709RGB, D65→D65, matrix-only).
-					// DL-217: the splat path DOES need mYNormalization.
-					// `SplatFilm::Resolve`'s own divisor is a SAMPLE COUNT
-					// (`GetSplatSampleScale()` x spp) and nothing more --
-					// it is the splat analogue of the `/ nSpectralSamples`
-					// the non-splat return below carries, NOT of the
-					// `(lambda_end - lambda_begin) / k_y` INTEGRAL scale
-					// that turns an MC average of XYZ(lambda)*L(lambda)
-					// into a properly normalised tristimulus value.
-					// Omitting it made every spectral t==1 deposit
-					// mYNormalization (~3.74 over [380, 780] nm) times too
-					// dim relative to the same render's non-splat layer.
-					// The pre-fix comment here claimed the opposite and was
-					// wrong; see the file header / the DL-217 ledger row.
+					// DL-215: Use genuine matrix-only conversion
+					// (ColorUtils::XYZtoRec709RGBMatrixOnly) rather than
+					// gamut-mapping ColorUtils::XYZtoRec709RGB.  Single-wavelength
+					// contributions lie on the spectral locus outside the Rec.709
+					// gamut; gamut mapping each wavelength independently destroys
+					// linear superposition.
 					SplatContributionToFilm( fx, fy,
-						RISEPel( thisXYZ ) * mYNormalization,
+						ColorUtils::XYZtoRec709RGBMatrixOnly( thisXYZ ) * mYNormalization,
 						filmW, filmH );
 				}
 			}
@@ -431,13 +420,9 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 								splatXYZ = splatXYZ * weighted;
 								const Scalar fx = cr.rasterPos.x;
 								const Scalar fy = static_cast<Scalar>( filmH ) - cr.rasterPos.y;
-								// Proper XYZ -> ROMM RGB conversion (hero).
-								// DL-201: * splatLaneScale -- see its
-								// declaration above.  DL-217:
-								// * mYNormalization -- see the non-HWSS
-								// splat site in IntegratePixelNM above.
+								// DL-215: Use genuine matrix-only conversion (ColorUtils::XYZtoRec709RGBMatrixOnly).
 								SplatContributionToFilm( fx, fy,
-									RISEPel( splatXYZ ) * ( splatLaneScale * mYNormalization ),
+									ColorUtils::XYZtoRec709RGBMatrixOnly( splatXYZ ) * ( splatLaneScale * mYNormalization ),
 									filmW, filmH );
 							}
 						} else {
@@ -510,15 +495,9 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 								splatXYZ = splatXYZ * weighted;
 								const Scalar fx = cr.rasterPos.x;
 								const Scalar fy = static_cast<Scalar>( filmH ) - cr.rasterPos.y;
-								// Proper XYZ -> ROMM RGB conversion (companion).
-								// DL-201: * splatLaneScale -- see its
-								// declaration above.  A companion only reaches
-								// this line when it survived, so the scale is
-								// the same one its hero used.  DL-217:
-								// * mYNormalization, as at every other
-								// spectral splat site.
+								// DL-215: Use genuine matrix-only conversion (ColorUtils::XYZtoRec709RGBMatrixOnly).
 								SplatContributionToFilm( fx, fy,
-									RISEPel( splatXYZ ) * ( splatLaneScale * mYNormalization ),
+									ColorUtils::XYZtoRec709RGBMatrixOnly( splatXYZ ) * ( splatLaneScale * mYNormalization ),
 									filmW, filmH );
 							}
 						} else {

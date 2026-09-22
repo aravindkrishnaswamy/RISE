@@ -364,13 +364,12 @@ namespace
 			return std::make_pair( false, RISEPel( 0, 0, 0 ) );
 		}
 		xyz = xyz * v;
-		// Proper XYZ → RISEPel via implicit RISEPel(XYZPel)
-		// constructor (ColorUtils::XYZtoRec709RGB post Stage B —
-		// D65→D65, matrix-only).  Replaces the channel-relabel
-		// "RISEPel(xyz.X, xyz.Y, xyz.Z)" hack which bypassed the
-		// matrix multiply, treating CIE XYZ tristimulus as if it
-		// were RGB channels.
-		return std::make_pair( true, RISEPel( xyz ) );
+		// DL-215: Use genuine matrix-only conversion (ColorUtils::XYZtoRec709RGBMatrixOnly)
+		// rather than gamut-mapping ColorUtils::XYZtoRec709RGB.  Monochromatic
+		// single-wavelength contributions lie on the spectral locus outside the
+		// Rec.709 gamut triangle; gamut-mapping each wavelength independently
+		// destroys linear superposition and biases the splat layer by ~7-10%.
+		return std::make_pair( true, ColorUtils::XYZtoRec709RGBMatrixOnly( xyz ) );
 	}
 
 	/// Tag-dispatched media-aware connection transmittance.  Borrows

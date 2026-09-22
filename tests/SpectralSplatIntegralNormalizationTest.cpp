@@ -77,7 +77,22 @@
 //  MLT needs no row: `MLTSpectralRasterizer` applies `mYNormalization`
 //  NOWHERE (splat or otherwise) and normalises its image by the bootstrap
 //  luminance `b`, which is estimated from the same unscaled quantity -- so
-//  a global scale cancels and that rasterizer is internally consistent.
+//  DL-215 EXTENSION (September 2026):
+//  After DL-217 restored mYNormalization, the spectral splat layer still
+//  read ~7-10% below its Pel twin (0.9019 at 80 wavelengths, 0.9337 at 10
+//  wavelengths) on isolated pure-splat scenes (max_eye_depth 0).
+//  Root cause: ToSplatRGB<NMTag> and BDPTSpectralRasterizer splat sites used
+//  the implicit RISEPel(XYZPel) constructor, which invokes
+//  ColorUtils::XYZtoRec709RGB.  That function applied MoveXYZIntoRec709RGBGamut
+//  to every single monochromatic wavelength sample.  Because monochromatic
+//  wavelengths lie on the spectral locus outside the Rec.709 gamut triangle,
+//  clipping each wavelength independently before summing destroyed linear
+//  superposition, clipping negative CMF/RGB lobes and distorting the integral
+//  (e.g. blue channel was reduced to 0.47, red elevated to 1.24, mean reduced by ~10%).
+//  Fix: ColorUtils::XYZtoRec709RGBMatrixOnly provides genuine matrix-only
+//  linear conversion for intermediate spectral splat accumulations.
+//  Pure-splat (max_eye_depth 0) spectral/Pel ratio moves to 0.997 (80 nm)
+//  and 1.011 (10 nm), in exact agreement with the Pel twin.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: September 18, 2026
@@ -284,6 +299,17 @@ static std::string Rasterizer( const char* kind, const char* extra )
 	return std::string( buf );
 }
 
+static std::string RasterizerDepth( const char* kind, unsigned int eyeDepth, unsigned int lightDepth, unsigned int spp, const char* extra )
+{
+	char buf[1024];
+	std::snprintf( buf, sizeof(buf),
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+		"%s\n{\n\tmax_eye_depth %u\n\tmax_light_depth %u\n\tsamples %u\n%s"
+		"\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n",
+		kind, eyeDepth, lightDepth, spp, extra );
+	return std::string( buf );
+}
+
 static void RunPair( const std::string& label,
 	const std::string& pelRast, const std::string& specRast,
 	const std::string& body, double loBand, double hiBand, bool gated )
@@ -371,6 +397,22 @@ int main()
 		Rasterizer( "bdpt_pel_rasterizer", "" ),
 		Rasterizer( "bdpt_spectral_rasterizer", "\thwss FALSE\n" ),
 		SceneBody( false ), 0.85, 1.15, true );
+
+	// DL-215 MONEY ROWS: PURE SPLAT LAYER ISOLATION (max_eye_depth 0).
+	// With eye depth 0, only t=1 light-tracing splats reach the film.
+	// Pre-fix (due to per-sample gamut mapping on monochromatic wavelengths),
+	// this read ~0.90 at 80 wavelengths (and ~0.93 at 10 wavelengths) vs Pel twin.
+	// Post-fix (genuine matrix-only conversion), it lands at 1.00 +/- noise.
+	const char* kVcmSpecExtra80 = "\tvc_enabled true\n\tvm_enabled false\n\thwss FALSE\n\tnum_wavelengths 80\n";
+	RunPair( "DL-215 MONEY ROW: VCM pure splat (eye 0, 80 nm) vs VCM Pel, no glass",
+		RasterizerDepth( "vcm_pel_rasterizer", 0, 5, 512, kVcmPelExtra ),
+		RasterizerDepth( "vcm_spectral_rasterizer", 0, 5, 512, kVcmSpecExtra80 ),
+		SceneBody( false ), 0.95, 1.05, true );
+
+	RunPair( "DL-215 MONEY ROW: VCM pure splat (eye 0, default 10 nm) vs VCM Pel, no glass",
+		RasterizerDepth( "vcm_pel_rasterizer", 0, 5, 512, kVcmPelExtra ),
+		RasterizerDepth( "vcm_spectral_rasterizer", 0, 5, 512, kVcmSpecExtra ),
+		SceneBody( false ), 0.95, 1.05, true );
 
 	std::cout << std::endl;
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;

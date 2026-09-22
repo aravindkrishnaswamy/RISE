@@ -211,6 +211,11 @@ sRGBPel ColorUtils::sRGBNonLinearization( const Rec709RGBPel& rgb )
 	return ret;
 }
 
+Rec709RGBPel ColorUtils::XYZtoRec709RGBMatrixOnly( const XYZPel& xyz )
+{
+	return XYZtoRGBMatrixMultiply<Rec709RGBPel>( xyz, mxXYZtoRec709 );
+}
+
 Rec709RGBPel ColorUtils::XYZtoRec709RGB( const XYZPel& xyz_ )
 {
 	Rec709RGBPel ret;
@@ -218,13 +223,6 @@ Rec709RGBPel ColorUtils::XYZtoRec709RGB( const XYZPel& xyz_ )
 	ColorUtils::MoveXYZIntoRec709RGBGamut( xyz );
 
 	return XYZtoRGBMatrixMultiply<Rec709RGBPel>( xyz, mxXYZtoRec709 );
-	/*
-	ret.r =  3.240479 * xyz.X - 1.537150 * xyz.Y - 0.498535 * xyz.Z;
-	ret.g = -0.969256 * xyz.X + 1.875992 * xyz.Y + 0.041556 * xyz.Z;
-	ret.b =  0.055648 * xyz.X - 0.204043 * xyz.Y + 1.057311 * xyz.Z;
-	*/
-
-//	return ret;
 }
 
 XYZPel ColorUtils::ROMMRGBtoXYZ( const ROMMRGBPel& p )
