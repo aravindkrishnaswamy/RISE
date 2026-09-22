@@ -2705,30 +2705,17 @@ static void TestSpectralHWSSChromaticLobeSpectra()
 		          << errors.achroDeltaSE[i] * 100.0 << " pp" << std::endl;
 	}
 
-	// GATE 1: parity of the three reference estimators. The 1.5% band
-	// is calibrated from repeated in-suite measurements; see §6.3.
-	for( int i = 0; i < 3; i++ ) {
+	// GATE: parity of all four estimators (DL-125 / DL-219).
+	// DL-219 fixed BDPT HWSS companion density evaluation so that BDPT `hwss TRUE`
+	// achieves parity with the reference estimators inside the 1.5% band.
+	for( int i = 0; i < 4; i++ ) {
 		Check( std::fabs( comparison.brDelta[i] ) < 0.015,
-			( std::string("DL-125 (topology P): ") + rows[i].label +
-			  " agrees with the other two clean estimators on B/R" ).c_str() );
+			( std::string("DL-219 (topology P): ") + rows[i].label +
+			  " agrees with the reference estimators on B/R" ).c_str() );
 		Check( std::fabs( comparison.achroDelta[i] ) < 0.015,
-			( std::string("DL-125 (topology P): ") + rows[i].label +
-			  " agrees with the other two clean estimators on the achromatic mean" ).c_str() );
+			( std::string("DL-219 (topology P): ") + rows[i].label +
+			  " agrees with the reference estimators on the achromatic mean" ).c_str() );
 	}
-
-	// GATE 2: known DL-219 discrepancy, distinct from DL-125. The band
-	// excludes parity so an eventual fix forces this pin to be retired.
-	// Calibration at matched spp and nw=160 is documented in §6.3.
-	const double brDefect = comparison.brDelta[3];
-	std::cout << "    DL-219 KNOWN DEFECT: BDPT hwss TRUE B/R differs by "
-	          << ( brDefect * 100.0 ) << "% from the three-estimator reference" << std::endl;
-	Check( brDefect > -0.07 && brDefect < -0.015,
-		"DL-219 KNOWN DEFECT (topology P): BDPT `hwss TRUE` mis-renders a chromatic "
-		"multi-lobe material's channel balance -- pinned, PRE-EXISTING, "
-		"and NOT what DL-125 fixed" );
-	Check( std::fabs( comparison.achroDelta[3] ) < 0.04,
-		"DL-219 (topology P): BDPT `hwss TRUE`'s achromatic mean stays within 4% "
-		"of the three-estimator reference" );
 }
 
 //////////////////////////////////////////////////////////////////////
