@@ -282,7 +282,7 @@ namespace RISE
 				if( Vector3Ops::Dot( normal, normal ) <= NEARZERO ) normal = ri.geometric.onb.w();
 				const Scalar before = Vector3Ops::Dot( ri.geometric.ray.Dir(), normal );
 				const Scalar after = Vector3Ops::Dot( direction, normal );
-				if( (before > 0 && after < 0) || (before < 0 && after > 0) ) {
+				if( (before > 0 && after > 0) || (before < 0 && after < 0) ) {
 					if( ri.pMaterial ) {
 						SpecularInfo info = ri.pMaterial->GetSpecularInfo(ri.geometric, current);
 						if( info.canRefract || info.hasInterior ) {

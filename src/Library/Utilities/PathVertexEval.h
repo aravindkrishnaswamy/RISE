@@ -364,7 +364,8 @@ namespace RISE
 			IORStack vertexStack( 1.0 );
 			BuildVertexIORStack( vertex, vertexStack );
 
-			return pBSDF->valueStateful( wi, ri, &vertexStack );
+			const Vector3& evalDir = vertex.isLightSubpathVertex ? wo : wi;
+			return pBSDF->valueStateful( evalDir, ri, &vertexStack );
 		}
 
 		//////////////////////////////////////////////////////////////////////
@@ -520,7 +521,8 @@ namespace RISE
 			}
 
 			// Negate wi to get toward-surface direction for ri.ray.Dir()
-			return pSPF->Pdf( ctx.RecordFor( wi, wo ), wo, ctx.Stack() );
+			const Vector3& evalDir = ctx.Vertex().isLightSubpathVertex ? wo : wi;
+			return pSPF->Pdf( ctx.RecordFor( wi, wo ), evalDir, ctx.Stack() );
 		}
 
 		/// Evaluates the SPF sampling PDF at a path vertex.
@@ -623,7 +625,8 @@ namespace RISE
 			IORStack vertexStack( 1.0 );
 			BuildVertexIORStack( vertex, vertexStack );
 
-			return pBSDF->valueStatefulNM( wi, ri, nm, &vertexStack );
+			const Vector3& evalDir = vertex.isLightSubpathVertex ? wo : wi;
+			return pBSDF->valueStatefulNM( evalDir, ri, nm, &vertexStack );
 		}
 
 		//////////////////////////////////////////////////////////////////////
@@ -650,7 +653,8 @@ namespace RISE
 				return 0;
 			}
 
-			return pSPF->PdfNM( ctx.RecordFor( wi, wo ), wo, nm, ctx.Stack() );
+			const Vector3& evalDir = ctx.Vertex().isLightSubpathVertex ? wo : wi;
+			return pSPF->PdfNM( ctx.RecordFor( wi, wo ), evalDir, nm, ctx.Stack() );
 		}
 
 		/// Evaluates the SPF sampling PDF at a vertex for a single wavelength.
