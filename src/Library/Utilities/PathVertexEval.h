@@ -435,11 +435,9 @@ namespace RISE
 				return m_pSPF;
 			}
 
-			//! The shared record, re-aimed for this query's `wi`.  Only
-			//! call after `PrepareSPF()` returned non-null.
-			inline RayIntersectionGeometric& RecordFor( const Vector3& wi, const Vector3& wo )
+			inline RayIntersectionGeometric& RecordFor( const Vector3& wi )
 			{
-				Vector3 inDir = m_vertex.isLightSubpathVertex ? -wi : -wo;
+				const Vector3 inDir = -wi;
 				m_ri.ray = Ray( Point3Ops::mkPoint3( m_vertex.position, -(inDir * m_vertex.scatterIncomingDistance) ), inDir );
 				return m_ri;
 			}
@@ -521,8 +519,7 @@ namespace RISE
 			}
 
 			// Negate wi to get toward-surface direction for ri.ray.Dir()
-			const Vector3& evalDir = ctx.Vertex().isLightSubpathVertex ? wo : wi;
-			return pSPF->Pdf( ctx.RecordFor( wi, wo ), evalDir, ctx.Stack() );
+			return pSPF->Pdf( ctx.RecordFor( wi ), wo, ctx.Stack() );
 		}
 
 		/// Evaluates the SPF sampling PDF at a path vertex.
@@ -653,8 +650,7 @@ namespace RISE
 				return 0;
 			}
 
-			const Vector3& evalDir = ctx.Vertex().isLightSubpathVertex ? wo : wi;
-			return pSPF->PdfNM( ctx.RecordFor( wi, wo ), evalDir, nm, ctx.Stack() );
+			return pSPF->PdfNM( ctx.RecordFor( wi ), wo, nm, ctx.Stack() );
 		}
 
 		/// Evaluates the SPF sampling PDF at a vertex for a single wavelength.
