@@ -38,10 +38,11 @@ namespace RISE
 				);
 			virtual ~CausticPelPhotonMap( );
 
-			void RadianceEstimate( 
-				RISEPel&						rad,					// returned radiance
-				const RayIntersectionGeometric&	ri,						// ray-surface intersection information
-				const IBSDF&					brdf					// BRDF of the surface to estimate irradiance from
+			void RadianceEstimate(
+				RISEPel& rad,
+				const RayIntersectionGeometric& ri,
+				const IBSDF& brdf,
+				const IORStack* pIorStack = 0
 				) const;
 
 			void Serialize( 

@@ -44,7 +44,7 @@ namespace RISE
 				int from, int to, Scalar& distance, const CacheAnchor*& nearest ) const;
 			const CacheAnchor* FindAnchor( const Point3& point, const Vector3& normal ) const;
 			void RadianceAtAnchor( RISEPel& rad, const CacheAnchor& anchor,
-				const RayIntersectionGeometric& query, const IBSDF& bsdf ) const;
+				const RayIntersectionGeometric& query, const IBSDF& bsdf, const IORStack* pIorStack ) const;
 
 		public:
 			GlobalPelPhotonMap( 
@@ -58,10 +58,11 @@ namespace RISE
 				IProgressCallback* pFunc						// Progress callback
 				);
 
-			void RadianceEstimate( 
-				RISEPel&						rad,					// returned radiance
-				const RayIntersectionGeometric&	ri,						// ray-surface intersection information
-				const IBSDF&					brdf					// BRDF of the surface to estimate irradiance from
+			void RadianceEstimate(
+				RISEPel& rad,
+				const RayIntersectionGeometric& ri,
+				const IBSDF& brdf,
+				const IORStack* pIorStack = 0
 				) const;
 
 			// N is the unit geometric surface normal, not the shading normal.

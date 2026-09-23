@@ -335,12 +335,12 @@ void FinalGatherShaderOp::PerformOperation(
 	if( rs.type == IRayCaster::RAY_STATE::eRayFinalGather ) {
 		if( pBRDF ) {
 			if( pGM ) {
-				pGM->RadianceEstimate( c, ri.geometric, *pBRDF );
+				pGM->RadianceEstimate( c, ri.geometric, *pBRDF, &ior_stack );
 			}
 
 			if( pGSM ) {
 				RISEPel cs;
-				pGSM->RadianceEstimate( cs, ri.geometric, *pBRDF );
+				pGSM->RadianceEstimate( cs, ri.geometric, *pBRDF, &ior_stack );
 				c = c + cs;
 			}
 		} else if( pScat ) {

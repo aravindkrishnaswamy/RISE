@@ -51,7 +51,7 @@ void GlobalPelPhotonMapShaderOp::PerformOperation(
 	const IBSDF* pBRDF = ri.pMaterial->GetBSDF();
 
 	if( pGM && pBRDF ) {
-		pGM->RadianceEstimate( c, ri.geometric, *pBRDF );
+		pGM->RadianceEstimate( c, ri.geometric, *pBRDF, &ior_stack );
 	}
 }
 

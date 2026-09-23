@@ -298,7 +298,7 @@ void SubSurfaceScatteringShaderOp::PerformOperation(
 	// Pass 2: Evaluate the BSSRDF integral at the shading point.
 	// The octree sums Rd(|xi - xo|) * E(xi) over all sample points,
 	// using hierarchical approximation for distant clusters (Jensen 2002).
-	ps->Evaluate( c, ri.geometric.ptIntersection, extinction, error, multiplyBSDF?ri.pMaterial->GetBSDF():0, ri.geometric );
+	ps->Evaluate( c, ri.geometric.ptIntersection, extinction, error, multiplyBSDF?ri.pMaterial->GetBSDF():0, ri.geometric, &ior_stack );
 
 	// Monte Carlo normalization: divide by N (the number of sample points).
 	// Each sample's irradiance was pre-multiplied by irrad_scale, which

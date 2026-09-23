@@ -78,7 +78,7 @@ void SMSShaderOp::PerformOperation(
 		woOutgoing,
 		*pScene,
 		caster,
-		smsSampler );
+		smsSampler, &ior_stack );
 
 	if( sms.valid )
 	{
@@ -131,7 +131,7 @@ Scalar SMSShaderOp::PerformOperationNM(
 		*pScene,
 		caster,
 		smsSamplerNM,
-		nm );
+		nm, &ior_stack );
 
 	if( sms.valid )
 	{

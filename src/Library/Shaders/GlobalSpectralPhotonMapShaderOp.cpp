@@ -51,7 +51,7 @@ void GlobalSpectralPhotonMapShaderOp::PerformOperation(
 	const IBSDF* pBRDF = ri.pMaterial->GetBSDF();
 
 	if( pSGM && pBRDF ) {
-		pSGM->RadianceEstimate( c, ri.geometric, *pBRDF );
+		pSGM->RadianceEstimate( c, ri.geometric, *pBRDF, &ior_stack );
 	}
 }
 
@@ -80,7 +80,7 @@ Scalar GlobalSpectralPhotonMapShaderOp::PerformOperationNM(
 	const IBSDF* pBRDF = ri.pMaterial->GetBSDF();
 
 	if( pSGM && pBRDF ) {
-		pSGM->RadianceEstimateNM( nm, c, ri.geometric, *pBRDF );
+		pSGM->RadianceEstimateNM( nm, c, ri.geometric, *pBRDF, &ior_stack );
 	}
 
 	return c;

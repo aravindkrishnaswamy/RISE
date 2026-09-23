@@ -2217,8 +2217,7 @@ namespace {
 			BDPTVertex v;
 			v.type = BDPTVertex::SURFACE;
 			v.position = ri.geometric.ptIntersection;
-			v.scatterIncomingDistance = Vector3Ops::Magnitude(
-				Vector3Ops::mkVector3( ri.geometric.ray.origin, ri.geometric.ptIntersection ) );
+			v.scatterIncomingDistance = ri.geometric.range;
 			v.normal = ri.geometric.vNormal;
 			v.geomNormal = ri.geometric.vGeomNormal;
 			v.onb = ri.geometric.onb;
@@ -2638,6 +2637,7 @@ namespace {
 			// --- End BSSRDF sampling ---
 
 			const IORStack* traceIorStack = pScat->ior_stack ? pScat->ior_stack : &iorStack;
+			IORStack guidedIorStack( iorStack );
 	#ifdef RISE_ENABLE_OPENPGL
 			// --- Path guiding (eye subpath) ---
 			bool usedGuidedDirection = false;
@@ -2793,7 +2793,7 @@ namespace {
 			}
 			if( usedGuidedDirection ) {
 				traceIorStack = PathTransportUtilities::GuidedContinuationIORStack(
-					*pScat, iorStack, ri.geometric, guidedDir );
+					*pScat, iorStack, ri, guidedDir, guidedIorStack );
 			}
 			if constexpr( Traits::is_nm ) {
 				// NM-only inline guiding-training sample.  The Pel path trains
@@ -6351,8 +6351,8 @@ unsigned int GenerateLightSubpathImpl(
 		BDPTVertex v;
 		v.type = BDPTVertex::SURFACE;
 		v.position = ri.geometric.ptIntersection;
-		v.scatterIncomingDistance = Vector3Ops::Magnitude(
-			Vector3Ops::mkVector3( ri.geometric.ray.origin, ri.geometric.ptIntersection ) );
+		v.scatterIncomingDistance = ri.geometric.range;
+		v.isLightSubpathVertex = true;
 		v.normal = ri.geometric.vNormal;
 		v.geomNormal = ri.geometric.vGeomNormal;
 		v.onb = ri.geometric.onb;
@@ -6776,6 +6776,7 @@ unsigned int GenerateLightSubpathImpl(
 		// --- End BSSRDF sampling ---
 
 		const IORStack* traceIorStack = pScat->ior_stack ? pScat->ior_stack : &iorStack;
+		IORStack guidedIorStack( iorStack );
 #ifdef RISE_ENABLE_OPENPGL
 		// --- Path guiding (light subpath) ---
 		// Query the shared guiding field at each light subpath surface vertex
@@ -6935,7 +6936,7 @@ unsigned int GenerateLightSubpathImpl(
 		}
 		if( usedGuidedDirection ) {
 			traceIorStack = PathTransportUtilities::GuidedContinuationIORStack(
-				*pScat, iorStack, ri.geometric, guidedDir );
+				*pScat, iorStack, ri, guidedDir, guidedIorStack );
 		}
 #endif
 		// --- End light subpath path guiding ---

@@ -591,7 +591,8 @@ namespace RISE
 				const Vector3& woOutgoing,
 				const IScene& scene,
 				const IRayCaster& caster,
-				ISampler& sampler
+				ISampler& sampler,
+				const IORStack* pIorStack = nullptr
 				) const;
 
 			/// Uniform-on-shape SMS evaluator (Mitsuba-faithful single- /
@@ -625,7 +626,8 @@ namespace RISE
 				const Vector3& woOutgoing,
 				const IScene& scene,
 				const IRayCaster& caster,
-				ISampler& sampler
+				ISampler& sampler,
+				const IORStack* pIorStack = nullptr
 				) const;
 
 			/// Spectral variant of SMS evaluation.
@@ -654,7 +656,8 @@ namespace RISE
 				const IScene& scene,
 				const IRayCaster& caster,
 				ISampler& sampler,
-				const Scalar nm
+				const Scalar nm,
+				const IORStack* pIorStack = nullptr
 				) const;
 
 			SMSContributionNM EvaluateAtShadingPointNM(
@@ -667,7 +670,8 @@ namespace RISE
 				const IScene& scene,
 				const IRayCaster& caster,
 				ISampler& sampler,
-				const Scalar nm
+				const Scalar nm,
+				const IORStack* pIorStack = nullptr
 				) const;
 
 			/// Tests whether the external segments of an SMS specular
@@ -754,8 +758,9 @@ namespace RISE
 				const IRayCaster& caster,
 				Vector3& outDir,
 				RISEPel& outContribution,
-				bool clampGeometric = true,           ///< When false, skip the per-path `min(smsGeometric, maxGeometricTerm)` clamp.  Caller must apply the cap (typically a sum-level clamp across all unique preimages — see `EvaluateAtShadingPoint` for the pattern).
-				Scalar* outSmsGeometric = nullptr     ///< When `clampGeometric == false`, receives the unclamped `G_x_v1 × |det dv/dy|` so the caller can sum-clamp.
+				bool clampGeometric = true,
+				Scalar* outSmsGeometric = nullptr,
+				const IORStack* pIorStack = nullptr
 				) const;
 
 			/// Spectral counterpart of `ComputeTrialContribution`.
@@ -773,7 +778,8 @@ namespace RISE
 				Vector3& outDir,
 				Scalar& outContribution,
 				bool clampGeometric = true,           ///< See `ComputeTrialContribution`.
-				Scalar* outSmsGeometric = nullptr     ///< See `ComputeTrialContribution`.
+				Scalar* outSmsGeometric = nullptr,     ///< See `ComputeTrialContribution`.
+				const IORStack* pIorStack = nullptr
 				) const;
 
 			// ============================================================

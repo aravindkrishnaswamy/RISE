@@ -51,7 +51,7 @@ void CausticPelPhotonMapShaderOp::PerformOperation(
 	const IBSDF* pBRDF = ri.pMaterial->GetBSDF();
 
 	if( pCM && pBRDF ) {
-		pCM->RadianceEstimate( c, ri.geometric, *pBRDF );
+		pCM->RadianceEstimate( c, ri.geometric, *pBRDF, &ior_stack );
 	}
 }
 

@@ -291,6 +291,7 @@ namespace RISE
 		/// throughput replay (DL-222), not connection BSDF reconstruction
 		/// (DL-223). Endpoints, media and BSSRDF entries do not consume it.
 		Scalar scatterIncomingDistance;
+		bool isLightSubpathVertex;
 		bool					isConnectible;	///< True if material has at least one non-delta BxDF component
 		bool					isBSSRDFEntry;	///< True if this vertex is a BSSRDF re-emission point (Sw vertex)
 		Scalar					mediumIOR;		///< Top-of-stack IOR seen at this vertex before scattering
@@ -375,6 +376,7 @@ namespace RISE
 		isDelta( false ),
 		scatterType( ScatteredRay::eRayUnknown ),
 		scatterIncomingDistance( 0 ),
+		isLightSubpathVertex( false ),
 		isConnectible( true ),
 		isBSSRDFEntry( false ),
 		mediumIOR( 1.0 ),

@@ -1456,25 +1456,25 @@ namespace
 		ManifoldSolver* pSolver, const Point3& pos, const Vector3& geomNormal,
 		const Vector3& shadingNormal, const OrthonormalBasis3D& onb,
 		const IMaterial* pMaterial, const Vector3& woOutgoing, const IScene& scene,
-		const IRayCaster& caster, ISampler& sampler, const Tag& tag );
+		const IRayCaster& caster, ISampler& sampler, const IORStack& iorStack, const Tag& tag );
 	template<> inline PTSMSResult<PelTag> PTEvaluateSMS<PelTag>(
 		ManifoldSolver* pSolver, const Point3& pos, const Vector3& geomNormal,
 		const Vector3& shadingNormal, const OrthonormalBasis3D& onb,
 		const IMaterial* pMaterial, const Vector3& woOutgoing, const IScene& scene,
-		const IRayCaster& caster, ISampler& sampler, const PelTag& )
+		const IRayCaster& caster, ISampler& sampler, const IORStack& iorStack, const PelTag& )
 	{
 		ManifoldSolver::SMSContribution sms = pSolver->EvaluateAtShadingPoint(
-			pos, geomNormal, shadingNormal, onb, pMaterial, woOutgoing, scene, caster, sampler );
+			pos, geomNormal, shadingNormal, onb, pMaterial, woOutgoing, scene, caster, sampler, &iorStack );
 		return PTSMSResult<PelTag>{ sms.contribution, sms.misWeight, sms.valid };
 	}
 	template<> inline PTSMSResult<NMTag> PTEvaluateSMS<NMTag>(
 		ManifoldSolver* pSolver, const Point3& pos, const Vector3& geomNormal,
 		const Vector3& shadingNormal, const OrthonormalBasis3D& onb,
 		const IMaterial* pMaterial, const Vector3& woOutgoing, const IScene& scene,
-		const IRayCaster& caster, ISampler& sampler, const NMTag& tag )
+		const IRayCaster& caster, ISampler& sampler, const IORStack& iorStack, const NMTag& tag )
 	{
 		ManifoldSolver::SMSContributionNM sms = pSolver->EvaluateAtShadingPointNM(
-			pos, geomNormal, shadingNormal, onb, pMaterial, woOutgoing, scene, caster, sampler, tag.nm );
+			pos, geomNormal, shadingNormal, onb, pMaterial, woOutgoing, scene, caster, sampler, tag.nm, &iorStack );
 		return PTSMSResult<NMTag>{ sms.contribution, sms.misWeight, sms.valid };
 	}
 
@@ -3664,6 +3664,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				scene,
 				caster,
 				smsSampler,
+				iorStack,
 				tag );
 
 			if( sms.valid )
@@ -3763,6 +3764,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			Value scatterThroughput = PTScatterKray<Tag>( *pS ) * ( Scalar( 1 ) / selectProb );
 			Scalar effectiveBsdfPdf = pS->isDelta ? 0 : pS->pdf;
 			const IORStack* traceIorStack = pS->ior_stack ? pS->ior_stack : &iorStack;
+			IORStack guidedIorStack( iorStack );
 
 #ifdef RISE_ENABLE_OPENPGL
 			// DL-74: `guideDist` was initialised (and cosine-multiplied)
@@ -3859,7 +3861,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 							traceRay = Ray( pS->ray.origin, candidates[sel].direction );
 							effectiveBsdfPdf = risEffectivePdf;
 							traceIorStack = PathTransportUtilities::GuidedContinuationIORStack(
-								*pS, iorStack, ri.geometric, traceRay.Dir() );
+								*pS, iorStack, ri, traceRay.Dir(), guidedIorStack );
 						}
 						else
 						{
@@ -3921,7 +3923,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 									traceRay = Ray( pS->ray.origin, guidedDir );
 									effectiveBsdfPdf = combinedPdf;
 									traceIorStack = PathTransportUtilities::GuidedContinuationIORStack(
-										*pS, iorStack, ri.geometric, traceRay.Dir() );
+										*pS, iorStack, ri, traceRay.Dir(), guidedIorStack );
 									smplBsdfPdf = bsdfPdfGuided;
 									smplGuidePdf = guidePdf;
 									smplCombinedPdf = combinedPdf;
@@ -6216,7 +6218,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					scene,
 					caster,
 					smsSampler,
-					swl.lambda[w] );
+					swl.lambda[w], &iorStack );
 
 				if( sms.valid )
 				{

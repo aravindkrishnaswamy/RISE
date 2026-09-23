@@ -72,7 +72,7 @@ bool TranslucentPelPhotonMap::Store( const RISEPel& power,const Point3& position
 }
 
 void TranslucentPelPhotonMap::RadianceEstimate( RISEPel& rad,
- const RayIntersectionGeometric& query,const IBSDF& bsdf ) const
+ const RayIntersectionGeometric& query,const IBSDF& bsdf, const IORStack* pIorStack ) const
 {
  rad=RISEPel(0.0);
  PhotonDistListType heap;
@@ -100,7 +100,7 @@ void TranslucentPelPhotonMap::RadianceEstimate( RISEPel& rad,
    // front-reflection BSDF or Beer attenuation a second time.
    if(seesExit) rad=rad+photon.power*(response/(PI*valid));
   } else {
-   rad=rad+photon.power*bsdf.value(photon.incomingDirection,query)*response;
+   rad=rad+photon.power*bsdf.valueStateful(photon.incomingDirection,query,pIorStack)*response;
   }
  }
  rad=rad/(PI*radius2);

@@ -5640,7 +5640,8 @@ bool ManifoldSolver::ComputeTrialContribution(
 	Vector3& outDir,
 	RISEPel& outContribution,
 	bool clampGeometric,
-	Scalar* outSmsGeometric
+	Scalar* outSmsGeometric,
+	const IORStack* pIorStack
 	) const
 {
 	outContribution = RISEPel( 0, 0, 0 );
@@ -5681,7 +5682,7 @@ bool ManifoldSolver::ComputeTrialContribution(
 	rig.vGeomNormal = geomNormal;
 	rig.onb = onb;
 
-	RISEPel fBSDF = pBSDF->value( wiAtShading, rig );
+	RISEPel fBSDF = pBSDF->valueStateful( wiAtShading, rig, pIorStack );
 	if( ColorMath::MaxValue( fBSDF ) <= 0 ) return false;
 
 	// Receiver-side BSDF cosine — SHADING (the `cos θ` paired with
@@ -5760,7 +5761,8 @@ bool ManifoldSolver::ComputeTrialContributionNM(
 	Vector3& outDir,
 	Scalar& outContribution,
 	bool clampGeometric,
-	Scalar* outSmsGeometric
+	Scalar* outSmsGeometric,
+	const IORStack* pIorStack
 	) const
 {
 	outContribution = 0;
@@ -5863,7 +5865,8 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	const Vector3& woOutgoing,
 	const IScene& scene,
 	const IRayCaster& caster,
-	ISampler& sampler
+	ISampler& sampler,
+	const IORStack* pIorStack
 	) const
 {
 	// Mitsuba-faithful uniform-on-shape seeding (opt-in via
@@ -6621,7 +6624,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		rig.vGeomNormal = geomNormal;
 		rig.onb = onb;
 
-		RISEPel fBSDF = pBSDF->value( wiAtShading, rig );
+		RISEPel fBSDF = pBSDF->valueStateful( wiAtShading, rig, pIorStack );
 		if( ColorMath::MaxValue( fBSDF ) <= 0 ) continue;
 
 		// Cosine at shading point: SHADING frame paired with `f * cos / pdf`.
@@ -6897,7 +6900,8 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 	const Vector3& woOutgoing,
 	const IScene& scene,
 	const IRayCaster& caster,
-	ISampler& sampler
+	ISampler& sampler,
+	const IORStack* pIorStack
 	) const
 {
 	SMSContribution result;
@@ -7341,7 +7345,8 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 	const IScene& scene,
 	const IRayCaster& caster,
 	ISampler& sampler,
-	const Scalar nm
+	const Scalar nm,
+	const IORStack* pIorStack
 	) const
 {
 	SMSContributionNM result;
@@ -7722,7 +7727,8 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	const IScene& scene,
 	const IRayCaster& caster,
 	ISampler& sampler,
-	const Scalar nm
+	const Scalar nm,
+	const IORStack* pIorStack
 	) const
 {
 	// Mitsuba-faithful uniform-on-shape seeding (opt-in via

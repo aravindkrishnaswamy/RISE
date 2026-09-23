@@ -87,7 +87,8 @@ namespace RISE
 					const ISubSurfaceExtinctionFunction& pFunc,
 					const Scalar maxDistance,
 					const IBSDF* pBSDF,
-					const RayIntersectionGeometric& rig
+					const RayIntersectionGeometric& rig,
+					const IORStack* pIorStack = 0
 					) const;
 			};
 
@@ -123,10 +124,11 @@ namespace RISE
 				const ISubSurfaceExtinctionFunction& pFunc,
 				const Scalar error,
 				const IBSDF* pBSDF,
-				const RayIntersectionGeometric& rig
+				const RayIntersectionGeometric& rig,
+				const IORStack* pIorStack = 0
 				)
 			{
-				return root.Evaluate( c, bbox, 99, point, pFunc, pFunc.GetMaximumDistanceForError(error), pBSDF, rig );
+				return root.Evaluate( c, bbox, 99, point, pFunc, pFunc.GetMaximumDistanceForError(error), pBSDF, rig, pIorStack );
 			};
 		};
 	}

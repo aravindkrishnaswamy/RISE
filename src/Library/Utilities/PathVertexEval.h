@@ -227,6 +227,7 @@ namespace RISE
 			)
 		{
 			ri.bHit            = true;
+			ri.ray.origin      = Point3Ops::mkPoint3( vertex.position, -(ri.ray.Dir() * vertex.scatterIncomingDistance) );
 			ri.ptIntersection  = vertex.position;
 			ri.vNormal         = vertex.normal;
 			ri.vGeomNormal     = vertex.geomNormal;
@@ -345,7 +346,7 @@ namespace RISE
 
 			// Build a RayIntersectionGeometric for the BSDF evaluation.
 			// Negate wo to get ri.ray.Dir() toward the surface.
-			Ray evalRay( vertex.position, -wo );
+			Ray evalRay( vertex.position, vertex.isLightSubpathVertex ? -wi : -wo );
 			RayIntersectionGeometric ri( evalRay, nullRasterizerState );
 			PopulateRIGFromVertex( vertex, ri );
 
@@ -363,7 +364,8 @@ namespace RISE
 			IORStack vertexStack( 1.0 );
 			BuildVertexIORStack( vertex, vertexStack );
 
-			return pBSDF->valueStateful( wi, ri, &vertexStack );
+			const Vector3& evalDir = vertex.isLightSubpathVertex ? wo : wi;
+			return pBSDF->valueStateful( evalDir, ri, &vertexStack );
 		}
 
 		//////////////////////////////////////////////////////////////////////
@@ -433,11 +435,10 @@ namespace RISE
 				return m_pSPF;
 			}
 
-			//! The shared record, re-aimed for this query's `wi`.  Only
-			//! call after `PrepareSPF()` returned non-null.
 			inline RayIntersectionGeometric& RecordFor( const Vector3& wi )
 			{
-				m_ri.ray = Ray( m_vertex.position, -wi );
+				const Vector3 inDir = -wi;
+				m_ri.ray = Ray( Point3Ops::mkPoint3( m_vertex.position, -(inDir * m_vertex.scatterIncomingDistance) ), inDir );
 				return m_ri;
 			}
 
@@ -613,7 +614,7 @@ namespace RISE
 				return 0;
 			}
 
-			Ray evalRay( vertex.position, -wo );
+			Ray evalRay( vertex.position, vertex.isLightSubpathVertex ? -wi : -wo );
 			RayIntersectionGeometric ri( evalRay, nullRasterizerState );
 			PopulateRIGFromVertex( vertex, ri );
 
@@ -621,7 +622,8 @@ namespace RISE
 			IORStack vertexStack( 1.0 );
 			BuildVertexIORStack( vertex, vertexStack );
 
-			return pBSDF->valueStatefulNM( wi, ri, nm, &vertexStack );
+			const Vector3& evalDir = vertex.isLightSubpathVertex ? wo : wi;
+			return pBSDF->valueStatefulNM( evalDir, ri, nm, &vertexStack );
 		}
 
 		//////////////////////////////////////////////////////////////////////

@@ -53,7 +53,9 @@
 #include "StabilityConfig.h"
 #include "../Interfaces/IRayCaster.h"
 #include "../Interfaces/ISPF.h"
+#include "../Interfaces/IMaterial.h"
 #include "../Intersection/RayIntersectionGeometric.h"
+#include "../Intersection/RayIntersection.h"
 
 namespace RISE
 {
@@ -270,18 +272,41 @@ namespace RISE
 		inline const IORStack* GuidedContinuationIORStack(
 			const ScatteredRay& selected,
 			const IORStack& current,
-			const RayIntersectionGeometric& rig,
-			const Vector3& direction
+			const RayIntersection& ri,
+			const Vector3& direction,
+			IORStack& generatedStack
 			)
 		{
-			if( !selected.ior_stack ) return &current;
+			if( !selected.ior_stack ) {
+				Vector3 normal = ri.geometric.vGeomNormal;
+				if( Vector3Ops::Dot( normal, normal ) <= NEARZERO ) normal = ri.geometric.onb.w();
+				const Scalar before = Vector3Ops::Dot( ri.geometric.ray.Dir(), normal );
+				const Scalar after = Vector3Ops::Dot( direction, normal );
+				if( (before > 0 && after > 0) || (before < 0 && after < 0) ) {
+					if( ri.pMaterial ) {
+						SpecularInfo info = ri.pMaterial->GetSpecularInfo(ri.geometric, current);
+						if( info.canRefract || info.hasInterior ) {
+							generatedStack = current;
+							generatedStack.SetCurrentObject( ri.pObject );
+							const bool bEntering = !generatedStack.containsCurrent();
+							if( bEntering ) {
+								generatedStack.push( info.canRefract ? info.ior : generatedStack.top() );
+							} else {
+								generatedStack.pop();
+							}
+							return &generatedStack;
+						}
+					}
+				}
+				return &current;
+			}
 			const Vector3& original = selected.ray.Dir();
 			if( direction.x == original.x && direction.y == original.y && direction.z == original.z ) {
 				return selected.ior_stack;
 			}
-			Vector3 normal = rig.vGeomNormal;
-			if( Vector3Ops::Dot( normal, normal ) <= NEARZERO ) normal = rig.onb.w();
-			const Scalar before = Vector3Ops::Dot( rig.ray.Dir(), normal );
+			Vector3 normal = ri.geometric.vGeomNormal;
+			if( Vector3Ops::Dot( normal, normal ) <= NEARZERO ) normal = ri.geometric.onb.w();
+			const Scalar before = Vector3Ops::Dot( ri.geometric.ray.Dir(), normal );
 			const Scalar after = Vector3Ops::Dot( direction, normal );
 			return ((before > 0 && after > 0) || (before < 0 && after < 0))
 				? selected.ior_stack : &current;

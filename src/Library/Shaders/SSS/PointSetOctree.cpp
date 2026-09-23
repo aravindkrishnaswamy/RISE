@@ -251,7 +251,8 @@ void PointSetOctree::PointSetOctreeNode::Evaluate(
 	const ISubSurfaceExtinctionFunction& pFunc,
 	const Scalar maxDistance,
 	const IBSDF* pBSDF,
-	const RayIntersectionGeometric& rig
+	const RayIntersectionGeometric& rig,
+	const IORStack* pIorStack
 	) const
 {
 	if( pChildren ) {
@@ -268,7 +269,7 @@ void PointSetOctree::PointSetOctreeNode::Evaluate(
 				} else {
 					// Use the node's average irradiance as an estimate
 					if( pBSDF ) {
-						c = c + pFunc.ComputeTotalExtinction( dist ) * pChildren[i]->AverageIrradiance() * pBSDF->value( vdir, rig ) ;
+						c = c + pFunc.ComputeTotalExtinction( dist ) * pChildren[i]->AverageIrradiance() * pBSDF->valueStateful( vdir, rig, pIorStack ) ;
 					} else {
 						c = c + pFunc.ComputeTotalExtinction( dist ) * pChildren[i]->AverageIrradiance();
 					}
@@ -284,7 +285,7 @@ void PointSetOctree::PointSetOctreeNode::Evaluate(
 			const Vector3& vdir = Vector3Ops::mkVector3( i->ptPosition, point );
 			const Scalar dist = Vector3Ops::Magnitude( vdir );
 			if( pBSDF ) {
-				c = c + pFunc.ComputeTotalExtinction( dist ) * i->irrad * pBSDF->value( vdir, rig ) ;
+				c = c + pFunc.ComputeTotalExtinction( dist ) * i->irrad * pBSDF->valueStateful( vdir, rig, pIorStack ) ;
 			} else {
 				c = c + pFunc.ComputeTotalExtinction( dist ) * i->irrad;
 			}
