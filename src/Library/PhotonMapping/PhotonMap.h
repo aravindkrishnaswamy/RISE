@@ -706,9 +706,10 @@ namespace RISE
 			//! Estimates a RISEPel radiance by actually searching through the photons
 			//! and doing computations, this is alternate code
 			void RadianceEstimateFromSearch(
-				RISEPel&						rad,					// returned radiance
-				const RayIntersectionGeometric&	ri,						// ray-surface intersection information
-				const IBSDF&					brdf					// BRDF of the surface to estimate irradiance from
+				RISEPel& rad,
+				const RayIntersectionGeometric& ri,
+				const IBSDF& brdf,
+				const IORStack* pIorStack = 0
 				) const
 			{
 				rad = RISEPel( 0, 0, 0 );
@@ -771,7 +772,7 @@ namespace RISE
 							if( (pcos < maxNDist) && (pcos > -maxNDist) ) {
 								// Filter the samples using a gaussian filter as described in Jensen's course notes
 								const Scalar wpg = alpha * ( 1.0 - ((1-exp(-beta * (i->distance/(2.0*farthest_away))))/(1-exp(-beta))));
-								rad = rad + (p.power * (wpg * response) * brdf.value( vPhotonDir, ri ));
+								rad = rad + (p.power * (wpg * response) * brdf.valueStateful( vPhotonDir, ri, pIorStack ));
 							}
 						}
 					}

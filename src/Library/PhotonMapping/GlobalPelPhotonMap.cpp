@@ -133,7 +133,7 @@ void GlobalPelPhotonMap::SetGatherParams( const Scalar radius,const Scalar ellip
 }
 
 void GlobalPelPhotonMap::RadianceAtAnchor( RISEPel& rad,const CacheAnchor& anchor,
- const RayIntersectionGeometric& query,const IBSDF& bsdf ) const
+ const RayIntersectionGeometric& query,const IBSDF& bsdf, const IORStack* pIorStack ) const
 {
  rad=RISEPel(0.0);
  PhotonDistListType heap;
@@ -152,17 +152,17 @@ void GlobalPelPhotonMap::RadianceAtAnchor( RISEPel& rad,const CacheAnchor& ancho
   // BSDF support, shading frame and position. Do not rebuild the query at
   // the anchor or replace its geometric support normal.
   const Scalar response=PathVertexEval::RadianceShadingNormalFactor(query.vNormal,anchor.geometricNormal,wi);
-  if(response>0) rad=rad+photon.power*bsdf.value(wi,query)*response;
+  if(response>0) rad=rad+photon.power*bsdf.valueStateful(wi,query,pIorStack)*response;
  }
  rad=rad/(PI*radius2);
 }
 
 void GlobalPelPhotonMap::RadianceEstimate( RISEPel& rad,
- const RayIntersectionGeometric& query,const IBSDF& bsdf ) const
+ const RayIntersectionGeometric& query,const IBSDF& bsdf, const IORStack* pIorStack ) const
 {
  const CacheAnchor* anchor=FindAnchor(query.ptIntersection,query.vGeomNormal);
- if(anchor) RadianceAtAnchor(rad,*anchor,query,bsdf);
- else RadianceEstimateFromSearch(rad,query,bsdf);
+ if(anchor) RadianceAtAnchor(rad,*anchor,query,bsdf,pIorStack);
+ else RadianceEstimateFromSearch(rad,query,bsdf,pIorStack);
 }
 
 bool GlobalPelPhotonMap::Store( const RISEPel& power,const Point3& pos,

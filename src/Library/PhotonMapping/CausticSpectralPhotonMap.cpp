@@ -38,8 +38,8 @@ CausticSpectralPhotonMap::~CausticSpectralPhotonMap()
 void CausticSpectralPhotonMap::RadianceEstimate( 
 		RISEPel&						rad,					// returned radiance
 		const RayIntersectionGeometric&	ri,						// ray-surface intersection information
-		const IBSDF&					brdf					// BRDF of the surface to estimate irradiance from
-		) const
+		const IBSDF& brdf, const IORStack* pIorStack // BRDF of the surface to estimate irradiance from
+ ) const
 {
 	rad = RISEPel( 0, 0, 0 );
 
@@ -99,8 +99,8 @@ void CausticSpectralPhotonMap::RadianceEstimateNM(
 			const Scalar					nm,						// wavelength for the estimate
 			Scalar&							rad,					// returned radiance for the particular wavelength
 			const RayIntersectionGeometric&	ri,						// ray-surface intersection information
-			const IBSDF&					brdf					// BRDF of the surface to estimate irradiance from
-			) const
+			const IBSDF& brdf, const IORStack* pIorStack // BRDF of the surface to estimate irradiance from
+ ) const
 {
 	rad = 0;
 	const Scalar mass=samplingLaw.WindowMass(nm,nm_range);

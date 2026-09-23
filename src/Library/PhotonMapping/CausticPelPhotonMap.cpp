@@ -41,8 +41,8 @@ CausticPelPhotonMap::~CausticPelPhotonMap()
 void CausticPelPhotonMap::RadianceEstimate( 
 		RISEPel&						rad,					// returned radiance
 		const RayIntersectionGeometric&	ri,						// ray-surface intersection information
-		const IBSDF&					brdf					// BRDF of the surface to estimate irradiance from
-		) const
+		const IBSDF& brdf, const IORStack* pIorStack // BRDF of the surface to estimate irradiance from
+ ) const
 {
 	RadianceEstimateFromSearch( rad, ri, brdf );
 }

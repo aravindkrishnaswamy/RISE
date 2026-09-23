@@ -51,7 +51,7 @@ void TranslucentPelPhotonMapShaderOp::PerformOperation(
 	const IBSDF* pBRDF = ri.pMaterial->GetBSDF();
 
 	if( pTM && pBRDF ) {
-		pTM->RadianceEstimate( c, ri.geometric, *pBRDF );
+		pTM->RadianceEstimate( c, ri.geometric, *pBRDF, &ior_stack );
 	}
 }
 

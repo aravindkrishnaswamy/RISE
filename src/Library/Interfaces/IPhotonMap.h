@@ -66,7 +66,8 @@ namespace RISE
 		virtual void RadianceEstimate( 
 			RISEPel&						rad,						///< [out] Radiance at the surface
 			const RayIntersectionGeometric&	ri,							///< [in] Ray-surface intersection information
-			const IBSDF&					brdf						///< [in] BRDF of the surface to estimate irradiance from
+			const IBSDF&					brdf,						///< [in] BRDF of the surface to estimate irradiance from
+			const IORStack*					pIorStack = 0				///< [in] Current IOR stack, if available
 			) const = 0;
 
 		//! Counts the number of photons at the particular location
@@ -124,7 +125,8 @@ namespace RISE
 			const Scalar					nm,						///< [in] Wavelength for the estimate
 			Scalar&							rad,					///< [out] Returned radiance for the particular wavelength
 			const RayIntersectionGeometric&	ri,						///< [in] Ray-surface intersection information
-			const IBSDF&					brdf					///< [in] BRDF of the surface to estimate irradiance from
+			const IBSDF&					brdf,					///< [in] BRDF of the surface to estimate irradiance from
+			const IORStack*					pIorStack = 0				///< [in] Current IOR stack, if available
 			) const = 0;		
 
 	};

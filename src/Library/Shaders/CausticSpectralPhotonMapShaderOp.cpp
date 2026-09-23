@@ -51,7 +51,7 @@ void CausticSpectralPhotonMapShaderOp::PerformOperation(
 	const IBSDF* pBRDF = ri.pMaterial->GetBSDF();
 
 	if( pSCM && pBRDF ) {
-		pSCM->RadianceEstimate( c, ri.geometric, *pBRDF );
+		pSCM->RadianceEstimate( c, ri.geometric, *pBRDF, &ior_stack );
 	}
 }
 
@@ -80,7 +80,7 @@ Scalar CausticSpectralPhotonMapShaderOp::PerformOperationNM(
 	const IBSDF* pBRDF = ri.pMaterial->GetBSDF();
 
 	if( pSCM && pBRDF ) {
-		pSCM->RadianceEstimateNM( nm, c, ri.geometric, *pBRDF );
+		pSCM->RadianceEstimateNM( nm, c, ri.geometric, *pBRDF, &ior_stack );
 	}
 
 	return c;

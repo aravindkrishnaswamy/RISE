@@ -141,8 +141,8 @@ public:
 		ObjectManager(false, false, 4, 8), object(obj), material(mat) {}
 	void IntersectRay( RayIntersection& ri, bool, bool, bool ) const override {
 		ri.geometric.bHit = true;
-		ri.geometric.range = 1;
 		ri.geometric.ptIntersection = ri.geometric.ray.PointAtLength(1);
+		ri.geometric.range = Vector3Ops::Magnitude(Vector3Ops::mkVector3(ri.geometric.ray.origin, ri.geometric.ptIntersection));
 		ri.geometric.vNormal = -ri.geometric.ray.Dir();
 		ri.geometric.vGeomNormal = ri.geometric.vNormal;
 		ri.geometric.onb.CreateFromW(ri.geometric.vNormal);
@@ -175,8 +175,8 @@ public:
 	void IntersectRay(RayIntersection& ri, bool, bool, bool) const override {
 		if(!observed.transportStarted || observed.scatters >= 3) return;
 		ri.geometric.bHit = true;
-		ri.geometric.range = 1;
 		ri.geometric.ptIntersection = observed.scatters == 1 ? Point3(0,0,0) : ri.geometric.ray.PointAtLength(1);
+		ri.geometric.range = Vector3Ops::Magnitude(Vector3Ops::mkVector3(ri.geometric.ray.origin, ri.geometric.ptIntersection));
 		ri.geometric.vNormal = observed.scatters == 1 ? ri.geometric.ray.Dir() : -ri.geometric.ray.Dir();
 		ri.geometric.vGeomNormal = ri.geometric.vNormal;
 		ri.geometric.onb.CreateFromW(ri.geometric.vNormal);
@@ -399,7 +399,7 @@ static void Run()
 					rc.guidingSamplingType = mode == 2 ? eGuidingRIS : eGuidingOneSampleMIS;
 					RayIntersection hit(Ray(Point3(0,0,-1),Vector3(0,0,1)),rast);
 					hit.geometric.bHit = true;
-					hit.geometric.range = 1;
+					hit.geometric.range = 1; // fake hit
 					hit.geometric.ptIntersection = Point3(0,0,0);
 					hit.geometric.vNormal = tilted ? Vector3(std::sqrt(3.0)/2,0,.5) : Vector3(0,0,1);
 					hit.geometric.vGeomNormal = Vector3(0,0,1);

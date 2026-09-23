@@ -227,6 +227,7 @@ namespace RISE
 			)
 		{
 			ri.bHit            = true;
+			ri.ray.origin      = Point3Ops::mkPoint3( vertex.position, -(ri.ray.Dir() * vertex.scatterIncomingDistance) );
 			ri.ptIntersection  = vertex.position;
 			ri.vNormal         = vertex.normal;
 			ri.vGeomNormal     = vertex.geomNormal;
@@ -345,7 +346,7 @@ namespace RISE
 
 			// Build a RayIntersectionGeometric for the BSDF evaluation.
 			// Negate wo to get ri.ray.Dir() toward the surface.
-			Ray evalRay( vertex.position, -wo );
+			Ray evalRay( vertex.position, vertex.isLightSubpathVertex ? -wi : -wo );
 			RayIntersectionGeometric ri( evalRay, nullRasterizerState );
 			PopulateRIGFromVertex( vertex, ri );
 
@@ -435,9 +436,10 @@ namespace RISE
 
 			//! The shared record, re-aimed for this query's `wi`.  Only
 			//! call after `PrepareSPF()` returned non-null.
-			inline RayIntersectionGeometric& RecordFor( const Vector3& wi )
+			inline RayIntersectionGeometric& RecordFor( const Vector3& wi, const Vector3& wo )
 			{
-				m_ri.ray = Ray( m_vertex.position, -wi );
+				Vector3 inDir = m_vertex.isLightSubpathVertex ? -wi : -wo;
+				m_ri.ray = Ray( Point3Ops::mkPoint3( m_vertex.position, -(inDir * m_vertex.scatterIncomingDistance) ), inDir );
 				return m_ri;
 			}
 
@@ -518,7 +520,7 @@ namespace RISE
 			}
 
 			// Negate wi to get toward-surface direction for ri.ray.Dir()
-			return pSPF->Pdf( ctx.RecordFor( wi ), wo, ctx.Stack() );
+			return pSPF->Pdf( ctx.RecordFor( wi, wo ), wo, ctx.Stack() );
 		}
 
 		/// Evaluates the SPF sampling PDF at a path vertex.
@@ -613,7 +615,7 @@ namespace RISE
 				return 0;
 			}
 
-			Ray evalRay( vertex.position, -wo );
+			Ray evalRay( vertex.position, vertex.isLightSubpathVertex ? -wi : -wo );
 			RayIntersectionGeometric ri( evalRay, nullRasterizerState );
 			PopulateRIGFromVertex( vertex, ri );
 
@@ -648,7 +650,7 @@ namespace RISE
 				return 0;
 			}
 
-			return pSPF->PdfNM( ctx.RecordFor( wi ), wo, nm, ctx.Stack() );
+			return pSPF->PdfNM( ctx.RecordFor( wi, wo ), wo, nm, ctx.Stack() );
 		}
 
 		/// Evaluates the SPF sampling PDF at a vertex for a single wavelength.
