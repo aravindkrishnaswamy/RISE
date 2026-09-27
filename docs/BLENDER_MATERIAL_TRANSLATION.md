@@ -345,9 +345,15 @@ dependency on the wider `coated_material` substrate allowlist landed
 COATED-over-fabric (a wax finish over cloth), a different composition
 this debt does not need.  This is the SAME `pbrRegisterName`
 intermediate-name mechanism `GLTFSceneImporter.cpp` already uses for
-its own sheen-vs-clearcoat precedence (sheen wins there too, for the
-identical reason: `coated_material` cannot wrap a `fabric_material`
-result, but `fabric_material` CAN wrap a `ggx_material`/PBR one).
+its own sheen-vs-clearcoat naming precedence (sheen still takes
+priority there too when picking THIS particular intermediate name,
+for the identical reason: `fabric_material` CAN wrap a
+`ggx_material`/PBR one directly, so it is the natural first wrap.
+Historically `coated_material` could not then wrap that
+`fabric_material` result in turn -- since DL-23 [docs/DEBT_LEDGER.md,
+closed 2026-09-14] it can, and both bridges now compose a coat OVER
+the fabric result when both contribute; see "Coat and Subsurface"
+below).
 
 **Textured sheen tint/roughness (ABI v12's texture-scalar path).**
 `sheen_color_painter_name` is always a genuine `IPainter` reference
@@ -552,18 +558,29 @@ class differs).
 | `Coat Roughness` | `coat_roughness` (numeric) / `coat_roughness_texture_painter_name` | Blender's PERCEPTUAL roughness [0,1]. The native bridge SQUARES it into a GGX alpha before calling `AddCoatedMaterial` — `coated_material`'s own `coat_roughness` slot is directly a GGX alpha, not a perceptual roughness — matching `GLTFSceneImporter.cpp`'s identical `clearcoat_roughness_factor^2` conversion for `KHR_materials_clearcoat`. |
 | `Coat IOR` | `coat_ior` | Plain numeric IOR (>= 1), socket-default only — Blender rarely textures this input and `coated_material`'s own `coat_ior` slot is not texture-driven either. |
 
-**Layering with Sheen.** A material with BOTH Coat Weight > 0 and
-Sheen contributing gets **Sheen only** — `coated_material`'s substrate
-allowlist does not accept a `fabric_material` (the sheen result), so
-the coat cannot wrap ON TOP of sheen.  This is the identical call
-`GLTFSceneImporter.cpp`'s own `KHR_materials_clearcoat` +
-`KHR_materials_sheen` handling already makes (see "Anisotropy and
-sheen" above); the Blender bridge applies it consistently, warning at
-both the exporter layer (`_material_payload`) and the native layer
-(`add_pbr_metallic_roughness_material`) rather than dropping the coat
-silently.  A material with Coat but no Sheen wraps the PBR base
-directly, exactly like the `coated_material.RISEscene` regression
-scene's own `mat_lacquer`/`mat_wet` examples.
+**Layering with Sheen (UPDATED 2026-09-27).** A material with BOTH
+Coat Weight > 0 and Sheen contributing composes the coat OVER the
+sheen result: `add_pbr_metallic_roughness_material` builds the fabric
+(sheen) wrap first (registered under an intermediate
+`<name>::sheenbase_undercoat` name whenever coat also contributes),
+then wraps THAT with a `coated_material` layer via the same
+`BuildCoatWrap` mechanism the coat-only case below uses, matching
+glTF's own base → sheen → clearcoat layer order.  This mirrors
+`GLTFSceneImporter.cpp`'s identical `KHR_materials_clearcoat` +
+`KHR_materials_sheen` composition (see "Anisotropy and sheen" above),
+which was updated the same way and for the same reason: DL-23
+(docs/DEBT_LEDGER.md, closed 2026-09-14) lifted `coated_material`'s
+substrate-allowlist refusal of a `FabricMaterial`.  **Historically**
+(before this fix), the combination got Sheen only — the allowlist
+refused a `fabric_material` substrate, so the coat was warned-and-
+dropped at both the exporter layer (`_material_payload`) and the
+native layer (`add_pbr_metallic_roughness_material`); neither layer
+warns for this combination any more, since it is now fully supported.
+A material with Coat but no Sheen still wraps the PBR base directly,
+exactly like the `coated_material.RISEscene` regression scene's own
+`mat_lacquer`/`mat_wet` examples.  See
+`tests/BlenderBridgeCoatTest.cpp`'s `TestCoatComposesOverSheen` (was
+`TestCoatAndSheenTogetherKeepsSheenOnly`) for the regression.
 
 ### Coat Normal -> `coated_material`'s coat lobe (ABI v14, DL-192)
 
@@ -1223,11 +1240,15 @@ stays manually validated only.
   unaffected, coat wraps a real `CoatedMaterial` around a real,
   separately-registered PBR base with a differing BRDF response,
   numeric and texture-driven `coat_roughness`/`coat_weight` both
-  change the response, coat+emission keeps both, **coat+sheen together
-  keeps sheen's response EXACTLY** (money check: the two responses
-  agree to `1e-9`, confirming the coat genuinely contributes nothing
-  once skipped, not merely that it registers under a different type),
-  and an unresolvable `coat_tint_painter_name` fails fatally.
+  change the response, coat+emission keeps both, **coat+sheen now
+  composes the coat OVER the fabric (sheen) result** (money checks:
+  the final material is a `CoatedMaterial` whose base is a
+  `FabricMaterial` registered under `::sheenbase_undercoat`, and its
+  response DIFFERS from a sheen-only control, confirming the coat
+  genuinely contributes now that it composes over sheen instead of
+  being dropped — `TestCoatComposesOverSheen`, was
+  `TestCoatAndSheenTogetherKeepsSheenOnly`), and an unresolvable
+  `coat_tint_painter_name` fails fatally.
   Subsurface: probes `IMaterial::GetRandomWalkSSSParams()` directly —
   a far more precise instrument than a BRDF-response comparison, since
   it reads back the exact baked `sigma_a`/`sigma_s`/`ior`/`g`/

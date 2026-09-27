@@ -4850,7 +4850,16 @@ yet known (§10.1).
     does consume this composition, as predicted: `CoatedBRDF::SubstrateAlbedo`
     already read `IBSDF::hemisphericalAlbedo` generically, so no change was
     needed there — the composition simply became reachable once the
-    allowlist opened.
+    allowlist opened.  **The importer-side follow-up this composition
+    unblocked is now ALSO CLOSED (2026-09-27, docs/IMPROVEMENTS.md
+    "Clearcoat over `fabric_material`", commits `84d33974`/`31cb5be4`)**:
+    `GLTFSceneImporter.cpp` and the Blender native bridge
+    (`rise_blender_bridge.cpp`) both now build a `coated_material`
+    wrapping the sheen's `fabric_material` result when both extensions
+    contribute, instead of warning and dropping the coat -- see
+    [GLTF_IMPORT.md](GLTF_IMPORT.md) §15 and
+    [BLENDER_MATERIAL_TRANSLATION.md](BLENDER_MATERIAL_TRANSLATION.md)
+    "Coat and Subsurface" for the current behaviour.
 
 17. ~~**NEW 2026-09-02 (round 5) — the substrate's own `hemisphericalAlbedo` is
     the larger error, and it is not `fabric_material`'s to fix.**~~
