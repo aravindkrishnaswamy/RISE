@@ -2456,20 +2456,21 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
                 )
 
         # LAYERING DECISION (docs/BLENDER_MATERIAL_TRANSLATION.md "Coat
-        # and Subsurface"): mirrors GLTFSceneImporter.cpp's own
-        # KHR_materials_clearcoat + KHR_materials_sheen combination --
-        # `coated_material`'s substrate allowlist does not accept a
-        # `fabric_material` (the sheen result), so the coat cannot wrap
-        # ON TOP of sheen.  The native bridge (rise_blender_bridge.cpp)
-        # makes the SAME call and skips the coat layer there too; this
-        # warning is the Blender-node-side half of that one decision.
-        if sheen_weight > 1e-4:
-            _warn_once(
-                state,
-                f"RISE: '{material.name_full}' declares both Coat Weight and Sheen; coated_material's "
-                f"substrate allowlist does not accept a fabric_material (the sheen result), so the coat "
-                f"layer is skipped, keeping sheen.",
-            )
+        # and Subsurface"), UPDATED 2026-09-27: this USED TO warn and
+        # drop the coat when Sheen also contributed, mirroring
+        # GLTFSceneImporter.cpp's own (also since-updated)
+        # KHR_materials_clearcoat + KHR_materials_sheen handling --
+        # `coated_material`'s substrate allowlist did not accept a
+        # `fabric_material` (the sheen result).  DL-23
+        # (docs/DEBT_LEDGER.md, closed 2026-09-14) lifted that
+        # allowlist refusal, and the native bridge
+        # (rise_blender_bridge.cpp's `add_pbr_metallic_roughness_material`)
+        # now composes a `coated_material` wrapping the sheen's
+        # `fabric_material` result instead of skipping it -- so no
+        # warning belongs here any more; both fields simply combine.
+        # (No `_material_payload` code change was otherwise needed:
+        # `coat_*` and `sheen_*` fields are forwarded independently and
+        # the native bridge alone decides how to compose them.)
 
     # Subsurface (DL-186, docs/DEBT_LEDGER.md) -- Blender's Principled
     # "Subsurface Weight" / "Subsurface Radius" (RGB vector, scene

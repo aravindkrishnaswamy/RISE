@@ -1373,34 +1373,54 @@ A broader independent BRDF sweep changed from 150 checks/46 failures to 150 chec
 
 ---
 
-## Clearcoat over `fabric_material` — not composable, unowned
+## ~~Clearcoat over `fabric_material` — not composable, unowned~~
 
-`coated_material`'s substrate allowlist admits `lambertian_material` /
+CLOSED 2026-09-27 — commits `84d33974` (glTF importer) and `31cb5be4`
+(Blender native bridge): `GLTFSceneImporter.cpp` now builds a
+`coated_material` wrapping the sheen's `fabric_material` result whenever
+`KHR_materials_clearcoat` and `KHR_materials_sheen` both contribute on
+one material, matching glTF's own base → sheen → clearcoat layer order;
+the clearcoat factor/roughness/tint mapping is shared with the
+clearcoat-only branch via one `BuildClearcoatWrap` lambda so the two
+call sites cannot drift.  `rise_blender_bridge.cpp`'s
+`add_pbr_metallic_roughness_material` carried the identical sheen-wins
+layering decision and was updated the same way, via a shared
+`BuildCoatWrap` lambda.  `tests/GLTFSheenImportTest.cpp`'s
+`TestClearcoatSheenComposesCoatOverFabric` (was `TestClearcoatSheenOrdering`,
+which asserted the OLD sheen-wins behaviour) and
+`tests/BlenderBridgeCoatTest.cpp`'s `TestCoatComposesOverSheen` (was
+`TestCoatAndSheenTogetherKeepsSheenOnly`) are the regressions; both were
+confirmed genuinely red against an isolated pre-fix rebuild (the C++
+importer test: 4 of 47 checks failed; the Blender bridge test: 5 of 60
+checks failed) before the fix landed.  See
+[docs/GLTF_IMPORT.md](GLTF_IMPORT.md) §15's "Clearcoat + sheen on the
+same material" paragraph and
+[docs/BLENDER_MATERIAL_TRANSLATION.md](BLENDER_MATERIAL_TRANSLATION.md)
+"Coat and Subsurface" for the current behaviour, and
+[docs/CLOTH_FABRIC_DESIGN.md](CLOTH_FABRIC_DESIGN.md) §15 item 16 for
+the material-composition side this follow-up unblocked.
+
+`coated_material`'s substrate allowlist used to admit `lambertian_material` /
 `orennayar_material` / `ggx_material` only (three of the four scattering
 classes `FabricMaterial::IsSupportedSubstrate` checks — fabric also admits
-`weave_material`) — `fabric_material` is none of those, so
-`coated_material` cannot wrap one.  A glTF asset
+`weave_material`) — `fabric_material` was none of those, so
+`coated_material` could not wrap one.  A glTF asset
 combining `KHR_materials_sheen` + `KHR_materials_clearcoat` (lacquered
-fabric, coated upholstery) loses the clearcoat layer on import as a
-result: sheen wins the wrap (the registered material is the
-`fabric_material` over the bare PBR base) and the clearcoat layer is
-warn-and-skipped, naming both extensions in the message so the drop is
-said, not silent ([docs/GLTF_IMPORT.md](GLTF_IMPORT.md) §15;
-`GLTFSceneImporter.cpp`'s clearcoat/sheen composition warning).
+fabric, coated upholstery) lost the clearcoat layer on import as a
+result: sheen won the wrap (the registered material was the
+`fabric_material` over the bare PBR base) and the clearcoat layer was
+warn-and-skipped, naming both extensions in the message so the drop was
+said, not silent.
 
 **Blocker REMOVED 2026-09-14 (DL-23, [docs/DEBT_LEDGER.md](DEBT_LEDGER.md)):**
-`CoatedMaterial` now admits `FabricMaterial` (and `WeaveMaterial`) as a
+`CoatedMaterial` gained `FabricMaterial` (and `WeaveMaterial`) as a
 substrate, with `CoatedBRDF`/`CoatedSPF` forwarding and modulating a
 `transmission thin` weave's below-horizon transport exactly as
 `FabricBRDF`/`FabricSPF` already did.  `docs/CLOTH_FABRIC_DESIGN.md` §15
-item 16's tail and item 22's "one hop out" prediction are both struck
-accordingly.  **This item's OWN remaining scope is narrower than it was**:
-the material-composition machinery is unblocked, but `GLTFSceneImporter.cpp`
-still needs its own follow-up to actually BUILD a `coated_material` wrapping
-a `fabric_material` when both `KHR_materials_sheen` and
-`KHR_materials_clearcoat` are present, instead of warning and dropping the
-clearcoat layer -- that importer-side wiring was outside DL-23's
-parser/Job/material-composition scope and is not yet scheduled.
+item 16's tail and item 22's "one hop out" prediction were struck
+accordingly at the time.  The importer-side wiring that composition
+unblocked (this item's own remaining scope at the time) is what the
+2026-09-27 closure above delivers.
 
 ---
 

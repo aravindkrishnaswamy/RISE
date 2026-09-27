@@ -39,11 +39,16 @@
 //       mirroring sheen_roughness_texture_painter_name's own v12
 //       precedent) really varies coverage across UV.
 //    6. COAT + EMISSION KEEP BOTH.
-//    7. COAT + SHEEN: sheen wins (documented layering decision,
-//       mirrors GLTFSceneImporter.cpp's identical clearcoat+sheen
-//       call) -- the coat layer is skipped, no `::coatbase`
-//       intermediate is registered, and the final material's response
-//       matches a sheen-only control (coat contributes nothing).
+//    7. COAT + SHEEN: the coat now composes OVER the fabric (sheen)
+//       result (DL-23 follow-up, docs/DEBT_LEDGER.md -- lifted
+//       `coated_material`'s substrate-allowlist refusal of a
+//       `FabricMaterial`; mirrors GLTFSceneImporter.cpp's identical
+//       clearcoat-over-sheen composition) -- the final material is a
+//       CoatedMaterial whose base is the FabricMaterial (registered
+//       under `::sheenbase_undercoat`), and its response DIFFERS from
+//       a sheen-only control (the coat lobe genuinely contributes).
+//       This test used to assert the OLD "sheen wins, coat skipped"
+//       layering; it now asserts the new composition.
 //    8. An unresolvable `coat_tint_painter_name` is a fatal failure,
 //       matching sheen_color_painter_name's own required-slot
 //       convention.
@@ -516,12 +521,19 @@ void TestCoatWithEmissionKeepsBoth()
 }
 
 // ============================================================
-//  7. Coat + sheen: sheen wins, coat skipped (documented layering)
+//  7. Coat + sheen: coat now composes OVER the fabric (sheen) result
+//     (DL-23 follow-up -- CoatedMaterial::IsSupportedSubstrate accepts
+//     a FabricMaterial since 2026-09-14; the Blender bridge's own
+//     layering decision, previously "sheen wins, coat skipped", is
+//     updated to match glTF's identical base -> sheen -> clearcoat
+//     order -- see GLTFSheenImportTest.cpp's
+//     TestClearcoatSheenComposesCoatOverFabric for the C++-importer twin
+//     of this test).
 // ============================================================
 
-void TestCoatAndSheenTogetherKeepsSheenOnly()
+void TestCoatComposesOverSheen()
 {
-	std::cout << "Test: Coat Weight + Sheen together keep SHEEN ONLY (documented layering decision)" << std::endl;
+	std::cout << "Test: Coat Weight + Sheen together compose coat OVER fabric (updated layering)" << std::endl;
 
 	JobHolder job;
 	if( !job.Valid() ) { Check( false, "created a job" ); return; }
@@ -544,20 +556,104 @@ void TestCoatAndSheenTogetherKeepsSheenOnly()
 	Check( add_material( *job, both, err, sizeof( err ) ), std::string( "coat+sheen material registered: " ) + err );
 	Check( add_material( *job, sheenOnly, err, sizeof( err ) ), "sheen-only control registered" );
 
-	Check( FabricOf( *job, "coat_and_sheen" ) != 0,
-		"the final name IS a FabricMaterial (sheen is the outer/only layer)" );
-	Check( CoatedOf( *job, "coat_and_sheen" ) == 0,
-		"the final name is NOT a CoatedMaterial -- coat did not wrap on top" );
-	Check( (*job).GetMaterials()->GetItem( "coat_and_sheen::coatbase" ) == 0,
-		"MONEY: no `::coatbase` intermediate is registered -- the coat layer is genuinely skipped, "
-		"not just hidden" );
+	Check( CoatedOf( *job, "coat_and_sheen" ) != 0,
+		"A MONEY: the final name IS a CoatedMaterial -- the coat now composes over the sheen "
+		"result instead of being skipped" );
+	Check( FabricOf( *job, "coat_and_sheen" ) == 0,
+		"the final name is NOT itself a FabricMaterial -- that lives one layer down, under the "
+		"coat" );
+
+	const CoatedMaterial* coated = CoatedOf( *job, "coat_and_sheen" );
+	const FabricMaterial* fabricUnderCoat = coated
+		? dynamic_cast<const FabricMaterial*>( &coated->GetBase() ) : 0;
+	Check( fabricUnderCoat != 0,
+		"B MONEY: the coated material's `base` is a `FabricMaterial` -- the coat wraps the "
+		"sheen layer's OWN result" );
+
+	Check( FabricOf( *job, "coat_and_sheen::sheenbase_undercoat" ) != 0,
+		"the fabric (sheen) layer is registered under the `::sheenbase_undercoat` intermediate "
+		"name and IS a live FabricMaterial" );
 
 	const double bothResponse = Respond( *job, "coat_and_sheen" );
 	const double sheenOnlyResponse = Respond( *job, "sheen_only_ctrl" );
 	Check( bothResponse > 0.0 && sheenOnlyResponse > 0.0, "both materials have a real response" );
-	Check( std::fabs( bothResponse - sheenOnlyResponse ) < 1.0e-9,
-		"MONEY: the coat+sheen material's response is IDENTICAL to the sheen-only control's -- "
-		"the coat genuinely contributes nothing when sheen is also present" );
+	Check( std::fabs( bothResponse - sheenOnlyResponse ) > 1.0e-6,
+		"C MONEY: the coat+sheen material's response DIFFERS from the sheen-only control's -- "
+		"the coat lobe genuinely contributes now that it composes over sheen instead of being "
+		"dropped (both " + std::to_string( bothResponse ) + " vs sheen-only " +
+		std::to_string( sheenOnlyResponse ) + ")" );
+}
+
+// ============================================================
+//  7b. Self-review addition (implementation-review-loop's "did you test
+//      the triple combination" lens): Coat + Sheen + Emission all on
+//      ONE material.  Each pairwise combination is covered elsewhere
+//      (TestCoatComposesOverSheen for coat+sheen, TestCoatWithEmission-
+//      KeepsBoth for coat+emission) but never all three at once.
+// ============================================================
+
+void TestCoatSheenEmissionTripleCombination()
+{
+	std::cout << "Test: Coat + Sheen + Emission all on one material" << std::endl;
+
+	JobHolder job;
+	if( !job.Valid() ) { Check( false, "created a job" ); return; }
+
+	double sheenColor[3] = { 1.0, 1.0, 1.0 };
+	(*job).AddUniformColorPainter( "sheen_white_triple", sheenColor, "Rec709RGB_Linear" );
+	double emitColor[3] = { 2.0, 1.0, 0.5 };
+	(*job).AddUniformColorPainter( "emit_color_triple", emitColor, "Rec709RGB_Linear" );
+
+	rise_blender_material mat = PbrFixture( *job, "coat_sheen_emit" );
+	mat.coat_weight = 1.0;
+	mat.coat_roughness = 0.1;
+	mat.coat_ior = 1.5;
+	mat.sheen_color_painter_name = "sheen_white_triple";
+	mat.sheen_roughness = 0.3;
+	mat.emission_painter_name = "emit_color_triple";
+	mat.emissive_scale = 2.0;
+
+	char err[256] = { 0 };
+	Check( add_material( *job, mat, err, sizeof( err ) ),
+		std::string( "MONEY: coat+sheen+emission material registered: " ) + err );
+
+	RISE::IMaterial* finalMat = (*job).GetMaterials() ? (*job).GetMaterials()->GetItem( "coat_sheen_emit" ) : 0;
+	Check( finalMat != 0, "the final material is registered" );
+	if( finalMat ) {
+		Check( finalMat->GetEmitter() != 0,
+			"MONEY: the final material has a real emitter -- emission was NOT dropped even with "
+			"coat and sheen both also present" );
+		Check( dynamic_cast<LambertianLuminaireMaterial*>( finalMat ) != 0,
+			"the final material is a LambertianLuminaireMaterial (the outer emissive wrapper)" );
+		Check( dynamic_cast<CoatedMaterial*>( finalMat ) == 0,
+			"the final material is NOT itself a CoatedMaterial -- that lives one layer down" );
+	}
+
+	const CoatedMaterial* coated = CoatedOf( *job, "coat_sheen_emit::coatoversheenbase" );
+	Check( coated != 0,
+		"MONEY: the coat layer is registered under the `::coatoversheenbase` intermediate name "
+		"and IS a live CoatedMaterial, even with sheen also present" );
+
+	const FabricMaterial* fabric = coated ? dynamic_cast<const FabricMaterial*>( &coated->GetBase() ) : 0;
+	Check( fabric != 0,
+		"MONEY: the coated material's base is a FabricMaterial -- the coat wraps the sheen "
+		"result, not the bare PBR base, even with emission also present" );
+
+	Check( FabricOf( *job, "coat_sheen_emit::sheenbase_undercoat" ) != 0,
+		"the fabric (sheen) layer is registered under the `::sheenbase_undercoat` intermediate "
+		"name and IS a live FabricMaterial" );
+
+	if( coated ) {
+		Check( coated->GetEmitter() == 0,
+			"the coat layer itself carries no emitter -- a legal coated_material result" );
+	}
+	if( fabric ) {
+		Check( fabric->GetEmitter() == 0,
+			"the fabric (sheen) layer itself carries no emitter either" );
+	}
+
+	const double response = Respond( *job, "coat_sheen_emit::coatoversheenbase" );
+	Check( response > 0.0, "the coat-over-sheen layer has a real response" );
 }
 
 // ============================================================
@@ -598,7 +694,8 @@ int main()
 	TestTextureDrivenCoatRoughnessSquaresPerTexel();
 	TestTextureDrivenCoatWeight();
 	TestCoatWithEmissionKeepsBoth();
-	TestCoatAndSheenTogetherKeepsSheenOnly();
+	TestCoatComposesOverSheen();
+	TestCoatSheenEmissionTripleCombination();
 	TestDanglingCoatTintIsFatal();
 
 	std::cout << "----------------------------------------" << std::endl;
