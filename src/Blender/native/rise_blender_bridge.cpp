@@ -1172,14 +1172,18 @@ namespace
 		const bool hasEmission = ( material.emission_painter_name && material.emission_painter_name[0] );
 		const std::string finalName = material.name;
 
-		// Sheen takes priority over coat for the intermediate-name
-		// choice, mirroring GLTFSceneImporter.cpp's identical
-		// `pbrRegisterName` decision (that file's own comment: "sheen
-		// takes priority over clearcoat when picking the intermediate
-		// name") -- `coated_material`'s substrate allowlist does not
-		// accept a `fabric_material` result, so sheen is always the
-		// OUTERMOST layer when both contribute (see the coat-skip
-		// warning-diagnostic and `hasCoat && !hasSheen` gate below).
+		// Sheen takes priority over coat for THIS particular
+		// intermediate-name choice (the raw PBR base), mirroring
+		// GLTFSceneImporter.cpp's identical `pbrRegisterName` decision
+		// (that file's own comment: "sheen still takes priority over
+		// clearcoat when picking THIS particular intermediate name").
+		// When both contribute, the fabric (sheen) wrap built over THIS
+		// name is in turn wrapped by a `coated_material` layer below
+		// (DL-23, docs/DEBT_LEDGER.md, lifted `coated_material`'s
+		// refusal of a `FabricMaterial` substrate) -- coat is the
+		// OUTERMOST layer when both contribute, matching glTF's own
+		// base -> sheen -> clearcoat order; see `BuildCoatWrap`'s
+		// `hasCoat` call site inside the `hasSheen` branch below.
 		const std::string pbrRegisterName = ( hasSheen || hasCoat ) ? ( finalName + "::pbrbase" ) : finalName;
 
 		// P1 FIX (post-DL-18 review, 2026-09-17).  `FabricMaterial::-
@@ -1237,91 +1241,42 @@ namespace
 			return true;
 		}
 
-		// `wrapRegisterName` names whichever layer (sheen, or coat when
-		// sheen doesn't contribute) is the LAST one built over
-		// `pbrRegisterName` -- the substrate the deferred emission
-		// wrapper below re-attaches over.  Set by whichever branch runs.
-		std::string wrapRegisterName;
-
-		if( hasSheen ) {
-			char roughnessLiteral[64];
-			std::snprintf( roughnessLiteral, sizeof( roughnessLiteral ), "%.9g", material.sheen_roughness );
-			const std::string sheenRoughness = resolve_material_scalar_slot(
-				job, material.sheen_roughness_texture_painter_name, roughnessLiteral );
-
-			// The fabric (sheen) wrap registers under an INTERMEDIATE
-			// name when emission also contributes (a
-			// `LambertianLuminaireMaterial` layer above it then owns
-			// `finalName`, see below); otherwise it registers directly
-			// under `finalName` as before.
-			const std::string fabricRegisterName = hasEmission ? ( finalName + "::sheenbase" ) : finalName;
-
-			// `fabric` = "custom" (no preset seeding -- Blender's
-			// Principled Sheen carries no fabric-type concept, matching
-			// GLTFSceneImporter.cpp's identical choice for
-			// KHR_materials_sheen) and `weave_rotation` = "0.0"
-			// (Blender's Sheen model has no weave-direction concept
-			// either; the anisotropic-GGX case above already carries
-			// its own `tangent_rotation`).
-			if( !job.AddFabricMaterial(
-				fabricRegisterName.c_str(),
-				"custom",
-				pbrRegisterName.c_str(),
-				material.sheen_color_painter_name,
-				sheenRoughness.c_str(),
-				"0.0" ) )
-			{
-				write_error( error_message, error_message_size, "Failed to create a fabric (sheen) material wrap" );
-				return false;
-			}
-			wrapRegisterName = fabricRegisterName;
-
-			// LAYERING DECISION (DL-186, docs/BLENDER_MATERIAL_-
-			// TRANSLATION.md "Coat and Subsurface"): glTF's own
-			// KHR_materials_clearcoat + KHR_materials_sheen combination
-			// (GLTFSceneImporter.cpp) skips clearcoat and keeps sheen
-			// for the identical reason -- `coated_material`'s substrate
-			// allowlist does not accept a `fabric_material` result, so
-			// the coat cannot wrap on top of sheen.  Blender's bridge
-			// makes the same call; say so rather than dropping it
-			// silently (exporter.py ALSO warns at export time, from the
-			// Blender-node side of this same decision).
-			if( hasCoat ) {
-				RISE::GlobalLog()->PrintEx( RISE::eLog_Warning,
-					"add_pbr_metallic_roughness_material `%s`: Coat Weight and Sheen both contribute; "
-					"coated_material's substrate allowlist does not accept a fabric_material (the sheen "
-					"result), so the coat layer is skipped, keeping sheen.",
-					finalName.c_str() );
-			}
-		} else {
-			// hasCoat && !hasSheen: coat wraps the PBR base directly.
+		// Shared coat-wrap builder (DL-23 follow-up, docs/DEBT_LEDGER.md /
+		// docs/IMPROVEMENTS.md "Clearcoat over `fabric_material`"):
+		// `CoatedMaterial::IsSupportedSubstrate` now accepts a
+		// `FabricMaterial`, so this is reused both when coat wraps the
+		// bare PBR base directly (hasCoat && !hasSheen, below) and when
+		// it wraps the sheen's OWN `fabric_material` result (hasCoat &&
+		// hasSheen, in the `hasSheen` branch below) -- matching glTF's
+		// identical base -> sheen -> clearcoat layer order
+		// (`GLTFSceneImporter.cpp`'s own `BuildClearcoatWrap` lambda is
+		// the C++ importer's twin of this one).  `coat_roughness` arrives
+		// as Blender's PERCEPTUAL roughness [0,1]; `coated_material`'s
+		// own `coat_roughness` slot is a GGX alpha, so it is SQUARED here
+		// -- the identical conversion GLTFSceneImporter.cpp applies to
+		// `clearcoat_roughness_factor` (that file's own comment:
+		// "passing the perceptual value straight through would silently
+		// render a coat about sqrt too rough").  Applied to the NUMERIC
+		// fallback here; the TEXTURE-driven branch needs the IDENTICAL
+		// per-texel squaring, so `square=true` is passed to
+		// `resolve_material_scalar_slot` below rather than assuming (as
+		// an earlier revision of this comment wrongly did) that a bound
+		// texture "already encodes the desired alpha directly" -- review
+		// found that assumption false (`CoatedBRDF::GetCoatRoughness()`
+		// read alpha 0.25 on the numeric path vs 0.5 on the texture path
+		// for the SAME authored value 0.5, a 2x divergence) and the
+		// review is what added the `square` parameter.
+		// `sheen_roughness_texture_painter_name` (below, in the `hasSheen`
+		// branch) is a genuinely DIFFERENT case, not a counter-example:
+		// Charlie alpha is never squared from a perceptual value on
+		// EITHER its numeric or texture path, so `square=false` (the
+		// default) there is correct, not merely unaudited.
+		auto BuildCoatWrap = [&]( const std::string& coatOutputName, const std::string& substrateName ) -> bool {
 			char weightLiteral[64];
 			std::snprintf( weightLiteral, sizeof( weightLiteral ), "%.9g", material.coat_weight );
 			const std::string coatWeight = resolve_material_scalar_slot(
 				job, material.coat_weight_texture_painter_name, weightLiteral );
 
-			// `coat_roughness` arrives as Blender's PERCEPTUAL roughness
-			// [0,1]; `coated_material`'s own `coat_roughness` slot is a
-			// GGX alpha, so it is SQUARED here -- the identical
-			// conversion GLTFSceneImporter.cpp applies to
-			// `clearcoat_roughness_factor` (that file's own comment:
-			// "passing the perceptual value straight through would
-			// silently render a coat about sqrt too rough").  Applied
-			// to the NUMERIC fallback here; the TEXTURE-driven branch
-			// needs the IDENTICAL per-texel squaring, so `square=true` is
-			// passed to resolve_material_scalar_slot below rather than
-			// assuming (as an earlier revision of this comment wrongly
-			// did) that a bound texture "already encodes the desired
-			// alpha directly" -- review found that assumption false
-			// (`CoatedBRDF::GetCoatRoughness()` read alpha 0.25 on the
-			// numeric path vs 0.5 on the texture path for the SAME
-			// authored value 0.5, a 2x divergence) and the review is what
-			// added the `square` parameter.  `sheen_roughness_texture_-
-			// painter_name` below is a genuinely DIFFERENT case, not a
-			// counter-example: Charlie alpha is never squared from a
-			// perceptual value on EITHER its numeric or texture path, so
-			// `square=false` (the default) there is correct, not merely
-			// unaudited.
 			const double coatRoughSq = material.coat_roughness * material.coat_roughness;
 			char roughLiteral[64];
 			std::snprintf( roughLiteral, sizeof( roughLiteral ), "%.9g", coatRoughSq );
@@ -1343,11 +1298,9 @@ namespace
 			const char* coatNormal = ( material.coat_normal_painter_name && material.coat_normal_painter_name[0] )
 				? material.coat_normal_painter_name : "none";
 
-			const std::string coatRegisterName = hasEmission ? ( finalName + "::coatbase" ) : finalName;
-
-			if( !job.AddCoatedMaterialEx(
-				coatRegisterName.c_str(),
-				pbrRegisterName.c_str(),
+			return job.AddCoatedMaterialEx(
+				coatOutputName.c_str(),
+				substrateName.c_str(),
 				coatWeight.c_str(),
 				iorLiteral,
 				coatRoughness.c_str(),
@@ -1355,8 +1308,78 @@ namespace
 				"0.0",			// coat_absorption -- no Blender Principled equivalent, clear film
 				coatTint,
 				coatNormal,
-				material.coat_normal_scale > 0.0 ? material.coat_normal_scale : 1.0 ) )
+				material.coat_normal_scale > 0.0 ? material.coat_normal_scale : 1.0 );
+		};
+
+		// `wrapRegisterName` names whichever layer (sheen, coat, or
+		// coat-over-sheen) is the LAST one built over `pbrRegisterName`
+		// -- the substrate the deferred emission wrapper below re-attaches
+		// over.  Set by whichever branch runs.
+		std::string wrapRegisterName;
+
+		if( hasSheen ) {
+			char roughnessLiteral[64];
+			std::snprintf( roughnessLiteral, sizeof( roughnessLiteral ), "%.9g", material.sheen_roughness );
+			const std::string sheenRoughness = resolve_material_scalar_slot(
+				job, material.sheen_roughness_texture_painter_name, roughnessLiteral );
+
+			// The fabric (sheen) wrap's register name.  When coat ALSO
+			// contributes, the fabric result feeds a `coated_material`
+			// wrap below as ITS substrate, so the fabric layer is NEVER
+			// `finalName` in that case, regardless of whether emission
+			// also contributes.  Otherwise unchanged from before: an
+			// intermediate name when emission contributes (a
+			// `LambertianLuminaireMaterial` layer re-attaches it under
+			// `finalName`, see below), or `finalName` directly.
+			const std::string fabricRegisterName =
+				hasCoat     ? ( finalName + "::sheenbase_undercoat" ) :
+				hasEmission ? ( finalName + "::sheenbase" ) :
+				              finalName;
+
+			// `fabric` = "custom" (no preset seeding -- Blender's
+			// Principled Sheen carries no fabric-type concept, matching
+			// GLTFSceneImporter.cpp's identical choice for
+			// KHR_materials_sheen) and `weave_rotation` = "0.0"
+			// (Blender's Sheen model has no weave-direction concept
+			// either; the anisotropic-GGX case above already carries
+			// its own `tangent_rotation`).
+			if( !job.AddFabricMaterial(
+				fabricRegisterName.c_str(),
+				"custom",
+				pbrRegisterName.c_str(),
+				material.sheen_color_painter_name,
+				sheenRoughness.c_str(),
+				"0.0" ) )
 			{
+				write_error( error_message, error_message_size, "Failed to create a fabric (sheen) material wrap" );
+				return false;
+			}
+			wrapRegisterName = fabricRegisterName;
+
+			// ----- Coat OVER sheen, via coated_material -----
+			// LAYERING DECISION (DL-186, docs/BLENDER_MATERIAL_-
+			// TRANSLATION.md "Coat and Subsurface"), UPDATED (DL-23
+			// follow-up): glTF's own KHR_materials_clearcoat +
+			// KHR_materials_sheen combination (GLTFSceneImporter.cpp) used
+			// to skip clearcoat and keep sheen because `coated_material`'s
+			// substrate allowlist did not accept a `fabric_material`
+			// result -- that blocker was lifted by DL-23
+			// (docs/DEBT_LEDGER.md, closed 2026-09-14), and both importers'
+			// wiring have since been updated to compose the coat over the
+			// sheen result instead of dropping it.
+			if( hasCoat ) {
+				const std::string coatOverSheenName = hasEmission ? ( finalName + "::coatoversheenbase" ) : finalName;
+				if( !BuildCoatWrap( coatOverSheenName, fabricRegisterName ) ) {
+					write_error( error_message, error_message_size, "Failed to create a coated material wrap over the fabric (sheen) material" );
+					return false;
+				}
+				wrapRegisterName = coatOverSheenName;
+			}
+		} else {
+			// hasCoat && !hasSheen: coat wraps the PBR base directly.
+			const std::string coatRegisterName = hasEmission ? ( finalName + "::coatbase" ) : finalName;
+
+			if( !BuildCoatWrap( coatRegisterName, pbrRegisterName ) ) {
 				write_error( error_message, error_message_size, "Failed to create a coated material wrap" );
 				return false;
 			}
