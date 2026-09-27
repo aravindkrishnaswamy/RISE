@@ -265,6 +265,7 @@ namespace RISE
 		/// any vertex other than the (s=0) eye end.  Consumed by
 		/// `BDPTIntegrator::MISWeight`'s eye-side walk.
 		bool					lightSamplingStrategyAbsent;
+		unsigned int			volumeBounces;	///< Cumulative volume scatter bounces along subpath up to this vertex (default 0)
 
 		bool					isDelta;		///< True if the sampled interaction at this vertex is a delta distribution
 		/// DL-125.  WHICH LOBE the sampler actually selected at this vertex
@@ -372,6 +373,7 @@ namespace RISE
 		cosAtGen( 0 ),
 		pdfSelect( 1.0 ),	///< Default 1.0: SmallVCM-invariance on non-light vertices and master back-compat
 		lightSamplingStrategyAbsent( false ),
+		volumeBounces( 0 ),
 
 		isDelta( false ),
 		scatterType( ScatteredRay::eRayUnknown ),

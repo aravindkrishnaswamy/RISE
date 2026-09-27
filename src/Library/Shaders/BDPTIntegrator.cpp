@@ -1851,6 +1851,7 @@ namespace {
 						mv.pPhaseFunc = pMed->GetPhaseFunction();
 						mv.pMediumObject = pMedObj;
 						mv.sigma_t_scalar = sigmaTScalar;
+						mv.volumeBounces = eyeVolumeBounces + 1;
 						mv.isDelta = false;
 
 						// HISTORY (DL-200 struck this rule out entirely, so the
@@ -2270,6 +2271,7 @@ namespace {
 			// seed its boundary walk from the correct starting medium.
 			v.pMediumObject = pMedObj_eye;
 			v.pMediumVol = pMed_eye;
+			v.volumeBounces = eyeVolumeBounces;
 			if( ri.pObject ) {
 				iorStack.SetCurrentObject( ri.pObject );
 				v.mediumIOR = iorStack.top();
@@ -5149,6 +5151,13 @@ EvaluateAllStrategiesImpl(
 					continue;
 				}
 
+				const unsigned int volBounces =
+					(s > 0 ? lightVerts[s-1].volumeBounces : 0) +
+					(t > 0 ? eyeVerts[t-1].volumeBounces : 0);
+				if( volBounces > self.GetStabilityConfig().maxVolumeBounce ) {
+					continue;
+				}
+
 				const Point3& eyePosition = eyeVerts[t - 1].position;
 				const Point3* pLightPosition =
 					(s > 0 && s <= nLight) ? &lightVerts[s - 1].position : 0;
@@ -5252,6 +5261,13 @@ EvaluateAllStrategiesImpl(
 					continue;
 				}
 
+				const unsigned int volBounces =
+					(s > 0 ? lightVerts[s-1].volumeBounces : 0) +
+					(t > 0 ? eyeVerts[t-1].volumeBounces : 0);
+				if( volBounces > self.GetStabilityConfig().maxVolumeBounce ) {
+					continue;
+				}
+
 				CR cr = DispatchConnectAndEvaluate<Tag>(
 					self, lightVerts, eyeVerts, s, t, scene, caster, camera, cameraLensSample, tag );
 				if constexpr( Traits::is_pel ) {
@@ -5291,6 +5307,7 @@ EvaluateAllStrategiesImpl(
 				{
 					const BDPTVertex& eyeEnd = eyeVerts[t - 1];
 
+					if( eyeEnd.volumeBounces > self.GetStabilityConfig().maxVolumeBounce ) continue;
 					if( eyeEnd.type != BDPTVertex::SURFACE ) continue;
 					if( !eyeEnd.pMaterial ) continue;
 
@@ -6231,6 +6248,7 @@ unsigned int GenerateLightSubpathImpl(
 					mv.pPhaseFunc = pMed->GetPhaseFunction();
 					mv.pMediumObject = pMedObj;
 					mv.sigma_t_scalar = sigma_t_max;
+					mv.volumeBounces = volumeBounces + 1;
 					mv.isDelta = false;
 
 					// DL-200: a MEDIUM vertex is always connectible.  See the
@@ -6380,6 +6398,7 @@ unsigned int GenerateLightSubpathImpl(
 		// seed its boundary walk from the correct starting medium.
 		v.pMediumObject = pMedObj_light;
 		v.pMediumVol = pMed_light;
+		v.volumeBounces = volumeBounces;
 		if( ri.pObject ) {
 			iorStack.SetCurrentObject( ri.pObject );
 			v.mediumIOR = iorStack.top();
