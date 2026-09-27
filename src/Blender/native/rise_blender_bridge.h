@@ -360,16 +360,17 @@ typedef struct rise_blender_material {
 	// `coated_material`'s own `coat_ior` slot is not texture-driven.
 	//
 	// LAYERING WITH SHEEN (documented decision --
-	// docs/BLENDER_MATERIAL_TRANSLATION.md "Coat and Subsurface"): a
-	// material with BOTH Coat Weight > 0 and Sheen contributing gets
-	// SHEEN ONLY, exactly as GLTFSceneImporter.cpp's own
-	// KHR_materials_clearcoat + KHR_materials_sheen combination already
-	// decides -- `coated_material`'s substrate allowlist does not
-	// accept a `fabric_material` (the sheen result), so the coat
-	// cannot wrap ON TOP of sheen, and the bridge does not attempt the
-	// (unsupported) reverse order either.  The coat layer is silently
-	// skipped in that combination at the native layer; `exporter.py`
-	// warns.
+	// docs/BLENDER_MATERIAL_TRANSLATION.md "Coat and Subsurface",
+	// UPDATED 2026-09-27): a material with BOTH Coat Weight > 0 and
+	// Sheen contributing COMPOSES the coat OVER the fabric (sheen)
+	// result, exactly as GLTFSceneImporter.cpp's own (also updated)
+	// KHR_materials_clearcoat + KHR_materials_sheen combination now
+	// decides -- DL-23 (docs/DEBT_LEDGER.md, closed 2026-09-14) lifted
+	// `coated_material`'s substrate-allowlist refusal of a
+	// `FabricMaterial`, so the coat DOES wrap on top of sheen now (the
+	// reverse order, coat-under-sheen, is still not attempted).
+	// Neither the native layer nor `exporter.py` warns for this
+	// combination any more.
 	const char* coat_weight_texture_painter_name;
 	double coat_weight;
 	const char* coat_tint_painter_name;
