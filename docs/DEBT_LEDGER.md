@@ -1195,6 +1195,7 @@ debt-dl247 slice note (2026-09-27, does NOT sum into the totals below -- recompu
 
 **Authoritative totals on `master` (recount after each merge; per-slice notes
 below are each slice's own snapshot at its branch HEAD and do NOT sum):**
+2026-09-27 participating medium continuation distance sampling and bounce cap parity reviewed and merged — **172 main rows: 11 open, 161 closed**.
 2026-09-23 Translucent IOR stack connection reconstruction and guided entry membership reviewed and merged — **172 main rows: 12 open, 160 closed**.
 2026-09-22 BDPT HWSS companion density evaluation parity reviewed and merged — **172 main rows: 14 open, 158 closed**.
 2026-09-22 spectral splat matrix-only Rec.709 conversion reviewed and merged — **172 main rows: 15 open, 157 closed**.
