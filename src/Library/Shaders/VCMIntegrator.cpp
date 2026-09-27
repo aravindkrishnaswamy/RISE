@@ -767,6 +767,7 @@ void VCMIntegrator::ConvertLightSubpath(
 			if( v.isBSSRDFEntry    ) lv.flags |= kLVF_IsBSSRDFEntry;
 			if( v.bHasVertexColor  ) lv.flags |= kLVF_HasVertexColor;
 			lv.pathLength = static_cast<unsigned short>( i );
+			lv.volumeBounces = v.volumeBounces;
 			lv.normal     = v.normal;
 			lv.geomNormal = v.geomNormal;
 			// Direction FROM the previous vertex TO this one.
@@ -932,6 +933,7 @@ namespace
 {
 	template<class Tag>
 	typename SpectralValueTraits<Tag>::value_type EvaluateS0Impl(
+		unsigned int maxVolumeBounce,
 		const IScene& scene,
 		const IRayCaster& caster,
 		const std::vector<BDPTVertex>& eyeVerts,
@@ -961,6 +963,9 @@ namespace
 		for( std::size_t i = 1; i < eyeVerts.size(); i++ )
 		{
 			const BDPTVertex& v = eyeVerts[i];
+			if( v.volumeBounces > maxVolumeBounce ) {
+				continue;
+			}
 
 			// Env-light escape vertex (Path B, VCM side).  Shares
 			// BDPT's GenerateEyeSubpath so the synthetic env vertex
@@ -1177,7 +1182,7 @@ RISEPel VCMIntegrator::EvaluateS0(
 	const VCMNormalization& /*norm*/
 	) const
 {
-	return EvaluateS0Impl<PelTag>( scene, caster, eyeVerts, eyeMis, PelTag{} );
+	return EvaluateS0Impl<PelTag>( stabilityConfig.maxVolumeBounce, scene, caster, eyeVerts, eyeMis, PelTag{} );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1246,6 +1251,9 @@ namespace
 		for( std::size_t i = 1; i < eyeVerts.size(); i++ )
 		{
 			const BDPTVertex& v = eyeVerts[i];
+			if( v.volumeBounces > bdpt.GetStabilityConfig().maxVolumeBounce ) {
+				continue;
+			}
 			if( v.type != BDPTVertex::SURFACE && v.type != BDPTVertex::MEDIUM ) {
 				continue;
 			}
@@ -1721,6 +1729,10 @@ namespace
 		{
 			const BDPTVertex& v = lightVerts[i];
 
+			if( v.volumeBounces > bdpt.GetStabilityConfig().maxVolumeBounce ) {
+				continue;
+			}
+
 			if( !v.isConnectible ) {
 				continue;
 			}
@@ -2013,6 +2025,10 @@ namespace
 					continue;
 				}
 				if( !ev.isConnectible ) {
+					continue;
+				}
+
+				if( lv.volumeBounces + ev.volumeBounces > bdpt.GetStabilityConfig().maxVolumeBounce ) {
 					continue;
 				}
 				const bool eyeIsMedium = ( ev.type == BDPTVertex::MEDIUM );
@@ -2347,6 +2363,7 @@ namespace
 {
 	template<class Tag>
 	typename SpectralValueTraits<Tag>::value_type EvaluateMergesImpl(
+		const BDPTIntegrator& bdpt,
 		const std::vector<BDPTVertex>& eyeVerts,
 		const std::vector<VCMMisQuantities>& eyeMis,
 		const LightVertexStore& store,
@@ -2406,6 +2423,10 @@ namespace
 					continue;
 				}
 
+				if( lv.volumeBounces + v.volumeBounces > bdpt.GetStabilityConfig().maxVolumeBounce ) {
+					continue;
+				}
+
 				const Vector3 wiAtEye = -lv.wi;
 
 				const typename Traits::value_type cameraBsdf =
@@ -2443,7 +2464,7 @@ RISEPel VCMIntegrator::EvaluateMerges(
 	const VCMNormalization& norm
 	) const
 {
-	return EvaluateMergesImpl<PelTag>( eyeVerts, eyeMis, store, norm, PelTag{} );
+	return EvaluateMergesImpl<PelTag>( *pGenerator, eyeVerts, eyeMis, store, norm, PelTag{} );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -2484,7 +2505,7 @@ Scalar VCMIntegrator::EvaluateS0NM(
 	const Scalar nm
 	) const
 {
-	return EvaluateS0Impl<NMTag>( scene, caster, eyeVerts, eyeMis, NMTag( nm ) );
+	return EvaluateS0Impl<NMTag>( stabilityConfig.maxVolumeBounce, scene, caster, eyeVerts, eyeMis, NMTag( nm ) );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -2571,5 +2592,5 @@ Scalar VCMIntegrator::EvaluateMergesNM(
 	const Scalar nm
 	) const
 {
-	return EvaluateMergesImpl<NMTag>( eyeVerts, eyeMis, store, norm, NMTag( nm ) );
+	return EvaluateMergesImpl<NMTag>( *pGenerator, eyeVerts, eyeMis, store, norm, NMTag( nm ) );
 }

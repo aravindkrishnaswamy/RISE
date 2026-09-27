@@ -4816,39 +4816,14 @@ PathTracingIntegrator::IntegrateRayTemplated(
 				RayIntersection ri2( walkRay, rast );
 				scene.GetObjects()->IntersectRay( ri2, true, true, false );
 
-				if( ri2.geometric.bHit )
-				{
-					// A surface ends the walk: the main loop takes over and
-					// handles everything past this point, including any
-					// further medium transport, with `volumeBounces` carried
-					// across so the shared bounce cap keeps counting.
-					const Value hitResult = IntegrateFromHitForTag<Tag>( rc, rast, ri2, scene, caster,
-						sampler, pRadianceMap, 1, iorStack, walkPdf,
-						Traits::zero(), true, 1.0,
-						IRayCaster::RAY_STATE::eRayDiffuse,
-						0, 0, 0, 0, volumeBounces, 0,
-						pAOV, tag );
+				const Scalar maxDist = ri2.geometric.bHit ? ri2.geometric.range : RISE_INFINITY;
+				IndependentSampler mediumSampler( rc.random );
 
-					return result + throughput * hitResult;
-				}
-
-				//
-				// --- the continuation missed all geometry --------------
-				//
-				// Sample the medium along it once more.  A scatter continues
-				// the walk; a no-scatter is the escape, and carries the
-				// per-channel survival weight Tr / pSurvival (== 1 for a
-				// bounded medium, where "no scatter" means "left the
-				// medium's AABB") rather than Tr itself, which would
-				// double-count the attenuation the survival probability
-				// already encodes.  Identical bookkeeping to the main loop's
-				// `!scattered && !bHit` branch.
-				//
 				Value escapeWeight;
 				if( volumeBounces < stabilityConfig.maxVolumeBounce )
 				{
 					const MediumSampleOutcome mso2 = PTSampleMediumDistance<Tag>(
-						pCurrentMedium, walkRay, RISE_INFINITY, pLS, mediumSampler, tag );
+						pCurrentMedium, walkRay, maxDist, pLS, mediumSampler, tag );
 
 					if( mso2.zeroContrib ) {
 						// Equiangular strategy sampled a zero-density point:
@@ -4864,6 +4839,31 @@ PathTracingIntegrator::IntegrateRayTemplated(
 						continue;			// next scatter event
 					}
 
+					if( ri2.geometric.bHit )
+					{
+						// Surface hit through medium (analog no-scatter survival).
+						// SampleDistance already drew "reach the surface"; that
+						// survival event carries Beer-Lambert.  Apply only the
+						// per-channel weight Tr / pSurvival (deterministic no-scatter
+						// survival pdf; = 1 for monochrome/NM homogeneous) so we don't
+						// double-count attenuation.
+						const Value Tr = PTEvalTransmittance<Tag>(
+							pCurrentMedium, walkRay, ri2.geometric.range, tag );
+						const Scalar pSurvival = mso2.noScatterPdfScale * PTEvalNoScatterSurvivalPdf<Tag>(
+							pCurrentMedium, walkRay, ri2.geometric.range, tag );
+						const Value survivalWeight = PTSurvivalWeight<Tag>( Tr, pSurvival );
+
+						const Value hitResult = IntegrateFromHitForTag<Tag>( rc, rast, ri2, scene, caster,
+							sampler, pRadianceMap, 1, iorStack, walkPdf,
+							Traits::zero(), true, 1.0,
+							IRayCaster::RAY_STATE::eRayDiffuse,
+							0, 0, 0, 0, volumeBounces, 0,
+							pAOV, tag, walkPdf );
+
+						return result + throughput * survivalWeight * hitResult;
+					}
+
+					// Ray escapes the scene through the medium (analog no-scatter survival).
 					const Value TrEsc = PTEvalTransmittance<Tag>(
 						pCurrentMedium, walkRay, RISE_INFINITY, tag );
 					const Scalar pSurvival = mso2.noScatterPdfScale * PTEvalNoScatterSurvivalPdf<Tag>(
@@ -4872,6 +4872,20 @@ PathTracingIntegrator::IntegrateRayTemplated(
 				}
 				else
 				{
+					if( ri2.geometric.bHit )
+					{
+						const Value Tr = PTEvalTransmittance<Tag>(
+							pCurrentMedium, walkRay, ri2.geometric.range, tag );
+						const Value hitResult = IntegrateFromHitForTag<Tag>( rc, rast, ri2, scene, caster,
+							sampler, pRadianceMap, 1, iorStack, walkPdf,
+							Traits::zero(), true, 1.0,
+							IRayCaster::RAY_STATE::eRayDiffuse,
+							0, 0, 0, 0, volumeBounces, 0,
+							pAOV, tag, walkPdf );
+
+						return result + throughput * Tr * hitResult;
+					}
+
 					// Bounce cap reached.  Close the path with the
 					// deterministic Beer-Lambert escape -- the estimator
 					// this whole block replaced -- so the cap loses only the

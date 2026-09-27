@@ -216,7 +216,7 @@ static double RenderMean( const std::string& sceneText )
 	return mean;
 }
 
-static const int kRepeats = 3;
+static const int kRepeats = 4;
 
 static double RenderMeanRepeated( const std::string& sceneText, const char* label )
 {
@@ -309,10 +309,6 @@ static const char* kVCMSpectral =
 	"\tvc_enabled true\n\tvm_enabled false\n\thwss FALSE\n"
 	"\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
 
-static const char* kBDPT_L1 =
-	"bdpt_pel_rasterizer\n{\n\tmax_eye_depth 6\n\tmax_light_depth 1\n\tsamples 32\n"
-	"\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
-
 static std::string Scene( const char* rast, const std::string& body )
 {
 	return std::string("RISE ASCII SCENE 7\n") + kShader + rast + body;
@@ -363,31 +359,41 @@ int main()
 	RunRatio( "VCM spectral vs PT spectral, same scene, camera OUTSIDE",
 		kPTSpectral, kVCMSpectral, enclosed, 0.90, 1.10 );
 
-	// CONTROL, and KNOWN-DEFECT PIN (DL-247).  The SAME medium
-	// and emitter with no shell, bound as the scene's GLOBAL medium:
-	// BDPT and VCM read ~1.8-2.1x of PT in a plain global medium.
-	// Independent defect in PT volumetric continuation vs BDPT/VCM eye-walk.
-	RunRatio( "CONTROL/PIN(DL-247) BDPT vs PT, same medium as a GLOBAL medium (no shell)",
-		kPT, kBDPT, global, 1.50, 2.25 );
+	static const char* kPT64 =
+		"pathtracing_pel_rasterizer\n{\n\tsamples 64\n\trr_min_depth 8\n"
+		"\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
+	static const char* kBDPT64 =
+		"bdpt_pel_rasterizer\n{\n\tmax_eye_depth 6\n\tmax_light_depth 6\n\tsamples 64\n"
+		"\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
+	static const char* kVCM64 =
+		"vcm_pel_rasterizer\n{\n\tmax_eye_depth 6\n\tmax_light_depth 6\n\tsamples 64\n"
+		"\tvc_enabled true\n\tvm_enabled false\n"
+		"\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
+	static const char* kPTSpectral64 =
+		"pathtracing_spectral_rasterizer\n{\n\tsamples 64\n\trr_min_depth 8\n\thwss FALSE\n"
+		"\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
+	static const char* kBDPTSpectral64 =
+		"bdpt_spectral_rasterizer\n{\n\tmax_eye_depth 6\n\tmax_light_depth 6\n\tsamples 64\n"
+		"\thwss FALSE\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
+	static const char* kVCMSpectral64 =
+		"vcm_spectral_rasterizer\n{\n\tmax_eye_depth 6\n\tmax_light_depth 6\n\tsamples 64\n"
+		"\tvc_enabled true\n\tvm_enabled false\n\thwss FALSE\n"
+		"\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
 
-	// DIAGNOSTIC (DL-247): BDPT max_light_depth 1 (light-root-only, no light subpath scattering in medium)
-	{
-		std::cout << "--- Diagnostic for DL-247: BDPT max_light_depth 1 on GLOBAL medium ---" << std::endl;
-		const double ref  = RenderMeanRepeated( Scene( kPT, global ), "PT reference" );
-		const double cand = RenderMeanRepeated( Scene( kBDPT_L1, global ), "BDPT L1     " );
-		if( ref > 1e-9 && cand > 0 ) {
-			std::cout << "    DIAGNOSTIC: BDPT(L1) / PT = " << (cand / ref) << std::endl;
-		}
-	}
-	// DIAGNOSTIC (DL-247): VCM on GLOBAL medium
-	{
-		std::cout << "--- Diagnostic for DL-247: VCM on GLOBAL medium ---" << std::endl;
-		const double ref  = RenderMeanRepeated( Scene( kPT, global ), "PT reference" );
-		const double cand = RenderMeanRepeated( Scene( kVCM, global ), "VCM         " );
-		if( ref > 1e-9 && cand > 0 ) {
-			std::cout << "    DIAGNOSTIC: VCM / PT = " << (cand / ref) << std::endl;
-		}
-	}
+	// MONEY ROWS (DL-247).  The SAME medium and emitter with no shell,
+	// bound as the scene's GLOBAL medium:
+	// BDPT and VCM now match PT within [0.90, 1.10] (previously ~1.8-2.1x).
+	RunRatio( "BDPT vs PT, same medium as a GLOBAL medium (no shell)",
+		kPT64, kBDPT64, global, 0.90, 1.10 );
+
+	RunRatio( "BDPT spectral vs PT spectral, same medium as a GLOBAL medium (no shell)",
+		kPTSpectral64, kBDPTSpectral64, global, 0.90, 1.10 );
+
+	RunRatio( "VCM vs PT, same medium as a GLOBAL medium (no shell)",
+		kPT64, kVCM64, global, 0.90, 1.10 );
+
+	RunRatio( "VCM spectral vs PT spectral, same medium as a GLOBAL medium (no shell)",
+		kPTSpectral64, kVCMSpectral64, global, 0.90, 1.10 );
 
 	std::cout << std::endl;
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;

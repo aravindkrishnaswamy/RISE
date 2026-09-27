@@ -190,6 +190,7 @@ namespace RISE
 
 			unsigned int GetMaxEyeDepth() const { return maxEyeDepth; }
 			unsigned int GetMaxLightDepth() const { return maxLightDepth; }
+			const StabilityConfig& GetStabilityConfig() const { return stabilityConfig; }
 
 			/// Result of connecting a single (s,t) strategy
 			struct ConnectionResult

@@ -83,6 +83,7 @@ namespace RISE
 			unsigned char		plane;			///< REQUIRED SECOND: KD-tree builder writes this
 			unsigned char		flags;			///< LightVertexFlags bitmask
 			unsigned short		pathLength;		///< Light-subpath bounces to reach this vertex
+			unsigned int		volumeBounces;	///< Light-subpath volume bounces to reach this vertex
 
 			Vector3				normal;			///< Shading normal at the vertex (BSDF-frame; merge-time BSDF eval)
 			Vector3				geomNormal;		///< Geometric flat-face normal at the vertex.
@@ -134,6 +135,7 @@ namespace RISE
 				plane( 0 ),
 				flags( 0 ),
 				pathLength( 0 ),
+				volumeBounces( 0 ),
 				normal( 0, 0, 1 ),
 				geomNormal( 0, 0, 1 ),
 				wi( 0, 0, 0 ),
