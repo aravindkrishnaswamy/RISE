@@ -1390,12 +1390,17 @@ namespace
 			//
 			// Sheen (docs/CLOTH_FABRIC_DESIGN.md §7(B)) reuses this same
 			// intermediate-name mechanism: glTF layers base -> sheen ->
-			// clearcoat, and when sheen contributes it is the layer that
-			// ends up registered as `matName` (clearcoat cannot compose
-			// ON TOP of a `fabric_material` result -- `coated_material`'s
-			// substrate allowlist does not include it, see the clearcoat+
-			// sheen diagnostic below) -- so sheen takes priority over
-			// clearcoat when picking the intermediate name.
+			// clearcoat.  When sheen contributes, THIS name (the raw PBR
+			// base) is always an intermediate -- the fabric (sheen) layer
+			// wraps it, and when clearcoat ALSO contributes, a
+			// `coated_material` wrap then composes on top of THAT fabric
+			// result in turn (DL-23, docs/DEBT_LEDGER.md, lifted
+			// `coated_material`'s substrate-allowlist refusal of a
+			// `FabricMaterial` -- see the "Sheen layer, via
+			// fabric_material" block's own `BuildClearcoatWrap` call) --
+			// so sheen still takes priority over clearcoat when picking
+			// THIS particular intermediate name, even though clearcoat no
+			// longer loses the layer.
 			const std::string pbrRegisterName =
 				sheenContributes     ? ( matName + "__sheen_base" ) :
 				clearcoatContributes ? ( matName + "__cc_base" )    :
@@ -1469,7 +1474,18 @@ namespace
 			// clearcoat textures (base/roughness/normal) are NOT sampled --
 			// uniform factors only, the same scope limit Phase 4 already
 			// accepts for KHR_materials_transmission's texture above.
-			if( ok && clearcoatContributes && !sheenContributes ) {
+			//
+			// Shared by BOTH the clearcoat-only branch below and the
+			// clearcoat-over-sheen branch inside the sheen block further
+			// down (DL-23, docs/DEBT_LEDGER.md, lifted `coated_material`'s
+			// substrate-allowlist refusal of a `FabricMaterial` --
+			// `coated_material` can now wrap the sheen's `fabric_material`
+			// result, matching glTF's own base -> sheen -> clearcoat layer
+			// order) -- one mapping, reused rather than duplicated, so
+			// the two call sites cannot drift on the factor/roughness
+			// conversion.
+			auto BuildClearcoatWrap = [&]( const std::string& coatOutputName,
+			                                const std::string& substrateName ) -> bool {
 				const cgltf_clearcoat& cc = mat.clearcoat;
 				const double ccWeight = (double)cc.clearcoat_factor;
 				const double ccRoughSq = (double)cc.clearcoat_roughness_factor *
@@ -1478,6 +1494,29 @@ namespace
 				std::snprintf( weightStr, sizeof( weightStr ), "%.6f", ccWeight );
 				std::snprintf( roughStr,  sizeof( roughStr ),  "%.6f", ccRoughSq );
 
+				const bool okLocal = job.AddCoatedMaterial(
+					coatOutputName.c_str(),
+					substrateName.c_str(),
+					weightStr,       // coat_weight <- clearcoat_factor
+					"1.5",           // coat_ior, fixed per glTF spec
+					roughStr,        // coat_roughness <- clearcoat_roughness_factor^2
+					"0.0",           // coat_thickness -- no glTF equivalent, clear film
+					"0.0",           // coat_absorption -- no glTF equivalent, clear film
+					"none" );        // coat_tint -- no glTF equivalent, untinted
+
+				if( okLocal && ( cc.clearcoat_texture.texture || cc.clearcoat_roughness_texture.texture ||
+				    cc.clearcoat_normal_texture.texture ) ) {
+					GlobalLog()->PrintEx( eLog_Warning,
+						"GLTFSceneImporter:: material `%s` declares a clearcoat/clearcoatRoughness/"
+						"clearcoatNormal texture; the clearcoat layer honours only the SCALAR "
+						"clearcoat_factor (%.3f) and clearcoat_roughness_factor (%.3f) -- the "
+						"textures are ignored.  See docs/GLTF_IMPORT.md §15.",
+						matName.c_str(), ccWeight, (double)cc.clearcoat_roughness_factor );
+				}
+				return okLocal;
+			};
+
+			if( ok && clearcoatContributes && !sheenContributes ) {
 				// See the `pbrEmissivePainter` comment above: when
 				// emission also contributes, the coated wrap registers
 				// under an intermediate name and a
@@ -1486,25 +1525,7 @@ namespace
 				// directly under `matName` as before.
 				const std::string coatRegisterName = hasEmission ? ( matName + "__cc_emit_base" ) : matName;
 
-				ok = job.AddCoatedMaterial(
-					coatRegisterName.c_str(),
-					pbrRegisterName.c_str(),
-					weightStr,       // coat_weight <- clearcoat_factor
-					"1.5",           // coat_ior, fixed per glTF spec
-					roughStr,        // coat_roughness <- clearcoat_roughness_factor^2
-					"0.0",           // coat_thickness -- no glTF equivalent, clear film
-					"0.0",           // coat_absorption -- no glTF equivalent, clear film
-					"none" );        // coat_tint -- no glTF equivalent, untinted
-
-				if( cc.clearcoat_texture.texture || cc.clearcoat_roughness_texture.texture ||
-				    cc.clearcoat_normal_texture.texture ) {
-					GlobalLog()->PrintEx( eLog_Warning,
-						"GLTFSceneImporter:: material `%s` declares a clearcoat/clearcoatRoughness/"
-						"clearcoatNormal texture; the clearcoat layer honours only the SCALAR "
-						"clearcoat_factor (%.3f) and clearcoat_roughness_factor (%.3f) -- the "
-						"textures are ignored.  See docs/GLTF_IMPORT.md §15.",
-						matName.c_str(), ccWeight, (double)cc.clearcoat_roughness_factor );
-				}
+				ok = BuildClearcoatWrap( coatRegisterName, pbrRegisterName );
 
 				// Re-attach the emission the PBR base deliberately did
 				// NOT bake in, now that the coated wrap is a legal
@@ -1627,13 +1648,22 @@ namespace
 						matName.c_str(), shRoughFactor );
 				}
 
-				// See the `pbrEmissivePainter` comment above: when
-				// emission also contributes, the fabric (sheen) wrap
-				// registers under an intermediate name and a
-				// `LambertianLuminaireMaterial` layer below re-attaches
-				// the emission under `matName`; otherwise it registers
-				// directly under `matName` as before.
-				const std::string fabricRegisterName = hasEmission ? ( matName + "__sheen_emit_base" ) : matName;
+				// The fabric (sheen) wrap's register name.  glTF layers
+				// base -> sheen -> clearcoat: when clearcoat ALSO
+				// contributes, the fabric result feeds a `coated_material`
+				// wrap below as ITS substrate (DL-23, docs/DEBT_LEDGER.md,
+				// lifted `coated_material`'s refusal of a `FabricMaterial`
+				// substrate -- see `CoatedMaterial::IsSupportedSubstrate`),
+				// so the fabric layer is NEVER `matName` in that case,
+				// regardless of whether emission also contributes.
+				// Otherwise this is unchanged from before: an intermediate
+				// name when emission contributes (a `LambertianLuminaire-
+				// Material` layer below re-attaches it under `matName`),
+				// or `matName` directly.
+				const std::string fabricRegisterName =
+					clearcoatContributes ? ( matName + "__sheen_cc_base" ) :
+					hasEmission          ? ( matName + "__sheen_emit_base" ) :
+					                       matName;
 
 				ok = job.AddFabricMaterial(
 					fabricRegisterName.c_str(),
@@ -1643,37 +1673,38 @@ namespace
 					sheenRoughnessScalar.c_str(),
 					"0.0" );				// weave_rotation -- glTF has no weave-direction concept
 
-				// glTF layers base -> sheen -> clearcoat, but `coated_material`
-				// cannot wrap the fabric_material result (its substrate
-				// allowlist is the same three scattering classes as
-				// FabricMaterial's own -- LambertianMaterial /
-				// OrenNayarMaterial / GGXMaterial -- and FabricMaterial is
-				// none of those), so the clearcoat wrap above is gated off
-				// whenever sheen contributes.  Say so rather than dropping
-				// it silently.
+				// ----- Clearcoat OVER sheen, via coated_material -----
+				// DL-23 (docs/DEBT_LEDGER.md, closed 2026-09-14) made
+				// `CoatedMaterial::IsSupportedSubstrate` accept a
+				// `FabricMaterial` substrate, so the clearcoat layer now
+				// composes on top of the fabric (sheen) result instead of
+				// being warned-and-skipped (docs/IMPROVEMENTS.md
+				// "Clearcoat over `fabric_material`" -- CLOSED by this
+				// fix).  `wrapRegisterName` names whichever layer (the
+				// coat, or the fabric alone when clearcoat doesn't
+				// contribute) is outermost before the emission re-attach
+				// below.
+				std::string wrapRegisterName = fabricRegisterName;
 				if( ok && clearcoatContributes ) {
-					GlobalLog()->PrintEx( eLog_Warning,
-						"GLTFSceneImporter:: material `%s` declares KHR_materials_clearcoat "
-						"(factor=%.2f) together with KHR_materials_sheen; `coated_material`'s "
-						"substrate allowlist does not accept a fabric_material (the sheen result), "
-						"so the clearcoat layer is skipped, keeping sheen.  See "
-						"docs/GLTF_IMPORT.md §15.",
-						matName.c_str(), (double)mat.clearcoat.clearcoat_factor );
+					const std::string coatOverSheenName = hasEmission ? ( matName + "__cc_emit_base" ) : matName;
+					ok = BuildClearcoatWrap( coatOverSheenName, fabricRegisterName );
+					wrapRegisterName = coatOverSheenName;
 				}
 
 				// Re-attach the emission the PBR base deliberately did
-				// NOT bake in, now that the fabric (sheen) wrap is a
-				// legal (non-emissive) IMaterial to layer it over.
+				// NOT bake in, now that the outermost wrap (coat-over-
+				// sheen, or fabric/sheen alone) is a legal (non-emissive)
+				// IMaterial to layer it over.
 				if( ok && hasEmission ) {
 					ok = job.AddLambertianLuminaireMaterial(
 						matName.c_str(),
 						emissivePainter.c_str(),
-						fabricRegisterName.c_str(),
+						wrapRegisterName.c_str(),
 						emissiveScale );
 					if( !ok ) {
 						GlobalLog()->PrintEx( eLog_Error,
 							"GLTFSceneImporter:: material `%s` failed to attach its emissive "
-							"layer over the fabric (sheen) wrap", matName.c_str() );
+							"layer over the sheen/coat wrap", matName.c_str() );
 					}
 				}
 			}
