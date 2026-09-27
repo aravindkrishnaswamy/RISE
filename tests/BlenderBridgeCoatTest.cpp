@@ -585,6 +585,78 @@ void TestCoatComposesOverSheen()
 }
 
 // ============================================================
+//  7b. Self-review addition (implementation-review-loop's "did you test
+//      the triple combination" lens): Coat + Sheen + Emission all on
+//      ONE material.  Each pairwise combination is covered elsewhere
+//      (TestCoatComposesOverSheen for coat+sheen, TestCoatWithEmission-
+//      KeepsBoth for coat+emission) but never all three at once.
+// ============================================================
+
+void TestCoatSheenEmissionTripleCombination()
+{
+	std::cout << "Test: Coat + Sheen + Emission all on one material" << std::endl;
+
+	JobHolder job;
+	if( !job.Valid() ) { Check( false, "created a job" ); return; }
+
+	double sheenColor[3] = { 1.0, 1.0, 1.0 };
+	(*job).AddUniformColorPainter( "sheen_white_triple", sheenColor, "Rec709RGB_Linear" );
+	double emitColor[3] = { 2.0, 1.0, 0.5 };
+	(*job).AddUniformColorPainter( "emit_color_triple", emitColor, "Rec709RGB_Linear" );
+
+	rise_blender_material mat = PbrFixture( *job, "coat_sheen_emit" );
+	mat.coat_weight = 1.0;
+	mat.coat_roughness = 0.1;
+	mat.coat_ior = 1.5;
+	mat.sheen_color_painter_name = "sheen_white_triple";
+	mat.sheen_roughness = 0.3;
+	mat.emission_painter_name = "emit_color_triple";
+	mat.emissive_scale = 2.0;
+
+	char err[256] = { 0 };
+	Check( add_material( *job, mat, err, sizeof( err ) ),
+		std::string( "MONEY: coat+sheen+emission material registered: " ) + err );
+
+	RISE::IMaterial* finalMat = (*job).GetMaterials() ? (*job).GetMaterials()->GetItem( "coat_sheen_emit" ) : 0;
+	Check( finalMat != 0, "the final material is registered" );
+	if( finalMat ) {
+		Check( finalMat->GetEmitter() != 0,
+			"MONEY: the final material has a real emitter -- emission was NOT dropped even with "
+			"coat and sheen both also present" );
+		Check( dynamic_cast<LambertianLuminaireMaterial*>( finalMat ) != 0,
+			"the final material is a LambertianLuminaireMaterial (the outer emissive wrapper)" );
+		Check( dynamic_cast<CoatedMaterial*>( finalMat ) == 0,
+			"the final material is NOT itself a CoatedMaterial -- that lives one layer down" );
+	}
+
+	const CoatedMaterial* coated = CoatedOf( *job, "coat_sheen_emit::coatoversheenbase" );
+	Check( coated != 0,
+		"MONEY: the coat layer is registered under the `::coatoversheenbase` intermediate name "
+		"and IS a live CoatedMaterial, even with sheen also present" );
+
+	const FabricMaterial* fabric = coated ? dynamic_cast<const FabricMaterial*>( &coated->GetBase() ) : 0;
+	Check( fabric != 0,
+		"MONEY: the coated material's base is a FabricMaterial -- the coat wraps the sheen "
+		"result, not the bare PBR base, even with emission also present" );
+
+	Check( FabricOf( *job, "coat_sheen_emit::sheenbase_undercoat" ) != 0,
+		"the fabric (sheen) layer is registered under the `::sheenbase_undercoat` intermediate "
+		"name and IS a live FabricMaterial" );
+
+	if( coated ) {
+		Check( coated->GetEmitter() == 0,
+			"the coat layer itself carries no emitter -- a legal coated_material result" );
+	}
+	if( fabric ) {
+		Check( fabric->GetEmitter() == 0,
+			"the fabric (sheen) layer itself carries no emitter either" );
+	}
+
+	const double response = Respond( *job, "coat_sheen_emit::coatoversheenbase" );
+	Check( response > 0.0, "the coat-over-sheen layer has a real response" );
+}
+
+// ============================================================
 //  8. An unresolvable coat_tint_painter_name is a fatal failure
 // ============================================================
 
@@ -623,6 +695,7 @@ int main()
 	TestTextureDrivenCoatWeight();
 	TestCoatWithEmissionKeepsBoth();
 	TestCoatComposesOverSheen();
+	TestCoatSheenEmissionTripleCombination();
 	TestDanglingCoatTintIsFatal();
 
 	std::cout << "----------------------------------------" << std::endl;

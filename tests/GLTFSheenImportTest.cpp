@@ -497,6 +497,82 @@ static void TestSheenWithEmissionCombines()
 	pJob->release();
 }
 
+//! Self-review addition (implementation-review-loop's "did you test the
+//! triple combination" lens): clearcoat + sheen + emission all on ONE
+//! material.  Each pairwise combination is covered elsewhere
+//! (TestClearcoatSheenComposesCoatOverFabric for clearcoat+sheen,
+//! TestSheenWithEmissionCombines / GLTFClearcoatImportTest.cpp's
+//! TestClearcoatWithEmissionCombines for sheen+emission / clearcoat+
+//! emission) but never all three at once.  Expected chain: PBR base
+//! (no emission) -> fabric (sheen) wrap, registered under
+//! `__sheen_cc_base` (clearcoat also contributes) -> coat wrap,
+//! registered under `__cc_emit_base` (emission also contributes) ->
+//! LambertianLuminaireMaterial re-attaching emission under the final
+//! name.
+static void TestClearcoatSheenEmissiveTripleCombination()
+{
+	std::printf( "-- clearcoat + sheen + emission all on one material --\n" );
+
+	Job* pJob = nullptr;
+	const bool loaded = LoadFixture( pJob, "scenes/Tests/Geometry/assets/ClearcoatSheenEmissiveQuad.gltf",
+	                                  "csem", "gltf_ccs_emissive.RISEscene" );
+	Check( loaded, "the clearcoat+sheen+emissive fixture scene parses and derives -- is "
+	               "scenes/Tests/Geometry/assets/ClearcoatSheenEmissiveQuad.gltf committed?" );
+	if( !loaded ) { pJob->release(); return; }
+
+	IMaterial* mat = pJob->GetMaterials()->GetItem( "csem.mat.0" );
+	Check( mat != nullptr, "the imported material `csem.mat.0` is registered" );
+
+	if( mat ) {
+		Check( mat->GetEmitter() != nullptr,
+		       "MONEY: the final material has a real emitter -- emission was NOT dropped even "
+		       "with clearcoat and sheen both also present" );
+		Check( dynamic_cast<LambertianLuminaireMaterial*>( mat ) != nullptr,
+		       "the final material is the outer LambertianLuminaireMaterial emissive wrapper" );
+		Check( dynamic_cast<CoatedMaterial*>( mat ) == nullptr,
+		       "the final material is NOT itself a CoatedMaterial -- that lives one layer down" );
+	}
+
+	CoatedMaterial* coated = pJob->GetMaterials()->GetItem( "csem.mat.0__cc_emit_base" )
+		? dynamic_cast<CoatedMaterial*>( pJob->GetMaterials()->GetItem( "csem.mat.0__cc_emit_base" ) )
+		: nullptr;
+	Check( coated != nullptr,
+	       "MONEY: the coat layer is registered under the `__cc_emit_base` intermediate name and "
+	       "IS a live CoatedMaterial, even with sheen also present" );
+
+	FabricMaterial* fabric = coated ? dynamic_cast<FabricMaterial*>( const_cast<IMaterial*>( &coated->GetBase() ) ) : nullptr;
+	Check( fabric != nullptr,
+	       "MONEY: the coated material's base is a FabricMaterial -- the coat wraps the sheen "
+	       "result, not the bare PBR base, even with emission also present" );
+
+	if( fabric ) {
+		Check( coated->GetEmitter() == nullptr,
+		       "the coat layer itself carries no emitter -- a legal coated_material result" );
+		Check( fabric->GetEmitter() == nullptr,
+		       "the fabric (sheen) layer itself carries no emitter either" );
+
+		GGXMaterial* base = dynamic_cast<GGXMaterial*>( const_cast<IMaterial*>( &fabric->GetBase() ) );
+		Check( base != nullptr && base->GetEmitter() == nullptr,
+		       "the fabric material's own base is a GGXMaterial with no emitter -- the full chain "
+		       "is luminaire(coat(fabric(ggx))), matching glTF's base -> sheen -> clearcoat order "
+		       "with emission attached outermost" );
+	}
+
+	Check( pJob->GetScene() != nullptr, "the imported scene derives a live IScene" );
+	{
+		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+		Agent::AgentRenderParams rp;
+		rp.width = 32; rp.height = 32; rp.samples = 4;
+		const Agent::AgentRenderResult rr = sess->Render( rp );
+		Check( rr.ok, "the clearcoat+sheen+emissive scene renders" );
+		Check( rr.meanR + rr.meanG + rr.meanB > 0.0,
+		       "the clearcoat+sheen+emissive glTF scene renders NON-BLACK" );
+		sess.reset();
+	}
+
+	pJob->release();
+}
+
 int main()
 {
 	std::printf( "=== GLTFSheenImportTest ===\n" );
@@ -504,6 +580,7 @@ int main()
 	TestSheenRoughnessTextureAlphaRouting();
 	TestClearcoatSheenComposesCoatOverFabric();
 	TestSheenWithEmissionCombines();
+	TestClearcoatSheenEmissiveTripleCombination();
 	std::printf( "\n%d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }
