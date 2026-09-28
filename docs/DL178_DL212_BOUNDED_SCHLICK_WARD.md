@@ -53,7 +53,16 @@ unchanged. An independent test reference uses `H=l+v` and
 The diffuse lobe remains additive `Rd/pi`; over-authored `Rd+Rs` can still
 exceed one even though the Ward specular family is bounded by `Rs`.
 
-## Schlick residual: DL-225 remains open
+## Schlick residual: DL-225 (closed by the `debt-dl225` slice, 2026-09-28)
+
+**Superseded by [DL225_BOUNDED_SCHLICK.md](DL225_BOUNDED_SCHLICK.md):** the
+masking is now `min(Eq.31, the Smith projected-area bound of Schlick's own
+Z*A)`, shared by the BRDF, the SPF `kray`, the aggregate `Pdf` replay and
+the auxiliary albedo; the worst directional reflectance over a 1900-cell
+grid falls from 5.6194 to 0.9943 and the witness cell below from 1.2445
+to 0.7899.  The rest of this section is the historical DL-178-time
+measurement.
+
 
 Eq.31 removes the missing-G divergence, but does **not** make this complete
 Schlick specular family energy-conserving. Formula-only half-vector
