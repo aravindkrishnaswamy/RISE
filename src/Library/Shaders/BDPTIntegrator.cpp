@@ -105,7 +105,7 @@ static_assert( RISE::BDPTUtilities::kMediumDistanceStreamBase >
 	// vertices per walk iteration (SobolDimensionBudgetTest Test F).
 	RISE::BDPTUtilities::kMediumDistanceStreamBase >
 		48 + 3 * static_cast<int>( RISE::BDPTUtilities::kWalkIterationCap ) + 1,
-	"medium-distance streams overlap a fixed BDPT/VCM/MLT stream" );
+	"medium-distance streams overlap a fixed BDPT/VCM stream" );
 static_assert( static_cast<unsigned long long>( RISE::BDPTUtilities::kMediumDistanceStreamEnd ) *
 		RISE::Implementation::SobolSampler::kStreamStride < 0xFFFFFFFFull,
 	"medium-distance streams overflow SobolSampler's 32-bit dimension counter" );
@@ -1845,15 +1845,23 @@ namespace {
 					bool scattered = false;
 					Scalar t_m = 0;
 					if( !bAtCap ) {
-						// DL-283: the distance sample's open-ended draw
-						// sequence gets a stream block of its own, and the
-						// vertex stream is re-opened at slot 0 afterwards --
-						// see BDPTUtilities::MediumDistanceStream.
-						sampler.StartStream( BDPTUtilities::MediumDistanceStream(
-							BDPTUtilities::eEyeWalk, depth ) );
+						// DL-283: under a fixed-budget sampler (Sobol) the
+						// distance sample's open-ended draw sequence gets a
+						// stream block of its own, and the vertex stream is
+						// re-opened at slot 0 afterwards -- see
+						// BDPTUtilities::MediumDistanceStream.  PSSMLT (MLT)
+						// lanes are unbounded, so nothing can spill there and
+						// its chains keep their pre-DL-283 lane layout.
+						const bool bOwnStream = sampler.HasFixedDimensionBudget();
+						if( bOwnStream ) {
+							sampler.StartStream( BDPTUtilities::MediumDistanceStream(
+								BDPTUtilities::eEyeWalk, depth ) );
+						}
 						t_m = SampleMediumDistance<Tag>(
 							*pMed, currentRay, maxDist, sampler, scattered, tag );
-						sampler.StartStream( 16u + depth );
+						if( bOwnStream ) {
+							sampler.StartStream( 16u + depth );
+						}
 					}
 
 					if( scattered )
@@ -6293,12 +6301,18 @@ unsigned int GenerateLightSubpathImpl(
 				bool scattered = false;
 				Scalar t_m = 0;
 				if( !bAtCap ) {
-					// DL-283: own stream block -- see the eye subpath's twin.
-					sampler.StartStream( BDPTUtilities::MediumDistanceStream(
-						BDPTUtilities::eLightWalk, depth ) );
+					// DL-283: own stream block under a fixed-budget sampler
+					// -- see the eye subpath's twin.
+					const bool bOwnStream = sampler.HasFixedDimensionBudget();
+					if( bOwnStream ) {
+						sampler.StartStream( BDPTUtilities::MediumDistanceStream(
+							BDPTUtilities::eLightWalk, depth ) );
+					}
 					t_m = SampleMediumDistance<Tag>(
 						*pMed, currentRay, maxDist, sampler, scattered, tag );
-					sampler.StartStream( 1u + depth );
+					if( bOwnStream ) {
+						sampler.StartStream( 1u + depth );
+					}
 				}
 
 				if( scattered )

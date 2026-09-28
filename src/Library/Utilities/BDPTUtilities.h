@@ -48,7 +48,9 @@ namespace RISE
 		// Sobol' dimension drove two decisions on one path (the PT
 		// twin of this defect was DL-247's `PTVolumeWalkStream`).
 		//
-		// Each distance sample therefore draws from a BLOCK of
+		// Under a fixed-budget sampler (`ISampler::
+		// HasFixedDimensionBudget()`, i.e. SobolSampler) each distance
+		// sample therefore draws from a BLOCK of
 		// `kMediumDistanceStreamsPerEvent` streams of its own, wide
 		// enough for the full draw bound (64 * 32 = 2048 dimensions),
 		// keyed by (walk, loop iteration).  The caller re-opens its
@@ -62,7 +64,7 @@ namespace RISE
 		// i.e. [8192, 139264), 4.46M dimensions at most.  Both walk
 		// loops saturate their iteration count at
 		// `kWalkIterationCap` (1024), which is what bounds `d`.  Every
-		// other consumer of a BDPT/VCM/MLT sampler sits below 8192:
+		// other consumer of a BDPT/VCM sampler sits below 8192:
 		// film/light select 0, light walk 1..1024, eye walk 16..1039,
 		// strategy select 47, VCM NEE 48..3121, MLT film/lens 2048,
 		// thin-lens aperture 3322 -- and PT's own volume walks
@@ -70,11 +72,16 @@ namespace RISE
 		// these at all.  `tests/SobolDimensionBudgetTest.cpp` Test G
 		// enumerates the whole map and asserts it is collision-free.
 		//
-		// Under `SobolSampler` every block lies past the 8192-dimension
-		// table, so each draw is a wrapped dimension (an Owen-permuted
-		// index over a table row); under `PSSMLTSampler` a stream is an
-		// unbounded lane and only the block's first stream is touched;
-		// `IndependentSampler` ignores streams.
+		// Every block lies past SobolSampler's 8192-dimension table, so
+		// each draw is a wrapped dimension (an Owen-permuted index over
+		// a table row).  Samplers WITHOUT a fixed budget are left on the
+		// vertex stream: `IndependentSampler` ignores streams, and a
+		// `PSSMLTSampler` (MLT) stream is an unbounded lane that cannot
+		// spill.  Routing MLT through the blocks too was measured and
+		// declined: no correctness gain, and +13 % user CPU on
+		// scenes/Tests/MLT/mlt_deep_fog.RISEscene (its chains, not its
+		// storage -- 128 events cost 128 extra-tier lanes), besides
+		// needing PSSMLTSampler's 4096-stream sanity bound raised.
 		//////////////////////////////////////////////////////////////
 		static const unsigned int kWalkIterationCap = 1024;
 		static const int kMediumDistanceStreamBase = 8192;

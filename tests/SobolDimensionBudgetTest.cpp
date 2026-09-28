@@ -26,7 +26,7 @@
 //       thin-lens aperture draw.
 //    G1. Shipped scenes' per-vertex streams stay inside the table.
 //    G2. The sampler stream map: both wrap-region families (PT volume
-//       walks, BDPT/VCM/MLT medium-distance blocks) enumerated from the
+//       walks, BDPT/VCM medium-distance blocks) enumerated from the
 //       real functions, wrap counts asserted, collision-freedom
 //       asserted; the pre-existing fixed-layout overlaps (DL-286)
 //       pinned.
@@ -72,6 +72,7 @@
 #include "../src/Library/Utilities/BSSRDFSampling.h"
 #include "../src/Library/Utilities/ISampler.h"
 #include "../src/Library/Utilities/SobolSampler.h"
+#include "../src/Library/Utilities/PSSMLTSampler.h"
 #include "../src/Library/Sampling/SobolSequence.h"
 #include "../src/Library/Utilities/RasterizerDefaults.h"
 #include "../src/Library/Utilities/StabilityConfig.h"
@@ -904,10 +905,11 @@ static void TestApertureDrawConsumption()
 //   PT volume walks   4096 + 1024 * lane + (event mod 1024)
 //                     (PathTransportUtilities::PTVolumeWalkStream;
 //                     wrap 16 + 4 * lane + event / 256, i.e. 16..31)
-//   BDPT/VCM/MLT      8192 + 64 * (1024 * side + depth), a 64-stream
+//   BDPT/VCM          8192 + 64 * (1024 * side + depth), a 64-stream
 //   medium distance   (2048-dimension) block per walk iteration
 //                     (BDPTUtilities::MediumDistanceStream; wrap
-//                     32..543)
+//                     32..543; fixed-budget samplers only -- MLT's
+//                     PSSMLTSampler never reaches them, Test H)
 //
 // The rule that survives is narrower and still true: every PER-VERTEX
 // stream a shipped scene reaches is inside the table.  G1 recomputes
@@ -1228,7 +1230,7 @@ static void TestStreamMap()
 		}
 	}
 
-	// --- BDPT/VCM/MLT medium-distance blocks ----------------------------
+	// --- BDPT/VCM medium-distance blocks (fixed-budget samplers only) ---
 	{
 		const unsigned int per = BDPTUtilities::kMediumDistanceStreamsPerEvent;
 		if( per * stride < IMedium::kMaxSampleDistanceDraws ) {
@@ -1245,7 +1247,7 @@ static void TestStreamMap()
 			for( unsigned int d = 0; d < cap; d++ ) {
 				const unsigned int s = (unsigned int)BDPTUtilities::MediumDistanceStream(
 					side ? BDPTUtilities::eLightWalk : BDPTUtilities::eEyeWalk, d );
-				const Range r = { "medium block", s, s + per, BIDIR };
+				const Range r = { "medium block", s, s + per, BDPT | VCM };
 				blocks.push_back( r );
 				const unsigned long long first = (unsigned long long)s * stride;
 				const unsigned long long last  = first + (unsigned long long)per * stride - 1ull;
@@ -1268,7 +1270,7 @@ static void TestStreamMap()
 			[]( const Range& a, const Range& b ) { return a.lo < b.lo; } );
 		bool disjoint = true;
 		for( size_t i = 1; i < blocks.size(); i++ ) if( blocks[i].lo < blocks[i-1].hi ) disjoint = false;
-		std::cout << "  BDPT/VCM/MLT medium-distance blocks: " << blocks.size() << " x " << per
+		std::cout << "  BDPT/VCM medium-distance blocks: " << blocks.size() << " x " << per
 			<< " streams [" << blocks.front().lo << ", " << blocks.back().hi << "), wrap counts "
 			<< wrapLo << ".." << wrapHi << ( disjoint ? ", pairwise disjoint" : ", OVERLAPPING" )
 			<< ", max dimension " << maxDim << "\n";
@@ -1309,7 +1311,11 @@ static void TestStreamMap()
 //       medium-distance block, and no block receives more than
 //       IMedium::kMaxSampleDistanceDraws;
 //   H3  no raw dimension is drawn twice WITHIN one walk (the "one
-//       Sobol' dimension drives two decisions" signature).
+//       Sobol' dimension drives two decisions" signature);
+//   H4  a PSSMLTSampler (MLT) driven through the same generators never
+//       opens a medium-distance block -- its lanes are unbounded, so it
+//       stays on the vertex streams (a routing that was measured at +13 %
+//       user CPU on mlt_deep_fog for no correctness gain).
 //
 // Before DL-283 the distance sample drew from the vertex stream: this
 // fixture's delta tracking ran to ~100 draws, so H1 and H3 failed.
@@ -1346,6 +1352,21 @@ public:
 	{
 		stream = s;
 		SobolSampler::StartStream( s );
+	}
+};
+
+// A PSSMLTSampler that records the highest stream it is asked for.  MLT
+// drives the same generators; its lanes are unbounded, so DL-283 leaves
+// it on the vertex streams -- this pins that.
+class StreamRecordingPSSMLT : public PSSMLTSampler
+{
+public:
+	int maxStream;
+	StreamRecordingPSSMLT( unsigned int seed ) : PSSMLTSampler( seed, 1.0 ), maxStream( 0 ) {}
+	void StartStream( int s ) override
+	{
+		if( s > maxStream ) maxStream = s;
+		PSSMLTSampler::StartStream( s );
 	}
 };
 
@@ -1429,7 +1450,7 @@ static void AuditOneSample( const StreamAuditSobol& s, size_t lightEnd, StreamAu
 	t.samples++;
 }
 
-static bool RunStreamAudit( bool heterogeneous, bool nm, StreamAuditTally& t )
+static bool RunStreamAudit( bool heterogeneous, bool nm, StreamAuditTally& t, int* pMaxPssmltStream )
 {
 	char path[512];
 	std::snprintf( path, sizeof(path), "/tmp/sobol_budget_medium_%d.RISEscene", (int)::getpid() );
@@ -1469,6 +1490,15 @@ static bool RunStreamAudit( bool heterogeneous, bool nm, StreamAuditTally& t )
 		if( nm ) pBdpt->GenerateEyeSubpathNM( rc, cameraRay, screen, *pScene, *pCaster, sampler, ev, es, 550.0, nullptr, nullptr );
 		else     pBdpt->GenerateEyeSubpath( rc, cameraRay, screen, *pScene, *pCaster, sampler, ev, es, nullptr );
 		AuditOneSample( sampler, lightEnd, t );
+
+		if( pMaxPssmltStream && i < 256u ) {
+			StreamRecordingPSSMLT mlt( 283u + i );
+			std::vector<BDPTVertex> lv2, ev2;
+			std::vector<uint32_t> ls2, es2;
+			pBdpt->GenerateLightSubpath( *pScene, *pCaster, mlt, lv2, ls2, rng );
+			pBdpt->GenerateEyeSubpath( rc, cameraRay, screen, *pScene, *pCaster, mlt, ev2, es2, nullptr );
+			if( mlt.maxStream > *pMaxPssmltStream ) *pMaxPssmltStream = mlt.maxStream;
+		}
 	}
 	safe_release( pBdpt );
 	safe_release( pJob );
@@ -1482,7 +1512,8 @@ static void TestMediumDistanceStreamAudit()
 	for( int het = 1; het >= 0; het-- ) {
 		for( int nm = 0; nm < 2; nm++ ) {
 			StreamAuditTally t;
-			if( !RunStreamAudit( het != 0, nm != 0, t ) || t.samples == 0 ) {
+			int maxPssmlt = 0;
+			if( !RunStreamAudit( het != 0, nm != 0, t, ( het && !nm ) ? &maxPssmlt : nullptr ) || t.samples == 0 ) {
 				std::cerr << "  FAIL: could not build/drive the medium box scene.\n";
 				exit( 1 );
 			}
@@ -1495,6 +1526,16 @@ static void TestMediumDistanceStreamAudit()
 				<< ", same-walk dimension repeats " << t.sameWalkRepeats
 				<< ", light/eye shared dimensions " << t.crossWalkRepeats << " (DL-286, not gated)\n";
 			if( t.vertexOverruns || t.badBlockDraws || t.sameWalkRepeats ) ok = false;
+			if( het && !nm ) {
+				std::cout << "    PSSMLTSampler (MLT) through the same generators: highest stream "
+					<< maxPssmlt << " (medium-distance blocks start at "
+					<< BDPTUtilities::kMediumDistanceStreamBase << ")\n";
+				if( maxPssmlt >= BDPTUtilities::kMediumDistanceStreamBase || maxPssmlt < 17 ) {
+					std::cerr << "  FAIL: an MLT (PSSMLTSampler) walk reached stream " << maxPssmlt
+						<< "; it must stay on its pre-DL-283 vertex streams.\n";
+					ok = false;
+				}
+			}
 			if( t.mediumSamples == 0 ) ok = false;
 			if( het && std::max( t.maxBlockDraws, t.maxVertexDraws ) <= SobolSampler::kStreamStride ) {
 				std::cerr << "  FAIL: the heterogeneous fixture no longer drives a distance sample "

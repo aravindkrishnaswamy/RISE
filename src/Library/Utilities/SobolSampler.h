@@ -38,7 +38,7 @@
 //    past the table ON PURPOSE, because they must be disjoint from
 //    every per-vertex stream at any depth: PT's volume-walk streams
 //    (`PathTransportUtilities::PTVolumeWalkStream`, 4096..8191, wrap
-//    counts 16..31) and BDPT/VCM/MLT's medium distance-sampling blocks
+//    counts 16..31) and BDPT/VCM's medium distance-sampling blocks
 //    (`BDPTUtilities::MediumDistanceStream`, 8192..139263, wraps
 //    32..543).  Every medium render therefore draws wrapped dimensions.
 //    Measured harmless: 0 % dyadic leading-digit collapse from 8 spp

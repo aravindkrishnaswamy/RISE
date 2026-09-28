@@ -76,7 +76,6 @@
 
 #include "../src/Library/Utilities/PSSMLTSampler.h"
 #include "../src/Library/Cameras/CameraUtilities.h"
-#include "../src/Library/Utilities/BDPTUtilities.h"
 #include "../src/Library/Cameras/ThinLensCamera.h"
 
 using namespace RISE;
@@ -601,28 +600,11 @@ static void TestKNumStreamsMinimum()
 	{
 		const int lanes = StreamLaneProbe::Lanes();
 
-		// DL-283: 4096 -> 262144, re-checked against every stream index
-		// in the integrators and the MLT rasterizers: BDPT's medium
-		// distance samples now draw from per-iteration stream blocks up
-		// to BDPTUtilities::kMediumDistanceStreamEnd (139264), which
-		// MLT reaches through the shared generator.
-		if( lanes != 262144 ) {
+		if( lanes != 4096 ) {
 			std::cerr << "  FAIL: PSSMLTSampler::kDefaultNumStreams is " << lanes
-				<< ", not 262144.  Every stream index in the integrators and the "
+				<< ", not 4096.  Every stream index in the integrators and the "
 				<< "MLT rasterizers must be re-checked against the new bound "
 				<< "before this test is updated.\n";
-			exit( 1 );
-		}
-		if( lanes < BDPTUtilities::kMediumDistanceStreamEnd ) {
-			std::cerr << "  FAIL: kDefaultNumStreams (" << lanes << ") is below the end of "
-				<< "BDPT's medium-distance stream layout (" << BDPTUtilities::kMediumDistanceStreamEnd
-				<< "): the first medium event under MLT would abort.\n";
-			exit( 1 );
-		}
-		// ...and the reserved block must not be one of them.
-		if( !( kMltStream < BDPTUtilities::kMediumDistanceStreamBase ) ) {
-			std::cerr << "  FAIL: kPSSMLTFilmLensApertureStream (" << kMltStream
-				<< ") falls inside BDPT's medium-distance stream layout.\n";
 			exit( 1 );
 		}
 
@@ -643,9 +625,8 @@ static void TestKNumStreamsMinimum()
 		}
 
 		// The core DL-08 safety property: the reserved stream sits
-		// strictly above every PER-VERTEX stream BDPT's own eye/light
-		// walks can reach under PSSMLTSampler (and, checked above, below
-		// the DL-283 medium-distance blocks at 8192+) (kMaxBdptWalkStreamUnderPSSMLT ==
+		// strictly above every stream BDPT's own eye/light walks can
+		// reach under PSSMLTSampler (kMaxBdptWalkStreamUnderPSSMLT ==
 		// 16 + 1024, the eye walk's saturating loop cap -- see that
 		// constant's own derivation in CameraUtilities.h), so the
 		// eye walk can NEVER compute a stream equal to the reserved
@@ -1370,34 +1351,6 @@ static void TestStorageCostRedProof()
 		std::cerr << "  FAIL: expected exactly 1 extra-tier stream entry, got "
 			<< extraStreams << ".\n";
 		exit( 1 );
-	}
-
-	// DL-283: BDPT's medium distance samples draw from per-iteration
-	// stream blocks at 8192..139264.  Under PSSMLT a stream is an
-	// unbounded lane, so each medium event must cost ONE extra-tier
-	// entry and exactly as many slots as it draws -- never a function of
-	// the (large) stream number.  64 eye + 64 light events of 40 draws
-	// each (a long delta-tracking run) on top of the film block above.
-	{
-		const unsigned int kEvents = 64, kDraws = 40;
-		for( unsigned int side = 0; side < 2; side++ ) {
-			for( unsigned int d = 0; d < kEvents; d++ ) {
-				probe.StartStream( BDPTUtilities::MediumDistanceStream(
-					side ? BDPTUtilities::eLightWalk : BDPTUtilities::eEyeWalk, d ) );
-				for( unsigned int k = 0; k < kDraws; k++ ) probe.Get1D();
-			}
-		}
-		const size_t mSlots = probe.MaterializedSlotCount();
-		const size_t mExtra = probe.ExtraStreamCount();
-		std::cout << "  + 128 medium-distance events x " << kDraws << " draws (streams up to "
-			<< BDPTUtilities::MediumDistanceStream( BDPTUtilities::eLightWalk, kEvents - 1 )
-			<< "): " << mSlots << " slots across " << mExtra << " extra-tier streams\n";
-		if( mSlots != 6u + 2u * kEvents * kDraws || mExtra != 1u + 2u * kEvents ) {
-			std::cerr << "  FAIL: expected " << ( 6u + 2u * kEvents * kDraws ) << " slots and "
-				<< ( 1u + 2u * kEvents ) << " extra-tier streams -- a medium-distance stream "
-				<< "is not costing exactly one lane.\n";
-			exit( 1 );
-		}
 	}
 
 	std::cout << "  Passed!\n";

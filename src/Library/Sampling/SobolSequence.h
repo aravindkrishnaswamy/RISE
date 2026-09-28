@@ -332,7 +332,7 @@ namespace RISE
 		//! walks (`PathTransportUtilities::PTVolumeWalkStream`, streams
 		//! 4096..8191, wrap counts 16..31 -- valid for
 		//! `max_volume_bounce` <= 1024 and PT depth <= 4080) and the
-		//! BDPT/VCM/MLT medium distance-sampling blocks
+		//! BDPT/VCM medium distance-sampling blocks
 		//! (`BDPTUtilities::MediumDistanceStream`, 8192..139263, wraps
 		//! 32..543).  They share table rows with main-loop streams at a
 		//! different index permutation and value seed; the measured
