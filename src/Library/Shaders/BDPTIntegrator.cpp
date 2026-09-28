@@ -90,6 +90,32 @@
 #include "../Utilities/PathValueOps.h"
 #include "BSSRDFEntryAdapters.h"
 
+// ==== DL283 SCRATCH INSTRUMENTATION (reverted before merge) ====
+#include <atomic>
+#include <cstdio>
+namespace DL283Scratch {
+	static std::atomic<unsigned long long> g_hist[2][2050];
+	struct Dumper { ~Dumper() {
+		for( int side = 0; side < 2; side++ ) {
+			unsigned long long tot = 0; for( int i = 0; i < 2050; i++ ) tot += g_hist[side][i].load();
+			if( !tot ) continue;
+			std::fprintf( stderr, "DL283HIST side=%s events=%llu\n", side ? "light" : "eye", tot );
+			for( int i = 0; i < 2050; i++ ) { const unsigned long long c = g_hist[side][i].load();
+				if( c ) std::fprintf( stderr, "DL283H %s %d %llu\n", side ? "light" : "eye", i, c ); }
+		} } };
+	static Dumper g_dumper;
+	class Counting : public RISE::ISampler {
+	public:
+		RISE::ISampler& inner; unsigned int n;
+		explicit Counting( RISE::ISampler& s ) : inner( s ), n( 0 ) {}
+		RISE::Scalar Get1D() { n++; return inner.Get1D(); }
+		RISE::Point2 Get2D() { n += 2; return inner.Get2D(); }
+		void StartStream( int s ) { inner.StartStream( s ); }
+		bool HasFixedDimensionBudget() const { return inner.HasFixedDimensionBudget(); }
+		void Record( int side ) { g_hist[side][ n < 2049 ? n : 2049 ].fetch_add( 1, std::memory_order_relaxed ); }
+	};
+}
+
 using namespace RISE;
 using namespace RISE::Implementation;
 using RISE::SpectralDispatch::PelTag;
@@ -1822,8 +1848,10 @@ namespace {
 					bool scattered = false;
 					Scalar t_m = 0;
 					if( !bAtCap ) {
+						DL283Scratch::Counting cs( sampler );
 						t_m = SampleMediumDistance<Tag>(
-							*pMed, currentRay, maxDist, sampler, scattered, tag );
+							*pMed, currentRay, maxDist, cs, scattered, tag );
+						cs.Record( 0 );
 					}
 
 					if( scattered )
@@ -6261,8 +6289,10 @@ unsigned int GenerateLightSubpathImpl(
 				bool scattered = false;
 				Scalar t_m = 0;
 				if( !bAtCap ) {
+					DL283Scratch::Counting cs( sampler );
 					t_m = SampleMediumDistance<Tag>(
-						*pMed, currentRay, maxDist, sampler, scattered, tag );
+						*pMed, currentRay, maxDist, cs, scattered, tag );
+					cs.Record( 1 );
 				}
 
 				if( scattered )
