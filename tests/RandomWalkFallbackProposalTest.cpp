@@ -157,7 +157,12 @@ Scalar IndependentAngularWeight( const BSSRDFSampling::SampleResult& sample )
 {
 	const Scalar cosine = Vector3Ops::Dot(
 		sample.scatteredRay.Dir(), sample.entryNormal );
-	return ( 1.0 - std::pow(1.0 - cosine,5.0) ) / (20.0 / 21.0);
+	// Every walk here runs at IOR 1: no interface.  Since DL-306 the SSS
+	// boundary transmits with the exact dielectric law, which is 1 at every
+	// cosine with unit cosine-hemisphere normalization, so Sw's angular
+	// weight is exactly 1.  (DL-48's Schlick oracle was
+	// (1-(1-mu)^5)/(20/21): Schlick "reflects" even at a matched index.)
+	return ( std::isfinite( cosine ) && cosine > 0 ) ? Scalar( 1.0 ) : Scalar( -1.0 );
 }
 
 Scalar EffectiveRGBRate( const RISEPel& sigmaT, const int channel )
