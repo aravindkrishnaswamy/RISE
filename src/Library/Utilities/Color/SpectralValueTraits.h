@@ -152,8 +152,7 @@ namespace RISE
 			/// fabs to match the existing integrator convention:
 			///   max_value( scalar ) = fabs( scalar )
 			///   max_value( RISEPel ) = ColorMath::MaxValue( pel )
-			/// This matches PathTracingIntegrator's GuidingEffectiveAlpha
-			/// and the BDPT/VCM NM paths, which all use fabs() when
+			/// This matches the PT and BDPT/VCM NM paths, which all use fabs() when
 			/// comparing NM throughput against the RR threshold.
 			static inline Scalar max_value( const value_type& v )
 			{

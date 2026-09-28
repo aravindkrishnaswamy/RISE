@@ -349,67 +349,21 @@ namespace RISE
 		//
 		// A guided vertex runs two techniques on the same integral
 		// `integral f(w) cos(w) L(w) dw`: the BSDF technique (Scatter +
-		// RandomlySelect, one lobe `I` drawn with realized probability
-		// `q_I`) and the guide technique (a direction drawn from the
-		// trained field `g`).  One-sample MIS is unbiased for ANY pair of
-		// weights with `W_g(w) + W_b(w) == 1` at every direction, provided
-		// each technique's estimator is its own UNWEIGHTED estimator times
-		// its weight, divided by the probability that the technique fired:
-		//
-		//   lobe I kept    kray_I / q_I  *  W_b(w_I) / (1 - alpha_I)
-		//   guide draw     f(w) cos(w) / g(w)  *  W_g(w) / alphaBar
-		//
-		// with `alpha_I` the probability that the guide REPLACES lobe I
-		// once it is selected, and `alphaBar = sum_J q_J alpha_J` the
-		// probability the guide fires at all (the helper below).  The
-		// weights must be deterministic functions of direction -- not of
-		// the realized lobe draws -- and lobe-independent, which is why
-		// they are built from a fixed mixing constant `a` and the
-		// material's AGGREGATE `ISPF::Pdf()` (the true generating density
-		// of the BSDF technique since DL-67 Slice 0 / DL-98 / DL-99 /
-		// DL-177 / DL-157), never from the selected lobe's own `.pdf`:
+		// RandomlySelect, lobe `I` drawn with realized probability `q_I`)
+		// and the guide technique (a direction drawn from the trained
+		// field `g`).  The choice between them is made with a probability
+		// `a` that does NOT depend on the Scatter realization, and they
+		// are combined through one deterministic partition of directions
 		//
 		//   W_g(w) = a g(w) / (a g(w) + (1 - a) p_agg(w)),  W_b = 1 - W_g
 		//
-		// A lobe the guide never replaces (`alpha_I == 0`: a delta lobe, a
-		// transmission lobe, BDPT's glossy lobes) still takes `W_b`
-		// wherever it is non-delta -- the guide technique evaluates the
-		// AGGREGATE BSDF, so it covers that lobe too.
+		// with `p_agg` the material's AGGREGATE `ISPF::Pdf()`.  Each
+		// technique prices its own UNWEIGHTED estimator times its weight
+		// over the probability it fired (`kray_I/q_I * W_b/(1-a)`,
+		// `f cos/g * W_g/a`).  Unbiased for any deterministic W under two
+		// premises: the technique choice is realization-independent, and
+		// `IBSDF::value` and the SPF's kray describe ONE function.
 		//////////////////////////////////////////////////////////////////////
-
-		/// Realized probability that the guide technique fires at a vertex:
-		/// `sum_J q_J alpha_J`, with `q_J` EXACTLY the weights
-		/// `ScatteredRayContainer::RandomlySelect` draws from (max-channel
-		/// kray for RGB, krayNM for spectral) and `alphaOf(ray)` the
-		/// probability that the guide replaces that lobe once selected.
-		template<class AlphaOf>
-		inline Scalar GuidingRealizedGuideProbability(
-			const ScatteredRayContainer& rays,
-			const bool bNM,
-			AlphaOf alphaOf
-			)
-		{
-			const unsigned int n = rays.Count();
-			if( n == 0 ) {
-				return 0;
-			}
-			if( n == 1 ) {
-				return alphaOf( rays[0] );
-			}
-			Scalar total = 0;
-			for( unsigned int i = 0; i < n; i++ ) {
-				total += bNM ? rays[i].krayNM : ColorMath::MaxValue( rays[i].kray );
-			}
-			if( total <= NEARZERO ) {
-				return 0;
-			}
-			Scalar p = 0;
-			for( unsigned int i = 0; i < n; i++ ) {
-				const Scalar w = bNM ? rays[i].krayNM : ColorMath::MaxValue( rays[i].kray );
-				p += ( w / total ) * alphaOf( rays[i] );
-			}
-			return p;
-		}
 
 		/// The guide technique's partition weight `W_g(w)`.  Zero when the
 		/// guide has no density there (the guide cannot produce that
