@@ -27,6 +27,8 @@
 //    7. Continuity at isotropy -> 1.
 //    8. Tightness (reported and bounded): G1_exact / m_prod where the
 //       bound binds.
+//    9. The cFast shortcut never skips a state the full evaluation
+//       would bound.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -298,6 +300,27 @@ int main()
 			}
 		}
 		printf( "7. continuity at isotropy 1: worst relative %.3e\n", worst );
+	}
+
+	// 9. The cFast threshold: for c >= cFast the full slow path must
+	// itself return Eq.31 (so the shortcut never skips a binding state).
+	{
+		int n = 0;
+		for( double r : { 0.001, 0.02, 0.1, 0.3 } ) for( double p : { 0.01, 0.3, 1.0, 5.0 } ) {
+			SchlickMasking::Lane L;
+			SchlickMasking::Prepare( L, r, p );
+			for( int i = 0; i <= 200; i++ ) {
+				const double c = L.cFast + ( 1.0 - L.cFast ) * i / 200.0;
+				if( c <= 0 || c >= 1 ) continue;
+				for( double ph : { 0.0, 0.7, 1.5 } ) {
+					const double den31 = r + ( 1 - r ) * c;
+					const double slow = SchlickMasking::MaskOverCosSlow( L, c, cos( ph ), sin( ph ), den31 );
+					Check( slow == 1.0 / den31, "c >= cFast: the full evaluation also returns Eq.31", slow, 1.0 / den31 );
+					n++;
+				}
+			}
+		}
+		printf( "9. cFast shortcut agrees with the full evaluation in %d states\n", n );
 	}
 
 	printf( "Checks: %d Failures: %d\n", checks, failures );

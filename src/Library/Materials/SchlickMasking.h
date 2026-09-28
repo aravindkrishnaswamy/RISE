@@ -111,11 +111,12 @@ namespace RISE
 				double Qmax;		//!< Q at the anisotropy peak (the maximum over azimuth)
 				double QmaxOver2Pi;	//!< fast-path constants
 				double WmaxOver4;
+				double cFast;		//!< Eq.31 is inside the bound for every c >= cFast, at every azimuth
 				bool   swapAxes;	//!< isotropy > 1: A peaks along onb.v(), not onb.u()
 				bool   bounded;		//!< false: degenerate parameters, Eq.31 is returned as is
 			};
 
-			inline void Prepare( Lane& L, const double roughness, const double isotropy )
+			inline void PrepareUncached( Lane& L, const double roughness, const double isotropy )
 			{
 				L.r = roughness;
 				L.sqrtR = ( roughness > 0 ) ? std::sqrt( roughness ) : 0.0;
@@ -125,6 +126,7 @@ namespace RISE
 				L.p = p;
 				if( !L.bounded ) {
 					L.sqrtP = L.q = L.cp = L.C2 = L.Wmax = L.Qmax = L.QmaxOver2Pi = L.WmaxOver4 = 0;
+					L.cFast = 0;
 					return;
 				}
 				L.sqrtP = std::sqrt( p );
@@ -161,30 +163,61 @@ namespace RISE
 				L.Qmax = 0.5 * ( kPi * L.cp + L.C2 );
 				L.QmaxOver2Pi = L.Qmax / ( 2.0 * kPi );
 				L.WmaxOver4 = 0.25 * L.Wmax;
+
+				// cFast: with atan x <= x, E <= k Qmax at every azimuth, so
+				// Eq.31 is inside the bound wherever
+				//   f(c) = c (r + (1-r) c - c cp) - r (1-c^2) Qmax/(2 pi) >= 0,
+				// i.e. a c^2 + r c - r Qm >= 0 with Qm = Qmax/(2 pi) and
+				// a = 1 - r - cp + r Qm.  f(0) = -r Qm < 0 and
+				// f(1) = 1 - cp >= 0, so {f >= 0} on (0,1] is [c_a, 1] with
+				// c_a = 2 r Qm / (r + sqrt(r^2 + 4 a r Qm)) (the root that
+				// is positive for a > 0 and the smaller one for a < 0,
+				// written without cancellation).
+				{
+					const double Qm = L.QmaxOver2Pi;
+					const double a = 1.0 - L.r - L.cp + L.r * Qm;
+					const double disc = L.r * L.r + 4.0 * a * L.r * Qm;
+					L.cFast = ( disc >= 0 ) ? 2.0 * L.r * Qm / ( L.r + std::sqrt( disc ) ) : 1.0;
+					L.cFast = std::min( 1.0, std::max( 0.0, L.cFast ) );
+				}
 			}
 
-			//! m(c, phi) / c for a direction at cosine `c` from the normal
-			//! whose tangential components in (onb.u, onb.v) are (tx, ty)
-			//! (need not be normalized).  Finite as c -> 0.  Equals Eq.31's
-			//! G(c)/c = 1/(r + (1-r)c) wherever that is inside the bound.
-			inline double MaskOverCos( const Lane& L, const double c, const double tx, const double ty )
+			//! PrepareUncached behind a two-entry thread-local memo keyed
+			//! on the exact (roughness, isotropy) pair: a material hit
+			//! evaluates the same lane from value(), Scatter() and Pdf()
+			//! many times, and the AGM costs a handful of square roots.
+			//! Pure value key, per-thread storage, no shared mutation.
+			inline void Prepare( Lane& L, const double roughness, const double isotropy )
 			{
-				const double den31 = L.r + ( 1.0 - L.r ) * c;		// c / G_Eq31(c)
-				if( !L.bounded || c <= 0 || c >= 1.0 ) {
-					return 1.0 / den31;
+				struct Entry { double r, p; Lane lane; bool used; };
+				static thread_local Entry cache[2] = { { 0, 0, Lane(), false }, { 0, 0, Lane(), false } };
+				static thread_local int next = 0;
+				for( int i = 0; i < 2; i++ ) {
+					if( cache[i].used && cache[i].r == roughness && cache[i].p == isotropy ) {
+						L = cache[i].lane;
+						return;
+					}
 				}
+				PrepareUncached( L, roughness, isotropy );
+				cache[next].r = roughness;
+				cache[next].p = isotropy;
+				cache[next].lane = L;
+				cache[next].used = true;
+				next ^= 1;
+			}
 
+			//! The part of MaskOverCos below cFast.  Kept separate from the
+			//! cheap test above it, which is what the C_D replay's inner
+			//! loop runs almost always; this holds every transcendental.
+			inline double MaskOverCosSlow( const Lane& L, const double c, const double tx, const double ty, const double den31 )
+			{
 				// Eq.31 is inside the bound iff c*cp + g E <= den31, with
 				// g = sqrt(r) s / (2 pi) and E <= W atan(k Q / W) (Jensen).
-				// Three progressively tighter, progressively costlier
-				// sufficient tests run first; each upper-bounds the Jensen
-				// bound at EVERY azimuth (W, Q are maximal at the anisotropy
-				// peak and W atan(k Q/W) increases in both), so a pass
-				// returns exactly what the full evaluation would.
-				//   (a) atan x <= x:    c cp + r s^2 Qmax / (2 pi c) <= den31
-				if( c * ( den31 - c * L.cp ) >= L.r * ( 1.0 - c*c ) * L.QmaxOver2Pi ) {
-					return 1.0 / den31;
-				}
+				// Two progressively tighter sufficient tests run first; each
+				// upper-bounds the Jensen bound at EVERY azimuth (W, Q are
+				// maximal at the anisotropy peak and W atan(k Q/W) increases
+				// in both), so a pass returns exactly what the full
+				// evaluation would.
 				const double s = std::sqrt( std::max( 0.0, 1.0 - c*c ) );
 				//   (b) atan x <= pi/2: c cp + sqrt(r) s Wmax / 4 <= den31
 				if( c * L.cp + L.sqrtR * s * L.WmaxOver4 <= den31 ) {
@@ -217,11 +250,33 @@ namespace RISE
 						c2 * AsinhOverZ( L.q * std::sqrt( c2 ) / L.p ) / L.p +
 						s2 * AsinOverZ( L.q * std::sqrt( s2 ) ) );
 					const double Q = 0.5 * ( kPi * L.cp + ( c2 - s2 ) * L.C2 );
-					const double eJensen = W * std::atan( k * Q / W );
-					const double eCS = std::sqrt( M2( k, L.p, L.q ) * EIso( k ) );
-					smith = 1.0 / ( c * L.cp + g * std::min( eJensen, eCS ) );
+					double E = W * std::atan( k * Q / W );
+					// The rearrangement/Cauchy-Schwarz bound matters near
+					// isotropy 1 (it is exact there, and Jensen's gap reaches
+					// ~3%).  Below isotropy 1/2 Jensen is within 0.5% of the
+					// smaller of the two everywhere (CS was tighter in 13 of
+					// 194560 swept (isotropy, azimuth, k) states, by at most
+					// 0.50%; docs/DL225_BOUNDED_SCHLICK.md), so the second
+					// atan is skipped there.  Either alone is a valid bound.
+					if( L.p >= 0.5 ) {
+						E = std::min( E, std::sqrt( M2( k, L.p, L.q ) * EIso( k ) ) );
+					}
+					smith = 1.0 / ( c * L.cp + g * E );
 				}
 				return std::min( 1.0 / den31, smith );
+			}
+
+			//! m(c, phi) / c for a direction at cosine `c` from the normal
+			//! whose tangential components in (onb.u, onb.v) are (tx, ty)
+			//! (need not be normalized).  Finite as c -> 0.  Equals Eq.31's
+			//! G(c)/c = 1/(r + (1-r)c) wherever that is inside the bound.
+			inline double MaskOverCos( const Lane& L, const double c, const double tx, const double ty )
+			{
+				const double den31 = L.r + ( 1.0 - L.r ) * c;		// c / G_Eq31(c)
+				if( !L.bounded || c <= 0 || c >= 1.0 || c >= L.cFast ) {
+					return 1.0 / den31;
+				}
+				return MaskOverCosSlow( L, c, tx, ty, den31 );
 			}
 		}
 	}
