@@ -534,7 +534,10 @@ static Scalar IntegrateOneSample(
 	// default, straight down the normal; the DL-67 rows also run at an
 	// oblique incidence so a multi-lobe SPF's lobes are not all centred on
 	// the same axis.
-	const Vector3& inDir = Vector3( 0, 0, -1 ) )
+	const Vector3& inDir = Vector3( 0, 0, -1 ),
+	// DL-67 round 2: the SHADING normal (a bump/normal-map tilt); the
+	// geometric normal stays +Z.  Default: untilted.
+	const Vector3& shadingN = Vector3( 0, 0, 1 ) )
 {
 	const RasterizerState rast{};
 
@@ -545,7 +548,7 @@ static Scalar IntegrateOneSample(
 	hit.geometric.bHit = true;
 	hit.geometric.range = 1;
 	hit.geometric.ptIntersection = Point3( 0, 0, 0 );
-	hit.geometric.vNormal = Vector3( 0, 0, 1 );
+	hit.geometric.vNormal = shadingN;
 	hit.geometric.vGeomNormal = Vector3( 0, 0, 1 );
 	hit.geometric.onb.CreateFromW( hit.geometric.vNormal );
 	hit.pObject = &shadingObject;
@@ -1595,8 +1598,10 @@ static Scalar RunBatch(
 	// the material's aggregate pdf under a DIFFERENT stack than the
 	// escape side's `PTEvalPdfAtSurface(..., iorStack)` does.
 	const IObject* pEnclosing = 0,
-	// DL-67: incoming ray direction (see IntegrateOneSample).
-	const Vector3& inDir = Vector3( 0, 0, -1 ) )
+	// DL-67: incoming ray direction and shading normal (see
+	// IntegrateOneSample).
+	const Vector3& inDir = Vector3( 0, 0, -1 ),
+	const Vector3& shadingN = Vector3( 0, 0, 1 ) )
 {
 	PathTracingIntegrator* integrator =
 		new PathTracingIntegrator( ManifoldSolverConfig(), StabilityConfig() );
@@ -1627,7 +1632,7 @@ static Scalar RunBatch(
 		}
 
 		sum += IntegrateOneSample( fx, material, *integrator, *shadingObject,
-			rc, sampler, pEnclosing, inDir );
+			rc, sampler, pEnclosing, inDir, shadingN );
 	}
 
 	integrator->release();
@@ -2677,14 +2682,15 @@ static Scalar DL67BsdfCosQuadrature(
 	const Scalar zLo,
 	const Scalar zHi,
 	const unsigned int nz,
-	const unsigned int nphi )
+	const unsigned int nphi,
+	const Vector3& shadingN = Vector3( 0, 0, 1 ) )
 {
 	const RasterizerState rast{};
 	RayIntersectionGeometric ri( Ray( Point3( -inDir.x, -inDir.y, -inDir.z ), inDir ), rast );
 	ri.bHit = true;
 	ri.range = 1;
 	ri.ptIntersection = Point3( 0, 0, 0 );
-	ri.vNormal = Vector3( 0, 0, 1 );
+	ri.vNormal = shadingN;
 	ri.vGeomNormal = Vector3( 0, 0, 1 );
 	ri.onb.CreateFromW( ri.vNormal );
 
@@ -2706,10 +2712,12 @@ static Scalar DL67BsdfCosQuadrature(
 		for( unsigned int ip = 0; ip < nphi; ++ip ) {
 			const double phi = ( ip + 0.5 ) * dphi;
 			const Vector3 w( r * std::cos( phi ), r * std::sin( phi ), z );
+			// The integrators' cosine is against the SHADING normal.
 			ring += ColorMath::MaxValue(
-				PathVertexEval::EvalBSDFAtSurface( pB, w, ri, &stack ) );
+				PathVertexEval::EvalBSDFAtSurface( pB, w, ri, &stack ) ) *
+				std::fabs( Vector3Ops::Dot( w, shadingN ) );
 		}
-		sum += ring * std::fabs( z );
+		sum += ring;
 	}
 	return static_cast<Scalar>( sum * dz * dphi );
 }
@@ -2747,7 +2755,8 @@ static void DL67RunRows(
 	const Scalar relTol,
 	const unsigned int nSamples,
 	const unsigned int seedBase,
-	const char* what )
+	const char* what,
+	const Vector3& shadingN = Vector3( 0, 0, 1 ) )
 {
 	PathGuidingField* guides[2] = {
 		BuildSkewedField( Point3( 0, 0, 0 ), guideAxis, 64.0 ),
@@ -2763,8 +2772,11 @@ static void DL67RunRows(
 				continue;	// the un-guided control does not depend on the field
 			}
 			RowConfig cfg{ row.name, row.learnedAlpha, false, false, row.samplingType, row.alpha };
+			// Distinct, non-overlapping seed ranges per row (review P3:
+			// `seedBase + 1000 i` made consecutive rows share ~99% of
+			// their per-sample seeds).
 			const Scalar m = RunBatch( fx, material, guides[gi], cfg, nSamples,
-				seedBase + 1000 * i + 100 * gi, 0, inDir );
+				seedBase * 10000u + ( 10 * i + gi ) * nSamples, 0, inDir, shadingN );
 			const std::string tag = row.alpha > 0
 				? std::string( row.name ) + ", " + guideNames[gi]
 				: std::string( row.name );
@@ -2896,6 +2908,94 @@ static void RunDL67EnvRows()
 		ext->release();
 		T->release();
 		rF->release();
+	}
+
+	// (q) DL-67 round 2 (external review P1-1): `schlick_material` with a
+	// BLACK diffuse.  `SchlickSPF::Scatter` still emits the zero-weight
+	// diffuse ray, and the specular draw is rejected on a sizeable
+	// fraction of calls, so some realizations hold only the zero-weight
+	// diffuse ray.  Round 1 let the guide fire only when the SELECTED lobe
+	// was eligible, which made "can the guide fire" depend on the
+	// realization.  PT admits the glossy lobe too, so PT read fine here
+	// even in round 1 (BDPTGuidedContinuationTest carries the BDPT row
+	// that did not); the row stays as the PT half of the pair.
+	{
+		UniformColorPainter* rd = new UniformColorPainter( RISEPel( 0, 0, 0 ) );
+		GlobalLog()->PrintNew( rd, __FILE__, __LINE__, "DL-67 black rd" );
+		UniformColorPainter* rs = new UniformColorPainter( RISEPel( 0.9, 0.9, 0.9 ) );
+		GlobalLog()->PrintNew( rs, __FILE__, __LINE__, "DL-67 rs 0.9" );
+		UniformScalarPainter* rough = new UniformScalarPainter( 0.2 );
+		GlobalLog()->PrintNew( rough, __FILE__, __LINE__, "DL-67 schlick roughness" );
+		UniformScalarPainter* iso = new UniformScalarPainter( 1.0 );
+		GlobalLog()->PrintNew( iso, __FILE__, __LINE__, "DL-67 schlick isotropy" );
+		SchlickMaterial* schlick = new SchlickMaterial( *rd, *rs, *rough, *iso );
+		GlobalLog()->PrintNew( schlick, __FILE__, __LINE__, "DL-67 black-diffuse schlick" );
+
+		const Vector3 inDir = DL67Incidence( 40 );
+		const Scalar albedo = DL67BsdfCosQuadrature( *schlick, quadObject, inDir,
+			0.0, 1.0, 2048, 2048 );
+		std::cout << "    (q) black-diffuse schlick albedo at 40 deg (quadrature) "
+			<< albedo << std::endl;
+		const Vector3 guideAxisLocal = Vector3Ops::Normalize( Vector3( 0.6, 0.0, 0.8 ) );
+		DL67RunRows( fx, *schlick, guideAxisLocal, inDir, Lenv * albedo, 0.015, kN, 36000,
+			"(q) black-diffuse schlick_material, env" );
+
+		schlick->release();
+		iso->release();
+		rough->release();
+		rs->release();
+		rd->release();
+	}
+
+	// (r) DL-67 round 2 (external review P2): a TILTED SHADING NORMAL (a
+	// bump / normal-map tilt of 30 deg; the geometric normal stays +Z).
+	// `LambertianSPF` drops a cosine draw that lands below the GEOMETRIC
+	// horizon, so some realizations produce an EMPTY container, and
+	// `SchlickSPF` can lose its diffuse ray the same way.  Round 1 broke
+	// out of the walk on an empty container before the guide could fire,
+	// so the guide's share was missing on exactly those realizations.
+	// Reference: quadrature of the material's own `value * |cos_s|`, whose
+	// geometric-horizon gate matches the SPF's (validated by the
+	// un-guided control).
+	{
+		const Scalar tilt = 30.0 * PI / 180.0;
+		const Vector3 shadingN( std::sin( tilt ), 0, std::cos( tilt ) );
+		const Vector3 inDir = DL67Incidence( 40 );
+		const Vector3 guideAxisLocal = Vector3Ops::Normalize( Vector3( 0.6, 0.0, 0.8 ) );
+
+		UniformColorPainter* whiteP = new UniformColorPainter( RISEPel( 1, 1, 1 ) );
+		GlobalLog()->PrintNew( whiteP, __FILE__, __LINE__, "DL-67 white" );
+		LambertianMaterial* lambert = new LambertianMaterial( *whiteP );
+		GlobalLog()->PrintNew( lambert, __FILE__, __LINE__, "DL-67 tilted lambertian" );
+		const Scalar albedoL = DL67BsdfCosQuadrature( *lambert, quadObject, inDir,
+			-1.0, 1.0, 2048, 2048, shadingN );
+		std::cout << "    (r) tilted-normal lambertian albedo (quadrature) " << albedoL << std::endl;
+		DL67RunRows( fx, *lambert, guideAxisLocal, inDir, Lenv * albedoL, 0.015, kN, 37000,
+			"(r) lambertian, 30 deg tilted shading normal, env", shadingN );
+
+		UniformColorPainter* rd = new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) );
+		GlobalLog()->PrintNew( rd, __FILE__, __LINE__, "DL-67 schlick rd" );
+		UniformColorPainter* rs = new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) );
+		GlobalLog()->PrintNew( rs, __FILE__, __LINE__, "DL-67 schlick rs" );
+		UniformScalarPainter* rough = new UniformScalarPainter( 0.2 );
+		GlobalLog()->PrintNew( rough, __FILE__, __LINE__, "DL-67 schlick roughness" );
+		UniformScalarPainter* iso = new UniformScalarPainter( 1.0 );
+		GlobalLog()->PrintNew( iso, __FILE__, __LINE__, "DL-67 schlick isotropy" );
+		SchlickMaterial* schlick = new SchlickMaterial( *rd, *rs, *rough, *iso );
+		GlobalLog()->PrintNew( schlick, __FILE__, __LINE__, "DL-67 tilted schlick" );
+		const Scalar albedoS = DL67BsdfCosQuadrature( *schlick, quadObject, inDir,
+			-1.0, 1.0, 2048, 2048, shadingN );
+		std::cout << "    (r) tilted-normal schlick albedo (quadrature) " << albedoS << std::endl;
+		DL67RunRows( fx, *schlick, guideAxisLocal, inDir, Lenv * albedoS, 0.015, kN, 38000,
+			"(r) schlick_material, 30 deg tilted shading normal, env", shadingN );
+
+		schlick->release();
+		iso->release();
+		rough->release();
+		rs->release();
+		rd->release();
+		lambert->release();
+		whiteP->release();
 	}
 
 	quadObject->release();

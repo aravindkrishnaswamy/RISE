@@ -26,6 +26,18 @@ struct Observation {
 	bool containsOnArrival = false, entryLobeOnArrival = false;
 	Scalar mediumOnArrival = 0;
 	bool hasEntryPrefix = false, forceEntryChoice = false, transportStarted = false;
+	// DL-67 round 2: BDPT now decides whether a vertex is guided from the
+	// VERTEX, not from the selected lobe, so the forced ENTRY vertex (whose
+	// selected lobe is the entering transmission, which the old per-lobe
+	// rule never guided) is now guided too.  This sub-test observes the
+	// EXIT, so after forcing the entry lobe it also forces the entry
+	// vertex's guided technique choice onto the kept lobe: -1 = pass the
+	// draw through, anything else = return it.  One-sample: skip the
+	// region draw, then force the coin to "keep".  RIS: skip the region
+	// draw and the guide candidate's two draws, then force the
+	// resampling draw onto candidate 0.
+	int guidedMode = 0;
+	std::vector<Scalar> forcedAfterEntry;
 	Vector3 spfDirection, tracedDirection, exitNormal;
 	// DL-43: the last guiding-candidate density query's (wo, return value)
 	// during the exit vertex's guiding phase.  TranslucentSPF's diffuse
@@ -66,6 +78,12 @@ class ObservedSPF : public virtual ISPF, public virtual Reference {
 			Vector3Ops::mkVector3( ri.ray.origin, ri.ptIntersection ) ) );
 		if( observed.hasEntryPrefix && index == 0 ) {
 			observed.forceEntryChoice = true;
+			observed.forcedAfterEntry.clear();
+			if( observed.guidedMode == 1 ) {
+				observed.forcedAfterEntry = { Scalar( -1 ), Scalar( .999 ) };
+			} else if( observed.guidedMode == 2 ) {
+				observed.forcedAfterEntry = { Scalar( -1 ), Scalar( -1 ), Scalar( -1 ), Scalar( 0 ) };
+			}
 			return;
 		}
 		if( index == (observed.hasEntryPrefix ? 1u : 0u) ) {
@@ -173,6 +191,11 @@ public:
 	void StartStream(int stream) override { observed.transportStarted = stream != 0; }
 	Scalar Get1D() override {
 		if(observed.forceEntryChoice) { observed.forceEntryChoice = false; return .999; }
+		if(!observed.forcedAfterEntry.empty()) {
+			const Scalar v = observed.forcedAfterEntry.front();
+			observed.forcedAfterEntry.erase(observed.forcedAfterEntry.begin());
+			if( v >= 0 ) return v;
+		}
 		return IndependentSampler::Get1D();
 	}
 };
@@ -217,6 +240,7 @@ static void RunBDPT(PathGuidingField& guide, const IPainter& front, const IPaint
 				for(unsigned int trial=0; trial<512; ++trial) {
 					Observation observation;
 					observation.hasEntryPrefix = true;
+					observation.guidedMode = (int)mode;
 					ObservedMaterial* material = new ObservedMaterial(front,trans,extinction,exponent,scattering,observation);
 					ThreeHitManager* manager = new ThreeHitManager(object,*material,observation);
 					Scene* scene = new Scene();
