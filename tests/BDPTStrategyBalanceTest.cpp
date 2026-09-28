@@ -2505,6 +2505,37 @@ static void TestSchlickMultiLobeGuided()
 	RunTopologyTest( "multi-lobe schlick_material, PT GUIDED RIS vs un-guided BDPT (DL-67)",
 		std::string( kSceneSchlickMultiLobeL ), kSchlickTopologyLTolerances,
 		kRasterizerPTSchlickLGuidedRIS, kRasterizerBDPTSchlickL );
+
+	// DL-67 round 2 (external review P1-1): the same geometry with a
+	// BLACK diffuse (`rd 0`, `rs 0.9`).  `SchlickSPF::Scatter` still emits
+	// the zero-weight diffuse ray and rejects a sizeable fraction of its
+	// specular draws, so some realizations hold only the zero-weight
+	// diffuse ray.  Round 1 let BDPT's guide fire only when the SELECTED
+	// lobe was diffuse, which made "can the guide fire here" depend on the
+	// realization: BDPT guided RIS read +4.72% over un-guided (1024 and
+	// 4096 spp alike, the reviewer's measurement).  Round 2's technique
+	// choice is vertex-level.
+	std::string blackL( kSceneSchlickMultiLobeL );
+	{
+		const std::string rdOld = "\tname pnt_rd\n\tcolor 0.4 0.4 0.4\n";
+		const std::string rsOld = "\tname pnt_rs\n\tcolor 0.4 0.4 0.4\n";
+		const size_t iRd = blackL.find( rdOld );
+		Check( iRd != std::string::npos, "DL-67 black-diffuse topology L: rd painter found" );
+		if( iRd != std::string::npos ) {
+			blackL.replace( iRd, rdOld.size(), "\tname pnt_rd\n\tcolor 0 0 0\n" );
+		}
+		const size_t iRs = blackL.find( rsOld );
+		Check( iRs != std::string::npos, "DL-67 black-diffuse topology L: rs painter found" );
+		if( iRs != std::string::npos ) {
+			blackL.replace( iRs, rsOld.size(), "\tname pnt_rs\n\tcolor 0.9 0.9 0.9\n" );
+		}
+	}
+	RunTopologyTest( "black-diffuse schlick_material, BDPT GUIDED RIS vs un-guided PT (DL-67 round 2)",
+		blackL, kSchlickTopologyLTolerances,
+		kRasterizerPTSchlickL, kRasterizerBDPTSchlickLGuidedRIS );
+	RunTopologyTest( "black-diffuse schlick_material, PT GUIDED RIS vs un-guided BDPT (DL-67 round 2)",
+		blackL, kSchlickTopologyLTolerances,
+		kRasterizerPTSchlickLGuidedRIS, kRasterizerBDPTSchlickL );
 }
 
 //////////////////////////////////////////////////////////////////////
