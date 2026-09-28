@@ -329,6 +329,34 @@ namespace
 			Check( RelClose( wa, ws, 1e-12 ) && RelClose( waNM, wsNM, 1e-12 ), "A3: RandomWalkEntryBSDF RGB/NM scale invariant" );
 		}
 		std::cout << "    worst relative difference: diffusion " << worstD << "  random walk " << worstW << std::endl;
+
+		// For a relative index >= 1 the normalized Sw does not depend on the
+		// index at all ((1-F0) cancels against c), so the checks above are a
+		// CONSISTENCY PIN that passes before DL-49 too.  The discriminating
+		// case is a DENSER exterior: 1.33 inside 1.5 has a critical exterior
+		// cosine of sqrt(1 - (1.33/1.5)^2) = 0.4623, below which no light
+		// crosses, so Sw must vanish there -- and must equal its own
+		// scaled-down air twin (interior 1.33/1.5 in air) everywhere.
+		ProfileBundle dense( 1.33 ), denseAir( 1.33 / 1.5 );
+		const RayIntersectionGeometric riGlass = MakeSurfaceRI( 1.5 );
+		BSSRDFAdapters::BSSRDFEntryBSDF dDense( dense.profile, 1.33 ), dDenseAir( denseAir.profile, 1.33 / 1.5 );
+		BSSRDFAdapters::RandomWalkEntryBSDF wDense( 1.33 ), wDenseAir( 1.33 / 1.5 );
+		const Vector3 grazing = DirectionForCosine( 0.3 );
+		const Vector3 steep = DirectionForCosine( 0.9 );
+		std::cout << "    1.33 inside 1.5: diffusion Sw(0.3)=" << dDense.value( grazing, riGlass )[0]
+			<< " Sw(0.9)=" << dDense.value( steep, riGlass )[0]
+			<< "  walk Sw(0.3)=" << wDense.value( grazing, riGlass )[0] << " Sw(0.9)=" << wDense.value( steep, riGlass )[0] << std::endl;
+		Check( dDense.value( grazing, riGlass )[0] == 0.0 && dDense.valueNM( grazing, riGlass, 550 ) == 0.0,
+			"A3: BSSRDFEntryBSDF RGB/NM: denser exterior, no transmission past the critical angle" );
+		Check( wDense.value( grazing, riGlass )[0] == 0.0 && wDense.valueNM( grazing, riGlass, 550 ) == 0.0,
+			"A3: RandomWalkEntryBSDF RGB/NM: denser exterior, no transmission past the critical angle" );
+		for( const Scalar mu : { 0.95, 0.7, 0.5 } ) {
+			const Vector3 d = DirectionForCosine( mu );
+			Check( RelClose( dDense.value( d, riGlass )[0], dDenseAir.value( d, riAir )[0], 1e-12 ) &&
+				dDense.value( d, riGlass )[0] > 0, "A3: BSSRDFEntryBSDF denser exterior equals its air twin" );
+			Check( RelClose( wDense.value( d, riGlass )[0], wDenseAir.value( d, riAir )[0], 1e-12 ) &&
+				wDense.value( d, riGlass )[0] > 0, "A3: RandomWalkEntryBSDF denser exterior equals its air twin" );
+		}
 	}
 
 	//////////////////////////////////////////////////////////////////
@@ -572,6 +600,28 @@ namespace
 			Check( RelClose( wa, ws, 1e-12 ) && RelClose( waNM, wsNM, 1e-12 ), "A8: random-walk entry vertex RGB/NM scale invariant" );
 		}
 		std::cout << "    worst relative difference: diffusion " << worstD << "  random walk " << worstW << std::endl;
+
+		// As in A3, the discriminating case is a denser exterior -- and here
+		// it is what pins `BDPTVertex::mediumIOR` as the exterior source for
+		// the connection re-evaluation (1.33 inside 1.5: nothing crosses
+		// below the critical exterior cosine 0.4623).
+		UniformScalarPainter* nDense = new UniformScalarPainter( 1.33 ); nDense->addref();
+		SubSurfaceScatteringMaterial* dDense = new SubSurfaceScatteringMaterial( *nDense, *absorption, *scattering, 0.0, 0.0 ); dDense->addref();
+		RandomWalkSSSMaterial* wDense = new RandomWalkSSSMaterial( *nDense, *absorption, *scattering, 0.0, 0.0, 64 ); wDense->addref();
+		const BDPTVertex vdDense = MakeEntryVertex( dDense, 1.5 ), vwDense = MakeEntryVertex( wDense, 1.5 );
+		const Vector3 grazing = DirectionForCosine( 0.3 );
+		const Scalar dg = PathVertexEval::EvalBSDFAtVertex( vdDense, grazing, wo )[0];
+		const Scalar dgNM = PathVertexEval::EvalBSDFAtVertexNM( vdDense, grazing, wo, 550.0 );
+		const Scalar wg = PathVertexEval::EvalBSDFAtVertex( vwDense, grazing, wo )[0];
+		const Scalar wgNM = PathVertexEval::EvalBSDFAtVertexNM( vwDense, grazing, wo, 550.0 );
+		const Scalar ds = PathVertexEval::EvalBSDFAtVertex( vdDense, DirectionForCosine( 0.9 ), wo )[0];
+		std::cout << "    1.33 inside 1.5 (mediumIOR): diffusion Sw(0.3) RGB/NM=" << dg << "/" << dgNM
+			<< " Sw(0.9)=" << ds << "  walk Sw(0.3) RGB/NM=" << wg << "/" << wgNM << std::endl;
+		Check( dg == 0.0 && dgNM == 0.0, "A8: diffusion entry vertex honours mediumIOR (no transmission past the critical angle)" );
+		Check( wg == 0.0 && wgNM == 0.0, "A8: random-walk entry vertex honours mediumIOR (no transmission past the critical angle)" );
+		Check( ds > 0, "A8: (sanity) denser exterior still transmits inside the critical cone" );
+		dDense->release(); wDense->release(); nDense->release();
+
 		dAir->release(); dScaled->release(); wAir->release(); wScaled->release();
 		nAir->release(); nScaled->release(); absorption->release(); scattering->release();
 	}
@@ -617,7 +667,9 @@ namespace
 		return i == Integrator::PT ? "PT" : ( i == Integrator::BDPT ? "BDPT" : "PT-spectral" );
 	}
 
-	std::string BuildScene( Model model, Integrator integrator, bool scaled, unsigned int samples )
+	//! exterior == 1 builds the air scene; exterior > 1 wraps camera, light
+	//! and subject in an ideal enclosure of that index.
+	std::string BuildScene( Model model, Integrator integrator, Scalar exterior, Scalar interior, unsigned int samples )
 	{
 		std::ostringstream s;
 		s << std::setprecision( 17 );
@@ -628,7 +680,8 @@ namespace
 		s << "uniformcolor_painter\n{\n\tname black\n\tcolor 0 0 0\n}\n\n";
 		s << "lambertian_material\n{\n\tname black_base\n\treflectance black\n}\n\n";
 		s << "lambertian_luminaire_material\n{\n\tname lum\n\texitance white\n\tmaterial black_base\n\tscale 6\n}\n\n";
-		const Scalar nS = scaled ? kScaledInterior : kAirInterior;
+		const Scalar nS = interior;
+		const bool scaled = exterior != 1.0;
 		switch( model ) {
 		case Model::Lambertian:
 			s << "uniformcolor_painter\n{\n\tname albedo\n\tcolor 0.7 0.6 0.5\n}\n\n"
@@ -670,7 +723,7 @@ namespace
 			// SSSRadianceScalingTest idiom) outside the black room: no path
 			// ever reaches its wall, so its only effect is the exterior index
 			// the IOR stack is seeded with at the camera and the light.
-			s << "perfectrefractor_material\n{\n\tname enclosure_mat\n\tior " << kScaledExterior << "\n\trefractance white\n}\n\n"
+			s << "perfectrefractor_material\n{\n\tname enclosure_mat\n\tior " << exterior << "\n\trefractance white\n}\n\n"
 			  << "box_geometry\n{\n\tname enclosure_geo\n\twidth 60\n\theight 60\n\tdepth 60\n}\n\n"
 			  << "standard_object\n{\n\tname enclosure\n\tgeometry enclosure_geo\n\tmaterial enclosure_mat\n}\n\n";
 		}
@@ -752,28 +805,45 @@ namespace
 
 	void TestRenderedInvariance( const unsigned int trials, const std::string& only )
 	{
-		std::cout << "B: rendered scale invariance, air (1, 1.33) vs enclosed (1.5, 1.995), n=" << trials << " per side" << std::endl;
-		struct Row { Model model; Integrator integrator; unsigned int samples; double band; };
+		std::cout << "B: rendered scale invariance, air (1, n) vs enclosed (1.5, 1.5 n), n=" << trials << " per side" << std::endl;
+		// Each row compares an air scene (exterior 1, interior airInterior)
+		// with the same scene enclosed at `exterior` with interior
+		// airInterior * exterior: one relative index, two absolute scales.
+		struct Row { Model model; Integrator integrator; unsigned int samples; double band; Scalar airInterior; Scalar exterior; };
+		// The "dense" rows put the relative index BELOW 1 (a 1.33 body inside
+		// 1.5 glass, twinned with 1.33/1.5 in air): Schlick then runs at the
+		// transmitted cosine with total reflection past the critical angle,
+		// the one regime where Sw itself (not just Ft) depends on the index,
+		// so these rows are what pin BDPTVertex::mediumIOR on the entry
+		// vertices that PathVertexEval re-evaluates.
+		const Scalar kDense = 1.33 / 1.5;
 		// Bands: several times the measured sd of the ratio at these sample
 		// counts and far below the pre-DL-49 deviations of the same rows
-		// (both recorded in docs/DL49_SSS_EXTERIOR_INDEX.md).
+		// (both recorded in docs/DL49_SSS_EXTERIOR_INDEX.md).  BDPT renders
+		// are deterministic for a fixed libc seed, and the pairs share one,
+		// so the BDPT diffusion rows read exactly 1 after the fix.
 		const Row rows[] = {
-			{ Model::Lambertian,     Integrator::PT,         16,  0.02 },
-			{ Model::Diffusion,      Integrator::PT,         64,  0.02 },
-			{ Model::DiffusionRough, Integrator::PT,         64,  0.02 },
-			{ Model::RandomWalk,     Integrator::PT,         64,  0.04 },
-			{ Model::Diffusion,      Integrator::BDPT,       32,  0.02 },
-			{ Model::DiffusionRough, Integrator::BDPT,       32,  0.02 },
-			{ Model::RandomWalk,     Integrator::BDPT,       128, 0.10 },
-			{ Model::Diffusion,      Integrator::PTSpectral, 64,  0.04 },
-			{ Model::RandomWalk,     Integrator::PTSpectral, 64,  0.05 },
+			{ Model::Lambertian,     Integrator::PT,         16,  0.02,  kAirInterior, kScale },
+			{ Model::Diffusion,      Integrator::PT,         64,  0.02,  kAirInterior, kScale },
+			{ Model::DiffusionRough, Integrator::PT,         64,  0.01,  kAirInterior, kScale },
+			{ Model::RandomWalk,     Integrator::PT,         64,  0.04,  kAirInterior, kScale },
+			{ Model::Diffusion,      Integrator::BDPT,       32,  0.02,  kAirInterior, kScale },
+			{ Model::DiffusionRough, Integrator::BDPT,       32,  0.006, kAirInterior, kScale },
+			{ Model::RandomWalk,     Integrator::BDPT,       128, 0.10,  kAirInterior, kScale },
+			{ Model::Diffusion,      Integrator::PTSpectral, 64,  0.04,  kAirInterior, kScale },
+			{ Model::RandomWalk,     Integrator::PTSpectral, 64,  0.05,  kAirInterior, kScale },
+			{ Model::Diffusion,      Integrator::PT,         64,  0.02,  kDense,       kScale },
+			{ Model::Diffusion,      Integrator::BDPT,       32,  0.02,  kDense,       kScale },
+			{ Model::RandomWalk,     Integrator::PT,         64,  0.04,  kDense,       kScale },
 		};
 		unsigned int seed = 49000;
 		for( const Row& row : rows ) {
-			const std::string label = std::string( "B: " ) + ModelName( row.model ) + "/" + IntegratorName( row.integrator );
+			const std::string label = std::string( "B: " ) + ModelName( row.model ) +
+				( row.airInterior < 1.0 ? "_dense" : "" ) + "/" + IntegratorName( row.integrator );
 			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
-			const std::string airPath = WriteScene( BuildScene( row.model, row.integrator, false, row.samples ), "air" );
-			const std::string scaledPath = WriteScene( BuildScene( row.model, row.integrator, true, row.samples ), "scaled" );
+			const std::string airPath = WriteScene( BuildScene( row.model, row.integrator, 1.0, row.airInterior, row.samples ), "air" );
+			const std::string scaledPath = WriteScene( BuildScene( row.model, row.integrator, row.exterior,
+				row.airInterior * row.exterior, row.samples ), "scaled" );
 			Check( !airPath.empty() && !scaledPath.empty(), label + ": scene files written" );
 			std::vector<double> air, scaled;
 			bool allValid = true;
@@ -785,7 +855,7 @@ namespace
 			for( unsigned int t = 0; t < trials; ++t ) {
 				const unsigned int pairSeed = seed++;
 				const double a = RenderMean( airPath, pairSeed, 1.0, t == 0, label + " air" );
-				const double s = RenderMean( scaledPath, pairSeed, kScaledExterior, t == 0, label + " enclosed" );
+				const double s = RenderMean( scaledPath, pairSeed, row.exterior, t == 0, label + " enclosed" );
 				if( !( a > 0 ) || !( s > 0 ) ) allValid = false;
 				air.push_back( a );
 				scaled.push_back( s );
@@ -798,7 +868,7 @@ namespace
 			const double ratio = ss.mean / sa.mean;
 			const double ratioSd = ratio * std::sqrt( ( sa.sd / sa.mean ) * ( sa.sd / sa.mean ) / trials +
 				( ss.sd / ss.mean ) * ( ss.sd / ss.mean ) / trials );
-			std::cout << std::setprecision( 6 ) << "    " << ModelName( row.model ) << " / " << IntegratorName( row.integrator )
+			std::cout << std::setprecision( 6 ) << "    " << label.substr( 3 )
 				<< " spp=" << row.samples << ": air " << sa.mean << " +/- " << sa.sd
 				<< "  enclosed " << ss.mean << " +/- " << ss.sd
 				<< "  ratio " << ratio << " +/- " << ratioSd << " (band " << row.band << ")" << std::endl;
