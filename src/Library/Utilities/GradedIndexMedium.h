@@ -54,6 +54,7 @@
 #ifndef GRADED_INDEX_MEDIUM_
 #define GRADED_INDEX_MEDIUM_
 
+#include <atomic>
 #include "IORStack.h"
 #include "FiniteMath.h"
 #include "../Interfaces/IObject.h"
@@ -63,6 +64,65 @@
 
 namespace RISE
 {
+	//! DL-09 COST GATE: how many live `IScalarPainter`s in the process are
+	//! world-position fields (`IsWorldPositionField()`).  Only such a
+	//! painter can make a medium graded, so while this is zero every
+	//! GradedIndexMedium query returns "not graded" after ONE relaxed atomic
+	//! load -- no `topObject()` dereference, no virtual `GetMaterial()` /
+	//! `GetGradedIORField()` / `IsWorldPositionField()` chain -- on every
+	//! vertex of every walk.  Same RAII pattern and thread-safety argument
+	//! as `SurfaceCurvatureDemand` (SurfaceCurvature.h): mutated only at
+	//! painter construction/destruction, loaded relaxed by render threads;
+	//! a stale read at a scene boundary costs one vertex's worth of lookup,
+	//! never correctness (the gated lookup it skips would answer "not
+	//! graded" for every medium anyway when the count is truly zero).  A
+	//! registered painter ANYWHERE in the process -- bound to an `ior` or
+	//! not -- opens the gate for every scene in it; that is a cost, not a
+	//! correctness risk.
+	namespace GradedIndexDemand
+	{
+		inline std::atomic<int>& Counter()
+		{
+			static std::atomic<int> counter( 0 );
+			return counter;
+		}
+
+		inline bool Any()
+		{
+			return Counter().load( std::memory_order_relaxed ) > 0;
+		}
+
+		class Registration
+		{
+		public:
+			explicit Registration( bool active = false ) : m_active( active )
+			{
+				if( m_active ) Counter().fetch_add( 1, std::memory_order_relaxed );
+			}
+			Registration( const Registration& other ) : m_active( other.m_active )
+			{
+				if( m_active ) Counter().fetch_add( 1, std::memory_order_relaxed );
+			}
+			Registration& operator=( const Registration& other )
+			{
+				if( this != &other ) {
+					if( other.m_active ) Counter().fetch_add( 1, std::memory_order_relaxed );
+					if( m_active ) Counter().fetch_sub( 1, std::memory_order_relaxed );
+					m_active = other.m_active;
+				}
+				return *this;
+			}
+			~Registration()
+			{
+				if( m_active ) Counter().fetch_sub( 1, std::memory_order_relaxed );
+			}
+			bool IsActive() const { return m_active; }
+
+		private:
+			bool m_active;
+		};
+	}
+
 	namespace GradedIndexMedium
 	{
 		enum TransportMode
@@ -74,7 +134,7 @@ namespace RISE
 		//! The graded ior field of the medium `pObj` encloses, or null.
 		inline const IScalarPainter* FieldOf( const IObject* pObj )
 		{
-			if( !pObj ) {
+			if( !pObj || !GradedIndexDemand::Any() ) {
 				return 0;
 			}
 			const IMaterial* pMat = pObj->GetMaterial();
