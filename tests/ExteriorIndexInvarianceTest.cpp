@@ -629,7 +629,7 @@ namespace
 
 	//! exterior == 1 builds the air scene; exterior > 1 wraps everything in an
 	//! ideal enclosure of that index and scales every material index by it.
-	std::string BuildScene( Model model, Integrator integrator, Scalar exterior, unsigned int samples, const char* smsSeeding )
+	std::string BuildScene( Model model, Integrator integrator, Scalar exterior, unsigned int samples, const char* smsSeeding, unsigned int smsBounces )
 	{
 		const Scalar s = exterior;
 		std::ostringstream o;
@@ -736,7 +736,7 @@ namespace
 		const bool photons = smsSeeding && std::string( smsSeeding ) == "snell-photons";
 		const std::string sms = smsSeeding
 			? std::string( "\n\tsms_enabled TRUE\n\tsms_seeding " ) + ( photons ? "snell" : smsSeeding ) +
-			  "\n\tsms_max_chain_depth 2\n\tsms_target_bounces " + ( model == Model::SMSGlass ? "2" : "1" ) +
+			  "\n\tsms_max_chain_depth 2\n\tsms_target_bounces " + std::to_string( smsBounces ) +
 			  ( photons ? "\n\tsms_photon_count 20000" : "" )
 			: std::string();
 		switch( integrator ) {
@@ -819,7 +819,7 @@ namespace
 	void TestRenderedInvariance( const unsigned int trials, const std::string& only )
 	{
 		std::cout << "B: rendered scale invariance, air (1, n) vs enclosed (1.5, 1.5 n), n=" << trials << " per side" << std::endl;
-		struct Row { Model model; Integrator integrator; unsigned int samples; double band; const char* sms; bool gated = true; };
+		struct Row { Model model; Integrator integrator; unsigned int samples; double band; const char* sms; bool gated = true; unsigned int bounces = 1; };
 		// Bands: several times the measured sd of the ratio (common random
 		// numbers per pair) and far below the pre-fix deviations of the
 		// same rows; both recorded in docs/DL49_SSS_EXTERIOR_INDEX.md §10.
@@ -841,20 +841,23 @@ namespace
 			{ Model::SMSMirror,    Integrator::PT,         16,  0.03, "uniform" },
 			{ Model::SMSMirror,    Integrator::PTSpectral, 16,  0.05, "snell" },
 			{ Model::SMSMirror,    Integrator::PTSpectral, 16,  0.05, "uniform" },
-			{ Model::SMSGlass,     Integrator::PT,         16,  0.02, "snell" },
-			{ Model::SMSGlass,     Integrator::PT,         16,  0.02, "uniform" },
-			{ Model::SMSGlass,     Integrator::PTSpectral, 16,  0.05, "snell" },
-			{ Model::SMSGlass,     Integrator::PTSpectral, 16,  0.05, "uniform" },
-			{ Model::SMSGlass,     Integrator::PT,         16,  0.02, "snell-photons", false },
+			// k = 1: the sphere's Fresnel REFLECTION chain; k = 2: the
+			// refraction chain through it.
+			{ Model::SMSGlass,     Integrator::PT,         16,  0.01, "snell" },
+			{ Model::SMSGlass,     Integrator::PT,         16,  0.01, "uniform" },
+			{ Model::SMSGlass,     Integrator::PTSpectral, 64,  0.03, "snell" },
+			{ Model::SMSGlass,     Integrator::PTSpectral, 64,  0.03, "uniform" },
+			{ Model::SMSGlass,     Integrator::PT,         64,  0.02, "uniform", true, 2 },
+			{ Model::SMSGlass,     Integrator::PT,         16,  0.02, "snell-photons", false, 2 },
 		};
 		unsigned int seed = 290000;
 		for( const Row& row : rows ) {
 			const std::string label = std::string( "B: " ) + ModelName( row.model ) + "/" + IntegratorName( row.integrator ) +
-				( row.sms ? std::string( "/sms-" ) + row.sms : std::string() );
+				( row.sms ? std::string( "/sms-" ) + row.sms + "/k" + std::to_string( row.bounces ) : std::string() );
 			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
 			const Point3 camera = ( row.model == Model::SMSMirror || row.model == Model::SMSGlass ) ? Point3( 0, 2.2, 3.4 ) : Point3( 0, 0, 4.5 );
-			const std::string airPath = WriteScene( BuildScene( row.model, row.integrator, 1.0, row.samples, row.sms ), "air" );
-			const std::string scaledPath = WriteScene( BuildScene( row.model, row.integrator, kScale, row.samples, row.sms ), "scaled" );
+			const std::string airPath = WriteScene( BuildScene( row.model, row.integrator, 1.0, row.samples, row.sms, row.bounces ), "air" );
+			const std::string scaledPath = WriteScene( BuildScene( row.model, row.integrator, kScale, row.samples, row.sms, row.bounces ), "scaled" );
 			Check( !airPath.empty() && !scaledPath.empty(), label + ": scene files written" );
 			std::vector<double> air, scaled;
 			bool allValid = true;
