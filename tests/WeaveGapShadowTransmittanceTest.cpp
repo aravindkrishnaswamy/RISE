@@ -697,7 +697,7 @@ static void TestAreaPartitionGuard()
 // or the same surfaces as free-standing double-sided planes; omni light
 // at (0,0,lightZ) power 6; camera (0,0,3.2) fov 34.
 //////////////////////////////////////////////////////////////////////
-enum LayerGeom { kBox, kSixPlanes, kTwoPlanes, kOnePlane };
+enum LayerGeom { kBox, kSixPlanes, kTwoPlanes, kOnePlane, kSphere };
 
 static std::string PlaneChunk( const char* name, const char* pts )
 {
@@ -735,6 +735,15 @@ static std::string LayerScene( LayerGeom geom, double gap, double lightZ, unsign
 	case kOnePlane:
 		ss << PlaneChunk( "z0", "\tpta -1.4 -1.4 0\n\tptb 1.4 -1.4 0\n\tptc 1.4 1.4 0\n\tptd -1.4 1.4 0\n" );
 		break;
+	case kSphere:
+		// A closed analytic shell: every NEE shadow ray from the lit-from-
+		// behind front hemisphere leaves its OWN surface and crosses the
+		// SAME object's far side -- the self-root topology debt 25's
+		// sibling audit fixed, so a walk that re-found the ray's own
+		// origin surface would multiply in a spurious extra `gap`.
+		ss << "sphere_geometry\n{\n\tname g\n\tradius 1.0\n}\n\n"
+		      "standard_object\n{\n\tname o\n\tgeometry g\n\tmaterial mat_box\n\tposition 0 0 0\n}\n\n";
+		break;
 	}
 	return ss.str();
 }
@@ -746,6 +755,13 @@ static void TestTwoLayerLightOutside()
 	const L rows[] = {
 		{ kBox,       0.3, "box gap 0.3" },
 		{ kTwoPlanes, 0.1, "two planes gap 0.1" },
+		// The closed SPHERE is deliberately NOT gated here, only printed by
+		// the `table` section: BDPT reads it ~6.5 % under PT with gap 0.3
+		// (0.01653 vs 0.01770) while VCM at 4096 spp reads 0.0180 +/-
+		// 0.0004, i.e. with PT -- a BDPT closed-shell residual that exists
+		// independently of DL-05 (the same sphere at gap 0.0, where no
+		// pass-through exists, already reads BDPT/PT 1.041 before and after)
+		// and that this 8 % band would sit too close to.
 	};
 	// 512 spp, the table's own count: at 256 spp BDPT reads the box row
 	// ~3 % lower than at 512 with a run-to-run sd of ~0.03 %, i.e. a
@@ -824,9 +840,14 @@ static void MeasureDesignDocTable( unsigned int nRepeats )
 		// section 15 debt 25 records.
 		{ kBox,       0.0, -3.0, "box gap 0.0, light outside (control)" },
 		{ kTwoPlanes, 0.0, -3.0, "two planes gap 0.0 (control)" },
+		{ kSphere,    0.3, -3.0, "sphere gap 0.3, light outside" },
+		{ kSphere,    0.0, -3.0, "sphere gap 0.0, light outside (control)" },
 	};
+	// WEAVE_GAP_TABLE_ROWS (optional): only rows whose label contains it.
+	const char* rowFilter = std::getenv( "WEAVE_GAP_TABLE_ROWS" );
 	for( const T& r : rows )
 	{
+		if( rowFilter && !std::strstr( r.label, rowFilter ) ) continue;
 		const std::string body = LayerScene( r.geom, r.gap, r.lightZ, 24 );
 		std::vector<double> pt, bd, vc;
 		for( unsigned int i = 0; i < nRepeats; i++ ) {
