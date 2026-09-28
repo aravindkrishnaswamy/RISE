@@ -55,7 +55,7 @@ void CausticPelPhotonTracer::TracePhoton(
 	const RISEPel& power,
 	bool bFromSpecular,
 	CausticPelPhotonMap& pPhotonMap,
-	const IORStack& ior_stack,								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack,								///< [in] Index of refraction stack (not modified; DL-315)
 	const unsigned int depth								///< [in] Recursion depth (0 = primary photon emitted from the light)
 	) const
 {
@@ -100,8 +100,11 @@ void CausticPelPhotonTracer::TracePhoton(
 			ri.geometric.ambientIOR = ( ambIOR > 0.0 ) ? ambIOR : 1.0;
 		}
 
-		// Set the current object on the IOR stack
-		ior_stack.SetCurrentObject( ri.pObject );
+		// DL-315: this hit's current object lives on a COPY; the caller's
+		// stack is `const` and is no longer written through (IORStack's
+		// pCurrentObject used to be `mutable`).
+		IORStack hitStack( ior_stack );
+		hitStack.SetCurrentObject( ri.pObject );
 
 		ISPF* pSPF = ri.pMaterial ? ri.pMaterial->GetSPF() : 0;
 		IBSDF* pBRDF = ri.pMaterial ? ri.pMaterial->GetBSDF() : 0;
@@ -119,7 +122,7 @@ void CausticPelPhotonTracer::TracePhoton(
 		// Scaling here too would cancel the non-symmetry and put every
 		// gather/merge that pairs a photon with an eye vertex back where
 		// it was.  See docs/REFRACTIVE_RADIANCE_SCALING.md.
-		pSPF->Scatter( ri.geometric, samplerWrapper, scattered, ior_stack );
+		pSPF->Scatter( ri.geometric, samplerWrapper, scattered, hitStack );
 
 			// The material record will tell us what to do!
 
@@ -142,7 +145,7 @@ void CausticPelPhotonTracer::TracePhoton(
 						) {
 						// Trace all non-diffuse rays
 						scat.ray.Advance( 1e-8 );
-						TracePhoton( scat.ray, power*scat.kray*PathVertexEval::ImportanceShadingNormalFactor( ri.geometric.vNormal, ri.geometric.vGeomNormal, -ray.Dir(), scat.ray.Dir() ), true, pPhotonMap, scat.ior_stack?*scat.ior_stack:ior_stack, depth+1 );
+						TracePhoton( scat.ray, power*scat.kray*PathVertexEval::ImportanceShadingNormalFactor( ri.geometric.vNormal, ri.geometric.vGeomNormal, -ray.Dir(), scat.ray.Dir() ), true, pPhotonMap, scat.ior_stack?*scat.ior_stack:hitStack, depth+1 );
 					}
 				}
 			} else {
@@ -154,7 +157,7 @@ void CausticPelPhotonTracer::TracePhoton(
 						(bTraceRefractions&&pScat->type==ScatteredRay::eRayRefraction)
 						) {
 						pScat->ray.Advance( 1e-8 );
-						TracePhoton( pScat->ray, power*pScat->kray*(PathVertexEval::ImportanceShadingNormalFactor( ri.geometric.vNormal, ri.geometric.vGeomNormal, -ray.Dir(), pScat->ray.Dir() )/selectedProbability), true, pPhotonMap, pScat->ior_stack?*pScat->ior_stack:ior_stack, depth+1 );
+						TracePhoton( pScat->ray, power*pScat->kray*(PathVertexEval::ImportanceShadingNormalFactor( ri.geometric.vNormal, ri.geometric.vGeomNormal, -ray.Dir(), pScat->ray.Dir() )/selectedProbability), true, pPhotonMap, pScat->ior_stack?*pScat->ior_stack:hitStack, depth+1 );
 					}
 				}
 			}

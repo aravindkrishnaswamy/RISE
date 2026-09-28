@@ -867,7 +867,7 @@ bool RayCaster::CastRay(
 			const RAY_STATE& rs,								///< [in] The ray state
 			Scalar* distance,									///< [in] If there was a hit, how far?
 			const IRadianceMap* pRadianceMap,					///< [in] Radiance map to use in case there is no hit
-			const IORStack& ior_stack							///< [in/out] Index of refraction stack
+			const IORStack& ior_stack							///< [in] Index of refraction stack (DL-315: never modified; the hit is shaded with a copy)
 			) const
 {
 #ifdef ENABLE_MAX_RECURSION
@@ -1548,8 +1548,18 @@ bool RayCaster::CastRay(
 			ri.pModifier->Modify( ri.geometric );
 		}
 
-		// Set the current object on the IOR stack
-		ior_stack.SetCurrentObject( ri.pObject );
+		// DL-315: the hit's object is the current object of the stack the
+		// SHADER sees -- a copy.  This used to write through the caller's
+		// `const IORStack&` (then a `mutable` field), so after PT's SSS
+		// continuation hit an enclosure, the caller's own vertex read the
+		// enclosure as its current object, `containsCurrent()` went true,
+		// and SubSurfaceScatteringSPF::Scatter took its inside/absorb
+		// branch -- an F0-sized loss.  The same leak reached the legacy
+		// shader-op chain (an op's continuation cast followed by a later
+		// op's Scatter at the same vertex).  See
+		// docs/DL315_RAYCASTER_STACK_AND_RECURSION.md.
+		IORStack hitStack( ior_stack );
+		hitStack.SetCurrentObject( ri.pObject );
 
 		// DL-185: hand the shader a copy of `rs` carrying THIS call's own
 		// cast-level RR compensation, so any NEE done while shading this
@@ -1562,7 +1572,7 @@ bool RayCaster::CastRay(
 		rsForShade.castRRCompensation = rrCompensation;
 
 		// Apply shade by calling the appropriate shader
-		SelectShader( ri ).Shade( rc, ri, *this, rsForShade, c, ior_stack );
+		SelectShader( ri ).Shade( rc, ri, *this, rsForShade, c, hitStack );
 
 		// Analog no-scatter survival weight (see RayCasterSurvivalWeight):
 		// reaching this surface without a scatter event is a survival outcome
@@ -1683,7 +1693,7 @@ bool RayCaster::CastRayNM(
 	const Scalar nm,									///< [in] Wavelength to cast
 	Scalar* distance,									///< [in] If there was a hit, how far?
 	const IRadianceMap* pRadianceMap,					///< [in] Radiance map to use in case there is no hit
-	const IORStack& ior_stack							///< [in/out] Index of refraction stack
+	const IORStack& ior_stack							///< [in] Index of refraction stack (DL-315: never modified; the hit is shaded with a copy)
 	) const
 {
 #ifdef ENABLE_MAX_RECURSION
@@ -2174,15 +2184,16 @@ bool RayCaster::CastRayNM(
 			ri.pModifier->Modify( ri.geometric );
 		}
 
-		// Set the current object on the IOR stack
-		ior_stack.SetCurrentObject( ri.pObject );
+		// DL-315: shade with a copy -- see the RGB CastRay's identical site.
+		IORStack hitStack( ior_stack );
+		hitStack.SetCurrentObject( ri.pObject );
 
 		// DL-185 -- see the RGB CastRay's identical call site above.
 		RAY_STATE rsForShade( rs );
 		rsForShade.castRRCompensation = rrCompensation;
 
 		// Apply shade by calling the appropriate shader
-		c = SelectShader( ri ).ShadeNM( rc, ri, *this, rsForShade, nm, ior_stack );
+		c = SelectShader( ri ).ShadeNM( rc, ri, *this, rsForShade, nm, hitStack );
 
 		// Analog no-scatter survival: reaching this surface without a scatter
 		// event is a survival outcome whose probability already carries
@@ -3072,8 +3083,9 @@ bool RayCaster::CastRayHWSS(
 			ri.pModifier->Modify( ri.geometric );
 		}
 
-		// IOR stack (shared geometry)
-		ior_stack.SetCurrentObject( ri.pObject );
+		// DL-315: shade with a copy -- see the RGB CastRay's identical site.
+		IORStack hitStack( ior_stack );
+		hitStack.SetCurrentObject( ri.pObject );
 
 		// DL-185 -- see RGB CastRay's identical call site above.  (The
 		// per-wavelength medium fallback above already delegates to
@@ -3084,7 +3096,7 @@ bool RayCaster::CastRayHWSS(
 		// Dispatch to ShadeHWSS — this routes through
 		// PerformOperationHWSS, enabling hero-wavelength
 		// directional sharing in PathTracingShaderOp.
-		SelectShader( ri ).ShadeHWSS( rc, ri, *this, rsForShade, c, swl, ior_stack );
+		SelectShader( ri ).ShadeHWSS( rc, ri, *this, rsForShade, c, swl, hitStack );
 
 		if( distance ) {
 			*distance = ri.geometric.range;

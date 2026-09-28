@@ -270,7 +270,7 @@ namespace RISE
 				const RAY_STATE& rs,								///< [in] The ray state
 				Scalar* distance,									///< [in] If there was a hit, how far?
 				const IRadianceMap* pRadianceMap,					///< [in] Radiance map to use in case there is no hit
-				const IORStack& ior_stack							///< [in/out] Index of refraction stack
+				const IORStack& ior_stack							///< [in] Index of refraction stack (DL-315: never modified; the hit is shaded with a copy)
 				) const;
 
 			//! Tells the ray caster to cast the specified ray into the scene for the specific wavelength
@@ -284,7 +284,7 @@ namespace RISE
 				const Scalar nm,									///< [in] Wavelength to cast
 				Scalar* distance,									///< [in] If there was a hit, how far?
 				const IRadianceMap* pRadianceMap,					///< [in] Radiance map to use in case there is no hit
-				const IORStack& ior_stack							///< [in/out] Index of refraction stack
+				const IORStack& ior_stack							///< [in] Index of refraction stack (DL-315: never modified; the hit is shaded with a copy)
 				) const;
 
 			//! Casts a ray for a bundle of HWSS wavelengths with shared
@@ -301,7 +301,7 @@ namespace RISE
 				SampledWavelengths& swl,							///< [in/out] Wavelength bundle
 				Scalar* distance,									///< [in] If there was a hit, how far?
 				const IRadianceMap* pRadianceMap,					///< [in] Radiance map for misses
-				const IORStack& ior_stack							///< [in/out] Index of refraction stack
+				const IORStack& ior_stack							///< [in] Index of refraction stack (DL-315: never modified; the hit is shaded with a copy)
 				) const;
 
 			//! This function casts a ray into the scene and only checks to see if it intersects something.
