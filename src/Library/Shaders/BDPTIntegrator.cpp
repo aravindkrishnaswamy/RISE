@@ -101,38 +101,14 @@ static_assert( RISE::BDPTUtilities::kMediumDistanceStreamBase >
 		RISE::BDPTCameraUtilities::kApertureSamplerStream &&
 	RISE::BDPTUtilities::kMediumDistanceStreamBase >
 		RISE::BDPTCameraUtilities::kPSSMLTFilmLensApertureStream &&
+	// VCM's per-eye-vertex NEE stream, 48 + i, with at most three
+	// vertices per walk iteration (SobolDimensionBudgetTest Test F).
 	RISE::BDPTUtilities::kMediumDistanceStreamBase >
-		48 + 2 * static_cast<int>( RISE::BDPTUtilities::kWalkIterationCap ) + 1,
+		48 + 3 * static_cast<int>( RISE::BDPTUtilities::kWalkIterationCap ) + 1,
 	"medium-distance streams overlap a fixed BDPT/VCM/MLT stream" );
 static_assert( static_cast<unsigned long long>( RISE::BDPTUtilities::kMediumDistanceStreamEnd ) *
 		RISE::Implementation::SobolSampler::kStreamStride < 0xFFFFFFFFull,
 	"medium-distance streams overflow SobolSampler's 32-bit dimension counter" );
-
-// ==== DL283 SCRATCH INSTRUMENTATION (reverted before merge) ====
-#include <atomic>
-#include <cstdio>
-namespace DL283Scratch {
-	static std::atomic<unsigned long long> g_hist[2][2050];
-	struct Dumper { ~Dumper() {
-		for( int side = 0; side < 2; side++ ) {
-			unsigned long long tot = 0; for( int i = 0; i < 2050; i++ ) tot += g_hist[side][i].load();
-			if( !tot ) continue;
-			std::fprintf( stderr, "DL283HIST side=%s events=%llu\n", side ? "light" : "eye", tot );
-			for( int i = 0; i < 2050; i++ ) { const unsigned long long c = g_hist[side][i].load();
-				if( c ) std::fprintf( stderr, "DL283H %s %d %llu\n", side ? "light" : "eye", i, c ); }
-		} } };
-	static Dumper g_dumper;
-	class Counting : public RISE::ISampler {
-	public:
-		RISE::ISampler& inner; unsigned int n;
-		explicit Counting( RISE::ISampler& s ) : inner( s ), n( 0 ) {}
-		RISE::Scalar Get1D() { n++; return inner.Get1D(); }
-		RISE::Point2 Get2D() { n += 2; return inner.Get2D(); }
-		void StartStream( int s ) { inner.StartStream( s ); }
-		bool HasFixedDimensionBudget() const { return inner.HasFixedDimensionBudget(); }
-		void Record( int side ) { g_hist[side][ n < 2049 ? n : 2049 ].fetch_add( 1, std::memory_order_relaxed ); }
-	};
-}
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -1875,10 +1851,8 @@ namespace {
 						// see BDPTUtilities::MediumDistanceStream.
 						sampler.StartStream( BDPTUtilities::MediumDistanceStream(
 							BDPTUtilities::eEyeWalk, depth ) );
-						DL283Scratch::Counting cs( sampler );
 						t_m = SampleMediumDistance<Tag>(
-							*pMed, currentRay, maxDist, cs, scattered, tag );
-						cs.Record( 0 );
+							*pMed, currentRay, maxDist, sampler, scattered, tag );
 						sampler.StartStream( 16u + depth );
 					}
 
@@ -6322,10 +6296,8 @@ unsigned int GenerateLightSubpathImpl(
 					// DL-283: own stream block -- see the eye subpath's twin.
 					sampler.StartStream( BDPTUtilities::MediumDistanceStream(
 						BDPTUtilities::eLightWalk, depth ) );
-					DL283Scratch::Counting cs( sampler );
 					t_m = SampleMediumDistance<Tag>(
-						*pMed, currentRay, maxDist, cs, scattered, tag );
-					cs.Record( 1 );
+						*pMed, currentRay, maxDist, sampler, scattered, tag );
 					sampler.StartStream( 1u + depth );
 				}
 

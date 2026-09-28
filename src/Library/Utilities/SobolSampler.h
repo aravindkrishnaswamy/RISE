@@ -60,19 +60,6 @@
 
 #include "ISampler.h"
 #include "../Sampling/SobolSequence.h"
-#include <atomic>
-#include <cstdio>
-// ==== DL283 SCRATCH INSTRUMENTATION (reverted before merge) ====
-namespace DL283ScratchSobol {
-	inline std::atomic<unsigned long long>* Hist() { static std::atomic<unsigned long long> h[2100]; return h; }
-	struct Dumper { ~Dumper() { unsigned long long t = 0; for( int i = 0; i < 2100; i++ ) t += Hist()[i].load();
-		if( !t ) return; std::fprintf( stderr, "DL283STREAM total=%llu\n", t );
-		for( int i = 0; i < 2100; i++ ) { const unsigned long long c = Hist()[i].load(); if( c ) std::fprintf( stderr, "DL283H stream %d %llu\n", i, c ); } } };
-	inline Dumper& D() { static Dumper d; return d; }
-	// Per-render scramble salt so repeated renders are INDEPENDENT QMC
-	// randomizations (otherwise every render reuses identical Sobol points).
-	inline uint32_t& Salt() { static uint32_t s = 0; return s; }
-}
 
 namespace RISE
 {
@@ -113,15 +100,7 @@ namespace RISE
 			// MediumDistanceStream, DL-283).
 			static const unsigned int kStreamStride = 32;
 
-			virtual ~SobolSampler(){ RecordStream(); };
-			int curStream = -1;
-			void RecordStream() {
-				if( curStream >= 1 && curStream < 1040 ) {
-					(void)DL283ScratchSobol::D();
-					const unsigned int used = dimension - unsigned(curStream) * kStreamStride;
-					DL283ScratchSobol::Hist()[ used < 2099 ? used : 2099 ].fetch_add( 1, std::memory_order_relaxed );
-				}
-			}
+			virtual ~SobolSampler(){};
 
 		public:
 			SobolSampler(
@@ -129,7 +108,7 @@ namespace RISE
 				uint32_t seed_
 				) :
 				sampleIndex( sampleIndex_ ),
-				seed( seed_ ^ DL283ScratchSobol::Salt() ),
+				seed( seed_ ),
 				dimension( 0 )
 			{
 			}
@@ -168,8 +147,6 @@ namespace RISE
 			//! Stream 0 = film/camera, 1 = light subpath, 2 = eye subpath, etc.
 			void StartStream( int streamIndex )
 			{
-				RecordStream();
-				curStream = streamIndex;
 				dimension = static_cast<unsigned int>(streamIndex) * kStreamStride;
 			}
 		};
