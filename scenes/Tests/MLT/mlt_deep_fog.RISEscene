@@ -1,0 +1,250 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           mlt_deep_fog.RISEscene                                                                  #
+#   Description:    DL-08 render-level proof scene: a small closed box, densely filled with an isotropic    #
+#                   scattering medium, rendered with PSSMLT (mlt_rasterizer).  sigma_t = 1.0/unit with      #
+#                   albedo 0.98 over an 80-unit box gives a mean free path (1 unit) far shorter than any    #
+#                   wall-to-wall traversal, so an eye subpath's loop-depth counter (surface bounces +       #
+#                   medium scatters, StabilityConfig::maxVolumeBounce defaults to 64) commonly climbs past  #
+#                   32 -- the exact depth at which the pre-DL-08 BDPTIntegrator eye walk's                  #
+#                   StartStream(16+depth) literal-collided with MLT's old reserved stream 48                #
+#                   (docs/DL08_PSSMLT_LANE_LAYOUT.md).  max_eye_depth/max_light_depth are kept small (3) so #
+#                   depth accumulation is dominated by medium scatters, not surface bounces, and            #
+#                   bootstrap/chain/mutation counts are kept low for fast iteration; this is a regression   #
+#                   fixture, not a beauty render.  No translucent/SSS material is used (kept out of scope   #
+#                   per the DL-08 render-level task -- transport stays a plain Lambertian box + isotropic   #
+#                   fog).  oidn_denoise is off and the reconstruction filter is box so the EXR output is a  #
+#                   direct, unfiltered measurement of the sampler's own output.                             #
+#                                                                                                           #
+#                   sigma_a = 0.02, sigma_s = 0.98 (albedo 0.98), phase = isotropic, box = 80 units          #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      September 27, 2026                                                                      #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+mlt_rasterizer
+{
+	max_eye_depth		3
+	max_light_depth	3
+	bootstrap_samples	3000
+	chains				24
+	mutations_per_pixel	24
+	large_step_prob		0.3
+	oidn_denoise		FALSE
+	pixel_filter		box
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/mlt_deep_fog
+	type				EXR
+	color_space			Rec709RGB_Linear
+}
+
+film
+{
+	width			64
+	height			64
+}
+
+pinhole_camera
+{
+	location			40 12 8
+	lookat				40 45 72
+	up					0 1 0
+	fov					60.0
+}
+
+##################################################
+# Participating Medium -- dense isotropic fog.
+# mean free path = 1/sigma_t = 1 unit, far shorter
+# than the 80-unit box, so eye/light subpaths
+# commonly accumulate dozens of medium-scatter
+# vertices (loop depth) before a surface bounce
+# terminates the walk.
+##################################################
+
+homogeneous_medium
+{
+	name		fog
+	absorption	0.02 0.02 0.02
+	scattering	0.98 0.98 0.98
+	phase		isotropic
+}
+
+global_medium
+{
+medium fog
+}
+
+##################################################
+# Painters
+##################################################
+
+uniformcolor_painter
+{
+	name				pnt_white
+	color				0.75 0.75 0.75
+}
+
+uniformcolor_painter
+{
+	name				pnt_light
+	color				1.0 0.95 0.85
+}
+
+##################################################
+# Materials -- plain Lambertian only (no
+# translucent/SSS material, per the DL-08 task
+# scope: keep transport simple).
+##################################################
+
+lambertian_material
+{
+	name				white
+	reflectance			pnt_white
+}
+
+lambertian_luminaire_material
+{
+	name				light_mat
+	exitance			pnt_light
+	scale				1000000.0
+	material			none
+}
+
+##################################################
+# Geometry -- closed 80-unit box
+##################################################
+
+# --- Floor ---
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					80 0 0
+	ptb					0 0 0
+	ptc					0 0 80
+	ptd					80 0 80
+}
+
+# --- Ceiling ---
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					80 80 0
+	ptb					80 80 80
+	ptc					0 80 80
+	ptd					0 80 0
+}
+
+# --- Back wall ---
+clippedplane_geometry
+{
+	name				backwallgeom
+	pta					0 0 80
+	ptb					0 80 80
+	ptc					80 80 80
+	ptd					80 0 80
+}
+
+# --- Front wall (behind camera, closes the box) ---
+clippedplane_geometry
+{
+	name				frontwallgeom
+	pta					80 0 0
+	ptb					80 80 0
+	ptc					0 80 0
+	ptd					0 0 0
+}
+
+# --- Left wall ---
+clippedplane_geometry
+{
+	name				leftwallgeom
+	pta					0 0 80
+	ptb					0 0 0
+	ptc					0 80 0
+	ptd					0 80 80
+}
+
+# --- Right wall ---
+clippedplane_geometry
+{
+	name				rightwallgeom
+	pta					80 0 0
+	ptb					80 0 80
+	ptc					80 80 80
+	ptd					80 80 0
+}
+
+# --- Ceiling area light (recessed slightly below the ceiling plane) ---
+clippedplane_geometry
+{
+	name				lightgeom
+	pta					50 79.9 30
+	ptb					50 79.9 50
+	ptc					30 79.9 50
+	ptd					30 79.9 30
+}
+
+##################################################
+# Objects
+##################################################
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			white
+}
+
+standard_object
+{
+	name				backwall
+	geometry			backwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				frontwall
+	geometry			frontwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				leftwall
+	geometry			leftwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				rightwall
+	geometry			rightwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				light
+	geometry			lightgeom
+	material			light_mat
+}

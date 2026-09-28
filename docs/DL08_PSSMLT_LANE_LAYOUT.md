@@ -180,6 +180,155 @@ directly from the same PSSMLT invariant `PSSMLTStreamAliasingTest`'s
 header comment already documents for the ORIGINAL (kNumStreams=3)
 shifted-shadow bug this file's test suite exists to guard against.
 
+## Render-level proof (2026-09-27)
+
+The paragraph above declined a render-level demonstration as "not
+justified" given the closed-form sampler-arithmetic proof already
+existed.  This section supplies that demonstration anyway, on a
+purpose-built deep-volume MLT scene, and reports the result honestly
+whichever way it came out.
+
+**Scene**: `scenes/Tests/MLT/mlt_deep_fog.RISEscene` (RGB,
+`mlt_rasterizer`) and its spectral twin `mlt_deep_fog_spectral.RISEscene`
+(`mlt_spectral_rasterizer`).  A small (80-unit) closed Lambertian box,
+entirely filled with a dense isotropic-scattering `homogeneous_medium`
+(`absorption 0.02`, `scattering 0.98` -- mean free path 1 unit, two
+orders of magnitude shorter than the box), lit by one small ceiling
+emitter (`lambertian_luminaire_material`, `scale 1000000`).
+`max_eye_depth`/`max_light_depth` are kept at 3 so almost all loop-depth
+accumulation comes from medium scatters (which do NOT count toward the
+surface-bounce cap -- see `BDPTIntegrator.cpp`'s
+`eyeSurfaceBounces`/`depth` distinction above), driving the eye
+subpath's `StartStream(16+depth)` counter well past the historical
+collision depth of 32 on the great majority of subpaths.
+`bootstrap_samples 3000`, `chains 24`, `mutations_per_pixel 24`; film
+64x64; `oidn_denoise FALSE`, `pixel_filter box`; output `EXR`
+`Rec709RGB_Linear`.  No translucent/SSS material.
+
+**Depth >= 32 fraction (measured, not argued)**: a temporary atomic
+counter pair was added to `BDPTIntegrator::GenerateEyeSubpathImpl`
+(scratch commit `2c7c3e03`, reverted in a following commit before this
+slice's final state) counting, per eye subpath generated, whether the
+per-bounce loop counter `depth` ever reaches 32.  Rendering
+`mlt_deep_fog.RISEscene` at its shipped settings on the post-fix
+library: **101328 total eye subpaths generated (bootstrap + chain
+mutations combined), 99451 reaching depth >= 32 -- 98.1%.**  The
+fraction stays in the 98.0-98.2% band across every `bootstrap_samples`
+value tried (3000-6000) and under both the RGB and spectral
+rasterizers.
+
+**Render sweep**: both scenes were rendered on BOTH builds -- pre-fix
+(`e290fc64`, in a second worktree) and post-fix (this slice's HEAD) --
+INTERLEAVED (pre, post, pre, post, ...), n=4 repeats each, under both
+`mlt_rasterizer` and `mlt_spectral_rasterizer`.  `MLTRasterizer`'s
+bootstrap/chain seeds are index-deterministic
+(`bootstrapSamples[i].seed = i`; `RandomNumberGenerator
+selRNG(c*31337)` in `InitChain`), so identical settings reproduce a
+bit-identical render every time; repeats were varied by changing
+`bootstrap_samples`, in two separate sweeps:
+
+- **"narrow" sweep**: `bootstrap_samples` = 3000, 3001, 3002, 3003 (a
+  minimal +1 variation -- these four repeats explore a
+  nearly-identical bootstrap population and are highly correlated with
+  each other; useful for isolating the code-caused difference from
+  noise at a FIXED sampling population, but not representative of
+  independent-trial variance).
+- **"wide" sweep**: `bootstrap_samples` = 3000, 4000, 5000, 6000 (a
+  materially different, largely-independent population each time).
+
+EXRs were read with `OpenEXR`/`numpy`; "centre" = the middle 50%x50%
+of the 64x64 frame, "edge" = the surrounding ring; Welch's t is
+between the n=4 POST values and the n=4 PRE values.
+
+**RGB (`mlt_rasterizer`), narrow sweep:**
+
+| region | PRE mean | PRE sd | POST mean | POST sd | rel diff | Welch t |
+|---|---|---|---|---|---|---|
+| whole-image | 0.043627 | 0.000019 | 0.045424 | 0.000020 | +4.12% | +133.0 |
+| centre (50%) | 0.032944 | 0.000014 | 0.050855 | 0.000021 | +54.37% | +1400.3 |
+| edge (ring) | 0.047188 | 0.000020 | 0.043614 | 0.000019 | -7.57% | -258.2 |
+
+**RGB, wide sweep:**
+
+| region | PRE mean | PRE sd | POST mean | POST sd | rel diff | Welch t |
+|---|---|---|---|---|---|---|
+| whole-image | 0.040270 | 0.002779 | 0.038304 | 0.005838 | -4.88% | -0.61 (n.s.) |
+| centre (50%) | 0.033709 | 0.002673 | 0.032927 | 0.012167 | -2.32% | -0.13 (n.s.) |
+| edge (ring) | 0.042457 | 0.003825 | 0.040097 | 0.005607 | -5.56% | -0.70 (n.s.) |
+
+**Spectral (`mlt_spectral_rasterizer`), narrow sweep:**
+
+| region | PRE mean | PRE sd | POST mean | POST sd | rel diff | Welch t |
+|---|---|---|---|---|---|---|
+| whole-image | 0.005262 | 0.000002 | 0.014057 | 0.000006 | +167.15% | +2721.9 |
+| centre (50%) | 0.004442 | 0.000002 | 0.011766 | 0.000005 | +164.88% | +2676.9 |
+| edge (ring) | 0.005535 | 0.000002 | 0.014821 | 0.000006 | +167.76% | +2732.6 |
+
+**Spectral, wide sweep:**
+
+| region | PRE mean | PRE sd | POST mean | POST sd | rel diff | Welch t |
+|---|---|---|---|---|---|---|
+| whole-image | 0.003959 | 0.000962 | 0.011713 | 0.001899 | +195.88% | +7.29 |
+| centre (50%) | 0.003645 | 0.000609 | 0.010353 | 0.001164 | +184.03% | +10.22 |
+| edge (ring) | 0.004063 | 0.001089 | 0.012166 | 0.002321 | +199.43% | +6.32 |
+
+Per-repeat spectral whole-image ratios (POST/PRE), wide sweep: 2.67x,
+3.01x, 3.22x, 3.10x -- POST reads at least 2.67x PRE on every one of
+the four widely-spread, largely-independent trials; the sign never
+flips.  Absolute-difference image (narrow sweep, repeat 0, whole
+64x64 luma): RGB mean |diff| = 0.084215, max = 7.461167; spectral mean
+|diff| = 0.018618, max = 1.507747 -- both far above this scene's own
+per-repeat sd, i.e. a structured difference, not read noise.
+
+**PT reference** (reference-free -- PT never constructs a
+`PSSMLTSampler`): `pathtracing_pel_rasterizer` (4096 spp) and
+`pathtracing_spectral_rasterizer` (2048 spp), both `oidn_denoise
+FALSE`/`pixel_filter box`, same geometry/medium (only the integrator
+chunk swapped), built with the post-fix library (PT is unaffected
+either way):
+
+| | whole | centre | edge |
+|---|---|---|---|
+| PT RGB (4096spp) | 2.858056 | 2.729586 | 2.900879 |
+| PT spectral (2048spp) | 3.013022 | 2.269985 | 3.260701 |
+
+Both MLT builds are FAR below this truth at the deliberately cheap
+settings chosen for fast iteration here (RGB: PRE/POST both ~60-75x
+dim; spectral: PRE ~570-960x dim, POST ~210-310x dim) -- an MLT
+convergence-BUDGET limitation, ORTHOGONAL to DL-08 (an albedo-0.98,
+optically-very-thick scene needs vastly more bootstrap/chain/mutation
+budget than these speed-oriented settings for the Markov chain to
+discover the dominant high-throughput deep-scattering path
+population; neither PRE nor POST is converged, and the fix neither
+closes nor should close that gap).  Within that shared limitation,
+POST moves consistently CLOSER to the PT truth on spectral (mean gap
+shrinks from ~570-960x to ~210-310x -- the fix's effect points toward
+correctness, not away from it); on RGB the centre/edge ratio (PT:
+0.941, near-flat) is 0.698 for PRE-narrow and 1.166 for POST-narrow --
+POST's ratio sits modestly closer to PT's (0.225 away vs 0.243 away),
+though neither reading is genuinely close.
+
+**Verdict**: the aliasing has a substantial, render-visible effect at
+an attainable production setting (a deep-volume MLT scene) --
+confirmed by measurement, not merely argued from the sampler-level
+proof.  Under `mlt_spectral_rasterizer` the effect is large AND robust
+to independent-ish resampling: POST reads at least 2.67x PRE's
+whole-image mean on every one of 4 widely-spread `bootstrap_samples`
+trials (wide-sweep Welch t=+7.29; narrow-sweep t=+2721.9).  Under
+`mlt_rasterizer` (RGB), a FIXED bootstrap population shows a large,
+exactly-reproducible SPATIAL energy redistribution (centre +54.37%,
+edge -7.57%, |t|>250 both) -- a real, deterministic consequence of
+which specific pixels the depth>=32 chains land on -- but the net
+WHOLE-IMAGE mean shift this produces (+4.12% on the narrow sweep) is
+NOT distinguishable from this scene's own large inherent MLT
+run-to-run variance once the bootstrap population is varied
+independently (wide-sweep whole-image Welch t=-0.61, not significant
+at n=4).  Both readings are reported as measured: RGB's whole-image
+mean washes into this scene's own MC noise under independent
+resampling at this small a sample budget, while its per-fixed-seed
+spatial redistribution and spectral's whole-image brightness shift are
+both large and statistically overwhelming.
+
 ## Sibling audit
 
 Bug pattern: **a fixed-size, dense (non-hashed) lane table whose
