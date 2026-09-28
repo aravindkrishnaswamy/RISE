@@ -90,11 +90,13 @@ tone-mapping of the original PNG protocol amplifying small shifts).
 `oidn_denoise FALSE`, linear Rec.709 luma, sun/omni removed and every
 `emissive_scale` zeroed):** PT **0.037878 ± 0.000004** (n = 4, sd),
 VCM **0.037177 ± 0.000001** (n = 4), BDPT **0.036966 ± 0.0000002** (n = 2);
-VCM/PT 0.981, BDPT/PT 0.976.  PT moved +12% from the 0.03383 above: this
-camera sits inside `water_volume`, so its eye rays start with the
-camera-ray volumetric walk, whose surface hand-off used to skip the medium
-in front of the surface (DL-247) -- plus the intervening env-MIS and
-DL-218 fixes, which this re-measurement does not separate.  VCM's old
+VCM/PT 0.981, BDPT/PT 0.976.  PT moved +12% from the 0.03383 above.  **That move is NOT DL-247's** (review
+correction, 2026-09-27): an isolated A/B of the DL-247 change alone on this
+row (PT file at `9e2239b1` vs the merged fix, n = 4) reads 0.050618 -> 0.050181,
+i.e. DL-247 moved it **-0.86%** (darker, ~14x smaller than +12%); the +12% is
+the intervening env-MIS and DL-218 fixes.  This camera does sit inside
+`water_volume`, so its eye rays start with the camera-ray volumetric walk
+whose surface hand-off DL-247 fixed -- the effect is just small here.  VCM's old
 0.854 was the DL-218 medium-vertex gap, since closed.  The residual
 ~2% BDPT/VCM-below-PT is not attributed here (the DL-247 inside/outside
 box shows the same BDPT ~2.6% deficit, pre-existing).  The sun/omni row
