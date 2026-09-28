@@ -807,7 +807,15 @@ void WeaveBRDF::ResolveWeave( const RayIntersectionGeometric& ri, const Scalar n
 		// construction (an orthonormal pair combined with cos/sin).
 		d.tangent = s.frame->u() * cos( tilt ) + out.n * sin( tilt );
 
+		// DL-290: the thread lobes' eta (FrDielectric at the fibre
+		// surface) is the fibre-vs-SURROUNDING ratio, so the clamped
+		// authored index is divided by the live exterior -- bit-identical
+		// in air, where the quotient is the clamped value itself and the
+		// second clamp is a no-op.  Immersed (wet) cloth prices its fibre
+		// surface against the medium it is in; a relative index below the
+		// model's floor is clamped to it (see RelativeFibreEta).
 		d.eta = ClampNaNSafe( s.ior->GetValuesAt( ri ).v[0], kMinIOR, kMaxIOR );
+		d.eta = ClampNaNSafe( FibreLobeMath::RelativeFibreEta( d.eta, ri.ambientIOR ), kMinIOR, kMaxIOR );
 
 		const Scalar beta = ClampNaNSafe( s.width->GetValuesAt( ri ).v[0], kMinWidth, kMaxWidth );
 		d.vSurf = beta * beta;

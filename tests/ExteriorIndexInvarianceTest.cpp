@@ -348,20 +348,32 @@ namespace
 		CompareBSDF( *air->GetBSDF(), *scaled->GetBSDF(), 1.0, kScale, 1e-9, "A1 cooktorrance BSDF", true );
 
 		// Matched index (n == exterior, k = 0, black diffuse): no interface.
-		Scalar maxMatched = 0, maxAirControl = 0;
+		// The conductor Fresnel then reads (cos - a)^2-type cancellations,
+		// so "nothing" is rounding-level, not a literal 0.  The NM value
+		// also carries the black diffuse painter's Jakob-Hanika uplift
+		// residual (~2.5e-5 / pi); it is removed by differencing against a
+		// twin whose SPECULAR colour is black too (same diffuse residual,
+		// no specular term at any index).
+		const IMaterial* matchedNoSpec = mj.Get( "ct_matched_nospec" );
+		Check( matchedNoSpec && matchedNoSpec->GetBSDF(), "A1: matched no-specular twin loads" );
+		if( !( matchedNoSpec && matchedNoSpec->GetBSDF() ) ) return;
+		Scalar maxMatched = 0, maxMatchedNM = 0, maxAirControl = 0;
 		for( const Vector3& view : kViews ) {
 			const RayIntersectionGeometric riM = MakeRI( 1.5, view );
 			const RayIntersectionGeometric riAir = MakeRI( 1.0, view );
 			for( const Vector3& l : kLights ) {
 				const Vector3 light = Vector3Ops::Normalize( l );
 				maxMatched = std::fmax( maxMatched, ColorMath::MaxValue( matched->GetBSDF()->value( light, riM ) ) );
-				maxMatched = std::fmax( maxMatched, matched->GetBSDF()->valueNM( light, riM, 550.0 ) );
+				maxMatchedNM = std::fmax( maxMatchedNM, std::fabs( matched->GetBSDF()->valueNM( light, riM, 550.0 ) -
+					matchedNoSpec->GetBSDF()->valueNM( light, riM, 550.0 ) ) );
 				maxAirControl = std::fmax( maxAirControl, ColorMath::MaxValue( matched->GetBSDF()->value( light, riAir ) ) );
 			}
 		}
-		std::cout << "    matched index (1.5 in 1.5, k=0): max value " << maxMatched << "  (same material in air: " << maxAirControl << ")" << std::endl;
-		Check( maxAirControl > 0, "A1: (sanity) the matched material reflects in air" );
-		Check( maxMatched == 0.0, "A1: matched index reflects exactly nothing (value/valueNM)" );
+		std::cout << "    matched index (1.5 in 1.5, k=0): max value RGB " << maxMatched << "  NM specular " << maxMatchedNM
+			<< "  (same material in air: " << maxAirControl << ")" << std::endl;
+		Check( maxAirControl > 0.05, "A1: (sanity) the matched material reflects in air" );
+		Check( maxMatched <= 1e-12 * maxAirControl, "A1: matched index reflects nothing (value, rounding level)" );
+		Check( maxMatchedNM <= 1e-12 * maxAirControl, "A1: matched index reflects nothing (valueNM specular, rounding level)" );
 
 		const Scalar rgb = CompareSPF( *air->GetSPF(), *scaled->GetSPF(), 1.0, kScale, false, 2048, 1e-9, "A2 cooktorrance SPF RGB" );
 		const Scalar nm = CompareSPF( *air->GetSPF(), *scaled->GetSPF(), 1.0, kScale, true, 2048, 1e-9, "A2 cooktorrance SPF NM" );
@@ -382,7 +394,7 @@ namespace
 			for( unsigned int r = 0; r < c2.Count(); ++r ) { maxKray = std::fmax( maxKray, c2[r].krayNM ); ++emitted; }
 		}
 		std::cout << "    matched index SPF: " << emitted << " rays, max kray " << maxKray << std::endl;
-		Check( emitted > 100 && maxKray == 0.0, "A2: matched index SPF emits zero throughput (RGB and NM)" );
+		Check( emitted > 100 && maxKray <= 1e-12, "A2: matched index SPF emits zero throughput (RGB and NM, rounding level)" );
 
 		// The aggregate density does not read the Fresnel (lobe selection is
 		// by specular colour): a consistency pin that the Pdf replay stays
@@ -669,16 +681,25 @@ namespace
 			o << "lambertian_luminaire_material\n{\n\tname lum\n\texitance white\n\tmaterial black_base\n\tscale 6\n}\n\n";
 			o << "sphere_geometry\n{\n\tname subject_geo\n\tradius 1\n}\n\n";
 			o << "standard_object\n{\n\tname subject_obj\n\tgeometry subject_geo\n\tmaterial subject\n}\n\n";
-			o << "sphere_geometry\n{\n\tname light_geo\n\tradius 0.4\n}\n\n";
+			// BioSpec skin has no evaluable BSDF (null GetBSDF, DL-126), so
+			// no NEE reaches it: the light is found only by BSDF-sampled
+			// continuations, and a large emitter keeps that row's noise
+			// within its band at a practical sample count.
+			o << "sphere_geometry\n{\n\tname light_geo\n\tradius " << ( model == Model::Skin ? 1.5 : 0.4 ) << "\n}\n\n";
 			o << "standard_object\n{\n\tname light_obj\n\tgeometry light_geo\n\tmaterial lum\n\tposition 2 2.5 2.5\n}\n\n";
 		}
-		// DL-49's black absorbing room (both sides), and the ideal
-		// non-reflecting index enclosure OUTSIDE it (enclosed side only): no
-		// path ever reaches the enclosure wall, so its only effect is the
-		// exterior index the IOR stack is seeded with.
+		// DL-49's black absorbing room, and the ideal non-reflecting index
+		// enclosure OUTSIDE it: no path ever reaches the enclosure wall, so
+		// its only effect is the exterior index the IOR stack is seeded
+		// with.  Unlike DL-49's harness the enclosure is present on BOTH
+		// sides -- at index 1 (air) in the air scene -- because SMS
+		// uniform-area seeding enumerates every specular CASTER shape, and
+		// an enclosure on one side only changed that set: the uniform rows
+		// read 0.988 (a 20-sd offset under common random numbers) with the
+		// enclosure absent from the air scene, 1.000 with it present.
 		o << "sphere_geometry\n{\n\tname room_geo\n\tradius 20\n}\n\n";
 		o << "standard_object\n{\n\tname room\n\tgeometry room_geo\n\tmaterial black_base\n}\n\n";
-		if( exterior != 1.0 ) {
+		{
 			o << "perfectrefractor_material\n{\n\tname enclosure_mat\n\tior " << exterior << "\n\trefractance white\n}\n\n"
 			  << "box_geometry\n{\n\tname enclosure_geo\n\twidth 60\n\theight 60\n\tdepth 60\n}\n\n"
 			  << "standard_object\n{\n\tname enclosure\n\tgeometry enclosure_geo\n\tmaterial enclosure_mat\n}\n\n";
@@ -763,8 +784,11 @@ namespace
 			{ Model::CookTorrance, Integrator::BDPT,       16,  0.02, nullptr },
 			{ Model::CookTorrance, Integrator::PTSpectral, 32,  0.03, nullptr },
 			{ Model::Hair,         Integrator::PT,         32,  0.03, nullptr },
+			{ Model::Hair,         Integrator::BDPT,       16,  0.03, nullptr },
 			{ Model::Weave,        Integrator::PT,         32,  0.03, nullptr },
-			{ Model::Skin,         Integrator::PT,         32,  0.04, nullptr },
+			{ Model::Weave,        Integrator::BDPT,       16,  0.03, nullptr },
+			{ Model::Skin,         Integrator::PT,         256, 0.04, nullptr },
+			{ Model::Skin,         Integrator::BDPT,       128, 0.04, nullptr },
 			{ Model::SMSMirror,    Integrator::PT,         16,  0.03, "snell" },
 			{ Model::SMSMirror,    Integrator::PT,         16,  0.03, "uniform" },
 			{ Model::SMSMirror,    Integrator::PTSpectral, 16,  0.05, "snell" },
@@ -826,6 +850,7 @@ int main( int argc, char** argv )
 			CookTorranceChunk( "ct_air", 1.0, 1.5, 0.5, false ) +
 			CookTorranceChunk( "ct_scaled", kScale, 1.5, 0.5, false ) +
 			CookTorranceChunk( "ct_matched", 1.0, 1.5, 0.0, true ) +
+			"cooktorrance_material\n{\n\tname ct_matched_nospec\n\trd black\n\trs black\n\tfacets 0.25\n\tior 1.5\n\textinction 0\n}\n\n" +
 			HairChunk( "hair_air", 1.0, 0.4 ) +
 			HairChunk( "hair_scaled", kScale, 0.4 ) +
 			HairChunk( "hair_opaque_matched", 1.0, 2000.0 ) +

@@ -692,6 +692,28 @@ using namespace RISE::Implementation;
 namespace
 {
 	//////////////////////////////////////////////////////////////////
+	// DL-290: the SMS evaluation rigs rebuild a receiver record from
+	// scratch, and a fresh `RayIntersectionGeometric` carries the
+	// default `ambientIOR = 1.0` (air).  Every integrator stamps that
+	// field from the IOR-stack top at a real hit, and G6 consumers
+	// (GGX conductor / thin-film Fresnel, `coated_material`, the DL-49
+	// SSS boundary, Cook-Torrance and the fibre models since DL-290)
+	// read it, so a receiver in water or glass priced air under SMS
+	// only.  The caller hands the receiver's live stack in (the same
+	// pointer `valueStateful` already gets); its top IS the receiver's
+	// exterior.  No stack, or an invalid top, is air -- bit-identical to
+	// the pre-DL-290 record.
+	//////////////////////////////////////////////////////////////////
+	inline Scalar SMSReceiverAmbientIOR( const IORStack* pIorStack )
+	{
+		if( !pIorStack ) {
+			return Scalar( 1.0 );
+		}
+		const Scalar n = pIorStack->top();
+		return ( n > 0 && n < RISE_INFINITY ) ? n : Scalar( 1.0 );
+	}
+
+	//////////////////////////////////////////////////////////////////
 	// SMS spectral source term (Stage C slice 2).
 	//
 	// `LightSample::Le` is an RGB radiance the light sampler already
@@ -5681,6 +5703,7 @@ bool ManifoldSolver::ComputeTrialContribution(
 	rig.vNormal     = shadingNormal;
 	rig.vGeomNormal = geomNormal;
 	rig.onb = onb;
+	rig.ambientIOR = SMSReceiverAmbientIOR( pIorStack );	// DL-290
 
 	RISEPel fBSDF = pBSDF->valueStateful( wiAtShading, rig, pIorStack );
 	if( ColorMath::MaxValue( fBSDF ) <= 0 ) return false;
@@ -5796,8 +5819,11 @@ bool ManifoldSolver::ComputeTrialContributionNM(
 	rig.vNormal     = shadingNormal;
 	rig.vGeomNormal = geomNormal;
 	rig.onb = onb;
+	rig.ambientIOR = SMSReceiverAmbientIOR( pIorStack );	// DL-290
 
-	Scalar fBSDF = pBSDF->valueNM( wiAtShading, rig, nm );
+	// DL-290: the stack goes to the BSDF exactly as the RGB twin's
+	// valueStateful does (DL-157's plumbed entry/exit side).
+	Scalar fBSDF = pBSDF->valueStatefulNM( wiAtShading, rig, nm, pIorStack );
 	if( fBSDF <= 0 ) return false;
 
 	// Receiver-side BSDF cosine: shading.
@@ -5876,9 +5902,12 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	// `docs/SMS_UNIFORM_SEEDING_PLAN.md`.
 	if( config.seedingMode == ManifoldSolverConfig::eSeedingUniform )
 	{
+		// DL-290: forward the receiver's live IOR stack -- it was dropped
+		// here, so uniform mode's receiver record priced air (and its
+		// `valueStateful` never saw the stack DL-157 plumbed for it).
 		return EvaluateAtShadingPointUniform(
 			pos, geomNormal, shadingNormal, onb, pMaterial, woOutgoing,
-			scene, caster, sampler );
+			scene, caster, sampler, pIorStack );
 	}
 
 	SMSContribution result;
@@ -6623,6 +6652,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		rig.vNormal     = shadingNormal;
 		rig.vGeomNormal = geomNormal;
 		rig.onb = onb;
+		rig.ambientIOR = SMSReceiverAmbientIOR( pIorStack );	// DL-290
 
 		RISEPel fBSDF = pBSDF->valueStateful( wiAtShading, rig, pIorStack );
 		if( ColorMath::MaxValue( fBSDF ) <= 0 ) continue;
@@ -7106,7 +7136,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 					Scalar smsGeometric = 0;
 					if( !ComputeTrialContribution( pos, geomNormal, shadingNormal, onb, woOutgoing,
 						pBSDF, lightSample, mResult, caster, trialDir, trialContrib,
-						/*clampGeometric=*/ false, &smsGeometric ) )
+						/*clampGeometric=*/ false, &smsGeometric, pIorStack ) )	// DL-290: the receiver's live stack
 						continue;
 
 					if( seedResult.proposalPdf > 1e-20 ) {
@@ -7164,7 +7194,8 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 			Vector3 dirMain;
 			RISEPel mainContrib;
 			if( !ComputeTrialContribution( pos, geomNormal, shadingNormal, onb, woOutgoing,
-				pBSDF, lightSample, mResult, caster, dirMain, mainContrib ) )
+				pBSDF, lightSample, mResult, caster, dirMain, mainContrib,
+				/*clampGeometric=*/ true, nullptr, pIorStack ) )	// DL-290: the receiver's live stack
 				continue;
 
 			// Geometric Bernoulli K-loop.  Cap on `maxBernoulliTrials`,
@@ -7276,7 +7307,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 				Scalar smsGeometric = 0;
 				if( !ComputeTrialContribution( pos, geomNormal, shadingNormal, onb, woOutgoing,
 					pBSDF, lightSample, mResult, caster, trialDir, trialContrib,
-					/*clampGeometric=*/ false, &smsGeometric ) )
+					/*clampGeometric=*/ false, &smsGeometric, pIorStack ) )	// DL-290: the receiver's live stack
 					continue;
 
 				totalContribution = totalContribution + trialContrib;
@@ -7526,7 +7557,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 					Scalar smsGeometric = 0;
 					if( !ComputeTrialContributionNM( pos, geomNormal, shadingNormal, onb, woOutgoing,
 						pBSDF, lightSample, mResult, caster, nm, trialDir, trialContrib,
-						/*clampGeometric=*/ false, &smsGeometric ) )
+						/*clampGeometric=*/ false, &smsGeometric, pIorStack ) )	// DL-290: the receiver's live stack
 						continue;
 
 					if( seedResult.proposalPdf > 1e-20 ) {
@@ -7566,7 +7597,8 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 			Vector3 dirMain;
 			Scalar mainContrib;
 			if( !ComputeTrialContributionNM( pos, geomNormal, shadingNormal, onb, woOutgoing,
-				pBSDF, lightSample, mResult, caster, nm, dirMain, mainContrib ) )
+				pBSDF, lightSample, mResult, caster, nm, dirMain, mainContrib,
+				/*clampGeometric=*/ true, nullptr, pIorStack ) )	// DL-290: the receiver's live stack
 				continue;
 
 			unsigned int K = 1;
@@ -7670,7 +7702,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 				Scalar smsGeometric = 0;
 				if( !ComputeTrialContributionNM( pos, geomNormal, shadingNormal, onb, woOutgoing,
 					pBSDF, lightSample, mResult, caster, nm, trialDir, trialContrib,
-					/*clampGeometric=*/ false, &smsGeometric ) )
+					/*clampGeometric=*/ false, &smsGeometric, pIorStack ) )	// DL-290: the receiver's live stack
 					continue;
 
 				totalContribution += trialContrib;
@@ -7736,9 +7768,10 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	// `EvaluateAtShadingPointUniform`.
 	if( config.seedingMode == ManifoldSolverConfig::eSeedingUniform )
 	{
+		// DL-290: forward the live stack (see the RGB dispatch above).
 		return EvaluateAtShadingPointNMUniform(
 			pos, geomNormal, shadingNormal, onb, pMaterial, woOutgoing,
-			scene, caster, sampler, nm );
+			scene, caster, sampler, nm, pIorStack );
 	}
 
 	SMSContributionNM result;
@@ -8087,8 +8120,10 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		rig.vNormal     = shadingNormal;
 		rig.vGeomNormal = geomNormal;
 		rig.onb = onb;
+		rig.ambientIOR = SMSReceiverAmbientIOR( pIorStack );	// DL-290
 
-		Scalar fBSDF = pBSDF->valueNM( wiAtShading, rig, nm );
+		// DL-290: stateful, as the RGB twin (see ComputeTrialContributionNM).
+		Scalar fBSDF = pBSDF->valueStatefulNM( wiAtShading, rig, nm, pIorStack );
 		if( fBSDF <= 0 ) continue;
 
 		// Cosine at shading point — SHADING frame matches `f * cos / pdf`.

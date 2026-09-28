@@ -219,6 +219,31 @@ namespace RISE
 			const Scalar rPerp = ( cosThetaI - eta * cosThetaT ) / ( cosThetaI + eta * cosThetaT );
 			return ( Sqr( rParl ) + Sqr( rPerp ) ) * 0.5;
 		}
+
+		//! DL-290: the fibre models' `eta` is the RELATIVE index of the
+		//! fibre against the medium it is immersed in -- Marschner /
+		//! Chiang (and PBRT-v4's HairBxDF) write every Snell and Fresnel
+		//! term of the fibre surface in terms of that one ratio, and so do
+		//! the weave's Irawan-Marschner-style thread lobes.  The authored
+		//! `ior` painters are ABSOLUTE indices, so this divides by the live
+		//! exterior (`RayIntersectionGeometric::ambientIOR`, the IOR-stack
+		//! top every integrator stamps; 1.0 = air).  In air the quotient
+		//! is the authored value exactly (x / 1.0 == x), so an in-air
+		//! render is bit-identical.
+		//!
+		//! A fibre LESS dense than its surroundings (relative < 1) is
+		//! outside both models: the azimuthal refraction geometry
+		//! (gamma_t = asin(h / eta')) needs eta' >= 1.  It is clamped to
+		//! exactly 1 -- an index-MATCHED fibre, which FrDielectric prices
+		//! as no boundary at all (zero reflection, straight transmission)
+		//! -- the physically nearest state the model can represent.  A
+		//! non-positive or non-finite exterior reads as air.
+		inline Scalar RelativeFibreEta( const Scalar absoluteEta, const Scalar exteriorIOR )
+		{
+			const Scalar ne = ( exteriorIOR > 0 && exteriorIOR < RISE_INFINITY ) ? exteriorIOR : Scalar( 1 );
+			const Scalar rel = absoluteEta / ne;
+			return rel > Scalar( 1 ) ? rel : Scalar( 1 );
+		}
 	}
 }
 
