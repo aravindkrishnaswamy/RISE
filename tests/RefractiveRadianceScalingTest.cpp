@@ -809,7 +809,7 @@ static const char* kSlabLightDelta =
 //! `max_diffuse_bounce 1` reads the same number (identity measured in
 //! docs/REFRACTIVE_RADIANCE_SCALING.md section 12).  16 is converged
 //! (8 already is; 32 reads the same within noise) and PT is untruncated.
-static const unsigned int kSlabDepth = 5;
+static const unsigned int kSlabDepth = 16;
 
 static void RunRowC()
 {
