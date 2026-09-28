@@ -150,6 +150,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Materials/SheenSPF.cpp"
     "${RISE_LIB}/Materials/SheenDirectionalAlbedo.cpp"
     "${RISE_LIB}/Materials/SheenDirectionalAlbedo_LUTData.cpp"
+    "${RISE_LIB}/Materials/SchlickDirectionalAlbedo_LUTData.cpp"
     "${RISE_LIB}/Materials/GenericHumanTissueSPF.cpp"
     "${RISE_LIB}/Materials/HenyeyGreensteinPhaseFunction.cpp"
     "${RISE_LIB}/Materials/HeterogeneousMedium.cpp"

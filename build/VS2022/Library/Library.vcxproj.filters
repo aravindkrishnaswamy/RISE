@@ -828,6 +828,9 @@
     <ClCompile Include="..\..\..\src\Library\Materials\SheenDirectionalAlbedo_LUTData.cpp">
       <Filter>Materials</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\SchlickDirectionalAlbedo_LUTData.cpp">
+      <Filter>Materials\Schlick</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Scene.cpp">
       <Filter>Scene</Filter>
     </ClCompile>
@@ -2188,6 +2191,9 @@
       <Filter>Materials\Schlick</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\SchlickMasking.h">
+      <Filter>Materials\Schlick</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\SchlickDirectionalAlbedo.h">
       <Filter>Materials\Schlick</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\SchlickMaterial.h">
