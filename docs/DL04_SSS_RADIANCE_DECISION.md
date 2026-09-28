@@ -14,6 +14,21 @@ test executes; the follow-up DL-71 orientation fix (`e416d3bd`,
 2026-09-13) does not move it further. The current baseline is
 **574017 checks, 0 failures** — see [DL52_BSSRDF_PLANAR_PROBE_ORIGIN.md](DL52_BSSRDF_PLANAR_PROBE_ORIGIN.md)
 and [DL71_BSSRDF_PROBE_ENTRY_NORMAL.md](DL71_BSSRDF_PROBE_ENTRY_NORMAL.md).
+**DL-284 (2026-09-28):** the default gate now reads **576220 checks, 0
+failures** -- the same 574017 matrix checks (reproduced exactly with the
+new pin skipped) plus 2203 from one provisioning-pin render.  DL-247's
+`max_volume_bounce` ruling (past the cap a medium segment carries
+deterministic Beer transmittance; before it, the medium turned to vacuum)
+made the explicit-volume air furnace read 1 - P(path exceeds the cap):
+0.9606 at the old volume cap 1024, where 3.94 % of camera paths exceed it
+in this TIR-trapped, optically 40-thick zero-absorption slab (0.644 /
+0.815 / 0.960 / 0.996 / 1.000 at caps 64 / 256 / 1024 / 2048 / 4096).
+The defaults are now volume/RW/path caps **4096/8192/8192**, and the gate
+renders the explicit air row once more at four times the volume cap and
+requires agreement within 0.2 %.  Every explicit-volume figure below that
+was measured at a volume cap of 1024 or less predates this and was taken
+under the old vacuum-past-cap rule.  See the DL-284 row in
+[DEBT_LEDGER.md](DEBT_LEDGER.md).
 Other residual status is maintained in the debt ledger.
 This records the source audit, measured probes, and the coarse convention gate
 introduced at test commit `25421dd6`, with selected caps in `d33f9d6d`.
@@ -167,7 +182,7 @@ the residual mechanisms below. The unchanged-library gate passes and both delibe
 
 Selected defaults are 16x16, 256 spp, four trials, seed base 1000,
 material IOR 1.5, ellipsoid radii `(40,40,10)` centered at z=-10,
-and volume/RW/path caps 1024/8192/4096. Ordinary gate mode permits IOR
+and volume/RW/path caps 4096/8192/8192 (1024/8192/4096 before DL-284). Ordinary gate mode permits IOR
 1.5 or 2, requires at least 256 spp and four trials, curved R=40 and
 an ideal enclosure. The camera remains outside the SSS solid; water
 views place it inside or outside a separate IOR-1.33 enclosure.

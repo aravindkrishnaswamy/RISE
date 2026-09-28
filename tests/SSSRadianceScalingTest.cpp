@@ -2,6 +2,19 @@
 // Coarse bounds reject an unmatched eta square; they do not certify exact
 // SSS energy conservation. DL49/52/53 and finite walk caps remain separate.
 //
+// DL-284: `max_volume_bounce` truncates the medium's Neumann series (DL-247
+// ruling: past the cap a segment carries deterministic Beer-Lambert Tr).
+// In this ZERO-absorption air furnace every untruncated path returns
+// exactly L_env, so the explicit-volume row reads 1 - P(path exceeds the
+// cap).  The sigma_s=2 slab behind an ior-1.5 interface is dense: that
+// row reads 0.644 / 0.815 / 0.960 / 0.996 / 1.000 at caps
+// 64 / 256 / 1024 / 2048 / 4096 (3.94% of camera paths pass 1024
+// scatters).  The pre-DL-247 cap turned the medium into VACUUM past it,
+// which loses nothing to the medium in this furnace (0.9986 at cap 1024),
+// so the old 1024 default never showed.
+// The default is 4096 and a provisioning pin (cap N vs 4N within 0.2%)
+// keeps truncation out of the 0.03 convention band.
+//
 // Exact guards: the loaded camera samples the same slab top in every model,
 // the requested modern material/medium is bound, and every captured RGB and
 // alpha value is finite. Nonzero image means are only smoke guards.
@@ -26,7 +39,9 @@
 // The default curved ellipsoid is (R,R,10) centered at z=-10, R=40.
 // --flat selects the diagnostic box for the DL-52 planar probe-origin hole;
 // --curved explicitly restores curved geometry (last shape flag wins).
-// --volume-cap N / --rw-cap N / --path-cap N default to 1024 / 8192 / 4096.
+// --volume-cap N / --rw-cap N / --path-cap N default to 4096 / 8192 / 8192
+// (DL-284; the path cap exceeds the volume cap because every volume
+// scatter also counts as a path vertex).
 // --air-only implies --probe and runs all three models' air baseline only.
 // --helper-only implies --probe, loads only the diffusion air scene, and
 // samples the actual BSSRDF helper without any rasterization. Its trials use
@@ -38,6 +53,7 @@
 // Normal and --probe invocations currently execute the same selected
 // matrix; --probe reports measurements without convention bounds.
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <cmath>
@@ -102,7 +118,7 @@ const char* TopologyName( Topology t )
 }
 struct Config {
 	unsigned int samples = 256, trials = 4, seedBase = 1000;
-	unsigned int volumeCap = 1024, rwCap = 8192, pathCap = 4096;
+	unsigned int volumeCap = 4096, rwCap = 8192, pathCap = 8192;
 	unsigned int helperAttempts = 256;
 	double surfaceIOR = 1.5, slabRadius = 40;
 	bool probe = false, outerFresnel = false, curved = true, airOnly = false;
@@ -567,6 +583,7 @@ int main( int argc, char** argv )
 	const Topology topologies[] = { Topology::Air, Topology::WaterInside, Topology::WaterOutside };
 	const size_t topologyCount = cfg.airOnly ? 1 : 3;
 	std::array<RGBChannels, 3> observerRatios{};
+	RGBChannels explicitAirMean{};
 	for( size_t m = 0; m < 3; ++m ) {
 		std::array<RGBChannels, 3> means{};
 		for( size_t t = 0; t < topologyCount; ++t ) {
@@ -584,6 +601,7 @@ int main( int argc, char** argv )
 				values.push_back(mean);
 			}
 			if( !Aggregate(values, means[t], label) ) return 1;
+			if( m == 0 && t == 0 ) explicitAirMean = means[t];
 			if( !cfg.probe && t == 0 ) {
 				for( size_t channel = 0; channel < 3; ++channel ) {
 					const double allowance = m == 0 ? 0.03 : 0.20;
@@ -610,6 +628,32 @@ int main( int argc, char** argv )
 			std::string(ModelName(models[m])) + " observer_ratio/explicit_observer_ratio") ) return 1;
 		if( !cfg.probe ) for( double ratio : ratioOfRatios )
 			Check(std::fabs(ratio - 1) < 0.10, "observer ratio-of-ratios within 10% wiring bound; not the eta discriminator");
+	}
+	// DL-284 provisioning pin.  Rendered after the whole matrix so every
+	// earlier render keeps its libc seed.  In a zero-absorption furnace the
+	// explicit-volume row is 1 - P(truncation), so its agreement with the
+	// same scene at four times the cap bounds the truncation directly; a
+	// failure here means the scene's `max_volume_bounce` is too small for
+	// its medium, NOT an eta-convention error.  Red at the pre-DL-284 cap
+	// (`--volume-cap 1024`: 0.960 vs 1.000).
+	if( !cfg.probe && cfg.volumeCap <= std::numeric_limits<unsigned int>::max() / 8 ) {
+		Config capReference = cfg;
+		capReference.volumeCap = 4 * cfg.volumeCap;
+		capReference.pathCap = std::max( cfg.pathCap, 2 * capReference.volumeCap );
+		RGBChannels referenceMean{};
+		const std::string label = "explicit_dielectric_volume/air_no_enclosure/cap_reference";
+		std::cout << "RENDER " << label << " max_volume_bounce=" << capReference.volumeCap <<
+			" max_path_depth=" << capReference.pathCap << " seed=" << cfg.seedBase + renderIndex << std::endl;
+		if( !Render(Model::ExplicitDielectricVolume, Topology::Air, capReference, referenceMean, label) ) {
+			std::cerr << "INCOMPLETE: invalid cap-reference render.\n";
+			return 1;
+		}
+		RGBChannels provisioning{};
+		if( !Ratio(explicitAirMean, referenceMean, provisioning,
+			"explicit_dielectric_volume air cap_" + std::to_string(cfg.volumeCap) + "/cap_" + std::to_string(capReference.volumeCap)) ) return 1;
+		for( double ratio : provisioning )
+			Check(std::fabs(ratio - 1) < 0.002,
+				"explicit_dielectric_volume/air_no_enclosure: max_volume_bounce provisioned (cap N vs 4N within 0.2%; DL-284)");
 	}
 	std::cout << "Guards passed: " << passCount << " failed: " << failCount <<
 		(cfg.probe ? ". Probe complete; no convention bounds applied.\n" : ". Complete-event convention checks complete; exact energy conservation is not asserted.\n");
