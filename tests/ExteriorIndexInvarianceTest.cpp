@@ -582,6 +582,73 @@ namespace
 		std::remove( path.c_str() );
 	}
 
+	//! A7 (DL-290 review P1-2): the seed walk's etaI/etaT across an open
+	//! sheet it never entered.  Case (a) is the slabs-from-planes pattern:
+	//! a DOWN-facing lower sheet is entered from below, the UP-facing upper
+	//! sheet is then left without a matching push -- the far side is the
+	//! medium the walk entered the slab from (the sibling's entry is
+	//! popped).  Case (b) is a single up-facing sheet crossed from below:
+	//! nothing was entered, and the far side is the medium the walk is in.
+	//! Both in air (root 1) and immersed (root 1.5, every index x1.5).
+	//! Pre-review code priced both far sides as a hardcoded 1.0 (wrong
+	//! immersed); a first revision of the fix read the stack top in case
+	//! (a) as well, which is index-MATCHED (2.2 s -> 2.2 s) and wrong in
+	//! air too.
+	void TestSeedWalkOpenSheets()
+	{
+		std::cout << "A7: SMS seed walk across open sheets (slab-from-planes and a lone sheet)" << std::endl;
+		const std::string up = "\tpta -0.6 0 -0.6\n\tptb -0.6 0 0.6\n\tptc 0.6 0 0.6\n\tptd 0.6 0 -0.6\n";
+		const std::string down = "\tpta -0.6 0 -0.6\n\tptb 0.6 0 -0.6\n\tptc 0.6 0 0.6\n\tptd -0.6 0 0.6\n";
+		for( int slab = 0; slab < 2; ++slab ) {
+			for( int immersed = 0; immersed < 2; ++immersed ) {
+				const Scalar sc = immersed ? kScale : 1.0;
+				const Scalar n = 2.2 * sc;
+				std::ostringstream o;
+				o << std::setprecision( 17 );
+				o << "RISE ASCII SCENE 7\n" << PainterPreamble();
+				o << "perfectrefractor_material\n{\n\tname glass_mat\n\tior " << n << "\n\trefractance white\n}\n\n";
+				o << "clippedplane_geometry\n{\n\tname top_geo\n" << up << "}\n\n";
+				o << "standard_object\n{\n\tname top_sheet\n\tgeometry top_geo\n\tposition 0 0.55 0\n\tmaterial glass_mat\n}\n\n";
+				if( slab ) {
+					o << "clippedplane_geometry\n{\n\tname bot_geo\n" << down << "}\n\n";
+					o << "standard_object\n{\n\tname bot_sheet\n\tgeometry bot_geo\n\tposition 0 0.45 0\n\tmaterial glass_mat\n}\n\n";
+				}
+				const std::string tag = std::string( slab ? "(a) two-sheet slab" : "(b) lone sheet" ) + ( immersed ? ", immersed 1.5" : ", air" );
+				const std::string path = WriteScene( o.str(), "seedwalk" );
+				IJobPriv* job = nullptr;
+				const bool loaded = !path.empty() && RISE_CreateJobPriv( &job ) && job && job->LoadAsciiSceneViaCst( path.c_str() );
+				Check( loaded, "A7: scene loads, " + tag );
+				if( !loaded ) { safe_release( job ); std::remove( path.c_str() ); continue; }
+				StandardShader* shader = new StandardShader( std::vector<IShaderOp*>() );
+				RayCaster* caster = new RayCaster( false, 8, *shader, false );
+				caster->AttachScene( job->GetScene() );
+				ManifoldSolver* solver = new ManifoldSolver( ManifoldSolverConfig() );
+				const IORStack receiver( sc );
+				std::vector<ManifoldVertex> chain;
+				// Slightly off-axis so no hit is exactly at normal incidence.
+				solver->BuildSeedChain( Point3( 0.05, 0, 0.02 ), Point3( 0.1, 1.5, 0.05 ), *job->GetScene(), *caster, chain, true, &receiver );
+				std::cout << "    " << tag << ": " << chain.size() << " vertices";
+				for( const ManifoldVertex& v : chain ) std::cout << "  [" << v.etaI << " -> " << v.etaT << ( v.isExiting ? " exit" : " entry" ) << "]";
+				std::cout << std::endl;
+				if( slab ) {
+					const bool ok = chain.size() == 2 &&
+						std::fabs( chain[0].etaI - sc ) < 1e-12 && std::fabs( chain[0].etaT - n ) < 1e-12 &&
+						std::fabs( chain[1].etaI - n ) < 1e-12 && std::fabs( chain[1].etaT - sc ) < 1e-12;
+					Check( ok, "A7: slab-from-planes enters " + std::string( immersed ? "1.5 -> 3.3" : "1 -> 2.2" ) + " and leaves back to the exterior, " + tag );
+				} else {
+					const bool ok = chain.size() == 1 &&
+						std::fabs( chain[0].etaI - n ) < 1e-12 && std::fabs( chain[0].etaT - sc ) < 1e-12;
+					Check( ok, "A7: lone sheet's unpushed exit lands in the walk's own medium, " + tag );
+				}
+				safe_release( solver );
+				safe_release( caster );
+				safe_release( shader );
+				safe_release( job );
+				std::remove( path.c_str() );
+			}
+		}
+	}
+
 	//////////////////////////////////////////////////////////////////
 	// Part B -- rendered scale invariance
 	//////////////////////////////////////////////////////////////////
@@ -1087,6 +1154,7 @@ int main( int argc, char** argv )
 		TestSkin( mj );
 	}
 	TestSMSRigs();
+	TestSeedWalkOpenSheets();
 	if( !unitOnly ) {
 		TestRenderedInvariance( trials, only );
 		TestShippedMatchedIndexScenes( trials, only );
