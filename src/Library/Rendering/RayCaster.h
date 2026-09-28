@@ -45,7 +45,27 @@ namespace RISE
 
 			bool						bConsiderRMapAsBackground;
 
+			//! Depth cap on a cast (`rs.depth > cap` returns nothing).  For
+			//! the legacy pixel-based rasterizers it is the scene's authored
+			//! `max_recursion`; for every integrator-owned caster it is
+			//! kDefaultPathTracingMaxDepth (DL-315 -- it used to be a
+			//! hard-coded 10, which cut PT's SSS continuations: each SSS
+			//! event nests its continuation cast at depth + 2).  Read it
+			//! through MaxRecursions(rc), never directly.
 			const unsigned int			nMaxRecursions;
+
+			//! DL-315: the effective depth cap for this cast.  A path
+			//! tracer's runtime path-vertex cap (`rc.pathTracingMaxDepth`,
+			//! installed by PathTracingPelRasterizer::SetMaxPathDepth) can
+			//! exceed the construction-time value, and the nested
+			//! PathTracingShaderOp integrator honours it, so the caster
+			//! honours it too.  A legacy rasterizer's context never carries
+			//! a variant config, so its authored cap stands.
+			unsigned int MaxRecursions( const RuntimeContext& rc ) const
+			{
+				return ( rc.hasPathTracingVariantConfig && rc.pathTracingMaxDepth > nMaxRecursions )
+					? rc.pathTracingMaxDepth : nMaxRecursions;
+			}
 
 			const bool					bShowLuminaires;
 

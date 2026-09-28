@@ -37,6 +37,34 @@
 
 #define ENABLE_MAX_RECURSION
 
+namespace
+{
+	// DL-315: hard safety ceiling on how many CastRay/CastRayNM/
+	// CastRayHWSS frames may be ACTIVE at once on one thread.  The depth
+	// cap (RayCaster::MaxRecursions) is a transport limit that follows the
+	// scene's path depth; this one is a STACK limit.  Every cast recurses
+	// in C++ (an SSS continuation nests CastRay -> shader -> integrator ->
+	// CastRay; a medium phase continuation nests CastRay -> CastRay), and
+	// render workers run on default-size thread stacks (512 KB for a
+	// secondary pthread on macOS).  Measured on a macOS release build: one
+	// nested SSS level costs about 13.2 KB of stack, so 16 levels are about
+	// 210 KB plus the rasterizer's base frames (about 26 KB).  The pre-fix
+	// depth cap of 10 allowed at most 11 nested casts, so this can never
+	// cut a path the old code kept, and no legacy scene nests deeper than
+	// its authored `max_recursion` (at most 10 in the shipped corpus) + 1.
+	const unsigned int kMaxCastNesting = 16;
+	thread_local unsigned int tlCastNesting = 0;
+
+	//! RAII count of the casts active on this thread.
+	struct CastNestingGuard
+	{
+		CastNestingGuard() { ++tlCastNesting; }
+		~CastNestingGuard() { --tlCastNesting; }
+		CastNestingGuard( const CastNestingGuard& ) = delete;
+		CastNestingGuard& operator=( const CastNestingGuard& ) = delete;
+	};
+}
+
 //#define ENABLE_TERMINATION_MESSAGES
 
 //
@@ -871,7 +899,7 @@ bool RayCaster::CastRay(
 			) const
 {
 #ifdef ENABLE_MAX_RECURSION
-	if( rs.depth > nMaxRecursions )
+	if( rs.depth > MaxRecursions( rc ) || tlCastNesting >= kMaxCastNesting )
 	{
 #ifdef ENABLE_TERMINATION_MESSAGES
 		GlobalLog()->PrintEasyInfo( "FORCED RECURSION TERMINATION" );
@@ -879,6 +907,7 @@ bool RayCaster::CastRay(
 
 		return false;
 	}
+	const CastNestingGuard nestingGuard;	// DL-315: see kMaxCastNesting
 #endif
 
 	// Unbiased Russian roulette: decide before the expensive
@@ -1261,7 +1290,7 @@ bool RayCaster::CastRay(
 			RISEPel Li( 0, 0, 0 );
 			Scalar phasePdf = 0;
 			Vector3 wi( 0, 0, 0 );
-			if( pPhase && rs.depth < nMaxRecursions &&
+			if( pPhase && rs.depth < MaxRecursions( rc ) &&
 				rs.volumeBounces < nMaxVolumeBounces )
 			{
 				// Sample the continuation direction — optionally guided
@@ -1697,13 +1726,14 @@ bool RayCaster::CastRayNM(
 	) const
 {
 #ifdef ENABLE_MAX_RECURSION
-	if( rs.depth > nMaxRecursions )
+	if( rs.depth > MaxRecursions( rc ) || tlCastNesting >= kMaxCastNesting )
 	{
 #ifdef ENABLE_TERMINATION_MESSAGES
 		GlobalLog()->PrintEasyInfo( "FORCED RECURSION TERMINATION" );
 #endif
 		return false;
 	}
+	const CastNestingGuard nestingGuard;	// DL-315: see kMaxCastNesting
 #endif
 
 	// Unbiased Russian roulette: decide before the expensive
@@ -1977,7 +2007,7 @@ bool RayCaster::CastRayNM(
 			Scalar Li = 0;
 			Scalar phasePdf = 0;
 			Vector3 wi( 0, 0, 0 );
-			if( pPhase && rs.depth < nMaxRecursions &&
+			if( pPhase && rs.depth < MaxRecursions( rc ) &&
 				rs.volumeBounces < nMaxVolumeBounces )
 			{
 				Scalar guidingMISWeight = 1.0;
@@ -2999,8 +3029,9 @@ bool RayCaster::CastRayHWSS(
 		c[i] = 0;
 
 #ifdef ENABLE_MAX_RECURSION
-	if( rs.depth > nMaxRecursions )
+	if( rs.depth > MaxRecursions( rc ) || tlCastNesting >= kMaxCastNesting )
 		return false;
+	const CastNestingGuard nestingGuard;	// DL-315: see kMaxCastNesting
 #endif
 
 	// Check for participating medium BEFORE Russian roulette.
