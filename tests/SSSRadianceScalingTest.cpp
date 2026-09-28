@@ -4,6 +4,9 @@
 // closed). DL-49 (2026-09-28) made the SSS boundary relative to the live
 // exterior index, which moved the WATER rows' SSS means toward the explicit
 // volume (docs/DL49_SSS_EXTERIOR_INDEX.md); the air rows are bit-identical.
+// DL-315 (2026-09-28) closed the remaining ~3% water deficit (two PT
+// RayCaster defects, docs/DL315_RAYCASTER_STACK_AND_RECURSION.md) and gates
+// each SSS model's water rows within 0.8% of the explicit volume's.
 //
 // DL-284: `max_volume_bounce` truncates the medium's Neumann series (DL-247
 // ruling: past the cap a segment carries deterministic Beer-Lambert Tr).
@@ -587,6 +590,7 @@ int main( int argc, char** argv )
 	const size_t topologyCount = cfg.airOnly ? 1 : 3;
 	std::array<RGBChannels, 3> observerRatios{};
 	RGBChannels explicitAirMean{};
+	std::array<RGBChannels, 3> explicitMeans{};
 	for( size_t m = 0; m < 3; ++m ) {
 		std::array<RGBChannels, 3> means{};
 		for( size_t t = 0; t < topologyCount; ++t ) {
@@ -614,6 +618,29 @@ int main( int argc, char** argv )
 			}
 		}
 		if( cfg.airOnly ) continue;
+		if( m == 0 ) explicitMeans = means;
+		else {
+			// DL-315: each SSS model's WATER rows against the explicit
+			// volume's.  Two PT defects held both water rows about 3% low
+			// (diffusion 0.9689 / random walk 0.9692 camera outside against
+			// explicit 1.0000): RayCaster::CastRay wrote the continuation
+			// hit's object into the caller's IOR stack, so the SSS vertex
+			// absorbed its own surface reflection once the continuation
+			// reached the enclosure, and PT's RayCaster recursion cap of 10
+			// cut paths that TIR at the enclosure and return.  The band
+			// holds diffusion's own open-air residual (0.9956 against the
+			// explicit 1.0000, a Burley-on-a-finite-slab property, not an
+			// index one) plus several sd of the means.
+			const double kWaterBand = 0.008;
+			for( size_t t = 1; t < 3; ++t ) {
+				RGBChannels toExplicit{};
+				if( !Ratio(means[t], explicitMeans[t], toExplicit,
+					std::string(ModelName(models[m])) + " " + TopologyName(topologies[t]) + "/explicit_" + TopologyName(topologies[t])) ) return 1;
+				if( !cfg.probe ) for( double ratio : toExplicit )
+					Check(std::fabs(ratio - 1) < kWaterBand, std::string(ModelName(models[m])) + "/" + TopologyName(topologies[t]) +
+						": water row within 0.8% of the explicit volume (DL-315)");
+			}
+		}
 		if( !Ratio(means[1], means[2], observerRatios[m], std::string(ModelName(models[m])) + " water_inside/water_outside") ) return 1;
 		if( !cfg.probe ) for( double ratio : observerRatios[m] ) {
 			// An ideal enclosing interface transforms basic radiance by n^2.
