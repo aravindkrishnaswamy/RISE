@@ -42,7 +42,21 @@ fixture preserves the documented approximation rather than correcting it.
 - `Lights/`: environment, mesh-emitter, and analytic-sky comparisons, plus
   `rect_light_sidedness` (the one-chunk area light emits toward `facing`
   only — two identical panels, one facing down and one up, over one floor)
-- `MLT/`: Metropolis light transport baselines and comparison renders
+- `MLT/`: Metropolis light transport baselines and comparison renders.
+  `mlt_deep_fog`/`mlt_deep_fog_spectral` are the DL-08 render-level proof
+  fixtures (docs/DL08_PSSMLT_LANE_LAYOUT.md): a small, densely-scattering
+  fog-filled box whose eye subpaths commonly climb past loop depth 32 --
+  the exact depth at which the pre-DL-08 `BDPTIntegrator` eye walk's
+  `StartStream(16+depth)` literal-collided with MLT's old reserved stream
+  48 -- measured at 98% of eye subpaths under the shipped settings.
+  A pre-fix/post-fix interleaved render sweep found a large, statistically
+  overwhelming render-visible effect: `mlt_spectral_rasterizer`'s
+  whole-image mean is at least 2.67x higher post-fix across every
+  independently-varied `bootstrap_samples` trial (Welch t > 7), and
+  `mlt_rasterizer`'s fixed-bootstrap-population centre/edge energy split
+  moves by +54%/-8% (|t| > 250) though its net whole-image mean is not
+  distinguishable from this scene's own large MLT run-to-run variance
+  once the bootstrap population is varied independently.
 - `Materials/`: isolated material demonstrations and regression scenes;
   `Materials/Enamel/` contains the silver, swatch, dome, SDF, and dimple
   controls used to build the enamel-watch hero.

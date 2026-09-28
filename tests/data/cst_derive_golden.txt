@@ -223,6 +223,8 @@ scenes/Tests/Lights/hosek_wilkie_sky_lab.RISEscene  07c9ca1177e5861eb8dec7a7bbee
 scenes/Tests/Lights/rect_light_sidedness.RISEscene  b95f6af162c664886c0a51bf9aba65a02879024447dbf9ee110e47bec978c1ce  1864  35
 scenes/Tests/MLT/cornellbox_mlt.RISEscene  f55866fe44ae4ca2bddfe920cab2966804982766bfc8828177e40e3fe5add3ec  2081  38
 scenes/Tests/MLT/cornellbox_mlt_fast.RISEscene  5150c005a89666fa9bb975f8488224d254f520e4ab00024660a32ac08e399040  2081  38
+scenes/Tests/MLT/mlt_deep_fog.RISEscene  ec8d7721198f219bd20b252824f5e753aa5e26e2a86a92b12b35bdeccf49c2be  2234  37
+scenes/Tests/MLT/mlt_deep_fog_spectral.RISEscene  ec8d7721198f219bd20b252824f5e753aa5e26e2a86a92b12b35bdeccf49c2be  2234  37
 scenes/Tests/MLT/mlt_torus_chain_atrium.RISEscene  f00ff698a31ef71c6d93177ab13e3149e0423012424904bc52058e6776b65a4e  12417  123
 scenes/Tests/Materials/Enamel/enamel_dial_dimpled.RISEscene  82a726f10ddc619f7ad9f0da80abe43f62db95bc37c435e3eecaded3edddc653  2685  37
 scenes/Tests/Materials/Enamel/enamel_dial_sdf.RISEscene  2ddfd9f30ab2db2c970925fc2d63bc88f5fc6ad97ed7574f591bc05e4da3eeaf  2071  32
