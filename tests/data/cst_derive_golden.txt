@@ -249,7 +249,7 @@ scenes/Tests/Materials/ggx_roughness_sweep_bdpt.RISEscene  90e1212f3271a3af972c1
 scenes/Tests/Materials/ggx_vs_cooktorrance.RISEscene  d0b8d3c5fc3409395b12777f6fe37ba604a6956021826dee29a62754cfe7eb63  3722  57
 scenes/Tests/Materials/ggx_white_furnace.RISEscene  fdfdbed339b80edccc25d03da0e261eedee3b8d788ec189f465eb24f9bf49f40  2851  43
 scenes/Tests/Materials/graded_index_interior_gather.RISEscene  ed0d00e6cab095774d80a00cacb5c2d14ab1dfb33d1a3d14f6284d675c0b4650  1293  30
-scenes/Tests/Materials/graded_index_seeded_inside.RISEscene  39c24a62c202edc267afff5bfb83143aeb14d5052837bae33b968c2f17769166  1295  30
+scenes/Tests/Materials/graded_index_seeded_inside.RISEscene  d1d809313a5292bd20f97d18333048eb6c66a0f95dd044cbb18f770ae48198cb  1303  30
 scenes/Tests/Materials/iorstack.RISEscene  692a1504ca4560037699282cffdb2f1a62ca73207ca19bccb0d80280ceeab2ed  1793  36
 scenes/Tests/Materials/materials.RISEscene  2c8954ed2af0e7da8cf797be341c6a32107fd9d0cfbf3071ca99106b1cf59684  2361  38
 scenes/Tests/Materials/pbr_metallic_roughness.RISEscene  f73324b72f613254b7684996e8aba55cd1fcf1f0557e1bff85a132f6d85e6d93  9241  63
