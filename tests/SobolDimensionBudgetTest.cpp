@@ -22,9 +22,19 @@
 //    C. Integration guard: verifies that RandomWalkSSS::SampleExit
 //       in the actual integrator code paths uses IndependentSampler,
 //       not the Sobol sampler, by grepping the source files.
+//    D-F. SobolSampler mechanics, the fixed-budget contract, the
+//       thin-lens aperture draw.
+//    G1. Shipped scenes' per-vertex streams stay inside the table.
+//    G2. The sampler stream map: both wrap-region families (PT volume
+//       walks, BDPT/VCM medium-distance blocks) enumerated from the
+//       real functions, wrap counts asserted, collision-freedom
+//       asserted; the pre-existing fixed-layout overlaps (DL-286)
+//       pinned.
+//    H. BDPT's real generators on a heterogeneous medium: no vertex
+//       stream overruns, no dimension drawn twice within a walk (DL-283).
 //
 //  Build (from project root):
-//    make -C build/make/rise tests
+//    make -C build/make/rise build-test/SobolDimensionBudgetTest
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -41,6 +51,17 @@
 #include <string>
 #include <filesystem>
 #include <system_error>
+#include <algorithm>
+#include <iterator>
+#include <map>
+#include <cstdio>
+
+#ifdef _WIN32
+	#include <process.h>
+	#define getpid _getpid
+#else
+	#include <unistd.h>
+#endif
 
 #include "../src/Library/Utilities/Math3D/Math3D.h"
 #include "../src/Library/Utilities/Math3D/Constants.h"
@@ -51,6 +72,7 @@
 #include "../src/Library/Utilities/BSSRDFSampling.h"
 #include "../src/Library/Utilities/ISampler.h"
 #include "../src/Library/Utilities/SobolSampler.h"
+#include "../src/Library/Utilities/PSSMLTSampler.h"
 #include "../src/Library/Sampling/SobolSequence.h"
 #include "../src/Library/Utilities/RasterizerDefaults.h"
 #include "../src/Library/Utilities/StabilityConfig.h"
@@ -63,9 +85,26 @@
 #include "../src/Library/Cameras/ThinLensCamera.h"
 #include "../src/Library/Cameras/OrthographicCamera.h"
 #include "../src/Library/Cameras/FisheyeCamera.h"
+#include "../src/Library/Utilities/BDPTUtilities.h"
+#include "../src/Library/Utilities/PathTransportUtilities.h"
+#include "../src/Library/Utilities/RuntimeContext.h"
+#include "../src/Library/Utilities/Color/SampledWavelengths.h"
+#include "../src/Library/Interfaces/IMedium.h"
+#include "../src/Library/Interfaces/IJob.h"
+#include "../src/Library/Interfaces/IJobPriv.h"
+#include "../src/Library/Interfaces/IScene.h"
+#include "../src/Library/Interfaces/ICamera.h"
+#include "../src/Library/Interfaces/IRayCaster.h"
+#include "../src/Library/Shaders/BDPTIntegrator.h"
+#include "../src/Library/Rendering/PixelBasedRasterizerHelper.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+namespace RISE
+{
+	bool RISE_CreateJobPriv( IJobPriv** ppi );
+}
 
 // ================================================================
 // DimensionAuditSampler
@@ -847,24 +886,47 @@ static void TestApertureDrawConsumption()
 
 
 // ================================================================
-// Test G: no SHIPPED scene can drive a sampler stream past the end
-// of the Sobol' dimension table (DL-81 review, P2-2)
+// Test G: the sampler STREAM MAP (DL-81 review P2-2; rewritten for
+// DL-283)
 //
-// `SobolSequence::kNumDimensions` is finite, and `StartStream(s)` puts
-// stream s at dimension s * kStreamStride.  Past the table, a Get1D
-// draw is re-indexed rather than aliased -- it decorrelates instead of
-// collapsing -- but it stops being a joint net with the dimension it
-// shares, so the table is SIZED to keep shipped content off that path
-// entirely.  This test recomputes the bound from the scene files
-// rather than trusting the comment that states it, so a scene that
-// raises a depth past the table turns red here.
+// `SobolSequence::kNumDimensions` is finite (8192 = 256 streams), and
+// `StartStream(s)` puts stream s at dimension s * kStreamStride.  Past
+// the table a Get1D draw is re-indexed rather than aliased -- the table
+// row is read at an index Owen-permuted by the wrap count -- so it
+// decorrelates instead of collapsing, but it stops being a joint net
+// with the row it shares.
 //
-// Reachable streams, read off the integrators:
-//   light walk   1  + d,  d < maxLightDepth + maxVolumeBounce
-//   eye walk     16 + d,  d < maxEyeDepth   + maxVolumeBounce
+// DL-81 stated the rule as "the table is sized so shipped scenes never
+// wrap".  Since DL-247 that has been FALSE by construction, and since
+// DL-283 doubly so: two families of streams are DELIBERATELY placed in
+// the wrap region, because they must be disjoint from every per-vertex
+// stream at any depth and the table cannot hold that many:
+//
+//   PT volume walks   4096 + 1024 * lane + (event mod 1024)
+//                     (PathTransportUtilities::PTVolumeWalkStream;
+//                     wrap 16 + 4 * lane + event / 256, i.e. 16..31)
+//   BDPT/VCM          8192 + 64 * (1024 * side + depth), a 64-stream
+//   medium distance   (2048-dimension) block per walk iteration
+//                     (BDPTUtilities::MediumDistanceStream; wrap
+//                     32..543; fixed-budget samplers only -- MLT's
+//                     PSSMLTSampler never reaches them, Test H)
+//
+// The rule that survives is narrower and still true: every PER-VERTEX
+// stream a shipped scene reaches is inside the table.  G1 recomputes
+// that from the scene files; G2 enumerates both wrap-region families
+// from the real functions and asserts (a) the wrap counts each family
+// lands on, (b) that every stream in them is unique, and (c) that each
+// is disjoint from every OTHER consumer of the same sampler.  Whether
+// the wrapped draws are GOOD draws is measured, not argued:
+// SobolDimensionParityTest section H.
+//
+// Reachable per-vertex streams, read off the integrators:
+//   light walk   1  + d,  d < maxLightDepth + maxVolumeBounce (cap 1024)
+//   eye walk     16 + d,  d < maxEyeDepth   + maxVolumeBounce (cap 1024)
 //   BDPT select  47
-//   MLT          48
+//   MLT          2048 (BDPTCameraUtilities::kPSSMLTFilmLensApertureStream)
 //   VCM NEE      48 + i, i over the eye vertices the walk produced
+//   PT main loop 16 + d,  d < mMaxPathDepth (default 128, ceiling 4080)
 // A walk iteration appends one vertex, except that a BSSRDF material
 // appends a second (the entry vertex), so the VCM bound carries a
 // factor of two on a scene that declares subsurface scattering.
@@ -979,7 +1041,7 @@ static bool SceneDepthBound(
 
 static void TestShippedSceneStreamBudget()
 {
-	std::cout << "\nTest G: shipped scenes stay inside the Sobol' dimension table (DL-81)\n";
+	std::cout << "\nTest G1: shipped scenes' per-vertex streams stay inside the Sobol' dimension table (DL-81)\n";
 
 	const char* roots[2] = { "scenes", "../../../scenes" };
 	std::string root;
@@ -1030,7 +1092,498 @@ static void TestShippedSceneStreamBudget()
 			<< "draws are re-indexed wraps rather than distinct dimensions.\n";
 		std::exit( 1 );
 	}
-	std::cout << "  deepest shipped stream is inside the table: OK\n";
+	std::cout << "  deepest shipped per-vertex stream is inside the table: OK (the PT walk and\n"
+		<< "  BDPT medium-distance streams live past it by design -- Test G2)\n";
+}
+
+// ----------------------------------------------------------------
+// G2: the wrap-region stream families, enumerated from the real
+// functions, and the whole map's collision-freedom.
+// ----------------------------------------------------------------
+namespace StreamMap
+{
+	enum { PT = 1, BDPT = 2, VCM = 4, MLT = 8, BIDIR = BDPT | VCM | MLT };
+
+	struct Range { const char* name; unsigned int lo, hi; unsigned int users; };
+
+	static bool Overlap( const Range& a, const Range& b )
+	{
+		return ( a.users & b.users ) != 0 && a.lo < b.hi && b.lo < a.hi;
+	}
+}
+
+static void TestStreamMap()
+{
+	using namespace StreamMap;
+	std::cout << "\nTest G2: sampler stream map -- wrap-region families and collisions (DL-283)\n";
+
+	const unsigned int stride = SobolSampler::kStreamStride;
+	const unsigned int table  = SobolSequence::kNumDimensions;
+	const unsigned int cap    = BDPTUtilities::kWalkIterationCap;
+	bool ok = true;
+
+	// Fixed (per-vertex and single-purpose) consumers.  VCM's NEE runs
+	// 48 + eye-vertex-index, i >= 1 (so it really starts at 49; 48 is
+	// kept as a conservative lower edge), and one iteration appends at
+	// most three vertices (Test F's bound).
+	const Range fixedRanges[] = {
+		{ "film / light select (0)",        0u,   1u,                  PT | BIDIR },
+		{ "light walk (1+d)",               1u,   1u + cap,            BIDIR },
+		{ "eye walk (16+d)",                16u,  16u + cap,           BIDIR },
+		{ "BDPT strategy select (47)",      47u,  48u,                 BDPT | MLT },
+		{ "VCM per-vertex NEE (48+i)",      48u,  48u + 3u * cap + 1u, VCM },
+		{ "MLT film/lens (2048)",
+			(unsigned int)BDPTCameraUtilities::kPSSMLTFilmLensApertureStream,
+			(unsigned int)BDPTCameraUtilities::kPSSMLTFilmLensApertureStream + 1u, MLT },
+		{ "thin-lens aperture (3322)",
+			(unsigned int)BDPTCameraUtilities::kApertureSamplerStream,
+			(unsigned int)BDPTCameraUtilities::kApertureSamplerStream + 1u,     BDPT | VCM },
+		{ "PT main loop (16+d, d<=4079)",   16u,  4096u,               PT },
+	};
+	const unsigned int nFixed = sizeof(fixedRanges) / sizeof(fixedRanges[0]);
+
+	// PRE-EXISTING overlaps among the fixed per-vertex streams (DL-286,
+	// opened by DL-283's sibling audit, NOT fixed there): the light walk
+	// reaches the eye walk's streams from light iteration 15, the
+	// strategy select at 46 and VCM's NEE (first stream 49: 48 + i with
+	// i >= 1, VCMIntegrator.cpp) at 48; the eye walk reaches the select
+	// at iteration 31 and VCM's NEE at 33.  (The NEE range below starts
+	// at 48, one stream conservative.)  Pinned so a NEW overlap turns
+	// this test red while the known ones stay visible.
+	const char* knownPairs[][2] = {
+		{ "light walk (1+d)", "eye walk (16+d)" },
+		{ "light walk (1+d)", "BDPT strategy select (47)" },
+		{ "light walk (1+d)", "VCM per-vertex NEE (48+i)" },
+		{ "eye walk (16+d)",  "BDPT strategy select (47)" },
+		{ "eye walk (16+d)",  "VCM per-vertex NEE (48+i)" },
+	};
+	const unsigned int nKnown = sizeof(knownPairs) / sizeof(knownPairs[0]);
+	unsigned int knownSeen = 0;
+	for( unsigned int i = 0; i < nFixed; i++ ) {
+		for( unsigned int j = i + 1; j < nFixed; j++ ) {
+			if( !Overlap( fixedRanges[i], fixedRanges[j] ) ) continue;
+			bool known = false;
+			for( unsigned int k = 0; k < nKnown; k++ ) {
+				if( std::string( knownPairs[k][0] ) == fixedRanges[i].name &&
+					std::string( knownPairs[k][1] ) == fixedRanges[j].name ) known = true;
+			}
+			if( known ) {
+				knownSeen++;
+				std::cout << "  known pre-existing overlap (DL-286): " << fixedRanges[i].name
+					<< " x " << fixedRanges[j].name << "\n";
+			} else {
+				std::cerr << "  FAIL: NEW stream overlap between " << fixedRanges[i].name
+					<< " and " << fixedRanges[j].name << " (same sampler).\n";
+				ok = false;
+			}
+		}
+	}
+	if( knownSeen != nKnown ) {
+		std::cerr << "  FAIL: expected " << nKnown << " known overlaps, saw " << knownSeen
+			<< " -- if DL-286 closed, update this list.\n";
+		ok = false;
+	}
+
+	// --- PT volume walks ------------------------------------------------
+	{
+		const unsigned int lanes = SampledWavelengths::N;
+		std::vector<unsigned int> streams;
+		unsigned int wrapLo = ~0u, wrapHi = 0u;
+		bool wrapFormula = true;
+		for( unsigned int lane = 0; lane < lanes; lane++ ) {
+			for( unsigned int ev = 0; ev < PathTransportUtilities::kPTVolumeWalkLaneStride; ev++ ) {
+				const unsigned int s = (unsigned int)PathTransportUtilities::PTVolumeWalkStream( lane, ev );
+				streams.push_back( s );
+				for( unsigned int slot = 0; slot < stride; slot++ ) {
+					const unsigned int w = ( s * stride + slot ) / table;
+					if( w < wrapLo ) wrapLo = w;
+					if( w > wrapHi ) wrapHi = w;
+					if( w != 16u + 4u * lane + ev / 256u ) wrapFormula = false;
+				}
+				const Range r = { "PT walk", s, s + 1u, PT };
+				for( unsigned int i = 0; i < nFixed; i++ ) {
+					if( Overlap( r, fixedRanges[i] ) ) {
+						std::cerr << "  FAIL: PT walk (lane " << lane << ", event " << ev
+							<< ") stream " << s << " overlaps " << fixedRanges[i].name << "\n";
+						ok = false;
+					}
+				}
+			}
+			// The `mod`: event 1024 is event 0 again -- the documented
+			// max_volume_bounce <= 1024 ceiling.
+			if( PathTransportUtilities::PTVolumeWalkStream( lane, 1024u ) !=
+				PathTransportUtilities::PTVolumeWalkStream( lane, 0u ) ) {
+				std::cerr << "  FAIL: PT walk ceiling moved; re-derive the documented 1024.\n";
+				ok = false;
+			}
+		}
+		std::sort( streams.begin(), streams.end() );
+		const bool unique = std::adjacent_find( streams.begin(), streams.end() ) == streams.end();
+		std::cout << "  PT walks: " << streams.size() << " streams [" << streams.front() << ", "
+			<< streams.back() << "], wrap counts " << wrapLo << ".." << wrapHi
+			<< ( unique ? ", all distinct" : ", DUPLICATES" ) << "\n";
+		if( !unique || wrapLo != 16u || wrapHi != 31u || !wrapFormula ) {
+			std::cerr << "  FAIL: PT walk streams are not the documented distinct set on wraps 16..31.\n";
+			ok = false;
+		}
+		// PT's main loop reaches the first walk stream at depth 4080.
+		if( 16u + 4080u != (unsigned int)PathTransportUtilities::kPTVolumeWalkStreamBase ) {
+			std::cerr << "  FAIL: the documented PT depth ceiling 4080 no longer matches the walk base.\n";
+			ok = false;
+		}
+	}
+
+	// --- BDPT/VCM medium-distance blocks (fixed-budget samplers only) ---
+	{
+		const unsigned int per = BDPTUtilities::kMediumDistanceStreamsPerEvent;
+		if( per * stride < IMedium::kMaxSampleDistanceDraws ) {
+			std::cerr << "  FAIL: a medium-distance block (" << per * stride
+				<< " dims) cannot hold one SampleDistance call ("
+				<< IMedium::kMaxSampleDistanceDraws << " draws).\n";
+			ok = false;
+		}
+		std::vector<Range> blocks;
+		unsigned int wrapLo = ~0u, wrapHi = 0u;
+		bool wrapFormula = true;
+		unsigned long long maxDim = 0;
+		for( unsigned int side = 0; side < 2; side++ ) {
+			for( unsigned int d = 0; d < cap; d++ ) {
+				const unsigned int s = (unsigned int)BDPTUtilities::MediumDistanceStream(
+					side ? BDPTUtilities::eLightWalk : BDPTUtilities::eEyeWalk, d );
+				const Range r = { "medium block", s, s + per, BDPT | VCM };
+				blocks.push_back( r );
+				const unsigned long long first = (unsigned long long)s * stride;
+				const unsigned long long last  = first + (unsigned long long)per * stride - 1ull;
+				if( last > maxDim ) maxDim = last;
+				const unsigned int w0 = (unsigned int)( first / table );
+				const unsigned int w1 = (unsigned int)( last / table );
+				if( w0 < wrapLo ) wrapLo = w0;
+				if( w1 > wrapHi ) wrapHi = w1;
+				if( w0 != w1 || w0 != 32u + ( side * cap + d ) / 4u ) wrapFormula = false;
+				for( unsigned int i = 0; i < nFixed; i++ ) {
+					if( Overlap( r, fixedRanges[i] ) ) {
+						std::cerr << "  FAIL: medium block (side " << side << ", depth " << d
+							<< ") overlaps " << fixedRanges[i].name << "\n";
+						ok = false;
+					}
+				}
+			}
+		}
+		std::sort( blocks.begin(), blocks.end(),
+			[]( const Range& a, const Range& b ) { return a.lo < b.lo; } );
+		bool disjoint = true;
+		for( size_t i = 1; i < blocks.size(); i++ ) if( blocks[i].lo < blocks[i-1].hi ) disjoint = false;
+		std::cout << "  BDPT/VCM medium-distance blocks: " << blocks.size() << " x " << per
+			<< " streams [" << blocks.front().lo << ", " << blocks.back().hi << "), wrap counts "
+			<< wrapLo << ".." << wrapHi << ( disjoint ? ", pairwise disjoint" : ", OVERLAPPING" )
+			<< ", max dimension " << maxDim << "\n";
+		if( !disjoint || !wrapFormula || wrapLo != 32u || wrapHi != 543u ||
+			blocks.back().hi != (unsigned int)BDPTUtilities::kMediumDistanceStreamEnd ||
+			maxDim >= 0xFFFFFFFFull ) {
+			std::cerr << "  FAIL: the medium-distance layout is not the documented disjoint "
+				<< "set on wraps 32..543 inside the 32-bit dimension counter.\n";
+			ok = false;
+		}
+		// A depth past the loop cap must not reach a neighbour's block.
+		if( BDPTUtilities::MediumDistanceStream( BDPTUtilities::eEyeWalk, cap + 5u ) !=
+			BDPTUtilities::MediumDistanceStream( BDPTUtilities::eEyeWalk, cap - 1u ) ) {
+			std::cerr << "  FAIL: MediumDistanceStream no longer clamps depth into the cap.\n";
+			ok = false;
+		}
+	}
+
+	if( !ok ) exit( 1 );
+	std::cout << "  Passed!\n";
+}
+
+// ================================================================
+// Test H: BDPT's medium distance sampling stays inside its own
+// stream block (DL-283)
+//
+// Drives BDPTIntegrator's REAL light and eye generators (Pel and NM,
+// light sampler attached so the light walk really runs) on an
+// index-matched box holding a thin heterogeneous medium whose 256^3
+// majorant grid makes delta tracking cross many cells, with a
+// SobolSampler subclass that records every draw's stream and raw
+// dimension.  Three properties, per BDPT sample (light subpath then
+// eye subpath off one sampler, as every BDPT/VCM rasterizer does):
+//
+//   H1  no per-vertex stream (< the medium-distance base) receives
+//       more than kStreamStride draws -- i.e. nothing spills into the
+//       stream the next walk iteration re-opens;
+//   H2  every draw at or above the base lands at the START of a
+//       medium-distance block, and no block receives more than
+//       IMedium::kMaxSampleDistanceDraws;
+//   H3  no raw dimension is drawn twice WITHIN one walk (the "one
+//       Sobol' dimension drives two decisions" signature);
+//   H4  a PSSMLTSampler (MLT) driven through the same generators never
+//       opens a medium-distance block -- its lanes are unbounded, so it
+//       stays on the vertex streams (a routing that was measured at +13 %
+//       user CPU on mlt_deep_fog for no correctness gain).
+//
+// Before DL-283 the distance sample drew from the vertex stream: this
+// fixture's delta tracking ran to ~100 draws, so H1 and H3 failed.
+// The test also asserts the fixture really exercises the hazard (some
+// distance sample draws more than a stream holds), so a medium change
+// that made tracking cheap cannot turn it vacuous.  A HOMOGENEOUS
+// control pins the bounded case at exactly one draw per sample.
+//
+// Draws shared BETWEEN the light and eye walks are the pre-existing
+// fixed-layout overlap Test G2 pins (DL-286); they are counted and
+// printed here, not gated.
+// ================================================================
+
+class StreamAuditSobol : public SobolSampler
+{
+public:
+	int stream;
+	std::vector<std::pair<int, unsigned int> > draws;	// (stream, raw dimension)
+
+	StreamAuditSobol( uint32_t idx, uint32_t seed ) : SobolSampler( idx, seed ), stream( 0 ) {}
+
+	Scalar Get1D() override
+	{
+		draws.push_back( std::make_pair( stream, dimension ) );
+		return SobolSampler::Get1D();
+	}
+	Point2 Get2D() override
+	{
+		draws.push_back( std::make_pair( stream, dimension ) );
+		draws.push_back( std::make_pair( stream, dimension + 1u ) );
+		return SobolSampler::Get2D();
+	}
+	void StartStream( int s ) override
+	{
+		stream = s;
+		SobolSampler::StartStream( s );
+	}
+};
+
+// A PSSMLTSampler that records the highest stream it is asked for.  MLT
+// drives the same generators; its lanes are unbounded, so DL-283 leaves
+// it on the vertex streams -- this pins that.
+class StreamRecordingPSSMLT : public PSSMLTSampler
+{
+public:
+	int maxStream;
+	StreamRecordingPSSMLT( unsigned int seed ) : PSSMLTSampler( seed, 1.0 ), maxStream( 0 ) {}
+	void StartStream( int s ) override
+	{
+		if( s > maxStream ) maxStream = s;
+		PSSMLTSampler::StartStream( s );
+	}
+};
+
+static std::string MediumBoxScene( bool heterogeneous )
+{
+	std::string s = "RISE ASCII SCENE 7\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+		"film\n{\n\twidth 8\n\theight 8\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 1.9999\n\tlookat 0 -1.0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_env\n\tcolor 1.0 1.0 1.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_floor\n\tcolor 0.8 0.8 0.8\n}\n\n"
+		"lambertian_material\n{\n\tname mat_floor\n\treflectance pnt_floor\n}\n\n";
+	if( heterogeneous ) {
+		s +=
+			"uniformcolor_painter\n{\n\tname pnt_dense\n\tcolor 1.0 1.0 1.0\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt_sparse\n\tcolor 0.0 0.0 0.0\n}\n\n"
+			"perlin3d_painter\n{\n\tname pnt_density\n\tpersistence 0.65\n\toctaves 4\n"
+			"\tcolora pnt_dense\n\tcolorb pnt_sparse\n\tscale 1.5 1.5 1.5\n\tshift 0 0 0\n}\n\n"
+			"painter_heterogeneous_medium\n{\n\tname med\n\tabsorption 0.15 0.15 0.15\n"
+			"\tscattering 0.35 0.35 0.35\n\tphase isotropic\n\tdensity_painter pnt_density\n"
+			"\tresolution 256\n\tcolor_to_scalar luminance\n\tbbox_min -2 -2 -2\n\tbbox_max 2 2 2\n}\n\n";
+	} else {
+		s += "homogeneous_medium\n{\n\tname med\n\tabsorption 0.3 0.3 0.3\n"
+			"\tscattering 0.7 0.7 0.7\n\tphase isotropic\n}\n\n";
+	}
+	s +=
+		"dielectric_material\n{\n\tname mat_shell\n\ttau 1.0 1.0 1.0\n\tior 1.0\n\tscattering 1000000.0\n}\n\n"
+		"box_geometry\n{\n\tname shell_box\n\twidth 4.0\n\theight 4.0\n\tdepth 4.0\n}\n\n"
+		"standard_object\n{\n\tname obj_shell\n\tgeometry shell_box\n\tmaterial mat_shell\n\tinterior_medium med\n}\n\n"
+		"clippedplane_geometry\n{\n\tname floor_quad\n"
+		"\tpta -1.9 -1.5 -1.9\n\tptb -1.9 -1.5 1.9\n\tptc 1.9 -1.5 1.9\n\tptd 1.9 -1.5 -1.9\n}\n\n"
+		"standard_object\n{\n\tname obj_floor\n\tgeometry floor_quad\n\tmaterial mat_floor\n}\n\n"
+		"bdpt_pel_rasterizer\n{\n\tmax_eye_depth 20\n\tmax_light_depth 20\n\tsamples 1\n"
+		"\tpixel_filter box\n\toidn_denoise FALSE\n"
+		"\tradiance_map pnt_env\n\tradiance_scale 1.0\n\tradiance_background TRUE\n}\n\n";
+	return s;
+}
+
+struct StreamAuditTally
+{
+	unsigned long long samples = 0, vertexOverruns = 0, badBlockDraws = 0,
+		sameWalkRepeats = 0, crossWalkRepeats = 0, mediumSamples = 0,
+		lightMediumSamples = 0, lightDraws = 0, samplesWithSharedDims = 0,
+		mediumSamplesOver32 = 0;
+	unsigned int maxVertexDraws = 0, maxBlockDraws = 0;
+};
+
+static void AuditOneSample( const StreamAuditSobol& s, size_t lightEnd, StreamAuditTally& t )
+{
+	const int base = BDPTUtilities::kMediumDistanceStreamBase;
+	const int per  = BDPTUtilities::kMediumDistanceStreamsPerEvent;
+	std::map<int, unsigned int> perStream;
+	for( const auto& d : s.draws ) perStream[d.first]++;
+	for( const auto& ps : perStream ) {
+		if( ps.first < base ) {
+			// Per-vertex streams.  Streams >= 1040 cannot be reached by a
+			// walk; a fixture this shallow never gets near them.
+			if( ps.second > t.maxVertexDraws ) t.maxVertexDraws = ps.second;
+			if( ps.second > SobolSampler::kStreamStride ) t.vertexOverruns++;
+		} else {
+			t.mediumSamples++;
+			if( ps.first >= BDPTUtilities::MediumDistanceStream( BDPTUtilities::eLightWalk, 0 ) )
+				t.lightMediumSamples++;
+			if( ps.second > t.maxBlockDraws ) t.maxBlockDraws = ps.second;
+			if( ps.second > SobolSampler::kStreamStride ) t.mediumSamplesOver32++;
+			if( ( ps.first - base ) % per != 0 || ps.first >= BDPTUtilities::kMediumDistanceStreamEnd ||
+				ps.second > IMedium::kMaxSampleDistanceDraws ) t.badBlockDraws++;
+		}
+	}
+	// Raw-dimension repeats, split by walk.
+	std::vector<unsigned int> light, eye;
+	for( size_t i = 0; i < s.draws.size(); i++ )
+		( i < lightEnd ? light : eye ).push_back( s.draws[i].second );
+	auto repeats = []( std::vector<unsigned int>& v ) {
+		std::sort( v.begin(), v.end() );
+		unsigned long long r = 0;
+		for( size_t i = 1; i < v.size(); i++ ) if( v[i] == v[i-1] ) r++;
+		return r;
+	};
+	std::vector<unsigned int> lc = light, ec = eye;
+	t.sameWalkRepeats += repeats( lc ) + repeats( ec );
+	std::vector<unsigned int> both;
+	std::set_intersection( lc.begin(), lc.end(), ec.begin(), ec.end(), std::back_inserter( both ) );
+	both.erase( std::unique( both.begin(), both.end() ), both.end() );
+	t.crossWalkRepeats += both.size();
+	if( !both.empty() ) t.samplesWithSharedDims++;
+	t.lightDraws += lightEnd;
+	t.samples++;
+}
+
+static bool RunStreamAudit( bool heterogeneous, bool nm, StreamAuditTally& t, int* pMaxPssmltStream )
+{
+	char path[512];
+	std::snprintf( path, sizeof(path), "/tmp/sobol_budget_medium_%d.RISEscene", (int)::getpid() );
+	{
+		std::ofstream ofs( path );
+		if( !ofs ) return false;
+		ofs << MediumBoxScene( heterogeneous );
+	}
+	IJobPriv* pJob = nullptr;
+	if( !RISE_CreateJobPriv( &pJob ) || !pJob || !pJob->LoadAsciiSceneViaCst( path ) ) {
+		if( pJob ) safe_release( pJob );
+		std::remove( path );
+		return false;
+	}
+	std::remove( path );
+	const IScene* pScene = pJob->GetScene();
+	const ICamera* pCamera = pScene ? pScene->GetCamera() : nullptr;
+	auto* pRaster = dynamic_cast<PixelBasedRasterizerHelper*>( pJob->GetRasterizer() );
+	IRayCaster* pCaster = pRaster ? pRaster->GetRayCaster() : nullptr;
+	if( !pScene || !pCamera || !pCaster ) { safe_release( pJob ); return false; }
+
+	RandomNumberGenerator rng( 283u );
+	RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
+	StabilityConfig stability;		// max_volume_bounce 64
+	BDPTIntegrator* pBdpt = new BDPTIntegrator( 20, 20, stability );
+
+	// The LIGHT walk needs a light sampler: without one
+	// GenerateLightSubpathImpl returns before drawing anything, and an
+	// earlier revision of this test audited only the eye walk (review of
+	// DL-283, P1-2).  Same wiring the rasterizers do.
+	pCaster->AttachScene( pScene );
+	pScene->GetObjects()->PrepareForRendering();
+	pBdpt->SetLightSampler( pCaster->GetLightSampler() );
+	if( !pCaster->GetLightSampler() ) { safe_release( pBdpt ); safe_release( pJob ); return false; }
+
+	for( unsigned int i = 0; i < 4096u; i++ ) {
+		const Point2 screen( ( ( i % 64u ) + 0.5 ) / 64.0, ( ( i / 64u ) + 0.5 ) / 64.0 );
+		Ray cameraRay;
+		if( !pCamera->GenerateRay( rc, cameraRay, screen ) ) continue;
+		StreamAuditSobol sampler( i, 0x283u + i * 7u );
+		std::vector<BDPTVertex> lv, ev;
+		std::vector<uint32_t> ls, es;
+		if( nm ) pBdpt->GenerateLightSubpathNM( *pScene, *pCaster, sampler, lv, ls, 550.0, rng, nullptr );
+		else     pBdpt->GenerateLightSubpath( *pScene, *pCaster, sampler, lv, ls, rng );
+		const size_t lightEnd = sampler.draws.size();
+		if( nm ) pBdpt->GenerateEyeSubpathNM( rc, cameraRay, screen, *pScene, *pCaster, sampler, ev, es, 550.0, nullptr, nullptr );
+		else     pBdpt->GenerateEyeSubpath( rc, cameraRay, screen, *pScene, *pCaster, sampler, ev, es, nullptr );
+		AuditOneSample( sampler, lightEnd, t );
+
+		if( pMaxPssmltStream && i < 256u ) {
+			StreamRecordingPSSMLT mlt( 283u + i );
+			std::vector<BDPTVertex> lv2, ev2;
+			std::vector<uint32_t> ls2, es2;
+			pBdpt->GenerateLightSubpath( *pScene, *pCaster, mlt, lv2, ls2, rng );
+			pBdpt->GenerateEyeSubpath( rc, cameraRay, screen, *pScene, *pCaster, mlt, ev2, es2, nullptr );
+			if( mlt.maxStream > *pMaxPssmltStream ) *pMaxPssmltStream = mlt.maxStream;
+		}
+	}
+	safe_release( pBdpt );
+	safe_release( pJob );
+	return true;
+}
+
+static void TestMediumDistanceStreamAudit()
+{
+	std::cout << "\nTest H: BDPT medium distance sampling stays in its own stream block (DL-283)\n";
+	bool ok = true;
+	for( int het = 1; het >= 0; het-- ) {
+		for( int nm = 0; nm < 2; nm++ ) {
+			StreamAuditTally t;
+			int maxPssmlt = 0;
+			if( !RunStreamAudit( het != 0, nm != 0, t, ( het && !nm ) ? &maxPssmlt : nullptr ) || t.samples == 0 ) {
+				std::cerr << "  FAIL: could not build/drive the medium box scene.\n";
+				exit( 1 );
+			}
+			std::cout << "  " << ( het ? "heterogeneous" : "homogeneous  " ) << ( nm ? " NM " : " Pel" )
+				<< ": " << t.samples << " samples, " << t.mediumSamples << " distance samples, "
+				<< "max draws per distance sample " << t.maxBlockDraws << " ("
+				<< std::fixed << std::setprecision( 1 )
+				<< ( t.mediumSamples ? 100.0 * double( t.mediumSamplesOver32 ) / double( t.mediumSamples ) : 0.0 )
+				<< std::defaultfloat << "% of them past 32 draws, i.e. would overrun a vertex stream on their own)"
+				<< ", max per vertex stream " << t.maxVertexDraws
+				<< ", vertex overruns " << t.vertexOverruns
+				<< ", misplaced block draws " << t.badBlockDraws
+				<< ", same-walk dimension repeats " << t.sameWalkRepeats
+				<< "\n    light walk: " << t.lightDraws << " draws, " << t.lightMediumSamples
+				<< " distance samples; light/eye shared dimensions " << t.crossWalkRepeats
+				<< " in " << t.samplesWithSharedDims << " samples (DL-286, not gated)\n";
+			if( t.vertexOverruns || t.badBlockDraws || t.sameWalkRepeats ) ok = false;
+			if( het && !nm ) {
+				std::cout << "    PSSMLTSampler (MLT) through the same generators: highest stream "
+					<< maxPssmlt << " (medium-distance blocks start at "
+					<< BDPTUtilities::kMediumDistanceStreamBase << ")\n";
+				if( maxPssmlt >= BDPTUtilities::kMediumDistanceStreamBase || maxPssmlt < 17 ) {
+					std::cerr << "  FAIL: an MLT (PSSMLTSampler) walk reached stream " << maxPssmlt
+						<< "; it must stay on its pre-DL-283 vertex streams.\n";
+					ok = false;
+				}
+			}
+			if( t.mediumSamples == 0 ) ok = false;
+			if( t.lightMediumSamples == 0 || t.lightDraws == 0 ) {
+				std::cerr << "  FAIL: the light walk drew nothing, or drew no medium distance sample "
+					<< "from a LIGHT-walk block (" << t.lightDraws << " light-walk draws, "
+					<< t.lightMediumSamples << " light-block distance samples) -- either the walk "
+					<< "did not run or its distance samples are still on the vertex streams.\n";
+				ok = false;
+			}
+			if( het && std::max( t.maxBlockDraws, t.maxVertexDraws ) <= SobolSampler::kStreamStride ) {
+				std::cerr << "  FAIL: the heterogeneous fixture no longer drives a distance sample "
+					<< "past one stream's " << SobolSampler::kStreamStride
+					<< " slots; it cannot see the DL-283 overrun.\n";
+				ok = false;
+			}
+			if( !het && t.maxBlockDraws != 1u ) {
+				std::cerr << "  FAIL: a homogeneous distance sample drew " << t.maxBlockDraws
+					<< " values; the bounded-draw premise changed.\n";
+				ok = false;
+			}
+		}
+	}
+	if( !ok ) exit( 1 );
+	std::cout << "  Passed!\n";
 }
 
 int main( int /*argc*/, char** /*argv*/ )
@@ -1044,6 +1597,8 @@ int main( int /*argc*/, char** /*argv*/ )
 	TestHasFixedDimensionBudget();
 	TestApertureDrawConsumption();
 	TestShippedSceneStreamBudget();
+	TestStreamMap();
+	TestMediumDistanceStreamAudit();
 
 	std::cout << "\nAll Sobol dimension budget tests passed!\n";
 	return 0;

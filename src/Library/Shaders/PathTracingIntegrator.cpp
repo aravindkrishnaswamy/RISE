@@ -1086,44 +1086,11 @@ namespace
 		const Implementation::LightSampler* pLS, ISampler& sampler, const NMTag& tag )
 	{ return SampleDistanceWithEquiangularMIS_NM( pMedium, ray, maxDist, tag.nm, pLS, sampler ); }
 
-	//! DL-247: the sampler stream a volumetric random WALK draws scatter
-	//! event `scatterIndex` of wavelength lane `lane` from.
-	//!
-	//! The main loops give every vertex its own stream
-	//! (`StartStream( 16 + depth )`, and a volume scatter there bumps
-	//! `depth`).  The three walks -- IntegrateRayTemplated's camera walk,
-	//! IntegrateRayHWSS's camera walk and IntegrateFromHitHWSS's in-loop
-	//! walk -- used to run every scatter event, and under HWSS every
-	//! wavelength lane, SEQUENTIALLY off one stream.  SobolSampler's
-	//! `Get1D` simply increments the dimension, so a walk ran straight
-	//! past its stream's `kStreamStride` (32) slots into `16 + depth + 1`,
-	//! `+ 2`, ... -- exactly the streams its own surface hand-off
-	//! (`IntegrateFromHit*( startDepth = depth + 1 )`) then re-opens.  The
-	//! same Sobol dimension then drove two DIFFERENT decisions on ONE path
-	//! (a walk's NEE or phase draw and the hand-off's BSDF draw), which is
-	//! a correlation inside a single estimator sample and therefore a
-	//! bias, not just noise.  With four HWSS lanes at ~6 draws per scatter
-	//! the overrun happens on the FIRST scatter: +3.1 % on the absorbing
-	//! box of tests/MediumInsideOutsideInvariantTest.cpp (hwss TRUE camera
-	//! inside, black floor: 0.2923 vs 0.2820 for per-lane streams, NM and
-	//! the camera-outside render).
-	//!
-	//! Every walk scatter event now opens a stream of its own, in a range
-	//! no main-loop depth can reach (base 4096; the eye walk's documented
-	//! ceiling is 16 + 1023, the aperture stream is 3322).  A path runs
-	//! at most one walk (each ends in a hand-off to the NM/RGB main loop or
-	//! an escape) and `scatterIndex` is the path's running volume-bounce
-	//! count, so no (lane, scatterIndex) pair repeats within a path.
-	//! SobolSampler streams are unbounded -- past its 8192-dimension table
-	//! a dimension is Owen-permuted by its wrap count (DL-81) -- and
-	//! IndependentSampler ignores streams.  PT is never driven by
-	//! PSSMLTSampler (MLT runs BDPT), whose 4096 lanes these would alias.
-	inline int PTVolumeWalkStream( const unsigned int lane, const unsigned int scatterIndex )
-	{
-		static const int kBase = 4096;
-		static const unsigned int kLaneStride = 1024;
-		return kBase + static_cast<int>( lane * kLaneStride + ( scatterIndex % kLaneStride ) );
-	}
+	//! DL-247: one sampler stream per volume-walk scatter event per
+	//! wavelength lane.  The function and its derivation live in
+	//! PathTransportUtilities.h (moved there by DL-283 so the stream-map
+	//! test, SobolDimensionBudgetTest Test G2, enumerates the real layout).
+	using PathTransportUtilities::PTVolumeWalkStream;
 
 	// In-scattered radiance (NEE) at a medium scatter point.
 	template<class Tag>

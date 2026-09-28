@@ -89,6 +89,26 @@
 #include "../Utilities/Color/SpectralValueTraits.h"
 #include "../Utilities/PathValueOps.h"
 #include "BSSRDFEntryAdapters.h"
+#include "../Utilities/SobolSampler.h"
+
+// DL-283: the medium-distance stream layout (BDPTUtilities.h) must hold a
+// whole distance sample, stay clear of every fixed stream, and fit the
+// 32-bit Sobol' dimension counter.
+static_assert( RISE::BDPTUtilities::kMediumDistanceStreamsPerEvent *
+		RISE::Implementation::SobolSampler::kStreamStride >= RISE::IMedium::kMaxSampleDistanceDraws,
+	"a medium-distance stream block is narrower than one SampleDistance call's draw bound" );
+static_assert( RISE::BDPTUtilities::kMediumDistanceStreamBase >
+		RISE::BDPTCameraUtilities::kApertureSamplerStream &&
+	RISE::BDPTUtilities::kMediumDistanceStreamBase >
+		RISE::BDPTCameraUtilities::kPSSMLTFilmLensApertureStream &&
+	// VCM's per-eye-vertex NEE stream, 48 + i, with at most three
+	// vertices per walk iteration (SobolDimensionBudgetTest Test F).
+	RISE::BDPTUtilities::kMediumDistanceStreamBase >
+		48 + 3 * static_cast<int>( RISE::BDPTUtilities::kWalkIterationCap ) + 1,
+	"medium-distance streams overlap a fixed BDPT/VCM stream" );
+static_assert( static_cast<unsigned long long>( RISE::BDPTUtilities::kMediumDistanceStreamEnd ) *
+		RISE::Implementation::SobolSampler::kStreamStride < 0xFFFFFFFFull,
+	"medium-distance streams overflow SobolSampler's 32-bit dimension counter" );
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -1977,10 +1997,13 @@ namespace {
 		// Cap at 1024 which is well above any realistic depth.  Also guard
 		// `maxEyeDepth >= 1024` directly so the subtraction in the first
 		// half of the ternary doesn't underflow.
+		// The cap is BDPTUtilities::kWalkIterationCap, which also bounds
+		// the per-iteration medium-distance stream layout (DL-283).
+		const unsigned int kCap = BDPTUtilities::kWalkIterationCap;
 		const unsigned int maxEyeTotalDepth =
-			( maxEyeDepth >= 1024u ||
-			  stabilityConfig.maxVolumeBounce > 1024u - maxEyeDepth ) ?
-				1024u :
+			( maxEyeDepth >= kCap ||
+			  stabilityConfig.maxVolumeBounce > kCap - maxEyeDepth ) ?
+				kCap :
 				maxEyeDepth + stabilityConfig.maxVolumeBounce;
 
 		for( unsigned int depth = 0; depth < maxEyeTotalDepth; depth++ )
@@ -2045,8 +2068,23 @@ namespace {
 					bool scattered = false;
 					Scalar t_m = 0;
 					if( !bAtCap ) {
+						// DL-283: under a fixed-budget sampler (Sobol) the
+						// distance sample's open-ended draw sequence gets a
+						// stream block of its own, and the vertex stream is
+						// re-opened at slot 0 afterwards -- see
+						// BDPTUtilities::MediumDistanceStream.  PSSMLT (MLT)
+						// lanes are unbounded, so nothing can spill there and
+						// its chains keep their pre-DL-283 lane layout.
+						const bool bOwnStream = sampler.HasFixedDimensionBudget();
+						if( bOwnStream ) {
+							sampler.StartStream( BDPTUtilities::MediumDistanceStream(
+								BDPTUtilities::eEyeWalk, depth ) );
+						}
 						t_m = SampleMediumDistance<Tag>(
 							*pMed, currentRay, maxDist, sampler, scattered, tag );
+						if( bOwnStream ) {
+							sampler.StartStream( 16u + depth );
+						}
 					}
 
 					if( scattered )
@@ -6430,10 +6468,12 @@ unsigned int GenerateLightSubpathImpl(
 	// Surface bounces are capped by maxLightDepth, volume bounces by maxVolumeBounce.
 	// Saturating add to avoid underflow when a scene sets maxLightDepth
 	// pathologically high (≥1024).
+	// Cap: BDPTUtilities::kWalkIterationCap (DL-283 stream layout).
+	const unsigned int kCap = BDPTUtilities::kWalkIterationCap;
 	const unsigned int maxLightTotalDepth =
-		( maxLightDepth >= 1024u ||
-		  stabilityConfig.maxVolumeBounce > 1024u - maxLightDepth ) ?
-			1024u :
+		( maxLightDepth >= kCap ||
+		  stabilityConfig.maxVolumeBounce > kCap - maxLightDepth ) ?
+			kCap :
 			maxLightDepth + stabilityConfig.maxVolumeBounce;
 
 	for( unsigned int depth = 0; depth < maxLightTotalDepth; depth++ )
@@ -6482,8 +6522,18 @@ unsigned int GenerateLightSubpathImpl(
 				bool scattered = false;
 				Scalar t_m = 0;
 				if( !bAtCap ) {
+					// DL-283: own stream block under a fixed-budget sampler
+					// -- see the eye subpath's twin.
+					const bool bOwnStream = sampler.HasFixedDimensionBudget();
+					if( bOwnStream ) {
+						sampler.StartStream( BDPTUtilities::MediumDistanceStream(
+							BDPTUtilities::eLightWalk, depth ) );
+					}
 					t_m = SampleMediumDistance<Tag>(
 						*pMed, currentRay, maxDist, sampler, scattered, tag );
+					if( bOwnStream ) {
+						sampler.StartStream( 1u + depth );
+					}
 				}
 
 				if( scattered )
