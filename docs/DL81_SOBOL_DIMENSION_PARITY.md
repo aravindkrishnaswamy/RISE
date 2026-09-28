@@ -835,7 +835,7 @@ BDPT renders of a thin 256³-grid heterogeneous box with a black floor read
 **−0.8 % against an independent-sampler reference** (pel camera inside n = 24,
 z −3.7; hwss TRUE n = 40, z −5.1; pre-fix vs fixed paired +0.8 / +0.9 %, z 4.4 /
 5.2), and the fixed build agrees with the reference to 0.1 %.
-`MediumInsideOutsideInvariantTest`'s sampler-bias row gates it (pre-fix −0.599 %,
+`MediumInsideOutsideInvariantTest --sampler-bias` gates it (an opt-in row, ~1 % false-red rate; pre-fix −0.599 %,
 z −5.0, red). An earlier revision of this section and of the DL-283 row called
 the bias "refuted" from an underpowered, camera-outside comparison; that was
 wrong.
