@@ -84,10 +84,21 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 	const Scalar cosIncomingGeom = Vector3Ops::Dot( ri.vGeomNormal, -dir );
 	Vector3 outwardNormal = ( cosIncomingGeom > 0 ) ? surfNormal : -surfNormal;
 
-	// Snell's law refraction: air (1.0) -> medium (ior).  Direction
-	// generation uses the SHADING-frame outward normal (BSDF-coupled).
+	// DL-49: the boundary is an interface between the medium the ray
+	// arrived through and this material -- NOT air and this material.
+	// `ri.ambientIOR` is that exterior index (stamped from the IOR stack
+	// by every integrator; 1.0 for a stackless record).  The exit below
+	// leaves into the SAME exterior: the walk stays on one object, and the
+	// caller continues the exit ray with the unchanged IOR stack.  In air
+	// every call below is the pre-DL-49 call bit-for-bit.
+	const Scalar nExterior = BSSRDFSampling::ExteriorIOR( ri );
+	const Scalar etaRel = BSSRDFSampling::RelativeBoundaryIOR( ior, nExterior );
+
+	// Snell's law refraction: exterior (nExterior) -> medium (ior).
+	// Direction generation uses the SHADING-frame outward normal
+	// (BSDF-coupled).
 	Vector3 refractedDir = dir;
-	if( !Optics::CalculateRefractedRay( outwardNormal, 1.0, ior, refractedDir ) )
+	if( !Optics::CalculateRefractedRay( outwardNormal, nExterior, ior, refractedDir ) )
 	{
 		// Total internal reflection at entry — no walk possible
 		return result;
@@ -326,9 +337,10 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 			// 3e. Fresnel at exit boundary
 			//
 			// Compute Fresnel reflectance at the exit boundary.
-			// We are going from medium (ior) to air (1.0).
+			// We are going from medium (ior) to the exterior (nExterior;
+			// DL-49 -- was hardcoded air).
 			Vector3 refractedOut = dir;
-			if( !Optics::CalculateRefractedRay( -exitNormal, ior, 1.0, refractedOut ) )
+			if( !Optics::CalculateRefractedRay( -exitNormal, ior, nExterior, refractedOut ) )
 			{
 				// Total internal reflection — reflect and continue walk
 				dir = Optics::CalculateReflectedRay( dir, exitNormal );
@@ -339,7 +351,7 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 
 			// Dielectric Fresnel reflectance at exit
 			const Scalar F_exit = Optics::CalculateDielectricReflectance(
-				-dir, refractedOut, -exitNormal, ior, 1.0 );
+				-dir, refractedOut, -exitNormal, ior, nExterior );
 
 			// Stochastic Fresnel: reflect with probability F, transmit with (1-F)
 			if( sampler.Get1D() < F_exit )
@@ -392,10 +404,10 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 			// 3g. Compute Sw and fill result
 			//
 			// Sw(wi) = Ft(cos_theta_i) / (c * PI)
-			// For the cosine-weighted direction, compute entry Fresnel.
-			const Scalar F0 = ((ior - 1.0) / (ior + 1.0)) * ((ior - 1.0) / (ior + 1.0));
-			const Scalar c_norm = BSSRDFSampling::SchlickTransmissionNormalization( ior );
-			const Scalar FtEntry = 1.0 - (F0 + (1.0 - F0) * pow( 1.0 - cosTheta, 5.0 ));
+			// For the cosine-weighted direction, compute entry Fresnel --
+			// for the RELATIVE boundary index (DL-49).
+			const Scalar c_norm = BSSRDFSampling::SchlickTransmissionNormalization( etaRel );
+			const Scalar FtEntry = BSSRDFSampling::RandomWalkSchlickTransmission( cosTheta, etaRel );
 			const Scalar SwFactor = (c_norm > 1e-20) ? FtEntry / c_norm : FtEntry;
 
 			// IS weight for the cosine-sampled continuation direction.

@@ -1,6 +1,9 @@
 // DL-04 complete-event eta convention consistency pin.
 // Coarse bounds reject an unmatched eta square; they do not certify exact
-// SSS energy conservation. DL49/52/53 and finite walk caps remain separate.
+// SSS energy conservation. Finite walk caps remain separate (DL-52/53 are
+// closed). DL-49 (2026-09-28) made the SSS boundary relative to the live
+// exterior index, which moved the WATER rows' SSS means toward the explicit
+// volume (docs/DL49_SSS_EXTERIOR_INDEX.md); the air rows are bit-identical.
 //
 // DL-284: `max_volume_bounce` truncates the medium's Neumann series (DL-247
 // ruling: past the cap a segment carries deterministic Beer-Lambert Tr).

@@ -2487,6 +2487,12 @@ namespace {
 							entryV.pObject = ri.pObject;
 							entryV.pMediumObject = pMedObj_eye;
 							entryV.pMediumVol = pMed_eye;
+							// DL-49: the entry point shares the exit hit's exterior medium
+							// (the continuation carries the same IOR stack).  Without this
+							// the vertex kept the 1.0 default and every re-evaluation of its
+							// Sw (PathVertexEval, the zero-exitance sweep) priced an air
+							// interface.
+							entryV.mediumIOR = vertices.back().mediumIOR;
 							entryV.isDelta = false;
 							entryV.isConnectible = true;
 							entryV.isBSSRDFEntry = true;
@@ -2582,9 +2588,18 @@ namespace {
 				}
 				if( rwGate )
 				{
-					const Scalar F0 = ((pRW->ior - 1.0) / (pRW->ior + 1.0)) *
-						((pRW->ior - 1.0) / (pRW->ior + 1.0));
-					const Scalar F = F0 + (1.0 - F0) * pow( 1.0 - cosIn, 5.0 );
+					// DL-49: Schlick against the RELATIVE index -- the material
+					// over the exterior the ray arrived through (`ambientIOR`, the
+					// IOR-stack top), the same interface the SPF reflection this
+					// coin competes with, and RandomWalkSSS's refraction, use.  A
+					// denser exterior past its critical angle is totally reflected.
+					const Scalar etaRW = BSSRDFSampling::RelativeBoundaryIOR(
+						pRW->ior, BSSRDFSampling::ExteriorIOR( ri.geometric ) );
+					Scalar cosSchlick = cosIn;
+					const bool bTransmits = BSSRDFSampling::SchlickBoundaryCosine( cosIn, etaRW, cosSchlick );
+					const Scalar F0 = ((etaRW - 1.0) / (etaRW + 1.0)) *
+						((etaRW - 1.0) / (etaRW + 1.0));
+					const Scalar F = bTransmits ? F0 + (1.0 - F0) * pow( 1.0 - cosSchlick, 5.0 ) : 1.0;
 					const Scalar Ft = 1.0 - F;
 					const Scalar R = F;
 
@@ -2643,6 +2658,12 @@ namespace {
 							entryV.pObject = ri.pObject;
 							entryV.pMediumObject = pMedObj_eye;
 							entryV.pMediumVol = pMed_eye;
+							// DL-49: the entry point shares the exit hit's exterior medium
+							// (the continuation carries the same IOR stack).  Without this
+							// the vertex kept the 1.0 default and every re-evaluation of its
+							// Sw (PathVertexEval, the zero-exitance sweep) priced an air
+							// interface.
+							entryV.mediumIOR = vertices.back().mediumIOR;
 
 							// See RGB light subpath block for rationale.
 							entryV.isDelta = true;
@@ -6660,6 +6681,12 @@ unsigned int GenerateLightSubpathImpl(
 						entryV.pObject = ri.pObject;
 						entryV.pMediumObject = pMedObj_light;
 						entryV.pMediumVol = pMed_light;
+						// DL-49: the entry point shares the exit hit's exterior medium
+						// (the continuation carries the same IOR stack).  Without this
+						// the vertex kept the 1.0 default and every re-evaluation of its
+						// Sw (PathVertexEval, the zero-exitance sweep) priced an air
+						// interface.
+						entryV.mediumIOR = vertices.back().mediumIOR;
 						entryV.isDelta = false;
 						entryV.isConnectible = true;
 						entryV.isBSSRDFEntry = true;
@@ -6750,9 +6777,18 @@ unsigned int GenerateLightSubpathImpl(
 			}
 			if( rwGate )
 			{
-				const Scalar F0 = ((pRW->ior - 1.0) / (pRW->ior + 1.0)) *
-					((pRW->ior - 1.0) / (pRW->ior + 1.0));
-				const Scalar F = F0 + (1.0 - F0) * pow( 1.0 - cosIn, 5.0 );
+				// DL-49: Schlick against the RELATIVE index -- the material
+				// over the exterior the ray arrived through (`ambientIOR`, the
+				// IOR-stack top), the same interface the SPF reflection this
+				// coin competes with, and RandomWalkSSS's refraction, use.  A
+				// denser exterior past its critical angle is totally reflected.
+				const Scalar etaRW = BSSRDFSampling::RelativeBoundaryIOR(
+					pRW->ior, BSSRDFSampling::ExteriorIOR( ri.geometric ) );
+				Scalar cosSchlick = cosIn;
+				const bool bTransmits = BSSRDFSampling::SchlickBoundaryCosine( cosIn, etaRW, cosSchlick );
+				const Scalar F0 = ((etaRW - 1.0) / (etaRW + 1.0)) *
+					((etaRW - 1.0) / (etaRW + 1.0));
+				const Scalar F = bTransmits ? F0 + (1.0 - F0) * pow( 1.0 - cosSchlick, 5.0 ) : 1.0;
 				const Scalar Ft = 1.0 - F;
 				const Scalar R = F;
 
@@ -6818,6 +6854,12 @@ unsigned int GenerateLightSubpathImpl(
 						entryV.pObject = ri.pObject;
 						entryV.pMediumObject = pMedObj_light;
 						entryV.pMediumVol = pMed_light;
+						// DL-49: the entry point shares the exit hit's exterior medium
+						// (the continuation carries the same IOR stack).  Without this
+						// the vertex kept the 1.0 default and every re-evaluation of its
+						// Sw (PathVertexEval, the zero-exitance sweep) priced an air
+						// interface.
+						entryV.mediumIOR = vertices.back().mediumIOR;
 
 						// The random walk has no analytic area PDF for
 						// the exit point — pdfSurface is a placeholder.

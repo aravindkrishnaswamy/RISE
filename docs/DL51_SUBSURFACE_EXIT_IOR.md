@@ -38,7 +38,8 @@ PT RGB/NM/HWSS and BDPT consumers use the attached continuation stack;
 VCM/MLT share the bidirectional generators. The fix preserves their existing
 radiance/importance weighting convention. CompositeSPF follows a child's
 attached stack. Supported coated/fabric substrate allowlists exclude SSS.
-Random-walk and diffusion non-air conventions remain separate DL-49 work.
+Random-walk and diffusion non-air conventions were separate DL-49 work, fixed
+on `debt-dl49` (2026-09-28; see [closure](DL49_SSS_EXTERIOR_INDEX.md)).
 
 ## Regression and scope
 

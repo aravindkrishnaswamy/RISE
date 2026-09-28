@@ -90,7 +90,13 @@ RISEPel SubSurfaceScatteringBSDF::value(
 
 		const Scalar D = MicrofacetUtils::GGX_D<Scalar>( alpha, NdotH );
 		const Scalar G = MicrofacetUtils::GGX_G( alpha, NdotO, NdotI );
-		const Scalar F = DielectricFresnel( OdotH, 1.0, n_ior );
+		// DL-49: Fresnel against the exterior the ray arrived through
+		// (`ri.ambientIOR`, stamped from the IOR stack; 1.0 = air), the
+		// same index SubSurfaceScatteringSPF's VNDF reflection reads from
+		// `ior_stack.top()` -- was hardcoded air, so NEE through this BSDF
+		// and the SPF's sampled reflection priced two different interfaces
+		// whenever the SSS body sat in a non-air medium.
+		const Scalar F = DielectricFresnel( OdotH, ri.ambientIOR, n_ior );
 
 		const Scalar val = D * F * G / (4.0 * NdotO * NdotI);
 		return RISEPel( val, val, val );
@@ -130,7 +136,8 @@ Scalar SubSurfaceScatteringBSDF::valueNM(
 
 		const Scalar D = MicrofacetUtils::GGX_D<Scalar>( alpha, NdotH );
 		const Scalar G = MicrofacetUtils::GGX_G( alpha, NdotO, NdotI );
-		const Scalar F = DielectricFresnel( OdotH, 1.0, n_ior );
+		// DL-49: see value() -- exterior index, not hardcoded air.
+		const Scalar F = DielectricFresnel( OdotH, ri.ambientIOR, n_ior );
 		return D * F * G / (4.0 * NdotO * NdotI);
 	}
 

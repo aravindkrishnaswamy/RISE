@@ -58,6 +58,16 @@ namespace BSSRDFAdapters
 		bool release() const { return false; }
 		unsigned int refcount() const { return 1; }
 
+		/// DL-49: the Sw normalization belongs to the SAME relative index
+		/// the profile's FresnelTransmission evaluates -- the material's
+		/// index over the record's exterior index (`ri.ambientIOR`, which
+		/// every caller's entry record carries from the exit hit).
+		Scalar RelativeEta( const RayIntersectionGeometric& ri ) const
+		{
+			return BSSRDFSampling::RelativeBoundaryIOR(
+				pProfile->GetIOR( ri ), BSSRDFSampling::ExteriorIOR( ri ) );
+		}
+
 		RISEPel value(
 			const Vector3& vLightIn,
 			const RayIntersectionGeometric& ri
@@ -68,7 +78,7 @@ namespace BSSRDFAdapters
 				return RISEPel( 0, 0, 0 );
 			}
 			const Scalar Ft = pProfile->FresnelTransmission( cosTheta, ri );
-			const Scalar Sw = BSSRDFSampling::EvaluateSwWithFresnel( Ft, pProfile->GetIOR(ri) );
+			const Scalar Sw = BSSRDFSampling::EvaluateSwWithFresnel( Ft, RelativeEta( ri ) );
 			return RISEPel( Sw, Sw, Sw );
 		}
 
@@ -83,24 +93,36 @@ namespace BSSRDFAdapters
 				return 0;
 			}
 			const Scalar Ft = pProfile->FresnelTransmission( cosTheta, ri );
-			return BSSRDFSampling::EvaluateSwWithFresnel( Ft, pProfile->GetIOR(ri) );
+			return BSSRDFSampling::EvaluateSwWithFresnel( Ft, RelativeEta( ri ) );
 		}
 	};
 
 	/// Adapter BSDF for NEE at random-walk SSS entry points.
-	/// Uses Schlick Fresnel with stored IOR.
+	/// Uses Schlick Fresnel with the material's stored (ABSOLUTE) IOR over
+	/// the evaluation record's exterior index (DL-49).
 	class RandomWalkEntryBSDF : public IBSDF
 	{
-		Scalar swScale;
 		Scalar ior;
+
+		/// Sw = Ft(cos; eta) / (c(eta) * PI) for the RELATIVE index
+		/// eta = ior / ri.ambientIOR.  Every caller's evaluation record
+		/// carries the exterior index of the exit hit (PT stamps its entry
+		/// record, BDPT replays `BDPTVertex::mediumIOR`); a record without
+		/// one defaults to air, which is the pre-DL-49 behaviour exactly.
+		Scalar Sw( const Scalar cosTheta, const RayIntersectionGeometric& ri ) const
+		{
+			const Scalar eta = BSSRDFSampling::RelativeBoundaryIOR(
+				ior, BSSRDFSampling::ExteriorIOR( ri ) );
+			const Scalar c = BSSRDFSampling::SchlickTransmissionNormalization( eta );
+			const Scalar swScale = (c > 1e-20) ? 1.0 / (c * PI) : 0;
+			return BSSRDFSampling::RandomWalkSchlickTransmission( cosTheta, eta ) * swScale;
+		}
 
 	public:
 		RandomWalkEntryBSDF(
 			const Scalar eta
 			) : ior( eta )
 		{
-			const Scalar c = BSSRDFSampling::SchlickTransmissionNormalization( eta );
-			swScale = (c > 1e-20) ? 1.0 / (c * PI) : 0;
 		}
 
 		void addref() const {}
@@ -116,26 +138,21 @@ namespace BSSRDFAdapters
 			if( cosTheta <= 0 ) {
 				return RISEPel( 0, 0, 0 );
 			}
-			const Scalar F0v = ((ior - 1.0) / (ior + 1.0)) * ((ior - 1.0) / (ior + 1.0));
-			const Scalar F = F0v + (1.0 - F0v) * pow( 1.0 - cosTheta, 5.0 );
-			const Scalar Ft = 1.0 - F;
-			const Scalar Sw = Ft * swScale;
-			return RISEPel( Sw, Sw, Sw );
+			const Scalar s = Sw( cosTheta, ri );
+			return RISEPel( s, s, s );
 		}
 
 		Scalar valueNM(
 			const Vector3& vLightIn,
 			const RayIntersectionGeometric& ri,
-			const Scalar nm
+			const Scalar /*nm*/
 			) const
 		{
 			const Scalar cosTheta = Vector3Ops::Dot( vLightIn, ri.vNormal );
 			if( cosTheta <= 0 ) {
 				return 0;
 			}
-			const Scalar F0v = ((ior - 1.0) / (ior + 1.0)) * ((ior - 1.0) / (ior + 1.0));
-			const Scalar F = F0v + (1.0 - F0v) * pow( 1.0 - cosTheta, 5.0 );
-			return (1.0 - F) * swScale;
+			return Sw( cosTheta, ri );
 		}
 	};
 

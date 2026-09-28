@@ -2947,6 +2947,11 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 							entryRI.ptObjIntersec = bssrdf.ptObjIntersec;
 							entryRI.vColor = bssrdf.vColor;
 							entryRI.bHasVertexColor = bssrdf.bHasVertexColor;
+							// DL-49: the entry point sits in the same exterior
+							// medium as the exit hit (the continuation below
+							// carries the same IOR stack); the adapter's Fresnel
+							// and Sw normalization read it from here.
+							entryRI.ambientIOR = ri.geometric.ambientIOR;
 
 							const Scalar eta = pProfile->GetIOR( entryRI );
 							BSSRDFEntryBSDF entryBSDF( pProfile, eta );
@@ -3182,10 +3187,13 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					// a discontinuous Ft when shading swung past horizon.
 					const Scalar cosInShade = Vector3Ops::Dot( ri.geometric.vNormal, wo );
 					const Scalar cosIn = r_max( fabs( cosInShade ), Scalar( NEARZERO ) );
-					const Scalar F0 = ((pRWParams->ior - 1.0) / (pRWParams->ior + 1.0)) *
-						((pRWParams->ior - 1.0) / (pRWParams->ior + 1.0));
-					const Scalar F = F0 + (1.0 - F0) * pow( 1.0 - cosIn, 5.0 );
-					const Scalar Ft = 1.0 - F;
+					// DL-49: Schlick against the RELATIVE index -- the
+					// material over the exterior the ray arrived through
+					// (`ambientIOR`, the IOR-stack top), the same interface
+					// the SPF's reflection and RandomWalkSSS's refraction use.
+					const Scalar Ft = BSSRDFSampling::RandomWalkSchlickTransmission( cosIn,
+						BSSRDFSampling::RelativeBoundaryIOR( pRWParams->ior,
+							BSSRDFSampling::ExteriorIOR( ri.geometric ) ) );
 
 					if( Ft > NEARZERO )
 					{
@@ -3224,6 +3232,9 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 							entryRI.ptObjIntersec = bssrdf.ptObjIntersec;
 							entryRI.vColor = bssrdf.vColor;
 							entryRI.bHasVertexColor = bssrdf.bHasVertexColor;
+							// DL-49: exterior index of the exit hit; the adapter
+							// prices Sw for ior / ambientIOR.
+							entryRI.ambientIOR = ri.geometric.ambientIOR;
 
 							RandomWalkEntryBSDF entryBSDF( pRWParams->ior );
 							BSSRDFEntryMaterial entryMaterial;
