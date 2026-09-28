@@ -2,9 +2,14 @@
 
 Slice `debt-dl24`, branched from `master` `5c9eeb96`, 2026-09-28.
 Ledger row: [DEBT_LEDGER.md](DEBT_LEDGER.md) DL-24.  Residuals opened:
-DL-296, DL-297.  An external review round (FAIL: 2 P1, 3 P2) was addressed
-the same day; its fixes and the corrected numbers are in section 7, and
-the sections below are updated to the post-review state.  Related rows: DL-221 (narrowed here, still open), DL-67
+DL-296, DL-297; two more recorded for the supervisor to file at merge,
+DL-341 (the composite's stack-gap family, section 5) and DL-342
+(`coated_material` too bright under an absorbing coat).  Two external
+review rounds (round 1 FAIL: 2 P1, 3 P2; round 2 FAIL: 1 P1, 2 P2, P3s)
+were addressed the same day; their fixes and the corrected numbers are in
+sections 7 and 8, and the sections below are updated to the post-review
+state.  After round 2 the branch was merged with `master` `1e20e1f6`
+(DL-05, DL-306, DL-291); section 8 records the one semantic conflict.  Related rows: DL-221 (narrowed here, still open), DL-67
 (its "placeholder `CompositeSPF::Pdf`" residual is resolved here), DL-285
 (polished bottom, unchanged).
 
@@ -62,11 +67,14 @@ the authoritative description; this section summarises it.
 
 * **DIRECT.**  The top layer's own up-going lobes.  Scatter draws them by
   a conditional selection of the top's natural rule.  When the top
-  DECLARES a deterministic up/down split
-  (`ISPF::SelectionMassIsDeterministic`: dielectric, perfect
-  reflector/refractor, translucent) they are weighted `w1 = Qup`, so
+  DECLARES a deterministic up/down split AT THIS RECORD
+  (`ISPF::SelectionMassIsDeterministic( ri, nm )`: perfect
+  reflector/refractor and translucent always; a dielectric only when its
+  transmission warp is off or its shading normal equals its geometric
+  normal -- section 8, P1-A) they are weighted `w1 = Qup`, so
   `w1 * conditional == top.Pdf` exactly (AGGREGATE mode).  Every other top
-  runs PER-BRANCH mode (section 7, P1-1).
+  runs PER-BRANCH mode (section 7, P1-1), whose weights average
+  `kPerBranchProbes` = 8 hashed probes of the top (section 8).
 * **COVERED.**  Transport that enters through the top, reaches the bottom
   and leaves through the top in one of two ways: (a) a delta refraction
   after an evaluable bottom event, or (b) a non-delta exit through a top
@@ -100,8 +108,10 @@ the authoritative description; this section summarises it.
 `max_*_recursion`) are now **Russian-roulette onsets**.  Past a budget,
 the walk continues under roulette with `p = min(1, max(beta))`, and the
 survival is compensated.  `kMaxWalkEvents = 256` is only a safety cap.  A
-walk that reaches it still carrying energy is a lossless trapping pair,
-and the SPF warns once per process.  The chunk descriptor, `IJob.h`,
+walk that reaches it still carrying energy is either a lossless trapping
+pair or -- far more often in practice -- the DL-341 stack-gap residual
+(section 5: 91 323 of 100 000 H4 walks at 35 deg reach it, and that energy
+is lost); the SPF warns once per process.  The chunk descriptor, `IJob.h`,
 `RISE_API.h`, `Job.{h,cpp}` and `RISE_API.cpp` all document the budgets
 this way now.
 
@@ -259,10 +269,12 @@ reconstructed from `(ri, dir, nm)`:
 * The 5-argument form reconstructs the top's DIRECT delta reflection by
   re-probing the top at `nm` -- in AGGREGATE mode only, and only for an
   `eRayReflection`-typed ray matched to a reflection-typed top lobe
-  (section 7, P1-2).  Exact for a non-dispersive top; for a DISPERSIVE
-  top it returns `kray_nm / q_nm` where the right weight is
-  `kray_nm / q_hero`, which the method cannot form (the hero wavelength is
-  not an argument), so it is approximate there.
+  (section 7, P1-2).  Exact for a non-dispersive top.  For a DISPERSIVE
+  top it returns `kray_nm / q_nm`, and a dielectric selects its
+  reflection with probability `q = F`, so that is the hero's own weight
+  (companion ratio 1) where the right ratio is `F(nm) / F(hero)` -- the
+  method cannot form it (the hero wavelength is not an argument).  Close,
+  not exact.
 
 The count is 3627 reconstructed, 0 declined, 0 mismatches.  Over a
 chromatic bottom the companion weight really moves with `nm`, which was
@@ -282,7 +294,13 @@ decline, 0 mismatches.)  PER-BRANCH composites and SPF-only composites (no
 layer BSDFs) decline everywhere.  For the
 coat-over-diffuse regime, WALKER emissions are rare.  After an evaluable
 bottom the walker's top exits are COVERED and are not emitted, so most
-composite vertices now reconstruct exactly.
+composite vertices now reconstruct exactly.  That does NOT hold over a
+bottom with a DELTA coat.  The round-2 reviewer measured
+composite{glass / polished-red}: 3 768 of every 100 000 up-going emissions
+are walker rays priced by the fallback, and `hwss TRUE` reads **-9.7 %**
+against `hwss FALSE` under PT and **-8.5 %** under BDPT
+(composite{glass/glass}, whose walker rays are grey, shows no significant
+difference).  Carried into the DL-221 row.
 
 ### 3.6 Sibling configuration classes (section F, full-sphere furnace)
 
@@ -306,6 +324,34 @@ position jittered every draw; truth 1 for the lossless rows:
 | H2 composite{dielectric / lossless translucent} / white | **0.9418 / 0.9351** | 1.0030 ± .0063 / 0.9969 ± .0050 | gated |
 | H3 composite{dielectric / dielectric} / white | 0.3811 / 0.3530 | 0.4785 ± .0026 / 0.5108 ± .0043 | KNOWN RESIDUAL, pinned [0.40, 0.62] (section 5) |
 | H4 composite{dielectric / dielectric} struck from inside | 1.0000 (20 deg) / 0.0868 (35 deg) | same | KNOWN RESIDUAL, pinned [0.04, 0.20] at 35 deg; base `5c9eeb96` reads the same 0.086 |
+
+Section T (added by review round 2, P1-A) tilts the SHADING normal of a
+flat +Z surface and compares composite{dielectric / white} against an
+independent natural layer walk written in the test; the pre-fix column is
+the same tree with `DielectricSPF::SelectionMassIsDeterministic` forced
+back to the round-1 claim (`true`).  Composite n = 64 x 20 000, walk
+n = 16 x 20 000, band 5 sigma + 0.001:
+
+| top | tilt / theta | independent walk | pre-fix composite (z) | post-fix composite (z) |
+|---|---|---|---|---|
+| scattering 0 | 0 / 0, 45 | 1.0000 / 1.0000 | 0.9994 / 1.0003 | 0.9994 / 1.0003 (unchanged) |
+| scattering 0 | 5 / 0 | 0.9781 | 0.9539 (**-24.9**) | 0.9766 (-1.6) |
+| scattering 0 | 5 / 45 | 0.9781 | 0.9493 (**-32.6**) | 0.9778 (-0.4) |
+| scattering 0 | 20 / 0 | 0.8844 | 0.8086 (**-48.8**) | 0.8856 (+0.9) |
+| scattering 0 | 20 / 45 | 0.8966 | 0.8133 (**-69.4**) | 0.8976 (+0.9) |
+| scattering 0 | 35 / 0 | 0.7787 | 0.6785 (**-51.3**) | 0.7754 (-2.3) |
+| scattering 0 | 35 / 45 | 0.8632 | 0.7911 (**-65.7**) | 0.8618 (-1.3) |
+| scattering 5 | 5 / 0, 45 | 0.9881 / 0.9881 | 0.9874 / 0.9877 | 0.9874 / 0.9892 |
+| scattering 5 | 20 / 45 | 0.9202 | 0.9139 (**-7.2**) | 0.9207 (+0.5) |
+| scattering 5 | 35 / 45 | 0.8685 | 0.8605 (**-8.6**) | 0.8680 (-0.5) |
+
+The walk itself reads below 1 because a tilted shading normal is not
+energy-conserving; the gate is agreement, not 1.  T2 (the E2 twin under a
+20 deg tilt, grey, hero 550 / companion 600): pre-fix 92 734 up-going rays
+reconstructed, **296 wrong** (worst relative error 16.3); post-fix every
+one declines (the top is per-branch there), 0 wrong.  A ray that arrives
+BEHIND the tilted shading normal (tilt 35, theta 60) is pinned instead of
+gated: section 5, DL-341.
 
 `CompositeExtinctionTest` bands were calibrated to the truncated walk.
 They were replaced by a closed-form interreflection series
@@ -349,7 +395,11 @@ proof that the new NEE value is right.
 ### 3.8 Cost
 
 **Shipped scene, whole-render user CPU**, n = 5 interleaved, 512×288,
-64 spp:
+64 spp.  After review round 2 and the merge, against `master` `1e20e1f6`
+(two separately built binaries, interleaved): **66.05 ± 1.07 s -> 80.28 ±
+1.06 s, +21.5 %**; the region means match section 3.7's deltas to within
+0.2 % per region (whole image −4.04 %).  Earlier builds, against base
+`5c9eeb96`:
 
 * before the review: base 66.80 ± 0.50 s, fix 90.47 ± 1.85 s — **+35.4 %**
   (the reviewer re-measured +40.7 %, 72.91 ± 3.32 → 102.56 ± 3.20 s; the
@@ -378,25 +428,29 @@ along the recorded walk, and the mixture `Pdf`.
 
 ## 4. Gates (this slice's final state)
 
-The clean library rebuild and every test target built had **0 warnings**.
+On the merged tree (`master` `1e20e1f6` + this branch, after review round
+2).  The clean library rebuild and every test target built had **0
+warnings**.
 
 | suite | post-fix | base (red) |
 |---|---|---|
-| CompositeEnergyConservationTest (new) | 128/0 | 34/82 on `5c9eeb96` (116-check revision); 121/7 on `c03807a2` for the review rows (E2 2, H1 1, H2 2, H3 pin 2) |
+| CompositeEnergyConservationTest (new) | 150/0 | the 128-check revision reads 37/91 on `5c9eeb96` (round 1's 34/82 was the 116-check file); 121/7 on `c03807a2` for the round-1 review rows (E2 2, H1 1, H2 2, H3 pin 2); section T 11/9 with the round-1 `DielectricSPF` claim restored (section 3.6) |
 | LayeredWhiteFurnaceTest | 0 of 60 failed | 3 of 60 |
 | CompositeExtinctionTest | all pass | 5 FAIL |
 | SPFPdfConsistencyTest | all pass | 12 FAILED |
 | HWSSCompanionKrayTest | 193/0 | 190/3 |
 | TranslucentLobeConsistencyTest | 1226/0 | 1222/4 (gate 6 re-ruled) |
-| BDPTStrategyBalanceTest (full) | 215/0 | topology S passes on base too |
+| BDPTStrategyBalanceTest (full) | 227/0 (includes DL-05's Q/R: `--weave-gap-only` 24/0; S: `--materials-only` 19/0) | topology S passes on base too |
+| WeaveGapShadowTransmittanceTest (DL-05) | 132/0 | 132/0 on master |
 | PTGuidingMISPartitionTest | 185/0 | — |
 | BDPTGuidedContinuationTest | 164/0 | — |
 | SPFBSDFConsistencyTest | pass | — |
 | VCMStrategyBalanceTest | 74/0 | — |
-| CstDeriveGoldenTest | 454 MATCH, 0 DRIFT | — |
+| CstDeriveGoldenTest | 456 MATCH, 0 DRIFT | — |
 | SourceHygieneTest | 167/0 | — |
 | SSSRadianceScalingTest | 576220/0 | (base 576220/0) |
-| RefractiveRadianceScalingTest | 40/1 | row C, the known pre-existing regression (DL-308); base 40/1 |
+| SSSExteriorIndexInvarianceTest (DL-291) | 227/0 | 227/0 on master |
+| RefractiveRadianceScalingTest | 40/1 | row C, the known pre-existing regression (DL-308); master 40/1 |
 | ConnectionLegality / AgentMakeFabric / ReferenceGraph / SceneEditTransaction / LightBVH | 319/0, 273/0, 375/0, 274/0, 20/0 | — |
 
 ## 5. Residuals
@@ -421,8 +475,11 @@ The clean library rebuild and every test target built had **0 warnings**.
   | scat 0, walker-only (follows the warp) | 0.123 / 0.136 / 0.150 / 0.167 / 0.185 / 0.239 |
   | scat 1e4 (the parser default) | evaluator and walker agree within noise |
 
-* **Nested composites walked FROM BELOW (no id free; recorded in the DL-24
-  row for the supervisor to file).**  The two-stack convention
+* **DL-341 (filed at merge by the supervisor) -- the composite's IOR-stack
+  gap family.**  Three presentations, one cause: the two-stack convention
+  and the walk's exits are only right for a walk that enters from ABOVE
+  and leaves through the TOP.  (i) **Nested composites walked FROM
+  BELOW.**  The two-stack convention
   (`EvalStack`: a down-going ray sees `outside`, an up-going one `gap`) is
   defined for walks entered from ABOVE.  A walk entered from below is
   handed the medium BELOW the stack as `outside`, and the from-below loop
@@ -441,14 +498,42 @@ The clean library rebuild and every test target built had **0 warnings**.
   loop but leaves the down-going return reading the wrong side; the real
   fix is a from-below stack convention for the whole walk.  The evaluator
   inherits the same fault for H3 (its term (a) applies the 1/eta^2 of a
-  refraction the nested top never performs).
+  refraction the nested top never performs).  (ii) **A TRANSMITTING
+  composite seen from above.**  composite{glass / glass} with zero gap on
+  an open quad under a white env furnace reads **0.487** under PT and
+  BDPT pel (the round-2 reviewer: 0.486 across pel, spectral and HWSS;
+  base 0.484-0.487), truth 1: the walker's exit through the BOTTOM
+  carries the inside-the-object stack, so the escaping ray is priced at
+  the `1/eta^2 = 0.444` basic-radiance factor of a medium it never
+  entered.  A plain `dielectric_material` open quad reads 0.467 =
+  `F + (1 - F)/eta^2` in the same frame -- the same half-space convention
+  -- so what the composite lacks is a way for a bottom exit to pop back
+  to the outside stack.  Pinned (section D3, [0.43, 0.54]).  (iii) **A ray
+  arriving BEHIND a tilted shading normal** (tilt 35, theta 60:
+  `d . n_s = +0.087`) is classified up-going and takes the from-below
+  walker: 0.0899 on this branch, 0.0907 on base.  Pinned (section T,
+  [0.06, 0.12]).
 * **Probe/walk cache key** holds the IOR stack's top and
   `containsCurrent()`, not its deeper entries.  Two queries at the same
   point, direction and top but a different deeper stack would share a
   probe.  Not reachable from any walk in the tree today (a composite's
   sub-SPFs read only the top and the object membership); recorded.
-* **Dispersive tops, 5-argument `EvaluateKrayNM`**: approximate (section
-  3.5), part of DL-221.
+* **Dispersive tops, 5-argument `EvaluateKrayNM`**: returns the hero's
+  weight (ratio 1) where `F(nm)/F(hero)` is right (section 3.5), part of
+  DL-221.  **Delta-coated bottoms under HWSS** are measured there too
+  (composite{glass / polished-red}: `hwss TRUE` -9.7 % PT, -8.5 % BDPT).
+* **Pre-existing, not this row: BDPT `hwss TRUE` reads ~-9.5 % against
+  `hwss FALSE` on COVERED composites, on base and branch alike** (round-2
+  reviewer; the figure was reported for BDPT only).  Because it is present
+  on the base as well, it is not caused by this slice; its attribution
+  was NOT investigated here.  Recorded for the supervisor.
+* **PER-BRANCH variance.**  Per-branch mode is unbiased for any positive
+  weights, but its variance can be large: the round-2 reviewer measured a
+  per-draw sd about 30x the mean on a three-level nested composite.  The
+  8-probe weights (section 8) reduce the worst of it (a floored walker
+  share weighting rare exits ~100x); they do not remove it.
+* **DL-342 (filed at merge) -- `coated_material` too bright under an
+  ABSORBING coat** (~15-17 %; its recycling approximation), section 7.
 * **DL-285** (polished bottom, now PINNED in [1.05, 1.15]) and **config 7 /
   F6** (reflection-only GGX top) are unchanged.  So is the
   RefractiveRadianceScalingTest row C regression (DL-308).
@@ -547,3 +632,98 @@ every claimed red/green, the appearance deltas and the pointwise
   (analytic 0.855).  The composite matches the independent closed form
   (section G).
 
+
+## 8. Review round 2 (2026-09-28): FAIL, 1 P1, 2 P2, P3s -- all addressed
+
+**Merge first.**  `master` moved to `1e20e1f6` (DL-05, DL-306, DL-291) and
+was merged into this branch (no rebase).  One semantic conflict: DL-05's
+new `CompositeSPF::DeltaPassThroughTransmittance{,NM}` (the straight-through
+transmittance a shadow ray of a delta light takes through a composite)
+gated its `layer x Beer x layer` product on `max_recur` and on the
+`ShouldScatteredRayBePropagated` budget this slice had removed.  The
+product is kept; the gates were re-derived for the new budget model and
+removed: since DL-24 the budgets are Russian-roulette ONSETS with the
+survival compensated, and the walk's only hard stop is the 256-event cap,
+which a two-event straight path never reaches, so no budget changes the
+EXPECTED straight-through weight (the reasoning is in the comment above
+the function).  The old `NEARZERO` floor on the attenuation went with them
+(the walker stops only at an exactly zero throughput).
+
+Re-running DL-05's `WeaveGapShadowTransmittanceTest` on the merged tree
+then read its composite-of-weaves BDPT row **-25 %** (0.06737 against an
+expected 0.09).  Not a bias in the weights -- per-branch mode is unbiased
+for any positive weights -- but a heavy tail: a single-emit top (a weave)
+whose true down share is ~0.3 read "no down mass" on BOTH of the two
+hashed probes at 49 % of shading points, which floored the walker's share
+to 1 % and weighted its rare straight-through exits ~100x, and a BDPT
+light-tracing splat did not converge within 1024 spp.  The per-branch
+weights now average `kPerBranchProbes` = 8 hashed probes (the declared
+aggregate path still uses one): the zero-read rate falls to 5.8 %, the
+batch sem from 0.0041 to 0.0013, and the row reads **0.09117** (132/0).
+An efficiency choice, not a correctness one.
+
+**P1-A -- `DielectricSPF` falsely declared determinism under a tilted
+shading normal with finite `scattering`.**  Its transmission warp is
+clipped to the GEOMETRIC side of the surface, so when the shading normal
+is tilted the wedge between the two planes moves mass across the shading
+plane at random: the per-draw up/down split is not a function of the
+record, and the aggregate mode priced the branches with a split no draw
+realises.  Three options were offered; **(a), a query-dependent
+capability, was chosen**:
+
+* `ISPF::SelectionMassIsDeterministic( ri, nm )` now takes the record and
+  wavelength.  `PerfectReflectorSPF`, `PerfectRefractorSPF` and
+  `TranslucentSPF` return true unconditionally (their claim was re-checked
+  and kept: no warp, lobes determined by the record).  `DielectricSPF`
+  returns true only when its warp is OFF at this record and wavelength
+  (non-HG `scattering >= 1e6`, HG `g >= 1`; any channel for RGB) or its
+  shading normal equals its geometric normal (`1 - |n_g . n_s| < 1e-12`,
+  i.e. a residual wedge of at most ~1.4e-6 rad; a degenerate geometric
+  normal makes the SPF clip against the shading normal itself, so no wedge
+  exists).  The tilt test is exact rather than a tolerance because both
+  warps (Phong `cos^N`, Henyey-Greenstein) have support over the whole
+  hemisphere: ANY tilt makes a nonzero wedge.
+* Why not (c) ("false unless `scattering >= 1e6`"): the parser default is
+  10 000, so (c) would have moved every default-glass composite -- on flat
+  and analytic geometry too, where the split is exactly deterministic --
+  to the per-branch mode, losing the exact `Pdf` and the HWSS
+  reconstruction for no correctness gain.  Why not (b) (classify up/down
+  against the geometric plane): the walker, the evaluator's connections
+  and the reflection lobe are all defined in the SHADING frame; moving
+  the classification would be a redesign of every branch, and it would not
+  remove the underlying fact that the sub-SPF's own split is stochastic.
+* Consequence worth knowing: on a smooth-shaded mesh or a bump-/normal-
+  mapped surface, a composite whose top is a dielectric with a finite
+  `scattering` (including the default 10 000) runs PER-BRANCH -- unbiased,
+  higher variance, `Pdf` an MIS partner, the 5-argument `EvaluateKrayNM`
+  declines.  The shipped scene is all analytic primitives and does not
+  move (section 3.8: every region within 0.2 % of round 1's deltas).
+
+Red -> green: section 3.6's T table (red 11/9 with the round-1 claim
+restored on this tree, via a committed-state mutation of the one function;
+green 29/0), including a warp-OFF tilted top that keeps its declaration
+and matches the independent walk in AGGREGATE mode, and T2 (296 wrong
+companion reconstructions -> 0).  The untilted rows are identical in both
+builds.
+
+**P2-1 -- a transmitting composite reads ~0.49 in a white env furnace.**
+Recorded, not fixed: the bottom exit carries the inside-the-object stack
+(`1/eta^2 = 0.444`).  Filed with the from-below case as DL-341 (section 5
+(ii)), pinned by the new render row D3 (PT and BDPT pel 0.487, band
+[0.43, 0.54]).
+
+**P2-2 -- DL-221 quantified** (section 3.5 and the DL-221 row):
+glass/polished-red `hwss TRUE` -9.7 % PT, -8.5 % BDPT, 3 768 fallback-priced
+walker rays per 100 000 up-going.
+
+**P3s.**  BDPT HWSS ~-9.5 % on covered composites is pre-existing (base and
+branch) and recorded in section 5; the behind-the-tilted-normal from-below
+case (0.0899 / base 0.0907) is DL-341 (iii) and pinned; the stale "seeded
+from (wi, wo, position)" comments in `CompositeSPF.h` and the `.cpp`
+hashing block now say the walk is seeded from (wi, position) and term (a)
+from (wi, wo, position); the `kMaxWalkEvents` comment no longer says only
+a lossless trap reaches the cap (91 323 of 100 000 H4 walks do); the
+per-branch variance note is in section 5; the dispersive direct-reflection
+reconstruction is described as returning 1 where `F(nm)/F(hero)` is right,
+not "exactly"; and the red-proof figure is 37/91 for the 128-check file
+(round 1's 34/82 was the 116-check revision).

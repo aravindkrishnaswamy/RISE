@@ -833,10 +833,15 @@ static void SectionT( Fixtures& f )
 {
 	std::cout << "\n[T] Tilted shading normal: composite{dielectric / white} vs an independent layer walk (DL-24 review round 2 P1-A), mean +- sem, composite n = 64 x 20000, walk n = 16 x 20000\n";
 	UniformScalarPainter* s5 = new UniformScalarPainter( 5.0 );  s5->addref();
+	UniformScalarPainter* s1e6 = new UniformScalarPainter( 1000000.0 );  s1e6->addref();
 	DielectricMaterial* dScat5 = new DielectricMaterial( *f.s1, *f.s15, *s5, false );  dScat5->addref();
-	DielectricMaterial* tops[] = { f.dScat0, dScat5 };
-	const char* names[] = { "scattering 0", "scattering 5" };
-	for( int k = 0; k < 2; ++k ) {
+	DielectricMaterial* dDelta = new DielectricMaterial( *f.s1, *f.s15, *s1e6, false );  dDelta->addref();
+	// The third top has its warp OFF (delta transmission), so it still
+	// DECLARES determinism under a tilt and runs the AGGREGATE mode there:
+	// the row proves the declaration is right when it is kept.
+	DielectricMaterial* tops[] = { f.dScat0, dScat5, dDelta };
+	const char* names[] = { "scattering 0", "scattering 5", "scattering 1e6 (warp off, still declared)" };
+	for( int k = 0; k < 3; ++k ) {
 		CompositeMaterial* m = MakeComposite( *tops[k], *f.lamb, 3, 3, 3, 3, 3, 0.0, *f.s0 );
 		for( const double tilt : { 0.0, 5.0, 20.0, 35.0 } ) {
 			for( const double th : { 0.0, 45.0 } ) {
@@ -901,7 +906,7 @@ static void SectionT( Fixtures& f )
 		Check( mism == 0, "[T2] no reconstructed companion weight differs from the grey stack's hero weight under a tilted shading normal" );
 		m->release();
 	}
-	dScat5->release(); s5->release();
+	dScat5->release(); s5->release(); dDelta->release(); s1e6->release();
 }
 
 //////////////////////////////////////////////////////////////////////
