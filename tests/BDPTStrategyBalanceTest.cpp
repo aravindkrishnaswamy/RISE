@@ -105,6 +105,14 @@
 //         comment), so it discriminates a Schlick-specific residual
 //         on L from a generic PT-vs-BDPT one.
 //
+//      U. ROUGH `subsurfacescattering_material` wall + floor (DL-307)
+//         and V. a closed ROUGH `randomwalk_sss_material` sphere
+//         (DL-307) -- both generators used to break on an empty scatter
+//         container (a rough reflection drawn below the horizon) before
+//         the subsurface branch.  Each gates un-guided BDPT vs PT,
+//         guided-RIS BDPT vs PT, and un-guided vs guided BDPT in its own
+//         tight band (see the topologies' own comment).
+//
 //    Tolerance: 8% relative on the mean RGB.  At 32 spp, 64x64 images
 //    Monte Carlo noise on the mean of a smooth scene is sub-percent;
 //    multi-threaded BDPT splat-accumulation order adds run-to-run
