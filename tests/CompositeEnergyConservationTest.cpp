@@ -739,7 +739,7 @@ static void SectionH( Fixtures& f )
 //  two-stack convention (down-going arrivals see the outside stack,
 //  up-going ones the gap stack), Russian roulette after 8 events.  Both
 //  sides are furnaces over the full sphere at jittered positions; the
-//  band is 5 sigma of the combined sem plus a 0.005 floor.
+//  band is 5 sigma of the combined sem plus a 0.001 floor.
 //////////////////////////////////////////////////////////////////////
 static RayIntersectionGeometric MakeTiltedIntersection( double thDeg, const Point3& p, double tiltDeg )
 {
@@ -831,7 +831,7 @@ static FurnaceStats TiltedFurnace( const ISPF* composite, const ISPF* top, const
 
 static void SectionT( Fixtures& f )
 {
-	std::cout << "\n[T] Tilted shading normal: composite{dielectric / white} vs an independent layer walk (DL-24 review round 2 P1-A), mean +- sem, n = 16 x 20000\n";
+	std::cout << "\n[T] Tilted shading normal: composite{dielectric / white} vs an independent layer walk (DL-24 review round 2 P1-A), mean +- sem, composite n = 64 x 20000, walk n = 16 x 20000\n";
 	UniformScalarPainter* s5 = new UniformScalarPainter( 5.0 );  s5->addref();
 	DielectricMaterial* dScat5 = new DielectricMaterial( *f.s1, *f.s15, *s5, false );  dScat5->addref();
 	DielectricMaterial* tops[] = { f.dScat0, dScat5 };
@@ -840,13 +840,13 @@ static void SectionT( Fixtures& f )
 		CompositeMaterial* m = MakeComposite( *tops[k], *f.lamb, 3, 3, 3, 3, 3, 0.0, *f.s0 );
 		for( const double tilt : { 0.0, 5.0, 20.0, 35.0 } ) {
 			for( const double th : { 0.0, 45.0 } ) {
-				const FurnaceStats a = TiltedFurnace( m->GetSPF(), 0, 0, th, tilt, 16, 20000, 911u + (unsigned)th + 13u * (unsigned)tilt );
+				const FurnaceStats a = TiltedFurnace( m->GetSPF(), 0, 0, th, tilt, 64, 20000, 911u + (unsigned)th + 13u * (unsigned)tilt );
 				const FurnaceStats r = TiltedFurnace( 0, tops[k]->GetSPF(), f.lamb->GetSPF(), th, tilt, 16, 20000, 555u + (unsigned)th + 17u * (unsigned)tilt );
 				const double sig = std::sqrt( a.sem * a.sem + r.sem * r.sem );
 				std::cout << std::fixed << std::setprecision( 4 ) << "    " << names[k] << ", tilt " << tilt << ", theta " << th
 				          << ": composite " << a.mean << " +- " << a.sem << ", independent walk " << r.mean << " +- " << r.sem
 				          << ", z " << std::setprecision( 2 ) << ( a.mean - r.mean ) / std::max( 1e-12, sig ) << "\n";
-				Check( std::fabs( a.mean - r.mean ) <= 0.005 + 5.0 * sig,
+				Check( std::fabs( a.mean - r.mean ) <= 0.001 + 5.0 * sig,
 					std::string( "[T] composite{dielectric " ) + names[k] + " / white} == independent walk, tilt " +
 					std::to_string( (int)tilt ) + " theta " + std::to_string( (int)th ) );
 			}
