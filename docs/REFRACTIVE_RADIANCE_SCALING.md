@@ -8,7 +8,7 @@ IMPORTANCE-mode walks (light subpaths, photon tracers, SMS photon seeds,
 detector-sphere rigs) deliberately do not.
 
 Guard: [`tests/RefractiveRadianceScalingTest.cpp`](../tests/RefractiveRadianceScalingTest.cpp)
-(38 checks, ~27 s),
+(60 checks since DL-308, ~110 s -- §11),
 [`tests/RadianceEtaScaleGradedIndexTest.cpp`](../tests/RadianceEtaScaleGradedIndexTest.cpp)
 (13 checks — the spatially-varying-`ior` through-slab invariant, §10.2),
 [`tests/GradedIndexInteriorFactorTest.cpp`](../tests/GradedIndexInteriorFactorTest.cpp)
@@ -248,7 +248,8 @@ Read the rows in pairs:
   - `tests/RefractiveRadianceScalingTest.cpp` row C (radius 0.08, same
     scene family, 128/64/2048 spp for PT/BDPT/VCM): VCM/PT =
     0.00468599/0.00462829 = **1.0125** (re-measured for this round;
-    BDPT/PT = 1.0067 in the same run).
+    BDPT/PT = 1.0067 in the same run).  That BDPT figure predates DL-210;
+    see §11 for why the row later read 0.91 and what it reads now.
   All three sit inside VCMStrategyBalanceTest's 8% mean band, which is
   sized for auto-radius merge drift (the `VCMRasterizerBase::
   PreRenderSetup` log line each run prints its own `effective_radius`
@@ -885,7 +886,123 @@ recognised as world-position fields) and DL-293 (straight rays: the exit
 Snell trace is now consistent with the tracked index but geometrically wrong
 for a stratified slab, and solid angles do not collimate).
 
-## 11. Cross-references
+## 11. DL-308: row C's "BDPT 8-9 % below PT" was the eye depth (2026-09-28, slice `debt-dl308`)
+
+From the DL-210 merge (`e361fa45`) on, row C read BDPT/PT 0.905-0.922 on
+every commit tested.  The row was filed as a possible refractive-boundary
+transport bias.  **It is not one: neither integrator was wrong.**
+
+**The mechanism.**  Row C ran BDPT and VCM at `max_eye_depth 5` /
+`max_light_depth 5`, like row A, against a PT with no practical depth
+limit.  DL-210 made that cap real on the RGB eye walk: before it, the Pel
+walk ran up to `max_volume_bounce` more surface vertices past the
+authored depth, which is why §4 measured BDPT/PT 1.0067.
+
+Five surface vertices allow exactly one floor bounce: the water surface,
+the floor, the surface again, and the emitter.  The rest of the floor's
+light is trapped under the surface by total internal reflection, and each
+further floor bounce costs two surface vertices.  PT with
+`max_diffuse_bounce 1` makes the same one-floor-bounce truncation, and it
+reads the same number:
+
+| salted, n = 4 | mean | sd |
+|---|---|---|
+| PT, untruncated | 0.004619 | 0.000035 |
+| PT, `max_diffuse_bounce 1` | 0.004157 | 0.000023 |
+| BDPT, depth 5 | 0.004166 | 0.000029 |
+| BDPT, depth 32 | 0.004642 | 0.000027 |
+| VCM, depth 5 | 0.004322 | 0.000029 |
+| VCM, depth 32 | 0.004636 | 0.000005 |
+
+No per-(s,t) instrumentation was needed.  On row C's direct paths
+(camera, surface, floor, surface, emitter) every connection edge touches
+the delta water surface.  Eye-path emitter hits (s = 0) are therefore the
+only strategy, with MIS weight 1 in BDPT and in VCM.  No MIS partition is
+involved.
+
+**The reference-free evidence.**  Two new rows decide it without
+comparing one integrator against another.
+
+*Row E, closed form.*  A 0.14-wide Lambertian patch sits 0.25 below the
+water surface.  The camera looks straight down at it; a sphere emitter of
+radius 0.4 hangs in air.  The expected image mean is
+
+```
+L = T_in / n^2 * rho/pi * E,    E = integral of T(theta_w) n^2 L_e cos(theta_w) d(omega_w)
+```
+
+The test integrates E numerically over the refraction point on the
+surface, with an exact ray-sphere test of the refracted ray.  It averages
+over the camera footprint and adds the patch's first-order Fresnel
+self-return (+0.024 %).  The closed form is 0.00351454.
+
+| salted independent renders | spp | n | ratio to closed form (+/- sem) |
+|---|---|---|---|
+| PT | 256 | 10 | 1.0024 +/- 0.0021 |
+| BDPT | 512 | 10 | 1.0013 +/- 0.0020 |
+| VCM | 512 | 10 | 1.0015 +/- 0.0020 |
+| pixelpel (Emission + diffuse `distributiontracing_shaderop` + Refraction) | 4 x 128 | 6 | 0.9975 +/- 0.0050 |
+
+The table is the same before and after this slice, because no transport
+changed.  The default `DefaultDirectLighting` chain reads exactly 0 here,
+since its shadow ray is opaque to the delta surface; that is row D's
+structural zero.
+
+*Row F, scale invariance.*  Render row E's scene in air, then again with
+every index multiplied by 1.5 (water 1.995) inside an ideal index-1.5
+enclosure.  Both versions sit in a black room, so no path reaches the
+enclosure wall.  Paired common-salt ratios, n = 4:
+
+- PT 1.0004 +/- 0.0017 (sd)
+- BDPT 0.9999 +/- 0.0011
+- VCM 1.0002 +/- 0.0003
+
+**The fix.**  Rows C and D now run BDPT/VCM at depth 16; depth 8 is
+already converged.  Salted n = 8, row C reads:
+
+- BDPT/PT 1.0044, single-render sd 1.18 %
+- VCM/PT 1.0063, single-render sd 1.35 %
+
+Row C's band tightens from 8 % to 5 %.  Row D's VCM moved from
+PTts/VCM 0.965 to 0.953.  That brings it closer to the 1.05
+refractive-concentration gap the row's comment predicts for transparent
+shadows.
+
+The suite now salts every render (`SobolSamplerTestHooks::ValueSalt`).
+Before, a different `argv[1]` gave the identical Sobol' points under a
+different libc seed.
+
+**A trap worth recording.**  The row-E comparison done UNSALTED misled
+badly (n = 8, 1024 spp, a 0.08 emitter).  It read PT -3.4 % and BDPT
++4.8 % from the closed form, with an apparent sd of 0.4 %.  Repeats of a
+Sobol' render reuse one point set, so that sd omits the QMC error
+entirely.
+
+**Found on the way, filed:**
+
+- **DL-319.**  VCM's auto merge radius is 1 % of the median light
+  segment over everything the light reaches.  With row E's scene inside
+  a black room of radius 20, that radius is 0.19, wider than the whole
+  patch.  VCM then reads 0.60 of the closed form, and the same with the
+  enclosure.  This is why row F's VCM uses an explicit `merge_radius`.
+  Separately, the "auto-radius failed" warning on rows B and E is
+  correct behaviour: nothing, or too little, is mergeable.  The message
+  now says so.
+- **DL-320.**  A double-sided emitter's back face is two-sided for every
+  strategy that HITS it and one-sided for NEE and light-subpath emission,
+  whose MIS weights still count it.  This is what the DL-09 review's
+  "camera inside a dielectric: BDPT 0.9175 / VCM 0.795" was: that
+  fixture's quad was wound away from the scene.  Flipped, it reads
+  BDPT/PT 0.9988 and VCM/PT 0.9927.
+
+**Not explained here, recorded.**  The "smaller BDPT deficits" of the
+DL-247b and DL-283 reviews do not depend on depth.  They are BDPT-only,
+under an environment light, in a SCATTERING medium: a scattering-only box
+reads 0.954.  With no medium it reads 1.000, and with an interior area
+light instead of the environment BDPT equals VCM.  Refraction and this
+section's mechanism play no part.
+
+## 12. Cross-references
 
 - [`tests/RefractiveRadianceScalingTest.cpp`](../tests/RefractiveRadianceScalingTest.cpp) — the closed forms
 - [`docs/CAUSTIC_PHOTONMAP_NORMALIZATION.md`](CAUSTIC_PHOTONMAP_NORMALIZATION.md) §11, §13

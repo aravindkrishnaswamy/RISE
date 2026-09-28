@@ -807,7 +807,7 @@ static const char* kSlabLightDelta =
 //! these rows used to share with row A, BDPT's eye walk admits exactly ONE
 //! floor bounce: it read 0.905-0.922 of PT, and PT with
 //! `max_diffuse_bounce 1` reads the same number (identity measured in
-//! docs/REFRACTIVE_RADIANCE_SCALING.md section 12).  16 is converged
+//! docs/REFRACTIVE_RADIANCE_SCALING.md section 11).  16 is converged
 //! (8 already is; 32 reads the same within noise) and PT is untruncated.
 static const unsigned int kSlabDepth = 16;
 
