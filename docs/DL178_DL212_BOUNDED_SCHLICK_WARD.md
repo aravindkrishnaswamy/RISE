@@ -5,7 +5,7 @@ Cost and isolated proposal experiments continued on 2026-09-21. Bounded Schlick
 geometric attenuation (DL-178) and Geisler-Moroder & Dür bounded Ward transport
 (DL-212) are formally accepted with exact domain-split quadrature and a 4-entry
 thread-local evaluation cache. Finite grazing residual for Schlick is tracked
-under open DL-225. Appearance changes are documented below for both models. This document
+under DL-225 (CLOSED 2026-09-28 by the `debt-dl225` slice; the uncoupled diffuse term is DL-310). Appearance changes are documented below for both models. This document
 separates a specular model's energy bound, the sum of independently authored
 `Rd` and `Rs`, and the bounded auxiliary albedo AOV. These are different
 contracts: an AOV saturation does not repair transport energy.
@@ -314,7 +314,7 @@ These are per-draw sum-of-lobe weights, not image quantiles. DL-177's
 tail question is resolved by changing Ward's published normalization: its
 accepted per-lobe weight is analytically bounded by `2 Rs`. The Schlick
 change strongly reduces this tail without asserting a global conservation
-result; DL-225 remains open.
+result; DL-225 was CLOSED 2026-09-28 by the bounded reciprocal masking (see the DL-225 section above); the uncoupled diffuse term is DL-310.
 
 ## BDPT controls and measurement dispatch
 
