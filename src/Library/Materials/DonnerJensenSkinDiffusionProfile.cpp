@@ -596,14 +596,10 @@ void DonnerJensenSkinDiffusionProfile::PrecomputeTables(
 	}
 }
 
-const DonnerJensenSkinDiffusionProfile::ProfileTables& DonnerJensenSkinDiffusionProfile::TablesFor(
-	const RayIntersectionGeometric& ri
+const DonnerJensenSkinDiffusionProfile::ProfileTables& DonnerJensenSkinDiffusionProfile::TablesForExterior(
+	const Scalar exteriorIOR
 	) const
 {
-	const Scalar exteriorIOR = BSSRDFSampling::ExteriorIOR( ri );
-	if( exteriorIOR == 1.0 ) {
-		return m_air;
-	}
 	return m_exterior_tables.Get( exteriorIOR, [this]( const Scalar n ) {
 		ProfileTables* tables = new ProfileTables;
 		memset( tables, 0, sizeof(*tables) );

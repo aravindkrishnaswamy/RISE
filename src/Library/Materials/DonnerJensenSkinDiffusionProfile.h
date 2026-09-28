@@ -233,8 +233,19 @@ namespace RISE
 				) const;
 
 			/// The tables for the exterior the record's ray arrived through
-			/// (`ri.ambientIOR`; air for a stackless record).
-			const ProfileTables& TablesFor( const RayIntersectionGeometric& ri ) const;
+			/// (`ri.ambientIOR`; air for a stackless record).  Inline so the
+			/// in-air path costs one compare.
+			inline const ProfileTables& TablesFor( const RayIntersectionGeometric& ri ) const
+			{
+				const Scalar n = ri.ambientIOR;
+				if( n == 1.0 || !( n > 0 && n < RISE_INFINITY ) ) {
+					return m_air;		// air, or a non-physical value (BSSRDFSampling::ExteriorIOR's air fallback)
+				}
+				return TablesForExterior( n );
+			}
+
+			/// Non-air exteriors: built on first use (DL-291).
+			const ProfileTables& TablesForExterior( const Scalar exteriorIOR ) const;
 
 			/// Evaluate the K-term Sum-of-Gaussians at radius r.
 			static Scalar EvaluateSumOfGaussians(

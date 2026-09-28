@@ -243,6 +243,22 @@ bool PointSetOctree::PointSetOctreeNode::AddElements(
 	return true;
 }
 
+namespace
+{
+	//! DL-291: the profile at the body's exterior.  Air (every shipped scene)
+	//! keeps the original single virtual call on this hot loop.
+	inline RISEPel ExtinctionAt(
+		const ISubSurfaceExtinctionFunction& pFunc,
+		const Scalar dist,
+		const Scalar exteriorIOR
+		)
+	{
+		return exteriorIOR == 1.0
+			? pFunc.ComputeTotalExtinction( dist )
+			: ExtinctionAt( pFunc, dist, exteriorIOR );
+	}
+}
+
 void PointSetOctree::PointSetOctreeNode::Evaluate(
 	RISEPel& c,
 	const BoundingBox& bbox,
@@ -273,9 +289,9 @@ void PointSetOctree::PointSetOctreeNode::Evaluate(
 				} else {
 					// Use the node's average irradiance as an estimate
 					if( pBSDF ) {
-						c = c + pFunc.ComputeTotalExtinctionForExterior( dist, exteriorIOR ) * pChildren[i]->AverageIrradiance() * pBSDF->valueStateful( vdir, rig, pIorStack ) ;
+						c = c + ExtinctionAt( pFunc, dist, exteriorIOR ) * pChildren[i]->AverageIrradiance() * pBSDF->valueStateful( vdir, rig, pIorStack ) ;
 					} else {
-						c = c + pFunc.ComputeTotalExtinctionForExterior( dist, exteriorIOR ) * pChildren[i]->AverageIrradiance();
+						c = c + ExtinctionAt( pFunc, dist, exteriorIOR ) * pChildren[i]->AverageIrradiance();
 					}
 				}
 			}
@@ -289,9 +305,9 @@ void PointSetOctree::PointSetOctreeNode::Evaluate(
 			const Vector3& vdir = Vector3Ops::mkVector3( i->ptPosition, point );
 			const Scalar dist = Vector3Ops::Magnitude( vdir );
 			if( pBSDF ) {
-				c = c + pFunc.ComputeTotalExtinctionForExterior( dist, exteriorIOR ) * i->irrad * pBSDF->valueStateful( vdir, rig, pIorStack ) ;
+				c = c + ExtinctionAt( pFunc, dist, exteriorIOR ) * i->irrad * pBSDF->valueStateful( vdir, rig, pIorStack ) ;
 			} else {
-				c = c + pFunc.ComputeTotalExtinctionForExterior( dist, exteriorIOR ) * i->irrad;
+				c = c + ExtinctionAt( pFunc, dist, exteriorIOR ) * i->irrad;
 			}
 		}
 	}
