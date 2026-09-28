@@ -4574,11 +4574,11 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";                 p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "top";                  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.description = "Top material"; p.semantics.pipe = ParameterPipe::Material; }
 						{ auto& p = P(); p.name = "bottom";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.description = "Bottom material"; p.semantics.pipe = ParameterPipe::Material; }
-						{ auto& p = P(); p.name = "max_recursion";            p.kind = ValueKind::UInt; p.description = "Max composite recursion"; p.defaultValueHint = "3"; }
-						{ auto& p = P(); p.name = "max_reflection_recursion"; p.kind = ValueKind::UInt; p.description = "Max reflection recursion"; p.defaultValueHint = "3"; }
-						{ auto& p = P(); p.name = "max_refraction_recursion"; p.kind = ValueKind::UInt; p.description = "Max refraction recursion"; p.defaultValueHint = "3"; }
-						{ auto& p = P(); p.name = "max_diffuse_recursion";    p.kind = ValueKind::UInt; p.description = "Max diffuse recursion"; p.defaultValueHint = "3"; }
-						{ auto& p = P(); p.name = "max_translucent_recursion";p.kind = ValueKind::UInt; p.description = "Max translucent recursion"; p.defaultValueHint = "3"; }
+						{ auto& p = P(); p.name = "max_recursion";            p.kind = ValueKind::UInt; p.description = "Russian-roulette onset for the inter-layer walk, total events (since DL-24 a budget no longer truncates the walk; past it the walk continues under roulette)"; p.defaultValueHint = "3"; }
+						{ auto& p = P(); p.name = "max_reflection_recursion"; p.kind = ValueKind::UInt; p.description = "Russian-roulette onset, reflection events (DL-24: not a truncation)"; p.defaultValueHint = "3"; }
+						{ auto& p = P(); p.name = "max_refraction_recursion"; p.kind = ValueKind::UInt; p.description = "Russian-roulette onset, refraction events (DL-24: not a truncation)"; p.defaultValueHint = "3"; }
+						{ auto& p = P(); p.name = "max_diffuse_recursion";    p.kind = ValueKind::UInt; p.description = "Russian-roulette onset, diffuse events (DL-24: not a truncation)"; p.defaultValueHint = "3"; }
+						{ auto& p = P(); p.name = "max_translucent_recursion";p.kind = ValueKind::UInt; p.description = "Russian-roulette onset, translucent events (DL-24: not a truncation)"; p.defaultValueHint = "3"; }
 						{ auto& p = P(); p.name = "thickness";            p.kind = ValueKind::Double;    p.description = "Layer thickness"; p.defaultValueHint = "0"; }
 						{ auto& p = P(); p.name = "extinction";           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Inter-layer extinction, applied as exp(-extinction*path) across the gap (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here).  0.0 (default) reproduces the pre-refactor \"none\" IPainter default's numeric value bit-for-bit -- NO extinction (a clear gap), not black/opaque."; p.defaultValueHint = "0.0"; p.semantics.pipe = ParameterPipe::Scalar; }
 						AddVariantTagParam( cd );

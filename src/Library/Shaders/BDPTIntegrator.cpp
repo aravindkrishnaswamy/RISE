@@ -3373,7 +3373,9 @@ namespace {
 							// Aggregate evaluation remains appropriate for
 							// aggregate-density rays with matching BSDF
 							// response, or a guiding-substituted direction.
-							// CompositeSPF still declines (DL-221).
+							// CompositeSPF declines for its walker-emitted
+							// rays and for per-branch composites (DL-221,
+							// narrowed by DL-24).
 							// TranslucentSPF supports its entry/exit lobes;
 							// unsupported types can still decline and warn.
 							Scalar compScale = -1;
@@ -3390,8 +3392,8 @@ namespace {
 								// Match aggregate response with aggregate
 								// density; a per-lobe density can instead
 								// produce DL-69's summed-response mismatch.
-								// CompositeSPF still declines
-								// (DL-221) and names itself. TranslucentSPF
+								// CompositeSPF declines for its walker-emitted
+								// rays and per-branch composites (DL-221) and names itself. TranslucentSPF
 								// now evaluates its normal entry/exit lobes.
 								if( useKray ) {
 									NotePerLobeDensityCompanionFallback( pSPF );
@@ -7529,8 +7531,8 @@ unsigned int GenerateLightSubpathImpl(
 						// Same selected-lobe contract as PT and the eye twin:
 						// EvaluateKrayNM first (DL-125 closed), aggregate
 						// fallback for matching aggregate-density response
-						// or guiding substitution. CompositeSPF remains
-						// DL-221; Translucent's entry/exit lobes are supported,
+						// or guiding substitution. CompositeSPF's walker-emitted
+						// rays and per-branch composites remain DL-221; Translucent's entry/exit lobes are supported,
 						// while unsupported types may decline and warn.
 						Scalar compScale = -1;
 						if( useKray && pSPF ) {
