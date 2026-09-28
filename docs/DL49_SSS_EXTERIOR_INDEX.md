@@ -241,3 +241,191 @@ approximation, independent of DL-49 (it exists at `n_e = 1`).
   Fresnel, Chiang hair `eta`, BioSpec skin outside index.
 - **DL-291** -- precomputed / authored SSS boundary conditions: the
   Donner-Jensen multipole `Rd` and the legacy point-set shader-op.
+
+## 10. DL-291: the precomputed / authored boundary conditions (2026-09-28)
+
+Slice `debt-dl291`, branched from `master` `7bbb434f`.  Regression:
+`tests/SSSExteriorIndexInvarianceTest.cpp` Parts C and the six new Part B
+rows.
+
+### 10.1 The defect
+
+DL-49 made the boundary Fresnel and Sw relative to the live exterior, but
+the diffusion solution's OWN boundary condition -- the extrapolation term
+`A = (1 + Fdr) / (1 - Fdr)` that sets the virtual-source depth
+`z_v = z_r + 4 A D` -- is a function of the relative index too, and three
+models baked it against air:
+
+- `DonnerJensenSkinDiffusionProfile` (`donner_jensen_skin_bssrdf_material`,
+  every integrator) fits its Sum-of-Gaussians once, at construction, from a
+  two-layer multipole whose per-slab `A` came from
+  `ComputeFdr( layer.ior )` -- the ABSOLUTE index against 1.
+- `DonnerJensenSkinSSSShaderOp` (`donner_jensen_skin_sss_shaderop`,
+  `pixelpel_rasterizer`) tabulates the same multipole (plus a 480-point LUT
+  when offset painters are bound) the same way.
+- `DiffusionApproximationExtinction` (`diffusion_approximation_sss_shaderop`,
+  `pixelpel_rasterizer`) computes the Jensen dipole's `A` from its authored
+  `ior`, whose chunk description is "Index of refraction" -- the material's
+  index, i.e. against air.
+
+**Which multipole boundaries are exterior-facing.**  The inter-layer
+coupling (`ComputeCompositeProfileHankel`'s `Ft_down`/`Ft_up`) uses the
+RATIO of adjacent layer indices -- internal, already relative, unchanged.
+Each slab's single symmetric `A` is used for both of its faces; the stack's
+two OUTER faces (the epidermis top and the dermis bottom, beyond which the
+model places nothing) face the medium around the body, and that is what
+the model's `Fdr( n / 1 )` was evaluating.  Re-expressing each layer's
+index relative to the exterior is the only reading that leaves the whole
+multipole a function of relative indices, and it is exactly a no-op in
+air.  The symmetric-slab approximation itself -- the epidermis BOTTOM and
+dermis TOP are also extrapolated against the ambient medium rather than
+against each other -- is a pre-existing model deviation from Donner &
+Jensen 2005 (per-boundary `A`) that exists at `n_e = 1`; filed as
+**DL-313**, not changed here (it would move every in-air skin render).
+
+### 10.2 Fix
+
+| Site | Change |
+|---|---|
+| `MultipoleDiffusion::RelativizeLayersToExterior` (new) | divides each layer index by the exterior and recomputes the derived parameters; exactly a no-op at `n_e == 1` |
+| `DonnerJensenSkinDiffusionProfile` | tables grouped as `ProfileTables`; the constructor builds air (`m_air`, the pre-DL-291 tables bit for bit); `TablesFor( ri )` (inline, one compare in air) serves every other exterior from a per-exterior cache; `EvaluateProfile{,NM}`, `SampleRadius`, `PdfRadius` read it; the fit's active set moves with the exterior (a 1.2 body at default melanin: widest active Gaussian 2.8x the air variance in water), so the entry-point cutoff follows it via the new `ISubSurfaceDiffusionProfile::GetMaximumDistanceForErrorAt( error, ri )` (default: the exterior-independent value; `BSSRDFSampling::SampleEntryPoint`'s probe length and cutoff call it) |
+| `DonnerJensenSkinSSSShaderOp` | uniform table and (when offset painters exist) the LUT built per exterior on first use; `PerformOperation` evaluates against `ri.geometric.ambientIOR` |
+| `DiffusionApproximationExtinction` | new `ComputeTotalExtinctionForExterior` evaluates the dipole at `A( ior / n_e )` (closed form, no cache) |
+| `ISubSurfaceExtinctionFunction` | new defaulted `ComputeTotalExtinctionForExterior( distance, exteriorIOR )` (default ignores the exterior: `SimpleExtinction` has no boundary term) |
+| `PointSetOctree::Evaluate` | takes the exterior; air keeps the original single virtual call; **also forwards the IOR stack into the recursion** -- DL-223 plumbed `const IORStack*` through the octree, but the child-node call dropped it, so every node below the root priced a stateful BSDF (`translucent_material` under `multiplybsdf TRUE`) stacklessly |
+| `SubSurfaceScatteringShaderOp` | passes `ExteriorIOR( ri.geometric )` |
+| `ExteriorIndexCache.h` (new, header-only) | lock-free-read cache of per-exterior tables, exact key, mutex-serialized builds, 32 entries; once full (a dispersive enclosure presents a new exterior per hero wavelength) further exteriors reuse the NEAREST cached key with a one-shot warning |
+
+A multipole build costs ~5-7 ms per distinct exterior (34 wavelength fits);
+the legacy skin op's uniform table is of the same order, its LUT of the
+order of its construction cost.
+
+### 10.3 Red-proof and gate
+
+Isolated A/B against committed state: the 13 fix files reverted with
+`git checkout 7bbb434f -- <files>` (the test kept, at its red-proof
+revision with the final row settings), rebuilt, run, restored with
+`git checkout HEAD -- src tests`.  Pre-fix **167/12**, post-fix **188/0**
+(the post-fix file also carries C3 and the cutoff checks, which do not
+compile against the pre-fix interface).
+
+Part C, deterministic (pre-fix failures / post-fix):
+
+| Check | pre-fix | post-fix |
+|---|---|---|
+| C1 multipole, (2.1, 2.07) in 1.5 vs (1.4, 1.38) in air, whole public surface | worst rel. diff 0.99 | 1.3e-11 |
+| C1 matched: (1.4, 1.38) in 1.4 vs (1, 1.38/1.4) in air -- the boundary constant at relative index 1 equals the relative-1 air value | 0.62 | 0 (exact) |
+| C1 dense (eta < 1): (1.33, 1.31) in 1.5 vs its /1.5 twin in air | 0.54 | 0 (exact) |
+| C1 discrimination: same body, water vs air | 0 (profile ignored the exterior) | 0.58 |
+| C2 octree: evaluations with the live stack / without | 0 / 2000 | 2000 / 0 |
+| C3 legacy dipole at exterior n_e == its (ior/n_e) twin in air (air, water, matched, glass) | (post-fix interface) | 0 (exact) |
+
+Part B, rendered (same scene as section 4; interior index scaled 1.5 with
+the enclosure; n = 4 renders per side; ratio enclosed/air, independent-sides
+sd):
+
+| Row | spp | pre-fix | post-fix | band |
+|---|---:|---:|---:|---:|
+| skin multipole / PT | 64 | **0.9033** +/- 0.0022 | 1.0008 +/- 0.0026 | 0.02 |
+| skin multipole / BDPT | 32 | **0.8906** +/- 0.0302 | 1.0075 +/- 0.0324 | 0.02 |
+| skin multipole / PT spectral | 256 | **0.9110** +/- 0.0160 | 1.0035 +/- 0.0090 | 0.04 |
+| skin multipole, eta < 1 (1.33/1.5 epidermis) / PT | 64 | **0.8291** +/- 0.0022 | 0.9980 +/- 0.0026 | 0.02 |
+| legacy dipole op / pixelpel | 4 | **0.8030** +/- 0.0064 | 1 (exact) | 0.03 |
+| legacy skin op / pixelpel | 4 | **0.7432** +/- 0.0032 | 1 (exact) | 0.02 |
+
+(Final post-fix run, after the clean rebuild.  The BDPT row usually reads
+exactly 1 -- the pairs share a seed -- and moved by a BDPT thread race here,
+as DL-49's own record notes for that integrator; the sd column is the
+conservative independent-sides figure.)  Three earlier post-fix repeats of
+the new rows read 0.9985-1.0006 (PT),
+0.9971-1 (BDPT), 0.9926-1.0011 (PT spectral at 64 spp; raised to 256 for
+the gate), 0.9959-1.0029 (eta < 1), 0.99994 (legacy dipole, three times)
+and 0.9992-1 (legacy skin op).  Pairs share one libc seed, so the BDPT and
+pixelpel rows usually read the ratio of two identical-noise renders.
+
+Gate (clean rebuild, 0 warnings, library and every test target built):
+`SSSRadianceScalingTest` 576220/0, `BSSRDFNormalizationTest`,
+`SubsurfaceScatteringSpectralTest` 8/0, `SSSBuildDeterminismTest` 2/0,
+`BlenderBridgeSSSTest`, `CstDeriveGoldenTest` 454 MATCH / 0 DRIFT,
+`SourceHygieneTest` 167/0, `AgentReadValidateTest` 341/0,
+`CSGNullGeometryLuminaireCrashTest` (constructs the legacy skin op),
+`RefractiveRadianceScalingTest` 40/1 (row C, the pre-existing DL-308),
+`BSSRDFEntryPointTest`, `BSSRDFSamplingTest`, `BSSRDFProjectionNormalTest`,
+`BSSRDFPlanarProbeReachTest`, `HairSSSEntryNormalTest`,
+`OptimalMISTrainingSitesTest` 111/0.
+
+The gate also caught a defect in this slice's own intermediate commit: the
+octree's air/non-air helper, introduced for the cost fix below, called
+itself on its non-air arm (no compiler warning; the build evaluated the air
+dipole instead), and C2 plus the legacy-dipole row went red (186/2) until
+it was corrected.  The in-air branch the hashes and cost runs below
+exercise was never affected.
+
+### 10.4 In air: bit-identical
+
+Every changed expression computes the pre-DL-291 value at `n_e == 1`
+(`RelativizeLayersToExterior` returns early, `TablesFor` returns the
+constructor tables, the octree keeps its single `ComputeTotalExtinction`
+call, `GetMaximumDistanceForErrorAt` reads the air variance).  Verified by
+render: a scratch harness (never committed) rendering in-process,
+single-threaded (`force_number_of_threads 1`), fixed libc seed, OIDN off,
+FNV-1a over the float image, base binary (fix files reverted to
+`7bbb434f`) against fix binary -- **28/28 identical**: all 21 shipped
+scenes binding `subsurfacescattering_material`, `randomwalk_sss_material`,
+`simple_sss_shaderop` or `diffusion_approximation_sss_shaderop` (PT, BDPT,
+VCM and pixelpel, reduced resolution/spp), plus seven air scenes for the
+classes no shipped scene binds (`donner_jensen_skin_bssrdf_material` under
+PT, BDPT, PT spectral and VCM; `diffusion_approximation_sss_shaderop`;
+`donner_jensen_skin_sss_shaderop` with and without an offset painter).
+The two shipped `multiplybsdf TRUE` scenes (`translucent_bunny`,
+`sss_colorvariation`, both `translucent_material` on closed meshes) are
+among the identical 28: the recursion's dropped stack was reachable there
+but render-neutral, because the stackless `TranslucentBSDF::value` infers
+the side geometrically and is exact on a closed object.
+
+**Census.**  No shipped scene binds `donner_jensen_skin_bssrdf_material`
+or `donner_jensen_skin_sss_shaderop`; `diffusion_approximation_sss_shaderop`
+appears in `sss.RISEscene` and `spotlight_drama.RISEscene`, both in air
+(`caustic_sss.RISEscene` has a `perfectrefractor_material` but binds only
+`simple_sss_shaderop`, which has no boundary term).  So the fix changes no
+shipped image; it is a correctness gap for user scenes with skin or legacy
+SSS inside a refracting medium.
+
+### 10.5 Cost
+
+Interleaved base/fix binaries, single thread, user CPU, n = 6, air scenes:
+`donner_jensen_skin_bssrdf_material` PT 160x160 at 128 spp
+7.028 -> 7.040 s (+0.17 %, paired t = 0.29); `pt_sss_wax_sphere` (Burley)
++0.17 % (t = 0.77); legacy dipole op +0.50 % (t = 0.33); legacy skin op
+3.540 -> 3.583 s (**+1.21 %**, t = 7.3 -- the per-point exterior compare in
+the octree's hot loop; no shipped scene binds that op).  A first version
+that routed every octree evaluation through the new virtual and did the
+air test out of line measured +11.9 % / +3.3 % on the skin op / skin
+material and was replaced.
+
+### 10.6 Sibling audit (pattern: "a boundary quantity baked against air")
+
+| Site | Verdict |
+|---|---|
+| `DonnerJensenSkinDiffusionProfile`, `DonnerJensenSkinSSSShaderOp` (uniform + LUT), `DiffusionApproximationExtinction` | Fixed here. |
+| Multipole inter-layer `Ft_down`/`Ft_up` | Ratio of layer indices -- relative, unchanged. |
+| Multipole symmetric-slab `A` on the INTERNAL faces | Pre-existing model deviation (exists in air) -- **DL-313**. |
+| `BurleyNormalizedDiffusionProfile` `Rd` | Empirical fit, no boundary term -- nothing to make relative (confirmed, untouched). |
+| `SimpleExtinction` (`simple_sss_shaderop`) | No index at all -- the new virtual's default is right. |
+| `SSSCoefficients` / `RandomWalkSSSMaterial` coefficients | Pure sums (`sigma_t = sigma_a + sigma_s`), no albedo inversion and no boundary term; `m_rwParams.ior` is the ABSOLUTE index and `RandomWalkSSS` already prices it relative (DL-49). |
+| `CoatedLayer::InternalDiffuseFresnel` | Not SSS, but the same kind of quantity: already evaluated at the relative `eta` from `ri.ambientIOR` (G6) -- confirmed. |
+| Blender bridge (`exporter.py`) SSS conversion | Index-free; `Subsurface IOR` exported verbatim as the absolute index -- assumes air at export by construction, now said so in `exporter.py` and `docs/BLENDER_MATERIAL_TRANSLATION.md`; RISE applies the live exterior at render time.  Not changed. |
+| Painters read at a dummy record at construction (`DonnerJensenSkinDiffusionProfile`: all nine; `RandomWalkSSSMaterial`: absorption, scattering, ior) | A DIFFERENT pattern found while auditing: a spatially varying painter bound to these slots is silently flattened to its value at the origin -- **DL-314**. |
+
+### 10.7 Residuals
+
+- **DL-313** -- symmetric-slab extrapolation on the multipole's internal
+  faces (model fidelity; in air too).
+- **DL-314** -- construction-time flattening of spatially varying SSS
+  painters.
+- A scene presenting more than 32 distinct exteriors to one multipole
+  body (a dispersive enclosure) reuses the nearest cached table after the
+  32nd, with a warning; the approximation is bounded by the cached keys'
+  spacing and depends on which exteriors arrived first.
+- The legacy ops' rasterizer-state cache (`cache TRUE`) keys on object and
+  raster state, not exterior -- pre-existing and unchanged.

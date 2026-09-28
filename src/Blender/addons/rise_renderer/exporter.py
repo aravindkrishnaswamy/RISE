@@ -2540,6 +2540,11 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
                 f"RISE reads Principled Subsurface IOR on '{material.name_full}' at its socket "
                 f"default; a linked/textured IOR is not sampled.",
             )
+        # DL-291: exported verbatim as the material's ABSOLUTE index (Blender
+        # authors it against air).  RISE prices the SSS boundary at the
+        # RELATIVE index against the live exterior (`ambientIOR`), so this is
+        # deliberately NOT divided by any enclosing medium here -- the export
+        # assumes air by construction, and RISE does the rest at render time.
         subsurface_ior_value = max(1.0, float(_socket_default_float(principled_node, "Subsurface IOR", 1.4)))
 
         subsurface_anisotropy_socket = _node_input(principled_node, "Subsurface Anisotropy")
