@@ -36,11 +36,29 @@
 //  cancel.  A furnace with zero absorption cannot see a skipped segment;
 //  this scene's sigma_a = 0.3 is what makes the defect visible.
 //
-//  MEASURED (32x32, 64 spp, n = 4 per cell) -- see docs/DEBT_LEDGER.md
-//  DL-247 for the full pre/post table:
-//    pre-DL-247 (9e2239b1)       PT pel inside/outside 1.840
-//    post-db71fdfd (pel/NM fix)  PT pel 0.998, PT hwss TRUE 1.913
-//    this slice (debt-dl247b)    every row within the band below
+//  MEASURED (32x32, 64 spp; mean of n renders per cell):
+//                              pre-DL-247   master     this slice
+//                              (9e2239b1)   (acf8eb5d) (debt-dl247b, n=8,
+//                              (review n=4) (n=4)      three runs)
+//    PT pel             in/out  1.840        0.9965     0.9973 / 0.9980 / 0.9955
+//    PT spectral NM     in/out  1.843        0.9956     0.9913 / 0.9901 / 0.9885
+//    PT spectral HWSS   in/out  1.911        1.9220     0.9945 / 0.9953 / 0.9948
+//    BDPT pel           in/out  0.999        0.9986     0.9985 / 0.9987 / 0.9985
+//    VCM pel            in/out  1.000        1.0003     1.0001 / 1.0000 / 1.0001
+//    cap 2: BDPT/PT             -            1.4878     0.9875 / 0.9869 / 0.9860
+//    cap 2: VCM/PT              -            1.6910     1.0003 / 0.9996 / 0.9988
+//  The HWSS row needed TWO fixes: the hand-off itself (1.922 -> 1.062
+//  from IntegrateRayHWSS's walk, -> 1.028 with IntegrateFromHitHWSS's in-
+//  loop walk too), then per-scatter sampler streams for the walks
+//  (PTVolumeWalkStream; 1.028 -> 0.995), without which the four lanes'
+//  draws overran into the streams their own surface hand-off re-opens.
+//
+//  BAND.  +/-3%.  Run-to-run sd of an 8-render in/out ratio is <= 0.0014
+//  on every row (three batches above) and the largest systematic offset
+//  is the NM row's ~1%, so the band is >= 13 sd from any row's mean.  The
+//  sub-1% PT offsets are below this suite's resolution and not claimed:
+//  at n = 16, PT pel camera-outside reads 0.31623 +/- 0.00029 against
+//  camera-inside 0.31525 +/- 0.00024 and VCM 0.31526 +/- 0.00001.
 //
 //  THE CAP ROWS.  `max_volume_bounce` N means, for every integrator, the
 //  Neumann series truncated at N medium-scatter vertices per full path,
@@ -272,7 +290,7 @@ static std::string Rasterizer( const std::string& kind, const std::string& extra
 static int Repeats()
 {
 	const char* e = std::getenv( "RISE_MIOIT_REPEATS" );
-	const int n = e ? std::atoi( e ) : 4;
+	const int n = e ? std::atoi( e ) : 8;
 	return n >= 2 ? n : 2;
 }
 
@@ -322,9 +340,7 @@ int main()
 {
 	std::cout << "=== MediumInsideOutsideInvariantTest (DL-247) ===" << std::endl;
 
-	// Band: +/- 3%.  Measured run-to-run sd of a 4-render mean is below
-	// 0.3% of the mean on every row (see the ledger), so a 3% band is
-	// >= 10 sd wide and can only fail on a real transport difference.
+	// Band: +/- 3% -- see the header's BAND paragraph for the measurement.
 	const double kBand = 0.03;
 
 	std::cout << "Inside vs outside an index-matched absorbing medium box:" << std::endl;

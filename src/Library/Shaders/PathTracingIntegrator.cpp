@@ -4673,11 +4673,16 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			//   T_1     = Tr(camera segment) * sigma_s / p_dist       (medWeight)
 			//   L      += T_k * Ld_NEE(x_k)                                 (a)
 			//   T_k    *= phase(wo,wi) / phasePdf   [then RR compensation]  (b)
-			//   trace the phase-sampled ray from x_k:
-			//     surface hit -> L += T_k * IntegrateFromHitForTag(...)     (d)
-			//     miss        -> sample the medium along it once more:
-			//        no scatter -> L += T_k * (Tr/pSurvival) * w_phase * L_env  (c)
-			//        scatter    -> T_{k+1} = T_k * medWeight, loop with k+1
+			//   trace the phase-sampled ray from x_k and sample the medium
+			//   along it, up to the first surface (or to infinity on a miss):
+			//     scatter          -> T_{k+1} = T_k * medWeight, loop with k+1
+			//     no scatter, hit  -> L += T_k * (Tr/pSurvival)
+			//                              * IntegrateFromHitForTag(...)   (d)
+			//     no scatter, miss -> L += T_k * (Tr/pSurvival) * w_phase * L_env  (c)
+			//   At the bounce cap nothing is sampled: (c)/(d) carry the
+			//   segment's deterministic Tr instead of Tr/pSurvival
+			//   (`max_volume_bounce` is a Neumann-series truncation order;
+			//   DL-247's ruling).
 			//
 			// (c) has the SAME EXPECTATION as the deterministic escape it
 			// replaces -- for a bounded medium the no-scatter event has
@@ -4685,6 +4690,16 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			// old `T_k * Tr * env` exactly.  The whole of the fix is that
 			// the complementary event (probability 1 - Tr) now continues
 			// the walk instead of being discarded.
+			//
+			// (d) used to hand the phase-sampled ray to
+			// IntegrateFromHitForTag WITHOUT sampling the segment in front
+			// of the surface -- as if it crossed vacuum: no attenuation and
+			// no chance to scatter.  A furnace with zero absorption cannot
+			// see that (skipping the attenuation AND the in-scatter cancel
+			// exactly when L == L_env everywhere), which is why
+			// VolumeEnvFurnaceTest never did; the camera-inside vs
+			// camera-outside absorbing box of
+			// tests/MediumInsideOutsideInvariantTest.cpp read 1.84 (DL-247).
 			//
 			// MIS INVARIANT -- holds at EVERY k, which is what makes this a
 			// furnace rather than an approximation.  (a) is env-NEE,
@@ -4712,11 +4727,13 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			//                 the camera segment, which has no phase sample
 			//                 behind it and never reaches the env branch).
 			//   `volumeBounces` scatter events already COMPLETED.
-			//   `pCurrentMedium` is LOOP-INVARIANT.  The walk only continues
-			//                 while the ray misses ALL geometry, so no
-			//                 boundary is ever crossed and the IOR stack --
-			//                 hence MediumTracking's answer -- cannot change.
-			//                 The moment a surface is hit the walk hands off
+			//   `pCurrentMedium` is LOOP-INVARIANT.  Every scatter point the
+			//                 walk visits lies strictly BEFORE the first
+			//                 surface along its ray (the distance is sampled
+			//                 up to that surface), so no boundary is ever
+			//                 crossed and the IOR stack -- hence
+			//                 MediumTracking's answer -- cannot change.  A
+			//                 continuation that reaches a surface hands off
 			//                 to IntegrateFromHitForTag, which re-derives the
 			//                 medium for itself.
 			//
@@ -4896,7 +4913,6 @@ PathTracingIntegrator::IntegrateRayTemplated(
 				scene.GetObjects()->IntersectRay( ri2, true, true, false );
 
 				const Scalar maxDist = ri2.geometric.bHit ? ri2.geometric.range : RISE_INFINITY;
-				IndependentSampler mediumSampler( rc.random );
 
 				Value escapeWeight;
 				if( volumeBounces < stabilityConfig.maxVolumeBounce )
