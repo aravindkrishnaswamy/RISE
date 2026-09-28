@@ -152,6 +152,192 @@ namespace RISE
 		{
 			return std::max( 0.0, std::min( rd, std::min( 1.0 - Ai, 1.0 - Ao ) ) );
 		}
+
+		//! True when the lane can clip SOME direction pair: Rd > 1 - A_top.
+		//! When false the coupled term is Rd exactly, for every pair.
+		inline bool CanClip( const Lane& L, const double rho, const double rd )
+		{
+			double t0, t5;
+			TopMoments( L, t0, t5 );
+			return rd > 1.0 - Albedo( rho, t0, t5 );
+		}
+
+		//! THE coupled diffuse reflectance of one channel for the pair
+		//! (mu_i, mu_o).  Every consumer -- SchlickBRDF::value / valueNM,
+		//! SchlickSPF's diffuse kray, its Pdf's C_D weight and
+		//! EvaluateKrayNM / EvaluateLobeFNM -- goes through this one
+		//! function, so they cannot drift.  Returns `rd` itself (bit for
+		//! bit the pre-DL-310 additive term) whenever the lane cannot clip.
+		inline double CoupledDiffuseAt( const Lane& L, const double rho, const double rd, const double muI, const double muO )
+		{
+			if( !CanClip( L, rho, rd ) ) {
+				return rd;
+			}
+			double a0, a5, b0, b5;
+			Moments( L, muI, a0, a5 );
+			Moments( L, muO, b0, b5 );
+			return CoupledDiffuse( rd, Albedo( rho, a0, a5 ), Albedo( rho, b0, b5 ) );
+		}
+
+		//! One lane's moment row at the mu nodes (the (r, p) bilinear
+		//! blend done once), for the Pdf / albedo band quadrature.
+		struct LaneRow
+		{
+			double M0[ kNumMu ];
+			double M5[ kNumMu ];
+			bool   belowR;
+		};
+
+		inline void BuildRow( const Lane& L, LaneRow& row )
+		{
+			row.belowR = L.belowR;
+			if( !L.specular ) {
+				for( int j = 0; j < kNumMu; ++j ) { row.M0[j] = row.M5[j] = 0; }
+				return;
+			}
+			const int pStride = kNumR * kNumMu;
+			const int i0 = L.base * kNumMu;
+			const double w00 = (1 - L.fr) * (1 - L.fp), w10 = L.fr * (1 - L.fp);
+			const double w01 = (1 - L.fr) * L.fp, w11 = L.fr * L.fp;
+			for( int j = 0; j < kNumMu; ++j ) {
+				const int i = i0 + j;
+				row.M0[j] = w00 * kM0[i] + w10 * kM0[i + kNumMu] + w01 * kM0[i + pStride] + w11 * kM0[i + pStride + kNumMu];
+				row.M5[j] = w00 * kM5[i] + w10 * kM5[i + kNumMu] + w01 * kM5[i + pStride] + w11 * kM5[i + pStride + kNumMu];
+			}
+		}
+
+		//! A at table coordinate u = sqrt(mu) (kNumMu - 1): the SAME
+		//! multilinear interpolant Moments() evaluates (blended in the
+		//! other order), including its r < 1e-5 branch.
+		inline double RowAlbedo( const LaneRow& row, const double rho, const double u )
+		{
+			const int j0 = std::max( 0, std::min( int( u ), kNumMu - 2 ) );
+			const double fu = std::max( 0.0, std::min( 1.0, u - j0 ) );
+			double m0 = (1 - fu) * row.M0[j0] + fu * row.M0[j0 + 1];
+			double m5 = (1 - fu) * row.M5[j0] + fu * row.M5[j0 + 1];
+			if( row.belowR ) {
+				const double x = u / double( kNumMu - 1 );
+				const double f = 1.0 - x * x, f2 = f * f;
+				m0 = 1.0;
+				m5 = std::max( m5, f2 * f2 * f );
+			}
+			return Albedo( rho, m0, m5 );
+		}
+
+		//! Probability that a cosine-sampled diffuse direction at cosine
+		//! `mu` (azimuth uniform) passes the geometric-horizon gate
+		//! mu gz + sin(theta) gt cos(phi - phi_g) > 0, where (gt, gz) are
+		//! the tangential length and normal component of the
+		//! (ray-anchored) geometric normal in the sampling frame.
+		//! Integrates over s = 1 - mu^2 to (1 + gz)/2 -- the closed form
+		//! SchlickDiffuseAcceptFraction uses.
+		inline double AcceptFraction( const double mu, const double gz, const double gt )
+		{
+			const double st = std::sqrt( std::max( 0.0, 1.0 - mu * mu ) );
+			if( gt <= 0 || st <= 0 ) {
+				return ( mu * gz > 0 ) ? 1.0 : 0.0;
+			}
+			const double k = -mu * gz / ( st * gt );
+			if( k <= -1.0 ) return 1.0;
+			if( k >= 1.0 ) return 0.0;
+			return std::acos( k ) / 3.14159265358979323846;
+		}
+
+		//! The diffuse channels of one shading point, for the quadrature
+		//! over the DIFFUSE draw that SchlickSPF::Pdf's specular
+		//! coefficient and SchlickBRDF::albedo need once the diffuse
+		//! weight depends on the drawn direction.
+		struct DiffuseChannels
+		{
+			int     count;			//!< 3 (RGB) or 1 (NM)
+			bool    active[3];		//!< the channel can clip
+			double  K[3];			//!< min(Rd, 1 - A(mu_i)), >= 0 (active) / Rd (inactive)
+			double  rho[3];
+			const LaneRow* row[3];
+		};
+
+		//! W_c at table coordinate u.
+		inline void ChannelWeights( const DiffuseChannels& d, const double u, double W[3] )
+		{
+			for( int c = 0; c < d.count; ++c ) {
+				W[c] = d.active[c]
+					? std::max( 0.0, std::min( d.K[c], 1.0 - RowAlbedo( *d.row[c], d.rho[c], u ) ) )
+					: d.K[c];
+			}
+		}
+
+		//! The nodes of a deterministic quadrature of
+		//!     int_0^1 ds P(mu(s)) [ G(W(mu(s))) - G(W0) ],   mu = sqrt(1 - s),
+		//! over the band where some channel clips (outside it W == W0 and
+		//! the integrand vanishes identically).  In the table coordinate
+		//! u = sqrt(mu) (kNumMu - 1) every channel's A is linear between
+		//! nodes, so each table interval that reaches a clip is split at
+		//! every channel's exact crossing and at the gate's kink, and each
+		//! piece gets 3-point Gauss-Legendre (ds = 4 u^3 / 32^4 du).  The
+		//! caller evaluates G at `nodeW` and weights by `nodeWeight`.
+		struct BandNodes
+		{
+			static const int kMax = ( kNumMu - 1 ) * 6 * 3;
+			int    n;
+			double weight[ kMax ];
+			double W[ kMax ][ 3 ];
+			double W0[ 3 ];
+		};
+
+		inline void BuildBand( const DiffuseChannels& d, const double gz, const double gt, BandNodes& b )
+		{
+			b.n = 0;
+			for( int c = 0; c < 3; ++c ) b.W0[c] = ( c < d.count ) ? d.K[c] : 0.0;
+			bool any = false;
+			for( int c = 0; c < d.count; ++c ) any = any || d.active[c];
+			if( !any ) return;
+
+			static const double gx[3] = { 0.1127016653792583, 0.5, 0.8872983346207417 };
+			static const double gw[3] = { 5.0 / 18.0, 8.0 / 18.0, 5.0 / 18.0 };
+			const double N = double( kNumMu - 1 );
+			const double N4 = N * N * N * N;
+			// The gate's kink: k = -mu gz / (sin(theta) gt) crosses -1 or 1
+			// at mu = gt / sqrt(gt^2 + gz^2).
+			double uGate = -1;
+			if( gt > 0 ) {
+				const double mg = gt / std::sqrt( gt * gt + gz * gz );
+				uGate = std::sqrt( mg ) * N;
+			}
+			for( int j = 0; j + 1 < kNumMu; ++j ) {
+				double cuts[8];
+				int nc = 0;
+				cuts[nc++] = j;
+				bool inBand = false;
+				for( int c = 0; c < d.count; ++c ) {
+					if( !d.active[c] ) continue;
+					const double a = RowAlbedo( *d.row[c], d.rho[c], double( j ) );
+					const double e = RowAlbedo( *d.row[c], d.rho[c], double( j + 1 ) );
+					const double thr = 1.0 - d.K[c];
+					if( std::max( a, e ) > thr ) inBand = true;
+					if( ( a - thr ) * ( e - thr ) < 0 && !d.row[c]->belowR ) {
+						cuts[nc++] = j + ( thr - a ) / ( e - a );
+					}
+				}
+				if( !inBand ) continue;
+				if( uGate > j && uGate < j + 1 ) cuts[nc++] = uGate;
+				cuts[nc++] = j + 1;
+				std::sort( cuts, cuts + nc );
+				for( int k = 0; k + 1 < nc; ++k ) {
+					const double lo = cuts[k], hi = cuts[k + 1];
+					if( hi <= lo ) continue;
+					for( int q = 0; q < 3; ++q ) {
+						const double u = lo + ( hi - lo ) * gx[q];
+						const double mu = ( u / N ) * ( u / N );
+						const double w = gw[q] * ( hi - lo ) * 4.0 * u * u * u / N4 * AcceptFraction( mu, gz, gt );
+						if( w <= 0 ) continue;
+						b.weight[b.n] = w;
+						ChannelWeights( d, u, b.W[b.n] );
+						for( int c = d.count; c < 3; ++c ) b.W[b.n][c] = 0.0;
+						b.n++;
+					}
+				}
+			}
+		}
 	}
 }
 

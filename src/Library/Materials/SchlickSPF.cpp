@@ -16,6 +16,7 @@
 #include "../Utilities/GeometricUtilities.h"
 #include "../Interfaces/ILog.h"
 #include "SchlickMasking.h"
+#include "SchlickDirectionalAlbedo.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -47,6 +48,55 @@ namespace
 		Scalar r[3];
 		Scalar p[3];
 		Scalar rho[3];
+	};
+
+	//! DL-310: the per-channel lanes of the COUPLED diffuse term -- each
+	//! channel's own (r, p), exactly as SchlickBRDF::value reads them,
+	//! each distinct pair prepared once.
+	void SchlickDiffuseLanes( const ScalarTriple& rt, const ScalarTriple& it, SchlickDirectionalAlbedo::Lane lanes[3] )
+	{
+		for( int ch = 0; ch < 3; ch++ ) {
+			int reuse = -1;
+			for( int prev = 0; prev < ch; prev++ ) {
+				if( rt.v[prev] == rt.v[ch] && it.v[prev] == it.v[ch] ) { reuse = prev; break; }
+			}
+			if( reuse >= 0 ) {
+				lanes[ch] = lanes[reuse];
+			} else {
+				SchlickDirectionalAlbedo::PrepareLane( lanes[ch], rt.v[ch], it.v[ch] );
+			}
+		}
+	}
+
+	//! DL-310: the diffuse ray's `kray`, min(Rd, 1 - A(i), 1 - A(o)) per
+	//! channel -- its own f_D cos / p_D for the cosine-sampled lobe.
+	RISEPel SchlickCoupledDiffuseKray( const SchlickDirectionalAlbedo::Lane lanes[3], const RISEPel& rho,
+		const RISEPel& rd, const Scalar muI, const Scalar muO )
+	{
+		RISEPel out;
+		for( int ch = 0; ch < 3; ch++ ) {
+			out[ch] = SchlickDirectionalAlbedo::CoupledDiffuseAt( lanes[ch], rho[ch], rd[ch], muI, muO );
+		}
+		return out;
+	}
+
+	//! DL-310: what the specular coefficient q_i needs to know about the
+	//! diffuse draw.  Before DL-310 the diffuse ray's realized weight was
+	//! the constant MaxValue(Rd), so only the probability `aD` that it
+	//! survived its geometric gate entered q_i.  It is now
+	//! w_D(d) = MaxValue(min(Rd, 1 - A(i), 1 - A(d))), a function of the
+	//! drawn direction d, so q_i is an expectation over the diffuse draw
+	//! (the DL-99 construction):
+	//!     q_i = aD g(W0) + int ds P(s) [ g(w_D(s)) - g(W0) ]
+	//! with W0 the unclipped weight and the correction a deterministic
+	//! quadrature over the band where some channel clips.  `band.n == 0`
+	//! (no channel can clip) is exactly the pre-DL-310 formula.
+	struct SchlickDiffuseDraw
+	{
+		Scalar aD;								//!< P(the diffuse ray passes its gate)
+		Scalar W0;								//!< MaxValue of the unclipped weights
+		SchlickDirectionalAlbedo::BandNodes band;
+		int    count;							//!< channels in `band.W`
 	};
 }
 
@@ -816,11 +866,12 @@ static Scalar SchlickSpecularDensity(
 	const OrthonormalBasis3D& myonb,
 	const Vector3& geomN,
 	const Vector3& woNorm,
-	const Scalar wD,
-	const Scalar aD,
+	const SchlickDiffuseDraw& diffuse,
 	const SchlickLobeSet& lobes
 	)
 {
+	const Scalar aD = diffuse.aD;
+	const Scalar wD = diffuse.W0;
 	// fresnel at the query direction.  GenerateSpecularRay reflects the
 	// incoming ray d about its sampled half-vector h, so wo = d - 2(d.h)h
 	// and, with wi=-d, wi+wo = 2(h.wi)h: for every direction the sampler
@@ -874,8 +925,18 @@ static Scalar SchlickSpecularDensity(
 		Scalar q = 0;
 		// ...with the diffuse ray present (probability aD).
 		const Scalar totalWith = wD + wS;
-		if( totalWith > NEARZERO ) {
-			q += aD * (w_i / totalWith);
+		const Scalar g0 = ( totalWith > NEARZERO ) ? ( w_i / totalWith ) : Scalar(0);
+		q += aD * g0;
+		// DL-310: minus/plus where the drawn diffuse direction clips the
+		// diffuse weight below W0 (see SchlickDiffuseDraw).
+		for( int k = 0; k < diffuse.band.n; k++ ) {
+			Scalar wDk = diffuse.band.W[k][0];
+			for( int c = 1; c < diffuse.count; c++ ) {
+				wDk = r_max( wDk, diffuse.band.W[k][c] );
+			}
+			const Scalar totalK = wDk + wS;
+			const Scalar gk = ( totalK > NEARZERO ) ? ( w_i / totalK ) : Scalar(0);
+			q += diffuse.band.weight[k] * ( gk - g0 );
 		}
 		// ...and without it (probability 1-aD), where a lone specular ray
 		// wins outright through RandomlySelect's freeidx==1 short-circuit.
@@ -908,6 +969,46 @@ static inline Scalar SchlickDiffuseAcceptFraction(
 	return r_max( Scalar(0), r_min( Scalar(1), 0.5 * (1.0 + c) ) );
 }
 
+//! DL-310: fills `draw` for the channels `count` (3 RGB lanes, or 1 for
+//! the spectral path) -- see SchlickDiffuseDraw.  `lanes[c]`, `rho[c]`,
+//! `rd[c]` are channel c's own lane, specular and diffuse reflectance.
+static void BuildSchlickDiffuseDraw(
+	const SchlickDirectionalAlbedo::Lane* lanes,
+	const Scalar* rho,
+	const Scalar* rd,
+	const int count,
+	const Scalar muI,
+	const OrthonormalBasis3D& myonb,
+	const Vector3& geomN,
+	SchlickDiffuseDraw& draw
+	)
+{
+	draw.aD = SchlickDiffuseAcceptFraction( myonb, geomN );
+	draw.count = count;
+	SchlickDirectionalAlbedo::LaneRow rows[3];
+	SchlickDirectionalAlbedo::DiffuseChannels dc;
+	dc.count = count;
+	Scalar W0 = 0;
+	for( int c = 0; c < count; c++ ) {
+		dc.rho[c] = rho[c];
+		dc.row[c] = &rows[c];
+		dc.active[c] = SchlickDirectionalAlbedo::CanClip( lanes[c], rho[c], rd[c] );
+		if( dc.active[c] ) {
+			double a0, a5;
+			SchlickDirectionalAlbedo::Moments( lanes[c], muI, a0, a5 );
+			dc.K[c] = r_max( Scalar(0), r_min( rd[c], Scalar(1) - SchlickDirectionalAlbedo::Albedo( rho[c], a0, a5 ) ) );
+			SchlickDirectionalAlbedo::BuildRow( lanes[c], rows[c] );
+		} else {
+			dc.K[c] = rd[c];
+		}
+		W0 = ( c == 0 ) ? dc.K[c] : r_max( W0, dc.K[c] );
+	}
+	draw.W0 = W0;
+	const Scalar gz = Vector3Ops::Dot( geomN, myonb.w() );
+	const Scalar gu = Vector3Ops::Dot( geomN, myonb.u() ), gv = Vector3Ops::Dot( geomN, myonb.v() );
+	SchlickDirectionalAlbedo::BuildBand( dc, gz, sqrt( gu*gu + gv*gv ), draw.band );
+}
+
 void SchlickSPF::Scatter(
 	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 	ISampler& sampler,				///< [in] Sampler
@@ -932,22 +1033,6 @@ void SchlickSPF::Scatter(
 		? ri.vGeomNormal : myonb.w();
 	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 
-	ScatteredRay d;
-	GenerateDiffuseRay( d, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()) );
-
-	// Accept-check tests myonb.w() (the frame lobes are actually sampled
-	// around, post-FlipW) rather than the raw ri.onb.w() -- on a back-face
-	// hit the two differ by sign, and testing the unflipped normal here
-	// silently dropped every legitimately-sampled back-face lobe.
-	if( Vector3Ops::Dot( d.ray.Dir(), myonb.w() ) > 0.0 && Vector3Ops::Dot( d.ray.Dir(), geomN ) > 0.0 ) {
-		d.kray = pDiffuse->GetColor(ri);
-		// Cosine-weighted hemisphere PDF
-		const Scalar cosTheta = Vector3Ops::Dot( d.ray.Dir(), myonb.w() );
-		d.pdf = (cosTheta > 0) ? cosTheta * INV_PI : 0;
-		d.isDelta = false;
-		scattered.AddScatteredRay( d );
-	}
-
 	ScalarTriple rt = pRoughness->GetValuesAt(ri);
 	const ScalarTriple it = pIsotropy->GetValuesAt(ri);
 
@@ -957,6 +1042,27 @@ void SchlickSPF::Scatter(
 		for( int ch = 0; ch < 3; ch++ ) {
 			rt.v[ch] = r_min( rt.v[ch] + ri.glossyFilterWidth, Scalar(1.0) );
 		}
+	}
+
+	ScatteredRay d;
+	GenerateDiffuseRay( d, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()) );
+
+	// Accept-check tests myonb.w() (the frame lobes are actually sampled
+	// around, post-FlipW) rather than the raw ri.onb.w() -- on a back-face
+	// hit the two differ by sign, and testing the unflipped normal here
+	// silently dropped every legitimately-sampled back-face lobe.
+	if( Vector3Ops::Dot( d.ray.Dir(), myonb.w() ) > 0.0 && Vector3Ops::Dot( d.ray.Dir(), geomN ) > 0.0 ) {
+		// Cosine-weighted hemisphere PDF
+		const Scalar cosTheta = Vector3Ops::Dot( d.ray.Dir(), myonb.w() );
+		// DL-310: the coupled diffuse's own f_D cos / p_D, the SAME
+		// function SchlickBRDF::value evaluates.
+		SchlickDirectionalAlbedo::Lane lanes[3];
+		SchlickDiffuseLanes( rt, it, lanes );
+		const Scalar muI = Vector3Ops::Dot( myonb.w(), Vector3Ops::Normalize( -ri.ray.Dir() ) );
+		d.kray = SchlickCoupledDiffuseKray( lanes, pSpecular->GetColor(ri), pDiffuse->GetColor(ri), muI, cosTheta );
+		d.pdf = (cosTheta > 0) ? cosTheta * INV_PI : 0;
+		d.isDelta = false;
+		scattered.AddScatteredRay( d );
 	}
 
 	if( !pRoughness->HasPerChannelVariation() && !pIsotropy->HasPerChannelVariation() )
@@ -1055,8 +1161,13 @@ void SchlickSPF::ScatterNM(
 	// frame lobes are actually sampled around (post-FlipW), not the raw
 	// ri.onb.w() which differs by sign on a back-face hit.
 	if( Vector3Ops::Dot( d.ray.Dir(), myonb.w() ) > 0.0 && Vector3Ops::Dot( d.ray.Dir(), geomN ) > 0.0 ) {
-		d.krayNM = GuardedGetColorNM( *pDiffuse, ri, nm );
 		const Scalar cosTheta = Vector3Ops::Dot( d.ray.Dir(), myonb.w() );
+		// DL-310: coupled diffuse, spectral twin of Scatter's.
+		SchlickDirectionalAlbedo::Lane lane;
+		SchlickDirectionalAlbedo::PrepareLane( lane, roughnessNM, isotropyNM );
+		d.krayNM = SchlickDirectionalAlbedo::CoupledDiffuseAt( lane, GuardedGetColorNM( *pSpecular, ri, nm ),
+			GuardedGetColorNM( *pDiffuse, ri, nm ),
+			Vector3Ops::Dot( myonb.w(), Vector3Ops::Normalize( -ri.ray.Dir() ) ), cosTheta );
 		d.pdf = (cosTheta > 0) ? cosTheta * INV_PI : 0;
 		d.isDelta = false;
 		scattered.AddScatteredRay( d );
@@ -1117,7 +1228,19 @@ Scalar SchlickSPF::Pdf(
 
 	const RISEPel rd = pDiffuse->GetColor(ri);
 	const RISEPel rho = pSpecular->GetColor(ri);
-	const Scalar wD = ColorMath::MaxValue(rd);
+
+	// DL-310: the diffuse ray's realized weight is its coupled kray at
+	// THIS direction (MaxValue(Rd) wherever no channel can clip).
+	SchlickDirectionalAlbedo::Lane dLanes[3];
+	SchlickDiffuseLanes( roughness, isotropy, dLanes );
+	const Scalar muI = Vector3Ops::Dot( myonb.w(), Vector3Ops::Normalize( -ri.ray.Dir() ) );
+	const Scalar wD = ColorMath::MaxValue( SchlickCoupledDiffuseKray( dLanes, rho, rd, muI, cosTheta ) );
+	SchlickDiffuseDraw draw;
+	{
+		const Scalar rhoC[3] = { rho[0], rho[1], rho[2] };
+		const Scalar rdC[3]  = { rd[0], rd[1], rd[2] };
+		BuildSchlickDiffuseDraw( dLanes, rhoC, rdC, 3, muI, myonb, geomN, draw );
+	}
 
 	SchlickLobeSet lobes;
 	if( !pRoughness->HasPerChannelVariation() && !pIsotropy->HasPerChannelVariation() ) {
@@ -1144,11 +1267,10 @@ Scalar SchlickSPF::Pdf(
 		}
 	}
 
-	const Scalar aD = SchlickDiffuseAcceptFraction( myonb, geomN );
 	const Scalar cD = SchlickDiffuseSelectCoefficient( ri, myonb, geomN, wD, lobes );
 
 	return cD * diffusePdf
-	     + SchlickSpecularDensity( ri, myonb, geomN, woNorm, wD, aD, lobes );
+	     + SchlickSpecularDensity( ri, myonb, geomN, woNorm, draw, lobes );
 }
 
 Scalar SchlickSPF::PdfNM(
@@ -1190,19 +1312,26 @@ Scalar SchlickSPF::PdfNM(
 		r = r_min( r + ri.glossyFilterWidth, Scalar(1.0) );
 	}
 
-	const Scalar wD = GuardedGetColorNM( *pDiffuse, ri, nm );
-
 	SchlickLobeSet lobes;
 	lobes.count  = 1;
 	lobes.r[0]   = r;
 	lobes.p[0]   = p;
 	lobes.rho[0] = GuardedGetColorNM( *pSpecular, ri, nm );
 
-	const Scalar aD = SchlickDiffuseAcceptFraction( myonb, geomN );
+	// DL-310: coupled diffuse weight at this direction, and the diffuse
+	// draw's description for the specular coefficient (spectral twin).
+	const Scalar rdNM = GuardedGetColorNM( *pDiffuse, ri, nm );
+	SchlickDirectionalAlbedo::Lane lane;
+	SchlickDirectionalAlbedo::PrepareLane( lane, r, p );
+	const Scalar muI = Vector3Ops::Dot( myonb.w(), Vector3Ops::Normalize( -ri.ray.Dir() ) );
+	const Scalar wD = SchlickDirectionalAlbedo::CoupledDiffuseAt( lane, lobes.rho[0], rdNM, muI, cosTheta );
+	SchlickDiffuseDraw draw;
+	BuildSchlickDiffuseDraw( &lane, &lobes.rho[0], &rdNM, 1, muI, myonb, geomN, draw );
+
 	const Scalar cD = SchlickDiffuseSelectCoefficient( ri, myonb, geomN, wD, lobes );
 
 	return cD * diffusePdf
-	     + SchlickSpecularDensity( ri, myonb, geomN, woNorm, wD, aD, lobes );
+	     + SchlickSpecularDensity( ri, myonb, geomN, woNorm, draw, lobes );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1236,6 +1365,31 @@ Scalar SchlickSPF::PdfNM(
 // in [1/sr], without multiplying by cosine and without dividing by
 // any sampling density.
 //////////////////////////////////////////////////////////////////////
+//! DL-310: the diffuse krayNM ScatterNM stamps on a ray along `outDir`
+//! -- the coupled min(Rd, 1 - A(i), 1 - A(o)) at `nm`, read and filtered
+//! exactly as ScatterNM reads it.
+Scalar SchlickSPF::SchlickCoupledDiffuseNM(
+	const RayIntersectionGeometric& ri,
+	const Vector3& outDir,
+	const Scalar nm
+	) const
+{
+	OrthonormalBasis3D myonb = ri.onb;
+	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
+		myonb.FlipW();
+	}
+	Scalar roughnessNM = pRoughness->GetValueAtNM( ri, nm );
+	if( ri.glossyFilterWidth > 0 ) {
+		roughnessNM = r_min( roughnessNM + ri.glossyFilterWidth, Scalar(1.0) );
+	}
+	SchlickDirectionalAlbedo::Lane lane;
+	SchlickDirectionalAlbedo::PrepareLane( lane, roughnessNM, pIsotropy->GetValueAtNM( ri, nm ) );
+	return SchlickDirectionalAlbedo::CoupledDiffuseAt( lane,
+		GuardedGetColorNM( *pSpecular, ri, nm ), GuardedGetColorNM( *pDiffuse, ri, nm ),
+		Vector3Ops::Dot( myonb.w(), Vector3Ops::Normalize( -ri.ray.Dir() ) ),
+		Vector3Ops::Dot( myonb.w(), Vector3Ops::Normalize( outDir ) ) );
+}
+
 Scalar SchlickSPF::EvaluateLobeFNM(
 	const RayIntersectionGeometric& ri,
 	const Vector3& outDir,
@@ -1245,7 +1399,7 @@ Scalar SchlickSPF::EvaluateLobeFNM(
 	) const
 {
 	if( rayType == ScatteredRay::eRayDiffuse ) {
-		return GuardedGetColorNM( *pDiffuse, ri, nm ) * INV_PI;
+		return SchlickCoupledDiffuseNM( ri, outDir, nm ) * INV_PI;
 	}
 
 	if( rayType != ScatteredRay::eRayReflection ) {
@@ -1298,7 +1452,7 @@ Scalar SchlickSPF::EvaluateKrayNM(
 	) const
 {
 	if( rayType == ScatteredRay::eRayDiffuse ) {
-		return GuardedGetColorNM( *pDiffuse, ri, nm );
+		return SchlickCoupledDiffuseNM( ri, outDir, nm );
 	}
 
 	if( rayType != ScatteredRay::eRayReflection ) {
@@ -1351,7 +1505,7 @@ Scalar SchlickSPF::EvaluateKrayNM(
 	}
 
 	if( rayType == ScatteredRay::eRayDiffuse ) {
-		return GuardedGetColorNM( *pDiffuse, ri, nm );
+		return SchlickCoupledDiffuseNM( ri, outDir, nm );
 	}
 
 	if( rayType != ScatteredRay::eRayReflection ) {
