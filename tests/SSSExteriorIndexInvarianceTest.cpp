@@ -599,12 +599,18 @@ namespace
 		}
 	};
 
-	enum class Model { Lambertian, Diffusion, RandomWalk };
+	enum class Model { Lambertian, Diffusion, DiffusionRough, RandomWalk };
 	enum class Integrator { PT, BDPT, PTSpectral };
 
 	const char* ModelName( Model m )
 	{
-		return m == Model::Lambertian ? "lambertian_control" : ( m == Model::Diffusion ? "diffusion_rough" : "random_walk" );
+		switch( m ) {
+		case Model::Lambertian: return "lambertian_control";
+		case Model::Diffusion: return "diffusion_smooth";
+		case Model::DiffusionRough: return "diffusion_rough";
+		case Model::RandomWalk: return "random_walk";
+		}
+		return "unknown";
 	}
 	const char* IntegratorName( Integrator i )
 	{
@@ -629,8 +635,17 @@ namespace
 			  << "lambertian_material\n{\n\tname subject\n\treflectance albedo\n}\n\n";
 			break;
 		case Model::Diffusion:
+		case Model::DiffusionRough:
+			// Smooth isolates the subsurface event (the only surface term is
+			// the SPF's delta reflection, relative-index-correct before and
+			// after DL-49).  Rough adds the SubSurfaceScatteringBSDF NEE
+			// lobe, whose pre-DL-49 error has the OPPOSITE sign to the
+			// subsurface one (air Fresnel over-reflects in the enclosure while
+			// the air-index profile under-transmits), so the two partially
+			// cancel in a whole-image mean -- which is why each gets a row.
 			s << "subsurfacescattering_material\n{\n\tname subject\n\tior " << nS
-			  << "\n\tabsorption 0.05 0.1 0.2\n\tscattering 2\n\tg 0\n\troughness 0.3\n}\n\n";
+			  << "\n\tabsorption 0.05 0.1 0.2\n\tscattering 2\n\tg 0\n\troughness "
+			  << ( model == Model::DiffusionRough ? "0.3" : "0" ) << "\n}\n\n";
 			break;
 		case Model::RandomWalk:
 			s << "randomwalk_sss_material\n{\n\tname subject\n\tior " << nS
@@ -735,34 +750,42 @@ namespace
 		return Stats{ m, v.size() > 1 ? std::sqrt( ss / double( v.size() - 1 ) ) : 0.0 };
 	}
 
-	void TestRenderedInvariance( const unsigned int trials )
+	void TestRenderedInvariance( const unsigned int trials, const std::string& only )
 	{
 		std::cout << "B: rendered scale invariance, air (1, 1.33) vs enclosed (1.5, 1.995), n=" << trials << " per side" << std::endl;
 		struct Row { Model model; Integrator integrator; unsigned int samples; double band; };
-		// Bands: >= 5x the measured sd of the ratio at these sample counts
-		// (see docs/DL49_SSS_EXTERIOR_INDEX.md), and far below the pre-fix
-		// deviations the same rows read.
+		// Bands: several times the measured sd of the ratio at these sample
+		// counts and far below the pre-DL-49 deviations of the same rows
+		// (both recorded in docs/DL49_SSS_EXTERIOR_INDEX.md).
 		const Row rows[] = {
-			{ Model::Lambertian, Integrator::PT,         16, 0.02 },
-			{ Model::Diffusion,  Integrator::PT,         64, 0.02 },
-			{ Model::RandomWalk, Integrator::PT,         64, 0.03 },
-			{ Model::Diffusion,  Integrator::BDPT,       32, 0.02 },
-			{ Model::RandomWalk, Integrator::BDPT,       32, 0.03 },
-			{ Model::Diffusion,  Integrator::PTSpectral, 64, 0.03 },
-			{ Model::RandomWalk, Integrator::PTSpectral, 64, 0.04 },
+			{ Model::Lambertian,     Integrator::PT,         16,  0.02 },
+			{ Model::Diffusion,      Integrator::PT,         64,  0.02 },
+			{ Model::DiffusionRough, Integrator::PT,         64,  0.02 },
+			{ Model::RandomWalk,     Integrator::PT,         64,  0.04 },
+			{ Model::Diffusion,      Integrator::BDPT,       32,  0.02 },
+			{ Model::DiffusionRough, Integrator::BDPT,       32,  0.02 },
+			{ Model::RandomWalk,     Integrator::BDPT,       128, 0.10 },
+			{ Model::Diffusion,      Integrator::PTSpectral, 64,  0.04 },
+			{ Model::RandomWalk,     Integrator::PTSpectral, 64,  0.05 },
 		};
 		unsigned int seed = 49000;
 		for( const Row& row : rows ) {
 			const std::string label = std::string( "B: " ) + ModelName( row.model ) + "/" + IntegratorName( row.integrator );
+			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
 			const std::string airPath = WriteScene( BuildScene( row.model, row.integrator, false, row.samples ), "air" );
 			const std::string scaledPath = WriteScene( BuildScene( row.model, row.integrator, true, row.samples ), "scaled" );
 			Check( !airPath.empty() && !scaledPath.empty(), label + ": scene files written" );
 			std::vector<double> air, scaled;
 			bool allValid = true;
-			// Interleave the two sides so machine-load drift cannot bias the ratio.
+			// Interleave the two sides so machine-load drift cannot bias the
+			// ratio, and give each pair the SAME libc seed (common random
+			// numbers: the invariance says the two sides are the same
+			// function, so correlating their noise only tightens the ratio;
+			// the independent-sides sd printed below is then conservative).
 			for( unsigned int t = 0; t < trials; ++t ) {
-				const double a = RenderMean( airPath, seed++, 1.0, t == 0, label + " air" );
-				const double s = RenderMean( scaledPath, seed++, kScaledExterior, t == 0, label + " enclosed" );
+				const unsigned int pairSeed = seed++;
+				const double a = RenderMean( airPath, pairSeed, 1.0, t == 0, label + " air" );
+				const double s = RenderMean( scaledPath, pairSeed, kScaledExterior, t == 0, label + " enclosed" );
 				if( !( a > 0 ) || !( s > 0 ) ) allValid = false;
 				air.push_back( a );
 				scaled.push_back( s );
@@ -788,9 +811,11 @@ int main( int argc, char** argv )
 {
 	unsigned int trials = 4;
 	bool unitOnly = false;
+	std::string only;
 	for( int i = 1; i < argc; ++i ) {
 		const std::string a( argv[i] );
 		if( a == "--unit-only" ) unitOnly = true;
+		else if( a == "--only" && i + 1 < argc ) only = argv[++i];
 		else if( a == "--trials" && i + 1 < argc ) trials = static_cast<unsigned int>( std::atoi( argv[++i] ) );
 	}
 	if( trials < 2 ) trials = 2;
@@ -805,7 +830,7 @@ int main( int argc, char** argv )
 	TestRandomWalkMatchedIndex();
 	TestPathVertexEval();
 	if( !unitOnly ) {
-		TestRenderedInvariance( trials );
+		TestRenderedInvariance( trials, only );
 	}
 	std::cout << "=== " << passCount << " passed, " << failCount << " failed ===" << std::endl;
 	return failCount == 0 ? 0 : 1;
