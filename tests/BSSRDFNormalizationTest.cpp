@@ -31,6 +31,8 @@
 #include "../src/Library/Painters/RGBScalarPainter.h"
 #include "../src/Library/Materials/BurleyNormalizedDiffusionProfile.h"
 #include "../src/Library/Materials/SubSurfaceScatteringMaterial.h"
+#include "../src/Library/Materials/SubSurfaceScatteringSPF.h"
+#include "../src/Library/Utilities/IORStack.h"
 #include "../src/Library/Shaders/BSSRDFEntryAdapters.h"
 
 using namespace RISE;
@@ -425,6 +427,186 @@ static void TestRandomWalkSampleRatios()
 	sphere->release();
 }
 
+// ================================================================
+// Test E (DL-306): reflection + transmission partition at ONE interface.
+//
+// SubSurfaceScatteringSPF prices the surface REFLECTION of an SSS
+// boundary with the exact dielectric Fresnel law; the integrators price
+// the TRANSMISSION into the subsurface event with the profile's
+// FresnelTransmission (diffusion) or the Sw adapters' law (random walk).
+// Both halves describe the same interface, so at every exterior cosine
+// R(mu) + T(mu) must be 1, and over a cosine-weighted incident hemisphere
+// <R> + <T> must be 1.  Before DL-306 T was Schlick's approximation:
+// <R> + <T> = 0.966 / 0.980 / 0.9992 / 1.006 at eta 1.05 / 1.128 / 1.33 /
+// 1.5 (independent quadrature, recorded in docs/DL306_SSS_FRESNEL_PARTITION.md).
+//
+// Every quantity comes from production code EXCEPT the oracles:
+//   R      the real SubSurfaceScatteringSPF (smooth), RGB kray and NM krayNM,
+//          at an IOR stack whose top is the exterior index;
+//   T      the real Burley profile's FresnelTransmission at a record whose
+//          ambientIOR is that exterior index;
+//   shape  the RandomWalkEntryBSDF / BSSRDFEntryBSDF adapters: pi*Sw(mu)
+//          must be (1 - R(mu)) / c for ONE constant c at every mu (the
+//          random walk's T lives only in this shape and in the integrators'
+//          entry coin, which call the same helper);
+//   c      that constant must equal an independent quadrature of
+//          2 * integral (1 - F_exact(mu)) mu dmu.
+// eta < 1 (a denser exterior) is included: past the critical angle the
+// SPF reflects totally and T must be exactly 0.
+// ================================================================
+
+static Scalar IndependentExactReflectance( const Scalar cosI, const Scalar ni, const Scalar nt )
+{
+	const Scalar sin2T = (ni / nt) * (ni / nt) * (1.0 - cosI * cosI);
+	if( sin2T >= 1.0 ) {
+		return 1.0;
+	}
+	const Scalar cosT = sqrt( 1.0 - sin2T );
+	const Scalar rs = (ni * cosI - nt * cosT) / (ni * cosI + nt * cosT);
+	const Scalar rp = (nt * cosI - ni * cosT) / (nt * cosI + ni * cosT);
+	return 0.5 * (rs * rs + rp * rp);
+}
+
+// 2 * integral_0^1 (1 - F_exact(mu; 1 -> eta)) mu dmu by a 2^20-bin
+// midpoint rule.  The integrand is continuous (a square-root edge at the
+// critical cosine for eta < 1), so the rule's error is below 1e-9.
+static Scalar IndependentExactNormalization( const Scalar eta )
+{
+	const int count = 1 << 20;
+	Scalar sum = 0;
+	for( int i = 0; i < count; ++i ) {
+		const Scalar mu = (Scalar(i) + 0.5) / count;
+		sum += 2.0 * mu * (1.0 - IndependentExactReflectance( mu, 1.0, eta ));
+	}
+	return sum / count;
+}
+
+static RayIntersectionGeometric MakeIncidentRI( const Scalar mu, const Scalar exterior )
+{
+	RayIntersectionGeometric ri = MakeSurfaceRI();
+	const Vector3 incoming = -DirectionForCosine( mu );
+	ri.ray = Ray( Point3Ops::mkPoint3( ri.ptIntersection, -incoming * 2.0 ), incoming );
+	ri.ambientIOR = exterior;
+	return ri;
+}
+
+static void TestReflectionTransmissionPartition()
+{
+	std::cout << "Test E: SPF reflection + subsurface transmission partition (DL-306)" << std::endl;
+	struct Case { Scalar interior, exterior; };
+	// Relative indices 1.05 / 1.128 / 1.33 / 1.5 in air; 1.128 immersed
+	// (1.5 in water); and the eta < 1 direction (1.33 in 1.5 glass, 1.5 in
+	// 1.575).
+	const Case cases[] = {
+		{ 1.05, 1.0 }, { 1.128, 1.0 }, { 1.33, 1.0 }, { 1.5, 1.0 },
+		{ 1.5, 1.33 }, { 1.33, 1.5 }, { 1.5, 1.575 } };
+	const int count = 4096;
+
+	for( const Case& cs : cases )
+	{
+		const Scalar eta = cs.interior / cs.exterior;
+		UniformScalarPainter* ior = new UniformScalarPainter( cs.interior ); ior->addref();
+		RGBScalarPainter* absorption = new RGBScalarPainter( 0.05, 0.10, 0.20 ); absorption->addref();
+		RGBScalarPainter* scattering = new RGBScalarPainter( 1.0, 1.0, 1.0 ); scattering->addref();
+		BurleyNormalizedDiffusionProfile* profile =
+			new BurleyNormalizedDiffusionProfile( *ior, *absorption, *scattering, 0.0 );
+		profile->addref();
+		SubSurfaceScatteringSPF* spf = new SubSurfaceScatteringSPF( *ior, 0.0, 0.0, true );
+		spf->addref();
+		BSSRDFAdapters::BSSRDFEntryBSDF diffusionEntry( profile, cs.interior );
+		BSSRDFAdapters::RandomWalkEntryBSDF walkEntry( cs.interior );
+		const IORStack stack( cs.exterior );
+		TestSampler sampler( 7000 );
+
+		Scalar worstPoint = 0, meanR = 0, meanT = 0;
+		Scalar cMinW = RISE_INFINITY, cMaxW = 0, cMinD = RISE_INFINITY, cMaxD = 0;
+		bool tirExact = true;
+		for( int i = 0; i < count; ++i )
+		{
+			const Scalar mu = (Scalar(i) + 0.5) / count;
+			const RayIntersectionGeometric ri = MakeIncidentRI( mu, cs.exterior );
+
+			ScatteredRayContainer rays, raysNM;
+			spf->Scatter( ri, sampler, rays, stack );
+			spf->ScatterNM( ri, sampler, 550.0, raysNM, stack );
+			const Scalar R = rays.Count() == 1 ? rays[0].kray[0] : -1.0;
+			const Scalar RNM = raysNM.Count() == 1 ? raysNM[0].krayNM : -1.0;
+			const Scalar T = profile->FresnelTransmission( mu, ri );
+			if( R < 0 || RNM < 0 || !std::isfinite(T) ) {
+				std::cerr << "FAIL: partition eta=" << eta << " mu=" << mu
+					<< " SPF did not emit one reflection ray" << std::endl;
+				++gFailures;
+				break;
+			}
+			worstPoint = std::fmax( worstPoint, std::fabs( R + T - 1.0 ) );
+			worstPoint = std::fmax( worstPoint, std::fabs( RNM + T - 1.0 ) );
+			meanR += 2.0 * mu * R / count;
+			meanT += 2.0 * mu * T / count;
+			if( R >= 1.0 && T != 0.0 ) tirExact = false;
+
+			// Adapter shape: (1 - R) / (pi * Sw) must be one constant c.
+			const Scalar oneMinusR = 1.0 - R;
+			if( oneMinusR > 1e-3 ) {
+				const Vector3 wi = DirectionForCosine( mu );
+				const Scalar swW = walkEntry.value( wi, ri )[0];
+				const Scalar swD = diffusionEntry.value( wi, ri )[0];
+				if( swW > 0 && swD > 0 ) {
+					const Scalar cW = oneMinusR / (PI * swW);
+					const Scalar cD = oneMinusR / (PI * swD);
+					cMinW = std::fmin( cMinW, cW ); cMaxW = std::fmax( cMaxW, cW );
+					cMinD = std::fmin( cMinD, cD ); cMaxD = std::fmax( cMaxD, cD );
+				} else {
+					tirExact = false;
+				}
+			}
+		}
+
+		const Scalar cIndependent = IndependentExactNormalization( eta );
+		const Scalar hemi = meanR + meanT;
+		std::cout << std::setprecision(9)
+			<< "  n_s=" << cs.interior << " n_e=" << cs.exterior << " eta=" << eta
+			<< "  <R>=" << meanR << " <T>=" << meanT << " <R>+<T>=" << hemi
+			<< "  worst |R+T-1|=" << worstPoint
+			<< "  c walk [" << cMinW << "," << cMaxW << "] diffusion [" << cMinD << "," << cMaxD << "]"
+			<< " independent " << cIndependent << std::endl;
+
+		if( !(worstPoint < 1e-4) ) {
+			std::cerr << "FAIL: partition eta=" << eta << " pointwise |R+T-1| = " << worstPoint << std::endl;
+			++gFailures;
+		}
+		if( !(std::fabs( hemi - 1.0 ) < 1e-4) ) {
+			std::cerr << "FAIL: partition eta=" << eta << " hemispherical <R>+<T> = " << hemi << std::endl;
+			++gFailures;
+		}
+		if( !tirExact ) {
+			std::cerr << "FAIL: partition eta=" << eta << " transmission past total reflection" << std::endl;
+			++gFailures;
+		}
+		// One constant across mu (the Sw SHAPE is 1 - R), equal to the
+		// independent normalization of the exact law.
+		const bool shapeW = cMaxW > 0 && (cMaxW - cMinW) <= 1e-7 * cMaxW &&
+			std::fabs( cMaxW - cIndependent ) <= 1e-7;
+		const bool shapeD = cMaxD > 0 && (cMaxD - cMinD) <= 1e-7 * cMaxD &&
+			std::fabs( cMaxD - cIndependent ) <= 1e-7;
+		if( !shapeW ) {
+			std::cerr << "FAIL: partition eta=" << eta << " RandomWalkEntryBSDF Sw is not (1-R)/(c pi) with c = "
+				<< cIndependent << std::endl;
+			++gFailures;
+		}
+		if( !shapeD ) {
+			std::cerr << "FAIL: partition eta=" << eta << " BSSRDFEntryBSDF Sw is not (1-R)/(c pi) with c = "
+				<< cIndependent << std::endl;
+			++gFailures;
+		}
+
+		spf->release();
+		profile->release();
+		ior->release();
+		absorption->release();
+		scattering->release();
+	}
+}
+
 } // namespace
 
 int main()
@@ -434,6 +616,7 @@ int main()
 	TestDiffusionSampleRatios();
 	TestRandomWalkSampleRatios();
 	TestTexturedIORAdapter();
+	TestReflectionTransmissionPartition();
 	if( gFailures ) {
 		std::cerr << "=== DL-48 normalization failures: " << gFailures << " ==="
 			<< std::endl;
