@@ -1858,8 +1858,11 @@ static void TestNullBSDFMaterialContinuation()
 // probability Ft was lost.  Unlike BDPT, VCM does NOT reach PT on this
 // scene even with the fix -- it reads ~5% under PT with or without
 // merging (vm_enabled false: -5.5%), a SEPARATE, pre-existing VCM
-// defect at BSSRDF / random-walk entry vertices recorded as DL-317
-// (the random-walk sphere of BDPT's topology V reads -12.7%).  So this
+// defect in its MIS running quantities at BSSRDF / random-walk entry
+// vertices recorded as DL-317.  This wall-dominated frame UNDERSTATES
+// it: BDPT's topology V (rough-0.8 random-walk sphere) reads -15.1%,
+// and frames the SSS object fills read -78% .. -97% (external review of
+// 2212f537; see the DL-317 row).  So this
 // row is a TWO-SIDED PIN of VCM/PT on the post-DL-307 value, not a
 // parity gate: it is red on the pre-fix generator (the DL-307 red-proof)
 // and it must be re-derived, deliberately, when DL-317 is fixed.

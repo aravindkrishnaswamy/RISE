@@ -1773,6 +1773,10 @@ namespace {
 	/// SPF realization, so an empty (or unselectable) container is a ZERO
 	/// sample of the reflection technique and no reason to skip the
 	/// subsurface one -- exactly DL-67's ruling for the guide technique.
+	/// The NM specialization's third query (`GetRandomWalkSSSParamsNM`) is
+	/// dead today -- no material in src/ overrides it (2026-09-28) -- and is
+	/// kept only so this predicate cannot drift from the random-walk
+	/// block's own NM fallback, which still asks it.
 	template<class Tag> inline bool HasSubsurfaceEntryBranch( const IMaterial& m, const Tag& tag );
 	template<> inline bool HasSubsurfaceEntryBranch<PelTag>( const IMaterial& m, const PelTag& )
 	{ return m.GetDiffusionProfile() != 0 || m.GetRandomWalkSSSParams() != 0; }
