@@ -119,6 +119,9 @@
 #include "../src/Library/Materials/TranslucentSPF.h"
 #include "../src/Library/Materials/SchlickSPF.h"
 #include "../src/Library/Materials/IsotropicPhongSPF.h"
+#include "../src/Library/Materials/SchlickMaterial.h"
+#include "../src/Library/Materials/TranslucentMaterial.h"
+#include "../src/Library/Utilities/PathVertexEval.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
 #include "../src/Library/Painters/UniformScalarPainter.h"
 #include "../src/Library/Utilities/RuntimeContext.h"
@@ -524,14 +527,19 @@ static Scalar IntegrateOneSample(
 	StubObject& shadingObject,
 	RuntimeContext& rc,
 	ISampler& sampler,
-	const IObject* pEnclosing )
+	const IObject* pEnclosing,
+	// DL-67: the incoming ray's direction.  Every pre-DL-67 row uses the
+	// default, straight down the normal; the DL-67 rows also run at an
+	// oblique incidence so a multi-lobe SPF's lobes are not all centred on
+	// the same axis.
+	const Vector3& inDir = Vector3( 0, 0, -1 ) )
 {
 	const RasterizerState rast{};
 
 	// Front-facing hit at the origin with the normal along +Z: the
-	// incoming ray travels -Z, so Dot(dir, N) < 0 and both
+	// incoming ray travels toward -Z, so Dot(dir, N) < 0 and both
 	// LambertianSPF and GuidingCosineNormal keep the +Z hemisphere.
-	RayIntersection hit( Ray( Point3( 0, 0, 1 ), Vector3( 0, 0, -1 ) ), rast );
+	RayIntersection hit( Ray( Point3( -inDir.x, -inDir.y, -inDir.z ), inDir ), rast );
 	hit.geometric.bHit = true;
 	hit.geometric.range = 1;
 	hit.geometric.ptIntersection = Point3( 0, 0, 0 );
@@ -1508,7 +1516,13 @@ static std::string AreaLightScene()
 // single spatial region and `InitDistribution`'s stochastic region
 // lookup is deterministic (asserted below).
 //////////////////////////////////////////////////////////////////////
-static PathGuidingField* BuildSkewedField( const Point3& at, const Vector3& axis )
+static PathGuidingField* BuildSkewedField( const Point3& at, const Vector3& axis,
+	// DL-67: the trained lobe's cosine power.  64 (every pre-DL-67 row)
+	// concentrates the guide into ~0.1 sr, where it dominates the BSDF
+	// density outright; the DL-67 rows also need a BROAD guide whose
+	// density is COMPARABLE to the lobes' own over most of the
+	// hemisphere, which is where a mis-built partition shows.
+	const double lobePower = 64.0 )
 {
 	PathGuidingConfig config;
 	config.enabled = true;
@@ -1525,7 +1539,7 @@ static PathGuidingField* BuildSkewedField( const Point3& at, const Vector3& axis
 		const Vector3 dir( r * std::cos( phi ), r * std::sin( phi ), z );
 		// Sharply peaked "incident radiance": cos^64 about `axis`.
 		const Scalar c = Vector3Ops::Dot( dir, axis );
-		const Scalar lum = c > 0 ? std::pow( (double)c, 64.0 ) : 0.0;
+		const Scalar lum = c > 0 ? std::pow( (double)c, lobePower ) : 0.0;
 		if( lum <= 1e-9 ) {
 			guide->AddZeroValueSample( at, dir );
 		} else {
@@ -1578,7 +1592,9 @@ static Scalar RunBatch(
 	// NEE arms' historical `IORStack(1.0)` sentinel therefore evaluates
 	// the material's aggregate pdf under a DIFFERENT stack than the
 	// escape side's `PTEvalPdfAtSurface(..., iorStack)` does.
-	const IObject* pEnclosing = 0 )
+	const IObject* pEnclosing = 0,
+	// DL-67: incoming ray direction (see IntegrateOneSample).
+	const Vector3& inDir = Vector3( 0, 0, -1 ) )
 {
 	PathTracingIntegrator* integrator =
 		new PathTracingIntegrator( ManifoldSolverConfig(), StabilityConfig() );
@@ -1609,7 +1625,7 @@ static Scalar RunBatch(
 		}
 
 		sum += IntegrateOneSample( fx, material, *integrator, *shadingObject,
-			rc, sampler, pEnclosing );
+			rc, sampler, pEnclosing, inDir );
 	}
 
 	integrator->release();
@@ -2606,6 +2622,364 @@ static void RunVolumeEmitterRow()
 	guide->release();
 }
 
+//////////////////////////////////////////////////////////////////////
+//
+//  DL-67 (docs/DL67_GUIDED_GENERATING_DENSITY.md) -- the GUIDED
+//  continuation at a MULTI-LOBE, MULTI-EMIT SPF.
+//
+//  Every row above this block guides a SINGLE-lobe material, where the
+//  selected lobe's own `.pdf`, the aggregate `ISPF::Pdf()` and the true
+//  generating density of `Scatter` + `RandomlySelect` are one function.
+//  At a multi-emit SPF they are three, and the guided branches of
+//  PART 3 mixed them:
+//
+//   - one-sample, BSDF direction KEPT: `kray_I * p_I / (q_I * p_c)`
+//     with `p_c = a g + (1-a) p_I` -- a per-lobe density where the
+//     partition needs the aggregate;
+//   - RIS candidate 0: proposal density `p_I`, candidate 1: `p_agg` --
+//     two different functions in one RIS weight sum;
+//   - every lobe the guide does NOT sample (a glossy lobe's halved
+//     alpha, a transmission lobe's zero alpha) was priced
+//     `kray/q` un-weighted while the guide technique, which evaluates
+//     the AGGREGATE BSDF, also covered it -- a double count wherever
+//     the guide's density reaches that lobe's support.
+//
+//  THE INVARIANT.  Guiding is a variance-reduction choice; it must not
+//  move the expectation.  Each row compares a GUIDED furnace against a
+//  closed form (the synthetic two-lobe SPF, as in the DL-103 rows) or a
+//  deterministic quadrature of the material's own `IBSDF` (the
+//  PRODUCTION `schlick_material` and `translucent_material`), and each
+//  quadrature row carries an UN-GUIDED control that validates the
+//  reference: it must be green before and after the fix.
+//
+//////////////////////////////////////////////////////////////////////
+
+static Vector3 DL67Incidence( const Scalar thetaDeg )
+{
+	const Scalar t = thetaDeg * PI / 180.0;
+	return Vector3( -std::sin( t ), 0, -std::cos( t ) );
+}
+
+//! Deterministic midpoint quadrature of `value(w) |cos(w, n)|` over the
+//! band `z in [zLo, zHi]` (z = cos of the angle to the +Z normal) and
+//! the full azimuth, at EXACTLY the hit `IntegrateOneSample` builds --
+//! same incoming ray, same frame, same live IOR stack (current object =
+//! the shading object), evaluated through the SAME
+//! `PathVertexEval::EvalBSDFAtSurface` PART 3 uses.  Integrand is the
+//! MaxValue channel, matching the furnace's own readout (all painters
+//! here are grey).
+static Scalar DL67BsdfCosQuadrature(
+	const IMaterial& material,
+	const IObject* pShadingObject,
+	const Vector3& inDir,
+	const Scalar zLo,
+	const Scalar zHi,
+	const unsigned int nz,
+	const unsigned int nphi )
+{
+	const RasterizerState rast{};
+	RayIntersectionGeometric ri( Ray( Point3( -inDir.x, -inDir.y, -inDir.z ), inDir ), rast );
+	ri.bHit = true;
+	ri.range = 1;
+	ri.ptIntersection = Point3( 0, 0, 0 );
+	ri.vNormal = Vector3( 0, 0, 1 );
+	ri.vGeomNormal = Vector3( 0, 0, 1 );
+	ri.onb.CreateFromW( ri.vNormal );
+
+	IORStack stack( 1.0 );
+	stack.SetCurrentObject( pShadingObject );
+
+	const IBSDF* pB = material.GetBSDF();
+	if( !pB ) {
+		return 0;
+	}
+
+	const double dz = ( (double)zHi - (double)zLo ) / nz;
+	const double dphi = TWO_PI / nphi;
+	double sum = 0;
+	for( unsigned int iz = 0; iz < nz; ++iz ) {
+		const double z = zLo + ( iz + 0.5 ) * dz;
+		const double r = std::sqrt( r_max( 0.0, 1.0 - z * z ) );
+		double ring = 0;
+		for( unsigned int ip = 0; ip < nphi; ++ip ) {
+			const double phi = ( ip + 0.5 ) * dphi;
+			const Vector3 w( r * std::cos( phi ), r * std::sin( phi ), z );
+			ring += ColorMath::MaxValue(
+				PathVertexEval::EvalBSDFAtSurface( pB, w, ri, &stack ) );
+		}
+		sum += ring * std::fabs( z );
+	}
+	return static_cast<Scalar>( sum * dz * dphi );
+}
+
+//! One DL-67 guided configuration.
+struct DL67Row
+{
+	const char*			name;
+	GuidingSamplingType	samplingType;
+	bool				learnedAlpha;
+	Scalar				alpha;			///< 0 = un-guided control
+};
+
+static const DL67Row kDL67Rows[] = {
+	{ "un-guided control",          eGuidingOneSampleMIS, false, 0.0 },
+	{ "one-sample, fixed alpha",    eGuidingOneSampleMIS, false, 0.7 },
+	{ "one-sample, learned alpha",  eGuidingOneSampleMIS, true,  0.7 },
+	{ "RIS",                        eGuidingRIS,          false, 0.7 },
+};
+
+//! Runs the un-guided control once, then every guided configuration
+//! under TWO trained fields about the same axis: a SHARP one (cos^64,
+//! the pre-DL-67 rows' own construction, whose density dominates the
+//! lobes' inside ~0.1 sr and is negligible elsewhere) and a BROAD one
+//! (cos^2, comparable to the lobes' densities over most of the
+//! hemisphere).  A partition built from the wrong density function is
+//! invisible wherever one side's density swamps the other's, so the
+//! two fields probe complementary regimes.
+static void DL67RunRows(
+	const Fixture& fx,
+	const IMaterial& material,
+	const Vector3& guideAxis,
+	const Vector3& inDir,
+	const Scalar expected,
+	const Scalar relTol,
+	const unsigned int nSamples,
+	const unsigned int seedBase,
+	const char* what )
+{
+	PathGuidingField* guides[2] = {
+		BuildSkewedField( Point3( 0, 0, 0 ), guideAxis, 64.0 ),
+		BuildSkewedField( Point3( 0, 0, 0 ), guideAxis, 2.0 ) };
+	const char* guideNames[2] = { "sharp guide", "broad guide" };
+	Check( guides[0]->IsTrained() && guides[1]->IsTrained(),
+		"DL-67: both trained guiding fields are ready" );
+
+	for( unsigned int gi = 0; gi < 2; ++gi ) {
+		for( unsigned int i = 0; i < sizeof( kDL67Rows ) / sizeof( kDL67Rows[0] ); ++i ) {
+			const DL67Row& row = kDL67Rows[i];
+			if( row.alpha <= 0 && gi > 0 ) {
+				continue;	// the un-guided control does not depend on the field
+			}
+			RowConfig cfg{ row.name, row.learnedAlpha, false, false, row.samplingType, row.alpha };
+			const Scalar m = RunBatch( fx, material, guides[gi], cfg, nSamples,
+				seedBase + 1000 * i + 100 * gi, 0, inDir );
+			const std::string tag = row.alpha > 0
+				? std::string( row.name ) + ", " + guideNames[gi]
+				: std::string( row.name );
+			std::cout << "    " << what << " [" << tag << "] " << m
+				<< " , expected " << expected
+				<< " (" << ( expected > 0 ? 100.0 * ( m / expected - 1.0 ) : 0.0 ) << "%)"
+				<< std::endl;
+			const std::string label = std::string( what ) + " [" + tag + "]: "
+				+ ( row.alpha > 0 ? "guided " : "un-guided " ) + "furnace reads its reference";
+			CheckRel( m, expected, relTol, label.c_str() );
+		}
+	}
+
+	guides[1]->release();
+	guides[0]->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+// Environment furnaces.
+//////////////////////////////////////////////////////////////////////
+static void RunDL67EnvRows()
+{
+	std::cout << "DL-67 guided env furnace at MULTI-LOBE, multi-emit SPFs: guiding must "
+		"not move the expectation" << std::endl;
+
+	Fixture fx;
+	Check( fx.Build( EnvOnlyScene(), "dl67env" ), "DL-67 env fixture builds" );
+	if( !fx.pCaster || !fx.pScene ) return;
+	const IRadianceMap* pGlobal = fx.pScene->GetGlobalRadianceMap();
+	Check( pGlobal != 0, "DL-67 env fixture has a global radiance map" );
+	if( !pGlobal ) return;
+
+	const RasterizerState rast{};
+	const Scalar Lenv = ColorMath::MaxValue(
+		pGlobal->GetRadiance( Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ), rast ) );
+	Check( Lenv > 0, "DL-67 env radiance probe is positive" );
+	if( Lenv <= 0 ) return;
+
+	StubObject* quadObject = new StubObject();
+	GlobalLog()->PrintNew( quadObject, __FILE__, __LINE__, "quadrature shading object" );
+
+	const unsigned int kN = 160000;
+
+	// (l) The synthetic two-lobe SPF of rows (j)/(k): closed form L_env.
+	// Both lobes are `eRayDiffuse`, so every lobe carries the SAME
+	// guiding alpha; what separates the two-lobe from the one-lobe
+	// material is ONLY the selected lobe's `.pdf` vs the aggregate.
+	{
+		MultiLobeMaterial* twoLobe = new MultiLobeMaterial( false );
+		GlobalLog()->PrintNew( twoLobe, __FILE__, __LINE__, "DL-67 two-lobe material" );
+		MultiLobeMaterial* oneLobe = new MultiLobeMaterial( true );
+		GlobalLog()->PrintNew( oneLobe, __FILE__, __LINE__, "DL-67 one-lobe control" );
+		const Vector3 guideAxisLocal = Vector3Ops::Normalize( Vector3( 0.6, 0.0, 0.8 ) );
+
+		DL67RunRows( fx, *oneLobe, guideAxisLocal, DL67Incidence( 0 ), Lenv, 0.015, kN, 30000,
+			"(l-control) one-lobe mixture, env" );
+		DL67RunRows( fx, *twoLobe, guideAxisLocal, DL67Incidence( 0 ), Lenv, 0.015, kN, 31000,
+			"(l) two-lobe synthetic SPF, env" );
+
+		oneLobe->release();
+		twoLobe->release();
+	}
+
+	// (m) PRODUCTION `schlick_material` at 40 degrees incidence: a
+	// cosine diffuse lobe (`eRayDiffuse`, full alpha) and a Schlick
+	// specular lobe (`eRayReflection`, HALF alpha) -- so the two lobes
+	// also differ in the probability that the guide replaces them.
+	{
+		UniformColorPainter* rd = new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) );
+		GlobalLog()->PrintNew( rd, __FILE__, __LINE__, "DL-67 schlick rd" );
+		UniformColorPainter* rs = new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) );
+		GlobalLog()->PrintNew( rs, __FILE__, __LINE__, "DL-67 schlick rs" );
+		UniformScalarPainter* rough = new UniformScalarPainter( 0.2 );
+		GlobalLog()->PrintNew( rough, __FILE__, __LINE__, "DL-67 schlick roughness" );
+		UniformScalarPainter* iso = new UniformScalarPainter( 1.0 );
+		GlobalLog()->PrintNew( iso, __FILE__, __LINE__, "DL-67 schlick isotropy" );
+		SchlickMaterial* schlick = new SchlickMaterial( *rd, *rs, *rough, *iso );
+		GlobalLog()->PrintNew( schlick, __FILE__, __LINE__, "DL-67 schlick material" );
+
+		const Vector3 inDir = DL67Incidence( 40 );
+		const Scalar albedo = DL67BsdfCosQuadrature( *schlick, quadObject, inDir,
+			0.0, 1.0, 2048, 2048 );
+		std::cout << "    (m) schlick directional albedo at 40 deg (quadrature) "
+			<< albedo << std::endl;
+		const Vector3 guideAxisLocal = Vector3Ops::Normalize( Vector3( 0.6, 0.0, 0.8 ) );
+		DL67RunRows( fx, *schlick, guideAxisLocal, inDir, Lenv * albedo, 0.015, kN, 32000,
+			"(m) schlick_material, env" );
+
+		schlick->release();
+		iso->release();
+		rough->release();
+		rs->release();
+		rd->release();
+	}
+
+	// (n) PRODUCTION `translucent_material`: an entry-side front
+	// reflection (`eRayDiffuse`) and a transmitted Phong lobe
+	// (`eRayTranslucent`, which the guide never samples) below the
+	// horizon.  The guide is trained toward a direction BELOW the
+	// horizon, so its density reaches the transmission lobe's support.
+	// `ScattersFullSphere()` is true, so the reference integrates the
+	// whole sphere.
+	{
+		UniformColorPainter* rF = new UniformColorPainter( RISEPel( 0.4, 0.4, 0.4 ) );
+		GlobalLog()->PrintNew( rF, __FILE__, __LINE__, "DL-67 translucent rF" );
+		UniformColorPainter* T = new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) );
+		GlobalLog()->PrintNew( T, __FILE__, __LINE__, "DL-67 translucent T" );
+		UniformScalarPainter* ext = new UniformScalarPainter( 0.0 );
+		GlobalLog()->PrintNew( ext, __FILE__, __LINE__, "DL-67 translucent ext" );
+		UniformScalarPainter* N = new UniformScalarPainter( 4.0 );
+		GlobalLog()->PrintNew( N, __FILE__, __LINE__, "DL-67 translucent N" );
+		UniformScalarPainter* scat = new UniformScalarPainter( 0.0 );
+		GlobalLog()->PrintNew( scat, __FILE__, __LINE__, "DL-67 translucent scat" );
+		TranslucentMaterial* trans = new TranslucentMaterial( *rF, *T, *ext, *N, *scat );
+		GlobalLog()->PrintNew( trans, __FILE__, __LINE__, "DL-67 translucent material" );
+
+		const Vector3 inDir = DL67Incidence( 30 );
+		const Scalar albedo = DL67BsdfCosQuadrature( *trans, quadObject, inDir,
+			-1.0, 1.0, 2048, 1024 );
+		std::cout << "    (n) translucent full-sphere albedo at 30 deg (quadrature) "
+			<< albedo << std::endl;
+		const Vector3 guideAxisLocal = Vector3Ops::Normalize( Vector3( 0.5, 0.0, -0.87 ) );
+		DL67RunRows( fx, *trans, guideAxisLocal, inDir, Lenv * albedo, 0.015, kN, 33000,
+			"(n) translucent_material, env" );
+
+		trans->release();
+		scat->release();
+		N->release();
+		ext->release();
+		T->release();
+		rF->release();
+	}
+
+	quadObject->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+// Area-emitter furnaces: the OTHER MIS pair (area NEE vs emitter hit),
+// on row (k)'s small emitter (the size that makes the two techniques'
+// densities comparable -- see `MultiLobeAreaLightScene`).  Normal
+// incidence, so the Schlick specular lobe points at the emitter.
+//////////////////////////////////////////////////////////////////////
+static void RunDL67AreaRows()
+{
+	std::cout << "DL-67 guided area furnace at MULTI-LOBE, multi-emit SPFs" << std::endl;
+
+	Fixture fx;
+	Check( fx.Build( MultiLobeAreaLightScene(), "dl67area" ), "DL-67 area fixture builds" );
+	if( !fx.pCaster || !fx.pScene ) return;
+
+	const RasterizerState rast{};
+	Scalar Le = 0;
+	{
+		RayIntersection probe( Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ), rast );
+		fx.pScene->GetObjects()->IntersectRay( probe, true, true, false );
+		if( probe.geometric.bHit && probe.pMaterial && probe.pMaterial->GetEmitter() ) {
+			Le = ColorMath::MaxValue( probe.pMaterial->GetEmitter()->emittedRadiance(
+				probe.geometric, -probe.geometric.ray.Dir(), probe.geometric.vNormal ) );
+		}
+	}
+	Check( Le > 0, "DL-67 area fixture: emitted radiance probe is positive" );
+	if( Le <= 0 ) return;
+
+	const Scalar cosMax = std::sqrt( 1.0 -
+		( kMLSphereRadius * kMLSphereRadius ) / ( kMLSphereDist * kMLSphereDist ) );
+
+	StubObject* quadObject = new StubObject();
+	GlobalLog()->PrintNew( quadObject, __FILE__, __LINE__, "quadrature shading object" );
+
+	// Guide trained ONTO the light (nearly along the normal).  Row (d)
+	// skews it AWAY, which is the right stress for an NEE-vs-emitter-hit
+	// partition; here the quantity under test is the continuation's OWN
+	// estimator, which the emitter can only reveal where the guide's
+	// density is comparable to the lobes' inside the emitter's cone --
+	// with the guide pointed away both DL-67 defects are invisible
+	// (measured: every guided row within 0.8 % of its reference pre-fix).
+	const Vector3 guideAxis = Vector3Ops::Normalize( Vector3( 0.15, 0.0, 0.99 ) );
+	const unsigned int kN = 300000;
+
+	{
+		MultiLobeMaterial* twoLobe = new MultiLobeMaterial( false );
+		GlobalLog()->PrintNew( twoLobe, __FILE__, __LINE__, "DL-67 two-lobe material" );
+		const Scalar expected = Le * (
+			kLobeAWeight * ( 1.0 - std::pow( (double)cosMax, (double)kLobeAPower + 1.0 ) ) +
+			kLobeBWeight * ( 1.0 - std::pow( (double)cosMax, (double)kLobeBPower + 1.0 ) ) );
+		DL67RunRows( fx, *twoLobe, guideAxis, DL67Incidence( 0 ), expected, 0.02, kN, 34000,
+			"(o) two-lobe synthetic SPF, area" );
+		twoLobe->release();
+	}
+
+	{
+		UniformColorPainter* rd = new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) );
+		GlobalLog()->PrintNew( rd, __FILE__, __LINE__, "DL-67 schlick rd" );
+		UniformColorPainter* rs = new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) );
+		GlobalLog()->PrintNew( rs, __FILE__, __LINE__, "DL-67 schlick rs" );
+		UniformScalarPainter* rough = new UniformScalarPainter( 0.2 );
+		GlobalLog()->PrintNew( rough, __FILE__, __LINE__, "DL-67 schlick roughness" );
+		UniformScalarPainter* iso = new UniformScalarPainter( 1.0 );
+		GlobalLog()->PrintNew( iso, __FILE__, __LINE__, "DL-67 schlick isotropy" );
+		SchlickMaterial* schlick = new SchlickMaterial( *rd, *rs, *rough, *iso );
+		GlobalLog()->PrintNew( schlick, __FILE__, __LINE__, "DL-67 schlick material" );
+
+		const Scalar coneIntegral = DL67BsdfCosQuadrature( *schlick, quadObject,
+			DL67Incidence( 0 ), cosMax, 1.0, 1024, 256 );
+		DL67RunRows( fx, *schlick, guideAxis, DL67Incidence( 0 ), Le * coneIntegral, 0.02, kN, 35000,
+			"(p) schlick_material, area" );
+
+		schlick->release();
+		iso->release();
+		rough->release();
+		rs->release();
+		rd->release();
+	}
+
+	quadObject->release();
+}
+
 static void RunGuidingRows()
 {
 	RunEnvRows();
@@ -2615,6 +2989,8 @@ static void RunGuidingRows()
 	RunZeroAggregateEnvRow();
 	RunZeroAggregateAreaRow();
 	RunVolumeEmitterRow();
+	RunDL67EnvRows();
+	RunDL67AreaRows();
 }
 
 #else
