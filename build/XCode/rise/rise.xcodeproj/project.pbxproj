@@ -930,6 +930,7 @@
 		F24C549C2F893D75009AF16D /* MLTSpectralRasterizer.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C54992F893D75009AF16D /* MLTSpectralRasterizer.h */; };
 		F24C549D2F893D75009AF16D /* MLTSpectralRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C549A2F893D75009AF16D /* MLTSpectralRasterizer.cpp */; };
 		F24D00012F7CAB67009AF16D /* IORStackSeeding.h in Headers */ = {isa = PBXBuildFile; fileRef = F24D00002F7CAB67009AF16D /* IORStackSeeding.h */; };
+		D0900A1F2F7CAB67009AF16D /* GradedIndexMedium.h in Headers */ = {isa = PBXBuildFile; fileRef = D0900A0F2F7CAB67009AF16D /* GradedIndexMedium.h */; };
 		F2586B1100000000A0000002 /* skills in Resources */ = {isa = PBXBuildFile; fileRef = F2586B1100000000A0000001 /* skills */; };
 		F2617A0D2F9A000100610003 /* GlintModifier.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2617A0D2F9A000100610001 /* GlintModifier.cpp */; };
 		F2617A0D2F9A000100610004 /* GlintModifier.h in Headers */ = {isa = PBXBuildFile; fileRef = F2617A0D2F9A000100610002 /* GlintModifier.h */; };
@@ -2229,6 +2230,7 @@
 		F24C54992F893D75009AF16D /* MLTSpectralRasterizer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MLTSpectralRasterizer.h; sourceTree = "<group>"; };
 		F24C549A2F893D75009AF16D /* MLTSpectralRasterizer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = MLTSpectralRasterizer.cpp; sourceTree = "<group>"; };
 		F24D00002F7CAB67009AF16D /* IORStackSeeding.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = IORStackSeeding.h; sourceTree = "<group>"; };
+		D0900A0F2F7CAB67009AF16D /* GradedIndexMedium.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = GradedIndexMedium.h; sourceTree = "<group>"; };
 		F2586B1100000000A0000001 /* skills */ = {isa = PBXFileReference; lastKnownFileType = folder; name = skills; path = ../../../skills; sourceTree = SOURCE_ROOT; };
 		F2617A0D2F9A000100610001 /* GlintModifier.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = GlintModifier.cpp; sourceTree = "<group>"; };
 		F2617A0D2F9A000100610002 /* GlintModifier.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = GlintModifier.h; sourceTree = "<group>"; };
@@ -4255,6 +4257,7 @@
 				F24C54682F859F87009AF16D /* RandomWalkSSS.cpp */,
 				F24C544B2F7CAB67009AF16D /* MediumTracking.h */,
 				F24D00002F7CAB67009AF16D /* IORStackSeeding.h */,
+				D0900A0F2F7CAB67009AF16D /* GradedIndexMedium.h */,
 				F24C544C2F7CAB67009AF16D /* MediumTransport.h */,
 				F24C544D2F7CAB67009AF16D /* MediumTransport.cpp */,
 				F24C544E2F7CAB67009AF16D /* MicrofacetEnergyLUT.h */,
@@ -4727,6 +4730,7 @@
 				7B74685035C14A7ABB6F0BCE /* ThinFilm.h in Headers */,
 				F24C54532F7CAB67009AF16D /* MediumTracking.h in Headers */,
 				F24D00012F7CAB67009AF16D /* IORStackSeeding.h in Headers */,
+				D0900A1F2F7CAB67009AF16D /* GradedIndexMedium.h in Headers */,
 				F24C54542F7CAB67009AF16D /* MediumTransport.h in Headers */,
 				F27F0ACD069C42910069C9E5 /* IFunction2D.h in Headers */,
 				F27F0ACE069C42910069C9E5 /* IFunction2DManager.h in Headers */,

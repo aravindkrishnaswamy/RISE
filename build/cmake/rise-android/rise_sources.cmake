@@ -1,4 +1,5 @@
 # Ward SPFs share header-only Materials/WardSelectionQuadrature.h.
+# Graded-index media share header-only Utilities/GradedIndexMedium.h (DL-09).
 # -----------------------------------------------------------------------------
 # rise_sources.cmake
 #
