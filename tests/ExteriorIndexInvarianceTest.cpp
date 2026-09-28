@@ -599,7 +599,7 @@ namespace
 		}
 	};
 
-	enum class Model { Lambertian, CookTorrance, Hair, Weave, Skin, SMSMirror };
+	enum class Model { Lambertian, CookTorrance, Hair, Weave, Skin, SMSMirror, SMSGlass };
 	enum class Integrator { PT, BDPT, PTSpectral };
 
 	const char* ModelName( Model m )
@@ -611,6 +611,7 @@ namespace
 		case Model::Weave: return "weave";
 		case Model::Skin: return "biospec_skin";
 		case Model::SMSMirror: return "sms_ggx_conductor_via_mirror";
+		case Model::SMSGlass: return "sms_lambertian_via_glass_sphere";
 		}
 		return "unknown";
 	}
@@ -628,7 +629,7 @@ namespace
 		o << std::setprecision( 17 );
 		o << "RISE ASCII SCENE 7\n";
 		o << "film\n{\n\twidth 32\n\theight 32\n}\n\n";
-		if( model == Model::SMSMirror ) {
+		if( model == Model::SMSMirror || model == Model::SMSGlass ) {
 			o << "pinhole_camera\n{\n\tlocation 0 2.2 3.4\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n";
 		} else {
 			o << "pinhole_camera\n{\n\tlocation 0 0 4.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n";
@@ -661,8 +662,23 @@ namespace
 			  << "\n\textinction " << 0.5 * s << "\n}\n\n";
 			o << "perfectreflector_material\n{\n\tname mirror_mat\n\treflectance white\n}\n\n";
 			break;
+		case Model::SMSGlass:
+			// NOT GATED -- the recorded DL-290 residual.  A Lambertian floor
+			// (no index anywhere at the receiver) under a glass sphere
+			// caster: the only index-dependent quantities are the SMS
+			// chain's own etaI/etaT, which the seed walk
+			// (BuildSeedChain / SnellContinueChain) still starts at air.
+			o << "lambertian_material\n{\n\tname subject\n\treflectance grey\n}\n\n";
+			o << "perfectrefractor_material\n{\n\tname glass_mat\n\tior " << 1.5 * s << "\n\trefractance white\n}\n\n";
+			break;
 		}
-		if( model == Model::SMSMirror ) {
+		if( model == Model::SMSGlass ) {
+			o << "clippedplane_geometry\n{\n\tname floor_geo\n\tpta -3 0 -3\n\tptb -3 0 3\n\tptc 3 0 3\n\tptd 3 0 -3\n}\n\n";
+			o << "standard_object\n{\n\tname floor_obj\n\tgeometry floor_geo\n\tmaterial subject\n}\n\n";
+			o << "sphere_geometry\n{\n\tname ball_geo\n\tradius 0.4\n}\n\n";
+			o << "standard_object\n{\n\tname ball\n\tgeometry ball_geo\n\tmaterial glass_mat\n\tposition 0 0.6 0\n}\n\n";
+			o << "omni_light\n{\n\tname point\n\tpower 40\n\tcolor 1 1 1\n\tposition 0 1.5 0\n}\n\n";
+		} else if( model == Model::SMSMirror ) {
 			o << "clippedplane_geometry\n{\n\tname floor_geo\n\tpta -3 0 -3\n\tptb -3 0 3\n\tptc 3 0 3\n\tptd 3 0 -3\n}\n\n";
 			o << "standard_object\n{\n\tname floor_obj\n\tgeometry floor_geo\n\tmaterial subject\n}\n\n";
 			o << "clippedplane_geometry\n{\n\tname mirror_geo\n\tpta -1.2 2.5 -1.2\n\tptb 1.2 2.5 -1.2\n\tptc 1.2 2.5 1.2\n\tptd -1.2 2.5 1.2\n}\n\n";
@@ -774,7 +790,7 @@ namespace
 	void TestRenderedInvariance( const unsigned int trials, const std::string& only )
 	{
 		std::cout << "B: rendered scale invariance, air (1, n) vs enclosed (1.5, 1.5 n), n=" << trials << " per side" << std::endl;
-		struct Row { Model model; Integrator integrator; unsigned int samples; double band; const char* sms; };
+		struct Row { Model model; Integrator integrator; unsigned int samples; double band; const char* sms; bool gated = true; };
 		// Bands: several times the measured sd of the ratio (common random
 		// numbers per pair) and far below the pre-fix deviations of the
 		// same rows; both recorded in docs/DL49_SSS_EXTERIOR_INDEX.md §10.
@@ -787,19 +803,20 @@ namespace
 			{ Model::Hair,         Integrator::BDPT,       16,  0.03, nullptr },
 			{ Model::Weave,        Integrator::PT,         32,  0.03, nullptr },
 			{ Model::Weave,        Integrator::BDPT,       16,  0.03, nullptr },
-			{ Model::Skin,         Integrator::PT,         256, 0.04, nullptr },
-			{ Model::Skin,         Integrator::BDPT,       128, 0.04, nullptr },
+			{ Model::Skin,         Integrator::PT,         256, 0.015, nullptr },
+			{ Model::Skin,         Integrator::BDPT,       512, 0.02, nullptr },
 			{ Model::SMSMirror,    Integrator::PT,         16,  0.03, "snell" },
 			{ Model::SMSMirror,    Integrator::PT,         16,  0.03, "uniform" },
 			{ Model::SMSMirror,    Integrator::PTSpectral, 16,  0.05, "snell" },
 			{ Model::SMSMirror,    Integrator::PTSpectral, 16,  0.05, "uniform" },
+			{ Model::SMSGlass,     Integrator::PT,         16,  0.03, "snell", false },
 		};
 		unsigned int seed = 290000;
 		for( const Row& row : rows ) {
 			const std::string label = std::string( "B: " ) + ModelName( row.model ) + "/" + IntegratorName( row.integrator ) +
 				( row.sms ? std::string( "/sms-" ) + row.sms : std::string() );
 			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
-			const Point3 camera = row.model == Model::SMSMirror ? Point3( 0, 2.2, 3.4 ) : Point3( 0, 0, 4.5 );
+			const Point3 camera = ( row.model == Model::SMSMirror || row.model == Model::SMSGlass ) ? Point3( 0, 2.2, 3.4 ) : Point3( 0, 0, 4.5 );
 			const std::string airPath = WriteScene( BuildScene( row.model, row.integrator, 1.0, row.samples, row.sms ), "air" );
 			const std::string scaledPath = WriteScene( BuildScene( row.model, row.integrator, kScale, row.samples, row.sms ), "scaled" );
 			Check( !airPath.empty() && !scaledPath.empty(), label + ": scene files written" );
@@ -825,7 +842,11 @@ namespace
 				<< " spp=" << row.samples << ": air " << sa.mean << " +/- " << sa.sd
 				<< "  enclosed " << ss.mean << " +/- " << ss.sd
 				<< "  ratio " << ratio << " +/- " << ratioSd << " (band " << row.band << ")" << std::endl;
-			Check( std::fabs( ratio - 1.0 ) < row.band, label + ": enclosed/air image mean ratio within band of 1" );
+			if( row.gated ) {
+				Check( std::fabs( ratio - 1.0 ) < row.band, label + ": enclosed/air image mean ratio within band of 1" );
+			} else {
+				std::cout << "      (NOT GATED: recorded DL-290 residual -- SMS chain etas seed their walk at air)" << std::endl;
+			}
 		}
 	}
 }
