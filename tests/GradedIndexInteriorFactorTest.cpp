@@ -587,6 +587,45 @@ static void RunSpectralRow( const double closedA )
 }
 
 //////////////////////////////////////////////////////////////////////
+// Row H: row D's scene with a scattering medium filling the graded box.
+// Medium vertices do not Advance -- the next surface vertex's Advance
+// telescopes over them -- but the NEE and connections made FROM a medium
+// vertex still price their segment from the tracked index (PT volume NEE
+// via MediumTransport, BDPT/VCM via the vertex's recorded index).  PT vs
+// BDPT vs VCM; an unpriced volume-NEE segment makes PT's own MIS partition
+// inconsistent and moves it off the bidirectional estimators.
+//////////////////////////////////////////////////////////////////////
+static void RunMediumRow()
+{
+	std::cout << std::endl << "-- Row H: scattering medium inside the graded box, pinhole inside, PT vs BDPT vs VCM --" << std::endl;
+	std::string base = WithSmallEmitter( ReadFile( "scenes/Tests/Materials/graded_index_seeded_inside.RISEscene" ) );
+	Check( !base.empty(), "H: fixture built" );
+	if( base.empty() ) return;
+	const std::string ortho = "orthographic_camera\n{\n\tlocation 0 0 0.333333333333\n\tlookat 0 0 0\n\tup 0 1 0\n\tviewport_scale 0.2 0.2\n}\n";
+	const std::size_t at = base.find( ortho );
+	Check( at != std::string::npos, "H: fixture camera block found" );
+	if( at == std::string::npos ) return;
+	base.replace( at, ortho.size(), "pinhole_camera\n{\n\tlocation 0 0 0.333333333333\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 60\n}\n" );
+	const std::string obj = "\tmaterial mat_graded\n\tposition 0 0 1\n}\n";
+	const std::size_t ao = base.find( obj );
+	Check( ao != std::string::npos, "H: graded object block found" );
+	if( ao == std::string::npos ) return;
+	base.replace( ao, obj.size(), "\tmaterial mat_graded\n\tposition 0 0 1\n\tinterior_medium fog\n}\n" );
+	// The medium chunk must precede its use: insert it right after the
+	// scene-file header line.
+	base.insert( base.find( '\n' ) + 1,
+		"\nhomogeneous_medium\n{\n\tname fog\n\tabsorption 0.05 0.05 0.05\n\tscattering 0.6 0.6 0.6\n\tphase isotropic\n}\n" );
+
+	const Stat p = RenderStat( ReplaceSpan( base, "RASTERIZER", RasterizerPT( 256 ) ), "med_pt" );
+	const Stat b = RenderStat( ReplaceSpan( base, "RASTERIZER", RasterizerBDPT( 128 ) ), "med_bdpt" );
+	const Stat v = RenderStat( ReplaceSpan( base, "RASTERIZER", RasterizerVCM( 128 ) ), "med_vcm" );
+	std::printf( "    PT   mean=%.6f\n    BDPT mean=%.6f  BDPT/PT=%.4f\n    VCM  mean=%.6f  VCM/PT=%.4f\n",
+		p.mean, b.mean, b.mean / p.mean, v.mean, v.mean / p.mean );
+	Check( p.ok && b.ok && p.mean > 0 && std::fabs( b.mean / p.mean - 1.0 ) < 0.04, "H: BDPT == PT within 4% (medium inside graded box)" );
+	Check( p.ok && v.ok && p.mean > 0 && std::fabs( v.mean / p.mean - 1.0 ) < 0.06, "H: VCM == PT within 6% (medium inside graded box)" );
+}
+
+//////////////////////////////////////////////////////////////////////
 // Row F: uniform-ior control on row A's geometry.
 //////////////////////////////////////////////////////////////////////
 static void RunUniformControlRow()
@@ -684,6 +723,7 @@ int main( int argc, char** argv )
 	RunSmallEmitterOutsideRow();
 	RunPinholeConsistencyRow();
 	RunSpectralRow( closedA );
+	RunMediumRow();
 	RunUniformControlRow();
 
 	std::cout << std::endl << "Passed: " << passCount << std::endl << "Failed: " << failCount << std::endl;

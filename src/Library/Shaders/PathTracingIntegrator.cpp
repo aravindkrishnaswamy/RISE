@@ -1180,23 +1180,23 @@ namespace
 		const Point3& scatterPoint, const Vector3& wo, const IMedium* pMedium,
 		const IRayCaster& caster, const Implementation::LightSampler* pLS,
 		ISampler& sampler, const RasterizerState& rast, const IObject* pMediumObject,
-		const Tag& tag );
+		const Tag& tag, const IORStack* pGradedIndexStack );
 
 	template<>
 	inline RISEPel PTEvaluateInScattering<PelTag>(
 		const Point3& scatterPoint, const Vector3& wo, const IMedium* pMedium,
 		const IRayCaster& caster, const Implementation::LightSampler* pLS,
 		ISampler& sampler, const RasterizerState& rast, const IObject* pMediumObject,
-		const PelTag& )
-	{ return MediumTransport::EvaluateInScattering( scatterPoint, wo, pMedium, caster, pLS, sampler, rast, pMediumObject ); }
+		const PelTag&, const IORStack* pGradedIndexStack )
+	{ return MediumTransport::EvaluateInScattering( scatterPoint, wo, pMedium, caster, pLS, sampler, rast, pMediumObject, 1, pGradedIndexStack ); }
 
 	template<>
 	inline Scalar PTEvaluateInScattering<NMTag>(
 		const Point3& scatterPoint, const Vector3& wo, const IMedium* pMedium,
 		const IRayCaster& caster, const Implementation::LightSampler* pLS,
 		ISampler& sampler, const RasterizerState& rast, const IObject* pMediumObject,
-		const NMTag& tag )
-	{ return MediumTransport::EvaluateInScatteringNM( scatterPoint, wo, pMedium, tag.nm, caster, pLS, sampler, rast, pMediumObject ); }
+		const NMTag& tag, const IORStack* pGradedIndexStack )
+	{ return MediumTransport::EvaluateInScatteringNM( scatterPoint, wo, pMedium, tag.nm, caster, pLS, sampler, rast, pMediumObject, 1, pGradedIndexStack ); }
 
 	// Radiance-map lookup (per-object or global environment).
 	template<class Tag>
@@ -1324,7 +1324,7 @@ namespace
 		const IGuidedNEEPdfBlend* pGuidedBlend, const IORStack* pMisIorStack,
 		Scalar neeTrainingScale )
 	{ return pLS->EvaluateDirectLighting( ri, brdf, pMaterial, caster, sampler, pShadingObject, pMedium, isVolumeScatter, pMediumObject, pGuidedBlend, pMisIorStack, neeTrainingScale,
-		/*bBsdfSamplingPartnerExists*/ true, /*bGradedIndexTracked (DL-09: this walk Advances)*/ true ); }
+		/*bBsdfSamplingPartnerExists*/ true, /*pGradedIndexStack (DL-09: this walk Advances)*/ pMisIorStack ); }
 	template<> inline Scalar PTEvaluateDirectLighting<NMTag>(
 		const Implementation::LightSampler* pLS, const RayIntersectionGeometric& ri,
 		const IBSDF& brdf, const IMaterial* pMaterial, const IRayCaster& caster,
@@ -1333,7 +1333,7 @@ namespace
 		const IGuidedNEEPdfBlend* pGuidedBlend, const IORStack* pMisIorStack,
 		Scalar neeTrainingScale )
 	{ return pLS->EvaluateDirectLightingNM( ri, brdf, pMaterial, tag.nm, caster, sampler, pShadingObject, pMedium, isVolumeScatter, pMediumObject, pGuidedBlend, pMisIorStack, neeTrainingScale,
-		/*bBsdfSamplingPartnerExists*/ true, /*bGradedIndexTracked (DL-09: this walk Advances)*/ true ); }
+		/*bBsdfSamplingPartnerExists*/ true, /*pGradedIndexStack (DL-09: this walk Advances)*/ pMisIorStack ); }
 
 	// BSDF value at a surface (guiding RIS / one-sample MIS).
 	template<class Tag>
@@ -2066,9 +2066,12 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					// NEE at scatter point
 					if( pLS )
 					{
+						// DL-09: `&iorStack` -- this walk Advances through
+						// graded media, so volume NEE prices its connection
+						// segment from the tracked index too.
 						Value Ld = PTEvaluateInScattering<Tag>(
 							scatterPt, wo, pCurrentMedium, caster, pLS,
-							sampler, rast, pMediumObject, tag );
+							sampler, rast, pMediumObject, tag, &iorStack );
 						if( PTPositiveMagnitude( Ld ) > 0 )
 						{
 							Value directContrib = throughput * Ld;
@@ -4833,9 +4836,10 @@ PathTracingIntegrator::IntegrateRayTemplated(
 				// NEE at the scatter point.
 				if( pLS )
 				{
+					// DL-09: `&iorStack` -- see the in-loop volume twin.
 					Value Ld = PTEvaluateInScattering<Tag>(
 						scatterPt, wo, pCurrentMedium, caster, pLS,
-						sampler, rast, pMediumObject, tag );
+						sampler, rast, pMediumObject, tag, &iorStack );
 					if( PTPositiveMagnitude( Ld ) > 0 )
 					{
 						Value directContrib = throughput * Ld;
@@ -5758,9 +5762,10 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 							// NEE at scatter point
 							if( pLS )
 							{
+								// DL-09: `&iorStack` -- see the Pel/NM twin.
 								Scalar Ld = MediumTransport::EvaluateInScatteringNM(
 									scatterPt, wo, pCurrentMedium, lambda, caster, pLS,
-									sampler, rast, pMediumObject );
+									sampler, rast, pMediumObject, 1, &iorStack );
 								if( Ld > 0 )
 								{
 									Scalar directContrib = throughput * Ld;
@@ -6360,7 +6365,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					// 1.0 (no-op) for every deeper iteration of this loop.
 					depth == startDepth ? castRRCompensation_ : Scalar( 1.0 ),
 					/*bBsdfSamplingPartnerExists*/ true,
-					/*bGradedIndexTracked (DL-09: this walk Advances)*/ true );
+					/*pGradedIndexStack (DL-09: this walk Advances)*/ &iorStack );
 				directNM = ClampContribution( directNM, stabilityConfig.directClamp );
 				// GUI render modes P2b `indirect` (HWSS twin): suppress
 				// NEE's direct-lighting contribution at the camera-visible
@@ -6976,9 +6981,10 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 					// scattering, i.e. indirect, and is kept in every mode.
 					if( pLS )
 					{
+						// DL-09: `&iorStack` -- see the Pel/NM twin.
 						Scalar Ld = MediumTransport::EvaluateInScatteringNM(
 							scatterPt, wo, pCurrentMedium, lambda, caster,
-							pLS, sampler, rast, pMediumObject );
+							pLS, sampler, rast, pMediumObject, 1, &iorStack );
 						if( Ld > 0 )
 						{
 							Scalar directContrib = throughput * Ld;

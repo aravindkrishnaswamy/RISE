@@ -2019,22 +2019,23 @@ namespace
 
 	//! DL-09 (docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md §3(ii)): the NEE
 	//! shadow segment from the shading point (whose walk's stack top has
-	//! been advanced to it) to the light point, when both lie in the same
-	//! graded-index medium, carries (n_shading/n_light)^2 -- the same factor
-	//! the BSDF-sampled continuation pays on arrival at that light, so the
-	//! two MIS strategies price one integrand.  Exactly 1 when the caller
-	//! does not track graded media, when the innermost medium is not
+	//! been advanced to it, or telescopes to it) to the light point, when
+	//! both lie in the same graded-index medium, carries
+	//! (n_shading/n_light)^2 -- the same factor the BSDF-sampled
+	//! continuation pays on arrival at that light, so the two MIS
+	//! strategies price one integrand.  Exactly 1 when the caller does not
+	//! track graded media (null stack), when the innermost medium is not
 	//! graded, or when a transparent shadow ray CROSSED a surface on the
 	//! way (the light is then in another medium region, and the segment
 	//! from the shading point to that boundary is DL-292's residual).
 	inline Scalar GradedNEESegmentScale(
-		const bool bTracked, const IORStack* pStack,
+		const IORStack* pGradedStack,
 		const Point3& lightPoint, const bool bCrossedSurface )
 	{
-		if( !bTracked || bCrossedSurface ) {
+		if( !pGradedStack || bCrossedSurface ) {
 			return Scalar( 1 );
 		}
-		return GradedIndexMedium::ConnectionScaleToPoint( pStack, lightPoint );
+		return GradedIndexMedium::ConnectionScaleToPoint( pGradedStack, lightPoint );
 	}
 }
 
@@ -2052,7 +2053,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
 	const IORStack* pMisIorStack,
 	const Scalar neeTrainingScale,
 	const bool bBsdfSamplingPartnerExists,
-	const bool bGradedIndexTracked
+	const IORStack* pGradedIndexStack
 	) const
 {
 	RISEPel result( 0, 0, 0 );
@@ -2473,7 +2474,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
 
 			// DL-09: the connection segment's graded-index factor.
 			result = result + amount * ( ( risWeight / pdfAlias ) *
-				GradedNEESegmentScale( bGradedIndexTracked, pMisIorStack, lightPos, !IsUnitTransmittance( shadowT ) ) );
+				GradedNEESegmentScale( pGradedIndexStack, lightPos, !IsUnitTransmittance( shadowT ) ) );
 		}
 		else
 		{
@@ -2776,7 +2777,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
 					// partner's trained `bsdfTimesCos` (set before the
 					// segment) does.
 					result = result + contrib * ( ( rrSurvivalCompensation * risWeight / pdfAlias ) *
-						GradedNEESegmentScale( bGradedIndexTracked, pMisIorStack, ptOnLum, !IsUnitTransmittance( meshShadowT ) ) );
+						GradedNEESegmentScale( pGradedIndexStack, ptOnLum, !IsUnitTransmittance( meshShadowT ) ) );
 				}
 			}
 		}
@@ -2956,7 +2957,7 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 	const IORStack* pMisIorStack,
 	const Scalar neeTrainingScale,
 	const bool bBsdfSamplingPartnerExists,
-	const bool bGradedIndexTracked
+	const IORStack* pGradedIndexStack
 	) const
 {
 	Scalar result = 0;
@@ -3217,7 +3218,7 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 
 			// DL-09: the connection segment's graded-index factor.
 			result = neeContrib *
-				GradedNEESegmentScale( bGradedIndexTracked, pMisIorStack, lightPos, shadowTNM != Scalar( 1 ) );
+				GradedNEESegmentScale( pGradedIndexStack, lightPos, shadowTNM != Scalar( 1 ) );
 			break;
 		}
 
@@ -3383,7 +3384,7 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 		// DL-09: the connection segment's graded-index factor (after
 		// training -- see the RGB twin).
 		result = contrib * ( ( rrSurvivalCompensation * risWeight / pdfAlias ) *
-			GradedNEESegmentScale( bGradedIndexTracked, pMisIorStack, ptOnLum, meshShadowTNM != Scalar( 1 ) ) );
+			GradedNEESegmentScale( pGradedIndexStack, ptOnLum, meshShadowTNM != Scalar( 1 ) ) );
 	} while( false );
 
 	// Environment map NEE (spectral path)

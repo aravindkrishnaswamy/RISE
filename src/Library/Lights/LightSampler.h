@@ -909,19 +909,22 @@ namespace RISE
 				//! still used for `bFullSphere`/the BRDF value -- there is
 				//! no BSDF-sampled sibling to partition against.
 				const bool bBsdfSamplingPartnerExists = true,
-				//! DL-09: does the caller's walk ADVANCE its IOR stack
+				//! DL-09: the IOR stack of a caller whose walk ADVANCES
 				//! through graded-index media (GradedIndexMedium::Advance at
-				//! every vertex), so that `pMisIorStack->top()` is the index
-				//! its throughput was priced to?  Only then is the NEE
+				//! every vertex), so that its top is the index the caller's
+				//! throughput was priced to.  Only then is the NEE
 				//! connection segment priced `(top/n(light point))^2`
 				//! (docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md §3(ii)).
-				//! Default FALSE: a walk that does not advance (the legacy
-				//! shader-op chain, the volume-only callers) keeps its
+				//! Default NULL: a walk that does not advance (the legacy
+				//! shader-op chain, RayCaster's own volume walk) keeps its
 				//! pre-DL-09 accounting on BOTH its NEE and its
 				//! BSDF-sampled side, which is what keeps its own MIS
-				//! partition consistent.  Exactly no effect unless the
-				//! stack's innermost medium is graded.
-				const bool bGradedIndexTracked = false
+				//! partition consistent.  Kept separate from
+				//! `pMisIorStack` on purpose: a volume vertex prices its
+				//! partner pdf stacklessly yet still sits in a graded
+				//! medium.  Exactly no effect unless the stack's innermost
+				//! medium is graded.
+				const IORStack* pGradedIndexStack = 0
 				) const;
 
 			/// Spectral variant of EvaluateDirectLighting.
@@ -943,7 +946,7 @@ namespace RISE
 				//! DL-171/DL-209 -- see the RGB overload's doc.
 				const bool bBsdfSamplingPartnerExists = true,
 				//! DL-09 -- see the RGB overload's doc.
-				const bool bGradedIndexTracked = false
+				const IORStack* pGradedIndexStack = 0
 				) const;
 
 			/// Returns the alias-table selection probability for a given
