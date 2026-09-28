@@ -394,6 +394,27 @@ namespace RISE
 		{
 			return 0;
 		}
+
+		/// DL-24 review P1-1 (2026-09-28).  True only when the NATURAL
+		/// selection mass of this SPF's up-going emissions (and of its
+		/// down-going ones), relative to the shading normal, is a
+		/// DETERMINISTIC function of (ri, ior_stack, nm): every
+		/// `Scatter`/`ScatterNM` call at the same query emits the same set
+		/// of lobe weights, and never emits nothing at random.  Direction
+		/// warps that keep a lobe on its side are allowed; a random
+		/// up-OR-down roll (a single-emit layered or tissue SPF), a lobe
+		/// dropped by a random horizon test (Lambertian under a tilted
+		/// shading normal) or a direction-dependent realized weight are
+		/// not.  `CompositeSPF` prices its layered transport through ONE
+		/// deterministic mixture (exact `Pdf`) only when its TOP layer
+		/// declares this; otherwise it runs its per-branch estimator,
+		/// which is unbiased for any positive branch weights.  The default
+		/// is false, which is always safe (never biased, at worst less
+		/// efficient); a wrong `true` zeroes whole transport classes.
+		virtual bool SelectionMassIsDeterministic() const
+		{
+			return false;
+		}
 	};
 
 	//! DL-125.  One-shot (per process, per class) warning when the HWSS

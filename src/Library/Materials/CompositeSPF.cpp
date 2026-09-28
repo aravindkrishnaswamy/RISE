@@ -822,7 +822,7 @@ namespace RISE
 			{
 				Scalar Qup;					// natural-selection mass of the top's up-going (direct) lobes
 				Scalar Qdown;				// ... of its down-going (transmitted) lobes
-				bool   det;					// Qup/Qdown identical under two independent draws
+				bool   det;					// the top DECLARES a deterministic up/down split (ISPF::SelectionMassIsDeterministic)
 				bool   walkerPossible;		// a one-path look found transport the evaluator cannot price
 			};
 
@@ -847,23 +847,34 @@ namespace RISE
 				}
 				const Scalar up1 = SubsetMass<P>( c1, isUp ),   dn1 = SubsetMass<P>( c1, isDown );
 
-				// The determinism check needs a second, independent draw --
-				// but only when a top BSDF prices the DIRECT class through
-				// the aggregate estimator.  With no top BSDF every direct
-				// ray is priced by its own lobe estimator and the covered
-				// rays by the evaluator proposals alone, so the weights
-				// need only be deterministic NUMBERS, which one hashed
-				// probe already is.
+				// DETERMINISM IS DECLARED, NEVER INFERRED (DL-24 review P1-1).
+				// An earlier revision compared two hashed draws and called
+				// the top deterministic when they agreed.  For a SINGLE-EMIT
+				// stochastic top (a nested composite, generic_human_tissue,
+				// a thin weave) one draw's up mass is exactly 0 or 1, two
+				// draws agree at least half the time, and AGGREGATE mode then
+				// gave the DIRECT branch (or every down branch) probability
+				// ZERO at that shading point -- transport never sampled, a
+				// bias (tissue over white, 60 deg, position-jittered furnace:
+				// 0.6250 against truth 1).  So only a top that DECLARES
+				// `ISPF::SelectionMassIsDeterministic()` takes the aggregate
+				// path; every other top runs PER-BRANCH mode, whose weights
+				// need only be deterministic positive numbers (the floors in
+				// MakeWeights keep every class reachable).  Two hashed probes
+				// are averaged there purely to make those numbers closer to
+				// the true split -- an efficiency choice, not a correctness
+				// one.
+				const bool declared = s.top.SelectionMassIsDeterministic();
 				ScatteredRayContainer c2;
-				if( s.pTopBSDF ) {
+				if( !declared ) {
 					HashedSampler hs( seed ^ kSaltProbeB );
 					P::Scatter( s.top, ri, hs, nm, c2, outside );
 				}
-				const Scalar up2 = s.pTopBSDF ? SubsetMass<P>( c2, isUp )   : up1;
-				const Scalar dn2 = s.pTopBSDF ? SubsetMass<P>( c2, isDown ) : dn1;
+				const Scalar up2 = declared ? up1 : SubsetMass<P>( c2, isUp );
+				const Scalar dn2 = declared ? dn1 : SubsetMass<P>( c2, isDown );
 
 				Probe pr;
-				pr.det = fabs( up1 - up2 ) <= Scalar( 1e-12 ) && fabs( dn1 - dn2 ) <= Scalar( 1e-12 );
+				pr.det = declared;
 				pr.Qup   = pr.det ? up1 : Scalar( 0.5 ) * ( up1 + up2 );
 				pr.Qdown = pr.det ? dn1 : Scalar( 0.5 ) * ( dn1 + dn2 );
 				pr.walkerPossible = !s.HasLayeredValue();
@@ -1022,10 +1033,13 @@ namespace RISE
 			//
 			//  w2 + w3 + w4 = Qdown.  AGGREGATE mode (every non-delta
 			//  emission priced value*cos/Pdf, Pdf exact) requires Qup to be
-			//  deterministic given the entry, which the probe checks: true
-			//  of every top whose lobe weights do not depend on its own
-			//  random draws (dielectric, perfect refractor, translucent,
-			//  lambertian) and of every reflection-only top (Qup == 1).
+			//  deterministic given the entry, which the TOP must DECLARE
+			//  (`ISPF::SelectionMassIsDeterministic`: dielectric, perfect
+			//  reflector/refractor, translucent).  Not inferred from
+			//  samples (DL-24 review P1-1), and not assumed for a
+			//  reflection-only top either: a GGX or Lambertian top can
+			//  emit NOTHING on a random draw (a sample below the geometric
+			//  horizon), which would read as Qup == 0.
 			//  Otherwise PER-BRANCH mode: each branch prices only its own
 			//  class, which is unbiased for ANY positive weights, and Pdf is
 			//  an MIS partner rather than the exact density (legal by
@@ -1679,18 +1693,38 @@ Scalar CompositeSPF::EvaluateLobeFNM(
 Scalar CompositeSPF::EvaluateKrayNM(
 	const RayIntersectionGeometric& ri,
 	const Vector3& outDir,
-	ScatteredRay::ScatRayType /*rayType*/,
+	ScatteredRay::ScatRayType rayType,
 	Scalar nm,
 	const IORStack& ior_stack
 	) const
 {
 	// Reached for DELTA rays (the HWSS ladders pass pdfHero = -1 for them).
-	// A DIRECT delta ray is the top's own delta up-going lobe, emitted with
-	// kray_r / q (q its natural selection probability, since w1 == Qup in
-	// AGGREGATE mode).  Reconstruct it from the top at `nm`, using the
-	// selection probability at `nm` too -- exact whenever the top's lobe
-	// selection is wavelength-independent (a non-dispersive dielectric:
-	// F / F).  A WALKER ray is a multi-event stochastic path and declines.
+	// A DIRECT delta ray is the top's own delta up-going REFLECTION,
+	// emitted with kray_r / q (q its natural selection probability, since
+	// w1 == Qup in AGGREGATE mode).  Reconstruct it from the top at `nm`,
+	// using the selection probability at `nm` too -- exact whenever the
+	// top's lobe selection is wavelength-independent (a non-dispersive
+	// dielectric: F / F).  For a DISPERSIVE top the emitted weight is
+	// kray_hero / q_hero and the right companion weight is
+	// kray_nm / q_hero, which this cannot form (the hero wavelength is not
+	// an argument), so a dispersive top is approximate here (DL-221).
+	//
+	// DL-24 review P1-2: a WALKER ray must decline, and its DIRECTION
+	// cannot tell it apart -- a composite is a parallel slab, so every
+	// all-delta walker path that leaves through the top exits exactly
+	// along the mirror direction of the entry.  Its TYPE can: a walker
+	// ray leaves the top from INSIDE the stack, i.e. it arrived at the
+	// top travelling upward, and a reflection returns a ray to the side it
+	// came from, so an up-going ray out of the top from inside is a
+	// TRANSMISSION, never a reflection.  The DIRECT delta ray is the only
+	// up-going eRayReflection this SPF emits in AGGREGATE mode, so only
+	// that type, matched against a top lobe of the same type, is
+	// reconstructed.  PER-BRANCH mode prices the direct ray as
+	// kray_r / (q * w1) with a floored w1 that is not Qup, so it declines
+	// outright.
+	if( rayType != ScatteredRay::eRayReflection ) {
+		return -1;
+	}
 	if( !CompositeSPFImpl::EntryFromTop( ri ) ) {
 		return -1;
 	}
@@ -1698,6 +1732,12 @@ Scalar CompositeSPF::EvaluateKrayNM(
 	const Vector3 d = Vector3Ops::Normalize( outDir );
 	if( !( Vector3Ops::Dot( d, n ) >= 0 ) ) {
 		return -1;
+	}
+	{
+		const CompositeSPFImpl::Probe pr = CompositeSPFImpl::DoProbe<CompositeSPFImpl::PipeNM>( *this, ri, ior_stack, nm );
+		if( !pr.det ) {
+			return -1;
+		}
 	}
 
 	const uint64_t seed = CompositeSPFImpl::HashPoint(
@@ -1714,7 +1754,7 @@ Scalar CompositeSPF::EvaluateKrayNM(
 	}
 	Scalar result = -1;
 	for( unsigned int i = 0; i < count; i++ ) {
-		if( !c[i].isDelta ) {
+		if( !c[i].isDelta || c[i].type != ScatteredRay::eRayReflection ) {
 			continue;
 		}
 		const Vector3 ci = Vector3Ops::Normalize( c[i].ray.Dir() );
