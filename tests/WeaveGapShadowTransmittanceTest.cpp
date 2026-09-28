@@ -678,9 +678,10 @@ static void TestAreaPartitionGuard()
 	std::cout << "=== area: receiver under ONE gapped weave sheet, small AREA emitter (partition guard) ===" << std::endl;
 	const double gaps[] = { 0.3 };
 	std::vector<RowSpec> rows;
-	// 5 %: n = 5 seed bases put PT at -0.16 .. +1.04 % and BDPT at
-	// -2.77 .. -0.71 % (identical spread before and after DL-05 -- this
-	// light kind's shadow path is untouched); the failure this row
+	// 5 %: six runs (seed bases 1000-4000, before and after DL-05) put
+	// PT at -1.42 .. +1.04 % and BDPT at -2.77 .. -0.71 % (the pre-fix runs
+	// inside the post-fix spread -- this light kind's shadow path is
+	// untouched); the failure this row
 	// exists for, an area-light NEE arm that sees through the gap while
 	// PT's BSDF-sampled continuation still reaches the emitter through it
 	// at MIS weight 1, reads +103 % (measured by forcing that arm).

@@ -43,8 +43,9 @@ all (a plain dielectric pane renders 0.000000 under it, and adding
 see §15 debt 26.
 Debt 25's fix exposed **debt 27** — a two-layer gapped weave reads PT UNDER
 BDPT/VCM by 1.28–1.55× because PT's binary NEE cannot reach a path through
-the far layer's delta gap and the near layer's continuum lobe, **OPEN**, not
-a closed-solid effect. Phase 3's
+the far layer's delta gap and the near layer's continuum lobe, not a
+closed-solid effect -- **FIXED 2026-09-28** (ledger DL-05: a delta light's
+NEE shadow ray now sees through the gap; §15 item 27). Phase 3's
 weave-resolving-geometry scope (yarn-density loop/crossing geometry) stays
 **declined**, on the same precedent and for the same reasons as before; what
 shipped instead is the bounded `add_fuzz` verb — a sparse fuzz-shell groom
@@ -6515,10 +6516,38 @@ yet known (§10.1).
     band loosened — see [bdpt-vcm-mis-balance.md's "Sibling sweep"
     addendum](skills/bdpt-vcm-mis-balance.md) for the full accounting.
 
-27. **OPEN 2026-09-05 — PT cannot sample the far layer's delta gap: a
-    two-layer gapped weave reads PT UNDER BDPT/VCM by 1.28–1.30× at gap
-    0.1 (two planes / box) and 1.55× at gap 0.3 with the light outside;
-    exact with the light inside or a single layer.**
+27. **FIXED 2026-09-28 (debt ledger DL-05, slice `debt-dl05`; row left
+    open for the supervisor to strike) — was OPEN 2026-09-05: PT cannot
+    sample the far layer's delta gap: a two-layer gapped weave read PT
+    UNDER BDPT/VCM by 1.28–1.30× at gap 0.1 (two planes / box) and 1.55×
+    at gap 0.3 with the light outside; exact with the light inside or a
+    single layer.**
+
+    **Resolution (2026-09-28).**  Only a DELTA light's NEE shadow ray sees
+    through a non-bending delta pass-through: `IMaterial::
+    HasDeltaPassThrough()` + `ISPF::DeltaPassThroughTransmittance{,NM}`
+    (the SPF's own expected gap throughput -- `gap(x)` for the weave,
+    re-priced in expectation by `fabric_material`, `coated_material`,
+    `composite_material` and the luminaire wrappers), consulted by
+    `RayCaster::CastShadowRayAuto( ..., bDeltaLight )` for PT's delta-light
+    arm, the Step-1 zero-exitance lights and BDPT's zero-exitance sweep.
+    An AREA or environment light keeps a binary shadow there: PT's
+    BSDF-sampled continuation already reaches it THROUGH the gap at MIS
+    weight 1 (the gap is a delta vertex, so the emitter hit has no NEE
+    partner), which is exactly the "one side is suppressed" the paragraph
+    below asks for -- forcing that arm through measured +103 % on a closed
+    form.  BDPT/VCM connections are unchanged (the gap is already a delta
+    subpath vertex their MIS skips).  Re-measured at this item's own setup
+    (24×24, 512 spp, n = 4; BDPT/PT before -> after): box gap 0.3 1.5453 ->
+    0.9933, six planes 0.3 1.5447 -> 0.9929, box 0.1 1.2773 -> 1.0007, six
+    planes 0.1 1.2760 -> 0.9994, two planes 0.1 1.2626 -> 1.0018, single
+    plane 1.0000 -> 1.0000, light inside 0.9971 -> 0.9969; the ~0.7 % left
+    on the box is the gap-0 closed-box residual debt 25 records (0.9945 ->
+    0.9935 on the same box at gap 0).  Closed form, full table, cost, the
+    `silk`/`satin` gap-0 gate and the two residuals it opened (DL-294, a
+    narrow-fov bidirectional splat bias; DL-295, PT+SMS dropping emission
+    after a gap): [DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md](DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md).
+    The history below is kept as written.
 
     Exposed by debt 25's fix — masked before it by the closed-box leak that
     debt 25 filed. Measured (same setup as debt 25's after-table):
@@ -6583,7 +6612,8 @@ yet known (§10.1).
 
     **Auto-router.** `docs/RENDERING_INTEGRATORS.md` §2 /
     `docs/AUTO_RASTERIZER_DESIGN.md` currently have no rule for this
-    two-layer-gap regime, and PT is the default.
+    two-layer-gap regime, and PT is the default.  (Moot since the 2026-09-28
+    fix: PT now agrees with BDPT/VCM on this regime.)
 ---
 
 ## 16. Non-goals
