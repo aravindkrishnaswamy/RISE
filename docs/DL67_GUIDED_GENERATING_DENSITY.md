@@ -1,9 +1,11 @@
 # DL-67: the guided continuation at a multi-lobe SPF, priced on ONE partition
 
-Slice `debt-dl67`, 2026-09-27/28, branched from `master` `6b91fd19`.  Two
-rounds: round 1 (`1a2c7c67`) and round 2, which answers an external review
-(FAIL, two P1s -- both about the round-1 rule's PREMISES, not its
-algebra).  Ledger row: [DEBT_LEDGER.md](DEBT_LEDGER.md) DL-67; residual
+Slice `debt-dl67`, 2026-09-27/28, branched from `master` `6b91fd19`.  Three
+rounds: round 1 (`1a2c7c67`); round 2 (`d56ace70`), which answers an
+external review (FAIL, two P1s -- both about the round-1 rule's PREMISES,
+not its algebra); and round 3, which answers a second review (FAIL, one
+P1: round 2's vertex-level rule let the one-sample firing probability
+reach 1, which drops every delta lobe -- a third premise).  Ledger row: [DEBT_LEDGER.md](DEBT_LEDGER.md) DL-67; residual
 DL-285.  Predecessors:
 [DL67_SLICE0_SCHLICK_PDF_WEIGHTS.md](DL67_SLICE0_SCHLICK_PDF_WEIGHTS.md)
 (the aggregate `ISPF::Pdf()` made the true generating density),
@@ -30,7 +32,10 @@ vertex is guided when the field is active there (trained, depth, alpha,
 non-specular arrival -- the same gate `PTGuidingMisPdf` uses for NEE) and
 the material has a BSDF for the guide technique to price.  At a guided
 vertex the guide fires with probability `a` (one-sample: PT's nominal
-alpha `alpha_nom`, BDPT's `guidingAlpha`) or always (RIS), and the two
+alpha `alpha_nom`, BDPT's `guidingAlpha`, both clamped to
+`[0, kGuidingMaxOneSampleProbability = 0.9]` by
+`PathTransportUtilities::GuidingOneSampleProbability` -- premise 3, §2)
+or always (RIS), and the two
 techniques are combined through ONE deterministic partition:
 
 ```
@@ -52,10 +57,11 @@ function NEE is weighted against (DL-74).  Details:
   (non-delta, zero weight); a guide draw ALWAYS continues on that
   placeholder (a guide draw is a non-delta event of its own, not the
   selected lobe's), so it counts as a diffuse bounce for the per-type
-  bounce limits and resolves its medium through
-  `GuidedContinuationIORStack` from the material.
+  bounce limits (premise 4, §2 -- a documented limitation) and resolves
+  its medium through `GuidedContinuationIORStack` from the material.
 * A delta lobe keeps `W_b = 1` (the guide cannot produce a delta
-  direction) but is divided by `1 - a`, the probability it was kept.
+  direction) but is divided by `1 - a`, the probability it was kept --
+  which is why `a` must stay strictly below 1 (premise 3).
 * Where `p_agg(w_I) <= 0` at a direction a lobe really generated,
   `W_b := 1` (DL-103's guard, no known production inhabitant since DL-41
   closed); in RIS the lobe's own `selectProb * pdf` also stands in for
@@ -66,7 +72,9 @@ function NEE is weighted against (DL-74).  Details:
   `c_y * sum(w) / w_y` with `c_0 = X_b`-without-`1/(1-a)` and
   `c_1 = f cos / (g + p_agg)`.  A weight only has to be positive where its
   contribution is: a delta or target-less candidate 0 is weighted by its
-  own contribution magnitude.
+  own contribution magnitude, and a guide candidate whose target-based
+  weight is unusable (`target1 <= 0` or a vanishing proposal density) by
+  ITS contribution magnitude (round 3; measure-zero before).
 
 **BDPT's `pdfFwd` has one rule, guided or not**: the aggregate
 `ISPF::Pdf()` at the direction actually traced -- the MIS-partner
@@ -74,7 +82,7 @@ function `pdfRev` and every connection strategy evaluate.  A substituted
 direction marks the vertex non-delta.  The zero-aggregate fallback is the
 density the continuation's own weight corresponds to (`equivScatterPdf`).
 
-## 2. Why it is unbiased -- and its two premises
+## 2. Why it is unbiased -- and its four premises
 
 Condition on the Scatter realization `R` and let the technique coin be
 independent of `R` with probability `a`:
@@ -88,7 +96,8 @@ with `V_I = W_b` for a non-delta lobe and 1 for a delta lobe.  Taking
 `E_R` with the SPF contract `E_R[sum_I kray_I h(w_I)] = integral f_SPF cos h`
 gives `integral f_BSDF cos W_g + integral f_SPF cos W_b` (the delta part of
 `f_SPF` rides entirely on `V = 1`).  That equals `I` for ANY deterministic
-`W` under exactly two premises:
+`W` under the premises below.  Rounds 1 and 2 stated only the first
+two; the reviews found the third and fourth:
 
 1. **The technique choice is independent of the realization.**  Round 1
    violated this.  It let the guide fire only when the SELECTED lobe was
@@ -115,6 +124,47 @@ gives `integral f_BSDF cos W_g + integral f_SPF cos W_b` (the delta part of
    (-1.6% PT, -1.2% BDPT, §5).  DL-67 cannot close that without building
    a `PolishedBRDF` that matches `PolishedSPF` -- a model change to every
    polished render's NEE, outside this row.  **DL-285** carries it.
+
+3. **`0 < a < 1` wherever the BSDF technique owns mass the guide cannot
+   reach.**  A delta lobe is such mass: `W_b = 1` there, priced
+   `kray/q/(1 - a)` on the `1 - a` of samples that keep it.  At `a = 1`
+   those samples never occur and the delta transport vanishes -- the
+   DL-74 side condition ("a weight must be zero wherever its own
+   strategy's density is") failing in the other direction.  Round 2 hit
+   this: PT's `alpha_nom = pathguiding_alpha * 2 * sigma(cell)` was
+   clamped to EXACTLY 1, and the learned sigmoid tops out at ~0.9997, so
+   any `pathguiding_alpha` above ~0.5002 gave `a = 1` in a saturated cell
+   (this slice's own topology-L rows use 0.7); with learned alpha off,
+   `pathguiding_alpha 1.0` did it directly, in both integrators.  Affected:
+   any guided material with a delta lobe -- `subsurfacescattering_material`
+   / `randomwalk_sss_material` at roughness 0 (the shipped
+   `composite_wacky_creature.RISEscene` uses roughness 0.0), weave/fabric
+   gaps, polished at very high scattering.  Base and round 1 were immune
+   (a delta lobe was never guide-eligible).  Round 3 clamps `a` to
+   `[0, 0.9]` in both integrators (`GuidingOneSampleProbability`; PT
+   clamps `alpha_nom` once at `Configure`, so NEE's partner and the
+   continuation's partition stay one value).  0.9 rather than `1 - 1e-3`
+   because the delta lobe's weight is amplified by `1/(1 - a)`: the cap
+   bounds that variance factor at 10, while the guide's own share barely
+   changes between 0.9 and 1 (`p_agg` is small wherever the guide
+   matters).  The same clamp stops a configured alpha above 1 (learned
+   alpha off was never clamped) from making `p_mix` negative -- round 2
+   had also dropped the old `combinedPdf > NEARZERO` gate (row (t), §5.1:
+   alpha 1.5 read -2.25%).
+4. **The continuation state after the choice must not depend on WHICH
+   technique chose the direction.**  NOT met, and documented rather than
+   fixed: a guide draw continues as `eRayDiffuse` (for the per-type
+   bounce limits -- `PropagateBounceLimits` in PT,
+   `ExceedsBounceLimitForType` in BDPT -- and for `filter_glossy`) while a
+   kept lobe keeps its own type, so under a per-type cap the two
+   techniques integrate differently truncated paths.  The reviewer
+   measured topology L, PT, `max_diffuse_bounce 1`, 1024 spp, n = 3:
+   guided RIS 0.0569377 (sd 0.025%) vs un-guided 0.0572795 (sd 0.009%) =
+   **-0.60%**; at `max_diffuse_bounce 5` -0.06% (+0.02% at 4096 spp).
+   The per-type caps default to unlimited, so default renders are not
+   affected.  A fix would book the guide draw with the type the aggregate
+   would attribute its direction to, which needs per-lobe densities at an
+   arbitrary direction that the SPF interface does not expose.
 
 `p_agg`'s exactness is a variance matter (the balance-heuristic choice of
 `W`), except through the zero-aggregate guard.
@@ -191,7 +241,16 @@ their fall-back fires only on `guidePdf <= 0` at a SAMPLED direction.
   `generic_human_tissue_material`) is not guided at all; round 1's RIS
   killed the walk at the null-BSDF materials.
 * A guide draw is a diffuse-type event for per-type bounce limits and
-  `rs2.type` (it used to inherit the randomly selected lobe's type).
+  `rs2.type` (it used to inherit the randomly selected lobe's type) --
+  premise 4's documented limitation.
+* Round 3: the one-sample firing probability is capped at 0.9 in PT
+  (including the NEE partner's `alpha_nom`) and BDPT.  Variance-only
+  wherever no delta lobe is present; a configured alpha above 0.9 now
+  behaves as 0.9.
+* Round 3: PT's Accurate-AOV capture keys on the SELECTED lobe being
+  non-delta (as un-guided), not on the traced direction -- round 2 let a
+  guide draw add a capture at a vertex whose kept lobe was delta, so the
+  AOV depended on which technique fired.
 * BDPT RIS at `alpha = 0` (the warm-up iteration) no longer resamples;
   BDPT spends the guide distribution's `Get1D` at every guided vertex.
 * Training-only: PT RIS's candidate-0 pick now reports
@@ -212,7 +271,14 @@ round 2's file: **175/3** -- the new tilted-shading-normal Lambertian
 rows read **-3.04% / -3.45% / -2.47%** (one-sample fixed / learned / RIS,
 broad field; sharp field ~ -1%), tilted Schlick -0.55..-0.87% (inside
 band).  Round 2: **178/0**, every row within 0.83% of its reference, and
-every env row within 0.17% at 10x the samples (1.6M per row).  Rows:
+every env row within 0.17% at 10x the samples (1.6M per row).  Round 3
+added (s) a SMOOTH `subsurfacescattering_material` (all lobes delta; the
+reference is the un-guided control at 2x the samples, which is
+deterministic here) and (t) a white Lambertian at alpha 1.5: round 2
+(`d56ace70`) reads **182/3** on round 3's file -- (s) one-sample fixed
+alpha 1.0 **exactly 0**, (s) learned alpha 0.7 at a cell driven to
+sigma 0.9984 **exactly 0**, (t) **-2.25%**; round 3: **185/0**, (s)
+-0.82% / +0.44% (fixed 1.0 / learned), (t) -0.01%.  Rows:
 
 | row | base | round 1 | round 2 |
 |---|---|---|---|
@@ -224,6 +290,8 @@ every env row within 0.17% at 10x the samples (1.6M per row).  Rows:
 | (r) tilted lambertian env, one-sample broad (new) | -- | **-3.04%** | +0.30% |
 | (r) tilted lambertian env, RIS broad (new) | -- | **-2.47%** | +0.05% |
 | (r) tilted schlick env (new, worst) | -- | -0.87% | -0.56% |
+| (s) smooth sss, one-sample fixed alpha 1.0 (round 3) | +0.00% (review) | -- | round 2 **0 exactly**, round 3 -0.82% |
+| (t) lambertian, one-sample alpha 1.5 (round 3) | -- | -- | round 2 **-2.25%**, round 3 -0.01% |
 
 PT read fine on the black-diffuse case even in round 1: PT's per-lobe
 rule admitted the glossy lobe too, which kept `alphaBar > 0`.
@@ -238,6 +306,26 @@ round 2's file: **95/15** -- black-diffuse schlick eye one-sample
 DISJOINT seed ranges (round 1's `seed += 1000` with 200000 samples made
 consecutive rows share ~99.5% of their seeds, so its "every eye row within
 2.5 standard errors" was not a set of independent checks).
+
+Round 3 adds, on per-FIXTURE seed blocks (round 2's ranges restarted at
+the same base in every fixture, so rows of different fixtures shared
+streams -- review P3):
+
+* one eye furnace per remaining multi-lobe SPF family --
+  `ward_isotropic_material` (alpha 0.3), `ward_anisotropic_material`
+  (0.2 / 0.4), `isotropic_phong_material` (N 20),
+  `ashikminshirley_anisotropicphong_material` (nu 40, nv 10) -- 8 guided
+  rows each.  On BASE `6b91fd19` all 32 are red: **+18.9% .. +111%**
+  (Ward iso), **+20.5% .. +111%** (Ward aniso), **+30.4% .. +119%**
+  (Phong), **+24.8% .. +75.6%** (Ashikhmin); base reads 74/90 on round 3's
+  file.  Round 2 and round 3 are green on them.
+* a SMOOTH `subsurfacescattering_material` eye furnace against a 4x
+  un-guided reference (combined-standard-error z, |z| <= 4): round 2 reads
+  **exactly 0** at one-sample alpha 1.0 (z = -120); round 3 reads
+  0.0201969 +/- 0.00109 against 0.0206389 +/- 0.00017 (z = -0.40).
+
+Round 2 on round 3's file: **163/1**.  Round 3: **164/0**, largest |z|
+over the printed rows 2.03.
 
 ### 5.3 `BDPTStrategyBalanceTest` guided topology L (2% band)
 
@@ -263,7 +351,25 @@ what a bias looks like.  The one-sample rows fire rarely (adaptive alpha
 ~0.016 on this scene) and are consistency pins; the generator-level test
 is their red-proof.
 
-### 5.4 The residual: `polished_material` (DL-285)
+### 5.4 Which SPFs are verified, and how
+
+| SPF family | generator-level (`BDPTGuidedContinuationTest`) | scene-level render |
+|---|---|---|
+| Lambertian | eye + light rows (incl. tilted normal) | PT furnaces (`PTGuidingMISPartitionTest` DL-74 rows, (r)) |
+| `SchlickSPF` (incl. black diffuse, tilted normal) | eye + light + NM rows | topology L guided rows (`BDPTStrategyBalanceTest`) |
+| `TranslucentSPF` | eye + light rows | PT furnace row (n) |
+| Ward isotropic / anisotropic | eye rows (round 3) | reviewer's topology L, 1024 spp: +0.025% / +0.024% (base BDPT +54.2%), -0.051% / -0.006% (base +55.6%) |
+| `IsotropicPhongSPF` | eye rows (round 3) | reviewer: +0.011% / -0.046% (base +52.9%) |
+| `AshikminShirleyAnisotropicPhongSPF` | eye rows (round 3) | reviewer: -0.048% / -0.011% (base +62.1%) |
+| smooth SSS (delta lobes only) | eye row (round 3) | PT furnace row (s) |
+| `PolishedSPF` | -- | fails premise 2: DL-285 |
+| `CompositeSPF` | -- | not verified (DL-24/DL-221) |
+| single-emit SPFs (GGX, Cook-Torrance, Coated) | -- | argued: selectProb is identically 1, so the partition reduces to the pre-DL-67 single-lobe case |
+
+(PT scene-level numbers in the reviewer column are PT / BDPT guided RIS vs
+un-guided of the same integrator.)
+
+### 5.5 The residual: `polished_material` (DL-285)
 
 Topology L with `polished_material` (reflectance 0.4, tau 0.9, ior 1.5,
 scattering 20), guided RIS vs un-guided of the SAME integrator:
@@ -287,9 +393,33 @@ onto the kept lobe as well -- it observes the EXIT.
 
 ## 7. Cost
 
-Two separately built `bin/rise` binaries (`6b91fd19` vs round 2),
-interleaved, order alternated per repetition, n = 4, user CPU, 256x256 at
-96 spp, 3 training iterations:
+**Round 2's table below understated BDPT's cost.**  The external review
+re-measured with its own interleaved, alternating-order A/B on topology L
+(all `schlick_material`, 256x256, 96 spp, 3 training iterations, LIGHT
+guiding on: `pathguiding_light_max_depth 4`):  BDPT RIS **+10.63%**
+(n = 4, t = 14.9), **+8.94%** (t = 8.4) and **+8.79%** (repeat); BDPT
+one-sample **+3.56%** (t = 3.2); PT RIS +2.62% (n.s.); PT one-sample
+**-10.04%** (t = -5.7).  Round 3 re-measured the same scenes with the
+reviewer's own generator (`gen.py`) and two freshly built binaries
+(`6b91fd19` vs round 3), n = 4, order alternated, on a heavily loaded
+machine (load average 25-54, another worker active):
+
+| scene (reviewer's) | base (s) | round 3 (s) | paired delta | reviewer |
+|---|---|---|---|---|
+| BDPT RIS | 91.63 +/- 0.99 | 95.80 +/- 1.16 | **+4.55% (t = 8.0)** | +10.63% / +8.94% / +8.79% |
+| BDPT one-sample | 78.06 +/- 1.78 | 78.67 +/- 0.58 | +0.83% (t = 0.7) | +3.56% (t = 3.2) |
+| PT RIS | 54.70 +/- 1.15 | 55.67 +/- 0.44 | +1.81% (t = 1.7) | +2.62% (n.s.) |
+| PT one-sample | 42.22 +/- 1.46 | 40.03 +/- 0.73 | **-5.10% (t = -2.5)** | -10.04% (t = -5.7) |
+
+The honest reading: **BDPT RIS costs +4.5% to +10.6%** (both measurements
+significant; they disagree on size, most plausibly through machine load),
+BDPT one-sample 0 to +3.6%, PT RIS ~+2% (not significant in either), and
+PT one-sample is 5-10% FASTER.  Round 2's measurement (below) ran without
+light guiding.
+
+Round 2's own measurement -- two separately built binaries (`6b91fd19` vs
+round 2), interleaved, order alternated per repetition, n = 4, user CPU,
+256x256 at 96 spp, 3 training iterations, no light guiding:
 
 | scene | base (s) | round 2 (s) | paired delta |
 |---|---|---|---|
@@ -308,7 +438,7 @@ significant change anywhere.
 ## 8. Residuals
 
 * **DL-285** -- `polished_material`'s BSDF/SPF mismatch (§2 premise 2,
-  §5.4).
+  §5.5).
 * `CompositeSPF` (DL-24 / DL-221): its 50/50 placeholder `Pdf()` is a
   variance matter under round 2 (the realization-independence premise no
   longer depends on the SPF), except where it reads 0 at a generated
@@ -318,3 +448,18 @@ significant change anywhere.
 * Glossy "half-trust" is gone: the guide now takes probability `a` at a
   glossy vertex too.  Unbiased by §2; a variance question for strongly
   glossy scenes, not measured beyond the cost table.
+* **Premise 4** (§2): under a per-type bounce cap a guide draw and a kept
+  lobe continue under different types -- -0.60% at PT
+  `max_diffuse_bounce 1` on topology L (reviewer), -0.06% at 5, nothing at
+  the default (unlimited).  Documented, not fixed.
+* **Variance at a delta-only vertex** (review P2, same root as premise 3):
+  a vertex whose lobes are all delta (smooth SSS) is still guided, and
+  there the guide fires with probability `a` and always contributes 0,
+  so the delta transport's variance grows by ~`1/(1 - a)` --
+  `BDPTGuidedContinuationTest`'s smooth-SSS row reads standard error
+  0.00063 at alpha 0.7 against base's 0.00034 (3.4x variance), 0.00109
+  at the 0.9 cap.  Not guiding such a vertex needs a REALIZATION-
+  INDEPENDENT "every lobe is delta" query (premise 1), and none exists:
+  `SpecularInfo::isSpecular` means "HAS a delta interaction" (it is true
+  for `polished_material`, whose diffuse substrate the guide should
+  cover).  Left as a variance cost.

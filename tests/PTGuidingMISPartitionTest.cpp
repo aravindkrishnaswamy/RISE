@@ -1751,7 +1751,10 @@ static void RunEnvRows()
 	// halves alpha for it and PART 3's ApplyCosineProduct gate skips it,
 	// while the NEE side does neither.  Run with the LEARNED alpha back at
 	// its neutral setting (learnedAlpha=false) so this row isolates the
-	// lobe-type asymmetry from row (b)'s alpha asymmetry.
+	// lobe-type asymmetry from row (b)'s alpha asymmetry.  (DL-67 round 2
+	// removed `GuidingEffectiveAlpha`'s per-lobe halving: the guide now
+	// fires with one vertex-level probability whatever the lobe's type,
+	// so this row is a consistency pin for the eRayReflection tag.)
 	{
 		RowConfig cfg{ "(c)", false, false, true, eGuidingOneSampleMIS, 0.9 };
 		const Scalar m = RunBatch( fx, *glossyMat, guide, cfg, kN, 4000 );
