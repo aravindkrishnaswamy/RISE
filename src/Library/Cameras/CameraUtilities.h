@@ -117,6 +117,14 @@ namespace RISE
 		/// margin `tests/SobolDimensionBudgetTest.cpp`'s
 		/// `TestApertureDrawConsumption` uses when it derives
 		/// `kMaxEyeWalkStream` the same way.
+		///
+		/// DL-283: this bounds the PER-VERTEX walk streams only.  Since
+		/// DL-283 each medium distance sample draws from a block of its
+		/// own at `BDPTUtilities::MediumDistanceStream` -- streams
+		/// [8192, 139264), above both this bound and
+		/// `kPSSMLTFilmLensApertureStream`, and disjoint from both
+		/// (SobolDimensionBudgetTest Test G2 and PSSMLTStreamAliasingTest
+		/// C3 assert it).
 		static const int kMaxBdptWalkStreamUnderPSSMLT = 16 + 1024;
 
 		/// Stream reserved for the MLT film / lens / (debt 28) aperture

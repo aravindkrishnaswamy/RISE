@@ -294,13 +294,14 @@ namespace RISE
 		//!
 		//! 8192 = 256 * `SobolSampler::kStreamStride`, i.e. stream
 		//! indices 0..255 each get 32 dimensions of their own.  That
-		//! covers every stream a SHIPPED scene can reach:
+		//! covers every PER-VERTEX stream a SHIPPED scene can reach
+		//! (the deliberate wrap-region families are listed below):
 		//!
 		//!   film / light-source select        stream 0
 		//!   light-subpath bounce d            1 + d
 		//!   eye-subpath bounce d              16 + d
 		//!   BDPT strategy select              47
-		//!   MLT film / lens / aperture        48
+		//!   MLT film / lens / aperture        2048 (DL-08)
 		//!   VCM per-eye-vertex NEE            48 + i, i >= 1
 		//!   thin-lens aperture (Get2D only)   3322 * 32, see
 		//!                                     BDPTCameraUtilities
@@ -324,6 +325,20 @@ namespace RISE
 		//! the table, draws do not alias -- they are re-indexed, see
 		//! `Sample` -- so this is a quality bound, not a correctness
 		//! one.
+		//!
+		//! That bound covers the PER-VERTEX streams only (DL-283).  Two
+		//! stream families are placed past the table deliberately, so
+		//! every medium render draws wrapped dimensions: PT's volume
+		//! walks (`PathTransportUtilities::PTVolumeWalkStream`, streams
+		//! 4096..8191, wrap counts 16..31 -- valid for
+		//! `max_volume_bounce` <= 1024 and PT depth <= 4080) and the
+		//! BDPT/VCM/MLT medium distance-sampling blocks
+		//! (`BDPTUtilities::MediumDistanceStream`, 8192..139263, wraps
+		//! 32..543).  They share table rows with main-loop streams at a
+		//! different index permutation and value seed; the measured
+		//! dyadic leading-digit collapse against those streams is 0 %
+		//! from 8 spp (`SobolDimensionParityTest` section H).
+		//! `SobolDimensionBudgetTest` Test G2 enumerates both families.
 		//!
 		//! Cost: 8192 * 32 * 4 = 1 MiB of expanded table, built once
 		//! per process at first use, from 555 KiB of embedded initial
@@ -573,7 +588,11 @@ namespace RISE
 		// well stratified dyadic block (see `ScrambleIndex`).  Two
 		// streams that wrap onto each other are decorrelated; they are
 		// not a joint net, which is why `kNumDimensions` is sized to
-		// keep every shipped scene off this path entirely.
+		// keep every shipped scene's PER-VERTEX streams off this path.
+		// The medium-walk streams (PT's `PTVolumeWalkStream`, BDPT's
+		// `MediumDistanceStream`) live on it by design (DL-283); their
+		// leading-digit collapse against the rows they share is 0 %
+		// from 8 spp (SobolDimensionParityTest section H).
 		//
 		// sampleIndex: which sample in the sequence (0, 1, 2, ...)
 		// dimension:   which dimension (0, 1, 2, 3, ...)

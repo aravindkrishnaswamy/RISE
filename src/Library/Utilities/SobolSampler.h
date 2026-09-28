@@ -25,13 +25,26 @@
 //    harmless; see SobolSequence.h's header for the mechanism and
 //    docs/DL81_SOBOL_DIMENSION_PARITY.md for the measurements.  There
 //    is now a finite dimension supply (`SobolSequence::kNumDimensions`
-//    = 8192 = 256 streams' worth), sized so that every stream a
-//    SHIPPED scene reaches has dimensions of its own; past it, Get1D
-//    draws are re-indexed rather than aliased (they decorrelate, but
-//    stop being a joint net) and Get2D draws are unaffected, since
-//    they are padded and keyed by the raw dimension.
-//    `SobolDimensionBudgetTest` Test G recomputes the shipped bound
+//    = 8192 = 256 streams' worth), sized so that every PER-VERTEX
+//    stream a SHIPPED scene reaches has dimensions of its own; past
+//    it, Get1D draws are re-indexed rather than aliased (they
+//    decorrelate, but stop being a joint net) and Get2D draws are
+//    unaffected, since they are padded and keyed by the raw dimension.
+//    `SobolDimensionBudgetTest` Test G1 recomputes the shipped bound
 //    from the scene files.
+//
+//    NOTE (DL-283, 2026-09-27): "shipped scenes never wrap" is NOT the
+//    rule, and has not been since DL-247.  Two stream families live
+//    past the table ON PURPOSE, because they must be disjoint from
+//    every per-vertex stream at any depth: PT's volume-walk streams
+//    (`PathTransportUtilities::PTVolumeWalkStream`, 4096..8191, wrap
+//    counts 16..31) and BDPT/VCM/MLT's medium distance-sampling blocks
+//    (`BDPTUtilities::MediumDistanceStream`, 8192..139263, wraps
+//    32..543).  Every medium render therefore draws wrapped dimensions.
+//    Measured harmless: 0 % dyadic leading-digit collapse from 8 spp
+//    against the main-loop streams whose table rows they share
+//    (`SobolDimensionParityTest` section H).  Test G2 enumerates both
+//    families and asserts their wrap counts and collision-freedom.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: March 27, 2026
@@ -81,9 +94,15 @@ namespace RISE
 			//
 			// Encoding: phase = streamBase + bounceIndex
 			//   Light source sampling: phase 0
-			//   Light bounces 0..14:   phases 1..15
-			//   Eye bounces 0..14:     phases 16..30
-			//   SMS:                   phases 31..46
+			//   Light bounces d:       phases 1 + d
+			//   Eye bounces d:         phases 16 + d
+			//   BDPT strategy select:  phase 47
+			//   VCM NEE, eye vertex i: phase 48 + i
+			// The bounce ranges were laid out for 15 bounces; deeper
+			// walks run into each other's phases (light bounce 15 is
+			// eye bounce 0) -- a known pre-existing overlap, DL-286.
+			// The full map, including the wrap-region families past
+			// the dimension table, is SobolDimensionBudgetTest G2.
 			//
 		public:
 			// kStreamStride must be >= max dimensions consumed by

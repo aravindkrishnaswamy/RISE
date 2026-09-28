@@ -55,6 +55,16 @@
 //       every pixel.  A second counting floor, independent of C's;
 //       pinned near its measured value, not fixed (see
 //       SobolSequence.h).
+//    H. The wrap-region stream families (DL-283): PT's volume-walk
+//       streams and BDPT/VCM/MLT's medium distance-sampling blocks live
+//       past the 8192-dimension table by design, so each of their Get1D
+//       draws reads a table row some UNWRAPPED main-loop dimension also
+//       reads, at an Owen-permuted index.  Measured with the same
+//       dyadic 2x2 leading-digit collapse statistic as G, against (1)
+//       that aliased main-loop dimension, (2) the walk iteration's own
+//       vertex stream, (3) the other walk's block at the same iteration
+//       (same row, different wrap), beside the floor of ordinary
+//       adjacent production streams.
 //
 //  Author: Claude (debt-sobol slice, DL-81)
 //  Tabs: 4
@@ -75,6 +85,8 @@
 
 #include "../src/Library/Sampling/SobolSequence.h"
 #include "../src/Library/Utilities/SobolSampler.h"
+#include "../src/Library/Utilities/BDPTUtilities.h"
+#include "../src/Library/Utilities/PathTransportUtilities.h"
 
 // Declared by SobolSequence.h once the library consumes them; repeated
 // here so this test also builds against a library that does not yet.
@@ -977,6 +989,120 @@ int main( int argc, char** argv )
 			std::snprintf( msg, sizeof(msg),
 				"G: sweep at 2^%u spp examined all 80400 combinations", m );
 			Check( pairs == 80400ull, msg );
+		}
+	}
+
+
+	// ----------------------------------------------------------------
+	// H. The wrap-region stream families (DL-283).
+	//
+	// Collapse statistic exactly as section G: over the first 2^M
+	// samples, the dyadic 2x2 occupancy of (draw A >= 1/2, draw B >= 1/2);
+	// "collapsed" = two or more empty boxes, i.e. the two leading digits
+	// locked together.  Four value seeds; Get1D path (SobolSequence::
+	// Sample on the RAW dimension, which is what SobolSampler::Get1D
+	// calls).  Families of pairs:
+	//   PTa   PT walk (lane 0..3, event 0..255, slot 0..7) vs the
+	//         unwrapped dimension on the same table row;
+	//   MDa   BDPT medium block (side 0..1, iteration 0..63, draw
+	//         0..63) vs the unwrapped dimension on the same table row;
+	//   MDv   the same block draws vs the iteration's own vertex stream
+	//         (16 + d eye / 1 + d light, slots 0..7);
+	//   MDx   eye block d vs light block d, draw k -- same table row,
+	//         different wrap counts;
+	//   floor ordinary adjacent production streams (s, s+1), s 16..40,
+	//         8 x 8 slots -- what a render already lives with.
+	// ----------------------------------------------------------------
+	std::cout << std::endl << "H. Wrap-region stream families: leading-digit collapse (DL-283)" << std::endl;
+	{
+		const uint32_t table = SobolSequence::kNumDimensions;
+		const uint32_t stride = SobolSampler::kStreamStride;
+		const uint32_t seeds[4] = { 0x5eed1234u, 0x0badf00du, 0x283283u, 0x9e3779b9u };
+		typedef std::vector< std::pair<uint32_t, uint32_t> > PairList;
+		PairList pta, mda, mdv, mdx, flo;
+		for( uint32_t lane = 0; lane < 4; lane++ )
+			for( uint32_t ev = 0; ev < 256; ev++ )
+				for( uint32_t slot = 0; slot < 8; slot++ ) {
+					const uint32_t d = uint32_t( PathTransportUtilities::PTVolumeWalkStream( lane, ev ) ) * stride + slot;
+					pta.push_back( std::make_pair( d, d % table ) );
+				}
+		for( uint32_t side = 0; side < 2; side++ )
+			for( uint32_t it = 0; it < 64; it++ ) {
+				const uint32_t b = uint32_t( BDPTUtilities::MediumDistanceStream(
+					side ? BDPTUtilities::eLightWalk : BDPTUtilities::eEyeWalk, it ) ) * stride;
+				const uint32_t v = ( side ? 1u + it : 16u + it ) * stride;
+				for( uint32_t k = 0; k < 64; k++ ) {
+					mda.push_back( std::make_pair( b + k, ( b + k ) % table ) );
+					mdv.push_back( std::make_pair( b + k, v + ( k % 8u ) ) );
+					if( side == 0 ) {
+						const uint32_t bl = uint32_t( BDPTUtilities::MediumDistanceStream(
+							BDPTUtilities::eLightWalk, it ) ) * stride;
+						mdx.push_back( std::make_pair( b + k, bl + k ) );
+					}
+				}
+			}
+		for( uint32_t st = 16; st <= 40; st++ )
+			for( uint32_t a = 0; a < 8; a++ )
+				for( uint32_t c = 0; c < 8; c++ )
+					flo.push_back( std::make_pair( st * stride + a, ( st + 1u ) * stride + c ) );
+
+		// Sanity: every MDa / PTa partner really is a different raw
+		// dimension on the same row (the premise of the family).
+		bool rowPremise = true;
+		for( const auto& pr : pta ) if( pr.first == pr.second || pr.first % table != pr.second ) rowPremise = false;
+		for( const auto& pr : mda ) if( pr.first == pr.second || pr.first % table != pr.second ) rowPremise = false;
+		for( const auto& pr : mdx ) if( pr.first % table != pr.second % table || pr.first == pr.second ) rowPremise = false;
+		Check( rowPremise, "H: every aliased pair shares a table row at distinct raw dimensions" );
+
+		auto rate = [&]( const PairList& L, unsigned int m ) {
+			const uint32_t n = 1u << m;
+			unsigned long long pairs = 0, collapsed = 0;
+			std::vector<unsigned char> a( n ), b( n );
+			for( uint32_t sd = 0; sd < 4; sd++ ) {
+				for( const auto& pr : L ) {
+					unsigned int box[2][2] = { { 0, 0 }, { 0, 0 } };
+					for( uint32_t i = 0; i < n; i++ ) {
+						const int x = SobolSequence::Sample( i, pr.first,  seeds[sd] ) >= 0.5 ? 1 : 0;
+						const int y = SobolSequence::Sample( i, pr.second, seeds[sd] ) >= 0.5 ? 1 : 0;
+						box[x][y]++;
+					}
+					unsigned int empty = 0;
+					for( int x = 0; x < 2; x++ ) for( int y = 0; y < 2; y++ ) if( box[x][y] == 0u ) empty++;
+					pairs++;
+					if( empty >= 2u ) collapsed++;
+				}
+			}
+			return 100.0 * double( collapsed ) / double( pairs );
+		};
+
+		std::cout << "    pairs x 4 seeds: PTa " << pta.size() << ", MDa " << mda.size()
+		          << ", MDv " << mdv.size() << ", MDx " << mdx.size() << ", floor " << flo.size() << std::endl;
+		for( unsigned int m = 2; m <= 8; m++ ) {
+			const double rPTa = rate( pta, m ), rMDa = rate( mda, m ), rMDv = rate( mdv, m ),
+				rMDx = rate( mdx, m ), rFlo = rate( flo, m );
+			std::cout << "    " << std::setw( 3 ) << ( 1u << m ) << " spp: PTa " << std::fixed
+			          << std::setprecision( 2 ) << std::setw( 6 ) << rPTa << "%  MDa " << std::setw( 6 ) << rMDa
+			          << "%  MDv " << std::setw( 6 ) << rMDv << "%  MDx " << std::setw( 6 ) << rMDx
+			          << "%   floor " << std::setw( 6 ) << rFlo << "%" << std::endl;
+			// Measured (this table): at 8 spp PTa 0.00, MDa 6.25, MDv 13.84,
+			// MDx 25.00 against a floor of 24.69 -- MDx sits AT the
+			// counting floor (two index permutations of one row; the same
+			// pigeonhole as section G), not above it by more than noise.
+			// From 16 spp every family is exactly 0 while the floor is
+			// still 12.6 %.  Gate: at 8 spp within 1 point of the floor;
+			// from 16 spp exactly zero.
+			char msg[200];
+			if( m == 3 ) {
+				std::snprintf( msg, sizeof(msg),
+					"H: at 8 spp every wrap-region family is within 1 point of the production floor "
+					"(PTa %.2f MDa %.2f MDv %.2f MDx %.2f vs %.2f)", rPTa, rMDa, rMDv, rMDx, rFlo );
+				Check( rPTa <= rFlo + 1.0 && rMDa <= rFlo + 1.0 && rMDv <= rFlo + 1.0 && rMDx <= rFlo + 1.0, msg );
+			} else if( m >= 4 ) {
+				std::snprintf( msg, sizeof(msg),
+					"H: at %u spp no wrap-region pair collapses (PTa %.2f MDa %.2f MDv %.2f MDx %.2f)",
+					1u << m, rPTa, rMDa, rMDv, rMDx );
+				Check( rPTa == 0.0 && rMDa == 0.0 && rMDv == 0.0 && rMDx == 0.0, msg );
+			}
 		}
 	}
 
