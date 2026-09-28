@@ -5674,9 +5674,59 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 							ri2.geometric.glossyFilterWidth = glossyFilterWidth;
 							scene.GetObjects()->IntersectRay( ri2, true, true, false );
 
+							//
+							// --- sample this wavelength's medium along it
+							//
+							// DL-247: the IntegrateRayHWSS walk's defect,
+							// on the surface-bounce -> medium path; read
+							// that site's comment.  The segment to the next
+							// surface is IN the medium, so it is sampled
+							// (scatter -> continue the walk; no-scatter ->
+							// survival weight Tr / pSurvival) whether or not
+							// it ends on geometry, at this lane's OWN
+							// `lambda`.  At the bounce cap it carries its
+							// deterministic Beer-Lambert transmittance.
+							// Handing it straight to IntegrateFromHitNM let
+							// it cross as if through vacuum: +6 % inside vs
+							// outside the absorbing box of
+							// tests/MediumInsideOutsideInvariantTest.cpp
+							// once the camera-side walk was fixed (a camera
+							// inside the box reaches this walk through the
+							// floor bounce; one outside never does, because
+							// the dielectric shell has no BSDF and HWSS
+							// falls back to per-wavelength NM there).
+							//
+							const Scalar segDist = ri2.geometric.bHit ? ri2.geometric.range : RISE_INFINITY;
+							Scalar segWeight;
+							if( walkVolumeBounces < stabilityConfig.maxVolumeBounce )
+							{
+								const MediumSampleOutcome mso2 = SampleDistanceWithEquiangularMIS_NM(
+									pCurrentMedium, walkRay, segDist, lambda, pLS, mediumSampler );
+
+								if( mso2.zeroContrib ) break;
+
+								if( mso2.scattered ) {
+									walkMso = mso2;
+									walkT = mso2.t;
+									continue;			// next scatter event
+								}
+
+								const Scalar TrSeg = pCurrentMedium->EvalTransmittanceNM(
+									walkRay, segDist, lambda );
+								const Scalar pSurvival = mso2.noScatterPdfScale *
+									pCurrentMedium->EvalDistancePdfNM(
+										walkRay, segDist, /*scattered=*/false, segDist, lambda );
+								segWeight = ( pSurvival > 0.0 ) ? ( TrSeg / pSurvival ) : TrSeg;
+							}
+							else
+							{
+								segWeight = pCurrentMedium->EvalTransmittanceNM(
+									walkRay, segDist, lambda );
+							}
+
 							if( ri2.geometric.bHit )
 							{
-								hwssResult[w] += throughput * IntegrateFromHitNM(
+								hwssResult[w] += throughput * segWeight * IntegrateFromHitNM(
 									rc, rast, ri2, lambda, scene, caster,
 									sampler, pRadianceMap, walkDepth, iorStack,
 									walkPdf, 0, true, importance, rayType,
@@ -5690,48 +5740,8 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 								break;
 							}
 
-							//
-							// --- the continuation missed all geometry ---
-							//
-							// Sample this wavelength's medium along it once
-							// more: a scatter continues the walk, a
-							// no-scatter is the escape and carries the
-							// survival weight Tr / pSurvival (== 1 for a
-							// bounded medium) rather than Tr itself, which
-							// would double-count the attenuation the
-							// survival probability already encodes (G1-c).
-							//
-							Scalar escapeWeight;
-							if( walkVolumeBounces < stabilityConfig.maxVolumeBounce )
-							{
-								const MediumSampleOutcome mso2 = SampleDistanceWithEquiangularMIS_NM(
-									pCurrentMedium, walkRay, RISE_INFINITY, lambda, pLS, mediumSampler );
-
-								if( mso2.zeroContrib ) break;
-
-								if( mso2.scattered ) {
-									walkMso = mso2;
-									walkT = mso2.t;
-									continue;			// next scatter event
-								}
-
-								const Scalar TrEsc = pCurrentMedium->EvalTransmittanceNM(
-									walkRay, RISE_INFINITY, lambda );
-								const Scalar pSurvival = mso2.noScatterPdfScale *
-									pCurrentMedium->EvalDistancePdfNM(
-										walkRay, RISE_INFINITY, /*scattered=*/false, RISE_INFINITY, lambda );
-								escapeWeight = ( pSurvival > 0.0 ) ? ( TrEsc / pSurvival ) : TrEsc;
-							}
-							else
-							{
-								// Bounce cap: close the path with the
-								// deterministic Beer-Lambert escape -- the
-								// estimator this block replaced -- so the cap
-								// loses only the tail beyond it rather than
-								// the escape as well.
-								escapeWeight = pCurrentMedium->EvalTransmittanceNM(
-									walkRay, RISE_INFINITY, lambda );
-							}
+							// --- the continuation escaped the scene -----
+							const Scalar escapeWeight = segWeight;
 
 							// MIS PARTNER RULE -- see the RGB/NM camera walk's
 							// escape site for the full derivation (phase-sampled
@@ -6848,9 +6858,63 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 					RayIntersection ri2( walkRay, rast );
 					scene.GetObjects()->IntersectRay( ri2, true, true, false );
 
+					//
+					// --- sample this wavelength's medium along it -------
+					//
+					// DL-247: the segment to the next surface is IN the
+					// medium, exactly like an escaping one, so it is sampled
+					// the same way whether or not it ends on geometry.  A
+					// scatter before the surface continues the walk; a
+					// no-scatter survives to the surface (or escapes) and
+					// carries the survival weight Tr / pSurvival rather than
+					// Tr itself, which would double-count the attenuation the
+					// survival probability already encodes (G1-c).  Handing a
+					// surface-bound continuation straight to
+					// IntegrateFromHitNM -- what this site used to do -- let
+					// it cross the whole segment as if through vacuum: no
+					// Tr, no chance to scatter.  Camera inside an absorbing
+					// medium box read 1.92x the same scene from just outside
+					// (tests/MediumInsideOutsideInvariantTest.cpp).  Each
+					// lane samples and weights at ITS OWN `lambda`: the
+					// bundle has already split here, so there is no hero
+					// transmittance to broadcast.
+					//
+					// At the bounce cap no further scatter is permitted, so
+					// the segment carries its deterministic Beer-Lambert
+					// transmittance (`max_volume_bounce` = Neumann-series
+					// truncation order; see DL-247's ruling).
+					//
+					const Scalar segDist = ri2.geometric.bHit ? ri2.geometric.range : RISE_INFINITY;
+					Scalar segWeight;
+					if( volumeBounces < stabilityConfig.maxVolumeBounce )
+					{
+						const MediumSampleOutcome mso2 = SampleDistanceWithEquiangularMIS_NM(
+							pCurrentMedium, walkRay, segDist, lambda, pLS, mediumSampler );
+
+						if( mso2.zeroContrib ) break;
+
+						if( mso2.scattered ) {
+							walkMso = mso2;
+							walkT = mso2.t;
+							continue;			// next scatter event
+						}
+
+						const Scalar TrSeg = pCurrentMedium->EvalTransmittanceNM(
+							walkRay, segDist, lambda );
+						const Scalar pSurvival = mso2.noScatterPdfScale *
+							pCurrentMedium->EvalDistancePdfNM(
+								walkRay, segDist, /*scattered=*/false, segDist, lambda );
+						segWeight = ( pSurvival > 0.0 ) ? ( TrSeg / pSurvival ) : TrSeg;
+					}
+					else
+					{
+						segWeight = pCurrentMedium->EvalTransmittanceNM(
+							walkRay, segDist, lambda );
+					}
+
 					if( ri2.geometric.bHit )
 					{
-						result[w] += throughput * IntegrateFromHitNM(
+						result[w] += throughput * segWeight * IntegrateFromHitNM(
 							rc, rast, ri2, lambda, scene, caster,
 							sampler, pRadianceMap, 1, iorStack, walkPdf, 0,
 							true, 1.0, IRayCaster::RAY_STATE::eRayDiffuse,
@@ -6862,47 +6926,8 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 						break;
 					}
 
-					//
-					// --- the continuation missed all geometry -----------
-					//
-					// Sample this wavelength's medium along it once more: a
-					// scatter continues the walk, a no-scatter is the escape
-					// and carries the survival weight Tr / pSurvival (== 1
-					// for a bounded medium, where "no scatter" means "left
-					// the medium's AABB") rather than Tr itself, which would
-					// double-count the attenuation the survival probability
-					// already encodes (G1-c).
-					//
-					Scalar escapeWeight;
-					if( volumeBounces < stabilityConfig.maxVolumeBounce )
-					{
-						const MediumSampleOutcome mso2 = SampleDistanceWithEquiangularMIS_NM(
-							pCurrentMedium, walkRay, RISE_INFINITY, lambda, pLS, mediumSampler );
-
-						if( mso2.zeroContrib ) break;
-
-						if( mso2.scattered ) {
-							walkMso = mso2;
-							walkT = mso2.t;
-							continue;			// next scatter event
-						}
-
-						const Scalar TrEsc = pCurrentMedium->EvalTransmittanceNM(
-							walkRay, RISE_INFINITY, lambda );
-						const Scalar pSurvival = mso2.noScatterPdfScale *
-							pCurrentMedium->EvalDistancePdfNM(
-								walkRay, RISE_INFINITY, /*scattered=*/false, RISE_INFINITY, lambda );
-						escapeWeight = ( pSurvival > 0.0 ) ? ( TrEsc / pSurvival ) : TrEsc;
-					}
-					else
-					{
-						// Bounce cap: close the path with the deterministic
-						// Beer-Lambert escape -- the estimator this block
-						// replaced -- so the cap loses only the tail beyond
-						// it rather than the escape as well.
-						escapeWeight = pCurrentMedium->EvalTransmittanceNM(
-							walkRay, RISE_INFINITY, lambda );
-					}
+					// --- the continuation escaped the scene -------------
+					const Scalar escapeWeight = segWeight;
 
 					// MIS PARTNER RULE -- HWSS twin of the RGB/NM
 					// IntegrateRayTemplated volume escape; see that site's
