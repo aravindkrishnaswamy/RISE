@@ -134,7 +134,12 @@ Three deliberate carve-outs:
   surviving only as the `misFwdPdf <= NEARZERO` fallback.  That is a
   third density — neither the guided sampling density nor a mixture
   including the guide — and DL-67's reconciliation has to account for
-  it.
+  it.  **DL-67 CLOSED 2026-09-27**
+  ([DL67_GUIDED_GENERATING_DENSITY.md](DL67_GUIDED_GENERATING_DENSITY.md)):
+  it is not a third density but the DL-69 partner rule itself —
+  `pdfFwd` is the aggregate at the traced direction in EVERY branch —
+  and both guided throughput carve-outs (this one and the next) are
+  now priced on one aggregate partition (`BDPTGuidedContinuation`).
 * **Guiding only BLENDED the density** for the lobe's own direction
   (`bsdfCombinedPdf > NEARZERO`): the per-lobe form still applies, and
   takes PT's DL-42-fixed shape,

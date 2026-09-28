@@ -35,6 +35,21 @@
 //
 //        scatterThroughput = kray * pS->pdf / (selectProb * combinedPdf)
 //
+//  DL-67 FIXED on the debt-dl67 branch (2026-09-27/28, three rounds;
+//  docs/DL67_GUIDED_GENERATING_DENSITY.md): the kept-direction branch
+//  this test pins is now `kray_I / selectProb * W_b(w) / (1 - a)`, W_b
+//  the BSDF share of ONE partition built from the AGGREGATE Pdf() and
+//  `a` the VERTEX-level one-sample firing probability (clamped to
+//  [0, 0.9]) -- not a per-lobe alpha_I, which round 1 used and round 2
+//  removed.  It keeps DL-42's `1/selectProb` (this test still passes)
+//  but no longer divides by a mixture built from the lobe's own
+//  `pS->pdf`.  At this test's guidingAlpha 1e-6 the partition weight is
+//  1 to well under its tolerance.  The "one f and one
+//  denominator" construction the comment below anticipates was NOT what
+//  shipped: it is not unbiased once the guide-replacement probability
+//  varies by lobe; the partition is.  The historical analysis below is
+//  kept as written.
+//
 //  WHAT THIS FIX DOES **NOT** CLAIM ABOUT THE OTHER TWO PTMulDiv() SITES
 //  (documented here because a plain-English summary of this row can read
 //  as implicating all three trained-guiding overwrite sites; corrected
@@ -467,10 +482,12 @@ static void RunOneMode( bool spectral, Scalar skyRadianceValue, Scalar scatFacto
 		const CapturedLobe& sel = obs.lobes[selIdx];
 
 		if( sel.type == ScatteredRay::eRayTranslucent ) {
-			// Not guiding-eligible (GuidingSupportsSurfaceSampling admits
-			// only eRayDiffuse/eRayReflection) -- guiding never engaged
-			// for this trial, so the bug cannot manifest here regardless
-			// of selectProb.  Skip; the diffuse-exit trials below cover it.
+			// Historically not guiding-eligible (PT's since-removed
+			// GuidingSupportsSurfaceSampling admitted only eRayDiffuse/
+			// eRayReflection).  Since DL-67 round 2 every lobe at a
+			// guided vertex is priced by the same partition, but this
+			// test's closed form is written for the diffuse-exit lobe, so
+			// the translucent trials are still skipped here.
 			++translucentSelected;
 			continue;
 		}
