@@ -499,9 +499,10 @@ int main()
 	// Heterogeneous rows: +/- 3% too -- see the header's DL-283 paragraph
 	// for the measured sd.
 	const double kBandHet = 0.03;
-	// DL-283 sampler-bias row: +/- 0.45% -- see the header's DL-283
-	// paragraph for the measured se and the pre-fix reading.
-	const double kBandSampler = 0.0045;
+	// DL-283 sampler-bias row: +/- 0.35% = 3 se of the measured 0.118%
+	// (n = 48 each side); the pre-fix build read -0.599% (z -5.0).  See
+	// the header's DL-283 paragraph.
+	const double kBandSampler = 0.0035;
 
 	// RISE_MIOIT_ONLY_SAMPLER_ROW=1 runs just the DL-283 sampler-bias row
 	// (for measuring it; the gate runs everything).
