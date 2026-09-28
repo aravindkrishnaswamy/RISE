@@ -180,20 +180,56 @@ struct Fixture
 //////////////////////////////////////////////////////////////////////
 
 //! The three materials under test, each named `mat_under_test`.
-enum MaterialKind { kSchlick, kTranslucent, kLambertian };
+//! DL-67 round 2 added the last three: a BLACK-diffuse schlick (the
+//! realization can hold only a zero-weight diffuse ray -- external review
+//! P1-1) and two materials under a 30-degree TILTED SHADING NORMAL (a
+//! constant `normal_map_modifier`; the diffuse draw is dropped below the
+//! geometric horizon on some realizations -- review P2).
+enum MaterialKind { kSchlick, kTranslucent, kLambertian,
+	kSchlickBlackDiffuse, kLambertianTilted, kSchlickTilted };
 
 static const char* MaterialName( MaterialKind k )
 {
 	switch( k ) {
-		case kSchlick:     return "schlick_material";
-		case kTranslucent: return "translucent_material";
-		default:           return "lambertian_material";
+		case kSchlick:             return "schlick_material";
+		case kTranslucent:         return "translucent_material";
+		case kSchlickBlackDiffuse: return "schlick_material (black diffuse)";
+		case kLambertianTilted:    return "lambertian_material (30 deg tilted normal)";
+		case kSchlickTilted:       return "schlick_material (30 deg tilted normal)";
+		default:                   return "lambertian_material";
 	}
+}
+
+static bool IsTilted( MaterialKind k )
+{
+	return k == kLambertianTilted || k == kSchlickTilted;
+}
+
+//! A constant tangent-space normal (sin 30, 0, cos 30), stored linear:
+//! a uniform 30-degree tilt of the shading normal toward +u.
+static std::string TiltModifier()
+{
+	return
+		"uniformcolor_painter\n{\n\tname pnt_tilt\n\tcolor 0.75 0.5 0.9330127\n"
+		"\tcolorspace Rec709RGB_Linear\n}\n"
+		"normal_map_modifier\n{\n\tname nm_tilt\n\tnormal_map pnt_tilt\n\tscale 1.0\n}\n";
 }
 
 static std::string MaterialChunk( MaterialKind k )
 {
 	switch( k ) {
+		case kSchlickBlackDiffuse:
+			return
+				"uniformcolor_painter\n{\n\tname pnt_rd\n\tcolor 0 0 0\n}\n"
+				"uniformcolor_painter\n{\n\tname pnt_rs\n\tcolor 0.9 0.9 0.9\n}\n"
+				"scalar_painter\n{\n\tname pnt_rough\n\tvalue 0.2\n}\n"
+				"scalar_painter\n{\n\tname pnt_iso\n\tvalue 1.0\n}\n"
+				"schlick_material\n{\n\tname mat_under_test\n\trd pnt_rd\n\trs pnt_rs\n"
+				"\troughness pnt_rough\n\tisotropy pnt_iso\n}\n";
+		case kLambertianTilted:
+			return MaterialChunk( kLambertian ) + TiltModifier();
+		case kSchlickTilted:
+			return MaterialChunk( kSchlick ) + TiltModifier();
 		case kSchlick:
 			return
 				"uniformcolor_painter\n{\n\tname pnt_rd\n\tcolor 0.5 0.5 0.5\n}\n"
@@ -215,10 +251,14 @@ static std::string MaterialChunk( MaterialKind k )
 	}
 }
 
-static const char* kPlane =
-	"clippedplane_geometry\n{\n\tname plane\n"
-	"\tpta -50 -50 0\n\tptb 50 -50 0\n\tptc 50 50 0\n\tptd -50 50 0\n}\n"
-	"standard_object\n{\n\tname obj_plane\n\tgeometry plane\n\tmaterial mat_under_test\n}\n";
+static std::string Plane( MaterialKind k )
+{
+	return std::string(
+		"clippedplane_geometry\n{\n\tname plane\n"
+		"\tpta -50 -50 0\n\tptb 50 -50 0\n\tptc 50 50 0\n\tptd -50 50 0\n}\n"
+		"standard_object\n{\n\tname obj_plane\n\tgeometry plane\n\tmaterial mat_under_test\n" )
+		+ ( IsTilted( k ) ? "\tmodifier nm_tilt\n" : "" ) + "}\n";
+}
 
 static const char* kRasterizerAndCamera =
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n"
@@ -230,7 +270,7 @@ static std::string EyeScene( MaterialKind k )
 {
 	return std::string( "RISE ASCII SCENE 7\n" )
 		+ "uniformcolor_painter\n{\n\tname pnt_env\n\tcolor 0.6 0.6 0.6\n}\n"
-		+ MaterialChunk( k ) + kPlane + kRasterizerAndCamera
+		+ MaterialChunk( k ) + Plane( k ) + kRasterizerAndCamera
 		+ "bdpt_pel_rasterizer\n{\n\tsamples 1\n\tmax_eye_depth 3\n\tmax_light_depth 3\n"
 		  "\tpixel_filter box\n\toidn_denoise FALSE\n\tradiance_map pnt_env\n"
 		  "\tradiance_background TRUE\n}\n";
@@ -247,7 +287,7 @@ static std::string LightScene( MaterialKind k )
 	const Scalar t = kIncidenceDeg * PI / 180.0;
 	std::ostringstream ss;
 	ss << "RISE ASCII SCENE 7\n"
-		<< MaterialChunk( k ) << kPlane
+		<< MaterialChunk( k ) << Plane( k )
 		<< "uniformcolor_painter\n{\n\tname pnt_wall\n\tcolor 0.5 0.5 0.5\n}\n"
 		<< "lambertian_material\n{\n\tname mat_wall\n\treflectance pnt_wall\n}\n"
 		<< "sphere_geometry\n{\n\tname enclosure\n\tradius 200\n}\n"
@@ -285,6 +325,12 @@ static Scalar AlbedoQuadrature( const Fixture& fx, const Vector3& inDir, bool& o
 	if( !probe.geometric.bHit || !probe.pMaterial || !probe.pMaterial->GetBSDF() ) {
 		return 0;
 	}
+	// The generators apply the intersection modifier (the tilt) before
+	// scattering; the quadrature must see the same shading frame.
+	if( probe.pModifier ) {
+		probe.pModifier->Modify( probe.geometric );
+	}
+	const Vector3 shadingN = probe.geometric.vNormal;
 	IORStack stack( 1.0 );
 	stack.SetCurrentObject( probe.pObject );
 	const IBSDF* pB = probe.pMaterial->GetBSDF();
@@ -300,10 +346,12 @@ static Scalar AlbedoQuadrature( const Fixture& fx, const Vector3& inDir, bool& o
 		for( unsigned int ip = 0; ip < nphi; ++ip ) {
 			const double phi = ( ip + 0.5 ) * dphi;
 			const Vector3 w( r * std::cos( phi ), r * std::sin( phi ), z );
+			// The generators' cosine is against the SHADING normal.
 			ring += ColorMath::MaxValue(
-				PathVertexEval::EvalBSDFAtSurface( pB, w, probe.geometric, &stack ) );
+				PathVertexEval::EvalBSDFAtSurface( pB, w, probe.geometric, &stack ) ) *
+				std::fabs( Vector3Ops::Dot( w, shadingN ) );
 		}
-		sum += ring * std::fabs( z );
+		sum += ring;
 	}
 	ok = true;
 	return static_cast<Scalar>( sum * dz * dphi );
@@ -479,7 +527,10 @@ static void RunEyeFurnace( MaterialKind k )
 		Vector3Ops::Normalize( Vector3( -0.6, 0.0, 0.8 ) ),	// up, toward the mirror side
 		Vector3Ops::Normalize( Vector3( 0.3, 0.0, -0.95 ) ) };	// below the horizon
 	const double powers[2] = { 2.0, 64.0 };
-	unsigned int seed = 2000;
+	// Distinct, non-overlapping per-row seed ranges (external review P3:
+	// `seed += 1000` with 200000 samples made consecutive rows share
+	// ~99.5% of their per-sample seeds, so the rows were not independent).
+	unsigned int seed = 10000000;
 	for( unsigned int ai = 0; ai < 2; ++ai ) {
 		for( unsigned int pi = 0; pi < 2; ++pi ) {
 			PathGuidingField* guide = BuildField( axes[ai], powers[pi] );
@@ -490,7 +541,7 @@ static void RunEyeFurnace( MaterialKind k )
 					}
 					Scalar se = 0;
 					const Scalar m = EyeBatch( fx, guide, kModes[mi], nm == 1, kN, seed, nEsc, &se );
-					seed += 1000;
+					seed += kN;
 					std::cout << "    z = " << ( m - albedo ) / r_max( se, Scalar( 1e-12 ) )
 						<< " (standard error " << se << ")" << std::endl;
 					std::ostringstream label;
@@ -543,9 +594,14 @@ int main()
 	RunEyeFurnace( kLambertian );
 	RunEyeFurnace( kSchlick );
 	RunEyeFurnace( kTranslucent );
+	RunEyeFurnace( kSchlickBlackDiffuse );
+	RunEyeFurnace( kLambertianTilted );
+	RunEyeFurnace( kSchlickTilted );
 	RunLightFurnace( kLambertian );
 	RunLightFurnace( kSchlick );
 	RunLightFurnace( kTranslucent );
+	RunLightFurnace( kSchlickBlackDiffuse );
+	RunLightFurnace( kLambertianTilted );
 
 	std::cout << std::endl;
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
