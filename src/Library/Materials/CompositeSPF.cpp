@@ -544,6 +544,93 @@ void CompositeSPF::ProcessBottomLayerNM(
 	}
 }
 
+// DL-05.  Scatter's walk reaches a straight exit only as first-layer
+// pass-through -> gap crossing -> second-layer pass-through (any other lobe
+// turns the ray, and a turned ray never re-aligns with the incoming
+// direction).  The first layer is chosen exactly as Scatter chooses it; a
+// first-layer pass-through ray that already counts as an EXIT of that
+// layer (the numerically edge-on `d == 0` case the two exit tests admit)
+// is the whole answer; otherwise it must survive the per-type propagation
+// gate at step 0 and the recursion cap at step 1.  ProcessTopLayer's
+// importance floor (`MaxValue(importance) < NEARZERO`) is mirrored on the
+// gap attenuation alone -- the per-draw kray it also multiplies in is not
+// recoverable from an expectation; the two differ only when the
+// attenuation is already at the floor.
+RISEPel CompositeSPF::DeltaPassThroughTransmittance(
+	const RayIntersectionGeometric& ri
+	) const
+{
+	if( max_recur < 1 ) {
+		return RISEPel( 0, 0, 0 );
+	}
+	const Vector3 dir = ri.ray.Dir();
+	const Scalar  d   = Vector3Ops::Dot( dir, ri.onb.w() );
+	const bool fromAbove = ( d <= 0 );
+	const ISPF& first  = fromAbove ? top : bottom;
+	const ISPF& second = fromAbove ? bottom : top;
+
+	const RISEPel t1 = first.DeltaPassThroughTransmittance( ri );
+	if( !( ColorMath::MaxValue( t1 ) > 0 ) ) {
+		return RISEPel( 0, 0, 0 );
+	}
+	// Top-first: the straight ray EXITS the top when `d >= 0`; bottom-first
+	// it exits the bottom when `d <= 0` -- unreachable there (d > 0).
+	if( fromAbove && d >= 0 ) {
+		return t1;
+	}
+	if( max_recur < 2 || !ShouldScatteredRayBePropagated( ScatteredRay::eRayRefraction, 0 ) ) {
+		return RISEPel( 0, 0, 0 );
+	}
+
+	RayIntersectionGeometric my_ri( ri );
+	my_ri.ray.origin = ri.ptIntersection;
+	my_ri.ray.SetDir( Vector3Ops::Normalize( dir ) );
+	const Scalar pathLength = GapPathLength( my_ri.ray.Dir(), ri.onb.w(), thickness );
+	my_ri.ray.Advance( pathLength );
+	const RISEPel attenuation = GapAttenuation( extinction, ri, pathLength );
+	if( ColorMath::MaxValue( attenuation ) < NEARZERO ) {
+		return RISEPel( 0, 0, 0 );
+	}
+	return t1 * attenuation * second.DeltaPassThroughTransmittance( my_ri );
+}
+
+Scalar CompositeSPF::DeltaPassThroughTransmittanceNM(
+	const RayIntersectionGeometric& ri,
+	const Scalar nm
+	) const
+{
+	if( max_recur < 1 ) {
+		return 0;
+	}
+	const Vector3 dir = ri.ray.Dir();
+	const Scalar  d   = Vector3Ops::Dot( dir, ri.onb.w() );
+	const bool fromAbove = ( d <= 0 );
+	const ISPF& first  = fromAbove ? top : bottom;
+	const ISPF& second = fromAbove ? bottom : top;
+
+	const Scalar t1 = first.DeltaPassThroughTransmittanceNM( ri, nm );
+	if( !( t1 > 0 ) ) {
+		return 0;
+	}
+	if( fromAbove && d >= 0 ) {
+		return t1;
+	}
+	if( max_recur < 2 || !ShouldScatteredRayBePropagated( ScatteredRay::eRayRefraction, 0 ) ) {
+		return 0;
+	}
+
+	RayIntersectionGeometric my_ri( ri );
+	my_ri.ray.origin = ri.ptIntersection;
+	my_ri.ray.SetDir( Vector3Ops::Normalize( dir ) );
+	const Scalar pathLength = GapPathLength( my_ri.ray.Dir(), ri.onb.w(), thickness );
+	my_ri.ray.Advance( pathLength );
+	const Scalar attenuation = exp( -extinction.GetValueAtNM( ri, nm ) * pathLength );
+	if( attenuation < NEARZERO ) {
+		return 0;
+	}
+	return t1 * attenuation * second.DeltaPassThroughTransmittanceNM( my_ri, nm );
+}
+
 void CompositeSPF::Scatter(
 			const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 			ISampler& sampler,				///< [in] Sampler

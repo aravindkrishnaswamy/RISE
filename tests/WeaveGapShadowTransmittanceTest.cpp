@@ -35,6 +35,9 @@
 //             (itself checked against rho/pi * P/d^2).  Rows: PT RGB,
 //             PT spectral (hwss off and on), BDPT, VCM.  PT reads 0
 //             pre-fix; BDPT/VCM read g*L0 before and after.
+//    composite  The same receiver under a `composite_material` of two
+//             gapped weaves: g^2 * L0 (CompositeSPF's straight exit is
+//             gap -> gap).  PT read 0 before the composite override.
 //    directional  Same receiver under a `directional_light` -- the
 //             Step-1 zero-exitance path in PT AND BDPT's deterministic
 //             zero-exitance sweep (both route through the light's own
@@ -111,6 +114,7 @@
 #include "../src/Library/Materials/CoatedMaterial.h"
 #include "../src/Library/Materials/LambertianMaterial.h"
 #include "../src/Library/Materials/LambertianLuminaireMaterial.h"
+#include "../src/Library/Materials/CompositeMaterial.h"
 #include "WeaveTestFixture.h"
 
 using namespace RISE;
@@ -313,7 +317,10 @@ enum LightKind { kOmni, kSpot, kDirectional, kArea };
 //! needs no absolute closed form.
 enum CamKind { kTight, kWide };
 
-static std::string ReceiverScene( LightKind light, bool withSheet, double gap, CamKind cam = kTight )
+//! @a compositeSheet: the sheet is a `composite_material` of two such
+//! weaves (zero thickness, no extinction), whose only straight exit is
+//! gap -> gap, so the closed form becomes g^2.
+static std::string ReceiverScene( LightKind light, bool withSheet, double gap, CamKind cam = kTight, bool compositeSheet = false )
 {
 	const bool wide = ( cam == kWide );
 	std::ostringstream ss;
@@ -331,8 +338,11 @@ static std::string ReceiverScene( LightKind light, bool withSheet, double gap, C
 		"standard_object\n{\n\tname obj_recv\n\tgeometry geo_recv\n\tmaterial mat_recv\n}\n\n";
 
 	if( withSheet ) {
-		ss <<
-			"weave_material\n{\n\tname mat_sheet\n\tfabric custom\n\ttransmission thin\n\tgap " << gap << "\n}\n\n"
+		ss
+			<< ( compositeSheet
+				? std::string( "weave_material\n{\n\tname mat_layer\n\tfabric custom\n\ttransmission thin\n\tgap " ) + std::to_string( gap ) + "\n}\n\n"
+				  "composite_material\n{\n\tname mat_sheet\n\ttop mat_layer\n\tbottom mat_layer\n}\n\n"
+				: std::string( "weave_material\n{\n\tname mat_sheet\n\tfabric custom\n\ttransmission thin\n\tgap " ) + std::to_string( gap ) + "\n}\n\n" ) <<
 			"clippedplane_geometry\n{\n\tname geo_sheet\n"
 				"\tpta -4 " << kSheetY << " 4\n\tptb 4 " << kSheetY << " 4\n"
 				"\tptc 4 " << kSheetY << " -4\n\tptd -4 " << kSheetY << " -4\n"
@@ -471,7 +481,9 @@ static void CheckQueryMatchesSampler( const char* label, const IMaterial& mat )
 	Check( pSPF != 0, std::string( "query " ) + label + ": material has an SPF" );
 	if( !pSPF ) return;
 
-	const double angles[] = { 0.0, 40.0, 75.0 };
+	// 140 deg views the sheet from BELOW its normal: the ray-facing
+	// frames flip, and a composite walks bottom-first.
+	const double angles[] = { 0.0, 40.0, 75.0, 140.0 };
 	const int n = 200000;
 	for( double a : angles )
 	{
@@ -485,7 +497,7 @@ static void CheckQueryMatchesSampler( const char* label, const IMaterial& mat )
 		for( int c = 0; c < 3; ++c ) worst = std::fmax( worst, std::fabs( query[c] - sampled[c] ) );
 		char buf[320];
 		std::snprintf( buf, sizeof(buf),
-			"query %s view %2.0f deg RGB: query (%.5f %.5f %.5f)  sampled (%.5f %.5f %.5f)  |diff| %.2e  (5 se = %.2e)",
+			"query %s view %3.0f deg RGB: query (%.5f %.5f %.5f)  sampled (%.5f %.5f %.5f)  |diff| %.2e  (5 se = %.2e)",
 			label, a, query[0], query[1], query[2], sampled[0], sampled[1], sampled[2], worst, 5 * se );
 		std::cout << "  " << buf << std::endl;
 		Check( worst <= 5 * se + 1e-4, buf );
@@ -494,7 +506,7 @@ static void CheckQueryMatchesSampler( const char* label, const IMaterial& mat )
 		const RISEPel sampledNM = SampledPassThrough( *pSPF, ri, 550.0, n, seNM );
 		const Scalar queryNM = pSPF->DeltaPassThroughTransmittanceNM( ri, 550.0 );
 		std::snprintf( buf, sizeof(buf),
-			"query %s view %2.0f deg NM(550): query %.5f  sampled %.5f  |diff| %.2e  (5 se = %.2e)",
+			"query %s view %3.0f deg NM(550): query %.5f  sampled %.5f  |diff| %.2e  (5 se = %.2e)",
 			label, a, queryNM, sampledNM[0], std::fabs( queryNM - sampledNM[0] ), 5 * seNM );
 		std::cout << "  " << buf << std::endl;
 		Check( std::fabs( queryNM - sampledNM[0] ) <= 5 * seNM + 1e-4, buf );
@@ -528,6 +540,11 @@ static void TestQueryMatchesSampler()
 	CoatedMaterial* coatTint = new CoatedMaterial( *thin.Material(), *one, *ior, *rgh, *thick, *absb, *tint ); coatTint->addref();
 	CoatedMaterial* coatFab  = new CoatedMaterial( *fabThin, *one, *ior, *rgh, *zed, *zed, *white ); coatFab->addref();
 	LambertianLuminaireMaterial* lum = new LambertianLuminaireMaterial( *white, 1.0, *thin.Material() ); lum->addref();
+	// Two thin-weave layers 0.1 apart with an absorbing gap: the walk's only
+	// straight exit is gap -> Beer crossing -> gap.
+	UniformScalarPainter* ext = new UniformScalarPainter( 1.5 ); ext->addref();
+	CompositeMaterial* compWW = new CompositeMaterial( *thin.Material(), *fabThin, 4, 2, 2, 2, 2, 0.1, *ext ); compWW->addref();
+	CompositeMaterial* compWL = new CompositeMaterial( *thin.Material(), *lamb, 4, 2, 2, 2, 2, 0.1, *ext ); compWL->addref();
 
 	// Capability flags.
 	Check( thin.Material()->HasDeltaPassThrough(), "query: a `transmission thin` weave reports HasDeltaPassThrough" );
@@ -551,6 +568,8 @@ static void TestQueryMatchesSampler()
 	Check( fabThin->HasDeltaPassThrough() && coatThin->HasDeltaPassThrough() && coatFab->HasDeltaPassThrough(),
 		"query: fabric / coated / coated-over-fabric over a thin weave FORWARD it" );
 	Check( lum->HasDeltaPassThrough(), "query: a luminaire wrapping a thin weave FORWARDS it" );
+	Check( compWW->HasDeltaPassThrough(), "query: a composite of two pass-through layers reports it" );
+	Check( !compWL->HasDeltaPassThrough(), "query: a composite over an opaque bottom does NOT (no straight exit exists)" );
 
 	// The bare weave's value is the gap itself, deterministically.
 	{
@@ -568,7 +587,9 @@ static void TestQueryMatchesSampler()
 	CheckQueryMatchesSampler( "coated(tinted, absorbing) over weave", *coatTint );
 	CheckQueryMatchesSampler( "coated over fabric over weave", *coatFab );
 	CheckQueryMatchesSampler( "luminaire over weave", *lum );
+	CheckQueryMatchesSampler( "composite(weave | fabric-over-weave, gap 0.1 ext 1.5)", *compWW );
 
+	safe_release( compWL ); safe_release( compWW ); safe_release( ext );
 	safe_release( lum ); safe_release( coatFab ); safe_release( coatTint ); safe_release( coatThin );
 	safe_release( fabThin ); safe_release( lamb );
 	safe_release( rot ); safe_release( alph ); safe_release( absb ); safe_release( thick );
@@ -608,6 +629,29 @@ static void TestClosedFormOmni()
 	spotRows.push_back( { "BDPT RGB", RastBDPT( 1024 ), 0.02, kWide } );
 	spotRows.push_back( { "VCM RGB", RastVCM( 1024 ), 0.02, kWide } );
 	RunReceiverRows( "closed spot", kSpot, spotRows, gaps, 2 );
+}
+
+//////////////////////////////////////////////////////////////////////
+// composite: a `composite_material` of two gapped thin weaves, spot light.
+// Before DL-05's CompositeSPF override the composite reported no
+// pass-through and PT read exactly 0 while BDPT read g^2 * L0.
+//////////////////////////////////////////////////////////////////////
+static void TestClosedFormComposite()
+{
+	std::cout << "=== composite: receiver under a composite of two gapped weaves (gap 0.3 each), spot light ===" << std::endl;
+	struct R { const char* label; std::string rast; double tol; };
+	const R rows[] = { { "PT RGB", RastPT( 64 ), 0.02 }, { "BDPT RGB", RastBDPT( 1024 ), 0.03 } };
+	const double g = 0.3, expected = g * g;
+	for( const R& r : rows )
+	{
+		const double L0 = Render( Assemble( r.rast, ReceiverScene( kSpot, false, 0.0, kWide ) ), "c_l0" );
+		const double L  = Render( Assemble( r.rast, ReceiverScene( kSpot, true, g, kWide, true ) ), "c_lg" );
+		char buf[256];
+		std::snprintf( buf, sizeof(buf), "composite %s: L/L0 = %.5f  (closed form g^2 = %.5f, rel err %+.3f%%)",
+			r.label, L / L0, expected, 100.0 * ( L / L0 / expected - 1.0 ) );
+		std::cout << "  " << buf << std::endl;
+		Check( L0 > 0 && std::fabs( L / L0 / expected - 1.0 ) <= r.tol, buf );
+	}
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -822,6 +866,7 @@ int main( int argc, char** argv )
 
 	if( !filter || std::strstr( filter, "query" ) )       TestQueryMatchesSampler();
 	if( !filter || std::strstr( filter, "closed" ) )      TestClosedFormOmni();
+	if( !filter || std::strstr( filter, "composite" ) )   TestClosedFormComposite();
 	if( !filter || std::strstr( filter, "directional" ) ) TestClosedFormDirectional();
 	if( !filter || std::strstr( filter, "area" ) )        TestAreaPartitionGuard();
 	if( !filter || std::strstr( filter, "layers" ) )      TestTwoLayerLightOutside();
