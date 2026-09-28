@@ -2173,6 +2173,35 @@ static void TestSchlickMultiLobe()
 	RunTopologyTest( "multi-lobe schlick_material wall + floor, area emitter (DL-69)",
 		std::string( kSceneSchlickMultiLobeL ), kSchlickTopologyLTolerances,
 		kRasterizerPTSchlickL, kRasterizerBDPTSchlickL );
+
+	// Topology Y (DL-310): topology L's geometry, emitter, camera and
+	// rasterizers with a `schlick_material` INSIDE the coupled-diffuse
+	// clip -- Rd .9, rho .5, roughness .05, isotropy .3 -- so the
+	// diffuse lobe's weight min(Rd, 1 - A(i), 1 - A(o)) is direction-
+	// dependent at every vertex (A reaches ~.8 at grazing).  PT prices
+	// the continuation with `kray` and NEE with `value()` under the
+	// aggregate `Pdf` as MIS partner; BDPT prices connections with
+	// `value()` and continuations with `kray`, with `Pdf` as `pdfFwd` /
+	// `pdfRev`.  A coupling that reached one of those and not the others
+	// would split the two estimators.
+	{
+		std::string scene( kSceneSchlickMultiLobeL );
+		const std::string rdOld = "\tname pnt_rd\n\tcolor 0.4 0.4 0.4\n";
+		const std::string rsOld = "\tname pnt_rs\n\tcolor 0.4 0.4 0.4\n";
+		const std::string roOld = "\tname pnt_rough\n\tvalue 0.5\n";
+		const std::string isOld = "\tname pnt_iso\n\tvalue 1.0\n";
+		const size_t a = scene.find( rdOld ), b = scene.find( rsOld ), c = scene.find( roOld ), d = scene.find( isOld );
+		Check( a != std::string::npos && b != std::string::npos && c != std::string::npos && d != std::string::npos,
+			"topology Y: topology L's painter blocks found" );
+		if( a != std::string::npos && b != std::string::npos && c != std::string::npos && d != std::string::npos ) {
+			scene.replace( scene.find( rdOld ), rdOld.size(), "\tname pnt_rd\n\tcolor 0.9 0.9 0.9\n" );
+			scene.replace( scene.find( rsOld ), rsOld.size(), "\tname pnt_rs\n\tcolor 0.5 0.5 0.5\n" );
+			scene.replace( scene.find( roOld ), roOld.size(), "\tname pnt_rough\n\tvalue 0.05\n" );
+			scene.replace( scene.find( isOld ), isOld.size(), "\tname pnt_iso\n\tvalue 0.3\n" );
+			RunTopologyTest( "topology Y: schlick_material inside the DL-310 coupled-diffuse clip",
+				scene, kSchlickTopologyLTolerances, kRasterizerPTSchlickL, kRasterizerBDPTSchlickL );
+		}
+	}
 }
 
 
