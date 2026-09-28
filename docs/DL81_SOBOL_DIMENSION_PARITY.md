@@ -824,7 +824,21 @@ other suite in §7's table unchanged.
 
 ---
 
-## 9. DL-283 addendum (2026-09-27) — the wrap region is used by design
+## 9. DL-283 addendum (2026-09-27/28) — the wrap region is used by design
+
+**Why the second family exists: a measured bias.** Before DL-283, BDPT/VCM drew
+each medium distance sample off the per-vertex stream; heterogeneous delta
+tracking ran past the stream's 32 slots into the stream the next vertex
+re-opens, so one Sobol' dimension drove two decisions on one path. That was a
+real **bias**, not just noise: salted (independent randomized-QMC replicates)
+BDPT renders of a thin 256³-grid heterogeneous box with a black floor read
+**−0.8 % against an independent-sampler reference** (pel camera inside n = 24,
+z −3.7; hwss TRUE n = 40, z −5.1; pre-fix vs fixed paired +0.8 / +0.9 %, z 4.4 /
+5.2), and the fixed build agrees with the reference to 0.1 %.
+`MediumInsideOutsideInvariantTest`'s sampler-bias row gates it (pre-fix −0.599 %,
+z −5.0, red). An earlier revision of this section and of the DL-283 row called
+the bias "refuted" from an underpowered, camera-outside comparison; that was
+wrong.
 
 The table-size argument in §2 covers the **per-vertex** streams (`StartStream(16
 + depth)`, `1 + depth`, 47, `48 + i`). Two families of streams are placed past
@@ -844,8 +858,8 @@ none beyond the walk loops' own saturating cap of 1024 iterations
 delta-tracking cap (2 × 1024 steps), and a `static_assert` ties the two. MLT's
 `PSSMLTSampler` is not a fixed-budget sampler and stays on its vertex streams.
 
-**Quality, measured, not argued** (`SobolDimensionParityTest` section H, the
-same dyadic 2×2 leading-digit collapse statistic as section G, 4 value seeds):
+**Quality** (`SobolDimensionParityTest` section H, the same dyadic 2×2
+leading-digit collapse statistic as section G, 4 value seeds):
 
 | spp | PT walk vs aliased main-loop row | BDPT block vs aliased row | block vs own vertex stream | eye block vs light block (same row) | floor: adjacent production streams |
 |---|---|---|---|---|---|
@@ -860,12 +874,24 @@ permutations of one row — the same pigeonhole as section G), not above it; fro
 collapse 12.6 %. The PT-walk column reproduces the `debt-dl247b` review's
 measurement (0 % from 8 spp).
 
+**Caveat on that statistic.** "Collapse" is EXACT locking of the leading
+digits. The wrapped draws read their row at an Owen-scrambled (nonlinear)
+index, which essentially never locks exactly, so the zeros are partly
+structural and do not by themselves show independence; the unbiasedness
+argument rests on the value scrambles having independent seeds per raw
+dimension. The practical check is variance: mean per-pixel variance across 12
+salted renders at **8 spp** (thin 256³ box, floor 0.8, 128×128) reads pre-fix
+0.0752, fixed 0.0747, independent sampler 0.0805 — no low-spp regression (the
+DL-283 review measured 0.0750 / 0.0743 / 0.0807).
+
 `SobolDimensionBudgetTest` Test G2 enumerates both families from the real
 functions and asserts the wrap counts above, uniqueness, and disjointness from
-every other consumer of the same sampler; Test H drives BDPT's real generators
-and asserts no per-vertex stream overruns. G2 also pins the **pre-existing**
-overlaps among the fixed per-vertex streams (the light walk reaches the eye
-walk's streams from light depth 15, the strategy select from 46 and VCM's NEE
-from 47; the eye walk reaches the select at 31 and the NEE at 32) — DL-286,
-opened by DL-283's sibling audit.
+every other consumer of the same sampler; Test H drives BDPT's real light and
+eye generators (light sampler attached) and asserts no per-vertex stream
+overruns. G2 also pins the **pre-existing** overlaps among the fixed per-vertex
+streams (the light walk reaches the eye walk's streams from light iteration 15,
+the strategy select at 46 and VCM's first NEE stream, 49, at 48; the eye walk
+reaches the select at 31 and the NEE at 33) — DL-286, opened by DL-283's
+sibling audit; Test H observes it on its homogeneous fixture (635 light/eye
+shared dimensions in 60 of 4096 samples).
 
