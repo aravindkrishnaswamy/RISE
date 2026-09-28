@@ -4202,42 +4202,55 @@ unsigned int ManifoldSolver::SnellContinueChain(
 						// sheet crossed against its normal.  DL-290
 						// review P1-2: this used to be a hardcoded 1.0
 						// ("back to air"), which priced an immersed
-						// open-sheet caster against air.  The far side is
-						// now read from the stack, and there are two cases:
+						// open-sheet caster against air.  Two geometries
+						// reach this branch:
 						//
-						//  (a) the walk is currently IN this sheet's
-						//      material (the stack top carries its index):
-						//      the slabs-from-planes pattern, where a
-						//      SIBLING sheet pushed the slab on the way in
-						//      (the walk entered through the bottom sheet
-						//      and leaves through the top).  Leaving the
-						//      slab leaves that entry, so it is popped and
-						//      the far side is the medium beneath it.  In
-						//      air this is 1.0, exactly the old constant.
-						//  (b) the walk is NOT in this material (a single
-						//      open sheet whose normal says "exiting" but
-						//      which nothing entered): nothing is popped,
-						//      and the far side is the medium the walk is
-						//      already in, the stack top -- the index the
-						//      Snell bend above already used
-						//      (ior / currentIOR).  In air, again 1.0.
+						//  (a) slabs-from-planes: the walk (or the camera
+						//      path that built the receiver stack) entered
+						//      the slab through a SIBLING sheet Y, which is
+						//      the stack top, and is now leaving through
+						//      this one.  Leaving the slab leaves Y's entry:
+						//      pop it; the far side is the medium beneath.
+						//  (b) a sheet crossed while the walk is inside a
+						//      medium Y that ENCLOSES the crossing (a lone
+						//      sheet in a water box, or no Y at all: the
+						//      root).  Nothing is popped; the far side is Y.
 						//
-						// Reading the top in case (a) instead of popping
-						// it would make the slab's exit an index-MATCHED
-						// vertex and leave the chain "inside glass" at the
-						// light -- a first revision of this fix did that
-						// and read the two-sheet slabs' lit floor 13 %
-						// under PT-without-SMS.  Residual ambiguity, not a
-						// regression: a case-(b) sheet immersed in a medium
-						// of EXACTLY its own index is classified (a).  The
-						// case-(a) Snell bend above used the pre-pop top
-						// (ratio 1, straight through) -- a pre-existing
-						// seed-direction approximation Newton re-solves.
-						const Scalar topIOR = seedIor.top();
-						const Scalar scale = ( fabs( topIOR ) > fabs( specInfo.ior ) ) ? fabs( topIOR ) : fabs( specInfo.ior );
-						if( seedIor.topObject() && fabs( topIOR - specInfo.ior ) <= Scalar( 1e-9 ) * scale ) {
-							seedIor.SetCurrentObject( seedIor.topObject() );
-							seedIor.pop();
+						// Review round 2 (P1-A): the two are told apart by
+						// CONTAINMENT, never by comparing indices.  The
+						// round-1 rule ("pop iff Y's index equals this
+						// sheet's") misread every slab of two DIFFERENT
+						// indices as (b) and ended the chain inside the
+						// sibling's glass, and turned an index mismatch of
+						// 1e-9..1e-3 into a near-matched last vertex --
+						// a continuity cliff (flatslab floor -94 % at a
+						// top index of 2.2000002).  Here Y is probed along
+						// the continuing direction: an EXIT hit on Y means
+						// the walk is still inside Y after the crossing,
+						// i.e. Y encloses it -- (b); a miss, or an ENTRY
+						// hit, means Y was a sheet the walk has already
+						// passed -- (a).  An open sheet cannot be exited
+						// from a point it never bounded; a closed solid
+						// always is.  The side test uses the TRUE face
+						// orientation (DL-70), so a double-sided closed
+						// mesh reads correctly; a ray-derived (hair)
+						// normal has no side and cannot enclose.  One ray
+						// against ONE object, only on this rare branch.
+						// In air with no enclosing object nothing
+						// changes: the top is the root, 1.0.
+						const IObject* pY = seedIor.topObject();
+						if( pY ) {
+							bool yEnclosesCrossing = false;
+							const Ray probe( Point3Ops::mkPoint3( ri.geometric.ptIntersection, dir * offsetEps ), dir );
+							RayIntersection pri( probe, nullRasterizerState );
+							pY->IntersectRay( pri, RISE_INFINITY, true, true, false );
+							if( pri.geometric.bHit && pri.geometric.HasTrueGeomSide() ) {
+								yEnclosesCrossing = Vector3Ops::Dot( dir, pri.geometric.UnflippedGeomNormal() ) > 0;
+							}
+							if( !yEnclosesCrossing ) {
+								seedIor.SetCurrentObject( pY );
+								seedIor.pop();
+							}
 						}
 						currentIOR = seedIor.top();
 					}

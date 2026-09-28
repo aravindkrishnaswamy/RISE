@@ -104,6 +104,7 @@
 #include "../src/Library/Utilities/RandomNumbers.h"
 #include "../src/Library/Utilities/IORStack.h"
 #include "../src/Library/Utilities/IORStackSeeding.h"
+#include "../src/Library/Interfaces/IObjectManager.h"
 #include "../src/Library/Utilities/ManifoldSolver.h"
 #include "../src/Library/Lights/LightSampler.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
@@ -582,70 +583,101 @@ namespace
 		std::remove( path.c_str() );
 	}
 
-	//! A7 (DL-290 review P1-2): the seed walk's etaI/etaT across an open
-	//! sheet it never entered.  Case (a) is the slabs-from-planes pattern:
-	//! a DOWN-facing lower sheet is entered from below, the UP-facing upper
-	//! sheet is then left without a matching push -- the far side is the
-	//! medium the walk entered the slab from (the sibling's entry is
-	//! popped).  Case (b) is a single up-facing sheet crossed from below:
-	//! nothing was entered, and the far side is the medium the walk is in.
-	//! Both in air (root 1) and immersed (root 1.5, every index x1.5).
-	//! Pre-review code priced both far sides as a hardcoded 1.0 (wrong
-	//! immersed); a first revision of the fix read the stack top in case
-	//! (a) as well, which is index-MATCHED (2.2 s -> 2.2 s) and wrong in
-	//! air too.
+	//! A7 (DL-290 review P1-2 / round-2 P1-A): the seed walk's etaI/etaT
+	//! across an open sheet it never entered.  Two geometries reach that
+	//! branch: (a) slabs-from-planes -- the walk (or the camera path that
+	//! built the receiver stack) entered through a SIBLING sheet, and
+	//! leaving the slab leaves that entry; (b) a sheet crossed inside a
+	//! medium that ENCLOSES the crossing (or the root) -- the far side is
+	//! that medium.  Every configuration the round-2 review probed:
+	//! equal, UNEQUAL and NEAR-equal slabs, in air and inside a closed
+	//! 1.33 box, a walk that STARTS inside an unequal slab (the camera
+	//! pushed the top sheet), and lone sheets in air and inside boxes of
+	//! a different and of the SAME index (the old "enclosure tie").  The
+	//! receiver stack comes from IORStackSeeding (the closed box) plus,
+	//! for the inside-the-slab case, the sheet the camera crossed.
+	//! Pre-review code priced every far side as 1.0; round 1 decided (a)
+	//! vs (b) by comparing indices, which ends an unequal slab inside the
+	//! sibling's glass, leaves a near-matched vertex at a near-equal one,
+	//! and pops a same-index enclosure.
 	void TestSeedWalkOpenSheets()
 	{
-		std::cout << "A7: SMS seed walk across open sheets (slab-from-planes and a lone sheet)" << std::endl;
+		std::cout << "A7: SMS seed walk across open sheets (containment, not index value)" << std::endl;
 		const std::string up = "\tpta -0.6 0 -0.6\n\tptb -0.6 0 0.6\n\tptc 0.6 0 0.6\n\tptd 0.6 0 -0.6\n";
 		const std::string down = "\tpta -0.6 0 -0.6\n\tptb 0.6 0 -0.6\n\tptc 0.6 0 0.6\n\tptd -0.6 0 0.6\n";
-		for( int slab = 0; slab < 2; ++slab ) {
-			for( int immersed = 0; immersed < 2; ++immersed ) {
-				const Scalar sc = immersed ? kScale : 1.0;
-				const Scalar n = 2.2 * sc;
-				std::ostringstream o;
-				o << std::setprecision( 17 );
-				o << "RISE ASCII SCENE 7\n" << PainterPreamble();
-				o << "perfectrefractor_material\n{\n\tname glass_mat\n\tior " << n << "\n\trefractance white\n}\n\n";
-				o << "clippedplane_geometry\n{\n\tname top_geo\n" << up << "}\n\n";
-				o << "standard_object\n{\n\tname top_sheet\n\tgeometry top_geo\n\tposition 0 0.55 0\n\tmaterial glass_mat\n}\n\n";
-				if( slab ) {
-					o << "clippedplane_geometry\n{\n\tname bot_geo\n" << down << "}\n\n";
-					o << "standard_object\n{\n\tname bot_sheet\n\tgeometry bot_geo\n\tposition 0 0.45 0\n\tmaterial glass_mat\n}\n\n";
-				}
-				const std::string tag = std::string( slab ? "(a) two-sheet slab" : "(b) lone sheet" ) + ( immersed ? ", immersed 1.5" : ", air" );
-				const std::string path = WriteScene( o.str(), "seedwalk" );
-				IJobPriv* job = nullptr;
-				const bool loaded = !path.empty() && RISE_CreateJobPriv( &job ) && job && job->LoadAsciiSceneViaCst( path.c_str() );
-				Check( loaded, "A7: scene loads, " + tag );
-				if( !loaded ) { safe_release( job ); std::remove( path.c_str() ); continue; }
-				StandardShader* shader = new StandardShader( std::vector<IShaderOp*>() );
-				RayCaster* caster = new RayCaster( false, 8, *shader, false );
-				caster->AttachScene( job->GetScene() );
-				ManifoldSolver* solver = new ManifoldSolver( ManifoldSolverConfig() );
-				const IORStack receiver( sc );
-				std::vector<ManifoldVertex> chain;
-				// Slightly off-axis so no hit is exactly at normal incidence.
-				solver->BuildSeedChain( Point3( 0.05, 0, 0.02 ), Point3( 0.1, 1.5, 0.05 ), *job->GetScene(), *caster, chain, true, &receiver );
-				std::cout << "    " << tag << ": " << chain.size() << " vertices";
-				for( const ManifoldVertex& v : chain ) std::cout << "  [" << v.etaI << " -> " << v.etaT << ( v.isExiting ? " exit" : " entry" ) << "]";
-				std::cout << std::endl;
-				if( slab ) {
-					const bool ok = chain.size() == 2 &&
-						std::fabs( chain[0].etaI - sc ) < 1e-12 && std::fabs( chain[0].etaT - n ) < 1e-12 &&
-						std::fabs( chain[1].etaI - n ) < 1e-12 && std::fabs( chain[1].etaT - sc ) < 1e-12;
-					Check( ok, "A7: slab-from-planes enters " + std::string( immersed ? "1.5 -> 3.3" : "1 -> 2.2" ) + " and leaves back to the exterior, " + tag );
-				} else {
-					const bool ok = chain.size() == 1 &&
-						std::fabs( chain[0].etaI - n ) < 1e-12 && std::fabs( chain[0].etaT - sc ) < 1e-12;
-					Check( ok, "A7: lone sheet's unpushed exit lands in the walk's own medium, " + tag );
-				}
-				safe_release( solver );
-				safe_release( caster );
-				safe_release( shader );
-				safe_release( job );
-				std::remove( path.c_str() );
+		struct Case {
+			const char* tag;
+			Scalar top;			//!< index of the up-facing sheet at y 0.55
+			Scalar bottom;		//!< index of the down-facing sheet at y 0.45 (<= 0: none)
+			Scalar box;			//!< index of a closed box enclosing everything (<= 0: none)
+			bool startInside;	//!< walk from between the sheets downward, top sheet pre-pushed
+			Scalar expect[4];	//!< etaI, etaT of vertex 0, then of vertex 1 (<= 0: no vertex 1)
+		};
+		const Case cases[] = {
+			{ "equal slab 2.2/2.2, air",               2.2,       2.2, 0,    false, { 1.0,  2.2, 2.2,       1.0  } },
+			{ "UNEQUAL slab 1.8/2.2, air",             1.8,       2.2, 0,    false, { 1.0,  2.2, 1.8,       1.0  } },
+			{ "NEAR-equal slab 2.2000002/2.2, air",    2.2000002, 2.2, 0,    false, { 1.0,  2.2, 2.2000002, 1.0  } },
+			{ "equal slab 2.2/2.2 in a 1.33 box",      2.2,       2.2, 1.33, false, { 1.33, 2.2, 2.2,       1.33 } },
+			{ "UNEQUAL slab 1.8/2.2 in a 1.33 box",    1.8,       2.2, 1.33, false, { 1.33, 2.2, 1.8,       1.33 } },
+			{ "inside UNEQUAL slab, walking down",     1.8,       2.2, 0,    true,  { 2.2,  1.0, 0,         0    } },
+			{ "lone 2.2 sheet, air",                   2.2,       0,   0,    false, { 2.2,  1.0, 0,         0    } },
+			{ "lone 2.2 sheet in a 1.33 box",          2.2,       0,   1.33, false, { 2.2,  1.33, 0,        0    } },
+			{ "lone 1.5 sheet in a 1.5 box (the tie)", 1.5,       0,   1.5,  false, { 1.5,  1.5, 0,         0    } },
+		};
+		for( const Case& c : cases ) {
+			std::ostringstream o;
+			o << std::setprecision( 17 );
+			o << "RISE ASCII SCENE 7\n" << PainterPreamble();
+			o << "perfectrefractor_material\n{\n\tname top_mat\n\tior " << c.top << "\n\trefractance white\n}\n\n";
+			o << "clippedplane_geometry\n{\n\tname top_geo\n" << up << "}\n\n";
+			o << "standard_object\n{\n\tname top_sheet\n\tgeometry top_geo\n\tposition 0 0.55 0\n\tmaterial top_mat\n}\n\n";
+			if( c.bottom > 0 ) {
+				o << "perfectrefractor_material\n{\n\tname bot_mat\n\tior " << c.bottom << "\n\trefractance white\n}\n\n";
+				o << "clippedplane_geometry\n{\n\tname bot_geo\n" << down << "}\n\n";
+				o << "standard_object\n{\n\tname bot_sheet\n\tgeometry bot_geo\n\tposition 0 0.45 0\n\tmaterial bot_mat\n}\n\n";
 			}
+			if( c.box > 0 ) {
+				o << "perfectrefractor_material\n{\n\tname box_mat\n\tior " << c.box << "\n\trefractance white\n}\n\n";
+				o << "box_geometry\n{\n\tname box_geo\n\twidth 6\n\theight 6\n\tdepth 6\n}\n\n";
+				o << "standard_object\n{\n\tname box\n\tgeometry box_geo\n\tposition 0 0.5 0\n\tmaterial box_mat\n}\n\n";
+			}
+			const std::string tag = c.tag;
+			const std::string path = WriteScene( o.str(), "seedwalk" );
+			IJobPriv* job = nullptr;
+			const bool loaded = !path.empty() && RISE_CreateJobPriv( &job ) && job && job->LoadAsciiSceneViaCst( path.c_str() );
+			Check( loaded, "A7: scene loads, " + tag );
+			if( !loaded ) { safe_release( job ); std::remove( path.c_str() ); continue; }
+			StandardShader* shader = new StandardShader( std::vector<IShaderOp*>() );
+			RayCaster* caster = new RayCaster( false, 8, *shader, false );
+			caster->AttachScene( job->GetScene() );
+			ManifoldSolver* solver = new ManifoldSolver( ManifoldSolverConfig() );
+			// Slightly off-axis so no hit is exactly at normal incidence.
+			const Point3 start = c.startInside ? Point3( 0.05, 0.5, 0.02 ) : Point3( 0.05, 0, 0.02 );
+			const Point3 end = c.startInside ? Point3( 0.1, -1.0, 0.05 ) : Point3( 0.1, 1.5, 0.05 );
+			IORStack receiver( 1.0 );
+			IORStackSeeding::SeedFromPoint( receiver, start, *job->GetScene() );
+			if( c.startInside ) {
+				const IObjectPriv* pTop = job->GetScene()->GetObjects()->GetItem( "top_sheet" );
+				Check( pTop != nullptr, "A7: top sheet found, " + tag );
+				receiver.SetCurrentObject( pTop );
+				receiver.push( c.top );
+			}
+			std::vector<ManifoldVertex> chain;
+			solver->BuildSeedChain( start, end, *job->GetScene(), *caster, chain, true, &receiver );
+			std::cout << std::setprecision( 9 ) << "    " << tag << ": receiver top " << receiver.top() << ", " << chain.size() << " vertices";
+			for( const ManifoldVertex& v : chain ) std::cout << "  [" << v.etaI << " -> " << v.etaT << ( v.isExiting ? " exit" : " entry" ) << "]";
+			std::cout << std::endl;
+			const std::size_t want = c.expect[2] > 0 ? 2 : 1;
+			bool ok = chain.size() == want;
+			for( std::size_t k = 0; ok && k < want; ++k ) {
+				ok = std::fabs( chain[k].etaI - c.expect[2 * k] ) < 1e-12 && std::fabs( chain[k].etaT - c.expect[2 * k + 1] ) < 1e-12;
+			}
+			Check( ok, "A7: seed-walk etas, " + tag );
+			safe_release( solver );
+			safe_release( caster );
+			safe_release( shader );
+			safe_release( job );
+			std::remove( path.c_str() );
 		}
 	}
 
