@@ -251,7 +251,8 @@ which obeys the same `c(eta) = eta^2 c(1/eta)` identity.)
 
 Slice `debt-dl291`, branched from `master` `7bbb434f`, two rounds (the
 second answers an external review: two P1s, three P2s).  Regression:
-`tests/SSSExteriorIndexInvarianceTest.cpp` Part C and seven new Part B rows.
+`tests/SSSExteriorIndexInvarianceTest.cpp` Part D and seven new Part B rows
+(Part C is DL-306's furnace, merged from `master` `d694244e`).
 
 ### 10.1 The defect
 
@@ -316,7 +317,7 @@ DL-313's to fix and measure.
 | `MultipoleDiffusion::RelativizeLayersToExterior` (new) | divides each layer index by the exterior and recomputes the derived parameters; exactly a no-op at `n_e == 1` |
 | `DonnerJensenSkinDiffusionProfile` | tables grouped as `ProfileTables`; the constructor builds air (`m_air`, the pre-DL-291 tables bit for bit); `TablesFor( ri )` (inline, one compare in air) serves every other exterior from a per-exterior cache; `EvaluateProfile{,NM}`, `SampleRadius`, `PdfRadius` read it; the fit's active set moves with the exterior (a 1.2 body at default melanin: widest active Gaussian 2.8x the air variance in water), so the entry-point cutoff follows it via the new `ISubSurfaceDiffusionProfile::GetMaximumDistanceForErrorAt( error, ri )` (default: the exterior-independent value; `BSSRDFSampling::SampleEntryPoint`'s probe length and cutoff call it) |
 | `DonnerJensenSkinSSSShaderOp` | uniform table and (when offset painters exist) the LUT built per exterior on first use; `PerformOperation` evaluates against `ri.geometric.ambientIOR` |
-| `DiffusionApproximationExtinction` | new `ComputeTotalExtinctionForExterior` evaluates the dipole at `A( ior / n_e )`; `BoundaryA` keeps the class's own Egan-Hilgeman fit for a relative index >= 1 and uses the separate eta < 1 fit (`ComputeFdr`) below 1 -- review P1-1: the >= 1 polynomial goes NEGATIVE there (-0.051 at 1.3 inside water, -0.375 inside 1.5 glass, against the Fresnel integral's 0.0069 / 0.0359), which put `A` at 0.904 / 0.455 instead of 1.014 / 1.074 and read the dipole's reflectance 1.7-2.7 % high in water and 10-17 % high in glass.  The two fits meet at 1 to 1e-4 in Fdr. |
+| `DiffusionApproximationExtinction` | new `ComputeTotalExtinctionForExterior` evaluates the dipole at `A( ior / n_e )`; `BoundaryA` keeps the class's own Egan-Hilgeman fit for a relative index >= 1 and uses the separate eta < 1 fit (`ComputeFdr`) below 1 -- review P1-1: the >= 1 polynomial goes NEGATIVE there (-0.051 at 1.3 inside water, -0.375 inside 1.5 glass, against the Fresnel integral's 0.0069 / 0.0359), which put `A` at 0.904 / 0.455 instead of 1.014 / 1.074 and read the dipole's reflectance 1.7-2.7 % high in water and 10-17 % high in glass.  The two fits meet at 1 to 1e-4 in Fdr.  An `ior` AUTHORED below 1 in air moves too (10.4). |
 | `ISubSurfaceExtinctionFunction` | new defaulted `ComputeTotalExtinctionForExterior( distance, exteriorIOR )` (default ignores the exterior: `SimpleExtinction` has no boundary term) |
 | `PointSetOctree::Evaluate` | takes the exterior; the air loops are the original code verbatim and the non-air loops call the new virtual; **also forwards the IOR stack into the recursion** -- DL-223 plumbed `const IORStack*` through the octree, but the child-node call dropped it, so every node below the root priced a stateful BSDF (`translucent_material` under `multiplybsdf TRUE`) stacklessly |
 | `SubSurfaceScatteringShaderOp` | passes `ExteriorIOR( ri.geometric )` |
@@ -331,7 +332,7 @@ under does not produce).  A scene with a handful of media builds a handful
 of tables.  A DISPERSIVE enclosure under HWSS or MLT spectral presents a
 new exterior on nearly every hit: the first 32 are built, every later one
 reuses the nearest cached table (bounded by the key spacing: for BK7,
-~0.018/32 in index, `dA ~ 1e-3`).  The first round took the build mutex on
+~0.0226/32 in index (1.5337-1.5112 over 380-780 nm), `dA ~ 1e-3`).  The first round took the build mutex on
 every such miss; the review measured the lock alone at 2.4x wall clock.
 Re-measured after the lock-free fix (skin sphere inside a BK7 Sellmeier
 sphere, `pathtracing_spectral_rasterizer hwss TRUE`, 64x64, 256 spp,
@@ -353,22 +354,22 @@ first; restored with `git checkout HEAD -- src tests`).
 
 **Against the pre-DL-291 code** (the 13 fix files at `7bbb434f`, the test
 at its red-proof revision `e52c0781` with the final row settings added):
-**170/14** -- the six Part C checks that compile there, the seven DL-291
+**170/14** -- the six Part D checks that compile there, the seven DL-291
 render rows below, and one DL-49 row (`diffusion_smooth_dense/BDPT` read
 1.0062 against its 0.005 band: see 10.7).
 
 **Against round 1** (`DiffusionApproximationExtinction.h` alone at
-`7fcecac7`): the new C3 Fresnel-integral checks read **102/3** (dipole `A`
+`7fcecac7`): the new D3 Fresnel-integral checks read **102/3** (dipole `A`
 0.9035 / 0.4547 / 0.0539 against the integral's 1.0139 / 1.0744 / 1.1424
 at relative index 0.977 / 0.867 / 0.75).  The rendered below-1 dipole row
 reads exactly 1 there: the invariant is BLIND to a wrong-but-consistent
 fit (both sides evaluate the same function), which is why the defect
-survived round 1 and why C3 now checks the fit against an independent
+survived round 1 and why D3 now checks the fit against an independent
 quadrature of the unpolarized Fresnel equations rather than against a
 twin.  Its image mean shows the size of the defect: the 1.3-in-1.5 air
 twin read 0.00763 in round 1 and 0.00674 now (+13 % over).
 
-Part C, deterministic (final): multipole twins at a common scale 1.3e-11,
+Part D, deterministic (final): multipole twins at a common scale 1.3e-11,
 matched and eta < 1 twins exact (the matched case -- 1.4 in 1.4 against
 the relative-1 body in air -- is the boundary constant at relative index
 1 equalling the air value, bit for bit); same body water vs air 0.58 apart
@@ -386,8 +387,8 @@ renders per side; ratio enclosed/air, independent-sides sd; bands >= 3 sd):
 | skin multipole / BDPT | 128 | **0.9018** +/- 0.0127 | 0.9849-0.9987 (sd 0.008-0.015) | 0.06 |
 | skin multipole / PT spectral | 256 | **0.9168** +/- 0.0090 | 0.9870-1.0021 | 0.04 |
 | skin multipole, eta < 1 / PT | 64 | **0.8284** +/- 0.0025 | 0.9963-1.0020 | 0.02 |
-| legacy dipole op / pixelpel | 4 | **0.8030** +/- 0.0064 | 1 (exact) | 0.03 |
-| legacy dipole op, eta < 1 (1.3 in 1.5) / pixelpel | 4 | **0.7143** +/- 0.0077 | 1 (exact) | 0.03 |
+| legacy dipole op / pixelpel | 4 | **0.8030** +/- 0.0064 | 1 within 0.03 (1.00502 once in the review's five runs) | 0.03 |
+| legacy dipole op, eta < 1 (1.3 in 1.5) / pixelpel | 4 | **0.7143** +/- 0.0077 | 1 within 0.03 (exactly 1 in every run seen) | 0.03 |
 | legacy skin op / pixelpel | 4 | **0.7437** +/- 0.0010 | 0.9983-1 | 0.02 |
 
 **The skin BDPT row (review P1-2).**  Round 1 ran it at 32 spp with a
@@ -397,7 +398,10 @@ full runs (0.9714, 0.9737).  Measured sd 0.032 / 0.019 / 0.0099 at
 32 / 128 / 512 spp (BDPT fireflies through the multipole); 512 spp costs
 ~34 s for the row alone, so the row runs at 128 spp with a 3-sd band
 (0.06), which the pre-DL-291 0.90 still clears by ~8 sd.  **Five full
-suite runs: 200/0, 200/0, 200/0, 200/0, 200/0.**
+suite runs: 200/0, 200/0, 200/0, 200/0, 200/0.**  After merging `master`
+`d694244e` (DL-306's Part C furnace rows join the suite): **227/0 in three
+of three full runs** (~85 s), the skin BDPT row reading 1.0210 / 0.9754 /
+1.0049.
 
 Gate (clean rebuild, 0 warnings, library and all 18 test targets):
 `SSSRadianceScalingTest` 576220/0, `BSSRDFNormalizationTest`,
@@ -419,7 +423,7 @@ octree's air/non-air helper called itself on its non-air arm (no compiler
 warning; the build evaluated the air dipole instead), and the octree
 check plus the legacy-dipole row went red (186/2) until it was corrected.
 
-### 10.4 In air: bit-identical
+### 10.4 In air: identical except for one intended consistency change
 
 Every changed expression computes the pre-DL-291 value at `n_e == 1`:
 `RelativizeLayersToExterior` returns early, `TablesFor` returns the
@@ -430,40 +434,69 @@ load-bearing: RISE's macOS build uses `-ffast-math`, and two refactors
 that were algebraically identical in air -- an inline air/non-air helper
 in the octree loop, and a ternary around the dipole's Egan-Hilgeman
 polynomial -- changed the generated code enough to move 4 of 57,600 image
-values by up to 8.6e-8 / 1.2e-7 relative (`sss.RISEscene`,
-`sss_colorvariation`, found by the review and by this slice's own
-re-hash); both were rewritten to keep the original expressions.
+values by up to 8.6e-8 / 1.2e-7 relative; both were rewritten to keep the
+original expressions.
 
-Verified by render: a scratch harness (never committed) rendering
-in-process, single-threaded (`force_number_of_threads 1`), fixed libc
-seed, OIDN off, FNV-1a over the float image, base binary (fix files at
-`7bbb434f`) against the final binary:
+**One in-air change is intended, and it is visible only at shipped
+resolution.**  The octree recursion now forwards the live IOR stack to
+every child node (10.2); before, only the root node read it.  The second
+external review found the two shipped `multiplybsdf TRUE` scenes
+(`translucent_material` on meshes) move by exactly that:
 
-- **28/28 identical** at reduced resolution: all 21 shipped scenes binding
-  `subsurfacescattering_material`, `randomwalk_sss_material`,
-  `simple_sss_shaderop` or `diffusion_approximation_sss_shaderop` (PT, BDPT,
-  VCM and pixelpel), plus seven air scenes for the classes no shipped scene
-  binds (`donner_jensen_skin_bssrdf_material` under PT, BDPT, PT spectral
-  and VCM; `diffusion_approximation_sss_shaderop`;
-  `donner_jensen_skin_sss_shaderop` with and without an offset painter);
-- **5/5 identical** on the review's own full-resolution scenes and seed
-  (`translucent_bunny`, `sss_colorvariation`, `sss` with the dipole op,
-  skin under PT, the legacy skin op).
+| Scene (shipped resolution) | Pixels that differ | Mean |
+|---|---:|---|
+| `sss_colorvariation` 500x375 | 69,574 of 187,500 (largest 0.54 abs) | 0.2790208 -> 0.2790117 (-3.3e-5) |
+| `translucent_bunny` 512x512 | 95,897 of 262,144 | +2.3e-7 relative |
 
-The two shipped `multiplybsdf TRUE` scenes (`translucent_bunny`,
-`sss_colorvariation`, `translucent_material` on closed meshes) are among
-them: the recursion's dropped stack was reachable there but render-neutral,
-because the stackless `TranslucentBSDF::value` infers the side
-geometrically and is exact on a closed object.  Hashes are per process: a
-process that rendered a non-air scene first can differ (static RNG state).
+Isolated cause: reverting ONLY the forwarded `pIorStack` argument restores
+both base hashes exactly.  Mechanism: one (`sss_colorvariation`) / two
+(`translucent_bunny`) SSS shading points where the stack says OUTSIDE but
+the geometry says BACK FACE -- the stackless `TranslucentBSDF::value`,
+which infers the side geometrically, disagrees with the stack there, so
+"exact on a closed object" does not hold for these meshes -- and every
+other differing pixel is the single-threaded RNG stream shifting after
+that point.  The child nodes now agree with the root, which already read
+the stack before this slice: a consistency fix, not a bias.  At reduced
+resolution (160x120 up to 400x300, and this slice's own 48-pixel-wide
+copies) neither scene reaches such a point, which is why both this
+slice's round-1 hashes and the first review saw "identical".  **Hash at
+shipped resolution.**
+
+Evidence, all single-threaded in-process renders (`force_number_of_threads
+1`), fixed libc seed, OIDN off, FNV-1a over the image, base = the fix files
+at `7bbb434f`:
+
+- The second review, at SHIPPED resolution: ten scenes bit-identical --
+  six shipped (`sss`, `spotlight_drama`, `caustic_sss`, `pt_sss_wax_sphere`,
+  `rwsss_sphere`, `rwsss_bdpt`) and four DL-291 air scenes (skin under PT,
+  BDPT and PT spectral; the legacy skin op); the two above differ; and a
+  reduced `sss` copy differs in 34 of 43,200 doubles by <= 7.1e-14 (the
+  compiler output for `DiffusionApproximationExtinction.h` alone; it
+  vanishes at float precision).
+- This slice, at REDUCED resolution (every film scaled to 48 pixels on its
+  long side), float precision: 28/28 identical -- all 21 shipped scenes
+  binding `subsurfacescattering_material`, `randomwalk_sss_material`,
+  `simple_sss_shaderop` or `diffusion_approximation_sss_shaderop` (PT,
+  BDPT, VCM and pixelpel), plus seven air scenes for the classes no shipped
+  scene binds.  The 13 shipped scenes outside the review's list have only
+  this reduced-resolution evidence.
+
+Hashes are per process: a process that rendered a non-air scene first can
+differ (static RNG state).
 
 **Census.**  No shipped scene binds `donner_jensen_skin_bssrdf_material`
 or `donner_jensen_skin_sss_shaderop`; `diffusion_approximation_sss_shaderop`
 appears in `sss.RISEscene` and `spotlight_drama.RISEscene`, both in air
 (`caustic_sss.RISEscene` has a `perfectrefractor_material` but binds only
-`simple_sss_shaderop`, which has no boundary term).  So the fix changes no
-shipped image; it is a correctness gap for user scenes with skin or legacy
-SSS inside a refracting medium.
+`simple_sss_shaderop`, which has no boundary term).  So the boundary-term
+fix changes no shipped image; the only shipped images that move are the
+two octree-consistency scenes above.  The boundary-term fix is a
+correctness gap for user scenes with skin or legacy SSS inside a
+refracting medium -- and for any `diffusion_approximation_sss_shaderop`
+that AUTHORS an `ior` below 1 in air, whose dipole the >= 1 polynomial
+used to put out of range (virtual-source depth at `ior 0.9`: 0.8668 ->
+1.1734, a correction; no shipped scene authors one, and the parser has no
+range check).
 
 ### 10.5 Cost
 
@@ -508,12 +541,12 @@ replaced.
 - The legacy ops' rasterizer-state cache (`cache TRUE`) keys on object and
   raster state, not exterior -- pre-existing and unchanged.
 - DL-04 (no unmatched eta^2) is not gated for the Donner-Jensen classes.
-- The DL-49 BDPT rows (`diffusion_smooth/BDPT` band 0.02, sd 0.016;
-  `diffusion_rough/BDPT` 0.006, sd 0.007; `diffusion_smooth_dense/BDPT`
-  0.005, sd 0.007) share the pattern review P1-2 found in this slice's
-  skin BDPT row: a band below 3 sd that holds only while the pair's shared
-  seed survives the full-suite thread race.  They read exactly 1 in all
-  five final full-suite runs here, but `diffusion_smooth_dense/BDPT` read
-  1.0062 (red) once, in the pre-DL-291 A/B run, whose seed consumption
-  differs.  Not changed here (DL-49's gate; raising its spp to a 3-sd band
-  roughly doubles the suite's runtime); flagged for the supervisor.
+- **DL-332** (filed at merge): the DL-49 rows share the pattern review
+  P1-2 found in this slice's skin BDPT row -- a band below 3 sd that holds
+  only while the pair's shared seed survives the full-suite thread race.
+  The second review measured band/sd (decorrelated): `diffusion_rough/BDPT`
+  0.90, `diffusion_smooth_dense/BDPT` 0.48, `diffusion_smooth/BDPT` 2.6,
+  `random_walk/BDPT` 2.3 (reads 0.9487 .. 1.0349 over five runs),
+  `diffusion_smooth/PT-spectral` 1.97, `random_walk/PT-spectral` 2.96;
+  `diffusion_smooth_dense/BDPT` went red once (1.0062) in this slice's
+  pre-DL-291 A/B.  Not changed here (DL-49's gate).
