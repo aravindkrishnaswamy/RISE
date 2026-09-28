@@ -1252,6 +1252,43 @@ static void SectionD()
 			if( cap ) safe_release( cap );
 		}
 	}
+
+	// D3: a TRANSMITTING composite, glass / glass with zero gap, under the
+	// same env furnace.  Lossless, so the truth is 1; it reads ~0.49
+	// because the walker's exit through the BOTTOM carries the
+	// inside-the-object stack, so the escaping ray is priced at the
+	// eta^-2 = 0.444 basic-radiance factor of a medium it never entered.
+	// Pre-existing (the base 5c9eeb96 reads 0.484-0.487 across PT/BDPT
+	// pel, spectral and HWSS) and part of DL-341's stack-gap family.
+	// KNOWN RESIDUAL PIN [0.43, 0.54]; the plain glass quad on the right
+	// is printed as a record only.
+	{
+		const std::string glassComp =
+			"dielectric_material\n{\n\tname mat_glass2\n\ttau 1\n\tior 1.5\n}\n\n"
+			"composite_material\n{\n\tname mat_gg\n\ttop mat_glass\n\tbottom mat_glass2\n\tthickness 0\n\textinction 0.0\n}\n\n";
+		const std::string scene3 = std::string( "RISE ASCII SCENE 7\n" ) +
+			"film\n{\n\twidth 32\n\theight 16\n}\n\n"
+			"pinhole_camera\n{\n\tlocation 0 0 7.0\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt_env\n\tcolor 1.0 1.0 1.0\n}\n\n" +
+			kLayers + glassComp +
+			"clippedplane_geometry\n{\n\tname qL\n\tpta -4 -3 0\n\tptb 0 -3 0\n\tptc 0 3 0\n\tptd -4 3 0\n}\n\n"
+			"clippedplane_geometry\n{\n\tname qR\n\tpta 0 -3 0\n\tptb 4 -3 0\n\tptc 4 3 0\n\tptd 0 3 0\n}\n\n"
+			"standard_object\n{\n\tname objL\n\tgeometry qL\n\tmaterial mat_gg\n}\n\n"
+			"standard_object\n{\n\tname objR\n\tgeometry qR\n\tmaterial mat_glass\n}\n\n";
+		for( int r = 0; r < 2; ++r ) {
+			const std::string scene = scene3 + ( r == 0 ? PtRasterizer( true, 64 ) : BdptRasterizer( true, 64 ) );
+			CapturingRasterizerOutput* cap = 0;
+			const bool ok = Render( scene, r == 0 ? "gg_pt" : "gg_bdpt", cap, 40960u + r );
+			const double mL = ok ? RegionMean( *cap, 2, cap->width / 2 - 2 ) : -1;
+			const double mR = ok ? RegionMean( *cap, cap->width / 2 + 2, cap->width - 2 ) : -1;
+			std::cout << "    D3 transmitting composite glass/glass under env, " << ( r == 0 ? "PT  " : "BDPT" )
+			          << ": composite = " << std::setprecision(5) << mL << " (truth 1; KNOWN RESIDUAL PIN [0.43, 0.54], DL-341)"
+			          << ", plain glass quad (record) = " << mR << "\n";
+			Check( ok && mL >= 0.43 && mL <= 0.54,
+				std::string( "[D3] transmitting composite (DL-341 residual) inside its pin band (" ) + ( r == 0 ? "PT" : "BDPT" ) + ")" );
+			if( cap ) safe_release( cap );
+		}
+	}
 }
 
 int main( int argc, char** argv )
@@ -1267,6 +1304,7 @@ int main( int argc, char** argv )
 	const bool skipRender = ( argc > 1 && std::string( argv[1] ) == "--no-render" );
 	if( argc > 1 && std::string( argv[1] ) == "--tilt-only" ) {
 		SectionT( f );
+		if( argc > 2 && std::string( argv[2] ) == "--render" ) SectionD();
 		std::cout << "\n" << passCount << " passed, " << failCount << " failed" << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
