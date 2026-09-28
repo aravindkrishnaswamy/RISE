@@ -913,7 +913,12 @@ namespace
 				const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
 				c[1].direction = field.Sample( dist, xi2d, gPdf );
 				c[1].guidePdf = gPdf;
-				if( gPdf > NEARZERO )
+				// `> 0`, not `> NEARZERO`: the guide's own density divides
+				// out of this candidate's contribution (it is
+				// `f cos / ((g + p_agg) guideProb)`), so a tiny positive `g`
+				// is an ordinary draw, and discarding it would be a (tiny)
+				// bias rather than a guard.
+				if( gPdf > 0 )
 				{
 					c[1].bsdfEval = evalF( c[1].direction );
 					c[1].bsdfPdf = evalPdf( c[1].direction );
@@ -974,7 +979,9 @@ namespace
 			Scalar gPdf = 0;
 			const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
 			const Vector3 gDir = field.Sample( dist, xi2d, gPdf );
-			if( gPdf > NEARZERO )
+			// `> 0`: see candidate 1 above -- `g` divides out of
+			// `f cos W_g / (g guideProb)`.
+			if( gPdf > 0 )
 			{
 				const V f = evalF( gDir );
 				const Scalar agg = evalPdf( gDir );

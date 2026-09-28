@@ -3997,7 +3997,10 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 						c.direction = rc.pGuidingField->Sample( guideDist, xi2d, guidePdf );
 						c.guidePdf = guidePdf;
 
-						if( guidePdf > NEARZERO )
+						// `> 0`, not `> NEARZERO`: the guide density (DL-67)
+						// divides out of this candidate's contribution, so a tiny
+						// positive `g` is an ordinary draw, not a degenerate one.
+						if( guidePdf > 0 )
 						{
 							c.bsdfEval = PTEvalBSDFAtSurface<Tag>(
 								pBRDF, c.direction, ri.geometric, tag, &iorStack );
@@ -4082,7 +4085,8 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 						const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
 						const Vector3 guidedDir = rc.pGuidingField->Sample( guideDist, xi2d, guidePdf );
 
-						if( guidePdf > NEARZERO )
+						// `> 0`: `g` divides out of `f cos W_g / (g guideProb)`.
+						if( guidePdf > 0 )
 						{
 							const Value fGuided = PTEvalBSDFAtSurface<Tag>(
 								pBRDF, guidedDir, ri.geometric, tag, &iorStack );
