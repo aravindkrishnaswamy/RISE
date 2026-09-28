@@ -1156,9 +1156,14 @@ namespace
 			{ Model::Diffusion,      Integrator::BDPT,       32,  0.005, kDense,       kScale },
 			{ Model::RandomWalk,     Integrator::PT,         64,  0.04,  kDense,       kScale },
 			// DL-291 rows (bands set from measured sd; see
-			// docs/DL49_SSS_EXTERIOR_INDEX.md section 10).
+			// docs/DL49_SSS_EXTERIOR_INDEX.md section 10).  The skin BDPT
+			// row's independent-sides sd is 0.032 / 0.019 / 0.0099 at
+			// 32 / 128 / 512 spp (BDPT fireflies through the multipole),
+			// and in the FULL suite a BDPT thread race decorrelates the
+			// pair, so its band is 3 sd at 128 spp -- the pre-fix 0.89 is
+			// still ~6 sd outside it.
 			{ Model::SkinMultipole,  Integrator::PT,         64,  0.02,  1.4,          kScale },
-			{ Model::SkinMultipole,  Integrator::BDPT,       32,  0.02,  1.4,          kScale },
+			{ Model::SkinMultipole,  Integrator::BDPT,       128, 0.06,  1.4,          kScale },
 			{ Model::SkinMultipole,  Integrator::PTSpectral, 256, 0.04,  1.4,          kScale },
 			{ Model::SkinMultipole,  Integrator::PT,         64,  0.02,  1.33 / 1.5,   kScale },
 			{ Model::LegacyDipole,   Integrator::PixelPel,   4,   0.03,  1.3,          kScale },

@@ -22,7 +22,13 @@
 //    - Readers never lock: an entry is fully built before its slot is
 //      published (release store of the count), and entries are never
 //      mutated or removed until the cache is destroyed.
-//    - Misses are serialized by one mutex (the build runs under it).
+//    - Misses are serialized by one mutex (the build runs under it) --
+//      but only while the cache still has room.  Once full, a miss is
+//      served by a LOCK-FREE nearest-key scan: under HWSS / MLT spectral
+//      rendering a dispersive enclosure presents a new exterior on
+//      almost every hit, and taking the mutex there serialized the
+//      render (external review: skin in BK7, PT spectral hwss, 2.4x
+//      wall clock, 17-19 s of system time).
 //    - Capacity is bounded.  A scene that presents more than `Capacity`
 //      distinct exteriors (e.g. a DISPERSIVE enclosure, whose index
 //      changes with every hero wavelength) is served the cached entry
@@ -61,7 +67,7 @@ namespace RISE
 		mutable std::atomic<Entry*>			slots[Capacity];
 		mutable std::atomic<unsigned int>	count;
 		mutable std::mutex					buildMutex;
-		mutable bool						warnedFull;		///< guarded by buildMutex
+		mutable std::atomic<bool>			warnedFull;
 
 		//! Scans the first `n` published entries for an exact key.
 		const T* Find( const Scalar exteriorIOR, const unsigned int n ) const
@@ -73,6 +79,25 @@ namespace RISE
 				}
 			}
 			return 0;
+		}
+
+		//! Nearest cached key; only called once all Capacity slots are
+		//! published (immutable from then on), so it needs no lock.
+		const T& Nearest( const Scalar exteriorIOR ) const
+		{
+			if( !warnedFull.exchange( true, std::memory_order_relaxed ) ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"ExteriorIndexCache:: more than %u distinct exterior indices (e.g. a dispersive enclosure); "
+					"further exteriors reuse the nearest cached table (DL-291)", Capacity );
+			}
+			const Entry* best = slots[0].load( std::memory_order_acquire );
+			for( unsigned int i = 1; i < Capacity; ++i ) {
+				const Entry* e = slots[i].load( std::memory_order_acquire );
+				if( std::fabs( e->exteriorIOR - exteriorIOR ) < std::fabs( best->exteriorIOR - exteriorIOR ) ) {
+					best = e;
+				}
+			}
+			return *best->payload;
 		}
 
 	public:
@@ -100,8 +125,12 @@ namespace RISE
 		template< class Builder >
 		const T& Get( const Scalar exteriorIOR, const Builder& build ) const
 		{
-			if( const T* hit = Find( exteriorIOR, count.load( std::memory_order_acquire ) ) ) {
+			const unsigned int published = count.load( std::memory_order_acquire );
+			if( const T* hit = Find( exteriorIOR, published ) ) {
 				return *hit;
+			}
+			if( published == Capacity ) {
+				return Nearest( exteriorIOR );		// full: no lock, ever again
 			}
 
 			std::lock_guard<std::mutex> guard( buildMutex );
@@ -119,21 +148,8 @@ namespace RISE
 				return *e->payload;
 			}
 
-			// Full: nearest cached key (Capacity > 0, so n > 0 here).
-			if( !warnedFull ) {
-				warnedFull = true;
-				GlobalLog()->PrintEx( eLog_Warning,
-					"ExteriorIndexCache:: more than %u distinct exterior indices (e.g. a dispersive enclosure); "
-					"further exteriors reuse the nearest cached table (DL-291)", Capacity );
-			}
-			const Entry* best = slots[0].load( std::memory_order_acquire );
-			for( unsigned int i = 1; i < n; ++i ) {
-				const Entry* e = slots[i].load( std::memory_order_acquire );
-				if( std::fabs( e->exteriorIOR - exteriorIOR ) < std::fabs( best->exteriorIOR - exteriorIOR ) ) {
-					best = e;
-				}
-			}
-			return *best->payload;
+			// Filled while we waited for the lock.
+			return Nearest( exteriorIOR );
 		}
 
 		//! Number of distinct exteriors built so far (diagnostics / tests).
