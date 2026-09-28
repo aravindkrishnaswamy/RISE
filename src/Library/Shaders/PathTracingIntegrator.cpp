@@ -3571,14 +3571,19 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 			// Same learned-alpha scaling PART 3 applies (Mueller 2017 v2's
 			// per-cell sigmoid, 2x so a neutral 0.5 reproduces the fixed-
-			// alpha behaviour), clamped to [0,1] for the MIS probability
-			// invariant.  No per-lobe damping: NEE cannot know the lobe.
+			// alpha behaviour).  No per-lobe damping: NEE cannot know the
+			// lobe.  DL-67 round 3: clamped STRICTLY below 1
+			// (`GuidingOneSampleProbability`) -- this is also PART 3's
+			// one-sample firing probability, and at 1 the BSDF technique
+			// never fires, losing every delta lobe's transport.  One value
+			// serves both roles, so NEE's partner and the continuation's
+			// partition stay one function.
 			Scalar alphaNominal = rc.guidingAlpha;
 			if( rc.guidingLearnedAlpha ) {
 				alphaNominal = rc.guidingAlpha * 2.0 *
 					rc.pGuidingField->GetCellAlpha( guideDist );
-				if( alphaNominal > 1.0 ) alphaNominal = 1.0;
 			}
+			alphaNominal = PathTransportUtilities::GuidingOneSampleProbability( alphaNominal );
 			guidingMis.Configure( rc.pGuidingField, &guideDist, alphaNominal );
 		}
 #endif
@@ -3798,6 +3803,12 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			guideTemplateRay.isDelta = false;
 			guideTemplateRay.ray = Ray( ri.geometric.ptIntersection, ri.geometric.vNormal );
 			const bool hasLobe = ( pS != 0 && selectProb > 0 );
+			// DL-67 round 3 (review P3): the Accurate-AOV capture below is a
+			// property of the SELECTED interaction, as it is un-guided -- a
+			// guide draw must not add a capture at a vertex whose kept lobe
+			// was delta (or whose container was empty), or the AOV would
+			// depend on which technique fired.
+			const bool aovSelectedNonDelta = hasLobe && !pS->isDelta;
 			if( !hasLobe ) {
 				if( !guidedVertex ) {
 					break;
@@ -3843,7 +3854,11 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			//
 			// Unbiased for any deterministic W PROVIDED `IBSDF::value` and
 			// the SPF's kray describe one function (DL-285: not
-			// `polished_material`).  Round 1 of this fix let the guide
+			// `polished_material`), `0 < a < 1` (delta lobes belong to the
+			// BSDF technique alone; `a` is clamped at Configure), and the
+			// continuation state does not depend on which technique fired
+			// (NOT met under a per-type bounce cap: a guide draw continues
+			// as `eRayDiffuse` -- documented limitation, doc §2).  Round 1 of this fix let the guide
 			// fire only when the SELECTED lobe was guide-eligible, with a
 			// per-lobe alpha; that made "can the guide fire here" a random
 			// event whenever a realization could lack an eligible lobe
@@ -3925,8 +3940,14 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 							sumPdf[1] = guidePdf + ( agg[1] > 0 ? agg[1] : Scalar( 0 ) );
 							const Scalar risPdf1 = Scalar( 0.5 ) * sumPdf[1];
 							contrib[1] = PTMulDiv( f1, cos1, sumPdf[1] );
-							if( PTSurvivalMagnitude( f1 ) > 0 && risPdf1 > NEARZERO && target1 > 0 ) {
-								w[1] = target1 / risPdf1;
+							// The weight is positive wherever the
+							// contribution is (review P3); the target-based
+							// value when it is usable, the contribution's
+							// own magnitude otherwise.
+							const Scalar c1 = PTSurvivalMagnitude( contrib[1] );
+							if( c1 > 0 ) {
+								w[1] = ( risPdf1 > NEARZERO && target1 > 0 ) ?
+									target1 / risPdf1 : c1;
 							}
 						}
 					}
@@ -4017,7 +4038,10 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					{
 						// The guide cannot produce a delta direction
 						// (W_b = 1); the lobe was kept with probability
-						// `1 - a` (`xiG >= a` in [0, 1) implies a < 1).
+						// `1 - a`, and `a <= kGuidingMaxOneSampleProbability
+						// < 1` (DL-67 round 3, premise 3) keeps that
+						// probability -- and this lobe's transport --
+						// nonzero.
 						scatterThroughput = scatterThroughput *
 							( Scalar( 1 ) / ( Scalar( 1 ) - alphaV ) );
 					}
@@ -4089,7 +4113,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			// termination decisions prevents direct-only and RR-terminated paths
 			// from producing transport-correlated holes in Accurate AOVs.
 			if constexpr ( Traits::supports_aov ) {
-				if( pAOV && !pAOV->valid && !pS->isDelta &&
+				if( pAOV && !pAOV->valid && aovSelectedNonDelta &&
 				    rc.aovPrefilterMode == OidnPrefilter::Accurate )
 				{
 					pAOV->normal = ri.geometric.vNormal;

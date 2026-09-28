@@ -831,9 +831,16 @@ namespace
 	// to skip the guide.  A guide draw that yields nothing is a zero
 	// sample of the guide technique, never a fall-back to the lobe.
 	//
-	// PREMISE (not checked here): `IBSDF::value` and the SPF's `kray`
-	// describe ONE function -- the guide prices `value`, the kept lobes
-	// price `kray`.  `polished_material` violates it (DL-285).
+	// PREMISES (doc §2).  (2) `IBSDF::value` and the SPF's `kray` describe
+	// ONE function -- the guide prices `value`, the kept lobes price
+	// `kray`; `polished_material` violates it (DL-285).  (3) 0 < a < 1
+	// where the kept technique owns mass the guide cannot reach (a delta
+	// lobe) -- enforced below through `GuidingOneSampleProbability`.
+	// (4) The continuation state must not depend on which technique chose
+	// the direction; a substituted vertex continues as a non-delta
+	// `eRayDiffuse` event, so under a per-type bounce cap the two
+	// techniques integrate differently truncated paths (documented
+	// limitation, not enforced).
 	//////////////////////////////////////////////////////////////////
 	template<class V>
 	struct BDPTGuidedChoice
@@ -931,8 +938,11 @@ namespace
 					const Scalar risPdf1 = PathTransportUtilities::GuidingRISProposalPdf(
 						agg1 > 0 ? agg1 : Scalar( 0 ), gPdf );
 					sum1 = gPdf + ( agg1 > 0 ? agg1 : Scalar( 0 ) );
-					if( Traits::max_value( f1 ) > 0 && risPdf1 > NEARZERO && target1 > 0 ) {
-						w[1] = target1 / risPdf1;
+					// The weight is positive wherever candidate 1's
+					// contribution `f cos / (g + p_agg)` is (review P3).
+					const Scalar c1 = Traits::max_value( f1 ) * cos1 / sum1;
+					if( c1 > 0 ) {
+						w[1] = ( risPdf1 > NEARZERO && target1 > 0 ) ? target1 / risPdf1 : c1;
 					}
 				}
 			}
@@ -963,9 +973,13 @@ namespace
 			return;
 		}
 
-		// One-sample MIS with the realization-independent coin.
+		// One-sample MIS with the realization-independent coin.  The
+		// firing probability is clamped strictly below 1 (DL-67 round 3,
+		// premise 3): at 1 the kept technique never fires and every delta
+		// lobe's transport is lost.
+		const Scalar a = PathTransportUtilities::GuidingOneSampleProbability( alpha );
 		const Scalar xi = sampler.Get1D();
-		if( PathTransportUtilities::ShouldUseGuidedSample( alpha, xi ) )
+		if( PathTransportUtilities::ShouldUseGuidedSample( a, xi ) )
 		{
 			Scalar gPdf = 0;
 			const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
@@ -978,7 +992,7 @@ namespace
 				out.dir = gDir;
 				out.f = evalF( gDir );
 				out.equivPdf = PathTransportUtilities::GuidingCombinedPdf(
-					alpha, gPdf, agg > 0 ? agg : Scalar( 0 ) );
+					a, gPdf, agg > 0 ? agg : Scalar( 0 ) );
 				out.aggAtTrace = agg;
 				return;
 			}
@@ -986,19 +1000,19 @@ namespace
 			return;
 		}
 
-		// Kept: `xi >= alpha` in [0, 1) implies `alpha < 1`.
+		// Kept, with probability `1 - a > 0`.
 		if( !hasLobe || lobeMagnitude <= 0 ) {
 			out.terminate = true;
 			return;
 		}
 		if( scat.isDelta ) {
-			out.keptScale = Scalar( 1 ) / ( Scalar( 1 ) - alpha );
+			out.keptScale = Scalar( 1 ) / ( Scalar( 1 ) - a );
 			return;
 		}
 		const Scalar agg = evalPdf( wSel );
 		out.aggAtTrace = agg;
 		out.keptScale = PathTransportUtilities::GuidingPartitionBsdfWeight(
-			alpha, field.Pdf( dist, wSel ), agg ) / ( Scalar( 1 ) - alpha );
+			a, field.Pdf( dist, wSel ), agg ) / ( Scalar( 1 ) - a );
 		if( out.keptScale <= 0 ) {
 			out.terminate = true;
 		}

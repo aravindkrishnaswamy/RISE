@@ -360,9 +360,16 @@ namespace RISE
 		// with `p_agg` the material's AGGREGATE `ISPF::Pdf()`.  Each
 		// technique prices its own UNWEIGHTED estimator times its weight
 		// over the probability it fired (`kray_I/q_I * W_b/(1-a)`,
-		// `f cos/g * W_g/a`).  Unbiased for any deterministic W under two
-		// premises: the technique choice is realization-independent, and
-		// `IBSDF::value` and the SPF's kray describe ONE function.
+		// `f cos/g * W_g/a`).  Unbiased for any deterministic W under
+		// four premises (doc §2): (1) the technique choice is
+		// realization-independent; (2) `IBSDF::value` and the SPF's kray
+		// describe ONE function (DL-285: not `polished_material`);
+		// (3) 0 < a < 1 wherever the BSDF technique owns mass the guide
+		// cannot reach (delta lobes) -- `GuidingOneSampleProbability`;
+		// (4) the continuation state after the choice does not depend on
+		// which technique chose the direction -- NOT met under a per-type
+		// bounce cap (a guide draw continues as `eRayDiffuse`), a
+		// documented limitation.
 		//////////////////////////////////////////////////////////////////////
 
 		/// The guide technique's partition weight `W_g(w)`.  Zero when the
@@ -397,6 +404,33 @@ namespace RISE
 			const Scalar num = ( 1.0 - mixA ) * aggregatePdf;
 			const Scalar den = num + mixA * ( guidePdf > 0 ? guidePdf : Scalar( 0 ) );
 			return den > 0 ? num / den : Scalar( 1 );
+		}
+
+		/// DL-67 round 3 (docs/DL67_GUIDED_GENERATING_DENSITY.md §2,
+		/// premise 3): the one-sample guide technique's firing probability
+		/// `a` must satisfy 0 < a < 1 wherever the BSDF technique owns mass
+		/// the guide cannot reach.  A DELTA lobe is such mass (the guide
+		/// cannot produce a delta direction, so W_b = 1 there): it is
+		/// priced `kray/q/(1 - a)` and is LOST outright at a = 1 -- a
+		/// smooth `subsurfacescattering_material` read exactly 0 under
+		/// one-sample alpha 1.0, which PT's learned alpha reached for any
+		/// `pathguiding_alpha` above ~0.5 in a saturated cell.  The same
+		/// clamp keeps a configured alpha above 1 from making the mixture
+		/// density `a g + (1-a) p_agg` negative.  The ceiling also bounds
+		/// the delta lobe's amplification `1/(1 - a)` (and hence its
+		/// variance factor) at 10; the guide's own share barely moves
+		/// between 0.9 and 1 because `p_agg` is small wherever it matters.
+		static const Scalar kGuidingMaxOneSampleProbability = 0.9;
+
+		/// The clamped one-sample firing probability: 0 for a non-positive
+		/// (or NaN) alpha, `kGuidingMaxOneSampleProbability` above it.
+		inline Scalar GuidingOneSampleProbability( const Scalar alpha )
+		{
+			if( !( alpha > 0 ) ) {
+				return 0;
+			}
+			return alpha < kGuidingMaxOneSampleProbability ?
+				alpha : kGuidingMaxOneSampleProbability;
 		}
 
 		/// Determines whether to sample from the guiding distribution
