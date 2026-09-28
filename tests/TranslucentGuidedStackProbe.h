@@ -45,6 +45,13 @@ struct Observation {
 	// deliberately queries wo=-currentRay.Dir() regardless of guiding);
 	// capturing that one instead would silently test the wrong call.
 	bool capturedExitQuery = false;
+	// DL-67: EVERY exit-window density query, in order.  Since DL-67 the
+	// BDPT RIS branch evaluates candidate 0's AGGREGATE density before the
+	// guide candidate's, so "the first query" is no longer the guide
+	// candidate's; the value check below finds the query whose `wo` IS the
+	// substituted (traced) direction instead.
+	std::vector<Vector3> exitQueryWo;
+	std::vector<Scalar> exitQueryRet;
 	std::vector<Scalar> liveIncomingDistances;
 };
 
@@ -97,6 +104,8 @@ public:
 		const Scalar ret = real.Pdf(ri, wo, stack);
 		if(observed.initialExit && !observed.arrived && ri.ptIntersection.x == 0 && ri.ptIntersection.y == 0 && ri.ptIntersection.z == 0) {
 			++observed.exitPdfQueries;
+			observed.exitQueryWo.push_back( wo );
+			observed.exitQueryRet.push_back( ret );
 			if(!observed.capturedExitQuery) {
 				observed.capturedExitQuery = true;
 				observed.lastQueriedPdfWo = wo;
@@ -111,6 +120,8 @@ public:
 		const Scalar ret = real.PdfNM(ri, wo, nm, stack);
 		if(observed.initialExit && !observed.arrived && ri.ptIntersection.x == 0 && ri.ptIntersection.y == 0 && ri.ptIntersection.z == 0) {
 			++observed.exitPdfQueries;
+			observed.exitQueryWo.push_back( wo );
+			observed.exitQueryRet.push_back( ret );
 			if(!observed.capturedExitQuery) {
 				observed.capturedExitQuery = true;
 				observed.lastQueriedPdfWo = wo;
@@ -287,11 +298,27 @@ static void RunBDPT(PathGuidingField& guide, const IPainter& front, const IPaint
 						// one -- the density evaluated for the substituted
 						// candidate must be ITS OWN, not some other
 						// direction's -- only the constant in front changed.
+						//
+						// DL-67 (2026-09-27): the density is looked up by
+						// DIRECTION, not by position in the query sequence --
+						// the RIS branch now queries candidate 0's aggregate
+						// first.  A substituted outward candidate with NO query
+						// at its own direction counts as bad too: that is the
+						// guide candidate never having been priced at all, a
+						// stronger liveness proof than the query COUNT below.
 						const Scalar kExitSelectShare = Scalar(0.7);
-						if(substituted && outward && observation.pdfQueries>0 && observation.lastQueriedPdfReturn >= 0) {
+						if(substituted && outward && observation.pdfQueries>0) {
 							const Scalar expected = kExitSelectShare * std::fabs(Vector3Ops::Dot(
 								observation.tracedDirection, observation.exitNormal)) * INV_PI;
-							if(std::fabs(observation.lastQueriedPdfReturn - expected) > 1e-9) ++badPdfValue;
+							bool found = false;
+							for( size_t q = 0; q < observation.exitQueryWo.size(); ++q ) {
+								if( Vector3Ops::Magnitude( observation.exitQueryWo[q] - observation.tracedDirection ) < 1e-9 ) {
+									found = true;
+									if(std::fabs(observation.exitQueryRet[q] - expected) > 1e-9) ++badPdfValue;
+									break;
+								}
+							}
+							if( !found ) ++badPdfValue;
 						}
 					}
 					integrator->SetLightSampler(0);
@@ -310,8 +337,15 @@ static void RunBDPT(PathGuidingField& guide, const IPainter& front, const IPaint
 				EXPECT(badOut==0,"DL-03 BDPT outward exit carries popped stack and next same-object Scatter enters");
 				EXPECT(badIn==0,"DL-03 BDPT inward substitution preserves inside stack");
 				EXPECT(badMedium==0,"DL-03 BDPT surrounding air IOR remains unchanged");
+				// DL-67: `>=`, not `>`.  The guided branch now hands the
+				// aggregate density it already evaluated at the traced
+				// direction to `pdfFwd` instead of querying it a second
+				// time, so one-sample mode issues exactly the unguided
+				// count.  Liveness of the guide candidate is proven by the
+				// per-direction value check (`badPdfValue`) below, which
+				// fails if the substituted candidate was never priced.
 				if(mode == 0) baselineExitQueries = exitQueries;
-				else EXPECT(exitQueries > baselineExitQueries,"DL-03 BDPT exit PDF query count exceeds unguided baseline (live guide candidate)");
+				else EXPECT(exitQueries >= baselineExitQueries,"DL-03 BDPT exit PDF query count is at least the unguided baseline");
 				// DL-43: eye-subpath guide candidates (side==0) used to have their
 				// Pdf arguments reversed (BDPTIntegrator.cpp GenerateEyeSubpathImpl's
 				// RIS candidate-1 and one-sample branches), so eye+RIS in particular
