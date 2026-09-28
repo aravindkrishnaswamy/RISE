@@ -123,6 +123,9 @@
 #include "../src/Library/Materials/SubSurfaceScatteringMaterial.h"
 #include "../src/Library/Materials/SubSurfaceScatteringBSDF.h"
 #include "../src/Library/Materials/RandomWalkSSSMaterial.h"
+#include "../src/Library/Materials/DonnerJensenSkinDiffusionProfile.h"
+#include "../src/Library/Materials/MultipoleDiffusion.h"
+#include "../src/Library/Shaders/SSS/PointSetOctree.h"
 #include "../src/Library/Shaders/BSSRDFEntryAdapters.h"
 #include "../src/Library/Shaders/BDPTVertex.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
@@ -637,6 +640,169 @@ namespace
 		nAir->release(); nScaled->release(); absorption->release(); scattering->release();
 	}
 
+
+	//////////////////////////////////////////////////////////////////
+	// C -- DL-291: precomputed / authored boundary conditions
+	//////////////////////////////////////////////////////////////////
+
+	//! A Donner-Jensen multipole profile with the given layer indices and
+	//! the chunk defaults for every other parameter.
+	struct SkinBundle
+	{
+		UniformScalarPainter* p[9];
+		DonnerJensenSkinDiffusionProfile* profile;
+		SkinBundle( const Scalar iorEpidermis, const Scalar iorDermis )
+		{
+			const Scalar v[9] = { 0.02, 0.5, 0.002, 0.001, 0.005, 0.025, iorEpidermis, iorDermis, 0.7 };
+			for( int i = 0; i < 9; ++i ) { p[i] = new UniformScalarPainter( v[i] ); p[i]->addref(); }
+			profile = new DonnerJensenSkinDiffusionProfile( *p[0], *p[1], *p[2], *p[3], *p[4], *p[5], *p[6], *p[7], *p[8] );
+			profile->addref();
+		}
+		~SkinBundle()
+		{
+			profile->release();
+			for( int i = 0; i < 9; ++i ) p[i]->release();
+		}
+	};
+
+	//! Largest relative difference between two profiles over their whole
+	//! public surface (RGB and NM evaluation, radius sampling, radius pdf).
+	Scalar WorstSkinProfileDifference(
+		const DonnerJensenSkinDiffusionProfile& a, const RayIntersectionGeometric& riA,
+		const DonnerJensenSkinDiffusionProfile& b, const RayIntersectionGeometric& riB )
+	{
+		Scalar worst = 0;
+		auto accumulate = [&worst]( const Scalar x, const Scalar y ) {
+			const Scalar scale = std::fmax( std::fabs( x ), std::fabs( y ) );
+			if( !std::isfinite( x ) || !std::isfinite( y ) ) { worst = INFINITY; return; }
+			if( scale > 0 ) worst = std::fmax( worst, std::fabs( x - y ) / scale );
+		};
+		const Scalar radii[] = { 0.0, 0.002, 0.01, 0.03, 0.08, 0.2 };
+		const Scalar wavelengths[] = { 405.0, 480.0, 555.0, 633.0, 695.0 };
+		const Scalar us[] = { 0.02, 0.3, 0.6, 0.9, 0.995 };
+		for( const Scalar r : radii ) {
+			const RISEPel ea = a.EvaluateProfile( r, riA ), eb = b.EvaluateProfile( r, riB );
+			for( int c = 0; c < 3; ++c ) accumulate( ea[c], eb[c] );
+			for( const Scalar nm : wavelengths ) accumulate( a.EvaluateProfileNM( r, riA, nm ), b.EvaluateProfileNM( r, riB, nm ) );
+			if( r > 0 ) for( int c = 0; c < 3; ++c ) accumulate( a.PdfRadius( r, c, riA ), b.PdfRadius( r, c, riB ) );
+		}
+		for( const Scalar u : us ) for( int c = 0; c < 3; ++c ) accumulate( a.SampleRadius( u, c, riA ), b.SampleRadius( u, c, riB ) );
+		return worst;
+	}
+
+	void TestSkinMultipoleRelativeIndex()
+	{
+		std::cout << "C1: Donner-Jensen multipole Rd is a function of the RELATIVE layer indices" << std::endl;
+		// The multipole's boundary term A = (1+Fdr)/(1-Fdr) of each slab is
+		// evaluated against the medium surrounding the stack; before DL-291
+		// the profile baked it once, at construction, against air.  Each
+		// case compares a body seen through exterior n_e with a SECOND body
+		// whose authored indices are the first one's divided by n_e, seen
+		// in air: one relative problem, two absolute scales.
+		struct Case { const char* what; Scalar epi, derm, ext; Scalar tol; };
+		const Case cases[] = {
+			// Common scaling by 1.5 (the Part B enclosure).  2.1/1.5 is not
+			// exactly 1.4 in binary, so a rounding-level tolerance.
+			{ "scaled (2.1, 2.07) in 1.5 vs (1.4, 1.38) in air", 2.1, 2.07, 1.5, 1e-9 },
+			// Matched epidermis: relative index exactly 1 -- the boundary
+			// constant must be EXACTLY the air value of a relative-1 body.
+			{ "matched (1.4, 1.38) in 1.4 vs (1, 1.38/1.4) in air", 1.4, 1.38, 1.4, 0.0 },
+			// Denser exterior (eta < 1, the Fdr fit's other branch).
+			{ "dense (1.33, 1.31) in 1.5 vs (1.33/1.5, 1.31/1.5) in air", 1.33, 1.31, 1.5, 0.0 },
+		};
+		for( const Case& c : cases ) {
+			SkinBundle immersed( c.epi, c.derm );
+			SkinBundle reference( c.epi / c.ext, c.derm / c.ext );
+			const Scalar worst = WorstSkinProfileDifference(
+				*immersed.profile, MakeSurfaceRI( c.ext ), *reference.profile, MakeSurfaceRI( 1.0 ) );
+			std::cout << "    " << c.what << ": worst relative difference " << std::setprecision( 6 ) << worst << std::endl;
+			Check( worst <= c.tol, std::string( "C1: " ) + c.what );
+		}
+
+		// Discrimination: the SAME body is priced differently by a different
+		// exterior (otherwise the cases above would pass vacuously).
+		SkinBundle skin( 1.4, 1.38 );
+		const Scalar moved = WorstSkinProfileDifference( *skin.profile, MakeSurfaceRI( 1.33 ), *skin.profile, MakeSurfaceRI( 1.0 ) );
+		std::cout << "    same body, water vs air: worst relative difference " << moved << std::endl;
+		Check( moved > 1e-2, "C1: the exterior index changes the multipole profile" );
+
+		// In air the profile is the constructor's table, bit for bit: a
+		// stackless record (default ambientIOR) and an explicit 1.0 agree.
+		RayIntersectionGeometric riDefault = MakeSurfaceRI( 1.0 );
+		riDefault.ambientIOR = RayIntersectionGeometric( Ray(), nullRasterizerState ).ambientIOR;
+		Check( WorstSkinProfileDifference( *skin.profile, riDefault, *skin.profile, MakeSurfaceRI( 1.0 ) ) == 0.0,
+			"C1: stackless record reads the air table exactly" );
+
+		// A record whose exterior differs only in the last bit is a
+		// different key; a repeat of an exterior already seen is served
+		// from the cache and is identical to its first evaluation.
+		const Scalar first = skin.profile->EvaluateProfile( 0.01, MakeSurfaceRI( 1.33 ) )[1];
+		const Scalar again = skin.profile->EvaluateProfile( 0.01, MakeSurfaceRI( 1.33 ) )[1];
+		Check( first == again, "C1: a repeated exterior evaluates identically" );
+
+		// The Egan-Hilgeman diffuse-Fresnel fit's two branches meet at
+		// eta = 1 (so an exterior crossing the interior index is continuous).
+		Check( std::fabs( ComputeFdr( 1.0 - 1e-12 ) - ComputeFdr( 1.0 ) ) < 1e-9,
+			"C1: diffuse Fresnel fit is continuous across eta = 1" );
+	}
+
+	//! Counts how the octree hands the IOR stack to the BSDF.
+	class StackRecordingBSDF : public virtual IBSDF, public virtual Reference
+	{
+	public:
+		mutable unsigned int withStack = 0, withoutStack = 0;
+		RISEPel value( const Vector3&, const RayIntersectionGeometric& ) const override { ++withoutStack; return RISEPel( 1, 1, 1 ); }
+		Scalar valueNM( const Vector3&, const RayIntersectionGeometric&, const Scalar ) const override { ++withoutStack; return 1; }
+		RISEPel valueStateful( const Vector3&, const RayIntersectionGeometric&, const IORStack* s ) const override
+		{
+			if( s ) ++withStack; else ++withoutStack;
+			return RISEPel( 1, 1, 1 );
+		}
+	protected:
+		virtual ~StackRecordingBSDF() {}
+	};
+
+	class UnitExtinction : public virtual ISubSurfaceExtinctionFunction, public virtual Reference
+	{
+	public:
+		Scalar GetMaximumDistanceForError( const Scalar ) const override { return RISE_INFINITY; }
+		RISEPel ComputeTotalExtinction( const Scalar ) const override { return RISEPel( 1, 1, 1 ); }
+	protected:
+		virtual ~UnitExtinction() {}
+	};
+
+	void TestPointSetOctreeStackForwarding()
+	{
+		std::cout << "C2: the point-set octree hands the live IOR stack to the BSDF at every depth" << std::endl;
+		// DL-223 plumbed `const IORStack*` through PointSetOctree::Evaluate so
+		// a stateful BSDF (translucent_material, the material both shipped
+		// `multiplybsdf TRUE` scenes use) is priced on the right side; the
+		// recursion into child nodes dropped it, so every node below the
+		// root fell back to the stackless evaluation.
+		PointSetOctree::PointSet points;
+		BoundingBox bbox( Point3( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY ), Point3( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY ) );
+		RandomNumberGenerator rng( 291 );
+		for( int i = 0; i < 2000; ++i ) {
+			PointSetOctree::SamplePoint sp;
+			sp.ptPosition = Point3( rng.CanonicalRandom(), rng.CanonicalRandom(), rng.CanonicalRandom() );
+			sp.irrad = RISEPel( 1, 1, 1 );
+			points.push_back( sp );
+			bbox.Include( sp.ptPosition );
+		}
+		bbox.EnsureBoxHasVolume();
+		PointSetOctree tree( bbox, 4 );
+		Check( tree.AddElements( points, 8 ), "C2: (setup) octree built" );
+		StackRecordingBSDF* bsdf = new StackRecordingBSDF(); bsdf->addref();
+		UnitExtinction* ext = new UnitExtinction(); ext->addref();
+		IORStack stack( 1.0 );
+		RISEPel c( 0, 0, 0 );
+		tree.Evaluate( c, Point3( 0.5, 0.5, 0.5 ), *ext, 0.001, bsdf, MakeSurfaceRI( 1.0 ), &stack );
+		std::cout << "    BSDF evaluations with stack " << bsdf->withStack << ", without " << bsdf->withoutStack << std::endl;
+		Check( bsdf->withStack == 2000, "C2: every sample point priced with the live stack" );
+		Check( bsdf->withoutStack == 0, "C2: no evaluation fell back to the stackless value" );
+		bsdf->release(); ext->release();
+	}
+
 	//////////////////////////////////////////////////////////////////
 	// Part B -- rendered scale invariance
 	//////////////////////////////////////////////////////////////////
@@ -660,8 +826,8 @@ namespace
 		}
 	};
 
-	enum class Model { Lambertian, Diffusion, DiffusionRough, RandomWalk };
-	enum class Integrator { PT, BDPT, PTSpectral };
+	enum class Model { Lambertian, Diffusion, DiffusionRough, RandomWalk, SkinMultipole, LegacyDipole, LegacySkinOp };
+	enum class Integrator { PT, BDPT, PTSpectral, PixelPel };
 
 	const char* ModelName( Model m )
 	{
@@ -670,12 +836,21 @@ namespace
 		case Model::Diffusion: return "diffusion_smooth";
 		case Model::DiffusionRough: return "diffusion_rough";
 		case Model::RandomWalk: return "random_walk";
+		case Model::SkinMultipole: return "skin_multipole";
+		case Model::LegacyDipole: return "legacy_dipole_op";
+		case Model::LegacySkinOp: return "legacy_skin_op";
 		}
 		return "unknown";
 	}
 	const char* IntegratorName( Integrator i )
 	{
-		return i == Integrator::PT ? "PT" : ( i == Integrator::BDPT ? "BDPT" : "PT-spectral" );
+		switch( i ) {
+		case Integrator::PT: return "PT";
+		case Integrator::BDPT: return "BDPT";
+		case Integrator::PTSpectral: return "PT-spectral";
+		case Integrator::PixelPel: return "pixelpel";
+		}
+		return "unknown";
 	}
 
 	//! exterior == 1 builds the air scene; exterior > 1 wraps camera, light
@@ -715,9 +890,36 @@ namespace
 			s << "randomwalk_sss_material\n{\n\tname subject\n\tior " << nS
 			  << "\n\tabsorption 0.05 0.1 0.2\n\tscattering 2\n\tg 0\n\troughness 0\n\tmax_bounces 256\n}\n\n";
 			break;
+		case Model::SkinMultipole:
+			// DL-291: the Donner-Jensen two-layer multipole.  `interior` is the
+			// epidermis index; the dermis keeps the chunk defaults' ratio
+			// (1.38/1.4), so both layers scale with the enclosure.  Smooth,
+			// so the only surface term is the relative-index SPF reflection.
+			s << "donner_jensen_skin_bssrdf_material\n{\n\tname subject\n\tior_epidermis " << nS
+			  << "\n\tior_dermis " << nS * ( 1.38 / 1.4 ) << "\n\troughness 0\n}\n\n";
+			break;
+		case Model::LegacyDipole:
+		case Model::LegacySkinOp:
+			// DL-291: the legacy point-set shader-ops (pixelpel only).  The
+			// subject is a white Lambertian whose shader is the SSS op; the
+			// op's irradiance-capture shader is plain direct lighting, and
+			// the op's authored index is the material's absolute index.
+			s << "lambertian_material\n{\n\tname subject\n\treflectance white\n}\n\n"
+			  << "standard_shader\n{\n\tname sss_irrad\n\tshaderop DefaultDirectLighting\n}\n\n";
+			if( model == Model::LegacyDipole ) {
+				s << "diffusion_approximation_sss_shaderop\n{\n\tname sss_op\n\tnumpoints 4000\n\tirrad_scale 1\n"
+				  << "\tgeometric_scale 0.01\n\tscattering 2 2 2\n\tabsorption 0.05 0.1 0.2\n\tior " << nS
+				  << "\n\tg 0\n\tshader sss_irrad\n}\n\n";
+			} else {
+				s << "donner_jensen_skin_sss_shaderop\n{\n\tname sss_op\n\tnumpoints 4000\n\tirrad_scale 1\n"
+				  << "\tior_epidermis " << nS << "\n\tior_dermis " << nS * ( 1.38 / 1.4 ) << "\n\tshader sss_irrad\n}\n\n";
+			}
+			s << "standard_shader\n{\n\tname sss_shader\n\tshaderop sss_op\n}\n\n";
+			break;
 		}
 		s << "sphere_geometry\n{\n\tname subject_geo\n\tradius 1\n}\n\n";
-		s << "standard_object\n{\n\tname subject_obj\n\tgeometry subject_geo\n\tmaterial subject\n}\n\n";
+		s << "standard_object\n{\n\tname subject_obj\n\tgeometry subject_geo\n\tmaterial subject\n"
+		  << ( ( model == Model::LegacyDipole || model == Model::LegacySkinOp ) ? "\tshader sss_shader\n" : "" ) << "}\n\n";
 		s << "sphere_geometry\n{\n\tname light_geo\n\tradius 0.4\n}\n\n";
 		s << "standard_object\n{\n\tname light_obj\n\tgeometry light_geo\n\tmaterial lum\n\tposition 2 2.5 2.5\n}\n\n";
 		// A black absorbing room around camera, light and subject, on BOTH
@@ -751,6 +953,10 @@ namespace
 		case Integrator::PTSpectral:
 			s << "pathtracing_spectral_rasterizer\n{\n\tsamples " << samples
 			  << "\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
+			break;
+		case Integrator::PixelPel:
+			s << "pixelpel_rasterizer\n{\n\tsamples " << samples
+			  << "\n\tmax_recursion 4\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
 			break;
 		}
 		s << "file_rasterizeroutput\n{\n\tpattern rendered/dl49_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
@@ -846,6 +1052,14 @@ namespace
 			{ Model::Diffusion,      Integrator::PT,         256, 0.008, kDense,       kScale },
 			{ Model::Diffusion,      Integrator::BDPT,       32,  0.005, kDense,       kScale },
 			{ Model::RandomWalk,     Integrator::PT,         64,  0.04,  kDense,       kScale },
+			// DL-291 rows (bands set from measured sd; see
+			// docs/DL49_SSS_EXTERIOR_INDEX.md section 10).
+			{ Model::SkinMultipole,  Integrator::PT,         64,  0.02,  1.4,          kScale },
+			{ Model::SkinMultipole,  Integrator::BDPT,       32,  0.02,  1.4,          kScale },
+			{ Model::SkinMultipole,  Integrator::PTSpectral, 64,  0.04,  1.4,          kScale },
+			{ Model::SkinMultipole,  Integrator::PT,         64,  0.02,  1.33 / 1.5,   kScale },
+			{ Model::LegacyDipole,   Integrator::PixelPel,   4,   0.01,  1.3,          kScale },
+			{ Model::LegacySkinOp,   Integrator::PixelPel,   4,   0.01,  1.4,          kScale },
 		};
 		unsigned int seed = 49000;
 		for( const Row& row : rows ) {
@@ -910,6 +1124,8 @@ int main( int argc, char** argv )
 	TestRandomWalkTwins();
 	TestRandomWalkMatchedIndex();
 	TestPathVertexEval();
+	TestSkinMultipoleRelativeIndex();
+	TestPointSetOctreeStackForwarding();
 	if( !unitOnly ) {
 		TestRenderedInvariance( trials, only );
 	}
