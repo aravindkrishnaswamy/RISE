@@ -120,6 +120,20 @@ namespace RISE
 			// evaluation") is strictly more correct here than anything
 			// this class could compute.
 
+			//! DL-05: the substrate's delta pass-through (a thin weave's
+			//! gap) as ScatterImpl's substrate branch re-prices it -- the
+			//! coat's bare two-crossing attenuation, in expectation over
+			//! this wrapper's own `1 - pCoat` branch selection.  See
+			//! ISPF::DeltaPassThroughTransmittance.
+			RISEPel DeltaPassThroughTransmittance(
+				const RayIntersectionGeometric& ri
+				) const;
+
+			Scalar DeltaPassThroughTransmittanceNM(
+				const RayIntersectionGeometric& ri,
+				const Scalar nm
+				) const;
+
 			inline const CoatedBRDF& GetBRDF()    const { return *pBRDF; }
 			inline const ISPF&       GetBaseSPF() const { return *pBaseSPF; }
 

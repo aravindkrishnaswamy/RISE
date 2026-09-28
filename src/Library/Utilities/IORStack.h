@@ -205,6 +205,17 @@ namespace RISE
 			return iorstack.containsObject( pCurrentObject );
 		}
 
+		// DL-09: re-record the IOR of the innermost enclosing medium (the
+		// top entry) as the walk moves through it.  Only meaningful for a
+		// medium whose `ior` varies with position (GradedIndexMedium.h);
+		// the root (environment) entry is never rewritten.
+		inline void SetTopIOR( const Scalar ior )
+		{
+			if( iorstack.size() > 1 ) {
+				iorstack.top().ior = ior;
+			}
+		}
+
 		// Returns the object at the top of the IOR stack (innermost enclosing object).
 		// Returns 0 for the environment (root entry with no object).
 		// Analogous to Cycles' volume stack top entry.
@@ -266,66 +277,31 @@ namespace RISE
 	//!   change DielectricSPF priced between two other indices.  Scenes
 	//!   that avoid that pathology (see the file header's guidance) are
 	//!   unaffected.
-	//! - **Spatially varying `ior` -- OPEN, DL-09 (docs/DEBT_LEDGER.md).
-	//!   READ THIS BEFORE "FIXING" THE EXIT-HIT READ.**  At an EXIT hit,
-	//!   the SPF prices its own Snell/Fresnel calculation with the `ior`
-	//!   painter's value AT THAT EXIT HIT (`DielectricSPF.cpp` ~line 384's
-	//!   `pRIndex->GetValuesAt(ri)`, re-fetched fresh on every `Scatter`/
-	//!   `ScatterNM` call; the same shape recurs in
-	//!   `PerfectRefractorSPF.cpp`'s `newIOR` parameter), while
-	//!   `before.top()` here is whatever value was PUSHED at the object's
-	//!   ENTRY hit and has sat on the stack ever since. For a uniform
-	//!   `ior` those are the same number. For an `ior` bound to a
-	//!   spatially-varying `IScalarPainter` (a graded-index object, `ior`
-	//!   `n_A` at the entry point and `n_B` at the exit point) they
-	//!   differ -- but substituting the fresh exit value here is WRONG,
-	//!   and was tried and reverted on 2026-09-14. The basic radiance
-	//!   `L / n^2` is conserved BOTH across an interface AND along the
-	//!   ray INSIDE a graded medium (the second half is the part that is
-	//!   easy to forget). RISE applies no interior-segment factor at all,
-	//!   so a full camera(air) -> A(`n_A`) -> B(`n_B`) -> air trip has to
-	//!   net exactly 1, and today it does:
-	//!   `(1/n_A)^2 * (n_A/1)^2 = 1`, where the second term's STALE
-	//!   `n_A` is silently standing in for the product of the missing
-	//!   interior-segment factor `(n_A/n_B)^2` and the true exit factor
-	//!   `(n_B/1)^2`. Reading the fresh `n_B` at the exit without ALSO
-	//!   adding the interior-segment factor turns that net 1 into
-	//!   `(n_B/n_A)^2` -- i.e. it makes an emitter seen through a
-	//!   passive, lossless graded slab BRIGHTER than the emitter.
-	//!   `tests/RadianceEtaScaleGradedIndexTest.cpp` pins the correct net
-	//!   (`L * T1 * T2`, no eta factor) against exactly that regression.
-	//!   The genuine, still-OPEN residual is the contribution GATHERED AT
-	//!   AN INTERIOR VERTEX C (an NEE connection or a bounce while still
-	//!   inside the graded object, before it exits): the throughput there
-	//!   carries `(1/n_A)^2` from the entry crossing when physics wants
-	//!   `(1/n_C)^2`, an error of `(n_C/n_A)^2`, because the interior
-	//!   segment from the entry point to C paid no factor.
-	//!   THE FIX NEEDS TWO CHANGES THAT MUST LAND TOGETHER, not one:
-	//!   (a) the missing interior-segment factor `(n_prev/n_C)^2` applied
-	//!   along the walk, AND (b) switching the EXIT crossing's own read
-	//!   here from the stale `before.top()` to the SPF's freshly
-	//!   re-fetched exit value. Read ONLY (a) as "the fix" -- i.e. add
-	//!   the interior factor but leave this function's stale-`before.top()`
-	//!   exit read untouched, on the theory that "not a substitution at
-	//!   the exit read" means don't touch it at all -- and a through-trip
-	//!   becomes `(1/n_A)^2 * (n_A/n_B)^2 * (n_A/1)^2 = (n_A/n_B)^2`: the
-	//!   MIRROR IMAGE of the reverted 2026-09-14 bug (that one was
-	//!   `(n_B/n_A)^2`; this one is its reciprocal), still wrong, and
-	//!   still invisible to this file's own through-slab pin only by
-	//!   coincidence at a 1:1 ratio -- it is NOT invisible in general.
-	//!   (a) and (b) together reproduce the correct net exactly:
-	//!   `(1/n_A)^2 * (n_A/n_B)^2 * (n_B/1)^2 = 1` on any completed
-	//!   through-trip, which is why the through-slab pin cannot
-	//!   distinguish "fixed" from "unfixed" -- only an INTERIOR gather
-	//!   can, because it never reaches the exit read at all. See
-	//!   docs/REFRACTIVE_RADIANCE_SCALING.md sect 10.2 for the full
-	//!   derivation, the prerequisite that `n_C` is undefined for most
-	//!   `IScalarPainter` forms (GetValuesAt takes a SURFACE hit; an
-	//!   interior point never generated one), and a second, independent
-	//!   inconsistency this same investigation found at DielectricSPF's
-	//!   exit-hit Snell trace (direction + TIR classification computed
-	//!   against the fresh `n_B` while the walk's own tracked medium is
-	//!   still `n_A`) that widens this row from size M to L.
+	//! - **Spatially varying `ior` -- DL-09, fixed 2026-09-28 by keeping
+	//!   `before.top()` CURRENT, not by changing this function.**  Read
+	//!   docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md before touching either.
+	//!   Basic radiance `L / n^2` is conserved ALONG a ray inside a graded
+	//!   medium as well as across an interface, so a camera(air) ->
+	//!   A(`n_A`) -> B(`n_B`) -> air trip is
+	//!   `(1/n_A)^2 * (n_A/n_B)^2 * (n_B/1)^2 = 1`.  Walks that support
+	//!   graded media (PT, BDPT eye AND light, and so VCM and MLT) now call
+	//!   `GradedIndexMedium::Advance` at every vertex inside a medium whose
+	//!   `ior` is a world-position field: it pays the interior-segment
+	//!   factor `(n_start/n_end)^2` and RE-RECORDS the stack top as the
+	//!   local index.  At the exit hit this function therefore reads the
+	//!   FRESH exit-point index as `before.top()` -- the "exit-read switch"
+	//!   -- and it cannot happen without the interior factor, or vice versa.
+	//!   Each half alone is one of the two failed rounds: substituting the
+	//!   fresh exit value without the interior factor nets `(n_B/n_A)^2`
+	//!   (2.25x brighter behind a passive 1.2 -> 1.8 slab, reverted
+	//!   2026-09-14); the interior factor with a stale exit read nets
+	//!   `(n_A/n_B)^2` (0.444).  `tests/RadianceEtaScaleGradedIndexTest.cpp`
+	//!   pins the through-slab net at 1 (it catches both half-fixes) and
+	//!   `tests/GradedIndexInteriorFactorTest.cpp` pins the interior gathers
+	//!   that never reach this exit read.  A walk that does NOT Advance (the
+	//!   legacy shader-op chain, the photon tracers, SMS chains) still sees
+	//!   the entry-time value here -- the pre-DL-09 accounting, which nets
+	//!   correctly on every completed through-trip (DL-292).
 	//!
 	//! @param before  the walk's current IOR stack at the scattering vertex
 	//! @param after   the scattered ray's stack, or NULL when the SPF left

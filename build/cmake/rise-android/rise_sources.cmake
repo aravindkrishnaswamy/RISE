@@ -1,4 +1,7 @@
 # Ward SPFs share header-only Materials/WardSelectionQuadrature.h.
+# Schlick BRDF/SPF share header-only Materials/SchlickMasking.h (DL-225).
+# Donner-Jensen SSS profile/shader-op share header-only Utilities/ExteriorIndexCache.h (DL-291).
+# Graded-index media share header-only Utilities/GradedIndexMedium.h (DL-09).
 # -----------------------------------------------------------------------------
 # rise_sources.cmake
 #

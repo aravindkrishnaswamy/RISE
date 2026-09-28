@@ -322,7 +322,7 @@ namespace RISE
 			//! DL-24 review P1-1: every lobe kray is direction-independent and the
 			//! clipped lobes are renormalized, never dropped, so the up/down
 			//! selection mass is a deterministic function of the query (DL-157).
-			bool SelectionMassIsDeterministic() const { return true; }
+			bool SelectionMassIsDeterministic( const RayIntersectionGeometric&, const Scalar ) const { return true; }
 
 			const char* PerLobeDensityFallbackName() const
 			{

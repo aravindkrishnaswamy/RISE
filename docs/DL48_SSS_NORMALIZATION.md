@@ -1,5 +1,11 @@
 # DL-48: normalize the actual SSS directional transmission law
 
+> **Superseded law (DL-306, 2026-09-28):** the SSS transmission is now the
+> EXACT dielectric Fresnel law (the one the SPF's surface reflection uses),
+> normalized by the closed-form hemispherical Fresnel reflectance; the
+> Schlick law and its `20(1-F0)/21` constant below are historical.  See
+> [DL306_SSS_FRESNEL_PARTITION.md](DL306_SSS_FRESNEL_PARTITION.md).
+
 Base master: `c270836be5bea7433149f31933f697900d9b91c3`.
 Formula fix: `9e48b225`; evaluated-record follow-up: `12a7ef3e`.
 Final independent review and the full selected gate govern

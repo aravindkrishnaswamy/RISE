@@ -87,7 +87,7 @@ namespace RISE
 		/// size, and no walk stream can key the same group because none
 		/// reaches stream 3322.  What the constant still has to be is
 		/// ABOVE every walk stream, which is what
-		/// `SobolDimensionBudgetTest` Test F asserts; Test G separately
+		/// `SobolDimensionBudgetTest` Test F asserts; Test G1 separately
 		/// asserts that no shipped scene drives a WALK stream past the
 		/// end of the dimension table, which is where the wrap would
 		/// still matter (for Get1D draws).
@@ -117,6 +117,13 @@ namespace RISE
 		/// margin `tests/SobolDimensionBudgetTest.cpp`'s
 		/// `TestApertureDrawConsumption` uses when it derives
 		/// `kMaxEyeWalkStream` the same way.
+		///
+		/// DL-283: still the true bound under PSSMLT.  The per-event
+		/// medium distance-sampling blocks
+		/// (`BDPTUtilities::MediumDistanceStream`, streams 8192+) are
+		/// used only by fixed-budget samplers, never by PSSMLTSampler
+		/// (SobolDimensionBudgetTest Test H drives the generators with
+		/// one and asserts it).
 		static const int kMaxBdptWalkStreamUnderPSSMLT = 16 + 1024;
 
 		/// Stream reserved for the MLT film / lens / (debt 28) aperture

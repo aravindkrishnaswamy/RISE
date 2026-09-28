@@ -461,6 +461,7 @@ namespace RISE
 			static const uint64_t kSaltProbeC   = 0x5A17C0DE00000003ull;
 			static const uint64_t kSaltEvaluate = 0x5A17C0DE00000004ull;
 			static const uint64_t kSaltEvaluateExit = 0x5A17C0DE00000005ull;
+			static const int      kPerBranchProbes  = 8;
 
 			//! PCG32 (O'Neill 2014).  Local, stack-allocated, never shared
 			//! across threads.
@@ -871,24 +872,52 @@ namespace RISE
 				// `ISPF::SelectionMassIsDeterministic()` takes the aggregate
 				// path; every other top runs PER-BRANCH mode, whose weights
 				// need only be deterministic positive numbers (the floors in
-				// MakeWeights keep every class reachable).  Two hashed probes
-				// are averaged there purely to make those numbers closer to
-				// the true split -- an efficiency choice, not a correctness
-				// one.
-				const bool declared = s.top.SelectionMassIsDeterministic();
-				ScatteredRayContainer c2;
+				// MakeWeights keep every class reachable).  Several hashed
+				// probes are averaged there purely to make those numbers
+				// closer to the true split -- an efficiency choice, not a
+				// correctness one: with two probes a single-emit top whose
+				// true down share is 0.3 read "no down mass" at 49 % of
+				// shading points, flooring the walker's share to 1 % and
+				// weighting its rare straight-through exits ~100x (a
+				// heavy-tailed estimator a BDPT light-tracing splat did not
+				// converge within 1024 spp on DL-05's composite-of-weaves
+				// row).  kPerBranchProbes = 8 takes that to 5.8 %.
+				const bool declared = s.top.SelectionMassIsDeterministic( ri, nm );
+				Scalar upSum = up1, dnSum = dn1;
+				int nProbes = 1;
+				uint64_t downSalt = 0;
+				bool haveDownSalt = false;
 				if( !declared ) {
-					HashedSampler hs( seed ^ kSaltProbeB );
-					P::Scatter( s.top, ri, hs, nm, c2, outside );
+					for( int i = 1; i < kPerBranchProbes; i++ ) {
+						const uint64_t salt = kSaltProbeB + uint64_t( i ) * 0x9E3779B97F4A7C15ull;
+						ScatteredRayContainer ci;
+						HashedSampler hs( seed ^ salt );
+						P::Scatter( s.top, ri, hs, nm, ci, outside );
+						const Scalar dnI = SubsetMass<P>( ci, isDown );
+						upSum += SubsetMass<P>( ci, isUp );
+						dnSum += dnI;
+						nProbes++;
+						if( !haveDownSalt && dnI > 0 ) {
+							downSalt = salt;
+							haveDownSalt = true;
+						}
+					}
 				}
-				const Scalar up2 = declared ? up1 : SubsetMass<P>( c2, isUp );
-				const Scalar dn2 = declared ? dn1 : SubsetMass<P>( c2, isDown );
 
 				Probe pr;
 				pr.det = declared;
-				pr.Qup   = pr.det ? up1 : Scalar( 0.5 ) * ( up1 + up2 );
-				pr.Qdown = pr.det ? dn1 : Scalar( 0.5 ) * ( dn1 + dn2 );
+				pr.Qup   = upSum / Scalar( nProbes );
+				pr.Qdown = dnSum / Scalar( nProbes );
 				pr.walkerPossible = !s.HasLayeredValue();
+
+				// The capability probe below follows ONE transmitted ray:
+				// the first probe draw that had one.
+				ScatteredRayContainer c2;
+				if( !( dn1 > 0 ) && haveDownSalt ) {
+					HashedSampler hs( seed ^ downSalt );
+					P::Scatter( s.top, ri, hs, nm, c2, outside );
+				}
+				const Scalar dn2 = SubsetMass<P>( c2, isDown );
 
 				if( pr.walkerPossible || !( dn1 > 0 || dn2 > 0 ) ) {
 					return pr;
@@ -1753,6 +1782,88 @@ namespace RISE
 		const Scalar CompositeSPFImpl::kWalkerShareIfPossible = Scalar( 0.5 );
 		const Scalar CompositeSPFImpl::kWalkerShareFloor      = Scalar( 0.05 );
 	}
+}
+
+// DL-05.  Scatter's walk reaches a straight exit only as first-layer
+// pass-through -> gap crossing -> second-layer pass-through (any other lobe
+// turns the ray, and a turned ray never re-aligns with the incoming
+// direction).  The first layer is chosen exactly as Scatter chooses it
+// (EntryFromTop: top when the ray travels down or is edge-on).  A top
+// pass-through that already reads as up-going (the numerically edge-on
+// `d == 0` case) is emitted by the DIRECT branch as the whole answer.
+// Otherwise it is emitted only by the WALKER, as a delta-tagged exit through
+// the far layer, with weight beta = (1/w4) * (kray1/q1) * Beer * (kray2/q2)
+// on a draw of probability w4 * q1 * q2 -- expectation t1 * Beer * t2 for
+// ANY branch weights.
+//
+// DL-24 re-derivation of the gates.  The pre-DL-24 walk DROPPED a
+// continuation past `max_recur` or a per-type budget, so this used to return
+// 0 when `max_recur < 2` or the step-0 refraction gate refused.  Since DL-24
+// the budgets are only Russian-roulette ONSETS with the survival
+// compensated (IsRouletteEligible / Roulette), and the walk's only hard
+// stop is the 256-event safety cap, which a two-event straight path never
+// reaches -- so no budget changes the EXPECTED straight-through weight, and
+// the gates are gone.  So is the old importance floor on the attenuation:
+// the walker stops only at an exactly zero throughput.
+RISEPel CompositeSPF::DeltaPassThroughTransmittance(
+	const RayIntersectionGeometric& ri
+	) const
+{
+	const Vector3 dir = ri.ray.Dir();
+	const Scalar  d   = Vector3Ops::Dot( dir, ri.onb.w() );
+	const bool fromAbove = ( d <= 0 );
+	const ISPF& first  = fromAbove ? top : bottom;
+	const ISPF& second = fromAbove ? bottom : top;
+
+	const RISEPel t1 = first.DeltaPassThroughTransmittance( ri );
+	if( !( ColorMath::MaxValue( t1 ) > 0 ) ) {
+		return RISEPel( 0, 0, 0 );
+	}
+	if( fromAbove && d >= 0 ) {
+		return t1;
+	}
+
+	RayIntersectionGeometric my_ri( ri );
+	my_ri.ray.origin = ri.ptIntersection;
+	my_ri.ray.SetDir( Vector3Ops::Normalize( dir ) );
+	const Scalar pathLength = GapPathLength( my_ri.ray.Dir(), ri.onb.w(), thickness );
+	my_ri.ray.Advance( pathLength );
+	const RISEPel attenuation = GapAttenuation( extinction, ri, pathLength );
+	if( !( ColorMath::MaxValue( attenuation ) > 0 ) ) {
+		return RISEPel( 0, 0, 0 );
+	}
+	return t1 * attenuation * second.DeltaPassThroughTransmittance( my_ri );
+}
+
+Scalar CompositeSPF::DeltaPassThroughTransmittanceNM(
+	const RayIntersectionGeometric& ri,
+	const Scalar nm
+	) const
+{
+	const Vector3 dir = ri.ray.Dir();
+	const Scalar  d   = Vector3Ops::Dot( dir, ri.onb.w() );
+	const bool fromAbove = ( d <= 0 );
+	const ISPF& first  = fromAbove ? top : bottom;
+	const ISPF& second = fromAbove ? bottom : top;
+
+	const Scalar t1 = first.DeltaPassThroughTransmittanceNM( ri, nm );
+	if( !( t1 > 0 ) ) {
+		return 0;
+	}
+	if( fromAbove && d >= 0 ) {
+		return t1;
+	}
+
+	RayIntersectionGeometric my_ri( ri );
+	my_ri.ray.origin = ri.ptIntersection;
+	my_ri.ray.SetDir( Vector3Ops::Normalize( dir ) );
+	const Scalar pathLength = GapPathLength( my_ri.ray.Dir(), ri.onb.w(), thickness );
+	my_ri.ray.Advance( pathLength );
+	const Scalar attenuation = exp( -extinction.GetValueAtNM( ri, nm ) * pathLength );
+	if( !( attenuation > 0 ) ) {
+		return 0;
+	}
+	return t1 * attenuation * second.DeltaPassThroughTransmittanceNM( my_ri, nm );
 }
 
 void CompositeSPF::Scatter(

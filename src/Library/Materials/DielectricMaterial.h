@@ -72,6 +72,15 @@ namespace RISE
 				return pSPF->GetSpecularInfoNM( ri, ior_stack, nm );
 			}
 
+			//! DL-09: the enclosed medium's `ior`, when it is a
+			//! world-position field (see IMaterial::GetGradedIORField).
+			//! Queried live, so an editor rebind of `ior` is honoured.
+			const IScalarPainter* GetGradedIORField() const
+			{
+				const IScalarPainter& ior = pSPF->GetIOR();
+				return ior.IsWorldPositionField() ? &ior : 0;
+			}
+
 			//! Read-back + rebind for the interactive editor.  All
 			//! three Dielectric slots are physical-scalar pipe
 			//! (IScalarPainter) per the docs/ISCALARPAINTER_REFACTOR

@@ -294,13 +294,14 @@ namespace RISE
 		//!
 		//! 8192 = 256 * `SobolSampler::kStreamStride`, i.e. stream
 		//! indices 0..255 each get 32 dimensions of their own.  That
-		//! covers every stream a SHIPPED scene can reach:
+		//! covers every PER-VERTEX stream a SHIPPED scene can reach
+		//! (the deliberate wrap-region families are listed below):
 		//!
 		//!   film / light-source select        stream 0
 		//!   light-subpath bounce d            1 + d
 		//!   eye-subpath bounce d              16 + d
 		//!   BDPT strategy select              47
-		//!   MLT film / lens / aperture        48
+		//!   MLT film / lens / aperture        2048 (DL-08)
 		//!   VCM per-eye-vertex NEE            48 + i, i >= 1
 		//!   thin-lens aperture (Get2D only)   3322 * 32, see
 		//!                                     BDPTCameraUtilities
@@ -313,7 +314,7 @@ namespace RISE
 		//! -- `vcm_pel_rasterizer`, `max_eye_depth 128`, default
 		//! `max_volume_bounce 64` -- giving 192 iterations and so a
 		//! highest stream of 48 + 192 + 1 = 241, inside 256.
-		//! `SobolDimensionBudgetTest` Test G recomputes that bound from
+		//! `SobolDimensionBudgetTest` Test G1 recomputes that bound from
 		//! the scene files themselves, so a scene that raises a depth
 		//! past the table turns the test red.
 		//!
@@ -324,6 +325,20 @@ namespace RISE
 		//! the table, draws do not alias -- they are re-indexed, see
 		//! `Sample` -- so this is a quality bound, not a correctness
 		//! one.
+		//!
+		//! That bound covers the PER-VERTEX streams only (DL-283).  Two
+		//! stream families are placed past the table deliberately, so
+		//! every medium render draws wrapped dimensions: PT's volume
+		//! walks (`PathTransportUtilities::PTVolumeWalkStream`, streams
+		//! 4096..8191, wrap counts 16..31 -- valid for
+		//! `max_volume_bounce` <= 1024 and PT depth <= 4080) and the
+		//! BDPT/VCM medium distance-sampling blocks
+		//! (`BDPTUtilities::MediumDistanceStream`, 8192..139263, wraps
+		//! 32..543).  They share table rows with main-loop streams at a
+		//! different index permutation and value seed.  Evidence they are
+		//! harmless: 8-spp per-pixel variance no worse than pre-DL-283
+		//! (DL-81 doc section 9; ParityTest H's collapse is only a floor).
+		//! `SobolDimensionBudgetTest` Test G2 enumerates both families.
 		//!
 		//! Cost: 8192 * 32 * 4 = 1 MiB of expanded table, built once
 		//! per process at first use, from 555 KiB of embedded initial
@@ -573,7 +588,11 @@ namespace RISE
 		// well stratified dyadic block (see `ScrambleIndex`).  Two
 		// streams that wrap onto each other are decorrelated; they are
 		// not a joint net, which is why `kNumDimensions` is sized to
-		// keep every shipped scene off this path entirely.
+		// keep every shipped scene's PER-VERTEX streams off this path.
+		// The medium-walk streams (PT's `PTVolumeWalkStream`, BDPT's
+		// `MediumDistanceStream`) live on it by design (DL-283); evidence
+		// they are harmless is the 8-spp per-pixel variance check in the
+		// DL-81 doc section 9 (ParityTest H's collapse is only a floor).
 		//
 		// sampleIndex: which sample in the sequence (0, 1, 2, ...)
 		// dimension:   which dimension (0, 1, 2, 3, ...)

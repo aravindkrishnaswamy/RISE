@@ -376,6 +376,73 @@ void CoatedSPF::ScatterImpl(
 	}
 }
 
+// DL-05.  Mirrors ScatterImpl's substrate-branch delta re-pricing step
+// for step: the ray-facing `cosWi <= 0` early-out; the substrate branch
+// taken with probability `1 - pCoat`; the delta ray kept only when the
+// base scatters over the full sphere (its direction is the incoming one,
+// so `scos = -cosWi < 0` always and `muDelta = cosWi`); its kray scaled
+// by the coat's bare two-crossing attenuation over `sel`.  The
+// expectation multiplies back by the branch probability -- written
+// literally, not simplified, so it stays the Scatter-side number.
+RISEPel CoatedSPF::DeltaPassThroughTransmittance(
+	const RayIntersectionGeometric& ri
+	) const
+{
+	const OrthonormalBasis3D onb = RayFacingONB( ri );
+	const Vector3 wi    = Vector3Ops::Normalize( -ri.ray.Dir() );
+	const Scalar  cosWi = Vector3Ops::Dot( wi, onb.w() );
+	if( cosWi <= 0 || !pBRDF->BaseScattersFullSphere() ) {
+		return RISEPel( 0, 0, 0 );
+	}
+	const RISEPel baseT = pBaseSPF->DeltaPassThroughTransmittance( ri );
+	if( !( ColorMath::MaxValue( baseT ) > 0 ) ) {
+		return RISEPel( 0, 0, 0 );
+	}
+
+	CoatedBRDF::CoatParams cp;
+	pBRDF->ResolveCoat( ri, Scalar(-1), cp );
+	const Scalar pCoat   = cp.weight * CoatedLayer::Fresnel( cosWi, cp.eta );
+	const Scalar muDelta = cosWi;
+	const Scalar Tin  = Scalar(1) - CoatedLayer::Fresnel( cosWi,   cp.eta );
+	const Scalar Tout = Scalar(1) - CoatedLayer::Fresnel( muDelta, cp.eta );
+	const Scalar sel  = r_max( Scalar(1e-12), Scalar(1) - pCoat );
+	const RISEPel Ain   = CoatedLayer::PassTransmittanceRGB( cosWi,   cp.eta, cp.thickness, cp.absorption, cp.tint, cp.tinted );
+	const RISEPel Aout  = CoatedLayer::PassTransmittanceRGB( muDelta, cp.eta, cp.thickness, cp.absorption, cp.tint, cp.tinted );
+	const RISEPel atten = Ain * Aout * ( Tin * Tout / ( cp.eta * cp.eta ) );
+	return baseT * atten * ( ( Scalar(1) - pCoat ) / sel );
+}
+
+Scalar CoatedSPF::DeltaPassThroughTransmittanceNM(
+	const RayIntersectionGeometric& ri,
+	const Scalar nm
+	) const
+{
+	const OrthonormalBasis3D onb = RayFacingONB( ri );
+	const Vector3 wi    = Vector3Ops::Normalize( -ri.ray.Dir() );
+	const Scalar  cosWi = Vector3Ops::Dot( wi, onb.w() );
+	if( cosWi <= 0 || !pBRDF->BaseScattersFullSphere() ) {
+		return 0;
+	}
+	const Scalar baseT = pBaseSPF->DeltaPassThroughTransmittanceNM( ri, nm );
+	if( !( baseT > 0 ) ) {
+		return 0;
+	}
+
+	CoatedBRDF::CoatParams cp;
+	pBRDF->ResolveCoat( ri, nm, cp );
+	const Scalar pCoat   = cp.weight * CoatedLayer::Fresnel( cosWi, cp.eta );
+	const Scalar muDelta = cosWi;
+	const Scalar Tin  = Scalar(1) - CoatedLayer::Fresnel( cosWi,   cp.eta );
+	const Scalar Tout = Scalar(1) - CoatedLayer::Fresnel( muDelta, cp.eta );
+	const Scalar sel  = r_max( Scalar(1e-12), Scalar(1) - pCoat );
+	// `cp.tint[0]` -- the exact expression ScatterImpl's NM delta branch
+	// uses (ResolveCoat's NM regime stores the wavelength's tint there).
+	const Scalar Ain   = CoatedLayer::PassTransmittance( cosWi,   cp.eta, cp.thickness, cp.absorption, cp.tint[0], cp.tinted );
+	const Scalar Aout  = CoatedLayer::PassTransmittance( muDelta, cp.eta, cp.thickness, cp.absorption, cp.tint[0], cp.tinted );
+	const Scalar atten = Ain * Aout * ( Tin * Tout / ( cp.eta * cp.eta ) );
+	return baseT * atten * ( ( Scalar(1) - pCoat ) / sel );
+}
+
 void CoatedSPF::Scatter(
 	const RayIntersectionGeometric& ri,
 	ISampler& sampler,

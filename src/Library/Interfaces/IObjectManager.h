@@ -402,6 +402,28 @@ namespace RISE
 			std::size_t* outNodesVisited = 0,			///< [in,out] DL-33 diagnostic: incremented by BVH nodes visited (TLAS path only)
 			std::size_t* outCandidatesVisited = 0		///< [in,out] DL-33 diagnostic: incremented by candidate objects evaluated (TLAS path only)
 			) const = 0;
+
+		//! DL-05: IntersectShadowRay with every object whose material
+		//! reports IMaterial::HasDeltaPassThrough() (a `transmission thin`
+		//! weave, or a wrapper forwarding one) EXCLUDED -- i.e. "is this
+		//! segment blocked by something a delta light's shadow ray cannot
+		//! see through".  RayCaster::CastShadowRayAuto asks it after the
+		//! ordinary shadow test reported a hit, so a segment blocked by an
+		//! opaque occluder costs one further any-hit traversal instead of
+		//! a closest-hit walk, and only a segment blocked by pass-through
+		//! surfaces alone pays for the walk that multiplies their
+		//! transmittances.  Otherwise the same gates as IntersectShadowRay
+		//! (IsWorldVisible, DoesCastShadows), no shadow cache.  An object
+		//! whose OWN material does not report the capability (e.g. a CSG
+		//! composite with no material of its own over a weave operand) is
+		//! treated as opaque -- the pre-DL-05 answer, never a leak.
+		//! Appended at the interface tail (see IntersectOcclusionRay).
+		virtual bool IntersectShadowRayOpaque(
+			const Ray& ray,								///< [in] The ray to process the intersection from
+			const Scalar dHowFar,						///< [in] Maximum distance to travel along that ray
+			const bool bHitFrontFaces,					///< [in] Should we process the intersection if the element is front facing?
+			const bool bHitBackFaces					///< [in] Should we process the intersection if the element is back facing?
+			) const = 0;
 	};
 }
 

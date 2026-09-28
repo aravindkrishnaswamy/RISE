@@ -213,6 +213,48 @@ Scalar WeaveSPF::PdfNM(
 	return PdfWithParams( ri, wo, p );
 }
 
+namespace
+{
+	//! DL-05: the Scatter-side expectation of the gap lobe for a ray
+	//! arriving along `ri.ray.Dir()`.  Mirrors `ScatterImpl`'s gates in
+	//! order: the ray-facing frame's `view . n <= 0` early-out (reached
+	//! only for a numerically edge-on hit), then `p.thin`, then the gap
+	//! draw `Get1D() < gap` at `kray = 1`.  The expectation is therefore
+	//! `gap` itself -- the lobe's coefficient and its selection
+	//! probability are the same number and cancel, exactly as the
+	//! comment on the draw says.
+	inline Scalar WeaveGapExpectation( const WeaveBRDF& brdf, const RISE::RayIntersectionGeometric& ri )
+	{
+		if( brdf.GetTransmission() != eWeaveTransmissionThin ) {
+			return 0;
+		}
+		const RISE::OrthonormalBasis3D onb = RayFacingONB( ri );
+		const RISE::Vector3 view = RISE::Vector3Ops::Normalize( -ri.ray.Dir() );
+		if( RISE::Vector3Ops::Dot( view, onb.w() ) <= 0 ) {
+			return 0;
+		}
+		return brdf.ResolveGap( ri );
+	}
+}
+
+RISEPel WeaveSPF::DeltaPassThroughTransmittance(
+	const RayIntersectionGeometric& ri
+	) const
+{
+	const Scalar g = WeaveGapExpectation( *pBRDF, ri );
+	return RISEPel( g, g, g );
+}
+
+Scalar WeaveSPF::DeltaPassThroughTransmittanceNM(
+	const RayIntersectionGeometric& ri,
+	const Scalar /*nm*/
+	) const
+{
+	// The gap painter is read achromatically (ResolveWeave's rule), so
+	// every wavelength sees the same number.
+	return WeaveGapExpectation( *pBRDF, ri );
+}
+
 void WeaveSPF::ScatterImpl(
 	const RayIntersectionGeometric& ri,
 	ISampler& sampler,

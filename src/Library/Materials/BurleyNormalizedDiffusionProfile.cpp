@@ -65,20 +65,6 @@ Scalar BurleyNormalizedDiffusionProfile::ComputeScalingFactor( const Scalar A )
 	return 1.9 - A + 3.5 * diff * diff;
 }
 
-Scalar BurleyNormalizedDiffusionProfile::SchlickFresnel(
-	const Scalar cosTheta,
-	const Scalar eta
-	)
-{
-	// Schlick's approximation for Fresnel reflectance.
-	// R0 = ((eta_i - eta_t) / (eta_i + eta_t))^2
-	// F(cos) = R0 + (1 - R0) * (1 - cos)^5
-	const Scalar R0 = ((1.0 - eta) / (1.0 + eta)) * ((1.0 - eta) / (1.0 + eta));
-	const Scalar c = 1.0 - cosTheta;
-	const Scalar c2 = c * c;
-	return R0 + (1.0 - R0) * c2 * c2 * c;
-}
-
 //=============================================================
 // Profile evaluation
 //=============================================================
@@ -243,16 +229,13 @@ Scalar BurleyNormalizedDiffusionProfile::FresnelTransmission(
 	// DL-49: the boundary is an interface between this material and the
 	// medium the ray arrived through (`ri.ambientIOR`, stamped from the
 	// IOR stack; 1.0 = air for a stackless record), so Fresnel is a
-	// function of the RELATIVE index.  In air this is the pre-DL-49 law
-	// bit-for-bit; a denser exterior (eta < 1) evaluates Schlick at the
-	// transmitted cosine and is zero past the critical angle.
+	// function of the RELATIVE index.  DL-306: the EXACT dielectric law,
+	// the one SubSurfaceScatteringSPF prices the surface reflection of the
+	// same interface with, so reflection + transmission = 1 (a denser
+	// exterior is totally reflected past the critical angle).
 	const Scalar eta = BSSRDFSampling::RelativeBoundaryIOR(
 		pIOR->GetValuesAt( ri ).v[0], BSSRDFSampling::ExteriorIOR( ri ) );
-	Scalar cosSchlick;
-	if( !BSSRDFSampling::SchlickBoundaryCosine( fabs(cosTheta), eta, cosSchlick ) ) {
-		return 0;
-	}
-	return 1.0 - SchlickFresnel( cosSchlick, eta );
+	return BSSRDFSampling::BoundaryTransmission( fabs( cosTheta ), eta );
 }
 
 Scalar BurleyNormalizedDiffusionProfile::GetIOR(

@@ -46,6 +46,7 @@
 #include "../../Utilities/Reference.h"
 #include "../../Utilities/Threads/Threads.h"
 #include "../../Materials/MultipoleDiffusion.h"
+#include "../../Utilities/ExteriorIndexCache.h"
 #include "PointSetOctree.h"
 #include <vector>
 #include <map>
@@ -144,11 +145,15 @@ namespace RISE
 			void PrecomputeProfile();
 
 			/// Compute Rd(r) at a single wavelength from the Hankel-domain
-			/// multipole composite, with hybrid correction for J0 ringing.
+			/// multipole composite, with hybrid correction for J0 ringing,
+			/// for a body seen through a medium of index `exteriorIOR`
+			/// (DL-291; 1.0 = air), into `table_out` (TABLE_SIZE entries).
 			void TabulateProfileAtWavelength(
 				const Scalar nm,
-				const int channel
-				);
+				const int channel,
+				const Scalar exteriorIOR,
+				RISEPel* table_out
+				) const;
 
 			/// Overload for LUT: tabulate into a caller-provided table.
 			void TabulateProfileAtWavelengthInto(
@@ -157,6 +162,7 @@ namespace RISE
 				const Scalar mel_frac,
 				const Scalar hb_epi,
 				const Scalar hb_derm,
+				const Scalar exteriorIOR,
 				RISEPel* table_out,
 				Scalar table_r2_max,
 				Scalar table_r2_step
@@ -165,12 +171,39 @@ namespace RISE
 			/// Precompute the 3D profile LUT (called only when offset painters exist).
 			void PrecomputeLUT();
 
-			/// Trilinear interpolation of the LUT into caller's stack buffer.
+			/// Fill a LUT_TOTAL x TABLE_SIZE LUT for one exterior (the grid
+			/// axes and m_max_distance_lut are set by PrecomputeLUT).
+			void FillLUT(
+				const Scalar exteriorIOR,
+				RISEPel* lut_out
+				) const;
+
+			/// Trilinear interpolation of `lut` into caller's stack buffer.
 			/// Thread-safe: reads only immutable LUT data, writes to caller's buffer.
 			void InterpolateProfile(
+				const RISEPel* lut,
 				Scalar mel, Scalar hbe, Scalar hbd,
 				RISEPel* table_out
 				) const;
+
+			/// DL-291: the multipole's boundary term depends on the layer
+			/// indices RELATIVE to the medium around the body.  The members
+			/// above hold the air tables; every other exterior's tables are
+			/// built on first use and kept here.
+			struct ExteriorTables
+			{
+				RISEPel		Rd[TABLE_SIZE];
+				RISEPel*	lut;			///< null unless offset painters exist
+				ExteriorTables() : lut( 0 ) {}
+				~ExteriorTables() { delete[] lut; }
+			private:
+				ExteriorTables( const ExteriorTables& );
+				ExteriorTables& operator=( const ExteriorTables& );
+			};
+			static const unsigned int MAX_EXTERIORS = 32;
+			ExteriorIndexCache<ExteriorTables, MAX_EXTERIORS>	m_exterior_tables;
+
+			const ExteriorTables& TablesForExterior( const Scalar exteriorIOR ) const;
 
 			/// Flattened index into m_lut_tables.
 			int LUTIndex( int i_mel, int i_hbe, int i_hbd ) const
@@ -231,6 +264,7 @@ namespace RISE
 			// Called by PointSetOctree::Evaluate() for each sample
 
 			RISEPel ComputeTotalExtinction( const Scalar distance ) const;
+			RISEPel ComputeTotalExtinctionForExterior( const Scalar distance, const Scalar exteriorIOR ) const;
 			Scalar GetMaximumDistanceForError( const Scalar error ) const;
 		};
 	}

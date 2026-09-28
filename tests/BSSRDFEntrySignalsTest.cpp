@@ -307,24 +307,41 @@ int main()
 
 		BSSRDFEntryBSDF entryBSDF( pProfile, eta );
 
-		// At eta = 2.5, F0 = (1.5/3.5)^2 = 0.18367
-		// Ft(cosTheta=1) = 1 - F0 = 0.81633
-		// c = (20/21) * (1 - F0) = 0.77745
-		// Sw = Ft / (c * PI) = 0.81633 / (0.77745 * PI) = 1.05 / PI = 0.334225
-		// Whereas at neutral eta = 1.0, F0 = 0, Ft = 1.0, c = 20/21, Sw = 1.05 / PI = 0.334225
-		// To show live vs neutral difference, test an oblique angle cosTheta = 0.5:
-		// At cosTheta = 0.5:
-		// eta = 2.5: F(0.5) = F0 + (1-F0)*(1-0.5)^5 = 0.18367 + 0.81633 * (1/32) = 0.20918 => Ft = 0.79082
-		// Sw = 0.79082 / (0.77745 * PI) = 0.32378
-		// eta = 1.0: F(0.5) = 0 => Ft = 1.0 => Sw = 1.0 / ((20/21)*PI) = 0.334225
-		// Difference is ~3.2%
-		Vector3 vLightOblique = Vector3Ops::Normalize( entryRI.vNormal + entryRI.onb.u() * sqrt( 3.0 ) ); // cosTheta = 0.5
+		// DL-306: the SSS boundary transmits with the EXACT dielectric law
+		// (the one the SPF's surface reflection uses), normalized by
+		// c(eta) = 2 * integral (1 - F(mu)) mu dmu.  The normalized Sw is then
+		// index-dependent in SHAPE, so a live eta = 2.5 and the neutral
+		// eta = 1 (no interface: Sw = 1/PI at every cosine) differ most toward
+		// grazing.  Test at cosTheta = 0.2, with an independent exact Fresnel
+		// and an independent quadrature of c (no production constant):
+		//   eta = 2.5: F(0.2) = 0.3906..., c = 0.778133 => Sw = 0.246856
+		//   eta = 1.0:                                     Sw = 0.318310
+		// (Under DL-48's Schlick law the test used cosTheta = 0.5, where the
+		// exact law's live and neutral Sw are only 0.2 % apart.)
+		const Scalar cosOblique = 0.2;
+		auto exactF = []( const Scalar c, const Scalar n ) {
+			const Scalar s2 = (1.0 - c * c) / (n * n);
+			const Scalar ct = sqrt( 1.0 - s2 );
+			const Scalar rs = (c - n * ct) / (c + n * ct);
+			const Scalar rp = (n * c - ct) / (n * c + ct);
+			return 0.5 * (rs * rs + rp * rp);
+		};
+		Scalar cIndependent = 0;
+		{
+			const int count = 1 << 18;
+			for( int i = 0; i < count; ++i ) {
+				const Scalar mu = (Scalar(i) + 0.5) / count;
+				cIndependent += 2.0 * mu * (1.0 - exactF( mu, 2.5 )) / count;
+			}
+		}
+		Vector3 vLightOblique = Vector3Ops::Normalize( entryRI.vNormal +
+			entryRI.onb.u() * ( sqrt( 1.0 - cosOblique * cosOblique ) / cosOblique ) );
 		RISEPel bsdfOblique = entryBSDF.value( vLightOblique, entryRI );
-		const Scalar expectedSwLive = 0.79082 / (0.77745 * PI);
-		const Scalar expectedSwNeutral = 1.0 / ((20.0 / 21.0) * PI);
+		const Scalar expectedSwLive = (1.0 - exactF( cosOblique, 2.5 )) / (cIndependent * PI);
+		const Scalar expectedSwNeutral = 1.0 / PI;
 
-		Check( Close( bsdfOblique[0], expectedSwLive, 0.005 ), "entryBSDF evaluates live Sw (0.3238), not neutral (0.3342)" );
-		Check( !Close( bsdfOblique[0], expectedSwNeutral, 0.002 ), "entryBSDF distinct from neutral Sw" );
+		Check( Close( bsdfOblique[0], expectedSwLive, 1e-4 ), "entryBSDF evaluates live Sw (0.2469), not neutral (0.3183)" );
+		Check( !Close( bsdfOblique[0], expectedSwNeutral, 0.02 ), "entryBSDF distinct from neutral Sw" );
 	}
 
 	//

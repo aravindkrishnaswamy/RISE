@@ -788,6 +788,7 @@
     <ClInclude Include="..\..\..\src\Library\Materials\PolishedMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\PolishedSPF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\SchlickBRDF.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\SchlickMasking.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\SchlickMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\SchlickSPF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\TranslucentBSDF.h" />
@@ -1056,6 +1057,7 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\HermiteInterpolator.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\IORStack.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\IORStackSeeding.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\GradedIndexMedium.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\LoadLibrary.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Log\Log.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Log\LogEvent.h" />
@@ -1226,6 +1228,7 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\AliasTable.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\BDPTUtilities.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\BSSRDFSampling.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\ExteriorIndexCache.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\RGB.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\SampledWavelengths.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\CompletePathGuide.h" />

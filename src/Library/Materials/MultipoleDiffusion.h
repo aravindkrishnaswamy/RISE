@@ -42,7 +42,11 @@ namespace RISE
 		double	sigma_a;		///< Absorption coefficient (cm^-1)
 		double	sigma_sp;		///< Reduced scattering coefficient (cm^-1)
 		double	thickness;		///< Layer thickness (cm)
-		double	ior;			///< Index of refraction
+		double	ior;			///< Index of refraction RELATIVE to the medium surrounding the stack
+								///< (DL-291).  Each slab's single extrapolation term A below is
+								///< evaluated against that ambient medium; in air this is the
+								///< layer's absolute index.  Inter-layer coupling (StackLayersHankel's
+								///< Ft_down/Ft_up) uses ratios of these values, so it is unaffected.
 
 		// Derived parameters (computed by ComputeLayerDerivedParams)
 		double	sigma_t_prime;	///< sigma_a + sigma_sp
@@ -59,6 +63,15 @@ namespace RISE
 
 	/// Compute derived parameters from primary parameters.
 	void ComputeLayerDerivedParams( LayerParams& lp );
+
+	/// DL-291: re-express a stack's layer indices relative to the medium
+	/// that surrounds it (the exterior index `exteriorIOR`, e.g. water
+	/// around skin) and recompute each layer's derived parameters.  The
+	/// multipole's extrapolation term A = (1+Fdr)/(1-Fdr) is a function of
+	/// that RELATIVE index, so a stack built with absolute indices describes
+	/// the body in air only.  Exactly a no-op when `exteriorIOR == 1`, so an
+	/// in-air precompute is bit-identical to one that never called this.
+	void RelativizeLayersToExterior( LayerParams* layers, int N_layers, double exteriorIOR );
 
 	/// Compute diffuse Fresnel reflectance for a given IOR ratio.
 	/// Uses Egan & Hilgeman 1973 polynomial fit (same as Jensen 2001).

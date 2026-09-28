@@ -310,6 +310,12 @@ namespace RISE
 			//! nor closes an aperture the substrate does not have.
 			inline bool CouldLightPassThrough() const { return pBase->CouldLightPassThrough(); }
 
+			//! DL-05: FabricSPF re-prices (never removes) the substrate's
+			//! delta pass-through, so the capability is the substrate's;
+			//! FabricSPF::DeltaPassThroughTransmittance supplies the
+			//! re-priced value.
+			inline bool HasDeltaPassThrough() const { return pBase->HasDeltaPassThrough(); }
+
 			//! Read-back for the interactive editor / snapshot clone.
 			inline const IMaterial&      GetBase()           const { return *pBase; }
 			inline const IPainter&       GetSheenColor()     const { return pBRDF->GetSheenColor(); }

@@ -77,6 +77,20 @@ void RISE::ComputeLayerDerivedParams( LayerParams& lp )
 	lp.slab_period = 2.0 * (lp.thickness + 2.0 * lp.d_e);
 }
 
+void RISE::RelativizeLayersToExterior( LayerParams* layers, const int N_layers, const double exteriorIOR )
+{
+	// Air (and any non-physical exterior, which callers already map to
+	// air) leaves the stack untouched -- the in-air bit-identity pin.
+	if( exteriorIOR == 1.0 || !( exteriorIOR > 0.0 ) || !std::isfinite( exteriorIOR ) ) {
+		return;
+	}
+	for( int i = 0; i < N_layers; i++ )
+	{
+		layers[i].ior = layers[i].ior / exteriorIOR;
+		ComputeLayerDerivedParams( layers[i] );
+	}
+}
+
 //=============================================================
 // Single-layer multipole in Hankel domain
 //=============================================================

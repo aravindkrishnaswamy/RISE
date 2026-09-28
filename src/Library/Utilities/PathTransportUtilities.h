@@ -62,6 +62,67 @@ namespace RISE
 	namespace PathTransportUtilities
 	{
 		//////////////////////////////////////////////////////////////////////
+		// PTVolumeWalkStream (DL-247; moved here from PathTracingIntegrator.cpp
+		// by DL-283 so SobolDimensionBudgetTest Test G2 enumerates the real
+		// layout instead of a copy of it).
+		//
+		// The sampler stream a PT volumetric random WALK draws scatter event
+		// `scatterIndex` of wavelength lane `lane` from.
+		//
+		// The PT main loops give every vertex its own stream
+		// (`StartStream( 16 + depth )`, and a volume scatter there bumps
+		// `depth`).  The three walks -- IntegrateRayTemplated's camera walk,
+		// IntegrateRayHWSS's camera walk and IntegrateFromHitHWSS's in-loop
+		// walk -- used to run every scatter event, and under HWSS every
+		// wavelength lane, SEQUENTIALLY off one stream.  SobolSampler's
+		// `Get1D` simply increments the dimension, so a walk ran straight
+		// past its stream's `kStreamStride` (32) slots into `16 + depth + 1`,
+		// `+ 2`, ... -- exactly the streams its own surface hand-off
+		// (`IntegrateFromHit*( startDepth = depth + 1 )`) then re-opens.  The
+		// same Sobol dimension then drove two DIFFERENT decisions on ONE path
+		// (a walk's NEE or phase draw and the hand-off's BSDF draw), which is
+		// a correlation inside a single estimator sample and therefore a
+		// bias, not just noise.  With four HWSS lanes at ~6 draws per scatter
+		// the overrun happens on the FIRST scatter: +3.1 % on the absorbing
+		// box of tests/MediumInsideOutsideInvariantTest.cpp (hwss TRUE camera
+		// inside, black floor: 0.2923 vs 0.2820 for per-lane streams, NM and
+		// the camera-outside render).
+		//
+		// Every walk scatter event opens a stream of its own at
+		// `4096 + 1024 * lane + (scatterIndex mod 1024)`, lanes 0..3
+		// (`SampledWavelengths::N`), so [4096, 8192).  A path runs at most
+		// one walk (each ends in a hand-off to the NM/RGB main loop or an
+		// escape) and `scatterIndex` is the path's running volume-bounce
+		// count, so no (lane, scatterIndex) pair repeats within a path.
+		//
+		// CEILINGS (DL-283, previously undocumented):
+		//   - `max_volume_bounce` <= 1024.  Past it, events k and k + 1024 of
+		//     one lane share a stream exactly (the `mod`).
+		//   - PT main-loop depth <= 4080.  `StartStream( 16 + depth )` reaches
+		//     4096 = walk (lane 0, event 0) at depth 4080, and
+		//     `SetMaxPathDepth` is not clamped.  (The eye-walk bound 16 + 1023
+		//     is BDPT's, not PT's: PT's own loop cap is `mMaxPathDepth`,
+		//     default 128.)
+		// Every stream here is past SobolSampler's 8192-dimension table
+		// (stream 256), so every walk draw is a WRAPPED Get1D: table row
+		// `32 * (event mod 256) + slot`, index Owen-permuted by the wrap
+		// count `16 + 4 * lane + event / 256` (DL-81).  Walk event k
+		// therefore shares its table rows with main-loop stream k -- at a
+		// different index block and value seed (harmless by the 8-spp
+		// per-pixel variance check, DL-81 doc section 9; ParityTest H's
+		// collapse is only a floor).  IndependentSampler ignores streams; PT is never
+		// driven by PSSMLTSampler (MLT runs BDPT).
+		//////////////////////////////////////////////////////////////////////
+		static const int kPTVolumeWalkStreamBase = 4096;
+		static const unsigned int kPTVolumeWalkLaneStride = 1024;
+
+		inline int PTVolumeWalkStream( const unsigned int lane, const unsigned int scatterIndex )
+		{
+			return kPTVolumeWalkStreamBase + static_cast<int>(
+				lane * kPTVolumeWalkLaneStride + ( scatterIndex % kPTVolumeWalkLaneStride ) );
+		}
+
+		//////////////////////////////////////////////////////////////////////
 		// Russian Roulette
 		//////////////////////////////////////////////////////////////////////
 

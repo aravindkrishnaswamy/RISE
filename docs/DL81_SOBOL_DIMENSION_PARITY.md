@@ -213,8 +213,17 @@ inside the table. Over the 459 shipped scenes the deepest is **stream 241**, in
 A dimension past the table is now Owen-permuted **by its wrap count** before the
 draw, so it reads a *different* dyadic block of the same Sobol' dimension. Two
 streams that wrap onto each other are decorrelated; they are not a joint net,
-which is why the table is sized to keep shipped content off that path. Beyond
-the table is a quality boundary, not a correctness cliff. `Sobol(index, dim)` is
+which is why the table is sized to keep shipped content's **per-vertex**
+streams off that path. Beyond the table is a quality boundary, not a
+correctness cliff.
+
+> **Superseded in part, 2026-09-27 (DL-283).** The sentence this section used
+> to carry — the table "is sized so shipped scenes never wrap" — has been false
+> since DL-247 and is false by design now. Two stream families live past the
+> table *deliberately*, because they must be disjoint from every per-vertex
+> stream at any depth and 256 streams cannot hold that; see §9. What remains
+> true is the narrower rule: every **per-vertex** stream a shipped scene
+> reaches is inside the table (Test G1, formerly Test G). `Sobol(index, dim)` is
 public and was unguarded past the table end; it now reduces.
 
 ### The aperture stream
@@ -812,3 +821,77 @@ counters are IDENTICAL to §7's round-2 numbers (re-confirmed, not assumed):
 `SobolDimensionParityTest` 70/0 (was 63/0; see above), `SobolDimensionBudgetTest`
 all passed (Test G unchanged: 459 scenes, deepest stream 241), and every
 other suite in §7's table unchanged.
+
+---
+
+## 9. DL-283 addendum (2026-09-27/28) — the wrap region is used by design
+
+**Why the second family exists: a measured bias.** Before DL-283, BDPT/VCM drew
+each medium distance sample off the per-vertex stream; heterogeneous delta
+tracking ran past the stream's 32 slots into the stream the next vertex
+re-opens, so one Sobol' dimension drove two decisions on one path. That was a
+real **bias**, not just noise: salted (independent randomized-QMC replicates)
+BDPT renders of a thin 256³-grid heterogeneous box with a black floor read
+**−0.8 % against an independent-sampler reference** (pel camera inside n = 24,
+z −3.7; hwss TRUE n = 40, z −5.1; pre-fix vs fixed paired +0.8 / +0.9 %, z 4.4 /
+5.2), and the fixed build agrees with the reference to 0.1 %.
+`MediumInsideOutsideInvariantTest --sampler-bias` gates it (an opt-in row, ~1 % false-red rate; pre-fix −0.599 %,
+z −5.0, red). An earlier revision of this section and of the DL-283 row called
+the bias "refuted" from an underpowered, camera-outside comparison; that was
+wrong.
+
+The table-size argument in §2 covers the **per-vertex** streams (`StartStream(16
++ depth)`, `1 + depth`, 47, `48 + i`). Two families of streams are placed past
+the table on purpose:
+
+| family | streams | wrap count | consumer |
+|---|---|---|---|
+| PT volume walks — `PathTransportUtilities::PTVolumeWalkStream(lane, k)` (DL-247) | `4096 + 1024·lane + (k mod 1024)`, lanes 0..3 → [4096, 8192) | `16 + 4·lane + ⌊k/256⌋` → 16..31 | every scatter event of PT's three volume random walks |
+| BDPT/VCM medium distance sampling — `BDPTUtilities::MediumDistanceStream(side, d)` (DL-283) | `8192 + 64·(1024·side + d)`, a 64-stream (2048-dimension) block per walk iteration → [8192, 139264) | `32 + ⌊(1024·side + d)/4⌋` → 32..543 | each `IMedium::SampleDistance` call of the BDPT eye/light generators under a fixed-budget sampler |
+
+**Ceilings.** PT walks: `max_volume_bounce` ≤ 1024 (events k and k + 1024 of
+one lane share a stream past it) and PT main-loop depth ≤ 4080 (stream `16 +
+4080` = 4096 is walk (0, 0); `SetMaxPathDepth` is unclamped). BDPT/VCM blocks:
+none beyond the walk loops' own saturating cap of 1024 iterations
+(`BDPTUtilities::kWalkIterationCap`), which keys the layout; a block holds
+`IMedium::kMaxSampleDistanceDraws` = 2048 draws, the heterogeneous
+delta-tracking cap (2 × 1024 steps), and a `static_assert` ties the two. MLT's
+`PSSMLTSampler` is not a fixed-budget sampler and stays on its vertex streams.
+
+**Quality** (`SobolDimensionParityTest` section H, the same dyadic 2×2
+leading-digit collapse statistic as section G, 4 value seeds):
+
+| spp | PT walk vs aliased main-loop row | BDPT block vs aliased row | block vs own vertex stream | eye block vs light block (same row) | floor: adjacent production streams |
+|---|---|---|---|---|---|
+| 4 | 50.00 % | 34.38 % | 50.12 % | 56.25 % | 49.38 % |
+| 8 | **0.00 %** | 6.25 % | 13.84 % | 25.00 % | 24.69 % |
+| 16 | 0.00 % | 0.00 % | 0.00 % | 0.00 % | 12.56 % |
+| 32–256 | 0.00 % | 0.00 % | 0.00 % | 0.00 % | 6.62 → 0.69 % |
+
+The 8-spp eye-vs-light figure sits at the counting floor (two index
+permutations of one row — the same pigeonhole as section G), not above it; from
+16 spp every family is exactly zero while ordinary production streams still
+collapse 12.6 %. The PT-walk column reproduces the `debt-dl247b` review's
+measurement (0 % from 8 spp).
+
+**Caveat on that statistic.** "Collapse" is EXACT locking of the leading
+digits. The wrapped draws read their row at an Owen-scrambled (nonlinear)
+index, which essentially never locks exactly, so the zeros are partly
+structural and do not by themselves show independence; the unbiasedness
+argument rests on the value scrambles having independent seeds per raw
+dimension. The practical check is variance: mean per-pixel variance across 12
+salted renders at **8 spp** (thin 256³ box, floor 0.8, 128×128) reads pre-fix
+0.0752, fixed 0.0747, independent sampler 0.0805 — no low-spp regression (the
+DL-283 review measured 0.0750 / 0.0743 / 0.0807).
+
+`SobolDimensionBudgetTest` Test G2 enumerates both families from the real
+functions and asserts the wrap counts above, uniqueness, and disjointness from
+every other consumer of the same sampler; Test H drives BDPT's real light and
+eye generators (light sampler attached) and asserts no per-vertex stream
+overruns. G2 also pins the **pre-existing** overlaps among the fixed per-vertex
+streams (the light walk reaches the eye walk's streams from light iteration 15,
+the strategy select at 46 and VCM's first NEE stream, 49, at 48; the eye walk
+reaches the select at 31 and the NEE at 33) — DL-286, opened by DL-283's
+sibling audit; Test H observes it on its homogeneous fixture (635 light/eye
+shared dimensions in 60 of 4096 samples).
+

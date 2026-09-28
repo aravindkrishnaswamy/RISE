@@ -25,13 +25,26 @@
 //    harmless; see SobolSequence.h's header for the mechanism and
 //    docs/DL81_SOBOL_DIMENSION_PARITY.md for the measurements.  There
 //    is now a finite dimension supply (`SobolSequence::kNumDimensions`
-//    = 8192 = 256 streams' worth), sized so that every stream a
-//    SHIPPED scene reaches has dimensions of its own; past it, Get1D
-//    draws are re-indexed rather than aliased (they decorrelate, but
-//    stop being a joint net) and Get2D draws are unaffected, since
-//    they are padded and keyed by the raw dimension.
-//    `SobolDimensionBudgetTest` Test G recomputes the shipped bound
+//    = 8192 = 256 streams' worth), sized so that every PER-VERTEX
+//    stream a SHIPPED scene reaches has dimensions of its own; past
+//    it, Get1D draws are re-indexed rather than aliased (they
+//    decorrelate, but stop being a joint net) and Get2D draws are
+//    unaffected, since they are padded and keyed by the raw dimension.
+//    `SobolDimensionBudgetTest` Test G1 recomputes the shipped bound
 //    from the scene files.
+//
+//    NOTE (DL-283, 2026-09-27): "shipped scenes never wrap" is NOT the
+//    rule, and has not been since DL-247.  Two stream families live
+//    past the table ON PURPOSE, because they must be disjoint from
+//    every per-vertex stream at any depth: PT's volume-walk streams
+//    (`PathTransportUtilities::PTVolumeWalkStream`, 4096..8191, wrap
+//    counts 16..31) and BDPT/VCM's medium distance-sampling blocks
+//    (`BDPTUtilities::MediumDistanceStream`, 8192..139263, wraps
+//    32..543).  Every medium render therefore draws wrapped dimensions.
+//    Measured harmless by per-pixel variance at 8 spp (no worse than
+//    pre-DL-283; DL-81 doc section 9 -- ParityTest section H's collapse
+//    statistic is only a sanity floor).  Test G2 enumerates both
+//    families and asserts their wrap counts and collision-freedom.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: March 27, 2026
@@ -47,11 +60,56 @@
 
 #include "ISampler.h"
 #include "../Sampling/SobolSequence.h"
+#include <atomic>
 
 namespace RISE
 {
 	namespace Implementation
 	{
+		//////////////////////////////////////////////////////////////
+		// SobolSamplerTestHooks -- TEST-ONLY seams (DL-283 review).
+		//
+		// Production code never writes these; both default to "off",
+		// and a SobolSampler reads them ONCE, at construction, so the
+		// per-draw paths pay one predictable member-bool branch.  A test
+		// sets them between renders (a render's worker hand-off goes
+		// through the thread pool's own synchronisation, which orders
+		// the write before every sampler the render constructs).
+		//
+		//  ValueSalt   XORed into every sampler's scramble seed.  That
+		//              seed feeds only the VALUE-side Owen scramble
+		//              (`HashCombine(seed, dimension)`); `ScrambleIndex`
+		//              is keyed by the dimension group / wrap count and
+		//              never sees it.  A distinct salt per render makes
+		//              repeated renders INDEPENDENT randomized-QMC
+		//              replicates; without it every render of a scene
+		//              reuses the identical Sobol' points, so the
+		//              run-to-run sd omits the QMC error entirely and
+		//              a mean difference can look significant (or
+		//              insignificant) for the wrong reason.
+		//  Independent Replace every draw by an i.i.d. value from a
+		//              STATEFUL splitmix64 stream seeded by (seed ^
+		//              salt, sampleIndex), keeping the stream/dimension
+		//              bookkeeping and `HasFixedDimensionBudget() ==
+		//              true` -- the integrators take the identical code
+		//              path, but a dimension drawn twice yields two
+		//              FRESH values.  An unbiased reference no
+		//              sampler-correlation defect can reach.
+		//////////////////////////////////////////////////////////////
+		struct SobolSamplerTestHooks
+		{
+			static std::atomic<uint32_t>& ValueSalt()
+			{
+				static std::atomic<uint32_t> v( 0u );
+				return v;
+			}
+			static std::atomic<bool>& Independent()
+			{
+				static std::atomic<bool> v( false );
+				return v;
+			}
+		};
+
 		class SobolSampler :
 			public ISampler
 		{
@@ -59,6 +117,18 @@ namespace RISE
 			uint32_t sampleIndex;		// Which sample in the sequence
 			uint32_t seed;				// Per-pixel base scramble seed
 			unsigned int dimension;		// Current dimension counter
+			bool independent;			// SobolSamplerTestHooks::Independent at construction
+			uint64_t rngState;			// splitmix64 state, independent mode only
+
+			//! splitmix64 -> [0,1) with 53 bits (independent test mode).
+			double NextIndependent()
+			{
+				uint64_t z = ( rngState += 0x9E3779B97F4A7C15ull );
+				z = ( z ^ ( z >> 30 ) ) * 0xBF58476D1CE4E5B9ull;
+				z = ( z ^ ( z >> 27 ) ) * 0x94D049BB133111EBull;
+				z = z ^ ( z >> 31 );
+				return double( z >> 11 ) * ( 1.0 / 9007199254740992.0 );
+			}
 
 			// Dimensions are partitioned into fixed-size phases so
 			// that each bounce always starts at the same dimension
@@ -68,16 +138,27 @@ namespace RISE
 			//
 			// Encoding: phase = streamBase + bounceIndex
 			//   Light source sampling: phase 0
-			//   Light bounces 0..14:   phases 1..15
-			//   Eye bounces 0..14:     phases 16..30
-			//   SMS:                   phases 31..46
+			//   Light bounces d:       phases 1 + d
+			//   Eye bounces d:         phases 16 + d
+			//   BDPT strategy select:  phase 47
+			//   VCM NEE, eye vertex i: phase 48 + i (i >= 1)
+			// The bounce ranges were laid out for 15 bounces; deeper
+			// walks run into each other's phases (light bounce 15 is
+			// eye bounce 0, light 46 / eye 31 is the select, light 48
+			// / eye 33 is VCM's first NEE phase 49) -- a known
+			// pre-existing overlap, DL-286.
+			// The full map, including the wrap-region families past
+			// the dimension table, is SobolDimensionBudgetTest G2.
 			//
+		public:
 			// kStreamStride must be >= max dimensions consumed by
 			// any single phase (BioSpecSkinSPF uses ~20 + lobe
-			// selection + BSSRDF = ~25 max).
+			// selection + BSSRDF = ~25 max).  Public so a stream
+			// layout that must hold an open-ended consumer can
+			// static_assert its width (BDPTUtilities::
+			// MediumDistanceStream, DL-283).
 			static const unsigned int kStreamStride = 32;
 
-		public:
 			virtual ~SobolSampler(){};
 
 		public:
@@ -86,14 +167,17 @@ namespace RISE
 				uint32_t seed_
 				) :
 				sampleIndex( sampleIndex_ ),
-				seed( seed_ ),
-				dimension( 0 )
+				seed( seed_ ^ SobolSamplerTestHooks::ValueSalt().load( std::memory_order_relaxed ) ),
+				dimension( 0 ),
+				independent( SobolSamplerTestHooks::Independent().load( std::memory_order_relaxed ) ),
+				rngState( ( uint64_t( seed ) << 32 ) ^ uint64_t( sampleIndex_ ) ^ 0xD1B54A32D192ED03ull )
 			{
 			}
 
 			//! Returns a single Owen-scrambled Sobol sample in [0,1)
 			Scalar Get1D()
 			{
+				if( independent ) { dimension++; return Scalar( NextIndependent() ); }
 				return Scalar( SobolSequence::Sample( sampleIndex, dimension++, seed ) );
 			}
 
@@ -112,6 +196,12 @@ namespace RISE
 			Point2 Get2D()
 			{
 				double u = 0.0, v = 0.0;
+				if( independent ) {
+					u = NextIndependent();
+					v = NextIndependent();
+					dimension += 2;
+					return Point2( Scalar( u ), Scalar( v ) );
+				}
 				SobolSequence::SamplePair( sampleIndex, dimension, seed, u, v );
 				dimension += 2;
 				return Point2( Scalar( u ), Scalar( v ) );

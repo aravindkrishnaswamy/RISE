@@ -88,7 +88,8 @@ namespace RISE
 					const Scalar maxDistance,
 					const IBSDF* pBSDF,
 					const RayIntersectionGeometric& rig,
-					const IORStack* pIorStack = 0
+					const IORStack* pIorStack = 0,
+					const Scalar exteriorIOR = 1.0
 					) const;
 			};
 
@@ -125,10 +126,11 @@ namespace RISE
 				const Scalar error,
 				const IBSDF* pBSDF,
 				const RayIntersectionGeometric& rig,
-				const IORStack* pIorStack = 0
+				const IORStack* pIorStack = 0,
+				const Scalar exteriorIOR = 1.0		///< DL-291: index of the medium around the body (1 = air)
 				)
 			{
-				return root.Evaluate( c, bbox, 99, point, pFunc, pFunc.GetMaximumDistanceForError(error), pBSDF, rig, pIorStack );
+				return root.Evaluate( c, bbox, 99, point, pFunc, pFunc.GetMaximumDistanceForError(error), pBSDF, rig, pIorStack, exteriorIOR );
 			};
 		};
 	}

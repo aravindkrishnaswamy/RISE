@@ -695,6 +695,19 @@ native bridge (`add_randomwalk_sss_material`), matching the
 convention `scenes/Tests/SubsurfaceScattering/rwsss_sphere.RISEscene`
 already uses; there is no Blender socket this would come from anyway.
 
+**The exterior is assumed to be AIR at export time, by construction
+(DL-291, 2026-09-28).**  Nothing in the conversion above depends on a
+refractive index: `Subsurface IOR` is exported verbatim as the
+material's ABSOLUTE index (`subsurface_ior`), exactly as Blender's
+socket authors it (against vacuum/air).  RISE then prices every SSS
+boundary quantity at the RELATIVE index against the live exterior
+(`ambientIOR`, DL-49/DL-291), so an SSS body the Blender scene places
+inside a refracting volume (a skin surface under water, wax in glass)
+renders with the immersed interface in RISE while Cycles' own random
+walk keeps pricing it against air.  That divergence is RISE being
+physically consistent, not an export defect, and the exporter
+deliberately does not pre-divide the IOR by any enclosing medium.
+
 ### Alpha -> a per-material `advanced_shader` op chain (ABI v14, DL-193)
 
 Alpha was never a missing ABI field — it was a missing SUBSYSTEM: RISE

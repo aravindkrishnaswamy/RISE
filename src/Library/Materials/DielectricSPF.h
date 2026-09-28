@@ -184,10 +184,15 @@ namespace RISE
 
 			//! Returns the PDF for sampling the given outgoing direction (always 0 for delta distributions)
 			Scalar Pdf( const RayIntersectionGeometric& ri, const Vector3& wo, const IORStack& ior_stack ) const;
-			//! DL-24 review P1-1: the reflect/refract lobe weights are a deterministic
-			//! function of the query (warps keep each lobe on its side; wrong-side
-			//! lobes are re-derived, never dropped at random).
-			bool SelectionMassIsDeterministic() const { return true; }
+			//! DL-24 review P1-1 / round-2 P1-A: both lobes are emitted every
+			//! call with deterministic weights, and a wrong-side delta lobe
+			//! is re-derived, never dropped.  The ONE random element is the
+			//! `scattering` warp of the transmitted ray, which is clipped to
+			//! the GEOMETRIC side of the surface -- so under a tilted
+			//! shading normal it can land between the geometric and shading
+			//! planes and read "up".  Deterministic therefore iff the warp
+			//! is off at this query or the shading normal is untilted.
+			bool SelectionMassIsDeterministic( const RayIntersectionGeometric& ri, const Scalar nm ) const;
 
 			//! Returns the spectral PDF for sampling the given outgoing direction (always 0 for delta distributions)
 			Scalar PdfNM( const RayIntersectionGeometric& ri, const Vector3& wo, const Scalar nm, const IORStack& ior_stack ) const;

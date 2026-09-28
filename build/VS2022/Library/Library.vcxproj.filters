@@ -1302,6 +1302,9 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\IORStackSeeding.h">
       <Filter>Utilities</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\GradedIndexMedium.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\LoadLibrary.h">
       <Filter>Utilities</Filter>
     </ClInclude>
@@ -2182,6 +2185,9 @@
       <Filter>Materials\Oren Nayar</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\SchlickBRDF.h">
+      <Filter>Materials\Schlick</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\SchlickMasking.h">
       <Filter>Materials\Schlick</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\SchlickMaterial.h">
@@ -3315,6 +3321,9 @@
       <Filter>Utilities</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\BSSRDFSampling.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\ExteriorIndexCache.h">
       <Filter>Utilities</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\RGB.h">

@@ -407,6 +407,67 @@ void FabricSPF::ScatterImpl(
 	}
 }
 
+Scalar FabricSPF::DeltaPassThroughScale(
+	const RayIntersectionGeometric& ri,
+	const Scalar nm,
+	Scalar& weaveAngleOut
+	) const
+{
+	// Mirrors ScatterImpl step for step.  Its first gate: the ray-facing
+	// frame's `cosWi <= 0` early-out (numerically edge-on only).
+	const OrthonormalBasis3D onb = RayFacingONB( ri );
+	const Vector3 n  = onb.w();
+	const Vector3 wi = Vector3Ops::Normalize( -ri.ray.Dir() );
+	const Scalar cosWi = Vector3Ops::Dot( wi, n );
+	if( cosWi <= 0 ) {
+		return 0;
+	}
+
+	FabricBRDF::FabricParams p;
+	pBRDF->ResolveFabric( ri, nm, p );
+	weaveAngleOut = p.weaveAngle;
+
+	// The substrate branch is taken with probability `1 - w`; there the
+	// base emits its delta ray (probability and kray folded into the
+	// base's own DeltaPassThroughTransmittance), and ScatterImpl's delta
+	// branch multiplies that kray by `atten / sel` with the straight-
+	// through `muDelta = |n . dir| = cosWi`.  The expectation is the
+	// product -- written literally rather than simplified to `atten`, so
+	// it stays the Scatter-side number if either helper's clamping moves.
+	const Scalar w     = FabricBRDF::SheenSelectWeight( p.alpha, p.m, cosWi );
+	const Scalar atten = FabricBRDF::SheenTransmit( p.alpha, p.m, cosWi )
+	                   * FabricBRDF::SheenTransmit( p.alpha, p.m, cosWi );
+	const Scalar sel   = r_max( Scalar(1e-12), Scalar(1) - w );
+	return ( Scalar(1) - w ) * ( atten / sel );
+}
+
+RISEPel FabricSPF::DeltaPassThroughTransmittance(
+	const RayIntersectionGeometric& ri
+	) const
+{
+	Scalar weaveAngle = 0;
+	const Scalar scale = DeltaPassThroughScale( ri, Scalar(-1), weaveAngle );
+	if( !( scale > 0 ) ) {
+		return RISEPel( 0, 0, 0 );
+	}
+	const WeaveRotatedRI weave( ri, weaveAngle );
+	return pBaseSPF->DeltaPassThroughTransmittance( weave.Get() ) * scale;
+}
+
+Scalar FabricSPF::DeltaPassThroughTransmittanceNM(
+	const RayIntersectionGeometric& ri,
+	const Scalar nm
+	) const
+{
+	Scalar weaveAngle = 0;
+	const Scalar scale = DeltaPassThroughScale( ri, nm, weaveAngle );
+	if( !( scale > 0 ) ) {
+		return 0;
+	}
+	const WeaveRotatedRI weave( ri, weaveAngle );
+	return pBaseSPF->DeltaPassThroughTransmittanceNM( weave.Get(), nm ) * scale;
+}
+
 void FabricSPF::Scatter(
 	const RayIntersectionGeometric& ri,
 	ISampler& sampler,

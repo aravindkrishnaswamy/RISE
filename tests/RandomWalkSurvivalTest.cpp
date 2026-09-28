@@ -132,9 +132,14 @@ Scalar IndependentAngularWeight( const BSSRDFSampling::SampleResult& sample )
 {
 	const Scalar cosine = Vector3Ops::Dot(
 		sample.scatteredRay.Dir(), sample.entryNormal );
-	// At IOR 1, Schlick transmission is 1-(1-mu)^5.  Its cosine-hemisphere
-	// normalization is 2*integral_0^1 mu*(1-(1-mu)^5)dmu = 20/21.
-	return ( 1.0 - pow( 1.0 - cosine, 5.0 ) ) / ( 20.0 / 21.0 );
+	// At IOR 1 there is no interface: the exact dielectric transmission the
+	// SSS boundary uses since DL-306 is 1 at every cosine and its
+	// cosine-hemisphere normalization is 1, so the angular weight is exactly
+	// 1.  (Under DL-48's Schlick law it was (1-(1-mu)^5)/(20/21) -- Schlick
+	// still "reflects" (1-mu)^5 at a matched index.)  The cosine is still
+	// required to be a real exit direction.
+	Require( Finite( cosine ) && cosine > 0, "angular oracle needs an outward exit direction" );
+	return 1.0;
 }
 
 void RequireFiniteSample( const BSSRDFSampling::SampleResult& sample,

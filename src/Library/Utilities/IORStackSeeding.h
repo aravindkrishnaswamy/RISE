@@ -112,6 +112,7 @@
 #define IOR_STACK_SEEDING_
 
 #include "IORStack.h"
+#include "GradedIndexMedium.h"
 #include <cstdlib>
 #include "../Interfaces/IScene.h"
 #include "../Interfaces/IObjectManager.h"
@@ -157,9 +158,24 @@ namespace RISE
 			bool repushParentIor;
 		};
 
-		// Stack-allocated small buffer; real scenes rarely nest more
-		// than 2-3 refractive volumes so the fixed cap is generous.
-		static const std::size_t kMaxNestingDepth = 8;
+		// Safety cap on the surface hits one probe walks: guards against
+		// pathological geometry (coincident faces, self-intersections)
+		// that could loop indefinitely.
+		static const int kMaxProbeSteps = 32;
+
+		// Per-probe entry table, stack-allocated.  Sized to the STEP cap,
+		// not to a nesting depth (DL-09 slice, 2026-09-28): the table holds
+		// one entry per DISTINCT trackable object the probe MEETS, and a
+		// probe meets every refractor between the seed and the scene edge
+		// -- including the ones in front of it that do not contain it at
+		// all.  An 8-entry table (the old `kMaxNestingDepth`) filled up with
+		// those and silently dropped the containing objects the probe only
+		// reaches afterwards: a camera inside 5 of 17 nested boxes, 12 of
+		// them above it along +z, seeded as bare AIR, and the render read
+		// 0.39x its closed form (tests/GradedIndexInteriorFactorTest.cpp row
+		// E).  One step adds at most one entry, so kMaxProbeSteps entries
+		// can never overflow.
+		static const std::size_t kMaxProbeEntries = static_cast<std::size_t>( kMaxProbeSteps );
 
 		// Probe-trace counter (2026-09-14, DL-76 perf follow-up).  This
 		// compiles and increments UNCONDITIONALLY in every build -- it
@@ -208,10 +224,7 @@ namespace RISE
 			const Scalar kSeedEps = Scalar( 1e-4 );
 			Ray probe( pos, dir );
 
-			// Safety cap: guards against pathological geometry (coincident
-			// faces, self-intersections) that could loop indefinitely.
-			const int kMaxSteps = 32;
-			for( int step = 0; step < kMaxSteps; step++ )
+			for( int step = 0; step < kMaxProbeSteps; step++ )
 			{
 				RayIntersection ri( probe, nullRasterizerState );
 				pObjects->IntersectRay( ri, true, true, false );
@@ -271,7 +284,7 @@ namespace RISE
 					if( info.valid && bTrackable )
 					{
 						// Find or create per-object entry.  Linear scan is
-						// fine — kMaxNestingDepth is 8.
+						// fine — at most kMaxProbeEntries (32) entries.
 						ProbeEntry* e = 0;
 						for( std::size_t d = 0; d < count; d++ ) {
 							if( out[d].pObj == ri.pObject ) {
@@ -279,7 +292,7 @@ namespace RISE
 								break;
 							}
 						}
-						if( !e && count < kMaxNestingDepth ) {
+						if( !e && count < kMaxProbeEntries ) {
 							e = &out[count++];
 							e->pObj = ri.pObject;
 							e->ior = info.ior;
@@ -388,7 +401,7 @@ namespace RISE
 
 			// +Z is arbitrary; any fixed direction avoids per-seed RNG
 			// and keeps results deterministic across threads.
-			ProbeEntry containing[kMaxNestingDepth];
+			ProbeEntry containing[kMaxProbeEntries];
 			const std::size_t containingCount =
 				TallyProbe( pObjects, pos, Vector3( 0, 0, 1 ), containing );
 
@@ -457,7 +470,7 @@ namespace RISE
 			// See docs/DEBT_LEDGER.md DL-76 and
 			// docs/SUBMERGED_CAMERA_IOR_SEEDING.md for the accepted
 			// scope.
-			ProbeEntry reverse[kMaxNestingDepth];
+			ProbeEntry reverse[kMaxProbeEntries];
 			std::size_t reverseCount = 0;
 			bool anyCandidate = false;
 			for( std::size_t i = 0; i < containingCount; i++ ) {
@@ -479,8 +492,8 @@ namespace RISE
 			// Y-rev = 6 `TallyProbe` calls total, independent of how many
 			// candidates the Z round found (was up to 8 candidates x 4 =
 			// 32 on top of the Z pair).
-			ProbeEntry xForward[kMaxNestingDepth], xReverse[kMaxNestingDepth];
-			ProbeEntry yForward[kMaxNestingDepth], yReverse[kMaxNestingDepth];
+			ProbeEntry xForward[kMaxProbeEntries], xReverse[kMaxProbeEntries];
+			ProbeEntry yForward[kMaxProbeEntries], yReverse[kMaxProbeEntries];
 			std::size_t xForwardCount = 0, xReverseCount = 0;
 			std::size_t yForwardCount = 0, yReverseCount = 0;
 			bool anyZConfirmed = false;
@@ -505,12 +518,12 @@ namespace RISE
 			// INNERMOST surface, the LAST exit at its OUTERMOST.  Objects
 			// with smaller firstExitStep are inner — push them last.
 			// Insertion-sort to OUTERMOST-FIRST (largest firstExitStep
-			// first); buffer is at most 8 entries.
+			// first); buffer is at most kMaxProbeEntries entries.
 			//
 			// Objects with parity == 0 (probe passed through) and
 			// parity < 0 (unbalanced entries — only possible from
 			// pathological geometry hitting the step cap) are skipped.
-			ProbeEntry* ordered[kMaxNestingDepth];
+			ProbeEntry* ordered[kMaxProbeEntries];
 			std::size_t orderedCount = 0;
 			for( std::size_t i = 0; i < containingCount; i++ ) {
 				if( containing[i].parity <= 0 ) {
@@ -554,6 +567,19 @@ namespace RISE
 				// pushes its own captured `ior` as before.
 				stack.push( ordered[i]->repushParentIor ? stack.top() : ordered[i]->ior );
 			}
+
+			// DL-09: every entry above was recorded at its probe's FIRST
+			// SURFACE HIT -- a boundary point that can be arbitrarily far
+			// from `pos`.  For a constant-index medium that is the same
+			// number; for a medium whose `ior` is a world-position field it
+			// is not, and the walk that starts here must start from the
+			// index AT the seed point, or its first interior-segment factor
+			// (GradedIndexMedium::Advance) is priced from the wrong end.
+			// Only the innermost medium matters: a deeper entry is re-read
+			// only after the walk pops back into it, and the next Advance
+			// then telescopes from whatever it holds.  No-op unless the
+			// innermost medium is graded.
+			GradedIndexMedium::RecordAt( stack, pos );
 		}
 	}
 }

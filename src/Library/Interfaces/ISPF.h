@@ -261,6 +261,48 @@ namespace RISE
 			return GetSpecularInfo( ri, ior_stack );
 		}
 
+		//! DL-05.  The EXPECTED throughput of this SPF's NON-BENDING delta
+		//! pass-through lobe at @a ri, for a ray arriving along
+		//! `ri.ray.Dir()` and leaving along that SAME direction -- i.e.
+		//! `E[ kray * 1{the pass-through lobe is the ray Scatter emits} ]`
+		//! over the sampler's draws, exactly the factor a sampled path
+		//! carries across this surface in expectation.  Today that is a
+		//! `transmission thin` `weave_material`'s gap (the gap fraction
+		//! `gap(x)`, drawn with probability `gap` at `kray = 1`), and the
+		//! wrappers that re-price it (`FabricSPF`, `CoatedSPF`,
+		//! `CompositeSPF`).
+		//!
+		//! Read by `RayCaster`'s shadow walk so a DELTA light's NEE shadow
+		//! ray can see through the gap -- see `IMaterial::HasDeltaPassThrough`
+		//! for when the walk consults it and why ONLY delta lights do.
+		//!
+		//! A dielectric is deliberately NOT such a lobe: its transmission
+		//! BENDS (the existing, approximate `transparent_shadows` walk
+		//! handles it), and this query's contract is that the continuation
+		//! direction is EXACTLY the incoming one, so the shadow segment is
+		//! the same geometric path the sampled one is.
+		//!
+		//! Default: no pass-through lobe (0).  An override MUST return
+		//! precisely the Scatter-side expectation, gates included: a value
+		//! that disagrees with what Scatter emits makes PT's NEE and every
+		//! bidirectional strategy that samples the lobe disagree.
+		virtual RISEPel DeltaPassThroughTransmittance(
+			const RayIntersectionGeometric& ri						///< [in] Hit (ray direction = the pass-through direction)
+			) const
+		{
+			return RISEPel( 0, 0, 0 );
+		}
+
+		//! Spectral variant of DeltaPassThroughTransmittance (single
+		//! wavelength; the ScatterNM-side expectation).
+		virtual Scalar DeltaPassThroughTransmittanceNM(
+			const RayIntersectionGeometric& ri,						///< [in] Hit (ray direction = the pass-through direction)
+			const Scalar nm											///< [in] Wavelength
+			) const
+		{
+			return 0;
+		}
+
 		/// Evaluate the spectral throughput weight (krayNM) for a
 		/// previously sampled scattered ray at a different wavelength.
 		///
@@ -399,23 +441,30 @@ namespace RISE
 			return 0;
 		}
 
-		/// DL-24 review P1-1 (2026-09-28).  True only when the NATURAL
+		/// DL-24 review P1-1 (2026-09-28), made QUERY-DEPENDENT by review
+		/// round 2's P1-A.  True only when, AT THIS QUERY, the NATURAL
 		/// selection mass of this SPF's up-going emissions (and of its
-		/// down-going ones), relative to the shading normal, is a
-		/// DETERMINISTIC function of (ri, ior_stack, nm): every
-		/// `Scatter`/`ScatterNM` call at the same query emits the same set
-		/// of lobe weights, and never emits nothing at random.  Direction
-		/// warps that keep a lobe on its side are allowed; a random
-		/// up-OR-down roll (a single-emit layered or tissue SPF), a lobe
-		/// dropped by a random horizon test (Lambertian under a tilted
-		/// shading normal) or a direction-dependent realized weight are
-		/// not.  `CompositeSPF` prices its layered transport through ONE
+		/// down-going ones), classified against the SHADING normal
+		/// `ri.onb.w()`, is a DETERMINISTIC function of (ri, ior_stack, nm):
+		/// every `Scatter`/`ScatterNM` call at the same query emits the same
+		/// set of lobe weights on the same sides, and never emits nothing at
+		/// random.  @a nm < 0 means the RGB pipe.  A random up-OR-down roll
+		/// (a single-emit layered or tissue SPF), a lobe dropped by a random
+		/// horizon test (Lambertian under a tilted shading normal), a
+		/// direction-dependent realized weight, and a random direction warp
+		/// that can carry a lobe across the SHADING plane (a finite-
+		/// `scattering` dielectric under a tilted shading normal: the warp is
+		/// clipped to the GEOMETRIC side, so it can land between the two
+		/// planes) all disqualify.  `CompositeSPF` prices its layered transport through ONE
 		/// deterministic mixture (exact `Pdf`) only when its TOP layer
 		/// declares this; otherwise it runs its per-branch estimator,
 		/// which is unbiased for any positive branch weights.  The default
 		/// is false, which is always safe (never biased, at worst less
 		/// efficient); a wrong `true` zeroes whole transport classes.
-		virtual bool SelectionMassIsDeterministic() const
+		virtual bool SelectionMassIsDeterministic(
+			const RayIntersectionGeometric& /*ri*/,
+			const Scalar /*nm*/
+			) const
 		{
 			return false;
 		}

@@ -113,7 +113,8 @@ RISEPel MediumTransport::EvaluateInScattering(
 	ISampler& sampler,
 	const RasterizerState& rast,
 	const IObject* pMediumObject,
-	Scalar neeTrainingScale
+	Scalar neeTrainingScale,
+	const IORStack* pGradedIndexStack
 	)
 {
 	if( !pMedium || !pLightSampler )
@@ -151,7 +152,8 @@ RISEPel MediumTransport::EvaluateInScattering(
 	return pLightSampler->EvaluateDirectLighting(
 		scatterRI, scatterBSDF, &scatterMaterial,
 		caster, sampler, 0, pMedium, true, pMediumObject,
-		0, 0, neeTrainingScale );
+		0, 0, neeTrainingScale,
+		/*bBsdfSamplingPartnerExists*/ true, pGradedIndexStack );
 }
 
 Scalar MediumTransport::EvaluateInScatteringNM(
@@ -164,7 +166,8 @@ Scalar MediumTransport::EvaluateInScatteringNM(
 	ISampler& sampler,
 	const RasterizerState& rast,
 	const IObject* pMediumObject,
-	Scalar neeTrainingScale
+	Scalar neeTrainingScale,
+	const IORStack* pGradedIndexStack
 	)
 {
 	if( !pMedium || !pLightSampler )
@@ -191,5 +194,6 @@ Scalar MediumTransport::EvaluateInScatteringNM(
 	return pLightSampler->EvaluateDirectLightingNM(
 		scatterRI, scatterBSDF, &scatterMaterial,
 		nm, caster, sampler, 0, pMedium, true, pMediumObject,
-		0, 0, neeTrainingScale );
+		0, 0, neeTrainingScale,
+		/*bBsdfSamplingPartnerExists*/ true, pGradedIndexStack );
 }
