@@ -99,17 +99,28 @@ namespace RISE
 
 		/// Computes the Fresnel transmission factor (1 - F) at the
 		/// surface boundary for a given cosine of the incident angle.
+		///
+		/// DL-49: the boundary is an interface between the material and
+		/// the medium the ray arrived through, so the transmission is a
+		/// function of the RELATIVE index GetIOR(ri) / ri.ambientIOR
+		/// (see BSSRDFSampling::RelativeBoundaryIOR).  `cosTheta` is the
+		/// EXTERIOR-side cosine.  A record without a stamped exterior
+		/// index carries the default ambientIOR = 1.0 (air).
 		/// \param cosTheta Cosine of angle between direction and normal
-		/// \param ri Intersection data (for IOR texture lookup)
+		/// \param ri Intersection data (for IOR texture lookup and the
+		///           exterior index `ambientIOR`)
 		/// \return Fresnel transmission factor in [0, 1]
 		virtual Scalar FresnelTransmission(
 			const Scalar cosTheta,
 			const RayIntersectionGeometric& ri
 			) const = 0;
 
-		/// Returns the index of refraction at the given surface point.
+		/// Returns the material's own (ABSOLUTE) index of refraction at
+		/// the given surface point.  A boundary quantity needs the
+		/// RELATIVE index GetIOR(ri) / ri.ambientIOR instead (DL-49) --
+		/// the two coincide only in air.
 		/// \param ri Intersection data (for IOR texture lookup)
-		/// \return Index of refraction (eta_t / eta_i where eta_i = 1 for air)
+		/// \return Absolute index of refraction of the material
 		virtual Scalar GetIOR(
 			const RayIntersectionGeometric& ri
 			) const = 0;

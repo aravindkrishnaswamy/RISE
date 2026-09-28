@@ -15,6 +15,7 @@
 
 #include "pch.h"
 #include "DonnerJensenSkinDiffusionProfile.h"
+#include "../Utilities/BSSRDFSampling.h"
 #include "BioSpecSkinData.h"
 #include "MultipoleDiffusion.h"
 #include "../Utilities/HankelTransform.h"
@@ -720,8 +721,19 @@ Scalar DonnerJensenSkinDiffusionProfile::FresnelTransmission(
 	const RayIntersectionGeometric& ri
 	) const
 {
-	const Scalar eta = pnt_ior_epidermis.GetValuesAt(ri).v[0];
-	return 1.0 - SchlickFresnel( fabs(cosTheta), eta );
+	// DL-49: the boundary is an interface between this material and the
+	// medium the ray arrived through (`ri.ambientIOR`, stamped from the
+	// IOR stack; 1.0 = air for a stackless record), so Fresnel is a
+	// function of the RELATIVE index.  In air this is the pre-DL-49 law
+	// bit-for-bit; a denser exterior (eta < 1) evaluates Schlick at the
+	// transmitted cosine and is zero past the critical angle.
+	const Scalar eta = BSSRDFSampling::RelativeBoundaryIOR(
+		pnt_ior_epidermis.GetValuesAt(ri).v[0], BSSRDFSampling::ExteriorIOR( ri ) );
+	Scalar cosSchlick;
+	if( !BSSRDFSampling::SchlickBoundaryCosine( fabs(cosTheta), eta, cosSchlick ) ) {
+		return 0;
+	}
+	return 1.0 - SchlickFresnel( cosSchlick, eta );
 }
 
 Scalar DonnerJensenSkinDiffusionProfile::GetIOR(

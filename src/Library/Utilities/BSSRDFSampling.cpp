@@ -469,8 +469,15 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 	entryRig.ptObjIntersec = hits[sel].ptObjIntersec;
 	entryRig.vColor = hits[sel].vColor;
 	entryRig.bHasVertexColor = hits[sel].bHasVertexColor;
+	// DL-49: the entry point is on the same object's boundary, bathed in
+	// the same exterior medium the exit hit was reached through (the
+	// continuation ray carries that same IOR stack), so the entry record
+	// inherits the exit record's exterior index.  The probe hits above
+	// are fresh intersections and never carried one.
+	entryRig.ambientIOR = ExteriorIOR( ri );
 
-	const Scalar eta = pProfile->GetIOR( entryRig );
+	const Scalar eta = RelativeBoundaryIOR(
+		pProfile->GetIOR( entryRig ), ExteriorIOR( entryRig ) );
 	const Scalar SwNorm = SchlickTransmissionNormalization( eta );
 	const Scalar FtEntry = pProfile->FresnelTransmission( cosTheta, entryRig );
 

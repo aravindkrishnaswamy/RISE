@@ -11,7 +11,8 @@
 //  the re-emission vertex.
 //
 //  ALGORITHM OVERVIEW:
-//    1. Refract the incoming ray into the surface using Snell's law.
+//    1. Refract the incoming ray into the surface using Snell's law
+//       (exterior index `ri.ambientIOR` -> material index; DL-49).
 //    2. Walk loop (up to maxBounces):
 //       a. Trace ray from current position against the object with
 //          back-face-only hits to find the exit distance.
@@ -80,7 +81,12 @@ namespace RISE
 		/// \param sigma_s    Scattering coefficient per channel [1/m]
 		/// \param sigma_t    Extinction coefficient per channel [1/m]
 		/// \param g          Henyey-Greenstein asymmetry parameter
-		/// \param ior        Index of refraction at the surface boundary
+		/// \param ior        The material's (absolute) index of refraction.
+		///                   The boundary is an interface against the
+		///                   exterior index `ri.ambientIOR` (DL-49): entry
+		///                   and exit refraction, exit Fresnel and the Sw
+		///                   factor all use the relative index
+		///                   ior / ri.ambientIOR.
 		/// \param maxBounces Maximum walk steps (safety cap)
 		/// \param sampler    Random number source
 		/// \param nm         Wavelength for spectral path (0 = RGB)

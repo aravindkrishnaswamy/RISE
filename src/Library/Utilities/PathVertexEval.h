@@ -315,8 +315,13 @@ namespace RISE
 						Ray( vertex.position, -wi ), nullRasterizerState );
 					PopulateRIGFromVertex( vertex, rig );
 
+					// DL-49: `rig.ambientIOR` is the vertex's exterior
+					// index (`BDPTVertex::mediumIOR`, replayed by
+					// PopulateRIGFromVertex); Fresnel and its Sw
+					// normalization use the RELATIVE index against it.
 					const Scalar FtEntry = pProfile->FresnelTransmission( cosTheta, rig );
-					const Scalar eta = pProfile->GetIOR( rig );
+					const Scalar eta = BSSRDFSampling::RelativeBoundaryIOR(
+						pProfile->GetIOR( rig ), BSSRDFSampling::ExteriorIOR( rig ) );
 					const Scalar Sw = BSSRDFSampling::EvaluateSwWithFresnel( FtEntry, eta );
 					return RISEPel( Sw, Sw, Sw );
 				}
@@ -328,11 +333,12 @@ namespace RISE
 					if( cosTheta <= NEARZERO ) {
 						return RISEPel( 0, 0, 0 );
 					}
-					const Scalar F0 = ((pRW->ior - 1.0) / (pRW->ior + 1.0)) *
-						((pRW->ior - 1.0) / (pRW->ior + 1.0));
-					const Scalar FSchlick = F0 + (1.0 - F0) * pow( 1.0 - cosTheta, 5.0 );
-					const Scalar FtEntry = 1.0 - FSchlick;
-					const Scalar Sw = BSSRDFSampling::EvaluateSwWithFresnel( FtEntry, pRW->ior );
+					// DL-49: relative to the vertex's exterior index
+					// (`mediumIOR`, the IOR-stack top at the exit hit).
+					const Scalar eta = BSSRDFSampling::RelativeBoundaryIOR(
+						pRW->ior, ( vertex.mediumIOR > 0.0 ) ? vertex.mediumIOR : 1.0 );
+					const Scalar FtEntry = BSSRDFSampling::RandomWalkSchlickTransmission( cosTheta, eta );
+					const Scalar Sw = BSSRDFSampling::EvaluateSwWithFresnel( FtEntry, eta );
 					return RISEPel( Sw, Sw, Sw );
 				}
 
@@ -583,8 +589,10 @@ namespace RISE
 						Ray( vertex.position, -wi ), nullRasterizerState );
 					PopulateRIGFromVertex( vertex, rig );
 
+					// DL-49: relative index, as in the RGB twin above.
 					const Scalar FtEntry = pProfile->FresnelTransmission( cosTheta, rig );
-					const Scalar eta = pProfile->GetIOR( rig );
+					const Scalar eta = BSSRDFSampling::RelativeBoundaryIOR(
+						pProfile->GetIOR( rig ), BSSRDFSampling::ExteriorIOR( rig ) );
 					return BSSRDFSampling::EvaluateSwWithFresnel( FtEntry, eta );
 				}
 
@@ -599,11 +607,11 @@ namespace RISE
 					if( cosTheta <= NEARZERO ) {
 						return 0;
 					}
-					const Scalar F0 = ((pRW->ior - 1.0) / (pRW->ior + 1.0)) *
-						((pRW->ior - 1.0) / (pRW->ior + 1.0));
-					const Scalar FSchlick = F0 + (1.0 - F0) * pow( 1.0 - cosTheta, 5.0 );
-					const Scalar FtEntry = 1.0 - FSchlick;
-					return BSSRDFSampling::EvaluateSwWithFresnel( FtEntry, pRW->ior );
+					// DL-49: relative index, as in the RGB twin above.
+					const Scalar eta = BSSRDFSampling::RelativeBoundaryIOR(
+						pRW->ior, ( vertex.mediumIOR > 0.0 ) ? vertex.mediumIOR : 1.0 );
+					const Scalar FtEntry = BSSRDFSampling::RandomWalkSchlickTransmission( cosTheta, eta );
+					return BSSRDFSampling::EvaluateSwWithFresnel( FtEntry, eta );
 				}
 
 				return 0;
