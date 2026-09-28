@@ -98,8 +98,9 @@ namespace BSSRDFAdapters
 	};
 
 	/// Adapter BSDF for NEE at random-walk SSS entry points.
-	/// Uses Schlick Fresnel with the material's stored (ABSOLUTE) IOR over
-	/// the evaluation record's exterior index (DL-49).
+	/// Uses the exact dielectric Fresnel transmission (DL-306) with the
+	/// material's stored (ABSOLUTE) IOR over the evaluation record's
+	/// exterior index (DL-49).
 	class RandomWalkEntryBSDF : public IBSDF
 	{
 		Scalar ior;
@@ -113,9 +114,9 @@ namespace BSSRDFAdapters
 		{
 			const Scalar eta = BSSRDFSampling::RelativeBoundaryIOR(
 				ior, BSSRDFSampling::ExteriorIOR( ri ) );
-			const Scalar c = BSSRDFSampling::SchlickTransmissionNormalization( eta );
+			const Scalar c = BSSRDFSampling::BoundaryTransmissionNormalization( eta );
 			const Scalar swScale = (c > 1e-20) ? 1.0 / (c * PI) : 0;
-			return BSSRDFSampling::RandomWalkSchlickTransmission( cosTheta, eta ) * swScale;
+			return BSSRDFSampling::BoundaryTransmission( cosTheta, eta ) * swScale;
 		}
 
 	public:

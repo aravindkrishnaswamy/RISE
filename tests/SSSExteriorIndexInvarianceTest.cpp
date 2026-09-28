@@ -24,8 +24,10 @@
 //  THE INVARIANT (reference-free)
 //
 //    Scale every index by the same factor s: exterior 1 -> s, interior
-//    n -> s*n.  Snell directions, exact dielectric Fresnel and every
-//    Schlick law of the RELATIVE index are unchanged, and the complete
+//    n -> s*n.  Snell directions and the exact dielectric Fresnel law of
+//    the RELATIVE index (the SSS boundary's law on both sides since
+//    DL-306; it was Schlick on the transmission side before) are
+//    unchanged, and the complete
 //    SSS event carries no unmatched eta^2 (DL-04), so every weight, every
 //    sampled direction and every rendered pixel must be unchanged.  This
 //    needs no reference image and no closed form.
@@ -244,8 +246,9 @@ namespace
 		}
 		std::cout << "    worst |Ft_scaled - Ft_air| / Ft_air = " << worst << std::endl;
 
-		// Matched index: no interface.  Schlick at F0 = 0 transmits exactly 1
-		// at normal incidence (a pre-DL-49 build reads 0.96, the air value).
+		// Matched index: no interface.  The exact law transmits exactly 1
+		// (at every cosine since DL-306; DL-49's Schlick law did so only at
+		// normal incidence).  A pre-DL-49 build reads 0.96, the air value.
 		ProfileBundle glass( 1.5 );
 		const RayIntersectionGeometric riGlass = MakeSurfaceRI( 1.5 );
 		const Scalar ftMatched = glass.profile->FresnelTransmission( 1.0, riGlass );
@@ -310,9 +313,11 @@ namespace
 			Check( std::fabs( iWalkRGB - 1.0 ) < 1e-5, "A2: RandomWalkEntryBSDF RGB unit integral" + tag );
 			Check( std::fabs( iWalkNM - 1.0 ) < 1e-5, "A2: RandomWalkEntryBSDF NM unit integral" + tag );
 		}
-		// The eta < 1 closed form agrees with the eta >= 1 one at eta = 1.
-		Check( std::fabs( BSSRDFSampling::SchlickTransmissionNormalization( 1.0 - 1e-12 ) -
-			BSSRDFSampling::SchlickTransmissionNormalization( 1.0 ) ) < 1e-10,
+		// The eta < 1 form agrees with the eta >= 1 one at eta = 1 (checked
+		// through the Sw helper, whose denominator is the normalization, so
+		// the check is independent of the helper's name -- DL-306 renamed it).
+		Check( std::fabs( BSSRDFSampling::EvaluateSwWithFresnel( 1.0, 1.0 - 1e-12 ) -
+			BSSRDFSampling::EvaluateSwWithFresnel( 1.0, 1.0 ) ) < 1e-10,
 			"A2: normalization is continuous across eta = 1" );
 	}
 
@@ -822,9 +827,10 @@ namespace
 		// airInterior * exterior: one relative index, two absolute scales.
 		struct Row { Model model; Integrator integrator; unsigned int samples; double band; Scalar airInterior; Scalar exterior; };
 		// The "dense" rows put the relative index BELOW 1 (a 1.33 body inside
-		// 1.5 glass, twinned with 1.33/1.5 in air): Schlick then runs at the
-		// transmitted cosine with total reflection past the critical angle,
-		// the one regime where Sw itself (not just Ft) depends on the index,
+		// 1.5 glass, twinned with 1.33/1.5 in air): the boundary law then
+		// totally reflects past the critical angle (exact Fresnel since
+		// DL-306; Schlick at the transmitted cosine under DL-49) -- the
+		// regime where Sw is most strongly index-dependent,
 		// so these rows are what pin BDPTVertex::mediumIOR on the entry
 		// vertices that PathVertexEval re-evaluates.
 		const Scalar kDense = 1.33 / 1.5;
@@ -886,6 +892,158 @@ namespace
 			Check( std::fabs( ratio - 1.0 ) < row.band, label + ": enclosed/air image mean ratio within band of 1" );
 		}
 	}
+
+	//////////////////////////////////////////////////////////////////
+	// Part C (DL-306) -- rendered R + T white furnace
+	//////////////////////////////////////////////////////////////////
+	//
+	// A conservative SSS sphere (zero absorption) under a uniform white
+	// environment of radiance 1, seen by an orthographic camera whose
+	// viewport exactly frames it.  Every path either reflects off the
+	// sphere (the SPF's exact-Fresnel lobe, weight R(mu)) or enters the
+	// subsurface event (weight T(mu), then an albedo-one random walk that
+	// returns everything through a unit-normalized Sw), so a pixel whose
+	// ray meets the sphere at cosine mu reads R(mu) + T(mu).  Over the
+	// orthographic disk the cosine is cosine-weighted, so
+	//   image mean = 1 - (pi/4) (1 - H),   H = <R> + <T>,
+	// and the row gates the recovered H against 1.  Pre-DL-306 (Schlick T)
+	// H = 0.966 / 0.980 / 1.006 at eta 1.05 / 1.128 / 1.5 and 0.984 for
+	// eta = 1.33/1.5 (a denser exterior; the relative index is all the
+	// boundary sees -- Part B pins that immersed == its air twin -- so the
+	// sphere is simply given that index in air).  The random walk is used
+	// because it is the transport whose albedo is exactly one; the
+	// diffusion row is a consistency check in the same band (Burley
+	// on a finite sphere carries a small energy GAIN of its own: H reads
+	// about 1.003 post-fix, a few sd of the mean above 1, inside the band).
+	double kFurnaceDiffusionScattering = 200;
+	std::string BuildFurnaceScene( Model model, Integrator integrator, Scalar ior, unsigned int samples )
+	{
+		std::ostringstream s;
+		s << std::setprecision( 17 );
+		s << "RISE ASCII SCENE 7\n";
+		s << "film\n{\n\twidth 32\n\theight 32\n}\n\n";
+		s << "orthographic_camera\n{\n\tlocation 0 0 4\n\tlookat 0 0 0\n\tup 0 1 0\n\tviewport_scale 2 2\n}\n\n";
+		s << "uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n\n";
+		if( model == Model::Lambertian ) {
+			s << "lambertian_material\n{\n\tname subject\n\treflectance white\n}\n\n";
+		} else if( model == Model::RandomWalk ) {
+			s << "randomwalk_sss_material\n{\n\tname subject\n\tior " << ior
+			  << "\n\tabsorption 0\n\tscattering 2\n\tg 0\n\troughness 0\n\tmax_bounces 8192\n}\n\n";
+		} else {
+			s << "subsurfacescattering_material\n{\n\tname subject\n\tior " << ior
+			  << "\n\tabsorption 0\n\tscattering " << kFurnaceDiffusionScattering << "\n\tg 0\n\troughness 0\n}\n\n";
+		}
+		s << "sphere_geometry\n{\n\tname subject_geo\n\tradius 1\n}\n\n";
+		s << "standard_object\n{\n\tname subject_obj\n\tgeometry subject_geo\n\tmaterial subject\n}\n\n";
+		s << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
+		const char* env = "\tradiance_map white\n\tradiance_scale 1\n\tradiance_background TRUE\n";
+		switch( integrator ) {
+		case Integrator::PT:
+			s << "pathtracing_pel_rasterizer\n{\n\tsamples " << samples
+			  << "\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n\tpathguiding FALSE\n\tadaptive_max_samples 0\n"
+			  << env << "}\n\n";
+			break;
+		case Integrator::BDPT:
+			s << "bdpt_pel_rasterizer\n{\n\tmax_eye_depth 6\n\tmax_light_depth 6\n\tsamples " << samples
+			  << "\n\tpixel_filter box\n\toidn_denoise FALSE\n" << env << "}\n\n";
+			break;
+		case Integrator::PTSpectral:
+			s << "pathtracing_spectral_rasterizer\n{\n\tsamples " << samples
+			  << "\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n" << env << "}\n\n";
+			break;
+		}
+		s << "file_rasterizeroutput\n{\n\tpattern rendered/dl306_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+		return s.str();
+	}
+
+	//! Renders the furnace once and returns H = <R> + <T> recovered from
+	//! the image, or a negative value on failure.  The environment level B
+	//! is read from the pixels that lie wholly outside the sphere's disk
+	//! (a spectral rasterizer's uplifted "white" is not exactly 1), so
+	//! image mean m = B (1 - f + f H) with f = pi/4 gives
+	//! H = 1 - (1 - m/B) / f.
+	double RenderFurnaceH( const std::string& path, unsigned int seed )
+	{
+		IJobPriv* job = nullptr;
+		if( !RISE_CreateJobPriv( &job ) || !job ) return -1;
+		if( !job->LoadAsciiSceneViaCst( path.c_str() ) ) { safe_release( job ); return -1; }
+		job->RemoveRasterizerOutputs();
+		CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
+		GlobalLog()->PrintNew( cap, __FILE__, __LINE__, "dl306 capture" );
+		job->GetRasterizer()->AddRasterizerOutput( cap );
+		std::srand( seed );
+		const bool rendered = job->Rasterize();
+		double h = -1;
+		const unsigned int side = 32;
+		if( rendered && cap->pixels.size() == size_t( side ) * side ) {
+			double sum = 0, bSum = 0;
+			unsigned int bCount = 0;
+			bool finite = true;
+			for( unsigned int y = 0; y < side; ++y ) {
+				for( unsigned int x = 0; x < side; ++x ) {
+					const RISEColor& c = cap->pixels[size_t( y ) * side + x];
+					const double v = ( c.base.r + c.base.g + c.base.b ) * c.a / 3.0;
+					if( !std::isfinite( v ) ) { finite = false; continue; }
+					sum += v;
+					// Pixel centre in viewport units (the 2x2 viewport frames
+					// the unit disk); half a pixel diagonal is 0.0442.
+					const double u = ( x + 0.5 ) * 2.0 / side - 1.0;
+					const double w = ( y + 0.5 ) * 2.0 / side - 1.0;
+					if( std::sqrt( u * u + w * w ) > 1.05 ) { bSum += v; ++bCount; }
+				}
+			}
+			if( finite && bCount > 0 && bSum > 0 ) {
+				const double m = sum / double( side * side );
+				const double b = bSum / double( bCount );
+				h = 1.0 - ( 1.0 - m / b ) / ( PI / 4.0 );
+			}
+		}
+		safe_release( cap );
+		safe_release( job );
+		return h;
+	}
+
+	void TestRenderedPartitionFurnace( const unsigned int trials, const std::string& only )
+	{
+		std::cout << "C: rendered R+T white furnace (DL-306), n=" << trials << std::endl;
+		struct Row { Model model; Integrator integrator; unsigned int samples; double band; Scalar eta; };
+		// Bands: several times the measured sd of H at these sample counts,
+		// far below the pre-DL-306 deviations (docs/DL306_SSS_FRESNEL_PARTITION.md).
+		const Row rows[] = {
+			{ Model::Lambertian, Integrator::PT,         64, 0.01, 1.0 },
+			{ Model::RandomWalk, Integrator::PT,         64, 0.01, 1.05 },
+			{ Model::RandomWalk, Integrator::PT,         64, 0.01, 1.128 },
+			{ Model::RandomWalk, Integrator::PT,         64, 0.004, 1.5 },
+			{ Model::RandomWalk, Integrator::PT,         64, 0.01, 1.33 / 1.5 },
+			{ Model::RandomWalk, Integrator::BDPT,       64, 0.01, 1.05 },
+			{ Model::RandomWalk, Integrator::BDPT,       64, 0.01, 1.33 / 1.5 },
+			{ Model::RandomWalk, Integrator::PTSpectral, 512, 0.01, 1.128 },
+			{ Model::Diffusion,  Integrator::PT,         64, 0.01, 1.05 },
+		};
+		unsigned int seed = 30600;
+		for( const Row& row : rows ) {
+			std::ostringstream lab;
+			lab << "C: " << ModelName( row.model ) << "/" << IntegratorName( row.integrator ) << " eta=" << std::setprecision( 4 ) << row.eta;
+			const std::string label = lab.str();
+			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
+			const std::string path = WriteScene( BuildFurnaceScene( row.model, row.integrator, row.eta, row.samples ), "furnace" );
+			Check( !path.empty(), label + ": scene file written" );
+			std::vector<double> h;
+			bool allValid = true;
+			for( unsigned int t = 0; t < trials; ++t ) {
+				const double hi = RenderFurnaceH( path, seed++ );
+				if( !( hi > 0 ) ) allValid = false;
+				h.push_back( hi );
+			}
+			std::remove( path.c_str() );
+			Check( allValid, label + ": every render finite and non-black" );
+			if( !allValid ) continue;
+			const Stats st = Summarize( h );
+			std::cout << std::setprecision( 6 ) << "    " << label.substr( 3 ) << " spp=" << row.samples
+				<< ": H = <R>+<T> = " << st.mean << " +/- " << st.sd << " (sd of one render; band " << row.band << ")" << std::endl;
+			Check( std::fabs( st.mean - 1.0 ) < row.band, label + ": reflection + transmission partition H within band of 1" );
+		}
+	}
 }
 
 int main( int argc, char** argv )
@@ -897,6 +1055,7 @@ int main( int argc, char** argv )
 		const std::string a( argv[i] );
 		if( a == "--unit-only" ) unitOnly = true;
 		else if( a == "--only" && i + 1 < argc ) only = argv[++i];
+		else if( a == "--diffusion-scattering" && i + 1 < argc ) kFurnaceDiffusionScattering = std::atof( argv[++i] );
 		else if( a == "--trials" && i + 1 < argc ) trials = static_cast<unsigned int>( std::atoi( argv[++i] ) );
 	}
 	if( trials < 2 ) trials = 2;
@@ -912,6 +1071,7 @@ int main( int argc, char** argv )
 	TestPathVertexEval();
 	if( !unitOnly ) {
 		TestRenderedInvariance( trials, only );
+		TestRenderedPartitionFurnace( trials, only );
 	}
 	std::cout << "=== " << passCount << " passed, " << failCount << " failed ===" << std::endl;
 	return failCount == 0 ? 0 : 1;

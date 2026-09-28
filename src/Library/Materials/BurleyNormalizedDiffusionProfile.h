@@ -74,8 +74,6 @@ namespace RISE
 			/// Higher albedo yields a wider profile (more scattering).
 			static Scalar ComputeScalingFactor( const Scalar A );
 
-			/// Schlick Fresnel reflectance from cosine and IOR
-			static Scalar SchlickFresnel( const Scalar cosTheta, const Scalar eta );
 
 		public:
 			BurleyNormalizedDiffusionProfile(

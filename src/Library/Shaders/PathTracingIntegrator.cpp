@@ -3094,7 +3094,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			// run under clay_lights either.
 			if( pRWParams && pBRDF && !EffectivePathTracingClayOverride( rc, mClayOverride ) )
 			{
-				// Front-face gate uses GEOMETRIC normal; Schlick Fresnel
+				// Front-face gate uses GEOMETRIC normal; the Fresnel
 				// cosine uses SHADING.  See the BSSRDF site above for
 				// the rationale.
 				const Vector3 wo = Vector3Ops::Normalize( -ri.geometric.ray.Dir() );
@@ -3139,11 +3139,13 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					// a discontinuous Ft when shading swung past horizon.
 					const Scalar cosInShade = Vector3Ops::Dot( ri.geometric.vNormal, wo );
 					const Scalar cosIn = r_max( fabs( cosInShade ), Scalar( NEARZERO ) );
-					// DL-49: Schlick against the RELATIVE index -- the
-					// material over the exterior the ray arrived through
-					// (`ambientIOR`, the IOR-stack top), the same interface
-					// the SPF's reflection and RandomWalkSSS's refraction use.
-					const Scalar Ft = BSSRDFSampling::RandomWalkSchlickTransmission( cosIn,
+					// DL-49: the RELATIVE index -- the material over the
+					// exterior the ray arrived through (`ambientIOR`, the
+					// IOR-stack top), the same interface the SPF's reflection
+					// and RandomWalkSSS's refraction use.  DL-306: the exact
+					// dielectric law, so this transmission and the SPF's
+					// reflection sum to 1.
+					const Scalar Ft = BSSRDFSampling::BoundaryTransmission( cosIn,
 						BSSRDFSampling::RelativeBoundaryIOR( pRWParams->ior,
 							BSSRDFSampling::ExteriorIOR( ri.geometric ) ) );
 

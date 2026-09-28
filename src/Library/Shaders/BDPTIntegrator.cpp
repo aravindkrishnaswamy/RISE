@@ -2916,20 +2916,18 @@ namespace {
 				}
 				if( rwGate )
 				{
-					// DL-49: Schlick against the RELATIVE index -- the material
-					// over the exterior the ray arrived through (`ambientIOR`, the
+					// DL-49: the RELATIVE index -- the material over the
+					// exterior the ray arrived through (`ambientIOR`, the
 					// IOR-stack top), the same interface the SPF reflection this
 					// coin competes with, and RandomWalkSSS's refraction, use.  A
 					// denser exterior past its critical angle is totally reflected.
+					// DL-306: the exact dielectric law, the SPF reflection's own,
+					// so the coin's reflect branch (weight R_spf / R) carries
+					// exactly 1 and the two branches partition the interface.
 					const Scalar etaRW = BSSRDFSampling::RelativeBoundaryIOR(
 						pRW->ior, BSSRDFSampling::ExteriorIOR( ri.geometric ) );
-					Scalar cosSchlick = cosIn;
-					const bool bTransmits = BSSRDFSampling::SchlickBoundaryCosine( cosIn, etaRW, cosSchlick );
-					const Scalar F0 = ((etaRW - 1.0) / (etaRW + 1.0)) *
-						((etaRW - 1.0) / (etaRW + 1.0));
-					const Scalar F = bTransmits ? F0 + (1.0 - F0) * pow( 1.0 - cosSchlick, 5.0 ) : 1.0;
-					const Scalar Ft = 1.0 - F;
-					const Scalar R = F;
+					const Scalar Ft = BSSRDFSampling::BoundaryTransmission( cosIn, etaRW );
+					const Scalar R = 1.0 - Ft;
 
 					if( Ft > NEARZERO && sampler.Get1D() < Ft )
 					{
@@ -7171,20 +7169,18 @@ unsigned int GenerateLightSubpathImpl(
 			}
 			if( rwGate )
 			{
-				// DL-49: Schlick against the RELATIVE index -- the material
-				// over the exterior the ray arrived through (`ambientIOR`, the
+				// DL-49: the RELATIVE index -- the material over the
+				// exterior the ray arrived through (`ambientIOR`, the
 				// IOR-stack top), the same interface the SPF reflection this
 				// coin competes with, and RandomWalkSSS's refraction, use.  A
 				// denser exterior past its critical angle is totally reflected.
+				// DL-306: the exact dielectric law, the SPF reflection's own,
+				// so the coin's reflect branch (weight R_spf / R) carries
+				// exactly 1 and the two branches partition the interface.
 				const Scalar etaRW = BSSRDFSampling::RelativeBoundaryIOR(
 					pRW->ior, BSSRDFSampling::ExteriorIOR( ri.geometric ) );
-				Scalar cosSchlick = cosIn;
-				const bool bTransmits = BSSRDFSampling::SchlickBoundaryCosine( cosIn, etaRW, cosSchlick );
-				const Scalar F0 = ((etaRW - 1.0) / (etaRW + 1.0)) *
-					((etaRW - 1.0) / (etaRW + 1.0));
-				const Scalar F = bTransmits ? F0 + (1.0 - F0) * pow( 1.0 - cosSchlick, 5.0 ) : 1.0;
-				const Scalar Ft = 1.0 - F;
-				const Scalar R = F;
+				const Scalar Ft = BSSRDFSampling::BoundaryTransmission( cosIn, etaRW );
+				const Scalar R = 1.0 - Ft;
 
 				if( Ft > NEARZERO && sampler.Get1D() < Ft )
 				{
