@@ -29,6 +29,8 @@
 //       bound binds.
 //    9. The cFast shortcut never skips a state the full evaluation
 //       would bound.
+//   10. W's closed form, its concavity in cos^2(phi_v), and the tangent
+//       envelope the production bound reads W through.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -321,6 +323,43 @@ int main()
 			}
 		}
 		printf( "9. cFast shortcut agrees with the full evaluation in %d states\n", n );
+	}
+
+	// 10. The W(cos^2 phi_v) tangent envelope: W's closed form against
+	// quadrature of int_window A cos, W concave in c2 (so each tangent is
+	// an upper bound), and the envelope never below W.
+	{
+		double worstClosed = 0, worstLoose = 0, maxSecond = -1e300;
+		for( double p : { 1e-4, 1e-3, 0.01, 0.1, 0.3, 0.6, 0.9, 0.999 } ) {
+			SchlickMasking::Lane L;
+			SchlickMasking::Prepare( L, 0.02, p );
+			const SchlickMasking::WTable& wt = SchlickMasking::GetWTable( L );
+			auto Wc = [&]( double c2 ) { double W, dW; SchlickMasking::WAndSlope( L.p, L.q, c2, W, dW ); return W; };
+			for( int i = 0; i <= 400; i++ ) {
+				const double c2 = i / 400.0;
+				const double W = Wc( c2 );
+				double env = wt.a[0] + wt.b[0] * c2;
+				for( int j = 1; j < SchlickMasking::kWNodes; j++ ) env = std::min( env, wt.a[j] + wt.b[j] * c2 );
+				Check( env >= W * ( 1 - 1e-12 ), "W tangent envelope is an upper bound", env, W );
+				worstLoose = std::max( worstLoose, env / W - 1 );
+				if( i % 40 == 0 ) {
+					const double phv = acos( sqrt( c2 ) );
+					std::vector<double> pk; for( double q : Peaks( p ) ) pk.push_back( q - phv );
+					const double Wq = GradedIntegral( [&]( double x ) { return ARaw( phv + x, p ) * cos( x ); },
+						-0.5 * kPi, 0.5 * kPi, pk, Width( p ) );
+					worstClosed = std::max( worstClosed, fabs( W - Wq ) / Wq );
+					Check( fabs( W - Wq ) < 1e-9 * Wq, "W closed form == int_window A cos (quadrature)", W, Wq );
+				}
+				if( i > 0 && i < 400 ) {
+					const double h = 1.0 / 400.0;
+					const double sd = ( Wc( c2 + h ) - 2 * W + Wc( c2 - h ) ) / ( h * h );
+					maxSecond = std::max( maxSecond, sd );
+					Check( sd < 0, "W is concave in cos^2(phi_v)", sd, 0 );
+				}
+			}
+		}
+		printf( "10. W closed form vs quadrature worst %.3e; envelope looseness worst %.4f%%; max d2W/dc2^2 = %.3e (< 0)\n",
+			worstClosed, 100 * worstLoose, maxSecond );
 	}
 
 	printf( "Checks: %d Failures: %d\n", checks, failures );
