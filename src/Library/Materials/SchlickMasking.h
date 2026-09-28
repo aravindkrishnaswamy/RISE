@@ -109,6 +109,8 @@ namespace RISE
 				double C2;			//!< int_0^pi A cos(2 phi) dphi
 				double Wmax;		//!< W at the anisotropy peak (the maximum over azimuth)
 				double Qmax;		//!< Q at the anisotropy peak (the maximum over azimuth)
+				double QmaxOver2Pi;	//!< fast-path constants
+				double WmaxOver4;
 				bool   swapAxes;	//!< isotropy > 1: A peaks along onb.v(), not onb.u()
 				bool   bounded;		//!< false: degenerate parameters, Eq.31 is returned as is
 			};
@@ -122,7 +124,7 @@ namespace RISE
 				const double p = L.swapAxes ? 1.0 / isotropy : isotropy;
 				L.p = p;
 				if( !L.bounded ) {
-					L.sqrtP = L.q = L.cp = L.C2 = L.Wmax = L.Qmax = 0;
+					L.sqrtP = L.q = L.cp = L.C2 = L.Wmax = L.Qmax = L.QmaxOver2Pi = L.WmaxOver4 = 0;
 					return;
 				}
 				L.sqrtP = std::sqrt( p );
@@ -157,6 +159,8 @@ namespace RISE
 				L.C2 = kPi * L.cp * S;
 				L.Wmax = 2.0 * L.sqrtP * AsinhOverZ( L.q / p ) / p;
 				L.Qmax = 0.5 * ( kPi * L.cp + L.C2 );
+				L.QmaxOver2Pi = L.Qmax / ( 2.0 * kPi );
+				L.WmaxOver4 = 0.25 * L.Wmax;
 			}
 
 			//! m(c, phi) / c for a direction at cosine `c` from the normal
@@ -165,41 +169,59 @@ namespace RISE
 			//! G(c)/c = 1/(r + (1-r)c) wherever that is inside the bound.
 			inline double MaskOverCos( const Lane& L, const double c, const double tx, const double ty )
 			{
-				const double eq31 = 1.0 / ( L.r + ( 1.0 - L.r ) * c );
+				const double den31 = L.r + ( 1.0 - L.r ) * c;		// c / G_Eq31(c)
 				if( !L.bounded || c <= 0 || c >= 1.0 ) {
-					return eq31;
+					return 1.0 / den31;
+				}
+
+				// Eq.31 is inside the bound iff c*cp + g E <= den31, with
+				// g = sqrt(r) s / (2 pi) and E <= W atan(k Q / W) (Jensen).
+				// Three progressively tighter, progressively costlier
+				// sufficient tests run first; each upper-bounds the Jensen
+				// bound at EVERY azimuth (W, Q are maximal at the anisotropy
+				// peak and W atan(k Q/W) increases in both), so a pass
+				// returns exactly what the full evaluation would.
+				//   (a) atan x <= x:    c cp + r s^2 Qmax / (2 pi c) <= den31
+				if( c * ( den31 - c * L.cp ) >= L.r * ( 1.0 - c*c ) * L.QmaxOver2Pi ) {
+					return 1.0 / den31;
 				}
 				const double s = std::sqrt( std::max( 0.0, 1.0 - c*c ) );
+				//   (b) atan x <= pi/2: c cp + sqrt(r) s Wmax / 4 <= den31
+				if( c * L.cp + L.sqrtR * s * L.WmaxOver4 <= den31 ) {
+					return 1.0 / den31;
+				}
 				const double k = L.sqrtR * s / c;
 				const double g = L.sqrtR * s / ( 2.0 * kPi );		// multiplies E in c * I/nv
-
-				// Quick accept: W and Q are maximal at the anisotropy peak
-				// and W atan(k Q / W) increases in both, so this upper-bounds
-				// the Jensen bound at every azimuth.  If Eq.31 is already
-				// within the looser bound, it is within the tighter one.
-				const double eQuick = L.Wmax * std::atan( k * L.Qmax / L.Wmax );
-				if( c * L.cp + g * eQuick <= 1.0 / eq31 ) {
-					return eq31;
+				//   (c) the Jensen bound at the anisotropy peak.
+				if( c * L.cp + g * L.Wmax * std::atan( k * L.Qmax / L.Wmax ) <= den31 ) {
+					return 1.0 / den31;
 				}
 
-				const double T = tx*tx + ty*ty;
-				double c2 = 1.0, s2 = 0.0;
-				if( T > 0 ) {
-					c2 = tx*tx / T;
-					s2 = 1.0 - c2;
+				double smith;
+				if( L.q == 0 ) {
+					// Isotropy 1: the rearrangement/Cauchy-Schwarz bound is
+					// exact, i.e. the closed-form GGX Smith G1 of Z,
+					// m/c = 2 / (c + sqrt(c^2 + r s^2)).
+					smith = 2.0 / ( c + std::sqrt( c*c + L.r * s*s ) );
+				} else {
+					const double T = tx*tx + ty*ty;
+					double c2 = 1.0, s2 = 0.0;
+					if( T > 0 ) {
+						c2 = tx*tx / T;
+						s2 = 1.0 - c2;
+					}
+					if( L.swapAxes ) {
+						std::swap( c2, s2 );
+					}
+					const double W = 2.0 * L.sqrtP * (
+						c2 * AsinhOverZ( L.q * std::sqrt( c2 ) / L.p ) / L.p +
+						s2 * AsinOverZ( L.q * std::sqrt( s2 ) ) );
+					const double Q = 0.5 * ( kPi * L.cp + ( c2 - s2 ) * L.C2 );
+					const double eJensen = W * std::atan( k * Q / W );
+					const double eCS = std::sqrt( M2( k, L.p, L.q ) * EIso( k ) );
+					smith = 1.0 / ( c * L.cp + g * std::min( eJensen, eCS ) );
 				}
-				if( L.swapAxes ) {
-					std::swap( c2, s2 );
-				}
-				const double W = 2.0 * L.sqrtP * (
-					c2 * AsinhOverZ( L.q * std::sqrt( c2 ) / L.p ) / L.p +
-					s2 * AsinOverZ( L.q * std::sqrt( s2 ) ) );
-				const double Q = 0.5 * ( kPi * L.cp + ( c2 - s2 ) * L.C2 );
-				const double eJensen = W * std::atan( k * Q / W );
-				const double eCS = std::sqrt( M2( k, L.p, L.q ) * EIso( k ) );
-				const double E = std::min( eJensen, eCS );
-				const double smith = 1.0 / ( c * L.cp + g * E );
-				return std::min( eq31, smith );
+				return std::min( 1.0 / den31, smith );
 			}
 		}
 	}
