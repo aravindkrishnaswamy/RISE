@@ -953,13 +953,17 @@ namespace
 	//
 	// The gate is the SMS render's mean over the caustic rectangle divided
 	// by the VCM _ref twin's -- the same scene, the same film, oidn off.
-	// The band is NOT a multiple of the render sd (QMC makes that ~0.1 %);
-	// it is set by the references' own disagreement: VCM and the same
-	// scene rendered by PT without SMS disagree by up to ~10 % in this
-	// rectangle, and glassblock's displaced top reads 0.89 even with the
-	// index MISMATCHED (ior 2.3, no matched vertex at all) -- SMS's own
-	// displaced-caster limit, not an index effect.  Both bands sit far
-	// from the pre-fix readings.
+	// Measured post-fix (n=4): flatslab 1.0125 +/- 0.0016, glassblock
+	// 0.8904 +/- 0.0011.  Each band is that centre +/- 0.05.  The
+	// width is NOT a multiple of the ratio sd (QMC makes that ~0.1 %); it
+	// is the scale of the two references' own disagreement in this
+	// rectangle: glassblock's SMS agrees with the same scene rendered by
+	// PT WITHOUT SMS at 4096 spp (0.98 matched; 1.00 with the top sheet's
+	// index moved to 2.3, i.e. no matched vertex at all), while VCM reads
+	// ~11 % above both -- a VCM-vs-PT difference on that displaced top,
+	// not an SMS or index effect -- and on flatslab VCM and PT-without-SMS
+	// differ by ~7 % the other way.  The pre-fix readings (0.26 / 0.22
+	// with the matched-index branch disabled) sit far outside both bands.
 	std::string ReadFileText( const std::string& path )
 	{
 		std::ifstream ifs( path );
@@ -1000,8 +1004,8 @@ namespace
 		std::cout << "C: shipped matched-index SMS scenes vs their VCM _ref twin, n=" << trials << " per side" << std::endl;
 		struct SceneRow { const char* name; double lo, hi; };
 		const SceneRow rows[] = {
-			{ "sms_k2_flatslab",   0.92, 1.08 },
-			{ "sms_k2_glassblock", 0.80, 1.08 },
+			{ "sms_k2_flatslab",   0.96, 1.06 },
+			{ "sms_k2_glassblock", 0.84, 0.94 },
 		};
 		const unsigned int kW = 100, kH = 75, kSmsSpp = 256, kVcmSpp = 512;
 		const PixelRect rect = { 36, 64, 26, 38 };
