@@ -2337,6 +2337,7 @@ static void TestGGXLambertianControl()
 //   BDPT guided (one-sample, eye + light subpaths)  vs  PT un-guided
 //   BDPT guided (RIS, eye + light subpaths)         vs  PT un-guided
 //   PT guided   (one-sample, learned alpha)         vs  BDPT un-guided
+//   PT guided   (RIS)                               vs  BDPT un-guided
 //
 // WHAT WAS BROKEN.  At a multi-lobe vertex the guided branches mixed
 // three densities: a guide-SUBSTITUTED direction was priced
@@ -2459,6 +2460,37 @@ static const char* kRasterizerPTSchlickLGuided =
 // tests/BDPTGuidedContinuationTest.cpp, which installs the field with a
 // fixed alpha.  RIS resamples every eligible vertex regardless of
 // alpha, which is why it discriminates at scene level.
+static const char* kRasterizerPTSchlickLGuidedRIS =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"pathtracing_pel_rasterizer\n"
+	"{\n"
+	"\tsamples 256\n"
+	"\trr_min_depth 8\n"
+	"\tmax_diffuse_bounce 5\n"
+	"\tmax_glossy_bounce 5\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"\tpathguiding TRUE\n"
+	"\tpathguiding_iterations 3\n"
+	"\tpathguiding_spp 16\n"
+	"\tpathguiding_alpha 0.7\n"
+	"\tpathguiding_max_depth 4\n"
+	"\tpathguiding_sampling_type RIS\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern rendered/bdpt_balance_pt_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
+	"}\n";
+
 static void TestSchlickMultiLobeGuided()
 {
 	RunTopologyTest( "multi-lobe schlick_material, BDPT GUIDED one-sample vs un-guided PT (DL-67)",
@@ -2470,6 +2502,9 @@ static void TestSchlickMultiLobeGuided()
 	RunTopologyTest( "multi-lobe schlick_material, PT GUIDED one-sample vs un-guided BDPT (DL-67)",
 		std::string( kSceneSchlickMultiLobeL ), kSchlickTopologyLTolerances,
 		kRasterizerPTSchlickLGuided, kRasterizerBDPTSchlickL );
+	RunTopologyTest( "multi-lobe schlick_material, PT GUIDED RIS vs un-guided BDPT (DL-67)",
+		std::string( kSceneSchlickMultiLobeL ), kSchlickTopologyLTolerances,
+		kRasterizerPTSchlickLGuidedRIS, kRasterizerBDPTSchlickL );
 }
 
 //////////////////////////////////////////////////////////////////////
