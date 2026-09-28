@@ -1,0 +1,782 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  CompositeEnergyConservationTest.cpp - Red-proof and regression guard
+//    for DL-24 (`composite_material`'s random walk loses the energy of
+//    the coat-over-diffuse configuration) and the three contracts a
+//    layered material has to satisfy once its walk conserves energy:
+//
+//    A. ENERGY.  A lossless top over an albedo-1 diffuse bottom must
+//       return rho == 1 at every incidence, RGB and NM, at every
+//       recursion budget -- the budgets are a cost knob, not an energy
+//       sink.  Pre-fix the walk hard-truncated the internal Fresnel/TIR
+//       reflection series at the top interface's underside (per-bounce
+//       energy ledger in docs/DL24_COMPOSITE_ENERGY.md: exit 0.4260 +
+//       dropped 0.5740 == 1.0000 at normal incidence).  A
+//       `coated_material` of the same physical layers is the control.
+//
+//    B. DENSITY (the DL-67 Slice 0 / DL-98 / DL-99 contract).  `Pdf`
+//       must report the density of the NON-DELTA directions `Scatter`
+//       actually emits: its full-sphere integral must equal the measured
+//       non-delta emission probability, and a histogram of real emitted
+//       directions must match it in shape (total variation against a
+//       MEASURED split-half noise floor).  Pre-fix: the 50/50 placeholder.
+//
+//    C. ONE FUNCTION PER SIDE (DL-157).  Every emitted non-delta ray
+//       must satisfy kray * Pdf(dir) == value(dir) * cos, pointwise, with
+//       `value` the material's own `GetBSDF()`.  Pre-fix `GetBSDF()` was
+//       top-wins (the BARE substrate under a dielectric coat).
+//
+//    D. RENDER-LEVEL CLOSED FORMS (PT and BDPT).  (1) A white-furnace
+//       env: a lossless coat over an albedo-1 Lambertian quad must read
+//       exactly the environment radiance.  (2) A directional light: the
+//       composite/Lambertian-control ratio must equal the smooth-coat
+//       closed form T(theta_v) T(theta_l) / (eta^2 (1 - r_i)) -- which
+//       NEE can only produce if `value` is the layered response.
+//
+//    E. HWSS (DL-221).  The companion-wavelength weight of every emitted
+//       non-delta ray must be reconstructible from (ri, dir, nm):
+//       `EvaluateLobeFNM` returns the aggregate valueNM and the 6-arg
+//       `EvaluateKrayNM` equals valueNM(nm) * cos / pdfHero exactly.
+//
+//    F. SIBLING TABLE.  Every composite configuration class the tree
+//       builds, full-sphere furnace, printed; lossless ones gated.
+//
+//  Author: Aravind Krishnaswamy (RISE debt-cleanup, slice `debt-dl24`)
+//  Tabs: 4
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
+#include <iostream>
+#include <iomanip>
+#include <fstream>
+#include <sstream>
+#include <vector>
+#include <string>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <algorithm>
+#if defined(_WIN32)
+	#include <process.h>
+	#define getpid _getpid
+#else
+	#include <unistd.h>
+#endif
+
+#include "../src/Library/Utilities/Math3D/Math3D.h"
+#include "../src/Library/Utilities/OrthonormalBasis3D.h"
+#include "../src/Library/Utilities/RandomNumbers.h"
+#include "../src/Library/Utilities/IndependentSampler.h"
+#include "../src/Library/Intersection/RayIntersectionGeometric.h"
+#include "../src/Library/Interfaces/ISPF.h"
+#include "../src/Library/Interfaces/IBSDF.h"
+#include "../src/Library/Interfaces/IMaterial.h"
+#include "../src/Library/Painters/UniformColorPainter.h"
+#include "../src/Library/Painters/UniformScalarPainter.h"
+#include "../src/Library/Materials/LambertianMaterial.h"
+#include "../src/Library/Materials/DielectricMaterial.h"
+#include "../src/Library/Materials/TranslucentMaterial.h"
+#include "../src/Library/Materials/GGXMaterial.h"
+#include "../src/Library/Materials/PolishedMaterial.h"
+#include "../src/Library/Materials/CompositeMaterial.h"
+#include "../src/Library/Materials/CompositeSPF.h"
+#include "../src/Library/Materials/CoatedMaterial.h"
+#include "../src/Library/Materials/CoatedLayer.h"
+
+#include "../src/Library/Interfaces/IJob.h"
+#include "../src/Library/Interfaces/IJobPriv.h"
+#include "../src/Library/Interfaces/IRasterizer.h"
+#include "../src/Library/Interfaces/IRasterizerOutput.h"
+#include "../src/Library/Interfaces/IRasterImage.h"
+#include "../src/Library/Interfaces/ILog.h"
+
+#include "TestStubObject.h"
+
+using namespace RISE;
+using namespace RISE::Implementation;
+
+namespace RISE
+{
+	bool RISE_CreateJobPriv( IJobPriv** ppi );
+}
+
+static int passCount = 0;
+static int failCount = 0;
+
+static void Check( bool condition, const std::string& name )
+{
+	if( condition ) {
+		passCount++;
+	} else {
+		failCount++;
+		std::cout << "  FAIL: " << name << std::endl;
+	}
+}
+
+static StubObject* g_stub = 0;
+
+static const double kPi = 3.14159265358979323846;
+
+//////////////////////////////////////////////////////////////////////
+//  Fixture: a flat +Z surface at the origin, viewed from direction
+//  theta in the x-z plane (same construction as LayeredWhiteFurnaceTest).
+//////////////////////////////////////////////////////////////////////
+static RayIntersectionGeometric MakeIntersection( double thetaRad )
+{
+	const double s = std::sin( thetaRad );
+	const double c = std::cos( thetaRad );
+	const Vector3 inDir( s, 0, -c );
+	const Ray inRay( Point3( s, 0, 1.0 ), inDir );
+	const RasterizerState rs = { 0, 0 };
+	RayIntersectionGeometric ri( inRay, rs );
+	ri.bHit = true;
+	ri.range = 1.0 / c;
+	ri.ptIntersection = Point3( 0, 0, 0 );
+	ri.vNormal = Vector3( 0, 0, 1 );
+	ri.vGeomNormal = Vector3( 0, 0, 1 );
+	ri.onb.CreateFromW( Vector3( 0, 0, 1 ) );
+	ri.ptCoord = Point2( 0.5, 0.5 );
+	return ri;
+}
+
+//////////////////////////////////////////////////////////////////////
+//  Painters / materials shared by every section.
+//////////////////////////////////////////////////////////////////////
+struct Fixtures
+{
+	UniformColorPainter*  white;
+	UniformColorPainter*  red;
+	UniformColorPainter*  transRef;
+	UniformColorPainter*  transTau;
+	UniformScalarPainter* s0;
+	UniformScalarPainter* s1;
+	UniformScalarPainter* s133;
+	UniformScalarPainter* s15;
+	UniformScalarPainter* sScatDefault;		// dielectric_material's parser default
+	UniformScalarPainter* sCoatRough;
+	UniformScalarPainter* sN10;
+	UniformScalarPainter* sHalf;
+	UniformScalarPainter* sAlpha;
+	UniformScalarPainter* sDielF0;
+
+	LambertianMaterial*   lamb;
+	LambertianMaterial*   lambRed;
+	DielectricMaterial*   dScat0;			// config 3's top: scattering 0 (widest transmission warp)
+	DielectricMaterial*   dSmooth;			// scattering 10000 (the parser default) -- the clearcoat case
+	DielectricMaterial*   d133;				// water
+	TranslucentMaterial*  trans;
+	TranslucentMaterial*  transLossless;	// ext 0, white ref/tau
+	GGXMaterial*          clearcoat;		// reflection-only GGX top (LayeredWhiteFurnaceTest config 7's)
+	GGXMaterial*          redGgx;
+	PolishedMaterial*     polishedWhite;	// delta coat + diffuse: the "tail class" bottom
+	CoatedMaterial*       coatedControl;
+};
+
+static Fixtures MakeFixtures()
+{
+	Fixtures f;
+	f.white        = new UniformColorPainter( RISEPel( 1, 1, 1 ) );        f.white->addref();
+	f.red          = new UniformColorPainter( RISEPel( 0.8, 0.2, 0.2 ) );  f.red->addref();
+	f.transRef     = new UniformColorPainter( RISEPel( 0.3, 0.3, 0.3 ) );  f.transRef->addref();
+	f.transTau     = new UniformColorPainter( RISEPel( 0.7, 0.7, 0.7 ) );  f.transTau->addref();
+	f.s0           = new UniformScalarPainter( 0.0 );    f.s0->addref();
+	f.s1           = new UniformScalarPainter( 1.0 );    f.s1->addref();
+	f.s133         = new UniformScalarPainter( 1.33 );   f.s133->addref();
+	f.s15          = new UniformScalarPainter( 1.5 );    f.s15->addref();
+	f.sScatDefault = new UniformScalarPainter( 10000.0 ); f.sScatDefault->addref();
+	f.sCoatRough   = new UniformScalarPainter( 0.001 );  f.sCoatRough->addref();
+	f.sN10         = new UniformScalarPainter( 10.0 );   f.sN10->addref();
+	f.sHalf        = new UniformScalarPainter( 0.5 );    f.sHalf->addref();
+	f.sAlpha       = new UniformScalarPainter( 0.16 );   f.sAlpha->addref();
+	f.sDielF0      = new UniformScalarPainter( 0.04 );   f.sDielF0->addref();
+
+	f.lamb    = new LambertianMaterial( *f.white );  f.lamb->addref();
+	f.lambRed = new LambertianMaterial( *f.red );    f.lambRed->addref();
+	f.dScat0  = new DielectricMaterial( *f.s1, *f.s15, *f.s0, false );           f.dScat0->addref();
+	f.dSmooth = new DielectricMaterial( *f.s1, *f.s15, *f.sScatDefault, false ); f.dSmooth->addref();
+	f.d133    = new DielectricMaterial( *f.s1, *f.s133, *f.sScatDefault, false );f.d133->addref();
+	f.trans   = new TranslucentMaterial( *f.transRef, *f.transTau, *f.sHalf, *f.sN10, *f.sHalf ); f.trans->addref();
+	f.transLossless = new TranslucentMaterial( *f.transRef, *f.transTau, *f.s0, *f.sN10, *f.s0 );  f.transLossless->addref();
+	f.clearcoat = new GGXMaterial( *new UniformColorPainter( RISEPel( 0, 0, 0 ) ), *new UniformColorPainter( RISEPel( 0.04, 0.04, 0.04 ) ),
+		*f.sAlpha, *f.sAlpha, *f.s15, *f.s0, eFresnelSchlickF0 );
+	f.clearcoat->addref();
+	f.redGgx = new GGXMaterial( *f.red, *new UniformColorPainter( RISEPel( 0.04, 0.04, 0.04 ) ),
+		*f.sAlpha, *f.sAlpha, *f.s15, *f.s0, eFresnelSchlickF0 );
+	f.redGgx->addref();
+	f.polishedWhite = new PolishedMaterial( *f.white, *f.s1, *f.s15, *new UniformScalarPainter( 1000000.0 ), false );
+	f.polishedWhite->addref();
+	f.coatedControl = new CoatedMaterial( *f.lamb, *f.s1, *f.s15, *f.sCoatRough, *f.s0, *f.s0, *f.white );
+	f.coatedControl->addref();
+	return f;
+}
+
+static CompositeMaterial* MakeComposite(
+	const IMaterial& top, const IMaterial& bottom,
+	unsigned r, unsigned a, unsigned b, unsigned c, unsigned d,
+	double thickness, const IScalarPainter& ext )
+{
+	CompositeMaterial* m = new CompositeMaterial( top, bottom, r, a, b, c, d, thickness, ext );
+	m->addref();
+	return m;
+}
+
+//////////////////////////////////////////////////////////////////////
+//  SPF-level white furnace.
+//
+//  rho(theta) = E[ sum_j kray_j ] over every emitted ray (reflection
+//  half-space only unless `fullSphere`), batch means over independent
+//  seeds so the report carries a standard deviation.  Max-over-channels
+//  of the mean, as in LayeredWhiteFurnaceTest.
+//////////////////////////////////////////////////////////////////////
+struct FurnaceStats
+{
+	double mean;
+	double sd;		// sd of the batch means
+	double sem;		// sd / sqrt(batches)
+};
+
+static FurnaceStats Furnace(
+	const ISPF& spf, double thetaDeg, bool nm, bool fullSphere,
+	int batches, int perBatch, unsigned seedBase )
+{
+	const RayIntersectionGeometric ri = MakeIntersection( thetaDeg * kPi / 180.0 );
+	std::vector<double> means;
+	for( int b = 0; b < batches; ++b ) {
+		RandomNumberGenerator rng( seedBase + 7919u * (unsigned)b );
+		IndependentSampler sampler( rng );
+		IORStack stack = MakeTestIORStack( g_stub );
+		RISEPel sum( 0, 0, 0 );
+		double sumNM = 0;
+		for( int i = 0; i < perBatch; ++i ) {
+			ScatteredRayContainer sc;
+			if( nm ) {
+				spf.ScatterNM( ri, sampler, 550.0, sc, stack );
+			} else {
+				spf.Scatter( ri, sampler, sc, stack );
+			}
+			for( unsigned j = 0; j < sc.Count(); ++j ) {
+				const Vector3 d = Vector3Ops::Normalize( sc[j].ray.Dir() );
+				if( !fullSphere && d.z <= 0 ) continue;
+				if( nm ) sumNM += sc[j].krayNM;
+				else     sum = sum + sc[j].kray;
+			}
+		}
+		means.push_back( nm ? sumNM / perBatch : ColorMath::MaxValue( sum * ( 1.0 / perBatch ) ) );
+	}
+	FurnaceStats s;
+	double m = 0; for( double v : means ) m += v; m /= means.size();
+	double var = 0; for( double v : means ) var += ( v - m ) * ( v - m );
+	var /= std::max<size_t>( 1, means.size() - 1 );
+	s.mean = m;
+	s.sd = std::sqrt( var );
+	s.sem = s.sd / std::sqrt( (double)means.size() );
+	return s;
+}
+
+static const double kThetas[] = { 0.0, 30.0, 60.0, 80.0 };
+static const int kNumThetas = 4;
+
+//////////////////////////////////////////////////////////////////////
+//  Section A -- ENERGY.
+//////////////////////////////////////////////////////////////////////
+static void SectionA( Fixtures& f )
+{
+	std::cout << "\n[A] White furnace: lossless top over albedo-1 Lambertian (truth rho = 1)\n";
+	std::cout << "    n = 8 batches x 20000 draws; mean +- sd(batch means)\n";
+
+	struct Cfg { const char* name; CompositeMaterial* m; };
+	Cfg cfgs[] = {
+		{ "A1 dielectric(scat 0, ior 1.5)/white, 4/2/2/2/2, t=0   (LayeredWhiteFurnaceTest config 3)",
+		  MakeComposite( *f.dScat0,  *f.lamb, 4, 2, 2, 2, 2, 0.0, *f.s0 ) },
+		{ "A2 dielectric(scat 1e4, ior 1.5)/white, 3/3/3/3/3, t=0 (parser-default budgets)",
+		  MakeComposite( *f.dSmooth, *f.lamb, 3, 3, 3, 3, 3, 0.0, *f.s0 ) },
+		{ "A3 dielectric(scat 1e4, ior 1.5)/white, 5/3/3/3/3, t=0.5 ext 0 (shipped budgets)",
+		  MakeComposite( *f.dSmooth, *f.lamb, 5, 3, 3, 3, 3, 0.5, *f.s0 ) },
+		{ "A4 dielectric(scat 1e4, ior 1.33)/white, 3/3/3/3/3, t=0 (water)",
+		  MakeComposite( *f.d133,    *f.lamb, 3, 3, 3, 3, 3, 0.0, *f.s0 ) },
+	};
+
+	for( const Cfg& c : cfgs ) {
+		for( int pipe = 0; pipe < 2; ++pipe ) {
+			std::cout << "    " << c.name << ( pipe ? "  [NM 550]" : "  [RGB]" ) << "\n      ";
+			for( int t = 0; t < kNumThetas; ++t ) {
+				const FurnaceStats s = Furnace( *c.m->GetSPF(), kThetas[t], pipe == 1, false, 8, 20000, 1001u + t );
+				std::cout << std::fixed << std::setprecision(4) << kThetas[t] << "deg: "
+				          << s.mean << " +- " << s.sd << "   ";
+				const double tol = std::max( 0.01, 5.0 * s.sem );
+				Check( std::fabs( s.mean - 1.0 ) <= tol,
+					std::string( "[A] " ) + c.name + ( pipe ? " NM" : " RGB" ) + " theta " + std::to_string( (int)kThetas[t] ) + " rho == 1" );
+			}
+			std::cout << "\n";
+		}
+		c.m->release();
+	}
+
+	// Control: coated_material with the same physical layers (smooth
+	// 1.5 coat over the same white Lambertian).  Must read ~1 within its
+	// own documented DL-37/DL-63 residual (LayeredWhiteFurnaceTest config
+	// 11 reads 0.9889 at 80 deg with a 0.02 coat; this one is 0.001).
+	std::cout << "    CONTROL coated_material(ior 1.5, rough 0.001)/white  [RGB]\n      ";
+	for( int t = 0; t < kNumThetas; ++t ) {
+		const FurnaceStats s = Furnace( *f.coatedControl->GetSPF(), kThetas[t], false, false, 8, 20000, 3001u + t );
+		std::cout << std::fixed << std::setprecision(4) << kThetas[t] << "deg: " << s.mean << " +- " << s.sd << "   ";
+		const double tol = ( kThetas[t] >= 80.0 ) ? 0.02 : std::max( 0.01, 5.0 * s.sem );
+		Check( std::fabs( s.mean - 1.0 ) <= tol,
+			std::string( "[A] coated control theta " ) + std::to_string( (int)kThetas[t] ) + " rho ~ 1" );
+	}
+	std::cout << "\n";
+}
+
+//////////////////////////////////////////////////////////////////////
+//  Section B -- DENSITY (DL-67 contract): mass and shape.
+//
+//  Full-sphere quadrature of Pdf over (cos theta in [-1,1], phi) vs the
+//  measured non-delta emission probability, and total variation of a
+//  (cos theta, phi) histogram of emitted non-delta directions against
+//  Pdf integrated per bin.  The TVD gate is 3x a measured split-half
+//  noise floor (two independent halves of the same draws), per
+//  TranslucentLobeConsistencyTest's lesson that a TVD gate over many
+//  cells needs its floor measured, not guessed.
+//////////////////////////////////////////////////////////////////////
+static const int kBinsMu  = 16;
+static const int kBinsPhi = 16;
+
+static int BinOf( const Vector3& d )
+{
+	const double mu = std::max( -1.0, std::min( 1.0, d.z ) );
+	int im = (int)( ( mu + 1.0 ) * 0.5 * kBinsMu );
+	if( im >= kBinsMu ) im = kBinsMu - 1;
+	if( im < 0 ) im = 0;
+	double phi = std::atan2( d.y, d.x );
+	if( phi < 0 ) phi += 2.0 * kPi;
+	int ip = (int)( phi / ( 2.0 * kPi ) * kBinsPhi );
+	if( ip >= kBinsPhi ) ip = kBinsPhi - 1;
+	return im * kBinsPhi + ip;
+}
+
+static void PdfBins( const ISPF& spf, const RayIntersectionGeometric& ri, const IORStack& stack,
+	std::vector<double>& bins, double& total )
+{
+	bins.assign( kBinsMu * kBinsPhi, 0.0 );
+	total = 0;
+	const int sub = 8;
+	const double dMu  = 2.0 / ( kBinsMu * sub );
+	const double dPhi = 2.0 * kPi / ( kBinsPhi * sub );
+	for( int a = 0; a < kBinsMu * sub; ++a ) {
+		const double mu = -1.0 + ( a + 0.5 ) * dMu;
+		const double st = std::sqrt( std::max( 0.0, 1.0 - mu * mu ) );
+		for( int b = 0; b < kBinsPhi * sub; ++b ) {
+			const double phi = ( b + 0.5 ) * dPhi;
+			const Vector3 w( st * std::cos( phi ), st * std::sin( phi ), mu );
+			const double p = spf.Pdf( ri, w, stack ) * dMu * dPhi;
+			bins[ BinOf( w ) ] += p;
+			total += p;
+		}
+	}
+}
+
+static void SectionB( Fixtures& f )
+{
+	std::cout << "\n[B] Pdf == density of what Scatter emits (mass + shape), theta 30\n";
+
+	struct Cfg { const char* name; CompositeMaterial* m; };
+	Cfg cfgs[] = {
+		{ "B1 dielectric(ior 1.5)/white Lambertian", MakeComposite( *f.dSmooth, *f.lamb, 3, 3, 3, 3, 3, 0.0, *f.s0 ) },
+		{ "B2 translucent/red Lambertian",           MakeComposite( *f.trans,   *f.lambRed, 3, 3, 3, 3, 3, 0.0, *f.s0 ) },
+		{ "B3 clearcoat GGX/red GGX (reflection-only top)", MakeComposite( *f.clearcoat, *f.redGgx, 3, 3, 3, 3, 3, 0.0, *f.s0 ) },
+	};
+
+	const RayIntersectionGeometric ri = MakeIntersection( 30.0 * kPi / 180.0 );
+	for( const Cfg& c : cfgs ) {
+		const ISPF& spf = *c.m->GetSPF();
+		IORStack stack = MakeTestIORStack( g_stub );
+		RandomNumberGenerator rng( 4242u );
+		IndependentSampler sampler( rng );
+		const int N = 200000;
+		std::vector<double> hA( kBinsMu * kBinsPhi, 0.0 ), hB( kBinsMu * kBinsPhi, 0.0 );
+		int nonDelta = 0, nonDeltaA = 0, nonDeltaB = 0, multi = 0;
+		for( int i = 0; i < N; ++i ) {
+			ScatteredRayContainer sc;
+			spf.Scatter( ri, sampler, sc, stack );
+			if( sc.Count() > 1 ) multi++;
+			// The density a consumer sees is that of the ray
+			// RandomlySelect returns, exactly as PT/BDPT consume it.
+			Scalar q = 0;
+			const ScatteredRay* p = sc.RandomlySelect( sampler.Get1D(), false, &q );
+			if( !p || p->isDelta ) continue;
+			const int bin = BinOf( Vector3Ops::Normalize( p->ray.Dir() ) );
+			nonDelta++;
+			if( i & 1 ) { hB[bin] += 1; nonDeltaB++; } else { hA[bin] += 1; nonDeltaA++; }
+		}
+		std::vector<double> e; double integral = 0;
+		PdfBins( spf, ri, stack, e, integral );
+		const double emitProb = (double)nonDelta / N;
+		std::cout << "    " << c.name << ": int Pdf = " << std::setprecision(5) << integral
+		          << ", measured non-delta emission probability = " << emitProb
+		          << "  (Scatter calls emitting >1 ray: " << multi << ")\n";
+		Check( std::fabs( integral - emitProb ) <= 0.01 + 0.02 * emitProb,
+			std::string( "[B] " ) + c.name + " full-sphere int Pdf == measured non-delta emission probability" );
+		if( nonDelta > 1000 && integral > 1e-6 ) {
+			double tvd = 0, floorTvd = 0;
+			for( size_t k = 0; k < e.size(); ++k ) {
+				tvd      += std::fabs( ( hA[k] + hB[k] ) / nonDelta - e[k] / integral );
+				floorTvd += std::fabs( hA[k] / std::max( 1, nonDeltaA ) - hB[k] / std::max( 1, nonDeltaB ) );
+			}
+			tvd *= 0.5; floorTvd *= 0.5;
+			// The split-half TVD of two n/2 samples has ~sqrt(2) the
+			// fluctuation of one n sample against the truth, so the
+			// floor for the full histogram is floorTvd / sqrt(2) / sqrt(2)
+			// (n doubles) ~= floorTvd / 2.  Gate at 3x that.
+			const double gate = std::max( 0.01, 1.5 * floorTvd );
+			std::cout << "      TVD(histogram, Pdf) = " << tvd << "  split-half floor = " << floorTvd
+			          << "  gate = " << gate << "\n";
+			Check( tvd <= gate, std::string( "[B] " ) + c.name + " TVD(real draws, Pdf) within the measured noise floor" );
+		} else {
+			Check( false, std::string( "[B] " ) + c.name + " emits non-delta directions (premise of the shape gate)" );
+		}
+		c.m->release();
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+//  Section C -- ONE FUNCTION PER SIDE: kray * Pdf == value * cos,
+//  pointwise, for every emitted non-delta ray (RGB and NM).
+//////////////////////////////////////////////////////////////////////
+static void SectionC( Fixtures& f )
+{
+	std::cout << "\n[C] kray * Pdf(dir) == GetBSDF()->value(dir) * cos, pointwise (RGB and NM)\n";
+
+	struct Cfg { const char* name; CompositeMaterial* m; };
+	Cfg cfgs[] = {
+		{ "C1 dielectric/white Lambertian", MakeComposite( *f.dSmooth, *f.lamb, 3, 3, 3, 3, 3, 0.0, *f.s0 ) },
+		{ "C2 dielectric/red Lambertian, t=0.5 ext 0.3", MakeComposite( *f.dSmooth, *f.lambRed, 3, 3, 3, 3, 3, 0.5, *new UniformScalarPainter( 0.3 ) ) },
+		{ "C3 translucent/red Lambertian",  MakeComposite( *f.trans,   *f.lambRed, 3, 3, 3, 3, 3, 0.0, *f.s0 ) },
+	};
+
+	for( const Cfg& c : cfgs ) {
+		const IBSDF* pBSDF = c.m->GetBSDF();
+		const ISPF& spf = *c.m->GetSPF();
+		for( int pipe = 0; pipe < 2; ++pipe ) {
+			int checked = 0, bad = 0;
+			double worst = 0;
+			for( int t = 0; t < 3; ++t ) {
+				const RayIntersectionGeometric ri = MakeIntersection( kThetas[t] * kPi / 180.0 );
+				IORStack stack = MakeTestIORStack( g_stub );
+				RandomNumberGenerator rng( 555u + t );
+				IndependentSampler sampler( rng );
+				for( int i = 0; i < 4000; ++i ) {
+					ScatteredRayContainer sc;
+					if( pipe ) spf.ScatterNM( ri, sampler, 550.0, sc, stack );
+					else       spf.Scatter( ri, sampler, sc, stack );
+					for( unsigned j = 0; j < sc.Count(); ++j ) {
+						const ScatteredRay& s = sc[j];
+						if( s.isDelta ) continue;
+						const Vector3 d = Vector3Ops::Normalize( s.ray.Dir() );
+						const double cosO = std::fabs( Vector3Ops::Dot( d, ri.onb.w() ) );
+						const double pdf = pipe ? spf.PdfNM( ri, d, 550.0, stack ) : spf.Pdf( ri, d, stack );
+						double lhs, rhs;
+						if( pipe ) {
+							lhs = s.krayNM * pdf;
+							rhs = pBSDF ? pBSDF->valueStatefulNM( d, ri, 550.0, &stack ) * cosO : 0.0;
+						} else {
+							lhs = ColorMath::MaxValue( s.kray * pdf );
+							rhs = pBSDF ? ColorMath::MaxValue( pBSDF->valueStateful( d, ri, &stack ) * cosO ) : 0.0;
+						}
+						const double rel = std::fabs( lhs - rhs ) / std::max( 1e-12, std::fabs( rhs ) );
+						worst = std::max( worst, rel );
+						if( rel > 1e-9 ) bad++;
+						checked++;
+					}
+				}
+			}
+			std::cout << "    " << c.name << ( pipe ? " [NM]" : " [RGB]" ) << ": non-delta rays checked = "
+			          << checked << ", mismatches = " << bad << ", worst rel = " << worst << "\n";
+			Check( checked > 1000, std::string( "[C] " ) + c.name + ( pipe ? " NM" : " RGB" ) + " emits non-delta rays" );
+			Check( bad == 0, std::string( "[C] " ) + c.name + ( pipe ? " NM" : " RGB" ) + " kray*Pdf == value*cos for every non-delta ray" );
+		}
+		c.m->release();
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+//  Section E -- HWSS companion reconstructibility (DL-221).
+//////////////////////////////////////////////////////////////////////
+static void SectionE( Fixtures& f )
+{
+	std::cout << "\n[E] HWSS companion weight reconstructible from (ri, dir, nm)  (DL-221)\n";
+	CompositeMaterial* m = MakeComposite( *f.dSmooth, *f.lambRed, 3, 3, 3, 3, 3, 0.2, *new UniformScalarPainter( 0.4 ) );
+	const ISPF& spf = *m->GetSPF();
+	const IBSDF* pBSDF = m->GetBSDF();
+	const RayIntersectionGeometric ri = MakeIntersection( 35.0 * kPi / 180.0 );
+	IORStack stack = MakeTestIORStack( g_stub );
+	RandomNumberGenerator rng( 9090u );
+	IndependentSampler sampler( rng );
+	const double heroNM = 520.0, compNM = 640.0;
+	int checked = 0, bad = 0, unimplemented = 0;
+	for( int i = 0; i < 4000; ++i ) {
+		ScatteredRayContainer sc;
+		spf.ScatterNM( ri, sampler, heroNM, sc, stack );
+		for( unsigned j = 0; j < sc.Count(); ++j ) {
+			const ScatteredRay& s = sc[j];
+			if( s.isDelta ) continue;
+			const Vector3 d = Vector3Ops::Normalize( s.ray.Dir() );
+			const double w = spf.EvaluateKrayNM( ri, d, s.type, compNM, stack, s.pdf );
+			if( w < 0 ) { unimplemented++; continue; }
+			const double cosO = std::fabs( Vector3Ops::Dot( d, ri.vNormal ) );
+			const double ref = pBSDF ? pBSDF->valueStatefulNM( d, ri, compNM, &stack ) * cosO / s.pdf : -1;
+			const double rel = std::fabs( w - ref ) / std::max( 1e-12, std::fabs( ref ) );
+			if( rel > 1e-9 ) bad++;
+			checked++;
+			// And the hero reconstructs the hero kray exactly.
+			const double wh = spf.EvaluateKrayNM( ri, d, s.type, heroNM, stack, s.pdf );
+			if( std::fabs( wh - s.krayNM ) > 1e-9 * std::max( 1e-12, std::fabs( s.krayNM ) ) ) bad++;
+		}
+	}
+	std::cout << "    non-delta rays: " << checked << " reconstructed, " << unimplemented
+	          << " declined (-1), mismatches " << bad << "\n";
+	Check( checked > 1000 && unimplemented == 0, "[E] every non-delta composite ray's companion weight is implemented (not the aggregate fallback)" );
+	Check( bad == 0, "[E] companion weight == valueNM(nm) * cos / pdfHero, and the hero reconstructs its own kray" );
+	m->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+//  Section F -- sibling table.  Full-sphere furnace (reflection +
+//  transmission through the stack), RGB, theta 0 and 60.  Lossless
+//  configurations are gated at 1; the rest are printed as a record.
+//////////////////////////////////////////////////////////////////////
+static void SectionF( Fixtures& f )
+{
+	std::cout << "\n[F] Sibling configuration classes (full-sphere furnace, RGB, n = 8 x 10000)\n";
+	struct Cfg { const char* name; CompositeMaterial* m; bool lossless; };
+	Cfg cfgs[] = {
+		{ "F1 dielectric / dielectric (both ior 1.5) -- transmits through",
+		  MakeComposite( *f.dSmooth, *f.dSmooth, 3, 3, 3, 3, 3, 0.0, *f.s0 ), true },
+		{ "F2 dielectric / polished(white, delta coat) -- delta-bottom tail class",
+		  MakeComposite( *f.dSmooth, *f.polishedWhite, 3, 3, 3, 3, 3, 0.0, *f.s0 ), true },
+		{ "F3 lossless translucent / white Lambertian",
+		  MakeComposite( *f.transLossless, *f.lamb, 3, 3, 3, 3, 3, 0.0, *f.s0 ), false },
+		{ "F4 translucent / red Lambertian (mat_wax_gold class)",
+		  MakeComposite( *f.trans, *f.lambRed, 3, 3, 3, 3, 3, 0.0, *f.s0 ), false },
+		{ "F5 dielectric / translucent (transmitting bottom)",
+		  MakeComposite( *f.dSmooth, *f.trans, 3, 3, 3, 3, 3, 0.0, *f.s0 ), false },
+		{ "F6 clearcoat GGX / red GGX (LayeredWhiteFurnaceTest config 7: substrate never reached)",
+		  MakeComposite( *f.clearcoat, *f.redGgx, 4, 2, 2, 2, 2, 0.0, *f.s0 ), false },
+	};
+	for( const Cfg& c : cfgs ) {
+		std::cout << "    " << c.name << "\n      ";
+		for( int t = 0; t < 4; t += 2 ) {
+			const FurnaceStats s = Furnace( *c.m->GetSPF(), kThetas[t], false, true, 8, 10000, 7001u + t );
+			std::cout << std::fixed << std::setprecision(4) << kThetas[t] << "deg: " << s.mean << " +- " << s.sd << "   ";
+			if( c.lossless ) {
+				Check( std::fabs( s.mean - 1.0 ) <= std::max( 0.01, 5.0 * s.sem ),
+					std::string( "[F] " ) + c.name + " theta " + std::to_string( (int)kThetas[t] ) + " lossless -> 1" );
+			}
+			Check( s.mean <= 1.0 + std::max( 0.01, 5.0 * s.sem ),
+				std::string( "[F] " ) + c.name + " theta " + std::to_string( (int)kThetas[t] ) + " energy-bounded" );
+		}
+		std::cout << "\n";
+		c.m->release();
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+//  Render-level harness (same pattern as BDPTStrategyBalanceTest).
+//////////////////////////////////////////////////////////////////////
+class CapturingRasterizerOutput
+	: public virtual IRasterizerOutput
+	, public virtual Reference
+{
+public:
+	std::vector<RISEColor> pixels;
+	unsigned int width;
+	unsigned int height;
+	CapturingRasterizerOutput() : width(0), height(0) {}
+protected:
+	virtual ~CapturingRasterizerOutput() {}
+public:
+	virtual void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+	virtual void OutputImage( const IRasterImage& img, const Rect*, const unsigned int ) override
+	{
+		width = img.GetWidth();
+		height = img.GetHeight();
+		pixels.resize( width * height );
+		for( unsigned int y = 0; y < height; y++ ) {
+			for( unsigned int x = 0; x < width; x++ ) {
+				pixels[y * width + x] = img.GetPEL( x, y );
+			}
+		}
+	}
+};
+
+//! Mean of max-channel radiance (composited over black) over columns
+//! [x0, x1) and all rows except a 2-pixel border.  Returns -1 on a
+//! failed or nonfinite render.
+static double RegionMean( const CapturingRasterizerOutput& cap, unsigned x0, unsigned x1 )
+{
+	if( cap.pixels.empty() ) return -1;
+	double sum = 0; int n = 0;
+	for( unsigned y = 2; y + 2 < cap.height; ++y ) {
+		for( unsigned x = x0; x < x1; ++x ) {
+			const RISEColor& c = cap.pixels[y * cap.width + x];
+			const double v = std::max( c.base.r, std::max( c.base.g, c.base.b ) ) * c.a;
+			if( !std::isfinite( v ) ) return -1;
+			sum += v; n++;
+		}
+	}
+	return n ? sum / n : -1;
+}
+
+static bool Render( const std::string& sceneText, const char* tag, CapturingRasterizerOutput*& pCapOut, unsigned seed )
+{
+	char path[512];
+	std::snprintf( path, sizeof(path), "/tmp/composite_energy_%s_%d.RISEscene", tag, (int)getpid() );
+	{
+		std::ofstream ofs( path );
+		if( !ofs.is_open() ) return false;
+		ofs << sceneText;
+	}
+	IJobPriv* pJob = 0;
+	if( !RISE_CreateJobPriv( &pJob ) || !pJob ) return false;
+	if( !pJob->LoadAsciiSceneViaCst( path ) ) { safe_release( pJob ); std::remove( path ); return false; }
+	pJob->RemoveRasterizerOutputs();
+	CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
+	GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "test capture output" );
+	pJob->GetRasterizer()->AddRasterizerOutput( pCap );
+	// Renders are seeded from libc rand(): fix it per render so repeats
+	// are distinct but the run is reproducible (docs: rise-render-seeding).
+	std::srand( seed );
+	const bool ok = pJob->Rasterize();
+	safe_release( pJob );
+	std::remove( path );
+	if( !ok ) { safe_release( pCap ); return false; }
+	pCapOut = pCap;
+	return true;
+}
+
+static const char* kLayers =
+	"uniformcolor_painter\n{\n\tname pnt_white\n\tcolor 1.0 1.0 1.0\n}\n\n"
+	"lambertian_material\n{\n\tname mat_lamb\n\treflectance pnt_white\n}\n\n"
+	"dielectric_material\n{\n\tname mat_glass\n\ttau 1\n\tior 1.5\n}\n\n"
+	"composite_material\n{\n\tname mat_comp\n\ttop mat_glass\n\tbottom mat_lamb\n\tthickness 0\n\textinction 0.0\n}\n\n";
+
+static std::string PtRasterizer( bool env, int spp )
+{
+	std::ostringstream s;
+	s << "standard_shader\n{\n\tname global\n\tshaderop DefaultDirectLighting\n}\n\n"
+	  << "pathtracing_pel_rasterizer\n{\n\tsamples " << spp << "\n\toidn_denoise FALSE\n\tpixel_filter box\n";
+	if( env ) s << "\tradiance_map pnt_env\n\tradiance_scale 1.0\n\tradiance_background TRUE\n";
+	s << "}\n\nfile_rasterizeroutput\n{\n\tpattern rendered/composite_energy_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n\n";
+	return s.str();
+}
+
+static std::string BdptRasterizer( bool env, int spp )
+{
+	std::ostringstream s;
+	s << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	  << "bdpt_pel_rasterizer\n{\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tsamples " << spp << "\n\toidn_denoise FALSE\n\tpixel_filter box\n";
+	if( env ) s << "\tradiance_map pnt_env\n\tradiance_scale 1.0\n\tradiance_background TRUE\n";
+	s << "}\n\nfile_rasterizeroutput\n{\n\tpattern rendered/composite_energy_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n\n";
+	return s.str();
+}
+
+static void SectionD()
+{
+	std::cout << "\n[D] Render-level closed forms (PT pel, BDPT pel)\n";
+
+	// D1: white furnace.  One composite quad fills the frame (camera at
+	// z=3.5, fov 30 -> half-extent 0.94 < 1), env L = 1, no other
+	// geometry.  Lossless coat over albedo-1 Lambertian: every pixel
+	// must read exactly 1.
+	const std::string furnace = std::string( "RISE ASCII SCENE 7\n" ) +
+		"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_env\n\tcolor 1.0 1.0 1.0\n}\n\n" +
+		kLayers +
+		"clippedplane_geometry\n{\n\tname quad\n\tpta -1 -1 0\n\tptb 1 -1 0\n\tptc 1 1 0\n\tptd -1 1 0\n}\n\n"
+		"standard_object\n{\n\tname obj\n\tgeometry quad\n\tmaterial mat_comp\n}\n\n";
+
+	for( int r = 0; r < 2; ++r ) {
+		const std::string scene = furnace + ( r == 0 ? PtRasterizer( true, 128 ) : BdptRasterizer( true, 128 ) );
+		CapturingRasterizerOutput* cap = 0;
+		const bool ok = Render( scene, r == 0 ? "furnace_pt" : "furnace_bdpt", cap, 20240u + r );
+		const double m = ok ? RegionMean( *cap, 2, cap->width - 2 ) : -1;
+		std::cout << "    D1 env white furnace, " << ( r == 0 ? "PT  " : "BDPT" ) << ": mean radiance = "
+		          << std::setprecision(5) << m << "  (truth 1.0)\n";
+		Check( ok && std::fabs( m - 1.0 ) <= 0.02,
+			std::string( "[D1] composite white furnace under env == 1 (" ) + ( r == 0 ? "PT" : "BDPT" ) + ")" );
+		if( cap ) safe_release( cap );
+	}
+
+	// D2: directional light.  Left half of the frame is the composite,
+	// right half a white Lambertian control; the camera looks straight
+	// down the normal.  Ratio composite/control = pi * f_composite(0, l),
+	// and for a smooth coat over an albedo-1 Lambertian with no gap the
+	// Saunderson form is EXACT:
+	//     pi f = T(theta_v) T(theta_l) / ( eta^2 (1 - r_i) ).
+	// The light reaches the surface ONLY through NEE (a delta light), so
+	// this ratio is read entirely off `GetBSDF()->value`.
+	const double eta = 1.5;
+	const double ri15 = CoatedLayer::InternalDiffuseFresnel( eta );
+	const double thetaLights[] = { 0.0, 60.0, 80.0 };
+	for( double tl : thetaLights ) {
+		const double tr = tl * kPi / 180.0;
+		std::ostringstream light;
+		light << "directional_light\n{\n\tname key\n\tpower 1.0\n\tcolor 1 1 1\n\tdirection "
+		      << std::sin( tr ) << " 0 " << std::cos( tr ) << "\n}\n\n";
+		const std::string scene2 = std::string( "RISE ASCII SCENE 7\n" ) +
+			"film\n{\n\twidth 32\n\theight 16\n}\n\n"
+			"pinhole_camera\n{\n\tlocation 0 0 7.0\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n" +
+			kLayers +
+			"clippedplane_geometry\n{\n\tname qL\n\tpta -4 -3 0\n\tptb 0 -3 0\n\tptc 0 3 0\n\tptd -4 3 0\n}\n\n"
+			"clippedplane_geometry\n{\n\tname qR\n\tpta 0 -3 0\n\tptb 4 -3 0\n\tptc 4 3 0\n\tptd 0 3 0\n}\n\n"
+			"standard_object\n{\n\tname objL\n\tgeometry qL\n\tmaterial mat_comp\n}\n\n"
+			"standard_object\n{\n\tname objR\n\tgeometry qR\n\tmaterial mat_lamb\n}\n\n" +
+			light.str();
+		const double Tl = 1.0 - CoatedLayer::Fresnel( std::cos( tr ), eta );
+		const double Tv = 1.0 - CoatedLayer::Fresnel( 1.0, eta );
+		const double truth = Tv * Tl / ( eta * eta * ( 1.0 - ri15 ) );
+		for( int r = 0; r < 2; ++r ) {
+			const std::string scene = scene2 + ( r == 0 ? PtRasterizer( false, 64 ) : BdptRasterizer( false, 64 ) );
+			CapturingRasterizerOutput* cap = 0;
+			const bool ok = Render( scene, r == 0 ? "dir_pt" : "dir_bdpt", cap, 31337u + r + (unsigned)tl );
+			const double mL = ok ? RegionMean( *cap, 2, cap->width / 2 - 2 ) : -1;
+			const double mR = ok ? RegionMean( *cap, cap->width / 2 + 2, cap->width - 2 ) : -1;
+			const double ratio = ( mR > 0 ) ? mL / mR : -1;
+			std::cout << "    D2 directional light theta_l=" << tl << ", " << ( r == 0 ? "PT  " : "BDPT" )
+			          << ": composite/control = " << std::setprecision(5) << ratio
+			          << "  (closed form " << truth << ")\n";
+			Check( ok && std::fabs( ratio - truth ) <= 0.03 * truth,
+				std::string( "[D2] directional light, theta_l " ) + std::to_string( (int)tl ) +
+				" composite/control == smooth-coat closed form (" + ( r == 0 ? "PT" : "BDPT" ) + ")" );
+			if( cap ) safe_release( cap );
+		}
+	}
+}
+
+int main( int argc, char** argv )
+{
+	std::cout << "CompositeEnergyConservationTest (DL-24 / DL-221)" << std::endl;
+	std::cout << "================================================" << std::endl;
+
+	g_stub = new StubObject();
+	g_stub->addref();
+
+	Fixtures f = MakeFixtures();
+
+	const bool skipRender = ( argc > 1 && std::string( argv[1] ) == "--no-render" );
+
+	SectionA( f );
+	SectionB( f );
+	SectionC( f );
+	SectionE( f );
+	SectionF( f );
+	if( !skipRender ) {
+		SectionD();
+	}
+
+	std::cout << "\n================================================" << std::endl;
+	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
+	return failCount == 0 ? 0 : 1;
+}
