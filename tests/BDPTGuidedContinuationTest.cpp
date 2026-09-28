@@ -185,8 +185,14 @@ struct Fixture
 //! P1-1) and two materials under a 30-degree TILTED SHADING NORMAL (a
 //! constant `normal_map_modifier`; the diffuse draw is dropped below the
 //! geometric horizon on some realizations -- review P2).
+//! DL-67 round 3 added one row per remaining multi-lobe SPF family
+//! (both Ward models, isotropic Phong, Ashikhmin-Shirley -- review P2-3:
+//! no test had exercised them under guiding) and a smooth
+//! (roughness 0) `subsurfacescattering_material`, whose scattered lobes
+//! are all DELTA -- mass only the BSDF technique can reach (review P1-A).
 enum MaterialKind { kSchlick, kTranslucent, kLambertian,
-	kSchlickBlackDiffuse, kLambertianTilted, kSchlickTilted };
+	kSchlickBlackDiffuse, kLambertianTilted, kSchlickTilted,
+	kWardIso, kWardAniso, kPhong, kAshikmin, kSmoothSSS };
 
 static const char* MaterialName( MaterialKind k )
 {
@@ -196,6 +202,11 @@ static const char* MaterialName( MaterialKind k )
 		case kSchlickBlackDiffuse: return "schlick_material (black diffuse)";
 		case kLambertianTilted:    return "lambertian_material (30 deg tilted normal)";
 		case kSchlickTilted:       return "schlick_material (30 deg tilted normal)";
+		case kWardIso:             return "ward_isotropic_material";
+		case kWardAniso:           return "ward_anisotropic_material";
+		case kPhong:               return "isotropic_phong_material";
+		case kAshikmin:            return "ashikminshirley_anisotropicphong_material";
+		case kSmoothSSS:           return "subsurfacescattering_material (roughness 0)";
 		default:                   return "lambertian_material";
 	}
 }
@@ -230,6 +241,34 @@ static std::string MaterialChunk( MaterialKind k )
 			return MaterialChunk( kLambertian ) + TiltModifier();
 		case kSchlickTilted:
 			return MaterialChunk( kSchlick ) + TiltModifier();
+		case kWardIso:
+			return
+				"uniformcolor_painter\n{\n\tname pnt_rd\n\tcolor 0.4 0.4 0.4\n}\n"
+				"uniformcolor_painter\n{\n\tname pnt_rs\n\tcolor 0.5 0.5 0.5\n}\n"
+				"ward_isotropic_material\n{\n\tname mat_under_test\n\trd pnt_rd\n\trs pnt_rs\n"
+				"\talpha 0.3\n}\n";
+		case kWardAniso:
+			return
+				"uniformcolor_painter\n{\n\tname pnt_rd\n\tcolor 0.4 0.4 0.4\n}\n"
+				"uniformcolor_painter\n{\n\tname pnt_rs\n\tcolor 0.5 0.5 0.5\n}\n"
+				"ward_anisotropic_material\n{\n\tname mat_under_test\n\trd pnt_rd\n\trs pnt_rs\n"
+				"\talphax 0.2\n\talphay 0.4\n}\n";
+		case kPhong:
+			return
+				"uniformcolor_painter\n{\n\tname pnt_rd\n\tcolor 0.4 0.4 0.4\n}\n"
+				"uniformcolor_painter\n{\n\tname pnt_rs\n\tcolor 0.5 0.5 0.5\n}\n"
+				"isotropic_phong_material\n{\n\tname mat_under_test\n\trd pnt_rd\n\trs pnt_rs\n"
+				"\tN 20.0\n}\n";
+		case kAshikmin:
+			return
+				"uniformcolor_painter\n{\n\tname pnt_rd\n\tcolor 0.4 0.4 0.4\n}\n"
+				"uniformcolor_painter\n{\n\tname pnt_rs\n\tcolor 0.5 0.5 0.5\n}\n"
+				"ashikminshirley_anisotropicphong_material\n{\n\tname mat_under_test\n\trd pnt_rd\n"
+				"\trs pnt_rs\n\tnu 40.0\n\tnv 10.0\n}\n";
+		case kSmoothSSS:
+			return
+				"subsurfacescattering_material\n{\n\tname mat_under_test\n\tior 1.3\n"
+				"\tabsorption 0.1\n\tscattering 1.0\n\tg 0.0\n\troughness 0.0\n}\n";
 		case kSchlick:
 			return
 				"uniformcolor_painter\n{\n\tname pnt_rd\n\tcolor 0.5 0.5 0.5\n}\n"
@@ -401,6 +440,16 @@ static const GuidingMode kModes[] = {
 	{ "RIS",                  eGuidingRIS,          0.7 },
 };
 
+//! DL-67 round 3 (review P3): every fixture draws from its OWN seed block
+//! -- round 2's ranges were disjoint within one fixture but restarted at
+//! the same base in every RunEyeFurnace / RunLightFurnace call, so rows
+//! of different fixtures shared their per-sample streams.
+static const unsigned int kSeedBlock = 8000000;
+static unsigned int FixtureSeedBase( const unsigned int fixtureIndex )
+{
+	return 100000000u + fixtureIndex * kSeedBlock;
+}
+
 //////////////////////////////////////////////////////////////////////
 // Eye-side batch: mean continuation weight over `n` eye subpaths.
 //////////////////////////////////////////////////////////////////////
@@ -498,7 +547,7 @@ static Scalar LightBatch(
 	return nOnPlane > 0 ? static_cast<Scalar>( sum / nOnPlane ) : Scalar( 0 );
 }
 
-static void RunEyeFurnace( MaterialKind k )
+static void RunEyeFurnace( MaterialKind k, const unsigned int fixtureIndex )
 {
 	std::cout << "BDPT eye generator, " << MaterialName( k )
 		<< " at " << kIncidenceDeg << " deg under a constant environment" << std::endl;
@@ -516,7 +565,7 @@ static void RunEyeFurnace( MaterialKind k )
 	unsigned int nEsc = 0;
 	{
 		const GuidingMode off{ "un-guided", eGuidingOneSampleMIS, 0.0 };
-		const Scalar m = EyeBatch( fx, 0, off, false, kN, 1000, nEsc );
+		const Scalar m = EyeBatch( fx, 0, off, false, kN, FixtureSeedBase( fixtureIndex ), nEsc );
 		Check( nEsc > kN / 2, "eye un-guided: most subpaths escape to the environment" );
 		const std::string label = std::string( "eye " ) + MaterialName( k ) +
 			" [un-guided]: continuation weight reads the quadrature albedo";
@@ -530,7 +579,7 @@ static void RunEyeFurnace( MaterialKind k )
 	// Distinct, non-overlapping per-row seed ranges (external review P3:
 	// `seed += 1000` with 200000 samples made consecutive rows share
 	// ~99.5% of their per-sample seeds, so the rows were not independent).
-	unsigned int seed = 10000000;
+	unsigned int seed = FixtureSeedBase( fixtureIndex ) + kN;
 	for( unsigned int ai = 0; ai < 2; ++ai ) {
 		for( unsigned int pi = 0; pi < 2; ++pi ) {
 			PathGuidingField* guide = BuildField( axes[ai], powers[pi] );
@@ -556,7 +605,7 @@ static void RunEyeFurnace( MaterialKind k )
 	}
 }
 
-static void RunLightFurnace( MaterialKind k )
+static void RunLightFurnace( MaterialKind k, const unsigned int fixtureIndex )
 {
 	std::cout << "BDPT light generator, " << MaterialName( k )
 		<< ": guided vs un-guided continuation weight" << std::endl;
@@ -566,14 +615,14 @@ static void RunLightFurnace( MaterialKind k )
 
 	unsigned int nOn = 0;
 	const GuidingMode off{ "un-guided", eGuidingOneSampleMIS, 0.0 };
-	const Scalar reference = LightBatch( fx, 0, off, 800000, 5000000, nOn );
+	const Scalar reference = LightBatch( fx, 0, off, 800000, FixtureSeedBase( fixtureIndex ), nOn );
 	Check( nOn > 400000, "light un-guided: most light subpaths land on the plane" );
 	std::cout << "    un-guided reference " << reference << " over " << nOn << " subpaths" << std::endl;
 
 	const Vector3 axes[2] = {
 		Vector3Ops::Normalize( Vector3( -0.6, 0.0, 0.8 ) ),
 		Vector3Ops::Normalize( Vector3( 0.3, 0.0, -0.95 ) ) };
-	unsigned int seed = 6000000;
+	unsigned int seed = FixtureSeedBase( fixtureIndex ) + 1000000;
 	for( unsigned int ai = 0; ai < 2; ++ai ) {
 		PathGuidingField* guide = BuildField( axes[ai], 2.0 );
 		for( unsigned int mi = 0; mi < sizeof( kModes ) / sizeof( kModes[0] ); ++mi ) {
@@ -588,20 +637,78 @@ static void RunLightFurnace( MaterialKind k )
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+// DL-67 round 3 (external review P1-A): a smooth `subsurfacescattering_
+// material` (roughness 0) scatters ONLY delta lobes, which the guide
+// cannot produce -- their mass belongs entirely to the BSDF technique
+// (W_b = 1), which fires with probability 1 - a.  A one-sample alpha of
+// 1 made that probability zero and the delta transport vanished
+// (d56ace70 read EXACTLY 0 here).  The firing probability is now capped
+// strictly below 1 (`GuidingOneSampleFiringProbability`), so alpha 1.0
+// must still read the un-guided expectation.  No quadrature reference
+// exists for a delta lobe, so the reference is a 4x-sample un-guided
+// run and each row is judged by a combined-standard-error z score.
+//////////////////////////////////////////////////////////////////////
+static void RunDeltaLobeFurnace( const unsigned int fixtureIndex )
+{
+	const MaterialKind k = kSmoothSSS;
+	std::cout << "BDPT eye generator, " << MaterialName( k )
+		<< " at " << kIncidenceDeg << " deg: delta lobes under one-sample alpha up to 1" << std::endl;
+	Fixture fx;
+	Check( fx.Build( EyeScene( k ), "eye delta" ), "delta-lobe eye fixture builds" );
+	if( !fx.pCaster || !fx.pScene ) return;
+
+	const unsigned int kN = 200000;
+	unsigned int seed = FixtureSeedBase( fixtureIndex );
+	unsigned int nEsc = 0;
+	Scalar seRef = 0;
+	const GuidingMode off{ "un-guided", eGuidingOneSampleMIS, 0.0 };
+	const Scalar ref = EyeBatch( fx, 0, off, false, 4 * kN, seed, nEsc, &seRef );
+	seed += 4 * kN;
+	std::cout << "    un-guided reference " << ref << " (standard error " << seRef << ")" << std::endl;
+	Check( ref > 0, "delta-lobe eye: the un-guided reference is positive" );
+
+	PathGuidingField* guide = BuildField( Vector3Ops::Normalize( Vector3( -0.6, 0.0, 0.8 ) ), 2.0 );
+	const GuidingMode modes[4] = {
+		{ "one-sample alpha 0.7", eGuidingOneSampleMIS, 0.7 },
+		{ "one-sample alpha 0.99", eGuidingOneSampleMIS, 0.99 },
+		{ "one-sample alpha 1.0", eGuidingOneSampleMIS, 1.0 },
+		{ "RIS", eGuidingRIS, 1.0 } };
+	for( unsigned int mi = 0; mi < 4; ++mi ) {
+		Scalar se = 0;
+		const Scalar m = EyeBatch( fx, guide, modes[mi], false, kN, seed, nEsc, &se );
+		seed += kN;
+		const Scalar z = ( m - ref ) / r_max( Scalar( std::sqrt( se * se + seRef * seRef ) ), Scalar( 1e-12 ) );
+		std::cout << "    [" << modes[mi].name << "] " << m << " (standard error " << se
+			<< "), z = " << z << " against the un-guided reference" << std::endl;
+		std::ostringstream label;
+		label << "eye " << MaterialName( k ) << " [" << modes[mi].name
+			<< "]: delta transport survives guiding (|z| <= 4)";
+		Check( m > 0 && std::fabs( z ) <= 4.0, label.str().c_str() );
+	}
+	guide->release();
+}
+
 int main()
 {
 	GlobalLog();
-	RunEyeFurnace( kLambertian );
-	RunEyeFurnace( kSchlick );
-	RunEyeFurnace( kTranslucent );
-	RunEyeFurnace( kSchlickBlackDiffuse );
-	RunEyeFurnace( kLambertianTilted );
-	RunEyeFurnace( kSchlickTilted );
-	RunLightFurnace( kLambertian );
-	RunLightFurnace( kSchlick );
-	RunLightFurnace( kTranslucent );
-	RunLightFurnace( kSchlickBlackDiffuse );
-	RunLightFurnace( kLambertianTilted );
+	unsigned int fixture = 0;
+	RunEyeFurnace( kLambertian, fixture++ );
+	RunEyeFurnace( kSchlick, fixture++ );
+	RunEyeFurnace( kTranslucent, fixture++ );
+	RunEyeFurnace( kSchlickBlackDiffuse, fixture++ );
+	RunEyeFurnace( kLambertianTilted, fixture++ );
+	RunEyeFurnace( kSchlickTilted, fixture++ );
+	RunEyeFurnace( kWardIso, fixture++ );
+	RunEyeFurnace( kWardAniso, fixture++ );
+	RunEyeFurnace( kPhong, fixture++ );
+	RunEyeFurnace( kAshikmin, fixture++ );
+	RunDeltaLobeFurnace( fixture++ );
+	RunLightFurnace( kLambertian, fixture++ );
+	RunLightFurnace( kSchlick, fixture++ );
+	RunLightFurnace( kTranslucent, fixture++ );
+	RunLightFurnace( kSchlickBlackDiffuse, fixture++ );
+	RunLightFurnace( kLambertianTilted, fixture++ );
 
 	std::cout << std::endl;
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;

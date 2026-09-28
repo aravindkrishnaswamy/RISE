@@ -121,6 +121,7 @@
 #include "../src/Library/Materials/IsotropicPhongSPF.h"
 #include "../src/Library/Materials/SchlickMaterial.h"
 #include "../src/Library/Materials/TranslucentMaterial.h"
+#include "../src/Library/Materials/SubSurfaceScatteringMaterial.h"
 #include "../src/Library/Utilities/PathVertexEval.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
 #include "../src/Library/Painters/UniformScalarPainter.h"
@@ -1571,6 +1572,17 @@ static void DriveCellAlphaDown( PathGuidingField& field, uint32_t cellId )
 	}
 }
 
+//! DL-67 round 3: the opposite extreme -- `guidePdf > bsdfPdf` drives the
+//! sigmoid to its CEILING (~0.9997), so `pathguiding_alpha * 2 * sigma`
+//! exceeds 1 for any `pathguiding_alpha` above ~0.5002.
+static void DriveCellAlphaUp( PathGuidingField& field, uint32_t cellId )
+{
+	for( unsigned int i = 0; i < 400; ++i ) {
+		field.UpdateCellAlpha( cellId, /*bsdfPdf*/ 1.0, /*guidePdf*/ 10.0,
+			/*f*/ 1.0, /*combinedPdf*/ 1.0, /*learningRate*/ 0.1 );
+	}
+}
+
 //////////////////////////////////////////////////////////////////////
 // One measurement batch.
 //////////////////////////////////////////////////////////////////////
@@ -2994,6 +3006,92 @@ static void RunDL67EnvRows()
 		rough->release();
 		rs->release();
 		rd->release();
+		lambert->release();
+		whiteP->release();
+	}
+
+	// (s) DL-67 round 3 (external review P1-A): a SMOOTH
+	// `subsurfacescattering_material` (roughness 0) scatters ONLY delta
+	// lobes.  The guide cannot produce a delta direction, so that mass
+	// belongs entirely to the BSDF technique (W_b = 1), which fires with
+	// probability 1 - a -- the THIRD premise, 0 < a < 1.  At a = 1 the
+	// transport vanished: d56ace70 read EXACTLY 0 for the fixed alpha 1.0
+	// row and for the learned-alpha row (0.7 * 2 * sigma clamped to 1 once
+	// the cell's sigmoid sits near its ceiling).  The firing probability
+	// is now capped strictly below 1.  No closed form: the reference is
+	// the un-guided control at twice the samples.
+	{
+		UniformScalarPainter* ior = new UniformScalarPainter( 1.3 );
+		GlobalLog()->PrintNew( ior, __FILE__, __LINE__, "DL-67 sss ior" );
+		UniformScalarPainter* ab = new UniformScalarPainter( 0.1 );
+		GlobalLog()->PrintNew( ab, __FILE__, __LINE__, "DL-67 sss absorption" );
+		UniformScalarPainter* sc = new UniformScalarPainter( 1.0 );
+		GlobalLog()->PrintNew( sc, __FILE__, __LINE__, "DL-67 sss scattering" );
+		SubSurfaceScatteringMaterial* sss = new SubSurfaceScatteringMaterial( *ior, *ab, *sc, 0.0, 0.0 );
+		GlobalLog()->PrintNew( sss, __FILE__, __LINE__, "DL-67 smooth sss" );
+
+		const Vector3 inDir = DL67Incidence( 40 );
+		PathGuidingField* guide = BuildSkewedField( Point3( 0, 0, 0 ),
+			Vector3Ops::Normalize( Vector3( 0.6, 0.0, 0.8 ) ), 2.0 );
+		PathGuidingField* guideHigh = BuildSkewedField( Point3( 0, 0, 0 ),
+			Vector3Ops::Normalize( Vector3( 0.6, 0.0, 0.8 ) ), 2.0 );
+		{
+			GuidingDistributionHandle h;
+			guideHigh->InitDistribution( h, Point3( 0, 0, 0 ), 0.5 );
+			DriveCellAlphaUp( *guideHigh, guideHigh->GetCellId( h ) );
+			const Scalar cellAlpha = guideHigh->GetCellAlpha( h );
+			std::cout << "    (s) learned cell alpha driven to " << cellAlpha << std::endl;
+			Check( 0.7 * 2.0 * cellAlpha > 1.0,
+				"(s) the learned cell alpha is high enough that 0.7 * 2 * sigma exceeds 1" );
+		}
+
+		const unsigned int kNs = 200000;
+		const RowConfig ref{ "(s) un-guided control", false, false, false, eGuidingOneSampleMIS, 0.0 };
+		const Scalar expected = RunBatch( fx, *sss, guide, ref, 2 * kNs, 39000000u, 0, inDir );
+		std::cout << "    (s) smooth sss, un-guided reference " << expected << std::endl;
+		Check( expected > 0, "(s) smooth sss: the un-guided reference is positive" );
+
+		struct { RowConfig cfg; PathGuidingField* field; } rows[4] = {
+			{ { "one-sample, fixed alpha 0.7", false, false, false, eGuidingOneSampleMIS, 0.7 }, guide },
+			{ { "one-sample, fixed alpha 1.0", false, false, false, eGuidingOneSampleMIS, 1.0 }, guide },
+			{ { "one-sample, learned alpha 0.7 at a saturated cell", true, false, false, eGuidingOneSampleMIS, 0.7 }, guideHigh },
+			{ { "RIS", false, false, false, eGuidingRIS, 1.0 }, guide } };
+		for( unsigned int i = 0; i < 4; ++i ) {
+			const Scalar m = RunBatch( fx, *sss, rows[i].field, rows[i].cfg, kNs,
+				39400000u + i * kNs, 0, inDir );
+			std::cout << "    (s) smooth sss [" << rows[i].cfg.name << "] " << m
+				<< " , expected " << expected
+				<< " (" << ( expected > 0 ? 100.0 * ( m / expected - 1.0 ) : 0.0 ) << "%)" << std::endl;
+			const std::string label = std::string( "(s) smooth subsurfacescattering_material [" )
+				+ rows[i].cfg.name + "]: delta transport survives guiding";
+			CheckRel( m, expected, 0.04, label.c_str() );
+		}
+
+		guideHigh->release();
+		guide->release();
+		sss->release();
+		sc->release();
+		ab->release();
+		ior->release();
+	}
+
+	// (t) DL-67 round 3 (review P3): a configured one-sample alpha ABOVE 1
+	// with learned alpha off was never clamped, so the guide fired on
+	// every sample and the mixture density `a g + (1-a) p_agg` could go
+	// NEGATIVE.  White Lambertian, closed form L_env.
+	{
+		UniformColorPainter* whiteP = new UniformColorPainter( RISEPel( 1, 1, 1 ) );
+		GlobalLog()->PrintNew( whiteP, __FILE__, __LINE__, "DL-67 white" );
+		LambertianMaterial* lambert = new LambertianMaterial( *whiteP );
+		GlobalLog()->PrintNew( lambert, __FILE__, __LINE__, "DL-67 lambertian" );
+		PathGuidingField* guide = BuildSkewedField( Point3( 0, 0, 0 ),
+			Vector3Ops::Normalize( Vector3( 0.6, 0.0, 0.8 ) ), 2.0 );
+		const RowConfig cfg{ "(t) one-sample, fixed alpha 1.5", false, false, false, eGuidingOneSampleMIS, 1.5 };
+		const Scalar m = RunBatch( fx, *lambert, guide, cfg, kN, 41000000u, 0, DL67Incidence( 40 ) );
+		std::cout << "    (t) lambertian [one-sample, fixed alpha 1.5] " << m << " , expected " << Lenv
+			<< " (" << 100.0 * ( m / Lenv - 1.0 ) << "%)" << std::endl;
+		CheckRel( m, Lenv, 0.015, "(t) white lambertian [one-sample, fixed alpha 1.5]: furnace reads L_env" );
+		guide->release();
 		lambert->release();
 		whiteP->release();
 	}
