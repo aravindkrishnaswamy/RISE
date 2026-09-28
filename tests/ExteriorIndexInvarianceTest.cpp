@@ -600,7 +600,7 @@ namespace
 	};
 
 	enum class Model { Lambertian, CookTorrance, Hair, Weave, Skin, SMSMirror, SMSGlass };
-	enum class Integrator { PT, BDPT, PTSpectral };
+	enum class Integrator { PT, BDPT, PTSpectral, PTHWSS, BDPTHWSS };
 
 	const char* ModelName( Model m )
 	{
@@ -617,7 +617,14 @@ namespace
 	}
 	const char* IntegratorName( Integrator i )
 	{
-		return i == Integrator::PT ? "PT" : ( i == Integrator::BDPT ? "BDPT" : "PT-spectral" );
+		switch( i ) {
+		case Integrator::PT: return "PT";
+		case Integrator::BDPT: return "BDPT";
+		case Integrator::PTSpectral: return "PT-spectral";
+		case Integrator::PTHWSS: return "PT-HWSS";
+		case Integrator::BDPTHWSS: return "BDPT-HWSS";
+		}
+		return "unknown";
 	}
 
 	//! exterior == 1 builds the air scene; exterior > 1 wraps everything in an
@@ -745,6 +752,20 @@ namespace
 			o << "pathtracing_spectral_rasterizer\n{\n\tsamples " << samples
 			  << "\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE" << sms << "\n}\n\n";
 			break;
+		case Integrator::PTHWSS:
+			// HWSS: the companion wavelengths are priced by
+			// EvaluateKrayNM / EvaluateLobeFNM (hair) or the aggregate
+			// valueNM fallback (Cook-Torrance) on the SAME record.
+			o << "pathtracing_spectral_rasterizer\n{\n\tsamples " << samples
+			  << "\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n\thwss TRUE\n}\n\n";
+			break;
+		case Integrator::BDPTHWSS:
+			// BDPT HWSS re-prices every companion through
+			// RecomputeSubpathThroughputNM on a PathVertexEval-rebuilt
+			// record, whose ambientIOR is the vertex's mediumIOR.
+			o << "bdpt_spectral_rasterizer\n{\n\tmax_eye_depth 6\n\tmax_light_depth 6\n\tsamples " << samples
+			  << "\n\tpixel_filter box\n\toidn_denoise FALSE\n\thwss TRUE\n}\n\n";
+			break;
 		}
 		o << "file_rasterizeroutput\n{\n\tpattern rendered/dl290_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
 		return o.str();
@@ -807,8 +828,11 @@ namespace
 			{ Model::CookTorrance, Integrator::PT,         32,  0.02, nullptr },
 			{ Model::CookTorrance, Integrator::BDPT,       16,  0.02, nullptr },
 			{ Model::CookTorrance, Integrator::PTSpectral, 32,  0.03, nullptr },
-			{ Model::Hair,         Integrator::PT,         32,  0.03, nullptr },
+			{ Model::CookTorrance, Integrator::PTHWSS,     32,  0.03, nullptr },
+			{ Model::Hair,         Integrator::PT,         64,  0.03, nullptr },
 			{ Model::Hair,         Integrator::BDPT,       16,  0.03, nullptr },
+			{ Model::Hair,         Integrator::PTHWSS,     256, 0.03, nullptr },
+			{ Model::Hair,         Integrator::BDPTHWSS,   64,  0.03, nullptr },
 			{ Model::Weave,        Integrator::PT,         32,  0.03, nullptr },
 			{ Model::Weave,        Integrator::BDPT,       16,  0.03, nullptr },
 			{ Model::Skin,         Integrator::PT,         256, 0.015, nullptr },
