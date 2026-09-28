@@ -2537,6 +2537,10 @@ namespace {
 								entryV.guidingEta = 1.0;
 							}
 	#endif
+							// DL-09: the BSSRDF entry vertex records the tracked index its
+							// throughput was priced to (the subsurface event is not a
+							// straight segment, so no factor is paid across it).
+							GradedIndexMedium::RecordVertex( iorStack, entryV.pGradedMedium, entryV.gradedIOR );
 							vertices.push_back( entryV );
 
 							pdfFwdPrev = bssrdf.cosinePdf;
@@ -2695,6 +2699,10 @@ namespace {
 								entryV.guidingEta = 1.0;
 							}
 	#endif
+							// DL-09: the BSSRDF entry vertex records the tracked index its
+							// throughput was priced to (the subsurface event is not a
+							// straight segment, so no factor is paid across it).
+							GradedIndexMedium::RecordVertex( iorStack, entryV.pGradedMedium, entryV.gradedIOR );
 							vertices.push_back( entryV );
 
 							pdfFwdPrev = bssrdf.cosinePdf;
@@ -6778,6 +6786,10 @@ unsigned int GenerateLightSubpathImpl(
 						StoreThroughput<Tag>( entryV, betaSpatial );
 						entryV.pdfFwd = bssrdf.pdfSurface;
 						entryV.pdfRev = 0;
+						// DL-09: the BSSRDF entry vertex records the tracked index its
+						// throughput was priced to (the subsurface event is not a
+						// straight segment, so no factor is paid across it).
+						GradedIndexMedium::RecordVertex( iorStack, entryV.pGradedMedium, entryV.gradedIOR );
 						vertices.push_back( entryV );
 
 						pdfFwdPrev = bssrdf.cosinePdf;
@@ -6945,6 +6957,10 @@ unsigned int GenerateLightSubpathImpl(
 						StoreThroughput<Tag>( entryV, betaSpatial );
 						entryV.pdfFwd = 0;
 						entryV.pdfRev = 0;
+						// DL-09: the BSSRDF entry vertex records the tracked index its
+						// throughput was priced to (the subsurface event is not a
+						// straight segment, so no factor is paid across it).
+						GradedIndexMedium::RecordVertex( iorStack, entryV.pGradedMedium, entryV.gradedIOR );
 						vertices.push_back( entryV );
 
 						pdfFwdPrev = bssrdf.cosinePdf;
