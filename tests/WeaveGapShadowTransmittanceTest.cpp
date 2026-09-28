@@ -50,6 +50,13 @@
 //             the emitter hit has no NEE partner); the fix must NOT let
 //             the area-light NEE arm see through the gap too, or the
 //             path is counted twice.  g*L0 before AND after.
+//    castsshadows  P2-2 (external review): the transparent-shadow walk
+//             (WalkShadowSegment, shared with DL-05's pass-through
+//             walk) must STEP OVER a `casts_shadows FALSE` object, not
+//             block on it -- the binary any-hit test already ignores
+//             one.  NO weave anywhere in this section; a general
+//             RayCaster regression found while building the DL-05 walk,
+//             not a DL-05 mechanism.
 //    layers   The design-doc topology: a closed two-layer weave box
 //             (and its free-standing two-plane twin) with the omni
 //             light OUTSIDE.  PT/BDPT/VCM within 8%.
@@ -239,6 +246,18 @@ static std::string RastPT( unsigned int spp )
 	std::ostringstream ss;
 	ss << "pathtracing_pel_rasterizer\n{\n\tsamples " << spp * SppScale()
 	   << "\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n" << kOutputChunk;
+	return ss.str();
+}
+
+//! RastPT with the opt-in `transparent_shadows` walk turned on -- P2-2's
+//! `casts_shadows FALSE` step-over test needs this walk specifically
+//! (WalkShadowSegment, shared with the DL-05 pass-through walk), not the
+//! binary default.
+static std::string RastPTTransparentShadows( unsigned int spp )
+{
+	std::ostringstream ss;
+	ss << "pathtracing_pel_rasterizer\n{\n\tsamples " << spp * SppScale()
+	   << "\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n\ttransparent_shadows TRUE\n}\n\n" << kOutputChunk;
 	return ss.str();
 }
 
@@ -697,6 +716,84 @@ static void TestAreaPartitionGuard()
 }
 
 //////////////////////////////////////////////////////////////////////
+// P2-2 (external review of DL-05): the transparent-shadow walk
+// (`RayCaster::WalkShadowSegment`, shared by the opt-in
+// `transparent_shadows` path and DL-05's new pass-through walk) now
+// STEPS OVER an object whose `casts_shadows` is FALSE -- the binary
+// any-hit test (`IObjectManager::IntersectShadowRay`) already ignored
+// such objects, and a walk entered because the binary test saw a
+// DIFFERENT occluder must not then block on one the binary test itself
+// would not have blocked on.  Pre-DL-05 it did: `WalkShadowSegment` had
+// no such branch, so with `transparent_shadows TRUE` and NO weave
+// anywhere in the scene, a `casts_shadows FALSE` opaque Lambertian
+// blocker directly between the receiver and an omni light fully
+// occluded the transmittance walk while the binary walk (and the
+// blocker-free control) read the light through unattenuated.  No
+// weave/gap material is involved -- this is a general RayCaster
+// regression, found while implementing DL-05's pass-through walk
+// because both walks share WalkShadowSegment, not something DL-05's
+// own mechanism (IMaterial::HasDeltaPassThrough) has any part in.
+//////////////////////////////////////////////////////////////////////
+
+//! Same receiver/light geometry as ReceiverScene(kOmni, ...), but the
+//! "sheet" (when present) is an ORDINARY opaque Lambertian plane with
+//! `casts_shadows FALSE`, not a weave.
+static std::string NonCasterBlockerScene( bool withBlocker )
+{
+	std::ostringstream ss;
+	ss <<
+		"film\n{\n\twidth 16\n\theight 16\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 1 1.2\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 2.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_recv\n\tcolor " << kRho << " " << kRho << " " << kRho
+			<< "\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+		"lambertian_material\n{\n\tname mat_recv\n\treflectance pnt_recv\n}\n\n"
+		"clippedplane_geometry\n{\n\tname geo_recv\n"
+			"\tpta -0.1 0 0.1\n\tptb 0.1 0 0.1\n\tptc 0.1 0 -0.1\n\tptd -0.1 0 -0.1\n"
+			"\tdoublesided TRUE\n}\n\n"
+		"standard_object\n{\n\tname obj_recv\n\tgeometry geo_recv\n\tmaterial mat_recv\n}\n\n";
+
+	if( withBlocker ) {
+		ss <<
+			"uniformcolor_painter\n{\n\tname pnt_block\n\tcolor 0.8 0.8 0.8\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+			"lambertian_material\n{\n\tname mat_block\n\treflectance pnt_block\n}\n\n"
+			"clippedplane_geometry\n{\n\tname geo_block\n"
+				"\tpta -4 " << kSheetY << " 4\n\tptb 4 " << kSheetY << " 4\n"
+				"\tptc 4 " << kSheetY << " -4\n\tptd -4 " << kSheetY << " -4\n"
+				"\tdoublesided TRUE\n}\n\n"
+			"standard_object\n{\n\tname obj_block\n\tgeometry geo_block\n\tmaterial mat_block\n\tcasts_shadows FALSE\n}\n\n";
+	}
+
+	ss << "omni_light\n{\n\tname lgt\n\tposition 0 " << kLightY << " 0\n\tcolor 1 1 1\n\tpower " << kOmniPow << "\n}\n\n";
+	return ss.str();
+}
+
+static void TestCastsShadowsFalseStepOver()
+{
+	std::cout << "=== casts_shadows FALSE: the transparent-shadow walk must step over it (P2-2) ===" << std::endl;
+
+	const double L0 = Render( Assemble( RastPT( 16 ), NonCasterBlockerScene( false ) ), "noncaster_l0" );
+	Check( L0 > 0, "casts_shadows: no-blocker control renders non-black" );
+	if( !( L0 > 0 ) ) return;
+
+	// Binary walk: IntersectShadowRay already excludes a casts_shadows
+	// FALSE object, so this has always equalled L0 -- the reference the
+	// transmittance walk below is held to.
+	const double Lbinary = Render( Assemble( RastPT( 16 ), NonCasterBlockerScene( true ) ), "noncaster_binary" );
+	// Opt-in transparent-shadow walk: pre-DL-05 this read ~0 (blocked);
+	// post-fix it must step over the non-caster exactly like the binary
+	// walk and read L0 too.
+	const double Ltrans = Render( Assemble( RastPTTransparentShadows( 16 ), NonCasterBlockerScene( true ) ), "noncaster_trans" );
+
+	std::cout << "  L0 (no blocker) = " << L0
+		<< ", binary walk (casts_shadows FALSE blocker) = " << Lbinary
+		<< ", transparent_shadows walk (casts_shadows FALSE blocker) = " << Ltrans << std::endl;
+
+	Check( std::fabs( Lbinary / L0 - 1.0 ) <= 0.03, "casts_shadows: binary walk == unblocked L0" );
+	Check( std::fabs( Ltrans  / L0 - 1.0 ) <= 0.03, "casts_shadows: transparent-shadow walk == unblocked L0" );
+	Check( std::fabs( Ltrans  / Lbinary - 1.0 ) <= 0.03, "casts_shadows: transparent-shadow walk == binary walk" );
+}
+
+//////////////////////////////////////////////////////////////////////
 // The design-doc two-layer topology (docs/CLOTH_FABRIC_DESIGN.md
 // section 15 debt 25 / item 27's measurement family): a
 // `weave_material { fabric custom transmission thin gap g
@@ -897,6 +994,7 @@ int main( int argc, char** argv )
 	if( !filter || std::strstr( filter, "composite" ) )   TestClosedFormComposite();
 	if( !filter || std::strstr( filter, "directional" ) ) TestClosedFormDirectional();
 	if( !filter || std::strstr( filter, "area" ) )        TestAreaPartitionGuard();
+	if( !filter || std::strstr( filter, "castsshadows" ) ) TestCastsShadowsFalseStepOver();
 	if( !filter || std::strstr( filter, "layers" ) )      TestTwoLayerLightOutside();
 
 	std::cout << "Passed: " << passCount << "   Failed: " << failCount << std::endl;
