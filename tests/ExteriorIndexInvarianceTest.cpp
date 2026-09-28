@@ -20,7 +20,11 @@
 //        1.0 for the outside index, on entry and on exit;
 //      - the four SMS evaluation rigs in ManifoldSolver.cpp built their
 //        receiver record without stamping `ambientIOR`, although the IOR
-//        stack was in hand, so a G6 receiver (GGX conductor) priced air.
+//        stack was in hand, so a G6 receiver (GGX conductor) priced air;
+//        uniform mode did not even forward the stack;
+//      - the SMS seed walk (BuildSeedChain) started every chain at air,
+//        so each chain vertex's etaI/etaT priced an immersed caster
+//        against air.
 //
 //  THE INVARIANT (reference-free, DL-49's)
 //
@@ -53,11 +57,13 @@
 //      subject, spherical luminaire and pinhole camera inside a black
 //      absorbing room, in air versus inside an ideal non-reflecting
 //      enclosure of index 1.5 with every material index scaled by 1.5.
-//      Rows: Lambertian control, Cook-Torrance (PT, BDPT, PT spectral),
-//      hair (PT), weave (PT), BioSpec skin (PT), and four SMS rows (a GGX
-//      conductor floor lit ONLY through a mirror by a shaded point light,
-//      snell and uniform seeding, RGB and spectral).  The enclosed/air
-//      image-mean ratio must be 1.
+//      Rows: Lambertian control, Cook-Torrance (PT, BDPT, PT spectral,
+//      PT HWSS), hair (PT, BDPT, PT HWSS, BDPT HWSS), weave (PT, BDPT),
+//      BioSpec skin (PT, BDPT), SMS onto a GGX conductor floor lit ONLY
+//      through a mirror by a shaded point light (the rigs), and SMS onto a
+//      Lambertian floor through a glass sphere (the seed walk), snell and
+//      uniform, RGB and spectral.  The enclosed/air image-mean ratio must
+//      be 1.  One NON-gated row prints the photon-seeded SMS residual.
 //    Usage: [--unit-only] [--trials K (default 4)] [--only <label substring>]
 //
 //  Author: RISE debt-cleanup, slice `debt-dl290`
