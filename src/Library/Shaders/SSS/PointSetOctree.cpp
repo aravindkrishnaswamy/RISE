@@ -255,7 +255,7 @@ namespace
 	{
 		return exteriorIOR == 1.0
 			? pFunc.ComputeTotalExtinction( dist )
-			: ExtinctionAt( pFunc, dist, exteriorIOR );
+			: pFunc.ComputeTotalExtinctionForExterior( dist, exteriorIOR );
 	}
 }
 
