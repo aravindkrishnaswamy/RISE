@@ -74,6 +74,14 @@
 //         supervisor's r=0.03 probe, where merges carry more of the
 //         MIS mixture).
 //
+//         DL-308 (2026-09-28): BDPT read 0.905-0.922 of PT here from
+//         the DL-210 merge on.  Not transport: this row ran BDPT/VCM at
+//         max_eye_depth 5, which since DL-210 admits exactly one floor
+//         bounce under the water's total internal reflection, against an
+//         untruncated PT.  Rows C and D now run BDPT/VCM at kSlabDepth
+//         (16) and row C's band is 5% (was 8%); row E is the closed form
+//         that decided which side was right.
+//
 //      D. Same slab with a DELTA omni light.  PT and BDPT are exactly 0
 //         here (no strategy can connect through a delta interface to a
 //         delta light -- structural, not a bug), so the two estimators
@@ -81,6 +89,16 @@
 //         ray that ignores refraction entirely) and VCM (merges).  They
 //         must agree to within the transparent-shadow approximation.
 //         Band set from measurement, see the row.
+//
+//      E. (DL-308) Row C's direct term in CLOSED FORM: a small
+//         Lambertian patch under the water surface, looked at straight
+//         down, lit by a sphere emitter in air; the refracted irradiance
+//         is integrated numerically in the test.  PT, BDPT, VCM and a
+//         gathering legacy pixelpel chain against it.
+//
+//      F. (DL-308) Reference-free scale invariance of row E's scene:
+//         every index x1.5 inside an ideal index-1.5 enclosure (a black
+//         room around everything) must render the same image.
 //
 //    RED-PROOF -- this file's own run on the UNFIXED library at
 //    b6c12301, seed base 1000, 18 passed / 12 FAILED:
@@ -116,7 +134,11 @@
 //    so RISE renders here are seeded by the unsynchronized libc `rand()`
 //    race across worker threads.  `std::srand( g_seedBase + g_renderIndex++ )`
 //    runs immediately before every `Rasterize()`; argv[1] overrides the
-//    base for an independent sample.
+//    base for an independent sample.  Since DL-308 every render also
+//    salts the Sobol value scramble from the same index
+//    (SobolSamplerTestHooks::ValueSalt), so a different argv[1] is an
+//    independent randomized-QMC replicate rather than the identical
+//    Sobol' points under a different libc seed.
 //
 //    See docs/REFRACTIVE_RADIANCE_SCALING.md for the derivation, the
 //    site table, and the list of scene classes whose look changes.
@@ -146,6 +168,9 @@
 #include "../src/Library/Interfaces/IRasterImage.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
+#include "../src/Library/Utilities/SobolSampler.h"
+#include "../src/Library/Utilities/IORStack.h"
+#include "../src/Library/Utilities/IORStackSeeding.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -310,7 +335,21 @@ static std::string WriteSceneToTempFile( const std::string& sceneText, const cha
 	return std::string( path );
 }
 
-static ImageStats RenderAndComputeStats( const std::string& sceneText, const char* tag )
+//! Per-render Sobol VALUE salt (DL-308).  Without it every render of one
+//! scene reuses the IDENTICAL Sobol' points (the pixel seed is a function
+//! of the pixel alone), so argv[1] changed nothing but libc rand() and a
+//! repeat could not tell a real offset from the point set's own QMC error.
+//! Salting makes every render an independent randomized-QMC replicate,
+//! exactly as tests/MediumInsideOutsideInvariantTest.cpp does.
+static const uint32_t kSaltTag = 0x308u;
+
+//! Render one scene and composite its mean.  `salt` is the Sobol value
+//! salt for this render; `seedCheck`, when non-null, is filled with the
+//! IOR-stack top `IORStackSeeding::SeedFromPoint` seeds at `seedPoint`
+//! (row F asserts the enclosure really is the camera's exterior).
+static ImageStats RenderWithSalt(
+	const std::string& sceneText, const char* tag, const uint32_t salt,
+	const Point3* seedPoint = nullptr, double* seedCheck = nullptr )
 {
 	ImageStats result{};
 
@@ -337,16 +376,34 @@ static ImageStats RenderAndComputeStats( const std::string& sceneText, const cha
 	GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "test capture output" );
 	pJob->GetRasterizer()->AddRasterizerOutput( pCap );
 
+	SobolSamplerTestHooks::ValueSalt().store( salt );
 	std::srand( g_seedBase + g_renderIndex++ );
 	const bool bRendered = pJob->Rasterize();
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
 	if( bRendered ) {
 		result = ComputeStats( *pCap );
+	}
+
+	// After the render, so the scene's acceleration structure is already
+	// built (probing first builds it lazily and logs a warning).
+	if( seedPoint && seedCheck && pJob->GetScene() ) {
+		IORStack stack( 1.0 );
+		IORStackSeeding::SeedFromPoint( stack, *seedPoint, *pJob->GetScene() );
+		*seedCheck = stack.top();
 	}
 
 	safe_release( pCap );
 	safe_release( pJob );
 	std::remove( scenePath.c_str() );
 	return result;
+}
+
+//! The ordinary per-render entry point: a fresh salt per render, derived
+//! from the seed base and the running render index.
+static ImageStats RenderAndComputeStats( const std::string& sceneText, const char* tag )
+{
+	const uint32_t salt = SobolSequence::HashCombine( g_seedBase + g_renderIndex, kSaltTag );
+	return RenderWithSalt( sceneText, tag, salt );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -369,30 +426,30 @@ static std::string RasterizerPT( const char* samples, bool transparentShadows = 
 		"}\n";
 }
 
-static std::string RasterizerBDPT( const char* samples )
+static std::string RasterizerBDPT( const char* samples, unsigned int depth = 5 )
 {
 	return std::string(
 		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
 		"bdpt_pel_rasterizer\n{\n"
-		"\tmax_eye_depth 5\n"
-		"\tmax_light_depth 5\n"
-		"\tsamples " ) + samples + "\n"
+		"\tmax_eye_depth " ) + std::to_string( depth ) + "\n"
+		"\tmax_light_depth " + std::to_string( depth ) + "\n"
+		"\tsamples " + samples + "\n"
 		"\toidn_denoise FALSE\n"
 		"\tpixel_filter box\n"
 		"}\n";
 }
 
-static std::string RasterizerVCM( const char* samples )
+static std::string RasterizerVCM( const char* samples, unsigned int depth = 5, const char* mergeRadius = "0.0" )
 {
 	return std::string(
 		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
 		"vcm_pel_rasterizer\n{\n"
-		"\tmax_eye_depth 5\n"
-		"\tmax_light_depth 5\n"
-		"\tsamples " ) + samples + "\n"
+		"\tmax_eye_depth " ) + std::to_string( depth ) + "\n"
+		"\tmax_light_depth " + std::to_string( depth ) + "\n"
+		"\tsamples " + samples + "\n"
 		"\toidn_denoise FALSE\n"
 		"\tpixel_filter box\n"
-		"\tmerge_radius 0.0\n"
+		"\tmerge_radius " + mergeRadius + "\n"
 		"\tvc_enabled true\n"
 		"\tvm_enabled true\n"
 		"}\n";
@@ -740,6 +797,20 @@ static const char* kSlabLightDelta =
 	"omni_light\n{\n\tname light\n\tpower 30.0\n\tcolor 1.0 1.0 1.0\n"
 	"\tposition 0 2.5 0\n}\n";
 
+//! DL-308: BDPT/VCM eye/light depth for rows C and D, where the floor's
+//! light is trapped under the water surface by total internal reflection
+//! and the path-space series runs deep.  Each extra floor bounce costs two
+//! SURFACE vertices (the floor and the internal reflection at the top),
+//! and since DL-210 (`e361fa45`) `max_eye_depth` really caps the RGB eye
+//! walk at that many surface vertices -- before it the Pel walk ran up to
+//! `max_volume_bounce` (64) further surface vertices past it.  At the 5
+//! these rows used to share with row A, BDPT's eye walk admits exactly ONE
+//! floor bounce: it read 0.905-0.922 of PT, and PT with
+//! `max_diffuse_bounce 1` reads the same number (identity measured in
+//! docs/REFRACTIVE_RADIANCE_SCALING.md section 12).  16 is converged
+//! (8 already is; 32 reads the same within noise) and PT is untruncated.
+static const unsigned int kSlabDepth = 5;
+
 static void RunRowC()
 {
 	std::cout << "Row C: submerged floor, sphere emitter in air, camera in air"
@@ -749,8 +820,8 @@ static void RunRowC()
 	const std::string common = std::string( kSlabBody ) + kSlabLightArea;
 
 	const ImageStats pt   = RenderAndComputeStats( head + RasterizerPT( "4096" )   + common, "rowC" );
-	const ImageStats bdpt = RenderAndComputeStats( head + RasterizerBDPT( "2048" ) + common, "rowC" );
-	const ImageStats vcm  = RenderAndComputeStats( head + RasterizerVCM( "2048" )  + common, "rowC" );
+	const ImageStats bdpt = RenderAndComputeStats( head + RasterizerBDPT( "2048", kSlabDepth ) + common, "rowC" );
+	const ImageStats vcm  = RenderAndComputeStats( head + RasterizerVCM( "2048", kSlabDepth )  + common, "rowC" );
 
 	Check( pt.valid && bdpt.valid && vcm.valid, "row C: all three renders produced output" );
 	if( !pt.valid || !bdpt.valid || !vcm.valid ) return;
@@ -764,8 +835,12 @@ static void RunRowC()
 	std::cout << "    VCM  mean=" << mVCM  << "  VCM/PT ="  << ( mVCM  / mPT ) << std::endl;
 
 	Check( mPT > 1e-6, "row C: PT mean is non-trivial" );
-	Check( std::fabs( mBDPT - mPT ) <= 0.08 * mPT, "row C: BDPT within 8% of PT" );
-	Check( std::fabs( mVCM  - mPT ) <= 0.08 * mPT, "row C: VCM within 8% of PT" );
+	// 5% band (DL-308, was 8%): salted single-render ratios at depth 16,
+	// n = 8 each, read BDPT/PT 1.0044 (sd 1.18%) and VCM/PT 1.0063
+	// (sd 1.35%), so the band sits >= 3.2 sd from either mean; the
+	// depth-5 truncation it replaces reads -9.5% (BDPT) / -6.4% (VCM).
+	Check( std::fabs( mBDPT - mPT ) <= 0.05 * mPT, "row C: BDPT within 5% of PT" );
+	Check( std::fabs( mVCM  - mPT ) <= 0.05 * mPT, "row C: VCM within 5% of PT" );
 }
 
 static void RunRowD()
@@ -779,7 +854,7 @@ static void RunRowD()
 	const ImageStats ptPlain = RenderAndComputeStats( head + RasterizerPT( "64" ) + common, "rowD" );
 	const ImageStats ptTs    = RenderAndComputeStats(
 		head + RasterizerPT( "512", /*transparentShadows*/ true ) + common, "rowD" );
-	const ImageStats vcm     = RenderAndComputeStats( head + RasterizerVCM( "1024" ) + common, "rowD" );
+	const ImageStats vcm     = RenderAndComputeStats( head + RasterizerVCM( "1024", kSlabDepth ) + common, "rowD" );
 
 	Check( ptPlain.valid && ptTs.valid && vcm.valid, "row D: all three renders produced output" );
 	if( !ptPlain.valid || !ptTs.valid || !vcm.valid ) return;
@@ -816,6 +891,385 @@ static void RunRowD()
 	Check( std::fabs( mTs - mVCM ) <= 0.15 * mVCM, "row D: transparent-shadow PT within 15% of VCM" );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Row E -- DL-308: the submerged floor's DIRECT term in closed form.
+//
+// Row C can only assert agreement, and agreement cannot say which side
+// is wrong -- DL-308 (BDPT 0.905-0.922 of PT) needed a number that does
+// not come from any integrator.  This row shrinks row C's floor to a
+// small Lambertian PATCH under a flat water surface, looked at straight
+// down through it, lit by a sphere emitter in air.  Everything that is
+// not the direct term is either absent or computed:
+//
+//   L_pixel = T_in(theta_cam) / n^2 * rho/pi * E(p)
+//   E(p)    = integral over water directions of T(theta_w) n^2 L_e cos
+//
+// (the n^2 factors are docs/REFRACTIVE_RADIANCE_SCALING.md section 1's:
+// radiance entering the water from the emitter is n^2 brighter, the
+// floor's radiance leaving it for the camera n^2 dimmer).  E is
+// integrated numerically over the refraction point q on the surface
+// plane -- d(omega_w) = cos(theta_w) dA_q / |q - p|^2 -- with an exact
+// ray-sphere test of the refracted air ray, so the refraction geometry
+// (the emitter's image is displaced and compressed) is exact, not
+// paraxial.  The camera footprint is averaged on a 16 x 16 grid through
+// the same pinhole model PinholeCamera uses (square film, half-extent
+// tan(fov/2)).
+//
+// What the closed form leaves out, and why it may:
+//  - the floor re-lit by its own light reflected at the surface: the
+//    patch (0.14 wide, 0.25 under the surface) is too small for a
+//    total-internal-reflection return to land on it (a TIR return
+//    travels >= 0.57 sideways), and the sub-critical Fresnel return is
+//    COMPUTED (a first-order term, +0.024%, `SelfReturn` below);
+//  - light passing beside the patch, reflecting off the water's bottom
+//    face 2.05 below and coming back via a second surface reflection:
+//    two Fresnel reflections (~1e-3) times the patch's solid angle from
+//    the bottom, < 1e-4;
+//  - the water box's side faces, 3 units away: nothing reaches the patch
+//    through them.
+// The camera's own Fresnel reflection off the surface goes up into an
+// unlit sky: the emitter's mirror image sits at x ~ 0.4 on the surface,
+// far outside the 2-degree field.
+//
+// MEASURED (salted independent renders, 32x32; ratio to the closed form
+// 0.00351454, +/- the standard error of the mean):
+//   PT       256 spp, n = 10   1.0024 +/- 0.0021
+//   BDPT     512 spp, n = 10   1.0013 +/- 0.0020
+//   VCM      512 spp, n = 10   1.0015 +/- 0.0020
+//   pixelpel 4 spp x 128 gather samples, n = 6   0.9975 +/- 0.0050
+// Every integrator carries the direct term through the interface
+// correctly -- which is what attributes row C's old deficit to the eye
+// DEPTH (kSlabDepth above) rather than to transport.  Bands: the mean of
+// n = 4 renders within 2% for PT (per-render sd 0.65%) and BDPT/VCM
+// (0.62%) -- >= 6 sd -- and one pixelpel render (sd 1.2%) within 5%.
+//
+// The legacy chain needs a gathering op to see this at all: the default
+// DefaultDirectLighting chain is exactly dark here (its shadow ray is
+// opaque to the delta water surface, row D's structural zero), so the
+// pixelpel row runs DefaultEmission + a diffuse-only
+// `distributiontracing_shaderop` + DefaultRefraction -- the op pair
+// whose eta^2 consumers (DistributionTracingShaderOp, RefractionShaderOp)
+// section 6.1 of the doc lists.  DefaultReflection is left out: with it
+// every Fresnel reflection of a gather ray at the surface falls back on
+// the patch and re-gathers, doubling the cost for the +0.024% term the
+// closed form adds anyway.
+//////////////////////////////////////////////////////////////////////
+namespace RowE
+{
+	const double kPi      = 3.14159265358979323846;
+	const double kN       = 1.33;		// water
+	const double kYFloor  = 0.05;		// the patch
+	const double kYSurf   = 0.3;		// the water surface
+	const double kPatch   = 0.07;		// patch half-width
+	const double kEmitX   = 0.8, kEmitY = 2.5, kEmitZ = 0.0;
+	const double kEmitR   = 0.4;
+	const double kEmitScale = 1.688;	// exitance => L_e = kEmitScale / pi
+	const double kRho     = 0.5;
+	const double kCamY    = 2.5, kCamZ = 0.001;
+	const double kFovDeg  = 2.0;
+
+	//! Unpolarized dielectric reflectance, the formula of
+	//! Optics::CalculateDielectricReflectance (1 past the critical angle).
+	double Fresnel( const double cosI, const double n1, const double n2 )
+	{
+		const double s2 = ( n1 / n2 ) * ( n1 / n2 ) * ( 1.0 - cosI * cosI );
+		if( s2 >= 1.0 ) return 1.0;
+		const double cosT = std::sqrt( 1.0 - s2 );
+		const double rs = ( n1 * cosI - n2 * cosT ) / ( n1 * cosI + n2 * cosT );
+		const double rp = ( n2 * cosI - n1 * cosT ) / ( n2 * cosI + n1 * cosT );
+		return 0.5 * ( rs * rs + rp * rp );
+	}
+
+	//! Refraction point on the surface of the chief ray from floor point
+	//! (px, pz) to the emitter centre: Snell in the vertical plane through
+	//! both, solved by bisection on the horizontal offset.
+	void ChiefPoint( const double px, const double pz, double& qx, double& qz )
+	{
+		const double dx = kEmitX - px, dz = kEmitZ - pz;
+		const double D = std::sqrt( dx * dx + dz * dz );
+		const double hw = kYSurf - kYFloor, ha = kEmitY - kYSurf;
+		double lo = 0.0, hi = D;
+		for( int i = 0; i < 100; i++ ) {
+			const double s = 0.5 * ( lo + hi );
+			const double f = kN * s / std::hypot( s, hw ) - ( D - s ) / std::hypot( D - s, ha );
+			if( f > 0 ) hi = s; else lo = s;
+		}
+		const double s = 0.5 * ( lo + hi );
+		qx = px + ( D > 0 ? s * dx / D : 0.0 );
+		qz = pz + ( D > 0 ? s * dz / D : 0.0 );
+	}
+
+	//! Irradiance at floor point (px, pz), integrated over the refraction
+	//! point q on the surface plane (midpoint rule, N x N over a box of
+	//! half-width w about the chief point, widened until no border cell
+	//! hits the emitter).  Returns a negative value if it cannot bracket.
+	double Irradiance( const double px, const double pz )
+	{
+		const double Le = kEmitScale / kPi;
+		const double hw = kYSurf - kYFloor;
+		double qx0, qz0;
+		ChiefPoint( px, pz, qx0, qz0 );
+		const int N = 400;
+		for( double w = 0.05; w < 1.0; w *= 1.5 ) {
+			const double cell = 2.0 * w / N;
+			double sum = 0.0;
+			bool borderHit = false;
+			for( int i = 0; i < N; i++ ) {
+				const double qx = qx0 - w + ( i + 0.5 ) * cell;
+				for( int j = 0; j < N; j++ ) {
+					const double qz = qz0 - w + ( j + 0.5 ) * cell;
+					const double vx = qx - px, vz = qz - pz;
+					const double L2 = vx * vx + hw * hw + vz * vz;
+					const double L = std::sqrt( L2 );
+					const double cw = hw / L;
+					// Refract into air: the horizontal component scales by n.
+					const double hx = vx / L * kN, hz = vz / L * kN;
+					const double h2 = hx * hx + hz * hz;
+					if( h2 >= 1.0 ) continue;			// total internal reflection
+					const double ay = std::sqrt( 1.0 - h2 );
+					const double ox = qx - kEmitX, oy = kYSurf - kEmitY, oz = qz - kEmitZ;
+					const double b = ox * hx + oy * ay + oz * hz;
+					const double c = ox * ox + oy * oy + oz * oz - kEmitR * kEmitR;
+					const double disc = b * b - c;
+					if( disc <= 0.0 || -b - std::sqrt( disc ) <= 0.0 ) continue;
+					const double T = 1.0 - Fresnel( cw, kN, 1.0 );
+					sum += T * kN * kN * Le * cw * cw / L2;
+					if( i == 0 || j == 0 || i == N - 1 || j == N - 1 ) borderHit = true;
+				}
+			}
+			if( !borderHit ) {
+				return sum * cell * cell;
+			}
+		}
+		return -1.0;
+	}
+
+	//! First-order self-return: the patch's own radiance Fresnel-reflected
+	//! back onto it by the surface above (unfolded: the patch's mirror
+	//! image 2 hw above), relative to the direct irradiance.
+	double SelfReturn()
+	{
+		const double h2 = 2.0 * ( kYSurf - kYFloor );
+		const int N = 200;
+		const double cell = 2.0 * kPatch / N;
+		double sum = 0.0;
+		for( int i = 0; i < N; i++ ) {
+			const double x = -kPatch + ( i + 0.5 ) * cell;
+			for( int j = 0; j < N; j++ ) {
+				const double z = -kPatch + ( j + 0.5 ) * cell;
+				const double d2 = x * x + z * z + h2 * h2;
+				const double c = h2 / std::sqrt( d2 );
+				sum += Fresnel( c, kN, 1.0 ) * c * c / d2;
+			}
+		}
+		return kRho / kPi * sum * cell * cell;
+	}
+
+	//! The closed-form image mean (see the row header).  Fills
+	//! `footprintInside` with whether every footprint sample landed on
+	//! the patch (a geometry guard for the scene text below).
+	double ClosedForm( bool& footprintInside )
+	{
+		footprintInside = true;
+		const double t = std::tan( 0.5 * kFovDeg * kPi / 180.0 );
+		// Camera frame: forward = lookat(0,0,0) - location, up (0,0,1).
+		double fx = 0.0, fy = -kCamY, fz = -kCamZ;
+		const double fl = std::sqrt( fx * fx + fy * fy + fz * fz );
+		fx /= fl; fy /= fl; fz /= fl;
+		// right = forward x up, up2 = right x forward.
+		double rx = fy * 1.0 - fz * 0.0, ry = fz * 0.0 - fx * 1.0, rz = fx * 0.0 - fy * 0.0;
+		const double rl = std::sqrt( rx * rx + ry * ry + rz * rz );
+		rx /= rl; ry /= rl; rz /= rl;
+		const double ux = ry * fz - rz * fy, uy = rz * fx - rx * fz, uz = rx * fy - ry * fx;
+		const int G = 16;
+		double sum = 0.0;
+		for( int i = 0; i < G; i++ ) {
+			for( int j = 0; j < G; j++ ) {
+				const double u = ( ( i + 0.5 ) / G * 2.0 - 1.0 ) * t;
+				const double v = ( ( j + 0.5 ) / G * 2.0 - 1.0 ) * t;
+				double dx = fx + u * rx + v * ux, dy = fy + u * ry + v * uy, dz = fz + u * rz + v * uz;
+				const double dl = std::sqrt( dx * dx + dy * dy + dz * dz );
+				dx /= dl; dy /= dl; dz /= dl;
+				const double s = ( kYSurf - kCamY ) / dy;
+				const double qx = 0.0 + s * dx, qz = kCamZ + s * dz;
+				const double Tin = 1.0 - Fresnel( -dy, 1.0, kN );
+				// Refracted direction in water.
+				const double wx = dx / kN, wz = dz / kN;
+				const double wy = -std::sqrt( 1.0 - wx * wx - wz * wz );
+				const double s2 = ( kYFloor - kYSurf ) / wy;
+				const double px = qx + s2 * wx, pz = qz + s2 * wz;
+				if( std::fabs( px ) >= kPatch || std::fabs( pz ) >= kPatch ) footprintInside = false;
+				const double E = Irradiance( px, pz );
+				if( E < 0 ) { footprintInside = false; return -1.0; }
+				sum += Tin * E;
+			}
+		}
+		const double meanTE = sum / double( G * G );
+		return meanTE / ( kN * kN ) * kRho / kPi * ( 1.0 + SelfReturn() );
+	}
+
+	std::string Scene( const char* waterIor )
+	{
+		char buf[4096];
+		std::snprintf( buf, sizeof(buf),
+			"film\n{\n\twidth 32\n\theight 32\n}\n\n"
+			"pinhole_camera\n{\n\tlocation 0.0 %g %g\n\tlookat 0 0 0\n\tup 0 0 1\n\tfov %g\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor %g %g %g\n}\n\n"
+			"lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n"
+			"clippedplane_geometry\n{\n\tname quad\n"
+			"\tpta -%g %g %g\n\tptb %g %g %g\n\tptc %g %g -%g\n\tptd -%g %g -%g\n}\n\n"
+			"standard_object\n{\n\tname obj_quad\n\tgeometry quad\n\tmaterial mat_diffuse\n}\n\n"
+			"dielectric_material\n{\n\tname mat_water\n\tior %s\n\ttau 1.0\n\tscattering 1000000\n}\n\n"
+			// Top face at kYSurf, bottom face far below (y = -2).
+			"box_geometry\n{\n\tname geo_water\n\twidth 6.0\n\theight 2.3\n\tdepth 6.0\n}\n\n"
+			"standard_object\n{\n\tname water\n\tgeometry geo_water\n\tmaterial mat_water\n\tposition 0 -0.85 0\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt_emit\n\tcolor 1.0 1.0 1.0\n}\n\n"
+			"lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n\tscale %g\n\tmaterial none\n}\n\n"
+			"sphere_geometry\n{\n\tname geo_emit\n\tradius %g\n}\n\n"
+			"standard_object\n{\n\tname obj_emit\n\tgeometry geo_emit\n\tmaterial mat_emit\n\tposition %g %g %g\n}\n",
+			kCamY, kCamZ, kFovDeg, kRho, kRho, kRho,
+			kPatch, kYFloor, kPatch, kPatch, kYFloor, kPatch, kPatch, kYFloor, kPatch, kPatch, kYFloor, kPatch,
+			waterIor, kEmitScale, kEmitR, kEmitX, kEmitY, kEmitZ );
+		return std::string( buf );
+	}
+
+	//! Legacy chain for row E: emission + a diffuse-only gather + the
+	//! refraction consumer (see the row header for why no reflection op).
+	std::string RasterizerPixelPelGather( const char* samples, const char* gatherSamples )
+	{
+		return std::string(
+			"distributiontracing_shaderop\n{\n\tname dt\n\tsamples " ) + gatherSamples + "\n"
+			"\treflections FALSE\n\trefractions FALSE\n\tdiffuse TRUE\n\ttranslucents FALSE\n}\n\n"
+			"standard_shader\n{\n\tname global\n"
+			"\tshaderop DefaultEmission\n\tshaderop dt\n\tshaderop DefaultRefraction\n}\n\n"
+			"pixelpel_rasterizer\n{\n\tsamples " + samples + "\n"
+			"\toidn_denoise FALSE\n\tpixel_filter box\n}\n";
+	}
+}
+
+static void RunRowE()
+{
+	bool inside = false;
+	const double expected = RowE::ClosedForm( inside );
+	std::cout << "Row E: submerged Lambertian patch, sphere emitter in air, camera in air"
+	          << "  (closed form " << expected << ")" << std::endl;
+	Check( expected > 0 && inside, "row E: closed form evaluated with the whole footprint on the patch" );
+	// The quadrature is independent of the renders; pin it so a change to
+	// it (or to the scene constants) is a visible, deliberate edit.
+	Check( std::fabs( expected - 0.0035147 ) <= 1e-3 * 0.0035147,
+		"row E: closed form reproduces the value the bands were measured against" );
+	if( !( expected > 0 ) ) return;
+
+	const std::string head( "RISE ASCII SCENE 7\n" );
+	const std::string common = RowE::Scene( "1.33" );
+
+	struct Row { const char* name; std::string scene; int n; double band; };
+	const Row rows[] = {
+		{ "PT",       head + RasterizerPT( "256" )                   + common, 4, 0.02 },
+		{ "BDPT",     head + RasterizerBDPT( "512", kSlabDepth )     + common, 4, 0.02 },
+		{ "VCM",      head + RasterizerVCM( "512", kSlabDepth )      + common, 4, 0.02 },
+		{ "pixelpel", head + RowE::RasterizerPixelPelGather( "4", "128" ) + common, 1, 0.05 },
+	};
+
+	for( const Row& r : rows ) {
+		double sum = 0.0;
+		bool ok = true;
+		for( int i = 0; i < r.n; i++ ) {
+			const ImageStats s = RenderAndComputeStats( r.scene, "rowE" );
+			if( !s.valid ) { ok = false; break; }
+			sum += GreyMean( s );
+		}
+		const std::string label = std::string( "row E " ) + r.name;
+		Check( ok, label + ": every render produced output" );
+		if( !ok ) continue;
+		const double m = sum / double( r.n );
+		std::cout << "    " << r.name << "  mean=" << m << " (n=" << r.n << ")"
+		          << "  ratio-to-closed-form=" << ( m / expected ) << std::endl;
+		char buf[160];
+		std::snprintf( buf, sizeof(buf), ": mean == closed-form direct term within %.0f%%", r.band * 100.0 );
+		Check( std::fabs( m - expected ) <= r.band * expected, label + buf );
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// Row F -- DL-308: scale invariance of row E's scene (reference-free).
+//
+// Multiply every index by 1.5 -- the camera, the emitter and the water
+// (1.33 -> 1.995) all sitting inside an ideal non-reflecting index-1.5
+// enclosure -- and every relative index, every Fresnel factor, every
+// Snell direction and every basic-radiance ratio is unchanged, so the
+// image must be too.  The SSSExteriorIndexInvarianceTest idiom: a black
+// absorbing room (radius 20) sits around everything on BOTH sides, so no
+// path ever reaches the enclosure's wall, whose total internal reflection
+// would otherwise return grazing escapes as real extra light.  Each pair
+// renders the air and the enclosed scene with ONE salt (common random
+// numbers: the invariance says they are the same function), so the ratio
+// is tight.  MEASURED (paired, n = 4): PT 1.0004 +/- 0.0017 (sd),
+// BDPT 0.9999 +/- 0.0011, VCM 1.0002 +/- 0.0003.  An eta factor taken
+// from an ABSOLUTE index anywhere reads 1.5^2 = 2.25 or its inverse.
+//
+// VCM runs with an explicit merge radius here: the room's long light
+// segments set its auto radius to 0.19, larger than the whole patch, and
+// the merge's kernel estimate then reads ~0.6 of the truth on both sides
+// alike (DL-319).  The invariance holds either way; the explicit radius
+// keeps the row's absolute value meaningful.
+//////////////////////////////////////////////////////////////////////
+static const char* kBlackRoom =
+	"uniformcolor_painter\n{\n\tname pnt_black\n\tcolor 0 0 0\n}\n\n"
+	"lambertian_material\n{\n\tname mat_black\n\treflectance pnt_black\n}\n\n"
+	"sphere_geometry\n{\n\tname room_geo\n\tradius 20\n}\n\n"
+	"standard_object\n{\n\tname room\n\tgeometry room_geo\n\tmaterial mat_black\n}\n\n";
+
+static const char* kEnclosure15 =
+	"uniformcolor_painter\n{\n\tname pnt_white_enc\n\tcolor 1 1 1\n}\n\n"
+	"perfectrefractor_material\n{\n\tname mat_enc\n\tior 1.5\n\trefractance pnt_white_enc\n}\n\n"
+	"box_geometry\n{\n\tname enc_geo\n\twidth 60\n\theight 60\n\tdepth 60\n}\n\n"
+	"standard_object\n{\n\tname enclosure\n\tgeometry enc_geo\n\tmaterial mat_enc\n}\n\n";
+
+static void RunRowF()
+{
+	std::cout << "Row F: row E's scene in air vs inside an index-1.5 enclosure (every index x1.5)"
+	          << "  (reference-free: ratio 1)" << std::endl;
+
+	const std::string head( "RISE ASCII SCENE 7\n" );
+	const std::string air = RowE::Scene( "1.33" )  + kBlackRoom;
+	const std::string enc = RowE::Scene( "1.995" ) + kBlackRoom + kEnclosure15;
+	const Point3 camPos( 0.0, RowE::kCamY, RowE::kCamZ );
+
+	struct Row { const char* name; std::string ras; };
+	const Row rows[] = {
+		{ "PT",   RasterizerPT( "256" ) },
+		{ "BDPT", RasterizerBDPT( "256", kSlabDepth ) },
+		{ "VCM",  RasterizerVCM( "256", kSlabDepth, "0.002" ) },
+	};
+	const int kPairs = 2;
+
+	for( const Row& r : rows ) {
+		double sumAir = 0.0, sumEnc = 0.0;
+		bool ok = true;
+		double seededAir = 0.0, seededEnc = 0.0;
+		for( int i = 0; i < kPairs && ok; i++ ) {
+			const uint32_t salt = SobolSequence::HashCombine( g_seedBase + g_renderIndex, kSaltTag );
+			const ImageStats a = RenderWithSalt( head + r.ras + air, "rowF_air", salt,
+				i == 0 ? &camPos : nullptr, &seededAir );
+			const ImageStats e = RenderWithSalt( head + r.ras + enc, "rowF_enc", salt,
+				i == 0 ? &camPos : nullptr, &seededEnc );
+			if( !a.valid || !e.valid ) { ok = false; break; }
+			sumAir += GreyMean( a );
+			sumEnc += GreyMean( e );
+		}
+		const std::string label = std::string( "row F " ) + r.name;
+		Check( ok, label + ": every render produced output" );
+		if( !ok ) continue;
+		Check( std::fabs( seededAir - 1.0 ) < 1e-12 && std::fabs( seededEnc - 1.5 ) < 1e-12,
+			label + ": the camera's seeded exterior index is 1 in air and 1.5 enclosed" );
+		const double ratio = sumEnc / sumAir;
+		std::cout << "    " << r.name << "  air=" << sumAir / kPairs << "  enclosed=" << sumEnc / kPairs
+		          << "  enclosed/air=" << ratio << std::endl;
+		Check( std::fabs( ratio - 1.0 ) <= 0.01, label + ": enclosed/air image mean within 1% of 1" );
+	}
+}
+
 int main( int argc, char** argv )
 {
 	if( argc > 1 && argv[1] ) {
@@ -834,6 +1288,8 @@ int main( int argc, char** argv )
 	RunRowB();
 	RunRowC();
 	RunRowD();
+	RunRowE();
+	RunRowF();
 	TestNonfiniteCandidateRejected();
 
 	std::cout << std::endl;
