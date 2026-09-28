@@ -59,7 +59,17 @@ namespace RISE
 		unsigned int	maxGlossyBounce;		///< Maximum glossy/reflection bounces (UINT_MAX = unlimited)
 		unsigned int	maxTransmissionBounce;	///< Maximum refraction/transmission bounces (UINT_MAX = unlimited)
 		unsigned int	maxTranslucentBounce;	///< Maximum translucent bounces (UINT_MAX = unlimited)
-		unsigned int	maxVolumeBounce;		///< Maximum volume scatter bounces (64 default, matches PT)
+		/// Maximum medium-scatter vertices per full camera-to-light path
+		/// (64 default).  DL-247: the SAME truncation in every integrator --
+		/// the medium's Neumann series is cut at this order, every medium
+		/// segment on a surviving path carrying its true transmittance.  PT
+		/// and the BDPT/VCM subpath generators stop sampling scatter at the
+		/// cap (the segment then carries deterministic Beer-Lambert Tr);
+		/// BDPT/VCM additionally drop any (s,t) strategy whose light- plus
+		/// eye-prefix scatter count exceeds it (BDPTVertex::volumeBounces).
+		/// In a dense medium whose expected scatter count approaches the
+		/// cap, every integrator reads the same TRUNCATED (darker) answer.
+		unsigned int	maxVolumeBounce;
 
 		//
 		// Light sampling
