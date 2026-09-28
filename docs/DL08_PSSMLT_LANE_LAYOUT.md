@@ -182,6 +182,8 @@ shifted-shadow bug this file's test suite exists to guard against.
 
 ## Render-level proof (2026-09-27)
 
+> **Measurement conventions (added at merge, 2026-09-27 review P3s).** Every "mean" in this section is the Rec.709 luma `0.2126 R + 0.7152 G + 0.0722 B` of the linear EXR, the renderer's own luminance convention; a plain `(R+G+B)/3` reproduction reads ~2% off and is not a discrepancy. The PT reference figures (2.858 RGB / 3.013 spectral) are single unseeded runs; an independent re-render at the same budget read 2.515 / 3.133, i.e. ~10-15% run-to-run spread on this heavy-tailed scene, two orders of magnitude below the 60-900x MLT/PT gap discussed here. That gap is PSSMLT's image mean being pegged to its bootstrap mean-luminance estimate `b_mean` (verified: the log's `b_mean` equals the resolved EXR luma to 6 significant figures), a small-N bootstrap of a heavy-tailed distribution reading low on BOTH builds -- quote `b_mean` beside any MLT-vs-PT ratio.
+
 The paragraph above declined a render-level demonstration as "not
 justified" given the closed-form sampler-arithmetic proof already
 existed.  This section supplies that demonstration anyway, on a
