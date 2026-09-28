@@ -89,6 +89,36 @@ namespace RISE
 			//! `transparent_shadows` flag.
 			bool						bTransparentShadows;
 
+			//! DL-05: true when some material reachable by a ray hit
+			//! reports IMaterial::HasDeltaPassThrough() (a `transmission
+			//! thin` weave, or a wrapper forwarding one).  Recomputed on
+			//! EVERY AttachScene (a cheap object walk, CSG operands
+			//! included), so a same-pointer re-attach after an in-place
+			//! material edit is never stale.  Gates only the COST of the
+			//! pass-through shadow walk -- when false no shadow ray ever
+			//! pays for it, and when true the per-hit material query still
+			//! decides.
+			bool						bSceneHasDeltaPassThrough;
+
+			//! The shared hit-by-hit shadow walk behind
+			//! CastShadowRayTransmittance (@a bDielectrics: the
+			//! `transparent_shadows` Fresnel pass-through of a clear
+			//! dielectric) and DL-05's delta pass-through
+			//! (@a bDeltaPassThrough: ISPF::DeltaPassThroughTransmittance
+			//! at a material reporting HasDeltaPassThrough).  Any other
+			//! shadow-casting hit blocks; a hit on an object that does not
+			//! cast shadows is stepped over (the binary CastShadowRay
+			//! ignores it too).
+			bool WalkShadowSegment(
+				const Ray& ray,
+				const Scalar dHowFar,
+				const bool bNM,
+				const Scalar nm,
+				RISEPel& transmittance,
+				const bool bDielectrics,
+				const bool bDeltaPassThrough
+				) const;
+
 			//! Runtime override for the environment radiance scale,
 			//! backing `> modify rasterizer radiance_scale`.  Negative
 			//! (the construction default) means "no override — use the
@@ -330,6 +360,23 @@ namespace RISE
 			//! Flag-aware NEE shadow occlusion — the SINGLE entry point that
 			//! routes to the Fresnel-transmittance walk when
 			//! `transparent_shadows` is enabled, else the binary CastShadowRay.
+			//!
+			//! DL-05: when @a bDeltaLight is true -- the caller is a DELTA
+			//! light's shadow test (omni, spot, directional; the LightSampler
+			//! delta arm, the Step-1 zero-exitance lights, BDPT's
+			//! zero-exitance sweep) -- a hit on a material with a non-bending
+			//! delta pass-through (a thin weave's gap) attenuates by
+			//! ISPF::DeltaPassThroughTransmittance and the walk continues.
+			//! Delta lights only, because no BSDF-sampled continuation can
+			//! ever hit a delta light: this shadow ray is the path's ONLY
+			//! estimator, so seeing through the gap adds a missing path
+			//! without competing with anything.  An area/env light's NEE
+			//! keeps a binary shadow here: PT's continuation already reaches
+			//! it through the gap at MIS weight 1.  Also suppressed while the
+			//! scene carries a radiance-carrying photon map (caustic / global
+			//! / translucent), whose legacy gather ops already estimate the
+			//! light-through-a-delta-lobe path.
+			//! See docs/DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md.
 			//! Every NEE shadow site uses this so the flag is honored
 			//! UNIFORMLY.  Two families of caller:
 			//!   * LightSampler's delta / mesh-luminary NEE branches (the PT
@@ -353,8 +400,13 @@ namespace RISE
 				const Scalar dHowFar,								///< [in] How far to follow the ray
 				const bool bNM,										///< [in] True for the spectral (single-wavelength) path; false for the RGB path
 				const Scalar nm,									///< [in] Wavelength (only used when bNM == true)
-				RISEPel& transmittance								///< [out] Accumulated per-interface Fresnel transmittance (1,1,1 when clear or binary)
+				RISEPel& transmittance,								///< [out] Accumulated per-interface Fresnel transmittance (1,1,1 when clear or binary)
+				const bool bDeltaLight								///< [in] DL-05: the caller is a delta light's shadow test (see above)
 				) const;
+
+			//! DL-05 read-back (tests): whether the last AttachScene found a
+			//! material with a delta pass-through.
+			bool SceneHasDeltaPassThrough() const { return bSceneHasDeltaPassThrough; }
 
 			//! To retreive the current scene
 			/// \return Pointer to currently attached scene, NULL if no scene is currently attached

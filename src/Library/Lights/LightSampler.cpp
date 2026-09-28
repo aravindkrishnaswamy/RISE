@@ -61,7 +61,8 @@ static bool ShadowOccludedRGB(
 	const IRayCaster& caster,
 	const Ray& ray,
 	const Scalar dHowFar,
-	RISEPel& transmittance
+	RISEPel& transmittance,
+	const bool bDeltaLight		// DL-05: see RayCaster::CastShadowRayAuto
 	)
 {
 	// Delegate to RayCaster::CastShadowRayAuto, the single source of truth for
@@ -70,7 +71,7 @@ static bool ShadowOccludedRGB(
 	const RayCaster* pRC = dynamic_cast<const RayCaster*>( &caster );
 	if( pRC )
 	{
-		return pRC->CastShadowRayAuto( ray, dHowFar, false, 0.0, transmittance );
+		return pRC->CastShadowRayAuto( ray, dHowFar, false, 0.0, transmittance, bDeltaLight );
 	}
 	transmittance = RISEPel( 1.0, 1.0, 1.0 );
 	return caster.CastShadowRay( ray, dHowFar );
@@ -81,7 +82,8 @@ static bool ShadowOccludedNM(
 	const Ray& ray,
 	const Scalar dHowFar,
 	const Scalar nm,
-	Scalar& transmittance
+	Scalar& transmittance,
+	const bool bDeltaLight		// DL-05: see RayCaster::CastShadowRayAuto
 	)
 {
 	// Delegate to RayCaster::CastShadowRayAuto (see ShadowOccludedRGB).
@@ -89,7 +91,7 @@ static bool ShadowOccludedNM(
 	if( pRC )
 	{
 		RISEPel t( 1.0, 1.0, 1.0 );
-		const bool occluded = pRC->CastShadowRayAuto( ray, dHowFar, true, nm, t );
+		const bool occluded = pRC->CastShadowRayAuto( ray, dHowFar, true, nm, t, bDeltaLight );
 		transmittance = t.r;	// NM path fills all 3 channels equally
 		return occluded;
 	}
@@ -2418,7 +2420,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
 			if( bReceivesShadows )
 			{
 				const Ray rayToLight( ri.ptIntersection, vToLight );
-				if( ShadowOccludedRGB( caster, rayToLight, dist - 0.001, shadowT ) )
+				if( ShadowOccludedRGB( caster, rayToLight, dist - 0.001, shadowT, true /*DL-05: delta light*/ ) )
 					break;
 			}
 
@@ -2522,7 +2524,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
 				if( bReceivesShadows )
 				{
 					const Ray rayToLight( ri.ptIntersection, vToLight );
-					shadowed = ShadowOccludedRGB( caster, rayToLight, dist - 0.001, meshShadowT );
+					shadowed = ShadowOccludedRGB( caster, rayToLight, dist - 0.001, meshShadowT, false /*DL-05: area light -- see CastShadowRayAuto*/ );
 				}
 
 				if( !shadowed )
@@ -2787,7 +2789,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
 			if( bReceivesShadows )
 			{
 				const Ray rayToEnv( ri.ptIntersection, envDir );
-				envShadowed = ShadowOccludedRGB( caster, rayToEnv, RISE_INFINITY, envShadowT );
+				envShadowed = ShadowOccludedRGB( caster, rayToEnv, RISE_INFINITY, envShadowT, false /*DL-05: env light -- see CastShadowRayAuto*/ );
 			}
 
 			if( !envShadowed )
@@ -3147,7 +3149,7 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 			if( bReceivesShadows )
 			{
 				const Ray rayToLight( ri.ptIntersection, vToLight );
-				if( ShadowOccludedNM( caster, rayToLight, dist - 0.001, nm, shadowTNM ) )
+				if( ShadowOccludedNM( caster, rayToLight, dist - 0.001, nm, shadowTNM, true /*DL-05: delta light*/ ) )
 					break;
 			}
 
@@ -3240,7 +3242,7 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 		if( bReceivesShadows )
 		{
 			const Ray rayToLight( ri.ptIntersection, vToLight );
-			if( ShadowOccludedNM( caster, rayToLight, dist - 0.001, nm, meshShadowTNM ) )
+			if( ShadowOccludedNM( caster, rayToLight, dist - 0.001, nm, meshShadowTNM, false /*DL-05: area light -- see CastShadowRayAuto*/ ) )
 			{
 				break;
 			}
@@ -3378,7 +3380,7 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 			if( bReceivesShadows )
 			{
 				const Ray rayToEnv( ri.ptIntersection, envDir );
-				envShadowed = ShadowOccludedNM( caster, rayToEnv, RISE_INFINITY, nm, envShadowTNM );
+				envShadowed = ShadowOccludedNM( caster, rayToEnv, RISE_INFINITY, nm, envShadowTNM, false /*DL-05: env light -- see CastShadowRayAuto*/ );
 			}
 
 			if( !envShadowed )

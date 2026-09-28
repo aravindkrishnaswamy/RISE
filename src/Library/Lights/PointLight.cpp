@@ -131,7 +131,7 @@ void PointLight::ComputeDirectLighting(
 
 		const RayCaster* pRC = dynamic_cast<const RayCaster*>( &pCaster );
 		if( pRC ) {
-			if( pRC->CastShadowRayAuto( rayToLight, fDistFromLight, false, 0.0, shadowT ) ) {
+			if( pRC->CastShadowRayAuto( rayToLight, fDistFromLight, false, 0.0, shadowT, true /*DL-05: delta light*/ ) ) {
 				return;
 			}
 		} else if( pCaster.CastShadowRay( rayToLight, fDistFromLight ) ) {
@@ -178,7 +178,7 @@ Scalar PointLight::ComputeDirectLightingNM(
 		const RayCaster* pRC = dynamic_cast<const RayCaster*>( &pCaster );
 		if( pRC ) {
 			RISEPel t( 1.0, 1.0, 1.0 );
-			if( pRC->CastShadowRayAuto( rayToLight, fDistFromLight, true, nm, t ) ) {
+			if( pRC->CastShadowRayAuto( rayToLight, fDistFromLight, true, nm, t, true /*DL-05: delta light*/ ) ) {
 				return Scalar(0);
 			}
 			shadowT = t.r;	// NM path fills all 3 channels equally

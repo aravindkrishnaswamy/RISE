@@ -258,6 +258,47 @@ namespace RISE
 			return GetSpecularInfo( ri, ior_stack );
 		}
 
+		//! DL-05.  The EXPECTED throughput of this SPF's NON-BENDING delta
+		//! pass-through lobe at @a ri, for a ray arriving along
+		//! `ri.ray.Dir()` and leaving along that SAME direction -- i.e.
+		//! `E[ kray * 1{the pass-through lobe is the ray Scatter emits} ]`
+		//! over the sampler's draws, exactly the factor a sampled path
+		//! carries across this surface in expectation.  Today that is a
+		//! `transmission thin` `weave_material`'s gap (the gap fraction
+		//! `gap(x)`, drawn with probability `gap` at `kray = 1`), and the
+		//! wrappers that re-price it (`FabricSPF`, `CoatedSPF`).
+		//!
+		//! Read by `RayCaster`'s shadow walk so a DELTA light's NEE shadow
+		//! ray can see through the gap -- see `IMaterial::HasDeltaPassThrough`
+		//! for when the walk consults it and why ONLY delta lights do.
+		//!
+		//! A dielectric is deliberately NOT such a lobe: its transmission
+		//! BENDS (the existing, approximate `transparent_shadows` walk
+		//! handles it), and this query's contract is that the continuation
+		//! direction is EXACTLY the incoming one, so the shadow segment is
+		//! the same geometric path the sampled one is.
+		//!
+		//! Default: no pass-through lobe (0).  An override MUST return
+		//! precisely the Scatter-side expectation, gates included: a value
+		//! that disagrees with what Scatter emits makes PT's NEE and every
+		//! bidirectional strategy that samples the lobe disagree.
+		virtual RISEPel DeltaPassThroughTransmittance(
+			const RayIntersectionGeometric& ri						///< [in] Hit (ray direction = the pass-through direction)
+			) const
+		{
+			return RISEPel( 0, 0, 0 );
+		}
+
+		//! Spectral variant of DeltaPassThroughTransmittance (single
+		//! wavelength; the ScatterNM-side expectation).
+		virtual Scalar DeltaPassThroughTransmittanceNM(
+			const RayIntersectionGeometric& ri,						///< [in] Hit (ray direction = the pass-through direction)
+			const Scalar nm											///< [in] Wavelength
+			) const
+		{
+			return 0;
+		}
+
 		/// Evaluate the spectral throughput weight (krayNM) for a
 		/// previously sampled scattered ray at a different wavelength.
 		///

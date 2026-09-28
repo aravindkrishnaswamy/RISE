@@ -33,6 +33,7 @@
 #include "../Interfaces/IObject.h"
 #include "../Interfaces/IGeometry.h"
 #include "../Scene.h"					// concrete Scene for the light-generation read (#2b(a))
+#include "../Objects/CSGObject.h"		// DL-05: the pass-through scan walks CSG operands (un-enumerated)
 
 #define ENABLE_MAX_RECURSION
 
@@ -232,6 +233,7 @@ RayCaster::RayCaster(
   iPendingRISCandidates( -1 ),
   builtLightGeneration( 0 ),
   bTransparentShadows( false ),
+  bSceneHasDeltaPassThrough( false ),
   dRadianceScaleOverride( -1.0 ),		// negative = no override (use the map's own scale)
   bWantsWireEdgeInfo( false ),
   bXrayViewResolve( false ),
@@ -301,6 +303,47 @@ namespace {
 			return true;
 		}
 	};
+
+	// DL-05: does any object a ray can hit report a material with a
+	// non-bending delta pass-through?  A CSG composite's hit carries its
+	// OWN material when it has one and an OPERAND's otherwise, and the
+	// operands are world-invisible and not enumerated (the realize pass
+	// above cascades into them the same way), so the scan recurses into
+	// them.  A false positive only costs a walk that finds nothing; a
+	// false negative leaves that material's gap opaque to delta-light
+	// shadow rays -- the pre-DL-05 behaviour, never a double count.
+	bool ObjectHasDeltaPassThrough( const RISE::IObject& obj )
+	{
+		const RISE::IMaterial* pMat = obj.GetMaterial();
+		if( pMat && pMat->HasDeltaPassThrough() ) {
+			return true;
+		}
+		const RISE::Implementation::CSGObject* pCsg =
+			dynamic_cast<const RISE::Implementation::CSGObject*>( &obj );
+		if( pCsg ) {
+			const RISE::IObject* a = pCsg->GetOperandA();
+			const RISE::IObject* b = pCsg->GetOperandB();
+			if( ( a && ObjectHasDeltaPassThrough( *a ) ) || ( b && ObjectHasDeltaPassThrough( *b ) ) ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	class DeltaPassThroughScan : public RISE::IEnumCallback<RISE::IObject>
+	{
+	public:
+		bool found;
+		DeltaPassThroughScan() : found( false ) {}
+		bool operator()( const RISE::IObject& obj )
+		{
+			if( ObjectHasDeltaPassThrough( obj ) ) {
+				found = true;
+				return false;	// stop enumerating
+			}
+			return true;
+		}
+	};
 }
 
 void RayCaster::AttachScene( const IScene* pScene_ )
@@ -357,6 +400,19 @@ void RayCaster::AttachScene( const IScene* pScene_ )
 		if( pObjMan ) {
 			RealizeGeometryDispatch realizeDispatch;
 			pObjMan->EnumerateObjects( realizeDispatch );
+		}
+	}
+
+	// DL-05: on EVERY attach, like the realize pass -- an in-place
+	// material edit on the same scene pointer (the early-return below)
+	// must not leave the gate stale.
+	bSceneHasDeltaPassThrough = false;
+	if( pScene_ ) {
+		const IObjectManager* pObjMan = pScene_->GetObjects();
+		if( pObjMan ) {
+			DeltaPassThroughScan scan;
+			pObjMan->EnumerateObjects( scan );
+			bSceneHasDeltaPassThrough = scan.found;
 		}
 	}
 
@@ -2278,6 +2334,12 @@ bool RayCaster::CastOcclusionRay( const Ray& ray, const Scalar dHowFar ) const
 // double-domed crystal, or glass-in-glass) get the right relative eta
 // at each crossing.  Total internal reflection (no real transmitted
 // direction) blocks that path (transmittance -> 0 -> fully occluded).
+//
+// DL-05: the same walk also carries the EXACT delta pass-through of a
+// `transmission thin` weave's gap (see WalkShadowSegment and
+// CastShadowRayAuto) -- but only for a delta light's shadow ray, which
+// this entry point (the opt-in dielectric walk, called with no light
+// kind) is not told about, so it keeps the dielectric-only behaviour.
 // ================================================================
 bool RayCaster::CastShadowRayTransmittance(
 	const Ray& ray,
@@ -2287,10 +2349,49 @@ bool RayCaster::CastShadowRayTransmittance(
 	RISEPel& transmittance
 	) const
 {
+	return WalkShadowSegment( ray, dHowFar, bNM, nm, transmittance, true, false );
+}
+
+// ================================================================
+// WalkShadowSegment -- the shared hit-by-hit shadow walk.
+//
+// @a bDielectrics: pass a CLEAR dielectric straight through at its
+//   per-interface Fresnel transmittance (the `transparent_shadows`
+//   approximation documented above).
+// @a bDeltaPassThrough (DL-05): pass a material reporting
+//   IMaterial::HasDeltaPassThrough (a thin weave's gap) at
+//   ISPF::DeltaPassThroughTransmittance{,NM}.  EXACT, unlike the
+//   dielectric case: the gap lobe continues along exactly the incoming
+//   direction, so the straight shadow segment IS the path the SPF's gap
+//   draw carries, and its expectation is the factor applied here.
+//   Symmetric in direction (the gap is the same aperture from either
+//   side, and every forwarding wrapper's attenuation is a product of
+//   two identical single-crossing arms), so walking from the shading
+//   point toward the light prices the light-to-shading-point transport.
+//   No sign-sensitive decision is made, so the DL-70 ray-relative
+//   normal question does not arise; no IOR stack change either (the gap
+//   ray carries none -- a thin weave has no interior).
+//
+// Any other hit that CASTS SHADOWS blocks.  A hit on an object with
+// DoesCastShadows() false is stepped over with no attenuation -- the
+// binary CastShadowRay (IntersectShadowRay) ignores such objects, and a
+// walk entered because that binary test reported a DIFFERENT occluder
+// must not then block on one it skipped.
+// ================================================================
+bool RayCaster::WalkShadowSegment(
+	const Ray& ray,
+	const Scalar dHowFar,
+	const bool bNM,
+	const Scalar nm,
+	RISEPel& transmittance,
+	const bool bDielectrics,
+	const bool bDeltaPassThrough
+	) const
+{
 	transmittance = RISEPel( 1.0, 1.0, 1.0 );
 
 	if( !pScene ) {
-		GlobalLog()->PrintSourceError( "RayCaster::CastShadowRayTransmittance:: No scene", __FILE__, __LINE__ );
+		GlobalLog()->PrintSourceError( "RayCaster::WalkShadowSegment:: No scene", __FILE__, __LINE__ );
 		// Conservative: treat as occluded so we never leak unshadowed light.
 		return true;
 	}
@@ -2334,7 +2435,66 @@ bool RayCaster::CastShadowRayTransmittance(
 
 		// There is a hit strictly before the light.  Decide whether it
 		// is a perfect-specular transmissive dielectric we can pass
-		// through, or an occluder that fully blocks.
+		// through, a delta pass-through (DL-05), an object that casts no
+		// shadow, or an occluder that fully blocks.
+
+		// Scale-relative step-off max(kStepEps, range*1e-5): stays above
+		// floating-point hit-position error at any scene scale (a fixed
+		// 1e-4 under-steps in very large scenes), while the 1e-4 floor
+		// covers small scenes.  Far below the thinnest real feature.
+		const Scalar relStep = ri.geometric.range * Scalar(1.0e-5);
+		const Scalar advance = ri.geometric.range + ( relStep > kStepEps ? relStep : kStepEps );
+
+		// Not a shadow caster: the binary test never saw it -- step over.
+		if( ri.pObject && !ri.pObject->DoesCastShadows() )
+		{
+			origin = segRay.PointAtLength( advance );
+			remaining -= advance;
+			if( remaining <= 0.0 ) {
+				return false;
+			}
+			continue;
+		}
+
+		// DL-05: a non-bending delta pass-through (a thin weave's gap).
+		if( bDeltaPassThrough && ri.pMaterial && ri.pMaterial->HasDeltaPassThrough() )
+		{
+			const ISPF* pSPF = ri.pMaterial->GetSPF();
+			if( !pSPF ) {
+				transmittance = RISEPel( 0, 0, 0 );
+				return true;
+			}
+			// The material sees the hit exactly as PT/BDPT shade it: the
+			// intersection modifier (bump / relief) is applied first.
+			if( ri.pModifier ) {
+				ri.pModifier->Modify( ri.geometric );
+			}
+			if( bNM ) {
+				const Scalar t = pSPF->DeltaPassThroughTransmittanceNM( ri.geometric, nm );
+				transmittance = transmittance * t;
+			} else {
+				transmittance = transmittance * pSPF->DeltaPassThroughTransmittance( ri.geometric );
+			}
+			if( !( ColorMath::MaxValue( transmittance ) > NEARZERO ) )
+			{
+				transmittance = RISEPel( 0, 0, 0 );
+				return true;
+			}
+			origin = segRay.PointAtLength( advance );
+			remaining -= advance;
+			if( remaining <= 0.0 ) {
+				return false;
+			}
+			continue;
+		}
+
+		if( !bDielectrics )
+		{
+			// Pass-through-only walk: anything else blocks.
+			transmittance = RISEPel( 0, 0, 0 );
+			return true;
+		}
+
 		ior_stack.SetCurrentObject( ri.pObject );
 
 		SpecularInfo info;
@@ -2500,14 +2660,8 @@ bool RayCaster::CastShadowRayTransmittance(
 
 		// Advance past this interface and continue toward the light.
 		// Step the origin to the hit point plus a small epsilon along
-		// the (unchanged) travel direction; shrink the remaining range
-		// accordingly.
-		// Scale-relative step-off max(kStepEps, range*1e-5): stays above
-		// floating-point hit-position error at any scene scale (a fixed
-		// 1e-4 under-steps in very large scenes), while the 1e-4 floor
-		// covers small scenes.  Far below the thinnest real feature.
-		const Scalar relStep = ri.geometric.range * Scalar(1.0e-5);
-		const Scalar advance = ri.geometric.range + ( relStep > kStepEps ? relStep : kStepEps );
+		// the (unchanged) travel direction (`advance`, computed above);
+		// shrink the remaining range accordingly.
 		origin = segRay.PointAtLength( advance );
 		remaining -= advance;
 
@@ -2539,14 +2693,37 @@ bool RayCaster::CastShadowRayAuto(
 	const Scalar dHowFar,
 	const bool bNM,
 	const Scalar nm,
-	RISEPel& transmittance
+	RISEPel& transmittance,
+	const bool bDeltaLight
 	) const
 {
+	// DL-05: may this shadow ray see through a delta pass-through?  Only
+	// a DELTA light's (no BSDF-sampled strategy can ever reach it, so this
+	// ray is the path's sole estimator), only when the scene has such a
+	// material at all (a cost gate), and not while a radiance-carrying
+	// photon map exists: the legacy caustic / global / translucent gather
+	// ops already estimate light-through-a-delta-lobe transport (a gap
+	// ray is `eRayRefraction`, which the caustic tracer follows), so
+	// adding it here too would count it twice in those chains.
+	const bool bPassThrough = bDeltaLight && bSceneHasDeltaPassThrough && pScene &&
+		!pScene->GetCausticPelMap() && !pScene->GetGlobalPelMap() &&
+		!pScene->GetTranslucentPelMap() && !pScene->GetCausticSpectralMap() &&
+		!pScene->GetGlobalSpectralMap();
+
 	if( bTransparentShadows ) {
-		return CastShadowRayTransmittance( ray, dHowFar, bNM, nm, transmittance );
+		return WalkShadowSegment( ray, dHowFar, bNM, nm, transmittance, true, bPassThrough );
 	}
 	transmittance = RISEPel( 1.0, 1.0, 1.0 );
-	return CastShadowRay( ray, dHowFar );
+	// The binary any-hit test first: a clear segment costs exactly what it
+	// always did, and only an OCCLUDED delta-light ray in a scene that has
+	// a pass-through material pays for the closest-hit walk.
+	if( !CastShadowRay( ray, dHowFar ) ) {
+		return false;
+	}
+	if( !bPassThrough ) {
+		return true;
+	}
+	return WalkShadowSegment( ray, dHowFar, bNM, nm, transmittance, false, true );
 }
 
 void RayCaster::SetRISCandidates( const unsigned int M )

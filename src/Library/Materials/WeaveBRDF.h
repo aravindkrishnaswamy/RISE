@@ -552,6 +552,14 @@ namespace RISE
 			//! tangent basis itself.  One geometry, both pipes.
 			void ResolveWeave( const RayIntersectionGeometric& ri, const Scalar nm, WeaveParams& out ) const;
 
+			//! The clamped gap fraction `gap(x)` at @a ri -- the ONE
+			//! expression `ResolveWeave` stores as `1 - available`, lifted
+			//! out so DL-05's shadow-walk query (`WeaveSPF::
+			//! DeltaPassThroughTransmittance`) reads the identical number
+			//! without resolving the other eighteen painters.  Achromatic,
+			//! like every geometric scalar above.
+			Scalar ResolveGap( const RayIntersectionGeometric& ri ) const;
+
 			//! ONE family's fibre frame.  `t` is the tilted tangent, `nk`
 			//! the component of the surface normal perpendicular to it
 			//! (so azimuth is measured FROM THE NORMAL, Sadeghi's

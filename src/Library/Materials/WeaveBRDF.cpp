@@ -716,6 +716,11 @@ WeaveBRDF::ThreadTerms WeaveBRDF::ComputeThreadTerms(
 // ResolveWeave
 //////////////////////////////////////////////////////////////////////
 
+Scalar WeaveBRDF::ResolveGap( const RayIntersectionGeometric& ri ) const
+{
+	return ClampNaNSafe( pGap->GetValuesAt( ri ).v[0], Scalar( 0 ), kMaxGap );
+}
+
 void WeaveBRDF::ResolveWeave( const RayIntersectionGeometric& ri, const Scalar nm, WeaveParams& out ) const
 {
 	// The ray-facing frame.  `FlipW` negates U as well as W, which keeps
@@ -749,8 +754,9 @@ void WeaveBRDF::ResolveWeave( const RayIntersectionGeometric& ri, const Scalar n
 	// the draft can imply it.
 	const OrthonormalBasis3D weftONB = MicrofacetUtils::RotateTangent( warpONB, PI_OV_TWO + skewSafe );
 
-	// --- the coverage field.
-	const Scalar gap = ClampNaNSafe( pGap->GetValuesAt( ri ).v[0], Scalar( 0 ), kMaxGap );
+	// --- the coverage field.  `ResolveGap` is the single copy of the
+	// gap expression (DL-05's shadow walk reads it too).
+	const Scalar gap = ResolveGap( ri );
 	out.available = Scalar( 1 ) - gap;
 	out.thin      = ( transmission == eWeaveTransmissionThin );
 
