@@ -1976,7 +1976,32 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			const IMedium* pCurrentMedium = MediumTracking::GetCurrentMediumWithObject(
 				iorStack, &scene, pMediumObject );
 
-			if( pCurrentMedium )
+			if( pCurrentMedium && volumeBounces >= stabilityConfig.maxVolumeBounce )
+			{
+				// DL-247 RULING -- `max_volume_bounce` N is the order at
+				// which EVERY integrator truncates the medium's Neumann
+				// series: a path contributes only if it has at most N
+				// medium-scatter vertices, and every medium segment on it
+				// carries its true transmittance.  Past the cap no
+				// further scatter is permitted, so the segment is not
+				// SAMPLED (a sampled "scatter" would have nowhere to go);
+				// it carries its deterministic Beer-Lambert
+				// transmittance.  This loop used to sample anyway and let
+				// a scattered-at-cap event fall through all three
+				// branches below with NO attenuation -- the medium turned
+				// to vacuum past the cap, which neither BDPT/VCM (which
+				// drop paths with more than N scatter vertices) nor this
+				// file's own camera walks (deterministic Tr at the cap)
+				// did.  tests/MediumInsideOutsideInvariantTest.cpp's
+				// max_volume_bounce 2 rows are the parity proof.
+				const Scalar maxDist = bHit ? ri.geometric.range : RISE_INFINITY;
+				const Value Tr = PTEvalTransmittance<Tag>(
+					pCurrentMedium, currentRay, maxDist, tag );
+				throughput = throughput * Tr;
+				// DL-124: the same factor for the emission-hit training fold.
+				escapeTr = Tr;
+			}
+			else if( pCurrentMedium )
 			{
 				const Scalar maxDist = bHit ? ri.geometric.range : RISE_INFINITY;
 				IndependentSampler mediumSampler( rc.random );
@@ -1994,7 +2019,10 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					break;
 				}
 
-				if( scattered && volumeBounces < stabilityConfig.maxVolumeBounce )
+				// `volumeBounces < maxVolumeBounce` holds here -- the cap is
+				// handled deterministically above -- so the three branches
+				// below are exhaustive.
+				if( scattered )
 				{
 					// Volume scatter event
 					const Point3 scatterPt = currentRay.PointAtLength( t_m );
@@ -4595,8 +4623,16 @@ PathTracingIntegrator::IntegrateRayTemplated(
 		const Scalar maxDist = ri.geometric.bHit ? ri.geometric.range : RISE_INFINITY;
 		const LightSampler* pLS = caster.GetLightSampler();
 		IndependentSampler mediumSampler( rc.random );
-		const MediumSampleOutcome mso = PTSampleMediumDistance<Tag>(
-			pCurrentMedium, cameraRay, maxDist, pLS, mediumSampler, tag );
+		// DL-247 ruling: at `max_volume_bounce 0` no scatter is permitted
+		// at all, so the camera segment is not sampled and carries its
+		// deterministic Beer-Lambert transmittance (the survival weight
+		// below becomes Tr itself).  Every other cap samples as before.
+		const bool bScatterAllowed = stabilityConfig.maxVolumeBounce > 0;
+		MediumSampleOutcome mso = { 0, false, 0, false, false, 1.0 };
+		if( bScatterAllowed ) {
+			mso = PTSampleMediumDistance<Tag>(
+				pCurrentMedium, cameraRay, maxDist, pLS, mediumSampler, tag );
+		}
 		const Scalar t_m = mso.t;
 		const bool scattered = mso.scattered;
 
@@ -5089,7 +5125,8 @@ PathTracingIntegrator::IntegrateRayTemplated(
 					0, 0, 0, 0, 0, 0,
 					pAOV, tag );
 			}
-			const Value survivalWeight = PTSurvivalWeight<Tag>( Tr, pSurvival );
+			const Value survivalWeight = bScatterAllowed ?
+				PTSurvivalWeight<Tag>( Tr, pSurvival ) : Tr;
 			if( pDirectResult ) {
 				*pDirectResult = *pDirectResult + survivalWeight * directAtHit;
 			}
@@ -5107,7 +5144,7 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			const Value Tr = PTEvalTransmittance<Tag>( pCurrentMedium, cameraRay, maxDist, tag );
 			const Scalar pSurvival = mso.noScatterPdfScale * PTEvalNoScatterSurvivalPdf<Tag>(
 				pCurrentMedium, cameraRay, maxDist, tag );
-			escapeTr = PTSurvivalWeight<Tag>( Tr, pSurvival );
+			escapeTr = bScatterAllowed ? PTSurvivalWeight<Tag>( Tr, pSurvival ) : Tr;
 		}
 	}
 
@@ -5519,7 +5556,22 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			const IMedium* pCurrentMedium = MediumTracking::GetCurrentMediumWithObject(
 				iorStack, &scene, pMediumObject );
 
-			if( pCurrentMedium )
+			if( pCurrentMedium && volumeBounces >= stabilityConfig.maxVolumeBounce )
+			{
+				// DL-247 ruling (see the RGB/NM main loop's twin): past the
+				// bounce cap the segment is not sampled; each lane carries
+				// its OWN deterministic Beer-Lambert transmittance.
+				const Scalar maxDist = bHit ? ri.geometric.range : RISE_INFINITY;
+				for( unsigned int w = 0; w < SampledWavelengths::N; w++ )
+				{
+					if( swl.terminated[w] ) {
+						continue;
+					}
+					throughputComp[w] *= pCurrentMedium->EvalTransmittanceNM(
+						currentRay, maxDist, swl.lambda[w] );
+				}
+			}
+			else if( pCurrentMedium )
 			{
 				const Scalar maxDist = bHit ? ri.geometric.range : RISE_INFINITY;
 				IndependentSampler mediumSampler( rc.random );
@@ -5536,7 +5588,9 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					break;
 				}
 
-				if( scattered && volumeBounces < stabilityConfig.maxVolumeBounce )
+				// `volumeBounces < maxVolumeBounce` holds here (the cap is
+				// handled above), so the three branches are exhaustive.
+				if( scattered )
 				{
 					// ====================================================
 					// MAIN-LOOP VOLUMETRIC WALK -- HWSS twin.
@@ -6750,11 +6804,18 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 		const Scalar maxDist = ri.geometric.bHit ? ri.geometric.range : RISE_INFINITY;
 		const LightSampler* pLS = caster.GetLightSampler();
 		IndependentSampler mediumSampler( rc.random );
+		// DL-247 ruling: at `max_volume_bounce 0` the camera segment is
+		// not sampled and each lane carries its deterministic Tr (see the
+		// RGB/NM twin).
+		const bool bScatterAllowed = stabilityConfig.maxVolumeBounce > 0;
 		// Hero wavelength drives free-flight sampling; MIS combinedPdf
 		// in distance measure (hero-driven delta tracking + wavelength-
 		// independent equiangular).
-		const MediumSampleOutcome mso = SampleDistanceWithEquiangularMIS_NM(
-			pCurrentMedium, cameraRay, maxDist, heroNM, pLS, mediumSampler );
+		MediumSampleOutcome mso = { 0, false, 0, false, false, 1.0 };
+		if( bScatterAllowed ) {
+			mso = SampleDistanceWithEquiangularMIS_NM(
+				pCurrentMedium, cameraRay, maxDist, heroNM, pLS, mediumSampler );
+		}
 		const Scalar t_m = mso.t;
 		const bool scattered = mso.scattered;
 
@@ -7061,7 +7122,7 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 				0, 0, 0, 0, 0, 0, result, pAOV );
 
 			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
-				result[w] *= ( pSurvivalHero > 0.0 ) ? ( Tr[w] / pSurvivalHero ) : Tr[w];
+				result[w] *= ( bScatterAllowed && pSurvivalHero > 0.0 ) ? ( Tr[w] / pSurvivalHero ) : Tr[w];
 			}
 			return;
 		}
@@ -7079,7 +7140,7 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 				const Scalar Tr = swl.terminated[w] ? Scalar(0) :
 					pCurrentMedium->EvalTransmittanceNM(
 						cameraRay, maxDist, swl.lambda[w] );
-				escapeTr[w] = ( pSurvivalHero > 0.0 ) ? ( Tr / pSurvivalHero ) : Tr;
+				escapeTr[w] = ( bScatterAllowed && pSurvivalHero > 0.0 ) ? ( Tr / pSurvivalHero ) : Tr;
 			}
 		}
 	}
