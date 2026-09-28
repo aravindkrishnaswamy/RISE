@@ -60,6 +60,26 @@
 //  at n = 16, PT pel camera-outside reads 0.31623 +/- 0.00029 against
 //  camera-inside 0.31525 +/- 0.00024 and VCM 0.31526 +/- 0.00001.
 //
+//  DL-283: HETEROGENEOUS ROWS.  The same box with a Perlin-density
+//  `painter_heterogeneous_medium` (64^3 majorant grid), so BDPT/VCM's
+//  distance sampling is delta tracking with an OPEN-ENDED draw count.
+//  Rows: BDPT pel, VCM pel, BDPT spectral hwss TRUE, and BDPT pel over a
+//  black floor (the discriminator that read +3.3% for PT's DL-247 walk
+//  overrun).  Measured in/out, three runs of n = 8 on the fixed build:
+//    BDPT pel het               0.9989 / 0.9900 / 1.0025
+//    VCM pel het                1.0027 / 0.9963 / 1.0034
+//    BDPT hwss TRUE het         1.0078 / 1.0056 / 1.0076
+//    BDPT pel het black floor   1.0006 / 0.9977 / 0.9956
+//  Per-render sd is ~1% (ratio-tracking transmittance noise), so an
+//  8-render ratio's run-to-run sd is ~0.5%; the +/-3% band is >= 4 sd
+//  from the worst row mean.  HONEST SCOPE: these rows are NOT red on the
+//  pre-DL-283 build -- the BDPT/VCM delta-tracking stream overrun was
+//  real (SobolDimensionBudgetTest Test H is its red-proof) but moved no
+//  mean measurably on any fixture tried, this one included (salted
+//  pre/post in/out 0.990..1.009, every row within 1.9 sd).  They gate
+//  the heterogeneous inside/outside invariant itself for BDPT/VCM, which
+//  nothing else did.
+//
 //  THE CAP ROWS.  `max_volume_bounce` N means, for every integrator, the
 //  Neumann series truncated at N medium-scatter vertices per full path,
 //  every medium segment carrying its true transmittance.  At N = 2 in the
