@@ -80,6 +80,23 @@ namespace RISE
 
 	public:
 
+		/// Upper bound on how many values ONE `SampleDistance` /
+		/// `SampleDistanceNM` call may draw from its `ISampler` (DL-283).
+		///
+		/// A fixed-budget sampler (`SobolSampler`, 32 dimensions per
+		/// stream) cannot absorb an open-ended draw sequence: the draws
+		/// run past the stream into the NEXT stream, which a later
+		/// vertex re-opens, so one Sobol' dimension drives two decisions
+		/// on one path.  BDPT/VCM/MLT therefore give every distance
+		/// sample its own block of streams sized from this bound
+		/// (`BDPTUtilities::MediumDistanceStream`, whose static_assert
+		/// ties the two together).  Homogeneous media draw exactly 1;
+		/// heterogeneous delta tracking draws at most 2 per step and is
+		/// capped at 1024 steps (HeterogeneousMedium.cpp asserts it).
+		/// A new medium that needs more must raise this AND re-derive
+		/// the stream layout, not silently exceed it.
+		static const unsigned int kMaxSampleDistanceDraws = 2048;
+
 		/// Query medium coefficients at a world-space point.
 		/// Homogeneous media ignore the point argument.
 		virtual MediumCoefficients GetCoefficients(

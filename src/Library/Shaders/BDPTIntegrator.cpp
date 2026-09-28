@@ -89,6 +89,24 @@
 #include "../Utilities/Color/SpectralValueTraits.h"
 #include "../Utilities/PathValueOps.h"
 #include "BSSRDFEntryAdapters.h"
+#include "../Utilities/SobolSampler.h"
+
+// DL-283: the medium-distance stream layout (BDPTUtilities.h) must hold a
+// whole distance sample, stay clear of every fixed stream, and fit the
+// 32-bit Sobol' dimension counter.
+static_assert( RISE::BDPTUtilities::kMediumDistanceStreamsPerEvent *
+		RISE::Implementation::SobolSampler::kStreamStride >= RISE::IMedium::kMaxSampleDistanceDraws,
+	"a medium-distance stream block is narrower than one SampleDistance call's draw bound" );
+static_assert( RISE::BDPTUtilities::kMediumDistanceStreamBase >
+		RISE::BDPTCameraUtilities::kApertureSamplerStream &&
+	RISE::BDPTUtilities::kMediumDistanceStreamBase >
+		RISE::BDPTCameraUtilities::kPSSMLTFilmLensApertureStream &&
+	RISE::BDPTUtilities::kMediumDistanceStreamBase >
+		48 + 2 * static_cast<int>( RISE::BDPTUtilities::kWalkIterationCap ) + 1,
+	"medium-distance streams overlap a fixed BDPT/VCM/MLT stream" );
+static_assert( static_cast<unsigned long long>( RISE::BDPTUtilities::kMediumDistanceStreamEnd ) *
+		RISE::Implementation::SobolSampler::kStreamStride < 0xFFFFFFFFull,
+	"medium-distance streams overflow SobolSampler's 32-bit dimension counter" );
 
 // ==== DL283 SCRATCH INSTRUMENTATION (reverted before merge) ====
 #include <atomic>
@@ -1780,10 +1798,13 @@ namespace {
 		// Cap at 1024 which is well above any realistic depth.  Also guard
 		// `maxEyeDepth >= 1024` directly so the subtraction in the first
 		// half of the ternary doesn't underflow.
+		// The cap is BDPTUtilities::kWalkIterationCap, which also bounds
+		// the per-iteration medium-distance stream layout (DL-283).
+		const unsigned int kCap = BDPTUtilities::kWalkIterationCap;
 		const unsigned int maxEyeTotalDepth =
-			( maxEyeDepth >= 1024u ||
-			  stabilityConfig.maxVolumeBounce > 1024u - maxEyeDepth ) ?
-				1024u :
+			( maxEyeDepth >= kCap ||
+			  stabilityConfig.maxVolumeBounce > kCap - maxEyeDepth ) ?
+				kCap :
 				maxEyeDepth + stabilityConfig.maxVolumeBounce;
 
 		for( unsigned int depth = 0; depth < maxEyeTotalDepth; depth++ )
@@ -1848,10 +1869,17 @@ namespace {
 					bool scattered = false;
 					Scalar t_m = 0;
 					if( !bAtCap ) {
+						// DL-283: the distance sample's open-ended draw
+						// sequence gets a stream block of its own, and the
+						// vertex stream is re-opened at slot 0 afterwards --
+						// see BDPTUtilities::MediumDistanceStream.
+						sampler.StartStream( BDPTUtilities::MediumDistanceStream(
+							BDPTUtilities::eEyeWalk, depth ) );
 						DL283Scratch::Counting cs( sampler );
 						t_m = SampleMediumDistance<Tag>(
 							*pMed, currentRay, maxDist, cs, scattered, tag );
 						cs.Record( 0 );
+						sampler.StartStream( 16u + depth );
 					}
 
 					if( scattered )
@@ -6237,10 +6265,12 @@ unsigned int GenerateLightSubpathImpl(
 	// Surface bounces are capped by maxLightDepth, volume bounces by maxVolumeBounce.
 	// Saturating add to avoid underflow when a scene sets maxLightDepth
 	// pathologically high (≥1024).
+	// Cap: BDPTUtilities::kWalkIterationCap (DL-283 stream layout).
+	const unsigned int kCap = BDPTUtilities::kWalkIterationCap;
 	const unsigned int maxLightTotalDepth =
-		( maxLightDepth >= 1024u ||
-		  stabilityConfig.maxVolumeBounce > 1024u - maxLightDepth ) ?
-			1024u :
+		( maxLightDepth >= kCap ||
+		  stabilityConfig.maxVolumeBounce > kCap - maxLightDepth ) ?
+			kCap :
 			maxLightDepth + stabilityConfig.maxVolumeBounce;
 
 	for( unsigned int depth = 0; depth < maxLightTotalDepth; depth++ )
@@ -6289,10 +6319,14 @@ unsigned int GenerateLightSubpathImpl(
 				bool scattered = false;
 				Scalar t_m = 0;
 				if( !bAtCap ) {
+					// DL-283: own stream block -- see the eye subpath's twin.
+					sampler.StartStream( BDPTUtilities::MediumDistanceStream(
+						BDPTUtilities::eLightWalk, depth ) );
 					DL283Scratch::Counting cs( sampler );
 					t_m = SampleMediumDistance<Tag>(
 						*pMed, currentRay, maxDist, cs, scattered, tag );
 					cs.Record( 1 );
+					sampler.StartStream( 1u + depth );
 				}
 
 				if( scattered )

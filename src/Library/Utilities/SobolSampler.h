@@ -82,12 +82,15 @@ namespace RISE
 			//   Eye bounces 0..14:     phases 16..30
 			//   SMS:                   phases 31..46
 			//
+		public:
 			// kStreamStride must be >= max dimensions consumed by
 			// any single phase (BioSpecSkinSPF uses ~20 + lobe
-			// selection + BSSRDF = ~25 max).
+			// selection + BSSRDF = ~25 max).  Public so a stream
+			// layout that must hold an open-ended consumer can
+			// static_assert its width (BDPTUtilities::
+			// MediumDistanceStream, DL-283).
 			static const unsigned int kStreamStride = 32;
 
-		public:
 			virtual ~SobolSampler(){ RecordStream(); };
 			int curStream = -1;
 			void RecordStream() {

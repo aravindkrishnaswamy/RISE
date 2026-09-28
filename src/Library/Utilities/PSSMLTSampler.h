@@ -256,7 +256,18 @@ namespace RISE
 			// lanes above this default via the protected constructor
 			// below.  When constructed via the public ctor, kNumStreams
 			// = kDefaultNumStreams exactly as before.
-			static const int				kDefaultNumStreams = 4096;
+			//
+			// DL-283 (2026-09-27): 4096 -> 262144 (2^18).  BDPT's medium
+			// distance samples now draw from per-iteration stream blocks
+			// in [8192, 139264) (`BDPTUtilities::MediumDistanceStream`),
+			// which MLT reaches through the shared generator; at 4096 the
+			// first heterogeneous-or-homogeneous medium event under MLT
+			// would trip this bound and abort.  Only the block's FIRST
+			// stream is ever touched here (a PSSMLT stream is an unbounded
+			// lane), so each medium event costs one XExtra entry, not 64.
+			// `tests/PSSMLTStreamAliasingTest.cpp` asserts the bound covers
+			// `BDPTUtilities::kMediumDistanceStreamEnd`.
+			static const int				kDefaultNumStreams = 262144;
 			int								kNumStreams;		///< Sanity bound on streamIndex (per-instance)
 			int								streamIndex;		///< Current active stream
 
