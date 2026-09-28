@@ -17,10 +17,6 @@
 
 #include <atomic>
 
-// DL24-SCRATCH-LEDGER (reverted before the fix)
-double g_dl24_exitTop[16]={0}, g_dl24_exitBot[16]={0}, g_dl24_dropType[16][5]={{0}}, g_dl24_dropRecur[16]={0};
-static int DL24TypeIdx( RISE::ScatteredRay::ScatRayType t ){ switch(t){case RISE::ScatteredRay::eRayReflection:return 0;case RISE::ScatteredRay::eRayRefraction:return 1;case RISE::ScatteredRay::eRayDiffuse:return 2;case RISE::ScatteredRay::eRayTranslucent:return 3;default:return 4;} }
-
 using namespace RISE;
 using namespace RISE::Implementation;
 
@@ -360,7 +356,6 @@ void CompositeSPF::ProcessTopLayer(
 				) const
 {
 	if( steps >= max_recur || ColorMath::MaxValue(importance) < NEARZERO ) {
-		if( steps >= max_recur ) g_dl24_dropRecur[steps<15?steps:15] += ColorMath::MaxValue(importance);
 		return;
 	}
 
@@ -382,7 +377,6 @@ void CompositeSPF::ProcessTopLayer(
 		if( Vector3Ops::Dot( scat_top[i].ray.Dir(), ri.onb.w() ) >= 0 ) {
 			// Exits from the top, so its all good
 			scat_top[i].kray = scat_top[i].kray * importance;
-			g_dl24_exitTop[steps<15?steps:15] += ColorMath::MaxValue(scat_top[i].kray);
 			if( !scattered.AddScatteredRay( scat_top[i] ) ) {
 				NoteCompositeExitRayDropped();
 			}
@@ -401,7 +395,7 @@ void CompositeSPF::ProcessTopLayer(
 				const RISEPel attenuation = GapAttenuation( extinction, ri, pathLength );
 
 				ProcessBottomLayer( my_ri, scat_top[i].kray*importance*attenuation, sampler, scattered, steps+1, outside_stack, GapStackBelowTop( scat_top[i], gap_stack ) );
-			} else { g_dl24_dropType[steps<15?steps:15][DL24TypeIdx(scat_top[i].type)] += ColorMath::MaxValue(scat_top[i].kray*importance); }
+			}
 		}
 	}
 }
@@ -417,7 +411,6 @@ void CompositeSPF::ProcessBottomLayer(
 		) const
 {
 	if( steps >= max_recur || ColorMath::MaxValue(importance) < NEARZERO ) {
-		if( steps >= max_recur ) g_dl24_dropRecur[steps<15?steps:15] += ColorMath::MaxValue(importance);
 		return;
 	}
 
@@ -430,7 +423,6 @@ void CompositeSPF::ProcessBottomLayer(
 		if( Vector3Ops::Dot( scat_bottom[i].ray.Dir(), ri.onb.w() ) <= 0 ) {
 			// Exits from the bottom, so its all good
 			scat_bottom[i].kray = scat_bottom[i].kray * importance;
-			g_dl24_exitBot[steps<15?steps:15] += ColorMath::MaxValue(scat_bottom[i].kray);
 			if( !scattered.AddScatteredRay( scat_bottom[i] ) ) {
 				NoteCompositeExitRayDropped();
 			}
@@ -450,7 +442,7 @@ void CompositeSPF::ProcessBottomLayer(
 
 				// gap_stack is passed through UNCHANGED -- see GapStackBelowTop.
 				ProcessTopLayer( my_ri, scat_bottom[i].kray*importance*attenuation, sampler, scattered, steps+1, outside_stack, gap_stack );
-			} else { g_dl24_dropType[steps<15?steps:15][DL24TypeIdx(scat_bottom[i].type)] += ColorMath::MaxValue(scat_bottom[i].kray*importance); }
+			}
 		}
 	}
 }
