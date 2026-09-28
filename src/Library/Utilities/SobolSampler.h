@@ -56,6 +56,9 @@ namespace DL283ScratchSobol {
 		if( !t ) return; std::fprintf( stderr, "DL283STREAM total=%llu\n", t );
 		for( int i = 0; i < 2100; i++ ) { const unsigned long long c = Hist()[i].load(); if( c ) std::fprintf( stderr, "DL283H stream %d %llu\n", i, c ); } } };
 	inline Dumper& D() { static Dumper d; return d; }
+	// Per-render scramble salt so repeated renders are INDEPENDENT QMC
+	// randomizations (otherwise every render reuses identical Sobol points).
+	inline uint32_t& Salt() { static uint32_t s = 0; return s; }
 }
 
 namespace RISE
@@ -107,7 +110,7 @@ namespace RISE
 				uint32_t seed_
 				) :
 				sampleIndex( sampleIndex_ ),
-				seed( seed_ ),
+				seed( seed_ ^ DL283ScratchSobol::Salt() ),
 				dimension( 0 )
 			{
 			}

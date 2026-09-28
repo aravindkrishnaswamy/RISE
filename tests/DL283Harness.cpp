@@ -14,6 +14,7 @@
 #include "../src/Library/Interfaces/IRasterImage.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
+#include "../src/Library/Utilities/SobolSampler.h"
 using namespace RISE;
 using namespace RISE::Implementation;
 namespace RISE { bool RISE_CreateJobPriv( IJobPriv** ppi ); }
@@ -44,6 +45,7 @@ int main( int argc, char** argv )
 		GlobalLog()->PrintNew( c, __FILE__, __LINE__, "cap" );
 		pJob->GetRasterizer()->AddRasterizerOutput( c );
 		std::srand( sb + unsigned(i) );
+		if( std::getenv( "DL283_SALT" ) ) DL283ScratchSobol::Salt() = SobolSequence::HashCombine( sb + unsigned(i), 0x283u );
 		const auto t0 = std::chrono::steady_clock::now();
 		if( !pJob->Rasterize() ) { std::fprintf( stderr, "render failed\n" ); return 1; }
 		secs += std::chrono::duration<double>( std::chrono::steady_clock::now() - t0 ).count();
