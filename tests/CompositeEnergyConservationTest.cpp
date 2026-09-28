@@ -725,6 +725,186 @@ static void SectionH( Fixtures& f )
 }
 
 //////////////////////////////////////////////////////////////////////
+//  Section T -- TILTED SHADING NORMAL (DL-24 review round 2, P1-A).
+//
+//  DielectricSPF's transmission warp (finite `scattering`) is clipped to
+//  the GEOMETRIC side of the surface, so when the shading normal is
+//  tilted the warp's wedge between the two planes moves mass across the
+//  shading plane stochastically: the per-draw up/down split is NOT a
+//  function of the record, and a top that still DECLARED a deterministic
+//  split (SelectionMassIsDeterministic) had the aggregate mode price the
+//  branches with a split no draw realises.  The reference is an
+//  INDEPENDENT natural random walk written here (not the composite's
+//  code): top Scatter, RandomlySelect, bounce between layers with the
+//  two-stack convention (down-going arrivals see the outside stack,
+//  up-going ones the gap stack), Russian roulette after 8 events.  Both
+//  sides are furnaces over the full sphere at jittered positions; the
+//  band is 5 sigma of the combined sem plus a 0.005 floor.
+//////////////////////////////////////////////////////////////////////
+static RayIntersectionGeometric MakeTiltedIntersection( double thDeg, const Point3& p, double tiltDeg )
+{
+	const double th = thDeg * kPi / 180.0;
+	const Vector3 d( std::sin( th ), 0, -std::cos( th ) );
+	const RasterizerState rs = { 0, 0 };
+	RayIntersectionGeometric ri( Ray( Point3( p.x - d.x, p.y - d.y, p.z - d.z ), d ), rs );
+	ri.bHit = true; ri.range = 1.0; ri.ptIntersection = p; ri.ptObjIntersec = p;
+	const double t = tiltDeg * kPi / 180.0;
+	const Vector3 ns( std::sin( t ), 0, std::cos( t ) );
+	ri.vNormal = ns;
+	ri.vGeomNormal = Vector3( 0, 0, 1 );
+	ri.onb.CreateFromW( ns );
+	ri.ptCoord = Point2( 0.5, 0.5 );
+	return ri;
+}
+
+static RISEPel ReferenceLayerWalk( const ISPF& top, const ISPF& bot, const RayIntersectionGeometric& ri, ISampler& smp )
+{
+	const Vector3 n = ri.onb.w();
+	IORStack outside = MakeTestIORStack( g_stub );
+	ScatteredRayContainer c0;
+	top.Scatter( ri, smp, c0, outside );
+	Scalar q = 0;
+	const ScatteredRay* r = c0.RandomlySelect( smp.Get1D(), false, &q );
+	if( !r || !( q > 0 ) ) return RISEPel( 0, 0, 0 );
+	RISEPel beta = r->kray * ( 1.0 / q );
+	if( Vector3Ops::Dot( r->ray.Dir(), n ) >= 0 ) return beta;
+	IORStack gap( r->ior_stack ? *r->ior_stack : outside );
+	Vector3 w = Vector3Ops::Normalize( r->ray.Dir() );
+	bool atBottom = true;
+	RayIntersectionGeometric rec( ri );
+	for( int ev = 0; ev < 4000; ++ev ) {
+		rec.ray.origin = ri.ptIntersection;
+		rec.ray.SetDir( w );
+		const bool down = Vector3Ops::Dot( w, n ) <= 0;
+		ScatteredRayContainer c;
+		( atBottom ? bot : top ).Scatter( rec, smp, c, down ? outside : gap );
+		r = c.RandomlySelect( smp.Get1D(), false, &q );
+		if( !r || !( q > 0 ) ) return RISEPel( 0, 0, 0 );
+		beta = beta * r->kray * ( 1.0 / q );
+		const Scalar cosN = Vector3Ops::Dot( r->ray.Dir(), n );
+		if( atBottom ) {
+			if( cosN <= 0 ) return beta;
+		} else {
+			if( cosN >= 0 ) return beta;
+			if( r->ior_stack ) gap = *r->ior_stack;
+		}
+		w = Vector3Ops::Normalize( r->ray.Dir() );
+		atBottom = !atBottom;
+		if( ev > 8 ) {
+			const double p = std::min( 1.0, (double)ColorMath::MaxValue( beta ) );
+			if( !( p > 0 ) || smp.Get1D() >= p ) return RISEPel( 0, 0, 0 );
+			beta = beta * ( 1.0 / p );
+		}
+	}
+	return RISEPel( 0, 0, 0 );
+}
+
+static FurnaceStats TiltedFurnace( const ISPF* composite, const ISPF* top, const ISPF* bot,
+	double thDeg, double tiltDeg, int batches, int perBatch, unsigned seedBase )
+{
+	std::vector<double> means;
+	for( int b = 0; b < batches; ++b ) {
+		RandomNumberGenerator rng( seedBase + 7919u * (unsigned)b );
+		IndependentSampler smp( rng );
+		RISEPel sum( 0, 0, 0 );
+		for( int i = 0; i < perBatch; ++i ) {
+			const Point3 p( rng.CanonicalRandom() * 10, rng.CanonicalRandom() * 10, 0 );
+			const RayIntersectionGeometric ri = MakeTiltedIntersection( thDeg, p, tiltDeg );
+			if( composite ) {
+				IORStack st = MakeTestIORStack( g_stub );
+				ScatteredRayContainer sc;
+				composite->Scatter( ri, smp, sc, st );
+				for( unsigned j = 0; j < sc.Count(); ++j ) sum = sum + sc[j].kray;
+			} else {
+				sum = sum + ReferenceLayerWalk( *top, *bot, ri, smp );
+			}
+		}
+		means.push_back( ColorMath::MaxValue( sum * ( 1.0 / perBatch ) ) );
+	}
+	FurnaceStats st;
+	double m = 0; for( double v : means ) m += v; m /= means.size();
+	double var = 0; for( double v : means ) var += ( v - m ) * ( v - m );
+	var /= std::max<size_t>( 1, means.size() - 1 );
+	st.mean = m; st.sd = std::sqrt( var ); st.sem = st.sd / std::sqrt( (double)means.size() );
+	return st;
+}
+
+static void SectionT( Fixtures& f )
+{
+	std::cout << "\n[T] Tilted shading normal: composite{dielectric / white} vs an independent layer walk (DL-24 review round 2 P1-A), mean +- sem, n = 16 x 20000\n";
+	UniformScalarPainter* s5 = new UniformScalarPainter( 5.0 );  s5->addref();
+	DielectricMaterial* dScat5 = new DielectricMaterial( *f.s1, *f.s15, *s5, false );  dScat5->addref();
+	DielectricMaterial* tops[] = { f.dScat0, dScat5 };
+	const char* names[] = { "scattering 0", "scattering 5" };
+	for( int k = 0; k < 2; ++k ) {
+		CompositeMaterial* m = MakeComposite( *tops[k], *f.lamb, 3, 3, 3, 3, 3, 0.0, *f.s0 );
+		for( const double tilt : { 0.0, 5.0, 20.0, 35.0 } ) {
+			for( const double th : { 0.0, 45.0 } ) {
+				const FurnaceStats a = TiltedFurnace( m->GetSPF(), 0, 0, th, tilt, 16, 20000, 911u + (unsigned)th + 13u * (unsigned)tilt );
+				const FurnaceStats r = TiltedFurnace( 0, tops[k]->GetSPF(), f.lamb->GetSPF(), th, tilt, 16, 20000, 555u + (unsigned)th + 17u * (unsigned)tilt );
+				const double sig = std::sqrt( a.sem * a.sem + r.sem * r.sem );
+				std::cout << std::fixed << std::setprecision( 4 ) << "    " << names[k] << ", tilt " << tilt << ", theta " << th
+				          << ": composite " << a.mean << " +- " << a.sem << ", independent walk " << r.mean << " +- " << r.sem
+				          << ", z " << std::setprecision( 2 ) << ( a.mean - r.mean ) / std::max( 1e-12, sig ) << "\n";
+				Check( std::fabs( a.mean - r.mean ) <= 0.005 + 5.0 * sig,
+					std::string( "[T] composite{dielectric " ) + names[k] + " / white} == independent walk, tilt " +
+					std::to_string( (int)tilt ) + " theta " + std::to_string( (int)th ) );
+			}
+		}
+		// A ray that arrives BEHIND the tilted shading normal (tilt 35,
+		// theta 60: d . n_s = +0.087) is classified up-going and takes the
+		// from-below walker, which the independent from-top walk above does
+		// not model.  Pre-existing (the base reads the same ~0.09) and part
+		// of DL-341's stack-gap family; pinned, not gated against the walk.
+		{
+			const FurnaceStats a = TiltedFurnace( m->GetSPF(), 0, 0, 60.0, 35.0, 8, 20000, 7717u + (unsigned)k );
+			std::cout << std::fixed << std::setprecision( 4 ) << "    " << names[k]
+			          << ", tilt 35, theta 60 (ray BEHIND the shading normal) -- KNOWN RESIDUAL PIN [0.06, 0.12] (DL-341): composite "
+			          << a.mean << " +- " << a.sem << "\n";
+			Check( a.mean >= 0.06 && a.mean <= 0.12,
+				std::string( "[T] behind-shading-normal arrival (DL-341 residual) inside its pin band, " ) + names[k] );
+		}
+		m->release();
+	}
+
+	// T2 -- the E2 twin under tilt: grey layers, so a reconstructed 5-arg
+	// companion weight must reproduce the ray's own hero krayNM.  A top
+	// that is not deterministic at this record is PER-BRANCH, and the
+	// per-branch mode declines every reconstruction (-1).
+	std::cout << "    T2 companion reconstruction under a 20 deg tilt, composite{dielectric scattering 5 / white}, hero 550 / companion 600\n";
+	{
+		CompositeMaterial* m = MakeComposite( *dScat5, *f.lamb, 3, 3, 3, 3, 3, 0.0, *f.s0 );
+		const ISPF& spf = *m->GetSPF();
+		RandomNumberGenerator rng( 4321u );
+		IndependentSampler smp( rng );
+		int up = 0, recon = 0, declined = 0, mism = 0;
+		double worst = 0;
+		for( int i = 0; i < 100000; ++i ) {
+			const Point3 p( rng.CanonicalRandom() * 10, rng.CanonicalRandom() * 10, 0 );
+			const RayIntersectionGeometric ri = MakeTiltedIntersection( 30.0, p, 20.0 );
+			IORStack st = MakeTestIORStack( g_stub );
+			ScatteredRayContainer sc;
+			spf.ScatterNM( ri, smp, 550.0, sc, st );
+			for( unsigned j = 0; j < sc.Count(); ++j ) {
+				if( Vector3Ops::Dot( sc[j].ray.Dir(), ri.onb.w() ) <= 0 ) continue;
+				up++;
+				const double c = spf.EvaluateKrayNM( ri, sc[j].ray.Dir(), sc[j].type, 600.0, st, sc[j].isDelta ? -1.0 : sc[j].pdf );
+				if( c < 0 ) { declined++; continue; }
+				recon++;
+				const double rel = std::fabs( c - sc[j].krayNM ) / std::max( 1e-12, (double)sc[j].krayNM );
+				if( rel > 1e-6 ) { mism++; worst = std::max( worst, rel ); }
+			}
+		}
+		std::cout << "      up-going " << up << ", reconstructed " << recon << ", declined " << declined
+		          << ", mismatched " << mism << ", worst rel " << worst << "\n";
+		Check( up > 10000, "[T2] up-going emissions present under tilt" );
+		Check( mism == 0, "[T2] no reconstructed companion weight differs from the grey stack's hero weight under a tilted shading normal" );
+		m->release();
+	}
+	dScat5->release(); s5->release();
+}
+
+//////////////////////////////////////////////////////////////////////
 //  Section F -- sibling table.  Full-sphere furnace (reflection +
 //  transmission through the stack), RGB, theta 0 and 60.  Lossless
 //  configurations are gated at 1; the rest are printed as a record.
@@ -1085,6 +1265,11 @@ int main( int argc, char** argv )
 	Fixtures f = MakeFixtures();
 
 	const bool skipRender = ( argc > 1 && std::string( argv[1] ) == "--no-render" );
+	if( argc > 1 && std::string( argv[1] ) == "--tilt-only" ) {
+		SectionT( f );
+		std::cout << "\n" << passCount << " passed, " << failCount << " failed" << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
 
 	SectionA( f );
 	SectionB( f );
@@ -1093,6 +1278,7 @@ int main( int argc, char** argv )
 	SectionE2( f );
 	SectionF( f );
 	SectionH( f );
+	SectionT( f );
 	SectionG( f );
 	if( !skipRender ) {
 		SectionD();
