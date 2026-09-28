@@ -1866,8 +1866,12 @@ static void TestNullBSDFMaterialContinuation()
 //
 // Measured (32x32, 1024 spp, salted Sobol', n = 16 per build, two
 // separately built binaries run interleaved): VCM/PT - 1 = -6.000%
-// (z -182) pre-fix, -5.242% (z -148) post-fix.  2048 spp here halves the
-// single-render variance; band [-5.60%, -4.90%].
+// (z -182) pre-fix, -5.242% (z -148) post-fix.  This row's own
+// UNSALTED 2048-spp render (one fixed draw of the QMC error; its PT half
+// realizes ~0.2% above the salted mean) reads -5.34% .. -5.45% post-fix
+// and -6.10% .. -6.18% pre-fix over three runs each, so the pin
+// [-5.72%, -5.00%] sits >= 0.27% inside the post-fix readings and
+// >= 0.38% away from the pre-fix ones.
 //////////////////////////////////////////////////////////////////////
 static const char* kSceneRoughSSSU =
 	"film\n{\n\twidth 32\n\theight 32\n}\n\n"
@@ -1913,10 +1917,10 @@ static void TestRoughSSSEmptyContainerU()
 	const double mPT  = ( pt.mean[0]  + pt.mean[1]  + pt.mean[2]  ) / 3.0;
 	const double mVCM = ( vcm.mean[0] + vcm.mean[1] + vcm.mean[2] ) / 3.0;
 	const double rel = mVCM / mPT - 1.0;
-	std::printf( "    PT %.7f  VCM %.7f  VCM/PT %+.3f%%  (pin [-5.60%%, -4.90%%])\n",
+	std::printf( "    PT %.7f  VCM %.7f  VCM/PT %+.3f%%  (pin [-5.72%%, -5.00%%])\n",
 		mPT, mVCM, 100.0 * rel );
-	Check( std::isfinite( rel ) && rel >= -0.0560 && rel <= -0.0490,
-		"DL-307 topology U: VCM/PT inside the DL-317 pin [-5.60%, -4.90%] (pre-DL-307 read -6.00%)" );
+	Check( std::isfinite( rel ) && rel >= -0.0572 && rel <= -0.0500,
+		"DL-307 topology U: VCM/PT inside the DL-317 pin [-5.72%, -5.00%] (pre-DL-307 read -6.1%)" );
 }
 
 int main( int argc, char** argv )

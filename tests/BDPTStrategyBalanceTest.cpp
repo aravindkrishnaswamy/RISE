@@ -3526,27 +3526,35 @@ static void TestWeaveGapBoxAreaOutside()
 //
 // U: topology L's wall + floor, `subsurfacescattering_material` ior 1.3
 //    roughness 0.3 (the DL-67 round-3 reviewer's replica).
-// V: a CLOSED `randomwalk_sss_material` sphere (roughness 0.3) on a
-//    Lambertian wall + floor.  A random walk into the zero-thickness
-//    sheets of U carries almost nothing (measured n = 8, salted: BDPT/PT
-//    -0.06% +/- 0.16% pre-fix), which is why the reviewer's thin-sheet
-//    random-walk replica read "-0.24%, inconclusive"; a closed sphere
-//    gives the walk a body to scatter in.  Depth 16 on both sides: at
-//    depth 5, PT's per-type bounce caps and BDPT's per-surface-vertex cap
-//    truncate a multi-event subsurface path differently (-0.10% on this
+// V: a CLOSED `randomwalk_sss_material` sphere (roughness 0.8, albedo
+//    ~0.99) on a Lambertian wall + floor.  A random walk into the
+//    zero-thickness sheets of U carries almost nothing (measured n = 8,
+//    salted: BDPT/PT -0.06% +/- 0.16% pre-fix), which is why the
+//    reviewer's thin-sheet random-walk replica read "-0.24%,
+//    inconclusive"; a closed sphere gives the walk a body to scatter in,
+//    and the high roughness makes below-horizon reflection draws (the
+//    empty containers) common.  Depth 16 on both sides: at depth 5, PT's
+//    per-type bounce caps and BDPT's per-surface-vertex cap truncate a
+//    multi-event subsurface path differently (-0.10% on a roughness-0.3
 //    sphere with the fix in, vanishing at 16 -- a depth-semantics
 //    difference, not a bias).
 //
-// Measured (32x32, 1024 spp, salted Sobol', n = 16 per build, two
-// separately built binaries run interleaved; mean BDPT/PT - 1):
-//   U  un-guided BDPT   -0.830% (z -29.7) pre-fix   -0.033% (z -1.1) post
-//   U  guided RIS BDPT  -0.048%           pre-fix   -0.033%          post
-//   V  un-guided BDPT   -0.450% (z -21.9) pre-fix at depth 5
-//   V  un-guided BDPT   -0.016% (z -0.8) post-fix at depth 16
-// Single-render sd at 1024 spp is ~0.09% (U) and ~0.06% (V), so the
-// 0.35% bands below sit >= 3.5 sd from both the pre-fix reading and the
-// post-fix mean.  Guided (RIS) vs un-guided BDPT is the invariant the row
-// exists for: the two techniques must estimate the same integral.
+// Measured (32x32, 1024 spp, salted Sobol', two separately built
+// binaries run interleaved; mean BDPT/PT - 1):
+//   U  un-guided BDPT   -0.830% (z -29.7) pre-fix   -0.033% (z -1.1) post   n = 16
+//   U  guided RIS BDPT  -0.048%           pre-fix   -0.033%          post   n = 16
+//   V  un-guided BDPT  -10.385% (z -339)  pre-fix   -0.015% (z -0.4) post   n = 8
+//   V  guided RIS BDPT  -0.076%           pre-fix   +0.018%          post   n = 8
+// (V's guided row moves too: vertices deeper than
+// `pathguiding_{,light_}max_depth` 4 are un-guided and hit the defect.)
+// Single-render sd at 1024 spp is ~0.09% (U) and ~0.07% (V).  A single
+// UNSALTED render is one fixed draw of that spread (it repeats to ~0.03%
+// run to run): U's rows read -0.08% .. -0.10% and V's +0.17% .. +0.22%
+// on the fixed build, the pre-fix builds -0.92% (U) and -10.3% (V).  So
+// U's band is 0.35% (>= 2.5 single-render sd from both sides) and V's
+// 0.6% (V's pre-fix is two orders of magnitude outside either).  Guided (RIS) vs un-guided BDPT is the
+// invariant the row exists for: the two techniques must estimate the
+// same integral.
 //////////////////////////////////////////////////////////////////////
 static const char* kSceneRoughSSSU =
 	"film\n{\n\twidth 32\n\theight 32\n}\n\n"
@@ -3565,8 +3573,8 @@ static const char* kSceneRoughSSSU =
 static const char* kSceneRandomWalkSphereV =
 	"film\n{\n\twidth 32\n\theight 32\n}\n\n"
 	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
-	"randomwalk_sss_material\n{\n\tname mat_rw\n\tior 1.3\n\tabsorption 0.5\n"
-		"\tscattering 10.0\n\tg 0.0\n\troughness 0.3\n}\n\n"
+	"randomwalk_sss_material\n{\n\tname mat_rw\n\tior 1.3\n\tabsorption 0.1\n"
+		"\tscattering 10.0\n\tg 0.0\n\troughness 0.8\n}\n\n"
 	"uniformcolor_painter\n{\n\tname pnt_alb_v\n\tcolor 0.5 0.5 0.5\n}\n\n"
 	"lambertian_material\n{\n\tname mat_lamb_v\n\treflectance pnt_alb_v\n}\n\n"
 	"clippedplane_geometry\n{\n\tname quad_wall\n\tpta -1 -1 0\n\tptb 1 -1 0\n\tptc 1 1 0\n\tptd -1 1 0\n}\n\n"
@@ -3625,7 +3633,7 @@ static void CheckSSSMeanBand( const char* label, double ref, double test, double
 	Check( std::fabs( rel ) <= band, label );
 }
 
-static void RunSSSTopology( const char* name, const char* sceneBody, int depth )
+static void RunSSSTopology( const char* name, const char* sceneBody, int depth, double band )
 {
 	std::cout << "Testing DL-307 " << name << std::endl;
 	double pt = 0, bdpt = 0, ris = 0;
@@ -3634,23 +3642,22 @@ static void RunSSSTopology( const char* name, const char* sceneBody, int depth )
 	const bool okRIS  = RenderSSSAchromaticMean( SSSRasterizer( "ris", depth ),  sceneBody, "sss_ris",  ris );
 	Check( okPT && okBDPT && okRIS, ( std::string( "DL-307 renders produced output: " ) + name ).c_str() );
 	if( !okPT || !okBDPT || !okRIS ) return;
-	const double kBand = 0.0035;
-	CheckSSSMeanBand( ( std::string( "DL-307 un-guided BDPT mean within 0.35% of PT: " ) + name ).c_str(),
-		pt, bdpt, kBand );
-	CheckSSSMeanBand( ( std::string( "DL-307 guided RIS BDPT mean within 0.35% of PT: " ) + name ).c_str(),
-		pt, ris, kBand );
-	CheckSSSMeanBand( ( std::string( "DL-307 un-guided BDPT mean within 0.35% of guided RIS BDPT: " ) + name ).c_str(),
-		ris, bdpt, kBand );
+	CheckSSSMeanBand( ( std::string( "DL-307 un-guided BDPT mean agrees with PT: " ) + name ).c_str(),
+		pt, bdpt, band );
+	CheckSSSMeanBand( ( std::string( "DL-307 guided RIS BDPT mean agrees with PT: " ) + name ).c_str(),
+		pt, ris, band );
+	CheckSSSMeanBand( ( std::string( "DL-307 un-guided BDPT mean agrees with guided RIS BDPT: " ) + name ).c_str(),
+		ris, bdpt, band );
 }
 
 static void TestRoughSSSEmptyContainerU()
 {
-	RunSSSTopology( "topology U (rough subsurfacescattering_material sheets, depth 5)", kSceneRoughSSSU, 5 );
+	RunSSSTopology( "topology U (rough subsurfacescattering_material sheets, depth 5)", kSceneRoughSSSU, 5, 0.0035 );
 }
 
 static void TestRandomWalkSphereEmptyContainerV()
 {
-	RunSSSTopology( "topology V (rough randomwalk_sss_material closed sphere, depth 16)", kSceneRandomWalkSphereV, 16 );
+	RunSSSTopology( "topology V (roughness-0.8 randomwalk_sss_material closed sphere, depth 16)", kSceneRandomWalkSphereV, 16, 0.0060 );
 }
 
 int main( int argc, char** argv )
