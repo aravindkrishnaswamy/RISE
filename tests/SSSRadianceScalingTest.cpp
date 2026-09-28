@@ -10,7 +10,8 @@
 // row reads 0.644 / 0.815 / 0.960 / 0.996 / 1.000 at caps
 // 64 / 256 / 1024 / 2048 / 4096 (3.94% of camera paths pass 1024
 // scatters).  The pre-DL-247 cap turned the medium into VACUUM past it,
-// which is exact here by accident, so the old 1024 default never showed.
+// which loses nothing to the medium in this furnace (0.9986 at cap 1024),
+// so the old 1024 default never showed.
 // The default is 4096 and a provisioning pin (cap N vs 4N within 0.2%)
 // keeps truncation out of the 0.03 convention band.
 //
