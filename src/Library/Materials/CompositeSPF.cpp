@@ -402,15 +402,18 @@ namespace RISE
 			//
 			//  The layered evaluator must be a DETERMINISTIC function of
 			//  (incoming direction, outgoing direction, position): that is
-			//  what makes an emitted covered ray's kray EXACTLY
-			//  value(dir) * cos / Pdf(dir), and what makes its HWSS
-			//  companion weight reconstructible from (ri, dir, nm).  The
-			//  walk inside it is therefore driven by a PCG32 stream seeded
-			//  from a hash of those arguments -- PBRT-v4's LayeredBxDF::f
-			//  does the same (its RNG is seeded from Hash(wo), Hash(wi));
-			//  the POSITION is added here so a flat surface under an
-			//  orthographic view and a directional light does not reuse one
-			//  estimate at every pixel.  The wavelength is deliberately NOT
+			//  what makes an emitted covered ray's kray equal
+			//  value(dir) * cos / Pdf(dir) (up to rounding), and what makes
+			//  its HWSS companion weight reconstructible from (ri, dir, nm)
+			//  in the aggregate mode.  The WALK is driven by a PCG32 stream
+			//  seeded from a hash of (incoming direction, position) ONLY --
+			//  it is recorded once per shading point and shared by every
+			//  exit query there (see WalkPath below) -- and term (a)'s top
+			//  transmission draws from a second stream seeded by (incoming,
+			//  outgoing, position).  PBRT-v4's LayeredBxDF::f seeds from
+			//  Hash(wo), Hash(wi); the POSITION is added here so a flat
+			//  surface under an orthographic view and a directional light
+			//  does not reuse one estimate at every pixel.  The wavelength is deliberately NOT
 			//  hashed: a companion wavelength then re-runs the SAME walk,
 			//  so hero and companion estimates are correlated rather than
 			//  independent.
@@ -869,7 +872,7 @@ namespace RISE
 				// ZERO at that shading point -- transport never sampled, a
 				// bias (tissue over white, 60 deg, position-jittered furnace:
 				// 0.6250 against truth 1).  So only a top that DECLARES
-				// `ISPF::SelectionMassIsDeterministic()` takes the aggregate
+				// `ISPF::SelectionMassIsDeterministic( ri, nm )` takes the aggregate
 				// path; every other top runs PER-BRANCH mode, whose weights
 				// need only be deterministic positive numbers (the floors in
 				// MakeWeights keep every class reachable).  Several hashed
@@ -1074,8 +1077,14 @@ namespace RISE
 			//  w2 + w3 + w4 = Qdown.  AGGREGATE mode (every non-delta
 			//  emission priced value*cos/Pdf, Pdf exact) requires Qup to be
 			//  deterministic given the entry, which the TOP must DECLARE
-			//  (`ISPF::SelectionMassIsDeterministic`: dielectric, perfect
-			//  reflector/refractor, translucent).  Not inferred from
+			//  PER RECORD (`ISPF::SelectionMassIsDeterministic(ri, nm)`:
+			//  perfect reflector/refractor and translucent always; a
+			//  dielectric only when its transmission warp is off or its
+			//  shading normal equals its geometric normal -- the warp is
+			//  clipped to the GEOMETRIC side, so under a tilted shading
+			//  normal the wedge between the two planes moves mass across
+			//  the shading plane at random; DL-24 review round 2 P1-A,
+			//  CompositeEnergyConservationTest section T).  Not inferred from
 			//  samples (DL-24 review P1-1), and not assumed for a
 			//  reflection-only top either: a GGX or Lambertian top can
 			//  emit NOTHING on a random draw (a sample below the geometric

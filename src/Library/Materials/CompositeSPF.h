@@ -42,11 +42,22 @@
 //                so the MIS partition is exact and the emitted weight is
 //                its own estimator.
 //
-//  The evaluator's walk is seeded from a hash of (incoming direction,
-//  outgoing direction, position), so `value(w)` is a deterministic
-//  function of its arguments: the kray of an emitted covered ray is
-//  EXACTLY `value(dir) * cos / Pdf(dir)`, and the HWSS companion weight
-//  of that ray is reconstructible from (ri, dir, nm) (DL-221).
+//  The evaluator's WALK is seeded from a hash of (incoming direction,
+//  position) alone and recorded once per shading point; only its two
+//  exit CONNECTION terms depend on the outgoing direction, and term (a)'s
+//  top transmission draws from its own stream seeded by (incoming,
+//  outgoing, position).  So `value(w)` is a deterministic function of
+//  its arguments, and the kray of an emitted covered ray is
+//  `value(dir) * cos / Pdf(dir)` up to floating-point rounding.  When
+//  the top DECLARES a deterministic up/down split at this record
+//  (ISPF::SelectionMassIsDeterministic(ri, nm)) `Pdf` is the exact
+//  density of what `Scatter` emits and the HWSS companion weight of an
+//  up-going reflection is reconstructible from (ri, dir, nm) (DL-221);
+//  otherwise `Pdf` is the MIS partner of a per-branch estimator and the
+//  5-argument EvaluateKrayNM declines (-1).  For a DISPERSIVE top the
+//  direct delta reflection is reconstructed as the hero's weight (ratio
+//  1) where the true companion ratio is F(nm)/F(hero) -- close, not
+//  exact.
 //
 //  ENERGY (DL-24).  Neither walk is truncated.  The recursion budgets
 //  (`max_recursion`, `max_*_recursion`) used to DROP every continuation
@@ -152,10 +163,15 @@ namespace RISE
 			static const Scalar kMinCosTheta;
 
 			//! Hard safety cap on the number of layer events in one walk.
-			//! Russian roulette ends every walk that loses energy long
-			//! before this; only a LOSSLESS trapping pair (a mirror facing
-			//! down over an albedo-1 bottom) reaches it, and that energy
-			//! can never leave the layer stack in the first place.
+			//! Russian roulette ends a walk that loses energy long before
+			//! this.  It is reached by a LOSSLESS trapping pair (a mirror
+			//! facing down over an albedo-1 bottom, whose energy can never
+			//! leave the stack) AND by the DL-341 stack-gap residual: a
+			//! nested composite{dielectric/dielectric} walked from below
+			//! (or struck from inside a closed object) reads each layer on
+			//! the wrong side and total-internally-reflects losslessly --
+			//! 91,323 of 100,000 walks of CompositeEnergyConservationTest
+			//! H4 at 35 deg reach the cap, and that energy is LOST.
 			static const unsigned int kMaxWalkEvents;
 
 			//! The slant distance a ray travels crossing the inter-layer gap:
