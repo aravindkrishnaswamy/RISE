@@ -400,7 +400,9 @@ Interleaved base / final, n = 8 (two batches in opposite order), user CPU:
 `cornellbox_bdpt_materials_pt` (Cook-Torrance) 9.002 -> 9.053 s (+0.6 %,
 paired t = 1.2); `hair_styled` 22.91 -> 22.98 s (+0.3 %, t = 1.0);
 `sms_k2_glasssphere` 2.001 -> 2.031 s (+1.5 %, t = 1.9).  Not
-distinguishable from noise.
+distinguishable from noise -- but none of these scenes exercises the
+changed walk; the mover measurement is in §10.6 (+5.80 % at `855ce136`,
+-0.04 % final).
 
 ### 10.5 Sibling audit (pattern: "an absolute index against 1 where a relative index is meant")
 
@@ -517,17 +519,18 @@ pre-existing, reference-limited question this slice does not change.
 - Part B `sms_lambertian_via_open_sheet` (a single open glass sheet over
   a Lambertian floor, point light above, camera BELOW the sheet so the
   receiver's stack does not hold it and the walk's first crossing is the
-  unpushed exit, case (b)): PT snell 1.0000 +/- 0.0010 (band 0.01), PT
-  spectral snell 0.9995 +/- 0.0029 (band 0.03).  With ONLY the P1-2 block
+  unpushed exit, case (b)): PT snell 1.0010 +/- 0.0014 (band 0.01), PT
+  spectral snell 0.9995 +/- 0.0030 (band 0.03).  With ONLY the P1-2 block
   reverted to the constant: **0.9693 +/- 0.0012** and **0.9304 +/- 0.0038**
   -- those two rows and the two immersed A7 rows fail (187/4), nothing
   else in the file does.
 - Part C, the two shipped scenes themselves against their VCM `_ref`
   twin (100x75, oidn off, SMS 256 spp vs VCM 512 spp, caustic rectangle
-  x36..64 y26..38, n = 4): flatslab **1.0125 +/- 0.0016** (band
-  0.96..1.06), glassblock **0.8904 +/- 0.0011** (band 0.84..0.94).  With
-  ONLY the matched-index branch disabled: **0.2606** and **0.2205** -- the
-  two rows fail, nothing else does.  The bands are centre +/- 0.05, set by
+  x36..64 y26..38, n = 4): flatslab **1.0102 +/- 0.0006** (band
+  0.96..1.06), glassblock **0.8904 +/- 0.0014** (band 0.84..0.94);
+  run to run the ratios move by up to 0.003.  With
+  ONLY the matched-index branch disabled: **0.2603** and **0.2302** -- the
+  two rows fail, nothing else does (189/2).  The bands are centre +/- 0.05, set by
   the references' disagreement, not by the ratio sd (QMC makes that
   ~0.1 %): glassblock's SMS agrees with the scene rendered by PT WITHOUT
   SMS at 4096 spp (0.98 matched; 1.00 with the top sheet moved to ior 2.3,
@@ -556,31 +559,39 @@ present, and larger, in the base build too.
 **In-air hash survey, re-run on the merged tree** (same harness as §10.3,
 seeds 42/1234, serial re-runs for anything that differed under parallel
 load).  Against the merged pre-round build (`855ce136` + `master`):
-exactly six scenes move, all SMS -- flatslab and glassblock (both fixes),
-`sms_k2_torus_cross` (both; two crossing glass tori of the SAME ior, so a
-walk through the overlap enters the second torus at a matched index),
-`sms_teapot_close_sms`, `sms_veach_egg_displaced` and
-`spectral_dispersive_caustic_pt_sms` (seed 42 only) (matched-index branch
-only, established by a build with the P1-2 line reverted: a displaced or
-tessellated caster the walk re-enters without an intervening exit is a
-matched double push).  These are air scenes: a matched vertex is a
+exactly six scenes move, all SMS, and the final build is hash-IDENTICAL on
+all 134 variants to a build with only P1-1 applied -- so the P1-2 rework
+is bit-identical in air across the survey, and every mover is the
+matched-index branch: flatslab and glassblock (above),
+`sms_k2_torus_cross` (seed 42 only; two crossing glass tori of the SAME
+ior, so a walk through the overlap enters the second torus at a matched
+index), `sms_teapot_close_sms`, `sms_veach_egg_displaced` and
+`spectral_dispersive_caustic_pt_sms` (seed 42 only) -- a tessellated or
+displaced caster the walk re-enters without an intervening exit is a
+matched double push.  These are air scenes: a matched vertex is a
 property of the scene's own stack, not of an exterior medium, so P1-1 is
-a pre-existing in-air SMS defect as well.  The last four move negligibly:
-torus_cross whole image 0.1805 / 0.1806 / 0.1799 +/- 0.0015 (base /
-`855ce136` / this round; VCM 0.1845, PT-without-SMS 0.1857), and the
-48-px means of teapot, egg and dispersive move by at most 0.04 %
-(at 100x75, n = 4: teapot changes 4 px by more than 4 sigma, moving them
-toward its VCM twin, 0.1491 -> 0.1500 against 0.1536, whole image
-0.3264 / 0.3254 / VCM 0.3231, all within sd; the displaced egg changes
-7 firefly-dominated px -- per-render sd 30-40 % of their mean -- and its
-whole image 0.3283 +/- 0.0018 -> 0.3217 +/- 0.0082 is within 1.6 sigma;
-it has no usable reference, since SMS on that scene recovers only a
-fraction of the caustic, CLAUDE.md "SMS seeding mode").  The `weave_presets` / `sheer_curtain` movers
-against `855ce136` are the `master` merge (DL-05) and are identical between
-the merged pre-round build and this one; `fabric_presets` differed only
-under parallel load (8/8 serial re-runs identical).
+a pre-existing in-air SMS defect as well.  The last four move nothing
+resolvable: the 48-px means of torus_cross, teapot and the dispersive
+caustic are identical to nine digits (only low-order bits differ), and
+at 100x75, n = 4, teapot changes 4 px by more than 4 sigma, moving them
+toward its VCM twin (0.1491 -> 0.1500 against 0.1536; whole image
+0.3264 / 0.3254 / VCM 0.3231, all within sd), while the displaced egg
+changes 7 firefly-dominated px (per-render sd 30-40 % of their mean) and
+its whole image 0.3283 +/- 0.0018 -> 0.3217 +/- 0.0082 is within
+1.6 sigma; it has no usable reference, since SMS on that scene recovers
+only a fraction of the caustic (CLAUDE.md, "SMS seeding mode").  The
+`weave_presets` / `sheer_curtain` movers against `855ce136` are the
+`master` merge (DL-05) and are identical between the merged pre-round build
+and this one; `fabric_presets` differed only under parallel load (serial
+re-runs identical).
 
-**Cost** (COST_PLACEHOLDER).
+**Cost.**  The round-0 figures (§10.4) were measured on scenes the change
+never exercises; on the mover the reviewer measured `855ce136` at +4.66 %.
+Interleaved base / `855ce136` / final on shipped `sms_k2_flatslab` (200x150,
+32 spp), n = 10 per build, order alternated, user CPU: base 4.690 s,
+`855ce136` 4.961 s (**+5.80 %**, paired t = 8.24 -- the reviewer's finding
+reproduced; consistent with the solve failing on every degenerate matched
+vertex, not separately profiled), final 4.687 s (**-0.04 %**, t = -0.05).
 
 **Clamp magnitude and residual rows.**  The hair / weave relative-index
 clamp now carries its magnitude in the code comment and in §10.1 (11.4 % /

@@ -1029,7 +1029,7 @@ namespace
 	// index moved to 2.3, i.e. no matched vertex at all), while VCM reads
 	// ~11 % above both -- a VCM-vs-PT difference on that displaced top,
 	// not an SMS or index effect -- and on flatslab VCM and PT-without-SMS
-	// differ by ~7 % the other way.  The pre-fix readings (0.26 / 0.22
+	// differ by ~7 % the other way.  The pre-fix readings (0.26 / 0.23
 	// with the matched-index branch disabled) sit far outside both bands.
 	std::string ReadFileText( const std::string& path )
 	{
