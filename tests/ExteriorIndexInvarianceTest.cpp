@@ -928,7 +928,7 @@ namespace
 		struct Row { Model model; Integrator integrator; unsigned int samples; double band; const char* sms; bool gated = true; unsigned int bounces = 1; };
 		// Bands: several times the measured sd of the ratio (common random
 		// numbers per pair) and far below the pre-fix deviations of the
-		// same rows; both recorded in docs/DL49_SSS_EXTERIOR_INDEX.md §10.
+		// same rows; both recorded in docs/DL49_SSS_EXTERIOR_INDEX.md §11.
 		const Row rows[] = {
 			{ Model::Lambertian,   Integrator::PT,         16,  0.02, nullptr },
 			{ Model::CookTorrance, Integrator::PT,         32,  0.02, nullptr },

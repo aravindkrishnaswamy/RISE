@@ -562,9 +562,20 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 				segLens.size(), (double)medianSeg,
 				(double)effectiveMergeRadius, (double)mGeometricRadiusFloor );
 		} else {
+			// Not a failure of VCM: the pre-pass found a delta surface but
+			// fewer than 8 light-subpath segments touching a MERGEABLE
+			// (non-delta) surface -- e.g. a camera inside a closed
+			// dielectric under an environment light, where nothing is
+			// diffuse, or a receiver too small for the pre-pass's one
+			// subpath per pixel to land on.  VM is disabled; the VC
+			// strategies are unaffected and stay unbiased
+			// (RefractiveRadianceScalingTest rows B and E read their
+			// closed forms through this branch).  DL-308.
 			GlobalLog()->PrintEx( eLog_Warning,
-				"VCMRasterizerBase::PreRenderSetup:: auto-radius "
-				"failed — disabling VM" );
+				"VCMRasterizerBase::PreRenderSetup:: auto-radius: only %zu "
+				"pre-pass light segments reach a mergeable (non-delta) surface "
+				"(need 8) — disabling VM; set merge_radius to force it",
+				segLens.size() );
 			effectiveMergeRadius = 0;
 		}
 	}

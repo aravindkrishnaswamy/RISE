@@ -252,7 +252,8 @@ void PointSetOctree::PointSetOctreeNode::Evaluate(
 	const Scalar maxDistance,
 	const IBSDF* pBSDF,
 	const RayIntersectionGeometric& rig,
-	const IORStack* pIorStack
+	const IORStack* pIorStack,
+	const Scalar exteriorIOR
 	) const
 {
 	if( pChildren ) {
@@ -265,13 +266,28 @@ void PointSetOctree::PointSetOctreeNode::Evaluate(
 				Vector3 vdir;
 				const Scalar dist = HowFarIsPointFromYou( vdir, point, my_bb, i );
 				if( dist < maxDistance ) {
-					pChildren[i]->Evaluate( c, my_bb, i, point, pFunc, maxDistance, pBSDF, rig );
+					// DL-291: forward the live IOR stack (DL-223 dropped it here, so
+					// every node below the root priced a stateful BSDF stacklessly)
+					// and the exterior index to every depth.
+					pChildren[i]->Evaluate( c, my_bb, i, point, pFunc, maxDistance, pBSDF, rig, pIorStack, exteriorIOR );
 				} else {
-					// Use the node's average irradiance as an estimate
-					if( pBSDF ) {
-						c = c + pFunc.ComputeTotalExtinction( dist ) * pChildren[i]->AverageIrradiance() * pBSDF->valueStateful( vdir, rig, pIorStack ) ;
+					// Use the node's average irradiance as an estimate.
+					// DL-291: air (every shipped scene) keeps the original
+					// expressions verbatim; any other exterior prices the
+					// profile against it.
+					if( exteriorIOR == 1.0 ) {
+						if( pBSDF ) {
+							c = c + pFunc.ComputeTotalExtinction( dist ) * pChildren[i]->AverageIrradiance() * pBSDF->valueStateful( vdir, rig, pIorStack ) ;
+						} else {
+							c = c + pFunc.ComputeTotalExtinction( dist ) * pChildren[i]->AverageIrradiance();
+						}
 					} else {
-						c = c + pFunc.ComputeTotalExtinction( dist ) * pChildren[i]->AverageIrradiance();
+						const RISEPel ext = pFunc.ComputeTotalExtinctionForExterior( dist, exteriorIOR );
+						if( pBSDF ) {
+							c = c + ext * pChildren[i]->AverageIrradiance() * pBSDF->valueStateful( vdir, rig, pIorStack ) ;
+						} else {
+							c = c + ext * pChildren[i]->AverageIrradiance();
+						}
 					}
 				}
 			}
@@ -281,13 +297,27 @@ void PointSetOctree::PointSetOctreeNode::Evaluate(
 	if( pElements ) {
 		// Process the elements
 		PointSet::const_iterator i, e;
-		for( i=pElements->begin(), e=pElements->end(); i!=e; i++ ) {
-			const Vector3& vdir = Vector3Ops::mkVector3( i->ptPosition, point );
-			const Scalar dist = Vector3Ops::Magnitude( vdir );
-			if( pBSDF ) {
-				c = c + pFunc.ComputeTotalExtinction( dist ) * i->irrad * pBSDF->valueStateful( vdir, rig, pIorStack ) ;
-			} else {
-				c = c + pFunc.ComputeTotalExtinction( dist ) * i->irrad;
+		if( exteriorIOR == 1.0 ) {
+			// Air: the original loop verbatim (DL-291 in-air identity).
+			for( i=pElements->begin(), e=pElements->end(); i!=e; i++ ) {
+				const Vector3& vdir = Vector3Ops::mkVector3( i->ptPosition, point );
+				const Scalar dist = Vector3Ops::Magnitude( vdir );
+				if( pBSDF ) {
+					c = c + pFunc.ComputeTotalExtinction( dist ) * i->irrad * pBSDF->valueStateful( vdir, rig, pIorStack ) ;
+				} else {
+					c = c + pFunc.ComputeTotalExtinction( dist ) * i->irrad;
+				}
+			}
+		} else {
+			for( i=pElements->begin(), e=pElements->end(); i!=e; i++ ) {
+				const Vector3& vdir = Vector3Ops::mkVector3( i->ptPosition, point );
+				const Scalar dist = Vector3Ops::Magnitude( vdir );
+				const RISEPel ext = pFunc.ComputeTotalExtinctionForExterior( dist, exteriorIOR );
+				if( pBSDF ) {
+					c = c + ext * i->irrad * pBSDF->valueStateful( vdir, rig, pIorStack ) ;
+				} else {
+					c = c + ext * i->irrad;
+				}
 			}
 		}
 	}

@@ -16,6 +16,7 @@
 #include "pch.h"
 #include "SubSurfaceScatteringShaderOp.h"
 #include "../../Utilities/GeometricUtilities.h"
+#include "../../Utilities/BSSRDFSampling.h"		// ExteriorIOR (DL-291)
 #include "../../Interfaces/IGeometry.h"		// CanBeAreaLight(): SSS needs real surface sampling
 #include "../../Utilities/stl_utils.h"
 #include "../../Sampling/HaltonPoints.h"
@@ -298,7 +299,14 @@ void SubSurfaceScatteringShaderOp::PerformOperation(
 	// Pass 2: Evaluate the BSSRDF integral at the shading point.
 	// The octree sums Rd(|xi - xo|) * E(xi) over all sample points,
 	// using hierarchical approximation for distant clusters (Jensen 2002).
-	ps->Evaluate( c, ri.geometric.ptIntersection, extinction, error, multiplyBSDF?ri.pMaterial->GetBSDF():0, ri.geometric, &ior_stack );
+	//
+	// DL-291: the diffusion boundary condition (the dipole's A) is a function
+	// of the material's index RELATIVE to the medium the body sits in, so the
+	// extinction function is evaluated against the live exterior -- the IOR-
+	// stack top the ray caster stamped on this hit (`ambientIOR`; 1.0 = air,
+	// which reproduces the pre-DL-291 value exactly).
+	ps->Evaluate( c, ri.geometric.ptIntersection, extinction, error, multiplyBSDF?ri.pMaterial->GetBSDF():0, ri.geometric, &ior_stack,
+		BSSRDFSampling::ExteriorIOR( ri.geometric ) );
 
 	// Monte Carlo normalization: divide by N (the number of sample points).
 	// Each sample's irradiance was pre-multiplied by irrad_scale, which
