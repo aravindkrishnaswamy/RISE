@@ -843,36 +843,51 @@ namespace
 		}
 	}
 
-	// DL-290 review P1-1: an INDEX-MATCHED refraction vertex (the same
-	// index on both sides -- e.g. the second of two separate open glass
-	// planes, which the IOR stack correctly reads as glass-into-glass)
-	// is optically NULL: no bend, zero Fresnel reflection, the path goes
-	// straight through.  The Walter half-vector h = -(eta_i wi + eta_t wo)
-	// is then IDENTICALLY ZERO at the solution, so its NORMALIZED
-	// tangential projection -- the constraint every other refraction
-	// vertex uses -- is 0/0 there (EvaluateConstraint used to return the
-	// degenerate C = (1,1) and the chain never converged).  For such a
-	// vertex the constraint is the tangential projection of the
-	// UNNORMALIZED h = -eta (wi + wo): zero exactly when the vertex lies
-	// on the straight segment between its neighbours, with a full-rank
-	// 2x2 derivative (moving the vertex along the surface bends the
-	// segment).  Scaling a vertex's two constraint rows by a factor that
-	// is nonzero where the constraint holds changes neither the solution
-	// nor the implicit-function derivative dv/dy used by the SMS
-	// geometric term (both rows of dC/dx and dC/dy scale together), so
-	// the unnormalized form prices the matched vertex consistently with
-	// the normalized one everywhere else.  The tolerance only absorbs
-	// last-bit differences between two copies of one authored index.
-	inline bool IsIndexMatchedRefraction(
-		const RISE::Implementation::ManifoldVertex& v,
-		const Scalar eta_i,
-		const Scalar eta_t )
+	// DL-290 review P1-1 and round 2 (P2-2): which form of Walter's
+	// generalized half-vector a REFRACTION vertex's constraint uses.
+	//
+	// The constraint is C = P_t(h), the projection of
+	// h = -(eta_i wi + eta_t wo) onto the vertex's tangent plane.  The
+	// solver used to project the NORMALIZED h / |h|.  Both vanish on the
+	// same set wherever h != 0, but |h| -> 0 as the two indices approach
+	// each other on a nearly straight path, and at an index-MATCHED
+	// vertex (the same index on both sides -- two same-index objects
+	// entered in turn, the second of two open glass sheets, a re-entered
+	// tessellated caster) h is IDENTICALLY zero at the solution: the
+	// normalized form is 0/0 there and has no root at all, and for a
+	// NEAR-matched vertex it is a root of arbitrarily steep slope.  Round
+	// 1 special-cased exact matches (|eta_i - eta_t| <= 1e-9 relative),
+	// which left a cliff one ulp-scale step away: on two concentric
+	// spheres 2.2 / 2.2 + dn, Newton converged 100 % at dn = 0 and
+	// 0 % at dn = 1e-8 .. 1e-3 (ExteriorIndexInvarianceTest A8).
+	//
+	// So every refraction vertex uses the UNNORMALIZED h.  Why that is
+	// the right constraint, including at a match:
+	//   * Away from h = 0 it has the same zero set as the normalized
+	//     form, and at a root the two Jacobians differ only by the row
+	//     scaling 1/|h| of that vertex's two rows (the derivative of the
+	//     1/|h| factor multiplies P_t(h) = 0).  A per-vertex row scaling
+	//     D leaves the Newton root and the chain-to-light sensitivity
+	//     dx/dy = -(DA)^-1 (DB) = -A^-1 B -- the only thing the
+	//     generalized geometric term reads -- unchanged.  Newton's
+	//     ITERATES do differ (only the root is shared).
+	//   * At a matched vertex the row-scaling argument does NOT apply
+	//     (1/|h| is undefined at the root).  There the justification is
+	//     direct: C = P_t(-eta (wi + wo)) vanishes exactly on the
+	//     straight-through path and is a full-rank local defining
+	//     function of it (moving the vertex along the surface bends the
+	//     segment), so the implicit-function tangent it yields is the
+	//     physical one.  Measured: the light-to-first-vertex Jacobian
+	//     determinant matches finite differences at a matched vertex to
+	//     ~1e-5 relative.
+	//   * Its magnitude is ~eta x (angular error), bounded below by the
+	//     physics rather than by |h|, so the solver's ||C|| threshold
+	//     keeps one meaning across all index pairs.
+	// Reflection vertices keep the normalized h = wi + wo, which never
+	// vanishes on a physical path.
+	inline bool UseUnnormalizedHalfVector( const RISE::Implementation::ManifoldVertex& v )
 	{
-		if( v.isReflection ) {
-			return false;
-		}
-		const Scalar m = ( fabs( eta_i ) > fabs( eta_t ) ) ? fabs( eta_i ) : fabs( eta_t );
-		return fabs( eta_i - eta_t ) <= Scalar( 1e-9 ) * m;
+		return !v.isReflection;
 	}
 }
 
@@ -1104,7 +1119,7 @@ void ManifoldSolver::EvaluateConstraint(
 
 		// Construct the generalized half-vector
 		Vector3 h;
-		bool matchedIndex = false;	// DL-290 P1-1: see IsIndexMatchedRefraction
+		bool rawHalfVector = false;	// DL-290: see UseUnnormalizedHalfVector
 
 		if( v.isReflection )
 		{
@@ -1136,7 +1151,7 @@ void ManifoldSolver::EvaluateConstraint(
 			// set.  See GetEffectiveEtas docstring for full rationale.
 			Scalar eta_i, eta_t;
 			GetEffectiveEtas( v, eta_i, eta_t );
-			matchedIndex = IsIndexMatchedRefraction( v, eta_i, eta_t );
+			rawHalfVector = UseUnnormalizedHalfVector( v );
 
 			h = Vector3(
 				-(eta_i * wi.x + eta_t * wo.x),
@@ -1145,10 +1160,10 @@ void ManifoldSolver::EvaluateConstraint(
 			);
 		}
 
-		// Normalize h -- except at an index-matched vertex, whose
-		// constraint is the UNNORMALIZED h (it vanishes at the solution;
-		// see IsIndexMatchedRefraction).
-		if( !matchedIndex )
+		// Normalize h -- reflection vertices only; a refraction vertex's
+		// constraint is the UNNORMALIZED h (see UseUnnormalizedHalfVector).
+		// The hLen < NEARZERO bail therefore guards reflections only.
+		if( !rawHalfVector )
 		{
 			Scalar hLen = Vector3Ops::Magnitude( h );
 			if( hLen < NEARZERO )
@@ -1479,10 +1494,10 @@ void ManifoldSolver::BuildJacobian(
 		if( !v.isReflection ) {
 			GetEffectiveEtas( v, eta_i_v, eta_t_v );
 		}
-		// DL-290 P1-1: an index-matched vertex's constraint is the
-		// UNNORMALIZED h (see IsIndexMatchedRefraction), so its
-		// derivatives are the raw ones, not DeriveNormalized's.
-		const bool matchedIndex = IsIndexMatchedRefraction( v, eta_i_v, eta_t_v );
+		// DL-290: a refraction vertex's constraint is the UNNORMALIZED h
+		// (see UseUnnormalizedHalfVector), so its derivatives are the raw
+		// ones, not DeriveNormalized's.
+		const bool rawHalfVector = UseUnnormalizedHalfVector( v );
 
 		// Half-vector (unnormalized)
 		Vector3 h_raw;
@@ -1499,8 +1514,8 @@ void ManifoldSolver::BuildJacobian(
 		}
 
 		Scalar h_len = Vector3Ops::Magnitude( h_raw );
-		if( !matchedIndex && h_len < NEARZERO ) continue;
-		Vector3 h = matchedIndex ? h_raw : h_raw * (1.0 / h_len);
+		if( !rawHalfVector && h_len < NEARZERO ) continue;
+		Vector3 h = rawHalfVector ? h_raw : h_raw * (1.0 / h_len);
 
 		// ---- Derivative of h w.r.t. moving vertex i ----
 		//
@@ -1541,7 +1556,7 @@ void ManifoldSolver::BuildJacobian(
 					-(eta_i_v * dwi_du.y + eta_t_v * dwo_du.y),
 					-(eta_i_v * dwi_du.z + eta_t_v * dwo_du.z) );
 			}
-			dh_du = matchedIndex ? dh_raw_du : DeriveNormalized( h, dh_raw_du, h_len );
+			dh_du = rawHalfVector ? dh_raw_du : DeriveNormalized( h, dh_raw_du, h_len );
 
 			// Same for dv
 			const Vector3 dwi_dv = Vector3(
@@ -1566,7 +1581,7 @@ void ManifoldSolver::BuildJacobian(
 					-(eta_i_v * dwi_dv.y + eta_t_v * dwo_dv.y),
 					-(eta_i_v * dwi_dv.z + eta_t_v * dwo_dv.z) );
 			}
-			dh_dv = matchedIndex ? dh_raw_dv : DeriveNormalized( h, dh_raw_dv, h_len );
+			dh_dv = rawHalfVector ? dh_raw_dv : DeriveNormalized( h, dh_raw_dv, h_len );
 		}
 
 		// Derivative of tangent frame w.r.t. surface parameters (u, v).
@@ -1685,7 +1700,7 @@ void ManifoldSolver::BuildJacobian(
 					// depends on next vertex)
 					dh_raw_next = Vector3( -eta_t_v * dwo.x, -eta_t_v * dwo.y, -eta_t_v * dwo.z );
 
-				const Vector3 dh_next = matchedIndex ? dh_raw_next : DeriveNormalized( h, dh_raw_next, h_len );
+				const Vector3 dh_next = rawHalfVector ? dh_raw_next : DeriveNormalized( h, dh_raw_next, h_len );
 
 				// upper[i] maps vertex i+1 to constraint i
 				upper[i*4 + 0 + p] = Vector3Ops::Dot( s, dh_next );
@@ -1722,7 +1737,7 @@ void ManifoldSolver::BuildJacobian(
 					// glass), η_i = 1.5 here and matters.
 					dh_raw_prev = Vector3( -eta_i_v * dwi.x, -eta_i_v * dwi.y, -eta_i_v * dwi.z );
 
-				const Vector3 dh_prev = matchedIndex ? dh_raw_prev : DeriveNormalized( h, dh_raw_prev, h_len );
+				const Vector3 dh_prev = rawHalfVector ? dh_raw_prev : DeriveNormalized( h, dh_raw_prev, h_len );
 
 				// lower[i-1] maps vertex i-1 to constraint i
 				lower[(i-1)*4 + 0 + p] = Vector3Ops::Dot( s, dh_prev );
@@ -4807,12 +4822,12 @@ void ManifoldSolver::ComputeLastBlockLightJacobian(
 			-(eta_i_v * wi.y + eta_t_v * wo.y),
 			-(eta_i_v * wi.z + eta_t_v * wo.z) );
 	}
-	// DL-290 P1-1: an index-matched vertex's constraint is the
-	// UNNORMALIZED h (see IsIndexMatchedRefraction).
-	const bool matchedIndex = !vk.isReflection && IsIndexMatchedRefraction( vk, eta_i_v, eta_t_v );
+	// DL-290: a refraction vertex's constraint is the UNNORMALIZED h
+	// (see UseUnnormalizedHalfVector).
+	const bool rawHalfVector = UseUnnormalizedHalfVector( vk );
 	const Scalar h_len = Vector3Ops::Magnitude( h_raw );
-	if( !matchedIndex && h_len < NEARZERO ) return;
-	const Vector3 h = matchedIndex ? h_raw : h_raw * (1.0 / h_len);
+	if( !rawHalfVector && h_len < NEARZERO ) return;
+	const Vector3 h = rawHalfVector ? h_raw : h_raw * (1.0 / h_len);
 
 	// Tangent basis at y (orthonormal, perpendicular to lightNormal)
 	Vector3 y_s = Vector3Ops::Perpendicular( lightNormal );
@@ -4844,8 +4859,8 @@ void ManifoldSolver::ComputeLastBlockLightJacobian(
 
 		// ∂h/∂y = (dh_raw - h * dot(h, dh_raw)) / h_len; the raw
 		// derivative itself at an index-matched vertex (DL-290 P1-1).
-		const Scalar h_dot = matchedIndex ? Scalar( 0 ) : Vector3Ops::Dot( h, dh_raw );
-		const Scalar inv_h = matchedIndex ? Scalar( 1 ) : Scalar( 1.0 ) / h_len;
+		const Scalar h_dot = rawHalfVector ? Scalar( 0 ) : Vector3Ops::Dot( h, dh_raw );
+		const Scalar inv_h = rawHalfVector ? Scalar( 1 ) : Scalar( 1.0 ) / h_len;
 		const Vector3 dh(
 			(dh_raw.x - h.x * h_dot) * inv_h,
 			(dh_raw.y - h.y * h_dot) * inv_h,

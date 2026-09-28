@@ -105,6 +105,7 @@
 #include "../src/Library/Utilities/IORStack.h"
 #include "../src/Library/Utilities/IORStackSeeding.h"
 #include "../src/Library/Interfaces/IObjectManager.h"
+#include "../src/Library/Utilities/IndependentSampler.h"
 #include "../src/Library/Utilities/ManifoldSolver.h"
 #include "../src/Library/Lights/LightSampler.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
@@ -681,6 +682,78 @@ namespace
 		}
 	}
 
+	//! A8 (DL-290 review round 2, P2-2): Newton convergence must be
+	//! CONTINUOUS in a vertex's index mismatch.  Two concentric glass
+	//! spheres, outer 2.2 and inner 2.2 + dn: the seed walk enters both,
+	//! so vertices 2 and 3 of the four-vertex chain are refractions with
+	//! a relative index 1 + dn/2.2 -- exactly matched at dn = 0, NEAR-
+	//! matched for small dn.  For random receiver / light pairs the chain
+	//! is seeded by BuildSeedChain and solved by Solve; the fraction that
+	//! converges is compared with the dn = 0 fraction.  The normalized
+	//! half-vector constraint is 0/0 at dn = 0 and arbitrarily steep near
+	//! it, so an exact-match special case (round 1) converged at dn = 0
+	//! and failed almost everywhere at dn = 1e-8 .. 1e-4.
+	void TestNewtonIndexContinuity()
+	{
+		std::cout << "A8: SMS Newton convergence is continuous in a vertex's index mismatch" << std::endl;
+		const double dns[] = { 0.0, 1e-10, 1e-8, 1e-6, 1e-4, 1e-3, 1e-2, 1e-1 };
+		const int kPairs = 400;
+		double okAtZero = -1;
+		for( const double dn : dns ) {
+			std::ostringstream o;
+			o << std::setprecision( 17 );
+			o << "RISE ASCII SCENE 7\n" << PainterPreamble();
+			o << "perfectrefractor_material\n{\n\tname outer_mat\n\tior 2.2\n\trefractance white\n}\n\n";
+			o << "perfectrefractor_material\n{\n\tname inner_mat\n\tior " << 2.2 + dn << "\n\trefractance white\n}\n\n";
+			o << "sphere_geometry\n{\n\tname outer_geo\n\tradius 0.5\n}\n\n";
+			o << "sphere_geometry\n{\n\tname inner_geo\n\tradius 0.3\n}\n\n";
+			o << "standard_object\n{\n\tname outer\n\tgeometry outer_geo\n\tposition 0 0.8 0\n\tmaterial outer_mat\n}\n\n";
+			o << "standard_object\n{\n\tname inner\n\tgeometry inner_geo\n\tposition 0 0.8 0\n\tmaterial inner_mat\n}\n\n";
+			const std::string path = WriteScene( o.str(), "newtoncont" );
+			IJobPriv* job = nullptr;
+			const bool loaded = !path.empty() && RISE_CreateJobPriv( &job ) && job && job->LoadAsciiSceneViaCst( path.c_str() );
+			Check( loaded, "A8: scene loads" );
+			if( !loaded ) { safe_release( job ); std::remove( path.c_str() ); continue; }
+			StandardShader* shader = new StandardShader( std::vector<IShaderOp*>() );
+			RayCaster* caster = new RayCaster( false, 8, *shader, false );
+			caster->AttachScene( job->GetScene() );
+			ManifoldSolverConfig cfg;
+			cfg.maxIterations = 30;
+			ManifoldSolver* solver = new ManifoldSolver( cfg );
+			RandomNumberGenerator rng( 290808 );
+			Implementation::IndependentSampler sampler( rng );
+			int seeded = 0, ok = 0;
+			for( int k = 0; k < kPairs; ++k ) {
+				const double r0 = 0.25 * std::sqrt( rng.CanonicalRandom() ), p0 = 2 * PI * rng.CanonicalRandom();
+				const double r1 = 0.15 * std::sqrt( rng.CanonicalRandom() ), p1 = 2 * PI * rng.CanonicalRandom();
+				const Point3 sp( r0 * std::cos( p0 ), 0, r0 * std::sin( p0 ) );
+				const Point3 lp( r1 * std::cos( p1 ), 2.0, r1 * std::sin( p1 ) );
+				std::vector<ManifoldVertex> chain;
+				const IORStack air( 1.0 );
+				solver->BuildSeedChain( sp, lp, *job->GetScene(), *caster, chain, true, &air );
+				if( chain.size() != 4 ) continue;
+				++seeded;
+				const ManifoldResult mr = solver->Solve( sp, Vector3( 0, 1, 0 ), lp, Vector3( 0, -1, 0 ), chain, sampler );
+				if( mr.valid ) ++ok;
+			}
+			const double frac = seeded > 0 ? double( ok ) / double( seeded ) : 0.0;
+			if( dn == 0.0 ) okAtZero = frac;
+			std::cout << std::setprecision( 6 ) << "    dn " << dn << ": " << ok << "/" << seeded << " converged (" << 100.0 * frac << " %)" << std::endl;
+			std::ostringstream lab;
+			lab << dn;
+			Check( seeded > kPairs / 2, "A8: four-vertex seed chains found, dn " + lab.str() );
+			if( dn > 0.0 && okAtZero > 0 ) {
+				Check( frac > okAtZero - 0.05, "A8: converged fraction within 5 points of the matched case, dn " + lab.str() );
+			}
+			safe_release( solver );
+			safe_release( caster );
+			safe_release( shader );
+			safe_release( job );
+			std::remove( path.c_str() );
+		}
+		Check( okAtZero > 0.5, "A8: the matched configuration converges" );
+	}
+
 	//////////////////////////////////////////////////////////////////
 	// Part B -- rendered scale invariance
 	//////////////////////////////////////////////////////////////////
@@ -1187,6 +1260,7 @@ int main( int argc, char** argv )
 	}
 	TestSMSRigs();
 	TestSeedWalkOpenSheets();
+	TestNewtonIndexContinuity();
 	if( !unitOnly ) {
 		TestRenderedInvariance( trials, only );
 		TestShippedMatchedIndexScenes( trials, only );
