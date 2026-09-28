@@ -241,9 +241,10 @@ static inline Scalar SchlickAzimuthFactorA(
 //! DL-178: Schlick 1994 Eq.31 adds G(nv)G(nl), G(c)=c/(r+(1-r)c).
 //! DL-225: the masking is min(Eq.31, the Smith projected-area bound of
 //! Schlick's own Z*A distribution) -- see SchlickMasking.h -- carried
-//! as the finite ratios mv = m(nv)/nv and ml = m(nl)/nl.  Dividing
+//! through its finite denominators dv = nv/m(nv) and dl = nl/m(nl)
+//! (Eq.31's r+(1-r)c wherever Eq.31 is inside the bound).  Dividing
 //! f_S cos by p_S cancels Z; roughness remains in the masking:
-//! R = A(h.wi) mv nl ml / (2 pi t p_phi),  nl = 2(h.wi)t - nv.
+//! R = A(h.wi) nl / (2 pi t p_phi dv dl),  nl = 2(h.wi)t - nv.
 //! Finite at grazing.
 static inline Scalar SchlickKrayRatioFromH(
 		const Vector3& h,											///< [in] Unit half-vector
@@ -271,12 +272,12 @@ static inline Scalar SchlickKrayRatioFromH(
 	const Vector3 l = 2.0 * hdotk * h - wi;
 	SchlickMasking::Lane lane;
 	SchlickMasking::Prepare( lane, r, p );
-	const Scalar mv = SchlickMasking::MaskOverCos( lane, nv,
+	const Scalar dv = SchlickMasking::MaskDen( lane, nv,
 		Vector3Ops::Dot( wi, onb.u() ), Vector3Ops::Dot( wi, onb.v() ) );
-	const Scalar ml = SchlickMasking::MaskOverCos( lane, nl,
+	const Scalar dl = SchlickMasking::MaskDen( lane, nl,
 		Vector3Ops::Dot( l, onb.u() ), Vector3Ops::Dot( l, onb.v() ) );
-	return SchlickAzimuthFactorA( h, t, onb, p ) * hdotk * mv * nl * ml
-		/ ( TWO_PI * t * pphi );
+	return SchlickAzimuthFactorA( h, t, onb, p ) * hdotk * nl
+		/ ( TWO_PI * t * pphi * dv * dl );
 }
 
 //! `SchlickKrayRatioFromH` at a QUERIED outgoing direction.  Recovers `h`
@@ -708,18 +709,20 @@ static Scalar SchlickDiffuseSelectCoefficient(
 
 	// DL-127: the realized selection weight is now `S * ratio`, and
 	// DL-178 cancels nv against G(nv).  DL-225: the masking is the
-	// bounded one (SchlickMasking.h); m(nv)/nv is constant over the
-	// quadrature, while m(nl)/nl depends on each accepted direction,
+	// bounded one (SchlickMasking.h); its denominator nv/m(nv) is
+	// constant over the quadrature, while nl/m(nl) depends on each accepted direction,
 	// whose tangential components are 2(h.v)h - v in the local frame.
 	const Vector3 wiView = Vector3Ops::Normalize( -d );
 	const Scalar  nvView = Vector3Ops::Dot( nW, wiView );
 	const Scalar  vxView = Vector3Ops::Dot( eu, wiView );
 	const Scalar  vyView = Vector3Ops::Dot( ev, wiView );
 	SchlickMasking::Lane lanes[3];
-	Scalar mvView[3] = { 0, 0, 0 };
+	Scalar denView[3] = { 1, 1, 1 };
+	Scalar slowBelow[3] = { 0, 0, 0 };		// nl below this may need the bounded branch
 	for( int j = 0; j < lobes.count; j++ ) {
 		SchlickMasking::Prepare( lanes[j], lobes.r[j], lobes.p[j] );
-		mvView[j] = SchlickMasking::MaskOverCos( lanes[j], nvView, vxView, vyView );
+		denView[j] = SchlickMasking::MaskDen( lanes[j], nvView, vxView, vyView );
+		slowBelow[j] = lanes[j].bounded ? lanes[j].cFast : Scalar(0);
 	}
 
 	Scalar accum = 0;
@@ -769,12 +772,17 @@ static Scalar SchlickDiffuseSelectCoefficient(
 				// `MaxValue(kray) = ratio * (rho_max + (1-rho_max) F)`
 				// because `ratio` is a nonnegative scalar.
 				const Scalar nl = 2.0 * hdotk * az - nvView;
-				const Scalar ratio = ( az > NEARZERO && nvView > NEARZERO && nl > 0 )
-					? ( rows.azim[j][bIdx] * hdotk * mvView[j] * nl
-					    * SchlickMasking::MaskOverCos( lanes[j], nl,
-					          k*ax - vxView, k*ay - vyView )
-					    / az )
-					: Scalar(0);
+				Scalar ratio = 0;
+				if( az > NEARZERO && nvView > NEARZERO && nl > 0 ) {
+					// SchlickMasking::MaskDen, with its cFast test hoisted
+					// per lane: above it the denominator is Eq.31's.
+					const Scalar r = lobes.r[j];
+					const Scalar den31 = r + (1.0 - r) * nl;
+					const Scalar denL = ( nl < slowBelow[j] )
+						? SchlickMasking::MaskDenSlow( lanes[j], nl, k*ax - vxView, k*ay - vyView, den31 )
+						: den31;
+					ratio = rows.azim[j][bIdx] * hdotk * nl / ( az * denView[j] * denL );
+				}
 
 				wS += (lobes.rho[j] + (1.0 - lobes.rho[j]) * fresnel) * ratio;
 				nAcceptedSpec++;

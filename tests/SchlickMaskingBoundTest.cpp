@@ -314,8 +314,8 @@ int main()
 				if( c <= 0 || c >= 1 ) continue;
 				for( double ph : { 0.0, 0.7, 1.5 } ) {
 					const double den31 = r + ( 1 - r ) * c;
-					const double slow = SchlickMasking::MaskOverCosSlow( L, c, cos( ph ), sin( ph ), den31 );
-					Check( slow == 1.0 / den31, "c >= cFast: the full evaluation also returns Eq.31", slow, 1.0 / den31 );
+					const double slow = SchlickMasking::MaskDenSlow( L, c, cos( ph ), sin( ph ), den31 );
+					Check( slow == den31, "c >= cFast: the full evaluation also returns Eq.31", slow, den31 );
 					n++;
 				}
 			}

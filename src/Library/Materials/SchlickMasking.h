@@ -189,6 +189,26 @@ namespace RISE
 			//! Pure value key, per-thread storage, no shared mutation.
 			inline void Prepare( Lane& L, const double roughness, const double isotropy )
 			{
+				// Isotropy exactly 1 (the common case) needs no elliptic
+				// integrals: A == 1, c(p) = 1, C2 = 0, and the bound is the
+				// closed-form GGX Smith G1, which Eq.31 exceeds only when
+				// r < 1/4 and cos < (1-4r)/(3-4r) -- so that IS cFast.
+				if( isotropy == 1.0 && roughness > 0 && std::isfinite( roughness ) ) {
+					L.r = roughness;
+					L.sqrtR = std::sqrt( roughness );
+					L.p = L.sqrtP = 1.0;
+					L.q = 0.0;
+					L.cp = 1.0;
+					L.C2 = 0.0;
+					L.Wmax = 2.0;
+					L.Qmax = 0.5 * kPi;
+					L.QmaxOver2Pi = 0.25;
+					L.WmaxOver4 = 0.5;
+					L.cFast = ( roughness < 0.25 ) ? ( 1.0 - 4.0 * roughness ) / ( 3.0 - 4.0 * roughness ) : 0.0;
+					L.swapAxes = false;
+					L.bounded = true;
+					return;
+				}
 				struct Entry { double r, p; Lane lane; bool used; };
 				static thread_local Entry cache[2] = { { 0, 0, Lane(), false }, { 0, 0, Lane(), false } };
 				static thread_local int next = 0;
@@ -206,77 +226,142 @@ namespace RISE
 				next ^= 1;
 			}
 
-			//! The part of MaskOverCos below cFast.  Kept separate from the
-			//! cheap test above it, which is what the C_D replay's inner
-			//! loop runs almost always; this holds every transcendental.
-			inline double MaskOverCosSlow( const Lane& L, const double c, const double tx, const double ty, const double den31 )
+			//! W(c2) = int_window A(phi) cos(phi - phi_v) dphi at
+			//! c2 = cos^2(phi_v) (folded isotropy p < 1), in closed form:
+			//! 2 sqrt(p) [ c2 asinh(q x/p)/(q x p) ... ] with x = sqrt(c2),
+			//! y = sqrt(1 - c2).  Also returns dW/dc2.
+			inline void WAndSlope( const double p, const double q, const double c2, double& W, double& dW )
 			{
-				// Eq.31 is inside the bound iff c*cp + g E <= den31, with
-				// g = sqrt(r) s / (2 pi) and E <= W atan(k Q / W) (Jensen).
-				// Two progressively tighter sufficient tests run first; each
-				// upper-bounds the Jensen bound at EVERY azimuth (W, Q are
-				// maximal at the anisotropy peak and W atan(k Q/W) increases
-				// in both), so a pass returns exactly what the full
-				// evaluation would.
-				const double s = std::sqrt( std::max( 0.0, 1.0 - c*c ) );
-				//   (b) atan x <= pi/2: c cp + sqrt(r) s Wmax / 4 <= den31
-				if( c * L.cp + L.sqrtR * s * L.WmaxOver4 <= den31 ) {
-					return 1.0 / den31;
-				}
-				const double k = L.sqrtR * s / c;
-				const double g = L.sqrtR * s / ( 2.0 * kPi );		// multiplies E in c * I/nv
-				//   (c) the Jensen bound at the anisotropy peak.
-				if( c * L.cp + g * L.Wmax * std::atan( k * L.Qmax / L.Wmax ) <= den31 ) {
-					return 1.0 / den31;
-				}
+				const double x = std::sqrt( c2 ), y = std::sqrt( std::max( 0.0, 1.0 - c2 ) );
+				const double z = q * x / p, w = q * y;
+				const double sp = std::sqrt( p );
+				W  = 2.0 * sp * ( c2 * AsinhOverZ( z ) / p + ( 1.0 - c2 ) * AsinOverZ( w ) );
+				dW = 2.0 * sp * ( ( AsinhOverZ( z ) + 1.0 / std::sqrt( 1.0 + z*z ) ) / ( 2.0 * p )
+				                - ( AsinOverZ( w ) + 1.0 / std::sqrt( 1.0 - w*w ) ) / 2.0 );
+			}
 
-				double smith;
+			//! Tangent lines of W(c2) at 12 nodes c2_j = (j/11)^4.  W is
+			//! concave in c2 (its rearrangement makes it the convolution
+			//! of two symmetric-decreasing functions; verified numerically
+			//! down to isotropy 1e-4 in docs/DL225_BOUNDED_SCHLICK.md), so
+			//! every tangent lies above W and min_j over them is an UPPER
+			//! bound on W -- which is all the Jensen bound needs, since
+			//! W atan(k Q / W) increases in W.  Looseness <= 1.31% at
+			//! isotropy 1e-4 and <= 0.53% for isotropy >= .01.  Built once
+			//! per distinct isotropy per thread, only when a direction
+			//! first reaches the transcendental path.
+			static const int kWNodes = 12;
+			struct WTable
+			{
+				double p;
+				bool   used;
+				double a[kWNodes];			//!< tangent intercepts
+				double b[kWNodes];			//!< tangent slopes
+			};
+
+			inline const WTable& GetWTable( const Lane& L )
+			{
+				static thread_local WTable cache[4] = {};
+				static thread_local int next = 0;
+				for( int i = 0; i < 4; i++ ) {
+					if( cache[i].used && cache[i].p == L.p ) {
+						return cache[i];
+					}
+				}
+				WTable& t = cache[next];
+				next = ( next + 1 ) & 3;
+				t.p = L.p;
+				t.used = true;
+				for( int j = 0; j < kWNodes; j++ ) {
+					const double u = double( j ) / double( kWNodes - 1 );
+					const double x = ( u * u ) * ( u * u );
+					double W = 0, dW = 0;
+					WAndSlope( L.p, L.q, x, W, dW );
+					t.a[j] = W - dW * x;
+					t.b[j] = dW;
+				}
+				return t;
+			}
+
+			//! The part of MaskDen below cFast.  Kept separate from the
+			//! cheap test in MaskDen, which is what the C_D replay's inner
+			//! loop runs almost always; this holds every transcendental.
+			//! Returns c / m(c) >= den31 (the Eq.31 value).
+			inline double MaskDenSlow( const Lane& L, const double c, const double tx, const double ty, const double den31 )
+			{
+				const double s = std::sqrt( std::max( 0.0, 1.0 - c*c ) );
 				if( L.q == 0 ) {
 					// Isotropy 1: the rearrangement/Cauchy-Schwarz bound is
 					// exact, i.e. the closed-form GGX Smith G1 of Z,
-					// m/c = 2 / (c + sqrt(c^2 + r s^2)).
-					smith = 2.0 / ( c + std::sqrt( c*c + L.r * s*s ) );
-				} else {
-					const double T = tx*tx + ty*ty;
-					double c2 = 1.0, s2 = 0.0;
-					if( T > 0 ) {
-						c2 = tx*tx / T;
-						s2 = 1.0 - c2;
-					}
-					if( L.swapAxes ) {
-						std::swap( c2, s2 );
-					}
-					const double W = 2.0 * L.sqrtP * (
-						c2 * AsinhOverZ( L.q * std::sqrt( c2 ) / L.p ) / L.p +
-						s2 * AsinOverZ( L.q * std::sqrt( s2 ) ) );
-					const double Q = 0.5 * ( kPi * L.cp + ( c2 - s2 ) * L.C2 );
-					double E = W * std::atan( k * Q / W );
-					// The rearrangement/Cauchy-Schwarz bound matters near
-					// isotropy 1 (it is exact there, and Jensen's gap reaches
-					// ~3%).  Below isotropy 1/2 Jensen is within 0.5% of the
-					// smaller of the two everywhere (CS was tighter in 13 of
-					// 194560 swept (isotropy, azimuth, k) states, by at most
-					// 0.50%; docs/DL225_BOUNDED_SCHLICK.md), so the second
-					// atan is skipped there.  Either alone is a valid bound.
-					if( L.p >= 0.5 ) {
-						E = std::min( E, std::sqrt( M2( k, L.p, L.q ) * EIso( k ) ) );
-					}
-					smith = 1.0 / ( c * L.cp + g * E );
+					// c / m = (c + sqrt(c^2 + r s^2)) / 2.
+					return std::max( den31, 0.5 * ( c + std::sqrt( c*c + L.r * s*s ) ) );
 				}
-				return std::min( 1.0 / den31, smith );
+
+				// Eq.31 is inside the bound iff c*cp + g E <= den31, with
+				// g = sqrt(r) s / (2 pi).  Sufficient test first, with the
+				// azimuth-free bound E <= (pi/2) Wmax (atan x <= pi/2; W is
+				// maximal at the anisotropy peak): a pass returns exactly
+				// what the full evaluation would.
+				if( c * L.cp + L.sqrtR * s * L.WmaxOver4 <= den31 ) {
+					return den31;
+				}
+
+				const double T = tx*tx + ty*ty;
+				double c2 = 1.0, s2 = 0.0;
+				if( T > 0 ) {
+					c2 = tx*tx / T;
+					s2 = 1.0 - c2;
+				}
+				if( L.swapAxes ) {
+					std::swap( c2, s2 );
+				}
+				const WTable& wt = GetWTable( L );
+				double W = wt.a[0] + wt.b[0] * c2;
+				for( int j = 1; j < kWNodes; j++ ) {
+					W = std::min( W, wt.a[j] + wt.b[j] * c2 );
+				}
+				const double k = L.sqrtR * s / c;
+				const double g = L.sqrtR * s / ( 2.0 * kPi );		// multiplies E in c * I/nv
+				const double Q = 0.5 * ( kPi * L.cp + ( c2 - s2 ) * L.C2 );
+				// Same sufficient test at THIS azimuth, still atan-free:
+				// W atan(k Q/W) <= min(k Q, (pi/2) W).
+				if( c * L.cp + g * std::min( k * Q, 0.5 * kPi * W ) <= den31 ) {
+					return den31;
+				}
+				double E = W * std::atan( k * Q / W );
+				// The rearrangement/Cauchy-Schwarz bound matters near
+				// isotropy 1 (it is exact there, and Jensen's gap reaches
+				// ~3%).  Below isotropy 1/2 Jensen is within 0.5% of the
+				// smaller of the two everywhere (CS was tighter in 13 of
+				// 194560 swept (isotropy, azimuth, k) states, by at most
+				// 0.50%; docs/DL225_BOUNDED_SCHLICK.md), so the second
+				// atan is skipped there.  Either alone is a valid bound.
+				if( L.p >= 0.5 ) {
+					E = std::min( E, std::sqrt( M2( k, L.p, L.q ) * EIso( k ) ) );
+				}
+				return std::max( den31, c * L.cp + g * E );
 			}
 
-			//! m(c, phi) / c for a direction at cosine `c` from the normal
+			//! c / m(c, phi) for a direction at cosine `c` from the normal
 			//! whose tangential components in (onb.u, onb.v) are (tx, ty)
-			//! (need not be normalized).  Finite as c -> 0.  Equals Eq.31's
-			//! G(c)/c = 1/(r + (1-r)c) wherever that is inside the bound.
-			inline double MaskOverCos( const Lane& L, const double c, const double tx, const double ty )
+			//! (need not be normalized): the masking's DENOMINATOR form,
+			//! so a caller forms ONE division exactly as the Eq.31 code
+			//! did with (r + (1-r)nv)(r + (1-r)nl).  Positive and finite as
+			//! c -> 0.  Equals Eq.31's r + (1-r)c wherever that is inside
+			//! the bound, and is >= it everywhere (m never exceeds Eq.31).
+			inline double MaskDen( const Lane& L, const double c, const double tx, const double ty )
 			{
 				const double den31 = L.r + ( 1.0 - L.r ) * c;		// c / G_Eq31(c)
 				if( !L.bounded || c <= 0 || c >= 1.0 || c >= L.cFast ) {
-					return 1.0 / den31;
+					return den31;
 				}
-				return MaskOverCosSlow( L, c, tx, ty, den31 );
+				return MaskDenSlow( L, c, tx, ty, den31 );
+			}
+
+			//! m(c, phi) / c = 1 / MaskDen.
+			inline double MaskOverCos( const Lane& L, const double c, const double tx, const double ty )
+			{
+				return 1.0 / MaskDen( L, c, tx, ty );
 			}
 		}
 	}

@@ -121,8 +121,8 @@ namespace
 	//! exceed 1 near grazing at low roughness (5.6 at r .005); the masking
 	//! is now min(Eq.31, the Smith projected-area bound of Schlick's own
 	//! Z*A distribution), which is exactly Eq.31 wherever Eq.31 is already
-	//! inside that bound -- see SchlickMasking.h.  Returned as m/c
-	//! factors so the grazing limit stays finite.
+	//! inside that bound -- see SchlickMasking.h.  The masking enters as
+	//! its denominators c/m(c) so the grazing limit stays finite.
 	Scalar SchlickLaneFactor( const SchlickPairGeometry& g, const Scalar r, const Scalar p )
 	{
 		const Scalar sqr_t = g.t*g.t;
@@ -135,9 +135,9 @@ namespace
 
 		SchlickMasking::Lane lane;
 		SchlickMasking::Prepare( lane, r, p );
-		const Scalar mv = SchlickMasking::MaskOverCos( lane, g.nv, g.vx, g.vy );
-		const Scalar ml = SchlickMasking::MaskOverCos( lane, g.nl, g.lx, g.ly );
-		return (Z*A*mv*ml)/(4.0*PI);
+		const Scalar dv = SchlickMasking::MaskDen( lane, g.nv, g.vx, g.vy );
+		const Scalar dl = SchlickMasking::MaskDen( lane, g.nl, g.lx, g.ly );
+		return (Z*A)/(4.0*PI*dv*dl);
 	}
 
 	//! Per-channel factor, evaluating each distinct (r, p) lane once.
@@ -255,7 +255,7 @@ RISEPel SchlickBRDF::albedo( const RayIntersectionGeometric& ri ) const
 		// DL-225: the same bounded masking value() evaluates.
 		SchlickMasking::Lane lane;
 		SchlickMasking::Prepare(lane,r,p);
-		const Scalar mvOverNv=SchlickMasking::MaskOverCos(lane,nv,vx,vy);
+		const Scalar denV=SchlickMasking::MaskDen(lane,nv,vx,vy);
 		Scalar az[np];
 		for(int j=0;j<np;++j) az[j]=sqrt(p/(p*p+(1-p*p)*sp[j]*sp[j]));
 		for(int i=0;i<nt;++i) {
@@ -267,8 +267,8 @@ RISEPel SchlickBRDF::albedo( const RayIntersectionGeometric& ri ) const
 				if(hv<=0 || nl<=0 || 2*hv*(hx*gx+hy*gy+t*gz)-vg<=0) continue;
 				const Scalar f=1-hv, f2=f*f, F=f2*f2*f;
 				const Scalar lx=2*hv*hx-vx, ly=2*hv*hy-vy;
-				const Scalar weight=2*u*az[j]*hv*nl*mvOverNv
-					*SchlickMasking::MaskOverCos(lane,nl,lx,ly)/t;
+				const Scalar weight=2*u*az[j]*hv*nl
+					/(t*denV*SchlickMasking::MaskDen(lane,nl,lx,ly));
 				m0[ch]+=weight;m5[ch]+=weight*F;
 			}
 		}
