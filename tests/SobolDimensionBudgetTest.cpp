@@ -1297,9 +1297,10 @@ static void TestStreamMap()
 // Test H: BDPT's medium distance sampling stays inside its own
 // stream block (DL-283)
 //
-// Drives BDPTIntegrator's REAL light and eye generators (Pel and NM)
-// on an index-matched box holding a thin heterogeneous medium whose
-// 128^3 majorant grid makes delta tracking cross many cells, with a
+// Drives BDPTIntegrator's REAL light and eye generators (Pel and NM,
+// light sampler attached so the light walk really runs) on an
+// index-matched box holding a thin heterogeneous medium whose 256^3
+// majorant grid makes delta tracking cross many cells, with a
 // SobolSampler subclass that records every draw's stream and raw
 // dimension.  Three properties, per BDPT sample (light subpath then
 // eye subpath off one sampler, as every BDPT/VCM rasterizer does):
@@ -1408,7 +1409,8 @@ static std::string MediumBoxScene( bool heterogeneous )
 struct StreamAuditTally
 {
 	unsigned long long samples = 0, vertexOverruns = 0, badBlockDraws = 0,
-		sameWalkRepeats = 0, crossWalkRepeats = 0, mediumSamples = 0;
+		sameWalkRepeats = 0, crossWalkRepeats = 0, mediumSamples = 0,
+		lightMediumSamples = 0, lightDraws = 0, samplesWithSharedDims = 0;
 	unsigned int maxVertexDraws = 0, maxBlockDraws = 0;
 };
 
@@ -1426,6 +1428,8 @@ static void AuditOneSample( const StreamAuditSobol& s, size_t lightEnd, StreamAu
 			if( ps.second > SobolSampler::kStreamStride ) t.vertexOverruns++;
 		} else {
 			t.mediumSamples++;
+			if( ps.first >= BDPTUtilities::MediumDistanceStream( BDPTUtilities::eLightWalk, 0 ) )
+				t.lightMediumSamples++;
 			if( ps.second > t.maxBlockDraws ) t.maxBlockDraws = ps.second;
 			if( ( ps.first - base ) % per != 0 || ps.first >= BDPTUtilities::kMediumDistanceStreamEnd ||
 				ps.second > IMedium::kMaxSampleDistanceDraws ) t.badBlockDraws++;
@@ -1447,6 +1451,8 @@ static void AuditOneSample( const StreamAuditSobol& s, size_t lightEnd, StreamAu
 	std::set_intersection( lc.begin(), lc.end(), ec.begin(), ec.end(), std::back_inserter( both ) );
 	both.erase( std::unique( both.begin(), both.end() ), both.end() );
 	t.crossWalkRepeats += both.size();
+	if( !both.empty() ) t.samplesWithSharedDims++;
+	t.lightDraws += lightEnd;
 	t.samples++;
 }
 
@@ -1476,6 +1482,15 @@ static bool RunStreamAudit( bool heterogeneous, bool nm, StreamAuditTally& t, in
 	RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
 	StabilityConfig stability;		// max_volume_bounce 64
 	BDPTIntegrator* pBdpt = new BDPTIntegrator( 20, 20, stability );
+
+	// The LIGHT walk needs a light sampler: without one
+	// GenerateLightSubpathImpl returns before drawing anything, and an
+	// earlier revision of this test audited only the eye walk (review of
+	// DL-283, P1-2).  Same wiring the rasterizers do.
+	pCaster->AttachScene( pScene );
+	pScene->GetObjects()->PrepareForRendering();
+	pBdpt->SetLightSampler( pCaster->GetLightSampler() );
+	if( !pCaster->GetLightSampler() ) { safe_release( pBdpt ); safe_release( pJob ); return false; }
 
 	for( unsigned int i = 0; i < 4096u; i++ ) {
 		const Point2 screen( ( ( i % 64u ) + 0.5 ) / 64.0, ( ( i / 64u ) + 0.5 ) / 64.0 );
@@ -1524,7 +1539,9 @@ static void TestMediumDistanceStreamAudit()
 				<< ", vertex overruns " << t.vertexOverruns
 				<< ", misplaced block draws " << t.badBlockDraws
 				<< ", same-walk dimension repeats " << t.sameWalkRepeats
-				<< ", light/eye shared dimensions " << t.crossWalkRepeats << " (DL-286, not gated)\n";
+				<< "\n    light walk: " << t.lightDraws << " draws, " << t.lightMediumSamples
+				<< " distance samples; light/eye shared dimensions " << t.crossWalkRepeats
+				<< " in " << t.samplesWithSharedDims << " samples (DL-286, not gated)\n";
 			if( t.vertexOverruns || t.badBlockDraws || t.sameWalkRepeats ) ok = false;
 			if( het && !nm ) {
 				std::cout << "    PSSMLTSampler (MLT) through the same generators: highest stream "
@@ -1537,6 +1554,11 @@ static void TestMediumDistanceStreamAudit()
 				}
 			}
 			if( t.mediumSamples == 0 ) ok = false;
+			if( t.lightMediumSamples == 0 || t.lightDraws == 0 ) {
+				std::cerr << "  FAIL: the LIGHT walk drew nothing / sampled no medium distance -- "
+					<< "the audit would be blind to the light-walk half of the fix.\n";
+				ok = false;
+			}
 			if( het && std::max( t.maxBlockDraws, t.maxVertexDraws ) <= SobolSampler::kStreamStride ) {
 				std::cerr << "  FAIL: the heterogeneous fixture no longer drives a distance sample "
 					<< "past one stream's " << SobolSampler::kStreamStride
