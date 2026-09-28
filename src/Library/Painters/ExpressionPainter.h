@@ -525,6 +525,27 @@ namespace RISE
 			//! of a vec3 body, not a per-hit check of whether the three
 			//! components happen to differ at any one point).
 			bool HasPerChannelVariation() const override { return m_prog.ResultType() == ExpressionProgram::kVec3; }
+
+			//! DL-09: a SCALAR-typed body that reads the world position `P`
+			//! and none of the surface-record inputs (`u`, `v`, `Po`, `N`,
+			//! `fw`, `fwo`, `curv`, `curvR`), no surface signal and no
+			//! `sample()` of another painter.  Resolved from the compiled
+			//! program's static context-variable mask, so it is a property
+			//! of the program, not a per-hit check.  `time` is allowed: it
+			//! is a fixed constant on this pipe (see the class comment).
+			bool IsWorldPositionField() const override
+			{
+				if( m_prog.ResultType() != ExpressionProgram::kScalar ) return false;
+				if( !m_prog.UsesContextVar( ExpressionProgram::kContextSlotP ) ) return false;
+				if( m_prog.UsesContextVar( 0 ) || m_prog.UsesContextVar( 1 ) ) return false;				// u, v
+				if( m_prog.UsesContextVar( ExpressionProgram::kContextSlotPo ) ) return false;
+				if( m_prog.UsesContextVar( 8 ) ) return false;											// N
+				if( m_prog.UsesContextVar( ExpressionProgram::kContextSlotFw ) ||
+					m_prog.UsesContextVar( ExpressionProgram::kContextSlotFwo ) ) return false;
+				if( m_prog.UsesSurfaceCurvature() ) return false;
+				if( m_prog.UsesSurfaceSignals() || m_prog.UsesPainterSample() ) return false;
+				return true;
+			}
 		};
 	}
 }

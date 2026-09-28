@@ -205,6 +205,17 @@ namespace RISE
 			return iorstack.containsObject( pCurrentObject );
 		}
 
+		// DL-09: re-record the IOR of the innermost enclosing medium (the
+		// top entry) as the walk moves through it.  Only meaningful for a
+		// medium whose `ior` varies with position (GradedIndexMedium.h);
+		// the root (environment) entry is never rewritten.
+		inline void SetTopIOR( const Scalar ior )
+		{
+			if( iorstack.size() > 1 ) {
+				iorstack.top().ior = ior;
+			}
+		}
+
 		// Returns the object at the top of the IOR stack (innermost enclosing object).
 		// Returns 0 for the environment (root entry with no object).
 		// Analogous to Cycles' volume stack top entry.

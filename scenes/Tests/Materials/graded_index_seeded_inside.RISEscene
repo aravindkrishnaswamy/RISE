@@ -3,14 +3,16 @@ RISE ASCII SCENE 7
 # DL-09 fixture (docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md section 3 (iii)):
 # the SAME graded-index box, floor and emitter as
 # graded_index_interior_gather.RISEscene, but the orthographic camera sits
-# INSIDE the graded medium at z = 0.3 (n_S = 1.8 - 0.6*0.7 = 1.38), between
-# the floor and the emitter, still looking straight down the gradient.
+# INSIDE the graded medium at z = 1/3 (n_S = 1.8 - 0.6*(2/3) = 1.4), between
+# the floor and the emitter, still looking straight down the gradient.  z = 1/3
+# is the centre of a nested-box band for every box count K = 3k+1, which is
+# what lets the test's piecewise-constant references converge quickly.
 #
-# Closed form:  pixel = rho*L_e*cov*(n_S/n_E)^2 = 0.5*(1/pi)*0.9988*(1.38/1.8)^2
-# = 0.09345.  Before DL-09 the eye walk carried no interior factor at all and
+# Closed form:  pixel = rho*L_e*cov*(n_S/n_E)^2 = 0.5*(1/pi)*0.9988*(1.4/1.8)^2
+# = 0.09617.  Before DL-09 the eye walk carried no interior factor at all and
 # IORStackSeeding::SeedFromPoint recorded the index at its +z probe's FIRST
 # SURFACE HIT (the top face, 1.2) instead of at the camera: the render read
-# rho*L_e*cov = 0.15897, 1.70x too bright.
+# rho*L_e*cov = 0.15897, 1.65x too bright.
 #
 # The test replaces the RASTERIZER span (to render with BDPT/VCM) and the
 # MEDIUM span (with nested constant-index boxes, and with a uniform control).
@@ -37,7 +39,7 @@ film
 
 orthographic_camera
 {
-	location 0 0 0.3
+	location 0 0 0.333333333333
 	lookat 0 0 0
 	up 0 1 0
 	viewport_scale 0.2 0.2

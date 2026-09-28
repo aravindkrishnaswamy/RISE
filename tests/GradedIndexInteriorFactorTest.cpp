@@ -336,8 +336,9 @@ static void RunGatherRows( const char* rowName, const std::string& sceneFile, do
 	Report( "PT graded", g, closed );
 	Check( g.ok, std::string( rowName ) + ": PT graded renders produced output" );
 
-	// Nested-box references: the convergence table.
-	const int Ks[] = { 2, 4, 8, 16 };
+	// Nested-box references: the convergence table.  K = 3k+1 so the
+	// seeded camera's z = 1/3 is a band CENTRE for every K (NestedBoxes).
+	const int Ks[] = { 4, 7, 10, 16 };
 	Stat ref16{ 0, 0, 0, false };
 	for( int K : Ks ) {
 		const std::string refText = ReplaceSpan( gradedPT, "MEDIUM", NestedBoxes( K ) );
@@ -474,8 +475,8 @@ static void RunPinholeConsistencyRow()
 	std::string base = WithSmallEmitter( ReadFile( "scenes/Tests/Materials/graded_index_seeded_inside.RISEscene" ) );
 	Check( !base.empty(), "D: fixture built" );
 	if( base.empty() ) return;
-	const std::string ortho = "orthographic_camera\n{\n\tlocation 0 0 0.3\n\tlookat 0 0 0\n\tup 0 1 0\n\tviewport_scale 0.2 0.2\n}\n";
-	const std::string pin = "pinhole_camera\n{\n\tlocation 0 0 0.3\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 60\n}\n";
+	const std::string ortho = "orthographic_camera\n{\n\tlocation 0 0 0.333333333333\n\tlookat 0 0 0\n\tup 0 1 0\n\tviewport_scale 0.2 0.2\n}\n";
+	const std::string pin = "pinhole_camera\n{\n\tlocation 0 0 0.333333333333\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 60\n}\n";
 	const std::size_t at = base.find( ortho );
 	Check( at != std::string::npos, "D: fixture camera block found" );
 	if( at == std::string::npos ) return;
@@ -534,14 +535,14 @@ static void RunSeedRow()
 	}
 	safe_release( pJob );
 
-	// The nested-box REFERENCE of row B puts the seed inside 5 of 17 boxes
-	// with 12 more above it on the +z probe.  TallyProbe used to record only
-	// the FIRST 8 distinct trackable objects a probe met, so the 12
-	// non-containing boxes in front used up the table and the 5 containing
-	// ones were never seen: the seed came back as bare air (1.0) and the
-	// K=16 reference rendered at 0.39x its closed form.  Containment depth is
-	// 5 here -- far below the documented cap; it is the PROBE's object count
-	// that overflowed.
+	// The nested-box REFERENCE of row B puts the seed inside 6 of 17 boxes
+	// with 11 more above it on the +z probe.  TallyProbe used to record only
+	// the FIRST 8 distinct trackable objects a probe met, so the
+	// non-containing boxes in front used up the table and the containing
+	// ones it only reaches afterwards were never seen: the seed came back as
+	// bare air (1.0) and the K=16 reference rendered at 0.39x its closed
+	// form.  Containment depth is 6 here -- it is the PROBE's object count
+	// that overflowed, not the nesting.
 	{
 		const int K = 16;
 		const double d = 1.0 / ( double( K ) + 0.5 );
@@ -552,12 +553,13 @@ static void RunSeedRow()
 			IScenePriv* pRS = pRef->GetScene();
 			pRS->GetObjects()->PrepareForRendering();
 			IORStack stack( 1.0 );
-			IORStackSeeding::SeedFromPoint( stack, Point3( 0.1, -0.2, 0.3 ), *pRS );
-			// Innermost box containing z = 0.3 is k = floor(0.3/d) = 4.
-			const double want = TentN( ( 4.0 + 0.5 ) * d );
-			std::printf( "    seed inside K=16 nested boxes z=0.30  top=%.6f  want box-4 ior %.6f\n", stack.top(), want );
-			Check( std::fabs( stack.top() - want ) < 1e-9,
-				"E: seed inside 5 of 17 nested constant boxes records the innermost box's ior (probe object count > 8)" );
+			IORStackSeeding::SeedFromPoint( stack, Point3( 0.1, -0.2, 1.0 / 3.0 ), *pRS );
+			// Innermost box containing z = 1/3 is k = 5 (5.5*d == 1/3).
+			const double want = TentN( ( 5.0 + 0.5 ) * d );
+			std::printf( "    seed inside K=16 nested boxes z=1/3  top=%.9f  want box-5 ior %.9f\n", stack.top(), want );
+			// The scene text prints each box's ior at %.9g.
+			Check( std::fabs( stack.top() - want ) < 1e-7,
+				"E: seed inside 6 of 17 nested constant boxes records the innermost box's ior (probe object count > 8)" );
 		} else {
 			Check( false, "E: nested-box seeding fixture loaded" );
 		}
@@ -575,7 +577,7 @@ int main( int argc, char** argv )
 	std::cout << "=== GradedIndexInteriorFactorTest (DL-09) ===  seed base " << g_seedBase << std::endl;
 
 	const double cov = Coverage();
-	const double nA = 1.2, nE = 1.8, nS = TentN( 0.3 );
+	const double nA = 1.2, nE = 1.8, nS = TentN( 1.0 / 3.0 );
 	// Row A: T_A*rho*L_e*cov/n_E^2; pre-DL-09 charged n_A instead of n_E.
 	const double closedA = ( 1.0 - R0( nA ) ) * kRho * kLe * cov / ( nE * nE );
 	const double preA    = ( 1.0 - R0( nA ) ) * kRho * kLe * cov / ( nA * nA );

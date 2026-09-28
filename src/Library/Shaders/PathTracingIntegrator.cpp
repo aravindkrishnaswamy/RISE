@@ -28,6 +28,7 @@
 #include "../Utilities/PathVertexEval.h"
 #include "../Utilities/OptimalMISAccumulator.h"
 #include "../Utilities/IORStackSeeding.h"
+#include "../Utilities/GradedIndexMedium.h"
 #include "../Utilities/MISWeights.h"
 #include "../Utilities/Profiling.h"
 #include "../Utilities/FiniteMath.h"
@@ -1322,7 +1323,8 @@ namespace
 		bool isVolumeScatter, const IObject* pMediumObject, const PelTag&,
 		const IGuidedNEEPdfBlend* pGuidedBlend, const IORStack* pMisIorStack,
 		Scalar neeTrainingScale )
-	{ return pLS->EvaluateDirectLighting( ri, brdf, pMaterial, caster, sampler, pShadingObject, pMedium, isVolumeScatter, pMediumObject, pGuidedBlend, pMisIorStack, neeTrainingScale ); }
+	{ return pLS->EvaluateDirectLighting( ri, brdf, pMaterial, caster, sampler, pShadingObject, pMedium, isVolumeScatter, pMediumObject, pGuidedBlend, pMisIorStack, neeTrainingScale,
+		/*bBsdfSamplingPartnerExists*/ true, /*bGradedIndexTracked (DL-09: this walk Advances)*/ true ); }
 	template<> inline Scalar PTEvaluateDirectLighting<NMTag>(
 		const Implementation::LightSampler* pLS, const RayIntersectionGeometric& ri,
 		const IBSDF& brdf, const IMaterial* pMaterial, const IRayCaster& caster,
@@ -1330,7 +1332,8 @@ namespace
 		bool isVolumeScatter, const IObject* pMediumObject, const NMTag& tag,
 		const IGuidedNEEPdfBlend* pGuidedBlend, const IORStack* pMisIorStack,
 		Scalar neeTrainingScale )
-	{ return pLS->EvaluateDirectLightingNM( ri, brdf, pMaterial, tag.nm, caster, sampler, pShadingObject, pMedium, isVolumeScatter, pMediumObject, pGuidedBlend, pMisIorStack, neeTrainingScale ); }
+	{ return pLS->EvaluateDirectLightingNM( ri, brdf, pMaterial, tag.nm, caster, sampler, pShadingObject, pMedium, isVolumeScatter, pMediumObject, pGuidedBlend, pMisIorStack, neeTrainingScale,
+		/*bBsdfSamplingPartnerExists*/ true, /*bGradedIndexTracked (DL-09: this walk Advances)*/ true ); }
 
 	// BSDF value at a surface (guiding RIS / one-sample MIS).
 	template<class Tag>
@@ -2553,6 +2556,26 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		// ============================================================
 		// Surface hit processing
 		// ============================================================
+
+		// DL-09: the interior-segment basic-radiance factor.  If the walk
+		// has been travelling inside a medium whose `ior` is a
+		// world-position field, the straight segment that just ended here
+		// carries (n_start/n_here)^2, and the stack's top is re-recorded as
+		// n_here -- so the exit crossing's RadianceEtaScale reads the FRESH
+		// exit-point index, and a gather here (emission below, NEE in PART
+		// 2) is priced with (1/n_here)^2 rather than the entry index's.
+		// Exactly nothing happens -- no multiply, no stack write -- unless
+		// the innermost medium is graded (docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md).
+		{
+			Scalar gradedScale;
+			if( GradedIndexMedium::Advance( iorStack, ri.geometric.ptIntersection,
+					GradedIndexMedium::eRadiance, gradedScale ) &&
+				gradedScale != Scalar( 1 ) )
+			{
+				throughput = throughput * gradedScale;
+				importance *= gradedScale;
+			}
+		}
 
 		// Determine current medium BEFORE updating IOR stack, so NEE
 		// shadow rays use the medium the ray was traveling through.
@@ -6052,6 +6075,22 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		// ============================================================
 		// Surface hit processing (HWSS)
 		// ============================================================
+
+		// DL-09 (HWSS twin of the Pel/NM site): interior-segment factor.
+		// The graded field is a single scalar (IsWorldPositionField), so
+		// the factor is wavelength-independent and applies to every lane.
+		{
+			Scalar gradedScale;
+			if( GradedIndexMedium::Advance( iorStack, ri.geometric.ptIntersection,
+					GradedIndexMedium::eRadiance, gradedScale ) &&
+				gradedScale != Scalar( 1 ) )
+			{
+				for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+					throughputComp[w] *= gradedScale;
+				}
+				importance *= gradedScale;
+			}
+		}
 		const IObject* pMediumObject = 0;
 		const IMedium* pCurrentMedium = MediumTracking::GetCurrentMediumWithObject(
 			iorStack, &scene, pMediumObject );
@@ -6319,7 +6358,9 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					// the FIRST vertex of this call -- the HWSS twin of the
 					// RGB/NM main loop's identical PART-2 NEE site (DL-185).
 					// 1.0 (no-op) for every deeper iteration of this loop.
-					depth == startDepth ? castRRCompensation_ : Scalar( 1.0 ) );
+					depth == startDepth ? castRRCompensation_ : Scalar( 1.0 ),
+					/*bBsdfSamplingPartnerExists*/ true,
+					/*bGradedIndexTracked (DL-09: this walk Advances)*/ true );
 				directNM = ClampContribution( directNM, stabilityConfig.directClamp );
 				// GUI render modes P2b `indirect` (HWSS twin): suppress
 				// NEE's direct-lighting contribution at the camera-visible

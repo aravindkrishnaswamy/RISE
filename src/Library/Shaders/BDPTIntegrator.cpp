@@ -83,6 +83,7 @@
 #include "../Rendering/AOVBuffers.h"
 #include "../Utilities/MediumTracking.h"
 #include "../Utilities/IORStackSeeding.h"
+#include "../Utilities/GradedIndexMedium.h"
 #include "../Interfaces/IMedium.h"
 #include "../Interfaces/IPhaseFunction.h"
 #include "../Utilities/IndependentSampler.h"
@@ -1716,6 +1717,9 @@ namespace {
 			// centre (debt 28) -- the walk physically starts there.
 			IORStackSeeding::SeedFromPoint( iorStack, vertices[0].position, scene );
 		}
+		// DL-09: the camera endpoint's graded medium and index, for a t==1
+		// connection's (n_camera/n_light)^2 factor.
+		GradedIndexMedium::RecordVertex( iorStack, vertices[0].pGradedMedium, vertices[0].gradedIOR );
 
 	#ifdef RISE_ENABLE_OPENPGL
 		static thread_local GuidingDistributionHandle guideDist;
@@ -1978,6 +1982,10 @@ namespace {
 						}
 	#endif
 
+						// DL-09: a medium vertex does not Advance (the next
+						// surface vertex's Advance telescopes over it); it
+						// records the stack top its throughput was priced to.
+						GradedIndexMedium::RecordVertex( iorStack, mv.pGradedMedium, mv.gradedIOR );
 						vertices.push_back( mv );
 
 						// Sample the phase function for continuation direction
@@ -2242,6 +2250,33 @@ namespace {
 				ri.pModifier->Modify( ri.geometric );
 			}
 
+			// DL-09: the interior-segment basic-radiance factor for the
+			// segment that just ended here, RADIANCE walk: (n_start/n_here)^2,
+			// top <- n_here.  The stack top then IS the index the exit
+			// crossing's RadianceEtaScale reads and the index the vertex
+			// records for connections.  No-op unless the innermost medium is
+			// a graded field (docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md).
+			{
+				Scalar gradedScale;
+				if( GradedIndexMedium::Advance( iorStack, ri.geometric.ptIntersection,
+						GradedIndexMedium::eRadiance, gradedScale ) )
+				{
+					if( gradedScale != Scalar( 1 ) ) {
+						beta = beta * gradedScale;
+						if constexpr( Traits::is_nm ) {
+							if( pSwlHWSS ) {
+								for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+									hwssBetaNM[w] *= gradedScale;
+								}
+							}
+						}
+					}
+					// The medium the ray was travelling through is now read
+					// at the hit, not at the segment's start.
+					ri.geometric.ambientIOR = iorStack.top();
+				}
+			}
+
 			// Create a new surface vertex
 			BDPTVertex v;
 			v.type = BDPTVertex::SURFACE;
@@ -2305,6 +2340,7 @@ namespace {
 				v.mediumIOR = iorStack.top();
 				v.insideObject = iorStack.containsCurrent();
 			}
+			GradedIndexMedium::RecordVertex( iorStack, v.pGradedMedium, v.gradedIOR );
 
 			// Convert pdfFwdPrev from solid angle to area measure
 			const Scalar distSq = ri.geometric.range * ri.geometric.range;
@@ -3577,7 +3613,7 @@ BroadcastScalar( const Scalar g )
 
 template<class Tag>
 typename ConnectionResultFor<Tag>::type
-ConnectAndEvaluateImpl(
+ConnectAndEvaluateImplCore(
 	const BDPTIntegrator& self,
 	const LightSampler* pLightSampler,
 	const std::vector<BDPTVertex>& lightVerts,
@@ -5057,6 +5093,51 @@ ConnectAndEvaluateImpl(
 	}
 }
 
+//! DL-09 (docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md §3(iv)): every
+//! CONNECTION strategy (s >= 1 and t >= 1 -- s==1 light-endpoint NEE, t==1
+//! camera splat, the general case) builds one straight segment between the
+//! eye endpoint and the light endpoint.  When both endpoints recorded the
+//! SAME graded-index medium, that segment carries (n_eye/n_light)^2 --
+//! the factor the eye walk would have paid had it traced that segment
+//! itself, and the one the light walk pays in its own order.  Applied here,
+//! once, around the one function every caller (BDPT, MLT, the complete-path
+//! strategy selector, both tags) reaches, so no strategy branch can miss it.
+//! It is a THROUGHPUT factor and never enters a pdf, so the MIS weight
+//! computed inside is untouched.  s == 0 (the eye walk hitting an emitter)
+//! builds no connection: the walk's own Advance already priced it.
+template<class Tag>
+typename ConnectionResultFor<Tag>::type
+ConnectAndEvaluateImpl(
+	const BDPTIntegrator& self,
+	const LightSampler* pLightSampler,
+	const std::vector<BDPTVertex>& lightVerts,
+	const std::vector<BDPTVertex>& eyeVerts,
+	unsigned int s,
+	unsigned int t,
+	const IScene& scene,
+	const IRayCaster& caster,
+	const ICamera& camera,
+	const Point2& cameraLensSample,
+	Tag tag )
+{
+	typename ConnectionResultFor<Tag>::type result = ConnectAndEvaluateImplCore<Tag>(
+		self, pLightSampler, lightVerts, eyeVerts, s, t, scene, caster, camera,
+		cameraLensSample, tag );
+	if( result.valid && s >= 1 && t >= 1 &&
+		s <= lightVerts.size() && t <= eyeVerts.size() )
+	{
+		const BDPTVertex& lightEnd = lightVerts[s - 1];
+		const BDPTVertex& eyeEnd = eyeVerts[t - 1];
+		const Scalar g = GradedIndexMedium::ConnectionScale(
+			eyeEnd.pGradedMedium, eyeEnd.gradedIOR,
+			lightEnd.pGradedMedium, lightEnd.gradedIOR );
+		if( g != Scalar( 1 ) ) {
+			result.contribution = result.contribution * g;
+		}
+	}
+	return result;
+}
+
 }  // anonymous namespace (ConnectAndEvaluate F3a)
 
 BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
@@ -6098,6 +6179,9 @@ unsigned int GenerateLightSubpathImpl(
 		}
 
 		v.pdfRev = 0;
+		// DL-09: the light endpoint's graded medium and index (SeedFromPoint
+		// recorded n at the light point), for s==1 connections.
+		GradedIndexMedium::RecordVertex( iorStack, v.pGradedMedium, v.gradedIOR );
 		vertices.push_back( v );
 	}
 
@@ -6311,6 +6395,8 @@ unsigned int GenerateLightSubpathImpl(
 					// cosAtGen is left at zero as it is unused.
 					mv.cosAtGen = 0;
 
+					// DL-09: see the eye walk's medium vertex.
+					GradedIndexMedium::RecordVertex( iorStack, mv.pGradedMedium, mv.gradedIOR );
 					vertices.push_back( mv );
 
 					// Sample phase function continuation
@@ -6411,6 +6497,31 @@ unsigned int GenerateLightSubpathImpl(
 			ri.pModifier->Modify( ri.geometric );
 		}
 
+		// DL-09: the interior-segment factor, IMPORTANCE walk:
+		// (n_here/n_start)^2.  An importance walk needs it EXPLICITLY on a
+		// straight graded segment -- at an interface the refraction map's
+		// Jacobian supplies the n^2 through this walk's sample density, and
+		// a straight segment has no map to supply it.  See
+		// GradedIndexMedium.h and the derivation doc §3(iv).
+		{
+			Scalar gradedScale;
+			if( GradedIndexMedium::Advance( iorStack, ri.geometric.ptIntersection,
+					GradedIndexMedium::eImportance, gradedScale ) )
+			{
+				if( gradedScale != Scalar( 1 ) ) {
+					beta = beta * gradedScale;
+					if constexpr( Traits::is_nm ) {
+						if( pSwlHWSS ) {
+							for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+								hwssBetaNM[w] *= gradedScale;
+							}
+						}
+					}
+				}
+				ri.geometric.ambientIOR = iorStack.top();
+			}
+		}
+
 		// Create a new surface vertex
 		BDPTVertex v;
 		v.type = BDPTVertex::SURFACE;
@@ -6450,6 +6561,7 @@ unsigned int GenerateLightSubpathImpl(
 			v.mediumIOR = iorStack.top();
 			v.insideObject = iorStack.containsCurrent();
 		}
+		GradedIndexMedium::RecordVertex( iorStack, v.pGradedMedium, v.gradedIOR );
 
 		// Convert pdfFwdPrev from solid angle to area measure
 		const Scalar distSq = ri.geometric.range * ri.geometric.range;
