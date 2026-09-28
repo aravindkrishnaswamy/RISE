@@ -30,7 +30,7 @@ namespace RISE
 			IBSDF*						pBRDF;
 			ISPF*						pSPF;
 			IEmitter*					pEmitter;
-			bool          bScattersFullSphere;   //!< DL-157 P2-1; see the ctor
+			bool          bScattersFullSphere;   //!< DL-157 P2-1 / DL-24; see the ctor
 
 			virtual ~CompositeMaterial( )
 			{
@@ -56,46 +56,69 @@ namespace RISE
 			pEmitter( 0 ),
 			bScattersFullSphere( false )
 			{
-				// DL-157 P2-1 (2026-09-18): the full-sphere capability is
-				// taken from WHICHEVER MATERIAL'S BSDF this composite ends
-				// up presenting, because that is the `value()` NEE will
-				// call and the capability's own safety condition is stated
-				// about `value()` (IMaterial.h, and LightSampler.cpp's
-				// FULL-SPHERE NEE block).  An OR over both layers would be
-				// wrong in one direction that matters: a Lambertian top
-				// over a translucent bottom presents the LAMBERTIAN BSDF,
-				// which does not transmit, and granting the flag there
-				// would light its back faces at full weight.
-				//
-				// The case this fixes is the other order --
-				// `composite { top = translucent }`, which is
-				// `mat_wax_gold` in scenes/Tests/Materials/composite_material.RISEscene:
-				// `GetBSDF()` hands NEE a transmitting `TranslucentBSDF`
-				// while `ScattersFullSphere()` said false, so the three NEE
-				// arms broke at `cosSurface <= 0` over exactly the
-				// half-space DL-157 had just taught that BSDF to price.
-				// `CompositeSPF::Pdf` is still DL-24's documented 50/50
-				// placeholder, so the MIS partition through a composite is
-				// not closed by this -- it is closer, and no longer
-				// systematically under-reading the transmissive half.
-				if( top.GetBSDF() ) {
-					pBRDF = top.GetBSDF();
-					pBRDF->addref();
-					bScattersFullSphere = top.ScattersFullSphere();
-				} else if( bottom.GetBSDF() ) {
-					pBRDF = bottom.GetBSDF();
-					pBRDF->addref();
-					bScattersFullSphere = bottom.ScattersFullSphere();
-				}
-
 				if( top.GetSPF() && bottom.GetSPF() ) {
-					pSPF = new CompositeSPF( *top.GetSPF(), *bottom.GetSPF(), max_recur, max_reflection_recursion, max_refraction_recursion, max_diffuse_recursion, max_translucent_recursion, thickness, extinction );
-				} else if( top.GetSPF() ) {
-					pSPF = top.GetSPF();
-					pSPF->addref();
-				} else if( bottom.GetSPF() ){
-					pSPF = bottom.GetSPF();
-					pSPF->addref();
+					// DL-24 (2026-09-28): the composite prices its own
+					// transport.  Both layers' BSDFs go INTO the SPF --
+					// they are what its layered evaluator connects
+					// through -- and the BSDF this material presents is
+					// that SAME evaluator (CompositeBSDF), so NEE, BDPT/VCM
+					// connections and the BSDF-sampled continuation
+					// estimate one integral (DL-157's one function per
+					// side).
+					//
+					// This SUPERSEDES the pre-DL-24 "top-wins" BSDF, which
+					// presented ONE layer's closed form while the walk
+					// sampled the stack: under a dielectric coat (whose
+					// GetBSDF() is 0) NEE priced the BARE substrate --
+					// unattenuated by the coat, and on top of the walk's own
+					// substrate transport -- which read 1.37 in a
+					// white-furnace BDPT render and ignored the coat's
+					// Fresnel under a delta light entirely.
+					//
+					// DL-157 P2-1's rule is unchanged in principle -- the
+					// full-sphere capability follows the BSDF actually
+					// presented -- and the presented BSDF now never prices
+					// a direction on the far side of the stack (that
+					// transport is sampled by the walk as delta-tagged
+					// rays, see CompositeSPF.h), so the capability is
+					// false.  Pre-DL-24 `composite { top = translucent }`
+					// claimed it because it presented the bare
+					// TranslucentBSDF, pricing a transmission the walk over
+					// an opaque bottom (mat_wax_gold's gold Lambertian)
+					// never produces.
+					CompositeSPF* pComposite = new CompositeSPF( *top.GetSPF(), *bottom.GetSPF(),
+						max_recur, max_reflection_recursion, max_refraction_recursion, max_diffuse_recursion,
+						max_translucent_recursion, thickness, extinction, top.GetBSDF(), bottom.GetBSDF() );
+					pSPF = pComposite;
+					if( pComposite->HasLayeredValue() ) {
+						// Null composition (DL-126) is preserved: with no
+						// BSDF on either layer there is nothing to evaluate,
+						// every walked exit is delta-tagged, and the
+						// material presents no BSDF, exactly as before.
+						pBRDF = new CompositeBSDF( *pComposite, top.GetBSDF() ? top.GetBSDF() : bottom.GetBSDF() );
+						GlobalLog()->PrintNew( pBRDF, __FILE__, __LINE__, "CompositeBSDF" );
+					}
+					bScattersFullSphere = false;
+				} else {
+					// Only one layer can scatter: that layer IS the
+					// material (the pre-DL-24 behaviour, kept verbatim).
+					if( top.GetBSDF() ) {
+						pBRDF = top.GetBSDF();
+						pBRDF->addref();
+						bScattersFullSphere = top.ScattersFullSphere();
+					} else if( bottom.GetBSDF() ) {
+						pBRDF = bottom.GetBSDF();
+						pBRDF->addref();
+						bScattersFullSphere = bottom.ScattersFullSphere();
+					}
+
+					if( top.GetSPF() ) {
+						pSPF = top.GetSPF();
+						pSPF->addref();
+					} else if( bottom.GetSPF() ){
+						pSPF = bottom.GetSPF();
+						pSPF->addref();
+					}
 				}
 
 				if( top.GetEmitter() && bottom.GetEmitter() ) {
@@ -119,8 +142,8 @@ namespace RISE
 			/// \return The emission properties for this material.  NULL If there is not an emitter
 			inline IEmitter* GetEmitter() const {	return pEmitter; };
 
-			//! DL-157 P2-1: the answer of whichever layer's BSDF `GetBSDF()`
-			//! actually returned -- see the constructor's derivation.
+			//! DL-157 P2-1 / DL-24: the answer of the BSDF `GetBSDF()`
+			//! actually returns -- see the constructor's derivation.
 			inline bool ScattersFullSphere() const { return bScattersFullSphere; }
 		};
 	}
