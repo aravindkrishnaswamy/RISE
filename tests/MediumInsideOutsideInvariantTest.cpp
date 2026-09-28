@@ -118,6 +118,7 @@
 #include "../src/Library/Interfaces/IRasterImage.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
+#include "../src/Library/Utilities/SobolSampler.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -240,6 +241,63 @@ static Stats RenderStats( const std::string& sceneText, int n, unsigned int seed
 	return s;
 }
 
+// DL-283: n renders of ONE loaded scene, each an INDEPENDENT randomized-
+// QMC replicate -- a distinct per-render value salt through
+// SobolSamplerTestHooks -- and, with `independent`, every SobolSampler
+// draw replaced by an i.i.d. stream (the unbiased reference).  Without
+// the salt, repeated renders reuse the identical Sobol' points and their
+// sd omits the QMC error (the unsalted rows above cannot see a sampler-
+// correlation bias at all).  The scene is loaded once: its 256^3
+// majorant grid dominates the per-render cost otherwise.
+static Stats RenderStatsSalted( const std::string& sceneText, int n, unsigned int seedBase,
+	bool independent )
+{
+	Stats st = { 0, 0, n, false };
+	char path[512];
+	std::snprintf( path, sizeof(path), "/tmp/medium_inside_outside_salted_%d.RISEscene",
+		static_cast<int>(::getpid()) );
+	{
+		std::ofstream ofs( path );
+		if( !ofs.is_open() ) return st;
+		ofs << sceneText;
+	}
+	IJobPriv* pJob = nullptr;
+	if( !RISE_CreateJobPriv( &pJob ) || !pJob ) { std::remove( path ); return st; }
+	if( !pJob->LoadAsciiSceneViaCst( path ) ) { safe_release( pJob ); std::remove( path ); return st; }
+	std::remove( path );
+	pJob->RemoveRasterizerOutputs();
+	CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
+	GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "test capture output" );
+	pJob->GetRasterizer()->AddRasterizerOutput( pCap );
+
+	std::vector<double> v;
+	bool ok = true;
+	for( int i = 0; i < n && ok; i++ ) {
+		SobolSamplerTestHooks::ValueSalt().store(
+			SobolSequence::HashCombine( seedBase + unsigned(i), independent ? 0x1u : 0x5u ) );
+		SobolSamplerTestHooks::Independent().store( independent );
+		std::srand( seedBase + unsigned(i) );
+		if( !pJob->Rasterize() || pCap->pixels.empty() ) { ok = false; break; }
+		double sum = 0;
+		for( const RISEColor& c : pCap->pixels ) sum += ( c.base.r + c.base.g + c.base.b ) / 3.0;
+		const double m = sum / double( pCap->pixels.size() );
+		if( !std::isfinite( m ) ) { ok = false; break; }
+		v.push_back( m );
+	}
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
+	SobolSamplerTestHooks::Independent().store( false );
+	safe_release( pCap );
+	safe_release( pJob );
+	if( !ok || n < 2 ) return st;
+	for( double x : v ) st.mean += x;
+	st.mean /= double( n );
+	double var = 0;
+	for( double x : v ) var += ( x - st.mean ) * ( x - st.mean );
+	st.sd = std::sqrt( var / double( n - 1 ) );
+	st.ok = true;
+	return st;
+}
+
 //////////////////////////////////////////////////////////////////////
 // Scene
 //////////////////////////////////////////////////////////////////////
@@ -247,7 +305,7 @@ static Stats RenderStats( const std::string& sceneText, int n, unsigned int seed
 static const char* kEnv =
 	"\tradiance_map pnt_env\n\tradiance_scale 1.0\n\tradiance_background TRUE\n";
 
-enum MediumKind { kHomogeneous, kHeterogeneous };
+enum MediumKind { kHomogeneous, kHeterogeneous, kHeterogeneousThinFine };
 
 static std::string MediumChunk( MediumKind kind )
 {
@@ -259,23 +317,33 @@ static std::string MediumChunk( MediumKind kind )
 	// delta tracking with an open-ended draw count (one per majorant-grid
 	// cell crossed plus two per tentative collision).  Perlin density in
 	// [0, 1] over the box, twice the homogeneous box's coefficients at
-	// full density.
-	return
+	// full density -- or, for the sampler-bias row (kHeterogeneousThinFine,
+	// SobolDimensionBudgetTest Test H's medium), a quarter of them over a
+	// 256^3 majorant grid, so a free flight crosses many cells and one
+	// distance sample draws far past a 32-slot stream.
+	const bool thin = ( kind == kHeterogeneousThinFine );
+	return std::string(
 		"uniformcolor_painter\n{\n\tname pnt_dense\n\tcolor 1.0 1.0 1.0\n}\n\n"
 		"uniformcolor_painter\n{\n\tname pnt_sparse\n\tcolor 0.0 0.0 0.0\n}\n\n"
 		"perlin3d_painter\n{\n\tname pnt_density\n\tpersistence 0.65\n\toctaves 4\n"
-		"\tcolora pnt_dense\n\tcolorb pnt_sparse\n\tscale 1.5 1.5 1.5\n\tshift 0 0 0\n}\n\n"
-		"painter_heterogeneous_medium\n{\n\tname med\n\tabsorption 0.6 0.6 0.6\n"
-		"\tscattering 1.4 1.4 1.4\n\tphase isotropic\n\tdensity_painter pnt_density\n"
-		"\tresolution 64\n\tcolor_to_scalar luminance\n\tbbox_min -2 -2 -2\n\tbbox_max 2 2 2\n}\n\n";
+		"\tcolora pnt_dense\n\tcolorb pnt_sparse\n\tscale 1.5 1.5 1.5\n\tshift 0 0 0\n}\n\n" )
+		+ std::string( thin
+			? "painter_heterogeneous_medium\n{\n\tname med\n\tabsorption 0.15 0.15 0.15\n"
+			  "\tscattering 0.35 0.35 0.35\n\tphase isotropic\n\tdensity_painter pnt_density\n"
+			  "\tresolution 256\n\tcolor_to_scalar luminance\n\tbbox_min -2 -2 -2\n\tbbox_max 2 2 2\n}\n\n"
+			: "painter_heterogeneous_medium\n{\n\tname med\n\tabsorption 0.6 0.6 0.6\n"
+			  "\tscattering 1.4 1.4 1.4\n\tphase isotropic\n\tdensity_painter pnt_density\n"
+			  "\tresolution 64\n\tcolor_to_scalar luminance\n\tbbox_min -2 -2 -2\n\tbbox_max 2 2 2\n}\n\n" );
 }
 
 static std::string BoxScene( const std::string& rasterizerChunk, double camZ,
-	MediumKind medium = kHomogeneous, double floorAlbedo = 0.8 )
+	MediumKind medium = kHomogeneous, double floorAlbedo = 0.8, int filmRes = 32 )
 {
 	std::string s = "RISE ASCII SCENE 7\n"
-		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
-		"film\n{\n\twidth 32\n\theight 32\n}\n\n";
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
+	char film[128];
+	std::snprintf( film, sizeof(film), "film\n{\n\twidth %d\n\theight %d\n}\n\n", filmRes, filmRes );
+	s += film;
 
 	char cam[256];
 	std::snprintf( cam, sizeof(cam),
@@ -377,6 +445,40 @@ static void InsideOutsideRow( const std::string& label, const std::string& kind,
 }
 
 //////////////////////////////////////////////////////////////////////
+// DL-283 sampler-bias row: the same BDPT render, salted Sobol' vs the
+// independent-sampler reference, black floor, camera inside, thin
+// 256^3-grid medium.  See the header's DL-283 paragraph.
+//////////////////////////////////////////////////////////////////////
+static int SaltedRepeats()
+{
+	const char* e = std::getenv( "RISE_MIOIT_SALTED_REPEATS" );
+	const int n = e ? std::atoi( e ) : 48;
+	return n >= 4 ? n : 4;
+}
+
+static void SamplerBiasRow( const std::string& label, double band, unsigned int seedBase )
+{
+	const int n = SaltedRepeats();
+	const std::string rast =
+		"bdpt_pel_rasterizer\n{\n\tmax_eye_depth 20\n\tmax_light_depth 20\n\tsamples 4\n"
+		"\tpixel_filter box\n\toidn_denoise FALSE\n" + std::string( kEnv ) + "}\n\n";
+	const std::string scene = BoxScene( rast, kCameraInside, kHeterogeneousThinFine, 0.0, 128 );
+	const Stats sob = RenderStatsSalted( scene, n, seedBase, false );
+	const Stats ind = RenderStatsSalted( scene, n, seedBase + 5000u, true );
+	Check( sob.ok && ind.ok, label + ": salted renders produced output" );
+	if( !sob.ok || !ind.ok || ind.mean <= 1e-6 ) return;
+	const double rel = sob.mean / ind.mean - 1.0;
+	const double se = std::sqrt( sob.sd * sob.sd / n + ind.sd * ind.sd / n ) / ind.mean;
+	std::printf( "  %-26s Sobol %.6f +/- %.6f  independent %.6f +/- %.6f  (sd, n=%d each)  "
+		"Sobol/indep - 1 = %+.3f%% (se %.3f%%, z %+.2f)\n",
+		label.c_str(), sob.mean, sob.sd, ind.mean, ind.sd, n, 100.0 * rel, 100.0 * se, rel / se );
+	char buf[320];
+	std::snprintf( buf, sizeof(buf), "%s: Sobol/independent - 1 = %+.3f%% within +/- %.2f%%",
+		label.c_str(), 100.0 * rel, 100.0 * band );
+	Check( std::fabs( rel ) <= band, buf );
+}
+
+//////////////////////////////////////////////////////////////////////
 // Cap row: camera inside, `max_volume_bounce 2`.  Truncation dominates,
 // so the candidate must match the PT reference only if both truncate the
 // Neumann series at the same order with the same segment transmittance.
@@ -397,6 +499,17 @@ int main()
 	// Heterogeneous rows: +/- 3% too -- see the header's DL-283 paragraph
 	// for the measured sd.
 	const double kBandHet = 0.03;
+	// DL-283 sampler-bias row: +/- 0.45% -- see the header's DL-283
+	// paragraph for the measured se and the pre-fix reading.
+	const double kBandSampler = 0.0045;
+
+	// RISE_MIOIT_ONLY_SAMPLER_ROW=1 runs just the DL-283 sampler-bias row
+	// (for measuring it; the gate runs everything).
+	if( std::getenv( "RISE_MIOIT_ONLY_SAMPLER_ROW" ) ) {
+		SamplerBiasRow( "BDPT pel black floor thin", kBandSampler, 9100u );
+		std::cout << std::endl << passCount << " passed, " << failCount << " failed" << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
 
 	std::cout << "Inside vs outside an index-matched absorbing medium box:" << std::endl;
 	InsideOutsideRow( "PT pel",                   "pt",     kBand, 7100u );
@@ -411,6 +524,9 @@ int main()
 	InsideOutsideRow( "VCM pel het",              "vcm",      kBandHet, 8200u, kHeterogeneous );
 	InsideOutsideRow( "BDPT hwss TRUE het",       "bdpthwss", kBandHet, 8300u, kHeterogeneous );
 	InsideOutsideRow( "BDPT pel het black floor", "bdpt",     kBandHet, 8400u, kHeterogeneous, 0.0 );
+
+	std::cout << "Salted Sobol' vs independent sampler, same BDPT render (DL-283):" << std::endl;
+	SamplerBiasRow( "BDPT pel black floor thin", kBandSampler, 9100u );
 
 	std::cout << "Truncation parity at max_volume_bounce 2 (camera inside):" << std::endl;
 	const Stats ptCap   = CapRender( "pt",   2, 7600u );
