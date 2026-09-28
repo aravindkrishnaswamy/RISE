@@ -159,7 +159,7 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 	// Limit the chord's reach on each side of the projection plane to the
 	// profile's effective range — hits beyond this contribute negligible
 	// energy and may cross voids.
-	const Scalar probeMaxDist = pProfile->GetMaximumDistanceForError( 1e-4 );
+	const Scalar probeMaxDist = pProfile->GetMaximumDistanceForErrorAt( 1e-4, ri );
 	const int maxProbeHits = 64;  // safety cap
 
 	{
@@ -364,7 +364,7 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 	// Skip entry points beyond the profile's effective range.
 	// This prevents probe rays from finding distant entry points
 	// across voids (e.g., mouth cavity between lips).
-	const Scalar maxDist = pProfile->GetMaximumDistanceForError( 1e-4 );
+	const Scalar maxDist = pProfile->GetMaximumDistanceForErrorAt( 1e-4, ri );
 	if( rActual > maxDist ) {
 		return result;
 	}

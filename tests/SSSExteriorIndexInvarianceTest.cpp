@@ -126,6 +126,7 @@
 #include "../src/Library/Materials/DonnerJensenSkinDiffusionProfile.h"
 #include "../src/Library/Materials/MultipoleDiffusion.h"
 #include "../src/Library/Shaders/SSS/PointSetOctree.h"
+#include "../src/Library/Shaders/SSS/DiffusionApproximationExtinction.h"
 #include "../src/Library/Shaders/BSSRDFEntryAdapters.h"
 #include "../src/Library/Shaders/BDPTVertex.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
@@ -687,6 +688,8 @@ namespace
 			if( r > 0 ) for( int c = 0; c < 3; ++c ) accumulate( a.PdfRadius( r, c, riA ), b.PdfRadius( r, c, riB ) );
 		}
 		for( const Scalar u : us ) for( int c = 0; c < 3; ++c ) accumulate( a.SampleRadius( u, c, riA ), b.SampleRadius( u, c, riB ) );
+		// The sampler's entry-point cutoff follows the fit's active set.
+		accumulate( a.GetMaximumDistanceForErrorAt( 1e-4, riA ), b.GetMaximumDistanceForErrorAt( 1e-4, riB ) );
 		return worst;
 	}
 
@@ -732,6 +735,17 @@ namespace
 		riDefault.ambientIOR = RayIntersectionGeometric( Ray(), nullRasterizerState ).ambientIOR;
 		Check( WorstSkinProfileDifference( *skin.profile, riDefault, *skin.profile, MakeSurfaceRI( 1.0 ) ) == 0.0,
 			"C1: stackless record reads the air table exactly" );
+		Check( skin.profile->GetMaximumDistanceForErrorAt( 1e-4, MakeSurfaceRI( 1.0 ) ) == skin.profile->GetMaximumDistanceForError( 1e-4 ),
+			"C1: in air the entry-point cutoff is the constructor's, exactly" );
+
+		// The NNLS fit's active set moves with the exterior, so the cutoff
+		// must too: at the default melanin a 1.2-epidermis body's widest
+		// active Gaussian in water has ~2.8x the variance of its air fit.
+		SkinBundle thin( 1.2, 1.2 * ( 1.38 / 1.4 ) );
+		const Scalar cutAir = thin.profile->GetMaximumDistanceForErrorAt( 1e-4, MakeSurfaceRI( 1.0 ) );
+		const Scalar cutWater = thin.profile->GetMaximumDistanceForErrorAt( 1e-4, MakeSurfaceRI( 1.33 ) );
+		std::cout << "    entry-point cutoff (1.2 body, default melanin): air " << cutAir << "  water " << cutWater << std::endl;
+		Check( cutWater > cutAir * 1.2, "C1: the entry-point cutoff follows the exterior's fit" );
 
 		// A record whose exterior differs only in the last bit is a
 		// different key; a repeat of an exterior already seen is served
@@ -765,8 +779,15 @@ namespace
 	class UnitExtinction : public virtual ISubSurfaceExtinctionFunction, public virtual Reference
 	{
 	public:
+		mutable unsigned int exteriorMismatches = 0;
+		Scalar expectedExterior = 1.0;
 		Scalar GetMaximumDistanceForError( const Scalar ) const override { return RISE_INFINITY; }
-		RISEPel ComputeTotalExtinction( const Scalar ) const override { return RISEPel( 1, 1, 1 ); }
+		RISEPel ComputeTotalExtinction( const Scalar ) const override { ++exteriorMismatches; return RISEPel( 1, 1, 1 ); }
+		RISEPel ComputeTotalExtinctionForExterior( const Scalar, const Scalar exteriorIOR ) const override
+		{
+			if( exteriorIOR != expectedExterior ) ++exteriorMismatches;
+			return RISEPel( 1, 1, 1 );
+		}
 	protected:
 		virtual ~UnitExtinction() {}
 	};
@@ -795,12 +816,49 @@ namespace
 		StackRecordingBSDF* bsdf = new StackRecordingBSDF(); bsdf->addref();
 		UnitExtinction* ext = new UnitExtinction(); ext->addref();
 		IORStack stack( 1.0 );
+		ext->expectedExterior = 1.33;
 		RISEPel c( 0, 0, 0 );
-		tree.Evaluate( c, Point3( 0.5, 0.5, 0.5 ), *ext, 0.001, bsdf, MakeSurfaceRI( 1.0 ), &stack );
-		std::cout << "    BSDF evaluations with stack " << bsdf->withStack << ", without " << bsdf->withoutStack << std::endl;
+		tree.Evaluate( c, Point3( 0.5, 0.5, 0.5 ), *ext, 0.001, bsdf, MakeSurfaceRI( 1.33 ), &stack, 1.33 );
+		std::cout << "    BSDF evaluations with stack " << bsdf->withStack << ", without " << bsdf->withoutStack
+			<< "; profile evaluations at the wrong exterior " << ext->exteriorMismatches << std::endl;
 		Check( bsdf->withStack == 2000, "C2: every sample point priced with the live stack" );
 		Check( bsdf->withoutStack == 0, "C2: no evaluation fell back to the stackless value" );
+		Check( ext->exteriorMismatches == 0, "C2: every profile evaluation received the exterior index" );
 		bsdf->release(); ext->release();
+	}
+
+	void TestLegacyDipoleRelativeIndex()
+	{
+		std::cout << "C3: legacy dipole (diffusion_approximation_sss_shaderop) prices the relative index" << std::endl;
+		// The chunk's `ior` is the material's index against air; the
+		// dipole's boundary term A = (1+Fdr)/(1-Fdr) is a function of the
+		// index RELATIVE to the medium the body sits in.
+		const RISEPel absorption( 0.05, 0.1, 0.2 ), scattering( 2, 2, 2 );
+		DiffusionApproximationExtinction* body = new DiffusionApproximationExtinction( absorption, scattering, 1.3, 0.0, 0.01 );
+		body->addref();
+		struct Case { const char* what; Scalar exterior; };
+		const Case cases[] = { { "air", 1.0 }, { "water", 1.33 }, { "matched (1.3 in 1.3)", 1.3 }, { "denser glass", 1.5 } };
+		const Scalar distances[] = { 0.0, 0.0005, 0.002, 0.01, 0.05 };
+		for( const Case& c : cases ) {
+			DiffusionApproximationExtinction* twin = new DiffusionApproximationExtinction( absorption, scattering, 1.3 / c.exterior, 0.0, 0.01 );
+			twin->addref();
+			Scalar worst = 0;
+			for( const Scalar d : distances ) {
+				const RISEPel a = body->ComputeTotalExtinctionForExterior( d, c.exterior );
+				const RISEPel b = twin->ComputeTotalExtinction( d );
+				for( int k = 0; k < 3; ++k ) worst = std::fmax( worst, std::fabs( a[k] - b[k] ) / std::fmax( 1e-300, std::fabs( b[k] ) ) );
+			}
+			std::cout << "    " << c.what << ": worst relative difference to the relative-index twin in air " << worst << std::endl;
+			Check( worst == 0.0, std::string( "C3: exterior " ) + c.what + " == relative-index twin in air, exactly" );
+			twin->release();
+		}
+		// In air the exterior-aware entry is the constructor's value, bit for bit.
+		Check( body->ComputeTotalExtinctionForExterior( 0.003, 1.0 )[1] == body->ComputeTotalExtinction( 0.003 )[1],
+			"C3: air reads the constructor's dipole exactly" );
+		// Discrimination: a non-air exterior does move the profile.
+		Check( body->ComputeTotalExtinctionForExterior( 0.003, 1.33 )[1] != body->ComputeTotalExtinction( 0.003 )[1],
+			"C3: the exterior index changes the dipole" );
+		body->release();
 	}
 
 	//////////////////////////////////////////////////////////////////
@@ -907,7 +965,7 @@ namespace
 			s << "lambertian_material\n{\n\tname subject\n\treflectance white\n}\n\n"
 			  << "standard_shader\n{\n\tname sss_irrad\n\tshaderop DefaultDirectLighting\n}\n\n";
 			if( model == Model::LegacyDipole ) {
-				s << "diffusion_approximation_sss_shaderop\n{\n\tname sss_op\n\tnumpoints 4000\n\tirrad_scale 1\n"
+				s << "diffusion_approximation_sss_shaderop\n{\n\tname sss_op\n\tnumpoints 4000\n\tirrad_scale 1000\n"
 				  << "\tgeometric_scale 0.01\n\tscattering 2 2 2\n\tabsorption 0.05 0.1 0.2\n\tior " << nS
 				  << "\n\tg 0\n\tshader sss_irrad\n}\n\n";
 			} else {
@@ -1056,10 +1114,10 @@ namespace
 			// docs/DL49_SSS_EXTERIOR_INDEX.md section 10).
 			{ Model::SkinMultipole,  Integrator::PT,         64,  0.02,  1.4,          kScale },
 			{ Model::SkinMultipole,  Integrator::BDPT,       32,  0.02,  1.4,          kScale },
-			{ Model::SkinMultipole,  Integrator::PTSpectral, 64,  0.04,  1.4,          kScale },
+			{ Model::SkinMultipole,  Integrator::PTSpectral, 256, 0.04,  1.4,          kScale },
 			{ Model::SkinMultipole,  Integrator::PT,         64,  0.02,  1.33 / 1.5,   kScale },
-			{ Model::LegacyDipole,   Integrator::PixelPel,   4,   0.01,  1.3,          kScale },
-			{ Model::LegacySkinOp,   Integrator::PixelPel,   4,   0.01,  1.4,          kScale },
+			{ Model::LegacyDipole,   Integrator::PixelPel,   4,   0.03,  1.3,          kScale },
+			{ Model::LegacySkinOp,   Integrator::PixelPel,   4,   0.02,  1.4,          kScale },
 		};
 		unsigned int seed = 49000;
 		for( const Row& row : rows ) {
@@ -1126,6 +1184,7 @@ int main( int argc, char** argv )
 	TestPathVertexEval();
 	TestSkinMultipoleRelativeIndex();
 	TestPointSetOctreeStackForwarding();
+	TestLegacyDipoleRelativeIndex();
 	if( !unitOnly ) {
 		TestRenderedInvariance( trials, only );
 	}

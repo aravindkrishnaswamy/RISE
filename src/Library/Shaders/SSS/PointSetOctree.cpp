@@ -252,7 +252,8 @@ void PointSetOctree::PointSetOctreeNode::Evaluate(
 	const Scalar maxDistance,
 	const IBSDF* pBSDF,
 	const RayIntersectionGeometric& rig,
-	const IORStack* pIorStack
+	const IORStack* pIorStack,
+	const Scalar exteriorIOR
 	) const
 {
 	if( pChildren ) {
@@ -265,13 +266,16 @@ void PointSetOctree::PointSetOctreeNode::Evaluate(
 				Vector3 vdir;
 				const Scalar dist = HowFarIsPointFromYou( vdir, point, my_bb, i );
 				if( dist < maxDistance ) {
-					pChildren[i]->Evaluate( c, my_bb, i, point, pFunc, maxDistance, pBSDF, rig );
+					// DL-291: forward the live IOR stack (DL-223 dropped it here, so
+					// every node below the root priced a stateful BSDF stacklessly)
+					// and the exterior index to every depth.
+					pChildren[i]->Evaluate( c, my_bb, i, point, pFunc, maxDistance, pBSDF, rig, pIorStack, exteriorIOR );
 				} else {
 					// Use the node's average irradiance as an estimate
 					if( pBSDF ) {
-						c = c + pFunc.ComputeTotalExtinction( dist ) * pChildren[i]->AverageIrradiance() * pBSDF->valueStateful( vdir, rig, pIorStack ) ;
+						c = c + pFunc.ComputeTotalExtinctionForExterior( dist, exteriorIOR ) * pChildren[i]->AverageIrradiance() * pBSDF->valueStateful( vdir, rig, pIorStack ) ;
 					} else {
-						c = c + pFunc.ComputeTotalExtinction( dist ) * pChildren[i]->AverageIrradiance();
+						c = c + pFunc.ComputeTotalExtinctionForExterior( dist, exteriorIOR ) * pChildren[i]->AverageIrradiance();
 					}
 				}
 			}
@@ -285,9 +289,9 @@ void PointSetOctree::PointSetOctreeNode::Evaluate(
 			const Vector3& vdir = Vector3Ops::mkVector3( i->ptPosition, point );
 			const Scalar dist = Vector3Ops::Magnitude( vdir );
 			if( pBSDF ) {
-				c = c + pFunc.ComputeTotalExtinction( dist ) * i->irrad * pBSDF->valueStateful( vdir, rig, pIorStack ) ;
+				c = c + pFunc.ComputeTotalExtinctionForExterior( dist, exteriorIOR ) * i->irrad * pBSDF->valueStateful( vdir, rig, pIorStack ) ;
 			} else {
-				c = c + pFunc.ComputeTotalExtinction( dist ) * i->irrad;
+				c = c + pFunc.ComputeTotalExtinctionForExterior( dist, exteriorIOR ) * i->irrad;
 			}
 		}
 	}

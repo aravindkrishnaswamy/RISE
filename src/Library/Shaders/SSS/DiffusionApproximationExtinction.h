@@ -64,6 +64,7 @@ namespace RISE
 
 			RISEPel zr;
 			RISEPel zv;
+			RISEPel D;			///< Diffusion coefficient (kept for per-exterior zv, DL-291)
 
 			RISEPel tr;
 
@@ -93,11 +94,11 @@ namespace RISE
 				// at the surface.  The polynomial fit is from Egan & Hilgeman 1973.
 				// A controls how far the virtual source sits above the surface —
 				// higher IOR pushes more light back in, deepening the virtual source.
-				const Scalar nu = relative_ior;
-				const Scalar fresnel = -1.440/(nu*nu) + 0.710/nu + 0.668 + 0.0636*nu;
-				const Scalar A = (1.0+fresnel)/(1.0-fresnel);
+				// The value built here is for an AIR exterior; see
+				// ComputeTotalExtinctionForExterior for any other (DL-291).
+				const Scalar A = BoundaryA( relative_ior );
 
-				const RISEPel D = RISEPel(1,1,1) / (3.0*t_prime);
+				D = RISEPel(1,1,1) / (3.0*t_prime);
 				zr = RISEPel(1,1,1) / t_prime;
 				zv = zr + 4.0*A*D;
 
@@ -110,6 +111,31 @@ namespace RISE
 
 			virtual ~DiffusionApproximationExtinction()
 			{
+			}
+
+			/// The dipole boundary term A = (1+Fdr)/(1-Fdr) at relative
+			/// index `nu` (interior / exterior), Egan & Hilgeman's fit.
+			static Scalar BoundaryA( const Scalar nu )
+			{
+				const Scalar fresnel = -1.440/(nu*nu) + 0.710/nu + 0.668 + 0.0636*nu;
+				return (1.0+fresnel)/(1.0-fresnel);
+			}
+
+			/// DL-291: the authored `relative_ior` is the material's index
+			/// against AIR (the chunk's `ior`); the dipole's boundary term is
+			/// a function of the index relative to the medium the body actually
+			/// sits in, so a non-air exterior moves the virtual source.  In air
+			/// this is ComputeTotalExtinction exactly.
+			RISEPel ComputeTotalExtinctionForExterior(
+				const Scalar distance,
+				const Scalar exteriorIOR
+			) const
+			{
+				if( exteriorIOR == 1.0 || !( exteriorIOR > 0 ) || !( exteriorIOR < RISE_INFINITY ) ) {
+					return ComputeTotalExtinction( distance );
+				}
+				const Scalar A = BoundaryA( relative_ior / exteriorIOR );
+				return EvaluateDipole( distance, zr + 4.0*A*D );
 			}
 
 			virtual Scalar GetMaximumDistanceForError(
@@ -141,6 +167,16 @@ namespace RISE
 				const Scalar distance
 			) const
 			{
+				return EvaluateDipole( distance, zv );
+			}
+
+		protected:
+			/// Jensen 2001 Eq. 6 with the given virtual-source depth.
+			RISEPel EvaluateDipole(
+				const Scalar distance,
+				const RISEPel& zvIn
+			) const
+			{
 				const Scalar r = distance * 1000.0 * geometric_scale;
 				const Scalar r2 = r*r;
 				const RISEPel sqr_r( r2, r2, r2 );
@@ -148,11 +184,11 @@ namespace RISE
 				const RISEPel one(1,1,1);
 				const RISEPel negative(-1,-1,-1);
 
-				RISEPel dv = ColorMath::root( sqr_r + (zv*zv) );
+				RISEPel dv = ColorMath::root( sqr_r + (zvIn*zvIn) );
 				RISEPel dr = ColorMath::root( sqr_r + (zr*zr) );
 
 				const RISEPel inside_left = zr*(tr*dr+one) * ( ColorMath::exponential(negative*tr*dr)/(dr*dr*dr) );
-				const RISEPel inside_right = zv*(tr*dv+one) * ( ColorMath::exponential(negative*tr*dv)/(dv*dv*dv) );
+				const RISEPel inside_right = zvIn*(tr*dv+one) * ( ColorMath::exponential(negative*tr*dv)/(dv*dv*dv) );
 
 				return ap_ov_four_pi * (inside_left+inside_right);
 			}
