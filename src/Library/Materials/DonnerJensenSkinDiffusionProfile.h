@@ -109,6 +109,7 @@
 #include "../Interfaces/IFunction1D.h"
 #include "../Utilities/Reference.h"
 #include "MultipoleDiffusion.h"
+#include "../Utilities/ExteriorIndexCache.h"
 
 namespace RISE
 {
@@ -164,12 +165,31 @@ namespace RISE
 			static const int NUM_RGB = 3;
 			static const int NUM_SPECTRAL = 31;			///< 400-700 nm at 10 nm spacing
 
-			GaussianTerm		m_rgb_terms[NUM_RGB][K_TERMS];
-			Scalar				m_rgb_total_weight[NUM_RGB];		///< Σ c_k per channel
-			Scalar				m_rgb_cdf[NUM_RGB][K_TERMS];
+			/// The fitted profile for ONE exterior index (DL-291).  The
+			/// multipole's extrapolation term A = (1+Fdr)/(1-Fdr) of each
+			/// slab depends on the layer index RELATIVE to the medium around
+			/// the body, so the fit is a function of the exterior.
+			struct ProfileTables
+			{
+				GaussianTerm		rgb_terms[NUM_RGB][K_TERMS];
+				Scalar				rgb_total_weight[NUM_RGB];		///< Σ c_k per channel
+				Scalar				rgb_cdf[NUM_RGB][K_TERMS];
 
-			GaussianTerm		m_spectral_terms[NUM_SPECTRAL][K_TERMS];
-			Scalar				m_spectral_total_weight[NUM_SPECTRAL];
+				GaussianTerm		spectral_terms[NUM_SPECTRAL][K_TERMS];
+				Scalar				spectral_total_weight[NUM_SPECTRAL];
+
+				/// Largest variance of any term with non-negligible weight
+				/// (the fit's active set moves with the exterior).
+				Scalar				max_variance;
+			};
+
+			/// Built by the constructor for an air exterior (exactly the
+			/// pre-DL-291 tables; the in-air path reads only these).
+			ProfileTables		m_air;
+
+			/// Every other exterior, built on first use (DL-291).
+			static const unsigned int MAX_EXTERIORS = 32;
+			ExteriorIndexCache<ProfileTables, MAX_EXTERIORS>	m_exterior_tables;
 
 			static const Scalar	ms_rgb_wavelengths[NUM_RGB];
 			static const Scalar	ms_spectral_wavelengths[NUM_SPECTRAL];
@@ -184,7 +204,6 @@ namespace RISE
 
 			static Scalar ComputeSkinBaselineAbsorption( const Scalar nm );
 			static Scalar ComputeEpidermisScattering( const Scalar nm );
-			static Scalar SchlickFresnel( const Scalar cosTheta, const Scalar eta );
 
 			void ComputePerLayerCoefficients(
 				const Scalar nm,
@@ -194,13 +213,38 @@ namespace RISE
 
 			void PrecomputeProfiles();
 
+			/// Fits every RGB and spectral profile for one exterior index.
+			/// `max_variance_out` (optional) receives the largest variance
+			/// of any term with non-negligible weight.
+			void PrecomputeTables(
+				const Scalar exteriorIOR,
+				ProfileTables& tables_out,
+				Scalar* max_variance_out
+				) const;
+
 			void PrecomputeProfileAtWavelength(
 				const Scalar nm,
 				const RayIntersectionGeometric& ri,
+				const Scalar exteriorIOR,
 				GaussianTerm terms_out[K_TERMS],
 				Scalar& total_weight_out,
 				Scalar cdf_out[K_TERMS]
-				);
+				) const;
+
+			/// The tables for the exterior the record's ray arrived through
+			/// (`ri.ambientIOR`; air for a stackless record).  Inline so the
+			/// in-air path costs one compare.
+			inline const ProfileTables& TablesFor( const RayIntersectionGeometric& ri ) const
+			{
+				const Scalar n = ri.ambientIOR;
+				if( n == 1.0 || !( n > 0 && n < RISE_INFINITY ) ) {
+					return m_air;		// air, or a non-physical value (BSSRDFSampling::ExteriorIOR's air fallback)
+				}
+				return TablesForExterior( n );
+			}
+
+			/// Non-air exteriors: built on first use (DL-291).
+			const ProfileTables& TablesForExterior( const Scalar exteriorIOR ) const;
 
 			/// Evaluate the K-term Sum-of-Gaussians at radius r.
 			static Scalar EvaluateSumOfGaussians(
@@ -263,6 +307,14 @@ namespace RISE
 
 			Scalar GetMaximumDistanceForError(
 				const Scalar error
+				) const;
+
+			/// DL-291: the fit for a non-air exterior can activate a wider
+			/// Gaussian than the air fit, so the cutoff follows the record's
+			/// exterior; in air it is GetMaximumDistanceForError exactly.
+			Scalar GetMaximumDistanceForErrorAt(
+				const Scalar error,
+				const RayIntersectionGeometric& ri
 				) const;
 
 			RISEPel ComputeTotalExtinction(

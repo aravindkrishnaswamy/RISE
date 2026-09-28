@@ -127,11 +127,7 @@ DonnerJensenSkinDiffusionProfile::DonnerJensenSkinDiffusionProfile(
 	}
 
 	// Initialize precomputed tables to zero
-	memset( m_rgb_terms, 0, sizeof(m_rgb_terms) );
-	memset( m_rgb_total_weight, 0, sizeof(m_rgb_total_weight) );
-	memset( m_rgb_cdf, 0, sizeof(m_rgb_cdf) );
-	memset( m_spectral_terms, 0, sizeof(m_spectral_terms) );
-	memset( m_spectral_total_weight, 0, sizeof(m_spectral_total_weight) );
+	memset( &m_air, 0, sizeof(m_air) );
 
 	// Run the multipole precomputation pipeline
 	PrecomputeProfiles();
@@ -183,17 +179,6 @@ Scalar DonnerJensenSkinDiffusionProfile::ComputeEpidermisScattering( const Scala
 	// source the paper references.  The dermis uses half this value
 	// per the paper's convention.
 	return 2.0e12 * pow( nm, -4.0 ) + 2.0e5 * pow( nm, -1.5 );
-}
-
-Scalar DonnerJensenSkinDiffusionProfile::SchlickFresnel(
-	const Scalar cosTheta,
-	const Scalar eta
-	)
-{
-	const Scalar R0 = ((1.0 - eta) / (1.0 + eta)) * ((1.0 - eta) / (1.0 + eta));
-	const Scalar c = 1.0 - cosTheta;
-	const Scalar c2 = c * c;
-	return R0 + (1.0 - R0) * c2 * c2 * c;
 }
 
 //=============================================================
@@ -318,14 +303,25 @@ void DonnerJensenSkinDiffusionProfile::ComputePerLayerCoefficients(
 void DonnerJensenSkinDiffusionProfile::PrecomputeProfileAtWavelength(
 	const Scalar nm,
 	const RayIntersectionGeometric& ri,
+	const Scalar exteriorIOR,
 	GaussianTerm terms_out[K_TERMS],
 	Scalar& total_weight_out,
 	Scalar cdf_out[K_TERMS]
-	)
+	) const
 {
 	// Get per-layer optical properties at this wavelength
 	LayerParams layers[2];
 	ComputePerLayerCoefficients( nm, ri, layers );
+
+	// DL-291: each slab's extrapolation term A = (1+Fdr)/(1-Fdr) is a
+	// function of the layer index RELATIVE to the medium around the body
+	// (the stack's outer faces -- the epidermis top and, by the model's
+	// symmetric-slab approximation, every slab face -- are extrapolated
+	// against it).  ComputePerLayerCoefficients builds them against air;
+	// re-express them against the actual exterior.  The inter-layer
+	// Fresnel coupling in ComputeCompositeProfileHankel uses ratios of
+	// these values and is unaffected.  Exactly a no-op in air.
+	RelativizeLayersToExterior( layers, 2, exteriorIOR );
 
 	//=============================================================
 	// Hankel-domain Sum-of-Gaussians fitting.
@@ -538,26 +534,32 @@ void DonnerJensenSkinDiffusionProfile::PrecomputeProfileAtWavelength(
 	}
 }
 
-void DonnerJensenSkinDiffusionProfile::PrecomputeProfiles()
+void DonnerJensenSkinDiffusionProfile::PrecomputeTables(
+	const Scalar exteriorIOR,
+	ProfileTables& tables,
+	Scalar* max_variance_out
+	) const
 {
+	// The painters are read at a fixed dummy record, for every exterior
+	// alike (the profile is not spatially varying; see DL-314).
 	Ray dummyRay( Point3(0,0,0), Vector3(0,0,1) );
 	RayIntersectionGeometric ri( dummyRay, nullRasterizerState );
 	ri.ptIntersection = Point3(0,0,0);
 	ri.vNormal = Vector3(0,1,0);
 
-	m_max_variance = 0;
+	Scalar max_variance = 0;
 
 	// Precompute RGB profiles
 	for( int c = 0; c < NUM_RGB; c++ )
 	{
 		PrecomputeProfileAtWavelength(
-			ms_rgb_wavelengths[c], ri,
-			m_rgb_terms[c], m_rgb_total_weight[c], m_rgb_cdf[c] );
+			ms_rgb_wavelengths[c], ri, exteriorIOR,
+			tables.rgb_terms[c], tables.rgb_total_weight[c], tables.rgb_cdf[c] );
 
 		for( int k = 0; k < K_TERMS; k++ )
 		{
-			if( m_rgb_terms[c][k].weight > 1e-20 && m_rgb_terms[c][k].variance > m_max_variance )
-				m_max_variance = m_rgb_terms[c][k].variance;
+			if( tables.rgb_terms[c][k].weight > 1e-20 && tables.rgb_terms[c][k].variance > max_variance )
+				max_variance = tables.rgb_terms[c][k].variance;
 		}
 	}
 
@@ -566,17 +568,39 @@ void DonnerJensenSkinDiffusionProfile::PrecomputeProfiles()
 	{
 		Scalar dummy_cdf[K_TERMS];
 		PrecomputeProfileAtWavelength(
-			ms_spectral_wavelengths[w], ri,
-			m_spectral_terms[w], m_spectral_total_weight[w], dummy_cdf );
+			ms_spectral_wavelengths[w], ri, exteriorIOR,
+			tables.spectral_terms[w], tables.spectral_total_weight[w], dummy_cdf );
 
 		for( int k = 0; k < K_TERMS; k++ )
 		{
-			if( m_spectral_terms[w][k].weight > 1e-20 && m_spectral_terms[w][k].variance > m_max_variance )
-				m_max_variance = m_spectral_terms[w][k].variance;
+			if( tables.spectral_terms[w][k].weight > 1e-20 && tables.spectral_terms[w][k].variance > max_variance )
+				max_variance = tables.spectral_terms[w][k].variance;
 		}
 	}
 
-	if( m_max_variance < 1e-10 ) m_max_variance = 0.01;
+	if( max_variance < 1e-10 ) max_variance = 0.01;
+	tables.max_variance = max_variance;
+	if( max_variance_out ) {
+		*max_variance_out = max_variance;
+	}
+}
+
+const DonnerJensenSkinDiffusionProfile::ProfileTables& DonnerJensenSkinDiffusionProfile::TablesForExterior(
+	const Scalar exteriorIOR
+	) const
+{
+	return m_exterior_tables.Get( exteriorIOR, [this]( const Scalar n ) {
+		ProfileTables* tables = new ProfileTables;
+		memset( tables, 0, sizeof(*tables) );
+		PrecomputeTables( n, *tables, 0 );
+		return tables;
+	} );
+}
+
+void DonnerJensenSkinDiffusionProfile::PrecomputeProfiles()
+{
+	m_max_variance = 0;
+	PrecomputeTables( 1.0, m_air, &m_max_variance );
 
 	GlobalLog()->PrintEx( eLog_Info,
 		"DonnerJensenSkinDiffusionProfile: SoG precomputation complete (max_sigma=%.4f cm)",
@@ -617,9 +641,10 @@ RISEPel DonnerJensenSkinDiffusionProfile::EvaluateProfile(
 	const RayIntersectionGeometric& ri
 	) const
 {
+	const ProfileTables& tables = TablesFor( ri );
 	RISEPel result;
 	for( int c = 0; c < NUM_RGB; c++ )
-		result[c] = EvaluateSumOfGaussians( m_rgb_terms[c], r );
+		result[c] = EvaluateSumOfGaussians( tables.rgb_terms[c], r );
 	return result;
 }
 
@@ -629,11 +654,13 @@ Scalar DonnerJensenSkinDiffusionProfile::EvaluateProfileNM(
 	const Scalar nm
 	) const
 {
+	const GaussianTerm (&spectral_terms)[NUM_SPECTRAL][K_TERMS] = TablesFor( ri ).spectral_terms;
+
 	if( nm <= ms_spectral_wavelengths[0] )
-		return EvaluateSumOfGaussians( m_spectral_terms[0], r );
+		return EvaluateSumOfGaussians( spectral_terms[0], r );
 
 	if( nm >= ms_spectral_wavelengths[NUM_SPECTRAL - 1] )
-		return EvaluateSumOfGaussians( m_spectral_terms[NUM_SPECTRAL - 1], r );
+		return EvaluateSumOfGaussians( spectral_terms[NUM_SPECTRAL - 1], r );
 
 	for( int w = 0; w < NUM_SPECTRAL - 1; w++ )
 	{
@@ -641,12 +668,12 @@ Scalar DonnerJensenSkinDiffusionProfile::EvaluateProfileNM(
 		{
 			const Scalar t = (nm - ms_spectral_wavelengths[w]) /
 				(ms_spectral_wavelengths[w + 1] - ms_spectral_wavelengths[w]);
-			return EvaluateSumOfGaussians( m_spectral_terms[w], r ) * (1.0 - t)
-				 + EvaluateSumOfGaussians( m_spectral_terms[w + 1], r ) * t;
+			return EvaluateSumOfGaussians( spectral_terms[w], r ) * (1.0 - t)
+				 + EvaluateSumOfGaussians( spectral_terms[w + 1], r ) * t;
 		}
 	}
 
-	return EvaluateSumOfGaussians( m_spectral_terms[NUM_SPECTRAL / 2], r );
+	return EvaluateSumOfGaussians( spectral_terms[NUM_SPECTRAL / 2], r );
 }
 
 //=============================================================
@@ -659,9 +686,10 @@ Scalar DonnerJensenSkinDiffusionProfile::SampleRadius(
 	const RayIntersectionGeometric& ri
 	) const
 {
-	const GaussianTerm* terms = m_rgb_terms[channel];
-	const Scalar* cdf = m_rgb_cdf[channel];
-	const Scalar totalW = m_rgb_total_weight[channel];
+	const ProfileTables& tables = TablesFor( ri );
+	const GaussianTerm* terms = tables.rgb_terms[channel];
+	const Scalar* cdf = tables.rgb_cdf[channel];
+	const Scalar totalW = tables.rgb_total_weight[channel];
 
 	if( totalW < 1e-30 ) return 0.0;
 
@@ -692,8 +720,9 @@ Scalar DonnerJensenSkinDiffusionProfile::PdfRadius(
 	const RayIntersectionGeometric& ri
 	) const
 {
-	const GaussianTerm* terms = m_rgb_terms[channel];
-	const Scalar totalW = m_rgb_total_weight[channel];
+	const ProfileTables& tables = TablesFor( ri );
+	const GaussianTerm* terms = tables.rgb_terms[channel];
+	const Scalar totalW = tables.rgb_total_weight[channel];
 
 	if( totalW < 1e-30 ) return 0.0;
 
@@ -752,6 +781,15 @@ Scalar DonnerJensenSkinDiffusionProfile::GetMaximumDistanceForError(
 	// For a Gaussian with variance σ², exp(-r²/(2σ²)) = error
 	// → r = σ · sqrt(-2 · ln(error))
 	return sqrt( -2.0 * m_max_variance * log(error) );
+}
+
+Scalar DonnerJensenSkinDiffusionProfile::GetMaximumDistanceForErrorAt(
+	const Scalar error,
+	const RayIntersectionGeometric& ri
+	) const
+{
+	if( error <= 0 ) return RISE_INFINITY;
+	return sqrt( -2.0 * TablesFor( ri ).max_variance * log(error) );
 }
 
 RISEPel DonnerJensenSkinDiffusionProfile::ComputeTotalExtinction(

@@ -115,6 +115,21 @@ namespace RISE
 			const RayIntersectionGeometric& ri
 			) const = 0;
 
+		/// DL-291: the profile's effective radius for the exterior the
+		/// record's ray arrived through (`ri.ambientIOR`).  A profile whose
+		/// shape depends on the exterior (the Donner-Jensen multipole, whose
+		/// boundary term is a function of the relative index) overrides this;
+		/// the default is the exterior-independent
+		/// ISubSurfaceExtinctionFunction::GetMaximumDistanceForError.  In air
+		/// every override must return exactly that value.
+		virtual Scalar GetMaximumDistanceForErrorAt(
+			const Scalar error,
+			const RayIntersectionGeometric& /*ri*/
+			) const
+		{
+			return GetMaximumDistanceForError( error );
+		}
+
 		/// Returns the material's own (ABSOLUTE) index of refraction at
 		/// the given surface point.  A boundary quantity needs the
 		/// RELATIVE index GetIOR(ri) / ri.ambientIOR instead (DL-49) --

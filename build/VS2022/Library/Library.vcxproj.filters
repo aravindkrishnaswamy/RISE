@@ -3323,6 +3323,9 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\BSSRDFSampling.h">
       <Filter>Utilities</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\ExteriorIndexCache.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\RGB.h">
       <Filter>Utilities\Color</Filter>
     </ClInclude>

@@ -19,6 +19,7 @@
 #include "../../Materials/MultipoleDiffusion.h"
 #include "../../Utilities/HankelTransform.h"
 #include "../../Utilities/GeometricUtilities.h"
+#include "../../Utilities/BSSRDFSampling.h"		// ExteriorIOR (DL-291)
 #include "../../Utilities/stl_utils.h"
 #include "../../Sampling/HaltonPoints.h"
 #include "../../RISE_API.h"
@@ -160,11 +161,17 @@ void DonnerJensenSkinSSSShaderOp::ComputePerLayerCoefficients(
 
 void DonnerJensenSkinSSSShaderOp::TabulateProfileAtWavelength(
 	const Scalar nm,
-	const int channel
-	)
+	const int channel,
+	const Scalar exteriorIOR,
+	RISEPel* table_out
+	) const
 {
 	LayerParams layers[2];
 	ComputePerLayerCoefficients( nm, layers );
+
+	// DL-291: each slab's extrapolation term is evaluated against the medium
+	// around the body; exactly a no-op in air (see MultipoleDiffusion.h).
+	RelativizeLayersToExterior( layers, 2, exteriorIOR );
 
 	const LayerParams& epi = layers[0];
 	const LayerParams& derm = layers[1];
@@ -223,20 +230,20 @@ void DonnerJensenSkinSSSShaderOp::TabulateProfileAtWavelength(
 			Rd_final = Rd_ref;
 		}
 
-		m_Rd_table[i][channel] = Rd_final;
+		table_out[i][channel] = Rd_final;
 	}
 
 	// Enforce monotone decrease past the peak
 	int peak = 0;
 	for( int i = 1; i < TABLE_SIZE; i++ )
 	{
-		if( m_Rd_table[i][channel] > m_Rd_table[peak][channel] )
+		if( table_out[i][channel] > table_out[peak][channel] )
 			peak = i;
 	}
 	for( int i = peak + 1; i < TABLE_SIZE; i++ )
 	{
-		if( m_Rd_table[i][channel] > m_Rd_table[i - 1][channel] )
-			m_Rd_table[i][channel] = m_Rd_table[i - 1][channel];
+		if( table_out[i][channel] > table_out[i - 1][channel] )
+			table_out[i][channel] = table_out[i - 1][channel];
 	}
 }
 
@@ -263,7 +270,7 @@ void DonnerJensenSkinSSSShaderOp::PrecomputeProfile()
 	static const Scalar rgb_wavelengths[3] = { 615.0, 550.0, 465.0 };
 	for( int c = 0; c < 3; c++ )
 	{
-		TabulateProfileAtWavelength( rgb_wavelengths[c], c );
+		TabulateProfileAtWavelength( rgb_wavelengths[c], c, 1.0, m_Rd_table );
 	}
 
 	GlobalLog()->PrintEx( eLog_Info,
@@ -281,6 +288,7 @@ void DonnerJensenSkinSSSShaderOp::TabulateProfileAtWavelengthInto(
 	const Scalar mel_frac,
 	const Scalar hb_epi,
 	const Scalar hb_derm,
+	const Scalar exteriorIOR,
 	RISEPel* table_out,
 	Scalar table_r2_max_val,
 	Scalar table_r2_step_val
@@ -323,6 +331,9 @@ void DonnerJensenSkinSSSShaderOp::TabulateProfileAtWavelengthInto(
 	layers[1].thickness = 1.0;
 	layers[1].ior = ior_dermis;
 	ComputeLayerDerivedParams( layers[1] );
+
+	// DL-291: relative to the medium around the body (no-op in air).
+	RelativizeLayersToExterior( layers, 2, exteriorIOR );
 
 	// Hankel composite
 	static const int N_FREQ = 512;
@@ -436,12 +447,24 @@ void DonnerJensenSkinSSSShaderOp::PrecomputeLUT()
 		if( m_max_distance_lut < 0.1 ) m_max_distance_lut = 0.1;
 	}
 
+	// Allocate LUT storage
+	m_lut_tables = new RISEPel[ LUT_TOTAL * TABLE_SIZE ];
+	FillLUT( 1.0, m_lut_tables );
+
+	GlobalLog()->PrintEx( eLog_Event,
+		"DonnerJensenSkinSSSShaderOp: LUT precomputed (%dx%dx%d = %d entries, max_r=%.3f cm)",
+		N_MEL, N_HBE, N_HBD, LUT_TOTAL, m_max_distance_lut );
+}
+
+void DonnerJensenSkinSSSShaderOp::FillLUT(
+	const Scalar exteriorIOR,
+	RISEPel* lut
+	) const
+{
 	const Scalar lut_r2_max = m_max_distance_lut * m_max_distance_lut;
 	const Scalar lut_r2_step = lut_r2_max / TABLE_SIZE;
 
-	// Allocate LUT storage
-	m_lut_tables = new RISEPel[ LUT_TOTAL * TABLE_SIZE ];
-    memset( (void*)m_lut_tables, 0, sizeof(RISEPel) * LUT_TOTAL * TABLE_SIZE );
+    memset( (void*)lut, 0, sizeof(RISEPel) * LUT_TOTAL * TABLE_SIZE );
 
 	static const Scalar rgb_wavelengths[3] = { 615.0, 550.0, 465.0 };
 
@@ -452,22 +475,18 @@ void DonnerJensenSkinSSSShaderOp::PrecomputeLUT()
 		{
 			for( int i_hbd = 0; i_hbd < N_HBD; i_hbd++ )
 			{
-				RISEPel* table = &m_lut_tables[ LUTIndex(i_mel, i_hbe, i_hbd) ];
+				RISEPel* table = &lut[ LUTIndex(i_mel, i_hbe, i_hbd) ];
 
 				for( int c = 0; c < 3; c++ )
 				{
 					TabulateProfileAtWavelengthInto(
 						rgb_wavelengths[c], c,
 						m_mel_grid[i_mel], m_hbe_grid[i_hbe], m_hbd_grid[i_hbd],
-						table, lut_r2_max, lut_r2_step );
+						exteriorIOR, table, lut_r2_max, lut_r2_step );
 				}
 			}
 		}
 	}
-
-	GlobalLog()->PrintEx( eLog_Event,
-		"DonnerJensenSkinSSSShaderOp: LUT precomputed (%dx%dx%d = %d entries, max_r=%.3f cm)",
-		N_MEL, N_HBE, N_HBD, LUT_TOTAL, m_max_distance_lut );
 }
 
 //=============================================================
@@ -475,6 +494,7 @@ void DonnerJensenSkinSSSShaderOp::PrecomputeLUT()
 //=============================================================
 
 void DonnerJensenSkinSSSShaderOp::InterpolateProfile(
+	const RISEPel* lut,
 	Scalar mel, Scalar hbe, Scalar hbd,
 	RISEPel* table_out
 	) const
@@ -518,14 +538,14 @@ void DonnerJensenSkinSSSShaderOp::InterpolateProfile(
 		(hbd - m_hbd_grid[i0_hbd]) / (m_hbd_grid[i0_hbd+1] - m_hbd_grid[i0_hbd]) : 0;
 
 	// 8 corner tables for trilinear interpolation
-	const RISEPel* c000 = &m_lut_tables[ LUTIndex(i0_mel,   i0_hbe,   i0_hbd) ];
-	const RISEPel* c001 = &m_lut_tables[ LUTIndex(i0_mel,   i0_hbe,   i0_hbd+1) ];
-	const RISEPel* c010 = &m_lut_tables[ LUTIndex(i0_mel,   i0_hbe+1, i0_hbd) ];
-	const RISEPel* c011 = &m_lut_tables[ LUTIndex(i0_mel,   i0_hbe+1, i0_hbd+1) ];
-	const RISEPel* c100 = &m_lut_tables[ LUTIndex(i0_mel+1, i0_hbe,   i0_hbd) ];
-	const RISEPel* c101 = &m_lut_tables[ LUTIndex(i0_mel+1, i0_hbe,   i0_hbd+1) ];
-	const RISEPel* c110 = &m_lut_tables[ LUTIndex(i0_mel+1, i0_hbe+1, i0_hbd) ];
-	const RISEPel* c111 = &m_lut_tables[ LUTIndex(i0_mel+1, i0_hbe+1, i0_hbd+1) ];
+	const RISEPel* c000 = &lut[ LUTIndex(i0_mel,   i0_hbe,   i0_hbd) ];
+	const RISEPel* c001 = &lut[ LUTIndex(i0_mel,   i0_hbe,   i0_hbd+1) ];
+	const RISEPel* c010 = &lut[ LUTIndex(i0_mel,   i0_hbe+1, i0_hbd) ];
+	const RISEPel* c011 = &lut[ LUTIndex(i0_mel,   i0_hbe+1, i0_hbd+1) ];
+	const RISEPel* c100 = &lut[ LUTIndex(i0_mel+1, i0_hbe,   i0_hbd) ];
+	const RISEPel* c101 = &lut[ LUTIndex(i0_mel+1, i0_hbe,   i0_hbd+1) ];
+	const RISEPel* c110 = &lut[ LUTIndex(i0_mel+1, i0_hbe+1, i0_hbd) ];
+	const RISEPel* c111 = &lut[ LUTIndex(i0_mel+1, i0_hbe+1, i0_hbd+1) ];
 
 	// Trilinear interpolation weights
 	const Scalar w000 = (1-t_mel) * (1-t_hbe) * (1-t_hbd);
@@ -702,6 +722,41 @@ Scalar DonnerJensenSkinSSSShaderOp::GetMaximumDistanceForError(
 	) const
 {
 	return m_max_distance;
+}
+
+const DonnerJensenSkinSSSShaderOp::ExteriorTables& DonnerJensenSkinSSSShaderOp::TablesForExterior(
+	const Scalar exteriorIOR
+	) const
+{
+	// Built once per distinct exterior (DL-291).  The table extents
+	// (m_table_r2_max, m_max_distance_lut) depend only on the dermis
+	// transport coefficient, not on the boundary term, so they are shared.
+	return m_exterior_tables.Get( exteriorIOR, [this]( const Scalar n ) {
+		static const Scalar rgb_wavelengths[3] = { 615.0, 550.0, 465.0 };
+		ExteriorTables* tables = new ExteriorTables;
+		for( int i = 0; i < TABLE_SIZE; i++ )
+			tables->Rd[i] = RISEPel( 0, 0, 0 );
+		for( int c = 0; c < 3; c++ )
+			TabulateProfileAtWavelength( rgb_wavelengths[c], c, n, tables->Rd );
+		if( m_has_offset_painters )
+		{
+			tables->lut = new RISEPel[ LUT_TOTAL * TABLE_SIZE ];
+			FillLUT( n, tables->lut );
+		}
+		return tables;
+	} );
+}
+
+RISEPel DonnerJensenSkinSSSShaderOp::ComputeTotalExtinctionForExterior(
+	const Scalar distance,
+	const Scalar exteriorIOR
+	) const
+{
+	if( exteriorIOR == 1.0 || !( exteriorIOR > 0 ) || !( exteriorIOR < RISE_INFINITY ) ) {
+		return ComputeTotalExtinction( distance );
+	}
+	LocalProfile profile( TablesForExterior( exteriorIOR ).Rd, m_table_r2_max, m_table_r2_step, m_max_distance );
+	return profile.ComputeTotalExtinction( distance );
 }
 
 //=============================================================
@@ -914,6 +969,12 @@ void DonnerJensenSkinSSSShaderOp::PerformOperation(
 	// --- Pass 2: Hierarchical octree evaluation ---
 	if( ps )
 	{
+		// DL-291: the multipole's boundary term is a function of the layer
+		// indices relative to the medium the body sits in -- the IOR-stack
+		// top the ray caster stamped on this hit (1.0 = air: the constructor
+		// tables, exactly the pre-DL-291 path).
+		const Scalar exteriorIOR = BSSRDFSampling::ExteriorIOR( ri.geometric );
+
 		if( m_has_offset_painters && m_lut_tables )
 		{
 			// Spatially-varying: evaluate offset painters at shading point,
@@ -940,7 +1001,8 @@ void DonnerJensenSkinSSSShaderOp::PerformOperation(
 
 			// Stack-allocated interpolated table: 1024 × 24 bytes = 24 KB
 			RISEPel local_table[TABLE_SIZE];
-			InterpolateProfile( mel_eff, hbe_eff, hbd_eff, local_table );
+			InterpolateProfile( exteriorIOR == 1.0 ? m_lut_tables : TablesForExterior( exteriorIOR ).lut,
+				mel_eff, hbe_eff, hbd_eff, local_table );
 
 			const Scalar lut_r2_max = m_max_distance_lut * m_max_distance_lut;
 			const Scalar lut_r2_step = lut_r2_max / TABLE_SIZE;
@@ -948,10 +1010,16 @@ void DonnerJensenSkinSSSShaderOp::PerformOperation(
 
 			ps->Evaluate( c, ri.geometric.ptIntersection, profile, error, 0, ri.geometric );
 		}
-		else
+		else if( exteriorIOR == 1.0 )
 		{
 			// Uniform skin: use base table via *this, zero overhead
 			ps->Evaluate( c, ri.geometric.ptIntersection, *this, error, 0, ri.geometric );
+		}
+		else
+		{
+			// Uniform skin in a non-air exterior: that exterior's table (DL-291)
+			LocalProfile profile( TablesForExterior( exteriorIOR ).Rd, m_table_r2_max, m_table_r2_step, m_max_distance );
+			ps->Evaluate( c, ri.geometric.ptIntersection, profile, error, 0, ri.geometric );
 		}
 
 		// Normalize by sample count (each sample's irradiance * dA already applied)
