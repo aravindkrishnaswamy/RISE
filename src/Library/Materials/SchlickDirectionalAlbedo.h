@@ -76,7 +76,7 @@ namespace RISE
 			bool   belowR;			//!< r < 1e-5: M0 = 1, M5 >= (1-mu)^5
 		};
 
-		inline void PrepareLane( Lane& L, const double r, const double p )
+		inline void PrepareLaneUncached( Lane& L, const double r, const double p )
 		{
 			L.base = 0; L.fr = L.fp = 0; L.belowR = false;
 			L.specular = ( r > 0 ) && ( p > 0 ) && std::isfinite( r ) && std::isfinite( p );
@@ -94,6 +94,30 @@ namespace RISE
 			L.fr = kr - r0;
 			L.fp = kp - p0;
 			L.base = p0 * kNumR + r0;
+		}
+
+		//! PrepareLaneUncached behind a two-entry thread-local memo keyed on
+		//! the exact (r, p): one hit evaluates the same lane from value(),
+		//! Scatter() and Pdf() many times, and the bracket costs two log10.
+		//! Pure value key, per-thread storage, no shared mutation (the
+		//! SchlickMasking::Prepare pattern).
+		inline void PrepareLane( Lane& L, const double r, const double p )
+		{
+			struct Entry { double r, p; Lane lane; bool used; };
+			static thread_local Entry cache[2] = { { 0, 0, Lane(), false }, { 0, 0, Lane(), false } };
+			static thread_local int next = 0;
+			for( int i = 0; i < 2; ++i ) {
+				if( cache[i].used && cache[i].r == r && cache[i].p == p ) {
+					L = cache[i].lane;
+					return;
+				}
+			}
+			PrepareLaneUncached( L, r, p );
+			cache[next].r = r;
+			cache[next].p = p;
+			cache[next].lane = L;
+			cache[next].used = true;
+			next ^= 1;
 		}
 
 		//! M0, M5 at cosine mu for a prepared lane (upper bounds).
@@ -206,21 +230,27 @@ namespace RISE
 			}
 		}
 
-		//! A at table coordinate u = sqrt(mu) (kNumMu - 1): the SAME
-		//! multilinear interpolant Moments() evaluates (blended in the
-		//! other order), including its r < 1e-5 branch.
-		inline double RowAlbedo( const LaneRow& row, const double rho, const double u )
+		//! The moments at table coordinate u = sqrt(mu) (kNumMu - 1): the
+		//! SAME multilinear interpolant Moments() evaluates (blended in
+		//! the other order), including its r < 1e-5 branch.
+		inline void RowMoments( const LaneRow& row, const double u, double& m0, double& m5 )
 		{
 			const int j0 = std::max( 0, std::min( int( u ), kNumMu - 2 ) );
 			const double fu = std::max( 0.0, std::min( 1.0, u - j0 ) );
-			double m0 = (1 - fu) * row.M0[j0] + fu * row.M0[j0 + 1];
-			double m5 = (1 - fu) * row.M5[j0] + fu * row.M5[j0 + 1];
+			m0 = (1 - fu) * row.M0[j0] + fu * row.M0[j0 + 1];
+			m5 = (1 - fu) * row.M5[j0] + fu * row.M5[j0 + 1];
 			if( row.belowR ) {
 				const double x = u / double( kNumMu - 1 );
 				const double f = 1.0 - x * x, f2 = f * f;
 				m0 = 1.0;
 				m5 = std::max( m5, f2 * f2 * f );
 			}
+		}
+
+		inline double RowAlbedo( const LaneRow& row, const double rho, const double u )
+		{
+			double m0, m5;
+			RowMoments( row, u, m0, m5 );
 			return Albedo( rho, m0, m5 );
 		}
 
@@ -259,10 +289,20 @@ namespace RISE
 		//! W_c at table coordinate u.
 		inline void ChannelWeights( const DiffuseChannels& d, const double u, double W[3] )
 		{
+			// Channels that share a lane share its moment row: evaluate the
+			// row's two moments once and apply each channel's rho.
+			const LaneRow* lastRow = 0;
+			double m0 = 0, m5 = 0;
 			for( int c = 0; c < d.count; ++c ) {
-				W[c] = d.active[c]
-					? std::max( 0.0, std::min( d.K[c], 1.0 - RowAlbedo( *d.row[c], d.rho[c], u ) ) )
-					: d.K[c];
+				if( !d.active[c] ) {
+					W[c] = d.K[c];
+					continue;
+				}
+				if( d.row[c] != lastRow ) {
+					lastRow = d.row[c];
+					RowMoments( *lastRow, u, m0, m5 );
+				}
+				W[c] = std::max( 0.0, std::min( d.K[c], 1.0 - Albedo( d.rho[c], m0, m5 ) ) );
 			}
 		}
 
@@ -288,9 +328,27 @@ namespace RISE
 		{
 			b.n = 0;
 			for( int c = 0; c < 3; ++c ) b.W0[c] = ( c < d.count ) ? d.K[c] : 0.0;
-			bool any = false;
-			for( int c = 0; c < d.count; ++c ) any = any || d.active[c];
-			if( !any ) return;
+
+			// Distinct active channels (a grey material's three channels
+			// are one), with each one's albedo at the table nodes.
+			int nu = 0;
+			int uniq[3];
+			int map[3] = { -1, -1, -1 };
+			double Anode[3][ kNumMu ];
+			for( int c = 0; c < d.count; ++c ) {
+				if( !d.active[c] ) continue;
+				for( int k = 0; k < nu; ++k ) {
+					const int o = uniq[k];
+					if( d.row[o] == d.row[c] && d.rho[o] == d.rho[c] && d.K[o] == d.K[c] ) { map[c] = k; break; }
+				}
+				if( map[c] < 0 ) {
+					map[c] = nu;
+					uniq[nu] = c;
+					for( int j = 0; j < kNumMu; ++j ) Anode[nu][j] = RowAlbedo( *d.row[c], d.rho[c], double( j ) );
+					nu++;
+				}
+			}
+			if( nu == 0 ) return;
 
 			static const double gx[3] = { 0.1127016653792583, 0.5, 0.8872983346207417 };
 			static const double gw[3] = { 5.0 / 18.0, 8.0 / 18.0, 5.0 / 18.0 };
@@ -303,15 +361,15 @@ namespace RISE
 				const double mg = gt / std::sqrt( gt * gt + gz * gz );
 				uGate = std::sqrt( mg ) * N;
 			}
+			const bool gated = ( gt > 0 ) || ( gz <= 0 );
 			for( int j = 0; j + 1 < kNumMu; ++j ) {
 				double cuts[8];
 				int nc = 0;
 				cuts[nc++] = j;
 				bool inBand = false;
-				for( int c = 0; c < d.count; ++c ) {
-					if( !d.active[c] ) continue;
-					const double a = RowAlbedo( *d.row[c], d.rho[c], double( j ) );
-					const double e = RowAlbedo( *d.row[c], d.rho[c], double( j + 1 ) );
+				for( int k = 0; k < nu; ++k ) {
+					const int c = uniq[k];
+					const double a = Anode[k][j], e = Anode[k][j + 1];
 					const double thr = 1.0 - d.K[c];
 					if( std::max( a, e ) > thr ) inBand = true;
 					if( ( a - thr ) * ( e - thr ) < 0 && !d.row[c]->belowR ) {
@@ -321,18 +379,30 @@ namespace RISE
 				if( !inBand ) continue;
 				if( uGate > j && uGate < j + 1 ) cuts[nc++] = uGate;
 				cuts[nc++] = j + 1;
-				std::sort( cuts, cuts + nc );
+				if( nc > 2 ) std::sort( cuts, cuts + nc );
 				for( int k = 0; k + 1 < nc; ++k ) {
 					const double lo = cuts[k], hi = cuts[k + 1];
 					if( hi <= lo ) continue;
 					for( int q = 0; q < 3; ++q ) {
 						const double u = lo + ( hi - lo ) * gx[q];
-						const double mu = ( u / N ) * ( u / N );
-						const double w = gw[q] * ( hi - lo ) * 4.0 * u * u * u / N4 * AcceptFraction( mu, gz, gt );
+						double w = gw[q] * ( hi - lo ) * 4.0 * u * u * u / N4;
+						if( gated ) {
+							const double mu = ( u / N ) * ( u / N );
+							w *= AcceptFraction( mu, gz, gt );
+						}
 						if( w <= 0 ) continue;
+						double Wu[3];
+						const LaneRow* lastRow = 0;
+						double m0 = 0, m5 = 0;
+						for( int k2 = 0; k2 < nu; ++k2 ) {
+							const int c = uniq[k2];
+							if( d.row[c] != lastRow ) { lastRow = d.row[c]; RowMoments( *lastRow, u, m0, m5 ); }
+							Wu[k2] = std::max( 0.0, std::min( d.K[c], 1.0 - Albedo( d.rho[c], m0, m5 ) ) );
+						}
+						for( int c = 0; c < 3; ++c ) {
+							b.W[b.n][c] = ( c >= d.count ) ? 0.0 : ( map[c] >= 0 ? Wu[ map[c] ] : d.K[c] );
+						}
 						b.weight[b.n] = w;
-						ChannelWeights( d, u, b.W[b.n] );
-						for( int c = d.count; c < 3; ++c ) b.W[b.n][c] = 0.0;
 						b.n++;
 					}
 				}

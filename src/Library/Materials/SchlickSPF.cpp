@@ -989,17 +989,32 @@ static void BuildSchlickDiffuseDraw(
 	SchlickDirectionalAlbedo::DiffuseChannels dc;
 	dc.count = count;
 	Scalar W0 = 0;
+	int rowOf[3] = { -1, -1, -1 };	// channel sharing this channel's lane, if its row is built
 	for( int c = 0; c < count; c++ ) {
 		dc.rho[c] = rho[c];
-		dc.row[c] = &rows[c];
 		dc.active[c] = SchlickDirectionalAlbedo::CanClip( lanes[c], rho[c], rd[c] );
 		if( dc.active[c] ) {
 			double a0, a5;
 			SchlickDirectionalAlbedo::Moments( lanes[c], muI, a0, a5 );
 			dc.K[c] = r_max( Scalar(0), r_min( rd[c], Scalar(1) - SchlickDirectionalAlbedo::Albedo( rho[c], a0, a5 ) ) );
-			SchlickDirectionalAlbedo::BuildRow( lanes[c], rows[c] );
+			// Channels on the same lane share one row (and one evaluation
+			// of it per quadrature node -- see ChannelWeights).
+			for( int prev = 0; prev < c; prev++ ) {
+				if( rowOf[prev] >= 0 && lanes[prev].base == lanes[c].base && lanes[prev].fr == lanes[c].fr
+				    && lanes[prev].fp == lanes[c].fp && lanes[prev].belowR == lanes[c].belowR
+				    && lanes[prev].specular == lanes[c].specular ) {
+					rowOf[c] = rowOf[prev];
+					break;
+				}
+			}
+			if( rowOf[c] < 0 ) {
+				rowOf[c] = c;
+				SchlickDirectionalAlbedo::BuildRow( lanes[c], rows[c] );
+			}
+			dc.row[c] = &rows[rowOf[c]];
 		} else {
 			dc.K[c] = rd[c];
+			dc.row[c] = &rows[c];
 		}
 		W0 = ( c == 0 ) ? dc.K[c] : r_max( W0, dc.K[c] );
 	}
