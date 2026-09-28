@@ -173,9 +173,10 @@ static double QuadratureAggregate(
 // `f_I(w) * cos`.  With the diffuse reflectance painter set to BLACK,
 // `SchlickBRDF::value` reduces to the specular term alone, so `f_I` for
 // the reflection lobe IS `value()` and the identity is directly
-// measurable through the public API.  (The diffuse lobe needs no test:
-// `kray_D = Rd`, `p_D = cos/pi` and `f_D = Rd/pi` give `f_D cos/p_D =
-// Rd` identically -- see the doc, section 2.)
+// measurable through the public API.  (Before DL-310 the diffuse lobe
+// needed no test: `kray_D = Rd`, `p_D = cos/pi` and `f_D = Rd/pi` gave
+// `f_D cos/p_D = Rd` identically.  Since DL-310 both carry the coupled
+// min(Rd, 1 - A(i), 1 - A(o)); section 14 gates that identity per draw.)
 //////////////////////////////////////////////////////////////////////
 struct RatioStat
 {

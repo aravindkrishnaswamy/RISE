@@ -8,7 +8,9 @@
 //
 //  Why that is not trivially true.  SchlickSPF is a "draw every lobe,
 //  THEN pick one by its realized weight" sampler: Scatter() draws the
-//  diffuse ray (kray = rd, independent of the drawn direction) AND the
+//  diffuse ray (kray = rd, independent of the drawn direction -- until
+//  DL-310, which couples it to min(Rd, 1 - A(i), 1 - A(o)); see the
+//  DL-310 rows below) AND the
 //  specular ray (kray = rho + (1-rho)*fresnel(half-vector), a function
 //  of the specular lobe's OWN drawn direction) every call, and
 //  RandomlySelect then picks one with probability proportional to

@@ -280,7 +280,7 @@ void WardAnisotropicEllipticalGaussianSPF::Scatter(
 	// silently dropped every legitimately-sampled back-face lobe.
 	if( Vector3Ops::Dot( d.ray.Dir(), myonb.w() ) > 0.0 && Vector3Ops::Dot( d.ray.Dir(), geomN ) > 0.0 ) {
 		// DL-310: coupled diffuse (WardSelection::CoupledDiffuse) -- the
-		// same constant SchlickBRDF-style min(Rd, 1 - Rs) value() uses.
+		// same constant min(Rd, 1 - Rs) value() uses.
 		{
 			const RISEPel rd = pDiffuse->GetColor(ri), rs = pSpecular->GetColor(ri);
 			d.kray = RISEPel( WardSelection::CoupledDiffuse( rd[0], rs[0] ),

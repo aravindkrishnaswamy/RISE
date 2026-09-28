@@ -36,7 +36,8 @@
 //      probability, and total variation against a histogram of real
 //      `Scatter` + `RandomlySelect` draws.
 //
-//      Ward's diffuse `kray` is the constant `Rd`, so -- unlike
+//      Ward's diffuse `kray` is the constant `Rd` (since DL-310 the
+//      constant coupled min(Rd, 1 - Rs), section I), so -- unlike
 //      Ashikmin-Shirley (DL-99) -- the specular lobe's own selection
 //      coefficient does NOT need a second quadrature over the diffuse
 //      draw: `q_S` depends on the query direction alone, modulated only

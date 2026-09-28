@@ -527,8 +527,11 @@ static Scalar ComputeSchlickSpecularPdf(
 //  weight" sampler, so the density of the direction the integrator
 //  finally continues along is NOT a fixed mixture of the lobe pdfs.
 //  Writing p_D / p_i for the diffuse / i-th specular sampling density,
-//  w_D = MaxValue(rd) for the diffuse ray's (direction-INDEPENDENT)
-//  realized selection weight and w_i(omega) = rho_i + (1-rho_i)*
+//  w_D for the diffuse ray's realized selection weight (the constant
+//  MaxValue(rd) before DL-310; since DL-310 the coupled
+//  MaxValue(min(Rd, 1 - A(i), 1 - A(omega))), direction-DEPENDENT
+//  wherever a channel can clip -- see SchlickDiffuseDraw) and
+//  w_i(omega) = rho_i + (1-rho_i)*
 //  fresnel(omega), multiplied by the DL-178/DL-225 geometric ratio R, for
 //  the i-th specular ray's (direction-DEPENDENT)
 //  one, the density of the selected direction is
@@ -1356,7 +1359,7 @@ Scalar SchlickSPF::PdfNM(
 // lobe had `nm` been the hero wavelength, for the SAME outgoing
 // direction.  Both lobes are recoverable from `(ri, outDir, nm)`:
 //
-//   diffuse:   Rd(nm)                                 -- direction-free
+//   diffuse:   min(Rd, 1 - A(i), 1 - A(o)) at nm       -- DL-310
 //   specular:  (rho(nm) + (1-rho(nm)) * F) * R(wo, r(nm), p(nm))
 //
 // with `F = (1 - (h.wi))^5` at the half-vector `h = normalize(wi + wo)`
