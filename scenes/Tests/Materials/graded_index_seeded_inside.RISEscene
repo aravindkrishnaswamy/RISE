@@ -1,0 +1,136 @@
+RISE ASCII SCENE 7
+#
+# DL-09 fixture (docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md section 3 (iii)):
+# the SAME graded-index box, floor and emitter as
+# graded_index_interior_gather.RISEscene, but the orthographic camera sits
+# INSIDE the graded medium at z = 0.3 (n_S = 1.8 - 0.6*0.7 = 1.38), between
+# the floor and the emitter, still looking straight down the gradient.
+#
+# Closed form:  pixel = rho*L_e*cov*(n_S/n_E)^2 = 0.5*(1/pi)*0.9988*(1.38/1.8)^2
+# = 0.09345.  Before DL-09 the eye walk carried no interior factor at all and
+# IORStackSeeding::SeedFromPoint recorded the index at its +z probe's FIRST
+# SURFACE HIT (the top face, 1.2) instead of at the camera: the render read
+# rho*L_e*cov = 0.15897, 1.70x too bright.
+#
+# The test replaces the RASTERIZER span (to render with BDPT/VCM) and the
+# MEDIUM span (with nested constant-index boxes, and with a uniform control).
+# BEGIN RASTERIZER
+standard_shader
+{
+	name global
+	shaderop DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples 64
+	oidn_denoise FALSE
+	pixel_filter box
+}
+# END RASTERIZER
+
+film
+{
+	width 32
+	height 32
+}
+
+orthographic_camera
+{
+	location 0 0 0.3
+	lookat 0 0 0
+	up 0 1 0
+	viewport_scale 0.2 0.2
+}
+
+# BEGIN MEDIUM
+scalar_painter
+{
+	name ior_tent
+	expression 1.8-0.6*abs(P.z-1.0)
+}
+
+dielectric_material
+{
+	name mat_graded
+	ior ior_tent
+	tau 1.0
+	scattering 1000000
+}
+
+box_geometry
+{
+	name geo_graded
+	width 60
+	height 60
+	depth 2
+}
+
+standard_object
+{
+	name graded
+	geometry geo_graded
+	material mat_graded
+	position 0 0 1
+}
+# END MEDIUM
+
+uniformcolor_painter
+{
+	name pnt_floor
+	color 0.5 0.5 0.5
+}
+
+lambertian_material
+{
+	name mat_floor
+	reflectance pnt_floor
+}
+
+clippedplane_geometry
+{
+	name geo_floor
+	pta -28 -28 0.02
+	ptb 28 -28 0.02
+	ptc 28 28 0.02
+	ptd -28 28 0.02
+	doublesided FALSE
+}
+
+standard_object
+{
+	name floor
+	geometry geo_floor
+	material mat_floor
+}
+
+uniformcolor_painter
+{
+	name pnt_emit
+	color 1.0 1.0 1.0
+}
+
+lambertian_luminaire_material
+{
+	name mat_emit
+	exitance pnt_emit
+	scale 1.0
+	material none
+}
+
+clippedplane_geometry
+{
+	name geo_emit
+	pta -28 -28 1.0
+	ptb -28 28 1.0
+	ptc 28 28 1.0
+	ptd 28 -28 1.0
+	doublesided FALSE
+}
+
+standard_object
+{
+	name emitter
+	geometry geo_emit
+	material mat_emit
+}
