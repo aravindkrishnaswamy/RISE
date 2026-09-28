@@ -227,7 +227,31 @@ static Stats RenderStats( const std::string& sceneText, int n, unsigned int seed
 static const char* kEnv =
 	"\tradiance_map pnt_env\n\tradiance_scale 1.0\n\tradiance_background TRUE\n";
 
-static std::string BoxScene( const std::string& rasterizerChunk, double camZ )
+enum MediumKind { kHomogeneous, kHeterogeneous };
+
+static std::string MediumChunk( MediumKind kind )
+{
+	if( kind == kHomogeneous ) {
+		return "homogeneous_medium\n{\n\tname med\n"
+			"\tabsorption 0.3 0.3 0.3\n\tscattering 0.7 0.7 0.7\n\tphase isotropic\n}\n\n";
+	}
+	// DL-283: a HETEROGENEOUS medium, so BDPT/VCM's distance sampling is
+	// delta tracking with an open-ended draw count (one per majorant-grid
+	// cell crossed plus two per tentative collision).  Perlin density in
+	// [0, 1] over the box, twice the homogeneous box's coefficients at
+	// full density.
+	return
+		"uniformcolor_painter\n{\n\tname pnt_dense\n\tcolor 1.0 1.0 1.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_sparse\n\tcolor 0.0 0.0 0.0\n}\n\n"
+		"perlin3d_painter\n{\n\tname pnt_density\n\tpersistence 0.65\n\toctaves 4\n"
+		"\tcolora pnt_dense\n\tcolorb pnt_sparse\n\tscale 1.5 1.5 1.5\n\tshift 0 0 0\n}\n\n"
+		"painter_heterogeneous_medium\n{\n\tname med\n\tabsorption 0.6 0.6 0.6\n"
+		"\tscattering 1.4 1.4 1.4\n\tphase isotropic\n\tdensity_painter pnt_density\n"
+		"\tresolution 64\n\tcolor_to_scalar luminance\n\tbbox_min -2 -2 -2\n\tbbox_max 2 2 2\n}\n\n";
+}
+
+static std::string BoxScene( const std::string& rasterizerChunk, double camZ,
+	MediumKind medium = kHomogeneous, double floorAlbedo = 0.8 )
 {
 	std::string s = "RISE ASCII SCENE 7\n"
 		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
@@ -239,12 +263,16 @@ static std::string BoxScene( const std::string& rasterizerChunk, double camZ )
 		camZ );
 	s += cam;
 
+	char floorPainter[160];
+	std::snprintf( floorPainter, sizeof(floorPainter),
+		"uniformcolor_painter\n{\n\tname pnt_floor\n\tcolor %g %g %g\n}\n\n",
+		floorAlbedo, floorAlbedo, floorAlbedo );
+
+	s += "uniformcolor_painter\n{\n\tname pnt_env\n\tcolor 1.0 1.0 1.0\n}\n\n";
+	s += floorPainter;
+	s += "lambertian_material\n{\n\tname mat_floor\n\treflectance pnt_floor\n}\n\n";
+	s += MediumChunk( medium );
 	s +=
-		"uniformcolor_painter\n{\n\tname pnt_env\n\tcolor 1.0 1.0 1.0\n}\n\n"
-		"uniformcolor_painter\n{\n\tname pnt_floor\n\tcolor 0.8 0.8 0.8\n}\n\n"
-		"lambertian_material\n{\n\tname mat_floor\n\treflectance pnt_floor\n}\n\n"
-		"homogeneous_medium\n{\n\tname med\n"
-		"\tabsorption 0.3 0.3 0.3\n\tscattering 0.7 0.7 0.7\n\tphase isotropic\n}\n\n"
 		// `scattering 1000000` is the delta pass-through spelling and
 		// `ior 1.0` makes the boundary index-matched: a transport no-op.
 		"dielectric_material\n{\n\tname mat_shell\n\ttau 1.0 1.0 1.0\n"
@@ -276,6 +304,9 @@ static std::string Rasterizer( const std::string& kind, const std::string& extra
 		       "\tnmbegin 380\n\tnmend 720\n\tnum_wavelengths 8\n\tspectral_samples 1\n";
 	} else if( kind == "bdpt" ) {
 		body = "bdpt_pel_rasterizer\n{\n\tmax_eye_depth 20\n\tmax_light_depth 20\n\tsamples 64\n";
+	} else if( kind == "bdpthwss" ) {
+		body = "bdpt_spectral_rasterizer\n{\n\tmax_eye_depth 20\n\tmax_light_depth 20\n\tsamples 64\n"
+		       "\thwss TRUE\n\tnmbegin 380\n\tnmend 720\n\tnum_wavelengths 8\n\tspectral_samples 1\n";
 	} else if( kind == "vcm" ) {
 		body = "vcm_pel_rasterizer\n{\n\tmax_eye_depth 20\n\tmax_light_depth 20\n\tsamples 64\n"
 		       "\tvc_enabled true\n\tvm_enabled false\n";
@@ -302,12 +333,13 @@ static const double kCameraOutside = 2.0001;
 // outside the index-matched shell.  The two means must agree.
 //////////////////////////////////////////////////////////////////////
 static void InsideOutsideRow( const std::string& label, const std::string& kind,
-	double band, unsigned int seedBase )
+	double band, unsigned int seedBase,
+	MediumKind medium = kHomogeneous, double floorAlbedo = 0.8 )
 {
 	const int n = Repeats();
 	const std::string rast = Rasterizer( kind, "" );
-	const Stats in  = RenderStats( BoxScene( rast, kCameraInside ),  n, seedBase );
-	const Stats out = RenderStats( BoxScene( rast, kCameraOutside ), n, seedBase + 1000u );
+	const Stats in  = RenderStats( BoxScene( rast, kCameraInside,  medium, floorAlbedo ), n, seedBase );
+	const Stats out = RenderStats( BoxScene( rast, kCameraOutside, medium, floorAlbedo ), n, seedBase + 1000u );
 
 	Check( in.ok && out.ok, label + ": both renders produced output" );
 	if( !in.ok || !out.ok ) return;
@@ -342,6 +374,9 @@ int main()
 
 	// Band: +/- 3% -- see the header's BAND paragraph for the measurement.
 	const double kBand = 0.03;
+	// Heterogeneous rows: +/- 3% too -- see the header's DL-283 paragraph
+	// for the measured sd.
+	const double kBandHet = 0.03;
 
 	std::cout << "Inside vs outside an index-matched absorbing medium box:" << std::endl;
 	InsideOutsideRow( "PT pel",                   "pt",     kBand, 7100u );
@@ -349,6 +384,13 @@ int main()
 	InsideOutsideRow( "PT spectral hwss TRUE",    "pthwss", kBand, 7300u );
 	InsideOutsideRow( "BDPT pel",                 "bdpt",   kBand, 7400u );
 	InsideOutsideRow( "VCM pel",                  "vcm",    kBand, 7500u );
+
+	// DL-283: heterogeneous rows -- see the header's DL-283 paragraph.
+	std::cout << "Same box, HETEROGENEOUS medium (delta tracking; DL-283):" << std::endl;
+	InsideOutsideRow( "BDPT pel het",             "bdpt",     kBandHet, 8100u, kHeterogeneous );
+	InsideOutsideRow( "VCM pel het",              "vcm",      kBandHet, 8200u, kHeterogeneous );
+	InsideOutsideRow( "BDPT hwss TRUE het",       "bdpthwss", kBandHet, 8300u, kHeterogeneous );
+	InsideOutsideRow( "BDPT pel het black floor", "bdpt",     kBandHet, 8400u, kHeterogeneous, 0.0 );
 
 	std::cout << "Truncation parity at max_volume_bounce 2 (camera inside):" << std::endl;
 	const Stats ptCap   = CapRender( "pt",   2, 7600u );
