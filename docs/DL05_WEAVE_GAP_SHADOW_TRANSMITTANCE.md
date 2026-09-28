@@ -137,8 +137,10 @@ custom transmission thin gap g }` sheet at y = 2 (`custom` has zero diffuse
 transmission, so the underside is lit ONLY through the gap), the light above
 at y = 4.  The exact answer is `L(g) = g * L0`, L0 the no-sheet render
 (checked absolutely against `rho/pi * I/d^2`: PT 0.159142 vs 0.159155).
-A/B against committed state: the six shadow-routing files reverted to
-`5f0c57f2`, everything else at the fix commit.
+A/B against committed state: the shadow-routing files (`RayCaster`,
+`LightSampler`, the three delta lights) and the composite override reverted
+to `5f0c57f2`, everything else at the fix commit -- the suite reads
+**103/25** there and **128/0** at the fix.
 
 | row | pre-fix L/L0 | post-fix L/L0 | closed form |
 |---|---|---|---|
@@ -154,14 +156,15 @@ A/B against committed state: the six shadow-routing files reverted to
 | directional, PT spectral hwss on | 0.00000 | 0.30004 | 0.3 |
 | directional, BDPT (zero-exitance sweep) | 0.00000 | 0.30007 | 0.3 |
 | AREA, PT (partition guard) | 0.29573 | 0.30230 | 0.3 |
-| AREA, BDPT | 0.29169 | 0.29324 | 0.3 |
+| AREA, BDPT (printed, not gated) | 0.29169 | 0.29324 | 0.3 |
 
 (The composite rows' pre column is the composite override reverted alone,
 the weave pass-through in place.)  The AREA rows are unchanged by
 construction and noisy (PT reaches the light through the gap by BSDF
 sampling only): over six runs (seed bases 1000-4000, before and after) PT
-spans -1.42 .. +1.04 % and BDPT -2.77 .. -0.71 %, with the pre-fix runs
-inside the post-fix spread.  Forcing the mesh-
+spans -1.42 .. +1.04 %, with the pre-fix run inside the post-fix spread.
+BDPT spans -0.20 .. -5.35 % over nine runs (mean ~-2.2 %) before and after
+alike, so it is printed rather than gated (§8).  Forcing the mesh-
 luminary NEE arm to see through the gap reads PT **0.60932 (+103 %)** -- the
 double count this row exists to catch.
 
@@ -280,6 +283,15 @@ last part is the energy the fix recovers, not overhead: on the design-doc box
   5 deg up (fov 1/2/3/5/10: -6.2/-6.1/-2.5/+0.03/+0.1 %).  Not root-caused.
   `WEAVE_GAP_FILTER=dl294` prints it.
 - **DL-295** (new): the SMS emission suppression after a weave gap (§7).
+- Observed, NOT filed (the slice's two ids are spent; flagged to the
+  supervisor): on the AREA closed-form row (kWide, fov 10 deg, where the
+  spot rows' t = 1 splat is exact) BDPT reads -0.20 .. -5.35 % over nine
+  runs, mean ~-2.2 % (t ~ 4 against 0), identically before and after DL-05
+  -- the path there is s = 0 (eye path through the gap to the emitter)
+  against t = 1, with the gap a delta vertex both walks skip.  Either
+  heavy-tailed noise or a small BDPT bias through a delta pass-through;
+  topology F (a gapped single curtain in front of a full-width emitter)
+  reads BDPT/PT 0.995.
 - Depth / bounce caps: a BSDF-sampled path crossing a gap still counts it as
   a transmission bounce and a depth step, where the NEE shadow walk counts
   nothing -- irrelevant to delta lights (no BSDF partner) and to area/env
