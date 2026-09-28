@@ -618,7 +618,9 @@ Burley-profile and explicit-volume reflectance. The conservative control
 uses zero absorption. Sw normalization was subsequently corrected in
 [DL-48](DL48_SSS_NORMALIZATION.md). Non-air relative-index handling
 (DL-49), spectral random-walk survival (DL-50), planar probe support
-(DL-52), and recursive environment MIS (DL-53) remain distinct questions. No eta factor should be used to hide them. See [the decision and measurement record](DL04_SSS_RADIANCE_DECISION.md)
+(DL-52), and recursive environment MIS (DL-53) were distinct questions (all
+since fixed; DL-49 on `debt-dl49`, 2026-09-28, see
+[DL49_SSS_EXTERIOR_INDEX.md](DL49_SSS_EXTERIOR_INDEX.md)). No eta factor should be used to hide them. See [the decision and measurement record](DL04_SSS_RADIANCE_DECISION.md)
 for source evidence, geometry controls, executed eta mutations and gate
 counters. The closure pins the absence of an unmatched factor; it does not
 claim exact SSS energy conservation or spectral/non-air material equality.

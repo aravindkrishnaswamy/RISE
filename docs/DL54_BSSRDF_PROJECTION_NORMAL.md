@@ -77,7 +77,8 @@ volume free-flight sampling and pdfSurface=0, with no disk projection.
 Coated/Fabric supported substrate lists exclude SSS; CompositeMaterial does
 not forward a diffusion profile. No sibling projection site remains.
 
-DL-49 remains distinct open work. DL-52's coplanar probe omission was
+DL-49 was distinct work, fixed on `debt-dl49` (2026-09-28; see
+[closure](DL49_SSS_EXTERIOR_INDEX.md)). DL-52's coplanar probe omission was
 subsequently closed by `00cd6723` (see
 [closure](DL52_BSSRDF_PLANAR_PROBE_ORIGIN.md)). The separate fallback-proposal
 defect DL-55 was subsequently closed by

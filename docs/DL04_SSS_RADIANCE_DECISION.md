@@ -110,6 +110,10 @@ bitwise repeatability under worker-side random scheduling.
 - DL-49: exterior IOR is hardcoded as air in profile Fresnel and random-walk
   refraction/entry factors, while surface SPF reflection reads the stack.
   Changing the surrounding medium is different from moving only the camera.
+  (Fixed on `debt-dl49`, 2026-09-28: every SSS boundary quantity now uses
+  the relative index against `ri.ambientIOR`, bit-identical in air; the
+  water rows of `SSSRadianceScalingTest` moved toward the explicit volume.
+  See [DL49_SSS_EXTERIOR_INDEX.md](DL49_SSS_EXTERIOR_INDEX.md).)
 
 ### ~~DL-48: Sw normalization~~
 
@@ -369,7 +373,7 @@ exterior medium. No production site was changed in this row.
 | --- | --- |
 | SubSurfaceScatteringSPF RGB/NM | Shipped front side supplies reflection; complete subsurface transport is sampled by the integrator. Shipped materials absorb membership-selected inside hits. Standalone non-absorbing fallback destination was corrected by DL-51. |
 | BSSRDFSampling RGB/NM full and spatial weights | Complete exterior-to-exterior event; no separate preceding surface transmission. Actual helper and RGB PT measurements pin the absence of an unmatched square. Sw and candidate support remain DL-48/DL-52. |
-| RandomWalkSSS RGB/NM | Samples internal transport and exit; callers handle entry Fresnel probability/weight. The exterior stack is preserved. Relative IOR remains DL-49; spectral survival was closed by DL-50. |
+| RandomWalkSSS RGB/NM | Samples internal transport and exit; callers handle entry Fresnel probability/weight. The exterior stack is preserved. Relative IOR against the live exterior since DL-49 (`debt-dl49`, 2026-09-28); spectral survival was closed by DL-50. |
 | BSSRDFEntryAdapters and PathVertexEval | Reevaluate directional factors of the same complete event. They do not add an independent surface-transmission stage. Sw and relative-index issues remain open; adapters are covered by source audit, not a new spectral renderer oracle. |
 | PT RGB/NM and HWSS | RGB/NM share the templated complete-event branches. HWSS SSS routes through NM. New rendered measurements are RGB only; they do not certify spectral equivalence. Recursive environment MIS remains DL-53. |
 | BDPT eye/light RGB/NM; VCM and MLT | BDPT invokes the same helpers, with entry Fresnel selection compensation; it preserves exterior state. VCM/MLT share those subpath generators. Source audit establishes the convention scope; no new complete BDPT/VCM/MLT SSS render matrix is claimed. |
