@@ -468,25 +468,60 @@ chain's `ComputeSpecularDirection` re-trace passes straight through;
 and not on the production path.
 
 **P1-2 -- the unpushed exit.**  `SnellContinueChain`'s exit branch with no
-matching push (one face of a slab the walk never entered -- the open-sheet
-pattern) set the far-side index to a hardcoded `1.0`, which priced an
-immersed open-sheet caster against air even with the rest of the walk
-stack-aware.  Nothing is popped there, so the medium on the far side is the
-one the walk is already in: it now reads `seedIor.top()` (1.0 in air, so
-in-air unchanged by this line alone).  The stale DL-70 comment in the same
-function (which said the `sameObjectAgain` override could not fire on a
-walk's first crossing because "nothing has been pushed yet") is corrected:
-with the receiver stack it can.
+matching push for the object hit set the far-side index to a hardcoded
+`1.0`, which priced an immersed open-sheet caster against air even with the
+rest of the walk stack-aware.  The far side is now read from the stack, and
+the branch has TWO cases, because two different geometries reach it:
 
-**Gate rows** (`ExteriorIndexInvarianceTest`, 183/0):
+- **(a) the walk is IN this sheet's material** (the stack top carries its
+  index): the slabs-from-planes pattern, where a SIBLING sheet pushed the
+  slab on the way in -- the walk enters through the down-facing lower sheet
+  and leaves through the up-facing upper one.  Leaving the slab leaves that
+  entry, so the top entry is popped and the far side is the medium beneath
+  it (1.0 in air: exactly the old constant).
+- **(b) the walk is NOT in this material** (a lone open sheet whose normal
+  says "exiting" but which nothing entered): nothing is popped, and the far
+  side is the medium the walk is already in, the stack top (1.0 in air
+  unless the walk is inside some other medium).
 
+A FIRST revision of this fix read the stack top in both cases.  In case (a)
+that makes the slab's exit an index-MATCHED vertex (2.2 -> 2.2) and leaves
+the chain "inside glass" at the light -- in air too -- and it read the
+two-sheet slabs' lit floor beside the slab (1523 px on flatslab, 1097 on
+glassblock) 27 % / 16 % darker than every other build; the scale-invariance
+rows could not see it, because the error is itself scale-invariant.  The
+deterministic A7 rows below were added for exactly that.  Residual
+ambiguity: a case-(b) sheet immersed in a medium of EXACTLY its own index
+is classified (a).  In case (a) the Snell bend that seeds the direction
+still uses the pre-pop index (ratio 1, straight through) -- a pre-existing
+seed approximation that Newton re-solves, unchanged here.  The stale DL-70
+comment in the same function (which said the `sameObjectAgain` override
+could not fire on a walk's first crossing because "nothing has been pushed
+yet") is corrected: with the receiver stack it can.
+
+In the region that first revision darkened, this slice's final build is
+unchanged from base (flatslab 0.1785 / 0.1792, glassblock 0.1416 / 0.1426)
+and the two references disagree with each other by 40-60 %: VCM 0.2143 /
+0.2250, PT without SMS 0.1508 / 0.1389.  SMS sits within 3 % of
+PT-without-SMS on glassblock and 19 % above it on flatslab there -- a
+pre-existing, reference-limited question this slice does not change.
+
+**Gate rows** (`ExteriorIndexInvarianceTest`, 191/0):
+
+- Part A7 (deterministic): `BuildSeedChain` from below through (a) a
+  two-sheet slab and (b) a lone up-facing sheet, in air and with a 1.5
+  receiver stack (every index x1.5): etas (a) `1 -> 2.2, 2.2 -> 1` /
+  `1.5 -> 3.3, 3.3 -> 1.5`, (b) `2.2 -> 1` / `3.3 -> 1.5`.  Red against the
+  pre-review constant: the two immersed rows (`3.3 -> 1`); red against the
+  first revision: both case-(a) rows (`2.2 -> 2.2`, `3.3 -> 3.3`).
 - Part B `sms_lambertian_via_open_sheet` (a single open glass sheet over
   a Lambertian floor, point light above, camera BELOW the sheet so the
   receiver's stack does not hold it and the walk's first crossing is the
-  unpushed exit): PT snell 0.9993 +/- 0.0025 (band 0.01), PT spectral snell
-  0.9981 +/- 0.0055 (band 0.03).  With ONLY the P1-2 line reverted:
-  **0.9693 +/- 0.0012** and **0.9318 +/- 0.0028** -- the two rows fail,
-  nothing else in the file does.
+  unpushed exit, case (b)): PT snell 1.0000 +/- 0.0010 (band 0.01), PT
+  spectral snell 0.9995 +/- 0.0029 (band 0.03).  With ONLY the P1-2 block
+  reverted to the constant: **0.9693 +/- 0.0012** and **0.9304 +/- 0.0038**
+  -- those two rows and the two immersed A7 rows fail (187/4), nothing
+  else in the file does.
 - Part C, the two shipped scenes themselves against their VCM `_ref`
   twin (100x75, oidn off, SMS 256 spp vs VCM 512 spp, caustic rectangle
   x36..64 y26..38, n = 4): flatslab **1.0125 +/- 0.0016** (band
@@ -507,11 +542,11 @@ than 4 sigma, 1021 px on flatslab and 661 on glassblock):
 | scene / region | base `c190163c` | `855ce136` | this round | VCM `_ref` | PT, SMS off, 4096 spp |
 |---|---:|---:|---:|---:|---:|
 | flatslab caustic rect | 0.0549 (0.66 / 0.71) | 0.0216 (0.26 / 0.28) | **0.0838 (1.01 / 1.08)** | 0.0828 +/- 0.0003 | 0.0773 +/- 0.0025 |
-| flatslab changed region | 0.0870 (0.86 / 0.84) | 0.0739 (0.73 / 0.71) | **0.0973 (0.96 / 0.94)** | 0.1011 +/- 0.0001 | 0.1041 +/- 0.0008 |
-| flatslab whole image | 0.1721 | 0.1699 | **0.1735** | 0.1805 +/- 0.0014 | 0.1768 +/- 0.0004 |
-| glassblock caustic rect | 0.0390 (0.44 / 0.48) | 0.0205 (0.23 / 0.25) | **0.0791 (0.89 / 0.98)** | 0.0889 +/- 0.0003 | 0.0807 +/- 0.0031 |
-| glassblock changed region | 0.0643 (0.68 / 0.68) | 0.0534 (0.56 / 0.57) | **0.0872 (0.92 / 0.93)** | 0.0948 +/- 0.0002 | 0.0940 +/- 0.0019 |
-| glassblock whole image | 0.1647 | 0.1650 | **0.1677** | 0.1837 +/- 0.0022 | 0.1766 +/- 0.0002 |
+| flatslab changed region | 0.0870 (0.86 / 0.84) | 0.0739 (0.73 / 0.71) | **0.0974 (0.96 / 0.94)** | 0.1011 +/- 0.0001 | 0.1041 +/- 0.0008 |
+| flatslab whole image | 0.1721 | 0.1699 | **0.1729** | 0.1805 +/- 0.0014 | 0.1768 +/- 0.0004 |
+| glassblock caustic rect | 0.0390 (0.44 / 0.48) | 0.0205 (0.23 / 0.25) | **0.0792 (0.89 / 0.98)** | 0.0889 +/- 0.0003 | 0.0807 +/- 0.0031 |
+| glassblock changed region | 0.0643 (0.68 / 0.68) | 0.0534 (0.56 / 0.57) | **0.0873 (0.92 / 0.93)** | 0.0948 +/- 0.0002 | 0.0940 +/- 0.0019 |
+| glassblock whole image | 0.1647 | 0.1650 | **0.1676** | 0.1837 +/- 0.0022 | 0.1766 +/- 0.0002 |
 
 (ratios in parentheses: to VCM / to PT-without-SMS.)  This round's build
 is the closest of the three to BOTH references in every row.  The two
