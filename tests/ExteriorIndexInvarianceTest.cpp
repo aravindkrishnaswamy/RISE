@@ -106,6 +106,7 @@
 #include "../src/Library/Utilities/IORStackSeeding.h"
 #include "../src/Library/Interfaces/IObjectManager.h"
 #include "../src/Library/Utilities/IndependentSampler.h"
+#include "../src/Library/Utilities/SobolSampler.h"
 #include "../src/Library/Utilities/ManifoldSolver.h"
 #include "../src/Library/Lights/LightSampler.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
@@ -972,11 +973,14 @@ namespace
 		return o.str();
 	}
 
-	//! Renders once; returns the RGB-sum image mean, or a negative value on failure.
-	struct PixelRect { unsigned int x0, x1, y0, y1; };	// inclusive
-
+	//! Renders once; returns the RGB-sum mean over the pixels `mask` selects
+	//! (every pixel when null), or a negative value on failure.  `pixelsOut`,
+	//! when given, receives the raw RGB-sum image.  `salt` != 0 is XORed into
+	//! every Sobol' sampler's scramble seed for this render (independent
+	//! randomized-QMC replicates; see SobolSamplerTestHooks).
 	double RenderMean( const std::string& path, unsigned int seed, Scalar expectedExterior, bool checkSeed,
-		const Point3& camera, const std::string& label, const PixelRect* rect = nullptr, unsigned int rectWidth = 0 )
+		const Point3& camera, const std::string& label, const std::vector<char>* mask = nullptr,
+		std::vector<double>* pixelsOut = nullptr, uint32_t salt = 0 )
 	{
 		IJobPriv* job = nullptr;
 		if( !RISE_CreateJobPriv( &job ) || !job ) return -1;
@@ -991,7 +995,9 @@ namespace
 		GlobalLog()->PrintNew( cap, __FILE__, __LINE__, "dl290 capture" );
 		job->GetRasterizer()->AddRasterizerOutput( cap );
 		std::srand( seed );
+		SobolSamplerTestHooks::ValueSalt().store( salt );
 		const bool rendered = job->Rasterize();
+		SobolSamplerTestHooks::ValueSalt().store( 0u );
 		double mean = -1;
 		if( rendered && !cap->pixels.empty() ) {
 			double sum = 0;
@@ -1001,11 +1007,8 @@ namespace
 				const RISEColor& c = cap->pixels[i];
 				const double v = ( c.base.r + c.base.g + c.base.b ) * c.a;
 				if( !std::isfinite( v ) ) { finite = false; break; }
-				if( rect ) {
-					const unsigned int x = static_cast<unsigned int>( i % rectWidth );
-					const unsigned int y = static_cast<unsigned int>( i / rectWidth );
-					if( x < rect->x0 || x > rect->x1 || y < rect->y0 || y > rect->y1 ) continue;
-				}
+				if( pixelsOut ) pixelsOut->push_back( v );
+				if( mask && ( i >= mask->size() || !(*mask)[i] ) ) continue;
 				sum += v;
 				++count;
 			}
@@ -1107,35 +1110,38 @@ namespace
 namespace
 {
 	//////////////////////////////////////////////////////////////////
-	// Part C -- shipped matched-index SMS scenes against their VCM twin
+	// Part C -- shipped two-sheet SMS scenes against their VCM twin
 	//////////////////////////////////////////////////////////////////
 	//
-	// DL-290 review P1-1.  sms_k2_flatslab and sms_k2_glassblock build
-	// their slab from TWO separate open clippedplane sheets, each of which
-	// pushes the glass index on the IOR stack.  A receiver under the slab
-	// therefore carries [1, n, n], and once the seed walk starts from that
-	// live stack the second sheet is an EXACTLY INDEX-MATCHED refraction
-	// vertex (eta_i == eta_t).  Walter's generalized half-vector
-	// h = -(eta_i wi + eta_t wo) vanishes identically at such a vertex, so
-	// its normalized form is 0/0 and the Newton solve could not converge:
-	// the 855ce136 build read these caustics at 0.26 / 0.23 of the VCM
-	// reference (and the pre-DL-290 base, which walked from a fresh
-	// [1.0] stack, at 0.66 / 0.44).  The fix keeps the UNNORMALIZED h at
-	// a matched vertex (see IsIndexMatchedRefraction, ManifoldSolver.cpp).
+	// DL-290 review round 1 (P1-1) and round 2 (P1-A, P1-B).
+	// sms_k2_flatslab and sms_k2_glassblock build their slab from TWO open
+	// clippedplane sheets, each of which pushes the glass index.  With the
+	// seed walk starting from the receiver's live stack, a matched second
+	// vertex and an unpushed exit are both reached here: the round-0 build
+	// read these caustics at a quarter of the reference.
 	//
-	// The gate is the SMS render's mean over the caustic rectangle divided
-	// by the VCM _ref twin's -- the same scene, the same film, oidn off.
-	// Measured post-fix (n=4): flatslab 1.0125 +/- 0.0016, glassblock
-	// 0.8904 +/- 0.0011.  Each band is that centre +/- 0.05.  The
-	// width is NOT a multiple of the ratio sd (QMC makes that ~0.1 %); it
-	// is the scale of the two references' own disagreement in this
-	// rectangle: glassblock's SMS agrees with the same scene rendered by
-	// PT WITHOUT SMS at 4096 spp (0.98 matched; 1.00 with the top sheet's
-	// index moved to 2.3, i.e. no matched vertex at all), while VCM reads
-	// ~11 % above both -- a VCM-vs-PT difference on that displaced top,
-	// not an SMS or index effect -- and on flatslab VCM and PT-without-SMS
-	// differ by ~7 % the other way.  The pre-fix readings (0.26 / 0.23
-	// with the matched-index branch disabled) sit far outside both bands.
+	// The gate is the SMS render's mean over the pixels S where the CAMERA
+	// SEES THE SLAB (the floor seen through both sheets), divided by the
+	// VCM _ref twin's -- same scene, same film, oidn off.  S is rendered,
+	// not guessed: a variant of the scene with the sheets emissive and
+	// everything else black.  The floor seen directly around the slab (F)
+	// is excluded on purpose: there the open-sheet index-stack convention
+	// is non-reciprocal and the integrators disagree by up to 3x among
+	// themselves (DL-345, filed at merge); on S the references agree to
+	// 1-2 %.  Renders are salted (independent randomized-QMC replicates).
+	//
+	// Bands, from the measured ratio and its sd (salted, n = 4):
+	// flatslab 1.0143 +/- 0.0018, glassblock 0.9034 +/- 0.0030.  On S the
+	// two references agree with each other to ~1 % (VCM vs PT without SMS
+	// at 4096 spp: 0.2180 / 0.2183 flatslab, 0.2344 / 0.2317 glassblock),
+	// so each band is [centre - 6 sd - 0.02, max(centre, 1) + 6 sd + 0.02]:
+	// wide enough for the reference agreement and the replicate noise, and
+	// with an upper bound above 1 so a genuine SMS improvement cannot fail.
+	// glassblock's centre is ~10 % LOW: SMS's own deficit on a DISPLACED
+	// slab, present with or without a matched vertex (0.85 of PT-without-
+	// SMS with the top sheet at 2.3) -- DL-352, filed at merge -- not an
+	// index effect.  Pre-fix readings on S: base 0.70 / 0.45, the round-0
+	// build 0.13 / 0.12.
 	std::string ReadFileText( const std::string& path )
 	{
 		std::ifstream ifs( path );
@@ -1145,18 +1151,20 @@ namespace
 		return ss.str();
 	}
 
-	//! Rewrites a shipped scene for the gate: film dims, spp, oidn off.
+	//! Rewrites a shipped scene for the gate: film dims, spp, oidn off, and
+	//! for the mask variant: the glass objects emissive, all else black.
 	//! Returns empty on any structural surprise.
-	std::string PatchShippedScene( const std::string& text, unsigned int samples, unsigned int width, unsigned int height )
+	std::string PatchShippedScene( const std::string& text, unsigned int samples, unsigned int width, unsigned int height, bool maskVariant )
 	{
 		std::istringstream in( text );
 		std::ostringstream out;
 		std::string line;
-		unsigned int samplesSeen = 0, widthSeen = 0, heightSeen = 0;
+		unsigned int samplesSeen = 0, widthSeen = 0, heightSeen = 0, glassSeen = 0;
+		bool maskChunksWritten = false;
 		while( std::getline( in, line ) ) {
 			std::istringstream toks( line );
-			std::string key;
-			toks >> key;
+			std::string key, val;
+			toks >> key >> val;
 			if( key == "oidn_denoise" ) continue;
 			if( key == "samples" ) {
 				out << "\tsamples " << samples << "\n\toidn_denoise FALSE\n";
@@ -1165,42 +1173,71 @@ namespace
 			}
 			if( key == "width" ) { out << "\twidth " << width << "\n"; ++widthSeen; continue; }
 			if( key == "height" ) { out << "\theight " << height << "\n"; ++heightSeen; continue; }
+			if( maskVariant && key == "standard_object" && !maskChunksWritten ) {
+				out << "uniformcolor_painter\n{\n\tname dl290_mask_white\n\tcolor 1 1 1\n}\n\n";
+				out << "uniformcolor_painter\n{\n\tname dl290_mask_black\n\tcolor 0 0 0\n}\n\n";
+				out << "lambertian_luminaire_material\n{\n\tname dl290_mask_em\n\texitance dl290_mask_white\n\tscale 1.0\n\tmaterial none\n}\n\n";
+				out << "lambertian_material\n{\n\tname dl290_mask_blackmat\n\treflectance dl290_mask_black\n}\n\n";
+				maskChunksWritten = true;
+			}
+			if( maskVariant && key == "material" && ( val == "glass_mat" || val == "floor_mat" || val == "light_mat" ) ) {
+				if( val == "glass_mat" ) ++glassSeen;
+				out << "\tmaterial dl290_mask_" << ( val == "glass_mat" ? "em" : "blackmat" ) << "\n";
+				continue;
+			}
 			out << line << "\n";
 		}
 		if( samplesSeen != 1 || widthSeen != 1 || heightSeen != 1 ) return std::string();
+		if( maskVariant && ( !maskChunksWritten || glassSeen != 2 ) ) return std::string();
 		return out.str();
 	}
 
 	void TestShippedMatchedIndexScenes( const unsigned int trials, const std::string& only )
 	{
-		std::cout << "C: shipped matched-index SMS scenes vs their VCM _ref twin, n=" << trials << " per side" << std::endl;
+		std::cout << "C: shipped two-sheet SMS scenes vs their VCM _ref twin on the slab pixels S, n=" << trials << " per side, salted" << std::endl;
 		struct SceneRow { const char* name; double lo, hi; };
 		const SceneRow rows[] = {
-			{ "sms_k2_flatslab",   0.96, 1.06 },
-			{ "sms_k2_glassblock", 0.84, 0.94 },
+			{ "sms_k2_flatslab",   0.98,  1.045 },
+			{ "sms_k2_glassblock", 0.865, 1.04  },
 		};
 		const unsigned int kW = 100, kH = 75, kSmsSpp = 256, kVcmSpp = 512;
-		const PixelRect rect = { 36, 64, 26, 38 };
 		const char* media = std::getenv( "RISE_MEDIA_PATH" );
 		const std::string root = media ? std::string( media ) : std::string();
 		unsigned int seed = 291000;
 		for( const SceneRow& row : rows ) {
 			const std::string label = std::string( "C: " ) + row.name;
 			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
-			const std::string smsText = PatchShippedScene(
-				ReadFileText( root + "scenes/Tests/SMS/" + row.name + ".RISEscene" ), kSmsSpp, kW, kH );
+			const std::string shipped = ReadFileText( root + "scenes/Tests/SMS/" + row.name + ".RISEscene" );
+			const std::string smsText = PatchShippedScene( shipped, kSmsSpp, kW, kH, false );
+			const std::string maskText = PatchShippedScene( shipped, 4, kW, kH, true );
 			const std::string refText = PatchShippedScene(
-				ReadFileText( root + "scenes/Tests/SMS/" + row.name + "_ref.RISEscene" ), kVcmSpp, kW, kH );
-			Check( !smsText.empty() && !refText.empty(), label + ": shipped scene and _ref twin read and patched" );
-			if( smsText.empty() || refText.empty() ) continue;
+				ReadFileText( root + "scenes/Tests/SMS/" + row.name + "_ref.RISEscene" ), kVcmSpp, kW, kH, false );
+			Check( !smsText.empty() && !refText.empty() && !maskText.empty(), label + ": shipped scene, mask variant and _ref twin read and patched" );
+			if( smsText.empty() || refText.empty() || maskText.empty() ) continue;
+
+			// The slab mask S: pixels where the camera sees a glass sheet.
+			const std::string maskPath = WriteScene( maskText, "shipped_mask" );
+			std::vector<double> maskImg;
+			const double maskMean = RenderMean( maskPath, 1, 1.0, false, Point3( 0, 0, 0 ), label + " mask", nullptr, &maskImg );
+			std::remove( maskPath.c_str() );
+			std::vector<char> S( maskImg.size(), 0 );
+			std::size_t nS = 0;
+			for( std::size_t i = 0; i < maskImg.size(); ++i ) {
+				if( maskImg[i] > 0.1 ) { S[i] = 1; ++nS; }
+			}
+			std::cout << "    " << row.name << ": slab mask S = " << nS << " of " << maskImg.size() << " px" << std::endl;
+			Check( maskMean >= 0 && maskImg.size() == std::size_t( kW ) * kH && nS > 200 && nS < 1000, label + ": slab mask renders a plausible pixel set" );
+			if( nS == 0 ) continue;
+
 			const std::string smsPath = WriteScene( smsText, "shipped_sms" );
 			const std::string refPath = WriteScene( refText, "shipped_ref" );
 			std::vector<double> sms, ref;
 			bool allValid = true;
 			for( unsigned int t = 0; t < trials; ++t ) {
-				const unsigned int s = seed++;
-				const double a = RenderMean( smsPath, s, 1.0, false, Point3( 0, 0, 0 ), label + " sms", &rect, kW );
-				const double b = RenderMean( refPath, s, 1.0, false, Point3( 0, 0, 0 ), label + " ref", &rect, kW );
+				const unsigned int sd = seed++;
+				const uint32_t salt = 0x9E3779B9u * sd;
+				const double a = RenderMean( smsPath, sd, 1.0, false, Point3( 0, 0, 0 ), label + " sms", &S, nullptr, salt );
+				const double b = RenderMean( refPath, sd, 1.0, false, Point3( 0, 0, 0 ), label + " ref", &S, nullptr, salt ^ 0x5bd1e995u );
 				if( !( a > 0 ) || !( b > 0 ) ) allValid = false;
 				sms.push_back( a );
 				ref.push_back( b );
@@ -1213,11 +1250,10 @@ namespace
 			const double ratio = sa.mean / sb.mean;
 			const double ratioSd = ratio * std::sqrt( ( sa.sd / sa.mean ) * ( sa.sd / sa.mean ) / trials +
 				( sb.sd / sb.mean ) * ( sb.sd / sb.mean ) / trials );
-			std::cout << std::setprecision( 6 ) << "    " << row.name << " rect x" << rect.x0 << ".." << rect.x1
-				<< " y" << rect.y0 << ".." << rect.y1 << ": SMS(" << kSmsSpp << "spp) " << sa.mean << " +/- " << sa.sd
+			std::cout << std::setprecision( 6 ) << "    " << row.name << " on S: SMS(" << kSmsSpp << "spp) " << sa.mean << " +/- " << sa.sd
 				<< "  VCM(" << kVcmSpp << "spp) " << sb.mean << " +/- " << sb.sd
 				<< "  ratio " << ratio << " +/- " << ratioSd << " (band " << row.lo << ".." << row.hi << ")" << std::endl;
-			Check( ratio > row.lo && ratio < row.hi, label + ": SMS/VCM caustic-rect ratio within band" );
+			Check( ratio > row.lo && ratio < row.hi, label + ": SMS/VCM ratio on the slab pixels within band" );
 		}
 	}
 }

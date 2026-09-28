@@ -756,19 +756,24 @@ caustics at a quarter of the reference, WORSE than the pre-DL-290 base
 (which walked from a fresh `[1.0]` and so never produced the matched
 vertex, while mispricing the first sheet instead).
 
-The fix (`IsIndexMatchedRefraction`, `ManifoldSolver.cpp`) keeps the
+The round-1 fix (`IsIndexMatchedRefraction`, `ManifoldSolver.cpp`) kept the
 UNNORMALIZED `h` at such a vertex, in `EvaluateConstraint`, `BuildJacobian`
 and `ComputeLastBlockLightJacobian` alike (raw derivatives, no
-`DeriveNormalized`).  This is exact, not a regularization: at `C = 0`, where
-`h` is parallel to the normal,
-`d(P_t(h/|h|)) = P_t(dh)/|h|`, so the normalized block is the raw block with
-BOTH of the vertex's rows scaled by `1/|h|`.  A per-vertex row scaling `D`
-leaves the zero set unchanged, leaves the Newton step `J^-1 C` unchanged,
-and leaves the chain-to-light sensitivity `dx/dy = -(DA)^-1 (DB) = -A^-1 B`
--- the only thing the generalized geometric term reads -- unchanged.  The
-raw form is simply the one of the two that stays defined as `|h| -> 0`.
-The match is exact-relative (`|eta_i - eta_t| <= 1e-9 max`): two
-authored-equal indices, never a near-match.
+`DeriveNormalized`), for an exact-relative match (`|eta_i - eta_t| <= 1e-9
+max`).  **Round 2 changed both the scope and the argument (§11.7).**  The
+scope: EVERY refraction vertex now uses the unnormalized `h`, because the
+1e-9 special case left a cliff one step away (Newton 100 % at an exact
+match, 0 % at a relative mismatch of 1e-8 .. 1e-3).  The argument written
+here in round 1 -- "at `C = 0` the normalized block is the raw block scaled
+by `1/|h|`, so the Newton step is unchanged" -- was WRONG for the matched
+case it was written for: at a matched root `h = 0`, so `1/|h|` is undefined
+and the normalized form has no root there at all; and away from a root the
+Newton step does change (only the root is shared).  The valid argument at a
+match: `P_t(-eta (wi + wo))` vanishes exactly on the straight-through path
+and is a full-rank local defining function of it, so the implicit-function
+tangent it yields is the physical one (the external review's finite
+differences of the production light-to-first-vertex Jacobian at a matched
+vertex agree to 9.9e-6 relative, n = 103).
 
 **Matched-index audit, rest of the chain** (asked by the review): the
 Newton constraint was the only site that degenerated.
@@ -783,6 +788,10 @@ matching push for the object hit set the far-side index to a hardcoded
 `1.0`, which priced an immersed open-sheet caster against air even with the
 rest of the walk stack-aware.  The far side is now read from the stack, and
 the branch has TWO cases, because two different geometries reach it:
+
+**Superseded in round 2 (§11.7): cases (a) and (b) below are now told
+apart by CONTAINMENT, not by comparing indices; the index-value test
+regressed every slab of two different indices, in air.**
 
 - **(a) the walk is IN this sheet's material** (the stack top carries its
   index): the slabs-from-planes pattern, where a SIBLING sheet pushed the
@@ -833,7 +842,9 @@ pre-existing, reference-limited question this slice does not change.
   reverted to the constant: **0.9693 +/- 0.0012** and **0.9304 +/- 0.0038**
   -- those two rows and the two immersed A7 rows fail (187/4), nothing
   else in the file does.
-- Part C, the two shipped scenes themselves against their VCM `_ref`
+- Part C (**superseded in round 2, §11.7: the rectangle mixed the slab
+  pixels with the floor seen directly, and the glassblock reading below is
+  WRONG**), the two shipped scenes themselves against their VCM `_ref`
   twin (100x75, oidn off, SMS 256 spp vs VCM 512 spp, caustic rectangle
   x36..64 y26..38, n = 4): flatslab **1.0102 +/- 0.0006** (band
   0.96..1.06), glassblock **0.8904 +/- 0.0014** (band 0.84..0.94);
@@ -861,7 +872,16 @@ than 4 sigma, 1021 px on flatslab and 661 on glassblock):
 | glassblock whole image | 0.1647 | 0.1650 | **0.1676** | 0.1837 +/- 0.0022 | 0.1766 +/- 0.0002 |
 
 (ratios in parentheses: to VCM / to PT-without-SMS.)  This round's build
-is the closest of the three to BOTH references in every row.  The two
+is the closest of the three to BOTH references in every row.  **Round-2
+correction (§11.7):** every region in this table mixes two pixel classes --
+the slab seen through both sheets (S) and the floor seen directly under it
+(F) -- and on F the integrators disagree by up to 3x among themselves
+because the open-sheet index-stack convention is non-reciprocal (DL-345).
+On S alone the references agree to 1-2 %, and glassblock's SMS reads
+~10-15 % LOW there with or without a matched vertex: SMS's own deficit on
+a displaced slab (DL-352), not VCM's.  The "0.98 / 1.00 of PT-without-SMS"
+readings in the Part C bullet above came from the F pixels in the
+rectangle.  The two
 references themselves disagree by 3-10 %; the residual whole-image gap is
 present, and larger, in the base build too.
 
@@ -894,7 +914,8 @@ only a fraction of the caustic (CLAUDE.md, "SMS seeding mode").  The
 and this one; `fabric_presets` differed only under parallel load (serial
 re-runs identical).
 
-**Cost.**  The round-0 figures (§11.4) were measured on scenes the change
+**Cost** (**superseded in round 2, §11.7 -- the "-0.04 %" below did not
+reproduce**).  The round-0 figures (§11.4) were measured on scenes the change
 never exercises; on the mover the reviewer measured `855ce136` at +4.66 %.
 Interleaved base / `855ce136` / final on shipped `sms_k2_flatslab` (200x150,
 32 spp), n = 10 per build, order alternated, user CPU: base 4.690 s,
