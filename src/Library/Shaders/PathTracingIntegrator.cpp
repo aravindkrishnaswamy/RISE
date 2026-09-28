@@ -1137,7 +1137,7 @@ namespace
 	//! DL-247: one sampler stream per volume-walk scatter event per
 	//! wavelength lane.  The function and its derivation live in
 	//! PathTransportUtilities.h (moved there by DL-283 so the stream-map
-	//! test, SobolDimensionBudgetTest Test G, enumerates the real layout).
+	//! test, SobolDimensionBudgetTest Test G2, enumerates the real layout).
 	using PathTransportUtilities::PTVolumeWalkStream;
 
 	// In-scattered radiance (NEE) at a medium scatter point.

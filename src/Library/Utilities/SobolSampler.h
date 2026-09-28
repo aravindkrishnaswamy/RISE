@@ -41,9 +41,9 @@
 //    counts 16..31) and BDPT/VCM's medium distance-sampling blocks
 //    (`BDPTUtilities::MediumDistanceStream`, 8192..139263, wraps
 //    32..543).  Every medium render therefore draws wrapped dimensions.
-//    Measured harmless: 0 % dyadic leading-digit collapse from 8 spp
-//    against the main-loop streams whose table rows they share
-//    (`SobolDimensionParityTest` section H).  Test G2 enumerates both
+//    Measured harmless by per-pixel variance at 8 spp (no worse than
+//    pre-DL-283; DL-81 doc section 9 -- ParityTest section H's collapse
+//    statistic is only a sanity floor).  Test G2 enumerates both
 //    families and asserts their wrap counts and collision-freedom.
 //
 //  Author: Aravind Krishnaswamy

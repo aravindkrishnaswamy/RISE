@@ -95,18 +95,24 @@
 //  the two means to agree:
 //                          Sobol/independent - 1     se      z
 //    pre-DL-283 (6b91fd19)      -0.599 %           0.119 %  -5.04   RED
-//    this slice, run 1          -0.048 %           0.118 %  -0.41
-//    this slice, run 2          +0.195 %           0.131 %  +1.49
-//  Band +/- 0.35% = 3 se (the pre-fix reading sits 2 se outside it; the
-//  fixed build's mean offset over four salted measurements, incl. the
-//  harness rows below, is about +0.06%).  Independent confirmation (salted, separate
+//    this slice, runs 1..4      -0.048 / +0.195 / +0.093 / -0.000 %
+//                               (se 0.108..0.132 %)
+//  Band +/- 0.35%.  The fixed build's four readings average +0.06% with
+//  a between-run sd of ~0.11%, so the band sits ~2.4 sd from its mean:
+//  an estimated FALSE-RED RATE of ~1% per run (0.8-1.5%).  The band is
+//  deliberately NOT widened -- the pre-fix reading clears it by only ~2
+//  se -- so the row is OPT-IN: run it with `--sampler-bias` (or
+//  RISE_MIOIT_ONLY_SAMPLER_ROW=1 for this row alone) nightly and whenever
+//  a change touches the BDPT/VCM medium walks, `MediumDistanceStream`,
+//  or SobolSampler's stream layout; the default run skips it.  A single
+//  red read is re-run once before being believed (the false-red rate
+//  above); two consecutive reds are a regression.  Independent confirmation (salted, separate
 //  harness, P = pre-fix, F = fixed, I = independent, same fixture):
 //  pel inside n = 24 P-I -0.806% (z -3.7), F-I +0.005%, F-P paired
 //  +0.818% (z +4.4); hwss TRUE inside n = 40 P-I -0.815% (z -5.1),
 //  F-I +0.103%, F-P +0.926% (z +5.2); pel camera OUTSIDE n = 24 P-I
-//  -0.250%, F-P +0.451% (z +2.4).  ~5.5 min of this test's runtime;
-//  RISE_MIOIT_SALTED_REPEATS overrides n, RISE_MIOIT_ONLY_SAMPLER_ROW=1
-//  runs this row alone.
+//  -0.250%, F-P +0.451% (z +2.4).  The row adds ~5.5 min;
+//  RISE_MIOIT_SALTED_REPEATS overrides n.
 //
 //  THE CAP ROWS.  `max_volume_bounce` N means, for every integrator, the
 //  Neumann series truncated at N medium-scatter vertices per full path,
@@ -518,7 +524,7 @@ static Stats CapRender( const std::string& kind, unsigned int cap, unsigned int 
 	return RenderStats( BoxScene( Rasterizer( kind, extra ), kCameraInside ), Repeats(), seedBase );
 }
 
-int main()
+int main( int argc, char** argv )
 {
 	std::cout << "=== MediumInsideOutsideInvariantTest (DL-247) ===" << std::endl;
 
@@ -532,8 +538,13 @@ int main()
 	// the header's DL-283 paragraph.
 	const double kBandSampler = 0.0035;
 
-	// RISE_MIOIT_ONLY_SAMPLER_ROW=1 runs just the DL-283 sampler-bias row
-	// (for measuring it; the gate runs everything).
+	// The DL-283 sampler-bias row is OPT-IN (header: ~1% false-red rate,
+	// ~5.5 min): `--sampler-bias` adds it to the run,
+	// RISE_MIOIT_ONLY_SAMPLER_ROW=1 runs it alone.
+	bool bSamplerBias = false;
+	for( int a = 1; a < argc; a++ ) {
+		if( std::string( argv[a] ) == "--sampler-bias" ) bSamplerBias = true;
+	}
 	if( std::getenv( "RISE_MIOIT_ONLY_SAMPLER_ROW" ) ) {
 		SamplerBiasRow( "BDPT pel black floor thin", kBandSampler, 9100u );
 		std::cout << std::endl << passCount << " passed, " << failCount << " failed" << std::endl;
@@ -554,8 +565,12 @@ int main()
 	InsideOutsideRow( "BDPT hwss TRUE het",       "bdpthwss", kBandHet, 8300u, kHeterogeneous );
 	InsideOutsideRow( "BDPT pel het black floor", "bdpt",     kBandHet, 8400u, kHeterogeneous, 0.0 );
 
-	std::cout << "Salted Sobol' vs independent sampler, same BDPT render (DL-283):" << std::endl;
-	SamplerBiasRow( "BDPT pel black floor thin", kBandSampler, 9100u );
+	if( bSamplerBias ) {
+		std::cout << "Salted Sobol' vs independent sampler, same BDPT render (DL-283):" << std::endl;
+		SamplerBiasRow( "BDPT pel black floor thin", kBandSampler, 9100u );
+	} else {
+		std::cout << "(DL-283 sampler-bias row skipped; opt in with --sampler-bias)" << std::endl;
+	}
 
 	std::cout << "Truncation parity at max_volume_bounce 2 (camera inside):" << std::endl;
 	const Stats ptCap   = CapRender( "pt",   2, 7600u );

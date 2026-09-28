@@ -63,7 +63,7 @@ namespace RISE
 	{
 		//////////////////////////////////////////////////////////////////////
 		// PTVolumeWalkStream (DL-247; moved here from PathTracingIntegrator.cpp
-		// by DL-283 so SobolDimensionBudgetTest Test G enumerates the real
+		// by DL-283 so SobolDimensionBudgetTest Test G2 enumerates the real
 		// layout instead of a copy of it).
 		//
 		// The sampler stream a PT volumetric random WALK draws scatter event
@@ -108,9 +108,9 @@ namespace RISE
 		// `32 * (event mod 256) + slot`, index Owen-permuted by the wrap
 		// count `16 + 4 * lane + event / 256` (DL-81).  Walk event k
 		// therefore shares its table rows with main-loop stream k -- at a
-		// different index block and value seed; the leading-digit collapse
-		// between the two is 0 % from 8 spp (SobolDimensionParityTest
-		// section H).  IndependentSampler ignores streams; PT is never
+		// different index block and value seed (harmless by the 8-spp
+		// per-pixel variance check, DL-81 doc section 9; ParityTest H's
+		// collapse is only a floor).  IndependentSampler ignores streams; PT is never
 		// driven by PSSMLTSampler (MLT runs BDPT).
 		//////////////////////////////////////////////////////////////////////
 		static const int kPTVolumeWalkStreamBase = 4096;

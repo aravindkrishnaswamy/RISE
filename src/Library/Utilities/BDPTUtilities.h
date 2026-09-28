@@ -69,7 +69,7 @@ namespace RISE
 		// strategy select 47, VCM NEE 49..3121 (48 + i, i >= 1), MLT film/lens 2048,
 		// thin-lens aperture 3322 -- and PT's own volume walks
 		// (`PTVolumeWalkStream`, 4096..8191) never share a sampler with
-		// these at all.  `tests/SobolDimensionBudgetTest.cpp` Test G
+		// these at all.  `tests/SobolDimensionBudgetTest.cpp` Test G2
 		// enumerates the whole map and asserts it is collision-free.
 		//
 		// Every block lies past SobolSampler's 8192-dimension table, so

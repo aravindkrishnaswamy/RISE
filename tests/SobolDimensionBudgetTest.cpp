@@ -1413,7 +1413,8 @@ struct StreamAuditTally
 {
 	unsigned long long samples = 0, vertexOverruns = 0, badBlockDraws = 0,
 		sameWalkRepeats = 0, crossWalkRepeats = 0, mediumSamples = 0,
-		lightMediumSamples = 0, lightDraws = 0, samplesWithSharedDims = 0;
+		lightMediumSamples = 0, lightDraws = 0, samplesWithSharedDims = 0,
+		mediumSamplesOver32 = 0;
 	unsigned int maxVertexDraws = 0, maxBlockDraws = 0;
 };
 
@@ -1434,6 +1435,7 @@ static void AuditOneSample( const StreamAuditSobol& s, size_t lightEnd, StreamAu
 			if( ps.first >= BDPTUtilities::MediumDistanceStream( BDPTUtilities::eLightWalk, 0 ) )
 				t.lightMediumSamples++;
 			if( ps.second > t.maxBlockDraws ) t.maxBlockDraws = ps.second;
+			if( ps.second > SobolSampler::kStreamStride ) t.mediumSamplesOver32++;
 			if( ( ps.first - base ) % per != 0 || ps.first >= BDPTUtilities::kMediumDistanceStreamEnd ||
 				ps.second > IMedium::kMaxSampleDistanceDraws ) t.badBlockDraws++;
 		}
@@ -1537,7 +1539,10 @@ static void TestMediumDistanceStreamAudit()
 			}
 			std::cout << "  " << ( het ? "heterogeneous" : "homogeneous  " ) << ( nm ? " NM " : " Pel" )
 				<< ": " << t.samples << " samples, " << t.mediumSamples << " distance samples, "
-				<< "max draws per distance sample " << t.maxBlockDraws
+				<< "max draws per distance sample " << t.maxBlockDraws << " ("
+				<< std::fixed << std::setprecision( 1 )
+				<< ( t.mediumSamples ? 100.0 * double( t.mediumSamplesOver32 ) / double( t.mediumSamples ) : 0.0 )
+				<< std::defaultfloat << "% of them past 32 draws, i.e. would overrun a vertex stream on their own)"
 				<< ", max per vertex stream " << t.maxVertexDraws
 				<< ", vertex overruns " << t.vertexOverruns
 				<< ", misplaced block draws " << t.badBlockDraws
@@ -1558,8 +1563,10 @@ static void TestMediumDistanceStreamAudit()
 			}
 			if( t.mediumSamples == 0 ) ok = false;
 			if( t.lightMediumSamples == 0 || t.lightDraws == 0 ) {
-				std::cerr << "  FAIL: the LIGHT walk drew nothing / sampled no medium distance -- "
-					<< "the audit would be blind to the light-walk half of the fix.\n";
+				std::cerr << "  FAIL: the light walk drew nothing, or drew no medium distance sample "
+					<< "from a LIGHT-walk block (" << t.lightDraws << " light-walk draws, "
+					<< t.lightMediumSamples << " light-block distance samples) -- either the walk "
+					<< "did not run or its distance samples are still on the vertex streams.\n";
 				ok = false;
 			}
 			if( het && std::max( t.maxBlockDraws, t.maxVertexDraws ) <= SobolSampler::kStreamStride ) {

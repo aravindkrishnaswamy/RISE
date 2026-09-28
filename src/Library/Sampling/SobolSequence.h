@@ -314,7 +314,7 @@ namespace RISE
 		//! -- `vcm_pel_rasterizer`, `max_eye_depth 128`, default
 		//! `max_volume_bounce 64` -- giving 192 iterations and so a
 		//! highest stream of 48 + 192 + 1 = 241, inside 256.
-		//! `SobolDimensionBudgetTest` Test G recomputes that bound from
+		//! `SobolDimensionBudgetTest` Test G1 recomputes that bound from
 		//! the scene files themselves, so a scene that raises a depth
 		//! past the table turns the test red.
 		//!
@@ -335,9 +335,9 @@ namespace RISE
 		//! BDPT/VCM medium distance-sampling blocks
 		//! (`BDPTUtilities::MediumDistanceStream`, 8192..139263, wraps
 		//! 32..543).  They share table rows with main-loop streams at a
-		//! different index permutation and value seed; the measured
-		//! dyadic leading-digit collapse against those streams is 0 %
-		//! from 8 spp (`SobolDimensionParityTest` section H).
+		//! different index permutation and value seed.  Evidence they are
+		//! harmless: 8-spp per-pixel variance no worse than pre-DL-283
+		//! (DL-81 doc section 9; ParityTest H's collapse is only a floor).
 		//! `SobolDimensionBudgetTest` Test G2 enumerates both families.
 		//!
 		//! Cost: 8192 * 32 * 4 = 1 MiB of expanded table, built once
@@ -590,9 +590,9 @@ namespace RISE
 		// not a joint net, which is why `kNumDimensions` is sized to
 		// keep every shipped scene's PER-VERTEX streams off this path.
 		// The medium-walk streams (PT's `PTVolumeWalkStream`, BDPT's
-		// `MediumDistanceStream`) live on it by design (DL-283); their
-		// leading-digit collapse against the rows they share is 0 %
-		// from 8 spp (SobolDimensionParityTest section H).
+		// `MediumDistanceStream`) live on it by design (DL-283); evidence
+		// they are harmless is the 8-spp per-pixel variance check in the
+		// DL-81 doc section 9 (ParityTest H's collapse is only a floor).
 		//
 		// sampleIndex: which sample in the sequence (0, 1, 2, ...)
 		// dimension:   which dimension (0, 1, 2, 3, ...)
