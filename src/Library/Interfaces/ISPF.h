@@ -381,12 +381,16 @@ namespace RISE
 		/// the aggregate BSDF use this pairing (CoatedSPF / FabricSPF /
 		/// WeaveSPF and the single-emit GGXSPF / CookTorranceSPF).
 		/// A per-lobe conditional density can instead mispair that summed
-		/// response. CompositeSPF (DL-221, narrowed by DL-24): a ray its
-		/// layered EVALUATOR prices is reconstructed exactly (`EvaluateLobeFNM`
-		/// / `EvaluateKrayNM`), but a ray its WALKER emits (delta-tagged: a
-		/// bottom exit, a from-below entry, a null-BSDF layer) is one
-		/// realization of a stochastic walk and cannot be recovered from
-		/// these arguments, so it still declines there. TranslucentSPF now evaluates its normal entry/exit
+		/// response. CompositeSPF (DL-221, narrowed by DL-24): when its top
+		/// declares `SelectionMassIsDeterministic`, a ray its layered
+		/// EVALUATOR prices is reconstructed (`EvaluateLobeFNM` /
+		/// `EvaluateKrayNM`), and so is the top's direct delta REFLECTION
+		/// (matched by type: a walker ray leaves the top from inside the
+		/// stack, so it is always a transmission).  A ray its WALKER emits
+		/// (delta-tagged: a bottom exit, a from-below entry, a null-BSDF
+		/// layer, an all-delta chain) is one realization of a stochastic
+		/// walk and cannot be recovered from these arguments, so it
+		/// declines; so does every ray of a PER-BRANCH composite. TranslucentSPF now evaluates its normal entry/exit
 		/// lobes (DL-222 closed), but retains a diagnostic identity for
 		/// unsupported lobe types. Overriding this method keeps any such
 		/// fallback visible instead of silently taking a wrong number.

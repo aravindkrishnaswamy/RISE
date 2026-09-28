@@ -2,7 +2,9 @@
 
 Slice `debt-dl24`, branched from `master` `5c9eeb96`, 2026-09-28.
 Ledger row: [DEBT_LEDGER.md](DEBT_LEDGER.md) DL-24.  Residuals opened:
-DL-296, DL-297.  Related rows: DL-221 (narrowed here, still open), DL-67
+DL-296, DL-297.  An external review round (FAIL: 2 P1, 3 P2) was addressed
+the same day; its fixes and the corrected numbers are in section 7, and
+the sections below are updated to the post-review state.  Related rows: DL-221 (narrowed here, still open), DL-67
 (its "placeholder `CompositeSPF::Pdf`" residual is resolved here), DL-285
 (polished bottom, unchanged).
 
@@ -59,8 +61,12 @@ comment in [CompositeSPF.h](../src/Library/Materials/CompositeSPF.h) is
 the authoritative description; this section summarises it.
 
 * **DIRECT.**  The top layer's own up-going lobes.  Scatter draws them by
-  a conditional selection of the top's natural rule.  They are weighted
-  `w1 = Qup`, so `w1 * conditional == top.Pdf` exactly.
+  a conditional selection of the top's natural rule.  When the top
+  DECLARES a deterministic up/down split
+  (`ISPF::SelectionMassIsDeterministic`: dielectric, perfect
+  reflector/refractor, translucent) they are weighted `w1 = Qup`, so
+  `w1 * conditional == top.Pdf` exactly (AGGREGATE mode).  Every other top
+  runs PER-BRANCH mode (section 7, P1-1).
 * **COVERED.**  Transport that enters through the top, reaches the bottom
   and leaves through the top in one of two ways: (a) a delta refraction
   after an evaluable bottom event, or (b) a non-delta exit through a top
@@ -70,9 +76,14 @@ the authoritative description; this section summarises it.
   requested exit through the top's delta refraction (term a: bottom BSDF
   at the internal direction, the top's delta transmission kray, gap
   attenuation, `1/eta^2`).  At every top visit it evaluates the top's exit
-  BSDF (term b).  The walk is seeded by a hash (PCG32 + SplitMix64) of the
-  quantised incoming direction, outgoing direction and position.  So
-  `value(w)` is a DETERMINISTIC function of its arguments.  COVERED
+  BSDF (term b).  The walk is drawn ONCE per (incoming direction,
+  position) from a hash-seeded PCG32 stream and recorded; each exit query
+  re-evaluates only the two connection terms, term (a)'s top transmission
+  drawn from a second stream seeded by (incoming, outgoing, position)
+  (section 7, P2-3).  So `value(w)` is a deterministic function of its
+  arguments -- but it is ONE Monte-Carlo estimate per query, not the
+  closed form: per-evaluation relative sd ~0.80 for a smooth coat over
+  white, ~0.39 over red with an absorbing gap (section 3.2).  COVERED
   directions are sampled from a known mixture: a cosine hemisphere
   (`w2`), and the bottom's own sampler at the outer record (`w3`,
   CoatedSPF's substrate proposal).
@@ -151,15 +162,18 @@ targets were rebuilt, the tests were run, and the files were restored with
 
 The top is lossless and the bottom is an albedo-1 Lambertian, so the
 truth is rho == 1.  Each cell is the mean ± sd of 8 batch means ×
-20 000 draws; the gate is |rho − 1| ≤ max(5 sem, 0.01).
+20 000 draws; the gate is |rho − 1| ≤ max(5 sem, 0.01).  Since the review
+the shading POSITION moves every draw: the evaluator draws one walk per
+(incoming direction, position), so it is unbiased averaged over positions,
+and a fixed-position furnace would read one walk realisation.
 
-| config | pre-fix 0 / 30 / 60 / 80 deg | post-fix RGB | post-fix NM 550 |
+| configuration | pre-fix 0 / 30 / 60 / 80 deg | post-fix RGB | post-fix NM 550 |
 |---|---|---|---|
-| A1 diel(scat 0)/white, 4/2/2/2/2 (config 3) | 0.4258±.0035 / 0.4275±.0030 / 0.4585±.0029 / 0.6339±.0020 | 1.0005±.0045 / 1.0005±.0055 / 1.0032±.0066 / 0.9989±.0051 | 1.0008±.0046 / 0.9982±.0055 / 1.0030±.0065 / 0.9988±.0047 |
+| A1 diel(scat 0)/white, 4/2/2/2/2 (config 3) | 0.4258±.0035 / 0.4275±.0030 / 0.4585±.0029 / 0.6339±.0020 | 1.0020±.0066 / 1.0026±.0052 / 0.9985±.0070 / 0.9982±.0065 | 1.0022±.0061 / 1.0007±.0051 / 0.9985±.0070 / 0.9982±.0065 |
 | A2 diel(scat 1e4)/white, 3/3 (parser default) | same as A1 | same as A1 | same as A1 |
-| A3 diel(scat 1e4)/white, 5/3, t=0.5 (shipped budgets) | 0.4266±.0018 / 0.4302±.0031 / 0.4571±.0028 / 0.6347±.0023 | 1.0000±.0058 / 0.9969±.0042 / 1.0014±.0042 / 0.9976±.0073 | 0.9999±.0061 / 0.9984±.0045 / 1.0010±.0040 / 0.9975±.0071 |
-| A4 water(1.33)/white, 3/3 | 0.5360±.0041 / 0.5360±.0036 / 0.5573±.0043 / 0.6903±.0023 | 0.9993±.0063 / 0.9994±.0051 / 1.0017±.0051 / 1.0014±.0046 | 0.9993±.0061 / 0.9997±.0051 / 1.0015±.0048 / 1.0017±.0047 |
-| control `coated_material` (ior 1.5, rough 0.001)/white | 1.0001 / 1.0002 / 1.0004 / 1.0000 (±≤.0010), both builds | | |
+| A3 diel(scat 1e4)/white, 5/3, t=0.5 (shipped budgets) | 0.4266±.0018 / 0.4302±.0031 / 0.4571±.0028 / 0.6347±.0023 | 1.0012±.0059 / 1.0055±.0047 / 1.0010±.0069 / 0.9996±.0081 | 1.0012±.0058 / 1.0022±.0070 / 1.0006±.0066 / 0.9993±.0081 |
+| A4 water(1.33)/white, 3/3 | 0.5360±.0041 / 0.5360±.0036 / 0.5573±.0043 / 0.6903±.0023 | 0.9993±.0073 / 0.9999±.0031 / 1.0003±.0042 / 0.9995±.0053 | 0.9993±.0072 / 1.0000±.0030 / 1.0004±.0040 / 0.9995±.0054 |
+| control `coated_material` (ior 1.5, rough 0.001)/white | ~1.000 | 0.9998 / 1.0001 / 1.0001 / 1.0001 (±≤.0011) | |
 
 A1 equals A2 bit for bit post-fix because the evaluator treats the top's
 delta transmission as ideal Snell whatever its `scattering` is.  That is
@@ -169,7 +183,9 @@ Section A is **production transport**, so it is gated in
 `LayeredWhiteFurnaceTest` too.  Config 3 was pinned at the truncated
 {0.4271, …} and now reads **1.0000** at kPosturePass (band 0.01).  Two new
 material-path rows, configs 58 (config 3 through `CompositeMaterial`) and
-59 (water, t=0.5), read 1.0000 in a 0.02 band.  The suite reads **0 of 60
+59 (water, t=0.5), read {0.9972, 1.0039, 0.9961, 1.0002} and
+{0.9991, 1.0005, 1.0009, 1.0027} in a 0.02 band -- position-jittered, the
+only rows in that suite that move the shading point.  The suite reads **0 of 60
 configurations failed**; the red-proof on base is 3 of 60.
 
 ### 3.2 Closed-form value (section G)
@@ -180,9 +196,18 @@ For a smooth coat over a Lambertian with an absorbing gap:
 
 Here `a` is the slant gap attenuation and `E_ret` is the internal
 diffuse-return reflectance.  `value` matches this at five
-`(theta_i, theta_o)` pairs, white and red, per channel, to within 1 sd of
-the 120 000-sample mean.  For example, red channel 0 at (0,0) reads
-0.077926 ± 0.000382 against 0.078517.
+`(theta_i, theta_o)` pairs, white and red, per channel, inside the test's
+band of max(4 sem, 0.4 %).  (An earlier revision of this sentence said
+"within 1 sd"; the worst rows were 1.55 and 1.47 sem off.)  After the
+review the sample count is 24 000 per pair and every row prints its
+distance in sem: the largest is 2.6 sem (the white rows' per-evaluation
+distribution is heavy-tailed, so their sem is itself noisy; a 60 000-sample
+check of the worst row read 1.3 sem), and red channel 0 at (0,0) reads
+0.078546 against 0.078517 (0.15 sem).  The same rows print the
+per-evaluation relative sd -- ~0.8-0.96 for G1 (white), ~0.39-0.46 for G2
+red channel 0 -- which is the noise one `value` query carries into an NEE
+sample or a BDPT connection.  The MIS partition is not affected by it:
+only the exact `Pdf` enters the weights.
 
 ### 3.3 Density (section B, theta 30)
 
@@ -202,24 +227,27 @@ FAILED.
 
 * **D1, environment white furnace.**  A composite quad and a Lambertian
   control quad sit under the same environment.  PT composite read 0.835
-  pre-fix and **1.0026** post-fix; the control reads 1.0021.  BDPT has a
-  known env-only bias of ~+22 % (identical on the control), so it is gated
-  on the ratio: 1.117 pre-fix → **1.0052**.
+  pre-fix and **0.9990** post-review (1.0026 before it); the control reads
+  1.0021.  BDPT has a known env-only bias of ~+22 % (identical on the
+  control), so it is gated on the ratio: 1.117 pre-fix → **0.9922**
+  (1.0052 before the review).  Both inside the 2 % gate; run-to-run noise
+  of this 32×32 render is about ±0.6 %.
 * **D2, directional light.**  The composite/control ratio must equal the
   smooth-coat closed form `T(v) T(l) / (eta^2 (1 - r_i))`:
 
   | theta_l | pre-fix PT / BDPT | post-fix PT / BDPT | closed form |
   |---|---|---|---|
-  | 0 | 1.0000 / 1.0000 | 1.0227 / 1.0243 | 1.0147 |
-  | 60 | 1.0000 / 1.0000 | 0.9665 / 0.9662 | 0.9627 |
-  | 80 | 1.0000 / 1.0000 | 0.6456 / 0.6445 | 0.6472 |
+  | 0 | 1.0000 / 1.0000 | 1.0083 / 1.0176 | 1.0147 |
+  | 60 | 1.0000 / 1.0000 | 0.9714 / 0.9596 | 0.9627 |
+  | 80 | 1.0000 / 1.0000 | 0.6513 / 0.6492 | 0.6472 |
 
   The pre-fix ratio was exactly 1 because NEE priced the bare substrate.
-* **`BDPTStrategyBalanceTest` topology Q.**  A clear coat with extinction
+* **`BDPTStrategyBalanceTest` topology S** (lettered Q before the review;
+  a concurrent slice owns Q/R).  A clear coat with extinction
   (0.2, 0.5, 2.0) and t = 0.1 over red, plus a translucent-over-gold
-  floor, lit by an area emitter.  PT and BDPT agree to ~0.5 %.  Topology Q
-  is a consistency pin, not a red-proof: base also passes at ~0.25 %,
-  because both integrators shared the same wrong model.
+  floor, lit by an area emitter.  PT and BDPT agree to ~0.5 %.  It is a
+  consistency pin, not a red-proof: base also passes at ~0.25 %, because
+  both integrators shared the same wrong model.
 
 ### 3.5 HWSS / DL-221 (section E, `HWSSCompanionKrayTest` section D)
 
@@ -229,7 +257,12 @@ reconstructed from `(ri, dir, nm)`:
 * `EvaluateLobeFNM` returns the aggregate layered `valueNM`.
 * The 6-argument `EvaluateKrayNM` equals `valueNM(nm) cos / pdfHero`.
 * The 5-argument form reconstructs the top's DIRECT delta reflection by
-  re-probing the top at `nm`.
+  re-probing the top at `nm` -- in AGGREGATE mode only, and only for an
+  `eRayReflection`-typed ray matched to a reflection-typed top lobe
+  (section 7, P1-2).  Exact for a non-dispersive top; for a DISPERSIVE
+  top it returns `kray_nm / q_nm` where the right weight is
+  `kray_nm / q_hero`, which the method cannot form (the hero wavelength is
+  not an argument), so it is approximate there.
 
 The count is 3627 reconstructed, 0 declined, 0 mismatches.  Over a
 chromatic bottom the companion weight really moves with `nm`, which was
@@ -239,8 +272,14 @@ the row's own "divergent spectra" premise.  `HWSSCompanionKrayTest` reads
 **DL-221 verdict: narrowed, not closable.**  A WALKER-emitted ray is one
 realisation of a stochastic walk: a bottom exit, a from-below entry, a
 null-BSDF layer, or an all-delta chain.  It cannot be recovered from the
-`EvaluateKrayNM` arguments, so it still declines and names itself.  An
-SPF-only composite (no layer BSDFs) still declines everywhere.  For the
+`EvaluateKrayNM` arguments, so it declines and names itself.  (The first
+revision of this section claimed that and was WRONG: an all-delta walker
+path leaves the top exactly along the entry's mirror direction, so the
+5-argument form matched it as a direct reflection and returned a wrong
+number -- 7 366 of 15 709 up-going rays on grey glass/glass, worst
+relative error 7.34.  Fixed by type, section 7 P1-2; the walker exits now
+decline, 0 mismatches.)  PER-BRANCH composites and SPF-only composites (no
+layer BSDFs) decline everywhere.  For the
 coat-over-diffuse regime, WALKER emissions are rare.  After an evaluable
 bottom the walker's top exits are COVERED and are not emitted, so most
 composite vertices now reconstruct exactly.
@@ -250,13 +289,23 @@ composite vertices now reconstruct exactly.
 | class | pre-fix 0 / 60 deg | post-fix 0 / 60 deg | note |
 |---|---|---|---|
 | F1 dielectric / dielectric | 0.9985 / 0.9965 | 1.0000 / 1.0000 | walker, gated |
-| F2 dielectric / composite(dielectric/white) (`mat_double_composite` shape) | 0.2359 / 0.2749 | 0.9922 / 0.9985 | delta bottom lobe → walker, gated |
-| F2b dielectric / polished(white) | 0.4502 / 0.4766 | 1.1020 / 1.0749 | RECORD ONLY: DL-285, `polished_material::GetBSDF()` is the bare Lambertian |
-| F3 lossless translucent / white | 1.0000 / 1.0000 | 0.9989 / 1.0006 | gated |
-| F4 translucent / red (`mat_wax_gold` class) | 0.5800 / 0.5800 | 0.7678 / 0.7663 | absorbing, not gated; post-fix includes the whole interreflection series |
-| F5 dielectric / translucent (transmitting bottom) | 0.8283 / 0.8368 | 1.0016 / 0.9983 | bottom exits via walker, gated |
-| F6 clearcoat GGX / red GGX (config 7) | 0.0389 / 0.0655 | 0.0389 / 0.0654 | unchanged: `GGXSPF` emits no downward lobe, so the substrate is never reached; `coated_material` is the answer |
+| F2 dielectric / composite(dielectric/white) (`mat_double_composite` shape) | 0.2359 / 0.2749 | 1.0001 / 0.9947 | delta bottom lobe → walker, gated |
+| F2b dielectric / polished(white) | 0.4502 / 0.4766 | 1.1098 / 1.0724 | KNOWN-DEFECT PIN [1.05, 1.15]: DL-285, `polished_material::GetBSDF()` is the bare Lambertian |
+| F3 lossless translucent / white | 1.0000 / 1.0000 | 1.0009 / 0.9992 | gated |
+| F4 translucent / red (`mat_wax_gold` class) | 0.5800 / 0.5800 | 0.7683 / 0.7658 | absorbing, not gated; post-fix includes the whole interreflection series |
+| F5 dielectric / translucent (transmitting bottom) | 0.8283 / 0.8368 | 0.9927 / 0.9989 | bottom exits via walker, gated |
+| F6 clearcoat GGX / red GGX (config 7) | 0.0389 / 0.0655 | 0.0389 / 0.0656 | unchanged: `GGXSPF` emits no downward lobe, so the substrate is never reached; `coated_material` is the answer |
 | F7 dielectric / generic_human_tissue (null bottom BSDF) | 1.0000 / 0.9172 | 1.0000 / 1.0000 | DL-126 composition |
+
+Section H (added by the review) puts STOCHASTIC layers on TOP, with the
+position jittered every draw; truth 1 for the lossless rows:
+
+| class | pre-review `c03807a2` 0 / 60 deg | post-review 0 / 60 deg (mean ± sem) | note |
+|---|---|---|---|
+| H1 generic_human_tissue / white | 0.9985 / **0.6212** | 0.9999 ± .0041 / 0.9939 ± .0112 | gated |
+| H2 composite{dielectric / lossless translucent} / white | **0.9418 / 0.9351** | 1.0030 ± .0063 / 0.9969 ± .0050 | gated |
+| H3 composite{dielectric / dielectric} / white | 0.3811 / 0.3530 | 0.4785 ± .0026 / 0.5108 ± .0043 | KNOWN RESIDUAL, pinned [0.40, 0.62] (section 5) |
+| H4 composite{dielectric / dielectric} struck from inside | 1.0000 (20 deg) / 0.0868 (35 deg) | same | KNOWN RESIDUAL, pinned [0.04, 0.20] at 35 deg; base `5c9eeb96` reads the same 0.086 |
 
 `CompositeExtinctionTest` bands were calibrated to the truncated walk.
 They were replaced by a closed-form interreflection series
@@ -269,19 +318,25 @@ They were replaced by a closed-form interreflection series
 `scenes/Tests/Materials/composite_material.RISEscene` is the only shipped
 scene that binds `composite_material`.  Render setup: 512×288, 64 spp,
 `oidn_denoise FALSE`, linear EXR.  Two separately built binaries (base
-`5c9eeb96`; fix `e761daa8`), n = 5 interleaved.  Luminance mean (sd):
+`5c9eeb96`; fix = this branch after the review), n = 5 interleaved.
+Luminance mean (sd):
 
 | region | base | fix | delta |
 |---|---|---|---|
-| clearcoat red sphere | 0.19582 (0.00004) | 0.15794 (0.00010) | −19.35 % |
-| amber red box (extinction) | 0.22678 (0.00008) | 0.07504 (0.00026) | −66.91 % |
-| white ellipsoid, blue extinction 0.2/0.5/6.0 | 0.76837 (0.00059) | 0.18732 (0.00047) | −75.62 %, now warm orange (0.33, 0.16, 0.04) |
-| wax over gold torus | 1.02212 (0.00041) | 1.00023 (0.00037) | −2.14 % |
-| glass over emissive sphere | 8.82924 (0.00035) | 8.44167 (0.00044) | −4.39 % |
-| double composite cylinder | 0.46448 (0.00031) | 0.22700 (0.00024) | −51.13 % |
-| floor (control) | 0.79222 (0.00009) | 0.78604 (0.00004) | −0.78 % |
-| back wall (control) | 0.51945 (0.00018) | 0.51614 (0.00012) | −0.64 % |
-| whole image | 1.04700 (0.00007) | 1.00474 (0.00010) | −4.04 % |
+| clearcoat red sphere | 0.19579 (0.00005) | 0.15788 (0.00012) | −19.36 % |
+| amber red box (extinction) | 0.22677 (0.00007) | 0.07526 (0.00024) | −66.81 % |
+| white ellipsoid, blue extinction 0.2/0.5/6.0 | 0.76850 (0.00065) | 0.18706 (0.00059) | −75.66 %, now warm orange (0.33, 0.16, 0.04) |
+| wax over gold torus | 1.02242 (0.00025) | 0.99986 (0.00065) | −2.21 % |
+| glass over emissive sphere | 8.82884 (0.00041) | 8.44115 (0.00043) | −4.39 % |
+| double composite cylinder | 0.46479 (0.00033) | 0.22674 (0.00017) | −51.22 % |
+| floor (control) | 0.79227 (0.00004) | 0.78606 (0.00008) | −0.78 % |
+| back wall (control) | 0.51950 (0.00011) | 0.51612 (0.00012) | −0.65 % |
+| whole image | 1.04697 (0.00003) | 1.00471 (0.00007) | −4.04 % |
+
+The pre-review build read the same deltas to within 0.1 % per region
+(e.g. whole image −4.04 %, wax/gold −2.14 %): the review's changes do not
+move this scene's means.  The reviewer's independent masks read the same
+whole-image −4.04 %.
 
 Composites DARKEN overall, even though the walk now conserves energy.
 Pre-fix NEE priced the bare substrate.  It ignored the coat's Fresnel
@@ -293,11 +348,14 @@ proof that the new NEE value is right.
 
 ### 3.8 Cost
 
-**Shipped scene, whole-render user CPU**, n = 5 interleaved:
+**Shipped scene, whole-render user CPU**, n = 5 interleaved, 512×288,
+64 spp:
 
-* base: 66.80 ± 0.50 s
-* fix: 90.47 ± 1.85 s — **+35.4 %**
-* wall clock: 8.14 s → 11.13 s
+* before the review: base 66.80 ± 0.50 s, fix 90.47 ± 1.85 s — **+35.4 %**
+  (the reviewer re-measured +40.7 %, 72.91 ± 3.32 → 102.56 ± 3.20 s; the
+  two agree within noise, so quote **+35..41 %** for that build).
+* after the review (walk recorded once per shading point, section 7
+  P2-3): base 67.23 ± 1.25 s, fix 82.96 ± 4.20 s — **+23.4 %**.
 
 The scene is composite-dominated: 6 of its 8 objects are composites.  A
 scene with one composite pays proportionally less.
@@ -309,11 +367,14 @@ scene with one composite pays proportionally less.
 * `value`: 0.9–1.1 µs
 * double composite: 9.5 / 3.1 / 6.3 µs
 
-The render cost is dominated by the evaluator walk that each NEE light
-sample runs (the scene has 3 lights).  Two optimisations are in place: the
-probe cache, and one reused layer record per walk.  Caching the walk
-itself across a vertex's NEE samples was considered but not implemented;
-the walk depends on the exit direction.
+Before the review the render cost was dominated by the evaluator walk
+that each NEE light sample ran (the scene has 3 lights).  Three
+optimisations are now in place: the probe cache, one reused layer record
+per walk, and (since the review) the walk itself, drawn once per
+(incoming direction, position) and shared by the emitted ray, every NEE
+sample and every connection at that point.  What remains is one top
+scatter per exit query (term (a)'s transmission), the BSDF evaluations
+along the recorded walk, and the mixture `Pdf`.
 
 ## 4. Gates (this slice's final state)
 
@@ -321,13 +382,13 @@ The clean library rebuild and every test target built had **0 warnings**.
 
 | suite | post-fix | base (red) |
 |---|---|---|
-| CompositeEnergyConservationTest (new) | 116/0 | 34/82 |
+| CompositeEnergyConservationTest (new) | 128/0 | 34/82 on `5c9eeb96` (116-check revision); 121/7 on `c03807a2` for the review rows (E2 2, H1 1, H2 2, H3 pin 2) |
 | LayeredWhiteFurnaceTest | 0 of 60 failed | 3 of 60 |
 | CompositeExtinctionTest | all pass | 5 FAIL |
 | SPFPdfConsistencyTest | all pass | 12 FAILED |
 | HWSSCompanionKrayTest | 193/0 | 190/3 |
 | TranslucentLobeConsistencyTest | 1226/0 | 1222/4 (gate 6 re-ruled) |
-| BDPTStrategyBalanceTest (full) | 215/0 | topology Q passes on base too |
+| BDPTStrategyBalanceTest (full) | 215/0 | topology S passes on base too |
 | PTGuidingMISPartitionTest | 185/0 | — |
 | BDPTGuidedContinuationTest | 164/0 | — |
 | SPFBSDFConsistencyTest | pass | — |
@@ -335,7 +396,7 @@ The clean library rebuild and every test target built had **0 warnings**.
 | CstDeriveGoldenTest | 454 MATCH, 0 DRIFT | — |
 | SourceHygieneTest | 167/0 | — |
 | SSSRadianceScalingTest | 576220/0 | (base 576220/0) |
-| RefractiveRadianceScalingTest | 40/1 | row C, the known pre-existing regression; base 40/1 |
+| RefractiveRadianceScalingTest | 40/1 | row C, the known pre-existing regression (DL-308); base 40/1 |
 | ConnectionLegality / AgentMakeFabric / ReferenceGraph / SceneEditTransaction / LightBVH | 319/0, 273/0, 375/0, 274/0, 20/0 | — |
 
 ## 5. Residuals
@@ -360,15 +421,45 @@ The clean library rebuild and every test target built had **0 warnings**.
   | scat 0, walker-only (follows the warp) | 0.123 / 0.136 / 0.150 / 0.167 / 0.185 / 0.239 |
   | scat 1e4 (the parser default) | evaluator and walker agree within noise |
 
-* **DL-285** (polished bottom) and **config 7 / F6** (reflection-only GGX
-  top) are unchanged.  So is the RefractiveRadianceScalingTest row C
-  regression.
+* **Nested composites walked FROM BELOW (no id free; recorded in the DL-24
+  row for the supervisor to file).**  The two-stack convention
+  (`EvalStack`: a down-going ray sees `outside`, an up-going one `gap`) is
+  defined for walks entered from ABOVE.  A walk entered from below is
+  handed the medium BELOW the stack as `outside`, and the from-below loop
+  never refreshes `gap` after a bottom-layer event.  With two dielectric
+  layers sharing one object key (a composite{dielectric/dielectric}) and a
+  stack that already holds that key, each layer then reads the other's
+  side: the ray is total-internally-reflected between them without end,
+  and the energy is dropped at the 256-event cap (whose warning now says
+  so).  Reached two ways: a composite{dielectric/dielectric} used as
+  another composite's TOP (H3: 0.48 / 0.51 at 0 / 60 deg, truth 1), and a
+  transmitting composite{dielectric/dielectric} on a closed object seen
+  from inside (H4: 0.087 at 35 deg; 1.0 below ~30 deg, 1.0 by genuine TIR
+  above ~42 deg).  Pre-existing: the base reads the same 0.086 for H4 and
+  0.236 / 0.275 for H3.  Both are pinned.  A contained fix was not found:
+  updating `gap` on the upward bottom crossing alone stops the endless
+  loop but leaves the down-going return reading the wrong side; the real
+  fix is a from-below stack convention for the whole walk.  The evaluator
+  inherits the same fault for H3 (its term (a) applies the 1/eta^2 of a
+  refraction the nested top never performs).
+* **Probe/walk cache key** holds the IOR stack's top and
+  `containsCurrent()`, not its deeper entries.  Two queries at the same
+  point, direction and top but a different deeper stack would share a
+  probe.  Not reachable from any walk in the tree today (a composite's
+  sub-SPFs read only the top and the object membership); recorded.
+* **Dispersive tops, 5-argument `EvaluateKrayNM`**: approximate (section
+  3.5), part of DL-221.
+* **DL-285** (polished bottom, now PINNED in [1.05, 1.15]) and **config 7 /
+  F6** (reflection-only GGX top) are unchanged.  So is the
+  RefractiveRadianceScalingTest row C regression (DL-308).
 * **Premise note for DL-67.**  A composite now satisfies DL-67's premise
   2: its `IBSDF::value` and its kray describe one function for every
   non-delta ray.  Its WALKER rays are delta-tagged, and the guided
   continuation prices those at `W_b = 1`.
 
 ## 6. `add_wetness`
+
+(Section 7's cost figure does not change this ruling.)
 
 The route-around in WETNESS_COAT_DESIGN.md §4(a) / §12 item 2 is no
 longer *necessary*: coat-over-diffuse now conserves energy, NEE sees the
@@ -379,3 +470,80 @@ variance, and has its own furnace/HWSS guards.  `composite_material`
 also loses a finite-`scattering` coat's blur (DL-297).
 `composite_material` is now a valid general two-layer stack; wetness is
 the coat case `coated_material` was built for.
+
+## 7. Review round 1 (2026-09-28): FAIL, 2 P1, 3 P2 -- all addressed
+
+An independent reviewer reproduced the diagnosis (exit + dropped =
+1.0000; 0.4277 + 0.5723 at normal incidence against an analytic 0.5725),
+every claimed red/green, the appearance deltas and the pointwise
+`kray * Pdf == value * cos`, and found:
+
+* **P1-1 -- the "is the top deterministic?" probe was itself stochastic.**
+  It compared two hashed draws of the top's up/down selection mass (one
+  draw with itself when the top had no BSDF).  For a SINGLE-EMIT
+  stochastic top -- a nested composite (which emits at most one ray),
+  `generic_human_tissue`, a thin weave -- one draw's mass is exactly 0 or
+  1, the draws agree at least half the time, and AGGREGATE mode then gave
+  the DIRECT branch or every down branch probability zero at that shading
+  point.  Every furnace in the suite used one fixed intersection, so one
+  hashed probe, and could not see it.  **Fix:** determinism is DECLARED,
+  never inferred -- new `ISPF::SelectionMassIsDeterministic()` (default
+  false, documented contract), true only for `DielectricSPF`,
+  `PerfectReflectorSPF`, `PerfectRefractorSPF` and `TranslucentSPF`
+  (checked: none drops a lobe at random or carries a direction-dependent
+  realised weight).  Every other top runs PER-BRANCH mode, unbiased for
+  any positive floored weights; `Pdf` is then an MIS partner, not the
+  exact density, and the companion-weight methods decline there.
+  Lambertian is deliberately NOT declared: under a tilted shading normal
+  its horizon gate drops the lobe at random.  Red -> green (section H,
+  position-jittered): tissue/white at 60 deg 0.6212 -> 0.9939; nested
+  composite{glass/lossless translucent}/white 0.9418 / 0.9351 -> 1.0030 /
+  0.9969.
+* **P1-2 -- the 5-argument `EvaluateKrayNM` priced WALKER rays as direct
+  reflections.**  A composite is a parallel slab, so an all-delta walker
+  exit leaves exactly along the mirror direction and the direction match
+  accepted it.  **Fix:** a walker ray leaves the top from INSIDE the
+  stack, travelling upward, and a reflection returns a ray to the side it
+  came from, so an up-going ray out of the top from inside is always a
+  TRANSMISSION; the DIRECT delta ray is the only up-going
+  `eRayReflection` a composite emits.  The method now reconstructs only
+  that type, matched to a reflection-typed top lobe, and only in
+  AGGREGATE mode (per-branch prices the direct ray with a floored `w1`).
+  Red -> green (section E2, grey glass(1e6)/glass, t 1, ext 1): 15 709
+  up-going, 15 709 "reconstructed", 7 366 wrong, worst relative error
+  7.34 -> 8 343 reconstructed (0 wrong), 7 366 walker exits declined.
+* **P2-1 -- composite{glass/glass} over white loses ~50 % and the cap
+  warning called it "lossless trapping".**  Mechanism found and recorded
+  (section 5, "Nested composites walked FROM BELOW"); not contained, so
+  pinned (H3, H4) and the warning text corrected.
+* **P2-2 -- `value` is a noisy per-query Monte-Carlo estimate, and the
+  docs said "DETERMINISTIC" without saying so.**  Section 2 and 3.2 now
+  state it: per-evaluation relative sd ~0.80 (smooth coat over white),
+  ~0.39 (red, absorbing gap), printed by section G.  The MIS partition is
+  unaffected (only the exact `Pdf` enters the weights).  Since P2-3 one
+  walk is shared by all exits at a point, so a repeated query at the same
+  (incoming direction, position) returns one realisation: the estimate is
+  unbiased averaged over positions, which every renderer provides (every
+  pixel sample hits a new point) and which the composite furnaces now do
+  explicitly.
+* **P2-3 -- cost +40.7 %, not +35.4 %** (consistent within noise).  The
+  evaluator's walk is now recorded once per (incoming direction,
+  position) and only the connection terms are recomputed per exit:
+  **+23.4 %** (67.23 ± 1.25 -> 82.96 ± 4.20 s user, n = 5 interleaved).
+  The emitted ray, every NEE sample and every connection at a point share
+  one walk -- correlated, each still unbiased.  A thread-local depth guard
+  keeps a nested composite's own evaluation out of the cache while the
+  outer one holds an entry.
+* **P3s:** section 3.2's "within 1 sd" corrected (1.55 / 1.47 sem;
+  now max 2.6 sem at 24 000 samples, inside the 4-sem gate); topology Q renamed S with its false
+  "could not agree before" comment corrected; F2b (DL-285) pinned in
+  [1.05, 1.15]; the dispersive direct-reflection "exactly" corrected
+  (section 3.5); the probe-cache key residual recorded (section 5).
+* **Pre-existing, reported for the supervisor (not this row):** the
+  reviewer measured `coated_material` ~15 % too bright under an ABSORBING
+  coat -- its recycling approximation (`kRecycleMeanCos` 0.5) gives
+  E_ret ~0.366 against an exact 0.258 at sigma_t 0.2; on the shipped
+  scene's warm-white ellipsoid composite/coated reads R 0.852, G 0.879
+  (analytic 0.855).  The composite matches the independent closed form
+  (section G).
+

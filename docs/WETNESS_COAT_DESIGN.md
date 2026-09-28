@@ -2471,8 +2471,9 @@ timing exists because no implementation exists.
    > rho == 1 at 0/30/60/80 degrees.  **The route-around is therefore no
    > longer NECESSARY, but it stays the right choice, and `add_wetness`
    > should NOT switch back.**  `coated_material` is closed-form: it runs
-   > no Monte-Carlo evaluator walk per NEE sample (composite renders cost
-   > +35 % on a composite-dominated scene) and has lower variance.  It also
+   > no Monte-Carlo evaluator walk (composite renders cost +23 % on a
+   > composite-dominated scene after the DL-24 review shared one walk per
+   > shading point; +35-41 % before) and has lower variance.  It also
    > keeps a finite-`scattering` coat's blur that `composite_material`'s
    > evaluator drops (DL-297).  `composite_material` is now a valid general
    > two-layer stack; wetness is the coat case `coated_material` was built
