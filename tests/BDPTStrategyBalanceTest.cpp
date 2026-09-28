@@ -2327,6 +2327,63 @@ static void TestGGXLambertianControl()
 
 
 //////////////////////////////////////////////////////////////////////
+// Topology Q: composite_material (DL-24, 2026-09-28).
+//
+// Topology M's geometry and emitter with a composite on BOTH receivers:
+// the wall is a clear coat (dielectric, ior 1.5) over a red Lambertian
+// across an absorbing 0.1-thick gap, the floor a translucent layer over a
+// gold Lambertian -- the two composite classes the shipped
+// scenes/Tests/Materials/composite_material.RISEscene uses.
+//
+// Pre-DL-24 PT and BDPT could not agree on a composite: the walk
+// truncated the internal-reflection series, `GetBSDF()` presented ONE
+// layer's closed form (the bare substrate under a dielectric coat) while
+// the walk sampled the stack, and `Pdf` was a 50/50 placeholder -- so NEE,
+// every BDPT connection and the MIS weights priced a different material
+// from the sampled one.  Now the composite's `value`, `Pdf` and emitted
+// `kray` are one function, and the two integrators must agree like any
+// other material.  Same 8 % band as topology M.
+//////////////////////////////////////////////////////////////////////
+static std::string SceneCompositeQ()
+{
+	std::string sc( kSceneGGXLambertianControlM );
+	const std::string mats =
+		"uniformcolor_painter\n{\n\tname pnt_red_q\n\tcolor 0.8 0.15 0.1\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_gold_q\n\tcolor 0.85 0.65 0.13\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_tref_q\n\tcolor 0.3 0.3 0.3\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_ttau_q\n\tcolor 0.6 0.6 0.6\n}\n\n"
+		"lambertian_material\n{\n\tname mat_red_q\n\treflectance pnt_red_q\n}\n\n"
+		"lambertian_material\n{\n\tname mat_gold_q\n\treflectance pnt_gold_q\n}\n\n"
+		"dielectric_material\n{\n\tname mat_glass_q\n\ttau 1\n\tior 1.5\n}\n\n"
+		"translucent_material\n{\n\tname mat_trans_q\n\tref pnt_tref_q\n\ttau pnt_ttau_q\n\text 0.5\n\tN 10\n\tscattering 0.3\n}\n\n"
+		"composite_material\n{\n\tname mat_comp_wall_q\n\ttop mat_glass_q\n\tbottom mat_red_q\n\tthickness 0.1\n\textinction 0.2 0.5 2.0\n}\n\n"
+		"composite_material\n{\n\tname mat_comp_floor_q\n\ttop mat_trans_q\n\tbottom mat_gold_q\n\tthickness 0.05\n\textinction 0.0\n}\n\n";
+	// Insert the layer materials before the wall geometry and rebind the
+	// two receivers.
+	const std::string wallGeom = "clippedplane_geometry\n{\n\tname quad_wall\n";
+	const size_t at = sc.find( wallGeom );
+	if( at == std::string::npos ) return std::string();
+	sc.insert( at, mats );
+	const std::string wallObj  = "\tname obj_wall\n\tgeometry quad_wall\n\tmaterial mat_ggx\n";
+	const std::string floorObj = "\tname obj_floor\n\tgeometry quad_floor\n\tmaterial mat_lambert\n";
+	const size_t w = sc.find( wallObj );
+	const size_t f = sc.find( floorObj );
+	if( w == std::string::npos || f == std::string::npos ) return std::string();
+	sc.replace( sc.find( wallObj ), wallObj.size(), "\tname obj_wall\n\tgeometry quad_wall\n\tmaterial mat_comp_wall_q\n" );
+	sc.replace( sc.find( floorObj ), floorObj.size(), "\tname obj_floor\n\tgeometry quad_floor\n\tmaterial mat_comp_floor_q\n" );
+	return sc;
+}
+
+static void TestCompositeMaterial()
+{
+	const std::string scene = SceneCompositeQ();
+	Check( !scene.empty(), "topology Q scene assembled from topology M's fixture" );
+	if( scene.empty() ) return;
+	RunTopologyTest( "composite_material clear coat wall + translucent floor, area emitter (DL-24)",
+		scene, kStrictTolerances, kRasterizerPTSchlickL, kRasterizerBDPTSchlickL );
+}
+
+//////////////////////////////////////////////////////////////////////
 // Topology L, GUIDED (DL-67, docs/DL67_GUIDED_GENERATING_DENSITY.md).
 //
 // Topology L's geometry and `schlick_material` walls with OpenPGL path
@@ -3444,6 +3501,7 @@ int main( int argc, char** argv )
 	if( argc == 2 && std::strcmp(argv[1], "--materials-only") == 0 ) {
 		TestSchlickMultiLobe();
 		TestGGXLambertianControl();
+		TestCompositeMaterial();
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
@@ -3486,6 +3544,7 @@ int main( int argc, char** argv )
 	TestSubmergedCeilingMISCombination();
 	TestSchlickMultiLobe();
 	TestGGXLambertianControl();
+	TestCompositeMaterial();
 	TestSchlickMultiLobeGuided();
 	TestSpectralHWSSCompanionLadder();
 	TestSpectralHWSSCompanionLadderControl();
