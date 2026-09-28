@@ -92,7 +92,8 @@
 //  the new emitter: PT 1.2%, PT spectral 1.3%, BDPT 0.24%, VCM 0.48%,
 //  BDPT spectral 0.94%, VCM spectral 1.6%.  Every render is seeded
 //  (`std::srand`); references are means of 32 renders (sd of the mean
-//  ~0.2%), candidates of 4 (<= 0.8%).  The +/-4% band is >= 6x the
+//  ~0.2%), candidates of 4 (pel) or 8 (spectral, whose per-render tails
+//  are heavier: VCM spectral read 0.976-0.983 at n = 4).  The +/-4% band is >= 6x the
 //  references' sd and >= 4 sd of the noisiest ratio (VCM spectral, ~0.85%).
 //  The BDPT `max_light_depth 1` row restores the diagnostic the first
 //  closure deleted: it and full BDPT are both unbiased, so they agree with
@@ -464,11 +465,11 @@ int main()
 
 	std::cout << "Testing BDPT spectral vs PT spectral, GLOBAL medium" << std::endl;
 	CheckRatio( "BDPT spectral vs PT spectral, GLOBAL medium", ptSpRef,
-		RenderMeanRepeated( Scene( kBDPTSpectral64, global ), "BDPT spectral        ", 4 ), kLo, kHi );
+		RenderMeanRepeated( Scene( kBDPTSpectral64, global ), "BDPT spectral        ", 8 ), kLo, kHi );
 
 	std::cout << "Testing VCM spectral vs PT spectral, GLOBAL medium" << std::endl;
 	CheckRatio( "VCM spectral vs PT spectral, GLOBAL medium", ptSpRef,
-		RenderMeanRepeated( Scene( kVCMSpectral64, global ), "VCM spectral         ", 4 ), kLo, kHi );
+		RenderMeanRepeated( Scene( kVCMSpectral64, global ), "VCM spectral         ", 8 ), kLo, kHi );
 
 	std::cout << std::endl;
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
