@@ -17,6 +17,7 @@
 #include "../Utilities/Optics.h"
 #include "../Utilities/math_utils.h"
 #include "../Utilities/GeometricUtilities.h"
+#include "SchlickMasking.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -51,24 +52,40 @@ void SchlickBRDF::SetSpecular( const IPainter& v )      { v.addref(); safe_relea
 void SchlickBRDF::SetRoughness( const IScalarPainter& v ){ v.addref(); safe_release( pRoughness ); pRoughness = &v; }
 void SchlickBRDF::SetIsotropy( const IScalarPainter& v ) { v.addref(); safe_release( pIsotropy );  pIsotropy  = &v; }
 
-template< class T >
-static T ComputeFactor(
-	T& fresnel,
-	const Vector3& vLightIn,
-	const RayIntersectionGeometric& ri,
-	const Vector3& n,
-	const Vector3& v_tangent,
-	const T& r,
-	const T& p
-	)
+namespace
 {
-	const Vector3 l = Vector3Ops::Normalize(vLightIn); // light vector
-	const Vector3 v = Vector3Ops::Normalize(-ri.ray.Dir()); // outgoing ray vector
+	//! The direction-pair quantities every lane shares (DL-225 split
+	//! them out of the old templated ComputeFactor so each channel can
+	//! carry its own masking lane).
+	struct SchlickPairGeometry
+	{
+		Scalar nv, nl;				//!< cosines to the shading normal
+		Scalar vx, vy, lx, ly;		//!< tangential components in (onb.u, onb.v)
+		Scalar t;					//!< n.h
+		Scalar w;					//!< onb.v . normalize(h - t n): Schlick's A argument
+		Scalar fresnel;				//!< (1 - h.l)^5
+	};
 
-	const Scalar nv = Vector3Ops::Dot(n,v);
-	const Scalar nl = Vector3Ops::Dot(n,l);
+	//! Returns false (zero BRDF) outside either hemisphere or below the
+	//! geometric horizon.
+	bool SchlickPair(
+		const Vector3& vLightIn,
+		const RayIntersectionGeometric& ri,
+		const OrthonormalBasis3D& onb,
+		SchlickPairGeometry& g
+		)
+	{
+		const Vector3& n = onb.w();
+		const Vector3 l = Vector3Ops::Normalize(vLightIn); // light vector
+		const Vector3 v = Vector3Ops::Normalize(-ri.ray.Dir()); // outgoing ray vector
 
-	if( (nv >= NEARZERO) &&	(nl >= NEARZERO) ) {
+		g.nv = Vector3Ops::Dot(n,v);
+		g.nl = Vector3Ops::Dot(n,l);
+
+		if( (g.nv < NEARZERO) || (g.nl < NEARZERO) ) {
+			return false;
+		}
+
 		// Geometric-horizon gate: a GlintModifier-tilted shading normal can
 		// validate light/view directions that are still below the true
 		// geometric surface.  This is a DEFENSIVE check (a valid exterior hit
@@ -82,37 +99,64 @@ static T ComputeFactor(
 			? ri.vGeomNormal : n;
 		const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
 		if( Vector3Ops::Dot( l, geomN ) <= 0 || Vector3Ops::Dot( v, geomN ) <= 0 ) {
-			return 0.0;
+			return false;
 		}
 
 		const Vector3 h = Vector3Ops::Normalize(l+v);
-		const Scalar t = Vector3Ops::Dot(n,h);
-
+		g.t = Vector3Ops::Dot(n,h);
 		const Scalar hl = Vector3Ops::Dot(h,l);
-
-		fresnel = pow<T>(1-hl,5);
-
-		const Scalar w = Vector3Ops::Dot(v_tangent,Vector3Ops::Normalize(h-(t*n)));
-
-		const Scalar sqr_t = t*t;
-		const T zdem = (r*sqr_t + 1.0) - sqr_t;
-		const T Z = r / (zdem*zdem);
-
-		const T sqr_p = p*p;
-		const Scalar sqr_w = w*w;
-		const T A = sqrt<T>(p/(sqr_p-sqr_p*sqr_w+sqr_w));
-
-		// Schlick 1994 Eq.31: G(c)=c/(r+(1-r)c). Cancel nl*nv
-		// analytically, avoiding the grazing singularity before evaluation.
-		return (Z*A)/(4.0*PI*(r + (1.0-r)*nl)*(r + (1.0-r)*nv));
+		g.fresnel = ::pow(1-hl,5);
+		g.w = Vector3Ops::Dot(onb.v(),Vector3Ops::Normalize(h-(g.t*n)));
+		g.vx = Vector3Ops::Dot(v,onb.u());
+		g.vy = Vector3Ops::Dot(v,onb.v());
+		g.lx = Vector3Ops::Dot(l,onb.u());
+		g.ly = Vector3Ops::Dot(l,onb.v());
+		return true;
 	}
-   
-	return 0.0;
+
+	//! Z A m(v) m(l) / (4 pi nv nl) for ONE lane.
+	//!
+	//! DL-178 introduced Schlick 1994 Eq.31, G(c) = c/(r+(1-r)c), with
+	//! nl*nv cancelled analytically.  DL-225: Eq.31 alone lets rho_d
+	//! exceed 1 near grazing at low roughness (5.6 at r .005); the masking
+	//! is now min(Eq.31, the Smith projected-area bound of Schlick's own
+	//! Z*A distribution), which is exactly Eq.31 wherever Eq.31 is already
+	//! inside that bound -- see SchlickMasking.h.  Returned as m/c
+	//! factors so the grazing limit stays finite.
+	Scalar SchlickLaneFactor( const SchlickPairGeometry& g, const Scalar r, const Scalar p )
+	{
+		const Scalar sqr_t = g.t*g.t;
+		const Scalar zdem = (r*sqr_t + 1.0) - sqr_t;
+		const Scalar Z = r / (zdem*zdem);
+
+		const Scalar sqr_p = p*p;
+		const Scalar sqr_w = g.w*g.w;
+		const Scalar A = sqrt(p/(sqr_p-sqr_p*sqr_w+sqr_w));
+
+		SchlickMasking::Lane lane;
+		SchlickMasking::Prepare( lane, r, p );
+		const Scalar mv = SchlickMasking::MaskOverCos( lane, g.nv, g.vx, g.vy );
+		const Scalar ml = SchlickMasking::MaskOverCos( lane, g.nl, g.lx, g.ly );
+		return (Z*A*mv*ml)/(4.0*PI);
+	}
+
+	//! Per-channel factor, evaluating each distinct (r, p) lane once.
+	RISEPel SchlickChannelFactors( const SchlickPairGeometry& g, const RISEPel& r, const RISEPel& p )
+	{
+		RISEPel out;
+		for( int ch = 0; ch < 3; ch++ ) {
+			int reuse = -1;
+			for( int prev = 0; prev < ch; prev++ ) {
+				if( r[prev] == r[ch] && p[prev] == p[ch] ) { reuse = prev; break; }
+			}
+			out[ch] = ( reuse >= 0 ) ? out[reuse] : SchlickLaneFactor( g, r[ch], p[ch] );
+		}
+		return out;
+	}
 }
 
 RISEPel SchlickBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const
 {
-	RISEPel fresnel;
 	ScalarTriple rt = pRoughness->GetValuesAt(ri);
 	const ScalarTriple it = pIsotropy->GetValuesAt(ri);
 
@@ -136,10 +180,14 @@ RISEPel SchlickBRDF::value( const Vector3& vLightIn, const RayIntersectionGeomet
 	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
 		myonb.FlipW();
 	}
-	const RISEPel factor = ComputeFactor<RISEPel>( fresnel, vLightIn, ri, myonb.w(), myonb.v(), rPel, iPel );
+	SchlickPairGeometry g;
+	if( !SchlickPair( vLightIn, ri, myonb, g ) ) {
+		return RISEPel(0,0,0);
+	}
+	const RISEPel factor = SchlickChannelFactors( g, rPel, iPel );
 	if( ColorMath::MaxValue(factor) > 0 ) {
 		const RISEPel rho = pSpecular->GetColor(ri);
-		return (pDiffuse->GetColor(ri)*INV_PI) + ((rho + (RISEPel(1.0,1.0,1.0)-rho)*fresnel) * factor);
+		return (pDiffuse->GetColor(ri)*INV_PI) + ((rho + (RISEPel(1.0,1.0,1.0)-rho)*g.fresnel) * factor);
 	}
 
 	return RISEPel(0,0,0);
@@ -147,8 +195,6 @@ RISEPel SchlickBRDF::value( const Vector3& vLightIn, const RayIntersectionGeomet
 
 Scalar SchlickBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
 {
-	Scalar fresnel=0;
-
 	// Same ray-facing flip as value() above.
 	OrthonormalBasis3D myonb = ri.onb;
 	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
@@ -159,10 +205,14 @@ Scalar SchlickBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeome
 	if( ri.glossyFilterWidth > 0 ) {
 		roughnessNM = r_min( roughnessNM + ri.glossyFilterWidth, Scalar(1.0) );
 	}
-	const Scalar factor = ComputeFactor<Scalar>( fresnel, vLightIn, ri, myonb.w(), myonb.v(), roughnessNM, pIsotropy->GetValueAtNM(ri,nm) );
+	SchlickPairGeometry g;
+	if( !SchlickPair( vLightIn, ri, myonb, g ) ) {
+		return 0;
+	}
+	const Scalar factor = SchlickLaneFactor( g, roughnessNM, pIsotropy->GetValueAtNM(ri,nm) );
 	if( factor > 0 ) {
 		const Scalar rho = GuardedGetColorNM( *pSpecular, ri, nm );
-		return (GuardedGetColorNM( *pDiffuse, ri, nm )*INV_PI) + (rho + (1.0-rho)*fresnel) * factor;
+		return (GuardedGetColorNM( *pDiffuse, ri, nm )*INV_PI) + (rho + (1.0-rho)*g.fresnel) * factor;
 	}
 
 	return 0;
@@ -170,8 +220,9 @@ Scalar SchlickBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeome
 
 RISEPel SchlickBRDF::albedo( const RayIntersectionGeometric& ri ) const
 {
-	// Deterministic half-vector quadrature of the corrected directional
-	// reflectance, for the noise-free OIDN/preview AOV only. Sampling
+	// Deterministic half-vector quadrature of the corrected (DL-178 Eq.31,
+	// DL-225 bounded) directional reflectance, for the noise-free
+	// OIDN/preview AOV only. Sampling
 	// p_h=t*Z/pi cancels the sharp Z peak analytically; uniform azimuth
 	// leaves A in the weight. Substitute xi=u^2 (Jacobian 2u) to
 	// remove the 1/sqrt(xi) endpoint at grazing. No transport clamp.
@@ -201,6 +252,10 @@ RISEPel SchlickBRDF::albedo( const RayIntersectionGeometric& ri ) const
 		int reuse=-1;
 		for(int prev=0;prev<ch;++prev) if(effectiveR[prev]==r && iso.v[prev]==p) { reuse=prev; break; }
 		if(reuse>=0) { m0[ch]=m0[reuse];m5[ch]=m5[reuse]; } else {
+		// DL-225: the same bounded masking value() evaluates.
+		SchlickMasking::Lane lane;
+		SchlickMasking::Prepare(lane,r,p);
+		const Scalar mvOverNv=SchlickMasking::MaskOverCos(lane,nv,vx,vy);
 		Scalar az[np];
 		for(int j=0;j<np;++j) az[j]=sqrt(p/(p*p+(1-p*p)*sp[j]*sp[j]));
 		for(int i=0;i<nt;++i) {
@@ -211,8 +266,9 @@ RISEPel SchlickBRDF::albedo( const RayIntersectionGeometric& ri ) const
 				const Scalar hv=hx*vx+hy*vy+t*nv, nl=2*hv*t-nv;
 				if(hv<=0 || nl<=0 || 2*hv*(hx*gx+hy*gy+t*gz)-vg<=0) continue;
 				const Scalar f=1-hv, f2=f*f, F=f2*f2*f;
-				const Scalar weight=2*u*az[j]*hv*nl
-					/(t*(r+(1-r)*nv)*(r+(1-r)*nl));
+				const Scalar lx=2*hv*hx-vx, ly=2*hv*hy-vy;
+				const Scalar weight=2*u*az[j]*hv*nl*mvOverNv
+					*SchlickMasking::MaskOverCos(lane,nl,lx,ly)/t;
 				m0[ch]+=weight;m5[ch]+=weight*F;
 			}
 		}

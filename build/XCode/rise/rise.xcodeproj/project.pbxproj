@@ -503,6 +503,7 @@
 		F24B72FE2F52A632008304C4 /* SchlickMaterial.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F090B069C42900069C9E5 /* SchlickMaterial.h */; };
 		F24B72FF2F52A632008304C4 /* SchlickSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F090C069C42900069C9E5 /* SchlickSPF.cpp */; };
 		F24B73002F52A632008304C4 /* SchlickSPF.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F090D069C42900069C9E5 /* SchlickSPF.h */; };
+		A17822500000000000000001 /* SchlickMasking.h in Sources */ = {isa = PBXBuildFile; fileRef = A17822500000000000000003 /* SchlickMasking.h */; };
 		F24B73012F52A632008304C4 /* TranslucentMaterial.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0910069C42900069C9E5 /* TranslucentMaterial.h */; };
 		F24B73022F52A632008304C4 /* TranslucentSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0911069C42900069C9E5 /* TranslucentSPF.cpp */; };
 		F24B73032F52A632008304C4 /* TranslucentSPF.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0912069C42900069C9E5 /* TranslucentSPF.h */; };
@@ -1238,6 +1239,7 @@
 		F27F0B73069C42910069C9E5 /* SchlickMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F090B069C42900069C9E5 /* SchlickMaterial.h */; };
 		F27F0B74069C42910069C9E5 /* SchlickSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F090C069C42900069C9E5 /* SchlickSPF.cpp */; };
 		F27F0B75069C42910069C9E5 /* SchlickSPF.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F090D069C42900069C9E5 /* SchlickSPF.h */; };
+		A17822500000000000000002 /* SchlickMasking.h in Headers */ = {isa = PBXBuildFile; fileRef = A17822500000000000000003 /* SchlickMasking.h */; };
 		F27F0B78069C42910069C9E5 /* TranslucentMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0910069C42900069C9E5 /* TranslucentMaterial.h */; };
 		F27F0B79069C42910069C9E5 /* TranslucentSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0911069C42900069C9E5 /* TranslucentSPF.cpp */; };
 		F27F0B7A069C42910069C9E5 /* TranslucentSPF.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0912069C42900069C9E5 /* TranslucentSPF.h */; };
@@ -2529,6 +2531,7 @@
 		F27F090B069C42900069C9E5 /* SchlickMaterial.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SchlickMaterial.h; sourceTree = "<group>"; };
 		F27F090C069C42900069C9E5 /* SchlickSPF.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SchlickSPF.cpp; sourceTree = "<group>"; };
 		F27F090D069C42900069C9E5 /* SchlickSPF.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SchlickSPF.h; sourceTree = "<group>"; };
+		A17822500000000000000003 /* SchlickMasking.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SchlickMasking.h; sourceTree = "<group>"; };
 		F27F0910069C42900069C9E5 /* TranslucentMaterial.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = TranslucentMaterial.h; sourceTree = "<group>"; };
 		F27F0911069C42900069C9E5 /* TranslucentSPF.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = TranslucentSPF.cpp; sourceTree = "<group>"; };
 		F27F0912069C42900069C9E5 /* TranslucentSPF.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = TranslucentSPF.h; sourceTree = "<group>"; };
@@ -3751,6 +3754,7 @@
 				F27F090B069C42900069C9E5 /* SchlickMaterial.h */,
 				F27F090C069C42900069C9E5 /* SchlickSPF.cpp */,
 				F27F090D069C42900069C9E5 /* SchlickSPF.h */,
+				A17822500000000000000003 /* SchlickMasking.h */,
 				F27F0910069C42900069C9E5 /* TranslucentMaterial.h */,
 				F27F0911069C42900069C9E5 /* TranslucentSPF.cpp */,
 				F27F0912069C42900069C9E5 /* TranslucentSPF.h */,
@@ -4888,6 +4892,7 @@
 				F27F0B72069C42910069C9E5 /* SchlickBRDF.h in Headers */,
 				F27F0B73069C42910069C9E5 /* SchlickMaterial.h in Headers */,
 				F27F0B75069C42910069C9E5 /* SchlickSPF.h in Headers */,
+				A17822500000000000000002 /* SchlickMasking.h in Headers */,
 				F27F0B78069C42910069C9E5 /* TranslucentMaterial.h in Headers */,
 				F27F0B7A069C42910069C9E5 /* TranslucentSPF.h in Headers */,
 				F27F0B7C069C42910069C9E5 /* WardAnisotropicEllipticalGaussianBRDF.h in Headers */,
@@ -6127,6 +6132,7 @@
 				F24B72FE2F52A632008304C4 /* SchlickMaterial.h in Sources */,
 				F24B72FF2F52A632008304C4 /* SchlickSPF.cpp in Sources */,
 				F24B73002F52A632008304C4 /* SchlickSPF.h in Sources */,
+				A17822500000000000000001 /* SchlickMasking.h in Sources */,
 				F24B73012F52A632008304C4 /* TranslucentMaterial.h in Sources */,
 				F24B73022F52A632008304C4 /* TranslucentSPF.cpp in Sources */,
 				F24B73032F52A632008304C4 /* TranslucentSPF.h in Sources */,

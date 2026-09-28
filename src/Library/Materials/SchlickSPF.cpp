@@ -15,6 +15,7 @@
 #include "SchlickSPF.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "../Interfaces/ILog.h"
+#include "SchlickMasking.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -238,9 +239,12 @@ static inline Scalar SchlickAzimuthFactorA(
 //! `SchlickBRDF::value`).
 //!
 //! DL-178: Schlick 1994 Eq.31 adds G(nv)G(nl), G(c)=c/(r+(1-r)c).
-//! Dividing f_S cos by p_S cancels Z, but roughness remains in G:
-//! R = A(h.wi)*nl / (2 pi t p_phi [r+(1-r)nv][r+(1-r)nl]).
-//! This cancelled form is finite at grazing; nl=2(h.wi)t-nv.
+//! DL-225: the masking is min(Eq.31, the Smith projected-area bound of
+//! Schlick's own Z*A distribution) -- see SchlickMasking.h -- carried
+//! as the finite ratios mv = m(nv)/nv and ml = m(nl)/nl.  Dividing
+//! f_S cos by p_S cancels Z; roughness remains in the masking:
+//! R = A(h.wi) mv nl ml / (2 pi t p_phi),  nl = 2(h.wi)t - nv.
+//! Finite at grazing.
 static inline Scalar SchlickKrayRatioFromH(
 		const Vector3& h,											///< [in] Unit half-vector
 		const Vector3& wi,											///< [in] Unit direction toward the viewer
@@ -264,8 +268,15 @@ static inline Scalar SchlickKrayRatioFromH(
 	}
 	const Scalar nl = 2.0 * hdotk * t - nv;
 	if( nl <= 0 ) return 0;
-	return SchlickAzimuthFactorA( h, t, onb, p ) * hdotk * nl
-		/ ( TWO_PI * t * pphi * (r + (1.0-r)*nv) * (r + (1.0-r)*nl) );
+	const Vector3 l = 2.0 * hdotk * h - wi;
+	SchlickMasking::Lane lane;
+	SchlickMasking::Prepare( lane, r, p );
+	const Scalar mv = SchlickMasking::MaskOverCos( lane, nv,
+		Vector3Ops::Dot( wi, onb.u() ), Vector3Ops::Dot( wi, onb.v() ) );
+	const Scalar ml = SchlickMasking::MaskOverCos( lane, nl,
+		Vector3Ops::Dot( l, onb.u() ), Vector3Ops::Dot( l, onb.v() ) );
+	return SchlickAzimuthFactorA( h, t, onb, p ) * hdotk * mv * nl * ml
+		/ ( TWO_PI * t * pphi );
 }
 
 //! `SchlickKrayRatioFromH` at a QUERIED outgoing direction.  Recovers `h`
@@ -467,7 +478,7 @@ static Scalar ComputeSchlickSpecularPdf(
 //  Writing p_D / p_i for the diffuse / i-th specular sampling density,
 //  w_D = MaxValue(rd) for the diffuse ray's (direction-INDEPENDENT)
 //  realized selection weight and w_i(omega) = rho_i + (1-rho_i)*
-//  fresnel(omega), multiplied by the DL-178 geometric ratio R, for
+//  fresnel(omega), multiplied by the DL-178/DL-225 geometric ratio R, for
 //  the i-th specular ray's (direction-DEPENDENT)
 //  one, the density of the selected direction is
 //
@@ -696,10 +707,20 @@ static Scalar SchlickDiffuseSelectCoefficient(
 	const Vector3& nW = myonb.w();
 
 	// DL-127: the realized selection weight is now `S * ratio`, and
-	// DL-178 cancels nv against G(nv); r+(1-r)nv is constant over
-	// the quadrature, while G(nl) depends on each accepted direction.
+	// DL-178 cancels nv against G(nv).  DL-225: the masking is the
+	// bounded one (SchlickMasking.h); m(nv)/nv is constant over the
+	// quadrature, while m(nl)/nl depends on each accepted direction,
+	// whose tangential components are 2(h.v)h - v in the local frame.
 	const Vector3 wiView = Vector3Ops::Normalize( -d );
 	const Scalar  nvView = Vector3Ops::Dot( nW, wiView );
+	const Scalar  vxView = Vector3Ops::Dot( eu, wiView );
+	const Scalar  vyView = Vector3Ops::Dot( ev, wiView );
+	SchlickMasking::Lane lanes[3];
+	Scalar mvView[3] = { 0, 0, 0 };
+	for( int j = 0; j < lobes.count; j++ ) {
+		SchlickMasking::Prepare( lanes[j], lobes.r[j], lobes.p[j] );
+		mvView[j] = SchlickMasking::MaskOverCos( lanes[j], nvView, vxView, vyView );
+	}
 
 	Scalar accum = 0;
 
@@ -748,10 +769,11 @@ static Scalar SchlickDiffuseSelectCoefficient(
 				// `MaxValue(kray) = ratio * (rho_max + (1-rho_max) F)`
 				// because `ratio` is a nonnegative scalar.
 				const Scalar nl = 2.0 * hdotk * az - nvView;
-				const Scalar r = lobes.r[j];
 				const Scalar ratio = ( az > NEARZERO && nvView > NEARZERO && nl > 0 )
-					? ( rows.azim[j][bIdx] * hdotk * nl
-					    / (az * (r+(1.0-r)*nvView) * (r+(1.0-r)*nl)) )
+					? ( rows.azim[j][bIdx] * hdotk * mvView[j] * nl
+					    * SchlickMasking::MaskOverCos( lanes[j], nl,
+					          k*ax - vxView, k*ay - vyView )
+					    / az )
 					: Scalar(0);
 
 				wS += (lobes.rho[j] + (1.0 - lobes.rho[j]) * fresnel) * ratio;
@@ -1189,8 +1211,9 @@ Scalar SchlickSPF::PdfNM(
 // mirror of `-wi` about `h`, so `wi + wo` is parallel to `h`), and `R`
 // the DL-127 ratio `SchlickKrayRatio`.
 //
-// DL-178: Z still cancels, but the geometric factors depend on the
-// wavelength's roughness. Read and filter it exactly as ScatterNM does.
+// DL-178/DL-225: Z still cancels, but the (bounded) masking depends on
+// the wavelength's roughness and isotropy. Read and filter them exactly
+// as ScatterNM does.
 // Isotropy also enters R through the azimuthal factor and density.
 //
 // Every wavelength-dependent input is read at `nm`; no sampler draw is

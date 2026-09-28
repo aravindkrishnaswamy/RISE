@@ -1,4 +1,5 @@
 # Ward SPFs share header-only Materials/WardSelectionQuadrature.h.
+# Schlick BRDF/SPF share header-only Materials/SchlickMasking.h (DL-225).
 # -----------------------------------------------------------------------------
 # rise_sources.cmake
 #
