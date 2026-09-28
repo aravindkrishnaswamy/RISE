@@ -1360,10 +1360,11 @@ int main()
 	// (Rd x rho x r x isotropy x theta x view azimuth).  Must be
 	// <= 1 + 1e-3 in every cell.  Pre-fix (Rd/pi added with no coupling)
 	// 369 of these 1260 cells exceed 1 -- 34 of them with AUTHORED
-	// Rd + rho <= 1 -- and the worst is 1.7448 (Rd .9, rho .9,
+	// Rd + rho <= 1 -- and the worst is 1.7445 (Rd .9, rho .9,
 	// r .05, isotropy .1, 89 deg); the worst conserving-authored cell
-	// is 1.1538 (Rd .9, rho .1, r .05, isotropy .1, 89 deg, view
-	// azimuth 90).
+	// is 1.1544 (Rd .9, rho .1, r .05, isotropy .1, 89 deg, view
+	// azimuth 90).  (This file's own 96x192 quadrature; the 256x512
+	// measurement in the doc reads 1.7448 / 1.1538.)
 	//----------------------------------------------------------------
 	std::cout << std::endl
 	          << "-- Section 11: DL-310 full-material directional reflectance "
@@ -1413,8 +1414,8 @@ int main()
 		std::cout << "   cells=" << cells << "  cells > 1: " << over
 		          << "   worst rho_d = " << std::setprecision(6) << worst << "  (" << worstAt << ")" << std::endl
 		          << "   worst with authored Rd + rho <= 1: " << worstCons << "  (" << worstConsAt << ")" << std::endl
-		          << "   pre-fix (uncoupled Rd/pi): 369/1260 cells > 1, worst 1.7448;"
-		             " conserving-authored worst 1.1538" << std::endl;
+		          << "   pre-fix (uncoupled Rd/pi): 369/1260 cells > 1, worst 1.7445;"
+		             " conserving-authored worst 1.1544" << std::endl;
 
 		// The ledger row's own quote: Rd .1 + rho .9 read 1.0202 at
 		// grazing on the DL-225 review's grid (r .005..).  Its family

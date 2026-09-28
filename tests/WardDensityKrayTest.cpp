@@ -1332,9 +1332,10 @@ int main()
 	// min(Rd, 1 - A(i), 1 - A(o)) with A = Rs, GMD's own albedo bound:
 	// the coupled term is Rd EXACTLY whenever Rd <= 1 - Rs (every
 	// conserving authoring), and min(Rd, 1 - Rs) otherwise.
-	// (1) rho_d <= 1 + 1e-3 over the grid (pre-fix worst 1.7985 at
-	//     Rd .9, Rs .9, iso a .05, normal incidence; conserving-
-	//     authored worst 1.0000);
+	// (1) rho_d <= 1 + 1e-3 over the grid (pre-fix 421 of 1260 cells
+	//     > 1, worst 1.7989 at Rd .9, Rs .9, aniso a .05/.005, normal
+	//     incidence; conserving-authored worst 1.00001, quadrature
+	//     noise on an exactly-Rd + Rs material);
 	// (2) value() == Rd/pi + f_S bit for bit wherever Rd <= 1 - Rs,
 	//     chromatic, iso and aniso;
 	// (3) the diffuse kray is its own f_D cos / p_D on real Scatter /
@@ -1383,7 +1384,7 @@ int main()
 		}
 		std::cout << "   cells=" << cells << "  cells > 1: " << over << "  worst rho_d = " << std::setprecision(6)
 		          << worst << "  conserving-authored worst = " << worstCons
-		          << "   (pre-fix: 1.7985; conserving 1.0000)" << std::endl;
+		          << "   (pre-fix: 421 cells > 1, worst 1.7989; conserving 1.00001)" << std::endl;
 
 		// (2) exactness wherever Rd <= 1 - Rs, per channel.
 		{
