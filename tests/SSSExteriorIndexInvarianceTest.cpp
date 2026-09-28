@@ -1156,14 +1156,25 @@ namespace
 		// counts and far below the pre-DL-49 deviations of the same rows
 		// (both recorded in docs/DL49_SSS_EXTERIOR_INDEX.md).  BDPT renders
 		// are deterministic for a fixed libc seed, and the pairs share one,
-		// so the BDPT diffusion rows read exactly 1 after the fix.
+		// so the BDPT diffusion rows read exactly 1 after the fix -- at THIS
+		// seed order only: common random numbers do not make the two sides
+		// bit-identical in general (the pre-DL-307 build reads 0.99958 on
+		// the rough row and 1.00336 on the dense row when either is run
+		// alone with --only, i.e. at the first seeds), because a path whose
+		// branch decisions differ in the last ulp diverges from its twin.
+		// DL-307 (2026-09-28) lets rough-SSS BDPT subpaths continue where
+		// they used to die, so more pairs diverge and the rough row read
+		// 1.0066 +/- 0.0066 at 32 spp -- a 1-sigma reading against a band
+		// the independent-sides noise never supported.  It now renders at
+		// 512 spp (ratio sd 0.0016, band 3.7 sd; 0.99881 in the full run,
+		// 0.99919 alone).
 		const Row rows[] = {
 			{ Model::Lambertian,     Integrator::PT,         16,  0.02,  kAirInterior, kScale },
 			{ Model::Diffusion,      Integrator::PT,         64,  0.02,  kAirInterior, kScale },
 			{ Model::DiffusionRough, Integrator::PT,         64,  0.01,  kAirInterior, kScale },
 			{ Model::RandomWalk,     Integrator::PT,         64,  0.04,  kAirInterior, kScale },
 			{ Model::Diffusion,      Integrator::BDPT,       32,  0.02,  kAirInterior, kScale },
-			{ Model::DiffusionRough, Integrator::BDPT,       32,  0.006, kAirInterior, kScale },
+			{ Model::DiffusionRough, Integrator::BDPT,       512, 0.006, kAirInterior, kScale },
 			{ Model::RandomWalk,     Integrator::BDPT,       128, 0.10,  kAirInterior, kScale },
 			{ Model::Diffusion,      Integrator::PTSpectral, 64,  0.04,  kAirInterior, kScale },
 			{ Model::RandomWalk,     Integrator::PTSpectral, 64,  0.05,  kAirInterior, kScale },

@@ -463,3 +463,81 @@ significant change anywhere.
   `SpecularInfo::isSpecular` means "HAS a delta interaction" (it is true
   for `polished_material`, whose diffuse substrate the guide should
   cover).  Left as a variance cost.
+
+### 8.1 DL-307 (closed on `debt-dl307`, 2026-09-28): the un-guided twin of the empty-container rule
+
+This slice's own round-3 review (P2-1) found that the rule "an empty or
+unselectable container is a zero sample of the BSDF technique, not a
+reason to skip the other technique" had been applied to the GUIDE
+technique only.  Both BDPT generators still `break` on an empty container
+at an UN-guided vertex BEFORE the BSSRDF / random-walk entry branch --
+another technique whose Fresnel coin is independent of the Scatter
+realization.  A rough `subsurfacescattering_material` /
+`randomwalk_sss_material` front reflection drawn below the horizon is
+dropped by `SubSurfaceScatteringSPF::Scatter`, the container comes back
+empty, and the subsurface branch (taken with probability `Ft`) was lost.
+PT takes that branch before it ever scatters; guided BDPT took it
+because a guided vertex survives an empty container.  So un-guided and
+guided BDPT disagreed, and un-guided BDPT, VCM and MLT (shared
+generators) were biased dark.
+
+Fix (`BDPTIntegrator.cpp`, both generators): a vertex with no selectable
+lobe whose material has a subsurface-entry branch
+(`HasSubsurfaceEntryBranch<Tag>`: a diffusion profile, random-walk
+params, or the NM per-wavelength params -- queried lazily, only at a
+vertex with no lobe) rides the existing placeholder into the subsurface
+branch with the SAME coin, and terminates right after it if the branch
+does not continue.  The spawned entry vertex's bookkeeping (`isDelta`,
+`isConnectible`, `isBSSRDFEntry`, `pdfFwd`, the exit vertex marked delta)
+is the non-empty case's own code; the guided path and the DL-126
+null-BSDF route are untouched.
+
+Measured (32x32, 1024 spp, salted Sobol', two separately built binaries
+run interleaved; BDPT/PT - 1):
+
+| topology | pre-fix | post-fix |
+|---|---:|---:|
+| U rough (0.3) diffusion sheets, un-guided BDPT (n = 16) | **-0.830 %** (z -29.7) | -0.033 % (z -1.1) |
+| U, guided RIS BDPT (n = 16) | -0.048 % | -0.033 % |
+| U, VCM (n = 16) | **-6.000 %** | -5.242 % (DL-317) |
+| V rough (0.8) random-walk sphere, depth 16, un-guided BDPT (n = 8) | **-10.385 %** (z -339) | -0.015 % (z -0.4) |
+| V, guided RIS BDPT (n = 8) | -0.076 % | +0.018 % |
+| random walk on U's zero-thickness sheets (n = 8) | -0.06 % +/- 0.16 % | -- |
+
+Post-fix guided and un-guided BDPT agree within noise: on U the n = 16
+salted means differ by 3e-7 against a standard error of ~1.1e-5 (z
+-0.01 -- the near-identity is a coincidence) and the external review's
+independent n = 8 reads -0.016 % (z -1.7); on V within 1.3 sd (review:
+-0.058 %).  The random-walk variant the reviewer
+read as "-0.24 %, inconclusive" on U's sheets is resolved: a walk into a
+zero-thickness sheet transports almost nothing, so the sheet cannot see
+the defect; a closed sphere reads -0.45 % at roughness 0.3 and -10.4 %
+at 0.8.  Under a directional light (the zero-exitance sweep reaches only
+entry vertices the eye generator spawned) BDPT read **-23.9 %**
+(random walk) / **-24.4 %** (diffusion) on roughness-0.8 spheres.  At
+depth 5 a closed sphere keeps a -0.10 .. -0.20 % BDPT residual that
+vanishes at depth 16: PT's per-type bounce caps and BDPT's per-surface-
+vertex cap truncate multi-event subsurface paths differently -- depth
+semantics, not bias.  VCM carries a separate, pre-existing defect in its
+MIS running quantities at a BSSRDF / random-walk entry, with or without
+merging (DL-317): -5 % on U's wall-dominated frame, -15.1 % on V, and
+-78 % .. -97 % on frames the SSS object fills.
+
+The external review of `2212f537` also verified the LIGHT-subpath half
+(closed sphere, area light behind it, 40x40, 1024 spp, depth 16,
+BDPT/PT - 1): diffusion r0.8 -23.17 % -> -0.52 %, r0.3 -1.55 % ->
++0.02 %; random walk r0.8 -22.74 % -> +1.46 %, r0.3 -1.58 % -> +0.80 %;
+spectral BDPT on V -10.4 % -> -0.22 %.
+
+Shipped scenes (quarter resolution, 256 spp, n = 3..6 per build,
+interleaved; these are PER-PIXEL-CLAMPED means, which keep fireflies out
+of the comparison and so read differently from a plain mean):
+`bdpt_sss_dragon` +1.24 % (t 4.9), `vcm_sss_dragon` +2.29 % (t 4.7),
+`bdpt_sss_different_bsdf` (VCM, roughness 0.5) +1.86 % (t 20),
+`rwsss_bdpt` (roughness 0.05) +0.03 % (n.s.).  The review's PLAIN means:
+`bdpt_sss_dragon` +1.56 % (t 2.7), `bdpt_sss_different_bsdf` +0.96 %
+(t 3.1).  Tests: `BDPTStrategyBalanceTest` topologies U/V
+(`--sss-only`; U gates the mean of 3 salted 2048-spp replicates per
+integrator -- one unsalted draw read -0.34 % against its 0.35 % band),
+`VCMStrategyBalanceTest` topology U (a DL-317 pin),
+`BDPTZeroExitanceBSSRDFTest` Part E.

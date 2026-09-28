@@ -143,13 +143,15 @@ namespace RISE
 		/// Compute wavelength-dependent random-walk SSS parameters.
 		/// Returns true if this material provides spectral RW SSS.
 		///
-		/// Used by materials whose scattering coefficients vary
-		/// strongly with wavelength (e.g. BioSpec skin), where
-		/// packing 3 wavelengths into RGB channels produces
-		/// intolerable per-channel weight variance.  These
-		/// materials return NULL from GetRandomWalkSSSParams()
-		/// (disabling RGB mode) and implement this method for
-		/// the spectral (NM) rendering path.
+		/// Intended for materials whose scattering coefficients vary
+		/// strongly with wavelength, where packing 3 wavelengths into
+		/// RGB channels produces intolerable per-channel weight
+		/// variance: such a material would return NULL from
+		/// GetRandomWalkSSSParams() (disabling RGB mode) and implement
+		/// this method for the spectral (NM) rendering path.  As of
+		/// 2026-09-28 NO material overrides it (BioSpec skin, once the
+		/// named example, does not), so every caller's NM fallback is
+		/// currently unreachable.
 		///
 		/// The output params_out has all 3 RGB channels set to
 		/// the same scalar value for the requested wavelength,
