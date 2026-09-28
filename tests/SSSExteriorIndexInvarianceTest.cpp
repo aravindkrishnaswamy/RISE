@@ -39,7 +39,9 @@
 //      A2  Sw normalization integrates to exactly one over the exterior
 //          cosine hemisphere at relative indices below, at, and above 1
 //          (the eta < 1 closed form eta^2 * 20(1-F0)/21 is new in DL-49).
-//      A3  both NEE entry adapters are scale invariant (RGB and NM).
+//      A3  both NEE entry adapters are scale invariant (RGB and NM) and,
+//          under a DENSER exterior (1.33 inside 1.5), transmit nothing past
+//          the critical angle and equal their scaled-down air twin.
 //      A4  the rough SubSurfaceScatteringBSDF is scale invariant and is
 //          exactly zero at a matched index (no interface, no reflection).
 //      A5  BSSRDFSampling::SampleEntryPoint, seeded twins: identical
@@ -51,16 +53,25 @@
 //          no exit Fresnel) and exits exactly on the incident ray's
 //          chord through the sphere.
 //      A8  PathVertexEval::EvalBSDFAtVertex{,NM} at a BSSRDF entry vertex
-//          (the BDPT/VCM connection re-evaluation) is scale invariant
-//          through `BDPTVertex::mediumIOR`, diffusion and random walk.
+//          (the BDPT/VCM connection re-evaluation) is scale invariant and
+//          honours `BDPTVertex::mediumIOR` under a denser exterior.
+//    NOTE on A3/A8: for a relative index >= 1 the normalized Sw does not
+//    depend on the index at all ((1-F0) cancels against c), so their
+//    scale-invariance rows are consistency pins that pass before DL-49
+//    too; the denser-exterior rows are the discriminating half.
 //    Part B -- rendered, end to end:
-//      An SSS sphere, a spherical area light and a pinhole camera, all
-//      in air (n_s = 1.33) versus all inside an ideal non-reflecting
-//      enclosure of index 1.5 (n_s = 1.995).  PT RGB, BDPT RGB and PT
-//      spectral, diffusion (rough surface, exercising the BSDF) and
-//      random walk: the scaled/air ratio of the image mean must be 1.
-//      A Lambertian control sphere (no index anywhere) pins that the
-//      enclosure itself changes nothing else.
+//      An SSS sphere, a spherical area light and a pinhole camera inside a
+//      black absorbing room, all in air versus all inside an ideal
+//      non-reflecting enclosure of index 1.5 with every interior index
+//      scaled by 1.5 (one relative index, two absolute scales).  PT RGB,
+//      BDPT RGB and PT spectral; smooth diffusion (the subsurface event
+//      alone), rough diffusion (adds the BSDF NEE lobe, whose pre-DL-49
+//      error has the OPPOSITE sign and partially cancels in a mean -- so
+//      it gets its own, tighter band), random walk, and "dense" rows with
+//      the relative index below 1.  The enclosed/air ratio of the image
+//      mean must be 1.  A Lambertian control row (no index anywhere) pins
+//      that the enclosure itself changes nothing else.
+//    Usage: [--unit-only] [--trials K (default 4)] [--only <label substring>]
 //
 //  Author: RISE debt-cleanup, slice `debt-dl49`
 //  Tabs: 4
