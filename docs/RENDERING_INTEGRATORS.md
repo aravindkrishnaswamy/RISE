@@ -515,7 +515,9 @@ No MIS heuristic changed: BDPT is still power-2, VCM still balance
   their shadow rays 1e-6 and were right all along.  Fixed in
   `BoxGeometry::DropSelfHitRoot` (commit 40e78b69; BDPT/PT 0.28 → 0.97,
   the six-face `clippedplane` twin of the same box reads 0.99).  The
-  fix unmasked **debt 27** (OPEN): with `gap > 0` and the light OUTSIDE
+  fix unmasked **debt 27** (FIXED 2026-09-28 as ledger DL-05 -- delta-light
+  NEE shadow rays now see through the gap; see
+  [DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md](DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md)): with `gap > 0` and the light OUTSIDE
   a two-layer weave, PT reads UNDER BDPT/VCM by 1.28–1.30× at gap 0.1 and
   1.55× at gap 0.3 on box and free-standing planes alike, because the
   path light → straight through the far layer's delta gap → near layer's

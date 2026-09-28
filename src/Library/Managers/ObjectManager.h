@@ -382,6 +382,15 @@ namespace RISE
 				const bool bHitBackFaces
 				) const;
 
+			//! See IObjectManager::IntersectShadowRayOpaque's contract
+			//! comment (DL-05).
+			bool IntersectShadowRayOpaque(
+				const Ray& ray,
+				const Scalar dHowFar,
+				const bool bHitFrontFaces,
+				const bool bHitBackFaces
+				) const;
+
 			//! See IObjectManager::NearestOtherSurface's contract comment.
 			bool NearestOtherSurface(
 				const Point3& ptWorld,

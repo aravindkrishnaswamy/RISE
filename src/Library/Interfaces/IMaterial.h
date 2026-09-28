@@ -254,6 +254,31 @@ namespace RISE
 		/// the BSDF genuinely scatters through.
 		virtual bool ScattersFullSphere() const { return false; }
 
+		//! DL-05.  True when this material's SPF can emit a NON-BENDING
+		//! DELTA PASS-THROUGH lobe -- a ray that leaves along exactly the
+		//! incoming direction, carrying `ISPF::DeltaPassThroughTransmittance`
+		//! in expectation (today: a `transmission thin` weave's gap, and the
+		//! wrappers that forward it).  A capability of the MATERIAL, not a
+		//! per-sample flag (the debt-23 lesson): `RayCaster` scans it once
+		//! per attach to decide whether the pass-through shadow walk can
+		//! ever fire, and consults it per shadow-ray hit to decide whether
+		//! to ask the SPF for the transmittance.
+		//!
+		//! Only a DELTA light's NEE shadow ray sees through such a lobe (PT
+		//! NEE, the Step-1 zero-exitance lights, BDPT's zero-exitance
+		//! sweep).  An area or environment light keeps a binary shadow
+		//! here because PT's BSDF-sampled continuation already reaches it
+		//! THROUGH the delta lobe at MIS weight 1 (a delta vertex has no NEE
+		//! partner), so letting that NEE arm see through too would count
+		//! the same path twice.  See docs/DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md.
+		//!
+		//! A wrapper whose `GetSPF()` forwards (or re-prices) a base SPF's
+		//! pass-through lobe MUST forward this too, and its SPF must
+		//! override `DeltaPassThroughTransmittance{,NM}` with the re-priced
+		//! expectation; a wrapper that forwards neither simply keeps the
+		//! pre-DL-05 binary shadow (an under-read, never a double count).
+		virtual bool HasDeltaPassThrough() const { return false; }
+
 		//! Rescales this material's emission.  Default is a no-op that
 		//! REJECTS the change (returns false) so non-emissive materials
 		//! safely decline — only luminaire materials (e.g.

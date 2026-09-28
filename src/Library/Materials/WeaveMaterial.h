@@ -141,6 +141,15 @@ namespace RISE
 			//! `transmission thin`.
 			inline bool CouldLightPassThrough() const { return pBRDF->GetTransmission() == eWeaveTransmissionThin; }
 
+			//! DL-05: the gap IS a non-bending delta pass-through, under the
+			//! same condition -- WeaveSPF draws it only when `transmission
+			//! thin` -- AND only if the gap can open at all: `silk` / `satin`
+			//! ship `thin` with a uniform `gap 0`, whose SPF never draws the
+			//! lobe, and reporting the capability there would only make
+			//! every delta-light shadow ray they occlude pay for a walk that
+			//! finds zero (IMaterial::HasDeltaPassThrough).
+			inline bool HasDeltaPassThrough() const { return pBRDF->GetTransmission() == eWeaveTransmissionThin && pBRDF->GapCanOpen(); }
+
 			//! Read-back for the interactive editor / snapshot clone.
 			//! Every slot is forwarded from the BRDF, which holds the one
 			//! copy of the state.
