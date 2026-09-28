@@ -84,6 +84,7 @@
 #include "../src/Library/Materials/CompositeSPF.h"
 #include "../src/Library/Materials/CoatedMaterial.h"
 #include "../src/Library/Materials/CoatedLayer.h"
+#include "../src/Library/Materials/GenericHumanTissueMaterial.h"
 
 #include "../src/Library/Interfaces/IJob.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
@@ -565,6 +566,9 @@ static void SectionF( Fixtures& f )
 		  MakeComposite( *f.dSmooth, *f.trans, 3, 3, 3, 3, 3, 0.0, *f.s0 ), false },
 		{ "F6 clearcoat GGX / red GGX (LayeredWhiteFurnaceTest config 7: substrate never reached)",
 		  MakeComposite( *f.clearcoat, *f.redGgx, 4, 2, 2, 2, 2, 0.0, *f.s0 ), false },
+		{ "F7 dielectric / generic_human_tissue (null bottom BSDF -- DL-126's composition case)",
+		  MakeComposite( *f.dSmooth, *new GenericHumanTissueMaterial( *new UniformScalarPainter( 0.85 ), *new UniformScalarPainter( 0.0 ), 0.75, 0.012, 0.05, 7.0e-5, true ),
+		                 3, 3, 3, 3, 3, 0.0, *f.s0 ), false },
 	};
 	for( const Cfg& c : cfgs ) {
 		std::cout << "    " << c.name << "\n      ";
@@ -583,6 +587,111 @@ static void SectionF( Fixtures& f )
 		std::cout << "\n";
 		c.m->release();
 	}
+}
+
+//////////////////////////////////////////////////////////////////////
+//  Section G -- THE LAYERED VALUE AGAINST A CLOSED FORM.
+//
+//  For a SMOOTH dielectric top of index n over a Lambertian of albedo rho
+//  across a gap of thickness t and extinction sigma, the layered BRDF is
+//  EXACTLY (the Lambertian re-randomises every bounce, so the internal
+//  interreflection series is geometric -- Saunderson's form generalised
+//  to an absorbing gap):
+//
+//     f(wi, wo) = T(wi) T(wo) a(mu_ti) a(mu_to) rho
+//                 ------------------------------------------
+//                     pi n^2 ( 1 - rho E_ret )
+//
+//     a(mu)  = exp( -sigma t / mu )                  one gap crossing
+//     E_ret  = INT_0^1 2 mu a(mu)^2 F_in(mu) dmu     one internal round trip
+//
+//  with mu_t the refracted cosines, T = 1 - F the outer Fresnel
+//  transmittance and F_in the Fresnel reflectance at the top's underside
+//  (1 under TIR).  At sigma = 0 this is exactly CoatedLayer's
+//  T T rho / (pi n^2 (1 - r_i rho)).  The layered evaluator is a
+//  deterministic per-(wi, wo, position) Monte-Carlo estimate, so its
+//  MEAN over many positions is compared (a stat-scaled band), and the
+//  comparison is also run with wi and wo swapped (reciprocity).  This
+//  shares no code with the evaluator.
+//////////////////////////////////////////////////////////////////////
+static double FresnelInside15( const double mu, const double n )
+{
+	const double s2 = n * n * ( 1.0 - mu * mu );
+	if( s2 >= 1.0 ) return 1.0;
+	const double ct = std::sqrt( 1.0 - s2 );
+	const double rs = ( n * mu - ct ) / ( n * mu + ct );
+	const double rp = ( mu - n * ct ) / ( mu + n * ct );
+	return 0.5 * ( rs * rs + rp * rp );
+}
+
+static double ClosedFormLayered( const double thetaI, const double thetaO, const double rho,
+	const double sigma, const double t, const double n )
+{
+	const double ci = std::cos( thetaI ), co = std::cos( thetaO );
+	const double Ti = 1.0 - CoatedLayer::Fresnel( ci, n );
+	const double To = 1.0 - CoatedLayer::Fresnel( co, n );
+	const double mti = CoatedLayer::CosRefracted( ci, n );
+	const double mto = CoatedLayer::CosRefracted( co, n );
+	const double ai = std::exp( -sigma * t / mti );
+	const double ao = std::exp( -sigma * t / mto );
+	const int N = 40000;
+	double eRet = 0;
+	for( int i = 0; i < N; ++i ) {
+		const double mu = ( i + 0.5 ) / N;
+		const double a = std::exp( -sigma * t / mu );
+		eRet += 2.0 * mu * a * a * FresnelInside15( mu, n ) / N;
+	}
+	return Ti * To * ai * ao * rho / ( kPi * n * n * ( 1.0 - rho * eRet ) );
+}
+
+static void SectionG( Fixtures& f )
+{
+	std::cout << "\n[G] Layered value vs the closed form (smooth coat over a Lambertian, absorbing gap)\n";
+	UniformScalarPainter* sDelta = new UniformScalarPainter( 1000000.0 );  sDelta->addref();
+	DielectricMaterial* smooth = new DielectricMaterial( *f.s1, *f.s15, *sDelta, false );  smooth->addref();
+	UniformScalarPainter* sExt = new UniformScalarPainter( 0.8 );  sExt->addref();
+
+	struct Cfg { const char* name; CompositeMaterial* m; double rho[3]; double sigma; double t; };
+	Cfg cfgs[] = {
+		{ "G1 smooth coat / white, no gap", MakeComposite( *smooth, *f.lamb, 3, 3, 3, 3, 3, 0.0, *f.s0 ), { 1, 1, 1 }, 0.0, 0.0 },
+		{ "G2 smooth coat / red, gap 0.3 ext 0.8", MakeComposite( *smooth, *f.lambRed, 3, 3, 3, 3, 3, 0.3, *sExt ), { 0.8, 0.2, 0.2 }, 0.8, 0.3 },
+	};
+	const double pairs[][2] = { { 0, 0 }, { 30, 60 }, { 60, 30 }, { 75, 10 }, { 10, 80 } };
+	const int M = 6000;
+	for( const Cfg& c : cfgs ) {
+		const IBSDF* b = c.m->GetBSDF();
+		Check( b != 0, std::string( "[G] " ) + c.name + " presents a BSDF" );
+		if( !b ) { c.m->release(); continue; }
+		for( const auto& pr : pairs ) {
+			const double ti = pr[0] * kPi / 180.0, to = pr[1] * kPi / 180.0;
+			// wi in the x-z plane; wo at azimuth 120 deg.
+			const Vector3 wo( std::sin( to ) * std::cos( 2.0944 ), std::sin( to ) * std::sin( 2.0944 ), std::cos( to ) );
+			double sum[3] = { 0, 0, 0 }, sum2[3] = { 0, 0, 0 };
+			for( int k = 0; k < M; ++k ) {
+				RayIntersectionGeometric ri = MakeIntersection( ti );
+				ri.ptIntersection = Point3( 1e-3 * k, 7e-4 * k, 0 );
+				IORStack stack = MakeTestIORStack( g_stub );
+				const RISEPel v = b->valueStateful( wo, ri, &stack );
+				for( int ch = 0; ch < 3; ++ch ) { sum[ch] += v[ch]; sum2[ch] += v[ch] * v[ch]; }
+			}
+			for( int ch = 0; ch < 3; ++ch ) {
+				const double mean = sum[ch] / M;
+				const double var = r_max( 0.0, sum2[ch] / M - mean * mean );
+				const double sem = std::sqrt( var / M );
+				const double truth = ClosedFormLayered( ti, to, c.rho[ch], c.sigma, c.t, 1.5 );
+				const bool ok = std::fabs( mean - truth ) <= r_max( 4.0 * sem, 0.004 * truth );
+				if( ch == 0 || c.rho[ch] != c.rho[0] ) {
+					std::cout << "    " << c.name << " (" << pr[0] << "," << pr[1] << ") ch" << ch
+					          << ": mean " << std::setprecision( 6 ) << mean << " +- " << sem
+					          << "  closed form " << truth << "  " << ( ok ? "ok" : "MISMATCH" ) << "\n";
+				}
+				Check( ok, std::string( "[G] " ) + c.name + " theta (" + std::to_string( (int)pr[0] ) + "," +
+					std::to_string( (int)pr[1] ) + ") ch" + std::to_string( ch ) + " value == closed form" );
+			}
+		}
+		c.m->release();
+	}
+	sExt->release(); smooth->release(); sDelta->release();
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -788,6 +897,7 @@ int main( int argc, char** argv )
 	SectionC( f );
 	SectionE( f );
 	SectionF( f );
+	SectionG( f );
 	if( !skipRender ) {
 		SectionD();
 	}
