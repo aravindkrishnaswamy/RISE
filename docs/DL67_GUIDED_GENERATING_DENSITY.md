@@ -234,8 +234,8 @@ vertices.  RIS resamples every eligible vertex regardless of alpha.
 ## 5. Gate (current counts, from this slice's run logs)
 
 `PTGuidingMISPartitionTest` 154/0, `BDPTGuidedContinuationTest` 62/0,
-`BDPTStrategyBalanceTest` 188/0 (full run; 24/0 `--guided-only` after the
-PT RIS row), `VCMStrategyBalanceTest` 74/0, `TranslucentIORStackTest` all
+`BDPTStrategyBalanceTest` 194/0 (full run, including the PT RIS row; 24/0
+`--guided-only`), `VCMStrategyBalanceTest` 74/0, `TranslucentIORStackTest` all
 pass, `PTGuidedSelectProbTest` all pass, `RayCasterEnvEscapeMISTest` 91/0,
 `EnvLightBalanceTest` 123/0, `VolumeEnvFurnaceTest` 32/0,
 `OptimalMISTrainingSitesTest` 111/0, `SchlickLobePairingTest` 27/0,
@@ -243,8 +243,8 @@ pass, `PTGuidedSelectProbTest` all pass, `RayCasterEnvEscapeMISTest` 91/0,
 `SourceHygieneTest` 167/0, `RasterizerDefaultsConsistencyTest` 164/0,
 `AgentFirstSliceTest` 372/0.  `SSSRadianceScalingTest` reads 574014/3 --
 IDENTICAL with this slice's three source files reverted to `6b91fd19`, so
-it pre-dates DL-67 (opened as DL-284).  Zero compiler warnings, library
-and every test target built.
+it pre-dates DL-67 (opened as DL-284).  Zero compiler warnings on a clean rebuild of the
+library and every test target above (final gate re-run on the clean build).
 
 `TranslucentIORStackTest`'s BDPT probe needed two test-side changes, both
 consequences of the ruling rather than of a defect: its DL-43 density check
