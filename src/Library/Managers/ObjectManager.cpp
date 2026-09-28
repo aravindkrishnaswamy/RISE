@@ -53,11 +53,82 @@ bool IsContainerNode_( const IObjectPriv* obj )
 	return dynamic_cast<const Implementation::CSGObject*>( obj ) == 0;
 }
 
+//! DL-05: the IntersectShadowRay gate plus "the object's own material has
+//! no delta pass-through" -- see IObjectManager::IntersectShadowRayOpaque.
+inline bool OpaqueShadowCaster_( const IObjectPriv* obj )
+{
+	if( !obj->IsWorldVisible() || !obj->DoesCastShadows() ) {
+		return false;
+	}
+	const IMaterial* pMat = obj->GetMaterial();
+	return !( pMat && pMat->HasDeltaPassThrough() );
+}
+
 unsigned long long NextSpatialGeneration()
 {
 	static std::atomic<unsigned long long> sCounter{ 0 };
 	return sCounter.fetch_add( 1, std::memory_order_relaxed ) + 1;
 }
+
+//! DL-05: OcclusionElementProcessor's twin for IntersectShadowRayOpaque --
+//! identical forwarding, except the any-hit gate is OpaqueShadowCaster_.
+//! Same lifetime rules as OcclusionElementProcessor below (stack-owned,
+//! never addref'd by the tree).
+class OpaqueShadowElementProcessor : public RISE::TreeElementProcessor<const IObjectPriv*>
+{
+public:
+	explicit OpaqueShadowElementProcessor( const ObjectManager& mgr_ ) : mgr( mgr_ ) {}
+
+	void RayElementIntersection( RayIntersectionGeometric& ri, const IObjectPriv* elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const override
+	{
+		mgr.RayElementIntersection( ri, elem, bHitFrontFaces, bHitBackFaces );
+	}
+
+	void RayElementIntersection( RayIntersection& ri, const IObjectPriv* elem, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const override
+	{
+		mgr.RayElementIntersection( ri, elem, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
+	}
+
+	bool RayElementIntersection_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const IObjectPriv* elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const override
+	{
+		if( OpaqueShadowCaster_( elem ) ) {
+			return elem->IntersectRay_IntersectionOnly( ray, dHowFar, bHitFrontFaces, bHitBackFaces );
+		}
+		return false;
+	}
+
+	BoundingBox GetElementBoundingBox( const IObjectPriv* elem ) const override
+	{
+		return mgr.GetElementBoundingBox( elem );
+	}
+
+	bool ElementBoxIntersection( const IObjectPriv* elem, const BoundingBox& bbox ) const override
+	{
+		return mgr.ElementBoxIntersection( elem, bbox );
+	}
+
+	char WhichSideofPlaneIsElement( const IObjectPriv* elem, const Plane& plane ) const override
+	{
+		return mgr.WhichSideofPlaneIsElement( elem, plane );
+	}
+
+	void SerializeElement( IWriteBuffer& buffer, const IObjectPriv* elem ) const override
+	{
+		mgr.SerializeElement( buffer, elem );
+	}
+
+	void DeserializeElement( IReadBuffer& buffer, const IObjectPriv*& elem ) const override
+	{
+		mgr.DeserializeElement( buffer, elem );
+	}
+
+	void addref() const override {}
+	bool release() const override { return false; }
+	unsigned int refcount() const override { return 1; }
+
+private:
+	const ObjectManager& mgr;
+};
 
 //! GEOMETRY-PRESENCE sibling of ObjectManager's own TreeElementProcessor
 //! implementation.  Forwards every method to the real ObjectManager
@@ -1241,6 +1312,38 @@ bool ObjectManager::IntersectOcclusionRay( const Ray& ray, const Scalar dHowFar,
 		for( i=items.begin(), e=items.end(); i!=e; i++ ) {
 			const IObjectPriv* obj = i->second.first;
 			if( obj->IsWorldVisible() ) {
+				if( obj->IntersectRay_IntersectionOnly( ray, dHowFar, bHitFrontFaces, bHitBackFaces ) ) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+}
+
+bool ObjectManager::IntersectShadowRayOpaque( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const
+{
+	if( bUseBSPtree && (items.size() > nMaxObjectsPerNode) ) {
+		// Same DCLP-correct acquire/self-heal/re-load pattern as
+		// IntersectRay above; see pBVH's declaration comment.
+		BVH<const IObjectPriv*>* localBVH = pBVH.load( std::memory_order_acquire );
+		if( !localBVH ) {
+			CreateBVH();
+			localBVH = pBVH.load( std::memory_order_acquire );
+		}
+		const OpaqueShadowElementProcessor opaqueEp( *this );
+		return localBVH->IntersectRay_IntersectionOnly( ray, dHowFar, bHitFrontFaces, bHitBackFaces, &opaqueEp );
+	} else if( bUseOctree && (items.size() > nMaxObjectsPerNode) ) {
+		if( !pOctree ) {
+			CreateOctree();
+		}
+		const OpaqueShadowElementProcessor opaqueEp( *this );
+		return pOctree->IntersectRay_IntersectionOnly( ray, dHowFar, bHitFrontFaces, bHitBackFaces, &opaqueEp );
+	} else {
+		GenericManager<IObjectPriv>::ItemListType::const_iterator		i, e;
+		for( i=items.begin(), e=items.end(); i!=e; i++ ) {
+			const IObjectPriv* obj = i->second.first;
+			if( OpaqueShadowCaster_( obj ) ) {
 				if( obj->IntersectRay_IntersectionOnly( ray, dHowFar, bHitFrontFaces, bHitBackFaces ) ) {
 					return true;
 				}

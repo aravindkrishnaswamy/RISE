@@ -2715,12 +2715,21 @@ bool RayCaster::CastShadowRayAuto(
 	}
 	transmittance = RISEPel( 1.0, 1.0, 1.0 );
 	// The binary any-hit test first: a clear segment costs exactly what it
-	// always did, and only an OCCLUDED delta-light ray in a scene that has
-	// a pass-through material pays for the closest-hit walk.
+	// always did.
 	if( !CastShadowRay( ray, dHowFar ) ) {
 		return false;
 	}
 	if( !bPassThrough ) {
+		return true;
+	}
+	// Something blocks.  If anything OTHER than a pass-through surface
+	// does, the answer is fully occluded -- one more any-hit traversal,
+	// not a closest-hit walk.  Only a segment blocked by pass-through
+	// surfaces alone reaches the walk that multiplies their
+	// transmittances (and there every hit it finds is one of them, up to
+	// the walk's own step-over of non-shadow-casters).
+	if( pScene->GetObjects()->IntersectShadowRayOpaque( ray, dHowFar, true, true ) ) {
+		transmittance = RISEPel( 0, 0, 0 );
 		return true;
 	}
 	return WalkShadowSegment( ray, dHowFar, bNM, nm, transmittance, false, true );
