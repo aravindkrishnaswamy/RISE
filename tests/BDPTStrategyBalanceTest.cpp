@@ -2327,6 +2327,152 @@ static void TestGGXLambertianControl()
 
 
 //////////////////////////////////////////////////////////////////////
+// Topology L, GUIDED (DL-67, docs/DL67_GUIDED_GENERATING_DENSITY.md).
+//
+// Topology L's geometry and `schlick_material` walls with OpenPGL path
+// guiding ON in the integrator under test.  Guiding is a
+// variance-reduction choice: it must not move the expectation, so the
+// reference is always an UN-GUIDED render of the other integrator.
+//
+//   BDPT guided (one-sample, eye + light subpaths)  vs  PT un-guided
+//   BDPT guided (RIS, eye + light subpaths)         vs  PT un-guided
+//   PT guided   (one-sample, learned alpha)         vs  BDPT un-guided
+//
+// WHAT WAS BROKEN.  At a multi-lobe vertex the guided branches mixed
+// three densities: a guide-SUBSTITUTED direction was priced
+// `f_agg cos / (selectProb * p_c)` -- the aggregate BSDF over a density
+// that still carried the selected lobe's `1/selectProb`, although the
+// guide draw is not conditioned on any lobe; the kept direction divided
+// `kray_I p_I` by a mixture built from the lobe's OWN `p_I`; RIS
+// candidate 0 used `p_I` where candidate 1 used the aggregate; and the
+// specular lobe -- which BDPT never guides (`GuidingSupportsSurface
+// Sampling` admits diffuse lobes only) -- kept `kray/q` un-weighted
+// while the guide, pricing the AGGREGATE BSDF, covered it too.  All of
+// these are one error: the continuation must be priced on ONE partition
+// of the integral between its two techniques.  VCM shares this
+// generator but never guides (no VCM rasterizer calls
+// `BDPTIntegrator::SetGuidingField`, and the VCM chunks do not accept
+// the `pathguiding*` parameters), so it has no guided twin to test.
+//////////////////////////////////////////////////////////////////////
+static const char* kRasterizerBDPTSchlickLGuidedOneSample =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"bdpt_pel_rasterizer\n"
+	"{\n"
+	"\tmax_eye_depth 5\n"
+	"\tmax_light_depth 5\n"
+	"\tsamples 256\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"\tpathguiding TRUE\n"
+	"\tpathguiding_iterations 3\n"
+	"\tpathguiding_spp 16\n"
+	"\tpathguiding_alpha 0.7\n"
+	"\tpathguiding_max_depth 4\n"
+	"\tpathguiding_light_max_depth 4\n"
+	"\tpathguiding_sampling_type OneSampleMIS\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern rendered/bdpt_balance_bdpt_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
+	"}\n";
+
+static const char* kRasterizerBDPTSchlickLGuidedRIS =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"bdpt_pel_rasterizer\n"
+	"{\n"
+	"\tmax_eye_depth 5\n"
+	"\tmax_light_depth 5\n"
+	"\tsamples 256\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"\tpathguiding TRUE\n"
+	"\tpathguiding_iterations 3\n"
+	"\tpathguiding_spp 16\n"
+	"\tpathguiding_alpha 0.7\n"
+	"\tpathguiding_max_depth 4\n"
+	"\tpathguiding_light_max_depth 4\n"
+	"\tpathguiding_sampling_type RIS\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern rendered/bdpt_balance_bdpt_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
+	"}\n";
+
+static const char* kRasterizerPTSchlickLGuided =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"pathtracing_pel_rasterizer\n"
+	"{\n"
+	"\tsamples 256\n"
+	"\trr_min_depth 8\n"
+	"\tmax_diffuse_bounce 5\n"
+	"\tmax_glossy_bounce 5\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"\tpathguiding TRUE\n"
+	"\tpathguiding_iterations 3\n"
+	"\tpathguiding_spp 16\n"
+	"\tpathguiding_alpha 0.7\n"
+	"\tpathguiding_max_depth 4\n"
+	"\tpathguiding_sampling_type OneSampleMIS\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern rendered/bdpt_balance_pt_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
+	"}\n";
+
+// Band: topology L's own 2% mean band (`kSchlickTopologyLTolerances`),
+// not the shared 8%.  All three rows read within 0.1% of their
+// reference post-fix and the RIS row read +19.07% pre-fix.  NOTE what
+// the one-sample rows can and cannot see here: both rasterizers scale
+// the configured alpha by their adaptive variance heuristic
+// (`BDPTRasterizerBase` / `PixelBasedPelRasterizer`), which settles at
+// ~0.016 on this scene, so the one-sample rows exercise every guided
+// branch but only rarely; they read +0.08% pre-fix.  The one-sample
+// red-proof is the generator-level furnace in
+// tests/BDPTGuidedContinuationTest.cpp, which installs the field with a
+// fixed alpha.  RIS resamples every eligible vertex regardless of
+// alpha, which is why it discriminates at scene level.
+static void TestSchlickMultiLobeGuided()
+{
+	RunTopologyTest( "multi-lobe schlick_material, BDPT GUIDED one-sample vs un-guided PT (DL-67)",
+		std::string( kSceneSchlickMultiLobeL ), kSchlickTopologyLTolerances,
+		kRasterizerPTSchlickL, kRasterizerBDPTSchlickLGuidedOneSample );
+	RunTopologyTest( "multi-lobe schlick_material, BDPT GUIDED RIS vs un-guided PT (DL-67)",
+		std::string( kSceneSchlickMultiLobeL ), kSchlickTopologyLTolerances,
+		kRasterizerPTSchlickL, kRasterizerBDPTSchlickLGuidedRIS );
+	RunTopologyTest( "multi-lobe schlick_material, PT GUIDED one-sample vs un-guided BDPT (DL-67)",
+		std::string( kSceneSchlickMultiLobeL ), kSchlickTopologyLTolerances,
+		kRasterizerPTSchlickLGuided, kRasterizerBDPTSchlickL );
+}
+
+//////////////////////////////////////////////////////////////////////
 // DL-125 achromatic parity controls: spectral BDPT hero versus bundle.
 // Schlick supplies EvaluateKrayNM after DL-125; aggregate-density GGX
 // and Lambertian still use an appropriate aggregate fallback. Equal
@@ -3235,6 +3381,11 @@ int main( int argc, char** argv )
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
+	if( argc == 2 && std::strcmp(argv[1], "--guided-only") == 0 ) {
+		TestSchlickMultiLobeGuided();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
 	if( argc == 2 && std::strcmp(argv[1], "--spectral-aggregate-unit") == 0 ) {
 		TestSpectralRepeatAggregation();
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
@@ -3243,7 +3394,7 @@ int main( int argc, char** argv )
 	if( argc > 1 ) {
 		if( argc != 3 || std::strcmp(argv[1], "--spectral-only") != 0 ||
 			(std::strcmp(argv[2], "1") != 0 && std::strcmp(argv[2], "2") != 0) ) {
-			std::cerr << "Usage: BDPTStrategyBalanceTest [--spectral-only 1|2 | --spectral-aggregate-unit | --materials-only]" << std::endl;
+			std::cerr << "Usage: BDPTStrategyBalanceTest [--spectral-only 1|2 | --spectral-aggregate-unit | --materials-only | --guided-only]" << std::endl;
 			return 2;
 		}
 		spectralSampleScale = std::strcmp(argv[2], "2") == 0 ? 2 : 1;
@@ -3269,6 +3420,7 @@ int main( int argc, char** argv )
 	TestSubmergedCeilingMISCombination();
 	TestSchlickMultiLobe();
 	TestGGXLambertianControl();
+	TestSchlickMultiLobeGuided();
 	TestSpectralHWSSCompanionLadder();
 	TestSpectralHWSSCompanionLadderControl();
 	TestSpectralHWSSChromaticLobeSpectra();

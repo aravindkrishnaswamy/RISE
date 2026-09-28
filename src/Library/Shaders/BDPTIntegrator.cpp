@@ -794,6 +794,214 @@ namespace
 				cr.needsSplat );
 		}
 	}
+
+	//////////////////////////////////////////////////////////////////
+	// DL-67 (docs/DL67_GUIDED_GENERATING_DENSITY.md): the guided
+	// continuation at one BDPT subpath vertex, shared by the eye and
+	// light generators (and so by MLT, which drives this generator; VCM
+	// shares it too but never installs a guiding field).
+	//
+	// ONE partition, the same one PT's PART 3 uses: a deterministic,
+	// lobe-independent split of the continuation integral between the
+	// BSDF technique (Scatter + RandomlySelect) and the guide technique,
+	//
+	//   W_g(w) = a g(w) / (a g(w) + (1-a) p_agg(w)),   W_b = 1 - W_g,
+	//
+	// with `p_agg` the material's AGGREGATE `ISPF::Pdf()` (the true
+	// generating density of the BSDF technique) and `a` the one-sample
+	// alpha (or 1/2, the RIS proposal mixture).  Each technique prices
+	// its own UNWEIGHTED estimator times its weight over the probability
+	// it fired:
+	//
+	//   lobe I kept    kray_I / selectProb * W_b(w_I) / (1 - alpha_I)
+	//   guide draw     f_agg(w) cos / g(w) * W_g(w) / alphaBar
+	//
+	// `alpha_I` is `alpha` for a lobe `GuidingSupportsSurfaceSampling`
+	// admits and 0 otherwise (1 for an admitted lobe in RIS mode, which
+	// always resamples); `alphaBar = sum_J q_J alpha_J` is the realized
+	// probability the guide fires -- `guideProb`, which the caller
+	// computes with `GuidingRealizedGuideProbability`.  A lobe the guide never
+	// replaces still takes `W_b`: the guide technique prices the
+	// AGGREGATE BSDF, so it covers that lobe too.  A guide draw that
+	// yields nothing is a ZERO sample of the guide technique -- the walk
+	// ends -- never a fall-back to the lobe's own direction, which would
+	// raise that technique's firing probability above `1 - alpha_I`.
+	//////////////////////////////////////////////////////////////////
+	template<class V>
+	struct BDPTGuidedChoice
+	{
+		bool	substituted;	///< the guide's direction replaced the lobe's
+		bool	terminate;		///< the chosen technique contributed zero
+		Vector3	dir;			///< substituted direction
+		V		f;				///< aggregate BSDF at `dir` (substituted only)
+		Scalar	equivPdf;		///< substituted: weight == f cos / equivPdf
+		Scalar	keptScale;		///< kept lobe: multiplies kray / selectProb
+		Scalar	aggAtTrace;		///< aggregate pdf at the traced direction, -1 = not evaluated
+
+		BDPTGuidedChoice() :
+			substituted( false ), terminate( false ), dir( 0, 0, 0 ),
+			f(), equivPdf( 0 ), keptScale( 1 ), aggAtTrace( -1 )
+		{}
+	};
+
+	template<class Tag, class V, class EvalF, class EvalP>
+	inline void BDPTGuidedContinuation(
+		PathGuidingField& field,
+		GuidingDistributionHandle& dist,
+		const ScatteredRay& scat,
+		const Scalar guideProb,
+		const Scalar alpha,
+		const GuidingSamplingType samplingType,
+		const Vector3& normal,
+		ISampler& sampler,
+		const EvalF& evalF,
+		const EvalP& evalPdf,
+		BDPTGuidedChoice<V>& out )
+	{
+		typedef SpectralValueTraits<Tag> Traits;
+		const bool bRIS = ( samplingType == eGuidingRIS );
+		const Scalar mixA = bRIS ? Scalar( 0.5 ) : alpha;
+		const Vector3 wSel = scat.ray.Dir();
+
+		if( !GuidingSupportsSurfaceSampling( scat ) )
+		{
+			const Scalar agg = evalPdf( wSel );
+			out.aggAtTrace = agg;
+			out.keptScale = PathTransportUtilities::GuidingPartitionBsdfWeight(
+				mixA, field.Pdf( dist, wSel ), agg );
+			if( out.keptScale <= 0 ) {
+				out.terminate = true;
+			}
+			return;
+		}
+
+		if( bRIS )
+		{
+			// Candidate 0 is the lobe's own draw; its proposal density is
+			// the BSDF TECHNIQUE's density -- the aggregate -- the same
+			// function candidate 1 is evaluated with, so the RIS identity
+			// `sum_i p_i(x) / (p_0 + p_1)(x) == 1` holds at every x.
+			PathTransportUtilities::GuidingRISCandidate<V> c[2];
+			Scalar v0 = 0;
+			{
+				c[0].direction = wSel;
+				c[0].bsdfEval = evalF( wSel );
+				c[0].bsdfPdf = evalPdf( wSel );
+				c[0].guidePdf = field.Pdf( dist, wSel );
+				c[0].incomingRadPdf = field.IncomingRadiancePdf( dist, wSel );
+				c[0].cosTheta = fabs( Vector3Ops::Dot( wSel, normal ) );
+				const Scalar avgBsdf = Traits::max_value( c[0].bsdfEval );
+				c[0].risTarget = PathTransportUtilities::GuidingRISTarget(
+					avgBsdf, c[0].cosTheta, c[0].incomingRadPdf, alpha );
+				c[0].risPdf = PathTransportUtilities::GuidingRISProposalPdf(
+					r_max( c[0].bsdfPdf, Scalar( 0 ) ), c[0].guidePdf );
+				v0 = PathTransportUtilities::GuidingPartitionBsdfWeight(
+					mixA, c[0].guidePdf, c[0].bsdfPdf );
+				c[0].risWeight = c[0].risPdf > NEARZERO ? c[0].risTarget / c[0].risPdf : 0;
+				c[0].valid = v0 > 0 && c[0].risPdf > NEARZERO && avgBsdf > 0;
+				if( !c[0].valid ) {
+					c[0].risWeight = 0;
+				}
+			}
+			// Candidate 1 is a guide draw, valid wherever the guide has
+			// density and the BSDF is nonzero -- NOT gated on the
+			// aggregate pdf, which would discard exactly the directions
+			// the guide owns outright (`W_g == 1`).
+			Scalar w1 = 0;
+			{
+				Scalar gPdf = 0;
+				const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
+				c[1].direction = field.Sample( dist, xi2d, gPdf );
+				c[1].guidePdf = gPdf;
+				if( gPdf > NEARZERO )
+				{
+					c[1].bsdfEval = evalF( c[1].direction );
+					c[1].bsdfPdf = evalPdf( c[1].direction );
+					c[1].incomingRadPdf = field.IncomingRadiancePdf( dist, c[1].direction );
+					c[1].cosTheta = fabs( Vector3Ops::Dot( c[1].direction, normal ) );
+					const Scalar avgBsdf = Traits::max_value( c[1].bsdfEval );
+					c[1].risTarget = PathTransportUtilities::GuidingRISTarget(
+						avgBsdf, c[1].cosTheta, c[1].incomingRadPdf, alpha );
+					c[1].risPdf = PathTransportUtilities::GuidingRISProposalPdf(
+						r_max( c[1].bsdfPdf, Scalar( 0 ) ), c[1].guidePdf );
+					w1 = PathTransportUtilities::GuidingPartitionGuideWeight(
+						mixA, gPdf, c[1].bsdfPdf );
+					c[1].risWeight = c[1].risPdf > NEARZERO ? c[1].risTarget / c[1].risPdf : 0;
+					c[1].valid = avgBsdf > 0 && w1 > 0;
+					if( !c[1].valid ) {
+						c[1].risWeight = 0;
+					}
+				}
+				else
+				{
+					c[1].bsdfEval = Traits::zero();
+					c[1].bsdfPdf = 0;
+					c[1].incomingRadPdf = 0;
+					c[1].cosTheta = 0;
+					c[1].risTarget = 0;
+					c[1].risPdf = 0;
+					c[1].risWeight = 0;
+					c[1].valid = false;
+				}
+			}
+
+			Scalar risEffectivePdf = 0;
+			const unsigned int sel = PathTransportUtilities::GuidingRISSelectCandidate(
+				c, 2, sampler.Get1D(), risEffectivePdf );
+			if( !( risEffectivePdf > NEARZERO && c[sel].valid ) ) {
+				out.terminate = true;
+				return;
+			}
+			// Resampled output = contribution * (sum w / w_sel), and
+			// sum w / w_sel == M * risPdf_sel / risEffectivePdf.
+			const Scalar resample = Scalar( 2 ) * c[sel].risPdf / risEffectivePdf;
+			out.aggAtTrace = c[sel].bsdfPdf;
+			if( sel == 0 ) {
+				out.keptScale = v0 * resample;
+			} else {
+				out.substituted = true;
+				out.dir = c[1].direction;
+				out.f = c[1].bsdfEval;
+				out.equivPdf = c[1].guidePdf * guideProb / ( w1 * resample );
+			}
+			return;
+		}
+
+		// One-sample MIS.
+		const Scalar xi = sampler.Get1D();
+		if( PathTransportUtilities::ShouldUseGuidedSample( alpha, xi ) )
+		{
+			Scalar gPdf = 0;
+			const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
+			const Vector3 gDir = field.Sample( dist, xi2d, gPdf );
+			if( gPdf > NEARZERO )
+			{
+				const V f = evalF( gDir );
+				const Scalar agg = evalPdf( gDir );
+				const Scalar wg = PathTransportUtilities::GuidingPartitionGuideWeight(
+					mixA, gPdf, agg );
+				if( wg > 0 ) {
+					out.substituted = true;
+					out.dir = gDir;
+					out.f = f;
+					out.equivPdf = gPdf * guideProb / wg;
+					out.aggAtTrace = agg;
+					return;
+				}
+			}
+			out.terminate = true;
+			return;
+		}
+
+		// Kept: `xi >= alpha` in [0, 1) implies `alpha < 1`.
+		const Scalar agg = evalPdf( wSel );
+		out.aggAtTrace = agg;
+		out.keptScale = PathTransportUtilities::GuidingPartitionBsdfWeight(
+			mixA, field.Pdf( dist, wSel ), agg ) / ( Scalar( 1 ) - alpha );
+		if( out.keptScale <= 0 ) {
+			out.terminate = true;
+		}
+	}
 #endif
 }
 
@@ -2678,169 +2886,95 @@ namespace {
 			IORStack guidedIorStack( iorStack );
 	#ifdef RISE_ENABLE_OPENPGL
 			// --- Path guiding (eye subpath) ---
+			// DL-67: see `BDPTGuidedContinuation` for the ONE partition
+			// every branch below prices on.  The vertex-level gate is
+			// deliberately NOT the selected lobe's eligibility: a lobe the
+			// guide never replaces still owns only its `W_b` share
+			// whenever the guide CAN fire here, and that needs the guide
+			// density at its direction.  `guideProb == 0` (no lobe in this
+			// Scatter the guide could replace) means no partner exists,
+			// the walk is un-guided at this vertex, and no sampler
+			// dimension is spent.
 			bool usedGuidedDirection = false;
 			V guidedF = Traits::zero();
 			Vector3 guidedDir;
-			Scalar guidedEffectivePdf = 0;
-			Scalar bsdfCombinedPdf = 0;
+			Scalar guidedEffectivePdf = 0;	// substituted: weight == f cos / this
+			Scalar keptPartitionScale = 1;	// kept lobe: multiplies kray / selectProb
+			Scalar aggregateAtScatDir = -1;	// aggregate pdf at the traced direction, -1 = not evaluated
+			bool guidedTerminate = false;
 
 			if( pGuidingField && pGuidingField->IsTrained() &&
-				depth < maxGuidingDepth && GuidingSupportsSurfaceSampling( *pScat ) &&
-				vertices.back().isConnectible )
+				depth < maxGuidingDepth && guidingAlpha > NEARZERO &&
+				!pScat->isDelta && vertices.back().isConnectible )
 			{
-				if( pGuidingField->InitDistribution( guideDist, v.position, sampler.Get1D() ) )
+				// The probability the guide technique replaces an eligible
+				// lobe once selected: `alpha` in one-sample mode, 1 in RIS
+				// mode (RIS always resamples between the lobe's draw and a
+				// guide draw).
+				const Scalar lobeGuideProb =
+					( guidingSamplingType == eGuidingRIS ) ? Scalar( 1 ) : guidingAlpha;
+				const Scalar guideProb =
+					PathTransportUtilities::GuidingRealizedGuideProbability(
+						scattered, Traits::is_nm,
+						[lobeGuideProb]( const ScatteredRay& r ) -> Scalar {
+							return GuidingSupportsSurfaceSampling( r ) ? lobeGuideProb : Scalar( 0 );
+						} );
+				if( guideProb > 0 &&
+					pGuidingField->InitDistribution( guideDist, v.position, sampler.Get1D() ) )
 				{
-					if( pScat->type == ScatteredRay::eRayDiffuse ) {
-						pGuidingField->ApplyCosineProduct(
-							guideDist,
-							GuidingCosineNormal( v.normal, currentRay.Dir() ) );
-					}
+					pGuidingField->ApplyCosineProduct(
+						guideDist,
+						GuidingCosineNormal( v.normal, currentRay.Dir() ) );
 
-					const Scalar alpha = guidingAlpha;
-
-					if( guidingSamplingType == eGuidingRIS )
-					{
-						// RIS-based guiding (BDPT eye subpath)
-						PathTransportUtilities::GuidingRISCandidate<V> candidates[2];
-
-						// Candidate 0: BSDF sample
-						{
-							PathTransportUtilities::GuidingRISCandidate<V>& c = candidates[0];
-							c.direction = pScat->ray.Dir();
-							c.bsdfEval = PathValueOps::EvalBSDFAtVertex<Tag>(
-								vertices.back(), c.direction, -currentRay.Dir(), tag );
-							c.bsdfPdf = pScat->pdf;
-							c.guidePdf = pGuidingField->Pdf( guideDist, c.direction );
-							c.incomingRadPdf = pGuidingField->IncomingRadiancePdf( guideDist, c.direction );
-							c.cosTheta = fabs( Vector3Ops::Dot( c.direction, v.normal ) );
-							const Scalar avgBsdf = Traits::max_value( c.bsdfEval );
-							c.risTarget = PathTransportUtilities::GuidingRISTarget(
-								avgBsdf, c.cosTheta, c.incomingRadPdf, alpha );
-							c.risPdf = PathTransportUtilities::GuidingRISProposalPdf(
-								c.bsdfPdf, c.guidePdf );
-							c.risWeight = c.risPdf > NEARZERO ? c.risTarget / c.risPdf : 0;
-							c.valid = c.bsdfPdf > NEARZERO && c.risPdf > NEARZERO && avgBsdf > 0;
-							if( !c.valid ) {
-								c.risWeight = 0;
-							}
-						}
-
-						// Candidate 1: guide sample
-						{
-							PathTransportUtilities::GuidingRISCandidate<V>& c = candidates[1];
-							Scalar gPdf = 0;
-							const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
-							c.direction = pGuidingField->Sample( guideDist, xi2d, gPdf );
-							c.guidePdf = gPdf;
-
-							if( gPdf > NEARZERO )
-							{
-								c.bsdfEval = PathValueOps::EvalBSDFAtVertex<Tag>(
-									vertices.back(), c.direction, -currentRay.Dir(), tag );
-								// DL-43: EvalPdfAtVertex(vertex, wi, wo) evaluates
-								// Pdf(outgoing=wo | incoming=wi) -- wi must be the
-								// incoming direction (-currentRay.Dir()) and wo the
-								// candidate whose density we want, matching the
-								// light-subpath twin below.  This used to be
-								// swapped (c.direction, -currentRay.Dir()), which
-								// evaluated the density of scattering back toward
-								// the previous vertex instead of the guide
-								// candidate's own density.
-								c.bsdfPdf = PathValueOps::EvalPdfAtVertex<Tag>(
-									vertices.back(), -currentRay.Dir(), c.direction, tag );
-								c.incomingRadPdf = pGuidingField->IncomingRadiancePdf( guideDist, c.direction );
-								c.cosTheta = fabs( Vector3Ops::Dot( c.direction, v.normal ) );
-								const Scalar avgBsdf = Traits::max_value( c.bsdfEval );
-								c.risTarget = PathTransportUtilities::GuidingRISTarget(
-									avgBsdf, c.cosTheta, c.incomingRadPdf, alpha );
-								c.risPdf = PathTransportUtilities::GuidingRISProposalPdf(
-									c.bsdfPdf, c.guidePdf );
-								c.risWeight = c.risPdf > NEARZERO ? c.risTarget / c.risPdf : 0;
-								c.valid = c.bsdfPdf > NEARZERO && avgBsdf > 0;
-								if( !c.valid ) {
-									c.risWeight = 0;
-								}
-							}
-							else
-							{
-								c.bsdfEval = Traits::zero();
-								c.bsdfPdf = 0;
-								c.incomingRadPdf = 0;
-								c.cosTheta = 0;
-								c.risTarget = 0;
-								c.risPdf = 0;
-								c.risWeight = 0;
-								c.valid = false;
-							}
-						}
-
-						Scalar risEffectivePdf = 0;
-						const unsigned int sel = PathTransportUtilities::GuidingRISSelectCandidate(
-							candidates, 2, sampler.Get1D(), risEffectivePdf );
-
-						if( risEffectivePdf > NEARZERO && candidates[sel].valid )
-						{
-							usedGuidedDirection = true;
-							guidedDir = candidates[sel].direction;
-							guidedF = candidates[sel].bsdfEval;
-							guidedEffectivePdf = risEffectivePdf;
-						}
-					}
-					else
-					{
-						// One-sample MIS (BDPT eye subpath)
-						const Scalar xi = sampler.Get1D();
-
-						if( PathTransportUtilities::ShouldUseGuidedSample( alpha, xi ) )
-						{
-							Scalar guidePdf = 0;
-							const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
-							const Vector3 gDir = pGuidingField->Sample( guideDist, xi2d, guidePdf );
-
-							if( guidePdf > NEARZERO )
-							{
-								guidedF = PathValueOps::EvalBSDFAtVertex<Tag>(
-									vertices.back(), gDir, -currentRay.Dir(), tag );
-								// DL-43: see the RIS candidate above -- wi must be
-								// the incoming direction, wo the guide candidate.
-								const Scalar bsdfPdf = PathValueOps::EvalPdfAtVertex<Tag>(
-									vertices.back(), -currentRay.Dir(), gDir, tag );
-
-								const Scalar combinedPdf =
-									PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdf, bsdfPdf );
-
-								if( combinedPdf > NEARZERO &&
-									PositiveMagnitude<Tag>( guidedF ) > NEARZERO )
-								{
-									usedGuidedDirection = true;
-									guidedDir = gDir;
-									guidedEffectivePdf = combinedPdf;
-								}
-							}
-						}
-
-						if( !usedGuidedDirection )
-						{
-							const Scalar guidePdfForBsdfDir =
-								pGuidingField->Pdf( guideDist, pScat->ray.Dir() );
-							bsdfCombinedPdf =
-								PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdfForBsdfDir, pScat->pdf );
-						}
+					const BDPTVertex& gv = vertices.back();
+					const Vector3 woIn = -currentRay.Dir();
+					BDPTGuidedChoice<V> choice;
+					BDPTGuidedContinuation<Tag, V>(
+						*pGuidingField, guideDist, *pScat, guideProb, guidingAlpha,
+						guidingSamplingType, v.normal, sampler,
+						[&]( const Vector3& w ) -> V {
+							return PathValueOps::EvalBSDFAtVertex<Tag>( gv, w, woIn, tag );
+						},
+						// DL-43: EvalPdfAtVertex(vertex, wi, wo) is the
+						// density of scattering INTO `wo` given incoming
+						// `wi` -- wi must be the incoming direction.
+						[&]( const Vector3& w ) -> Scalar {
+							return PathValueOps::EvalPdfAtVertex<Tag>( gv, woIn, w, tag );
+						},
+						choice );
+					guidedTerminate = choice.terminate;
+					usedGuidedDirection = choice.substituted;
+					keptPartitionScale = choice.keptScale;
+					aggregateAtScatDir = choice.aggAtTrace;
+					if( usedGuidedDirection ) {
+						guidedDir = choice.dir;
+						guidedF = choice.f;
+						guidedEffectivePdf = choice.equivPdf;
 					}
 				}
+			}
+			if( guidedTerminate ) {
+				break;
 			}
 			if( usedGuidedDirection ) {
 				traceIorStack = PathTransportUtilities::GuidedContinuationIORStack(
 					*pScat, iorStack, ri, guidedDir, guidedIorStack );
 			}
+			// The density the continuation's weight corresponds to,
+			// INCLUDING lobe selection: `f cos / equivScatterPdf` for a
+			// substituted direction (whose estimator is not conditioned on
+			// a lobe, so no `selectProb`), `selectProb * pdf / W-scale`
+			// for a kept lobe.  It feeds OpenPGL's `pdfDirectionIn`
+			// training input and `pdfFwd`'s zero-aggregate fallback -- the
+			// two consumers that want "the density this direction was
+			// drawn with" -- and nothing that weights a strategy.
+			const Scalar equivScatterPdf = usedGuidedDirection ? guidedEffectivePdf :
+				( keptPartitionScale > 0 ? selectProb * pScat->pdf / keptPartitionScale : Scalar( 0 ) );
 			if constexpr( Traits::is_nm ) {
 				// NM-only inline guiding-training sample.  The Pel path trains
 				// from connection results in a post-pass instead -- preserved
 				// Pel/NM asymmetry.
-				const Scalar trainingEffectivePdf =
-					usedGuidedDirection ? guidedEffectivePdf :
-					(bsdfCombinedPdf > NEARZERO ? bsdfCombinedPdf : pScat->pdf);
-				const Scalar trainingPdf = selectProb * trainingEffectivePdf;
+				const Scalar trainingPdf = equivScatterPdf;
 				if( pGuidingField && pGuidingField->IsCollectingTrainingSamples() &&
 					GuidingSupportsSurfaceSampling( *pScat ) && trainingPdf > NEARZERO )
 				{
@@ -2870,8 +3004,6 @@ namespace {
 			if( usedGuidedDirection ) {
 				scatDir = guidedDir;
 				effectivePdf = guidedEffectivePdf;
-			} else if( bsdfCombinedPdf > NEARZERO ) {
-				effectivePdf = bsdfCombinedPdf;
 			}
 	#endif
 
@@ -2896,8 +3028,8 @@ namespace {
 			// delta lobe to every OTHER technique, even though its own
 			// sample is not itself drawn from a Dirac direction.  The
 			// guiding block above is already gated on
-			// `vertices.back().isConnectible`, so `usedGuidedDirection` and
-			// `bsdfCombinedPdf` are always false/0 here.
+			// `vertices.back().isConnectible`, so `usedGuidedDirection` is
+			// false and `keptPartitionScale` 1 here.
 			const bool nullBSDFContinuation =
 				!pScat->isDelta && !vertices.back().isConnectible;
 
@@ -2912,7 +3044,11 @@ namespace {
 				break;
 			}
 
+	#ifdef RISE_ENABLE_OPENPGL
+			const Scalar scatterPdf = equivScatterPdf;
+	#else
 			const Scalar scatterPdf = selectProb * effectivePdf;
+	#endif
 
 			// HWSS per-wavelength pre-scatter throughput snapshot (NM bundle
 			// only) so the RR below can take max(pre)/max(post) over active
@@ -3042,22 +3178,25 @@ namespace {
 				// a function of the already-drawn `kray`s, so no fixed
 				// direction-only `q_I(w)` exists for it).
 				//
-				// GUIDING (DL-67's territory, deliberately untouched
-				// here): when OpenPGL SUBSTITUTED a direction, `scatDir`
-				// is not the lobe's direction at all and `kray_I` does
-				// not price it -- that branch keeps the aggregate
-				// `f * invScale`.  When guiding only BLENDED the density
-				// for the lobe's OWN direction (`bsdfCombinedPdf`), the
-				// per-lobe form still applies and takes PT's DL-42-fixed
-				// shape, `kray_I * pScat->pdf / (selectProb *
-				// combinedPdf)`.
+				// GUIDING (DL-67, `BDPTGuidedContinuation`): when OpenPGL
+				// SUBSTITUTED a direction, `scatDir` is not the lobe's
+				// direction at all and `kray_I` does not price it -- the
+				// guide technique's own estimator `f_agg cos / equivPdf`
+				// does, with no `selectProb` (the guide draw is not
+				// conditioned on a lobe; `equivPdf` already carries the
+				// realized probability the guide fired).  When the lobe's
+				// OWN direction was kept, its `kray_I / selectProb` takes
+				// the BSDF technique's share of the aggregate partition
+				// (`keptPartitionScale`, which is 1 wherever the guide
+				// cannot fire).  The HWSS aggregate fallback's `invScale`
+				// carries the same factor through `scatterPdf`.
 				Scalar krayScale = bssrdfReflectCompensation / selectProb;
 				bool useKray = true;
 	#ifdef RISE_ENABLE_OPENPGL
 				if( usedGuidedDirection ) {
 					useKray = false;
-				} else if( bsdfCombinedPdf > NEARZERO ) {
-					krayScale = bssrdfReflectCompensation * pScat->pdf / scatterPdf;
+				} else {
+					krayScale = krayScale * keptPartitionScale;
 				}
 	#endif
 				if( useKray ) {
@@ -3281,10 +3420,27 @@ namespace {
 			// between here and its last use pushes to `vertices`.
 			PathVertexEval::VertexPdfContext pdfCtx( vertices.back() );
 
+			// DL-67: ONE rule, guided or not -- `pdfFwd` is the MIS
+			// partner density, the aggregate `ISPF::Pdf()` at the
+			// direction actually traced (the function `pdfRev` and every
+			// connection strategy evaluate), never the density the guided
+			// continuation was drawn with.  MIS is unbiased for any
+			// weights that partition to one; what it needs is the SAME
+			// function on every strategy, and no other strategy can
+			// evaluate this vertex's trained guide.  The zero-aggregate
+			// fallback is the density the continuation's own weight
+			// corresponds to (`scatterPdf`).  A guided branch that already
+			// evaluated the aggregate at `scatDir` hands it over rather
+			// than paying for a second identical `Pdf()`.
 			pdfFwdPrev = scatterPdf;
 			if( !pScat->isDelta ) {
+	#ifdef RISE_ENABLE_OPENPGL
+				const Scalar misFwdPdf = aggregateAtScatDir >= 0 ? aggregateAtScatDir :
+					PathValueOps::EvalPdfAtVertex<Tag>( pdfCtx, -currentRay.Dir(), scatDir, tag );
+	#else
 				const Scalar misFwdPdf = PathValueOps::EvalPdfAtVertex<Tag>(
 					pdfCtx, -currentRay.Dir(), scatDir, tag );
+	#endif
 				if( misFwdPdf > NEARZERO ) {
 					pdfFwdPrev = misFwdPdf;
 				}
@@ -6856,161 +7012,81 @@ unsigned int GenerateLightSubpathImpl(
 		// and blend with BSDF sampling using RIS or one-sample MIS.  The
 		// shared field's incident-radiance distribution approximates the
 		// reciprocal scattering distribution for diffuse-dominated transport.
-		// (STALE since DL-69, corrected 2026-09-14: the guided PDF no
-		// longer flows into pdfFwdPrev.  `pdfFwdPrev` is now the
-		// material's aggregate `ISPF::Pdf()` at `scatDir` -- the same
-		// function `pdfRev` uses -- and the guided density survives only
-		// as the NEARZERO fallback.  The guided density still reaches
-		// OpenPGL through `guidingPdfDirectionIn`, which is a training
-		// input and is deliberately left as `selectProb * effectivePdf`.)
+		// DL-67: the continuation is priced on the ONE partition
+		// `BDPTGuidedContinuation` documents -- the eye generator's twin
+		// block above has the vertex-gate rationale.  `pdfFwdPrev` is the
+		// aggregate `ISPF::Pdf()` at `scatDir` (DL-69's one rule, now
+		// stated for the guided branches too), and the density the
+		// continuation's weight corresponds to reaches OpenPGL through
+		// `guidingPdfDirectionIn` and serves as `pdfFwd`'s zero-aggregate
+		// fallback.
 		bool usedGuidedDirection = false;
 		V guidedF = Traits::zero();
 		Vector3 guidedDir;
 		Scalar guidedEffectivePdf = 0;
-		Scalar bsdfCombinedPdf = 0;
+		Scalar keptPartitionScale = 1;
+		Scalar aggregateAtScatDir = -1;
+		bool guidedTerminate = false;
 
 		if( pLightGuidingField && pLightGuidingField->IsTrained() &&
-			depth < maxLightGuidingDepth &&
-			GuidingSupportsSurfaceSampling( *pScat ) &&
-			vertices.back().isConnectible )
+			depth < maxLightGuidingDepth && guidingAlpha > NEARZERO &&
+			!pScat->isDelta && vertices.back().isConnectible )
 		{
+			// See the eye twin: `alpha` per eligible lobe in one-sample
+			// mode, 1 in RIS mode.
+			const Scalar lobeGuideProb =
+				( guidingSamplingType == eGuidingRIS ) ? Scalar( 1 ) : guidingAlpha;
+			const Scalar guideProb =
+				PathTransportUtilities::GuidingRealizedGuideProbability(
+					scattered, Traits::is_nm,
+					[lobeGuideProb]( const ScatteredRay& r ) -> Scalar {
+						return GuidingSupportsSurfaceSampling( r ) ? lobeGuideProb : Scalar( 0 );
+					} );
 			// Use a separate thread_local handle from the eye subpath's
 			// guideDist to avoid cross-contamination.
 			static thread_local GuidingDistributionHandle lightGuideDist;
-			if( pLightGuidingField->InitDistribution( lightGuideDist, v.position, sampler.Get1D() ) )
+			if( guideProb > 0 &&
+				pLightGuidingField->InitDistribution( lightGuideDist, v.position, sampler.Get1D() ) )
 			{
-				if( pScat->type == ScatteredRay::eRayDiffuse ) {
-					pLightGuidingField->ApplyCosineProduct(
-						lightGuideDist,
-						GuidingCosineNormal( v.normal, currentRay.Dir() ) );
-				}
+				pLightGuidingField->ApplyCosineProduct(
+					lightGuideDist,
+					GuidingCosineNormal( v.normal, currentRay.Dir() ) );
 
-				const Scalar alpha = guidingAlpha;
-
-				if( guidingSamplingType == eGuidingRIS )
-				{
-					// RIS-based guiding (BDPT light subpath)
-					PathTransportUtilities::GuidingRISCandidate<V> candidates[2];
-
-					// Candidate 0: BSDF sample
-					{
-						PathTransportUtilities::GuidingRISCandidate<V>& c = candidates[0];
-						c.direction = pScat->ray.Dir();
-						c.bsdfEval = PathValueOps::EvalBSDFAtVertex<Tag>(
-							vertices.back(), -currentRay.Dir(), c.direction, tag );
-						c.bsdfPdf = pScat->pdf;
-						c.guidePdf = pLightGuidingField->Pdf( lightGuideDist, c.direction );
-						c.incomingRadPdf = pLightGuidingField->IncomingRadiancePdf( lightGuideDist, c.direction );
-						c.cosTheta = fabs( Vector3Ops::Dot( c.direction, v.normal ) );
-						const Scalar avgBsdf = Traits::max_value( c.bsdfEval );
-						c.risTarget = PathTransportUtilities::GuidingRISTarget(
-							avgBsdf, c.cosTheta, c.incomingRadPdf, alpha );
-						c.risPdf = PathTransportUtilities::GuidingRISProposalPdf(
-							c.bsdfPdf, c.guidePdf );
-						c.risWeight = c.risPdf > NEARZERO ? c.risTarget / c.risPdf : 0;
-						c.valid = c.bsdfPdf > NEARZERO && c.risPdf > NEARZERO && avgBsdf > 0;
-						if( !c.valid ) {
-							c.risWeight = 0;
-						}
-					}
-
-					// Candidate 1: guide sample
-					{
-						PathTransportUtilities::GuidingRISCandidate<V>& c = candidates[1];
-						Scalar gPdf = 0;
-						const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
-						c.direction = pLightGuidingField->Sample( lightGuideDist, xi2d, gPdf );
-						c.guidePdf = gPdf;
-
-						if( gPdf > NEARZERO )
-						{
-							c.bsdfEval = PathValueOps::EvalBSDFAtVertex<Tag>(
-								vertices.back(), -currentRay.Dir(), c.direction, tag );
-							c.bsdfPdf = PathValueOps::EvalPdfAtVertex<Tag>(
-								vertices.back(), -currentRay.Dir(), c.direction, tag );
-							c.incomingRadPdf = pLightGuidingField->IncomingRadiancePdf( lightGuideDist, c.direction );
-							c.cosTheta = fabs( Vector3Ops::Dot( c.direction, v.normal ) );
-							const Scalar avgBsdf = Traits::max_value( c.bsdfEval );
-							c.risTarget = PathTransportUtilities::GuidingRISTarget(
-								avgBsdf, c.cosTheta, c.incomingRadPdf, alpha );
-							c.risPdf = PathTransportUtilities::GuidingRISProposalPdf(
-								c.bsdfPdf, c.guidePdf );
-							c.risWeight = c.risPdf > NEARZERO ? c.risTarget / c.risPdf : 0;
-							c.valid = c.bsdfPdf > NEARZERO && avgBsdf > 0;
-							if( !c.valid ) {
-								c.risWeight = 0;
-							}
-						}
-						else
-						{
-							c.bsdfEval = Traits::zero();
-							c.bsdfPdf = 0;
-							c.incomingRadPdf = 0;
-							c.cosTheta = 0;
-							c.risTarget = 0;
-							c.risPdf = 0;
-							c.risWeight = 0;
-							c.valid = false;
-						}
-					}
-
-					Scalar risEffectivePdf = 0;
-					const unsigned int sel = PathTransportUtilities::GuidingRISSelectCandidate(
-						candidates, 2, sampler.Get1D(), risEffectivePdf );
-
-					if( risEffectivePdf > NEARZERO && candidates[sel].valid )
-					{
-						usedGuidedDirection = true;
-						guidedDir = candidates[sel].direction;
-						guidedF = candidates[sel].bsdfEval;
-						guidedEffectivePdf = risEffectivePdf;
-					}
-				}
-				else
-				{
-					// One-sample MIS (BDPT light subpath)
-					const Scalar xi = sampler.Get1D();
-
-					if( PathTransportUtilities::ShouldUseGuidedSample( alpha, xi ) )
-					{
-						Scalar guidePdf = 0;
-						const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
-						const Vector3 gDir = pLightGuidingField->Sample( lightGuideDist, xi2d, guidePdf );
-
-						if( guidePdf > NEARZERO )
-						{
-							guidedF = PathValueOps::EvalBSDFAtVertex<Tag>(
-								vertices.back(), -currentRay.Dir(), gDir, tag );
-							const Scalar bsdfPdf = PathValueOps::EvalPdfAtVertex<Tag>(
-								vertices.back(), -currentRay.Dir(), gDir, tag );
-
-							const Scalar combinedPdf =
-								PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdf, bsdfPdf );
-
-							if( combinedPdf > NEARZERO &&
-								Traits::max_value( guidedF ) > NEARZERO )	// magnitude (light-NM orig used fabs); NOT PositiveMagnitude -- cf. the eye subpath's NM gate which is bare
-							{
-								usedGuidedDirection = true;
-								guidedDir = gDir;
-								guidedEffectivePdf = combinedPdf;
-							}
-						}
-					}
-
-					if( !usedGuidedDirection )
-					{
-						const Scalar guidePdfForBsdfDir =
-							pLightGuidingField->Pdf( lightGuideDist, pScat->ray.Dir() );
-						bsdfCombinedPdf =
-							PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdfForBsdfDir, pScat->pdf );
-					}
+				const BDPTVertex& gv = vertices.back();
+				const Vector3 wiIn = -currentRay.Dir();
+				BDPTGuidedChoice<V> choice;
+				BDPTGuidedContinuation<Tag, V>(
+					*pLightGuidingField, lightGuideDist, *pScat, guideProb, guidingAlpha,
+					guidingSamplingType, v.normal, sampler,
+					[&]( const Vector3& w ) -> V {
+						return PathValueOps::EvalBSDFAtVertex<Tag>( gv, wiIn, w, tag );
+					},
+					[&]( const Vector3& w ) -> Scalar {
+						return PathValueOps::EvalPdfAtVertex<Tag>( gv, wiIn, w, tag );
+					},
+					choice );
+				guidedTerminate = choice.terminate;
+				usedGuidedDirection = choice.substituted;
+				keptPartitionScale = choice.keptScale;
+				aggregateAtScatDir = choice.aggAtTrace;
+				if( usedGuidedDirection ) {
+					guidedDir = choice.dir;
+					guidedF = choice.f;
+					guidedEffectivePdf = choice.equivPdf;
 				}
 			}
+		}
+		if( guidedTerminate ) {
+			break;
 		}
 		if( usedGuidedDirection ) {
 			traceIorStack = PathTransportUtilities::GuidedContinuationIORStack(
 				*pScat, iorStack, ri, guidedDir, guidedIorStack );
 		}
+		// See the eye twin: the density the continuation's weight
+		// corresponds to, including lobe selection.
+		const Scalar equivScatterPdf = usedGuidedDirection ? guidedEffectivePdf :
+			( keptPartitionScale > 0 ? selectProb * pScat->pdf / keptPartitionScale : Scalar( 0 ) );
 #endif
 		// --- End light subpath path guiding ---
 
@@ -7022,8 +7098,6 @@ unsigned int GenerateLightSubpathImpl(
 		if( usedGuidedDirection ) {
 			scatDir = guidedDir;
 			effectivePdf = guidedEffectivePdf;
-		} else if( bsdfCombinedPdf > NEARZERO ) {
-			effectivePdf = bsdfCombinedPdf;
 		}
 #endif
 
@@ -7037,8 +7111,8 @@ unsigned int GenerateLightSubpathImpl(
 		// any such material too.  Neither gate is meaningful for a vertex
 		// no rival strategy can ever reconstruct (isConnectible false);
 		// the guiding block above is already gated on
-		// `vertices.back().isConnectible`, so `usedGuidedDirection` and
-		// `bsdfCombinedPdf` are always false/0 here.
+		// `vertices.back().isConnectible`, so `usedGuidedDirection` is
+		// false and `keptPartitionScale` 1 here.
 		const bool nullBSDFContinuation =
 			!pScat->isDelta && !vertices.back().isConnectible;
 
@@ -7123,7 +7197,11 @@ unsigned int GenerateLightSubpathImpl(
 			if( PositiveMagnitude<Tag>( f ) <= 0 ) {
 				break;
 			}
+#ifdef RISE_ENABLE_OPENPGL
+			const Scalar scatterPdf = equivScatterPdf;
+#else
 			const Scalar scatterPdf = selectProb * effectivePdf;
+#endif
 
 			// DL-69, light-subpath twin of the eye generator's block --
 			// read its comment for the derivation.  Same defect
@@ -7131,14 +7209,14 @@ unsigned int GenerateLightSubpathImpl(
 			// `scatterPdf`), same fix (the selected lobe's own `kray_I`
 			// over the same lobe's selection probability, matching this
 			// file's delta branch immediately above and PT's ordinary
-			// initialization), same guiding carve-out for DL-67.
+			// initialization), same DL-67 guided pricing as the eye twin.
 			Scalar krayScale = bssrdfReflectCompensation / selectProb;
 			bool useKray = true;
 #ifdef RISE_ENABLE_OPENPGL
 			if( usedGuidedDirection ) {
 				useKray = false;
-			} else if( bsdfCombinedPdf > NEARZERO ) {
-				krayScale = bssrdfReflectCompensation * pScat->pdf / scatterPdf;
+			} else {
+				krayScale = krayScale * keptPartitionScale;
 			}
 #endif
 			if constexpr( Traits::is_pel ) {
@@ -7261,7 +7339,7 @@ unsigned int GenerateLightSubpathImpl(
 		{
 			vertices.back().guidingHasDirectionIn = true;
 			vertices.back().guidingDirectionIn = scatDir;
-			vertices.back().guidingPdfDirectionIn = selectProb * effectivePdf;
+			vertices.back().guidingPdfDirectionIn = equivScatterPdf;
 			vertices.back().guidingScatteringWeight = localScatteringWeight;
 			vertices.back().guidingRussianRouletteSurvivalProbability = rr.survivalProb;
 			vertices.back().guidingEta =
@@ -7318,10 +7396,22 @@ unsigned int GenerateLightSubpathImpl(
 		// and the lifetime contract (review P2-5).
 		PathVertexEval::VertexPdfContext pdfCtx( vertices.back() );
 
+		// DL-67: the eye twin's one rule -- aggregate `ISPF::Pdf()` at
+		// the traced direction, guided or not; zero-aggregate fallback =
+		// the density the continuation's weight corresponds to.
+#ifdef RISE_ENABLE_OPENPGL
+		pdfFwdPrev = equivScatterPdf;
+#else
 		pdfFwdPrev = selectProb * effectivePdf;
+#endif
 		if( !pScat->isDelta ) {
+#ifdef RISE_ENABLE_OPENPGL
+			const Scalar misFwdPdf = aggregateAtScatDir >= 0 ? aggregateAtScatDir :
+				PathValueOps::EvalPdfAtVertex<Tag>( pdfCtx, -currentRay.Dir(), scatDir, tag );
+#else
 			const Scalar misFwdPdf = PathValueOps::EvalPdfAtVertex<Tag>(
 				pdfCtx, -currentRay.Dir(), scatDir, tag );
+#endif
 			if( misFwdPdf > NEARZERO ) {
 				pdfFwdPrev = misFwdPdf;
 			}
