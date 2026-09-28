@@ -51,7 +51,10 @@ guide draw      X_g = f(w) cos / g(w)  *  W_g(w) / alphaBar,   alphaBar = sum_J 
   technique prices the AGGREGATE BSDF, so it covers that lobe too.  A delta
   lobe keeps weight 1 (the guide cannot generate a delta direction).
 * Where `p_agg(w_I) <= 0` at a direction a lobe really generated, `W_b := 1`
-  (DL-103's guard, no known production inhabitant since DL-41 closed).
+  (DL-103's guard, no known production inhabitant since DL-41 closed), and
+  in RIS mode the lobe's own `selectProb * pdf` stands in for candidate 0's
+  proposal density in the resampling WEIGHT only (RIS leaves the weights
+  free), so a nonzero contribution stays selectable.
 * A guide draw that yields nothing is a ZERO sample of the guide technique
   -- never a fall-back to the lobe's own direction.
 
@@ -109,7 +112,7 @@ eligible `J`).  Resampling with any positive weights `w_i` and outputting
 `c_y * (sum w)/w_y` has conditional expectation `c_0 + c_1`, so the output
 is unbiased for the same partition.  With `W_g = g/(g + p_agg)` (a = 1/2)
 and the code's weights `w_i = p_hat(x_i) / (0.5 (p_agg + g)(x_i))`, a
-single-lobe material reproduces the pre-fix estimator exactly:
+single-lobe material reproduces the pre-fix RIS estimator exactly:
 `c_y (sum w)/w_y = f cos(y) (sum w) / (2 p_hat(y))`.  The identity
 `sum_i p_i(x) / sum_j p_j(x) = 1` holds at every `x` because BOTH candidates
 now evaluate `p_0 = p_agg` -- pre-fix candidate 0 used `p_I(x_0)`.
@@ -291,6 +294,11 @@ selected lobe it never replaces.
   double-counts there if `value()` is nonzero), and its random-walk lobe
   SET can make "the guide can fire here" a random event (§2's condition).
   Neither is measured; both belong to DL-24's rework.
+* At a single DIFFUSE lobe (`alpha_I = alpha_nom`) the one-sample estimator
+  reduces to the pre-fix one; at a single GLOSSY lobe it does not (the
+  pre-fix code used `alpha/2` in its denominators, which is also unbiased
+  for one lobe); `PTGuidingMISPartitionTest` row (c), that configuration,
+  reads -0.04% post-fix.
 * The one-sample partition uses `a = alpha_nom` while a glossy lobe is
   replaced with probability `alpha/2`; unbiased by §2, and it is the same
   partition NEE uses, but it is not the balance heuristic for a

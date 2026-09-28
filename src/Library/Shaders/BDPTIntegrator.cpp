@@ -850,6 +850,7 @@ namespace
 		GuidingDistributionHandle& dist,
 		const ScatteredRay& scat,
 		const Scalar guideProb,
+		const Scalar selectProb,
 		const Scalar alpha,
 		const GuidingSamplingType samplingType,
 		const Vector3& normal,
@@ -893,8 +894,12 @@ namespace
 				const Scalar avgBsdf = Traits::max_value( c[0].bsdfEval );
 				c[0].risTarget = PathTransportUtilities::GuidingRISTarget(
 					avgBsdf, c[0].cosTheta, c[0].incomingRadPdf, alpha );
+				// DL-103's guard: a zero aggregate at a direction this
+				// lobe really generated falls back to the lobe's own
+				// `selectProb * pdf` -- in the resampling WEIGHT only,
+				// which RIS leaves free.
 				c[0].risPdf = PathTransportUtilities::GuidingRISProposalPdf(
-					r_max( c[0].bsdfPdf, Scalar( 0 ) ), c[0].guidePdf );
+					c[0].bsdfPdf > 0 ? c[0].bsdfPdf : selectProb * scat.pdf, c[0].guidePdf );
 				v0 = PathTransportUtilities::GuidingPartitionBsdfWeight(
 					mixA, c[0].guidePdf, c[0].bsdfPdf );
 				c[0].risWeight = c[0].risPdf > NEARZERO ? c[0].risTarget / c[0].risPdf : 0;
@@ -2937,7 +2942,7 @@ namespace {
 					const Vector3 woIn = -currentRay.Dir();
 					BDPTGuidedChoice<V> choice;
 					BDPTGuidedContinuation<Tag, V>(
-						*pGuidingField, guideDist, *pScat, guideProb, guidingAlpha,
+						*pGuidingField, guideDist, *pScat, guideProb, selectProb, guidingAlpha,
 						guidingSamplingType, v.normal, sampler,
 						[&]( const Vector3& w ) -> V {
 							return PathValueOps::EvalBSDFAtVertex<Tag>( gv, w, woIn, tag );
@@ -7063,7 +7068,7 @@ unsigned int GenerateLightSubpathImpl(
 				const Vector3 wiIn = -currentRay.Dir();
 				BDPTGuidedChoice<V> choice;
 				BDPTGuidedContinuation<Tag, V>(
-					*pLightGuidingField, lightGuideDist, *pScat, guideProb, guidingAlpha,
+					*pLightGuidingField, lightGuideDist, *pScat, guideProb, selectProb, guidingAlpha,
 					guidingSamplingType, v.normal, sampler,
 					[&]( const Vector3& w ) -> V {
 						return PathValueOps::EvalBSDFAtVertex<Tag>( gv, wiIn, w, tag );

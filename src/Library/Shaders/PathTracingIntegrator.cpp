@@ -3974,8 +3974,14 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 						const Scalar avgBsdf = PTSurvivalMagnitude( c.bsdfEval );
 						c.risTarget = PathTransportUtilities::GuidingRISTarget(
 							avgBsdf, c.cosTheta, c.incomingRadPdf, alphaTarget );
+						// DL-103's guard: where the aggregate reads 0 at a
+						// direction this lobe really generated, the lobe's
+						// own `selectProb * pdf` stands in for the proposal
+						// density.  It enters only the resampling WEIGHT
+						// (which RIS leaves free), and keeps a nonzero
+						// contribution selectable.
 						c.risPdf = PathTransportUtilities::GuidingRISProposalPdf(
-							r_max( c.bsdfPdf, Scalar( 0 ) ), c.guidePdf );
+							c.bsdfPdf > 0 ? c.bsdfPdf : selectProb * pS->pdf, c.guidePdf );
 						const Scalar v0 = PathTransportUtilities::GuidingPartitionBsdfWeight(
 							mixA, c.guidePdf, c.bsdfPdf );
 						contrib[0] = scatterThroughput * v0;
