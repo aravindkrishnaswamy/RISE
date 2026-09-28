@@ -1008,7 +1008,7 @@ namespace
 			{ Model::Lambertian, Integrator::PT,         64, 0.01, 1.0 },
 			{ Model::RandomWalk, Integrator::PT,         64, 0.01, 1.05 },
 			{ Model::RandomWalk, Integrator::PT,         64, 0.01, 1.128 },
-			{ Model::RandomWalk, Integrator::PT,         64, 0.01, 1.5 },
+			{ Model::RandomWalk, Integrator::PT,         64, 0.004, 1.5 },
 			{ Model::RandomWalk, Integrator::PT,         64, 0.01, 1.33 / 1.5 },
 			{ Model::RandomWalk, Integrator::BDPT,       64, 0.01, 1.05 },
 			{ Model::RandomWalk, Integrator::BDPT,       64, 0.01, 1.33 / 1.5 },
