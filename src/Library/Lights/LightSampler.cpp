@@ -2582,10 +2582,17 @@ RISEPel LightSampler::EvaluateDirectLighting(
 			// winding normal and its back face stays dark (`cosLight <= 0`).
 			// Area-measure density is unchanged (1/area); the hit-side MIS
 			// partner (`fabs(cosLight)`, PathTracingIntegrator.cpp) already
-			// describes this two-faced density.  `lumNormal` itself stays the
-			// winding normal for the surface-payload probe below.
-			const Vector3 lumFace = EmitterSides::FaceToward( entry.twoSided, lumNormal, -vToLight );
-			const Scalar cosLight = Vector3Ops::Dot( -vToLight, lumFace );
+			// describes this two-faced density.
+			//
+			// `lumNormal` is flipped IN PLACE to that face, so every later use
+			// (the record, `Le`, the MIS cosine) reads the emitting face and a
+			// one-sided luminary runs the pre-DL-320 code unchanged; the
+			// surface-payload probe keeps the winding normal (`lumWinding`).
+			const Vector3 lumWinding = lumNormal;
+			if( entry.twoSided && Vector3Ops::Dot( -vToLight, lumNormal ) < 0 ) {
+				lumNormal = -lumNormal;
+			}
+			const Scalar cosLight = Vector3Ops::Dot( -vToLight, lumNormal );
 
 			// Optimal MIS training: count every NEE attempt including
 			// geometry-rejected samples (back-face, below hemisphere).
@@ -2634,17 +2641,17 @@ RISEPel LightSampler::EvaluateDirectLighting(
 				{
 					// Emitted radiance at sampled point
 					RayIntersectionGeometric lumri( Ray( ptOnLum, -vToLight ), nullRasterizerState );
-					lumri.vNormal = lumFace;
-					// `lumFace` is `UniformRandomPoint`'s normal (negated
+					lumri.vNormal = lumNormal;
+					// `lumNormal` is `UniformRandomPoint`'s normal (negated
 					// only for a double-sided emitter's back face, DL-320):
 					// the INTERPOLATED VERTEX normal on a mesh luminary that
 					// has per-vertex normals, the face normal when it has
 					// none (see `GeometricUtilities::PointOnTriangle`).
 					// Mirror it so the record is self-consistent; no
 					// modifier runs here to make the two differ.
-					lumri.vGeomNormal = lumFace;
+					lumri.vGeomNormal = lumNormal;
 					lumri.ptCoord = lumCoord;
-					lumri.onb.CreateFromW( lumFace );
+					lumri.onb.CreateFromW( lumNormal );
 
 					// THE SHADING PAYLOAD for this sampled point (slice S3
 					// of docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5).
@@ -2700,7 +2707,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
 						ProbeEmitterSurface(
 							lumEntry.pLum,
 							pPreparedScene ? pPreparedScene->GetObjects() : 0,
-							ptOnLum, lumNormal, lumSurface );
+							ptOnLum, lumWinding, lumSurface );
 						ApplyEmitterSurface( lumri, lumSurface );
 					}
 
@@ -2712,7 +2719,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
 					lumri.ptObjIntersec = EmitterObjectPoint(
 						lumEntry.pLum, ptOnLum, lumri.ptObjIntersec );
 
-					const RISEPel Le = pEmitter->emittedRadiance( lumri, -vToLight, lumFace );
+					const RISEPel Le = pEmitter->emittedRadiance( lumri, -vToLight, lumNormal );
 
 					const Scalar geom = area * cosLight / (dist * dist);
 					RISEPel contrib = Le * cosSurface * geom * brdf.valueStateful( vToLight, ri, pMisIorStack ) * meshShadowT;
@@ -3322,10 +3329,17 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 		// winding normal and its back face stays dark (`cosLight <= 0`).
 		// Area-measure density is unchanged (1/area); the hit-side MIS
 		// partner (`fabs(cosLight)`, PathTracingIntegrator.cpp) already
-		// describes this two-faced density.  `lumNormal` itself stays the
-		// winding normal for the surface-payload probe below.
-		const Vector3 lumFace = EmitterSides::FaceToward( entry.twoSided, lumNormal, -vToLight );
-		const Scalar cosLight = Vector3Ops::Dot( -vToLight, lumFace );
+		// describes this two-faced density.
+		//
+		// `lumNormal` is flipped IN PLACE to that face, so every later use
+		// (the record, `Le`, the MIS cosine) reads the emitting face and a
+		// one-sided luminary runs the pre-DL-320 code unchanged; the
+		// surface-payload probe keeps the winding normal (`lumWinding`).
+		const Vector3 lumWinding = lumNormal;
+		if( entry.twoSided && Vector3Ops::Dot( -vToLight, lumNormal ) < 0 ) {
+			lumNormal = -lumNormal;
+		}
+		const Scalar cosLight = Vector3Ops::Dot( -vToLight, lumNormal );
 
 		// Optimal MIS training: count every spectral NEE attempt
 		// including geometry-rejected samples (back-face, below
@@ -3372,16 +3386,16 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 		}
 
 		RayIntersectionGeometric lumri( Ray( ptOnLum, -vToLight ), nullRasterizerState );
-		lumri.vNormal = lumFace;
-		// `lumFace` is `UniformRandomPoint`'s normal (negated only for a
+		lumri.vNormal = lumNormal;
+		// `lumNormal` is `UniformRandomPoint`'s normal (negated only for a
 		// double-sided emitter's back face, DL-320) -- the INTERPOLATED
 		// VERTEX normal on a mesh luminary with per-vertex normals, the face
 		// normal otherwise (see the RGB twin above and
 		// `GeometricUtilities::PointOnTriangle`); mirror it so the record is
 		// self-consistent.
-		lumri.vGeomNormal = lumFace;
+		lumri.vGeomNormal = lumNormal;
 		lumri.ptCoord = lumCoord;
-		lumri.onb.CreateFromW( lumFace );
+		lumri.onb.CreateFromW( lumNormal );
 
 		// THE SHADING PAYLOAD -- the NM twin of the RGB site above, calling
 		// the SAME functions with the same arguments, including the same
@@ -3393,13 +3407,13 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 			ProbeEmitterSurface(
 				lumEntry.pLum,
 				pPreparedScene ? pPreparedScene->GetObjects() : 0,
-				ptOnLum, lumNormal, lumSurface );
+				ptOnLum, lumWinding, lumSurface );
 			ApplyEmitterSurface( lumri, lumSurface );
 		}
 		lumri.ptObjIntersec = EmitterObjectPoint(
 			lumEntry.pLum, ptOnLum, lumri.ptObjIntersec );
 
-		const Scalar Le = pEmitter->emittedRadianceNM( lumri, -vToLight, lumFace, nm );
+		const Scalar Le = pEmitter->emittedRadianceNM( lumri, -vToLight, lumNormal, nm );
 
 		const Scalar geom = area * cosLight / (dist * dist);
 		Scalar contrib = Le * cosSurface * geom * brdf.valueStatefulNM( vToLight, ri, nm, pMisIorStack ) * meshShadowTNM;
