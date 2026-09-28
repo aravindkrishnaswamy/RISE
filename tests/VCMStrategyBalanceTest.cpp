@@ -107,6 +107,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <fstream>
 #include <vector>
@@ -1846,9 +1847,87 @@ static void TestNullBSDFMaterialContinuation()
 		kRasterizerPTModernBasic, kRasterizerVCM );
 }
 
-int main()
+//////////////////////////////////////////////////////////////////////
+// Topology U: rough `subsurfacescattering_material` sheets (DL-307) --
+// VCM's twin of BDPTStrategyBalanceTest's topology U (the same scene).
+//
+// VCM builds its subpaths with BDPT's shared generators, which used to
+// BREAK on an empty scatter container before the BSSRDF entry branch
+// (DL-307): a rough front reflection drawn below the horizon is dropped
+// by the SPF and the subsurface branch it would have taken with
+// probability Ft was lost.  Unlike BDPT, VCM does NOT reach PT on this
+// scene even with the fix -- it reads ~5% under PT with or without
+// merging (vm_enabled false: -5.5%), a SEPARATE, pre-existing VCM
+// defect at BSSRDF / random-walk entry vertices recorded as DL-317
+// (the random-walk sphere of BDPT's topology V reads -12.7%).  So this
+// row is a TWO-SIDED PIN of VCM/PT on the post-DL-307 value, not a
+// parity gate: it is red on the pre-fix generator (the DL-307 red-proof)
+// and it must be re-derived, deliberately, when DL-317 is fixed.
+//
+// Measured (32x32, 1024 spp, salted Sobol', n = 16 per build, two
+// separately built binaries run interleaved): VCM/PT - 1 = -6.000%
+// (z -182) pre-fix, -5.242% (z -148) post-fix.  2048 spp here halves the
+// single-render variance; band [-5.60%, -4.90%].
+//////////////////////////////////////////////////////////////////////
+static const char* kSceneRoughSSSU =
+	"film\n{\n\twidth 32\n\theight 32\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
+	"subsurfacescattering_material\n{\n\tname mat_sss\n\tior 1.3\n\tabsorption 0.1\n"
+		"\tscattering 1.0\n\tg 0.0\n\troughness 0.3\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_wall\n\tpta -1 -1 0\n\tptb 1 -1 0\n\tptc 1 1 0\n\tptd -1 1 0\n}\n\n"
+	"standard_object\n{\n\tname obj_wall\n\tgeometry quad_wall\n\tmaterial mat_sss\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_floor\n\tpta -1 -1 0\n\tptb -1 -1 2\n\tptc 1 -1 2\n\tptd 1 -1 0\n}\n\n"
+	"standard_object\n{\n\tname obj_floor\n\tgeometry quad_floor\n\tmaterial mat_sss\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_emit_u\n\tcolor 1.0 1.0 1.0\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname mat_emit_u\n\texitance pnt_emit_u\n\tscale 0.5\n\tmaterial none\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_emit_u\n\tpta -6 -6 4.2\n\tptb -6 6 4.2\n\tptc 6 6 4.2\n\tptd 6 -6 4.2\n}\n\n"
+	"standard_object\n{\n\tname obj_emit_u\n\tgeometry quad_emit_u\n\tmaterial mat_emit_u\n}\n";
+
+static const char* kRasterizerPTRoughSSSU =
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 2048\n\trr_min_depth 8\n\tmax_diffuse_bounce 5\n"
+		"\tmax_glossy_bounce 5\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n"
+	"file_rasterizeroutput\n{\n\tpattern rendered/vcm_balance_pt_unused\n\ttype EXR\n\tbpp 32\n"
+		"\tcolor_space Rec709RGB_Linear\n}\n";
+
+static const char* kRasterizerVCMRoughSSSU =
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"vcm_pel_rasterizer\n{\n\tmax_eye_depth 5\n\tmax_light_depth 5\n\tsamples 2048\n\tmerge_radius 0.0\n"
+		"\tvc_enabled true\n\tvm_enabled true\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n"
+	"file_rasterizeroutput\n{\n\tpattern rendered/vcm_balance_vcm_unused\n\ttype EXR\n\tbpp 32\n"
+		"\tcolor_space Rec709RGB_Linear\n}\n";
+
+static void TestRoughSSSEmptyContainerU()
+{
+	std::cout << "Testing PT-vs-VCM: topology U, rough subsurfacescattering_material sheets (DL-307 / DL-317 pin)" << std::endl;
+	const std::string ptScene  = std::string( "RISE ASCII SCENE 7\n" ) + kRasterizerPTRoughSSSU  + kSceneRoughSSSU;
+	const std::string vcmScene = std::string( "RISE ASCII SCENE 7\n" ) + kRasterizerVCMRoughSSSU + kSceneRoughSSSU;
+	const std::string ptPath  = WriteSceneToTempFile( ptScene.c_str(),  "pt_sss"  );
+	const std::string vcmPath = WriteSceneToTempFile( vcmScene.c_str(), "vcm_sss" );
+	const ImageStats pt  = ptPath.empty()  ? ImageStats{} : RenderAndComputeStats( ptPath.c_str() );
+	const ImageStats vcm = vcmPath.empty() ? ImageStats{} : RenderAndComputeStats( vcmPath.c_str() );
+	if( !ptPath.empty() )  std::remove( ptPath.c_str() );
+	if( !vcmPath.empty() ) std::remove( vcmPath.c_str() );
+	Check( pt.valid && vcm.valid, "DL-307 topology U renders produced output" );
+	if( !pt.valid || !vcm.valid ) return;
+	const double mPT  = ( pt.mean[0]  + pt.mean[1]  + pt.mean[2]  ) / 3.0;
+	const double mVCM = ( vcm.mean[0] + vcm.mean[1] + vcm.mean[2] ) / 3.0;
+	const double rel = mVCM / mPT - 1.0;
+	std::printf( "    PT %.7f  VCM %.7f  VCM/PT %+.3f%%  (pin [-5.60%%, -4.90%%])\n",
+		mPT, mVCM, 100.0 * rel );
+	Check( std::isfinite( rel ) && rel >= -0.0560 && rel <= -0.0490,
+		"DL-307 topology U: VCM/PT inside the DL-317 pin [-5.60%, -4.90%] (pre-DL-307 read -6.00%)" );
+}
+
+int main( int argc, char** argv )
 {
 	std::cout << "=== VCMStrategyBalanceTest ===" << std::endl;
+
+	if( argc == 2 && std::strcmp( argv[1], "--sss-only" ) == 0 ) {
+		TestRoughSSSEmptyContainerU();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
 
 	if (!TestCompositedStats()) return 1;
 
@@ -1863,6 +1942,7 @@ int main()
 	TestSubmergedCeilingMISCombination();
 	TestSchlickMultiLobe();
 	TestNullBSDFMaterialContinuation();
+	TestRoughSSSEmptyContainerU();
 	TestNonfiniteCandidateRejected();
 
 	std::cout << std::endl;

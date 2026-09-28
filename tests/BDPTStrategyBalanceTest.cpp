@@ -3509,6 +3509,150 @@ static void TestWeaveGapBoxAreaOutside()
 		kStrictTolerances, kRasterizerPTWeaveGap, kRasterizerBDPTWeaveGap );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Topologies U and V: DL-307 (docs/DL67_GUIDED_GENERATING_DENSITY.md
+// section 8, "DL-307").
+//
+// Both BDPT subpath generators used to BREAK on an empty scatter
+// container BEFORE the BSSRDF / random-walk entry branch.  A rough
+// `subsurfacescattering_material` / `randomwalk_sss_material` front
+// reflection whose microfacet draw lands below the horizon is DROPPED by
+// `SubSurfaceScatteringSPF::Scatter`, the container comes back empty, and
+// the walk died there -- losing the subsurface branch it would have taken
+// with probability Ft.  PT is immune (its BSSRDF block runs before PART 3
+// ever scatters), and so was GUIDED BDPT since DL-67 (a guided vertex
+// survives an empty container on the guide technique), so un-guided and
+// guided BDPT disagreed.
+//
+// U: topology L's wall + floor, `subsurfacescattering_material` ior 1.3
+//    roughness 0.3 (the DL-67 round-3 reviewer's replica).
+// V: a CLOSED `randomwalk_sss_material` sphere (roughness 0.3) on a
+//    Lambertian wall + floor.  A random walk into the zero-thickness
+//    sheets of U carries almost nothing (measured n = 8, salted: BDPT/PT
+//    -0.06% +/- 0.16% pre-fix), which is why the reviewer's thin-sheet
+//    random-walk replica read "-0.24%, inconclusive"; a closed sphere
+//    gives the walk a body to scatter in.  Depth 16 on both sides: at
+//    depth 5, PT's per-type bounce caps and BDPT's per-surface-vertex cap
+//    truncate a multi-event subsurface path differently (-0.10% on this
+//    sphere with the fix in, vanishing at 16 -- a depth-semantics
+//    difference, not a bias).
+//
+// Measured (32x32, 1024 spp, salted Sobol', n = 16 per build, two
+// separately built binaries run interleaved; mean BDPT/PT - 1):
+//   U  un-guided BDPT   -0.830% (z -29.7) pre-fix   -0.033% (z -1.1) post
+//   U  guided RIS BDPT  -0.048%           pre-fix   -0.033%          post
+//   V  un-guided BDPT   -0.450% (z -21.9) pre-fix at depth 5
+//   V  un-guided BDPT   -0.016% (z -0.8) post-fix at depth 16
+// Single-render sd at 1024 spp is ~0.09% (U) and ~0.06% (V), so the
+// 0.35% bands below sit >= 3.5 sd from both the pre-fix reading and the
+// post-fix mean.  Guided (RIS) vs un-guided BDPT is the invariant the row
+// exists for: the two techniques must estimate the same integral.
+//////////////////////////////////////////////////////////////////////
+static const char* kSceneRoughSSSU =
+	"film\n{\n\twidth 32\n\theight 32\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
+	"subsurfacescattering_material\n{\n\tname mat_sss\n\tior 1.3\n\tabsorption 0.1\n"
+		"\tscattering 1.0\n\tg 0.0\n\troughness 0.3\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_wall\n\tpta -1 -1 0\n\tptb 1 -1 0\n\tptc 1 1 0\n\tptd -1 1 0\n}\n\n"
+	"standard_object\n{\n\tname obj_wall\n\tgeometry quad_wall\n\tmaterial mat_sss\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_floor\n\tpta -1 -1 0\n\tptb -1 -1 2\n\tptc 1 -1 2\n\tptd 1 -1 0\n}\n\n"
+	"standard_object\n{\n\tname obj_floor\n\tgeometry quad_floor\n\tmaterial mat_sss\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_emit_u\n\tcolor 1.0 1.0 1.0\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname mat_emit_u\n\texitance pnt_emit_u\n\tscale 0.5\n\tmaterial none\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_emit_u\n\tpta -6 -6 4.2\n\tptb -6 6 4.2\n\tptc 6 6 4.2\n\tptd 6 -6 4.2\n}\n\n"
+	"standard_object\n{\n\tname obj_emit_u\n\tgeometry quad_emit_u\n\tmaterial mat_emit_u\n}\n";
+
+static const char* kSceneRandomWalkSphereV =
+	"film\n{\n\twidth 32\n\theight 32\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
+	"randomwalk_sss_material\n{\n\tname mat_rw\n\tior 1.3\n\tabsorption 0.5\n"
+		"\tscattering 10.0\n\tg 0.0\n\troughness 0.3\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_alb_v\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"lambertian_material\n{\n\tname mat_lamb_v\n\treflectance pnt_alb_v\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_wall\n\tpta -1 -1 0\n\tptb 1 -1 0\n\tptc 1 1 0\n\tptd -1 1 0\n}\n\n"
+	"standard_object\n{\n\tname obj_wall\n\tgeometry quad_wall\n\tmaterial mat_lamb_v\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_floor\n\tpta -1 -1 0\n\tptb -1 -1 2\n\tptc 1 -1 2\n\tptd 1 -1 0\n}\n\n"
+	"standard_object\n{\n\tname obj_floor\n\tgeometry quad_floor\n\tmaterial mat_lamb_v\n}\n\n"
+	"sphere_geometry\n{\n\tname sph_v\n\tradius 0.55\n}\n\n"
+	"standard_object\n{\n\tname obj_sph_v\n\tgeometry sph_v\n\tmaterial mat_rw\n\tposition 0 -0.45 0.6\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_emit_v\n\tcolor 1.0 1.0 1.0\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname mat_emit_v\n\texitance pnt_emit_v\n\tscale 0.5\n\tmaterial none\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_emit_v\n\tpta -6 -6 4.2\n\tptb -6 6 4.2\n\tptc 6 6 4.2\n\tptd 6 -6 4.2\n}\n\n"
+	"standard_object\n{\n\tname obj_emit_v\n\tgeometry quad_emit_v\n\tmaterial mat_emit_v\n}\n";
+
+//! PT / BDPT / guided-RIS BDPT rasterizer chunks for topologies U and V,
+//! 1024 spp; `depth` is PT's diffuse/glossy cap and BDPT's eye/light cap.
+static std::string SSSRasterizer( const char* kind, int depth )
+{
+	char buf[1024];
+	const std::string head = "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
+	const std::string tail = "\nfile_rasterizeroutput\n{\n\tpattern rendered/bdpt_balance_unused\n\ttype EXR\n"
+		"\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+	if( std::strcmp( kind, "pt" ) == 0 ) {
+		std::snprintf( buf, sizeof(buf), "pathtracing_pel_rasterizer\n{\n\tsamples 1024\n\trr_min_depth 8\n"
+			"\tmax_diffuse_bounce %d\n\tmax_glossy_bounce %d\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n", depth, depth );
+	} else if( std::strcmp( kind, "bdpt" ) == 0 ) {
+		std::snprintf( buf, sizeof(buf), "bdpt_pel_rasterizer\n{\n\tmax_eye_depth %d\n\tmax_light_depth %d\n"
+			"\tsamples 1024\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n", depth, depth );
+	} else {
+		std::snprintf( buf, sizeof(buf), "bdpt_pel_rasterizer\n{\n\tmax_eye_depth %d\n\tmax_light_depth %d\n"
+			"\tsamples 1024\n\tpixel_filter box\n\toidn_denoise FALSE\n\tpathguiding TRUE\n"
+			"\tpathguiding_iterations 3\n\tpathguiding_spp 16\n\tpathguiding_alpha 0.7\n"
+			"\tpathguiding_max_depth 4\n\tpathguiding_light_max_depth 4\n"
+			"\tpathguiding_sampling_type RIS\n}\n", depth, depth );
+	}
+	return head + buf + tail;
+}
+
+static bool RenderSSSAchromaticMean( const std::string& rasterizer, const char* sceneBody,
+	const char* tag, double& outMean )
+{
+	const std::string scene = std::string( "RISE ASCII SCENE 7\n" ) + rasterizer + sceneBody;
+	const std::string path = WriteSceneToTempFile( scene.c_str(), tag );
+	if( path.empty() ) return false;
+	const ImageStats st = RenderAndComputeStats( path.c_str() );
+	std::remove( path.c_str() );
+	if( !st.valid ) return false;
+	outMean = ( st.mean[0] + st.mean[1] + st.mean[2] ) / 3.0;
+	return std::isfinite( outMean ) && outMean > 0;
+}
+
+static void CheckSSSMeanBand( const char* label, double ref, double test, double band )
+{
+	const double rel = test / ref - 1.0;
+	std::printf( "    %s: ref %.7f test %.7f  rel %+.3f%%  (band +/- %.2f%%)\n",
+		label, ref, test, 100.0 * rel, 100.0 * band );
+	Check( std::fabs( rel ) <= band, label );
+}
+
+static void RunSSSTopology( const char* name, const char* sceneBody, int depth )
+{
+	std::cout << "Testing DL-307 " << name << std::endl;
+	double pt = 0, bdpt = 0, ris = 0;
+	const bool okPT   = RenderSSSAchromaticMean( SSSRasterizer( "pt", depth ),   sceneBody, "sss_pt",   pt );
+	const bool okBDPT = RenderSSSAchromaticMean( SSSRasterizer( "bdpt", depth ), sceneBody, "sss_bdpt", bdpt );
+	const bool okRIS  = RenderSSSAchromaticMean( SSSRasterizer( "ris", depth ),  sceneBody, "sss_ris",  ris );
+	Check( okPT && okBDPT && okRIS, ( std::string( "DL-307 renders produced output: " ) + name ).c_str() );
+	if( !okPT || !okBDPT || !okRIS ) return;
+	const double kBand = 0.0035;
+	CheckSSSMeanBand( ( std::string( "DL-307 un-guided BDPT mean within 0.35% of PT: " ) + name ).c_str(),
+		pt, bdpt, kBand );
+	CheckSSSMeanBand( ( std::string( "DL-307 guided RIS BDPT mean within 0.35% of PT: " ) + name ).c_str(),
+		pt, ris, kBand );
+	CheckSSSMeanBand( ( std::string( "DL-307 un-guided BDPT mean within 0.35% of guided RIS BDPT: " ) + name ).c_str(),
+		ris, bdpt, kBand );
+}
+
+static void TestRoughSSSEmptyContainerU()
+{
+	RunSSSTopology( "topology U (rough subsurfacescattering_material sheets, depth 5)", kSceneRoughSSSU, 5 );
+}
+
+static void TestRandomWalkSphereEmptyContainerV()
+{
+	RunSSSTopology( "topology V (rough randomwalk_sss_material closed sphere, depth 16)", kSceneRandomWalkSphereV, 16 );
+}
+
 int main( int argc, char** argv )
 {
 	// Focused repeated A/B measurement uses the exact shipped topology
@@ -3526,6 +3670,12 @@ int main( int argc, char** argv )
 	}
 	// DL-05: every weave topology (E, F, Q, R) and nothing else -- the
 	// focused before/after A/B.
+	if( argc == 2 && std::strcmp(argv[1], "--sss-only") == 0 ) {
+		TestRoughSSSEmptyContainerU();
+		TestRandomWalkSphereEmptyContainerV();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
 	if( argc == 2 && std::strcmp(argv[1], "--weave-gap-only") == 0 ) {
 		TestBacklitThinCurtain();
 		TestGappedCurtainAreaLight();
@@ -3542,7 +3692,7 @@ int main( int argc, char** argv )
 	if( argc > 1 ) {
 		if( argc != 3 || std::strcmp(argv[1], "--spectral-only") != 0 ||
 			(std::strcmp(argv[2], "1") != 0 && std::strcmp(argv[2], "2") != 0) ) {
-			std::cerr << "Usage: BDPTStrategyBalanceTest [--spectral-only 1|2 | --spectral-aggregate-unit | --materials-only | --guided-only | --weave-gap-only]" << std::endl;
+			std::cerr << "Usage: BDPTStrategyBalanceTest [--spectral-only 1|2 | --spectral-aggregate-unit | --materials-only | --guided-only | --weave-gap-only | --sss-only]" << std::endl;
 			return 2;
 		}
 		spectralSampleScale = std::strcmp(argv[2], "2") == 0 ? 2 : 1;
@@ -3580,6 +3730,8 @@ int main( int argc, char** argv )
 	TestGenericHumanTissueOriginFix();
 	TestWeaveGapBoxOmniOutside();
 	TestWeaveGapBoxAreaOutside();
+	TestRoughSSSEmptyContainerU();
+	TestRandomWalkSphereEmptyContainerV();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;
