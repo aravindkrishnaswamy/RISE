@@ -141,10 +141,12 @@ namespace RISE
 			//   Light bounces d:       phases 1 + d
 			//   Eye bounces d:         phases 16 + d
 			//   BDPT strategy select:  phase 47
-			//   VCM NEE, eye vertex i: phase 48 + i
+			//   VCM NEE, eye vertex i: phase 48 + i (i >= 1)
 			// The bounce ranges were laid out for 15 bounces; deeper
 			// walks run into each other's phases (light bounce 15 is
-			// eye bounce 0) -- a known pre-existing overlap, DL-286.
+			// eye bounce 0, light 46 / eye 31 is the select, light 48
+			// / eye 33 is VCM's first NEE phase 49) -- a known
+			// pre-existing overlap, DL-286.
 			// The full map, including the wrap-region families past
 			// the dimension table, is SobolDimensionBudgetTest G2.
 			//

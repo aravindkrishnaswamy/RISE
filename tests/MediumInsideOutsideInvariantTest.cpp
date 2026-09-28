@@ -64,21 +64,46 @@
 //  `painter_heterogeneous_medium` (64^3 majorant grid), so BDPT/VCM's
 //  distance sampling is delta tracking with an OPEN-ENDED draw count.
 //  Rows: BDPT pel, VCM pel, BDPT spectral hwss TRUE, and BDPT pel over a
-//  black floor (the discriminator that read +3.3% for PT's DL-247 walk
-//  overrun).  Measured in/out, three runs of n = 8 on the fixed build:
+//  black floor.  Measured in/out, three runs of n = 8 on the fixed build:
 //    BDPT pel het               0.9989 / 0.9900 / 1.0025
 //    VCM pel het                1.0027 / 0.9963 / 1.0034
 //    BDPT hwss TRUE het         1.0078 / 1.0056 / 1.0076
 //    BDPT pel het black floor   1.0006 / 0.9977 / 0.9956
 //  Per-render sd is ~1% (ratio-tracking transmittance noise), so an
 //  8-render ratio's run-to-run sd is ~0.5%; the +/-3% band is >= 4 sd
-//  from the worst row mean.  HONEST SCOPE: these rows are NOT red on the
-//  pre-DL-283 build -- the BDPT/VCM delta-tracking stream overrun was
-//  real (SobolDimensionBudgetTest Test H is its red-proof) but moved no
-//  mean measurably on any fixture tried, this one included (salted
-//  pre/post in/out 0.990..1.009, every row within 1.9 sd).  They gate
-//  the heterogeneous inside/outside invariant itself for BDPT/VCM, which
-//  nothing else did.
+//  from the worst row mean.  These rows gate the heterogeneous
+//  inside/outside invariant for BDPT/VCM, which nothing else did.  They
+//  CANNOT see DL-283's defect, and neither can any unsalted row: the
+//  pre-fix sampler-stream overrun biased camera-inside and camera-outside
+//  renders by similar amounts (so the ratio is blind), and repeated
+//  renders of a Sobol' build reuse the IDENTICAL Sobol' points -- the
+//  pixel seed is deterministic -- so an unsalted run-to-run sd omits the
+//  QMC error and cannot resolve a sub-percent mean shift either way.
+//
+//  DL-283: THE SAMPLER-BIAS ROW.  The pre-fix BDPT/VCM generators drew
+//  each medium distance sample off the per-vertex Sobol' stream; delta
+//  tracking in a thin, finely gridded heterogeneous medium runs far past
+//  the stream's 32 slots into the stream the next vertex re-opens, so one
+//  Sobol' dimension drove two decisions on one path -- a real BIAS.  This
+//  row renders one BDPT scene (thin 256^3-grid Perlin medium, a quarter
+//  of the coefficients above; black floor; camera inside; 128x128 x 4
+//  spp) n = 48 times with a distinct per-render VALUE salt
+//  (SobolSamplerTestHooks::ValueSalt, so each render is an independent
+//  randomized-QMC replicate) and n = 48 times with every SobolSampler
+//  draw replaced by an i.i.d. stream (SobolSamplerTestHooks::Independent,
+//  a reference no sampler-correlation defect can reach), and requires
+//  the two means to agree:
+//                          Sobol/independent - 1     se      z
+//    pre-DL-283 (6b91fd19)      -0.599 %           0.119 %  -5.04   RED
+//    this slice                 -0.048 %           0.118 %  -0.41
+//  Band +/- 0.35% = 3 se.  Independent confirmation (salted, separate
+//  harness, P = pre-fix, F = fixed, I = independent, same fixture):
+//  pel inside n = 24 P-I -0.806% (z -3.7), F-I +0.005%, F-P paired
+//  +0.818% (z +4.4); hwss TRUE inside n = 40 P-I -0.815% (z -5.1),
+//  F-I +0.103%, F-P +0.926% (z +5.2); pel camera OUTSIDE n = 24 P-I
+//  -0.250%, F-P +0.451% (z +2.4).  ~5.5 min of this test's runtime;
+//  RISE_MIOIT_SALTED_REPEATS overrides n, RISE_MIOIT_ONLY_SAMPLER_ROW=1
+//  runs this row alone.
 //
 //  THE CAP ROWS.  `max_volume_bounce` N means, for every integrator, the
 //  Neumann series truncated at N medium-scatter vertices per full path,

@@ -66,7 +66,7 @@ namespace RISE
 		// `kWalkIterationCap` (1024), which is what bounds `d`.  Every
 		// other consumer of a BDPT/VCM sampler sits below 8192:
 		// film/light select 0, light walk 1..1024, eye walk 16..1039,
-		// strategy select 47, VCM NEE 48..3121, MLT film/lens 2048,
+		// strategy select 47, VCM NEE 49..3121 (48 + i, i >= 1), MLT film/lens 2048,
 		// thin-lens aperture 3322 -- and PT's own volume walks
 		// (`PTVolumeWalkStream`, 4096..8191) never share a sampler with
 		// these at all.  `tests/SobolDimensionBudgetTest.cpp` Test G

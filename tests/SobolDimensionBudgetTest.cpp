@@ -1123,8 +1123,9 @@ static void TestStreamMap()
 	bool ok = true;
 
 	// Fixed (per-vertex and single-purpose) consumers.  VCM's NEE runs
-	// 48 + eye-vertex-index and one iteration appends at most three
-	// vertices (Test F's bound).
+	// 48 + eye-vertex-index, i >= 1 (so it really starts at 49; 48 is
+	// kept as a conservative lower edge), and one iteration appends at
+	// most three vertices (Test F's bound).
 	const Range fixedRanges[] = {
 		{ "film / light select (0)",        0u,   1u,                  PT | BIDIR },
 		{ "light walk (1+d)",               1u,   1u + cap,            BIDIR },
@@ -1143,10 +1144,12 @@ static void TestStreamMap()
 
 	// PRE-EXISTING overlaps among the fixed per-vertex streams (DL-286,
 	// opened by DL-283's sibling audit, NOT fixed there): the light walk
-	// reaches the eye walk's streams from light depth 15, the strategy
-	// select from 46 and VCM's NEE from 47; the eye walk reaches the
-	// select at depth 31 and VCM's NEE at 32.  Pinned so a NEW overlap
-	// turns this test red while the known ones stay visible.
+	// reaches the eye walk's streams from light iteration 15, the
+	// strategy select at 46 and VCM's NEE (first stream 49: 48 + i with
+	// i >= 1, VCMIntegrator.cpp) at 48; the eye walk reaches the select
+	// at iteration 31 and VCM's NEE at 33.  (The NEE range below starts
+	// at 48, one stream conservative.)  Pinned so a NEW overlap turns
+	// this test red while the known ones stay visible.
 	const char* knownPairs[][2] = {
 		{ "light walk (1+d)", "eye walk (16+d)" },
 		{ "light walk (1+d)", "BDPT strategy select (47)" },
