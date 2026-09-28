@@ -2303,7 +2303,9 @@ bool RayCaster::CastOcclusionRay( const Ray& ray, const Scalar dHowFar ) const
 // through (no refractive bend) and the running transmittance is
 // multiplied by the per-interface Fresnel transmittance (1 - F) (and
 // the dielectric's per-channel transmittance tint, which is 1 for
-// clear glass).  Any other hit fully blocks.
+// clear glass).  Any other shadow-casting hit fully blocks (a hit on
+// an object that casts no shadow is stepped over -- see
+// WalkShadowSegment).
 //
 // APPROXIMATION — this is the industry-standard "transparent shadow"
 // shortcut (Arnold / RenderMan / Cycles `transparent` shadow path):
@@ -2684,7 +2686,12 @@ bool RayCaster::WalkShadowSegment(
 // (clear dielectrics attenuate rather than block); when off, the binary test.
 // Used by BOTH the LightSampler NEE evaluators (omni / spot / area) and the
 // directional / ambient Step-1 lights, so the flag applies uniformly across
-// light types.  It is geometry-agnostic: it forwards to the same closest-hit
+// light types.
+//
+// DL-05: also the one place a DELTA light's shadow ray is let through a
+// non-bending delta pass-through (a thin weave's gap) -- see the header
+// comment on CastShadowRayAuto for why delta lights only, and
+// docs/DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md.  It is geometry-agnostic: it forwards to the same closest-hit
 // traversal that analytic primitives and SDFs both use, so primitive and SDF
 // dielectrics occlude (flag off) or transmit (flag on) identically.
 // ================================================================

@@ -329,9 +329,11 @@ namespace RISE
 			//! passes STRAIGHT
 			//! through (no refractive bend) and the running transmittance
 			//! is multiplied by the per-interface Fresnel transmittance
-			//! T = 1 - F(cosTheta, eta).  Any OTHER hit (opaque, diffuse,
-			//! rough, pure mirror) fully blocks (returns true, transmittance
-			//! left at 0).
+			//! T = 1 - F(cosTheta, eta).  Any OTHER shadow-casting hit
+			//! (opaque, diffuse, rough, pure mirror) fully blocks (returns
+			//! true, transmittance left at 0); a hit on an object that does
+			//! not cast shadows is stepped over, as the binary CastShadowRay
+			//! ignores it (DL-05; before DL-05 this walk blocked on it).
 			//!
 			//! APPROXIMATION (documented at the implementation): straight-
 			//! through propagation ignores refractive ray bending and

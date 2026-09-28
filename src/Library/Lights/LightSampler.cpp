@@ -56,6 +56,15 @@ using namespace RISE::Implementation;
 // Any other IRayCaster implementation, or the flag being off, falls
 // back to the binary test with transmittance = 1 — so default
 // behaviour is byte-identical to before this feature.
+//
+// DL-05: @a bDeltaLight is true ONLY at the delta-light arm (omni /
+// spot).  It lets that arm's shadow ray see through a thin weave's delta
+// gap lobe (RayCaster::CastShadowRayAuto); the mesh-luminary and env
+// arms pass false and keep a binary shadow there, because PT's
+// BSDF-sampled continuation already reaches those lights THROUGH the gap
+// at MIS weight 1 -- seeing through it here too would count the path
+// twice.  No BSDF-sampled strategy can ever hit a delta light, so for the
+// delta arm this shadow ray is the path's only estimator.
 // ----------------------------------------------------------------
 static bool ShadowOccludedRGB(
 	const IRayCaster& caster,
