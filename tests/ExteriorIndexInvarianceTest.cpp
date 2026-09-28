@@ -663,11 +663,16 @@ namespace
 			o << "perfectreflector_material\n{\n\tname mirror_mat\n\treflectance white\n}\n\n";
 			break;
 		case Model::SMSGlass:
-			// NOT GATED -- the recorded DL-290 residual.  A Lambertian floor
-			// (no index anywhere at the receiver) under a glass sphere
-			// caster: the only index-dependent quantities are the SMS
-			// chain's own etaI/etaT, which the seed walk
-			// (BuildSeedChain / SnellContinueChain) still starts at air.
+			// A Lambertian floor (no index anywhere at the receiver) under a
+			// glass sphere caster lit by a point light: only SMS connects
+			// the light through the sphere, and the only index-dependent
+			// quantities left are the SMS chain's own etaI/etaT.  The seed
+			// walk (BuildSeedChain / SnellContinueChain) started at air, so
+			// the chain priced the caster against air inside the enclosure
+			// (0.9565 pre-fix, snell); it now starts from the receiver's
+			// stack.  The photon-aided row stays NOT GATED: photon-seeded
+			// chains (ReversePhotonChainForSeed) carry no etaI/etaT and
+			// fall back to "air on the other side" -- the recorded residual.
 			o << "lambertian_material\n{\n\tname subject\n\treflectance grey\n}\n\n";
 			o << "perfectrefractor_material\n{\n\tname glass_mat\n\tior " << 1.5 * s << "\n\trefractance white\n}\n\n";
 			break;
@@ -721,8 +726,11 @@ namespace
 			  << "standard_object\n{\n\tname enclosure\n\tgeometry enclosure_geo\n\tmaterial enclosure_mat\n}\n\n";
 		}
 		o << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
+		const bool photons = smsSeeding && std::string( smsSeeding ) == "snell-photons";
 		const std::string sms = smsSeeding
-			? std::string( "\n\tsms_enabled TRUE\n\tsms_seeding " ) + smsSeeding + "\n\tsms_max_chain_depth 2\n\tsms_target_bounces 1"
+			? std::string( "\n\tsms_enabled TRUE\n\tsms_seeding " ) + ( photons ? "snell" : smsSeeding ) +
+			  "\n\tsms_max_chain_depth 2\n\tsms_target_bounces " + ( model == Model::SMSGlass ? "2" : "1" ) +
+			  ( photons ? "\n\tsms_photon_count 20000" : "" )
 			: std::string();
 		switch( integrator ) {
 		case Integrator::PT:
@@ -809,7 +817,11 @@ namespace
 			{ Model::SMSMirror,    Integrator::PT,         16,  0.03, "uniform" },
 			{ Model::SMSMirror,    Integrator::PTSpectral, 16,  0.05, "snell" },
 			{ Model::SMSMirror,    Integrator::PTSpectral, 16,  0.05, "uniform" },
-			{ Model::SMSGlass,     Integrator::PT,         16,  0.03, "snell", false },
+			{ Model::SMSGlass,     Integrator::PT,         16,  0.02, "snell" },
+			{ Model::SMSGlass,     Integrator::PT,         16,  0.02, "uniform" },
+			{ Model::SMSGlass,     Integrator::PTSpectral, 16,  0.05, "snell" },
+			{ Model::SMSGlass,     Integrator::PTSpectral, 16,  0.05, "uniform" },
+			{ Model::SMSGlass,     Integrator::PT,         16,  0.02, "snell-photons", false },
 		};
 		unsigned int seed = 290000;
 		for( const Row& row : rows ) {
@@ -845,7 +857,7 @@ namespace
 			if( row.gated ) {
 				Check( std::fabs( ratio - 1.0 ) < row.band, label + ": enclosed/air image mean ratio within band of 1" );
 			} else {
-				std::cout << "      (NOT GATED: recorded DL-290 residual -- SMS chain etas seed their walk at air)" << std::endl;
+				std::cout << "      (NOT GATED: recorded DL-290 residual -- photon-seeded SMS chains price the caster against air)" << std::endl;
 			}
 		}
 	}

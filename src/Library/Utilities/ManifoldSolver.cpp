@@ -3759,7 +3759,8 @@ unsigned int ManifoldSolver::BuildSeedChain(
 	const IScene& scene,
 	const IRayCaster& caster,
 	std::vector<ManifoldVertex>& chain,
-	bool applyEmitterStop
+	bool applyEmitterStop,
+	const IORStack* pStartStack
 	) const
 {
 	chain.clear();
@@ -3788,11 +3789,23 @@ unsigned int ManifoldSolver::BuildSeedChain(
 	}
 
 	// Initial seed: the ray walks from the shading point toward the light
-	// sample.  Medium starts as air (IOR=1.0).  Snell-continue handles the
-	// per-vertex push/pop, vertex creation, and ray refraction.
+	// sample.  Snell-continue handles the per-vertex push/pop, vertex
+	// creation, and ray refraction.
+	//
+	// DL-290: "air" is only right when the SHADING POINT is in air.  The
+	// walk starts in the receiver's medium, so it starts from the
+	// receiver's live IOR stack when the caller has one: the chain's
+	// etaI/etaT (the Newton constraint, the chain Fresnel) then describe
+	// the interfaces the light really crosses -- a glass caster under
+	// water is priced glass-vs-water, not glass-vs-air.  No stack is air,
+	// exactly as before (and an in-air stack's top is 1.0, so an in-air
+	// render is bit-identical).
 	Point3 currentOrigin = start;
-	Scalar currentIOR = 1.0;
-	IORStack seedIor( 1.0 );
+	IORStack seedIor = pStartStack ? *pStartStack : IORStack( 1.0 );
+	Scalar currentIOR = seedIor.top();
+	if( !( currentIOR > 0 && currentIOR < RISE_INFINITY ) ) {
+		currentIOR = 1.0;
+	}
 
 	const unsigned int produced = SnellContinueChain(
 		currentOrigin, dir, totalDist,
@@ -4237,7 +4250,8 @@ unsigned int ManifoldSolver::BuildSeedChainBranching(
 	const IRayCaster& caster,
 	ISampler& sampler,
 	std::vector<SeedChainResult>& out,
-	bool applyEmitterStop
+	bool applyEmitterStop,
+	const IORStack* pStartStack
 	) const
 {
 	(void)sampler;	// no longer needed since we don't RR-pick branches
@@ -4245,7 +4259,7 @@ unsigned int ManifoldSolver::BuildSeedChainBranching(
 
 	std::vector<ManifoldVertex> chain;
 	const unsigned int chainLen = BuildSeedChain(
-		start, end, scene, caster, chain, applyEmitterStop );
+		start, end, scene, caster, chain, applyEmitterStop, pStartStack );
 	if( chainLen > 0 && !chain.empty() ) {
 		SeedChainResult sole;
 		sole.chain      = std::move( chain );
@@ -5962,7 +5976,8 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	std::vector<ManifoldVertex> seedChain;
 	unsigned int chainLen = BuildSeedChain(
 		pos, lightSample.position,
-		scene, caster, seedChain );
+		scene, caster, seedChain,
+		/*applyEmitterStop=*/ true, pIorStack );	// DL-290: walk starts in the receiver's medium
 	if( chainLen > 0 && !seedChain.empty() ) {
 		SeedChainResult lone;
 		lone.chain = seedChain;
@@ -5987,7 +6002,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		chainLen = BuildSeedChain(
 			pos, normalTarget,
 			scene, caster, seedChain,
-			/*applyEmitterStop=*/ false );
+			/*applyEmitterStop=*/ false, pIorStack );	// DL-290
 		if( chainLen > 0 && !seedChain.empty() ) {
 			baseSeeds.clear();
 			SeedChainResult lone;
@@ -6015,7 +6030,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		chainLen = BuildSeedChain(
 			pos, midTarget,
 			scene, caster, seedChain,
-			/*applyEmitterStop=*/ false );
+			/*applyEmitterStop=*/ false, pIorStack );	// DL-290
 		if( chainLen > 0 && !seedChain.empty() ) {
 			baseSeeds.clear();
 			SeedChainResult lone;
@@ -6087,7 +6102,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 			std::vector<ManifoldVertex> mirrorChain;
 			const unsigned int mirrorLen = BuildSeedChain(
 				pos, sp, scene, caster, mirrorChain,
-				/*applyEmitterStop=*/ false );
+				/*applyEmitterStop=*/ false, pIorStack );	// DL-290
 			if( mirrorLen > 0 && !mirrorChain.empty() &&
 			    mirrorChain[0].pObject == pMirrorCaster ) {
 				SeedChainResult mc;
@@ -7041,7 +7056,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 		// the non-specular-hit terminator.
 		const unsigned int chainLen = BuildSeedChain(
 			pos, sp, scene, caster, trialSeed,
-			/*applyEmitterStop=*/ false );
+			/*applyEmitterStop=*/ false, pIorStack );	// DL-290
 		if( chainLen == 0 || trialSeed.empty() ) return false;
 		if( trialSeed[0].pObject != pCasterObj ) return false;
 		return true;
@@ -7065,7 +7080,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 			Point3( loopSampler.Get1D(), loopSampler.Get1D(), loopSampler.Get1D() ) );
 		outSeeds.clear();
 		BuildSeedChainBranching( pos, sp, scene, caster, loopSampler, outSeeds,
-			/*applyEmitterStop=*/ false );
+			/*applyEmitterStop=*/ false, pIorStack );	// DL-290
 		// Filter to chains whose first specular hit is the sampled caster
 		// (matches Mitsuba's `si_init.shape != shape` rejection).
 		outSeeds.erase(
@@ -7218,7 +7233,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 				std::vector<ManifoldVertex> trialChain;
 				bool match = false;
 				if( BuildSeedChain( pos, sp_t, scene, caster, trialChain,
-						/*applyEmitterStop=*/ false ) > 0 &&
+						/*applyEmitterStop=*/ false, pIorStack ) > 0 &&	// DL-290
 					!trialChain.empty() && trialChain[0].pObject == pCasterObj )
 				{
 					ManifoldResult tResult = Solve(
@@ -7482,7 +7497,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 		// Uniform mode — see RGB variant comment.  applyEmitterStop=false.
 		const unsigned int chainLen = BuildSeedChain(
 			pos, sp, scene, caster, trialSeed,
-			/*applyEmitterStop=*/ false );
+			/*applyEmitterStop=*/ false, pIorStack );	// DL-290
 		if( chainLen == 0 || trialSeed.empty() ) return false;
 		if( trialSeed[0].pObject != pCasterObj ) return false;
 		applyNMEtaToChain( trialSeed );
@@ -7503,7 +7518,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 			Point3( loopSampler.Get1D(), loopSampler.Get1D(), loopSampler.Get1D() ) );
 		outSeeds.clear();
 		BuildSeedChainBranching( pos, sp, scene, caster, loopSampler, outSeeds,
-			/*applyEmitterStop=*/ false );
+			/*applyEmitterStop=*/ false, pIorStack );	// DL-290
 		outSeeds.erase(
 			std::remove_if( outSeeds.begin(), outSeeds.end(),
 				[&]( const SeedChainResult& r ) {
@@ -7618,7 +7633,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 				std::vector<ManifoldVertex> trialChain;
 				bool match = false;
 				if( BuildSeedChain( pos, sp_t, scene, caster, trialChain,
-						/*applyEmitterStop=*/ false ) > 0 &&
+						/*applyEmitterStop=*/ false, pIorStack ) > 0 &&	// DL-290
 					!trialChain.empty() && trialChain[0].pObject == pCasterObj )
 				{
 					applyNMEtaToChain( trialChain );
@@ -7811,7 +7826,8 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	std::vector<ManifoldVertex> seedChain;
 	unsigned int chainLen = BuildSeedChain(
 		pos, lightSample.position,
-		scene, caster, seedChain );
+		scene, caster, seedChain,
+		/*applyEmitterStop=*/ true, pIorStack );	// DL-290: walk starts in the receiver's medium
 
 	if( chainLen == 0 || seedChain.empty() )
 	{
@@ -7823,7 +7839,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		chainLen = BuildSeedChain(
 			pos, normalTarget,
 			scene, caster, seedChain,
-			/*applyEmitterStop=*/ false );
+			/*applyEmitterStop=*/ false, pIorStack );	// DL-290
 	}
 
 	if( chainLen == 0 || seedChain.empty() )
@@ -7837,7 +7853,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		chainLen = BuildSeedChain(
 			pos, midTarget,
 			scene, caster, seedChain,
-			/*applyEmitterStop=*/ false );
+			/*applyEmitterStop=*/ false, pIorStack );	// DL-290
 	}
 
 	if( chainLen == 0 || seedChain.empty() )

@@ -425,7 +425,8 @@ namespace RISE
 				const IScene& scene,
 				const IRayCaster& caster,
 				std::vector<ManifoldVertex>& chain,
-				bool applyEmitterStop = true       ///< Snell mode: true (stop at emitter projection).  Uniform mode: false (sp is a direction probe, not the emitter).
+				bool applyEmitterStop = true,      ///< Snell mode: true (stop at emitter projection).  Uniform mode: false (sp is a direction probe, not the emitter).
+				const IORStack* pStartStack = nullptr	///< DL-290: the RECEIVER's live IOR stack; the walk starts in that medium.  Null = air (the pre-DL-290 behaviour).
 				) const;
 
 			/// Single seed chain plus a proposal pdf (always 1.0 since
@@ -454,7 +455,8 @@ namespace RISE
 				const IRayCaster& caster,
 				ISampler& sampler,
 				std::vector<SeedChainResult>& out,
-				bool applyEmitterStop = true       ///< Snell mode: true.  Uniform mode: false (see BuildSeedChain).
+				bool applyEmitterStop = true,      ///< Snell mode: true.  Uniform mode: false (see BuildSeedChain).
+				const IORStack* pStartStack = nullptr	///< DL-290: see BuildSeedChain.
 				) const;
 
 			/// Continues a manifold-seed chain by Snell-tracing a ray from
