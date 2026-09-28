@@ -1018,7 +1018,19 @@ int main()
 					// `kray_I p_I == f_I cos` exactly (DL-127 for
 					// Schlick, DL-177 for the two Wards; the two Phongs
 					// always did).
-					Check( fabs( st.minR - 1.0 ) < 1e-9 && fabs( st.maxR - 1.0 ) < 1e-9,
+					// The Schlick control row runs at isotropy 100 (it
+					// reuses the Ashikmin exponent painter), where Schlick's
+					// A(phi) has a relative condition number ~p^2 = 1e4 in
+					// the half-vector's azimuth near the pole: a 1-ulp
+					// difference between the SPF's and value()'s
+					// reconstruction of h already moved this ratio by
+					// 1.7e-9 BEFORE DL-225 (isolated A/B on 6b91fd19, same
+					// draw) and 3.5e-9 after, the masking itself agreeing
+					// to the last digit.  Its tolerance is the 1e-8 this
+					// conditioning needs; sections 1, 2, 4 and 10 gate the
+					// same Schlick identity at 1e-6.
+					const double tol = ( e == 0 ) ? 1e-8 : 1e-9;
+					Check( fabs( st.minR - 1.0 ) < tol && fabs( st.maxR - 1.0 ) < tol,
 						std::string( "Section 6: per-lobe kray identity holds per draw: " ) + audit[e].name );
 				}
 			}
