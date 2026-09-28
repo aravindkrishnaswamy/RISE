@@ -96,6 +96,13 @@
 //    already, so it alone would not prove the isConnectible bypass is
 //    load-bearing).
 //
+//    PART E (DL-307).  ROUGH (0.8) random-walk and diffusion spheres
+//    under the same directional light, PT vs BDPT.  The sweep only ever
+//    reaches a BSSRDF entry vertex the eye generator spawned, and the
+//    generator used to break BEFORE spawning one whenever a rough
+//    reflection draw fell below the horizon (empty scatter container):
+//    BDPT read ~24% under PT on both spheres.
+//
 //  Author: Aravind Krishnaswamy (RISE debt-cleanup, slice `dl207`)
 //  Tabs: 4
 //
@@ -575,7 +582,12 @@ static void TestRandomWalkDirectional()
 // emptied the scatter container (DL-307) -- at a sphere's grazing
 // silhouette that is common, so BDPT under-read the directional light's
 // subsurface transport there.  E1 random walk, E2 diffusion profile,
-// both roughness 0.8; measured bands in RunRoughSphere's caller.
+// both roughness 0.8, 1024 spp.  Pre-fix (isolated A/B, base library)
+// BDPT/PT read -23.9% (E1) and -24.4% (E2); post-fix four runs read
+// -0.98 / +0.00 / -0.81 / +1.02% (E1 -- the random walk draws from the
+// per-thread RNG, so it is not reproducible run to run) and +0.39 / +0.40
+// / +0.60 / +0.63% (E2).  Bands 4% and 2%: >= 2x the post-fix spread
+// and >= 6x inside the pre-fix deficit.
 //////////////////////////////////////////////////////////////////////
 static void RunRoughSphere( const char* label, const std::string& materialBlock, const char* matName,
 	unsigned int seedBase, double band )
@@ -605,7 +617,7 @@ static void TestRoughSubsurfaceSpheresDirectional()
 {
 	std::cout << "Part E: ROUGH subsurface spheres + directional light, PT vs BDPT (DL-307)" << std::endl;
 	RunRoughSphere( "E1 randomwalk_sss_material roughness 0.8",
-		"randomwalk_sss_material\n{\n\tname mat_rw\n\troughness 0.8\n}\n\n", "mat_rw", 5401, 0.02 );
+		"randomwalk_sss_material\n{\n\tname mat_rw\n\troughness 0.8\n}\n\n", "mat_rw", 5401, 0.04 );
 	RunRoughSphere( "E2 subsurfacescattering_material roughness 0.8",
 		"subsurfacescattering_material\n{\n\tname mat_sss\n\troughness 0.8\n}\n\n", "mat_sss", 5411, 0.02 );
 }

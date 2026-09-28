@@ -2695,11 +2695,15 @@ namespace {
 			// realization (PT takes it BEFORE scattering at all).  Breaking
 			// here dropped the whole subsurface contribution of every rough
 			// SSS hit whose reflection draw fell below the horizon.
-			const bool subsurfaceCarrier = !guidedVertex &&
-				HasSubsurfaceEntryBranch<Tag>( *ri.pMaterial, tag );
-			if( scattered.Count() == 0 && !guidedVertex && !subsurfaceCarrier ) {
-				CaptureBDPTAccurateAOV( rc, ri, pPrimaryAOV );
-				break;
+			// Queried lazily: only a vertex with no lobe pays the two (NM:
+			// three) virtual material calls.
+			bool subsurfaceCarrier = false;
+			if( scattered.Count() == 0 && !guidedVertex ) {
+				subsurfaceCarrier = HasSubsurfaceEntryBranch<Tag>( *ri.pMaterial, tag );
+				if( !subsurfaceCarrier ) {
+					CaptureBDPTAccurateAOV( rc, ri, pPrimaryAOV );
+					break;
+				}
 			}
 
 			// Stochastic single-lobe selection (no path-tree branching).
@@ -2726,7 +2730,13 @@ namespace {
 			const bool hasLobe = ( pScat != 0 );
 			if( !pScat ) {
 				if( !guidedVertex && !subsurfaceCarrier ) {
-					break;
+					// A non-empty container none of whose lobes is
+					// selectable (every weight zero) is the same zero
+					// sample of the reflection technique.
+					subsurfaceCarrier = HasSubsurfaceEntryBranch<Tag>( *ri.pMaterial, tag );
+					if( !subsurfaceCarrier ) {
+						break;
+					}
 				}
 				pScat = &guideTemplateRay;
 				selectProb = 1.0;
@@ -6964,10 +6974,12 @@ unsigned int GenerateLightSubpathImpl(
 #endif
 		// DL-307: see the eye twin -- an empty container at a vertex with a
 		// subsurface-entry branch still offers that branch its coin.
-		const bool subsurfaceCarrier = !guidedVertex &&
-			HasSubsurfaceEntryBranch<Tag>( *ri.pMaterial, tag );
-		if( scattered.Count() == 0 && !guidedVertex && !subsurfaceCarrier ) {
-			break;
+		bool subsurfaceCarrier = false;
+		if( scattered.Count() == 0 && !guidedVertex ) {
+			subsurfaceCarrier = HasSubsurfaceEntryBranch<Tag>( *ri.pMaterial, tag );
+			if( !subsurfaceCarrier ) {
+				break;
+			}
 		}
 
 		// Stochastic single-lobe selection (no path-tree branching).
@@ -6989,7 +7001,10 @@ unsigned int GenerateLightSubpathImpl(
 		const bool hasLobe = ( pScat != 0 );
 		if( !pScat ) {
 			if( !guidedVertex && !subsurfaceCarrier ) {
-				break;
+				subsurfaceCarrier = HasSubsurfaceEntryBranch<Tag>( *ri.pMaterial, tag );
+				if( !subsurfaceCarrier ) {
+					break;
+				}
 			}
 			pScat = &guideTemplateRay;
 			selectProb = 1.0;
