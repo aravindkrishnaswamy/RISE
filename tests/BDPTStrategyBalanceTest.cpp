@@ -149,6 +149,7 @@
 #include "../src/Library/Interfaces/IRasterImage.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
+#include "../src/Library/Utilities/SobolSampler.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -3555,13 +3556,26 @@ static void TestWeaveGapBoxAreaOutside()
 //   V  guided RIS BDPT  -0.076%           pre-fix   +0.018%          post   n = 8
 // (V's guided row moves too: vertices deeper than
 // `pathguiding_{,light_}max_depth` 4 are un-guided and hit the defect.)
-// Single-render sd at 1024 spp is ~0.09% (U) and ~0.07% (V).  A single
-// UNSALTED render is one fixed draw of that spread (it repeats to ~0.03%
-// run to run): U's rows read -0.08% .. -0.10% and V's +0.17% .. +0.22%
-// on the fixed build, the pre-fix builds -0.92% (U) and -10.3% (V).  So
-// U's band is 0.35% (>= 2.5 single-render sd from both sides) and V's
-// 0.6% (V's pre-fix is two orders of magnitude outside either).  Guided (RIS) vs un-guided BDPT is the
-// invariant the row exists for: the two techniques must estimate the
+// Every gated quantity is a RATIO of two renders (BDPT/PT, RIS/PT,
+// BDPT/RIS), so a band is judged against the DECORRELATED ratio sd -- the
+// spread a QMC redraw of both sides (any future change to the sampler's
+// stream layout) would give -- not a single-render sd, and not the
+// same-salt pair sd, which common points shrink.  U: salted n = 10 on the
+// fixed build at 2048 spp, per-render sd PT 0.056% / BDPT 0.065% / RIS
+// 0.073%, decorrelated ratio sd 0.086% (BDPT/PT), 0.091% (RIS/PT), 0.098%
+// (BDPT/RIS).  A single UNSALTED draw is NOT safe here: the sampler's own
+// point set read PT +0.18% and BDPT -0.15% of the salted means at 2048 spp
+// (ratio -0.34%, against the 0.35% band -- it failed once in three runs),
+// while at 1024 / 4096 spp the same pair read -0.08% / +0.06%.  So U
+// gates the mean of 3 salted replicates per integrator (the same 3 salts
+// for all three): ratio sd <= 0.057%, the 0.35% band >= 6 sd from a
+// correct build, and the pre-fix -0.83% 8 sd outside it.  (At 1024 spp
+// and one unsalted draw -- external review of 2212f537 -- the ratio sd was
+// ~0.17% and the band only ~2 sd.)  V keeps one unsalted 1024-spp render:
+// decorrelated ratio sd 0.106%, band 0.6% = 5.7 sd, pre-fix -10.3% two
+// orders of magnitude outside.  Guided (RIS) vs un-guided BDPT is the
+// invariant the row exists for: the two
+// techniques must estimate the
 // same integral.
 //////////////////////////////////////////////////////////////////////
 static const char* kSceneRoughSSSU =
@@ -3596,40 +3610,55 @@ static const char* kSceneRandomWalkSphereV =
 	"clippedplane_geometry\n{\n\tname quad_emit_v\n\tpta -6 -6 4.2\n\tptb -6 6 4.2\n\tptc 6 6 4.2\n\tptd 6 -6 4.2\n}\n\n"
 	"standard_object\n{\n\tname obj_emit_v\n\tgeometry quad_emit_v\n\tmaterial mat_emit_v\n}\n";
 
-//! PT / BDPT / guided-RIS BDPT rasterizer chunks for topologies U and V,
-//! 1024 spp; `depth` is PT's diffuse/glossy cap and BDPT's eye/light cap.
-static std::string SSSRasterizer( const char* kind, int depth )
+//! PT / BDPT / guided-RIS BDPT rasterizer chunks for topologies U and V;
+//! `depth` is PT's diffuse/glossy cap and BDPT's eye/light cap.
+static std::string SSSRasterizer( const char* kind, int depth, int spp )
 {
 	char buf[1024];
 	const std::string head = "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
 	const std::string tail = "\nfile_rasterizeroutput\n{\n\tpattern rendered/bdpt_balance_unused\n\ttype EXR\n"
 		"\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
 	if( std::strcmp( kind, "pt" ) == 0 ) {
-		std::snprintf( buf, sizeof(buf), "pathtracing_pel_rasterizer\n{\n\tsamples 1024\n\trr_min_depth 8\n"
-			"\tmax_diffuse_bounce %d\n\tmax_glossy_bounce %d\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n", depth, depth );
+		std::snprintf( buf, sizeof(buf), "pathtracing_pel_rasterizer\n{\n\tsamples %d\n\trr_min_depth 8\n"
+			"\tmax_diffuse_bounce %d\n\tmax_glossy_bounce %d\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n", spp, depth, depth );
 	} else if( std::strcmp( kind, "bdpt" ) == 0 ) {
 		std::snprintf( buf, sizeof(buf), "bdpt_pel_rasterizer\n{\n\tmax_eye_depth %d\n\tmax_light_depth %d\n"
-			"\tsamples 1024\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n", depth, depth );
+			"\tsamples %d\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n", depth, depth, spp );
 	} else {
 		std::snprintf( buf, sizeof(buf), "bdpt_pel_rasterizer\n{\n\tmax_eye_depth %d\n\tmax_light_depth %d\n"
-			"\tsamples 1024\n\tpixel_filter box\n\toidn_denoise FALSE\n\tpathguiding TRUE\n"
+			"\tsamples %d\n\tpixel_filter box\n\toidn_denoise FALSE\n\tpathguiding TRUE\n"
 			"\tpathguiding_iterations 3\n\tpathguiding_spp 16\n\tpathguiding_alpha 0.7\n"
 			"\tpathguiding_max_depth 4\n\tpathguiding_light_max_depth 4\n"
-			"\tpathguiding_sampling_type RIS\n}\n", depth, depth );
+			"\tpathguiding_sampling_type RIS\n}\n", depth, depth, spp );
 	}
 	return head + buf + tail;
 }
 
+//! `replicates` == 0: one render with the sampler's own (unsalted) points.
+//! `replicates` == N: the mean of N renders, each an independent
+//! randomized-QMC replicate (a distinct `SobolSamplerTestHooks::ValueSalt`,
+//! the SAME N salts for every integrator of a topology), so the gated ratio
+//! is not one fixed draw of the QMC error.  The salt is reset to 0 after.
 static bool RenderSSSAchromaticMean( const std::string& rasterizer, const char* sceneBody,
-	const char* tag, double& outMean )
+	const char* tag, int replicates, double& outMean )
 {
 	const std::string scene = std::string( "RISE ASCII SCENE 7\n" ) + rasterizer + sceneBody;
 	const std::string path = WriteSceneToTempFile( scene.c_str(), tag );
 	if( path.empty() ) return false;
-	const ImageStats st = RenderAndComputeStats( path.c_str() );
+	const int n = replicates > 0 ? replicates : 1;
+	double sum = 0;
+	bool ok = true;
+	for( int i = 0; i < n && ok; i++ ) {
+		SobolSamplerTestHooks::ValueSalt().store(
+			replicates > 0 ? SobolSequence::HashCombine( 0xD307u, unsigned( i ) ) : 0u );
+		const ImageStats st = RenderAndComputeStats( path.c_str() );
+		ok = st.valid;
+		if( ok ) sum += ( st.mean[0] + st.mean[1] + st.mean[2] ) / 3.0;
+	}
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
 	std::remove( path.c_str() );
-	if( !st.valid ) return false;
-	outMean = ( st.mean[0] + st.mean[1] + st.mean[2] ) / 3.0;
+	if( !ok ) return false;
+	outMean = sum / double( n );
 	return std::isfinite( outMean ) && outMean > 0;
 }
 
@@ -3641,13 +3670,13 @@ static void CheckSSSMeanBand( const char* label, double ref, double test, double
 	Check( std::fabs( rel ) <= band, label );
 }
 
-static void RunSSSTopology( const char* name, const char* sceneBody, int depth, double band )
+static void RunSSSTopology( const char* name, const char* sceneBody, int depth, int spp, int replicates, double band )
 {
 	std::cout << "Testing DL-307 " << name << std::endl;
 	double pt = 0, bdpt = 0, ris = 0;
-	const bool okPT   = RenderSSSAchromaticMean( SSSRasterizer( "pt", depth ),   sceneBody, "sss_pt",   pt );
-	const bool okBDPT = RenderSSSAchromaticMean( SSSRasterizer( "bdpt", depth ), sceneBody, "sss_bdpt", bdpt );
-	const bool okRIS  = RenderSSSAchromaticMean( SSSRasterizer( "ris", depth ),  sceneBody, "sss_ris",  ris );
+	const bool okPT   = RenderSSSAchromaticMean( SSSRasterizer( "pt", depth, spp ),   sceneBody, "sss_pt",   replicates, pt );
+	const bool okBDPT = RenderSSSAchromaticMean( SSSRasterizer( "bdpt", depth, spp ), sceneBody, "sss_bdpt", replicates, bdpt );
+	const bool okRIS  = RenderSSSAchromaticMean( SSSRasterizer( "ris", depth, spp ),  sceneBody, "sss_ris",  replicates, ris );
 	Check( okPT && okBDPT && okRIS, ( std::string( "DL-307 renders produced output: " ) + name ).c_str() );
 	if( !okPT || !okBDPT || !okRIS ) return;
 	CheckSSSMeanBand( ( std::string( "DL-307 un-guided BDPT mean agrees with PT: " ) + name ).c_str(),
@@ -3660,12 +3689,12 @@ static void RunSSSTopology( const char* name, const char* sceneBody, int depth, 
 
 static void TestRoughSSSEmptyContainerU()
 {
-	RunSSSTopology( "topology U (rough subsurfacescattering_material sheets, depth 5)", kSceneRoughSSSU, 5, 0.0035 );
+	RunSSSTopology( "topology U (rough subsurfacescattering_material sheets, depth 5, 2048 spp x 3 salted)", kSceneRoughSSSU, 5, 2048, 3, 0.0035 );
 }
 
 static void TestRandomWalkSphereEmptyContainerV()
 {
-	RunSSSTopology( "topology V (roughness-0.8 randomwalk_sss_material closed sphere, depth 16)", kSceneRandomWalkSphereV, 16, 0.0060 );
+	RunSSSTopology( "topology V (roughness-0.8 randomwalk_sss_material closed sphere, depth 16, 1024 spp)", kSceneRandomWalkSphereV, 16, 1024, 0, 0.0060 );
 }
 
 int main( int argc, char** argv )
