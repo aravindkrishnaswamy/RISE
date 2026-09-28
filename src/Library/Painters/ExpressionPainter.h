@@ -41,6 +41,7 @@
 #include "ExpressionEval.h"
 #include "ExpressionParamSpec.h"
 #include "../Interfaces/IScalarPainter.h"
+#include "../Utilities/GradedIndexMedium.h"	// DL-09: GradedIndexDemand, the graded-index cost gate
 #include "../Interfaces/ILog.h"
 #include "../Utilities/Reference.h"
 #include "../Utilities/SurfaceCurvature.h"
@@ -472,7 +473,33 @@ namespace RISE
 			//! snapshot build for a scene that genuinely needs one (which
 			//! the lazy path would then pay for under the lock).
 			ProximityDemand::Registration m_proximityDemand;
+			//! DL-09: the graded-index cost gate (GradedIndexMedium.h).
+			//! Active iff this program is a world-position field, i.e.
+			//! exactly when IsWorldPositionField() below answers true.
+			GradedIndexDemand::Registration m_gradedDemand;
 			virtual ~ExpressionScalarPainter() {}
+
+			//! DL-09: the static test behind IsWorldPositionField() -- a
+			//! SCALAR-typed body that reads the world position `P` and none
+			//! of the surface-record inputs (`u`, `v`, `Po`, `N`, `fw`,
+			//! `fwo`, `curv`, `curvR`), no surface signal and no `sample()`
+			//! of another painter.  Resolved from the compiled program's
+			//! context-variable mask, so it is a property of the program,
+			//! not a per-hit check.  `time` is allowed: it is a fixed
+			//! constant on this pipe (see the class comment).
+			static bool IsWorldPositionProgram( const ExpressionProgram& prog )
+			{
+				if( prog.ResultType() != ExpressionProgram::kScalar ) return false;
+				if( !prog.UsesContextVar( ExpressionProgram::kContextSlotP ) ) return false;
+				if( prog.UsesContextVar( 0 ) || prog.UsesContextVar( 1 ) ) return false;				// u, v
+				if( prog.UsesContextVar( ExpressionProgram::kContextSlotPo ) ) return false;
+				if( prog.UsesContextVar( 8 ) ) return false;											// N
+				if( prog.UsesContextVar( ExpressionProgram::kContextSlotFw ) ||
+					prog.UsesContextVar( ExpressionProgram::kContextSlotFwo ) ) return false;
+				if( prog.UsesSurfaceCurvature() ) return false;
+				if( prog.UsesSurfaceSignals() || prog.UsesPainterSample() ) return false;
+				return true;
+			}
 
 			static Scalar SafeComp( const Scalar v ) { return ExpressionProgram::IsFinite( v ) ? v : Scalar(0); }
 
@@ -483,7 +510,8 @@ namespace RISE
 				m_prog( prog ), m_paramSpecs( paramSpecs ),
 				m_curvatureDemand( prog.UsesSurfaceCurvature() ),
 				m_signalDemand( prog.UsesSurfaceSignals() ),
-				m_proximityDemand( prog.UsesCrossObject() )
+				m_proximityDemand( prog.UsesCrossObject() ),
+				m_gradedDemand( IsWorldPositionProgram( prog ) )
 			{
 				// DL-25 round-3 review (P3-7): make the attach-time contract
 				// STRUCTURAL rather than a convention.  A program that calls
@@ -525,6 +553,10 @@ namespace RISE
 			//! of a vec3 body, not a per-hit check of whether the three
 			//! components happen to differ at any one point).
 			bool HasPerChannelVariation() const override { return m_prog.ResultType() == ExpressionProgram::kVec3; }
+
+			//! DL-09 (IScalarPainter::IsWorldPositionField): see
+			//! IsWorldPositionProgram above.
+			bool IsWorldPositionField() const override { return IsWorldPositionProgram( m_prog ); }
 		};
 	}
 }

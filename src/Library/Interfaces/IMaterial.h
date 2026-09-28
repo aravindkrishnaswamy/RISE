@@ -26,6 +26,7 @@ namespace RISE
 	class ISubSurfaceDiffusionProfile;
 	class RayIntersectionGeometric;
 	class IORStack;
+	class IScalarPainter;
 
 	//! Selects which Fresnel model GGX-family materials evaluate internally.
 	//! Visible at the public API level so RISE_API_CreateGGXMaterial /
@@ -186,6 +187,20 @@ namespace RISE
 			) const
 		{
 			return GetSpecularInfo( ri, ior_stack );
+		}
+
+		/// \return DL-09 (docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md): the
+		/// `ior` field of the MEDIUM this material encloses, when that field
+		/// is a genuine function of world position
+		/// (`IScalarPainter::IsWorldPositionField()`), else null.  A walk
+		/// travelling inside an object whose material returns non-null pays
+		/// the interior-segment basic-radiance factor `(n_start/n_end)^2`
+		/// along every straight segment (GradedIndexMedium.h).  Default null:
+		/// constant-index media, non-refracting materials, and any `ior`
+		/// form that has no value at an interior point.
+		virtual const IScalarPainter* GetGradedIORField() const
+		{
+			return 0;
 		}
 
 		/// \return The PDF (probability density function) for scattering from

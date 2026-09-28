@@ -46,6 +46,7 @@
 
 namespace RISE
 {
+	class IORStack;
 	class IObject;
 	class LightSampler;
 
@@ -146,7 +147,8 @@ namespace RISE
 			ISampler& sampler,										///< [in] Low-discrepancy sampler
 			const RasterizerState& rast,							///< [in] Rasterizer state
 			const IObject* pMediumObject,							///< [in] Object enclosing the medium (NULL for global medium)
-			Scalar neeTrainingScale = 1							///< [in] DL-185: `RayCaster::CastRay`'s LOCAL cast-level RR compensation for THIS call -- scales the OPTIMAL-MIS TRAINING integrand only (see `LightSampler::EvaluateDirectLighting`'s note); never the returned radiance
+			Scalar neeTrainingScale = 1,						///< [in] DL-185: `RayCaster::CastRay`'s LOCAL cast-level RR compensation for THIS call -- scales the OPTIMAL-MIS TRAINING integrand only (see `LightSampler::EvaluateDirectLighting`'s note); never the returned radiance
+			const IORStack* pGradedIndexStack = 0				///< [in] DL-09: the walk's IOR stack when that walk ADVANCES through graded-index media (see `LightSampler::EvaluateDirectLighting`); NULL = pre-DL-09 accounting
 			);
 
 		/// Spectral variant of EvaluateInScattering
@@ -161,7 +163,8 @@ namespace RISE
 			ISampler& sampler,										///< [in] Low-discrepancy sampler
 			const RasterizerState& rast,							///< [in] Rasterizer state
 			const IObject* pMediumObject,							///< [in] Object enclosing the medium (NULL for global medium)
-			Scalar neeTrainingScale = 1							///< [in] DL-185 -- see the RGB twin above
+			Scalar neeTrainingScale = 1,						///< [in] DL-185 -- see the RGB twin above
+			const IORStack* pGradedIndexStack = 0				///< [in] DL-09 -- see the RGB twin above
 			);
 	}
 }

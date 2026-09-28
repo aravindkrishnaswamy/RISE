@@ -908,7 +908,23 @@ namespace RISE
 				//! full, unweighted contribution) while `pMaterial` is
 				//! still used for `bFullSphere`/the BRDF value -- there is
 				//! no BSDF-sampled sibling to partition against.
-				const bool bBsdfSamplingPartnerExists = true
+				const bool bBsdfSamplingPartnerExists = true,
+				//! DL-09: the IOR stack of a caller whose walk ADVANCES
+				//! through graded-index media (GradedIndexMedium::Advance at
+				//! every vertex), so that its top is the index the caller's
+				//! throughput was priced to.  Only then is the NEE
+				//! connection segment priced `(top/n(light point))^2`
+				//! (docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md §3(ii)).
+				//! Default NULL: a walk that does not advance (the legacy
+				//! shader-op chain, RayCaster's own volume walk) keeps its
+				//! pre-DL-09 accounting on BOTH its NEE and its
+				//! BSDF-sampled side, which is what keeps its own MIS
+				//! partition consistent.  Kept separate from
+				//! `pMisIorStack` on purpose: a volume vertex prices its
+				//! partner pdf stacklessly yet still sits in a graded
+				//! medium.  Exactly no effect unless the stack's innermost
+				//! medium is graded.
+				const IORStack* pGradedIndexStack = 0
 				) const;
 
 			/// Spectral variant of EvaluateDirectLighting.
@@ -928,7 +944,9 @@ namespace RISE
 				const IORStack* pMisIorStack = 0,					///< [in] DL-74 P2: IOR stack to evaluate the MIS-partner aggregate pdf under (NULL = the historical IORStack(1.0) sentinel)
 				const Scalar neeTrainingScale = 1,					///< [in] DL-72 P2-3: scales the OPTIMAL-MIS TRAINING integrand only (see the RGB overload's note); never the returned radiance
 				//! DL-171/DL-209 -- see the RGB overload's doc.
-				const bool bBsdfSamplingPartnerExists = true
+				const bool bBsdfSamplingPartnerExists = true,
+				//! DL-09 -- see the RGB overload's doc.
+				const IORStack* pGradedIndexStack = 0
 				) const;
 
 			/// Returns the alias-table selection probability for a given
