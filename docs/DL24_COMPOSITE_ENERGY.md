@@ -344,6 +344,7 @@ n = 16 x 20 000, band 5 sigma + 0.001:
 | scattering 5 | 5 / 0, 45 | 0.9881 / 0.9881 | 0.9874 / 0.9877 | 0.9874 / 0.9892 |
 | scattering 5 | 20 / 45 | 0.9202 | 0.9139 (**-7.2**) | 0.9207 (+0.5) |
 | scattering 5 | 35 / 45 | 0.8685 | 0.8605 (**-8.6**) | 0.8680 (-0.5) |
+| scattering 1e6 (warp off: still DECLARED, aggregate mode) | 5, 20, 35 / 0, 45 | 0.9957 .. 0.8803 | same as post-fix (the claim is unchanged) | \|z\| <= 2.2 on all six |
 
 The walk itself reads below 1 because a tilted shading normal is not
 energy-conserving; the gate is agreement, not 1.  T2 (the E2 twin under a
@@ -434,7 +435,7 @@ warnings**.
 
 | suite | post-fix | base (red) |
 |---|---|---|
-| CompositeEnergyConservationTest (new) | 150/0 | the 128-check revision reads 37/91 on `5c9eeb96` (round 1's 34/82 was the 116-check file); 121/7 on `c03807a2` for the round-1 review rows (E2 2, H1 1, H2 2, H3 pin 2); section T 11/9 with the round-1 `DielectricSPF` claim restored (section 3.6) |
+| CompositeEnergyConservationTest (new) | 159/0 | the 128-check revision reads 37/91 on `5c9eeb96` (round-2 reviewer's measurement; round 1's 34/82 was the 116-check file); 121/7 on `c03807a2` for the round-1 review rows (E2 2, H1 1, H2 2, H3 pin 2); section T 20/9 with the round-1 `DielectricSPF` claim restored (section 3.6) |
 | LayeredWhiteFurnaceTest | 0 of 60 failed | 3 of 60 |
 | CompositeExtinctionTest | all pass | 5 FAIL |
 | SPFPdfConsistencyTest | all pass | 12 FAILED |
@@ -699,7 +700,7 @@ capability, was chosen**:
   declines.  The shipped scene is all analytic primitives and does not
   move (section 3.8: every region within 0.2 % of round 1's deltas).
 
-Red -> green: section 3.6's T table (red 11/9 with the round-1 claim
+Red -> green: section 3.6's T table (red 20/9 with the round-1 claim
 restored on this tree, via a committed-state mutation of the one function;
 green 29/0), including a warp-OFF tilted top that keeps its declaration
 and matches the independent walk in AGGREGATE mode, and T2 (296 wrong
@@ -726,4 +727,4 @@ a lossless trap reaches the cap (91 323 of 100 000 H4 walks do); the
 per-branch variance note is in section 5; the dispersive direct-reflection
 reconstruction is described as returning 1 where `F(nm)/F(hero)` is right,
 not "exactly"; and the red-proof figure is 37/91 for the 128-check file
-(round 1's 34/82 was the 116-check revision).
+(the reviewer's measurement; round 1's 34/82 was the 116-check revision).
