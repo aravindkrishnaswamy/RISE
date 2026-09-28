@@ -266,7 +266,8 @@ namespace RISE
 		//! carries across this surface in expectation.  Today that is a
 		//! `transmission thin` `weave_material`'s gap (the gap fraction
 		//! `gap(x)`, drawn with probability `gap` at `kray = 1`), and the
-		//! wrappers that re-price it (`FabricSPF`, `CoatedSPF`).
+		//! wrappers that re-price it (`FabricSPF`, `CoatedSPF`,
+		//! `CompositeSPF`).
 		//!
 		//! Read by `RayCaster`'s shadow walk so a DELTA light's NEE shadow
 		//! ray can see through the gap -- see `IMaterial::HasDeltaPassThrough`

@@ -6612,8 +6612,18 @@ yet known (§10.1).
 
     **Auto-router.** `docs/RENDERING_INTEGRATORS.md` §2 /
     `docs/AUTO_RASTERIZER_DESIGN.md` currently have no rule for this
-    two-layer-gap regime, and PT is the default.  (Moot since the 2026-09-28
-    fix: PT now agrees with BDPT/VCM on this regime.)
+    two-layer-gap regime, and PT is the default.  (Moot for RGB and
+    non-HWSS spectral since the 2026-09-28 fix: PT now agrees with
+    BDPT/VCM on this regime there.  **False for `hwss TRUE`**: PT's HWSS
+    companion loop prices a Scatter()-sampled continuation through the gap
+    with the continuum BSDF instead of the delta pass-through -- no
+    `weave_material`/`fabric_material`/`coated_material`/
+    `composite_material` SPF implements `ISPF::EvaluateKrayNM` -- dropping
+    3 of 4 wavelength lanes; the §15 item 27 closed-form rows' own HWSS
+    numbers are unaffected because they cross the gap only via the NEE
+    shadow ray, not a continuation.  Filed as **DL-329** at merge; see
+    [DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md](DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md)
+    section 8.)
 ---
 
 ## 16. Non-goals

@@ -283,15 +283,53 @@ last part is the energy the fix recovers, not overhead: on the design-doc box
   5 deg up (fov 1/2/3/5/10: -6.2/-6.1/-2.5/+0.03/+0.1 %).  Not root-caused.
   `WEAVE_GAP_FILTER=dl294` prints it.
 - **DL-295** (new): the SMS emission suppression after a weave gap (§7).
-- Observed, NOT filed (the slice's two ids are spent; flagged to the
-  supervisor): on the AREA closed-form row (kWide, fov 10 deg, where the
-  spot rows' t = 1 splat is exact) BDPT reads -0.20 .. -5.35 % over nine
-  runs, mean ~-2.2 % (t ~ 4 against 0), identically before and after DL-05
-  -- the path there is s = 0 (eye path through the gap to the emitter)
-  against t = 1, with the gap a delta vertex both walks skip.  Either
-  heavy-tailed noise or a small BDPT bias through a delta pass-through;
-  topology F (a gapped single curtain in front of a full-width emitter)
-  reads BDPT/PT 0.995.
+- **OVERCLAIM correction (external review P2-1), filed as DL-329 at merge:
+  "PT HWSS 0.30030" and every "PT now agrees with BDPT/VCM" statement in
+  this doc hold for RGB and non-HWSS spectral only.**  Under
+  `hwss TRUE`, PT drops 3 of 4 wavelength lanes on any path where a
+  BSDF-SAMPLED CONTINUATION (not a shadow ray) crosses a weave gap --
+  `WeaveSPF` (and the Fabric/Coated/Composite wrappers) have no
+  `EvaluateKrayNM`, so the PT HWSS companion loop prices the delta gap ray
+  with the continuum BSDF instead of the delta pass-through, pricing
+  `pdf = 1` (the delta marker) as if it were an ordinary density.  This
+  does NOT affect §4's closed-form omni/spot/directional rows: those cross
+  the gap only via `LightSampler`'s delta-arm SHADOW ray (`WalkShadowSegment`
+  calling `DeltaPassThroughTransmittanceNM` per companion wavelength
+  directly), which is unaffected and reads the correct 0.30030 at `hwss
+  TRUE`.  It DOES affect any scenario reached only by a
+  Scatter()-sampled continuation -- the AREA partition guard (§4's own row,
+  RGB-only in this suite) and the design-doc two-layer topologies (§5,
+  also RGB-only) have no HWSS row and so never exercised it.  Measured by
+  the reviewer (pre approx post, the defect is pre-existing and DL-05 does
+  not move it): area closed form PT-HWSS 0.0775*L0 vs the RGB/non-HWSS
+  0.3*L0; topology R PT-HWSS 0.02575 vs its own pel 0.07956; topology Q
+  post-fix PT-HWSS 0.01999 vs pel 0.03187.  A one-line mutation in the HWSS
+  companion loop (`if(compWeight<0 && pS->isDelta) compWeight =
+  pS->krayNM;`) recovers R to 0.07928 and Q to 0.03179, confirming the
+  mechanism (not landed here -- new `ISPF::EvaluateKrayNM` overrides on
+  `WeaveSPF`/`FabricSPF`/`CoatedSPF`/`CompositeSPF` are a DL-125-class fix,
+  out of this slice's scope).
+- **Two pre-existing, unattributed BDPT deficits through a delta
+  pass-through, identically before and after DL-05, filed as DL-330 at
+  merge** (the slice's own two ids, DL-294/DL-295, were spent on other
+  findings; flagged to the supervisor rather than left as an unfiled
+  observation): (1) on the AREA closed-form row (kWide, fov 10 deg, where
+  the spot rows' t = 1 splat is exact) BDPT reads -0.20 .. -5.35 % over
+  nine runs, mean ~-2.2 % (t ~ 4 against 0) -- the path there is s = 0 (eye
+  path through the gap to the emitter) against t = 1, with the gap a delta
+  vertex both walks skip; topology F (a gapped single curtain in front of
+  a full-width emitter) reads BDPT/PT 0.995, so it is specific to this
+  fixture's geometry, not a property of every delta-pass-through scene.
+  The external review additionally measured BDPT/PT 0.979 on this same
+  area closed form pooled over n = 10 (t ~ 4), and on the closed weave
+  SPHERE at gap 0.3: BDPT 0.016599 vs PT 0.017678 vs VCM@2048spp
+  0.017390 +/- 0.00012 se -- BDPT -4.5 % vs VCM (t ~ 6.5) and -6.1 % vs PT,
+  not a depth-cap artifact (16/16 reads 0.016612, matching the suite's own
+  8/8).  (2) BDPT-HWSS on the area closed form reads 0.2651 (-11.9 % vs
+  the RGB/non-HWSS closed form, n = 10, t ~ 29), while BDPT pel on the same
+  row reads -1.6 % and topology R's BDPT-HWSS is fine -- likely the BDPT
+  analogue of DL-329's `RecomputeSubpathThroughputNM` companion-pricing
+  mechanism, not root-caused here.
 - Depth / bounce caps: a BSDF-sampled path crossing a gap still counts it as
   a transmission bounce and a depth step, where the NEE shadow walk counts
   nothing -- irrelevant to delta lights (no BSDF partner) and to area/env
@@ -299,3 +337,33 @@ last part is the energy the fix recovers, not overhead: on the design-doc box
 - The CSG case where a composite object with NO material of its own wraps a
   weave operand keeps the binary shadow (its `GetMaterial()` reports no
   capability) -- the pre-DL-05 under-read, never a double count.
+- **Photon-map suppression (external review P3) is SCENE-WIDE, keyed on
+  whether the scene carries a radiance photon map at all, not on whether
+  the CHAIN doing the shading actually gathers it.**  A `pixelpel_rasterizer`
+  chain with a caustic/global map and its own caustic-gather op is correctly
+  covered once (0.0480601 -> 0.0480599, unchanged); a chain that declares a
+  map but has no gather op in its own shader (or a `pathtracing_pel_rasterizer`,
+  which never builds the legacy maps at all: 0.0489283 vs 0.0489309 with/
+  without a declared map, i.e. no suppression fires there either way) keeps
+  the PRE-DL-05 under-read regardless of §2's suppression rule.  Not a
+  double count in either direction; §2's "legacy gathers already carry the
+  path" is accurate only for a chain whose shader actually has the gather.
+- **Legacy direct-only chain, area light behind a gap: still reads 0, before
+  and after DL-05.**  The ruling's reason for keeping the area/env NEE arm
+  binary (§2: "PT's continuation already reaches it through the gap at MIS
+  weight 1") does not exist in a direct-only chain (no BSDF-sampled
+  continuation at all), so per DL-171's "a strategy's MIS partner is the
+  sibling that actually exists in the chain" rule this arm COULD transmit
+  there without double-counting -- an under-read, not fixed in this slice.
+- **`kMaxCrossings` (32, `WalkShadowSegment`) now also counts pass-throughs
+  and non-caster step-overs**, where before DL-05 it counted only dielectric
+  interface crossings.  A very deep stack of thin-weave layers (or many
+  `casts_shadows FALSE` objects) on one shadow segment can exhaust the
+  budget sooner than before and fall back to the conservative "blocked"
+  answer; no shipped scene approaches this depth.
+- **Clay-override / material-preview mode**: a delta light's shadow ray
+  still consults the REAL material's `HasDeltaPassThrough`/
+  `DeltaPassThroughTransmittance{,NM}` rather than the clay override, so a
+  preview render can show light passing through a weave gap that the
+  clay-shaded preview material itself would not have. Preview-only
+  inconsistency, not a rendered-output defect.

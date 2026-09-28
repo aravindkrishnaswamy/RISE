@@ -3254,7 +3254,9 @@ static void TestGenericHumanTissueOriginFix()
 // which renders this same box): BDPT/PT 1.5453 +/- 0.0004 pre-fix and
 // 0.9933 post; the ~0.6 % left is the pre-existing closed-box residual
 // debt 25 records -- the SAME box at gap 0 (no pass-through exists, so
-// DL-05 cannot touch it) reads 0.9945 before and 0.9940 after.
+// DL-05 cannot touch it) reads 0.9945 before and 0.9935 after (n = 4,
+// matching docs/DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md section 5's own
+// design-doc table row for this box).
 //////////////////////////////////////////////////////////////////////
 static const char* kRasterizerPTWeaveGap =
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"

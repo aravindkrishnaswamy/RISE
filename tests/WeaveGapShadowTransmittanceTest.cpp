@@ -705,11 +705,12 @@ static void TestAreaPartitionGuard()
 	// this row exists for, an area-light NEE arm that sees through the gap
 	// while PT's BSDF-sampled continuation still reaches the emitter
 	// through it at MIS weight 1, reads +103 % (measured by forcing that
-	// arm).  BDPT is PRINTED, NOT GATED: over seven runs it reads -0.71 ..
-	// -5.35 % (mean ~-2.4 %), before and after DL-05 alike -- a
+	// arm).  BDPT is PRINTED, NOT GATED: over nine runs it reads -0.20 ..
+	// -5.35 % (mean ~-2.2 %), before and after DL-05 alike -- a
 	// pre-existing BDPT residual on this fixture that DL-05 does not touch
-	// (docs/DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md section 8), and a band
-	// wide enough to hold it would say nothing.
+	// (docs/DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md section 8, filed as
+	// DL-330 at merge), and a band wide enough to hold it would say
+	// nothing.
 	rows.push_back( { "PT RGB", RastPT( 1024 ), 0.05, kWide } );
 	rows.push_back( { "BDPT RGB", RastBDPT( 512 ), -1.0, kWide } );
 	RunReceiverRows( "area", kArea, rows, gaps, 1 );
