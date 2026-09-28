@@ -39,6 +39,14 @@ namespace
 /// This prevents infinite loops in degenerate cases.
 static const unsigned int nMaxDeltaTrackingSteps = 1024;
 
+// DL-283: each delta-tracking step draws at most two values (the free-flight
+// xi and the accept/reject xi2), so SampleDistance{,NM} draws at most
+// 2 * nMaxDeltaTrackingSteps -- the bound BDPT's per-event stream blocks are
+// sized from.  Raising the step cap past it would let a distance sample run
+// out of its own stream block into the next event's.
+static_assert( 2u * nMaxDeltaTrackingSteps <= IMedium::kMaxSampleDistanceDraws,
+	"HeterogeneousMedium delta tracking can outrun IMedium::kMaxSampleDistanceDraws" );
+
 
 HeterogeneousMedium::HeterogeneousMedium(
 	const RISEPel& max_sigma_a,

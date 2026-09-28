@@ -179,6 +179,23 @@ namespace RISE
 				const IORStack& ior_stack									///< [in/out] Index of refraction stack
 				) const;
 
+			//! DL-05: the straight-through delta pass-through of the WHOLE
+			//! two-layer walk -- the first layer's pass-through lobe (a thin
+			//! weave's gap), the gap crossing's Beer attenuation, and the
+			//! second layer's pass-through lobe -- mirroring Scatter's walk
+			//! step for step (layer order by ray direction, the propagation
+			//! and recursion gates).  Every other walk turns the ray, so this
+			//! product is the whole straight-through expectation.  See
+			//! ISPF::DeltaPassThroughTransmittance.
+			RISEPel DeltaPassThroughTransmittance(
+				const RayIntersectionGeometric& ri
+				) const;
+
+			Scalar DeltaPassThroughTransmittanceNM(
+				const RayIntersectionGeometric& ri,
+				const Scalar nm
+				) const;
+
 			//! Returns the PDF for the composite SPF as the sum of weighted child PDFs
 			Scalar Pdf(
 				const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details

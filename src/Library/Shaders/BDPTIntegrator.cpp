@@ -83,12 +83,33 @@
 #include "../Rendering/AOVBuffers.h"
 #include "../Utilities/MediumTracking.h"
 #include "../Utilities/IORStackSeeding.h"
+#include "../Utilities/GradedIndexMedium.h"
 #include "../Interfaces/IMedium.h"
 #include "../Interfaces/IPhaseFunction.h"
 #include "../Utilities/IndependentSampler.h"
 #include "../Utilities/Color/SpectralValueTraits.h"
 #include "../Utilities/PathValueOps.h"
 #include "BSSRDFEntryAdapters.h"
+#include "../Utilities/SobolSampler.h"
+
+// DL-283: the medium-distance stream layout (BDPTUtilities.h) must hold a
+// whole distance sample, stay clear of every fixed stream, and fit the
+// 32-bit Sobol' dimension counter.
+static_assert( RISE::BDPTUtilities::kMediumDistanceStreamsPerEvent *
+		RISE::Implementation::SobolSampler::kStreamStride >= RISE::IMedium::kMaxSampleDistanceDraws,
+	"a medium-distance stream block is narrower than one SampleDistance call's draw bound" );
+static_assert( RISE::BDPTUtilities::kMediumDistanceStreamBase >
+		RISE::BDPTCameraUtilities::kApertureSamplerStream &&
+	RISE::BDPTUtilities::kMediumDistanceStreamBase >
+		RISE::BDPTCameraUtilities::kPSSMLTFilmLensApertureStream &&
+	// VCM's per-eye-vertex NEE stream, 48 + i, with at most three
+	// vertices per walk iteration (SobolDimensionBudgetTest Test F).
+	RISE::BDPTUtilities::kMediumDistanceStreamBase >
+		48 + 3 * static_cast<int>( RISE::BDPTUtilities::kWalkIterationCap ) + 1,
+	"medium-distance streams overlap a fixed BDPT/VCM stream" );
+static_assert( static_cast<unsigned long long>( RISE::BDPTUtilities::kMediumDistanceStreamEnd ) *
+		RISE::Implementation::SobolSampler::kStreamStride < 0xFFFFFFFFull,
+	"medium-distance streams overflow SobolSampler's 32-bit dimension counter" );
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -1939,6 +1960,9 @@ namespace {
 			// centre (debt 28) -- the walk physically starts there.
 			IORStackSeeding::SeedFromPoint( iorStack, vertices[0].position, scene );
 		}
+		// DL-09: the camera endpoint's graded medium and index, for a t==1
+		// connection's (n_camera/n_light)^2 factor.
+		GradedIndexMedium::RecordVertex( iorStack, vertices[0].pGradedMedium, vertices[0].gradedIOR );
 
 	#ifdef RISE_ENABLE_OPENPGL
 		static thread_local GuidingDistributionHandle guideDist;
@@ -1977,10 +2001,13 @@ namespace {
 		// Cap at 1024 which is well above any realistic depth.  Also guard
 		// `maxEyeDepth >= 1024` directly so the subtraction in the first
 		// half of the ternary doesn't underflow.
+		// The cap is BDPTUtilities::kWalkIterationCap, which also bounds
+		// the per-iteration medium-distance stream layout (DL-283).
+		const unsigned int kCap = BDPTUtilities::kWalkIterationCap;
 		const unsigned int maxEyeTotalDepth =
-			( maxEyeDepth >= 1024u ||
-			  stabilityConfig.maxVolumeBounce > 1024u - maxEyeDepth ) ?
-				1024u :
+			( maxEyeDepth >= kCap ||
+			  stabilityConfig.maxVolumeBounce > kCap - maxEyeDepth ) ?
+				kCap :
 				maxEyeDepth + stabilityConfig.maxVolumeBounce;
 
 		for( unsigned int depth = 0; depth < maxEyeTotalDepth; depth++ )
@@ -2045,8 +2072,23 @@ namespace {
 					bool scattered = false;
 					Scalar t_m = 0;
 					if( !bAtCap ) {
+						// DL-283: under a fixed-budget sampler (Sobol) the
+						// distance sample's open-ended draw sequence gets a
+						// stream block of its own, and the vertex stream is
+						// re-opened at slot 0 afterwards -- see
+						// BDPTUtilities::MediumDistanceStream.  PSSMLT (MLT)
+						// lanes are unbounded, so nothing can spill there and
+						// its chains keep their pre-DL-283 lane layout.
+						const bool bOwnStream = sampler.HasFixedDimensionBudget();
+						if( bOwnStream ) {
+							sampler.StartStream( BDPTUtilities::MediumDistanceStream(
+								BDPTUtilities::eEyeWalk, depth ) );
+						}
 						t_m = SampleMediumDistance<Tag>(
 							*pMed, currentRay, maxDist, sampler, scattered, tag );
+						if( bOwnStream ) {
+							sampler.StartStream( 16u + depth );
+						}
 					}
 
 					if( scattered )
@@ -2201,6 +2243,10 @@ namespace {
 						}
 	#endif
 
+						// DL-09: a medium vertex does not Advance (the next
+						// surface vertex's Advance telescopes over it); it
+						// records the stack top its throughput was priced to.
+						GradedIndexMedium::RecordVertex( iorStack, mv.pGradedMedium, mv.gradedIOR );
 						vertices.push_back( mv );
 
 						// Sample the phase function for continuation direction
@@ -2465,6 +2511,33 @@ namespace {
 				ri.pModifier->Modify( ri.geometric );
 			}
 
+			// DL-09: the interior-segment basic-radiance factor for the
+			// segment that just ended here, RADIANCE walk: (n_start/n_here)^2,
+			// top <- n_here.  The stack top then IS the index the exit
+			// crossing's RadianceEtaScale reads and the index the vertex
+			// records for connections.  No-op unless the innermost medium is
+			// a graded field (docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md).
+			{
+				Scalar gradedScale;
+				if( GradedIndexMedium::Advance( iorStack, ri.geometric.ptIntersection,
+						GradedIndexMedium::eRadiance, gradedScale ) )
+				{
+					if( gradedScale != Scalar( 1 ) ) {
+						beta = beta * gradedScale;
+						if constexpr( Traits::is_nm ) {
+							if( pSwlHWSS ) {
+								for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+									hwssBetaNM[w] *= gradedScale;
+								}
+							}
+						}
+					}
+					// The medium the ray was travelling through is now read
+					// at the hit, not at the segment's start.
+					ri.geometric.ambientIOR = iorStack.top();
+				}
+			}
+
 			// Create a new surface vertex
 			BDPTVertex v;
 			v.type = BDPTVertex::SURFACE;
@@ -2528,6 +2601,7 @@ namespace {
 				v.mediumIOR = iorStack.top();
 				v.insideObject = iorStack.containsCurrent();
 			}
+			GradedIndexMedium::RecordVertex( iorStack, v.pGradedMedium, v.gradedIOR );
 
 			// Convert pdfFwdPrev from solid angle to area measure
 			const Scalar distSq = ri.geometric.range * ri.geometric.range;
@@ -2757,6 +2831,10 @@ namespace {
 								entryV.guidingEta = 1.0;
 							}
 	#endif
+							// DL-09: the BSSRDF entry vertex records the tracked index its
+							// throughput was priced to (the subsurface event is not a
+							// straight segment, so no factor is paid across it).
+							GradedIndexMedium::RecordVertex( iorStack, entryV.pGradedMedium, entryV.gradedIOR );
 							vertices.push_back( entryV );
 
 							pdfFwdPrev = bssrdf.cosinePdf;
@@ -2930,6 +3008,10 @@ namespace {
 								entryV.guidingEta = 1.0;
 							}
 	#endif
+							// DL-09: the BSSRDF entry vertex records the tracked index its
+							// throughput was priced to (the subsurface event is not a
+							// straight segment, so no factor is paid across it).
+							GradedIndexMedium::RecordVertex( iorStack, entryV.pGradedMedium, entryV.gradedIOR );
 							vertices.push_back( entryV );
 
 							pdfFwdPrev = bssrdf.cosinePdf;
@@ -3798,7 +3880,7 @@ BroadcastScalar( const Scalar g )
 
 template<class Tag>
 typename ConnectionResultFor<Tag>::type
-ConnectAndEvaluateImpl(
+ConnectAndEvaluateImplCore(
 	const BDPTIntegrator& self,
 	const LightSampler* pLightSampler,
 	const std::vector<BDPTVertex>& lightVerts,
@@ -5278,6 +5360,51 @@ ConnectAndEvaluateImpl(
 	}
 }
 
+//! DL-09 (docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md §3(iv)): every
+//! CONNECTION strategy (s >= 1 and t >= 1 -- s==1 light-endpoint NEE, t==1
+//! camera splat, the general case) builds one straight segment between the
+//! eye endpoint and the light endpoint.  When both endpoints recorded the
+//! SAME graded-index medium, that segment carries (n_eye/n_light)^2 --
+//! the factor the eye walk would have paid had it traced that segment
+//! itself, and the one the light walk pays in its own order.  Applied here,
+//! once, around the one function every caller (BDPT, MLT, the complete-path
+//! strategy selector, both tags) reaches, so no strategy branch can miss it.
+//! It is a THROUGHPUT factor and never enters a pdf, so the MIS weight
+//! computed inside is untouched.  s == 0 (the eye walk hitting an emitter)
+//! builds no connection: the walk's own Advance already priced it.
+template<class Tag>
+typename ConnectionResultFor<Tag>::type
+ConnectAndEvaluateImpl(
+	const BDPTIntegrator& self,
+	const LightSampler* pLightSampler,
+	const std::vector<BDPTVertex>& lightVerts,
+	const std::vector<BDPTVertex>& eyeVerts,
+	unsigned int s,
+	unsigned int t,
+	const IScene& scene,
+	const IRayCaster& caster,
+	const ICamera& camera,
+	const Point2& cameraLensSample,
+	Tag tag )
+{
+	typename ConnectionResultFor<Tag>::type result = ConnectAndEvaluateImplCore<Tag>(
+		self, pLightSampler, lightVerts, eyeVerts, s, t, scene, caster, camera,
+		cameraLensSample, tag );
+	if( result.valid && s >= 1 && t >= 1 &&
+		s <= lightVerts.size() && t <= eyeVerts.size() )
+	{
+		const BDPTVertex& lightEnd = lightVerts[s - 1];
+		const BDPTVertex& eyeEnd = eyeVerts[t - 1];
+		const Scalar g = GradedIndexMedium::ConnectionScale(
+			eyeEnd.pGradedMedium, eyeEnd.gradedIOR,
+			lightEnd.pGradedMedium, lightEnd.gradedIOR );
+		if( g != Scalar( 1 ) ) {
+			result.contribution = result.contribution * g;
+		}
+	}
+	return result;
+}
+
 }  // anonymous namespace (ConnectAndEvaluate F3a)
 
 BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
@@ -6319,6 +6446,9 @@ unsigned int GenerateLightSubpathImpl(
 		}
 
 		v.pdfRev = 0;
+		// DL-09: the light endpoint's graded medium and index (SeedFromPoint
+		// recorded n at the light point), for s==1 connections.
+		GradedIndexMedium::RecordVertex( iorStack, v.pGradedMedium, v.gradedIOR );
 		vertices.push_back( v );
 	}
 
@@ -6430,10 +6560,12 @@ unsigned int GenerateLightSubpathImpl(
 	// Surface bounces are capped by maxLightDepth, volume bounces by maxVolumeBounce.
 	// Saturating add to avoid underflow when a scene sets maxLightDepth
 	// pathologically high (≥1024).
+	// Cap: BDPTUtilities::kWalkIterationCap (DL-283 stream layout).
+	const unsigned int kCap = BDPTUtilities::kWalkIterationCap;
 	const unsigned int maxLightTotalDepth =
-		( maxLightDepth >= 1024u ||
-		  stabilityConfig.maxVolumeBounce > 1024u - maxLightDepth ) ?
-			1024u :
+		( maxLightDepth >= kCap ||
+		  stabilityConfig.maxVolumeBounce > kCap - maxLightDepth ) ?
+			kCap :
 			maxLightDepth + stabilityConfig.maxVolumeBounce;
 
 	for( unsigned int depth = 0; depth < maxLightTotalDepth; depth++ )
@@ -6482,8 +6614,18 @@ unsigned int GenerateLightSubpathImpl(
 				bool scattered = false;
 				Scalar t_m = 0;
 				if( !bAtCap ) {
+					// DL-283: own stream block under a fixed-budget sampler
+					// -- see the eye subpath's twin.
+					const bool bOwnStream = sampler.HasFixedDimensionBudget();
+					if( bOwnStream ) {
+						sampler.StartStream( BDPTUtilities::MediumDistanceStream(
+							BDPTUtilities::eLightWalk, depth ) );
+					}
 					t_m = SampleMediumDistance<Tag>(
 						*pMed, currentRay, maxDist, sampler, scattered, tag );
+					if( bOwnStream ) {
+						sampler.StartStream( 1u + depth );
+					}
 				}
 
 				if( scattered )
@@ -6532,6 +6674,8 @@ unsigned int GenerateLightSubpathImpl(
 					// cosAtGen is left at zero as it is unused.
 					mv.cosAtGen = 0;
 
+					// DL-09: see the eye walk's medium vertex.
+					GradedIndexMedium::RecordVertex( iorStack, mv.pGradedMedium, mv.gradedIOR );
 					vertices.push_back( mv );
 
 					// Sample phase function continuation
@@ -6632,6 +6776,31 @@ unsigned int GenerateLightSubpathImpl(
 			ri.pModifier->Modify( ri.geometric );
 		}
 
+		// DL-09: the interior-segment factor, IMPORTANCE walk:
+		// (n_here/n_start)^2.  An importance walk needs it EXPLICITLY on a
+		// straight graded segment -- at an interface the refraction map's
+		// Jacobian supplies the n^2 through this walk's sample density, and
+		// a straight segment has no map to supply it.  See
+		// GradedIndexMedium.h and the derivation doc §3(iv).
+		{
+			Scalar gradedScale;
+			if( GradedIndexMedium::Advance( iorStack, ri.geometric.ptIntersection,
+					GradedIndexMedium::eImportance, gradedScale ) )
+			{
+				if( gradedScale != Scalar( 1 ) ) {
+					beta = beta * gradedScale;
+					if constexpr( Traits::is_nm ) {
+						if( pSwlHWSS ) {
+							for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+								hwssBetaNM[w] *= gradedScale;
+							}
+						}
+					}
+				}
+				ri.geometric.ambientIOR = iorStack.top();
+			}
+		}
+
 		// Create a new surface vertex
 		BDPTVertex v;
 		v.type = BDPTVertex::SURFACE;
@@ -6671,6 +6840,7 @@ unsigned int GenerateLightSubpathImpl(
 			v.mediumIOR = iorStack.top();
 			v.insideObject = iorStack.containsCurrent();
 		}
+		GradedIndexMedium::RecordVertex( iorStack, v.pGradedMedium, v.gradedIOR );
 
 		// Convert pdfFwdPrev from solid angle to area measure
 		const Scalar distSq = ri.geometric.range * ri.geometric.range;
@@ -6913,6 +7083,10 @@ unsigned int GenerateLightSubpathImpl(
 						StoreThroughput<Tag>( entryV, betaSpatial );
 						entryV.pdfFwd = bssrdf.pdfSurface;
 						entryV.pdfRev = 0;
+						// DL-09: the BSSRDF entry vertex records the tracked index its
+						// throughput was priced to (the subsurface event is not a
+						// straight segment, so no factor is paid across it).
+						GradedIndexMedium::RecordVertex( iorStack, entryV.pGradedMedium, entryV.gradedIOR );
 						vertices.push_back( entryV );
 
 						pdfFwdPrev = bssrdf.cosinePdf;
@@ -7095,6 +7269,10 @@ unsigned int GenerateLightSubpathImpl(
 						StoreThroughput<Tag>( entryV, betaSpatial );
 						entryV.pdfFwd = 0;
 						entryV.pdfRev = 0;
+						// DL-09: the BSSRDF entry vertex records the tracked index its
+						// throughput was priced to (the subsurface event is not a
+						// straight segment, so no factor is paid across it).
+						GradedIndexMedium::RecordVertex( iorStack, entryV.pGradedMedium, entryV.gradedIOR );
 						vertices.push_back( entryV );
 
 						pdfFwdPrev = bssrdf.cosinePdf;

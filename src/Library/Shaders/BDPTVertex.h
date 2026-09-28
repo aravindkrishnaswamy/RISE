@@ -297,6 +297,15 @@ namespace RISE
 		bool					isBSSRDFEntry;	///< True if this vertex is a BSSRDF re-emission point (Sw vertex)
 		Scalar					mediumIOR;		///< Top-of-stack IOR seen at this vertex before scattering
 		bool					insideObject;	///< True if the current object was already in the IOR stack
+		/// DL-09 (docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md): the graded-index
+		/// medium the walk was travelling in when it produced this vertex
+		/// (null if that medium is not a world-position `ior` field) and the
+		/// walk's TRACKED index there (its IOR stack top, which telescopes
+		/// with this vertex's throughput).  A connection between an eye and
+		/// a light vertex recorded in the same graded medium carries
+		/// (n_eye/n_light)^2 (GradedIndexMedium::ConnectionScale).
+		const IObject*			pGradedMedium;
+		Scalar					gradedIOR;
 
 		// Medium scatter data (valid only for type == MEDIUM)
 		const IMedium*			pMediumVol;		///< The participating medium at this scatter vertex
@@ -383,6 +392,8 @@ namespace RISE
 		isBSSRDFEntry( false ),
 		mediumIOR( 1.0 ),
 		insideObject( false ),
+		pGradedMedium( 0 ),
+		gradedIOR( 0 ),
 		pMediumVol( 0 ),
 		pPhaseFunc( 0 ),
 		pMediumObject( 0 ),

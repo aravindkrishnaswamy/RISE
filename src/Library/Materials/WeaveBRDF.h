@@ -552,6 +552,21 @@ namespace RISE
 			//! tangent basis itself.  One geometry, both pipes.
 			void ResolveWeave( const RayIntersectionGeometric& ri, const Scalar nm, WeaveParams& out ) const;
 
+			//! The clamped gap fraction `gap(x)` at @a ri -- the ONE
+			//! expression `ResolveWeave` stores as `1 - available`, lifted
+			//! out so DL-05's shadow-walk query (`WeaveSPF::
+			//! DeltaPassThroughTransmittance`) reads the identical number
+			//! without resolving the other eighteen painters.  Achromatic,
+			//! like every geometric scalar above.
+			Scalar ResolveGap( const RayIntersectionGeometric& ri ) const;
+
+			//! DL-05: false only when the gap is PROVABLY zero everywhere
+			//! (a uniform painter clamping to 0 -- the `silk` / `satin`
+			//! presets), so the SPF can never draw its gap lobe.  Read by
+			//! WeaveMaterial::HasDeltaPassThrough; kept current by the
+			//! constructor and SetGap.
+			inline bool GapCanOpen() const { return bGapCanOpen; }
+
 			//! ONE family's fibre frame.  `t` is the tilted tangent, `nk`
 			//! the component of the surface normal perpendicular to it
 			//! (so azimuth is measured FROM THE NORMAL, Sadeghi's
@@ -744,6 +759,10 @@ namespace RISE
 			const IScalarPainter*	pSkew;
 			const IScalarPainter*	pCoverage;		///< may be NULL
 			const IScalarPainter*	pGap;
+			bool					bGapCanOpen;	///< DL-05: see GapCanOpen()
+
+			//! DL-05: the rule behind bGapCanOpen (WeaveBRDF.cpp).
+			static bool GapPainterCanOpen( const IScalarPainter& gap );
 
 			const IPainter*			pWarpColor;
 			const IScalarPainter*	pWarpIOR;

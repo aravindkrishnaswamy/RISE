@@ -237,6 +237,24 @@ namespace RISE
 		//! single wavelength instead of whichever channel happens to sit
 		//! at `.v[0]`.
 		virtual IScalarPainter* MakeSingleScalarSlotView() const { return nullptr; }
+
+		//! DL-09 (docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md): is this
+		//! painter a genuine function of WORLD POSITION and nothing else
+		//! the hit record carries -- so that it can be evaluated at an
+		//! arbitrary interior point of a medium (a point that is not a hit
+		//! on the painter's own object and so has no UV, normal or
+		//! footprint) from a record carrying only `ptIntersection`?
+		//!
+		//! True only when the value really VARIES with position (a
+		//! position-independent painter reports false: it needs no
+		//! interior-segment factor) and is a single scalar (a per-channel
+		//! triple would need to know which RGB channel a walk is carrying).
+		//! The default is false, which is the conservative answer for
+		//! every UV-, normal- or signal-driven form: `n` is undefined at an
+		//! interior point for those, and a walk through such a medium
+		//! keeps the pre-DL-09 accounting (see the derivation doc, §4 and
+		//! §8, for why that is consistent on every completed path).
+		virtual bool IsWorldPositionField() const { return false; }
 	};
 }
 

@@ -284,6 +284,20 @@ namespace RISE
 				const IORStack& ior_stack
 				) const;
 
+			//! DL-05: the gap lobe's expected throughput for a shadow ray
+			//! crossing this hit -- see ISPF::DeltaPassThroughTransmittance
+			//! and ScatterImpl's gap draw, whose gates this mirrors
+			//! exactly (probability `gap`, `kray = 1`, so the expectation is
+			//! `gap`; zero unless `transmission thin`).
+			RISEPel DeltaPassThroughTransmittance(
+				const RayIntersectionGeometric& ri
+				) const;
+
+			Scalar DeltaPassThroughTransmittanceNM(
+				const RayIntersectionGeometric& ri,
+				const Scalar nm
+				) const;
+
 			inline const WeaveBRDF& GetBRDF() const { return *pBRDF; }
 
 		protected:

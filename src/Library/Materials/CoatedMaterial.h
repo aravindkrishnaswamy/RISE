@@ -232,6 +232,11 @@ namespace RISE
 			//! Same forwarding, same reason.
 			inline bool CouldLightPassThrough() const { return pBase->CouldLightPassThrough(); }
 
+			//! DL-05: CoatedSPF re-prices the substrate's delta
+			//! pass-through by the coat's two crossings; the capability is
+			//! the substrate's (CoatedSPF::DeltaPassThroughTransmittance).
+			inline bool HasDeltaPassThrough() const { return pBase->HasDeltaPassThrough(); }
+
 			/// \return NULL: a coated surface never emits (the
 			///         allowlist refuses emissive substrates).
 			inline IEmitter* GetEmitter() const { return 0; }

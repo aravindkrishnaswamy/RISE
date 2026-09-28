@@ -32,6 +32,79 @@ namespace RISE
 {
 	namespace BDPTUtilities
 	{
+		//////////////////////////////////////////////////////////////
+		// Medium distance-sampling streams (DL-283).
+		//
+		// The eye and light walks give every loop iteration its own
+		// sampler stream (`StartStream( 16 + depth )` /
+		// `StartStream( 1 + depth )`, 32 Sobol' dimensions each).  An
+		// `IMedium::SampleDistance` call is the one consumer inside
+		// that iteration whose draw count is OPEN-ENDED: heterogeneous
+		// delta tracking draws one value per majorant-grid cell it
+		// crosses plus two per tentative collision, up to
+		// `IMedium::kMaxSampleDistanceDraws` (2048).  Drawn from the
+		// vertex stream, a long free flight ran past the stream's 32
+		// slots into the stream the NEXT iteration re-opens, so one
+		// Sobol' dimension drove two decisions on one path (the PT
+		// twin of this defect was DL-247's `PTVolumeWalkStream`).
+		//
+		// Under a fixed-budget sampler (`ISampler::
+		// HasFixedDimensionBudget()`, i.e. SobolSampler) each distance
+		// sample therefore draws from a BLOCK of
+		// `kMediumDistanceStreamsPerEvent` streams of its own, wide
+		// enough for the full draw bound (64 * 32 = 2048 dimensions),
+		// keyed by (walk, loop iteration).  The caller re-opens its
+		// vertex stream afterwards, so the vertex's own draws (phase,
+		// roulette, BSDF) sit at the same slots whether or not a medium
+		// was crossed.
+		//
+		// Layout, in streams (dimension = 32 * stream):
+		//   eye   walk, iteration d:  8192 + 64 * d            d < 1024
+		//   light walk, iteration d:  8192 + 64 * (1024 + d)   d < 1024
+		// i.e. [8192, 139264), 4.46M dimensions at most.  Both walk
+		// loops saturate their iteration count at
+		// `kWalkIterationCap` (1024), which is what bounds `d`.  Every
+		// other consumer of a BDPT/VCM sampler sits below 8192:
+		// film/light select 0, light walk 1..1024, eye walk 16..1039,
+		// strategy select 47, VCM NEE 49..3121 (48 + i, i >= 1), MLT film/lens 2048,
+		// thin-lens aperture 3322 -- and PT's own volume walks
+		// (`PTVolumeWalkStream`, 4096..8191) never share a sampler with
+		// these at all.  `tests/SobolDimensionBudgetTest.cpp` Test G2
+		// enumerates the whole map and asserts it is collision-free.
+		//
+		// Every block lies past SobolSampler's 8192-dimension table, so
+		// each draw is a wrapped dimension (an Owen-permuted index over
+		// a table row).  Samplers WITHOUT a fixed budget are left on the
+		// vertex stream: `IndependentSampler` ignores streams, and a
+		// `PSSMLTSampler` (MLT) stream is an unbounded lane that cannot
+		// spill.  Routing MLT through the blocks too was measured and
+		// declined: no correctness gain, and +13 % user CPU on
+		// scenes/Tests/MLT/mlt_deep_fog.RISEscene (its chains, not its
+		// storage -- 128 events cost 128 extra-tier lanes), besides
+		// needing PSSMLTSampler's 4096-stream sanity bound raised.
+		//////////////////////////////////////////////////////////////
+		static const unsigned int kWalkIterationCap = 1024;
+		static const int kMediumDistanceStreamBase = 8192;
+		static const int kMediumDistanceStreamsPerEvent = 64;
+
+		enum WalkSide { eEyeWalk = 0, eLightWalk = 1 };
+
+		//! First stream of the block a walk's distance sample at loop
+		//! iteration `depth` draws from.  `depth` is clamped into the
+		//! cap so a caller bug cannot run into a neighbouring layout;
+		//! both walk loops already keep it below the cap.
+		inline int MediumDistanceStream( const WalkSide side, const unsigned int depth )
+		{
+			const unsigned int d = depth < kWalkIterationCap ? depth : kWalkIterationCap - 1u;
+			const unsigned int event = static_cast<unsigned int>( side ) * kWalkIterationCap + d;
+			return kMediumDistanceStreamBase +
+				static_cast<int>( event ) * kMediumDistanceStreamsPerEvent;
+		}
+
+		//! One past the last stream the medium-distance layout can reach.
+		static const int kMediumDistanceStreamEnd = kMediumDistanceStreamBase +
+			2 * static_cast<int>( kWalkIterationCap ) * kMediumDistanceStreamsPerEvent;
+
 		//! Convert a solid-angle PDF at `from` to the canonical
 		//! measure stored at `to`.
 		//!

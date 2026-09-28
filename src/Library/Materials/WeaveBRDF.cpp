@@ -23,6 +23,7 @@
 #include "../Interfaces/ILog.h"
 #include "../Utilities/MicrofacetUtils.h"
 #include "../Utilities/math_utils.h"
+#include "../Painters/UniformScalarPainter.h"
 #include <cmath>
 
 using namespace RISE;
@@ -231,6 +232,23 @@ WeaveBRDF::WeaveBRDF(
 	pWeftKd->addref();
 	pWeftTilt->addref();
 	pWeftTransmit->addref();
+	bGapCanOpen = GapPainterCanOpen( *pGap );
+}
+
+//! DL-05: can this gap painter ever read above zero?  Only a uniform
+//! painter can be decided without evaluating it, so every other painter
+//! answers "yes" (a false positive costs a shadow walk that finds a zero
+//! transmittance; a false negative is impossible -- a uniform zero, after
+//! ResolveGap's own clamp, is zero everywhere).  This is what keeps the
+//! `silk` / `satin` presets -- `transmission thin` with `gap 0` -- from
+//! paying for a pass-through that can never open.
+bool WeaveBRDF::GapPainterCanOpen( const IScalarPainter& gap )
+{
+	const UniformScalarPainter* u = dynamic_cast<const UniformScalarPainter*>( &gap );
+	if( !u ) {
+		return true;
+	}
+	return ClampNaNSafe( u->GetValue(), Scalar( 0 ), kMaxGap ) > 0;
 }
 
 WeaveBRDF::~WeaveBRDF()
@@ -276,7 +294,6 @@ WeaveBRDF::~WeaveBRDF()
 WEAVE_SETTER( WeaveScale,    pScale,       IScalarPainter )
 WEAVE_SETTER( WeaveRotation, pRotation,    IScalarPainter )
 WEAVE_SETTER( WeftSkew,      pSkew,        IScalarPainter )
-WEAVE_SETTER( Gap,           pGap,         IScalarPainter )
 WEAVE_SETTER( WarpColor,     pWarpColor,   IPainter )
 WEAVE_SETTER( WarpIOR,       pWarpIOR,     IScalarPainter )
 WEAVE_SETTER( WarpWidth,     pWarpWidth,   IScalarPainter )
@@ -293,6 +310,16 @@ WEAVE_SETTER( WeftTilt,      pWeftTilt,    IScalarPainter )
 WEAVE_SETTER( WeftTransmit,  pWeftTransmit,IScalarPainter )
 
 #undef WEAVE_SETTER
+
+//! Not through the macro: a gap rebind must also refresh DL-05's cached
+//! `bGapCanOpen` (IMaterial::HasDeltaPassThrough reads it).
+void WeaveBRDF::SetGap( const IScalarPainter& v )
+{
+	v.addref();
+	safe_release( pGap );
+	pGap = &v;
+	bGapCanOpen = GapPainterCanOpen( *pGap );
+}
 
 //! `coverage` is the one slot that may have been UNBOUND at
 //! construction (it is meaningful only for `weave custom`), so its
@@ -716,6 +743,11 @@ WeaveBRDF::ThreadTerms WeaveBRDF::ComputeThreadTerms(
 // ResolveWeave
 //////////////////////////////////////////////////////////////////////
 
+Scalar WeaveBRDF::ResolveGap( const RayIntersectionGeometric& ri ) const
+{
+	return ClampNaNSafe( pGap->GetValuesAt( ri ).v[0], Scalar( 0 ), kMaxGap );
+}
+
 void WeaveBRDF::ResolveWeave( const RayIntersectionGeometric& ri, const Scalar nm, WeaveParams& out ) const
 {
 	// The ray-facing frame.  `FlipW` negates U as well as W, which keeps
@@ -749,8 +781,9 @@ void WeaveBRDF::ResolveWeave( const RayIntersectionGeometric& ri, const Scalar n
 	// the draft can imply it.
 	const OrthonormalBasis3D weftONB = MicrofacetUtils::RotateTangent( warpONB, PI_OV_TWO + skewSafe );
 
-	// --- the coverage field.
-	const Scalar gap = ClampNaNSafe( pGap->GetValuesAt( ri ).v[0], Scalar( 0 ), kMaxGap );
+	// --- the coverage field.  `ResolveGap` is the single copy of the
+	// gap expression (DL-05's shadow walk reads it too).
+	const Scalar gap = ResolveGap( ri );
 	out.available = Scalar( 1 ) - gap;
 	out.thin      = ( transmission == eWeaveTransmissionThin );
 

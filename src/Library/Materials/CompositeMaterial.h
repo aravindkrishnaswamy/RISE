@@ -31,6 +31,7 @@ namespace RISE
 			ISPF*						pSPF;
 			IEmitter*					pEmitter;
 			bool          bScattersFullSphere;   //!< DL-157 P2-1; see the ctor
+			bool          bHasDeltaPassThrough;  //!< DL-05; see the ctor
 
 			virtual ~CompositeMaterial( )
 			{
@@ -54,7 +55,8 @@ namespace RISE
 			pBRDF( 0 ), 
 			pSPF( 0 ), 
 			pEmitter( 0 ),
-			bScattersFullSphere( false )
+			bScattersFullSphere( false ),
+			bHasDeltaPassThrough( false )
 			{
 				// DL-157 P2-1 (2026-09-18): the full-sphere capability is
 				// taken from WHICHEVER MATERIAL'S BSDF this composite ends
@@ -88,14 +90,25 @@ namespace RISE
 					bScattersFullSphere = bottom.ScattersFullSphere();
 				}
 
+				// DL-05: the capability follows the SPF this composite
+				// presents.  CompositeSPF's straight-through lobe needs BOTH
+				// layers to pass (CompositeSPF::DeltaPassThroughTransmittance);
+				// a forwarded single SPF is that layer's own.  Captured here,
+				// like bScattersFullSphere -- an editor rebind of a layer's
+				// gap after construction can only make it stale toward the
+				// pre-DL-05 binary shadow or toward a walk that reads zero,
+				// never toward a double count.
 				if( top.GetSPF() && bottom.GetSPF() ) {
 					pSPF = new CompositeSPF( *top.GetSPF(), *bottom.GetSPF(), max_recur, max_reflection_recursion, max_refraction_recursion, max_diffuse_recursion, max_translucent_recursion, thickness, extinction );
+					bHasDeltaPassThrough = top.HasDeltaPassThrough() && bottom.HasDeltaPassThrough();
 				} else if( top.GetSPF() ) {
 					pSPF = top.GetSPF();
 					pSPF->addref();
+					bHasDeltaPassThrough = top.HasDeltaPassThrough();
 				} else if( bottom.GetSPF() ){
 					pSPF = bottom.GetSPF();
 					pSPF->addref();
+					bHasDeltaPassThrough = bottom.HasDeltaPassThrough();
 				}
 
 				if( top.GetEmitter() && bottom.GetEmitter() ) {
@@ -122,6 +135,9 @@ namespace RISE
 			//! DL-157 P2-1: the answer of whichever layer's BSDF `GetBSDF()`
 			//! actually returned -- see the constructor's derivation.
 			inline bool ScattersFullSphere() const { return bScattersFullSphere; }
+
+			//! DL-05: see the constructor (IMaterial::HasDeltaPassThrough).
+			inline bool HasDeltaPassThrough() const { return bHasDeltaPassThrough; }
 		};
 	}
 }
