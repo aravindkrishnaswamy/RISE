@@ -97,11 +97,18 @@ namespace RISE
 				// higher IOR pushes more light back in, deepening the virtual source.
 				// The value built here is for an AIR exterior; see
 				// ComputeTotalExtinctionForExterior for any other (DL-291).
-				const Scalar A = BoundaryA( relative_ior );
+				// The nu >= 1 arm is the original expression, verbatim (so an
+				// in-air body is bit-identical); see BoundaryA for nu < 1.
+				const Scalar nu = relative_ior;
+				const Scalar fresnel = ( nu >= 1.0 )
+					? ( -1.440/(nu*nu) + 0.710/nu + 0.668 + 0.0636*nu )
+					: Scalar( ComputeFdr( nu ) );
+				const Scalar A = (1.0+fresnel)/(1.0-fresnel);
 
-				D = RISEPel(1,1,1) / (3.0*t_prime);
+				const RISEPel Dcoef = RISEPel(1,1,1) / (3.0*t_prime);
 				zr = RISEPel(1,1,1) / t_prime;
-				zv = zr + 4.0*A*D;
+				zv = zr + 4.0*A*Dcoef;
+				D = Dcoef;
 
 				// Effective transport coefficient — controls the exponential falloff
 				// rate of the Rd(r) profile.  Per-channel to produce color bleeding.
@@ -180,7 +187,22 @@ namespace RISE
 				const Scalar distance
 			) const
 			{
-				return EvaluateDipole( distance, zv );
+				// The original evaluation, verbatim (the in-air path, DL-291);
+				// EvaluateDipole below is the same formula at another zv.
+				const Scalar r = distance * 1000.0 * geometric_scale;
+				const Scalar r2 = r*r;
+				const RISEPel sqr_r( r2, r2, r2 );
+
+				const RISEPel one(1,1,1);
+				const RISEPel negative(-1,-1,-1);
+
+				RISEPel dv = ColorMath::root( sqr_r + (zv*zv) );
+				RISEPel dr = ColorMath::root( sqr_r + (zr*zr) );
+
+				const RISEPel inside_left = zr*(tr*dr+one) * ( ColorMath::exponential(negative*tr*dr)/(dr*dr*dr) );
+				const RISEPel inside_right = zv*(tr*dv+one) * ( ColorMath::exponential(negative*tr*dv)/(dv*dv*dv) );
+
+				return ap_ov_four_pi * (inside_left+inside_right);
 			}
 
 		protected:
