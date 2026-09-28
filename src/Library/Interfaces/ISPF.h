@@ -460,7 +460,8 @@ namespace RISE
 		/// declares this; otherwise it runs its per-branch estimator,
 		/// which is unbiased for any positive branch weights.  The default
 		/// is false, which is always safe (never biased, at worst less
-		/// efficient); a wrong `true` zeroes whole transport classes.
+		/// efficient); a wrong `true` zeroes whole transport classes or
+		/// prices them with a split no draw realises (a bias).
 		virtual bool SelectionMassIsDeterministic(
 			const RayIntersectionGeometric& /*ri*/,
 			const Scalar /*nm*/

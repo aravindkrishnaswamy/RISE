@@ -839,9 +839,12 @@ static void SectionT( Fixtures& f )
 	// The third top has its warp OFF (delta transmission), so it still
 	// DECLARES determinism under a tilt and runs the AGGREGATE mode there:
 	// the row proves the declaration is right when it is kept.
-	DielectricMaterial* tops[] = { f.dScat0, dScat5, dDelta };
-	const char* names[] = { "scattering 0", "scattering 5", "scattering 1e6 (warp off, still declared)" };
-	for( int k = 0; k < 3; ++k ) {
+	// The fourth is a lossless TRANSLUCENT top, which keeps its
+	// unconditional declaration: its lobes are clipped to the geometric
+	// side too, so the row checks the claim under the same tilts.
+	const IMaterial* tops[] = { f.dScat0, dScat5, dDelta, f.transLossless };
+	const char* names[] = { "dielectric scattering 0", "dielectric scattering 5", "dielectric scattering 1e6 (warp off, still declared)", "lossless translucent (declared)" };
+	for( int k = 0; k < 4; ++k ) {
 		CompositeMaterial* m = MakeComposite( *tops[k], *f.lamb, 3, 3, 3, 3, 3, 0.0, *f.s0 );
 		for( const double tilt : { 0.0, 5.0, 20.0, 35.0 } ) {
 			for( const double th : { 0.0, 45.0 } ) {
@@ -852,7 +855,7 @@ static void SectionT( Fixtures& f )
 				          << ": composite " << a.mean << " +- " << a.sem << ", independent walk " << r.mean << " +- " << r.sem
 				          << ", z " << std::setprecision( 2 ) << ( a.mean - r.mean ) / std::max( 1e-12, sig ) << "\n";
 				Check( std::fabs( a.mean - r.mean ) <= 0.001 + 5.0 * sig,
-					std::string( "[T] composite{dielectric " ) + names[k] + " / white} == independent walk, tilt " +
+					std::string( "[T] composite{" ) + names[k] + " / white} == independent walk, tilt " +
 					std::to_string( (int)tilt ) + " theta " + std::to_string( (int)th ) );
 			}
 		}
