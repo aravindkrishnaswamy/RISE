@@ -57,6 +57,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace RISE
 {
@@ -235,9 +236,12 @@ namespace RISE
 				const double x = std::sqrt( c2 ), y = std::sqrt( std::max( 0.0, 1.0 - c2 ) );
 				const double z = q * x / p, w = q * y;
 				const double sp = std::sqrt( p );
+				// 1 - w^2 = 1 - (1-c2)(1-p^2) = c2 + (1-c2) p^2, without the
+				// cancellation 1 - w*w suffers once q rounds to 1.
+				const double oneMinusW2 = c2 + ( 1.0 - c2 ) * p * p;
 				W  = 2.0 * sp * ( c2 * AsinhOverZ( z ) / p + ( 1.0 - c2 ) * AsinOverZ( w ) );
 				dW = 2.0 * sp * ( ( AsinhOverZ( z ) + 1.0 / std::sqrt( 1.0 + z*z ) ) / ( 2.0 * p )
-				                - ( AsinOverZ( w ) + 1.0 / std::sqrt( 1.0 - w*w ) ) / 2.0 );
+				                - ( AsinOverZ( w ) + 1.0 / std::sqrt( oneMinusW2 ) ) / 2.0 );
 			}
 
 			//! Tangent lines of W(c2) at 12 nodes c2_j = (j/11)^4.  W is
@@ -277,8 +281,16 @@ namespace RISE
 					const double x = ( u * u ) * ( u * u );
 					double W = 0, dW = 0;
 					WAndSlope( L.p, L.q, x, W, dW );
-					t.a[j] = W - dW * x;
-					t.b[j] = dW;
+					if( std::isfinite( W ) && std::isfinite( dW ) ) {
+						t.a[j] = W - dW * x;
+						t.b[j] = dW;
+					} else {
+						// An isotropy so extreme that the slope at c2 = 0
+						// overflows (p^2 below the double range): drop this
+						// tangent.  The rest still upper-bound the concave W.
+						t.a[j] = std::numeric_limits<double>::max();
+						t.b[j] = 0;
+					}
 				}
 				return t;
 			}

@@ -31,6 +31,8 @@
 //       would bound.
 //   10. W's closed form, its concavity in cos^2(phi_v), and the tangent
 //       envelope the production bound reads W through.
+//   11. Extreme parameters (isotropy 1e-300..1e300, roughness down to
+//       1e-300, cos down to 1e-300) stay finite and never exceed Eq.31.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -360,6 +362,24 @@ int main()
 		}
 		printf( "10. W closed form vs quadrature worst %.3e; envelope looseness worst %.4f%%; max d2W/dc2^2 = %.3e (< 0)\n",
 			worstClosed, 100 * worstLoose, maxSecond );
+	}
+
+	// 11. Extreme parameters stay finite and never exceed Eq.31.
+	{
+		int n = 0;
+		for( double p : { 1e-300, 1e-12, 1e-9, 1e-4, 0.5, 1.0, 2.0, 1e4, 1e9, 1e300 } )
+		for( double r : { 1e-300, 1e-12, 1e-4, 0.01, 0.3, 1.0, 1.5 } ) {
+			SchlickMasking::Lane L;
+			SchlickMasking::Prepare( L, r, p );
+			for( double c : { 1e-300, 1e-12, 1e-6, 0.01, 0.1, 0.5, 0.999999 } )
+			for( double ph : { 0.0, 0.5, 1.5707963 } ) {
+				const double den31 = r + ( 1 - r ) * c;
+				const double d = SchlickMasking::MaskDen( L, c, cos( ph ), sin( ph ) );
+				Check( std::isfinite( d ) && d >= den31 * ( 1 - 1e-15 ), "masking denominator finite and never below Eq.31's", d, den31 );
+				n++;
+			}
+		}
+		printf( "11. extreme isotropy/roughness/cosine: %d states finite and bounded by Eq.31\n", n );
 	}
 
 	printf( "Checks: %d Failures: %d\n", checks, failures );
