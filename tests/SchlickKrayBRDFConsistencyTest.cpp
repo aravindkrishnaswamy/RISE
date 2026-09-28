@@ -483,6 +483,105 @@ static RatioStat MeasureAnyPairRatio(
 	return st;
 }
 
+//////////////////////////////////////////////////////////////////////
+// Sections 7-10 (DL-225): the bounded, reciprocal Schlick specular
+// family.  See docs/DL225_BOUNDED_SCHLICK.md.
+//
+// A flat hit whose shading frame is rotated about the normal so the
+// incoming view direction sits at azimuth `viewAzimuthDeg` from
+// `onb.u()` -- the axis Schlick's anisotropy factor A peaks along
+// for isotropy < 1 (and `onb.v()` for isotropy > 1).
+//////////////////////////////////////////////////////////////////////
+static RayIntersectionGeometric MakeIntersectionFromView(
+	const Vector3& towardViewer,									///< [in] unit, z > 0
+	double frameAzimuthDeg )										///< [in] rotation of onb.u about +Z
+{
+	Ray inRay( Point3( towardViewer.x, towardViewer.y, towardViewer.z ), -towardViewer );
+	RasterizerState rs = { 0, 0 };
+	RayIntersectionGeometric ri( inRay, rs );
+	ri.bHit = true;
+	ri.range = 1.0;
+	ri.ptIntersection = Point3( 0, 0, 0 );
+	ri.vNormal = Vector3( 0, 0, 1 );
+	ri.vGeomNormal = Vector3( 0, 0, 1 );
+	const double a = frameAzimuthDeg * PI / 180.0;
+	ri.onb.CreateFromWU( Vector3( 0, 0, 1 ), Vector3( cos( a ), sin( a ), 0 ) );
+	ri.ptCoord = Point2( 0.5, 0.5 );
+	return ri;
+}
+
+//! View at `thetaDeg` from the normal and `viewAzimuthDeg` from onb.u().
+static RayIntersectionGeometric MakeIntersectionAz( double thetaDeg, double viewAzimuthDeg )
+{
+	const double th = thetaDeg * PI / 180.0;
+	// The viewer sits in the world X-Z plane; rotating onb.u() by
+	// -viewAzimuth puts it at +viewAzimuth in the shading frame.
+	return MakeIntersectionFromView( Vector3( sin( th ), 0, cos( th ) ), -viewAzimuthDeg );
+}
+
+//! Directional reflectance rho_d(v) = int f(v,l) (n.l) dw_l of the LIVE
+//! `value()`, by an INDEPENDENT quadrature: the half-vector is swept on
+//! this test's own warp tan(theta_h) = sqrt(warp) tan(pi u / 2) (NOT the
+//! SPF's inverse CDF, which is the thing under test elsewhere), uniform
+//! in azimuth, and mapped to the outgoing direction with the reflection
+//! Jacobian dw_l = 4 (h.v) dw_h.  `channel` < 0 reads MaxValue.
+static double DirectionalAlbedoIndependent(
+	const IBSDF& brdf,
+	const RayIntersectionGeometric& ri,
+	double warp,
+	int channel,
+	int nU = 256,
+	int nPhi = 512 )
+{
+	const Vector3 v = Vector3Ops::Normalize( -ri.ray.Dir() );
+	const double sw = sqrt( warp );
+	double sum = 0;
+	for( int i = 0; i < nU; i++ ) {
+		const double a = 0.5 * PI * ( i + 0.5 ) / nU;
+		const double tt = sw * tan( a );
+		const double th = atan( tt );
+		const double dth = 0.5 * PI * sw / ( cos( a ) * cos( a ) ) / ( 1.0 + tt * tt ) / nU;
+		const double ct = cos( th ), st = sin( th );
+		for( int j = 0; j < nPhi; j++ ) {
+			const double ph = TWO_PI * ( j + 0.5 ) / nPhi;
+			const Vector3 h( st * cos( ph ), st * sin( ph ), ct );
+			const double hv = Vector3Ops::Dot( h, v );
+			if( hv <= 0 ) continue;
+			const Vector3 l( 2 * hv * h.x - v.x, 2 * hv * h.y - v.y, 2 * hv * h.z - v.z );
+			if( l.z <= 0 ) continue;
+			const RISEPel f = brdf.value( l, ri );
+			const double fv = ( channel < 0 ) ? ColorMath::MaxValue( f ) : f[channel];
+			sum += fv * l.z * 4.0 * hv * st * dth * ( TWO_PI / nPhi );
+		}
+	}
+	return sum;
+}
+
+//! Schlick 1994 Eq.31 exactly as shipped by DL-178, spelled
+//! independently of the production helpers: the model DL-225 must
+//! reproduce wherever Eq.31's masking is already within the Smith
+//! projected-area bound.
+static double SchlickEq31Reference(
+	const RayIntersectionGeometric& ri,
+	const Vector3& l,
+	double rho, double r, double p )
+{
+	const Vector3 v = Vector3Ops::Normalize( -ri.ray.Dir() );
+	const Vector3 n = ri.onb.w();
+	const double nv = Vector3Ops::Dot( n, v ), nl = Vector3Ops::Dot( n, l );
+	if( nv <= 0 || nl <= 0 ) return 0;
+	const Vector3 h = Vector3Ops::Normalize( Vector3( l.x + v.x, l.y + v.y, l.z + v.z ) );
+	const double t = Vector3Ops::Dot( h, n ), hv = Vector3Ops::Dot( h, v );
+	const Vector3 tan = Vector3( h.x - t * n.x, h.y - t * n.y, h.z - t * n.z );
+	const double len = sqrt( Vector3Ops::SquaredModulus( tan ) );
+	const double w = len > 0 ? Vector3Ops::Dot( ri.onb.v(), tan ) / len : 0;
+	const double A = sqrt( p / ( p * p + ( 1 - p * p ) * w * w ) );
+	const double zd = 1 - ( 1 - r ) * t * t;
+	const double Z = r / ( zd * zd );
+	const double S = rho + ( 1 - rho ) * ::pow( 1 - hv, 5.0 );
+	return S * Z * A / ( 4 * PI * ( r + ( 1 - r ) * nv ) * ( r + ( 1 - r ) * nl ) );
+}
+
 int main()
 {
 	GlobalLog();
@@ -931,6 +1030,239 @@ int main()
 		ctS->release(); ctB->release(); ggS->release(); ggB->release();
 		lit->release(); spec->release(); alpha->release(); alphaY->release();
 		iorSc->release(); extSc->release(); expSc->release(); nuSc->release(); nvSc->release();
+	}
+
+	//----------------------------------------------------------------
+	// SECTION 7 -- DL-225 directional-reflectance BOUND.
+	//
+	// rho_d(v) = int f cos dw of the LIVE value(), specular only, with a
+	// WHITE specular painter (S == 1, the worst case over rho), by the
+	// independent half-vector quadrature above.  Must be <= 1 + 1e-3 in
+	// every cell.  Pre-fix (Eq.31 alone) the worst cell of this grid is
+	// ~5.6 (r .005, isotropy .3, 89.9 deg, view along the anisotropy
+	// peak) and DL-225's own row cell (rho .9, r .1, isotropy 1,
+	// 89.9 deg) reads 1.2445.
+	//----------------------------------------------------------------
+	std::cout << std::endl
+	          << "-- Section 7: DL-225 directional reflectance of the live value() "
+	             "(white specular, independent quadrature; must be <= 1 + 1e-3)" << std::endl;
+	{
+		UniformColorPainter* white = new UniformColorPainter( RISEPel( 1, 1, 1 ) ); white->addref();
+		const double r7[]   = { 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5 };
+		const double p7[]   = { 0.1, 0.3, 0.5, 1.0, 3.0 };
+		const double th7[]  = { 0.0, 60.0, 85.0, 88.0, 89.9 };
+		const double az7[]  = { 0.0, 45.0, 90.0 };
+		double worst = 0; double wr = 0, wp = 0, wt = 0, wa = 0;
+		int cells = 0;
+		for( double r : r7 ) {
+			UniformScalarPainter* rough = new UniformScalarPainter( r ); rough->addref();
+			for( double p : p7 ) {
+				UniformScalarPainter* iso = new UniformScalarPainter( p ); iso->addref();
+				SchlickBRDF* brdf = new SchlickBRDF( *black, *white, *rough, *iso ); brdf->addref();
+				for( double th : th7 ) {
+					for( double az : az7 ) {
+						if( p == 1.0 && az != 0.0 ) continue;
+						const RayIntersectionGeometric ri = MakeIntersectionAz( th, az );
+						const double rhoD = DirectionalAlbedoIndependent( *brdf, ri, r, -1 );
+						cells++;
+						if( rhoD > worst ) { worst = rhoD; wr = r; wp = p; wt = th; wa = az; }
+						Check( std::isfinite( rhoD ) && rhoD <= 1.0 + 1e-3,
+							"DL-225: Schlick specular directional reflectance <= 1 (white specular)" );
+					}
+				}
+				brdf->release();
+				iso->release();
+			}
+			rough->release();
+		}
+		std::cout << "   cells=" << cells << "   worst rho_d = " << std::setprecision(6) << worst
+		          << "  at r=" << wr << " isotropy=" << wp << " theta=" << wt
+		          << " view azimuth=" << wa << std::endl;
+
+		// DL-225's own row cell: rho .9, r .1, isotropy 1, 89.9 deg.
+		{
+			UniformColorPainter*  rs    = new UniformColorPainter( RISEPel( 0.9, 0.9, 0.9 ) ); rs->addref();
+			UniformScalarPainter* rough = new UniformScalarPainter( 0.1 ); rough->addref();
+			UniformScalarPainter* iso   = new UniformScalarPainter( 1.0 ); iso->addref();
+			SchlickBRDF* brdf = new SchlickBRDF( *black, *rs, *rough, *iso ); brdf->addref();
+			const double rhoD = DirectionalAlbedoIndependent( *brdf, MakeIntersectionAz( 89.9, 0 ), 0.1, -1, 512, 1024 );
+			std::cout << "   DL-225 row cell (rho .9, r .1, isotropy 1, 89.9 deg): rho_d = "
+			          << std::setprecision(9) << rhoD << "   (Eq.31 alone: 1.2445)" << std::endl;
+			Check( rhoD <= 1.0, "DL-225: the ledger row's own witness cell is bounded" );
+			brdf->release(); rs->release(); rough->release(); iso->release();
+		}
+
+		// Per-channel lanes: each channel carries its own (r, isotropy).
+		{
+			RGBScalarPainter* rough = new RGBScalarPainter( 0.005, 0.05, 0.5 ); rough->addref();
+			RGBScalarPainter* iso   = new RGBScalarPainter( 0.3, 1.0, 3.0 );    iso->addref();
+			SchlickBRDF* brdf = new SchlickBRDF( *black, *white, *rough, *iso ); brdf->addref();
+			const double rr[3] = { 0.005, 0.05, 0.5 };
+			double worstCh = 0;
+			for( double th : { 0.0, 85.0, 89.9 } ) {
+				for( double az : { 0.0, 90.0 } ) {
+					const RayIntersectionGeometric ri = MakeIntersectionAz( th, az );
+					for( int ch = 0; ch < 3; ch++ ) {
+						const double rhoD = DirectionalAlbedoIndependent( *brdf, ri, rr[ch], ch );
+						if( rhoD > worstCh ) worstCh = rhoD;
+						Check( std::isfinite( rhoD ) && rhoD <= 1.0 + 1e-3,
+							"DL-225: per-channel lane directional reflectance <= 1" );
+					}
+				}
+			}
+			std::cout << "   per-channel (r .005/.05/.5, isotropy .3/1/3) worst rho_d = "
+			          << std::setprecision(6) << worstCh << std::endl;
+			brdf->release(); rough->release(); iso->release();
+		}
+		white->release();
+	}
+
+	//----------------------------------------------------------------
+	// SECTION 8 -- DL-225 reciprocity where the new masking BINDS.
+	//
+	// f(l->v) == f(v->l) to 1e-9 at five direction pairs chosen inside
+	// the regime where Eq.31's masking exceeds the Smith bound (each
+	// pair is also checked to read materially BELOW Eq.31, so the pair
+	// provably exercises the bounded branch rather than the pass-through).
+	//----------------------------------------------------------------
+	std::cout << std::endl
+	          << "-- Section 8: DL-225 reciprocity of value() where the bound binds" << std::endl;
+	{
+		struct Pair { double r, p, thv, phv, thl, phl; };
+		const Pair pairs[] = {
+			{ 0.02, 1.0, 86.0,   0.0, 84.0, 170.0 },
+			{ 0.02, 0.3, 87.0,  10.0, 85.0, 200.0 },
+			{ 0.05, 0.5, 88.0,  30.0, 80.0, 215.0 },
+			{ 0.01, 3.0, 85.0,  95.0, 87.5, 280.0 },
+			{ 0.005,0.1, 89.0,   5.0, 86.0, 181.0 },
+		};
+		double maxAsym = 0;
+		for( const Pair& q : pairs ) {
+			UniformColorPainter*  rs    = new UniformColorPainter( RISEPel( 0.7, 0.7, 0.7 ) ); rs->addref();
+			UniformScalarPainter* rough = new UniformScalarPainter( q.r ); rough->addref();
+			UniformScalarPainter* iso   = new UniformScalarPainter( q.p ); iso->addref();
+			SchlickBRDF* brdf = new SchlickBRDF( *black, *rs, *rough, *iso ); brdf->addref();
+
+			const double tv = q.thv * PI / 180, pv = q.phv * PI / 180;
+			const double tl = q.thl * PI / 180, pl = q.phl * PI / 180;
+			const Vector3 wv( sin( tv ) * cos( pv ), sin( tv ) * sin( pv ), cos( tv ) );
+			const Vector3 wl( sin( tl ) * cos( pl ), sin( tl ) * sin( pl ), cos( tl ) );
+			// Same shading frame (onb.u = +X) for both evaluations.
+			const RayIntersectionGeometric riV = MakeIntersectionFromView( wv, 0 );
+			const RayIntersectionGeometric riL = MakeIntersectionFromView( wl, 0 );
+			const double fVL = ColorMath::MaxValue( brdf->value( wl, riV ) );
+			const double fLV = ColorMath::MaxValue( brdf->value( wv, riL ) );
+			const double asym = fVL > 0 ? fabs( fLV - fVL ) / fVL : 1.0;
+			if( asym > maxAsym ) maxAsym = asym;
+			const double eq31 = SchlickEq31Reference( riV, wl, 0.7, q.r, q.p );
+			std::cout << "   r=" << std::setprecision(3) << q.r << " iso=" << q.p
+			          << "  f(v->l)=" << std::setprecision(9) << fVL << " f(l->v)=" << fLV
+			          << "  asym " << std::scientific << std::setprecision(3) << asym << std::fixed
+			          << "  f/Eq31 = " << std::setprecision(6) << ( eq31 > 0 ? fVL / eq31 : 0 ) << std::endl;
+			Check( fVL > 0 && asym < 1e-9, "DL-225: value() is reciprocal in the bounded regime" );
+			Check( eq31 > 0 && fVL < 0.99 * eq31,
+				"DL-225: this reciprocity pair exercises the bounded (Smith) branch" );
+
+			brdf->release(); rs->release(); rough->release(); iso->release();
+		}
+		std::cout << "   max relative asymmetry = " << std::scientific << std::setprecision(3)
+		          << maxAsym << std::fixed << std::endl;
+	}
+
+	//----------------------------------------------------------------
+	// SECTION 9 -- DL-225 reduction: wherever Eq.31's masking is already
+	// inside the Smith bound, value() IS the shipped Eq.31 model.
+	// Isotropic Eq.31 <= Smith for every direction once r >= 1/4; and
+	// for any r at incidences with cos >= (1-4r)/(3-4r).
+	//----------------------------------------------------------------
+	std::cout << std::endl
+	          << "-- Section 9: DL-225 reduces to Eq.31 where Eq.31 is already bounded" << std::endl;
+	{
+		struct Cfg { double r, p, thMax; };
+		const Cfg cfgs[] = { { 0.3, 1.0, 89.9 }, { 0.8, 1.0, 89.9 }, { 0.1, 1.0, 60.0 },
+		                     { 0.05, 0.3, 45.0 }, { 0.5, 0.7, 70.0 } };
+		double maxDev = 0;
+		for( const Cfg& c : cfgs ) {
+			UniformColorPainter*  rs    = new UniformColorPainter( RISEPel( 0.6, 0.6, 0.6 ) ); rs->addref();
+			UniformScalarPainter* rough = new UniformScalarPainter( c.r ); rough->addref();
+			UniformScalarPainter* iso   = new UniformScalarPainter( c.p ); iso->addref();
+			SchlickBRDF* brdf = new SchlickBRDF( *black, *rs, *rough, *iso ); brdf->addref();
+			for( double th : { 0.0, 20.0, 45.0, c.thMax } ) {
+				for( double az : { 0.0, 60.0 } ) {
+					const RayIntersectionGeometric ri = MakeIntersectionAz( th, az );
+					for( double lt : { 5.0, 30.0, c.thMax } ) {
+						for( double lp : { 10.0, 100.0, 190.0 } ) {
+							const double a = lt * PI / 180, b = lp * PI / 180;
+							// World direction: the frame is rotated, so express
+							// l in the WORLD frame the ray lives in.
+							const Vector3 l = Vector3Ops::Normalize(
+								ri.onb.u() * ( sin( a ) * cos( b ) ) + ri.onb.v() * ( sin( a ) * sin( b ) ) + ri.onb.w() * cos( a ) );
+							const double ref = SchlickEq31Reference( ri, l, 0.6, c.r, c.p );
+							const double got = ColorMath::MaxValue( brdf->value( l, ri ) );
+							if( ref <= 0 ) continue;
+							const double dev = fabs( got - ref ) / ref;
+							if( dev > maxDev ) maxDev = dev;
+							Check( dev < 1e-12, "DL-225: value() == Eq.31 where Eq.31 is inside the Smith bound" );
+						}
+					}
+				}
+			}
+			brdf->release(); rs->release(); rough->release(); iso->release();
+		}
+		std::cout << "   max relative |value - Eq.31| = " << std::scientific << std::setprecision(3)
+		          << maxDev << std::fixed << std::endl;
+	}
+
+	//----------------------------------------------------------------
+	// SECTION 10 -- DL-225 lockstep: the per-lobe kray identity holds
+	// IN the bounded regime (grazing, low roughness, isotropy <, =, > 1),
+	// for Scatter, the per-channel branch and ScatterNM.
+	//----------------------------------------------------------------
+	std::cout << std::endl
+	          << "-- Section 10: DL-225 kray_S * p_S == f_S cos where the bound binds" << std::endl;
+	{
+		double worstDev = 0;
+		for( double p : { 0.3, 1.0, 3.0 } ) {
+			UniformColorPainter*  rs    = new UniformColorPainter( RISEPel( 0.8, 0.8, 0.8 ) ); rs->addref();
+			UniformScalarPainter* rough = new UniformScalarPainter( 0.02 ); rough->addref();
+			UniformScalarPainter* iso   = new UniformScalarPainter( p ); iso->addref();
+			SchlickSPF*  spf  = new SchlickSPF(  *black, *rs, *rough, *iso ); spf->addref();
+			SchlickBRDF* brdf = new SchlickBRDF( *black, *rs, *rough, *iso ); brdf->addref();
+			for( double th : { 85.0, 89.0 } ) {
+				for( double az : { 0.0, 60.0 } ) {
+					const RayIntersectionGeometric ri = MakeIntersectionAz( th, az );
+					const RatioStat st = MeasureSpecularRatio( *spf, *brdf, ri, sampler, iorStack, 20000, -1 );
+					const RatioStat sn = MeasureSpecularRatioNM( *spf, *brdf, ri, sampler, iorStack, 20000, 550.0, *black );
+					Check( st.n > 1000 && sn.n > 1000, "Section 10: enough grazing specular draws" );
+					const double d1 = std::max( fabs( st.maxR - 1.0 ), fabs( st.minR - 1.0 ) );
+					const double d2 = std::max( fabs( sn.maxR - 1.0 ), fabs( sn.minR - 1.0 ) );
+					worstDev = std::max( worstDev, std::max( d1, d2 ) );
+					Check( d1 < 1e-6, "DL-225: kray_S p_S == f_S cos per draw in the bounded regime (RGB)" );
+					Check( d2 < 1e-6, "DL-225: krayNM p_S == valueNM cos per draw in the bounded regime" );
+				}
+			}
+			spf->release(); brdf->release(); rs->release(); rough->release(); iso->release();
+		}
+		{
+			RGBScalarPainter*     rough = new RGBScalarPainter( 0.01, 0.03, 0.3 ); rough->addref();
+			RGBScalarPainter*     iso   = new RGBScalarPainter( 0.3, 1.0, 2.0 );   iso->addref();
+			UniformColorPainter*  rs    = new UniformColorPainter( RISEPel( 0.3, 0.6, 0.9 ) ); rs->addref();
+			SchlickSPF*  spf  = new SchlickSPF(  *black, *rs, *rough, *iso ); spf->addref();
+			SchlickBRDF* brdf = new SchlickBRDF( *black, *rs, *rough, *iso ); brdf->addref();
+			for( double th : { 86.0, 89.0 } ) {
+				const RayIntersectionGeometric ri = MakeIntersectionAz( th, 30.0 );
+				for( int ch = 0; ch < 3; ch++ ) {
+					const RatioStat st = MeasureSpecularRatio( *spf, *brdf, ri, sampler, iorStack, 20000, ch );
+					Check( st.n > 500, "Section 10: enough per-channel grazing draws" );
+					const double d = std::max( fabs( st.maxR - 1.0 ), fabs( st.minR - 1.0 ) );
+					worstDev = std::max( worstDev, d );
+					Check( d < 1e-6, "DL-225: per-channel kray identity in the bounded regime" );
+				}
+			}
+			spf->release(); brdf->release(); rs->release(); rough->release(); iso->release();
+		}
+		std::cout << "   worst |per-draw - 1| = " << std::scientific << std::setprecision(3)
+		          << worstDev << std::fixed << std::endl;
 	}
 
 	black->release();
