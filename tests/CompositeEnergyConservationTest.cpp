@@ -682,6 +682,45 @@ static void SectionH( Fixtures& f )
 		std::cout << "\n";
 		c.m->release();
 	}
+	// H4 -- the same residual on its own: composite{dielectric/dielectric}
+	// struck FROM INSIDE (a closed object seen from within: the ray
+	// travels upward and the stack already holds the object's entry).
+	// Below the critical angle the stack passes it through (gated at 1);
+	// at 35 deg the two layers read each other's side, total-internally-
+	// reflect forever and the energy is dropped at the walk cap
+	// (pre-existing: the base 5c9eeb96 reads the same 0.086).  Pinned.
+	{
+		std::cout << "    H4 composite{dielectric / dielectric} struck from INSIDE (stack holds the object) -- KNOWN RESIDUAL PIN at 35 deg [0.04, 0.20]\n      ";
+		const ISPF& spf = *innerGG->GetSPF();
+		for( const double thDeg : { 20.0, 35.0 } ) {
+			RandomNumberGenerator rng( 4242u );
+			IndependentSampler sampler( rng );
+			const double th = thDeg * kPi / 180.0;
+			const Vector3 d( std::sin( th ), 0, std::cos( th ) );
+			double sum = 0;
+			const int N = 100000;
+			for( int i = 0; i < N; ++i ) {
+				const Point3 p( rng.CanonicalRandom() * 10, rng.CanonicalRandom() * 10, 0 );
+				const RasterizerState rs = { 0, 0 };
+				RayIntersectionGeometric ri( Ray( Point3( p.x - d.x, p.y, -1.0 ), d ), rs );
+				ri.bHit = true; ri.range = 1.0; ri.ptIntersection = p;
+				ri.vNormal = Vector3( 0, 0, 1 ); ri.vGeomNormal = Vector3( 0, 0, 1 ); ri.onb.CreateFromW( Vector3( 0, 0, 1 ) );
+				IORStack st = MakeTestIORStack( g_stub );
+				st.push( 1.5 );
+				ScatteredRayContainer sc;
+				spf.Scatter( ri, sampler, sc, st );
+				for( unsigned j = 0; j < sc.Count(); ++j ) sum += ColorMath::MaxValue( sc[j].kray );
+			}
+			const double rho = sum / N;
+			std::cout << std::fixed << std::setprecision( 4 ) << thDeg << "deg: " << rho << "   ";
+			if( thDeg < 30.0 ) {
+				Check( std::fabs( rho - 1.0 ) <= 0.02, "[H] H4 struck from inside below the critical angle -> 1" );
+			} else {
+				Check( rho >= 0.04 && rho <= 0.20, "[H] H4 (known nested/inside residual) 35 deg inside its pin band" );
+			}
+		}
+		std::cout << "\n";
+	}
 	inner->release(); innerGG->release(); tissue->release();
 }
 
