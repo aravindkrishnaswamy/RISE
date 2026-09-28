@@ -4198,17 +4198,47 @@ unsigned int ManifoldSolver::SnellContinueChain(
 						// by the IORStack constructor).
 						currentIOR = seedIor.top();
 					} else {
-						// No matching push -- the slabs-from-planes
-						// pattern (one face of a slab the walk never
-						// entered).  Nothing is popped, so the medium on
-						// the far side is the one the walk is already in:
-						// the stack top -- the same index the Snell
-						// direction above was bent into (etaRatio =
-						// ior / currentIOR).  DL-290 review P1-2: this
-						// used to be a hardcoded 1.0 ("back to air"),
-						// which priced an immersed open-sheet caster
-						// against air.  In air the top is 1.0 and
-						// nothing changes.
+						// No matching push for THIS object -- an open
+						// sheet crossed against its normal.  DL-290
+						// review P1-2: this used to be a hardcoded 1.0
+						// ("back to air"), which priced an immersed
+						// open-sheet caster against air.  The far side is
+						// now read from the stack, and there are two cases:
+						//
+						//  (a) the walk is currently IN this sheet's
+						//      material (the stack top carries its index):
+						//      the slabs-from-planes pattern, where a
+						//      SIBLING sheet pushed the slab on the way in
+						//      (the walk entered through the bottom sheet
+						//      and leaves through the top).  Leaving the
+						//      slab leaves that entry, so it is popped and
+						//      the far side is the medium beneath it.  In
+						//      air this is 1.0, exactly the old constant.
+						//  (b) the walk is NOT in this material (a single
+						//      open sheet whose normal says "exiting" but
+						//      which nothing entered): nothing is popped,
+						//      and the far side is the medium the walk is
+						//      already in, the stack top -- the index the
+						//      Snell bend above already used
+						//      (ior / currentIOR).  In air, again 1.0.
+						//
+						// Reading the top in case (a) instead of popping
+						// it would make the slab's exit an index-MATCHED
+						// vertex and leave the chain "inside glass" at the
+						// light -- a first revision of this fix did that
+						// and read the two-sheet slabs' lit floor 13 %
+						// under PT-without-SMS.  Residual ambiguity, not a
+						// regression: a case-(b) sheet immersed in a medium
+						// of EXACTLY its own index is classified (a).  The
+						// case-(a) Snell bend above used the pre-pop top
+						// (ratio 1, straight through) -- a pre-existing
+						// seed-direction approximation Newton re-solves.
+						const Scalar topIOR = seedIor.top();
+						const Scalar scale = ( fabs( topIOR ) > fabs( specInfo.ior ) ) ? fabs( topIOR ) : fabs( specInfo.ior );
+						if( seedIor.topObject() && fabs( topIOR - specInfo.ior ) <= Scalar( 1e-9 ) * scale ) {
+							seedIor.SetCurrentObject( seedIor.topObject() );
+							seedIor.pop();
+						}
 						currentIOR = seedIor.top();
 					}
 					// Backfill the just-pushed vertex's etaT with the
