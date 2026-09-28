@@ -82,9 +82,23 @@ tone-mapping of the original PNG protocol amplifying small shifts).
 
 | illumination | PT | VCM | VCM/PT | attribution |
 |---|---|---|---|---|
-| env only | 0.03383 | 0.02889 | 0.854 | VCM now evaluates NEE and connections at MEDIUM vertices (DL-218 closed; merges remain surface-only per docs/VCM.md); BDPT DOES connect at medium vertices since DL-200 (2026-09-18), and matches PT in a scattering global medium (DL-247 closed, 2026-09-27) -- env in-scatter through the water medium is reachable via phase-sampling continuation, NEE, and bidirectional connections.  BDPT measures 0.02891. |
+| env only | 0.03383 | 0.02889 | 0.854 | (2026-08-13 figures; superseded -- see the re-measurement below.) |
 | sun+omni+emissives, no env | 0.01940 | 0.01260 | 0.649 | (a) VCM never samples **directional lights** — `DirectionalLight::radiantExitance()==0` keeps it out of the alias table, and VCM lacks the deterministic zero-exitance NEE loop PT (`LightSampler::EvaluateDirectLighting` Step 1) and BDPT (`EvaluateAllStrategies`) both run; the sun contributes nothing to VCM.  (b) The omni's glow through the medium hits the same medium-vertex gap as env. |
 | full scene | 0.05330 | 0.04151 | 0.779 | components sum linearly (PT 0.0532, VCM 0.0415). |
+
+**Env-only row re-measured 2026-09-27 (debt-dl247b build; 400×300, 256 spp,
+`oidn_denoise FALSE`, linear Rec.709 luma, sun/omni removed and every
+`emissive_scale` zeroed):** PT **0.037878 ± 0.000004** (n = 4, sd),
+VCM **0.037177 ± 0.000001** (n = 4), BDPT **0.036966 ± 0.0000002** (n = 2);
+VCM/PT 0.981, BDPT/PT 0.976.  PT moved +12% from the 0.03383 above: this
+camera sits inside `water_volume`, so its eye rays start with the
+camera-ray volumetric walk, whose surface hand-off used to skip the medium
+in front of the surface (DL-247) -- plus the intervening env-MIS and
+DL-218 fixes, which this re-measurement does not separate.  VCM's old
+0.854 was the DL-218 medium-vertex gap, since closed.  The residual
+~2% BDPT/VCM-below-PT is not attributed here (the DL-247 inside/outside
+box shows the same BDPT ~2.6% deficit, pre-existing).  The sun/omni row
+and the full-scene row were NOT re-measured.
 
 VCM's remaining 3.4× neighbour-diff vs PT at 1024 spp **does** decrease
 with samples (0.0223 → 0.0162) — it is splat/connection variance from
@@ -100,8 +114,11 @@ boundary, not bias.
    MIS bookkeeping — feature-sized work.
 2. **VCM medium-vertex photon merge gap** — VCM now connects and performs
    NEE at MEDIUM vertices (DL-218 closed), but photon merges remain
-   surface-only (documented in docs/VCM.md). Global medium PT discrepancy
-   resolved under DL-247 (2026-09-27).
+   surface-only (documented in docs/VCM.md). The "BDPT/VCM ~2x PT in a
+   global medium" gap (DL-247) was PT's camera-walk surface hand-off
+   skipping the medium segment -- fixed for pel/NM (`db71fdfd`) and
+   `hwss TRUE` (debt-dl247b) -- plus mismatched `max_volume_bounce`
+   truncation, now one rule for all integrators (see the ledger row).
 3. **`dielectric_material` finite `scattering` drops perturbed rays**
    that cross the tangent plane without renormalizing
    ([DielectricSPF.cpp](../src/Library/Materials/DielectricSPF.cpp)

@@ -312,17 +312,6 @@ namespace RISE
 				? selected.ior_stack : &current;
 		}
 
-		inline const IORStack* GuidedContinuationIORStack(
-			const ScatteredRay& selected,
-			const IORStack& current,
-			const RayIntersection& ri,
-			const Vector3& direction
-			)
-		{
-			static thread_local IORStack fallbackGenerated( 1.0 );
-			return GuidedContinuationIORStack( selected, current, ri, direction, fallbackGenerated );
-		}
-
 #ifdef RISE_ENABLE_OPENPGL
 		//////////////////////////////////////////////////////////////////////
 		// Path Guiding MIS Helpers

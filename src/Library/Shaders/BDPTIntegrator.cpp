@@ -1806,11 +1806,27 @@ namespace {
 				if( pMed )
 				{
 					const Scalar maxDist = ri.geometric.bHit ? ri.geometric.range : RISE_INFINITY;
+					// DL-247 RULING -- `max_volume_bounce` N truncates the
+					// medium's Neumann series at N scatter vertices PER FULL
+					// PATH for every integrator, every medium segment
+					// carrying its true transmittance.  Past the cap this
+					// subpath may not scatter, so the segment is not sampled
+					// and carries its deterministic Beer-Lambert Tr (the
+					// `bAtCap` branch below).  It used to be sampled anyway,
+					// and a scattered-at-cap event fell into the no-scatter
+					// survival branch -- weight Tr/pSurvival ~ 1, i.e. the
+					// medium turned to VACUUM past the cap.  The per-path
+					// half of the ruling is the `volBounces` gate in
+					// EvaluateAllStrategiesImpl (and VCM's twins).
+					const bool bAtCap = eyeVolumeBounces >= stabilityConfig.maxVolumeBounce;
 					bool scattered = false;
-					const Scalar t_m = SampleMediumDistance<Tag>(
-						*pMed, currentRay, maxDist, sampler, scattered, tag );
+					Scalar t_m = 0;
+					if( !bAtCap ) {
+						t_m = SampleMediumDistance<Tag>(
+							*pMed, currentRay, maxDist, sampler, scattered, tag );
+					}
 
-					if( scattered && eyeVolumeBounces < stabilityConfig.maxVolumeBounce )
+					if( scattered )
 					{
 						// Medium scatter event before surface hit.
 						//
@@ -2042,6 +2058,10 @@ namespace {
 						eyeVolumeBounces++;
 						continue;
 					}
+					else if( bAtCap )
+					{
+						beta = beta * EvalMediumTransmittance<Tag>( *pMed, currentRay, maxDist, tag );
+					}
 					else if( ri.geometric.bHit )
 					{
 						// No-scatter SURVIVAL: the eye subpath reached the
@@ -2112,6 +2132,14 @@ namespace {
 					  caster.IsRadianceMapVisibleAsBackground() ) ) {
 					BDPTVertex vEnv;
 					vEnv.type = BDPTVertex::LIGHT;
+					// DL-247: the escape adds no scatter vertex, so the
+					// path's count is the one carried to here.  An unset
+					// field (0) would let the s == 0 strategy through the
+					// per-path `volBounces` gate while the s == 1 env-NEE
+					// strategy for the SAME path, ending at the previous
+					// vertex, is excluded -- a partition break once the
+					// cap binds.
+					vEnv.volumeBounces = eyeVolumeBounces;
 					const Point3 sceneCentre =
 						pLightSampler->GetCachedSceneCenter();
 					// Ray-sphere intersection.  Let e = origin - center;
@@ -2436,6 +2464,10 @@ namespace {
 
 							BDPTVertex entryV;
 							entryV.type = BDPTVertex::SURFACE;
+							// DL-247: the SSS exit adds no medium-scatter vertex; carry the
+							// subpath's count, or the per-path `volBounces` gate under-counts
+							// every strategy ending here.
+							entryV.volumeBounces = eyeVolumeBounces;
 							entryV.position = bssrdf.entryPoint;
 							entryV.normal = bssrdf.entryNormal;
 							entryV.geomNormal = bssrdf.entryGeomNormal;
@@ -2588,6 +2620,10 @@ namespace {
 
 							BDPTVertex entryV;
 							entryV.type = BDPTVertex::SURFACE;
+							// DL-247: the SSS exit adds no medium-scatter vertex; carry the
+							// subpath's count, or the per-path `volBounces` gate under-counts
+							// every strategy ending here.
+							entryV.volumeBounces = eyeVolumeBounces;
 							entryV.position = bssrdf.entryPoint;
 							entryV.normal = bssrdf.entryNormal;
 							entryV.geomNormal = bssrdf.entryGeomNormal;
@@ -6219,11 +6255,17 @@ unsigned int GenerateLightSubpathImpl(
 			if( pMed )
 			{
 				const Scalar maxDist = ri.geometric.bHit ? ri.geometric.range : RISE_INFINITY;
+				// DL-247 ruling -- see the eye subpath's twin: past the cap
+				// the segment is not sampled and carries deterministic Tr.
+				const bool bAtCap = volumeBounces >= stabilityConfig.maxVolumeBounce;
 				bool scattered = false;
-				const Scalar t_m = SampleMediumDistance<Tag>(
-					*pMed, currentRay, maxDist, sampler, scattered, tag );
+				Scalar t_m = 0;
+				if( !bAtCap ) {
+					t_m = SampleMediumDistance<Tag>(
+						*pMed, currentRay, maxDist, sampler, scattered, tag );
+				}
 
-				if( scattered && volumeBounces < stabilityConfig.maxVolumeBounce )
+				if( scattered )
 				{
 					const Point3 scatterPt = currentRay.PointAtLength( t_m );
 					const Vector3 wo = currentRay.Dir();
@@ -6331,6 +6373,10 @@ unsigned int GenerateLightSubpathImpl(
 
 					volumeBounces++;
 					continue;
+				}
+				else if( bAtCap )
+				{
+					beta = beta * EvalMediumTransmittance<Tag>( *pMed, currentRay, maxDist, tag );
 				}
 				else if( ri.geometric.bHit )
 				{
@@ -6591,6 +6637,10 @@ unsigned int GenerateLightSubpathImpl(
 
 						BDPTVertex entryV;
 						entryV.type = BDPTVertex::SURFACE;
+						// DL-247: the SSS exit adds no medium-scatter vertex; carry the
+						// subpath's count, or the per-path `volBounces` gate under-counts
+						// every strategy ending here.
+						entryV.volumeBounces = volumeBounces;
 						entryV.position = bssrdf.entryPoint;
 						entryV.normal = bssrdf.entryNormal;
 						entryV.geomNormal = bssrdf.entryGeomNormal;
@@ -6745,6 +6795,10 @@ unsigned int GenerateLightSubpathImpl(
 
 						BDPTVertex entryV;
 						entryV.type = BDPTVertex::SURFACE;
+						// DL-247: the SSS exit adds no medium-scatter vertex; carry the
+						// subpath's count, or the per-path `volBounces` gate under-counts
+						// every strategy ending here.
+						entryV.volumeBounces = volumeBounces;
 						entryV.position = bssrdf.entryPoint;
 						entryV.normal = bssrdf.entryNormal;
 						entryV.geomNormal = bssrdf.entryGeomNormal;

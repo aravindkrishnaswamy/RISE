@@ -68,13 +68,37 @@
 //  the marginal one (0.905-0.915 pre-fix against a 0.95 floor); the
 //  SPECTRAL row is the decisive red at 0.78.
 //
-//  TWO ROWS HERE ARE NOT DL-200 ROWS.  VCM reads 6% of PT on the enclosed
-//  scene and BDPT reads 1.73x of PT in a plain GLOBAL medium; both are
-//  pre-existing, both are unmoved by this fix (the global-medium one
-//  provably so -- `pMedObj == 0` took the old derivation's own early-out,
-//  so the fix is a literal no-op there), and both are filed as DL-218.
-//  They are pinned at their measured values so that closing DL-218 has to
-//  move them deliberately rather than silently.
+//  TWO ROW FAMILIES HERE WERE NOT DL-200 ROWS.  VCM read 6% of PT on the
+//  enclosed scene (DL-218, closed 2026-09-22: VCM now takes NEE and
+//  interior connections at medium vertices) and BDPT/VCM read ~1.8-2.1x
+//  of PT in a plain GLOBAL medium (DL-247).  DL-247's first closure
+//  (`db71fdfd`) was reopened on review: its global-medium scene was so
+//  dense (albedo 0.9934, ~150 expected scatters) that the `max_volume_bounce`
+//  64 truncation it had just made symmetric dominated the answer -- every
+//  estimator read ~15-18% of the untruncated one, so the "parity" compared
+//  two truncations -- and its PT reference was firefly-dominated with a
+//  +/-10% band at ~1 sd (24/0, 23/1, 23/1 over three runs).
+//
+//  THE GLOBAL ROWS NOW (debt-dl247b).  The same camera in a THIN global
+//  medium (sigma_a 0.1, sigma_s 0.4: albedo 0.8, mean scatter count
+//  a/(1-a) = 4, P(> 64 scatters) = 0.8^64 ~ 6e-7), so PT at
+//  `max_volume_bounce` 64 and at 1000 agree (checked below) and the rows
+//  measure TRANSPORT, not truncation.  The emitter is a larger, dimmer
+//  sphere (r 0.5, scale 2.3: the same power as the enclosed rows' r 0.12,
+//  scale 40): the small hot one made every estimator heavy-tailed -- VCM
+//  spectral's per-render sd was 6.7% at 64 spp and a 16-render mean read
+//  0.95 of PT while 16 renders at 256 spp read 1.003, i.e. the "bias" was
+//  the skew of a heavy-tailed mean.  Measured per-render sd at 64 spp with
+//  the new emitter: PT 1.2%, PT spectral 1.3%, BDPT 0.24%, VCM 0.48%,
+//  BDPT spectral 0.94%, VCM spectral 1.6%.  Every render is seeded
+//  (`std::srand`); references are means of 32 renders (sd of the mean
+//  ~0.2%), candidates of 4 (pel) or 8 (spectral, whose per-render tails
+//  are heavier: VCM spectral read 0.976-0.983 at n = 4).  The +/-4% band is >= 6x the
+//  references' sd and >= 4 sd of the noisiest ratio (VCM spectral, ~0.85%).
+//  The BDPT `max_light_depth 1` row restores the diagnostic the first
+//  closure deleted: it and full BDPT are both unbiased, so they agree with
+//  each other and with PT.  The enclosed rows' PT references are likewise
+//  rendered once, 16 renders at 256 spp (sd of the mean ~0.3%).
 //
 //  WHAT THE PREDICTED MECHANISM TURNED OUT TO BE WORTH: ZERO.  DL-200
 //  predicted a partition-of-unity violation from the ASYMMETRY.  The
@@ -176,7 +200,7 @@ public:
 	}
 };
 
-static double RenderMean( const std::string& sceneText )
+static double RenderMean( const std::string& sceneText, unsigned int seed )
 {
 	char path[512];
 	std::snprintf( path, sizeof(path), "/tmp/medium_enclosure_conn_%d.RISEscene",
@@ -196,8 +220,10 @@ static double RenderMean( const std::string& sceneText )
 	GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "test capture output" );
 	pJob->GetRasterizer()->AddRasterizerOutput( pCap );
 
-	static unsigned renderIndex = 0;
-	std::srand( 3100u + renderIndex++ );
+	// Renders seed from libc rand() (nothing in the library calls srand),
+	// so every render re-seeds explicitly.  Thread scheduling still makes a
+	// render non-deterministic, which is why every row is a mean over n.
+	std::srand( seed );
 	if( !pJob->Rasterize() ) { safe_release( pCap ); safe_release( pJob ); return -1.0; }
 
 	double sum = 0;
@@ -216,42 +242,49 @@ static double RenderMean( const std::string& sceneText )
 	return mean;
 }
 
-static const int kRepeats = 4;
+static unsigned int g_seed = 3100u;
 
-static double RenderMeanRepeated( const std::string& sceneText, const char* label )
+// Mean of n seeded renders; prints the mean and the sd OF THE MEAN.
+static double RenderMeanRepeated( const std::string& sceneText, const char* label, int n )
 {
-	double sum = 0, lo = 0, hi = 0;
-	for( int i = 0; i < kRepeats; i++ ) {
-		const double m = RenderMean( sceneText );
+	std::vector<double> v;
+	for( int i = 0; i < n; i++ ) {
+		const double m = RenderMean( sceneText, g_seed++ );
 		if( m < 0 ) return -1.0;
-		if( i == 0 || m < lo ) lo = m;
-		if( i == 0 || m > hi ) hi = m;
-		sum += m;
+		v.push_back( m );
 	}
-	const double mean = sum / double( kRepeats );
-	std::cout << "    " << label << ": mean=" << mean << " over " << kRepeats
-	          << " renders (range " << lo << " .. " << hi << ")" << std::endl;
+	double mean = 0;
+	for( double x : v ) mean += x;
+	mean /= double( n );
+	double var = 0;
+	for( double x : v ) var += ( x - mean ) * ( x - mean );
+	const double sdMean = n > 1 ? std::sqrt( var / double( n - 1 ) / double( n ) ) : 0;
+	std::printf( "    %s: mean=%.6g over %d renders, sd of mean %.3g (%.2f%%)\n",
+		label, mean, n, sdMean, mean > 0 ? 100.0 * sdMean / mean : 0.0 );
 	return mean;
 }
 
 //////////////////////////////////////////////////////////////////////
-// Scene.  `enclosed` false is the CONTROL: the same medium, the same
-// emitter and the same camera, but the medium is the scene's GLOBAL one
-// and there is no shell at all.  `pMedObj` is then null at every medium
-// vertex, which took the pre-fix derivation's own "global medium: always
-// connectable" early-out, so those vertices read connectible in the
-// PRE-fix build too and the row is green in BOTH builds.
+// Scene.  `enclosed` puts the medium inside a delta dielectric shell
+// around the emitter (DL-200 / DL-218); otherwise the medium is the
+// scene's GLOBAL one and there is no shell (DL-247).
 //////////////////////////////////////////////////////////////////////
-static std::string SceneBody( bool enclosed )
+static std::string SceneBody( bool enclosed, double sigmaA, double sigmaS,
+	double emitterRadius, double emitterScale )
 {
 	std::string s = "film\n{\n\twidth 48\n\theight 48\n}\n\n";
 
 	s += "pinhole_camera\n{\n"
 	     "\tlocation 0 0 5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n";
 
-	s +=
+	char med[256];
+	std::snprintf( med, sizeof(med),
 		"homogeneous_medium\n{\n\tname med\n"
-		"\tabsorption 0.02 0.02 0.02\n\tscattering 3.0 3.0 3.0\n\tphase hg 0.0\n}\n\n"
+		"\tabsorption %g %g %g\n\tscattering %g %g %g\n\tphase hg 0.0\n}\n\n",
+		sigmaA, sigmaA, sigmaA, sigmaS, sigmaS, sigmaS );
+	s += med;
+
+	s +=
 		"scalar_painter\n{\n\tname tau1\n\tvalue 1.0\n}\n\n"
 		"scalar_painter\n{\n\tname ior15\n\tvalue 1.5\n}\n\n"
 		// `scattering 1000000` is the DELTA pass-through spelling; a
@@ -269,11 +302,14 @@ static std::string SceneBody( bool enclosed )
 		s += "global_medium\n{\n\tmedium med\n}\n\n";
 	}
 
-	s +=
+	char emit[512];
+	std::snprintf( emit, sizeof(emit),
 		"uniformcolor_painter\n{\n\tname pemit\n\tcolor 1.0 1.0 1.0\n}\n\n"
 		"lambertian_luminaire_material\n{\n\tname memit\n"
-		"\texitance pemit\n\tscale 40.0\n\tmaterial none\n}\n\n"
-		"sphere_geometry\n{\n\tname emitgeo\n\tradius 0.12\n}\n\n";
+		"\texitance pemit\n\tscale %g\n\tmaterial none\n}\n\n"
+		"sphere_geometry\n{\n\tname emitgeo\n\tradius %g\n}\n\n",
+		emitterScale, emitterRadius );
+	s += emit;
 
 	s += "standard_object\n{\n\tname emit\n\tgeometry emitgeo\n\tmaterial memit\n}\n\n";
 
@@ -287,9 +323,6 @@ static std::string SceneBody( bool enclosed )
 static const char* kShader =
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
 
-static const char* kPT =
-	"pathtracing_pel_rasterizer\n{\n\tsamples 32\n\trr_min_depth 8\n"
-	"\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
 static const char* kBDPT =
 	"bdpt_pel_rasterizer\n{\n\tmax_eye_depth 6\n\tmax_light_depth 6\n\tsamples 32\n"
 	"\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
@@ -297,15 +330,51 @@ static const char* kVCM =
 	"vcm_pel_rasterizer\n{\n\tmax_eye_depth 6\n\tmax_light_depth 6\n\tsamples 32\n"
 	"\tvc_enabled true\n\tvm_enabled false\n"
 	"\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
-static const char* kPTSpectral =
-	"pathtracing_spectral_rasterizer\n{\n\tsamples 32\n\trr_min_depth 8\n\thwss FALSE\n"
-	"\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
 static const char* kBDPTSpectral =
 	"bdpt_spectral_rasterizer\n{\n\tmax_eye_depth 6\n\tmax_light_depth 6\n\tsamples 32\n"
 	"\thwss FALSE\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
-
 static const char* kVCMSpectral =
 	"vcm_spectral_rasterizer\n{\n\tmax_eye_depth 6\n\tmax_light_depth 6\n\tsamples 32\n"
+	"\tvc_enabled true\n\tvm_enabled false\n\thwss FALSE\n"
+	"\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
+
+// Enclosed-scene references: 256 spp (the 32-spp PT reference the rows
+// used to re-render per row was heavy-tailed -- a 4-render mean moved by
+// 2-3%, enough to take the spectral row outside its band on its own).
+static const char* kPT256Enc =
+	"pathtracing_pel_rasterizer\n{\n\tsamples 256\n\trr_min_depth 8\n"
+	"\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
+static const char* kPTSpectral256Enc =
+	"pathtracing_spectral_rasterizer\n{\n\tsamples 256\n\trr_min_depth 8\n\thwss FALSE\n"
+	"\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
+
+// Global-medium (DL-247) rasterizers, all 64 spp: references are means of
+// 32 renders, candidates of 4.  `max_volume_bounce 1000` is the
+// truncation control.
+static const char* kPT64 =
+	"pathtracing_pel_rasterizer\n{\n\tsamples 64\n\trr_min_depth 8\n"
+	"\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
+static const char* kPTSpectral64 =
+	"pathtracing_spectral_rasterizer\n{\n\tsamples 64\n\trr_min_depth 8\n\thwss FALSE\n"
+	"\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
+static const char* kPT64Mvb1000 =
+	"pathtracing_pel_rasterizer\n{\n\tsamples 64\n\trr_min_depth 8\n"
+	"\tmax_volume_bounce 1000\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
+static const char* kBDPT64 =
+	"bdpt_pel_rasterizer\n{\n\tmax_eye_depth 6\n\tmax_light_depth 6\n\tsamples 64\n"
+	"\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
+static const char* kBDPTL1_64 =
+	"bdpt_pel_rasterizer\n{\n\tmax_eye_depth 6\n\tmax_light_depth 1\n\tsamples 64\n"
+	"\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
+static const char* kVCM64 =
+	"vcm_pel_rasterizer\n{\n\tmax_eye_depth 6\n\tmax_light_depth 6\n\tsamples 64\n"
+	"\tvc_enabled true\n\tvm_enabled false\n"
+	"\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
+static const char* kBDPTSpectral64 =
+	"bdpt_spectral_rasterizer\n{\n\tmax_eye_depth 6\n\tmax_light_depth 6\n\tsamples 64\n"
+	"\thwss FALSE\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
+static const char* kVCMSpectral64 =
+	"vcm_spectral_rasterizer\n{\n\tmax_eye_depth 6\n\tmax_light_depth 6\n\tsamples 64\n"
 	"\tvc_enabled true\n\tvm_enabled false\n\thwss FALSE\n"
 	"\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
 
@@ -314,86 +383,93 @@ static std::string Scene( const char* rast, const std::string& body )
 	return std::string("RISE ASCII SCENE 7\n") + kShader + rast + body;
 }
 
-static void RunRatio( const std::string& label, const char* refRast,
-	const char* candRast, const std::string& body, double lo, double hi )
+static void CheckRatio( const std::string& label, double ref, double cand, double lo, double hi )
 {
-	std::cout << "Testing " << label << std::endl;
-	const double ref  = RenderMeanRepeated( Scene( refRast, body ),  "PT reference" );
-	const double cand = RenderMeanRepeated( Scene( candRast, body ), "candidate   " );
-
-	Check( ref > 1e-9, label + ": PT reference render is non-black" );
+	Check( ref > 1e-9, label + ": reference render is non-black" );
 	Check( cand > -0.5, label + ": candidate render produced output" );
 	if( ref <= 1e-9 || cand < 0 ) return;
 
 	const double r = cand / ref;
-	std::cout << "    candidate / PT = " << r << std::endl;
+	std::cout << "    candidate / reference = " << r << std::endl;
 
 	char buf[320];
-	std::snprintf( buf, sizeof(buf), "%s: candidate/PT %.4f in [%.2f, %.2f]",
+	std::snprintf( buf, sizeof(buf), "%s: candidate/reference %.4f in [%.2f, %.2f]",
 		label.c_str(), r, lo, hi );
 	Check( r >= lo && r <= hi, buf );
 }
 
 int main()
 {
-	std::cout << "=== MediumEnclosureConnectibilityTest (DL-200 / DL-218) ===" << std::endl;
+	std::cout << "=== MediumEnclosureConnectibilityTest (DL-200 / DL-218 / DL-247) ===" << std::endl;
 
-	const std::string enclosed = SceneBody( true );
-	const std::string global   = SceneBody( false );
+	// The enclosed rows keep the original dense medium: the DL-200 /
+	// DL-218 configuration is a light INSIDE a strongly scattering shell.
+	// Each reference is rendered ONCE (16 renders at 256 spp) and shared.
+	const std::string enclosed = SceneBody( true, 0.02, 3.0, 0.12, 40.0 );
+
+	std::cout << "Enclosed shell, references:" << std::endl;
+	const double encRef   = RenderMeanRepeated( Scene( kPT256Enc, enclosed ), "PT pel reference     ", 16 );
+	const double encSpRef = RenderMeanRepeated( Scene( kPTSpectral256Enc, enclosed ), "PT spectral reference", 16 );
 
 	// MONEY ROWS (DL-200).  Camera OUTSIDE: the eye walk must cross the delta
 	// shell to reach the medium, so pre-fix every eye-rooted medium
 	// vertex read !isConnectible and every NEE / interior connection
 	// from it was skipped.
-	RunRatio( "BDPT vs PT, emitter in a fog-filled dielectric shell, camera OUTSIDE",
-		kPT, kBDPT, enclosed, 0.95, 1.06 );
+	std::cout << "Testing BDPT vs PT, emitter in a fog-filled dielectric shell, camera OUTSIDE" << std::endl;
+	CheckRatio( "BDPT vs PT, emitter in a fog-filled dielectric shell, camera OUTSIDE", encRef,
+		RenderMeanRepeated( Scene( kBDPT, enclosed ), "BDPT                 ", 8 ), 0.95, 1.06 );
 
-	RunRatio( "BDPT spectral vs PT spectral, same scene, camera OUTSIDE",
-		kPTSpectral, kBDPTSpectral, enclosed, 0.95, 1.06 );
+	std::cout << "Testing BDPT spectral vs PT spectral, same scene, camera OUTSIDE" << std::endl;
+	CheckRatio( "BDPT spectral vs PT spectral, same scene, camera OUTSIDE", encSpRef,
+		RenderMeanRepeated( Scene( kBDPTSpectral, enclosed ), "BDPT spectral        ", 8 ), 0.95, 1.06 );
 
 	// MONEY ROWS (DL-218 (a)). VCM implementing NEE and interior connections
 	// at medium vertices should match PT and BDPT at ~1.0.
-	RunRatio( "VCM vs PT, same scene, camera OUTSIDE",
-		kPT, kVCM, enclosed, 0.90, 1.10 );
+	std::cout << "Testing VCM vs PT, same scene, camera OUTSIDE" << std::endl;
+	CheckRatio( "VCM vs PT, same scene, camera OUTSIDE", encRef,
+		RenderMeanRepeated( Scene( kVCM, enclosed ), "VCM                  ", 8 ), 0.90, 1.10 );
 
-	RunRatio( "VCM spectral vs PT spectral, same scene, camera OUTSIDE",
-		kPTSpectral, kVCMSpectral, enclosed, 0.90, 1.10 );
+	std::cout << "Testing VCM spectral vs PT spectral, same scene, camera OUTSIDE" << std::endl;
+	CheckRatio( "VCM spectral vs PT spectral, same scene, camera OUTSIDE", encSpRef,
+		RenderMeanRepeated( Scene( kVCMSpectral, enclosed ), "VCM spectral         ", 8 ), 0.90, 1.10 );
 
-	static const char* kPT64 =
-		"pathtracing_pel_rasterizer\n{\n\tsamples 64\n\trr_min_depth 8\n"
-		"\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
-	static const char* kBDPT64 =
-		"bdpt_pel_rasterizer\n{\n\tmax_eye_depth 6\n\tmax_light_depth 6\n\tsamples 64\n"
-		"\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
-	static const char* kVCM64 =
-		"vcm_pel_rasterizer\n{\n\tmax_eye_depth 6\n\tmax_light_depth 6\n\tsamples 64\n"
-		"\tvc_enabled true\n\tvm_enabled false\n"
-		"\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
-	static const char* kPTSpectral64 =
-		"pathtracing_spectral_rasterizer\n{\n\tsamples 64\n\trr_min_depth 8\n\thwss FALSE\n"
-		"\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
-	static const char* kBDPTSpectral64 =
-		"bdpt_spectral_rasterizer\n{\n\tmax_eye_depth 6\n\tmax_light_depth 6\n\tsamples 64\n"
-		"\thwss FALSE\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
-	static const char* kVCMSpectral64 =
-		"vcm_spectral_rasterizer\n{\n\tmax_eye_depth 6\n\tmax_light_depth 6\n\tsamples 64\n"
-		"\tvc_enabled true\n\tvm_enabled false\n\thwss FALSE\n"
-		"\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
+	// MONEY ROWS (DL-247).  A THIN global medium (albedo 0.8) with no
+	// shell -- see the header for why the medium is thin and how the band
+	// was measured.  Each reference is rendered ONCE and shared by its rows.
+	const std::string global = SceneBody( false, 0.1, 0.4, 0.5, 2.3 );
+	const double kLo = 0.96, kHi = 1.04;
 
-	// MONEY ROWS (DL-247).  The SAME medium and emitter with no shell,
-	// bound as the scene's GLOBAL medium:
-	// BDPT and VCM now match PT within [0.90, 1.10] (previously ~1.8-2.1x).
-	RunRatio( "BDPT vs PT, same medium as a GLOBAL medium (no shell)",
-		kPT64, kBDPT64, global, 0.90, 1.10 );
+	std::cout << "DL-247 global medium, references:" << std::endl;
+	const double ptRef   = RenderMeanRepeated( Scene( kPT64, global ), "PT pel reference     ", 32 );
+	const double ptSpRef = RenderMeanRepeated( Scene( kPTSpectral64, global ), "PT spectral reference", 32 );
 
-	RunRatio( "BDPT spectral vs PT spectral, same medium as a GLOBAL medium (no shell)",
-		kPTSpectral64, kBDPTSpectral64, global, 0.90, 1.10 );
+	// Truncation control: the thin medium's PT answer must not depend on
+	// the cap, or the rows below would again compare truncations.
+	std::cout << "Testing PT max_volume_bounce 1000 vs 64 (truncation control)" << std::endl;
+	CheckRatio( "PT mvb 1000 vs mvb 64, thin global medium", ptRef,
+		RenderMeanRepeated( Scene( kPT64Mvb1000, global ), "PT mvb 1000          ", 32 ), kLo, kHi );
 
-	RunRatio( "VCM vs PT, same medium as a GLOBAL medium (no shell)",
-		kPT64, kVCM64, global, 0.90, 1.10 );
+	std::cout << "Testing BDPT vs PT, GLOBAL medium" << std::endl;
+	CheckRatio( "BDPT vs PT, GLOBAL medium", ptRef,
+		RenderMeanRepeated( Scene( kBDPT64, global ), "BDPT                 ", 4 ), kLo, kHi );
 
-	RunRatio( "VCM spectral vs PT spectral, same medium as a GLOBAL medium (no shell)",
-		kPTSpectral64, kVCMSpectral64, global, 0.90, 1.10 );
+	// DIAGNOSTIC, restored (review P2-4): light subpaths reduced to the
+	// emitter vertex.  Still an unbiased estimator of the same integral.
+	std::cout << "Testing BDPT max_light_depth 1 vs PT, GLOBAL medium" << std::endl;
+	CheckRatio( "BDPT max_light_depth 1 vs PT, GLOBAL medium", ptRef,
+		RenderMeanRepeated( Scene( kBDPTL1_64, global ), "BDPT L1              ", 4 ), kLo, kHi );
+
+	std::cout << "Testing VCM vs PT, GLOBAL medium" << std::endl;
+	CheckRatio( "VCM vs PT, GLOBAL medium", ptRef,
+		RenderMeanRepeated( Scene( kVCM64, global ), "VCM                  ", 4 ), kLo, kHi );
+
+	std::cout << "Testing BDPT spectral vs PT spectral, GLOBAL medium" << std::endl;
+	CheckRatio( "BDPT spectral vs PT spectral, GLOBAL medium", ptSpRef,
+		RenderMeanRepeated( Scene( kBDPTSpectral64, global ), "BDPT spectral        ", 8 ), kLo, kHi );
+
+	std::cout << "Testing VCM spectral vs PT spectral, GLOBAL medium" << std::endl;
+	CheckRatio( "VCM spectral vs PT spectral, GLOBAL medium", ptSpRef,
+		RenderMeanRepeated( Scene( kVCMSpectral64, global ), "VCM spectral         ", 8 ), kLo, kHi );
 
 	std::cout << std::endl;
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
