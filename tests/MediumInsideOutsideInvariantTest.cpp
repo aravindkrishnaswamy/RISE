@@ -95,8 +95,11 @@
 //  the two means to agree:
 //                          Sobol/independent - 1     se      z
 //    pre-DL-283 (6b91fd19)      -0.599 %           0.119 %  -5.04   RED
-//    this slice                 -0.048 %           0.118 %  -0.41
-//  Band +/- 0.35% = 3 se.  Independent confirmation (salted, separate
+//    this slice, run 1          -0.048 %           0.118 %  -0.41
+//    this slice, run 2          +0.195 %           0.131 %  +1.49
+//  Band +/- 0.35% = 3 se (the pre-fix reading sits 2 se outside it; the
+//  fixed build's mean offset over four salted measurements, incl. the
+//  harness rows below, is about +0.06%).  Independent confirmation (salted, separate
 //  harness, P = pre-fix, F = fixed, I = independent, same fixture):
 //  pel inside n = 24 P-I -0.806% (z -3.7), F-I +0.005%, F-P paired
 //  +0.818% (z +4.4); hwss TRUE inside n = 40 P-I -0.815% (z -5.1),
