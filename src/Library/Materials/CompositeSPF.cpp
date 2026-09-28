@@ -79,19 +79,29 @@ static Scalar ClampCompositeThickness( const Scalar thickness )
 }
 
 // A walk that reaches CompositeSPF::kMaxWalkEvents without Russian roulette
-// ending it is a LOSSLESS trapping layer pair (e.g. a mirror facing down
-// over an albedo-1 bottom): the energy it still carries can never leave the
-// stack, so truncating it is exact in the limit -- but a user who built such
-// a pair by accident deserves to hear about it once.
+// ending it has either met a GENUINELY lossless trapping layer pair (e.g. a
+// mirror facing down over an albedo-1 bottom: the energy it still carries
+// can never leave the stack, so truncating it is exact in the limit), or --
+// the case the DL-24 review found -- a stack whose IOR state is inconsistent:
+// a NESTED composite walked from below with a stack that already holds the
+// shared object key (a composite{dielectric/dielectric} as the TOP of another
+// composite, or on a closed object seen from inside) leaves its two layers
+// each reading the other side, and a ray ping-pongs between them under a
+// total internal reflection that is not physical.  That energy is LOST, not
+// merely trapped.  Either way the user deserves to hear about it once.
 static void NoteCompositeWalkCapReached()
 {
 	static std::atomic<bool> warnedCap{ false };
 	bool expected = false;
 	if( warnedCap.compare_exchange_strong( expected, true ) ) {
 		GlobalLog()->PrintEx( eLog_Warning,
-			"CompositeSPF:: a layer walk reached the %u-event safety cap still carrying energy -- the "
-			"two layers trap light losslessly (e.g. a downward-facing mirror top over an albedo-1 "
-			"bottom), so that light can never leave the layer stack.  Reported once per process.",
+			"CompositeSPF:: a layer walk reached the %u-event safety cap still carrying energy, which "
+			"is then dropped.  Either the two layers trap light losslessly (e.g. a downward-facing "
+			"mirror top over an albedo-1 bottom), or -- more likely -- the stack's IOR state is "
+			"inconsistent: a nested composite (a composite_material used as another composite's "
+			"top, or a transmitting composite seen from inside a closed object) whose dielectric "
+			"layers read each other's side and total-internally-reflect forever (DL-24 residual; "
+			"energy is lost).  Reported once per process.",
 			CompositeSPF::kMaxWalkEvents );
 	}
 }
@@ -450,6 +460,7 @@ namespace RISE
 			static const uint64_t kSaltProbeB   = 0x5A17C0DE00000002ull;
 			static const uint64_t kSaltProbeC   = 0x5A17C0DE00000003ull;
 			static const uint64_t kSaltEvaluate = 0x5A17C0DE00000004ull;
+			static const uint64_t kSaltEvaluateExit = 0x5A17C0DE00000005ull;
 
 			//! PCG32 (O'Neill 2014).  Local, stack-allocated, never shared
 			//! across threads.
@@ -1173,6 +1184,215 @@ namespace RISE
 			//  transmission warp, which it itself tags delta, is not
 			//  reproduced on the exit crossing (see the DL-24 doc).
 			// -----------------------------------------------------------
+			// -----------------------------------------------------------
+			//  THE EVALUATOR'S WALK, built once per shading point.
+			//
+			//  The walk itself -- the entry transmission, every bottom
+			//  and top visit, the throughputs -- does not depend on the
+			//  exit direction: only the two CONNECTION terms do (term (a)
+			//  through the top's delta transmission at the inverse-Snell
+			//  direction of wOut, term (b) the top's BSDF at wOut).  So the
+			//  walk is seeded from (wi, position) alone and recorded, and
+			//  every exit query at the same shading point -- the emitted
+			//  ray's own value, every NEE sample, every BDPT connection --
+			//  re-evaluates only the connections against it (DL-24 review
+			//  P2-3; +40 % render cost before).  Term (a)'s top transmission
+			//  at ux is drawn from its own stream seeded by (wi, wOut,
+			//  position), so `value` stays a deterministic function of its
+			//  arguments.  Sharing one walk across a vertex's exits
+			//  CORRELATES those estimates; each is still unbiased.
+			// -----------------------------------------------------------
+			template<class P>
+			struct WalkPath
+			{
+				typedef typename P::T T;
+				bool                   entered;
+				IORStack               gap0;			//!< gap stack after the entry transmission (term (a)'s eta and top scatter)
+				std::vector<T>         betaBot;		//!< throughput ARRIVING at each bottom visit
+				std::vector<Vector3>   wBot;
+				std::vector<Scalar>    LBot;
+				std::vector<T>         betaTop;		//!< throughput ARRIVING at each top-underside visit
+				std::vector<Vector3>   wTop;
+				std::vector<Scalar>    LTop;
+				std::vector<IORStack>  gapTop;		//!< gap stack the top sees at that visit
+				WalkPath() : entered( false ), gap0( Scalar( 1 ) ) {}
+				void Clear()
+				{
+					entered = false;
+					betaBot.clear(); wBot.clear(); LBot.clear();
+					betaTop.clear(); wTop.clear(); LTop.clear(); gapTop.clear();
+				}
+			};
+
+			template<class P>
+			static void BuildWalk(
+				const CompositeSPF& s,
+				const RayIntersectionGeometric& ri,
+				const IORStack& outside,
+				const Scalar nm,
+				WalkPath<P>& path
+				)
+			{
+				typedef typename P::T T;
+				path.Clear();
+				const Vector3 n = ri.onb.w();
+				auto isUpBottom = [&n]( const ScatteredRay& r ) { return Vector3Ops::Dot( r.ray.Dir(), n ) > 0; };
+				auto isDownTop  = [&n]( const ScatteredRay& r ) { return Vector3Ops::Dot( r.ray.Dir(), n ) < 0; };
+
+				HashedSampler hs( HashPoint( HashVector( kSaltEvaluate, ri.ray.Dir() ), ri.ptIntersection ) );
+
+				// Entry transmission.
+				ScatteredRayContainer c0;
+				P::Scatter( s.top, ri, hs, nm, c0, outside );
+				Scalar q = 0;
+				int k = SelectSubset<P>( c0, isDownTop, hs.Get1D(), q );
+				if( k < 0 ) {
+					return;
+				}
+				T beta = P::Scaled( P::Kray( c0[k] ), Scalar( 1 ) / q );
+				Vector3 w = Vector3Ops::Normalize( c0[k].ray.Dir() );
+				IORStack gap( c0[k].ior_stack ? *c0[k].ior_stack : outside );
+				if( !Roulette<P>( s, beta, c0[k].type, 0, hs ) ) {
+					return;
+				}
+				path.entered = true;
+				path.gap0 = gap;
+
+				// ONE record, re-aimed at every event (SetLayerRay).
+				RayIntersectionGeometric rec( ri );
+
+				unsigned int steps = 1;
+				for( unsigned int ev = 0; ev < CompositeSPF::kMaxWalkEvents; ev += 2 )
+				{
+					// Down across the gap to the bottom.
+					const Scalar Ld = CompositeSPF::GapPathLength( w, n, s.thickness );
+					beta = P::Mul( beta, P::GapAtt( s.extinction, ri, nm, Ld ) );
+					if( !( P::MaxOf( beta ) > 0 ) ) {
+						return;
+					}
+					path.betaBot.push_back( beta );
+					path.wBot.push_back( w );
+					path.LBot.push_back( Ld );
+					SetLayerRay( rec, ri, w, Ld );
+					ScatteredRayContainer cb;
+					P::Scatter( s.bottom, rec, hs, nm, cb, outside );
+					k = SelectCarried<P>( cb, isUpBottom, beta, hs.Get1D(), q );
+					if( k < 0 ) {
+						return;
+					}
+					beta = P::Mul( beta, P::Scaled( P::Kray( cb[k] ), Scalar( 1 ) / q ) );
+					w = Vector3Ops::Normalize( cb[k].ray.Dir() );
+					if( !Roulette<P>( s, beta, cb[k].type, steps, hs ) ) {
+						return;
+					}
+					steps++;
+
+					// Up across the gap to the top's underside.
+					const Scalar Lu = CompositeSPF::GapPathLength( w, n, s.thickness );
+					beta = P::Mul( beta, P::GapAtt( s.extinction, ri, nm, Lu ) );
+					if( !( P::MaxOf( beta ) > 0 ) ) {
+						return;
+					}
+					path.betaTop.push_back( beta );
+					path.wTop.push_back( w );
+					path.LTop.push_back( Lu );
+					path.gapTop.push_back( gap );
+					SetLayerRay( rec, ri, w, Lu );
+					ScatteredRayContainer ct;
+					P::Scatter( s.top, rec, hs, nm, ct, gap );
+					k = SelectCarried<P>( ct, isDownTop, beta, hs.Get1D(), q );
+					if( k < 0 ) {
+						return;
+					}
+					beta = P::Mul( beta, P::Scaled( P::Kray( ct[k] ), Scalar( 1 ) / q ) );
+					w = Vector3Ops::Normalize( ct[k].ray.Dir() );
+					if( ct[k].ior_stack ) {
+						gap = *ct[k].ior_stack;
+					}
+					if( !Roulette<P>( s, beta, ct[k].type, steps, hs ) ) {
+						return;
+					}
+					steps++;
+				}
+				if( P::MaxOf( beta ) > 0 ) {
+					NoteCompositeWalkCapReached();
+				}
+			}
+
+			//! The connection terms against a recorded walk.
+			template<class P>
+			static typename P::T EvaluateFromWalk(
+				const CompositeSPF& s,
+				const RayIntersectionGeometric& ri,
+				const Vector3& wOut,
+				const IORStack& outside,
+				const Scalar nm,
+				const WalkPath<P>& path
+				)
+			{
+				typedef typename P::T T;
+				T f = P::Zero();
+				if( !path.entered ) {
+					return f;
+				}
+				const Vector3 n = ri.onb.w();
+				RayIntersectionGeometric rec( ri );
+
+				// Term (a): every bottom visit connects to wOut through the
+				// top's delta refraction at ux.
+				if( s.pBottomBSDF && !path.betaBot.empty() ) {
+					const Scalar nOut = outside.top();
+					const Scalar nGap = path.gap0.top();
+					const Scalar eta = ( nOut > 0 && nGap > 0 ) ? ( nGap / nOut ) : Scalar( 1 );
+					Vector3 ux( 0, 0, 1 );
+					if( InternalDirectionForExit( wOut, n, eta, ux ) ) {
+						const Scalar Lx = CompositeSPF::GapPathLength( ux, n, s.thickness );
+						SetLayerRay( rec, ri, ux, Lx );
+						HashedSampler hx( HashPoint( HashVector( HashVector( kSaltEvaluateExit, ri.ray.Dir() ), wOut ), ri.ptIntersection ) );
+						ScatteredRayContainer cx;
+						P::Scatter( s.top, rec, hx, nm, cx, path.gap0 );
+						T W = P::Zero();
+						for( unsigned int i = 0; i < cx.Count(); i++ ) {
+							if( cx[i].isDelta && Vector3Ops::Dot( cx[i].ray.Dir(), n ) >= 0 ) {
+								W = W + P::Kray( cx[i] );
+							}
+						}
+						if( P::MaxOf( W ) > 0 ) {
+							const T aFactor = P::Scaled( P::Mul( W, P::GapAtt( s.extinction, ri, nm, Lx ) ), Scalar( 1 ) / ( eta * eta ) );
+							for( size_t i = 0; i < path.betaBot.size(); i++ ) {
+								SetLayerRay( rec, ri, path.wBot[i], path.LBot[i] );
+								f = f + P::Mul( P::Mul( path.betaBot[i], P::Value( *s.pBottomBSDF, ux, rec, nm, &outside ) ), aFactor );
+							}
+						}
+					}
+				}
+
+				// Term (b): every top-underside visit exits through the top's
+				// own BSDF.
+				if( s.pTopBSDF ) {
+					for( size_t j = 0; j < path.betaTop.size(); j++ ) {
+						SetLayerRay( rec, ri, path.wTop[j], path.LTop[j] );
+						f = f + P::Mul( path.betaTop[j], P::Value( *s.pTopBSDF, wOut, rec, nm, &path.gapTop[j] ) );
+					}
+				}
+				return f;
+			}
+
+			//! Per-thread cache of recorded walks, keyed exactly like the
+			//! probe cache.  Only the OUTERMOST composite evaluation on a
+			//! thread uses it: a nested composite's evaluation happens
+			//! INSIDE the outer one's walk build / connection loop, and
+			//! letting it touch the cache could evict the entry the outer
+			//! evaluation is still reading.  Nested evaluations build a
+			//! local walk instead.
+			static thread_local int tEvaluateDepth;
+
+			struct EvaluateDepthGuard
+			{
+				EvaluateDepthGuard() { ++tEvaluateDepth; }
+				~EvaluateDepthGuard() { --tEvaluateDepth; }
+			};
+
 			template<class P>
 			static typename P::T EvaluateWalked(
 				const CompositeSPF& s,
@@ -1182,114 +1402,45 @@ namespace RISE
 				const Scalar nm
 				)
 			{
-				typedef typename P::T T;
-				T f = P::Zero();
-				const Vector3 n = ri.onb.w();
-				auto isUpBottom = [&n]( const ScatteredRay& r ) { return Vector3Ops::Dot( r.ray.Dir(), n ) > 0; };
-				auto isDownTop  = [&n]( const ScatteredRay& r ) { return Vector3Ops::Dot( r.ray.Dir(), n ) < 0; };
-
-				HashedSampler hs( HashPoint( HashVector( HashVector( kSaltEvaluate, ri.ray.Dir() ), wOut ), ri.ptIntersection ) );
-
-				// Entry transmission.
-				ScatteredRayContainer c0;
-				P::Scatter( s.top, ri, hs, nm, c0, outside );
-				Scalar q = 0;
-				int k = SelectSubset<P>( c0, isDownTop, hs.Get1D(), q );
-				if( k < 0 ) {
-					return f;
-				}
-				T beta = P::Scaled( P::Kray( c0[k] ), Scalar( 1 ) / q );
-				Vector3 w = Vector3Ops::Normalize( c0[k].ray.Dir() );
-				IORStack gap( c0[k].ior_stack ? *c0[k].ior_stack : outside );
-				if( !Roulette<P>( s, beta, c0[k].type, 0, hs ) ) {
-					return f;
-				}
-
-				// ONE record, re-aimed at every event (SetLayerRay).
-				RayIntersectionGeometric rec( ri );
-
-				// Term (a)'s exit presample: fixed for the whole walk.
-				bool aActive = false;
-				T aFactor = P::Zero();
-				Vector3 ux( 0, 0, 1 );
-				if( s.pBottomBSDF ) {
-					const Scalar nOut = outside.top();
-					const Scalar nGap = gap.top();
-					const Scalar eta = ( nOut > 0 && nGap > 0 ) ? ( nGap / nOut ) : Scalar( 1 );
-					if( InternalDirectionForExit( wOut, n, eta, ux ) ) {
-						const Scalar Lx = CompositeSPF::GapPathLength( ux, n, s.thickness );
-						SetLayerRay( rec, ri, ux, Lx );
-						ScatteredRayContainer cx;
-						P::Scatter( s.top, rec, hs, nm, cx, gap );
-						T W = P::Zero();
-						for( unsigned int i = 0; i < cx.Count(); i++ ) {
-							if( cx[i].isDelta && Vector3Ops::Dot( cx[i].ray.Dir(), n ) >= 0 ) {
-								W = W + P::Kray( cx[i] );
-							}
-						}
-						if( P::MaxOf( W ) > 0 ) {
-							aFactor = P::Scaled( P::Mul( W, P::GapAtt( s.extinction, ri, nm, Lx ) ), Scalar( 1 ) / ( eta * eta ) );
-							aActive = true;
-						}
-					}
-				}
-
-				unsigned int steps = 1;
-				for( unsigned int ev = 0; ev < CompositeSPF::kMaxWalkEvents; ev += 2 )
+				struct Entry
 				{
-					// Down across the gap to the bottom.
-					const Scalar Ld = CompositeSPF::GapPathLength( w, n, s.thickness );
-					beta = P::Mul( beta, P::GapAtt( s.extinction, ri, nm, Ld ) );
-					if( !( P::MaxOf( beta ) > 0 ) ) {
-						return f;
-					}
-					SetLayerRay( rec, ri, w, Ld );
-					if( aActive ) {
-						f = f + P::Mul( P::Mul( beta, P::Value( *s.pBottomBSDF, ux, rec, nm, &outside ) ), aFactor );
-					}
-					ScatteredRayContainer cb;
-					P::Scatter( s.bottom, rec, hs, nm, cb, outside );
-					k = SelectCarried<P>( cb, isUpBottom, beta, hs.Get1D(), q );
-					if( k < 0 ) {
-						return f;
-					}
-					beta = P::Mul( beta, P::Scaled( P::Kray( cb[k] ), Scalar( 1 ) / q ) );
-					w = Vector3Ops::Normalize( cb[k].ray.Dir() );
-					if( !Roulette<P>( s, beta, cb[k].type, steps, hs ) ) {
-						return f;
-					}
-					steps++;
+					bool               valid;
+					unsigned long long id;
+					Scalar             nm;
+					Scalar             key[kProbeKeySize];
+					WalkPath<P>        path;
+					Entry() : valid( false ), id( 0 ), nm( 0 ) {}
+				};
+				static const int kWalkCacheSize = 4;
+				thread_local Entry cache[kWalkCacheSize];
+				thread_local int next = 0;
 
-					// Up across the gap to the top's underside.
-					const Scalar Lu = CompositeSPF::GapPathLength( w, n, s.thickness );
-					beta = P::Mul( beta, P::GapAtt( s.extinction, ri, nm, Lu ) );
-					if( !( P::MaxOf( beta ) > 0 ) ) {
-						return f;
-					}
-					SetLayerRay( rec, ri, w, Lu );
-					if( s.pTopBSDF ) {
-						f = f + P::Mul( beta, P::Value( *s.pTopBSDF, wOut, rec, nm, &gap ) );
-					}
-					ScatteredRayContainer ct;
-					P::Scatter( s.top, rec, hs, nm, ct, gap );
-					k = SelectCarried<P>( ct, isDownTop, beta, hs.Get1D(), q );
-					if( k < 0 ) {
-						return f;
-					}
-					beta = P::Mul( beta, P::Scaled( P::Kray( ct[k] ), Scalar( 1 ) / q ) );
-					w = Vector3Ops::Normalize( ct[k].ray.Dir() );
-					if( ct[k].ior_stack ) {
-						gap = *ct[k].ior_stack;
-					}
-					if( !Roulette<P>( s, beta, ct[k].type, steps, hs ) ) {
-						return f;
-					}
-					steps++;
+				const bool outermost = ( tEvaluateDepth == 0 );
+				EvaluateDepthGuard guard;
+				if( !outermost ) {
+					WalkPath<P> local;
+					BuildWalk<P>( s, ri, outside, nm, local );
+					return EvaluateFromWalk<P>( s, ri, wOut, outside, nm, local );
 				}
-				if( P::MaxOf( beta ) > 0 ) {
-					NoteCompositeWalkCapReached();
+
+				Scalar key[kProbeKeySize];
+				ProbeKey( ri, outside, key );
+				for( int i = 0; i < kWalkCacheSize; i++ ) {
+					const Entry& e = cache[i];
+					if( e.valid && e.id == s.instanceId && e.nm == nm &&
+						std::memcmp( e.key, key, sizeof( key ) ) == 0 ) {
+						return EvaluateFromWalk<P>( s, ri, wOut, outside, nm, e.path );
+					}
 				}
-				return f;
+				Entry& e = cache[next];
+				next = ( next + 1 ) % kWalkCacheSize;
+				e.valid = false;
+				BuildWalk<P>( s, ri, outside, nm, e.path );
+				e.id = s.instanceId;
+				e.nm = nm;
+				std::memcpy( e.key, key, sizeof( key ) );
+				e.valid = true;
+				return EvaluateFromWalk<P>( s, ri, wOut, outside, nm, e.path );
 			}
 
 			//! Direct + covered non-delta response at `vLightIn`.
@@ -1597,6 +1748,7 @@ namespace RISE
 			}
 		};
 
+		thread_local int CompositeSPFImpl::tEvaluateDepth = 0;
 		const Scalar CompositeSPFImpl::kShareFloor            = Scalar( 0.02 );
 		const Scalar CompositeSPFImpl::kWalkerShareIfPossible = Scalar( 0.5 );
 		const Scalar CompositeSPFImpl::kWalkerShareFloor      = Scalar( 0.05 );

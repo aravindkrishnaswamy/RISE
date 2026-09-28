@@ -224,7 +224,7 @@ static CompositeMaterial* MakeComposite(
 }
 
 //////////////////////////////////////////////////////////////////////
-//  SPF-level white furnace.
+//  SPF-level white furnace, position-jittered (see the loop).
 //
 //  rho(theta) = E[ sum_j kray_j ] over every emitted ray (reflection
 //  half-space only unless `fullSphere`), batch means over independent
@@ -242,7 +242,8 @@ static FurnaceStats Furnace(
 	const ISPF& spf, double thetaDeg, bool nm, bool fullSphere,
 	int batches, int perBatch, unsigned seedBase )
 {
-	const RayIntersectionGeometric ri = MakeIntersection( thetaDeg * kPi / 180.0 );
+	RayIntersectionGeometric ri = MakeIntersection( thetaDeg * kPi / 180.0 );
+	const Point3 origin0 = ri.ray.origin;
 	std::vector<double> means;
 	for( int b = 0; b < batches; ++b ) {
 		RandomNumberGenerator rng( seedBase + 7919u * (unsigned)b );
@@ -251,6 +252,13 @@ static FurnaceStats Furnace(
 		RISEPel sum( 0, 0, 0 );
 		double sumNM = 0;
 		for( int i = 0; i < perBatch; ++i ) {
+			// The layered evaluator draws ONE walk per (wi, position) and
+			// reuses it for every exit there (DL-24 review P2-3), so it is
+			// unbiased AVERAGED OVER POSITIONS: move the shading point every
+			// draw on this flat, uniform fixture.
+			const Point3 p( rng.CanonicalRandom() * 10, rng.CanonicalRandom() * 10, 0 );
+			ri.ptIntersection = p;
+			ri.ray.origin = Point3( origin0.x + p.x, origin0.y + p.y, origin0.z );
 			ScatteredRayContainer sc;
 			if( nm ) {
 				spf.ScatterNM( ri, sampler, 550.0, sc, stack );
@@ -543,6 +551,141 @@ static void SectionE( Fixtures& f )
 }
 
 //////////////////////////////////////////////////////////////////////
+//  Section E2 -- WALKER delta rays must DECLINE (DL-24 review P1-2).
+//
+//  A composite is a parallel slab: every all-delta walker path that
+//  leaves through the top exits EXACTLY along the entry's mirror
+//  direction, so a direction match cannot tell a walker ray from the
+//  top's DIRECT delta reflection.  Grey, non-dispersive layers: the true
+//  companion weight EQUALS the hero weight, so anything the 5-argument
+//  EvaluateKrayNM returns must reproduce the ray's own krayNM, and the
+//  walker class must be declined (-1).  Pre-fix (c03807a2) this read
+//  15709 up-going emissions, 15709 "reconstructed", 7366 of them wrong,
+//  worst relative error 7.34 (a walker ray priced at the direct total).
+//////////////////////////////////////////////////////////////////////
+static void SectionE2( Fixtures& f )
+{
+	std::cout << "\n[E2] Walker delta rays decline; the direct delta reflection reconstructs (DL-24 review P1-2)\n";
+	UniformScalarPainter* sDelta = new UniformScalarPainter( 1000000.0 );  sDelta->addref();
+	UniformScalarPainter* sExt   = new UniformScalarPainter( 1.0 );  sExt->addref();
+	DielectricMaterial* smooth = new DielectricMaterial( *f.s1, *f.s15, *sDelta, false );  smooth->addref();
+	CompositeMaterial* m = MakeComposite( *smooth, *smooth, 3, 3, 3, 3, 3, 1.0, *sExt );
+	const ISPF& spf = *m->GetSPF();
+	const double th = 30.0 * kPi / 180.0;
+	const Vector3 d( std::sin( th ), 0, -std::cos( th ) );
+	RandomNumberGenerator rng( 1234u );
+	IndependentSampler sampler( rng );
+	int up = 0, recon = 0, declined = 0, mism = 0, walkerDeclined = 0;
+	double worst = 0;
+	for( int i = 0; i < 200000; ++i ) {
+		const Point3 p( rng.CanonicalRandom(), rng.CanonicalRandom(), 0 );
+		const Ray r( Point3( p.x - d.x, p.y, 1.0 ), d );
+		const RasterizerState rs = { 0, 0 };
+		RayIntersectionGeometric ri( r, rs );
+		ri.bHit = true; ri.range = 1.0; ri.ptIntersection = p;
+		ri.vNormal = Vector3( 0, 0, 1 ); ri.vGeomNormal = Vector3( 0, 0, 1 ); ri.onb.CreateFromW( Vector3( 0, 0, 1 ) );
+		IORStack st = MakeTestIORStack( g_stub );
+		ScatteredRayContainer sc;
+		spf.ScatterNM( ri, sampler, 550.0, sc, st );
+		for( unsigned j = 0; j < sc.Count(); ++j ) {
+			if( sc[j].ray.Dir().z <= 0 ) continue;
+			up++;
+			const double c = spf.EvaluateKrayNM( ri, sc[j].ray.Dir(), sc[j].type, 600.0, st, sc[j].isDelta ? -1.0 : sc[j].pdf );
+			if( c < 0 ) {
+				declined++;
+				if( sc[j].type != ScatteredRay::eRayReflection ) walkerDeclined++;
+				continue;
+			}
+			recon++;
+			const double rel = std::fabs( c - sc[j].krayNM ) / std::max( 1e-12, (double)sc[j].krayNM );
+			if( rel > 1e-6 ) { mism++; worst = std::max( worst, rel ); }
+		}
+	}
+	std::cout << "    glass(1e6)/glass, t 1, grey ext 1.0, theta 30, hero 550 / companion 600: up-going " << up
+	          << ", reconstructed " << recon << ", declined " << declined << " (walker " << walkerDeclined
+	          << "), mismatched " << mism << ", worst rel " << worst << "\n";
+	Check( up > 10000 && recon > 1000 && walkerDeclined > 1000, "[E2] both classes present (direct reflections reconstructed, walker exits declined)" );
+	Check( mism == 0, "[E2] no reconstructed companion weight differs from the grey stack's hero weight" );
+	m->release(); smooth->release(); sDelta->release(); sExt->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+//  Section H -- STOCHASTIC TOPS, position-jittered (DL-24 review P1-1).
+//
+//  Every other furnace in this file uses ONE fixed intersection, so the
+//  hash-seeded probe never changes.  A probe that INFERS determinism from
+//  two hashed draws calls a single-emit stochastic top (tissue, a nested
+//  composite) deterministic at the positions where its draws agree and
+//  then gives the direct branch or every down branch probability ZERO
+//  there -- invisible at one position, a bias over many.  New points per
+//  draw.  Pre-fix (c03807a2, reviewer's independent harness, mean +- sem):
+//  tissue / white 0.9985 +- .0032 (0 deg), 0.6250 +- .0022 (60 deg);
+//  composite{glass / lossless translucent} / white 0.9418 +- .0042,
+//  0.9319 +- .0037.  Truth 1 (lossless).
+//////////////////////////////////////////////////////////////////////
+static FurnaceStats JitteredFurnace( const ISPF& spf, double thetaDeg, int batches, int perBatch, unsigned seedBase )
+{
+	std::vector<double> means;
+	for( int b = 0; b < batches; ++b ) {
+		RandomNumberGenerator rng( seedBase + 7919u * (unsigned)b );
+		IndependentSampler sampler( rng );
+		RISEPel sum( 0, 0, 0 );
+		for( int i = 0; i < perBatch; ++i ) {
+			RayIntersectionGeometric ri = MakeIntersection( thetaDeg * kPi / 180.0 );
+			const Point3 p( rng.CanonicalRandom() * 10, rng.CanonicalRandom() * 10, 0 );
+			ri.ptIntersection = p;
+			ri.ray.origin = Point3( p.x + std::sin( thetaDeg * kPi / 180.0 ), p.y, 1.0 );
+			IORStack stack = MakeTestIORStack( g_stub );
+			ScatteredRayContainer sc;
+			spf.Scatter( ri, sampler, sc, stack );
+			for( unsigned j = 0; j < sc.Count(); ++j ) sum = sum + sc[j].kray;
+		}
+		means.push_back( ColorMath::MaxValue( sum * ( 1.0 / perBatch ) ) );
+	}
+	FurnaceStats st;
+	double m = 0; for( double v : means ) m += v; m /= means.size();
+	double var = 0; for( double v : means ) var += ( v - m ) * ( v - m );
+	var /= std::max<size_t>( 1, means.size() - 1 );
+	st.mean = m; st.sd = std::sqrt( var ); st.sem = st.sd / std::sqrt( (double)means.size() );
+	return st;
+}
+
+static void SectionH( Fixtures& f )
+{
+	std::cout << "\n[H] Stochastic TOP layers, position-jittered full-sphere furnace (DL-24 review P1-1), mean +- sem\n";
+	GenericHumanTissueMaterial* tissue = new GenericHumanTissueMaterial( *new UniformScalarPainter( 0.85 ), *new UniformScalarPainter( 0.0 ), 0.75, 0.012, 0.05, 7.0e-5, true );
+	tissue->addref();
+	CompositeMaterial* inner = MakeComposite( *f.dSmooth, *f.transLossless, 3, 3, 3, 3, 3, 0.0, *f.s0 );
+	CompositeMaterial* innerGG = MakeComposite( *f.dSmooth, *f.dSmooth, 3, 3, 3, 3, 3, 0.0, *f.s0 );
+	struct Cfg { const char* name; CompositeMaterial* m; int batches; bool gated; double pinLo, pinHi; };
+	Cfg cfgs[] = {
+		{ "H1 generic_human_tissue (single-emit, rolls up or down) / white",
+		  MakeComposite( *tissue, *f.lamb, 3, 3, 3, 3, 3, 0.0, *f.s0 ), 16, true, 0, 0 },
+		{ "H2 composite{dielectric / lossless translucent} (single-emit nested, has a BSDF) / white",
+		  MakeComposite( *inner, *f.lamb, 3, 3, 3, 3, 3, 0.0, *f.s0 ), 32, true, 0, 0 },
+		{ "H3 composite{dielectric / dielectric} (nested, no BSDF) / white -- KNOWN RESIDUAL PIN [0.40, 0.62]: the nested composite is walked FROM BELOW with the outer gap's stack, which already holds the shared object key, and the two-stack convention (defined for from-top walks) leaves its layers reading the wrong side -- see docs/DL24_COMPOSITE_ENERGY.md section 5",
+		  MakeComposite( *innerGG, *f.lamb, 3, 3, 3, 3, 3, 0.0, *f.s0 ), 16, false, 0.40, 0.62 },
+	};
+	for( const Cfg& c : cfgs ) {
+		std::cout << "    " << c.name << "\n      ";
+		for( int t = 0; t < 4; t += 2 ) {
+			const FurnaceStats s = JitteredFurnace( *c.m->GetSPF(), kThetas[t], c.batches, 20000, 911u + t );
+			std::cout << std::fixed << std::setprecision(4) << kThetas[t] << "deg: " << s.mean << " +- " << s.sem << "   ";
+			if( c.gated ) {
+				Check( std::fabs( s.mean - 1.0 ) <= std::max( 0.02, 5.0 * s.sem ),
+					std::string( "[H] " ) + c.name + " theta " + std::to_string( (int)kThetas[t] ) + " lossless -> 1" );
+			} else {
+				Check( s.mean >= c.pinLo && s.mean <= c.pinHi,
+					std::string( "[H] H3 (known nested from-below residual) theta " ) + std::to_string( (int)kThetas[t] ) + " inside its pin band" );
+			}
+		}
+		std::cout << "\n";
+		c.m->release();
+	}
+	inner->release(); innerGG->release(); tissue->release();
+}
+
+//////////////////////////////////////////////////////////////////////
 //  Section F -- sibling table.  Full-sphere furnace (reflection +
 //  transmission through the stack), RGB, theta 0 and 60.  Lossless
 //  configurations are gated at 1; the rest are printed as a record.
@@ -556,7 +699,7 @@ static void SectionF( Fixtures& f )
 		  MakeComposite( *f.dSmooth, *f.dSmooth, 3, 3, 3, 3, 3, 0.0, *f.s0 ), true },
 		{ "F2 dielectric / composite(dielectric/white) -- the double-composite shape: the inner coat's delta reflection is a delta BOTTOM lobe (walker class)",
 		  MakeComposite( *f.dSmooth, *MakeComposite( *f.dSmooth, *f.lamb, 3, 3, 3, 3, 3, 0.0, *f.s0 ), 3, 3, 3, 3, 3, 0.0, *f.s0 ), true },
-		{ "F2b dielectric / polished(white, delta coat) -- RECORD ONLY: polished_material's GetBSDF() is the bare Lambertian its SPF does not sample (DL-285), so term (a) prices the wrong substrate",
+		{ "F2b dielectric / polished(white, delta coat) -- KNOWN-DEFECT PIN [1.05, 1.15]: polished_material's GetBSDF() is the bare Lambertian its SPF does not sample (DL-285), so term (a) prices the wrong substrate",
 		  MakeComposite( *f.dSmooth, *f.polishedWhite, 3, 3, 3, 3, 3, 0.0, *f.s0 ), false },
 		{ "F3 lossless translucent / white Lambertian",
 		  MakeComposite( *f.transLossless, *f.lamb, 3, 3, 3, 3, 3, 0.0, *f.s0 ), false },
@@ -579,7 +722,15 @@ static void SectionF( Fixtures& f )
 				Check( std::fabs( s.mean - 1.0 ) <= std::max( 0.01, 5.0 * s.sem ),
 					std::string( "[F] " ) + c.name + " theta " + std::to_string( (int)kThetas[t] ) + " lossless -> 1" );
 			}
-			if( std::string( c.name ).compare( 0, 3, "F2b" ) != 0 ) {
+			if( std::string( c.name ).compare( 0, 3, "F2b" ) == 0 ) {
+				// KNOWN-DEFECT PIN (DL-285, not this row's): polished_material's
+				// GetBSDF() is the bare Lambertian its SPF does not sample, so
+				// term (a) prices the wrong substrate and the stack reads over
+				// unity.  Pinned so it can neither silently worsen nor silently
+				// "improve" without this band being revisited.
+				Check( s.mean >= 1.05 && s.mean <= 1.15,
+					std::string( "[F] F2b (DL-285 known defect) theta " ) + std::to_string( (int)kThetas[t] ) + " pinned in [1.05, 1.15]" );
+			} else {
 				Check( s.mean <= 1.0 + std::max( 0.01, 5.0 * s.sem ),
 					std::string( "[F] " ) + c.name + " theta " + std::to_string( (int)kThetas[t] ) + " energy-bounded" );
 			}
@@ -608,11 +759,13 @@ static void SectionF( Fixtures& f )
 //  with mu_t the refracted cosines, T = 1 - F the outer Fresnel
 //  transmittance and F_in the Fresnel reflectance at the top's underside
 //  (1 under TIR).  At sigma = 0 this is exactly CoatedLayer's
-//  T T rho / (pi n^2 (1 - r_i rho)).  The layered evaluator is a
-//  deterministic per-(wi, wo, position) Monte-Carlo estimate, so its
-//  MEAN over many positions is compared (a stat-scaled band), and the
-//  comparison is also run with wi and wo swapped (reciprocity).  This
-//  shares no code with the evaluator.
+//  T T rho / (pi n^2 (1 - r_i rho)).  The layered evaluator is ONE
+//  Monte-Carlo estimate per query (a walk drawn once per (wi, position),
+//  connected to wo with a (wi, wo, position)-seeded draw), so its MEAN
+//  over many positions is compared: band max(4 sem, 0.4 %), and the
+//  printed per-evaluation relative sd is the noise every NEE sample and
+//  BDPT connection carries.  The comparison is also run with wi and wo
+//  swapped (reciprocity).  This shares no code with the evaluator.
 //////////////////////////////////////////////////////////////////////
 static double FresnelInside15( const double mu, const double n )
 {
@@ -657,7 +810,7 @@ static void SectionG( Fixtures& f )
 		{ "G2 smooth coat / red, gap 0.3 ext 0.8", MakeComposite( *smooth, *f.lambRed, 3, 3, 3, 3, 3, 0.3, *sExt ), { 0.8, 0.2, 0.2 }, 0.8, 0.3 },
 	};
 	const double pairs[][2] = { { 0, 0 }, { 30, 60 }, { 60, 30 }, { 75, 10 }, { 10, 80 } };
-	const int M = 6000;
+	const int M = 24000;
 	for( const Cfg& c : cfgs ) {
 		const IBSDF* b = c.m->GetBSDF();
 		Check( b != 0, std::string( "[G] " ) + c.name + " presents a BSDF" );
@@ -683,7 +836,9 @@ static void SectionG( Fixtures& f )
 				if( ch == 0 || c.rho[ch] != c.rho[0] ) {
 					std::cout << "    " << c.name << " (" << pr[0] << "," << pr[1] << ") ch" << ch
 					          << ": mean " << std::setprecision( 6 ) << mean << " +- " << sem
-					          << "  closed form " << truth << "  " << ( ok ? "ok" : "MISMATCH" ) << "\n";
+					          << " (sem; " << std::setprecision( 3 ) << ( mean > 0 ? std::fabs( mean - truth ) / sem : 0.0 )
+					          << " sem off; per-evaluation relative sd " << ( mean > 0 ? std::sqrt( var ) / mean : 0.0 ) << ")"
+					          << std::setprecision( 6 ) << "  closed form " << truth << "  " << ( ok ? "ok" : "MISMATCH" ) << "\n";
 				}
 				Check( ok, std::string( "[G] " ) + c.name + " theta (" + std::to_string( (int)pr[0] ) + "," +
 					std::to_string( (int)pr[1] ) + ") ch" + std::to_string( ch ) + " value == closed form" );
@@ -896,7 +1051,9 @@ int main( int argc, char** argv )
 	SectionB( f );
 	SectionC( f );
 	SectionE( f );
+	SectionE2( f );
 	SectionF( f );
+	SectionH( f );
 	SectionG( f );
 	if( !skipRender ) {
 		SectionD();

@@ -1494,7 +1494,14 @@ int main()
         // measured non-delta emission probability, 0.01), so Part 2's band
         // is widened to hold only a sanity bound on those two rows.
         //--------------------------------------------------------------
-        { "Composite",                         composite,      true,  true,  false, false, INTEGRAL_TOL },
+        // "Composite"'s Lambertian TOP does not declare a deterministic
+        // up/down split (ISPF::SelectionMassIsDeterministic: it can drop
+        // its lobe under a tilted shading normal), so since the DL-24
+        // review the composite runs PER-BRANCH mode there: each emitted
+        // ray carries its own branch's density and `Pdf` is the MIS
+        // partner, not the exact density -- exactSelectedPdf is off for
+        // that row alone (mass and chi2 shape still gated).
+        { "Composite",                         composite,      true,  false, false, false, INTEGRAL_TOL },
         { "Composite_DielectricLambertian",    compositeDiel,  true,  true,  false, false, 0.15 },
         { "Composite_TranslucentLambertian",   compositeTrans, true,  true,  false, false, 0.15 },
 

@@ -172,9 +172,11 @@ static double DirectionalAlbedo(
 	ISPF& spf,
 	double incomingThetaRad,
 	double* outRejectionRate = 0,
-	unsigned int* outInvalidContributions = 0 )
+	unsigned int* outInvalidContributions = 0,
+	bool jitterPosition = false )
 {
 	RayIntersectionGeometric ri = MakeIntersection( incomingThetaRad );
+	const Point3 rayOrigin0 = ri.ray.origin;
 	RandomNumberGenerator rng;
 	IndependentSampler sampler( rng );
 	IORStack iorStack = MakeTestIORStack( g_stubObject );
@@ -186,6 +188,16 @@ static double DirectionalAlbedo(
 
 	for( int i = 0; i < FURNACE_SAMPLES; ++i )
 	{
+		// DL-24 review P2-3: composite_material's layered evaluator draws
+		// ONE random walk per (incoming direction, position) and reuses it
+		// for every exit at that point, so its estimate is unbiased only
+		// AVERAGED OVER POSITIONS.  Its rows move the shading point every
+		// draw (a flat, uniform fixture, so nothing else changes).
+		if( jitterPosition ) {
+			const Point3 p( rng.CanonicalRandom() * 10, rng.CanonicalRandom() * 10, 0 );
+			ri.ptIntersection = p;
+			ri.ray.origin = Point3( rayOrigin0.x + p.x, rayOrigin0.y + p.y, rayOrigin0.z );
+		}
 		ScatteredRayContainer scattered;
 		spf.Scatter( ri, sampler, scattered, iorStack );
 
@@ -659,13 +671,13 @@ struct ConfigReport
 	double       predictionEps = 0.0;
 };
 
-static void Run( ConfigReport& r, ISPF& spf )
+static void Run( ConfigReport& r, ISPF& spf, bool jitterPosition = false )
 {
 	r.passed = true;
 	for( int i = 0; i < NUM_THETA; ++i )
 	{
 		const double rad = THETA_DEG[i] * PI / 180.0;
-		r.albedo[i] = DirectionalAlbedo( spf, rad, &r.reject[i], &r.invalid[i] );
+		r.albedo[i] = DirectionalAlbedo( spf, rad, &r.reject[i], &r.invalid[i], jitterPosition );
 
 		// An invalid sample must never be silently omitted and then let a
 		// bounded mean look healthy.  Keep the remaining contributions printed
@@ -3005,10 +3017,10 @@ int main()
 		compMatW->addref();
 		{ ConfigReport& r = add( "58. Composite (material path): dielectric(scat 0) / white Lambertian", kPosturePass, 0.02,
 		    "DL-24: config 3's stack through CompositeMaterial -- the evaluator + exact-density path" );
-		  Run( r, *compMat3->GetSPF() ); }
+		  Run( r, *compMat3->GetSPF(), true ); }
 		{ ConfigReport& r = add( "59. Composite (material path): water(1.33) / white Lambertian, t=0.5", kPosturePass, 0.02,
 		    "DL-24: parser-default budgets; a gap with no extinction must not absorb" );
-		  Run( r, *compMatW->GetSPF() ); }
+		  Run( r, *compMatW->GetSPF(), true ); }
 		compMatW->release();
 		compMat3->release();
 		dSmoothMat->release();
