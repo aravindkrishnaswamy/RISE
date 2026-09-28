@@ -832,8 +832,8 @@ namespace
 			{ Model::RandomWalk,     Integrator::BDPT,       128, 0.10,  kAirInterior, kScale },
 			{ Model::Diffusion,      Integrator::PTSpectral, 64,  0.04,  kAirInterior, kScale },
 			{ Model::RandomWalk,     Integrator::PTSpectral, 64,  0.05,  kAirInterior, kScale },
-			{ Model::Diffusion,      Integrator::PT,         64,  0.02,  kDense,       kScale },
-			{ Model::Diffusion,      Integrator::BDPT,       32,  0.02,  kDense,       kScale },
+			{ Model::Diffusion,      Integrator::PT,         256, 0.008, kDense,       kScale },
+			{ Model::Diffusion,      Integrator::BDPT,       32,  0.005, kDense,       kScale },
 			{ Model::RandomWalk,     Integrator::PT,         64,  0.04,  kDense,       kScale },
 		};
 		unsigned int seed = 49000;
