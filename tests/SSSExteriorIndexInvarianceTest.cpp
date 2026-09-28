@@ -827,6 +827,30 @@ namespace
 		bsdf->release(); ext->release();
 	}
 
+	//! Internal diffuse Fresnel reflectance of a boundary with relative
+	//! index `eta` (inside / outside): 2 * integral F(mu) mu dmu over the
+	//! INSIDE hemisphere, exact unpolarized dielectric Fresnel, total
+	//! internal reflection past the critical angle.  Independent of every
+	//! polynomial fit in the library (the reference the fits approximate).
+	Scalar NumericInternalFdr( const Scalar eta )
+	{
+		const int count = 1 << 16;
+		Scalar sum = 0;
+		for( int i = 0; i < count; ++i ) {
+			const Scalar cosI = ( Scalar( i ) + 0.5 ) / count;
+			const Scalar sinT2 = eta * eta * ( 1.0 - cosI * cosI );
+			Scalar F = 1.0;
+			if( sinT2 < 1.0 ) {
+				const Scalar cosT = std::sqrt( 1.0 - sinT2 );
+				const Scalar rs = ( eta * cosI - cosT ) / ( eta * cosI + cosT );
+				const Scalar rp = ( eta * cosT - cosI ) / ( eta * cosT + cosI );
+				F = 0.5 * ( rs * rs + rp * rp );
+			}
+			sum += 2.0 * F * cosI;
+		}
+		return sum / count;
+	}
+
 	void TestLegacyDipoleRelativeIndex()
 	{
 		std::cout << "C3: legacy dipole (diffusion_approximation_sss_shaderop) prices the relative index" << std::endl;
@@ -852,6 +876,27 @@ namespace
 			Check( worst == 0.0, std::string( "C3: exterior " ) + c.what + " == relative-index twin in air, exactly" );
 			twin->release();
 		}
+		// The boundary term itself against the Fresnel integral BELOW
+		// relative index 1 (a body less dense than its exterior -- only
+		// reachable since DL-291).  The twins above cannot see a wrong fit:
+		// both sides evaluate the same function.  Egan-Hilgeman's eta >= 1
+		// polynomial goes NEGATIVE here (-0.051 at 1.3 in 1.33, -0.375 at
+		// 1.3 in 1.5); the eta < 1 fit is within ~1e-3 of the integral.
+		const Scalar belowOne[] = { 1.3 / 1.33, 1.3 / 1.5, 0.75 };
+		for( const Scalar nu : belowOne ) {
+			const Scalar Fnum = NumericInternalFdr( nu );
+			const Scalar Anum = ( 1.0 + Fnum ) / ( 1.0 - Fnum );
+			const Scalar Aused = DiffusionApproximationExtinction::BoundaryA( nu );
+			const Scalar Amultipole = ( 1.0 + ComputeFdr( nu ) ) / ( 1.0 - ComputeFdr( nu ) );
+			std::cout << "    relative index " << nu << ": numeric Fdr " << Fnum << "  A numeric " << Anum
+				<< "  legacy dipole A " << Aused << "  multipole A " << Amultipole << std::endl;
+			Check( std::fabs( Aused - Anum ) < 0.01 * Anum, "C3: legacy dipole boundary term below relative index 1 matches the Fresnel integral" );
+			Check( std::fabs( Amultipole - Anum ) < 0.01 * Anum, "C3: multipole boundary term below relative index 1 matches the Fresnel integral" );
+		}
+		// The dipole's two fits meet at relative index 1 (to the fits' own 1e-4).
+		Check( std::fabs( DiffusionApproximationExtinction::BoundaryA( 1.0 - 1e-12 ) - DiffusionApproximationExtinction::BoundaryA( 1.0 ) ) < 1e-3,
+			"C3: legacy dipole boundary term continuous across relative index 1" );
+
 		// In air the exterior-aware entry is the constructor's value, bit for bit.
 		Check( body->ComputeTotalExtinctionForExterior( 0.003, 1.0 )[1] == body->ComputeTotalExtinction( 0.003 )[1],
 			"C3: air reads the constructor's dipole exactly" );
@@ -1117,6 +1162,7 @@ namespace
 			{ Model::SkinMultipole,  Integrator::PTSpectral, 256, 0.04,  1.4,          kScale },
 			{ Model::SkinMultipole,  Integrator::PT,         64,  0.02,  1.33 / 1.5,   kScale },
 			{ Model::LegacyDipole,   Integrator::PixelPel,   4,   0.03,  1.3,          kScale },
+			{ Model::LegacyDipole,   Integrator::PixelPel,   4,   0.03,  1.3 / 1.5,    kScale },
 			{ Model::LegacySkinOp,   Integrator::PixelPel,   4,   0.02,  1.4,          kScale },
 		};
 		unsigned int seed = 49000;

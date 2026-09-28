@@ -41,6 +41,7 @@
 
 #include "../../Interfaces/ISubSurfaceExtinctionFunction.h"
 #include "../../Utilities/Reference.h"
+#include "../../Materials/MultipoleDiffusion.h"		// ComputeFdr's eta < 1 fit (DL-291)
 
 namespace RISE
 {
@@ -114,10 +115,22 @@ namespace RISE
 			}
 
 			/// The dipole boundary term A = (1+Fdr)/(1-Fdr) at relative
-			/// index `nu` (interior / exterior), Egan & Hilgeman's fit.
+			/// index `nu` (interior / exterior).
+			///
+			/// nu >= 1: this class's own Egan & Hilgeman fit, exactly as it
+			/// has always been evaluated (every in-air body; bit-identical).
+			/// nu < 1: that polynomial is outside its range -- it goes
+			/// NEGATIVE (-0.051 at 1.3 inside water, -0.375 inside 1.5 glass,
+			/// against the true 0.007 / 0.036) -- so the separate eta < 1 fit
+			/// (Jensen 2001; MultipoleDiffusion's ComputeFdr) is used.  Only
+			/// reachable since DL-291 made nu relative to the live exterior.
+			/// The two fits meet at nu = 1 to 1e-4 in Fdr (0.0016 vs 0.0017),
+			/// below either fit's own error against the Fresnel integral.
 			static Scalar BoundaryA( const Scalar nu )
 			{
-				const Scalar fresnel = -1.440/(nu*nu) + 0.710/nu + 0.668 + 0.0636*nu;
+				const Scalar fresnel = ( nu >= 1.0 )
+					? ( -1.440/(nu*nu) + 0.710/nu + 0.668 + 0.0636*nu )
+					: Scalar( ComputeFdr( nu ) );
 				return (1.0+fresnel)/(1.0-fresnel);
 			}
 
