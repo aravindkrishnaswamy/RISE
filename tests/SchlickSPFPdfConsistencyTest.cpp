@@ -8,7 +8,9 @@
 //
 //  Why that is not trivially true.  SchlickSPF is a "draw every lobe,
 //  THEN pick one by its realized weight" sampler: Scatter() draws the
-//  diffuse ray (kray = rd, independent of the drawn direction) AND the
+//  diffuse ray (kray = rd, independent of the drawn direction -- until
+//  DL-310, which couples it to min(Rd, 1 - A(i), 1 - A(o)); see the
+//  DL-310 rows below) AND the
 //  specular ray (kray = rho + (1-rho)*fresnel(half-vector), a function
 //  of the specular lobe's OWN drawn direction) every call, and
 //  RandomlySelect then picks one with probability proportional to
@@ -210,6 +212,7 @@ struct Config
     int    qtOverride, qpOverride;  // 0 = use the default kQT/kQP grid
     double massTolOverride;         // 0 = use the default kMassTol
     bool   knownFailure;            // recorded-not-gated escape hatch; unused since DL-101 closed 2026-09-17 (no row currently sets this true)
+    bool   reportFloor;             // DL-310: also measure this row's own TVD noise floor (half-split)
 };
 
 // Quadrature resolution for the hemisphere integral of Pdf().  400x800
@@ -304,6 +307,32 @@ static void RunConfig( const Config& c, double nm )
     std::vector<double> emp( kNBins, 0.0 );
     long emitted = 0;
 
+    // DL-310: a row's own noise floor.  A SECOND, independently seeded
+    // histogram of the same sampler; the TVD between the two is pure
+    // Monte-Carlo noise, and one histogram against the exact density
+    // carries 1/sqrt(2) of it.
+    double floorTvd = -1;
+    if( c.reportFloor ) {
+        RandomNumberGenerator rngA( bNM ? 161803 : 141421 ), rngB( bNM ? 313131 : 271828 );
+        Implementation::IndependentSampler samplerA( rngA ), samplerB( rngB );
+        std::vector<double> a( kNBins, 0.0 ), b( kNBins, 0.0 );
+        for( int half = 0; half < 2; half++ ) {
+            std::vector<double>& h = half ? b : a;
+            RandomNumberGenerator& rr = half ? rngB : rngA;
+            Implementation::IndependentSampler& ss = half ? samplerB : samplerA;
+            for( long i = 0; i < kDraws; i++ ) {
+                ScatteredRayContainer scattered;
+                if( bNM ) spf->ScatterNM( ri, ss, nm, scattered, iorStack );
+                else      spf->Scatter( ri, ss, scattered, iorStack );
+                ScatteredRay* sel = scattered.RandomlySelect( rr.CanonicalRandom(), bNM );
+                if( sel ) h[ BinOf( Vector3Ops::Normalize( sel->ray.Dir() ) ) ] += 1.0 / (double)kDraws;
+            }
+        }
+        floorTvd = 0;
+        for( int k = 0; k < kNBins; k++ ) floorTvd += fabs( a[k] - b[k] );
+        floorTvd *= 0.5 / sqrt( 2.0 );
+    }
+
     for( long i = 0; i < kDraws; i++ ) {
         ScatteredRayContainer scattered;
         if( bNM ) {
@@ -356,8 +385,11 @@ static void RunConfig( const Config& c, double nm )
               << "  intPdf=" << std::fixed << std::setprecision(5) << intPdf
               << "  emitted=" << massEmp
               << "  |diff|=" << fabs(intPdf - massEmp)
-              << "  TVD=" << tvd
-              << std::endl;
+              << "  TVD=" << tvd;
+    if( floorTvd >= 0 ) {
+        std::cout << "  floor=" << floorTvd << "  TVD/floor=" << std::setprecision(2) << tvd / floorTvd;
+    }
+    std::cout << std::endl;
 
     if( c.knownFailure ) {
         // Escape hatch for a row whose failure is a KNOWN, not-yet-fixed
@@ -473,6 +505,22 @@ int main()
         { "tilt 20 deg th=45",       45.0, 0.5,  0.3,  0.3,  0.8, false, 0,   0,   0,   20.0, true  , 0,     0,     0.0    },
         { "tilt 40 deg th=45",       45.0, 0.5,  0.3,  0.3,  0.8, false, 0,   0,   0,   40.0, false , 0,     0,     0.0    },
         { "tilt 55 deg th=30",       30.0, 0.5,  0.3,  0.3,  0.8, false, 0,   0,   0,   55.0, true  , 0,     0,     0.0    },
+        // DL-310 (2026-09-28): the diffuse lobe's realized weight is now
+        // min(Rd, 1 - A(i), 1 - A(o)) -- direction-dependent wherever
+        // Rd > 1 - A at some outgoing direction -- so C_D is evaluated at
+        // the query direction and the specular coefficient integrates
+        // over the diffuse draw (SchlickSPF.cpp).  Rows chosen INSIDE
+        // the clip: Rd-dominated at grazing and at normal view, the
+        // over-authored "clips everywhere" case, a tilted geometric
+        // normal (the analytic accept-fraction path), per-channel lanes
+        // and chromatic reflectances; each also reports its own
+        // half-split TVD noise floor.
+        { "DL-310 rd.9 rs.1 r.05 i1 th85",  85.0, 0.9, 0.1, 0.05, 1.0, false, 0, 0, 0, 0.0, true , kQTFine, kQPFine, kMassTolLowRough, false, true },
+        { "DL-310 rd.9 rs.1 r.05 i.3 th30", 30.0, 0.9, 0.1, 0.05, 0.3, false, 0, 0, 0, 0.0, true , kQTFine, kQPFine, 0.0,              false, true },
+        { "DL-310 rd.9 rs.5 r.05 i.3 th60", 60.0, 0.9, 0.5, 0.05, 0.3, false, 0, 0, 0, 0.0, false, kQTFine, kQPFine, kMassTolLowRough, false, true },
+        { "DL-310 rd.8 rs.9 r.2 i1 th45",   45.0, 0.8, 0.9, 0.2,  1.0, false, 0, 0, 0, 0.0, true , 0,       0,       0.0,              false, true },
+        { "DL-310 rd.9 rs.3 r.1 tilt30 th45",45.0,0.9, 0.3, 0.1,  1.0, false, 0, 0, 0, 30.0,true , kQTFine, kQPFine, 0.0,              false, true },
+        { "DL-310 per-channel rd.9 rs.3 th70",70.0,0.9,0.3, 0.0,  0.5, true, 0.02, 0.1, 0.4, 0.0, false, kQTFine, kQPFine, kMassTolLowRough, false, true },
     };
 
     std::cout << "\n-- Gate 1 (two-sided normalisation) + Gate 2 (TVD vs the real sampler) --" << std::endl;
