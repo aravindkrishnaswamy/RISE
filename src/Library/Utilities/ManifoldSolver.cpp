@@ -4857,8 +4857,9 @@ void ManifoldSolver::ComputeLastBlockLightJacobian(
 			dh_raw = Vector3( -eta_t_v * dwo.x, -eta_t_v * dwo.y, -eta_t_v * dwo.z );
 		}
 
-		// ∂h/∂y = (dh_raw - h * dot(h, dh_raw)) / h_len; the raw
-		// derivative itself at an index-matched vertex (DL-290 P1-1).
+		// ∂h/∂y = (dh_raw - h * dot(h, dh_raw)) / h_len at a reflection
+		// vertex; the raw derivative itself at a refraction vertex, whose
+		// constraint is the unnormalized h (UseUnnormalizedHalfVector).
 		const Scalar h_dot = rawHalfVector ? Scalar( 0 ) : Vector3Ops::Dot( h, dh_raw );
 		const Scalar inv_h = rawHalfVector ? Scalar( 1 ) : Scalar( 1.0 ) / h_len;
 		const Vector3 dh(
