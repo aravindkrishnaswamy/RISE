@@ -283,6 +283,31 @@ sampler with the new `C_D` but no second quadrature reads 1 failure
 Post-fix every DL-310 row sits at 1.08-1.71x its own measured half-split
 noise floor (0.0039-0.0050).
 
+### Tests
+
+| Suite | Pre-fix (this slice's final test files against `b89a8aa9`'s material sources) | Post-fix |
+|---|---|---|
+| `SchlickKrayBRDFConsistencyTest` (sections 11-15 new) | **422905 / 383** -- 369 grid cells > 1, the ledger family (8), the five clip-binding reciprocity pairs, section 14's "exercises the clip" | **423288 / 0** |
+| `WardDensityKrayTest` (section I new) | **81398 / 170418** -- 418 grid cells over the 1e-3 band, every over-authored diffuse draw's kray | **251816 / 0** |
+| `SchlickSPFPdfConsistencyTest` (six DL-310 rows + NM twins, noise floors) | 64 / 0 (the pre-fix sampler and density agree; the stale-replay control is the red) | 64 / 0 |
+| `BDPTStrategyBalanceTest` (topology Y) | -- | 227 / 0 |
+
+Unchanged and green: `SchlickMaskingBoundTest` 21655/0, `BoundedSchlickWardTest`
+920/0, `SchlickLobePairingTest` 27/0, `SPFBSDFConsistencyTest`,
+`SPFPdfConsistencyTest`, `LayeredWhiteFurnaceTest` 0/58,
+`HWSSCompanionKrayTest` 189/0, `PTGuidingMISPartitionTest` 185/0,
+`VCMStrategyBalanceTest` 74/0, `BDPTGuidedContinuationTest` 164/0,
+`CstDeriveGoldenTest` 456 MATCH / 0 DRIFT, `SourceHygieneTest` 167/0,
+`WardSelectionQuadratureTest` 969/0, `SchlickWardBackfaceEnergyTest` 19/0,
+`SchlickWardPerChannelReuseTest` 4/0,
+`CookTorranceSchlickGlossyFilterConsistencyTest` 22/0, `PathValueOpsTest`,
+`AshikminShirleySPFPdfConsistencyTest` 99/0,
+`IsotropicPhongSPFPdfConsistencyTest` 46/0, `ConnectionLegalityTest` 319/0,
+`AgentChunkCrudTest` 3816/0, `SSSRadianceScalingTest` 576220/0;
+`RefractiveRadianceScalingTest` 40/1 (row C, DL-308, pre-existing on
+`master`).  Clean `make` rebuild (library + 27 test targets) and clean
+Xcode `RISE-GUI` build: zero compiler warnings.
+
 ### Appearance
 
 On the implementation's own grid (cells whose pre-fix `rho_d <= 1`,
