@@ -2184,6 +2184,9 @@
     <ClInclude Include="..\..\..\src\Library\Materials\SchlickBRDF.h">
       <Filter>Materials\Schlick</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\SchlickMasking.h">
+      <Filter>Materials\Schlick</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\SchlickMaterial.h">
       <Filter>Materials\Schlick</Filter>
     </ClInclude>

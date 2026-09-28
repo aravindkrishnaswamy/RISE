@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include "../src/Library/Materials/SchlickBRDF.h"
+#include "../src/Library/Materials/SchlickMasking.h"
 #include "../src/Library/Materials/IsotropicPhongBRDF.h"
 #include "../src/Library/Materials/AshikminShirleyAnisotropicPhongBRDF.h"
 #include "../src/Library/Materials/WardIsotropicGaussianBRDF.h"
@@ -35,7 +36,13 @@ static double PublishedReference(int model,const Vector3& l,const RayIntersectio
   double w=len>0?Vector3Ops::Dot(ri.onb.v(),tangent)/len:0;
   double A=sqrt(p/(p*p+(1-p*p)*w*w));
   double Z=r/std::pow(1-(1-r)*t*t,2);
-  return (.9+.1*std::pow(1-hv,5))*Z*A/(4*PI*(r+(1-r)*nv)*(r+(1-r)*nl));
+  // DL-225: Eq.31's G(c)/c = 1/(r+(1-r)c) clipped to the Smith
+  // projected-area bound of Z*A (SchlickMaskingBoundTest validates the
+  // helper against exact Smith independently of this file).
+  SchlickMasking::Lane lane; SchlickMasking::Prepare(lane,r,p);
+  double mv=SchlickMasking::MaskOverCos(lane,nv,Vector3Ops::Dot(v,ri.onb.u()),Vector3Ops::Dot(v,ri.onb.v()));
+  double ml=SchlickMasking::MaskOverCos(lane,nl,Vector3Ops::Dot(l,ri.onb.u()),Vector3Ops::Dot(l,ri.onb.v()));
+  return (.9+.1*std::pow(1-hv,5))*Z*A*mv*ml/(4*PI);
  }
  double ax=r,ay=model==1?r:p;
  double x=Vector3Ops::Dot(H,ri.onb.u()),y=Vector3Ops::Dot(H,ri.onb.v());
@@ -62,9 +69,9 @@ int main() {
     }
    }
    printf("ENERGY model=%d r=%.2f theta=%.1f Q=%.9f\n",model,r,d,integral);
-   if(model==0 && d>80) {
-    printf("OPEN DL-225: published Schlick geometric approximation may exceed one: %.9f\n",integral);
-   } else Check(std::isfinite(integral)&&integral <= (model==0?1:.5)+1e-4,"prescribed specular energy family",integral,model==0?1:.5);
+   // DL-225 closed: the grazing Schlick rows were printed as an OPEN
+   // witness (1.244529893 at r .1, 89.9 deg); they are now gated.
+   Check(std::isfinite(integral)&&integral <= (model==0?1:.5)+1e-4,"prescribed specular energy family",integral,model==0?1:.5);
    for(double out:{15.,45.,85.}) for(double phi:{.2,1.0,2.2}) {
     double th=out*PI/180; Vector3 l(sin(th)*cos(phi),sin(th)*sin(phi),cos(th));
     double expected=PublishedReference(model,l,ri,r,model==2?.12:1), actual=b->value(l,ri)[0];

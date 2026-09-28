@@ -788,6 +788,7 @@
     <ClInclude Include="..\..\..\src\Library\Materials\PolishedMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\PolishedSPF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\SchlickBRDF.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\SchlickMasking.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\SchlickMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\SchlickSPF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\TranslucentBSDF.h" />
