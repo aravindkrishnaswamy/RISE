@@ -1643,6 +1643,12 @@ namespace
 
 		bool IsActive() const { return bActive; }
 
+		//! DL-67: the lobe-independent nominal mixing weight.  PART 3's
+		//! one-sample continuation partitions its two techniques with
+		//! the SAME `alpha_nom*guide + (1-alpha_nom)*p_aggregate` split
+		//! this class hands NEE -- see `GuidingPartitionGuideWeight`.
+		Scalar NominalAlpha() const { return alphaNominal; }
+
 		//! The nominal MIS-partner density at `wo`.
 		//!
 		//! `aggregatePdf <= 0` is NOT a special case while guiding is
@@ -3832,6 +3838,11 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			Scalar effectiveBsdfPdf = pS->isDelta ? 0 : pS->pdf;
 			const IORStack* traceIorStack = pS->ior_stack ? pS->ior_stack : &iorStack;
 			IORStack guidedIorStack( iorStack );
+			// DL-67: the aggregate `ISPF::Pdf()` at `traceRay`'s direction,
+			// when a guided branch below already evaluated it (-1 = not
+			// yet); the MIS-partner block reuses it rather than calling
+			// `Pdf()` a second time for the same direction and stack.
+			Scalar aggregateAtTrace = -1;
 
 #ifdef RISE_ENABLE_OPENPGL
 			// DL-74: `guideDist` was initialised (and cosine-multiplied)
@@ -3842,163 +3853,260 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			// nonzero base alpha, non-specular arrival); what remains here
 			// is only the per-LOBE eligibility, which governs SAMPLING and
 			// deliberately does NOT govern the shared nominal MIS density.
-			if( guidingMis.IsActive() && GuidingSupportsSurfaceSampling( *pS ) )
+			// ========================================================
+			// DL-67 (docs/DL67_GUIDED_GENERATING_DENSITY.md): the ONE
+			// partition every guided branch below is built on.
+			// ========================================================
+			// A guided vertex runs two techniques on one integral: the
+			// BSDF technique (the `Scatter` + `PTRandomlySelect` above,
+			// lobe `I` drawn with realized probability `selectProb`) and
+			// the guide technique.  Every branch prices its own
+			// technique's UNWEIGHTED estimator, times that technique's
+			// share of ONE deterministic, lobe-independent partition,
+			// divided by the probability the technique fired:
+			//
+			//   W_g(w) = a g(w) / (a g(w) + (1-a) p_agg(w)),  W_b = 1 - W_g
+			//   lobe I kept   kray_I / selectProb * W_b(w_I) / (1 - alpha_I)
+			//   guide draw    f_agg(w) cos / g(w) * W_g(w) / alphaBar
+			//   alphaBar    = sum_J q_J alpha_J  (the realized probability
+			//                 the guide fires at all at this vertex)
+			//
+			// `p_agg` is the material's AGGREGATE `ISPF::Pdf()` -- the
+			// true generating density of the BSDF technique for every
+			// multi-emit SPF in tree (DL-67 Slice 0, DL-98/99, DL-177,
+			// DL-157) -- never the selected lobe's own `pS->pdf`.  `a` is
+			// `PTGuidingMisPdf`'s nominal alpha in one-sample mode (so the
+			// continuation and NEE split directions by the same function)
+			// and 1/2 in RIS mode (the RIS proposal mixture).
+			//
+			// This replaced three inconsistent densities (DL-67): the
+			// kept-lobe branch divided `kray_I p_I` by a mixture built from
+			// the SELECTED lobe's `p_I`; RIS candidate 0's proposal density
+			// was `p_I` while candidate 1's was `p_agg`; and a lobe the
+			// guide never replaces (half-alpha glossy aside, a
+			// `eRayTranslucent` / `eRayRefraction` lobe) kept its
+			// un-weighted `kray/q` while the guide technique -- which
+			// evaluates the AGGREGATE BSDF -- covered it as well.
+			if( guidingMis.IsActive() && !pS->isDelta )
 			{
-				const Scalar alpha = GuidingEffectiveAlpha(
-					rc.guidingAlpha, *pS, rs );
+				const bool bRIS = ( rc.guidingSamplingType == eGuidingRIS );
+				const Scalar learnedCellAlpha = ( !bRIS && rc.guidingLearnedAlpha ) ?
+					rc.pGuidingField->GetCellAlpha( guideDist ) : Scalar( 0 );
 
-				if( alpha > NEARZERO )
+				// The probability that the guide REPLACES a lobe once that
+				// lobe is selected -- the per-lobe eligibility rule this
+				// block always had (GuidingSupportsSurfaceSampling,
+				// GuidingEffectiveAlpha's glossy half-trust, the learned
+				// per-cell scale in one-sample mode; RIS always resamples
+				// an eligible lobe).
+				auto lobeGuideProb = [&]( const ScatteredRay& r ) -> Scalar {
+					if( !GuidingSupportsSurfaceSampling( r ) ) {
+						return 0;
+					}
+					const Scalar a0 = GuidingEffectiveAlpha( rc.guidingAlpha, r, rs );
+					if( a0 <= NEARZERO ) {
+						return 0;
+					}
+					if( bRIS ) {
+						return 1;
+					}
+					if( rc.guidingLearnedAlpha ) {
+						const Scalar e = a0 * 2.0 * learnedCellAlpha;
+						return e > 1.0 ? Scalar( 1.0 ) : e;
+					}
+					return a0;
+				};
+
+				const Scalar alphaSel = lobeGuideProb( *pS );
+				const Scalar guideProb =
+					PathTransportUtilities::GuidingRealizedGuideProbability(
+						scattered, Traits::is_nm, lobeGuideProb );
+				const Scalar mixA = bRIS ? Scalar( 0.5 ) : guidingMis.NominalAlpha();
+
+				if( alphaSel <= 0 )
 				{
-					if( rc.guidingSamplingType == eGuidingRIS )
+					// The guide never replaces THIS lobe, but it can fire
+					// at this vertex (another lobe could have been
+					// selected), and when it does it prices the aggregate
+					// BSDF -- which includes this lobe.  So this lobe owns
+					// only its `W_b` share.  A realization in which no
+					// lobe can fire the guide (`guideProb == 0`) has no
+					// partner and keeps weight 1.
+					if( guideProb > 0 )
 					{
-						PathTransportUtilities::GuidingRISCandidate<Value> candidates[2];
+						const Vector3& wSel = pS->ray.Dir();
+						aggregateAtTrace = PTEvalPdfAtSurface<Tag>(
+							pSPF, ri.geometric, wSel, iorStack, tag );
+						const Scalar vSel = PathTransportUtilities::GuidingPartitionBsdfWeight(
+							mixA, rc.pGuidingField->Pdf( guideDist, wSel ), aggregateAtTrace );
+						scatterThroughput = scatterThroughput * vSel;
+						if( vSel > 0 ) {
+							effectiveBsdfPdf = effectiveBsdfPdf / vSel;
+						}
+					}
+				}
+				else if( bRIS )
+				{
+					// The RIS-target shape keeps its old per-lobe blend
+					// parameter; it only steers the resampling weights,
+					// which RIS leaves free.
+					const Scalar alphaTarget = GuidingEffectiveAlpha( rc.guidingAlpha, *pS, rs );
 
-						// Candidate 0: BSDF sample (already drawn)
+					PathTransportUtilities::GuidingRISCandidate<Value> candidates[2];
+					Value contrib[2] = { Traits::zero(), Traits::zero() };
+
+					// Candidate 0: the lobe's own draw.  Its proposal
+					// density is the BSDF TECHNIQUE's density -- the
+					// aggregate -- the same function candidate 1 is
+					// evaluated with, so `sum_i p_i(x) / (p_0+p_1)(x) == 1`
+					// at every x (the RIS identity).
+					{
+						PathTransportUtilities::GuidingRISCandidate<Value>& c = candidates[0];
+						c.direction = pS->ray.Dir();
+						c.bsdfEval = PTEvalBSDFAtSurface<Tag>(
+							pBRDF, c.direction, ri.geometric, tag, &iorStack );
+						c.bsdfPdf = PTEvalPdfAtSurface<Tag>(
+							pSPF, ri.geometric, c.direction, iorStack, tag );
+						c.guidePdf = rc.pGuidingField->Pdf( guideDist, c.direction );
+						c.incomingRadPdf = rc.pGuidingField->IncomingRadiancePdf( guideDist, c.direction );
+						c.cosTheta = fabs(
+							Vector3Ops::Dot( c.direction, ri.geometric.vNormal ) );
+						const Scalar avgBsdf = PTSurvivalMagnitude( c.bsdfEval );
+						c.risTarget = PathTransportUtilities::GuidingRISTarget(
+							avgBsdf, c.cosTheta, c.incomingRadPdf, alphaTarget );
+						c.risPdf = PathTransportUtilities::GuidingRISProposalPdf(
+							r_max( c.bsdfPdf, Scalar( 0 ) ), c.guidePdf );
+						const Scalar v0 = PathTransportUtilities::GuidingPartitionBsdfWeight(
+							mixA, c.guidePdf, c.bsdfPdf );
+						contrib[0] = scatterThroughput * v0;
+						c.risWeight = c.risPdf > NEARZERO ? c.risTarget / c.risPdf : 0;
+						c.valid = v0 > 0 && c.risPdf > NEARZERO && avgBsdf > 0;
+						if( !c.valid ) {
+							c.risWeight = 0;
+						}
+					}
+
+					// Candidate 1: a guide draw.  Valid wherever the guide
+					// has density and the BSDF is nonzero -- NOT gated on
+					// the aggregate pdf, which would discard exactly the
+					// directions the guide owns outright (`W_g == 1`).
+					{
+						PathTransportUtilities::GuidingRISCandidate<Value>& c = candidates[1];
+						Scalar guidePdf = 0;
+						const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
+						c.direction = rc.pGuidingField->Sample( guideDist, xi2d, guidePdf );
+						c.guidePdf = guidePdf;
+
+						if( guidePdf > NEARZERO )
 						{
-							PathTransportUtilities::GuidingRISCandidate<Value>& c = candidates[0];
-							c.direction = pS->ray.Dir();
 							c.bsdfEval = PTEvalBSDFAtSurface<Tag>(
 								pBRDF, c.direction, ri.geometric, tag, &iorStack );
-							c.bsdfPdf = pS->pdf;
-							c.guidePdf = rc.pGuidingField->Pdf( guideDist, c.direction );
+							c.bsdfPdf = PTEvalPdfAtSurface<Tag>(
+								pSPF, ri.geometric, c.direction, iorStack, tag );
 							c.incomingRadPdf = rc.pGuidingField->IncomingRadiancePdf( guideDist, c.direction );
 							c.cosTheta = fabs(
 								Vector3Ops::Dot( c.direction, ri.geometric.vNormal ) );
 							const Scalar avgBsdf = PTSurvivalMagnitude( c.bsdfEval );
 							c.risTarget = PathTransportUtilities::GuidingRISTarget(
-								avgBsdf, c.cosTheta, c.incomingRadPdf, alpha );
+								avgBsdf, c.cosTheta, c.incomingRadPdf, alphaTarget );
 							c.risPdf = PathTransportUtilities::GuidingRISProposalPdf(
-								c.bsdfPdf, c.guidePdf );
+								r_max( c.bsdfPdf, Scalar( 0 ) ), c.guidePdf );
+							const Scalar w1 = PathTransportUtilities::GuidingPartitionGuideWeight(
+								mixA, c.guidePdf, c.bsdfPdf );
+							contrib[1] = PTMulDiv( c.bsdfEval, c.cosTheta * w1, guidePdf * guideProb );
 							c.risWeight = c.risPdf > NEARZERO ? c.risTarget / c.risPdf : 0;
-							c.valid = c.bsdfPdf > NEARZERO && c.risPdf > NEARZERO && avgBsdf > 0;
+							c.valid = avgBsdf > 0 && w1 > 0;
 							if( !c.valid ) {
 								c.risWeight = 0;
 							}
 						}
-
-						// Candidate 1: guide sample
-						{
-							PathTransportUtilities::GuidingRISCandidate<Value>& c = candidates[1];
-							Scalar guidePdf = 0;
-							const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
-							c.direction = rc.pGuidingField->Sample( guideDist, xi2d, guidePdf );
-							c.guidePdf = guidePdf;
-
-							if( guidePdf > NEARZERO )
-							{
-								c.bsdfEval = PTEvalBSDFAtSurface<Tag>(
-									pBRDF, c.direction, ri.geometric, tag, &iorStack );
-								c.bsdfPdf = PTEvalPdfAtSurface<Tag>(
-									pSPF, ri.geometric, c.direction, iorStack, tag );
-								c.incomingRadPdf = rc.pGuidingField->IncomingRadiancePdf( guideDist, c.direction );
-								c.cosTheta = fabs(
-									Vector3Ops::Dot( c.direction, ri.geometric.vNormal ) );
-								const Scalar avgBsdf = PTSurvivalMagnitude( c.bsdfEval );
-								c.risTarget = PathTransportUtilities::GuidingRISTarget(
-									avgBsdf, c.cosTheta, c.incomingRadPdf, alpha );
-								c.risPdf = PathTransportUtilities::GuidingRISProposalPdf(
-									c.bsdfPdf, c.guidePdf );
-								c.risWeight = c.risPdf > NEARZERO ? c.risTarget / c.risPdf : 0;
-								c.valid = c.bsdfPdf > NEARZERO && avgBsdf > 0;
-								if( !c.valid ) {
-									c.risWeight = 0;
-								}
-							}
-							else
-							{
-								c.bsdfEval = Traits::zero();
-								c.bsdfPdf = 0;
-								c.incomingRadPdf = 0;
-								c.cosTheta = 0;
-								c.risTarget = 0;
-								c.risPdf = 0;
-								c.risWeight = 0;
-								c.valid = false;
-							}
-						}
-
-						Scalar risEffectivePdf = 0;
-						const Scalar xiRIS = sampler.Get1D();
-						const unsigned int sel = PathTransportUtilities::GuidingRISSelectCandidate(
-							candidates, 2, xiRIS, risEffectivePdf );
-
-						if( risEffectivePdf > NEARZERO && candidates[sel].valid )
-						{
-							scatterThroughput = PTMulDiv( candidates[sel].bsdfEval, candidates[sel].cosTheta, risEffectivePdf );
-							traceRay = Ray( pS->ray.origin, candidates[sel].direction );
-							effectiveBsdfPdf = risEffectivePdf;
-							traceIorStack = PathTransportUtilities::GuidedContinuationIORStack(
-								*pS, iorStack, ri, traceRay.Dir(), guidedIorStack );
-						}
 						else
 						{
-							scatterThroughput = Traits::zero();
+							c.bsdfEval = Traits::zero();
+							c.bsdfPdf = 0;
+							c.incomingRadPdf = 0;
+							c.cosTheta = 0;
+							c.risTarget = 0;
+							c.risPdf = 0;
+							c.risWeight = 0;
+							c.valid = false;
+						}
+					}
+
+					Scalar risEffectivePdf = 0;
+					const Scalar xiRIS = sampler.Get1D();
+					const unsigned int sel = PathTransportUtilities::GuidingRISSelectCandidate(
+						candidates, 2, xiRIS, risEffectivePdf );
+
+					if( risEffectivePdf > NEARZERO && candidates[sel].valid )
+					{
+						// Resampled output: contribution * (sum w / w_sel),
+						// and `sum w / w_sel == M * risPdf_sel / risEff`.
+						scatterThroughput = contrib[sel] *
+							( Scalar( 2 ) * candidates[sel].risPdf / risEffectivePdf );
+						aggregateAtTrace = candidates[sel].bsdfPdf;
+						if( sel == 1 ) {
+							traceRay = Ray( pS->ray.origin, candidates[sel].direction );
+							effectiveBsdfPdf = risEffectivePdf * guideProb;
+							traceIorStack = PathTransportUtilities::GuidedContinuationIORStack(
+								*pS, iorStack, ri, traceRay.Dir(), guidedIorStack );
+						} else {
+							// The lobe's own direction and its own medium
+							// transition -- no substitution happened.
+							effectiveBsdfPdf = risEffectivePdf;
 						}
 					}
 					else
 					{
-						// One-sample MIS.  When rc.guidingLearnedAlpha
-						// is true, use Müller 2017 v2's per-cell Adam-
-						// learned mixing weight σ(θ_cell) — `alpha` is
-						// the Cycles-style scatter-type damping factor
-						// and learnedCellAlpha ∈ (0,1) (default 0.5)
-						// scales it via 2× so initial learned=0.5
-						// reproduces the fixed-α (2a) behaviour and
-						// learning can push effective up or down.
-						// Clamp to [0,1] for the MIS probability
-						// invariant.  Adam step is deferred to path
-						// completion so f = BSDF·cos·Li uses the
-						// actual radiance flowing through the chosen
-						// direction.  When false, falls back to the
-						// fixed `alpha` from GuidingEffectiveAlpha —
-						// reproducible, slightly higher mean σ² in
-						// production (~2% measured at 256 SPP).
-						Scalar effectiveAlpha = alpha;
-						if( rc.guidingLearnedAlpha )
+						scatterThroughput = Traits::zero();
+					}
+				}
+				else
+				{
+					// One-sample MIS.  `alphaSel` already carries the
+					// learned per-cell scale (Mueller 2017 v2; see
+					// lobeGuideProb) -- it is the probability the guide
+					// replaces THIS lobe.  The Adam step on that scale is
+					// deferred to path completion so f = BSDF*cos*Li uses
+					// the radiance that actually flowed.
+					const Scalar effectiveAlpha = alphaSel;
+					const Scalar xiG = sampler.Get1D();
+
+					Scalar smplBsdfPdf = 0;
+					Scalar smplGuidePdf = 0;
+					Scalar smplCombinedPdf = 0;
+
+					if( PathTransportUtilities::ShouldUseGuidedSample( effectiveAlpha, xiG ) )
+					{
+						Scalar guidePdf = 0;
+						const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
+						const Vector3 guidedDir = rc.pGuidingField->Sample( guideDist, xi2d, guidePdf );
+
+						if( guidePdf > NEARZERO )
 						{
-							const Scalar learnedCellAlpha =
-								rc.pGuidingField->GetCellAlpha( guideDist );
-							effectiveAlpha = alpha * 2.0 * learnedCellAlpha;
-							if( effectiveAlpha > 1.0 ) effectiveAlpha = 1.0;
-						}
-						const Scalar xiG = sampler.Get1D();
+							const Value fGuided = PTEvalBSDFAtSurface<Tag>(
+								pBRDF, guidedDir, ri.geometric, tag, &iorStack );
+							const Scalar bsdfPdfGuided = PTEvalPdfAtSurface<Tag>(
+								pSPF, ri.geometric, guidedDir, iorStack, tag );
+							const Scalar wg = PathTransportUtilities::GuidingPartitionGuideWeight(
+								mixA, guidePdf, bsdfPdfGuided );
 
-						Scalar smplBsdfPdf = 0;
-						Scalar smplGuidePdf = 0;
-						Scalar smplCombinedPdf = 0;
-
-						if( PathTransportUtilities::ShouldUseGuidedSample( effectiveAlpha, xiG ) )
-						{
-							Scalar guidePdf = 0;
-							const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
-							const Vector3 guidedDir = rc.pGuidingField->Sample( guideDist, xi2d, guidePdf );
-
-							if( guidePdf > NEARZERO )
+							if( wg > 0 )
 							{
-								const Value fGuided = PTEvalBSDFAtSurface<Tag>(
-									pBRDF, guidedDir, ri.geometric, tag, &iorStack );
-								const Scalar bsdfPdfGuided = PTEvalPdfAtSurface<Tag>(
-									pSPF, ri.geometric, guidedDir, iorStack, tag );
-								const Scalar combinedPdf =
-									PathTransportUtilities::GuidingCombinedPdf( effectiveAlpha, guidePdf, bsdfPdfGuided );
-
-								if( combinedPdf > NEARZERO )
-								{
-									const Scalar cosTheta = fabs(
-										Vector3Ops::Dot( guidedDir, ri.geometric.vNormal ) );
-									scatterThroughput = PTMulDiv( fGuided, cosTheta, combinedPdf );
-									traceRay = Ray( pS->ray.origin, guidedDir );
-									effectiveBsdfPdf = combinedPdf;
-									traceIorStack = PathTransportUtilities::GuidedContinuationIORStack(
-										*pS, iorStack, ri, traceRay.Dir(), guidedIorStack );
-									smplBsdfPdf = bsdfPdfGuided;
-									smplGuidePdf = guidePdf;
-									smplCombinedPdf = combinedPdf;
-								}
-								else
-								{
-									scatterThroughput = Traits::zero();
-								}
+								// f cos / g * W_g / alphaBar  ==  f cos / dEq
+								const Scalar dEq = guidePdf * guideProb / wg;
+								const Scalar cosTheta = fabs(
+									Vector3Ops::Dot( guidedDir, ri.geometric.vNormal ) );
+								scatterThroughput = PTMulDiv( fGuided, cosTheta, dEq );
+								traceRay = Ray( pS->ray.origin, guidedDir );
+								effectiveBsdfPdf = dEq;
+								aggregateAtTrace = bsdfPdfGuided;
+								traceIorStack = PathTransportUtilities::GuidedContinuationIORStack(
+									*pS, iorStack, ri, traceRay.Dir(), guidedIorStack );
+								smplBsdfPdf = bsdfPdfGuided;
+								smplGuidePdf = guidePdf;
+								smplCombinedPdf = PathTransportUtilities::GuidingCombinedPdf(
+									effectiveAlpha, guidePdf, r_max( bsdfPdfGuided, Scalar( 0 ) ) );
 							}
 							else
 							{
@@ -4007,67 +4115,58 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 						}
 						else
 						{
-							const Scalar guidePdfForBsdf = rc.pGuidingField->Pdf( guideDist, pS->ray.Dir() );
-							const Scalar combinedPdf =
-								PathTransportUtilities::GuidingCombinedPdf( effectiveAlpha, guidePdfForBsdf, pS->pdf );
-
-							if( combinedPdf > NEARZERO )
-							{
-								// DL-42: kray is already f_lobe*cos/pS->pdf for
-								// the ONE lobe PTRandomlySelect stochastically
-								// chose (ISPF.h's documented kray contract), so
-								// reweighting its own pdf to combinedPdf must
-								// still divide by selectProb -- the same
-								// multi-lobe compensation applied at this
-								// function's non-guided initialization above
-								// (`scatterThroughput = kray * (1/selectProb)`).
-								// DL-42 fixes THIS branch only. The
-								// RIS-accepted and guided-direction-accepted
-								// branches elsewhere in this block instead
-								// re-evaluate the BSDF/PDF through the
-								// material's AGGREGATE (all-lobes) interfaces
-								// -- that does NOT make them complete,
-								// self-contained estimators immune to
-								// selectProb: at a multi-lobe surface where
-								// GuidingSupportsSurfaceSampling's eligibility
-								// gate admits only SOME lobes (non-delta
-								// diffuse/reflection), the guided/RIS branches
-								// price the material's FULL aggregate value()
-								// while the guiding machinery only ever
-								// proposed/weighted the eligible subset, and
-								// ineligible lobes are additionally priced a
-								// second time through the ordinary
-								// kray/selectProb path below this block --
-								// see DL-67 for the derivation and the
-								// remaining inconsistency between all three
-								// branches (this one, RIS-accepted, and
-								// guided-direction-accepted).
-								scatterThroughput = PTScatterKray<Tag>( *pS ) * (pS->pdf / (selectProb * combinedPdf));
-								effectiveBsdfPdf = combinedPdf;
-								smplBsdfPdf = pS->pdf;
-								smplGuidePdf = guidePdfForBsdf;
-								smplCombinedPdf = combinedPdf;
-							}
+							scatterThroughput = Traits::zero();
 						}
+					}
+					else
+					{
+						// DL-42 fixed the missing `1/selectProb` here; DL-67
+						// fixes the density: the lobe's unweighted estimator
+						// `kray_I / selectProb` takes the BSDF share of the
+						// aggregate partition at its own direction, divided
+						// by the probability it was kept (`1 - alpha_I`,
+						// strictly positive in this branch).
+						const Vector3& wSel = pS->ray.Dir();
+						const Scalar guidePdfForBsdf = rc.pGuidingField->Pdf( guideDist, wSel );
+						const Scalar aggSel = PTEvalPdfAtSurface<Tag>(
+							pSPF, ri.geometric, wSel, iorStack, tag );
+						aggregateAtTrace = aggSel;
+						const Scalar vSel = PathTransportUtilities::GuidingPartitionBsdfWeight(
+							mixA, guidePdfForBsdf, aggSel );
 
-						// Defer Adam update until path completion (only
-						// at root: recursive split branches use a
-						// separate result frame and would attribute
-						// radiance to the wrong vertex).  Skipped when
-						// learning is disabled — keeps the queue
-						// empty so the apply-pending block is a no-op.
-						if( rc.guidingLearnedAlpha && guidingRootRay &&
-							smplCombinedPdf > NEARZERO )
+						if( vSel > 0 )
 						{
-							PTIPendingGuideUpdate u;
-							u.cellId           = rc.pGuidingField->GetCellId( guideDist );
-							u.bsdfPdf          = smplBsdfPdf;
-							u.guidePdf         = smplGuidePdf;
-							u.combinedPdf      = smplCombinedPdf;
-							u.resultBefore     = PTGuidingLuminance( result );
-							u.throughputBefore = PTGuidingLuminance( throughput );
-							GetPTIPendingGuideUpdates().push_back( u );
+							scatterThroughput = PTScatterKray<Tag>( *pS ) *
+								( vSel / ( selectProb * ( Scalar( 1 ) - effectiveAlpha ) ) );
+							effectiveBsdfPdf = pS->pdf * ( Scalar( 1 ) - effectiveAlpha ) / vSel;
+							smplBsdfPdf = aggSel;
+							smplGuidePdf = guidePdfForBsdf;
+							smplCombinedPdf = PathTransportUtilities::GuidingCombinedPdf(
+								effectiveAlpha, guidePdfForBsdf, r_max( aggSel, Scalar( 0 ) ) );
 						}
+						else
+						{
+							scatterThroughput = Traits::zero();
+						}
+					}
+
+					// Defer Adam update until path completion (only
+					// at root: recursive split branches use a
+					// separate result frame and would attribute
+					// radiance to the wrong vertex).  Skipped when
+					// learning is disabled — keeps the queue
+					// empty so the apply-pending block is a no-op.
+					if( rc.guidingLearnedAlpha && guidingRootRay &&
+						smplCombinedPdf > NEARZERO )
+					{
+						PTIPendingGuideUpdate u;
+						u.cellId           = rc.pGuidingField->GetCellId( guideDist );
+						u.bsdfPdf          = smplBsdfPdf;
+						u.guidePdf         = smplGuidePdf;
+						u.combinedPdf      = smplCombinedPdf;
+						u.resultBefore     = PTGuidingLuminance( result );
+						u.throughputBefore = PTGuidingLuminance( throughput );
+						GetPTIPendingGuideUpdates().push_back( u );
 					}
 				}
 			}
@@ -4227,8 +4326,8 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			Scalar misBsdfPdf = 0;
 			if( !pS->isDelta )
 			{
-				const Scalar aggregatePdf = PTEvalPdfAtSurface<Tag>(
-					pSPF, ri.geometric, traceRay.Dir(), iorStack, tag );
+				const Scalar aggregatePdf = aggregateAtTrace >= 0 ? aggregateAtTrace :
+					PTEvalPdfAtSurface<Tag>( pSPF, ri.geometric, traceRay.Dir(), iorStack, tag );
 #ifdef RISE_ENABLE_OPENPGL
 				if( guidingMis.IsActive() )
 				{

@@ -343,6 +343,108 @@ namespace RISE
 			return alpha * guidePdf + (1.0 - alpha) * bsdfPdf;
 		}
 
+		//////////////////////////////////////////////////////////////////////
+		// DL-67: the ONE partition a guided continuation is built on
+		// (docs/DL67_GUIDED_GENERATING_DENSITY.md).
+		//
+		// A guided vertex runs two techniques on the same integral
+		// `integral f(w) cos(w) L(w) dw`: the BSDF technique (Scatter +
+		// RandomlySelect, one lobe `I` drawn with realized probability
+		// `q_I`) and the guide technique (a direction drawn from the
+		// trained field `g`).  One-sample MIS is unbiased for ANY pair of
+		// weights with `W_g(w) + W_b(w) == 1` at every direction, provided
+		// each technique's estimator is its own UNWEIGHTED estimator times
+		// its weight, divided by the probability that the technique fired:
+		//
+		//   lobe I kept    kray_I / q_I  *  W_b(w_I) / (1 - alpha_I)
+		//   guide draw     f(w) cos(w) / g(w)  *  W_g(w) / alphaBar
+		//
+		// with `alpha_I` the probability that the guide REPLACES lobe I
+		// once it is selected, and `alphaBar = sum_J q_J alpha_J` the
+		// probability the guide fires at all (the helper below).  The
+		// weights must be deterministic functions of direction -- not of
+		// the realized lobe draws -- and lobe-independent, which is why
+		// they are built from a fixed mixing constant `a` and the
+		// material's AGGREGATE `ISPF::Pdf()` (the true generating density
+		// of the BSDF technique since DL-67 Slice 0 / DL-98 / DL-99 /
+		// DL-177 / DL-157), never from the selected lobe's own `.pdf`:
+		//
+		//   W_g(w) = a g(w) / (a g(w) + (1 - a) p_agg(w)),  W_b = 1 - W_g
+		//
+		// A lobe the guide never replaces (`alpha_I == 0`: a delta lobe, a
+		// transmission lobe, BDPT's glossy lobes) still takes `W_b`
+		// wherever it is non-delta -- the guide technique evaluates the
+		// AGGREGATE BSDF, so it covers that lobe too.
+		//////////////////////////////////////////////////////////////////////
+
+		/// Realized probability that the guide technique fires at a vertex:
+		/// `sum_J q_J alpha_J`, with `q_J` EXACTLY the weights
+		/// `ScatteredRayContainer::RandomlySelect` draws from (max-channel
+		/// kray for RGB, krayNM for spectral) and `alphaOf(ray)` the
+		/// probability that the guide replaces that lobe once selected.
+		template<class AlphaOf>
+		inline Scalar GuidingRealizedGuideProbability(
+			const ScatteredRayContainer& rays,
+			const bool bNM,
+			AlphaOf alphaOf
+			)
+		{
+			const unsigned int n = rays.Count();
+			if( n == 0 ) {
+				return 0;
+			}
+			if( n == 1 ) {
+				return alphaOf( rays[0] );
+			}
+			Scalar total = 0;
+			for( unsigned int i = 0; i < n; i++ ) {
+				total += bNM ? rays[i].krayNM : ColorMath::MaxValue( rays[i].kray );
+			}
+			if( total <= NEARZERO ) {
+				return 0;
+			}
+			Scalar p = 0;
+			for( unsigned int i = 0; i < n; i++ ) {
+				const Scalar w = bNM ? rays[i].krayNM : ColorMath::MaxValue( rays[i].kray );
+				p += ( w / total ) * alphaOf( rays[i] );
+			}
+			return p;
+		}
+
+		/// The guide technique's partition weight `W_g(w)`.  Zero when the
+		/// guide has no density there (the guide cannot produce that
+		/// direction, so the BSDF side must own it).
+		inline Scalar GuidingPartitionGuideWeight(
+			const Scalar mixA,
+			const Scalar guidePdf,
+			const Scalar aggregatePdf
+			)
+		{
+			const Scalar num = mixA * ( guidePdf > 0 ? guidePdf : Scalar( 0 ) );
+			const Scalar den = num + ( 1.0 - mixA ) * ( aggregatePdf > 0 ? aggregatePdf : Scalar( 0 ) );
+			return den > 0 ? num / den : Scalar( 0 );
+		}
+
+		/// The BSDF technique's partition weight `W_b(w) = 1 - W_g(w)` at a
+		/// direction a NON-DELTA lobe generated.  Returns 1 where the
+		/// aggregate density reads zero there: the aggregate does not
+		/// describe that lobe (DL-103's guard -- no known production
+		/// inhabitant since DL-41 closed), so the lobe is priced
+		/// un-partitioned exactly as it is with guiding off.
+		inline Scalar GuidingPartitionBsdfWeight(
+			const Scalar mixA,
+			const Scalar guidePdf,
+			const Scalar aggregatePdf
+			)
+		{
+			if( aggregatePdf <= 0 ) {
+				return 1;
+			}
+			const Scalar num = ( 1.0 - mixA ) * aggregatePdf;
+			const Scalar den = num + mixA * ( guidePdf > 0 ? guidePdf : Scalar( 0 ) );
+			return den > 0 ? num / den : Scalar( 1 );
+		}
+
 		/// Determines whether to sample from the guiding distribution
 		/// or keep the BSDF-sampled direction, given a uniform random
 		/// number on [0, 1).
