@@ -18,6 +18,8 @@
 #include "../Utilities/Reference.h"
 #include "../Utilities/IORStackSeeding.h"
 #include "../Rendering/LuminaryManager.h"
+#include "../Interfaces/IGeometry.h"
+#include "../Interfaces/IEmitter.h"
 
 namespace RISE
 {
@@ -148,8 +150,14 @@ namespace RISE
 				{
 					const IEmitter* pEmitter = i->pLum->GetMaterial()->GetEmitter();
 					const Scalar area = (*i).pLum->GetArea();
-					const RISEPel totalpower = (*i).pLum->GetMaterial()->GetEmitter()->averageRadiantExitance() * area;
-					const RISEPel power = pEmitter->averageRadiantExitance() * area * dPowerScale;
+					// DL-320: a double-sided luminary radiates from both faces
+					// (docs/DL320_DOUBLE_SIDED_EMITTER.md): its total power,
+					// and so each photon's, counts both, and each photon
+					// leaves from a face chosen with probability 1/2 below.
+					const bool twoSided = (*i).pLum->GetGeometry() && (*i).pLum->GetGeometry()->IsDoubleSided();
+					const Scalar faces = EmitterSides::FaceCount( twoSided );
+					const RISEPel totalpower = (*i).pLum->GetMaterial()->GetEmitter()->averageRadiantExitance() * area * faces;
+					const RISEPel power = pEmitter->averageRadiantExitance() * area * faces * dPowerScale;
 
 					unsigned int numshot_thislum = 0;
 					const unsigned int numstored_sofar = pPhotonMap->NumStored();
@@ -179,6 +187,19 @@ namespace RISE
 						Point2 coord;
 						i->pLum->UniformRandomPoint( &r.origin, &normal, &coord, Point3( geomsampler.CanonicalRandom(), geomsampler.CanonicalRandom(), geomsampler.CanonicalRandom() ) );
 
+						// DL-320: the emitting face.  The first direction
+						// coordinate is remapped to pick it (no extra draw),
+						// so a one-sided luminary's photon is bit-identical.
+						Point2 dirRand( geomsampler.CanonicalRandom(), geomsampler.CanonicalRandom() );
+						if( twoSided ) {
+							if( dirRand.x < 0.5 ) {
+								dirRand.x = dirRand.x * 2.0;
+							} else {
+								dirRand.x = dirRand.x * 2.0 - 1.0;
+								normal = -normal;
+							}
+						}
+
 						RayIntersectionGeometric rig( r, nullRasterizerState );
 						rig.vNormal = normal;
 						// `UniformRandomPoint` returns the geometric face
@@ -189,7 +210,7 @@ namespace RISE
 						rig.ptCoord = coord;
 						rig.onb.CreateFromW( rig.vNormal );
 
-						r.SetDir(pEmitter->getEmmittedPhotonDir( rig, Point2( geomsampler.CanonicalRandom(), geomsampler.CanonicalRandom() ) ));
+						r.SetDir(pEmitter->getEmmittedPhotonDir( rig, dirRand ));
 
 						// Fresh per-photon stack seeded from THIS photon's
 						// origin: a luminaire sealed inside nested
@@ -331,7 +352,10 @@ namespace RISE
 				if( bShootFromMeshLights ) {
 					for( i=lum.begin(), e=lum.end(); i!=e; i++ ) {
 						const Scalar area = (*i).pLum->GetArea();
-						const RISEPel power = (*i).pLum->GetMaterial()->GetEmitter()->averageRadiantExitance() * area;
+						// DL-320: both faces of a double-sided luminary radiate.
+						const bool twoSided = (*i).pLum->GetGeometry() && (*i).pLum->GetGeometry()->IsDoubleSided();
+						const RISEPel power = (*i).pLum->GetMaterial()->GetEmitter()->averageRadiantExitance() * area *
+							EmitterSides::FaceCount( twoSided );
 						total_exitance += ColorMath::MaxValue(power);
 					}
 				}

@@ -49,7 +49,9 @@
 //          emission MIS-combined -- the hit-side partner must describe
 //          the same two-faced density NEE now samples).
 //      Z2  a MIXED scene: the back-lit double-sided quad plus a small
-//          single-sided face-down quad.  The double-sided emitter's
+//          single-sided face-down quad off to the side (x in [3.1, 3.9],
+//          so neither emitter shadows the other's light onto the viewed
+//          floor square and the closed forms simply add).  The double-sided emitter's
 //          selection weight doubles with its power; every consumer of
 //          the selection PMF must read the same value or the two
 //          lights' MIS partitions stop summing to one.
@@ -256,7 +258,7 @@ static const double kView = 4.0;		// orthographic viewport width (floor square [
 
 // The second, SINGLE-sided emitter of row Z2.
 static const double kH2 = 1.4;
-static const double kCx2 = 1.2;
+static const double kCx2 = 3.5;
 static const double kHalf2 = 0.4;
 static const double kScale2 = 6.0;
 
@@ -480,6 +482,9 @@ static void TestZ2()
 		{ "VCM (connections only)", RasVCM( 64, false ),   0.02 },
 	};
 	for( const Ras& r : rs ) {
+		const Stat f = RenderN( Header() + r.text + SceneBody( true, true, true ), "z2f", g_repeats );
+		Print( ( std::string( r.name ) + " mixed, face-down (control)" ).c_str(), f, cf );
+		Check( f.ok && std::fabs( f.mean / cf - 1.0 ) < r.tol, std::string( "Z2 " ) + r.name + ": mixed face-down control matches the closed form" );
 		const Stat b = RenderN( Header() + r.text + SceneBody( false, true, true ), "z2b", g_repeats );
 		Print( ( std::string( r.name ) + " mixed, BACK face" ).c_str(), b, cf );
 		Check( b.ok && std::fabs( b.mean / cf - 1.0 ) < r.tol, std::string( "Z2 " ) + r.name + ": mixed scene matches the closed form" );

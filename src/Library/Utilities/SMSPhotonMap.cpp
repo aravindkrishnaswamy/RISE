@@ -21,6 +21,8 @@
 #include "../Interfaces/IObjectManager.h"
 #include "../Interfaces/IObject.h"
 #include "../Interfaces/IMaterial.h"
+#include "../Interfaces/IGeometry.h"
+#include "../Interfaces/IEmitter.h"
 #include "../Interfaces/ISPF.h"
 #include "../Interfaces/ILightPriv.h"
 #include "../Interfaces/ILightManager.h"
@@ -433,7 +435,9 @@ unsigned int SMSPhotonMap::Build(
 	Scalar totalExitance = 0;
 	for( LuminaryManager::LuminariesList::const_iterator i = luminaries.begin(); i != luminaries.end(); ++i ) {
 		if( i->pLum && i->pLum->GetMaterial() && i->pLum->GetMaterial()->GetEmitter() ) {
-			const Scalar area = i->pLum->GetArea();
+			// DL-320: both faces of a double-sided luminary radiate.
+			const bool twoSided = i->pLum->GetGeometry() && i->pLum->GetGeometry()->IsDoubleSided();
+			const Scalar area = i->pLum->GetArea() * EmitterSides::FaceCount( twoSided );
 			const RISEPel pw = i->pLum->GetMaterial()->GetEmitter()->averageRadiantExitance() * area;
 			totalExitance += ColorMath::MaxValue( pw );
 		}
@@ -472,7 +476,13 @@ unsigned int SMSPhotonMap::Build(
 			continue;
 		}
 		const IEmitter* pEmitter = i->pLum->GetMaterial()->GetEmitter();
-		const Scalar area = i->pLum->GetArea();
+		// DL-320: a double-sided luminary radiates from both faces
+		// (docs/DL320_DOUBLE_SIDED_EMITTER.md), exactly as SMS's own
+		// light-directed connection already treats it (its emitter
+		// cosine is `fabs`); its photon budget counts both faces and each
+		// seed photon leaves from a face chosen with probability 1/2.
+		const bool twoSided = i->pLum->GetGeometry() && i->pLum->GetGeometry()->IsDoubleSided();
+		const Scalar area = i->pLum->GetArea() * EmitterSides::FaceCount( twoSided );
 		const RISEPel emitterTotal = pEmitter->averageRadiantExitance() * area;
 
 		const unsigned int target = static_cast<unsigned int>(
@@ -487,6 +497,18 @@ unsigned int SMSPhotonMap::Build(
 			i->pLum->UniformRandomPoint( &r.origin, &normal, &coord,
 				Point3( geomRng.CanonicalRandom(), geomRng.CanonicalRandom(), geomRng.CanonicalRandom() ) );
 
+			// DL-320: the emitting face, chosen by remapping the first
+			// direction coordinate (no extra draw).
+			Point2 dirRand( geomRng.CanonicalRandom(), geomRng.CanonicalRandom() );
+			if( twoSided ) {
+				if( dirRand.x < 0.5 ) {
+					dirRand.x = dirRand.x * 2.0;
+				} else {
+					dirRand.x = dirRand.x * 2.0 - 1.0;
+					normal = -normal;
+				}
+			}
+
 			RayIntersectionGeometric rig( r, nullRasterizerState );
 			rig.vNormal = normal;
 			// Luminary normal from UniformRandomPoint is geometric; mirror.
@@ -494,8 +516,7 @@ unsigned int SMSPhotonMap::Build(
 			rig.ptCoord = coord;
 			rig.onb.CreateFromW( rig.vNormal );
 
-			r.SetDir( pEmitter->getEmmittedPhotonDir( rig,
-				Point2( geomRng.CanonicalRandom(), geomRng.CanonicalRandom() ) ) );
+			r.SetDir( pEmitter->getEmmittedPhotonDir( rig, dirRand ) );
 
 			const RISEPel power = emitterTotal;
 
