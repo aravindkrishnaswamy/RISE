@@ -160,9 +160,18 @@ f_D(i, o) = min( Rd, 1 - A(i), 1 - A(o) ) / pi        (per channel / lane)
   section 13).
 * **Bounded:** `rho_d(i) = A_true(i) + ∫ f_D cos <= A_true(i) + (1 - A(i))
   <= 1` whenever `A >= A_true` (any `Rd`, any `rho`, over-authored included).
+  `A >= A_true` is enforced at the table's probes and MEASURED, not proven,
+  between them: the external review's 15,925-cell extended grid (roughness
+  down to .001, isotropy to .01, 89.9°) reads pre-fix 5143 cells > 1 (worst
+  1.8486) and post-fix 0 (worst 0.99991), but one of its 5000 table probes
+  under-reads the truth by 3e-3 and the full material there reads 1.00298
+  (`Rd .5`, `rho 1`, roughness .024, isotropy .004, 89.62°: table 0.9531 vs
+  true 0.9561) -- so the bound holds to within 3e-3 at isotropy below .01
+  at grazing.
 * **Minimal:** it equals `Rd/pi` BIT FOR BIT for every direction pair both
   of whose directions already conserve energy under the additive model
-  (`Rd <= 1 - A(v)` at `v = i` and `v = o`) -- DL-225's ruling applied to
+  (`Rd <= 1 - A(v)` at `v = i` and `v = o`, judged against the table's
+  conservative `A`; see Residuals) -- DL-225's ruling applied to
   the diffuse term (section 13: 2.2e-16 relative, the three materials /
   direction pairs that do not clip).
 
@@ -187,7 +196,11 @@ energy-conserving Ward materials by 7-17%, which have no defect at all.
 By DL-225's own precedent (full Smith masking was rejected for
 brightening already-conservative cells) it fails the appearance gate.
 Kulla-Conty normalization is energy-exact for white diffuse but still
-moves every material (and has zero slack for an under-estimated `A` at
+moves every material -- its directional albedo is `A(i) + Rd (1 - A(i))`,
+not the additive `A(i) + Rd`, so the premise that normalizing by
+`1 - Ā` leaves the material "unchanged on average" is false (external
+review: conserving sub-grid mean change at normal incidence −7.5%, against
+−13.5% for the DL-37 product and −0.05% for the min clip) (and has zero slack for an under-estimated `A` at
 `Rd = 1`).  The product clip `Rd c(i) c(o)`, `c = min(1, (1-A)/Rd)`, is
 bounded and reciprocal but darkens unclipped incoming directions through
 `c̄ < 1`; the min form is pointwise the largest symmetric function with
@@ -372,28 +385,63 @@ Renders (user CPU, n = 4-5 interleaved): all-Schlick box that never clips
 1.07 → 82.66 ± 0.65 s (+1.6%), images identical within noise.  The clipping
 all-Schlick box reads −5.3% PT / −5.2% BDPT, but that comparison is
 confounded: the base render's paths carry runaway throughput and survive
-Russian roulette longer.
+Russian roulette longer.  **The unconfounded clipping cost (external
+review):** an energy-conserving furnace sphere, Rd .9 / rho .1 / roughness
+.05 -- which clips -- reads PT user CPU 7.56 ± 0.03 s → 10.72 ± 0.12 s,
+**+41.7%** (n = 3 interleaved); the mixed Cornell box +0.8%.  Every Schlick
+lane with `Rd > 1 − A_top` (`A_top` the table's maximum over incidence)
+pays the band quadrature on every `Pdf` call.  At isotropy 1 that
+threshold is:
+
+| roughness | rho .04 | rho .1 | rho .5 | rho .9 |
+|---:|---:|---:|---:|---:|
+| .01 | Rd > .63 | .59 | .33 | .07 |
+| .05 | .80 | .75 | .45 | .14 |
+| .2 | .90 | .85 | .55 | .25 |
+| .5 | .96 | .93 | .75 | .57 |
+| .8 | .98 | .96 | .84 | .71 |
+
+Mitigation recipe (not done in this slice): the band nodes
+(`SchlickDiffuseDraw`) depend only on the lanes, `rho`, `Rd`, `mu_i` and the
+geometric-normal frame -- not on the query direction -- so a small
+thread-local memo keyed on those can share them across the several `Pdf`
+calls one vertex makes (the DL-24 shared-walk precedent); verify it
+bit-identical on a deterministic single-thread render.
 
 ### Residuals
 
-* **DL-323** (new): `CookTorranceBRDF` and `IsotropicPhongBRDF` add the same
-  uncoupled `Rd/pi`; both are bounded under energy-conserving authoring
-  (Cook-Torrance's Fresnel multiplies the specular colour, so its albedo
-  stays below it: `rd .9 spec .1` reads 0.982, `rd .5 spec .5` 0.909;
-  normalized Phong reads exactly `Rd + Rs`) but reach 1.717 / 1.900 when
-  over-authored, where DL-310 now clips Ward's.  The over-authoring policy
-  is inconsistent across the four models until one ruling covers them.
-  `AshikminShirleyAnisotropicPhongBRDF`'s coupled diffuse is bounded by
-  design (max 0.996 on the same grid).
+* **DL-323** (new, reframed by the external review): `CookTorranceBRDF`
+  adds the same uncoupled `Rd/pi` under a specular whose Fresnel RISES
+  toward 1 at grazing -- the mechanism DL-310 closed for Schlick -- so a
+  STANDARD plastic (Rd .9 under a white specular tint, ior 1.5) reads
+  0.940 at 0°, 1.452 at 85° and 1.715 at 89° (spec .3: 1.144, spec .5:
+  1.307 at 89°); `Rd + spec <= 1` is not its conservation criterion (the
+  sibling audit's own `rd .9 spec .1` 0.982 / `rd .5 spec .5` 0.909 rows
+  simply never reached that corner).  Normalized isotropic Phong reads
+  exactly `Rd + Rs` (over-authoring only, 1.900 at `Rd .9 Rs 1`).  The
+  shipped `materials` scene shows the resulting POLICY SPLIT: under
+  identical grey-under-white authoring its Ward teapots lose 47-50% while
+  the Cook-Torrance teapot moves −0.02%.  Ruling needed: extend the
+  min clip to Cook-Torrance and Phong (the consistent choice) or revert
+  Ward's half.  `AshikminShirleyAnisotropicPhongBRDF`'s coupled diffuse is
+  bounded by design (max 0.996).
 * **DL-324** (new): an intermittent NaN in the shipped `showroom` on the
-  base build (not attributed; see the ledger row).
+  base build (about 1 in 33 renders); lead from the external review: Ward
+  anisotropic `ComputeFactors`' unclamped `acos` of a possibly zero-length
+  tangent (NaN on 46,912 of 200,000 constructed pairs), pre-existing.
 * The azimuth-maximum `A` over-darkens anisotropic Schlick in the clip band
   (above); Ward's supremum `A` over-darkens over-authored rough Ward.
-  Both are bounded, reciprocal choices made on cost; neither touches an
-  energy-conserving direction pair.
-* The table's off-probe residual deficit (3.2e-3 at the box's extreme
-  corner, `r < 1e-4`, isotropy < .01, beyond 89.9°) can let
-  `rho_d` exceed 1 by at most that much there.
+  Both are bounded, reciprocal choices made on cost.  "Untouched where the
+  pair already conserves" holds against the TABLE's `A`, not the true one:
+  on the external review's extended grid 40 of 449 never-over cells move by
+  more than 1%, worst −6.6% (`Rd .3`, `rho .7`, roughness .05, isotropy .01,
+  89.9°), all at `θ >= 89°` with isotropy <= .1 or roughness <= .001, where
+  the table's conservative bump or the azimuth maximum over-reads `A`.
+* The table's residual under-read: the generator's off-probe validation
+  reads 3.2e-3 worst (roughness 2.7e-5, isotropy .006, 89.93°), and the
+  external review found the same order at an ordinary roughness (.024,
+  isotropy .004, 89.62°: full material 1.00298).  The bound holds to
+  within 3e-3 at isotropy below .01 at grazing.
 
 ## Auxiliary albedo and consumers
 
