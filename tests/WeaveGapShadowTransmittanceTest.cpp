@@ -533,6 +533,21 @@ static void TestQueryMatchesSampler()
 	Check( thin.Material()->HasDeltaPassThrough(), "query: a `transmission thin` weave reports HasDeltaPassThrough" );
 	Check( !opaque.Material()->HasDeltaPassThrough(), "query: a `transmission none` weave does NOT" );
 	Check( !lamb->HasDeltaPassThrough(), "query: a Lambertian does NOT" );
+	{
+		// `silk` ships `transmission thin` with a uniform `gap 0`: its SPF
+		// can never draw the gap lobe, so it must not claim the capability
+		// (it would only make every delta-light shadow ray it occludes pay
+		// for a walk that finds zero).  Same for an explicit gap 0.
+		RISE::WeaveTest::PresetWeave silk( "silk", 0.0, 0.5, false, /*thin=*/true );
+		RISE::WeaveTest::PresetWeave zeroGap( "linen", 0.0, 0.5, false, /*thin=*/true, 0.25, 0.25, /*gapOverride=*/0.0 );
+		Check( silk.Material()->GetTransmission() == eWeaveTransmissionThin && !silk.Material()->HasDeltaPassThrough(),
+			"query: `silk` (thin, uniform gap 0) does NOT report HasDeltaPassThrough" );
+		Check( !zeroGap.Material()->HasDeltaPassThrough(), "query: a thin weave with gap 0 does NOT" );
+		UniformScalarPainter* g3 = new UniformScalarPainter( 0.3 ); g3->addref();
+		zeroGap.Material()->SetGap( *g3 );
+		Check( zeroGap.Material()->HasDeltaPassThrough(), "query: ... and does once SetGap rebinds a non-zero gap" );
+		safe_release( g3 );
+	}
 	Check( fabThin->HasDeltaPassThrough() && coatThin->HasDeltaPassThrough() && coatFab->HasDeltaPassThrough(),
 		"query: fabric / coated / coated-over-fabric over a thin weave FORWARD it" );
 	Check( lum->HasDeltaPassThrough(), "query: a luminaire wrapping a thin weave FORWARDS it" );
