@@ -64,7 +64,10 @@ It agrees with an independent quadrature to < 1e-11 for `n - 1 >= 1e-3`
 catastrophically (1.4e-9 off at `1 + 1e-4`, 1.1e-5 at `1 + 1e-6`), so
 within `1e-3` of a matched index `c` is interpolated linearly between the
 exact `c(1) = 1` and the closed form at `1.001`; Test E measures the worst
-error over `|eta - 1| in [1e-6, 3e-3]`, both sides, at **6.3e-7**.  For
+error over ten sampled offsets `|eta - 1| in [1e-6, 3e-3]`, both sides,
+at **6.3e-7**; the external review's dense scan (2000 points per side)
+puts the true in-band worst at **6.67e-7, at eta = 1.00048**, inside the
+test's 1e-6 gate.  For
 `eta < 1`, Fresnel's symmetry in the two sides plus Snell
 (`mu dmu = eta^2 t dt`) give `c(eta) = eta^2 * c(1/eta)` exactly -- the
 same identity DL-49 derived for the Schlick law.  Sw = `Ft/(c pi)` keeps a
@@ -108,7 +111,7 @@ at HEAD), library and tests rebuilt, run, restored with
 |---|---|---|
 | `BSSRDFNormalizationTest` | **41 failures** (Test E 28: all 7 indices pointwise, hemispherical and both adapter shapes; the near-`eta = 1` normalization sweep 1, off by 0.048; the diffusion and random-walk RGB/NM sample-ratio groups 12, whose independent oracle now integrates the exact law) | all pass |
 | `BSSRDFSamplingTest` | abort in Test C (`R + Ft = 0.049` at `eta = 1, mu = 0.01`) | all pass |
-| `SSSExteriorIndexInvarianceTest` | **159/7** | 166/0 |
+| `SSSExteriorIndexInvarianceTest` | **158/8** | 166/0 |
 
 **Part C (rendered white furnace).**  A conservative SSS sphere (zero
 absorption) under a uniform environment of radiance 1, orthographic camera
@@ -158,8 +161,9 @@ filing's prediction that they would is refuted.**  (The filing's
 The reason is geometric: that rig's orthographic camera sees the slab at
 normal incidence, where Schlick and exact Fresnel coincide (both `F0`), so
 the R+T mismatch enters only through light re-hitting the slab obliquely.
-The ~3 % residual has a different cause, isolated by four discriminators
-(PT, 256 spp, RW slab of index 1.5 in the same water rig unless noted):
+The ~3 % residual has a different cause.  This slice's own discriminators
+(PT, 256 spp, RW slab of index 1.5 in the same water rig unless noted)
+showed it is not the boundary law and is PT-specific:
 
 - a **matched** index (1.33 in water -- no interface at all) still reads
   0.9733 (random walk) / 0.9693 (diffusion); index 2 reads 0.934 / 0.957;
@@ -168,9 +172,46 @@ The ~3 % residual has a different cause, isolated by four discriminators
 - handing the live IOR stack to PT's two SSS entry NEE calls (they pass
   none) leaves it at 0.9698.
 
-So it is a PT-specific SSS-transport defect under a non-air exterior,
-independent of the boundary Fresnel law: filed as **DL-315**, not fixed
-here.
+The external review of this slice then isolated the mechanism, and it is
+NOT "a non-air exterior": **an enclosure of index 1.0 -- no interface at
+all -- is WORSE than water** (slab 1.5 in a 1.0 box: random walk 0.9603,
+diffusion 0.9831, against 1.0003 / 0.9956 in open air; slab-index sweep in
+that box: 1.0 -> 1.00000, 1.5 -> 0.960, 2.0 -> 0.889, i.e. a loss the size
+of the normal-incidence reflectance `F0`).  Two INDEPENDENT PT defects:
+
+1. **`RayCaster::CastRay` sets the current object on the CALLER's IOR
+   stack** (`RayCaster.cpp:1496`, `ior_stack.SetCurrentObject(ri.pObject)`
+   through a `const IORStack&`, `pCurrentObject` being `mutable`).  After
+   PT's SSS continuation (`PathTracingIntegrator.cpp:3057` diffusion,
+   `:3336` random walk) hits the enclosure, the caller's stack names the
+   box as the current object; the box IS in that stack, so the same
+   vertex's `SubSurfaceScatteringSPF::Scatter` sees `containsCurrent()`,
+   takes the inside/absorb branch, and the surface reflection is lost.
+   Passing a COPY of the stack at the two continuation sites restores the
+   index-1.0 box exactly (random walk 1.0004 / 0.99998, diffusion 0.9964 /
+   0.9988).
+2. **PT's RayCaster is created with a hard-coded maximum recursion of 10**
+   (`Job.cpp:10357`; `ENABLE_MAX_RECURSION` is on at `RayCaster.cpp:37`),
+   and each SSS event nests its continuation cast at `depth + 2`, so paths
+   that TIR inside the enclosure and come back to the slab are cut off.
+   Raising the cap alone recovers 2.6 % of the water rows' 3.1 % deficit
+   (random walk 0.99553, diffusion 0.99406), and it reaches OPEN-AIR
+   shipped content: `bdpt_sss_dragon` under PT reads **+0.82 %** with the
+   cap raised (0.214115 +/- 0.000169, n = 5, vs 0.215864 +/- 0.000271,
+   n = 3, t about 10).
+
+Both fixed together: water camera-outside random walk **1.00019**,
+diffusion **0.99550** (= diffusion's own open-air 0.99568); camera inside
+1.76883 against explicit 1.76890; matched index random walk 1.00000.
+BDPT and a Lambertian slab are immune because neither nests a cast per
+event.  Suspects REFUTED by the review (so not to be chased again): the
+entry-NEE / continuation MIS partition (forcing the continuation partner
+to 0 leaves the water rows unchanged), integrator Russian roulette
+(`rr_min_depth 100000`: unchanged), the random walk's exit weight
+(`E[Ft*W] = 0.8889` per event in every topology, valid fraction 1), the
+continuation's returned value, and a far-side exit.  Filed as **DL-315**
+(both defects, one row), not fixed here -- library code outside this
+slice's law change.
 
 **Four more suites hard-coded the Schlick law as their oracle** and were
 moved to the exact law in this slice.  Three failed against the fix with
@@ -236,9 +277,14 @@ the thin slab (grazing-dominated) **-0.35 %**.  The three dragon scenes
 under BDPT move **+0.4 ... +1.1 %** while PT does not; on those scenes
 BDPT sits below PT pre-fix (e.g. `bdpt_sss_dragon` 0.20915 vs 0.21418,
 -2.3 %) and the fix closes about 40 % of that gap (0.21121 vs 0.21416,
--1.4 %) -- BDPT's MIS-weighted SSS connections re-evaluate Sw's SHAPE,
-which changed.  The residual PT-BDPT gap on those scenes predates this
-slice and is not attributed here.
+-1.4 %).  No BDPT-only code path is involved: the dragons use the
+diffusion model, and the only BDPT-only edits in this slice are the two
+random-walk coins, which diffusion never reaches.  The +1.2 % BDPT move is
+BDPT's own pre-existing inconsistency responding to shared code (the
+profile's `FresnelTransmission` and the Sw normalization); with the
+dragon's surface made SMOOTH, BDPT reads **7.9 % ABOVE** PT in both
+builds -- see DL-333 (filed at merge).  Part of PT's side of that gap is
+DL-315's recursion cap (+0.82 % on this scene).
 
 ## 7. Cost
 
@@ -267,8 +313,18 @@ Fresnel a square root and two divisions per evaluation.
 
 ## 9. Residuals
 
-- **DL-315** -- PT's SSS (diffusion and random walk) reads ~3 % low under a
-  non-air exterior (the `SSSRadianceScalingTest` water rows), independent
-  of the boundary law (§5).
+- **DL-315** -- two PT defects (§5): `RayCaster::CastRay` mutating the
+  caller's IOR stack's current object, which drops the SSS reflection of
+  any SSS object inside an enclosure by about `F0`; and PT's hard-coded
+  RayCaster recursion cap of 10 against SSS continuations nested at
+  `depth + 2` (the water rows' ~3 %, and +0.82 % on the open-air
+  `bdpt_sss_dragon` under PT).
+- **DL-333** (filed at merge) -- with the dragon's surface smooth, BDPT
+  reads 7.9 % above PT in both builds; pre-existing, not from this branch.
+- **DL-334** (filed at merge) -- in the spectral path the SSS REFLECTION
+  (`SubSurfaceScatteringSPF::ScatterNM`) uses the index at the wavelength
+  while the TRANSMISSION uses the RGB value (`GetValuesAt(ri).v[0]`), so
+  R + T != 1 per wavelength for a wavelength-varying index painter; the
+  "R + T = 1 to rounding" result here is measured at uniform index only.
 - The Donner-Jensen profile's dead `SchlickFresnel` helper -- delete after
   `debt-dl291` merges.

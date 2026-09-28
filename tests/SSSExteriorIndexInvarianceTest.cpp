@@ -24,8 +24,10 @@
 //  THE INVARIANT (reference-free)
 //
 //    Scale every index by the same factor s: exterior 1 -> s, interior
-//    n -> s*n.  Snell directions, exact dielectric Fresnel and every
-//    Schlick law of the RELATIVE index are unchanged, and the complete
+//    n -> s*n.  Snell directions and the exact dielectric Fresnel law of
+//    the RELATIVE index (the SSS boundary's law on both sides since
+//    DL-306; it was Schlick on the transmission side before) are
+//    unchanged, and the complete
 //    SSS event carries no unmatched eta^2 (DL-04), so every weight, every
 //    sampled direction and every rendered pixel must be unchanged.  This
 //    needs no reference image and no closed form.
@@ -244,8 +246,9 @@ namespace
 		}
 		std::cout << "    worst |Ft_scaled - Ft_air| / Ft_air = " << worst << std::endl;
 
-		// Matched index: no interface.  Schlick at F0 = 0 transmits exactly 1
-		// at normal incidence (a pre-DL-49 build reads 0.96, the air value).
+		// Matched index: no interface.  The exact law transmits exactly 1
+		// (at every cosine since DL-306; DL-49's Schlick law did so only at
+		// normal incidence).  A pre-DL-49 build reads 0.96, the air value.
 		ProfileBundle glass( 1.5 );
 		const RayIntersectionGeometric riGlass = MakeSurfaceRI( 1.5 );
 		const Scalar ftMatched = glass.profile->FresnelTransmission( 1.0, riGlass );
@@ -824,9 +827,10 @@ namespace
 		// airInterior * exterior: one relative index, two absolute scales.
 		struct Row { Model model; Integrator integrator; unsigned int samples; double band; Scalar airInterior; Scalar exterior; };
 		// The "dense" rows put the relative index BELOW 1 (a 1.33 body inside
-		// 1.5 glass, twinned with 1.33/1.5 in air): Schlick then runs at the
-		// transmitted cosine with total reflection past the critical angle,
-		// the one regime where Sw itself (not just Ft) depends on the index,
+		// 1.5 glass, twinned with 1.33/1.5 in air): the boundary law then
+		// totally reflects past the critical angle (exact Fresnel since
+		// DL-306; Schlick at the transmitted cosine under DL-49) -- the
+		// regime where Sw is most strongly index-dependent,
 		// so these rows are what pin BDPTVertex::mediumIOR on the entry
 		// vertices that PathVertexEval re-evaluates.
 		const Scalar kDense = 1.33 / 1.5;
@@ -908,8 +912,9 @@ namespace
 	// boundary sees -- Part B pins that immersed == its air twin -- so the
 	// sphere is simply given that index in air).  The random walk is used
 	// because it is the transport whose albedo is exactly one; the
-	// diffusion row is an explicit smaller-band consistency check (Burley
-	// on a finite sphere loses a little energy of its own).
+	// diffusion row is a consistency check in the same band (Burley
+	// on a finite sphere carries a small energy GAIN of its own: H reads
+	// about 1.003 post-fix, a few sd of the mean above 1, inside the band).
 	double kFurnaceDiffusionScattering = 200;
 	std::string BuildFurnaceScene( Model model, Integrator integrator, Scalar ior, unsigned int samples )
 	{
