@@ -233,11 +233,16 @@ namespace RISE
 		//!
 		//! A fibre LESS dense than its surroundings (relative < 1) is
 		//! outside both models: the azimuthal refraction geometry
-		//! (gamma_t = asin(h / eta')) needs eta' >= 1.  It is clamped to
-		//! exactly 1 -- an index-MATCHED fibre, which FrDielectric prices
-		//! as no boundary at all (zero reflection, straight transmission)
-		//! -- the physically nearest state the model can represent.  A
-		//! non-positive or non-finite exterior reads as air.
+		//! (gamma_t = asin(h / eta')) needs eta' >= 1.  It is CLAMPED to
+		//! exactly 1 -- an index-matched fibre, which FrDielectric prices
+		//! as no boundary at all -- so it REFLECTS NOTHING.  That is a
+		//! documented limitation, not an approximation of the truth: a
+		//! real fibre at relative 0.9 reflects ~11 % of the light hitting
+		//! it (h-averaged surface Fresnel at normal incidence, mostly TIR
+		//! for |h| > 0.9) and ~23 % at 0.8 (DL-290 row).  Reachable only
+		//! in a medium denser than the fibre (hair at 1.55 needs one
+		//! above 1.55).  A non-positive or non-finite exterior reads as
+		//! air.
 		inline Scalar RelativeFibreEta( const Scalar absoluteEta, const Scalar exteriorIOR )
 		{
 			const Scalar ne = ( exteriorIOR > 0 && exteriorIOR < RISE_INFINITY ) ? exteriorIOR : Scalar( 1 );

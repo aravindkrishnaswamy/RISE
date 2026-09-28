@@ -842,6 +842,38 @@ namespace
 			eta_t = v.etaT;
 		}
 	}
+
+	// DL-290 review P1-1: an INDEX-MATCHED refraction vertex (the same
+	// index on both sides -- e.g. the second of two separate open glass
+	// planes, which the IOR stack correctly reads as glass-into-glass)
+	// is optically NULL: no bend, zero Fresnel reflection, the path goes
+	// straight through.  The Walter half-vector h = -(eta_i wi + eta_t wo)
+	// is then IDENTICALLY ZERO at the solution, so its NORMALIZED
+	// tangential projection -- the constraint every other refraction
+	// vertex uses -- is 0/0 there (EvaluateConstraint used to return the
+	// degenerate C = (1,1) and the chain never converged).  For such a
+	// vertex the constraint is the tangential projection of the
+	// UNNORMALIZED h = -eta (wi + wo): zero exactly when the vertex lies
+	// on the straight segment between its neighbours, with a full-rank
+	// 2x2 derivative (moving the vertex along the surface bends the
+	// segment).  Scaling a vertex's two constraint rows by a factor that
+	// is nonzero where the constraint holds changes neither the solution
+	// nor the implicit-function derivative dv/dy used by the SMS
+	// geometric term (both rows of dC/dx and dC/dy scale together), so
+	// the unnormalized form prices the matched vertex consistently with
+	// the normalized one everywhere else.  The tolerance only absorbs
+	// last-bit differences between two copies of one authored index.
+	inline bool IsIndexMatchedRefraction(
+		const RISE::Implementation::ManifoldVertex& v,
+		const Scalar eta_i,
+		const Scalar eta_t )
+	{
+		if( v.isReflection ) {
+			return false;
+		}
+		const Scalar m = ( fabs( eta_i ) > fabs( eta_t ) ) ? fabs( eta_i ) : fabs( eta_t );
+		return fabs( eta_i - eta_t ) <= Scalar( 1e-9 ) * m;
+	}
 }
 
 bool ManifoldSolver::ComputeSpecularDirection(
@@ -1072,6 +1104,7 @@ void ManifoldSolver::EvaluateConstraint(
 
 		// Construct the generalized half-vector
 		Vector3 h;
+		bool matchedIndex = false;	// DL-290 P1-1: see IsIndexMatchedRefraction
 
 		if( v.isReflection )
 		{
@@ -1103,6 +1136,7 @@ void ManifoldSolver::EvaluateConstraint(
 			// set.  See GetEffectiveEtas docstring for full rationale.
 			Scalar eta_i, eta_t;
 			GetEffectiveEtas( v, eta_i, eta_t );
+			matchedIndex = IsIndexMatchedRefraction( v, eta_i, eta_t );
 
 			h = Vector3(
 				-(eta_i * wi.x + eta_t * wo.x),
@@ -1111,16 +1145,21 @@ void ManifoldSolver::EvaluateConstraint(
 			);
 		}
 
-		// Normalize h
-		Scalar hLen = Vector3Ops::Magnitude( h );
-		if( hLen < NEARZERO )
+		// Normalize h -- except at an index-matched vertex, whose
+		// constraint is the UNNORMALIZED h (it vanishes at the solution;
+		// see IsIndexMatchedRefraction).
+		if( !matchedIndex )
 		{
-			// Degenerate — set large constraint
-			C[2*i]   = 1.0;
-			C[2*i+1] = 1.0;
-			continue;
+			Scalar hLen = Vector3Ops::Magnitude( h );
+			if( hLen < NEARZERO )
+			{
+				// Degenerate — set large constraint
+				C[2*i]   = 1.0;
+				C[2*i+1] = 1.0;
+				continue;
+			}
+			h = h * (1.0 / hLen);
 		}
-		h = h * (1.0 / hLen);
 
 		// Tangent-plane projection: when Snell's law is satisfied,
 		// h is parallel to the normal, so these projections are zero.
@@ -1440,6 +1479,10 @@ void ManifoldSolver::BuildJacobian(
 		if( !v.isReflection ) {
 			GetEffectiveEtas( v, eta_i_v, eta_t_v );
 		}
+		// DL-290 P1-1: an index-matched vertex's constraint is the
+		// UNNORMALIZED h (see IsIndexMatchedRefraction), so its
+		// derivatives are the raw ones, not DeriveNormalized's.
+		const bool matchedIndex = IsIndexMatchedRefraction( v, eta_i_v, eta_t_v );
 
 		// Half-vector (unnormalized)
 		Vector3 h_raw;
@@ -1456,8 +1499,8 @@ void ManifoldSolver::BuildJacobian(
 		}
 
 		Scalar h_len = Vector3Ops::Magnitude( h_raw );
-		if( h_len < NEARZERO ) continue;
-		Vector3 h = h_raw * (1.0 / h_len);
+		if( !matchedIndex && h_len < NEARZERO ) continue;
+		Vector3 h = matchedIndex ? h_raw : h_raw * (1.0 / h_len);
 
 		// ---- Derivative of h w.r.t. moving vertex i ----
 		//
@@ -1498,7 +1541,7 @@ void ManifoldSolver::BuildJacobian(
 					-(eta_i_v * dwi_du.y + eta_t_v * dwo_du.y),
 					-(eta_i_v * dwi_du.z + eta_t_v * dwo_du.z) );
 			}
-			dh_du = DeriveNormalized( h, dh_raw_du, h_len );
+			dh_du = matchedIndex ? dh_raw_du : DeriveNormalized( h, dh_raw_du, h_len );
 
 			// Same for dv
 			const Vector3 dwi_dv = Vector3(
@@ -1523,7 +1566,7 @@ void ManifoldSolver::BuildJacobian(
 					-(eta_i_v * dwi_dv.y + eta_t_v * dwo_dv.y),
 					-(eta_i_v * dwi_dv.z + eta_t_v * dwo_dv.z) );
 			}
-			dh_dv = DeriveNormalized( h, dh_raw_dv, h_len );
+			dh_dv = matchedIndex ? dh_raw_dv : DeriveNormalized( h, dh_raw_dv, h_len );
 		}
 
 		// Derivative of tangent frame w.r.t. surface parameters (u, v).
@@ -1642,7 +1685,7 @@ void ManifoldSolver::BuildJacobian(
 					// depends on next vertex)
 					dh_raw_next = Vector3( -eta_t_v * dwo.x, -eta_t_v * dwo.y, -eta_t_v * dwo.z );
 
-				const Vector3 dh_next = DeriveNormalized( h, dh_raw_next, h_len );
+				const Vector3 dh_next = matchedIndex ? dh_raw_next : DeriveNormalized( h, dh_raw_next, h_len );
 
 				// upper[i] maps vertex i+1 to constraint i
 				upper[i*4 + 0 + p] = Vector3Ops::Dot( s, dh_next );
@@ -1679,7 +1722,7 @@ void ManifoldSolver::BuildJacobian(
 					// glass), η_i = 1.5 here and matters.
 					dh_raw_prev = Vector3( -eta_i_v * dwi.x, -eta_i_v * dwi.y, -eta_i_v * dwi.z );
 
-				const Vector3 dh_prev = DeriveNormalized( h, dh_raw_prev, h_len );
+				const Vector3 dh_prev = matchedIndex ? dh_raw_prev : DeriveNormalized( h, dh_raw_prev, h_len );
 
 				// lower[i-1] maps vertex i-1 to constraint i
 				lower[(i-1)*4 + 0 + p] = Vector3Ops::Dot( s, dh_prev );
@@ -4041,10 +4084,13 @@ unsigned int ManifoldSolver::SnellContinueChain(
 		//     outward normal -- see the invariant on the field in
 		//     ManifoldSolver.h -- so the cosI test below is correct on a
 		//     double-sided mesh in its own right, and this override is no
-		//     longer load-bearing for that case.  It still is for a walk
-		//     that STARTS inside the solid, which it always was: nothing
-		//     has been pushed yet there, so the override cannot fire and
-		//     only the now-correct sign test answers.)
+		//     longer load-bearing for that case.  DL-290: the walk now
+		//     starts from the RECEIVER'S live stack when the caller has
+		//     one, so the override CAN fire on the first crossing -- for
+		//     a receiver whose own path pushed this object (inside a
+		//     closed solid, or under an open sheet the camera path
+		//     crossed); with no stack the walk starts empty and only the
+		//     now-correct sign test answers.)
 		//   - Else fall back to sign(dot(dir, normal)) < 0 ⇒ entering.
 		//     This is the correct test for closed volumes (sphere) AND
 		//     multi-object slabs-from-planes (each plane is a distinct
@@ -4152,11 +4198,18 @@ unsigned int ManifoldSolver::SnellContinueChain(
 						// by the IORStack constructor).
 						currentIOR = seedIor.top();
 					} else {
-						// No matching push — legacy slabs-from-planes
-						// pattern.  Fall back to the old hardcoded
-						// "back to air" behaviour for this case so we
-						// don't break tests that exercise it.
-						currentIOR = 1.0;
+						// No matching push -- the slabs-from-planes
+						// pattern (one face of a slab the walk never
+						// entered).  Nothing is popped, so the medium on
+						// the far side is the one the walk is already in:
+						// the stack top -- the same index the Snell
+						// direction above was bent into (etaRatio =
+						// ior / currentIOR).  DL-290 review P1-2: this
+						// used to be a hardcoded 1.0 ("back to air"),
+						// which priced an immersed open-sheet caster
+						// against air.  In air the top is 1.0 and
+						// nothing changes.
+						currentIOR = seedIor.top();
 					}
 					// Backfill the just-pushed vertex's etaT with the
 					// post-pop surrounding-medium IOR.  Provisional
@@ -4711,9 +4764,12 @@ void ManifoldSolver::ComputeLastBlockLightJacobian(
 			-(eta_i_v * wi.y + eta_t_v * wo.y),
 			-(eta_i_v * wi.z + eta_t_v * wo.z) );
 	}
+	// DL-290 P1-1: an index-matched vertex's constraint is the
+	// UNNORMALIZED h (see IsIndexMatchedRefraction).
+	const bool matchedIndex = !vk.isReflection && IsIndexMatchedRefraction( vk, eta_i_v, eta_t_v );
 	const Scalar h_len = Vector3Ops::Magnitude( h_raw );
-	if( h_len < NEARZERO ) return;
-	const Vector3 h = h_raw * (1.0 / h_len);
+	if( !matchedIndex && h_len < NEARZERO ) return;
+	const Vector3 h = matchedIndex ? h_raw : h_raw * (1.0 / h_len);
 
 	// Tangent basis at y (orthonormal, perpendicular to lightNormal)
 	Vector3 y_s = Vector3Ops::Perpendicular( lightNormal );
@@ -4743,12 +4799,14 @@ void ManifoldSolver::ComputeLastBlockLightJacobian(
 			dh_raw = Vector3( -eta_t_v * dwo.x, -eta_t_v * dwo.y, -eta_t_v * dwo.z );
 		}
 
-		// ∂h/∂y = (dh_raw - h * dot(h, dh_raw)) / h_len
-		const Scalar h_dot = Vector3Ops::Dot( h, dh_raw );
+		// ∂h/∂y = (dh_raw - h * dot(h, dh_raw)) / h_len; the raw
+		// derivative itself at an index-matched vertex (DL-290 P1-1).
+		const Scalar h_dot = matchedIndex ? Scalar( 0 ) : Vector3Ops::Dot( h, dh_raw );
+		const Scalar inv_h = matchedIndex ? Scalar( 1 ) : Scalar( 1.0 ) / h_len;
 		const Vector3 dh(
-			(dh_raw.x - h.x * h_dot) * (1.0 / h_len),
-			(dh_raw.y - h.y * h_dot) * (1.0 / h_len),
-			(dh_raw.z - h.z * h_dot) * (1.0 / h_len) );
+			(dh_raw.x - h.x * h_dot) * inv_h,
+			(dh_raw.y - h.y * h_dot) * inv_h,
+			(dh_raw.z - h.z * h_dot) * inv_h );
 
 		// Project onto (s_v, t_v) basis at vk.  Row index = {s_v, t_v}.
 		const Scalar s_dot = Vector3Ops::Dot( s_v, dh );

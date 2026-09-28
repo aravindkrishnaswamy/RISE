@@ -605,7 +605,7 @@ namespace
 		}
 	};
 
-	enum class Model { Lambertian, CookTorrance, Hair, Weave, Skin, SMSMirror, SMSGlass };
+	enum class Model { Lambertian, CookTorrance, Hair, Weave, Skin, SMSMirror, SMSGlass, SMSOpenSheet };
 	enum class Integrator { PT, BDPT, PTSpectral, PTHWSS, BDPTHWSS };
 
 	const char* ModelName( Model m )
@@ -618,6 +618,7 @@ namespace
 		case Model::Skin: return "biospec_skin";
 		case Model::SMSMirror: return "sms_ggx_conductor_via_mirror";
 		case Model::SMSGlass: return "sms_lambertian_via_glass_sphere";
+		case Model::SMSOpenSheet: return "sms_lambertian_via_open_sheet";
 		}
 		return "unknown";
 	}
@@ -644,6 +645,13 @@ namespace
 		o << "film\n{\n\twidth 32\n\theight 32\n}\n\n";
 		if( model == Model::SMSMirror || model == Model::SMSGlass ) {
 			o << "pinhole_camera\n{\n\tlocation 0 2.2 3.4\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n";
+		} else if( model == Model::SMSOpenSheet ) {
+			// BELOW the sheet: camera paths reach the floor under the
+			// sheet without crossing it, so the receiver's stack does NOT
+			// contain the sheet and the seed walk's first crossing (up,
+			// through an up-facing normal) is an exit from a sheet the walk
+			// never entered -- SnellContinueChain's unpushed-exit branch.
+			o << "pinhole_camera\n{\n\tlocation 0 0.3 3.0\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n";
 		} else {
 			o << "pinhole_camera\n{\n\tlocation 0 0 4.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n";
 		}
@@ -689,8 +697,23 @@ namespace
 			o << "lambertian_material\n{\n\tname subject\n\treflectance grey\n}\n\n";
 			o << "perfectrefractor_material\n{\n\tname glass_mat\n\tior " << 1.5 * s << "\n\trefractance white\n}\n\n";
 			break;
+		case Model::SMSOpenSheet:
+			// DL-290 review P1-2: a single OPEN glass sheet (the
+			// slabs-from-planes pattern of shipped sms_k1_refract) over a
+			// Lambertian floor, lit by a point light above it.  The seed
+			// walk exits the sheet without having pushed it, and that
+			// branch used to set the far-side index to a hardcoded 1.0.
+			o << "lambertian_material\n{\n\tname subject\n\treflectance grey\n}\n\n";
+			o << "perfectrefractor_material\n{\n\tname glass_mat\n\tior " << 1.5 * s << "\n\trefractance white\n}\n\n";
+			break;
 		}
-		if( model == Model::SMSGlass ) {
+		if( model == Model::SMSOpenSheet ) {
+			o << "clippedplane_geometry\n{\n\tname floor_geo\n\tpta -3 0 -3\n\tptb -3 0 3\n\tptc 3 0 3\n\tptd 3 0 -3\n}\n\n";
+			o << "standard_object\n{\n\tname floor_obj\n\tgeometry floor_geo\n\tmaterial subject\n}\n\n";
+			o << "clippedplane_geometry\n{\n\tname sheet_geo\n\tpta -0.6 0.6 -0.6\n\tptb -0.6 0.6 0.6\n\tptc 0.6 0.6 0.6\n\tptd 0.6 0.6 -0.6\n}\n\n";
+			o << "standard_object\n{\n\tname sheet\n\tgeometry sheet_geo\n\tmaterial glass_mat\n}\n\n";
+			o << "omni_light\n{\n\tname point\n\tpower 40\n\tcolor 1 1 1\n\tposition 0.2 1.5 0\n}\n\n";
+		} else if( model == Model::SMSGlass ) {
 			o << "clippedplane_geometry\n{\n\tname floor_geo\n\tpta -3 0 -3\n\tptb -3 0 3\n\tptc 3 0 3\n\tptd 3 0 -3\n}\n\n";
 			o << "standard_object\n{\n\tname floor_obj\n\tgeometry floor_geo\n\tmaterial subject\n}\n\n";
 			o << "sphere_geometry\n{\n\tname ball_geo\n\tradius 0.4\n}\n\n";
@@ -855,13 +878,16 @@ namespace
 			{ Model::SMSGlass,     Integrator::PTSpectral, 64,  0.03, "uniform" },
 			{ Model::SMSGlass,     Integrator::PT,         64,  0.02, "uniform", true, 2 },
 			{ Model::SMSGlass,     Integrator::PT,         16,  0.02, "snell-photons", false, 2 },
+			{ Model::SMSOpenSheet, Integrator::PT,         16,  0.01, "snell" },
+			{ Model::SMSOpenSheet, Integrator::PTSpectral, 64,  0.03, "snell" },
 		};
 		unsigned int seed = 290000;
 		for( const Row& row : rows ) {
 			const std::string label = std::string( "B: " ) + ModelName( row.model ) + "/" + IntegratorName( row.integrator ) +
 				( row.sms ? std::string( "/sms-" ) + row.sms + "/k" + std::to_string( row.bounces ) : std::string() );
 			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
-			const Point3 camera = ( row.model == Model::SMSMirror || row.model == Model::SMSGlass ) ? Point3( 0, 2.2, 3.4 ) : Point3( 0, 0, 4.5 );
+			const Point3 camera = ( row.model == Model::SMSMirror || row.model == Model::SMSGlass ) ? Point3( 0, 2.2, 3.4 )
+				: ( row.model == Model::SMSOpenSheet ? Point3( 0, 0.3, 3.0 ) : Point3( 0, 0, 4.5 ) );
 			const std::string airPath = WriteScene( BuildScene( row.model, row.integrator, 1.0, row.samples, row.sms, row.bounces ), "air" );
 			const std::string scaledPath = WriteScene( BuildScene( row.model, row.integrator, kScale, row.samples, row.sms, row.bounces ), "scaled" );
 			Check( !airPath.empty() && !scaledPath.empty(), label + ": scene files written" );
