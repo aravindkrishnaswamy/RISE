@@ -807,8 +807,8 @@ static const char* kSlabLightDelta =
 //! these rows used to share with row A, BDPT's eye walk admits exactly ONE
 //! floor bounce: it read 0.905-0.922 of PT, and PT with
 //! `max_diffuse_bounce 1` reads the same number (identity measured in
-//! docs/REFRACTIVE_RADIANCE_SCALING.md section 11).  16 is converged
-//! (8 already is; 32 reads the same within noise) and PT is untruncated.
+//! docs/REFRACTIVE_RADIANCE_SCALING.md section 11).  16 reads the same as
+//! 32 within noise (8 is still 0.65% low); PT is untruncated.
 static const unsigned int kSlabDepth = 16;
 
 static void RunRowC()
@@ -935,13 +935,19 @@ static void RunRowD()
 // 0.00351454, +/- the standard error of the mean):
 //   PT       256 spp, n = 10   1.0024 +/- 0.0021
 //   BDPT     512 spp, n = 10   1.0013 +/- 0.0020
-//   VCM      512 spp, n = 10   1.0015 +/- 0.0020
+//   VCM      512 spp, n = 10   1.0015 +/- 0.0020  (CONNECTIONS only)
 //   pixelpel 4 spp x 128 gather samples, n = 6   0.9975 +/- 0.0050
 // Every integrator carries the direct term through the interface
 // correctly -- which is what attributes row C's old deficit to the eye
-// DEPTH (kSlabDepth above) rather than to transport.  Bands: the mean of
-// n = 4 renders within 2% for PT (per-render sd 0.65%) and BDPT/VCM
-// (0.62%) -- >= 6 sd -- and one pixelpel render (sd 1.2%) within 5%.
+// DEPTH (kSlabDepth above) rather than to transport.  The VCM figure is
+// its connection strategies alone: the auto merge-radius pre-pass lands
+// 0-3 light segments on this small patch (it needs 8) and disables
+// merging in every row-E render, so this row does NOT test VCM merging
+// (row C does, against PT).  Bands: the mean of n = 4 renders within 2%.
+// PT's per-render sd is 0.65-0.85% (0.85% at n = 12 in an independent
+// review), i.e. 0.43% for the mean, and PT sits ~+0.27% high -- ~4 sd of
+// margin; BDPT/VCM (sd 0.6%) have >= 6 sd.  One pixelpel render (sd 1.2%)
+// within 5%.
 //
 // The legacy chain needs a gathering op to see this at all: the default
 // DefaultDirectLighting chain is exactly dark here (its shadow ray is

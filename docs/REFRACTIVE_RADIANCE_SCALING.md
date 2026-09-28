@@ -8,7 +8,7 @@ IMPORTANCE-mode walks (light subpaths, photon tracers, SMS photon seeds,
 detector-sphere rigs) deliberately do not.
 
 Guard: [`tests/RefractiveRadianceScalingTest.cpp`](../tests/RefractiveRadianceScalingTest.cpp)
-(60 checks since DL-308, ~110 s -- §11),
+(60 checks since DL-308, ~120 s -- §11),
 [`tests/RadianceEtaScaleGradedIndexTest.cpp`](../tests/RadianceEtaScaleGradedIndexTest.cpp)
 (13 checks — the spatially-varying-`ior` through-slab invariant, §10.2),
 [`tests/GradedIndexInteriorFactorTest.cpp`](../tests/GradedIndexInteriorFactorTest.cpp)
@@ -898,10 +898,12 @@ limit.  DL-210 made that cap real on the RGB eye walk: before it, the Pel
 walk ran up to `max_volume_bounce` more surface vertices past the
 authored depth, which is why §4 measured BDPT/PT 1.0067.
 
-Five surface vertices allow exactly one floor bounce: the water surface,
-the floor, the surface again, and the emitter.  The rest of the floor's
-light is trapped under the surface by total internal reflection, and each
-further floor bounce costs two surface vertices.  PT with
+The eye walk counts every surface hit -- the delta water surface and the
+emitter hit included, the camera not.  The one-floor-bounce path uses four
+counted vertices (surface, floor, surface, emitter); the next path, with a
+total-internal-reflection return and a second floor bounce, needs six.  So
+depth 5 admits exactly one floor bounce, and the rest of the floor's light,
+trapped under the surface by total internal reflection, is cut.  PT with
 `max_diffuse_bounce 1` makes the same one-floor-bounce truncation, and it
 reads the same number:
 
@@ -914,11 +916,18 @@ reads the same number:
 | VCM, depth 5 | 0.004322 | 0.000029 |
 | VCM, depth 32 | 0.004636 | 0.000005 |
 
-No per-(s,t) instrumentation was needed.  On row C's direct paths
-(camera, surface, floor, surface, emitter) every connection edge touches
-the delta water surface.  Eye-path emitter hits (s = 0) are therefore the
-only strategy, with MIS weight 1 in BDPT and in VCM.  No MIS partition is
-involved.
+No per-(s,t) instrumentation was needed for BDPT.  On row C's direct
+paths (camera, surface, floor, surface, emitter) every connection edge
+touches the delta water surface, so for BDPT eye-path emitter hits (s = 0)
+are the only strategy, at MIS weight 1: BDPT at depth 16 with
+`max_diffuse_bounce 1` reads 0.0041232 against PT's 0.0041145 (review,
+n = 4).  VCM is different (correction, review of this slice): row C runs
+it with vertex merging ON (auto radius 0.0027), and a merge at the floor
+is a second valid technique for the same direct path.  At depth 5 the
+merges carry +4.3 % (VCM merging on 0.0043110, merging off 0.0041348, BDPT
+0.0041208, review n = 4) -- which is why VCM at depth 5 sits above BDPT in
+the table.  The s = 0 / merge weights are consistent: at depth 32 VCM
+matches PT.
 
 **The reference-free evidence.**  Two new rows decide it without
 comparing one integrator against another.
@@ -940,11 +949,17 @@ self-return (+0.024 %).  The closed form is 0.00351454.
 |---|---|---|---|
 | PT | 256 | 10 | 1.0024 +/- 0.0021 |
 | BDPT | 512 | 10 | 1.0013 +/- 0.0020 |
-| VCM | 512 | 10 | 1.0015 +/- 0.0020 |
+| VCM (connections only -- see below) | 512 | 10 | 1.0015 +/- 0.0020 |
 | pixelpel (Emission + diffuse `distributiontracing_shaderop` + Refraction) | 4 x 128 | 6 | 0.9975 +/- 0.0050 |
 
 The table is the same before and after this slice, because no transport
-changed.  The default `DefaultDirectLighting` chain reads exactly 0 here,
+changed.  The VCM row checks VCM's CONNECTION strategies only: the auto
+merge-radius pre-pass lands 0-3 light segments on the small patch, below
+its threshold of 8, so it disables merging in every row-E render.  Row E
+does not test VCM merging; row C does (against PT).  An independent
+review re-derived the closed form (0.0035146) and re-measured PT
+1.0027 +/- 0.0025 (n = 12, per-render sd 0.85 %), BDPT 1.0025 +/- 0.0017,
+VCM 1.0031 +/- 0.0017, pixelpel 0.9912 +/- 0.0042 (n = 4).  The default `DefaultDirectLighting` chain reads exactly 0 here,
 since its shadow ray is opaque to the delta surface; that is row D's
 structural zero.
 
@@ -957,8 +972,9 @@ enclosure wall.  Paired common-salt ratios, n = 4:
 - BDPT 0.9999 +/- 0.0011
 - VCM 1.0002 +/- 0.0003
 
-**The fix.**  Rows C and D now run BDPT/VCM at depth 16; depth 8 is
-already converged.  Salted n = 8, row C reads:
+**The fix.**  Rows C and D now run BDPT/VCM at depth 16.  Depth 8 still
+reads 0.65 % below depth 32 (0.00461 vs 0.00464 here; 0.0045542 vs
+0.0045842 in the review); 16 is within noise of 32.  Salted n = 8, row C reads:
 
 - BDPT/PT 1.0044, single-render sd 1.18 %
 - VCM/PT 1.0063, single-render sd 1.35 %
@@ -984,7 +1000,8 @@ entirely.
   segment over everything the light reaches.  With row E's scene inside
   a black room of radius 20, that radius is 0.19, wider than the whole
   patch.  VCM then reads 0.60 of the closed form, and the same with the
-  enclosure.  This is why row F's VCM uses an explicit `merge_radius`.
+  enclosure.  With merging off it reads 0.998 +/- 0.006 (salted n = 6).  This is why
+  row F's VCM uses an explicit `merge_radius`.
   Separately, the "auto-radius failed" warning on rows B and E is
   correct behaviour: nothing, or too little, is mergeable.  The message
   now says so.
@@ -993,14 +1010,35 @@ entirely.
   whose MIS weights still count it.  This is what the DL-09 review's
   "camera inside a dielectric: BDPT 0.9175 / VCM 0.795" was: that
   fixture's quad was wound away from the scene.  Flipped, it reads
-  BDPT/PT 0.9988 and VCM/PT 0.9927.
+  BDPT/PT 0.9988 and VCM/PT 0.9927.  The convention doc already says a
+  double-sided quad emits from both faces, so the HIT side is right and
+  NEE and light-subpath emission are the sides to fix.
 
 **Not explained here, recorded.**  The "smaller BDPT deficits" of the
 DL-247b and DL-283 reviews do not depend on depth.  They are BDPT-only,
 under an environment light, in a SCATTERING medium: a scattering-only box
 reads 0.954.  With no medium it reads 1.000, and with an interior area
 light instead of the environment BDPT equals VCM.  Refraction and this
-section's mechanism play no part.
+section's mechanism play no part.  Filed as DL-346 (at merge).  The
+review's discriminator: VCM with merging OFF -- BDPT's own subpath
+generators and connection code -- reads 0.9996 of PT on the same box, so
+the defect is in BDPT's MIS walk or a BDPT-only environment strategy at
+medium vertices.
+
+**Also recorded (DL-351, filed at merge): the depth caps do not mean the
+same paths in PT and BDPT/VCM.**  PT has no scene-level surface-depth
+setting (its path cap is a fixed 128), and BDPT's `max_eye_depth` /
+`max_light_depth` have no PT counterpart.  The shared per-type caps
+(`max_diffuse_bounce` etc.) are applied per PATH by PT and per SUBPATH by
+BDPT/VCM, and `BDPTIntegrator::MISWeight` accounts for no subpath cap
+(only `max_volume_bounce` is per-path, since DL-247).  Review numbers
+(open Lambertian corner, sphere emitter, n = 3): `max_diffuse_bounce 0`
+PT 0.070170 / BDPT 0.072256 (+2.97 %) / VCM 0.071389; `1` 0.073813 /
+0.074363 (+0.74 %); unlimited 0.074815 / 0.074721.  An environment-lit
+scattering box under BDPT at `max_light_depth` 0/1/2/20 reads
+0.674/0.832/0.864/0.872 against PT 0.915, while the same box with no
+medium is flat (0.88226 vs 0.88229).  Row C is immune: only s = 0 carries
+weight there.
 
 ## 12. Cross-references
 
