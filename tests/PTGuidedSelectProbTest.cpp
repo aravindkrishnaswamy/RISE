@@ -35,6 +35,17 @@
 //
 //        scatterThroughput = kray * pS->pdf / (selectProb * combinedPdf)
 //
+//  DL-67 CLOSED 2026-09-27 (docs/DL67_GUIDED_GENERATING_DENSITY.md):
+//  the kept-direction branch this test pins is now
+//  `kray_I / selectProb * W_b(w) / (1 - alpha_I)`, W_b the BSDF share of
+//  ONE partition built from the AGGREGATE Pdf() -- it keeps DL-42's
+//  `1/selectProb` (this test still passes) but no longer divides by a
+//  mixture built from the lobe's own `pS->pdf`.  The "one f and one
+//  denominator" construction the comment below anticipates was NOT what
+//  shipped: it is not unbiased once the guide-replacement probability
+//  varies by lobe; the partition is.  The historical analysis below is
+//  kept as written.
+//
 //  WHAT THIS FIX DOES **NOT** CLAIM ABOUT THE OTHER TWO PTMulDiv() SITES
 //  (documented here because a plain-English summary of this row can read
 //  as implicating all three trained-guiding overwrite sites; corrected

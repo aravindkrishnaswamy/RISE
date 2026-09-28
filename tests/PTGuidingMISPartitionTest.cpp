@@ -294,8 +294,10 @@ public:
 // TranslucentSPF is exactly energy-conserving, so neither has a
 // closed-form furnace value, and their unguided readings cannot serve
 // as a reference either (a multi-lobe material's unguided escape side
-// stores the SELECTED lobe's pdf while NEE uses the aggregate -- the
-// separate, still-open DL-67 mismatch).  This decorator keeps the
+// stored the SELECTED lobe's pdf while NEE used the aggregate -- DL-103,
+// closed 2026-09-17 -- and their GUIDED readings carried DL-67's
+// mismatch, closed 2026-09-27; see the DL-67 rows at the end of this
+// file).  This decorator keeps the
 // albedo-1 Lambertian BRDF (so the closed form holds exactly) and
 // varies ONLY the stack-dependence of the sampling density.
 //
