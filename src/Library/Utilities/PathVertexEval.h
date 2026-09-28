@@ -326,7 +326,7 @@ namespace RISE
 					return RISEPel( Sw, Sw, Sw );
 				}
 
-				// Random-walk SSS: Sw with Schlick Fresnel
+				// Random-walk SSS: Sw with the exact dielectric transmission (DL-306)
 				const RandomWalkSSSParams* pRW = vertex.pMaterial->GetRandomWalkSSSParams();
 				if( pRW ) {
 					const Scalar cosTheta = Vector3Ops::Dot( wi, vertex.normal );
@@ -337,7 +337,7 @@ namespace RISE
 					// (`mediumIOR`, the IOR-stack top at the exit hit).
 					const Scalar eta = BSSRDFSampling::RelativeBoundaryIOR(
 						pRW->ior, ( vertex.mediumIOR > 0.0 ) ? vertex.mediumIOR : 1.0 );
-					const Scalar FtEntry = BSSRDFSampling::RandomWalkSchlickTransmission( cosTheta, eta );
+					const Scalar FtEntry = BSSRDFSampling::BoundaryTransmission( cosTheta, eta );
 					const Scalar Sw = BSSRDFSampling::EvaluateSwWithFresnel( FtEntry, eta );
 					return RISEPel( Sw, Sw, Sw );
 				}
@@ -596,7 +596,7 @@ namespace RISE
 					return BSSRDFSampling::EvaluateSwWithFresnel( FtEntry, eta );
 				}
 
-				// Random-walk SSS: Sw with Schlick Fresnel
+				// Random-walk SSS: Sw with the exact dielectric transmission (DL-306)
 				const RandomWalkSSSParams* pRW = vertex.pMaterial->GetRandomWalkSSSParams();
 				RandomWalkSSSParams rwParamsNM;
 				if( !pRW && vertex.pMaterial->GetRandomWalkSSSParamsNM( nm, rwParamsNM ) ) {
@@ -610,7 +610,7 @@ namespace RISE
 					// DL-49: relative index, as in the RGB twin above.
 					const Scalar eta = BSSRDFSampling::RelativeBoundaryIOR(
 						pRW->ior, ( vertex.mediumIOR > 0.0 ) ? vertex.mediumIOR : 1.0 );
-					const Scalar FtEntry = BSSRDFSampling::RandomWalkSchlickTransmission( cosTheta, eta );
+					const Scalar FtEntry = BSSRDFSampling::BoundaryTransmission( cosTheta, eta );
 					return BSSRDFSampling::EvaluateSwWithFresnel( FtEntry, eta );
 				}
 

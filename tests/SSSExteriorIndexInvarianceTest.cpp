@@ -310,9 +310,11 @@ namespace
 			Check( std::fabs( iWalkRGB - 1.0 ) < 1e-5, "A2: RandomWalkEntryBSDF RGB unit integral" + tag );
 			Check( std::fabs( iWalkNM - 1.0 ) < 1e-5, "A2: RandomWalkEntryBSDF NM unit integral" + tag );
 		}
-		// The eta < 1 closed form agrees with the eta >= 1 one at eta = 1.
-		Check( std::fabs( BSSRDFSampling::SchlickTransmissionNormalization( 1.0 - 1e-12 ) -
-			BSSRDFSampling::SchlickTransmissionNormalization( 1.0 ) ) < 1e-10,
+		// The eta < 1 form agrees with the eta >= 1 one at eta = 1 (checked
+		// through the Sw helper, whose denominator is the normalization, so
+		// the check is independent of the helper's name -- DL-306 renamed it).
+		Check( std::fabs( BSSRDFSampling::EvaluateSwWithFresnel( 1.0, 1.0 - 1e-12 ) -
+			BSSRDFSampling::EvaluateSwWithFresnel( 1.0, 1.0 ) ) < 1e-10,
 			"A2: normalization is continuous across eta = 1" );
 	}
 
@@ -1010,7 +1012,7 @@ namespace
 			{ Model::RandomWalk, Integrator::PT,         64, 0.01, 1.33 / 1.5 },
 			{ Model::RandomWalk, Integrator::BDPT,       64, 0.01, 1.05 },
 			{ Model::RandomWalk, Integrator::BDPT,       64, 0.01, 1.33 / 1.5 },
-			{ Model::RandomWalk, Integrator::PTSpectral, 64, 0.01, 1.128 },
+			{ Model::RandomWalk, Integrator::PTSpectral, 512, 0.01, 1.128 },
 			{ Model::Diffusion,  Integrator::PT,         64, 0.01, 1.05 },
 		};
 		unsigned int seed = 30600;
