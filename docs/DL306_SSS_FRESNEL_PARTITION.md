@@ -206,9 +206,9 @@ master from DL-308, was not touched and not re-run.)
 ## 6. In-air appearance (a documented change)
 
 Every in-air SSS render moves slightly: Sw's angular shape is now the
-exact law and `<T>` changes by `c_exact - c_Schlick` (+0.08 % at 1.3, -0.66 %
+exact law and `<T>` changes by `c_exact - c_Schlick` (+0.08 % at 1.33, -0.66 %
 at 1.5, larger near grazing).  All twelve shipped scenes that bind
-`subsurfacescattering_material` / `randomwalk_sss_material` (eleven at
+`subsurfacescattering_material` / `randomwalk_sss_material` (all at
 index 1.3), each re-rendered under BOTH PT and BDPT (their own rasterizer
 chunk replaced; half resolution, 64 spp, no OIDN, box filter;
 `composite_wacky_creature` quarter resolution, 32 spp), base and fix
