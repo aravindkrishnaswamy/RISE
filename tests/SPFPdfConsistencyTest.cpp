@@ -1502,11 +1502,11 @@ int main()
         // coated_material -- docs/WETNESS_COAT_DESIGN.md Phase 2 item 5,
         // "Real mixture Pdf/PdfNM -- not a 50/50 placeholder".  7.5
         // calls this "the correctness line that separates [coated] from
-        // composite_material", and names THIS FILE as the guard.  The
-        // contrast is one row above: `Composite` runs with cross-val,
-        // chi2 AND exact-selected-pdf all switched off, because
-        // CompositeSPF's Pdf is a hard-coded 50/50 blend that no
-        // sampled direction can be expected to agree with.
+        // composite_material", and names THIS FILE as the guard.  Until
+        // DL-24 (2026-09-28) the contrast was the `Composite` row above,
+        // which ran with cross-val, chi2 AND exact-selected-pdf switched
+        // off because CompositeSPF's Pdf was a hard-coded 50/50 blend;
+        // since DL-24 the composite rows run with every check on too.
         //
         // The coated triad runs with EVERY check on, at both
         // substrates:

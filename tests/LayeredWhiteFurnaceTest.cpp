@@ -1236,8 +1236,9 @@ int main()
 	// -- and they must land in kPosturePass.  That is a direct, numeric,
 	// apples-to-apples improvement claim against a shipped baseline."
 	//
-	// Config 3 is `dielectric (ior 1.5) / white Lambertian`, a
-	// KNOWN FAILURE on CompositeSPF's random walk.  Config 11 below is
+	// Config 3 is `dielectric (ior 1.5) / white Lambertian`, which was a
+	// KNOWN FAILURE on CompositeSPF's random walk until DL-24 (2026-09-28;
+	// it now reads rho == 1 and is gated pass).  Config 11 below is
 	// its coated twin: same white Lambertian substrate, same 1.5 coat
 	// IOR, full coverage.  Config 7 is `clearcoat (F0 = 0.04, alpha
 	// 0.16) / GGX-PBR base`; configs 14 and 15 are its coated twins on
@@ -1714,8 +1715,9 @@ int main()
 	// 11. Coated: varnish coat (ior 1.5, alpha 0.02) over WHITE
 	//     Lambertian, full coverage.  DIRECT MIRROR OF CONFIG 3
 	//     (`dielectric ior 1.5 / white Lambertian`), which is
-	//     kPostureKnownFailure because CompositeSPF's recursion budget
-	//     kills the below-layer diffuse paths.  Nothing recurses here:
+	//     was kPostureKnownFailure until DL-24 (2026-09-28) because
+	//     CompositeSPF's recursion budget killed the below-layer diffuse
+	//     paths (config 3 now passes at rho == 1).  Nothing recurses here:
 	//     the coat's transmission is folded into the substrate lobe's
 	//     throughput analytically (7.5), so there is no budget to
 	//     exhaust.  HIGH-SUBSTRATE-ALBEDO (R = 1) -- this is the

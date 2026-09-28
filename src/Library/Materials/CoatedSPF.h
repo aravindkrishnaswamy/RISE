@@ -21,8 +21,9 @@
 //  and BDPT/VCM connections evaluate.  Three consequences worth
 //  stating, because they are the reasons for this shape:
 //
-//   1. `Pdf` is the REAL mixture PDF, never `composite_material`'s
-//      50/50 placeholder (CompositeSPF.cpp:297-309).  7.5 calls this
+//   1. `Pdf` is the REAL mixture PDF, never the 50/50 placeholder
+//      `composite_material` used before DL-24 (since DL-24 CompositeSPF
+//      reports the exact density of its own mixture too).  7.5 calls this
 //      "the correctness line that separates the two" and
 //      tests/SPFPdfConsistencyTest.cpp is the guard.
 //

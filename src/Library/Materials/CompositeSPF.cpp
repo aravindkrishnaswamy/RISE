@@ -26,26 +26,18 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
-// A composite is the only SPF in the engine that can produce MORE exit rays
-// than `ScatteredRayContainer::kCapacity`: every extra gap round trip adds
-// another batch of exits.  (CoatedSPF also re-enters a substrate's Scatter(),
-// but its substrate allowlist -- Lambertian / OrenNayar / GGX / PBR -- emits at
-// most one ray, so it cannot overflow; that allowlist is the load-bearing
-// invariant there.)  `AddScatteredRay` answers false and DISCARDS the ray when
-// it is full, so an unchecked add loses that energy with no diagnostic at all
-// -- and on the RGB walk the loss is not even colour-neutral, because the
-// dropped rays are whichever the walk emitted LAST (with a dispersive top the
-// per-channel loop runs R, G, B in order, so BLUE starves first; the NM walk
-// is per-wavelength and has no such bias).
-//
-// kCapacity (12; see the constant's comment in ISPF.h) is sized from the
-// measured worst case of a dispersive top over a DIFFUSE substrate, so a
-// coat-over-diffuse composite should never reach this path.  It is a bound,
-// not a guarantee: a dispersive top over a NON-diffuse bottom (dispersive
-// clearcoat over glass) adds one down-exit per refracted ray and reaches 15
-// at the parser's default budgets, and a dispersive top at max_recursion 12 /
-// per-type 6 measured 30 -- exactly the cases that must be audible rather
-// than silent.
+// Before DL-24 (2026-09-28) a composite was the only SPF in the engine that
+// could produce MORE exit rays than `ScatteredRayContainer::kCapacity`: its
+// walk emitted every exit of every gap round trip into the caller's
+// container, and a dispersive top reached 15 at the parser's default budgets
+// and 30 at deep ones.  Since DL-24 `Scatter` emits AT MOST ONE ray per call
+// (one branch of the DIRECT / COVERED / WALKER mixture, see CompositeSPF.h),
+// and the walk's own per-layer containers receive one sub-SPF Scatter each
+// (a dispersive DielectricSPF emits at most 6), so this path is not reachable
+// from any layer SPF in the tree.  The check stays because `AddScatteredRay`
+// answers false and DISCARDS the ray when full, and a future layer SPF that
+// emits more than the capacity would otherwise lose energy with no
+// diagnostic at all.
 //
 // Warn ONCE per process (the SplatFilm.cpp / Object.cpp log-once idiom): this
 // sits inside the per-sample scatter loop, so an unthrottled warning would
@@ -56,15 +48,10 @@ static void NoteCompositeExitRayDropped()
 	bool expected = false;
 	if( warnedExitRayDropped.compare_exchange_strong( expected, true ) ) {
 		GlobalLog()->PrintEx( eLog_Warning,
-			"CompositeSPF:: the scattered-ray container filled (capacity %u) and at least one "
-			"exiting ray was DROPPED -- that ray's energy is lost from the image (and on the RGB "
-			"path, where a dispersive top emits per-channel lobes in R,G,B order, the loss is "
-			"biased toward blue).  "
-			"This composite's random walk produces more exits than the container can hold; "
-			"lower the material's recursion budgets (max_recursion / max_reflection_recursion / "
-			"max_refraction_recursion / max_diffuse_recursion / max_translucent_recursion), "
-			"or drop the per-channel (dispersive) IOR on the top layer, which triples the "
-			"number of lobes each interface emits.  Reported once per process.",
+			"CompositeSPF:: the scattered-ray container filled (capacity %u) and a ray was "
+			"DROPPED -- that ray's energy is lost from the image.  A composite emits at most one "
+			"ray per Scatter, so this means a layer SPF emitted more lobes than the container "
+			"holds.  Reported once per process.",
 			ScatteredRayContainer::kCapacity );
 	}
 }
@@ -109,6 +96,12 @@ static void NoteCompositeWalkCapReached()
 	}
 }
 
+static unsigned long long NextCompositeInstanceId()
+{
+	static std::atomic<unsigned long long> next{ 1 };
+	return next.fetch_add( 1 );
+}
+
 CompositeSPF::CompositeSPF(
 	const ISPF& top_,
 	const ISPF& bottom_,
@@ -132,7 +125,8 @@ CompositeSPF::CompositeSPF(
   max_diffuse_recursion( max_diffuse_recursion_ ),
   max_translucent_recursion( max_translucent_recursion_ ),
   thickness( ClampCompositeThickness( thickness_ ) ),
-  extinction( extinction_ )
+  extinction( extinction_ ),
+  instanceId( NextCompositeInstanceId() )
 {
 	top.addref();
 	bottom.addref();
@@ -598,10 +592,23 @@ namespace RISE
 				)
 			{
 				RayIntersectionGeometric r( ri );
+				SetLayerRay( r, ri, dir, pathLength );
+				return r;
+			}
+
+			//! In-place form of LayerRecord for the walks, which re-aim ONE
+			//! record at every event instead of copying the (~1 KB) record
+			//! each time: only the ray differs between a walk's events.
+			static inline void SetLayerRay(
+				RayIntersectionGeometric& r,
+				const RayIntersectionGeometric& ri,
+				const Vector3& dir,
+				const Scalar pathLength
+				)
+			{
 				r.ray.origin = ri.ptIntersection;
 				r.ray.SetDir( dir );
 				r.ray.Advance( pathLength );
-				return r;
 			}
 
 			//! The internal UP-going direction that a Snell refraction out
@@ -820,7 +827,7 @@ namespace RISE
 			};
 
 			template<class P>
-			static Probe DoProbe(
+			static Probe ComputeProbe(
 				const CompositeSPF& s,
 				const RayIntersectionGeometric& ri,
 				const IORStack& outside,
@@ -838,14 +845,22 @@ namespace RISE
 					HashedSampler hs( seed ^ kSaltProbeA );
 					P::Scatter( s.top, ri, hs, nm, c1, outside );
 				}
+				const Scalar up1 = SubsetMass<P>( c1, isUp ),   dn1 = SubsetMass<P>( c1, isDown );
+
+				// The determinism check needs a second, independent draw --
+				// but only when a top BSDF prices the DIRECT class through
+				// the aggregate estimator.  With no top BSDF every direct
+				// ray is priced by its own lobe estimator and the covered
+				// rays by the evaluator proposals alone, so the weights
+				// need only be deterministic NUMBERS, which one hashed
+				// probe already is.
 				ScatteredRayContainer c2;
-				{
+				if( s.pTopBSDF ) {
 					HashedSampler hs( seed ^ kSaltProbeB );
 					P::Scatter( s.top, ri, hs, nm, c2, outside );
 				}
-
-				const Scalar up1 = SubsetMass<P>( c1, isUp ),   dn1 = SubsetMass<P>( c1, isDown );
-				const Scalar up2 = SubsetMass<P>( c2, isUp ),   dn2 = SubsetMass<P>( c2, isDown );
+				const Scalar up2 = s.pTopBSDF ? SubsetMass<P>( c2, isUp )   : up1;
+				const Scalar dn2 = s.pTopBSDF ? SubsetMass<P>( c2, isDown ) : dn1;
 
 				Probe pr;
 				pr.det = fabs( up1 - up2 ) <= Scalar( 1e-12 ) && fabs( dn1 - dn2 ) <= Scalar( 1e-12 );
@@ -908,6 +923,88 @@ namespace RISE
 						pr.walkerPossible = true;
 					}
 				}
+				return pr;
+			}
+
+			// -----------------------------------------------------------
+			//  PROBE CACHE.  At one path vertex the SAME probe is needed by
+			//  Scatter, by every NEE sample's MIS partner (Pdf), by the
+			//  escape-side partner and by every HWSS companion's
+			//  EvaluateLobeFNM.  The probe is a deterministic function of
+			//  (composite, wavelength, record, IOR stack), so a small
+			//  per-thread cache keyed on EXACTLY those inputs returns
+			//  bit-identical results and changes nothing but cost.  Keyed on
+			//  the composite's process-unique instanceId (never its address,
+			//  which a later composite can reuse) and on the record fields a
+			//  sub-SPF or its painters read at the shading point (direction,
+			//  both points, both normals, the tangent, both UV charts, the
+			//  glossy-filter width, the texture footprint, the IOR-stack
+			//  state).  A miss only costs a recomputation; a hit requires
+			//  every one of those to be bit-identical.
+			// -----------------------------------------------------------
+			static const int kProbeKeySize = 32;
+
+			struct ProbeCacheEntry
+			{
+				bool                valid;
+				unsigned long long  id;
+				Scalar              nm;
+				Scalar              key[kProbeKeySize];
+				Probe               probe;
+			};
+			static const int kProbeCacheSize = 4;
+
+			static inline void ProbeKey( const RayIntersectionGeometric& ri, const IORStack& st, Scalar key[kProbeKeySize] )
+			{
+				const Vector3 d = ri.ray.Dir();
+				const Vector3 u = ri.onb.u();
+				int i = 0;
+				key[i++] = d.x;                     key[i++] = d.y;                     key[i++] = d.z;
+				key[i++] = ri.ptIntersection.x;     key[i++] = ri.ptIntersection.y;     key[i++] = ri.ptIntersection.z;
+				key[i++] = ri.ptObjIntersec.x;      key[i++] = ri.ptObjIntersec.y;      key[i++] = ri.ptObjIntersec.z;
+				key[i++] = ri.vNormal.x;            key[i++] = ri.vNormal.y;            key[i++] = ri.vNormal.z;
+				key[i++] = ri.vGeomNormal.x;        key[i++] = ri.vGeomNormal.y;        key[i++] = ri.vGeomNormal.z;
+				key[i++] = u.x;                     key[i++] = u.y;                     key[i++] = u.z;
+				key[i++] = ri.ptCoord.x;            key[i++] = ri.ptCoord.y;
+				key[i++] = ri.ptCoord1.x;           key[i++] = ri.ptCoord1.y;
+				key[i++] = ri.glossyFilterWidth;
+				key[i++] = ri.txFootprint.worldWidth;
+				key[i++] = ri.txFootprint.objectWidth;
+				key[i++] = ri.txFootprint.dudx;     key[i++] = ri.txFootprint.dvdy;
+				key[i++] = ( ri.txFootprint.valid ? Scalar( 1 ) : Scalar( 0 ) ) + ( ri.bGeomNormalOrientedToRay ? Scalar( 2 ) : Scalar( 0 ) );
+				key[i++] = st.top();
+				key[i++] = st.containsCurrent() ? Scalar( 1 ) : Scalar( 0 );
+				key[i++] = ri.ambientIOR;
+				key[i++] = ri.ray.origin.x;
+			}
+
+			template<class P>
+			static Probe DoProbe(
+				const CompositeSPF& s,
+				const RayIntersectionGeometric& ri,
+				const IORStack& outside,
+				const Scalar nm
+				)
+			{
+				thread_local ProbeCacheEntry cache[kProbeCacheSize] = {};
+				thread_local int next = 0;
+				Scalar key[kProbeKeySize];
+				ProbeKey( ri, outside, key );
+				for( int i = 0; i < kProbeCacheSize; i++ ) {
+					const ProbeCacheEntry& e = cache[i];
+					if( e.valid && e.id == s.instanceId && e.nm == nm &&
+						std::memcmp( e.key, key, sizeof( key ) ) == 0 ) {
+						return e.probe;
+					}
+				}
+				const Probe pr = ComputeProbe<P>( s, ri, outside, nm );
+				ProbeCacheEntry& e = cache[next];
+				next = ( next + 1 ) % kProbeCacheSize;
+				e.valid = true;
+				e.id = s.instanceId;
+				e.nm = nm;
+				std::memcpy( e.key, key, sizeof( key ) );
+				e.probe = pr;
 				return pr;
 			}
 
@@ -1094,6 +1191,9 @@ namespace RISE
 					return f;
 				}
 
+				// ONE record, re-aimed at every event (SetLayerRay).
+				RayIntersectionGeometric rec( ri );
+
 				// Term (a)'s exit presample: fixed for the whole walk.
 				bool aActive = false;
 				T aFactor = P::Zero();
@@ -1104,9 +1204,9 @@ namespace RISE
 					const Scalar eta = ( nOut > 0 && nGap > 0 ) ? ( nGap / nOut ) : Scalar( 1 );
 					if( InternalDirectionForExit( wOut, n, eta, ux ) ) {
 						const Scalar Lx = CompositeSPF::GapPathLength( ux, n, s.thickness );
-						const RayIntersectionGeometric rx = LayerRecord( ri, ux, Lx );
+						SetLayerRay( rec, ri, ux, Lx );
 						ScatteredRayContainer cx;
-						P::Scatter( s.top, rx, hs, nm, cx, gap );
+						P::Scatter( s.top, rec, hs, nm, cx, gap );
 						T W = P::Zero();
 						for( unsigned int i = 0; i < cx.Count(); i++ ) {
 							if( cx[i].isDelta && Vector3Ops::Dot( cx[i].ray.Dir(), n ) >= 0 ) {
@@ -1129,12 +1229,12 @@ namespace RISE
 					if( !( P::MaxOf( beta ) > 0 ) ) {
 						return f;
 					}
-					const RayIntersectionGeometric rb = LayerRecord( ri, w, Ld );
+					SetLayerRay( rec, ri, w, Ld );
 					if( aActive ) {
-						f = f + P::Mul( P::Mul( beta, P::Value( *s.pBottomBSDF, ux, rb, nm, &outside ) ), aFactor );
+						f = f + P::Mul( P::Mul( beta, P::Value( *s.pBottomBSDF, ux, rec, nm, &outside ) ), aFactor );
 					}
 					ScatteredRayContainer cb;
-					P::Scatter( s.bottom, rb, hs, nm, cb, outside );
+					P::Scatter( s.bottom, rec, hs, nm, cb, outside );
 					k = SelectCarried<P>( cb, isUpBottom, beta, hs.Get1D(), q );
 					if( k < 0 ) {
 						return f;
@@ -1152,12 +1252,12 @@ namespace RISE
 					if( !( P::MaxOf( beta ) > 0 ) ) {
 						return f;
 					}
-					const RayIntersectionGeometric rt = LayerRecord( ri, w, Lu );
+					SetLayerRay( rec, ri, w, Lu );
 					if( s.pTopBSDF ) {
-						f = f + P::Mul( beta, P::Value( *s.pTopBSDF, wOut, rt, nm, &gap ) );
+						f = f + P::Mul( beta, P::Value( *s.pTopBSDF, wOut, rec, nm, &gap ) );
 					}
 					ScatteredRayContainer ct;
-					P::Scatter( s.top, rt, hs, nm, ct, gap );
+					P::Scatter( s.top, rec, hs, nm, ct, gap );
 					k = SelectCarried<P>( ct, isDownTop, beta, hs.Get1D(), q );
 					if( k < 0 ) {
 						return f;
@@ -1270,7 +1370,7 @@ namespace RISE
 					steps = 1;
 					const Scalar L = CompositeSPF::GapPathLength( w, n, s.thickness );
 					beta = P::Mul( beta, P::GapAtt( s.extinction, ri, nm, L ) );
-					cur = LayerRecord( ri, w, L );
+					SetLayerRay( cur, ri, w, L );
 				}
 
 				for( unsigned int ev = 0; ev < CompositeSPF::kMaxWalkEvents; ev++ )
@@ -1328,7 +1428,7 @@ namespace RISE
 					steps++;
 					const Scalar L = CompositeSPF::GapPathLength( w, n, s.thickness );
 					beta = P::Mul( beta, P::GapAtt( s.extinction, ri, nm, L ) );
-					cur = LayerRecord( ri, w, L );
+					SetLayerRay( cur, ri, w, L );
 					atBottom = !atBottom;
 				}
 				if( P::MaxOf( beta ) > 0 ) {

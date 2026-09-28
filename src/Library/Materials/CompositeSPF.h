@@ -111,6 +111,13 @@ namespace RISE
 			//! colourspace.  Mirrors `TranslucentSPF::pExtinction`.
 			const IScalarPainter& extinction;
 
+			//! Process-unique identity for the per-thread probe cache
+			//! (CompositeSPF.cpp, "PROBE CACHE").  NOT the object's address:
+			//! a destroyed composite's address is reused by the next one
+			//! allocated, and a cache keyed on it would hand the new
+			//! material the old one's branch weights.
+			const unsigned long long instanceId;
+
 			//! The walk carries TWO stacks -- `outside` (without this object's
 			//! IOR-stack entry, i.e. the medium above the top interface) and
 			//! `gap` (with the entry the top interface pushed).  A single

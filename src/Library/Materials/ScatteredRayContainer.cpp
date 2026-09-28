@@ -259,7 +259,8 @@ ScatteredRay* ScatteredRayContainer::RandomlySelectDiffuse(double random, bool b
 // evaluation times cos / the stored density. This matches a sampled
 // aggregate-density ray when its response matches the aggregate BSDF;
 // a per-lobe conditional density can instead mispair the summed response.
-// CompositeSPF still declines (DL-221). TranslucentSPF now evaluates
+// CompositeSPF declines only for the rays its stochastic WALKER emits
+// (DL-221, narrowed by DL-24). TranslucentSPF now evaluates
 // its normal entry/exit lobes (DL-222 closed), retaining its diagnostic
 // identity only in case an unsupported lobe reaches the fallback.
 //
@@ -305,7 +306,7 @@ namespace RISE
 					"%s:: ISPF::EvaluateKrayNM declined this lobe for an HWSS companion. "
 					"The AGGREGATE-BSDF fallback is paired with a PER-LOBE conditional "
 					"density, so the summed response may not match the selected lobe. "
-					"CompositeSPF's unresolved walk is DL-221; TranslucentSPF supports its "
+					"CompositeSPF's walker-emitted rays are DL-221; TranslucentSPF supports its "
 					"normal entry/exit lobes and retains this diagnostic for unsupported "
 					"types. This fallback concerns companion lanes in `hwss TRUE` spectral "
 					"transport; the hero wavelength and RGB rendering are unaffected. "

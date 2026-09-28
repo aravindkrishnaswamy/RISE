@@ -29,8 +29,10 @@
 //  `AshikminShirleyAnisotropicPhongSPF`. TranslucentSPF now also
 //  answers (DL-222, integrated 2026-09-19); section D independently
 //  checks entry painters, interior Beer/scattering and live-distance
-//  replay. CompositeSPF remains unresolved (DL-221): its stochastic
-//  layer walk cannot be recovered from (ri, outDir, type, nm).
+//  replay. CompositeSPF (DL-221, narrowed by DL-24 2026-09-28): the
+//  rays its layered evaluator prices are reconstructed (section D,
+//  material path); the rays its stochastic WALKER emits still cannot
+//  be recovered from (ri, outDir, type, nm) and decline.
 //
 //  SECTIONS
 //    A. SAMPLER <-> EVALUATOR, SAME WAVELENGTH.  For every non-delta
@@ -83,7 +85,9 @@
 //       aggregate (`LambertianSPF`) must still return -1, so the
 //       fallback ladder stays reachable; and an unknown / unsupported
 //       `rayType` on the five must return -1 rather than a wrong
-//       number. CompositeSPF names its unresolved fallback. Translucent
+//       number. An SPF-only CompositeSPF (no layer BSDFs) declines and
+//       names itself; the production CompositeMaterial path answers
+//       for its evaluator-priced rays (DL-24). Translucent
 //       entry/exit weights have independent painter/Beer oracles; both
 //       eye/light replay must consume recorded non-unit incoming
 //       distance and apply the ratio only to downstream throughput.

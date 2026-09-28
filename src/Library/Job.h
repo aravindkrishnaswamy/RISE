@@ -1404,11 +1404,11 @@ namespace RISE
 			const char* name,											///< [in] Name of the material
 			const char* top,											///< [in] Name of material on top
 			const char* bottom,											///< [in] Name of material on bottom
-			const unsigned int max_recur,								///< [in] Maximum recursion level in the random walk process
-			const unsigned int max_reflection_recursion,				///< [in] Maximum level of reflection recursion
-			const unsigned int max_refraction_recursion,				///< [in] Maximum level of refraction recursion
-			const unsigned int max_diffuse_recursion,					///< [in] Maximum level of diffuse recursion
-			const unsigned int max_translucent_recursion,				///< [in] Maximum level of translucent recursion
+			const unsigned int max_recur,								///< [in] Russian-roulette onset (total walk events) for the inter-layer walk; since DL-24 not a truncation
+			const unsigned int max_reflection_recursion,				///< [in] Russian-roulette onset for reflection events (DL-24: not a truncation)
+			const unsigned int max_refraction_recursion,				///< [in] Russian-roulette onset for refraction events (DL-24: not a truncation)
+			const unsigned int max_diffuse_recursion,					///< [in] Russian-roulette onset for diffuse events (DL-24: not a truncation)
+			const unsigned int max_translucent_recursion,				///< [in] Russian-roulette onset for translucent events (DL-24: not a truncation)
 			const double thickness,										///< [in] Thickness between the materials
 			const char* extinction										///< [in] Extinction: a scalar_painter name, or an inline `r g b` / single scalar (physical SCALAR slot -- a colour painter does not bind here)
 			);

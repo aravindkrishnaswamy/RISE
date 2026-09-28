@@ -6507,8 +6507,9 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			if( compWeight < 0 && pBRDFCur )
 			{
 				// DL-125: aggregate-density sampling with matching aggregate
-				// BSDF response uses this fallback. CompositeSPF declines with
-				// per-lobe density (DL-221); report its diagnostic identity.
+				// BSDF response uses this fallback. CompositeSPF declines for
+				// its walker-emitted rays (DL-221, narrowed by DL-24); report
+				// its diagnostic identity.
 				// TranslucentSPF now handles its normal companion lobes.
 				NotePerLobeDensityCompanionFallback( pSPF );
 
