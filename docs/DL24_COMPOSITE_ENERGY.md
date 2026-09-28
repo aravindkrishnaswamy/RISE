@@ -318,11 +318,11 @@ difference).  Carried into the DL-221 row.
 Section H (added by the review) puts STOCHASTIC layers on TOP, with the
 position jittered every draw; truth 1 for the lossless rows:
 
-| class | pre-review `c03807a2` 0 / 60 deg | post-review 0 / 60 deg (mean ± sem) | note |
+| class | pre-review `c03807a2` 0 / 60 deg | current (after round 2's 8-probe weights) 0 / 60 deg (mean ± sem) | note |
 |---|---|---|---|
-| H1 generic_human_tissue / white | 0.9985 / **0.6212** | 0.9999 ± .0041 / 0.9939 ± .0112 | gated |
-| H2 composite{dielectric / lossless translucent} / white | **0.9418 / 0.9351** | 1.0030 ± .0063 / 0.9969 ± .0050 | gated |
-| H3 composite{dielectric / dielectric} / white | 0.3811 / 0.3530 | 0.4785 ± .0026 / 0.5108 ± .0043 | KNOWN RESIDUAL, pinned [0.40, 0.62] (section 5) |
+| H1 generic_human_tissue / white | 0.9985 / **0.6212** | 0.9999 ± .0041 / 1.0061 ± .0042 (round 1: 0.9939 ± .0112) | gated |
+| H2 composite{dielectric / lossless translucent} / white | **0.9418 / 0.9351** | 1.0011 ± .0022 / 1.0004 ± .0026 (round 1: 1.0030 / 0.9969) | gated |
+| H3 composite{dielectric / dielectric} / white | 0.3811 / 0.3530 | 0.4781 ± .0016 / 0.5084 ± .0032 (round 1: 0.4785 / 0.5108) | KNOWN RESIDUAL, pinned [0.40, 0.62] (section 5) |
 | H4 composite{dielectric / dielectric} struck from inside | 1.0000 (20 deg) / 0.0868 (35 deg) | same | KNOWN RESIDUAL, pinned [0.04, 0.20] at 35 deg; base `5c9eeb96` reads the same 0.086 |
 
 Section T (added by review round 2, P1-A) tilts the SHADING normal of a
@@ -399,7 +399,7 @@ proof that the new NEE value is right.
 **Shipped scene, whole-render user CPU**, n = 5 interleaved, 512×288,
 64 spp.  After review round 2 and the merge, against `master` `1e20e1f6`
 (two separately built binaries, interleaved): **66.05 ± 1.07 s -> 80.28 ±
-1.06 s, +21.5 %**; the region means match section 3.7's deltas to within
+1.06 s, +21.5 %** (the round-3 reviewer re-measured +23.6 %: quote **+21-24 %**); the region means match section 3.7's deltas to within
 0.2 % per region (whole image −4.04 %).  Earlier builds, against base
 `5c9eeb96`:
 
@@ -513,8 +513,10 @@ warnings**.
   to the outside stack.  Pinned (section D3, [0.43, 0.54]).  (iii) **A ray
   arriving BEHIND a tilted shading normal** (tilt 35, theta 60:
   `d . n_s = +0.087`) is classified up-going and takes the from-below
-  walker: 0.0899 on this branch, 0.0907 on base.  Pinned (section T,
-  [0.06, 0.12]).
+  walker: 0.0899 on this branch, 0.0907 on base.  It is a property of the
+  composite's classification, not of the top: section T reads 0.0899 /
+  0.0900 / 0.0904 / 0.0903 for dielectric scattering 0 / 5 / warp-off and
+  a lossless translucent top alike.  Pinned (section T, [0.06, 0.12]).
 * **Probe/walk cache key** holds the IOR stack's top and
   `containsCurrent()`, not its deeper entries.  Two queries at the same
   point, direction and top but a different deeper stack would share a
@@ -661,8 +663,32 @@ to 1 % and weighted its rare straight-through exits ~100x, and a BDPT
 light-tracing splat did not converge within 1024 spp.  The per-branch
 weights now average `kPerBranchProbes` = 8 hashed probes (the declared
 aggregate path still uses one): the zero-read rate falls to 5.8 %, the
-batch sem from 0.0041 to 0.0013, and the row reads **0.09117** (132/0).
-An efficiency choice, not a correctness one.
+batch sem from 0.0041 to 0.0013, and the row passes (132/0).  An
+efficiency choice, not a correctness one: the round-3 reviewer confirmed
+the per-branch mean does not move with 2, 8 or 32 probes.  **That row's
+pass is on a FROZEN Sobol pattern**: unsalted it reads 0.09116 / 0.09115
+whatever the libc seed, while SALTED renders give **0.0901 ± 0.0012**
+(n = 16) with a single-render sd of 5.1 % against the row's ±3 % band, so
+about half of single salted renders would fail.  DL-355 (filed at merge):
+the row needs 8+ salted renders averaged, or more spp.
+
+**Cost cliff of NESTED composites (known limitation, disclosed by the
+round-3 reviewer).**  Every per-branch level scatters its top 8 times to
+probe it, and the 4-entry probe cache thrashes beyond a nesting depth of
+about 4, so `Scatter` cost grows EXPONENTIALLY with depth -- the 8-probe
+change raised the growth base from ~2 to ~8.  Microseconds per `Scatter`,
+weave layers nested as the TOP: depth 1 / 5 / 6 / 7 / 8 = 3.8 / 32 / 105 /
+816 / 9195; nested as the BOTTOM: 3.8 / 42 / 66 / 110 / 202; `master` is
+flat at 0.65-1.24.  The shipped depth-2 nest costs ~12x per `Scatter`
+against `master`; at depth 128 neither form finishes.  Not fixed here (a
+cache-size bump was not tried).
+
+**Extreme tail of the per-branch walker share.**  The walker share floors
+at ~0.001 whenever no probe sees down mass.  For a nested top whose own
+down share is ~1 %, 91 % of shading points are in that state, so
+straight-through events occur about once per 10^6 draws with weights up
+to 5939.  The estimator is unbiased, but transport through such a sheet
+that NEE cannot price (DL-296) will firefly.
 
 **P1-A -- `DielectricSPF` falsely declared determinism under a tilted
 shading normal with finite `scattering`.**  Its transmission warp is
@@ -697,8 +723,11 @@ capability, was chosen**:
 * Consequence worth knowing: on a smooth-shaded mesh or a bump-/normal-
   mapped surface, a composite whose top is a dielectric with a finite
   `scattering` (including the default 10 000) runs PER-BRANCH -- unbiased,
-  higher variance, `Pdf` an MIS partner, the 5-argument `EvaluateKrayNM`
-  declines.  The shipped scene is all analytic primitives and does not
+  but measurably costlier and noisier: the round-3 reviewer measured
+  **PT +50 % and BDPT +62 % user CPU** on a bump-mapped composite against
+  the aggregate mode, with a per-draw sd ~2.5x the natural walk's
+  (PT/BDPT/`coated_material` still agree to 0.2 %); `Pdf` is an MIS
+  partner and the 5-argument `EvaluateKrayNM` declines.  The shipped scene is all analytic primitives and does not
   move (section 3.8: every region within 0.2 % of round 1's deltas).
 
 Red -> green: section 3.6's T table (red 29/9 with the round-1 claim
@@ -730,3 +759,19 @@ per-branch variance note is in section 5; the dispersive direct-reflection
 reconstruction is described as returning 1 where `F(nm)/F(hero)` is right,
 not "exactly"; and the red-proof figure is 37/91 for the 128-check file
 (the reviewer's measurement; round 1's 34/82 was the 116-check revision).
+
+**Round 3 (2026-09-28): PASS, no P1.**  The reviewer confirmed P1-A closed
+(a per-record audit found 0 violations across 10 materials x tilts x
+stacks x angles x pipes), the DL-05 reconciliation matching the walker in
+expectation on 9 configurations, and the 8-probe estimator unbiased.  Its
+P2s are disclosed above (the nested-composite cost cliff, the frozen-Sobol
+WeaveGap row -> DL-355, the per-branch tail, the per-branch cost).  Two
+more recorded residuals: (1) **hero/companion mode mismatch, unguarded
+and contrived** -- if a spectrally varying `scattering` painter crosses
+1e6 (or an HG `g` crosses 1) between the hero and a companion wavelength,
+the hero ray is priced per-branch while the 5-argument `EvaluateKrayNM`,
+queried at the companion, reconstructs an aggregate-mode weight; (2) on
+the shipped scene the BDPT/PT ratio sits 0.55-0.59 % low, and 0.24 % low
+on a composite-free version of it -- unattributed.  The merge commit
+`3e860735` also carries the P1-A fix and the 8-probe change, so a bisect
+landing on it tests three changes at once.
