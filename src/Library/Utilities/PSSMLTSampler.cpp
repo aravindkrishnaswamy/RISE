@@ -63,7 +63,9 @@ PSSMLTSampler::PSSMLTSampler(
   largeStepProb( largeStepProb_ ),
   isLargeStep( true ),
   lastLargeStepIteration( 0 ),
-  rng( seed )
+  rng( seed ),
+  extraHint( 0 ),
+  extraCursor( -1 )
 {
 }
 
@@ -79,7 +81,9 @@ PSSMLTSampler::PSSMLTSampler(
   largeStepProb( largeStepProb_ ),
   isLargeStep( true ),
   lastLargeStepIteration( 0 ),
-  rng( seed )
+  rng( seed ),
+  extraHint( 0 ),
+  extraCursor( -1 )
 {
 }
 
@@ -214,7 +218,10 @@ Scalar PSSMLTSampler::Get1D()
 		// scan over XExtra.  Touching this stream for N samples costs
 		// exactly N PrimarySample slots -- no multiplicative blow-up,
 		// regardless of how large streamIndex is.
-		std::vector<PrimarySample>& streamVec = FindOrCreateExtraStream( streamIndex );
+		if( extraCursor < 0 ) {
+			extraCursor = static_cast<long>( FindOrCreateExtraStreamIndex( streamIndex ) );
+		}
+		std::vector<PrimarySample>& streamVec = XExtra[ static_cast<size_t>( extraCursor ) ].second;
 
 		while( sampleIndex >= streamVec.size() )
 		{
@@ -228,6 +235,7 @@ Scalar PSSMLTSampler::Get1D()
 		pSample = &streamVec[sampleIndex];
 		lane.legacy = false;
 		lane.stream = streamIndex;
+		lane.extraIdx = static_cast<size_t>( extraCursor );
 		lane.sampleIdx = sampleIndex;
 	}
 
@@ -283,6 +291,7 @@ void PSSMLTSampler::StartStream( int stream )
 {
 	streamIndex = stream;
 	sampleIndex = 0;
+	extraCursor = -1;		// resolved lazily on the first extra-tier Get1D
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -299,6 +308,7 @@ void PSSMLTSampler::StartIteration()
 	isLargeStep = ( rng.CanonicalRandom() < largeStepProb );
 	streamIndex = 0;
 	sampleIndex = 0;
+	extraCursor = -1;
 	modifiedIndices.clear();
 }
 
@@ -336,7 +346,7 @@ void PSSMLTSampler::Reject()
 		const ModifiedLane& lane = modifiedIndices[i];
 		PrimarySample& sample = lane.legacy
 			? X[lane.legacyIdx]
-			: FindOrCreateExtraStream( lane.stream )[lane.sampleIdx];
+			: XExtra[lane.extraIdx].second[lane.sampleIdx];
 		sample.value = sample.backup;
 		sample.lastModIteration = sample.backupIteration;
 	}

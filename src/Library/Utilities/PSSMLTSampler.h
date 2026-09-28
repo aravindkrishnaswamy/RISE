@@ -205,17 +205,39 @@ namespace RISE
 			/// `XExtra` comment above for why this beats a hash map for
 			/// the tiny number of distinct extra streams any one
 			/// instance actually touches.
-			std::vector<PrimarySample>& FindOrCreateExtraStream( int stream )
+			///
+			/// DL-283: BDPT's medium distance samples give EVERY medium
+			/// event its own stream, so a chain through a scattering
+			/// medium now touches dozens of extra streams, not one.  Two
+			/// changes keep that linear: the scan starts just past the
+			/// previous hit (a chain re-walks its streams in the order
+			/// it first created them, so the next lookup is almost
+			/// always the very next entry), and callers resolve the
+			/// index ONCE per StartStream (`extraCursor`) and record it
+			/// in each ModifiedLane, so Get1D and Reject never scan.
+			/// XExtra only ever grows by push_back, so an index is
+			/// stable for the life of the sampler.
+			size_t FindOrCreateExtraStreamIndex( int stream )
 			{
-				for( size_t i = 0; i < XExtra.size(); i++ )
+				const size_t n = XExtra.size();
+				for( size_t k = 0; k < n; k++ )
 				{
+					const size_t i = ( extraHint + k ) % n;
 					if( XExtra[i].first == stream ) {
-						return XExtra[i].second;
+						extraHint = i + 1;
+						return i;
 					}
 				}
 				XExtra.push_back( std::make_pair( stream, std::vector<PrimarySample>() ) );
-				return XExtra.back().second;
+				extraHint = XExtra.size();
+				return XExtra.size() - 1;
 			}
+
+			std::vector<PrimarySample>& FindOrCreateExtraStream( int stream )
+			{
+				return XExtra[ FindOrCreateExtraStreamIndex( stream ) ].second;
+			}
+
 
 			/// Identifies one touched (stream, sampleIndex) lane so
 			/// Accept()/Reject() can find its PrimarySample back
@@ -225,6 +247,7 @@ namespace RISE
 				bool			legacy;			///< true: lane lives in X; false: lives in XExtra
 				unsigned int	legacyIdx;		///< valid iff legacy: flat index into X
 				int				stream;			///< valid iff !legacy: key into XExtra
+				size_t			extraIdx;		///< valid iff !legacy: XExtra index of `stream` (DL-283)
 				unsigned int	sampleIdx;		///< valid iff !legacy: index into XExtra's vector for `stream`
 			};
 			std::vector<ModifiedLane>		modifiedIndices;	///< Lanes modified in current proposal (for fast rollback)
@@ -284,6 +307,8 @@ namespace RISE
 			static const Scalar				logRatio;			///< Precomputed -log(s2/s1)
 
 			RandomNumberGenerator			rng;				///< Source of fresh randomness
+			size_t							extraHint;			///< Where the next XExtra scan starts (DL-283)
+			long							extraCursor;		///< XExtra index of the current stream, -1 = unresolved (DL-283)
 
 			virtual ~PSSMLTSampler();
 
