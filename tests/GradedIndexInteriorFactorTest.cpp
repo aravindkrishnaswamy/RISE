@@ -170,6 +170,25 @@ static std::string WriteTemp( const std::string& text, const char* tag )
 
 static const int kFilm = 32;
 
+//! FNV-1a over the captured pixel buffer's raw doubles.  Printed with every
+//! render so a constant-index row can be compared BIT FOR BIT between a
+//! pre-DL-09 and a post-DL-09 build: these fixtures render deterministically
+//! (uniformly lit floor, per-pixel-seeded Sobol, pinned libc seed).
+static unsigned long long g_lastHash = 0;
+static unsigned long long HashPixels( const CapturingRasterizerOutput& cap )
+{
+	unsigned long long h = 1469598103934665603ULL;
+	for( const RISEColor& c : cap.pixels ) {
+		const double v[4] = { c.base.r, c.base.g, c.base.b, c.a };
+		const unsigned char* b = reinterpret_cast<const unsigned char*>( v );
+		for( std::size_t k = 0; k < sizeof( v ); k++ ) {
+			h ^= b[k];
+			h *= 1099511628211ULL;
+		}
+	}
+	return h;
+}
+
 static std::vector<double> RenderTiles( const std::string& sceneText, const char* tag )
 {
 	std::vector<double> tiles;
@@ -183,7 +202,10 @@ static std::vector<double> RenderTiles( const std::string& sceneText, const char
 		GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "capture" );
 		pJob->GetRasterizer()->AddRasterizerOutput( pCap );
 		std::srand( g_seedBase + g_renderIndex++ );
-		if( pJob->Rasterize() ) tiles = TileMeansOf( *pCap, kFilm, kFilm );
+		if( pJob->Rasterize() ) {
+			tiles = TileMeansOf( *pCap, kFilm, kFilm );
+			g_lastHash = HashPixels( *pCap );
+		}
 		safe_release( pCap );
 	}
 	safe_release( pJob );
@@ -314,8 +336,8 @@ static const double kLe = 1.0 / kPi;
 
 static void Report( const char* label, const Stat& s, double closed )
 {
-	std::printf( "    %-34s mean=%.6f sd=%.6f n=%d  ratio-to-closed-form=%.4f\n",
-		label, s.mean, s.sd, s.n, s.ok ? s.mean / closed : -1.0 );
+	std::printf( "    %-34s mean=%.6f sd=%.6f n=%d  ratio-to-closed-form=%.4f  pixels=%016llx\n",
+		label, s.mean, s.sd, s.n, s.ok ? s.mean / closed : -1.0, g_lastHash );
 }
 
 //////////////////////////////////////////////////////////////////////
