@@ -96,6 +96,13 @@
 //          Pre-fix PT's RayCaster was built with a hard-coded recursion
 //          cap of 10 while every SSS event nests its continuation cast at
 //          depth + 2, so paths hopping sphere to sphere were cut off.
+//      E3  the legacy shader-op chain: a distribution-tracing op's image
+//          expectation must not depend on its per-hit sample count.  The
+//          op re-runs the SPF's Scatter for every sample on the stack it
+//          was handed, and pre-fix each earlier sample's continuation
+//          cast had rewritten that stack's current object, so a later
+//          sample's entry push keyed the new stack entry on the WRONG
+//          object and the interior exit read as a second entry.
 //    Usage: [--unit-only] [--trials K (default 4)] [--only <label substring>]
 //
 //  Author: RISE debt-cleanup, slice `debt-dl49`
@@ -1510,6 +1517,56 @@ namespace
 				<< "  ratio " << ratio << " (paired sd " << sr.sd << ", band " << row.band << ")" << std::endl;
 			Check( std::fabs( ratio - 1.0 ) < row.band, label + ": enclosed/open image mean ratio within band of 1" );
 		}
+		// E3: legacy pixelpel chain [distribution tracing, direct lighting]
+		// on a sphere that tracks containment (translucent, dielectric)
+		// inside a grey room lit by an omni light: DT with 4 samples per
+		// hit must read the same image mean as DT with 1 (one sample per
+		// hit is immune by construction: a single Scatter precedes every
+		// cast).  Pre-fix translucent read about 4.3% low and dielectric
+		// about 17% low at 4 samples; the renders are deterministic for a
+		// fixed libc seed, so the band only has to hold the estimator
+		// difference between 1 and 4 samples.
+		for( const char* subject : { "translucent", "dielectric" } ) {
+			const std::string label = std::string( "E3: legacy DT " ) + subject + " sample-count invariance";
+			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
+			auto build = [&]( unsigned int dtSamples ) {
+				std::ostringstream t;
+				t << "RISE ASCII SCENE 7\nfilm\n{\n\twidth 32\n\theight 32\n}\n\n"
+				  << "pinhole_camera\n{\n\tlocation 0 0 4.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
+				  << "uniformcolor_painter\n{\n\tname half\n\tcolor 0.5 0.5 0.5\n}\n\n"
+				  << "uniformcolor_painter\n{\n\tname grey\n\tcolor 0.6 0.6 0.6\n}\n\n";
+				if( std::string( subject ) == "translucent" ) {
+					t << "translucent_material\n{\n\tname subject\n\tref half\n\ttau half\n\text 0\n}\n\n";
+				} else {
+					t << "dielectric_material\n{\n\tname subject\n\tior 1.5\n\ttau 1\n\tscattering 1000000\n}\n\n";
+				}
+				t << "lambertian_material\n{\n\tname room_mat\n\treflectance grey\n}\n\n"
+				  << "sphere_geometry\n{\n\tname subject_geo\n\tradius 1\n}\n\n"
+				  << "standard_object\n{\n\tname subject_obj\n\tgeometry subject_geo\n\tmaterial subject\n}\n\n"
+				  << "sphere_geometry\n{\n\tname room_geo\n\tradius 12\n}\n\n"
+				  << "standard_object\n{\n\tname room\n\tgeometry room_geo\n\tmaterial room_mat\n}\n\n"
+				  << "omni_light\n{\n\tname light\n\tpower 40\n\tposition 2 3 3\n\tcolor 1 1 1\n}\n\n"
+				  << "distributiontracing_shaderop\n{\n\tname dt\n\tsamples " << dtSamples << "\n}\n\n"
+				  << "standard_shader\n{\n\tname global\n\tshaderop dt\n\tshaderop DefaultDirectLighting\n}\n\n"
+				  << "pixelpel_rasterizer\n{\n\tsamples 16\n\tmax_recursion 4\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n"
+				  << "file_rasterizeroutput\n{\n\tpattern rendered/dl315_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+				return t.str();
+			};
+			const std::string p1 = WriteScene( build( 1 ), "dl315dt1" );
+			const std::string p4 = WriteScene( build( 4 ), "dl315dt4" );
+			Check( !p1.empty() && !p4.empty(), label + ": scene files written" );
+			const unsigned int legacySeed = seed++;
+			const double m1 = RenderFurnaceMean( p1, legacySeed );
+			const double m4 = RenderFurnaceMean( p4, legacySeed );
+			std::remove( p1.c_str() );
+			std::remove( p4.c_str() );
+			Check( m1 > 0 && m4 > 0, label + ": both renders finite and non-black" );
+			if( !( m1 > 0 && m4 > 0 ) ) continue;
+			std::cout << std::setprecision( 6 ) << "    " << label.substr( 4 ) << ": DT samples 1 " << m1 << "  samples 4 " << m4
+				<< "  ratio " << m4 / m1 << " (band 0.01)" << std::endl;
+			Check( std::fabs( m4 / m1 - 1.0 ) < 0.01, label + ": DT(4) / DT(1) image mean within band of 1" );
+		}
+
 		// E2: a close-packed cluster of conservative random-walk spheres in
 		// the open-air white furnace (radiance exactly 1 under the RGB
 		// pipe): every pixel reads 1 whatever the geometry.  Pre-fix a
