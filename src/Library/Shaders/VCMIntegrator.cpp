@@ -41,6 +41,7 @@
 #include "../Interfaces/ICamera.h"
 #include "../Cameras/CameraUtilities.h"
 #include "../Rendering/SplatFilm.h"
+#include "../Utilities/GradedIndexMedium.h"
 
 
 using namespace RISE;
@@ -1606,8 +1607,14 @@ namespace
 					bdpt, v.position, ls.position,
 					scene, caster,
 					v.pMediumObject, v.pMediumVol, tag );
+			// DL-09: the NEE connection segment's graded-index factor
+			// (n_eye/n_light)^2 when both ends lie in one graded medium
+			// (docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md §3(ii)); exactly 1
+			// otherwise.  Throughput only -- no pdf above reads it.
+			const Scalar gradedScale = GradedIndexMedium::ConnectionScaleToPoint(
+				v.pGradedMedium, v.gradedIOR, ls.position );
 			const typename Traits::value_type contribution =
-				VertexThroughput<Tag>( v, tag ) * fEye * Le * Tr_conn_nee * ( G / invLightPdfArea ) * weight;
+				VertexThroughput<Tag>( v, tag ) * fEye * Le * Tr_conn_nee * ( G / invLightPdfArea ) * ( weight * gradedScale );
 			total = total + contribution;
 		}
 
@@ -1851,6 +1858,17 @@ namespace
 					RISE::PathValueOps::EvalPdfAtVertex<Tag>( v, dirToCam, wiAtLight, tag );
 
 				contribution = VertexThroughput<Tag>( v, tag ) * fLight * ( G * We );
+			}
+
+			// DL-09: the splat segment's graded-index factor
+			// (n_camera/n_light)^2 when camera and light vertex lie in one
+			// graded medium (a camera seeded inside it); exactly 1 otherwise.
+			{
+				const Scalar gradedScale = GradedIndexMedium::ConnectionScaleFromPoint(
+					camPos, v.pGradedMedium, v.gradedIOR );
+				if( gradedScale != Scalar( 1 ) ) {
+					contribution = contribution * gradedScale;
+				}
 			}
 
 			const Scalar wLight =
@@ -2127,8 +2145,11 @@ namespace
 						scene, caster,
 						ev.pMediumObject, ev.pMediumVol, tag );
 
+				// DL-09: the connection segment's graded-index factor.
+				const Scalar gradedScale = GradedIndexMedium::ConnectionScale(
+					ev.pGradedMedium, ev.gradedIOR, lv.pGradedMedium, lv.gradedIOR );
 				const typename Traits::value_type contrib =
-					VertexThroughput<Tag>( lv, tag ) * fLight * ( G * weight ) * Tr_conn_int * fEye
+					VertexThroughput<Tag>( lv, tag ) * fLight * ( G * ( weight * gradedScale ) ) * Tr_conn_int * fEye
 					* VertexThroughput<Tag>( ev, tag );
 				total = total + contrib;
 			}

@@ -186,6 +186,19 @@ namespace RISE
 				const IORStack& ior_stack
 				) const;
 
+			//! DL-05: the substrate's delta pass-through (a thin weave's
+			//! gap) as ScatterImpl re-prices it, in expectation over this
+			//! wrapper's own branch selection -- see
+			//! ISPF::DeltaPassThroughTransmittance.
+			RISEPel DeltaPassThroughTransmittance(
+				const RayIntersectionGeometric& ri
+				) const;
+
+			Scalar DeltaPassThroughTransmittanceNM(
+				const RayIntersectionGeometric& ri,
+				const Scalar nm
+				) const;
+
 			inline const FabricBRDF& GetBRDF()    const { return *pBRDF; }
 			inline const ISPF&       GetBaseSPF() const { return *pBaseSPF; }
 
@@ -234,6 +247,19 @@ namespace RISE
 				const FabricBRDF::FabricParams& p,
 				const RayIntersectionGeometric& weaveRi,
 				const IORStack& ior_stack
+				) const;
+
+			//! Shared body of DeltaPassThroughTransmittance{,NM}: the
+			//! SCALAR factor ScatterImpl's delta branch multiplies the
+			//! substrate's delta kray by, times this branch's own
+			//! probability -- i.e. the expected re-pricing.  Writes the
+			//! weave rotation the substrate must be queried under (the
+			//! record ScatterImpl hands the base sampler) into
+			//! @a weaveAngleOut.  0 wherever ScatterImpl emits nothing.
+			Scalar DeltaPassThroughScale(
+				const RayIntersectionGeometric& ri,
+				const Scalar nm,
+				Scalar& weaveAngleOut
 				) const;
 
 			const FabricBRDF*	pBRDF;

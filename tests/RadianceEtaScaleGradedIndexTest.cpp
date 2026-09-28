@@ -28,64 +28,32 @@
 //    The `n_A^2` and `n_B^2` cancel completely.  Physically obvious in
 //    hindsight: a slab that neither emits nor absorbs cannot amplify.
 //
-//    WHAT RISE DOES, AND WHY IT IS RIGHT TODAY.  RISE applies the
-//    walk-order factor `(eta_before/eta_after)^2` only at SCATTER
-//    events (`RISE::RadianceEtaScale`, Utilities/IORStack.h) and has NO
-//    interior-segment factor at all.  A camera-rooted eye walk through
-//    this slab therefore multiplies:
-//      entry hit (top face, air -> slab):  (1 / n_A)^2
-//      exit  hit (bottom face, slab -> air): (n_A / 1)^2
-//    -- because `RadianceEtaScale`'s `before.top()` reads the value
-//    PUSHED at the ENTRY hit (`n_A`), not the exit hit's freshly
-//    re-fetched `n_B`.  The product is exactly 1, which is exactly
-//    right: that stale `n_A` is silently standing in for the product of
-//    the missing interior-segment factor `(n_A/n_B)^2` and the true
-//    exit factor `(n_B/1)^2`.  The mismatch and the omission cancel.
+//    WHAT RISE DOES (DL-09, fixed 2026-09-28).  A camera-rooted walk now
+//    pays the interior-segment factor along the way
+//    (`GradedIndexMedium::Advance`, which also re-records the IOR stack's
+//    top as the local index), so the eye walk through this slab
+//    multiplies:
+//      entry hit (top face, air -> slab):     (1 / n_A)^2
+//      exit  hit, on arrival (segment A->B):  (n_A / n_B)^2, top <- n_B
+//      exit  hit, the crossing:               (n_B / 1)^2
+//    `RadianceEtaScale`'s `before.top()` reads the FRESH exit value `n_B`
+//    because the walk updated it on arrival.  Before DL-09 the middle
+//    factor was missing and the stale `n_A` at the exit read stood in for
+//    it -- the same net 1, which is why this file was green then too.
+//    See docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md.
 //
-//    THE REGRESSION THIS GUARDS AGAINST (tried and reverted
-//    2026-09-14).  Substituting the SPF's fresh exit-hit `n_B` for the
-//    stack's `n_A` at the exit read -- on the reasonable-sounding
-//    grounds that `n_B` is what the SPF's own Snell/Fresnel math used
-//    -- WITHOUT also adding the interior-segment factor turns the net
-//    1 into `(n_B/n_A)^2`.  At this file's geometry that is 2.25: the
-//    emitter behind a passive lossless slab would read 2.25x BRIGHTER
-//    than the emitter.  The `overbright` closed form below is that
-//    wrong answer, asserted to be far from what we read.
-//
-//    WHAT IS STILL OPEN (DL-09, re-opened 2026-09-14).  A contribution
-//    GATHERED AT AN INTERIOR VERTEX C -- an NEE connection or a bounce
-//    while the walk is still inside the graded object, before it exits
-//    -- never reaches the cancelling exit event.  Its throughput
-//    carries `(1/n_A)^2` from the entry crossing where physics wants
-//    `(1/n_C)^2`, an error of `(n_C/n_A)^2`.  The same gap applies to a
-//    walk seeded INSIDE a graded medium: `IORStackSeeding::
-//    SeedFromPoint` does NOT record the index AT THE SEED POINT itself
-//    (e.g. the camera position) -- it fires a probe ray FROM the seed
-//    point and records the index at the probe's FIRST SURFACE HIT on
-//    the containing object (`ri.pMaterial->GetSpecularInfo(ri.geometric,
-//    ...)`, IORStackSeeding.h), a point on the object's boundary that
-//    can be arbitrarily far from the seed point for a graded `ior`.
-//    Either way, the first segment out from the seed pays no
-//    interior-segment factor of its own.
-//
-//    THE FIX NEEDS TWO CHANGES THAT MUST LAND TOGETHER, not one: the
-//    missing interior-segment factor `(n_prev/n_C)^2` applied along the
-//    walk, AND switching the EXIT crossing's own `RadianceEtaScale` read
-//    from the stale `before.top()` to the SPF's freshly re-fetched exit
-//    value.  Implementing only the interior factor, while leaving that
-//    exit read untouched on the theory that "don't touch the exit read"
-//    means "add nothing there", turns a through-trip into
-//    `(1/n_A)^2 * (n_A/n_B)^2 * (n_A/1)^2 = (n_A/n_B)^2` -- the MIRROR
-//    IMAGE of the regression this file guards against (that one is
-//    `(n_B/n_A)^2`; this one is its reciprocal) -- and this file's own
-//    rows cannot distinguish that half-applied state from a real fix,
-//    because both rows are pure through-transmission (see below): only
-//    an INTERIOR gather, which never reaches the exit read, can tell
-//    them apart.  Full derivation:
-//    docs/REFRACTIVE_RADIANCE_SCALING.md sect 10.2.  This file does not
-//    exercise the interior-gather case: both rows here are pure
-//    through-transmission with a diffuse-free slab, so every
-//    contribution completes the round trip.
+//    WHAT THIS FILE CATCHES.  Either HALF of that change applied alone:
+//      * the fresh exit read WITHOUT the interior factor (tried and
+//        reverted 2026-09-14): `(n_B/n_A)^2` = 2.25 -- the `overbright`
+//        closed form below, asserted to be far from what we read;
+//      * the interior factor WITHOUT refreshing the stack top (the literal
+//        reading of the DL-09 row's round-2 recipe): `(n_A/n_B)^2` = 0.444.
+//    Both were run as mutations of the shipped fix on 2026-09-28: the
+//    graded rows read 2.25168x and 0.444645x the physics value
+//    respectively, both far outside the 5% band.  What this file CANNOT see is the interior GATHER
+//    (a contribution made before the walk reaches the exit): both rows here
+//    are pure through-transmission.  That is
+//    tests/GradedIndexInteriorFactorTest.cpp's job.
 //
 //    THE SCENE.  A single `box_geometry` dielectric slab, `ior` bound
 //    to a `scalar_painter { expression 1.8-2.0*P.y }`.  Box height 0.3,

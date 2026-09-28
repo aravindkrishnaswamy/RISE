@@ -204,7 +204,6 @@ namespace RISE
 
 			static Scalar ComputeSkinBaselineAbsorption( const Scalar nm );
 			static Scalar ComputeEpidermisScattering( const Scalar nm );
-			static Scalar SchlickFresnel( const Scalar cosTheta, const Scalar eta );
 
 			void ComputePerLayerCoefficients(
 				const Scalar nm,

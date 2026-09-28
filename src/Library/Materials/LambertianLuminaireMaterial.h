@@ -55,6 +55,12 @@ namespace RISE
 			/// \return The SPF for this material.  NULL If there is no SPF
 			inline ISPF* GetSPF() const {			return pMaterial.GetSPF(); };
 
+			//! DL-05: GetSPF() forwards the wrapped material's SPF verbatim,
+			//! so a delta pass-through it emits (a thin weave's gap) is
+			//! emitted here too -- forward the capability with it
+			//! (IMaterial::HasDeltaPassThrough).
+			inline bool HasDeltaPassThrough() const { return pMaterial.HasDeltaPassThrough(); }
+
 			/// \return The emission properties for this material.  NULL If there is not an emitter
 			inline IEmitter* GetEmitter() const {	return pEmitter; };
 

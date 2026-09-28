@@ -478,7 +478,7 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 
 	const Scalar eta = RelativeBoundaryIOR(
 		pProfile->GetIOR( entryRig ), ExteriorIOR( entryRig ) );
-	const Scalar SwNorm = SchlickTransmissionNormalization( eta );
+	const Scalar SwNorm = BoundaryTransmissionNormalization( eta );
 	const Scalar FtEntry = pProfile->FresnelTransmission( cosTheta, entryRig );
 
 	// Full BSSRDF weight (for continuation path):

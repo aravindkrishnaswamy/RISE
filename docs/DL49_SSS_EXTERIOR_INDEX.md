@@ -233,7 +233,12 @@ No measurable cost (one division and one branch per boundary evaluation).
 Also noted, not filed: the SPF's surface reflection uses the EXACT
 dielectric Fresnel while the profile transmission uses Schlick, so
 `R + Ft != 1` by a few percent even in air.  That is a pre-existing model
-approximation, independent of DL-49 (it exists at `n_e = 1`).
+approximation, independent of DL-49 (it exists at `n_e = 1`).  (Filed at merge as DL-306 and fixed on `debt-dl306`, 2026-09-28: the
+transmission now uses the exact law too -- see
+[DL306_SSS_FRESNEL_PARTITION.md](DL306_SSS_FRESNEL_PARTITION.md).  The
+`eta < 1` Schlick branch and its `eta^2 * 20(1-F0)/21` normalization
+described in §2 were replaced by the exact law's closed-form normalization,
+which obeys the same `c(eta) = eta^2 c(1/eta)` identity.)
 
 ## 9. Residuals
 

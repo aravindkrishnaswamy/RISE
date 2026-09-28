@@ -87,6 +87,18 @@
 //         `lambertian_material` (N == 1) and is structurally blind
 //         to it.
 //
+//      Q. CLOSED two-layer gapped weave box (gap 0.3), omni light
+//         OUTSIDE behind it (DL-05) -- the light reaches the camera-
+//         facing layer only THROUGH the far layer's delta gap lobe.
+//         BDPT gets that path by light tracing; PT only since DL-05,
+//         whose delta-light NEE shadow ray now sees through the gap.
+//         Pre-fix BDPT/PT read 1.545.
+//      R. Q's AREA-LIGHT twin -- a mesh emitter behind the same box.
+//         PT reaches it through the far gap by BSDF sampling at MIS
+//         weight 1 (a delta vertex has no NEE partner), so it was right
+//         before DL-05 and must stay right: an area-light NEE arm that
+//         also saw through the gap would count the path twice.
+//
 //      M. GGX wall + Lambertian floor, same geometry / emitter /
 //         camera / rasterizers as L -- L's CONTROL.  Both materials
 //         are immune to DL-127 and DL-103 (see the topology's own
@@ -3437,6 +3449,66 @@ static void TestGenericHumanTissueOriginFix()
 		sceneTissue, kStrictTolerances, kRasterizerPTNullBSDF, kRasterizerBDPTNullBSDF );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Topologies Q and R: DL-05 (docs/DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md).
+//
+// The closed thin-weave box of docs/CLOTH_FABRIC_DESIGN.md section 15
+// debts 25/27 (`box_geometry` 2.8 x 2.8 x 1.0, `weave_material { fabric
+// custom transmission thin gap 0.3 warp_transmit 0.25 weft_transmit
+// 0.25 }`, camera at +3.2 z), lit from OUTSIDE behind it.
+//
+// Own rasterizer pair: 512 spp, and BDPT at depth 8/8 instead of this
+// file's 3/3 -- a closed box's interreflection chains are longer than
+// three vertices on each side, and PT (which has no such cap) would
+// otherwise read above BDPT for a reason that has nothing to do with
+// either integrator's correctness.  Measured n = 4 (seed bases
+// 1000..4000 of tests/WeaveGapShadowTransmittanceTest.cpp's table, 24x24,
+// which renders this same box): BDPT/PT 1.5453 +/- 0.0004 pre-fix and
+// 0.9933 post; the ~0.6 % left is the pre-existing closed-box residual
+// debt 25 records -- the SAME box at gap 0 (no pass-through exists, so
+// DL-05 cannot touch it) reads 0.9945 before and 0.9935 after (n = 4,
+// matching docs/DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md section 5's own
+// design-doc table row for this box).
+//////////////////////////////////////////////////////////////////////
+static const char* kRasterizerPTWeaveGap =
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 512\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n"
+	"file_rasterizeroutput\n{\n\tpattern rendered/bdpt_balance_pt_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+
+static const char* kRasterizerBDPTWeaveGap =
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"bdpt_pel_rasterizer\n{\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tsamples 512\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n"
+	"file_rasterizeroutput\n{\n\tpattern rendered/bdpt_balance_bdpt_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+
+static const char* kSceneWeaveGapBox =
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.2\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 34.0\n}\n\n"
+	"weave_material\n{\n\tname mat_box\n\tfabric custom\n\ttransmission thin\n\tgap 0.3\n"
+		"\twarp_transmit 0.25\n\tweft_transmit 0.25\n}\n\n"
+	"box_geometry\n{\n\tname g_box\n\twidth 2.8\n\theight 2.8\n\tdepth 1.0\n}\n\n"
+	"standard_object\n{\n\tname o_box\n\tgeometry g_box\n\tmaterial mat_box\n\tposition 0 0 0\n}\n\n";
+
+static void TestWeaveGapBoxOmniOutside()
+{
+	RunTopologyTest( "closed two-layer gapped weave box, omni light OUTSIDE (DL-05)",
+		std::string( kSceneWeaveGapBox ) +
+		"omni_light\n{\n\tname lgt\n\tposition 0 0 -3.0\n\tcolor 1.0 1.0 1.0\n\tpower 6.0\n}\n",
+		kStrictTolerances, kRasterizerPTWeaveGap, kRasterizerBDPTWeaveGap );
+}
+
+static void TestWeaveGapBoxAreaOutside()
+{
+	// Winding gives the one-sided luminaire normal +Z, facing the box.
+	RunTopologyTest( "closed two-layer gapped weave box, AREA light outside (DL-05 partition guard)",
+		std::string( kSceneWeaveGapBox ) +
+		"uniformcolor_painter\n{\n\tname pnt_emit_wg\n\tcolor 1.0 1.0 1.0\n}\n\n"
+		"lambertian_luminaire_material\n{\n\tname mat_emit_wg\n\texitance pnt_emit_wg\n\tscale 2.0\n\tmaterial none\n}\n\n"
+		"clippedplane_geometry\n{\n\tname quad_emit_wg\n"
+			"\tpta -1.4 -1.4 -2.0\n\tptb 1.4 -1.4 -2.0\n\tptc 1.4 1.4 -2.0\n\tptd -1.4 1.4 -2.0\n}\n\n"
+		"standard_object\n{\n\tname obj_emit_wg\n\tgeometry quad_emit_wg\n\tmaterial mat_emit_wg\n}\n",
+		kStrictTolerances, kRasterizerPTWeaveGap, kRasterizerBDPTWeaveGap );
+}
+
 int main( int argc, char** argv )
 {
 	// Focused repeated A/B measurement uses the exact shipped topology
@@ -3452,6 +3524,16 @@ int main( int argc, char** argv )
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
+	// DL-05: every weave topology (E, F, Q, R) and nothing else -- the
+	// focused before/after A/B.
+	if( argc == 2 && std::strcmp(argv[1], "--weave-gap-only") == 0 ) {
+		TestBacklitThinCurtain();
+		TestGappedCurtainAreaLight();
+		TestWeaveGapBoxOmniOutside();
+		TestWeaveGapBoxAreaOutside();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
 	if( argc == 2 && std::strcmp(argv[1], "--spectral-aggregate-unit") == 0 ) {
 		TestSpectralRepeatAggregation();
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
@@ -3460,7 +3542,7 @@ int main( int argc, char** argv )
 	if( argc > 1 ) {
 		if( argc != 3 || std::strcmp(argv[1], "--spectral-only") != 0 ||
 			(std::strcmp(argv[2], "1") != 0 && std::strcmp(argv[2], "2") != 0) ) {
-			std::cerr << "Usage: BDPTStrategyBalanceTest [--spectral-only 1|2 | --spectral-aggregate-unit | --materials-only | --guided-only]" << std::endl;
+			std::cerr << "Usage: BDPTStrategyBalanceTest [--spectral-only 1|2 | --spectral-aggregate-unit | --materials-only | --guided-only | --weave-gap-only]" << std::endl;
 			return 2;
 		}
 		spectralSampleScale = std::strcmp(argv[2], "2") == 0 ? 2 : 1;
@@ -3496,6 +3578,8 @@ int main( int argc, char** argv )
 	TestNullBSDFMaterialContinuation();
 	TestNullBSDFHWSSCompanionLadder();
 	TestGenericHumanTissueOriginFix();
+	TestWeaveGapBoxOmniOutside();
+	TestWeaveGapBoxAreaOutside();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

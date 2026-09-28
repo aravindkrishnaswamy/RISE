@@ -181,17 +181,6 @@ Scalar DonnerJensenSkinDiffusionProfile::ComputeEpidermisScattering( const Scala
 	return 2.0e12 * pow( nm, -4.0 ) + 2.0e5 * pow( nm, -1.5 );
 }
 
-Scalar DonnerJensenSkinDiffusionProfile::SchlickFresnel(
-	const Scalar cosTheta,
-	const Scalar eta
-	)
-{
-	const Scalar R0 = ((1.0 - eta) / (1.0 + eta)) * ((1.0 - eta) / (1.0 + eta));
-	const Scalar c = 1.0 - cosTheta;
-	const Scalar c2 = c * c;
-	return R0 + (1.0 - R0) * c2 * c2 * c;
-}
-
 //=============================================================
 // Per-layer coefficient computation (Donner 2008 Eq. 11-13)
 //=============================================================
@@ -764,16 +753,13 @@ Scalar DonnerJensenSkinDiffusionProfile::FresnelTransmission(
 	// DL-49: the boundary is an interface between this material and the
 	// medium the ray arrived through (`ri.ambientIOR`, stamped from the
 	// IOR stack; 1.0 = air for a stackless record), so Fresnel is a
-	// function of the RELATIVE index.  In air this is the pre-DL-49 law
-	// bit-for-bit; a denser exterior (eta < 1) evaluates Schlick at the
-	// transmitted cosine and is zero past the critical angle.
+	// function of the RELATIVE index.  DL-306: the EXACT dielectric law,
+	// the one SubSurfaceScatteringSPF prices the surface reflection of the
+	// same interface with, so reflection + transmission = 1 (a denser
+	// exterior is totally reflected past the critical angle).
 	const Scalar eta = BSSRDFSampling::RelativeBoundaryIOR(
 		pnt_ior_epidermis.GetValuesAt(ri).v[0], BSSRDFSampling::ExteriorIOR( ri ) );
-	Scalar cosSchlick;
-	if( !BSSRDFSampling::SchlickBoundaryCosine( fabs(cosTheta), eta, cosSchlick ) ) {
-		return 0;
-	}
-	return 1.0 - SchlickFresnel( cosSchlick, eta );
+	return BSSRDFSampling::BoundaryTransmission( fabs( cosTheta ), eta );
 }
 
 Scalar DonnerJensenSkinDiffusionProfile::GetIOR(

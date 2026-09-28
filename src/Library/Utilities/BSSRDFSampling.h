@@ -45,10 +45,13 @@
 //  FACTORIZATION:
 //    The BSSRDF is factored as (Christensen & Burley 2015):
 //      S(wo, xo, wi, xi) = C * Ft(wo) * Rd(||xo - xi||) * Ft(wi)
-//    where C = 1 / (c * PI), c = 20*(1-F0) / 21, and
-//    F0 = ((eta-1)/(eta+1))^2, with eta the RELATIVE boundary index
-//    n_interior / n_exterior (DL-49; see RelativeBoundaryIOR below --
-//    and SchlickTransmissionNormalization for the eta < 1 form).  SampleEntryPoint returns two weights:
+//    where Ft = 1 - F is the EXACT dielectric Fresnel transmission
+//    (DL-306: the same law SubSurfaceScatteringSPF's surface reflection
+//    uses, so reflection + transmission = 1 at the interface),
+//    C = 1 / (c * PI) and c = 2 * integral Ft(mu) mu dmu (a closed form,
+//    see BoundaryTransmissionNormalization), with eta the RELATIVE
+//    boundary index n_interior / n_exterior (DL-49; see
+//    RelativeBoundaryIOR below).  SampleEntryPoint returns two weights:
 //      weight        = Rd * Ft(exit) * Ft(cosine_dir) / (c * pdfSurface)
 //                      (Sw * cosine / cosinePdf = Ft/c for this continuation)
 //      weightSpatial = Rd * Ft(exit) / pdfSurface
@@ -164,59 +167,87 @@ namespace RISE
 				? interiorIOR / exteriorIOR : interiorIOR;
 		}
 
-		/// The cosine the Schlick law is evaluated at, for an EXTERIOR-side
-		/// direction with cosine mu (in [0,1]) against the surface normal.
+		/// Exact dielectric Fresnel transmission Ft = 1 - F at an
+		/// EXTERIOR-side cosine mu for the RELATIVE index eta.
 		///
-		/// eta >= 1 (exterior no denser than the interior, including every
-		/// in-air material): the exterior cosine itself -- the pre-DL-49
-		/// law, bit-for-bit.
+		/// DL-306: this is the law every SSS boundary transmission uses --
+		/// the profiles' FresnelTransmission, the random walk's entry coin
+		/// and exit Sw, and the NEE / connection adapters -- because it is
+		/// the law `SubSurfaceScatteringSPF` prices the surface REFLECTION
+		/// of the same interface with (`Optics::CalculateDielectricReflectance`
+		/// against `ior_stack.top()`, i.e. the same relative index).  So
+		/// R(mu) + Ft(mu) = 1 at every cosine, to rounding.  Before
+		/// DL-306 the transmission was Schlick's approximation, which does
+		/// not partition with the exact reflection: <R> + <T> read 0.966 /
+		/// 0.980 / 0.9992 / 1.006 at eta 1.05 / 1.128 / 1.33 / 1.5.
 		///
-		/// eta < 1 (a denser exterior, e.g. a 1.33 SSS body inside 1.5
-		/// glass): Schlick's approximation must be evaluated at the cosine
-		/// on the RARER side (the transmitted cosine), and directions past
-		/// the critical angle are totally reflected.  Returns false for
-		/// TIR (Ft == 0).  Only reachable once DL-49 made eta relative:
-		/// pre-DL-49 eta was always an absolute index against air.
-		inline bool SchlickBoundaryCosine( const Scalar mu, const Scalar eta, Scalar& cosSchlick )
+		/// eta < 1 (a denser exterior) needs no special casing: the Fresnel
+		/// function evaluates the transmitted cosine itself and returns
+		/// total reflection (Ft = 0) past the critical angle.  eta == 1 is
+		/// no interface (Ft = 1).
+		inline Scalar BoundaryTransmission( const Scalar mu, const Scalar eta )
 		{
-			if( eta >= 1.0 ) {
-				cosSchlick = mu;
-				return true;
-			}
-			return Optics::CalculateRefractedCosine( mu, 1.0, eta, cosSchlick );
+			return 1.0 - Optics::CalculateDielectricReflectanceCosine( mu, 1.0, eta );
 		}
 
-		/// Schlick transmission Ft = 1 - F at an exterior-side cosine mu,
-		/// in the random-walk / entry-adapter arithmetic form
-		/// (`pow(1-mu, 5)`), for the RELATIVE index eta.
-		inline Scalar RandomWalkSchlickTransmission( const Scalar mu, const Scalar eta )
+		/// Closed-form cosine-hemisphere mean of the exact dielectric
+		/// Fresnel REFLECTANCE for light arriving from the rarer side,
+		/// r(n) = 2 * integral_0^1 F(mu; 1 -> n) mu dmu, n > 1 (the
+		/// classical diffuse / hemispherical Fresnel reflectance, exact,
+		/// not a fit).  Verified against an independent quadrature to
+		/// < 1e-11 for n - 1 >= 1e-3; below that its log terms cancel
+		/// catastrophically, which is why BoundaryTransmissionNormalization
+		/// never calls it there.
+		inline Scalar ExactExternalDiffuseFresnelReflectance( const Scalar n )
 		{
-			Scalar c;
-			if( !SchlickBoundaryCosine( mu, eta, c ) ) {
+			const Scalar n2 = n * n;
+			const Scalar n4 = n2 * n2;
+			const Scalar np1 = n + 1.0;
+			const Scalar n2p1 = n2 + 1.0;
+			const Scalar n4m1 = n4 - 1.0;
+			return 0.5
+				+ (n - 1.0) * (3.0 * n + 1.0) / (6.0 * np1 * np1)
+				+ n2 * (n2 - 1.0) * (n2 - 1.0) / (n2p1 * n2p1 * n2p1) * log( (n - 1.0) / np1 )
+				- 2.0 * n2 * n * (n2 + 2.0 * n - 1.0) / (n2p1 * n4m1)
+				+ 8.0 * n4 * (n4 + 1.0) / (n2p1 * n4m1 * n4m1) * log( n );
+		}
+
+		/// Normalization c = 2 * integral_0^1 Ft(mu) mu dmu of
+		/// BoundaryTransmission over the EXTERIOR cosine hemisphere, for
+		/// the RELATIVE index eta (DL-306; replaces DL-48/DL-49's Schlick
+		/// constant 20(1-F0)/21 and its eta^2 twin).  Sw = Ft/(c*PI) then
+		/// has unit exterior cosine-hemisphere integral at every index, so
+		/// DL-04's complete-event convention is unchanged.
+		///
+		/// eta >= 1: c = 1 - r(eta), the closed form above.  Within 1e-3 of
+		///   eta = 1 the closed form loses digits to cancellation, so c is
+		///   interpolated linearly between the exact c(1) = 1 and the closed
+		///   form at 1 + 1e-3 (r ~ e/3 + O(e^2 log e) there); the
+		///   interpolation error is below 1e-6, measured against an
+		///   independent quadrature (BSSRDFNormalizationTest Test E and
+		///   docs/DL306_SSS_FRESNEL_PARTITION.md).
+		/// eta < 1: Fresnel is symmetric in the two sides, so
+		///   F(mu; 1 -> eta) = F(t; 1 -> 1/eta) with t the transmitted
+		///   cosine, and Snell gives mu dmu = eta^2 t dt over t in [0,1]
+		///   (directions past the critical angle transmit nothing), hence
+		///   c(eta) = eta^2 * c(1/eta) exactly -- the same identity DL-49
+		///   derived for the Schlick law.
+		inline Scalar BoundaryTransmissionNormalization( const Scalar eta )
+		{
+			if( !( eta > 0 ) || !( eta < RISE_INFINITY ) ) {
 				return 0;
 			}
-			const Scalar F0 = ((eta - 1.0) / (eta + 1.0)) * ((eta - 1.0) / (eta + 1.0));
-			const Scalar F = F0 + (1.0 - F0) * pow( 1.0 - c, 5.0 );
-			return 1.0 - F;
-		}
-
-		/// Normalization for the in-tree profiles' Schlick transmission law,
-		/// for the RELATIVE index eta (DL-49).
-		///
-		/// eta >= 1: Ft(mu) = (1-F0) * (1-(1-mu)^5), so
-		///   c = 2 * integral_0^1 Ft(mu)*mu dmu = 20*(1-F0)/21.
-		/// eta < 1: Ft(mu) = (1-F0) * (1-(1-t)^5) with t the transmitted
-		///   cosine and Ft = 0 past the critical angle.  Snell gives
-		///   mu^2 = 1 - eta^2 (1 - t^2), so mu dmu = eta^2 t dt over
-		///   t in [0,1], and c = eta^2 * 20*(1-F0)/21 exactly (the two
-		///   branches agree at eta = 1).
-		/// Consequently Sw = Ft/(c*PI) has unit exterior cosine-hemisphere
-		/// integral at every relative index.
-		inline Scalar SchlickTransmissionNormalization( const Scalar eta )
-		{
-			const Scalar F0 = ((eta - 1.0) / (eta + 1.0)) * ((eta - 1.0) / (eta + 1.0));
-			const Scalar c = (20.0 / 21.0) * (1.0 - F0);
-			return ( eta >= 1.0 ) ? c : eta * eta * c;
+			const bool bDenserExterior = eta < 1.0;
+			const Scalar n = bDenserExterior ? 1.0 / eta : eta;
+			const Scalar kNearOne = 1e-3;
+			Scalar c;
+			if( n - 1.0 >= kNearOne ) {
+				c = 1.0 - ExactExternalDiffuseFresnelReflectance( n );
+			} else {
+				const Scalar cAnchor = 1.0 - ExactExternalDiffuseFresnelReflectance( 1.0 + kNearOne );
+				c = 1.0 + (cAnchor - 1.0) * ((n - 1.0) / kNearOne);
+			}
+			return bDenserExterior ? eta * eta * c : c;
 		}
 
 		/// Computes the Sw directional scattering factor at a BSSRDF
@@ -233,7 +264,7 @@ namespace RISE
 			const Scalar eta						///< [in] RELATIVE index n_interior / n_exterior (DL-49)
 			)
 		{
-			const Scalar c = SchlickTransmissionNormalization( eta );
+			const Scalar c = BoundaryTransmissionNormalization( eta );
 
 			if( c > 1e-20 ) {
 				return FtEntry / (c * PI);

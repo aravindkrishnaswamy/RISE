@@ -10,7 +10,10 @@ detector-sphere rigs) deliberately do not.
 Guard: [`tests/RefractiveRadianceScalingTest.cpp`](../tests/RefractiveRadianceScalingTest.cpp)
 (38 checks, ~27 s),
 [`tests/RadianceEtaScaleGradedIndexTest.cpp`](../tests/RadianceEtaScaleGradedIndexTest.cpp)
-(10 checks — the spatially-varying-`ior` invariant, §10.2), plus
+(13 checks — the spatially-varying-`ior` through-slab invariant, §10.2),
+[`tests/GradedIndexInteriorFactorTest.cpp`](../tests/GradedIndexInteriorFactorTest.cpp)
+(55 checks — the interior-gather invariant graded vs nested constant boxes,
+§10.4), plus
 `VCMStrategyBalanceTest` topology H (the red row)
 and `BDPTStrategyBalanceTest` topology J (the cancellation pin). Review
 round 2 (2026-09-12) added `VCMStrategyBalanceTest` topology I and
@@ -627,6 +630,12 @@ claim exact SSS energy conservation or spectral/non-air material equality.
 
 ### 10.2 Named residual: spatially-varying `ior` — the INTERIOR-VERTEX gather AND the DielectricSPF exit-hit Snell trace (review round 2; re-scoped 2026-09-14; widened M→L round 3, same day, DL-09)
 
+**FIXED 2026-09-28 (slice `debt-dl09`) — see §10.4.**  The analysis below
+is the history the fix was built from and is kept as written; its "principled
+fix" is what landed, extended in two places it does not state (the NEE /
+connection segment and the importance walks), and its Snell-trace item is
+resolved as a CONSISTENCY statement and deferred as a GEOMETRY one (DL-293).
+
 `RadianceEtaScale` (`Utilities/IORStack.h`) reads only `before.top()`
 and `after->top()` — the values recorded on the IOR stack at push/pop
 time — while `DielectricSPF` and `PerfectRefractorSPF` price their own
@@ -834,6 +843,48 @@ See [DL-02 closure](DL02_TRANSLUCENT_EXIT_DENSITY.md). Stateful BSDF/HWSS
 amplitudes remain DL-38; full mixture/reverse densities and NEE state
 remain DL-41. Local exit-density agreement does not prove renderer parity.
 
+### 10.4 DL-09 closure: the interior-segment factor (2026-09-28, slice `debt-dl09`)
+
+Full derivation, factor tables, measurements and residuals:
+[DL09_GRADED_INDEX_INTERIOR_FACTOR.md](DL09_GRADED_INDEX_INTERIOR_FACTOR.md).
+
+**The rule, extended.**  §1's `(η_before/η_after)²` is the interface form of
+one statement: basic radiance `L/n²` is continuous along every straight
+segment AND across every interface.  Inside a medium whose `ior` is a
+world-position field every segment therefore carries
+`(n_cameraside/n_lightside)²` — `(n_start/n_end)²` on a RADIANCE walk,
+`(n_end/n_start)²` on an IMPORTANCE walk (a straight segment has no
+refraction Jacobian to supply it implicitly, unlike an interface, so §6's
+"importance walks get no factor" is an INTERFACE rule, not a segment rule),
+and `(n_eye/n_light)²` on every connection (PT NEE, BDPT s ≥ 1 / t ≥ 1, VCM
+NEE / splat / interior).
+
+**The mechanism** (`Utilities/GradedIndexMedium.h`).  At every vertex inside
+a graded medium the walk pays `(top/n(x))²` and re-records the IOR stack top
+as `n(x)`.  `RadianceEtaScale` is untouched: at the exit hit it reads the
+refreshed top, i.e. the fresh exit index, so the interior factor and §10.2's
+exit-read switch are ONE change and neither half can land alone.  Factors
+telescope, so a vertex the update does not visit (a medium scatter vertex)
+breaks nothing downstream.  `SeedFromPoint` records `n` at the seed point.
+Constant-index media never enter the path (a process-wide
+`GradedIndexDemand` gate): bit-identical, cost +0.34 % / +0.24 % (noise).
+
+**Invariant** (`tests/GradedIndexInteriorFactorTest.cpp`, reference-free:
+the graded box vs the same box as `K+1` nested constant-index boxes, whose
+factors are §6's and are correct by construction).  Camera outside, gather
+at an interior floor: graded / K=16 reference **2.267 → 1.0077**; camera
+seeded inside: **4.350 → 1.0060** (the reference itself needed a seeding fix:
+`SeedFromPoint`'s 8-entry probe table dropped containing boxes behind
+non-containing ones — DL-09 doc §7); suite **34/21 → 55/0**.  The through-slab pin of
+§10.2 reads 0.290126 (1.00075 of physics) and catches both half-fixes as
+mutations (2.25168× and 0.444645×).
+
+**Residuals.** DL-292 (walks that do not Advance — legacy shader-op chain,
+photon tracers, SMS, `RayCaster`'s own volume walk — and `ior` forms not
+recognised as world-position fields) and DL-293 (straight rays: the exit
+Snell trace is now consistent with the tracked index but geometrically wrong
+for a stratified slab, and solid angles do not collimate).
+
 ## 11. Cross-references
 
 - [`tests/RefractiveRadianceScalingTest.cpp`](../tests/RefractiveRadianceScalingTest.cpp) — the closed forms
@@ -842,4 +893,6 @@ remain DL-41. Local exit-density agreement does not prove renderer parity.
 - [`docs/SUBMERGED_CAMERA_IOR_SEEDING.md`](SUBMERGED_CAMERA_IOR_SEEDING.md) — the ×n² exit factor
 - [`docs/skills/bdpt-vcm-mis-balance.md`](skills/bdpt-vcm-mis-balance.md) step 0
 - [`src/Library/Utilities/IORStack.h`](../src/Library/Utilities/IORStack.h) — `RadianceEtaScale`
+- [`src/Library/Utilities/GradedIndexMedium.h`](../src/Library/Utilities/GradedIndexMedium.h) — the interior-segment factor (DL-09, §10.4)
+- [`docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md`](DL09_GRADED_INDEX_INTERIOR_FACTOR.md) — its derivation
 - [`src/Library/Interfaces/ISPF.h`](../src/Library/Interfaces/ISPF.h) — the `kray` contract
