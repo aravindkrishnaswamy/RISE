@@ -930,3 +930,238 @@ The photon-seeded SMS residual (§11.2's non-gated row: 1.0208 +/- 0.0074
 after this slice, 0.9673 before it; wrong in air for nested dielectrics
 as well) is recorded in the DL-290 row's residual column as **DL-331
 (filed at merge)**; the slice had no id left to file it under.
+
+### 11.7 External review round 2: the unpushed exit by containment, the half-vector everywhere, and the slab mask
+
+The second external review (on `8903f14b`) confirmed P1-1's matched-index
+result numerically (probes 100 % converged, `dv/dy` within 9.9e-6; Newton
+success on flatslab 59 -> 82 %, glassblock 61 -> 84 %) and returned two new
+P1s.  `master` `0d69d782` was merged first (docs-only conflicts; this
+section is §11 because DL-291 took §10).
+
+**P1-A -- the round-1 unpushed-exit rule regressed in air and had a
+cliff.**  Round 1 decided "slab entered through a sibling sheet" (pop the
+sibling's entry) versus "sheet crossed inside an enclosing medium" (keep it)
+by comparing the stack top's index with the sheet's.  A slab of two
+DIFFERENT indices (top 1.8, bottom 2.2) therefore read as the second case
+and ended the chain inside the sibling's glass (`[1.8 -> 2.2]` where the
+far side is air), in air; an index mismatch of 1e-9 .. 1e-3 did the same
+and in addition left a NEAR-matched last vertex; and a lone sheet inside an
+enclosure of exactly its own index popped the enclosure.  The rule is now
+CONTAINMENT: the stack-top object Y is probed along the continuing
+direction; an EXIT hit on Y (true face orientation, DL-70) means the walk is
+still inside Y after the crossing, so Y encloses it and nothing is popped;
+a miss or an ENTRY hit means Y was a sheet the walk has already passed, and
+its entry is popped.  An open sheet cannot be exited from a point it never
+bounded; a closed solid always is.  One ray against one object, on this
+rare branch only; in air with no enclosing object nothing changes.
+(Probing was chosen over a flag set at push time because the receiver
+stack's entries are pushed by the MATERIALS along the camera path -- a flag
+would have to be threaded through every refractive SPF and still could not
+say whether a mesh is open.)
+
+Seed-walk etas, `ExteriorIndexInvarianceTest` A7 (walk from below toward a
+light above unless noted; `[etaI -> etaT]` per vertex):
+
+| configuration | pre-review (`5c02d489`) | round 1 (`55bede5b`) | round 2 |
+|---|---|---|---|
+| equal slab 2.2/2.2, air | [1->2.2][2.2->1] | [1->2.2][2.2->1] | [1->2.2][2.2->1] |
+| UNEQUAL slab 1.8/2.2, air | [1->2.2][1.8->1] | **[1->2.2][1.8->2.2]** | [1->2.2][1.8->1] |
+| NEAR-equal slab 2.2000002/2.2, air | [1->2.2][2.2000002->1] | **[..][2.2000002->2.2]** | [1->2.2][2.2000002->1] |
+| equal slab in a closed 1.33 box | **[1.33->2.2][2.2->1]** | [1.33->2.2][2.2->1.33] | [1.33->2.2][2.2->1.33] |
+| UNEQUAL slab in a closed 1.33 box | **[1.33->2.2][1.8->1]** | **[1.33->2.2][1.8->2.2]** | [1.33->2.2][1.8->1.33] |
+| inside an unequal slab, walking down (camera pushed the top sheet) | [2.2->1] | **[2.2->1.8]** | [2.2->1] |
+| lone 2.2 sheet, air | [2.2->1] | [2.2->1] | [2.2->1] |
+| lone 2.2 sheet in a closed 1.33 box | **[2.2->1]** | [2.2->1.33] | [2.2->1.33] |
+| lone 1.5 sheet in a closed 1.5 box (the tie) | **[1.5->1]** | **[1.5->1]** | [1.5->1.5] |
+
+Wrong entries in bold: pre-review 4/9, round 1 5/9, round 2 0/9.
+
+**P2-2 -- the matched branch's own cliff: the half-vector is now
+unnormalized at EVERY refraction vertex.**  Round 1's exact-match special
+case (relative 1e-9) left a cliff one step away.  A8 measures it directly:
+two concentric spheres of index 2.2 and 2.2 + dn, 400 random receiver /
+light pairs, `BuildSeedChain` + `Solve`:
+
+| dn | 0 | 1e-10 | 1e-8 | 1e-6 | 1e-4 | 1e-3 | 1e-2 | 1e-1 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| round 1 (exact-match special case) | 100 % | 100 % | **0 %** | **0 %** | **0 %** | **0 %** | **10 %** | 100 % |
+| round 2 (unnormalized everywhere) | 100 % | 100 % | 100 % | 100 % | 100 % | 100 % | 100 % | 100 % |
+
+Justification (the comment on `UseUnnormalizedHalfVector`): away from
+`h = 0` the unnormalized and normalized forms share their zero set, and at
+a root their Jacobians differ by a per-vertex row scaling, which leaves the
+root and `dx/dy = -A^-1 B` unchanged (Newton's iterates differ); at a
+matched vertex the row-scaling argument does NOT apply, and the valid one is
+that `P_t(-eta (wi + wo))` is a full-rank local defining function of the
+straight-through path.  The external review built the same variant and
+measured 100 % convergence at every dn with `dv/dy` within 3.3e-5 of finite
+differences.  Its magnitude is ~eta x (angular error), so the solver's
+`||C||` threshold keeps one meaning across index pairs.  The round-1
+justification text in §11.6 is corrected there.
+
+The cliff is gone in the render too -- flatslab with the TOP sheet's index
+swept, SMS 256 spp, salted n = 3, S = the 370 px where the camera sees the
+slab, F = the 369 px of floor seen directly under it (the reviewer's masks):
+
+| top ior | base (pre-DL-290 SMS) S / F | round 1 S / F | round 2 S / F |
+|---|---|---|---|
+| 2.2 | 0.1536 / 0.7490 | 0.2213 / 0.7641 | 0.2212 / 0.7642 |
+| 2.2000002 | 0.1535 / 0.7489 | 0.2151 / **0.0472** | 0.2213 / 0.7642 |
+| 2.2002 | 0.1535 / 0.7490 | 0.2178 / **0.0528** | 0.2212 / 0.7642 |
+| 2.202 | 0.1535 / 0.7492 | 0.2177 / **0.0653** | 0.2212 / 0.7644 |
+| 2.22 | 0.1538 / 0.7511 | 0.2182 / **0.4385** | 0.2203 / 0.7661 |
+| 2.3 | 0.1545 / 0.7644 | 0.2144 / **0.4608** | 0.2164 / 0.7778 |
+| 1.8 | 0.1503 / 0.6899 | 0.2347 / **0.3400** | 0.2371 / 0.7080 |
+
+(per-cell sd <= 0.0003 except F at 2.3, 0.004.)  Round 2 is continuous in
+the index on both masks; the round-1 F collapse reproduces the review's
+figures to three digits.  "Base" here is the pre-DL-290 `ManifoldSolver`
+built into this same tree, so it isolates the SMS change.
+
+**Every loadable shipped SMS scene, round 1 vs round 2** (all 22 scenes
+that set `sms_enabled TRUE`, 100x75, the scene's own spp capped at 64,
+salted n = 3; whole-image mean of R+G+B, t of the difference, and the count
+of pixels that moved by more than 4 sigma):
+
+| scene | round 1 | round 2 | change | t | px > 4 sigma |
+|---|---:|---:|---:|---:|---:|
+| diacaustic_pt_sms | 0.36555 | 0.36606 | +0.14 % | 0.27 | 1 |
+| pool_caustics_vcm (PT+SMS chunk, 4 spp) | 0.27231 | 0.27586 | +1.30 % | 1.60 | 32 |
+| sms_k1_botonly | 0.49830 | 0.49834 | +0.01 % | 0.01 | 7 |
+| sms_k1_refract | 0.53733 | 0.53898 | +0.31 % | 0.14 | 5 |
+| sms_k2_flatslab | 0.51123 | 0.51627 | +0.99 % | 1.02 | 4 |
+| sms_k2_glassblock | 0.50309 | 0.50054 | -0.50 % | -0.39 | 0 |
+| sms_k2_glasssphere | 0.54700 | 0.54490 | -0.38 % | -0.42 | 3 |
+| sms_k2_glasssphere_tess | 0.54469 | 0.54252 | -0.40 % | -0.44 | 2 |
+| sms_k2_glasssphere_tess_disp | 0.54667 | 0.54726 | +0.11 % | 0.11 | 1 |
+| sms_k2_torus_cross | 0.54610 | 0.54345 | -0.48 % | -0.56 | 6 |
+| sms_luminous_orb | 0.60165 | 0.59624 | -0.90 % | -1.74 | 0 |
+| sms_slab_close_pt_sms_hispp | 1.33745 | 1.34902 | +0.87 % | 0.61 | 57 |
+| sms_slab_close_sms | 0.81422 | 0.81025 | -0.49 % | -0.03 | 4 |
+| sms_teapot_close_sms | 0.94034 | 1.02064 | +8.54 % | 0.79 | 0 |
+| sms_through_glass_emitter_pt_sms | 8.56431 | 8.56162 | -0.03 % | -0.32 | 0 |
+| sms_veach_egg | 2.27440 | 2.27623 | +0.08 % | 0.27 | 0 |
+| sms_veach_egg_bumpmap | 2.22942 | 2.23432 | +0.22 % | 0.11 | 0 |
+| sms_veach_egg_displaced | 1.00754 | 1.06940 | +6.14 % | 0.53 | 46 |
+| sms_visibility_occluded | 0.78205 | 0.78164 | -0.05 % | -0.30 | 0 |
+| sms_visibility_unoccluded | 10.17849 | 10.16861 | -0.10 % | -0.56 | 1 |
+| spectral_dispersive_caustic_pt_sms | 3.37676 | 3.36163 | -0.45 % | -0.23 | 0 |
+| triplecaustic_pt_sms | 1.76032 | 1.76562 | +0.30 % | 1.62 | 1 |
+
+No whole-image change is resolvable (|t| < 2 everywhere; the two large
+percentages are firefly-dominated low-spp scenes).  The three scenes with
+tens of moved pixels, against a reference where one exists (n = 3, same
+pixels): `pool_caustics_vcm` 32 px, round 1 0.450 -> round 2 0.525, its
+own VCM chunk at 512 spp 0.529 +/- 0.028; `sms_slab_close_pt_sms_hispp`
+57 px, 0.136 -> 0.133, VCM twin 0.205 (both far from it: SMS on a
+displaced slab, DL-352's class); `sms_veach_egg_displaced` 46
+firefly-dominated px, 0.082 -> 0.175, no usable reference.  The three scenes
+the review could not load (`sms_slab_close_sms`,
+`sms_slab_close_pt_sms_hispp`, `sms_teapot_close_sms`) load here: their
+assets (`models/raw/displaced_slab.raw`, `models/raw/teapot.bezier`) are
+tracked and resolve once the harness registers `RISE_MEDIA_PATH` with the
+media-path locator, which the review's harness evidently did not.
+
+**In-air bit identity after round 2.**  The P2-2 change is not
+bit-identical in air, by construction: it changes Newton's iterates (not its
+roots) at every refraction vertex.  The fixed-seed hash survey (§11.3's 134
+variants, seeds 42/1234) against round 1: every non-SMS variant is
+bit-identical; 19 of the 22 SMS scenes change bits -- exactly those with a
+refraction vertex -- and `diacaustic_pt_sms`, `pool_caustics_vcm` and
+`sms_through_glass_emitter_pt_sms` do not.  The salted sweep above is the
+measurement that matters for those 19: no resolvable mean change.
+(`fabric_presets` under its native rasterizer is bimodal across repeated
+SERIAL runs of any build -- means 0.1648 and 0.1914, round 1, round 2 and
+the merged pre-round build alike -- a pre-existing nondeterminism unrelated
+to this slice; §11.6's "differed only under parallel load" was an
+under-sampled reading of the same thing.)
+
+**P1-B -- glassblock's gap is SMS's, not VCM's; Part C is gated on the
+slab pixels.**  The round-1 Part C rectangle straddled two pixel classes:
+311 px of S (the slab seen through both sheets) and 55-66 px of F (the floor
+seen directly under it).  On F the integrators disagree by up to 3x among
+themselves (DL-345, below); on S the references agree to 1-2 %.  S-mask
+readings (the round-1 renders, 100x75, VCM 1024 spp, PT without SMS 4096
+spp, n = 4; S from a render of the scene with the sheets emissive):
+
+| region S | base | round 0 (`855ce136`) | round 1 / 2 | VCM `_ref` | PT, SMS off |
+|---|---:|---:|---:|---:|---:|
+| flatslab (370 px) | 0.1536 (0.70) | 0.0273 (0.13) | 0.2213 (**1.015**) | 0.2180 +/- 0.0007 | 0.2183 +/- 0.0074 |
+| glassblock (366 px) | 0.1044 (0.45) | 0.0292 (0.12) | 0.2135 (**0.911**) | 0.2344 +/- 0.0007 | 0.2317 +/- 0.0091 |
+
+(ratios to VCM.)  On flatslab SMS matches both references; on glassblock
+SMS reads 9-12 % LOW against two references that agree with each other,
+and the review's variant with the top sheet at 2.3 (no matched vertex at
+all) reads 0.85 of PT-without-SMS -- so the deficit is SMS's own on a
+DISPLACED slab (Newton fails 15.6 % there), pre-existing and independent of
+the index work.  Recorded as **DL-352 (filed at merge)**.  The round-1
+statement that glassblock's gap was VCM's (§11.6) was wrong: its "0.98 /
+1.00 of PT-without-SMS" came from the F pixels in the rectangle.
+
+Part C now renders the S mask per scene (sheets emissive, everything else
+black), gates the salted SMS/VCM ratio over S, and derives each band from
+the measured centre and sd plus the references' own agreement:
+`[centre - 6 sd - 0.02, max(centre, 1) + 6 sd + 0.02]`, giving
+flatslab [0.98, 1.045] (measured 1.0143 +/- 0.0018) and glassblock
+[0.865, 1.04] (0.9034 +/- 0.0030) -- the upper bounds sit above 1, so a
+genuine SMS improvement cannot fail the gate.
+
+**DL-345 (filed at merge) -- the open-sheet index-stack convention is
+non-reciprocal.**  The materials decide "entering" from
+`!containsCurrent()` alone, so for a slab of two open sheets each walk
+treats the SECOND sheet it crosses as an index-matched entry: the eye side
+(PT, BDPT's dominant strategies) bends once at the bottom sheet with the
+light "inside glass", while the light side (VCM, with or without merging)
+bends once at the top sheet with the floor "inside glass".  Measured by the
+review on flatslab, region F, open sheets: PT 0.4161 +/- 0.0045, BDPT
+0.4213, VCM 1.2536, VCM without merging 1.2351, SMS 0.7641; the SAME slab
+as one closed `box_geometry`: PT 0.8621 +/- 0.0184, BDPT 0.8496, VCM 0.8429,
+SMS 0.7755 -- every integrator agrees on the closed box (VCM/PT 0.978).  SMS
+(whose walk decides entering by sign) is the only estimator that is
+physical on the open sheets; its own -9 % against the closed-box truth is
+pre-existing (0.776 on the closed box in both builds).  Recipe: document
+"author a slab as one closed solid", or make the materials' entering test
+sign-aware for provably-open sheets as the seed walk is.
+
+**Cost (P2-1).**  §11.6's "-0.04 %" was measured between binaries built
+from different trees, and the review's +6.07 % (flatslab) / +3.81 %
+(glasssphere) likewise (its own base-vs-master pair read -0.4 % / +3.2 %,
+i.e. layout).  Re-measured with builds that differ ONLY in
+`ManifoldSolver.cpp`/`.h` (pre-DL-290, round 1, round 2, all linked from
+this merged tree), shipped settings (200x150, 32 spp), n = 12 per build,
+order alternated, user CPU, paired:
+
+| scene | pre-DL-290 | round 1 | round 2 | round 2 vs pre-DL-290 |
+|---|---:|---:|---:|---:|
+| sms_k2_flatslab | 4.853 s | 4.802 s | 4.745 s | **-2.13 %** (t = -2.39) |
+| sms_k2_glasssphere | 3.197 s | 3.137 s | 3.173 s | **-0.71 %** (t = -1.09) |
+
+No cost increase is resolvable on either scene (flatslab is slightly
+FASTER: fewer failed Newton solves); nothing to profile.
+
+**DL-353 (filed at merge) -- uniform-mode spectral SMS ignores the
+per-wavelength index: CONFIRMED.**  `EvaluateAtShadingPointNMUniform`'s
+`applyNMEtaToChain` writes only `v.eta`, while `GetEffectiveEtas` (the
+Newton constraint and the chain Fresnel) reads the walk's `etaI`/`etaT`,
+which the snell NM path overrides per wavelength and the uniform one does
+not.  An instrumented (never committed) render of a Sellmeier SF11 sphere,
+uniform mode, narrow bands at 450 and 650 nm: `v.eta` 1.8200 / 1.7766 but
+the effective pair is `(1.0, 1.781363)` in both bands -- the RGB walk's
+index -- so uniform-mode spectral SMS renders no dispersion.
+
+**DL-354 (filed at merge) -- BDPT under-renders the directly visible
+luminaire on flatslab.**  Reproduced: over the 3 px where the camera sees
+the small area light (100x75, 256 spp, n = 3), BDPT 399.4 +/- 3.3 against
+PT without SMS 689.3 +/- 6.1, VCM 687.1 +/- 29.1 and PT with SMS 690.1 +/-
+8.8 (R+G+B), i.e. 0.58 of the other three.  Not investigated here.
+
+**Red / green** (`ExteriorIndexInvarianceTest`, isolated A/B: only
+`ManifoldSolver.cpp` checked out at the named commit, rebuilt, restored):
+round 2 **228/0**; `ManifoldSolver.cpp` at round 1 (`55bede5b`) **218/10**
+-- the five round-1-wrong A7 rows and five A8 rows (dn 1e-8 .. 1e-2), with
+Part C on S passing (1.0108 / 0.9048: round 1 was right on the EQUAL
+shipped slabs); at pre-review `5c02d489` **212/9** -- four A7 rows, A8's
+matched configuration (0 % converged, so its continuity rows are not
+reached), both Part B open-sheet rows, and both Part C rows on S (0.1187 /
+0.1086).
