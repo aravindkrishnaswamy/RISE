@@ -19,26 +19,40 @@
 //    monotonically from floor to emitter (derivation doc section 5).
 //
 //    ROWS.
-//      A  camera OUTSIDE, NEE/BSDF gather at an interior floor
+//      A  camera OUTSIDE, gather at an interior floor
 //         (scenes/Tests/Materials/graded_index_interior_gather.RISEscene):
-//         PT graded vs nested-box references K = 2,4,8,16 and the closed
+//         PT graded vs nested-box references K = 4,7,10,16 and the closed
 //         form T_A*rho*L_e*cov/n_E^2; BDPT and VCM graded vs the closed form.
 //         Pre-DL-09: every graded render reads (n_E/n_A)^2 = 2.25x.
-//      B  camera INSIDE the graded medium (seeded walk)
+//      B  camera INSIDE the graded medium at z = 1/3 (seeded walk)
 //         (scenes/Tests/Materials/graded_index_seeded_inside.RISEscene):
 //         same comparisons, closed form rho*L_e*cov*(n_S/n_E)^2.
-//         Pre-DL-09: 1.70x (no interior factor, and the seed recorded the
-//         probe's first-hit index 1.2 instead of n(camera) = 1.38).
-//      C  camera inside, PINHOLE, PT vs BDPT vs VCM on the graded scene.
-//         Pins the IMPORTANCE-walk and connection factors (derivation doc
-//         section 3 (iv)): BDPT's light-tracing splats reach this camera,
-//         and a half fix (eye factor only) makes them disagree by
-//         (n_S/n_E)^2.  Not red before DL-09 -- every integrator was
-//         consistently wrong then -- it guards the fix's completeness.
-//      D  uniform-ior control on scene A's geometry: must read its own
-//         closed form T(1.5)*rho*L_e*cov/1.5^2 before and after.
+//         Pre-DL-09: 1.65x (no interior factor, and the seed recorded the
+//         probe's first-hit index 1.2 instead of n(camera) = 1.4).
+//      C  camera outside, SMALL emitter: NEE and BDPT/VCM s=1 carry the
+//         weight, so this row gates the CONNECTION-segment factor, against
+//         the straight-ray model's own closed form (point-to-rectangle form
+//         factor) -- a model-consistency row, not a physics reference.
+//      D  PINHOLE camera inside, small emitter, extra diffuse sphere: PT vs
+//         BDPT vs VCM.  Pins the IMPORTANCE-walk and splat/connection
+//         factors (derivation doc section 3 (iv)).  Not red before DL-09 --
+//         every integrator was consistently wrong then -- it guards the
+//         fix's COMPLETENESS (measured: dropping the importance factor reads
+//         VCM/PT 1.19; dropping the BDPT connection factor BDPT/PT 2.08).
 //      E  IORStackSeeding::SeedFromPoint at a point inside the graded box
-//         records n(point), not the probe's boundary hit.
+//         records n(point), not the probe's boundary hit; and a seed inside
+//         6 of 17 nested boxes is not truncated by the probe table.
+//      F  uniform-ior control on scene A's geometry: its own closed form.
+//      G  the spectral pipes (PT NM hero, PT HWSS, BDPT HWSS; num_wavelengths
+//         160): scene A vs its closed form, and scene D PT-vs-BDPT.
+//
+//    Replicas: every render is split into 16 tiles; where the view is a
+//    uniformly lit floor (rows A-C, F, G scene A) the tiles are independent
+//    replicas (disjoint per-pixel Sobol seeds) and `sd` is their spread.
+//    Row D's pinhole image is not uniform: its tile `sd` is spatial spread,
+//    and the row compares integrators on the SAME pixels instead.
+//    Each render also prints a hash of its pixel buffer, for bit-identity
+//    A/Bs of the constant-index rows between builds.
 //
 //    Seeding: every render reseeds libc rand() from argv[1] (default 1000)
 //    plus a running index (docs: RISE renders are seeded from libc rand()).
@@ -279,6 +293,22 @@ static std::string RasterizerVCM( int spp )
 		"\toidn_denoise FALSE\n\tpixel_filter box\n}\n";
 }
 
+//! Spectral twins.  `num_wavelengths 160` on every spectral rasterizer
+//! (the tree's convention for hero-vs-bundle comparisons).  The graded
+//! field is a single scalar, so every lane pays the same factor.
+static std::string RasterizerPTSpectral( int spp, bool hwss )
+{
+	return ShaderBlock() + "pathtracing_spectral_rasterizer\n{\n\tsamples " + std::to_string( spp ) +
+		"\n\thwss " + ( hwss ? "TRUE" : "FALSE" ) + "\n\tnum_wavelengths 160\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n";
+}
+
+static std::string RasterizerBDPTSpectral( int spp, bool hwss )
+{
+	return ShaderBlock() + "bdpt_spectral_rasterizer\n{\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tsamples " +
+		std::to_string( spp ) + "\n\thwss " + ( hwss ? "TRUE" : "FALSE" ) +
+		"\n\tnum_wavelengths 160\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n";
+}
+
 //! The tent profile n(z) = 1.8 - 0.6*|z - 1| on z in [0, 2].
 static double TentN( double z ) { return 1.8 - 0.6 * std::fabs( z - 1.0 ); }
 
@@ -516,6 +546,47 @@ static void RunPinholeConsistencyRow()
 }
 
 //////////////////////////////////////////////////////////////////////
+// Row G: the spectral pipes (NM hero walk, HWSS bundle, BDPT spectral),
+// which carry the factor through separate code (PT's HWSS body multiplies
+// every lane; BDPT's generators scale hwssBetaNM).  Scene A's large
+// emitter (bending-free) against the SAME closed form; scene D's pinhole
+// inside the medium with the small emitter for spectral PT-vs-BDPT
+// agreement (light-tracing splats reach that camera).
+//////////////////////////////////////////////////////////////////////
+static void RunSpectralRow( const double closedA )
+{
+	std::cout << std::endl << "-- Row G: spectral (num_wavelengths 160) --" << std::endl;
+	const std::string baseA = ReadFile( "scenes/Tests/Materials/graded_index_interior_gather.RISEscene" );
+	Check( !baseA.empty(), "G: fixture readable" );
+	if( baseA.empty() ) return;
+	struct R { const char* name; std::string ras; };
+	const R rs[] = {
+		{ "PT spectral hwss FALSE",   RasterizerPTSpectral( 64, false ) },
+		{ "PT spectral hwss TRUE",    RasterizerPTSpectral( 32, true ) },
+		{ "BDPT spectral hwss TRUE",  RasterizerBDPTSpectral( 32, true ) },
+	};
+	for( const R& r : rs ) {
+		const Stat st = RenderStat( ReplaceSpan( baseA, "RASTERIZER", r.ras ), "spec_a" );
+		Report( r.name, st, closedA );
+		Check( st.ok && std::fabs( st.mean / closedA - 1.0 ) < 0.03,
+			std::string( "G: " ) + r.name + " graded (scene A) == closed form within 3%" );
+	}
+
+	std::string baseD = WithSmallEmitter( ReadFile( "scenes/Tests/Materials/graded_index_seeded_inside.RISEscene" ) );
+	const std::string ortho = "orthographic_camera\n{\n\tlocation 0 0 0.333333333333\n\tlookat 0 0 0\n\tup 0 1 0\n\tviewport_scale 0.2 0.2\n}\n";
+	const std::size_t at = baseD.find( ortho );
+	Check( at != std::string::npos, "G: fixture camera block found" );
+	if( at == std::string::npos ) return;
+	baseD.replace( at, ortho.size(), "pinhole_camera\n{\n\tlocation 0 0 0.333333333333\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 60\n}\n" );
+	const Stat p = RenderStat( ReplaceSpan( baseD, "RASTERIZER", RasterizerPTSpectral( 64, true ) ), "spec_d_pt" );
+	const Stat b = RenderStat( ReplaceSpan( baseD, "RASTERIZER", RasterizerBDPTSpectral( 32, true ) ), "spec_d_bdpt" );
+	std::printf( "    pinhole inside, small emitter: PT spectral hwss mean=%.6f  BDPT spectral hwss mean=%.6f  BDPT/PT=%.4f\n",
+		p.mean, b.mean, b.mean / p.mean );
+	Check( p.ok && b.ok && std::fabs( b.mean / p.mean - 1.0 ) < 0.04,
+		"G: BDPT spectral hwss == PT spectral hwss within 4% (pinhole inside graded medium)" );
+}
+
+//////////////////////////////////////////////////////////////////////
 // Row F: uniform-ior control on row A's geometry.
 //////////////////////////////////////////////////////////////////////
 static void RunUniformControlRow()
@@ -612,6 +683,7 @@ int main( int argc, char** argv )
 	RunGatherRows( "B", "scenes/Tests/Materials/graded_index_seeded_inside.RISEscene", closedB, preB );
 	RunSmallEmitterOutsideRow();
 	RunPinholeConsistencyRow();
+	RunSpectralRow( closedA );
 	RunUniformControlRow();
 
 	std::cout << std::endl << "Passed: " << passCount << std::endl << "Failed: " << failCount << std::endl;
