@@ -1685,6 +1685,38 @@ int main()
 		rd->release(); rs->release(); rU->release(); pU->release(); rC->release(); pC->release();
 	}
 
+	//----------------------------------------------------------------
+	// SECTION 15 -- DL-310: the auxiliary albedo AOV integrates the
+	// COUPLED material.  SchlickBRDF::albedo's diffuse term is now the
+	// gated hemispherical integral of min(Rd, 1 - A(v), 1 - A(o)); it
+	// must agree with the independent full-material quadrature of the
+	// live value() (saturated to [0,1], the AOV contract) to the AOV's
+	// own documented .02, in the clip.
+	//----------------------------------------------------------------
+	std::cout << std::endl
+	          << "-- Section 15: DL-310 albedo() AOV vs the full coupled material" << std::endl;
+	{
+		double worst = 0;
+		struct Mat { double rd, rho, r, p; };
+		const Mat mats[] = { { 0.9, 0.1, 0.05, 1.0 }, { 0.9, 0.5, 0.05, 0.3 }, { 0.6, 1.0, 0.05, 0.3 }, { 0.8, 0.9, 0.2, 1.0 } };
+		for( const Mat& m : mats ) {
+			UniformColorPainter*  rdp   = new UniformColorPainter( RISEPel( m.rd, m.rd, m.rd ) ); rdp->addref();
+			UniformColorPainter*  rs    = new UniformColorPainter( RISEPel( m.rho, m.rho, m.rho ) ); rs->addref();
+			UniformScalarPainter* rough = new UniformScalarPainter( m.r ); rough->addref();
+			UniformScalarPainter* iso   = new UniformScalarPainter( m.p ); iso->addref();
+			SchlickBRDF* brdf = new SchlickBRDF( *rdp, *rs, *rough, *iso ); brdf->addref();
+			for( double th : { 0.0, 45.0, 75.0, 85.0 } ) {
+				const RayIntersectionGeometric ri = MakeIntersectionAz( th, 0.0 );
+				const double q = r_min( 1.0, FullAlbedoTwoGrid( *brdf, ri, m.r, 0, 128 ) );
+				const double a = brdf->albedo( ri )[0];
+				worst = std::max( worst, fabs( a - q ) );
+				Check( fabs( a - q ) < 0.02, "DL-310: albedo() AOV agrees with the coupled material's directional reflectance" );
+			}
+			brdf->release(); rdp->release(); rs->release(); rough->release(); iso->release();
+		}
+		std::cout << "   worst |albedo() - saturate(rho_d)| = " << std::setprecision(6) << worst << std::endl;
+	}
+
 	black->release();
 	g_stubObject->release();
 
