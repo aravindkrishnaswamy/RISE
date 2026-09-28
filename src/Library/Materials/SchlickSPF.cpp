@@ -710,8 +710,9 @@ static Scalar SchlickDiffuseSelectCoefficient(
 	// DL-127: the realized selection weight is now `S * ratio`, and
 	// DL-178 cancels nv against G(nv).  DL-225: the masking is the
 	// bounded one (SchlickMasking.h); its denominator nv/m(nv) is
-	// constant over the quadrature, while nl/m(nl) depends on each accepted direction,
-	// whose tangential components are 2(h.v)h - v in the local frame.
+	// constant over the quadrature, while nl/m(nl) depends on each
+	// accepted direction, whose tangential components are 2(h.v)h - v
+	// in the local frame.
 	const Vector3 wiView = Vector3Ops::Normalize( -d );
 	const Scalar  nvView = Vector3Ops::Dot( nW, wiView );
 	const Scalar  vxView = Vector3Ops::Dot( eu, wiView );

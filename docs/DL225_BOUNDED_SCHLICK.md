@@ -29,8 +29,8 @@ a grazing, low-roughness band; the ruling on that is in §5.
 
 Formula-only half-vector quadrature, independent of the SPF's sampler
 (`xi = u^2` regularized, 512 × 1024; the witness cell reproduces the
-ledger's convergence study: 1.24461 / 1.24456 / 1.24455 / 1.24455 at
-256 … 4096 radial nodes).  The grid is `r ∈ {.005,.01,.02,.05,.1,.2,.3,.5,.8,1}`,
+ledger's convergence study: 1.24461 at 256 radial nodes, 1.24456 at
+512, 1.24455 at 1024 through 4096).  The grid is `r ∈ {.005,.01,.02,.05,.1,.2,.3,.5,.8,1}`,
 isotropy `p ∈ {.01,.05,.1,.3,.5,.7,1}`, incidence
 `θ ∈ {0,30,60,70,75,80,85,88,89,89.9}°`, view azimuth from `onb.u()`
 `φv ∈ {0,45,90}°` (1900 cells).  `ρ_d` is linear in the reflectance `rho`,
@@ -198,7 +198,7 @@ aggregate `Pdf` as their MIS partner; no file overlaps).
 | Suite | Pre-fix (isolated A/B against `6b91fd19`) | Post-fix |
 |---|---|---|
 | `SchlickKrayBRDFConsistencyTest` (sections 7–10 new) | **1299 / 150** — 138 of 455 grid cells and 6 of 18 per-channel lanes above 1 + 1e-3 (worst 5.6390, r .005, isotropy 3, 89.9°, view along `onb.v`), the ledger's witness cell (1.24458), and the 5 "pair exercises the bound" checks | **1449 / 0** — worst ρ_d 0.99417; witness cell 0.78993; reciprocity 2.2e-15; Eq.31 reduction 3.0e-15; bounded-regime `kray p = f cos` 1.6e-9 |
-| `SchlickMaskingBoundTest` (new) | n/a (tests the new helper) | **20185 / 0** — AGM constants 5.6e-15 vs quadrature; semi-analytic projected area vs brute-force 2-D 1.2e-7; `m ≤ exact Smith G1` over 3969 states (worst 4.3e-12 above, i.e. equality at isotropy 1); tightness ≥ 0.9641 of exact Smith where it binds; isotropy-1 = closed-form GGX Smith 2.1e-16; `p > 1` symmetry; continuity at `p → 1`; `cFast` never skips a bound state (9600); W closed form 4.3e-13, concave, envelope ≥ W |
+| `SchlickMaskingBoundTest` (new) | n/a (tests the new helper) | **21655 / 0** — AGM constants 5.6e-15 vs quadrature; semi-analytic projected area vs brute-force 2-D 1.2e-7; `m ≤ exact Smith G1` over 3969 states (worst 4.3e-12 above, i.e. equality at isotropy 1); tightness ≥ 0.9641 of exact Smith where it binds; isotropy-1 = closed-form GGX Smith 2.1e-16; `p > 1` symmetry; continuity at `p → 1`; `cFast` never skips a bound state (9600); W closed form 4.3e-13, concave, envelope ≥ W; 1470 extreme-parameter states (isotropy 1e-300..1e300, roughness and cos to 1e-300) finite and ≤ Eq.31 |
 | `BoundedSchlickWardTest` | 917 / 0 with three grazing Schlick rows printed as an OPEN witness (1.244529893) | **920 / 0** — the three rows gated (r .1: 0.7899) |
 
 Section 6's Schlick control row (isotropy 100) moved from a 1e-9 to a
@@ -241,7 +241,7 @@ Over the 1661 grid cells whose pre-fix `ρ_d ≤ 1`: 1240 change by < 0.1%,
 for `θ ≤ 60°`, ≤ 2.9% to 75°, ≤ 8.2% at 80°.  **Ruling: this is a model
 substitution confined to the band where Schlick's Eq.31 masking exceeds
 the Smith projected-area limit of Schlick's own distribution (grazing
-directions at `r < 1/4` isotropically, `r ≲ 0.39` at extreme anisotropy);
+directions at `r < 1/4` isotropically, up to `r ≈ 0.29` at isotropy .3–.5, and only `r < 0.07` at isotropy .01);
 outside that band the shipped Eq.31 model is reproduced to rounding
 (3.0e-15), and inside it the old values were not a physically attainable
 reflectance.  Grazing highlights of low-roughness Schlick materials

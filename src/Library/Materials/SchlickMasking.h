@@ -22,7 +22,8 @@
 //  and the BRDF S D m(v) m(l) / (4 nv nl) is reciprocal because m is a
 //  function of ONE direction.  Eq.31 violates the bound only near
 //  grazing at low roughness (isotropically when r < 1/4 and
-//  cos < (1-4r)/(3-4r)); DL-225 keeps Eq.31 everywhere else and clips
+//  cos < (1-4r)/(3-4r); up to r ~ 0.29 at isotropy .3-.5, and only
+//  r < 0.07 at isotropy .01); DL-225 keeps Eq.31 everywhere else and clips
 //  it to a closed-form upper bound of I(v) where it overshoots:
 //
 //      m(v) = min( G_Eq31(nv), nv / I_bound(v) ).
