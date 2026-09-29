@@ -1432,6 +1432,7 @@ class StreamAuditSobol : public SobolSampler
 public:
 	int stream;
 	std::vector<std::pair<int, unsigned int> > draws;	// (stream, raw dimension)
+	std::vector<int> opens;								// every StartStream, in order
 
 	StreamAuditSobol( uint32_t idx, uint32_t seed ) : SobolSampler( idx, seed ), stream( 0 ) {}
 
@@ -1449,9 +1450,29 @@ public:
 	void StartStream( int s ) override
 	{
 		stream = s;
+		opens.push_back( s );
 		SobolSampler::StartStream( s );
 	}
 };
+
+// Walk iterations a walk reached, read off its StartStream calls in a
+// LAYOUT-INDEPENDENT way: the distinct streams it opened, less stream 0
+// (light selection) and the medium-distance blocks.  (So the DL-286
+// non-vacuity checks below read the same on the pre-fix layout.)
+static unsigned int WalkIterationsReached( const std::vector<int>& opens, size_t lo, size_t hi )
+{
+	std::vector<int> v;
+	for( size_t i = lo; i < hi && i < opens.size(); i++ ) {
+		const int st = opens[i];
+		if( st == 0 ) continue;
+		if( st >= BDPTUtilities::kMediumDistanceStreamBase &&
+			st < BDPTUtilities::kMediumDistanceStreamEnd ) continue;
+		v.push_back( st );
+	}
+	std::sort( v.begin(), v.end() );
+	v.erase( std::unique( v.begin(), v.end() ), v.end() );
+	return (unsigned int)v.size();
+}
 
 // A PSSMLTSampler that records the highest stream it is asked for and
 // every primary sample (lane, index within the lane) it hands out.  MLT
@@ -1465,6 +1486,7 @@ public:
 	int stream;
 	unsigned int indexInStream;
 	std::vector<std::pair<int, unsigned int> > lanes;
+	std::vector<int> opens;
 	StreamRecordingPSSMLT( unsigned int seed ) :
 		PSSMLTSampler( seed, 1.0 ), maxStream( 0 ), stream( 0 ), indexInStream( 0 ) {}
 	void StartStream( int s ) override
@@ -1472,6 +1494,7 @@ public:
 		if( s > maxStream ) maxStream = s;
 		stream = s;
 		indexInStream = 0;
+		opens.push_back( s );
 		PSSMLTSampler::StartStream( s );
 	}
 	// PSSMLTSampler::Get2D is two virtual Get1D calls, so this sees both.
@@ -1528,16 +1551,14 @@ struct StreamAuditTally
 	unsigned int maxVertexDraws = 0, maxBlockDraws = 0;
 };
 
-static void AuditOneSample( const StreamAuditSobol& s, size_t lightEnd, StreamAuditTally& t )
+static void AuditOneSample( const StreamAuditSobol& s, size_t lightEnd, size_t lightOpensEnd, StreamAuditTally& t )
 {
 	const int base = BDPTUtilities::kMediumDistanceStreamBase;
 	const int per  = BDPTUtilities::kMediumDistanceStreamsPerEvent;
 	std::map<int, unsigned int> perStream;
 	for( const auto& d : s.draws ) perStream[d.first]++;
-	bool deepLight = false;
-	for( size_t i = 0; i < lightEnd && i < s.draws.size(); i++ )
-		if( s.draws[i].first >= BDPTUtilities::kDeepWalkStreamBaseFixedBudget ) deepLight = true;
-	if( deepLight ) t.deepLightSamples++;
+	if( WalkIterationsReached( s.opens, 0, lightOpensEnd ) > BDPTUtilities::kLightWalkShallowIterations )
+		t.deepLightSamples++;
 	for( const auto& ps : perStream ) {
 		if( ps.first < base || ps.first >= BDPTUtilities::kMediumDistanceStreamEnd ) {
 			// Per-vertex streams: the shallow walk streams below the
@@ -1576,15 +1597,12 @@ static void AuditOneSample( const StreamAuditSobol& s, size_t lightEnd, StreamAu
 	t.samples++;
 }
 
-static void AuditPSSMLTSample( const StreamRecordingPSSMLT& m, size_t lightEnd, StreamAuditTally& t )
+static void AuditPSSMLTSample( const StreamRecordingPSSMLT& m, size_t lightEnd, size_t lightOpensEnd, StreamAuditTally& t )
 {
 	std::vector<std::pair<int, unsigned int> > light( m.lanes.begin(), m.lanes.begin() + lightEnd );
 	std::vector<std::pair<int, unsigned int> > eye( m.lanes.begin() + lightEnd, m.lanes.end() );
-	for( const auto& l : light )
-		if( l.first >= BDPTUtilities::LightWalkStream( BDPTUtilities::kLightWalkShallowIterations, false ) ) {
-			t.pssmltDeepLightSamples++;
-			break;
-		}
+	if( WalkIterationsReached( m.opens, 0, lightOpensEnd ) > BDPTUtilities::kLightWalkShallowIterations )
+		t.pssmltDeepLightSamples++;
 	std::sort( light.begin(), light.end() );
 	std::sort( eye.begin(), eye.end() );
 	std::vector<std::pair<int, unsigned int> > both;
@@ -1641,9 +1659,10 @@ static bool RunStreamAudit( bool heterogeneous, bool nm, StreamAuditTally& t, in
 		if( nm ) pBdpt->GenerateLightSubpathNM( *pScene, *pCaster, sampler, lv, ls, 550.0, rng, nullptr );
 		else     pBdpt->GenerateLightSubpath( *pScene, *pCaster, sampler, lv, ls, rng );
 		const size_t lightEnd = sampler.draws.size();
+		const size_t lightOpensEnd = sampler.opens.size();
 		if( nm ) pBdpt->GenerateEyeSubpathNM( rc, cameraRay, screen, *pScene, *pCaster, sampler, ev, es, 550.0, nullptr, nullptr );
 		else     pBdpt->GenerateEyeSubpath( rc, cameraRay, screen, *pScene, *pCaster, sampler, ev, es, nullptr );
-		AuditOneSample( sampler, lightEnd, t );
+		AuditOneSample( sampler, lightEnd, lightOpensEnd, t );
 
 		if( pMaxPssmltStream ) {
 			StreamRecordingPSSMLT* pMlt = new StreamRecordingPSSMLT( 283u + i );
@@ -1652,9 +1671,10 @@ static bool RunStreamAudit( bool heterogeneous, bool nm, StreamAuditTally& t, in
 			std::vector<uint32_t> ls2, es2;
 			pBdpt->GenerateLightSubpath( *pScene, *pCaster, mlt, lv2, ls2, rng );
 			const size_t mltLightEnd = mlt.lanes.size();
+			const size_t mltLightOpensEnd = mlt.opens.size();
 			pBdpt->GenerateEyeSubpath( rc, cameraRay, screen, *pScene, *pCaster, mlt, ev2, es2, nullptr );
 			if( mlt.maxStream > *pMaxPssmltStream ) *pMaxPssmltStream = mlt.maxStream;
-			AuditPSSMLTSample( mlt, mltLightEnd, t );
+			AuditPSSMLTSample( mlt, mltLightEnd, mltLightOpensEnd, t );
 			safe_release( pMlt );
 		}
 	}
