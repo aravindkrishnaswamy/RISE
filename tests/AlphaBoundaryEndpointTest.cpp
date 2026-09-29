@@ -27,7 +27,36 @@ struct Decisions : ISampler {
     Point2 Get2D() override { return Point2(Get1D(),Get1D()); }
     Scalar GetAlpha1D() override { return count<values.size()?values[count++]: (++count,.9); }
 };
+class ContextCoverage:public UniformScalarPainter {
+public:mutable unsigned calls=0;mutable bool context=true;Ray ray;Scalar range;RasterizerState raster;
+ ContextCoverage(const Ray& r,Scalar d):UniformScalarPainter(.5),ray(r),range(d),raster{17,29}{}
+ ScalarTriple GetValuesAt(const RayIntersectionGeometric& r)const override{
+  ++calls;context=context&&r.rast.x==raster.x&&r.rast.y==raster.y&&Point3Ops::Distance(r.ray.origin,ray.origin)==0&&Vector3Ops::Magnitude(r.ray.Dir()-ray.Dir())==0&&r.range==range;return ScalarTriple(.5);
+ }
+};
+static void OcclusionIntervals(){
+ auto* color=new UniformColorPainter(RISEPel(.5));auto* coverage=new UniformScalarPainter(.5);auto* mat=new LambertianMaterial(*color);
+ auto* geo=new SphereGeometry(1);auto* object=new Object(geo);object->AssignMaterial(*mat);object->FinalizeTransformations();auto* manager=new ObjectManager(false,false,4,8);manager->AddItem(object,"sphere");
+ const Ray ray(Point3(0,0,-2),Vector3(0,0,1));
+ {Decisions d{.1};Check(manager->IntersectShadowRaySampled(ray,1,d)&&d.count==0,"no-alpha null-output shadow retains legacy exact-end inclusion");}
+ for(int mode=0;mode<3;++mode){mat->SetAlpha(coverage,mode==0?eAlphaOpaque:mode==1?eAlphaMask:eAlphaBlend,.5);
+  for(int begin=-1;begin<=1;++begin)for(int end=-1;end<=1;++end)for(bool records:{false,true}){
+   const Scalar lo=begin<0?std::nextafter(1.,-RISE_INFINITY):begin>0?std::nextafter(1.,RISE_INFINITY):1.;
+   const Scalar hi=end<0?std::nextafter(1.,-RISE_INFINITY):end>0?std::nextafter(1.,RISE_INFINITY):1.;
+   const bool expected=begin<=0&&end>0;RayIntersection q(ray,nullRasterizerState);Decisions d{.1};MediumBoundaryHits hits;
+   manager->IntersectRaySampled(q,d,true,true,false,2,true,records?&hits:nullptr,false,hi,lo);
+   Check(q.geometric.bHit==expected&&d.count==static_cast<size_t>(expected&&mode==2),"raw occlusion start/end membership and draws ignore optional output");
+  }
+ }
+ auto* phase=new IsotropicPhaseFunction;auto* medium=new HomogeneousMedium(RISEPel(1.),RISEPel(0.),*phase);object->AssignInteriorMedium(*medium);mat->SetAlpha(coverage,eAlphaBlend,.5);
+ for(bool accepted:{false,true}){Decisions d=accepted?Decisions{.1,.1}:Decisions{.9,.9};MediumBoundaryHits hits;RayIntersection q(ray,nullRasterizerState);
+  manager->IntersectRaySampled(q,d,true,true,false,4,true,&hits,false,1,0);
+  Check(!q.geometric.bHit&&d.count==2&&hits.size()==(accepted?2u:0u),"longer physical interval records accepted/rejected medium events after occlusion end");
+ }
+ manager->release();object->release();geo->release();mat->release();coverage->release();color->release();medium->release();phase->release();
+}
 int main() {
+ OcclusionIntervals();
  auto* color=new UniformColorPainter(RISEPel(.5));auto* alpha=new UniformScalarPainter(.5);
  auto* mat=new LambertianMaterial(*color);mat->SetAlpha(alpha,eAlphaBlend,.5);
  auto* phase=new IsotropicPhaseFunction();auto* medium=new HomogeneousMedium(RISEPel(1.),RISEPel(0.),*phase);
@@ -59,6 +88,21 @@ int main() {
    Check(copy.hasBoundaryRange&&std::fabs(copy.boundaryRange-end)<1e-12,"copy preserves raw caller-frame boundary parameter");
    Check(copy.geometric.range<copy.boundaryRange,"published shading backoff remains unchanged");
   }
+  RayIntersection raw(ray,nullRasterizerState);manager->IntersectRay(raw,true,true,false);
+  auto* context=new ContextCoverage(ray,raw.geometric.range);
+  for(int mode=0;mode<3;++mode){mat->SetAlpha(context,mode==0?eAlphaOpaque:mode==1?eAlphaMask:eAlphaBlend,.5);
+   // Snapshot materials can be reconstructed independently: set the actual root slot too.
+   const_cast<IMaterial*>(top->GetMaterial())->SetAlpha(context,mode==0?eAlphaOpaque:mode==1?eAlphaMask:eAlphaBlend,.5);
+   for(int side=-1;side<=1;++side)for(bool records:{false,true}){
+    const Scalar limit=side<0?std::nextafter(end,-RISE_INFINITY):side>0?std::nextafter(end,RISE_INFINITY):end;
+    Decisions decisions{.1,.1};MediumBoundaryHits hits;RayIntersection q(ray,RasterizerState{17,29});
+    manager->IntersectRaySampled(q,decisions,true,true,false,limit,false,records?&hits:nullptr);
+    Check(q.geometric.bHit==(side>0),"bounded sampled membership identical with and without records");
+    Check(decisions.count==static_cast<size_t>(side>0&&mode==2),"exact/outside endpoint never consumes alpha; interior consumes once");
+   }
+  }
+  Check(context->context&&context->calls>0,"physical membership preserves original ray raster and published shading range");context->release();
+  mat->SetAlpha(alpha,eAlphaBlend,.5);
   top->release();manager->release();
  }
  medium->release();phase->release();mat->release();alpha->release();color->release();

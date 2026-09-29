@@ -1799,7 +1799,6 @@ bool LightSampler::SampleLight(
 		// which is the property the downstream cosines need.
 		rig.vGeomNormal = sample.normal;
 		rig.ptCoord = coord;
-        rig.ptIntersection = sample.position;
 		rig.onb = onb;
 		ApplyEmitterSurface( rig, sample.surface );
 		rig.ptObjIntersec = sample.ptObjIntersec;

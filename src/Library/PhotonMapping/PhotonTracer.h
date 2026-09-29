@@ -157,14 +157,18 @@ namespace RISE
 						rig.ptCoord = coord;
 						rig.onb.CreateFromW( rig.vNormal );
 
-                        rig.ptIntersection = r.origin;
-                        rig.ptObjIntersec = LightSampler::EmitterObjectPoint(object, r.origin, r.origin);
-                        EmitterSurfacePayload alphaSurface;
-                        LightSampler::ProbeEmitterSurface(object, pScene->GetObjects(), r.origin, normal, alphaSurface);
-                        LightSampler::ApplyEmitterSurface(rig, alphaSurface);
-                        IndependentSampler alphaSampler(random);
-                        if (!LightSampler::AcceptEmitterAlpha(object, pScene->GetObjects(), r.origin, rig, alphaSampler)) {
-                            continue;
+                        // Preserve the original emitter direction-proposal record.
+                        // Only coverage receives physical/local/surface context.
+                        if (object->GetMaterial()->GetAlphaMode() != eAlphaOpaque) {
+                            RayIntersectionGeometric alphaRI(rig);
+                            alphaRI.ptObjIntersec = LightSampler::EmitterObjectPoint(object, r.origin, r.origin);
+                            EmitterSurfacePayload alphaSurface;
+                            LightSampler::ProbeEmitterSurface(object, pScene->GetObjects(), r.origin, normal, alphaSurface);
+                            LightSampler::ApplyEmitterSurface(alphaRI, alphaSurface);
+                            IndependentSampler alphaSampler(random);
+                            if (!LightSampler::AcceptEmitterAlpha(object, pScene->GetObjects(), r.origin, alphaRI, alphaSampler)) {
+                                continue;
+                            }
                         }
 						r.SetDir(pEmitter->getEmmittedPhotonDir( rig, dirRand ));
 

@@ -1240,3 +1240,12 @@ See [ALPHA_COVERAGE.md](../docs/ALPHA_COVERAGE.md) for the estimator definitions
   pre-modifier UV, nearby CSG faces, finite visibility draw bounds, and stale
   or missing-record refusal. Uses independent control hits and affirmative
   MASK1 visibility so negative coverage tests cannot pass vacuously.
+
+- `AlphaEmitterRecordTest`: real expression Le preserves the original manual
+  record in OPAQUE/MASK while physical world-P alpha remains affirmative;
+  separates legacy zero-P emission limitations from coverage correctness.
+  `AlphaPhotonEmissionTest` additionally checks actual RGB/NM Phong exponent
+  and direction records, with physical/local/curvature alpha-only context.
+  `AlphaBoundaryEndpointTest` pairs null/record finite bounds and exact alpha
+  draws, distinguishes physical medium events from occlusion intervals, and
+  explicitly retains the no-alpha raw-shadow exact-end convention.

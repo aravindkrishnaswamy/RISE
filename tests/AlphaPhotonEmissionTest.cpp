@@ -149,7 +149,44 @@ template<class Base>static void ReservoirChecks(){
  ReadMap<Base> loaded(100,nullptr);loaded.EnableReservoir();loaded.Deserialize(*bytes);bytes->release();
  Check(!loaded.ReservoirActive()&&!Fill(loaded,999)&&loaded.NumStored()==100,"deserialization retires shooting state");
 }
-int main(){ReservoirChecks<GlobalPelPhotonMap>();ReservoirChecks<CausticPelPhotonMap>();ReservoirChecks<TranslucentPelPhotonMap>();ReservoirChecks<GlobalSpectralPhotonMap>();ReservoirChecks<CausticSpectralPhotonMap>();ReservoirChecks<ShadowPhotonMap>();Cases<RGBTracer<GlobalPelPhotonMap>>(false);Cases<RGBTracer<CausticPelPhotonMap>>(false);Cases<RGBTracer<TranslucentPelPhotonMap>>(false);Cases<NMTracer<GlobalSpectralPhotonMap>>(true);Cases<NMTracer<CausticSpectralPhotonMap>>(true);
+#include "../src/Library/Materials/PhongLuminaireMaterial.h"
+#include "../src/Library/Painters/ExpressionPainter.h"
+#include <memory>
+class RecordExponent:public IScalarPainter,public Reference {
+ const IScalarPainter& source;
+public:mutable std::unique_ptr<RayIntersectionGeometric> last; mutable unsigned calls=0;
+ RecordExponent(const IScalarPainter& s):source(s){source.addref();}~RecordExponent(){source.release();}
+ ScalarTriple GetValuesAt(const RayIntersectionGeometric&r)const override {++calls;last.reset(new RayIntersectionGeometric(r));return source.GetValuesAt(r);}
+};
+class PhotonAlphaContext:public IScalarPainter,public Reference {
+ const IObjectManager* scene;const IObject* object;const IScalarPainter& signal;
+public:mutable unsigned calls=0;mutable bool valid=true;
+ PhotonAlphaContext(const IObjectManager* s,const IObject* o,const IScalarPainter& p):scene(s),object(o),signal(p){signal.addref();}
+ ~PhotonAlphaContext(){signal.release();}
+ ScalarTriple GetValuesAt(const RayIntersectionGeometric& r)const override{
+  ++calls;const auto local=Point3Ops::Transform(object->GetFinalInverseTransformMatrix(),r.ray.origin);
+  // Analytic sphere curvature uses the derivative fallback, not curvatureValid.
+  // curv = (1/r) * (2*r*sqrt(3)), so the real expression must return 13.
+  valid=valid&&r.signals.pScene==scene&&r.signals.pSelf==object&&Point3Ops::Distance(r.ptIntersection,r.ray.origin)<1e-12&&Point3Ops::Distance(r.signals.ptWorld,r.ray.origin)<1e-12&&Point3Ops::Distance(r.ptObjIntersec,local)<1e-12&&std::fabs(signal.GetValuesAt(r).v[0]-13)<1e-9;
+  return valid?signal.GetValuesAt(r):ScalarTriple(0);
+ }
+};
+template<class Tracer>void PhotonRecordContract(const char*name){
+ Fixture f(true);ExpressionProgram prog=ExpressionProgram::Invalid();ExpressionProgram::Builder b;b.EnableContextVars(true);Check(b.Finalize("1+P.x*P.x",prog),"real exponent expression compiles");std::vector<ParamSpec> params;auto* expr=new ExpressionScalarPainter(prog,params);auto* exponent=new RecordExponent(*expr);auto* mat=new PhongLuminaireMaterial(*f.white,1,*exponent,*f.base);auto* obj=f.objects->GetItem("left");obj->AssignMaterial(*mat);
+ ExpressionProgram ap=ExpressionProgram::Invalid();ExpressionProgram::Builder ab;ab.EnableContextVars(true);Check(ab.Finalize("1+curv*curv",ap),"actual curvature alpha expression compiles");auto* signal=new ExpressionScalarPainter(ap,params);auto* alpha=new PhotonAlphaContext(f.objects,obj,*signal);signal->release();
+ for(bool masked:{false,true}){if(masked)mat->SetAlpha(alpha,eAlphaMask,.5);auto* t=new Tracer;t->AttachScene(f.scene);exponent->calls=0;exponent->last.reset();Check(t->TracePhotons(1,0,false,nullptr)&&t->result.calls==1,"real photon loop emits one positive control");Check(exponent->last&&exponent->calls==1,"actual PhongEmitter queried exponent once");if(!exponent->last){t->release();continue;}const auto& actual=*exponent->last;
+ Check(masked?(alpha->calls==1&&alpha->valid):(alpha->calls==0),"only alpha copy sees physical local scene and demanded curvature context");
+ Check(Point3Ops::Distance(actual.ptIntersection,Point3(0,0,0))==0&&Point3Ops::Distance(actual.ptObjIntersec,Point3(0,0,0))==0&&!actual.signals.pScene&&!actual.signals.pSelf&&!actual.derivatives.curvatureValid&&!actual.derivatives.valid,"original Phong proposal keeps baseline P Po and optional payload defaults");
+ RayIntersectionGeometric old(actual.ray,nullRasterizerState);old.vNormal=actual.vNormal;old.vGeomNormal=actual.vGeomNormal;old.ptCoord=actual.ptCoord;old.onb=actual.onb;
+ const double n0=expr->GetValuesAt(old).v[0],n1=expr->GetValuesAt(actual).v[0];
+ RayIntersectionGeometric saved(actual);const auto d0=mat->GetEmitter()->getEmmittedPhotonDir(old,Point2(.3,.7));const auto d1=mat->GetEmitter()->getEmmittedPhotonDir(saved,Point2(.3,.7));
+ std::printf("%s masked=%d actualP.x=%.17g baselineP.x=%.17g n_old=%.17g n_actual=%.17g cos_old=%.17g cos_actual=%.17g\n",name,masked,saved.ptIntersection.x,old.ptIntersection.x,n0,n1,Vector3Ops::Dot(d0,old.vNormal),Vector3Ops::Dot(d1,saved.vNormal));
+ Check(std::fabs(n0-n1)<1e-12,"unchanged real Phong exponent query contract");Check(Vector3Ops::Magnitude(d0-d1)<1e-12,"unchanged photon proposal at identical direction sample");t->release();}
+ alpha->release();mat->release();exponent->release();expr->release();
+}
+int main(){
+ PhotonRecordContract<RGBTracer<GlobalPelPhotonMap>>("RGB");PhotonRecordContract<NMTracer<GlobalSpectralPhotonMap>>("NM");
+ReservoirChecks<GlobalPelPhotonMap>();ReservoirChecks<CausticPelPhotonMap>();ReservoirChecks<TranslucentPelPhotonMap>();ReservoirChecks<GlobalSpectralPhotonMap>();ReservoirChecks<CausticSpectralPhotonMap>();ReservoirChecks<ShadowPhotonMap>();Cases<RGBTracer<GlobalPelPhotonMap>>(false);Cases<RGBTracer<CausticPelPhotonMap>>(false);Cases<RGBTracer<TranslucentPelPhotonMap>>(false);Cases<NMTracer<GlobalSpectralPhotonMap>>(true);Cases<NMTracer<CausticSpectralPhotonMap>>(true);
  Fixture f(false,true);auto* t=new RGBTracer<GlobalPelPhotonMap>(1,false,1,true);t->AttachScene(f.scene);Check(t->TracePhotons(100003,0,false,nullptr),"mixed mesh/nonmesh source shoot");Check(std::fabs(t->result.left/(4*PI)-1)<.035,"mesh power with point sibling",t->result.left,4*PI);Check(std::fabs(t->result.right/(12*PI)-1)<.035,"point-light directional-PDF and source-PDF power",t->result.right,12*PI);t->release();
  std::printf("%d passed / %d failed\n",passed,failed);return failed?1:0;
 }

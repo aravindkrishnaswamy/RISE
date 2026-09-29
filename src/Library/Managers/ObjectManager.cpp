@@ -2151,7 +2151,7 @@ void IObjectManager::IntersectRaySampled(RayIntersection& ri, ISampler& sampler,
     for (;;) {
         IntersectRay(ri, front, back, exit);
         const Scalar localBoundary = ri.hasBoundaryRange ? ri.boundaryRange : ri.geometric.range;
-        if (!ri.geometric.bHit || (boundaries ? localBoundary : ri.geometric.range) >= maxDistance - offset) {
+        if (!ri.geometric.bHit || localBoundary >= maxDistance - offset) {
             ri.geometric.bHit = false;
             ri.geometric.ray = original;
             return;
@@ -2164,7 +2164,10 @@ void IObjectManager::IntersectRaySampled(RayIntersection& ri, ISampler& sampler,
         if (exit) ri.geometric.range2 += offset;
         ri.geometric.ray = original;
         const bool mediumBoundary = ri.pObject && ri.pObject->GetInteriorMedium();
-        const bool inOcclusionInterval = ri.geometric.range >= occlusionStart && ri.geometric.range < occlusionEnd;
+        // Physical membership does not depend on requesting boundary records.
+        // Keep the published shading range/context unchanged for painters.
+        const Scalar physicalRange = offset + localBoundary;
+        const bool inOcclusionInterval = physicalRange >= occlusionStart && physicalRange < occlusionEnd;
         const bool casts = !boundariesOnly && inOcclusionInterval && (!shadows || !ri.pObject || ri.pObject->DoesCastShadows());
         // Outside visibility's endpoint exclusions only medium events matter.
         const bool needsCoverage = casts || (boundaries && mediumBoundary) || (!shadows && !boundariesOnly);

@@ -347,3 +347,29 @@ production `BuildSeedChain`→`Solve` crossing between equally reflective CSG
 materials with different alpha. `AlphaPhotonEmissionTest` adds the five actual
 emission-loop context controls; `SignalEmitterRecordTest` guards unchanged Le
 and optional surface payload behavior.
+
+
+Manual emitter record preservation does not repair the older world-position
+limitation: RGB `SampleLight` and RGB/NM mesh NEE still pass the original
+zero-default `ptIntersection` to Le; NM/HWSS BDPT roots already used the sampled
+position before this feature. RGB/NM legacy photon direction proposals likewise
+retain their original P/Po and optional-payload defaults. Their coverage query
+alone receives physical world/local coordinates and demanded surface signals,
+behind the non-OPAQUE guard. `AlphaEmitterRecordTest` observes real position-
+sensitive Le and affirmative physical-P coverage separately;
+`AlphaPhotonEmissionTest` observes actual Phong exponent/direction queries and
+analytic curvature on the coverage copy. These checks preserve the earlier
+caller contract, not physically correct world-P emission across all paths.
+
+Within `IntersectRaySampled`, raw boundary parameters determine physical-end
+and occlusion-start/end membership regardless of whether a boundary-output
+vector is requested. Published shading points/ranges and scalar query context
+remain unchanged. Equal required intervals give the same membership and draws;
+requesting physical medium records outside the occlusion interval may require
+additional coverage draws for those distinct boundaries. They do not occlude
+or cause an earlier event to be sampled again. The inherited no-alpha,
+no-record `IntersectShadowRaySampled` fast path still uses raw shadow traversal
+and its legacy exact-end convention; this is an explicit exception to the new
+sampled walk's half-open contract. `AlphaBoundaryEndpointTest` distinguishes
+that baseline path, direct sampled record/null parity, and longer physical
+medium intervals, including adjacent representable bounds and CSG transforms.
