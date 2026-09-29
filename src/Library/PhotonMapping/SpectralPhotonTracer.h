@@ -19,6 +19,8 @@
 #include "../Utilities/Reference.h"
 #include "../Utilities/IORStackSeeding.h"
 #include "../Rendering/LuminaryManager.h"
+#include "../Interfaces/IGeometry.h"
+#include "../Interfaces/IEmitter.h"
 
 namespace RISE
 {
@@ -97,7 +99,11 @@ namespace RISE
 				for( i=lum.begin(), e=lum.end(); i!=e; i++ )
 				{
 					const IEmitter* pEmitter = i->pLum->GetMaterial()->GetEmitter();
-					const Scalar area = (*i).pLum->GetArea();
+					// DL-320: a double-sided luminary radiates from both faces
+					// (docs/DL320_DOUBLE_SIDED_EMITTER.md) -- count both in its
+					// power and pick each photon's face with probability 1/2.
+					const bool twoSided = (*i).pLum->GetGeometry() && (*i).pLum->GetGeometry()->IsDoubleSided();
+					const Scalar area = (*i).pLum->GetArea() * EmitterSides::FaceCount( twoSided );
 					const RISEPel pelpower = (*i).pLum->GetMaterial()->GetEmitter()->averageRadiantExitance() * (area*INV_PI) * dPowerScale;
 					const Scalar area_premul = area * dPowerScale;
 
@@ -129,6 +135,19 @@ namespace RISE
 						Point2 coord;
 						i->pLum->UniformRandomPoint( &r.origin, &normal, &coord, Point3( geomsampler.CanonicalRandom(), geomsampler.CanonicalRandom(), geomsampler.CanonicalRandom() ) );
 						
+						// DL-320: the emitting face, chosen by remapping the
+						// first direction coordinate (no extra draw), so a
+						// one-sided luminary's photon is bit-identical.
+						Point2 dirRand( geomsampler.CanonicalRandom(), geomsampler.CanonicalRandom() );
+						if( twoSided ) {
+							if( dirRand.x < 0.5 ) {
+								dirRand.x = dirRand.x * 2.0;
+							} else {
+								dirRand.x = dirRand.x * 2.0 - 1.0;
+								normal = -normal;
+							}
+						}
+
 						RayIntersectionGeometric rig( r, nullRasterizerState );
 						rig.ray = r;
 						rig.vNormal = normal;
@@ -139,7 +158,7 @@ namespace RISE
 						rig.ptCoord = coord;
 						rig.onb.CreateFromW( rig.vNormal );
 
-						r.SetDir(pEmitter->getEmmittedPhotonDir( rig, Point2( geomsampler.CanonicalRandom(), geomsampler.CanonicalRandom() ) ));
+						r.SetDir(pEmitter->getEmmittedPhotonDir( rig, dirRand ));
 
 						// Each photon gets a different wavelength...
 						const Scalar nm = pPhotonMap->SampleWavelength(random.CanonicalRandom());
@@ -228,7 +247,9 @@ namespace RISE
 					//! \todo Something to consider.  Get the averageRadiantExitanceSpecrum, then use the peak value in the
 					//! spectrum.  It is arguable which way is better.  If anyone has any suggestions, I'm willing to 
 					//! listen
-					const Scalar area = (*i).pLum->GetArea();
+					// DL-320: both faces of a double-sided luminary radiate.
+					const bool twoSided = (*i).pLum->GetGeometry() && (*i).pLum->GetGeometry()->IsDoubleSided();
+					const Scalar area = (*i).pLum->GetArea() * EmitterSides::FaceCount( twoSided );
 					const RISEPel power = (*i).pLum->GetMaterial()->GetEmitter()->averageRadiantExitance() * (area*INV_PI) * dPowerScale;
 					total_exitance += ColorMath::MaxValue(power);
 				}

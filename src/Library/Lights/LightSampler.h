@@ -441,6 +441,7 @@ namespace RISE
 			unsigned int		lumIndex;	///< Index into luminaries list (valid when pLight==0)
 			Scalar				exitance;	///< MaxValue of radiant exitance
 			Point3				position;	///< Representative position for distance estimates
+			bool				twoSided;	///< DL-320: mesh luminary on double-sided geometry (emits from both faces); false for delta lights
 		};
 
 		class LightSampler : public virtual Reference
@@ -712,6 +713,16 @@ namespace RISE
 				const Point3&	ptWorld,		///< [in] the sampled point, in world space
 				const Point3&	fallback		///< [in] what to return when there is no single object frame
 				);
+
+			//! DL-320: does this luminary emit from BOTH faces?  True when
+			//! its geometry reports back-face hits with a ray-facing normal
+			//! (`IGeometry::IsDoubleSided()`), which is exactly when every
+			//! strategy that HITS it sees a two-sided emitter.  False for a
+			//! null luminary and for a luminary with no directly-owned
+			//! geometry (a CSG composite: `GetGeometry() == 0`, and it is
+			//! never NEE-sampled anyway).  See `EmitterSides` in IEmitter.h
+			//! and docs/DL320_DOUBLE_SIDED_EMITTER.md.
+			static bool LuminaryIsTwoSided( const IObject* pLum );
 
 			//
 			// LIGHT SOLO — render with exactly one light enabled.

@@ -370,10 +370,21 @@ void ClippedPlaneGeometry::UniformRandomPoint( Point3* point, Vector3* normal, P
 		Vector3Ops::Cross( dpdu, dpdv ) );
 
 	if( point ) {
-		// Pull the point out by a small epsilon along the surface
-		// normal so when the clipped plane is a back-facing luminary
-		// it still occludes anyone behind it.  Matches prior behaviour.
-		*point = Point3Ops::mkPoint3( pt, nrm * 0.00001 );
+		// SINGLE-sided: pull the point out by a small epsilon along the
+		// surface normal so when the clipped plane is a back-facing
+		// luminary it still occludes anyone behind it.  Matches prior
+		// behaviour.
+		//
+		// DOUBLE-sided (DL-320): no offset.  Both faces emit
+		// (IGeometry::IsDoubleSided), so a receiver behind the plane is
+		// lit by the back face, and a point pushed 1e-5 toward the FRONT
+		// would sit on the far side of the plane from it: every
+		// connection from behind would cross the emitter and read as
+		// occluded under a connection epsilon smaller than the push
+		// (BDPT/VCM use 2 * BDPT_RAY_EPSILON; PT's NEE shadow ray stops
+		// 0.001 short and happened to clear it).  On the plane itself the
+		// point is reachable from both faces.
+		*point = bDoubleSided ? pt : Point3Ops::mkPoint3( pt, nrm * 0.00001 );
 	}
 
 	if( normal ) {

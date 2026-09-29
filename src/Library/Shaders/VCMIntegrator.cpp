@@ -1122,10 +1122,14 @@ namespace
 			// Emission pdf area-Jacobian uses GEOMETRIC normal — the
 			// Lambertian emitter's directional pdf is `cosThetaG / PI`
 			// where cosThetaG is measured against the actual face.
-			const Scalar cosAtEmitter = Vector3Ops::Dot( v.geomNormal, woFromEmitter );
-			const Scalar emissionDirPdfSA = ( cosAtEmitter > 0 )
-				? ( cosAtEmitter * INV_PI )
-				: Scalar( 0 );
+			//
+			// DL-320: `LightSampler::SampleLight` emits a double-sided
+			// emitter's light subpaths from either face with probability 1/2,
+			// so its directional density is |cos|/(2 pi); `v.geomNormal` is
+			// the ray-facing normal here, and the one-sided expression would
+			// claim twice that for the back face.
+			const Scalar emissionDirPdfSA = EmitterSides::CosineEmissionPdf(
+				LightSampler::LuminaryIsTwoSided( v.pObject ), v.geomNormal, woFromEmitter );
 			const Scalar emissionPdfW = directPdfA * emissionDirPdfSA;
 
 			// SmallVCM: path length 1 (eye ray directly hits emitter) has
@@ -1371,7 +1375,17 @@ namespace
 					// ungated by design; see
 					// `LightSampler::EmitterObjectPoint`.
 					rig.ptObjIntersec = ls.ptObjIntersec;
-					Le = EvalEmitterRadiance<Tag>( *pEmitter, rig, -dirToLight, ls.normal, tag );
+					// DL-320: `ls.normal` is the face `SampleLight` picked for
+					// the light subpath's own continuation; this record looks
+					// toward the eye vertex instead, which a double-sided
+					// emitter lights from whichever face faces it.
+					const Vector3 lsFace = EmitterSides::FaceToward(
+						LightSampler::LuminaryIsTwoSided( ls.pLuminary ), ls.normal, -dirToLight );
+					if( Vector3Ops::Dot( lsFace, ls.normal ) < 0 ) {
+						rig.vNormal = lsFace;
+						rig.vGeomNormal = lsFace;
+					}
+					Le = EvalEmitterRadiance<Tag>( *pEmitter, rig, -dirToLight, lsFace, tag );
 				}
 			} else if( envCaseVCM ) {
 				// Env-light NEE: look up radiance at the actually-
@@ -1442,8 +1456,10 @@ namespace
 
 			Scalar emissionDirPdfSA = 0;
 			if( ls.pLuminary ) {
-				const Scalar c = Vector3Ops::Dot( ls.normal, -dirToLight );
-				emissionDirPdfSA = ( c > 0 ) ? ( c * INV_PI ) : Scalar( 0 );
+				// DL-320: the two-faced density for a double-sided emitter,
+				// the same function `SampleLight` draws from.
+				emissionDirPdfSA = EmitterSides::CosineEmissionPdf(
+					LightSampler::LuminaryIsTwoSided( ls.pLuminary ), ls.normal, -dirToLight );
 			} else if( ls.pLight ) {
 				emissionDirPdfSA = ls.pLight->pdfDirection( -dirToLight );
 			} else if( envCaseVCM ) {

@@ -424,6 +424,35 @@ namespace RISE
 			outExact = false;
 			return false;
 		}
+
+		//! DL-320: whether a hit on this surface's BACK face is reported
+		//! with the normal FLIPPED TOWARD THE RAY (the double-sided
+		//! convention, `RayIntersectionGeometric::bGeomNormalOrientedToRay`).
+		//!
+		//! It matters for emitters.  A Lambertian luminaire is one-sided
+		//! about the normal it is HANDED, so on a surface that reports a
+		//! ray-facing normal it emits from BOTH faces for every strategy
+		//! that HITS it (docs/SCENE_CONVENTIONS.md: "with `doublesided
+		//! TRUE` the quad emits from BOTH faces").  Every strategy that
+		//! SAMPLES the emitter -- NEE, the light-subpath root, the photon
+		//! tracers -- asks this to describe the same two-faced source: a
+		//! sampled point emits from the face toward the receiver, a light
+		//! subpath leaves from either face with probability 1/2, and the
+		//! emitter's total power counts both faces.  See
+		//! docs/DL320_DOUBLE_SIDED_EMITTER.md.
+		//!
+		//! TRUE for: `TriangleMeshGeometry` / `TriangleMeshGeometryIndexed`
+		//! with `bDoubleSided`, `DisplacedGeometry` (its internal mesh's
+		//! flag), `ClippedPlaneGeometry` with `doublesided`, and
+		//! `BezierPatchGeometry` (it flips on every back-face hit it
+		//! accepts).  FALSE (the default) for every analytic primitive
+		//! (sphere, box, disk, bilinear patch, ...): their back faces
+		//! report the outward normal, so a luminaire on them is one-sided.
+		//! `HairGeometry` flips unconditionally but cannot be an area light
+		//! (`CanBeAreaLight()` is false), so it keeps the default.
+		//!
+		//! DEFAULTED, declared LAST: no claim on any existing vtable slot.
+		virtual bool IsDoubleSided() const { return false; }
 	};
 }
 

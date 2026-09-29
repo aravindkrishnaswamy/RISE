@@ -1911,6 +1911,18 @@ static void TestNullBSDFMaterialContinuation()
 // and -6.10% .. -6.18% pre-fix over three runs each, so the pin
 // [-5.72%, -5.00%] sits >= 0.27% inside the post-fix readings and
 // >= 0.38% away from the pre-fix ones.
+//
+// THE EMITTER IS SINGLE-SIDED ON PURPOSE (DL-320, 2026-09-28).  Its
+// winding faces the sheets (-Z), and `clippedplane_geometry` defaults to
+// `doublesided TRUE`.  Since DL-320 a double-sided emitter emits from
+// BOTH faces for every strategy, so half of its light subpaths would
+// leave upward into empty space; the biased light-side strategies DL-317
+// is about would then carry less of the image and the pin would stop
+// measuring DL-317 (it read -2.93% with the default, against -5.9% for
+// the same scene single-sided -- the review's isolation: double-sided
+// -5.90% -> -3.50%, `doublesided FALSE` -5.88% -> -5.87%, a Lambertian
+// control +0.01% / +0.02%, salted n = 2).  `doublesided FALSE` keeps the
+// pin on the quantity it was derived for.
 //////////////////////////////////////////////////////////////////////
 static const char* kSceneRoughSSSU =
 	"film\n{\n\twidth 32\n\theight 32\n}\n\n"
@@ -1923,7 +1935,7 @@ static const char* kSceneRoughSSSU =
 	"standard_object\n{\n\tname obj_floor\n\tgeometry quad_floor\n\tmaterial mat_sss\n}\n\n"
 	"uniformcolor_painter\n{\n\tname pnt_emit_u\n\tcolor 1.0 1.0 1.0\n}\n\n"
 	"lambertian_luminaire_material\n{\n\tname mat_emit_u\n\texitance pnt_emit_u\n\tscale 0.5\n\tmaterial none\n}\n\n"
-	"clippedplane_geometry\n{\n\tname quad_emit_u\n\tpta -6 -6 4.2\n\tptb -6 6 4.2\n\tptc 6 6 4.2\n\tptd 6 -6 4.2\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_emit_u\n\tpta -6 -6 4.2\n\tptb -6 6 4.2\n\tptc 6 6 4.2\n\tptd 6 -6 4.2\n\tdoublesided FALSE\n}\n\n"
 	"standard_object\n{\n\tname obj_emit_u\n\tgeometry quad_emit_u\n\tmaterial mat_emit_u\n}\n";
 
 static const char* kRasterizerPTRoughSSSU =

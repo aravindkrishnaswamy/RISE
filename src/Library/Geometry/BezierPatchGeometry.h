@@ -103,6 +103,8 @@ namespace RISE
 
 			void UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const override;
 			Scalar GetArea( ) const override;
+			//! DL-320: every accepted back-face hit is flipped toward the ray (see IGeometry).
+			bool IsDoubleSided() const override { return true; }
 
 			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const override;
 
