@@ -60,8 +60,8 @@ namespace
 	//! `Optics::CalculateDielectricReflectanceCosine`'s own formula to
 	//! ~1e-12 over eta in [1.02, 1e4]).  It cancels catastrophically as
 	//! eta -> 1, so below eta = 1.02 a 32-node Gauss-Legendre rule in
-	//! mu = t^2 integrates the same Fresnel function directly (~1e-12
-	//! relative there).
+	//! mu = t^2 integrates the model's own Fresnel function directly
+	//! (~1e-12 relative there).
 	Scalar ExternalTransmittance( const Scalar eta )
 	{
 		if( eta < 1.02 ) {
@@ -70,7 +70,7 @@ namespace
 				const Scalar t  = kGL32X[i];
 				const Scalar mu = t * t;
 				// d(mu) = 2t dt, weight 2 mu (1 - F).
-				s += kGL32W[i] * 2.0 * mu * ( 1.0 - Optics::CalculateDielectricReflectanceCosine( mu, 1.0, eta ) ) * 2.0 * t;
+				s += kGL32W[i] * 2.0 * mu * ( 1.0 - PolishedBRDF::Fresnel( mu, 1.0, eta ) ) * 2.0 * t;
 			}
 			return s;
 		}
@@ -131,9 +131,35 @@ void PolishedBRDF::SetTransmittance( const IScalarPainter& v ) { v.addref(); saf
 void PolishedBRDF::SetIOR( const IScalarPainter& v )           { v.addref(); safe_release( pNt ); pNt = &v; }
 void PolishedBRDF::SetScattering( const IScalarPainter& v )    { v.addref(); safe_release( pScat ); pScat = &v; }
 
+// The unpolarized dielectric Fresnel reflectance in the classic g-form
+// (Cook & Torrance 1982; Walter et al. 2007 eq. 22): with the relative
+// index eta = coat / outer and g^2 = eta^2 - 1 + mu^2,
+//   F = (g-mu)^2 / (2 (g+mu)^2) * ( 1 + ((mu(g+mu) - 1)/(mu(g-mu) + 1))^2 ),
+// and total internal reflection (g^2 <= 0) reflects everything.  The same
+// function as `Optics::CalculateDielectricReflectanceCosine` (worst
+// absolute difference 1.1e-12, at matched-index grazing, over the grid in
+// tests/PolishedBRDFConsistencyTest.cpp gate 0a) at a fraction of its
+// cost, which matters because PolishedSPF::Pdf's replay evaluates it at
+// every quadrature node.  Matched indices return exactly 0, invalid input
+// 1 (an opaque interface), both as Optics does.
 Scalar PolishedBRDF::Fresnel( const Scalar mu, const Scalar outer, const Scalar coat )
 {
-	return Optics::CalculateDielectricReflectanceCosine( mu, outer, coat );
+	if( !( outer > 0 ) || !( coat > 0 ) || !IsFiniteDouble( outer ) || !IsFiniteDouble( coat ) ) {
+		return 1;
+	}
+	if( outer == coat ) {
+		return 0;
+	}
+	const Scalar c   = r_min( Scalar(1), fabs( mu ) );
+	const Scalar eta = coat / outer;
+	const Scalar g2  = eta * eta - 1.0 + c * c;
+	if( !( g2 > 0 ) ) {
+		return 1;
+	}
+	const Scalar g = sqrt( g2 );
+	const Scalar a = ( g - c ) / ( g + c );
+	const Scalar b = ( c * ( g + c ) - 1.0 ) / ( c * ( g - c ) + 1.0 );
+	return r_min( Scalar(1), 0.5 * a * a * ( 1.0 + b * b ) );
 }
 
 Scalar PolishedBRDF::HemisphericalTransmittance( const Scalar outer, const Scalar coat )
@@ -144,14 +170,23 @@ Scalar PolishedBRDF::HemisphericalTransmittance( const Scalar outer, const Scala
 	if( outer == coat ) {
 		return 1;
 	}
-	const Scalar eta = coat / outer;
-	if( eta > 1 ) {
-		return ExternalTransmittance( eta );
+	// One-entry per-thread memo: a scene's polished coats rarely change
+	// index from one shading point to the next, and the closed form costs
+	// two logarithms.  Keyed on the exact inputs, so a hit is bit-for-bit
+	// the recomputed value.
+	static thread_local Scalar memoOuter = -1, memoCoat = -1, memoT = 0;
+	if( outer == memoOuter && coat == memoCoat ) {
+		return memoT;
 	}
+	const Scalar eta = coat / outer;
 	// Internal interface (eta < 1): the reciprocity / etendue identity
 	// T_int(eta) = eta^2 T_ext(1/eta) (verified numerically to ~1e-8
 	// at eta = 1/1.5, 1/1.33, 0.9 against direct quadrature with TIR).
-	return eta * eta * ExternalTransmittance( 1.0 / eta );
+	const Scalar T = ( eta > 1 ) ? ExternalTransmittance( eta ) : eta * eta * ExternalTransmittance( 1.0 / eta );
+	memoOuter = outer;
+	memoCoat  = coat;
+	memoT     = T;
+	return T;
 }
 
 void PolishedBRDF::Resolve( const RayIntersectionGeometric& ri, const Scalar outerIn, const Scalar nm, PolishedLobes& L ) const

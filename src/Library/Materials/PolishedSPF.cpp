@@ -65,8 +65,8 @@ namespace
 	//! angle) times kCoatQuadP midpoints over the azimuth ARC that stays
 	//! above the shading horizon at that polar angle (the cut-away part is
 	//! booked analytically as a rejected draw).
-	const int kCoatQuadA = 8;
-	const int kCoatQuadP = 8;
+	const int kCoatQuadA = 6;
+	const int kCoatQuadP = 4;
 
 	//! `ScatteredRayContainer::RandomlySelect`'s probability of returning
 	//! a ray of weight @a w from a container of @a count rays whose
@@ -105,6 +105,222 @@ namespace
 		} else {
 			r.kray = RISEPel( k[0], k[1], k[2] );
 		}
+	}
+
+	//! The per-shading-point half of PdfImpl's two quadratures: every
+	//! node's selection WEIGHT (and acceptance) for the OTHER lobe's own
+	//! draw.  None of it depends on the queried direction -- only the
+	//! final select-probability sums do -- so it is built once per
+	//! shading point and memoized (below).
+	struct PolishedReplay
+	{
+		// Substrate draw, at kSubQuadN exit cosines: GL weight, accepted
+		// azimuth fraction, and the substrate ray's selection weight.
+		Scalar subW[kSubQuadN];
+		Scalar subA[kSubQuadN];
+		Scalar subWS[kSubQuadN];
+		// Glossy coat draw, at nA = nGlossy * kCoatQuadA polar nodes: the
+		// kept (above-horizon) azimuth fraction and, per kept-arc node,
+		// the coat ray's selection weight (< 0: rejected by the
+		// geometric horizon).
+		int    nA;
+		Scalar keep[3 * kCoatQuadA];
+		Scalar wG[3 * kCoatQuadA][2 * kCoatQuadP];
+	};
+
+	void BuildReplay( const PolishedLobes& L, PolishedReplay& R )
+	{
+		// Substrate: exact acceptance fraction of its azimuth against the
+		// geometric horizon at each exit cosine (1 when geomN == n).
+		const Scalar cosG = r_min( Scalar(1), r_max( Scalar(-1), Vector3Ops::Dot( L.n, L.geomN ) ) );
+		const Scalar sinG = sqrt( r_max( Scalar(0), Scalar(1) - cosG * cosG ) );
+		Scalar ks[3];
+		for( int j = 0; j < kSubQuadN; ++j ) {
+			const Scalar mu = sqrt( kGL8X[j] );
+			Scalar a = 1;
+			if( sinG > Scalar(1e-9) ) {
+				const Scalar sn = sqrt( r_max( Scalar(0), Scalar(1) - mu * mu ) );
+				if( sn > 0 ) {
+					const Scalar x = -( mu * cosG ) / ( sn * sinG );
+					a = acos( r_min( Scalar(1), r_max( Scalar(-1), x ) ) ) * INV_PI;
+				} else {
+					a = ( mu * cosG > 0 ) ? Scalar(1) : Scalar(0);
+				}
+			}
+			// Substrate weight at exit cosine mu (it depends on mu alone).
+			for( int c = 0; c < 3; ++c ) ks[c] = 0;
+			for( int c = 0; c < L.nch; ++c ) {
+				const Scalar Fo = PolishedBRDF::Fresnel( mu, L.outer, L.eta[c] );
+				ks[c] = ( L.Tavg[c] > 0 ) ? L.rd[c] * ( 1.0 - L.Fi[c] ) * ( 1.0 - Fo ) / L.Tavg[c] : Scalar(0);
+			}
+			R.subW[j]  = kGL8W[j];
+			R.subA[j]  = a;
+			R.subWS[j] = PolishedBRDF::Reduce( L, ks );
+		}
+
+		// Glossy coat.  Replay frame about the mirror direction:
+		// n = ci rv + sRv e1, so a lobe direction at (alpha, psi) has exit
+		// cosine mu = ci cos(alpha) + sRv sin(alpha) cos(psi), and its
+		// geometric-horizon dot is gz cos(alpha) + sin(alpha)(gx cos(psi)
+		// + gy sin(psi)) -- no per-node vector construction.
+		R.nA = 0;
+		if( L.nGlossy == 0 ) {
+			return;
+		}
+		const Scalar sRv = sqrt( r_max( Scalar(0), Scalar(1) - L.ci * L.ci ) );
+		Vector3 e1;
+		if( sRv > Scalar(1e-9) ) {
+			e1 = ( L.n - L.rv * L.ci ) * ( Scalar(1) / sRv );
+		} else {
+			OrthonormalBasis3D fr;
+			fr.CreateFromW( L.rv );
+			e1 = fr.u();
+		}
+		const Vector3 e2 = Vector3Ops::Cross( L.rv, e1 );
+		const Scalar gz = Vector3Ops::Dot( L.geomN, L.rv );
+		const Scalar gx = Vector3Ops::Dot( L.geomN, e1 );
+		const Scalar gy = Vector3Ops::Dot( L.geomN, e2 );
+		Scalar kc[3];
+		for( int i = 0; i < L.nGlossy; ++i ) {
+			const int comp = GlossyComponent( L, i );
+			for( int a = 0; a < kCoatQuadA; ++a ) {
+				const int ia = R.nA++;
+				const Scalar cosA = PolishedBRDF::ComponentCosAlpha( L, comp, ( a + 0.5 ) / kCoatQuadA );
+				const Scalar sinA = sqrt( r_max( Scalar(0), Scalar(1) - cosA * cosA ) );
+				// The shading-horizon cut mu > 0 is an ARC in psi at fixed
+				// alpha: cos(psi) > -ci cos(alpha) / (sRv sin(alpha)).  Only
+				// the kept arc is integrated (its own midpoints); the cut-away
+				// fraction is booked as a rejected coat draw, so the rule never
+				// straddles the discontinuity (the dominant error of a plain
+				// azimuth grid at grazing).
+				const Scalar rr = sRv * sinA;
+				Scalar psi0 = PI;
+				if( rr > Scalar(1e-12) ) {
+					const Scalar x = -( L.ci * cosA ) / rr;
+					psi0 = ( x <= -1 ) ? PI : ( ( x >= 1 ) ? Scalar(0) : acos( x ) );
+				} else if( !( L.ci * cosA > 0 ) ) {
+					psi0 = 0;
+				}
+				R.keep[ia] = psi0 * INV_PI;
+				if( !( R.keep[ia] > 0 ) ) {
+					continue;
+				}
+				// Half-arc midpoints, each taken at +psi and -psi: the exit
+				// cosine (hence a single component's weight) is even in psi
+				// and only the geometric-horizon test sees the sign, so this
+				// is a 2*kCoatQuadP-node rule for kCoatQuadP weight
+				// evaluations.  cos/sin by recurrence.
+				const Scalar step = psi0 / Scalar( kCoatQuadP );
+				const Scalar cStep = cos( step ), sStep = sin( step );
+				Scalar cp = cos( 0.5 * step ), sp = sin( 0.5 * step );
+				for( int p = 0; p < kCoatQuadP; ++p ) {
+					const Scalar mu = L.ci * cosA + rr * cp;
+					const Scalar gEven = gz * cosA + sinA * gx * cp;
+					const Scalar gOdd  = sinA * gy * sp;
+					Scalar wK1 = -1;
+					for( int sgn = 0; sgn < 2; ++sgn ) {
+						const Scalar gdot = sgn ? ( gEven - gOdd ) : ( gEven + gOdd );
+						Scalar w = -1;
+						if( mu > 0 && gdot > 0 ) {
+							if( L.K == 1 ) {
+								if( wK1 < 0 ) {
+									PolishedBRDF::CoatKrayAtExitCosine( L, mu, kc );
+									wK1 = PolishedBRDF::Reduce( L, kc );
+								}
+								w = wK1;
+							} else {
+								const Vector3 C = Vector3Ops::Normalize(
+									L.rv * cosA + e1 * ( sinA * cp ) + e2 * ( sinA * ( sgn ? -sp : sp ) ) );
+								PolishedBRDF::CoatKray( L, C, kc );
+								w = PolishedBRDF::Reduce( L, kc );
+							}
+						}
+						R.wG[ia][2 * p + sgn] = w;
+					}
+					const Scalar cn = cp * cStep - sp * sStep;
+					sp = sp * cStep + cp * sStep;
+					cp = cn;
+				}
+			}
+		}
+	}
+
+	//! One-entry-per-pipe, per-thread memo of BuildReplay.  The key is
+	//! every PolishedLobes field BuildReplay reads, compared EXACTLY, so a
+	//! hit returns bit-for-bit what a rebuild would -- a pure cache, never
+	//! an approximation.  PT evaluates Pdf twice per vertex at the same
+	//! shading point (the NEE MIS weight and the escape-side partner), and
+	//! BDPT's forward density and every connection at a vertex share it.
+	const int kReplayKeyN = 35;
+
+	int ReplayKey( const PolishedLobes& L, Scalar key[kReplayKeyN] )
+	{
+		int n = 0;
+		key[n++] = L.ci;
+		key[n++] = L.n.x;     key[n++] = L.n.y;     key[n++] = L.n.z;
+		key[n++] = L.rv.x;    key[n++] = L.rv.y;    key[n++] = L.rv.z;
+		key[n++] = L.geomN.x; key[n++] = L.geomN.y; key[n++] = L.geomN.z;
+		key[n++] = L.outer;
+		key[n++] = Scalar( L.nch );
+		key[n++] = Scalar( L.K );
+		key[n++] = L.hg ? Scalar(1) : Scalar(0);
+		for( int c = 0; c < 3; ++c ) {
+			const bool on = c < L.nch;
+			key[n++] = on ? L.tau[c]  : Scalar(0);
+			key[n++] = on ? L.Fi[c]   : Scalar(0);
+			key[n++] = on ? L.eta[c]  : Scalar(0);
+			key[n++] = on ? L.rd[c]   : Scalar(0);
+			key[n++] = on ? L.Tavg[c] : Scalar(0);
+		}
+		for( int k = 0; k < 3; ++k ) {
+			const bool on = k < L.K;
+			key[n++] = on ? L.scat[k] : Scalar(0);
+			key[n++] = ( on && L.delta[k] ) ? Scalar(1) : Scalar(0);
+		}
+		return n;
+	}
+
+	//! Four entries per pipe, round-robin: a BDPT vertex alternates
+	//! between its forward record and the reversed one each connection's
+	//! reverse density evaluates, and a one-entry memo would thrash on
+	//! exactly that pattern.
+	const int kReplayMemoWays = 4;
+
+	struct ReplayMemo
+	{
+		bool           valid;
+		Scalar         key[kReplayKeyN];
+		PolishedReplay replay;
+	};
+
+	struct ReplayMemoSet
+	{
+		ReplayMemo way[kReplayMemoWays];
+		int        next;
+	};
+
+	const PolishedReplay& GetReplay( const PolishedLobes& L )
+	{
+		static thread_local ReplayMemoSet memo[2] = {};
+		ReplayMemoSet& set = memo[ L.nch == 1 ? 1 : 0 ];
+		Scalar key[kReplayKeyN];
+		const int n = ReplayKey( L, key );
+		for( int w = 0; w < kReplayMemoWays; ++w ) {
+			ReplayMemo& m = set.way[w];
+			bool hit = m.valid;
+			for( int i = 0; hit && i < n; ++i ) {
+				if( !( key[i] == m.key[i] ) ) hit = false;
+			}
+			if( hit ) {
+				return m.replay;
+			}
+		}
+		ReplayMemo& m = set.way[set.next];
+		set.next = ( set.next + 1 ) % kReplayMemoWays;
+		BuildReplay( L, m.replay );
+		for( int i = 0; i < n; ++i ) m.key[i] = key[i];
+		m.valid = true;
+		return m.replay;
 	}
 }
 
@@ -271,6 +487,8 @@ Scalar PolishedSPF::PdfImpl(
 
 	Scalar result = 0;
 
+	const PolishedReplay& R = GetReplay( L );
+
 	// ---- glossy coat generated wo: expectation over the substrate draw.
 	if( pG > 0 )
 	{
@@ -278,34 +496,11 @@ Scalar PolishedSPF::PdfImpl(
 		const Scalar wG = PolishedBRDF::Reduce( L, k );
 		const Scalar selNoSub = SelectProbability( wG, nD + 1, wDelta + wG );
 		Scalar q = selNoSub;
-		if( L.emitDiffuse )
-		{
-			// Exact acceptance fraction of the substrate's azimuth against the
-			// geometric horizon at each exit cosine (1 when geomN == n).
-			const Scalar cosG = r_min( Scalar(1), r_max( Scalar(-1), Vector3Ops::Dot( L.n, L.geomN ) ) );
-			const Scalar sinG = sqrt( r_max( Scalar(0), Scalar(1) - cosG * cosG ) );
+		if( L.emitDiffuse ) {
 			q = 0;
-			Scalar ks[3];
 			for( int j = 0; j < kSubQuadN; ++j ) {
-				const Scalar mu = sqrt( kGL8X[j] );
-				Scalar a = 1;
-				if( sinG > Scalar(1e-9) ) {
-					const Scalar s = sqrt( r_max( Scalar(0), Scalar(1) - mu * mu ) );
-					if( s > 0 ) {
-						const Scalar x = -( mu * cosG ) / ( s * sinG );
-						a = acos( r_min( Scalar(1), r_max( Scalar(-1), x ) ) ) * INV_PI;
-					} else {
-						a = ( mu * cosG > 0 ) ? Scalar(1) : Scalar(0);
-					}
-				}
-				// Substrate weight at exit cosine mu (it depends on mu alone).
-				for( int c = 0; c < L.nch; ++c ) {
-					const Scalar Fo = PolishedBRDF::Fresnel( mu, L.outer, L.eta[c] );
-					ks[c] = ( L.Tavg[c] > 0 ) ? L.rd[c] * ( 1.0 - L.Fi[c] ) * ( 1.0 - Fo ) / L.Tavg[c] : Scalar(0);
-				}
-				for( int c = L.nch; c < 3; ++c ) ks[c] = 0;
-				const Scalar wS = PolishedBRDF::Reduce( L, ks );
-				q += kGL8W[j] * ( a * SelectProbability( wG, nD + 2, wDelta + wG + wS ) + ( 1 - a ) * selNoSub );
+				q += R.subW[j] * ( R.subA[j] * SelectProbability( wG, nD + 2, wDelta + wG + R.subWS[j] )
+				                 + ( 1 - R.subA[j] ) * selNoSub );
 			}
 		}
 		result += pG * q;
@@ -318,92 +513,20 @@ Scalar PolishedSPF::PdfImpl(
 		const Scalar wS = PolishedBRDF::Reduce( L, k );
 		const Scalar selNoCoat = SelectProbability( wS, nD + 1, wDelta + wS );
 		Scalar q = selNoCoat;
-		if( L.nGlossy > 0 )
-		{
-			// Replay frame about the mirror direction: n = ci rv + sRv e1,
-			// so a lobe direction at (alpha, psi) has exit cosine
-			// mu = ci cos(alpha) + sRv sin(alpha) cos(psi), and its
-			// geometric-horizon dot is gz cos(alpha) + sin(alpha)(gx cos(psi)
-			// + gy sin(psi)) -- no per-node vector construction.
-			const Scalar sRv = sqrt( r_max( Scalar(0), Scalar(1) - L.ci * L.ci ) );
-			Vector3 e1;
-			if( sRv > Scalar(1e-9) ) {
-				e1 = ( L.n - L.rv * L.ci ) * ( Scalar(1) / sRv );
-			} else {
-				OrthonormalBasis3D fr;
-				fr.CreateFromW( L.rv );
-				e1 = fr.u();
-			}
-			const Vector3 e2 = Vector3Ops::Cross( L.rv, e1 );
-			const Scalar gz = Vector3Ops::Dot( L.geomN, L.rv );
-			const Scalar gx = Vector3Ops::Dot( L.geomN, e1 );
-			const Scalar gy = Vector3Ops::Dot( L.geomN, e2 );
+		if( R.nA > 0 ) {
 			Scalar sum = 0;
-			Scalar kc[3];
-			for( int i = 0; i < L.nGlossy; ++i ) {
-				const int comp = GlossyComponent( L, i );
-				for( int a = 0; a < kCoatQuadA; ++a ) {
-					const Scalar cosA = PolishedBRDF::ComponentCosAlpha( L, comp, ( a + 0.5 ) / kCoatQuadA );
-					const Scalar sinA = sqrt( r_max( Scalar(0), Scalar(1) - cosA * cosA ) );
-					// The shading-horizon cut mu > 0 is an ARC in psi at fixed
-					// alpha: cos(psi) > -ci cos(alpha) / (sRv sin(alpha)).
-					// Integrate the kept arc with its own midpoints and book the
-					// cut-away fraction as a rejected coat draw, so the
-					// quadrature never straddles the discontinuity (the
-					// dominant error of a plain azimuth grid at grazing).
-					const Scalar rr = sRv * sinA;
-					Scalar psi0 = PI;
-					if( rr > Scalar(1e-12) ) {
-						const Scalar x = -( L.ci * cosA ) / rr;
-						psi0 = ( x <= -1 ) ? PI : ( ( x >= 1 ) ? Scalar(0) : acos( x ) );
-					} else if( !( L.ci * cosA > 0 ) ) {
-						psi0 = 0;
+			for( int ia = 0; ia < R.nA; ++ia ) {
+				Scalar arc = 0;
+				if( R.keep[ia] > 0 ) {
+					for( int n = 0; n < 2 * kCoatQuadP; ++n ) {
+						const Scalar w = R.wG[ia][n];
+						arc += ( w >= 0 ) ? SelectProbability( wS, nD + 2, wDelta + w + wS ) : selNoCoat;
 					}
-					const Scalar keep = psi0 * INV_PI;
-					Scalar arc = 0;
-					if( keep > 0 ) {
-						// Half-arc midpoints, each evaluated at +psi and -psi: the
-						// exit cosine (hence the weight, for a single component) is
-						// even in psi, and only the geometric-horizon test sees the
-						// sign, so this is a 2*kCoatQuadP-node rule for the cost of
-						// kCoatQuadP weight evaluations.  cos/sin by recurrence.
-						const Scalar step = psi0 / Scalar( kCoatQuadP );
-						const Scalar cStep = cos( step ), sStep = sin( step );
-						Scalar cp = cos( 0.5 * step ), sp = sin( 0.5 * step );
-						for( int p = 0; p < kCoatQuadP; ++p ) {
-							const Scalar mu = L.ci * cosA + rr * cp;
-							const Scalar gEven = gz * cosA + sinA * gx * cp;
-							const Scalar gOdd  = sinA * gy * sp;
-							Scalar selK1 = -1;		// K == 1: the weight depends on mu alone
-							for( int sgn = 0; sgn < 2; ++sgn ) {
-								const Scalar gdot = sgn ? ( gEven - gOdd ) : ( gEven + gOdd );
-								if( !( mu > 0 && gdot > 0 ) ) {
-									arc += selNoCoat;
-									continue;
-								}
-								if( L.K == 1 ) {
-									if( selK1 < 0 ) {
-										PolishedBRDF::CoatKrayAtExitCosine( L, mu, kc );
-										selK1 = SelectProbability( wS, nD + 2, wDelta + PolishedBRDF::Reduce( L, kc ) + wS );
-									}
-									arc += selK1;
-								} else {
-									const Vector3 C = Vector3Ops::Normalize(
-										L.rv * cosA + e1 * ( sinA * cp ) + e2 * ( sinA * ( sgn ? -sp : sp ) ) );
-									PolishedBRDF::CoatKray( L, C, kc );
-									arc += SelectProbability( wS, nD + 2, wDelta + PolishedBRDF::Reduce( L, kc ) + wS );
-								}
-							}
-							const Scalar cn = cp * cStep - sp * sStep;
-							sp = sp * cStep + cp * sStep;
-							cp = cn;
-						}
-						arc /= Scalar( 2 * kCoatQuadP );
-					}
-					sum += keep * arc + ( 1 - keep ) * selNoCoat;
+					arc /= Scalar( 2 * kCoatQuadP );
 				}
+				sum += R.keep[ia] * arc + ( 1 - R.keep[ia] ) * selNoCoat;
 			}
-			q = sum / Scalar( L.nGlossy * kCoatQuadA );
+			q = sum / Scalar( R.nA );
 		}
 		result += pS * q;
 	}

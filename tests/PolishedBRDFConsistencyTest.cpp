@@ -31,6 +31,13 @@
 //       histogram of the directions it returns (TVD against a floor).
 //    5. HWSS.  `EvaluateKrayNM` at the hero wavelength reproduces every
 //       emitted ray's `krayNM` exactly (the companion ladders' premise).
+//    0. The model's building blocks (post-fix API; the gate-1..5 rows are
+//       the red-proof and compile against the pre-fix tree): the model's
+//       g-form Fresnel equals `Optics::CalculateDielectricReflectanceCosine`,
+//       the closed-form hemispherical transmittance equals a brute-force
+//       quadrature of it (internal and external interfaces, eta -> 1), and
+//       `PolishedSPF::Pdf`'s per-thread replay memo returns bit-identical
+//       values regardless of call order.
 //
 //  Pass `--skip-hg` to skip the Henyey-Greenstein rows: the pre-fix
 //  HG coat sampler redrew `acos` from the SAME random number inside a
@@ -67,6 +74,7 @@
 #include "../src/Library/Painters/UniformColorPainter.h"
 #include "../src/Library/Painters/UniformScalarPainter.h"
 #include "../src/Library/Materials/PolishedMaterial.h"
+#include "../src/Library/Materials/PolishedBRDF.h"
 
 #include "TestStubObject.h"
 
@@ -403,6 +411,68 @@ static void RunReciprocity( const Config& cfg, const Fixture& fx )
 	safe_release( rd );
 }
 
+// ====================================================================
+// Gate 0: building blocks.
+// ====================================================================
+static void RunBuildingBlocks()
+{
+	std::cout << "-- gate 0 (building blocks) --" << std::endl;
+	// (a) g-form Fresnel == Optics' unpolarized Fresnel.
+	double worstF = 0;
+	const double etas[] = { 0.5, 1.0 / 1.5, 0.9, 0.999, 1.0, 1.001, 1.05, 1.33, 1.5, 2.4, 10.0, 1e4 };
+	for( double eta : etas ) {
+		for( int i = 0; i <= 2000; ++i ) {
+			const double mu = i / 2000.0;
+			const double a = PolishedBRDF::Fresnel( mu, 1.0, eta );
+			const double b = Optics::CalculateDielectricReflectanceCosine( mu, 1.0, eta );
+			worstF = std::max( worstF, std::fabs( a - b ) );
+		}
+	}
+	std::cout << "  Fresnel g-form vs Optics: worst |diff| " << std::scientific << worstF << std::defaultfloat << std::endl;
+	Check( worstF <= 1e-10, "gate 0a: PolishedBRDF::Fresnel equals Optics::CalculateDielectricReflectanceCosine" );
+
+	// (b) T_avg closed form (+ eta<1 identity, + near-1 quadrature) vs a
+	//     4e6-point midpoint rule of 2 mu (1 - F(mu)).
+	double worstT = 0;
+	for( double eta : etas ) {
+		const int n = 4000000;
+		double q = 0;
+		for( int i = 0; i < n; ++i ) {
+			const double mu = ( i + 0.5 ) / n;
+			q += 2.0 * mu * ( 1.0 - Optics::CalculateDielectricReflectanceCosine( mu, 1.0, eta ) );
+		}
+		q /= n;
+		const double t = PolishedBRDF::HemisphericalTransmittance( 1.0, eta );
+		worstT = std::max( worstT, std::fabs( t - q ) );
+	}
+	std::cout << "  T_avg closed form vs quadrature: worst |diff| " << std::scientific << worstT << std::defaultfloat << std::endl;
+	Check( worstT <= 1e-7, "gate 0b: hemispherical transmittance matches brute-force quadrature" );
+
+	// (c) Pdf memo: interleaved queries at two shading points give the same
+	//     bits as each point queried alone after a cold start.
+	UniformColorPainter* rd = new UniformColorPainter( RISEPel( 0.4, 0.4, 0.4 ) );  rd->addref();
+	UniformScalarPainter* tau = new UniformScalarPainter( 0.9 );  tau->addref();
+	UniformScalarPainter* nt  = new UniformScalarPainter( 1.5 );  nt->addref();
+	UniformScalarPainter* sc  = new UniformScalarPainter( 20.0 ); sc->addref();
+	PolishedMaterial* mat = new PolishedMaterial( *rd, *tau, *nt, *sc, false );  mat->addref();
+	const ISPF& spf = *mat->GetSPF();
+	const IORStack stack = MakeTestIORStack( g_stub );
+	std::vector<RayIntersectionGeometric> ris;
+	for( int k = 0; k < 6; ++k ) ris.push_back( MakeRI( Fixture{ 10.0 + 13.0 * k, 0.0, false } ) );
+	const Vector3 wo = Vector3Ops::Normalize( Vector3( -0.3, 0.2, 0.9 ) );
+	double ref[6];
+	for( int k = 0; k < 6; ++k ) ref[k] = spf.Pdf( ris[k], wo, stack );
+	bool same = true;
+	for( int rep = 0; rep < 50; ++rep ) {
+		for( int k = 0; k < 6; ++k ) {
+			const int j = ( k * 5 + rep ) % 6;
+			if( spf.Pdf( ris[j], wo, stack ) != ref[j] ) same = false;
+		}
+	}
+	Check( same, "gate 0c: Pdf replay memo is order-independent (bit-identical)" );
+	safe_release( mat ); safe_release( sc ); safe_release( nt ); safe_release( tau ); safe_release( rd );
+}
+
 int main( int argc, char** argv )
 {
 	bool skipHG = false;
@@ -414,6 +484,7 @@ int main( int argc, char** argv )
 	g_stub->addref();
 
 	std::cout << "PolishedBRDFConsistencyTest (DL-285)" << std::endl;
+	RunBuildingBlocks();
 
 	std::vector<Config> cfgs = {
 		{ "topoL N20 ior1.5 tau.9 rd.4",      RISEPel( 0.4, 0.4, 0.4 ), 0.9, 1.5,  20.0,  false },
