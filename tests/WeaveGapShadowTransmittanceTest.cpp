@@ -300,6 +300,19 @@ static std::string RastVCM( unsigned int spp )
 	return ss.str();
 }
 
+//! RastBDPT with the DEFAULT reconstruction filter (gaussian, 2-pixel
+//! support): the filtered splat path, where DL-294 showed up not as a
+//! lost mean but as a half-pixel MISREGISTRATION of the splat layer
+//! (edge column 0 / row 0 at ~0.49 of the interior, the opposite
+//! edges at ~1.49).
+static std::string RastBDPTDefaultFilter( unsigned int spp )
+{
+	std::ostringstream ss;
+	ss << "bdpt_pel_rasterizer\n{\n\tsamples " << spp * SppScale()
+	   << "\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\toidn_denoise FALSE\n}\n\n" << kOutputChunk;
+	return ss.str();
+}
+
 //! RastVCM with merging OFF (vertex connection only): separates the
 //! splat from VCM's merge-radius blur in the DL-294 measurement.
 static std::string RastVCMNoMerge( unsigned int spp )
@@ -992,6 +1005,7 @@ static void TestNarrowFovSplat()
 			{ "BDPT RGB",              RastBDPT( 1024 ),       0.01, 0.005, true },
 			{ "VCM RGB",               RastVCM( 1024 ),        0.02, 0.005, false },
 			{ "VCM RGB merging OFF",   RastVCMNoMerge( 1024 ), 0.01, 0.005, true },
+			{ "BDPT RGB gaussian filter", RastBDPTDefaultFilter( 1024 ), 0.01, 0.005, true },
 		};
 		for( const R& r : rows )
 		{
@@ -1010,8 +1024,10 @@ static void TestNarrowFovSplat()
 
 			// The fingerprint: at fov 2 the frame is lit edge to edge and
 			// the gap render IS the splat, so every edge row / column must
-			// read like the interior (pre-fix: column 0 and row 0 at
-			// 0.49 / 0.52).  Not at fov 1, where the per-pixel splat count
+			// read like the interior (pre-fix, box filter: column 0 and
+			// row 0 at 0.49 / 0.52; gaussian filter: 0.49 / 0.51 with
+			// the last column / row at 1.48 / 1.51 -- the filtered path
+			// renormalised the out-of-film strip onto them).  Not at fov 1, where the per-pixel splat count
 			// is low enough that a deterministic QMC pattern moves the
 			// edge means by up to 12 % in BOTH builds.
 			if( fov == 2.0 && r.edge ) {
