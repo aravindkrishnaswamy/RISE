@@ -8536,9 +8536,12 @@ bool ManifoldSolver::CheckChainVisibility(
     // Physical endpoint coverage belongs to the solved path, outside the
     // seed-proposal Bernoulli normalization. Projection is geometry-only;
     // exactly one alpha draw follows at the validated final surface point.
+    const bool sceneAlpha = caster.GetLightSampler() && caster.GetLightSampler()->SceneHasAlphaCoverage();
     for (size_t i=0;i<chain.size();++i) {
         const auto& v=chain[i];
-        if (!v.pMaterial || v.pMaterial->GetAlphaMode()==eAlphaOpaque) continue;
+        // Newton can move a seed across an inherited CSG material boundary.
+        // Probe all solved vertices in alpha scenes, even an opaque seed.
+        if (!sceneAlpha && (!v.pMaterial || v.pMaterial->GetAlphaMode()==eAlphaOpaque)) continue;
         const Vector3 n=Vector3Ops::Normalize(v.geomNormal);
         const Scalar eps=1e-4;
         const Ray probe(Point3Ops::mkPoint3(v.position,n*eps),-n);
@@ -8549,7 +8552,14 @@ bool ManifoldSolver::CheckChainVisibility(
         const Point3 prev=i?chain[i-1].position:shadingPoint;
         hit.geometric.ray=Ray(prev,Vector3Ops::Normalize(Vector3Ops::mkVector3(v.position,prev)));
         hit.geometric.range=Point3Ops::Distance(prev,v.position);
-        if (!v.pMaterial->AcceptAlpha(hit.geometric,sampler)) return false;
+        if (hit.pMaterial && hit.pMaterial->GetAlphaMode()!=eAlphaOpaque) {
+            RayIntersectionGeometric alphaRI(hit.geometric);
+            alphaRI.ptIntersection = v.position;
+            alphaRI.signals.pScene = caster.GetAttachedScene() ? caster.GetAttachedScene()->GetObjects() : nullptr;
+            alphaRI.signals.pSelf = v.pObject;
+            alphaRI.signals.ptWorld = v.position;
+            if (!hit.pMaterial->AcceptAlpha(alphaRI,sampler)) return false;
+        }
     }
 
 

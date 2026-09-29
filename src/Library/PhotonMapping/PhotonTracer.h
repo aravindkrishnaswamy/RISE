@@ -163,7 +163,7 @@ namespace RISE
                         LightSampler::ProbeEmitterSurface(object, pScene->GetObjects(), r.origin, normal, alphaSurface);
                         LightSampler::ApplyEmitterSurface(rig, alphaSurface);
                         IndependentSampler alphaSampler(random);
-                        if (!object->GetMaterial()->AcceptAlpha(rig, alphaSampler)) {
+                        if (!LightSampler::AcceptEmitterAlpha(object, pScene->GetObjects(), r.origin, rig, alphaSampler)) {
                             continue;
                         }
 						r.SetDir(pEmitter->getEmmittedPhotonDir( rig, dirRand ));

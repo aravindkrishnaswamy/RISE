@@ -657,6 +657,15 @@ namespace RISE
 				const EmitterSurfacePayload&	payload
 				);
 
+            //! Coverage-only context for sampled emitter endpoints. Known scene,
+            //! self and world position never depend on optional signal probes.
+            //! NEE can supply its receiver raster; emission has no camera pixel.
+            //! Leaves the existing emitted-radiance record unchanged.
+            static bool AcceptEmitterAlpha(
+                const IObject* luminary, const IObjectManager* objects,
+                const Point3& position, const RayIntersectionGeometric& context,
+                ISampler& sampler, const RasterizerState* raster = nullptr );
+
 			//! THE OBJECT-SPACE EMISSION POINT -- `Po` to the expression VM.
 			//!
 			//! UNGATED, RAY-FREE, and deliberately NOT part of the probe

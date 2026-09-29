@@ -61,6 +61,14 @@ public:mutable Result result;
 class SpatialAlpha:public IScalarPainter,public Reference {
 public:ScalarTriple GetValuesAt(const RayIntersectionGeometric& r)const override{return ScalarTriple(r.ptObjIntersec.z>0?.75:.25);}
 };
+class SceneAlpha:public IScalarPainter,public Reference {
+ const IObjectManager* scene;const IObject* object;
+public:SceneAlpha(const IObjectManager* s,const IObject* o):scene(s),object(o){}
+ ScalarTriple GetValuesAt(const RayIntersectionGeometric& r)const override {
+  return ScalarTriple(r.signals.pScene==scene && r.signals.pSelf==object &&
+   Point3Ops::Distance(r.signals.ptWorld,r.ptIntersection)<1e-8 && r.ptIntersection.x < -8 ? 1:0);
+ }
+};
 struct Fixture {
  Scene* scene=new Scene;ObjectManager* objects=new ObjectManager(false,false,4,8);LightManager* lights=new LightManager;
  UniformColorPainter* white=new UniformColorPainter(RISEPel(1));LambertianMaterial* base=new LambertianMaterial(*white);
@@ -78,6 +86,12 @@ class ProgressCounter:public IProgressCallback {public:double last=0;unsigned ca
 // RGB and narrow-band NM use the same source-mixture estimator. The latter's
 // expected spectral exitance is queried at its sole wavelength (550nm).
 template<class Tracer>void Cases(bool nm){
+ {Fixture f(true);auto* coverage=new SceneAlpha(f.objects,f.objects->GetItem("left"));auto* t=new Tracer;t->AttachScene(f.scene);
+  Check(t->TracePhotons(113,0,false,nullptr)&&t->result.calls==113,"opaque context photon control launches every attempt");
+  const double original=t->result.left;t->release();f.left->SetAlpha(coverage,eAlphaMask,.5);t=new Tracer;t->AttachScene(f.scene);
+  Check(t->TracePhotons(113,0,false,nullptr)&&t->result.calls==113&&std::fabs(t->result.left-original)<1e-9,"emission alpha receives actual scene self and world context",t->result.left,original);
+  t->release();coverage->release();}
+
  for(int mode=0;mode<4;++mode){Fixture f;auto* alpha=new UniformScalarPainter(.3);auto* spatial=new SpatialAlpha;
   if(mode==1)f.left->SetAlpha(alpha,eAlphaBlend,.5);if(mode==2)f.left->SetAlpha(spatial,eAlphaBlend,.5);
   const unsigned copies=mode==3?3:1;auto* t=new Tracer(copies,mode==2);t->AttachScene(f.scene);

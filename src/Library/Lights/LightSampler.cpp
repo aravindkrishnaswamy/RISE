@@ -1055,6 +1055,22 @@ void LightSampler::ApplyEmitterSurface(
 	// NOT `ptObjIntersec`: the call sites set it themselves, ungated.
 }
 
+bool LightSampler::AcceptEmitterAlpha(
+    const IObject* luminary, const IObjectManager* objects,
+    const Point3& position, const RayIntersectionGeometric& context,
+    ISampler& sampler, const RasterizerState* raster )
+{
+    const IMaterial* material = luminary ? luminary->GetMaterial() : nullptr;
+    if( !material || material->GetAlphaMode() == eAlphaOpaque ) return true;
+    RayIntersectionGeometric alphaRI(context);
+    alphaRI.ptIntersection = position;
+    alphaRI.signals.pScene = objects;
+    alphaRI.signals.pSelf = luminary;
+    alphaRI.signals.ptWorld = position;
+    if( raster ) alphaRI.rast = *raster;
+    return material->AcceptAlpha(alphaRI, sampler);
+}
+
 LightSampler::LightSampler() :
   pPreparedScene( 0 ),
   pPreparedLuminaries( 0 ),
@@ -1788,7 +1804,7 @@ bool LightSampler::SampleLight(
 		ApplyEmitterSurface( rig, sample.surface );
 		rig.ptObjIntersec = sample.ptObjIntersec;
 
-		if (!lumEntry.pLum->GetMaterial()->AcceptAlpha(rig, sampler)) return false;
+		if (!AcceptEmitterAlpha(lumEntry.pLum, scene.GetObjects(), sample.position, rig, sampler)) return false;
 		sample.Le = pEmitter->emittedRadiance( rig, sample.direction, sample.normal );
 	}
 
@@ -2780,7 +2796,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
 					lumri.ptObjIntersec = EmitterObjectPoint(
 						lumEntry.pLum, ptOnLum, lumri.ptObjIntersec );
 
-					const RISEPel Le = lumEntry.pLum->GetMaterial()->AcceptAlpha(lumri, sampler)
+					const RISEPel Le = AcceptEmitterAlpha(lumEntry.pLum, pPreparedScene ? pPreparedScene->GetObjects() : nullptr, ptOnLum, lumri, sampler, &ri.rast)
                         ? pEmitter->emittedRadiance( lumri, -vToLight, lumNormal ) : RISEPel(0,0,0);
 
 					const Scalar geom = area * cosLight / (dist * dist);
@@ -3489,7 +3505,7 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 		lumri.ptObjIntersec = EmitterObjectPoint(
 			lumEntry.pLum, ptOnLum, lumri.ptObjIntersec );
 
-		const Scalar Le = lumEntry.pLum->GetMaterial()->AcceptAlpha(lumri, sampler)
+		const Scalar Le = AcceptEmitterAlpha(lumEntry.pLum, pPreparedScene ? pPreparedScene->GetObjects() : nullptr, ptOnLum, lumri, sampler, &ri.rast)
             ? pEmitter->emittedRadianceNM( lumri, -vToLight, lumNormal, nm ) : 0;
 
 		const Scalar geom = area * cosLight / (dist * dist);
