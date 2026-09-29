@@ -1010,8 +1010,14 @@ static std::string PerfectRefractorSheet( const char* ior )
 // Both carry a BSDF, so their delta lobe goes through PART 3, and the
 // SSS one makes the HWSS body hand off to IntegrateFromHitNM.
 //////////////////////////////////////////////////////////////////////
-static std::string CasterChunk( bool polished )
+//! @a kind: 0 smooth random-walk SSS, 1 polished, 2 a clear dielectric
+//! (BSDF-less: the SPF-only branch; only the dl295probe section uses it).
+static std::string CasterChunk( int kind )
 {
+	if( kind == 2 ) {
+		return "dielectric_material\n{\n\tname mat_caster\n\ttau 1.0\n\tior 1.5\n\tscattering 1000000\n}\n\n";
+	}
+	const bool polished = ( kind == 1 );
 	return polished
 		? BlackPainterChunk() + "polished_material\n{\n\tname mat_caster\n\treflectance pnt_black\n\ttau 1.0\n\tior 1.5\n\tscattering 1000000\n}\n\n"
 		: std::string( "randomwalk_sss_material\n{\n\tname mat_caster\n\tior 1.5\n\tabsorption 50 50 50\n\tscattering 0.01 0.01 0.01\n\tg 0.0\n\troughness 0\n}\n\n" );
@@ -1041,7 +1047,7 @@ static std::string CasterFloorScene( bool polished, bool sheet, bool slab )
 	std::ostringstream ss;
 	ss << "film\n{\n\twidth 16\n\theight 16\n}\n\n"
 	      "pinhole_camera\n{\n\tlocation 0 3 3\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 6.0\n}\n\n"
-	   << CasterChunk( polished )
+	   << CasterChunk( polished ? 1 : 0 )
 	   << ( polished
 			? "clippedplane_geometry\n{\n\tname geo_floor\n\tpta -3 0 -3\n\tptb -3 0 3\n\tptc 3 0 3\n\tptd 3 0 -3\n\tdoublesided FALSE\n}\n\n"
 			  "standard_object\n{\n\tname floor\n\tgeometry geo_floor\n\tmaterial mat_caster\n}\n\n"
@@ -1072,8 +1078,9 @@ static std::string CasterFloorScene( bool polished, bool sheet, bool slab )
 //! trace from the receiver stops at the weave, so SMS holds no estimate
 //! and the path must be counted.  @a sheet false: the same chain with no
 //! gap, which SMS DOES own (the must-stay-suppressed control).
-static std::string CasterCeilingScene( bool polished, bool sheet, bool slab )
+static std::string CasterCeilingScene( int kind, bool sheet, bool slab )
 {
+	const bool polished = ( kind == 1 );
 	std::ostringstream ss;
 	ss << "film\n{\n\twidth 16\n\theight 16\n}\n\n"
 	      "pinhole_camera\n{\n\tlocation 0 1 1.2\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 10.0\n}\n\n"
@@ -1081,7 +1088,7 @@ static std::string CasterCeilingScene( bool polished, bool sheet, bool slab )
 	      "lambertian_material\n{\n\tname mat_recv\n\treflectance pnt_recv\n}\n\n"
 	      "clippedplane_geometry\n{\n\tname geo_recv\n\tpta -1 0 1\n\tptb 1 0 1\n\tptc 1 0 -1\n\tptd -1 0 -1\n\tdoublesided TRUE\n}\n\n"
 	      "standard_object\n{\n\tname obj_recv\n\tgeometry geo_recv\n\tmaterial mat_recv\n}\n\n"
-	   << CasterChunk( polished )
+	   << CasterChunk( kind )
 	   << ( polished
 			? "clippedplane_geometry\n{\n\tname geo_ceil\n\tpta -4 3.5 -4\n\tptb 4 3.5 -4\n\tptc 4 3.5 4\n\tptd -4 3.5 4\n\tdoublesided FALSE\n}\n\n"
 			  "standard_object\n{\n\tname ceil\n\tgeometry geo_ceil\n\tmaterial mat_caster\n}\n\n"
@@ -1121,6 +1128,7 @@ static void ProbeReviewScenes()
 		{ "ceiling SSS no gap pel (control)", CasterCeilingScene( false, false, false ), false },
 		{ "ceiling polished no gap pel (control)", CasterCeilingScene( true, false, false ), false },
 		{ "ceiling SSS no gap hwss (control)", CasterCeilingScene( false, false, false ), true },
+		{ "ceiling dielectric no gap pel (control)", CasterCeilingScene( 2, false, false ), false },
 	};
 	for( const P& r : rows ) {
 		const unsigned int spp = 256;
