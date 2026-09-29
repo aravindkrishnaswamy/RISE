@@ -300,6 +300,17 @@ static std::string RastVCM( unsigned int spp )
 	return ss.str();
 }
 
+//! RastVCM with merging OFF (vertex connection only): separates the
+//! splat from VCM's merge-radius blur in the DL-294 measurement.
+static std::string RastVCMNoMerge( unsigned int spp )
+{
+	std::ostringstream ss;
+	ss << "vcm_pel_rasterizer\n{\n\tsamples " << spp * SppScale()
+	   << "\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tmerge_radius 0.0\n\tvc_enabled true\n\tvm_enabled false\n"
+	   << "\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n" << kOutputChunk;
+	return ss.str();
+}
+
 static std::string Assemble( const std::string& rasterizer, const std::string& body )
 {
 	// The standard_shader is ignored by the modern rasterizers (they drive
@@ -966,10 +977,21 @@ static void TestNarrowFovSplat()
 		Check( ptL0 > 0, "fovsweep: PT reference renders non-black" );
 		if( !( ptL0 > 0 ) ) continue;
 
-		struct R { const char* label; std::string rast; double tolGap; double tolL0; };
+		// Tolerances: BDPT and VCM-without-merging are the pure splat
+		// on the gap render; their post-fix residuals are QMC-pattern
+		// (seed-independent) and read <= 0.18 % across the sweep, so 1 %
+		// is a >5x margin while the pre-fix -6.05 % (fov 2) fails by 5x.
+		// Full VCM's gap render additionally carries its merge-radius
+		// blur of the spot's penumbra (-1.05 +/- 0.07 % at fov 3, n = 4;
+		// -0.02 % with merging off, so not the splat), hence 2 %.  Every L0
+		// (no-sheet) row is NEE-dominated and reads <= 0.10 %; pre-fix
+		// full VCM's L0 read -1.42 % at fov 2 (its balance-heuristic
+		// splat share times the 6 % loss), so 0.5 %.
+		struct R { const char* label; std::string rast; double tolGap; double tolL0; bool edge; };
 		const R rows[] = {
-			{ "BDPT RGB", RastBDPT( 1024 ), 0.015, 0.01 },
-			{ "VCM RGB",  RastVCM( 1024 ),  0.015, 0.01 },
+			{ "BDPT RGB",              RastBDPT( 1024 ),       0.01, 0.005, true },
+			{ "VCM RGB",               RastVCM( 1024 ),        0.02, 0.005, false },
+			{ "VCM RGB merging OFF",   RastVCMNoMerge( 1024 ), 0.01, 0.005, true },
 		};
 		for( const R& r : rows )
 		{
@@ -986,10 +1008,13 @@ static void TestNarrowFovSplat()
 			std::cout << "  " << buf << std::endl;
 			Check( std::fabs( Lg / ( kSweepGap * ptL0 ) - 1.0 ) <= r.tolGap, buf );
 
-			// The fingerprint: at fov <= 3 the frame is lit edge to edge
-			// and the gap render is (BDPT) or is mostly (VCM) the splat,
-			// so every edge row / column must read like the interior.
-			if( fov == 2.0 ) {
+			// The fingerprint: at fov 2 the frame is lit edge to edge and
+			// the gap render IS the splat, so every edge row / column must
+			// read like the interior (pre-fix: column 0 and row 0 at
+			// 0.49 / 0.52).  Not at fov 1, where the per-pixel splat count
+			// is low enough that a deterministic QMC pattern moves the
+			// edge means by up to 12 % in BOTH builds.
+			if( fov == 2.0 && r.edge ) {
 				const EdgeRatios e = EdgeFingerprint( px, 16, 16 );
 				std::snprintf( buf, sizeof(buf), "fovsweep fov %4.1f %s gap render edges / interior: col0 %.4f row0 %.4f colLast %.4f rowLast %.4f",
 					fov, r.label, e.col0, e.row0, e.colLast, e.rowLast );
@@ -1013,7 +1038,7 @@ static void MeasureNarrowFovSplat( unsigned int n )
 	for( int k = 0; k < kNumSweepFovs; k++ )
 	{
 		const double fov = kSweepFovs[k];
-		std::vector<double> pt, bL0, bG, vL0, vG, bc0, br0, vc0, vr0;
+		std::vector<double> pt, bL0, bG, vL0, vG, bc0, br0, vc0, vr0, vnG;
 		for( unsigned int i = 0; i < n; i++ ) {
 			pt.push_back( Render( Assemble( RastPT( 64 ), ReceiverScene( kSpot, false, 0.0, kWide, false, fov ) ), "m_pt" ) );
 			std::vector<double> px;
@@ -1023,6 +1048,7 @@ static void MeasureNarrowFovSplat( unsigned int n )
 			vL0.push_back( Render( Assemble( RastVCM( 1024 ), ReceiverScene( kSpot, false, 0.0, kWide, false, fov ) ), "m_vl0" ) );
 			vG.push_back( Render( Assemble( RastVCM( 1024 ), ReceiverScene( kSpot, true, kSweepGap, kWide, false, fov ) ), "m_vg", &px ) );
 			e = EdgeFingerprint( px, 16, 16 ); vc0.push_back( e.col0 ); vr0.push_back( e.row0 );
+			vnG.push_back( Render( Assemble( RastVCMNoMerge( 1024 ), ReceiverScene( kSpot, true, kSweepGap, kWide, false, fov ) ), "m_vng" ) );
 		}
 		double mp, sp; MeanSd( pt, mp, sp );
 		auto rel = [&]( const std::vector<double>& v, double scale ) {
@@ -1033,6 +1059,8 @@ static void MeasureNarrowFovSplat( unsigned int n )
 		MeanSd( bc0, e1, f1 ); MeanSd( br0, e2, f2 ); MeanSd( vc0, e3, f3 ); MeanSd( vr0, e4, f4 );
 		std::printf( "  dl294 fov %4.1f | PT L0 %.6f +/- %.6f | BDPT L0 %+.3f +/- %.3f %% gap %+.3f +/- %.3f %% | VCM L0 %+.3f +/- %.3f %% gap %+.3f +/- %.3f %%\n",
 			fov, mp, sp, m1, s1, m2, s2, m3, s3, m4, s4 );
+		double m5, s5; MeanSd( rel( vnG, kSweepGap ), m5, s5 );
+		std::printf( "  dl294 fov %4.1f | VCM merging OFF (vc only) gap %+.3f +/- %.3f %%\n", fov, m5, s5 );
 		std::printf( "  dl294 fov %4.1f | edges/interior: BDPT gap col0 %.4f +/- %.4f row0 %.4f +/- %.4f | VCM gap col0 %.4f +/- %.4f row0 %.4f +/- %.4f\n",
 			fov, e1, f1, e2, f2, e3, f3, e4, f4 );
 	}
