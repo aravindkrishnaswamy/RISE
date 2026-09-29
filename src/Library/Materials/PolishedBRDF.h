@@ -169,6 +169,10 @@ namespace RISE
 			static void SubstrateF( const PolishedLobes& L, const Vector3& wo, Scalar out[3] );
 			//! Per-channel kray of the glossy coat ray at wo: f_coat co / GlossyCoatDensity.
 			static void CoatKray( const PolishedLobes& L, const Vector3& wo, Scalar out[3] );
+			//! The glossy coat's kray at exit cosine @a co for a single-
+			//! component coat (K == 1), where the lobe density cancels:
+			//! tau min(F(ci), F(co)) 2 co / (ci + co).  Zero otherwise.
+			static void CoatKrayAtExitCosine( const PolishedLobes& L, Scalar co, Scalar out[3] );
 			//! Per-channel kray of the substrate ray at wo: f_sub co / (co / pi).
 			static void SubstrateKray( const PolishedLobes& L, const Vector3& wo, Scalar out[3] );
 			//! Per-channel kray of the delta coat ray: tau F(ci) on delta channels.

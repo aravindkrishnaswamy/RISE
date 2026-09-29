@@ -379,19 +379,7 @@ void PolishedBRDF::CoatKray( const PolishedLobes& L, const Vector3& wo, Scalar o
 		if( L.nGlossy == 0 || !Accepted( L, wo ) || !( Vector3Ops::Dot( wo, L.rv ) > 0 ) ) {
 			return;
 		}
-		const Scalar co = Vector3Ops::Dot( wo, L.n );
-		const Scalar geo = 2.0 * co / ( L.ci + co );
-		Scalar Fo0 = -1;
-		for( int c = 0; c < L.nch; ++c ) {
-			Scalar Fo;
-			if( L.etaShared ) {
-				if( Fo0 < 0 ) Fo0 = Fresnel( co, L.outer, L.eta[0] );
-				Fo = Fo0;
-			} else {
-				Fo = Fresnel( co, L.outer, L.eta[c] );
-			}
-			out[c] = L.tau[c] * r_min( L.Fi[c], Fo ) * geo;
-		}
+		CoatKrayAtExitCosine( L, Vector3Ops::Dot( wo, L.n ), out );
 		return;
 	}
 	CoatF( L, wo, out );
@@ -399,6 +387,26 @@ void PolishedBRDF::CoatKray( const PolishedLobes& L, const Vector3& wo, Scalar o
 	const Scalar co = Vector3Ops::Dot( wo, L.n );
 	for( int c = 0; c < 3; ++c ) {
 		out[c] = ( p > 0 && co > 0 ) ? out[c] * co / p : Scalar(0);
+	}
+}
+
+void PolishedBRDF::CoatKrayAtExitCosine( const PolishedLobes& L, const Scalar co, Scalar out[3] )
+{
+	out[0] = out[1] = out[2] = 0;
+	if( L.K != 1 || L.nGlossy == 0 || !( co > 0 ) ) {
+		return;
+	}
+	const Scalar geo = 2.0 * co / ( L.ci + co );
+	Scalar Fo0 = -1;
+	for( int c = 0; c < L.nch; ++c ) {
+		Scalar Fo;
+		if( L.etaShared ) {
+			if( Fo0 < 0 ) Fo0 = Fresnel( co, L.outer, L.eta[0] );
+			Fo = Fo0;
+		} else {
+			Fo = Fresnel( co, L.outer, L.eta[c] );
+		}
+		out[c] = L.tau[c] * r_min( L.Fi[c], Fo ) * geo;
 	}
 }
 
