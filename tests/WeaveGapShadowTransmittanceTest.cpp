@@ -117,6 +117,7 @@
 #include "../src/Library/Utilities/RandomNumbers.h"
 #include "../src/Library/Utilities/IndependentSampler.h"
 #include "../src/Library/Utilities/IORStack.h"
+#include "../src/Library/Utilities/SobolSampler.h"
 #include "../src/Library/Materials/FabricMaterial.h"
 #include "../src/Library/Materials/CoatedMaterial.h"
 #include "../src/Library/Materials/LambertianMaterial.h"
@@ -147,6 +148,13 @@ static void Check( bool condition, const std::string& testName )
 
 static unsigned int g_seedBase = 1000;
 static unsigned int g_renderIndex = 0;
+//! DL-295's section salts every render's Sobol' VALUE scramble with
+//! (seed base, render index) -- `SobolSamplerTestHooks::ValueSalt` -- so
+//! re-running the suite at another seed base is an INDEPENDENT
+//! randomized-QMC replicate (unsalted, every seed base reuses the
+//! identical Sobol' points and a seed sweep omits the QMC error).  Off
+//! (salt 0, the sampler's own points) everywhere else.
+static bool g_saltRenders = false;
 
 //! WEAVE_GAP_SPP_SCALE (env, measurement aid only): multiplies every
 //! gated row's sample count, to separate a structured (QMC) residual from
@@ -212,6 +220,8 @@ static double Render( const std::string& sceneText, const char* tag )
 	}
 
 	std::srand( g_seedBase + g_renderIndex );
+	SobolSamplerTestHooks::ValueSalt().store( g_saltRenders
+		? SobolSequence::HashCombine( 0xD295u + g_seedBase, g_renderIndex ) : 0u );
 	g_renderIndex++;
 
 	double result = -1.0;
@@ -358,7 +368,7 @@ static const double kLightY  = 4.0;
 static const double kRho     = 0.5;
 static const double kOmniPow = 16.0;	// I = color * power = 16 W/sr, E(0) = I / 4^2 = 1
 
-enum LightKind { kOmni, kSpot, kDirectional, kArea };
+enum LightKind { kOmni, kSpot, kDirectional, kArea, kAreaLarge };
 
 //! Camera framing.  kTight: fov 2 deg on a 0.2 x 0.2 patch -- the
 //! footprint over which the omni's 1/d^2 and cosine are constant to
@@ -438,6 +448,21 @@ static std::string ReceiverScene( LightKind light, bool withSheet, double gap, C
 		// `direction` is FROM the surface TO the light
 		// (docs/SCENE_CONVENTIONS.md).  Irradiance = color * power = 1.
 		ss << "directional_light\n{\n\tname lgt\n\tdirection 0 1 0\n\tcolor 1 1 1\n\tpower 1.0\n}\n\n";
+		break;
+	case kAreaLarge:
+		// DL-295's SMS rows: a 4 x 4 one-sided luminaire at y = 4 facing
+		// DOWN.  PT reaches an area light through a gap ONLY by BSDF
+		// sampling, so the 0.5 x 0.5 emitter below leaves a ~5 % per-render
+		// sd at 1024 spp on the kWide receiver; this one subtends ~50x the
+		// solid angle.  Every receiver -> emitter segment still crosses the
+		// 8 x 8 sheet.
+		ss <<
+			"uniformcolor_painter\n{\n\tname pnt_emit\n\tcolor 1 1 1\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+			"lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n\tscale 4.0\n\tmaterial none\n}\n\n"
+			"clippedplane_geometry\n{\n\tname geo_emit\n"
+				"\tpta -2 " << kLightY << " -2\n\tptb 2 " << kLightY << " -2\n"
+				"\tptc 2 " << kLightY << " 2\n\tptd -2 " << kLightY << " 2\n}\n\n"
+			"standard_object\n{\n\tname obj_emit\n\tgeometry geo_emit\n\tmaterial mat_emit\n}\n\n";
 		break;
 	case kArea:
 		// A 0.5 x 0.5 one-sided luminaire at y = 4 facing DOWN (winding
@@ -864,12 +889,42 @@ static void ParityRow( const char* label, const std::string& rastOn, const std::
 //!  * a perfect refractor at ior 1: a non-bending delta that IS an SMS
 //!    caster (GetSpecularInfo isSpecular), so SMS's premise holds and the
 //!    suppression is correct there -- the control for the rule.
+//! A BLACK-yarn gapped weave named @a name (`warp/weft_color` 0 and
+//! `warp/weft_ior` 1: no volume albedo, no fibre Fresnel), so the sheet
+//! transmits exactly its gap and reflects nothing -- no receiver <->
+//! sheet interreflection, no CompositeSPF interreflected walker exit, and
+//! every closed form below is exact.
+static std::string BlackWeaveChunk( const char* name, double gap )
+{
+	std::ostringstream ss;
+	ss << "weave_material\n{\n\tname " << name << "\n\tfabric custom\n\ttransmission thin\n\tgap " << gap << "\n"
+	      "\twarp_color pnt_black\n\tweft_color pnt_black\n\twarp_ior 1.0\n\tweft_ior 1.0\n}\n\n";
+	return ss.str();
+}
+
+static std::string BlackPainterChunk()
+{
+	return "uniformcolor_painter\n{\n\tname pnt_black\n\tcolor 0 0 0\n\tcolorspace Rec709RGB_Linear\n}\n\n";
+}
+
+static std::string BlackWeaveSheet( double gap )
+{
+	return BlackPainterChunk() + BlackWeaveChunk( "mat_sheet", gap );
+}
+
+//! A `composite_material` of two black-yarn gapped weaves: its only
+//! transmission is CompositeSPF's straight gap -> gap walker exit, g^2.
+static std::string CompositeTwoBlackWeavesSheet( double gap )
+{
+	return BlackPainterChunk() + BlackWeaveChunk( "mat_layer", gap )
+		+ "composite_material\n{\n\tname mat_sheet\n\ttop mat_layer\n\tbottom mat_layer\n}\n\n";
+}
+
 static std::string CompositeDielectricOverWeaveSheet()
 {
-	return
-		"dielectric_material\n{\n\tname mat_glass\n\ttau 1.0\n\tior 1.5\n\tscattering 1000000\n}\n\n"
-		"weave_material\n{\n\tname mat_layer\n\tfabric custom\n\ttransmission thin\n\tgap 0.3\n}\n\n"
-		"composite_material\n{\n\tname mat_sheet\n\ttop mat_glass\n\tbottom mat_layer\n}\n\n";
+	return BlackPainterChunk() + BlackWeaveChunk( "mat_layer", 0.3 )
+		+ "dielectric_material\n{\n\tname mat_glass\n\ttau 1.0\n\tior 1.5\n\tscattering 1000000\n}\n\n"
+		  "composite_material\n{\n\tname mat_sheet\n\ttop mat_glass\n\tbottom mat_layer\n}\n\n";
 }
 
 static std::string PerfectRefractorIOR1Sheet()
@@ -883,37 +938,50 @@ static void TestSMSEmissionThroughGap()
 {
 	std::cout << "=== sms: PT with sms_enabled, emission reached through a weave gap (DL-295) ===" << std::endl;
 	const double g = 0.3;
+	g_saltRenders = true;
 
-	// Closed forms, SMS on.  Pre-fix: area / lookup / composite read 0.
-	RatioRow( "area PT RGB (g*L0)", RastPTSMS( 1024, true ),
-		ReceiverScene( kArea, false, 0.0, kWide ), ReceiverScene( kArea, true, g, kWide ), g, 0.05 );
-	RatioRow( "area PT spectral hwss=false (g*L0)", RastPTSpectralSMS( 512, false, true ),
-		ReceiverScene( kArea, false, 0.0, kWide ), ReceiverScene( kArea, true, g, kWide ), g, 0.05 );
-	RatioRow( "lookup PT RGB (camera -> gap -> luminaire, g*L0)", RastPTSMS( 256, true ),
-		ReceiverScene( kArea, false, 0.0, kLookUp ), ReceiverScene( kArea, true, g, kLookUp ), g, 0.03 );
-	RatioRow( "area composite-of-two-weaves PT RGB (g^2*L0)", RastPTSMS( 1024, true ),
-		ReceiverScene( kArea, false, 0.0, kWide ), ReceiverScene( kArea, true, g, kWide, true ), g * g, 0.06 );
-	RatioRow( "env box PT RGB (g*L0, env escape)", RastPTSMS( 512, true, true ),
+	// Closed forms, SMS on, black-yarn sheet (exact).  Pre-fix: every
+	// row but the env box reads 0.  Bands are >= 3.3 sd of six salted
+	// seeds (1000-6000) at these sample counts: area RGB 0.9 %, spectral
+	// 0.9 %, lookup 0.1 %, composite area 3.5 % (CompositeSPF's walker is
+	// the noisy estimator here, SMS or not) / lookup 1.2 %, env 0.03 %;
+	// HWSS parity 0.7-0.9 %, composite(dielectric) parity 1.8 % / 0.8 %.
+	const std::string sheet = BlackWeaveSheet( g ), comp2 = CompositeTwoBlackWeavesSheet( g );
+	RatioRow( "area PT RGB (g*L0)", RastPTSMS( 512, true ),
+		ReceiverScene( kAreaLarge, false, 0.0, kWide ), ReceiverScene( kAreaLarge, true, g, kWide, false, sheet ), g, 0.03 );
+	RatioRow( "area PT spectral hwss=false (g*L0)", RastPTSpectralSMS( 1024, false, true ),
+		ReceiverScene( kAreaLarge, false, 0.0, kWide ), ReceiverScene( kAreaLarge, true, g, kWide, false, sheet ), g, 0.03 );
+	RatioRow( "lookup PT RGB (camera -> gap -> luminaire, g*L0)", RastPTSMS( 64, true ),
+		ReceiverScene( kAreaLarge, false, 0.0, kLookUp ), ReceiverScene( kAreaLarge, true, g, kLookUp, false, sheet ), g, 0.03 );
+	RatioRow( "area composite-of-two-weaves PT RGB (g^2*L0)", RastPTSMS( 8192, true ),
+		ReceiverScene( kAreaLarge, false, 0.0, kWide ), ReceiverScene( kAreaLarge, true, g, kWide, false, comp2 ), g * g, 0.12 );
+	RatioRow( "lookup composite-of-two-weaves PT RGB (g^2*L0)", RastPTSMS( 8192, true ),
+		ReceiverScene( kAreaLarge, false, 0.0, kLookUp ), ReceiverScene( kAreaLarge, true, g, kLookUp, false, comp2 ), g * g, 0.04 );
+	RatioRow( "env box PT RGB (g*L0, env escape)", RastPTSMS( 256, true, true ),
 		EnvBoxScene( false, 0.0 ), EnvBoxScene( true, g ), g, 0.03 );
 
 	// HWSS: parity (DL-329 moves on and off identically).
-	ParityRow( "area PT HWSS", RastPTSpectralSMS( 1024, true, true ), RastPTSpectralSMS( 1024, true, false ),
-		ReceiverScene( kArea, true, g, kWide ), 0.08 );
-	ParityRow( "lookup PT HWSS", RastPTSpectralSMS( 256, true, true ), RastPTSpectralSMS( 256, true, false ),
-		ReceiverScene( kArea, true, g, kLookUp ), 0.05 );
+	ParityRow( "area PT HWSS", RastPTSpectralSMS( 2048, true, true ), RastPTSpectralSMS( 2048, true, false ),
+		ReceiverScene( kAreaLarge, true, g, kWide, false, sheet ), 0.05 );
+	ParityRow( "lookup PT HWSS", RastPTSpectralSMS( 512, true, true ), RastPTSpectralSMS( 512, true, false ),
+		ReceiverScene( kAreaLarge, true, g, kLookUp, false, sheet ), 0.03 );
 	ParityRow( "env box PT HWSS", RastPTSpectralSMS( 512, true, true, true ), RastPTSpectralSMS( 512, true, false, true ),
-		EnvBoxScene( true, g ), 0.05 );
+		EnvBoxScene( true, g ), 0.03 );
 
-	// Siblings.
-	ParityRow( "area composite(dielectric over weave) PT RGB", RastPTSMS( 1024, true ), RastPTSMS( 1024, false ),
-		ReceiverScene( kArea, true, g, kWide, false, CompositeDielectricOverWeaveSheet() ), 0.06 );
-	ParityRow( "lookup composite(dielectric over weave) PT RGB", RastPTSMS( 256, true ), RastPTSMS( 256, false ),
-		ReceiverScene( kArea, true, g, kLookUp, false, CompositeDielectricOverWeaveSheet() ), 0.03 );
-	// Control: an SMS CASTER (the suppression premise holds).  Printed:
-	// whether SMS's own estimator reaches this chain is SMS's business,
-	// not this row's -- the fix must leave it exactly as it was.
-	ParityRow( "area perfectrefractor ior 1 PT RGB (SMS caster -- control, printed)", RastPTSMS( 1024, true ), RastPTSMS( 1024, false ),
-		ReceiverScene( kArea, true, g, kWide, false, PerfectRefractorIOR1Sheet() ), -1.0 );
+	// Sibling: CompositeSPF's walker exits through a dielectric top leave
+	// REFRACTED -- delta-tagged, not a pass-through, not an SMS caster.
+	ParityRow( "area composite(dielectric over weave) PT RGB", RastPTSMS( 4096, true ), RastPTSMS( 4096, false ),
+		ReceiverScene( kAreaLarge, true, g, kWide, false, CompositeDielectricOverWeaveSheet() ), 0.07 );
+	ParityRow( "lookup composite(dielectric over weave) PT RGB", RastPTSMS( 2048, true ), RastPTSMS( 2048, false ),
+		ReceiverScene( kAreaLarge, true, g, kLookUp, false, CompositeDielectricOverWeaveSheet() ), 0.03 );
+	// Control: an SMS CASTER, where the suppression's premise is SMS's to
+	// honour and this fix changes nothing.  Printed, not gated: it reads
+	// 0 with SMS on before AND after -- SMS does not solve a chain through
+	// a single open refractive plane (DL-339).
+	ParityRow( "area perfectrefractor ior 1 PT RGB (SMS caster -- control, printed)", RastPTSMS( 256, true ), RastPTSMS( 256, false ),
+		ReceiverScene( kAreaLarge, true, g, kWide, false, PerfectRefractorIOR1Sheet() ), -1.0 );
+	g_saltRenders = false;
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
 }
 
 //////////////////////////////////////////////////////////////////////

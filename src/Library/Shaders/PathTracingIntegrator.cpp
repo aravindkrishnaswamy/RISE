@@ -540,6 +540,50 @@ namespace
 			IRayCaster::RAY_STATE::eRaySpecular;
 	}
 
+	//! DL-295 (docs/DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md section 9):
+	//! is the specular chain this scatter extends one that SMS can NEVER
+	//! have estimated?  Returns the value of the "SMS-uncovered chain"
+	//! state AFTER @a scat:
+	//!  * a NON-delta scatter starts a new chain at a new SMS anchor -> false;
+	//!  * a chain already uncovered stays uncovered through every further
+	//!    delta vertex (SMS rejects the WHOLE chain, see below) -> true;
+	//!  * a delta scatter at a material SMS does not treat as a specular
+	//!    caster -> true.
+	//! SMS (ManifoldSolver) classifies a surface by
+	//! `IMaterial::GetSpecularInfo( ri, ior ).isSpecular` and nothing else:
+	//! its seed trace stops at the first hit reporting false, and its
+	//! chain-visibility test (`SegmentOccludedByNonChainSpeculars`) treats
+	//! such a hit as an opaque blocker.  So no SMS estimate ever contains
+	//! a vertex whose material reports false, and a chain through one --
+	//! a thin weave's delta GAP (DL-05's non-bending pass-through, and the
+	//! fabric / coated / composite / luminaire wrappers that forward it),
+	//! or CompositeSPF's delta-TAGGED walker exits (DL-24) -- has its only
+	//! estimator in PT's own continuation.  Suppressing that continuation's
+	//! emitter hit (PART 3's `nextConsiderEmission = false`, PART 1's
+	//! `smsSuppressEmission` latch) on the premise that SMS covers it
+	//! dropped the path outright: the DL-05 area closed form read 0 with
+	//! `sms_enabled TRUE` against g*L0 without.  The query is made only
+	//! at a delta vertex with SMS on, so every other render is untouched.
+	static inline bool PTNextSMSChainUncovered(
+		const bool bSMSEnabled,
+		const bool bUncoveredNow,
+		const ScatteredRay& scat,
+		const RayIntersection& ri,
+		const IORStack& iorStack
+		)
+	{
+		if( !scat.isDelta ) {
+			return false;
+		}
+		if( bUncoveredNow ) {
+			return true;
+		}
+		if( !bSMSEnabled ) {
+			return false;
+		}
+		return !( ri.pMaterial && ri.pMaterial->GetSpecularInfo( ri.geometric, iorStack ).isSpecular );
+	}
+
 	static inline Scalar GuidingTrainingLuminance( const RISEPel& pel )
 	{
 		return 0.212671 * pel[0] + 0.715160 * pel[1] + 0.072169 * pel[2];
@@ -1820,6 +1864,16 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 	// suppression state from the parent call.
 	bool bPassedThroughSpecular = smsPassedThroughSpecular_initial;
 	bool bHadNonSpecularShading = smsHadNonSpecularShading_initial;
+	// DL-295: true while the specular chain since the last non-delta
+	// vertex contains a delta vertex SMS cannot represent (see
+	// PTNextSMSChainUncovered) -- then no SMS estimate exists for this
+	// chain and neither SMS suppression may fire.  Kept SEPARATE from
+	// `bPassedThroughSpecular` on purpose: that latch also drives the GUI
+	// `indirect` mode's depth==1 MIS-partner test, for which a weave gap
+	// IS a delta event (NEE at the gap vertex cannot sample through it).
+	// Starts false: a caller that hands in a latched chain (the SSS
+	// continuations) hands in a chain anchored at an SMS-evaluated vertex.
+	bool bSMSChainUncovered = false;
 
 	const LightSampler* pLS = caster.GetLightSampler();
 
@@ -2583,7 +2637,8 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			// != 0); the Pel original spelled this `pSolver && ...` inline,
 			// the NM original as the `smsSuppressEmission` flag used here.
 			const bool smsSuppressEmission = bSMSEnabled
-				&& bPassedThroughSpecular && bHadNonSpecularShading;
+				&& bPassedThroughSpecular && bHadNonSpecularShading
+				&& !bSMSChainUncovered;		// DL-295
 			// GUI render modes P2b `light solo` (docs/gui/RENDER_MODES.md
 			// §3): under solo, a BSDF-sampled hit contributes emission
 			// ONLY when the hit object IS the soloed mesh luminary --
@@ -3457,6 +3512,13 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				// flag tracking below -- see PT_PEL_NM_ASYMMETRY_AUDIT.md #1/#3.
 				const bool nextConsiderEmissionSPF = true;
 				rs2.considerEmission = nextConsiderEmissionSPF;
+				// DL-295: a BSDF-less material's delta lobe can be one SMS
+				// never represents too (a luminaire wrapper over a
+				// dielectric forwards no GetSpecularInfo; a CompositeSPF
+				// built without either layer's BSDF emits delta-tagged
+				// walker exits) -- same rule as PART 3.
+				const bool nextSMSChainUncoveredSPF = PTNextSMSChainUncovered(
+					bSMSEnabled, bSMSChainUncovered, *pS, ri, iorStack );
 				if( PropagateBounceLimits( rs, rs2, *pS, &stabilityConfig ) ) {
 					break;
 				}
@@ -3500,6 +3562,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 						bPassedThroughSpecular = false;
 						bHadNonSpecularShading = true;
 					}
+				bSMSChainUncovered = nextSMSChainUncoveredSPF;
 
 				if constexpr ( Traits::is_pel ) {
 					if( ff ) {
@@ -4322,8 +4385,17 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				skipContinuation = true;
 			}
 
+			// SMS double-count guard: after a delta scatter the next
+			// emitter hit is SMS's to estimate -- but only when SMS can
+			// represent this chain at all (DL-295, PTNextSMSChainUncovered).
+			// A delta vertex keeps `bsdfMisPdf == 0` either way, so an
+			// emitter hit behind a weave gap takes MIS weight 1, which is
+			// the correct partition: the area / env NEE arm keeps a binary
+			// shadow at a pass-through (DL-05 section 2).
+			const bool nextSMSChainUncovered = PTNextSMSChainUncovered(
+				bSMSEnabled, bSMSChainUncovered, *pS, ri, iorStack );
 			bool nextConsiderEmission = true;
-			if( pS->isDelta && bSMSEnabled ) {
+			if( pS->isDelta && bSMSEnabled && !nextSMSChainUncovered ) {
 				nextConsiderEmission = false;
 			}
 
@@ -4392,6 +4464,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				bPassedThroughSpecular = false;
 				bHadNonSpecularShading = true;
 			}
+			bSMSChainUncovered = nextSMSChainUncovered;
 
 			currentRay = traceRay;
 			currentRay.Advance( 1e-8 );
@@ -5556,6 +5629,11 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 	// to IntegrateFromHitNM, which tracks its own copy -- so a plain local
 	// initialized false is correct with no carried-in initial value needed).
 	bool bPassedThroughSpecular = false;
+	// DL-295: HWSS twin of the Pel/NM loop's `bSMSChainUncovered` (see
+	// PTNextSMSChainUncovered).  This body has no PART 1 latch -- its only
+	// SMS suppression is PART 3's `nextConsiderEmission` -- so the state
+	// is read there, and forwarded to the no-BSDF NM delegation below.
+	bool bSMSChainUncovered = false;
 
 	const unsigned int rrMinDepth = stabilityConfig.rrMinDepth;
 	const Scalar rrThreshold = stabilityConfig.rrThreshold;
@@ -6153,7 +6231,15 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					considerEmission, importance, rayType,
 					diffuseBounces, glossyBounces, transmissionBounces,
 					translucentBounces, volumeBounces, glossyFilterWidth,
-					false, true, pAOV, misBsdfPdfComp[w] );
+					// DL-295: when the chain reaching this glass already
+					// crossed a delta vertex SMS cannot represent (a weave
+					// gap), the delegated body must not suppress the emitter
+					// either.  `smsHadNonSpecularShading = false` says
+					// exactly that for the rest of this chain: the NM
+					// predicate needs it true, and it only becomes true
+					// again at the next NON-delta vertex -- the same vertex
+					// that ends the uncovered chain.
+					false, !bSMSChainUncovered, pAOV, misBsdfPdfComp[w] );
 			}
 			break;
 		}
@@ -6720,8 +6806,12 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			skipContinuation = true;
 		}
 
+		// DL-295: suppress only a chain SMS can represent (the Pel/NM
+		// loop's PART 3 has the full note).
+		const bool nextSMSChainUncovered = PTNextSMSChainUncovered(
+			bSMSEnabled, bSMSChainUncovered, *pS, ri, iorStack );
 		bool nextConsiderEmission = true;
-		if( pS->isDelta && bSMSEnabled ) {
+		if( pS->isDelta && bSMSEnabled && !nextSMSChainUncovered ) {
 			nextConsiderEmission = false;
 		}
 
@@ -6753,6 +6843,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		// (see that site) -- records whether THIS depth's scatter was delta,
 		// read at the top of the NEXT iteration's emission/env-miss gate.
 		bPassedThroughSpecular = pS->isDelta;
+		bSMSChainUncovered = nextSMSChainUncovered;
 
 		currentRay = traceRay;
 		currentRay.Advance( 1e-8 );
