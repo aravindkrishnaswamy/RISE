@@ -453,7 +453,14 @@ significant change anywhere.
   renders from two interleaved binaries, guided RIS vs un-guided of the
   same integrator: **PT -1.551 +- 0.051 % -> -0.002 +- 0.015 %, BDPT
   -1.666 +- 0.192 % -> +0.012 +- 0.008 %**; VCM / PT -1.746 % -> -0.041 %
-  (VCM prices `value` too, so it was off un-guided).  Gated in
+  (VCM prices `value` too, so it was off un-guided; the post-fix residuals
+  are the QMC point-set floor -- a disjoint salt set reads VCM/PT +0.002 %,
+  BDPT/PT +0.018 %).  Shipped renders move (kaleidoscope_atrium -5.0 %)
+  because NEE and connections now include the coat's (1-F) transmission
+  loss and its highlights: the old bare-Lambertian BSDF over-counted, and
+  ANY consistent model corrects that (the old non-reciprocal weights made
+  consistent: -6.2 %), not the reciprocal coat (the coat choice moves
+  scenes <= 0.4 pt).  Gated in
   `BDPTStrategyBalanceTest` / `VCMStrategyBalanceTest` topology AB (0.5 %
   band).  Premise 2's audit found one more material that breaks it,
   in the opposite direction: `datadriven_material` has a BSDF and NO SPF

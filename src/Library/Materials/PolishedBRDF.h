@@ -49,10 +49,30 @@
 //      g(x) = 2x/(ci+x),  g(co) + g(co') <= 2 g(ci cos alpha) <= 2 and
 //      int P g <= int P = 1.  Hence the total directional albedo is
 //      <= tau F(ci) + Rd (1 - F(ci)) <= max(tau, Rd) <= 1.
-//    Measured cost of reciprocity: the coat's directional albedo drops
-//    where the lobe is wide or the view grazing (the (co < ci) half of
-//    the lobe is down-weighted); measured in the DL-285 ledger row
-//    (docs/DEBT_LEDGER.md) and docs/DL67_GUIDED_GENERATING_DENSITY.md §8.
+//    What reciprocity costs the COAT: its directional albedo falls below
+//    tau F(ci) wherever the lobe reaches exits with co > ci, because the
+//    symmetric Fresnel there is F(co) < F(ci) (a coupling any symmetric
+//    Fresnel shares -- F(h) does it too); the geometric factor
+//    2 co/(ci+co) itself BRIGHTENS the grazing lobe (N 20 at 80 deg: 0.318
+//    against the non-reciprocal 0.305 with the same Fresnel).
+//
+//    WHY SHIPPED RENDERS MOVE (external review, 2026-09-28).  Not because
+//    of the reciprocal coat: the pre-DL-285 `GetBSDF()` was a bare
+//    Lambertian, so NEE and every BDPT/VCM connection priced the
+//    substrate WITHOUT the coat's (1-F) transmission loss (and without the
+//    coat's highlights) -- an over-count.  A consistent BSDF of ANY form
+//    corrects it: the old NON-reciprocal weights made consistent darken
+//    kaleidoscope_atrium / rainwet_cobbles / wetness_prelude_validation by
+//    -6.2 / -6.4 / -5.9 %, MORE than this model's -5.0 / -4.5 / -3.7 %
+//    (the reciprocal substrate's (1-F(co))/T_avg brightens overhead-light
+//    NEE), and the coat choice (min F vs F(h)) moves them <= 0.4 pt.
+//    Among bounded consistent options this model is the closest to the
+//    old look.  Figures: the DL-285 ledger row (docs/DEBT_LEDGER.md).
+//
+//    AN INCIDENT DIRECTION BELOW THE SIDE-ORIENTED SHADING NORMAL (ci <= 0
+//    on a geometric front face, a tilted shading normal) returns 0 from
+//    `value` and from every kray -- as `LambertianBRDF` (0.004-0.023 there
+//    in the review's probe) rather than the pre-DL-285 SPF's 0.19-0.26.
 //
 //  PolishedSPF samples this same function lobe by lobe (each emitted ray
 //  carries its own lobe's `f_I co / p_I`), so `IBSDF::value` and the

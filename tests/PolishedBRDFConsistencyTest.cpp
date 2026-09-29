@@ -29,6 +29,9 @@
 //    4. DENSITY.  Pdf integrates to the measured probability that
 //       `RandomlySelect` returns a non-delta ray, and matches the
 //       histogram of the directions it returns (TVD against a floor).
+//       Gates 2 and 4b run twice: in 8x16 shading-frame bins and (2L/4bL)
+//       in LOBE-frame bins -- Phong-CDF polar bins about the mirror
+//       direction -- which alone resolve a N 256 / 350 coat lobe.
 //    5. HWSS.  `EvaluateKrayNM` at the hero wavelength reproduces every
 //       emitted ray's `krayNM` exactly (the companion ladders' premise).
 //    6. SIBLING AUDIT (DL-285's pattern: a material whose GetBSDF() is a
@@ -172,6 +175,29 @@ static int BinOf( const Vector3& w, const OrthonormalBasis3D& onb )
 	return ( z >= 0 ? 0 : kBinT * kBinP ) + bt * kBinP + bp;
 }
 
+// Lobe-frame binning (review P3): 8 polar bins in the Phong CDF
+// 1 - cos(alpha)^(N+1) about the MIRROR direction (uniform for a Phong
+// lobe of exponent N, so a N 256 / 350 lobe spreads over all 8 instead of
+// one shading-frame cell) plus one band for cos(alpha) <= 0, x 16 azimuths.
+static const int kLobeBinT = 9;
+static const int kLobeBins = kLobeBinT * kBinP;
+
+static int LobeBinOf( const Vector3& w, const OrthonormalBasis3D& f, const double N )
+{
+	const double ca = Vector3Ops::Dot( w, f.w() );
+	int bt = kLobeBinT - 1;
+	if( ca > 0 ) {
+		const double t = 1.0 - std::pow( ca, N + 1.0 );
+		bt = int( t * ( kLobeBinT - 1 ) );
+		if( bt >= kLobeBinT - 1 ) bt = kLobeBinT - 2;
+		if( bt < 0 ) bt = 0;
+	}
+	double ph = std::atan2( Vector3Ops::Dot( w, f.v() ), Vector3Ops::Dot( w, f.u() ) );
+	if( ph < 0 ) ph += 2 * PI;
+	int bp = int( ph / ( 2 * PI ) * kBinP );  if( bp >= kBinP ) bp = kBinP - 1;
+	return bt * kBinP + bp;
+}
+
 static double TVD( const std::vector<double>& a, const std::vector<double>& b )
 {
 	double sa = 0, sb = 0;
@@ -218,7 +244,7 @@ struct Config
 // ====================================================================
 // One row: gates 1-5 for (config, fixture).
 // ====================================================================
-static void RunRowMaterial( const IMaterial& mat, const std::string& name, const Fixture& fx, int draws, unsigned int seed )
+static void RunRowMaterial( const IMaterial& mat, const std::string& name, const Fixture& fx, int draws, unsigned int seed, const double lobeN = 1.0 )
 {
 	const ISPF&  spf  = *mat.GetSPF();
 	const IBSDF& bsdf = *mat.GetBSDF();
@@ -238,6 +264,9 @@ static void RunRowMaterial( const IMaterial& mat, const std::string& name, const
 	double S[3] = { 0, 0, 0 }, S2[3] = { 0, 0, 0 };
 	std::vector<double> histA( kBins, 0.0 ), histB( kBins, 0.0 );
 	std::vector<double> selA( kBins, 0.0 ), selB( kBins, 0.0 );
+	std::vector<double> lHistA( kLobeBins, 0.0 ), lHistB( kLobeBins, 0.0 );
+	std::vector<double> lSelA( kLobeBins, 0.0 ), lSelB( kLobeBins, 0.0 );
+	OrthonormalBasis3D lobeOnb;  lobeOnb.CreateFromW( Optics::CalculateReflectedRay( ri.ray.Dir(), nShade ) );
 	long selectedNonDelta = 0;
 	double worstKrayNM = 0;
 	for( int k = 0; k < draws; ++k ) {
@@ -251,6 +280,7 @@ static void RunRowMaterial( const IMaterial& mat, const std::string& name, const
 			const int b = BinOf( Vector3Ops::Normalize( r.ray.Dir() ), binOnb );
 			const double e = ( r.kray[0] + r.kray[1] + r.kray[2] ) / 3.0;
 			( ( k & 1 ) ? histB : histA )[b] += e;
+			( ( k & 1 ) ? lHistB : lHistA )[LobeBinOf( Vector3Ops::Normalize( r.ray.Dir() ), lobeOnb, lobeN )] += e;
 		}
 		for( int c = 0; c < 3; ++c ) { S[c] += sum[c];  S2[c] += sum[c] * sum[c]; }
 
@@ -260,6 +290,7 @@ static void RunRowMaterial( const IMaterial& mat, const std::string& name, const
 			++selectedNonDelta;
 			const int b = BinOf( Vector3Ops::Normalize( pSel->ray.Dir() ), binOnb );
 			( ( k & 1 ) ? selB : selA )[b] += 1.0;
+			( ( k & 1 ) ? lSelB : lSelA )[LobeBinOf( Vector3Ops::Normalize( pSel->ray.Dir() ), lobeOnb, lobeN )] += 1.0;
 		}
 	}
 	// Gate 5 on the NM pipe: EvaluateKrayNM reproduces krayNM.
@@ -285,6 +316,7 @@ static void RunRowMaterial( const IMaterial& mat, const std::string& name, const
 	double B[3] = { 0, 0, 0 };
 	double pdfMass = 0;
 	std::vector<double> histQ( kBins, 0.0 ), histPdf( kBins, 0.0 );
+	std::vector<double> lHistQ( kLobeBins, 0.0 ), lHistPdf( kLobeBins, 0.0 );
 	SphereQuadrature( axis, 1500, 512, [&]( const Vector3& w, double dOm ) {
 		const RISEPel f = bsdf.value( w, ri );
 		const double cw = std::fabs( Vector3Ops::Dot( w, ri.vNormal ) );
@@ -294,6 +326,9 @@ static void RunRowMaterial( const IMaterial& mat, const std::string& name, const
 		const double p = spf.Pdf( ri, w, stack );
 		pdfMass += p * dOm;
 		histPdf[b] += p * dOm;
+		const int lb = LobeBinOf( w, lobeOnb, lobeN );
+		lHistQ[lb] += ( f[0] + f[1] + f[2] ) / 3.0 * cw * dOm;
+		lHistPdf[lb] += p * dOm;
 	} );
 	(void)wiView;
 
@@ -320,6 +355,10 @@ static void RunRowMaterial( const IMaterial& mat, const std::string& name, const
 	const double emitRate = double( selectedNonDelta ) / draws;
 	const double tvdPdf = TVD( histSel, histPdf );
 	const double pdfFloor = TVD( selA, selB );
+	std::vector<double> lHistS( kLobeBins, 0.0 ), lSel( kLobeBins, 0.0 );
+	for( int b = 0; b < kLobeBins; ++b ) { lHistS[b] = lHistA[b] + lHistB[b];  lSel[b] = lSelA[b] + lSelB[b]; }
+	const double lTvdShape = TVD( lHistS, lHistQ ), lShapeFloor = TVD( lHistA, lHistB );
+	const double lTvdPdf = TVD( lSel, lHistPdf ), lPdfFloor = TVD( lSelA, lSelB );
 
 	std::cout << "  " << std::left << std::setw( 40 ) << label << std::right << std::fixed << std::setprecision( 5 )
 	          << " S/B-1=" << std::setw( 9 ) << worstRel
@@ -327,6 +366,7 @@ static void RunRowMaterial( const IMaterial& mat, const std::string& name, const
 	          << " TVDshape=" << tvdShape << " [floor " << shapeFloor << "]"
 	          << " intPdf=" << pdfMass << " emit=" << emitRate
 	          << " TVDpdf=" << tvdPdf << " [floor " << pdfFloor << "]"
+	          << " lobe-frame TVDshape/pdf=" << lTvdShape << "/" << lTvdPdf << " [floors " << lShapeFloor << "/" << lPdfFloor << "]"
 	          << std::scientific << std::setprecision( 1 ) << " krayNM=" << worstKrayNM
 	          << std::defaultfloat << std::endl;
 
@@ -335,6 +375,8 @@ static void RunRowMaterial( const IMaterial& mat, const std::string& name, const
 	Check( std::fabs( pdfMass - emitRate ) <= 0.01 + 4.0 * std::sqrt( emitRate * ( 1 - emitRate ) / draws ),
 		std::string( "gate 4a (integral Pdf == emission probability): " ) + label );
 	Check( tvdPdf <= std::max( 3.0 * pdfFloor, 0.015 ), std::string( "gate 4b (Pdf shape vs RandomlySelect histogram): " ) + label );
+	Check( lTvdShape <= std::max( 3.0 * lShapeFloor, 0.01 ), std::string( "gate 2L (energy shape, lobe-frame bins): " ) + label );
+	Check( lTvdPdf <= std::max( 3.0 * lPdfFloor, 0.015 ), std::string( "gate 4bL (Pdf shape, lobe-frame bins): " ) + label );
 	Check( worstKrayNM <= 1e-9, std::string( "gate 5 (EvaluateKrayNM reproduces krayNM): " ) + label );
 }
 
@@ -345,7 +387,10 @@ static void RunRow( const Config& cfg, const Fixture& fx, int draws, unsigned in
 	UniformScalarPainter* nt  = new UniformScalarPainter( cfg.ior );  nt->addref();
 	UniformScalarPainter* sc  = new UniformScalarPainter( cfg.scat ); sc->addref();
 	PolishedMaterial* mat = new PolishedMaterial( *rd, *tau, *nt, *sc, cfg.hg );  mat->addref();
-	RunRowMaterial( *mat, cfg.name, fx, draws, seed );
+	// Lobe-frame bins keyed to the Phong exponent (HG and delta coats bin
+	// with N 1: their glossy energy is either wide or absent).
+	const double lobeN = ( !cfg.hg && cfg.scat < 1e6 ) ? cfg.scat : 1.0;
+	RunRowMaterial( *mat, cfg.name, fx, draws, seed, lobeN );
 	safe_release( mat );
 	safe_release( sc );
 	safe_release( nt );

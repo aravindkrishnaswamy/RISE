@@ -550,8 +550,13 @@ RISEPel PolishedBRDF::albedo( const RayIntersectionGeometric& ri ) const
 
 // Reflectance under a uniform incident field.  Exact for the substrate
 // (Rd (1 - F_avg): the substrate's directional albedo is Rd (1 - F(ci))
-// exactly) and for a DELTA coat (tau F_avg); for a glossy coat tau F_avg
-// is the delta limit and an upper bound.  Does not read ri.ray.
+// exactly) and for a DELTA coat (tau F_avg); for a GLOSSY coat tau F_avg
+// is the delta limit and an UPPER BOUND, yet the method reports `true`.
+// Unreachable today -- its only consumers (`coated_material`'s recycling
+// denominator, `fabric_material`'s energy subtraction) refuse a polished
+// substrate at parse time -- and recorded on the DL-285 ledger row; a
+// consumer added later must either accept the bound or be handed an
+// honest flag.  Does not read ri.ray.
 bool PolishedBRDF::hemisphericalAlbedo( const RayIntersectionGeometric& ri, RISEPel& out ) const
 {
 	const ScalarTriple tauV = pTau->GetValuesAt( ri );
