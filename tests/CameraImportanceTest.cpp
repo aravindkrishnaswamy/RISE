@@ -62,6 +62,7 @@
 #include "../src/Library/Utilities/RuntimeContext.h"
 #include "../src/Library/Utilities/RandomNumbers.h"
 #include "../src/Library/Utilities/Ray.h"
+#include "../src/Library/Rendering/SplatFilm.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -710,8 +711,12 @@ static double IntegrateEmittingPlane(
 				const double y = -halfExtent + ( j + 0.5 ) * 2.0 * halfExtent / double( N );
 				const Point3 world( x, y, planeZ );
 
+				// DL-294: the camera projection no longer clips to the
+				// film; the film's own rule decides membership.
 				Point2 raster;
-				if( !BDPTCameraUtilities::RasterizeThrough( cam, world, ap, raster ) ) {
+				unsigned int ix = 0, iy = 0;
+				if( !BDPTCameraUtilities::RasterizeThrough( cam, world, ap, raster ) ||
+				    !SplatFilm::NearestPixel( raster.x, double( kHeight ) - raster.y, kWidth, kHeight, ix, iy ) ) {
 					everyPointLanded = false;
 					continue;
 				}
@@ -954,7 +959,10 @@ static void TestFisheyeFilmResponse( double pixelAR )
 				kCamZ - R * cos( th ) );
 
 			Point2 raster;
+			unsigned int ix = 0, iy = 0;
 			if( !BDPTCameraUtilities::RasterizeThrough( *cam, world, ap, raster ) ) continue;
+			// DL-294: film membership is the film's decision.
+			if( !SplatFilm::NearestPixel( raster.x, double( kHeight ) - raster.y, kWidth, kHeight, ix, iy ) ) continue;
 
 			Vector3 dirToCam = Vector3Ops::mkVector3( ap.point, world );
 			const double dist = Vector3Ops::Magnitude( dirToCam );
@@ -982,6 +990,100 @@ static void TestFisheyeFilmResponse( double pixelAR )
 	release( cam );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Test 9 (DL-294) - the light-tracing projection covers EXACTLY the film
+// the eye subpaths sample.
+//
+// Every rasterizer draws pixel (x, image row y) at screen position
+// (x + u - 0.5, H - y + v - 0.5), u, v in [0, 1), and a t = 1 splat is
+// deposited at SplatFilm::NearestPixel( raster.x, H - raster.y ).  So
+// for every screen point an eye sample can have, the camera's
+// world-to-raster inverse must (a) accept the point on the ray,
+// (b) return that same screen point, and (c) send it to the same pixel.
+// Before DL-294 the projection clipped at the camera's nominal
+// [0, W) x [0, H), half a pixel off that convention on both axes: the
+// left half of column 0 and the lower (screen) half-strip beyond row 0
+// failed (a), and the right half of column W-1's neighbour strip and
+// row 0's upper half passed (a) but were rounded OFF the film by (c)
+// -- the check counts both kinds.  Run at the DL-294 framing (pinhole
+// fov 2 deg, 16 x 16), at an ordinary one, and through a thin lens and
+// a fisheye.
+//////////////////////////////////////////////////////////////////////
+static void TestProjectionCoversEyeFilm()
+{
+	std::cout << "TestProjectionCoversEyeFilm (DL-294)" << std::endl;
+
+	RandomNumberGenerator rng;
+	RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
+
+	struct Case { const char* name; ICamera* cam; unsigned int w, h; ThinLensCamera* thin; };
+	const unsigned int W = 16, H = 16;
+	Case cases[] = {
+		{ "pinhole fov 2 deg 16x16", new PinholeCamera(
+			Point3( 0, 1, 1.2 ), Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ), 2.0 * DEG_TO_RAD,
+			W, H, 1.0, 0.0, 0.0, 0.0, Vector3( 0, 0, 0 ), Vector2( 0, 0 ) ), W, H, nullptr },
+		{ "pinhole matched 64x64", MakePinholeMatched(), kWidth, kHeight, nullptr },
+		{ "thin lens f/22 64x64", nullptr, kWidth, kHeight, MakeThinLens( 22.0, 6.0 ) },
+		{ "fisheye scale 1 64x64", new FisheyeCamera(
+			Point3( 0, 0, kCamZ ), Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ),
+			kWidth, kHeight, 1.0, 0.0, 0.0, 0.0, Vector3( 0, 0, 0 ), Vector2( 0, 0 ), 1.0 ), kWidth, kHeight, nullptr },
+	};
+	for( Case& c : cases ) {
+		if( c.thin ) c.cam = c.thin;
+	}
+
+	// Sub-pixel offsets (u, v) out to the extreme edges of a pixel.  The
+	// exact boundary u or v == 0 is left out: it is measure-zero, and the
+	// rasterizers' row mapping H - y + v - 0.5 closes a pixel at the
+	// opposite end from NearestPixel's round-half-up (a tie, not a strip).
+	const double offs[] = { 0.001, 0.25, 0.5, 0.75, 0.999 };
+	const unsigned int nOff = sizeof( offs ) / sizeof( offs[0] );
+
+	for( Case& c : cases )
+	{
+		// The thin lens images through ONE fixed lens point, the same one
+		// the projection is handed, so the round trip is exact at any
+		// depth (a random lens point would add the circle of confusion).
+		const Point2 lensUV( 0.3, 0.7 );
+		const BDPTCameraUtilities::ApertureSample ap = BDPTCameraUtilities::SampleAperture( *c.cam, lensUV );
+		unsigned int rejected = 0, wrongPixel = 0, tried = 0;
+		double worstErr = 0;
+		// Only the border ring of pixels and a few interior ones --
+		// the defect lives at the edges.
+		for( unsigned int y = 0; y < c.h; y++ ) {
+			for( unsigned int x = 0; x < c.w; x++ ) {
+				const bool border = ( x == 0 || y == 0 || x == c.w - 1 || y == c.h - 1 );
+				if( !border && !( x == c.w / 2 && y == c.h / 2 ) ) continue;
+				for( unsigned int a = 0; a < nOff; a++ ) {
+					for( unsigned int b = 0; b < nOff; b++ ) {
+						const Point2 screen( double( x ) + offs[a] - 0.5, double( c.h - y ) + offs[b] - 0.5 );
+						Ray r;
+						const bool ok = c.thin ? c.thin->GenerateRayWithLensSample( rc, r, screen, lensUV )
+						                       : c.cam->GenerateRay( rc, r, screen );
+						if( !ok ) continue;
+						tried++;
+						const Point3 world = r.PointAtLength( 3.0 );
+						Point2 back;
+						if( !BDPTCameraUtilities::RasterizeThrough( *c.cam, world, ap, back ) ) { rejected++; continue; }
+						worstErr = std::max( worstErr, std::max( fabs( back.x - screen.x ), fabs( back.y - screen.y ) ) );
+						unsigned int ix = 0, iy = 0;
+						if( !SplatFilm::NearestPixel( back.x, double( c.h ) - back.y, c.w, c.h, ix, iy ) || ix != x || iy != y ) {
+							wrongPixel++;
+						}
+					}
+				}
+			}
+		}
+		EXPECT( tried > 0 );
+		EXPECT( rejected == 0 );
+		EXPECT( wrongPixel == 0 );
+		EXPECT_NEAR( worstErr, 0.0, 1e-8 );
+		std::printf( "    %-26s tried %u  rejected by projection %u  landed in the wrong/no pixel %u  worst round trip %.2e px\n",
+			c.name, tried, rejected, wrongPixel, worstErr );
+		c.cam->release();
+	}
+}
+
 int main()
 {
 	std::cout << "=== CameraImportanceTest ===" << std::endl;
@@ -996,6 +1098,7 @@ int main()
 	TestFisheyeFilmResponse( 0.5 );
 	TestFisheyeFilmResponse( 1.0 );
 	TestFisheyeFilmResponse( 2.0 );
+	TestProjectionCoversEyeFilm();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << g_pass << std::endl;

@@ -141,12 +141,8 @@ void BidirectionalRasterizerBase::SplatContributionToFilm(
 	{
 		// No filter — round to nearest pixel, still better than the
 		// old truncation which introduced a half-pixel bias.
-		const Scalar rx = fx + Scalar( 0.5 );
-		const Scalar ry = fy + Scalar( 0.5 );
-		if( rx < 0 || ry < 0 ) return;
-		const unsigned int sx = static_cast<unsigned int>( rx );
-		const unsigned int sy = static_cast<unsigned int>( ry );
-		if( sx < imageWidth && sy < imageHeight ) {
+		unsigned int sx = 0, sy = 0;
+		if( SplatFilm::NearestPixel( fx, fy, imageWidth, imageHeight, sx, sy ) ) {
 			pSplatFilm->Splat( sx, sy, contribution );
 		}
 	}

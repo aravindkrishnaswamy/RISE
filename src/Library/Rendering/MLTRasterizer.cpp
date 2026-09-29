@@ -652,14 +652,9 @@ void MLTRasterizer::RunChainSegment(
 					// point splat.  floor() here (via unsigned cast on a
 					// truncation) would introduce a consistent half-pixel
 					// bias; adding 0.5 before truncation rounds instead.
-					const Scalar rx = s.rasterPos.x + static_cast<Scalar>( 0.5 );
-					const Scalar ry = s.rasterPos.y + static_cast<Scalar>( 0.5 );
-					if( rx >= 0 && ry >= 0 ) {
-						const unsigned int sx = static_cast<unsigned int>( rx );
-						const unsigned int sy = static_cast<unsigned int>( ry );
-						if( sx < width && sy < height ) {
-							splatFilm.Splat( sx, sy, splatColor );
-						}
+					unsigned int sx = 0, sy = 0;
+					if( SplatFilm::NearestPixel( s.rasterPos.x, s.rasterPos.y, width, height, sx, sy ) ) {
+						splatFilm.Splat( sx, sy, splatColor );
 					}
 				}
 			}
@@ -678,14 +673,9 @@ void MLTRasterizer::RunChainSegment(
 					splatFilm.SplatFiltered( s.rasterPos.x, s.rasterPos.y,
 						splatColor, *pPixelFilter );
 				} else {
-					const Scalar rx = s.rasterPos.x + static_cast<Scalar>( 0.5 );
-					const Scalar ry = s.rasterPos.y + static_cast<Scalar>( 0.5 );
-					if( rx >= 0 && ry >= 0 ) {
-						const unsigned int sx = static_cast<unsigned int>( rx );
-						const unsigned int sy = static_cast<unsigned int>( ry );
-						if( sx < width && sy < height ) {
-							splatFilm.Splat( sx, sy, splatColor );
-						}
+					unsigned int sx = 0, sy = 0;
+					if( SplatFilm::NearestPixel( s.rasterPos.x, s.rasterPos.y, width, height, sx, sy ) ) {
+						splatFilm.Splat( sx, sy, splatColor );
 					}
 				}
 			}

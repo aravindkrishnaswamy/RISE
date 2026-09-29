@@ -1934,14 +1934,8 @@ namespace
 			if( pixelFilter ) {
 				splatFilm.SplatFiltered( fx, fy, deposit, *pixelFilter );
 			} else {
-				const Scalar rx = fx + Scalar( 0.5 );
-				const Scalar ry = fy + Scalar( 0.5 );
-				if( rx < 0 || ry < 0 ) continue;
-				const int sx = static_cast<int>( rx );
-				const int sy = static_cast<int>( ry );
-				if( sx < 0 || sy < 0 ||
-				    static_cast<unsigned int>( sx ) >= filmWidth ||
-				    static_cast<unsigned int>( sy ) >= filmHeight ) continue;
+				unsigned int sx = 0, sy = 0;
+				if( !SplatFilm::NearestPixel( fx, fy, filmWidth, filmHeight, sx, sy ) ) continue;
 				splatFilm.Splat( sx, sy, deposit );
 			}
 		}

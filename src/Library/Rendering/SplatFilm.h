@@ -72,6 +72,38 @@ namespace RISE
 				const unsigned int h					///< [in] Height of the film in pixels
 				);
 
+			//! DL-294: THE film-membership rule for a fractional splat
+			//! position (image-row convention: y = 0 at the top).  The
+			//! splat's home pixel is the NEAREST pixel centre, pixel i
+			//! covering [i - 0.5, i + 0.5) -- the convention every
+			//! rasterizer samples its eye subpaths in (pixel (x, row y)
+			//! at screen (x + u - 0.5, H - y + v - 0.5)), so a
+			//! light-traced splat lands on the film exactly where an eye
+			//! sample could have.  The camera's world-to-raster
+			//! projection deliberately does NOT clip to the film
+			//! (BDPTCameraUtilities::InRasterGuardBand): this function
+			//! is the one place that decides.  FALSE (and @a ix / @a iy
+			//! untouched) when the home pixel is off the film or the
+			//! position is not finite.
+			static inline bool NearestPixel(
+				const Scalar fx,
+				const Scalar fy,
+				const unsigned int w,
+				const unsigned int h,
+				unsigned int& ix,
+				unsigned int& iy )
+			{
+				const Scalar rx = fx + Scalar( 0.5 );
+				const Scalar ry = fy + Scalar( 0.5 );
+				if( !( rx >= Scalar( 0 ) && ry >= Scalar( 0 ) &&
+				       rx < static_cast<Scalar>( w ) && ry < static_cast<Scalar>( h ) ) ) {
+					return false;
+				}
+				ix = static_cast<unsigned int>( rx );
+				iy = static_cast<unsigned int>( ry );
+				return true;
+			}
+
 			//! Thread-safe: adds a contribution to the pixel at (x,y)
 			void Splat(
 				const unsigned int x,					///< [in] X co-ordinate of pixel
@@ -97,8 +129,8 @@ namespace RISE
 			//! half-width is ≤ 0.501 (box case) to avoid unnecessary
 			//! work — matches PixelBasedRasterizerHelper::UseFilteredFilm.
 			void SplatFiltered(
-				const Scalar screenX,					///< [in] Fractional X (0 ≤ x < width)
-				const Scalar screenY,					///< [in] Fractional Y (0 ≤ y < height)
+				const Scalar screenX,					///< [in] Fractional X (image-row convention; see NearestPixel)
+				const Scalar screenY,					///< [in] Fractional Y (image-row convention; see NearestPixel)
 				const RISEPel& contribution,			///< [in] Color contribution to spread
 				const IPixelFilter& filter				///< [in] Reconstruction kernel
 				);

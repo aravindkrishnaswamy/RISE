@@ -83,15 +83,12 @@ void SplatFilm::SplatFiltered(
 	{
 		// Round to nearest pixel center.  Pixel centers live at
 		// integer coordinates (matches BoxPixelFilter::warpOnScreen
-		// which returns canonical.x + x - 0.5 for canonical ∈ [0,1)).
-		// Casting floor(v + 0.5) is the portable way to do a
-		// round-half-up for positive values.
-		const Scalar rx = screenX + Scalar( 0.5 );
-		const Scalar ry = screenY + Scalar( 0.5 );
-		if( rx < 0 || ry < 0 ) return;
-		const unsigned int ix = static_cast<unsigned int>( rx );
-		const unsigned int iy = static_cast<unsigned int>( ry );
-		Splat( ix, iy, contribution );
+		// which returns canonical.x + x - 0.5 for canonical ∈ [0,1));
+		// NearestPixel is the film-membership rule (DL-294).
+		unsigned int ix = 0, iy = 0;
+		if( NearestPixel( screenX, screenY, width, height, ix, iy ) ) {
+			Splat( ix, iy, contribution );
+		}
 		return;
 	}
 
@@ -115,12 +112,8 @@ void SplatFilm::SplatFiltered(
 				"an EvaluateFilter override.",
 				halfW, halfH );
 		}
-		const Scalar rx = screenX + Scalar( 0.5 );
-		const Scalar ry = screenY + Scalar( 0.5 );
-		if( rx < 0 || ry < 0 ) return;
-		const unsigned int ix = static_cast<unsigned int>( rx );
-		const unsigned int iy = static_cast<unsigned int>( ry );
-		if( ix < width && iy < height ) {
+		unsigned int ix = 0, iy = 0;
+		if( NearestPixel( screenX, screenY, width, height, ix, iy ) ) {
 			Splat( ix, iy, contribution );
 		}
 		return;
@@ -134,10 +127,8 @@ void SplatFilm::SplatFiltered(
 	// nearest pixel centre is.  Without this a splat just outside the
 	// film would be renormalised onto the edge pixels below.
 	{
-		const Scalar hx = floor( screenX + Scalar( 0.5 ) );
-		const Scalar hy = floor( screenY + Scalar( 0.5 ) );
-		if( !( hx >= 0 && hy >= 0 &&
-		       hx < static_cast<Scalar>( width ) && hy < static_cast<Scalar>( height ) ) ) {
+		unsigned int hx = 0, hy = 0;
+		if( !NearestPixel( screenX, screenY, width, height, hx, hy ) ) {
 			return;
 		}
 	}
