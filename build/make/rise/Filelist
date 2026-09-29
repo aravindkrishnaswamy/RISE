@@ -213,6 +213,7 @@ SRCLIBMATERIALS =\
 	$(PATHLIBRARY)Materials/PerfectReflectorSPF.cpp							\
 	$(PATHLIBRARY)Materials/PerfectRefractorSPF.cpp							\
 	$(PATHLIBRARY)Materials/PhongEmitter.cpp								\
+	$(PATHLIBRARY)Materials/PolishedBRDF.cpp									\
 	$(PATHLIBRARY)Materials/PolishedSPF.cpp									\
 	$(PATHLIBRARY)Materials/ScatteredRayContainer.cpp						\
 	$(PATHLIBRARY)Materials/SchlickBRDF.cpp									\

@@ -495,6 +495,8 @@
 		F24B72F42F52A632008304C4 /* PhongEmitter.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0901069C42900069C9E5 /* PhongEmitter.h */; };
 		F24B72F52F52A632008304C4 /* PhongLuminaireMaterial.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0902069C42900069C9E5 /* PhongLuminaireMaterial.h */; };
 		F24B72F82F52A632008304C4 /* PolishedMaterial.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0905069C42900069C9E5 /* PolishedMaterial.h */; };
+		D28500010000000000000005 /* PolishedBRDF.h in Sources */ = {isa = PBXBuildFile; fileRef = D28500010000000000000001 /* PolishedBRDF.h */; };
+		D28500010000000000000006 /* PolishedBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D28500010000000000000002 /* PolishedBRDF.cpp */; };
 		F24B72F92F52A632008304C4 /* PolishedSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0906069C42900069C9E5 /* PolishedSPF.cpp */; };
 		F24B72FA2F52A632008304C4 /* PolishedSPF.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0907069C42900069C9E5 /* PolishedSPF.h */; };
 		F24B72FB2F52A632008304C4 /* ScatteredRayContainer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0908069C42900069C9E5 /* ScatteredRayContainer.cpp */; };
@@ -1233,6 +1235,8 @@
 		F27F0B69069C42910069C9E5 /* PhongEmitter.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0901069C42900069C9E5 /* PhongEmitter.h */; };
 		F27F0B6A069C42910069C9E5 /* PhongLuminaireMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0902069C42900069C9E5 /* PhongLuminaireMaterial.h */; };
 		F27F0B6D069C42910069C9E5 /* PolishedMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0905069C42900069C9E5 /* PolishedMaterial.h */; };
+		D28500010000000000000003 /* PolishedBRDF.h in Headers */ = {isa = PBXBuildFile; fileRef = D28500010000000000000001 /* PolishedBRDF.h */; };
+		D28500010000000000000004 /* PolishedBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D28500010000000000000002 /* PolishedBRDF.cpp */; };
 		F27F0B6E069C42910069C9E5 /* PolishedSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0906069C42900069C9E5 /* PolishedSPF.cpp */; };
 		F27F0B6F069C42910069C9E5 /* PolishedSPF.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0907069C42900069C9E5 /* PolishedSPF.h */; };
 		F27F0B70069C42910069C9E5 /* ScatteredRayContainer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0908069C42900069C9E5 /* ScatteredRayContainer.cpp */; };
@@ -2527,6 +2531,8 @@
 		F27F0901069C42900069C9E5 /* PhongEmitter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PhongEmitter.h; sourceTree = "<group>"; };
 		F27F0902069C42900069C9E5 /* PhongLuminaireMaterial.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PhongLuminaireMaterial.h; sourceTree = "<group>"; };
 		F27F0905069C42900069C9E5 /* PolishedMaterial.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PolishedMaterial.h; sourceTree = "<group>"; };
+		D28500010000000000000001 /* PolishedBRDF.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PolishedBRDF.h; sourceTree = "<group>"; };
+		D28500010000000000000002 /* PolishedBRDF.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PolishedBRDF.cpp; sourceTree = "<group>"; };
 		F27F0906069C42900069C9E5 /* PolishedSPF.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PolishedSPF.cpp; sourceTree = "<group>"; };
 		F27F0907069C42900069C9E5 /* PolishedSPF.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PolishedSPF.h; sourceTree = "<group>"; };
 		F27F0908069C42900069C9E5 /* ScatteredRayContainer.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ScatteredRayContainer.cpp; sourceTree = "<group>"; };
@@ -3750,6 +3756,8 @@
 				F27F0901069C42900069C9E5 /* PhongEmitter.h */,
 				F27F0902069C42900069C9E5 /* PhongLuminaireMaterial.h */,
 				F27F0905069C42900069C9E5 /* PolishedMaterial.h */,
+				D28500010000000000000002 /* PolishedBRDF.cpp */,
+				D28500010000000000000001 /* PolishedBRDF.h */,
 				F27F0906069C42900069C9E5 /* PolishedSPF.cpp */,
 				F27F0907069C42900069C9E5 /* PolishedSPF.h */,
 				F27F0908069C42900069C9E5 /* ScatteredRayContainer.cpp */,
@@ -4896,6 +4904,7 @@
 				F2863A022F9244920009D9AE /* CPUTopology.h in Headers */,
 				F26E7A022F9244920009D9AE /* RenderETAEstimator.h in Headers */,
 				F27F0B6D069C42910069C9E5 /* PolishedMaterial.h in Headers */,
+				D28500010000000000000003 /* PolishedBRDF.h in Headers */,
 				F27F0B6F069C42910069C9E5 /* PolishedSPF.h in Headers */,
 				F27F0B72069C42910069C9E5 /* SchlickBRDF.h in Headers */,
 				F27F0B73069C42910069C9E5 /* SchlickMaterial.h in Headers */,
@@ -5506,6 +5515,7 @@
 				F27F0B63069C42910069C9E5 /* PerfectReflectorSPF.cpp in Sources */,
 				F27F0B66069C42910069C9E5 /* PerfectRefractorSPF.cpp in Sources */,
 				F27F0B68069C42910069C9E5 /* PhongEmitter.cpp in Sources */,
+				D28500010000000000000004 /* PolishedBRDF.cpp in Sources */,
 				F27F0B6E069C42910069C9E5 /* PolishedSPF.cpp in Sources */,
 				F27F0B70069C42910069C9E5 /* ScatteredRayContainer.cpp in Sources */,
 				F27F0B71069C42910069C9E5 /* SchlickBRDF.cpp in Sources */,
@@ -6132,6 +6142,8 @@
 				F24B72F42F52A632008304C4 /* PhongEmitter.h in Sources */,
 				F24B72F52F52A632008304C4 /* PhongLuminaireMaterial.h in Sources */,
 				F24B72F82F52A632008304C4 /* PolishedMaterial.h in Sources */,
+				D28500010000000000000006 /* PolishedBRDF.cpp in Sources */,
+				D28500010000000000000005 /* PolishedBRDF.h in Sources */,
 				F24B72F92F52A632008304C4 /* PolishedSPF.cpp in Sources */,
 				F24B72FA2F52A632008304C4 /* PolishedSPF.h in Sources */,
 				F24B72FB2F52A632008304C4 /* ScatteredRayContainer.cpp in Sources */,

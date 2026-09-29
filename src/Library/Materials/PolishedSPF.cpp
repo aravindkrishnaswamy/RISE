@@ -2,6 +2,33 @@
 //
 //  PolishedSPF.cpp - Implementation of the polished SPF
 //
+//  DL-285 (2026-09-28).  The sampler of `PolishedBRDF`'s ONE function
+//  (see PolishedBRDF.h for the model):
+//
+//    * a DELTA coat ray (mirror coat) carrying `tau F(ci)`;
+//    * a GLOSSY coat ray drawn from the coat lobe about the mirror
+//      direction (Phong cos^N, or forward-truncated Henyey-Greenstein),
+//      carrying its own `f_coat co / p_coat`;
+//    * a SUBSTRATE ray drawn cosine-weighted about the side-oriented
+//      shading normal, carrying `f_sub co / (co/pi)`.
+//
+//  Every emitted ray's kray is its own lobe's `f_I co / p_I`, so summing
+//  over what Scatter emits (the legacy shader ops) or selecting one with
+//  `ScatteredRayContainer::RandomlySelect` and dividing by the realized
+//  selection probability (PT/BDPT/VCM/MLT) both estimate
+//  integral f co L with the SAME f that `IBSDF::value` returns.
+//
+//  `Pdf`/`PdfNM` report the density of what Scatter + RandomlySelect
+//  actually generate.  Both non-delta lobes carry DIRECTION-DEPENDENT
+//  selection weights (the coat through min(F(ci),F(co)) and co, the
+//  substrate through 1-F(co)), so each lobe's realized selection
+//  probability at wo is an expectation over the OTHER lobe's own random
+//  draw -- the DL-99 case, which needs one quadrature PER lobe (not one
+//  shared): the substrate's over its cosine-distributed exit cosine
+//  (1-D Gauss-Legendre with the exact tilted-horizon azimuth fraction),
+//  the coat's over its own (alpha, psi) square.  A delta coat carries a
+//  constant weight and is always emitted, so it only shifts the others.
+//
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: May 21, 2003
 //  Tabs: 4
@@ -21,6 +48,88 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
+namespace
+{
+	//! Gauss-Legendre nodes on [0,1] for the substrate expectation, in
+	//! t with mu = sqrt(t) (cosine-weighted exit: mu^2 is uniform).
+	const int kSubQuadN = 16;
+	const Scalar kGL16X[16] = {
+		0.0052995325041750307, 0.0277124884633837, 0.067184398806084178, 0.12229779582249845,
+		0.19106187779867811, 0.27099161117138632, 0.35919822461037054, 0.45249374508118129,
+		0.54750625491881877, 0.64080177538962946, 0.72900838882861363, 0.80893812220132189,
+		0.87770220417750155, 0.93281560119391582, 0.9722875115366163, 0.99470046749582497 };
+	const Scalar kGL16W[16] = {
+		0.013576229705877027, 0.031126761969323805, 0.047579255841246497, 0.062314485627766973,
+		0.074797994408288326, 0.08457825969750131, 0.091301707522461806, 0.094725305227534293,
+		0.094725305227534293, 0.091301707522461806, 0.08457825969750131, 0.074797994408288326,
+		0.062314485627766973, 0.047579255841246497, 0.031126761969323805, 0.013576229705877027 };
+
+	//! Deterministic replay of the glossy coat sampler's own square:
+	//! kCoatQuadA midpoints in the sampler's u (the inverse-CDF polar
+	//! angle) times kCoatQuadP midpoints in the uniform azimuth.
+	const int kCoatQuadA = 16;
+	const int kCoatQuadP = 16;
+
+	struct AzimuthTable
+	{
+		Scalar c[kCoatQuadP];
+		Scalar s[kCoatQuadP];
+		AzimuthTable()
+		{
+			for( int j = 0; j < kCoatQuadP; ++j ) {
+				const Scalar p = ( j + 0.5 ) / kCoatQuadP * TWO_PI;
+				c[j] = cos( p );
+				s[j] = sin( p );
+			}
+		}
+	};
+
+	const AzimuthTable& Azimuths()
+	{
+		static const AzimuthTable t;
+		return t;
+	}
+
+	//! `ScatteredRayContainer::RandomlySelect`'s probability of returning
+	//! a ray of weight @a w from a container of @a count rays whose
+	//! weights sum to @a total.
+	inline Scalar SelectProbability( const Scalar w, const int count, const Scalar total )
+	{
+		if( count == 1 ) {
+			return 1;
+		}
+		return ( total > NEARZERO ) ? ( w / total ) : Scalar(0);
+	}
+
+	//! The i-th glossy component of @a L (skipping delta ones).
+	inline int GlossyComponent( const PolishedLobes& L, int i )
+	{
+		for( int k = 0; k < L.K; ++k ) {
+			if( !L.delta[k] ) {
+				if( i == 0 ) return k;
+				--i;
+			}
+		}
+		return 0;
+	}
+
+	//! Direction at polar cosine @a cosA and azimuth (@a cp, @a sp) about @a f's w axis.
+	inline Vector3 LobeDirection( const OrthonormalBasis3D& f, const Scalar cosA, const Scalar cp, const Scalar sp )
+	{
+		const Scalar sinA = sqrt( r_max( Scalar(0), Scalar(1) - cosA * cosA ) );
+		return Vector3Ops::Normalize( f.w() * cosA + f.u() * ( sinA * cp ) + f.v() * ( sinA * sp ) );
+	}
+
+	inline void Store( ScatteredRay& r, const PolishedLobes& L, const Scalar k[3] )
+	{
+		if( L.nch == 1 ) {
+			r.krayNM = k[0];
+		} else {
+			r.kray = RISEPel( k[0], k[1], k[2] );
+		}
+	}
+}
+
 PolishedSPF::PolishedSPF(
 	const IPainter& Rd_,
 	const IScalarPainter& tau_,
@@ -28,309 +137,269 @@ PolishedSPF::PolishedSPF(
 	const IScalarPainter& s,
 	const bool hg
 	) :
-  pRd( &Rd_ ),
-  pTau( &tau_ ),
-  pNt( &Nt_ ),
-  pScat( &s ),
-  bHG( hg )
+  pBRDF( 0 )
 {
-	pRd->addref();
-	pTau->addref();
-	pNt->addref();
-	pScat->addref();
+	pBRDF = new PolishedBRDF( Rd_, tau_, Nt_, s, hg );
+	GlobalLog()->PrintNew( pBRDF, __FILE__, __LINE__, "polished BRDF" );
 }
 
 PolishedSPF::~PolishedSPF( )
 {
-	safe_release( pRd );
-	safe_release( pTau );
-	safe_release( pNt );
-	safe_release( pScat );
+	safe_release( pBRDF );
 }
 
-void PolishedSPF::SetDiffuseReflectance( const IPainter& v )
-{
-	v.addref();
-	safe_release( pRd );
-	pRd = &v;
-}
-
-void PolishedSPF::SetTransmittance( const IScalarPainter& v )
-{
-	v.addref();
-	safe_release( pTau );
-	pTau = &v;
-}
-
-void PolishedSPF::SetIOR( const IScalarPainter& v )
-{
-	v.addref();
-	safe_release( pNt );
-	pNt = &v;
-}
-
-void PolishedSPF::SetScattering( const IScalarPainter& v )
-{
-	v.addref();
-	safe_release( pScat );
-	pScat = &v;
-}
-
-Scalar PolishedSPF::GenerateScatteredRayFromPolish(
-	ScatteredRay& dielectric,
-	const Vector3 normal,										///< [in] Normal
-	const Vector3 reflected,									///< [in] Reflected ray
-	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-	const Point2& random,										///< [in] Random numbers
-	const Scalar scatfunc,
-	const Scalar ior,
-	const IORStack& ior_stack								///< [in/out] Index of refraction stack
+void PolishedSPF::ScatterImpl(
+	const RayIntersectionGeometric& ri,
+	ISampler& sampler,
+	const Scalar nm,
+	ScatteredRayContainer& scattered,
+	const IORStack& ior_stack
 	) const
 {
-	Vector3	vRefracted = ri.ray.Dir();
-	const Vector3	vIn = vRefracted;
+	PolishedLobes L;
+	pBRDF->Resolve( ri, ior_stack.top(), nm, L );
 
-	Scalar		Rs = 0.0;
-	if( Optics::CalculateRefractedRay( normal, ior_stack.top(), ior, vRefracted ) ) {
-		Rs = Optics::CalculateDielectricReflectance( vIn, vRefracted, normal, ior_stack.top(), ior );
+	// Coat pair then substrate pair, drawn unconditionally so the
+	// per-vertex dimension budget does not depend on what is emitted;
+	// a third coat draw picks the component only when the lobe shape
+	// varies per channel.
+	const Scalar u1 = sampler.Get1D();
+	const Scalar u2 = sampler.Get1D();
+	const Scalar u3 = sampler.Get1D();
+	const Scalar u4 = sampler.Get1D();
+	const Scalar uK = ( L.nGlossy > 1 ) ? sampler.Get1D() : Scalar(0);
+
+	if( !L.valid ) {
+		return;
 	}
 
-	Vector3	rv = reflected;
+	Scalar k[3];
 
-	// Generate one reflected ray from the polish
-	Scalar alpha = 0;
-
-	if( bHG ) {
-		if( scatfunc<1 ) {
-			const Scalar& g = scatfunc;
-			do {
-				const Scalar inner = (1.0 - g*g) / (1 - g + 2*g*random.x);
-				alpha = acos( (1/(2.0*g)) * (1 + g*g - inner*inner) );
-			} while( alpha < 0 || alpha > PI_OV_TWO );
-
-			dielectric.isDelta = false;
-			// HG phase function PDF: p(cos_alpha) = (1-g^2) / (4*PI*(1+g^2-2*g*cos(alpha))^(3/2))
-			// Convert to solid angle (already in solid angle for phase functions)
-			const Scalar cos_alpha = cos(alpha);
-			const Scalar denom = 1.0 + g*g - 2.0*g*cos_alpha;
-			dielectric.pdf = (1.0 - g*g) / (FOUR_PI * denom * sqrt(denom));
-		} else {
-			// Perfect mirror reflection (g >= 1)
-			dielectric.isDelta = true;
-			dielectric.pdf = 1.0;
+	// Delta coat.  Mandatory lobe: where the shading-normal mirror would
+	// tunnel through the true geometric surface it is re-derived about
+	// the ray-anchored geometric normal (PerfectReflectorSPF's rule),
+	// so it is ALWAYS emitted -- the realized-density bookkeeping in
+	// PdfImpl relies on that.
+	if( L.nDelta > 0 )
+	{
+		ScatteredRay d;
+		d.type = ScatteredRay::eRayReflection;
+		d.isDelta = true;
+		d.pdf = 1.0;
+		Vector3 dir = L.rv;
+		if( Vector3Ops::Dot( dir, L.geomN ) <= 0 ) {
+			dir = Optics::CalculateReflectedRay( ri.ray.Dir(), L.geomN );
 		}
-	} else {
-		if( scatfunc < 1000000.0 ) {
-			alpha = acos( pow(random.x, 1.0 / (scatfunc+1.0)) );
+		d.ray.Set( ri.ptIntersection, dir );
+		PolishedBRDF::DeltaKray( L, k );
+		Store( d, L, k );
+		scattered.AddScatteredRay( d );
+	}
 
-			dielectric.isDelta = false;
-			// Phong lobe PDF: p(alpha) = (n+1)/(2*PI) * cos^n(alpha)
-			const Scalar cos_alpha = cos(alpha);
-			dielectric.pdf = (scatfunc + 1.0) / TWO_PI * pow(cos_alpha, scatfunc);
-		} else {
-			// Perfect mirror reflection (very high Phong exponent)
-			dielectric.isDelta = true;
-			dielectric.pdf = 1.0;
+	// Glossy coat: the component's lobe about the mirror direction.  A
+	// draw outside the model's support (below the side-oriented shading
+	// normal or the geometric horizon) is a zero sample, not re-drawn.
+	if( L.nGlossy > 0 )
+	{
+		const int pick = r_min( L.nGlossy - 1, int( uK * L.nGlossy ) );
+		const int comp = GlossyComponent( L, pick );
+		OrthonormalBasis3D f;
+		f.CreateFromW( L.rv );
+		const Scalar cosA = PolishedBRDF::ComponentCosAlpha( L, comp, u1 );
+		const Vector3 wo = LobeDirection( f, cosA, cos( TWO_PI * u2 ), sin( TWO_PI * u2 ) );
+		if( PolishedBRDF::Accepted( L, wo ) )
+		{
+			const Scalar p = PolishedBRDF::GlossyCoatDensity( L, wo );
+			if( p > 0 ) {
+				ScatteredRay c;
+				c.type = ScatteredRay::eRayReflection;
+				c.isDelta = false;
+				c.ray.Set( ri.ptIntersection, wo );
+				c.pdf = p;
+				PolishedBRDF::CoatKray( L, wo, k );
+				Store( c, L, k );
+				scattered.AddScatteredRay( c );
+			}
 		}
 	}
 
-	// Use the warping function for a Phong based PDF
-	if( alpha > 0 ) {
-		rv = GeometricUtilities::Perturb(
-			rv,
-			alpha,
-			TWO_PI * random.y
-			);
+	// Substrate: cosine-weighted about the side-oriented shading normal.
+	if( L.emitDiffuse )
+	{
+		const Vector3 wo = GeometricUtilities::CreateDiffuseVector( L.onb, Point2( u3, u4 ) );
+		if( PolishedBRDF::Accepted( L, wo ) )
+		{
+			ScatteredRay s;
+			s.type = ScatteredRay::eRayDiffuse;
+			s.isDelta = false;
+			s.ray.Set( ri.ptIntersection, wo );
+			s.pdf = Vector3Ops::Dot( wo, L.n ) * INV_PI;
+			PolishedBRDF::SubstrateKray( L, wo, k );
+			Store( s, L, k );
+			scattered.AddScatteredRay( s );
+		}
 	}
-
-	dielectric.ray.Set( ri.ptIntersection, rv );
-
-	return Rs;
 }
 
 void PolishedSPF::Scatter(
-	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-	ISampler& sampler,				///< [in] Sampler
-	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	const IORStack& ior_stack								///< [in/out] Index of refraction stack
+	const RayIntersectionGeometric& ri,
+	ISampler& sampler,
+	ScatteredRayContainer& scattered,
+	const IORStack& ior_stack
 	) const
 {
-	ScatteredRay	dielectric;
-	dielectric.type = ScatteredRay::eRayReflection;
-	RISEPel Rs;
-
-	const ScalarTriple scattering = pScat->GetValuesAt(ri);
-	const ScalarTriple ior        = pNt->GetValuesAt(ri);
-	const ScalarTriple tauVals    = pTau->GetValuesAt(ri);
-
-	const bool bBackface = Vector3Ops::Dot( ri.vGeomNormal, ri.ray.Dir() ) > 0;
-	const Vector3 n = bBackface ? -ri.vNormal : ri.vNormal;
-	const Vector3 rv = Optics::CalculateReflectedRay( ri.ray.Dir(), n );
-
-	// Geometric-horizon gate (ray-anchored; see GGXSPF::Scatter /
-	// PerfectReflectorSPF::Scatter): the coat lobe's direction is built
-	// around the SHADING normal `n` (and can be further perturbed by
-	// GenerateScatteredRayFromPolish's Phong/HG cone), which a tilting
-	// modifier can swing far enough that the reflection tunnels through
-	// the true geometric surface -- this file had no such gate before.
-	// geomN is anchored to ri.ray.Dir(), so its orientation cannot be
-	// fooled by the same tilt.  Degenerate vGeomNormal falls back to n
-	// (gate is a no-op).
-	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
-		? ri.vGeomNormal : n;
-	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
-
-	// Dispersion is detected via the painter's own static-property
-	// report; tau's per-channel variation alone doesn't trigger
-	// dispersion because tau is multiplicative attenuation rather
-	// than a wavelength-bound dispersion source.
-	const bool disperse = pScat->HasPerChannelVariation() || pNt->HasPerChannelVariation();
-	if( !disperse )
-	{
-		Rs = GenerateScatteredRayFromPolish( dielectric, n, rv, ri, Point2(sampler.Get1D(),sampler.Get1D()), scattering.v[0], ior.v[0], ior_stack );
-		dielectric.kray = RISEPel( tauVals.v[0], tauVals.v[1], tauVals.v[2] ) * Rs;
-
-		if( Vector3Ops::Dot( dielectric.ray.Dir(), geomN ) <= 0 )
-		{
-			if( dielectric.isDelta ) {
-				// Mandatory lobe (perfect-mirror coat) -- re-derive about the
-				// TRUE geometric normal exactly like PerfectReflectorSPF,
-				// which unconditionally satisfies the gate: for a ray
-				// arriving against geomN, dot(reflect(d,geomN),geomN) =
-				// -dot(d,geomN) > 0 holds unconditionally (up to the
-				// measure-zero exact-tangent boundary) since geomN is
-				// ray-anchored.
-				dielectric.ray.SetDir( Optics::CalculateReflectedRay( ri.ray.Dir(), geomN ) );
-				scattered.AddScatteredRay( dielectric );
-			}
-			// else: glossy coat lobe has a genuine sampling distribution
-			// (like GGXSPF's specular lobe) -- plain rejection, no fallback.
-		}
-		else if( Vector3Ops::Dot( dielectric.ray.Dir(), ri.onb.w() ) > 0.0 ) {
-			scattered.AddScatteredRay( dielectric );
-		}
-	}
-	else
-	{
-		Point2 ptrand( sampler.Get1D(), sampler.Get1D() );
-		for( int i=0; i<3; i++ ) {
-			Rs[i] = GenerateScatteredRayFromPolish( dielectric, n, rv, ri, ptrand, scattering.v[i], ior.v[i], ior_stack );
-			dielectric.kray = 0;
-			dielectric.kray[i] = tauVals.v[i] * Rs[i];
-
-			if( Vector3Ops::Dot( dielectric.ray.Dir(), geomN ) <= 0 )
-			{
-				if( dielectric.isDelta ) {
-					// Mandatory lobe -- see the non-dispersive branch above.
-					dielectric.ray.SetDir( Optics::CalculateReflectedRay( ri.ray.Dir(), geomN ) );
-					scattered.AddScatteredRay( dielectric );
-				}
-			}
-			else if( Vector3Ops::Dot( dielectric.ray.Dir(), ri.onb.w() ) > 0.0 ) {
-				scattered.AddScatteredRay( dielectric );
-			}
-		}
-	}
-
-	if( ColorMath::MinValue(Rs) < 1.0 )
-	{
-		ScatteredRay	diffuse;
-		diffuse.type = ScatteredRay::eRayDiffuse;
-		diffuse.isDelta = false;
-
-		// Generate a reflected ray with a cosine distribution
-		diffuse.kray = pRd->GetColor(ri) * (1.0-Rs);
- 		diffuse.ray.Set(
-			ri.ptIntersection,
-			GeometricUtilities::CreateDiffuseVector( ri.onb, Point2(sampler.Get1D(),sampler.Get1D()) )
-			);
-		// Cosine-weighted hemisphere: pdf = cos(theta) / PI
-		const Scalar cos_theta = Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() );
-		diffuse.pdf = r_max( 0.0, cos_theta ) * INV_PI;
-
-		// Diffuse is a non-delta lobe (like GGXSPF's diffuse lobe) --
-		// plain rejection against BOTH the shading hemisphere and the
-		// ray-anchored geometric horizon.
-		if( Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() ) > 0.0 && Vector3Ops::Dot( diffuse.ray.Dir(), geomN ) > 0.0 ) {
-			scattered.AddScatteredRay( diffuse );
-		}
-	}
+	ScatterImpl( ri, sampler, Scalar(-1), scattered, ior_stack );
 }
 
 void PolishedSPF::ScatterNM(
-	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-	ISampler& sampler,				///< [in] Sampler
-	const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
-	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	const IORStack& ior_stack								///< [in/out] Index of refraction stack
+	const RayIntersectionGeometric& ri,
+	ISampler& sampler,
+	const Scalar nm,
+	ScatteredRayContainer& scattered,
+	const IORStack& ior_stack
 	) const
 {
-	ScatteredRay	dielectric;
-	dielectric.type = ScatteredRay::eRayReflection;
+	ScatterImpl( ri, sampler, nm, scattered, ior_stack );
+}
 
-	// Side-of-surface decision uses the GEOMETRIC normal (front/back is
-	// face-orientation, PBRT 4e §10.1.1 / §9.5).  The flipped normal `n`
-	// carries the SHADING normal so the lobe / Fresnel / refracted
-	// direction stays in the BSDF frame, matching Mitsuba 3
-	// `dielectric.cpp`.  `Optics::CalculateRefractedRay` and
-	// `CalculateDielectricReflectance` are sign-invariant under n→-n
-	// so the visible difference vs the prior shading-only test is
-	// small in this file, but the geometric form is the documented
-	// convention and is robust against future code that consumes `n`
-	// directly.
-	const bool bBackface = Vector3Ops::Dot( ri.vGeomNormal, ri.ray.Dir() ) > 0;
-	const Vector3 n = bBackface ? -ri.vNormal : ri.vNormal;
-	const Vector3 rv = Optics::CalculateReflectedRay( ri.ray.Dir(), n );
+Scalar PolishedSPF::PdfImpl(
+	const RayIntersectionGeometric& ri,
+	const Vector3& woIn,
+	const Scalar nm,
+	const IORStack& ior_stack
+	) const
+{
+	PolishedLobes L;
+	pBRDF->Resolve( ri, ior_stack.top(), nm, L );
+	if( !L.valid ) {
+		return 0;
+	}
+	const Vector3 wo = Vector3Ops::Normalize( woIn );
+	if( !PolishedBRDF::Accepted( L, wo ) ) {
+		return 0;
+	}
+	const Scalar co = Vector3Ops::Dot( wo, L.n );
 
-	// Geometric-horizon gate (mirrors Scatter()'s gate above).
-	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
-		? ri.vGeomNormal : n;
-	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+	Scalar k[3];
+	const int    nD = ( L.nDelta > 0 ) ? 1 : 0;		// the delta coat is one always-emitted ray
+	Scalar wDelta = 0;
+	if( nD ) {
+		PolishedBRDF::DeltaKray( L, k );
+		wDelta = PolishedBRDF::Reduce( L, k );
+	}
 
-	Scalar Rs = GenerateScatteredRayFromPolish( dielectric, n, rv, ri, Point2(sampler.Get1D(),sampler.Get1D()), pScat->GetValueAtNM(ri,nm), pNt->GetValueAtNM(ri,nm), ior_stack );
-	dielectric.krayNM = pTau->GetValueAtNM(ri,nm) * Rs;
+	const Scalar pG = ( L.nGlossy > 0 ) ? PolishedBRDF::GlossyCoatDensity( L, wo ) : Scalar(0);
+	const Scalar pS = L.emitDiffuse ? co * INV_PI : Scalar(0);
 
-	if( Vector3Ops::Dot( dielectric.ray.Dir(), geomN ) <= 0 )
+	Scalar result = 0;
+
+	// ---- glossy coat generated wo: expectation over the substrate draw.
+	if( pG > 0 )
 	{
-		if( dielectric.isDelta ) {
-			// Mandatory lobe -- see Scatter() for the rationale.
-			dielectric.ray.SetDir( Optics::CalculateReflectedRay( ri.ray.Dir(), geomN ) );
-			scattered.AddScatteredRay( dielectric );
+		PolishedBRDF::CoatKray( L, wo, k );
+		const Scalar wG = PolishedBRDF::Reduce( L, k );
+		const Scalar selNoSub = SelectProbability( wG, nD + 1, wDelta + wG );
+		Scalar q = selNoSub;
+		if( L.emitDiffuse )
+		{
+			// Exact acceptance fraction of the substrate's azimuth against the
+			// geometric horizon at each exit cosine (1 when geomN == n).
+			const Scalar cosG = r_min( Scalar(1), r_max( Scalar(-1), Vector3Ops::Dot( L.n, L.geomN ) ) );
+			const Scalar sinG = sqrt( r_max( Scalar(0), Scalar(1) - cosG * cosG ) );
+			q = 0;
+			Scalar ks[3];
+			for( int j = 0; j < kSubQuadN; ++j ) {
+				const Scalar mu = sqrt( kGL16X[j] );
+				Scalar a = 1;
+				if( sinG > Scalar(1e-9) ) {
+					const Scalar s = sqrt( r_max( Scalar(0), Scalar(1) - mu * mu ) );
+					if( s > 0 ) {
+						const Scalar x = -( mu * cosG ) / ( s * sinG );
+						a = acos( r_min( Scalar(1), r_max( Scalar(-1), x ) ) ) * INV_PI;
+					} else {
+						a = ( mu * cosG > 0 ) ? Scalar(1) : Scalar(0);
+					}
+				}
+				// Substrate weight at exit cosine mu (it depends on mu alone).
+				for( int c = 0; c < L.nch; ++c ) {
+					const Scalar Fo = PolishedBRDF::Fresnel( mu, L.outer, L.eta[c] );
+					ks[c] = ( L.Tavg[c] > 0 ) ? L.rd[c] * ( 1.0 - L.Fi[c] ) * ( 1.0 - Fo ) / L.Tavg[c] : Scalar(0);
+				}
+				for( int c = L.nch; c < 3; ++c ) ks[c] = 0;
+				const Scalar wS = PolishedBRDF::Reduce( L, ks );
+				q += kGL16W[j] * ( a * SelectProbability( wG, nD + 2, wDelta + wG + wS ) + ( 1 - a ) * selNoSub );
+			}
 		}
-	}
-	else if( Vector3Ops::Dot( dielectric.ray.Dir(), ri.onb.w() ) > 0.0 ) {
-		scattered.AddScatteredRay( dielectric );
+		result += pG * q;
 	}
 
-	if( Rs < 1.0 )
+	// ---- substrate generated wo: expectation over the glossy coat draw.
+	if( pS > 0 )
 	{
-		ScatteredRay	diffuse;
-		diffuse.type = ScatteredRay::eRayDiffuse;
-		diffuse.isDelta = false;
-
-		// Generate a reflected ray with a cosine distribution
-		diffuse.krayNM = GuardedGetColorNM( *pRd, ri, nm ) * (1.0-Rs);
-		diffuse.ray.Set(
-			ri.ptIntersection,
-			GeometricUtilities::CreateDiffuseVector( ri.onb, Point2(sampler.Get1D(),sampler.Get1D()) )
-			);
-		const Scalar cos_theta = Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() );
-		diffuse.pdf = r_max( 0.0, cos_theta ) * INV_PI;
-
-		if( Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() ) > 0.0 && Vector3Ops::Dot( diffuse.ray.Dir(), geomN ) > 0.0 ) {
-			scattered.AddScatteredRay( diffuse );
+		PolishedBRDF::SubstrateKray( L, wo, k );
+		const Scalar wS = PolishedBRDF::Reduce( L, k );
+		const Scalar selNoCoat = SelectProbability( wS, nD + 1, wDelta + wS );
+		Scalar q = selNoCoat;
+		if( L.nGlossy > 0 )
+		{
+			const AzimuthTable& az = Azimuths();
+			OrthonormalBasis3D f;
+			f.CreateFromW( L.rv );
+			Scalar sum = 0;
+			Scalar kc[3];
+			for( int i = 0; i < L.nGlossy; ++i ) {
+				const int comp = GlossyComponent( L, i );
+				for( int a = 0; a < kCoatQuadA; ++a ) {
+					const Scalar cosA = PolishedBRDF::ComponentCosAlpha( L, comp, ( a + 0.5 ) / kCoatQuadA );
+					for( int p = 0; p < kCoatQuadP; ++p ) {
+						const Vector3 C = LobeDirection( f, cosA, az.c[p], az.s[p] );
+						if( PolishedBRDF::Accepted( L, C ) ) {
+							PolishedBRDF::CoatKray( L, C, kc );
+							const Scalar wG = PolishedBRDF::Reduce( L, kc );
+							sum += SelectProbability( wS, nD + 2, wDelta + wG + wS );
+						} else {
+							sum += selNoCoat;
+						}
+					}
+				}
+			}
+			q = sum / Scalar( L.nGlossy * kCoatQuadA * kCoatQuadP );
 		}
+		result += pS * q;
 	}
+
+	return result;
+}
+
+Scalar PolishedSPF::Pdf(
+	const RayIntersectionGeometric& ri,
+	const Vector3& wo,
+	const IORStack& ior_stack
+	) const
+{
+	return PdfImpl( ri, wo, Scalar(-1), ior_stack );
+}
+
+Scalar PolishedSPF::PdfNM(
+	const RayIntersectionGeometric& ri,
+	const Vector3& wo,
+	const Scalar nm,
+	const IORStack& ior_stack
+	) const
+{
+	return PdfImpl( ri, wo, nm, ior_stack );
 }
 
 //////////////////////////////////////////////////////////////////////
-// EvaluateKrayNM — HWSS companion throughput evaluation.
-//
-// Returns the krayNM that ScatterNM would have produced for the
-// given lobe at wavelength nm.  Both lobes are direction-independent:
-//   coat:    tau(nm) * Rs(nm, theta_i)
-//   diffuse: Rd(nm) * (1 - Rs(nm, theta_i))
-// where Rs is the Fresnel reflectance at the incident angle.
+// HWSS companion evaluation (DL-125 / DL-216).  Per selected lobe at
+// wavelength nm:
+//   glossy coat:  f_coat(nm)             (EvaluateLobeFNM)
+//                 f_coat(nm) co / p_coat (EvaluateKrayNM, 5-arg)
+//   substrate:    f_sub(nm)              / f_sub(nm) co / (co/pi)
+//   delta coat:   no f (-1)              / tau(nm) F(nm, ci)
+// The companion ladders divide by the HERO's RandomlySelect probability
+// (PT) or form companion/hero ratios in which it cancels (BDPT/VCM/MLT),
+// so the per-lobe values are exactly what they need.
 //////////////////////////////////////////////////////////////////////
 Scalar PolishedSPF::EvaluateLobeFNM(
 	const RayIntersectionGeometric& ri,
@@ -340,54 +409,22 @@ Scalar PolishedSPF::EvaluateLobeFNM(
 	const IORStack& ior_stack
 	) const
 {
-	const bool bBackface = Vector3Ops::Dot( ri.vGeomNormal, ri.ray.Dir() ) > 0;
-	const Vector3 n = bBackface ? -ri.vNormal : ri.vNormal;
-	Vector3 vRefracted = ri.ray.Dir();
-	Scalar Rs = 0.0;
-	const Scalar iorTop = ior_stack.top();
-	const Scalar iorCoat = pNt->GetValueAtNM( ri, nm );
-	if( Optics::CalculateRefractedRay( n, iorTop, iorCoat, vRefracted ) ) {
-		Rs = Optics::CalculateDielectricReflectance(
-			ri.ray.Dir(), vRefracted, n, iorTop, iorCoat );
-	}
-
+	PolishedLobes L;
+	pBRDF->Resolve( ri, ior_stack.top(), nm, L );
+	const Vector3 wo = Vector3Ops::Normalize( outDir );
+	Scalar f[3];
 	if( rayType == ScatteredRay::eRayDiffuse ) {
-		return GuardedGetColorNM( *pRd, ri, nm ) * ( 1.0 - Rs ) * INV_PI;
+		PolishedBRDF::SubstrateF( L, wo, f );
+		return f[0];
 	}
-
-	if( rayType != ScatteredRay::eRayReflection ) {
-		return -1;
+	if( rayType == ScatteredRay::eRayReflection ) {
+		if( L.nGlossy == 0 ) {
+			return -1;		// delta coat: no density-free value exists
+		}
+		PolishedBRDF::CoatF( L, wo, f );
+		return f[0];
 	}
-
-	const Scalar scatfunc = pScat->GetValueAtNM( ri, nm );
-	const bool is_delta = bHG ? (scatfunc >= 1.0) : (scatfunc >= 1000000.0);
-	if( is_delta ) {
-		return -1;
-	}
-
-	const Vector3 woNorm = Vector3Ops::Normalize( outDir );
-	const Vector3 rv = Optics::CalculateReflectedRay( ri.ray.Dir(), n );
-	const Scalar cos_alpha = Vector3Ops::Dot( woNorm, rv );
-	if( cos_alpha <= 0.0 ) {
-		return 0;
-	}
-
-	Scalar pdf_specular = 0.0;
-	if( bHG ) {
-		const Scalar& g = scatfunc;
-		const Scalar denom = 1.0 + g*g - 2.0*g*cos_alpha;
-		pdf_specular = (1.0 - g*g) / (FOUR_PI * denom * sqrt(denom));
-	} else {
-		pdf_specular = (scatfunc + 1.0) / TWO_PI * pow(cos_alpha, scatfunc);
-	}
-
-	const Scalar cos_o = Vector3Ops::Dot( woNorm, n );
-	if( cos_o <= 0.0 ) {
-		return 0;
-	}
-
-	const Scalar kray = pTau->GetValueAtNM( ri, nm ) * Rs;
-	return ( kray * pdf_specular ) / cos_o;
+	return -1;
 }
 
 Scalar PolishedSPF::EvaluateKrayNM(
@@ -398,28 +435,25 @@ Scalar PolishedSPF::EvaluateKrayNM(
 	const IORStack& ior_stack
 	) const
 {
-	// Compute Fresnel reflectance at the incident angle (same logic
-	// as GenerateScatteredRayFromPolish lines 62-68).
-	// Side-of-surface uses geometric; lobe direction uses shading
-	// (see PolishedSPF::Scatter for rationale).
-	const bool bBackface = Vector3Ops::Dot( ri.vGeomNormal, ri.ray.Dir() ) > 0;
-	const Vector3 n = bBackface ? -ri.vNormal : ri.vNormal;
-	Vector3 vRefracted = ri.ray.Dir();
-	Scalar Rs = 0.0;
-	const Scalar iorTop = ior_stack.top();
-	const Scalar iorCoat = pNt->GetValueAtNM( ri, nm );
-	if( Optics::CalculateRefractedRay( n, iorTop, iorCoat, vRefracted ) ) {
-		Rs = Optics::CalculateDielectricReflectance(
-			ri.ray.Dir(), vRefracted, n, iorTop, iorCoat );
+	PolishedLobes L;
+	pBRDF->Resolve( ri, ior_stack.top(), nm, L );
+	if( !L.valid ) {
+		return 0;
 	}
-
+	const Vector3 wo = Vector3Ops::Normalize( outDir );
+	Scalar k[3];
+	if( rayType == ScatteredRay::eRayDiffuse ) {
+		PolishedBRDF::SubstrateKray( L, wo, k );
+		return k[0];
+	}
 	if( rayType == ScatteredRay::eRayReflection ) {
-		return pTau->GetValueAtNM( ri, nm ) * Rs;
+		if( L.nDelta > 0 ) {
+			PolishedBRDF::DeltaKray( L, k );
+		} else {
+			PolishedBRDF::CoatKray( L, wo, k );
+		}
+		return k[0];
 	}
-	else if( rayType == ScatteredRay::eRayDiffuse ) {
-		return GuardedGetColorNM( *pRd, ri, nm ) * ( 1.0 - Rs );
-	}
-
 	return -1;
 }
 
@@ -435,198 +469,10 @@ Scalar PolishedSPF::EvaluateKrayNM(
 	if( pdfHero <= 0 ) {
 		return EvaluateKrayNM( ri, outDir, rayType, nm, ior_stack );
 	}
-
-	if( rayType == ScatteredRay::eRayDiffuse ) {
-		return EvaluateKrayNM( ri, outDir, rayType, nm, ior_stack );
-	}
-
-	if( rayType != ScatteredRay::eRayReflection ) {
-		return -1;
-	}
-
-	const Scalar scatfunc = pScat->GetValueAtNM( ri, nm );
-	const bool is_delta = bHG ? (scatfunc >= 1.0) : (scatfunc >= 1000000.0);
-	if( is_delta ) {
-		return EvaluateKrayNM( ri, outDir, rayType, nm, ior_stack );
-	}
-
-	const bool bBackface = Vector3Ops::Dot( ri.vGeomNormal, ri.ray.Dir() ) > 0;
-	const Vector3 n = bBackface ? -ri.vNormal : ri.vNormal;
-	const Vector3 woNorm = Vector3Ops::Normalize( outDir );
-	const Scalar cos_o = Vector3Ops::Dot( woNorm, n );
-	if( cos_o <= 0.0 ) {
-		return 0;
-	}
-
 	const Scalar f = EvaluateLobeFNM( ri, outDir, rayType, nm, ior_stack );
-	if( f <= 0.0 ) {
-		return 0;
+	if( f < 0 ) {
+		return EvaluateKrayNM( ri, outDir, rayType, nm, ior_stack );
 	}
-
+	const Scalar cos_o = fabs( Vector3Ops::Dot( Vector3Ops::Normalize( outDir ), ri.vNormal ) );
 	return ( f * cos_o ) / pdfHero;
-}
-
-// Computes the Polished SPF PDF for a given direction
-static Scalar PolishedPdf(
-	const RayIntersectionGeometric& ri,
-	const Vector3& wo,
-	const Scalar scatfunc,
-	const Scalar ior,
-	const bool bHG,
-	const IORStack& ior_stack,
-	const Scalar wSpec,
-	const Scalar wDiff
-	)
-{
-	const Vector3& n = ri.onb.w();
-	const Scalar cos_theta_o = Vector3Ops::Dot( wo, n );
-
-	if( cos_theta_o <= 0.0 ) {
-		return 0.0;
-	}
-
-	// Geometric-horizon gate (ray-anchored; MIS consistency with
-	// Scatter's sampler-side gate -- see GGXSPF::Pdf).  A wo the sampler
-	// can no longer emit (it would tunnel through the true geometric
-	// surface under a tilted shading normal) must contribute zero
-	// density.  Independently named (gateBackface/gateShadeN) to avoid
-	// shadowing the specular-lobe bBackface/vn computed further below.
-	{
-		const bool gateBackface = Vector3Ops::Dot( ri.vGeomNormal, ri.ray.Dir() ) > 0;
-		const Vector3 gateShadeN = gateBackface ? -ri.vNormal : ri.vNormal;
-		const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
-			? ri.vGeomNormal : gateShadeN;
-		const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
-		if( Vector3Ops::Dot( wo, geomN ) <= 0 ) {
-			return 0.0;
-		}
-	}
-
-	// Diffuse PDF: cosine-weighted hemisphere
-	const Scalar pdf_diffuse = cos_theta_o * INV_PI;
-
-	// Specular PDF: depends on whether it's a delta or not
-	bool is_delta = false;
-
-	if( bHG ) {
-		is_delta = (scatfunc >= 1.0);
-	} else {
-		is_delta = (scatfunc >= 1000000.0);
-	}
-
-	if( is_delta ) {
-		// Delta distribution for specular: pdf is 0 for any non-delta query direction
-		// Only the diffuse component contributes
-		return pdf_diffuse;
-	}
-
-	// For non-delta specular, compute the lobe PDF
-	// The specular ray is perturbed from the perfect reflection direction
-	// Side-of-surface uses geometric; lobe direction uses shading
-	// (see PolishedSPF::Scatter for rationale).
-	const bool bBackface = Vector3Ops::Dot( ri.vGeomNormal, ri.ray.Dir() ) > 0;
-	const Vector3 vn = bBackface ? -ri.vNormal : ri.vNormal;
-	const Vector3 rv = Optics::CalculateReflectedRay( ri.ray.Dir(), vn );
-
-	// Angle between wo and the reflected direction
-	const Scalar cos_alpha = Vector3Ops::Dot( wo, rv );
-
-	Scalar pdf_specular = 0.0;
-
-	if( cos_alpha > 0.0 ) {
-		if( bHG ) {
-			// Henyey-Greenstein phase function
-			const Scalar& g = scatfunc;
-			const Scalar denom = 1.0 + g*g - 2.0*g*cos_alpha;
-			pdf_specular = (1.0 - g*g) / (FOUR_PI * denom * sqrt(denom));
-		} else {
-			// Phong lobe: (n+1)/(2*PI) * cos^n(alpha)
-			pdf_specular = (scatfunc + 1.0) / TWO_PI * pow(cos_alpha, scatfunc);
-		}
-	}
-
-	// Weighted mixture of diffuse and specular PDFs
-	const Scalar totalWeight = wSpec + wDiff;
-	if( totalWeight < 1e-20 ) {
-		return pdf_diffuse;
-	}
-	return (wSpec * pdf_specular + wDiff * pdf_diffuse) / totalWeight;
-}
-
-Scalar PolishedSPF::Pdf(
-	const RayIntersectionGeometric& ri,
-	const Vector3& wo,
-	const IORStack& ior_stack
-	) const
-{
-	const ScalarTriple s = pScat->GetValuesAt(ri);
-	const ScalarTriple ior_val = pNt->GetValuesAt(ri);
-	// Use average values across channels
-	const Scalar s_val = (s.v[0] + s.v[1] + s.v[2]) / 3.0;
-	const Scalar ior_avg = (ior_val.v[0] + ior_val.v[1] + ior_val.v[2]) / 3.0;
-
-	// Compute Fresnel reflectance for lobe weighting
-	// Side-of-surface decision uses the GEOMETRIC normal (front/back is
-	// face-orientation, PBRT 4e §10.1.1 / §9.5).  The flipped normal `n`
-	// carries the SHADING normal so the lobe / Fresnel / refracted
-	// direction stays in the BSDF frame, matching Mitsuba 3
-	// `dielectric.cpp`.  `Optics::CalculateRefractedRay` and
-	// `CalculateDielectricReflectance` are sign-invariant under n→-n
-	// so the visible difference vs the prior shading-only test is
-	// small in this file, but the geometric form is the documented
-	// convention and is robust against future code that consumes `n`
-	// directly.
-	const bool bBackface = Vector3Ops::Dot( ri.vGeomNormal, ri.ray.Dir() ) > 0;
-	const Vector3 n = bBackface ? -ri.vNormal : ri.vNormal;
-	Vector3 vRefracted = ri.ray.Dir();
-	Scalar Rs = 0.0;
-	if( Optics::CalculateRefractedRay( n, ior_stack.top(), ior_avg, vRefracted ) ) {
-		Rs = Optics::CalculateDielectricReflectance( ri.ray.Dir(), vRefracted, n, ior_stack.top(), ior_avg );
-	}
-
-	// Weight by MaxValue(kray) to match RandomlySelect:
-	// specular kray = tau * Rs, diffuse kray = Rd * (1 - Rs).  tau
-	// is a per-wavelength scalar; max over its three channels is
-	// the right proxy for spectral magnitude.
-	const ScalarTriple tauVals = pTau->GetValuesAt(ri);
-	const Scalar wSpec = r_max( r_max( tauVals.v[0], tauVals.v[1] ), tauVals.v[2] ) * Rs;
-	const Scalar wDiff = ColorMath::MaxValue( pRd->GetColor(ri) * (1.0 - Rs) );
-
-	return PolishedPdf( ri, wo, s_val, ior_avg, bHG, ior_stack, wSpec, wDiff );
-}
-
-Scalar PolishedSPF::PdfNM(
-	const RayIntersectionGeometric& ri,
-	const Vector3& wo,
-	const Scalar nm,
-	const IORStack& ior_stack
-	) const
-{
-	const Scalar s_val = pScat->GetValueAtNM(ri,nm);
-	const Scalar ior_val = pNt->GetValueAtNM(ri,nm);
-
-	// Compute Fresnel reflectance for lobe weighting
-	// Side-of-surface decision uses the GEOMETRIC normal (front/back is
-	// face-orientation, PBRT 4e §10.1.1 / §9.5).  The flipped normal `n`
-	// carries the SHADING normal so the lobe / Fresnel / refracted
-	// direction stays in the BSDF frame, matching Mitsuba 3
-	// `dielectric.cpp`.  `Optics::CalculateRefractedRay` and
-	// `CalculateDielectricReflectance` are sign-invariant under n→-n
-	// so the visible difference vs the prior shading-only test is
-	// small in this file, but the geometric form is the documented
-	// convention and is robust against future code that consumes `n`
-	// directly.
-	const bool bBackface = Vector3Ops::Dot( ri.vGeomNormal, ri.ray.Dir() ) > 0;
-	const Vector3 n = bBackface ? -ri.vNormal : ri.vNormal;
-	Vector3 vRefracted = ri.ray.Dir();
-	Scalar Rs = 0.0;
-	if( Optics::CalculateRefractedRay( n, ior_stack.top(), ior_val, vRefracted ) ) {
-		Rs = Optics::CalculateDielectricReflectance( ri.ray.Dir(), vRefracted, n, ior_stack.top(), ior_val );
-	}
-
-	// Weight by krayNM magnitude: specular = tau*Rs, diffuse = Rd*(1-Rs)
-	const Scalar wSpec = fabs( pTau->GetValueAtNM(ri,nm) * Rs );
-	const Scalar wDiff = fabs( GuardedGetColorNM( *pRd, ri, nm ) * (1.0 - Rs) );
-
-	return PolishedPdf( ri, wo, s_val, ior_val, bHG, ior_stack, wSpec, wDiff );
 }

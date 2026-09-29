@@ -164,6 +164,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Materials/PerfectReflectorSPF.cpp"
     "${RISE_LIB}/Materials/PerfectRefractorSPF.cpp"
     "${RISE_LIB}/Materials/PhongEmitter.cpp"
+    "${RISE_LIB}/Materials/PolishedBRDF.cpp"
     "${RISE_LIB}/Materials/PolishedSPF.cpp"
     "${RISE_LIB}/Materials/ScatteredRayContainer.cpp"
     "${RISE_LIB}/Materials/SchlickBRDF.cpp"

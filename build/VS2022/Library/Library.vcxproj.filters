@@ -771,6 +771,9 @@
     <ClCompile Include="..\..\..\src\Library\Materials\LambertianSPF.cpp">
       <Filter>Materials\Lambertian</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\PolishedBRDF.cpp">
+      <Filter>Materials\Polished</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Materials\PolishedSPF.cpp">
       <Filter>Materials\Polished</Filter>
     </ClCompile>
@@ -2134,6 +2137,9 @@
       <Filter>Materials\Lambertian</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\PolishedMaterial.h">
+      <Filter>Materials\Polished</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\PolishedBRDF.h">
       <Filter>Materials\Polished</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\PolishedSPF.h">
