@@ -4,7 +4,8 @@ RISE ASCII SCENE 7
 #                                                                                                           #
 #   File:           composite_material.RISEscene                                                       #
 #   Description:    Test scene for composite materials with various layer combinations.                     #
-#                   Uses path tracing since composite BSDF is not yet implemented.                          #
+#                   Composites evaluate their own layered BSDF since DL-24 (2026-09-28), so NEE and         #
+#                   BDPT connections price them; path tracing is still the reference integrator here.       #
 #   Author:         Aravind Krishnaswamy                                                                    #
 #   Birthdate:      March 19, 2026                                                                          #
 #                                                                                                           #
@@ -21,7 +22,7 @@ RISE ASCII SCENE 7
 #############################################################################################################
 
 ##################################################
-# Renderer setup - path tracing only (no BSDF)
+# Renderer setup - path tracing
 ##################################################
 
 pathtracing_shaderop

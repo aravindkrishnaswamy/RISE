@@ -72,6 +72,8 @@
 #include "../src/Library/Materials/SheenSPF.h"
 #include "../src/Library/Materials/DielectricSPF.h"
 #include "../src/Library/Materials/CompositeSPF.h"
+#include "../src/Library/Materials/CompositeMaterial.h"
+#include "../src/Library/Materials/DielectricMaterial.h"
 #include "../src/Library/Materials/PolishedSPF.h"
 #include "../src/Library/Materials/LambertianMaterial.h"
 #include "../src/Library/Materials/GGXMaterial.h"
@@ -170,9 +172,11 @@ static double DirectionalAlbedo(
 	ISPF& spf,
 	double incomingThetaRad,
 	double* outRejectionRate = 0,
-	unsigned int* outInvalidContributions = 0 )
+	unsigned int* outInvalidContributions = 0,
+	bool jitterPosition = false )
 {
 	RayIntersectionGeometric ri = MakeIntersection( incomingThetaRad );
+	const Point3 rayOrigin0 = ri.ray.origin;
 	RandomNumberGenerator rng;
 	IndependentSampler sampler( rng );
 	IORStack iorStack = MakeTestIORStack( g_stubObject );
@@ -184,6 +188,16 @@ static double DirectionalAlbedo(
 
 	for( int i = 0; i < FURNACE_SAMPLES; ++i )
 	{
+		// DL-24 review P2-3: composite_material's layered evaluator draws
+		// ONE random walk per (incoming direction, position) and reuses it
+		// for every exit at that point, so its estimate is unbiased only
+		// AVERAGED OVER POSITIONS.  Its rows move the shading point every
+		// draw (a flat, uniform fixture, so nothing else changes).
+		if( jitterPosition ) {
+			const Point3 p( rng.CanonicalRandom() * 10, rng.CanonicalRandom() * 10, 0 );
+			ri.ptIntersection = p;
+			ri.ray.origin = Point3( rayOrigin0.x + p.x, rayOrigin0.y + p.y, rayOrigin0.z );
+		}
 		ScatteredRayContainer scattered;
 		spf.Scatter( ri, sampler, scattered, iorStack );
 
@@ -657,13 +671,13 @@ struct ConfigReport
 	double       predictionEps = 0.0;
 };
 
-static void Run( ConfigReport& r, ISPF& spf )
+static void Run( ConfigReport& r, ISPF& spf, bool jitterPosition = false )
 {
 	r.passed = true;
 	for( int i = 0; i < NUM_THETA; ++i )
 	{
 		const double rad = THETA_DEG[i] * PI / 180.0;
-		r.albedo[i] = DirectionalAlbedo( spf, rad, &r.reject[i], &r.invalid[i] );
+		r.albedo[i] = DirectionalAlbedo( spf, rad, &r.reject[i], &r.invalid[i], jitterPosition );
 
 		// An invalid sample must never be silently omitted and then let a
 		// bounded mean look healthy.  Keep the remaining contributions printed
@@ -1234,8 +1248,9 @@ int main()
 	// -- and they must land in kPosturePass.  That is a direct, numeric,
 	// apples-to-apples improvement claim against a shipped baseline."
 	//
-	// Config 3 is `dielectric (ior 1.5) / white Lambertian`, a
-	// KNOWN FAILURE on CompositeSPF's random walk.  Config 11 below is
+	// Config 3 is `dielectric (ior 1.5) / white Lambertian`, which was a
+	// KNOWN FAILURE on CompositeSPF's random walk until DL-24 (2026-09-28;
+	// it now reads rho == 1 and is gated pass).  Config 11 below is
 	// its coated twin: same white Lambertian substrate, same 1.5 coat
 	// IOR, full coverage.  Config 7 is `clearcoat (F0 = 0.04, alpha
 	// 0.16) / GGX-PBR base`; configs 14 and 15 are its coated twins on
@@ -1510,22 +1525,21 @@ int main()
 	//    lobes in this codebase, and the one this furnace independently
 	//    endorses by moving toward unity.
 	//
-	//    Still NOT energy-conserving, and the ORIGINAL note's mechanism is
-	//    still the correct description of the REMAINING deficit: with
-	//    max_recur=4 and per-type budgets of 2, the light that TIRs back down
-	//    at the top interface hits its reflection budget at steps=2 and is
-	//    dropped.  That is a genuine finite-budget truncation, not a bug, so
-	//    this row stays a documented deficit -- but as a PREDICTION check,
-	//    not a free pass: kPostureKnownFailure would silently swallow both a
-	//    regression back to 0.04 and an over-unity blow-up.  eps = 0.03 is
-	//    ~10x the MC noise on a 100k-sample mean here.
-	static const double kPredDielLamb[NUM_THETA] = { 0.4271, 0.4284, 0.4569, 0.6367 };
-	{ ConfigReport& r = addPredicted( "3. Dielectric / Lambertian",
-	    "DL-111 clipped-warp recovery locked in: predicted rho={0.4271,0.4284,0.4569,0.6367} "
-	    "(post-ior-stack-fix was {0.3339,0.3044,0.3128,0.5324}, pre-ior-stack-fix "
-	    "{0.0400,0.0415,0.0892,0.3877}, eps 0.03); residual deficit is finite "
-	    "recursion-budget truncation of the TIR population",
-	    kPredDielLamb, 0.03 );
+	//    2026-09-28 (DL-24): the "remaining deficit" this row was pinned at
+	//    was the recursion budgets DROPPING the internal Fresnel/TIR
+	//    reflection at the top's underside (per-bounce ledger: exit 0.4260 +
+	//    dropped 0.5740 == 1.0000 at normal incidence -- every event
+	//    conserved energy, the budget gates removed it).  It was never a
+	//    "genuine finite-budget truncation"; a random walk has no business
+	//    truncating energy.  The budgets are now Russian-roulette onsets with
+	//    the survival probability divided back out, so a lossless coat over a
+	//    white Lambertian returns rho == 1.  Built here from bare SPFs (no
+	//    BSDFs), so this row exercises the WALKER path alone, whose lossless
+	//    walk carries throughput exactly 1 on every exit -- rho is 1.0000 with
+	//    no variance.  Config 58 is the same stack through CompositeMaterial,
+	//    i.e. the production evaluator path.
+	{ ConfigReport& r = add( "3. Dielectric / Lambertian", kPosturePass, 0.01,
+	    "DL-24: re-gated to rho == 1 (was pinned at the budget-truncated {0.4271,0.4284,0.4569,0.6367})" );
 	  Run( r, *compDielLamb ); }
 
 	// 4. Composite: GGX top over Lambertian (clearcoat-style).  Top
@@ -1713,8 +1727,9 @@ int main()
 	// 11. Coated: varnish coat (ior 1.5, alpha 0.02) over WHITE
 	//     Lambertian, full coverage.  DIRECT MIRROR OF CONFIG 3
 	//     (`dielectric ior 1.5 / white Lambertian`), which is
-	//     kPostureKnownFailure because CompositeSPF's recursion budget
-	//     kills the below-layer diffuse paths.  Nothing recurses here:
+	//     was kPostureKnownFailure until DL-24 (2026-09-28) because
+	//     CompositeSPF's recursion budget killed the below-layer diffuse
+	//     paths (config 3 now passes at rho == 1).  Nothing recurses here:
 	//     the coat's transmission is folded into the substrate lobe's
 	//     throughput analytically (7.5), so there is no budget to
 	//     exhaust.  HIGH-SUBSTRATE-ALBEDO (R = 1) -- this is the
@@ -2985,6 +3000,33 @@ int main()
 	{ ConfigReport& r = add( "57. Coated varnish / white Lambertian, coat_normal tilted 5deg", kPosturePass, 0.02,
 	    "DL-192: a coat-normal tilt redirects the coat lobe but must not create/destroy energy" );
 	  Run( r, *coatedVarnishTiltedNormal->GetSPF() ); }
+
+	// 58-60. DL-24: composite_material through its PRODUCTION construction
+	// (CompositeMaterial hands both layers' BSDFs to the SPF, so the
+	// covered class is priced by the layered evaluator and sampled from a
+	// known density rather than walked).  Lossless layers over a white
+	// Lambertian must conserve energy at every incidence.  2 %: ~4 sigma of
+	// the 100k-sample estimator here.
+	{
+		UniformScalarPainter* sScatDefault = new UniformScalarPainter( 10000.0 );  sScatDefault->addref();
+		DielectricMaterial* dScat0Mat  = new DielectricMaterial( *sOne, *sIor, *sZero, false );           dScat0Mat->addref();
+		DielectricMaterial* dSmoothMat = new DielectricMaterial( *sOne, *sIor133, *sScatDefault, false ); dSmoothMat->addref();
+		CompositeMaterial* compMat3  = new CompositeMaterial( *dScat0Mat,  *whiteLambMat, kMaxRecur, kMaxReflectRecur, kMaxRefractRecur, kMaxDiffuseRecur, kMaxTranslucent, kThickness, *zeroSc );
+		compMat3->addref();
+		CompositeMaterial* compMatW  = new CompositeMaterial( *dSmoothMat, *whiteLambMat, 3, 3, 3, 3, 3, 0.5, *zeroSc );
+		compMatW->addref();
+		{ ConfigReport& r = add( "58. Composite (material path): dielectric(scat 0) / white Lambertian", kPosturePass, 0.02,
+		    "DL-24: config 3's stack through CompositeMaterial -- the evaluator + exact-density path" );
+		  Run( r, *compMat3->GetSPF(), true ); }
+		{ ConfigReport& r = add( "59. Composite (material path): water(1.33) / white Lambertian, t=0.5", kPosturePass, 0.02,
+		    "DL-24: parser-default budgets; a gap with no extinction must not absorb" );
+		  Run( r, *compMatW->GetSPF(), true ); }
+		compMatW->release();
+		compMat3->release();
+		dSmoothMat->release();
+		dScat0Mat->release();
+		sScatDefault->release();
+	}
 
 	PrintReport( reports );
 

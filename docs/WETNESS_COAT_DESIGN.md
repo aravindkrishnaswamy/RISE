@@ -548,6 +548,12 @@ an `IScalarPainter`.
 > substrate — see the 2026-09-01 addendum in
 > [PHYSICALLY_BASED_PIPELINE_PLAN.md](PHYSICALLY_BASED_PIPELINE_PLAN.md).
 >
+> **UPDATE 2026-09-28 (DL-24):** the residual budget truncation above and
+> items 1 and 2 (heuristic `Pdf`, top-wins `GetBSDF`) are all FIXED -- see
+> §12 item 2 and [DL24_COMPOSITE_ENERGY.md](DL24_COMPOSITE_ENERGY.md).
+> `composite_material` is no longer disqualified on correctness; this design
+> stays on `coated_material` for cost and variance.
+>
 > The routing hazard above now has a number: with `extinction` at 50, the
 > spectral walk attenuates the gap-crossing population by a factor 0.958 where
 > the RGB walk gives 0.119 — the JH **albedo** uplift bounds the coefficient to
@@ -2456,6 +2462,22 @@ timing exists because no implementation exists.
    The fix belongs to Landing 6's owner; if it lands, `composite_material` becomes
    usable for coat-over-diffuse but still carries the 50/50 `Pdf` and top-wins
    `GetBSDF` architectural defects (§3.2). **Open.**
+   > **UPDATE 2026-09-28 — FIXED as DL-24 (slice `debt-dl24`; [DL24_COMPOSITE_ENERGY.md](DL24_COMPOSITE_ENERGY.md)).**
+   > All three defects are gone: the energy loss (budget truncation of the
+   > internal Fresnel/TIR series; the budgets are now Russian-roulette
+   > onsets), the 50/50 `Pdf` (now the exact density of what `Scatter`
+   > emits), and the top-wins `GetBSDF` (now a `CompositeBSDF` that IS the
+   > SPF's layered evaluator, so NEE sees the coat).  Config 3 reads
+   > rho == 1 at 0/30/60/80 degrees.  **The route-around is therefore no
+   > longer NECESSARY, but it stays the right choice, and `add_wetness`
+   > should NOT switch back.**  `coated_material` is closed-form: it runs
+   > no Monte-Carlo evaluator walk (composite renders cost +23 % on a
+   > composite-dominated scene after the DL-24 review shared one walk per
+   > shading point; +35-41 % before) and has lower variance.  It also
+   > keeps a finite-`scattering` coat's blur that `composite_material`'s
+   > evaluator drops (DL-297).  `composite_material` is now a valid general
+   > two-layer stack; wetness is the coat case `coated_material` was built
+   > for.
 3. **`composite_material`'s `extinction` was `IPainter` (now `IScalarPainter`)**
    ([CompositeSPF.h](../src/Library/Materials/CompositeSPF.h)) — a
    wrong-pipe slot of the exact class

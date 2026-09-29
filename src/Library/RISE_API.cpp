@@ -4578,11 +4578,11 @@ namespace RISE
 								IMaterial** ppi,											///< [out] Pointer to recieve the material
 								const IMaterial& top,										///< [in] Material on top
 								const IMaterial& bottom,									///< [in] Material on the bottom
-								const unsigned int max_recur,								///< [in] Maximum recursion level in the random walk process
-								const unsigned int max_reflection_recursion,				///< [in] Maximum level of reflection recursion
-								const unsigned int max_refraction_recursion,				///< [in] Maximum level of refraction recursion
-								const unsigned int max_diffuse_recursion,					///< [in] Maximum level of diffuse recursion
-								const unsigned int max_translucent_recursion,				///< [in] Maximum level of translucent recursion
+								const unsigned int max_recur,								///< [in] Russian-roulette onset (total walk events) for the inter-layer walk; since DL-24 not a truncation
+								const unsigned int max_reflection_recursion,				///< [in] Russian-roulette onset for reflection events (DL-24: not a truncation)
+								const unsigned int max_refraction_recursion,				///< [in] Russian-roulette onset for refraction events (DL-24: not a truncation)
+								const unsigned int max_diffuse_recursion,					///< [in] Russian-roulette onset for diffuse events (DL-24: not a truncation)
+								const unsigned int max_translucent_recursion,				///< [in] Russian-roulette onset for translucent events (DL-24: not a truncation)
 								const Scalar thickness,										///< [in] Thickness between the materials
 								const IScalarPainter& extinction							///< [in] Extinction coefficient for absorption between layers (physical SCALAR -- an IPainter here would JH-uplift and clamp it; see IScalarPainter.h)
 								)

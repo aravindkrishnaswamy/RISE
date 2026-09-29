@@ -57,6 +57,7 @@
 
 #include <iostream>
 #include <iomanip>
+#include <sstream>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -78,6 +79,7 @@
 #include "../src/Library/Painters/RGBScalarPainter.h"
 #include "../src/Library/Materials/SchlickSPF.h"
 #include "../src/Library/Materials/SchlickBRDF.h"
+#include "../src/Library/Materials/SchlickDirectionalAlbedo.h"
 #include "../src/Library/Materials/CookTorranceSPF.h"
 #include "../src/Library/Materials/CookTorranceBRDF.h"
 #include "../src/Library/Materials/GGXSPF.h"
@@ -171,9 +173,10 @@ static double QuadratureAggregate(
 // `f_I(w) * cos`.  With the diffuse reflectance painter set to BLACK,
 // `SchlickBRDF::value` reduces to the specular term alone, so `f_I` for
 // the reflection lobe IS `value()` and the identity is directly
-// measurable through the public API.  (The diffuse lobe needs no test:
-// `kray_D = Rd`, `p_D = cos/pi` and `f_D = Rd/pi` give `f_D cos/p_D =
-// Rd` identically -- see the doc, section 2.)
+// measurable through the public API.  (Before DL-310 the diffuse lobe
+// needed no test: `kray_D = Rd`, `p_D = cos/pi` and `f_D = Rd/pi` gave
+// `f_D cos/p_D = Rd` identically.  Since DL-310 both carry the coupled
+// min(Rd, 1 - A(i), 1 - A(o)); section 14 gates that identity per draw.)
 //////////////////////////////////////////////////////////////////////
 struct RatioStat
 {
@@ -580,6 +583,79 @@ static double SchlickEq31Reference(
 	const double Z = r / ( zd * zd );
 	const double S = rho + ( 1 - rho ) * ::pow( 1 - hv, 5.0 );
 	return S * Z * A / ( 4 * PI * ( r + ( 1 - r ) * nv ) * ( r + ( 1 - r ) * nl ) );
+}
+
+//////////////////////////////////////////////////////////////////////
+// DL-310: directional reflectance of the FULL live value() (diffuse +
+// specular), by an INDEPENDENT deterministic quadrature: two midpoint
+// grids -- one cosine-warped over the outgoing hemisphere (resolves the
+// diffuse term to the horizon), one on the half-vector warped by the
+// GGX lobe of alpha^2 = r with xi = u^2 (resolves the specular peak) --
+// combined with the balance heuristic, so every outgoing direction is
+// counted exactly once whichever grid produced it.  Uses neither the
+// SPF's sampler nor any production density.  `channel` < 0 reads
+// MaxValue.
+//////////////////////////////////////////////////////////////////////
+static double FullAlbedoTwoGrid(
+	const IBSDF& brdf,
+	const RayIntersectionGeometric& ri,
+	double r,
+	int channel,
+	int N = 96 )
+{
+	const Vector3 v = Vector3Ops::Normalize( -ri.ray.Dir() );
+	const Vector3 U = ri.onb.u(), V = ri.onb.v(), W = ri.onb.w();
+	const double nPer = double( N ) * double( 2 * N );
+	double sum = 0;
+	for( int g = 0; g < 2; g++ ) {
+		for( int i = 0; i < N; i++ ) {
+			for( int j = 0; j < 2 * N; j++ ) {
+				const double a = ( i + 0.5 ) / N, b = ( j + 0.5 ) / ( 2 * N );
+				const double phi = TWO_PI * b;
+				Vector3 lLocal;
+				if( g == 0 ) {
+					const double st = sqrt( a ), ct = sqrt( 1.0 - a );
+					lLocal = Vector3( st * cos( phi ), st * sin( phi ), ct );
+				} else {
+					const double xi = a * a;
+					const double c2 = xi / ( r + xi * ( 1.0 - r ) );
+					const double c = sqrt( c2 ), s = sqrt( r_max( 0.0, 1.0 - c2 ) );
+					const Vector3 hLocal( s * cos( phi ), s * sin( phi ), c );
+					const Vector3 h = U * hLocal.x + V * hLocal.y + W * hLocal.z;
+					const double hv = Vector3Ops::Dot( h, v );
+					if( hv <= 0 ) continue;
+					const Vector3 lw = h * ( 2.0 * hv ) - v;
+					lLocal = Vector3( Vector3Ops::Dot( lw, U ), Vector3Ops::Dot( lw, V ), Vector3Ops::Dot( lw, W ) );
+				}
+				if( lLocal.z <= 0 ) continue;
+				lLocal = Vector3Ops::Normalize( lLocal );
+				const Vector3 l = U * lLocal.x + V * lLocal.y + W * lLocal.z;
+				const Vector3 h = Vector3Ops::Normalize( l + v );
+				const double hv = Vector3Ops::Dot( h, v ), t = Vector3Ops::Dot( h, W );
+				// Densities of the two grids in outgoing solid angle.
+				const double p1 = lLocal.z * INV_PI;
+				double p2 = 0;
+				if( hv > 0 && t > 0 ) {
+					const double zd = 1.0 - ( 1.0 - r ) * t * t;
+					const double ph = r / ( zd * zd ) * t * INV_PI;	// GGX alpha^2 = r, D cos
+					const double xi = t * t * r / ( 1.0 - t * t + t * t * r );
+					p2 = ph / ( 4.0 * hv ) / ( 2.0 * r_max( sqrt( xi ), 1e-300 ) );
+				}
+				const RISEPel f = brdf.value( l, ri );
+				const double fv = ( channel < 0 ) ? ColorMath::MaxValue( f ) : f[channel];
+				sum += fv * lLocal.z / ( nPer * ( p1 + p2 ) );
+			}
+		}
+	}
+	return sum;
+}
+
+//! The diffuse part of a live Schlick value(): the full BRDF minus the
+//! SAME material with a black diffuse painter (whose value() is the
+//! specular term alone).
+static RISEPel SchlickDiffusePart( const IBSDF& full, const IBSDF& specOnly, const Vector3& l, const RayIntersectionGeometric& ri )
+{
+	return full.value( l, ri ) - specOnly.value( l, ri );
 }
 
 int main()
@@ -1275,6 +1351,372 @@ int main()
 		}
 		std::cout << "   worst |per-draw - 1| = " << std::scientific << std::setprecision(3)
 		          << worstDev << std::fixed << std::endl;
+	}
+
+	//----------------------------------------------------------------
+	// SECTION 11 -- DL-310: the FULL material (diffuse + specular) is
+	// bounded.  rho_d(v) = int f cos dw of the live value() by the
+	// independent two-grid quadrature above, over the ledger row's grid
+	// (Rd x rho x r x isotropy x theta x view azimuth).  Must be
+	// <= 1 + 1e-3 in every cell.  Pre-fix (Rd/pi added with no coupling)
+	// 369 of these 1260 cells exceed 1 -- 34 of them with AUTHORED
+	// Rd + rho <= 1 -- and the worst is 1.7445 (Rd .9, rho .9,
+	// r .05, isotropy .1, 89 deg); the worst conserving-authored cell
+	// is 1.1544 (Rd .9, rho .1, r .05, isotropy .1, 89 deg, view
+	// azimuth 90).  (This file's own 96x192 quadrature; the 256x512
+	// measurement in the doc reads 1.7448 / 1.1538.)
+	//----------------------------------------------------------------
+	std::cout << std::endl
+	          << "-- Section 11: DL-310 full-material directional reflectance "
+	             "(independent two-grid quadrature; must be <= 1 + 1e-3)" << std::endl;
+	{
+		const double rd11[]  = { 0.1, 0.5, 0.9 };
+		const double rho11[] = { 0.1, 0.5, 0.9 };
+		const double r11[]   = { 0.05, 0.2, 0.5, 0.8 };
+		const double p11[]   = { 1.0, 0.5, 0.1 };
+		const double th11[]  = { 0.0, 30.0, 60.0, 80.0, 89.0 };
+		const double az11[]  = { 0.0, 45.0, 90.0 };
+		double worst = 0, worstCons = 0;
+		std::string worstAt, worstConsAt;
+		int cells = 0, over = 0;
+		for( double r : r11 ) {
+			UniformScalarPainter* rough = new UniformScalarPainter( r ); rough->addref();
+			for( double p : p11 ) {
+				UniformScalarPainter* iso = new UniformScalarPainter( p ); iso->addref();
+				for( double rdv : rd11 ) {
+					for( double rhov : rho11 ) {
+						UniformColorPainter* rd = new UniformColorPainter( RISEPel( rdv, rdv, rdv ) ); rd->addref();
+						UniformColorPainter* rs = new UniformColorPainter( RISEPel( rhov, rhov, rhov ) ); rs->addref();
+						SchlickBRDF* brdf = new SchlickBRDF( *rd, *rs, *rough, *iso ); brdf->addref();
+						for( double th : th11 ) {
+							for( double az : az11 ) {
+								if( p == 1.0 && az != 0.0 ) continue;
+								const RayIntersectionGeometric ri = MakeIntersectionAz( th, az );
+								const double q = FullAlbedoTwoGrid( *brdf, ri, r, 0 );
+								cells++;
+								if( q > 1.0 ) over++;
+								std::ostringstream at;
+								at << "Rd " << rdv << " rho " << rhov << " r " << r << " isotropy " << p
+								   << " theta " << th << " azimuth " << az;
+								if( q > worst ) { worst = q; worstAt = at.str(); }
+								if( rdv + rhov <= 1.0 + 1e-12 && q > worstCons ) { worstCons = q; worstConsAt = at.str(); }
+								Check( std::isfinite( q ) && q <= 1.0 + 1e-3,
+									"DL-310: full Schlick material directional reflectance <= 1" );
+							}
+						}
+						brdf->release(); rd->release(); rs->release();
+					}
+				}
+				iso->release();
+			}
+			rough->release();
+		}
+		std::cout << "   cells=" << cells << "  cells > 1: " << over
+		          << "   worst rho_d = " << std::setprecision(6) << worst << "  (" << worstAt << ")" << std::endl
+		          << "   worst with authored Rd + rho <= 1: " << worstCons << "  (" << worstConsAt << ")" << std::endl
+		          << "   pre-fix (uncoupled Rd/pi): 369/1260 cells > 1, worst 1.7445;"
+		             " conserving-authored worst 1.1544" << std::endl;
+
+		// The ledger row's own quote: Rd .1 + rho .9 read 1.0202 at
+		// grazing on the DL-225 review's grid (r .005..).  Its family
+		// re-measured here: pre-fix worst 1.0151 (r .005, isotropy .05,
+		// 89.9 deg, view azimuth 45).
+		{
+			UniformColorPainter* rd = new UniformColorPainter( RISEPel( 0.1, 0.1, 0.1 ) ); rd->addref();
+			UniformColorPainter* rs = new UniformColorPainter( RISEPel( 0.9, 0.9, 0.9 ) ); rs->addref();
+			double worstRow = 0;
+			for( double r : { 0.005, 0.01 } ) {
+				UniformScalarPainter* rough = new UniformScalarPainter( r ); rough->addref();
+				for( double p : { 1.0, 0.1, 0.05 } ) {
+					UniformScalarPainter* iso = new UniformScalarPainter( p ); iso->addref();
+					SchlickBRDF* brdf = new SchlickBRDF( *rd, *rs, *rough, *iso ); brdf->addref();
+					for( double th : { 89.0, 89.5, 89.9 } ) {
+						for( double az : { 0.0, 45.0 } ) {
+							const double q = FullAlbedoTwoGrid( *brdf, MakeIntersectionAz( th, az ), r, 0, 192 );
+							worstRow = std::max( worstRow, q );
+							Check( q <= 1.0 + 1e-3, "DL-310: the ledger row's Rd .1 + rho .9 family is bounded" );
+						}
+					}
+					brdf->release(); iso->release();
+				}
+				rough->release();
+			}
+			std::cout << "   ledger family (Rd .1, rho .9, r .005-.01, grazing): worst rho_d = "
+			          << std::setprecision(6) << worstRow << "   (pre-fix 1.0151 here; the ledger quoted 1.0202"
+			          << " on the DL-225 review grid)" << std::endl;
+			rd->release(); rs->release();
+		}
+	}
+
+	//----------------------------------------------------------------
+	// SECTION 12 -- DL-310: the baked albedo bounds the lobe from above.
+	// The coupled diffuse is bounded only if A_used(v) >= the true
+	// specular directional albedo.  M0 (rho 1) and M5 (rho 0) of the
+	// LIVE specular lobe (black diffuse) at OFF-NODE (mu, r, p, view
+	// azimuth) points, by the independent quadrature, against the
+	// table.  Allowed deficit 2e-3 (the generator's own off-probe
+	// validation reads 3.2e-3 only at r < .01 AND isotropy < .02 at
+	// grazing, outside this grid).
+	//----------------------------------------------------------------
+	std::cout << std::endl
+	          << "-- Section 12: DL-310 baked specular albedo >= the live lobe's (off-node)" << std::endl;
+	{
+		UniformColorPainter* white = new UniformColorPainter( RISEPel( 1, 1, 1 ) ); white->addref();
+		double worstDef = -1, worstOver = 0, worstOverAzMax = 0; int n = 0;
+		for( double r : { 0.013, 0.037, 0.11, 0.33 } ) {
+			UniformScalarPainter* rough = new UniformScalarPainter( r ); rough->addref();
+			for( double p : { 0.07, 0.23, 0.71, 1.0, 1.9 } ) {
+				UniformScalarPainter* iso = new UniformScalarPainter( p ); iso->addref();
+				SchlickBRDF* b1 = new SchlickBRDF( *black, *white, *rough, *iso ); b1->addref();
+				SchlickBRDF* b0 = new SchlickBRDF( *black, *black, *rough, *iso ); b0->addref();
+				SchlickDirectionalAlbedo::Lane lane;
+				SchlickDirectionalAlbedo::PrepareLane( lane, r, p );
+				for( double th : { 7.0, 41.0, 67.0, 83.0, 88.3, 89.6 } ) {
+					double t0, t5;
+					SchlickDirectionalAlbedo::Moments( lane, cos( th * PI / 180.0 ), t0, t5 );
+					double az0 = 0, az5 = 0;
+					for( double az : { 0.0, 27.0, 63.0, 90.0 } ) {
+						if( p == 1.0 && az != 0.0 ) continue;
+						const RayIntersectionGeometric ri = MakeIntersectionAz( th, az );
+						const double m0 = FullAlbedoTwoGrid( *b1, ri, r, 0, 256 );
+						const double m5 = FullAlbedoTwoGrid( *b0, ri, r, 0, 256 );
+						az0 = std::max( az0, m0 );
+						az5 = std::max( az5, m5 );
+						const double def = std::max( m0 - t0, m5 - t5 );
+						worstDef = std::max( worstDef, def );
+						worstOver = std::max( worstOver, std::max( t0 - m0, t5 - m5 ) );
+						n++;
+						Check( def <= 2e-3, "DL-310: baked M0/M5 bound the live specular lobe from above" );
+					}
+					worstOverAzMax = std::max( worstOverAzMax, std::max( t0 - az0, t5 - az5 ) );
+				}
+				b1->release(); b0->release(); iso->release();
+			}
+			rough->release();
+		}
+		std::cout << "   points=" << n << "  worst deficit (true - table) = " << std::scientific
+		          << std::setprecision(3) << worstDef << std::endl
+		          << "   worst over-estimate vs the azimuth maximum (interpolation + bump) = " << worstOverAzMax
+		          << std::endl
+		          << "   worst over-estimate vs a single view azimuth (adds the azimuth-maximum's own) = "
+		          << worstOver << std::fixed << std::endl;
+		white->release();
+	}
+
+	//----------------------------------------------------------------
+	// SECTION 13 -- DL-310: the coupled diffuse is RECIPROCAL where it
+	// binds, and is the additive Rd/pi EXACTLY where it does not.
+	//----------------------------------------------------------------
+	std::cout << std::endl
+	          << "-- Section 13: DL-310 coupled diffuse: reciprocity where it binds, "
+	             "exact Rd/pi where it does not" << std::endl;
+	{
+		double maxAsym = 0;
+		struct Pair { double rho, r, p, thv, phv, thl, phl; };
+		const Pair pairs[] = {
+			{ 0.5, 0.05, 1.0, 88.0,   0.0, 20.0, 170.0 },
+			{ 0.5, 0.05, 0.3, 30.0,  10.0, 89.0, 200.0 },
+			{ 0.1, 0.05, 1.0, 89.5,  30.0, 87.0, 215.0 },
+			{ 0.9, 0.2,  0.5, 60.0,  95.0, 50.0, 280.0 },
+			{ 0.3, 0.02, 3.0, 86.0,   5.0, 88.0, 181.0 },
+		};
+		UniformColorPainter* rd = new UniformColorPainter( RISEPel( 0.9, 0.9, 0.9 ) ); rd->addref();
+		for( const Pair& q : pairs ) {
+			UniformColorPainter*  rs    = new UniformColorPainter( RISEPel( q.rho, q.rho, q.rho ) ); rs->addref();
+			UniformScalarPainter* rough = new UniformScalarPainter( q.r ); rough->addref();
+			UniformScalarPainter* iso   = new UniformScalarPainter( q.p ); iso->addref();
+			SchlickBRDF* full = new SchlickBRDF( *rd, *rs, *rough, *iso ); full->addref();
+			SchlickBRDF* spec = new SchlickBRDF( *black, *rs, *rough, *iso ); spec->addref();
+			const double tv = q.thv * PI / 180, pv = q.phv * PI / 180;
+			const double tl = q.thl * PI / 180, pl = q.phl * PI / 180;
+			const Vector3 wv( sin( tv ) * cos( pv ), sin( tv ) * sin( pv ), cos( tv ) );
+			const Vector3 wl( sin( tl ) * cos( pl ), sin( tl ) * sin( pl ), cos( tl ) );
+			const RayIntersectionGeometric riV = MakeIntersectionFromView( wv, 0 );
+			const RayIntersectionGeometric riL = MakeIntersectionFromView( wl, 0 );
+			const double fVL = full->value( wl, riV )[0];
+			const double fLV = full->value( wv, riL )[0];
+			const double dVL = SchlickDiffusePart( *full, *spec, wl, riV )[0];
+			const double asym = fVL > 0 ? fabs( fLV - fVL ) / fVL : 1.0;
+			maxAsym = std::max( maxAsym, asym );
+			std::cout << "   rho=" << std::setprecision(2) << q.rho << " r=" << q.r << " iso=" << q.p
+			          << "  f(v->l)=" << std::setprecision(9) << fVL << " f(l->v)=" << fLV
+			          << "  f_D pi / Rd = " << std::setprecision(6) << dVL * PI / 0.9 << std::endl;
+			Check( fVL > 0 && asym < 1e-12, "DL-310: the coupled full value() is reciprocal where the clip binds" );
+			Check( dVL * PI < 0.99 * 0.9, "DL-310: this pair exercises the clip (f_D < Rd/pi)" );
+			full->release(); spec->release(); rs->release(); rough->release(); iso->release();
+		}
+		std::cout << "   max relative asymmetry = " << std::scientific << std::setprecision(3)
+		          << maxAsym << std::fixed << std::endl;
+		rd->release();
+
+		// Exactness where nothing clips: value() == Rd/pi + (specular)
+		// bit for bit.  (a) a material whose Rd <= 1 - A everywhere;
+		// (b) a clipping material at direction pairs neither of which
+		// clips.
+		double maxDev = 0;
+		struct Mat { double rd, rho, r, p; bool clips; };
+		const Mat mats[] = { { 0.5, 0.1, 0.5, 1.0, false }, { 0.3, 0.2, 0.05, 0.3, false }, { 0.9, 0.1, 0.05, 1.0, true } };
+		for( const Mat& m : mats ) {
+			UniformColorPainter*  rdp   = new UniformColorPainter( RISEPel( m.rd, m.rd, m.rd ) ); rdp->addref();
+			UniformColorPainter*  rs    = new UniformColorPainter( RISEPel( m.rho, m.rho, m.rho ) ); rs->addref();
+			UniformScalarPainter* rough = new UniformScalarPainter( m.r ); rough->addref();
+			UniformScalarPainter* iso   = new UniformScalarPainter( m.p ); iso->addref();
+			SchlickBRDF* full = new SchlickBRDF( *rdp, *rs, *rough, *iso ); full->addref();
+			SchlickBRDF* spec = new SchlickBRDF( *black, *rs, *rough, *iso ); spec->addref();
+			SchlickDirectionalAlbedo::Lane lane;
+			SchlickDirectionalAlbedo::PrepareLane( lane, m.r, m.p );
+			for( double thv : { 0.0, 30.0, 55.0, 75.0, 88.0 } ) {
+				const RayIntersectionGeometric ri = MakeIntersectionAz( thv, 20.0 );
+				for( double thl : { 5.0, 35.0, 60.0, 80.0, 89.0 } ) {
+					for( double phl : { 40.0, 190.0 } ) {
+						const double a = thl * PI / 180, b = phl * PI / 180;
+						const Vector3 l = Vector3Ops::Normalize(
+							ri.onb.u() * ( sin( a ) * cos( b ) ) + ri.onb.v() * ( sin( a ) * sin( b ) ) + ri.onb.w() * cos( a ) );
+						double v0, v5, l0, l5;
+						SchlickDirectionalAlbedo::Moments( lane, cos( thv * PI / 180 ), v0, v5 );
+						SchlickDirectionalAlbedo::Moments( lane, cos( a ), l0, l5 );
+						const double Av = SchlickDirectionalAlbedo::Albedo( m.rho, v0, v5 );
+						const double Al = SchlickDirectionalAlbedo::Albedo( m.rho, l0, l5 );
+						if( m.clips && ( m.rd > 1.0 - Av || m.rd > 1.0 - Al ) ) continue;
+						const double got = full->value( l, ri )[0];
+						const double ref = m.rd * INV_PI + spec->value( l, ri )[0];
+						const double dev = fabs( got - ref ) / ref;
+						maxDev = std::max( maxDev, dev );
+						Check( dev <= 1e-15, "DL-310: value() == Rd/pi + specular where neither direction clips" );
+					}
+				}
+			}
+			full->release(); spec->release(); rdp->release(); rs->release(); rough->release(); iso->release();
+		}
+		std::cout << "   max relative |value - (Rd/pi + f_S)| where nothing clips = " << std::scientific
+		          << std::setprecision(3) << maxDev << std::fixed << std::endl;
+	}
+
+	//----------------------------------------------------------------
+	// SECTION 14 -- DL-310 lockstep: the DIFFUSE lobe's kray is its own
+	// f_D cos / p_D on real Scatter / ScatterNM draws (f_D read from the
+	// live value() as full minus black-diffuse), per channel, including
+	// chromatic reflectance, the per-channel-roughness branch and
+	// grazing views; and EvaluateKrayNM / EvaluateLobeFNM reproduce
+	// ScatterNM's diffuse krayNM on the same direction.
+	//----------------------------------------------------------------
+	std::cout << std::endl
+	          << "-- Section 14: DL-310 diffuse kray_D * p_D == f_D cos (RGB, per-channel, NM) "
+	             "and EvaluateKrayNM/EvaluateLobeFNM" << std::endl;
+	{
+		double worst = 0, worstEval = 0; int nClipped = 0, nDraws = 0;
+		struct Cfg { bool perChannel; double th, az; };
+		const Cfg cfgs[] = { { false, 30.0, 0.0 }, { false, 85.0, 40.0 }, { false, 89.0, 90.0 },
+		                     { true, 60.0, 20.0 }, { true, 88.0, 70.0 } };
+		UniformColorPainter* rd = new UniformColorPainter( RISEPel( 0.9, 0.7, 0.5 ) ); rd->addref();
+		UniformColorPainter* rs = new UniformColorPainter( RISEPel( 0.2, 0.5, 0.9 ) ); rs->addref();
+		UniformScalarPainter* rU = new UniformScalarPainter( 0.05 ); rU->addref();
+		UniformScalarPainter* pU = new UniformScalarPainter( 0.3 ); pU->addref();
+		RGBScalarPainter* rC = new RGBScalarPainter( 0.02, 0.1, 0.4 ); rC->addref();
+		RGBScalarPainter* pC = new RGBScalarPainter( 0.3, 1.0, 2.0 ); pC->addref();
+		for( const Cfg& c : cfgs ) {
+			IScalarPainter* rough = c.perChannel ? (IScalarPainter*)rC : (IScalarPainter*)rU;
+			IScalarPainter* iso = c.perChannel ? (IScalarPainter*)pC : (IScalarPainter*)pU;
+			SchlickSPF*  spf  = new SchlickSPF(  *rd, *rs, *rough, *iso ); spf->addref();
+			SchlickBRDF* full = new SchlickBRDF( *rd, *rs, *rough, *iso ); full->addref();
+			SchlickBRDF* spec = new SchlickBRDF( *black, *rs, *rough, *iso ); spec->addref();
+			const RayIntersectionGeometric ri = MakeIntersectionAz( c.th, c.az );
+			const Vector3 n = ri.onb.w();
+			for( int draw = 0; draw < 20000; draw++ ) {
+				ScatteredRayContainer sc;
+				spf->Scatter( ri, sampler, sc, iorStack );
+				for( unsigned int i = 0; i < sc.Count(); i++ ) {
+					const ScatteredRay& sr = sc[i];
+					if( sr.type != ScatteredRay::eRayDiffuse ) continue;
+					const Vector3 wo = Vector3Ops::Normalize( sr.ray.Dir() );
+					const double co = Vector3Ops::Dot( wo, n );
+					const RISEPel fD = SchlickDiffusePart( *full, *spec, wo, ri );
+					nDraws++;
+					bool clipped = false;
+					for( int ch = 0; ch < 3; ch++ ) {
+						const double lhs = sr.kray[ch] * sr.pdf;
+						const double rhs = fD[ch] * co;
+						const double dev = fabs( lhs - rhs ) / r_max( rhs, 1e-12 );
+						worst = std::max( worst, dev );
+						if( sr.kray[ch] < ( ch == 0 ? 0.9 : ch == 1 ? 0.7 : 0.5 ) * ( 1.0 - 1e-9 ) ) clipped = true;
+						Check( dev < 1e-9, "DL-310: diffuse kray_D p_D == f_D cos per draw per channel" );
+					}
+					if( clipped ) nClipped++;
+				}
+			}
+			if( !c.perChannel ) {
+				for( int draw = 0; draw < 20000; draw++ ) {
+					ScatteredRayContainer sc;
+					spf->ScatterNM( ri, sampler, 550.0, sc, iorStack );
+					for( unsigned int i = 0; i < sc.Count(); i++ ) {
+						const ScatteredRay& sr = sc[i];
+						if( sr.type != ScatteredRay::eRayDiffuse ) continue;
+						const Vector3 wo = Vector3Ops::Normalize( sr.ray.Dir() );
+						const double co = Vector3Ops::Dot( wo, n );
+						// The black-diffuse twin's valueNM carries the Jakob-
+						// Hanika uplift residual of exact black (~1e-5, see
+						// MeasureSpecularRatioNM): add back exactly its
+						// own diffuse term so fD is the full material's.
+						const double blackNM = GuardedGetColorNM( *black, ri, 550.0 );
+						double b0v, b5v, o0, o5;
+						SchlickDirectionalAlbedo::Lane bl;
+						SchlickDirectionalAlbedo::PrepareLane( bl, 0.05, 0.3 );
+						SchlickDirectionalAlbedo::Moments( bl, Vector3Ops::Dot( Vector3Ops::Normalize( -ri.ray.Dir() ), n ), b0v, b5v );
+						SchlickDirectionalAlbedo::Moments( bl, co, o0, o5 );
+						const double rhoNM = GuardedGetColorNM( *rs, ri, 550.0 );
+						const double blackCoupled = SchlickDirectionalAlbedo::CoupledDiffuse( blackNM,
+							SchlickDirectionalAlbedo::Albedo( rhoNM, b0v, b5v ), SchlickDirectionalAlbedo::Albedo( rhoNM, o0, o5 ) );
+						const double fD = full->valueNM( wo, ri, 550.0 ) - ( spec->valueNM( wo, ri, 550.0 ) - blackCoupled * INV_PI );
+						const double dev = fabs( sr.krayNM * sr.pdf - fD * co ) / r_max( fD * co, 1e-12 );
+						worst = std::max( worst, dev );
+						Check( dev < 1e-9, "DL-310: diffuse krayNM p_D == f_D cos per draw (NM)" );
+						const double ek = spf->EvaluateKrayNM( ri, wo, ScatteredRay::eRayDiffuse, 550.0, iorStack );
+						const double ef = spf->EvaluateLobeFNM( ri, wo, ScatteredRay::eRayDiffuse, 550.0, iorStack );
+						const double de = std::max( fabs( ek - sr.krayNM ), fabs( ef * PI - sr.krayNM ) ) / r_max( sr.krayNM, 1e-12 );
+						worstEval = std::max( worstEval, de );
+						Check( de < 1e-12, "DL-310: EvaluateKrayNM / EvaluateLobeFNM reproduce ScatterNM's diffuse krayNM" );
+					}
+				}
+			}
+			spf->release(); full->release(); spec->release();
+		}
+		std::cout << "   diffuse draws=" << nDraws << "  of which clipped in some channel: " << nClipped
+		          << "   worst |kray p - f cos| rel = " << std::scientific << std::setprecision(3) << worst
+		          << "   worst EvaluateKrayNM/LobeFNM rel = " << worstEval << std::fixed << std::endl;
+		Check( nClipped > 1000, "DL-310: section 14 exercises the clipped diffuse" );
+		rd->release(); rs->release(); rU->release(); pU->release(); rC->release(); pC->release();
+	}
+
+	//----------------------------------------------------------------
+	// SECTION 15 -- DL-310: the auxiliary albedo AOV integrates the
+	// COUPLED material.  SchlickBRDF::albedo's diffuse term is now the
+	// gated hemispherical integral of min(Rd, 1 - A(v), 1 - A(o)); it
+	// must agree with the independent full-material quadrature of the
+	// live value() (saturated to [0,1], the AOV contract) to the AOV's
+	// own documented .02, in the clip.
+	//----------------------------------------------------------------
+	std::cout << std::endl
+	          << "-- Section 15: DL-310 albedo() AOV vs the full coupled material" << std::endl;
+	{
+		double worst = 0;
+		struct Mat { double rd, rho, r, p; };
+		const Mat mats[] = { { 0.9, 0.1, 0.05, 1.0 }, { 0.9, 0.5, 0.05, 0.3 }, { 0.6, 1.0, 0.05, 0.3 }, { 0.8, 0.9, 0.2, 1.0 } };
+		for( const Mat& m : mats ) {
+			UniformColorPainter*  rdp   = new UniformColorPainter( RISEPel( m.rd, m.rd, m.rd ) ); rdp->addref();
+			UniformColorPainter*  rs    = new UniformColorPainter( RISEPel( m.rho, m.rho, m.rho ) ); rs->addref();
+			UniformScalarPainter* rough = new UniformScalarPainter( m.r ); rough->addref();
+			UniformScalarPainter* iso   = new UniformScalarPainter( m.p ); iso->addref();
+			SchlickBRDF* brdf = new SchlickBRDF( *rdp, *rs, *rough, *iso ); brdf->addref();
+			for( double th : { 0.0, 45.0, 75.0, 85.0 } ) {
+				const RayIntersectionGeometric ri = MakeIntersectionAz( th, 0.0 );
+				const double q = r_min( 1.0, FullAlbedoTwoGrid( *brdf, ri, m.r, 0, 128 ) );
+				const double a = brdf->albedo( ri )[0];
+				worst = std::max( worst, fabs( a - q ) );
+				Check( fabs( a - q ) < 0.02, "DL-310: albedo() AOV agrees with the coupled material's directional reflectance" );
+			}
+			brdf->release(); rdp->release(); rs->release(); rough->release(); iso->release();
+		}
+		std::cout << "   worst |albedo() - saturate(rho_d)| = " << std::setprecision(6) << worst << std::endl;
 	}
 
 	black->release();

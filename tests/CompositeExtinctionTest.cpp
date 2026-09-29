@@ -280,6 +280,56 @@ static MeasurementNM MeasureNM( const ISPF& spf, const double thetaRad, const Sc
 	return m;
 }
 
+// ============================================================
+//  DL-24 closed form for the gap-crossing population.
+//
+//  Since DL-24 the walk is no longer truncated (the recursion budgets are
+//  Russian-roulette onsets), so `crossed` is the WHOLE interreflection
+//  series and has a closed form for this stack -- a smooth dielectric top
+//  of index n over a white Lambertian, entered at normal incidence:
+//
+//    crossed = T0 * g(1) * E_esc / (1 - E_ret)
+//    E_esc   = INT 2 mu g(mu) (1 - F_in(mu)) tau^d(mu) dmu
+//    E_ret   = INT 2 mu g(mu)^2 F_in(mu) dmu
+//
+//  with g(mu) = exp(-extinction * thickness / mu) one gap crossing at
+//  direction cosine mu, F_in the Fresnel reflectance at the top's underside
+//  (1 under total internal reflection), T0 = 1 - F at normal incidence, and
+//  tau^d DielectricSPF's own from-inside absorption on the REFRACTED lobe
+//  only (its reflection lobe carries bare F), with d the slant length
+//  thickness/mu -- or the perpendicular `thickness` for section 10's
+//  red-proof mutation.  The Lambertian re-randomises every bounce, which is
+//  what makes the series geometric.  Evaluated by a fine midpoint rule; it
+//  shares no code with the SPF walk it checks.
+// ============================================================
+static double FresnelFromInside( const double mu, const double n )
+{
+	const double s2 = n * n * ( 1.0 - mu * mu );
+	if( s2 >= 1.0 ) return 1.0;
+	const double ct = std::sqrt( 1.0 - s2 );
+	const double rs = ( n * mu - ct ) / ( n * mu + ct );
+	const double rp = ( mu - n * ct ) / ( mu + n * ct );
+	return 0.5 * ( rs * rs + rp * rp );
+}
+
+static double AnalyticCrossed( const double extinction, const double thickness, const double tau,
+	const bool perpendicularAdvance = false, const double n = 1.5 )
+{
+	const int N = 200000;
+	double eEsc = 0, eRet = 0;
+	for( int i = 0; i < N; ++i ) {
+		const double mu = ( i + 0.5 ) / N;
+		const double g  = std::exp( -extinction * thickness / mu );
+		const double d  = perpendicularAdvance ? thickness : thickness / mu;
+		const double F  = FresnelFromInside( mu, n );
+		eEsc += 2.0 * mu * g * ( 1.0 - F ) * std::pow( tau, d ) / N;
+		eRet += 2.0 * mu * g * g * F / N;
+	}
+	const double r0 = ( n - 1.0 ) / ( n + 1.0 );
+	const double T0 = 1.0 - r0 * r0;
+	return T0 * std::exp( -extinction * thickness ) * eEsc / ( 1.0 - eRet );
+}
+
 static void Check( const bool ok, const std::string& what )
 {
 	std::cout << "    " << ( ok ? "PASS" : "FAIL" ) << "  " << what << "\n";
@@ -348,9 +398,10 @@ int main()
 
 	Check( lo.nCrossed > kSamples / 10,
 	       "gap-crossing rays exist (nCrossed > 10% of draws)" );
-	// Measured post-fix: total 0.42, floor 0.04 -> ratio ~10.6x.  The gate is
-	// set at 4x: comfortably above MC noise, and a regression that loses the
-	// return trip drops the ratio to exactly 1.0.
+	// Measured: total 0.99984 against the 0.04 floor since DL-24 (0.42 before
+	// it, when the walk was truncated).  The gate is set at 4x: comfortably
+	// above MC noise, and a regression that loses the return trip drops the
+	// ratio to exactly 1.0.
 	Check( lo.total > 4.0 * bare.total,
 	       "aggregate exiting kray exceeds 4x the Fresnel-only floor" );
 	// The Fresnel lobe itself must be unchanged -- it never crosses the gap,
@@ -362,14 +413,14 @@ int main()
 	// ------------------------------------------------------------
 	// 2. Extinction attenuates the gap-crossing population.
 	//
-	//    Beer-Lambert over two crossings of a 0.02-thick gap at
-	//    extinction 50 gives roughly exp(-50 * 2 * 0.02 / cos) -- a
-	//    ~7-9x drop once the actual (cosine-spread) path lengths are
-	//    accounted for.  The band below is derived from the measured
-	//    post-fix ratio (0.04604 / 0.38569 = 0.1194), widened to
-	//    [0.05, 0.25] so it tracks the physics rather than one seed.
+	//    Checked against AnalyticCrossed (the closed-form series above):
+	//    crossed(ext=50) = 0.046727, crossed(ext=0.001) = 0.959812, ratio
+	//    0.048684.  (Until DL-24 the walk was truncated after ONE round trip,
+	//    which removed most of the transparent-gap denominator and read
+	//    0.04604 / 0.38569 = 0.1194 against a [0.05, 0.25] band; that band
+	//    described the truncation, not the physics.)  Gate: 10 %.
 	//
-	//    PRE-FIX: ratio == 1.000 exactly.
+	//    PRE-FIX (the IOR-stack bug): ratio == 1.000 exactly.
 	// ------------------------------------------------------------
 	std::cout << "\n2. Extinction attenuates (0.001 vs 50 at thickness 0.02)\n";
 	CompositeSPF* compHi = new CompositeSPF(
@@ -382,8 +433,12 @@ int main()
 	const double extRatio = ( lo.crossed > 0 ) ? hi.crossed / lo.crossed : 1.0;
 	std::cout << "    crossed(ext=50) / crossed(ext=0.001) = "
 	          << std::fixed << std::setprecision( 4 ) << extRatio << "\n";
-	Check( extRatio > 0.05 && extRatio < 0.25,
-	       "gap-crossing energy attenuated into the measured Beer-Lambert band [0.05, 0.25]" );
+	const double extRatioAnalytic = AnalyticCrossed( 50.0, 0.02, 1.0 ) / AnalyticCrossed( 0.001, 0.02, 1.0 );
+	std::cout << "    closed form = " << std::fixed << std::setprecision( 4 ) << extRatioAnalytic << "\n";
+	Check( std::fabs( lo.crossed - AnalyticCrossed( 0.001, 0.02, 1.0 ) ) < 0.01,
+	       "transparent-gap crossed population == closed-form series (whole interreflection series, DL-24)" );
+	Check( std::fabs( extRatio - extRatioAnalytic ) < 0.10 * extRatioAnalytic,
+	       "gap-crossing energy attenuated to the closed-form Beer-Lambert series ratio (+-10%)" );
 	Check( hi.total < lo.total,
 	       "total exiting energy strictly lower at the higher extinction" );
 
@@ -429,11 +484,12 @@ int main()
 	const double thickRatio = ( thin.crossed > 0 ) ? thick.crossed / thin.crossed : 1.0;
 	std::cout << "    crossed(t=0.10) / crossed(t=0.01) = "
 	          << std::fixed << std::setprecision( 4 ) << thickRatio << "\n";
-	// Measured post-fix: 0.3848 (0.13348 / 0.34690); the analytic
-	// exp(-5 * 2 * (0.10 - 0.01) / cos) with a cosine-spread mean path is
-	// ~0.28.  Band widened to [0.20, 0.60].
-	Check( thickRatio > 0.20 && thickRatio < 0.60,
-	       "10x thickness attenuates into the measured band [0.20, 0.60]" );
+	// Closed form (AnalyticCrossed): 0.146286 / 0.659930 = 0.221670.  (The
+	// pre-DL-24 truncated walk read 0.3848 against a [0.20, 0.60] band.)
+	const double thickRatioAnalytic = AnalyticCrossed( 5.0, 0.10, 1.0 ) / AnalyticCrossed( 5.0, 0.01, 1.0 );
+	std::cout << "    closed form = " << std::fixed << std::setprecision( 4 ) << thickRatioAnalytic << "\n";
+	Check( std::fabs( thickRatio - thickRatioAnalytic ) < 0.10 * thickRatioAnalytic,
+	       "10x thickness attenuates to the closed-form series ratio (+-10%)" );
 	Check( thick.total < thin.total,
 	       "total exiting energy strictly lower at the greater thickness" );
 
@@ -480,11 +536,10 @@ int main()
 	//
 	// Post-fix the two walks agree: NM 0.11940 vs RGB 0.11938 -- the same
 	// physics through the same painter, differing only in the last MC digit.
-	// The band is the RGB band from section 2 ([0.05, 0.25], derived from the
-	// same measurement and equally MC-robust); a regression to the JH-uplift
-	// routing lands at 0.958, an order of magnitude outside it.
-	Check( nmRatio > 0.05 && nmRatio < 0.25,
-	       "NM gap-crossing energy attenuated into the Beer-Lambert band [0.05, 0.25] (JH-uplift regression lands at 0.958)" );
+	// The reference is section 2's closed form; a regression to the
+	// JH-uplift routing lands at 0.958, twenty times outside it.
+	Check( std::fabs( nmRatio - extRatioAnalytic ) < 0.10 * extRatioAnalytic,
+	       "NM gap-crossing energy attenuated to the closed-form series ratio (+-10%; the JH-uplift regression lands at 0.958)" );
 	// The NM and RGB walks read the SAME scalar at 550 nm, so their ratios
 	// must agree to well inside MC noise.  This is the direct statement that
 	// the spectral path is no longer on a different value of `extinction`.
@@ -854,11 +909,19 @@ int main()
 	const Measurement absorbM = Measure( *compAbsorb, 0.0 );
 	PrintMeasurement( "composite absorbing-top(tau=0.2) thick=2.0", absorbM );
 
-	// The band brackets the fixed value (0.01028) with ~20 % either side and
-	// excludes the buggy one (0.01536) by a further 23 %.
-	Check( absorbM.crossed > 0.0085 && absorbM.crossed < 0.0125,
-	       "return-trip tau^distance uses the SLANT path (crossed in [0.0085, 0.0125]; "
-	       "advancing by the perpendicular thickness instead lands at 0.0154)" );
+	// DL-24 re-derivation.  The numbers above were measured on the walk
+	// that was TRUNCATED after one round trip; the whole series is now
+	// summed and both have closed forms (AnalyticCrossed): slant advance
+	// 0.025221, perpendicular advance 0.037670 (the bug is still +49 %, and
+	// still forced to be too BRIGHT).  Gate: 10 % of the slant value, which
+	// excludes the perpendicular one by a factor of five.
+	const double absorbSlant = AnalyticCrossed( 0.001, 2.0, 0.2 );
+	const double absorbPerp  = AnalyticCrossed( 0.001, 2.0, 0.2, true );
+	std::cout << "    closed form: slant " << std::fixed << std::setprecision( 5 ) << absorbSlant
+	          << ", perpendicular (the bug) " << absorbPerp << "\n";
+	Check( std::fabs( absorbM.crossed - absorbSlant ) < 0.10 * absorbSlant,
+	       "return-trip tau^distance uses the SLANT path (crossed == closed form +-10%; "
+	       "advancing by the perpendicular thickness instead lands 49 % high)" );
 	// Direction statement, independent of the exact band: the slant path is
 	// never SHORTER than the perpendicular one, so a correct advance can only
 	// make an absorbing coat darker, never brighter.

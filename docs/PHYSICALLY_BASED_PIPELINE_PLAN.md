@@ -636,7 +636,7 @@ denominator diverged as `cos θ → 0`.  Results: ρ(80°) on the sheen-
 alone config drops from **8.7** to **0.55** (configurations #2 and
 #6, both PASS at 5% bounded posture).
 
-**Composite recursion redesign NOT yet shipped (Finding A).**
+**Composite recursion redesign NOT yet shipped (Finding A).** *(Historical: shipped 2026-09-28 as DL-24 for row #3; row #7 is a different defect -- see the Finding A update below.)*
 Configurations #3 and #7 still fail with ρ(0°) ≈ 0.04 — `CompositeSPF`'s
 random-walk recursion budget clips below-layer diffuse paths under
 delta-mediated specular tops.  Remains the dominant blocker for
@@ -744,6 +744,8 @@ references, not the current reciprocal interface-transmission semantics.
 | 18 | Red GGX-PBR base alone (reference for #15) | 0.8069 | 0.8074 | 0.8344 | 0.9631 | PASS @ 6% bounded — bare-substrate reference row for #15's analytic check. Supplies `A_base(θ)`, the substrate's ACTUAL directional albedo, which is a different quantity from the `R_hemi` the recycling denominator uses (0.8537143 here, closed-form). Conflating the two is the easy mistake; both appear in #15's derivation. |
 
 ### Findings, in priority order
+
+> **UPDATE 2026-09-28 (DL-24, slice `debt-dl24`) — Finding A is CLOSED for row #3.**  After the 2026-09-01 IOR-stack fix the residual really was the budget truncation this finding describes (per-bounce ledger: exit 0.4260 + dropped 0.5740 = 1.0000 at normal incidence).  The fix went further than A1 or A2.  The budgets are now Russian-roulette onsets, not truncations, and `CompositeSPF` prices coat-over-substrate transport with a deterministic Monte-Carlo layered evaluator (Guo 2018 / PBRT-v4 `LayeredBxDF::f` -- the position-free cousin of A2).  It also reports an exact `Pdf`, and `CompositeMaterial` presents that evaluator as its BSDF, so NEE no longer prices the bare substrate.  Row #3 reads **1.0000** at all four angles and is gated at kPosturePass.  Row #7 is unchanged ({0.0389, 0.0654} at 0/60 deg): `GGXSPF` has no transmission lobe, so the substrate is never reached, and `coated_material` remains the answer there.  See [DL24_COMPOSITE_ENERGY.md](DL24_COMPOSITE_ENERGY.md).
 
 **Finding A — Catastrophic dielectric/Lambertian loss (#3).**  Most
 critical: this is the canonical "thin coat over diffuse paint"

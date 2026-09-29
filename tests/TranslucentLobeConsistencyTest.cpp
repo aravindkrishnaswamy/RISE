@@ -857,30 +857,30 @@ static void GateKrayNM( const IObject* obj, const IObject* other )
 }
 
 //////////////////////////////////////////////////////////////////////
-//  Gate 6 -- DL-157 review P2-1: `CompositeMaterial` must forward the
-//  full-sphere capability, and must forward it from WHICHEVER LAYER'S
-//  BSDF it actually presents.
+//  Gate 6 -- DL-157 review P2-1, as re-ruled by DL-24 (2026-09-28).
 //
-//  `CompositeMaterial::GetBSDF()` returns the TOP material's BSDF when
-//  it has one, else the BOTTOM's -- and that is the `value()`
-//  `LightSampler`'s NEE arms will call.  `FabricMaterial` and
-//  `CoatedMaterial` both forward `ScattersFullSphere()`; `CompositeMaterial`
-//  did not, so `composite { top = translucent }` (which is
-//  `mat_wax_gold` in scenes/Tests/Materials/composite_material.RISEscene)
-//  presented a transmitting `TranslucentBSDF` to a `bFullSphere == false`
-//  NEE and lost the whole transmissive half-space -- the exact
-//  under-reading DL-157's own `ScattersFullSphere` derivation names.
+//  THE RULE (unchanged): a composite's full-sphere capability follows the
+//  BSDF it actually PRESENTS, because that is the `value()` LightSampler's
+//  NEE arms call and the capability's safety condition is a statement
+//  about `value()` (IMaterial::ScattersFullSphere).
 //
-//  The CONTROL is the other order.  A Lambertian TOP over a translucent
-//  BOTTOM presents the LAMBERTIAN BSDF, which does not transmit, so the
-//  flag must stay FALSE there -- an OR over both layers would grant it
-//  and light that material's back faces at full weight, which is the
-//  failure mode `IMaterial::ScattersFullSphere`'s own doc warns about.
+//  WHAT CHANGED.  Pre-DL-24 `CompositeMaterial::GetBSDF()` presented ONE
+//  layer's BSDF (top, else bottom), so `composite { top = translucent }`
+//  (`mat_wax_gold` in scenes/Tests/Materials/composite_material.RISEscene)
+//  presented a transmitting `TranslucentBSDF` and this gate required the
+//  flag TRUE.  That BSDF priced a transmission the composite's own walk
+//  never produces over an opaque bottom.  Since DL-24 the composite
+//  presents its OWN layered BSDF (`CompositeBSDF`) -- the same function its
+//  Scatter prices its non-delta emissions with -- and that value is ZERO
+//  on the far side of the stack for every configuration (transport out
+//  through the bottom is sampled as delta-tagged walker rays, which no
+//  evaluation prices).  So the flag must be FALSE for BOTH orders, and
+//  the check below asserts the reason rather than the flag alone: the
+//  presented value transmits nothing.
 //////////////////////////////////////////////////////////////////////
-
 static void GateCompositeFullSphere()
 {
-	std::cout << std::endl << "[G] Gate 6: CompositeMaterial forwards ScattersFullSphere (DL-157 P2-1)"
+	std::cout << std::endl << "[G] Gate 6: CompositeMaterial's full-sphere capability follows the BSDF it presents (DL-157 P2-1 / DL-24)"
 	          << std::endl;
 
 	UniformColorPainter* c = new UniformColorPainter( RISEPel(0.5,0.4,0.3) ); c->addref();
@@ -901,23 +901,36 @@ static void GateCompositeFullSphere()
 	CompositeMaterial* topLamb  = new CompositeMaterial( *lm, *tr, 4, 2, 2, 2, 2, 0.1, *z );
 	topLamb->addref();
 
-	std::cout << "    composite{top=translucent} GetBSDF()==translucent's: "
-	          << ( topTrans->GetBSDF() == tr->GetBSDF() ? "yes" : "no" )
-	          << "  ScattersFullSphere=" << ( topTrans->ScattersFullSphere() ? "true" : "false" )
-	          << std::endl;
-	std::cout << "    composite{top=lambertian}  GetBSDF()==lambertian's:  "
-	          << ( topLamb->GetBSDF() == lm->GetBSDF() ? "yes" : "no" )
-	          << "  ScattersFullSphere=" << ( topLamb->ScattersFullSphere() ? "true" : "false" )
-	          << std::endl;
+	// A viewer above the +Z surface; one light direction on each side.
+	const Vector3 inDir = Vector3Ops::Normalize( Vector3( 0.3, 0.0, -1.0 ) );
+	RayIntersectionGeometric ri( Ray( Point3( -0.3, 0.0, 1.0 ), inDir ), RasterizerState() );
+	ri.bHit = true;
+	ri.ptIntersection = Point3( 0, 0, 0 );
+	ri.vNormal = Vector3( 0, 0, 1 );
+	ri.vGeomNormal = Vector3( 0, 0, 1 );
+	ri.onb.CreateFromW( Vector3( 0, 0, 1 ) );
+	const Vector3 above = Vector3Ops::Normalize( Vector3( -0.2, 0.1, 1.0 ) );
+	const Vector3 below = Vector3Ops::Normalize( Vector3( -0.2, 0.1, -1.0 ) );
 
-	EXPECT( topTrans->GetBSDF() == tr->GetBSDF(),
-		"[G] composite{top=translucent} presents the TRANSLUCENT BSDF" );
-	EXPECT( topTrans->ScattersFullSphere(),
-		"[G] ... so it must claim the full-sphere capability too" );
-	EXPECT( topLamb->GetBSDF() == lm->GetBSDF(),
-		"[G] composite{top=lambertian} presents the LAMBERTIAN BSDF" );
-	EXPECT( !topLamb->ScattersFullSphere(),
-		"[G] ... so it must NOT claim it, even though its BOTTOM layer does" );
+	for( int k = 0; k < 2; ++k ) {
+		CompositeMaterial* m = k == 0 ? topTrans : topLamb;
+		const char* label = k == 0 ? "composite{top=translucent}" : "composite{top=lambertian}";
+		const IBSDF* b = m->GetBSDF();
+		const double vAbove = b ? ColorMath::MaxValue( b->value( above, ri ) ) : -1;
+		const double vBelow = b ? ColorMath::MaxValue( b->value( below, ri ) ) : -1;
+		std::cout << "    " << label << ": presents its own layered BSDF: "
+		          << ( b && b != tr->GetBSDF() && b != lm->GetBSDF() ? "yes" : "no" )
+		          << "  value(above)=" << vAbove << "  value(below)=" << vBelow
+		          << "  ScattersFullSphere=" << ( m->ScattersFullSphere() ? "true" : "false" ) << std::endl;
+		EXPECT( b != 0 && b != tr->GetBSDF() && b != lm->GetBSDF(),
+			std::string( "[G] " ) + label + " presents its OWN layered BSDF, not a layer's" );
+		EXPECT( vAbove > 0,
+			std::string( "[G] " ) + label + " prices the near side" );
+		EXPECT( vBelow == 0,
+			std::string( "[G] " ) + label + " prices NOTHING on the far side of the stack" );
+		EXPECT( !m->ScattersFullSphere(),
+			std::string( "[G] " ) + label + " therefore does NOT claim the full-sphere capability" );
+	}
 
 	topLamb->release(); topTrans->release(); lm->release(); tr->release();
 	s3->release(); n10->release(); z->release(); c->release();

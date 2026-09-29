@@ -169,9 +169,12 @@
 		B7A4ED1EF0DE4E61A0A3D001 /* SheenMaterial.h in Sources */ = {isa = PBXBuildFile; fileRef = B7A4ED14F0DE4E61A0A3D001 /* SheenMaterial.h */; };
 		AFAED5358FCCEEE8AA95A272 /* SheenDirectionalAlbedo.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D658195E349F42002A9DA02B /* SheenDirectionalAlbedo.cpp */; };
 		7FA72AB2C3746F6E7732505A /* SheenDirectionalAlbedo_LUTData.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BD50C716CDA4FBD04FA07982 /* SheenDirectionalAlbedo_LUTData.cpp */; };
+		D31031000000000000000004 /* SchlickDirectionalAlbedo_LUTData.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D31031000000000000000002 /* SchlickDirectionalAlbedo_LUTData.cpp */; };
+		D31031000000000000000003 /* SchlickDirectionalAlbedo.h in Headers */ = {isa = PBXBuildFile; fileRef = D31031000000000000000001 /* SchlickDirectionalAlbedo.h */; };
 		CBC2590B5846215F7065E426 /* SheenDirectionalAlbedo.h in Headers */ = {isa = PBXBuildFile; fileRef = 47A7D49F374202022FF9771A /* SheenDirectionalAlbedo.h */; };
 		37F078D720EA603FD022D91D /* SheenDirectionalAlbedo.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D658195E349F42002A9DA02B /* SheenDirectionalAlbedo.cpp */; };
 		DC47B95138CCFE4873BDEE8B /* SheenDirectionalAlbedo_LUTData.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BD50C716CDA4FBD04FA07982 /* SheenDirectionalAlbedo_LUTData.cpp */; };
+		D31031000000000000000005 /* SchlickDirectionalAlbedo_LUTData.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D31031000000000000000002 /* SchlickDirectionalAlbedo_LUTData.cpp */; };
 		6CD8A61EFD736512758288FE /* FabricBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2C38C7FB6228D73FD8C1B140 /* FabricBRDF.cpp */; };
 		78BF53D4E6FD206498E48684 /* FabricSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E82B2F18F0509545F3643593 /* FabricSPF.cpp */; };
 		CF05237640B7B52A6963AC94 /* FabricBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2C38C7FB6228D73FD8C1B140 /* FabricBRDF.cpp */; };
@@ -2152,6 +2155,8 @@
 		47A7D49F374202022FF9771A /* SheenDirectionalAlbedo.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SheenDirectionalAlbedo.h; sourceTree = "<group>"; };
 		D658195E349F42002A9DA02B /* SheenDirectionalAlbedo.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SheenDirectionalAlbedo.cpp; sourceTree = "<group>"; };
 		BD50C716CDA4FBD04FA07982 /* SheenDirectionalAlbedo_LUTData.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SheenDirectionalAlbedo_LUTData.cpp; sourceTree = "<group>"; };
+		D31031000000000000000001 /* SchlickDirectionalAlbedo.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SchlickDirectionalAlbedo.h; sourceTree = "<group>"; };
+		D31031000000000000000002 /* SchlickDirectionalAlbedo_LUTData.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SchlickDirectionalAlbedo_LUTData.cpp; sourceTree = "<group>"; };
 		2C38C7FB6228D73FD8C1B140 /* FabricBRDF.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FabricBRDF.cpp; sourceTree = "<group>"; };
 		E82B2F18F0509545F3643593 /* FabricSPF.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FabricSPF.cpp; sourceTree = "<group>"; };
 		C48C3474E47A6A80511E576A /* FabricBRDF.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FabricBRDF.h; sourceTree = "<group>"; };
@@ -3644,6 +3649,8 @@
 				47A7D49F374202022FF9771A /* SheenDirectionalAlbedo.h */,
 				D658195E349F42002A9DA02B /* SheenDirectionalAlbedo.cpp */,
 				BD50C716CDA4FBD04FA07982 /* SheenDirectionalAlbedo_LUTData.cpp */,
+				D31031000000000000000001 /* SchlickDirectionalAlbedo.h */,
+				D31031000000000000000002 /* SchlickDirectionalAlbedo_LUTData.cpp */,
 				2C38C7FB6228D73FD8C1B140 /* FabricBRDF.cpp */,
 				E82B2F18F0509545F3643593 /* FabricSPF.cpp */,
 				C48C3474E47A6A80511E576A /* FabricBRDF.h */,
@@ -4682,6 +4689,7 @@
 				B7A4ED18F0DE4E61A0A3D001 /* SheenSPF.h in Headers */,
 				B7A4ED19F0DE4E61A0A3D001 /* SheenMaterial.h in Headers */,
 				CBC2590B5846215F7065E426 /* SheenDirectionalAlbedo.h in Headers */,
+				D31031000000000000000003 /* SchlickDirectionalAlbedo.h in Headers */,
 				329252CED5AF942BD28F9479 /* FabricBRDF.h in Headers */,
 				0A1E196AAF1A6EECBD0D7150 /* FabricSPF.h in Headers */,
 				FCA0236FC78BE6E186DCF416 /* FabricMaterial.h in Headers */,
@@ -5628,6 +5636,7 @@
 				B7A4ED1EF0DE4E61A0A3D001 /* SheenMaterial.h in Sources */,
 				37F078D720EA603FD022D91D /* SheenDirectionalAlbedo.cpp in Sources */,
 				DC47B95138CCFE4873BDEE8B /* SheenDirectionalAlbedo_LUTData.cpp in Sources */,
+				D31031000000000000000005 /* SchlickDirectionalAlbedo_LUTData.cpp in Sources */,
 				CF05237640B7B52A6963AC94 /* FabricBRDF.cpp in Sources */,
 				7C4A5B39AAC92D641AE49EA6 /* FabricSPF.cpp in Sources */,
 				CC2E0000000000000000000B /* WeaveBRDF.cpp in Sources */,
@@ -6625,6 +6634,7 @@
 				B7A4ED16F0DE4E61A0A3D001 /* SheenSPF.cpp in Sources */,
 				AFAED5358FCCEEE8AA95A272 /* SheenDirectionalAlbedo.cpp in Sources */,
 				7FA72AB2C3746F6E7732505A /* SheenDirectionalAlbedo_LUTData.cpp in Sources */,
+				D31031000000000000000004 /* SchlickDirectionalAlbedo_LUTData.cpp in Sources */,
 				6CD8A61EFD736512758288FE /* FabricBRDF.cpp in Sources */,
 				78BF53D4E6FD206498E48684 /* FabricSPF.cpp in Sources */,
 				CC2E0000000000000000000C /* WeaveBRDF.cpp in Sources */,

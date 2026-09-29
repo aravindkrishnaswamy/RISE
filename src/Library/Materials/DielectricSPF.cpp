@@ -85,6 +85,39 @@ void DielectricSPF::SetIOR( const IScalarPainter& v )
 	pRIndex = &v;
 }
 
+// DL-24 review round 2, P1-A.  The warp is active exactly where
+// GenerateScatteredRay draws a non-zero `alpha`: Henyey-Greenstein for
+// g < 1, the Phong cone for scattering < 1e6 (the delta pass-through
+// convention).  The shading-vs-geometric tilt test is exact up to the
+// normalisation round-off of the two normals: a residual wedge of at most
+// ~1.4e-6 rad between the planes (1 - cos < 1e-12) is treated as none.
+bool DielectricSPF::SelectionMassIsDeterministic(
+	const RayIntersectionGeometric& ri,
+	const Scalar nm
+	) const
+{
+	bool warp = false;
+	if( nm > 0 ) {
+		const Scalar v = pScat->GetValueAtNM( ri, nm );
+		warp = bHG ? ( v < 1 ) : ( v < 1000000.0 );
+	} else {
+		const ScalarTriple v = pScat->GetValuesAt( ri );
+		for( int i = 0; i < 3; i++ ) {
+			warp = warp || ( bHG ? ( v.v[i] < 1 ) : ( v.v[i] < 1000000.0 ) );
+		}
+	}
+	if( !warp ) {
+		return true;
+	}
+	// A degenerate geometric normal makes DielectricSPF clip against the
+	// shading normal itself (its own nEff fallback): no wedge exists.
+	if( !( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar( 1e-12 ) ) ) {
+		return true;
+	}
+	const Scalar c = fabs( Vector3Ops::Dot( Vector3Ops::Normalize( ri.vGeomNormal ), ri.onb.w() ) );
+	return c >= Scalar( 1 ) - Scalar( 1e-12 );
+}
+
 void DielectricSPF::SetScattering( const IScalarPainter& v )
 {
 	v.addref();

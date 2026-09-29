@@ -236,7 +236,13 @@ void WardIsotropicGaussianSPF::Scatter(
 	// hit the two differ by sign, and testing the unflipped normal here
 	// silently dropped every legitimately-sampled back-face lobe.
 	if( Vector3Ops::Dot( d.ray.Dir(), myonb.w() ) > 0.0 && Vector3Ops::Dot( d.ray.Dir(), geomN ) > 0.0 ) {
-		d.kray = pDiffuse->GetColor(ri);
+		// DL-310: coupled diffuse (WardSelection::CoupledDiffuse) -- the
+		// same constant min(Rd, 1 - Rs) value() uses.
+		{
+			const RISEPel rd = pDiffuse->GetColor(ri), rs = pSpecular->GetColor(ri);
+			d.kray = RISEPel( WardSelection::CoupledDiffuse( rd[0], rs[0] ),
+				WardSelection::CoupledDiffuse( rd[1], rs[1] ), WardSelection::CoupledDiffuse( rd[2], rs[2] ) );
+		}
 		// Cosine-weighted hemisphere: pdf = cos(theta) / PI
 		const Scalar cos_theta = Vector3Ops::Dot( d.ray.Dir(), myonb.w() );
 		d.pdf = cos_theta * INV_PI;
@@ -317,7 +323,7 @@ void WardIsotropicGaussianSPF::ScatterNM(
 	// frame lobes are actually sampled around (post-FlipW), not the raw
 	// ri.onb.w() which differs by sign on a back-face hit.
 	if( Vector3Ops::Dot( d.ray.Dir(), myonb.w() ) > 0.0 && Vector3Ops::Dot( d.ray.Dir(), geomN ) > 0.0 ) {
-		d.krayNM = GuardedGetColorNM( *pDiffuse, ri, nm );
+		d.krayNM = WardSelection::CoupledDiffuse( GuardedGetColorNM( *pDiffuse, ri, nm ), GuardedGetColorNM( *pSpecular, ri, nm ) );
 		const Scalar cos_theta = Vector3Ops::Dot( d.ray.Dir(), myonb.w() );
 		d.pdf = cos_theta * INV_PI;
 		scattered.AddScatteredRay( d );
@@ -561,7 +567,10 @@ Scalar WardIsotropicGaussianSPF::Pdf(
 		}
 	}
 
-	const Scalar wDiff = ColorMath::MaxValue( pDiffuse->GetColor(ri) );
+	// DL-310: the diffuse ray's realized weight is its coupled kray.
+	const RISEPel rdP = pDiffuse->GetColor(ri), rsP = pSpecular->GetColor(ri);
+	const Scalar wDiff = ColorMath::MaxValue( RISEPel( WardSelection::CoupledDiffuse( rdP[0], rsP[0] ),
+		WardSelection::CoupledDiffuse( rdP[1], rsP[1] ), WardSelection::CoupledDiffuse( rdP[2], rsP[2] ) ) );
 
 	return WardIsotropicPdf( ri, wo, lobes, wDiff );
 }
@@ -580,7 +589,7 @@ Scalar WardIsotropicGaussianSPF::PdfNM(
 	lobes.alpha[0] = pAlpha->GetValueAtNM(ri,nm);
 	lobes.w[0] = fabs( GuardedGetColorNM( *pSpecular, ri, nm ) );
 
-	const Scalar wDiff = fabs( GuardedGetColorNM( *pDiffuse, ri, nm ) );
+	const Scalar wDiff = fabs( WardSelection::CoupledDiffuse( GuardedGetColorNM( *pDiffuse, ri, nm ), GuardedGetColorNM( *pSpecular, ri, nm ) ) );
 
 	return WardIsotropicPdf( ri, wo, lobes, wDiff );
 }
@@ -592,7 +601,7 @@ Scalar WardIsotropicGaussianSPF::PdfNM(
 // lobe had `nm` been the hero wavelength, for the SAME outgoing
 // direction:
 //
-//   diffuse:   Rd(nm)                                 -- direction-free
+//   diffuse:   min(Rd(nm), 1 - Rs(nm))                -- direction-free (DL-310)
 //   specular:  Rs(nm) * WardKrayRatio(h.wo, cos_h, cos_o, cos_i)
 //
 // ALPHA DOES NOT APPEAR, and that is not an omission: DL-177's
@@ -619,7 +628,7 @@ Scalar WardIsotropicGaussianSPF::EvaluateLobeFNM(
 	) const
 {
 	if( rayType == ScatteredRay::eRayDiffuse ) {
-		return GuardedGetColorNM( *pDiffuse, ri, nm ) * INV_PI;
+		return WardSelection::CoupledDiffuse( GuardedGetColorNM( *pDiffuse, ri, nm ), GuardedGetColorNM( *pSpecular, ri, nm ) ) * INV_PI;
 	}
 
 	if( rayType != ScatteredRay::eRayReflection ) {
@@ -666,7 +675,7 @@ Scalar WardIsotropicGaussianSPF::EvaluateKrayNM(
 	) const
 {
 	if( rayType == ScatteredRay::eRayDiffuse ) {
-		return GuardedGetColorNM( *pDiffuse, ri, nm );
+		return WardSelection::CoupledDiffuse( GuardedGetColorNM( *pDiffuse, ri, nm ), GuardedGetColorNM( *pSpecular, ri, nm ) );
 	}
 
 	if( rayType != ScatteredRay::eRayReflection ) {
@@ -710,7 +719,7 @@ Scalar WardIsotropicGaussianSPF::EvaluateKrayNM(
 	}
 
 	if( rayType == ScatteredRay::eRayDiffuse ) {
-		return GuardedGetColorNM( *pDiffuse, ri, nm );
+		return WardSelection::CoupledDiffuse( GuardedGetColorNM( *pDiffuse, ri, nm ), GuardedGetColorNM( *pSpecular, ri, nm ) );
 	}
 
 	if( rayType != ScatteredRay::eRayReflection ) {

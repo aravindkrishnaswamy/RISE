@@ -29,8 +29,10 @@
 //  `AshikminShirleyAnisotropicPhongSPF`. TranslucentSPF now also
 //  answers (DL-222, integrated 2026-09-19); section D independently
 //  checks entry painters, interior Beer/scattering and live-distance
-//  replay. CompositeSPF remains unresolved (DL-221): its stochastic
-//  layer walk cannot be recovered from (ri, outDir, type, nm).
+//  replay. CompositeSPF (DL-221, narrowed by DL-24 2026-09-28): the
+//  rays its layered evaluator prices are reconstructed (section D,
+//  material path); the rays its stochastic WALKER emits still cannot
+//  be recovered from (ri, outDir, type, nm) and decline.
 //
 //  SECTIONS
 //    A. SAMPLER <-> EVALUATOR, SAME WAVELENGTH.  For every non-delta
@@ -83,7 +85,9 @@
 //       aggregate (`LambertianSPF`) must still return -1, so the
 //       fallback ladder stays reachable; and an unknown / unsupported
 //       `rayType` on the five must return -1 rather than a wrong
-//       number. CompositeSPF names its unresolved fallback. Translucent
+//       number. An SPF-only CompositeSPF (no layer BSDFs) declines and
+//       names itself; the production CompositeMaterial path answers
+//       for its evaluator-priced rays (DL-24). Translucent
 //       entry/exit weights have independent painter/Beer oracles; both
 //       eye/light replay must consume recorded non-unit incoming
 //       distance and apply the ratio only to downstream throughput.
@@ -126,6 +130,9 @@
 #include "../src/Library/Materials/AshikminShirleyAnisotropicPhongSPF.h"
 #include "../src/Library/Materials/AshikminShirleyAnisotropicPhongBRDF.h"
 #include "../src/Library/Materials/CompositeSPF.h"
+#include "../src/Library/Materials/CompositeMaterial.h"
+#include "../src/Library/Materials/DielectricMaterial.h"
+#include "../src/Library/Materials/LambertianMaterial.h"
 #include "../src/Library/Materials/TranslucentSPF.h"
 #include "../src/Library/Materials/GGXSPF.h"
 #include "../src/Library/Materials/LambertianSPF.h"
@@ -997,6 +1004,88 @@ int main()
 		       std::string( comp->PerLobeDensityFallbackName() ) == "CompositeSPF",
 			"DL-125 section D (CompositeSPF): names itself to the fallback diagnostic" );
 		comp->release();
+
+		// DL-221, as narrowed by DL-24 (2026-09-28).  The SPF-only
+		// composite above has no layer BSDFs, so every ray it emits is
+		// delta-tagged and nothing is reconstructible -- it keeps
+		// declining.  The PRODUCTION construction (CompositeMaterial,
+		// which hands the layers' BSDFs to the SPF) prices every NON-delta
+		// emission as value(dir) * cos / Pdf(dir) with a DETERMINISTIC
+		// layered value, so its companion weight IS reconstructible:
+		//   (1) same wavelength: EvaluateKrayNM(.., pdfHero = ray.pdf)
+		//       reproduces the ray's own krayNM (section A's contract);
+		//   (2) companion wavelength: it equals valueNM(nm) cos / pdfHero
+		//       -- the HWSS weight of the hero's direction -- and over a
+		//       CHROMATIC bottom it genuinely moves with nm (the row's own
+		//       "divergent spectra" red-proof recipe);
+		//   (3) the top's DIRECT delta reflection (5-argument call) is
+		//       reconstructed from the top layer at nm.
+		// Pre-DL-24 every one of these returned -1.
+		{
+			UniformColorPainter* chroma = new UniformColorPainter( RISEPel( 0.9, 0.25, 0.05 ) ); chroma->addref();
+			UniformScalarPainter* dTau  = new UniformScalarPainter( 1.0 );     dTau->addref();
+			UniformScalarPainter* dIor  = new UniformScalarPainter( 1.5 );     dIor->addref();
+			UniformScalarPainter* dScat = new UniformScalarPainter( 10000.0 ); dScat->addref();
+			UniformScalarPainter* cExt  = new UniformScalarPainter( 0.4 );     cExt->addref();
+			DielectricMaterial* dTop = new DielectricMaterial( *dTau, *dIor, *dScat, false ); dTop->addref();
+			LambertianMaterial* lBot = new LambertianMaterial( *chroma ); lBot->addref();
+			CompositeMaterial* cm = new CompositeMaterial( *dTop, *lBot, 3, 3, 3, 3, 3, 0.2, *cExt ); cm->addref();
+			const ISPF* cspf = cm->GetSPF();
+			const IBSDF* cbsdf = cm->GetBSDF();
+			const RayIntersectionGeometric cri = MakeIntersection( 35.0 * PI / 180.0 );
+
+			RandomNumberGenerator crng( 4711 );
+			IndependentSampler csmp( crng );
+			int nNonDelta = 0, nSame = 0, nComp = 0, nDelta = 0, nDeltaOk = 0;
+			double worstSame = 0, worstComp = 0, maxSpread = 0;
+			for( int i = 0; i < 3000; i++ ) {
+				ScatteredRayContainer sc;
+				cspf->ScatterNM( cri, csmp, 520.0, sc, iorStack );
+				for( unsigned int j = 0; j < sc.Count(); j++ ) {
+					const ScatteredRay& r = sc[j];
+					const Vector3 d = Vector3Ops::Normalize( r.ray.Dir() );
+					if( r.isDelta ) {
+						// Only the direct Fresnel reflection is a mirror
+						// direction; walker rays are not (and decline).
+						const Vector3 mirror = Vector3Ops::Normalize( Vector3( -cri.ray.Dir().x, -cri.ray.Dir().y, -cri.ray.Dir().z ) );
+						const Vector3 refl( -mirror.x, -mirror.y, mirror.z );
+						if( 1.0 - Vector3Ops::Dot( d, refl ) < 1e-9 ) {
+							nDelta++;
+							const Scalar w = cspf->EvaluateKrayNM( cri, d, r.type, 520.0, iorStack );
+							if( w >= 0 && RelDiff( w, r.krayNM ) < 1e-9 ) nDeltaOk++;
+						}
+						continue;
+					}
+					nNonDelta++;
+					const Scalar wSame = cspf->EvaluateKrayNM( cri, d, r.type, 520.0, iorStack, r.pdf );
+					const double eSame = RelDiff( wSame, r.krayNM );
+					worstSame = r_max( worstSame, eSame );
+					if( wSame >= 0 && eSame < 1e-9 ) nSame++;
+					const Scalar wComp = cspf->EvaluateKrayNM( cri, d, r.type, 650.0, iorStack, r.pdf );
+					const double cosO = fabs( Vector3Ops::Dot( d, cri.vNormal ) );
+					const double ref  = cbsdf ? cbsdf->valueStatefulNM( d, cri, 650.0, &iorStack ) * cosO / r.pdf : -1;
+					const double eComp = RelDiff( wComp, ref );
+					worstComp = r_max( worstComp, eComp );
+					if( wComp >= 0 && eComp < 1e-9 ) nComp++;
+					if( r.krayNM > 1e-6 ) maxSpread = r_max( maxSpread, fabs( wComp / r.krayNM - 1.0 ) );
+				}
+			}
+			std::cout << "  composite(material) non-delta rays " << nNonDelta
+			          << ": same-lambda reconstructed " << nSame << " (worst " << worstSame << ")"
+			          << ", companion == valueNM*cos/pdfHero " << nComp << " (worst " << worstComp << ")"
+			          << ", max |companion/hero - 1| " << maxSpread
+			          << ";  direct delta reflections " << nDelta << ", reconstructed " << nDeltaOk << std::endl;
+			Check( nNonDelta > 1000 && nSame == nNonDelta,
+				"DL-221/DL-24 section D (composite, material path): every non-delta ray's own krayNM is reconstructed" );
+			Check( nComp == nNonDelta,
+				"DL-221/DL-24 section D (composite, material path): companion weight == valueNM(nm) cos / pdfHero" );
+			Check( maxSpread > 0.5,
+				"DL-221/DL-24 section D (composite, material path, PREMISE): over a chromatic bottom the companion weight really moves with nm" );
+			Check( nDelta > 20 && nDeltaOk == nDelta,
+				"DL-221/DL-24 section D (composite, material path): the direct delta reflection is reconstructed from the top at nm" );
+			cm->release(); lBot->release(); dTop->release();
+			cExt->release(); dScat->release(); dIor->release(); dTau->release(); chroma->release();
+		}
 
 		// DL-222 integration: derive from painter and Beer/scattering
 		// inputs, independently of ScatterNM and BuildLobeSet.

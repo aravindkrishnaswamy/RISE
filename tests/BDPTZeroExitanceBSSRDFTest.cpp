@@ -96,6 +96,13 @@
 //    already, so it alone would not prove the isConnectible bypass is
 //    load-bearing).
 //
+//    PART E (DL-307).  ROUGH (0.8) random-walk and diffusion spheres
+//    under the same directional light, PT vs BDPT.  The sweep only ever
+//    reaches a BSSRDF entry vertex the eye generator spawned, and the
+//    generator used to break BEFORE spawning one whenever a rough
+//    reflection draw fell below the horizon (empty scatter container):
+//    BDPT read ~24% under PT on both spheres.
+//
 //  Author: Aravind Krishnaswamy (RISE debt-cleanup, slice `dl207`)
 //  Tabs: 4
 //
@@ -567,6 +574,54 @@ static void TestRandomWalkDirectional()
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+// PART E -- DL-307: ROUGH subsurface spheres under a directional light,
+// PT vs BDPT.  The zero-exitance sweep can only price a BSSRDF / random-
+// walk ENTRY vertex, and the eye generator used to break before spawning
+// one whenever a rough front-reflection draw fell below the horizon and
+// emptied the scatter container (DL-307) -- at a sphere's grazing
+// silhouette that is common, so BDPT under-read the directional light's
+// subsurface transport there.  E1 random walk, E2 diffusion profile,
+// both roughness 0.8, 1024 spp.  Pre-fix (isolated A/B, base library)
+// BDPT/PT read -23.9% (E1) and -24.4% (E2); post-fix four runs read
+// -0.98 / +0.00 / -0.81 / +1.02% (E1 -- the random walk draws from the
+// per-thread RNG, so it is not reproducible run to run) and +0.39 / +0.40
+// / +0.60 / +0.63% (E2).  Bands 4% and 2%: >= 2x the post-fix spread
+// and >= 6x inside the pre-fix deficit.
+//////////////////////////////////////////////////////////////////////
+static void RunRoughSphere( const char* label, const std::string& materialBlock, const char* matName,
+	unsigned int seedBase, double band )
+{
+	const std::string common = FilmAndCamera() + DirectionalLightBlock() + materialBlock + SphereObject( matName, 1.5 );
+	const std::string ptScene   = std::string("RISE ASCII SCENE 7\n") + RasterizerPT( 1024 )   + common;
+	const std::string bdptScene = std::string("RISE ASCII SCENE 7\n") + RasterizerBDPT( 1024 ) + common;
+	const std::string ptPath   = WriteSceneToTempFile( ptScene,   "e_pt" );
+	const std::string bdptPath = WriteSceneToTempFile( bdptScene, "e_bdpt" );
+	Check( !ptPath.empty() && !bdptPath.empty(), ( std::string( label ) + ": scene temp files written" ).c_str() );
+	const RenderResult pt   = RenderAndComputeMean( ptPath,   seedBase );
+	const RenderResult bdpt = RenderAndComputeMean( bdptPath, seedBase + 1 );
+	std::remove( ptPath.c_str() );
+	std::remove( bdptPath.c_str() );
+	Check( pt.valid && bdpt.valid, ( std::string( label ) + ": renders produced finite images" ).c_str() );
+	if( !pt.valid || !bdpt.valid ) return;
+	const double ptLuma = Luma( pt.mean ), bdptLuma = Luma( bdpt.mean );
+	const double rel = bdptLuma / std::max( ptLuma, 1e-12 ) - 1.0;
+	std::printf( "    %s: PT luma=%.6f  BDPT luma=%.6f  BDPT/PT %+.3f%%  (band +/- %.2f%%)\n",
+		label, ptLuma, bdptLuma, 100.0 * rel, 100.0 * band );
+	Check( ptLuma > 1e-3, ( std::string( label ) + ": (sanity) PT's lit sphere is non-trivially bright" ).c_str() );
+	Check( std::fabs( rel ) <= band,
+		( std::string( label ) + " MONEY: BDPT agrees with PT under a directional light (DL-307)" ).c_str() );
+}
+
+static void TestRoughSubsurfaceSpheresDirectional()
+{
+	std::cout << "Part E: ROUGH subsurface spheres + directional light, PT vs BDPT (DL-307)" << std::endl;
+	RunRoughSphere( "E1 randomwalk_sss_material roughness 0.8",
+		"randomwalk_sss_material\n{\n\tname mat_rw\n\troughness 0.8\n}\n\n", "mat_rw", 5401, 0.04 );
+	RunRoughSphere( "E2 subsurfacescattering_material roughness 0.8",
+		"subsurfacescattering_material\n{\n\tname mat_sss\n\troughness 0.8\n}\n\n", "mat_sss", 5411, 0.02 );
+}
+
 // DL224: both adapter families use fixed outward support, including every
 // spectral/HWSS lane. A diffusion chord can point inward and must not orient it.
 static void TestEntryEvaluationFrame()
@@ -611,6 +666,7 @@ int main()
 	TestSSSDirectional();
 	TestSSSAmbient();
 	TestRandomWalkDirectional();
+	TestRoughSubsurfaceSpheresDirectional();
 
 	std::cout << "\nPassed: " << passCount << "  Failed: " << failCount << std::endl;
 	return failCount == 0 ? 0 : 1;
