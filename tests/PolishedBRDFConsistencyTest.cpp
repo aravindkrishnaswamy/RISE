@@ -84,6 +84,7 @@
 #include "../src/Library/Materials/PolishedMaterial.h"
 #include "../src/Library/Materials/PolishedBRDF.h"
 #include "../src/Library/Materials/SheenMaterial.h"
+#include "../src/Library/Painters/RGBScalarPainter.h"
 #include "../src/Library/Materials/DataDrivenMaterial.h"
 #include <fstream>
 #include <unistd.h>
@@ -491,6 +492,38 @@ static void RunBuildingBlocks()
 }
 
 // ====================================================================
+// Per-channel (dispersive) rows: a per-channel coat index (one lobe
+// shape, three Fresnel curves) and a per-channel scattering exponent
+// (three coat components sampled as a mixture) -- the RGB branches the
+// scalar-painter rows above never reach.
+// ====================================================================
+static void RunPerChannelRows( unsigned int& seed )
+{
+	std::cout << "-- per-channel coat rows --" << std::endl;
+	UniformColorPainter* rd = new UniformColorPainter( RISEPel( 0.5, 0.4, 0.3 ) );  rd->addref();
+	UniformScalarPainter* tau = new UniformScalarPainter( 0.9 );  tau->addref();
+	UniformScalarPainter* ior1 = new UniformScalarPainter( 1.5 );  ior1->addref();
+	UniformScalarPainter* scat1 = new UniformScalarPainter( 30.0 );  scat1->addref();
+	RGBScalarPainter* iorRGB  = new RGBScalarPainter( 1.3, 1.5, 1.8 );  iorRGB->addref();
+	RGBScalarPainter* scatRGB = new RGBScalarPainter( 8.0, 40.0, 200.0 );  scatRGB->addref();
+	RGBScalarPainter* scatMix = new RGBScalarPainter( 20.0, 2e6, 60.0 );  scatMix->addref();
+	struct Row { const char* name; const IScalarPainter* nt; const IScalarPainter* sc; };
+	const Row rows[] = {
+		{ "per-channel ior (1.3,1.5,1.8) N30",          iorRGB, scat1 },
+		{ "per-channel N (8,40,200) ior1.5",            ior1,   scatRGB },
+		{ "per-channel N (20,DELTA,60) ior(1.3,1.5,1.8)", iorRGB, scatMix },
+	};
+	for( const Row& r : rows ) {
+		PolishedMaterial* mat = new PolishedMaterial( *rd, *tau, *r.nt, *r.sc, false );  mat->addref();
+		RunRowMaterial( *mat, r.name, Fixture{ 0.0, 0.0, false }, 400000, seed++ );
+		RunRowMaterial( *mat, r.name, Fixture{ 70.0, 0.0, false }, 400000, seed++ );
+		safe_release( mat );
+	}
+	safe_release( scatMix ); safe_release( scatRGB ); safe_release( iorRGB );
+	safe_release( scat1 ); safe_release( ior1 ); safe_release( tau ); safe_release( rd );
+}
+
+// ====================================================================
 // Gate 6: sibling audit.
 // ====================================================================
 static void RunSiblingAudit( unsigned int& seed )
@@ -582,6 +615,7 @@ int main( int argc, char** argv )
 	RunRow( cfgs[0], Fixture{ 30.0, 0.0,  true  }, 400000, seed++ );
 	RunRow( cfgs[1], Fixture{ 60.0, 0.0,  true  }, 400000, seed++ );
 
+	RunPerChannelRows( seed );
 	RunSiblingAudit( seed );
 
 	std::cout << "-- gate 3 (reciprocity) --" << std::endl;
