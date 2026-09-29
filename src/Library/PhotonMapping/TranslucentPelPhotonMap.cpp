@@ -62,11 +62,12 @@ bool TranslucentPelPhotonMap::Store( const RISEPel&,const Point3& )
 bool TranslucentPelPhotonMap::Store( const RISEPel& power,const Point3& position,
  const Vector3& incomingDirection,const bool diffuseExit )
 {
- if(vphotons.size()>=nMaxPhotons || ColorMath::MaxValue(power)<=0) return false;
+ if(ColorMath::MaxValue(power)<=0) return false;
  TranslucentPhoton photon;
  photon.ptPosition=position;photon.power=power;
  photon.incomingDirection=incomingDirection;photon.diffuseExit=diffuseExit;
- bbox.Include(position);vphotons.push_back(photon);
+ if(!StorePacket(photon)) return false;
+ bbox.Include(position);
  maxPower=r_max(maxPower,ColorMath::MaxValue(power));
  return true;
 }
@@ -150,7 +151,7 @@ bool TranslucentPelPhotonMap::DeserializeChecked( IReadBuffer& buffer )
    return LoadError("invalid directional packet");
   p.diffuseExit=kind!=0;bounds.Include(p.ptPosition);packets.push_back(p);
  }
- vphotons.swap(packets);bbox=bounds;nMaxPhotons=maximum;nPrevScale=scaled;
+ EndReservoir();vphotons.swap(packets);bbox=bounds;nMaxPhotons=maximum;nPrevScale=scaled;
  dGatherRadius=radius;dEllipseRatio=ellipse;nMinPhotonsOnGather=minimum;nMaxPhotonsOnGather=gather;maxPower=power;
  Balance();return true;
 }

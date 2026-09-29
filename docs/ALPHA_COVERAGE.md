@@ -135,3 +135,81 @@ Fresnel event. Actual scene rays still null-pass rejected surfaces normally.
 checker-textured sphere with zero, one and two MASK0 sheets. It pins full world
 filter width, the entire UV Jacobian, published ray context, and a scalar
 coverage query that depends on original ray origin and total distance.
+
+## Emission budgets and bounded legacy photon maps
+
+VCM counts each independent light-emission attempt, including an alpha-rejected
+endpoint or empty path, in both initial and rebuilt stores. Branches and deposits
+are not independent emissions. `AlphaEmitterNormalizationTest` exercises the
+actual rasterizer with an explicit nonzero merge radius in VM-only, VC-only,
+and combined RGB/NM/HWSS modes.
+
+For legacy photon tracing, `numPhotons` now means the number of attempted
+emissions and the maximum stored packet count. It no longer means a per-light
+stored quota retried until full. Consequently a map may contain fewer packets;
+increasing the budget increases work predictably, including for fully masked
+emitters and scenes that deposit nothing. This changes opaque multi-light maps
+too: the old fixed stored quotas and shared shot divisor underweighted sources
+and coupled each light to other lights' deposition efficiency.
+
+At each attempt choose source i with unmasked power probability q_i, and divide
+its emitted packet by q_i. The existing conditional emitter-direction law is
+retained; nonmesh RGB lights additionally retain their directional PDF divisor.
+Sampled alpha rejects contribute zero but still count in the final 1/N average.
+Thus source selection contributes q_i * (power_i/q_i) * alpha_i, without
+renormalizing away coverage or changing another source's power. Spectral legacy
+tracing continues to support mesh emitters; its source importance uses unmasked
+RGB exitance while packet power uses the sampled wavelength. This does not add
+spectral nonmesh emission support. Source lookup remains linear in the number of lights per attempt. The legacy
+mesh packet law still uses average exitance and its existing directional
+sampling, including preexisting textured-emission limitations; this change
+does not claim a new texture-importance emission estimator.
+
+Constant and spatial coverage use the same
+accounting; no alpha-average compensation is estimated.
+
+A path may deposit more than once. All eligible deposits enter a uniform
+reservoir: after M deposits, retain K=min(M, capacity) packets. Each survives
+with probability K/M, so multiply retained packet powers by M/K before the final
+1/N. Continuation never stops when storage fills. The reservoir uses its own
+fixed-seed 64-bit engine and unbiased integer selection, independent of transport
+and wavelength RNGs; the 64-bit deposit counter rejects overflow. It is enabled
+only for a fresh shooting map and disabled before publication. Manual stores
+and successfully deserialized maps retain ordinary bounded append semantics;
+no reservoir state is serialized. Flux corrections are applied once by the
+emission driver, not implicitly by `ScalePhotonPower`.
+
+RGB global, caustic and translucent maps, and NM global/caustic maps share this
+rule. Shadow maps are a separate heuristic categorical presence cache: uniform
+reservoir sampling preserves a representative set of lit/shadow labels, but
+neither labels nor their automatic gather-radius metadata receive M/K. Their
+historical 1/N radius scaling remains. A shadow cache is not an unbiased flux
+estimator. Existing finite-radius density-estimation and cache approximations
+remain; uniform packet retention does not remove them.
+
+Progress batches distribute every integer remainder. For T equal-width time
+strata, use N_t attempts in stratum t and packet weight N/(T*N_t), giving final
+weight 1/(T*N_t). T is capped at N so no nonempty time stratum receives zero
+attempts. Source probabilities are rebuilt after animation changes. Cancellation
+releases the partial map and returns failure without publishing it.
+
+`AlphaPhotonEmissionTest` exercises the real emission and publication loops
+with ideal deposit sinks: absolute source power, independently masked sources,
+spatial alpha with unequal deposit efficiency, multiple deposits per attempt,
+capacity overflow, progress/time remainders, cancellation, RGB/NM global/caustic
+and RGB translucent maps, and mixed mesh/point lights. Empty-source, all-alpha-zero and N=0 shoots
+publish valid empty maps without dividing by zero. Existing transport suites
+separately test actual photon continuation and gather responses.
+
+## Shadow-disabled medium queries
+
+Direct lighting uses scene-local alpha presence and distinguishes unavailable
+boundary records from an authoritative empty list. A visibility-enabled ray
+reuses the boundaries accepted by its shadow query. With `receives_shadows FALSE`,
+a full-segment sampled boundary query ignores ordinary blockers, accepts alpha
+only at actual medium boundaries, and supplies those records to attenuation.
+Every ray gets fresh records, including successive deterministic directional
+lights. `AlphaShadowMediumTest` covers RGB/NM/HWSS, unused local alpha and an
+unrelated live Job, both shadow flags, accepted/rejected alpha boundaries, and
+ordinary blockers that must not stop medium traversal, mesh/environment rays,
+and successive directional lights with different boundary segments.

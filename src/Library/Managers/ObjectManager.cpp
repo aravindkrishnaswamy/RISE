@@ -2128,9 +2128,9 @@ void ObjectManager::InvalidateSpatialStructure() const
 }
 
 void IObjectManager::IntersectRaySampled(RayIntersection& ri, ISampler& sampler,
-    bool front, bool back, bool exit, Scalar maxDistance, bool shadows, MediumBoundaryHits* boundaries) const
+    bool front, bool back, bool exit, Scalar maxDistance, bool shadows, MediumBoundaryHits* boundaries, bool boundariesOnly) const
 {
-    if (!IMaterial::AnyAlphaMaterials() && !shadows && maxDistance == RISE_INFINITY) {
+    if (!boundariesOnly && !IMaterial::AnyAlphaMaterials() && !shadows && maxDistance == RISE_INFINITY) {
         IntersectRay(ri, front, back, exit); return;
     }
     const Ray original = ri.geometric.ray;
@@ -2150,11 +2150,12 @@ void IObjectManager::IntersectRaySampled(RayIntersection& ri, ISampler& sampler,
         ri.geometric.range += offset;
         if (exit) ri.geometric.range2 += offset;
         ri.geometric.ray = original;
-        const bool casts = !shadows || !ri.pObject || ri.pObject->DoesCastShadows();
-        const Scalar coverage = ri.pMaterial ? ri.pMaterial->AlphaCoverage(ri.geometric) : 1;
+        const bool mediumBoundary = ri.pObject && ri.pObject->GetInteriorMedium();
+        const bool casts = !boundariesOnly && (!shadows || !ri.pObject || ri.pObject->DoesCastShadows());
+        const Scalar coverage = ri.pMaterial && (!boundariesOnly || mediumBoundary) ? ri.pMaterial->AlphaCoverage(ri.geometric) : 1;
         const bool accepted = coverage >= 1 || (coverage > 0 && sampler.GetAlpha1D() < coverage);
         ri.acceptedAlphaCoverage = coverage;
-        if (accepted && boundaries && ri.pObject && ri.pObject->GetInteriorMedium()) {
+        if (accepted && boundaries && mediumBoundary) {
             boundaries->push_back(ri);
         }
         if (casts && accepted) return;
@@ -2190,4 +2191,12 @@ bool IObjectManager::IntersectShadowRaySampled(const Ray& ray, Scalar distance, 
     RayIntersection ri(ray, rast);
     IntersectRaySampled(ri, sampler, true, true, false, distance, true, boundaries);
     return ri.geometric.bHit;
+}
+
+void IObjectManager::CollectMediumBoundaryHitsSampled(const Ray& ray, Scalar distance,
+    ISampler& sampler, MediumBoundaryHits& boundaries) const
+{
+    boundaries.clear();
+    RayIntersection ri(ray, nullRasterizerState);
+    IntersectRaySampled(ri, sampler, true, true, false, distance, false, &boundaries, true);
 }

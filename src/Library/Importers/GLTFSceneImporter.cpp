@@ -1843,7 +1843,9 @@ namespace
 
 		// Coverage belongs to the material, including on the legacy path.
         if (mat.alpha_mode != cgltf_alpha_mode_opaque) {
-            std::string alpha = std::to_string(factorAlpha);
+            char alphaLiteral[32];
+            std::snprintf(alphaLiteral, sizeof(alphaLiteral), "%.17g", double(factorAlpha));
+            std::string alpha = alphaLiteral;
             if (baseColorIsTexture && !baseColorTexturePainter.empty()) {
                 alpha = PainterName(prefix, "alpha", matIdx);
                 if (!job.AddPainterChannelScalarPainter(alpha.c_str(), baseColorTexturePainter.c_str(),

@@ -439,10 +439,26 @@ void TestAlphaCutoutUnderBDPT()
 	CheckAlphaUnderModernIntegrator( RISE_BLENDER_RASTERIZER_BDPT_PEL, "BDPT" );
 }
 
+void TestConstantAlphaPrecision() {
+    RISE::IJobPriv* job=nullptr;Check(RISE::RISE_CreateJobPriv(&job),"precision job created");if(!job)return;
+    double white[3]={1,1,1};job->AddUniformColorPainter("white",white,"Rec709RGB_Linear");
+    const double factors[]={1e-7,.4999996,.5000004};const double cutoffs[]={5e-8,.4999998,.5000002};const double expected[]={1,0,1};
+    for(int i=0;i<3;++i) {
+        const std::string name="precision"+std::to_string(i);job->AddLambertianMaterial(name.c_str(),"white");
+        rise_blender_material payload={};payload.name=name.c_str();payload.alpha=factors[i];payload.alpha_threshold=cutoffs[i];payload.alpha_mode=RISE_BLENDER_ALPHA_CLIP;
+        char error[512]={};Check(wire_alpha_shader_for_material(*job,payload,error,sizeof(error)),"production bridge binds precise alpha");
+        const RISE::IMaterial* m=job->GetMaterials()->GetItem(name.c_str());
+        RISE::RayIntersectionGeometric ri(RISE::Ray(RISE::Point3(0,0,1),RISE::Vector3(0,0,-1)),RISE::nullRasterizerState);
+        Check(m && m->AlphaCoverage(ri)==expected[i],"bridge constant MASK preserves double precision");
+    }
+    job->release();
+}
+
 int main()
 {
 	std::cout << "=== Blender bridge Alpha test (DL-193) ===" << std::endl;
 
+	TestConstantAlphaPrecision();
 	TestAbiVersionAndAlphaFields();
 	TestOpaqueMaterialUnaffected();
 	TestAlphaCutoutUnderPixelPel();

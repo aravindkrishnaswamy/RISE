@@ -16,7 +16,7 @@ int main(){
     Check(first.ContinueAfterFailure(end)&&first.ContinueAfterFailure(end),"prefix retained through B-1 failures");
     Check(!first.ContinueAfterFailure(end)&&first.Estimate()==3,"roulette termination returns prefix, never discards it");
     for(Scalar p:{.5,.1,.01,1./1024.})for(unsigned B:{64u,1024u}){
-        const int N=(p<.001 && B==64)?1000000:100000;
+        const int N=(p<.001 && B==64)?6000000:100000;
         RandomNumberGenerator random(214u+B);IndependentSampler sampler(random);
         double sum=0,sq=0,work=0;
         for(int i=0;i<N;++i){

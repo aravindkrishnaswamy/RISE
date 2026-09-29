@@ -125,12 +125,9 @@ Useful filename families:
   normal perturbation threaded through `CoatedBRDF`/`CoatedSPF`, ABI v14,
   DL-192 -- money test: a known coat-normal tilt moves the coat specular
   peak by the closed-form reflected angle while the substrate's own diffuse
-  response is unaffected), `BlenderBridgeAlphaTest` (Principled Alpha -> a
-  per-material `advanced_shader` op chain built via the shared
-  `src/Library/Shaders/AdvancedShaderWiring.h` helper, ABI v14, DL-193 --
-  renders the same alpha-cutout scene under `pixelpel_rasterizer` (works,
-  matches closed form) and PT/BDPT (both ignore alpha per the DL-214
-  integrator-compatibility finding, both warn)).  The matching Python-side
+  response is unaffected), `BlenderBridgeAlphaTest` (Principled Alpha -> scalar material
+  coverage, ABI v14: legacy pixelpel and modern PT/BDPT cutout renders plus
+  threshold-adjacent numeric precision checks). The matching Python-side
   exporter (socket-reading) contract lives in
   `src/Blender/addons/rise_renderer/test_hair_export.py`, run separately
   since it needs no C++ build.
@@ -1205,3 +1202,11 @@ See [ALPHA_COVERAGE.md](../docs/ALPHA_COVERAGE.md) for the estimator definitions
 - `AlphaRayContextTest`: MASK0 null traversal preserves full camera differential
   footprints and UV Jacobians, including nonzero differential-origin offsets;
   coverage painters receive the original segment ray and accumulated range.
+
+- `AlphaEmitterNormalizationTest`: actual rasterizer emission attempts, active
+  VM-only/VC-only/combined emitter coverage, RGB/NM/HWSS.
+- `AlphaShadowMediumTest`: shadow-disabled medium traversal, unused/foreign
+  alpha isolation, directional/mesh/environment queries and successive rays.
+- `AlphaPhotonEmissionTest`: real legacy emission loops, absolute multilight
+  power, spatial coverage/deposit efficiency, bounded reservoir/lifecycle,
+  cancellation, exact progress/time budgets, empty and zero-alpha cases.

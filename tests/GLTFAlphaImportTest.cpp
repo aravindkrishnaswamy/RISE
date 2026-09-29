@@ -1,6 +1,8 @@
 // DL-214: import real RGBA glTF alpha into scalar material coverage.
 #include <cmath>
 #include <iostream>
+#include <fstream>
+#include <cstdio>
 #include "../src/Library/Job.h"
 #include "../src/Library/Importers/GLTFSceneImporter.h"
 #include "../src/Library/Interfaces/IMaterial.h"
@@ -32,6 +34,19 @@ int main(){
         }
         Check(low&&middle&&high,"actual texture contains partial and endpoint coverage");
         Check(correct,"RGBA alpha stays linear and MASK uses explicit/default cutoffs");
+    }
+    const char* factors[]={"0.0000001","0.4999996","0.5000004"};
+    const char* cutoffs[]={"0.00000005","0.4999998","0.5000002"};
+    const Scalar expected[]={1,0,1};
+    for(int i=0;i<3;++i) {
+        const std::string path="rendered/alpha-precision-"+std::to_string(i)+".gltf";
+        { std::ofstream out(path);out<<"{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[]}],\"materials\":[{\"alphaMode\":\"MASK\",\"alphaCutoff\":"<<cutoffs[i]<<",\"pbrMetallicRoughness\":{\"baseColorFactor\":[1,1,1,"<<factors[i]<<"]}}]}"; }
+        Job* tiny=new Job();GLTFSceneImporter probe(path.c_str());GLTFImportOptions opt;opt.namePrefix="precision";
+        Check(probe.IsValid() && probe.ImportScene(*tiny,opt),"threshold-adjacent constant glTF imports");
+        const IMaterial* m=tiny->GetMaterials()->GetItem("precision.mat.0");
+        RayIntersectionGeometric ri(Ray(Point3(0,0,1),Vector3(0,0,-1)),nullRasterizerState);
+        Check(m && m->AlphaCoverage(ri)==expected[i],"constant MASK preserves imported numerical precision");
+        tiny->release();std::remove(path.c_str());
     }
     job->release();std::cout<<pass<<" passed / "<<fail<<" failed\n";return fail?1:0;
 }

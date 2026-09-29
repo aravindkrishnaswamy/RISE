@@ -1471,17 +1471,10 @@ namespace
 		return true;
 	}
 
-	// ABI v14 (DL-193, docs/DEBT_LEDGER.md).  Wires Blender Principled
-	// BSDF's Alpha socket into a per-material `advanced_shader` op chain,
-	// EXACTLY the shape `GLTFSceneImporter.cpp`'s `WireAlphaShader` /
-	// `BuildAlphaPainter` build (both now via AdvancedShaderWiring.h's
-	// shared `WireAlphaAdvancedShader`).  Called AFTER `material.name`
-	// is already a registered surface material (any model branch --
-	// PBR, random-walk SSS, the emissive wrapper, or the plain surface
-	// path all register under that same name), so the chain wraps
-	// whichever material actually got built.  No-op (returns true) for
-	// `RISE_BLENDER_ALPHA_OPAQUE`, the default -- bit-identical to a
-	// pre-v14 payload.
+    // ABI v14 Alpha socket payload now binds material intersection coverage.
+    // A linked Alpha texture replaces the numeric socket value, matching Blender.
+    // The historical helper name and exported shader name remain ABI-compatible;
+    // no alpha shader operation is installed on top of the material property.
 	bool wire_alpha_shader_for_material(
 		RISE::IJobPriv& job,
 		const rise_blender_material& material,
@@ -1494,7 +1487,9 @@ namespace
 		}
 
 		const std::string matName = material.name;
-        std::string alpha = std::to_string(material.alpha);
+        char alphaLiteral[32];
+        std::snprintf(alphaLiteral, sizeof(alphaLiteral), "%.17g", double(material.alpha));
+        std::string alpha = alphaLiteral;
         if (material.alpha_texture_painter_name && material.alpha_texture_painter_name[0]) {
             alpha = matName + ".alpha";
             if (!job.AddPainterChannelScalarPainter(alpha.c_str(), material.alpha_texture_painter_name, 3, 1, 0)) {

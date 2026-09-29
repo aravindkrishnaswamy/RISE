@@ -22,62 +22,19 @@
 #include "../Rendering/LuminaryManager.h"
 #include "../Interfaces/IGeometry.h"
 #include "../Interfaces/IEmitter.h"
+#include <vector>
+#include <cstdint>
+#include <cmath>
+#include <algorithm>
 
 namespace RISE
 {
 	namespace Implementation
 	{
-		//
-		// THREAD-SAFETY STATUS: SINGLE-THREADED ONLY.
-		//
-		// `TracePhotons()` runs on one thread and iterates luminaires +
-		// photons serially.  Everything below is sized for that contract.
-		// Parallelising the photon shoot — which is the obvious win for
-		// big scenes — has to address each of these points explicitly:
-		//
-		//   1. `pScene` (mutable IScenePriv*) is written by AttachScene()
-		//      during setup and read inside TraceNPhotons().  Fine today
-		//      because AttachScene() always completes before trace begins
-		//      and there is no concurrent AttachScene.  Parallel shoots
-		//      can keep this as setup-only read-shared state — DO NOT
-		//      call AttachScene from any worker.
-		//
-		//   2. `geomsampler` and `random` are RandomNumberGenerator
-		//      instances whose MersenneTwister is `mutable`.  Concurrent
-		//      CanonicalRandom() calls across threads race on the MT
-		//      state.  Parallelisation needs per-thread RNGs seeded from
-		//      a master stream (see RuntimeContext::random for the
-		//      pattern the rasterizers use).
-		//
-		//   3. TraceNPhotons' inner loop is bounded by
-		//      `pPhotonMap->NumStored() < thislummax`, and each
-		//      TraceSinglePhoton deposits into the same PhotonMapType.
-		//      Going parallel requires: (a) PhotonMapType::Store() to be
-		//      thread-safe (atomic append or per-thread bucket then
-		//      merge), (b) the loop-bound check tolerant of NumStored()
-		//      drifting (use an atomic counter + compare-and-fetch), and
-		//      (c) `numshot` converted to std::atomic<unsigned int> or
-		//      accumulated per-thread and reduced after the pool joins.
-		//
-		//   4. `pScene->GetAnimator()->EvaluateAtTime()` inside the
-		//      temporal-sampling branch mutates scene transforms and is
-		//      absolutely NOT safe to run concurrently with shooting.
-		//      Keep the temporal loop serial and only parallelise
-		//      photon-shooting within a single time step.
-		//
-		//   5. LuminaryManager's luminaire list iteration is read-only,
-		//      but `(*i).pLum` exposes methods that internally cache
-		//      precomputed area integrals — verify those are frozen
-		//      after scene prep before allowing workers to hit them.
-		//
-		// Parallel design sketch: make TraceNPhotons launch a thread
-		// pool, each worker shoots a share of the target count for its
-		// assigned luminaire, emits photons into a thread-local batch,
-		// and the batches are merged into the shared PhotonMapType
-		// under a single lock (or via a lock-free append buffer) once
-		// the pool barrier is reached.  Temporal-sampling loop stays
-		// serial.
-		//
+        // Single-threaded emission estimator: fixed attempted budget, sources
+        // sampled proportional to unmasked power, packets divided by source PDF.
+        // Shared RNGs and animation mutation require serial shooting. Deposits
+        // use a bounded uniform reservoir independently of path continuation.
 		template< class PhotonMapType >
 		class PhotonTracer :
 			public virtual IPhotonTracer,
@@ -93,7 +50,7 @@ namespace RISE
 			LuminaryManager*			pLumManager;
 
 			// Shared RNG state: MUST be made per-thread before the photon
-			// shoot is parallelised.  See class docstring point (2).
+			// shoot is parallelised. Scene animation and map storage are serial too.
 			const RandomNumberGenerator	geomsampler;
 			const RandomNumberGenerator random;
 
@@ -136,62 +93,50 @@ namespace RISE
 				PhotonMapType* pPhotonMap
 				) const = 0;
 
-			void TraceNPhotons(
-				const unsigned int numPhotons,
-				PhotonMapType*	pPhotonMap, 
-				const Scalar total_exitance,
-				int& numshot
-				) const
-			{
-				const LuminaryManager::LuminariesList& lum = pLumManager->getLuminaries();
-				LuminaryManager::LuminariesList::const_iterator	i, e;
-
-				// Then from now on each luminaire will only shoot photons proportional to its relative power
-				if( bShootFromMeshLights )
-				for( i=lum.begin(), e=lum.end(); i!=e; i++ )
-				{
-					const IEmitter* pEmitter = i->pLum->GetMaterial()->GetEmitter();
-					const Scalar area = (*i).pLum->GetArea();
-					// DL-320: a double-sided luminary radiates from both faces
-					// (docs/DL320_DOUBLE_SIDED_EMITTER.md): its total power,
-					// and so each photon's, counts both, and each photon
-					// leaves from a face chosen with probability 1/2 below.
-					const bool twoSided = (*i).pLum->GetGeometry() && (*i).pLum->GetGeometry()->IsDoubleSided();
-					const Scalar faces = EmitterSides::FaceCount( twoSided );
-					const RISEPel totalpower = (*i).pLum->GetMaterial()->GetEmitter()->averageRadiantExitance() * area * faces;
-					const RISEPel power = pEmitter->averageRadiantExitance() * area * faces * dPowerScale;
-
-					unsigned int numshot_thislum = 0;
-					const unsigned int numstored_sofar = pPhotonMap->NumStored();
-
-					// Trace their photons
-					unsigned int thislummax = (unsigned int)(ColorMath::MaxValue(totalpower)/total_exitance * numPhotons) + pPhotonMap->NumStored();
-					thislummax = thislummax > pPhotonMap->MaxPhotons() ? pPhotonMap->MaxPhotons() : thislummax;
-					while( pPhotonMap->NumStored() < thislummax )
-					{
-						//! This is a slightly dangerous fix, since it is entirely possible to only have a very small amount of photos
-						//  be deposited for a luminary and since we are dealing with a stochastic process, there is a chance (albeit
-						//  a trivially small chance) of having this introduce a bug.  However in any realworld use, this won't be a
-						//  problem, hence the fix is here.
-						if( (unsigned int)numshot_thislum > thislummax*100 ) {
-							// bugfix for infinite loop when no photon is stored
-							// e.g. when no suitable material is in the scene
-							// if there is not at least one percent of the shot photons
-							// gathered then break
-							if( numstored_sofar == pPhotonMap->NumStored() ) {
-								break;
-							}
-						}
-
+            void TraceNPhotons(const unsigned int numPhotons, PhotonMapType* pPhotonMap,
+                const Scalar /*legacyTotalExitance*/, uint64_t& numshot, Scalar batchWeight = 1) const
+            {
+                struct Source { const IObject* object; const ILightPriv* light; Scalar weight; };
+                std::vector<Source> sources;
+                Scalar total = 0;
+                const auto add = [&](const IObject* object, const ILightPriv* light, Scalar weight) {
+                    if (weight > 0 && std::isfinite(weight)) { sources.push_back({object,light,weight}); total += weight; }
+                };
+                if (bShootFromMeshLights)
+                for (const auto& entry : pLumManager->getLuminaries()) {
+                    const IObject* object = entry.pLum;
+                    const bool twoSided = object->GetGeometry() && object->GetGeometry()->IsDoubleSided();
+                    const Scalar area = object->GetArea()*EmitterSides::FaceCount(twoSided);
+                    add(object, nullptr, ColorMath::MaxValue(object->GetMaterial()->GetEmitter()->averageRadiantExitance())*area);
+                }
+                if (bShootFromNonMeshLights && pScene->GetLights())
+                    for (const auto* light : pScene->GetLights()->getLights())
+                        if (light->CanGeneratePhotons()) add(nullptr, light, ColorMath::MaxValue(light->radiantExitance()));
+                for (unsigned int attempt = 0; attempt < numPhotons; ++attempt) {
+                    ++numshot; // includes rejected alpha, zero power, and zero deposits
+                    if (!(total > 0)) continue;
+                    Scalar selection = geomsampler.CanonicalRandom()*total;
+                    const Source* selected = &sources.back();
+                    for (const auto& source : sources) {
+                        selection -= source.weight;
+                        if (selection < 0) { selected = &source; break; }
+                    }
+                    const Scalar q = selected->weight/total;
+                    if (selected->object) {
+                        const IObject* object = selected->object;
+                        const IEmitter* pEmitter = object->GetMaterial()->GetEmitter();
+                        const bool twoSided = object->GetGeometry() && object->GetGeometry()->IsDoubleSided();
+                        const Scalar area = object->GetArea()*EmitterSides::FaceCount(twoSided);
+                        const RISEPel power = pEmitter->averageRadiantExitance()*area*(dPowerScale*batchWeight/q);
 						// To find out where the photon starts off, ask the luminary for a uniform random point
 						Ray	r;
 						Vector3 normal;
 						Point2 coord;
-						i->pLum->UniformRandomPoint( &r.origin, &normal, &coord, Point3( geomsampler.CanonicalRandom(), geomsampler.CanonicalRandom(), geomsampler.CanonicalRandom() ) );
+						object->UniformRandomPoint( &r.origin, &normal, &coord, Point3( geomsampler.CanonicalRandom(), geomsampler.CanonicalRandom(), geomsampler.CanonicalRandom() ) );
 
 						// DL-320: the emitting face.  The first direction
 						// coordinate is remapped to pick it (no extra draw),
-						// so a one-sided luminary's photon is bit-identical.
+						// without an additional face-selection draw.
 						Point2 dirRand( geomsampler.CanonicalRandom(), geomsampler.CanonicalRandom() );
 						if( twoSided ) {
 							if( dirRand.x < 0.5 ) {
@@ -213,13 +158,12 @@ namespace RISE
 						rig.onb.CreateFromW( rig.vNormal );
 
                         rig.ptIntersection = r.origin;
-                        rig.ptObjIntersec = LightSampler::EmitterObjectPoint(i->pLum, r.origin, r.origin);
+                        rig.ptObjIntersec = LightSampler::EmitterObjectPoint(object, r.origin, r.origin);
                         EmitterSurfacePayload alphaSurface;
-                        LightSampler::ProbeEmitterSurface(i->pLum, pScene->GetObjects(), r.origin, normal, alphaSurface);
+                        LightSampler::ProbeEmitterSurface(object, pScene->GetObjects(), r.origin, normal, alphaSurface);
                         LightSampler::ApplyEmitterSurface(rig, alphaSurface);
                         IndependentSampler alphaSampler(random);
-                        if (!i->pLum->GetMaterial()->AcceptAlpha(rig, alphaSampler)) {
-                            ++numshot_thislum;
+                        if (!object->GetMaterial()->AcceptAlpha(rig, alphaSampler)) {
                             continue;
                         }
 						r.SetDir(pEmitter->getEmmittedPhotonDir( rig, dirRand ));
@@ -239,71 +183,16 @@ namespace RISE
 						// Now shoot that ray as a photon
 						TraceSinglePhoton( r, power, *pPhotonMap, ior_stack );
 
-						numshot_thislum++;
-					}
-
-					numshot += numshot_thislum;
-				}
-
-				// Do the non-mesh based lights
-				if( bShootFromNonMeshLights ) {
-					const ILightManager::LightsList& lights = pScene->GetLights()->getLights();
-					ILightManager::LightsList::const_iterator	m, n;
-
-					for( m=lights.begin(), n=lights.end(); m!=n; m++ ) {
-						const ILightPriv* l = *m;
-						if( l->CanGeneratePhotons() ) {
-							const RISEPel totalpower = l->radiantExitance();
-							unsigned int thislummax = (unsigned int)(ColorMath::MaxValue(totalpower)/total_exitance * numPhotons) + pPhotonMap->NumStored();
-							thislummax = thislummax > pPhotonMap->MaxPhotons() ? pPhotonMap->MaxPhotons() : thislummax;
-
-							unsigned int numshot_thislum = 0;
-							const unsigned int numstored_sofar = pPhotonMap->NumStored();
-
-							while( pPhotonMap->NumStored() < thislummax )
-							{
-								//! This is a slightly dangerous fix, since it is entirely possible to only have a very small amount of photos
-								//  be deposited for a luminary and since we are dealing with a stochastic process, there is a chance (albeit
-								//  a trivially small chance) of having this introduce a bug.  However in any realworld use, this won't be a
-								//  problem, hence the fix is here.
-								if( (unsigned int)numshot_thislum > thislummax*100 ) {
-									// bugfix for infinite loop when no photon is stored
-									// e.g. when no suitable material is in the scene
-									// if there is not at least one percent of the shot photons
-									// gathered then break
-									if( numstored_sofar == pPhotonMap->NumStored() ) {
-										break;
-									}
-								}
-
-								Ray r;
-								r = l->generateRandomPhoton( Point3(geomsampler.CanonicalRandom(), geomsampler.CanonicalRandom(), geomsampler.CanonicalRandom()) );
-
-								// Weight each photon by emittedRadiance/pdfDirection so that
-								// lights with non-uniform emission profiles (e.g. spot light
-								// inner/outer cone falloff) produce correctly weighted photons.
-								const Scalar pdf = l->pdfDirection( r.Dir() );
-								const RISEPel power = (pdf > 0) ?
-									l->emittedRadiance( r.Dir() ) * (dPowerScale / pdf) :
-									RISEPel(0,0,0);
-
-								// Fresh per-photon stack seeded from THIS
-								// photon's origin; see the mesh-luminaire
-								// loop above for why a shared stack is
-								// wrong (embedded/enclosed light case).
-								IORStack ior_stack( 1.0 );
-								IORStackSeeding::SeedFromPoint( ior_stack, r.origin, *pScene );
-
-								TraceSinglePhoton( r, power, *pPhotonMap, ior_stack );
-
-								numshot_thislum++;
-							}
-
-							numshot += numshot_thislum;
-						}
-					}
-				}
-			}
+                    } else {
+                        const ILightPriv* light = selected->light;
+                        const Ray ray = light->generateRandomPhoton(Point3(geomsampler.CanonicalRandom(),geomsampler.CanonicalRandom(),geomsampler.CanonicalRandom()));
+                        const Scalar pdf = light->pdfDirection(ray.Dir());
+                        const RISEPel power = pdf > 0 ? light->emittedRadiance(ray.Dir())*(dPowerScale*batchWeight/(q*pdf)) : RISEPel(0,0,0);
+                        IORStack stack(1.0);IORStackSeeding::SeedFromPoint(stack,ray.origin,*pScene);
+                        TraceSinglePhoton(ray,power,*pPhotonMap,stack);
+                    }
+                }
+            }
 
 		public:
 			// Attaches a scene
@@ -337,10 +226,7 @@ namespace RISE
 					return false;
 				}
 				
-				// Find out how many luminaries there are
-				const LuminaryManager::LuminariesList& lum = pLumManager->getLuminaries();
-
-				GlobalLog()->PrintEx( eLog_Event, "TracePhotons:: Trying to capture %d photons", numPhotons );
+				GlobalLog()->PrintEx( eLog_Event, "TracePhotons:: Launching %u photon emission attempts", numPhotons );
 
 				// Initialize the map in the scene
 				PhotonMapType*	pPhotonMap = new PhotonMapType( numPhotons, this );
@@ -351,84 +237,40 @@ namespace RISE
 					return false;
 				}
 
-				if( pFunc ) {
-					pFunc->SetTitle( "Shooting Photons: " );
-					pFunc->Progress(0.0,1.0);
-				}
-
-				// Now for each luminaire....
-				LuminaryManager::LuminariesList::const_iterator	i, e;
-
-				Scalar total_exitance=0;
-				// Compute the total power of all luminaires
-				if( bShootFromMeshLights ) {
-					for( i=lum.begin(), e=lum.end(); i!=e; i++ ) {
-						const Scalar area = (*i).pLum->GetArea();
-						// DL-320: both faces of a double-sided luminary radiate.
-						const bool twoSided = (*i).pLum->GetGeometry() && (*i).pLum->GetGeometry()->IsDoubleSided();
-						const RISEPel power = (*i).pLum->GetMaterial()->GetEmitter()->averageRadiantExitance() * area *
-							EmitterSides::FaceCount( twoSided );
-						total_exitance += ColorMath::MaxValue(power);
-					}
-				}
-
-				// Include the non-physically based luminaires as well
-				const ILightManager::LightsList& lights = pScene->GetLights()->getLights();
-				ILightManager::LightsList::const_iterator	m, n;
-
-				if( bShootFromNonMeshLights ) {
-					for( m=lights.begin(), n=lights.end(); m!=n; m++ ) {
-						const ILightPriv* l = *m;
-						if( l->CanGeneratePhotons() ) {
-							total_exitance = total_exitance + ColorMath::MaxValue(l->radiantExitance());
-						}
-					}
-				}
-
-				int numshot = 0;
-
-				const Scalar exposure = pScene->GetCamera()->GetExposureTime();
-
-				if( bAtTime && exposure > 0 && nNumTemporalSamples>1 ) {
-					const Scalar time_step = exposure/Scalar(nNumTemporalSamples);
-					Scalar base_cur_time = (time-(exposure*0.5));
-
-					for( unsigned int i=0; i<nNumTemporalSamples; i++, base_cur_time+=time_step ) {
-						// Set a new time
-						if( exposure > 0 ) {
-							pScene->GetAnimator()->EvaluateAtTime( base_cur_time + (random.CanonicalRandom()*time_step) );
-						}
-
-						TraceNPhotons( numPhotons/nNumTemporalSamples, pPhotonMap, total_exitance, numshot );
-
-						if( pFunc ) {
-							const unsigned int cnt = pPhotonMap->NumStored();
-							if( !pFunc->Progress(static_cast<Scalar>(cnt), static_cast<Scalar>(numPhotons)) ) {
-								break;		// abort
-							}
-						}
-					}
-				} else {
-					if( pFunc && numPhotons > 100 ) {
-						for( int i=0; i<100; i++ ) {
-							TraceNPhotons( numPhotons/100, pPhotonMap, total_exitance, numshot );
-							const unsigned int cnt = pPhotonMap->NumStored();
-							if( !pFunc->Progress(static_cast<Scalar>(cnt), static_cast<Scalar>(numPhotons)) ) {
-								break;		// abort
-							}
-						}
-					} else {
-						TraceNPhotons( numPhotons, pPhotonMap, total_exitance, numshot );
-					}
-				}
-
-				if( pFunc && pPhotonMap->NumStored() != numPhotons ) {
-					pFunc->Progress(0,0);
-				}
-
-				// After shooting, scale the values in the photon map
-				GlobalLog()->PrintEx( eLog_Event, "TracePhotons:: Stored %d of %d requested photons (%d shot)", pPhotonMap->NumStored(), numPhotons, numshot );
-				pPhotonMap->ScalePhotonPower( 1.0/Scalar(numshot) );
+                if (!pPhotonMap->EnableReservoir()) { safe_release(pPhotonMap); return false; }
+                if (pFunc) {
+                    pFunc->SetTitle("Shooting photon emission attempts: ");
+                    if (!pFunc->Progress(0, numPhotons)) { safe_release(pPhotonMap); return false; }
+                }
+                uint64_t numshot = 0;
+                const Scalar exposure = pScene->GetCamera() ? pScene->GetCamera()->GetExposureTime() : 0;
+                const bool temporal = bAtTime && exposure > 0 && nNumTemporalSamples > 1 && numPhotons > 0;
+                const unsigned strata = temporal ? std::min(nNumTemporalSamples,numPhotons) : 1;
+                for (unsigned stratum=0; stratum<strata; ++stratum) {
+                    const unsigned count = numPhotons/strata + (stratum < numPhotons%strata ? 1 : 0);
+                    if (temporal) {
+                        const Scalar dt = exposure/strata;
+                        pScene->GetAnimator()->EvaluateAtTime(time-exposure*.5+(stratum+random.CanonicalRandom())*dt);
+                    }
+                    // Each equal-width time stratum has equal integral weight,
+                    // even when integer attempt counts differ by one.
+                    const Scalar weight = temporal ? Scalar(numPhotons)/(Scalar(strata)*count) : 1;
+                    const unsigned batches = pFunc ? std::min(100u,count) : 1;
+                    for (unsigned batch=0; batch<batches; ++batch) {
+                        const unsigned n = count/batches + (batch < count%batches ? 1 : 0);
+                        TraceNPhotons(n,pPhotonMap,0,numshot,weight);
+                        if (pFunc && !pFunc->Progress(Scalar(numshot),Scalar(numPhotons))) {
+                            safe_release(pPhotonMap); return false; // never publish a partial estimator
+                        }
+                    }
+                }
+                GlobalLog()->PrintEx(eLog_Event,"TracePhotons:: Stored %u packets from %llu emission attempts",pPhotonMap->NumStored(),static_cast<unsigned long long>(numshot));
+                // Uniform K-of-M deposit reservoir, then attempted emission average.
+                // This is the sole capacity correction; ScalePhotonPower itself
+                // retains ordinary/manual-map semantics.
+                const Scalar storageWeight=pPhotonMap->StorageNormalization();
+                pPhotonMap->EndReservoir();
+                pPhotonMap->ScalePhotonPower(numshot ? storageWeight/Scalar(numshot) : 0);
 
 				// Tell the photon map to balance itself!
 				GlobalLog()->PrintEasyEvent( "TracePhotons:: Balancing KD-Tree" );

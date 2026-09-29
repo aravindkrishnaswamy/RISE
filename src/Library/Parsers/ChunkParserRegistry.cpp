@@ -1036,7 +1036,7 @@ namespace RISE
 			}
 			template<typename PushFn>
 			static void AddPhotonMapGenerateCommonParams( PushFn P ) {
-				{ auto& p = P(); p.name = "num";                      p.kind = ValueKind::UInt;   p.description = "Photon count to shoot";                     p.defaultValueHint = "10000"; }
+				{ auto& p = P(); p.name = "num";                      p.kind = ValueKind::UInt;   p.description = "Attempted emissions and maximum stored packets (may store fewer)";                     p.defaultValueHint = "10000"; }
 				{ auto& p = P(); p.name = "power_scale";              p.kind = ValueKind::Double; p.description = "Photon power multiplier";                   p.defaultValueHint = "1.0"; }
 				{ auto& p = P(); p.name = "max_recursion";            p.kind = ValueKind::UInt;   p.description = "Max photon scattering depth";               p.defaultValueHint = "10"; }
 				{ auto& p = P(); p.name = "min_importance";           p.kind = ValueKind::Double; p.description = "Photon-throughput cutoff";                  p.defaultValueHint = "0.01"; }

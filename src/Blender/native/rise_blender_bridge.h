@@ -56,11 +56,9 @@ enum rise_blender_color_space {
 	RISE_BLENDER_COLOR_ROMM_LINEAR = 2
 };
 
-// ABI v14 (DL-193, docs/DEBT_LEDGER.md).  How `rise_blender_material`'s
-// Alpha socket is wired into a per-material shader-op chain -- see
-// that struct's own `alpha_mode` field comment for the full mapping
-// (OPAQUE = no chain at all; CLIP = AddAlphaTestShaderOp cutout;
-// BLEND = transparency_shaderop, also used for Blender's HASHED mode).
+// ABI v14 Alpha socket modes bind scalar material coverage (DL-214).
+// OPAQUE ignores alpha, CLIP deterministically applies alpha_threshold,
+// and BLEND (including Blender HASHED) stochastically accepts coverage.
 enum rise_blender_alpha_mode {
 	RISE_BLENDER_ALPHA_OPAQUE = 0,
 	RISE_BLENDER_ALPHA_CLIP = 1,
@@ -451,7 +449,7 @@ typedef struct rise_blender_material {
 	// ABI v14: Principled Alpha becomes scalar material coverage (DL-214).
 	// OPAQUE ignores alpha; CLIP is MASK at alpha_threshold; BLEND/HASHED
 	// are stochastic coverage. A registered RGBA painter supplies linear A,
-	// multiplied by the numeric alpha factor. Legacy and modern transport
+	// replacing the unlinked numeric Alpha socket value. Legacy and modern transport
 	// share the same intersection-time semantics; ABI layout is unchanged.
 	double alpha;
 	const char* alpha_texture_painter_name;

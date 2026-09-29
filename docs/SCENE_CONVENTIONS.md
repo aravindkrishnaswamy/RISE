@@ -980,21 +980,24 @@ authored against the opposite convention.
 
 ## 8. Render-rasterizer pairing
 
-A scene needs exactly one rasterizer.  The shader-op pipeline behaves
-differently across rasterizers; some features (notably
-`alpha_test_shaderop`) only work under integrators that go through
-`IShader::Shade()`:
+A scene needs exactly one rasterizer. Imported glTF MASK and BLEND use
+scalar material coverage at intersections across all transport paths. Explicit
+legacy shader operations still require a rasterizer that invokes `IShader::Shade()`.
 
-| Rasterizer | Honours shader-ops? | glTF MASK alpha? |
+| Rasterizer | Honours explicit shader-ops? | glTF MASK / BLEND coverage? |
 |---|---|---|
-| `pixelpel_rasterizer` (PT) | yes | yes |
-| `bdpt_pel_rasterizer` (BDPT) | no — bypasses for path construction | no, surface treated as opaque |
-| `vcm_*_rasterizer` (VCM) | no | no |
-| `mlt_*_rasterizer` (MLT) | no | no |
-| Photon tracers | no | no |
+| `pixelpel_rasterizer` (legacy) | yes | yes |
+| `pathtracing_*_rasterizer` | no | yes |
+| `bdpt_*_rasterizer` | no | yes |
+| `vcm_*_rasterizer` | no | yes |
+| `mlt_*_rasterizer` | no | yes |
+| Photon tracers | no | yes |
 
-If a scene relies on alpha cutout (foliage, decals) or any
-shader-op-driven effect, render with PT.
+MASK deterministically accepts alpha at or above the cutoff. BLEND accepts a
+surface with probability alpha; rejection continues the original ray without a
+bounce or medium transition. See [DL-214](ALPHA_COVERAGE.md) for emitter,
+medium, SMS, and subsurface semantics. Explicit shader-op effects still require
+`pixelpel_rasterizer`; imported coverage does not install a second alpha shader.
 
 ### 8.1 Under `pixelpel_rasterizer` the shader chain must list an op per transport mode
 
