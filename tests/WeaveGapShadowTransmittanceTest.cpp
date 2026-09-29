@@ -963,6 +963,21 @@ static std::string CompositeDielectricOverWeaveSheet()
 		  "composite_material\n{\n\tname mat_sheet\n\ttop mat_glass\n\tbottom mat_layer\n}\n\n";
 }
 
+//! The DL-05 forwarding wrappers over a black-yarn gapped weave: the
+//! gap reaches the continuation as the wrapper's own delta ray, and
+//! neither wrapper reports an SMS caster.
+static std::string FabricOverWeaveSheet()
+{
+	return BlackPainterChunk() + BlackWeaveChunk( "mat_layer", 0.3 )
+		+ "fabric_material\n{\n\tname mat_sheet\n\tfabric custom\n\tbase mat_layer\n}\n\n";
+}
+
+static std::string CoatedOverWeaveSheet()
+{
+	return BlackPainterChunk() + BlackWeaveChunk( "mat_layer", 0.3 )
+		+ "coated_material\n{\n\tname mat_sheet\n\tbase mat_layer\n\tcoat_weight 1.0\n\tcoat_ior 1.5\n\tcoat_roughness 0.05\n}\n\n";
+}
+
 static std::string PerfectRefractorIOR1Sheet()
 {
 	return
@@ -1010,6 +1025,10 @@ static void TestSMSEmissionThroughGap()
 		ReceiverScene( kAreaLarge, true, g, kWide, false, CompositeDielectricOverWeaveSheet() ), 0.07 );
 	ParityRow( "lookup composite(dielectric over weave) PT RGB", RastPTSMS( 2048, true ), RastPTSMS( 2048, false ),
 		ReceiverScene( kAreaLarge, true, g, kLookUp, false, CompositeDielectricOverWeaveSheet() ), 0.03 );
+	ParityRow( "lookup fabric over weave PT RGB", RastPTSMS( 256, true ), RastPTSMS( 256, false ),
+		ReceiverScene( kAreaLarge, true, g, kLookUp, false, FabricOverWeaveSheet() ), 0.03 );
+	ParityRow( "lookup coated over weave PT RGB", RastPTSMS( 256, true ), RastPTSMS( 256, false ),
+		ReceiverScene( kAreaLarge, true, g, kLookUp, false, CoatedOverWeaveSheet() ), 0.03 );
 	// Control: an SMS CASTER, where the suppression's premise is SMS's to
 	// honour and this fix changes nothing.  Printed, not gated: it reads
 	// 0 with SMS on before AND after -- SMS does not solve a chain through
@@ -1329,6 +1348,10 @@ static void HashScenes()
 // caustic path is  light -> weave gap -> glass -> glass -> floor.
 // `cover`: 0 no sheet (control), 1 sheet over the whole emitter, 2 sheet
 // over the x < 0 half only (SMS still reaches the x > 0 half directly).
+// Two sibling probes, no sheet: 3 a global scattering medium (a medium
+// vertex after the glass -- does PART 1's latch survive it?), 4 the
+// sphere at ior 1.0 (an SMS caster whose refraction constraint is
+// degenerate -- does SMS still solve it?).
 // Prints PT+SMS, PT without SMS and VCM, mean +/- sd over n salted
 // replicates, whole image and a caustic ROI.  No assertions.
 //////////////////////////////////////////////////////////////////////
@@ -1343,14 +1366,18 @@ static std::string CausticAuditScene( int cover )
 		"uniformcolor_painter\n{\n\tname pnt_glass\n\tcolor 1 1 1\n\tcolorspace Rec709RGB_Linear\n}\n\n"
 		"lambertian_material\n{\n\tname floor_mat\n\treflectance pnt_floor\n}\n\n"
 		"lambertian_luminaire_material\n{\n\tname light_mat\n\texitance pnt_emit\n\tscale 20.0\n\tmaterial none\n}\n\n"
-		"perfectrefractor_material\n{\n\tname glass_mat\n\trefractance pnt_glass\n\tior 1.5\n}\n\n"
+		"perfectrefractor_material\n{\n\tname glass_mat\n\trefractance pnt_glass\n\tior " << ( cover == 4 ? "1.0" : "1.5" ) << "\n}\n\n"
 		"sphere_geometry\n{\n\tname sphere_geom\n\tradius 0.3\n}\n\n"
 		"clippedplane_geometry\n{\n\tname floor_geom\n\tpta -4 0 -4\n\tptb -4 0 4\n\tptc 4 0 4\n\tptd 4 0 -4\n}\n\n"
 		"clippedplane_geometry\n{\n\tname light_geom\n\tpta -0.5 1.8 -0.5\n\tptb 0.5 1.8 -0.5\n\tptc 0.5 1.8 0.5\n\tptd -0.5 1.8 0.5\n}\n\n"
 		"standard_object\n{\n\tname floor\n\tgeometry floor_geom\n\tmaterial floor_mat\n}\n\n"
 		"standard_object\n{\n\tname glass_ball\n\tgeometry sphere_geom\n\tposition 0 0.6 0\n\tmaterial glass_mat\n}\n\n"
 		"standard_object\n{\n\tname area_light\n\tgeometry light_geom\n\tmaterial light_mat\n}\n\n";
-	if( cover > 0 ) {
+	if( cover == 3 ) {
+		ss << "homogeneous_medium\n{\n\tname fog\n\tabsorption 0 0 0\n\tscattering 0.25 0.25 0.25\n\tphase isotropic\n}\n\n"
+		      "global_medium\n{\n\tmedium fog\n}\n\n";
+	}
+	if( cover == 1 || cover == 2 ) {
 		ss << BlackPainterChunk() << BlackWeaveChunk( "mat_sheet", 0.3 )
 		   << "clippedplane_geometry\n{\n\tname geo_sheet\n"
 		   << ( cover == 1
@@ -1387,9 +1414,12 @@ static void AuditMeans( double& whole, double& roi )
 static void MeasureCausticAudit( unsigned int n, unsigned int ptSpp, unsigned int vcmSpp )
 {
 	g_saltRenders = true;
-	const char* coverName[3] = { "no sheet (control)", "sheet over the whole emitter", "sheet over the x<0 half" };
-	for( int cover = 0; cover < 3; cover++ )
+	const char* coverName[5] = { "no sheet (control)", "sheet over the whole emitter", "sheet over the x<0 half",
+		"no sheet, global fog", "no sheet, sphere ior 1.0" };
+	const char* only = std::getenv( "WEAVE_GAP_AUDIT_COVERS" );	// e.g. "34"; default "012"
+	for( int cover = 0; cover < 5; cover++ )
 	{
+		if( !std::strchr( only ? only : "012", char( '0' + cover ) ) ) continue;
 		struct R { const char* label; std::string rast; };
 		const R rows[] = {
 			{ "PT+SMS", RastPTSMS( ptSpp, true ) },
