@@ -34,17 +34,22 @@
 //    from the scene files.
 //
 //    NOTE (DL-283, 2026-09-27): "shipped scenes never wrap" is NOT the
-//    rule, and has not been since DL-247.  Two stream families live
+//    rule, and has not been since DL-247.  Three stream families live
 //    past the table ON PURPOSE, because they must be disjoint from
 //    every per-vertex stream at any depth: PT's volume-walk streams
 //    (`PathTransportUtilities::PTVolumeWalkStream`, 4096..8191, wrap
-//    counts 16..31) and BDPT/VCM's medium distance-sampling blocks
+//    counts 16..31), BDPT/VCM's medium distance-sampling blocks
 //    (`BDPTUtilities::MediumDistanceStream`, 8192..139263, wraps
-//    32..543).  Every medium render therefore draws wrapped dimensions.
-//    Measured harmless by per-pixel variance at 8 spp (no worse than
-//    pre-DL-283; DL-81 doc section 9 -- ParityTest section H's collapse
-//    statistic is only a sanity floor).  Test G2 enumerates both
-//    families and asserts their wrap counts and collision-freedom.
+//    32..543) and -- DL-286 -- BDPT/VCM's DEEP walk iterations (light
+//    iteration >= 15, eye >= 31; `BDPTUtilities::LightWalkStream` /
+//    `EyeWalkStream`, 139264..141265, wraps 544..551).  Every medium
+//    render therefore draws wrapped dimensions.  Measured harmless by
+//    per-pixel variance at 8 spp (no worse than pre-DL-283; DL-81 doc
+//    section 9 -- ParityTest section H's collapse statistic is only a
+//    sanity floor), and the deep-walk block by the salted Sobol'-vs-
+//    independent deep-fog rows (DL-81 doc section 10).  Test G2
+//    enumerates all three families and asserts their wrap counts and
+//    collision-freedom.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: March 27, 2026
@@ -137,16 +142,21 @@ namespace RISE
 			// cross-pixel Sobol stratification.
 			//
 			// Encoding: phase = streamBase + bounceIndex
-			//   Light source sampling: phase 0
-			//   Light bounces d:       phases 1 + d
-			//   Eye bounces d:         phases 16 + d
-			//   BDPT strategy select:  phase 47
-			//   VCM NEE, eye vertex i: phase 48 + i (i >= 1)
-			// The bounce ranges were laid out for 15 bounces; deeper
-			// walks run into each other's phases (light bounce 15 is
-			// eye bounce 0, light 46 / eye 31 is the select, light 48
-			// / eye 33 is VCM's first NEE phase 49) -- a known
-			// pre-existing overlap, DL-286.
+			//   Light source sampling:   phase 0
+			//   Light bounces d < 15:    phases 1 + d        (1..15)
+			//   Eye bounces d < 31:      phases 16 + d       (16..46)
+			//   BDPT strategy select:    phase 47
+			//   VCM NEE, eye vertex i:   phase 48 + i (i >= 1)
+			//   Deeper light / eye bounces (DL-286): a block of their
+			//   own past the medium-distance blocks, 139264 + (d - 15)
+			//   and 140273 + (d - 31) -- BDPTUtilities::
+			//   LightWalkStream / EyeWalkStream.
+			// The bounce ranges were laid out for 15 bounces; until
+			// DL-286 deeper walks continued as 1 + d / 16 + d and ran
+			// into each other's phases (light bounce 15 re-opened eye
+			// bounce 0's, and so on) -- one dimension driving a
+			// light-vertex and an eye-vertex decision of one path, a
+			// -12 % bias in dense fog.
 			// The full map, including the wrap-region families past
 			// the dimension table, is SobolDimensionBudgetTest G2.
 			//
