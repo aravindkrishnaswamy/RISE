@@ -225,7 +225,7 @@ scenes/Tests/MLT/cornellbox_mlt.RISEscene  f55866fe44ae4ca2bddfe920cab2966804982
 scenes/Tests/MLT/cornellbox_mlt_fast.RISEscene  5150c005a89666fa9bb975f8488224d254f520e4ab00024660a32ac08e399040  2081  38
 scenes/Tests/MLT/mlt_deep_fog.RISEscene  ec8d7721198f219bd20b252824f5e753aa5e26e2a86a92b12b35bdeccf49c2be  2234  37
 scenes/Tests/MLT/mlt_deep_fog_spectral.RISEscene  ec8d7721198f219bd20b252824f5e753aa5e26e2a86a92b12b35bdeccf49c2be  2234  37
-scenes/Tests/MLT/mlt_torus_chain_atrium.RISEscene  ae2d5f6855c55a7d37319f9d4be592dffeb2ad9fa351f4f0cfb781cd2ee5df33  12437  123
+scenes/Tests/MLT/mlt_torus_chain_atrium.RISEscene  947906605cfd6da3c07ae4fc407fb5f9f7e1018fc97c069feb6fb328ef98f0b5  12428  123
 scenes/Tests/Materials/Enamel/enamel_dial_dimpled.RISEscene  82a726f10ddc619f7ad9f0da80abe43f62db95bc37c435e3eecaded3edddc653  2685  37
 scenes/Tests/Materials/Enamel/enamel_dial_sdf.RISEscene  2ddfd9f30ab2db2c970925fc2d63bc88f5fc6ad97ed7574f591bc05e4da3eeaf  2071  32
 scenes/Tests/Materials/Enamel/enamel_dome_dial.RISEscene  ec7eed76a1ca34466269260d5bfc92bd53bf189891292edb6236169cc197dff8  1988  31
