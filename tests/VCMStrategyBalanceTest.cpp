@@ -1764,6 +1764,33 @@ static void TestSchlickMultiLobe()
 }
 
 //////////////////////////////////////////////////////////////////////
+// Topology AB: `polished_material` wall + floor (DL-285, 2026-09-28) --
+// BDPTStrategyBalanceTest's topology AB, VCM twin.  Until DL-285 the
+// material's `GetBSDF()` was a bare Lambertian while its SPF sampled a
+// Fresnel coat plus a (1-F) substrate; VCM's merges and connections price
+// `value`, its continuations `kray`, and it read -1.77 % under PT on this
+// scene (pre-fix library, 256 spp; n = 6 salted 1024-spp renders:
+// -1.746 % +- 0.008 % sem).  Post-fix -0.10 % (256 spp) / -0.041 % +-
+// 0.009 % (n = 6, 1024 spp).  Band 0.5 % on the mean.
+//////////////////////////////////////////////////////////////////////
+static void TestPolishedAB()
+{
+	std::string s( kSceneSchlickMultiLobeL );
+	const std::string head = "schlick_material\n{\n\tname mat_schlick\n";
+	const size_t a = s.find( head );
+	const size_t b = ( a == std::string::npos ) ? std::string::npos : s.find( "}\n", a );
+	Check( a != std::string::npos && b != std::string::npos, "topology AB: schlick_material chunk found in topology L" );
+	if( a != std::string::npos && b != std::string::npos ) {
+		s.replace( a, b + 2 - a,
+			"polished_material\n{\n\tname mat_schlick\n\treflectance pnt_rd\n"
+			"\ttau 0.9\n\tior 1.5\n\tscattering 20\n}\n" );
+	}
+	static const Tolerances kPolishedABTolerances{ 0.005, 0.25, 1.00 };
+	RunTopologyTest( "polished_material wall + floor (AB), VCM vs PT (DL-285)",
+		s, kPolishedABTolerances, kRasterizerPTSchlickL, kRasterizerVCMSchlickL );
+}
+
+//////////////////////////////////////////////////////////////////////
 // Topology J: biospec_skin_material receiver, mesh area emitter
 // (DL-126) -- VCM's twin of BDPTStrategyBalanceTest's topology N.
 //
@@ -1948,6 +1975,7 @@ int main( int argc, char** argv )
 	TestSubmergedFloorAreaLight();
 	TestSubmergedCeilingMISCombination();
 	TestSchlickMultiLobe();
+	TestPolishedAB();
 	TestNullBSDFMaterialContinuation();
 	TestRoughSSSEmptyContainerU();
 	TestNonfiniteCandidateRejected();
