@@ -2007,10 +2007,10 @@ static const char* kSceneNarrowFovMirrorW1 =
 	"perfectreflector_material\n{\n\tname mat_mirror\n\treflectance pnt_mirror\n}\n\n"
 	"clippedplane_geometry\n{\n\tname geo_mirror\n\tpta -4 2 4\n\tptb 4 2 4\n\tptc 4 2 -4\n\tptd -4 2 -4\n\tdoublesided TRUE\n}\n\n"
 	"standard_object\n{\n\tname obj_mirror\n\tgeometry geo_mirror\n\tmaterial mat_mirror\n}\n\n"
-	"spot_light\n{\n\tname lgt\n\tposition 0 1 0\n\ttarget 0 2 0\n\tinner 4.0\n\touter 5.0\n\tcolor 1 1 1\n\tpower 16\n}\n";
+	"spot_light\n{\n\tname lgt\n\tposition 0 1 0\n\ttarget 0 2 0\n\tinner 2.0\n\touter 2.6\n\tcolor 1 1 1\n\tpower 16\n}\n";
 
 static const char* kSceneNarrowFovDirectW2 =
-	"spot_light\n{\n\tname lgt\n\tposition 0 4 0\n\ttarget 0 0 0\n\tinner 4.0\n\touter 5.0\n\tcolor 1 1 1\n\tpower 16\n}\n";
+	"spot_light\n{\n\tname lgt\n\tposition 0 4 0\n\ttarget 0 0 0\n\tinner 1.5\n\touter 2.0\n\tcolor 1 1 1\n\tpower 16\n}\n";
 
 static const char* kRasterizerVCMNarrowFovW =
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"

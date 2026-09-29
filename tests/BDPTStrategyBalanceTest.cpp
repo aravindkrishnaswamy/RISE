@@ -3768,7 +3768,7 @@ static void TestBackFaceEmitterZ()
 // has a closed form: the mirror image of the spot at (0, 3, 0), so
 // E = I / 3^2 on the beam axis and L = rho/pi * I / 9 (the frame spans
 // +/-0.043 on the floor, inside the beam's full-intensity radius
-// 3 tan(2 deg) = 0.105; cos and 1/d^2 are constant to < 3e-4 over it,
+// 3 tan(1 deg) = 0.052 -- `inner` is the FULL cone angle; cos and 1/d^2 are constant to < 3e-4 over it,
 // and the floor <-> mirror interreflection is ~1e-4).
 //
 // Before DL-294 the camera's world-to-raster inverse cut the splat at
@@ -3792,7 +3792,7 @@ static const char* kSceneNarrowFovMirrorW =
 	"clippedplane_geometry\n{\n\tname geo_mirror\n\tpta -4 2 4\n\tptb 4 2 4\n\tptc 4 2 -4\n\tptd -4 2 -4\n\tdoublesided TRUE\n}\n\n"
 	"standard_object\n{\n\tname obj_floor\n\tgeometry geo_floor\n\tmaterial mat_floor\n}\n\n"
 	"standard_object\n{\n\tname obj_mirror\n\tgeometry geo_mirror\n\tmaterial mat_mirror\n}\n\n"
-	"spot_light\n{\n\tname lgt\n\tposition 0 1 0\n\ttarget 0 2 0\n\tinner 4.0\n\touter 5.0\n\tcolor 1 1 1\n\tpower 16\n}\n";
+	"spot_light\n{\n\tname lgt\n\tposition 0 1 0\n\ttarget 0 2 0\n\tinner 2.0\n\touter 2.6\n\tcolor 1 1 1\n\tpower 16\n}\n";
 
 static const char* kRasterizerBDPTNarrowFovW =
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
