@@ -251,6 +251,11 @@ sided panel 1e-4 below the ceiling, n = 5 per build, paired:
   / 1.0208 of its closed form under PT and BDPT alike; the error scales
   with the pixel size.  Likely `OrthographicCamera::GenerateRay`'s
   `(W/2 - screenX)/W` against a pixel-centred `screenX`.
+- A CLOSED double-sided mesh emitter (e.g. an emissive sphere tessellated
+  with `double_sided TRUE`) now also emits inward: NEE samples on its far
+  side are occluded by its near side (correct, just wasted), and half its
+  light subpaths and photons start inside it and are trapped.  Unbiased;
+  such an emitter should be authored single-sided.
 - VCM's own merge radius is unaffected in practice (the auto pre-pass saw
   540 -> 242 segments and 0.774 -> 0.786 on a grid scene), but halving a
   face-down panel's useful light subpaths halves VCM's photon density
