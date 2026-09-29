@@ -48,10 +48,18 @@
 //          `distributiontracing_shaderop` sibling (NEE and BSDF-sampled
 //          emission MIS-combined -- the hit-side partner must describe
 //          the same two-faced density NEE now samples).
-//      Z2  a MIXED scene: the back-lit double-sided quad plus a small
-//          single-sided face-down quad off to the side (x in [3.1, 3.9],
-//          so neither emitter shadows the other's light onto the viewed
-//          floor square and the closed forms simply add).  The double-sided emitter's
+//      Z2  a MIXED scene: the back-lit double-sided quad plus two small
+//          single-sided face-down quads off to the sides (x in +/-[3.1,
+//          3.9], so no emitter shadows another's light onto the viewed
+//          floor square and the closed forms simply add; placed as a
+//          MIRROR PAIR because the orthographic footprint is offset by
+//          about half a pixel in x -- a pre-existing camera residual
+//          recorded in docs/DL320_DOUBLE_SIDED_EMITTER.md -- which a
+//          single off-axis emitter reads as a 2-5 % bias and a mirror
+//          pair cancels to first order).  VCM reads ~1.2 % low here
+//          whichever way the big quad faces, and read ~1.7 % low before
+//          DL-320: a pre-existing multi-light VCM deficit, DL-348, inside
+//          this row's 2 % band.  The double-sided emitter's
 //          selection weight doubles with its power; every consumer of
 //          the selection PMF must read the same value or the two
 //          lights' MIS partitions stop summing to one.
@@ -256,7 +264,7 @@ static const double kHalf = 1.5;		// emitter half-width (3 x 3 quad)
 static const double kScale = 10.0;		// exitance M (white painter x scale)
 static const double kView = 4.0;		// orthographic viewport width (floor square [-2, 2]^2)
 
-// The second, SINGLE-sided emitter of row Z2.
+// The second and third, SINGLE-sided emitters of row Z2 (a mirror pair).
 static const double kH2 = 1.4;
 static const double kCx2 = 3.5;
 static const double kHalf2 = 0.4;
@@ -307,6 +315,7 @@ static double ClosedFormImageMean( const bool withSecond )
 			double E = kScale * RectF( x, y, -kHalf, kHalf, -kHalf, kHalf, kH );
 			if( withSecond ) {
 				E += kScale2 * RectF( x, y, kCx2 - kHalf2, kCx2 + kHalf2, -kHalf2, kHalf2, kH2 );
+				E += kScale2 * RectF( x, y, -kCx2 - kHalf2, -kCx2 + kHalf2, -kHalf2, kHalf2, kH2 );
 			}
 			sum += E;
 		}
@@ -364,6 +373,7 @@ static std::string SceneBody( bool faceDown, bool doubleSided, bool withSecond )
 	s += EmitterQuad( "emit", 0.0, kHalf, kH, faceDown, doubleSided, kScale );
 	if( withSecond ) {
 		s += EmitterQuad( "emit2", kCx2, kHalf2, kH2, true, false, kScale2 );
+		s += EmitterQuad( "emit3", -kCx2, kHalf2, kH2, true, false, kScale2 );
 	}
 	return s;
 }
