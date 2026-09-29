@@ -105,6 +105,10 @@
 //         comment), so it discriminates a Schlick-specific residual
 //         on L from a generic PT-vs-BDPT one.
 //
+//     AB. `polished_material` wall + floor, un-guided and guided
+//         (DL-285): its BSDF and its SPF's kray are one function, so
+//         guiding must not move the mean (0.5 % band).
+//
 //      U. ROUGH `subsurfacescattering_material` wall + floor (DL-307)
 //         and V. a closed ROUGH `randomwalk_sss_material` sphere
 //         (DL-307) -- both generators used to break on an empty scatter
@@ -819,6 +823,15 @@ static const Tolerances kSchlickTopologyLTolerances{ 0.02, 0.25, 1.00 };
 // supplied tolerance.  PT is the trusted reference; BDPT must
 // converge to the same image distribution.
 //////////////////////////////////////////////////////////////////////
+//! A tolerance as a percent label ("0.5", "8") -- `int( tol * 100 )`
+//! printed a 0.5 % band as "0%".
+static std::string PercentLabel( const double tol )
+{
+	char buf[32];
+	std::snprintf( buf, sizeof( buf ), "%g", tol * 100.0 );
+	return std::string( buf );
+}
+
 static void RunTopologyTest(
 	const char* topologyName,
 	const std::string& sceneCommonBlock,
@@ -868,7 +881,7 @@ static void RunTopologyTest(
 	const bool maxMatch  = ChannelsAgree( pt.max,  bdpt.max,  tol.maxTol,  absFloor );
 
 	Check( meanMatch, ( std::string("BDPT mean within ")
-		+ std::to_string(int(tol.meanTol*100)) + "% of PT: " + topologyName ).c_str() );
+		+ PercentLabel( tol.meanTol ) + "% of PT: " + topologyName ).c_str() );
 	Check( p99Match,  ( std::string("BDPT p99 within ")
 		+ std::to_string(int(tol.p99Tol*100))  + "% of PT: " + topologyName ).c_str() );
 	Check( maxMatch,  ( std::string("BDPT max within ")
@@ -2647,6 +2660,61 @@ static void TestSchlickMultiLobeGuided()
 }
 
 //////////////////////////////////////////////////////////////////////
+// Topology AB: `polished_material` wall + floor (DL-285, 2026-09-28).
+//
+// Topology L's geometry, emitter, camera and rasterizers with the
+// multi-lobe `schlick_material` swapped for `polished_material`
+// (reflectance 0.4, tau 0.9, ior 1.5, scattering 20 -- the DL-67 slice's
+// own polished reproduction of DL-285).  Until DL-285 the material's
+// `GetBSDF()` was a bare `LambertianBRDF(Rd)` while `PolishedSPF` sampled
+// a Fresnel coat plus a `(1-F)` substrate, so `IBSDF::value` (what NEE,
+// connections and the DL-67 guide draw price) and the SPF's `kray` (what
+// the kept lobe prices) were two functions -- DL-67's premise 2.  Guiding
+// then MOVED the expectation, and so did VCM (its merges and connections
+// price `value`).  Measured with the pre-fix library (isolated A/B,
+// 256 spp, the rasterizer strings below):
+//
+//   PT guided RIS vs un-guided BDPT   -1.63 %      post  -0.04 %
+//   BDPT guided RIS vs un-guided PT   -1.12 %      post  -0.13 %
+//   un-guided BDPT vs un-guided PT    -0.01 %      post  -0.04 %
+//
+// (n = 6 salted 1024-spp renders per cell: pre PT RIS/PT -1.551 % +-
+// 0.051 % sem, BDPT RIS/BDPT -1.666 % +- 0.192 %; post -0.002 % +- 0.015 %
+// and +0.012 % +- 0.008 %.)  Un-guided PT and BDPT agreed pre-fix too --
+// both price their own continuations with `kray` and their NEE with the
+// same wrong `value`, so the two errors coincide; the guided rows are
+// what see premise 2.  Band: 0.5 % on the mean (the pre-fix rows fail it
+// by >= 2x, the post-fix residuals sit >= 4x inside it); p99/max as L.
+//////////////////////////////////////////////////////////////////////
+static const Tolerances kPolishedTopologyABTolerances{ 0.005, 0.25, 1.00 };
+
+static std::string PolishedTopologyABScene()
+{
+	std::string s( kSceneSchlickMultiLobeL );
+	const std::string head = "schlick_material\n{\n\tname mat_schlick\n";
+	const size_t a = s.find( head );
+	const size_t b = ( a == std::string::npos ) ? std::string::npos : s.find( "}\n", a );
+	Check( a != std::string::npos && b != std::string::npos, "topology AB: schlick_material chunk found in topology L" );
+	if( a != std::string::npos && b != std::string::npos ) {
+		s.replace( a, b + 2 - a,
+			"polished_material\n{\n\tname mat_schlick\n\treflectance pnt_rd\n"
+			"\ttau 0.9\n\tior 1.5\n\tscattering 20\n}\n" );
+	}
+	return s;
+}
+
+static void TestPolishedGuidedAB()
+{
+	const std::string scene = PolishedTopologyABScene();
+	RunTopologyTest( "polished_material wall + floor (AB), un-guided BDPT vs un-guided PT (DL-285)",
+		scene, kPolishedTopologyABTolerances, kRasterizerPTSchlickL, kRasterizerBDPTSchlickL );
+	RunTopologyTest( "polished_material (AB), BDPT GUIDED RIS vs un-guided PT (DL-285)",
+		scene, kPolishedTopologyABTolerances, kRasterizerPTSchlickL, kRasterizerBDPTSchlickLGuidedRIS );
+	RunTopologyTest( "polished_material (AB), PT GUIDED RIS vs un-guided BDPT (DL-285)",
+		scene, kPolishedTopologyABTolerances, kRasterizerPTSchlickLGuidedRIS, kRasterizerBDPTSchlickL );
+}
+
+//////////////////////////////////////////////////////////////////////
 // DL-125 achromatic parity controls: spectral BDPT hero versus bundle.
 // Schlick supplies EvaluateKrayNM after DL-125; aggregate-density GGX
 // and Lambertian still use an appropriate aggregate fallback. Equal
@@ -3606,6 +3674,89 @@ static void TestWeaveGapBoxAreaOutside()
 }
 
 //////////////////////////////////////////////////////////////////////
+// Topology Z: the receiver is lit by the BACK face of a double-sided
+// mesh emitter (DL-320, docs/DL320_DOUBLE_SIDED_EMITTER.md).
+//
+// Topology B's 1x1 quad at z = 4, wound so its normal points UP (+Z),
+// away from the receiver; `clippedplane_geometry`'s `doublesided`
+// defaults to TRUE, so by docs/SCENE_CONVENTIONS.md the quad emits from
+// both faces and this scene must render exactly like topology B.
+//
+// PT vs BDPT alone CANNOT see DL-320: before the fix both read the SAME
+// wrong answer (NEE and light-subpath emission treated the quad as one-
+// sided while both hit-side MIS weights assumed they could reach its back
+// face -- 11-14x dark on a small quad).  So besides the usual PT-vs-BDPT
+// comparison, both back-face renders are compared against topology B's
+// FACE-down PT render at 512 spp.
+//////////////////////////////////////////////////////////////////////
+static const char* kLightMeshBackFace =
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_emit\n"
+	"\tcolor 1.0 1.0 1.0\n"
+	"}\n"
+	"\n"
+	"lambertian_luminaire_material\n"
+	"{\n"
+	"\tname mat_emit\n"
+	"\texitance pnt_emit\n"
+	"\tscale 20.0\n"
+	"\tmaterial none\n"
+	"}\n"
+	"\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname quad_emit\n"
+	"\tpta -0.5 -0.5 4.0\n"
+	"\tptb 0.5 -0.5 4.0\n"
+	"\tptc 0.5 0.5 4.0\n"
+	"\tptd -0.5 0.5 4.0\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_emit\n"
+	"\tgeometry quad_emit\n"
+	"\tmaterial mat_emit\n"
+	"}\n";
+
+static void TestBackFaceEmitterZ()
+{
+	RunTopologyTest( "back-face-lit double-sided mesh emitter (DL-320)",
+		std::string( kSceneCommon ) + kLightMeshBackFace );
+
+	std::cout << "Testing back face vs face-down (512 spp): DL-320 topology Z" << std::endl;
+	const std::string face = std::string( "RISE ASCII SCENE 7\n" ) + kRasterizerPT512 + kSceneCommon + kLightMesh;
+	const std::string ptBack = std::string( "RISE ASCII SCENE 7\n" ) + kRasterizerPT512 + kSceneCommon + kLightMeshBackFace;
+	const std::string bdptBack = std::string( "RISE ASCII SCENE 7\n" ) + kRasterizerBDPT512 + kSceneCommon + kLightMeshBackFace;
+	const std::string pFace = WriteSceneToTempFile( face.c_str(), "zface" );
+	const std::string pPT = WriteSceneToTempFile( ptBack.c_str(), "zpt" );
+	const std::string pBD = WriteSceneToTempFile( bdptBack.c_str(), "zbdpt" );
+	if( pFace.empty() || pPT.empty() || pBD.empty() ) {
+		Check( false, "Topology Z: temp file write" );
+		return;
+	}
+	const ImageStats sFace = RenderAndComputeStats( pFace.c_str() );
+	const ImageStats sPT = RenderAndComputeStats( pPT.c_str() );
+	const ImageStats sBD = RenderAndComputeStats( pBD.c_str() );
+	std::remove( pFace.c_str() );
+	std::remove( pPT.c_str() );
+	std::remove( pBD.c_str() );
+	Check( sFace.valid && sPT.valid && sBD.valid, "Topology Z: renders produced output" );
+	if( !sFace.valid || !sPT.valid || !sBD.valid ) return;
+	PrintStats( "PT face-down ", sFace );
+	PrintStats( "PT back face ", sPT );
+	PrintStats( "BDPT back    ", sBD );
+	const double absFloor = 1e-6;
+	// 2%: the three renders' mean sd is ~0.2% at 512 spp; pre-fix the back
+	// face read ~9% of the face-down mean under both integrators.
+	Check( ChannelsAgree( sFace.mean, sPT.mean, 0.02, absFloor ),
+		"Topology Z: PT back-face mean within 2% of the face-down render (DL-320)" );
+	Check( ChannelsAgree( sFace.mean, sBD.mean, 0.02, absFloor ),
+		"Topology Z: BDPT back-face mean within 2% of the face-down render (DL-320)" );
+}
+
+//////////////////////////////////////////////////////////////////////
 // Topologies U and V: DL-307 (docs/DL67_GUIDED_GENERATING_DENSITY.md
 // section 8, "DL-307").
 //
@@ -3797,6 +3948,7 @@ int main( int argc, char** argv )
 	}
 	if( argc == 2 && std::strcmp(argv[1], "--guided-only") == 0 ) {
 		TestSchlickMultiLobeGuided();
+		TestPolishedGuidedAB();
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
@@ -3816,6 +3968,12 @@ int main( int argc, char** argv )
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
+	// DL-320: topology Z alone (the focused before/after A/B).
+	if( argc == 2 && std::strcmp(argv[1], "--back-face-only") == 0 ) {
+		TestBackFaceEmitterZ();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
 	if( argc == 2 && std::strcmp(argv[1], "--spectral-aggregate-unit") == 0 ) {
 		TestSpectralRepeatAggregation();
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
@@ -3824,7 +3982,7 @@ int main( int argc, char** argv )
 	if( argc > 1 ) {
 		if( argc != 3 || std::strcmp(argv[1], "--spectral-only") != 0 ||
 			(std::strcmp(argv[2], "1") != 0 && std::strcmp(argv[2], "2") != 0) ) {
-			std::cerr << "Usage: BDPTStrategyBalanceTest [--spectral-only 1|2 | --spectral-aggregate-unit | --materials-only | --guided-only | --weave-gap-only | --sss-only]" << std::endl;
+			std::cerr << "Usage: BDPTStrategyBalanceTest [--spectral-only 1|2 | --spectral-aggregate-unit | --materials-only | --guided-only | --weave-gap-only | --sss-only | --back-face-only]" << std::endl;
 			return 2;
 		}
 		spectralSampleScale = std::strcmp(argv[2], "2") == 0 ? 2 : 1;
@@ -3852,6 +4010,7 @@ int main( int argc, char** argv )
 	TestGGXLambertianControl();
 	TestCompositeMaterial();
 	TestSchlickMultiLobeGuided();
+	TestPolishedGuidedAB();
 	TestSpectralHWSSCompanionLadder();
 	TestSpectralHWSSCompanionLadderControl();
 	TestSpectralHWSSChromaticLobeSpectra();
@@ -3865,6 +4024,7 @@ int main( int argc, char** argv )
 	TestWeaveGapBoxAreaOutside();
 	TestRoughSSSEmptyContainerU();
 	TestRandomWalkSphereEmptyContainerV();
+	TestBackFaceEmitterZ();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

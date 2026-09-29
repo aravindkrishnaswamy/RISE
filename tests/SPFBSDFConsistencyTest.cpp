@@ -1259,13 +1259,11 @@ int main()
         //--------------------------------------------------------------
         // coated_material -- docs/WETNESS_COAT_DESIGN.md Phase 2.
         //
-        // These are the entries `polished_material` could never have:
-        // Polished appears ONLY in the Part-A sanity list below,
-        // because its GetBSDF() returns a bare LambertianBRDF (3.3's
-        // documented defect) and pairing it here would compare a
-        // Fresnel-coated sampler against an uncoated evaluator.  The
-        // coated triad's whole reason for existing (7.1) is that its
-        // BSDF IS the layered response, so it can be paired.
+        // The coated triad's whole reason for existing (7.1) is that its
+        // BSDF IS the layered response, so it can be paired.  (These
+        // used to be "the entries `polished_material` could never
+        // have", because its GetBSDF() was a bare LambertianBRDF; since
+        // DL-285 it has its own PolishedBRDF and is paired below.)
         //
         // singleLobe = TRUE for both, including the GGX substrate.
         // That is not an approximation: CoatedSPF emits one ray per
@@ -1280,6 +1278,18 @@ int main()
         // read the same closed form.
         //--------------------------------------------------------------
         { "Coated_Lambertian",                 coatedLambSPF,   coatedLambBRDF,     true,  FURNACE_TOL },
+
+        //--------------------------------------------------------------
+        // polished_material -- DL-285 (2026-09-28).  Its BSDF is now the
+        // SPF's own PolishedBRDF (the function the SPF samples lobe by
+        // lobe), so it pairs here.  NOT single-lobe: the coat and the
+        // substrate are two overlapping emitted rays, each carrying its
+        // own f_I cos / p_I, so Part D's kray * pdf == value * cos does
+        // not hold per ray (value is the SUM of both lobes); the furnace
+        // is the check.  tests/PolishedBRDFConsistencyTest.cpp gates the
+        // per-lobe identity, the shape, reciprocity and the density.
+        //--------------------------------------------------------------
+        { "Polished",                          polishedSPF,     &polishedSPF->GetBRDF(), false, FURNACE_TOL },
         { "Coated_GGX",                        coatedGgxSPF,    coatedGgxBRDF,      true,  FURNACE_TOL },
 
         //--------------------------------------------------------------

@@ -3859,8 +3859,8 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			//   guide draw               f_agg cos / (a g + (1-a) p_agg)
 			//
 			// Unbiased for any deterministic W PROVIDED `IBSDF::value` and
-			// the SPF's kray describe one function (DL-285: not
-			// `polished_material`), `0 < a < 1` (delta lobes belong to the
+			// the SPF's kray describe one function (`polished_material`
+			// violated it until DL-285, 2026-09-28), `0 < a < 1` (delta lobes belong to the
 			// BSDF technique alone; `a` is clamped at Configure), and the
 			// continuation state does not depend on which technique fired
 			// (NOT met under a per-type bounce cap: a guide draw continues

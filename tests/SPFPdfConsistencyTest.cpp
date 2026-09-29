@@ -1464,10 +1464,16 @@ int main()
         //--------------------------------------------------------------
         // Polished (dielectric coat over diffuse substrate):
         //
-        // Cross-val: 311 mismatches at 60° due to Fresnel-dependent
-        //   coating transmission affecting kray weights vs PDF weights.
-        //   At 30° it passes.  Skip cross-val for consistency.
-        // Chi2 and integral: pass at both angles.
+        // Since DL-285 (2026-09-28) `PolishedSPF::Pdf` is the REALIZED
+        // RandomlySelect density, with BOTH lobes' selection weights
+        // direction-dependent (the coat via min(F(ci),F(co)) and co, the
+        // substrate via 1-F(co)) -- DL-99's case.  Cross-val's
+        // multi-lobe branch checks Pdf >= q_I * p_I with q_I read off ONE
+        // realization, which is not a bound on the expectation over the
+        // other lobe's draw that the realized density is, so it stays
+        // skipped.  Chi2 (shape) and the sub-density gate (mass) are the
+        // real checks and pass at both angles; the per-row derivation and
+        // gates live in tests/PolishedBRDFConsistencyTest.cpp.
         //--------------------------------------------------------------
         { "Polished",                          polished,    false, false, true,  false, INTEGRAL_TOL },
 

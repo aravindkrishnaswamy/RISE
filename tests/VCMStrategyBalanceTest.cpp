@@ -637,6 +637,15 @@ static const Tolerances kStrictTolerances{ 0.08, 0.25, 1.00 };
 // PT is the trusted reference; VCM must converge to the same image
 // distribution for non-caustic scenes.
 //////////////////////////////////////////////////////////////////////
+//! A tolerance as a percent label ("0.5", "8") -- `int( tol * 100 )`
+//! printed a 0.5 % band as "0%".
+static std::string PercentLabel( const double tol )
+{
+	char buf[32];
+	std::snprintf( buf, sizeof( buf ), "%g", tol * 100.0 );
+	return std::string( buf );
+}
+
 static void RunTopologyTest(
 	const char* topologyName,
 	const std::string& sceneCommonBlock,
@@ -685,7 +694,7 @@ static void RunTopologyTest(
 	const bool maxMatch  = ChannelsAgree( pt.max,  vcm.max,  tol.maxTol,  absFloor );
 
 	Check( meanMatch, ( std::string("VCM mean within ")
-		+ std::to_string(int(tol.meanTol*100)) + "% of PT: " + topologyName ).c_str() );
+		+ PercentLabel( tol.meanTol ) + "% of PT: " + topologyName ).c_str() );
 	Check( p99Match,  ( std::string("VCM p99 within ")
 		+ std::to_string(int(tol.p99Tol*100))  + "% of PT: " + topologyName ).c_str() );
 	Check( maxMatch,  ( std::string("VCM max within ")
@@ -1764,6 +1773,33 @@ static void TestSchlickMultiLobe()
 }
 
 //////////////////////////////////////////////////////////////////////
+// Topology AB: `polished_material` wall + floor (DL-285, 2026-09-28) --
+// BDPTStrategyBalanceTest's topology AB, VCM twin.  Until DL-285 the
+// material's `GetBSDF()` was a bare Lambertian while its SPF sampled a
+// Fresnel coat plus a (1-F) substrate; VCM's merges and connections price
+// `value`, its continuations `kray`, and it read -1.77 % under PT on this
+// scene (pre-fix library, 256 spp; n = 6 salted 1024-spp renders:
+// -1.746 % +- 0.008 % sem).  Post-fix -0.10 % (256 spp) / -0.041 % +-
+// 0.009 % (n = 6, 1024 spp).  Band 0.5 % on the mean.
+//////////////////////////////////////////////////////////////////////
+static void TestPolishedAB()
+{
+	std::string s( kSceneSchlickMultiLobeL );
+	const std::string head = "schlick_material\n{\n\tname mat_schlick\n";
+	const size_t a = s.find( head );
+	const size_t b = ( a == std::string::npos ) ? std::string::npos : s.find( "}\n", a );
+	Check( a != std::string::npos && b != std::string::npos, "topology AB: schlick_material chunk found in topology L" );
+	if( a != std::string::npos && b != std::string::npos ) {
+		s.replace( a, b + 2 - a,
+			"polished_material\n{\n\tname mat_schlick\n\treflectance pnt_rd\n"
+			"\ttau 0.9\n\tior 1.5\n\tscattering 20\n}\n" );
+	}
+	static const Tolerances kPolishedABTolerances{ 0.005, 0.25, 1.00 };
+	RunTopologyTest( "polished_material wall + floor (AB), VCM vs PT (DL-285)",
+		s, kPolishedABTolerances, kRasterizerPTSchlickL, kRasterizerVCMSchlickL );
+}
+
+//////////////////////////////////////////////////////////////////////
 // Topology J: biospec_skin_material receiver, mesh area emitter
 // (DL-126) -- VCM's twin of BDPTStrategyBalanceTest's topology N.
 //
@@ -1875,6 +1911,18 @@ static void TestNullBSDFMaterialContinuation()
 // and -6.10% .. -6.18% pre-fix over three runs each, so the pin
 // [-5.72%, -5.00%] sits >= 0.27% inside the post-fix readings and
 // >= 0.38% away from the pre-fix ones.
+//
+// THE EMITTER IS SINGLE-SIDED ON PURPOSE (DL-320, 2026-09-28).  Its
+// winding faces the sheets (-Z), and `clippedplane_geometry` defaults to
+// `doublesided TRUE`.  Since DL-320 a double-sided emitter emits from
+// BOTH faces for every strategy, so half of its light subpaths would
+// leave upward into empty space; the biased light-side strategies DL-317
+// is about would then carry less of the image and the pin would stop
+// measuring DL-317 (it read -2.93% with the default, against -5.9% for
+// the same scene single-sided -- the review's isolation: double-sided
+// -5.90% -> -3.50%, `doublesided FALSE` -5.88% -> -5.87%, a Lambertian
+// control +0.01% / +0.02%, salted n = 2).  `doublesided FALSE` keeps the
+// pin on the quantity it was derived for.
 //////////////////////////////////////////////////////////////////////
 static const char* kSceneRoughSSSU =
 	"film\n{\n\twidth 32\n\theight 32\n}\n\n"
@@ -1887,7 +1935,7 @@ static const char* kSceneRoughSSSU =
 	"standard_object\n{\n\tname obj_floor\n\tgeometry quad_floor\n\tmaterial mat_sss\n}\n\n"
 	"uniformcolor_painter\n{\n\tname pnt_emit_u\n\tcolor 1.0 1.0 1.0\n}\n\n"
 	"lambertian_luminaire_material\n{\n\tname mat_emit_u\n\texitance pnt_emit_u\n\tscale 0.5\n\tmaterial none\n}\n\n"
-	"clippedplane_geometry\n{\n\tname quad_emit_u\n\tpta -6 -6 4.2\n\tptb -6 6 4.2\n\tptc 6 6 4.2\n\tptd 6 -6 4.2\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_emit_u\n\tpta -6 -6 4.2\n\tptb -6 6 4.2\n\tptc 6 6 4.2\n\tptd 6 -6 4.2\n\tdoublesided FALSE\n}\n\n"
 	"standard_object\n{\n\tname obj_emit_u\n\tgeometry quad_emit_u\n\tmaterial mat_emit_u\n}\n";
 
 static const char* kRasterizerPTRoughSSSU =
@@ -1948,6 +1996,7 @@ int main( int argc, char** argv )
 	TestSubmergedFloorAreaLight();
 	TestSubmergedCeilingMISCombination();
 	TestSchlickMultiLobe();
+	TestPolishedAB();
 	TestNullBSDFMaterialContinuation();
 	TestRoughSSSEmptyContainerU();
 	TestNonfiniteCandidateRejected();
