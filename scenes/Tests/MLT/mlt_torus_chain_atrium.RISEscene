@@ -292,8 +292,8 @@ lambertian_luminaire_material
 {
 	name				warm_lum
 	exitance			pnt_warm_light
-	# DL-320 (2026-09-28): 200 -> 67.3.  The ceiling panels are wound face-UP 0.02 below the ceiling, so the atrium was lit by their BACK faces, which next-event estimation and light subpaths ignored before DL-320; both faces now emit, and x0.3365 on all three panel materials returns the torus chain to its pre-DL-320 level.
-	scale				67.3
+	# DL-320 (2026-09-28): 200 -> 55.6.  The ceiling panels are wound face-UP 0.02 below the ceiling, so the atrium was lit by their BACK faces, which next-event estimation and light subpaths ignored before DL-320; both faces now emit, and x0.278 on all three panel materials returns the torus chain (centre of frame) to its pre-DL-320 MLT level.
+	scale				55.6
 	material			none
 }
 
@@ -301,8 +301,8 @@ lambertian_luminaire_material
 {
 	name				cool_lum
 	exitance			pnt_cool_light
-	# DL-320 (2026-09-28): 200 -> 67.3.  The ceiling panels are wound face-UP 0.02 below the ceiling, so the atrium was lit by their BACK faces, which next-event estimation and light subpaths ignored before DL-320; both faces now emit, and x0.3365 on all three panel materials returns the torus chain to its pre-DL-320 level.
-	scale				67.3
+	# DL-320 (2026-09-28): 200 -> 55.6.  The ceiling panels are wound face-UP 0.02 below the ceiling, so the atrium was lit by their BACK faces, which next-event estimation and light subpaths ignored before DL-320; both faces now emit, and x0.278 on all three panel materials returns the torus chain (centre of frame) to its pre-DL-320 MLT level.
+	scale				55.6
 	material			none
 }
 
@@ -310,8 +310,8 @@ lambertian_luminaire_material
 {
 	name				neutral_lum
 	exitance			pnt_neutral_light
-	# DL-320 (2026-09-28): 2000 -> 673.  The ceiling panels are wound face-UP 0.02 below the ceiling, so the atrium was lit by their BACK faces, which next-event estimation and light subpaths ignored before DL-320; both faces now emit, and x0.3365 on all three panel materials returns the torus chain to its pre-DL-320 level.
-	scale				673.0
+	# DL-320 (2026-09-28): 2000 -> 556.  The ceiling panels are wound face-UP 0.02 below the ceiling, so the atrium was lit by their BACK faces, which next-event estimation and light subpaths ignored before DL-320; both faces now emit, and x0.278 on all three panel materials returns the torus chain (centre of frame) to its pre-DL-320 MLT level.
+	scale				556.0
 	material			none
 }
 
