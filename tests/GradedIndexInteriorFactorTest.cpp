@@ -1272,6 +1272,67 @@ static void RunSMSMeasurementRow()
 		( r[0] > 0 && r[1] > 0 ) ? r[1] / r[0] : -1.0 );
 }
 
+
+//////////////////////////////////////////////////////////////////////
+// Row R (DL-292, OPT-IN: GRADED_ROWS must name R explicitly; prints, does
+// not gate).  The two L-sized residuals the row leaves open, measured:
+//   R1  a ROUGH graded dielectric (`scattering 3`, a non-delta
+//       transmission lobe) with the camera outside: a BDPT/VCM connection
+//       from an eye vertex ON the graded object's own surface (whose walk
+//       arrived through air, so it recorded no graded medium) to a light
+//       vertex inside prices no graded factor.  PT vs BDPT vs VCM, graded
+//       vs a constant-index control with the same roughness.
+//   R2  BDPT's t==1 splat prices the camera end with the camera VERTEX's
+//       recorded index, not n at the separately sampled thin-lens point: a
+//       wide-aperture thin-lens camera inside a medium whose index varies
+//       ACROSS the lens (a lateral gradient), BDPT vs PT, graded vs the
+//       same camera in a constant-index control.
+//////////////////////////////////////////////////////////////////////
+static void RunOpenResidualMeasurements()
+{
+	std::cout << std::endl << "-- Row R1 (measurement only): rough graded dielectric, camera outside --" << std::endl;
+	for( int graded = 1; graded >= 0; graded-- ) {
+		// A small emitter OFF the camera's axis (x in [0.3, 0.5]) so the
+		// camera sees it only through the rough top face's broad lobe --
+		// the strategies that connect the face vertex to the emitter carry
+		// real weight -- and never sees its unlit back.
+		std::string s = ReadFile( "scenes/Tests/Materials/graded_index_interior_gather.RISEscene" );
+		s = ReplaceOnce( s, "\tpta -28 -28 1.0\n\tptb -28 28 1.0\n\tptc 28 28 1.0\n\tptd 28 -28 1.0\n",
+			"\tpta 0.3 -0.1 1.0\n\tptb 0.3 0.1 1.0\n\tptc 0.5 0.1 1.0\n\tptd 0.5 -0.1 1.0\n" );
+		if( !graded ) s = ReplaceSpan( s, "MEDIUM", UniformBox( 1.4 ) );
+		s = graded ? ReplaceOnce( s, "\tname mat_graded\n\tior ior_tent\n\ttau 1.0\n\tscattering 1000000\n",
+				"\tname mat_graded\n\tior ior_tent\n\ttau 1.0\n\tscattering 3\n" )
+			: ReplaceOnce( s, "\tname mat_u\n\tior 1.4\n\ttau 1.0\n\tscattering 1000000\n",
+				"\tname mat_u\n\tior 1.4\n\ttau 1.0\n\tscattering 3\n" );
+		const Stat p = RenderStat( ReplaceSpan( s, "RASTERIZER", RasterizerPT( 512 ) ), "r1_pt" );
+		const Stat b = RenderStat( ReplaceSpan( s, "RASTERIZER", RasterizerBDPT( 256 ) ), "r1_bdpt" );
+		const Stat v = RenderStat( ReplaceSpan( s, "RASTERIZER", RasterizerVCM( 256 ) ), "r1_vcm" );
+		std::printf( "    %-9s PT %.6f  BDPT %.6f  VCM %.6f   BDPT/PT=%.4f  VCM/PT=%.4f\n",
+			graded ? "graded" : "constant", p.mean, b.mean, v.mean,
+			p.mean > 0 ? b.mean / p.mean : -1.0, p.mean > 0 ? v.mean / p.mean : -1.0 );
+	}
+
+	std::cout << std::endl << "-- Row R2 (measurement only): wide thin-lens camera inside, index varying across the lens --" << std::endl;
+	for( int graded = 1; graded >= 0; graded-- ) {
+		std::string s = WithSmallEmitter( ReadFile( kSeededScene ) );
+		s = ReplaceOnce( s, kOrthoInside,
+			"thinlens_camera\n{\n\tlocation 0 0 0.333333333333\n\tlookat 0 0 0\n\tup 0 1 0\n"
+			"\tsensor_size 36\n\tfocal_length 150\n\tfstop 0.5\n\tfocus_distance 0.313\n}\n" );
+		if( graded ) {
+			// Lateral gradient, clamped so the 60-wide box never reads a
+			// non-positive index: 0.5 per unit across the lens aperture.
+			s = ReplaceOnce( s, "\texpression 1.8-0.6*abs(P.z-1.0)\n",
+				"\texpression 1.8-0.6*abs(P.z-1.0)+0.5*clamp(P.x,-0.5,0.5)\n" );
+		} else {
+			s = ReplaceSpan( s, "MEDIUM", UniformBox( 1.4 ) );
+		}
+		const Stat p = RenderStat( ReplaceSpan( s, "RASTERIZER", RasterizerPT( 512 ) ), "r2_pt" );
+		const Stat b = RenderStat( ReplaceSpan( s, "RASTERIZER", RasterizerBDPT( 256 ) ), "r2_bdpt" );
+		std::printf( "    %-9s thin lens: PT %.6f  BDPT %.6f   BDPT/PT=%.4f\n",
+			graded ? "graded" : "constant", p.mean, b.mean, p.mean > 0 ? b.mean / p.mean : -1.0 );
+	}
+}
+
 int main( int argc, char** argv )
 {
 	if( argc > 1 && argv[1] ) {
@@ -1312,6 +1373,7 @@ int main( int argc, char** argv )
 	if( on( 'P' ) ) RunPhotonMapRow();
 	// Opt-in measurement row (named explicitly, never in the default run).
 	if( rowsEnv && std::strchr( rowsEnv, 'Q' ) ) RunSMSMeasurementRow();
+	if( rowsEnv && std::strchr( rowsEnv, 'R' ) ) RunOpenResidualMeasurements();
 
 	std::cout << std::endl << "Passed: " << passCount << std::endl << "Failed: " << failCount << std::endl;
 	return failCount == 0 ? 0 : 1;
