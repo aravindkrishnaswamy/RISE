@@ -61,12 +61,20 @@
 //             (and its free-standing two-plane twin) with the omni
 //             light OUTSIDE.  PT/BDPT/VCM within 8%.
 //
-//    dl294    (opt-in only; WEAVE_GAP_FILTER=dl294)  Prints, does not
-//             gate, the pre-existing narrow-fov light-tracing residual
-//             DL-294: the `closed spot` rows re-run at fov 2 deg, where
-//             BDPT reads ~6 % and VCM ~1 % off the closed form before
-//             AND after DL-05 (the gap path reaches them only by t = 1
-//             light tracing, so this fixture isolates the splat).
+//    fovsweep DL-294 (docs/DL294_NARROW_FOV_SPLAT.md): the spot rows
+//             at fov 1/2/3/5/10 deg on the 2 x 2 patch, BDPT, VCM, VCM
+//             with merging off and BDPT under the default gaussian
+//             filter, every render referenced to PT's no-sheet render
+//             at the same fov, plus the gap render's edge-row/column
+//             fingerprint at fov 2.  The gap path reaches the
+//             bidirectional integrators only by t = 1 light tracing, so
+//             this isolates the splat: pre-fix BDPT read -6.05 % at
+//             fov 2 with column 0 and row 0 at half radiance.
+//    dl294    (opt-in only; WEAVE_GAP_FILTER=dl294; argv[2] = n,
+//             default 4)  The same sweep with n repeats, mean +/- sd,
+//             plus VCM-without-merging and the no-weave control (the
+//             0.2 x 0.2 patch at fov 2, spot, no sheet, vs the analytic
+//             value).  No assertions -- a measurement aid.
 //    table    (opt-in only; WEAVE_GAP_FILTER=table)  Re-measures
 //             docs/CLOTH_FABRIC_DESIGN.md section 15 item 27's table at
 //             its own setup (24x24, 512 spp) with n repeats (argv[2],
@@ -363,13 +371,11 @@ enum LightKind { kOmni, kSpot, kDirectional, kArea };
 //! footprint over which the omni's 1/d^2 and cosine are constant to
 //! < 1e-4, so the no-sheet render can be checked against rho/pi * I/d^2
 //! absolutely.  kWide: fov 10 deg on a 2 x 2 patch, for the
-//! BIDIRECTIONAL rows: BDPT's and VCM's light-tracing (t = 1) splat reads
-//! up to 6 % low on this fixture at fov 1-3 deg and exact from 5 deg up,
-//! identically before and after DL-05 and independent of the pixel
-//! sampler -- a pre-existing narrow-fov splat residual recorded as DL-294
-//! (WEAVE_GAP_FILTER=dl294 prints it), not a property of the gap.  Every
-//! kWide row is a RATIO against the same framing's no-sheet render, so it
-//! needs no absolute closed form.
+//! BIDIRECTIONAL rows (chosen before DL-294 was fixed, when BDPT's and
+//! VCM's t = 1 splat read up to 6 % low whenever the frame was lit edge
+//! to edge -- the `fovsweep` section gates that now).  Every kWide row
+//! is a RATIO against the same framing's no-sheet render, so it needs no
+//! absolute closed form.
 enum CamKind { kTight, kWide };
 
 //! @a compositeSheet: the sheet is a `composite_material` of two such

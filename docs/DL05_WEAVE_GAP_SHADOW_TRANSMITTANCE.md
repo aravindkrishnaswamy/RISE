@@ -280,8 +280,14 @@ last part is the energy the fix recovers, not overhead: on the design-doc box
   BDPT reads the closed form -6.05 % (gap 0.3) / -5.87 % (0.1) and VCM's own
   no-sheet L0 reads -1.45 %, identically before and after DL-05, independent
   of the pixel sampler and of spp (-6.14 % at 16384 spp), and exact from fov
-  5 deg up (fov 1/2/3/5/10: -6.2/-6.1/-2.5/+0.03/+0.1 %).  Not root-caused.
-  `WEAVE_GAP_FILTER=dl294` prints it.
+  5 deg up (fov 1/2/3/5/10: -6.2/-6.1/-2.5/+0.03/+0.1 %).  **Root-caused
+  and fixed by the `debt-dl294` slice (2026-09-28)**: not an angular
+  effect -- the camera's world-to-raster inverse clipped the splat at its
+  nominal [0, W) film while the rasterizers sample (and the splat film
+  rounds in) [-0.5, W - 0.5), so half-pixel strips at image column 0 and
+  row 0 were lost, which only a frame lit edge to edge (this fixture at
+  fov <= 3) shows.  See [DL294_NARROW_FOV_SPLAT.md](DL294_NARROW_FOV_SPLAT.md);
+  the test's `fovsweep` section now gates it.
 - **DL-295** (new): the SMS emission suppression after a weave gap (§7).
 - **OVERCLAIM correction (external review P2-1), filed as DL-329 at merge:
   "PT HWSS 0.30030" and every "PT now agrees with BDPT/VCM" statement in
