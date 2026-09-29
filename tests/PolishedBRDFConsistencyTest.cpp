@@ -31,6 +31,12 @@
 //       histogram of the directions it returns (TVD against a floor).
 //    5. HWSS.  `EvaluateKrayNM` at the hero wavelength reproduces every
 //       emitted ray's `krayNM` exactly (the companion ladders' premise).
+//    6. SIBLING AUDIT (DL-285's pattern: a material whose GetBSDF() is a
+//       different function than its SPF samples).  Every pair already in
+//       SPFBSDFConsistencyTest's furnace is covered there; the two that
+//       were not are run here: `sheen_material` (gates 1-4, green) and
+//       `datadriven_material`, which has a BSDF and NO SPF at all -- the
+//       sampled function is identically 0 -- pinned as DL-325.
 //    0. The model's building blocks (post-fix API; the gate-1..5 rows are
 //       the red-proof and compile against the pre-fix tree): the model's
 //       g-form Fresnel equals `Optics::CalculateDielectricReflectanceCosine`,
@@ -77,6 +83,10 @@
 #include "../src/Library/Painters/UniformScalarPainter.h"
 #include "../src/Library/Materials/PolishedMaterial.h"
 #include "../src/Library/Materials/PolishedBRDF.h"
+#include "../src/Library/Materials/SheenMaterial.h"
+#include "../src/Library/Materials/DataDrivenMaterial.h"
+#include <fstream>
+#include <unistd.h>
 
 #include "TestStubObject.h"
 
@@ -207,15 +217,10 @@ struct Config
 // ====================================================================
 // One row: gates 1-5 for (config, fixture).
 // ====================================================================
-static void RunRow( const Config& cfg, const Fixture& fx, int draws, unsigned int seed )
+static void RunRowMaterial( const IMaterial& mat, const std::string& name, const Fixture& fx, int draws, unsigned int seed )
 {
-	UniformColorPainter* rd = new UniformColorPainter( cfg.rd );  rd->addref();
-	UniformScalarPainter* tau = new UniformScalarPainter( cfg.tau );  tau->addref();
-	UniformScalarPainter* nt  = new UniformScalarPainter( cfg.ior );  nt->addref();
-	UniformScalarPainter* sc  = new UniformScalarPainter( cfg.scat ); sc->addref();
-	PolishedMaterial* mat = new PolishedMaterial( *rd, *tau, *nt, *sc, cfg.hg );  mat->addref();
-	const ISPF&  spf  = *mat->GetSPF();
-	const IBSDF& bsdf = *mat->GetBSDF();
+	const ISPF&  spf  = *mat.GetSPF();
+	const IBSDF& bsdf = *mat.GetBSDF();
 
 	const RayIntersectionGeometric ri = MakeRI( fx );
 	const IORStack stack = MakeTestIORStack( g_stub );
@@ -223,7 +228,7 @@ static void RunRow( const Config& cfg, const Fixture& fx, int draws, unsigned in
 	OrthonormalBasis3D binOnb;  binOnb.CreateFromW( nShade );
 
 	char label[256];
-	std::snprintf( label, sizeof(label), "%s th%.0f%s%s", cfg.name.c_str(), fx.thetaDeg,
+	std::snprintf( label, sizeof(label), "%s th%.0f%s%s", name.c_str(), fx.thetaDeg,
 		fx.tiltDeg != 0 ? " tilt" : "", fx.backface ? " BACKFACE" : "" );
 
 	// ---- SPF side --------------------------------------------------
@@ -266,6 +271,7 @@ static void RunRow( const Config& cfg, const Fixture& fx, int draws, unsigned in
 			for( unsigned int j = 0; j < sc_.Count(); ++j ) {
 				const ScatteredRay& r = sc_[j];
 				const Scalar e = spf.EvaluateKrayNM( ri, r.ray.Dir(), r.type, 550.0, stack );
+				if( e < 0 ) continue;		// declined: the companion ladder falls back (not polished's case)
 				const double d = std::fabs( e - r.krayNM ) / std::max( 1e-12, std::fabs( r.krayNM ) );
 				if( r.krayNM > 1e-9 || e > 1e-9 ) worstKrayNM = std::max( worstKrayNM, d );
 			}
@@ -329,7 +335,16 @@ static void RunRow( const Config& cfg, const Fixture& fx, int draws, unsigned in
 		std::string( "gate 4a (integral Pdf == emission probability): " ) + label );
 	Check( tvdPdf <= std::max( 3.0 * pdfFloor, 0.015 ), std::string( "gate 4b (Pdf shape vs RandomlySelect histogram): " ) + label );
 	Check( worstKrayNM <= 1e-9, std::string( "gate 5 (EvaluateKrayNM reproduces krayNM): " ) + label );
+}
 
+static void RunRow( const Config& cfg, const Fixture& fx, int draws, unsigned int seed )
+{
+	UniformColorPainter* rd = new UniformColorPainter( cfg.rd );  rd->addref();
+	UniformScalarPainter* tau = new UniformScalarPainter( cfg.tau );  tau->addref();
+	UniformScalarPainter* nt  = new UniformScalarPainter( cfg.ior );  nt->addref();
+	UniformScalarPainter* sc  = new UniformScalarPainter( cfg.scat ); sc->addref();
+	PolishedMaterial* mat = new PolishedMaterial( *rd, *tau, *nt, *sc, cfg.hg );  mat->addref();
+	RunRowMaterial( *mat, cfg.name, fx, draws, seed );
 	safe_release( mat );
 	safe_release( sc );
 	safe_release( nt );
@@ -475,6 +490,60 @@ static void RunBuildingBlocks()
 	safe_release( mat ); safe_release( sc ); safe_release( nt ); safe_release( tau ); safe_release( rd );
 }
 
+// ====================================================================
+// Gate 6: sibling audit.
+// ====================================================================
+static void RunSiblingAudit( unsigned int& seed )
+{
+	std::cout << "-- gate 6 (sibling audit) --" << std::endl;
+	{
+		UniformColorPainter* white = new UniformColorPainter( RISEPel( 1, 1, 1 ) );  white->addref();
+		const double roughs[] = { 0.3, 0.8 };
+		for( double r : roughs ) {
+			UniformScalarPainter* rough = new UniformScalarPainter( r );  rough->addref();
+			SheenMaterial* sheen = new SheenMaterial( *white, *rough );  sheen->addref();
+			char name[64];
+			std::snprintf( name, sizeof(name), "sibling sheen rough%.1f", r );
+			RunRowMaterial( *sheen, name, Fixture{ 0.0, 0.0, false }, 400000, seed++ );
+			RunRowMaterial( *sheen, name, Fixture{ 60.0, 0.0, false }, 400000, seed++ );
+			safe_release( sheen );
+			safe_release( rough );
+		}
+		safe_release( white );
+	}
+
+	// datadriven_material: a synthetic constant table (value 0.4/pi on
+	// both hemispheres of the view/light pair), so its BSDF integrates to
+	// exactly 0.4 -- while it has no SPF, i.e. the sampled function is 0.
+	// KNOWN-DEFECT PIN (DL-325): PT terminates at it (direct light only),
+	// BDPT renders it black, VCM prices indirect light into it.
+	{
+		char path[256];
+		std::snprintf( path, sizeof(path), "/tmp/dl285_const04_%d.bdf", (int)::getpid() );
+		{
+			std::ofstream f( path, std::ios::binary );
+			const int hdr[4] = { 0xBDF, 1, 1, 2 };
+			f.write( reinterpret_cast<const char*>( hdr ), sizeof( hdr ) );
+			const double v = 0.4 / PI;
+			const double rec[21] = { PI / 2,
+				0.0, PI / 4, v, v, v,   0.0, PI / 4, 0, 0, 0,
+				PI / 4, PI / 2, v, v, v,   PI / 4, PI / 2, 0, 0, 0 };
+			f.write( reinterpret_cast<const char*>( rec ), sizeof( rec ) );
+		}
+		DataDrivenMaterial* dd = new DataDrivenMaterial( path );  dd->addref();
+		const RayIntersectionGeometric ri = MakeRI( Fixture{ 30.0, 0.0, false } );
+		double B = 0;
+		SphereQuadrature( Vector3( 0, 0, 1 ), 600, 256, [&]( const Vector3& w, double dOm ) {
+			B += dd->GetBSDF()->value( w, ri )[0] * std::fabs( w.z ) * dOm;
+		} );
+		std::cout << "  datadriven_material: BSDF albedo " << B << ", SPF " << ( dd->GetSPF() ? "present" : "ABSENT (sampled function == 0)" ) << std::endl;
+		Check( std::fabs( B - 0.4 ) < 0.01, "gate 6 (DL-325 pin): datadriven BSDF integrates to its table's 0.4" );
+		Check( dd->GetSPF() == 0, "gate 6 (DL-325 pin): datadriven_material has no SPF -- the known defect; closing DL-325 flips this" );
+		safe_release( dd );
+		std::remove( path );
+	}
+}
+
 int main( int argc, char** argv )
 {
 	bool skipHG = false;
@@ -512,6 +581,8 @@ int main( int argc, char** argv )
 	RunRow( cfgs[0], Fixture{ 45.0, 15.0, false }, 400000, seed++ );
 	RunRow( cfgs[0], Fixture{ 30.0, 0.0,  true  }, 400000, seed++ );
 	RunRow( cfgs[1], Fixture{ 60.0, 0.0,  true  }, 400000, seed++ );
+
+	RunSiblingAudit( seed );
 
 	std::cout << "-- gate 3 (reciprocity) --" << std::endl;
 	for( const Config& c : cfgs ) {
