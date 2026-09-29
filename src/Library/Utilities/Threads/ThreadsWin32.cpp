@@ -21,6 +21,7 @@
 
 #define WIN32_LEAN_AND_MEAN		// Exclude rarely-used stuff from Windows headers
 #include <windows.h>
+#include <cstdint>
 
 using namespace RISE;
 
@@ -66,7 +67,11 @@ void Threading::riseSetThreadLowPriority( RISETHREADID threadid )
 
 unsigned int Threading::riseCreateThread( THREAD_FUNC pFunc, void* pParam, unsigned int initial_stack_size, void* thread_attributes, RISETHREADID* threadid )
 {
-	HANDLE hThread = CreateThread( 0, initial_stack_size, (LPTHREAD_START_ROUTINE)pFunc, pParam, static_cast<DWORD>(reinterpret_cast<uintptr_t>(thread_attributes)), 0 );
+	// DL-315: a requested size is a RESERVATION (committed on touch), so
+	// an 8 MB render-worker stack does not commit 8 MB up front.
+	const DWORD createFlags = static_cast<DWORD>(reinterpret_cast<uintptr_t>(thread_attributes)) |
+		( initial_stack_size ? STACK_SIZE_PARAM_IS_A_RESERVATION : 0 );
+	HANDLE hThread = CreateThread( 0, initial_stack_size, (LPTHREAD_START_ROUTINE)pFunc, pParam, createFlags, 0 );
 
 	if( threadid ) {
 		*threadid = (RISETHREADID)hThread;
@@ -88,7 +93,11 @@ unsigned int Threading::riseCreateThread( THREAD_FUNC pFunc, void* pParam, unsig
 
 unsigned int Threading::riseCreateLowPriorityThread( THREAD_FUNC pFunc, void* pParam, unsigned int initial_stack_size, void* thread_attributes, RISETHREADID* threadid )
 {
-	HANDLE hThread = CreateThread( 0, initial_stack_size, (LPTHREAD_START_ROUTINE)pFunc, pParam, static_cast<DWORD>(reinterpret_cast<uintptr_t>(thread_attributes)), 0 );
+	// DL-315: a requested size is a RESERVATION (committed on touch), so
+	// an 8 MB render-worker stack does not commit 8 MB up front.
+	const DWORD createFlags = static_cast<DWORD>(reinterpret_cast<uintptr_t>(thread_attributes)) |
+		( initial_stack_size ? STACK_SIZE_PARAM_IS_A_RESERVATION : 0 );
+	HANDLE hThread = CreateThread( 0, initial_stack_size, (LPTHREAD_START_ROUTINE)pFunc, pParam, createFlags, 0 );
 
 	if( threadid ) {
 		*threadid = (RISETHREADID)hThread;
@@ -100,6 +109,27 @@ unsigned int Threading::riseCreateLowPriorityThread( THREAD_FUNC pFunc, void* pP
 	}
 
 	return 0;
+}
+
+size_t Threading::riseRemainingStackBytes( )
+{
+	// DL-315.  The stack's reservation base (its low bound), looked up
+	// once per thread with VirtualQuery on a local.
+	static thread_local ULONG_PTR tlStackLow = 0;
+	static thread_local bool tlLookedUp = false;
+	volatile char probe = 0;
+	if( !tlLookedUp ) {
+		tlLookedUp = true;
+		MEMORY_BASIC_INFORMATION mbi;
+		if( VirtualQuery( const_cast<char*>( &probe ), &mbi, sizeof( mbi ) ) != 0 ) {
+			tlStackLow = reinterpret_cast<ULONG_PTR>( mbi.AllocationBase );
+		}
+	}
+	if( !tlStackLow ) {
+		return SIZE_MAX;
+	}
+	const ULONG_PTR sp = reinterpret_cast<ULONG_PTR>( &probe );
+	return sp > tlStackLow ? static_cast<size_t>( sp - tlStackLow ) : 0;
 }
 
 unsigned int Threading::riseWaitUntilThreadFinishes( RISETHREADID threadid, void* )

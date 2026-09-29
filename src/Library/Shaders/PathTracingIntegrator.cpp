@@ -1633,7 +1633,7 @@ PathTracingIntegrator::PathTracingIntegrator(
   pSolver( 0 ),
   bSMSEnabled( smsConfig.enabled ),
   stabilityConfig( stabilityCfg ),
-  mMaxPathDepth( 128 ),
+  mMaxPathDepth( kDefaultPathTracingMaxDepth ),
   mIndirectOnly( false ),
   mClayOverride( false ),
   pClayPainter( 0 ),

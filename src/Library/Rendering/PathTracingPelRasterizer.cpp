@@ -45,7 +45,7 @@ PathTracingPelRasterizer::PathTracingPelRasterizer(
   PixelBasedPelRasterizer( pCaster_, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol_ , frameStore),
   pIntegrator( 0 ),
 	  mHasVariantTransportConfig( false ),
-	  mVariantMaxPathDepth( 128 ),
+	  mVariantMaxPathDepth( kDefaultPathTracingMaxDepth ),
 	  mVariantIndirectOnly( false ),
 	  mVariantClayOverride( false ),
 	  mInteractiveDenoiseSuppressed( false ),
@@ -82,7 +82,7 @@ void PathTracingPelRasterizer::OnBeforeDenoise(
 void PathTracingPelRasterizer::SetMaxPathDepth( unsigned int n )
 {
 	mHasVariantTransportConfig = true;
-	mVariantMaxPathDepth = n ? n : 128;
+	mVariantMaxPathDepth = n ? n : kDefaultPathTracingMaxDepth;
 	if( pIntegrator ) {
 		pIntegrator->SetMaxPathDepth( n );
 	}

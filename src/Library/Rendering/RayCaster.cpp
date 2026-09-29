@@ -30,12 +30,72 @@
 #include "../Utilities/MISWeights.h"
 #include "../Utilities/Optics.h"
 #include "../Utilities/ExpressionMemo.h"
+#include "../Utilities/Threads/Threads.h"
 #include "../Interfaces/IObject.h"
 #include "../Interfaces/IGeometry.h"
 #include "../Scene.h"					// concrete Scene for the light-generation read (#2b(a))
 #include "../Objects/CSGObject.h"		// DL-05: the pass-through scan walks CSG operands (un-enumerated)
 
 #define ENABLE_MAX_RECURSION
+
+namespace
+{
+	// DL-315: stack guard for a nested cast.  Every cast recurses in C++
+	// (an SSS continuation nests CastRay -> shader -> integrator -> CastRay;
+	// a legacy shader-op bounce and a medium phase continuation nest too),
+	// so the depth cap alone does not bound the stack: one nested SSS level
+	// measured 13.2 KB at -O3 and 34.5 KB at -O0, a legacy bounce about
+	// 6.2 KB at -O3.  Render workers get 8 MB stacks
+	// (ThreadPool::kWorkerStackBytes); a CALLING thread that also drains
+	// tiles may be smaller (a GUI render thread is a 512 KB std::thread on
+	// macOS).  A cast is refused when less than this much stack remains
+	// below its frame -- the budget for everything the cast runs before
+	// the next nested cast re-checks.  Sized by the DL-315 round-2 review
+	// with a stack-size SWEEP, never one stack size (-O0 library, driver
+	// and workers both at S = 512..640 KB in 16 KB steps, stacks painted
+	// for the high-water mark, a closed room of thick random-walk walls):
+	// the worst excursion below the last allowed cast entry is about 34 KB
+	// at -O0 and riseRemainingStackBytes over-reports by about 12-16 KB
+	// (the guard page), so the smallest safe margin is about 50 KB -- 16 KB
+	// crashed at 6 of the 9 sizes, 32 KB at 1, 48 KB reached the painted
+	// floor.  128 KB is about 2.5x that (3.5x the worst excursion): 64 KB
+	// left at least 35.4 KB and 128 KB at least 94.4 KB at every size, and
+	// every -O0 scene tried at 512 KB survived with it (worst excursions:
+	// PT room 34.2 KB, pt_sss_dragon 36.0, HWSS and PT-spectral rooms 30.6,
+	// BDPT-spectral guiding probe 30.6, legacy hall of mirrors at
+	// max_recursion 200 11.1).  ASan builds were not measured.  See
+	// docs/DL315_RAYCASTER_STACK_AND_RECURSION.md.  A refusal returns no
+	// radiance, exactly like the depth cap, and is COUNTED
+	// (RayCaster::StackGuardRefusals) and logged.
+	const size_t kCastStackMarginBytes = 128u * 1024u;
+	std::atomic<unsigned long long> sCastStackRefusals( 0 );
+
+	//! True when this thread cannot afford another nested cast.  Logs the
+	//! 1st, 2nd, 4th, 8th, ... refusal so a pathological scene cannot
+	//! flood the log.  The count is PROCESS-WIDE and never reset, so in a
+	//! long-lived process (the GUI) a later render whose refusals fall
+	//! between two powers of two logs nothing; StackGuardRefusals() still
+	//! counts every one.
+	inline bool CastStackExhausted()
+	{
+		const size_t remaining = RISE::Threading::riseRemainingStackBytes();
+		if( remaining >= kCastStackMarginBytes ) {
+			return false;
+		}
+		const unsigned long long n = sCastStackRefusals.fetch_add( 1, std::memory_order_relaxed ) + 1;
+		if( ( n & ( n - 1 ) ) == 0 ) {
+			RISE::GlobalLog()->PrintEx( RISE::eLog_Warning,
+				"RayCaster:: refused a nested cast with only %lu bytes of stack left (margin %lu); %llu refusal(s) so far.  That path is truncated (no radiance); render from a thread with a larger stack.",
+				static_cast<unsigned long>( remaining ), static_cast<unsigned long>( kCastStackMarginBytes ), n );
+		}
+		return true;
+	}
+}
+
+unsigned long long RISE::Implementation::RayCaster::StackGuardRefusals()
+{
+	return sCastStackRefusals.load( std::memory_order_relaxed );
+}
 
 //#define ENABLE_TERMINATION_MESSAGES
 
@@ -867,11 +927,11 @@ bool RayCaster::CastRay(
 			const RAY_STATE& rs,								///< [in] The ray state
 			Scalar* distance,									///< [in] If there was a hit, how far?
 			const IRadianceMap* pRadianceMap,					///< [in] Radiance map to use in case there is no hit
-			const IORStack& ior_stack							///< [in/out] Index of refraction stack
+			const IORStack& ior_stack							///< [in] Index of refraction stack (DL-315: never modified; the hit is shaded with a copy)
 			) const
 {
 #ifdef ENABLE_MAX_RECURSION
-	if( rs.depth > nMaxRecursions )
+	if( rs.depth > MaxRecursions( rc ) || CastStackExhausted() )
 	{
 #ifdef ENABLE_TERMINATION_MESSAGES
 		GlobalLog()->PrintEasyInfo( "FORCED RECURSION TERMINATION" );
@@ -1261,7 +1321,7 @@ bool RayCaster::CastRay(
 			RISEPel Li( 0, 0, 0 );
 			Scalar phasePdf = 0;
 			Vector3 wi( 0, 0, 0 );
-			if( pPhase && rs.depth < nMaxRecursions &&
+			if( pPhase && rs.depth < MaxRecursions( rc ) &&
 				rs.volumeBounces < nMaxVolumeBounces )
 			{
 				// Sample the continuation direction — optionally guided
@@ -1548,8 +1608,20 @@ bool RayCaster::CastRay(
 			ri.pModifier->Modify( ri.geometric );
 		}
 
-		// Set the current object on the IOR stack
-		ior_stack.SetCurrentObject( ri.pObject );
+		// DL-315: the hit's object is the current object of the stack the
+		// SHADER sees -- a copy.  This used to write through the caller's
+		// `const IORStack&` (then a `mutable` field), so after PT's SSS
+		// continuation hit an enclosure, the caller's own vertex read the
+		// enclosure as its current object, `containsCurrent()` went true,
+		// and SubSurfaceScatteringSPF::Scatter took its inside/absorb
+		// branch -- an F0-sized loss.  The same leak reached the legacy
+		// shader-op chain: a distribution-tracing / final-gather op re-runs
+		// Scatter per sample on the stack an earlier sample's cast had
+		// rewritten, so a later entry push was keyed on the wrong object.
+		// See
+		// docs/DL315_RAYCASTER_STACK_AND_RECURSION.md.
+		IORStack hitStack( ior_stack );
+		hitStack.SetCurrentObject( ri.pObject );
 
 		// DL-185: hand the shader a copy of `rs` carrying THIS call's own
 		// cast-level RR compensation, so any NEE done while shading this
@@ -1562,7 +1634,7 @@ bool RayCaster::CastRay(
 		rsForShade.castRRCompensation = rrCompensation;
 
 		// Apply shade by calling the appropriate shader
-		SelectShader( ri ).Shade( rc, ri, *this, rsForShade, c, ior_stack );
+		SelectShader( ri ).Shade( rc, ri, *this, rsForShade, c, hitStack );
 
 		// Analog no-scatter survival weight (see RayCasterSurvivalWeight):
 		// reaching this surface without a scatter event is a survival outcome
@@ -1683,11 +1755,11 @@ bool RayCaster::CastRayNM(
 	const Scalar nm,									///< [in] Wavelength to cast
 	Scalar* distance,									///< [in] If there was a hit, how far?
 	const IRadianceMap* pRadianceMap,					///< [in] Radiance map to use in case there is no hit
-	const IORStack& ior_stack							///< [in/out] Index of refraction stack
+	const IORStack& ior_stack							///< [in] Index of refraction stack (DL-315: never modified; the hit is shaded with a copy)
 	) const
 {
 #ifdef ENABLE_MAX_RECURSION
-	if( rs.depth > nMaxRecursions )
+	if( rs.depth > MaxRecursions( rc ) || CastStackExhausted() )
 	{
 #ifdef ENABLE_TERMINATION_MESSAGES
 		GlobalLog()->PrintEasyInfo( "FORCED RECURSION TERMINATION" );
@@ -1967,7 +2039,7 @@ bool RayCaster::CastRayNM(
 			Scalar Li = 0;
 			Scalar phasePdf = 0;
 			Vector3 wi( 0, 0, 0 );
-			if( pPhase && rs.depth < nMaxRecursions &&
+			if( pPhase && rs.depth < MaxRecursions( rc ) &&
 				rs.volumeBounces < nMaxVolumeBounces )
 			{
 				Scalar guidingMISWeight = 1.0;
@@ -2174,15 +2246,16 @@ bool RayCaster::CastRayNM(
 			ri.pModifier->Modify( ri.geometric );
 		}
 
-		// Set the current object on the IOR stack
-		ior_stack.SetCurrentObject( ri.pObject );
+		// DL-315: shade with a copy -- see the RGB CastRay's identical site.
+		IORStack hitStack( ior_stack );
+		hitStack.SetCurrentObject( ri.pObject );
 
 		// DL-185 -- see the RGB CastRay's identical call site above.
 		RAY_STATE rsForShade( rs );
 		rsForShade.castRRCompensation = rrCompensation;
 
 		// Apply shade by calling the appropriate shader
-		c = SelectShader( ri ).ShadeNM( rc, ri, *this, rsForShade, nm, ior_stack );
+		c = SelectShader( ri ).ShadeNM( rc, ri, *this, rsForShade, nm, hitStack );
 
 		// Analog no-scatter survival: reaching this surface without a scatter
 		// event is a survival outcome whose probability already carries
@@ -2988,7 +3061,7 @@ bool RayCaster::CastRayHWSS(
 		c[i] = 0;
 
 #ifdef ENABLE_MAX_RECURSION
-	if( rs.depth > nMaxRecursions )
+	if( rs.depth > MaxRecursions( rc ) || CastStackExhausted() )
 		return false;
 #endif
 
@@ -3072,8 +3145,9 @@ bool RayCaster::CastRayHWSS(
 			ri.pModifier->Modify( ri.geometric );
 		}
 
-		// IOR stack (shared geometry)
-		ior_stack.SetCurrentObject( ri.pObject );
+		// DL-315: shade with a copy -- see the RGB CastRay's identical site.
+		IORStack hitStack( ior_stack );
+		hitStack.SetCurrentObject( ri.pObject );
 
 		// DL-185 -- see RGB CastRay's identical call site above.  (The
 		// per-wavelength medium fallback above already delegates to
@@ -3084,7 +3158,7 @@ bool RayCaster::CastRayHWSS(
 		// Dispatch to ShadeHWSS — this routes through
 		// PerformOperationHWSS, enabling hero-wavelength
 		// directional sharing in PathTracingShaderOp.
-		SelectShader( ri ).ShadeHWSS( rc, ri, *this, rsForShade, c, swl, ior_stack );
+		SelectShader( ri ).ShadeHWSS( rc, ri, *this, rsForShade, c, swl, hitStack );
 
 		if( distance ) {
 			*distance = ri.geometric.range;

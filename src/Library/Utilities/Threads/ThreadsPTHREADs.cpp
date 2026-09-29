@@ -32,6 +32,8 @@
 	#include <sys/resource.h>	// setpriority / PRIO_PROCESS
 #endif
 #include <unistd.h>
+#include <cstdint>
+#include <limits.h>
 
 using namespace RISE;
 
@@ -156,6 +158,33 @@ namespace RISE {
 }
 #endif
 
+#ifndef NO_PTHREAD_SUPPORT
+namespace
+{
+	//! DL-315: honour riseCreateThread's `initial_stack_size` (0 = the
+	//! platform default).  Rounded up to the page size and to
+	//! PTHREAD_STACK_MIN, as pthread_attr_setstacksize requires.
+	void ApplyStackSize( pthread_attr_t& attr, const unsigned int bytes )
+	{
+		if( bytes == 0 ) {
+			return;
+		}
+		size_t size = bytes;
+		const long page = sysconf( _SC_PAGESIZE );
+		if( page > 0 ) {
+			const size_t p = static_cast<size_t>( page );
+			size = ( size + p - 1 ) / p * p;
+		}
+		if( size < static_cast<size_t>( PTHREAD_STACK_MIN ) ) {
+			size = static_cast<size_t>( PTHREAD_STACK_MIN );
+		}
+		if( pthread_attr_setstacksize( &attr, size ) != 0 ) {
+			GlobalLog()->PrintEx( eLog_Warning, "riseCreateThread:: could not set a %lu-byte stack; using the platform default", static_cast<unsigned long>( size ) );
+		}
+	}
+}
+#endif
+
 unsigned int Threading::riseCreateThread( THREAD_FUNC pFunc, void* pParam, unsigned int initial_stack_size, void* thread_attributes, RISETHREADID* threadid )
 {
 #ifdef NO_PTHREAD_SUPPORT
@@ -173,7 +202,9 @@ unsigned int Threading::riseCreateThread( THREAD_FUNC pFunc, void* pParam, unsig
 	startData->lowPriority = false;
 
 	pthread_attr_init( &attr );
+	ApplyStackSize( attr, initial_stack_size );
 	pthread_create( &tid, &attr, ThreadStartProc, startData );
+	pthread_attr_destroy( &attr );
 
 	if( threadid ) {
 		*threadid = (RISETHREADID)tid;
@@ -200,7 +231,9 @@ unsigned int Threading::riseCreateLowPriorityThread( THREAD_FUNC pFunc, void* pP
 	startData->lowPriority = true;
 
 	pthread_attr_init( &attr );
+	ApplyStackSize( attr, initial_stack_size );
 	pthread_create( &tid, &attr, ThreadStartProc, startData );
+	pthread_attr_destroy( &attr );
 
 	if( threadid ) {
 		*threadid = (RISETHREADID)tid;
@@ -413,5 +446,42 @@ void Threading::riseSemaphoreRelease(
 #endif
 }
 
-#endif
 
+size_t Threading::riseRemainingStackBytes( )
+{
+#ifdef NO_PTHREAD_SUPPORT
+	return SIZE_MAX;
+#else
+	// DL-315.  The low bound of this thread's stack, looked up once.
+	static thread_local uintptr_t tlStackLow = 0;
+	static thread_local bool tlLookedUp = false;
+	if( !tlLookedUp ) {
+		tlLookedUp = true;
+#if defined( __APPLE__ )
+		const pthread_t self = pthread_self();
+		const uintptr_t high = reinterpret_cast<uintptr_t>( pthread_get_stackaddr_np( self ) );
+		const size_t size = pthread_get_stacksize_np( self );
+		if( high > size ) {
+			tlStackLow = high - size;
+		}
+#elif defined( __linux__ )
+		pthread_attr_t attr;
+		if( pthread_getattr_np( pthread_self(), &attr ) == 0 ) {
+			void* addr = 0;
+			size_t size = 0;
+			if( pthread_attr_getstack( &attr, &addr, &size ) == 0 ) {
+				tlStackLow = reinterpret_cast<uintptr_t>( addr );
+			}
+			pthread_attr_destroy( &attr );
+		}
+#endif
+	}
+	if( !tlStackLow ) {
+		return SIZE_MAX;
+	}
+	const uintptr_t sp = reinterpret_cast<uintptr_t>( __builtin_frame_address( 0 ) );
+	return sp > tlStackLow ? static_cast<size_t>( sp - tlStackLow ) : 0;
+#endif
+}
+
+#endif

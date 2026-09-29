@@ -78,7 +78,7 @@ namespace RISE
 				const Scalar power,
 				const Scalar nm,
 				PhotonMapType& pPhotonMap,
-				const IORStack& ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack								///< [in] Index of refraction stack
 				) const = 0;
 
 			// Tells the tracer to set the photon map specifically for the scene

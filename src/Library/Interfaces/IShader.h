@@ -41,7 +41,7 @@ namespace RISE
 			const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 			const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 			RISEPel& c,									///< [out] IFXPel value at the point
-			const IORStack& ior_stack					///< [in/out] Index of refraction stack
+			const IORStack& ior_stack					///< [in] Index of refraction stack (const: not modified; DL-315)
 			) const = 0;
 
 		//! Tells the shader to apply shade to the given intersection point for the given wavelength
@@ -52,7 +52,7 @@ namespace RISE
 			const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 			const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 			const Scalar nm,							///< [in] Wavelength to shade
-			const IORStack& ior_stack					///< [in/out] Index of refraction stack
+			const IORStack& ior_stack					///< [in] Index of refraction stack (const: not modified; DL-315)
 			) const = 0;
 
 		//! Tells the shader to apply shade for a bundle of HWSS wavelengths.
@@ -69,7 +69,7 @@ namespace RISE
 			const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 			Scalar c[SampledWavelengths::N],				///< [out] Per-wavelength shading results
 			SampledWavelengths& swl,					///< [in/out] Wavelength bundle
-			const IORStack& ior_stack					///< [in/out] Index of refraction stack
+			const IORStack& ior_stack					///< [in] Index of refraction stack (const: not modified; DL-315)
 			) const
 		{
 			for( unsigned int i = 0; i < SampledWavelengths::N; i++ )

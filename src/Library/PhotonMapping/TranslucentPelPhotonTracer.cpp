@@ -56,7 +56,7 @@ void TranslucentPelPhotonTracer::TracePhoton(
 	const RISEPel& power,
 	const bool bFromTranslucent,
 	TranslucentPelPhotonMap& pPhotonMap,
-	const IORStack& ior_stack,								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack,								///< [in] Index of refraction stack (not modified; DL-315)
 	const unsigned int depth								///< [in] Recursion depth (0 = primary photon emitted from the light)
 	) const
 {
@@ -101,8 +101,11 @@ void TranslucentPelPhotonTracer::TracePhoton(
 			ri.geometric.ambientIOR = ( ambIOR > 0.0 ) ? ambIOR : 1.0;
 		}
 
-		// Set the current object on the IOR stack
-		ior_stack.SetCurrentObject( ri.pObject );
+		// DL-315: this hit's current object lives on a COPY; the caller's
+		// stack is `const` and is no longer written through (IORStack's
+		// pCurrentObject used to be `mutable`).
+		IORStack hitStack( ior_stack );
+		hitStack.SetCurrentObject( ri.pObject );
 
 		// Separate incident-flux packets from translucent diffuse-exit
 		// packets, whose SPF weight already includes Beer*(1-scattering).
@@ -112,8 +115,8 @@ void TranslucentPelPhotonTracer::TracePhoton(
 		bool bTranslucentExit = false;
 		if( ri.pMaterial ) {
 			const SpecularInfo info =
-				ri.pMaterial->GetSpecularInfo( ri.geometric, ior_stack );
-			bTranslucentExit = info.valid && info.hasInterior && ior_stack.containsCurrent();
+				ri.pMaterial->GetSpecularInfo( ri.geometric, hitStack );
+			bTranslucentExit = info.valid && info.hasInterior && hitStack.containsCurrent();
 		}
 
 		ISPF* pSPF = ri.pMaterial ? ri.pMaterial->GetSPF() : 0;
@@ -131,7 +134,7 @@ void TranslucentPelPhotonTracer::TracePhoton(
 		// Scaling here too would cancel the non-symmetry and put every
 		// gather/merge that pairs a photon with an eye vertex back where
 		// it was.  See docs/REFRACTIVE_RADIANCE_SCALING.md.
-		pSPF->Scatter( ri.geometric, samplerWrapper, scattered, ior_stack );
+		pSPF->Scatter( ri.geometric, samplerWrapper, scattered, hitStack );
 
 			// DL39: preserve the diffuse exit lobe's Beer-weighted packet,
 			// rather than treating absorption as deposited flux. At ordinary
@@ -152,7 +155,7 @@ void TranslucentPelPhotonTracer::TracePhoton(
 				if( (scat.type==ScatteredRay::eRayTranslucent && bTraceTranslucent) ||
 					(scat.type==ScatteredRay::eRayReflection && bTraceReflections) ||
 					(scat.type==ScatteredRay::eRayRefraction && bTraceRefractions) ) {
-					TracePhoton( scat.ray, power*scat.kray*PathVertexEval::ImportanceShadingNormalFactor( ri.geometric.vNormal, ri.geometric.vGeomNormal, -ray.Dir(), scat.ray.Dir() ), scat.type==ScatteredRay::eRayTranslucent, pPhotonMap, scat.ior_stack?*scat.ior_stack:ior_stack, depth+1 );
+					TracePhoton( scat.ray, power*scat.kray*PathVertexEval::ImportanceShadingNormalFactor( ri.geometric.vNormal, ri.geometric.vGeomNormal, -ray.Dir(), scat.ray.Dir() ), scat.type==ScatteredRay::eRayTranslucent, pPhotonMap, scat.ior_stack?*scat.ior_stack:hitStack, depth+1 );
 				} else if( scat.type==ScatteredRay::eRayDiffuse ) {
 					diffuse_deposit = diffuse_deposit + scat.kray;
 				}

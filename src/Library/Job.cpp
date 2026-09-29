@@ -9702,7 +9702,7 @@ bool Job::SetBDPTPelRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, radianceMapConfig.isBackground, 10, *pShader, bShowLuminaires );
+	RISE_API_CreateRayCaster( &pCaster, radianceMapConfig.isBackground, kDefaultPathTracingMaxDepth, *pShader, bShowLuminaires );	// DL-315
 
 	if( !( radianceMapConfig.name == "none" ) ) {
 		IPainter* p = pPntManager->GetItem( radianceMapConfig.name.c_str() );
@@ -9802,7 +9802,7 @@ bool Job::SetBDPTSpectralRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, radianceMapConfig.isBackground, 10, *pShader, bShowLuminaires );
+	RISE_API_CreateRayCaster( &pCaster, radianceMapConfig.isBackground, kDefaultPathTracingMaxDepth, *pShader, bShowLuminaires );	// DL-315
 
 	if( !( radianceMapConfig.name == "none" ) ) {
 		IPainter* p = pPntManager->GetItem( radianceMapConfig.name.c_str() );
@@ -9905,7 +9905,7 @@ bool Job::SetVCMPelRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, radianceMapConfig.isBackground, 10, *pShader, bShowLuminaires );
+	RISE_API_CreateRayCaster( &pCaster, radianceMapConfig.isBackground, kDefaultPathTracingMaxDepth, *pShader, bShowLuminaires );	// DL-315
 
 	if( !( radianceMapConfig.name == "none" ) ) {
 		IPainter* p = pPntManager->GetItem( radianceMapConfig.name.c_str() );
@@ -10027,7 +10027,7 @@ bool Job::SetVCMSpectralRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, radianceMapConfig.isBackground, 10, *pShader, bShowLuminaires );
+	RISE_API_CreateRayCaster( &pCaster, radianceMapConfig.isBackground, kDefaultPathTracingMaxDepth, *pShader, bShowLuminaires );	// DL-315
 
 	if( !( radianceMapConfig.name == "none" ) ) {
 		IPainter* p = pPntManager->GetItem( radianceMapConfig.name.c_str() );
@@ -10156,7 +10156,7 @@ bool Job::SetAutoRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, radianceMapConfig.isBackground, 10, *pShader, bShowLuminaires );
+	RISE_API_CreateRayCaster( &pCaster, radianceMapConfig.isBackground, kDefaultPathTracingMaxDepth, *pShader, bShowLuminaires );	// DL-315
 
 	if( !( radianceMapConfig.name == "none" ) ) {
 		IPainter* p = pPntManager->GetItem( radianceMapConfig.name.c_str() );
@@ -10259,7 +10259,7 @@ bool Job::SetAutoSpectralRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, radianceMapConfig.isBackground, 10, *pShader, bShowLuminaires );
+	RISE_API_CreateRayCaster( &pCaster, radianceMapConfig.isBackground, kDefaultPathTracingMaxDepth, *pShader, bShowLuminaires );	// DL-315
 
 	if( !( radianceMapConfig.name == "none" ) ) {
 		IPainter* p = pPntManager->GetItem( radianceMapConfig.name.c_str() );
@@ -10354,7 +10354,7 @@ bool Job::SetPathTracingPelRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, radianceMapConfig.isBackground, 10, *pShader, bShowLuminaires );
+	RISE_API_CreateRayCaster( &pCaster, radianceMapConfig.isBackground, kDefaultPathTracingMaxDepth, *pShader, bShowLuminaires );	// DL-315
 
 	if( !( radianceMapConfig.name == "none" ) ) {
 		IPainter* p = pPntManager->GetItem( radianceMapConfig.name.c_str() );
@@ -10463,7 +10463,7 @@ bool Job::SetPathTracingSpectralRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, radianceMapConfig.isBackground, 10, *pShader, bShowLuminaires );
+	RISE_API_CreateRayCaster( &pCaster, radianceMapConfig.isBackground, kDefaultPathTracingMaxDepth, *pShader, bShowLuminaires );	// DL-315
 
 	if( !( radianceMapConfig.name == "none" ) ) {
 		IPainter* p = pPntManager->GetItem( radianceMapConfig.name.c_str() );
@@ -10561,7 +10561,7 @@ bool Job::SetMLTRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, false, 10, *pShader, bShowLuminaires );
+	RISE_API_CreateRayCaster( &pCaster, false, kDefaultPathTracingMaxDepth, *pShader, bShowLuminaires );	// DL-315
 
 	if( stabilityConfig.useLightBVH ) {
 		pCaster->SetUseLightBVH( true );
@@ -10640,7 +10640,7 @@ bool Job::SetMLTSpectralRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, false, 10, *pShader, bShowLuminaires );
+	RISE_API_CreateRayCaster( &pCaster, false, kDefaultPathTracingMaxDepth, *pShader, bShowLuminaires );	// DL-315
 
 	if( stabilityConfig.useLightBVH ) {
 		pCaster->SetUseLightBVH( true );
