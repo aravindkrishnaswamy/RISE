@@ -288,6 +288,43 @@ static std::string RastVCM( unsigned int spp )
 	return ss.str();
 }
 
+//! DL-295: the PT rasterizers with `sms_enabled` set either way.  The
+//! SMS section compares the two on scenes that contain NO SMS caster
+//! (no material whose GetSpecularInfo reports isSpecular), where SMS can
+//! contribute nothing and so must change nothing.  @a envPainter, when
+//! true, prepends a uniform L = 1 `pnt_env` painter and binds it as the
+//! global radiance map (the env-box rows).
+static std::string EnvPainterChunk()
+{
+	return "uniformcolor_painter\n{\n\tname pnt_env\n\tcolor 1 1 1\n\tcolorspace Rec709RGB_Linear\n}\n\n";
+}
+
+static std::string RastPTSMS( unsigned int spp, bool sms, bool envPainter = false )
+{
+	std::ostringstream ss;
+	if( envPainter ) ss << EnvPainterChunk();
+	ss << "pathtracing_pel_rasterizer\n{\n\tsamples " << spp * SppScale()
+	   << "\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n"
+	   << "\tsms_enabled " << ( sms ? "TRUE" : "FALSE" ) << "\n";
+	if( envPainter ) ss << "\tradiance_map pnt_env\n\tradiance_scale 1.0\n";
+	ss << "}\n\n" << kOutputChunk;
+	return ss.str();
+}
+
+static std::string RastPTSpectralSMS( unsigned int spp, bool hwss, bool sms, bool envPainter = false )
+{
+	std::ostringstream ss;
+	if( envPainter ) ss << EnvPainterChunk();
+	ss << "pathtracing_spectral_rasterizer\n{\n\tsamples " << spp * SppScale()
+	   << "\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n"
+	   << "\tnmbegin 380\n\tnmend 720\n\tnum_wavelengths 8\n\tspectral_samples 1\n"
+	   << "\thwss " << ( hwss ? "true" : "false" ) << "\n"
+	   << "\tsms_enabled " << ( sms ? "TRUE" : "FALSE" ) << "\n";
+	if( envPainter ) ss << "\tradiance_map pnt_env\n\tradiance_scale 1.0\n";
+	ss << "}\n\n" << kOutputChunk;
+	return ss.str();
+}
+
 static std::string Assemble( const std::string& rasterizer, const std::string& body )
 {
 	// The standard_shader is ignored by the modern rasterizers (they drive
@@ -334,21 +371,36 @@ enum LightKind { kOmni, kSpot, kDirectional, kArea };
 //! (WEAVE_GAP_FILTER=dl294 prints it), not a property of the gap.  Every
 //! kWide row is a RATIO against the same framing's no-sheet render, so it
 //! needs no absolute closed form.
-enum CamKind { kTight, kWide };
+//! kLookUp (DL-295): the camera BELOW the sheet looking straight UP at
+//! the area luminaire through it (fov 4 deg: every pixel sees the 0.5 x
+//! 0.5 emitter 3 units away), so the ONLY vertex on the path is the
+//! sheet itself -- a gap draw at depth 0 with no SMS anchor anywhere.
+enum CamKind { kTight, kWide, kLookUp };
 
 //! @a compositeSheet: the sheet is a `composite_material` of two such
 //! weaves (zero thickness, no extinction), whose only straight exit is
 //! gap -> gap, so the closed form becomes g^2.
-static std::string ReceiverScene( LightKind light, bool withSheet, double gap, CamKind cam = kTight, bool compositeSheet = false )
+//! @a sheetMaterialChunks / @a recvMaterialChunks (DL-295's SMS
+//! section, empty = the default): verbatim material chunks that define
+//! `mat_sheet` / `mat_recv` in place of the built-in ones.
+static std::string ReceiverScene( LightKind light, bool withSheet, double gap, CamKind cam = kTight, bool compositeSheet = false,
+	const std::string& sheetMaterialChunks = std::string(), const std::string& recvMaterialChunks = std::string() )
 {
-	const bool wide = ( cam == kWide );
+	const bool wide = ( cam != kTight );
+	const char* camChunk = ( cam == kLookUp )
+		? "pinhole_camera\n{\n\tlocation 0 1 0\n\tlookat 0 4 0\n\tup 0 0 1\n\tfov 4.0\n}\n\n"
+		: ( wide
+			? "pinhole_camera\n{\n\tlocation 0 1 1.2\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 10.0\n}\n\n"
+			: "pinhole_camera\n{\n\tlocation 0 1 1.2\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 2.0\n}\n\n" );
 	std::ostringstream ss;
 	ss <<
 		"film\n{\n\twidth 16\n\theight 16\n}\n\n"
-		"pinhole_camera\n{\n\tlocation 0 1 1.2\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov " << ( wide ? "10.0" : "2.0" ) << "\n}\n\n"
+		<< camChunk <<
 		"uniformcolor_painter\n{\n\tname pnt_recv\n\tcolor " << kRho << " " << kRho << " " << kRho
 			<< "\n\tcolorspace Rec709RGB_Linear\n}\n\n"
-		"lambertian_material\n{\n\tname mat_recv\n\treflectance pnt_recv\n}\n\n"
+		<< ( recvMaterialChunks.empty()
+			? std::string( "lambertian_material\n{\n\tname mat_recv\n\treflectance pnt_recv\n}\n\n" )
+			: recvMaterialChunks ) <<
 		"clippedplane_geometry\n{\n\tname geo_recv\n"
 		<< ( wide
 			? "\tpta -1 0 1\n\tptb 1 0 1\n\tptc 1 0 -1\n\tptd -1 0 -1\n"
@@ -358,7 +410,7 @@ static std::string ReceiverScene( LightKind light, bool withSheet, double gap, C
 
 	if( withSheet ) {
 		ss
-			<< ( compositeSheet
+			<< ( !sheetMaterialChunks.empty() ? sheetMaterialChunks : compositeSheet
 				? std::string( "weave_material\n{\n\tname mat_layer\n\tfabric custom\n\ttransmission thin\n\tgap " ) + std::to_string( gap ) + "\n}\n\n"
 				  "composite_material\n{\n\tname mat_sheet\n\ttop mat_layer\n\tbottom mat_layer\n}\n\n"
 				: std::string( "weave_material\n{\n\tname mat_sheet\n\tfabric custom\n\ttransmission thin\n\tgap " ) + std::to_string( gap ) + "\n}\n\n" ) <<
@@ -717,6 +769,154 @@ static void TestAreaPartitionGuard()
 }
 
 //////////////////////////////////////////////////////////////////////
+// sms: DL-295.  PT with `sms_enabled TRUE` used to drop EVERY emitter
+// hit reached through a delta lobe of a material SMS does not treat as
+// a specular caster -- PART 3 set `considerEmission = false` after any
+// delta scatter, and PART 1's `smsSuppressEmission` latch suppressed
+// the emitter after any delta scatter that followed a diffuse vertex,
+// both on the premise that SMS covers that specular chain.  SMS builds
+// and validates its chains from `IMaterial::GetSpecularInfo().isSpecular`
+// alone (ManifoldSolver's seed trace stops at, and its chain-visibility
+// test is blocked by, any hit that reports false), and a weave -- like a
+// composite, a fabric or coated wrapper over one, a luminaire wrapper --
+// reports false, so a chain through a weave gap has NO estimator under
+// SMS.  Every scene here contains no SMS caster at all, so SMS on must
+// equal SMS off; the closed forms are DL-05's own (g * L0, g^2 * L0).
+//
+// HWSS rows are SMS-on vs SMS-off PARITY, not closed forms: PT-HWSS
+// prices a Scatter()-sampled gap continuation with the continuum BSDF
+// on its companion lanes (DL-329, open), which moves SMS on and off
+// identically.
+//////////////////////////////////////////////////////////////////////
+
+//! A closed box of BLACK-yarn gapped weave around the kWide receiver and
+//! camera, lit by the uniform L = 1 environment only.  The yarn is black
+//! (`warp/weft_color` 0, `warp/weft_ior` 1 -- no volume albedo, no fibre
+//! Fresnel), so every direction the receiver sees is the gap's `g` times
+//! the environment and nothing is reflected back: L = g * rho * L_env
+//! exactly, L0 (no box) = rho * L_env.  PT reaches it ONLY by a
+//! BSDF-sampled continuation through the gap and the ENV-ESCAPE branch
+//! (the env NEE arm keeps its binary shadow, DL-05 section 2).
+static std::string PlaneChunk( const char* name, const char* pts );	// defined with the design-doc topology below
+
+static std::string EnvBoxScene( bool withBox, double gap )
+{
+	std::ostringstream ss;
+	ss <<
+		"film\n{\n\twidth 16\n\theight 16\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 1 1.2\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 10.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_recv\n\tcolor " << kRho << " " << kRho << " " << kRho
+			<< "\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+		"lambertian_material\n{\n\tname mat_recv\n\treflectance pnt_recv\n}\n\n"
+		"clippedplane_geometry\n{\n\tname geo_recv\n"
+			"\tpta -1 0 1\n\tptb 1 0 1\n\tptc 1 0 -1\n\tptd -1 0 -1\n\tdoublesided TRUE\n}\n\n"
+		"standard_object\n{\n\tname obj_recv\n\tgeometry geo_recv\n\tmaterial mat_recv\n}\n\n";
+	if( withBox ) {
+		ss <<
+			"uniformcolor_painter\n{\n\tname pnt_black\n\tcolor 0 0 0\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+			"weave_material\n{\n\tname mat_box\n\tfabric custom\n\ttransmission thin\n\tgap " << gap << "\n"
+			"\twarp_color pnt_black\n\tweft_color pnt_black\n\twarp_ior 1.0\n\tweft_ior 1.0\n}\n\n"
+			<< PlaneChunk( "bx_top", "\tpta -3 3 3\n\tptb 3 3 3\n\tptc 3 3 -3\n\tptd -3 3 -3\n" )
+			<< PlaneChunk( "bx_bot", "\tpta -3 -1 3\n\tptb 3 -1 3\n\tptc 3 -1 -3\n\tptd -3 -1 -3\n" )
+			<< PlaneChunk( "bx_px", "\tpta 3 -1 3\n\tptb 3 3 3\n\tptc 3 3 -3\n\tptd 3 -1 -3\n" )
+			<< PlaneChunk( "bx_nx", "\tpta -3 -1 3\n\tptb -3 3 3\n\tptc -3 3 -3\n\tptd -3 -1 -3\n" )
+			<< PlaneChunk( "bx_pz", "\tpta -3 -1 3\n\tptb 3 -1 3\n\tptc 3 3 3\n\tptd -3 3 3\n" )
+			<< PlaneChunk( "bx_nz", "\tpta -3 -1 -3\n\tptb 3 -1 -3\n\tptc 3 3 -3\n\tptd -3 3 -3\n" );
+	}
+	return ss.str();
+}
+
+//! One ratio row: L(scene) / L(reference scene) against @a expected,
+//! gated at @a tol (relative) when tol >= 0.
+static void RatioRow( const char* label, const std::string& rast, const std::string& refScene,
+	const std::string& scene, double expected, double tol )
+{
+	const double L0 = Render( Assemble( rast, refScene ), "sms_l0" );
+	const double L  = Render( Assemble( rast, scene ), "sms_l" );
+	char buf[320];
+	std::snprintf( buf, sizeof(buf), "sms %s: L/L0 = %.5f  (closed form %.5f, rel err %+.3f%%)  [L0 %.6f]",
+		label, L / L0, expected, 100.0 * ( L / L0 / expected - 1.0 ), L0 );
+	std::cout << "  " << buf << ( tol < 0 ? "   [printed, not gated]" : "" ) << std::endl;
+	if( tol >= 0 ) {
+		Check( L0 > 0 && L >= 0 && std::fabs( L / L0 / expected - 1.0 ) <= tol, buf );
+	}
+}
+
+//! SMS-on vs SMS-off on the SAME scene (no SMS caster in it): must agree.
+static void ParityRow( const char* label, const std::string& rastOn, const std::string& rastOff,
+	const std::string& scene, double tol )
+{
+	const double Lon  = Render( Assemble( rastOn, scene ), "sms_on" );
+	const double Loff = Render( Assemble( rastOff, scene ), "sms_off" );
+	char buf[320];
+	std::snprintf( buf, sizeof(buf), "sms parity %s: SMS on %.6f / off %.6f = %.5f (rel %+.3f%%)",
+		label, Lon, Loff, Lon / Loff, 100.0 * ( Lon / Loff - 1.0 ) );
+	std::cout << "  " << buf << ( tol < 0 ? "   [printed, not gated]" : "" ) << std::endl;
+	if( tol >= 0 ) {
+		Check( Loff > 0 && Lon >= 0 && std::fabs( Lon / Loff - 1.0 ) <= tol, buf );
+	}
+}
+
+//! Sibling materials for the parity rows.
+//!  * composite(dielectric over gapped weave): the CompositeSPF walker's
+//!    delta-TAGGED exits, which leave in a REFRACTED (not incoming)
+//!    direction -- delta, not a pass-through, and not an SMS caster.
+//!  * a perfect refractor at ior 1: a non-bending delta that IS an SMS
+//!    caster (GetSpecularInfo isSpecular), so SMS's premise holds and the
+//!    suppression is correct there -- the control for the rule.
+static std::string CompositeDielectricOverWeaveSheet()
+{
+	return
+		"dielectric_material\n{\n\tname mat_glass\n\ttau 1.0\n\tior 1.5\n\tscattering 1000000\n}\n\n"
+		"weave_material\n{\n\tname mat_layer\n\tfabric custom\n\ttransmission thin\n\tgap 0.3\n}\n\n"
+		"composite_material\n{\n\tname mat_sheet\n\ttop mat_glass\n\tbottom mat_layer\n}\n\n";
+}
+
+static std::string PerfectRefractorIOR1Sheet()
+{
+	return
+		"uniformcolor_painter\n{\n\tname pnt_refr\n\tcolor 1 1 1\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+		"perfectrefractor_material\n{\n\tname mat_sheet\n\trefractance pnt_refr\n\tior 1.0\n}\n\n";
+}
+
+static void TestSMSEmissionThroughGap()
+{
+	std::cout << "=== sms: PT with sms_enabled, emission reached through a weave gap (DL-295) ===" << std::endl;
+	const double g = 0.3;
+
+	// Closed forms, SMS on.  Pre-fix: area / lookup / composite read 0.
+	RatioRow( "area PT RGB (g*L0)", RastPTSMS( 1024, true ),
+		ReceiverScene( kArea, false, 0.0, kWide ), ReceiverScene( kArea, true, g, kWide ), g, 0.05 );
+	RatioRow( "area PT spectral hwss=false (g*L0)", RastPTSpectralSMS( 512, false, true ),
+		ReceiverScene( kArea, false, 0.0, kWide ), ReceiverScene( kArea, true, g, kWide ), g, 0.05 );
+	RatioRow( "lookup PT RGB (camera -> gap -> luminaire, g*L0)", RastPTSMS( 256, true ),
+		ReceiverScene( kArea, false, 0.0, kLookUp ), ReceiverScene( kArea, true, g, kLookUp ), g, 0.03 );
+	RatioRow( "area composite-of-two-weaves PT RGB (g^2*L0)", RastPTSMS( 1024, true ),
+		ReceiverScene( kArea, false, 0.0, kWide ), ReceiverScene( kArea, true, g, kWide, true ), g * g, 0.06 );
+	RatioRow( "env box PT RGB (g*L0, env escape)", RastPTSMS( 512, true, true ),
+		EnvBoxScene( false, 0.0 ), EnvBoxScene( true, g ), g, 0.03 );
+
+	// HWSS: parity (DL-329 moves on and off identically).
+	ParityRow( "area PT HWSS", RastPTSpectralSMS( 1024, true, true ), RastPTSpectralSMS( 1024, true, false ),
+		ReceiverScene( kArea, true, g, kWide ), 0.08 );
+	ParityRow( "lookup PT HWSS", RastPTSpectralSMS( 256, true, true ), RastPTSpectralSMS( 256, true, false ),
+		ReceiverScene( kArea, true, g, kLookUp ), 0.05 );
+	ParityRow( "env box PT HWSS", RastPTSpectralSMS( 512, true, true, true ), RastPTSpectralSMS( 512, true, false, true ),
+		EnvBoxScene( true, g ), 0.05 );
+
+	// Siblings.
+	ParityRow( "area composite(dielectric over weave) PT RGB", RastPTSMS( 1024, true ), RastPTSMS( 1024, false ),
+		ReceiverScene( kArea, true, g, kWide, false, CompositeDielectricOverWeaveSheet() ), 0.06 );
+	ParityRow( "lookup composite(dielectric over weave) PT RGB", RastPTSMS( 256, true ), RastPTSMS( 256, false ),
+		ReceiverScene( kArea, true, g, kLookUp, false, CompositeDielectricOverWeaveSheet() ), 0.03 );
+	// Control: an SMS CASTER (the suppression premise holds).  Printed:
+	// whether SMS's own estimator reaches this chain is SMS's business,
+	// not this row's -- the fix must leave it exactly as it was.
+	ParityRow( "area perfectrefractor ior 1 PT RGB (SMS caster -- control, printed)", RastPTSMS( 1024, true ), RastPTSMS( 1024, false ),
+		ReceiverScene( kArea, true, g, kWide, false, PerfectRefractorIOR1Sheet() ), -1.0 );
+}
+
+//////////////////////////////////////////////////////////////////////
 // P2-2 (external review of DL-05): the transparent-shadow walk
 // (`RayCaster::WalkShadowSegment`, shared by the opt-in
 // `transparent_shadows` path and DL-05's new pass-through walk) now
@@ -995,6 +1195,7 @@ int main( int argc, char** argv )
 	if( !filter || std::strstr( filter, "composite" ) )   TestClosedFormComposite();
 	if( !filter || std::strstr( filter, "directional" ) ) TestClosedFormDirectional();
 	if( !filter || std::strstr( filter, "area" ) )        TestAreaPartitionGuard();
+	if( !filter || std::strstr( filter, "sms" ) )         TestSMSEmissionThroughGap();
 	if( !filter || std::strstr( filter, "castsshadows" ) ) TestCastsShadowsFalseStepOver();
 	if( !filter || std::strstr( filter, "layers" ) )      TestTwoLayerLightOutside();
 
