@@ -1228,3 +1228,9 @@ See [ALPHA_COVERAGE.md](../docs/ALPHA_COVERAGE.md) for the estimator definitions
   nonzero raster coordinates at selected endpoints, with paired proposal,
   weight and final-only draw controls; `BSSRDFEntrySignalsTest` preserves the
   established downstream entry-signal contract.
+
+- `AlphaEndpointContextTest`: sampled-emitter/NEE physical scene and world
+  context, optional receiver raster, real scalar world-position renders in
+  RGB/NM/HWSS, and SMS seed-to-solved-point effective material coverage.
+  `SignalEmitterRecordTest` verifies the original emitted-radiance records;
+  `AlphaPhotonEmissionTest` includes all five emission-loop context families.

@@ -292,3 +292,30 @@ expression time retains its documented fixed-zero behavior.
 `AlphaSubsurfaceContextTest` checks the real `1-interior(2)` expression against
 an enclosing-sphere closed form and nonzero pixel coordinates in RGB/NM for
 both kernels; `BSSRDFEntrySignalsTest` checks existing downstream signal payloads.
+
+All five manual emitter coverage sites (light-root sampling, RGB/NM mesh NEE,
+RGB/NM photon emission) use `LightSampler::AcceptEmitterAlpha`. Its alpha-only
+copy stamps the actual published sampled point, scene manager and luminary
+identity regardless of the optional signal-payload probe gate. NEE additionally
+forwards the receiver's raster coordinates. Light roots and photons have no
+camera pixel, so their raster context remains the existing null state. This
+changes only coverage evaluation: emitted-radiance records, photon proposals,
+attempt normalization and reservoir accounting are preserved. A single-sided
+clipped-plane sample includes its geometry's documented normal offset; tests
+obtain their expected point from `UniformRandomPoint` rather than introducing
+a larger comparison tolerance. Optional local signal payloads retain the
+existing `ProbeEmitterSurface` acceptance/refusal policy.
+
+SMS final coverage re-probes solved endpoints in scenes with effective alpha,
+even when a seed material was opaque. Newton can move across an inherited CSG
+material boundary; the actual validated hit material supplies coverage while
+the existing optical proposal remains unchanged. Its alpha-only query copy
+uses the attached scene, root object and solved world point. No receiver raster
+is available in this API, so none is invented. The decision still occurs once
+outside proposal normalization. No-alpha scenes retain the existing fast path.
+`AlphaEndpointContextTest` covers real scalar world/scene expressions, direct
+emitter/NEE contexts, unchanged MASK proposal draws, RGB/NM/HWSS rendering and
+production `BuildSeedChain`→`Solve` crossing between equally reflective CSG
+materials with different alpha. `AlphaPhotonEmissionTest` adds the five actual
+emission-loop context controls; `SignalEmitterRecordTest` guards unchanged Le
+and optional surface payload behavior.
