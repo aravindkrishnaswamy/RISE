@@ -1205,7 +1205,7 @@ static void TestStreamMap()
 		std::cout << "  walk streams, " << ( fb ? "fixed-budget (Sobol')" : "unbounded-lane (PSSMLT)" )
 			<< ": light 1..15 then [" << deepLo[fb][0] << ", " << deepHi[fb][0]
 			<< "), eye 16..46 then [" << deepLo[fb][1] << ", " << deepHi[fb][1] << ")"
-			<< ( unique ? ", all " : ", DUPLICATES among " ) << all.size() << " distinct\n";
+			<< ( unique ? ", all " : ", DUPLICATES among " ) << all.size() << ( unique ? " distinct\n" : "\n" );
 		if( !unique ) {
 			std::cerr << "  FAIL: two walk iterations share a stream (DL-286).\n";
 			ok = false;
