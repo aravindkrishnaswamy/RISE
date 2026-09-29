@@ -854,7 +854,8 @@ namespace
 	//
 	// PREMISES (doc §2).  (2) `IBSDF::value` and the SPF's `kray` describe
 	// ONE function -- the guide prices `value`, the kept lobes price
-	// `kray`; `polished_material` violates it (DL-285).  (3) 0 < a < 1
+	// `kray`; `polished_material` violated it until DL-285's PolishedBRDF
+	// (2026-09-28).  (3) 0 < a < 1
 	// where the kept technique owns mass the guide cannot reach (a delta
 	// lobe) -- enforced below through `GuidingOneSampleProbability`.
 	// (4) The continuation state must not depend on which technique chose

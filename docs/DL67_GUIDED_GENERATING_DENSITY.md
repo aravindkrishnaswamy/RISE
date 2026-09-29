@@ -123,7 +123,8 @@ two; the reviews found the third and fourth:
    coat over an attenuated substrate, so guiding moves the expectation
    (-1.6% PT, -1.2% BDPT, §5).  DL-67 cannot close that without building
    a `PolishedBRDF` that matches `PolishedSPF` -- a model change to every
-   polished render's NEE, outside this row.  **DL-285** carries it.
+   polished render's NEE, outside this row.  **DL-285** carries it (fixed
+   on `debt-dl285`, 2026-09-28 -- see §8).
 
 3. **`0 < a < 1` wherever the BSDF technique owns mass the guide cannot
    reach.**  A delta lobe is such mass: `W_b = 1` there, priced
@@ -362,7 +363,7 @@ is their red-proof.
 | `IsotropicPhongSPF` | eye rows (round 3) | reviewer: +0.011% / -0.046% (base +52.9%) |
 | `AshikminShirleyAnisotropicPhongSPF` | eye rows (round 3) | reviewer: -0.048% / -0.011% (base +62.1%) |
 | smooth SSS (delta lobes only) | eye row (round 3) | PT furnace row (s) |
-| `PolishedSPF` | -- | fails premise 2: DL-285 |
+| `PolishedSPF` | -- | premise 2 restored by DL-285 (2026-09-28): `PolishedBRDFConsistencyTest` + `BDPTStrategyBalanceTest` / `VCMStrategyBalanceTest` topology AB (§8) |
 | `CompositeSPF` | -- | not verified (DL-24/DL-221) |
 | single-emit SPFs (GGX, Cook-Torrance, Coated) | -- | argued: selectProb is identically 1, so the partition reduces to the pre-DL-67 single-lobe case |
 
@@ -380,7 +381,7 @@ scattering 20), guided RIS vs un-guided of the SAME integrator:
 | BDPT | +1.85% | -1.52% | **-1.18%** |
 
 Un-guided PT and BDPT agree (+0.02%).  Premise 2 of §2, not a DL-67
-defect.
+defect.  Closed by DL-285 (§8).
 
 ## 6. Gate (current counts, from this round's run logs)
 
@@ -438,7 +439,32 @@ significant change anywhere.
 ## 8. Residuals
 
 * **DL-285** -- `polished_material`'s BSDF/SPF mismatch (§2 premise 2,
-  §5.5).
+  §5.5).  **Fixed on `debt-dl285` (2026-09-28).**  `PolishedBRDF` is both
+  `PolishedMaterial::GetBSDF()` and the function `PolishedSPF` samples
+  lobe by lobe (each ray's kray is its own lobe's `f_I co / p_I`).  The
+  pre-fix SPF's implied BRDF was not reciprocal, so the SPF side moved
+  (DL-127's ruling) to a reciprocal, provably energy-bounded model: coat
+  `tau min(F(ci),F(co)) P(cos alpha) 2/(ci+co)`, substrate
+  `Rd (1-F(ci))(1-F(co)) / (pi T_avg)` (directional albedo `Rd (1-F(ci))`
+  kept exactly).  `Pdf` is the realized `RandomlySelect` density: both
+  lobes' selection weights depend on their own draws, so one replay
+  quadrature per lobe over the other lobe's draw, memoized per shading
+  point.  Topology L polished (the rows above), 1024 spp, n = 6 salted
+  renders from two interleaved binaries, guided RIS vs un-guided of the
+  same integrator: **PT -1.551 +- 0.051 % -> -0.002 +- 0.015 %, BDPT
+  -1.666 +- 0.192 % -> +0.012 +- 0.008 %**; VCM / PT -1.746 % -> -0.041 %
+  (VCM prices `value` too, so it was off un-guided; the post-fix residuals
+  are the QMC point-set floor -- a disjoint salt set reads VCM/PT +0.002 %,
+  BDPT/PT +0.018 %).  Shipped renders move (kaleidoscope_atrium -5.0 %)
+  because NEE and connections now include the coat's (1-F) transmission
+  loss and its highlights: the old bare-Lambertian BSDF over-counted, and
+  ANY consistent model corrects that (the old non-reciprocal weights made
+  consistent: -6.2 %), not the reciprocal coat (the coat choice moves
+  scenes <= 0.4 pt).  Gated in
+  `BDPTStrategyBalanceTest` / `VCMStrategyBalanceTest` topology AB (0.5 %
+  band).  Premise 2's audit found one more material that breaks it,
+  in the opposite direction: `datadriven_material` has a BSDF and NO SPF
+  (**DL-325**, open).  Full account: the DL-285 ledger row.
 * `CompositeSPF` (DL-24 / DL-221): its 50/50 placeholder `Pdf()` is a
   variance matter under round 2 (the realization-independence premise no
   longer depends on the SPF), except where it reads 0 at a generated

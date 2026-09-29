@@ -105,6 +105,10 @@
 //         comment), so it discriminates a Schlick-specific residual
 //         on L from a generic PT-vs-BDPT one.
 //
+//     AB. `polished_material` wall + floor, un-guided and guided
+//         (DL-285): its BSDF and its SPF's kray are one function, so
+//         guiding must not move the mean (0.5 % band).
+//
 //      U. ROUGH `subsurfacescattering_material` wall + floor (DL-307)
 //         and V. a closed ROUGH `randomwalk_sss_material` sphere
 //         (DL-307) -- both generators used to break on an empty scatter
@@ -819,6 +823,15 @@ static const Tolerances kSchlickTopologyLTolerances{ 0.02, 0.25, 1.00 };
 // supplied tolerance.  PT is the trusted reference; BDPT must
 // converge to the same image distribution.
 //////////////////////////////////////////////////////////////////////
+//! A tolerance as a percent label ("0.5", "8") -- `int( tol * 100 )`
+//! printed a 0.5 % band as "0%".
+static std::string PercentLabel( const double tol )
+{
+	char buf[32];
+	std::snprintf( buf, sizeof( buf ), "%g", tol * 100.0 );
+	return std::string( buf );
+}
+
 static void RunTopologyTest(
 	const char* topologyName,
 	const std::string& sceneCommonBlock,
@@ -868,7 +881,7 @@ static void RunTopologyTest(
 	const bool maxMatch  = ChannelsAgree( pt.max,  bdpt.max,  tol.maxTol,  absFloor );
 
 	Check( meanMatch, ( std::string("BDPT mean within ")
-		+ std::to_string(int(tol.meanTol*100)) + "% of PT: " + topologyName ).c_str() );
+		+ PercentLabel( tol.meanTol ) + "% of PT: " + topologyName ).c_str() );
 	Check( p99Match,  ( std::string("BDPT p99 within ")
 		+ std::to_string(int(tol.p99Tol*100))  + "% of PT: " + topologyName ).c_str() );
 	Check( maxMatch,  ( std::string("BDPT max within ")
@@ -2647,6 +2660,61 @@ static void TestSchlickMultiLobeGuided()
 }
 
 //////////////////////////////////////////////////////////////////////
+// Topology AB: `polished_material` wall + floor (DL-285, 2026-09-28).
+//
+// Topology L's geometry, emitter, camera and rasterizers with the
+// multi-lobe `schlick_material` swapped for `polished_material`
+// (reflectance 0.4, tau 0.9, ior 1.5, scattering 20 -- the DL-67 slice's
+// own polished reproduction of DL-285).  Until DL-285 the material's
+// `GetBSDF()` was a bare `LambertianBRDF(Rd)` while `PolishedSPF` sampled
+// a Fresnel coat plus a `(1-F)` substrate, so `IBSDF::value` (what NEE,
+// connections and the DL-67 guide draw price) and the SPF's `kray` (what
+// the kept lobe prices) were two functions -- DL-67's premise 2.  Guiding
+// then MOVED the expectation, and so did VCM (its merges and connections
+// price `value`).  Measured with the pre-fix library (isolated A/B,
+// 256 spp, the rasterizer strings below):
+//
+//   PT guided RIS vs un-guided BDPT   -1.63 %      post  -0.04 %
+//   BDPT guided RIS vs un-guided PT   -1.12 %      post  -0.13 %
+//   un-guided BDPT vs un-guided PT    -0.01 %      post  -0.04 %
+//
+// (n = 6 salted 1024-spp renders per cell: pre PT RIS/PT -1.551 % +-
+// 0.051 % sem, BDPT RIS/BDPT -1.666 % +- 0.192 %; post -0.002 % +- 0.015 %
+// and +0.012 % +- 0.008 %.)  Un-guided PT and BDPT agreed pre-fix too --
+// both price their own continuations with `kray` and their NEE with the
+// same wrong `value`, so the two errors coincide; the guided rows are
+// what see premise 2.  Band: 0.5 % on the mean (the pre-fix rows fail it
+// by >= 2x, the post-fix residuals sit >= 4x inside it); p99/max as L.
+//////////////////////////////////////////////////////////////////////
+static const Tolerances kPolishedTopologyABTolerances{ 0.005, 0.25, 1.00 };
+
+static std::string PolishedTopologyABScene()
+{
+	std::string s( kSceneSchlickMultiLobeL );
+	const std::string head = "schlick_material\n{\n\tname mat_schlick\n";
+	const size_t a = s.find( head );
+	const size_t b = ( a == std::string::npos ) ? std::string::npos : s.find( "}\n", a );
+	Check( a != std::string::npos && b != std::string::npos, "topology AB: schlick_material chunk found in topology L" );
+	if( a != std::string::npos && b != std::string::npos ) {
+		s.replace( a, b + 2 - a,
+			"polished_material\n{\n\tname mat_schlick\n\treflectance pnt_rd\n"
+			"\ttau 0.9\n\tior 1.5\n\tscattering 20\n}\n" );
+	}
+	return s;
+}
+
+static void TestPolishedGuidedAB()
+{
+	const std::string scene = PolishedTopologyABScene();
+	RunTopologyTest( "polished_material wall + floor (AB), un-guided BDPT vs un-guided PT (DL-285)",
+		scene, kPolishedTopologyABTolerances, kRasterizerPTSchlickL, kRasterizerBDPTSchlickL );
+	RunTopologyTest( "polished_material (AB), BDPT GUIDED RIS vs un-guided PT (DL-285)",
+		scene, kPolishedTopologyABTolerances, kRasterizerPTSchlickL, kRasterizerBDPTSchlickLGuidedRIS );
+	RunTopologyTest( "polished_material (AB), PT GUIDED RIS vs un-guided BDPT (DL-285)",
+		scene, kPolishedTopologyABTolerances, kRasterizerPTSchlickLGuidedRIS, kRasterizerBDPTSchlickL );
+}
+
+//////////////////////////////////////////////////////////////////////
 // DL-125 achromatic parity controls: spectral BDPT hero versus bundle.
 // Schlick supplies EvaluateKrayNM after DL-125; aggregate-density GGX
 // and Lambertian still use an appropriate aggregate fallback. Equal
@@ -3797,6 +3865,7 @@ int main( int argc, char** argv )
 	}
 	if( argc == 2 && std::strcmp(argv[1], "--guided-only") == 0 ) {
 		TestSchlickMultiLobeGuided();
+		TestPolishedGuidedAB();
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
@@ -3852,6 +3921,7 @@ int main( int argc, char** argv )
 	TestGGXLambertianControl();
 	TestCompositeMaterial();
 	TestSchlickMultiLobeGuided();
+	TestPolishedGuidedAB();
 	TestSpectralHWSSCompanionLadder();
 	TestSpectralHWSSCompanionLadderControl();
 	TestSpectralHWSSChromaticLobeSpectra();

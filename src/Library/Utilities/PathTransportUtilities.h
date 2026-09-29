@@ -424,7 +424,8 @@ namespace RISE
 		// `f cos/g * W_g/a`).  Unbiased for any deterministic W under
 		// four premises (doc §2): (1) the technique choice is
 		// realization-independent; (2) `IBSDF::value` and the SPF's kray
-		// describe ONE function (DL-285: not `polished_material`);
+		// describe ONE function (`polished_material` violated it until
+		// DL-285's PolishedBRDF, 2026-09-28);
 		// (3) 0 < a < 1 wherever the BSDF technique owns mass the guide
 		// cannot reach (delta lobes) -- `GuidingOneSampleProbability`;
 		// (4) the continuation state after the choice does not depend on
