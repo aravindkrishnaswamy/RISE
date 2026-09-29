@@ -6,7 +6,8 @@
 //
 //  This class is the point of Phase 2.  `composite_material` forwards
 //  one sub-material's BSDF (3.2 defect 2) and `polished_material`
-//  returns a bare LambertianBRDF (3.3), so before this triad EVERY
+//  returned a bare LambertianBRDF (3.3; fixed by DL-285, 2026-09-28,
+//  which gave it its own PolishedBRDF), so before this triad EVERY
 //  route to a coated surface in RISE mis-evaluated direct lighting --
 //  NEE, BDPT vertex connections and MIS denominators all saw an
 //  UNCOATED substrate.  `value` / `valueNM` here answer with the
