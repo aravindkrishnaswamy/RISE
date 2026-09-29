@@ -351,3 +351,4 @@ virtual bool AddDisplacedGeometryWithHeight(const char*name,const char*base_geom
 virtual bool AddReliefModifierEx(const char*name,const char*height,const double scale,const char*domain,const double step,const double maxSlope)=0;
 virtual bool AddAtan2ScalarPainter(const char*name,const char*y,const char*x,const double offset)=0;
 virtual bool AddCoatedMaterialEx(const char*name,const char*base,const char*coat_weight,const char*coat_ior,const char*coat_roughness,const char*coat_thickness,const char*coat_absorption,const char*coat_tint,const char*coat_normal,const double coat_normal_scale)=0;
+virtual bool SetMaterialAlpha(const char*material,const char*alpha,const char*mode,const double cutoff)=0;

@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/IndependentSampler.h"
 #include "PointLight.h"
 #include "../Animation/KeyframableHelper.h"
 #include "../Rendering/RayCaster.h"		// concrete RayCaster — dynamic_cast target for transparent (Fresnel-attenuated) shadow rays
@@ -80,7 +81,7 @@ PointLight::~PointLight( )
 {
 }
 
-void PointLight::ComputeDirectLighting(
+void PointLight::ComputeDirectLightingSampled(
 	const RayIntersectionGeometric& ri,
 	const IRayCaster& pCaster,
 	const IBSDF& brdf,
@@ -88,7 +89,8 @@ void PointLight::ComputeDirectLighting(
 	RISEPel& amount,
 	const bool /*bFullSphereReceiver*/,	// no-op here; see the .h doc
 	const bool bVolumeReceiver,			// implemented; see the .h doc
-	const IORStack* pIORStack			// DL-157 P1: live stack for a stateful BSDF
+	const IORStack* pIORStack, // DL-157 P1: live stack for a stateful BSDF
+    ISampler& sampler, MediumBoundaryHits* boundaries
 	) const
 {
 	//
@@ -131,10 +133,10 @@ void PointLight::ComputeDirectLighting(
 
 		const RayCaster* pRC = dynamic_cast<const RayCaster*>( &pCaster );
 		if( pRC ) {
-			if( pRC->CastShadowRayAuto( rayToLight, fDistFromLight, false, 0.0, shadowT, true /*DL-05: delta light*/ ) ) {
+			if( pRC->CastShadowRayAutoSampled( rayToLight, fDistFromLight, false, 0.0, shadowT, true /*DL-05: delta light*/ , sampler, boundaries ) ) {
 				return;
 			}
-		} else if( pCaster.CastShadowRay( rayToLight, fDistFromLight ) ) {
+		} else if( pCaster.CastShadowRaySampled( rayToLight, fDistFromLight , sampler, boundaries ) ) {
 			return;
 		}
 	}
@@ -147,7 +149,7 @@ void PointLight::ComputeDirectLighting(
 	amount = (cColor * brdf.valueStateful( vToLight, ri , pIORStack)) * (invDistSq * fDot * radiantEnergy) * shadowT;
 }
 
-Scalar PointLight::ComputeDirectLightingNM(
+Scalar PointLight::ComputeDirectLightingSampledNM(
 	const RayIntersectionGeometric& ri,
 	const IRayCaster& pCaster,
 	const IBSDF& brdf,
@@ -155,7 +157,8 @@ Scalar PointLight::ComputeDirectLightingNM(
 	const Scalar nm,
 	const bool /*bFullSphereReceiver*/,	// no-op here; see the .h doc
 	const bool bVolumeReceiver,			// implemented; see the .h doc
-	const IORStack* pIORStack			// DL-157 P1: live stack for a stateful BSDF
+	const IORStack* pIORStack, // DL-157 P1: live stack for a stateful BSDF
+    ISampler& sampler, MediumBoundaryHits* boundaries
 	) const
 {
 	// Same geometry as the RGB ComputeDirectLighting; only the BSDF eval and
@@ -178,11 +181,11 @@ Scalar PointLight::ComputeDirectLightingNM(
 		const RayCaster* pRC = dynamic_cast<const RayCaster*>( &pCaster );
 		if( pRC ) {
 			RISEPel t( 1.0, 1.0, 1.0 );
-			if( pRC->CastShadowRayAuto( rayToLight, fDistFromLight, true, nm, t, true /*DL-05: delta light*/ ) ) {
+			if( pRC->CastShadowRayAutoSampled( rayToLight, fDistFromLight, true, nm, t, true /*DL-05: delta light*/ , sampler, boundaries ) ) {
 				return Scalar(0);
 			}
 			shadowT = t.r;	// NM path fills all 3 channels equally
-		} else if( pCaster.CastShadowRay( rayToLight, fDistFromLight ) ) {
+		} else if( pCaster.CastShadowRaySampled( rayToLight, fDistFromLight , sampler, boundaries ) ) {
 			return Scalar(0);
 		}
 	}
@@ -261,4 +264,19 @@ void PointLight::SetIntermediateValue( const IKeyframeParameter& val )
 	}
 
 	Transformable::SetIntermediateValue( val );
+}
+
+void PointLight::ComputeDirectLighting(const RayIntersectionGeometric& ri,
+    const IRayCaster& caster, const IBSDF& bsdf, const bool shadows, RISEPel& amount,
+    const bool fullSphere, const bool volume, const IORStack* stack) const
+{
+    RandomNumberGenerator random; IndependentSampler sampler(random);
+    ComputeDirectLightingSampled(ri, caster, bsdf, shadows, amount, fullSphere, volume, stack, sampler, nullptr);
+}
+Scalar PointLight::ComputeDirectLightingNM(const RayIntersectionGeometric& ri,
+    const IRayCaster& caster, const IBSDF& bsdf, const bool shadows, const Scalar nm,
+    const bool fullSphere, const bool volume, const IORStack* stack) const
+{
+    RandomNumberGenerator random; IndependentSampler sampler(random);
+    return ComputeDirectLightingSampledNM(ri, caster, bsdf, shadows, nm, fullSphere, volume, stack, sampler, nullptr);
 }

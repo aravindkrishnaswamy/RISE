@@ -60,6 +60,29 @@ namespace RISE
 
 	namespace Implementation
 	{
+        // Unbiased reciprocal-probability tail for alpha seed proposals.
+        // After B failures, survival to term n is (B/(n+1))^2. Expected
+        // trial count is bounded by about 2B even as p approaches zero;
+        // for every p>0 the exponential failure tail gives finite variance.
+        class SMSReciprocalTail {
+            Scalar budget, failures = 0, estimate = 1;
+        public:
+            explicit SMSReciprocalTail(unsigned int b) : budget(b ? b : 1024) {}
+            bool ContinueAfterFailure(ISampler& sampler) {
+                failures += 1;
+                Scalar weight = 1;
+                if (failures >= budget) {
+                    const Scalar ratio = failures / (failures + 1);
+                    if (sampler.GetAlpha1D() >= ratio * ratio) return false;
+                    const Scalar inverse = (failures + 1) / budget;
+                    weight = inverse * inverse;
+                }
+                estimate += weight;
+                return true;
+            }
+            Scalar Estimate() const { return estimate; }
+        };
+
 		/// Data stored at each specular vertex during the manifold walk.
 		struct ManifoldVertex
 		{
@@ -426,7 +449,7 @@ namespace RISE
 				const IRayCaster& caster,
 				std::vector<ManifoldVertex>& chain,
 				bool applyEmitterStop = true,      ///< Snell mode: true (stop at emitter projection).  Uniform mode: false (sp is a direction probe, not the emitter).
-				const IORStack* pStartStack = nullptr	///< DL-290: the RECEIVER's live IOR stack; the walk starts in that medium.  Null = air (the pre-DL-290 behaviour).
+				const IORStack* pStartStack = nullptr, ISampler* alphaSampler = nullptr	///< DL-290: the RECEIVER's live IOR stack; the walk starts in that medium.  Null = air (the pre-DL-290 behaviour).
 				) const;
 
 			/// Single seed chain plus a proposal pdf (always 1.0 since
@@ -501,7 +524,7 @@ namespace RISE
 				const IScene& scene,
 				const IRayCaster& caster,
 				std::vector<ManifoldVertex>& chain,
-				bool applyEmitterStop = true       ///< false ⇒ ignore the projection cap; trace continues through every specular hit until maxChainDepth or non-specular hit.
+				bool applyEmitterStop = true, ISampler* alphaSampler = nullptr       ///< false ⇒ ignore the projection cap; trace continues through every specular hit until maxChainDepth or non-specular hit.
 				) const;
 
 			/// Computes the geometric coupling factor through a specular
@@ -700,7 +723,7 @@ namespace RISE
 				const Point3& shadingPoint,
 				const Point3& lightPoint,
 				const std::vector<ManifoldVertex>& chain,
-				const IRayCaster& caster
+				const IRayCaster& caster, ISampler* alphaSampler = nullptr
 				) const;
 
 			/// Reverses a photon's recorded specular chain (stored in
@@ -762,7 +785,7 @@ namespace RISE
 				RISEPel& outContribution,
 				bool clampGeometric = true,
 				Scalar* outSmsGeometric = nullptr,
-				const IORStack* pIorStack = nullptr
+				const IORStack* pIorStack = nullptr, ISampler* alphaSampler = nullptr
 				) const;
 
 			/// Spectral counterpart of `ComputeTrialContribution`.
@@ -781,7 +804,7 @@ namespace RISE
 				Scalar& outContribution,
 				bool clampGeometric = true,           ///< See `ComputeTrialContribution`.
 				Scalar* outSmsGeometric = nullptr,     ///< See `ComputeTrialContribution`.
-				const IORStack* pIorStack = nullptr
+				const IORStack* pIorStack = nullptr, ISampler* alphaSampler = nullptr
 				) const;
 
 			// ============================================================

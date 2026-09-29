@@ -2707,27 +2707,9 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
             # BLEND or HASHED -> RISE's single stochastic-transparency path.
             alpha_mode_value = ALPHA_MODE_BLEND
 
-        # Rasterizer-compatibility warning (AlphaTestShaderOp.h's own
-        # "integrator-compatibility caveat", corrected by DIRECT
-        # MEASUREMENT in the DL-193 slice: `pixelpel_rasterizer` --
-        # RISE's legacy DIRECT-lighting-only rasterizer -- is the ONLY
-        # rasterizer that honours the alpha shader-op chain.  BDPT, VCM,
-        # MLT, photon tracers, AND the modern path tracer
-        # (`pathtracing_pel_rasterizer`) all bypass the shader-op chain
-        # entirely and render this material fully opaque regardless of
-        # the wiring above -- `PathTracingIntegrator.cpp` has no
-        # reference to the shader-op pipeline at all; a stale, WRONG
-        # revision of this caveat used to claim the path tracer was
-        # compatible.  Filed as the general architecture gap DL-214,
-        # docs/DEBT_LEDGER.md.  Issued from the NATIVE bridge instead of
-        # here (`rise_blender_render_scene`'s
-        # own DL-193 blocks, alongside the pre-existing "Auto -> X"
-        # resolved-integrator surfacing that function already does) --
-        # the rasterizer kind lives in `rise_blender_render_settings`,
-        # which this export-time function has no access to (export and
-        # render-settings resolution are separate stages in this
-        # add-on), and the Auto dispatcher's actual choice isn't known
-        # until after rendering regardless of which stage asks.
+        # DL-214: the native bridge installs scalar material coverage for
+        # every integrator. No incompatible-rasterizer warning is needed.
+
 
     output_node = _find_material_output(material)
     interior_medium_name = None

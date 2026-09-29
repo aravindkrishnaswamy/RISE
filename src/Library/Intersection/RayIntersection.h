@@ -16,6 +16,7 @@
 #define RAY_INTERSECTION_
 
 #include "RayIntersectionGeometric.h"
+#include <vector>
 
 namespace RISE
 {
@@ -36,6 +37,8 @@ namespace RISE
 														// this should be a list of somesort... eventually
 		const IObject*					pObject;		// the object that was hit
 		const IRadianceMap*				pRadianceMap;	// the radiance map at the intersection
+
+        Scalar acceptedAlphaCoverage = 1; // Exact acceptance probability, never re-evaluated for deposits.
 
 		RayIntersection( const Ray& ray, const RasterizerState& rast ) : 
 		  geometric( ray, rast ),
@@ -62,8 +65,11 @@ namespace RISE
 		  pModifier( r.pModifier ),
 		  pObject( r.pObject ),
 		  pRadianceMap( r.pRadianceMap )
-		{}
+		{ acceptedAlphaCoverage = r.acceptedAlphaCoverage; }
 	};
+	// Accepted medium boundaries from one sampled visibility segment.
+	// Each record retains its world point and true geometric side; no replay.
+	typedef std::vector<RayIntersection> MediumBoundaryHits;
 }
 
 #include "../Interfaces/IMaterial.h"

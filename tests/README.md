@@ -1188,3 +1188,16 @@ controls are supplemental consistency coverage.
 
 See [the transport derivation and scope](../docs/DL239_PHOTON_TRANSPORT.md).
 Final full-slice rendering, cost and review gates are still pending.
+
+### Material alpha coverage (DL-214)
+
+Build named targets with `make -C build/make/rise build-test/<Name>` and run
+`bin/tests/<Name>` from the repository root. `AlphaIntersectionTransportTest`
+contains render-level shadow, emission, continuation, spectral, MLT and active
+VCM merging checks. `AlphaMediumBoundaryTest`, `AlphaSamplerLaneTest`,
+`AlphaSMSReciprocalTest`, `AlphaSMSTransportTest`, and
+`AlphaSubsurfaceEndpointTest` isolate sampler, medium, SMS and nonlocal endpoint
+contracts. `GLTFAlphaImportTest` uses the committed Khronos RGBA alpha asset;
+`BlenderBridgeAlphaTest` checks both legacy and modern imported cutout behavior.
+`LegacyPhotonTransportTest` also measures alpha-compensated RGB/NM photon deposits.
+See [ALPHA_COVERAGE.md](../docs/ALPHA_COVERAGE.md) for the estimator definitions.

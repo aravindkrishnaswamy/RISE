@@ -296,3 +296,5 @@ Process skills distilled from prior RISE sessions.  Auto-invoked via
 - Executable tests: [tests/README.md](tests/README.md)
 - Thread-safety and scene immutability: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - Planned improvements: [docs/IMPROVEMENTS.md](docs/IMPROVEMENTS.md)
+
+- **2026-09-29 DL-214:** imported alpha is scalar material coverage (`SetMaterialAlpha`, `alpha_coverage`/`alpha_mode`/`alpha_cutoff`), evaluated by sampler-aware traversal before shading. Alpha skip is not a bounce; connections reuse accepted medium-boundary records. Legacy explicit alpha shader chains remain available, but importers do not install them. See `docs/ALPHA_COVERAGE.md` for endpoint/deposit and SMS estimator contracts.

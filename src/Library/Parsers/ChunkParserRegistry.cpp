@@ -13757,6 +13757,40 @@ namespace RISE
 		}
 	}
 
+    // Coverage is orthogonal to a material's scattering model. Decorating
+    // each material parser keeps one descriptor and one construction path.
+    class AlphaMaterialParser final : public IAsciiChunkParser {
+        std::unique_ptr<IAsciiChunkParser> base_;
+        ChunkDescriptor descriptor_;
+    public:
+        explicit AlphaMaterialParser(IAsciiChunkParser* base) : base_(base), descriptor_(base->Describe()) {
+            ParameterDescriptor alpha;
+            alpha.name = "alpha_coverage"; alpha.kind = ValueKind::Reference;
+            alpha.referenceCategories = {ChunkCategory::Painter};
+            alpha.semantics.pipe = ParameterPipe::Scalar;
+            alpha.defaultValueHint = "1";
+            alpha.description = "Scalar surface coverage in [0,1], independent of wavelength";
+            descriptor_.parameters.push_back(alpha);
+            ParameterDescriptor mode;
+            mode.name = "alpha_mode"; mode.kind = ValueKind::Enum;
+            mode.enumValues = {"opaque", "mask", "blend"}; mode.defaultValueHint = "opaque";
+            mode.description = "Opaque, threshold mask, or stochastic coverage";
+            descriptor_.parameters.push_back(mode);
+            ParameterDescriptor cutoff;
+            cutoff.name = "alpha_cutoff"; cutoff.kind = ValueKind::Double;
+            cutoff.defaultValueHint = "0.5"; cutoff.description = "Mask threshold (keep alpha >= cutoff)";
+            descriptor_.parameters.push_back(cutoff);
+        }
+        const ChunkDescriptor& Describe() const override { return descriptor_; }
+        bool Finalize(const ParseStateBag& bag, IJob& job) const override {
+            if (!base_->Finalize(bag, job)) return false;
+            const std::string mode = bag.GetString("alpha_mode", "opaque");
+            if (mode == "opaque") return true;
+            return job.SetMaterialAlpha(bag.GetString("name", "noname").c_str(),
+                bag.GetString("alpha_coverage", "1").c_str(), mode.c_str(), bag.GetDouble("alpha_cutoff", 0.5));
+        }
+    };
+
 	// Factory that creates one instance of every chunk parser the scene
 	// grammar supports.  Ownership transfers to the caller; when the
 	// returned vector goes out of scope all parsers are destroyed.  The
@@ -13771,7 +13805,8 @@ namespace RISE
 		auto add = [&entries]( const char* keyword, IAsciiChunkParser* parser ) {
 			ChunkParserEntry e;
 			e.keyword = keyword;
-			e.parser.reset( parser );
+			e.parser.reset( parser->Describe().category == ChunkCategory::Material
+                ? static_cast<IAsciiChunkParser*>(new AlphaMaterialParser(parser)) : parser );
 			entries.push_back( std::move(e) );
 		};
 

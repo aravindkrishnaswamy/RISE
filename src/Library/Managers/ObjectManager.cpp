@@ -20,6 +20,8 @@
 #include "../Objects/CSGObject.h"   // telling a CSG operand from a container node (both are hidden)
 #include "../Interfaces/ISurfaceSignalProvider.h"	// ProximityDemand: the snapshot's cost gate
 #include <atomic>
+#include "../Utilities/ISampler.h"
+#include <cmath>
 #include <typeinfo>	// LogDistanceRefusal names the refusing geometry's kind
 #include <cstdint>
 #include <vector>
@@ -2123,4 +2125,61 @@ void ObjectManager::InvalidateSpatialStructure() const
 	if( shadowCache ) {
 		memset( shadowCache, 0, sizeof(ShadowCacheSlot) * kShadowCacheSlots );
 	}
+}
+
+void IObjectManager::IntersectRaySampled(RayIntersection& ri, ISampler& sampler,
+    bool front, bool back, bool exit, Scalar maxDistance, bool shadows, MediumBoundaryHits* boundaries) const
+{
+    if (!IMaterial::AnyAlphaMaterials() && !shadows && maxDistance == RISE_INFINITY) {
+        IntersectRay(ri, front, back, exit); return;
+    }
+    const Ray original = ri.geometric.ray;
+    const RasterizerState rast = ri.geometric.rast;
+    const RayIntersectionGeometric castInputs = ri.geometric;
+    Scalar offset = 0;
+    for (;;) {
+        IntersectRay(ri, front, back, exit);
+        if (!ri.geometric.bHit || ri.geometric.range >= maxDistance - offset) {
+            ri.geometric.bHit = false;
+            ri.geometric.ray = original;
+            return;
+        }
+        const bool casts = !shadows || !ri.pObject || ri.pObject->DoesCastShadows();
+        const Scalar coverage = ri.pMaterial ? ri.pMaterial->AlphaCoverage(ri.geometric) : 1;
+        const bool accepted = coverage >= 1 || (coverage > 0 && sampler.GetAlpha1D() < coverage);
+        ri.acceptedAlphaCoverage = coverage;
+        if (accepted && boundaries && ri.pObject && ri.pObject->GetInteriorMedium()) {
+            boundaries->push_back(ri);
+        }
+        if (casts && accepted) {
+            ri.geometric.range += offset;
+            if (exit) ri.geometric.range2 += offset;
+            ri.geometric.ray = original;
+            return;
+        }
+        // range already names the backed-off published point. Geometry's
+        // self-root floor rejects that same boundary on the next query.
+        // Advance by one representable segment parameter to ensure progress,
+        // rather than skipping a world-space epsilon-sized slab of geometry.
+        offset = std::nextafter(offset + ri.geometric.range, RISE_INFINITY);
+        if (!(offset < maxDistance)) {
+            ri.geometric.bHit = false;
+            ri.geometric.ray = original;
+            return;
+        }
+        Ray ray = original;
+        ray.Advance(offset);
+        ri = RayIntersection(ray, rast);
+        ri.geometric.PropagateCastInputs(castInputs);
+    }
+}
+
+bool IObjectManager::IntersectShadowRaySampled(const Ray& ray, Scalar distance, ISampler& sampler, MediumBoundaryHits* boundaries) const
+{
+    if (boundaries) boundaries->clear();
+    if (!IMaterial::AnyAlphaMaterials() && !boundaries) return IntersectShadowRay(ray, distance, true, true);
+    RasterizerState rast = {0};
+    RayIntersection ri(ray, rast);
+    IntersectRaySampled(ri, sampler, true, true, false, distance, true, boundaries);
+    return ri.geometric.bHit;
 }

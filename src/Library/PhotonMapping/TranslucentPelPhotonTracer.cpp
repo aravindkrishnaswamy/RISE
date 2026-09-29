@@ -81,7 +81,8 @@ void TranslucentPelPhotonTracer::TracePhoton(
 	// Cast the ray into the scene
 	RayIntersection	ri( ray, nullRasterizerState );
 	ri.geometric.ray.SetDir(Vector3Ops::Normalize(ri.geometric.ray.Dir()));
-	pScene->GetObjects()->IntersectRay( ri, true, true, false );
+	IndependentSampler alphaSampler(random);
+	pScene->GetObjects()->IntersectRaySampled(ri, alphaSampler);
 
 	if( ri.geometric.bHit )
 	{
@@ -164,8 +165,7 @@ void TranslucentPelPhotonTracer::TracePhoton(
 			// Only deposit if the photon came from a translucent surface,
 			if( bFromTranslucent ) {
 				pPhotonMap.Store(
-					bTranslucentExit ? power*diffuse_deposit
-						: power,
+					(bTranslucentExit ? power*diffuse_deposit : power) * (1 / ri.acceptedAlphaCoverage),
 					ri.geometric.ptIntersection, -ri.geometric.ray.Dir(), bTranslucentExit );
 			}
 		}

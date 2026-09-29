@@ -38,14 +38,9 @@
 //  Out-of-scope (warn-and-skip; see docs/GLTF_IMPORT.md):
 //   - Skinning / animation / morph targets -- one-time warning per
 //     file; geometry renders at bind pose.
-//   - alphaMode = MASK / BLEND -- both implemented (Phase 4) via
-//     alpha_test_shaderop / transparency_shaderop wired through a
-//     per-material advanced_shader.  Only integrators that route
-//     through IShader::Shade() honour them (path tracer + legacy
-//     direct shaders); BDPT, VCM, MLT, and photon tracers bypass the
-//     shader-op pipeline and currently treat both modes as opaque.
-//     Per-pixel alpha is read via IPainter::GetAlpha (the un-
-//     premultiplied A channel of the baseColor texture).
+//   - Alpha modes are supported through scalar material coverage (DL-214).
+//     Linear texture A times base-color factor A supplies coverage; MASK
+//     applies cutoff and BLEND samples a Bernoulli event before shading.
 //   - KHR_draco_mesh_compression / EXT_meshopt_compression -- rejected
 //     by the Phase 1 mesh loader; the importer surfaces that error.
 //   - KHR_materials_clearcoat / KHR_materials_sheen as a layer atop
@@ -1846,113 +1841,17 @@ namespace
 			}
 		}
 
-		// Optional alpha-mask shader (glTF alphaMode = MASK).  For
-		// alphaMode = OPAQUE we leave the global shader untouched; for
-		// MASK we register a per-material standard_shader containing the
-		// alpha_test_shaderop.  BLEND is documented as out-of-scope -- we
-		// log once and treat it as opaque.  Per-pixel alpha currently
-		// reads max(R,G,B) of baseColor as a luminance proxy because the
-		// painter system doesn't expose the A channel; this matches the
-		// MaskedAlphaMode test asset's behaviour where transparent pixels
-		// are also dark, and the architectural hook is in place for a
-		// future alpha-aware painter.
-		// Build a Phase-4 alpha-source painter when the material needs one.
-		// glTF alpha = textureAlpha * factorAlpha.  We bake factorAlpha
-		// into the channel_painter's `scale` so downstream consumers can
-		// read a single painter and have the spec semantics applied.
-		// When there's no baseColor texture, fall back to a uniform painter
-		// at factorAlpha (the test / blend then degenerates to material-
-		// wide pass/fail; warn so authors aren't surprised).
-		//
-		// Critical: read CHAN_A from the RAW baseColor texture
-		// (`baseColorTexturePainter`), NOT from `baseColorPainter`.  The
-		// latter is a BlendPainter composing texture × factor — its
-		// `GetAlpha()` returns the IPainter default (1.0) because the
-		// composition doesn't propagate the underlying texture's alpha.
-		// Reading from the raw TexturePainter pulls straight-alpha out
-		// of the RGBA texel.
-		auto BuildAlphaPainter = [&]() -> std::string
-		{
-			if( baseColorIsTexture && !baseColorTexturePainter.empty() ) {
-				const std::string n = PainterName( prefix, "alpha", matIdx );
-				job.AddChannelPainter( n.c_str(), baseColorTexturePainter.c_str(),
-					/*chan A*/ 3, /*scale*/ factorAlpha, /*bias*/ 0.0 );
-				return n;
-			}
-			const std::string n = PainterName( prefix, "alpha_factor", matIdx );
-			const double pel[3] = { factorAlpha, factorAlpha, factorAlpha };
-			job.AddUniformColorPainter( n.c_str(), pel, "Rec709RGB_Linear" );
-			return n;
-		};
-
-		// Per-material alpha-mode wiring.  Both MASK and BLEND need an
-		// `advanced_shader` (NOT `standard_shader`) because the alpha-aware
-		// op replaces the accumulator rather than adding to it -- the
-		// additive standard_shader would produce wrong cutout semantics.
-		// Op chain: [Emission +, DirectLighting +, alpha_test_or_transp =].
-		// The first two ops fill the accumulator with emission + surface
-		// BSDF; the third op either keeps that (opaque) or replaces it
-		// with the background colour (cutout / blend).
-		auto WireAlphaShader = [&]( const char* opName ) -> bool
-		{
-			const std::string shaderName = matName + ".shader";
-			// DL-193 (docs/DEBT_LEDGER.md): the [Emission+, DirectLighting+,
-			// op=] construction is now shared with rise_blender_bridge.cpp's
-			// identical Blender-side wiring -- see AdvancedShaderWiring.h.
-			const bool ok = RISE::Utilities::WireAlphaAdvancedShader(
-				job, shaderName.c_str(), opName );
-			if( !ok ) {
-				GlobalLog()->PrintEx( eLog_Warning,
-					"GLTFSceneImporter:: failed to wire alpha shader for material `%s`; "
-					"surface will render as opaque", matName.c_str() );
-			}
-			return ok;
-		};
-
-		if( mat.alpha_mode == cgltf_alpha_mode_mask ) {
-			std::string alphaSource = BuildAlphaPainter();
-			if( !baseColorIsTexture ) {
-				GlobalLog()->PrintEx( eLog_Warning,
-					"GLTFSceneImporter:: material `%s` is alphaMode=MASK but has no baseColor "
-					"texture; alpha test degraded to material-wide pass/fail at factor=%.3f",
-					matName.c_str(), factorAlpha );
-			}
-			// `alphaSource` already includes factorAlpha (baked in via the
-			// ChannelPainter scale or the uniform value), so the cutoff is
-			// passed through unchanged.
-			const double cutoff = (double)mat.alpha_cutoff;
-
-			const std::string opName = matName + ".alphatest";
-			if( job.AddAlphaTestShaderOp( opName.c_str(), alphaSource.c_str(), cutoff ) ) {
-				WireAlphaShader( opName.c_str() );
-			}
-		} else if( mat.alpha_mode == cgltf_alpha_mode_blend ) {
-			// Stochastic transparency for foliage / glass / decals.
-			// transparency_shaderop computes
-			//   c_op = cthis * factor + c_snap * (1 - factor)
-			// where cthis = background (recursively cast past surface) and
-			// c_snap is the running accumulator.  We want the rendered
-			// pixel = surface * alpha + background * (1 - alpha), so set
-			// factor = (1 - alpha) and run it AFTER the BSDF op (the
-			// advanced-shader `=` operator then replaces the accumulator
-			// with the blended result; see WireAlphaShader above).
-			const std::string alphaSource = BuildAlphaPainter();
-
-			const std::string nZero  = PainterName( prefix, "blend_zero",  matIdx );
-			const std::string nWhite = PainterName( prefix, "blend_white", matIdx );
-			const std::string nTrans = PainterName( prefix, "transparency", matIdx );
-			const double zero[3]  = { 0.0, 0.0, 0.0 };
-			const double white[3] = { 1.0, 1.0, 1.0 };
-			job.AddUniformColorPainter( nZero.c_str(),  zero,  "Rec709RGB_Linear" );
-			job.AddUniformColorPainter( nWhite.c_str(), white, "Rec709RGB_Linear" );
-			job.AddBlendPainter( nTrans.c_str(),
-				nZero.c_str(), nWhite.c_str(), alphaSource.c_str() );
-
-			const std::string opName = matName + ".transparency";
-			if( job.AddTransparencyShaderOp( opName.c_str(), nTrans.c_str(), /*one_sided*/ false ) ) {
-				WireAlphaShader( opName.c_str() );
-			}
-		}
+		// Coverage belongs to the material, including on the legacy path.
+        if (mat.alpha_mode != cgltf_alpha_mode_opaque) {
+            std::string alpha = std::to_string(factorAlpha);
+            if (baseColorIsTexture && !baseColorTexturePainter.empty()) {
+                alpha = PainterName(prefix, "alpha", matIdx);
+                if (!job.AddPainterChannelScalarPainter(alpha.c_str(), baseColorTexturePainter.c_str(),
+                    3, factorAlpha, 0.0)) return false;
+            }
+            if (!job.SetMaterialAlpha(matName.c_str(), alpha.c_str(),
+                mat.alpha_mode == cgltf_alpha_mode_mask ? "mask" : "blend", mat.alpha_cutoff)) return false;
+        }
 
 		return true;
 	}
@@ -2465,13 +2364,8 @@ bool GLTFSceneImporter::ImportScene( IJob& job, const GLTFImportOptions& opts )
 						if( opts.importNormalMaps && prim.material->normal_texture.texture ) {
 							modName = ModifierName( prefix, mi );
 						}
-						// Per-material shader override exists when the material was
-						// imported with alphaMode = MASK or BLEND; CreateMaterial
-						// registers <matName>.shader in those cases.
-						if( prim.material->alpha_mode == cgltf_alpha_mode_mask ||
-						    prim.material->alpha_mode == cgltf_alpha_mode_blend ) {
-							shaderName = matName + ".shader";
-						}
+						// Alpha belongs to the material; no shader override is installed.
+
 					}
 
 					RadianceMapConfig rmc;

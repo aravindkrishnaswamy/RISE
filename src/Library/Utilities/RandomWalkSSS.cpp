@@ -488,6 +488,12 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 			// and prevents connection strategies from targeting a vertex
 			// whose spatial PDF is unknown.
 			result.pdfSurface = 0;
+            // Interior boundary queries define the random-walk domain.
+            // Apply coverage once to the physical surface endpoint.
+            const IMaterial* material = pObject->GetMaterial();
+            result.acceptedAlphaCoverage = material ? material->AlphaCoverage(exitRI.geometric) : 1;
+            if (result.acceptedAlphaCoverage <= 0 || (result.acceptedAlphaCoverage < 1 &&
+                sampler.GetAlpha1D() >= result.acceptedAlphaCoverage)) return result;
 			result.valid = true;
 
 			return result;

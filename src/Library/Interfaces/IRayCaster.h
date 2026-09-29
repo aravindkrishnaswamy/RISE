@@ -15,6 +15,7 @@
 #define IRAYCASTER_
 
 #include "IReference.h"
+#include <vector>
 #include "ISampling2D.h"
 #include "IRadianceMap.h"
 #include "../Utilities/Ray.h"
@@ -23,6 +24,9 @@
 
 namespace RISE
 {
+    class ISampler;
+    class RayIntersection;
+    typedef std::vector<RayIntersection> MediumBoundaryHits;
 	class ILuminaryManager;
 	class IScene;
 	class IORStack;
@@ -377,7 +381,10 @@ namespace RISE
 			const Ray& ray,										///< [in] Ray to cast
 			const Scalar dHowFar								///< [in] How far to follow the ray, optimization
 			) const = 0;
-	};
+        //! DL-214: transport visibility owns an alpha sampler lane.
+        virtual bool CastShadowRaySampled(const Ray& ray, Scalar distance, ISampler& sampler, MediumBoundaryHits* boundaries = nullptr) const
+        { (void)sampler; (void)boundaries; return CastShadowRay(ray, distance); }
+    };
 }
 
 #include "ILuminaryManager.h"

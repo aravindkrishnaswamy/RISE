@@ -292,7 +292,7 @@ namespace RISE
 				const IScene& scene,
 				const IRayCaster& caster,
 				const ICamera& camera,
-				const Point2& cameraLensSample
+				const Point2& cameraLensSample, ISampler* alphaSampler = nullptr
 				) const;
 
 			/// Evaluates all valid (s,t) strategies and returns results.
@@ -386,7 +386,7 @@ namespace RISE
 				const IRayCaster& caster,
 				const ICamera& camera,
 				const Point2& cameraLensSample,
-				const Scalar nm
+				const Scalar nm, ISampler* alphaSampler = nullptr
 				) const;
 
 			std::vector<ConnectionResultNM> EvaluateAllStrategiesNM(
@@ -396,7 +396,7 @@ namespace RISE
 				const IRayCaster& caster,
 				const ICamera& camera,
 				const Point2& cameraLensSample,
-				const Scalar nm
+				const Scalar nm, ISampler* alphaSampler = nullptr
 				) const;
 
 		public:
@@ -420,7 +420,7 @@ namespace RISE
 				const IScene& scene,
 				const IRayCaster& caster,
 				const IObject* pStartMediumObject,
-				const IMedium* pStartMedium
+				const IMedium* pStartMedium, const MediumBoundaryHits* boundaries = nullptr
 				) const;
 
 			/// Ray+distance overload — needed by env NEE so the walk
@@ -438,7 +438,7 @@ namespace RISE
 				const IScene& scene,
 				const IRayCaster& caster,
 				const IObject* pStartMediumObject,
-				const IMedium* pStartMedium
+				const IMedium* pStartMedium, const MediumBoundaryHits* boundaries = nullptr
 				) const;
 
 			/// Spectral variant of EvalConnectionTransmittance
@@ -449,7 +449,7 @@ namespace RISE
 				const IRayCaster& caster,
 				const Scalar nm,
 				const IObject* pStartMediumObject,
-				const IMedium* pStartMedium
+				const IMedium* pStartMedium, const MediumBoundaryHits* boundaries = nullptr
 				) const;
 
 			/// Ray+distance NM overload — see RGB twin.
@@ -460,7 +460,7 @@ namespace RISE
 				const IRayCaster& caster,
 				const Scalar nm,
 				const IObject* pStartMediumObject,
-				const IMedium* pStartMedium
+				const IMedium* pStartMedium, const MediumBoundaryHits* boundaries = nullptr
 				) const;
 
 		protected:

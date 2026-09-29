@@ -1410,3 +1410,13 @@ model this follows.
   the convention-conversion sites in the importer.
 - [docs/PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_1.md](PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_1.md):
   Landing 1 detailed design for the HDR output pipeline.
+
+## Material coverage (DL-214)
+
+Every material chunk accepts `alpha_mode opaque|mask|blend`, `alpha_coverage`
+(a physical scalar painter name or numeric literal, default 1), and
+`alpha_cutoff` (default 0.5). MASK accepts coverage at or above cutoff; BLEND
+accepts with probability equal to coverage. Values clamp to [0,1]; invalid
+values become zero. OPAQUE ignores the scalar. This is surface coverage,
+separate from dielectric transmission. Existing Ward/hair `alpha` parameters
+retain their original meanings. See [ALPHA_COVERAGE.md](ALPHA_COVERAGE.md).

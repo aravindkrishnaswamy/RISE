@@ -376,7 +376,7 @@ void VCMPelRasterizer::IntegratePixel(
 					pIntegrator->SplatLightSubpathToCamera(
 						localLightVerts, lightMis,
 						pScene, *pCaster, *pCamera, cameraLensSample, *pSplatFilm,
-						mVCMNormalization, pPixelFilter );
+						mVCMNormalization, pPixelFilter, &sampler );
 				}
 			}
 
@@ -407,7 +407,7 @@ void VCMPelRasterizer::IntegratePixel(
 						pScene, *pCaster,
 						localLightVerts, lightMis,
 						eyeVerts, eyeMis,
-						mVCMNormalization );
+						mVCMNormalization, &sampler );
 				}
 			}
 

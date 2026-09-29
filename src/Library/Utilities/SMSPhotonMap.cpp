@@ -239,7 +239,8 @@ namespace
 			ray.SetDir( Vector3Ops::Normalize( ray.Dir() ) );
 
 			RayIntersection ri( ray, nullRasterizerState );
-			pObjMgr->IntersectRay( ri, true, true, false );
+			IndependentSampler alphaSampler(rng);
+			pObjMgr->IntersectRaySampled(ri, alphaSampler);
 			if( !ri.geometric.bHit ) {
 				return false;
 			}

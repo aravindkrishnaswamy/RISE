@@ -228,6 +228,7 @@ namespace RISE
 				unsigned int	sampleIdx;		///< valid iff !legacy: index into XExtra's vector for `stream`
 			};
 			std::vector<ModifiedLane>		modifiedIndices;	///< Lanes modified in current proposal (for fast rollback)
+			unsigned int alphaIndex = 0;
 			unsigned int					sampleIndex;		///< Current consumption position within current stream
 			unsigned int					currentIteration;	///< Global mutation counter
 
@@ -327,6 +328,8 @@ namespace RISE
 			/// (2048, DL-08) is reserved for the MLT film/lens/aperture
 			/// block -- see `kDefaultNumStreams`'s comment above for why
 			/// it is no longer the literal 48.
+            Scalar GetAlpha1D();
+
 			void StartStream( int streamIndex );
 
 			//////////////////////////////////////////////////////////////

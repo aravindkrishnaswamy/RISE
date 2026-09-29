@@ -460,7 +460,8 @@ namespace RISE
 			AliasTable					aliasTable;		///< O(1) selection table
 			unsigned int				risCandidates;	///< Number of RIS candidates (0=disabled)
 			Scalar						lightSampleRRThreshold;	///< Light-sample RR threshold (0=disabled)
-			bool						bSceneHasObjectMedia;	///< True if any object has an interior medium (cached during Prepare)
+			bool bSceneHasAlphaCoverage = false;
+            bool						bSceneHasObjectMedia;	///< True if any object has an interior medium (cached during Prepare)
 
 			/// Light BVH for importance-weighted selection (null when disabled)
 			LightBVH*					pLightBVH;
@@ -991,7 +992,8 @@ namespace RISE
 			/// (per-object or global).  Used to gate shadow transmittance
 			/// evaluation — when false, all shadow transmittance calls
 			/// are skipped.
-			bool SceneHasMedia() const { return bSceneHasObjectMedia || (pPreparedScene && pPreparedScene->GetGlobalMedium()); }
+			bool SceneHasAlphaCoverage() const { return bSceneHasAlphaCoverage; }
+            bool SceneHasMedia() const { return bSceneHasObjectMedia || (pPreparedScene && pPreparedScene->GetGlobalMedium()); }
 
 			/// Sets the number of RIS candidates for spatially-aware
 			/// light selection.  When M>0, EvaluateDirectLighting draws

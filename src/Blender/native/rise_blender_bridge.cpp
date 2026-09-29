@@ -1494,74 +1494,23 @@ namespace
 		}
 
 		const std::string matName = material.name;
+        std::string alpha = std::to_string(material.alpha);
+        if (material.alpha_texture_painter_name && material.alpha_texture_painter_name[0]) {
+            alpha = matName + ".alpha";
+            if (!job.AddPainterChannelScalarPainter(alpha.c_str(), material.alpha_texture_painter_name, 3, 1, 0)) {
+                write_error(error_message, error_message_size, "Failed to bind scalar alpha texture");
+                return false;
+            }
+        }
+        if (!job.SetMaterialAlpha(matName.c_str(), alpha.c_str(),
+            material.alpha_mode == RISE_BLENDER_ALPHA_CLIP ? "mask" : "blend", material.alpha_threshold)) return false;
+        // ABI-v14 exporters may still bind this name. Keep its ordinary
+        // shading response, with coverage applied only by traversal.
+        const char* ops[] = {"DefaultEmission", "DefaultDirectLighting"};
+        const unsigned int lo[] = {0,0}, hi[] = {100,100};
+        const char operations[] = {'+','+'};
+        if (!job.AddAdvancedShader((matName + ".shader").c_str(), 2, ops, lo, hi, operations)) return false;
 
-		// Alpha source painter: a textured Alpha (an already-registered
-		// COLOUR painter -- the connected Image Texture) reads its ALPHA
-		// channel via AddChannelPainter, mirroring GLTFSceneImporter.cpp's
-		// `BuildAlphaPainter` "read CHAN_A from the raw texture" comment
-		// verbatim; otherwise a uniform painter at the constant `alpha`
-		// value (Blender's Alpha socket carries no separate scale factor
-		// the way glTF's baseColorFactor.a does, so there is nothing to
-		// bake in beyond the raw channel/constant).
-		const std::string alphaSourceName = matName + ".alpha";
-		const bool hasAlphaTexture = ( material.alpha_texture_painter_name && material.alpha_texture_painter_name[0] );
-		if( hasAlphaTexture ) {
-			if( !job.AddChannelPainter( alphaSourceName.c_str(), material.alpha_texture_painter_name,
-				/*chan A*/ 3, /*scale*/ 1.0, /*bias*/ 0.0 ) )
-			{
-				write_error( error_message, error_message_size,
-					"Failed to build the alpha-channel painter for a Blender material's Alpha texture" );
-				return false;
-			}
-		} else {
-			const double alphaColor[3] = { material.alpha, material.alpha, material.alpha };
-			if( !job.AddUniformColorPainter( alphaSourceName.c_str(), alphaColor, "Rec709RGB_Linear" ) ) {
-				write_error( error_message, error_message_size,
-					"Failed to build the constant alpha painter for a Blender material" );
-				return false;
-			}
-		}
-
-		std::string opName;
-		if( material.alpha_mode == RISE_BLENDER_ALPHA_CLIP ) {
-			opName = matName + ".alphatest";
-			if( !job.AddAlphaTestShaderOp( opName.c_str(), alphaSourceName.c_str(), material.alpha_threshold ) ) {
-				write_error( error_message, error_message_size, "Failed to create an alpha-test shader op" );
-				return false;
-			}
-		} else {
-			// RISE_BLENDER_ALPHA_BLEND (also used for Blender's HASHED
-			// mode -- see rise_blender_alpha_mode's own comment).
-			// Identical construction to GLTFSceneImporter.cpp's
-			// alphaMode=BLEND branch: `transparency_shaderop` blends the
-			// background (continuing the ray past the surface) with the
-			// running accumulator by `(1 - alpha)`, built here as a
-			// blend between white and black masked by the alpha source.
-			const std::string nZero  = matName + ".alpha_blend_zero";
-			const std::string nWhite = matName + ".alpha_blend_white";
-			const std::string nTrans = matName + ".alpha_blend_factor";
-			const double zero[3]  = { 0.0, 0.0, 0.0 };
-			const double white[3] = { 1.0, 1.0, 1.0 };
-			if( !job.AddUniformColorPainter( nZero.c_str(),  zero,  "Rec709RGB_Linear" ) ||
-			    !job.AddUniformColorPainter( nWhite.c_str(), white, "Rec709RGB_Linear" ) ||
-			    !job.AddBlendPainter( nTrans.c_str(), nZero.c_str(), nWhite.c_str(), alphaSourceName.c_str() ) )
-			{
-				write_error( error_message, error_message_size, "Failed to build the alpha-blend factor painter" );
-				return false;
-			}
-
-			opName = matName + ".transparency";
-			if( !job.AddTransparencyShaderOp( opName.c_str(), nTrans.c_str(), /*one_sided*/ false ) ) {
-				write_error( error_message, error_message_size, "Failed to create a transparency shader op" );
-				return false;
-			}
-		}
-
-		const std::string shaderName = matName + ".shader";
-		if( !RISE::Utilities::WireAlphaAdvancedShader( job, shaderName.c_str(), opName.c_str() ) ) {
-			write_error( error_message, error_message_size, "Failed to wire the alpha-aware advanced shader" );
-			return false;
-		}
 		return true;
 	}
 
@@ -1608,7 +1557,7 @@ namespace
 			return false;
 		}
 
-		// ABI v14 / DL-193: wire the alpha-aware shader chain over
+		// ABI v14 / DL-214: install shared scalar material coverage over
 		// whichever branch above just registered `material.name`.
 		return wire_alpha_shader_for_material( job, material, error_message, error_message_size );
 	}
@@ -1665,7 +1614,7 @@ namespace
 
 		// ABI v14 / DL-193: an object-authored shader override (an
 		// already-registered `advanced_shader`, typically the alpha
-		// chain `wire_alpha_shader_for_material` built for its bound
+		// ordinary compatibility chain built for its bound
 		// material) -- NULL/empty (the pre-v14 default) keeps the
 		// renderer's default per-rasterizer shader, exactly as before.
 		const char* shaderName = ( object.shader_name && object.shader_name[0] ) ? object.shader_name : 0;
@@ -3202,15 +3151,12 @@ extern "C" int rise_blender_render_scene(
 	// directly rather than from anything `add_material` decides, since
 	// `alpha_mode` is authoritative regardless of which model branch a
 	// material takes.  Consumed after `configure_rasterizer` below.
-	bool any_alpha_material = false;
 	for( uint32_t i = 0; i < scene->num_materials; ++i ) {
 		if( !add_material( *job, scene->materials[i], error_message, error_message_size ) ) {
 			RISE::safe_release( job );
 			return 0;
 		}
-		if( scene->materials[i].alpha_mode != RISE_BLENDER_ALPHA_OPAQUE ) {
-			any_alpha_material = true;
-		}
+
 	}
 
 	for( uint32_t i = 0; i < scene->num_meshes; ++i ) {
@@ -3276,40 +3222,6 @@ extern "C" int rise_blender_render_scene(
 		return 0;
 	}
 
-	// DL-193 (docs/DEBT_LEDGER.md): AlphaTestShaderOp.h's own
-	// integrator-compatibility caveat, corrected by DIRECT MEASUREMENT
-	// (BlenderBridgeAlphaTest.cpp) rather than that file's own earlier,
-	// WRONG assumption that the modern path tracer honours it too:
-	// `RISE_BLENDER_RASTERIZER_PIXELPEL` is the ONLY rasterizer kind
-	// that dispatches through `RayCaster::SelectShader`/`ri.pShader`,
-	// so it is the ONLY one that honours the alpha shader-op chain
-	// `IJob::AddAlphaTestShaderOp`/`transparency_shaderop` builds.
-	// EVERY other kind -- BDPT, VCM, MLT, and the modern PT integrator
-	// alike (`pathtracing_pel_rasterizer`, `PathTracingIntegrator.cpp`,
-	// which never references the shader-op pipeline at all) -- silently
-	// renders every alpha-masked/blended surface fully opaque.  Filed
-	// as the general architecture gap DL-214 (docs/DEBT_LEDGER.md), not
-	// specific to this bridge.  For an explicitly selected (non-Auto)
-	// rasterizer this is knowable NOW, from `settings->rasterizer_kind`
-	// alone; the Auto dispatcher's actual choice isn't known until
-	// after rendering (and never resolves to PIXELPEL regardless), so
-	// that case is handled below, at the SAME site the "Auto -> X"
-	// resolved-integrator surfacing already reads
-	// `job->GetRasterizer()` from (mirrors this function's own
-	// pre-existing pattern rather than inventing a second one).
-	if( any_alpha_material && settings->rasterizer_kind != RISE_BLENDER_RASTERIZER_PIXELPEL ) {
-		// Auto is deliberately excluded here even though it, too, never
-		// resolves to PIXELPEL -- its warning fires post-render below,
-		// naming the ACTUAL resolved integrator rather than "Auto".
-		if( settings->rasterizer_kind != RISE_BLENDER_RASTERIZER_AUTO_PEL &&
-		    settings->rasterizer_kind != RISE_BLENDER_RASTERIZER_AUTO_SPECTRAL ) {
-			warnings.push_back(
-				"One or more materials use Alpha < 1 (cutout or blend); the "
-				"selected integrator does not honour RISE's alpha shader-op "
-				"chain and will render them fully opaque. Only the legacy "
-				"direct-lighting rasterizer currently honours it." );
-		}
-	}
 
 	if( !job->AddCallbackRasterizerOutput( &raster_output ) ) {
 		write_error( error_message, error_message_size, "Failed to attach the rasterizer callback output" );
@@ -3355,29 +3267,7 @@ extern "C" int rise_blender_render_scene(
 			std::snprintf( result->resolve_reason, sizeof( result->resolve_reason ),
 				"%s", active->ResolveReason() );
 
-			// DL-193: the Auto dispatcher's CHOICE wasn't knowable before
-			// rendering (unlike an explicitly selected rasterizer, handled
-			// above) -- check it now, from the SAME resolved name the "Auto
-			// -> X" UI surfacing above just populated.  UNCONDITIONAL: the
-			// auto dispatcher only ever resolves to "pt"/"bdpt"/"vcm"
-			// (docs/AUTO_RASTERIZER_DESIGN.md), and NONE of those honour
-			// the alpha shader-op chain (PIXELPEL, the one rasterizer that
-			// does, is never an auto-dispatcher candidate) -- so there is
-			// no resolved name that would make this warning wrong.  The
-			// resolved name is still read (not hardcoded) so the message
-			// names the ACTUAL integrator the render used.
-			if( any_alpha_material ) {
-				std::string resolved = result->resolved_integrator;
-				std::transform( resolved.begin(), resolved.end(), resolved.begin(),
-					[]( unsigned char c ) { return std::tolower( c ); } );
-				{
-					warnings.push_back(
-						"One or more materials use Alpha < 1 (cutout or blend); the "
-						"Auto rasterizer resolved to `" + resolved + "` for this render, "
-						"which does not honour RISE's alpha shader-op chain and will "
-						"render them fully opaque." );
-				}
-			}
+
 		}
 	}
 

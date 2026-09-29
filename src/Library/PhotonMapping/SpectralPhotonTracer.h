@@ -15,6 +15,8 @@
 #ifndef SPECTRAL_PHOTON_TRACER_
 #define SPECTRAL_PHOTON_TRACER_
 
+#include "../Utilities/IndependentSampler.h"
+#include "../Lights/LightSampler.h"
 #include "../Interfaces/IPhotonTracer.h"
 #include "../Utilities/Reference.h"
 #include "../Utilities/IORStackSeeding.h"
@@ -158,6 +160,16 @@ namespace RISE
 						rig.ptCoord = coord;
 						rig.onb.CreateFromW( rig.vNormal );
 
+                        rig.ptIntersection = r.origin;
+                        rig.ptObjIntersec = LightSampler::EmitterObjectPoint(i->pLum, r.origin, r.origin);
+                        EmitterSurfacePayload alphaSurface;
+                        LightSampler::ProbeEmitterSurface(i->pLum, pScene->GetObjects(), r.origin, normal, alphaSurface);
+                        LightSampler::ApplyEmitterSurface(rig, alphaSurface);
+                        IndependentSampler alphaSampler(random);
+                        if (!i->pLum->GetMaterial()->AcceptAlpha(rig, alphaSampler)) {
+                            ++numshot_thislum;
+                            continue;
+                        }
 						r.SetDir(pEmitter->getEmmittedPhotonDir( rig, dirRand ));
 
 						// Each photon gets a different wavelength...

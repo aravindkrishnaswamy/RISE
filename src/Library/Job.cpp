@@ -15766,3 +15766,22 @@ bool Job::InstantiateRasterizerWithDefaults( const std::string& name )
 	// Unknown name (not in the standard set).
 	return false;
 }
+
+bool Job::SetMaterialAlpha(const char* material, const char* alpha, const char* mode, const double cutoff)
+{
+    if (!material || !mode || !alpha || !RISE::IsFiniteDouble(cutoff)) return false;
+    IMaterial* mat = pMatManager->GetItem(material);
+    if (!mat) return false;
+    AlphaMode m;
+    if (!strcmp(mode, "opaque")) m = eAlphaOpaque;
+    else if (!strcmp(mode, "mask")) m = eAlphaMask;
+    else if (!strcmp(mode, "blend")) m = eAlphaBlend;
+    else return false;
+    IScalarPainter* p = ResolveOrDiagnoseScalar(pScalarPntManager, pPntManager,
+        "material_alpha", material, "alpha", alpha, true);
+    if (!p) return false;
+    mat->SetAlpha(p, m, cutoff);
+    p->release();
+    BumpSceneLightGen(pScene);
+    return true;
+}

@@ -448,34 +448,11 @@ typedef struct rise_blender_material {
 	const char* coat_normal_painter_name;
 	double coat_normal_scale;
 
-	// ABI v14 (DL-193, docs/DEBT_LEDGER.md; source heading DL-186's own
-	// "Alpha deliberately left unbridged" decision, now closed).
-	// Principled BSDF's Alpha socket.  `alpha_mode` selects HOW the
-	// bridge wires it (see `rise_blender_alpha_mode` above): OPAQUE
-	// (default, ABI-compatible with a pre-v14 payload) ignores `alpha`/
-	// `alpha_texture_painter_name`/`alpha_threshold` entirely; CLIP
-	// builds an `AddAlphaTestShaderOp` cutout at `alpha_threshold`;
-	// BLEND builds a `transparency_shaderop` (Blender's HASHED mode
-	// maps to this same path -- RISE has one stochastic-transparency
-	// mechanism, not a separate dithered one).  `alpha` is the constant
-	// fallback read when `alpha_texture_painter_name` is NULL/empty;
-	// when set, that name is an already-registered COLOUR painter (the
-	// connected Image Texture) whose ALPHA channel (index 3) the bridge
-	// extracts via `IJob::AddChannelPainter` -- mirroring
-	// `GLTFSceneImporter.cpp`'s own `WireAlphaShader`/`BuildAlphaPainter`
-	// convention exactly.  See `AlphaTestShaderOp.h`'s own integrator-
-	// compatibility caveat -- measured directly for this row (DL-193):
-	// `pixelpel_rasterizer` is the ONLY rasterizer that honours the
-	// resulting shader-op chain.  BDPT/VCM/MLT/photon tracers AND the
-	// modern PT integrator (`pathtracing_pel_rasterizer`, what this
-	// bridge's PT_PEL/PT_SPECTRAL rasterizer kinds build) all silently
-	// ignore it regardless of `alpha_mode` -- `PathTracingIntegrator.cpp`
-	// evaluates emission/BSDF/NEE directly, with no reference to
-	// `RayCaster::SelectShader`/`ri.pShader` anywhere in it (filed as
-	// the general architecture gap DL-214, docs/DEBT_LEDGER.md, not
-	// specific to this bridge).  `rise_blender_render_scene` warns at
-	// render time from wherever it already reports the resolved
-	// integrator (the "Auto -> X" surfacing).
+	// ABI v14: Principled Alpha becomes scalar material coverage (DL-214).
+	// OPAQUE ignores alpha; CLIP is MASK at alpha_threshold; BLEND/HASHED
+	// are stochastic coverage. A registered RGBA painter supplies linear A,
+	// multiplied by the numeric alpha factor. Legacy and modern transport
+	// share the same intersection-time semantics; ABI layout is unchanged.
 	double alpha;
 	const char* alpha_texture_painter_name;
 	int alpha_mode;
