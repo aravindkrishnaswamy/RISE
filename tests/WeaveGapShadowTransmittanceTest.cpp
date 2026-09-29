@@ -1114,6 +1114,37 @@ static std::string CasterCeilingScene( int kind, bool sheet, bool slab )
 	return ss.str();
 }
 
+//! DL-295 review round 2 (P1-1): a receiver under a CLOSED 0.05-thick
+//! ior-1.5 perfect-refractor slab at y 2, the 4 x 4 emitter at y 4.
+//! @a recv: 0 Lambertian (an SMS anchor -- SMS owns receiver -> slab ->
+//! emitter), 1 `biospec_skin_material` (NO BSDF: the SPF-only branch
+//! skips PART 2, so SMS never runs there and it is NOT an anchor), 2
+//! rough `randomwalk_sss_material` (BSSRDF; printed only).
+static std::string UnderSlabScene( int recv, bool slab )
+{
+	std::ostringstream ss;
+	ss << "film\n{\n\twidth 16\n\theight 16\n}\n\n"
+	      "pinhole_camera\n{\n\tlocation 0 1 1.2\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 10.0\n}\n\n";
+	if( recv == 1 ) {
+		ss << "biospec_skin_material\n{\n\tname mat_recv\n\tmelanosomes_in_epidermis 0.019\n\tfolds_aspect_ratio 0.75\n}\n\n";
+	} else if( recv == 2 ) {
+		ss << "randomwalk_sss_material\n{\n\tname mat_recv\n\tior 1.3\n\tabsorption 0.5 0.5 0.5\n\tscattering 20 20 20\n\tg 0.0\n\troughness 0.3\n}\n\n";
+	} else {
+		ss << "uniformcolor_painter\n{\n\tname pnt_recv\n\tcolor " << kRho << " " << kRho << " " << kRho << "\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+		      "lambertian_material\n{\n\tname mat_recv\n\treflectance pnt_recv\n}\n\n";
+	}
+	ss << "clippedplane_geometry\n{\n\tname geo_recv\n\tpta -1 0 1\n\tptb 1 0 1\n\tptc 1 0 -1\n\tptd -1 0 -1\n\tdoublesided TRUE\n}\n\n"
+	      "standard_object\n{\n\tname obj_recv\n\tgeometry geo_recv\n\tmaterial mat_recv\n}\n\n"
+	   << EmitterChunks( "\tpta -2 4 -2\n\tptb 2 4 -2\n\tptc 2 4 2\n\tptd -2 4 2\n", 4.0 );
+	if( slab ) {
+		ss << "uniformcolor_painter\n{\n\tname pnt_refr\n\tcolor 1 1 1\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+		      "perfectrefractor_material\n{\n\tname mat_refr\n\trefractance pnt_refr\n\tior 1.5\n}\n\n"
+		      "box_geometry\n{\n\tname geo_slab\n\twidth 8\n\theight 0.05\n\tdepth 8\n}\n\n"
+		      "standard_object\n{\n\tname slab\n\tgeometry geo_slab\n\tposition 0 2 0\n\tmaterial mat_refr\n}\n\n";
+	}
+	return ss.str();
+}
+
 //! Opt-in probe (WEAVE_GAP_FILTER=dl295probe): print SMS on / off for the
 //! round-1 review scenes, to size the gated rows' sample counts.
 static void ProbeReviewScenes()
@@ -1134,6 +1165,9 @@ static void ProbeReviewScenes()
 		{ "ceiling polished no gap pel (control)", CasterCeilingScene( true, false, false ), false },
 		{ "ceiling SSS no gap hwss (control)", CasterCeilingScene( false, false, false ), true },
 		{ "ceiling dielectric no gap pel (control)", CasterCeilingScene( 2, false, false ), false },
+		{ "Lambertian under slab pel (SMS owns it)", UnderSlabScene( 0, true ), false },
+		{ "rough RW-SSS under slab pel", UnderSlabScene( 2, true ), false },
+		{ "rough RW-SSS no slab pel", UnderSlabScene( 2, false ), false },
 	};
 	for( const P& r : rows ) {
 		const unsigned int spp = 256;
@@ -1232,6 +1266,16 @@ static void TestSMSEmissionThroughGap()
 		CasterCeilingScene( false, true, false ), 0.06 );
 	ParityRow( "receiver -> gap -> slab -> smooth-SSS ceiling PT HWSS (no-BSDF hand-off)", RastPTSpectralSMS( 2048, true, true ), RastPTSpectralSMS( 2048, true, false ),
 		CasterCeilingScene( false, true, true ), 0.09 );
+	// DL-295 review round 2, P1-1: a surface with NO BSDF is not an SMS
+	// anchor.  `biospec_skin_material` goes through the SPF-only branch,
+	// which `continue`s before PART 2, so SMS never runs there -- yet it set
+	// the anchor flag, and skin -> slab -> emitter was suppressed with no
+	// estimator: PT+SMS 0 vs 0.267 (pel) / 0.244 (spectral).
+	ParityRow( "skin receiver under a closed slab PT RGB (no BSDF: not an SMS anchor)", RastPTSMS( 256, true ), RastPTSMS( 256, false ),
+		UnderSlabScene( 1, true ), 0.05 );
+	ParityRow( "skin receiver under a closed slab PT spectral hwss=false", RastPTSpectralSMS( 256, false, true ), RastPTSpectralSMS( 256, false, false ),
+		UnderSlabScene( 1, true ), 0.08 );
+
 	// MUST STAY SUPPRESSED: the same anchored chain with no gap is an SMS
 	// chain by PT's accounting (anchor, then a caster), so PT must not
 	// count it -- a regression that un-suppressed it would read PT+SMS/PT
@@ -1669,8 +1713,34 @@ static void MeasureCausticAudit( unsigned int n, unsigned int ptSpp, unsigned in
 	SobolSamplerTestHooks::ValueSalt().store( 0u );
 }
 
+static char g_optPath[512] = { 0 };
+
 int main( int argc, char** argv )
 {
+	// DL-295 review round 2 (P2-1/P3-3): run every render on ONE worker
+	// unless the caller supplies its own options file.  A multithreaded
+	// render seeds each worker's RNG from libc rand() in thread-start order
+	// (RasterizeDispatchers) and hands tiles to workers nondeterministically,
+	// so the same seed base and Sobol' salt read differently run to run;
+	// single-threaded rendering draws from GlobalRNG() and is exactly
+	// reproducible.  Every fixture here is at most 24 x 24 -- a single
+	// 32-pixel tile -- so one worker costs a few percent.  With it a seed
+	// sweep IS the run-to-run spread, and the `sms` bands are set from one.
+	// (Must precede the first GlobalOptions() read, which caches.)
+	if( !std::getenv( "RISE_OPTIONS_FILE" ) ) {
+		std::snprintf( g_optPath, sizeof(g_optPath), "/tmp/weave_gap_options_%d.txt", static_cast<int>( ::getpid() ) );
+		char* optPath = g_optPath;
+		std::atexit( []() { std::remove( g_optPath ); } );
+		std::ofstream opt( optPath );
+		opt << "force_number_of_threads 1\n";
+		opt.close();
+#ifdef _WIN32
+		_putenv_s( "RISE_OPTIONS_FILE", optPath );
+#else
+		setenv( "RISE_OPTIONS_FILE", optPath, 1 );
+#endif
+	}
+
 	if( argc > 1 ) {
 		const long v = std::strtol( argv[1], nullptr, 10 );
 		if( v > 0 ) g_seedBase = (unsigned int)v;

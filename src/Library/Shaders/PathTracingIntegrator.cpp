@@ -3077,12 +3077,16 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 										rs2.translucentBounces = nextTranslucentBounces;
 										rs2.glossyFilterWidth = glossyFilterWidth;
 										// BSSRDF emerges as a diffuse scatter at a
-										// non-specular shading point — propagate
-										// SMS emission-suppression state so an
-										// onwards child ray through glass to a
-										// light doesn't re-enable emission.
+										// non-specular point -- but NOT an SMS
+										// anchor: SMS is evaluated only in PART 2 at
+										// a vertex with a BSDF, never at a BSSRDF
+										// exit, so a chain the continuation starts
+										// (exit -> glass -> light) has no SMS
+										// estimate and must keep its emitter hit
+										// (DL-295 review round 2; this used to pass
+										// `true`, i.e. "SMS already covered it").
 										rs2.smsPassedThroughSpecular = false;
-										rs2.smsHadNonSpecularShading = true;
+										rs2.smsHadNonSpecularShading = false;
 										// DL-72 / DL-84 (round 4): the FULL vertex-local
 										// integrand of this exit sample, `weight *
 										// cosinePdf` -- see PTBssrdfTrainedBsdfTimesCos's
@@ -3356,12 +3360,16 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 										rs2.translucentBounces = nextTranslucentBounces;
 										rs2.glossyFilterWidth = glossyFilterWidth;
 										// BSSRDF emerges as a diffuse scatter at a
-										// non-specular shading point — propagate
-										// SMS emission-suppression state so an
-										// onwards child ray through glass to a
-										// light doesn't re-enable emission.
+										// non-specular point -- but NOT an SMS
+										// anchor: SMS is evaluated only in PART 2 at
+										// a vertex with a BSDF, never at a BSSRDF
+										// exit, so a chain the continuation starts
+										// (exit -> glass -> light) has no SMS
+										// estimate and must keep its emitter hit
+										// (DL-295 review round 2; this used to pass
+										// `true`, i.e. "SMS already covered it").
 										rs2.smsPassedThroughSpecular = false;
-										rs2.smsHadNonSpecularShading = true;
+										rs2.smsHadNonSpecularShading = false;
 										// DL-72 / DL-84 (round 4): the FULL vertex-local
 										// integrand of this exit sample, `weight *
 										// cosinePdf` -- see PTBssrdfTrainedBsdfTimesCos's
@@ -3559,12 +3567,22 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				translucentBounces = rs2.translucentBounces;
 				glossyFilterWidth = rs2.glossyFilterWidth;
 
-				// Track specular transitions for SMS double-counting prevention
+				// Track specular transitions for SMS double-counting prevention.
+				// A NON-delta scatter here is NOT an SMS anchor (DL-295 review
+				// round 2, P1-1): this branch `continue`s before PART 2, so
+				// neither NEE nor SMS ever runs at a BSDF-less surface
+				// (`biospec_skin_material`, `generic_human_tissue_material`, a
+				// composite with no BSDF).  It used to set
+				// `bHadNonSpecularShading = true`, and the next caster chain
+				// then had its emitter hit suppressed with nothing estimating
+				// it: a skin receiver under a closed glass slab read 0 under
+				// PT+SMS.  An SMS anchor is a non-delta vertex at which SMS is
+				// EVALUATED -- one that reaches PART 2 with a BSDF.
 				if( pS->isDelta ) {
 					bPassedThroughSpecular = true;
 					} else {
 						bPassedThroughSpecular = false;
-						bHadNonSpecularShading = true;
+						bHadNonSpecularShading = false;
 					}
 				bSMSChainUncovered = nextSMSChainUncoveredSPF;
 
@@ -4398,8 +4416,10 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			// shadow at a pass-through (DL-05 section 2).
 			//
 			// ...and only when an SMS ANCHOR precedes the chain (DL-295
-			// review P2-2).  SMS is evaluated at a non-delta BSDF vertex and
-			// seeds from there toward the light THROUGH the casters; a
+			// review P2-2).  An SMS anchor is a non-delta vertex at which SMS
+			// is EVALUATED -- one that reaches PART 2 with a BSDF; SPF-only
+			// surfaces, BSSRDF exits and medium vertices are not anchors.
+			// SMS seeds from an anchor toward the light THROUGH the casters; a
 			// chain with no such vertex before it (camera -> smooth SSS or
 			// polished coat -> emitter) is never estimated by SMS, and NEE
 			// cannot sample a delta lobe, so suppressing it dropped a
@@ -5789,12 +5809,13 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					//   - the surface hand-off carries this loop's live
 					//     per-type bounce counters, `rayType` and
 					//     `glossyFilterWidth`, and passes
-					//     smsHadNonSpecularShading=true for the same reason
-					//     the no-BSDF and SSS delegations below do (this
-					//     site is likewise reachable only after >= 1
-					//     non-specular SMS anchor vertex, whose SMS pass
-					//     already counted the BSDF-sampled emission at the
-					//     light).
+					//     smsHadNonSpecularShading=true.  NOTE (DL-295 /
+					//     DL-340): that constant is WRONG -- the vertex
+					//     before this hand-off is a MEDIUM scatter, where
+					//     SMS is never evaluated, so it is not an SMS anchor
+					//     and a caster chain it starts has no SMS estimate.
+					//     The no-BSDF and SSS delegations below now forward
+					//     the chain's real state; this one is DL-340's.
 					//   - the escape mirrors the enclosing loop's own `!bHit`
 					//     env branch, INCLUDING its `pRadianceMap` fallback:
 					//     an escaping continuation is precisely what that
@@ -6223,15 +6244,17 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 
 		// If we hit a material without BSDF mid-path (e.g. entered a
 		// dielectric), fall back to per-wavelength NM for remaining path.
-		// SMS double-count guard: this delegation is reached ONLY after the
-		// HWSS loop has processed >= 1 BSDF (non-specular) vertex where SMS
-		// was evaluated -- the first hit has a BSDF (else Fallback 1 returned)
-		// and needsIntersection gates re-intersection, so any prior vertex was
-		// a non-specular SMS anchor.  Pass smsHadNonSpecularShading=true so the
-		// delegated NM body suppresses the BSDF-sampled emission at the light
-		// that the HWSS-side SMS pass already counted.  Without it the SPF
-		// emission fix (asymmetry #1: considerEmission stays true through
-		// glass) would double-count diffuse->glass->light in HWSS mode.
+		// SMS double-count guard: forward whether an SMS anchor (a non-delta
+		// BSDF vertex, where SMS ran) precedes the current chain -- the HWSS
+		// loop's `bSMSAnchor` -- so the delegated NM body suppresses the
+		// BSDF-sampled emission at the light that the HWSS-side SMS pass
+		// already counted.  Without it the SPF emission fix (asymmetry #1:
+		// considerEmission stays true through glass) would double-count
+		// diffuse->glass->light in HWSS mode.  (DL-295 review round 1: this
+		// used to pass a constant `true` on the claim that a BSDF vertex
+		// always precedes this hand-off; the first hit is a BSDF vertex, but
+		// the chain reaching here need not be ANCHORED by one -- camera ->
+		// polished coat -> glass has no anchor.)
 		if( !pBRDFCur )
 		{
 			for( unsigned int w = 0; w < SampledWavelengths::N; w++ )
