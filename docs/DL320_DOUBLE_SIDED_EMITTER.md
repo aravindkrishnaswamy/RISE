@@ -167,7 +167,7 @@ at 64 px / 64 spp / n = 4 (post/pre, then post/PT-post):
 | scene | PT | BDPT | VCM |
 |---|---|---|---|
 | `FeatureBased/BDPT/bdpt_crystal_garden` | 1.917 | 2.187 (0.888) | 2.782 (0.898) |
-| `FeatureBased/SDF/sdf_morph_torture` | 1.868 | 1.897 (1.010) | 1.908 (1.001) |
+| `FeatureBased/SDF/sdf_morph_torture` (census artifact: its rasterizer chunk carries its environment map, which the census stripped; with it the scene moves +1.4 %, section 7) | 1.868 | 1.897 (1.010) | 1.908 (1.001) |
 | `Tests/MLT/mlt_torus_chain_atrium` | 1.600 | 1.735 (0.950) | 1.904 (0.946) |
 | `Tests/Caustics/triplecaustic` (+ `_pt_sms`, `VCM/triplecaustic_vcm`, same lights) | 1.355 | 1.326 (0.970) | 1.430 (0.995) |
 | `FeatureBased/Shaders/SSS/sss_gi_dragon` | 1.092 | 1.207 (0.588) | 1.310 (0.580) |
@@ -269,3 +269,111 @@ ceiling behind them, harmlessly (the light is trapped); a panel with open
 space behind it sends half its power there.  Use `doublesided FALSE`
 (or `rect_light`) for a one-sided panel.  docs/SCENE_CONVENTIONS.md
 section 4 "Lights" states the rule.
+
+## 7. Scene re-authoring (user ruling, 2026-09-28)
+
+Ruling: keep the two-faced convention, accept the brightening, and adjust
+the shipped scenes so they look correct.  No `doublesided FALSE` flips.
+
+**Which scenes.**  Every scene whose whole-image mean moved by more than
+5 % under PT, BDPT or VCM in the section 4.3 census, plus a second census
+of the 23 legacy-chain scenes (`pixelpel`, `pixelintegratingspectral`)
+under their OWN rasterizer (it added none).  Re-checked under each
+scene's own rasterizer before editing:
+
+- `sdf_morph_torture` is NOT a mover: the census stripped its rasterizer
+  chunk, which carries its environment map; with it the image moves
+  +1.4 % (+7.8 % in one quadrant).  No edit.
+- `sms_k2_glasssphere` (VCM -31 % at z -3.2, n = 3) and the
+  `pt_painter_gabor3d_grid` / `domainwarp3d_grid` volumes (VCM -5.3 / -5.0 %)
+  moved only under VCM, which none of them uses; their own PT did not
+  move.  Those are VCM's own noise and medium bias (section 4.3), not a
+  change of look.  No edit.
+- The SSS wax / rwsss spheres (+2-3 %) are under the threshold.  No edit.
+
+**Method.**  For each edited scene: pre / post / tuned renders with the
+scene's own rasterizer (film 120 px wide, samples capped at 32 -- 8 for
+the dragon, MLT at its own settings; OIDN off; salted n = 3-4), the mean
+of the region the author composed for, and one uniform factor on the
+scene's luminaire `scale`s (the only lights in these scenes whose output
+matters -- the dragon and the triplecaustic trio have no other light, and
+the two spot lights in crystal_garden / one in the atrium were measured
+at 0.13 % / 0.02 % of the subject region with the panels off).  A region
+is linear in a uniform scale, so the factor is `pre / untuned`.  Before /
+after PNGs at the scenes' own tonemapping are in the slice's scratchpad
+(`debtclean/dl320/png/`: `<scene>_pre`, `<scene>_post`,
+`<scene>_tuned_post`).
+
+**Classes.**  (a) the back face lights something that is legitimately lit
+by a two-sided panel and the author's `scale` assumed one face: reduce the
+scale to the subject's pre-fix level.  (b) the back face's light dies
+harmlessly: no edit.  (c) the back face lights something the author did
+not want lit: a geometric edit.  All six edited scenes are (a).
+
+| scene (own integrator) | edit | class | subject region | subject pre / untuned / tuned |
+|---|---|---|---|---|
+| `FeatureBased/BDPT/bdpt_crystal_garden` (BDPT) | `warm_lum` 180 -> 84, `cool_lum` 140 -> 65 | (a) | glass + floor, x 0.1-0.9, y 0.2-0.95 | 1.0414 / 2.2352 / 1.0435 (+0.2 %) |
+| `Tests/MLT/mlt_torus_chain_atrium` (MLT) | `warm_lum`, `cool_lum` 200 -> 55.6, `neutral_lum` 2000 -> 556 | (a) | torus chain, x 0.2-0.8, y 0.25-0.8 | 1.063 / 3.888 / 1.076 (+1.3 %) |
+| `FeatureBased/Shaders/SSS/sss_gi_dragon` (legacy `pixelpel`) | `lum` 10 -> 8.2 | (a) | dragon, x 0.3-0.78, y 0.3-0.85 | 0.0641 / 0.0789 / 0.0664 (+3.4 %, sd 0.004) |
+| `Tests/Caustics/triplecaustic` (legacy `pixelpel` + photon maps) | `white_lum` 90 -> 78.8 | (a) | spheres + caustic, lower half | 0.5295 / 0.6049 / 0.5296 |
+| `Tests/Caustics/triplecaustic_pt_sms` (PT + SMS) | `white_lum` 90 -> 74.5 | (a) | spheres + caustic, lower half | 0.5987 / 0.7229 / 0.5981 |
+| `Tests/VCM/triplecaustic_vcm` (VCM) | `white_lum` 90 -> 71.3 | (a) | spheres + caustic, lower half | 0.5936 / 0.7489 / 0.5929 |
+
+Why (a) in each:
+
+- **crystal_garden, mlt_torus_chain_atrium.**  Their ceiling panels are
+  wound face-UP (normal `+y`), so the scene below has always been lit by
+  the BACK face.  Before DL-320 that light reached the image only through
+  MIS-weighted hits (the `pre` column is that partial count); now it
+  arrives in full.  The panel's other face lights the ceiling, which it
+  always did.  The subject is what the down-facing face should light, so
+  the scale comes down.  In the atrium the side walls now read about 4x
+  brighter than before (0.19 -> 0.77) with the torus chain matched: they
+  were dark only because the panels' downward light was missing.
+- **sss_gi_dragon.**  The panel stands close to the left wall and faces
+  into the room; its back face now lights that wall (before, a dark patch
+  sat directly behind the panel), and the bounce brightened the dragon by
+  23 %.  A lit wall behind a two-sided panel is the physics the convention
+  asks for.
+- **triplecaustic trio.**  The three small panels' back faces light the
+  back and side walls.  The PT variant ALREADY showed that glow before
+  DL-320 (PT counted most of the back-face light through hits), so the
+  glow is part of the look the author accepted, not something to hide.
+  A (c) edit was tried and dropped: a black "lamp housing" 0.002 behind
+  each panel removed the glow, but (1) it framed the centre panel in black,
+  (2) under VCM the merges gathered the housing's light vertices through
+  the emitter's own reflective surface (`white_lum` carries `material
+  white`) and read +25 % at a fixed merge radius, and (3) the housing's
+  0.002 segments shrank VCM's auto radius from 0.0107 to 0.0046 (DL-319's
+  mechanism).
+- **The trio no longer shares one scale** (78.8 / 74.5 / 71.3).  Before
+  DL-320 each integrator counted the back faces differently -- the
+  photon-mapped direct chain not at all, PT and VCM in part through
+  MIS-weighted hits -- so the three scenes' "pre-fix look" differed, and
+  a single scale would have left the direct-chain scene 5.4 % darker than
+  it was, which the ruling forbids.
+
+Whole-image means at the census settings (48 px, 16 spp, the scene's own
+rasterizer stripped, salted n = 3; post / pre):
+
+| scene | PT untuned / tuned | BDPT untuned / tuned | VCM untuned / tuned |
+|---|---|---|---|
+| bdpt_crystal_garden | 1.901 / 0.887 | 2.200 / 1.026 | 2.785 / 1.292 |
+| mlt_torus_chain_atrium | 1.617 / 0.454 | 1.759 / 0.487 | 1.970 / 0.534 |
+| sss_gi_dragon | 1.090 / 0.894 | 1.210 / 0.989 | 1.314 / 1.077 |
+| triplecaustic | 1.349 / 1.182 | 1.324 / 1.159 | 1.414 / 1.250 |
+| triplecaustic_pt_sms | 1.350 / 1.112 | 1.327 / 1.098 | 1.446 / 1.187 |
+| triplecaustic_vcm | 1.349 / 1.068 | 1.321 / 1.047 | 1.433 / 1.133 |
+
+The whole image is NOT the tuning target.  It stays above pre-fix where
+the back face lights a backdrop (the triplecaustic walls), and falls well
+below it in the atrium, whose pre-fix mean was dominated by the visible
+panels themselves (at 55.6 instead of 200 they still clip to white in the
+PNG).  The ratios also differ by integrator because each integrator's
+pre-fix image counted the back face differently.
+
+**Regenerated.**  `tests/data/cst_derive_golden.txt`: exactly the six
+edited scenes' digests changed (`--generate`; 456 MATCH / 0 DRIFT after).
+None of the six is an `AgentEvalCheckTest` fixture.
+`CausticReachHarnessTest` renders `bdpt_crystal_garden` but only reports
+scale-free ratios; it runs green (rc 0).

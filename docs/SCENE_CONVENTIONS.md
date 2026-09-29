@@ -492,6 +492,9 @@ so a back-facing panel lit the scene 7-14x too dark under PT and BDPT
 and not at all under the legacy direct-lighting chain
 ([DL320_DOUBLE_SIDED_EMITTER.md](DL320_DOUBLE_SIDED_EMITTER.md)).
 
+- **A `clippedplane_geometry` luminaire is double-sided by default and
+  emits from both faces -- size `scale` for both, or set `doublesided
+  FALSE` if only one face should emit.**
 - **Each face emits the full exitance**, so a double-sided panel's total
   power is `2 * exitance * area`.  A ceiling panel wound face-down with
   open space above it sends half its power up.  For a one-sided panel say
