@@ -13,6 +13,7 @@
 
 #include "pch.h"
 #include "WardIsotropicGaussianBRDF.h"
+#include "WardSelectionQuadrature.h"
 #include "../Interfaces/ILog.h"
 
 using namespace RISE;
@@ -105,7 +106,12 @@ RISEPel WardIsotropicGaussianBRDF::value( const Vector3& vLightIn, const RayInte
 	const Vector3 n = ( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) ? -ri.onb.w() : ri.onb.w();
 	ComputeFactors<RISEPel>( d, s, vLightIn, ri, n, a );
 
-	return d*pDiffuse->GetColor(ri) + s*pSpecular->GetColor(ri);
+	// DL-310: the diffuse term is coupled to the specular lobe's albedo
+	// bound -- see WardSelection::CoupledDiffuse.
+	const RISEPel rd = pDiffuse->GetColor(ri), rs = pSpecular->GetColor(ri);
+	const RISEPel rdCoupled( WardSelection::CoupledDiffuse( rd[0], rs[0] ),
+		WardSelection::CoupledDiffuse( rd[1], rs[1] ), WardSelection::CoupledDiffuse( rd[2], rs[2] ) );
+	return d*rdCoupled + s*rs;
 }
 
 Scalar WardIsotropicGaussianBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
@@ -116,7 +122,8 @@ Scalar WardIsotropicGaussianBRDF::valueNM( const Vector3& vLightIn, const RayInt
 	const Vector3 n = ( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) ? -ri.onb.w() : ri.onb.w();
 	ComputeFactors<Scalar>( d, s, vLightIn, ri, n, pAlpha->GetValueAtNM(ri,nm) );
 
-	return d*GuardedGetColorNM( *pDiffuse, ri, nm ) + s*GuardedGetColorNM( *pSpecular, ri, nm );
+	const Scalar rsNM = GuardedGetColorNM( *pSpecular, ri, nm );
+	return d*WardSelection::CoupledDiffuse( GuardedGetColorNM( *pDiffuse, ri, nm ), rsNM ) + s*rsNM;
 }
 
 RISEPel WardIsotropicGaussianBRDF::albedo( const RayIntersectionGeometric& ri ) const
@@ -124,7 +131,10 @@ RISEPel WardIsotropicGaussianBRDF::albedo( const RayIntersectionGeometric& ri ) 
 	// Conservative approximation: the bounded specular variant integrates
 	// to at most Rs. Saturate only this OIDN AOV, whose contract is [0,1];
 	// additive authored reflectances remain unchanged in transport.
-	RISEPel result=pDiffuse->GetColor(ri)+pSpecular->GetColor(ri);
+	// DL-310: the coupled diffuse min(Rd, 1 - Rs) plus the specular bound.
+	const RISEPel rd=pDiffuse->GetColor(ri), rs=pSpecular->GetColor(ri);
+	RISEPel result=rs;
+	for(int ch=0;ch<3;++ch) result[ch]+=WardSelection::CoupledDiffuse(rd[ch],rs[ch]);
 	for(int ch=0;ch<3;++ch) result[ch]=r_max(Scalar(0),r_min(Scalar(1),result[ch]));
 	return result;
 }

@@ -39,6 +39,11 @@ namespace RISE
 				Scalar ior_epidermis;
 				Scalar ior_papillary_dermis;
 				Scalar ior_reticular_dermis;
+				//! DL-290: the index of the medium OUTSIDE the skin -- the
+				//! live exterior `ri.ambientIOR` (IOR-stack top; 1.0 = air)
+				//! the outside / stratum-corneum boundary is priced
+				//! against on entry and on exit.  Was a literal 1.0.
+				Scalar ior_outside;
 				Scalar concentration_eumelanin;
 				Scalar concentration_pheomelanin;
 				Scalar melanosomes_in_epidermis;
@@ -446,6 +451,22 @@ namespace RISE
 			/////////////////////////////////////////////////
 			// Refraction
 			/////////////////////////////////////////////////
+
+			//! DL-290: the medium outside the skin at this hit --
+			//! `ri.ambientIOR`, stamped from the IOR-stack top by every
+			//! integrator (the G6 plumbing GGX and the DL-49 SSS boundary
+			//! read).  An unstamped record is air (1.0), and so is a
+			//! non-positive or non-finite value.  The outside boundary uses
+			//! the EXACT dielectric Fresnel and Snell of `Boundary_Refraction`
+			//! with both indices, which is a function of their ratio alone
+			//! and already handles a denser exterior (total internal
+			//! reflection on exit), so no Schlick re-derivation is needed
+			//! here, unlike DL-49's diffusion profiles.
+			static inline Scalar OutsideIOR( const RayIntersectionGeometric& ri )
+			{
+				const Scalar n = ri.ambientIOR;
+				return ( n > 0 && n < RISE_INFINITY ) ? n : Scalar( 1.0 );
+			}
 
 			//! Refraction between two layers of skin (at their boundaries)
 			/// \return The absolute reflectance

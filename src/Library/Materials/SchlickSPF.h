@@ -38,6 +38,9 @@ namespace RISE
 			const IScalarPainter*	pRoughness;		// physical scalar
 			const IScalarPainter*	pIsotropy;
 
+			//! DL-310: the diffuse lobe's coupled krayNM along `outDir`.
+			Scalar SchlickCoupledDiffuseNM( const RayIntersectionGeometric& ri, const Vector3& outDir, const Scalar nm ) const;
+
 		public:
 			SchlickSPF(
 				const IPainter& diffuse,

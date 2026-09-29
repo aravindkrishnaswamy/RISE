@@ -7,6 +7,16 @@
 #include <algorithm>
 #include <cmath>
 namespace RISE { namespace Implementation { namespace WardSelection {
+// DL-310: Ward's coupled diffuse reflectance.  The reciprocal coupling
+// min(Rd, 1 - A(i), 1 - A(o)) (SchlickDirectionalAlbedo.h) with A = Rs --
+// the Geisler-Moroder-Duer specular family's own albedo BOUND (DL-212)
+// -- is direction-independent: Rd itself whenever Rd <= 1 - Rs (every
+// energy-conserving authoring, bit for bit), and 1 - Rs otherwise.  Being
+// constant per shading point it keeps the diffuse kray constant, so the
+// selection quadrature below needs no second (diffuse-draw) integral.
+inline double CoupledDiffuse(double rd,double rs) {
+    return (rd<=1.0-rs) ? rd : std::max(0.0,1.0-rs);
+}
 struct Input {
     double vx,vy,nv,gx,gy,ng,wD;
     int count;

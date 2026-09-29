@@ -240,6 +240,7 @@
     <ClCompile Include="..\..\..\src\Library\Materials\SheenSPF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\SheenDirectionalAlbedo.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\SheenDirectionalAlbedo_LUTData.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Materials\SchlickDirectionalAlbedo_LUTData.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\GenericHumanTissueSPF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\HenyeyGreensteinPhaseFunction.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\HeterogeneousMedium.cpp" />
@@ -789,6 +790,7 @@
     <ClInclude Include="..\..\..\src\Library\Materials\PolishedSPF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\SchlickBRDF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\SchlickMasking.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\SchlickDirectionalAlbedo.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\SchlickMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\SchlickSPF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\TranslucentBSDF.h" />

@@ -50,6 +50,21 @@ namespace RISE
 			template< class T >
 			static T ComputeFactor( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Vector3& n, const T& m );
 
+			//! DL-290: the incident (exterior) index of this hit's
+			//! interface -- `ri.ambientIOR`, which every integrator stamps
+			//! from the IOR-stack top (the G6 plumbing GGX's conductor
+			//! Fresnel reads).  An unstamped record carries the default 1.0
+			//! (air); a non-positive or non-finite value also reads as air.
+			//! The conductor Fresnel is a function of the RELATIVE complex
+			//! index (n/n_e, k/n_e), so every Fresnel term of this model --
+			//! value, valueNM, albedo, the SPF kray and the Kulla-Conty
+			//! F_avg -- passes this as its incident index.
+			static inline Scalar AmbientIOR( const RayIntersectionGeometric& ri )
+			{
+				const Scalar n = ri.ambientIOR;
+				return ( n > 0 && n < RISE_INFINITY ) ? n : Scalar( 1.0 );
+			}
+
 			virtual RISEPel value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const;
 			virtual Scalar valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const;
 			virtual RISEPel albedo( const RayIntersectionGeometric& ri ) const;
