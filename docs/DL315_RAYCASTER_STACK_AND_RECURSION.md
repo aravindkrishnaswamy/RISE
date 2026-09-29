@@ -90,264 +90,287 @@ integrator loop is `for( depth = startDepth; depth < maxDepth; ... )` with
 (`rs.depth > cap >= maxDepth`) is one whose first vertex that loop would
 itself refuse to process.  BDPT / VCM / MLT reach `CastRay` only through the
 guiding-training probe and the OIDN AOV guide, both of which shade through
-the same `PathTracingShaderOp`, so the same rule is correct for them.  The
+the same `PathTracingShaderOp`, so the same rule is correct for them.  (The
+spectral BDPT guiding probe casts at eye depth + 2, so probes at eye depth
+>= 9 used to be refused by the old cap and now run: a guided closed-room
+BDPT-spectral render changes pattern -- review, single thread 0.134135 ->
+0.136931 -- with no bias, salted n = 6 0.134123 +/- 0.00055 vs 0.133704 +/-
+0.00045, and no cost change.)  The
 RayCaster's own medium phase continuation (`rs.depth < MaxRecursions( rc )
 && rs.volumeBounces < 64`) uses the same helper.
 
-**Stack ceiling.**  Raising the depth cap exposes a stack limit the old 10
-hid: every nested cast is a C++ recursion, and render workers run on
-default-size thread stacks (512 KB for a secondary pthread on macOS).
-Measured on a macOS release build with a temporary instrument at `CastRay`
-entry: one nested SSS level costs **13,232 bytes** (RGB) / **12,960 bytes**
-(NM) of stack, the first level sits at 18.6-25.8 KB, and the shipped
-`pt_sss_dragon` reaches 11 nested levels.  A per-thread count of active
-casts, `kMaxCastNesting = 16` (`RayCaster.cpp`, RAII `CastNestingGuard`),
-is the hard ceiling: 16 levels measured at **217 KB** on the worst scene
-below.  The pre-fix depth cap allowed at most 11 nested casts, and no
-shipped legacy scene authors `max_recursion` above 10, so the ceiling never
-cuts a path the old code kept and never binds a shipped legacy render.  It
-DOES cut PT paths that chain more than 16 nested casts (15 SSS events);
-the cluster furnace below (every path returns 1, thirteen touching spheres)
-measures that residual at **-0.08 %** (0.999169 +/- 0.00097 sd of one
-render, n = 4).
+**Stack.**  Raising the depth cap exposes a stack limit the old 10 hid:
+every nested cast is a C++ recursion.  Measured with a temporary instrument
+at `CastRay` entry: one nested SSS level costs **13,232 B** (RGB) /
+**12,960 B** (NM) at -O3 and **34.5 KB** at -O0 (review), a legacy
+shader-op bounce about 6.2 KB at -O3, and the first level sits at
+18.6-25.8 KB.  Before this slice render workers ran on the platform-default
+secondary-thread stack (512 KB on macOS): `riseCreateThread` IGNORED its
+`initial_stack_size` argument on pthreads and `ThreadPool` passed 0.
 
-## 3. Red-proof (every A/B against committed state)
+Round 1 of this slice bounded that with a fixed count of 16 active casts
+per thread.  The external review showed it was wrong both ways: at -O0
+(Xcode's `Development` configuration, the RISE-GUI scheme's Run action) 16
+levels need 563 KB and the room scene below died with SIGBUS on 3 of 3
+seeds, and in a release build it cut legacy chains with an authored
+`max_recursion` above 15 that had always been stack-safe (hall of mirrors,
+section 3).  The shipped design is:
 
-The tests were committed first (`369d0c8c`, `E3` in a later commit), then
-run against the master library by `git checkout a5d94241 -- <library files>`
-and rebuilt, then restored with `git checkout HEAD -- <files>`.
+1. **8 MB worker stacks.**  `riseCreateThread` honours `initial_stack_size`
+   (`pthread_attr_setstacksize`, page-rounded; on Win32 the existing
+   `CreateThread` size now passes `STACK_SIZE_PARAM_IS_A_RESERVATION`, so it
+   reserves rather than commits), and `ThreadPool` requests
+   `ThreadPool::kWorkerStackBytes` = 8 MB, the main thread's default.  That
+   covers any nesting the depth cap allows (at most 64 SSS levels under the
+   default cap of 128, 64 x 34.5 KB = 2.2 MB even at -O0).
+2. **A remaining-stack guard instead of a count.**
+   `Threading::riseRemainingStackBytes()` (new, `Threads.h`: macOS
+   `pthread_get_stackaddr_np`/`pthread_get_stacksize_np`, Linux/Android
+   `pthread_getattr_np`, Windows `VirtualQuery` on a local; the low bound
+   is cached per thread, so a call is a thread-local read and a subtraction)
+   and `CastRay{,NM,HWSS}` refuse a cast when less than
+   `kCastStackMarginBytes` = **128 KB** remains.  This protects a thread the
+   pool did not create -- `ThreadPool::ParallelFor` makes the CALLING thread
+   drain tiles too, and a GUI render thread is a 512 KB `std::thread` on
+   macOS -- and anything with no upper bound (`max_recursion` is unbounded).
+   A refusal returns no radiance, like the depth cap, and is now COUNTED
+   (`RayCaster::StackGuardRefusals()`) and LOGGED (the 1st, 2nd, 4th, ...
+   refusal, so a pathological scene cannot flood the log).
+3. **The margin is measured**, on the make build rebuilt with
+   `CXXFLAGS="-O0 -g"` (not `xcodebuild`), with workers forced back to
+   512 KB and the margin overridden by a temporary environment hook (not in
+   the tree), on the review's crash scene (camera inside a closed room of
+   0.5-thick conservative random-walk walls, PT pel, white env, 32x32,
+   64 spp), 3 seeds per margin: margin 0 crashes 3/3; 16, 32, 48, 64 and
+   128 KB all survive 3/3.  128 KB is 8x the smallest safe value and still
+   lets a 512 KB -O0 thread nest about as deep (~10 levels) as the pre-fix
+   cap of 10 allowed (11).
 
-**`SSSExteriorIndexInvarianceTest` Part E** (32x32, paired libc seeds,
-n = 4; ratio = enclosed / open image mean):
+**Truncation.**  With 8 MB workers the guard never fires in any scene
+measured here (refusals 0 everywhere below), so the round-1 ceiling's
+silent bias is gone: the thick-walled room reads 0.70337 +/- 0.00098
+(salted n = 4, -O3), against the review's 0.70153 at the old 16-cast
+ceiling and 0.70312 at ceiling 300.  It can still fire on a small CALLING
+thread: rendering that room from a 512 KB `std::thread` at -O0 refuses
+about 1,050 casts per render (0.699-0.701 vs 0.702-0.705), counted and
+logged, never a crash.
 
-| row | master | fix (1) only | both |
-|---|---:|---:|---:|
-| E1 random walk PT, index-1.0 enclosure | **0.931015** | 1.00041 | 1.00027 |
-| E1 diffusion PT, index-1.0 enclosure | **0.972065** | 1.00122 | 1.00103 |
-| E1 random walk PT-spectral, index-1.0 enclosure | **0.930399** | 1.00048 | 1.00056 |
-| E1 random walk BDPT (control) | 0.999684 | 0.999749 | 1.00003 |
-| E1 Lambertian PT (control) | 1.00006 | 0.999976 | 1.00006 |
-| E3 legacy DT(4)/DT(1), translucent | **0.956156** | 0.998543 | 0.998543 |
-| E3 legacy DT(4)/DT(1), dielectric | **0.825114** | 0.999746 | 0.999746 |
-| E2 random-walk cluster furnace, PT (image mean) | **0.966429** | 0.96544 | 0.999169 |
-| E2 Lambertian cluster (control) | 1.00054 | 1.00043 | 1.00054 |
+## 3. Red-proof and measurements (every A/B against committed state)
 
-Suite: **248/6** on the master library, **254/0** with the fix (227 of
-those checks pre-existed).  E1 isolates defect (1) (a single convex sphere
-never re-enters, so the cap is irrelevant); E2 isolates defect (2) (open
-air, so no enclosure is ever in the stack).
+A/B builds replace the library files with the merge base's by `git
+checkout <commit> -- <files>` after committing all work, and restore with
+`git checkout HEAD -- <files>`.  Every render in the two gate suites now
+carries its own Sobol value salt (`SobolSamplerTestHooks::ValueSalt`,
+DL-308's template) so repeats are independent randomized-QMC replicates:
+unsalted, every render of a scene reuses ONE Sobol' pattern, the repeat sd
+omits the QMC error (5e-5 against a true per-render 0.16 % on the slab),
+and a pattern offset reads as a significant bias (section 6, the withdrawn
+row).
 
-**The review's own rigs, reproduced** (PT pel, 16x16 orthographic,
-256 spp, n = 3 interleaved, seeds 7000-7002; builds: master / fix (1) only /
-both):
+**`SSSExteriorIndexInvarianceTest` Part E** (32x32, n = 4, salted; paired
+rows share a salt; ratio = enclosed / open image mean):
+
+| row | master | fix |
+|---|---:|---:|
+| E1 random walk PT, index-1.0 enclosure | @@E1RW | 0.999893 / 1.00012 |
+| E1 diffusion PT, index-1.0 enclosure | @@E1D | 0.999586 / 0.999801 |
+| E1 random walk PT-spectral | @@E1S | 1.00017 / 0.999395 |
+| E1 random walk BDPT (control) | @@E1B | 1.00005 / 1.00012 |
+| E1 Lambertian PT (control) | @@E1L | 0.999677 / 0.999677 |
+| E3 legacy DT(4)/DT(1), translucent | @@E3T | 1.00044 |
+| E3 legacy DT(4)/DT(1), dielectric | @@E3D | 0.998985 |
+| E2 random-walk cluster furnace (image mean) | @@E2RW | 1.00144 / 1.00136 |
+| E2 Lambertian cluster (control) | @@E2L | 0.998037 |
+
+(fix: two full Part E runs.)  Salted n = 8 per-pair ratio sds, from which
+the bands are set at >= 5 sd of the n = 4 mean: Lambertian 0.0008, random
+walk 0.0005, diffusion 0.0011, PT-spectral 0.0015, BDPT 0.0004; E2
+Lambertian one-render sd 0.0019 (band widened 0.004 -> 0.006), E2 random
+walk 0.0012.  Suite: @@SUITE_MASTER on the master library, @@SUITE_FIX with
+the fix.  E1 isolates defect (1) (a single convex sphere never re-enters,
+so the cap is irrelevant); E2 isolates defect (2) (open air, so no
+enclosure is ever in the stack).
+
+**The review's own rigs** (PT pel, 16x16 orthographic, 256 spp, n = 3
+interleaved, UNSALTED -- read these as reproductions of the row's numbers,
+not as bias estimates; builds: master / fix (1) only / both):
 
 | rig | master | fix (1) | both |
 |---|---:|---:|---:|
-| slab RW 1.5, open air | 0.999778 +/- 0.00070 | 1.001441 | 1.000570 |
-| slab RW 1.5 in index-1.0 box | **0.959910 +/- 0.00041** | 0.999673 | 0.999756 |
+| slab RW 1.5, open air | 0.999778 | 1.001441 | 1.000570 |
+| slab RW 1.5 in index-1.0 box | **0.959910** | 0.999673 | 0.999756 |
 | slab RW 1.0 in index-1.0 box | 1.000002 | 1.000002 | 1.000002 |
-| slab RW 2.0 in index-1.0 box | **0.888754 +/- 0.00025** | 1.000331 | 1.000152 |
-| slab RW 2.0, open air | 1.000405 | 1.000282 | 1.000608 |
-| slab diffusion 1.5, open air | 0.995668 +/- 0.00004 | 0.995649 | 0.995673 |
+| slab RW 2.0 in index-1.0 box | **0.888754** | 1.000331 | 1.000152 |
 | slab diffusion 1.5 in index-1.0 box | **0.983124** | 0.998655 | 0.998652 |
 | slab RW 1.5 in water (1.33) | **0.969205** | 0.973269 | 0.999805 |
 | slab diffusion 1.5 in water (1.33) | **0.968987** | 0.970001 | 0.995197 |
 
-The row's numbers were 0.9603 / 0.9831 (box), 1.000 / 0.960 / 0.889 (index
-sweep) and 0.9694 / 0.9687 (water); all reproduce.  In water fix (1) alone
-recovers 0.4 % and the cap the remaining 2.6 %, as the row said.
+The row's 0.9603 / 0.9831 (box), 1.000 / 0.960 / 0.889 (index sweep) and
+0.9694 / 0.9687 (water) all reproduce.  In water fix (1) alone recovers
+0.4 % and the cap the remaining 2.6 %, as the row said.
 
-**The open-air shipped dragon** (`bdpt_sss_dragon` with its rasterizer
-swapped to `pathtracing_pel_rasterizer`, 64 spp, `oidn_denoise FALSE`,
-full 480x360; n = 5 interleaved, seeds 5000-5004):
+**The open-air dragon** (`bdpt_sss_dragon` with its rasterizer swapped to
+`pathtracing_pel_rasterizer`, 64 spp, `oidn_denoise FALSE`, 480x360; n = 5
+interleaved, unsalted): master 0.214274 +/- 0.000109, fix (1) only
+0.214179 +/- 0.000023, both **0.215870** +/- 0.000110, +0.745 %, all of it
+defect (2).  Salted, the review reads +0.55 % (1/16 area, n = 4: 0.213957
++/- 0.00050 vs 0.215124 +/- 0.00052); the row quoted 0.214115 at cap 10
+and 0.215864 raised.
 
-| build | image mean | sd |
-|---|---:|---:|
-| master | 0.214274 | 0.000109 |
-| fix (1) only | 0.214179 | 0.000023 |
-| both | **0.215870** | 0.000110 |
+**`SSSRadianceScalingTest`** (default run, 256 spp, K = 4, salted): each
+SSS model's water rows gated against the explicit volume's, 1 % for
+diffusion and 0.3 % for random walk.  This is a GENERAL energy gate on the
+water rows, not an eta^2 discriminator -- any constant error larger than
+the band fails it (both DL-04 `eta^2` mutations do, 576238/18, as would
+any other).  Bands from four full salted runs (seeds 1000/2000/3000/4000):
 
-+0.745 % (t = 23), all of it defect (2) (fix (1) alone: -0.04 %, t = -1.9).
-The row quoted 0.214115 at cap 10 and 0.215864 raised.
-
-**`SSSRadianceScalingTest`** (default convention run, 256 spp, K = 4):
-new checks gate each SSS model's water rows within 0.8 % of the explicit
-volume's.  Master **576244/12** (all twelve new checks red), fix
-**576256/0**.
-
-| water row / explicit | master | fix (1) only | both |
+| water row / explicit | master (unsalted) | fix, four salted runs | sd of the K = 4 mean |
 |---|---:|---:|---:|
-| diffusion, camera outside | 0.96854 | 0.97033 | **0.99480** |
-| diffusion, camera inside | 0.96961 | 0.97191 | **0.99890** |
-| random walk, camera outside | 0.96981 | 0.97325 | **1.00031** |
-| random walk, camera inside | 0.96877 | 0.97266 | **1.00006** |
+| diffusion, camera outside | 0.96854 | 1.00075 / 0.99981 / 0.99977 / 0.99844 | 0.10 % |
+| diffusion, camera inside | 0.96961 | 1.00234 / 0.99712 / 1.00202 / 0.99983 | 0.24 % |
+| random walk, camera outside | 0.96981 | 0.99980 / 0.99992 / 1.00003 / 1.00015 | 0.015 % |
+| random walk, camera inside | 0.96877 | 0.99975 / 0.99989 / 1.00004 / 1.00005 | 0.014 % |
 
-Diffusion's camera-outside 0.9948 is its own open-air residual (0.9956
-against the explicit 1.0000 in air: Burley on a finite slab), not an index
-effect.
+Diffusion's 1 % is about 4 sd of its noisier row, random walk's 0.3 %
+about 20 sd; the pre-fix 3 % deficit is far outside both.  Suite:
+@@SSSRS_MASTER on the master library, **576256/0** with the fix (default
+seed; the guard count varies with the seed because the coverage probe's
+accepted samples do).  Round 1's claim that diffusion reads "0.9956 in
+air, a Burley-on-a-finite-slab property" was the fixed Sobol' pattern:
+salted, diffusion in air reads 1.0021 / 1.0017 / 0.99998 / 0.99951.
 
-**DL-04 still discriminates.**  Both deliberate `eta^2` mutations (the PT
-diffusion and random-walk complete-event weights, continuation and spatial,
-multiplied / divided by `1.5^2`) read **576238/18** each: the six air
-convention checks the DL-04 pin always fails, plus all twelve new water
-checks.
+**Hall of mirrors** (the review's legacy P2-1 rig: pixelpel, two 0.97
+mirrors over a grey floor, `[Emission, DirectLighting, Reflection]`,
+single-threaded, seed 77; master / round-1 16-cast ceiling / fix):
+
+| max_recursion | master | round 1 | fix |
+|---:|---:|---:|---:|
+| 10 | 0.16910333 | 0.16910333 | 0.16910333 (hash equal) |
+| 15 | 0.16976419 | 0.16976419 | 0.16976419 (hash equal) |
+| 20 | 0.17010738 | 0.16998702 | 0.17010738 (hash equal) |
+| 30 | 0.17018263 | 0.16998702 | 0.17018263 (hash equal) |
+| 60 | 0.17023368 | 0.16998702 | 0.17023368 (hash equal) |
+
+Refusals 0 at every row.  (The review's absolute values, 0.1683-0.1695,
+use a different reduction of the same images.)
+
+**-O0 crash scene** (make build with `CXXFLAGS="-O0 -g"`, final code,
+default 8 MB workers): `room_rw_pt` seeds 1-3 0.70218 / 0.70545 / 0.70466,
+HWSS (`room_rw_hwss16`) 0.70331 / 0.70406 / 0.70200, PT-spectral
+0.70471 / 0.71067 / 0.72596 -- 9/9 rendered, 0 refusals.  Render driven
+from a 512 KB `std::thread` (the GUI shape): 4/4 rendered, about 1,050
+refusals each on `room_rw_pt`, 0 on the HWSS room.
 
 ## 4. Caller audit (bug pattern: "a nested cast changes state the caller reads afterwards")
 
 After the fix no caller CAN be affected: a `const IORStack&` no longer
 admits a current-object write, and the compiler enumerated the eight sites
-that made one.  The table records which callers WERE affected before it.
+that made one (the review re-ran the census: no ninth writer, no
+`const_cast`, no stack pointer in `RAY_STATE`/`RayIntersection`).  Every
+`const IORStack&` parameter in `src/Library` is now documented `[in]`
+(83 files, comments only).  The table records which callers WERE affected
+before the fix.
 
 | caller | stack handed to the nested cast / recursion | reads it afterwards? | pre-fix | evidence |
 |---|---|---|---|---|
-| PT diffusion SSS continuation (RGB, NM; HWSS via NM) | the vertex's own `iorStack` | yes: PART 3 `Scatter` (`containsCurrent`) | **affected** | E1 0.972 / 0.930 (spectral); slab 0.983 |
-| PT random-walk SSS continuation (RGB, NM; HWSS via NM) | same | same | **affected** | E1 0.931; slab 0.960 / 0.889 |
-| `DistributionTracingShaderOp` (RGB, NM) | the shade stack (rays whose `scat.ior_stack` is null) | yes: re-`Scatter` per sample, `Pdf` MIS partner, `RadianceEtaScale` | **affected** | E3 0.956 (translucent), 0.825 (dielectric); shipped `blurry_glass` +13.6 % |
+| PT diffusion SSS continuation (RGB, NM; HWSS via NM) | the vertex's own `iorStack` | yes: PART 3 `Scatter` (`containsCurrent`) | **affected** | E1; slab 0.983 |
+| PT random-walk SSS continuation (RGB, NM; HWSS via NM) | same | same | **affected** | E1; slab 0.960 / 0.889 |
+| `DistributionTracingShaderOp` (RGB, NM) | the shade stack (rays whose `scat.ior_stack` is null) | yes: re-`Scatter` per sample, `Pdf` MIS partner, `RadianceEtaScale` | **affected** | E3; shipped `blurry_glass` +13.6 % |
 | `FinalGatherShaderOp` | the shade stack (gather rays; null-stack lobes) | yes: `valueStateful(..., &ior_stack)` after each gather cast, per-sample re-`Scatter` | **affected** (proof, same shape as DT) | shipped `cornellbox_fg` -0.41 % (t = -0.6, n = 2: not resolved) |
-| `ReflectionShaderOp` / `RefractionShaderOp` | the shade stack for a null-stack lobe | only through LATER ops at the same vertex (the shader's `Scatter` runs once, before any op) | affected only in a chain where a stack-reading op follows (e.g. `[DefaultReflection, dt]`) | proof; a `[DefaultReflection, DefaultDirectLighting]` translucent/enclosure rig read bit-identical before and after (translucent has no reflection-typed lobe) |
+| `ReflectionShaderOp` / `RefractionShaderOp` | the shade stack for a null-stack lobe | only through LATER ops at the same vertex (the shader's `Scatter` runs once, before any op) | affected only where a stack-reading op follows (e.g. `[DefaultReflection, dt]`) | proof |
 | `AlphaTestShaderOp` / `TransparencyShaderOp` | the shade stack (pass-through) | only through later ops | same as above | proof |
 | `DirectVolumeRenderingShader` | the shade stack | no (returns) | unaffected | proof |
 | Top-level rasterizers (`PixelBasedPel`, `PixelBasedSpectral{,RGB}`, HWSS) | a camera stack | only by the next `CastRay`, which sets the current object before any read | unaffected | proof |
-| `AOVBuffers` OIDN guide | a fresh local stack | no | unaffected | proof |
-| BDPT guiding-training probe (`RecordGuidingTrainingSampleNM`) | the continuation stack | only after the next hit's own `SetCurrentObject` on a local | unaffected | proof; BDPT/VCM/MLT single-thread renders bit-identical (section 5) |
-| Photon tracers (caustic pel/spectral, global pel/spectral, translucent pel) | their own recursion wrote the caller's stack | siblings set the current object before reading; the parent never reads after a child returns | unaffected (now copies) | proof |
-| `LightSampler` transparent-shadow walk (`RayCaster::WalkShadowSegment`) | a local copy | -- | unaffected | compiles unchanged (acts on a local) |
+| `AOVBuffers` OIDN guide | a fresh local stack | no | unaffected | proof; review: BDPT with OIDN on bit-identical |
+| BDPT spectral guiding-training probe (`RecordGuidingTrainingSampleNM`) | the continuation stack | only after the next hit's own `SetCurrentObject` on a local | unaffected by defect (1); CHANGED by defect (2) (probes at eye depth >= 9 now run; section 2) | review: pattern change, no bias |
+| Photon tracers (caustic pel/spectral, global pel/spectral, translucent pel) | their own recursion wrote the caller's stack | siblings set the current object before reading; the parent never reads after a child returns | unaffected (now copies) | proof; review: photon maps bit-identical |
+| `LightSampler` transparent-shadow walk (`RayCaster::WalkShadowSegment`) | a local copy | -- | unaffected | review: bit-identical |
 | `MediumTransport` in-scatter NEE, `BSSRDFEntryAdapters.h`, `BSSRDFSampling` | never call `CastRay` | -- | unaffected | grep |
-| SMS (`ManifoldSolver.cpp` `seedIor`, `SMSPhotonMap.cpp`) | local stacks, no `CastRay` | -- | unaffected | compiles unchanged; not edited (owned by `debt-dl290`) |
+| SMS (`ManifoldSolver.cpp` `seedIor`, `SMSPhotonMap.cpp`) | local stacks, no `CastRay` | -- | unaffected | compiles unchanged; not edited |
 | BDPT / VCM / MLT subpath walks, `PathVertexEval`, `PathTransportUtilities`, `InteractivePelRasterizer` | local stacks | -- | unaffected | compiles unchanged |
-
-## 5. Appearance, determinism and cost
-
-**BDPT / VCM / MLT and non-SSS PT are bit-identical.**  With
-`force_number_of_threads 1` (renders are only deterministic
-single-threaded: the same binary at the same libc seed gives different
-hashes multi-threaded), 1/16-area copies with `oidn_denoise FALSE`, seeds
-8300 and 8301, master and fix hash identically on `bdpt_sss_dragon`,
-`vcm_sss_dragon`, `bdpt_sss_different_bsdf` (VCM), `rwsss_bdpt` (its last
-rasterizer), and a non-SSS PT control
-(`cornellbox_bdpt_materials_pt`).  (With OIDN on, BDPT/VCM/MLT's AOV guide
-cast now follows the raised depth cap; not measured.)
-
-**Shipped SSS scenes under PT** (1/16 area, `oidn_denoise FALSE`, furnaces
-at 1/4 area and 512 spp; n = 3 interleaved, seeds 8100-8102; ratio fix /
-master):
-
-| scene | master | fix | change |
-|---|---:|---:|---:|
-| `pt_sss_dragon` (Cornell box) | 0.214481 +/- 0.00060 | 0.216362 +/- 0.00036 | **+0.88 %** (t = 4.6) |
-| `composite_wacky_creature` | 0.042411 | 0.042476 | +0.15 % (t = 0.6) |
-| `pt_sss_wax_sphere` | 0.411465 | 0.411556 | +0.022 % (t = 1.9) |
-| `rwsss_thin_slab` | 0.679654 | 0.679813 | +0.023 % (t = 0.7) |
-| `rwsss_sphere` | 0.418927 | 0.418962 | +0.008 % (t = 0.9) |
-| `sss_comparison_dragon` | 1.457414 | 1.457489 | +0.005 % (t = 0.1) |
-| `furnace_sss_zero_absorption` | 0.101333 | 0.101342 | +0.009 % (t = 1.6) |
-| `furnace_sss_absorption` | 0.097862 | 0.097859 | -0.003 % (t = -0.9) |
-
-plus the full-size open-air `bdpt_sss_dragon`-as-PT above (+0.745 %,
-t = 23).  Everything brightens or stays; only the Cornell-box dragon
-resolves at n = 3.
-
-**Shipped legacy-chain scenes** (every scene with a DT / final-gather /
-ambient-occlusion op; 1/64 area, n = 2 interleaved, seeds 4400-4401;
-`sss_gi_dragon` 1/256 area): `blurry_glass` (a dielectric under a
-depth-1 `dt` op, 16 samples) **+13.6 %** (t = 118); every other scene is
-within noise or below 0.1 %: `kaleidoscope_atrium` +0.047 % (t = 5.6),
-`cornellbox_fg` -0.41 % (t = -0.6), `showroom` +1.3 % (t = 0.1, its
-8 spp noise is 10 %), `irradiance_cache_torture` -0.25 % (t = -1.7),
-`tidepools` +0.05 %, `gi_spheres` +0.06 %, `ambocc_ibl` +0.39 % (t = 1.2),
-`sss_gi_dragon` +0.05 %, `spotlight_drama` -0.02 %, `blurry_floor`
-+0.02 %, `dt_with_irrcache` +0.008 %, `dielectric_dispersion` -0.008 %,
-`pillow` -0.09 % (n = 5, t = -0.7; bit-identical single-threaded),
-`different_rmaps`, `simple_dispersion` and `sss_ibl` bit-identical.
-
-`blurry_glass` is the E3 mechanism at shipped scale, and the fix is
-checked the same way: DT samples 1 / 4 / 16 read master 0.12899 / 0.11741
-/ 0.11627 and fix 0.12902 / 0.13016 / 0.13189 (n = 2 each).  Master loses
-10 % between 1 and 16 samples; the fix restores all but a +2.2 % trend,
-which a delta-glass variant (`scattering 1000000`) reads at +1.3 % with a
-noise sd of 0.7 %.  That residual is NOT a stack effect (none can remain,
-by construction) and is recorded unattributed in section 6.
-
-**Cost** (user CPU, `force_number_of_threads 1`, interleaved master /
-fix builds; the image is bit-identical in each pair, so this is the cost of
-the copy and the nesting guard alone):
-
-| workload | master | fix | change |
-|---|---:|---:|---:|
-| legacy DT(1), 400 spp, 32x32 translucent sphere (cast-bound) | 1.380 +/- 0.015 s | 1.423 +/- 0.022 s | **+3.1 %** (t = 4.2, n = 7) |
-| PT open-air dragon, 1/16 area (fix (1) only: image bit-identical) | 5.100 +/- 0.244 s | 5.223 +/- 0.281 s | +2.4 % (t = 0.9, n = 7) |
-| `pillow` (legacy DT, 1/16 area) | 0.899 +/- 0.013 s | 0.901 +/- 0.012 s | +0.3 % (t = 0.4, n = 7) |
-| PT Cornell box, no SSS (no nested cast) | 4.646 +/- 0.043 s | 4.650 +/- 0.039 s | +0.09 % (t = 0.2, n = 5) |
-
-The copy is one small `std::vector` allocation per shaded nested cast; it
-shows only on a scene whose whole cost is casts against one sphere.
-
-## 6. Residuals
-
-- **DL-343** (new): diffusion SSS reads 0.30 % HIGHER when env NEE is
-  blocked (an index-1.0 box, transparent shadows off, so the estimator is
-  continuation-only) than in open air (NEE + continuation under MIS):
-  slab 0.998652 +/- 0.000004 vs 0.995673 +/- 0.000020 (n = 3); sphere
-  furnace E1 ratio 1.0010-1.0014 (paired sd 0.0008).  The random walk
-  agrees (slab -0.08 % +/- 0.04, sphere +0.03 %).  Two estimators of one
-  image disagree, so one of them is biased; DL-306's review refuted the
-  entry-NEE / continuation partition only on the WATER rows, where the
-  enclosure blocks NEE, so it could not have seen this.  Visible only after
-  DL-315 (the stack defect masked it by 1.5-2 %).  E1's diffusion band
-  (0.004) holds it.
-- **DL-344** (new): `transparent_shadows TRUE` double-counts through a
-  delta transmitter: in the same index-1.0 box the NEE shadow ray passes
-  the wall with Fresnel transmittance 1 AND the BSDF-sampled continuation
-  that crosses the delta wall escapes at full weight (its MIS partner was
-  reset to "none" at the delta vertex): a white Lambertian slab reads
-  **1.174841** (open air 1.000001), random walk 1.151, diffusion 1.153.
-  Independent of DL-315 (NEE, not a nested cast).
-- **Unfiled (no id left in this slice's reservation):** `blurry_glass`'s
-  DT(16)/DT(1) = 1.022 after the fix (section 5).  Stack effects are
-  excluded by construction; a sampler-dimension interaction in the legacy
-  DT loop is the first suspect.
-- **The stack ceiling** truncates PT paths that nest more than 16 casts
-  (-0.08 % in the thirteen-sphere cluster furnace, inside noise).  A deeper
-  ceiling needs either bigger worker stacks (the GUI's render thread is a
-  `std::thread`, 512 KB on macOS) or an iterative SSS continuation.
-- `VolumeAbsorptionAttenuationTest` row O (heterogeneous blue, a +/-9 %
-  band on a stochastic ratio-tracking transmittance) failed 2 of 4 runs on
-  this branch while the machine was loaded and 0 of 8 unloaded; its value
-  distribution is the same on master (blue sd 0.0034 master / 0.0025 fix,
-  n = 8 interleaved).  Pre-existing flake, not this slice.
-- `SSSExteriorIndexInvarianceTest`'s `B: diffusion_rough/BDPT` row failed
-  once (0.9927, band 0.006, its own printed sd 0.0062) and passed in three
-  other full runs: DL-332 (bands below 3 sd), open, BDPT bit-identical to
-  master.
 
 The GUI's beauty-variant and material-look pipelines
 (`InteractivePelRasterizer.cpp`) already built their caster with the
 integrator's own path cap (`variantMaxBounces`, `kMaterialLookMaxBounces`),
-i.e. the rule above; they are unchanged.
+i.e. the rule in section 2; they are unchanged.
+
+## 5. Appearance, determinism and cost
+
+**Bit-identity.**  Renders are deterministic only single-threaded
+(`force_number_of_threads 1`).  Master and fix hash identically at seeds
+8300/8301 on 1/16-area `bdpt_sss_dragon`, `vcm_sss_dragon`, `rwsss_bdpt`
+(its last rasterizer, MLT), `bdpt_sss_different_bsdf` (VCM), a non-SSS PT
+Cornell box and `pillow`, and the review adds shapes (pixelpel 800x800),
+`cornellbox_pathtracer`, `pt_guiding_stress_guided`,
+`cornellbox_bdpt_materials_pt`, and `bdpt_sss_dragon` with OIDN on and
+off.  The exception is BDPT-SPECTRAL WITH PATH GUIDING, whose training
+probe now runs at eye depths the old cap refused (section 2).
+
+**Shipped SSS scenes under PT** (1/16 area, `oidn_denoise FALSE`,
+furnaces at 1/4 area and 512 spp; n = 3 interleaved, unsalted):
+`pt_sss_dragon` (Cornell box) **+0.88 %** (t = 4.6; the review's salted
+n = 4 reads +0.55 %); `composite_wacky_creature` +0.15 % (t = 0.6),
+`pt_sss_wax_sphere` +0.022 % (t = 1.9), `rwsss_thin_slab` +0.023 %,
+`rwsss_sphere` +0.008 %, `sss_comparison_dragon` +0.005 %,
+`furnace_sss_zero_absorption` +0.009 %, `furnace_sss_absorption` -0.003 %.
+
+**Shipped legacy-chain scenes** (every scene with a DT / final-gather /
+ambient-occlusion op; 1/64 area, n = 2): `blurry_glass` (a dielectric
+under a depth-1 `dt` op, 16 samples) **+13.6 %**; every other scene within
+noise or below 0.1 % (`kaleidoscope_atrium` +0.047 %, `cornellbox_fg`
+-0.41 % t = -0.6, `showroom`, `irradiance_cache_torture`, `tidepools`,
+`gi_spheres`, `ambocc_ibl`, `sss_gi_dragon`, `spotlight_drama`,
+`blurry_floor`, `dt_with_irrcache`, `dielectric_dispersion`; `pillow`,
+`different_rmaps`, `simple_dispersion`, `sss_ibl` bit-identical).
+`blurry_glass` is the E3 mechanism at shipped scale; linear capture,
+salted (review): master DT(1) / DT(4) / DT(16) 0.136014 / 0.123042 /
+0.119764 (1/4 area, n = 4), fix 0.135986 / 0.136094 / 0.136057, DT16/DT1
+1.0005 +/- 0.0007 (0.9996 +/- 0.005 at 1/64 area, n = 6).  DT(1), DT(4) and
+DT(16) now agree.  (Round 1's "+2.2 % DT(16)/DT(1) residual" was an
+n = 2 unsalted measurement of a non-linear output and does not reproduce.)
+
+**Cost** (user CPU, single thread, interleaved master / fix builds, images
+bit-identical in each pair): a cast-bound legacy DT(1) scene (400 spp,
+32x32 translucent sphere, n = 7) costs **+1.6 % to +3.1 %** across three
+measurements (round 1's copy + count: +3.1 %, t = 4.2; the review's
++2.5 %; the final copy + remaining-stack guard: +1.6 %, t = 1.7); a PT
+Cornell box with no nested cast +0.9 % (t = 0.3, n.s.); `pillow` +0.3 %
+(n.s.).  The copy is one small `std::vector` allocation per shaded nested
+cast; the guard is a thread-local read and a compare.
+
+## 6. Residuals
+
+- **DL-344** (new): `transparent_shadows TRUE` double-counts through a
+  delta transmitter: in the same index-1.0 box the NEE shadow ray passes
+  the wall with Fresnel transmittance 1 AND the BSDF-sampled continuation
+  that crosses the delta wall escapes at full weight (its MIS partner was
+  reset to "none" at the delta vertex).  White Lambertian slab 1.174841
+  (open air 1.000001), random walk 1.151, diffusion 1.153; the review
+  reproduces it on a sphere (1.138177 vs 0.99986).  Independent of DL-315.
+  It is the same double count DL-05 declined for area/env NEE (forcing
+  that arm through a weave gap read +103 % on the closed-form area row,
+  which is why DL-05 kept area/env NEE binary).
+- **Withdrawn: the round-1 "DL-343"** (diffusion reading 0.30 % higher
+  with env NEE blocked than in open air).  Not a bias: salted n = 6 per
+  side the slab reads open 1.000319 +/- 0.00065, boxed 1.000320 +/-
+  0.00081 (difference 0.0000 +/- 0.0010), and the E1 sphere salted n = 8
+  0.999565 +/- 0.00041 vs 0.999586 +/- 0.00029 (review).  The unsalted
+  repeats were one fixed Sobol' pattern.
+- **A closed room of thick random-walk walls reads ~0.70, not 1**, under
+  PT AND BDPT (BDPT 0.7037, review; PT 0.70337 +/- 0.00098 salted here) in
+  a white furnace with conservative walls.  Not a ceiling effect (0
+  refusals) and not attributed; recorded for the supervisor.
+- **The stack guard can still truncate on a small calling thread** (a
+  512 KB GUI render thread): counted and logged, section 2.  A render
+  thread with an 8 MB stack, or not draining tiles on the caller, would
+  remove it.
+- `VolumeAbsorptionAttenuationTest` row O (heterogeneous blue, a +/-9 %
+  band on a stochastic ratio-tracking transmittance) failed 2 of 4 runs on
+  this branch while the machine was loaded and 0 of 8 unloaded; same
+  distribution on master (blue sd 0.0034 master / 0.0025 fix, n = 8).
+  Pre-existing flake.
+- `SSSExteriorIndexInvarianceTest`'s `B: diffusion_rough/BDPT` row failed
+  once in round 1 (DL-332, bands below 3 sd); master's DL-307 has since
+  moved that row to 512 spp.
 
 ## 7. Gate
-
-Clean library rebuild and 41 test targets built: **0 warnings**.
-`SSSRadianceScalingTest` 576256/0, `SSSExteriorIndexInvarianceTest` 254/0
-(one of four full runs 253/1 on DL-332's row, section 6),
-`RefractiveRadianceScalingTest` 60/0, `MediumInsideOutsideInvariantTest`
-30/0, `EnvLightBalanceTest` 123/0, `BDPTStrategyBalanceTest` 227/0,
-`CstDeriveGoldenTest` 456 MATCH / 0 DRIFT, `SourceHygieneTest` 167/0,
-`BSSRDFNormalizationTest` pass, `BSSRDFSamplingTest` pass,
-`BSSRDFPlanarProbeReachTest` pass, `BSSRDFOpenSheetEntryTest` 73/0,
-`BDPTZeroExitanceBSSRDFTest` 41/0, `SubsurfaceScatteringSpectralTest` 8/0,
-`VolumeEnvFurnaceTest` pass, `TransparentShadowTest` 40/0,
-`WeaveGapShadowTransmittanceTest` 132/0, `RayCasterEnvEscapeMISTest` 91/0,
-`OptimalMISTrainingSitesTest` 111/0, and the touched-class suites
-`IORStackTest`, `IORStackBehaviorTest`, `TranslucentIORStackTest`,
-`LegacyChainMISPartnerTest`, `LegacyPhotonTransportTest` 136/0,
-`TranslucentPhotonEnergyTest`, `TranslucentInitialContainmentTest`,
-`SubSurfaceExitIORTest` 301/0, `PTGuidingMISPartitionTest` 185/0,
-`BDPTGuidedContinuationTest` 164/0, `RayCasterVolumeAbsorptionTest` 9/0,
-`AmbientOcclusionCastsShadowsTest` 10/0, `HairInteriorMediumSkipTest` 24/0,
-`ManifoldSolverTest` pass, `AgentViewModeRenderTest` 687/0,
-`AreaLightShaderOpScalarNTest` 11/0, `LightBVHTest` 20/0,
-`GeomNormalOrientationSitesTest` 72/0, `BDPTEyeDepthConsistencyTest` 12/0,
-`SobolDimensionBudgetTest` pass, `GradedIndexInteriorFactorTest` 55/0,
-`VolumeAbsorptionAttenuationTest` (flake, section 6).  Every
-`SetCurrentObject`-calling test source (45 files) also compiles.
