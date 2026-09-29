@@ -1218,9 +1218,13 @@ static void RunPhotonMapRow()
 	// the photons not, x(n_E/n_C)^2.
 	std::printf( "    graded/control predictions: master x(n_E/n_S)^2 = %.4f; eye walk fixed, photons not x(n_E/n_C)^2 = %.4f\n",
 		( nE / nS ) * ( nE / nS ), ( nE / nC ) * ( nE / nC ) );
-	Check( r[0] > 0 && std::fabs( r[0] - 1.0 ) < 0.05, "P: constant-index control photon gather == PT within 5%" );
-	Check( r[0] > 0 && r[1] > 0 && std::fabs( r[1] / r[0] - 1.0 ) < 0.03,
-		"P: graded photon/PT ratio == constant-control photon/PT ratio within 3% (photon walk Advances in importance order)" );
+	// Tolerances: the photon gather's own run-to-run spread at 3M photons
+	// is ~2-3 % (seed bases 1000/2000/3000: control photon/PT 1.0006 /
+	// 1.0335 / 0.9778), so the gate sits at 8 % -- still 15x inside the
+	// 2.24 the unfixed photon walk reads.
+	Check( r[0] > 0 && std::fabs( r[0] - 1.0 ) < 0.08, "P: constant-index control photon gather == PT within 8%" );
+	Check( r[0] > 0 && r[1] > 0 && std::fabs( r[1] / r[0] - 1.0 ) < 0.08,
+		"P: graded photon/PT ratio == constant-control photon/PT ratio within 8% (photon walk Advances in importance order)" );
 }
 
 int main( int argc, char** argv )
