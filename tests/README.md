@@ -1201,3 +1201,7 @@ contracts. `GLTFAlphaImportTest` uses the committed Khronos RGBA alpha asset;
 `BlenderBridgeAlphaTest` checks both legacy and modern imported cutout behavior.
 `LegacyPhotonTransportTest` also measures alpha-compensated RGB/NM photon deposits.
 See [ALPHA_COVERAGE.md](../docs/ALPHA_COVERAGE.md) for the estimator definitions.
+
+- `AlphaRayContextTest`: MASK0 null traversal preserves full camera differential
+  footprints and UV Jacobians, including nonzero differential-origin offsets;
+  coverage painters receive the original segment ray and accumulated range.

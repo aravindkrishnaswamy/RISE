@@ -14,7 +14,11 @@ with probability a. Zero/one do not draw random numbers. OPAQUE ignores alpha.
 `IObjectManager::IntersectRaySampled` is shared transport traversal above object
 intersection. Raw object/geometry intersections remain geometric. A rejected
 hit advances along the same ray, preserves cast inputs and the original ray,
-and publishes total distance to the accepted hit. It consumes neither a bounce
+and publishes total distance to the accepted hit. Coverage evaluation itself
+sees that original ray and total distance, not the shortened recast context.
+Differential origins are relative offsets: on a null continuation, each auxiliary
+origin offset gains its direction offset times the accumulated distance. This
+preserves the original auxiliary ray lines and the receiver texture footprint. It consumes neither a bounce
 nor a medium/IOR boundary transition. Finite visibility segments retain their
 original endpoint. Accepted hits stamp their exact coverage probability;
 photon deposits must use that stamp rather than evaluate a painter again after
@@ -126,3 +130,8 @@ Fresnel event. Actual scene rays still null-pass rejected surfaces normally.
   cutoff/default/OPAQUE behavior and bridge legacy/modern cutout rendering.
 - `LegacyPhotonTransportTest`: accepted global/caustic RGB/NM deposited incident
   flux retains one receiver-coverage factor.
+
+`AlphaRayContextTest` compares pinhole and nonzero-origin differential rays to a
+checker-textured sphere with zero, one and two MASK0 sheets. It pins full world
+filter width, the entire UV Jacobian, published ray context, and a scalar
+coverage query that depends on original ray origin and total distance.

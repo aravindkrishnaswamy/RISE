@@ -2144,6 +2144,12 @@ void IObjectManager::IntersectRaySampled(RayIntersection& ri, ISampler& sampler,
             ri.geometric.ray = original;
             return;
         }
+        // Coverage painters see the same ray/range context as an unobstructed
+        // full-segment hit. Keep the local distance only for recast progress.
+        const Scalar localRange = ri.geometric.range;
+        ri.geometric.range += offset;
+        if (exit) ri.geometric.range2 += offset;
+        ri.geometric.ray = original;
         const bool casts = !shadows || !ri.pObject || ri.pObject->DoesCastShadows();
         const Scalar coverage = ri.pMaterial ? ri.pMaterial->AlphaCoverage(ri.geometric) : 1;
         const bool accepted = coverage >= 1 || (coverage > 0 && sampler.GetAlpha1D() < coverage);
@@ -2151,17 +2157,12 @@ void IObjectManager::IntersectRaySampled(RayIntersection& ri, ISampler& sampler,
         if (accepted && boundaries && ri.pObject && ri.pObject->GetInteriorMedium()) {
             boundaries->push_back(ri);
         }
-        if (casts && accepted) {
-            ri.geometric.range += offset;
-            if (exit) ri.geometric.range2 += offset;
-            ri.geometric.ray = original;
-            return;
-        }
+        if (casts && accepted) return;
         // range already names the backed-off published point. Geometry's
         // self-root floor rejects that same boundary on the next query.
         // Advance by one representable segment parameter to ensure progress,
         // rather than skipping a world-space epsilon-sized slab of geometry.
-        offset = std::nextafter(offset + ri.geometric.range, RISE_INFINITY);
+        offset = std::nextafter(offset + localRange, RISE_INFINITY);
         if (!(offset < maxDistance)) {
             ri.geometric.bHit = false;
             ri.geometric.ray = original;
@@ -2169,6 +2170,13 @@ void IObjectManager::IntersectRaySampled(RayIntersection& ri, ISampler& sampler,
         }
         Ray ray = original;
         ray.Advance(offset);
+        if (ray.hasDifferentials) {
+            // Origins are offsets from the central ray. Advance each auxiliary
+            // along its own direction by the same parameter, preserving its
+            // original line and therefore the full-distance texture footprint.
+            ray.diffs.rxOrigin = ray.diffs.rxOrigin + ray.diffs.rxDir * offset;
+            ray.diffs.ryOrigin = ray.diffs.ryOrigin + ray.diffs.ryDir * offset;
+        }
         ri = RayIntersection(ray, rast);
         ri.geometric.PropagateCastInputs(castInputs);
     }
