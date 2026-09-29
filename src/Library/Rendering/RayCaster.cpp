@@ -1584,8 +1584,10 @@ bool RayCaster::CastRay(
 		// enclosure as its current object, `containsCurrent()` went true,
 		// and SubSurfaceScatteringSPF::Scatter took its inside/absorb
 		// branch -- an F0-sized loss.  The same leak reached the legacy
-		// shader-op chain (an op's continuation cast followed by a later
-		// op's Scatter at the same vertex).  See
+		// shader-op chain: a distribution-tracing / final-gather op re-runs
+		// Scatter per sample on the stack an earlier sample's cast had
+		// rewritten, so a later entry push was keyed on the wrong object.
+		// See
 		// docs/DL315_RAYCASTER_STACK_AND_RECURSION.md.
 		IORStack hitStack( ior_stack );
 		hitStack.SetCurrentObject( ri.pObject );
