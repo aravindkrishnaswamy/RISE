@@ -161,7 +161,7 @@ Scalar DielectricSPF::GenerateScatteredRay(
 	const Scalar scatfunc,
 	const Scalar rIndex,
 	const Scalar nm,
-	const IORStack& ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in] Index of refraction stack
 	) const
 {
 	dielectric.type = ScatteredRay::eRayRefraction;
@@ -520,7 +520,7 @@ void DielectricSPF::DoSingleRGBComponent(
 	 const RayIntersectionGeometric& ri,						///< [in] Geometric intersection details for point of intersection
 	 const Point2& random,										///< [in] Two canonical random numbers
 	 ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	 const IORStack& ior_stack,							///< [in/out] Index of refraction stack
+	 const IORStack& ior_stack,							///< [in] Index of refraction stack
 	 const int oneofthree,
 	 const Scalar newIOR,
 	 const Scalar scattering,
@@ -600,7 +600,7 @@ void DielectricSPF::Scatter(
 	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 	ISampler& sampler,				///< [in] Sampler
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	const IORStack& ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in] Index of refraction stack
 	) const
 {
 	Scalar		cosine = -Vector3Ops::Dot(ri.onb.w(), ri.ray.Dir());
@@ -643,7 +643,7 @@ void DielectricSPF::ScatterNM(
 	ISampler& sampler,				///< [in] Sampler
 	const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	const IORStack& ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in] Index of refraction stack
 	) const
 {
 	ScatteredRay dielectric;

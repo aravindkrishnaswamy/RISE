@@ -139,6 +139,7 @@
 #include "../src/Library/Utilities/Math3D/Constants.h"
 #include "../src/Library/Utilities/Ray.h"
 #include "../src/Library/Utilities/RandomNumbers.h"
+#include "../src/Library/Utilities/SobolSampler.h"
 #include "../src/Library/Utilities/BSSRDFSampling.h"
 #include "../src/Library/Utilities/RandomWalkSSS.h"
 #include "../src/Library/Utilities/SSSCoefficients.h"
@@ -1437,7 +1438,13 @@ namespace
 	//////////////////////////////////////////////////////////////////
 
 	//! Renders once and returns the RGB image mean (alpha-composited, per
-	//! channel averaged), or a negative value on failure.
+	//! channel averaged), or a negative value on failure.  Every Part E
+	//! render carries a Sobol value SALT derived from `seed` (DL-315
+	//! review; DL-308's template), so repeats are independent
+	//! randomized-QMC replicates -- unsalted, every render of a scene
+	//! reuses one fixed Sobol' pattern and a pattern offset reads as a
+	//! bias.  Paired rows pass the SAME seed to both sides (common random
+	//! numbers).
 	double RenderFurnaceMean( const std::string& path, unsigned int seed )
 	{
 		IJobPriv* job = nullptr;
@@ -1447,8 +1454,10 @@ namespace
 		CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
 		GlobalLog()->PrintNew( cap, __FILE__, __LINE__, "dl315 capture" );
 		job->GetRasterizer()->AddRasterizerOutput( cap );
+		SobolSamplerTestHooks::ValueSalt().store( SobolSequence::HashCombine( seed, 0x315u ) );
 		std::srand( seed );
 		const bool rendered = job->Rasterize();
+		SobolSamplerTestHooks::ValueSalt().store( 0u );
 		double mean = -1;
 		if( rendered && !cap->pixels.empty() ) {
 			double sum = 0;
@@ -1474,8 +1483,11 @@ namespace
 		// sides differ only through the defect.  Pre-fix the ratio reads
 		// about 1 - F0 (random walk and diffusion at index 1.5); the
 		// Lambertian subject and BDPT never nest a cast per event and are
-		// controls, green before and after.  Bands: several times the
-		// measured sd of the ratio (docs/DL315_RAYCASTER_STACK_AND_RECURSION.md).
+		// controls, green before and after.  Bands: at least 5 sd of the
+		// n = 4 mean ratio, measured on SALTED renders (salted n = 8,
+		// paired per-pair sd: Lambertian 0.0008, random walk 0.0005,
+		// diffusion 0.0011, PT-spectral 0.0015, BDPT 0.0004 --
+		// docs/DL315_RAYCASTER_STACK_AND_RECURSION.md).
 		struct EncRow { Model model; Integrator integrator; unsigned int samples; double band; Scalar eta; };
 		const EncRow encRows[] = {
 			{ Model::Lambertian, Integrator::PT,         16,  0.002, 1.0 },
@@ -1574,7 +1586,7 @@ namespace
 		// events hit the RayCaster's recursion cap of 10 and returned zero.
 		struct ClusterRow { Model model; Integrator integrator; unsigned int samples; double band; Scalar eta; };
 		const ClusterRow clusterRows[] = {
-			{ Model::Lambertian, Integrator::PT, 16, 0.004, 1.0 },
+			{ Model::Lambertian, Integrator::PT, 16, 0.006, 1.0 },
 			{ Model::RandomWalk, Integrator::PT, 64, 0.006, 1.5 },
 		};
 		for( const ClusterRow& row : clusterRows ) {

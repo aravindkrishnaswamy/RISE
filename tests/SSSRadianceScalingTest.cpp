@@ -6,7 +6,8 @@
 // volume (docs/DL49_SSS_EXTERIOR_INDEX.md); the air rows are bit-identical.
 // DL-315 (2026-09-28) closed the remaining ~3% water deficit (two PT
 // RayCaster defects, docs/DL315_RAYCASTER_STACK_AND_RECURSION.md) and gates
-// each SSS model's water rows within 0.8% of the explicit volume's.
+// each SSS model's water rows against the explicit volume's (1 % diffusion,
+// 0.3 % random walk, derived from salted renders).
 //
 // DL-284: `max_volume_bounce` truncates the medium's Neumann series (DL-247
 // ruling: past the cap a segment carries deterministic Beer-Lambert Tr).
@@ -26,8 +27,12 @@
 // alpha value is finite. Nonzero image means are only smoke guards.
 // Measurements: serial repeated renders, whole-film RGB means, their
 // repeat standard deviation and descriptive stdev/sqrt(K), and channelwise ratios.
-// PT reuses its fixed pixel Sobol scramble: these repeats are NOT independent
-// QMC replicates and their dispersion is NOT an integration-error estimate.
+// Since the DL-315 review every render carries its own Sobol value salt
+// (SobolSamplerTestHooks::ValueSalt), so repeats ARE independent
+// randomized-QMC replicates and stdev/sqrt(K) is an honest error estimate.
+// (Before, PT reused one fixed Sobol pattern per scene: the repeat sd was
+// ~5e-5 against a true per-render sd of ~0.16 %, and a pattern offset --
+// diffusion's "0.9956 in air" -- read as a significant bias.)
 // No invalid render may enter an aggregate or be replaced with zero.
 //
 // A full BSSRDF event can cancel entry 1/eta^2 against exit eta^2. An outer
@@ -94,6 +99,7 @@
 #include "../src/Library/Utilities/Color/Color_Template.h"
 #include "../src/Library/Utilities/BSSRDFSampling.h"
 #include "../src/Library/Utilities/IndependentSampler.h"
+#include "../src/Library/Utilities/SobolSampler.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -131,6 +137,8 @@ struct Config {
 	bool helperOnly = false;
 };
 unsigned int passCount = 0, failCount = 0, renderIndex = 0;
+//! Per-render Sobol value-salt tag (DL-315 review; DL-308's template).
+const uint32_t kSaltTag = 0x315u;
 bool Check( bool condition, const std::string& label )
 {
 	if( condition ) ++passCount;
@@ -489,8 +497,14 @@ bool Render( Model model, Topology topology, const Config& cfg, RGBChannels& mea
 	Capture* capture = new Capture();
 	GlobalLog()->PrintNew( capture, __FILE__, __LINE__, "SSS test capture output" );
 	pt->AddRasterizerOutput( capture );
+	// DL-315 review: every render is an INDEPENDENT randomized-QMC
+	// replicate (DL-308's template): without a value salt each repeat of a
+	// scene reuses the identical Sobol' points, so the repeat sd omits the
+	// QMC error and a fixed pattern offset reads as a significant bias.
+	SobolSamplerTestHooks::ValueSalt().store( SobolSequence::HashCombine( cfg.seedBase + renderIndex, kSaltTag ) );
 	std::srand( cfg.seedBase + renderIndex++ );
 	const bool rendered = job->Rasterize();
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
 	const bool valid = Check( rendered, label + ": render completed" ) && ComputeMean( *capture, mean, label );
 	safe_release( capture );
 	safe_release( job );
@@ -571,7 +585,7 @@ int main( int argc, char** argv )
 			". Unconditional helper measurements complete; no energy acceptance band.\n";
 		return failCount == 0 ? 0 : 1;
 	}
-	std::cout << "Libc seeds vary per render; fixed pixel Sobol scrambles repeat. Dispersion is descriptive only, not QMC uncertainty; worker scheduling prevents bitwise reproducibility.\n";
+	std::cout << "Libc seeds and Sobol value salts vary per render (independent randomized-QMC replicates); worker scheduling prevents bitwise reproducibility.\n";
 	if( !cfg.probe ) {
 		Config independent = cfg;
 		independent.helperOnly = true;
@@ -627,18 +641,24 @@ int main( int argc, char** argv )
 			// hit's object into the caller's IOR stack, so the SSS vertex
 			// absorbed its own surface reflection once the continuation
 			// reached the enclosure, and PT's RayCaster recursion cap of 10
-			// cut paths that TIR at the enclosure and return.  The band
-			// holds diffusion's own open-air residual (0.9956 against the
-			// explicit 1.0000, a Burley-on-a-finite-slab property, not an
-			// index one) plus several sd of the means.
-			const double kWaterBand = 0.008;
+			// cut paths that TIR at the enclosure and return.  This is a
+			// GENERAL energy gate on the water rows, not an eta^2
+			// discriminator: any constant error larger than the band fails
+			// it (the DL-04 mutations do, as would any other).  Bands from
+			// SALTED renders (four full runs, seeds 1000-4000, K = 4): the
+			// sd of the K = 4 mean ratio is about 0.10 % (diffusion,
+			// outside), 0.24 % (diffusion, inside) and 0.015 % (random
+			// walk), so diffusion's 1 % is about 4 sd of its noisier row
+			// and random walk's 0.3 % about 20 sd; the pre-fix 3 % deficit
+			// is far outside both.
+			const double kWaterBand = models[m] == Model::DiffusionSSS ? 0.010 : 0.003;
 			for( size_t t = 1; t < 3; ++t ) {
 				RGBChannels toExplicit{};
 				if( !Ratio(means[t], explicitMeans[t], toExplicit,
 					std::string(ModelName(models[m])) + " " + TopologyName(topologies[t]) + "/explicit_" + TopologyName(topologies[t])) ) return 1;
 				if( !cfg.probe ) for( double ratio : toExplicit )
 					Check(std::fabs(ratio - 1) < kWaterBand, std::string(ModelName(models[m])) + "/" + TopologyName(topologies[t]) +
-						": water row within 0.8% of the explicit volume (DL-315)");
+						": water row within its band of the explicit volume (DL-315)");
 			}
 		}
 		if( !Ratio(means[1], means[2], observerRatios[m], std::string(ModelName(models[m])) + " water_inside/water_outside") ) return 1;

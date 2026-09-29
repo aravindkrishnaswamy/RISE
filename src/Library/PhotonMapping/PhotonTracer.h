@@ -124,7 +124,7 @@ namespace RISE
 				const Ray& ray,
 				const RISEPel& power,
 				PhotonMapType& pPhotonMap,
-				const IORStack& ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack								///< [in] Index of refraction stack
 				) const = 0;
 
 			// Tells the tracer to set the photon map specifically for the scene

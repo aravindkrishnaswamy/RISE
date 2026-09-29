@@ -53,7 +53,7 @@ void PerfectRefractorSPF::SetIOR( const IScalarPainter& Nt_ )
 void PerfectRefractorSPF::DoSingleRGBComponent( 
 	 const RayIntersectionGeometric& ri,						///< [in] Geometric intersection details for point of intersection
 	 ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	 const IORStack& ior_stack,							///< [in/out] Index of refraction stack
+	 const IORStack& ior_stack,							///< [in] Index of refraction stack
 	 const int oneofthree,
 	 const Scalar newIOR,
 	 const Scalar cosine
@@ -254,7 +254,7 @@ void PerfectRefractorSPF::Scatter(
 	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 	ISampler& sampler,				///< [in] Sampler
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	const IORStack& ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in] Index of refraction stack
 	) const
 {
 	Scalar		cosine = Vector3Ops::Dot( ri.onb.w(), ri.ray.Dir() );
@@ -277,7 +277,7 @@ void PerfectRefractorSPF::ScatterNM(
 	ISampler& sampler,				///< [in] Sampler
 	const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	const IORStack& ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in] Index of refraction stack
 	) const
 {
 	ScatteredRay specular;

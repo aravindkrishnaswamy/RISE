@@ -50,11 +50,15 @@ namespace
 	// tiles may be smaller (a GUI render thread is a 512 KB std::thread on
 	// macOS).  A cast is refused when less than this much stack remains
 	// below its frame -- the budget for everything the cast runs before
-	// the next nested cast re-checks (measurement in
+	// the next nested cast re-checks.  Measured at -O0 on 512 KB workers
+	// (a closed room of thick random-walk walls): a 16 KB margin already
+	// survives and a 0 margin crashes; 128 KB is 8x that and still lets
+	// a 512 KB -O0 thread nest about as deep as the pre-DL-315 cap of 10
+	// did (see
 	// docs/DL315_RAYCASTER_STACK_AND_RECURSION.md).  A refusal returns no
 	// radiance, exactly like the depth cap, and is COUNTED
 	// (RayCaster::StackGuardRefusals) and logged.
-	const size_t kCastStackMarginBytes = 256u * 1024u;
+	const size_t kCastStackMarginBytes = 128u * 1024u;
 	std::atomic<unsigned long long> sCastStackRefusals( 0 );
 
 	//! True when this thread cannot afford another nested cast.  Logs the
