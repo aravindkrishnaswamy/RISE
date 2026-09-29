@@ -16,15 +16,17 @@
 //    CameraUtilities.h's BDPTCameraUtilities::kApertureSamplerStream
 //    comment for the authoritative table):
 //      - Stream 0:            light source sampling
-//      - Streams 1..1+maxLightDepth+maxVolumeBounce:  light subpath
-//        bounces
-//      - Streams 16..16+maxEyeDepth+maxVolumeBounce:  eye subpath
-//        bounces (both walk loops saturate their iteration count at
-//        1024, giving a documented ceiling of stream 1039 for the eye
-//        walk -- BDPTCameraUtilities::kMaxBdptWalkStreamUnderPSSMLT)
-//      - Streams 31-46:       SMS (reserved; unused today)
+//      - Streams 1..15:       light subpath bounces 0..14
+//      - Streams 16..46:      eye subpath bounces 0..30
 //      - Stream 47:           BDPT (s,t) strategy selection
 //        (BDPTIntegrator.cpp's `StartStream( 47 )`)
+//      - Streams 2049..4050:  DEEPER light / eye bounces under
+//        PSSMLTSampler (DL-286; BDPTUtilities::LightWalkStream /
+//        EyeWalkStream -- they used to continue as 1+d / 16+d up to
+//        1039, and the light walk re-opened the eye walk's lanes from
+//        iteration 15).  Both walk loops saturate at 1024 iterations.
+//        BDPTCameraUtilities::kBdptShallowWalkStreamEndUnderPSSMLT
+//        (48) bounds the lanes below the reserved one.
 //
 //    MLTRasterizer uses BDPTCameraUtilities::kPSSMLTFilmLensApertureStream
 //    (2048 since the DL-08 / debt 29 fix, 2026-09-17) for the film
@@ -47,16 +49,17 @@
 //    B. Mutation isolation: a small-step mutation on the MLT reserved
 //       stream does not alter the values returned by streams 0-47.
 //    C. kNumStreams minimum: kNumStreams > the MLT reserved stream,
-//       which itself clears kMaxBdptWalkStreamUnderPSSMLT.
+//       which sits between the walks' shallow lanes (< 48) and their
+//       deep lanes (2049..4050, DL-286), both inside kNumStreams.
 //    D. Source guard: MLTRasterizer uses the MLT reserved stream (not
 //       0 or the bare literal 48) for film position, and does not set
 //       streams 1 or 2 before integrator calls.
 //    E. Screen coordinate convention: MLTRasterizer uses (height - py)
 //       not (height - 1 - py) to match the BDPT pel rasterizer.
 //    F. Deep eye-walk aliasing (debt 29 / DL-08): the eye walk's own
-//       stream 48 (16 + eye depth 32) must never collide with the MLT
-//       reserved stream, at any eye depth PSSMLTSampler's loop caps
-//       allow.
+//       stream at eye depth 32 (16 + 32 = 48 before DL-286; a deep lane
+//       since) must never collide with the MLT reserved stream, at any
+//       eye depth PSSMLTSampler's loop caps allow.
 //
 //  Build (from project root):
 //    make -C build/make/rise tests
@@ -76,6 +79,7 @@
 
 #include "../src/Library/Utilities/PSSMLTSampler.h"
 #include "../src/Library/Cameras/CameraUtilities.h"
+#include "../src/Library/Utilities/BDPTUtilities.h"
 #include "../src/Library/Cameras/ThinLensCamera.h"
 
 using namespace RISE;
@@ -449,8 +453,9 @@ static void TestVectorEntryIndependence()
 // Test C: kNumStreams minimum value
 //
 // Verifies that streams 0-47 (every stream BDPTIntegrator's own
-// StartStream calls can reach under PSSMLTSampler, per
-// BDPTCameraUtilities::kMaxBdptWalkStreamUnderPSSMLT's derivation)
+// StartStream calls can reach below the reserved lane under
+// PSSMLTSampler, per BDPTCameraUtilities::
+// kBdptShallowWalkStreamEndUnderPSSMLT's derivation)
 // plus the MLT-reserved film/lens/aperture stream all produce
 // distinct initial values.  If kNumStreams <= N, then stream
 // N+kNumStreams aliases with N.
@@ -528,8 +533,9 @@ static void TestKNumStreamsMinimum()
 	// any integrator stream 0..47 can reach at the same depth.  This
 	// is the residue-mod-kNumStreams argument: it holds for ANY
 	// stream that stays below kNumStreams, PROVIDED the reserved
-	// stream itself is chosen above every stream the eye/light walks
-	// can reach (kMaxBdptWalkStreamUnderPSSMLT) -- unlike the
+	// stream itself is none of the streams the eye/light walks can
+	// reach (below kBdptShallowWalkStreamEndUnderPSSMLT, or DL-286's
+	// deep lanes above it) -- unlike the
 	// historical literal 48, which the eye walk's own
 	// `StartStream( 16u + depth )` reached at eye depth 32 (DL-08 /
 	// debt 29, docs/DL08_PSSMLT_LANE_LAYOUT.md).  See Test F below for
@@ -582,9 +588,10 @@ static void TestKNumStreamsMinimum()
 	}
 
 	// ------------------------------------------------------------
-	// C3: the DL-08 safety property itself -- the reserved stream
-	// sits strictly above every stream BDPT's own walks can reach
-	// under PSSMLTSampler, and is still a real (non-aliased) lane.
+	// C3: the DL-08 safety property itself -- the reserved stream is
+	// none of the streams BDPT's own walks can reach under
+	// PSSMLTSampler (above the shallow lanes, below DL-286's deep
+	// lanes), and is still a real (non-aliased) lane.
 	//
 	// Read through a probe subclass because kDefaultNumStreams is
 	// protected -- deliberately: this is the sampler's own invariant,
@@ -624,19 +631,38 @@ static void TestKNumStreamsMinimum()
 			exit( 1 );
 		}
 
-		// The core DL-08 safety property: the reserved stream sits
-		// strictly above every stream BDPT's own eye/light walks can
-		// reach under PSSMLTSampler (kMaxBdptWalkStreamUnderPSSMLT ==
-		// 16 + 1024, the eye walk's saturating loop cap -- see that
-		// constant's own derivation in CameraUtilities.h), so the
-		// eye walk can NEVER compute a stream equal to the reserved
-		// one, at any depth the walk's loop cap allows.
-		const int kMaxWalk = BDPTCameraUtilities::kMaxBdptWalkStreamUnderPSSMLT;
-		if( !( kMltStream > kMaxWalk ) ) {
+		// The core DL-08 safety property: the reserved stream is none of
+		// the streams BDPT's own eye/light walks can reach under
+		// PSSMLTSampler -- read off the REAL walk functions at every
+		// depth the loop cap allows (DL-286 moved the deep iterations to
+		// lanes above the reserved one), plus the shallow/select bound
+		// below it -- and every walk lane is a real lane (< kNumStreams),
+		// which is also what BDPTUtilities' own static_assert mirrors.
+		const int kMaxWalk = BDPTCameraUtilities::kBdptShallowWalkStreamEndUnderPSSMLT;
+		if( !( kMltStream >= kMaxWalk ) ||
+			!( kMltStream < BDPTUtilities::kDeepWalkStreamBaseUnboundedLanes ) ) {
 			std::cerr << "  FAIL: kPSSMLTFilmLensApertureStream (" << kMltStream
-				<< ") does not clear kMaxBdptWalkStreamUnderPSSMLT (" << kMaxWalk
-				<< ") -- BDPT's eye walk could reach the reserved stream at "
-				<< "some depth.\n";
+				<< ") is not between the walks' shallow lanes (< " << kMaxWalk
+				<< ") and their deep lanes (>= "
+				<< BDPTUtilities::kDeepWalkStreamBaseUnboundedLanes << ").\n";
+			exit( 1 );
+		}
+		for( unsigned int d = 0; d < BDPTUtilities::kWalkIterationCap; d++ ) {
+			const int ls = BDPTUtilities::LightWalkStream( d, false );
+			const int es = BDPTUtilities::EyeWalkStream( d, false );
+			if( ls == kMltStream || es == kMltStream || ls >= lanes || es >= lanes ||
+				( ls >= kMaxWalk && ls < BDPTUtilities::kDeepWalkStreamBaseUnboundedLanes ) ||
+				( es >= kMaxWalk && es < BDPTUtilities::kDeepWalkStreamBaseUnboundedLanes ) ) {
+				std::cerr << "  FAIL: walk iteration " << d << " opens lanes " << ls << " / " << es
+					<< " under PSSMLT -- the reserved lane, past kNumStreams (" << lanes
+					<< "), or inside the gap the layout keeps for the reserved lane.\n";
+				exit( 1 );
+			}
+		}
+		if( lanes != BDPTUtilities::kPSSMLTStreamSanityBound ) {
+			std::cerr << "  FAIL: BDPTUtilities::kPSSMLTStreamSanityBound ("
+				<< BDPTUtilities::kPSSMLTStreamSanityBound << ") no longer mirrors "
+				<< "PSSMLTSampler's bound (" << lanes << ").\n";
 			exit( 1 );
 		}
 
@@ -650,8 +676,10 @@ static void TestKNumStreamsMinimum()
 		// space was tiny (49) and 3322 was unambiguously outside it.
 		const int kDedicated = BDPTCameraUtilities::kApertureSamplerStream;
 		std::cout << "  kNumStreams = " << lanes << "; reserved stream "
-			<< kMltStream << " is a real lane and clears kMaxBdptWalkStreamUnderPSSMLT ("
-			<< kMaxWalk << "); kApertureSamplerStream (" << kDedicated
+			<< kMltStream << " is a real lane between the walks' shallow lanes (< "
+			<< kMaxWalk << ") and their deep lanes ["
+			<< BDPTUtilities::kDeepWalkStreamBaseUnboundedLanes << ", "
+			<< BDPTUtilities::DeepWalkStreamEnd( false ) << "); kApertureSamplerStream (" << kDedicated
 			<< ", Sobol-only by convention, never driven through PSSMLTSampler): OK\n";
 	}
 
@@ -862,7 +890,7 @@ static void TestSourceGuard()
 				std::cerr << "    FAIL: " << labels[f] << " line " << lineNum
 					<< " uses the bare literal StartStream(48) -- this is the "
 					<< "exact DL-08 / debt 29 regression (the eye walk's own "
-					<< "StartStream(16u+depth) reaches stream 48 at eye depth "
+					<< "StartStream(16u+depth) reached stream 48 at eye depth "
 					<< "32).  Use BDPTCameraUtilities::kPSSMLTFilmLensApertureStream.\n";
 				allPassed = false;
 			}
@@ -895,10 +923,10 @@ static void TestSourceGuard()
 			std::cerr << "    FAIL: " << labels[f] << " does not use "
 				<< "StartStream(BDPTCameraUtilities::kPSSMLTFilmLensApertureStream) "
 				<< "for film position.\n";
-			std::cerr << "    The film stream must clear "
-				<< "kMaxBdptWalkStreamUnderPSSMLT to avoid aliasing with "
-				<< "BDPTIntegrator's eye/light walks at deep bounces (DL-08 / "
-				<< "debt 29).\n";
+			std::cerr << "    The film stream must be none of "
+				<< "BDPTIntegrator's eye/light walk lanes at any depth "
+				<< "(kBdptShallowWalkStreamEndUnderPSSMLT; DL-08 / debt 29, "
+				<< "DL-286).\n";
 			allPassed = false;
 		}
 		else
@@ -1132,8 +1160,11 @@ static void TestDeepEyeWalkAliasing()
 {
 	std::cout << "\nTest F: Deep eye-walk stream aliasing (debt 29 / DL-08)\n";
 
-	const int kEyeDepthReachingFilmStream = 32; // BDPTIntegrator.cpp:1749 -> 16+32 == 48
-	const int kEyeWalkStream = 16 + kEyeDepthReachingFilmStream;
+	// Eye depth 32 was 16 + 32 == 48, the old literal film stream.  Read
+	// the stream the REAL eye walk opens there under PSSMLT (a deep lane
+	// since DL-286) rather than re-typing the arithmetic.
+	const int kEyeDepthReachingFilmStream = 32;
+	const int kEyeWalkStream = BDPTUtilities::EyeWalkStream( kEyeDepthReachingFilmStream, false );
 
 	// MLTRasterizer.cpp / MLTSpectralRasterizer.cpp's REAL reserved
 	// stream for the film / lens / (debt 28) aperture block, read from
@@ -1149,55 +1180,53 @@ static void TestDeepEyeWalkAliasing()
 
 	const int kSamplesPerStream = 6;
 
-	PSSMLTSampler* pEyeWalk = MakeSampler( 777001, 1.0 );  // all large steps
-	pEyeWalk->StartIteration();
-	pEyeWalk->StartStream( kEyeWalkStream );
-	std::vector<Scalar> eyeWalkVals( kSamplesPerStream );
-	for( int i = 0; i < kSamplesPerStream; i++ ) {
-		eyeWalkVals[i] = pEyeWalk->Get1D();
-	}
-	pEyeWalk->release();
+	// DL-286: the eye walk's depth-32 stream is now an EXTRA-tier lane,
+	// like the reserved stream, and two virgin same-seed instances hand
+	// out the same first values on ANY two extra-tier streams (see the
+	// second probe's DL-08 storage note) -- so comparing values across
+	// two instances, as this probe used to, would flag that coincidence.
+	// Probe the property itself on ONE instance: the reserved block,
+	// drawn after the eye walk's block, must materialise its own
+	// kSamplesPerStream primary samples (a shared lane materialises
+	// none).
+	PSSMLTStorageProbe* pProbe = new PSSMLTStorageProbe( 777001, 1.0 );  // all large steps
+	pProbe->StartIteration();
+	pProbe->StartStream( kEyeWalkStream );
+	for( int i = 0; i < kSamplesPerStream; i++ ) (void)pProbe->Get1D();
+	const size_t slotsAfterEye = pProbe->MaterializedSlotCount();
+	pProbe->StartStream( kMltReservedStream );
+	for( int i = 0; i < kSamplesPerStream; i++ ) (void)pProbe->Get1D();
+	const size_t newSlots = pProbe->MaterializedSlotCount() - slotsAfterEye;
+	pProbe->release();
+	const int identicalCount = kSamplesPerStream - static_cast<int>( newSlots );
 
-	PSSMLTSampler* pFilm = MakeSampler( 777001, 1.0 );  // identical seed
-	pFilm->StartIteration();
-	pFilm->StartStream( kMltReservedStream );
-	std::vector<Scalar> filmVals( kSamplesPerStream );
-	for( int i = 0; i < kSamplesPerStream; i++ ) {
-		filmVals[i] = pFilm->Get1D();
-	}
-	pFilm->release();
-
-	int identicalCount = 0;
-	for( int i = 0; i < kSamplesPerStream; i++ ) {
-		if( eyeWalkVals[i] == filmVals[i] ) identicalCount++;
-	}
-
-	// FIXED behaviour: the eye walk's stream (48, unaffected by this fix
-	// -- it is still literally 16+32) and MLTRasterizer's reserved
-	// stream must be different lanes with different values.  On the
-	// pre-fix code (kDefaultNumStreams == 49, MLT reserved stream ==
+	// FIXED behaviour: the eye walk's stream at depth 32 (48 until
+	// DL-286 moved deep iterations to their own lanes) and
+	// MLTRasterizer's reserved stream must be different lanes.  On the
+	// pre-DL-08 code (kDefaultNumStreams == 49, MLT reserved stream ==
 	// literal 48) this fails: both sides read stream 48 by construction
-	// and identicalCount == kSamplesPerStream.
+	// and no new slot is materialised (identicalCount ==
+	// kSamplesPerStream).
 	if( identicalCount > 0 )
 	{
 		std::cerr << "  FAIL: eye-walk stream " << kEyeWalkStream
-			<< " (16 + eye depth " << kEyeDepthReachingFilmStream
+			<< " (eye depth " << kEyeDepthReachingFilmStream
 			<< ") and MLT's reserved stream " << kMltReservedStream
-			<< " produced " << identicalCount << "/" << kSamplesPerStream
-			<< " identical values -- they are the SAME primary-sample-vector "
+			<< " shared " << identicalCount << "/" << kSamplesPerStream
+			<< " primary samples -- they are the SAME primary-sample-vector "
 			<< "lane.  A PSSMLT film-position mutation is aliased with the "
 			<< "eye walk's " << kEyeDepthReachingFilmStream
 			<< "th-bounce scattering direction (debt 29 / DL-08): "
-			<< "MLTRasterizer's reserved stream must sit strictly above "
-			<< "every stream BDPTIntegrator's own StartStream calls can "
+			<< "MLTRasterizer's reserved stream must be none of the "
+			<< "streams BDPTIntegrator's own StartStream calls can "
 			<< "reach under PSSMLTSampler.\n";
 		exit( 1 );
 	}
 
 	std::cout << "  Eye-walk stream " << kEyeWalkStream << " (eye depth "
 		<< kEyeDepthReachingFilmStream << ") vs MLT reserved stream "
-		<< kMltReservedStream << ": independent (0/" << kSamplesPerStream
-		<< " matches)\n";
+		<< kMltReservedStream << ": distinct lanes (0/" << kSamplesPerStream
+		<< " shared primary samples)\n";
 
 	// A second, deeper probe: the eye walk must never wrap back onto ANY
 	// low-numbered BDPT stream (light source = 0, light bounces, eye
@@ -1235,7 +1264,7 @@ static void TestDeepEyeWalkAliasing()
 
 		for( int depth = kProbeDepthLo; depth <= kProbeDepthHi && !anyCollision; depth++ )
 		{
-			const int eyeStream = 16 + depth;
+			const int eyeStream = BDPTUtilities::EyeWalkStream( (unsigned int)depth, false );
 
 			PSSMLTSampler* p = MakeSampler( 424242 + depth, 1.0 );
 			p->StartIteration();
@@ -1277,7 +1306,7 @@ static void TestDeepEyeWalkAliasing()
 		}
 
 		std::cout << "  Eye-walk streams " << kProbeDepthLo << ".." << kProbeDepthHi
-			<< " (as 16+depth) vs streams {0,1,16,47," << kMltReservedStream
+			<< " (the real EyeWalkStream lanes) vs streams {0,1,16,47," << kMltReservedStream
 			<< "}, single shared instance: no collisions\n";
 	}
 

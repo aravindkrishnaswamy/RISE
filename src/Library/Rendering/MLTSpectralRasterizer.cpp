@@ -297,9 +297,9 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 	MLTSample result;
 
 	// Film position + wavelength samples.  Must not conflict with
-	// BDPTIntegrator's internal streams (0-47, and up to 1039 at deep
-	// eye/volume bounces -- see
-	// BDPTCameraUtilities::kMaxBdptWalkStreamUnderPSSMLT).  This used
+	// BDPTIntegrator's internal streams (0-47, and 2049-4050 for deep
+	// eye/light iterations since DL-286 -- see
+	// BDPTCameraUtilities::kBdptShallowWalkStreamEndUnderPSSMLT).  This used
 	// to be the literal stream 48, which the eye walk's own
 	// StartStream(16u+depth) reached at eye depth 32 (DL-08 / debt 29,
 	// docs/DL08_PSSMLT_LANE_LAYOUT.md).
@@ -419,7 +419,8 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 			const Scalar heroNM = swl.HeroLambda();
 
 			// Generate subpaths once at hero wavelength.
-			// BDPTIntegrator manages its own streams internally (0-47).
+			// BDPTIntegrator manages its own streams internally (0-47, deep
+			// iterations 2049-4050 -- BDPTUtilities::LightWalkStream).
 			// MLT forces threshold=1.0 (single-branch) — see note at the
 			// top-level helper above.
 			std::vector<BDPTVertex> lightVerts;
@@ -536,7 +537,8 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 			const Scalar u = wavelengthSamples[ss];
 			const Scalar nm = lambda_begin + u * range;
 
-			// BDPTIntegrator manages its own streams internally (0-47).
+			// BDPTIntegrator manages its own streams internally (0-47, deep
+			// iterations 2049-4050 -- BDPTUtilities::LightWalkStream).
 			std::vector<BDPTIntegrator::ConnectionResultNM> results;
 			std::vector<BDPTVertex> lightVerts;
 			std::vector<BDPTVertex> eyeVerts;
