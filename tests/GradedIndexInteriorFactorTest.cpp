@@ -73,6 +73,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -823,13 +824,17 @@ static void RunSSSEntryNEERow()
 // must follow the segment's BOUNDARY CROSSINGS, not the value of its
 // transmittance.  Fixture: row B's seeded-inside camera looking down at a
 // small floor patch (so no floor-to-floor interreflection) lit by an omni
-// light at (1, 0, 1), n_L = 1.8, from the floor at n_C = n(0.02) = 1.212.
+// light at (2, 0, 1), n_L = 1.8, from the floor at n_C = n(0.02) = 1.212;
+// the occluder is a vertical sheet / slab at x = 1, met by the shadow ray
+// 26 deg off its normal (below the 41.8 deg at which the straight
+// transparent-shadow walk TIRs out of a 1.5 slab) and by no camera ray.
 //
 //   J  a `transmission thin` weave between floor and light: its delta gap
-//      returns g != 1 with NO boundary crossing.  With/without-weave ratio
-//      must be the closed form g in the graded box exactly as in a
-//      constant-index control.  Pre-fix the graded ratio read
-//      g * (n_L/n_C)^2 = 2.2 g: the shadow ray's transmittance != 1 turned
+//      returns t != 1 with NO boundary crossing.  The with/without-weave
+//      ratio in the graded box must equal the same ratio in a
+//      constant-index control (t, the weave's gap expectation at the hit,
+//      is what the control measures).  Pre-fix the graded ratio read
+//      t * (n_L/n_C)^2 = 2.2 t: the shadow ray's transmittance != 1 turned
 //      the graded factor off.
 //   K  the same with a thin NESTED constant-glass slab and
 //      `transparent_shadows TRUE`: the ray enters and leaves the slab, the
@@ -855,7 +860,7 @@ static std::string ShadowFixture( bool graded, double constIor, const std::strin
 	s = ReplaceOnce( s, kBigFloorCorners,
 		"\tpta -0.2 -0.2 0.02\n\tptb 0.2 -0.2 0.02\n\tptc 0.2 0.2 0.02\n\tptd -0.2 0.2 0.02\n" );
 	s = ReplaceOnce( s, kEmitterObject,
-		"omni_light\n{\n\tname lgt\n\tposition 1.0 0 1.0\n\tcolor 1 1 1\n\tpower 4\n}\n\n" + occluder );
+		"omni_light\n{\n\tname lgt\n\tposition 2.0 0 1.0\n\tcolor 1 1 1\n\tpower 16\n}\n\n" + occluder );
 	return s;
 }
 
@@ -866,8 +871,8 @@ static std::string WeaveOccluder()
 		"uniformcolor_painter\n{\n\tname pnt_black\n\tcolor 0 0 0\n}\n\n"
 		"weave_material\n{\n\tname mat_sheet\n\tfabric custom\n\ttransmission thin\n\tgap %g\n"
 		"\twarp_color pnt_black\n\tweft_color pnt_black\n}\n\n"
-		"clippedplane_geometry\n{\n\tname geo_sheet\n\tpta 0.5 -2 0.03\n\tptb 0.5 2 0.03\n"
-		"\tptc 0.5 2 1.9\n\tptd 0.5 -2 1.9\n\tdoublesided TRUE\n}\n\n"
+		"clippedplane_geometry\n{\n\tname geo_sheet\n\tpta 1.0 -2 0.03\n\tptb 1.0 2 0.03\n"
+		"\tptc 1.0 2 1.9\n\tptd 1.0 -2 1.9\n\tdoublesided TRUE\n}\n\n"
 		"standard_object\n{\n\tname obj_sheet\n\tgeometry geo_sheet\n\tmaterial mat_sheet\n}\n\n", kShadowGap );
 	return buf;
 }
@@ -877,7 +882,7 @@ static std::string NestedSlabOccluder()
 	return
 		"dielectric_material\n{\n\tname mat_slab\n\tior 1.5\n\ttau 1.0\n\tscattering 1000000\n}\n\n"
 		"box_geometry\n{\n\tname geo_slab\n\twidth 0.02\n\theight 4\n\tdepth 1.8\n}\n\n"
-		"standard_object\n{\n\tname slab\n\tgeometry geo_slab\n\tmaterial mat_slab\n\tposition 0.5 0 0.95\n}\n\n";
+		"standard_object\n{\n\tname slab\n\tgeometry geo_slab\n\tmaterial mat_slab\n\tposition 1.0 0 0.95\n}\n\n";
 }
 
 static void RunOccluderRatioRow( const char* row, const char* what, const std::string& occluder,
@@ -896,33 +901,31 @@ static void RunOccluderRatioRow( const char* row, const char* what, const std::s
 		std::printf( "    %-9s without mean=%.6f sd=%.6f   with %s mean=%.6f sd=%.6f   with/without=%.5f\n",
 			graded ? "graded" : "constant", a.mean, a.sd, what, b.mean, b.sd, r[graded] );
 	}
-	std::printf( "    closed-form ratio %.5f; pre-DL-292 graded prediction %.5f (x(n_L/n_C)^2 = %.4f)\n",
-		closedRatio, closedRatio * ( nL / nC ) * ( nL / nC ), ( nL / nC ) * ( nL / nC ) );
-	Check( r[0] > 0 && std::fabs( r[0] / closedRatio - 1.0 ) < 0.02,
-		std::string( row ) + ": constant-index control with/without ratio == closed form within 2%" );
-	Check( r[1] > 0 && std::fabs( r[1] / closedRatio - 1.0 ) < 0.02,
-		std::string( row ) + ": graded with/without ratio == closed form within 2% (factor keyed on crossings, not on T)" );
+	std::printf( "    pre-DL-292 graded/control prediction x(n_L/n_C)^2 = %.4f; authored gap %.3f\n",
+		( nL / nC ) * ( nL / nC ), closedRatio );
+	// The control's ratio is the weave's gap expectation at the hit -- at
+	// most the authored gap (the threads' projected width grows off the
+	// sheet normal).  A sanity bound, not the gate.
+	Check( r[0] > 0.05 && r[0] <= closedRatio * 1.02,
+		std::string( row ) + ": constant-index control with/without ratio is a transmittance in (0.05, gap]" );
 	Check( r[0] > 0 && r[1] > 0 && std::fabs( r[1] / r[0] - 1.0 ) < 0.02,
-		std::string( row ) + ": graded ratio == constant-control ratio within 2%" );
+		std::string( row ) + ": graded with/without ratio == constant-control ratio within 2% (factor keyed on crossings, not on T)" );
 }
 
 static void RunShadowSkipRows()
 {
 	std::cout << std::endl << "-- Row J (DL-292 item 2, DL-05 merge): thin-weave gap between an interior floor and a delta light --" << std::endl;
-	// The weave's gap transmittance at the shadow ray's own direction is
-	// exactly `gap` (WeaveGapShadowTransmittanceTest's closed form: the gap
-	// is a direction-independent aperture of a `fabric custom` weave).
 	RunOccluderRatioRow( "J", "weave", WeaveOccluder(), false, kShadowGap );
 
 	std::cout << std::endl << "-- Row K (DL-292 item 2): nested constant-glass slab, transparent shadows, light still inside the graded medium --" << std::endl;
 	// The two Fresnel crossings of the slab.  The walk starts its OWN stack
 	// in air (RayCaster::WalkShadowSegment), so each crossing reads 1 <-> 1.5
 	// in both builds and in both the graded and the control scene; the
-	// shadow direction from the floor centre to the light is 45.6 deg off
+	// shadow direction from the floor centre to the light is 26.1 deg off
 	// the slab normal.  The closed form is used for the report only -- the
 	// gate is graded ratio == control ratio, which does not depend on it.
 	{
-		const double dx = 1.0, dz = 0.98;
+		const double dx = 2.0, dz = 0.98;
 		const double cosI = dx / std::sqrt( dx * dx + dz * dz );
 		const double n = 1.5;
 		const double sinT = std::sqrt( 1.0 - cosI * cosI ) / n;
@@ -1174,21 +1177,26 @@ int main( int argc, char** argv )
 	const double closedB = kRho * kLe * cov * ( nS / nE ) * ( nS / nE );
 	const double preB    = kRho * kLe * cov;
 
-	RunSeedRow();
-	RunGatherRows( "A", "scenes/Tests/Materials/graded_index_interior_gather.RISEscene", closedA, preA );
-	RunGatherRows( "B", "scenes/Tests/Materials/graded_index_seeded_inside.RISEscene", closedB, preB );
-	RunSmallEmitterOutsideRow();
-	RunPinholeConsistencyRow();
-	RunSpectralRow( closedA );
-	RunMediumRow();
-	RunUniformControlRow();
+	// GRADED_ROWS (optional env var): run only the rows whose letters it
+	// contains, e.g. GRADED_ROWS=JKL.  Unset runs every row (the CI run).
+	const char* rowsEnv = std::getenv( "GRADED_ROWS" );
+	auto on = [rowsEnv]( char c ) { return !rowsEnv || std::strchr( rowsEnv, c ) != nullptr; };
+
+	if( on( 'E' ) ) RunSeedRow();
+	if( on( 'A' ) ) RunGatherRows( "A", "scenes/Tests/Materials/graded_index_interior_gather.RISEscene", closedA, preA );
+	if( on( 'B' ) ) RunGatherRows( "B", "scenes/Tests/Materials/graded_index_seeded_inside.RISEscene", closedB, preB );
+	if( on( 'C' ) ) RunSmallEmitterOutsideRow();
+	if( on( 'D' ) ) RunPinholeConsistencyRow();
+	if( on( 'G' ) ) RunSpectralRow( closedA );
+	if( on( 'H' ) ) RunMediumRow();
+	if( on( 'F' ) ) RunUniformControlRow();
 
 	// DL-292 (debt-dl292 slice): coverage rows.
-	RunSSSEntryNEERow();
-	RunShadowSkipRows();
-	RunRayCasterVolumeRow();
-	RunLegacyChainRow( closedB, preB );
-	RunIorFormRows( closedA );
+	if( on( 'I' ) ) RunSSSEntryNEERow();
+	if( on( 'J' ) || on( 'K' ) || on( 'L' ) ) RunShadowSkipRows();
+	if( on( 'M' ) ) RunRayCasterVolumeRow();
+	if( on( 'N' ) ) RunLegacyChainRow( closedB, preB );
+	if( on( 'O' ) ) RunIorFormRows( closedA );
 
 	std::cout << std::endl << "Passed: " << passCount << std::endl << "Failed: " << failCount << std::endl;
 	return failCount == 0 ? 0 : 1;
