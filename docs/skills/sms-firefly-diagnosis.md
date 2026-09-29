@@ -152,6 +152,22 @@ light hits that SMS already covers.  Audit:
   `rs2.smsHadNonSpecularShading` must be populated from the parent's
   state.  A fresh `RAY_STATE` starts with `false/false` and breaks
   the suppression chain.
+- The OPPOSITE failure -- energy LOSS, not fireflies (DL-295,
+  2026-09-28): suppression is only correct for a chain SMS can
+  actually represent.  SMS classifies a surface by
+  `IMaterial::GetSpecularInfo().isSpecular` alone (its seed trace stops
+  at, and its visibility test is blocked by, any hit reporting false),
+  so a chain through a weave gap, a composite's delta walker exit, or
+  any other delta lobe of a non-caster material has NO SMS estimate.
+  `PTNextSMSChainUncovered` / `bSMSChainUncovered` switches both guards
+  (PART 3's `considerEmission = false` and PART 1's latch) off for such
+  a chain, in the RGB/NM and HWSS bodies and the HWSS no-BSDF NM
+  delegation.  Reference-free check: on a scene with NO SMS caster,
+  PT with `sms_enabled TRUE` must equal PT without it
+  (`WeaveGapShadowTransmittanceTest` section `sms`).  Two open
+  relatives: DL-339 (a material that claims to be a caster but whose
+  chain SMS never solves -- an open refractive plane) and DL-340 (a
+  medium scatter after a caster does not end the chain).
 
 ### 7. Audit the photon tracer's pre-scatter state
 
