@@ -3871,14 +3871,23 @@ static void TestNarrowFovSplatW()
 // BDPT's splat still split across columns 16 and 17).
 //
 // Red-proof (P2-1, run once by hand, not part of the automated suite):
-// revert `BDPTPelRasterizer.cpp`, `VCMPelRasterizer.cpp` and
-// `BoxPixelFilter.cpp`'s `warpOnScreen` to the reviewer's PBRT-convention
-// mutation ( x + u, H - y + v - 1 ), leaving `SplatFilm::NearestPixel`
-// untouched -- rebuild, run `--stripe-only`, `git checkout HEAD -- <the
-// three files>` to restore, rebuild.  Measured: green build fractional
-// coverage BDPT-splat/VCM-splat within 0.010/0.006 of PT (n = 4 salted);
-// the mutated build reads BDPT-splat -0.482, VCM-splat -0.476 (a full
-// column of coverage lost on the splat side only).
+// mutate `BDPTPelRasterizer.cpp`'s and `VCMPelRasterizer.cpp`'s eye-ray
+// `ptOnScreen` and `BoxPixelFilter::warpOnScreen` (`BoxPixelFilter.h`) to
+// the reviewer's PBRT convention ( x + u, H - y + v - 1 ), leaving
+// `SplatFilm::NearestPixel` on the CURRENT convention -- rebuild, run
+// `--narrow-fov-only`, `git checkout HEAD -- <the three files>` to
+// restore, rebuild.  Measured: green build fractional coverage
+// BDPT-splat/VCM-splat within 0.0067 of PT-direct (n = 4 salted, three
+// salt-base checks, worst case); the mutated build moves PT-direct's OWN
+// eye-ray placement too, so the fixed-in-world-space floor edge now
+// falls INSIDE pixel 16 instead of straddling it -- PT-direct reads
+// 0.0000 at column 16 (the fixture-sanity check correctly FAILS), while
+// BDPT-splat is unaffected (a t = 1 splat's raster position comes from
+// `RasterizeThrough` + `NearestPixel`, neither mutated) and still reads
+// 0.4989, its green-build value -- a 0.4989 mismatch, a whole column of
+// coverage.  VCM-splat reads 0.0070 (its splat position is likewise
+// unaffected, but its eye-vertex generation shares the mutated formula
+// and perturbs its overall MIS mixture).  Whole test: 11/0 -> 9/2.
 //////////////////////////////////////////////////////////////////////
 static const char* kSceneStripeCommon =
 	"film\n{\n\twidth 32\n\theight 32\n}\n\n"
@@ -4055,10 +4064,10 @@ static void TestNarrowFovStripeGuard()
 	// PT-direct spread is {-0.0012, -0.0067, -0.0008}, VCM-splat vs
 	// PT-direct {0.0000, +0.0011, -0.0021} -- worst observed 0.0067.
 	// A one-sided half-pixel convention drift moves an ENTIRE column of
-	// coverage into (or out of) column 16 (the red-proof below reads
-	// BDPT-splat -0.482, VCM-splat -0.476), so 0.03 is a ~4.5x margin
-	// over the measured spread and still a >15x margin below the defect
-	// it exists to catch.  See docs/DL294_NARROW_FOV_SPLAT.md section 4
+	// coverage into (or out of) column 16 (the red-proof above measured
+	// PT-direct 0.0000 / BDPT-splat 0.4989, a 0.4989 mismatch), so 0.03
+	// is a ~4.5x margin over the measured spread and still a >15x margin
+	// below the defect it exists to catch.  See docs/DL294_NARROW_FOV_SPLAT.md section 4
 	// for the full salted table and the red-proof numbers.
 	const double kBand = 0.03;
 	char buf[256];

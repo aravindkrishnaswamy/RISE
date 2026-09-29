@@ -139,13 +139,26 @@ the fixed build (n = 4 salted, three independent salt-base checks):
 PT-direct 0.5001, BDPT-splat 0.4989/0.4934/0.4993, VCM-splat
 0.5001/0.5012/0.4980 -- worst spread 0.0067, gated at a 0.03 band (a
 ~4.5x margin over the measured spread, still >15x below a one-sided-shift
-defect).  Red-proofed against the reviewer's own mutation (the three files
-above reverted to the pre-DL-294 convention, `SplatFilm::NearestPixel`
-left alone): BDPT-splat fractional coverage read **-0.482**, VCM-splat
-**-0.476** -- a whole column of coverage moved off column 16 on the splat
-side only, while PT-direct stayed at 0.5001 (its own eye-ray convention
-moved too, so its OWN column split is internally consistent; it is the
-cross-convention comparison that fails).
+defect).  **Red-proofed against the reviewer's own mutation** (moving
+`BDPTPelRasterizer`/`VCMPelRasterizer`/`BoxPixelFilter::warpOnScreen`'s
+eye-ray placement TO PBRT's `(x + u, H - y + v - 1)` convention, leaving
+`SplatFilm::NearestPixel` on the CURRENT convention -- rebuilt, measured,
+`git checkout HEAD -- <the three files>`, rebuilt again to confirm the
+restore): PT-direct's OWN eye-ray sample placement moved with the
+mutation too, so the physical floor edge (fixed in world space, at the
+camera's optical centre) now falls INSIDE pixel 16 instead of straddling
+its boundary -- PT-direct reads **0.0000** at column 16 (the fixture's own
+sanity check, "PT locates a genuine partial-coverage transition column,"
+correctly FAILS), while BDPT's splat -- unaffected, since a t = 1 splat's
+raster position comes from `BDPTCameraUtilities::RasterizeThrough` and
+`NearestPixel`, neither of which the mutation touches -- still reads
+**0.4989**, exactly its green-build value.  VCM-splat reads **0.0070**, a
+smaller residual (VCM's own eye-vertex generation shares the mutated
+`ptOnScreen` formula, which perturbs its overall MIS mixture even though
+its splat's raster position is unaffected the same way BDPT's is).  The
+net effect: BDPT-splat vs PT-direct fails by 0.4989 (a whole column of
+coverage misaligned), and the whole test goes red (9/2, two failing
+checks) where the fixed build reads 11/0.
 
 ## 5. Evidence
 
