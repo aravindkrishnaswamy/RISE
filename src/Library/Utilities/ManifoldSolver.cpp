@@ -2530,6 +2530,7 @@ bool ManifoldSolver::UpdateVertexOnSurface(
 	// reason for existing.  See docs/SMS_TWO_STAGE_SOLVER.md.
 	if( smoothing > 0.0 )
 	{
+        vertex.alphaEndpoint.reset();
 		Point2 newUv( vertex.uv.x + du, vertex.uv.y + dv );
 		// Spherical-style pole wrap.  For sphere/ellipsoid parameter-
 		// isations, crossing a pole (v < 0 or v > 1) reflects the v
@@ -2589,7 +2590,7 @@ bool ManifoldSolver::UpdateVertexOnSurface(
 	// but always re-snap to the actual surface via intersection so
 	// we get accurate derivatives for the next Newton step.
 	const Scalar stepSize = sqrt( du * du + dv * dv );
-	if( stepSize < 1e-8 )
+	if( stepSize < 1e-8 && (!vertex.retainAlphaEndpoint || vertex.HasAlphaEndpoint()) )
 	{
 		// Negligible step — no change needed
 		vertex.valid = true;
@@ -2614,6 +2615,8 @@ bool ManifoldSolver::UpdateVertexOnSurface(
 
 		if( ri.geometric.bHit )
 		{
+            const auto endpoint = vertex.retainAlphaEndpoint ?
+                std::make_shared<const RayIntersection>(ri) : nullptr;
 			// Apply modifier — same reason as in BuildSeedChain.  Stage 2
 			// of the two-stage solver (smoothing == 0) wants the perturbed
 			// normal so SMS's chain matches PT's bumpy ray traversal.
@@ -2624,6 +2627,8 @@ bool ManifoldSolver::UpdateVertexOnSurface(
 			vertex.normal = ri.geometric.vNormal;
 			vertex.geomNormal = ri.geometric.UnflippedGeomNormal();	// DL-70: the TRUE outward normal (see ManifoldSolver.h)
 			vertex.uv = ri.geometric.ptCoord;
+            vertex.alphaEndpoint = endpoint;
+            vertex.alphaEndpointPosition = vertex.position;
 			snapped = true;
 		}
 	}
@@ -2641,6 +2646,8 @@ bool ManifoldSolver::UpdateVertexOnSurface(
 
 		if( ri2.geometric.bHit )
 		{
+            const auto endpoint = vertex.retainAlphaEndpoint ?
+                std::make_shared<const RayIntersection>(ri2) : nullptr;
 			if( ri2.pModifier ) {
 				ri2.pModifier->Modify( ri2.geometric );
 			}
@@ -2648,12 +2655,17 @@ bool ManifoldSolver::UpdateVertexOnSurface(
 			vertex.normal = ri2.geometric.vNormal;
 			vertex.geomNormal = ri2.geometric.UnflippedGeomNormal();	// DL-70: the TRUE outward normal (see ManifoldSolver.h)
 			vertex.uv = ri2.geometric.ptCoord;
+            vertex.alphaEndpoint = endpoint;
+            vertex.alphaEndpointPosition = vertex.position;
 			snapped = true;
 		}
 	}
 
 	if( !snapped )
 	{
+        // Alpha requires a position-producing geometric hit. Reject this
+        // Newton step instead of publishing an unverified linear endpoint.
+        if (vertex.retainAlphaEndpoint) return false;
 		// Fall back to the linear approximation (no re-snap)
 		vertex.position = newPos;
 		vertex.normal = newNormal;
@@ -2789,6 +2801,7 @@ bool ManifoldSolver::ComputeVertexDerivatives(
 	// timeline in docs/SMS_TWO_STAGE_SOLVER.md).
 	if( smoothing > 0.0 )
 	{
+        vertex.alphaEndpoint.reset();
 		Point3  aP;
 		Vector3 aN, aDpdu, aDpdv, aDndu, aDndv;
 		if( vertex.pObject->ComputeAnalyticalDerivatives(
@@ -2835,6 +2848,9 @@ bool ManifoldSolver::ComputeVertexDerivatives(
 		RayIntersection ri( probeRay, nullRasterizerState );
 		vertex.pObject->IntersectRay( ri, 2.0 * probeOffsetAnalytic, true, true, false );
 		if( ri.geometric.bHit ) {
+		    const bool initializeEndpoint = vertex.retainAlphaEndpoint && !vertex.HasAlphaEndpoint();
+		    const auto endpoint = vertex.retainAlphaEndpoint ?
+		        std::make_shared<const RayIntersection>(ri) : nullptr;
 			// Apply intersection modifier (bump map / normal map) so SMS
 			// sees the perturbed normal — same as RayCaster does for the
 			// rendering pipeline.  Without this, SMS's chain operates on
@@ -2844,8 +2860,21 @@ bool ManifoldSolver::ComputeVertexDerivatives(
 				ri.pModifier->Modify( ri.geometric );
 			}
 			onSurface = true;
+		    // Analytic Stage1 and synthetic seeds lack a physical record.
+		    // Publish this actual hit BEFORE Newton uses the vertex; never
+		    // associate a neighbouring FD hit with an unchanged endpoint.
+		    if (initializeEndpoint) {
+		        vertex.position = ri.geometric.ptIntersection;
+		        vertex.normal = ri.geometric.vNormal;
+		        vertex.geomNormal = ri.geometric.UnflippedGeomNormal();
+		        vertex.uv = ri.geometric.ptCoord;
+		        vertex.alphaEndpoint = endpoint;
+		        vertex.alphaEndpointPosition = vertex.position;
+		    }
 			if( ri.geometric.derivatives.valid ) {
 				vertex.position = ri.geometric.ptIntersection;
+		        vertex.alphaEndpoint = endpoint;
+		        vertex.alphaEndpointPosition = vertex.position;
 				vertex.normal = ri.geometric.vNormal;
 				vertex.geomNormal = ri.geometric.UnflippedGeomNormal();	// DL-70: the TRUE outward normal (see ManifoldSolver.h)
 				vertex.dpdu = ri.geometric.derivatives.dpdu;
@@ -2885,12 +2914,28 @@ bool ManifoldSolver::ComputeVertexDerivatives(
 			RayIntersection ri2( probeRay2, nullRasterizerState );
 			vertex.pObject->IntersectRay( ri2, 2.0 * probeOffsetAnalytic, true, true, false );
 			if( ri2.geometric.bHit ) {
+			    const bool initializeEndpoint = vertex.retainAlphaEndpoint && !vertex.HasAlphaEndpoint();
+			    const auto endpoint = vertex.retainAlphaEndpoint ?
+			        std::make_shared<const RayIntersection>(ri2) : nullptr;
 				if( ri2.pModifier ) {
 					ri2.pModifier->Modify( ri2.geometric );
 				}
 				onSurface = true;
+			    // Analytic Stage1 and synthetic seeds lack a physical record.
+			    // Publish this actual hit BEFORE Newton uses the vertex; never
+			    // associate a neighbouring FD hit with an unchanged endpoint.
+			    if (initializeEndpoint) {
+			        vertex.position = ri2.geometric.ptIntersection;
+			        vertex.normal = ri2.geometric.vNormal;
+			        vertex.geomNormal = ri2.geometric.UnflippedGeomNormal();
+			        vertex.uv = ri2.geometric.ptCoord;
+			        vertex.alphaEndpoint = endpoint;
+			        vertex.alphaEndpointPosition = vertex.position;
+			    }
 				if( ri2.geometric.derivatives.valid ) {
 					vertex.position = ri2.geometric.ptIntersection;
+			        vertex.alphaEndpoint = endpoint;
+			        vertex.alphaEndpointPosition = vertex.position;
 					vertex.normal = ri2.geometric.vNormal;
 					vertex.geomNormal = ri2.geometric.UnflippedGeomNormal();	// DL-70: the TRUE outward normal (see ManifoldSolver.h)
 					vertex.dpdu = ri2.geometric.derivatives.dpdu;
@@ -3984,6 +4029,12 @@ unsigned int ManifoldSolver::SnellContinueChain(
 
 		// Scene-wide intersection via the acceleration structure
 		pObjMgr->IntersectRaySampled(ri, sampler);
+        const bool retainAlphaEndpoint = caster.GetLightSampler() &&
+            caster.GetLightSampler()->SceneHasAlphaCoverage();
+        const std::shared_ptr<const RayIntersection> endpoint =
+            retainAlphaEndpoint && ri.geometric.bHit ?
+            std::make_shared<const RayIntersection>(ri) : nullptr;
+
 
 		// Apply intersection modifier (e.g. bump map / normal map) so the
 		// SMS chain's normals match what the rendering pipeline (RayCaster)
@@ -4089,6 +4140,10 @@ unsigned int ManifoldSolver::SnellContinueChain(
 		mv.uv = ri.geometric.ptCoord;
 		mv.pObject = ri.pObject;
 		mv.pMaterial = pMat;
+        mv.retainAlphaEndpoint = retainAlphaEndpoint;
+        mv.alphaEndpoint = endpoint;
+        mv.alphaEndpointPosition = mv.position;
+
 		mv.eta = specInfo.ior;
 		mv.attenuation = specInfo.attenuation;
 		mv.isReflection = !specInfo.canRefract;
@@ -5164,7 +5219,7 @@ ManifoldResult ManifoldSolver::Solve(
 	for( unsigned int i = 0; i < specularChain.size(); i++ )
 	{
 		ManifoldVertex& v = specularChain[i];
-		if( !v.valid )
+		if( !v.valid || (v.retainAlphaEndpoint && !v.HasAlphaEndpoint()) )
 		{
 			if( !ComputeVertexDerivatives( v ) )
 			{
@@ -8483,7 +8538,9 @@ namespace
 		{
 			Ray ray( curOrigin, dir );
 			RayIntersection ri( ray, nullRasterizerState );
-			pObjMgr->IntersectRaySampled(ri, sampler);
+			// Do not sample endpoint coverage beyond this finite visibility
+            // interval; final endpoint acceptance is handled exactly once.
+            pObjMgr->IntersectRaySampled(ri, sampler, true, true, false, distRemaining);
 
 			if( !ri.geometric.bHit ) return false;
 			if( ri.geometric.range > distRemaining ) return false;
@@ -8540,15 +8597,13 @@ bool ManifoldSolver::CheckChainVisibility(
     for (size_t i=0;i<chain.size();++i) {
         const auto& v=chain[i];
         // Newton can move a seed across an inherited CSG material boundary.
-        // Probe all solved vertices in alpha scenes, even an opaque seed.
+        // Validate retained records in alpha scenes, even an opaque seed.
         if (!sceneAlpha && (!v.pMaterial || v.pMaterial->GetAlphaMode()==eAlphaOpaque)) continue;
-        const Vector3 n=Vector3Ops::Normalize(v.geomNormal);
-        const Scalar eps=1e-4;
-        const Ray probe(Point3Ops::mkPoint3(v.position,n*eps),-n);
-        RayIntersection hit(probe,nullRasterizerState);
-        if (!v.pObject) return false;
-        v.pObject->IntersectRay(hit,eps*2,true,true,false);
-        if (!hit.geometric.bHit || Point3Ops::Distance(hit.geometric.ptIntersection,v.position)>eps*.1) return false;
+        // Visibility consumes the physical hit that produced the solved
+        // endpoint. A second normal probe can hit a different SDF/CSG face.
+        // Publicly fabricated or moved vertices have no such certificate.
+        if (!v.HasAlphaEndpoint()) return false;
+        RayIntersection hit(*v.alphaEndpoint);
         const Point3 prev=i?chain[i-1].position:shadingPoint;
         hit.geometric.ray=Ray(prev,Vector3Ops::Normalize(Vector3Ops::mkVector3(v.position,prev)));
         hit.geometric.range=Point3Ops::Distance(prev,v.position);

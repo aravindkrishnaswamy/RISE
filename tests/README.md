@@ -1234,3 +1234,9 @@ See [ALPHA_COVERAGE.md](../docs/ALPHA_COVERAGE.md) for the estimator definitions
   RGB/NM/HWSS, and SMS seed-to-solved-point effective material coverage.
   `SignalEmitterRecordTest` verifies the original emitted-radiance records;
   `AlphaPhotonEmissionTest` includes all five emission-loop context families.
+
+- `AlphaSMSGeometryTest`: production SMS seed/solve endpoint records on SDF
+  and analytic geometry across scale/transforms, two-stage projection,
+  pre-modifier UV, nearby CSG faces, finite visibility draw bounds, and stale
+  or missing-record refusal. Uses independent control hits and affirmative
+  MASK1 visibility so negative coverage tests cannot pass vacuously.

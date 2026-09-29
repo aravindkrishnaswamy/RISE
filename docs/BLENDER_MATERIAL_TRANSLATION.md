@@ -713,7 +713,10 @@ deliberately does not pre-divide the IOR by any enclosing medium.
 The existing ABI fields `alpha`, `alpha_texture_painter_name`, `alpha_mode`,
 and `alpha_threshold` now populate `IJob::SetMaterialAlpha`. CLIP uses MASK;
 BLEND and HASHED use stochastic BLEND. Texture alpha is read as linear scalar
-A and multiplied by the numeric factor. No RGB or spectral uplift is involved.
+A and replaces the unlinked numeric Alpha value; the numeric value is used
+only when no texture is linked. For example, a numeric value of 0.2 and linked
+texture A of 0.8 produce coverage 0.8, not 0.16. This differs from glTF, which
+multiplies texture alpha by its factor. No RGB or spectral uplift is involved.
 
 Coverage is applied before shading under legacy, PT, BDPT, VCM, MLT and photon
 transport. Importers do not install alpha shader ops. The bridge keeps the

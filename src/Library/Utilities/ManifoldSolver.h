@@ -51,6 +51,8 @@
 #include "../Utilities/ISampler.h"
 #include "../Utilities/IORStack.h"
 #include <vector>
+#include <memory>
+#include "../Intersection/RayIntersection.h"
 
 namespace RISE
 {
@@ -151,6 +153,19 @@ namespace RISE
 			const IObject*		pObject;		///< Object this vertex lies on
 			const IMaterial*	pMaterial;		///< Material at this vertex
 			bool				valid;			///< True if vertex data is complete
+
+            // Scene-local opt-in. Retain ONLY hits that publish this vertex's
+            // position, never neighbouring finite-difference validation hits.
+            // Immutable sharing makes Newton copies/rollback preserve provenance.
+            bool retainAlphaEndpoint = false;
+            std::shared_ptr<const RayIntersection> alphaEndpoint;
+            Point3 alphaEndpointPosition;
+            bool HasAlphaEndpoint() const {
+                return alphaEndpoint && alphaEndpoint->pObject == pObject &&
+                    position.x == alphaEndpointPosition.x &&
+                    position.y == alphaEndpointPosition.y &&
+                    position.z == alphaEndpointPosition.z;
+            }
 
 			ManifoldVertex() :
 			position( Point3(0,0,0) ),

@@ -306,13 +306,41 @@ obtain their expected point from `UniformRandomPoint` rather than introducing
 a larger comparison tolerance. Optional local signal payloads retain the
 existing `ProbeEmitterSurface` acceptance/refusal policy.
 
-SMS final coverage re-probes solved endpoints in scenes with effective alpha,
-even when a seed material was opaque. Newton can move across an inherited CSG
-material boundary; the actual validated hit material supplies coverage while
-the existing optical proposal remains unchanged. Its alpha-only query copy
-uses the attached scene, root object and solved world point. No receiver raster
-is available in this API, so none is invented. The decision still occurs once
-outside proposal normalization. No-alpha scenes retain the existing fast path.
+SMS final coverage consumes the immutable pre-modifier hit that actually
+produced the solved endpoint, including its actual inherited CSG material.
+A separate fixed-distance normal probe can skip an SDF face or select a nearby
+CSG face, so it is not an endpoint certificate. Seed hits and actual Newton
+projection hits retain records only in scenes with effective alpha; FD-only
+verification cannot replace a retained endpoint with its neighboring hit.
+The exact published position and root object key the record. Copies and
+rejected-step rollback share it immutably; changed positions/objects cannot
+use it, and analytical smoothing invalidates it. A missing record during
+geometric initialization publishes an actual hit before Newton evaluates the
+vertex. An alpha Newton step with no successful geometric snap is rejected
+instead of publishing a linear, unverified endpoint. Existing optical seed
+metadata and geometry/projection rules remain otherwise unchanged.
+
+The final alpha-only copy uses the previous physical segment, attached scene,
+root object and solved world point. No receiver raster is available in this
+API, so none is invented. Final acceptance occurs once outside proposal
+normalization. Visibility subqueries are bounded before sampling coverage,
+so surfaces beyond their segment cannot consume endpoint draws. All production
+alpha main/reciprocal proposals use the same BuildSeedChain/Solve pipeline;
+the existing alpha override excludes biased branched/photon extensions in RGB
+and NM. Direct internal visibility calls with fabricated or stale uncached
+vertices conservatively fail; they cannot move an endpoint to fabricate proof.
+This is a stricter internal input contract, not unchanged manual-call behavior.
+No-alpha solves allocate no endpoint payload. Alpha solves add immutable hit
+copies/allocations at seed/projection/validation queries; chain copies share
+records. Borrowed object/material pointers have the same owning-scene lifetime
+requirement as existing manifold vertices. This records the solver's actual
+geometry result, not exact mathematical surface coordinates, and does not
+remove its existing finite-precision or projection-support limits.
+
+`AlphaSMSGeometryTest` covers analytic and SDF mirrors at scales 0.1/1/10,
+nonuniform transforms, actual two-stage ellipsoid calls, modifier/UV behavior,
+nearby disconnected CSG faces, remote MASK1 invariance, actual MASK1/MASK0,
+one BLEND draw, immutable copies/rollback, and missing/stale records.
 `AlphaEndpointContextTest` covers real scalar world/scene expressions, direct
 emitter/NEE contexts, unchanged MASK proposal draws, RGB/NM/HWSS rendering and
 production `BuildSeedChain`→`Solve` crossing between equally reflective CSG

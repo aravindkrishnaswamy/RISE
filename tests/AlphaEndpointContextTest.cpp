@@ -25,12 +25,16 @@ static void SMSContext(){
  std::vector<IShaderOp*> ops;IShader* shader=nullptr;RISE_API_CreateStandardShader(&shader,ops);IRayCaster* caster=nullptr;RISE_API_CreateRayCaster(&caster,false,8,*shader,true);caster->AttachScene(scene);
  RayIntersection control(Ray(Point3(.5,0,0),Vector3(0,1,0)),nullRasterizerState);objects->IntersectRay(control,true,true,false);
  Check(control.geometric.bHit&&control.pObject==object&&coverage->GetValuesAt(control.geometric).v[0]==0,"SMS real manager-hit context gives zero coverage");
- ManifoldVertex vertex;vertex.position=Point3(.5,1,0);vertex.normal=Vector3(0,-1,0);vertex.geomNormal=vertex.normal;vertex.pObject=object;vertex.pMaterial=mirror;
- std::vector<ManifoldVertex> chain{vertex};auto* solver=new ManifoldSolver(ManifoldSolverConfig());RandomNumberGenerator random(214);IndependentSampler sampler(random);
- const bool opaque=solver->CheckChainVisibility(Point3(0,0,0),Point3(1,0,0),chain,*caster,&sampler);
+ auto* one=new UniformScalarPainter(1);mirror->SetAlpha(one,eAlphaMask,.5);one->release();scene->BumpLightTopologyGeneration();caster->AttachScene(scene);
+ auto* solver=new ManifoldSolver(ManifoldSolverConfig());RandomNumberGenerator random(214);IndependentSampler sampler(random);
+ std::vector<ManifoldVertex> seed;Check(solver->BuildSeedChain(Point3(0,0,0),Point3(.5,1,0),*scene,*caster,seed,false,nullptr,&sampler)==1,"SMS context uses a production seed");
+ auto solution=solver->Solve(Point3(0,0,0),Vector3(0,1,0),Point3(1,0,0),Vector3(0,1,0),seed,sampler);
+ Check(solution.valid&&solution.specularChain.size()==1&&solution.specularChain[0].HasAlphaEndpoint(),"SMS context uses a validated captured endpoint");
+ const auto& chain=solution.specularChain;
+ const bool opaque=solution.valid&&solver->CheckChainVisibility(Point3(0,0,0),Point3(1,0,0),chain,*caster,&sampler);
  mirror->SetAlpha(coverage,eAlphaMask,.5);
  const bool alpha=solver->CheckChainVisibility(Point3(0,0,0),Point3(1,0,0),chain,*caster,&sampler);
- Check(opaque,"SMS opaque solved-chain visibility control");Check(!alpha,"SMS final physical coverage sees scene context");
+ Check(opaque,"SMS MASK1 solved-chain visibility control");Check(!alpha,"SMS final physical coverage sees scene context");
  solver->release();caster->release();shader->release();scene->release();objects->release();enclosing->release();enclosingGeo->release();object->release();geometry->release();mirror->release();coverage->release();white->release();
 }
 class CountingSampler:public IndependentSampler {
