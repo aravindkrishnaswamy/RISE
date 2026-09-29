@@ -1012,7 +1012,10 @@ entirely.
   fixture's quad was wound away from the scene.  Flipped, it reads
   BDPT/PT 0.9988 and VCM/PT 0.9927.  The convention doc already says a
   double-sided quad emits from both faces, so the HIT side is right and
-  NEE and light-subpath emission are the sides to fix.
+  NEE and light-subpath emission are the sides to fix.  Fixed the same
+  day (slice `debt-dl320`, docs/DL320_DOUBLE_SIDED_EMITTER.md): with its
+  ORIGINAL winding that fixture now reads BDPT/PT 0.9996 and VCM/PT 0.9981
+  at depth 32 (salted n = 4).
 
 **Not explained here, recorded.**  The "smaller BDPT deficits" of the
 DL-247b and DL-283 reviews do not depend on depth.  They are BDPT-only,

@@ -321,7 +321,9 @@ standard_object
   (the default) a back-face hit flips the normal toward the ray, so the
   quad emits from BOTH faces; with `doublesided FALSE` the back face is
   not hit at all and only the winding's face emits.  `rect_light` sets
-  `FALSE` and derives the winding from `facing`.
+  `FALSE` and derives the winding from `facing`.  Both faces emit for
+  every integrator and every strategy (section 4, "Lights: a double-sided
+  emitter emits from both faces").
 - **`scale` sets exitance — brightness per unit area** — so the same
   `scale` on a panel twice the size delivers twice the light.  The
   number is therefore scene-dependent, and the values in `scenes/` span
@@ -473,6 +475,34 @@ Two places bypass it, both deliberately:
   comes back byte-identical.  That matters beyond tidiness, because an agent
   edit's undo replays the chunk's raw text and must find the convention its
   digits were captured under.
+
+### Lights: a double-sided emitter emits from both faces
+
+**Since 2026-09-28 (DL-320) a luminaire on double-sided geometry emits
+from BOTH faces for every strategy** -- path-traced hits, next-event
+estimation, BDPT/VCM/MLT light subpaths and connections, the legacy
+direct-lighting chain and the photon maps alike.  Double-sided geometry
+means: `clippedplane_geometry` (its `doublesided` defaults to `TRUE`), a
+mesh with `double_sided TRUE`, a `displaced_geometry` over such a mesh,
+and a Bezier patch.  Spheres, boxes, disks, bilinear patches and the
+other analytic primitives are one-sided: their back face does not emit.
+Before that date only strategies that HIT the emitter saw the back face;
+next-event estimation and light-subpath emission treated it as one-sided,
+so a back-facing panel lit the scene 7-14x too dark under PT and BDPT
+and not at all under the legacy direct-lighting chain
+([DL320_DOUBLE_SIDED_EMITTER.md](DL320_DOUBLE_SIDED_EMITTER.md)).
+
+- **Each face emits the full exitance**, so a double-sided panel's total
+  power is `2 * exitance * area`.  A ceiling panel wound face-down with
+  open space above it sends half its power up.  For a one-sided panel say
+  `doublesided FALSE` on the `clippedplane_geometry`, or use `rect_light`,
+  which is one-sided by construction.
+- **Winding does not change a double-sided panel's lighting**; it decides
+  a one-sided panel's lit face, `normalize(Cross(ptb - pta, ptd - pta))`.
+- A double-sided panel mounted flush against a ceiling or wall wastes its
+  back face's light harmlessly, but under BDPT/VCM that is half the light
+  subpaths: expect more light-tracing noise, and prefer `doublesided
+  FALSE` for such fixtures.
 
 ### Anti-patterns
 
