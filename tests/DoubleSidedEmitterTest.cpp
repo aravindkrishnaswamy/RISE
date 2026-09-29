@@ -52,14 +52,16 @@
 //          single-sided face-down quads off to the sides (x in +/-[3.1,
 //          3.9], so no emitter shadows another's light onto the viewed
 //          floor square and the closed forms simply add; placed as a
-//          MIRROR PAIR because the orthographic footprint is offset by
-//          about half a pixel in x -- a pre-existing camera residual
-//          recorded in docs/DL320_DOUBLE_SIDED_EMITTER.md -- which a
-//          single off-axis emitter reads as a 2-5 % bias and a mirror
-//          pair cancels to first order).  VCM reads ~1.2 % low here
-//          whichever way the big quad faces, and read ~1.7 % low before
-//          DL-320: a pre-existing multi-light VCM deficit, DL-348, inside
-//          this row's 2 % band.  The double-sided emitter's
+//          MIRROR PAIR because the image is offset by half a pixel
+//          against the camera's footprint -- the PT pel rasterizer places
+//          samples at `x + u - 0.5` while the cameras translate by
+//          `-0.5 * width`, for every camera type (DL-368, recorded in
+//          docs/DL320_DOUBLE_SIDED_EMITTER.md) -- which a single off-axis
+//          emitter reads as a 2-5 % bias and a mirror pair cancels to
+//          first order).  VCM reads ~1.2 % low here whichever way the big
+//          quad faces, and read ~1.7 % low before DL-320: VCM's pre-
+//          existing multi-luminary deficit, DL-348, inside this row's 2 %
+//          band.  The double-sided emitter's
 //          selection weight doubles with its power; every consumer of
 //          the selection PMF must read the same value or the two
 //          lights' MIS partitions stop summing to one.

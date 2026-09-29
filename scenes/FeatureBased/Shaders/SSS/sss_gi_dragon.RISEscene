@@ -248,7 +248,7 @@ lambertian_luminaire_material
 {
 	name				lum
 	exitance			color_white
-	# DL-320 (2026-09-28): 10 -> 8.2.  The panel is double-sided and sits close to the left wall; since DL-320 its back face lights that wall (it used to leave a dark patch there), and the bounce brightened the dragon by ~23 %.  8.2 returns the dragon to its pre-DL-320 level.
+	# DL-320 (2026-09-28): 10 -> 8.2.  The panel is double-sided and sits close to the left wall; since DL-320 its back face lights that wall (it used to leave a dark patch there), and the bounce brightened the dragon by ~23 %.  8.2 returns the dragon to within ~3.5 % (about one sd of the measurement) of its pre-DL-320 level, erring bright rather than dark.
 	scale				8.2
 	material			none
 }

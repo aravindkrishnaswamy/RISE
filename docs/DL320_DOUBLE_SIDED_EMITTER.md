@@ -210,12 +210,24 @@ Movers that are NOT sidedness:
 **Bit identity.**  Single-sided emitters: BDPT, PT HWSS and PT spectral
 renders are bit-identical to the pre-fix build (`DoubleSidedEmitterTest`
 Z5 hashes); PT RGB and the legacy direct-lighting chain differ in the
-last ulp on 19-25 % of pixels (max 1.6e-15 relative) -- the RGB NEE arm's
-code moved and `-ffast-math` contracts it differently; three source forms
-of the face flip were tried and none restored bitwise identity.  Face-on
-double-sided emitters cannot be bit-identical: the light subpaths now
-leave from either face, and the clipped-plane sample point moved 1e-5;
-their means are unchanged (topology B, Z1 face-down, the census).
+last ulp -- the external review measured 25.2 % (PT RGB) and 27.4 %
+(legacy) of CHANNELS differing, max 1.75e-15 / 1.86e-15 relative (this
+slice's own first count, 19-25 % of pixels at max 1.6e-15, understated
+it).  The cause is `-ffast-math` code generation in the RGB NEE arm: the
+review found that DELETING the in-place face-flip block restores the PT
+RGB and legacy hashes exactly, while "compute `cosLight` first, then flip
+both" does not.  Recorded, not chased.  Face-on double-sided emitters
+cannot be bit-identical: the light subpaths now leave from either face,
+and the clipped-plane sample point moved 1e-5.  Their means are
+unchanged WHERE THE LIGHT-SIDE STRATEGIES ARE UNBIASED (topology B, Z1
+face-down, the census).  Where a light-side strategy carries its own
+bias, halving a face-down panel's useful light-subpath density shifts
+the MIS weight away from it and the mean moves: `VCMStrategyBalanceTest`
+topology U (DL-317's biased light-side strategies at SSS entry vertices)
+went from VCM/PT -5.9 % to -3.5 % with the default double-sided emitter
+(its fixture is now single-sided to keep pinning DL-317), and a closed
+box of six double-sided emitting planes reads 0.5 % lower under VCM
+than the same box single-sided (DL-348).
 
 ### 4.4 Cost
 
@@ -240,22 +252,56 @@ sided panel 1e-4 below the ceiling, n = 5 per build, paired:
   caustics from its back face.  `sms_k1_refract` with the emitter made
   single-sided and turned face-up: PT + SMS 0.12421 against PT without SMS
   0.09671 (+28 %), identical pre and post.
-- **DL-348** (new): a multi-light VCM (and, before this slice, BDPT)
-  deficit.  Row Z2's face-down control -- one 3x3 double-sided quad and a
-  mirror pair of 0.8 x 0.8 single-sided quads, closed form 0.335217 --
-  reads PT 0.9999, BDPT 0.9944 pre / 0.9984 post, VCM 0.9835 pre / 0.9880
-  post (n = 4-6).  Each light alone agrees across all three integrators.
-- Orthographic camera footprint offset (no id reserved; for the
-  supervisor): the ortho footprint sits about half a pixel toward world
-  -x.  A lone off-axis quad at x = +2 / -2 (view 1.0, 32 px) reads 0.9794
-  / 1.0208 of its closed form under PT and BDPT alike; the error scales
-  with the pixel size.  Likely `OrthographicCamera::GenerateRay`'s
-  `(W/2 - screenX)/W` against a pixel-centred `screenX`.
+- **DL-348** (new): VCM reads low in scenes with SEVERAL luminaries, and
+  the deficit grows with the NUMBER of luminaries, not their sizes (the
+  external review; equal single-sided quads, salted n = 6): 2 lights,
+  orthographic, vs closed form -3.8 %; 4 lights -10.2 %; 4 lights,
+  pinhole, vs PT -7.6 %; the same 4 quads as ONE luminary (one PLY mesh)
+  -0.17 %.  Suspected mechanism, the main term: the light-selection
+  probability is divided out of VCM's MIS quantities (`EvaluateS0Impl`'s
+  `wCamera = wCameraJoint / pdfSelect`, and `InitLight`'s dVC) while its
+  partners keep it -- keeping `pdfSelect` in `wCamera` and passing 1 to
+  `InitLight` moves 4 lights from 0.898 to 0.965 of the closed form
+  (orthographic) and -7.6 % to -0.7 % (pinhole).  An unexplained -3.5 %
+  (orthographic) remains, and BDPT also reads -2.0 % with 4 equal lights
+  under the orthographic camera, before and after DL-320 (pinhole
+  -0.36 %).  DL-320 makes it WORSE on multi-luminary double-sided
+  emitters: a closed box of six double-sided emitting planes vs the same
+  box single-sided, VCM connections, double/single 1.00001 (z 0.03)
+  before, 0.9951 (z -10.4, n = 10) after, the deficit on the floor
+  (-1.9 % per pixel), PT and BDPT unchanged; with the `pdfSelect` patch
+  the gap is -0.09 %.  Row Z2's face-down control (one 3x3 double-sided
+  quad plus two 0.8 x 0.8 single-sided quads) reads VCM 0.9835 pre /
+  0.9880 post of its closed form.  Shipped reach: every multi-panel VCM
+  scene -- `triplecaustic_vcm` (three panels) among them.
+- **DL-368** (filed by the supervisor; the text this slice first wrote
+  here blamed the orthographic camera and was WRONG): the PT pel
+  rasterizer places pixel samples at `x + u - 0.5`
+  (`PathTracingPelRasterizer.cpp` ~394-395) while every camera
+  translates its film by `-0.5 * width`, so the image sits half a pixel
+  off the camera's footprint -- for orthographic AND pinhole cameras, in
+  x AND y.  The review: a centred emitter's centroid lands at raster 16.0,
+  not 15.5; a one-pixel stripe at world x in [0, 0.125] splits 0.25 /
+  0.25 across columns 16 and 17, and the stripe at [0.0625, 0.1875] falls
+  wholly in column 17.  A lone off-axis quad at x = +2 / -2 (view 1.0,
+  32 px) reads 0.9794 / 1.0208 of its closed form under PT and BDPT
+  alike; the error scales with the pixel size.  Mirror-pair tests cancel
+  it to first order (`DoubleSidedEmitterTest` Z2).
+- PT renders of `sms_k1_refract` and `rect_light_sidedness` are not
+  bit-reproducible run to run (three emitter-edge pixels flip; the
+  external review, pre-existing, independent of DL-320).
 - A CLOSED double-sided mesh emitter (e.g. an emissive sphere tessellated
   with `double_sided TRUE`) now also emits inward: NEE samples on its far
   side are occluded by its near side (correct, just wasted), and half its
   light subpaths and photons start inside it and are trapped.  Unbiased;
   such an emitter should be authored single-sided.
+- The dropped 1e-5 push is a property of `ClippedPlaneGeometry::
+  UniformRandomPoint`, so it also reaches that function's NON-emitter
+  consumers when the plane is double-sided: SMS caster seeding
+  (`ManifoldSolver.cpp` ~3652, ~6031) and the legacy SSS point sets
+  (`SubSurfaceScatteringShaderOp`, `DonnerJensenSkinSSSShaderOp`).  A
+  point 1e-5 closer to the surface is, if anything, more exact for them;
+  no suite moved.
 - VCM's own merge radius is unaffected in practice (the auto pre-pass saw
   540 -> 242 segments and 0.774 -> 0.786 on a grid scene), but halving a
   face-down panel's useful light subpaths halves VCM's photon density
@@ -293,7 +339,9 @@ scene's own rasterizer before editing:
 
 **Method.**  For each edited scene: pre / post / tuned renders with the
 scene's own rasterizer (film 120 px wide, samples capped at 32 -- 8 for
-the dragon, MLT at its own settings; OIDN off; salted n = 3-4), the mean
+the dragon, MLT at its own settings; OIDN off; salted n = 3-4 -- MLT
+renders are deterministic under this harness, sd 0, so its "n = 2"
+figures carry no noise estimate), the mean
 of the region the author composed for, and one uniform factor on the
 scene's luminaire `scale`s (the only lights in these scenes whose output
 matters -- the dragon and the triplecaustic trio have no other light, and
@@ -330,6 +378,13 @@ Why (a) in each:
   the scale comes down.  In the atrium the side walls now read about 4x
   brighter than before (0.19 -> 0.77) with the torus chain matched: they
   were dark only because the panels' downward light was missing.
+  **Sibling inconsistency, recorded not fixed:** the atrium's panels face
+  up only because this MLT variant lacks the `orientation 180 0 0` its
+  `pt_torus_chain_atrium` / `bdpt_torus_chain_atrium` siblings carry
+  (with scales 20 / 20 / 400).  Under two-faced emission the orientation
+  no longer matters for these double-sided panels, so the three variants
+  now differ only in `scale` (55.6 / 55.6 / 556 here, tuned to this
+  scene's own pre-fix MLT look).
 - **sss_gi_dragon.**  The panel stands close to the left wall and faces
   into the room; its back face now lights that wall (before, a dark patch
   sat directly behind the panel), and the bounce brightened the dragon by
@@ -346,6 +401,11 @@ Why (a) in each:
   white`) and read +25 % at a fixed merge radius, and (3) the housing's
   0.002 segments shrank VCM's auto radius from 0.0107 to 0.0046 (DL-319's
   mechanism).
+- **Visible change in the trio, accepted under the ruling:** the upper
+  backdrop is 28-33 % brighter than before and the centre panel's outline
+  against it is lost, because the three panels' back faces now light the
+  back and side walls.  That is the two-sided physics the ruling kept;
+  the scales hold the spheres and caustics, not the backdrop.
 - **The trio no longer shares one scale** (78.8 / 74.5 / 71.3).  Before
   DL-320 each integrator counted the back faces differently -- the
   photon-mapped direct chain not at all, PT and VCM in part through
