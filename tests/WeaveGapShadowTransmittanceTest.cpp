@@ -918,6 +918,20 @@ static void ParityRow( const char* label, const std::string& rastOn, const std::
 	}
 }
 
+//! An anchored chain PT must leave to SMS: SMS on must read under 5 % of
+//! SMS off (see the call site for why it reads ~0 rather than ~1).
+static void SuppressedRow( const char* label, const std::string& rastOn, const std::string& rastOff,
+	const std::string& scene )
+{
+	const double Lon  = Render( Assemble( rastOn, scene ), "sms_sup_on" );
+	const double Loff = Render( Assemble( rastOff, scene ), "sms_sup_off" );
+	char buf[320];
+	std::snprintf( buf, sizeof(buf), "sms suppressed %s: SMS on %.6f / off %.6f = %.5f (must stay < 0.05)",
+		label, Lon, Loff, Lon / Loff );
+	std::cout << "  " << buf << std::endl;
+	Check( Loff > 0 && Lon >= 0 && Lon / Loff < 0.05, buf );
+}
+
 //! Sibling materials for the parity rows.
 //!  * composite(dielectric over gapped weave): the CompositeSPF walker's
 //!    delta-TAGGED exits, which leave in a REFRACTED (not incoming)
@@ -985,6 +999,138 @@ static std::string PerfectRefractorSheet( const char* ior )
 		"perfectrefractor_material\n{\n\tname mat_sheet\n\trefractance pnt_refr\n\tior " + std::string( ior ) + "\n}\n\n";
 }
 
+//////////////////////////////////////////////////////////////////////
+// DL-295 review round 1: scenes for the HWSS hand-offs (P1-1) and for a
+// BSDF-carrying caster's own delta reflection with no SMS anchor (P2-2).
+//
+// The CASTER is a smooth `randomwalk_sss_material` (roughness 0 -> an
+// SMS caster, `GetSpecularInfo` isSpecular; absorption 50 -> the medium
+// is black, so all it returns is its delta Fresnel reflection) or a
+// `polished_material` at scattering 1e6 (delta coat, black substrate).
+// Both carry a BSDF, so their delta lobe goes through PART 3, and the
+// SSS one makes the HWSS body hand off to IntegrateFromHitNM.
+//////////////////////////////////////////////////////////////////////
+static std::string CasterChunk( bool polished )
+{
+	return polished
+		? BlackPainterChunk() + "polished_material\n{\n\tname mat_caster\n\treflectance pnt_black\n\ttau 1.0\n\tior 1.5\n\tscattering 1000000\n}\n\n"
+		: std::string( "randomwalk_sss_material\n{\n\tname mat_caster\n\tior 1.5\n\tabsorption 50 50 50\n\tscattering 0.01 0.01 0.01\n\tg 0.0\n\troughness 0\n}\n\n" );
+}
+
+//! A ONE-SIDED emitter: `clippedplane_geometry`'s `doublesided` defaults
+//! to TRUE, whose ray-facing normal makes a BSDF-sampled hit on the back
+//! of a luminaire emit while NEE (true normal) sees nothing there.
+static std::string EmitterChunks( const char* pts, double scale )
+{
+	std::ostringstream ss;
+	ss << "uniformcolor_painter\n{\n\tname pnt_emit\n\tcolor 1 1 1\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+	      "lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n\tscale " << scale << "\n\tmaterial none\n}\n\n"
+	      "clippedplane_geometry\n{\n\tname geo_emit\n" << pts << "\tdoublesided FALSE\n}\n\n"
+	      "standard_object\n{\n\tname obj_emit\n\tgeometry geo_emit\n\tmaterial mat_emit\n}\n\n";
+	return ss.str();
+}
+
+//! Camera looking DOWN at a caster floor that mirrors a 1 x 1 emitter
+//! hanging above it (the reviewer's S1 / S4 / S5).  @a sheet: a black
+//! gap-0.3 weave at y 2 between the camera and the floor.  @a slab: a
+//! 0.05-thick ior-1.5 perfect-refractor slab at y 1 (a BSDF-less
+//! vertex: the HWSS body's no-BSDF hand-off), with the emitter below it.
+//! No row has a non-delta vertex before the caster: no SMS anchor.
+static std::string CasterFloorScene( bool polished, bool sheet, bool slab )
+{
+	std::ostringstream ss;
+	ss << "film\n{\n\twidth 16\n\theight 16\n}\n\n"
+	      "pinhole_camera\n{\n\tlocation 0 3 3\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 6.0\n}\n\n"
+	   << CasterChunk( polished )
+	   << ( polished
+			? "clippedplane_geometry\n{\n\tname geo_floor\n\tpta -3 0 -3\n\tptb -3 0 3\n\tptc 3 0 3\n\tptd 3 0 -3\n\tdoublesided FALSE\n}\n\n"
+			  "standard_object\n{\n\tname floor\n\tgeometry geo_floor\n\tmaterial mat_caster\n}\n\n"
+			: "box_geometry\n{\n\tname geo_floor\n\twidth 6\n\theight 1\n\tdepth 6\n}\n\n"
+			  "standard_object\n{\n\tname floor\n\tgeometry geo_floor\n\tposition 0 -0.5 0\n\tmaterial mat_caster\n}\n\n" )
+	   << EmitterChunks( slab ? "\tpta -0.5 0.5 -1\n\tptb 0.5 0.5 -1\n\tptc 0.5 0.5 0\n\tptd -0.5 0.5 0\n"
+			: "\tpta -0.5 1.5 -2\n\tptb 0.5 1.5 -2\n\tptc 0.5 1.5 -1\n\tptd -0.5 1.5 -1\n", 20.0 );
+	if( slab ) {
+		ss << "uniformcolor_painter\n{\n\tname pnt_refr\n\tcolor 1 1 1\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+		      "perfectrefractor_material\n{\n\tname mat_refr\n\trefractance pnt_refr\n\tior 1.5\n}\n\n"
+		      "box_geometry\n{\n\tname geo_slab\n\twidth 8\n\theight 0.05\n\tdepth 8\n}\n\n"
+		      "standard_object\n{\n\tname slab\n\tgeometry geo_slab\n\tposition 0 1 0\n\tmaterial mat_refr\n}\n\n";
+	}
+	if( sheet ) {
+		ss << ( polished ? "" : BlackPainterChunk().c_str() ) << BlackWeaveChunk( "mat_sheet", 0.3 )
+		   << "clippedplane_geometry\n{\n\tname geo_sheet\n\tpta -4 2 4\n\tptb 4 2 4\n\tptc 4 2 -4\n\tptd -4 2 -4\n\tdoublesided TRUE\n}\n\n"
+		      "standard_object\n{\n\tname sheet\n\tgeometry geo_sheet\n\tmaterial mat_sheet\n}\n\n";
+	}
+	return ss.str();
+}
+
+//! WITH an SMS anchor before the gap (P1-1's real target): the kWide
+//! Lambertian receiver at y 0 looks UP through a black gap-0.3 weave at
+//! y 2 at a caster CEILING (smooth SSS box, bottom face y 3.5) that
+//! mirrors an UP-facing 2 x 2 emitter at y 3 (its black back hides it
+//! from the receiver's NEE).  @a slab puts an ior-1.5 slab at y 2.6.
+//! receiver (anchor) -> gap -> [slab] -> caster -> emitter: SMS's seed
+//! trace from the receiver stops at the weave, so SMS holds no estimate
+//! and the path must be counted.  @a sheet false: the same chain with no
+//! gap, which SMS DOES own (the must-stay-suppressed control).
+static std::string CasterCeilingScene( bool polished, bool sheet, bool slab )
+{
+	std::ostringstream ss;
+	ss << "film\n{\n\twidth 16\n\theight 16\n}\n\n"
+	      "pinhole_camera\n{\n\tlocation 0 1 1.2\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 10.0\n}\n\n"
+	      "uniformcolor_painter\n{\n\tname pnt_recv\n\tcolor " << kRho << " " << kRho << " " << kRho << "\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+	      "lambertian_material\n{\n\tname mat_recv\n\treflectance pnt_recv\n}\n\n"
+	      "clippedplane_geometry\n{\n\tname geo_recv\n\tpta -1 0 1\n\tptb 1 0 1\n\tptc 1 0 -1\n\tptd -1 0 -1\n\tdoublesided TRUE\n}\n\n"
+	      "standard_object\n{\n\tname obj_recv\n\tgeometry geo_recv\n\tmaterial mat_recv\n}\n\n"
+	   << CasterChunk( polished )
+	   << ( polished
+			? "clippedplane_geometry\n{\n\tname geo_ceil\n\tpta -4 3.5 -4\n\tptb 4 3.5 -4\n\tptc 4 3.5 4\n\tptd -4 3.5 4\n\tdoublesided FALSE\n}\n\n"
+			  "standard_object\n{\n\tname ceil\n\tgeometry geo_ceil\n\tmaterial mat_caster\n}\n\n"
+			: "box_geometry\n{\n\tname geo_ceil\n\twidth 8\n\theight 0.5\n\tdepth 8\n}\n\n"
+			  "standard_object\n{\n\tname ceil\n\tgeometry geo_ceil\n\tposition 0 3.75 0\n\tmaterial mat_caster\n}\n\n" )
+	   << EmitterChunks( "\tpta -1 3 1\n\tptb 1 3 1\n\tptc 1 3 -1\n\tptd -1 3 -1\n", 40.0 );
+	if( slab ) {
+		ss << "uniformcolor_painter\n{\n\tname pnt_refr\n\tcolor 1 1 1\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+		      "perfectrefractor_material\n{\n\tname mat_refr\n\trefractance pnt_refr\n\tior 1.5\n}\n\n"
+		      "box_geometry\n{\n\tname geo_slab\n\twidth 8\n\theight 0.05\n\tdepth 8\n}\n\n"
+		      "standard_object\n{\n\tname slab\n\tgeometry geo_slab\n\tposition 0 2.6 0\n\tmaterial mat_refr\n}\n\n";
+	}
+	if( sheet ) {
+		ss << ( polished ? "" : BlackPainterChunk().c_str() ) << BlackWeaveChunk( "mat_sheet", 0.3 )
+		   << "clippedplane_geometry\n{\n\tname geo_sheet\n\tpta -4 2 4\n\tptb 4 2 4\n\tptc 4 2 -4\n\tptd -4 2 -4\n\tdoublesided TRUE\n}\n\n"
+		      "standard_object\n{\n\tname sheet\n\tgeometry geo_sheet\n\tmaterial mat_sheet\n}\n\n";
+	}
+	return ss.str();
+}
+
+//! Opt-in probe (WEAVE_GAP_FILTER=dl295probe): print SMS on / off for the
+//! round-1 review scenes, to size the gated rows' sample counts.
+static void ProbeReviewScenes()
+{
+	g_saltRenders = true;
+	struct P { const char* label; std::string scene; bool hwss; };
+	const P rows[] = {
+		{ "floor SSS direct pel", CasterFloorScene( false, false, false ), false },
+		{ "floor SSS direct hwss", CasterFloorScene( false, false, false ), true },
+		{ "floor polished direct pel", CasterFloorScene( true, false, false ), false },
+		{ "floor polished direct hwss", CasterFloorScene( true, false, false ), true },
+		{ "floor SSS gap hwss (S1)", CasterFloorScene( false, true, false ), true },
+		{ "floor SSS gap slab hwss (S4)", CasterFloorScene( false, true, true ), true },
+		{ "ceiling SSS gap pel", CasterCeilingScene( false, true, false ), false },
+		{ "ceiling SSS gap hwss", CasterCeilingScene( false, true, false ), true },
+		{ "ceiling SSS gap slab hwss", CasterCeilingScene( false, true, true ), true },
+		{ "ceiling SSS no gap pel (control)", CasterCeilingScene( false, false, false ), false },
+		{ "ceiling polished no gap pel (control)", CasterCeilingScene( true, false, false ), false },
+		{ "ceiling SSS no gap hwss (control)", CasterCeilingScene( false, false, false ), true },
+	};
+	for( const P& r : rows ) {
+		const unsigned int spp = 256;
+		ParityRow( r.label, r.hwss ? RastPTSpectralSMS( spp, true, true ) : RastPTSMS( spp, true ),
+			r.hwss ? RastPTSpectralSMS( spp, true, false ) : RastPTSMS( spp, false ), r.scene, -1.0 );
+	}
+	g_saltRenders = false;
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
+}
+
 static void TestSMSEmissionThroughGap()
 {
 	std::cout << "=== sms: PT with sms_enabled, emission reached through a weave gap (DL-295) ===" << std::endl;
@@ -1029,6 +1175,52 @@ static void TestSMSEmissionThroughGap()
 		ReceiverScene( kAreaLarge, true, g, kLookUp, false, FabricOverWeaveSheet() ), 0.03 );
 	ParityRow( "lookup coated over weave PT RGB", RastPTSMS( 256, true ), RastPTSMS( 256, false ),
 		ReceiverScene( kAreaLarge, true, g, kLookUp, false, CoatedOverWeaveSheet() ), 0.03 );
+	// DL-295 review round 1, P2-2: a BSDF-carrying caster's OWN delta
+	// reflection with NO SMS anchor before it (camera -> smooth SSS /
+	// polished coat -> emitter).  SMS never estimates it (it seeds from a
+	// non-delta vertex THROUGH casters) and NEE cannot sample a delta lobe,
+	// yet PART 3 suppressed it: 0.000003 / 0.000000 vs 0.3124, pel and HWSS.
+	ParityRow( "direct smooth-SSS reflection PT RGB (no anchor)", RastPTSMS( 256, true ), RastPTSMS( 256, false ),
+		CasterFloorScene( false, false, false ), 0.03 );
+	ParityRow( "direct polished reflection PT RGB (no anchor)", RastPTSMS( 256, true ), RastPTSMS( 256, false ),
+		CasterFloorScene( true, false, false ), 0.03 );
+	ParityRow( "direct smooth-SSS reflection PT HWSS (no anchor)", RastPTSpectralSMS( 256, true, true ), RastPTSpectralSMS( 256, true, false ),
+		CasterFloorScene( false, false, false ), 0.03 );
+	ParityRow( "direct polished reflection PT HWSS (no anchor)", RastPTSpectralSMS( 256, true, true ), RastPTSpectralSMS( 256, true, false ),
+		CasterFloorScene( true, false, false ), 0.03 );
+
+	// DL-295 review round 1, P1-1: the HWSS body hands a smooth-SSS vertex
+	// (the SSS hand-off) or a BSDF-less slab (the no-BSDF hand-off) to the
+	// per-wavelength NM body; the chain's SMS state must go with it.
+	// No anchor (the reviewer's S1 / S4: camera -> gap -> [slab] -> SSS):
+	ParityRow( "gap -> smooth-SSS reflection PT HWSS (SSS hand-off, S1)", RastPTSpectralSMS( 1024, true, true ), RastPTSpectralSMS( 1024, true, false ),
+		CasterFloorScene( false, true, false ), 0.06 );
+	ParityRow( "gap -> slab -> smooth-SSS reflection PT HWSS (no-BSDF hand-off, S4)", RastPTSpectralSMS( 1024, true, true ), RastPTSpectralSMS( 1024, true, false ),
+		CasterFloorScene( false, true, true ), 0.06 );
+	// WITH an anchor (receiver -> gap -> [slab] -> SSS ceiling -> emitter):
+	// the anchor gate cannot rescue these, only the forwarded uncovered
+	// state does.
+	ParityRow( "receiver -> gap -> smooth-SSS ceiling PT RGB", RastPTSMS( 2048, true ), RastPTSMS( 2048, false ),
+		CasterCeilingScene( false, true, false ), 0.06 );
+	ParityRow( "receiver -> gap -> smooth-SSS ceiling PT HWSS (SSS hand-off)", RastPTSpectralSMS( 2048, true, true ), RastPTSpectralSMS( 2048, true, false ),
+		CasterCeilingScene( false, true, false ), 0.06 );
+	ParityRow( "receiver -> gap -> slab -> smooth-SSS ceiling PT HWSS (no-BSDF hand-off)", RastPTSpectralSMS( 2048, true, true ), RastPTSpectralSMS( 2048, true, false ),
+		CasterCeilingScene( false, true, true ), 0.06 );
+	// MUST STAY SUPPRESSED: the same anchored chain with no gap is an SMS
+	// chain by PT's accounting (anchor, then a caster), so PT must not
+	// count it -- a regression that un-suppressed it would read PT+SMS/PT
+	// ~1 (or ~2 had SMS estimated it).  It reads ~0: SMS treats these
+	// casters as refractors (`canRefract`) and never estimates their
+	// REFLECTION chain, so PT+SMS loses it entirely, before and after this
+	// slice -- a pre-existing premise failure recorded in DL-339, pinned
+	// here so a change to it is deliberate.
+	SuppressedRow( "receiver -> smooth-SSS ceiling (anchored, no gap) PT RGB", RastPTSMS( 256, true ), RastPTSMS( 256, false ),
+		CasterCeilingScene( false, false, false ) );
+	SuppressedRow( "receiver -> polished ceiling (anchored, no gap) PT RGB", RastPTSMS( 256, true ), RastPTSMS( 256, false ),
+		CasterCeilingScene( true, false, false ) );
+	SuppressedRow( "receiver -> smooth-SSS ceiling (anchored, no gap) PT HWSS", RastPTSpectralSMS( 256, true, true ), RastPTSpectralSMS( 256, true, false ),
+		CasterCeilingScene( false, false, false ) );
+
 	// Control: an SMS CASTER, where the suppression's premise is SMS's to
 	// honour and this fix changes nothing.  Printed, not gated: it reads
 	// 0 with SMS on before AND after -- SMS does not solve a chain through
@@ -1460,6 +1652,10 @@ int main( int argc, char** argv )
 	const char* filter = std::getenv( "WEAVE_GAP_FILTER" );
 	if( filter && std::strstr( filter, "dl294" ) ) {
 		PrintNarrowFovSplatResidual();
+		return 0;
+	}
+	if( filter && std::strstr( filter, "dl295probe" ) ) {
+		ProbeReviewScenes();
 		return 0;
 	}
 	if( filter && std::strstr( filter, "dl295audit" ) ) {
