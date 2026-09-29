@@ -1,0 +1,20 @@
+{
+  "reviewed_commit": "f58459d6",
+  "reviewers": [
+    {
+      "name": "r244_r245_final_review",
+      "P1": 0,
+      "P2": 0,
+      "scope": "SHA-pinned extraction, data shape and independent summary reproduction"
+    },
+    {
+      "name": "r245_localization_review",
+      "P1": 0,
+      "P2": 0,
+      "scope": "Independent source layout, all station arrays and480summary rows, qualified observations, implementation-pending plan"
+    }
+  ],
+  "minor_correction": "Boundary section cross-reference corrected from3.5 to3.6.",
+  "clarifications": "Every-accepted-step cumulative integration with frame publication, actual R0/R1 rates and averaged limited fluxes, and R2 combined projection explicitly required. No frozen-force substitution.",
+  "status": "station_evidence_reviewed_instrumentation_pending"
+}

@@ -545,6 +545,9 @@ namespace RISEFireProductionFP64
 		//! Replaces the class buffer after its device identity was issued.  The
 		//! physical-flux authority must refuse it before any publication.
 		bool qualificationUnverifiedEndpointClassBuffer;
+		//! Read-only terminal capture of accepted R1 scalar flux operands.
+		//! Does not alter the native publication or enable qualification controls.
+		bool captureAcceptedBudgetFlux=false;
 		bool qualificationCaptureIterationTrace;
 		//! Qualification selects the production sealing placement while retaining
 		//! the full owner RED/trace surface. The live entry chooses it internally.
@@ -597,6 +600,16 @@ namespace RISEFireProductionFP64
 		std::array<std::vector<double>,3> heunStressMomentumRateKGPerM2S2;
 		std::array<std::vector<double>,3> heunPhaseSourceMomentumRateKGPerM2S2;
 		std::vector<double> acceptedFaceAlpha;
+		//! v1 bytes: input root[32], native publication root[32], R1 candidate
+		//! uint64, then 9*allFaces binary32 low flux and 9*allFaces delta.
+		//! Then eight packed face rates: R0-under-R1-alpha/R1 advection
+		//! divergence, R0/R1 buoyancy, stress, phase source (in that order).
+		//! The separate Merkle root seals these bytes; native alpha is root-bound.
+		std::vector<unsigned char> acceptedBudgetPayload;
+		std::vector<unsigned char> acceptedBudgetNativePublication;
+		std::string acceptedBudgetPayloadRootSHA256;
+		//! Extra terminal observation packet, separate from native publication staging.
+		std::uint32_t acceptedBudgetStagingCount=0u;
 		std::vector<double> heunEddyKinematicViscosityM2PerS;
 		FireProductionProjectionResult projection;
 		std::vector<double> temperatureK;
@@ -661,11 +674,11 @@ namespace RISEFireProductionFP64
 	};
 
 	bool FireProductionProjectedHeunMetalOwnerWorkingSetBytes(
-		const FireProductionProjectionShape& shape,std::uint64_t& bytes,bool prescribedBottomFlux=false );
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes,bool prescribedBottomFlux=false,bool captureAcceptedBudgetFlux=false );
 
 	//! Qualification observer only: production peak plus one bounded trace staging packet.
 	bool FireProductionProjectedHeunMetalObserverWorkingSetBytes(
-		const FireProductionProjectionShape& shape,std::uint64_t& bytes,bool prescribedBottomFlux=false );
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes,bool prescribedBottomFlux=false,bool captureAcceptedBudgetFlux=false );
 
 	bool AttemptFireProductionProjectedHeunMetalOwner(
 		const FireProductionProjectedHeunMetalOwnerRequest& request,

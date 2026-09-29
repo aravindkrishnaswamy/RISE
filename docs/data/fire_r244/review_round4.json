@@ -1,0 +1,20 @@
+{
+  "reviewed_commit": "32999e80e2ad3c9dfdf18eecb54a305afd06f541",
+  "reviewers": [
+    {
+      "name": "r244_scene_review_r4",
+      "P1": 0,
+      "P2": 0,
+      "scope": "scene receipt and full consumer flow; verified all940baselinefile hashes, inventory root, source/binary/build and six gate logs"
+    },
+    {
+      "name": "r244_final_launch_review_r4",
+      "P1": 0,
+      "P2": 0,
+      "scope": "cumulative source/pilot/domain identity/fullwindow/memory/preview/spectra/evidence"
+    }
+  ],
+  "status": "converged_launch_authorized_by_owner_campaign",
+  "review_limit": "read-only review; no new renders or simulations; trusted-producer receipt model",
+  "recorded_utc": "2026-09-28T18:00:09.879867+00:00"
+}

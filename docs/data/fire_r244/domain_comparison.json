@@ -1,0 +1,130 @@
+{
+  "status": "domain_doubling_does_not_resolve_puffing_budget_localization_required",
+  "artifact_fidelity": "simulation_evidence",
+  "signals": {
+    "centerline_heat_release": {
+      "baseline": {
+        "input_samples": 8916,
+        "first_time_s": 10.531864278949797,
+        "last_time_s": 25.156864278920693,
+        "dominant_hz": 1.7743055555590865,
+        "expected_nearest_hz": 2.729700854706287,
+        "expected_to_peak_power_ratio": 0.051728682029957035,
+        "slow_nearest_hz": 0.13648504273531434,
+        "slow_to_peak_power_ratio": 0.4333461628711333,
+        "independent_fft_peak_hz": 1.7743055555590865,
+        "independent_max_absolute_power_error_over_peak": 4.7642814785320684e-14
+      },
+      "lateral": {
+        "input_samples": 8916,
+        "first_time_s": 10.531864278949797,
+        "last_time_s": 25.156864278920693,
+        "dominant_hz": 1.569577991456115,
+        "expected_nearest_hz": 2.729700854706287,
+        "expected_to_peak_power_ratio": 0.35071773809789936,
+        "slow_nearest_hz": 0.13648504273531434,
+        "slow_to_peak_power_ratio": 0.12643143418772188,
+        "independent_fft_peak_hz": 1.569577991456115,
+        "independent_max_absolute_power_error_over_peak": 3.421100017519604e-14
+      },
+      "lowest_nonzero_hz": 0.06824252136765717,
+      "wide_over_baseline_raw_power_at_lowest_bin": 0.4340151728329002,
+      "wide_over_baseline_raw_power_at_slow_bin": 0.3685550374736643,
+      "wide_over_baseline_raw_power_at_expected_bin": 8.564629111727324,
+      "expected_three_bin_neighborhood_hz": [
+        2.6614583333386297,
+        2.797943376073944
+      ],
+      "expected_three_bin_power_fraction_excluding_DC": {
+        "baseline": 0.01468190649929239,
+        "lateral": 0.08645339709773225
+      },
+      "8192_sample_processing_sensitivity_not_replacement": {
+        "baseline": {
+          "samples": 8192,
+          "dominant_hz": 1.777560763892426,
+          "expected_nearest_hz": 2.7347088675268094,
+          "expected_to_peak_power_ratio": 0.06461359813114406,
+          "positive_power_fraction_above_native_resampled_nyquist": 0.030468549638698533
+        },
+        "lateral": {
+          "samples": 8192,
+          "dominant_hz": 1.5724575988279155,
+          "expected_nearest_hz": 2.7347088675268094,
+          "expected_to_peak_power_ratio": 0.3244330625183258,
+          "positive_power_fraction_above_native_resampled_nyquist": 0.03245457333491357
+        }
+      }
+    },
+    "display_lit_area": {
+      "baseline": {
+        "input_samples": 235,
+        "first_time_s": 10.531864278949797,
+        "last_time_s": 25.156864278920693,
+        "dominant_hz": 0.06824252136765717,
+        "expected_nearest_hz": 2.729700854706287,
+        "expected_to_peak_power_ratio": 0.0025666736116580096,
+        "slow_nearest_hz": 0.13648504273531434,
+        "slow_to_peak_power_ratio": 0.10022090567108755,
+        "independent_fft_peak_hz": 0.06824252136765717,
+        "independent_max_absolute_power_error_over_peak": 4.93689564809738e-14
+      },
+      "lateral": {
+        "input_samples": 235,
+        "first_time_s": 10.531864278949797,
+        "last_time_s": 25.156864278920693,
+        "dominant_hz": 0.06824252136765717,
+        "expected_nearest_hz": 2.729700854706287,
+        "expected_to_peak_power_ratio": 0.06605689764010236,
+        "slow_nearest_hz": 0.13648504273531434,
+        "slow_to_peak_power_ratio": 0.907604820300905,
+        "independent_fft_peak_hz": 0.06824252136765717,
+        "independent_max_absolute_power_error_over_peak": 3.9293225872861713e-14
+      },
+      "lowest_nonzero_hz": 0.06824252136765717,
+      "wide_over_baseline_raw_power_at_lowest_bin": 0.6578913664791811,
+      "wide_over_baseline_raw_power_at_slow_bin": 5.957892432248408,
+      "wide_over_baseline_raw_power_at_expected_bin": 16.93174482974068,
+      "expected_three_bin_neighborhood_hz": [
+        2.6614583333386297,
+        2.797943376073944
+      ],
+      "expected_three_bin_power_fraction_excluding_DC": {
+        "baseline": 0.004595466163929064,
+        "lateral": 0.010303088715732479
+      }
+    }
+  },
+  "source_artifacts": [
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline_spectrum.v1/full_spectrum.csv",
+      "sha256": "7660059666f2825e21819560fadc374c9b8a5a171959d77a13b29e7bb4ce0b64"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_lateral_spectrum.v1/full_spectrum.csv",
+      "sha256": "173c59ddb4dd46e1bc61b44c11c7c6ef9979a8aeac1de63edad47bcdfcf86e7a"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline_spectrum.v1/centerline_signal.csv",
+      "sha256": "6700637b79e855d2cf5f5b70540cc6c571e7c84984f9385165c5699f7ecb0c87"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_lateral_spectrum.v1/centerline_signal.csv",
+      "sha256": "daeb9d32bc98da464ca0aaad5894d4fbb844a56eff1b80eba9a98b4df65b6280"
+    }
+  ],
+  "method": "Same observation span, 512-point linear interpolation, affine detrend, symmetric Hann; all 257 native bins retained in CSV. Figure shows 0\u20134 Hz.",
+  "limits": [
+    "Raw powers compare the same observable and DFT convention; they are not a PSD or cross-observable energy.",
+    "The first two bins cover only approximately one and two cycles; low-frequency power can reflect nonstationarity, not a confirmed periodic recirculation mode.",
+    "Lit area depends on the fixed exposure, threshold, finite camera view and spectral emission; it is not a direct flow or flame-height measurement.",
+    "Native lit-area Nyquist is 8 Hz; interpolated bins above this contain no additional independent information.",
+    "Native centerline processing downsamples by interpolation without an antialias filter. An 8192-sample sensitivity is separately reported; its ratios differ, though the dominant frequency classes and unresolved verdict persist. Native evidence is unchanged.",
+    "Tier 6 has 7.35 cells across the burner; no refined empirical puffing qualification or domain-multiplier amendment follows from this comparison.",
+    "Single realization per variant; no uncertainty interval or causal boundary diagnosis is claimed."
+  ],
+  "next_step": "Budget localization before proposing a solver or boundary fix; no soot/tier-10 window yet.",
+  "verifier_sha256": "55b3fbd2ed6dd22bcb18209c009c0e2eb4eb74a4ca5fc3f92a2b88035b8c7ccf",
+  "figure_sha256": "0aef20e8c04f97600254889d26e802981becba52d44c22b4dd1a3abb0b29eac3",
+  "csv_sha256": "4aa2e25e8e2d387e7e9a7b3b2d8967130c6359878ca342fc224ee8df486a2251"
+}

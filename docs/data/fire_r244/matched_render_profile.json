@@ -1,0 +1,483 @@
+{
+  "primary": {
+    "source": "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline_preview.v1/temporal_primary_00000.exr.provenance.cbor",
+    "source_sha256": "b81538595a64fa58dd01fb092affc99ba29796afd3a9fda68685528356ac9ebc",
+    "normalized_configuration_sha256": "467df3e3cab195628b44a30faa081abea05343dbb8d9d7f38b0ad616034198b2",
+    "normalized_configuration": {
+      "animation": {
+        "do_fields": false,
+        "frame_selection": {
+          "active": true,
+          "index": 0
+        },
+        "invert_fields": false,
+        "num_frames": 1,
+        "time_end": 0.0,
+        "time_start": 0.0
+      },
+      "aov": {
+        "channels": [
+          "beauty",
+          "alpha",
+          "albedo",
+          "normal"
+        ]
+      },
+      "camera": null,
+      "clamp": {
+        "direct": 0.0,
+        "indirect": 0.0
+      },
+      "depth": {
+        "max_diffuse_bounce": 4294967295,
+        "max_eye_depth": 8,
+        "max_glossy_bounce": 4294967295,
+        "max_light_depth": 8,
+        "max_recursion": 10,
+        "max_translucent_bounce": 4294967295,
+        "max_transmission_bounce": 4294967295,
+        "max_volume_bounce": 64
+      },
+      "evaluated_camera_states": [
+        {
+          "camera": null,
+          "field": "both",
+          "frame_index": 0,
+          "time": 0.0
+        }
+      ],
+      "execution": {
+        "effective_worker_task_count": 15,
+        "force_number_of_threads": 0,
+        "maximum_thread_count": 2147483647,
+        "random_stream_policy": "per_dispatch_task_mersenne53_seeded_from_c_rand",
+        "render_thread_reserve_count": 1
+      },
+      "external_runtime": null,
+      "film": {
+        "height": 64,
+        "pixel_aspect_ratio": 1.0,
+        "width": 64
+      },
+      "filter": {
+        "height": 1.0,
+        "name": "box",
+        "param_a": 2.0,
+        "param_b": 0.35,
+        "width": 1.0
+      },
+      "global_render_options": {
+        "auto_probe": {
+          "activation_spp": 256,
+          "reach_winsor_percentile": 0.99,
+          "scale": 4,
+          "spp": 4,
+          "tau_bdpt": 1.35,
+          "tau_caustic": 1.3,
+          "tau_reach": 1.5,
+          "variance_renders": 2
+        },
+        "vcm": {
+          "progressive_radius_enabled": true,
+          "throughput_clamp_multiplier": 20.0,
+          "throughput_clamp_percentile": 0.99
+        }
+      },
+      "integrator": {
+        "auto_choice": 0,
+        "auto_probe_enabled": false,
+        "effective_kind": "pathtracing_spectral_rasterizer",
+        "enable_vertex_connection": true,
+        "enable_vertex_merging": true,
+        "integrate_rgb": false,
+        "kind": "pathtracing_spectral_rasterizer",
+        "merge_radius": 0.0,
+        "path_guiding": {
+          "alpha": 0.5,
+          "combine_training_iterations": true,
+          "complete_path_guiding": false,
+          "complete_path_strategy_samples": 2,
+          "complete_path_strategy_selection": false,
+          "enabled": false,
+          "learned_alpha": true,
+          "max_guiding_depth": 8,
+          "max_light_guiding_depth": 0,
+          "online": false,
+          "ris_candidates": 2,
+          "sampling_type": 0,
+          "training_iterations": 4,
+          "training_spp": 4,
+          "warmup_iterations": 1
+        },
+        "show_luminaires": true,
+        "sms": {
+          "bernoulli_trials": 100,
+          "biased": true,
+          "enabled": false,
+          "max_chain_depth": 30,
+          "max_iterations": 20,
+          "max_photon_seeds_per_shading_point": 16,
+          "multi_trials": 1,
+          "photon_count": 0,
+          "seeding_mode": 0,
+          "target_bounces": 0,
+          "threshold": 1e-05,
+          "two_stage": false,
+          "use_levenberg_marquardt": false
+        }
+      },
+      "light_sampling": {
+        "rr_threshold": 0.0
+      },
+      "output": {
+        "aov_channels": [],
+        "attributes": [],
+        "bits_per_channel": 32,
+        "color_space": "rec709_linear",
+        "compression_level": -1,
+        "denoised_derivative": false,
+        "exr_channel_p_linear": false,
+        "exr_channel_x_sampling": 1,
+        "exr_channel_y_sampling": 1,
+        "exr_compression": "piz",
+        "exr_line_order": "increasing_y",
+        "exr_pixel_aspect_ratio": 1.0,
+        "exr_screen_window_center": [
+          0.0,
+          0.0
+        ],
+        "exr_screen_window_width": 1.0,
+        "exr_software": "R.I.S.E. v2.0.0 build 81",
+        "exr_white_luminance": 1.0,
+        "exr_with_alpha": true,
+        "format": "EXR",
+        "frame_index": 0,
+        "include_aovs": false,
+        "view_exposure_ev": 0.0,
+        "view_tone_curve": 0,
+        "view_tone_curve_strength": 1.0,
+        "view_white_balance": [
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      },
+      "raster_sequence": {
+        "kind": "morton",
+        "tile_size": 32
+      },
+      "record_kind": "resolved_render_configuration_v1",
+      "render_region": {
+        "active": false,
+        "bottom": 0,
+        "left": 0,
+        "right": 0,
+        "top": 0
+      },
+      "sampler": {
+        "adaptive": {
+          "max_samples": 0,
+          "show_map": false,
+          "threshold": 0.01
+        },
+        "blue_noise": true,
+        "large_step_probability": 0.3,
+        "luminary_sampler": "none",
+        "luminary_sampler_param": 1.0,
+        "mlt_bootstrap_samples": 100000,
+        "mlt_chains": 512,
+        "mlt_mutations_per_pixel": 32,
+        "num_luminary_samples": 1,
+        "pixel_sampler": "sobol",
+        "pixel_sampler_param": 1.0,
+        "pixel_samples": 4,
+        "progressive": {
+          "enabled": true,
+          "samples_per_pass": 32
+        },
+        "spectral": {
+          "hwss": false,
+          "nm_begin": 380.0,
+          "nm_end": 780.0,
+          "num_wavelengths": 32,
+          "spectral_samples": 4
+        }
+      },
+      "schema_version": 1,
+      "shader": "global",
+      "stability": {
+        "filter_glossy": 0.0,
+        "optimal_mis": false,
+        "optimal_mis_tile_size": 16,
+        "optimal_mis_training_iterations": 4,
+        "rr_min_depth": 3,
+        "rr_threshold": 0.05,
+        "transparent_shadows": false,
+        "use_light_bvh": true
+      },
+      "transport": {
+        "oidn": false,
+        "oidn_device": 0,
+        "oidn_prefilter": 0,
+        "oidn_quality": 0,
+        "radiance_map": {
+          "background": true,
+          "name": "none",
+          "orientation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": 1.0
+        }
+      }
+    }
+  },
+  "display": {
+    "source": "/Volumes/SSD/RISE/fire_production_calibration/r244_tier6_baseline_preview.v1/temporal_display_00000.png.provenance.cbor",
+    "source_sha256": "46ce547ddc39c3f78300725e895e21f1d0bc7b556150f037be047aebf0e77eec",
+    "normalized_configuration_sha256": "8ba10a890d3918a1330510f3466fbf9314ff5c251e552f68bdd6470224c508b0",
+    "normalized_configuration": {
+      "animation": {
+        "do_fields": false,
+        "frame_selection": {
+          "active": true,
+          "index": 0
+        },
+        "invert_fields": false,
+        "num_frames": 1,
+        "time_end": 0.0,
+        "time_start": 0.0
+      },
+      "aov": {
+        "channels": [
+          "beauty",
+          "alpha",
+          "albedo",
+          "normal"
+        ]
+      },
+      "camera": null,
+      "clamp": {
+        "direct": 0.0,
+        "indirect": 0.0
+      },
+      "depth": {
+        "max_diffuse_bounce": 4294967295,
+        "max_eye_depth": 8,
+        "max_glossy_bounce": 4294967295,
+        "max_light_depth": 8,
+        "max_recursion": 10,
+        "max_translucent_bounce": 4294967295,
+        "max_transmission_bounce": 4294967295,
+        "max_volume_bounce": 64
+      },
+      "evaluated_camera_states": [
+        {
+          "camera": null,
+          "field": "both",
+          "frame_index": 0,
+          "time": 0.0
+        }
+      ],
+      "execution": {
+        "effective_worker_task_count": 15,
+        "force_number_of_threads": 0,
+        "maximum_thread_count": 2147483647,
+        "random_stream_policy": "per_dispatch_task_mersenne53_seeded_from_c_rand",
+        "render_thread_reserve_count": 1
+      },
+      "external_runtime": null,
+      "film": {
+        "height": 64,
+        "pixel_aspect_ratio": 1.0,
+        "width": 64
+      },
+      "filter": {
+        "height": 1.0,
+        "name": "box",
+        "param_a": 2.0,
+        "param_b": 0.35,
+        "width": 1.0
+      },
+      "global_render_options": {
+        "auto_probe": {
+          "activation_spp": 256,
+          "reach_winsor_percentile": 0.99,
+          "scale": 4,
+          "spp": 4,
+          "tau_bdpt": 1.35,
+          "tau_caustic": 1.3,
+          "tau_reach": 1.5,
+          "variance_renders": 2
+        },
+        "vcm": {
+          "progressive_radius_enabled": true,
+          "throughput_clamp_multiplier": 20.0,
+          "throughput_clamp_percentile": 0.99
+        }
+      },
+      "integrator": {
+        "auto_choice": 0,
+        "auto_probe_enabled": false,
+        "effective_kind": "pathtracing_spectral_rasterizer",
+        "enable_vertex_connection": true,
+        "enable_vertex_merging": true,
+        "integrate_rgb": false,
+        "kind": "pathtracing_spectral_rasterizer",
+        "merge_radius": 0.0,
+        "path_guiding": {
+          "alpha": 0.5,
+          "combine_training_iterations": true,
+          "complete_path_guiding": false,
+          "complete_path_strategy_samples": 2,
+          "complete_path_strategy_selection": false,
+          "enabled": false,
+          "learned_alpha": true,
+          "max_guiding_depth": 8,
+          "max_light_guiding_depth": 0,
+          "online": false,
+          "ris_candidates": 2,
+          "sampling_type": 0,
+          "training_iterations": 4,
+          "training_spp": 4,
+          "warmup_iterations": 1
+        },
+        "show_luminaires": true,
+        "sms": {
+          "bernoulli_trials": 100,
+          "biased": true,
+          "enabled": false,
+          "max_chain_depth": 30,
+          "max_iterations": 20,
+          "max_photon_seeds_per_shading_point": 16,
+          "multi_trials": 1,
+          "photon_count": 0,
+          "seeding_mode": 0,
+          "target_bounces": 0,
+          "threshold": 1e-05,
+          "two_stage": false,
+          "use_levenberg_marquardt": false
+        }
+      },
+      "light_sampling": {
+        "rr_threshold": 0.0
+      },
+      "output": {
+        "aov_channels": [],
+        "attributes": [],
+        "bits_per_channel": 16,
+        "color_space": "srgb",
+        "compression_level": -1,
+        "denoised_derivative": false,
+        "exr_channel_p_linear": false,
+        "exr_channel_x_sampling": 1,
+        "exr_channel_y_sampling": 1,
+        "exr_compression": "not_applicable",
+        "exr_line_order": "increasing_y",
+        "exr_pixel_aspect_ratio": 1.0,
+        "exr_screen_window_center": [
+          0.0,
+          0.0
+        ],
+        "exr_screen_window_width": 1.0,
+        "exr_software": "R.I.S.E. v2.0.0 build 81",
+        "exr_white_luminance": 1.0,
+        "exr_with_alpha": false,
+        "format": "PNG",
+        "frame_index": 0,
+        "include_aovs": false,
+        "view_exposure_ev": 6.0,
+        "view_tone_curve": 2,
+        "view_tone_curve_strength": 1.0,
+        "view_white_balance": [
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      },
+      "raster_sequence": {
+        "kind": "morton",
+        "tile_size": 32
+      },
+      "record_kind": "resolved_render_configuration_v1",
+      "render_region": {
+        "active": false,
+        "bottom": 0,
+        "left": 0,
+        "right": 0,
+        "top": 0
+      },
+      "sampler": {
+        "adaptive": {
+          "max_samples": 0,
+          "show_map": false,
+          "threshold": 0.01
+        },
+        "blue_noise": true,
+        "large_step_probability": 0.3,
+        "luminary_sampler": "none",
+        "luminary_sampler_param": 1.0,
+        "mlt_bootstrap_samples": 100000,
+        "mlt_chains": 512,
+        "mlt_mutations_per_pixel": 32,
+        "num_luminary_samples": 1,
+        "pixel_sampler": "sobol",
+        "pixel_sampler_param": 1.0,
+        "pixel_samples": 4,
+        "progressive": {
+          "enabled": true,
+          "samples_per_pass": 32
+        },
+        "spectral": {
+          "hwss": false,
+          "nm_begin": 380.0,
+          "nm_end": 780.0,
+          "num_wavelengths": 32,
+          "spectral_samples": 4
+        }
+      },
+      "schema_version": 1,
+      "shader": "global",
+      "stability": {
+        "filter_glossy": 0.0,
+        "optimal_mis": false,
+        "optimal_mis_tile_size": 16,
+        "optimal_mis_training_iterations": 4,
+        "rr_min_depth": 3,
+        "rr_threshold": 0.05,
+        "transparent_shadows": false,
+        "use_light_bvh": true
+      },
+      "transport": {
+        "oidn": false,
+        "oidn_device": 0,
+        "oidn_prefilter": 0,
+        "oidn_quality": 0,
+        "radiance_map": {
+          "background": true,
+          "name": "none",
+          "orientation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": 1.0
+        }
+      }
+    }
+  },
+  "normalization": "Camera is verified independently against the canonical pinhole constructed from manifest dimensions at the original scene six-significant-digit precision; evaluated camera and exact frame time must match. Only these verified camera objects and three verified frame times are replaced with null/0 before hashing. All other configuration members remain bound, including output, sampling, integrator, execution, animation and evaluated-state structure."
+}

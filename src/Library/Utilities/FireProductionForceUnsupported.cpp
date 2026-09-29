@@ -50,13 +50,13 @@ namespace RISE
 	}
 
 	bool FireProductionProjectedHeunMetalOwnerWorkingSetBytes(
-		const FireProductionProjectionShape&,std::uint64_t& bytes,bool )
+		const FireProductionProjectionShape&,std::uint64_t& bytes,bool,bool )
 	{
 		bytes=0u;return false;
 	}
 
 	bool FireProductionProjectedHeunMetalObserverWorkingSetBytes(
-		const FireProductionProjectionShape&,std::uint64_t& bytes,bool )
+		const FireProductionProjectionShape&,std::uint64_t& bytes,bool,bool )
 	{
 		bytes=0u;return false;
 	}

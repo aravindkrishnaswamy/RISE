@@ -1,5 +1,6 @@
 #include "../src/Library/Utilities/FireSequence.h"
 #include "../src/Library/Utilities/FireCase.h"
+#include "../src/Library/Cameras/PinholeCamera.h"
 #include "../src/Library/Rendering/FrameStore.h"
 #include "../src/Library/Rendering/FileEncoderObserver.h"
 #include "../src/Library/Rendering/PixelBasedRasterizerHelper.h"
@@ -25,6 +26,7 @@
 #include "FireProductionRoundoffWalker.h"
 #include "FireProductionOwnerConvergenceProbe.h"
 #include "FireProductionAcceptedFuelBudget.h"
+#include "FireProductionAcceptedStageBudget.h"
 #include "FireProductionStaggeredColumnBudget.h"
 #include "FireProductionOnsetEvidence.h"
 #include "FireRunHostMemory.h"
@@ -565,11 +567,76 @@ namespace
 #endif
 	}
 
+	bool TemporalManifestDomainMatches(const RISECBOR64::Bytes& bytes,
+		const bool r244LateralDouble,std::string& error)
+	{
+		RISECBOR64::Value envelope;
+		if(!RISECBOR64::DecodeCanonical(bytes,envelope,&error))return false;
+		const auto* payload=envelope.Find("payload");
+		const auto* embedded=payload?payload->Find("case_record"):nullptr;
+		FireCase::RecordV1 record;
+		return embedded&&embedded->GetType()==RISECBOR64::Value::ByteString&&
+			FireCase::ValidateMethaneEnvelopeV1(embedded->GetBytes(),
+				FireSimulationMethaneRecord::PhysicalV1(),record,error)&&
+			record.authored.domainStudy==(r244LateralDouble?"r244-lateral-double-v1":"");
+	}
+
+#if defined(__APPLE__)
+	std::string TemporalFirePreviewScene(const FireSequenceChannelDescriptor& channel,
+		const std::filesystem::path& manifestPath,const bool r244LateralDouble)
+	{
+		const double width=channel.voxelSizeMeters[0];
+		const double centerX=0.5*static_cast<double>(channel.dimensions[0])*width;
+		const double centerY=0.5*static_cast<double>(channel.dimensions[1])*width;
+		const double depth=r244LateralDouble?static_cast<double>(channel.dimensions[2])*width:
+			std::max({static_cast<double>(channel.dimensions[0]),
+			static_cast<double>(channel.dimensions[1]),static_cast<double>(channel.dimensions[2])})*width;
+		const double centerZ=0.5*depth;
+		std::ostringstream scene;
+		scene<<"RISE ASCII SCENE 7\n\nscene_options\n{\nscene_unit 1\nfidelity_mode preview\n}\n\n"
+			<<"standard_shader\n{\nname global\nshaderop DefaultPathTracing\n}\n\n"
+			<<"pathtracing_spectral_rasterizer\n{\nsamples 4\nnmbegin 380\nnmend 780\n"
+			<<"num_wavelengths 32\nspectral_samples 4\nhwss false\npixel_filter box\n"
+			<<"oidn_denoise false\n}\n\nfile_rasterizeroutput\n{\npattern temporal_primary\n"
+			<<"type EXR\nbpp 32\ncolor_space Rec709RGB_Linear\nexposure 0\n"
+			<<"display_transform none\nexr_compression piz\n}\n\nfile_rasterizeroutput\n{\n"
+			<<"pattern temporal_display\ntype PNG\nbpp 16\ncolor_space sRGB\n"
+			<<"exposure 6\ndisplay_transform aces\n}\n\nfilm\n{\nwidth 64\nheight 64\n}\n\n"
+			<<"pinhole_camera\n{\nname camera\nlocation "<<centerX<<' '<<
+			centerY-1.25*depth<<' '<<centerZ<<"\nlookat "<<centerX<<' '<<centerY<<' '<<
+				centerZ<<"\nup 0 0 1\nfov 45\nexposure 0.04\nscanning_rate -0.1\n"
+			<<"pixel_rate 0.02\n}\n\nfire_medium\n{\nname sequence_fire\nfidelity_mode preview\n"
+			<<"sequence_manifest "<<manifestPath.string()<<"\nchannel_carbon carbon\n"
+			<<"channel_temperature temperature\nchannel_reaction reaction\n"
+			<<"channel_chem_ch chem_CH\nchannel_chem_c2 chem_C2\nchannel_chem_co2 chem_CO2\n"
+			<<"channel_velocity velocity\n}\n\nglobal_medium\n{\nmedium sequence_fire\n}\n";
+		return scene.str();
+	}
+
+	std::string TemporalPreviewInventory(const std::filesystem::path& directory,const std::size_t frames)
+	{
+		std::ostringstream inventory;
+		for(std::size_t frame=0u;frame<frames;++frame){
+			std::ostringstream index;index<<std::setw(5)<<std::setfill('0')<<frame;
+			inventory<<frame;
+			for(const std::string& name:{"temporal_primary_"+index.str()+".exr",
+				"temporal_primary_"+index.str()+".exr.provenance.cbor",
+				"temporal_display_"+index.str()+".png",
+				"temporal_display_"+index.str()+".png.provenance.cbor"}){
+				const auto digest=DigestFile(directory/name);if(digest.size()!=64u)return {};
+				inventory<<':'<<digest;
+			}
+			inventory<<'\n';
+		}
+		return inventory.str();
+	}
+
+#endif
 	int RunTemporalFirePreviewChild(const std::filesystem::path& sourceDirectory,
-		const std::filesystem::path& outputDirectory)
+		const std::filesystem::path& outputDirectory,const bool r244LateralDouble=false)
 	{
 #if !defined(__APPLE__)
-		(void)sourceDirectory;(void)outputDirectory;
+		(void)sourceDirectory;(void)outputDirectory;(void)r244LateralDouble;
 		std::fprintf(stderr,"temporal fire preview authoring requires macOS ImageIO\n");
 		return 90;
 #else
@@ -580,7 +647,8 @@ namespace
 		FireSequenceManifest manifest;
 		if(manifestBytes.empty()||!manifest.LoadCanonicalEnvelope(manifestBytes,
 			sourceDirectory.string(),error)||!manifest.PreflightAllFrames(error)||
-			manifest.Frames().size()<8u||manifest.Channels().empty()){
+			manifest.Frames().size()<8u||manifest.Channels().empty()||
+			!TemporalManifestDomainMatches(manifestBytes,r244LateralDouble,error)){
 			std::fprintf(stderr,"temporal fire manifest rejected: %s\n",error.c_str());return 91;
 		}
 		const FireSequenceChannelDescriptor& channel=manifest.Channels().front();
@@ -593,12 +661,11 @@ namespace
 		if(!(width>0.0)||!std::isfinite(sceneStep)||!(sceneStep>0.0)||
 			framesPerSecond==0u||std::fabs(static_cast<double>(framesPerSecond)-
 				framesPerPhysicalSecond)>1.0e-12)return 91;
-		const double centerX=0.5*static_cast<double>(channel.dimensions[0])*width;
-		const double centerY=0.5*static_cast<double>(channel.dimensions[1])*width;
-		const double depth=std::max({static_cast<double>(channel.dimensions[0]),
-			static_cast<double>(channel.dimensions[1]),
-			static_cast<double>(channel.dimensions[2])})*width;
-		const double centerZ=0.5*depth;
+		// The matched domain study keeps the baseline's physical field of view.
+		// Only the burner-centred camera translates when the lateral box widens.
+		if(r244LateralDouble&&(channel.dimensions[0]!=104u||channel.dimensions[1]!=104u||
+			channel.dimensions[2]!=80u))return 91;
+
 		std::filesystem::path stage;
 		const std::string stageStem="rise-temporal-fire-"+
 			std::to_string(static_cast<long>(getpid()))+"-"+
@@ -614,23 +681,7 @@ namespace
 		const std::filesystem::path scenePath=stage/"temporal_fire.RISEscene";
 		{
 			std::ofstream scene(scenePath);
-			scene<<"RISE ASCII SCENE 7\n\nscene_options\n{\nscene_unit 1\nfidelity_mode preview\n}\n\n"
-				<<"standard_shader\n{\nname global\nshaderop DefaultPathTracing\n}\n\n"
-				<<"pathtracing_spectral_rasterizer\n{\nsamples 4\nnmbegin 380\nnmend 780\n"
-				<<"num_wavelengths 32\nspectral_samples 4\nhwss false\npixel_filter box\n"
-				<<"oidn_denoise false\n}\n\nfile_rasterizeroutput\n{\npattern temporal_primary\n"
-				<<"type EXR\nbpp 32\ncolor_space Rec709RGB_Linear\nexposure 0\n"
-				<<"display_transform none\nexr_compression piz\n}\n\nfile_rasterizeroutput\n{\n"
-				<<"pattern temporal_display\ntype PNG\nbpp 16\ncolor_space sRGB\n"
-				<<"exposure 6\ndisplay_transform aces\n}\n\nfilm\n{\nwidth 64\nheight 64\n}\n\n"
-				<<"pinhole_camera\n{\nname camera\nlocation "<<centerX<<' '<<
-				centerY-1.25*depth<<' '<<centerZ<<"\nlookat "<<centerX<<' '<<centerY<<' '<<
-					centerZ<<"\nup 0 0 1\nfov 45\nexposure 0.04\nscanning_rate -0.1\n"
-				<<"pixel_rate 0.02\n}\n\nfire_medium\n{\nname sequence_fire\nfidelity_mode preview\n"
-				<<"sequence_manifest "<<manifestPath.string()<<"\nchannel_carbon carbon\n"
-				<<"channel_temperature temperature\nchannel_reaction reaction\n"
-				<<"channel_chem_ch chem_CH\nchannel_chem_c2 chem_C2\nchannel_chem_co2 chem_CO2\n"
-				<<"channel_velocity velocity\n}\n\nglobal_medium\n{\nmedium sequence_fire\n}\n";
+			scene<<TemporalFirePreviewScene(channel,manifestPath,r244LateralDouble);
 			if(!scene.good())return 92;
 		}
 		IJobPriv* job=nullptr;
@@ -735,6 +786,17 @@ namespace
 		std::filesystem::copy_file(gifPath.string()+".provenance.cbor",
 			outputDirectory/"temporal_fire_preview.gif.provenance.cbor",
 			std::filesystem::copy_options::overwrite_existing);
+		// Emitted only by the fixed scene producer after all pairs publish.
+		// This receipt is not a signature or an imported-file attestation.
+		std::filesystem::copy_file(scenePath,outputDirectory/"temporal_fire.RISEscene",
+			std::filesystem::copy_options::overwrite_existing);
+		const auto inventory=TemporalPreviewInventory(outputDirectory,primaryFrames.size());
+		if(inventory.empty())return 94;
+		std::ofstream receipt(outputDirectory/"temporal_preview_receipt.v1");
+		receipt<<"schema rise.fire.temporal-preview-receipt.v1\nsource_manifest_sha256 "
+			<<DigestFile(manifestPath)<<"\nscene_sha256 "<<DigestFile(scenePath)
+			<<"\nframes "<<primaryFrames.size()<<'\n'<<inventory;
+		receipt.close();if(!receipt)return 94;
 		std::ofstream summary(outputDirectory/"temporal_preview_summary.txt");
 		summary<<"artifact_fidelity=display_derivative\npreview_label=temporal_fire_preview\n"
 			<<"source_manifest_sha256="<<DigestFile(manifestPath)<<"\nframes="<<primaryLinks.size()<<
@@ -1113,6 +1175,9 @@ namespace
 		// r212 engineering adoption. Historical baseline/replay flags remain
 		// explicit; the temporal production entry selects this full owner.
 		bool portedProductionTransport=false;
+		bool r244LateralDouble=false;
+		bool r245AcceptedBudget=false;
+		bool r245ObservationFixture=false;
 		bool compatibleMomentumDiagnostic=false;
 		bool singleStageFCTDiagnostic=false;
 		bool sealedLegacyMomentumReplay=false;
@@ -3164,7 +3229,7 @@ namespace
 	}
 
 	bool CanonicalCapstoneGridForTier(const double resolutionTier,
-		std::array<std::size_t,3>& dimensions,double& cellWidthM)
+		std::array<std::size_t,3>& dimensions,double& cellWidthM,const bool r244LateralDouble=false)
 	{
 		dimensions.fill(0u);cellWidthM=0.0;
 		if(resolutionTier!=6.0&&resolutionTier!=8.0&&resolutionTier!=10.0)return false;
@@ -3174,6 +3239,7 @@ namespace
 		authored.heatReleaseRateKW=CapstoneHeatReleaseRateKW;authored.envelope={{0.0,1.0}};
 		authored.durationS=1.0;authored.outputFramesPerS=1.0;authored.quality="dstar";
 		authored.numericDStarTier=resolutionTier;authored.seed=1234;authored.plumeLaw=true;
+		if(r244LateralDouble)authored.domainStudy="r244-lateral-double-v1";
 		const RISECBOR64::Bytes aerosol=AerosolRecord(),chem=SyntheticChemRecord();
 		FireCase::RecordV1 record;std::string error;
 		if(!FireCase::BuildMethaneV1(authored,fuel,{
@@ -3188,17 +3254,18 @@ namespace
 	}
 
 	bool ProductionPuffingSpectrumTierMatches(const MethaneRunCheckpoint& checkpoint,
-		const double resolutionTier)
+		const double resolutionTier,const bool r244LateralDouble=false)
 	{
 		std::array<std::size_t,3> dimensions;double cellWidthM=0.0;
-		return CanonicalCapstoneGridForTier(resolutionTier,dimensions,cellWidthM)&&
+		return CanonicalCapstoneGridForTier(resolutionTier,dimensions,cellWidthM,r244LateralDouble)&&
 			checkpoint.dimensions==dimensions&&checkpoint.cellWidthM==cellWidthM;
 	}
 
 	bool WriteProductionPuffingSpectrumTierEvidence(std::ostream& output,
-		const MethaneRunCheckpoint& checkpoint,const double resolutionTier)
+		const MethaneRunCheckpoint& checkpoint,const double resolutionTier,const bool r244LateralDouble=false)
 	{
-		if(!ProductionPuffingSpectrumTierMatches(checkpoint,resolutionTier))return false;
+		if(!ProductionPuffingSpectrumTierMatches(checkpoint,resolutionTier,r244LateralDouble))return false;
+		if(r244LateralDouble)output<<"domain_study r244-lateral-double-v1\n";
 		output<<std::setprecision(17)
 			<<"resolution_tier "<<resolutionTier<<"\n"
 			<<"burner_diameter_m "<<CapstonePoolDiameterM<<"\n"
@@ -3240,17 +3307,186 @@ namespace
 		return true;
 	}
 
+	bool ProductionTemporalFramesComplete(const std::vector<double>& times,
+		const std::uint64_t streamed,const double start,const double duration,const double cadence);
+
+	bool SpectrumFullWindowMatches(const MethaneRunCheckpoint& checkpoint,
+		const FireSequenceManifest& manifest,const FireCase::RecordV1& record,
+		const std::vector<double>& frameTimes)
+	{
+		const double cadence=0.0625;
+		const double start=record.derived.preRollOrDiscardS;
+		const double duration=std::ceil((40.0/(1.5/std::sqrt(CapstonePoolDiameterM)))/cadence)*cadence;
+		const auto& probes=checkpoint.values.probeTimeS;
+		if(record.authored.durationS!=start+duration||record.authored.outputFramesPerS!=16.0||
+			manifest.ProducerBuildId()!=checkpoint.producerBuildId||
+			manifest.TimeMap().frameStepSeconds!=cadence||
+			manifest.TimeMap().sceneToSimulationScale!=1.0||
+			!ProductionTemporalFramesComplete(frameTimes,manifest.Frames().size(),start,duration,cadence)||
+			manifest.TimeMap().simulationTimeOrigin!=frameTimes.front()||
+			checkpoint.simulationTimeS!=frameTimes.back()||probes.size()<8u||
+			probes.size()!=checkpoint.values.probeCenterlineHeatReleaseW.size()||
+			probes.front()!=frameTimes.front()||probes.back()!=frameTimes.back())return false;
+		for(std::size_t i=0u;i<probes.size();++i)
+			if(!std::isfinite(probes[i])||!std::isfinite(checkpoint.values.probeCenterlineHeatReleaseW[i])||
+				(i&&!(probes[i]>probes[i-1u])))return false;
+		return true;
+	}
+
+	// r244 pins the completed baseline recipe. See matched_render_profile.json
+	// for the full readable configs and input hashes. Camera/time are checked
+	// independently before normalization; every other member remains hash-bound.
+	bool SpectrumRenderProfileMatches(const RISECBOR64::Value& payload,
+		const FireSequenceManifest& manifest,const std::size_t frame,const bool display)
+	{
+		using RISECBOR64::Value;
+		const auto* config=payload.Find("resolved_render_configuration_v1");
+		if(!config||config->GetType()!=Value::Map||manifest.Channels().empty())return false;
+		const auto& channel=manifest.Channels().front();
+		const double width=channel.voxelSizeMeters[0];
+		const bool wide=channel.dimensions[0]==104u&&channel.dimensions[1]==104u&&
+			channel.dimensions[2]==80u;
+		const double depth=(wide?static_cast<double>(channel.dimensions[2]):
+			std::max({static_cast<double>(channel.dimensions[0]),
+			static_cast<double>(channel.dimensions[1]),static_cast<double>(channel.dimensions[2])}))*width;
+		// Reproduce the existing scene writer's default six significant digits.
+		auto sceneNumber=[](const double value){std::ostringstream text;text<<value;
+			return std::stod(text.str());};
+		const double x=sceneNumber(0.5*channel.dimensions[0]*width);
+		const double y=sceneNumber(0.5*channel.dimensions[1]*width);
+		const double eyeY=sceneNumber(0.5*channel.dimensions[1]*width-1.25*depth);
+		const double z=sceneNumber(0.5*depth);
+		auto* camera=new PinholeCamera(Point3(x,eyeY,z),Point3(x,y,z),Vector3(0,0,1),
+			45.0*DEG_TO_RAD,64u,64u,1.0,0.04,-0.1,0.02,Vector3(0,0,0),Vector2(0,0));
+		const auto location=camera->GetLocation();const auto matrix=camera->GetMatrix();
+		Value::Values matrixValues;
+		for(const double value:{matrix._00,matrix._01,matrix._02,matrix._03,
+			matrix._10,matrix._11,matrix._12,matrix._13,matrix._20,matrix._21,matrix._22,matrix._23,
+			matrix._30,matrix._31,matrix._32,matrix._33})matrixValues.push_back(Value::Float(value));
+		camera->release();
+		const Value expectedCamera=Value::MapValue({
+			{"exposure_compensation_ev",Value::Float(0.0)},{"exposure_time",Value::Float(0.04)},
+			{"kind",Value::String("pinhole")},{"location",Value::ArrayValue({Value::Float(location.x),
+				Value::Float(location.y),Value::Float(location.z)})},{"matrix",Value::ArrayValue(matrixValues)},
+			{"pixel_rate",Value::Float(0.02)},{"projection",Value::MapValue({
+				{"fov_radians",Value::Float(45.0*DEG_TO_RAD)},{"fstop",Value::Float(0.0)},
+				{"iso",Value::Float(0.0)}})},{"scanning_rate",Value::Float(-0.1)}});
+		auto equal=[](const Value* actual,const Value& expected){RISECBOR64::Bytes a,b;
+			return actual&&RISECBOR64::Encode(*actual,a)&&RISECBOR64::Encode(expected,b)&&a==b;};
+		const double time=manifest.TimeMap().sceneTimeOrigin+static_cast<double>(frame)*
+			(manifest.TimeMap().frameStepSeconds/manifest.TimeMap().sceneToSimulationScale);
+		const auto* animation=config->Find("animation");
+		const auto* evaluated=config->Find("evaluated_camera_states");
+		if(!equal(config->Find("camera"),expectedCamera)||!animation||animation->GetType()!=Value::Map||
+			!equal(animation->Find("time_start"),Value::Float(time))||
+			!equal(animation->Find("time_end"),Value::Float(time))||!evaluated||
+			evaluated->GetType()!=Value::Array||evaluated->GetArray().size()!=1u)return false;
+		const auto& state=evaluated->GetArray().front();
+		if(state.GetType()!=Value::Map||!equal(state.Find("camera"),expectedCamera)||
+			!equal(state.Find("time"),Value::Float(time)))return false;
+		Value::Members members=config->GetMap(),anim=animation->GetMap(),evaluatedState=state.GetMap();
+		for(auto& member:anim)if(member.first=="time_start"||member.first=="time_end")member.second=Value::Float(0.0);
+		for(auto& member:evaluatedState){
+			if(member.first=="camera")member.second=Value();
+			if(member.first=="time")member.second=Value::Float(0.0);
+		}
+		for(auto& member:members){
+			if(member.first=="camera")member.second=Value();
+			if(member.first=="animation")member.second=Value::MapValue(anim);
+			if(member.first=="evaluated_camera_states")member.second=Value::ArrayValue({Value::MapValue(evaluatedState)});
+		}
+		RISECBOR64::Bytes normalized;
+		return RISECBOR64::Encode(Value::MapValue(members),normalized)&&
+			RISECBOR64::SHA256Hex(normalized)==(display?
+				"8ba10a890d3918a1330510f3466fbf9314ff5c251e552f68bdd6470224c508b0":
+				"467df3e3cab195628b44a30faa081abea05343dbb8d9d7f38b0ad616034198b2");
+	}
+
+	bool SpectrumPreviewSceneMatches(const std::filesystem::path& directory,
+		const std::filesystem::path& manifestPath,const FireSequenceManifest& manifest,
+		const bool wide,std::string& error)
+	{
+		const auto inventory=TemporalPreviewInventory(directory,manifest.Frames().size());
+		if(inventory.empty()||manifest.Channels().empty())return false;
+		const RISECBOR64::Bytes inventoryBytes(inventory.begin(),inventory.end());
+		// Historical baseline predates receipts: pin its audited bytes explicitly,
+		// without retrospectively claiming the old producer made an attestation.
+		if(!wide&&manifest.SequenceId()=="feb55253deffaacfdd3279afcce292863c70ca62fa8d2d28637c3ba8e23b28d8"&&
+			RISECBOR64::SHA256Hex(inventoryBytes)=="39d89046c32d00422958716e3c7a3afd1dd4de2f47243bb8803d476eff4dde03")return true;
+		const auto scene=TemporalFirePreviewScene(manifest.Channels().front(),manifestPath,wide);
+		const RISECBOR64::Bytes sceneBytes(scene.begin(),scene.end());
+		if(ReadFileBytes(directory/"temporal_fire.RISEscene")!=sceneBytes){
+			error="preview does not bind the canonical generated scene";return false;
+		}
+		std::ostringstream expected;
+		expected<<"schema rise.fire.temporal-preview-receipt.v1\nsource_manifest_sha256 "
+			<<DigestFile(manifestPath)<<"\nscene_sha256 "<<RISECBOR64::SHA256Hex(sceneBytes)
+			<<"\nframes "<<manifest.Frames().size()<<'\n'<<inventory;
+		const auto text=expected.str();
+		if(ReadFileBytes(directory/"temporal_preview_receipt.v1")!=RISECBOR64::Bytes(text.begin(),text.end())){
+			error="preview producer receipt does not bind all frame pairs";return false;
+		}
+		return true;
+	}
+
+	bool SpectrumPreviewFrameMatches(const std::filesystem::path& directory,
+		const FireSequenceManifest& manifest,const std::size_t frame,std::string& error)
+	{
+		using RISECBOR64::Value;
+		if(frame>=manifest.Frames().size())return false;
+		std::ostringstream index;index<<std::setw(5)<<std::setfill('0')<<frame;
+		const auto primary=directory/("temporal_primary_"+index.str()+".exr");
+		const auto display=directory/("temporal_display_"+index.str()+".png");
+		const auto sidecar=ReadFileBytes(primary.string()+".provenance.cbor");
+		Value envelope;
+		if(!VerifyFireProvenanceEXR(ReadFileBytes(primary),sidecar,error)||
+			!RISECBOR64::DecodeCanonical(sidecar,envelope,&error)||
+			!VerifyVisibleFireDisplayDerivative(ReadFileBytes(display),
+				ReadFileBytes(display.string()+".provenance.cbor"),envelope,error,false,false))return false;
+		const auto* payload=envelope.Find("payload");
+		const auto* fidelity=payload?payload->Find("artifact_fidelity"):nullptr;
+		const auto* media=payload?payload->Find("active_fire_media"):nullptr;
+		if(!fidelity||fidelity->GetText()!="preview_primary"||
+			!media||media->GetType()!=Value::Array||media->GetArray().size()!=1u)return false;
+		Value displayEnvelope;
+		if(!RISECBOR64::DecodeCanonical(ReadFileBytes(display.string()+".provenance.cbor"),displayEnvelope,&error))return false;
+		const auto* displayPayload=displayEnvelope.Find("payload");
+		if(!displayPayload||!SpectrumRenderProfileMatches(*payload,manifest,frame,false)||
+			!SpectrumRenderProfileMatches(*displayPayload,manifest,frame,true)){
+			error="spectrum preview differs from the matched render profile";return false;
+		}
+		const auto& medium=media->GetArray().front();
+		const auto* sequence=medium.Find("sequence_id");
+		const auto* selected=medium.Find("selected_base_frame_index");
+		const auto* digest=medium.Find("whole_file_digest");
+		return sequence&&sequence->GetText()==manifest.SequenceId()&&selected&&
+			selected->GetType()==Value::UnsignedInteger&&
+			selected->GetIntegerArgument()==static_cast<std::uint64_t>(manifest.Frames()[frame].index)&&
+			digest&&digest->GetText()==manifest.Frames()[frame].sha256;
+	}
+
 	int RunProductionPuffingSpectrumChild(const double resolutionTier,
 		const std::filesystem::path& checkpointPath,
 		const std::filesystem::path& simulationDirectory,
 		const std::filesystem::path& previewDirectory,
-		const std::filesystem::path& outputDirectory)
+		const std::filesystem::path& outputDirectory,const bool r244LateralDouble=false)
 	{
 		MethaneRunCheckpoint checkpoint;std::string error;
 		if(!LoadMethaneRunCheckpoint(checkpointPath,checkpoint,error)||
-			!ProductionPuffingSpectrumTierMatches(checkpoint,resolutionTier)){
+			!ProductionPuffingSpectrumTierMatches(checkpoint,resolutionTier,r244LateralDouble)){
 			std::fprintf(stderr,"puffing spectrum checkpoint rejected: %s\n",error.c_str());return 91;
 		}
+		const auto manifestBytes=ReadFileBytes(simulationDirectory/"sequence_manifest.rise-fire.cbor");
+		FireSequenceManifest manifest;
+		if(!manifest.LoadCanonicalEnvelope(manifestBytes,simulationDirectory.string(),error)||
+			manifest.CaseRecordId()!=checkpoint.caseRecordId||
+			!TemporalManifestDomainMatches(manifestBytes,r244LateralDouble,error))return 91;
+		RISECBOR64::Value envelope;FireCase::RecordV1 caseRecord;
+		if(!RISECBOR64::DecodeCanonical(manifestBytes,envelope,&error))return 91;
+		const auto* payload=envelope.Find("payload");
+		const auto* embedded=payload?payload->Find("case_record"):nullptr;
+		if(!embedded||!FireCase::ValidateMethaneEnvelopeV1(embedded->GetBytes(),
+			FireSimulationMethaneRecord::PhysicalV1(),caseRecord,error))return 91;
 		UniformHannSpectrum centerline;
 		if(!ComputeUniformHannSpectrum(checkpoint.values.probeTimeS,
 			checkpoint.values.probeCenterlineHeatReleaseW,512u,centerline))return 92;
@@ -3271,11 +3507,18 @@ namespace
 			if(!frameEnd||*frameEnd!='\0'||!timeEnd||*timeEnd!='\0'||
 				frame!=litTimeS.size()||!std::isfinite(timeS)||
 				(!litTimeS.empty()&&!(timeS>litTimeS.back())))return 93;
+			if(frame>=manifest.Frames().size()||manifest.Frames()[frame].index!=static_cast<std::int64_t>(frame)||
+				vdbDigest!=manifest.Frames()[frame].sha256||
+				DigestFile(simulationDirectory/manifest.Frames()[frame].relativePath)!=vdbDigest||
+				!SpectrumPreviewFrameMatches(previewDirectory,manifest,frame,error)){
+				std::fprintf(stderr,"puffing spectrum frame %lu provenance rejected: %s\n",frame,error.c_str());
+				return 94;
+			}
 			std::ostringstream name;name<<"temporal_display_"<<std::setw(5)<<
 				std::setfill('0')<<frame<<".png";
 			const std::filesystem::path displayPath=previewDirectory/name.str();
 			std::size_t lit=0u;unsigned int width=0u,height=0u;
-			if(!ReadDisplayLitArea(displayPath,lit,width,height)||
+			if(!ReadDisplayLitArea(displayPath,lit,width,height)||width!=64u||height!=64u||
 				(!litTimeS.empty()&&(width!=displayWidth||height!=displayHeight)))return 94;
 			if(litTimeS.empty()){displayWidth=width;displayHeight=height;}
 			const std::string displayDigest=DigestFile(displayPath);
@@ -3283,9 +3526,14 @@ namespace
 			litTimeS.push_back(timeS);litAreaPixels.push_back(static_cast<double>(lit));
 			displayDigests.push_back(displayDigest);
 		}
+		if(!SpectrumFullWindowMatches(checkpoint,manifest,caseRecord,litTimeS))return 93;
 		UniformHannSpectrum litArea;
 		if(!ComputeUniformHannSpectrum(litTimeS,litAreaPixels,512u,litArea))return 95;
 		std::error_code directoryError;
+		if(!SpectrumPreviewSceneMatches(previewDirectory,
+			simulationDirectory/"sequence_manifest.rise-fire.cbor",manifest,r244LateralDouble,error)){
+			std::fprintf(stderr,"puffing spectrum scene rejected: %s\n",error.c_str());return 94;
+		}
 		std::filesystem::create_directories(outputDirectory,directoryError);
 		if(directoryError)return 96;
 		auto writeSignal=[&](const std::filesystem::path& path,const std::vector<double>& time,
@@ -3332,7 +3580,7 @@ namespace
 			<<"centerline_signal_sha256 "<<DigestFile(outputDirectory/"centerline_signal.csv")<<"\n"
 			<<"lit_area_signal_sha256 "<<DigestFile(outputDirectory/"lit_area_signal.csv")<<"\n"
 			<<"full_spectrum_sha256 "<<DigestFile(outputDirectory/"full_spectrum.csv")<<"\n";
-		if(!WriteProductionPuffingSpectrumTierEvidence(summary,checkpoint,resolutionTier))return 96;
+		if(!WriteProductionPuffingSpectrumTierEvidence(summary,checkpoint,resolutionTier,r244LateralDouble))return 96;
 		summary
 			<<"r57_general_case_admissibility_minimum_cells 4\n"
 			<<"puffing_claim_requires_refined_approximately_ten_cell_class true\n"
@@ -3510,6 +3758,143 @@ namespace
 	{
 		return !scoped||!computed||R216KernelAccepted(kernel);
 	}
+	struct R245PendingBudget {
+		FireProductionAcceptedStageBudget::Step step;
+		std::vector<unsigned char> flux,native,beginning;
+		std::string columns;
+		std::uint64_t frame=0;
+		bool ready=false,frameDue=false;
+	};
+
+	bool PrepareR245Budget(const FireProductionProjectedHeunMetalOwnerRequest& request,
+		FireProductionProjectedHeunMetalOwnerResult& owner,std::uint64_t stepIndex,
+		const std::vector<double>& sourcePattern,bool frameDue,std::uint64_t frameIndex,
+		R245PendingBudget& pending,std::string& error)
+	{
+		pending=R245PendingBudget();
+		std::vector<unsigned char> footprint;footprint.reserve(sourcePattern.size());
+		for(double value:sourcePattern){if(!std::isfinite(value)||value<0){error="r245 invalid source mask";return false;}
+			footprint.push_back(value>0?1u:0u);}
+		if(!FireProductionAcceptedStageBudget::Reduce(request,owner,stepIndex,footprint,pending.step,error))return false;
+		pending.frameDue=frameDue;pending.frame=frameIndex;
+		if(frameDue){
+			// Independent CPU checks cover both GPU payload roots at retained frames.
+			FireProductionPayloadDigestV2 nativeSeal,fluxSeal;
+			if(!FireProductionPayloadDigestCPU(owner.acceptedBudgetPayload.data(),owner.acceptedBudgetPayload.size(),8u,fluxSeal,&error)||
+				fluxSeal.rootSHA256!=owner.acceptedBudgetPayloadRootSHA256||
+				!FireProductionPayloadDigestCPU(owner.acceptedBudgetNativePublication.data(),owner.acceptedBudgetNativePublication.size(),8u,nativeSeal,&error)||
+				nativeSeal.rootSHA256!=owner.publicationPayloadRootSHA256){error="r245 GPU/CPU observation seal mismatch";return false;}
+			const auto& transport=request.lineage.eos.physicalFlux.transport;
+			const auto& shape=transport.shape;
+			const FireProductionStaggeredColumn::Inputs inputs={request.beginningMomentumKGPerM2S,
+				owner.provisionalMomentumKGPerM2S,owner.momentumKGPerM2S,
+				owner.heunStressMomentumRateKGPerM2S2,owner.heunBuoyancyMomentumRateKGPerM2S2,
+				owner.heunAdvectionMomentumRateKGPerM2S2,owner.heunPhaseSourceMomentumRateKGPerM2S2,
+				owner.heunEddyKinematicViscosityM2PerS};
+			std::ostringstream columns;bool header=true;
+			if(shape.nx<2||shape.ny<2||shape.nx%2||shape.ny%2){error="r245 central columns require even extents";return false;}
+			for(std::size_t y=shape.ny/2u-1u;y<=shape.ny/2u;++y)
+				for(std::size_t x=shape.nx/2u-1u;x<=shape.nx/2u;++x){
+					std::vector<FireProductionStaggeredColumn::Row> rows;
+					std::ostringstream oneColumn;
+					if(!FireProductionStaggeredColumn::Build({{shape.nx,shape.ny,shape.nz}},x,y,pending.step.dt,inputs,rows)||
+						!FireProductionStaggeredColumn::Write(oneColumn,header,pending.step.beginTime,0u,pending.step.dt,rows)){
+						error="r245 accepted Heun column operands incomplete";return false;}
+					std::istringstream lines(oneColumn.str());std::string line;
+					while(std::getline(lines,line)){
+						if(header){const auto label=line.find("candidate,");
+							if(label!=std::string::npos)line.replace(label,10u,"observation_index,");
+							columns<<"column_x,column_y,"<<line<<'\n';header=false;}
+						else columns<<x<<','<<y<<','<<line<<'\n';}
+
+				}
+			pending.columns=columns.str();
+			// Little-endian binary32 wire order: Q0[9*cells], source delta[9*cells],
+			// M0[allFaces], five binary64 frozen-source arrays, then burner-mask bytes.
+			// Native publication contains final Q, momentum, actual
+			// Heun rates and alpha; flux packet binds the input and native roots.
+			const std::size_t cells=shape.nx*shape.ny*shape.nz;
+			std::size_t faces=0;for(const auto& axis:request.beginningMomentumKGPerM2S)faces+=axis.size();
+			pending.beginning.reserve(112u*cells+4u*faces+footprint.size());
+			auto append=[&](const auto& values){const auto* bytes=
+				reinterpret_cast<const unsigned char*>(values.data());
+				pending.beginning.insert(pending.beginning.end(),bytes,bytes+values.size()*sizeof(values[0]));};
+			append(transport.conservativeValues);append(request.lineage.frozenSource.SourceDelta());
+			for(const auto& axis:request.beginningMomentumKGPerM2S)append(axis);
+			const auto& frozen=request.lineage.frozenSource;
+			append(frozen.GasHeatReleaseWPerM3());append(frozen.SootHeatReleaseWPerM3());
+			append(frozen.RadiativeCoolingWPerM3());append(frozen.PilotEnergyDeltaJPerM3());append(frozen.ReactedFuelKGPerM3());
+			pending.beginning.insert(pending.beginning.end(),footprint.begin(),footprint.end());
+			pending.flux=std::move(owner.acceptedBudgetPayload);
+			pending.native=std::move(owner.acceptedBudgetNativePublication);
+		}
+		pending.ready=true;return true;
+	}
+
+	void WriteR245Rows(std::ostream& stream,const char* scope,const FireProductionAcceptedStageBudget::Rows& rows)
+	{
+		for(unsigned field=0;field<10;++field){const auto& row=rows[field];
+			stream<<std::setprecision(21)<<scope<<','<<field<<','<<(field==8?"J":"kg")<<','
+				<<row.beginning<<','<<row.ending<<','<<row.source<<','<<row.closure<<','<<row.interstepChange;
+			for(unsigned side=0;side<6;++side)stream<<','<<row.inflow[side]<<','<<row.outflow[side];
+			for(unsigned region=0;region<2;++region)stream<<','<<row.bottomInflow[region]<<','<<row.bottomOutflow[region];
+			stream<<'\n';
+		}
+	}
+
+	bool PublishR245Budget(const std::filesystem::path& directory,const std::string& caseId,
+		const std::string& producer,const std::string& executable,double statisticsStart,
+		const std::array<std::size_t,3>& dimensions,double solverDx,R245PendingBudget& pending,
+		FireProductionAcceptedStageBudget::Ledger& ledger,std::string& error)
+	{
+		if(!pending.ready){error="r245 accepted step lacks pending observation";return false;}
+		// Commit a local copy; failed I/O never advances the in-memory ledger.
+		auto next=ledger;
+		if(!next.Commit(pending.step,true,statisticsStart,error))return false;
+		std::ostringstream number;number<<"step_"<<std::setw(6)<<std::setfill('0')<<pending.step.index;
+		const auto path=directory/(number.str()+".csv");
+		if(std::filesystem::exists(path)){error="r245 step evidence already exists";return false;}
+		std::ofstream record(path);
+		record<<std::setprecision(17)<<"# schema rise.fire.accepted-stage-budget.v1\n# case_record_id "<<caseId
+			<<"\n# producer_build_id "<<producer<<"\n# executable_sha256 "<<executable
+			<<"\n# accepted_step "<<pending.step.index<<"\n# beginning_time_s "<<pending.step.beginTime
+			<<"\n# dt_s "<<pending.step.dt<<"\n# input_root "<<pending.step.inputRoot
+			<<"\n# native_root "<<pending.step.publicationRoot<<"\n# flux_root "<<pending.step.fluxRoot
+			<<"\n# R1_candidate "<<pending.step.candidate<<"\n# dimensions "<<dimensions[0]<<' '<<dimensions[1]<<' '<<dimensions[2]
+			<<"\n# binary32_solver_dx_m "<<solverDx<<"\n# statistics_start_s "<<statisticsStart
+			<<"\n# statistics_initial_inventory clipped_linear_increment_not_interior_state"
+			<<"\n# field_order Z,CH4,O2,N2,CO2,H2O,CO,carbon,sensible_enthalpy,total_species_mass"
+			<<"\n# side_order x_min,x_max,y_min,y_max,z_min,z_max; bottom_regions nonburner,burner"
+			<<"\n# enthalpy_source_components chemical_J,radiated_J,pilot_J,reacted_fuel_kg\n# step_source "
+			<<pending.step.chemicalJ<<','<<pending.step.radiatedJ<<','<<pending.step.pilotJ<<','<<pending.step.reactedFuelKG
+			<<"\n# cumulative_source "<<next.chemicalJ<<','<<next.radiatedJ<<','<<next.pilotJ<<','<<next.reactedFuelKG
+			<<"\n# statistics_source "<<next.statisticsChemicalJ<<','<<next.statisticsRadiatedJ<<','<<next.statisticsPilotJ<<','<<next.statisticsReactedFuelKG
+			<<"\nscope,field,units,beginning_inventory,ending_inventory,source_increment,closure_residual,interstep_inventory_change,xmin_in,xmin_out,xmax_in,xmax_out,ymin_in,ymin_out,ymax_in,ymax_out,bottom_in,bottom_out,top_in,top_out,bottom_nonburner_in,bottom_nonburner_out,bottom_burner_in,bottom_burner_out\n";
+		WriteR245Rows(record,"step",pending.step.rows);
+		WriteR245Rows(record,"full",next.full);
+		WriteR245Rows(record,"statistics",next.statistics);
+		if(!ClosePublishedStream(record)||!PublishPayloadMerkleSidecar(path,caseId,error))return false;
+		if(pending.frameDue){
+			std::ostringstream frame;frame<<"frame_"<<std::setw(5)<<std::setfill('0')<<pending.frame;
+			const auto base=directory/frame.str();
+			std::ofstream binding(base.string()+".v1");
+			binding<<"schema rise.fire.accepted-stage-frame.v1\naccepted_step "<<pending.step.index
+				<<"\nframe "<<pending.frame<<"\nstep_record_sha256 "<<DigestFile(path)<<'\n';
+			const std::array<std::pair<const char*,const std::vector<unsigned char>*>,3> payloads={{{".flux.bin",&pending.flux},{".native.bin",&pending.native},{".beginning.bin",&pending.beginning}}};
+			for(const auto& payload:payloads){const std::filesystem::path target=base.string()+payload.first;
+				if(std::filesystem::exists(target)){error="r245 frame evidence already exists";return false;}
+				std::ofstream binary(target,std::ios::binary);binary.write(reinterpret_cast<const char*>(payload.second->data()),payload.second->size());
+				if(!ClosePublishedStream(binary)||!PublishPayloadMerkleSidecar(target,caseId,error))return false;
+				binding<<payload.first<<' '<<DigestFile(target)<<'\n';}
+			const std::filesystem::path columnPath=base.string()+".columns.csv";
+			std::ofstream columns(columnPath);columns<<pending.columns;
+			if(!ClosePublishedStream(columns)||!PublishPayloadMerkleSidecar(columnPath,caseId,error))return false;
+			binding<<"columns_sha256 "<<DigestFile(columnPath)<<'\n';
+			if(!ClosePublishedStream(binding)||!PublishPayloadMerkleSidecar(base.string()+".v1",caseId,error))return false;
+		}
+		ledger=next;pending=R245PendingBudget();return true;
+	}
+
 	SolverFrameValues RunMethaneFrameProbe( const unsigned int workerCount=1u,
 		const unsigned int minimumStepCount=1u,const double targetTimeS=0.0,
 		const double caseDurationS=1.0,const double caseFramesPerS=4.0,
@@ -3519,6 +3904,18 @@ namespace
 		const RunPersistenceOptions& persistence=RunPersistenceOptions() )
 	{
 		SolverFrameValues values;
+		if(persistence.r245ObservationFixture&&!persistence.burnerLauncherFixture){
+			values.structuredError="r245_observer_fixture_scope_conflict";return values;}
+		if(persistence.r245AcceptedBudget&&(!persistence.r244LateralDouble||persistence.resume||
+			!persistence.portedProductionTransport||!persistence.productionMetal||
+			persistence.productionOnsetDiagnosticDirectory.empty()||persistence.temporalSnapshotDirectory.empty()||
+			persistence.temporalSnapshotCadenceS!=0.0625||targetTimeS<=0||
+			persistence.stopAfterAdditionalAcceptedSteps||persistence.isolatedEquivalenceProbe)){
+			values.structuredError="r245_budget_scope_conflict";return values;}
+		if(persistence.r244LateralDouble&&(resolutionTier!=6.0||persistence.resume||
+			poolDiameterM!=CapstonePoolDiameterM||heatReleaseRateKW!=CapstoneHeatReleaseRateKW||
+			(minimumStepCount>0u&&(!persistence.productionMetal||!persistence.portedProductionTransport)))){
+			values.structuredError="r244_domain_study_scope_conflict";return values;}
 		if((persistence.burnerLauncherFixture||persistence.burnerLauncherRejectFirstCandidate)&&
 			(!persistence.burnerLauncherFixture||!persistence.portedProductionTransport||
 			minimumStepCount!=1u||targetTimeS!=0.0||persistence.resume||
@@ -3704,6 +4101,7 @@ namespace
 		authored.numericDStarTier=resolutionTier; authored.seed=1234;
 		authored.outputFramesPerS=caseFramesPerS;
 		authored.plumeLaw=true;
+		if(persistence.r244LateralDouble)authored.domainStudy="r244-lateral-double-v1";
 		FireCase::RecordV1 caseRecord;
 		const RISECBOR64::Bytes aerosol=AerosolRecord();
 		const RISECBOR64::Bytes chem=SyntheticChemRecord();
@@ -4103,6 +4501,7 @@ namespace
 			if(!ClosePublishedStream(retries)){values.structuredError="production_onset_retry_trajectory_failure";
 				return values;}
 		}
+		FireProductionAcceptedStageBudget::Ledger r245Ledger;
 		std::uint64_t temporalSnapshotIndex=values.streamedFrameCount;
 		double nextTemporalSnapshotS=values.statisticsStartS;
 		if(persistence.temporalSnapshotCadenceS>0.0&&simulationTimeS>=nextTemporalSnapshotS)
@@ -4157,8 +4556,18 @@ namespace
 			memoryShape.ny=shape.ny;memoryShape.nz=shape.nz;
 			memoryShape.cellWidthM=static_cast<float>(shape.cellWidthM);
 			std::uint64_t ownerBytes=0u;
-			if(!FireProductionProjectedHeunMetalObserverWorkingSetBytes(memoryShape,ownerBytes)){
+			if(!FireProductionProjectedHeunMetalObserverWorkingSetBytes(memoryShape,ownerBytes,persistence.r245AcceptedBudget||persistence.r245ObservationFixture,
+				persistence.r245AcceptedBudget||persistence.r245ObservationFixture)){
 				values.structuredError="host_memory_certificate_unavailable";return values;}
+			if(persistence.r245AcceptedBudget||persistence.r245ObservationFixture){
+				// Additional simultaneously live host copies: flux+stage packet,
+				// native publication, and selected-frame Q0/source/M0. Sizes follow
+				// their wire layouts; existing 2 GiB scratch and 32 GiB ceiling stay.
+				const std::uint64_t cells=memoryShape.CellCount(),faces=
+					FireProductionProjectionFaceCount(memoryShape,0u)+FireProductionProjectionFaceCount(memoryShape,1u)+
+					FireProductionProjectionFaceCount(memoryShape,2u);
+				ownerBytes+=(72u+26u*faces*4u)+(76u*cells+36u*faces+216u)+(112u*cells+4u*faces)+memoryShape.nx*memoryShape.ny;
+			}
 			hostMemoryPolicy=FireRunHostMemory::ProductionPolicy(ownerBytes);
 			const auto memory=FireRunHostMemory::Read();
 			if(hostMemoryPolicy.Stop(memory)){
@@ -4332,6 +4741,7 @@ namespace
 			std::vector<ConservativeVector> beginning=currentConservative;
 			advancedOK=false;
 			std::string lastAdvanceError;
+			R245PendingBudget pendingBudget;
 			double trialStep=eventStep;
 			const FireStateProducerPrecision advanceOutputPrecision=
 				persistence.productionMetal?FireStateProducerPrecision::Binary32:
@@ -4348,6 +4758,7 @@ namespace
 			for(unsigned int reduction=0;
 				reduction<RISE::FireStepRejectionRetryCap&&!advancedOK;++reduction) {
 				solverPhase="step setup";
+				pendingBudget=R245PendingBudget();
 				if(injectSolverFailure){lastAdvanceError="injected_solver_failure";break;}
 				if(persistence.productionMetal)
 					trialStep=static_cast<double>(static_cast<float>(trialStep));
@@ -4686,7 +5097,9 @@ namespace
 									static_cast<float>(config.projectionTolerancePerS),
 									static_cast<float>(config.openBoundary.velocityToleranceMPerS),
 									projectedHeunRequest,error,persistence.portedProductionTransport?
-										&config.openBoundary:nullptr)&&
+										&config.openBoundary:nullptr);
+								projectedHeunRequest.captureAcceptedBudgetFlux=persistence.r245AcceptedBudget||persistence.r245ObservationFixture;
+								attemptComputed=attemptComputed&&
 									RISE::AttemptFireProductionProjectedHeunResidentStepMetal(projectedHeunRequest,
 										production,&projectedHeunDiagnostics,&error);
 							}else attemptComputed=persistence.compatibleMomentumDiagnostic?
@@ -5454,6 +5867,14 @@ namespace
 										static_cast<double>(production.forceDiagnostics.outwardLambdaPerS),
 										minimumAuxiliaryFaceDensity,maximumTransportedMomentum);
 								}
+								if(persistence.r245ObservationFixture&&!persistence.burnerLauncherFixture){
+			values.structuredError="r245_observer_fixture_scope_conflict";return values;}
+		if(persistence.r245AcceptedBudget&&
+									(!FireProductionOwnerConvergenceProbe::MatchesAcceptedEvent(projectedHeunRequest,
+										simulationTimeS,trialStep,error)||
+									!PrepareR245Budget(projectedHeunRequest,projectedHeunDiagnostics,acceptedSteps+1u,
+										sourcePattern,simulationTimeS+trialStep>=nextTemporalSnapshotS,temporalSnapshotIndex,pendingBudget,error))){
+									mandatoryEvidenceFailure=true;advancedOK=false;lastAdvanceError=error;break;}
 								acceptedBeginningStates=std::move(packetBeginning);
 								// Recompute the pilot ledger at the source producer's actual
 								// evaluation temperature, not the legacy binary64 override.
@@ -5789,6 +6210,12 @@ namespace
 					error="pilot_window_expired_without_ignition";
 					break;
 				}
+				if(persistence.r245ObservationFixture&&!persistence.burnerLauncherFixture){
+			values.structuredError="r245_observer_fixture_scope_conflict";return values;}
+		if(persistence.r245AcceptedBudget&&!PublishR245Budget(persistence.productionOnsetDiagnosticDirectory,
+					caseRecord.caseRecordId,currentBuildId,currentExecutableDigest,values.statisticsStartS,
+					{{shape.nx,shape.ny,shape.nz}},static_cast<float>(shape.cellWidthM),pendingBudget,r245Ledger,error)){
+					advancedOK=false;break;}
 				const double statisticsDuration=std::max(0.0,stepEndS-
 					std::max(simulationTimeS,values.statisticsStartS));
 				if(statisticsDuration>0.0) {
@@ -6287,7 +6714,7 @@ namespace
 		const double caseResolutionTier=6.0,const bool casePlumeLaw=false,
 		const std::vector<std::pair<std::string,std::string> >& sequenceFrames={},
 		const double authoredCaseDurationS=0.0,const double authoredCaseFramesPerS=0.0,
-		const bool prescribedProductionBurner=false )
+		const bool prescribedProductionBurner=false,const bool r244LateralDouble=false )
 	{
 		using RISECBOR64::Value;
 		std::string error;
@@ -6316,6 +6743,7 @@ namespace
 		caseAuthored.numericDStarTier=caseGridBound?caseResolutionTier:0.0; caseAuthored.seed=1234;
 		caseAuthored.outputFramesPerS=authoredCaseFramesPerS>0.0?authoredCaseFramesPerS:1.0/frameStepSeconds;
 		caseAuthored.plumeLaw=casePlumeLaw;
+		if(r244LateralDouble)caseAuthored.domainStudy="r244-lateral-double-v1";
 		caseAuthored.hasRadiativeFractionOverride=caseHasRadiativeFractionOverride;
 		caseAuthored.radiativeFractionOverride=caseRadiativeFractionOverride;
 		FireCase::RecordV1 caseRecord;
@@ -7213,7 +7641,22 @@ namespace
 				value.burnerFixtureAcceptedSHA.size()==64u&&
 				std::all_of(value.burnerFixtureInputSHA.begin(),value.burnerFixtureInputSHA.end(),
 					[&](const std::string& input){return input==value.burnerFixtureQ0SHA;});};
-		const bool passed=clean(normal,1u)&&clean(retry,2u)&&clean(control,1u)&&
+		options.maximumProductionSourceStepS=normal.acceptedTimeStepS;
+		options.r245ObservationFixture=true;
+		const auto observed=run();
+		options.burnerLauncherRejectFirstCandidate=true;
+		const auto observedRetry=run();
+		const auto sameObservation=[](const SolverFrameValues& a,const SolverFrameValues& b){
+			return a.succeeded&&b.succeeded&&a.burnerFixtureQ0SHA==b.burnerFixtureQ0SHA&&
+				a.burnerFixtureAcceptedSHA==b.burnerFixtureAcceptedSHA&&a.burnerFixtureInputSHA==b.burnerFixtureInputSHA&&
+				a.acceptedTimeStepHistoryS==b.acceptedTimeStepHistoryS&&a.externalFuelMassKG==b.externalFuelMassKG&&
+				a.expectedPilotEnergyJ==b.expectedPilotEnergyJ&&a.pilotEnergyJ==b.pilotEnergyJ&&a.integratedHeatReleaseJ==b.integratedHeatReleaseJ;};
+		const bool observationSame=sameObservation(normal,observed)&&sameObservation(retry,observedRetry)&&
+			clean(observed,1u)&&clean(observedRetry,2u);
+		std::fprintf(stdout,"R245_LAUNCHER_OBSERVER accepted_fields_source_pilot_timesteps=%d rejected_attempt_input_unchanged=%d observed_error=%s retry_error=%s\n",
+			observationSame?1:0,observedRetry.burnerFixtureVelocityMutantDetected?1:0,
+			observed.structuredError.c_str(),observedRetry.structuredError.c_str());
+		const bool passed=observationSame&&clean(normal,1u)&&clean(retry,2u)&&clean(control,1u)&&
 			normal.burnerFixtureQ0SHA==retry.burnerFixtureQ0SHA&&
 			retry.burnerFixtureQ0SHA==control.burnerFixtureQ0SHA&&
 			retry.burnerFixtureVelocityMutantDetected&&
@@ -7942,6 +8385,120 @@ namespace
 		return resolutionTier==6.0||resolutionTier==8.0||resolutionTier==10.0;
 	}
 
+
+	int RunR244DomainStudyGate()
+	{
+		const int before=failures;
+		RunPersistenceOptions options;options.productionMetal=true;options.portedProductionTransport=true;
+		const auto geometry=RunMethaneFrameProbe(1u,0u,0.0,1.0,1.0,6.0,
+			CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,options);
+		if(!geometry.succeeded)return 91;
+		const double start=5.0*geometry.flowThroughTimeS;
+		const double statistics=std::ceil((40.0/(1.5/std::sqrt(CapstonePoolDiameterM)))/0.0625)*0.0625;
+		const double target=start+statistics;
+		std::vector<std::pair<std::string,std::string>> frames;
+		for(std::size_t i=0;i<235u;++i){
+			std::ostringstream name;name<<"frames/frame_"<<std::setw(5)<<std::setfill('0')<<i<<".vdb";
+			frames.push_back({name.str(),std::string(64u,'0')});
+		}
+		std::string baselineId;
+		std::vector<double> baselineSource;std::vector<std::uint8_t> baselinePilot;
+		for(const bool wide:{false,true}){
+			options.r244LateralDouble=wide;
+			const auto generated=RunMethaneFrameProbe(1u,0u,0.0,target,16.0,6.0,
+				CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,options);
+			Check(generated.succeeded&&generated.flowThroughTimeS==geometry.flowThroughTimeS,
+				"r244 producer preflight preserves the complete physical window");
+			std::array<std::size_t,3> grid;double dx=0.0;
+			if(!CanonicalCapstoneGridForTier(6.0,grid,dx,wide))return 91;
+			const std::array<std::uint64_t,3> dimensions={{grid[0],grid[1],grid[2]}};
+			const auto bytes=ManifestBytes("","","hold",true,true,dimensions,dx,start,0.0625,
+				1.0,0.0,true,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,0.0,
+				6.0,true,frames,target,16.0,true,wide);
+			FireSequenceManifest manifest;std::string error;
+			Check(manifest.LoadCanonicalEnvelope(bytes,".",error)&&
+				manifest.CaseRecordId()==generated.caseRecordId&&
+				TemporalManifestDomainMatches(bytes,wide,error)&&
+				!TemporalManifestDomainMatches(bytes,!wide,error),
+				"r244 final manifest binds the producer case and rejects the wrong domain label");
+
+#if defined(__APPLE__)
+			// Receipt-only synthetic bytes, not render or empirical evidence.
+			const auto fixture=std::filesystem::temp_directory_path()/("r244-scene-receipt-fixture-"+
+				std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+			std::filesystem::create_directory(fixture);
+			const auto fixtureManifest=fixture/"sequence_manifest.rise-fire.cbor";
+			{std::ofstream file(fixtureManifest,std::ios::binary);
+				file.write(reinterpret_cast<const char*>(bytes.data()),bytes.size());}
+			for(std::size_t frame=0u;frame<235u;++frame){
+				std::ostringstream index;index<<std::setw(5)<<std::setfill('0')<<frame;
+				for(const std::string& name:{"temporal_primary_"+index.str()+".exr",
+					"temporal_primary_"+index.str()+".exr.provenance.cbor",
+					"temporal_display_"+index.str()+".png","temporal_display_"+index.str()+".png.provenance.cbor"})
+					{std::ofstream file(fixture/name);file<<"synthetic receipt fixture "<<name;}
+			}
+			const auto scene=TemporalFirePreviewScene(manifest.Channels().front(),fixtureManifest,wide);
+			auto writeReceipt=[&](const std::string& sceneText){
+				{std::ofstream file(fixture/"temporal_fire.RISEscene");file<<sceneText;}
+				std::ofstream receipt(fixture/"temporal_preview_receipt.v1");
+				receipt<<"schema rise.fire.temporal-preview-receipt.v1\nsource_manifest_sha256 "
+					<<DigestFile(fixtureManifest)<<"\nscene_sha256 "<<DigestFile(fixture/"temporal_fire.RISEscene")
+					<<"\nframes 235\n"<<TemporalPreviewInventory(fixture,235u);
+			};
+			writeReceipt(scene);
+			Check(SpectrumPreviewSceneMatches(fixture,fixtureManifest,manifest,wide,error),
+				"r244 canonical generated-scene receipt accepts all bound pairs");
+			writeReceipt(scene+"\nsphere_geometry\n{\nname added_occluder\nradius 1\n}\n");
+			Check(!SpectrumPreviewSceneMatches(fixture,fixtureManifest,manifest,wide,error),
+				"r244 alternate scene is refused even with a consistent recomputed receipt");
+			writeReceipt(scene);
+			{std::ofstream file(fixture/"temporal_primary_00000.exr");file<<"substituted alternate-scene frame";}
+			Check(!SpectrumPreviewSceneMatches(fixture,fixtureManifest,manifest,wide,error),
+				"r244 substituted frame cannot reuse the canonical producer receipt");
+			std::filesystem::remove_all(fixture);
+			std::fprintf(stdout,"R244_SCENE_RECEIPT synthetic_bytes_only=1 wide=%d canonical=1 alternate_scene_red=1 substituted_frame_red=1\n",wide?1:0);
+#endif
+			RISECBOR64::Value envelope;FireCase::RecordV1 caseRecord;
+			if(!RISECBOR64::DecodeCanonical(bytes,envelope,&error))return 91;
+			const auto* payload=envelope.Find("payload");
+			const auto* embedded=payload?payload->Find("case_record"):nullptr;
+			if(!embedded||!FireCase::ValidateMethaneEnvelopeV1(embedded->GetBytes(),
+				FireSimulationMethaneRecord::PhysicalV1(),caseRecord,error))return 91;
+			std::vector<double> source;std::vector<std::uint8_t> pilot;
+			if(!FireCase::BuildSourcePattern(caseRecord.authored,caseRecord.derived,source,error)||
+				!FireCase::BuildPilotMask(caseRecord.authored,caseRecord.derived,pilot,error))return 91;
+			if(!wide){baselineSource=source;baselinePilot=pilot;}
+			else{
+				bool translated=true;std::size_t commanded=0u,contacted=0u;
+				for(std::size_t k=0;k<80u;++k)for(std::size_t j=0;j<104u;++j)
+					for(std::size_t i=0;i<104u;++i){
+						const auto cell=i+104u*(j+104u*k);
+						const bool inside=i>=26u&&i<78u&&j>=26u&&j<78u;
+						const auto original=inside?i-26u+52u*(j-26u+52u*k):0u;
+						const bool command=ProductionPilotCommandCell(cell,104u,104u,pilot,source);
+						const bool contact=ProductionSourceBoundaryContactCell(cell,104u,104u,pilot,source);
+						translated=translated&&command==(inside&&ProductionPilotCommandCell(
+							original,52u,52u,baselinePilot,baselineSource))&&
+							contact==(inside&&ProductionSourceBoundaryContactCell(
+								original,52u,52u,baselinePilot,baselineSource));
+						commanded+=command;contacted+=contact;
+					}
+				Check(translated&&commanded>0u&&contacted>0u,
+					"r244 runtime pilot command and source-contact ownership translate exactly");
+			}
+			if(!wide){
+				baselineId=generated.caseRecordId;
+				Check(baselineId=="73d1cac70e5e68b697e0462ef3b5784c606606372397823d08cce9815b833b1e",
+					"r244 keeps the completed baseline case bytes exactly unchanged");
+			}else Check(generated.caseRecordId!=baselineId,"r244 wider domain has a distinct producer identity");
+			std::fprintf(stdout,"R244_PREFLIGHT variant=%s case=%s grid=%zux%zux%zu dx=%.17g "
+				"discard=%.17g statistics=%.17g target=%.17g frames=%zu\n",
+				wide?"lateral-double":"baseline",generated.caseRecordId.c_str(),grid[0],grid[1],grid[2],
+				dx,start,statistics,target,frames.size());
+		}
+		return failures==before?0:95;
+	}
+
 #if defined(RISE_ENABLE_OPENVDB)
 	bool OwnerCostPrefixEnvironmentAccepted();
 	bool ProductionTemporalEnvironmentAccepted()
@@ -8101,12 +8658,15 @@ namespace
 #endif
 
 	int RunProductionTemporalCapstoneChild(const double resolutionTier,
-		const double frameCadenceS,const std::filesystem::path& outputDirectory)
+		const double frameCadenceS,const std::filesystem::path& outputDirectory,const bool r244LateralDouble=false,
+		const bool r245AcceptedBudget=false)
 	{
 #if !defined(RISE_ENABLE_OPENVDB)
-		(void)resolutionTier;(void)frameCadenceS;(void)outputDirectory;return 90;
+		(void)resolutionTier;(void)frameCadenceS;(void)outputDirectory;(void)r244LateralDouble;(void)r245AcceptedBudget;return 90;
 #else
 		if(!ProductionTemporalCapstoneTierSupported(resolutionTier)||frameCadenceS!=0.0625||
+			(r245AcceptedBudget&&!r244LateralDouble)||
+			(r244LateralDouble&&resolutionTier!=6.0)||
 			!std::isfinite(frameCadenceS)||
 			static_cast<double>(static_cast<float>(frameCadenceS))!=frameCadenceS)return 91;
 		if(!ProductionTemporalEnvironmentAccepted()||std::filesystem::exists(outputDirectory)||
@@ -8116,8 +8676,9 @@ namespace
 		std::filesystem::create_directories(outputDirectory/"frames",directoryError);
 		std::filesystem::create_directories(outputDirectory/"budgets",directoryError);
 		if(directoryError)return 92;
+		RunPersistenceOptions geometryOptions;geometryOptions.r244LateralDouble=r244LateralDouble;
 		const SolverFrameValues beginning=RunMethaneFrameProbe(1u,0u,0.0,1.0,1.0,
-			resolutionTier,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW);
+			resolutionTier,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,geometryOptions);
 		if(!beginning.succeeded||!(beginning.flowThroughTimeS>0.0))return 93;
 		const double expectedPuffingHz=1.5/std::sqrt(CapstonePoolDiameterM);
 		const double statisticsStartS=5.0*beginning.flowThroughTimeS;
@@ -8129,9 +8690,11 @@ namespace
 		RunPersistenceOptions persistence;
 		persistence.productionMetal=true;
 		persistence.portedProductionTransport=true;
+		persistence.r244LateralDouble=r244LateralDouble;
 		const SolverFrameValues launchCase=RunMethaneFrameProbe(1u,0u,0.0,targetTimeS,1.0/frameCadenceS,
 			resolutionTier,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,persistence);
 		if(!launchCase.succeeded||launchCase.flowThroughTimeS!=beginning.flowThroughTimeS)return 93;
+		persistence.r245AcceptedBudget=r245AcceptedBudget;
 		persistence.checkpointPath=outputDirectory/"production_run.checkpoint";
 		persistence.finalCheckpointPath=outputDirectory/"production_final.checkpoint";
 		persistence.retainedCheckpointDirectory=outputDirectory/"checkpoint_history";
@@ -8153,6 +8716,8 @@ namespace
 		if(!CurrentRendererBuildIdentity(buildRecord,buildId)||
 			!CurrentExecutableDigest(buildRecord,executableDigest,publicationError))return 92;
 		std::ofstream receipt(outputDirectory/"window_launch.v1");
+		if(r244LateralDouble)receipt<<"domain_study r244-lateral-double-v1\n";
+		if(r245AcceptedBudget)receipt<<"accepted_stage_budget r245-v1\n";
 		receipt<<std::setprecision(17)<<"schema rise.fire.full-window-launch.v1\n"
 			<<"producer_build_id "<<buildId<<"\nproducer_executable_sha256 "<<executableDigest<<'\n'
 			<<"case_record_id "<<launchCase.caseRecordId<<"\nresolution_tier "<<resolutionTier<<'\n'
@@ -8221,7 +8786,7 @@ namespace
 			const RISECBOR64::Bytes manifest=ManifestBytes("","","hold",true,true,
 				dimensions,result.cellWidthM,frameTimesS.front(),frameCadenceS,1.0,0.0,
 				true,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,0.0,
-				resolutionTier,true,manifestFrames,targetTimeS,1.0/frameCadenceS,true);
+				resolutionTier,true,manifestFrames,targetTimeS,1.0/frameCadenceS,true,r244LateralDouble);
 			const std::filesystem::path manifestPath=
 				outputDirectory/"sequence_manifest.rise-fire.cbor";
 			std::ofstream manifestOutput(manifestPath,std::ios::binary|std::ios::trunc);
@@ -18929,12 +19494,71 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 			FireProductionOwnerConvergenceProbe::SameAcceptedOwner(ownerObserved,liveDiagnostic,liveError);
 		std::fprintf(stderr,"BURNER_LIVE_REFERENCE fixture=%s identical=%d error=%s\n",
 			burnerColdStartProbe?"cold":"mixed",liveSame?1:0,liveError.c_str());
+		// r245: observation must leave the actual live owner's publication and
+		// one-use accepted token unchanged. Compare against the independently
+		// captured terminal qualification operands, not a reconstructed flux.
+		auto budgetInput=liveInput;budgetInput.captureAcceptedBudgetFlux=true;
+		FireProductionResidentStepResult budgetOutput;
+		FireProductionProjectedHeunMetalOwnerResult budgetOwner;
+		std::string observerError;
+		bool observerSame=liveSame&&AttemptFireProductionProjectedHeunResidentStepMetal(
+			budgetInput,budgetOutput,&budgetOwner,&observerError)&&
+			budgetOutput.AcceptedManifoldTokenMatchesCurrentPayload()&&
+			budgetOutput.representedTimeStepS==liveOutput.representedTimeStepS&&
+			FireProductionOwnerConvergenceProbe::SameAcceptedOwner(liveDiagnostic,budgetOwner,observerError)&&
+			liveDiagnostic.acceptedBudgetPayload.empty()&&liveDiagnostic.acceptedBudgetNativePublication.empty()&&
+			liveDiagnostic.acceptedBudgetStagingCount==0u&&budgetOwner.acceptedBudgetStagingCount==1u;
+		FireProductionAcceptedStageBudget::Step observedBudget;
+		const auto& budgetShape=budgetInput.lineage.eos.physicalFlux.transport.shape;
+		const auto& mask=budgetInput.lineage.eos.physicalFlux.transport.fuelInletBoundaryFace[4];
+		observerSame=observerSame&&FireProductionAcceptedStageBudget::Reduce(budgetInput,budgetOwner,1u,mask,observedBudget,observerError);
+		bool exactFlux=false,exactRates=false,seals=false;
+		if(observerSame&&!ownerObserved.qualificationIterationTrace[0].empty()&&
+			!ownerObserved.qualificationIterationTrace[1].empty()){
+			const auto& r0=ownerObserved.qualificationIterationTrace[0].back();
+			const auto& r1=ownerObserved.qualificationIterationTrace[1].back();
+			const std::size_t faces=FireProductionProjectionFaceCount(budgetShape,0)+
+				FireProductionProjectionFaceCount(budgetShape,1)+FireProductionProjectionFaceCount(budgetShape,2);
+			exactFlux=r1.scalarLowFlux.size()==9*faces&&r1.scalarFluxDelta.size()==9*faces&&
+				std::memcmp(budgetOwner.acceptedBudgetPayload.data()+72,r1.scalarLowFlux.data(),9*faces*4)==0&&
+				std::memcmp(budgetOwner.acceptedBudgetPayload.data()+72+9*faces*4,r1.scalarFluxDelta.data(),9*faces*4)==0;
+			const std::array<std::vector<float>,3>* rates[]={&r1.heunR0AdvectionRateKGPerM2S2,&r1.advectionMomentumRateKGPerM2S2,
+				&r0.buoyancyMomentumRateKGPerM2S2,&r1.buoyancyMomentumRateKGPerM2S2,
+				&r0.stressMomentumRateKGPerM2S2,&r1.stressMomentumRateKGPerM2S2,
+				&r0.phaseSourceMomentumRateKGPerM2S2,&r1.phaseSourceMomentumRateKGPerM2S2};
+			std::size_t offset=72+18*faces*4;exactRates=true;
+			for(const auto* rate:rates)for(unsigned axis=0;axis<3;++axis){
+				const std::size_t count=FireProductionProjectionFaceCount(budgetShape,axis);
+				exactRates=exactRates&&(*rate)[axis].size()==count&&
+					std::memcmp(budgetOwner.acceptedBudgetPayload.data()+offset,(*rate)[axis].data(),count*4)==0;
+				offset+=count*4;}
+			FireProductionPayloadDigestV2 fluxDigest,nativeDigest;
+			seals=FireProductionPayloadDigestCPU(budgetOwner.acceptedBudgetPayload.data(),budgetOwner.acceptedBudgetPayload.size(),8,fluxDigest,&observerError)&&
+				FireProductionPayloadDigestCPU(budgetOwner.acceptedBudgetNativePublication.data(),budgetOwner.acceptedBudgetNativePublication.size(),8,nativeDigest,&observerError)&&
+				fluxDigest.rootSHA256==budgetOwner.acceptedBudgetPayloadRootSHA256&&nativeDigest.rootSHA256==budgetOwner.publicationPayloadRootSHA256;
+		}
+		bool observerGate=observerSame&&exactFlux&&exactRates&&seals&&FireProductionAcceptedStageBudget::Fixture();
+		if(observerGate)if(const char* fixtureRoot=std::getenv("RISE_R245_GATE_OUTPUT")){
+			const auto fixtureDirectory=std::filesystem::path(fixtureRoot)/(burnerColdStartProbe?"cold":"mixed");
+			std::error_code fixtureError;
+			const bool created=std::filesystem::create_directories(fixtureDirectory,fixtureError);
+			R245PendingBudget pending;FireProductionAcceptedStageBudget::Ledger ledger;
+			ledger.endTime=budgetInput.lineage.frozenSource.BeginningTimeS();
+			const std::vector<double> pattern(mask.begin(),mask.end());
+			observerGate=created&&!fixtureError&&PrepareR245Budget(budgetInput,budgetOwner,1u,pattern,true,0u,pending,observerError)&&
+				PublishR245Budget(fixtureDirectory,budgetInput.lineage.frozenSource.CaseRecordId(),
+					"synthetic-focused-owner-control","synthetic-focused-owner-control",ledger.endTime,
+					{{budgetShape.nx,budgetShape.ny,budgetShape.nz}},budgetShape.cellWidthM,pending,ledger,observerError)&&ledger.count==1;
+		}
+		std::fprintf(stderr,"R245_ACCEPTED_OBSERVER fixture=%s native_bits=%d accepted_token=%d exact_R1_flux=%d exact_stage_rates=%d payload_seals=%d synthetic_REDs=%d error=%s passed=%d\n",
+			burnerColdStartProbe?"cold":"mixed",observerSame?1:0,budgetOutput.AcceptedManifoldTokenMatchesCurrentPayload()?1:0,
+			exactFlux?1:0,exactRates?1:0,seals?1:0,FireProductionAcceptedStageBudget::Fixture()?1:0,observerError.c_str(),observerGate?1:0);
 		const bool applicableREDs=ownerArithmeticBoundCanFail&&projectionBracketRED&&effectiveAsMolecularRED&&
 			r2ImmediateEndpointClassRED&&endpointClassAuthorityRED&&endpointPredicateIdentityRED&&
 			transportInvariantREDs&&(wrongAveragedFluxParentRED||mixedControlPrerequisitePassed)&&
 			activeCycleREDs&&limiterOutcomeRED&&heunWeightingMutantAccepted&&heunWeightingRED&&
 			(sharedAlphaRED||mixedControlPrerequisitePassed);
-		const bool passed=budgetAvailable&&liveSame&&ownerAccepted&&owner32Accepted&&owner64Accepted&&
+		const bool passed=budgetAvailable&&liveSame&&observerGate&&ownerAccepted&&owner32Accepted&&owner64Accepted&&
 			ownerIterationTraceBounded&&ownerMirrorBounded&&inletStreamingRED&&
 			productionQualificationRefusalRED&&applicableREDs;
 		std::fprintf(stderr,"BURNER_OWNER_GATE fixture=%s mixed_controls_prerequisite=%d per_iteration=%d per_field=%d reds=%d production_admission=1 passed=%d\n",
@@ -19401,6 +20025,11 @@ static int RunProductionPayloadMerkleFixture(bool metal)
 
 int main(int argc,char** argv)
 {
+	if(argc==2&&std::strcmp(argv[1],"--fire-r245-budget-reducer-gate")==0){
+		const bool passed=FireProductionAcceptedStageBudget::Fixture();
+		std::fprintf(stdout,"R245_BUDGET_REDUCER signed_sides=1 limited_flux=1 counterdiffusion=1 bottom_partition=1 rejected_attempt=1 missing_operands=1 clock=1 passed=%d\n",passed?1:0);
+		return passed?0:98;
+	}
 	if(argc==2&&std::strcmp(argv[1],"--fire-production-payload-publication")==0)
 		return RunPayloadPublicationFixture();
 	if(argc==3&&std::strcmp(argv[1],"--fire-production-payload-merkle-file")==0){
@@ -19777,6 +20406,16 @@ int main(int argc,char** argv)
 		std::fprintf(stdout,"R221_SCOPE_RED unbound_probe_and_continuation_refused=1 passed=%d\n",passed?1:0);
 		return passed?0:95;
 	}
+	if(argc==2&&std::strcmp(argv[1],"--fire-r244-domain-study-gate")==0)
+		return RunR244DomainStudyGate();
+	if(argc==3&&std::strcmp(argv[1],"--fire-r245-lateral-budget")==0)
+		return RunProductionTemporalCapstoneChild(6.0,0.0625,argv[2],true,true);
+	if(argc==3&&std::strcmp(argv[1],"--fire-r244-lateral-double")==0)
+		return RunProductionTemporalCapstoneChild(6.0,0.0625,argv[2],true);
+	if(argc==4&&std::strcmp(argv[1],"--fire-r244-lateral-preview")==0)
+		return RunTemporalFirePreviewChild(argv[2],argv[3],true);
+	if(argc==6&&std::strcmp(argv[1],"--fire-r244-lateral-spectrum")==0)
+		return RunProductionPuffingSpectrumChild(6.0,argv[2],argv[3],argv[4],argv[5],true);
 	if(argc==7&&std::strcmp(argv[1],"--fire-production-puffing-spectrum")==0){
 		double tier=0.0;if(!ParsePositiveDoubleArgument(argv[2],tier))return 91;
 		return RunProductionPuffingSpectrumChild(tier,argv[3],argv[4],argv[5],argv[6]);

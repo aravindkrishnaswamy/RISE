@@ -43,6 +43,25 @@ namespace
 		for(const char c:value) if(!((c>='0'&&c<='9')||(c>='a'&&c<='f'))) return false;
 		return true;
 	}
+	bool LateralStudyBaseline(const RISE::FireCase::AuthoredV1& authored,
+		const RISE::FireCase::DerivedV1& derived,RISE::FireCase::DerivedV1& baseline,
+		std::string& error)
+	{
+		if(authored.domainStudy!="r244-lateral-double-v1"||authored.sourceKind!="pool"||
+			authored.poolDiameterM!=0.30||authored.intensityKind!="hrr"||
+			authored.heatReleaseRateKW!=33.0||authored.quality!="dstar"||
+			authored.numericDStarTier!=6.0||!authored.plumeLaw||
+			!FinitePositive(derived.cellWidthM))
+			return Fail(error,"r244 domain study requires the tier-6 capstone geometry");
+		baseline=derived;
+		baseline.nx=CeilCells(authored.poolDiameterM+6.0*authored.poolDiameterM,derived.cellWidthM);
+		baseline.ny=baseline.nx;
+		if(!baseline.nx||baseline.nx%2u||derived.nx!=2u*baseline.nx||derived.ny!=2u*baseline.ny)
+			return Fail(error,"r244 domain study requires an integer translated doubled lattice");
+		baseline.extentXM=baseline.nx*baseline.cellWidthM;
+		baseline.extentYM=baseline.ny*baseline.cellWidthM;
+		return true;
+	}
 }
 
 std::uint64_t RISE::FireCase::SplitMix64(std::uint64_t value)
@@ -58,6 +77,18 @@ bool RISE::FireCase::BuildSourcePattern(const AuthoredV1& authored,
 {
 	if(!derived.nx || !derived.ny || !derived.nz || !FinitePositive(derived.cellWidthM))
 		return Fail(error,"fire case source pattern has an invalid grid");
+	if(!authored.domainStudy.empty()) {
+		DerivedV1 baseline;
+		if(!LateralStudyBaseline(authored,derived,baseline,error)) return false;
+		AuthoredV1 canonical=authored; canonical.domainStudy.clear();
+		std::vector<double> original;
+		if(!BuildSourcePattern(canonical,baseline,original,error)) return false;
+		result.assign(static_cast<std::size_t>(derived.nx*derived.ny),0.0);
+		for(std::uint64_t j=0;j<baseline.ny;++j) for(std::uint64_t i=0;i<baseline.nx;++i)
+			result[static_cast<std::size_t>(i+baseline.nx/2u+derived.nx*(j+baseline.ny/2u))]=
+				original[static_cast<std::size_t>(i+baseline.nx*j)];
+		return true;
+	}
 	result.assign(static_cast<std::size_t>(derived.nx*derived.ny),0.0);
 	std::vector<std::size_t> mask;
 	const double cx=0.5*derived.extentXM, cy=0.5*derived.extentYM;
@@ -107,6 +138,18 @@ bool RISE::FireCase::BuildPilotMask(const AuthoredV1& authored,
 {
 	if(!derived.nx || !derived.ny || !derived.nz || !FinitePositive(derived.cellWidthM))
 		return Fail(error,"fire case pilot mask has an invalid grid");
+	if(!authored.domainStudy.empty()) {
+		DerivedV1 baseline;
+		if(!LateralStudyBaseline(authored,derived,baseline,error)) return false;
+		AuthoredV1 canonical=authored; canonical.domainStudy.clear();
+		std::vector<std::uint8_t> original;
+		if(!BuildPilotMask(canonical,baseline,original,error)) return false;
+		result.assign(static_cast<std::size_t>(derived.nx*derived.ny*derived.nz),0u);
+		for(std::uint64_t j=0;j<baseline.ny;++j) for(std::uint64_t i=0;i<baseline.nx;++i)
+			result[static_cast<std::size_t>(i+baseline.nx/2u+derived.nx*(j+baseline.ny/2u))]=
+				original[static_cast<std::size_t>(i+baseline.nx*j)];
+		return true;
+	}
 	const double diameter=authored.sourceKind=="patch" ? 2.0*std::sqrt(
 		authored.patchXM*authored.patchZM/3.141592653589793238462643383279502884) :
 		authored.poolDiameterM;
@@ -284,6 +327,16 @@ bool RISE::FireCase::BuildMethaneV1(const AuthoredV1& a,
 	const double requiredZ=(a.plumeLaw?5.0:2.0)*d.effectiveFlameHeightM;
 	d.nx=CeilCells(requiredX,d.cellWidthM); d.ny=CeilCells(requiredY,d.cellWidthM);
 	d.nz=CeilCells(requiredZ,d.cellWidthM);
+	if(!a.domainStudy.empty()) {
+		if(a.domainStudy!="r244-lateral-double-v1"||a.sourceKind!="pool"||
+			a.poolDiameterM!=0.30||a.intensityKind!="hrr"||a.heatReleaseRateKW!=33.0||
+			a.quality!="dstar"||a.numericDStarTier!=6.0||!a.plumeLaw||
+			envelope.size()!=1u||envelope.front().value!=1.0||a.seed!=1234u||
+			a.hasRadiativeFractionOverride||d.nx%2u||d.ny%2u)
+			return Fail(error,"r244 domain study is confined to the unchanged steady tier-6 capstone");
+		d.nx*=2u; d.ny*=2u;
+		d.pilotMaskRule="r244_integer_translation_of_canonical_first_layer_annulus";
+	}
 	d.extentXM=d.nx*d.cellWidthM; d.extentYM=d.ny*d.cellWidthM; d.extentZM=d.nz*d.cellWidthM;
 	d.flowThroughTimeS=d.extentZM/std::sqrt(9.80665*d.characteristicDiameterM);
 	const bool constant=std::all_of(envelope.begin(),envelope.end(),
@@ -325,12 +378,14 @@ bool RISE::FireCase::BuildMethaneV1(const AuthoredV1& a,
 	const Value quality=Value::MapValue({
 		{"dstar_tier",a.quality=="dstar"?Value::Float(a.numericDStarTier):Value()},
 		{"kind",Value::String(a.quality)}});
-	const Value authored=Value::MapValue({
+	Value::Members authoredMembers={
 		{"chi_r",a.hasRadiativeFractionOverride?Value::Float(a.radiativeFractionOverride):Value()},
 		{"duration_s",Value::Float(a.durationS)}, {"envelope",Value::ArrayValue(knots)},
 		{"fuel_record_id",Value::String(a.fuelRecordId)}, {"intensity",intensity},
 		{"output_frames_per_s",Value::Float(a.outputFramesPerS)}, {"plume_law",Value::Bool(a.plumeLaw)},
-		{"quality",quality}, {"seed",Value::Unsigned(a.seed)}, {"source",source} });
+		{"quality",quality}, {"seed",Value::Unsigned(a.seed)}, {"source",source} };
+	if(!a.domainStudy.empty()) authoredMembers.push_back({"domain_study",Value::String(a.domainStudy)});
+	const Value authored=Value::MapValue(authoredMembers);
 	const Value derived=Value::MapValue({
 		{"ambient_cp_J_per_kg_K",Value::Float(d.ambientCpJPerKGK)},
 		{"ambient_density_kg_per_m3",Value::Float(d.ambientDensityKGPerM3)},
@@ -400,11 +455,18 @@ bool RISE::FireCase::ValidateMethaneEnvelopeV1(const RISECBOR64::Bytes& bytes,
 	const Value* payload=envelope.Find("payload");
 	const Value* authored=payload?payload->Find("authored"):nullptr;
 	const Value* refs=payload?payload->Find("referenced_record_ids"):nullptr;
-	if(!authored || !ExactKeys(*authored,{"chi_r","duration_s","envelope","fuel_record_id",
-		"intensity","output_frames_per_s","plume_law","quality","seed","source"}) ||
+	std::vector<std::string> authoredKeys={"chi_r","duration_s","envelope","fuel_record_id",
+		"intensity","output_frames_per_s","plume_law","quality","seed","source"};
+	if(authored&&authored->Find("domain_study")) authoredKeys.push_back("domain_study");
+	if(!authored || !ExactKeys(*authored,authoredKeys) ||
 		!refs || refs->GetType()!=Value::Array) return Fail(error,
 		"fire case methane authored schema is not exact v1");
 	AuthoredV1 parsed;
+	if(const Value* study=authored->Find("domain_study")) {
+		if(study->GetType()!=Value::Text||study->GetText()!="r244-lateral-double-v1")
+			return Fail(error,"fire case domain study is unknown");
+		parsed.domainStudy=study->GetText();
+	}
 	const Value* fuelId=authored->Find("fuel_record_id");
 	const Value* quality=authored->Find("quality");
 	const Value* seed=authored->Find("seed");

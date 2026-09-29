@@ -9684,8 +9684,8 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				request_.lineage.eos.physicalFlux.transport.shape;
 			const bool hasPrescribedInlet=!request_.lineage.eos.physicalFlux.bottomFuelMassFluxKGPerM2S.empty();
 			const bool certificateKnown=request_.qualificationCaptureIterationTrace?
-				FireProductionProjectedHeunMetalObserverWorkingSetBytes(preflightShape,preflightBytes,hasPrescribedInlet):
-				FireProductionProjectedHeunMetalOwnerWorkingSetBytes(preflightShape,preflightBytes,hasPrescribedInlet);
+				FireProductionProjectedHeunMetalObserverWorkingSetBytes(preflightShape,preflightBytes,hasPrescribedInlet,request_.captureAcceptedBudgetFlux):
+				FireProductionProjectedHeunMetalOwnerWorkingSetBytes(preflightShape,preflightBytes,hasPrescribedInlet,request_.captureAcceptedBudgetFlux);
 			if(!certificateKnown||
 				(request_.qualificationWorkingSetLimitBytes!=0u&&
 				 preflightBytes>request_.qualificationWorkingSetLimitBytes)){
@@ -9939,6 +9939,33 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			publish(ownerIdentity,sizeof(std::uint64_t));publish(inputPayloadDigest_,32u);[blit endEncoding];
 			if(offset!=publicationBytes){if(error)*error="owner publication payload layout differs from its seal";return false;}
 			if(!HashPayload(command,terminal,publicationBytes,terminal,publicationBytes,error))return false;
+			// Observe only after the native publication has been sealed. No observer
+			// buffer is a solver input and the original publication layout is unchanged.
+			const std::size_t budgetBytes=request_.captureAcceptedBudgetFlux?
+				72u+26u*allFaces_*sizeof(float):0u;
+			id<MTLBuffer> budget=nil;
+			if(budgetBytes){
+				budget=[context_.device newBufferWithLength:budgetBytes+32u
+					options:MTLResourceStorageModeShared];
+				id<MTLBlitCommandEncoder> observer=[command blitCommandEncoder];
+				if(!budget||!observer)return false;
+				Copy(observer,inputPayloadDigest_,0u,budget,0u,32u,TransferKind::Terminal);
+				Copy(observer,terminal,publicationBytes,budget,32u,32u,TransferKind::Terminal);
+				Copy(observer,r1->candidate->publicationIdentity,0u,budget,64u,8u,TransferKind::Terminal);
+				const std::size_t fluxBytes=9u*allFaces_*sizeof(float);
+				Copy(observer,r1->averagedPhysical->lowComposite,0u,budget,72u,fluxBytes,TransferKind::Terminal);
+				Copy(observer,r1->averagedPhysical->advectiveDelta,0u,budget,72u+fluxBytes,fluxBytes,TransferKind::Terminal);
+				const id<MTLBuffer> stageRates[]={r1->heunR0AdvectionRate,r1->advectionRate,
+					r0->nonpressure.buoyancyMomentumRateKGPerM2S2,r1->nonpressure.buoyancyMomentumRateKGPerM2S2,
+					r0->nonpressure.stressMomentumRateKGPerM2S2,r1->nonpressure.stressMomentumRateKGPerM2S2,
+					r0->nonpressure.phaseSourceMomentumRateKGPerM2S2,r1->nonpressure.phaseSourceMomentumRateKGPerM2S2};
+				std::size_t rateOffset=72u+2u*fluxBytes;
+				for(id<MTLBuffer> rate:stageRates){Copy(observer,rate,0u,budget,rateOffset,
+					allFaces_*sizeof(float),TransferKind::Terminal);rateOffset+=allFaces_*sizeof(float);}
+				[observer endEncoding];
+				if(!HashPayload(command,budget,budgetBytes,budget,budgetBytes,error))return false;
+			}
+
 			if(!Commit(command,error))return false;const unsigned char* bytes=
 				static_cast<const unsigned char*>(Read(terminal,TransferKind::Terminal));if(!bytes)return false;
 			auto hexRoot=[](const unsigned char* root){const char* alphabet="0123456789abcdef";std::string text;
@@ -9949,6 +9976,15 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			result.inputPayloadRootSHA256=hexRoot(bytes+publicationBytes-32u);
 			result.publicationPayloadRootSHA256=hexRoot(bytes+publicationBytes);
 			result.publicationPayloadBytes=publicationBytes;
+			if(budgetBytes){
+				const auto* observed=static_cast<const unsigned char*>(Read(budget,TransferKind::Terminal));
+				if(!observed)return false;
+				result.acceptedBudgetPayload.assign(observed,observed+budgetBytes);
+				result.acceptedBudgetNativePublication.assign(bytes,bytes+publicationBytes);
+				result.acceptedBudgetPayloadRootSHA256=hexRoot(observed+budgetBytes);
+				result.acceptedBudgetStagingCount=1u;
+			}
+
 			offset=0u;auto floats=[&](std::vector<float>& destination,std::size_t count){const float* value=
 				reinterpret_cast<const float*>(bytes+offset);destination.assign(value,value+count);
 				offset+=count*sizeof(float);};floats(result.conservativeValues,9u*cells_);
@@ -11397,7 +11433,8 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 	}
 
 	bool FireProductionProjectedHeunMetalOwnerWorkingSetBytes(
-		const FireProductionProjectionShape& shape,std::uint64_t& bytes,const bool prescribedBottomFlux )
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes,const bool prescribedBottomFlux,
+		const bool captureAcceptedBudgetFlux )
 	{
 		bytes=0u;std::uint64_t projection=0u,target=0u,nonpressure=0u;
 		if(!FireProductionProjectionWorkingSetBytes(shape,projection,prescribedBottomFlux)||
@@ -11434,6 +11471,13 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 		const std::uint64_t publication=76u*cells+52u*faces+256u;
 		if(!add(input)||!add(input/120u+8u*16384u)||
 			!add(publication/120u+8u*16384u)||!add(64u)||!add(UINT64_C(1)<<20u))return false;
+		// r245 adds exactly one terminal packet and its Merkle tree. Host payload
+		// storage is accounted separately by the launcher, not hidden in this
+		// device-allocation certificate. Underlying shape validation bounds faces.
+		if(captureAcceptedBudgetFlux){
+			const std::uint64_t packet=72u+26u*faces*sizeof(float);
+			if(!add(packet+32u)||!add(packet/120u+8u*16384u))return false;
+		}
 		// The complete owner intentionally retains adjacent Picard candidates.  Its
 		// peak can exceed the historical process-agnostic two-GiB fixture ceiling at
 		// production grids even when it is comfortably inside the active Metal
@@ -11444,9 +11488,10 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 	}
 
 	bool FireProductionProjectedHeunMetalObserverWorkingSetBytes(
-		const FireProductionProjectionShape& shape,std::uint64_t& bytes,const bool prescribedBottomFlux )
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes,const bool prescribedBottomFlux,
+		const bool captureAcceptedBudgetFlux )
 	{
-		if(!FireProductionProjectedHeunMetalOwnerWorkingSetBytes(shape,bytes,prescribedBottomFlux))return false;
+		if(!FireProductionProjectedHeunMetalOwnerWorkingSetBytes(shape,bytes,prescribedBottomFlux,captureAcceptedBudgetFlux))return false;
 		// CaptureIterationTrace v2 wire layout: 27 cell float fields, 38 face
 		// float fields, one boundary float and two boundary class bytes,
 		// plus two uint64 identities. The local autorelease pool bounds its

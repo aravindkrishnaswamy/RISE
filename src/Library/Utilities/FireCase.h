@@ -33,6 +33,9 @@ namespace RISE
 			bool plumeLaw=false;
 			bool hasRadiativeFractionOverride=false;
 			double radiativeFractionOverride=0.0;
+			// Empty retains canonical r54 bytes. The named r244 tier-6 study
+			// doubles lateral extents with an exactly translated source/pilot.
+			std::string domainStudy;
 		};
 
 		struct DerivedV1

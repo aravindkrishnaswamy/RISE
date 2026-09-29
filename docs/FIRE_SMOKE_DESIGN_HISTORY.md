@@ -5787,3 +5787,85 @@ payload-bound r201l implementation already reviewed to zero P1/P2. Physical
 case semantics remain unchanged. Evidence is
 `r201_projected_heun_metal_owner/r201m_owner_iteration_trace_verdict.v1`.
 The ported replay remains behind the fresh zero-P1/P2 review boundary.
+
+
+### r244 — matched tier-6 lateral-domain experiment (complete; puffing unresolved)
+
+The owner authorized an isolated doubling of the lateral extents before soot
+work and before any tier-10 window. This experimental case extends case-v1
+with an optional authored `domain_study` key whose sole recognized value is
+`r244-lateral-double-v1`. Absence preserves existing canonical bytes. The
+experimental builder is confined to the steady 0.30 m, 33 kW, seed-1234,
+plume-law tier-6 methane case with inherited chi_r. The dedicated launcher
+fixes 16 fps and the full original discard/statistics window.
+
+The rounded 52 × 52 × 80 baseline grid becomes 104 × 104 × 80 at the same
+cell width. Canonical source values and the first-layer pilot mask translate
+by exactly (26,26,0) cells, with zero-filled lateral margins. The pilot mask
+rule records this construction; all other source, pilot, timestep and
+physical-gate fields remain unchanged. Rehashing global indices with the
+same seed was rejected because it changes the burner's perturbation values.
+An unrecorded grid override was rejected because it breaks case identity.
+Changing the production r54 multipliers before comparative evidence was
+also rejected. The spectral preview keeps the original physical field of
+view and translates its camera with the burner; automatically framing the
+larger box would change the lit-area observable.
+
+This is an experimental selection, not an adoption of larger production
+extents or a puffing verdict. The frozen baseline completed its full window;
+its full spectra and matched physical preview are complete. The centerline
+peak is 1.774306 Hz and the lit-area peak is 0.068243 Hz; neither establishes
+the slow-mode cause. Clean make/Deployment/Opto gates, native owner and
+Metal/fp64 checks, and exact-source/pilot mutation tests pass. Three review
+rounds identified input-consumption gaps: complete window/frame provenance
+and a matched rendering recipe are now enforced. Full primary/display
+configuration hashes bind the recipe after independently checking camera
+and frame time. Requiring only image dimensions or a valid hash link was
+rejected because same-frame re-renders can change the lit-area observable.
+Synthetic metadata controls distinguish profile rejection from bad linkage;
+no altered pixels are claimed as empirical evidence. The preview producer
+also retains its exact generated scene and binds all resulting frame files
+in a receipt; this closes added-geometry substitution that the render
+configuration alone cannot detect. The historical baseline is pinned by
+its audited inventory, without retroactive producer attestation. Two fresh final reviewers of `32999e80` reported zero P1/P2. The frozen v3
+full-window wider-domain run launched from zero at 2026-09-28 18:00:29 UTC;
+it completed the unchanged full window with all 235 frames on 2026-09-29.
+The paired full spectra show centerline peaks 1.774306 Hz (baseline) and
+1.569578 Hz (wide), with lit-area peak 0.068243 Hz in both. Expected 2.738613 Hz
+does not dominate. The 0.136485 Hz absolute power decreases to 0.36856× in
+centerline but increases to 5.95789× in lit area; a universal slow-mode collapse
+is not supported. Production domain multipliers remain unchanged. The next
+step is budget localization, not a boundary fix selected by speculation.
+Low-frequency bins cover only one/two cycles; thresholded display and narrow
+centerline observables do not by themselves identify a flow mechanism. See
+[FIRE_SMOKE_PUFFING_CAMPAIGN_R244.md](FIRE_SMOKE_PUFFING_CAMPAIGN_R244.md)
+for the continuation record and immutable external evidence locations.
+
+
+### r245 — budget localization before a boundary remedy
+
+The full matched r244 spectra do not resolve puffing. Keep the production
+domain multipliers and all physics unchanged. Extract the existing full-window
+height-station histories before adding diagnostics. The near-base temperature
+and reaction signals retain the centreline frequency shift; the strongest
+wide-domain vertical-velocity fluctuations peak at a lower frequency. These
+are descriptive fixed-column observations, not causal budgets. The next
+collection must retain actual accepted-stage signed momentum and per-side
+Heun scalar flux budgets through a complete from-zero window. Endpoint-derived
+flux estimates, relabelled combined pressure/restoration terms, shortened
+windows, speculative boundary knobs and soot/tier-10 launches are rejected.
+See [FIRE_SMOKE_BUDGET_LOCALIZATION_R245.md](FIRE_SMOKE_BUDGET_LOCALIZATION_R245.md)
+for the pinned extraction, limits and observation-only collection plan.
+
+
+The r245 observation implementation retains native owner publication bytes and
+adds a separately sealed packet after terminal acceptance. It captures the
+actual averaged limited scalar operands and R0/R1 momentum rates; it never
+re-solves or reconstructs boundary flux from endpoint velocities. Every accepted
+step contributes to full and clipped-statistics ledgers, including explicit
+interstep inventory changes. Fixed-column frame capsules retain the operands
+needed for independent recomputation. Total-mass directions sum constituent
+fluxes at each face before classifying inflow/outflow. Additional host/device
+observation storage is derived from wire sizes under the unchanged RSS ceiling.
+Focused on/off and mutation controls validate this diagnostic path; the full
+instrumented run remains gated on clean builds and fresh independent reviews.

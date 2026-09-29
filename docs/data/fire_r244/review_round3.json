@@ -1,0 +1,17 @@
+{
+  "reviewed_commit": "7414bae9c45154cb29f388ce84c6315b824e3740",
+  "reviewers": [
+    {
+      "name": "r244_recipe_review_r3",
+      "P1": 0,
+      "P2": 1
+    },
+    {
+      "name": "r244_launch_review_r3",
+      "P1": 0,
+      "P2": 1
+    }
+  ],
+  "finding": "Duplicate: resolved rendering configuration does not bind scene geometry/lights; valid alternate-scene pairs can change lit area.",
+  "status": "producer_scene_receipt_correction_in_validation"
+}

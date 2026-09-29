@@ -1,0 +1,21 @@
+{
+  "reviewed_commit": "fac0f3e7",
+  "reviewer": "r244_wide_completion_review",
+  "recorded_utc": "2026-09-29T19:31:21.195301+00:00",
+  "P1": 0,
+  "P2": 0,
+  "confidence": 0.97,
+  "scope": "Read-only independent decoding of both checkpoints, canonical identities, full history and frame bindings; parent independently checked all242selected payload hashes/Merkle seals.",
+  "findings": [
+    "15315 timesteps exactly match each diagnostics CSV; ordinary sum and fsum equal25.156864278920693s.",
+    "Unchanged statistics start10.531864278900095s; accumulated duration14.625000000020599s;8916 ordered finite centerline samples span10.531864278949797..25.156864278920693s.",
+    "Recomputed canonical sequence/case IDs and producer SHA agree across manifest/checkpoint/launch; all235manifest frame index/path/digest bindings match CSV and summary.",
+    "Exhaustive decoded case comparison differs only by domain_study, lateral52-to104cell counts, doubled lateral extents, translated pilot-mask rule; source-pattern digest, physical/pilot parameters, vertical domain, timing and numerical policy unchanged."
+  ],
+  "limits": [
+    "Pilot energy differs between evolved runs; each independently matches its own expected energy. No identical-energy claim.",
+    "No re-execution of source/pilot gates or validation of final cell physics.",
+    "Manifest remains preview_only, case_grid_bound, synthetic_chem_fixture; formal verdict pending_equal_time_composition. No puffing or empirical qualification verdict.",
+    "Full spectrum milestone reviews remain pending pipeline completion."
+  ]
+}

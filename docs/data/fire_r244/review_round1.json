@@ -1,0 +1,23 @@
+{
+  "commit": "075ab2ee",
+  "reviewers": [
+    "r244_domain_review_r1",
+    "r244_evidence_review_r1"
+  ],
+  "verdict": "two_duplicate_P2_findings_no_P1",
+  "findings": [
+    {
+      "id": "preview_input_binding",
+      "severity": "P2",
+      "description": "Spectrum accepted unverified PNGs from another run.",
+      "correction": "Verify display-to-primary hashes, primary EXR provenance, sequence ID, selected frame and source VDB digest before consumption."
+    },
+    {
+      "id": "full_window_consumption",
+      "severity": "P2",
+      "description": "Spectrum accepted retained prefix checkpoints and incomplete frame CSVs.",
+      "correction": "Bind producer/case identity, full canonical schedule, manifest frame count/digests and complete centerline endpoints to the final checkpoint."
+    }
+  ],
+  "actual_baseline_corruption_found": false
+}

@@ -1,0 +1,225 @@
+{
+  "status": "engineering_gates_passed_pending_fresh_reviews_no_empirical_budget_run",
+  "source_files": [
+    {
+      "path": "src/Library/Utilities/FireProductionAdvectionMac.mm",
+      "sha256": "5bd48c5e8e740bc2393553373b4e6f62f46e97d86d5d65f7d3acf800dfbe4e79"
+    },
+    {
+      "path": "src/Library/Utilities/FireProductionForce.h",
+      "sha256": "44801d078e128b76d3de3f66740c6246c843687f7c676f7040911f060b6541e7"
+    },
+    {
+      "path": "src/Library/Utilities/FireProductionForceUnsupported.cpp",
+      "sha256": "31eea01347e873601c3858fb4b6344d306166c46fcaefe2a7e7fa312e90d2085"
+    },
+    {
+      "path": "tests/FireSequenceTest.cpp",
+      "sha256": "757c0293f5b2a951b1efe30a72fe7bc5f1fdc919443a12a1dbaa1282db8db2da"
+    },
+    {
+      "path": "tests/fire_production_fp64/FireProductionForce.h",
+      "sha256": "7e2739bbb659631d50b7ca4683532f77bc36ab2433f9bd7c841522446ab58d6a"
+    },
+    {
+      "path": "tests/fire_production_fp64/SourceManifest.h",
+      "sha256": "12554b816e0ba62a913860767df7a267380d2d1d9021c413e25d24d940b46473"
+    },
+    {
+      "path": "tests/fire_production_trace/FireProductionForce.h",
+      "sha256": "f94c141c4c9e0ca532b224938a8b31b3522b21018415e5a6e44401e746248ca1"
+    },
+    {
+      "path": "tests/fire_production_trace/SourceManifest.h",
+      "sha256": "c4c7be1a7575510a9145968565fa1b6d62d7b50b2de647c807e878c2cd191da5"
+    },
+    {
+      "path": "tests/FireProductionAcceptedStageBudget.h",
+      "sha256": "ea0b054261379239b97034d91ee79b6b299ae70b0e4a8fd15251aee2857e1653"
+    },
+    {
+      "path": "tools/fire/r245_budget_audit.py",
+      "sha256": "627add5e913807a8b28f96e5df2181f2a6f150fc03b2cdeda323b1e94ac7ec13"
+    },
+    {
+      "path": "tools/fire/r245_budget_audit_gate.py",
+      "sha256": "dbfb8e517ac8cc130298bc03e67b175cc2dbb9f5c88fc5c26596b832420d5858"
+    }
+  ],
+  "binary": {
+    "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/bin/tests/FireSequenceTest",
+    "sha256": "6f8ad4340d68b4bd657ba3603b970dfff2a14c3e901461305d340dc9447e9e0b"
+  },
+  "artifacts": [
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_clean_make.v2.log",
+      "bytes": 24370,
+      "sha256": "6daeb1bd38eaebeef2e025a2076f1c5c7c28ba92760a5fd9fc06b7a62a053cb4"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_final_test_build.v1.log",
+      "bytes": 156,
+      "sha256": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_reducer_sanitizer.v1.log",
+      "bytes": 15,
+      "sha256": "4fc0ce47bcfe2ee697f227d089a8ff5f1adeb94962e8998b54e002ed495c3929"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_validation.v4/completion.json",
+      "bytes": 1551,
+      "sha256": "edad9737ab3fc9687a048c4ff91cdcfe8b70b29d500123e1f5de5ff5c00db17f"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_validation.v4/audit_reds.json",
+      "bytes": 1200,
+      "sha256": "08c09286ca7cdc27f20cc6d61e69c2aad480757377c8b63bb5c9250567ff2c9d"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_validation.v4/cold_audit.json",
+      "bytes": 523,
+      "sha256": "ea19c42eb7389312cc674dbec9a29c5ec9841f26d6c81ffec6af5ff891d4f052"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_xcode.v1/completion.json",
+      "bytes": 517,
+      "sha256": "675dc59286cdd9e25cd9fa54123c0aad8c734bde217638de49db2a11993e09b0"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_xcode.v1/Deployment.log",
+      "bytes": 1565213,
+      "sha256": "9fbd41c28e17eeaeca7185c0f13e857ac899a5647f3bbcdd6a94032d3999ca16"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_xcode.v1/Opto.log",
+      "bytes": 1551862,
+      "sha256": "917e363820cb297141fa4dd81a07fdc9c90e114254478a43eec71215c013cf0e"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_validation.v4/fire-r245-budget-reducer-gate.log",
+      "bytes": 143,
+      "sha256": "a6adff039fb0359122a0b6b7e44ca7428d76b4481dbfc4838c4d6a2ba474e288"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_validation.v4/fire-production-burner-owner-gate.log",
+      "bytes": 914919,
+      "sha256": "bdd22023c472817317c9a46873a298b8e9c1b18971638a4bcfb13097bfe7dbfb"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_validation.v4/fire-production-burner-cold-start-probe.log",
+      "bytes": 1306768,
+      "sha256": "8ff19c992ff3523f6d60b35723d35c848d5e877da64eedd532e45bd4a8e9c9fd"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_validation.v4/fire-production-burner-launcher-gate.log",
+      "bytes": 1308,
+      "sha256": "eebb491c66181e01c946afed8b9539c7031ca71696c5c2d4ef3809d150242d5a"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_validation.v4/fire-r244-domain-study-gate.log",
+      "bytes": 666,
+      "sha256": "67b2b84e77a763cd581c688cc12e3239e3c53e5bf398b4b370163da8ca072554"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_validation.v4/fire-production-payload-publication.log",
+      "bytes": 647,
+      "sha256": "36d8c860968fa9c657aeba4e8efb2915db1eec386177a80ae5bccc3165948dee"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_review_fix_build.v1.log",
+      "bytes": 156,
+      "sha256": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_validation.v5/audit_reds.json",
+      "bytes": 3224,
+      "sha256": "a1222f321ebe611ed0b07a279bd008cafb8c7b5b4708d15006c9da872095b534"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_validation.v5/cold_audit.json",
+      "bytes": 523,
+      "sha256": "5fcbf325f0e7e112124e3b33d9ee0d22cb3b690bb0ac9f28772e1a63cea3eb81"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_validation.v5/completion.json",
+      "bytes": 1552,
+      "sha256": "8cd56c1c39a28206e3b3dc717b358beefda981c92fdf4c0695abbf6b6708c9b6"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_validation.v5/fire-production-burner-cold-start-probe.log",
+      "bytes": 1306768,
+      "sha256": "8ff19c992ff3523f6d60b35723d35c848d5e877da64eedd532e45bd4a8e9c9fd"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_validation.v5/fire-production-burner-launcher-gate.log",
+      "bytes": 1308,
+      "sha256": "fac8f08514a87390fff896b9b9ceac9f693041290cdb748e67b4801df038f2d5"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_validation.v5/fire-production-burner-owner-gate.log",
+      "bytes": 914919,
+      "sha256": "bdd22023c472817317c9a46873a298b8e9c1b18971638a4bcfb13097bfe7dbfb"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_validation.v5/fire-production-payload-publication.log",
+      "bytes": 647,
+      "sha256": "5c4833499ca7d939de80c9dd9845231260774b5ac8e7b4192ed293d923feb664"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_validation.v5/fire-r244-domain-study-gate.log",
+      "bytes": 666,
+      "sha256": "67b2b84e77a763cd581c688cc12e3239e3c53e5bf398b4b370163da8ca072554"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_validation.v5/fire-r245-budget-reducer-gate.log",
+      "bytes": 143,
+      "sha256": "a6adff039fb0359122a0b6b7e44ca7428d76b4481dbfc4838c4d6a2ba474e288"
+    }
+  ],
+  "native_checks": [
+    {
+      "argument": "--fire-r245-budget-reducer-gate",
+      "exit_code": 0,
+      "wall_s": 0.47676706314086914,
+      "log": "/Volumes/SSD/RISE/fire_production_calibration/r245_validation.v4/fire-r245-budget-reducer-gate.log"
+    },
+    {
+      "argument": "--fire-production-burner-owner-gate",
+      "exit_code": 0,
+      "wall_s": 20.14854407310486,
+      "log": "/Volumes/SSD/RISE/fire_production_calibration/r245_validation.v4/fire-production-burner-owner-gate.log"
+    },
+    {
+      "argument": "--fire-production-burner-cold-start-probe",
+      "exit_code": 0,
+      "wall_s": 38.98579812049866,
+      "log": "/Volumes/SSD/RISE/fire_production_calibration/r245_validation.v4/fire-production-burner-cold-start-probe.log"
+    },
+    {
+      "argument": "--fire-production-burner-launcher-gate",
+      "exit_code": 0,
+      "wall_s": 23.1021831035614,
+      "log": "/Volumes/SSD/RISE/fire_production_calibration/r245_validation.v4/fire-production-burner-launcher-gate.log"
+    },
+    {
+      "argument": "--fire-r244-domain-study-gate",
+      "exit_code": 0,
+      "wall_s": 1.2361207008361816,
+      "log": "/Volumes/SSD/RISE/fire_production_calibration/r245_validation.v4/fire-r244-domain-study-gate.log"
+    },
+    {
+      "argument": "--fire-production-payload-publication",
+      "exit_code": 0,
+      "wall_s": 0.022801876068115234,
+      "log": "/Volumes/SSD/RISE/fire_production_calibration/r245_validation.v4/fire-production-payload-publication.log"
+    }
+  ],
+  "warning_policy": {
+    "clean_make_and_final_test_build": "zero warnings",
+    "Deployment_Opto": "only checkout-missing OIDN search path and AppIntents metadata warnings"
+  },
+  "harness_correction": "v2 cold prerequisite reused the earlier mixed fixture directory and correctly refused overwriting it. v3/v4 use an independent root for each command; no numerical failure or changed bound. Original logs retained.",
+  "scope": "Actual accepted stage observations only. Full-window localization, boundary decisions, soot and tier10 remain outstanding.",
+  "review_fix": "r1 audit correction; final binary controls r245_validation.v5, 3 positive / 13 negative independent audit controls. Shared library unchanged since clean make/Deployment/Opto."
+}
