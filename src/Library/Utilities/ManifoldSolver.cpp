@@ -692,6 +692,28 @@ using namespace RISE::Implementation;
 namespace
 {
 	//////////////////////////////////////////////////////////////////
+	// DL-290: the SMS evaluation rigs rebuild a receiver record from
+	// scratch, and a fresh `RayIntersectionGeometric` carries the
+	// default `ambientIOR = 1.0` (air).  Every integrator stamps that
+	// field from the IOR-stack top at a real hit, and G6 consumers
+	// (GGX conductor / thin-film Fresnel, `coated_material`, the DL-49
+	// SSS boundary, Cook-Torrance and the fibre models since DL-290)
+	// read it, so a receiver in water or glass priced air under SMS
+	// only.  The caller hands the receiver's live stack in (the same
+	// pointer `valueStateful` already gets); its top IS the receiver's
+	// exterior.  No stack, or an invalid top, is air -- bit-identical to
+	// the pre-DL-290 record.
+	//////////////////////////////////////////////////////////////////
+	inline Scalar SMSReceiverAmbientIOR( const IORStack* pIorStack )
+	{
+		if( !pIorStack ) {
+			return Scalar( 1.0 );
+		}
+		const Scalar n = pIorStack->top();
+		return ( n > 0 && n < RISE_INFINITY ) ? n : Scalar( 1.0 );
+	}
+
+	//////////////////////////////////////////////////////////////////
 	// SMS spectral source term (Stage C slice 2).
 	//
 	// `LightSample::Le` is an RGB radiance the light sampler already
@@ -819,6 +841,53 @@ namespace
 			eta_i = v.etaI;
 			eta_t = v.etaT;
 		}
+	}
+
+	// DL-290 review P1-1 and round 2 (P2-2): which form of Walter's
+	// generalized half-vector a REFRACTION vertex's constraint uses.
+	//
+	// The constraint is C = P_t(h), the projection of
+	// h = -(eta_i wi + eta_t wo) onto the vertex's tangent plane.  The
+	// solver used to project the NORMALIZED h / |h|.  Both vanish on the
+	// same set wherever h != 0, but |h| -> 0 as the two indices approach
+	// each other on a nearly straight path, and at an index-MATCHED
+	// vertex (the same index on both sides -- two same-index objects
+	// entered in turn, the second of two open glass sheets, a re-entered
+	// tessellated caster) h is IDENTICALLY zero at the solution: the
+	// normalized form is 0/0 there and has no root at all, and for a
+	// NEAR-matched vertex it is a root of arbitrarily steep slope.  Round
+	// 1 special-cased exact matches (|eta_i - eta_t| <= 1e-9 relative),
+	// which left a cliff one ulp-scale step away: on two concentric
+	// spheres 2.2 / 2.2 + dn, Newton converged 100 % at dn = 0 and
+	// 0 % at dn = 1e-8 .. 1e-3 (ExteriorIndexInvarianceTest A8).
+	//
+	// So every refraction vertex uses the UNNORMALIZED h.  Why that is
+	// the right constraint, including at a match:
+	//   * Away from h = 0 it has the same zero set as the normalized
+	//     form, and at a root the two Jacobians differ only by the row
+	//     scaling 1/|h| of that vertex's two rows (the derivative of the
+	//     1/|h| factor multiplies P_t(h) = 0).  A per-vertex row scaling
+	//     D leaves the Newton root and the chain-to-light sensitivity
+	//     dx/dy = -(DA)^-1 (DB) = -A^-1 B -- the only thing the
+	//     generalized geometric term reads -- unchanged.  Newton's
+	//     ITERATES do differ (only the root is shared).
+	//   * At a matched vertex the row-scaling argument does NOT apply
+	//     (1/|h| is undefined at the root).  There the justification is
+	//     direct: C = P_t(-eta (wi + wo)) vanishes exactly on the
+	//     straight-through path and is a full-rank local defining
+	//     function of it (moving the vertex along the surface bends the
+	//     segment), so the implicit-function tangent it yields is the
+	//     physical one.  Measured: the light-to-first-vertex Jacobian
+	//     determinant matches finite differences at a matched vertex to
+	//     ~1e-5 relative.
+	//   * Its magnitude is ~eta x (angular error), bounded below by the
+	//     physics rather than by |h|, so the solver's ||C|| threshold
+	//     keeps one meaning across all index pairs.
+	// Reflection vertices keep the normalized h = wi + wo, which never
+	// vanishes on a physical path.
+	inline bool UseUnnormalizedHalfVector( const RISE::Implementation::ManifoldVertex& v )
+	{
+		return !v.isReflection;
 	}
 }
 
@@ -1050,6 +1119,7 @@ void ManifoldSolver::EvaluateConstraint(
 
 		// Construct the generalized half-vector
 		Vector3 h;
+		bool rawHalfVector = false;	// DL-290: see UseUnnormalizedHalfVector
 
 		if( v.isReflection )
 		{
@@ -1081,6 +1151,7 @@ void ManifoldSolver::EvaluateConstraint(
 			// set.  See GetEffectiveEtas docstring for full rationale.
 			Scalar eta_i, eta_t;
 			GetEffectiveEtas( v, eta_i, eta_t );
+			rawHalfVector = UseUnnormalizedHalfVector( v );
 
 			h = Vector3(
 				-(eta_i * wi.x + eta_t * wo.x),
@@ -1089,16 +1160,21 @@ void ManifoldSolver::EvaluateConstraint(
 			);
 		}
 
-		// Normalize h
-		Scalar hLen = Vector3Ops::Magnitude( h );
-		if( hLen < NEARZERO )
+		// Normalize h -- reflection vertices only; a refraction vertex's
+		// constraint is the UNNORMALIZED h (see UseUnnormalizedHalfVector).
+		// The hLen < NEARZERO bail therefore guards reflections only.
+		if( !rawHalfVector )
 		{
-			// Degenerate — set large constraint
-			C[2*i]   = 1.0;
-			C[2*i+1] = 1.0;
-			continue;
+			Scalar hLen = Vector3Ops::Magnitude( h );
+			if( hLen < NEARZERO )
+			{
+				// Degenerate — set large constraint
+				C[2*i]   = 1.0;
+				C[2*i+1] = 1.0;
+				continue;
+			}
+			h = h * (1.0 / hLen);
 		}
-		h = h * (1.0 / hLen);
 
 		// Tangent-plane projection: when Snell's law is satisfied,
 		// h is parallel to the normal, so these projections are zero.
@@ -1418,6 +1494,10 @@ void ManifoldSolver::BuildJacobian(
 		if( !v.isReflection ) {
 			GetEffectiveEtas( v, eta_i_v, eta_t_v );
 		}
+		// DL-290: a refraction vertex's constraint is the UNNORMALIZED h
+		// (see UseUnnormalizedHalfVector), so its derivatives are the raw
+		// ones, not DeriveNormalized's.
+		const bool rawHalfVector = UseUnnormalizedHalfVector( v );
 
 		// Half-vector (unnormalized)
 		Vector3 h_raw;
@@ -1434,8 +1514,8 @@ void ManifoldSolver::BuildJacobian(
 		}
 
 		Scalar h_len = Vector3Ops::Magnitude( h_raw );
-		if( h_len < NEARZERO ) continue;
-		Vector3 h = h_raw * (1.0 / h_len);
+		if( !rawHalfVector && h_len < NEARZERO ) continue;
+		Vector3 h = rawHalfVector ? h_raw : h_raw * (1.0 / h_len);
 
 		// ---- Derivative of h w.r.t. moving vertex i ----
 		//
@@ -1476,7 +1556,7 @@ void ManifoldSolver::BuildJacobian(
 					-(eta_i_v * dwi_du.y + eta_t_v * dwo_du.y),
 					-(eta_i_v * dwi_du.z + eta_t_v * dwo_du.z) );
 			}
-			dh_du = DeriveNormalized( h, dh_raw_du, h_len );
+			dh_du = rawHalfVector ? dh_raw_du : DeriveNormalized( h, dh_raw_du, h_len );
 
 			// Same for dv
 			const Vector3 dwi_dv = Vector3(
@@ -1501,7 +1581,7 @@ void ManifoldSolver::BuildJacobian(
 					-(eta_i_v * dwi_dv.y + eta_t_v * dwo_dv.y),
 					-(eta_i_v * dwi_dv.z + eta_t_v * dwo_dv.z) );
 			}
-			dh_dv = DeriveNormalized( h, dh_raw_dv, h_len );
+			dh_dv = rawHalfVector ? dh_raw_dv : DeriveNormalized( h, dh_raw_dv, h_len );
 		}
 
 		// Derivative of tangent frame w.r.t. surface parameters (u, v).
@@ -1620,7 +1700,7 @@ void ManifoldSolver::BuildJacobian(
 					// depends on next vertex)
 					dh_raw_next = Vector3( -eta_t_v * dwo.x, -eta_t_v * dwo.y, -eta_t_v * dwo.z );
 
-				const Vector3 dh_next = DeriveNormalized( h, dh_raw_next, h_len );
+				const Vector3 dh_next = rawHalfVector ? dh_raw_next : DeriveNormalized( h, dh_raw_next, h_len );
 
 				// upper[i] maps vertex i+1 to constraint i
 				upper[i*4 + 0 + p] = Vector3Ops::Dot( s, dh_next );
@@ -1657,7 +1737,7 @@ void ManifoldSolver::BuildJacobian(
 					// glass), η_i = 1.5 here and matters.
 					dh_raw_prev = Vector3( -eta_i_v * dwi.x, -eta_i_v * dwi.y, -eta_i_v * dwi.z );
 
-				const Vector3 dh_prev = DeriveNormalized( h, dh_raw_prev, h_len );
+				const Vector3 dh_prev = rawHalfVector ? dh_raw_prev : DeriveNormalized( h, dh_raw_prev, h_len );
 
 				// lower[i-1] maps vertex i-1 to constraint i
 				lower[(i-1)*4 + 0 + p] = Vector3Ops::Dot( s, dh_prev );
@@ -3737,7 +3817,8 @@ unsigned int ManifoldSolver::BuildSeedChain(
 	const IScene& scene,
 	const IRayCaster& caster,
 	std::vector<ManifoldVertex>& chain,
-	bool applyEmitterStop
+	bool applyEmitterStop,
+	const IORStack* pStartStack
 	) const
 {
 	chain.clear();
@@ -3766,11 +3847,23 @@ unsigned int ManifoldSolver::BuildSeedChain(
 	}
 
 	// Initial seed: the ray walks from the shading point toward the light
-	// sample.  Medium starts as air (IOR=1.0).  Snell-continue handles the
-	// per-vertex push/pop, vertex creation, and ray refraction.
+	// sample.  Snell-continue handles the per-vertex push/pop, vertex
+	// creation, and ray refraction.
+	//
+	// DL-290: "air" is only right when the SHADING POINT is in air.  The
+	// walk starts in the receiver's medium, so it starts from the
+	// receiver's live IOR stack when the caller has one: the chain's
+	// etaI/etaT (the Newton constraint, the chain Fresnel) then describe
+	// the interfaces the light really crosses -- a glass caster under
+	// water is priced glass-vs-water, not glass-vs-air.  No stack is air,
+	// exactly as before (and an in-air stack's top is 1.0, so an in-air
+	// render is bit-identical).
 	Point3 currentOrigin = start;
-	Scalar currentIOR = 1.0;
-	IORStack seedIor( 1.0 );
+	IORStack seedIor = pStartStack ? *pStartStack : IORStack( 1.0 );
+	Scalar currentIOR = seedIor.top();
+	if( !( currentIOR > 0 && currentIOR < RISE_INFINITY ) ) {
+		currentIOR = 1.0;
+	}
 
 	const unsigned int produced = SnellContinueChain(
 		currentOrigin, dir, totalDist,
@@ -4006,10 +4099,13 @@ unsigned int ManifoldSolver::SnellContinueChain(
 		//     outward normal -- see the invariant on the field in
 		//     ManifoldSolver.h -- so the cosI test below is correct on a
 		//     double-sided mesh in its own right, and this override is no
-		//     longer load-bearing for that case.  It still is for a walk
-		//     that STARTS inside the solid, which it always was: nothing
-		//     has been pushed yet there, so the override cannot fire and
-		//     only the now-correct sign test answers.)
+		//     longer load-bearing for that case.  DL-290: the walk now
+		//     starts from the RECEIVER'S live stack when the caller has
+		//     one, so the override CAN fire on the first crossing -- for
+		//     a receiver whose own path pushed this object (inside a
+		//     closed solid, or under an open sheet the camera path
+		//     crossed); with no stack the walk starts empty and only the
+		//     now-correct sign test answers.)
 		//   - Else fall back to sign(dot(dir, normal)) < 0 ⇒ entering.
 		//     This is the correct test for closed volumes (sphere) AND
 		//     multi-object slabs-from-planes (each plane is a distinct
@@ -4117,11 +4213,87 @@ unsigned int ManifoldSolver::SnellContinueChain(
 						// by the IORStack constructor).
 						currentIOR = seedIor.top();
 					} else {
-						// No matching push — legacy slabs-from-planes
-						// pattern.  Fall back to the old hardcoded
-						// "back to air" behaviour for this case so we
-						// don't break tests that exercise it.
-						currentIOR = 1.0;
+						// No matching push for THIS object -- an open
+						// sheet crossed against its normal.  DL-290
+						// review P1-2: this used to be a hardcoded 1.0
+						// ("back to air"), which priced an immersed
+						// open-sheet caster against air.  Two geometries
+						// reach this branch:
+						//
+						//  (a) slabs-from-planes: the walk (or the camera
+						//      path that built the receiver stack) entered
+						//      the slab through a SIBLING sheet Y, which is
+						//      the stack top, and is now leaving through
+						//      this one.  Leaving the slab leaves Y's entry:
+						//      pop it; the far side is the medium beneath.
+						//  (b) a sheet crossed while the walk is inside a
+						//      medium Y that ENCLOSES the crossing (a lone
+						//      sheet in a water box, or no Y at all: the
+						//      root).  Nothing is popped; the far side is Y.
+						//
+						// Review round 2 (P1-A): the two are told apart by
+						// CONTAINMENT, never by comparing indices.  The
+						// round-1 rule ("pop iff Y's index equals this
+						// sheet's") misread every slab of two DIFFERENT
+						// indices as (b) and ended the chain inside the
+						// sibling's glass, and turned an index mismatch of
+						// 1e-9..1e-3 into a near-matched last vertex --
+						// a continuity cliff (flatslab floor -94 % at a
+						// top index of 2.2000002).  Here Y is probed along
+						// the continuing direction: an EXIT hit on Y means
+						// the walk is still inside Y after the crossing,
+						// i.e. Y encloses it -- (b); a miss, or an ENTRY
+						// hit, means Y was a sheet the walk has already
+						// passed -- (a).  For a CLOSED, outward-wound Y the
+						// first hit from inside is always an exit (concave
+						// or not).  The side test uses the TRUE face
+						// orientation (DL-70), so a double-sided closed
+						// mesh reads correctly; a ray-derived (hair)
+						// normal has no side and cannot enclose.  One ray
+						// against ONE object, only on this rare branch.
+						// In air with no enclosing object nothing
+						// changes: the top is the root, 1.0.
+						//
+						// Known residuals (review round 3; the open-sheet /
+						// winding convention family, DL-345, filed at
+						// merge), each measured with BuildSeedChain:
+						//  - Y is itself an OPEN sheet that bounds the
+						//    walk's medium: a lone 1.5 sheet inside a
+						//    two-sheet 2.2 slab reads [1.5 -> 1], correct
+						//    [1.5 -> 2.2] -- the probe misses the slab's
+						//    bottom sheet and pops it (A7-KF T6).
+						//  - Y is a closed solid wound INWARD (a
+						//    single-sided mesh) that the camera path
+						//    pushed: the probe's exit hit reads as an
+						//    entry, [2.2 -> 1][1 -> 1.33 entry] instead of
+						//    [2.2 -> 1.33][1.33 -> 1] (A7-KF T5c).
+						//  - Y is a closed solid with a HOLE and the walk
+						//    leaves through it: the probe misses and pops,
+						//    1.0 where the stack says 1.33 (ill-posed
+						//    geometry, no right answer).
+						//  - Two STACKED open slabs seen through their
+						//    sheets: the camera path pushed all four
+						//    sheets, and the walk reads the air gap between
+						//    the slabs as glass ([2.2 -> 2.2] x3) in every
+						//    post-DL-290 build; the pre-DL-290 walk, which
+						//    started from air, got it right.  This is the
+						//    receiver stack's own open-sheet convention
+						//    (DL-345), not this branch.
+						const IObject* pY = seedIor.topObject();
+						if( pY ) {
+							bool yEnclosesCrossing = false;
+							const Ray probe( Point3Ops::mkPoint3( ri.geometric.ptIntersection, dir * offsetEps ), dir );
+							RayIntersection pri( probe, nullRasterizerState );
+							pY->IntersectRay( pri, RISE_INFINITY, true, true, false );
+							if( pri.geometric.bHit && pri.geometric.HasTrueGeomSide() ) {
+								yEnclosesCrossing = Vector3Ops::Dot( dir, pri.geometric.UnflippedGeomNormal() ) > 0;
+							}
+							if( !yEnclosesCrossing ) {
+								seedIor.SetCurrentObject( pY );
+								seedIor.pop();
+							}
+						}
+						currentIOR = seedIor.top();
 					}
 					// Backfill the just-pushed vertex's etaT with the
 					// post-pop surrounding-medium IOR.  Provisional
@@ -4215,7 +4387,8 @@ unsigned int ManifoldSolver::BuildSeedChainBranching(
 	const IRayCaster& caster,
 	ISampler& sampler,
 	std::vector<SeedChainResult>& out,
-	bool applyEmitterStop
+	bool applyEmitterStop,
+	const IORStack* pStartStack
 	) const
 {
 	(void)sampler;	// no longer needed since we don't RR-pick branches
@@ -4223,7 +4396,7 @@ unsigned int ManifoldSolver::BuildSeedChainBranching(
 
 	std::vector<ManifoldVertex> chain;
 	const unsigned int chainLen = BuildSeedChain(
-		start, end, scene, caster, chain, applyEmitterStop );
+		start, end, scene, caster, chain, applyEmitterStop, pStartStack );
 	if( chainLen > 0 && !chain.empty() ) {
 		SeedChainResult sole;
 		sole.chain      = std::move( chain );
@@ -4675,9 +4848,12 @@ void ManifoldSolver::ComputeLastBlockLightJacobian(
 			-(eta_i_v * wi.y + eta_t_v * wo.y),
 			-(eta_i_v * wi.z + eta_t_v * wo.z) );
 	}
+	// DL-290: a refraction vertex's constraint is the UNNORMALIZED h
+	// (see UseUnnormalizedHalfVector).
+	const bool rawHalfVector = UseUnnormalizedHalfVector( vk );
 	const Scalar h_len = Vector3Ops::Magnitude( h_raw );
-	if( h_len < NEARZERO ) return;
-	const Vector3 h = h_raw * (1.0 / h_len);
+	if( !rawHalfVector && h_len < NEARZERO ) return;
+	const Vector3 h = rawHalfVector ? h_raw : h_raw * (1.0 / h_len);
 
 	// Tangent basis at y (orthonormal, perpendicular to lightNormal)
 	Vector3 y_s = Vector3Ops::Perpendicular( lightNormal );
@@ -4707,12 +4883,15 @@ void ManifoldSolver::ComputeLastBlockLightJacobian(
 			dh_raw = Vector3( -eta_t_v * dwo.x, -eta_t_v * dwo.y, -eta_t_v * dwo.z );
 		}
 
-		// ∂h/∂y = (dh_raw - h * dot(h, dh_raw)) / h_len
-		const Scalar h_dot = Vector3Ops::Dot( h, dh_raw );
+		// ∂h/∂y = (dh_raw - h * dot(h, dh_raw)) / h_len at a reflection
+		// vertex; the raw derivative itself at a refraction vertex, whose
+		// constraint is the unnormalized h (UseUnnormalizedHalfVector).
+		const Scalar h_dot = rawHalfVector ? Scalar( 0 ) : Vector3Ops::Dot( h, dh_raw );
+		const Scalar inv_h = rawHalfVector ? Scalar( 1 ) : Scalar( 1.0 ) / h_len;
 		const Vector3 dh(
-			(dh_raw.x - h.x * h_dot) * (1.0 / h_len),
-			(dh_raw.y - h.y * h_dot) * (1.0 / h_len),
-			(dh_raw.z - h.z * h_dot) * (1.0 / h_len) );
+			(dh_raw.x - h.x * h_dot) * inv_h,
+			(dh_raw.y - h.y * h_dot) * inv_h,
+			(dh_raw.z - h.z * h_dot) * inv_h );
 
 		// Project onto (s_v, t_v) basis at vk.  Row index = {s_v, t_v}.
 		const Scalar s_dot = Vector3Ops::Dot( s_v, dh );
@@ -5681,6 +5860,7 @@ bool ManifoldSolver::ComputeTrialContribution(
 	rig.vNormal     = shadingNormal;
 	rig.vGeomNormal = geomNormal;
 	rig.onb = onb;
+	rig.ambientIOR = SMSReceiverAmbientIOR( pIorStack );	// DL-290
 
 	RISEPel fBSDF = pBSDF->valueStateful( wiAtShading, rig, pIorStack );
 	if( ColorMath::MaxValue( fBSDF ) <= 0 ) return false;
@@ -5796,8 +5976,11 @@ bool ManifoldSolver::ComputeTrialContributionNM(
 	rig.vNormal     = shadingNormal;
 	rig.vGeomNormal = geomNormal;
 	rig.onb = onb;
+	rig.ambientIOR = SMSReceiverAmbientIOR( pIorStack );	// DL-290
 
-	Scalar fBSDF = pBSDF->valueNM( wiAtShading, rig, nm );
+	// DL-290: the stack goes to the BSDF exactly as the RGB twin's
+	// valueStateful does (DL-157's plumbed entry/exit side).
+	Scalar fBSDF = pBSDF->valueStatefulNM( wiAtShading, rig, nm, pIorStack );
 	if( fBSDF <= 0 ) return false;
 
 	// Receiver-side BSDF cosine: shading.
@@ -5876,9 +6059,12 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	// `docs/SMS_UNIFORM_SEEDING_PLAN.md`.
 	if( config.seedingMode == ManifoldSolverConfig::eSeedingUniform )
 	{
+		// DL-290: forward the receiver's live IOR stack -- it was dropped
+		// here, so uniform mode's receiver record priced air (and its
+		// `valueStateful` never saw the stack DL-157 plumbed for it).
 		return EvaluateAtShadingPointUniform(
 			pos, geomNormal, shadingNormal, onb, pMaterial, woOutgoing,
-			scene, caster, sampler );
+			scene, caster, sampler, pIorStack );
 	}
 
 	SMSContribution result;
@@ -5933,7 +6119,8 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	std::vector<ManifoldVertex> seedChain;
 	unsigned int chainLen = BuildSeedChain(
 		pos, lightSample.position,
-		scene, caster, seedChain );
+		scene, caster, seedChain,
+		/*applyEmitterStop=*/ true, pIorStack );	// DL-290: walk starts in the receiver's medium
 	if( chainLen > 0 && !seedChain.empty() ) {
 		SeedChainResult lone;
 		lone.chain = seedChain;
@@ -5958,7 +6145,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		chainLen = BuildSeedChain(
 			pos, normalTarget,
 			scene, caster, seedChain,
-			/*applyEmitterStop=*/ false );
+			/*applyEmitterStop=*/ false, pIorStack );	// DL-290
 		if( chainLen > 0 && !seedChain.empty() ) {
 			baseSeeds.clear();
 			SeedChainResult lone;
@@ -5986,7 +6173,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		chainLen = BuildSeedChain(
 			pos, midTarget,
 			scene, caster, seedChain,
-			/*applyEmitterStop=*/ false );
+			/*applyEmitterStop=*/ false, pIorStack );	// DL-290
 		if( chainLen > 0 && !seedChain.empty() ) {
 			baseSeeds.clear();
 			SeedChainResult lone;
@@ -6058,7 +6245,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 			std::vector<ManifoldVertex> mirrorChain;
 			const unsigned int mirrorLen = BuildSeedChain(
 				pos, sp, scene, caster, mirrorChain,
-				/*applyEmitterStop=*/ false );
+				/*applyEmitterStop=*/ false, pIorStack );	// DL-290
 			if( mirrorLen > 0 && !mirrorChain.empty() &&
 			    mirrorChain[0].pObject == pMirrorCaster ) {
 				SeedChainResult mc;
@@ -6623,6 +6810,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		rig.vNormal     = shadingNormal;
 		rig.vGeomNormal = geomNormal;
 		rig.onb = onb;
+		rig.ambientIOR = SMSReceiverAmbientIOR( pIorStack );	// DL-290
 
 		RISEPel fBSDF = pBSDF->valueStateful( wiAtShading, rig, pIorStack );
 		if( ColorMath::MaxValue( fBSDF ) <= 0 ) continue;
@@ -7011,7 +7199,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 		// the non-specular-hit terminator.
 		const unsigned int chainLen = BuildSeedChain(
 			pos, sp, scene, caster, trialSeed,
-			/*applyEmitterStop=*/ false );
+			/*applyEmitterStop=*/ false, pIorStack );	// DL-290
 		if( chainLen == 0 || trialSeed.empty() ) return false;
 		if( trialSeed[0].pObject != pCasterObj ) return false;
 		return true;
@@ -7035,7 +7223,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 			Point3( loopSampler.Get1D(), loopSampler.Get1D(), loopSampler.Get1D() ) );
 		outSeeds.clear();
 		BuildSeedChainBranching( pos, sp, scene, caster, loopSampler, outSeeds,
-			/*applyEmitterStop=*/ false );
+			/*applyEmitterStop=*/ false, pIorStack );	// DL-290
 		// Filter to chains whose first specular hit is the sampled caster
 		// (matches Mitsuba's `si_init.shape != shape` rejection).
 		outSeeds.erase(
@@ -7106,7 +7294,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 					Scalar smsGeometric = 0;
 					if( !ComputeTrialContribution( pos, geomNormal, shadingNormal, onb, woOutgoing,
 						pBSDF, lightSample, mResult, caster, trialDir, trialContrib,
-						/*clampGeometric=*/ false, &smsGeometric ) )
+						/*clampGeometric=*/ false, &smsGeometric, pIorStack ) )	// DL-290: the receiver's live stack
 						continue;
 
 					if( seedResult.proposalPdf > 1e-20 ) {
@@ -7164,7 +7352,8 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 			Vector3 dirMain;
 			RISEPel mainContrib;
 			if( !ComputeTrialContribution( pos, geomNormal, shadingNormal, onb, woOutgoing,
-				pBSDF, lightSample, mResult, caster, dirMain, mainContrib ) )
+				pBSDF, lightSample, mResult, caster, dirMain, mainContrib,
+				/*clampGeometric=*/ true, nullptr, pIorStack ) )	// DL-290: the receiver's live stack
 				continue;
 
 			// Geometric Bernoulli K-loop.  Cap on `maxBernoulliTrials`,
@@ -7187,7 +7376,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 				std::vector<ManifoldVertex> trialChain;
 				bool match = false;
 				if( BuildSeedChain( pos, sp_t, scene, caster, trialChain,
-						/*applyEmitterStop=*/ false ) > 0 &&
+						/*applyEmitterStop=*/ false, pIorStack ) > 0 &&	// DL-290
 					!trialChain.empty() && trialChain[0].pObject == pCasterObj )
 				{
 					ManifoldResult tResult = Solve(
@@ -7276,7 +7465,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 				Scalar smsGeometric = 0;
 				if( !ComputeTrialContribution( pos, geomNormal, shadingNormal, onb, woOutgoing,
 					pBSDF, lightSample, mResult, caster, trialDir, trialContrib,
-					/*clampGeometric=*/ false, &smsGeometric ) )
+					/*clampGeometric=*/ false, &smsGeometric, pIorStack ) )	// DL-290: the receiver's live stack
 					continue;
 
 				totalContribution = totalContribution + trialContrib;
@@ -7451,7 +7640,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 		// Uniform mode — see RGB variant comment.  applyEmitterStop=false.
 		const unsigned int chainLen = BuildSeedChain(
 			pos, sp, scene, caster, trialSeed,
-			/*applyEmitterStop=*/ false );
+			/*applyEmitterStop=*/ false, pIorStack );	// DL-290
 		if( chainLen == 0 || trialSeed.empty() ) return false;
 		if( trialSeed[0].pObject != pCasterObj ) return false;
 		applyNMEtaToChain( trialSeed );
@@ -7472,7 +7661,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 			Point3( loopSampler.Get1D(), loopSampler.Get1D(), loopSampler.Get1D() ) );
 		outSeeds.clear();
 		BuildSeedChainBranching( pos, sp, scene, caster, loopSampler, outSeeds,
-			/*applyEmitterStop=*/ false );
+			/*applyEmitterStop=*/ false, pIorStack );	// DL-290
 		outSeeds.erase(
 			std::remove_if( outSeeds.begin(), outSeeds.end(),
 				[&]( const SeedChainResult& r ) {
@@ -7526,7 +7715,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 					Scalar smsGeometric = 0;
 					if( !ComputeTrialContributionNM( pos, geomNormal, shadingNormal, onb, woOutgoing,
 						pBSDF, lightSample, mResult, caster, nm, trialDir, trialContrib,
-						/*clampGeometric=*/ false, &smsGeometric ) )
+						/*clampGeometric=*/ false, &smsGeometric, pIorStack ) )	// DL-290: the receiver's live stack
 						continue;
 
 					if( seedResult.proposalPdf > 1e-20 ) {
@@ -7566,7 +7755,8 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 			Vector3 dirMain;
 			Scalar mainContrib;
 			if( !ComputeTrialContributionNM( pos, geomNormal, shadingNormal, onb, woOutgoing,
-				pBSDF, lightSample, mResult, caster, nm, dirMain, mainContrib ) )
+				pBSDF, lightSample, mResult, caster, nm, dirMain, mainContrib,
+				/*clampGeometric=*/ true, nullptr, pIorStack ) )	// DL-290: the receiver's live stack
 				continue;
 
 			unsigned int K = 1;
@@ -7586,7 +7776,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 				std::vector<ManifoldVertex> trialChain;
 				bool match = false;
 				if( BuildSeedChain( pos, sp_t, scene, caster, trialChain,
-						/*applyEmitterStop=*/ false ) > 0 &&
+						/*applyEmitterStop=*/ false, pIorStack ) > 0 &&	// DL-290
 					!trialChain.empty() && trialChain[0].pObject == pCasterObj )
 				{
 					applyNMEtaToChain( trialChain );
@@ -7670,7 +7860,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 				Scalar smsGeometric = 0;
 				if( !ComputeTrialContributionNM( pos, geomNormal, shadingNormal, onb, woOutgoing,
 					pBSDF, lightSample, mResult, caster, nm, trialDir, trialContrib,
-					/*clampGeometric=*/ false, &smsGeometric ) )
+					/*clampGeometric=*/ false, &smsGeometric, pIorStack ) )	// DL-290: the receiver's live stack
 					continue;
 
 				totalContribution += trialContrib;
@@ -7736,9 +7926,10 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	// `EvaluateAtShadingPointUniform`.
 	if( config.seedingMode == ManifoldSolverConfig::eSeedingUniform )
 	{
+		// DL-290: forward the live stack (see the RGB dispatch above).
 		return EvaluateAtShadingPointNMUniform(
 			pos, geomNormal, shadingNormal, onb, pMaterial, woOutgoing,
-			scene, caster, sampler, nm );
+			scene, caster, sampler, nm, pIorStack );
 	}
 
 	SMSContributionNM result;
@@ -7778,7 +7969,8 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	std::vector<ManifoldVertex> seedChain;
 	unsigned int chainLen = BuildSeedChain(
 		pos, lightSample.position,
-		scene, caster, seedChain );
+		scene, caster, seedChain,
+		/*applyEmitterStop=*/ true, pIorStack );	// DL-290: walk starts in the receiver's medium
 
 	if( chainLen == 0 || seedChain.empty() )
 	{
@@ -7790,7 +7982,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		chainLen = BuildSeedChain(
 			pos, normalTarget,
 			scene, caster, seedChain,
-			/*applyEmitterStop=*/ false );
+			/*applyEmitterStop=*/ false, pIorStack );	// DL-290
 	}
 
 	if( chainLen == 0 || seedChain.empty() )
@@ -7804,7 +7996,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		chainLen = BuildSeedChain(
 			pos, midTarget,
 			scene, caster, seedChain,
-			/*applyEmitterStop=*/ false );
+			/*applyEmitterStop=*/ false, pIorStack );	// DL-290
 	}
 
 	if( chainLen == 0 || seedChain.empty() )
@@ -8087,8 +8279,10 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		rig.vNormal     = shadingNormal;
 		rig.vGeomNormal = geomNormal;
 		rig.onb = onb;
+		rig.ambientIOR = SMSReceiverAmbientIOR( pIorStack );	// DL-290
 
-		Scalar fBSDF = pBSDF->valueNM( wiAtShading, rig, nm );
+		// DL-290: stateful, as the RGB twin (see ComputeTrialContributionNM).
+		Scalar fBSDF = pBSDF->valueStatefulNM( wiAtShading, rig, nm, pIorStack );
 		if( fBSDF <= 0 ) continue;
 
 		// Cosine at shading point — SHADING frame matches `f * cos / pdf`.
