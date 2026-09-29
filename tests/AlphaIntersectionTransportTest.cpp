@@ -34,7 +34,11 @@ int main()
     }
     for (const char* kind : {"pathtracing_spectral_rasterizer","bdpt_spectral_rasterizer","vcm_spectral_rasterizer"}) {
         for(bool hwss : {false,true}) {
-            const std::string raster=std::string(kind)+"\n{\n samples 1024\n hwss "+(hwss?"true":"false")+"\n pixel_filter box\n oidn_denoise FALSE\n}\n"+kOutputChunk;
+            // PT wavelengths use a separate RNG; 1024 samples leave this ratio
+            // too noisy for the unchanged 0.035 band. Keep both spectral paths,
+            // seeds and sampler, and budget 32768 samples for PT NM/HWSS only.
+            const unsigned samples=std::string(kind)=="pathtracing_spectral_rasterizer"?32768:1024;
+            const std::string raster=std::string(kind)+"\n{\n samples "+std::to_string(samples)+"\n hwss "+(hwss?"true":"false")+"\n pixel_filter box\n oidn_denoise FALSE\n}\n"+kOutputChunk;
             const double base=Render(Assemble(raster,ReceiverScene(kOmni,false,0,kWide)),kind);
             const double alpha=Render(Assemble(raster,ReceiverScene(kOmni,true,.7,kWide)),kind);
             const double ratio=alpha/base;
