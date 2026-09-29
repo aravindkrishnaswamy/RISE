@@ -16,11 +16,22 @@ or the agent will lose its anchor.
 
 ## Last audit
 
-- **Date (UTC):** 2026-07-24
-- **Commit at audit time:** `1514297d`
-- **Canonical report:** [DOCUMENTATION_AUDIT.md](DOCUMENTATION_AUDIT.md)
+- **Date (UTC):** 2026-09-28
+- **Commit at audit time:** `75f78ba512aab16a218eb81caee123d9c9779ac1`
+- **Canonical report:** GitHub issue #28 (https://github.com/aravindkrishnaswamy/RISE/issues/28)
 
 ## Accumulated lessons (most recent first)
+
+### 2026-09-28 — index gaps from DL-batch + gui/agentic-redesign cluster growth
+
+- **Lessons for future audits:**
+  - The anchor commit in the previous memory entry (`1514297d`) was not a valid object — `git cat-file -t` is the right first check; if invalid, fall back to the full repo state and note it in the report.
+  - **Three new canonical docs were orphaned from the README index after the Sep-12 DL batch:** `REFRACTIVE_RADIANCE_SCALING.md` (DL-30), `SUBMERGED_CAMERA_IOR_SEEDING.md`, and `SPECTRAL_ILLUMINANT_CONVENTION.md`. Any time CLAUDE.md High-Value Facts gains a new `docs/` citation, cross-check that docs/README.md also indexes it — CLAUDE.md is updated more diligently than the README.
+  - **Subdir growth in `docs/gui/` and `docs/agentic-redesign/` is now the dominant index-completeness gap.** The README enumerates gui/ files individually (so new ones look like omissions), while SMS/pre-phase-1 use a cluster sentence (so growth there is intentional). Run `ls docs/gui/*.md | wc -l` and compare to the README's gui/ reference count each week.
+  - **The INTEGRATOR_REFACTOR_STATUS "Branch state: untracked" is a known stale line** — flagged this run; if still present next run, skip and note as already-filed.
+  - The "all 16 DL closures" claim in docs/README.md was accurate for the 16-doc batch but misses DL-30 (η²) which also landed 2026-09-12. The corrected count is 17 total DL records; docs/README.md:145 needs a "+1" update.
+- **Findings count:** 5 in Group A, 1 in B, 1 in C, 1 in D.
+- **Issue link:** https://github.com/aravindkrishnaswamy/RISE/issues/28
 
 ### 2026-07-24 — repository-wide audit
 
@@ -73,14 +84,9 @@ established the pattern. Treat them as the baseline scope.
 
 ### Watchlist for next audit
 
-- The `INTEGRATOR_REFACTOR_PLAN` Phase 2b/2c/3/4 — check whether any
-  shipped during the week.
-- The `CAMERAS_ROADMAP` Phase 2+ — output-format cameras, ODS,
-  realistic-lens. Check if any landed; the named-camera infra may
-  unblock further work.
-- Glance at the OIDN doc — heavy backlog there with stable IDs;
-  worth checking if any IDs got marked done in the doc but the
-  code didn't follow (or vice versa).
-- New `docs/_audit_memory.md` itself — should it be in
-  `docs/README.md`'s index, or stay as an internal artifact? Either
-  is defensible; pick a position and stop drifting.
+- **`docs/README.md` index gaps (already filed in #28):** REFRACTIVE_RADIANCE_SCALING.md, SUBMERGED_CAMERA_IOR_SEEDING.md, SPECTRAL_ILLUMINANT_CONVENTION.md, ~14 new docs/gui/ files, ~33 new docs/agentic-redesign/ files. Check whether these have been added before re-filing.
+- **`docs/README.md:145` DL count:** says "all 16" but DL-30 makes 17. Check if corrected.
+- **`docs/INTEGRATOR_REFACTOR_STATUS.md:6` "untracked (uncommitted)" line** — still stale; check if updated.
+- The `CAMERAS_ROADMAP` Phase 2+ — output-format cameras, ODS, realistic-lens. Check if any landed.
+- Glance at the OIDN doc — heavy backlog there with stable IDs; worth checking if any IDs got marked done in the doc but the code didn't follow (or vice versa).
+- `docs/gui/` is now 23 files with only 9 indexed — track whether the README expands its coverage or consolidates to a cluster sentence.
