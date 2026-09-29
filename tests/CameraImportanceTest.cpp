@@ -1001,13 +1001,16 @@ static void TestFisheyeFilmResponse( double pixelAR )
 // world-to-raster inverse must (a) accept the point on the ray,
 // (b) return that same screen point, and (c) send it to the same pixel.
 // Before DL-294 the projection clipped at the camera's nominal
-// [0, W) x [0, H), half a pixel off that convention on both axes: the
-// left half of column 0 and the lower (screen) half-strip beyond row 0
-// failed (a), and the right half of column W-1's neighbour strip and
-// row 0's upper half passed (a) but were rounded OFF the film by (c)
-// -- the check counts both kinds.  Run at the DL-294 framing (pinhole
-// fov 2 deg, 16 x 16), at an ordinary one, and through a thin lens and
-// a fisheye.
+// [0, W) x [0, H), half a pixel off that convention on both axes, so
+// the left half of image column 0 (screen x in [-0.5, 0)) and the upper
+// half of image row 0 (screen y in [H, H + 0.5)) failed (a) -- 469 of
+// 1525 probes at the DL-294 framing.  (c) guards the other direction: a
+// future convention change on one side only.  Run at the DL-294 framing
+// (pinhole fov 2 deg, 16 x 16), at an ordinary one, and through a thin
+// lens and a fisheye.  The film-response integrals above (Tests 6 and
+// 8) now count only what the FILM accepts; they read 0.984 against the
+// pre-fix projection -- they had been blind to this because they
+// integrated over the camera's own accept region.
 //////////////////////////////////////////////////////////////////////
 static void TestProjectionCoversEyeFilm()
 {

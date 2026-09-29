@@ -220,10 +220,12 @@ namespace RISE
 		/// `SplatFilm` and the unfiltered splat fallbacks round a splat
 		/// to the nearest pixel centre in that convention).  Before
 		/// DL-294 the camera cut at its NOMINAL film [0, W) x [0, H),
-		/// which is half a pixel off that convention on both axes: one
-		/// half-pixel edge strip per axis was rejected by the camera and
-		/// the opposite one was accepted and then rounded off the film,
-		/// so a light-traced (t = 1) splat covered (W - 0.5) x (H - 0.5)
+		/// which is half a pixel off that convention on both axes: the
+		/// eye film is screen x in [-0.5, W - 0.5), y in [0.5, H + 0.5),
+		/// so the camera rejected the strips x in [-0.5, 0) and
+		/// y in [H, H + 0.5) that lie ON it (the strips it accepted in
+		/// their place lie off it and were rightly dropped by the film),
+		/// and a light-traced (t = 1) splat covered (W - 0.5) x (H - 0.5)
 		/// of a W x H film (-6.15 % on a uniformly lit 16 x 16 frame,
 		/// image column 0 and row 0 at half radiance).  The projections
 		/// now reject only points outside this convention-agnostic

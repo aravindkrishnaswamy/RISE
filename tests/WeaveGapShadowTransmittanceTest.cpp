@@ -925,10 +925,10 @@ static void TestTwoLayerLightOutside()
 // while every rasterizer samples pixel (x, row y) at screen
 // (x + u - 0.5, H - y + v - 0.5), i.e. the film is x in [-0.5, W - 0.5),
 // y in [0.5, H + 0.5), and SplatFilm rounds a splat to the nearest
-// pixel CENTRE in that same convention.  A half-pixel strip along one
-// vertical and one horizontal film edge was rejected by the camera,
-// and the opposite strips were accepted and then dropped off the film
-// by the rounding: the splat covered 15.5 x 15.5 of a 16 x 16 film,
+// pixel CENTRE in that same convention.  The camera rejected the
+// half-pixel strips x in [-0.5, 0) and y in [H, H + 0.5) -- ON that
+// film (the strips it accepted in their place are off it, and the film
+// rightly dropped them) -- so the splat covered 15.5 x 15.5 of a 16 x 16 film,
 // 1 - (15.5/16)^2 = 6.15 % of a uniformly lit frame, with image
 // column 0 and row 0 at exactly HALF their radiance.  Only a frame
 // that is lit edge to edge sees it, which is why it looked like a
