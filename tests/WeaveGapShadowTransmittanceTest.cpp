@@ -60,9 +60,14 @@
 //             SMS off.  Every row but the env box read 0 before the fix
 //             (PT dropped the emitter hit after the gap).  HWSS rows and
 //             a composite(dielectric over weave) sibling are SMS-on vs
-//             SMS-off parity; a perfect refractor at ior 1 (an SMS
-//             caster SMS cannot solve, DL-339) is printed.  Renders in
-//             this section are Sobol'-salted per (seed base, index).
+//             SMS-off parity, as are the review-round rows (a smooth
+//             SSS / polished caster seen with no SMS anchor, the HWSS
+//             SSS and no-BSDF hand-offs with and without an anchor); an
+//             anchored no-gap caster reflection is pinned SUPPRESSED
+//             (DL-339 (a)); perfect refractor planes are printed (the
+//             ior-1.5 open sheet is DL-339 (b)).  Renders here are
+//             Sobol'-salted per (seed base, index) but NOT reproducible
+//             run to run -- see the band note in the section.
 //    castsshadows  P2-2 (external review): the transparent-shadow walk
 //             (WalkShadowSegment, shared with DL-05's pass-through
 //             walk) must STEP OVER a `casts_shadows FALSE` object, not
@@ -1243,9 +1248,11 @@ static void TestSMSEmissionThroughGap()
 		CasterCeilingScene( false, false, false ) );
 
 	// Control: an SMS CASTER, where the suppression's premise is SMS's to
-	// honour and this fix changes nothing.  Printed, not gated: it reads
-	// 0 with SMS on before AND after -- SMS does not solve a chain through
-	// a single open refractive plane (DL-339).
+	// honour and this fix changes nothing.  Printed, not gated.  Before
+	// master's DL-290 the ior-1.0 plane read 0 with SMS on; since, it reads
+	// ~1.0 (SMS's matched-index seed walk).  The ior-1.5 OPEN plane reads
+	// ~2.25x in every build -- the open-sheet index convention (DL-339 (b),
+	// DL-345's family); a closed slab of it agrees with PT and VCM.
 	ParityRow( "area perfectrefractor ior 1 PT RGB (SMS caster -- control, printed)", RastPTSMS( 256, true ), RastPTSMS( 256, false ),
 		ReceiverScene( kAreaLarge, true, g, kWide, false, PerfectRefractorSheet( "1.0" ) ), -1.0 );
 	ParityRow( "area perfectrefractor ior 1.5 PT RGB (SMS caster -- control, printed)", RastPTSMS( 256, true ), RastPTSMS( 256, false ),

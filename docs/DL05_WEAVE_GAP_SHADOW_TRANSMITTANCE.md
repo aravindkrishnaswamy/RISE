@@ -545,6 +545,19 @@ image (ROI under the sphere in parentheses):
 | over the x<0 half | pre | 0.05831 (0.09419) | 0.06862 (0.12619) | 0.06868 (0.12750) | 0.8497 (0.7464) |
 | over the x<0 half | post | 0.06757 (0.12176) | 0.06855 (0.12544) | 0.06863 (0.12696) | 0.9857 (0.9706) |
 
+Re-run on the branch merged with `master` `4c286bd5` after round 2 (the
+anchor rule and the hand-offs; pre = `PathTracingIntegrator.{cpp,h}` at
+`4c286bd5`), same protocol, n = 4:
+
+| sheet | build | PT+SMS | PT | VCM | PT+SMS / PT |
+|---|---|---|---|---|---|
+| none (control) | pre | 0.13353 (0.28881) | 0.13949 (0.31636) | 0.13933 (0.31563) | 0.9573 (0.9129) |
+| none (control) | post | 0.13357 (0.28894) | 0.13949 (0.31647) | 0.13936 (0.31577) | 0.9576 (0.9130) |
+| over the whole emitter | pre | 0 (0) | 0.01258 (0.02864) | 0.01248 (0.02827) | 0 |
+| over the whole emitter | post | 0.01244 (0.02816) | 0.01256 (0.02849) | 0.01252 (0.02816) | 0.9907 (0.9884) |
+| over the x<0 half | pre | 0.05829 (0.09394) | 0.06861 (0.12608) | 0.06865 (0.12690) | 0.8495 (0.7451) |
+| over the x<0 half | post | 0.06750 (0.12130) | 0.06868 (0.12655) | 0.06862 (0.12696) | 0.9828 (0.9585) |
+
 The un-suppressed path and SMS's paths are DISJOINT, from the code and in
 the measurement: SMS's seed trace from the floor stops at the weave (not
 specular), and its visibility test for a chain found by the uniform-caster
@@ -572,7 +585,13 @@ multithreaded nor CLI renders are reproducible) and `samples` capped at 8;
 the pixel hashes of all 19 scenes are identical between the pre and post
 builds in each of three interleaved rounds (all six hash listings have
 the same md5, `646deb65...`, so each build is also reproducible run to
-run under this protocol).
+run under this protocol).  Repeated after round 2 on the branch merged with `master`
+`4c286bd5` (pre = `PathTracingIntegrator.{cpp,h}` at `4c286bd5`): all 19
+identical again in three interleaved rounds, all six listings md5
+`9d0676fe...` -- a different set from before, because DL-290 changed
+SMS itself.  Round 2's anchor rule cannot reach these scenes either: its
+only new condition sits at a PART 3 delta vertex, and none of them has a
+BSDF-carrying material with a delta lobe.
 
 ### 9.6 Sibling audit
 
