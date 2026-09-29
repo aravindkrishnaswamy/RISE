@@ -136,15 +136,42 @@ section 3).  The shipped design is:
    A refusal returns no radiance, like the depth cap, and is now COUNTED
    (`RayCaster::StackGuardRefusals()`) and LOGGED (the 1st, 2nd, 4th, ...
    refusal, so a pathological scene cannot flood the log).
-3. **The margin is measured**, on the make build rebuilt with
-   `CXXFLAGS="-O0 -g"` (not `xcodebuild`), with workers forced back to
-   512 KB and the margin overridden by a temporary environment hook (not in
-   the tree), on the review's crash scene (camera inside a closed room of
-   0.5-thick conservative random-walk walls, PT pel, white env, 32x32,
-   64 spp), 3 seeds per margin: margin 0 crashes 3/3; 16, 32, 48, 64 and
-   128 KB all survive 3/3.  128 KB is 8x the smallest safe value and still
-   lets a 512 KB -O0 thread nest about as deep (~10 levels) as the pre-fix
-   cap of 10 allowed (11).
+3. **The margin is measured, and only a stack-size SWEEP measures it.**
+   Round 2's worker measured one stack size (512 KB, margins 0-128 KB, 3
+   seeds each) and read "16 KB already survives" -- an accident of how the
+   SSS levels happened to line up in that one stack.  The round-2 external
+   review swept it properly: -O0 library, driver thread and workers both at
+   S = 512, 528, ..., 640 KB (9 sizes, 16 KB steps), stacks painted for the
+   high-water mark, the thick-walled random-walk room at 16 spp:
+
+   | margin | result over the 9 sizes |
+   |---:|---|
+   | 16 KB | SIGBUS at 528/560/592/608/624/640 KB (6 of 9); survivors hit the painted floor |
+   | 32 KB | SIGBUS at 624 KB; survivors at the floor |
+   | 48 KB | 9/9 survive; 640 KB reaches the floor |
+   | 64 KB | 9/9; at least 35.4 KB left |
+   | 128 KB | 9/9; at least 94.4 KB left |
+
+   The worst excursion below the last allowed cast entry is about 34 KB
+   at -O0, and `riseRemainingStackBytes` over-reports by about 12-16 KB (the
+   guard page is inside the region it measures), so the smallest safe margin
+   for this scene is about 50 KB.  The shipped **128 KB is about 2.5x that
+   (3.5x the worst excursion)**, not the "8x" round 2 of this doc claimed.
+   Every -O0 scene the review tried at 512 KB survived it, with worst
+   excursions PT room 34.2 KB, `pt_sss_dragon` 36.0, HWSS room 30.6,
+   PT-spectral room 30.6, BDPT-spectral guiding probe 30.6, legacy hall of
+   mirrors at `max_recursion` 200 11.1, SMS + random-walk floor 3.7 (a
+   composite over a random-walk wall makes no nested cast at all).  ASan
+   builds were not measured.  The guard itself is correct on the main
+   thread, a `std::thread`, a GCD thread, 16 MB and 200 KB pthreads and the
+   8 MB pool workers, costs 0.37 ns per call, and resident memory is
+   unchanged (191.4-192.4 MB).  128 KB also lets a 512 KB -O0 thread nest
+   about as deep (~10 levels) as the pre-fix cap of 10 allowed (11).
+   **Log limitation:** the refusal log fires on the 1st, 2nd, 4th, ...
+   refusal of a PROCESS-WIDE count that is never reset, so in a long-lived
+   process (the GUI) a later render whose refusals fall between two powers
+   of two logs nothing; `RayCaster::StackGuardRefusals()` still counts
+   every refusal.
 
 **Truncation.**  With 8 MB workers the guard never fires in any scene
 measured here (refusals 0 everywhere below), so the round-1 ceiling's
@@ -183,8 +210,10 @@ rows share a salt; ratio = enclosed / open image mean):
 | E2 Lambertian cluster (control) | 0.998037 | 0.998037 |
 
 (fix: two full Part E runs.)  Salted n = 8 per-pair ratio sds, from which
-the bands are set at >= 5 sd of the n = 4 mean: Lambertian 0.0008, random
-walk 0.0005, diffusion 0.0011, PT-spectral 0.0015, BDPT 0.0004; E2
+the bands are set: Lambertian 0.0008, random walk 0.0005, diffusion
+0.0011, PT-spectral 0.0015, BDPT 0.0004.  The round-2 review's between-run
+sd of the n = 4 mean over 15 base seeds puts every row's band at >= 6 sd
+except the Lambertian control's 0.002, which is ~3.5 sd (sd 0.00057); E2
 Lambertian one-render sd 0.0019 (band widened 0.004 -> 0.006), E2 random
 walk 0.0012.  Suite: **248/6** on the master library, **254/0** (227 checks pre-existed) with
 the fix.  E1 isolates defect (1) (a single convex sphere never re-enters,
@@ -356,10 +385,16 @@ cast; the guard is a thread-local read and a compare.
   0.00081 (difference 0.0000 +/- 0.0010), and the E1 sphere salted n = 8
   0.999565 +/- 0.00041 vs 0.999586 +/- 0.00029 (review).  The unsalted
   repeats were one fixed Sobol' pattern.
-- **A closed room of thick random-walk walls reads ~0.70, not 1**, under
-  PT AND BDPT (BDPT 0.7037, review; PT 0.70337 +/- 0.00098 salted here) in
-  a white furnace with conservative walls.  Not a ceiling effect (0
-  refusals) and not attributed; recorded for the supervisor.
+- **DL-370 (filed at merge): a closed room of thick random-walk walls
+  reads ~0.70, not 1**, under PT AND BDPT alike (PT 0.70337 +/- 0.00098
+  salted here, BDPT 0.7037), 0 refusals.  The round-2 review attributed it
+  to a COINCIDENT-FACE loss between TOUCHING SSS objects: the random walk
+  loses energy exiting through a face shared with a neighbouring box
+  (PT salted 64 spp, absorption 0): one wall 1.000, two parallel walls
+  0.999, four touching walls (open tube) 0.914, the same with 0.02 corner
+  gaps 1.000, the closed room touching 0.706, with 0.02 gaps 1.000; BDPT
+  gapped 1.000, and BDPT at eye/light depth 32/128/512/2048 all ~0.70 with
+  0 refusals.
 - **The stack guard can still truncate on a small calling thread** (a
   512 KB GUI render thread): counted and logged, section 2.  A render
   thread with an 8 MB stack, or not draining tiles on the caller, would

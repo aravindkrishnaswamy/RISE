@@ -1494,11 +1494,14 @@ namespace
 		// sides differ only through the defect.  Pre-fix the ratio reads
 		// about 1 - F0 (random walk and diffusion at index 1.5); the
 		// Lambertian subject and BDPT never nest a cast per event and are
-		// controls, green before and after.  Bands: at least 5 sd of the
-		// n = 4 mean ratio, measured on SALTED renders (salted n = 8,
-		// paired per-pair sd: Lambertian 0.0008, random walk 0.0005,
-		// diffusion 0.0011, PT-spectral 0.0015, BDPT 0.0004 --
-		// docs/DL315_RAYCASTER_STACK_AND_RECURSION.md).
+		// controls, green before and after.  Bands from SALTED renders
+		// (salted n = 8, paired per-pair sd: Lambertian 0.0008, random walk
+		// 0.0005, diffusion 0.0011, PT-spectral 0.0015, BDPT 0.0004).  The
+		// round-2 review measured the between-run sd of the n = 4 mean over
+		// 15 base seeds: every row's band is >= 6 sd except the Lambertian
+		// control's 0.002, which is ~3.5 sd (sd 0.00057) -- a control, so a
+		// rare false red there says "rerun", not "defect"
+		// (docs/DL315_RAYCASTER_STACK_AND_RECURSION.md).
 		struct EncRow { Model model; Integrator integrator; unsigned int samples; double band; Scalar eta; };
 		const EncRow encRows[] = {
 			{ Model::Lambertian, Integrator::PT,         16,  0.002, 1.0 },

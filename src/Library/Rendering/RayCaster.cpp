@@ -50,12 +50,21 @@ namespace
 	// tiles may be smaller (a GUI render thread is a 512 KB std::thread on
 	// macOS).  A cast is refused when less than this much stack remains
 	// below its frame -- the budget for everything the cast runs before
-	// the next nested cast re-checks.  Measured at -O0 on 512 KB workers
-	// (a closed room of thick random-walk walls): a 16 KB margin already
-	// survives and a 0 margin crashes; 128 KB is 8x that and still lets
-	// a 512 KB -O0 thread nest about as deep as the pre-DL-315 cap of 10
-	// did (see
-	// docs/DL315_RAYCASTER_STACK_AND_RECURSION.md).  A refusal returns no
+	// the next nested cast re-checks.  Sized by the DL-315 round-2 review
+	// with a stack-size SWEEP, never one stack size (-O0 library, driver
+	// and workers both at S = 512..640 KB in 16 KB steps, stacks painted
+	// for the high-water mark, a closed room of thick random-walk walls):
+	// the worst excursion below the last allowed cast entry is about 34 KB
+	// at -O0 and riseRemainingStackBytes over-reports by about 12-16 KB
+	// (the guard page), so the smallest safe margin is about 50 KB -- 16 KB
+	// crashed at 6 of the 9 sizes, 32 KB at 1, 48 KB reached the painted
+	// floor.  128 KB is about 2.5x that (3.5x the worst excursion): 64 KB
+	// left at least 35.4 KB and 128 KB at least 94.4 KB at every size, and
+	// every -O0 scene tried at 512 KB survived with it (worst excursions:
+	// PT room 34.2 KB, pt_sss_dragon 36.0, HWSS and PT-spectral rooms 30.6,
+	// BDPT-spectral guiding probe 30.6, legacy hall of mirrors at
+	// max_recursion 200 11.1).  ASan builds were not measured.  See
+	// docs/DL315_RAYCASTER_STACK_AND_RECURSION.md.  A refusal returns no
 	// radiance, exactly like the depth cap, and is COUNTED
 	// (RayCaster::StackGuardRefusals) and logged.
 	const size_t kCastStackMarginBytes = 128u * 1024u;
@@ -63,7 +72,10 @@ namespace
 
 	//! True when this thread cannot afford another nested cast.  Logs the
 	//! 1st, 2nd, 4th, 8th, ... refusal so a pathological scene cannot
-	//! flood the log.
+	//! flood the log.  The count is PROCESS-WIDE and never reset, so in a
+	//! long-lived process (the GUI) a later render whose refusals fall
+	//! between two powers of two logs nothing; StackGuardRefusals() still
+	//! counts every one.
 	inline bool CastStackExhausted()
 	{
 		const size_t remaining = RISE::Threading::riseRemainingStackBytes();
