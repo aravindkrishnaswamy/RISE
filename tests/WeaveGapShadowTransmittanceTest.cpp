@@ -50,6 +50,19 @@
 //             the emitter hit has no NEE partner); the fix must NOT let
 //             the area-light NEE arm see through the gap too, or the
 //             path is counted twice.  g*L0 before AND after.
+//    sms      DL-295.  The same receiver (and a camera looking UP at the
+//             emitter through the sheet, and a closed black-weave box
+//             under a uniform environment) with `sms_enabled TRUE`: a
+//             BLACK-yarn gapped sheet in front of a 4 x 4 area emitter
+//             reads g*L0, a composite of two such weaves g^2*L0, the env
+//             box g*L0 -- SMS cannot represent a chain through a weave
+//             (GetSpecularInfo reports no caster), so SMS on must equal
+//             SMS off.  Every row but the env box read 0 before the fix
+//             (PT dropped the emitter hit after the gap).  HWSS rows and
+//             a composite(dielectric over weave) sibling are SMS-on vs
+//             SMS-off parity; a perfect refractor at ior 1 (an SMS
+//             caster SMS cannot solve, DL-339) is printed.  Renders in
+//             this section are Sobol'-salted per (seed base, index).
 //    castsshadows  P2-2 (external review): the transparent-shadow walk
 //             (WalkShadowSegment, shared with DL-05's pass-through
 //             walk) must STEP OVER a `casts_shadows FALSE` object, not
@@ -67,6 +80,9 @@
 //             BDPT reads ~6 % and VCM ~1 % off the closed form before
 //             AND after DL-05 (the gap path reaches them only by t = 1
 //             light tracing, so this fixture isolates the splat).
+//    scenehash (opt-in only; WEAVE_GAP_FILTER=scenehash)  Pixel hash
+//             of every scene in WEAVE_GAP_SCENES, fixed seed, for a
+//             pre/post bit-identity check (see HashScenes).
 //    table    (opt-in only; WEAVE_GAP_FILTER=table)  Re-measures
 //             docs/CLOTH_FABRIC_DESIGN.md section 15 item 27's table at
 //             its own setup (24x24, 512 spp) with n repeats (argv[2],
@@ -208,6 +224,23 @@ static double MeanLuminance( const CapturingRasterizerOutput& cap )
 	return sum / double( cap.pixels.size() );
 }
 
+//! FNV-1a over the captured pixels' float bytes (the scenehash section).
+static unsigned long long PixelHash( const CapturingRasterizerOutput& cap )
+{
+	unsigned long long h = 1469598103934665603ull;
+	for( const RISEColor& c : cap.pixels ) {
+		const double v[4] = { c.base.r, c.base.g, c.base.b, c.a };
+		const unsigned char* b = reinterpret_cast<const unsigned char*>( v );
+		for( size_t i = 0; i < sizeof( v ); i++ ) {
+			h ^= b[i];
+			h *= 1099511628211ull;
+		}
+	}
+	return h;
+}
+
+static unsigned long long g_lastPixelHash = 0;
+
 static double Render( const std::string& sceneText, const char* tag )
 {
 	char path[512];
@@ -236,6 +269,7 @@ static double Render( const std::string& sceneText, const char* tag )
 			pJob->GetRasterizer()->AddRasterizerOutput( pCap );
 			if( pJob->Rasterize() ) {
 				result = MeanLuminance( *pCap );
+				g_lastPixelHash = PixelHash( *pCap );
 			}
 			safe_release( pCap );
 		}
@@ -1235,6 +1269,55 @@ static void MeasureDesignDocTable( unsigned int nRepeats )
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+// scenehash (opt-in only; WEAVE_GAP_FILTER=scenehash): DL-295's
+// "nothing without a non-caster delta vertex moves" proof.  Renders every
+// scene file named in WEAVE_GAP_SCENES (whitespace-separated) with
+// std::srand(4242) and the Sobol' salt 0, every `samples` line capped at
+// WEAVE_GAP_SCENE_SPP (default 8), and prints the mean luminance and an
+// FNV-1a hash of the captured pixels.  Deterministic ONLY with a single
+// render thread (RISE_OPTIONS_FILE containing `force_number_of_threads
+// 1`): the per-thread RNGs are seeded from libc rand() in thread start
+// order.  Compare two separately built binaries' output line by line.
+//////////////////////////////////////////////////////////////////////
+static void HashScenes()
+{
+	const char* list = std::getenv( "WEAVE_GAP_SCENES" );
+	const char* sppEnv = std::getenv( "WEAVE_GAP_SCENE_SPP" );
+	const long cap = sppEnv ? std::strtol( sppEnv, nullptr, 10 ) : 8;
+	if( !list ) {
+		std::cout << "scenehash: set WEAVE_GAP_SCENES" << std::endl;
+		return;
+	}
+	std::istringstream names( list );
+	std::string path;
+	while( names >> path )
+	{
+		std::ifstream ifs( path );
+		if( !ifs.is_open() ) {
+			std::cout << "scenehash " << path << ": cannot open" << std::endl;
+			continue;
+		}
+		std::ostringstream text;
+		std::string line;
+		while( std::getline( ifs, line ) ) {
+			const size_t k = line.find_first_not_of( " \t" );
+			if( k != std::string::npos && line.compare( k, 7, "samples" ) == 0 &&
+			    ( line.size() == k + 7 || line[k + 7] == ' ' || line[k + 7] == '\t' ) ) {
+				const long n = std::strtol( line.c_str() + k + 7, nullptr, 10 );
+				if( n > cap && cap > 0 ) {
+					line = line.substr( 0, k ) + "samples " + std::to_string( cap );
+				}
+			}
+			text << line << "\n";
+		}
+		g_seedBase = 4242;
+		g_renderIndex = 0;
+		const double L = Render( text.str(), "scenehash" );
+		std::printf( "scenehash %s: mean %.9f hash %016llx\n", path.c_str(), L, g_lastPixelHash );
+	}
+}
+
 int main( int argc, char** argv )
 {
 	if( argc > 1 ) {
@@ -1246,6 +1329,10 @@ int main( int argc, char** argv )
 	const char* filter = std::getenv( "WEAVE_GAP_FILTER" );
 	if( filter && std::strstr( filter, "dl294" ) ) {
 		PrintNarrowFovSplatResidual();
+		return 0;
+	}
+	if( filter && std::strstr( filter, "scenehash" ) ) {
+		HashScenes();
 		return 0;
 	}
 	if( filter && std::strstr( filter, "table" ) ) {
