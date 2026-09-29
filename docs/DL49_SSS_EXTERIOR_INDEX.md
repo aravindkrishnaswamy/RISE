@@ -1296,3 +1296,13 @@ bullet, corrected); DL-360, filed at merge.
 review's premise that master differed from this branch by docs only was
 wrong for `0d69d782 .. 56303797` (DL-24 / DL-307 / DL-310 source); there is
 no source overlap with this slice, and the merged tree is gated below.
+
+**Round-3 gate, on the tree merged with `master` `56303797`** (clean
+library rebuild, 0 warnings; every rebuilt test target 0 warnings):
+`ExteriorIndexInvarianceTest` **231/0** x3 (228 + the three A7-KF setup
+checks; the two KNOWN-FAILURE rows print as above; Part C on full-coverage S
+1.0003 / 0.9957 / 1.0024 and 0.8760 / 0.8762 / 0.8778), `ManifoldSolverTest`
+pass, `WeaveGapShadowTransmittanceTest` 132/0, `SSSExteriorIndexInvarianceTest`
+227/0, `RefractiveRadianceScalingTest` 60/0, `CstDeriveGoldenTest` 456 MATCH
+/ 0 DRIFT, `SourceHygieneTest` 167/0.  (§11.7's red counts, 218/10 and 212/9,
+were taken on the 228-check file.)
