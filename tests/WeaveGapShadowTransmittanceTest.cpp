@@ -1145,6 +1145,65 @@ static std::string UnderSlabScene( int recv, bool slab )
 	return ss.str();
 }
 
+//! DL-340 fixture (external review round 2): Lambertian receiver under a
+//! closed ior-1.5 slab at y 2, a global isotropic fog, and a 1 x 1 emitter
+//! at y 3 FACING UP (the receiver, its NEE and SMS see only its black
+//! back, so light reaches the receiver only after a MEDIUM scatter).
+//! @a slab false: the no-caster control.
+static std::string FogSlabScene( bool slab, double sigmaS )
+{
+	std::ostringstream ss;
+	ss << "film\n{\n\twidth 16\n\theight 16\n}\n\n"
+	      "pinhole_camera\n{\n\tlocation 0 1 1.2\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 10.0\n}\n\n"
+	      "uniformcolor_painter\n{\n\tname pnt_recv\n\tcolor " << kRho << " " << kRho << " " << kRho << "\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+	      "lambertian_material\n{\n\tname mat_recv\n\treflectance pnt_recv\n}\n\n"
+	      "clippedplane_geometry\n{\n\tname geo_recv\n\tpta -1 0 1\n\tptb 1 0 1\n\tptc 1 0 -1\n\tptd -1 0 -1\n\tdoublesided TRUE\n}\n\n"
+	      "standard_object\n{\n\tname obj_recv\n\tgeometry geo_recv\n\tmaterial mat_recv\n}\n\n"
+	   << EmitterChunks( "\tpta -0.5 3 0.5\n\tptb 0.5 3 0.5\n\tptc 0.5 3 -0.5\n\tptd -0.5 3 -0.5\n", 20.0 )
+	   << "homogeneous_medium\n{\n\tname fog\n\tabsorption 0 0 0\n\tscattering " << sigmaS << " " << sigmaS << " " << sigmaS << "\n\tphase isotropic\n}\n\n"
+	      "global_medium\n{\n\tmedium fog\n}\n\n";
+	if( slab ) {
+		ss << "uniformcolor_painter\n{\n\tname pnt_refr\n\tcolor 1 1 1\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+		      "perfectrefractor_material\n{\n\tname mat_refr\n\trefractance pnt_refr\n\tior 1.5\n}\n\n"
+		      "box_geometry\n{\n\tname geo_slab\n\twidth 8\n\theight 0.05\n\tdepth 8\n}\n\n"
+		      "standard_object\n{\n\tname slab\n\tgeometry geo_slab\n\tposition 0 2 0\n\tmaterial mat_refr\n}\n\n";
+	}
+	return ss.str();
+}
+
+//! DL-373 fixture (external review round 2, class 4): floor (y 0) -> slab1
+//! (y 1) -> slab2 (y 1.75) -> Lambertian diffuser D (y 2.2) -> slab2 -> a
+//! 1 x 1 emitter at y 1.5 FACING UP.  @a gap: a black gap-0.3 weave at y
+//! 2.0 between slab2 and D; @a slab1 false removes the lower slab.  The
+//! camera looks at the floor.
+static std::string TwoChainScene( bool gap, bool slab1 )
+{
+	std::ostringstream ss;
+	ss << "film\n{\n\twidth 16\n\theight 16\n}\n\n"
+	      "pinhole_camera\n{\n\tlocation 0 0.5 0.6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 20.0\n}\n\n"
+	      "uniformcolor_painter\n{\n\tname pnt_recv\n\tcolor " << kRho << " " << kRho << " " << kRho << "\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+	      "lambertian_material\n{\n\tname mat_recv\n\treflectance pnt_recv\n}\n\n"
+	      "clippedplane_geometry\n{\n\tname geo_recv\n\tpta -1 0 1\n\tptb 1 0 1\n\tptc 1 0 -1\n\tptd -1 0 -1\n\tdoublesided TRUE\n}\n\n"
+	      "standard_object\n{\n\tname obj_recv\n\tgeometry geo_recv\n\tmaterial mat_recv\n}\n\n"
+	      "clippedplane_geometry\n{\n\tname geo_diff\n\tpta -4 2.2 4\n\tptb 4 2.2 4\n\tptc 4 2.2 -4\n\tptd -4 2.2 -4\n\tdoublesided TRUE\n}\n\n"
+	      "standard_object\n{\n\tname obj_diff\n\tgeometry geo_diff\n\tmaterial mat_recv\n}\n\n"
+	   << EmitterChunks( "\tpta -0.5 1.5 0.5\n\tptb 0.5 1.5 0.5\n\tptc 0.5 1.5 -0.5\n\tptd -0.5 1.5 -0.5\n", 20.0 )
+	   << "uniformcolor_painter\n{\n\tname pnt_refr\n\tcolor 1 1 1\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+	      "perfectrefractor_material\n{\n\tname mat_refr\n\trefractance pnt_refr\n\tior 1.5\n}\n\n";
+	auto slabAt = [&ss]( const char* name, double y ) {
+		ss << "box_geometry\n{\n\tname geo_" << name << "\n\twidth 8\n\theight 0.05\n\tdepth 8\n}\n\n"
+		   << "standard_object\n{\n\tname " << name << "\n\tgeometry geo_" << name << "\n\tposition 0 " << y << " 0\n\tmaterial mat_refr\n}\n\n";
+	};
+	if( slab1 ) slabAt( "slab1", 1.0 );
+	slabAt( "slab2", 1.75 );
+	if( gap ) {
+		ss << BlackPainterChunk() << BlackWeaveChunk( "mat_sheet", 0.3 )
+		   << "clippedplane_geometry\n{\n\tname geo_sheet\n\tpta -4 2 4\n\tptb 4 2 4\n\tptc 4 2 -4\n\tptd -4 2 -4\n\tdoublesided TRUE\n}\n\n"
+		      "standard_object\n{\n\tname sheet\n\tgeometry geo_sheet\n\tmaterial mat_sheet\n}\n\n";
+	}
+	return ss.str();
+}
+
 //! Opt-in probe (WEAVE_GAP_FILTER=dl295probe): print SMS on / off for the
 //! round-1 review scenes, to size the gated rows' sample counts.
 static void ProbeReviewScenes()
@@ -1168,9 +1227,15 @@ static void ProbeReviewScenes()
 		{ "Lambertian under slab pel (SMS owns it)", UnderSlabScene( 0, true ), false },
 		{ "rough RW-SSS under slab pel", UnderSlabScene( 2, true ), false },
 		{ "rough RW-SSS no slab pel", UnderSlabScene( 2, false ), false },
+		{ "DL-340 fog + slab pel", FogSlabScene( true, 0.2 ), false },
+		{ "DL-340 fog, no slab pel (control)", FogSlabScene( false, 0.2 ), false },
+		{ "DL-373 floor view, no gap pel", TwoChainScene( false, true ), false },
+		{ "DL-373 floor view, gap pel", TwoChainScene( true, true ), false },
+		{ "DL-373 floor view, gap, slab1 removed pel", TwoChainScene( true, false ), false },
 	};
 	for( const P& r : rows ) {
-		const unsigned int spp = 256;
+		const char* sppEnv = std::getenv( "WEAVE_GAP_PROBE_SPP" );
+		const unsigned int spp = sppEnv ? (unsigned int)std::strtol( sppEnv, nullptr, 10 ) : 256u;
 		ParityRow( r.label, r.hwss ? RastPTSpectralSMS( spp, true, true ) : RastPTSMS( spp, true ),
 			r.hwss ? RastPTSpectralSMS( spp, true, false ) : RastPTSMS( spp, false ), r.scene, -1.0 );
 	}
@@ -1561,23 +1626,46 @@ static void MeasureDesignDocTable( unsigned int nRepeats )
 //////////////////////////////////////////////////////////////////////
 // scenehash (opt-in only; WEAVE_GAP_FILTER=scenehash): DL-295's
 // "nothing without a non-caster delta vertex moves" proof.  Renders every
-// scene file named in WEAVE_GAP_SCENES (whitespace-separated) with
+// scene file named in WEAVE_GAP_SCENES (whitespace-separated; default:
+// every shipped scene whose ACTIVE rasterizer sets `sms_enabled TRUE`,
+// kSMSScenes below) with
 // std::srand(4242) and the Sobol' salt 0, every `samples` line capped at
 // WEAVE_GAP_SCENE_SPP (default 8), and prints the mean luminance and an
-// FNV-1a hash of the captured pixels.  Deterministic ONLY with a single
-// render thread (RISE_OPTIONS_FILE containing `force_number_of_threads
-// 1`): the per-thread RNGs are seeded from libc rand() in thread start
-// order.  Compare two separately built binaries' output line by line.
+// FNV-1a hash of the captured pixels.  Deterministic because main() forces
+// a single render worker (a multithreaded render seeds each worker's RNG
+// from libc rand() in thread-start order).  Compare two separately built
+// binaries' output line by line.  `pool_caustics_vcm` is NOT in the list:
+// its SMS rasterizer chunk is commented out.
+//////////////////////////////////////////////////////////////////////
+static const char* kSMSScenes =
+	"scenes/Tests/Caustics/diacaustic_pt_sms.RISEscene "
+	"scenes/Tests/Caustics/triplecaustic_pt_sms.RISEscene "
+	"scenes/Tests/SMS/sms_k1_botonly.RISEscene "
+	"scenes/Tests/SMS/sms_k1_refract.RISEscene "
+	"scenes/Tests/SMS/sms_k2_flatslab.RISEscene "
+	"scenes/Tests/SMS/sms_k2_glassblock.RISEscene "
+	"scenes/Tests/SMS/sms_k2_glasssphere.RISEscene "
+	"scenes/Tests/SMS/sms_k2_glasssphere_tess.RISEscene "
+	"scenes/Tests/SMS/sms_k2_glasssphere_tess_disp.RISEscene "
+	"scenes/Tests/SMS/sms_k2_torus_cross.RISEscene "
+	"scenes/Tests/SMS/sms_luminous_orb.RISEscene "
+	"scenes/Tests/SMS/sms_slab_close_pt_sms_hispp.RISEscene "
+	"scenes/Tests/SMS/sms_slab_close_sms.RISEscene "
+	"scenes/Tests/SMS/sms_teapot_close_sms.RISEscene "
+	"scenes/Tests/SMS/sms_veach_egg.RISEscene "
+	"scenes/Tests/SMS/sms_veach_egg_bumpmap.RISEscene "
+	"scenes/Tests/SMS/sms_veach_egg_displaced.RISEscene "
+	"scenes/Tests/SMS/sms_visibility_occluded.RISEscene "
+	"scenes/Tests/SMS/sms_visibility_unoccluded.RISEscene "
+	"scenes/Tests/Spectral/sms_through_glass_emitter_pt_sms.RISEscene "
+	"scenes/Tests/Spectral/spectral_dispersive_caustic_pt_sms.RISEscene";
 //////////////////////////////////////////////////////////////////////
 static void HashScenes()
 {
-	const char* list = std::getenv( "WEAVE_GAP_SCENES" );
+	const char* listEnv = std::getenv( "WEAVE_GAP_SCENES" );
+	const char* list = listEnv ? listEnv : kSMSScenes;
 	const char* sppEnv = std::getenv( "WEAVE_GAP_SCENE_SPP" );
 	const long cap = sppEnv ? std::strtol( sppEnv, nullptr, 10 ) : 8;
-	if( !list ) {
-		std::cout << "scenehash: set WEAVE_GAP_SCENES" << std::endl;
-		return;
-	}
 	std::istringstream names( list );
 	std::string path;
 	while( names >> path )
