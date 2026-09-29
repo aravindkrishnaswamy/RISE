@@ -683,6 +683,122 @@ namespace
 		}
 	}
 
+	//! A7-KF (DL-290 review round 3, P2-3): configurations the containment
+	//! probe gets WRONG, printed and NOT gated so they stay visible.  The
+	//! probe asks "does the stack-top object Y enclose this crossing?" by
+	//! looking for an EXIT hit on Y ahead; that answer is wrong when Y is
+	//! itself an OPEN sheet that bounds the walk's medium (T6: a lone sheet
+	//! inside a two-sheet slab -- the probe misses the slab's bottom sheet
+	//! and pops it) and when Y is a closed solid wound INWARD (T5c: the
+	//! probe's exit hit reads as an entry -- a single-sided mesh; an
+	//! analytic sphere under `scale -1` does NOT reproduce it).  Both belong to the open-sheet /
+	//! winding convention family, DL-345 (filed at merge); see the
+	//! SnellContinueChain comment for the full residual list.
+	void TestSeedWalkKnownFailures()
+	{
+		std::cout << "A7-KF: seed-walk configurations the containment probe gets wrong (KNOWN-FAILURE, not gated)" << std::endl;
+		const std::string up = "\tpta -0.6 0 -0.6\n\tptb -0.6 0 0.6\n\tptc 0.6 0 0.6\n\tptd 0.6 0 -0.6\n";
+		const std::string down = "\tpta -0.6 0 -0.6\n\tptb 0.6 0 -0.6\n\tptc 0.6 0 0.6\n\tptd -0.6 0 0.6\n";
+		struct KF { const char* tag; std::string scene; const char* pushObj; Scalar pushIor; Point3 end; std::vector<Scalar> expect; };
+		std::vector<KF> cases;
+		std::vector<std::string> tempFiles;
+		{
+			std::ostringstream o;
+			o << "RISE ASCII SCENE 7\n" << PainterPreamble();
+			o << "perfectrefractor_material\n{\n\tname slab_mat\n\tior 2.2\n\trefractance white\n}\n\n";
+			o << "perfectrefractor_material\n{\n\tname lone_mat\n\tior 1.5\n\trefractance white\n}\n\n";
+			o << "clippedplane_geometry\n{\n\tname up_geo\n" << up << "}\n\n";
+			o << "clippedplane_geometry\n{\n\tname down_geo\n" << down << "}\n\n";
+			o << "standard_object\n{\n\tname bot_sheet\n\tgeometry down_geo\n\tposition 0 0.45 0\n\tmaterial slab_mat\n}\n\n";
+			o << "standard_object\n{\n\tname lone_sheet\n\tgeometry up_geo\n\tposition 0 0.5 0\n\tmaterial lone_mat\n}\n\n";
+			o << "standard_object\n{\n\tname top_sheet\n\tgeometry up_geo\n\tposition 0 0.55 0\n\tmaterial slab_mat\n}\n\n";
+			cases.push_back( KF{ "T6 lone 1.5 sheet inside an open two-sheet 2.2 slab", o.str(), nullptr, 0,
+				Point3( 0.1, 1.5, 0.05 ), { 1.0, 2.2, 1.5, 2.2, 2.2, 1.0 } } );
+		}
+		{
+			// A closed water cube (a single-sided RAW2 mesh) wound INWARD --
+			// every triangle's winding normal points into the solid -- already
+			// on the receiver stack because the camera path entered it; a lone
+			// 2.2 sheet inside it.
+			char meshPath[512];
+			std::snprintf( meshPath, sizeof( meshPath ), "/tmp/dl290_invariance_inward_%d.rawmesh2", static_cast<int>( ::getpid() ) );
+			{
+				const double h = 2.0, cy = 0.5;
+				std::vector<Point3> P;
+				for( int k = 0; k < 8; ++k ) P.push_back( Point3( ( k & 1 ) ? h : -h, cy + ( ( k & 2 ) ? h : -h ), ( k & 4 ) ? h : -h ) );
+				const int quads[6][4] = { {0,2,6,4}, {1,3,7,5}, {0,1,5,4}, {2,3,7,6}, {0,1,3,2}, {4,5,7,6} };
+				std::vector<int> tris;
+				const Point3 centre( 0, cy, 0 );
+				for( const auto& q : quads ) {
+					const int t2[2][3] = { { q[0], q[1], q[2] }, { q[0], q[2], q[3] } };
+					for( const auto& t : t2 ) {
+						const Vector3 n = Vector3Ops::Cross( Vector3Ops::mkVector3( P[t[1]], P[t[0]] ), Vector3Ops::mkVector3( P[t[2]], P[t[0]] ) );
+						const Point3 c( ( P[t[0]].x + P[t[1]].x + P[t[2]].x ) / 3, ( P[t[0]].y + P[t[1]].y + P[t[2]].y ) / 3, ( P[t[0]].z + P[t[1]].z + P[t[2]].z ) / 3 );
+						const bool inward = Vector3Ops::Dot( n, Vector3Ops::mkVector3( c, centre ) ) < 0;
+						tris.push_back( t[0] );
+						tris.push_back( inward ? t[1] : t[2] );
+						tris.push_back( inward ? t[2] : t[1] );
+					}
+				}
+				std::ofstream m( meshPath );
+				m << "8 12\n";
+				for( const Point3& p : P ) {
+					const Vector3 n = Vector3Ops::Normalize( Vector3Ops::mkVector3( centre, p ) );	// inward
+					m << "v " << p.x << " " << p.y << " " << p.z << "    " << n.x << " " << n.y << " " << n.z << "    0 0\n";
+				}
+				for( std::size_t k = 0; k < tris.size(); k += 3 ) m << "t " << tris[k] << " " << tris[k + 1] << " " << tris[k + 2] << "\n";
+			}
+			std::ostringstream o;
+			o << "RISE ASCII SCENE 7\n" << PainterPreamble();
+			o << "perfectrefractor_material\n{\n\tname water_mat\n\tior 1.33\n\trefractance white\n}\n\n";
+			o << "perfectrefractor_material\n{\n\tname lone_mat\n\tior 2.2\n\trefractance white\n}\n\n";
+			o << "rawmesh2_geometry\n{\n\tname water_geo\n\tfile " << meshPath << "\n\tface_normals TRUE\n}\n\n";
+			o << "standard_object\n{\n\tname water\n\tgeometry water_geo\n\tmaterial water_mat\n}\n\n";
+			o << "clippedplane_geometry\n{\n\tname up_geo\n" << up << "}\n\n";
+			o << "standard_object\n{\n\tname lone_sheet\n\tgeometry up_geo\n\tposition 0 0.5 0\n\tmaterial lone_mat\n}\n\n";
+			cases.push_back( KF{ "T5c inward-wound closed 1.33 mesh (camera-pushed), lone 2.2 sheet inside", o.str(), "water", 1.33,
+				Point3( 0.1, 3.0, 0.05 ), { 2.2, 1.33, 1.33, 1.0 } } );
+			tempFiles.push_back( meshPath );
+		}
+		for( const KF& c : cases ) {
+			const std::string path = WriteScene( c.scene, "seedwalk_kf" );
+			IJobPriv* job = nullptr;
+			const bool loaded = !path.empty() && RISE_CreateJobPriv( &job ) && job && job->LoadAsciiSceneViaCst( path.c_str() );
+			Check( loaded, std::string( "A7-KF: scene loads, " ) + c.tag );
+			if( !loaded ) { safe_release( job ); std::remove( path.c_str() ); continue; }
+			StandardShader* shader = new StandardShader( std::vector<IShaderOp*>() );
+			RayCaster* caster = new RayCaster( false, 8, *shader, false );
+			caster->AttachScene( job->GetScene() );
+			ManifoldSolver* solver = new ManifoldSolver( ManifoldSolverConfig() );
+			const Point3 start( 0.05, 0, 0.02 );
+			IORStack receiver( 1.0 );
+			if( c.pushObj ) {
+				const IObjectPriv* pObj = job->GetScene()->GetObjects()->GetItem( c.pushObj );
+				Check( pObj != nullptr, std::string( "A7-KF: pushed object found, " ) + c.tag );
+				receiver.SetCurrentObject( pObj );
+				receiver.push( c.pushIor );
+			}
+			std::vector<ManifoldVertex> chain;
+			solver->BuildSeedChain( start, c.end, *job->GetScene(), *caster, chain, true, &receiver );
+			std::ostringstream got, want;
+			got << std::setprecision( 9 );
+			for( const ManifoldVertex& v : chain ) got << "[" << v.etaI << " -> " << v.etaT << ( v.isExiting ? " exit" : " entry" ) << "]";
+			for( std::size_t k = 0; k + 1 < c.expect.size(); k += 2 ) want << "[" << c.expect[k] << " -> " << c.expect[k + 1] << "]";
+			bool ok = chain.size() * 2 == c.expect.size();
+			for( std::size_t k = 0; ok && k < chain.size(); ++k ) {
+				ok = std::fabs( chain[k].etaI - c.expect[2 * k] ) < 1e-12 && std::fabs( chain[k].etaT - c.expect[2 * k + 1] ) < 1e-12;
+			}
+			std::cout << "    " << c.tag << ": got " << got.str() << "  correct " << want.str()
+				<< ( ok ? "  (now CORRECT -- promote this row to a gate)" : "  KNOWN-FAILURE (not gated; DL-345 family)" ) << std::endl;
+			safe_release( solver );
+			safe_release( caster );
+			safe_release( shader );
+			safe_release( job );
+			std::remove( path.c_str() );
+		}
+		for( const std::string& f : tempFiles ) std::remove( f.c_str() );
+	}
+
 	//! A8 (DL-290 review round 2, P2-2): Newton convergence must be
 	//! CONTINUOUS in a vertex's index mismatch.  Two concentric glass
 	//! spheres, outer 2.2 and inner 2.2 + dn: the seed walk enters both,
@@ -1113,15 +1229,15 @@ namespace
 	// Part C -- shipped two-sheet SMS scenes against their VCM twin
 	//////////////////////////////////////////////////////////////////
 	//
-	// DL-290 review round 1 (P1-1) and round 2 (P1-A, P1-B).
+	// DL-290 review round 1 (P1-1), round 2 (P1-A, P1-B) and round 3 (P2-1).
 	// sms_k2_flatslab and sms_k2_glassblock build their slab from TWO open
 	// clippedplane sheets, each of which pushes the glass index.  With the
 	// seed walk starting from the receiver's live stack, a matched second
 	// vertex and an unpushed exit are both reached here: the round-0 build
 	// read these caustics at a quarter of the reference.
 	//
-	// The gate is the SMS render's mean over the pixels S where the CAMERA
-	// SEES THE SLAB (the floor seen through both sheets), divided by the
+	// The gate is the SMS render's mean over the pixels S FULLY covered by
+	// the slab (the floor seen through both sheets), divided by the
 	// VCM _ref twin's -- same scene, same film, oidn off.  S is rendered,
 	// not guessed: a variant of the scene with the sheets emissive and
 	// everything else black.  The floor seen directly around the slab (F)
@@ -1130,18 +1246,18 @@ namespace
 	// themselves (DL-345, filed at merge); on S the references agree to
 	// 1-2 %.  Renders are salted (independent randomized-QMC replicates).
 	//
-	// Bands, from the measured ratio and its sd (salted, n = 4):
-	// flatslab 1.0143 +/- 0.0018, glassblock 0.9034 +/- 0.0030.  On S the
-	// two references agree with each other to ~1 % (VCM vs PT without SMS
-	// at 4096 spp: 0.2180 / 0.2183 flatslab, 0.2344 / 0.2317 glassblock),
-	// so each band is [centre - 6 sd - 0.02, max(centre, 1) + 6 sd + 0.02]:
-	// wide enough for the reference agreement and the replicate noise, and
-	// with an upper bound above 1 so a genuine SMS improvement cannot fail.
-	// glassblock's centre is ~10 % LOW: SMS's own deficit on a DISPLACED
-	// slab, present with or without a matched vertex (0.85 of PT-without-
-	// SMS with the top sheet at 2.3) -- DL-352, filed at merge -- not an
-	// index effect.  Pre-fix readings on S: base 0.70 / 0.45, the round-0
-	// build 0.13 / 0.12.
+	// Bands, re-derived in review round 3 on the coverage > 0.99 mask from
+	// two salted n = 6 runs: flatslab 0.9998 / 0.9994 (SE 0.0014 / 0.0021),
+	// glassblock 0.8810 / 0.8828 (SE 0.0020 / 0.0026).  With the larger
+	// per-replicate sd (0.0052 / 0.0065) the SE of the gate's own n = 4 mean
+	// is 0.0026 / 0.0032, and each band is
+	// [centre - 6 SE - 0.02, max(centre, 1) + 6 SE + 0.02]: flatslab
+	// [0.964, 1.036], glassblock [0.842, 1.040].  The 0.02 is the two
+	// references' own agreement on S (VCM vs PT without SMS, 1-2 %); the
+	// upper bound sits above 1 so a genuine SMS improvement cannot fail.
+	// glassblock's centre is 12 % LOW: SMS's own deficit on a DISPLACED slab,
+	// present with or without a matched vertex -- DL-352, filed at merge --
+	// not an index effect.  Pre-review readings on S: 0.12 / 0.11.
 	std::string ReadFileText( const std::string& path )
 	{
 		std::ifstream ifs( path );
@@ -1197,10 +1313,11 @@ namespace
 		std::cout << "C: shipped two-sheet SMS scenes vs their VCM _ref twin on the slab pixels S, n=" << trials << " per side, salted" << std::endl;
 		struct SceneRow { const char* name; double lo, hi; };
 		const SceneRow rows[] = {
-			{ "sms_k2_flatslab",   0.98,  1.045 },
-			{ "sms_k2_glassblock", 0.865, 1.04  },
+			{ "sms_k2_flatslab",   0.964, 1.036 },
+			{ "sms_k2_glassblock", 0.842, 1.040 },
 		};
-		const unsigned int kW = 100, kH = 75, kSmsSpp = 256, kVcmSpp = 512;
+		const unsigned int kW = 100, kH = 75, kSmsSpp = 256, kVcmSpp = 512, kMaskSpp = 256;
+		const uint32_t kMaskSalt = 0x5ca1ab1eu;
 		const char* media = std::getenv( "RISE_MEDIA_PATH" );
 		const std::string root = media ? std::string( media ) : std::string();
 		unsigned int seed = 291000;
@@ -1209,24 +1326,36 @@ namespace
 			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
 			const std::string shipped = ReadFileText( root + "scenes/Tests/SMS/" + row.name + ".RISEscene" );
 			const std::string smsText = PatchShippedScene( shipped, kSmsSpp, kW, kH, false );
-			const std::string maskText = PatchShippedScene( shipped, 4, kW, kH, true );
+			const std::string maskText = PatchShippedScene( shipped, kMaskSpp, kW, kH, true );
 			const std::string refText = PatchShippedScene(
 				ReadFileText( root + "scenes/Tests/SMS/" + row.name + "_ref.RISEscene" ), kVcmSpp, kW, kH, false );
 			Check( !smsText.empty() && !refText.empty() && !maskText.empty(), label + ": shipped scene, mask variant and _ref twin read and patched" );
 			if( smsText.empty() || refText.empty() || maskText.empty() ) continue;
 
-			// The slab mask S: pixels where the camera sees a glass sheet.
+			// The slab mask S: pixels FULLY covered by the slab (coverage >
+			// 0.99), from a mask render at kMaskSpp with a pinned seed and
+			// salt.  The emissive sheets are uniform, so a fully covered
+			// pixel reads exactly the image maximum and a pixel's value over
+			// that maximum is its coverage.  Partial-coverage boundary pixels
+			// (~21 % of the old union mask) are excluded: SMS/VCM reads
+			// 1.06-1.08 on them and they biased the gated ratio by +1.5 /
+			// +3.1 points (review round 3); a 4-spp union mask also moved by
+			// 2-10 px from run to run.
 			const std::string maskPath = WriteScene( maskText, "shipped_mask" );
 			std::vector<double> maskImg;
-			const double maskMean = RenderMean( maskPath, 1, 1.0, false, Point3( 0, 0, 0 ), label + " mask", nullptr, &maskImg );
+			const double maskMean = RenderMean( maskPath, 1, 1.0, false, Point3( 0, 0, 0 ), label + " mask", nullptr, &maskImg, kMaskSalt );
 			std::remove( maskPath.c_str() );
+			double full = 0;
+			for( const double v : maskImg ) full = v > full ? v : full;
 			std::vector<char> S( maskImg.size(), 0 );
-			std::size_t nS = 0;
+			std::size_t nS = 0, nPartial = 0;
 			for( std::size_t i = 0; i < maskImg.size(); ++i ) {
-				if( maskImg[i] > 0.1 ) { S[i] = 1; ++nS; }
+				if( maskImg[i] > 0.99 * full ) { S[i] = 1; ++nS; }
+				else if( maskImg[i] > 0.01 * full ) ++nPartial;
 			}
-			std::cout << "    " << row.name << ": slab mask S = " << nS << " of " << maskImg.size() << " px" << std::endl;
-			Check( maskMean >= 0 && maskImg.size() == std::size_t( kW ) * kH && nS > 200 && nS < 1000, label + ": slab mask renders a plausible pixel set" );
+			std::cout << "    " << row.name << ": slab mask S (coverage > 0.99) = " << nS << " of " << maskImg.size()
+				<< " px (" << nPartial << " partial-coverage px excluded)" << std::endl;
+			Check( maskMean >= 0 && full > 0 && maskImg.size() == std::size_t( kW ) * kH && nS > 200 && nS < 1000, label + ": slab mask renders a plausible pixel set" );
 			if( nS == 0 ) continue;
 
 			const std::string smsPath = WriteScene( smsText, "shipped_sms" );
@@ -1296,6 +1425,7 @@ int main( int argc, char** argv )
 	}
 	TestSMSRigs();
 	TestSeedWalkOpenSheets();
+	TestSeedWalkKnownFailures();
 	TestNewtonIndexContinuity();
 	if( !unitOnly ) {
 		TestRenderedInvariance( trials, only );

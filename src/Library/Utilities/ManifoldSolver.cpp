@@ -4244,15 +4244,41 @@ unsigned int ManifoldSolver::SnellContinueChain(
 						// the walk is still inside Y after the crossing,
 						// i.e. Y encloses it -- (b); a miss, or an ENTRY
 						// hit, means Y was a sheet the walk has already
-						// passed -- (a).  An open sheet cannot be exited
-						// from a point it never bounded; a closed solid
-						// always is.  The side test uses the TRUE face
+						// passed -- (a).  For a CLOSED, outward-wound Y the
+						// first hit from inside is always an exit (concave
+						// or not).  The side test uses the TRUE face
 						// orientation (DL-70), so a double-sided closed
 						// mesh reads correctly; a ray-derived (hair)
 						// normal has no side and cannot enclose.  One ray
 						// against ONE object, only on this rare branch.
 						// In air with no enclosing object nothing
 						// changes: the top is the root, 1.0.
+						//
+						// Known residuals (review round 3; the open-sheet /
+						// winding convention family, DL-345, filed at
+						// merge), each measured with BuildSeedChain:
+						//  - Y is itself an OPEN sheet that bounds the
+						//    walk's medium: a lone 1.5 sheet inside a
+						//    two-sheet 2.2 slab reads [1.5 -> 1], correct
+						//    [1.5 -> 2.2] -- the probe misses the slab's
+						//    bottom sheet and pops it (A7-KF T6).
+						//  - Y is a closed solid wound INWARD (a
+						//    single-sided mesh) that the camera path
+						//    pushed: the probe's exit hit reads as an
+						//    entry, [2.2 -> 1][1 -> 1.33 entry] instead of
+						//    [2.2 -> 1.33][1.33 -> 1] (A7-KF T5c).
+						//  - Y is a closed solid with a HOLE and the walk
+						//    leaves through it: the probe misses and pops,
+						//    1.0 where the stack says 1.33 (ill-posed
+						//    geometry, no right answer).
+						//  - Two STACKED open slabs seen through their
+						//    sheets: the camera path pushed all four
+						//    sheets, and the walk reads the air gap between
+						//    the slabs as glass ([2.2 -> 2.2] x3) in every
+						//    post-DL-290 build; the pre-DL-290 walk, which
+						//    started from air, got it right.  This is the
+						//    receiver stack's own open-sheet convention
+						//    (DL-345), not this branch.
 						const IObject* pY = seedIor.topObject();
 						if( pY ) {
 							bool yEnclosesCrossing = false;
