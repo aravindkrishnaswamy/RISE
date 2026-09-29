@@ -668,7 +668,11 @@ A temporary harness (never committed; `std::srand(seed)`,
 every shipped scene binding `cooktorrance_material`, `hair_material`,
 `weave_material` or `biospec_skin_material` (native rasterizer, and swapped
 to PT, BDPT and PT spectral) plus every `sms_enabled` scene (native), cut to
-48 px wide at <= 4 spp without OIDN: 134 variants, seeds 42 and 1234, base
+48 px wide at <= 4 spp, with `oidn_denoise FALSE` forced on every
+`pathtracing_` / `bdpt_` / `vcm_` / `mlt_` rasterizer chunk (**round-3
+correction:** NOT on the other native rasterizers -- a `pixelpel` or
+`pixelintegratingspectral` chunk with no `oidn_denoise` line kept OIDN on, so
+"without OIDN" was false for those variants): 134 variants, seeds 42 and 1234, base
 `c190163c` versus the final build.  Serial re-runs are deterministic.
 
 - **129/134 bit-identical at both seeds.**  (15 of those are canonical
@@ -696,8 +700,13 @@ to PT, BDPT and PT spectral) plus every `sms_enabled` scene (native), cut to
   and the round-0 build read their caustics at a quarter of the reference.
 - An earlier parallel (8-process) run showed `fabric_presets` (pixelpel) and
   `glass_pavilion` differing; serial re-runs of both binaries were 8/8 and
-  6/6 identical -- load-induced nondeterminism of that rasterizer, not the
-  fix.
+  6/6 identical.  **Round-3 correction:** this is not a race.  OIDN is ON
+  for that pixelpel chunk (no `oidn_denoise` line), and OIDN's Auto quality
+  (`ResolveAutoQuality`) picks FAST or BALANCED from the measured render
+  seconds per megapixel, so a render near that threshold flips mode with
+  machine load: the mode matched the output 6/6 (FAST 0.13945, BALANCED
+  0.14558), and with `oidn_denoise FALSE` 8/8 runs are identical.  DL-360
+  (filed at merge).
 - `spectral_skin_fast` / `spectral_skinmodel` read NaN under BDPT in BOTH
   builds -- not BioSpec: an `infiniteplane_geometry` luminaire with
   `scale` above 1 turns the whole image NaN under PT and BDPT (filed
@@ -1073,12 +1082,14 @@ refraction vertex -- and `diacaustic_pt_sms`, `pool_caustics_vcm` and
 measurement that matters for those 19: no resolvable mean change.
 (`fabric_presets` under its native rasterizer is bimodal across repeated
 SERIAL runs of any build -- means 0.1648 and 0.1914, round 1, round 2 and
-the merged pre-round build alike -- a pre-existing nondeterminism unrelated
-to this slice; §11.6's "differed only under parallel load" was an
-under-sampled reading of the same thing.)
+the merged pre-round build alike.  **Round-3 correction:** the cause is
+OIDN's Auto quality choosing FAST or BALANCED from measured render time,
+not a race -- see the §11.3 bullet and DL-360, filed at merge.)
 
 **P1-B -- glassblock's gap is SMS's, not VCM's; Part C is gated on the
-slab pixels.**  The round-1 Part C rectangle straddled two pixel classes:
+slab pixels.**  (Round 3, §11.8: the S mask below was the UNION of the slab
+pixels, 21 % of them partially covered; the gate now uses fully covered
+pixels only, and the figures in this paragraph are superseded there.)  The round-1 Part C rectangle straddled two pixel classes:
 311 px of S (the slab seen through both sheets) and 55-66 px of F (the floor
 seen directly under it).  On F the integrators disagree by up to 3x among
 themselves (DL-345, below); on S the references agree to 1-2 %.  S-mask
@@ -1100,7 +1111,7 @@ statement that glassblock's gap was VCM's (§11.6) was wrong: its "0.98 /
 1.00 of PT-without-SMS" came from the F pixels in the rectangle.
 
 Part C now renders the S mask per scene (sheets emissive, everything else
-black), gates the salted SMS/VCM ratio over S, and derives each band from
+black; round 3: fully covered pixels only, §11.8), gates the salted SMS/VCM ratio over S, and derives each band from
 the measured centre and sd plus the references' own agreement:
 `[centre - 6 sd - 0.02, max(centre, 1) + 6 sd + 0.02]`, giving
 flatslab [0.98, 1.045] (measured 1.0143 +/- 0.0018) and glassblock
@@ -1137,8 +1148,9 @@ order alternated, user CPU, paired:
 | sms_k2_flatslab | 4.853 s | 4.802 s | 4.745 s | **-2.13 %** (t = -2.39) |
 | sms_k2_glasssphere | 3.197 s | 3.137 s | 3.173 s | **-0.71 %** (t = -1.09) |
 
-No cost increase is resolvable on either scene (flatslab is slightly
-FASTER: fewer failed Newton solves); nothing to profile.
+No significant cost change on either scene (the review's own same-tree
+measurement read +2.1 % torus_cross, t = 1.64, and +1.6 % botonly, t =
+1.43); nothing to profile.
 
 **DL-353 (filed at merge) -- uniform-mode spectral SMS ignores the
 per-wavelength index: CONFIRMED.**  `EvaluateAtShadingPointNMUniform`'s
@@ -1165,3 +1177,122 @@ shipped slabs); at pre-review `5c02d489` **212/9** -- four A7 rows, A8's
 matched configuration (0 % converged, so its continuity rows are not
 reached), both Part B open-sheet rows, and both Part C rows on S (0.1187 /
 0.1086).
+
+### 11.8 External review round 3 (PASS, no P1): mask coverage, solver-rate disclosure, probe residuals
+
+The third external review (on `b7575384`) passed with no P1 and five P2s;
+this round is tests and documentation only (plus a comment in
+`SnellContinueChain`).  No library behaviour changed.
+
+**P2-1 -- Part C's mask now counts only fully covered pixels.**  The round-2
+mask S was the union of the slab pixels at a 0.1 threshold on a 4-spp
+render: 79 / 370 (flatslab) and 72 / 366 (glassblock) of them were partial-
+coverage boundary pixels, on which SMS/VCM reads 1.06-1.08, and they moved
+the gated ratio by +1.5 / +3.1 points; the 4-spp mask also moved by 2-10 px
+from run to run.  S is now the pixels with coverage > 0.99 from a 256-spp
+mask render at a pinned seed and salt (a fully covered pixel of the uniform
+emissive sheets reads exactly the image maximum): 291-292 px flatslab,
+296-297 px glassblock, 83-87 partial pixels excluded (the remaining 1-px
+jitter is the per-worker RNG seeding).  Re-derived from two salted n = 6
+runs:
+
+| scene | SMS/VCM on full-coverage S (two runs) | per-replicate sd | band |
+|---|---|---:|---|
+| sms_k2_flatslab | 0.9998, 0.9994 | 0.0052 | [0.964, 1.036] |
+| sms_k2_glassblock | 0.8810, 0.8828 | 0.0065 | [0.842, 1.040] |
+
+Band = `[centre - 6 SE(n=4) - 0.02, max(centre, 1) + 6 SE(n=4) + 0.02]`, the
+0.02 being the references' own agreement on S; the upper bounds sit above 1,
+so an SMS that became exact on glassblock passes, and the pre-review reading
+(0.11) fails.  On the same full-coverage S, the round-1 mover renders (n = 4;
+VCM 1024 spp, PT without SMS 4096 spp) read:
+
+| S (full coverage) | base | round 0 | rounds 1-3 | VCM | PT, SMS off |
+|---|---:|---:|---:|---:|---:|
+| flatslab (291 px) | 0.1521 | 0.0052 | 0.2263 (**1.001** of VCM) | 0.2260 +/- 0.0008 | 0.2325 +/- 0.0088 |
+| glassblock (297 px) | 0.0975 | 0.0053 | 0.2140 (**0.880** of VCM, 0.887 of PT) | 0.2431 +/- 0.0007 | 0.2412 +/- 0.0107 |
+
+flatslab's SMS is exact on the clean pixels (the +1.4 % of round 2 was
+entirely the partial pixels); glassblock's SMS deficit is **12 %** (the
+review's salted n = 6 reading: 0.876, i.e. 12.4 %) -- DL-352's figure.
+
+**P2-2 -- the unnormalized half-vector changes Newton's SUCCESS RATE, not
+only its iterates.**  `SMS_SOLVE_DIAG`, all 22 shipped SMS scenes at 100x75,
+spp <= 16, two runs each, round 1 -> round 2 (the review's measurement; the
+five rows marked * reproduced here with a separate diagnostic build, one
+run, 64 spp cap: glasssphere 92.5 -> 100.0, egg_displaced 39.1 -> 63.2,
+visibility_unoccluded 74.3 -> 86.1, triplecaustic 49.2 -> 58.7, teapot
+58.1 -> 57.0):
+
+| scene | ok rate round 1 | round 2 | z | what moved |
+|---|---:|---:|---:|---|
+| sms_veach_egg_displaced * | 39.19 % | 63.06 % | +156.7 | physicsFail 16.5 -> 2.5 % |
+| sms_k2_glasssphere * | 92.27 % | 100.00 % | +30.6 | physicsFail 7.48 -> 0 % |
+| sms_k2_glasssphere_tess | 92.54 % | 100.00 % | +30.0 | |
+| triplecaustic_pt_sms * | 49.54 % | 58.98 % | +39.3 | physicsFail 49.7 -> 36.2 % |
+| sms_visibility_unoccluded * | 74.34 % | 86.71 % | +24.3 | physicsFail 21.6 -> 4.8 % |
+| sms_visibility_occluded | 44.52 % | 51.92 % | +10.2 | |
+| sms_veach_egg_bumpmap | 96.91 % | 97.19 % | +5.4 | |
+| spectral_dispersive_caustic_pt_sms | 54.18 % | 55.79 % | +3.9 | seedTooFar 0 -> 1.09 % |
+| sms_k2_torus_cross | 94.93 % | 95.08 % | +2.5 | seedTooFar 0.01 -> 0.03 % |
+| sms_slab_close_sms | | +0.24 pt | +2.5 | |
+| sms_teapot_close_sms * | 58.86 % | 57.89 % | -2.9 | seedTooFar 0 -> 0.30 % |
+| flatslab, glassblock, botonly, refract, diacaustic, tess_disp, luminous_orb, veach_egg | unchanged | | | |
+| pool_caustics, through_glass_emitter | no solves | | | |
+
+The gain is mostly fewer spurious WRONG-SIDE roots (the physics check's
+rejections fall): the normalized constraint's rank-1 term `F (grad ln|h|)^T`
+blows up as `|h| -> 0` and drags Newton into basins the physics check then
+rejects.  No resolvable image change follows (§11.7's salted sweep; the
+review's reference comparison: egg_displaced +4.9 % toward VCM / PT-no-SMS,
+t = 1.2, with SMS ~50 % low there in both builds; glasssphere, triplecaustic
+and visibility_unoccluded unchanged to within noise).  **Residual (not
+changed):** the `||C|| > 2.0` "seed too far" early-out in `Solve` was tuned
+for the normalized constraint (whose magnitude is bounded by 2) and now fires
+on a few unnormalized seeds (the seedTooFar column above); it is recorded in
+the DL-290 row, not retuned here.
+
+**P2-3 -- containment-probe residuals.**  The probe is exact for a closed,
+outward-wound stack-top object (the review checked a concave torus re-entry
+and a stale stack, both correct), but not for these, now listed in the
+`SnellContinueChain` comment and the DL-290 row (the open-sheet / winding
+convention family, DL-345, filed at merge):
+
+- T6, a lone 1.5 sheet inside an OPEN two-sheet 2.2 slab: the probe misses
+  the slab's bottom sheet and pops it.
+- T5c, a closed 1.33 mesh wound INWARD (single-sided RAW2 cube) that the
+  camera path pushed: the probe's exit hit reads as an entry.
+- T4, a closed water mesh with a HOLE, the walk leaving through it: the
+  probe misses and pops (1.0 where the stack says 1.33; ill-posed).
+- T7, two STACKED open slabs seen through their sheets: the camera path
+  pushed all four sheets and the walk reads the air gap as glass in every
+  post-DL-290 build ([2.2 -> 2.2] x3); the pre-DL-290 walk (from air) got it
+  right.  This is the receiver stack's own open-sheet convention.
+
+T6 and T5c are now `ExteriorIndexInvarianceTest` rows marked KNOWN-FAILURE
+(printed, not gated):
+
+    T6 lone 1.5 sheet inside an open two-sheet 2.2 slab: got [1 -> 2.2 entry][1.5 -> 1 exit][2.2 -> 1 exit]  correct [1 -> 2.2][1.5 -> 2.2][2.2 -> 1]
+    T5c inward-wound closed 1.33 mesh (camera-pushed), lone 2.2 sheet inside: got [2.2 -> 1 exit][1 -> 1.33 entry]  correct [2.2 -> 1.33][1.33 -> 1]
+
+(An analytic sphere under `scale -1` does NOT reproduce T5c, which is why
+the row uses a mesh.)  Both print "now CORRECT -- promote this row to a
+gate" if a later change fixes them.
+
+**P2-4 -- DL-354 is a pixel-footprint effect.**  BDPT/PT on flatslab's
+directly visible luminaire (box filter, OIDN off, n = 3, the review's
+measurement): 0.567 at 100x75, 0.955 at 200x150, 0.997 at 400x300.  Flipping
+the quad's winding gives 0.576 / 0.955, so it is not DL-320 (winding); no
+path-depth cap is involved, so it is not DL-351.  It is a BDPT deficit on a
+SMALL emitter seen directly that grows with pixel size relative to the
+emitter -- likely the partition between the s = 0 camera-hit strategy and
+the (s >= 1, t = 1) light-to-camera splat.  §11.7's "0.58" is the 100x75
+figure only.
+
+**P2-5 -- `fabric_presets`** is OIDN Auto quality, not a race (§11.3
+bullet, corrected); DL-360, filed at merge.
+
+**P3.**  The cost statement in §11.7 now reads "no significant change".  The
+review's premise that master differed from this branch by docs only was
+wrong for `0d69d782 .. 56303797` (DL-24 / DL-307 / DL-310 source); there is
+no source overlap with this slice, and the merged tree is gated below.
