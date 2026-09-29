@@ -103,7 +103,17 @@ void DirectLightingShaderOp::PerformOperation(
 		// chainHasBsdfContinuationOp's doc) -- default TRUE for every
 		// caller that predates the field, so this is a no-op everywhere
 		// but the legacy shader-op chain.
-		rs.chainHasBsdfContinuationOp );
+		rs.chainHasBsdfContinuationOp,
+		// DL-292: price the NEE segment's graded-index factor (DL-09) from
+		// this hit's stack.  RayCaster::CastRay{,NM,HWSS} Advances that
+		// stack to the hit before shading it (and scales the whole shade by
+		// the factor of the segment that reached it), so its top is n(hit)
+		// and every BSDF-sampled sibling -- a distribution-tracing /
+		// reflection / refraction continuation, or a PathTracingShaderOp --
+		// prices its arrival at an emitter from the same value.  Before
+		// DL-292 this passed nothing and the legacy chain kept the
+		// pre-DL-09 accounting.
+		&ior_stack );
 }
 
 //! Tells the shader to apply shade to the given intersection point for the given wavelength
@@ -155,5 +165,7 @@ Scalar DirectLightingShaderOp::PerformOperationNM(
 		// DL-185 -- see the RGB twin above.
 		rs.castRRCompensation,
 		// DL-171/DL-209 -- see the RGB twin above.
-		rs.chainHasBsdfContinuationOp );
+		rs.chainHasBsdfContinuationOp,
+		// DL-292 -- see the RGB twin above.
+		&ior_stack );
 }
