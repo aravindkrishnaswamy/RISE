@@ -304,6 +304,7 @@ namespace RISE
         bool AcceptAlpha(const RayIntersectionGeometric& ri, ISampler& sampler) const;
         static bool AnyAlphaMaterials();
         AlphaMode GetAlphaMode() const { return alphaMode_; }
+        Scalar GetAlphaCutoff() const { return alphaCutoff_; }
         const IScalarPainter* GetAlphaPainter() const { return alphaPainter_; }
 
 	};

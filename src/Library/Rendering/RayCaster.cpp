@@ -2465,7 +2465,7 @@ bool RayCaster::WalkShadowSegment(
 	RISEPel& transmittance,
 	const bool bDielectrics,
 	const bool bDeltaPassThrough,
-    ISampler* alphaSampler, MediumBoundaryHits* boundaries
+    ISampler* alphaSampler, MediumBoundaryHits* boundaries, Scalar physicalDistance, Scalar occlusionStart
 	) const
 {
 	transmittance = RISEPel( 1.0, 1.0, 1.0 );
@@ -2499,15 +2499,21 @@ bool RayCaster::WalkShadowSegment(
 
 	Point3 origin = ray.origin;
 	Scalar remaining = dHowFar;
+    Scalar sampledStart = 0;
+    const Scalar physicalEnd = boundaries && physicalDistance >= 0 ? physicalDistance : dHowFar;
 
 	for( unsigned int crossing = 0; crossing < kMaxCrossings; crossing++ )
 	{
 		Ray segRay( origin, dir );
 		RayIntersection ri( segRay, nullRasterizerState );
-		if (alphaSampler) pScene->GetObjects()->IntersectRaySampled(ri, *alphaSampler, true, true, false, remaining, true, boundaries);
+		if (alphaSampler) {
+            ri = RayIntersection(ray, nullRasterizerState);
+            pScene->GetObjects()->IntersectRaySampled(ri, *alphaSampler, true, true, false,
+                physicalEnd, true, boundaries, false, dHowFar, occlusionStart, sampledStart);
+        }
         else pScene->GetObjects()->IntersectRay(ri, true, true, false);
 
-        if( !ri.geometric.bHit || ri.geometric.range >= remaining )
+        if( !ri.geometric.bHit || ri.geometric.range >= (alphaSampler ? dHowFar : remaining) )
 		{
 			// Reached the light with no further occluder along the
 			// remaining segment — the accumulated transmittance is final.
@@ -2524,13 +2530,15 @@ bool RayCaster::WalkShadowSegment(
 		// 1e-4 under-steps in very large scenes), while the 1e-4 floor
 		// covers small scenes.  Far below the thinnest real feature.
 		const Scalar relStep = ri.geometric.range * Scalar(1.0e-5);
-		const Scalar advance = ri.geometric.range + ( relStep > kStepEps ? relStep : kStepEps );
+		const Scalar advance = alphaSampler ? std::nextafter(ri.hasBoundaryRange ? ri.boundaryRange : ri.geometric.range, RISE_INFINITY) :
+            ri.geometric.range + ( relStep > kStepEps ? relStep : kStepEps );
 
 		// Not a shadow caster: the binary test never saw it -- step over.
 		if( ri.pObject && !ri.pObject->DoesCastShadows() )
 		{
-			origin = segRay.PointAtLength( advance );
-			remaining -= advance;
+			origin = alphaSampler ? ray.PointAtLength(advance) : segRay.PointAtLength(advance);
+            sampledStart = advance;
+            remaining = alphaSampler ? physicalEnd - advance : remaining - advance;
 			if( remaining <= 0.0 ) {
 				return false;
 			}
@@ -2561,8 +2569,9 @@ bool RayCaster::WalkShadowSegment(
 				transmittance = RISEPel( 0, 0, 0 );
 				return true;
 			}
-			origin = segRay.PointAtLength( advance );
-			remaining -= advance;
+			origin = alphaSampler ? ray.PointAtLength(advance) : segRay.PointAtLength(advance);
+            sampledStart = advance;
+            remaining = alphaSampler ? physicalEnd - advance : remaining - advance;
 			if( remaining <= 0.0 ) {
 				return false;
 			}
@@ -2743,8 +2752,9 @@ bool RayCaster::WalkShadowSegment(
 		// Step the origin to the hit point plus a small epsilon along
 		// the (unchanged) travel direction (`advance`, computed above);
 		// shrink the remaining range accordingly.
-		origin = segRay.PointAtLength( advance );
-		remaining -= advance;
+		origin = alphaSampler ? ray.PointAtLength(advance) : segRay.PointAtLength(advance);
+        sampledStart = advance;
+        remaining = alphaSampler ? physicalEnd - advance : remaining - advance;
 
 		if( remaining <= 0.0 )
 		{
@@ -3249,12 +3259,12 @@ void RayCaster::SetLuminaireSampling(
 	}
 }
 
-bool RayCaster::CastShadowRaySampled(const Ray& ray, Scalar distance, ISampler& sampler, MediumBoundaryHits* boundaries) const
+bool RayCaster::CastShadowRaySampled(const Ray& ray, Scalar distance, ISampler& sampler, MediumBoundaryHits* boundaries, Scalar physicalDistance, Scalar occlusionStart) const
 {
-    return pScene && pScene->GetObjects()->IntersectShadowRaySampled(ray, distance, sampler, boundaries);
+    return pScene && pScene->GetObjects()->IntersectShadowRaySampled(ray, distance, sampler, boundaries, physicalDistance, occlusionStart);
 }
 bool RayCaster::CastShadowRayAutoSampled(const Ray& ray, Scalar distance, bool nmMode,
-    Scalar nm, RISEPel& transmittance, bool deltaLight, ISampler& sampler, MediumBoundaryHits* boundaries) const
+    Scalar nm, RISEPel& transmittance, bool deltaLight, ISampler& sampler, MediumBoundaryHits* boundaries, Scalar physicalDistance, Scalar occlusionStart) const
 {
     if (boundaries) boundaries->clear();
     const bool passThrough = deltaLight && bSceneHasDeltaPassThrough && pScene &&
@@ -3263,7 +3273,7 @@ bool RayCaster::CastShadowRayAutoSampled(const Ray& ray, Scalar distance, bool n
         !pScene->GetGlobalSpectralMap();
     if (bTransparentShadows || passThrough)
         return WalkShadowSegment(ray, distance, nmMode, nm, transmittance,
-            bTransparentShadows, passThrough, &sampler, boundaries);
+            bTransparentShadows, passThrough, &sampler, boundaries, physicalDistance, occlusionStart);
     transmittance = RISEPel(1,1,1);
-    return CastShadowRaySampled(ray, distance, sampler, boundaries);
+    return CastShadowRaySampled(ray, distance, sampler, boundaries, physicalDistance, occlusionStart);
 }

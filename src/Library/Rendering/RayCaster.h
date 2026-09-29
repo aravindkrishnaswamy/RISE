@@ -137,7 +137,7 @@ namespace RISE
 				RISEPel& transmittance,
 				const bool bDielectrics,
 				const bool bDeltaPassThrough,
-                ISampler* alphaSampler = 0, MediumBoundaryHits* boundaries = nullptr
+                ISampler* alphaSampler = 0, MediumBoundaryHits* boundaries = nullptr, Scalar physicalDistance = -1, Scalar occlusionStart = 0
 				) const;
 
 			//! Runtime override for the environment radiance scale,
@@ -378,9 +378,9 @@ namespace RISE
 			//!         reached dHowFar, with @a transmittance carrying the
 			//!         accumulated Fresnel transmittance (1.0 when the
 			//!         segment was clear of any geometry).
-            bool CastShadowRaySampled(const Ray& ray, Scalar distance, ISampler& sampler, MediumBoundaryHits* boundaries = nullptr) const;
+            bool CastShadowRaySampled(const Ray& ray, Scalar distance, ISampler& sampler, MediumBoundaryHits* boundaries = nullptr, Scalar physicalDistance = -1, Scalar occlusionStart = 0) const;
             bool CastShadowRayAutoSampled(const Ray& ray, Scalar distance, bool nmMode,
-                Scalar nm, RISEPel& transmittance, bool deltaLight, ISampler& sampler, MediumBoundaryHits* boundaries = nullptr) const;
+                Scalar nm, RISEPel& transmittance, bool deltaLight, ISampler& sampler, MediumBoundaryHits* boundaries = nullptr, Scalar physicalDistance = -1, Scalar occlusionStart = 0) const;
 
 			bool CastShadowRayTransmittance(
 				const Ray& ray,										///< [in] Ray to cast (origin = shading point, dir = toward light, normalized)

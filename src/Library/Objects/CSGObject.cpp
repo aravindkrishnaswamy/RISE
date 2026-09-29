@@ -796,6 +796,7 @@ namespace
 
 void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool, const bool, const bool ) const
 {
+    ri.hasBoundaryRange = ri.hasBoundaryRange2 = false;
 	// The hitting of front and back faces are IGNORED for CSG objects!
 
 	if( !pObjectA || !pObjectB ) {
@@ -922,6 +923,7 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					// B's exit boundary (we've been inside the union all along).
 					ri = riObjB;
 					ri.geometric.range = riObjB.geometric.range2;
+					ri.boundaryRange = riObjB.boundaryRange2; ri.hasBoundaryRange = riObjB.hasBoundaryRange2;
 					ri.geometric.vNormal = riObjB.geometric.vNormal2;
 					ri.geometric.vGeomNormal = riObjB.geometric.vGeomNormal2;
 					// EXIT-designated boundary (union, origin inside an
@@ -936,6 +938,7 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					ri = riObjA;
 				}
 				ri.geometric.range2 = 0;
+				ri.boundaryRange2 = 0; ri.hasBoundaryRange2 = true;
 			}
 			else if( !insideA && insideB )
 			{
@@ -945,6 +948,7 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 				{
 					ri = riObjA;
 					ri.geometric.range = riObjA.geometric.range2;
+					ri.boundaryRange = riObjA.boundaryRange2; ri.hasBoundaryRange = riObjA.hasBoundaryRange2;
 					ri.geometric.vNormal = riObjA.geometric.vNormal2;
 					ri.geometric.vGeomNormal = riObjA.geometric.vGeomNormal2;
 					// EXIT-designated boundary (union, origin inside an
@@ -959,6 +963,7 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					ri = riObjB;
 				}
 				ri.geometric.range2 = 0;
+				ri.boundaryRange2 = 0; ri.hasBoundaryRange2 = true;
 			}
 			else
 			{
@@ -977,6 +982,7 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					// Exit at the farther boundary
 					if( riObjB.geometric.range2 > riObjA.geometric.range2 ) {
 						ri.geometric.range2 = riObjB.geometric.range2;
+						ri.boundaryRange2 = riObjB.boundaryRange2; ri.hasBoundaryRange2 = riObjB.hasBoundaryRange2;
 						ri.geometric.vNormal2 = riObjB.geometric.vNormal2;
 						ri.geometric.vGeomNormal2 = riObjB.geometric.vGeomNormal2;
 					}
@@ -986,6 +992,7 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					ri = riObjB;
 					if( riObjA.geometric.range2 > riObjB.geometric.range2 ) {
 						ri.geometric.range2 = riObjA.geometric.range2;
+						ri.boundaryRange2 = riObjA.boundaryRange2; ri.hasBoundaryRange2 = riObjA.hasBoundaryRange2;
 						ri.geometric.vNormal2 = riObjA.geometric.vNormal2;
 						ri.geometric.vGeomNormal2 = riObjA.geometric.vGeomNormal2;
 					}
@@ -1024,15 +1031,18 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 				{
 					ri = riObjB;
 					ri.geometric.range = riObjB.geometric.range;
+					ri.boundaryRange = riObjB.boundaryRange; ri.hasBoundaryRange = riObjB.hasBoundaryRange;
 					ri.geometric.vNormal = riObjB.geometric.vNormal;
 					ri.geometric.vGeomNormal = riObjB.geometric.vGeomNormal;
 					// Exit at whichever boundary is closer
 					if( riObjA.geometric.range <= riObjB.geometric.range2 ) {
 						ri.geometric.range2 = riObjA.geometric.range;
+						ri.boundaryRange2 = riObjA.boundaryRange; ri.hasBoundaryRange2 = riObjA.hasBoundaryRange;
 						ri.geometric.vNormal2 = riObjA.geometric.vNormal;
 						ri.geometric.vGeomNormal2 = riObjA.geometric.vGeomNormal;
 					} else {
 						ri.geometric.range2 = riObjB.geometric.range2;
+						ri.boundaryRange2 = riObjB.boundaryRange2; ri.hasBoundaryRange2 = riObjB.hasBoundaryRange2;
 						ri.geometric.vNormal2 = riObjB.geometric.vNormal2;
 						ri.geometric.vGeomNormal2 = riObjB.geometric.vGeomNormal2;
 					}
@@ -1046,15 +1056,18 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 				{
 					ri = riObjA;
 					ri.geometric.range = riObjA.geometric.range;
+					ri.boundaryRange = riObjA.boundaryRange; ri.hasBoundaryRange = riObjA.hasBoundaryRange;
 					ri.geometric.vNormal = riObjA.geometric.vNormal;
 					ri.geometric.vGeomNormal = riObjA.geometric.vGeomNormal;
 					// Exit at whichever boundary is closer
 					if( riObjB.geometric.range <= riObjA.geometric.range2 ) {
 						ri.geometric.range2 = riObjB.geometric.range;
+						ri.boundaryRange2 = riObjB.boundaryRange; ri.hasBoundaryRange2 = riObjB.hasBoundaryRange;
 						ri.geometric.vNormal2 = riObjB.geometric.vNormal;
 						ri.geometric.vGeomNormal2 = riObjB.geometric.vGeomNormal;
 					} else {
 						ri.geometric.range2 = riObjA.geometric.range2;
+						ri.boundaryRange2 = riObjA.boundaryRange2; ri.hasBoundaryRange2 = riObjA.hasBoundaryRange2;
 						ri.geometric.vNormal2 = riObjA.geometric.vNormal2;
 						ri.geometric.vGeomNormal2 = riObjA.geometric.vGeomNormal2;
 					}
@@ -1076,14 +1089,17 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					AdoptCsgSurfacePayload( ri.geometric, riObjB.geometric );
 					AdoptCsgSurfaceBindings( ri, riObjB );
 					ri.geometric.range = riObjB.geometric.range;
+					ri.boundaryRange = riObjB.boundaryRange; ri.hasBoundaryRange = riObjB.hasBoundaryRange;
 					ri.geometric.vNormal = riObjB.geometric.vNormal;
 					ri.geometric.vGeomNormal = riObjB.geometric.vGeomNormal;
 					if( riObjA.geometric.range2 <= riObjB.geometric.range2 ) {
 						ri.geometric.range2 = riObjA.geometric.range2;
+						ri.boundaryRange2 = riObjA.boundaryRange2; ri.hasBoundaryRange2 = riObjA.hasBoundaryRange2;
 						ri.geometric.vNormal2 = riObjA.geometric.vNormal2;
 						ri.geometric.vGeomNormal2 = riObjA.geometric.vGeomNormal2;
 					} else {
 						ri.geometric.range2 = riObjB.geometric.range2;
+						ri.boundaryRange2 = riObjB.boundaryRange2; ri.hasBoundaryRange2 = riObjB.hasBoundaryRange2;
 						ri.geometric.vNormal2 = riObjB.geometric.vNormal2;
 						ri.geometric.vGeomNormal2 = riObjB.geometric.vGeomNormal2;
 					}
@@ -1099,14 +1115,17 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					AdoptCsgSurfacePayload( ri.geometric, riObjA.geometric );
 					AdoptCsgSurfaceBindings( ri, riObjA );
 					ri.geometric.range = riObjA.geometric.range;
+					ri.boundaryRange = riObjA.boundaryRange; ri.hasBoundaryRange = riObjA.hasBoundaryRange;
 					ri.geometric.vNormal = riObjA.geometric.vNormal;
 					ri.geometric.vGeomNormal = riObjA.geometric.vGeomNormal;
 					if( riObjB.geometric.range2 <= riObjA.geometric.range2 ) {
 						ri.geometric.range2 = riObjB.geometric.range2;
+						ri.boundaryRange2 = riObjB.boundaryRange2; ri.hasBoundaryRange2 = riObjB.hasBoundaryRange2;
 						ri.geometric.vNormal2 = riObjB.geometric.vNormal2;
 						ri.geometric.vGeomNormal2 = riObjB.geometric.vGeomNormal2;
 					} else {
 						ri.geometric.range2 = riObjA.geometric.range2;
+						ri.boundaryRange2 = riObjA.boundaryRange2; ri.hasBoundaryRange2 = riObjA.hasBoundaryRange2;
 						ri.geometric.vNormal2 = riObjA.geometric.vNormal2;
 						ri.geometric.vGeomNormal2 = riObjA.geometric.vGeomNormal2;
 					}
@@ -1123,6 +1142,7 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 				if( riObjB.geometric.range < riObjA.geometric.range ) {
 					ri = riObjB;
 					ri.geometric.range2 = riObjA.geometric.range;
+					ri.boundaryRange2 = riObjA.boundaryRange; ri.hasBoundaryRange2 = riObjA.hasBoundaryRange;
 					ri.geometric.vNormal = -riObjB.geometric.vNormal;
 					ri.geometric.vGeomNormal = -riObjB.geometric.vGeomNormal;
 					// P1-1: `ri` is a whole-record copy of B, so it still
@@ -1244,11 +1264,13 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					ri = riObjA;
 				}
 				ri.geometric.range2 = 0;
+				ri.boundaryRange2 = 0; ri.hasBoundaryRange2 = true;
 			} else if( riObjB.geometric.range2 == 0 ) {
 				// If we are inside B but not inside A, then as long as we hit A before exiting B
 				if( riObjA.geometric.range < riObjB.geometric.range ) {
 					ri = riObjB;
 					ri.geometric.range2 = riObjA.geometric.range2;
+					ri.boundaryRange2 = riObjA.boundaryRange2; ri.hasBoundaryRange2 = riObjA.hasBoundaryRange2;
 					ri.geometric.vNormal = -riObjB.geometric.vNormal;
 					ri.geometric.vGeomNormal = -riObjB.geometric.vGeomNormal;
 					// P1-1: same sign-negation rationale as the two branches
@@ -1340,6 +1362,7 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 						// to a B that never touches A.
 						ri = riObjA;
 						ri.geometric.range2 = riObjB.geometric.range;
+						ri.boundaryRange2 = riObjB.boundaryRange; ri.hasBoundaryRange2 = riObjB.hasBoundaryRange;
 						ri.geometric.vNormal2 = -riObjB.geometric.vNormal;
 						ri.geometric.vGeomNormal2 = -riObjB.geometric.vGeomNormal;
 					}
@@ -1389,7 +1412,9 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 						// something this arc introduced.
 						ri = riObjB;
 						ri.geometric.range = riObjB.geometric.range2;
+						ri.boundaryRange = riObjB.boundaryRange2; ri.hasBoundaryRange = riObjB.hasBoundaryRange2;
 						ri.geometric.range2 = riObjA.geometric.range2;
+						ri.boundaryRange2 = riObjA.boundaryRange2; ri.hasBoundaryRange2 = riObjA.hasBoundaryRange2;
 						// Reverse the normal
 						ri.geometric.vNormal = -riObjB.geometric.vNormal2;
 						ri.geometric.vGeomNormal = -riObjB.geometric.vGeomNormal2;
@@ -1710,7 +1735,12 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 				Scalar(0.5) * ( Vector3Ops::Magnitude( dx ) + Vector3Ops::Magnitude( dy ) );
 		}
 
-		// Compute the intersection in world space
+		// Preserve geometric boundary parameters without accumulating any
+        // child/parent shading backoff. Existing shading points below stay intact.
+        if (ri.hasBoundaryRange) ri.boundaryRange /= factor;
+        if (ri.hasBoundaryRange2) ri.boundaryRange2 /= factor;
+
+        // Compute the intersection in world space
 		ri.geometric.ptIntersection = Point3Ops::Transform( m_mxFinalTrans,	ri.geometric.ray.PointAtLength( ri.geometric.range - SURFACE_INTERSEC_ERROR ) );
 		ri.geometric.ptExit = Point3Ops::Transform( m_mxFinalTrans,	ri.geometric.ray.PointAtLength( ri.geometric.range2 + SURFACE_INTERSEC_ERROR ) );
 

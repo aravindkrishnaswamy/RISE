@@ -213,3 +213,53 @@ lights. `AlphaShadowMediumTest` covers RGB/NM/HWSS, unused local alpha and an
 unrelated live Job, both shadow flags, accepted/rejected alpha boundaries, and
 ordinary blockers that must not stop medium traversal, mesh/environment rays,
 and successive directional lights with different boundary segments.
+
+## Physical medium segments and endpoint exclusions
+
+A shadow query has an occlusion interval and a physical medium interval on the
+same original ray. LightSampler retains its finite light self-hit exclusion,
+but accepted medium records extend to the actual light endpoint. BDPT/VCM
+collect over the original connection, including both endpoint exclusion regions;
+only occlusion ignores those regions. Record selection uses prepared scene-local
+alpha presence, so another live Job cannot change the medium estimator.
+
+`RayIntersection` retains optional raw geometric entry/exit parameters in the
+caller's ray-distance units. Object captures them before its published shading
+backoff; CSG carries the chosen operand's entry or exit parameter and converts
+units once at each transform. Shading points and ranges keep their existing
+contract. Physical interval membership, recorded boundary positions and recast
+progress use the raw parameters, avoiding a second alpha decision caused by a
+backed-off point. Exact physical endpoint events are excluded; the immediately
+next representable endpoint includes a real preceding boundary. Unknown external
+object implementations without this metadata retain their published-point
+fallback. Geometry solver accuracy and self-root policies still apply.
+
+DL-05 sampled interface walks resume with the original ray, raster/footprint
+inputs and total hit range. Each accepted event supplies both visibility and
+medium state; there is no independent alpha replay. Authoritative records do
+not use a recast epsilon, which could otherwise hide additional boundary events
+inside the last epsilon-sized interval. The older geometric walker already
+integrated a lone final active-medium remainder after its loop; that was not the
+finite-tail defect. Known starting/global media now integrate positive short
+connection lengths even below the old whole-connection early-return threshold,
+with or without records. Ordinary geometric boundary discovery retains its
+existing recast precision limitations; this is not a general geometry overhaul.
+
+`AlphaMediumTailTest` renders PT/BDPT/VCM RGB/NM/HWSS against an exp(-1)
+endpoint-medium oracle and checks unrelated-job isolation.
+`AlphaMediumBoundaryTest` checks leading/trailing records, draw counts, short
+connections and multiple events inside the final recast interval.
+`AlphaBoundaryEndpointTest` covers exact and adjacent-representable endpoints,
+nonuniform transforms, nested CSG, subtraction/intersection, front/back,
+snapshot objects, record copies and unchanged shading backoff.
+
+## Snapshot alpha ownership
+
+Every material reconstructed by `CloneMaterialForSnapshot` copies its root
+alpha mode, cutoff and scalar-painter binding. Scalar painters follow the
+existing reference-counted sharing policy, while reconstructed materials retain
+independent slot bindings. A source rebind or destruction therefore does not
+remove the snapshot's alpha. Existing baked/wrapped-material fallback still
+shares the material itself; its documented slot-mutation limitations remain.
+Nested wrappers retain root alpha rather than substituting a child's coverage.
+`AlphaSnapshotTest` pins these ownership and default-opaque behaviors.

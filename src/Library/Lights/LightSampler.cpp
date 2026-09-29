@@ -74,7 +74,7 @@ static bool ShadowOccludedRGB(
 	const Scalar dHowFar,
 	RISEPel& transmittance,
 	const bool bDeltaLight,
-    ISampler& sampler, MediumBoundaryHits* boundaries
+    ISampler& sampler, MediumBoundaryHits* boundaries, Scalar physicalDistance = -1
 	)
 {
 	// Delegate to RayCaster::CastShadowRayAuto, the single source of truth for
@@ -83,10 +83,10 @@ static bool ShadowOccludedRGB(
 	const RayCaster* pRC = dynamic_cast<const RayCaster*>( &caster );
 	if( pRC )
 	{
-		return pRC->CastShadowRayAutoSampled( ray, dHowFar, false, 0.0, transmittance, bDeltaLight, sampler, boundaries );
+		return pRC->CastShadowRayAutoSampled( ray, dHowFar, false, 0.0, transmittance, bDeltaLight, sampler, boundaries, physicalDistance );
 	}
 	transmittance = RISEPel( 1.0, 1.0, 1.0 );
-	return caster.CastShadowRaySampled( ray, dHowFar, sampler, boundaries );
+	return caster.CastShadowRaySampled( ray, dHowFar, sampler, boundaries, physicalDistance );
 }
 
 static bool ShadowOccludedNM(
@@ -96,7 +96,7 @@ static bool ShadowOccludedNM(
 	const Scalar nm,
 	Scalar& transmittance,
 	const bool bDeltaLight,
-    ISampler& sampler, MediumBoundaryHits* boundaries
+    ISampler& sampler, MediumBoundaryHits* boundaries, Scalar physicalDistance = -1
 	)
 {
 	// Delegate to RayCaster::CastShadowRayAuto (see ShadowOccludedRGB).
@@ -104,12 +104,12 @@ static bool ShadowOccludedNM(
 	if( pRC )
 	{
 		RISEPel t( 1.0, 1.0, 1.0 );
-		const bool occluded = pRC->CastShadowRayAutoSampled( ray, dHowFar, true, nm, t, bDeltaLight, sampler, boundaries );
+		const bool occluded = pRC->CastShadowRayAutoSampled( ray, dHowFar, true, nm, t, bDeltaLight, sampler, boundaries, physicalDistance );
 		transmittance = t.r;	// NM path fills all 3 channels equally
 		return occluded;
 	}
 	transmittance = 1.0;
-	return caster.CastShadowRaySampled( ray, dHowFar, sampler, boundaries );
+	return caster.CastShadowRaySampled( ray, dHowFar, sampler, boundaries, physicalDistance );
 }
 
 // ----------------------------------------------------------------
@@ -273,7 +273,7 @@ static RISEPel EvalShadowTransmittance(
 			// boundary we just processed.  On the first iteration
 			// (segStart == 0) we still add epsilon to avoid self-
 			// intersection at the shading point.
-			const Scalar castStart = segStart + WALK_EPSILON;
+			const Scalar castStart = segStart + (boundaries ? Scalar(0) : WALK_EPSILON);
 			if( castStart >= maxDist ) {
 				break;
 			}
@@ -287,11 +287,11 @@ static RISEPel EvalShadowTransmittance(
 			if (boundaries) {
                 if (step < boundaries->size()) {
                     const bool reverse = boundaries->size() > 1 && Vector3Ops::Dot(
-                        Vector3Ops::mkVector3(boundaries->back().geometric.ptIntersection,
-                            boundaries->front().geometric.ptIntersection), ray.Dir()) < 0;
+                        Vector3Ops::mkVector3(boundaries->back().BoundaryPoint(),
+                            boundaries->front().BoundaryPoint()), ray.Dir()) < 0;
                     ri = (*boundaries)[reverse ? boundaries->size()-1-step : step];
                     ri.geometric.range = Vector3Ops::Dot(
-                        Vector3Ops::mkVector3(ri.geometric.ptIntersection, ray.origin), ray.Dir()) - castStart;
+                        Vector3Ops::mkVector3(ri.BoundaryPoint(), ray.origin), ray.Dir()) - castStart;
                 }
             } else {
                 pObjects->IntersectRay( ri, true, true, false );
@@ -422,7 +422,7 @@ static RISEPel EvalShadowTransmittance(
 	// maxDist minus the per-object distance.
 	if( pGlobalMedium ) {
 		const Scalar globalDist = maxDist - objectCoveredDist;
-		if( globalDist > WALK_EPSILON ) {
+		if( globalDist > 0 ) {
 			// For homogeneous global media this is exact (transmittance
 			// depends only on total distance).  For heterogeneous global
 			// media this is approximate — a per-segment evaluation would
@@ -484,7 +484,7 @@ static Scalar EvalShadowTransmittanceNM(
 	{
 		for( size_t step = 0; (boundaries || step < MAX_WALK_STEPS) && segStart < maxDist; step++ )
 		{
-			const Scalar castStart = segStart + WALK_EPSILON;
+			const Scalar castStart = segStart + (boundaries ? Scalar(0) : WALK_EPSILON);
 			if( castStart >= maxDist ) {
 				break;
 			}
@@ -498,11 +498,11 @@ static Scalar EvalShadowTransmittanceNM(
 			if (boundaries) {
                 if (step < boundaries->size()) {
                     const bool reverse = boundaries->size() > 1 && Vector3Ops::Dot(
-                        Vector3Ops::mkVector3(boundaries->back().geometric.ptIntersection,
-                            boundaries->front().geometric.ptIntersection), ray.Dir()) < 0;
+                        Vector3Ops::mkVector3(boundaries->back().BoundaryPoint(),
+                            boundaries->front().BoundaryPoint()), ray.Dir()) < 0;
                     ri = (*boundaries)[reverse ? boundaries->size()-1-step : step];
                     ri.geometric.range = Vector3Ops::Dot(
-                        Vector3Ops::mkVector3(ri.geometric.ptIntersection, ray.origin), ray.Dir()) - castStart;
+                        Vector3Ops::mkVector3(ri.BoundaryPoint(), ray.origin), ray.Dir()) - castStart;
                 }
             } else {
                 pObjects->IntersectRay( ri, true, true, false );
@@ -617,7 +617,7 @@ static Scalar EvalShadowTransmittanceNM(
 
 	if( pGlobalMedium ) {
 		const Scalar globalDist = maxDist - objectCoveredDist;
-		if( globalDist > WALK_EPSILON ) {
+		if( globalDist > 0 ) {
 			Tr *= pGlobalMedium->EvalTransmittanceNM( ray, globalDist, nm );
 		}
 	}
@@ -2554,7 +2554,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
 			if( bReceivesShadows )
 			{
 				const Ray rayToLight( ri.ptIntersection, vToLight );
-				if( ShadowOccludedRGB( caster, rayToLight, dist - 0.001, shadowT, true /*DL-05: delta light*/ , sampler, sampledBoundaries ) )
+				if( ShadowOccludedRGB( caster, rayToLight, dist - 0.001, shadowT, true /*DL-05: delta light*/ , sampler, sampledBoundaries, dist ) )
 					break;
 			}
 
@@ -2677,7 +2677,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
 				if( bReceivesShadows )
 				{
 					const Ray rayToLight( ri.ptIntersection, vToLight );
-					shadowed = ShadowOccludedRGB( caster, rayToLight, dist - 0.001, meshShadowT, false /*DL-05: area light -- see CastShadowRayAuto*/ , sampler, sampledBoundaries );
+					shadowed = ShadowOccludedRGB( caster, rayToLight, dist - 0.001, meshShadowT, false /*DL-05: area light -- see CastShadowRayAuto*/ , sampler, sampledBoundaries, dist );
 				}
 
 				if( !shadowed )
@@ -3325,7 +3325,7 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 			if( bReceivesShadows )
 			{
 				const Ray rayToLight( ri.ptIntersection, vToLight );
-				if( ShadowOccludedNM( caster, rayToLight, dist - 0.001, nm, shadowTNM, true /*DL-05: delta light*/ , sampler, sampledBoundaries ) )
+				if( ShadowOccludedNM( caster, rayToLight, dist - 0.001, nm, shadowTNM, true /*DL-05: delta light*/ , sampler, sampledBoundaries, dist ) )
 					break;
 			}
 
@@ -3437,7 +3437,7 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 		if( bReceivesShadows )
 		{
 			const Ray rayToLight( ri.ptIntersection, vToLight );
-			if( ShadowOccludedNM( caster, rayToLight, dist - 0.001, nm, meshShadowTNM, false /*DL-05: area light -- see CastShadowRayAuto*/ , sampler, sampledBoundaries ) )
+			if( ShadowOccludedNM( caster, rayToLight, dist - 0.001, nm, meshShadowTNM, false /*DL-05: area light -- see CastShadowRayAuto*/ , sampler, sampledBoundaries, dist ) )
 			{
 				break;
 			}

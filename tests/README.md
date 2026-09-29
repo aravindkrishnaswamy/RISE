@@ -1210,3 +1210,9 @@ See [ALPHA_COVERAGE.md](../docs/ALPHA_COVERAGE.md) for the estimator definitions
 - `AlphaPhotonEmissionTest`: real legacy emission loops, absolute multilight
   power, spatial coverage/deposit efficiency, bounded reservoir/lifecycle,
   cancellation, exact progress/time budgets, empty and zero-alpha cases.
+- `AlphaMediumTailTest`: finite light-endpoint attenuation in PT/BDPT/VCM,
+  RGB/NM/HWSS, and unrelated live alpha Job isolation.
+- `AlphaBoundaryEndpointTest`: raw boundary parameters, exact versus adjacent
+  endpoints, transformed/nested CSG, front/back and snapshot copies.
+- `AlphaSnapshotTest`: reconstructed material alpha mode/cutoff, painter
+  lifetime, independent slot rebinding and existing wrapper fallback behavior.

@@ -382,8 +382,14 @@ namespace RISE
 			const Scalar dHowFar								///< [in] How far to follow the ray, optimization
 			) const = 0;
         //! DL-214: transport visibility owns an alpha sampler lane.
-        virtual bool CastShadowRaySampled(const Ray& ray, Scalar distance, ISampler& sampler, MediumBoundaryHits* boundaries = nullptr) const
-        { (void)sampler; (void)boundaries; return CastShadowRay(ray, distance); }
+        //! distance is the occlusion end parameter on the ORIGINAL ray.
+        //! Optional physicalDistance extends medium records to the actual
+        //! endpoint; occlusionStart excludes the starting surface. Neither
+        //! exclusion removes physical medium events. Records are complete
+        //! only when visibility succeeds. A negative physicalDistance uses
+        //! distance; without records the extra extent does no work.
+        virtual bool CastShadowRaySampled(const Ray& ray, Scalar distance, ISampler& sampler, MediumBoundaryHits* boundaries = nullptr, Scalar physicalDistance = -1, Scalar occlusionStart = 0) const
+        { (void)sampler; (void)boundaries; (void)physicalDistance; Ray shifted=ray; shifted.Advance(occlusionStart); return CastShadowRay(shifted, distance-occlusionStart); }
     };
 }
 

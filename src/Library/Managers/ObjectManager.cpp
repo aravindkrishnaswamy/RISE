@@ -2128,7 +2128,7 @@ void ObjectManager::InvalidateSpatialStructure() const
 }
 
 void IObjectManager::IntersectRaySampled(RayIntersection& ri, ISampler& sampler,
-    bool front, bool back, bool exit, Scalar maxDistance, bool shadows, MediumBoundaryHits* boundaries, bool boundariesOnly) const
+    bool front, bool back, bool exit, Scalar maxDistance, bool shadows, MediumBoundaryHits* boundaries, bool boundariesOnly, Scalar occlusionEnd, Scalar occlusionStart, Scalar startDistance) const
 {
     if (!boundariesOnly && !IMaterial::AnyAlphaMaterials() && !shadows && maxDistance == RISE_INFINITY) {
         IntersectRay(ri, front, back, exit); return;
@@ -2136,60 +2136,70 @@ void IObjectManager::IntersectRaySampled(RayIntersection& ri, ISampler& sampler,
     const Ray original = ri.geometric.ray;
     const RasterizerState rast = ri.geometric.rast;
     const RayIntersectionGeometric castInputs = ri.geometric;
-    Scalar offset = 0;
+    Scalar offset = startDistance;
+    const auto advanceRay = [&](Scalar parameter) {
+        Ray shifted = original;
+        shifted.Advance(parameter);
+        if (shifted.hasDifferentials) {
+            shifted.diffs.rxOrigin = shifted.diffs.rxOrigin + shifted.diffs.rxDir * parameter;
+            shifted.diffs.ryOrigin = shifted.diffs.ryOrigin + shifted.diffs.ryDir * parameter;
+        }
+        ri = RayIntersection(shifted, rast);
+        ri.geometric.PropagateCastInputs(castInputs);
+    };
+    if (offset > 0) advanceRay(offset);
     for (;;) {
         IntersectRay(ri, front, back, exit);
-        if (!ri.geometric.bHit || ri.geometric.range >= maxDistance - offset) {
+        const Scalar localBoundary = ri.hasBoundaryRange ? ri.boundaryRange : ri.geometric.range;
+        if (!ri.geometric.bHit || (boundaries ? localBoundary : ri.geometric.range) >= maxDistance - offset) {
             ri.geometric.bHit = false;
             ri.geometric.ray = original;
             return;
         }
         // Coverage painters see the same ray/range context as an unobstructed
         // full-segment hit. Keep the local distance only for recast progress.
-        const Scalar localRange = ri.geometric.range;
         ri.geometric.range += offset;
+        if (ri.hasBoundaryRange) ri.boundaryRange += offset;
+        if (ri.hasBoundaryRange2) ri.boundaryRange2 += offset;
         if (exit) ri.geometric.range2 += offset;
         ri.geometric.ray = original;
         const bool mediumBoundary = ri.pObject && ri.pObject->GetInteriorMedium();
-        const bool casts = !boundariesOnly && (!shadows || !ri.pObject || ri.pObject->DoesCastShadows());
-        const Scalar coverage = ri.pMaterial && (!boundariesOnly || mediumBoundary) ? ri.pMaterial->AlphaCoverage(ri.geometric) : 1;
+        const bool inOcclusionInterval = ri.geometric.range >= occlusionStart && ri.geometric.range < occlusionEnd;
+        const bool casts = !boundariesOnly && inOcclusionInterval && (!shadows || !ri.pObject || ri.pObject->DoesCastShadows());
+        // Outside visibility's endpoint exclusions only medium events matter.
+        const bool needsCoverage = casts || (boundaries && mediumBoundary) || (!shadows && !boundariesOnly);
+        const Scalar coverage = ri.pMaterial && needsCoverage ? ri.pMaterial->AlphaCoverage(ri.geometric) : 1;
         const bool accepted = coverage >= 1 || (coverage > 0 && sampler.GetAlpha1D() < coverage);
         ri.acceptedAlphaCoverage = coverage;
         if (accepted && boundaries && mediumBoundary) {
             boundaries->push_back(ri);
         }
         if (casts && accepted) return;
-        // range already names the backed-off published point. Geometry's
-        // self-root floor rejects that same boundary on the next query.
+        // Resume beyond the true boundary when available, so a published
+        // shading backoff cannot cause another alpha decision at this event.
         // Advance by one representable segment parameter to ensure progress,
         // rather than skipping a world-space epsilon-sized slab of geometry.
-        offset = std::nextafter(offset + localRange, RISE_INFINITY);
+        offset = std::nextafter(offset + localBoundary, RISE_INFINITY);
         if (!(offset < maxDistance)) {
             ri.geometric.bHit = false;
             ri.geometric.ray = original;
             return;
         }
-        Ray ray = original;
-        ray.Advance(offset);
-        if (ray.hasDifferentials) {
-            // Origins are offsets from the central ray. Advance each auxiliary
-            // along its own direction by the same parameter, preserving its
-            // original line and therefore the full-distance texture footprint.
-            ray.diffs.rxOrigin = ray.diffs.rxOrigin + ray.diffs.rxDir * offset;
-            ray.diffs.ryOrigin = ray.diffs.ryOrigin + ray.diffs.ryDir * offset;
-        }
-        ri = RayIntersection(ray, rast);
-        ri.geometric.PropagateCastInputs(castInputs);
+        advanceRay(offset);
     }
 }
 
-bool IObjectManager::IntersectShadowRaySampled(const Ray& ray, Scalar distance, ISampler& sampler, MediumBoundaryHits* boundaries) const
+bool IObjectManager::IntersectShadowRaySampled(const Ray& ray, Scalar distance, ISampler& sampler, MediumBoundaryHits* boundaries, Scalar physicalDistance, Scalar occlusionStart) const
 {
     if (boundaries) boundaries->clear();
-    if (!IMaterial::AnyAlphaMaterials() && !boundaries) return IntersectShadowRay(ray, distance, true, true);
+    if (!IMaterial::AnyAlphaMaterials() && !boundaries) {
+        Ray shifted=ray; shifted.Advance(occlusionStart);
+        return IntersectShadowRay(shifted, distance-occlusionStart, true, true);
+    }
     RasterizerState rast = {0};
     RayIntersection ri(ray, rast);
-    IntersectRaySampled(ri, sampler, true, true, false, distance, true, boundaries);
+    const Scalar physicalEnd = boundaries && physicalDistance >= 0 ? physicalDistance : distance;
+    IntersectRaySampled(ri, sampler, true, true, false, physicalEnd, true, boundaries, false, distance, occlusionStart);
     return ri.geometric.bHit;
 }
 

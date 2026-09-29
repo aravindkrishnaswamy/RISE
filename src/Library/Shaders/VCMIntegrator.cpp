@@ -126,13 +126,13 @@ namespace
 	{
 		Vector3 d = Vector3Ops::mkVector3( p2, p1 );
 		const Scalar dist = Vector3Ops::Magnitude( d );
-		if( dist < VCM_RAY_EPSILON ) {
+		if( dist <= 0 || (!boundaries && dist < VCM_RAY_EPSILON) ) {
 			return true;
 		}
 		d = d * ( Scalar( 1 ) / dist );
 		Ray shadowRay( p1, d );
-		shadowRay.Advance( VCM_RAY_EPSILON );
-		return !caster.CastShadowRaySampled( shadowRay, dist - 2.0 * VCM_RAY_EPSILON, sampler, boundaries );
+		// The original ray covers both endpoint tails for medium records.
+		return !caster.CastShadowRaySampled( shadowRay, dist - VCM_RAY_EPSILON, sampler, boundaries, dist, VCM_RAY_EPSILON );
 	}
 
 	inline VCMMisQuantities ApplyBSSRDFEntryAreaUpdate(
@@ -1241,6 +1241,7 @@ namespace
 		)
 	{
         MediumBoundaryHits boundaryHits;
+    const bool sceneAlpha = caster.GetLightSampler() && caster.GetLightSampler()->SceneHasAlphaCoverage();
 		using Traits = SpectralValueTraits<Tag>;
 		typename Traits::value_type total = Traits::zero();
 
@@ -1311,7 +1312,7 @@ namespace
 						v.position.y + wiVis.y * kVisFar,
 						v.position.z + wiVis.z * kVisFar );
 				}
-				if( !VCMIsVisible( caster, v.position, visTargetVCM, sampler, (IMaterial::AnyAlphaMaterials() ? &boundaryHits : nullptr) ) ) {
+				if( !VCMIsVisible( caster, v.position, visTargetVCM, sampler, (sceneAlpha ? &boundaryHits : nullptr) ) ) {
 					continue;
 				}
 			}
@@ -1617,7 +1618,7 @@ namespace
 					EvalConnectionTrRay<Tag>(
 						bdpt, envRayVCM, RISE_INFINITY,
 						scene, caster,
-						v.pMediumObject, v.pMediumVol, tag, (IMaterial::AnyAlphaMaterials() ? &boundaryHits : nullptr) );
+						v.pMediumObject, v.pMediumVol, tag, (sceneAlpha ? &boundaryHits : nullptr) );
 				const typename Traits::value_type contribution =
 					VertexThroughput<Tag>( v, tag ) * fEye * Le * Tr_conn_env *
 					( cosEyeWi / pdfSA ) * weight * invLightSelect;
@@ -1629,7 +1630,7 @@ namespace
 				EvalConnectionTr<Tag>(
 					bdpt, v.position, ls.position,
 					scene, caster,
-					v.pMediumObject, v.pMediumVol, tag, (IMaterial::AnyAlphaMaterials() ? &boundaryHits : nullptr) );
+					v.pMediumObject, v.pMediumVol, tag, (sceneAlpha ? &boundaryHits : nullptr) );
 			// DL-09: the NEE connection segment's graded-index factor
 			// (n_eye/n_light)^2 when both ends lie in one graded medium
 			// (docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md §3(ii)); exactly 1
@@ -1711,6 +1712,7 @@ namespace
 		)
 	{
         MediumBoundaryHits boundaryHits;
+    const bool sceneAlpha = caster.GetLightSampler() && caster.GetLightSampler()->SceneHasAlphaCoverage();
 		using Traits = SpectralValueTraits<Tag>;
 
 		if( lightVerts.size() != lightMis.size() || lightVerts.empty() ) {
@@ -1790,7 +1792,7 @@ namespace
 				continue;
 			}
 
-			if( !VCMIsVisible( caster, v.position, camPos, sampler, (IMaterial::AnyAlphaMaterials() ? &boundaryHits : nullptr) ) ) {
+			if( !VCMIsVisible( caster, v.position, camPos, sampler, (sceneAlpha ? &boundaryHits : nullptr) ) ) {
 				continue;
 			}
 
@@ -1909,7 +1911,7 @@ namespace
 				EvalConnectionTr<Tag>(
 					bdpt, v.position, camPos,
 					scene, caster,
-					v.pMediumObject, v.pMediumVol, tag, (IMaterial::AnyAlphaMaterials() ? &boundaryHits : nullptr) );
+					v.pMediumObject, v.pMediumVol, tag, (sceneAlpha ? &boundaryHits : nullptr) );
 
 			const typename Traits::value_type weighted = contribution * Tr_conn_splat * weight;
 
@@ -2032,6 +2034,7 @@ namespace
 		)
 	{
         MediumBoundaryHits boundaryHits;
+    const bool sceneAlpha = caster.GetLightSampler() && caster.GetLightSampler()->SceneHasAlphaCoverage();
 		using Traits = SpectralValueTraits<Tag>;
 		typename Traits::value_type total = Traits::zero();
 
@@ -2095,7 +2098,7 @@ namespace
 				lightToEye = lightToEye * ( Scalar( 1 ) / dist );
 				const Scalar distSq = dist * dist;
 
-				if( !VCMIsVisible( caster, lv.position, ev.position, sampler, (IMaterial::AnyAlphaMaterials() ? &boundaryHits : nullptr) ) ) {
+				if( !VCMIsVisible( caster, lv.position, ev.position, sampler, (sceneAlpha ? &boundaryHits : nullptr) ) ) {
 					continue;
 				}
 
@@ -2171,7 +2174,7 @@ namespace
 					EvalConnectionTr<Tag>(
 						bdpt, ev.position, lv.position,
 						scene, caster,
-						ev.pMediumObject, ev.pMediumVol, tag, (IMaterial::AnyAlphaMaterials() ? &boundaryHits : nullptr) );
+						ev.pMediumObject, ev.pMediumVol, tag, (sceneAlpha ? &boundaryHits : nullptr) );
 
 				// DL-09: the connection segment's graded-index factor.
 				const Scalar gradedScale = GradedIndexMedium::ConnectionScale(

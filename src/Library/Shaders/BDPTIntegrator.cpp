@@ -1384,7 +1384,7 @@ namespace {
 
 		const IMedium* pGlobalMedium = scene.GetGlobalMedium();
 
-		if( maxDist < BDPT_RAY_EPSILON ) {
+		if( maxDist <= 0 ) {
 			return TrOne<Tag>();
 		}
 
@@ -1422,7 +1422,7 @@ namespace {
 
 		for( size_t step = 0; (boundaries || step < MAX_WALK_STEPS) && segStart < maxDist; step++ )
 		{
-			const Scalar castStart = segStart + WALK_EPSILON;
+			const Scalar castStart = segStart + (boundaries ? Scalar(0) : WALK_EPSILON);
 			if( castStart >= maxDist ) {
 				break;
 			}
@@ -1436,11 +1436,11 @@ namespace {
 			if (boundaries) {
                 if (step < boundaries->size()) {
                     const bool reverse = boundaries->size() > 1 && Vector3Ops::Dot(
-                        Vector3Ops::mkVector3(boundaries->back().geometric.ptIntersection,
-                            boundaries->front().geometric.ptIntersection), connectionRay.Dir()) < 0;
+                        Vector3Ops::mkVector3(boundaries->back().BoundaryPoint(),
+                            boundaries->front().BoundaryPoint()), connectionRay.Dir()) < 0;
                     ri = (*boundaries)[reverse ? boundaries->size()-1-step : step];
                     ri.geometric.range = Vector3Ops::Dot(
-                        Vector3Ops::mkVector3(ri.geometric.ptIntersection, connectionRay.origin), d) - castStart;
+                        Vector3Ops::mkVector3(ri.BoundaryPoint(), connectionRay.origin), d) - castStart;
                 }
             } else {
                 pObjects->IntersectRay( ri, true, true, false );
@@ -1544,7 +1544,7 @@ namespace {
 		// Apply global medium for segments where no per-object medium was active
 		if( pGlobalMedium ) {
 			const Scalar globalDist = maxDist - objectCoveredDist;
-			if( globalDist > WALK_EPSILON ) {
+			if( globalDist > 0 ) {
 				Tr = Tr * EvalMediumTransmittance<Tag>( *pGlobalMedium, connectionRay, globalDist, tag );
 			}
 		}
@@ -1564,7 +1564,7 @@ RISEPel BDPTIntegrator::EvalConnectionTransmittance(
 {
 	Vector3 d = Vector3Ops::mkVector3( p2, p1 );
 	const Scalar maxDist = Vector3Ops::Magnitude( d );
-	if( maxDist < BDPT_RAY_EPSILON ) {
+	if( maxDist <= 0 ) {
 		return RISEPel( 1, 1, 1 );
 	}
 	d = d * (1.0 / maxDist);
@@ -1603,7 +1603,7 @@ Scalar BDPTIntegrator::EvalConnectionTransmittanceNM(
 {
 	Vector3 d = Vector3Ops::mkVector3( p2, p1 );
 	const Scalar maxDist = Vector3Ops::Magnitude( d );
-	if( maxDist < BDPT_RAY_EPSILON ) {
+	if( maxDist <= 0 ) {
 		return 1.0;
 	}
 	d = d * (1.0 / maxDist);
@@ -3788,13 +3788,13 @@ inline bool ConnectionIsVisible( const IRayCaster& caster, const Point3& p1, con
 {
 	Vector3 d = Vector3Ops::mkVector3( p2, p1 );
 	const Scalar dist = Vector3Ops::Magnitude( d );
-	if( dist < BDPT_RAY_EPSILON ) {
+	if( dist <= 0 || (!boundaries && dist < BDPT_RAY_EPSILON) ) {
 		return true;
 	}
 	d = d * (1.0 / dist);
 	Ray shadowRay( p1, d );
-	shadowRay.Advance( BDPT_RAY_EPSILON );
-	return !caster.CastShadowRaySampled( shadowRay, dist - 2.0 * BDPT_RAY_EPSILON, sampler, boundaries );
+	// The original ray covers both endpoint tails for medium records.
+	return !caster.CastShadowRaySampled( shadowRay, dist - BDPT_RAY_EPSILON, sampler, boundaries, dist, BDPT_RAY_EPSILON );
 }
 
 // Connection-edge transmittance dispatch -> the public (F1-templatized)
@@ -3981,6 +3981,7 @@ ConnectAndEvaluateImplCore(
 	Tag tag, ISampler& sampler )
 {
     MediumBoundaryHits boundaryHits;
+    const bool sceneAlpha = caster.GetLightSampler() && caster.GetLightSampler()->SceneHasAlphaCoverage();
 	typedef SpectralValueTraits<Tag> Traits;
 	typedef typename Traits::value_type V;
 	typename ConnectionResultFor<Tag>::type result;
@@ -4393,7 +4394,7 @@ ConnectAndEvaluateImplCore(
 
 		// Check visibility from camera to light vertex using standard shadow ray.
 		const Point3 camPos = apertureSample_t0.point;
-		if( !ConnectionIsVisible( caster, camPos, lightEnd.position, sampler, (IMaterial::AnyAlphaMaterials() ? &boundaryHits : nullptr) ) ) {
+		if( !ConnectionIsVisible( caster, camPos, lightEnd.position, sampler, (sceneAlpha ? &boundaryHits : nullptr) ) ) {
 			return result;
 		}
 
@@ -4512,7 +4513,7 @@ ConnectAndEvaluateImplCore(
 		}
 
 		const Point3 camPos = apertureSample_t0.point;
-		if( !ConnectionIsVisible( caster, camPos, lightEnd.position, sampler, (IMaterial::AnyAlphaMaterials() ? &boundaryHits : nullptr) ) ) {
+		if( !ConnectionIsVisible( caster, camPos, lightEnd.position, sampler, (sceneAlpha ? &boundaryHits : nullptr) ) ) {
 			return result;
 		}
 
@@ -4647,7 +4648,7 @@ ConnectAndEvaluateImplCore(
 					eyeEnd.position.y + wiForLight.y * kVisFar,
 					eyeEnd.position.z + wiForLight.z * kVisFar );
 			}
-			if( !ConnectionIsVisible( caster, eyeEnd.position, visTarget, sampler, (IMaterial::AnyAlphaMaterials() ? &boundaryHits : nullptr) ) ) {
+			if( !ConnectionIsVisible( caster, eyeEnd.position, visTarget, sampler, (sceneAlpha ? &boundaryHits : nullptr) ) ) {
 				return result;
 			}
 		}
@@ -4741,10 +4742,10 @@ ConnectAndEvaluateImplCore(
 		if( envCase_s1 ) {
 			Ray envRay( eyeEnd.position, wiForLight );
 			Tr_conn_s1 = EvalConnTr<Tag>( self, envRay, RISE_INFINITY, scene, caster,
-				eyeEnd.pMediumObject, eyeEnd.pMediumVol, tag, (IMaterial::AnyAlphaMaterials() ? &boundaryHits : nullptr) );
+				eyeEnd.pMediumObject, eyeEnd.pMediumVol, tag, (sceneAlpha ? &boundaryHits : nullptr) );
 		} else {
 			Tr_conn_s1 = EvalConnTr<Tag>( self, eyeEnd.position, lightStart.position, scene, caster,
-				eyeEnd.pMediumObject, eyeEnd.pMediumVol, tag, (IMaterial::AnyAlphaMaterials() ? &boundaryHits : nullptr) );
+				eyeEnd.pMediumObject, eyeEnd.pMediumVol, tag, (sceneAlpha ? &boundaryHits : nullptr) );
 		}
 
 		// Contribution: eyeThroughput * fEye * G * Le / pdfLight
@@ -5009,7 +5010,7 @@ ConnectAndEvaluateImplCore(
 		// vertices; treating them as transparent here produces invalid
 		// splats and severe caustic fireflies.
 		const Point3 camPos = apertureSample.point;
-		if( !ConnectionIsVisible( caster, lightEnd.position, camPos, sampler, (IMaterial::AnyAlphaMaterials() ? &boundaryHits : nullptr) ) ) {
+		if( !ConnectionIsVisible( caster, lightEnd.position, camPos, sampler, (sceneAlpha ? &boundaryHits : nullptr) ) ) {
 			return result;
 		}
 
@@ -5143,7 +5144,7 @@ ConnectAndEvaluateImplCore(
 
 		// Connection transmittance through participating media
 		const V Tr_conn_t1 = EvalConnTr<Tag>( self, lightEnd.position, camPos, scene, caster,
-			lightEnd.pMediumObject, lightEnd.pMediumVol, tag, (IMaterial::AnyAlphaMaterials() ? &boundaryHits : nullptr) );
+			lightEnd.pMediumObject, lightEnd.pMediumVol, tag, (sceneAlpha ? &boundaryHits : nullptr) );
 
 		result.contribution = VertexThroughput<Tag>( lightEnd ) * fLight * Tr_conn_t1 * (G * We);
 		result.rasterPos = rasterPos;
@@ -5254,7 +5255,7 @@ ConnectAndEvaluateImplCore(
 		dConnect = dConnect * (1.0 / dist);
 
 		// Check visibility
-		if( !ConnectionIsVisible( caster, eyeEnd.position, lightEnd.position, sampler, (IMaterial::AnyAlphaMaterials() ? &boundaryHits : nullptr) ) ) {
+		if( !ConnectionIsVisible( caster, eyeEnd.position, lightEnd.position, sampler, (sceneAlpha ? &boundaryHits : nullptr) ) ) {
 			return result;
 		}
 
@@ -5321,7 +5322,7 @@ ConnectAndEvaluateImplCore(
 		// included in MIS PDFs (see note on transmittance cancellation
 		// in the MISWeight documentation).
 		const V Tr_conn = EvalConnTr<Tag>( self, eyeEnd.position, lightEnd.position, scene, caster,
-			eyeEnd.pMediumObject, eyeEnd.pMediumVol, tag, (IMaterial::AnyAlphaMaterials() ? &boundaryHits : nullptr) );
+			eyeEnd.pMediumObject, eyeEnd.pMediumVol, tag, (sceneAlpha ? &boundaryHits : nullptr) );
 
 		// Full path contribution
 			result.contribution = VertexThroughput<Tag>( lightEnd ) * fLight *

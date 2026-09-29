@@ -71,6 +71,58 @@ int main() {
     Decisions nested{.1,.1,.1,.1}; run(nested,6,4,std::exp(-2.),"nested accepted boundaries unwind");
     Decisions finite{.1,.1}; run(finite,3,2,std::exp(-1.),"finite endpoint stays inside nested medium");
     Check(finite.count==2,"finite endpoint does not sample boundaries beyond it");
+    // Original full-segment coordinates cover BOTH visibility exclusion tails.
+    // Three boundaries (two before begin, one after end) fit inside gaps much
+    // smaller than the old 1e-5 recast epsilon. All are physical events.
+    auto* tailManager=new ObjectManager(false,false,4,8);
+    for(int i=0;i<2;++i) {
+        auto* geometry=new SphereGeometry(5e-7);
+        auto* object=new Object(geometry);
+        object->SetPosition(Point3(0,0,i==0?7.5e-7:.01));object->FinalizeTransformations();
+        object->AssignMaterial(*mat);object->SetShadowParams(true,true);
+        const Scalar sigma=i==0?1e6:2e6;
+        auto* medium=new HomogeneousMedium(RISEPel(sigma),RISEPel(0.0),*phase);
+        object->AssignInteriorMedium(*medium);tailManager->AddItem(object,i==0?"leading":"trailing");
+        safe_release(medium);safe_release(object);safe_release(geometry);
+    }
+    scene->SetObjectManager(tailManager);caster->AttachScene(scene);
+    const Ray fullRay(Point3(0,0,0),Vector3(0,0,1));
+    Decisions tails{.1,.1,.1};MediumBoundaryHits tailHits;
+    Check(!caster->CastShadowRaySampled(fullRay,.01-2e-6,tails,&tailHits,.01,2e-6),"endpoint-tail shadow casters remain excluded from occlusion");
+    Check(tailHits.size()==3&&tails.count==3,"one alpha draw per physical boundary across both tails");
+    bool fullContext=true;for(const auto& h:tailHits)fullContext=fullContext&&h.geometric.ray.origin.z==0&&std::fabs(h.geometric.range-h.geometric.ptIntersection.z)<1e-12;
+    Check(fullContext,"tail events retain original full ray and range");
+    const auto tailTr=integrator->EvalConnectionTransmittance(fullRay,.01,*scene,*caster,nullptr,nullptr,&tailHits);
+    const auto tailNM=integrator->EvalConnectionTransmittanceNM(fullRay,.01,*scene,*caster,550,nullptr,nullptr,&tailHits);
+    std::cout<<"both tails RGB="<<tailTr.r<<" NM="<<tailNM<<" expected="<<std::exp(-2.)<<std::endl;
+    Check(std::fabs(tailTr.r-std::exp(-2.))<1e-4,"RGB integrates both tails including short active-medium remainder");
+    Check(std::fabs(tailNM-std::exp(-2.))<1e-4,"NM integrates both tails including short active-medium remainder");
+    Check(tails.count==3,"tail attenuation never resamples alpha");
+    // A whole short connection still has real optical depth. Its known
+    // starting medium must integrate independently of record availability.
+    if(!tailHits.empty()) {
+        const auto* obj=tailHits.back().pObject;const auto* med=obj->GetInteriorMedium();
+        const Ray shortRay(Point3(0,0,.01),Vector3(0,0,1));MediumBoundaryHits noEvents;
+        for(bool records:{false,true}) {
+            const auto tr=integrator->EvalConnectionTransmittance(shortRay,5e-7,*scene,*caster,obj,med,records?&noEvents:nullptr);
+            const auto nm=integrator->EvalConnectionTransmittanceNM(shortRay,5e-7,*scene,*caster,550,obj,med,records?&noEvents:nullptr);
+            Check(std::fabs(tr.r-std::exp(-1.))<1e-6,"short known-medium connection RGB retains optical depth with/without records");
+            Check(std::fabs(nm-std::exp(-1.))<1e-6,"short known-medium connection NM retains optical depth with/without records");
+        }
+    }
+    if(!tailHits.empty()) {
+        // Use the same true medium/normal event payloads to isolate integration
+        // of a known enter/exit pair wholly inside the last recast epsilon.
+        auto enter=tailHits.back(),leave=enter;
+        enter.boundaryRange=.01-7.5e-7;leave.boundaryRange=.01-2.5e-7;
+        leave.geometric.vGeomNormal=-leave.geometric.vGeomNormal;
+        MediumBoundaryHits events{enter,leave};
+        const auto tr=integrator->EvalConnectionTransmittance(fullRay,.01,*scene,*caster,nullptr,nullptr,&events);
+        const auto nm=integrator->EvalConnectionTransmittanceNM(fullRay,.01,*scene,*caster,550,nullptr,nullptr,&events);
+        Check(std::fabs(tr.r-std::exp(-1.))<1e-6,"additional final-epsilon exit event prevents over-absorption RGB");
+        Check(std::fabs(nm-std::exp(-1.))<1e-6,"additional final-epsilon exit event prevents over-absorption NM");
+    }
+    safe_release(tailManager);
     safe_release(integrator);safe_release(caster);safe_release(shader);safe_release(scene);safe_release(manager);safe_release(mat);safe_release(coverage);safe_release(color);safe_release(phase);
     std::cout<<passed<<" passed / "<<failed<<" failed\n";return failed?1:0;
 }
