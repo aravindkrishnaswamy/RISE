@@ -126,6 +126,22 @@ void SplatFilm::SplatFiltered(
 		return;
 	}
 
+	// DL-294: film membership.  The camera's world-to-raster
+	// projection no longer clips to its nominal [0,W) x [0,H) film
+	// (BDPTCameraUtilities::InRasterGuardBand); the film decides, in
+	// the SAME convention the eye subpaths are sampled in and the box
+	// fast path above rounds in: a splat is on the film iff its
+	// nearest pixel centre is.  Without this a splat just outside the
+	// film would be renormalised onto the edge pixels below.
+	{
+		const Scalar hx = floor( screenX + Scalar( 0.5 ) );
+		const Scalar hy = floor( screenY + Scalar( 0.5 ) );
+		if( !( hx >= 0 && hy >= 0 &&
+		       hx < static_cast<Scalar>( width ) && hy < static_cast<Scalar>( height ) ) ) {
+			return;
+		}
+	}
+
 	// Filter footprint expansion.  Mirrors FilteredFilm::Splat so
 	// the two accumulators agree on which pixels receive weight
 	// from a given fractional sample position.

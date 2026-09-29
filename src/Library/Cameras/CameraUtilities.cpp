@@ -127,7 +127,8 @@ namespace {
 		const Scalar width = Scalar( cam.GetWidth() );
 		const Scalar height = Scalar( cam.GetHeight() );
 
-		if( px < 0.0 || px >= width || py < 0.0 || py >= height ) {
+		// DL-294: film membership is the splat film's decision.
+		if( !BDPTCameraUtilities::InRasterGuardBand( px, py, width, height ) ) {
 			return false;
 		}
 
@@ -397,7 +398,8 @@ namespace {
 		const Scalar px = (scale * 0.5 - x) * width / scale;
 		const Scalar py = (y + scale * 0.5) * height / scale;
 
-		if( px < 0.0 || px >= width || py < 0.0 || py >= height ) {
+		// DL-294: film membership is the splat film's decision.
+		if( !BDPTCameraUtilities::InRasterGuardBand( px, py, width, height ) ) {
 			return false;
 		}
 
@@ -579,7 +581,8 @@ namespace {
 		const Scalar px = projected.x * width / vpScale.x + width * 0.5;
 		const Scalar py = projected.y * height / vpScale.y + height * 0.5;
 
-		if( px < 0.0 || px >= width || py < 0.0 || py >= height ) {
+		// DL-294: film membership is the splat film's decision.
+		if( !BDPTCameraUtilities::InRasterGuardBand( px, py, width, height ) ) {
 			return false;
 		}
 
