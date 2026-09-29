@@ -1043,6 +1043,16 @@ scattering box under BDPT at `max_light_depth` 0/1/2/20 reads
 medium is flat (0.88226 vs 0.88229).  Row C is immune: only s = 0 carries
 weight there.
 
+**Sister-suite closure (DL-365, 2026-09-28):** `tests/VCMStrategyBalanceTest.cpp`'s
+topology H and I (the file's own submerged-floor/TIR-trap scenes) carried
+this section's exact depth-5 mechanism and are now fixed the same way --
+`max_eye_depth`/`max_light_depth` raised to 16, every render salted
+(matching this file's `RenderAndComputeStats`), bands re-derived from
+measured sd; the file's other depth-3/depth-5 pairs were audited and left
+unchanged where genuinely converged.  See the DL-365/DL-366/DL-367 rows
+in [docs/DEBT_LEDGER.md](DEBT_LEDGER.md) for the full sweep and two
+salting-exposed sibling findings (neither a depth-cap issue).
+
 ## 12. Cross-references
 
 - [`tests/RefractiveRadianceScalingTest.cpp`](../tests/RefractiveRadianceScalingTest.cpp) — the closed forms
