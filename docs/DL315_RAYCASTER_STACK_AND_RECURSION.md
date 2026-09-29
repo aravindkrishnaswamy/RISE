@@ -172,21 +172,21 @@ rows share a salt; ratio = enclosed / open image mean):
 
 | row | master | fix |
 |---|---:|---:|
-| E1 random walk PT, index-1.0 enclosure | @@E1RW | 0.999893 / 1.00012 |
-| E1 diffusion PT, index-1.0 enclosure | @@E1D | 0.999586 / 0.999801 |
-| E1 random walk PT-spectral | @@E1S | 1.00017 / 0.999395 |
-| E1 random walk BDPT (control) | @@E1B | 1.00005 / 1.00012 |
-| E1 Lambertian PT (control) | @@E1L | 0.999677 / 0.999677 |
-| E3 legacy DT(4)/DT(1), translucent | @@E3T | 1.00044 |
-| E3 legacy DT(4)/DT(1), dielectric | @@E3D | 0.998985 |
-| E2 random-walk cluster furnace (image mean) | @@E2RW | 1.00144 / 1.00136 |
-| E2 Lambertian cluster (control) | @@E2L | 0.998037 |
+| E1 random walk PT, index-1.0 enclosure | **0.930358** | 0.999893 / 1.00012 |
+| E1 diffusion PT, index-1.0 enclosure | **0.970626** | 0.999586 / 0.999801 |
+| E1 random walk PT-spectral | **0.929624** | 1.00017 / 0.999395 |
+| E1 random walk BDPT (control) | 1.00013 | 1.00005 / 1.00012 |
+| E1 Lambertian PT (control) | 0.999612 | 0.999677 / 0.999677 |
+| E3 legacy DT(4)/DT(1), translucent | **0.956135** | 1.00044 |
+| E3 legacy DT(4)/DT(1), dielectric | **0.824781** | 0.998985 |
+| E2 random-walk cluster furnace (image mean) | **0.965548** | 1.00144 / 1.00136 |
+| E2 Lambertian cluster (control) | 0.998037 | 0.998037 |
 
 (fix: two full Part E runs.)  Salted n = 8 per-pair ratio sds, from which
 the bands are set at >= 5 sd of the n = 4 mean: Lambertian 0.0008, random
 walk 0.0005, diffusion 0.0011, PT-spectral 0.0015, BDPT 0.0004; E2
 Lambertian one-render sd 0.0019 (band widened 0.004 -> 0.006), E2 random
-walk 0.0012.  Suite: @@SUITE_MASTER on the master library, @@SUITE_FIX with
+walk 0.0012.  Suite: **248/6** on the master library, **254/0** (227 checks pre-existed) with
 the fix.  E1 isolates defect (1) (a single convex sphere never re-enters,
 so the cap is irrelevant); E2 isolates defect (2) (open air, so no
 enclosure is ever in the stack).
@@ -233,7 +233,7 @@ any other).  Bands from four full salted runs (seeds 1000/2000/3000/4000):
 
 Diffusion's 1 % is about 4 sd of its noisier row, random walk's 0.3 %
 about 20 sd; the pre-fix 3 % deficit is far outside both.  Suite:
-@@SSSRS_MASTER on the master library, **576256/0** with the fix (default
+**576244/12** (salted master water ratios: diffusion 0.97262 out / 0.97257 in, random walk 0.96959 / 0.96867) on the master library, **576256/0** with the fix (default
 seed; the guard count varies with the seed because the coverage probe's
 accepted samples do).  Round 1's claim that diffusion reads "0.9956 in
 air, a Burley-on-a-finite-slab property" was the fixed Sobol' pattern:
@@ -374,3 +374,29 @@ cast; the guard is a thread-local read and a compare.
   moved that row to 512 spp.
 
 ## 7. Gate
+
+On the tree with `master` `4c286bd5` merged in: clean library rebuild and
+44 test targets built, **0 warnings** (also a clean -O0 library build for
+the crash scene).  `SSSRadianceScalingTest` 576256/0 (both DL-04 `eta^2`
+mutations 576238/18), `SSSExteriorIndexInvarianceTest` 254/0,
+`ExteriorIndexInvarianceTest` 231/0, `RefractiveRadianceScalingTest` 60/0,
+`MediumInsideOutsideInvariantTest` 30/0, `EnvLightBalanceTest` 123/0,
+`BDPTStrategyBalanceTest` 242/0, `CstDeriveGoldenTest` 456 MATCH / 0 DRIFT,
+`SourceHygieneTest` 167/0, `BSSRDFNormalizationTest` pass,
+`BSSRDFSamplingTest` pass, `BSSRDFPlanarProbeReachTest` pass,
+`BSSRDFOpenSheetEntryTest` 73/0, `BDPTZeroExitanceBSSRDFTest` 49/0,
+`SubsurfaceScatteringSpectralTest` 8/0, `VolumeEnvFurnaceTest` 32/0,
+`TransparentShadowTest` 40/0, `WeaveGapShadowTransmittanceTest` 132/0,
+`RayCasterEnvEscapeMISTest` 91/0, `OptimalMISTrainingSitesTest` pass,
+`IORStackTest` pass, `IORStackBehaviorTest` pass,
+`TranslucentIORStackTest` pass, `LegacyChainMISPartnerTest` pass,
+`LegacyPhotonTransportTest` 136/0, `TranslucentPhotonEnergyTest` pass,
+`TranslucentInitialContainmentTest` 43/0, `SubSurfaceExitIORTest` 301/0,
+`PTGuidingMISPartitionTest` 185/0, `BDPTGuidedContinuationTest` 164/0,
+`RayCasterVolumeAbsorptionTest` pass, `AmbientOcclusionCastsShadowsTest`
+10/0, `HairInteriorMediumSkipTest` 24/0, `ManifoldSolverTest` pass,
+`AgentViewModeRenderTest` 687/0, `AreaLightShaderOpScalarNTest` 11/0,
+`LightBVHTest` 20/0, `GeomNormalOrientationSitesTest` 72/0,
+`BDPTEyeDepthConsistencyTest` pass, `SobolDimensionBudgetTest` pass,
+`GradedIndexInteriorFactorTest` 55/0, `VolumeAbsorptionAttenuationTest`
+pass; the -O0 crash scene 9/9 and the hall-of-mirrors table (section 3).
