@@ -978,11 +978,11 @@ static std::string CoatedOverWeaveSheet()
 		+ "coated_material\n{\n\tname mat_sheet\n\tbase mat_layer\n\tcoat_weight 1.0\n\tcoat_ior 1.5\n\tcoat_roughness 0.05\n}\n\n";
 }
 
-static std::string PerfectRefractorIOR1Sheet()
+static std::string PerfectRefractorSheet( const char* ior )
 {
 	return
 		"uniformcolor_painter\n{\n\tname pnt_refr\n\tcolor 1 1 1\n\tcolorspace Rec709RGB_Linear\n}\n\n"
-		"perfectrefractor_material\n{\n\tname mat_sheet\n\trefractance pnt_refr\n\tior 1.0\n}\n\n";
+		"perfectrefractor_material\n{\n\tname mat_sheet\n\trefractance pnt_refr\n\tior " + std::string( ior ) + "\n}\n\n";
 }
 
 static void TestSMSEmissionThroughGap()
@@ -1034,7 +1034,9 @@ static void TestSMSEmissionThroughGap()
 	// 0 with SMS on before AND after -- SMS does not solve a chain through
 	// a single open refractive plane (DL-339).
 	ParityRow( "area perfectrefractor ior 1 PT RGB (SMS caster -- control, printed)", RastPTSMS( 256, true ), RastPTSMS( 256, false ),
-		ReceiverScene( kAreaLarge, true, g, kWide, false, PerfectRefractorIOR1Sheet() ), -1.0 );
+		ReceiverScene( kAreaLarge, true, g, kWide, false, PerfectRefractorSheet( "1.0" ) ), -1.0 );
+	ParityRow( "area perfectrefractor ior 1.5 PT RGB (SMS caster -- control, printed)", RastPTSMS( 256, true ), RastPTSMS( 256, false ),
+		ReceiverScene( kAreaLarge, true, g, kWide, false, PerfectRefractorSheet( "1.5" ) ), -1.0 );
 	g_saltRenders = false;
 	SobolSamplerTestHooks::ValueSalt().store( 0u );
 }
