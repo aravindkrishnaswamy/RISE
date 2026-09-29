@@ -240,6 +240,7 @@ static unsigned long long PixelHash( const CapturingRasterizerOutput& cap )
 }
 
 static unsigned long long g_lastPixelHash = 0;
+static std::vector<RISEColor> g_lastPixels;
 
 static double Render( const std::string& sceneText, const char* tag )
 {
@@ -270,6 +271,7 @@ static double Render( const std::string& sceneText, const char* tag )
 			if( pJob->Rasterize() ) {
 				result = MeanLuminance( *pCap );
 				g_lastPixelHash = PixelHash( *pCap );
+				g_lastPixels = pCap->pixels;
 			}
 			safe_release( pCap );
 		}
@@ -1318,6 +1320,103 @@ static void HashScenes()
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+// dl295audit (opt-in only; WEAVE_GAP_FILTER=dl295audit, argv[2] = n):
+// the DOUBLE-COUNT audit.  sms_k2_glasssphere's caster (a perfect
+// refractor sphere, ior 1.5, r 0.3 at y 0.6, an SMS caster) over a
+// Lambertian floor, a 1 x 1 area emitter at y 1.8, and a BLACK-yarn gap
+// 0.3 weave sheet at y 1.2 between the emitter and the sphere -- so the
+// caustic path is  light -> weave gap -> glass -> glass -> floor.
+// `cover`: 0 no sheet (control), 1 sheet over the whole emitter, 2 sheet
+// over the x < 0 half only (SMS still reaches the x > 0 half directly).
+// Prints PT+SMS, PT without SMS and VCM, mean +/- sd over n salted
+// replicates, whole image and a caustic ROI.  No assertions.
+//////////////////////////////////////////////////////////////////////
+static std::string CausticAuditScene( int cover )
+{
+	std::ostringstream ss;
+	ss <<
+		"film\n{\n\twidth 48\n\theight 36\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 2.0 3\n\tlookat 0 0.2 0\n\tup 0 1 0\n\tfov 45.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_floor\n\tcolor 0.8 0.75 0.65\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_emit\n\tcolor 1 1 1\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_glass\n\tcolor 1 1 1\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+		"lambertian_material\n{\n\tname floor_mat\n\treflectance pnt_floor\n}\n\n"
+		"lambertian_luminaire_material\n{\n\tname light_mat\n\texitance pnt_emit\n\tscale 20.0\n\tmaterial none\n}\n\n"
+		"perfectrefractor_material\n{\n\tname glass_mat\n\trefractance pnt_glass\n\tior 1.5\n}\n\n"
+		"sphere_geometry\n{\n\tname sphere_geom\n\tradius 0.3\n}\n\n"
+		"clippedplane_geometry\n{\n\tname floor_geom\n\tpta -4 0 -4\n\tptb -4 0 4\n\tptc 4 0 4\n\tptd 4 0 -4\n}\n\n"
+		"clippedplane_geometry\n{\n\tname light_geom\n\tpta -0.5 1.8 -0.5\n\tptb 0.5 1.8 -0.5\n\tptc 0.5 1.8 0.5\n\tptd -0.5 1.8 0.5\n}\n\n"
+		"standard_object\n{\n\tname floor\n\tgeometry floor_geom\n\tmaterial floor_mat\n}\n\n"
+		"standard_object\n{\n\tname glass_ball\n\tgeometry sphere_geom\n\tposition 0 0.6 0\n\tmaterial glass_mat\n}\n\n"
+		"standard_object\n{\n\tname area_light\n\tgeometry light_geom\n\tmaterial light_mat\n}\n\n";
+	if( cover > 0 ) {
+		ss << BlackPainterChunk() << BlackWeaveChunk( "mat_sheet", 0.3 )
+		   << "clippedplane_geometry\n{\n\tname geo_sheet\n"
+		   << ( cover == 1
+				? "\tpta -3 1.2 3\n\tptb 3 1.2 3\n\tptc 3 1.2 -3\n\tptd -3 1.2 -3\n"
+				: "\tpta -3 1.2 3\n\tptb 0 1.2 3\n\tptc 0 1.2 -3\n\tptd -3 1.2 -3\n" )
+		   << "\tdoublesided TRUE\n}\n\n"
+		   "standard_object\n{\n\tname obj_sheet\n\tgeometry geo_sheet\n\tmaterial mat_sheet\n}\n\n";
+	}
+	return ss.str();
+}
+
+static void AuditMeans( double& whole, double& roi )
+{
+	whole = 0; roi = 0;
+	const unsigned int w = 48, h = 36;
+	if( g_lastPixels.size() != w * h ) { whole = roi = -1; return; }
+	unsigned int nr = 0;
+	for( unsigned int y = 0; y < h; y++ ) {
+		for( unsigned int x = 0; x < w; x++ ) {
+			const RISEColor& c = g_lastPixels[y * w + x];
+			const double l = 0.2126 * c.base.r * c.a + 0.7152 * c.base.g * c.a + 0.0722 * c.base.b * c.a;
+			whole += l;
+			// The caustic under the sphere: rows 60-85 %, columns 35-65 %.
+			if( y >= h * 60 / 100 && y < h * 85 / 100 && x >= w * 35 / 100 && x < w * 65 / 100 ) {
+				roi += l;
+				nr++;
+			}
+		}
+	}
+	whole /= double( w * h );
+	roi /= double( nr ? nr : 1 );
+}
+
+static void MeasureCausticAudit( unsigned int n, unsigned int ptSpp, unsigned int vcmSpp )
+{
+	g_saltRenders = true;
+	const char* coverName[3] = { "no sheet (control)", "sheet over the whole emitter", "sheet over the x<0 half" };
+	for( int cover = 0; cover < 3; cover++ )
+	{
+		struct R { const char* label; std::string rast; };
+		const R rows[] = {
+			{ "PT+SMS", RastPTSMS( ptSpp, true ) },
+			{ "PT (no SMS)", RastPTSMS( ptSpp, false ) },
+			{ "VCM", RastVCM( vcmSpp ) } };
+		double m[3][2] = {}, sd[3][2] = {};
+		for( int r = 0; r < 3; r++ ) {
+			std::vector<double> wv, rv;
+			for( unsigned int i = 0; i < n; i++ ) {
+				double wm = 0, rm = 0;
+				Render( Assemble( rows[r].rast, CausticAuditScene( cover ) ), "audit" );
+				AuditMeans( wm, rm );
+				wv.push_back( wm );
+				rv.push_back( rm );
+			}
+			MeanSd( wv, m[r][0], sd[r][0] );
+			MeanSd( rv, m[r][1], sd[r][1] );
+		}
+		std::printf( "  dl295audit %-30s | whole: PT+SMS %.5f +/- %.5f  PT %.5f +/- %.5f  VCM %.5f +/- %.5f  | SMS/PT %.4f  SMS/VCM %.4f\n",
+			coverName[cover], m[0][0], sd[0][0], m[1][0], sd[1][0], m[2][0], sd[2][0], m[0][0] / m[1][0], m[0][0] / m[2][0] );
+		std::printf( "  dl295audit %-30s | ROI:   PT+SMS %.5f +/- %.5f  PT %.5f +/- %.5f  VCM %.5f +/- %.5f  | SMS/PT %.4f  SMS/VCM %.4f\n",
+			coverName[cover], m[0][1], sd[0][1], m[1][1], sd[1][1], m[2][1], sd[2][1], m[0][1] / m[1][1], m[0][1] / m[2][1] );
+	}
+	g_saltRenders = false;
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
+}
+
 int main( int argc, char** argv )
 {
 	if( argc > 1 ) {
@@ -1329,6 +1428,18 @@ int main( int argc, char** argv )
 	const char* filter = std::getenv( "WEAVE_GAP_FILTER" );
 	if( filter && std::strstr( filter, "dl294" ) ) {
 		PrintNarrowFovSplatResidual();
+		return 0;
+	}
+	if( filter && std::strstr( filter, "dl295audit" ) ) {
+		unsigned int n = 3;
+		if( argc > 2 ) {
+			const long v = std::strtol( argv[2], nullptr, 10 );
+			if( v > 0 ) n = (unsigned int)v;
+		}
+		const char* ptSppEnv = std::getenv( "WEAVE_GAP_AUDIT_PT_SPP" );
+		const char* vcmSppEnv = std::getenv( "WEAVE_GAP_AUDIT_VCM_SPP" );
+		MeasureCausticAudit( n, ptSppEnv ? (unsigned int)std::strtol( ptSppEnv, nullptr, 10 ) : 1024u,
+			vcmSppEnv ? (unsigned int)std::strtol( vcmSppEnv, nullptr, 10 ) : 1024u );
 		return 0;
 	}
 	if( filter && std::strstr( filter, "scenehash" ) ) {
