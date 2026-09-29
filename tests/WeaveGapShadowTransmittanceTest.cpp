@@ -1146,10 +1146,26 @@ static std::string UnderSlabScene( int recv, bool slab )
 }
 
 //! DL-340 fixture (external review round 2): Lambertian receiver under a
-//! closed ior-1.5 slab at y 2, a global isotropic fog, and a 1 x 1 emitter
-//! at y 3 FACING UP (the receiver, its NEE and SMS see only its black
-//! back, so light reaches the receiver only after a MEDIUM scatter).
+//! closed ior-1.5 slab at y 2, a global isotropic fog, and a 2 x 2 emitter
+//! at y 3 FACING UP over a black blocker (the receiver, its NEE and SMS
+//! never see the emitter, so light reaches the receiver only after a
+//! MEDIUM scatter).
 //! @a slab false: the no-caster control.
+//! A 1.2 x 1.2 black Lambertian blocker at height @a y, under an UP-facing
+//! emitter: SMS ignores emitter sidedness (DL-347), so without it an SMS
+//! chain from below reaches the emitter's black back and adds light that
+//! PT and VCM (correctly) do not see.
+static std::string BlockerChunks( double y, double half = 0.6 )
+{
+	std::ostringstream ss;
+	ss << BlackPainterChunk()
+	   << "lambertian_material\n{\n\tname mat_block\n\treflectance pnt_black\n}\n\n"
+	      "clippedplane_geometry\n{\n\tname geo_block\n\tpta " << -half << " " << y << " " << half << "\n\tptb " << half << " " << y << " " << half << "\n"
+	      "\tptc " << half << " " << y << " " << -half << "\n\tptd " << -half << " " << y << " " << -half << "\n\tdoublesided TRUE\n}\n\n"
+	      "standard_object\n{\n\tname obj_block\n\tgeometry geo_block\n\tmaterial mat_block\n}\n\n";
+	return ss.str();
+}
+
 static std::string FogSlabScene( bool slab, double sigmaS )
 {
 	std::ostringstream ss;
@@ -1159,7 +1175,8 @@ static std::string FogSlabScene( bool slab, double sigmaS )
 	      "lambertian_material\n{\n\tname mat_recv\n\treflectance pnt_recv\n}\n\n"
 	      "clippedplane_geometry\n{\n\tname geo_recv\n\tpta -1 0 1\n\tptb 1 0 1\n\tptc 1 0 -1\n\tptd -1 0 -1\n\tdoublesided TRUE\n}\n\n"
 	      "standard_object\n{\n\tname obj_recv\n\tgeometry geo_recv\n\tmaterial mat_recv\n}\n\n"
-	   << EmitterChunks( "\tpta -0.5 3 0.5\n\tptb 0.5 3 0.5\n\tptc 0.5 3 -0.5\n\tptd -0.5 3 -0.5\n", 20.0 )
+	   << EmitterChunks( "\tpta -1 3 1\n\tptb 1 3 1\n\tptc 1 3 -1\n\tptd -1 3 -1\n", 20.0 )
+	   << BlockerChunks( 2.95, 1.1 )
 	   << "homogeneous_medium\n{\n\tname fog\n\tabsorption 0 0 0\n\tscattering " << sigmaS << " " << sigmaS << " " << sigmaS << "\n\tphase isotropic\n}\n\n"
 	      "global_medium\n{\n\tmedium fog\n}\n\n";
 	if( slab ) {
@@ -1188,6 +1205,7 @@ static std::string TwoChainScene( bool gap, bool slab1 )
 	      "clippedplane_geometry\n{\n\tname geo_diff\n\tpta -4 2.2 4\n\tptb 4 2.2 4\n\tptc 4 2.2 -4\n\tptd -4 2.2 -4\n\tdoublesided TRUE\n}\n\n"
 	      "standard_object\n{\n\tname obj_diff\n\tgeometry geo_diff\n\tmaterial mat_recv\n}\n\n"
 	   << EmitterChunks( "\tpta -0.5 1.5 0.5\n\tptb 0.5 1.5 0.5\n\tptc 0.5 1.5 -0.5\n\tptd -0.5 1.5 -0.5\n", 20.0 )
+	   << BlockerChunks( 1.45 )
 	   << "uniformcolor_painter\n{\n\tname pnt_refr\n\tcolor 1 1 1\n\tcolorspace Rec709RGB_Linear\n}\n\n"
 	      "perfectrefractor_material\n{\n\tname mat_refr\n\trefractance pnt_refr\n\tior 1.5\n}\n\n";
 	auto slabAt = [&ss]( const char* name, double y ) {
@@ -1197,7 +1215,7 @@ static std::string TwoChainScene( bool gap, bool slab1 )
 	if( slab1 ) slabAt( "slab1", 1.0 );
 	slabAt( "slab2", 1.75 );
 	if( gap ) {
-		ss << BlackPainterChunk() << BlackWeaveChunk( "mat_sheet", 0.3 )
+		ss << BlackWeaveChunk( "mat_sheet", 0.3 )
 		   << "clippedplane_geometry\n{\n\tname geo_sheet\n\tpta -4 2 4\n\tptb 4 2 4\n\tptc 4 2 -4\n\tptd -4 2 -4\n\tdoublesided TRUE\n}\n\n"
 		      "standard_object\n{\n\tname sheet\n\tgeometry geo_sheet\n\tmaterial mat_sheet\n}\n\n";
 	}
@@ -1233,7 +1251,9 @@ static void ProbeReviewScenes()
 		{ "DL-373 floor view, gap pel", TwoChainScene( true, true ), false },
 		{ "DL-373 floor view, gap, slab1 removed pel", TwoChainScene( true, false ), false },
 	};
+	const char* rowFilter = std::getenv( "WEAVE_GAP_PROBE_ROWS" );	// label substring
 	for( const P& r : rows ) {
+		if( rowFilter && !std::strstr( r.label, rowFilter ) ) continue;
 		const char* sppEnv = std::getenv( "WEAVE_GAP_PROBE_SPP" );
 		const unsigned int spp = sppEnv ? (unsigned int)std::strtol( sppEnv, nullptr, 10 ) : 256u;
 		ParityRow( r.label, r.hwss ? RastPTSpectralSMS( spp, true, true ) : RastPTSMS( spp, true ),
