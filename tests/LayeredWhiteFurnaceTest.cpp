@@ -30,6 +30,9 @@
 //    54-56. GGX conductor and thin-film conductor controls — the
 //           spec-only physical conductor plus diffuse/specular mixtures
 //           that must remain energy-bounded at every furnace angle
+//    60-62. polished_material with a GLOSSY coat (DL-285) -- the
+//           reciprocal coat + normalized substrate, gated against the
+//           model's own predicted curve
 //
 //  Build (matches existing GGXWhiteFurnaceTest / SPFBSDFConsistencyTest
 //  patterns):
@@ -72,6 +75,8 @@
 #include "../src/Library/Materials/SheenSPF.h"
 #include "../src/Library/Materials/DielectricSPF.h"
 #include "../src/Library/Materials/CompositeSPF.h"
+#include "../src/Library/Materials/CompositeMaterial.h"
+#include "../src/Library/Materials/DielectricMaterial.h"
 #include "../src/Library/Materials/PolishedSPF.h"
 #include "../src/Library/Materials/LambertianMaterial.h"
 #include "../src/Library/Materials/GGXMaterial.h"
@@ -170,9 +175,11 @@ static double DirectionalAlbedo(
 	ISPF& spf,
 	double incomingThetaRad,
 	double* outRejectionRate = 0,
-	unsigned int* outInvalidContributions = 0 )
+	unsigned int* outInvalidContributions = 0,
+	bool jitterPosition = false )
 {
 	RayIntersectionGeometric ri = MakeIntersection( incomingThetaRad );
+	const Point3 rayOrigin0 = ri.ray.origin;
 	RandomNumberGenerator rng;
 	IndependentSampler sampler( rng );
 	IORStack iorStack = MakeTestIORStack( g_stubObject );
@@ -184,6 +191,16 @@ static double DirectionalAlbedo(
 
 	for( int i = 0; i < FURNACE_SAMPLES; ++i )
 	{
+		// DL-24 review P2-3: composite_material's layered evaluator draws
+		// ONE random walk per (incoming direction, position) and reuses it
+		// for every exit at that point, so its estimate is unbiased only
+		// AVERAGED OVER POSITIONS.  Its rows move the shading point every
+		// draw (a flat, uniform fixture, so nothing else changes).
+		if( jitterPosition ) {
+			const Point3 p( rng.CanonicalRandom() * 10, rng.CanonicalRandom() * 10, 0 );
+			ri.ptIntersection = p;
+			ri.ray.origin = Point3( rayOrigin0.x + p.x, rayOrigin0.y + p.y, rayOrigin0.z );
+		}
 		ScatteredRayContainer scattered;
 		spf.Scatter( ri, sampler, scattered, iorStack );
 
@@ -657,13 +674,13 @@ struct ConfigReport
 	double       predictionEps = 0.0;
 };
 
-static void Run( ConfigReport& r, ISPF& spf )
+static void Run( ConfigReport& r, ISPF& spf, bool jitterPosition = false )
 {
 	r.passed = true;
 	for( int i = 0; i < NUM_THETA; ++i )
 	{
 		const double rad = THETA_DEG[i] * PI / 180.0;
-		r.albedo[i] = DirectionalAlbedo( spf, rad, &r.reject[i], &r.invalid[i] );
+		r.albedo[i] = DirectionalAlbedo( spf, rad, &r.reject[i], &r.invalid[i], jitterPosition );
 
 		// An invalid sample must never be silently omitted and then let a
 		// bounded mean look healthy.  Keep the remaining contributions printed
@@ -1234,8 +1251,9 @@ int main()
 	// -- and they must land in kPosturePass.  That is a direct, numeric,
 	// apples-to-apples improvement claim against a shipped baseline."
 	//
-	// Config 3 is `dielectric (ior 1.5) / white Lambertian`, a
-	// KNOWN FAILURE on CompositeSPF's random walk.  Config 11 below is
+	// Config 3 is `dielectric (ior 1.5) / white Lambertian`, which was a
+	// KNOWN FAILURE on CompositeSPF's random walk until DL-24 (2026-09-28;
+	// it now reads rho == 1 and is gated pass).  Config 11 below is
 	// its coated twin: same white Lambertian substrate, same 1.5 coat
 	// IOR, full coverage.  Config 7 is `clearcoat (F0 = 0.04, alpha
 	// 0.16) / GGX-PBR base`; configs 14 and 15 are its coated twins on
@@ -1510,22 +1528,21 @@ int main()
 	//    lobes in this codebase, and the one this furnace independently
 	//    endorses by moving toward unity.
 	//
-	//    Still NOT energy-conserving, and the ORIGINAL note's mechanism is
-	//    still the correct description of the REMAINING deficit: with
-	//    max_recur=4 and per-type budgets of 2, the light that TIRs back down
-	//    at the top interface hits its reflection budget at steps=2 and is
-	//    dropped.  That is a genuine finite-budget truncation, not a bug, so
-	//    this row stays a documented deficit -- but as a PREDICTION check,
-	//    not a free pass: kPostureKnownFailure would silently swallow both a
-	//    regression back to 0.04 and an over-unity blow-up.  eps = 0.03 is
-	//    ~10x the MC noise on a 100k-sample mean here.
-	static const double kPredDielLamb[NUM_THETA] = { 0.4271, 0.4284, 0.4569, 0.6367 };
-	{ ConfigReport& r = addPredicted( "3. Dielectric / Lambertian",
-	    "DL-111 clipped-warp recovery locked in: predicted rho={0.4271,0.4284,0.4569,0.6367} "
-	    "(post-ior-stack-fix was {0.3339,0.3044,0.3128,0.5324}, pre-ior-stack-fix "
-	    "{0.0400,0.0415,0.0892,0.3877}, eps 0.03); residual deficit is finite "
-	    "recursion-budget truncation of the TIR population",
-	    kPredDielLamb, 0.03 );
+	//    2026-09-28 (DL-24): the "remaining deficit" this row was pinned at
+	//    was the recursion budgets DROPPING the internal Fresnel/TIR
+	//    reflection at the top's underside (per-bounce ledger: exit 0.4260 +
+	//    dropped 0.5740 == 1.0000 at normal incidence -- every event
+	//    conserved energy, the budget gates removed it).  It was never a
+	//    "genuine finite-budget truncation"; a random walk has no business
+	//    truncating energy.  The budgets are now Russian-roulette onsets with
+	//    the survival probability divided back out, so a lossless coat over a
+	//    white Lambertian returns rho == 1.  Built here from bare SPFs (no
+	//    BSDFs), so this row exercises the WALKER path alone, whose lossless
+	//    walk carries throughput exactly 1 on every exit -- rho is 1.0000 with
+	//    no variance.  Config 58 is the same stack through CompositeMaterial,
+	//    i.e. the production evaluator path.
+	{ ConfigReport& r = add( "3. Dielectric / Lambertian", kPosturePass, 0.01,
+	    "DL-24: re-gated to rho == 1 (was pinned at the budget-truncated {0.4271,0.4284,0.4569,0.6367})" );
 	  Run( r, *compDielLamb ); }
 
 	// 4. Composite: GGX top over Lambertian (clearcoat-style).  Top
@@ -1652,8 +1669,20 @@ int main()
 	//    the actual predicted number (not just an energy band), so a regression
 	//    that makes `tau` a no-op would still have to land within 0.002 of 1.0
 	//    to pass, which a broken deficit computation would not do at grazing.
+	//
+	//    DL-285 (2026-09-28) RE-DERIVED rows 8-10.  polished_material's
+	//    coat is now the RECIPROCAL lobe tau min(F(ci),F(co)) P 2/(ci+co)
+	//    (PolishedBRDF.h), whose albedo at the peak equals tau F(ci) but
+	//    falls slightly below it wherever the lobe reaches co != ci; the
+	//    substrate keeps Rd (1 - F(ci)) exactly.  At scattering 200000 the
+	//    lobe is 0.13 deg wide, so only the 60/80 deg columns move, by the
+	//    new model's own quadrature (independent Python, 4000 x 2048 nodes
+	//    about the mirror direction): coat albedo {0.02006, 0.02110,
+	//    0.05891, 0.34510} against F = {0.02006, 0.02111, 0.05913, 0.34692}.
+	//    Predicted rho = tau coat + (1 - F); measured (100000 samples) sits
+	//    within 0.0005 of it on every column.
 	{
-		static const double kPredicted8[NUM_THETA] = { 1.0, 1.0, 1.0, 1.0 };
+		static const double kPredicted8[NUM_THETA] = { 1.0000, 1.0000, 0.9998, 0.9982 };
 		ConfigReport& r = addPredicted( "8. Polished, tau=1.0 (full coverage)", 0,
 		    kPredicted8, 0.002 );
 		Run( r, *polishedTau1_0 );
@@ -1677,9 +1706,9 @@ int main()
 	//    energy band, which would pass both a no-op `tau` (rho -> 1.0) and an
 	//    unbounded/inverted deficit (rho -> 0.5 or below) without complaint.
 	{
-		static const double kPredicted9[NUM_THETA] = { 0.9900, 0.9894, 0.9704, 0.8265 };
+		static const double kPredicted9[NUM_THETA] = { 0.9900, 0.9894, 0.9703, 0.8256 };
 		ConfigReport& r = addPredicted( "9. Polished, tau=0.5 (worst-case dip)",
-		    "Rd*Rs*(1-c) deficit, c=0.5: predicted rho={0.9900,0.9894,0.9704,0.8265}, measured {0.9900,0.9894,0.9704,0.8265} -- matches to 0.0001",
+		    "Rd*Rs*(1-c) deficit, c=0.5, DL-285 reciprocal coat: predicted rho={0.9900,0.9894,0.9703,0.8256}, measured {0.9902,0.9894,0.9708,0.8256}",
 		    kPredicted9, 0.002 );
 		Run( r, *polishedTau0_5 );
 	}
@@ -1697,9 +1726,9 @@ int main()
 	//     kPostureMatchesPrediction, eps=0.002 around the stated prediction --
 	//     same regression-gate reasoning as #9.
 	{
-		static const double kPredicted10[NUM_THETA] = { 0.9980, 0.9979, 0.9941, 0.9653 };
+		static const double kPredicted10[NUM_THETA] = { 0.9980, 0.9979, 0.9939, 0.9637 };
 		ConfigReport& r = addPredicted( "10. Polished, tau=0.9 (recipe pooled value)",
-		    "Rd*Rs*(1-c) deficit, c=0.9 (recipe's pooled tau): predicted rho={0.9980,0.9979,0.9941,0.9653}, measured {0.9980,0.9979,0.9941,0.9653} -- matches to 0.0001",
+		    "Rd*Rs*(1-c) deficit, c=0.9 (recipe's pooled tau), DL-285 reciprocal coat: predicted rho={0.9980,0.9979,0.9939,0.9637}, measured {0.9979,0.9980,0.9940,0.9639}",
 		    kPredicted10, 0.002 );
 		Run( r, *polishedTau0_9 );
 	}
@@ -1713,8 +1742,9 @@ int main()
 	// 11. Coated: varnish coat (ior 1.5, alpha 0.02) over WHITE
 	//     Lambertian, full coverage.  DIRECT MIRROR OF CONFIG 3
 	//     (`dielectric ior 1.5 / white Lambertian`), which is
-	//     kPostureKnownFailure because CompositeSPF's recursion budget
-	//     kills the below-layer diffuse paths.  Nothing recurses here:
+	//     was kPostureKnownFailure until DL-24 (2026-09-28) because
+	//     CompositeSPF's recursion budget killed the below-layer diffuse
+	//     paths (config 3 now passes at rho == 1).  Nothing recurses here:
 	//     the coat's transmission is folded into the substrate lobe's
 	//     throughput analytically (7.5), so there is no budget to
 	//     exhaust.  HIGH-SUBSTRATE-ALBEDO (R = 1) -- this is the
@@ -2985,6 +3015,81 @@ int main()
 	{ ConfigReport& r = add( "57. Coated varnish / white Lambertian, coat_normal tilted 5deg", kPosturePass, 0.02,
 	    "DL-192: a coat-normal tilt redirects the coat lobe but must not create/destroy energy" );
 	  Run( r, *coatedVarnishTiltedNormal->GetSPF() ); }
+
+	// 58-60. DL-24: composite_material through its PRODUCTION construction
+	// (CompositeMaterial hands both layers' BSDFs to the SPF, so the
+	// covered class is priced by the layered evaluator and sampled from a
+	// known density rather than walked).  Lossless layers over a white
+	// Lambertian must conserve energy at every incidence.  2 %: ~4 sigma of
+	// the 100k-sample estimator here.
+	{
+		UniformScalarPainter* sScatDefault = new UniformScalarPainter( 10000.0 );  sScatDefault->addref();
+		DielectricMaterial* dScat0Mat  = new DielectricMaterial( *sOne, *sIor, *sZero, false );           dScat0Mat->addref();
+		DielectricMaterial* dSmoothMat = new DielectricMaterial( *sOne, *sIor133, *sScatDefault, false ); dSmoothMat->addref();
+		CompositeMaterial* compMat3  = new CompositeMaterial( *dScat0Mat,  *whiteLambMat, kMaxRecur, kMaxReflectRecur, kMaxRefractRecur, kMaxDiffuseRecur, kMaxTranslucent, kThickness, *zeroSc );
+		compMat3->addref();
+		CompositeMaterial* compMatW  = new CompositeMaterial( *dSmoothMat, *whiteLambMat, 3, 3, 3, 3, 3, 0.5, *zeroSc );
+		compMatW->addref();
+		{ ConfigReport& r = add( "58. Composite (material path): dielectric(scat 0) / white Lambertian", kPosturePass, 0.02,
+		    "DL-24: config 3's stack through CompositeMaterial -- the evaluator + exact-density path" );
+		  Run( r, *compMat3->GetSPF(), true ); }
+		{ ConfigReport& r = add( "59. Composite (material path): water(1.33) / white Lambertian, t=0.5", kPosturePass, 0.02,
+		    "DL-24: parser-default budgets; a gap with no extinction must not absorb" );
+		  Run( r, *compMatW->GetSPF(), true ); }
+		compMatW->release();
+		compMat3->release();
+		dSmoothMat->release();
+		dScat0Mat->release();
+		sScatDefault->release();
+	}
+
+	// 60-62. polished_material with a GLOSSY coat (DL-285, 2026-09-28).
+	//     Rows 8-10 run a near-mirror coat (scattering 200000); these run
+	//     the lobe WIDE, where the reciprocal coat's shape matters, at
+	//     tau = Rd = 1.  PolishedBRDF.h proves rho <= tau F(ci) + Rd (1 -
+	//     F(ci)) <= 1 (the pairing wo <-> rotation by pi about the mirror
+	//     direction), and the substrate's directional albedo is exactly
+	//     1 - F(ci), so each row is gated against the model's own
+	//     predicted curve: coat albedo by an independent Python quadrature
+	//     of the SAME formula (4000 x 2048 nodes about the mirror
+	//     direction, HG mass in closed form) plus 1 - F(ci).  Predictions
+	//     (coat / F): N 20, ior 1.5: {0.03905/0.04000, 0.03994/0.04152,
+	//     0.06932/0.08919, 0.19560/0.38770}; N 1, ior 1.33: {0.01550,
+	//     0.01556, 0.02656, 0.07761} over F {0.02006, 0.02111, 0.05913,
+	//     0.34692}; HG g 0.6, ior 1.5: {0.03293, 0.03327, 0.05082, 0.12350}.
+	//     eps 0.004 (4 sigma of the per-angle MC mean at these krays).
+	{
+		UniformScalarPainter* sScat20 = new UniformScalarPainter( 20.0 );  sScat20->addref();
+		UniformScalarPainter* sScat1  = new UniformScalarPainter( 1.0 );   sScat1->addref();
+		UniformScalarPainter* sG06    = new UniformScalarPainter( 0.6 );   sG06->addref();
+		PolishedSPF* polN20 = new PolishedSPF( *one, *sOne, *sIor,    *sScat20, false );  polN20->addref();
+		PolishedSPF* polN1  = new PolishedSPF( *one, *sOne, *sIor133, *sScat1,  false );  polN1->addref();
+		PolishedSPF* polHG  = new PolishedSPF( *one, *sOne, *sIor,    *sG06,    true  );  polHG->addref();
+		{
+			static const double kPred60[NUM_THETA] = { 0.9990, 0.9984, 0.9801, 0.8079 };
+			ConfigReport& r = addPredicted( "60. Polished glossy N=20, tau=Rd=1, ior 1.5 (DL-285)",
+			    "reciprocal coat + (1-F(ci))(1-F(co))/T_avg substrate; bounded by tau F + Rd (1-F)", kPred60, 0.004 );
+			Run( r, *polN20 );
+		}
+		{
+			static const double kPred61[NUM_THETA] = { 0.9954, 0.9944, 0.9674, 0.7307 };
+			ConfigReport& r = addPredicted( "61. Polished widest N=1, tau=Rd=1, ior 1.33 (DL-285)",
+			    "the reciprocal coat's largest departure from tau F(ci)", kPred61, 0.004 );
+			Run( r, *polN1 );
+		}
+		{
+			static const double kPred62[NUM_THETA] = { 0.9929, 0.9917, 0.9616, 0.7358 };
+			ConfigReport& r = addPredicted( "62. Polished HG g=0.6, tau=Rd=1, ior 1.5 (DL-285)",
+			    "forward-truncated HG coat (the pre-DL-285 retry loop was UB; its optimized build drew the untruncated lobe)", kPred62, 0.004 );
+			Run( r, *polHG );
+		}
+		polHG->release();
+		polN1->release();
+		polN20->release();
+		sG06->release();
+		sScat1->release();
+		sScat20->release();
+	}
 
 	PrintReport( reports );
 

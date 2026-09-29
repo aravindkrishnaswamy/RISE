@@ -550,3 +550,759 @@ replaced.
   `diffusion_smooth/PT-spectral` 1.97, `random_walk/PT-spectral` 2.96;
   `diffusion_smooth_dense/BDPT` went red once (1.0062) in this slice's
   pre-DL-291 A/B.  Not changed here (DL-49's gate).
+
+## 11. DL-290: the same pattern outside SSS (slice `debt-dl290`, 2026-09-28)
+
+Branched from `master` `c190163c`.  Regression:
+`tests/ExteriorIndexInvarianceTest.cpp` (the SSS-named suite above is
+unchanged, 139/0).
+
+### 11.1 Ruling
+
+The same one as §2, applied to every remaining boundary model that priced
+an interface against a literal air: **the exterior index is
+`RayIntersectionGeometric::ambientIOR`** (the G6 IOR-stack top; 1.0 for a
+stackless record), and every boundary quantity is a function of the
+RELATIVE index.  In air `x / 1.0 == x` and `RISEPel(1.0) == RISEPel(1)`,
+so every changed expression computes its pre-fix value bit for bit.
+
+| Site | Ruling | Change |
+|---|---|---|
+| `CookTorranceBRDF` `value`/`valueNM`/`albedo`, `CookTorranceSPF` specular and multiscatter `kray` (RGB, NM), Kulla-Conty `F_avg` | **fixed** | incident index `CookTorranceBRDF::AmbientIOR(ri)` (was `1` / `RISEPel(1,1,1)`); the complex conductor Fresnel is a function of `(n/n_e, k/n_e)` only.  The aggregate `Pdf` selects lobes by specular COLOUR, not Fresnel, so no replay moved (pinned: Pdf twins equal). |
+| `HairBSDF` (Chiang): `Resolve`'s `etaRef`, `EvalFsum`'s per-wavelength eta, the albedo AOV's `fAvg` | **fixed** | `FibreLobeMath::RelativeFibreEta(authored, ambientIOR)`.  Chiang/Marschner (and PBRT-v4's HairBxDF) write every Snell and Fresnel term of the fibre surface in the fibre-vs-SURROUNDING ratio; the colour fit (C <-> sigma_a) and the beta remaps do not involve eta, so the model accepts a relative index without changing anything else, and wet / submerged hair now prices the medium it is in.  **Documented limitation:** a fibre less dense than its surroundings (relative < 1) is outside the model (gamma_t = asin(h/eta') needs eta' >= 1); it is clamped to exactly 1, an index-MATCHED fibre (`FrDielectric` returns 0, straight transmission), which REFLECTS NOTHING.  That is a limitation, not an approximation: the h-averaged surface Fresnel reflectance a real fibre would have is 11.4 % at relative 0.9 and 22.7 % at 0.8 (mostly TIR for |h| above the relative index), and the clamp drops all of it.  Reachable only in a medium denser than the fibre (weave: likewise, re-clamped to `kMinIOR`).  The authored-index guard (`<= 1 -> 1.55`) still runs first, so in air the clamp never binds. |
+| `WeaveBRDF` thread lobes (found by the sibling audit: same `FrDielectric(eta)` against air) | **fixed** | the clamped authored index is divided by the exterior and re-clamped to `[kMinIOR, kMaxIOR]` (a no-op in air). |
+| `BioSpecSkinSPF` outside / stratum-corneum boundary, entry and exit | **fixed** | `SkinParams::ior_outside = OutsideIOR(ri)` replaces the two literal `1.0`s.  `Boundary_Refraction` is the EXACT dielectric Fresnel plus Snell with TIR on both indices, so it is already a function of the ratio and already correct for a denser exterior -- none of DL-49's Schlick-at-the-transmitted-cosine re-derivation is needed here. |
+| `GenericHumanTissueSPF` | **refuted** | no Fresnel, no Snell, no index (straight-through / cosine perturbation), as §8 said. |
+| SMS evaluation rigs (`ManifoldSolver.cpp`): `ComputeTrialContribution{,NM}` and the snell main loops of `EvaluateAtShadingPoint{,NM}` -- FOUR rigs, not the three the row named (the NM helper was missed) | **fixed** | each rig stamps `ambientIOR` from the receiver's stack top (`SMSReceiverAmbientIOR`).  At the same sites: the two NM rigs called `valueNM` while their RGB twins call `valueStateful(.., pIorStack)` -- now `valueStatefulNM`; and the uniform-mode dispatch DROPPED the stack (`EvaluateAtShadingPoint{,NM}Uniform` were called without it, and so were all six helper calls inside them), so uniform mode had no stack at all -- now forwarded. |
+| SMS seed walk (`BuildSeedChain` / `BuildSeedChainBranching`; found while red-proving the rigs) | **fixed** | the walk that produces every chain vertex's `etaI`/`etaT` (Newton's constraint, the chain Fresnel) started at `IORStack(1.0)`; it now starts from the receiver's live stack when one is given (all 14 snell / uniform / NM call sites pass it; null = air as before). |
+| SMS photon-seeded chains (`ReversePhotonChainForSeed` and the three photon-aided sites) | **residual, not fixed** | photon-reversed chains carry no `etaI`/`etaT` and take `GetEffectiveEtas`' "air on the other side" back-compat path; fixing it means walking a stack along the reversed chain (or storing the etas in `SMSPhotonChainVertex`) and changes nested-dielectric photon-aided scenes in air as well.  Measured and pinned by a NON-gated row (below). |
+
+### 11.2 Red-proof and gate
+
+Isolated A/B against committed state: every library file the slice
+touches was reverted with `git checkout c190163c -- <10 files>` (the test
+kept), rebuilt, run, and restored with `git checkout HEAD -- <files>`.
+**Pre-fix 123/44** (24 deterministic unit checks + 20 render rows),
+**post-fix 167/0**.
+
+Part A (deterministic): Cook-Torrance BSDF twins worst relative difference
+0.467 -> 1.9e-16; seeded SPF twins 477/2048 -> 2048/2048 (RGB and NM);
+matched index (1.5 inside 1.5, k = 0) max value 0.2200 -> 2.4e-17 and max
+SPF kray 0.367 -> 4.0e-17.  Hair BSDF twins 0.892 -> 0; SPF twins 0/2048 ->
+2048/2048; an opaque fibre at matched index max value 0.1925 -> 0.  Weave
+0.351 -> 2.2e-16; 0/2048 -> 2048/2048.  BioSpec seeded SPF twins (every
+skin index scaled, dermis thick enough that the collagen Rayleigh term
+saturates in both twins -- see the test's note) 4268/8192 -> 8192/8192, and
+with the outer interface index MATCHED 2030/8192 -> 8192/8192.  SMS
+`ComputeTrialContribution{,NM}` with a recording BSDF: receiver
+`ambientIOR` 1 -> the stack top (1.33, 1.5; air with no stack) and the NM
+helper's stateful calls 0 -> 1.
+
+Part B, rendered (DL-49's black-room harness; the enclosure is now present
+on BOTH sides, at index 1 in the air scene, because SMS uniform seeding
+enumerates every specular caster and a one-sided enclosure read 0.988 on
+the uniform rows under common random numbers).  n = 4 renders per side,
+enclosed/air mean ratio +/- the (conservative) independent-sides sd:
+
+| Row | spp | pre-fix | post-fix | band |
+|---|---:|---:|---:|---:|
+| lambertian control / PT | 16 | 1.0009 | 1.0009 +/- 0.0042 | 0.02 |
+| Cook-Torrance / PT | 32 | **1.2487** | 1.0000 +/- 0.0008 | 0.02 |
+| Cook-Torrance / BDPT | 16 | **1.2405** | 1.0034 +/- 0.0035 | 0.02 |
+| Cook-Torrance / PT spectral | 32 | **1.2538** | 1.0000 +/- 0.0082 | 0.03 |
+| Cook-Torrance / PT HWSS | 32 | **1.2466** | 1.0000 +/- 0.0086 | 0.03 |
+| hair / PT | 64 | **3.2399** | 0.9955 +/- 0.0079 | 0.03 |
+| hair / BDPT | 16 | **3.2164** | 1.0000 +/- 0.0114 | 0.03 |
+| hair / PT HWSS | 256 | **3.1088** | 0.9996 +/- 0.0084 | 0.03 |
+| hair / BDPT HWSS | 64 | **3.2088** | 0.9902 +/- 0.0110 | 0.03 |
+| weave / PT | 32 | **1.0395** | 1.0000 +/- 0.0003 | 0.03 |
+| weave / BDPT | 16 | **1.0371** | 1.0000 +/- 0.0012 | 0.03 |
+| BioSpec skin / PT | 256 | **1.0430** | 1.0014 +/- 0.0037 | 0.015 |
+| BioSpec skin / BDPT | 512 | **1.0296** | 1.0001 +/- 0.0033 | 0.02 |
+| SMS GGX conductor via mirror / PT snell | 16 | **2.4468** | 1.0000 +/- 0.0005 | 0.03 |
+| same / PT uniform | 16 | **2.4464** | 1.0000 +/- 0.0005 | 0.03 |
+| same / PT spectral snell | 16 | **2.4485** | 0.9977 +/- 0.0082 | 0.05 |
+| same / PT spectral uniform | 16 | **2.4446** | 1.0000 +/- 0.0122 | 0.05 |
+| SMS Lambertian via glass sphere, k = 1 / PT snell | 16 | **0.9530** | 1.0000 +/- 0.0022 | 0.01 |
+| same, k = 1 / PT uniform | 16 | **0.9862** | 1.0000 +/- 0.0010 | 0.01 |
+| same, k = 1 / PT spectral snell | 64 | **0.9325** | 1.0000 +/- 0.0034 | 0.03 |
+| same, k = 1 / PT spectral uniform | 64 | 0.9877 | 0.9992 +/- 0.0030 | 0.03 |
+| same, k = 2 / PT uniform | 64 | **1.0720** | 0.9987 +/- 0.0012 | 0.02 |
+| same, k = 2 / PT snell + photons (NOT gated) | 16 | 0.9673 | **1.0208** +/- 0.0074 | -- |
+
+The spectral-uniform k = 1 glass row passes pre-fix too (the NM path
+re-derives the caster side of each vertex per wavelength, so only the
+surrounding side was wrong and the whole-image effect is 1.2 %): it is a
+consistency pin, the other four glass rows are the red-proof of the seed
+walk.  The SMS mirror rows isolate the rigs (a delta light through a delta
+mirror reaches the GGX floor only through SMS; the light sits in a
+black open-topped box).  The BioSpec rows use a large emitter: that material
+has no evaluable BSDF, so only BSDF-sampled continuations find the light.
+The photon row's residual is +2.1 % (an n = 10 run read +2.0 % +/- 0.3 %).
+
+Other gates (all built and run from a clean rebuild; library 374 TUs and
+36 test targets, 0 warnings): `SSSExteriorIndexInvarianceTest` 139/0,
+`SSSRadianceScalingTest` 576220/0, `CookTorranceMultiscatterTest` 17/0,
+`CookTorranceSchlickGlossyFilterConsistencyTest` all pass,
+`CookTorranceHWSSTest` 7/0, `SPFPdfConsistencyTest` pass,
+`SPFBSDFConsistencyTest` pass, `SchlickKrayBRDFConsistencyTest` 1449/0,
+`GGXDiffuseTransmissionTest` pass, `HWSSCompanionKrayTest` 189/0,
+`HairBSDFTest` 0 failed, `HairRenderTest` 29/0, `HairDirectionalBacklitTest`
+7/0, `HairMaterialChunkTest` 44/0, `BlenderBridgeHairTest` pass,
+`HairSSSEntryNormalTest` 0 failures, `FibreLobeMathTest` 39/39,
+`WeaveMaterialChunkTest` 296/0, `FabricMaterialChunkTest` 178/0,
+`FabricRenderTest` 60/0, `MirroredUVWeaveDirectionTest` 24/0,
+`TextureFootprintTest` 192/0, `GenericHumanTissueInteriorScatterTest` 9/0,
+`ManifoldSolverTest` pass, `ManifoldNormalDerivativeTest` 141/0,
+`GrazingSnellFresnelTest` 38/0, `GrazingFresnelThroughputTest` 44/0,
+`LayeredWhiteFurnaceTest` 0/58, `BDPTStrategyBalanceTest` 208/0,
+`VCMStrategyBalanceTest` 74/0, `MLTSpectralHWSSNormalizationTest` 8/0,
+`SchlickWardBackfaceEnergyTest` pass, `CstDeriveGoldenTest` 454 MATCH /
+0 DRIFT, `SourceHygieneTest` 167/0; `RefractiveRadianceScalingTest` 40/1,
+the pre-existing row C of DL-308.
+
+### 11.3 Shipped scenes: in-air bit identity
+
+A temporary harness (never committed; `std::srand(seed)`,
+`force_number_of_threads 1`, FNV-1a over the float RGBA image) rendered
+every shipped scene binding `cooktorrance_material`, `hair_material`,
+`weave_material` or `biospec_skin_material` (native rasterizer, and swapped
+to PT, BDPT and PT spectral) plus every `sms_enabled` scene (native), cut to
+48 px wide at <= 4 spp, with `oidn_denoise FALSE` forced on every
+`pathtracing_` / `bdpt_` / `vcm_` / `mlt_` rasterizer chunk (**round-3
+correction:** NOT on the other native rasterizers -- a `pixelpel` or
+`pixelintegratingspectral` chunk with no `oidn_denoise` line kept OIDN on, so
+"without OIDN" was false for those variants): 134 variants, seeds 42 and 1234, base
+`c190163c` versus the final build.  Serial re-runs are deterministic.
+
+- **129/134 bit-identical at both seeds.**  (15 of those are canonical
+  variants that render black because swapping the rasterizer chunk drops the
+  scene's environment; the chunk-coverage `cc_hair_*` files have no camera
+  and are not counted.)
+- **5 differ, all SMS, and all have non-air receivers by the renderer's own
+  stack**: `sms_k1_botonly`, `sms_k1_refract`, `sms_k2_flatslab`,
+  `sms_k2_glassblock`, `sms_teapot_close_sms`.  An instrumented build
+  (never committed) counting seed walks whose receiver stack top is not 1.0
+  -- at the survey's own settings (48 px wide, <= 4 spp, one thread) --
+  read 2.7-3.0 % of walks on the first four (411-451 of ~15 000) and 1.4 %
+  on the teapot (228 of 16 260), and **0** on every one of the 15 matching SMS scenes that run a
+  seed walk at all (two more, a VCM scene and one whose SMS never seeds, make
+  none) --
+  the change is confined to receivers the IOR stack places inside glass
+  (camera paths through an open refracting sheet: `sms_k2_flatslab` and
+  `sms_k2_glassblock` are each TWO separate open clippedplane sheets at
+  y = 0.45 / 0.55 above the floor, both of which push the glass index, so a
+  floor point seen through them carries `[1, n, n]`), where the walk now
+  exits the caster instead of entering it.  Whole-image means moved
+  -1.0 % .. +1.3 % at 4 spp.  **Those movers were NOT benign as first
+  reported** -- see §11.6: the two-sheet slabs make the second sheet an
+  exactly index-matched vertex, which the Newton solve could not handle,
+  and the round-0 build read their caustics at a quarter of the reference.
+- An earlier parallel (8-process) run showed `fabric_presets` (pixelpel) and
+  `glass_pavilion` differing; serial re-runs of both binaries were 8/8 and
+  6/6 identical.  **Round-3 correction:** this is not a race.  OIDN is ON
+  for that pixelpel chunk (no `oidn_denoise` line), and OIDN's Auto quality
+  (`ResolveAutoQuality`) picks FAST or BALANCED from the measured render
+  seconds per megapixel, so a render near that threshold flips mode with
+  machine load: the mode matched the output 6/6 (FAST 0.13945, BALANCED
+  0.14558), and with `oidn_denoise FALSE` 8/8 runs are identical.  DL-360
+  (filed at merge).
+- `spectral_skin_fast` / `spectral_skinmodel` read NaN under BDPT in BOTH
+  builds -- not BioSpec: an `infiniteplane_geometry` luminaire with
+  `scale` above 1 turns the whole image NaN under PT and BDPT (filed
+  **DL-311**).
+
+### 11.4 Cost
+
+Interleaved base / final, n = 8 (two batches in opposite order), user CPU:
+`cornellbox_bdpt_materials_pt` (Cook-Torrance) 9.002 -> 9.053 s (+0.6 %,
+paired t = 1.2); `hair_styled` 22.91 -> 22.98 s (+0.3 %, t = 1.0);
+`sms_k2_glasssphere` 2.001 -> 2.031 s (+1.5 %, t = 1.9).  Not
+distinguishable from noise -- but none of these scenes exercises the
+changed walk; the mover measurement is in §11.6 (+5.80 % at `855ce136`,
+-0.04 % final).
+
+### 11.5 Sibling audit (pattern: "an absolute index against 1 where a relative index is meant")
+
+| Site | Verdict |
+|---|---|
+| GGX conductor / thin-film, `CoatedBRDF` | relative via `ambientIOR` (G6) -- confirmed |
+| `DielectricSPF`, `PolishedSPF`, `PerfectRefractorSPF`, SSS SPF, `RayCaster` shadow transmittance | relative via the IOR stack -- confirmed |
+| `TranslucentSPF`, `GenericHumanTissueSPF`, `FabricBRDF`/`SheenBRDF` (Charlie sheen), `DataDrivenBSDF` | no index / no Fresnel -- not applicable |
+| `WeaveBRDF` | **pattern present -- fixed here** |
+| SMS seed walk | **pattern present -- fixed here**; photon-seeded chains remain (above) |
+| Schlick / Ward / Phong / Ashikhmin, GGX `schlick_f0`, `pbr_metallic_roughness` (F0 = 0.04) | an authored normal-incidence REFLECTANCE, not an index: nothing to make relative (the model's F0 is an in-air datum by construction) |
+| glTF `KHR_materials_ior` | imported as `dielectric_material` (stack-relative) -- confirmed |
+| BioSpec dermis Rayleigh term (`ComputeBeta`: collagen 1.5 against the dermis index) | an INTRA-tissue contrast with a hardcoded collagen constant, not an exterior interface -- not this pattern (it is why the invariance fixture needs a saturating dermis) |
+| `BioSpecSkinSPF::Epidermis_Outside_Boundary_Refraction` | declared, never called |
+| Donner-Jensen multipole `Rd`, legacy point-set SSS | DL-291 (unchanged) |
+
+Found while measuring, genuinely separate, filed:
+**DL-311** (infinite-plane luminaire with `scale` > 1 -> NaN image under
+PT/BDPT; `averageRadiantExitance * GetArea()` with `GetArea() ==
+RISE_INFINITY` overflows the light power) and **DL-312** (the NM snell SMS
+path lacks the RGB path's pure-mirror caster supplemental seeds: on the
+mirror fixture the spectral snell row renders 0.021 against RGB snell 0.046
+and both uniform rows 0.041-0.042).
+
+### 11.6 External review round 1: the matched-index vertex and the unpushed exit
+
+The first external review (on `855ce136`) returned two P1s, both in the
+SMS seed walk this slice had just made stack-aware; both are fixed on the
+merged tree (`master` `5a46c7f4` merged first).
+
+**P1-1 -- an exactly index-matched seed vertex.**  `sms_k2_flatslab` and
+`sms_k2_glassblock` build their slab from TWO open sheets, each of which
+pushes the glass index, so a floor point seen through them carries
+`[1, n, n]`.  Once the walk starts from that stack (§11.1), the second sheet
+is a refraction vertex with `eta_i == eta_t` exactly.  Walter's generalized
+half-vector `h = -(eta_i wi + eta_t wo)` then vanishes identically at the
+solution (`wo == wi`), so the NORMALIZED constraint `C = P_tangent(h/|h|)`
+is 0/0 there: `EvaluateConstraint` returned its `|h| < NEARZERO` failure
+sentinel and `BuildJacobian` skipped the vertex, so Newton could not
+converge and every such chain was lost -- the `855ce136` build read these
+caustics at a quarter of the reference, WORSE than the pre-DL-290 base
+(which walked from a fresh `[1.0]` and so never produced the matched
+vertex, while mispricing the first sheet instead).
+
+The round-1 fix (`IsIndexMatchedRefraction`, `ManifoldSolver.cpp`) kept the
+UNNORMALIZED `h` at such a vertex, in `EvaluateConstraint`, `BuildJacobian`
+and `ComputeLastBlockLightJacobian` alike (raw derivatives, no
+`DeriveNormalized`), for an exact-relative match (`|eta_i - eta_t| <= 1e-9
+max`).  **Round 2 changed both the scope and the argument (§11.7).**  The
+scope: EVERY refraction vertex now uses the unnormalized `h`, because the
+1e-9 special case left a cliff one step away (Newton 100 % at an exact
+match, 0 % at a relative mismatch of 1e-8 .. 1e-3).  The argument written
+here in round 1 -- "at `C = 0` the normalized block is the raw block scaled
+by `1/|h|`, so the Newton step is unchanged" -- was WRONG for the matched
+case it was written for: at a matched root `h = 0`, so `1/|h|` is undefined
+and the normalized form has no root there at all; and away from a root the
+Newton step does change (only the root is shared).  The valid argument at a
+match: `P_t(-eta (wi + wo))` vanishes exactly on the straight-through path
+and is a full-rank local defining function of it, so the implicit-function
+tangent it yields is the physical one (the external review's finite
+differences of the production light-to-first-vertex Jacobian at a matched
+vertex agree to 9.9e-6 relative, n = 103).
+
+**Matched-index audit, rest of the chain** (asked by the review): the
+Newton constraint was the only site that degenerated.
+`ComputeDielectricFresnel` and the chain throughput price a matched
+vertex as `R = 0`, `T = 1`, no bend (DL-58's stable cosine form); the
+chain's `ComputeSpecularDirection` re-trace passes straight through;
+`BuildJacobianAngleDiff` and `EvaluateConstraintAtVertex` are test-only
+and not on the production path.
+
+**P1-2 -- the unpushed exit.**  `SnellContinueChain`'s exit branch with no
+matching push for the object hit set the far-side index to a hardcoded
+`1.0`, which priced an immersed open-sheet caster against air even with the
+rest of the walk stack-aware.  The far side is now read from the stack, and
+the branch has TWO cases, because two different geometries reach it:
+
+**Superseded in round 2 (§11.7): cases (a) and (b) below are now told
+apart by CONTAINMENT, not by comparing indices; the index-value test
+regressed every slab of two different indices, in air.**
+
+- **(a) the walk is IN this sheet's material** (the stack top carries its
+  index): the slabs-from-planes pattern, where a SIBLING sheet pushed the
+  slab on the way in -- the walk enters through the down-facing lower sheet
+  and leaves through the up-facing upper one.  Leaving the slab leaves that
+  entry, so the top entry is popped and the far side is the medium beneath
+  it (1.0 in air: exactly the old constant).
+- **(b) the walk is NOT in this material** (a lone open sheet whose normal
+  says "exiting" but which nothing entered): nothing is popped, and the far
+  side is the medium the walk is already in, the stack top (1.0 in air
+  unless the walk is inside some other medium).
+
+A FIRST revision of this fix read the stack top in both cases.  In case (a)
+that makes the slab's exit an index-MATCHED vertex (2.2 -> 2.2) and leaves
+the chain "inside glass" at the light -- in air too -- and it read the
+two-sheet slabs' lit floor beside the slab (1523 px on flatslab, 1097 on
+glassblock) 27 % / 16 % darker than every other build; the scale-invariance
+rows could not see it, because the error is itself scale-invariant.  The
+deterministic A7 rows below were added for exactly that.  Residual
+ambiguity: a case-(b) sheet immersed in a medium of EXACTLY its own index
+is classified (a).  In case (a) the Snell bend that seeds the direction
+still uses the pre-pop index (ratio 1, straight through) -- a pre-existing
+seed approximation that Newton re-solves, unchanged here.  The stale DL-70
+comment in the same function (which said the `sameObjectAgain` override
+could not fire on a walk's first crossing because "nothing has been pushed
+yet") is corrected: with the receiver stack it can.
+
+In the region that first revision darkened, this slice's final build is
+unchanged from base (flatslab 0.1785 / 0.1792, glassblock 0.1416 / 0.1426)
+and the two references disagree with each other by 40-60 %: VCM 0.2143 /
+0.2250, PT without SMS 0.1508 / 0.1389.  SMS sits within 3 % of
+PT-without-SMS on glassblock and 19 % above it on flatslab there -- a
+pre-existing, reference-limited question this slice does not change.
+
+**Gate rows** (`ExteriorIndexInvarianceTest`, 191/0):
+
+- Part A7 (deterministic): `BuildSeedChain` from below through (a) a
+  two-sheet slab and (b) a lone up-facing sheet, in air and with a 1.5
+  receiver stack (every index x1.5): etas (a) `1 -> 2.2, 2.2 -> 1` /
+  `1.5 -> 3.3, 3.3 -> 1.5`, (b) `2.2 -> 1` / `3.3 -> 1.5`.  Red against the
+  pre-review constant: the two immersed rows (`3.3 -> 1`); red against the
+  first revision: both case-(a) rows (`2.2 -> 2.2`, `3.3 -> 3.3`).
+- Part B `sms_lambertian_via_open_sheet` (a single open glass sheet over
+  a Lambertian floor, point light above, camera BELOW the sheet so the
+  receiver's stack does not hold it and the walk's first crossing is the
+  unpushed exit, case (b)): PT snell 1.0010 +/- 0.0014 (band 0.01), PT
+  spectral snell 0.9995 +/- 0.0030 (band 0.03).  With ONLY the P1-2 block
+  reverted to the constant: **0.9693 +/- 0.0012** and **0.9304 +/- 0.0038**
+  -- those two rows and the two immersed A7 rows fail (187/4), nothing
+  else in the file does.
+- Part C (**superseded in round 2, §11.7: the rectangle mixed the slab
+  pixels with the floor seen directly, and the glassblock reading below is
+  WRONG**), the two shipped scenes themselves against their VCM `_ref`
+  twin (100x75, oidn off, SMS 256 spp vs VCM 512 spp, caustic rectangle
+  x36..64 y26..38, n = 4): flatslab **1.0102 +/- 0.0006** (band
+  0.96..1.06), glassblock **0.8904 +/- 0.0014** (band 0.84..0.94);
+  run to run the ratios move by up to 0.003.  With
+  ONLY the matched-index branch disabled: **0.2603** and **0.2302** -- the
+  two rows fail, nothing else does (189/2).  The bands are centre +/- 0.05, set by
+  the references' disagreement, not by the ratio sd (QMC makes that
+  ~0.1 %): glassblock's SMS agrees with the scene rendered by PT WITHOUT
+  SMS at 4096 spp (0.98 matched; 1.00 with the top sheet moved to ior 2.3,
+  i.e. no matched vertex at all), while VCM reads ~11 % above both on that
+  displaced top in either configuration -- a VCM-vs-PT difference, not an
+  SMS or index effect.
+
+**Movers against both references** (100x75, n = 4, mean of RGB/3; the
+"changed" region is every pixel the base -> `855ce136` step moved by more
+than 4 sigma, 1021 px on flatslab and 661 on glassblock):
+
+| scene / region | base `c190163c` | `855ce136` | this round | VCM `_ref` | PT, SMS off, 4096 spp |
+|---|---:|---:|---:|---:|---:|
+| flatslab caustic rect | 0.0549 (0.66 / 0.71) | 0.0216 (0.26 / 0.28) | **0.0838 (1.01 / 1.08)** | 0.0828 +/- 0.0003 | 0.0773 +/- 0.0025 |
+| flatslab changed region | 0.0870 (0.86 / 0.84) | 0.0739 (0.73 / 0.71) | **0.0974 (0.96 / 0.94)** | 0.1011 +/- 0.0001 | 0.1041 +/- 0.0008 |
+| flatslab whole image | 0.1721 | 0.1699 | **0.1729** | 0.1805 +/- 0.0014 | 0.1768 +/- 0.0004 |
+| glassblock caustic rect | 0.0390 (0.44 / 0.48) | 0.0205 (0.23 / 0.25) | **0.0792 (0.89 / 0.98)** | 0.0889 +/- 0.0003 | 0.0807 +/- 0.0031 |
+| glassblock changed region | 0.0643 (0.68 / 0.68) | 0.0534 (0.56 / 0.57) | **0.0873 (0.92 / 0.93)** | 0.0948 +/- 0.0002 | 0.0940 +/- 0.0019 |
+| glassblock whole image | 0.1647 | 0.1650 | **0.1676** | 0.1837 +/- 0.0022 | 0.1766 +/- 0.0002 |
+
+(ratios in parentheses: to VCM / to PT-without-SMS.)  This round's build
+is the closest of the three to BOTH references in every row.  **Round-2
+correction (§11.7):** every region in this table mixes two pixel classes --
+the slab seen through both sheets (S) and the floor seen directly under it
+(F) -- and on F the integrators disagree by up to 3x among themselves
+because the open-sheet index-stack convention is non-reciprocal (DL-345).
+On S alone the references agree to 1-2 %, and glassblock's SMS reads
+~10-15 % LOW there with or without a matched vertex: SMS's own deficit on
+a displaced slab (DL-352), not VCM's.  The "0.98 / 1.00 of PT-without-SMS"
+readings in the Part C bullet above came from the F pixels in the
+rectangle.  The two
+references themselves disagree by 3-10 %; the residual whole-image gap is
+present, and larger, in the base build too.
+
+**In-air hash survey, re-run on the merged tree** (same harness as §11.3,
+seeds 42/1234, serial re-runs for anything that differed under parallel
+load).  Against the merged pre-round build (`855ce136` + `master`):
+exactly six scenes move, all SMS, and the final build is hash-IDENTICAL on
+all 134 variants to a build with only P1-1 applied -- so the P1-2 rework
+is bit-identical in air across the survey, and every mover is the
+matched-index branch: flatslab and glassblock (above),
+`sms_k2_torus_cross` (seed 42 only; two crossing glass tori of the SAME
+ior, so a walk through the overlap enters the second torus at a matched
+index), `sms_teapot_close_sms`, `sms_veach_egg_displaced` and
+`spectral_dispersive_caustic_pt_sms` (seed 42 only) -- a tessellated or
+displaced caster the walk re-enters without an intervening exit is a
+matched double push.  These are air scenes: a matched vertex is a
+property of the scene's own stack, not of an exterior medium, so P1-1 is
+a pre-existing in-air SMS defect as well.  The last four move nothing
+resolvable: the 48-px means of torus_cross, teapot and the dispersive
+caustic are identical to nine digits (only low-order bits differ), and
+at 100x75, n = 4, teapot changes 4 px by more than 4 sigma, moving them
+toward its VCM twin (0.1491 -> 0.1500 against 0.1536; whole image
+0.3264 / 0.3254 / VCM 0.3231, all within sd), while the displaced egg
+changes 7 firefly-dominated px (per-render sd 30-40 % of their mean) and
+its whole image 0.3283 +/- 0.0018 -> 0.3217 +/- 0.0082 is within
+1.6 sigma; it has no usable reference, since SMS on that scene recovers
+only a fraction of the caustic (CLAUDE.md, "SMS seeding mode").  The
+`weave_presets` / `sheer_curtain` movers against `855ce136` are the
+`master` merge (DL-05) and are identical between the merged pre-round build
+and this one; `fabric_presets` differed only under parallel load (serial
+re-runs identical).
+
+**Cost** (**superseded in round 2, §11.7 -- the "-0.04 %" below did not
+reproduce**).  The round-0 figures (§11.4) were measured on scenes the change
+never exercises; on the mover the reviewer measured `855ce136` at +4.66 %.
+Interleaved base / `855ce136` / final on shipped `sms_k2_flatslab` (200x150,
+32 spp), n = 10 per build, order alternated, user CPU: base 4.690 s,
+`855ce136` 4.961 s (**+5.80 %**, paired t = 8.24 -- the reviewer's finding
+reproduced; consistent with the solve failing on every degenerate matched
+vertex, not separately profiled), final 4.687 s (**-0.04 %**, t = -0.05).
+
+**Clamp magnitude and residual rows.**  The hair / weave relative-index
+clamp now carries its magnitude in the code comment and in §11.1 (11.4 % /
+22.7 % of the fibre's surface reflectance dropped at relative 0.9 / 0.8).
+The photon-seeded SMS residual (§11.2's non-gated row: 1.0208 +/- 0.0074
+after this slice, 0.9673 before it; wrong in air for nested dielectrics
+as well) is recorded in the DL-290 row's residual column as **DL-331
+(filed at merge)**; the slice had no id left to file it under.
+
+### 11.7 External review round 2: the unpushed exit by containment, the half-vector everywhere, and the slab mask
+
+The second external review (on `8903f14b`) confirmed P1-1's matched-index
+result numerically (probes 100 % converged, `dv/dy` within 9.9e-6; Newton
+success on flatslab 59 -> 82 %, glassblock 61 -> 84 %) and returned two new
+P1s.  `master` `0d69d782` was merged first (docs-only conflicts; this
+section is §11 because DL-291 took §10).
+
+**P1-A -- the round-1 unpushed-exit rule regressed in air and had a
+cliff.**  Round 1 decided "slab entered through a sibling sheet" (pop the
+sibling's entry) versus "sheet crossed inside an enclosing medium" (keep it)
+by comparing the stack top's index with the sheet's.  A slab of two
+DIFFERENT indices (top 1.8, bottom 2.2) therefore read as the second case
+and ended the chain inside the sibling's glass (`[1.8 -> 2.2]` where the
+far side is air), in air; an index mismatch of 1e-9 .. 1e-3 did the same
+and in addition left a NEAR-matched last vertex; and a lone sheet inside an
+enclosure of exactly its own index popped the enclosure.  The rule is now
+CONTAINMENT: the stack-top object Y is probed along the continuing
+direction; an EXIT hit on Y (true face orientation, DL-70) means the walk is
+still inside Y after the crossing, so Y encloses it and nothing is popped;
+a miss or an ENTRY hit means Y was a sheet the walk has already passed, and
+its entry is popped.  An open sheet cannot be exited from a point it never
+bounded; a closed solid always is.  One ray against one object, on this
+rare branch only; in air with no enclosing object nothing changes.
+(Probing was chosen over a flag set at push time because the receiver
+stack's entries are pushed by the MATERIALS along the camera path -- a flag
+would have to be threaded through every refractive SPF and still could not
+say whether a mesh is open.)
+
+Seed-walk etas, `ExteriorIndexInvarianceTest` A7 (walk from below toward a
+light above unless noted; `[etaI -> etaT]` per vertex):
+
+| configuration | pre-review (`5c02d489`) | round 1 (`55bede5b`) | round 2 |
+|---|---|---|---|
+| equal slab 2.2/2.2, air | [1->2.2][2.2->1] | [1->2.2][2.2->1] | [1->2.2][2.2->1] |
+| UNEQUAL slab 1.8/2.2, air | [1->2.2][1.8->1] | **[1->2.2][1.8->2.2]** | [1->2.2][1.8->1] |
+| NEAR-equal slab 2.2000002/2.2, air | [1->2.2][2.2000002->1] | **[..][2.2000002->2.2]** | [1->2.2][2.2000002->1] |
+| equal slab in a closed 1.33 box | **[1.33->2.2][2.2->1]** | [1.33->2.2][2.2->1.33] | [1.33->2.2][2.2->1.33] |
+| UNEQUAL slab in a closed 1.33 box | **[1.33->2.2][1.8->1]** | **[1.33->2.2][1.8->2.2]** | [1.33->2.2][1.8->1.33] |
+| inside an unequal slab, walking down (camera pushed the top sheet) | [2.2->1] | **[2.2->1.8]** | [2.2->1] |
+| lone 2.2 sheet, air | [2.2->1] | [2.2->1] | [2.2->1] |
+| lone 2.2 sheet in a closed 1.33 box | **[2.2->1]** | [2.2->1.33] | [2.2->1.33] |
+| lone 1.5 sheet in a closed 1.5 box (the tie) | **[1.5->1]** | **[1.5->1]** | [1.5->1.5] |
+
+Wrong entries in bold: pre-review 4/9, round 1 5/9, round 2 0/9.
+
+**P2-2 -- the matched branch's own cliff: the half-vector is now
+unnormalized at EVERY refraction vertex.**  Round 1's exact-match special
+case (relative 1e-9) left a cliff one step away.  A8 measures it directly:
+two concentric spheres of index 2.2 and 2.2 + dn, 400 random receiver /
+light pairs, `BuildSeedChain` + `Solve`:
+
+| dn | 0 | 1e-10 | 1e-8 | 1e-6 | 1e-4 | 1e-3 | 1e-2 | 1e-1 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| round 1 (exact-match special case) | 100 % | 100 % | **0 %** | **0 %** | **0 %** | **0 %** | **10 %** | 100 % |
+| round 2 (unnormalized everywhere) | 100 % | 100 % | 100 % | 100 % | 100 % | 100 % | 100 % | 100 % |
+
+Justification (the comment on `UseUnnormalizedHalfVector`): away from
+`h = 0` the unnormalized and normalized forms share their zero set, and at
+a root their Jacobians differ by a per-vertex row scaling, which leaves the
+root and `dx/dy = -A^-1 B` unchanged (Newton's iterates differ); at a
+matched vertex the row-scaling argument does NOT apply, and the valid one is
+that `P_t(-eta (wi + wo))` is a full-rank local defining function of the
+straight-through path.  The external review built the same variant and
+measured 100 % convergence at every dn with `dv/dy` within 3.3e-5 of finite
+differences.  Its magnitude is ~eta x (angular error), so the solver's
+`||C||` threshold keeps one meaning across index pairs.  The round-1
+justification text in §11.6 is corrected there.
+
+The cliff is gone in the render too -- flatslab with the TOP sheet's index
+swept, SMS 256 spp, salted n = 3, S = the 370 px where the camera sees the
+slab, F = the 369 px of floor seen directly under it (the reviewer's masks):
+
+| top ior | base (pre-DL-290 SMS) S / F | round 1 S / F | round 2 S / F |
+|---|---|---|---|
+| 2.2 | 0.1536 / 0.7490 | 0.2213 / 0.7641 | 0.2212 / 0.7642 |
+| 2.2000002 | 0.1535 / 0.7489 | 0.2151 / **0.0472** | 0.2213 / 0.7642 |
+| 2.2002 | 0.1535 / 0.7490 | 0.2178 / **0.0528** | 0.2212 / 0.7642 |
+| 2.202 | 0.1535 / 0.7492 | 0.2177 / **0.0653** | 0.2212 / 0.7644 |
+| 2.22 | 0.1538 / 0.7511 | 0.2182 / **0.4385** | 0.2203 / 0.7661 |
+| 2.3 | 0.1545 / 0.7644 | 0.2144 / **0.4608** | 0.2164 / 0.7778 |
+| 1.8 | 0.1503 / 0.6899 | 0.2347 / **0.3400** | 0.2371 / 0.7080 |
+
+(per-cell sd <= 0.0003 except F at 2.3, 0.004.)  Round 2 is continuous in
+the index on both masks; the round-1 F collapse reproduces the review's
+figures to three digits.  "Base" here is the pre-DL-290 `ManifoldSolver`
+built into this same tree, so it isolates the SMS change.
+
+**Every loadable shipped SMS scene, round 1 vs round 2** (all 22 scenes
+that set `sms_enabled TRUE`, 100x75, the scene's own spp capped at 64,
+salted n = 3; whole-image mean of R+G+B, t of the difference, and the count
+of pixels that moved by more than 4 sigma):
+
+| scene | round 1 | round 2 | change | t | px > 4 sigma |
+|---|---:|---:|---:|---:|---:|
+| diacaustic_pt_sms | 0.36555 | 0.36606 | +0.14 % | 0.27 | 1 |
+| pool_caustics_vcm (PT+SMS chunk, 4 spp) | 0.27231 | 0.27586 | +1.30 % | 1.60 | 32 |
+| sms_k1_botonly | 0.49830 | 0.49834 | +0.01 % | 0.01 | 7 |
+| sms_k1_refract | 0.53733 | 0.53898 | +0.31 % | 0.14 | 5 |
+| sms_k2_flatslab | 0.51123 | 0.51627 | +0.99 % | 1.02 | 4 |
+| sms_k2_glassblock | 0.50309 | 0.50054 | -0.50 % | -0.39 | 0 |
+| sms_k2_glasssphere | 0.54700 | 0.54490 | -0.38 % | -0.42 | 3 |
+| sms_k2_glasssphere_tess | 0.54469 | 0.54252 | -0.40 % | -0.44 | 2 |
+| sms_k2_glasssphere_tess_disp | 0.54667 | 0.54726 | +0.11 % | 0.11 | 1 |
+| sms_k2_torus_cross | 0.54610 | 0.54345 | -0.48 % | -0.56 | 6 |
+| sms_luminous_orb | 0.60165 | 0.59624 | -0.90 % | -1.74 | 0 |
+| sms_slab_close_pt_sms_hispp | 1.33745 | 1.34902 | +0.87 % | 0.61 | 57 |
+| sms_slab_close_sms | 0.81422 | 0.81025 | -0.49 % | -0.03 | 4 |
+| sms_teapot_close_sms | 0.94034 | 1.02064 | +8.54 % | 0.79 | 0 |
+| sms_through_glass_emitter_pt_sms | 8.56431 | 8.56162 | -0.03 % | -0.32 | 0 |
+| sms_veach_egg | 2.27440 | 2.27623 | +0.08 % | 0.27 | 0 |
+| sms_veach_egg_bumpmap | 2.22942 | 2.23432 | +0.22 % | 0.11 | 0 |
+| sms_veach_egg_displaced | 1.00754 | 1.06940 | +6.14 % | 0.53 | 46 |
+| sms_visibility_occluded | 0.78205 | 0.78164 | -0.05 % | -0.30 | 0 |
+| sms_visibility_unoccluded | 10.17849 | 10.16861 | -0.10 % | -0.56 | 1 |
+| spectral_dispersive_caustic_pt_sms | 3.37676 | 3.36163 | -0.45 % | -0.23 | 0 |
+| triplecaustic_pt_sms | 1.76032 | 1.76562 | +0.30 % | 1.62 | 1 |
+
+No whole-image change is resolvable (|t| < 2 everywhere; the two large
+percentages are firefly-dominated low-spp scenes).  The three scenes with
+tens of moved pixels, against a reference where one exists (n = 3, same
+pixels): `pool_caustics_vcm` 32 px, round 1 0.450 -> round 2 0.525, its
+own VCM chunk at 512 spp 0.529 +/- 0.028; `sms_slab_close_pt_sms_hispp`
+57 px, 0.136 -> 0.133, VCM twin 0.205 (both far from it: SMS on a
+displaced slab, DL-352's class); `sms_veach_egg_displaced` 46
+firefly-dominated px, 0.082 -> 0.175, no usable reference.  The three scenes
+the review could not load (`sms_slab_close_sms`,
+`sms_slab_close_pt_sms_hispp`, `sms_teapot_close_sms`) load here: their
+assets (`models/raw/displaced_slab.raw`, `models/raw/teapot.bezier`) are
+tracked and resolve once the harness registers `RISE_MEDIA_PATH` with the
+media-path locator, which the review's harness evidently did not.
+
+**In-air bit identity after round 2.**  The P2-2 change is not
+bit-identical in air, by construction: it changes Newton's iterates (not its
+roots) at every refraction vertex.  The fixed-seed hash survey (§11.3's 134
+variants, seeds 42/1234) against round 1: every non-SMS variant is
+bit-identical; 19 of the 22 SMS scenes change bits -- exactly those with a
+refraction vertex -- and `diacaustic_pt_sms`, `pool_caustics_vcm` and
+`sms_through_glass_emitter_pt_sms` do not.  The salted sweep above is the
+measurement that matters for those 19: no resolvable mean change.
+(`fabric_presets` under its native rasterizer is bimodal across repeated
+SERIAL runs of any build -- means 0.1648 and 0.1914, round 1, round 2 and
+the merged pre-round build alike.  **Round-3 correction:** the cause is
+OIDN's Auto quality choosing FAST or BALANCED from measured render time,
+not a race -- see the §11.3 bullet and DL-360, filed at merge.)
+
+**P1-B -- glassblock's gap is SMS's, not VCM's; Part C is gated on the
+slab pixels.**  (Round 3, §11.8: the S mask below was the UNION of the slab
+pixels, 21 % of them partially covered; the gate now uses fully covered
+pixels only, and the figures in this paragraph are superseded there.)  The round-1 Part C rectangle straddled two pixel classes:
+311 px of S (the slab seen through both sheets) and 55-66 px of F (the floor
+seen directly under it).  On F the integrators disagree by up to 3x among
+themselves (DL-345, below); on S the references agree to 1-2 %.  S-mask
+readings (the round-1 renders, 100x75, VCM 1024 spp, PT without SMS 4096
+spp, n = 4; S from a render of the scene with the sheets emissive):
+
+| region S | base | round 0 (`855ce136`) | round 1 / 2 | VCM `_ref` | PT, SMS off |
+|---|---:|---:|---:|---:|---:|
+| flatslab (370 px) | 0.1536 (0.70) | 0.0273 (0.13) | 0.2213 (**1.015**) | 0.2180 +/- 0.0007 | 0.2183 +/- 0.0074 |
+| glassblock (366 px) | 0.1044 (0.45) | 0.0292 (0.12) | 0.2135 (**0.911**) | 0.2344 +/- 0.0007 | 0.2317 +/- 0.0091 |
+
+(ratios to VCM.)  On flatslab SMS matches both references; on glassblock
+SMS reads 9-12 % LOW against two references that agree with each other,
+and the review's variant with the top sheet at 2.3 (no matched vertex at
+all) reads 0.85 of PT-without-SMS -- so the deficit is SMS's own on a
+DISPLACED slab (Newton fails 15.6 % there), pre-existing and independent of
+the index work.  Recorded as **DL-352 (filed at merge)**.  The round-1
+statement that glassblock's gap was VCM's (§11.6) was wrong: its "0.98 /
+1.00 of PT-without-SMS" came from the F pixels in the rectangle.
+
+Part C now renders the S mask per scene (sheets emissive, everything else
+black; round 3: fully covered pixels only, §11.8), gates the salted SMS/VCM ratio over S, and derives each band from
+the measured centre and sd plus the references' own agreement:
+`[centre - 6 sd - 0.02, max(centre, 1) + 6 sd + 0.02]`, giving
+flatslab [0.98, 1.045] (measured 1.0143 +/- 0.0018) and glassblock
+[0.865, 1.04] (0.9034 +/- 0.0030) -- the upper bounds sit above 1, so a
+genuine SMS improvement cannot fail the gate.
+
+**DL-345 (filed at merge) -- the open-sheet index-stack convention is
+non-reciprocal.**  The materials decide "entering" from
+`!containsCurrent()` alone, so for a slab of two open sheets each walk
+treats the SECOND sheet it crosses as an index-matched entry: the eye side
+(PT, BDPT's dominant strategies) bends once at the bottom sheet with the
+light "inside glass", while the light side (VCM, with or without merging)
+bends once at the top sheet with the floor "inside glass".  Measured by the
+review on flatslab, region F, open sheets: PT 0.4161 +/- 0.0045, BDPT
+0.4213, VCM 1.2536, VCM without merging 1.2351, SMS 0.7641; the SAME slab
+as one closed `box_geometry`: PT 0.8621 +/- 0.0184, BDPT 0.8496, VCM 0.8429,
+SMS 0.7755 -- every integrator agrees on the closed box (VCM/PT 0.978).  SMS
+(whose walk decides entering by sign) is the only estimator that is
+physical on the open sheets; its own -9 % against the closed-box truth is
+pre-existing (0.776 on the closed box in both builds).  Recipe: document
+"author a slab as one closed solid", or make the materials' entering test
+sign-aware for provably-open sheets as the seed walk is.
+
+**Cost (P2-1).**  §11.6's "-0.04 %" was measured between binaries built
+from different trees, and the review's +6.07 % (flatslab) / +3.81 %
+(glasssphere) likewise (its own base-vs-master pair read -0.4 % / +3.2 %,
+i.e. layout).  Re-measured with builds that differ ONLY in
+`ManifoldSolver.cpp`/`.h` (pre-DL-290, round 1, round 2, all linked from
+this merged tree), shipped settings (200x150, 32 spp), n = 12 per build,
+order alternated, user CPU, paired:
+
+| scene | pre-DL-290 | round 1 | round 2 | round 2 vs pre-DL-290 |
+|---|---:|---:|---:|---:|
+| sms_k2_flatslab | 4.853 s | 4.802 s | 4.745 s | **-2.13 %** (t = -2.39) |
+| sms_k2_glasssphere | 3.197 s | 3.137 s | 3.173 s | **-0.71 %** (t = -1.09) |
+
+No significant cost change on either scene (the review's own same-tree
+measurement read +2.1 % torus_cross, t = 1.64, and +1.6 % botonly, t =
+1.43); nothing to profile.
+
+**DL-353 (filed at merge) -- uniform-mode spectral SMS ignores the
+per-wavelength index: CONFIRMED.**  `EvaluateAtShadingPointNMUniform`'s
+`applyNMEtaToChain` writes only `v.eta`, while `GetEffectiveEtas` (the
+Newton constraint and the chain Fresnel) reads the walk's `etaI`/`etaT`,
+which the snell NM path overrides per wavelength and the uniform one does
+not.  An instrumented (never committed) render of a Sellmeier SF11 sphere,
+uniform mode, narrow bands at 450 and 650 nm: `v.eta` 1.8200 / 1.7766 but
+the effective pair is `(1.0, 1.781363)` in both bands -- the RGB walk's
+index -- so uniform-mode spectral SMS renders no dispersion.
+
+**DL-354 (filed at merge) -- BDPT under-renders the directly visible
+luminaire on flatslab.**  Reproduced: over the 3 px where the camera sees
+the small area light (100x75, 256 spp, n = 3), BDPT 399.4 +/- 3.3 against
+PT without SMS 689.3 +/- 6.1, VCM 687.1 +/- 29.1 and PT with SMS 690.1 +/-
+8.8 (R+G+B), i.e. 0.58 of the other three.  Not investigated here.
+
+**Red / green** (`ExteriorIndexInvarianceTest`, isolated A/B: only
+`ManifoldSolver.cpp` checked out at the named commit, rebuilt, restored):
+round 2 **228/0**; `ManifoldSolver.cpp` at round 1 (`55bede5b`) **218/10**
+-- the five round-1-wrong A7 rows and five A8 rows (dn 1e-8 .. 1e-2), with
+Part C on S passing (1.0108 / 0.9048: round 1 was right on the EQUAL
+shipped slabs); at pre-review `5c02d489` **212/9** -- four A7 rows, A8's
+matched configuration (0 % converged, so its continuity rows are not
+reached), both Part B open-sheet rows, and both Part C rows on S (0.1187 /
+0.1086).
+
+### 11.8 External review round 3 (PASS, no P1): mask coverage, solver-rate disclosure, probe residuals
+
+The third external review (on `b7575384`) passed with no P1 and five P2s;
+this round is tests and documentation only (plus a comment in
+`SnellContinueChain`).  No library behaviour changed.
+
+**P2-1 -- Part C's mask now counts only fully covered pixels.**  The round-2
+mask S was the union of the slab pixels at a 0.1 threshold on a 4-spp
+render: 79 / 370 (flatslab) and 72 / 366 (glassblock) of them were partial-
+coverage boundary pixels, on which SMS/VCM reads 1.06-1.08, and they moved
+the gated ratio by +1.5 / +3.1 points; the 4-spp mask also moved by 2-10 px
+from run to run.  S is now the pixels with coverage > 0.99 from a 256-spp
+mask render at a pinned seed and salt (a fully covered pixel of the uniform
+emissive sheets reads exactly the image maximum): 291-292 px flatslab,
+296-297 px glassblock, 83-87 partial pixels excluded (the remaining 1-px
+jitter is the per-worker RNG seeding).  Re-derived from two salted n = 6
+runs:
+
+| scene | SMS/VCM on full-coverage S (two runs) | per-replicate sd | band |
+|---|---|---:|---|
+| sms_k2_flatslab | 0.9998, 0.9994 | 0.0052 | [0.964, 1.036] |
+| sms_k2_glassblock | 0.8810, 0.8828 | 0.0065 | [0.842, 1.040] |
+
+Band = `[centre - 6 SE(n=4) - 0.02, max(centre, 1) + 6 SE(n=4) + 0.02]`, the
+0.02 being the references' own agreement on S; the upper bounds sit above 1,
+so an SMS that became exact on glassblock passes, and the pre-review reading
+(0.11) fails.  On the same full-coverage S, the round-1 mover renders (n = 4;
+VCM 1024 spp, PT without SMS 4096 spp) read:
+
+| S (full coverage) | base | round 0 | rounds 1-3 | VCM | PT, SMS off |
+|---|---:|---:|---:|---:|---:|
+| flatslab (291 px) | 0.1521 | 0.0052 | 0.2263 (**1.001** of VCM) | 0.2260 +/- 0.0008 | 0.2325 +/- 0.0088 |
+| glassblock (297 px) | 0.0975 | 0.0053 | 0.2140 (**0.880** of VCM, 0.887 of PT) | 0.2431 +/- 0.0007 | 0.2412 +/- 0.0107 |
+
+flatslab's SMS is exact on the clean pixels (the +1.4 % of round 2 was
+entirely the partial pixels); glassblock's SMS deficit is **12 %** (the
+review's salted n = 6 reading: 0.876, i.e. 12.4 %) -- DL-352's figure.
+
+**P2-2 -- the unnormalized half-vector changes Newton's SUCCESS RATE, not
+only its iterates.**  `SMS_SOLVE_DIAG`, all 22 shipped SMS scenes at 100x75,
+spp <= 16, two runs each, round 1 -> round 2 (the review's measurement; the
+five rows marked * reproduced here with a separate diagnostic build, one
+run, 64 spp cap: glasssphere 92.5 -> 100.0, egg_displaced 39.1 -> 63.2,
+visibility_unoccluded 74.3 -> 86.1, triplecaustic 49.2 -> 58.7, teapot
+58.1 -> 57.0):
+
+| scene | ok rate round 1 | round 2 | z | what moved |
+|---|---:|---:|---:|---|
+| sms_veach_egg_displaced * | 39.19 % | 63.06 % | +156.7 | physicsFail 16.5 -> 2.5 % |
+| sms_k2_glasssphere * | 92.27 % | 100.00 % | +30.6 | physicsFail 7.48 -> 0 % |
+| sms_k2_glasssphere_tess | 92.54 % | 100.00 % | +30.0 | |
+| triplecaustic_pt_sms * | 49.54 % | 58.98 % | +39.3 | physicsFail 49.7 -> 36.2 % |
+| sms_visibility_unoccluded * | 74.34 % | 86.71 % | +24.3 | physicsFail 21.6 -> 4.8 % |
+| sms_visibility_occluded | 44.52 % | 51.92 % | +10.2 | |
+| sms_veach_egg_bumpmap | 96.91 % | 97.19 % | +5.4 | |
+| spectral_dispersive_caustic_pt_sms | 54.18 % | 55.79 % | +3.9 | seedTooFar 0 -> 1.09 % |
+| sms_k2_torus_cross | 94.93 % | 95.08 % | +2.5 | seedTooFar 0.01 -> 0.03 % |
+| sms_slab_close_sms | | +0.24 pt | +2.5 | |
+| sms_teapot_close_sms * | 58.86 % | 57.89 % | -2.9 | seedTooFar 0 -> 0.30 % |
+| flatslab, glassblock, botonly, refract, diacaustic, tess_disp, luminous_orb, veach_egg | unchanged | | | |
+| pool_caustics, through_glass_emitter | no solves | | | |
+
+The gain is mostly fewer spurious WRONG-SIDE roots (the physics check's
+rejections fall): the normalized constraint's rank-1 term `F (grad ln|h|)^T`
+blows up as `|h| -> 0` and drags Newton into basins the physics check then
+rejects.  No resolvable image change follows (§11.7's salted sweep; the
+review's reference comparison: egg_displaced +4.9 % toward VCM / PT-no-SMS,
+t = 1.2, with SMS ~50 % low there in both builds; glasssphere, triplecaustic
+and visibility_unoccluded unchanged to within noise).  **Residual (not
+changed):** the `||C|| > 2.0` "seed too far" early-out in `Solve` was tuned
+for the normalized constraint (whose magnitude is bounded by 2) and now fires
+on a few unnormalized seeds (the seedTooFar column above); it is recorded in
+the DL-290 row, not retuned here.
+
+**P2-3 -- containment-probe residuals.**  The probe is exact for a closed,
+outward-wound stack-top object (the review checked a concave torus re-entry
+and a stale stack, both correct), but not for these, now listed in the
+`SnellContinueChain` comment and the DL-290 row (the open-sheet / winding
+convention family, DL-345, filed at merge):
+
+- T6, a lone 1.5 sheet inside an OPEN two-sheet 2.2 slab: the probe misses
+  the slab's bottom sheet and pops it.
+- T5c, a closed 1.33 mesh wound INWARD (single-sided RAW2 cube) that the
+  camera path pushed: the probe's exit hit reads as an entry.
+- T4, a closed water mesh with a HOLE, the walk leaving through it: the
+  probe misses and pops (1.0 where the stack says 1.33; ill-posed).
+- T7, two STACKED open slabs seen through their sheets: the camera path
+  pushed all four sheets and the walk reads the air gap as glass in every
+  post-DL-290 build ([2.2 -> 2.2] x3); the pre-DL-290 walk (from air) got it
+  right.  This is the receiver stack's own open-sheet convention.
+
+T6 and T5c are now `ExteriorIndexInvarianceTest` rows marked KNOWN-FAILURE
+(printed, not gated):
+
+    T6 lone 1.5 sheet inside an open two-sheet 2.2 slab: got [1 -> 2.2 entry][1.5 -> 1 exit][2.2 -> 1 exit]  correct [1 -> 2.2][1.5 -> 2.2][2.2 -> 1]
+    T5c inward-wound closed 1.33 mesh (camera-pushed), lone 2.2 sheet inside: got [2.2 -> 1 exit][1 -> 1.33 entry]  correct [2.2 -> 1.33][1.33 -> 1]
+
+(An analytic sphere under `scale -1` does NOT reproduce T5c, which is why
+the row uses a mesh.)  Both print "now CORRECT -- promote this row to a
+gate" if a later change fixes them.
+
+**P2-4 -- DL-354 is a pixel-footprint effect.**  BDPT/PT on flatslab's
+directly visible luminaire (box filter, OIDN off, n = 3, the review's
+measurement): 0.567 at 100x75, 0.955 at 200x150, 0.997 at 400x300.  Flipping
+the quad's winding gives 0.576 / 0.955, so it is not DL-320 (winding); no
+path-depth cap is involved, so it is not DL-351.  It is a BDPT deficit on a
+SMALL emitter seen directly that grows with pixel size relative to the
+emitter -- likely the partition between the s = 0 camera-hit strategy and
+the (s >= 1, t = 1) light-to-camera splat.  §11.7's "0.58" is the 100x75
+figure only.
+
+**P2-5 -- `fabric_presets`** is OIDN Auto quality, not a race (§11.3
+bullet, corrected); DL-360, filed at merge.
+
+**P3.**  The cost statement in §11.7 now reads "no significant change".  The
+review's premise that master differed from this branch by docs only was
+wrong for `0d69d782 .. 56303797` (DL-24 / DL-307 / DL-310 source); there is
+no source overlap with this slice, and the merged tree is gated below.
+
+**Round-3 gate, on the tree merged with `master` `56303797`** (clean
+library rebuild, 0 warnings; every rebuilt test target 0 warnings):
+`ExteriorIndexInvarianceTest` **231/0** x3 (228 + the three A7-KF setup
+checks; the two KNOWN-FAILURE rows print as above; Part C on full-coverage S
+1.0003 / 0.9957 / 1.0024 and 0.8760 / 0.8762 / 0.8778), `ManifoldSolverTest`
+pass, `WeaveGapShadowTransmittanceTest` 132/0, `SSSExteriorIndexInvarianceTest`
+227/0, `RefractiveRadianceScalingTest` 60/0, `CstDeriveGoldenTest` 456 MATCH
+/ 0 DRIFT, `SourceHygieneTest` 167/0.  (§11.7's red counts, 218/10 and 212/9,
+were taken on the 228-check file.)

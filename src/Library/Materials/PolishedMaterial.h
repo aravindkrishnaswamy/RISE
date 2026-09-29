@@ -18,7 +18,7 @@
 #include "../Interfaces/IMaterial.h"
 #include "../Interfaces/IScalarPainter.h"
 #include "../Interfaces/ILog.h"
-#include "LambertianBRDF.h"
+#include "PolishedBRDF.h"
 #include "PolishedSPF.h"
 
 namespace RISE
@@ -28,7 +28,13 @@ namespace RISE
 		class PolishedMaterial : public virtual IMaterial, public virtual Reference
 		{
 		protected:
-			LambertianBRDF*	pBRDF;
+			//! DL-285: the BSDF is the SPF's OWN reflectance function (one
+			//! object, shared), not a separate model -- NEE, BDPT/VCM
+			//! connections and the DL-67 guide draw price `value`, the
+			//! sampled continuation prices `kray`, and those must be one
+			//! function (DL-67 premise 2).  Before DL-285 this was a bare
+			//! `LambertianBRDF(Rd)`.
+			PolishedBRDF*	pBRDF;
 			PolishedSPF*	pSPF;
 
 			virtual ~PolishedMaterial( )
@@ -46,11 +52,11 @@ namespace RISE
 				const bool hg
 				)
 			{
-				pBRDF = new LambertianBRDF( Rd_ );
-				GlobalLog()->PrintNew( pBRDF, __FILE__, __LINE__, "BRDF" );
-
 				pSPF = new PolishedSPF( Rd_, tau_, Nt_, s, hg );
 				GlobalLog()->PrintNew( pSPF, __FILE__, __LINE__, "SPF" );
+
+				pBRDF = &pSPF->GetBRDF();
+				pBRDF->addref();
 			}
 
 			/// \return The BRDF for this material.  NULL If there is no BRDF
@@ -82,11 +88,9 @@ namespace RISE
 			//! Read-back + rebind for the interactive editor's
 			//! MaterialIntrospection.  diffuse_reflectance is an
 			//! IPainter; transmittance / ior / scattering are
-			//! IScalarPainter (physical scalar pipe).  Material's
-			//! SetDiffuseReflectance hits BOTH the LambertianBRDF
-			//! (which it owns for the substrate lobe) and the
-			//! PolishedSPF (the dielectric-over-Lambertian SPF) so
-			//! BRDF and SPF stay in lockstep on diffuse colour.
+			//! IScalarPainter (physical scalar pipe).  Every setter
+			//! rebinds the ONE painter set the shared PolishedBRDF owns,
+			//! so BSDF and SPF cannot fall out of lockstep.
 			inline const IPainter&       GetDiffuseReflectance() const { return pSPF->GetDiffuseReflectance(); }
 			inline const IScalarPainter& GetTransmittance()      const { return pSPF->GetTransmittance(); }
 			inline const IScalarPainter& GetIOR()                const { return pSPF->GetIOR(); }
@@ -94,10 +98,7 @@ namespace RISE
 			//! Baked HG-phase flag read-back for the snapshot clone
 			//! (fixed at construction; no setter).
 			inline bool                  GetHG()                 const { return pSPF->GetHG(); }
-			inline void SetDiffuseReflectance( const IPainter& v ) {
-				pBRDF->SetReflectance( v );
-				pSPF->SetDiffuseReflectance( v );
-			}
+			inline void SetDiffuseReflectance( const IPainter& v ) { pSPF->SetDiffuseReflectance( v ); }
 			inline void SetTransmittance( const IScalarPainter& v ) { pSPF->SetTransmittance( v ); }
 			inline void SetIOR( const IScalarPainter& v )           { pSPF->SetIOR( v ); }
 			inline void SetScattering( const IScalarPainter& v )    { pSPF->SetScattering( v ); }

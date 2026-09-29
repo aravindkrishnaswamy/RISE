@@ -52,6 +52,8 @@ unchanged. An independent test reference uses `H=l+v` and
 `f_S=Rs E |H|²/[pi ax ay (H.n)^4]`, avoiding the production normalization.
 The diffuse lobe remains additive `Rd/pi`; over-authored `Rd+Rs` can still
 exceed one even though the Ward specular family is bounded by `Rs`.
+**(Superseded 2026-09-28 by DL-310, section "DL-310" below: Ward's diffuse
+is now `min(Rd, 1 - Rs)/pi` -- `Rd` bit for bit whenever `Rd <= 1 - Rs`.)**
 
 ## Schlick residual: DL-225 (closed by the `debt-dl225` slice, 2026-09-28)
 
@@ -105,6 +107,341 @@ The original DL-178 family is corrected:
 | .8 | 80 | 2.418726332 | .278490429 |
 
 These are formula-only outgoing-angle 800×1600 integrations at `rho=.9,p=1`.
+
+## DL-310 — the coupled diffuse term (`debt-dl310`, 2026-09-28)
+
+DL-225 bounds the Schlick SPECULAR lobe; `SchlickBRDF::value` still added
+`Rd/pi` with no coupling, and Schlick's `S = rho + (1-rho)(1-h.v)^5` drives
+the lobe's directional albedo `A(v)` toward 1 at grazing for EVERY `rho`, so
+the full material exceeded 1 even for authored `Rd + rho <= 1`.  Ward's
+Geisler-Moroder–Dür family integrates to at most `Rs`, so Ward exceeded 1
+only for over-authored `Rd + Rs > 1`.
+
+### Measurement (independent quadrature of the live `value()`)
+
+Two deterministic midpoint grids -- cosine-warped over the outgoing
+hemisphere, and the half-vector warped by the lobe's own shape (Schlick:
+GGX `alpha^2 = r` with `xi = u^2`; Ward: the elliptical Gaussian slope) --
+combined with the balance heuristic so every outgoing direction counts once
+(256 x 512 per grid; 128 vs 256 agree to 7e-4 over the whole grid; a
+Lambertian-plus-DL-178-table cell reproduces the DL-178 figure to 3e-5).
+Grid: `Rd, rho ∈ {.1,.5,.9}`, `r ∈ {.05,.2,.5,.8}`, isotropy `∈ {1,.5,.1}`
+(Ward aniso: `ax = r`, `ay = r p`), `θ ∈ {0,30,60,80,89}`, view azimuth
+`{0,45,90}` for isotropy < 1.
+
+| Model | Authoring | Cells | Pre-fix cells > 1 | Pre-fix worst (r, p, Rd, rho, θ, azimuth) | Post-fix cells > 1 | Post-fix worst |
+|---|---|---:|---:|---|---:|---:|
+| Schlick | all | 1260 | 369 | **1.7448** (.05, .1, .9, .9, 89, 0) | 0 | 0.9996 |
+| Schlick | `Rd + rho <= 1` | 840 | 34 | **1.1538** (.05, .1, .9, .1, 89, 90) | 0 | 0.9996 |
+| Ward iso | all | 180 | 58 | 1.7977 (.05, 1, .9, .9, 0) | 0 | 0.9997 |
+| Ward iso | `Rd + Rs <= 1` | 120 | 0 | 0.9997 | 0 | 0.9997 (identical) |
+| Ward aniso | all | 1080 | 363 | 1.7989 (.05, .1, .9, .9, 0) | 3 | 1.000003 |
+| Ward aniso | `Rd + Rs <= 1` | 720 | 3 | 1.000003 | 3 | 1.000003 (identical) |
+
+The three Ward aniso "> 1" cells are the conserving `Rd .9, Rs .1, ax .05,
+ay .005` normal-incidence cells, bit-identical before and after (quadrature
+noise on an exactly-`Rd + Rs` material).  The ledger's quoted `Rd .1 +
+rho .9 -> 1.0202` came from the DL-225 review's finer grid; that family's
+worst on this suite's own re-measurement is 1.0151 (`r .005`, isotropy
+.05, 89.9°), 0.9907 post-fix.  Schlick's violation is angle-independent
+for over-authored materials (67-87 cells > 1 at every θ from 0 to 89) and
+grazing-only for conserving ones.
+
+### The coupling, and why not the DL-37 product
+
+With `A(v)` an upper bound of the specular lobe's directional albedo,
+
+```
+f_D(i, o) = min( Rd, 1 - A(i), 1 - A(o) ) / pi        (per channel / lane)
+```
+
+* **Reciprocal:** symmetric in `i` and `o` (measured asymmetry 4.2e-15 at
+  five pairs where the clip binds, `SchlickKrayBRDFConsistencyTest`
+  section 13).
+* **Bounded:** `rho_d(i) = A_true(i) + ∫ f_D cos <= A_true(i) + (1 - A(i))
+  <= 1` whenever `A >= A_true` (any `Rd`, any `rho`, over-authored included).
+  `A >= A_true` is enforced at the table's probes and MEASURED, not proven,
+  between them: the external review's 15,925-cell extended grid (roughness
+  down to .001, isotropy to .01, 89.9°) reads pre-fix 5143 cells > 1 (worst
+  1.8486) and post-fix 0 (worst 0.99991), but one of its 5000 table probes
+  under-reads the truth by 3e-3 and the full material there reads 1.00298
+  (`Rd .5`, `rho 1`, roughness .024, isotropy .004, 89.62°: table 0.9531 vs
+  true 0.9561) -- so the bound holds to within 3e-3 at isotropy below .01
+  at grazing.
+* **Minimal:** it equals `Rd/pi` BIT FOR BIT for every direction pair both
+  of whose directions already conserve energy under the additive model
+  (`Rd <= 1 - A(v)` at `v = i` and `v = o`, judged against the table's
+  conservative `A`; see Residuals) -- DL-225's ruling applied to
+  the diffuse term (section 13: 2.2e-16 relative, the three materials /
+  direction pairs that do not clip).
+
+Four candidates were compared on the grid (exact per-azimuth `A` from the
+same quadrature; hemispherical-mean albedo change, worst..best over
+`(r, p)`):
+
+| Schlick `(Rd, rho)` | DL-37 `(1-A(i))(1-A(o))` | Kulla-Conty `/(1-Ā)` | product clip `c(i)c(o)` | **min clip (chosen)** |
+|---|---|---|---|---|
+| (.1, .1) | −9.7..−3.8% | −5.1..−1.9% | 0 | **0** |
+| (.1, .9) | −12.8..−10.7% | −8.9..−6.7% | 0 | **0** |
+| (.5, .5) | −36.8..−17.7% | −23.8..−9.4% | 0 | **0** |
+| (.9, .1) | −18.0..−4.6% | −9.5..−2.3% | −2.2..0 | **−2.0..0** |
+| (.9, .5) | −46.6..−19.2% | −30.1..−10.2% | −42.0..−3.4% | **−26.5..−2.6%** |
+| (.9, .9) | −51.0..−30.1% | −42.3..−16.8% | −50.4..−18.1% | **−42.1..−11.4%** |
+
+The DL-37 product form (what the ledger recipe named) is bounded and
+reciprocal but moves EVERY material at EVERY angle, including normal
+incidence where the additive model was already physical -- the
+Rd-dominated, low-rho `(.9, .1)` material loses up to 18% -- and it moves
+energy-conserving Ward materials by 7-17%, which have no defect at all.
+By DL-225's own precedent (full Smith masking was rejected for
+brightening already-conservative cells) it fails the appearance gate.
+Kulla-Conty normalization is energy-exact for white diffuse but still
+moves every material -- its directional albedo is `A(i) + Rd (1 - A(i))`,
+not the additive `A(i) + Rd`, so the premise that normalizing by
+`1 - Ā` leaves the material "unchanged on average" is false (external
+review: conserving sub-grid mean change at normal incidence −7.5%, against
+−13.5% for the DL-37 product and −0.05% for the min clip) (and has zero slack for an under-estimated `A` at
+`Rd = 1`).  The product clip `Rd c(i) c(o)`, `c = min(1, (1-A)/Rd)`, is
+bounded and reciprocal but darkens unclipped incoming directions through
+`c̄ < 1`; the min form is pointwise the largest symmetric function with
+`f_D <= (1 - A(v))/pi` at both ends and `f_D <= Rd/pi`, so it is never
+darker.  With it the Rd-dominated low-rho material moves least: `(.9, .1)`
+at most −1.27% for `θ <= 60°` (mean −0.24%), −4.34% at grazing, on the
+implementation's own grid (below).
+
+### Schlick's `A`: a baked, conservative table
+
+`A(v) = rho M0(v) + (1 - rho) M5(v)`, with `M0` the lobe's unit-reflectance
+albedo and `M5` its `(1-h.v)^5` moment, both functions of `(μ = n.v, φ_v, r,
+p)`.  `tools/SchlickDirectionalAlbedoGen.cpp` bakes
+`src/Library/Materials/SchlickDirectionalAlbedo_LUTData.cpp` (13299 nodes x 2
+floats; deterministic, byte-reproducible; ~26 s on 12 cores) over `u =
+sqrt(μ)` (33 nodes), `log r ∈ [-5, 0]` (31), `log p ∈ [-3, 0]` (13), storing
+the **maximum over the view azimuth** (17 samples of the quarter period
+`A(φ)`'s symmetry covers).  An azimuth maximum is both an upper bound and a
+function of `μ` alone, which keeps the Pdf's diffuse-draw quadrature
+one-dimensional; its price is over-darkening in the clip band at azimuths
+where `A` is below its maximum (section 12: up to 0.48 absolute at `p .07`,
+`φ_v` across the grain).  The generator calls `SchlickMasking.h` verbatim.
+Quadrature: per half-vector azimuth the reflection is above the horizon
+exactly for `θ_h < (atan2(V, n.v) + π/2)/2`, so the `θ_h` integral runs over
+that interval (sampler warp, `ξ = u^2`, 64-point Gauss–Legendre), and `φ_h`
+is Gauss–Legendre on sub-intervals graded geometrically toward `A`'s peaks;
+16/64 vs 32/128 nodes agree to 1.3e-4.  **Conservative interpolation:** the
+runtime interpolates trilinearly in `(u, log r, log p)`; every node is raised
+by the largest deficit (true − interpolated) found at the probe points of
+the cells it bounds (49562 probes: every cell centre and edge midpoint), so
+the interpolant is >= the truth at every probe.  Off-probe validation (4000
+Weyl points over the whole box): worst remaining deficit 3.2e-3 (`r 2.7e-5`,
+`p .006`, 89.93°), 2 points > 1e-3; section 12's independent check on 408
+off-node points of the practical range (`r .013-.33`, isotropy `.07-1.9`)
+reads worst 6.96e-4 below the truth (quadrature noise of the check itself
+at `p .07`; it was 2.6e-3 at the check's coarser 128 grid, 7e-4 at 256).
+Outside the box: `r < 1e-5` uses the proven `M0 <= 1` and `M5 = max(table,
+(1-μ)^5)` (measured within 3e-6 of an upper bound at `r <= 1e-6`); isotropy
+below 1e-3 clamps (measured <= 7.4e-3 low, only beyond 89.99° at `r <=
+1e-3`); isotropy > 1 folds exactly.  A two-entry thread-local memo keys the
+`(r, p)` bracket (`SchlickMasking::Prepare`'s pattern).
+
+### Ward's `A`: GMD's own bound `Rs`
+
+Using `A = Rs` -- the Geisler-Moroder–Dür family's analytic albedo bound
+(DL-212) -- makes the coupled term the per-channel constant
+`min(Rd, 1 - Rs)`: `Rd` bit for bit whenever `Rd <= 1 - Rs` (every
+energy-conserving authoring; `WardDensityKrayTest` section I (2): 2.2e-16),
+`1 - Rs` otherwise.  Being direction-independent it keeps DL-177's ruling
+intact -- Ward's selection quadrature needs NO second (diffuse-draw)
+integral; only its diffuse weight changes, and `WardSelection::Evaluate`'s
+cache key already contains it.  The cost of the supremum over the exact
+directional `Rs M(v)`: over-authored ROUGH Ward loses up to ~24 percentage
+points more of its hemispherical albedo than a directional clip would
+(`(.5, .9)`: −39.5..−28.7% vs −28.5..−4.9%).  A directional Ward `A` would
+make the diffuse weight direction-dependent, and Ward's boundary-aware `C_D`
+quadrature (~20 µs cold, DL-212) would have to be re-run at every query
+direction instead of hitting its per-view cache -- declined on cost for a
+change confined to over-authored materials.
+
+### Lockstep
+
+| Site | Change |
+|---|---|
+| `SchlickBRDF::value/valueNM` | diffuse `min(Rd, 1-A(v), 1-A(l))/π` per channel, via `SchlickDirectionalAlbedo::CoupledDiffuseAt` |
+| `SchlickBRDF::albedo` (AOV) | gated hemispherical integral of the coupled term (same band quadrature as `Pdf`) |
+| `SchlickSPF::Scatter/ScatterNM` | diffuse `kray` = the same function at the sampled direction (its own `f_D cos/p_D`, section 14: 1.2e-13) |
+| `SchlickSPF::Pdf/PdfNM` `C_D` | the replay runs at the query direction's coupled weight `w_D(wo)` |
+| `SchlickSPF::Pdf/PdfNM` `q_i` | **second quadrature** over the diffuse draw (the DL-99 construction): `q_i = aD g(W0) + ∫ ds P(s)[g(w_D(s)) − g(W0)]`, `g(x) = w_i/(x + w_S)`, nonzero only in the band where a channel clips; in `u = sqrt(μ)` every channel's `A` is linear between table nodes, so each band interval is split at the exact clip crossings and at the geometric gate's kink, 3-point Gauss–Legendre per piece; `P(s)` is the closed-form fraction of azimuths passing the tilted geometric gate (integrates to `aD = (1+cos φ)/2`) |
+| `SchlickSPF::EvaluateKrayNM/EvaluateLobeFNM` | diffuse branch returns the coupled term (`/π`) |
+| Ward (both) value/valueNM/albedo, Scatter/ScatterNM, Pdf/PdfNM `wDiff`, EvaluateKrayNM/EvaluateLobeFNM | `WardSelection::CoupledDiffuse(Rd, Rs)` |
+
+Every Schlick consumer goes through ONE function, `CoupledDiffuseAt`, which
+returns `rd` itself unless the lane can clip anywhere (`Rd > 1 − A_top`,
+`A_top` the row maximum), so a non-clipping Schlick material renders
+identically (all-Schlick `r .5` box: 0.799022 vs 0.799149 PT, n = 5).
+
+**Is the second quadrature necessary?**  At the shipped `kSpecQuadN = 16`
+the `C_D` replay's own low-roughness mass bias (+0.5..+1%, DL-67 §4a,
+DL-127 §5.4) partly masks it; at
+`kSpecQuadN = 64` (bias ~1e-4) the four clip rows read `|∫Pdf − P(emit)|`
+0.00085 / 0.00099 / 0.00019 / 0.00003 WITH it and 0.00022 / 0.00532 /
+0.00607 / 0.00141 WITHOUT it (the `rd .9 rs .5 r .05 i .3 θ60` and `rd .8
+rs .9 r .2 θ45` rows move 0.5-0.6% of the mass).  **Stale-replay controls**
+(`SchlickSPFPdfConsistencyTest`, mass gate blind as documented, TVD gate
+0.012): the new sampler with the pre-DL-310 `Pdf` fails 11 of 28 checks,
+TVD 0.013-0.142 (the two rows it cannot see: `rd .9 rs .1 r .05 i .3 θ30`,
+0.0059, whose clip band is a sliver near grazing, and the per-channel
+`θ70` row, 0.0111); the new
+sampler with the new `C_D` but no second quadrature reads 1 failure
+(`r .05 rd .6 rs 1 θ70`, TVD 0.0124).  Ward with the new `kray` and the old
+`wDiff`: TVD 0.088-0.107 on section I's over-authored rows (0.020 gate).
+Post-fix every DL-310 row sits at 1.08-1.71x its own measured half-split
+noise floor (0.0039-0.0050).
+
+### Tests
+
+| Suite | Pre-fix (this slice's final test files against `b89a8aa9`'s material sources) | Post-fix |
+|---|---|---|
+| `SchlickKrayBRDFConsistencyTest` (sections 11-15 new) | **422905 / 383** -- 369 grid cells > 1, the ledger family (8), the five clip-binding reciprocity pairs, section 14's "exercises the clip" | **423288 / 0** |
+| `WardDensityKrayTest` (section I new) | **81398 / 170418** -- 418 grid cells over the 1e-3 band, every over-authored diffuse draw's kray | **251816 / 0** |
+| `SchlickSPFPdfConsistencyTest` (six DL-310 rows + NM twins, noise floors) | 64 / 0 (the pre-fix sampler and density agree; the stale-replay control is the red) | 64 / 0 |
+| `BDPTStrategyBalanceTest` (topology Y) | -- | 227 / 0 |
+
+Unchanged and green: `SchlickMaskingBoundTest` 21655/0, `BoundedSchlickWardTest`
+920/0, `SchlickLobePairingTest` 27/0, `SPFBSDFConsistencyTest`,
+`SPFPdfConsistencyTest`, `LayeredWhiteFurnaceTest` 0/58,
+`HWSSCompanionKrayTest` 189/0, `PTGuidingMISPartitionTest` 185/0,
+`VCMStrategyBalanceTest` 74/0, `BDPTGuidedContinuationTest` 164/0,
+`CstDeriveGoldenTest` 456 MATCH / 0 DRIFT, `SourceHygieneTest` 167/0,
+`WardSelectionQuadratureTest` 969/0, `SchlickWardBackfaceEnergyTest` 19/0,
+`SchlickWardPerChannelReuseTest` 4/0,
+`CookTorranceSchlickGlossyFilterConsistencyTest` 22/0, `PathValueOpsTest`,
+`AshikminShirleySPFPdfConsistencyTest` 99/0,
+`IsotropicPhongSPFPdfConsistencyTest` 46/0, `ConnectionLegalityTest` 319/0,
+`AgentChunkCrudTest` 3816/0, `SSSRadianceScalingTest` 576220/0;
+`RefractiveRadianceScalingTest` 40/1 (row C, DL-308, pre-existing on
+`master`).  Clean `make` rebuild (library + 27 test targets) and clean
+Xcode `RISE-GUI` build: zero compiler warnings.
+
+### Appearance
+
+On the implementation's own grid (cells whose pre-fix `rho_d <= 1`,
+relative change worst / mean): Schlick `(.1, *)` and `(.5, .1)` 0 / 0;
+`(.5, .5)` −7.63% / −0.07% (−0.08% worst at `θ <= 60`); `(.9, .1)` −4.34% /
+−0.23% (−1.27% at `θ <= 60`); `(.5, .9)` −34.1% / −0.85% (grazing);
+conserving Ward 0 everywhere.  Over-authored cells drop by up to 55%
+(Schlick, `(.9, .9)`) and 59% (Ward) directionally.
+
+Shipped scenes, linear capture, `oidn_denoise FALSE`, `std::srand(seedBase
++ n)` per render, interleaved base/fix binaries built from `b89a8aa9`'s and
+this slice's material sources (n = 4; whole-image mean luminance ± sample
+SD):
+
+| Scene (settings) | Base | Fix | Change | t |
+|---|---:|---:|---:|---:|
+| `materials` (pixelpel, 800², shipped) | 0.178868 ± 0.000033 | 0.128677 ± 0.000024 | −28.06% | −2477 |
+| `sss_different_bsdf` (pixelpel, shipped) | 0.098935 ± 0.000006 | 0.093882 ± 0.000005 | −5.11% | −1209 |
+| `kaleidoscope_atrium` (pixelpel, 512x384) | 0.453484 ± 0.000041 | 0.443877 ± 0.000066 | −2.12% | −248 |
+| `showroom` (shipped, irradiance cache) | 0.385843 ± 0.040340 | 0.367435 ± 0.035237 | −4.77% | −0.7 |
+| `showroom`, irradiance cache off (n = 3 base) | 0.360716 ± 0.000270 | 0.343584 ± 0.000451 | −4.75% | −62.5 |
+| `cornellbox_bdpt_materials_pt` (PT, 256²) | 0.983532 ± 0.000151 | 0.945228 ± 0.000439 | −3.89% | −165 |
+| `cornellbox_bdpt_materials` (BDPT, 256²) | 0.973399 ± 0.000504 | 0.941137 ± 0.000109 | −3.31% | −125 |
+| `pt_alchemists_sanctum` (PT, 192x128) | 4.804440 ± 0.016516 | 4.789953 ± 0.017608 | −0.30% | −1.2 |
+| `bdpt_alchemists_sanctum` (BDPT, 192x128, 64 spp) | 4.802400 ± 0.003052 | 4.793248 ± 0.017101 | −0.19% | −1.1 |
+| `pt_jewel_vault` (PT, 128x96, 128 spp) | 9.093668 ± 0.022245 | 9.077630 ± 0.025107 | −0.18% | −1.0 |
+| `bdpt_jewel_vault` (BDPT, 128x96) | 10.879074 ± 0.020105 | 10.890844 ± 0.003384 | +0.11% | +1.2 |
+
+**Every move above 2% is an over-authored material** (white or near-white
+specular over a coloured diffuse): the `materials` teapots are 50% grey
+under a white `rs` (their pixel region −44%; a white-`Rs` Ward keeps no
+diffuse at all, `1 - Rs = 0`), `sss_different_bsdf`'s Ward is orange
+`(1, .5, 0)` under a `.7` cream (clipped to `.3`), the kaleidoscope pillars
+are `(.42,.48,.58)` under `(.92,.95,.99)`, the showroom brushed metal is
+`(.65,.63,.6)` under `(.9,.88,.85)` (its image blocks −33..−37%) and the ruby
+`(.6,.1,.15)` under `(.95,.6,.65)` (−12%), and the Cornell boxes' Schlick
+and Ward spheres are grey / copper under white (their blocks −19..−38%).
+The only shipped energy-conserving Schlick/Ward materials -- the
+alchemists' and jewel vault's Ward floors, copper and bronze -- are
+unchanged within noise (|t| <= 1.2).  (A 2x2 NaN block appeared in 1 of 13
+base `showroom` renders and 0 of 10 fix renders -- DL-324.)  The
+constructed all-Schlick box (every receiver `rd .6` under white `rs`, `r
+.05`, isotropy .3, DL-225's cost fixture) shows the defect directly: base PT
+1120.98 ± 35.55 and BDPT 25.12 ± 0.11 (a closed box of surfaces with
+`rho_d > 1` -- the Neumann series diverges and each integrator's depth caps
+truncate it differently), fix PT 2.272 ± 0.059 and BDPT 2.081 ± 0.002.
+
+### Cost
+
+Micro-benchmarks, ns/call, 4 alternating runs of separately built base/fix
+binaries (mean ± SD), view 30° / 80°:
+
+| Config | `value` base → fix | `Pdf` base → fix | `Scatter` base → fix |
+|---|---|---|---|
+| Schlick `rd .4 rs .4 r .5` (never clips) | 21.3 → 29.9 / 21.2 → 30.6 | 1059 → 1059 / 979 → 1020 | 191 → 197 / 175 → 183 |
+| Schlick `rd .9 rs .5 r .05 i .3` (clips) | 20.4 → 48.8 / 27.1 → 58.9 | 1320 → 1725 / 1483 → 1789 | 212 → 234 / 190 → 214 |
+| Schlick `rd .6 rs 1 r .05 i .3` (over-authored) | 20.3 → 50.6 / 28.2 → 55.8 | 1338 → 1663 / 1482 → 1795 | 212 → 234 / 188 → 214 |
+| Ward iso / aniso over-authored | unchanged (±1 ns) | unchanged (warm cache) | unchanged |
+
+Renders (user CPU, n = 4-5 interleaved): all-Schlick box that never clips
+(`rd .4 rs .4 r .5`): PT 28.79 ± 0.26 → 29.24 ± 0.25 s (+1.6%), BDPT 81.39 ±
+1.07 → 82.66 ± 0.65 s (+1.6%), images identical within noise.  The clipping
+all-Schlick box reads −5.3% PT / −5.2% BDPT, but that comparison is
+confounded: the base render's paths carry runaway throughput and survive
+Russian roulette longer.  **The unconfounded clipping cost (external
+review):** an energy-conserving furnace sphere, Rd .9 / rho .1 / roughness
+.05 -- which clips -- reads PT user CPU 7.56 ± 0.03 s → 10.72 ± 0.12 s,
+**+41.7%** (n = 3 interleaved); the mixed Cornell box +0.8%.  Every Schlick
+lane with `Rd > 1 − A_top` (`A_top` the table's maximum over incidence)
+pays the band quadrature on every `Pdf` call.  At isotropy 1 that
+threshold is:
+
+| roughness | rho .04 | rho .1 | rho .5 | rho .9 |
+|---:|---:|---:|---:|---:|
+| .01 | Rd > .63 | .59 | .33 | .07 |
+| .05 | .80 | .75 | .45 | .14 |
+| .2 | .90 | .85 | .55 | .25 |
+| .5 | .96 | .93 | .75 | .57 |
+| .8 | .98 | .96 | .84 | .71 |
+
+Mitigation recipe (not done in this slice): the band nodes
+(`SchlickDiffuseDraw`) depend only on the lanes, `rho`, `Rd`, `mu_i` and the
+geometric-normal frame -- not on the query direction -- so a small
+thread-local memo keyed on those can share them across the several `Pdf`
+calls one vertex makes (the DL-24 shared-walk precedent); verify it
+bit-identical on a deterministic single-thread render.
+
+### Residuals
+
+* **DL-323** (new, reframed by the external review): `CookTorranceBRDF`
+  adds the same uncoupled `Rd/pi` under a specular whose Fresnel RISES
+  toward 1 at grazing -- the mechanism DL-310 closed for Schlick -- so a
+  STANDARD plastic (Rd .9 under a white specular tint, ior 1.5) reads
+  0.940 at 0°, 1.452 at 85° and 1.715 at 89° (spec .3: 1.144, spec .5:
+  1.307 at 89°); `Rd + spec <= 1` is not its conservation criterion (the
+  sibling audit's own `rd .9 spec .1` 0.982 / `rd .5 spec .5` 0.909 rows
+  simply never reached that corner).  Normalized isotropic Phong reads
+  exactly `Rd + Rs` (over-authoring only, 1.900 at `Rd .9 Rs 1`).  The
+  shipped `materials` scene shows the resulting POLICY SPLIT: under
+  identical grey-under-white authoring its Ward teapots lose 47-50% while
+  the Cook-Torrance teapot moves −0.02%.  Ruling needed: extend the
+  min clip to Cook-Torrance and Phong (the consistent choice) or revert
+  Ward's half.  `AshikminShirleyAnisotropicPhongBRDF`'s coupled diffuse is
+  bounded by design (max 0.996).
+* **DL-324** (new): an intermittent NaN in the shipped `showroom` on the
+  base build (about 1 in 33 renders); lead from the external review: Ward
+  anisotropic `ComputeFactors`' unclamped `acos` of a possibly zero-length
+  tangent (NaN on 46,912 of 200,000 constructed pairs), pre-existing.
+* The azimuth-maximum `A` over-darkens anisotropic Schlick in the clip band
+  (above); Ward's supremum `A` over-darkens over-authored rough Ward.
+  Both are bounded, reciprocal choices made on cost.  "Untouched where the
+  pair already conserves" holds against the TABLE's `A`, not the true one:
+  on the external review's extended grid 40 of 449 never-over cells move by
+  more than 1%, worst −6.6% (`Rd .3`, `rho .7`, roughness .05, isotropy .01,
+  89.9°), all at `θ >= 89°` with isotropy <= .1 or roughness <= .001, where
+  the table's conservative bump or the azimuth maximum over-reads `A`.
+* The table's residual under-read: the generator's off-probe validation
+  reads 3.2e-3 worst (roughness 2.7e-5, isotropy .006, 89.93°), and the
+  external review found the same order at an ordinary roughness (.024,
+  isotropy .004, 89.62°: full material 1.00298).  The bound holds to
+  within 3e-3 at isotropy below .01 at grazing.
 
 ## Auxiliary albedo and consumers
 

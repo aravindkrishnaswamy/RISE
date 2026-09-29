@@ -199,6 +199,7 @@ SRCLIBMATERIALS =\
 	$(PATHLIBRARY)Materials/SheenSPF.cpp									\
 	$(PATHLIBRARY)Materials/SheenDirectionalAlbedo.cpp						\
 	$(PATHLIBRARY)Materials/SheenDirectionalAlbedo_LUTData.cpp				\
+	$(PATHLIBRARY)Materials/SchlickDirectionalAlbedo_LUTData.cpp				\
 	$(PATHLIBRARY)Materials/GenericHumanTissueSPF.cpp						\
 	$(PATHLIBRARY)Materials/HenyeyGreensteinPhaseFunction.cpp				\
 	$(PATHLIBRARY)Materials/HeterogeneousMedium.cpp						\
@@ -213,6 +214,7 @@ SRCLIBMATERIALS =\
 	$(PATHLIBRARY)Materials/PerfectReflectorSPF.cpp							\
 	$(PATHLIBRARY)Materials/PerfectRefractorSPF.cpp							\
 	$(PATHLIBRARY)Materials/PhongEmitter.cpp								\
+	$(PATHLIBRARY)Materials/PolishedBRDF.cpp									\
 	$(PATHLIBRARY)Materials/PolishedSPF.cpp									\
 	$(PATHLIBRARY)Materials/ScatteredRayContainer.cpp						\
 	$(PATHLIBRARY)Materials/SchlickBRDF.cpp									\

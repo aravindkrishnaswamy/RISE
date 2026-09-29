@@ -319,6 +319,11 @@ namespace RISE
 			//! Diagnostic identity if an unsupported lobe declines companion
 			//! evaluation. DL-157 implements the normal entry/exit lobes
 			//! through EvaluateKrayNM, closing DL-222.
+			//! DL-24 review P1-1: every lobe kray is direction-independent and the
+			//! clipped lobes are renormalized, never dropped, so the up/down
+			//! selection mass is a deterministic function of the query (DL-157).
+			bool SelectionMassIsDeterministic( const RayIntersectionGeometric&, const Scalar ) const { return true; }
+
 			const char* PerLobeDensityFallbackName() const
 			{
 				return "TranslucentSPF";

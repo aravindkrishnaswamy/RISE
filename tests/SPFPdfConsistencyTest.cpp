@@ -62,6 +62,9 @@
 #include "../src/Library/Materials/PolishedSPF.h"
 #include "../src/Library/Materials/SubSurfaceScatteringSPF.h"
 #include "../src/Library/Materials/CompositeSPF.h"
+#include "../src/Library/Materials/CompositeMaterial.h"
+#include "../src/Library/Materials/DielectricMaterial.h"
+#include "../src/Library/Materials/TranslucentMaterial.h"
 #include "../src/Library/Materials/GGXSPF.h"
 #include "../src/Library/Materials/LambertianMaterial.h"
 #include "../src/Library/Materials/GGXMaterial.h"
@@ -1041,9 +1044,34 @@ int main()
     // SubSurfaceScattering SPF: IOR, g=0.8, roughness=0.3
     SubSurfaceScatteringSPF* sss = new SubSurfaceScatteringSPF( *iorScalar, 0.8, 0.3 );  sss->addref();
 
-    // Composite SPF: two Lambertian layers, max_recur=4, reflection/refraction/diffuse/translucent limits, thickness=0.1, zero extinction
-    LambertianSPF* lambertian2 = new LambertianSPF( *spec );  lambertian2->addref();
-    CompositeSPF* composite = new CompositeSPF( *lambertian, *lambertian2, 4, 2, 2, 2, 2, 0.1, *extinctionSc );  composite->addref();
+    // composite_material (DL-24).  Built through CompositeMaterial -- the
+    // production construction, which hands both layers' BSDFs to the SPF --
+    // because the composite's non-delta emissions are priced by the layered
+    // evaluator those BSDFs feed.  Three stacks:
+    //   Composite                     two Lambertians (the pre-DL-24 row):
+    //                                 a reflection-only top, so the
+    //                                 composite IS its top.
+    //   Composite_DielectricLambertian the coat-over-diffuse regime DL-24 is
+    //                                 about: a delta Fresnel reflection plus
+    //                                 the covered walked class.
+    //   Composite_TranslucentLambertian a NON-delta top whose own lobes and
+    //                                 the walked class share the hemisphere.
+    LambertianMaterial* compLambTop = new LambertianMaterial( *white );  compLambTop->addref();
+    LambertianMaterial* compLambBot = new LambertianMaterial( *spec );   compLambBot->addref();
+    CompositeMaterial* compositeMat = new CompositeMaterial( *compLambTop, *compLambBot, 4, 2, 2, 2, 2, 0.1, *extinctionSc );
+    compositeMat->addref();
+    ISPF* composite = compositeMat->GetSPF();
+    UniformScalarPainter* compDielTau  = new UniformScalarPainter( 1.0 );      compDielTau->addref();
+    UniformScalarPainter* compDielIor  = new UniformScalarPainter( 1.5 );      compDielIor->addref();
+    UniformScalarPainter* compDielScat = new UniformScalarPainter( 10000.0 );  compDielScat->addref();
+    DielectricMaterial* compDielTop = new DielectricMaterial( *compDielTau, *compDielIor, *compDielScat, false );  compDielTop->addref();
+    CompositeMaterial* compositeDielMat = new CompositeMaterial( *compDielTop, *compLambTop, 3, 3, 3, 3, 3, 0.1, *extinctionSc );
+    compositeDielMat->addref();
+    ISPF* compositeDiel = compositeDielMat->GetSPF();
+    TranslucentMaterial* compTransTop = new TranslucentMaterial( *gray, *trans, *extinctionSc, *phongNSc, *scatFactorSc );  compTransTop->addref();
+    CompositeMaterial* compositeTransMat = new CompositeMaterial( *compTransTop, *compLambTop, 3, 3, 3, 3, 3, 0.1, *extinctionSc );
+    compositeTransMat->addref();
+    ISPF* compositeTrans = compositeTransMat->GetSPF();
 
     // coated_material (docs/WETNESS_COAT_DESIGN.md Phase 2 item 5).
     // Built through the MATERIAL because CoatedSPF is the importance
@@ -1436,10 +1464,16 @@ int main()
         //--------------------------------------------------------------
         // Polished (dielectric coat over diffuse substrate):
         //
-        // Cross-val: 311 mismatches at 60° due to Fresnel-dependent
-        //   coating transmission affecting kray weights vs PDF weights.
-        //   At 30° it passes.  Skip cross-val for consistency.
-        // Chi2 and integral: pass at both angles.
+        // Since DL-285 (2026-09-28) `PolishedSPF::Pdf` is the REALIZED
+        // RandomlySelect density, with BOTH lobes' selection weights
+        // direction-dependent (the coat via min(F(ci),F(co)) and co, the
+        // substrate via 1-F(co)) -- DL-99's case.  Cross-val's
+        // multi-lobe branch checks Pdf >= q_I * p_I with q_I read off ONE
+        // realization, which is not a bound on the expectation over the
+        // other lobe's draw that the realized density is, so it stays
+        // skipped.  Chi2 (shape) and the sub-density gate (mass) are the
+        // real checks and pass at both angles; the per-row derivation and
+        // gates live in tests/PolishedBRDFConsistencyTest.cpp.
         //--------------------------------------------------------------
         { "Polished",                          polished,    false, false, true,  false, INTEGRAL_TOL },
 
@@ -1454,17 +1488,38 @@ int main()
         //--------------------------------------------------------------
         { "SubSurfaceScattering",              sss,         true,  true,  false, true,  INTEGRAL_TOL },
 
-        { "Composite",                         composite,   false, false, false, false, INTEGRAL_TOL },
+        //--------------------------------------------------------------
+        // composite_material (DL-24).  Every check ON: the composite now
+        // emits at most ONE ray per Scatter (singleLobe) and stamps the
+        // exact non-delta density on it (exactSelectedPdf).  Part 2's
+        // "hemispherical int Pdf ~ 1" is NOT a composite's contract: Pdf
+        // is the density of its NON-DELTA emissions, a sub-density whenever
+        // the top has a delta lobe (the dielectric's Fresnel reflection) or
+        // the walker branch's floor share emits nothing on a covered path.
+        // Part 2b gates the mass exactly (int Pdf over the sphere == the
+        // measured non-delta emission probability, 0.01), so Part 2's band
+        // is widened to hold only a sanity bound on those two rows.
+        //--------------------------------------------------------------
+        // "Composite"'s Lambertian TOP does not declare a deterministic
+        // up/down split (ISPF::SelectionMassIsDeterministic: it can drop
+        // its lobe under a tilted shading normal), so since the DL-24
+        // review the composite runs PER-BRANCH mode there: each emitted
+        // ray carries its own branch's density and `Pdf` is the MIS
+        // partner, not the exact density -- exactSelectedPdf is off for
+        // that row alone (mass and chi2 shape still gated).
+        { "Composite",                         composite,      true,  false, false, false, INTEGRAL_TOL },
+        { "Composite_DielectricLambertian",    compositeDiel,  true,  true,  false, false, 0.15 },
+        { "Composite_TranslucentLambertian",   compositeTrans, true,  true,  false, false, 0.15 },
 
         //--------------------------------------------------------------
         // coated_material -- docs/WETNESS_COAT_DESIGN.md Phase 2 item 5,
         // "Real mixture Pdf/PdfNM -- not a 50/50 placeholder".  7.5
         // calls this "the correctness line that separates [coated] from
-        // composite_material", and names THIS FILE as the guard.  The
-        // contrast is one row above: `Composite` runs with cross-val,
-        // chi2 AND exact-selected-pdf all switched off, because
-        // CompositeSPF's Pdf is a hard-coded 50/50 blend that no
-        // sampled direction can be expected to agree with.
+        // composite_material", and names THIS FILE as the guard.  Until
+        // DL-24 (2026-09-28) the contrast was the `Composite` row above,
+        // which ran with cross-val, chi2 AND exact-selected-pdf switched
+        // off because CompositeSPF's Pdf was a hard-coded 50/50 blend;
+        // since DL-24 the composite rows run with every check on too.
         //
         // The coated triad runs with EVERY check on, at both
         // substrates:

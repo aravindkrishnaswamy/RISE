@@ -104,7 +104,10 @@ namespace RISE
 		//! every copy).
 		//!
 		//! Sized 12 from measurement, not intuition.  The demanding producer
-		//! is `CompositeSPF`'s two-layer random walk over a DISPERSIVE top
+		//! WAS `CompositeSPF`'s pre-DL-24 two-layer random walk, which emitted
+		//! every exit it found (since DL-24, 2026-09-28, a composite emits at
+		//! most ONE ray per Scatter; the figures below are kept as the
+		//! historical sizing record).  That walk over a DISPERSIVE top
 		//! dielectric: a per-channel IOR makes `DielectricSPF::Scatter` run
 		//! `DoSingleRGBComponent` three times, so the top interface emits up
 		//! to 3 up-going Fresnel lobes (3 exits) plus 3 down-going refracted
@@ -122,7 +125,7 @@ namespace RISE
 		//! parser's default budgets (max_recursion 3, per-type 3), and a
 		//! dispersive top at deep budgets measured 30.  Producers that can
 		//! overflow must check the return value rather than assume success
-		//! (CompositeSPF warns once per process when it does).
+		//! (CompositeSPF still checks and warns once per process).
 		//!
 		//! Cost of the larger array: every slot is constructed and destroyed
 		//! with the container, so construct+destruct went ~19 -> ~37 ns per
@@ -420,15 +423,51 @@ namespace RISE
 		/// the aggregate BSDF use this pairing (CoatedSPF / FabricSPF /
 		/// WeaveSPF and the single-emit GGXSPF / CookTorranceSPF).
 		/// A per-lobe conditional density can instead mispair that summed
-		/// response. CompositeSPF still declines (DL-221):
-		/// its stochastic two-layer walk cannot be recovered from these
-		/// arguments. TranslucentSPF now evaluates its normal entry/exit
+		/// response. CompositeSPF (DL-221, narrowed by DL-24): when its top
+		/// declares `SelectionMassIsDeterministic`, a ray its layered
+		/// EVALUATOR prices is reconstructed (`EvaluateLobeFNM` /
+		/// `EvaluateKrayNM`), and so is the top's direct delta REFLECTION
+		/// (matched by type: a walker ray leaves the top from inside the
+		/// stack, so it is always a transmission).  A ray its WALKER emits
+		/// (delta-tagged: a bottom exit, a from-below entry, a null-BSDF
+		/// layer, an all-delta chain) is one realization of a stochastic
+		/// walk and cannot be recovered from these arguments, so it
+		/// declines; so does every ray of a PER-BRANCH composite. TranslucentSPF now evaluates its normal entry/exit
 		/// lobes (DL-222 closed), but retains a diagnostic identity for
 		/// unsupported lobe types. Overriding this method keeps any such
 		/// fallback visible instead of silently taking a wrong number.
 		virtual const char* PerLobeDensityFallbackName() const
 		{
 			return 0;
+		}
+
+		/// DL-24 review P1-1 (2026-09-28), made QUERY-DEPENDENT by review
+		/// round 2's P1-A.  True only when, AT THIS QUERY, the NATURAL
+		/// selection mass of this SPF's up-going emissions (and of its
+		/// down-going ones), classified against the SHADING normal
+		/// `ri.onb.w()`, is a DETERMINISTIC function of (ri, ior_stack, nm):
+		/// every `Scatter`/`ScatterNM` call at the same query emits the same
+		/// set of lobe weights on the same sides, and never emits nothing at
+		/// random.  @a nm < 0 means the RGB pipe.  A random up-OR-down roll
+		/// (a single-emit layered or tissue SPF), a lobe dropped by a random
+		/// horizon test (Lambertian under a tilted shading normal), a
+		/// direction-dependent realized weight, and a random direction warp
+		/// that can carry a lobe across the SHADING plane (a finite-
+		/// `scattering` dielectric under a tilted shading normal: the warp is
+		/// clipped to the GEOMETRIC side, so it can land between the two
+		/// planes) all disqualify.  `CompositeSPF` prices its layered transport through ONE
+		/// deterministic mixture (exact `Pdf`) only when its TOP layer
+		/// declares this; otherwise it runs its per-branch estimator,
+		/// which is unbiased for any positive branch weights.  The default
+		/// is false, which is always safe (never biased, at worst less
+		/// efficient); a wrong `true` zeroes whole transport classes or
+		/// prices them with a split no draw realises (a bias).
+		virtual bool SelectionMassIsDeterministic(
+			const RayIntersectionGeometric& /*ri*/,
+			const Scalar /*nm*/
+			) const
+		{
+			return false;
 		}
 	};
 

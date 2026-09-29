@@ -18,6 +18,7 @@
 #include "../Utilities/math_utils.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "SchlickMasking.h"
+#include "SchlickDirectionalAlbedo.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -140,6 +141,30 @@ namespace
 		return (Z*A)/(4.0*PI*dv*dl);
 	}
 
+	//! DL-310: the coupled diffuse reflectance per channel,
+	//! min(Rd, 1 - A(v), 1 - A(l)), A the specular lobe's own directional
+	//! albedo (SchlickDirectionalAlbedo.h), each distinct (r, p) lane
+	//! prepared once.  Rd itself, bit for bit, wherever a lane cannot clip.
+	RISEPel SchlickCoupledDiffuse( const SchlickPairGeometry& g, const RISEPel& rd, const RISEPel& rho,
+		const RISEPel& r, const RISEPel& p )
+	{
+		RISEPel out;
+		SchlickDirectionalAlbedo::Lane lanes[3];
+		for( int ch = 0; ch < 3; ch++ ) {
+			int reuse = -1;
+			for( int prev = 0; prev < ch; prev++ ) {
+				if( r[prev] == r[ch] && p[prev] == p[ch] ) { reuse = prev; break; }
+			}
+			if( reuse >= 0 ) {
+				lanes[ch] = lanes[reuse];
+			} else {
+				SchlickDirectionalAlbedo::PrepareLane( lanes[ch], r[ch], p[ch] );
+			}
+			out[ch] = SchlickDirectionalAlbedo::CoupledDiffuseAt( lanes[ch], rho[ch], rd[ch], g.nv, g.nl );
+		}
+		return out;
+	}
+
 	//! Per-channel factor, evaluating each distinct (r, p) lane once.
 	RISEPel SchlickChannelFactors( const SchlickPairGeometry& g, const RISEPel& r, const RISEPel& p )
 	{
@@ -187,7 +212,10 @@ RISEPel SchlickBRDF::value( const Vector3& vLightIn, const RayIntersectionGeomet
 	const RISEPel factor = SchlickChannelFactors( g, rPel, iPel );
 	if( ColorMath::MaxValue(factor) > 0 ) {
 		const RISEPel rho = pSpecular->GetColor(ri);
-		return (pDiffuse->GetColor(ri)*INV_PI) + ((rho + (RISEPel(1.0,1.0,1.0)-rho)*g.fresnel) * factor);
+		// DL-310: the diffuse term is coupled to the specular lobe's own
+		// directional albedo -- see SchlickDirectionalAlbedo.h.
+		const RISEPel rdCoupled = SchlickCoupledDiffuse( g, pDiffuse->GetColor(ri), rho, rPel, iPel );
+		return (rdCoupled*INV_PI) + ((rho + (RISEPel(1.0,1.0,1.0)-rho)*g.fresnel) * factor);
 	}
 
 	return RISEPel(0,0,0);
@@ -209,10 +237,16 @@ Scalar SchlickBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeome
 	if( !SchlickPair( vLightIn, ri, myonb, g ) ) {
 		return 0;
 	}
-	const Scalar factor = SchlickLaneFactor( g, roughnessNM, pIsotropy->GetValueAtNM(ri,nm) );
+	const Scalar isotropyNM = pIsotropy->GetValueAtNM(ri,nm);
+	const Scalar factor = SchlickLaneFactor( g, roughnessNM, isotropyNM );
 	if( factor > 0 ) {
 		const Scalar rho = GuardedGetColorNM( *pSpecular, ri, nm );
-		return (GuardedGetColorNM( *pDiffuse, ri, nm )*INV_PI) + (rho + (1.0-rho)*g.fresnel) * factor;
+		// DL-310: coupled diffuse, spectral twin of value() above.
+		SchlickDirectionalAlbedo::Lane lane;
+		SchlickDirectionalAlbedo::PrepareLane( lane, roughnessNM, isotropyNM );
+		const Scalar rdCoupled = SchlickDirectionalAlbedo::CoupledDiffuseAt(
+			lane, rho, GuardedGetColorNM( *pDiffuse, ri, nm ), g.nv, g.nl );
+		return (rdCoupled*INV_PI) + (rho + (1.0-rho)*g.fresnel) * factor;
 	}
 
 	return 0;
@@ -274,7 +308,34 @@ RISEPel SchlickBRDF::albedo( const RayIntersectionGeometric& ri ) const
 		}
 		m0[ch]/=nt*np;m5[ch]/=nt*np;
 		}
-		const Scalar reflected=rd[ch]*(1+gz)*0.5+rho[ch]*m0[ch]+(1-rho[ch])*m5[ch];
+		// DL-310: the coupled diffuse's gated hemispherical integral,
+		// min(Rd, 1 - A(v)) over the accepted cosine hemisphere minus the
+		// band where the outgoing direction clips it further -- the same
+		// deterministic band quadrature SchlickSPF::Pdf uses.
+		Scalar diffuseTerm = rd[ch]*(1+gz)*0.5;
+		{
+			SchlickDirectionalAlbedo::Lane lane;
+			SchlickDirectionalAlbedo::PrepareLane( lane, r, p );
+			if( SchlickDirectionalAlbedo::CanClip( lane, rho[ch], rd[ch] ) ) {
+				SchlickDirectionalAlbedo::LaneRow row;
+				SchlickDirectionalAlbedo::BuildRow( lane, row );
+				double a0, a5;
+				SchlickDirectionalAlbedo::Moments( lane, nv, a0, a5 );
+				SchlickDirectionalAlbedo::DiffuseChannels dc;
+				dc.count = 1;
+				dc.active[0] = true;
+				dc.K[0] = r_max( Scalar(0), r_min( rd[ch], Scalar(1) - SchlickDirectionalAlbedo::Albedo( rho[ch], a0, a5 ) ) );
+				dc.rho[0] = rho[ch];
+				dc.row[0] = &row;
+				SchlickDirectionalAlbedo::BandNodes band;
+				SchlickDirectionalAlbedo::BuildBand( dc, gz, sqrt( r_max( Scalar(0), gx*gx + gy*gy ) ), band );
+				diffuseTerm = dc.K[0]*(1+gz)*0.5;
+				for( int k = 0; k < band.n; ++k ) {
+					diffuseTerm += band.weight[k] * ( band.W[k][0] - band.W0[0] );
+				}
+			}
+		}
+		const Scalar reflected=diffuseTerm+rho[ch]*m0[ch]+(1-rho[ch])*m5[ch];
 		// IBSDF::albedo is a bounded auxiliary estimate. Authored additive
 		// Rd plus specular can exceed one; transport still evaluates it.
 		result[ch]=r_max(Scalar(0),r_min(Scalar(1),reflected));

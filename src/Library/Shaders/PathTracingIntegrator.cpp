@@ -3859,8 +3859,8 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			//   guide draw               f_agg cos / (a g + (1-a) p_agg)
 			//
 			// Unbiased for any deterministic W PROVIDED `IBSDF::value` and
-			// the SPF's kray describe one function (DL-285: not
-			// `polished_material`), `0 < a < 1` (delta lobes belong to the
+			// the SPF's kray describe one function (`polished_material`
+			// violated it until DL-285, 2026-09-28), `0 < a < 1` (delta lobes belong to the
 			// BSDF technique alone; `a` is clamped at Configure), and the
 			// continuation state does not depend on which technique fired
 			// (NOT met under a per-type bounce cap: a guide draw continues
@@ -6522,8 +6522,9 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			if( compWeight < 0 && pBRDFCur )
 			{
 				// DL-125: aggregate-density sampling with matching aggregate
-				// BSDF response uses this fallback. CompositeSPF declines with
-				// per-lobe density (DL-221); report its diagnostic identity.
+				// BSDF response uses this fallback. CompositeSPF declines for
+				// its walker-emitted rays and per-branch composites (DL-221,
+				// narrowed by DL-24); report its diagnostic identity.
 				// TranslucentSPF now handles its normal companion lobes.
 				NotePerLobeDensityCompanionFallback( pSPF );
 

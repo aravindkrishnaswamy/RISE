@@ -854,7 +854,8 @@ namespace
 	//
 	// PREMISES (doc §2).  (2) `IBSDF::value` and the SPF's `kray` describe
 	// ONE function -- the guide prices `value`, the kept lobes price
-	// `kray`; `polished_material` violates it (DL-285).  (3) 0 < a < 1
+	// `kray`; `polished_material` violated it until DL-285's PolishedBRDF
+	// (2026-09-28).  (3) 0 < a < 1
 	// where the kept technique owns mass the guide cannot reach (a delta
 	// lobe) -- enforced below through `GuidingOneSampleProbability`.
 	// (4) The continuation state must not depend on which technique chose
@@ -1763,6 +1764,32 @@ namespace {
 	template<> inline Scalar NmOrZero<PelTag>( const PelTag& ) { return Scalar( 0 ); }
 	template<> inline Scalar NmOrZero<NMTag>( const NMTag& tag ) { return tag.nm; }
 
+	/// DL-307: does this material carry a SUBSURFACE-ENTRY branch -- a
+	/// diffusion profile, or random-walk parameters for this tag -- that the
+	/// two subpath generators take AFTER scattering the SPF?  Mirrors exactly
+	/// the material half of those branches' own entry conditions (the
+	/// diffusion-profile block; the random-walk block's static params, plus
+	/// the NM-only per-wavelength fallback).  The generators consult it only
+	/// when no lobe was selected: the subsurface coin is independent of the
+	/// SPF realization, so an empty (or unselectable) container is a ZERO
+	/// sample of the reflection technique and no reason to skip the
+	/// subsurface one -- exactly DL-67's ruling for the guide technique.
+	/// The NM specialization's third query (`GetRandomWalkSSSParamsNM`) is
+	/// dead today -- no material in src/ overrides it (2026-09-28) -- and is
+	/// kept only so this predicate cannot drift from the random-walk
+	/// block's own NM fallback, which still asks it.
+	template<class Tag> inline bool HasSubsurfaceEntryBranch( const IMaterial& m, const Tag& tag );
+	template<> inline bool HasSubsurfaceEntryBranch<PelTag>( const IMaterial& m, const PelTag& )
+	{ return m.GetDiffusionProfile() != 0 || m.GetRandomWalkSSSParams() != 0; }
+	template<> inline bool HasSubsurfaceEntryBranch<NMTag>( const IMaterial& m, const NMTag& tag )
+	{
+		if( m.GetDiffusionProfile() != 0 || m.GetRandomWalkSSSParams() != 0 ) {
+			return true;
+		}
+		RandomWalkSSSParams rwParamsNM;
+		return m.GetRandomWalkSSSParamsNM( tag.nm, rwParamsNM );
+	}
+
 	/// Medium free-flight distance sample dispatch: SampleDistance (Pel) /
 	/// SampleDistanceNM(nm) (NM).
 	template<class Tag>
@@ -2666,9 +2693,22 @@ namespace {
 	#else
 			const bool guidedVertex = false;
 	#endif
+			// DL-307: an empty container is a zero sample of the SPF's
+			// reflection technique, not the end of the walk at a vertex
+			// whose material also has a subsurface-entry branch below --
+			// that branch's Fresnel coin is independent of the Scatter
+			// realization (PT takes it BEFORE scattering at all).  Breaking
+			// here dropped the whole subsurface contribution of every rough
+			// SSS hit whose reflection draw fell below the horizon.
+			// Queried lazily: only a vertex with no lobe pays the two (NM:
+			// three) virtual material calls.
+			bool subsurfaceCarrier = false;
 			if( scattered.Count() == 0 && !guidedVertex ) {
-				CaptureBDPTAccurateAOV( rc, ri, pPrimaryAOV );
-				break;
+				subsurfaceCarrier = HasSubsurfaceEntryBranch<Tag>( *ri.pMaterial, tag );
+				if( !subsurfaceCarrier ) {
+					CaptureBDPTAccurateAOV( rc, ri, pPrimaryAOV );
+					break;
+				}
 			}
 
 			// Stochastic single-lobe selection (no path-tree branching).
@@ -2684,15 +2724,24 @@ namespace {
 			// placeholder (non-delta, zero weight): only a guide draw can
 			// carry it on (`BDPTGuidedContinuation` terminates the kept
 			// technique for it).  `guideTemplateRay` is the placeholder a
-			// guide draw continues on either way.
+			// guide draw continues on either way.  DL-307: an un-guided
+			// subsurface vertex with no selectable lobe rides the same
+			// placeholder into the subsurface branch, and terminates right
+			// after it if that branch does not continue the walk.
 			ScatteredRay guideTemplateRay;
 			guideTemplateRay.type = ScatteredRay::eRayDiffuse;
 			guideTemplateRay.isDelta = false;
 			guideTemplateRay.ray = Ray( ri.geometric.ptIntersection, ri.geometric.vNormal );
 			const bool hasLobe = ( pScat != 0 );
 			if( !pScat ) {
-				if( !guidedVertex ) {
-					break;
+				if( !guidedVertex && !subsurfaceCarrier ) {
+					// A non-empty container none of whose lobes is
+					// selectable (every weight zero) is the same zero
+					// sample of the reflection technique.
+					subsurfaceCarrier = HasSubsurfaceEntryBranch<Tag>( *ri.pMaterial, tag );
+					if( !subsurfaceCarrier ) {
+						break;
+					}
 				}
 				pScat = &guideTemplateRay;
 				selectProb = 1.0;
@@ -3024,6 +3073,13 @@ namespace {
 				}
 			}
 			// --- End BSSRDF sampling ---
+
+			// DL-307: an un-guided vertex that reached here without a lobe
+			// (only to offer the subsurface branch its coin) has nothing
+			// left to continue on.  A guided one still has the guide draw.
+			if( !hasLobe && !guidedVertex ) {
+				break;
+			}
 
 			const IORStack* traceIorStack = pScat->ior_stack ? pScat->ior_stack : &iorStack;
 			IORStack guidedIorStack( iorStack );
@@ -3373,7 +3429,9 @@ namespace {
 							// Aggregate evaluation remains appropriate for
 							// aggregate-density rays with matching BSDF
 							// response, or a guiding-substituted direction.
-							// CompositeSPF still declines (DL-221).
+							// CompositeSPF declines for its walker-emitted
+							// rays and for per-branch composites (DL-221,
+							// narrowed by DL-24).
 							// TranslucentSPF supports its entry/exit lobes;
 							// unsupported types can still decline and warn.
 							Scalar compScale = -1;
@@ -3390,8 +3448,8 @@ namespace {
 								// Match aggregate response with aggregate
 								// density; a per-lobe density can instead
 								// produce DL-69's summed-response mismatch.
-								// CompositeSPF still declines
-								// (DL-221) and names itself. TranslucentSPF
+								// CompositeSPF declines for its walker-emitted
+								// rays and per-branch composites (DL-221) and names itself. TranslucentSPF
 								// now evaluates its normal entry/exit lobes.
 								if( useKray ) {
 									NotePerLobeDensityCompanionFallback( pSPF );
@@ -6945,8 +7003,14 @@ unsigned int GenerateLightSubpathImpl(
 #else
 		const bool guidedVertex = false;
 #endif
+		// DL-307: see the eye twin -- an empty container at a vertex with a
+		// subsurface-entry branch still offers that branch its coin.
+		bool subsurfaceCarrier = false;
 		if( scattered.Count() == 0 && !guidedVertex ) {
-			break;
+			subsurfaceCarrier = HasSubsurfaceEntryBranch<Tag>( *ri.pMaterial, tag );
+			if( !subsurfaceCarrier ) {
+				break;
+			}
 		}
 
 		// Stochastic single-lobe selection (no path-tree branching).
@@ -6958,16 +7022,20 @@ unsigned int GenerateLightSubpathImpl(
 		if( scattered.Count() > 0 ) {
 			pScat = scattered.RandomlySelect( lobeSelectXi, Traits::is_nm, &selectProb );
 		}
-		// See the eye twin: a placeholder carries a guided vertex with no
-		// selectable lobe, and is what a guide draw continues on.
+		// See the eye twin: a placeholder carries a guided vertex (or, DL-307,
+		// an un-guided subsurface vertex) with no selectable lobe, and is what
+		// a guide draw continues on.
 		ScatteredRay guideTemplateRay;
 		guideTemplateRay.type = ScatteredRay::eRayDiffuse;
 		guideTemplateRay.isDelta = false;
 		guideTemplateRay.ray = Ray( ri.geometric.ptIntersection, ri.geometric.vNormal );
 		const bool hasLobe = ( pScat != 0 );
 		if( !pScat ) {
-			if( !guidedVertex ) {
-				break;
+			if( !guidedVertex && !subsurfaceCarrier ) {
+				subsurfaceCarrier = HasSubsurfaceEntryBranch<Tag>( *ri.pMaterial, tag );
+				if( !subsurfaceCarrier ) {
+					break;
+				}
 			}
 			pScat = &guideTemplateRay;
 			selectProb = 1.0;
@@ -7310,6 +7378,11 @@ unsigned int GenerateLightSubpathImpl(
 		}
 		// --- End BSSRDF sampling ---
 
+		// DL-307: see the eye twin -- no lobe and no guide draw to continue on.
+		if( !hasLobe && !guidedVertex ) {
+			break;
+		}
+
 		const IORStack* traceIorStack = pScat->ior_stack ? pScat->ior_stack : &iorStack;
 		IORStack guidedIorStack( iorStack );
 #ifdef RISE_ENABLE_OPENPGL
@@ -7555,8 +7628,8 @@ unsigned int GenerateLightSubpathImpl(
 						// Same selected-lobe contract as PT and the eye twin:
 						// EvaluateKrayNM first (DL-125 closed), aggregate
 						// fallback for matching aggregate-density response
-						// or guiding substitution. CompositeSPF remains
-						// DL-221; Translucent's entry/exit lobes are supported,
+						// or guiding substitution. CompositeSPF's walker-emitted
+						// rays and per-branch composites remain DL-221; Translucent's entry/exit lobes are supported,
 						// while unsupported types may decline and warn.
 						Scalar compScale = -1;
 						if( useKray && pSPF ) {

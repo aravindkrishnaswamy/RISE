@@ -141,6 +141,7 @@ namespace
 	using RISE::FibreLobeMath::TrimmedLogistic;
 	using RISE::FibreLobeMath::SampleTrimmedLogistic;
 	using RISE::FibreLobeMath::FrDielectric;
+	using RISE::FibreLobeMath::RelativeFibreEta;
 
 	//! Ray-geometry terms in the fibre frame for one (h, eta) pair.
 	struct Geom
@@ -781,10 +782,17 @@ void HairScatteringBase::Resolve( const RayIntersectionGeometric& ri, Resolved& 
 	R.etaRef = pIOR ? pIOR->GetValuesAt( ri ).v[0] : 1.55;
 	// A fibre IOR of exactly 1 (or below) collapses the refraction
 	// geometry (etap -> 0) and would divide by zero; a hair fibre is a
-	// dielectric by construction.
+	// dielectric by construction.  This guards the AUTHORED (absolute)
+	// value, before it is made relative below.
 	if( !( R.etaRef > 1.0 + 1e-6 ) ) {
 		R.etaRef = 1.55;
 	}
+	// DL-290: the model's eta is the fibre-vs-SURROUNDING ratio (every
+	// Snell / Fresnel term of the fibre surface is a function of it), so
+	// divide by the live exterior.  In air this is the authored value bit
+	// for bit; immersed (wet / submerged) hair now refracts and reflects
+	// against the medium it is actually in.
+	R.etaRef = RelativeFibreEta( R.etaRef, ri.ambientIOR );
 
 	// Chiang's beta_m -> longitudinal-variance remap, and the per-lobe
 	// variance ladder (TT is sharper, TRT broader).
@@ -1010,7 +1018,9 @@ void HairScatteringBase::ReflectanceRGB(
 	// the absorption model already accounts for.
 	// Same guard as Resolve: an IOR of 1 or below is not a dielectric.
 	const Scalar etaRaw = pIOR ? pIOR->GetValuesAt( ri ).v[0] : Scalar( 1.55 );
-	const Scalar eta = ( etaRaw > 1.0 + 1e-6 ) ? etaRaw : Scalar( 1.55 );
+	// DL-290: relative to the live exterior, the same eta Resolve feeds
+	// the lobes (bit-identical in air).
+	const Scalar eta = RelativeFibreEta( ( etaRaw > 1.0 + 1e-6 ) ? etaRaw : Scalar( 1.55 ), ri.ambientIOR );
 	const Scalar fAvg = Sqr( ( eta - 1 ) / ( eta + 1 ) );
 	for( int c = 0; c < 3; c++ ) {
 		out[c] = Clamp( out[c] + ( 1 - out[c] ) * fAvg, 0.0, 1.0 );
@@ -1038,7 +1048,7 @@ void HairScatteringBase::EvalFsum(
 	if( bNM && pIOR ) {
 		const Scalar e = pIOR->GetValueAtNM( ri, nm );
 		if( e > 1.0 + 1e-6 ) {
-			eta = e;
+			eta = RelativeFibreEta( e, ri.ambientIOR );	// DL-290, as Resolve
 		}
 	}
 

@@ -236,8 +236,10 @@ void CookTorranceSPF::Scatter(
 						const ScalarTriple extT = pExtinction->GetValuesAt(ri);
 						const RISEPel iorPel( iorT.v[0], iorT.v[1], iorT.v[2] );
 						const RISEPel extPel( extT.v[0], extT.v[1], extT.v[2] );
+						// DL-290: relative to the live exterior, exactly as
+						// CookTorranceBRDF::value (1.0 = air, bit-identical).
 						const RISEPel fresnel = Optics::CalculateConductorReflectance<RISEPel>(
-							ri.ray.Dir(), n, RISEPel(1,1,1),
+							ri.ray.Dir(), n, RISEPel( CookTorranceBRDF::AmbientIOR( ri ) ),
 							iorPel, extPel );
 
 						// With VNDF sampling, kray = BRDF_spec * cos / pdf_spec
@@ -295,7 +297,7 @@ void CookTorranceSPF::Scatter(
 				const ScalarTriple extT = pExtinction->GetValuesAt(ri);
 				const RISEPel ior( iorT.v[0], iorT.v[1], iorT.v[2] );
 				const RISEPel ext( extT.v[0], extT.v[1], extT.v[2] );
-				const RISEPel F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<RISEPel>( n, RISEPel(1,1,1), ior, ext );
+				const RISEPel F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<RISEPel>( n, RISEPel( CookTorranceBRDF::AmbientIOR( ri ) ), ior, ext );	// DL-290
 				// specColor INSIDE the average: the tinted per-bounce reflectance specColor*F_avg
 				// compounds across bounces (matches the single-scatter lobe specColor*fresnel).
 				// Pulling it outside the nonlinear Fms over-brightens tinted rough metals.
@@ -450,7 +452,7 @@ void CookTorranceSPF::ScatterNM(
 						const Scalar mixPdf = (total > 1e-10) ? (wdSel * diffPdf + wms * msPdfHere + wsSel * vndfPdf) / total : vndfPdf;
 
 						const Scalar fresnel = Optics::CalculateConductorReflectance(
-							ri.ray.Dir(), n, 1.0,
+							ri.ray.Dir(), n, CookTorranceBRDF::AmbientIOR( ri ),	// DL-290
 							pIOR->GetValueAtNM(ri,nm), pExtinction->GetValueAtNM(ri,nm) );
 
 						const Scalar G1wo = MicrofacetUtils::GGX_G1( alpha, cosTheta );
@@ -497,7 +499,7 @@ void CookTorranceSPF::ScatterNM(
 
 				const Scalar iorVal = pIOR->GetValueAtNM(ri,nm);
 				const Scalar extVal = pExtinction->GetValueAtNM(ri,nm);
-				const Scalar F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<Scalar>( n, 1.0, iorVal, extVal );
+				const Scalar F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<Scalar>( n, CookTorranceBRDF::AmbientIOR( ri ), iorVal, extVal );	// DL-290
 				// specColor INSIDE the average: the tinted per-bounce reflectance specColor*F_avg
 				// compounds across bounces (matches the single-scatter lobe specColor*fresnel).
 				// (wsValNM already holds the guarded pSpecular sample for this call)

@@ -36,7 +36,8 @@
 //      probability, and total variation against a histogram of real
 //      `Scatter` + `RandomlySelect` draws.
 //
-//      Ward's diffuse `kray` is the constant `Rd`, so -- unlike
+//      Ward's diffuse `kray` is the constant `Rd` (since DL-310 the
+//      constant coupled min(Rd, 1 - Rs), section I), so -- unlike
 //      Ashikmin-Shirley (DL-99) -- the specular lobe's own selection
 //      coefficient does NOT need a second quadrature over the diffuse
 //      draw: `q_S` depends on the query direction alone, modulated only
@@ -409,6 +410,63 @@ static double MeasureTVD( ISPF& spf, const RayIntersectionGeometric& ri,
 //////////////////////////////////////////////////////////////////////
 //  MAIN
 //////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////
+// DL-310: directional reflectance of the FULL live Ward value(), by an
+// independent deterministic two-grid balance quadrature: a cosine grid
+// over the outgoing hemisphere and a half-vector grid on this test's
+// own elliptical-Gaussian slope warp (tan-plane slope (ax s cos psi,
+// ay s sin psi), s = sqrt(-ln(1-u))), each point weighted by
+// 1/(p_cos + p_h) so every outgoing direction is counted once.
+//////////////////////////////////////////////////////////////////////
+static double WardFullAlbedoTwoGrid( const IBSDF& brdf, const RayIntersectionGeometric& ri,
+	double ax, double ay, int channel, int N = 128 )
+{
+	const Vector3 v = Vector3Ops::Normalize( -ri.ray.Dir() );
+	const Vector3 U = ri.onb.u(), V = ri.onb.v(), W = ri.onb.w();
+	const double nPer = double( N ) * double( 2 * N );
+	double sum = 0;
+	for( int g = 0; g < 2; g++ ) {
+		for( int i = 0; i < N; i++ ) {
+			for( int j = 0; j < 2 * N; j++ ) {
+				const double a = ( i + 0.5 ) / N, b = ( j + 0.5 ) / ( 2 * N );
+				const double psi = TWO_PI * b;
+				Vector3 lLocal;
+				if( g == 0 ) {
+					const double st = sqrt( a ), ct = sqrt( 1.0 - a );
+					lLocal = Vector3( st * cos( psi ), st * sin( psi ), ct );
+				} else {
+					const double sl = sqrt( -log( 1.0 - a ) );
+					const double x = ax * sl * cos( psi ), y = ay * sl * sin( psi );
+					const Vector3 hLocal = Vector3Ops::Normalize( Vector3( x, y, 1.0 ) );
+					const Vector3 h = U * hLocal.x + V * hLocal.y + W * hLocal.z;
+					const double hv = Vector3Ops::Dot( h, v );
+					if( hv <= 0 ) continue;
+					const Vector3 lw = h * ( 2.0 * hv ) - v;
+					lLocal = Vector3( Vector3Ops::Dot( lw, U ), Vector3Ops::Dot( lw, V ), Vector3Ops::Dot( lw, W ) );
+				}
+				if( lLocal.z <= 0 ) continue;
+				lLocal = Vector3Ops::Normalize( lLocal );
+				const Vector3 l = U * lLocal.x + V * lLocal.y + W * lLocal.z;
+				const Vector3 h = Vector3Ops::Normalize( l + v );
+				const double hv = Vector3Ops::Dot( h, v );
+				const Vector3 hL( Vector3Ops::Dot( h, U ), Vector3Ops::Dot( h, V ), Vector3Ops::Dot( h, W ) );
+				const double p1 = lLocal.z * INV_PI;
+				double p2 = 0;
+				if( hv > 0 && hL.z > 0 ) {
+					const double sx = hL.x / hL.z, sy = hL.y / hL.z;
+					const double ph = exp( -( sx * sx / ( ax * ax ) + sy * sy / ( ay * ay ) ) )
+						/ ( PI * ax * ay * hL.z * hL.z * hL.z );
+					p2 = ph / ( 4.0 * hv );
+				}
+				const RISEPel f = brdf.value( l, ri );
+				const double fv = ( channel < 0 ) ? ColorMath::MaxValue( f ) : f[channel];
+				sum += fv * lLocal.z / ( nPer * ( p1 + p2 ) );
+			}
+		}
+	}
+	return sum;
+}
+
 int main()
 {
 	GlobalLog();
@@ -1263,6 +1321,185 @@ int main()
 
 		wi->release(); wa->release(); gg->release(); sc->release();
 		a03->release(); a012->release(); iorS->release(); extS->release(); isoS->release();
+	}
+
+	//----------------------------------------------------------------
+	// SECTION I -- DL-310: the FULL Ward material is bounded.
+	//
+	// Ward's Geisler-Moroder-Duer specular family integrates to at most
+	// Rs (DL-212), so the additive `Rd/pi` exceeds 1 only where the
+	// AUTHORED Rd + Rs does.  DL-310 couples the diffuse as
+	// min(Rd, 1 - A(i), 1 - A(o)) with A = Rs, GMD's own albedo bound:
+	// the coupled term is Rd EXACTLY whenever Rd <= 1 - Rs (every
+	// conserving authoring), and min(Rd, 1 - Rs) otherwise.
+	// (1) rho_d <= 1 + 1e-3 over the grid (pre-fix 421 of 1260 cells
+	//     > 1, worst 1.7989 at Rd .9, Rs .9, aniso a .05/.005, normal
+	//     incidence; conserving-authored worst 1.00001, quadrature
+	//     noise on an exactly-Rd + Rs material);
+	// (2) value() == Rd/pi + f_S bit for bit wherever Rd <= 1 - Rs,
+	//     chromatic, iso and aniso;
+	// (3) the diffuse kray is its own f_D cos / p_D on real Scatter /
+	//     ScatterNM draws, and EvaluateKrayNM / EvaluateLobeFNM agree;
+	// (4) Pdf mass and shape against the real sampler on OVER-authored
+	//     materials, where the coupled diffuse weight moves.
+	//----------------------------------------------------------------
+	std::cout << std::endl << "-- Section I: DL-310 full-material bound and coupled-diffuse lockstep" << std::endl;
+	{
+		double worst = 0, worstCons = 0; int cells = 0, over = 0;
+		for( int model = 0; model < 2; model++ ) {
+			for( double al : { 0.05, 0.2, 0.5, 0.8 } ) {
+				for( double pr : { 1.0, 0.5, 0.1 } ) {
+					if( model == 0 && pr != 1.0 ) continue;
+					if( model == 1 && pr == 1.0 ) continue;
+					UniformScalarPainter* axp = new UniformScalarPainter( al ); axp->addref();
+					UniformScalarPainter* ayp = new UniformScalarPainter( al * pr ); ayp->addref();
+					for( double rdv : { 0.1, 0.5, 0.9 } ) {
+						for( double rsv : { 0.1, 0.5, 0.9 } ) {
+							UniformColorPainter* rd = new UniformColorPainter( RISEPel( rdv, rdv, rdv ) ); rd->addref();
+							UniformColorPainter* rs = new UniformColorPainter( RISEPel( rsv, rsv, rsv ) ); rs->addref();
+							IBSDF* brdf = model == 0
+								? static_cast<IBSDF*>( new WardIsotropicGaussianBRDF( *rd, *rs, *axp ) )
+								: static_cast<IBSDF*>( new WardAnisotropicEllipticalGaussianBRDF( *rd, *rs, *axp, *ayp ) );
+							brdf->addref();
+							for( double th : { 0.0, 30.0, 60.0, 80.0, 89.0 } ) {
+								for( double az : { 0.0, 45.0, 90.0 } ) {
+									if( model == 0 && az != 0.0 ) continue;
+									RayIntersectionGeometric ri = MakeIntersection( th * PI / 180.0 );
+									const double t = th * PI / 180.0, a = az * PI / 180.0;
+									ri.ray.SetDir( Vector3( sin( t ) * cos( a ), sin( t ) * sin( a ), -cos( t ) ) );
+									const double q = WardFullAlbedoTwoGrid( *brdf, ri, al, model == 0 ? al : al * pr, 0 );
+									cells++;
+									if( q > 1.0 ) over++;
+									worst = std::max( worst, q );
+									if( rdv + rsv <= 1.0 + 1e-12 ) worstCons = std::max( worstCons, q );
+									Check( std::isfinite( q ) && q <= 1.0 + 1e-3, "Section I: DL-310 full Ward material rho_d <= 1" );
+								}
+							}
+							brdf->release(); rd->release(); rs->release();
+						}
+					}
+					axp->release(); ayp->release();
+				}
+			}
+		}
+		std::cout << "   cells=" << cells << "  cells > 1: " << over << "  worst rho_d = " << std::setprecision(6)
+		          << worst << "  conserving-authored worst = " << worstCons
+		          << "   (pre-fix: 421 cells > 1, worst 1.7989; conserving 1.00001)" << std::endl;
+
+		// (2) exactness wherever Rd <= 1 - Rs, per channel.
+		{
+			UniformColorPainter* rd = new UniformColorPainter( RISEPel( 0.6, 0.2, 0.1 ) ); rd->addref();
+			UniformColorPainter* rs = new UniformColorPainter( RISEPel( 0.4, 0.7, 0.3 ) ); rs->addref();
+			UniformScalarPainter* axp = new UniformScalarPainter( 0.2 ); axp->addref();
+			UniformScalarPainter* ayp = new UniformScalarPainter( 0.07 ); ayp->addref();
+			WardIsotropicGaussianBRDF* iso = new WardIsotropicGaussianBRDF( *rd, *rs, *axp ); iso->addref();
+			WardAnisotropicEllipticalGaussianBRDF* ani = new WardAnisotropicEllipticalGaussianBRDF( *rd, *rs, *axp, *ayp ); ani->addref();
+			WardIsotropicGaussianBRDF* isoS = new WardIsotropicGaussianBRDF( *black, *rs, *axp ); isoS->addref();
+			WardAnisotropicEllipticalGaussianBRDF* aniS = new WardAnisotropicEllipticalGaussianBRDF( *black, *rs, *axp, *ayp ); aniS->addref();
+			double maxDev = 0;
+			for( double th : { 0.0, 40.0, 75.0, 89.0 } ) {
+				const RayIntersectionGeometric ri = MakeIntersection( th * PI / 180.0 );
+				for( double lt : { 5.0, 45.0, 85.0 } ) {
+					for( double lp : { 30.0, 200.0 } ) {
+						const double a = lt * PI / 180.0, b = lp * PI / 180.0;
+						const Vector3 l( sin( a ) * cos( b ), sin( a ) * sin( b ), cos( a ) );
+						for( int m = 0; m < 2; m++ ) {
+							const RISEPel got = m ? ani->value( l, ri ) : iso->value( l, ri );
+							const RISEPel sp  = m ? aniS->value( l, ri ) : isoS->value( l, ri );
+							for( int ch = 0; ch < 3; ch++ ) {
+								const double ref = ( ch == 0 ? 0.6 : ch == 1 ? 0.2 : 0.1 ) * INV_PI + sp[ch];
+								const double dev = fabs( got[ch] - ref ) / ref;
+								maxDev = std::max( maxDev, dev );
+								Check( dev <= 1e-15, "Section I: DL-310 Ward value() == Rd/pi + f_S wherever Rd <= 1 - Rs" );
+							}
+						}
+					}
+				}
+			}
+			std::cout << "   conserving authoring, max relative |value - (Rd/pi + f_S)| = " << std::scientific
+			          << std::setprecision(3) << maxDev << std::fixed << std::endl;
+			iso->release(); ani->release(); isoS->release(); aniS->release();
+			rd->release(); rs->release(); axp->release(); ayp->release();
+		}
+
+		// (3) diffuse lockstep and (4) Pdf gates, on OVER-authored
+		// chromatic materials (channels with Rd > 1 - Rs, and one without).
+		{
+			UniformColorPainter* rd = new UniformColorPainter( RISEPel( 0.9, 0.6, 0.2 ) ); rd->addref();
+			UniformColorPainter* rs = new UniformColorPainter( RISEPel( 0.8, 0.5, 0.3 ) ); rs->addref();
+			const double rdE[3] = { 0.2, 0.5, 0.2 };	// min(Rd, 1 - Rs) per channel
+			UniformScalarPainter* axp = new UniformScalarPainter( 0.3 ); axp->addref();
+			UniformScalarPainter* ayp = new UniformScalarPainter( 0.12 ); ayp->addref();
+			RGBScalarPainter* axRGB = new RGBScalarPainter( 0.1, 0.3, 0.6 ); axRGB->addref();
+			double worstK = 0, worstE = 0;
+			for( int model = 0; model < 2; model++ ) {
+				for( int pc = 0; pc < 2; pc++ ) {
+					IScalarPainter* ax = pc ? (IScalarPainter*)axRGB : (IScalarPainter*)axp;
+					ISPF* spf = model == 0
+						? static_cast<ISPF*>( new WardIsotropicGaussianSPF( *rd, *rs, *ax ) )
+						: static_cast<ISPF*>( new WardAnisotropicEllipticalGaussianSPF( *rd, *rs, *ax, *ayp ) );
+					spf->addref();
+					IBSDF* full = model == 0
+						? static_cast<IBSDF*>( new WardIsotropicGaussianBRDF( *rd, *rs, *ax ) )
+						: static_cast<IBSDF*>( new WardAnisotropicEllipticalGaussianBRDF( *rd, *rs, *ax, *ayp ) );
+					full->addref();
+					IBSDF* sp = model == 0
+						? static_cast<IBSDF*>( new WardIsotropicGaussianBRDF( *black, *rs, *ax ) )
+						: static_cast<IBSDF*>( new WardAnisotropicEllipticalGaussianBRDF( *black, *rs, *ax, *ayp ) );
+					sp->addref();
+					const RayIntersectionGeometric ri = MakeIntersection( 50.0 * PI / 180.0 );
+					RandomNumberGenerator rng( kSeedA + 9700u + unsigned( model * 2 + pc ) );
+					IndependentSampler sampler( rng );
+					for( int draw = 0; draw < 20000; draw++ ) {
+						ScatteredRayContainer sc;
+						spf->Scatter( ri, sampler, sc, iorStack );
+						for( unsigned int i = 0; i < sc.Count(); i++ ) {
+							if( sc[i].type != ScatteredRay::eRayDiffuse ) continue;
+							const Vector3 wo = Vector3Ops::Normalize( sc[i].ray.Dir() );
+							const double co = Vector3Ops::Dot( wo, ri.onb.w() );
+							const RISEPel fD = full->value( wo, ri ) - sp->value( wo, ri );
+							for( int ch = 0; ch < 3; ch++ ) {
+								const double dev = std::max( fabs( sc[i].kray[ch] * sc[i].pdf - fD[ch] * co ) / ( fD[ch] * co ),
+								                             fabs( sc[i].kray[ch] - rdE[ch] ) / rdE[ch] );
+								worstK = std::max( worstK, dev );
+								Check( dev < 1e-9, "Section I: DL-310 Ward diffuse kray == min(Rd, 1-Rs) == f_D cos / p_D" );
+							}
+						}
+					}
+					if( !pc ) {
+						for( int draw = 0; draw < 5000; draw++ ) {
+							ScatteredRayContainer sc;
+							spf->ScatterNM( ri, sampler, 550.0, sc, iorStack );
+							for( unsigned int i = 0; i < sc.Count(); i++ ) {
+								if( sc[i].type != ScatteredRay::eRayDiffuse ) continue;
+								const Vector3 wo = Vector3Ops::Normalize( sc[i].ray.Dir() );
+								const double rdNM = GuardedGetColorNM( *rd, ri, 550.0 ), rsNM = GuardedGetColorNM( *rs, ri, 550.0 );
+								const double want = ( rdNM <= 1.0 - rsNM ) ? rdNM : r_max( 0.0, 1.0 - rsNM );
+								const double ek = spf->EvaluateKrayNM( ri, wo, ScatteredRay::eRayDiffuse, 550.0, iorStack );
+								const double ef = spf->EvaluateLobeFNM( ri, wo, ScatteredRay::eRayDiffuse, 550.0, iorStack );
+								const double dev = std::max( std::max( fabs( sc[i].krayNM - want ), fabs( ek - want ) ), fabs( ef * PI - want ) ) / want;
+								worstE = std::max( worstE, dev );
+								Check( dev < 1e-12, "Section I: DL-310 Ward ScatterNM / EvaluateKrayNM / EvaluateLobeFNM diffuse agree" );
+							}
+						}
+					}
+					// (4) Pdf gates.
+					const double integral = IntegratePdfFullSphere( *spf, ri, iorStack, 400, 800 );
+					const double emission = MeasureEmissionProbability( *spf, ri, iorStack, kSeedA + 9800u + unsigned( model * 2 + pc ), 200000 );
+					double sampledMass = 0, pdfMass = 0;
+					const double tvd = MeasureTVD( *spf, ri, iorStack, kSeedA + 9900u + unsigned( model * 2 + pc ), 600000, sampledMass, pdfMass );
+					std::cout << "   over-authored " << ( model ? "aniso" : "iso  " ) << ( pc ? " perchannel" : "           " )
+					          << "  int Pdf " << std::setprecision(6) << integral << "  emission " << emission
+					          << "  TVD " << tvd << std::endl;
+					Check( fabs( integral - emission ) < 0.01, "Section I: DL-310 over-authored Ward Pdf mass" );
+					Check( tvd < 0.02, "Section I: DL-310 over-authored Ward Pdf shape" );
+					spf->release(); full->release(); sp->release();
+				}
+			}
+			std::cout << "   worst diffuse kray deviation " << std::scientific << std::setprecision(3) << worstK
+			          << "   worst NM / Evaluate* deviation " << worstE << std::fixed << std::endl;
+			rd->release(); rs->release(); axp->release(); ayp->release(); axRGB->release();
+		}
 	}
 
 	spec->release();

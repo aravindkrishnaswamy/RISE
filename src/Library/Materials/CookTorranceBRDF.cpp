@@ -139,7 +139,13 @@ RISEPel CookTorranceBRDF::value( const Vector3& vLightIn, const RayIntersectionG
 	RISEPel specular(0,0,0);
 
 	if( ColorMath::MinValue(factor) > 0 ) {
-		const RISEPel fresnel = Optics::CalculateConductorReflectance<RISEPel>( ri.ray.Dir(), n, RISEPel(1,1,1), ior, ext );
+		// DL-290: the incident index is the live exterior (`ri.ambientIOR`,
+		// the IOR-stack top every integrator stamps; 1.0 = air, where this is
+		// bit-identical to the old literal) -- the same G6 plumbing GGX's
+		// conductor Fresnel reads.  The conductor Fresnel depends only on the
+		// RELATIVE complex index (n/n_e, k/n_e), so a conductor seen through
+		// water or glass now prices that interface instead of air.
+		const RISEPel fresnel = Optics::CalculateConductorReflectance<RISEPel>( ri.ray.Dir(), n, RISEPel( CookTorranceBRDF::AmbientIOR( ri ) ), ior, ext );
 		specular = specColor * fresnel * factor;
 	}
 
@@ -155,7 +161,7 @@ RISEPel CookTorranceBRDF::value( const Vector3& vLightIn, const RayIntersectionG
 			const Scalar Ess_i = MicrofacetEnergyLUT::LookupEss( cosWi, scalarAlpha );
 			const Scalar f_ms = (1.0 - Ess_o) * (1.0 - Ess_i) / (PI * (1.0 - Eavg));
 
-			const RISEPel F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<RISEPel>( n, RISEPel(1,1,1), ior, ext );
+			const RISEPel F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<RISEPel>( n, RISEPel( CookTorranceBRDF::AmbientIOR( ri ) ), ior, ext );	// DL-290
 			// specColor INSIDE the average: the tinted per-bounce reflectance specColor*F_avg
 			// compounds across bounces (matches the single-scatter lobe specColor*fresnel).
 			// Pulling it outside the nonlinear Fms over-brightens tinted rough metals.
@@ -198,7 +204,7 @@ Scalar CookTorranceBRDF::valueNM( const Vector3& vLightIn, const RayIntersection
 
 	const Scalar factor = ComputeFactor<Scalar>( vLightIn, ri, n, alpha );
 	if( factor > 0 ) {
-		const Scalar fresnel = Optics::CalculateConductorReflectance( ri.ray.Dir(), n, 1.0, iorVal, extVal );
+		const Scalar fresnel = Optics::CalculateConductorReflectance( ri.ray.Dir(), n, CookTorranceBRDF::AmbientIOR( ri ), iorVal, extVal );	// DL-290
 		if( fresnel > 0 ) {
 			specular = specColor * fresnel * factor;
 		}
@@ -216,7 +222,7 @@ Scalar CookTorranceBRDF::valueNM( const Vector3& vLightIn, const RayIntersection
 			const Scalar Ess_i = MicrofacetEnergyLUT::LookupEss( cosWi, alpha );
 			const Scalar f_ms = (1.0 - Ess_o) * (1.0 - Ess_i) / (PI * (1.0 - Eavg));
 
-			const Scalar F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<Scalar>( n, 1.0, iorVal, extVal );
+			const Scalar F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<Scalar>( n, CookTorranceBRDF::AmbientIOR( ri ), iorVal, extVal );	// DL-290
 			// specColor INSIDE the average: the tinted per-bounce reflectance specColor*F_avg
 			// compounds across bounces (matches the single-scatter lobe specColor*fresnel).
 			const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( specColor * F_avg, Eavg );
@@ -239,6 +245,6 @@ RISEPel CookTorranceBRDF::albedo( const RayIntersectionGeometric& ri ) const
 	const RISEPel ior( iorT.v[0], iorT.v[1], iorT.v[2] );
 	const RISEPel ext( extT.v[0], extT.v[1], extT.v[2] );
 	const RISEPel fresnel = Optics::CalculateConductorReflectance<RISEPel>(
-		ri.ray.Dir(), n, RISEPel( 1, 1, 1 ), ior, ext );
+		ri.ray.Dir(), n, RISEPel( CookTorranceBRDF::AmbientIOR( ri ) ), ior, ext );	// DL-290: live exterior, as value()
 	return pDiffuse->GetColor( ri ) + pSpecular->GetColor( ri ) * fresnel;
 }
