@@ -262,6 +262,86 @@ namespace RISE
 			return ConnectionScale( pEyeMedium, nEye, pEyeMedium, EvalAt( *pField, lightPoint ) );
 		}
 
+		//! DL-292: the graded-index factor of a straight NEE SHADOW segment
+		//! that a hit-by-hit shadow walk (RayCaster::WalkShadowSegment)
+		//! follows across boundaries -- the `transparent_shadows` Fresnel
+		//! pass-through of a clear dielectric and DL-05's delta pass-through
+		//! of a thin weave's gap.
+		//!
+		//! WHY A TRACK, NOT A FLAG.  `ConnectionScaleToPoint` prices the
+		//! segment as one graded piece, which is right exactly when the light
+		//! lies in the SAME medium region as the shading point.  Pre-DL-292
+		//! the NEE arms decided that from the shadow TRANSMITTANCE (`!= 1`
+		//! meant "crossed a surface"), which is wrong both ways: a weave's
+		//! gap returns `g != 1` with NO boundary crossing (the light is still
+		//! in the medium -- the factor was dropped on a delta light's ONLY
+		//! estimator), a NESTED object's through-trip leaves the light in the
+		//! medium too, and a real exit prices the graded part up to the
+		//! boundary, which a skipped factor leaves unpriced.  The track keys
+		//! on the boundary crossings themselves: it copies the shading
+		//! point's walk stack and mirrors the walk's own entry/exit
+		//! decisions on it, calling `Advance` at every crossing point and at
+		//! the light, so each straight piece inside a graded medium pays
+		//! `(n_start/n_end)^2` and a nested constant object's through-trip
+		//! telescopes exactly (its entry leaves the enclosing graded entry
+		//! holding n(P1), which the Advance to the light reads).
+		//!
+		//! INTERFACES are NOT priced: the transparent-shadow approximation
+		//! drops the per-interface (eta_before/eta_after)^2 along with the
+		//! refraction Jacobian it pairs with (straight propagation), for
+		//! constant media exactly as before.  The track only adds what the
+		//! straight-segment model owes INSIDE graded media, so a scene with
+		//! no graded medium on the shadow ray reads exactly 1.
+		class ShadowSegmentTrack
+		{
+		public:
+			explicit ShadowSegmentTrack( const IORStack& shadingStack ) :
+			  stack( shadingStack ), scale( 1 ), walked( false )
+			{}
+
+			//! The walk crossed the boundary of `pObj` at `p` (entering it
+			//! when `bEntering`), with `mediumIOR` the index the walk's own
+			//! Fresnel used for that object at `p`.
+			void Crossing( const Point3& p, const IObject* pObj, const bool bEntering, const Scalar mediumIOR )
+			{
+				Scalar s;
+				if( Advance( stack, p, eRadiance, s ) ) {
+					scale *= s;
+				}
+				if( !pObj ) {
+					return;
+				}
+				stack.SetCurrentObject( pObj );
+				if( bEntering ) {
+					stack.push( mediumIOR );
+				} else if( stack.containsCurrent() ) {
+					stack.pop();
+				}
+			}
+
+			//! The walk reached the light at `lightPoint` unoccluded.
+			void Finish( const Point3& lightPoint )
+			{
+				Scalar s;
+				if( Advance( stack, lightPoint, eRadiance, s ) ) {
+					scale *= s;
+				}
+				walked = true;
+			}
+
+			//! True once Finish ran: the hit-by-hit walk followed the whole
+			//! segment and `Scale()` prices it.  False when no walk ran (a
+			//! binary shadow test found the segment clear -- then there is
+			//! no crossing and `ConnectionScaleToPoint` is the answer).
+			bool Walked() const { return walked; }
+			Scalar Scale() const { return scale; }
+
+		private:
+			IORStack stack;
+			Scalar scale;
+			bool walked;
+		};
+
 		//! Same, in the other direction: from an eye-side POINT (a camera
 		//! aperture point) to a recorded (medium, n) light vertex:
 		//! (n(eyePoint)/n_light)^2.

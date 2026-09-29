@@ -29,6 +29,7 @@ namespace RISE
 	class IObject;
 
 	namespace Implementation { class LightSampler; }
+	namespace GradedIndexMedium { class ShadowSegmentTrack; }
 
 	namespace Implementation
 	{
@@ -129,6 +130,10 @@ namespace RISE
 			//! shadow-casting hit blocks; a hit on an object that does not
 			//! cast shadows is stepped over (the binary CastShadowRay
 			//! ignores it too).
+			//! @a pGradedTrack (DL-292, may be null): mirrors every boundary
+			//! crossing the walk makes onto the caller's graded-index stack
+			//! and Finish()es it at the segment end when the walk reaches
+			//! the light -- see GradedIndexMedium::ShadowSegmentTrack.
 			bool WalkShadowSegment(
 				const Ray& ray,
 				const Scalar dHowFar,
@@ -136,7 +141,9 @@ namespace RISE
 				const Scalar nm,
 				RISEPel& transmittance,
 				const bool bDielectrics,
-				const bool bDeltaPassThrough
+				const bool bDeltaPassThrough,
+				GradedIndexMedium::ShadowSegmentTrack* pGradedTrack,
+				const Point3* pSegmentEnd
 				) const;
 
 			//! Runtime override for the environment radiance scale,
@@ -429,7 +436,9 @@ namespace RISE
 				const bool bNM,										///< [in] True for the spectral (single-wavelength) path; false for the RGB path
 				const Scalar nm,									///< [in] Wavelength (only used when bNM == true)
 				RISEPel& transmittance,								///< [out] Accumulated per-interface Fresnel transmittance (1,1,1 when clear or binary)
-				const bool bDeltaLight								///< [in] DL-05: the caller is a delta light's shadow test (see above)
+				const bool bDeltaLight,								///< [in] DL-05: the caller is a delta light's shadow test (see above)
+				GradedIndexMedium::ShadowSegmentTrack* pGradedTrack = 0,	///< [in/out] DL-292: when a hit-by-hit walk runs, it records the graded-index factor of the segment on this track (null: not tracked)
+				const Point3* pSegmentEnd = 0						///< [in] DL-292: the light point the track is Finish()ed at (required with a track)
 				) const;
 
 			//! DL-05 read-back (tests): whether the last AttachScene found a

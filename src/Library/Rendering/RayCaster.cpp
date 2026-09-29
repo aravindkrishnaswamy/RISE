@@ -22,6 +22,7 @@
 #include "../Utilities/RandomNumbers.h"
 #include "../Utilities/MediumTracking.h"
 #include "../Utilities/MediumTransport.h"
+#include "../Utilities/GradedIndexMedium.h"
 #include "../Utilities/IndependentSampler.h"
 #include "../Utilities/PathGuidingField.h"
 #include "../Utilities/PathTransportUtilities.h"
@@ -2424,7 +2425,7 @@ bool RayCaster::CastShadowRayTransmittance(
 	RISEPel& transmittance
 	) const
 {
-	return WalkShadowSegment( ray, dHowFar, bNM, nm, transmittance, true, false );
+	return WalkShadowSegment( ray, dHowFar, bNM, nm, transmittance, true, false, 0, 0 );
 }
 
 // ================================================================
@@ -2460,10 +2461,22 @@ bool RayCaster::WalkShadowSegment(
 	const Scalar nm,
 	RISEPel& transmittance,
 	const bool bDielectrics,
-	const bool bDeltaPassThrough
+	const bool bDeltaPassThrough,
+	GradedIndexMedium::ShadowSegmentTrack* pGradedTrack,
+	const Point3* pSegmentEnd
 	) const
 {
 	transmittance = RISEPel( 1.0, 1.0, 1.0 );
+
+	// DL-292: every "reached the light" return goes through here, so the
+	// graded-index track (if any) is priced up to the light point exactly
+	// when the segment is NOT occluded.
+	auto reachedLight = [pGradedTrack, pSegmentEnd]() -> bool {
+		if( pGradedTrack && pSegmentEnd ) {
+			pGradedTrack->Finish( *pSegmentEnd );
+		}
+		return false;
+	};
 
 	if( !pScene ) {
 		GlobalLog()->PrintSourceError( "RayCaster::WalkShadowSegment:: No scene", __FILE__, __LINE__ );
@@ -2505,7 +2518,7 @@ bool RayCaster::WalkShadowSegment(
 		{
 			// Reached the light with no further occluder along the
 			// remaining segment — the accumulated transmittance is final.
-			return false;
+			return reachedLight();
 		}
 
 		// There is a hit strictly before the light.  Decide whether it
@@ -2526,7 +2539,7 @@ bool RayCaster::WalkShadowSegment(
 			origin = segRay.PointAtLength( advance );
 			remaining -= advance;
 			if( remaining <= 0.0 ) {
-				return false;
+				return reachedLight();
 			}
 			continue;
 		}
@@ -2558,7 +2571,7 @@ bool RayCaster::WalkShadowSegment(
 			origin = segRay.PointAtLength( advance );
 			remaining -= advance;
 			if( remaining <= 0.0 ) {
-				return false;
+				return reachedLight();
 			}
 			continue;
 		}
@@ -2733,6 +2746,16 @@ bool RayCaster::WalkShadowSegment(
 			ior_stack.pop();
 		}
 
+		// DL-292: mirror this crossing onto the graded-index track, which
+		// starts from the SHADING POINT's walk stack (this walk's own
+		// Fresnel stack starts in air, deliberately -- see above -- so it
+		// cannot say which medium the light is in).  A weave gap or a
+		// non-shadow-caster above is not a crossing and does not reach
+		// here.
+		if( pGradedTrack ) {
+			pGradedTrack->Crossing( ri.geometric.ptIntersection, ri.pObject, bEntering, mediumIOR );
+		}
+
 		// Advance past this interface and continue toward the light.
 		// Step the origin to the hit point plus a small epsilon along
 		// the (unchanged) travel direction (`advance`, computed above);
@@ -2743,7 +2766,7 @@ bool RayCaster::WalkShadowSegment(
 		if( remaining <= 0.0 )
 		{
 			// Stepped at or past the light — nothing more occludes.
-			return false;
+			return reachedLight();
 		}
 	}
 
@@ -2774,7 +2797,9 @@ bool RayCaster::CastShadowRayAuto(
 	const bool bNM,
 	const Scalar nm,
 	RISEPel& transmittance,
-	const bool bDeltaLight
+	const bool bDeltaLight,
+	GradedIndexMedium::ShadowSegmentTrack* pGradedTrack,
+	const Point3* pSegmentEnd
 	) const
 {
 	// DL-05: may this shadow ray see through a delta pass-through?  Only
@@ -2791,7 +2816,7 @@ bool RayCaster::CastShadowRayAuto(
 		!pScene->GetGlobalSpectralMap();
 
 	if( bTransparentShadows ) {
-		return WalkShadowSegment( ray, dHowFar, bNM, nm, transmittance, true, bPassThrough );
+		return WalkShadowSegment( ray, dHowFar, bNM, nm, transmittance, true, bPassThrough, pGradedTrack, pSegmentEnd );
 	}
 	transmittance = RISEPel( 1.0, 1.0, 1.0 );
 	// The binary any-hit test first: a clear segment costs exactly what it
@@ -2812,7 +2837,10 @@ bool RayCaster::CastShadowRayAuto(
 		transmittance = RISEPel( 0, 0, 0 );
 		return true;
 	}
-	return WalkShadowSegment( ray, dHowFar, bNM, nm, transmittance, false, true );
+	// DL-292: a clear binary test above returned WITHOUT a walk, which
+	// leaves the track un-Finish()ed -- the caller then prices the
+	// crossing-free segment with ConnectionScaleToPoint.
+	return WalkShadowSegment( ray, dHowFar, bNM, nm, transmittance, false, true, pGradedTrack, pSegmentEnd );
 }
 
 void RayCaster::SetRISCandidates( const unsigned int M )

@@ -14,6 +14,7 @@
 #include "pch.h"
 #include "LightSampler.h"
 #include <cmath>
+#include <optional>
 #include "../Utilities/ISampler.h"
 #include "../Interfaces/ILightPriv.h"
 #include "../Interfaces/IMaterial.h"
@@ -73,7 +74,9 @@ static bool ShadowOccludedRGB(
 	const Ray& ray,
 	const Scalar dHowFar,
 	RISEPel& transmittance,
-	const bool bDeltaLight		// DL-05: see RayCaster::CastShadowRayAuto
+	const bool bDeltaLight,		// DL-05: see RayCaster::CastShadowRayAuto
+	GradedIndexMedium::ShadowSegmentTrack* pGradedTrack = 0,	// DL-292: see RayCaster::CastShadowRayAuto
+	const Point3* pSegmentEnd = 0
 	)
 {
 	// Delegate to RayCaster::CastShadowRayAuto, the single source of truth for
@@ -82,7 +85,7 @@ static bool ShadowOccludedRGB(
 	const RayCaster* pRC = dynamic_cast<const RayCaster*>( &caster );
 	if( pRC )
 	{
-		return pRC->CastShadowRayAuto( ray, dHowFar, false, 0.0, transmittance, bDeltaLight );
+		return pRC->CastShadowRayAuto( ray, dHowFar, false, 0.0, transmittance, bDeltaLight, pGradedTrack, pSegmentEnd );
 	}
 	transmittance = RISEPel( 1.0, 1.0, 1.0 );
 	return caster.CastShadowRay( ray, dHowFar );
@@ -94,7 +97,9 @@ static bool ShadowOccludedNM(
 	const Scalar dHowFar,
 	const Scalar nm,
 	Scalar& transmittance,
-	const bool bDeltaLight		// DL-05: see RayCaster::CastShadowRayAuto
+	const bool bDeltaLight,		// DL-05: see RayCaster::CastShadowRayAuto
+	GradedIndexMedium::ShadowSegmentTrack* pGradedTrack = 0,	// DL-292: see RayCaster::CastShadowRayAuto
+	const Point3* pSegmentEnd = 0
 	)
 {
 	// Delegate to RayCaster::CastShadowRayAuto (see ShadowOccludedRGB).
@@ -102,7 +107,7 @@ static bool ShadowOccludedNM(
 	if( pRC )
 	{
 		RISEPel t( 1.0, 1.0, 1.0 );
-		const bool occluded = pRC->CastShadowRayAuto( ray, dHowFar, true, nm, t, bDeltaLight );
+		const bool occluded = pRC->CastShadowRayAuto( ray, dHowFar, true, nm, t, bDeltaLight, pGradedTrack, pSegmentEnd );
 		transmittance = t.r;	// NM path fills all 3 channels equally
 		return occluded;
 	}
@@ -2074,30 +2079,47 @@ Scalar LightSampler::CachedPdfSelectLuminary(
 
 namespace
 {
-	inline bool IsUnitTransmittance( const RISEPel& t )
-	{
-		return t[0] == Scalar( 1 ) && t[1] == Scalar( 1 ) && t[2] == Scalar( 1 );
-	}
-
 	//! DL-09 (docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md §3(ii)): the NEE
 	//! shadow segment from the shading point (whose walk's stack top has
-	//! been advanced to it, or telescopes to it) to the light point, when
-	//! both lie in the same graded-index medium, carries
-	//! (n_shading/n_light)^2 -- the same factor the BSDF-sampled
-	//! continuation pays on arrival at that light, so the two MIS
-	//! strategies price one integrand.  Exactly 1 when the caller does not
-	//! track graded media (null stack), when the innermost medium is not
-	//! graded, or when a transparent shadow ray CROSSED a surface on the
-	//! way (the light is then in another medium region, and the segment
-	//! from the shading point to that boundary is DL-292's residual).
+	//! been advanced to it, or telescopes to it) to the light point carries
+	//! the graded-index factor the BSDF-sampled continuation pays on
+	//! arrival at that light, so the two MIS strategies price one
+	//! integrand.  Exactly 1 when the caller does not track graded media
+	//! (null stack) or no graded medium lies on the segment.
+	//!
+	//! DL-292: when a hit-by-hit shadow walk ran (transparent shadows, or a
+	//! delta light's walk through a thin weave's gap), its track followed
+	//! the segment's actual boundary CROSSINGS and priced every graded
+	//! piece of it -- that is the answer.  Otherwise the segment was clear
+	//! (a binary test) and lies in one medium region, which
+	//! ConnectionScaleToPoint prices.  Before DL-292 this keyed on the
+	//! shadow transmittance (`!= 1` => "crossed a surface" => factor 1):
+	//! a weave gap's `g != 1` with no crossing, a nested object's
+	//! through-trip and a real exit's graded piece all went unpriced.
 	inline Scalar GradedNEESegmentScale(
 		const IORStack* pGradedStack,
-		const Point3& lightPoint, const bool bCrossedSurface )
+		const Point3& lightPoint,
+		const GradedIndexMedium::ShadowSegmentTrack* pTrack )
 	{
-		if( !pGradedStack || bCrossedSurface ) {
+		if( pTrack && pTrack->Walked() ) {
+			return pTrack->Scale();
+		}
+		if( !pGradedStack ) {
 			return Scalar( 1 );
 		}
 		return GradedIndexMedium::ConnectionScaleToPoint( pGradedStack, lightPoint );
+	}
+
+	//! DL-292: a shadow-segment track is built only when a graded-index
+	//! medium can exist in this process (GradedIndexDemand, one relaxed
+	//! atomic load) and the caller tracks graded media -- so a
+	//! constant-index render never copies a stack for it.
+	inline std::optional<GradedIndexMedium::ShadowSegmentTrack> MakeGradedShadowTrack( const IORStack* pGradedStack )
+	{
+		if( pGradedStack && GradedIndexDemand::Any() ) {
+			return GradedIndexMedium::ShadowSegmentTrack( *pGradedStack );
+		}
+		return std::nullopt;
 	}
 }
 
@@ -2508,10 +2530,12 @@ RISEPel LightSampler::EvaluateDirectLighting(
 			// Shadow test.  shadowT carries the Fresnel transmittance
 			// when transparent shadows are enabled (else 1,1,1).
 			RISEPel shadowT( 1.0, 1.0, 1.0 );
+			std::optional<GradedIndexMedium::ShadowSegmentTrack> gradedTrack = MakeGradedShadowTrack( pGradedIndexStack );
 			if( bReceivesShadows )
 			{
 				const Ray rayToLight( ri.ptIntersection, vToLight );
-				if( ShadowOccludedRGB( caster, rayToLight, dist - 0.001, shadowT, true /*DL-05: delta light*/ ) )
+				if( ShadowOccludedRGB( caster, rayToLight, dist - 0.001, shadowT, true /*DL-05: delta light*/,
+						gradedTrack ? &*gradedTrack : 0, &lightPos ) )
 					break;
 			}
 
@@ -2536,7 +2560,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
 
 			// DL-09: the connection segment's graded-index factor.
 			result = result + amount * ( ( risWeight / pdfAlias ) *
-				GradedNEESegmentScale( pGradedIndexStack, lightPos, !IsUnitTransmittance( shadowT ) ) );
+				GradedNEESegmentScale( pGradedIndexStack, lightPos, gradedTrack ? &*gradedTrack : 0 ) );
 		}
 		else
 		{
@@ -2631,10 +2655,12 @@ RISEPel LightSampler::EvaluateDirectLighting(
 				// when transparent shadows are enabled (else 1,1,1).
 				bool shadowed = false;
 				RISEPel meshShadowT( 1.0, 1.0, 1.0 );
+				std::optional<GradedIndexMedium::ShadowSegmentTrack> gradedTrack = MakeGradedShadowTrack( pGradedIndexStack );
 				if( bReceivesShadows )
 				{
 					const Ray rayToLight( ri.ptIntersection, vToLight );
-					shadowed = ShadowOccludedRGB( caster, rayToLight, dist - 0.001, meshShadowT, false /*DL-05: area light -- see CastShadowRayAuto*/ );
+					shadowed = ShadowOccludedRGB( caster, rayToLight, dist - 0.001, meshShadowT, false /*DL-05: area light -- see CastShadowRayAuto*/,
+						gradedTrack ? &*gradedTrack : 0, &ptOnLum );
 				}
 
 				if( !shadowed )
@@ -2857,7 +2883,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
 					// partner's trained `bsdfTimesCos` (set before the
 					// segment) does.
 					result = result + contrib * ( ( rrSurvivalCompensation * risWeight / pdfAlias ) *
-						GradedNEESegmentScale( pGradedIndexStack, ptOnLum, !IsUnitTransmittance( meshShadowT ) ) );
+						GradedNEESegmentScale( pGradedIndexStack, ptOnLum, gradedTrack ? &*gradedTrack : 0 ) );
 				}
 			}
 		}
@@ -3264,10 +3290,12 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 			// Shadow test.  shadowTNM carries the Fresnel transmittance
 			// when transparent shadows are enabled (else 1.0).
 			Scalar shadowTNM = 1.0;
+			std::optional<GradedIndexMedium::ShadowSegmentTrack> gradedTrack = MakeGradedShadowTrack( pGradedIndexStack );
 			if( bReceivesShadows )
 			{
 				const Ray rayToLight( ri.ptIntersection, vToLight );
-				if( ShadowOccludedNM( caster, rayToLight, dist - 0.001, nm, shadowTNM, true /*DL-05: delta light*/ ) )
+				if( ShadowOccludedNM( caster, rayToLight, dist - 0.001, nm, shadowTNM, true /*DL-05: delta light*/,
+						gradedTrack ? &*gradedTrack : 0, &lightPos ) )
 					break;
 			}
 
@@ -3298,7 +3326,7 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 
 			// DL-09: the connection segment's graded-index factor.
 			result = neeContrib *
-				GradedNEESegmentScale( pGradedIndexStack, lightPos, shadowTNM != Scalar( 1 ) );
+				GradedNEESegmentScale( pGradedIndexStack, lightPos, gradedTrack ? &*gradedTrack : 0 );
 			break;
 		}
 
@@ -3376,10 +3404,12 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 		// Shadow test.  meshShadowTNM carries the Fresnel transmittance
 		// when transparent shadows are enabled (else 1.0).
 		Scalar meshShadowTNM = 1.0;
+		std::optional<GradedIndexMedium::ShadowSegmentTrack> gradedTrack = MakeGradedShadowTrack( pGradedIndexStack );
 		if( bReceivesShadows )
 		{
 			const Ray rayToLight( ri.ptIntersection, vToLight );
-			if( ShadowOccludedNM( caster, rayToLight, dist - 0.001, nm, meshShadowTNM, false /*DL-05: area light -- see CastShadowRayAuto*/ ) )
+			if( ShadowOccludedNM( caster, rayToLight, dist - 0.001, nm, meshShadowTNM, false /*DL-05: area light -- see CastShadowRayAuto*/,
+					gradedTrack ? &*gradedTrack : 0, &ptOnLum ) )
 			{
 				break;
 			}
@@ -3482,7 +3512,7 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 		// DL-09: the connection segment's graded-index factor (after
 		// training -- see the RGB twin).
 		result = contrib * ( ( rrSurvivalCompensation * risWeight / pdfAlias ) *
-			GradedNEESegmentScale( pGradedIndexStack, ptOnLum, meshShadowTNM != Scalar( 1 ) ) );
+			GradedNEESegmentScale( pGradedIndexStack, ptOnLum, gradedTrack ? &*gradedTrack : 0 ) );
 	} while( false );
 
 	// Environment map NEE (spectral path)
