@@ -4136,6 +4136,37 @@ static IScalarPainter* ResolveOrDiagnoseScalar(
 	return nullptr;
 }
 
+//! DL-292: refuse a refractor `ior` that asks for a graded-index medium
+//! the engine cannot price.  An `ior` that is a single-scalar world-position
+//! field (IScalarPainter::IsWorldPositionField -- a scalar `expression` of
+//! `P` alone, or a scaled / added / multiplied composite of such fields and
+//! constants) is graded (DL-09).  One that READS `P` but is not such a
+//! field -- a per-channel (`vec3`) expression of P, P mixed with u / v / N
+//! / a surface signal, a composite with such an operand -- has no single
+//! value at an interior point of the medium, and before DL-292 it silently
+//! rendered with the pre-DL-09 accounting (every interior gather priced at
+//! the ENTRY index).  Per DL-32's convention a silent downgrade of an
+//! explicit request is a hard error with a diagnostic.  A P-free surface
+//! form (a u/v/N-driven or textured `ior`) is NOT refused: it asks for no
+//! interior variation, and its documented convention is the surface index
+//! at the entry point, which nets exactly on every through-trip.
+static bool RefuseUngradableWorldPositionIor(
+	const char* chunkKind, const char* chunkName, const char* paramValue, const IScalarPainter& ior )
+{
+	if( ior.ReadsWorldPosition() && !ior.IsWorldPositionField() ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"%s `%s`: `ior` painter `%s` reads the world position P but is not a single-scalar "
+			"world-position field (it is per-channel, or it also reads u / v / N / a surface "
+			"signal / another painter), so the index is undefined inside the medium "
+			"(DL-292).  Write it as a scalar expression of P alone (a composite of such "
+			"expressions and constants via `base`/`scale`, `add` or `multiply` also works), "
+			"or drop P for a surface-driven index.",
+			chunkKind, chunkName, paramValue ? paramValue : "" );
+		return true;
+	}
+	return false;
+}
+
 //! Creates a Dielectric material
 /// \return TRUE if successful, FALSE otherwise
 bool Job::AddDielectricMaterial(
@@ -4160,7 +4191,8 @@ bool Job::AddDielectricMaterial(
 	IScalarPainter* pIor  = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "dielectric_material", name, "ior",        rIndex );
 	IScalarPainter* pScat = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "dielectric_material", name, "scattering", scat );
 
-	if( !pTau || !pIor || !pScat ) {
+	if( !pTau || !pIor || !pScat ||
+		RefuseUngradableWorldPositionIor( "dielectric_material", name, rIndex, *pIor ) ) {
 		safe_release( pTau );
 		safe_release( pIor );
 		safe_release( pScat );
@@ -4436,6 +4468,10 @@ bool Job::AddPerfectRefractorMaterial(
 	IScalarPainter* pIOR = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager,
 		"perfectrefractor_material", name, "ior", ior );
 	if( !pIOR ) {
+		return false;
+	}
+	if( RefuseUngradableWorldPositionIor( "perfectrefractor_material", name, ior, *pIOR ) ) {
+		safe_release( pIOR );
 		return false;
 	}
 

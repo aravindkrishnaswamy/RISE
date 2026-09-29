@@ -557,6 +557,23 @@ namespace RISE
 			//! DL-09 (IScalarPainter::IsWorldPositionField): see
 			//! IsWorldPositionProgram above.
 			bool IsWorldPositionField() const override { return IsWorldPositionProgram( m_prog ); }
+
+			//! DL-292 (IScalarPainter::IsPositionIndependent): a program that
+			//! reads no hit input at all -- no context variable but `time`
+			//! (a fixed constant on this pipe), no surface signal, no
+			//! `sample()` of another painter.
+			bool IsPositionIndependent() const override
+			{
+				for( int slot = 0; slot < ExpressionProgram::kContextSlotCount; slot++ ) {
+					if( slot != ExpressionProgram::kContextSlotTime && m_prog.UsesContextVar( slot ) ) {
+						return false;
+					}
+				}
+				return !m_prog.UsesSurfaceSignals() && !m_prog.UsesPainterSample();
+			}
+
+			//! DL-292 (IScalarPainter::ReadsWorldPosition).
+			bool ReadsWorldPosition() const override { return m_prog.UsesContextVar( ExpressionProgram::kContextSlotP ); }
 		};
 	}
 }

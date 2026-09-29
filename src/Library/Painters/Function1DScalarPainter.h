@@ -123,6 +123,10 @@ namespace RISE
 				if( bSingleSlotView ) return nullptr;	// already one
 				return new Function1DScalarPainter( pFunc, true );
 			}
+
+			//! DL-292: the value depends on the wavelength only, never on
+			//! the hit (IScalarPainter::IsPositionIndependent).
+			bool IsPositionIndependent() const override { return true; }
 		};
 	}
 }

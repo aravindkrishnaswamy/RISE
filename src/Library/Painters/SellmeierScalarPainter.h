@@ -160,6 +160,10 @@ namespace RISE
 				if( bSingleSlotView ) return nullptr;	// already one
 				return new SellmeierScalarPainter( B1, B2, B3, C1, C2, C3, true );
 			}
+
+			//! DL-292: the value depends on the wavelength only, never on
+			//! the hit (IScalarPainter::IsPositionIndependent).
+			bool IsPositionIndependent() const override { return true; }
 		};
 	}
 }
