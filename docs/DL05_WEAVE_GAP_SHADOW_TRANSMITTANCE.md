@@ -401,11 +401,13 @@ wider than pass-throughs: `CompositeSPF`'s delta-TAGGED walker exits
 
 ### 9.2 The fix
 
-SMS estimates an emitter hit that ends a specular chain only when (1) a
-non-delta BSDF vertex -- an SMS ANCHOR, where SMS is evaluated -- precedes
-the chain, because SMS seeds from that vertex toward the light through the
-casters; and (2) every delta vertex in the chain is one SMS represents.
-The guards now fire only when both hold:
+SMS estimates an emitter hit that ends a specular chain only when (1) an
+SMS ANCHOR precedes the chain -- **a non-delta vertex at which SMS is
+EVALUATED, i.e. one that reaches PART 2 with a BSDF; BSDF-less (SPF-only)
+surfaces, BSSRDF exits and medium vertices are NOT anchors** -- because
+SMS seeds from that vertex toward the light through the casters; and (2)
+every delta vertex in the chain is one SMS represents.  The guards now
+fire only when both hold:
 
 - **(2), the round-1 fix.**  `PTNextSMSChainUncovered` tracks, per
   specular chain (reset at every non-delta vertex), whether the chain
@@ -429,6 +431,22 @@ The guards now fire only when both hold:
   branch already relied on PART 1 alone for this reason.  This is a
   pre-existing sibling of DL-295 (same guard, same wrong premise), not a
   consequence of it.
+- **(1) again, found by the external review's round 2 (P1-1), fixed in
+  round 3.**  The anchor flag itself was set at vertices where SMS never
+  runs.  The SPF-only branch (a material with no BSDF:
+  `biospec_skin_material`, `generic_human_tissue_material`, a composite
+  whose `GetBSDF()` is null) set `bHadNonSpecularShading = true` on a
+  non-delta scatter and `continue`d BEFORE PART 2 -- no NEE, no SMS -- so
+  the next caster chain passed both guards and nothing estimated it: a
+  skin receiver under a closed ior-1.5 slab read PT+SMS 0 against 0.267
+  (pel) / 0.244 (spectral) without SMS, before DL-295 and after both
+  earlier rounds.  That arm now CLEARS the anchor, and so do both BSSRDF
+  exit continuations (`rs2.smsHadNonSpecularShading`, which passed `true`
+  into a `CastRay` whose first vertex is the exit point -- also never
+  SMS-evaluated; no measurable effect on the review's fixture, 0.9974 ->
+  1.0025, but the same wrong claim).  It cannot double-count: SMS never
+  runs at either kind of vertex.  The medium vertex is the one remaining
+  inhabitant of the same wrong claim (DL-340).
 - **The HWSS hand-offs (review P1-1, round 2).**  The HWSS body hands a
   BSDF-less vertex (a glass slab) and a subsurface material to the
   per-wavelength `IntegrateFromHitNM`.  Round 1 forwarded only
@@ -463,12 +481,26 @@ Black-yarn gap-0.3 sheet (`warp/weft_color` 0, `warp/weft_ior` 1: the
 sheet transmits exactly its gap and reflects nothing, so every closed form
 is exact), 4 x 4 area emitter at y = 4 (the DL-05 0.5 x 0.5 emitter leaves
 a ~5 % per-render sd through the gap at 1024 spp), every render
-Sobol'-salted per (seed base, render index).  All three builds are the
-branch merged with `master` `4c286bd5` and the final tests; they differ in
-`PathTracingIntegrator.{cpp,h}` only: **master** (`4c286bd5`, no DL-295),
-**round 1** (`b15dc49a`, the chain rule without the review fixes) and
-**post**.  n = 3 seed bases (1000-3000) per build, mean +/- sd; the
-section reads **5/20, 17/8 and 25/0** at every seed.
+Sobol'-salted per (seed base, render index).
+
+**Round 3 (current).**  The suite now renders on ONE worker (section 9.3's
+band note), so every figure below is exactly reproducible from its seed
+base.  All three builds are the branch merged with `master` `abfd09269`
+and the final tests; they differ in `PathTracingIntegrator.{cpp,h}` only:
+**master** (`abfd09269`), **round 2** (`b5b5d4c9d`), **post**.  The
+section reads **5/22, 25/2 and 27/0** at seed bases 1000, 2000 and 3000;
+the whole file **137/22, 157/2, 159/0**.  Round 2 fails exactly the two
+skin rows; everything else in the table below keeps its round-2 reading.
+
+| row | expected | master | round 2 | post |
+|---|---|---|---|---|
+| skin receiver under a closed slab, PT RGB, SMS on / off (review r2 P1-1) | 1 | 0 | 0 | 0.99486 +/- 0.01288 |
+| same, PT spectral hwss off | 1 | 0 | 0 | 1.00177 +/- 0.03353 |
+
+**Rounds 1-2 (the table below).**  Merged with `master` `4c286bd5`;
+**master** (`4c286bd5`), **round 1** (`b15dc49a`), **post** (round 2);
+n = 3 seed bases (1000-3000) per build, MULTITHREADED (see the band
+note), mean +/- sd; the section read **5/20, 17/8 and 25/0** at every seed.
 
 | row | expected | master | round 1 | post |
 |---|---|---|---|---|
@@ -511,21 +543,32 @@ section reads **5/20, 17/8 and 25/0** at every seed.
   (post)** -- the 132 non-`sms` checks are DL-05's own and pass in all
   three.
 
-**Bands.**  Every gated band is >= 3 sd of that row's MEASURED run-to-run
-spread (n = 8 runs, seed bases 1000-8000): area RGB 0.88 %, spectral
-1.14 %, look-up 0.10 %, composite area 5.1 % / look-up 1.9 % (the external
-review pooled 2.9 % there; the 10 % band is 3.4 sd of that), env 0.06 %,
-HWSS parity 0.57-0.59 % (the review measured 1.08 % on look-up; band 4 %),
-composite(dielectric) 2.1 % / 0.8 %, fabric / coated / direct-view <=
-0.12 %, hand-off rows 0.57-1.38 %, the slab-and-anchor row 2.4 % (band
-9 %).  Round 1 claimed ">= 3.3 sd" from n = 6 SALTED seeds and was wrong
-on two rows (review P1-2): the salt does not make a render reproducible.
-Renders are multithreaded and each render thread's own RNG is seeded from
-libc `rand()` in thread-start order (`SobolSampling2D` draws its per-pixel
-film scramble from it, among others), so the same seed AND salt read
-differently run to run -- a lookup-composite row read -2.53 % and -1.12 %
-on two runs of one seed, and -2.553 % twice with `force_number_of_threads
-1`.  The spreads above include that component.
+**Bands (round 3).**  A multithreaded render is NOT reproducible: each
+render worker seeds its RNG from libc `rand()` in thread-start order
+(`RasterizeDispatchers.h`) and tiles go to workers nondeterministically,
+so the same seed base AND Sobol' salt read differently run to run (a
+look-up-composite row read -2.53 % and -1.12 % on two runs of one seed,
+-2.553 % twice single-threaded).  Round 1 set bands from salted seeds of
+multithreaded runs (">= 3.3 sd", wrong on two rows, review P1-2); round 2
+from an n = 8 multithreaded spread (two bands still did not reproduce,
+review round 2 P2-1: composite look-up 4.46 % against a claimed 1.9 %,
+anchored-ceiling SSS hand-off 1.96 % against a claimed <= 1.38 %).
+Round 3 makes the suite deterministic instead: `main()` writes an options
+file with `force_number_of_threads 1` unless the caller supplies one.
+Every fixture is at most 24 x 24 -- ONE 32-pixel tile -- so one worker
+costs a few percent, and single-threaded rendering draws from
+`GlobalRNG()`, identical run to run (checked: two runs of the section
+diff empty).  A seed sweep is then the whole run-to-run spread, and every
+band is >= 3.3 sd of a 12-seed sweep (seed bases 1000-12000, all 12 at
+27/0).  Relative sd (band / sd): area RGB 0.83 % (3.6), spectral 0.69 %
+(5.8), look-up 0.08 %, composite area 5.35 % (3.7) / look-up 2.14 % (15 %
+band: 7.0 here and 4.7 against the review's multithreaded pooled 3.16 %),
+env 0.05 %; HWSS parity area 1.00 % (5.0) / look-up 0.73 % (5.5) / env
+0.90 % (4.4); composite(dielectric) 2.29 % (3.5) / 0.93 % (4.3); fabric,
+coated, direct-view <= 0.17 %; S1 / S4 0.44 / 0.53 %; anchored ceiling
+RGB 1.26 % (4.8), HWSS SSS hand-off 2.29 % (9 % band: 3.9), no-BSDF
+hand-off 2.11 % (4.3); skin under a slab RGB 1.18 % (4.2), spectral
+1.85 % (4.3).
 
 ### 9.4 Double-count audit (`WEAVE_GAP_FILTER=dl295audit`)
 
@@ -572,8 +615,12 @@ unchanged by the fix.
 
 ### 9.5 Shipped SMS scenes are bit-identical
 
-Every scene with `sms_enabled TRUE` (the 16 in `scenes/Tests/SMS/`,
-`triplecaustic_pt_sms`, `diacaustic_pt_sms`, `pool_caustics_vcm`) contains
+Every shipped scene whose ACTIVE rasterizer sets `sms_enabled TRUE` -- 21
+of them: the 17 in `scenes/Tests/SMS/` (with `sms_slab_close_pt_sms_hispp`),
+`triplecaustic_pt_sms`, `diacaustic_pt_sms`, and the two spectral ones,
+`scenes/Tests/Spectral/sms_through_glass_emitter_pt_sms` and
+`spectral_dispersive_caustic_pt_sms` (the only legacy shader-op / spectral
+SMS scenes) -- contains
 only Lambertian receivers, luminaires, dielectrics and perfect
 reflectors/refractors -- no BSDF-bearing material with a delta lobe and no
 non-caster delta vertex -- so the new state never becomes true.
@@ -582,7 +629,12 @@ fixed, the Sobol' salt 0, one render thread (`force_number_of_threads 1`;
 the per-thread RNGs are seeded from libc `rand()` in thread start order,
 and the CLI `rise` itself seeds `srand` from the clock, so neither
 multithreaded nor CLI renders are reproducible) and `samples` capped at 8;
-the pixel hashes of all 19 scenes are identical between the pre and post
+rounds 1 and 2 hashed a 19-scene list that was WRONG (external review
+round 2, P3): it held `pool_caustics_vcm`, whose SMS rasterizer chunk is
+commented out, and missed the three scenes above whose `sms_enabled` is
+tab-separated.  The review hashed those three identical pre/post at round
+2 (md5 `2c7002ec...`), so the conclusion held.  The 19 hashed were
+identical between the pre and post
 builds in each of three interleaved rounds (all six hash listings have
 the same md5, `646deb65...`, so each build is also reproducible run to
 run under this protocol).  Repeated after round 2 on the branch merged with `master`
@@ -591,7 +643,10 @@ identical again in three interleaved rounds, all six listings md5
 `9d0676fe...` -- a different set from before, because DL-290 changed
 SMS itself.  Round 2's anchor rule cannot reach these scenes either: its
 only new condition sits at a PART 3 delta vertex, and none of them has a
-BSDF-carrying material with a delta lobe.
+BSDF-carrying material with a delta lobe.  Round 3 (the anchor-flag
+correction at BSDF-less surfaces and BSSRDF exits), merged with `master`
+`abfd09269`: the CORRECT 21-scene list (now `scenehash`'s built-in
+default) hashes identical pre/post in two interleaved rounds (all four listings md5 `25338d99...`; the three previously missed scenes included: `sms_slab_close_pt_sms_hispp` mean 0.322728, `sms_through_glass_emitter_pt_sms` 2.884176, `spectral_dispersive_caustic_pt_sms` 1.626959).
 
 ### 9.6 Sibling audit
 
@@ -600,7 +655,8 @@ BSDF-carrying material with a delta lobe.
 | weave gap, and fabric / coated / luminaire wrappers over a weave | FIXED (area, look-up, fabric and coated parity rows) |
 | `composite_material` of weaves (straight gap -> gap walker exit) | FIXED (g^2 rows) |
 | `CompositeSPF` walker exits that REFRACT (dielectric over weave) | FIXED -- same rule; a pass-through-only exemption would have missed these (parity rows, 0 pre) |
-| BSDF-less materials (SPF-only branch) | same rule applied; every shipped one (dielectric, perfect reflector/refractor) is a caster, so unchanged |
+| BSDF-less materials (SPF-only branch) as DELTA vertices | same rule applied; every shipped one (dielectric, perfect reflector/refractor) is a caster, so unchanged |
+| BSDF-less materials as NON-delta vertices (`biospec_skin_material`, `generic_human_tissue_material`, a composite with a null `GetBSDF()`) | **MISSED in rounds 1 and 2, found by the external review's round 2 (P1-1), FIXED in round 3** (section 9.2): they were treated as SMS anchors although SMS never runs there -- skin under a closed slab 0 vs 0.267 (pel) / 0.244 (spectral) under PT+SMS, pre-existing.  Same claim at the BSSRDF exit continuations, fixed alongside |
 | rough `subsurfacescattering_material`'s delta TIR / back-face lobes | covered by the rule (reports `isSpecular` false above roughness 1e-3); not measured |
 | hair | REFUTED: `HairBSDF` emits only `isDelta = false` rays |
 | `transparency_shaderop` / alpha | REFUTED for PT: the integrator never dispatches the shader-op chain (DL-214); the legacy `SMSShaderOp` has no emission suppression at all |
@@ -608,20 +664,39 @@ BSDF-carrying material with a delta lobe.
 | the HWSS -> NM hand-offs | **half-fixed in round 1** (P1-1): the chain state reached PART 1 only, and the SSS hand-off not at all; round 2 forwards the anchor and the uncovered state through both (section 9.2) |
 | anchored reflection off a refractive caster (receiver -> smooth SSS / polished / clear dielectric -> emitter, no gap) | NOT this defect: PT leaves it to SMS, correctly by the anchor rule, and SMS never estimates a refractive caster's REFLECTION -- 0 vs 0.019-0.031 without SMS, identical in every build.  The documented "reflection caustics are out of scope for SMS" convention; recorded as **DL-339** (rewritten at the `4c286bd5` merge) |
 | perfect refractor, open plane (an SMS caster) | NOT this defect.  Round 1 measured PT+SMS 0 vs 0.152 at ior 1.0 and 2.26x at ior 1.5 on an open plane, and a closed ior-1.0 sphere at 0.913 / 0.775 of PT; `master`'s DL-290 (SMS's matched-index seed walk) closes every ior-1.0 figure (open plane 0.999, closed thin box 0.1522 / 0.1527, closed sphere 1.000 / 1.000, measured by the external review on the merged tree), and the ior-1.5 2.25x remains ONLY on an open sheet (a closed 0.05-thick box reads SMS 0.14156 / PT 0.14202 / VCM 0.14237) -- the open-sheet convention, DL-345's family; now part of DL-339 |
-| a MEDIUM vertex after a caster | NOT a delta vertex, but the same premise, found by reading: PART 1's latch is not cleared by the in-loop medium scatter (`considerEmission = true; continue;` leaves `bPassedThroughSpecular` set) and the HWSS medium-walk hand-offs pass `smsHadNonSpecularShading = true`, while SMS is never evaluated at a medium vertex -- so floor -> glass -> medium scatter -> emitter is suppressed with no SMS estimate.  The measurement is INCONCLUSIVE, not a refutation: `dl295audit` cover 3 (the glass sphere in a global scattering medium, n = 3) reads PT+SMS/PT 0.986 whole / 0.967 ROI against the fog-free control's 0.958 / 0.917, a comparison the pre-existing SMS offset and a 3 % PT-vs-VCM medium disagreement on the same fixture (PT 0.1509 vs VCM 0.1464) both confound.  Filed as **DL-340** |
+| a MEDIUM vertex after a caster | NOT a delta vertex, but the same wrong anchor claim: a medium vertex is never SMS-evaluated, yet the latch survives it.  Round 1 called the measurement inconclusive; the external review's round 2 measured it CONCLUSIVELY on a blocked-emitter fixture: PT+SMS/PT 0.779 (0.800 before DL-295) with a slab against 0.975 / 0.978 without -- a ~20 % pre-existing loss.  The in-tree fixture (`FogSlabScene`, a 2 x 2 up-facing emitter over a black blocker, sigma_s 0.2; `dl295probe` rows `DL-340`) reads 0.942 +/- 0.011 against 1.011 +/- 0.010 (n = 4, 2048 spp): the size of the loss is the phase-sampled share of the medium vertex's MIS pair, so it scales with the emitter's solid angle.  Left open as **DL-340** by the slice's brief |
+| rough random-walk SSS receiver under a closed slab | pre-existing, UNATTRIBUTED: PT+SMS/PT 0.884 after DL-295 / 0.879 before, against 1.016 with no slab (external review round 2; `dl295probe` rows `rough RW-SSS ...`).  Recorded, not filed |
+| class 4: floor -> slab1 -> slab2 -> diffuser D -> slab2 -> emitter | NOT DL-295 state (the chain flags after D are identical whichever vertex the camera sees), UNATTRIBUTED: camera at D 0.9987 / 1.0131 (no gap / gap -- the rule holds); FLOOR view 0.927 with no gap (= 0.9275 on master), 0.870 / 0.821 / 0.902 with a weave gap between slab2 and D over three runs (0 on master), 0.981 / 0.983 with slab1 removed; the independent sampler reads the same (0.924 / 0.902) -- external review round 2.  The in-tree fixture (`TwoChainScene`, with a blocker under the up-facing emitter -- without one SMS reaches its black back, DL-347, and reads 5.5x / 16x) reads 0.941 / 0.926 / 0.975 (no gap / gap / slab1 removed; n = 4, 2048 spp, sd ~2-7 %).  **DL-373 (filed at merge)** |
 
 ### 9.7 Residuals
 
-- **DL-339** (rewritten on the `4c286bd5` merge; its round-1 ior-1.0
-  content is closed by DL-290): PT+SMS relies on SMS for every anchored
-  chain through a caster, and two such chains SMS does not estimate
-  correctly remain: (a) a refractive caster's REFLECTION (smooth SSS,
-  polished coat, clear dielectric -- 0 against 0.019-0.031 without SMS,
-  the documented out-of-scope convention, but a total loss rather than a
-  variance trade); (b) a single OPEN ior-1.5 refractor sheet, 2.25x (the
-  open-sheet convention, DL-345's family).  Pre-existing, identical before
-  and after.  `ManifoldSolver.cpp` was out of this slice's bounds.
-- **DL-340**: the medium-vertex latch leak (section 9.6), and the HWSS
-  medium-walk hand-off that still passes a constant
-  `smsHadNonSpecularShading = true` (section 9.2).
+- **DL-339** (rewritten twice): PT+SMS relies on SMS for every anchored
+  chain through a caster, and two small, specific chains SMS does not
+  estimate remain: (a) a refractive caster's REFLECTION -- 0 against
+  0.019-0.031 on a worst-case fixture, ~0.1-0.2 % on shipped scenes (the
+  documented out-of-scope convention); (b) a single OPEN ior-1.5 refractor
+  sheet, 2.25x (the open-sheet convention, DL-345's family).  The round-1
+  ior-1.0 content is closed by DL-290.  Pre-existing, identical before and
+  after.
+- **DL-372 (filed at merge): SMS refraction-chain coverage loss.**  The
+  large shipped loss, which DL-339 used to be read as: on shipped
+  `sms_visibility_unoccluded` (shipped resolution and spp, n = 3 salted,
+  OIDN off, box filter) PT+SMS 3.8255 +/- 0.0018 / PT 4.1709 / VCM 4.1741
+  -- turning SMS ON loses **8.3 % of the whole image** and up to **61 %**
+  in the 20 x 20-pixel cells over the sphere and its caustic; PT without
+  SMS matches VCM to 0.08 %.  Not the reflection convention (a
+  `perfectrefractor_material` with no reflection lobe loses the same
+  8.31 %) and not the biased estimator (`sms_biased FALSE` 3.8198);
+  `sms_luminous_orb` reads 0.998.  This slice's audit control (0.958
+  whole / 0.913-0.918 caustic ROI) is the same family.  External review
+  round 2's measurement; `ManifoldSolver.cpp` was out of this slice's
+  bounds.
+- **DL-373 (filed at merge)**: the class-4 floor-view deficit (section
+  9.6), unattributed, not DL-295 state.
+- **DL-340**: the medium-vertex anchor leak (section 9.6), now measured:
+  PT+SMS/PT 0.779 against 0.975 without the slab; and the HWSS medium-walk
+  hand-off that still passes a constant `smsHadNonSpecularShading = true`
+  (section 9.2).  Its fixtures need a blocker or a one-sided back because
+  SMS ignores emitter sidedness (DL-347, on master: a one-sided emitter
+  facing away behind a slab reads PT+SMS 0.1009 against PT / VCM 0).
 - DL-329 is untouched: the HWSS rows above are parity rows because of it.
