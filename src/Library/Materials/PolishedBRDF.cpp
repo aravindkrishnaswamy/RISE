@@ -317,9 +317,15 @@ Scalar PolishedBRDF::ComponentCosAlpha( const PolishedLobes& L, const int k, con
 			return r_max( Scalar(0), r_min( Scalar(1), u ) );
 		}
 		// Standard HG inversion, restricted to the forward hemisphere by
-		// remapping u onto [C(0), 1] (the pre-DL-285 sampler redrew from
-		// the SAME u in a `while( alpha > pi/2 )` loop, which never
-		// terminated for u below the threshold).
+		// remapping u onto [C(0), 1].  The pre-DL-285 sampler "truncated"
+		// with a `do { ... } while( alpha > pi/2 )` loop whose body
+		// re-evaluated the SAME u, so it could not change its own
+		// condition: for u below the threshold that is an infinite loop in
+		// the C++ abstract machine (undefined behaviour), which the
+		// optimized build does not execute as written -- the pre-fix
+		// LayeredWhiteFurnaceTest row 62 completes, i.e. the sampler
+		// actually drew the UNTRUNCATED lobe against the untruncated HG
+		// density.  A -O0 build would hang.
 		const Scalar xi = L.hgC0[k] + u * L.hgMass[k];
 		const Scalar inner = ( 1.0 - g * g ) / ( 1.0 - g + 2.0 * g * xi );
 		const Scalar mu = ( 1.0 + g * g - inner * inner ) / ( 2.0 * g );

@@ -39,11 +39,13 @@
 //       `PolishedSPF::Pdf`'s per-thread replay memo returns bit-identical
 //       values regardless of call order.
 //
-//  Pass `--skip-hg` to skip the Henyey-Greenstein rows: the pre-fix
-//  HG coat sampler redrew `acos` from the SAME random number inside a
-//  `while( alpha > PI/2 )` loop, i.e. it never terminated for a draw
-//  below the forward-hemisphere threshold, so the red-proof run needs to
-//  skip them.
+//  Pass `--skip-hg` to skip the Henyey-Greenstein rows.  The pre-fix HG
+//  coat sampler "truncated" with a `do { } while( alpha > PI/2 )` loop
+//  that re-evaluated the SAME random number, an infinite loop in the
+//  C++ abstract machine for a draw below the forward-hemisphere threshold
+//  (undefined behaviour; the optimized build drops the loop and draws the
+//  untruncated lobe, a -O0 build hangs), so the red-proof run skipped
+//  them.
 //
 //  Author: Aravind Krishnaswamy (RISE debt-cleanup, slice `debt-dl285`)
 //  Tabs: 4

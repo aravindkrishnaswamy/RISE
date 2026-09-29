@@ -823,6 +823,15 @@ static const Tolerances kSchlickTopologyLTolerances{ 0.02, 0.25, 1.00 };
 // supplied tolerance.  PT is the trusted reference; BDPT must
 // converge to the same image distribution.
 //////////////////////////////////////////////////////////////////////
+//! A tolerance as a percent label ("0.5", "8") -- `int( tol * 100 )`
+//! printed a 0.5 % band as "0%".
+static std::string PercentLabel( const double tol )
+{
+	char buf[32];
+	std::snprintf( buf, sizeof( buf ), "%g", tol * 100.0 );
+	return std::string( buf );
+}
+
 static void RunTopologyTest(
 	const char* topologyName,
 	const std::string& sceneCommonBlock,
@@ -872,7 +881,7 @@ static void RunTopologyTest(
 	const bool maxMatch  = ChannelsAgree( pt.max,  bdpt.max,  tol.maxTol,  absFloor );
 
 	Check( meanMatch, ( std::string("BDPT mean within ")
-		+ std::to_string(int(tol.meanTol*100)) + "% of PT: " + topologyName ).c_str() );
+		+ PercentLabel( tol.meanTol ) + "% of PT: " + topologyName ).c_str() );
 	Check( p99Match,  ( std::string("BDPT p99 within ")
 		+ std::to_string(int(tol.p99Tol*100))  + "% of PT: " + topologyName ).c_str() );
 	Check( maxMatch,  ( std::string("BDPT max within ")

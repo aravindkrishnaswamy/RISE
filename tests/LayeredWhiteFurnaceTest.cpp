@@ -3080,7 +3080,7 @@ int main()
 		{
 			static const double kPred62[NUM_THETA] = { 0.9929, 0.9917, 0.9616, 0.7358 };
 			ConfigReport& r = addPredicted( "62. Polished HG g=0.6, tau=Rd=1, ior 1.5 (DL-285)",
-			    "forward-truncated HG coat (the pre-DL-285 sampler never terminated here)", kPred62, 0.004 );
+			    "forward-truncated HG coat (the pre-DL-285 retry loop was UB; its optimized build drew the untruncated lobe)", kPred62, 0.004 );
 			Run( r, *polHG );
 		}
 		polHG->release();
