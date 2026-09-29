@@ -1004,13 +1004,34 @@ static void TestFisheyeFilmResponse( double pixelAR )
 // [0, W) x [0, H), half a pixel off that convention on both axes, so
 // the left half of image column 0 (screen x in [-0.5, 0)) and the upper
 // half of image row 0 (screen y in [H, H + 0.5)) failed (a) -- 469 of
-// 1525 probes at the DL-294 framing.  (c) guards the other direction: a
-// future convention change on one side only.  Run at the DL-294 framing
+// 1525 probes at the DL-294 framing.  Run at the DL-294 framing
 // (pinhole fov 2 deg, 16 x 16), at an ordinary one, and through a thin
 // lens and a fisheye.  The film-response integrals above (Tests 6 and
 // 8) now count only what the FILM accepts; they read 0.984 against the
 // pre-fix projection -- they had been blind to this because they
 // integrated over the camera's own accept region.
+//
+// CORRECTION (external review, 2026-09-29): this test does NOT catch a
+// future ONE-SIDED convention change (the earlier claim that check (c)
+// "guards the other direction" was false, and so was the identical claim
+// in docs/DL294_NARROW_FOV_SPLAT.md section 4).  The reason is structural:
+// `screen` above is built from `x + offs[a] - 0.5` / `H - y + offs[b] - 0.5`
+// -- this test's OWN copy of the rasterizers' convention -- so if a future
+// change moves ONLY the rasterizers' eye-ray placement (or only
+// `SplatFilm::NearestPixel`'s rounding) and leaves this test's hard-coded
+// formula alone, check (c) is comparing the mutated code against this
+// test's UNCHANGED assumption, not against the other side of the real
+// convention -- it can only ever catch a drift in `RasterizeThrough`'s OWN
+// round-trip, which is what checks (a)/(b)/`worstErr` already cover.
+// Measured: mutating `BDPTPelRasterizer`, `VCMPelRasterizer` and
+// `BoxPixelFilter::warpOnScreen` to PBRT's (x + u, H - y + v - 1) sample
+// placement, with `SplatFilm::NearestPixel` left untouched, leaves this
+// whole test at 984/0 -- it cannot see the resulting splat/hit
+// misregistration at all.  The real guard for that class of defect is
+// `tests/BDPTStrategyBalanceTest.cpp`'s `TestNarrowFovStripeGuard`
+// (`--narrow-fov-only`), which renders an INTERIOR floor edge through the
+// real rasterizer and splat code paths (no hard-coded convention of its
+// own) and compares where each side actually puts the energy.
 //////////////////////////////////////////////////////////////////////
 static void TestProjectionCoversEyeFilm()
 {

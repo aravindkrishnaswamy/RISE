@@ -125,6 +125,7 @@
 #include "../src/Library/Utilities/RandomNumbers.h"
 #include "../src/Library/Utilities/IndependentSampler.h"
 #include "../src/Library/Utilities/IORStack.h"
+#include "../src/Library/Utilities/SobolSampler.h"
 #include "../src/Library/Materials/FabricMaterial.h"
 #include "../src/Library/Materials/CoatedMaterial.h"
 #include "../src/Library/Materials/LambertianMaterial.h"
@@ -252,6 +253,24 @@ static double Render( const std::string& sceneText, const char* tag, std::vector
 		safe_release( pJob );
 	}
 	std::remove( path );
+	return result;
+}
+
+//! Render with an EXPLICIT Sobol' salt (P2-2, DL-294): BDPT's and VCM's
+//! Sobol' streams are keyed by pixel/sample index, not by libc `rand()`,
+//! so `Render`'s own `std::srand` increment leaves them BIT-IDENTICAL --
+//! every one of `Render`'s callers that repeats a scene without salting
+//! measures ONE fixed QMC realisation, not a distribution.  `salt` should
+//! come from `SobolSequence::HashCombine` over a caller-chosen base so
+//! repeats are independent draws; reset to 0 after so this function's
+//! callers cannot leak a salt into unrelated `Render()` calls elsewhere
+//! in this file.
+static double RenderSalted( const std::string& sceneText, const char* tag, unsigned int salt,
+	std::vector<double>* pPixels = nullptr )
+{
+	SobolSamplerTestHooks::ValueSalt().store( salt );
+	const double result = Render( sceneText, tag, pPixels );
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
 	return result;
 }
 
@@ -992,13 +1011,15 @@ static void TestNarrowFovSplat()
 	for( int k = 0; k < kNumSweepFovs; k++ )
 	{
 		const double fov = kSweepFovs[k];
-		const double ptL0 = Render( Assemble( RastPT( 64 ), ReceiverScene( kSpot, false, 0.0, kWide, false, fov ) ), "fs_pt" );
+		const unsigned int fovSaltBase = SobolSequence::HashCombine( 0xD1294Au, unsigned( k ) );
+		const double ptL0 = RenderSalted( Assemble( RastPT( 64 ), ReceiverScene( kSpot, false, 0.0, kWide, false, fov ) ), "fs_pt",
+			SobolSequence::HashCombine( fovSaltBase, 0x1u ) );
 		Check( ptL0 > 0, "fovsweep: PT reference renders non-black" );
 		if( !( ptL0 > 0 ) ) continue;
 
 		// Tolerances: BDPT and VCM-without-merging are the pure splat
 		// on the gap render; their post-fix residuals are QMC-pattern
-		// (seed-independent) and read <= 0.18 % across the sweep, so 1 %
+		// and read <= 0.18 % at fov >= 2 (a single realisation), so 1 %
 		// is a >5x margin while the pre-fix -6.05 % (fov 2) fails by 5x.
 		// Full VCM's gap render additionally carries its merge-radius
 		// blur of the spot's penumbra (-1.05 +/- 0.07 % at fov 3, n = 4;
@@ -1006,18 +1027,42 @@ static void TestNarrowFovSplat()
 		// (no-sheet) row is NEE-dominated and reads <= 0.10 %; pre-fix
 		// full VCM's L0 read -1.42 % at fov 2 (its balance-heuristic
 		// splat share times the 6 % loss), so 0.5 %.
-		struct R { const char* label; std::string rast; double tolGap; double tolL0; bool edge; };
+		//
+		// P2-2 (external review, 2026-09-29): at fov 1 the per-pixel
+		// splat count is low enough that this is NOT a single-realisation
+		// tolerance question -- every render here is now SALTED (a real
+		// QMC draw, not the one fixed point the pre-review test measured,
+		// whose "sd 0.000" was an artifact of measuring only that one
+		// point), and fov 1's true salted spread is much wider than at
+		// other fovs: n = 8 salted repeats (`WEAVE_GAP_FILTER=dl294`,
+		// this binary's own salting, seed base 1000) read BDPT gap
+		// -0.410 +/- 0.344 % (sd) and VCM-merging-off gap -0.126 +/-
+		// 0.616 % (sd) at fov 1, against BDPT gap sd 0.240 % (fov 2),
+		// 0.089 % (fov 3), 0.035 % (fov 5), 0.033 % (fov 10) -- see
+		// `docs/DL294_NARROW_FOV_SPLAT.md` section 5 for the full
+		// salted table.  So only fov 1's gap band widens, to 0.03 (an
+		// ~8.7 sd margin on BDPT's 0.344 % and ~4.9 sd on VCM-merging-
+		// off's 0.616 %) for the three rows whose tolGap was 0.01 at
+		// other fovs; VCM RGB (with merging) keeps its 0.02 band at
+		// every fov, since its own merge-radius blur already sets it,
+		// not the splat noise this row is about.
+		struct R { const char* label; std::string rast; double tolGap; double tolGapFov1; double tolL0; bool edge; };
 		const R rows[] = {
-			{ "BDPT RGB",              RastBDPT( 1024 ),       0.01, 0.005, true },
-			{ "VCM RGB",               RastVCM( 1024 ),        0.02, 0.005, false },
-			{ "VCM RGB merging OFF",   RastVCMNoMerge( 1024 ), 0.01, 0.005, true },
-			{ "BDPT RGB gaussian filter", RastBDPTDefaultFilter( 1024 ), 0.01, 0.005, true },
+			{ "BDPT RGB",              RastBDPT( 1024 ),       0.01, 0.03, 0.005, true },
+			{ "VCM RGB",               RastVCM( 1024 ),        0.02, 0.02, 0.005, false },
+			{ "VCM RGB merging OFF",   RastVCMNoMerge( 1024 ), 0.01, 0.03, 0.005, true },
+			{ "BDPT RGB gaussian filter", RastBDPTDefaultFilter( 1024 ), 0.01, 0.03, 0.005, true },
 		};
-		for( const R& r : rows )
+		for( int ri = 0; ri < 4; ri++ )
 		{
-			const double L0 = Render( Assemble( r.rast, ReceiverScene( kSpot, false, 0.0, kWide, false, fov ) ), "fs_l0" );
+			const R& r = rows[ri];
+			const unsigned int rowSaltBase = SobolSequence::HashCombine( fovSaltBase, unsigned( ri ) + 0x10u );
+			const double L0 = RenderSalted( Assemble( r.rast, ReceiverScene( kSpot, false, 0.0, kWide, false, fov ) ), "fs_l0",
+				SobolSequence::HashCombine( rowSaltBase, 0x2u ) );
 			std::vector<double> px;
-			const double Lg = Render( Assemble( r.rast, ReceiverScene( kSpot, true, kSweepGap, kWide, false, fov ) ), "fs_lg", &px );
+			const double Lg = RenderSalted( Assemble( r.rast, ReceiverScene( kSpot, true, kSweepGap, kWide, false, fov ) ), "fs_lg",
+				SobolSequence::HashCombine( rowSaltBase, 0x3u ), &px );
+			const double tolGap = ( fov == 1.0 ) ? r.tolGapFov1 : r.tolGap;
 			char buf[256];
 			std::snprintf( buf, sizeof(buf), "fovsweep fov %4.1f %s: L0/L0_PT = %.5f (%+.3f%%)",
 				fov, r.label, L0 / ptL0, 100.0 * ( L0 / ptL0 - 1.0 ) );
@@ -1026,7 +1071,7 @@ static void TestNarrowFovSplat()
 			std::snprintf( buf, sizeof(buf), "fovsweep fov %4.1f %s: L(gap %.1f)/(g*L0_PT) = %.5f (%+.3f%%)",
 				fov, r.label, kSweepGap, Lg / ( kSweepGap * ptL0 ), 100.0 * ( Lg / ( kSweepGap * ptL0 ) - 1.0 ) );
 			std::cout << "  " << buf << std::endl;
-			Check( std::fabs( Lg / ( kSweepGap * ptL0 ) - 1.0 ) <= r.tolGap, buf );
+			Check( std::fabs( Lg / ( kSweepGap * ptL0 ) - 1.0 ) <= tolGap, buf );
 
 			// The fingerprint: at fov 2 the frame is lit edge to edge and
 			// the gap render IS the splat, so every edge row / column must
@@ -1049,28 +1094,39 @@ static void TestNarrowFovSplat()
 	}
 }
 
-//! dl294 (measurement aid, no assertions): the same sweep with n
-//! repeats (argv[2], default 4), mean +/- sample sd per cell, plus the
+//! dl294 (measurement aid, no assertions): the same sweep with n SALTED
+//! repeats (argv[2], default 4; P2-2, external review 2026-09-29 --
+//! BDPT/VCM's Sobol' streams are keyed by pixel/sample index, so an
+//! UNSALTED repeat is bit-identical and its printed "sd" was always
+//! 0.000, not an error bar), mean +/- sample sd per cell, plus the
 //! NO-WEAVE control (the kTight 0.2 x 0.2 patch at fov 2 under the
 //! spot, no sheet, against the analytic rho/pi * I/d^2) and the edge
 //! fingerprint of each gap render.
 static void MeasureNarrowFovSplat( unsigned int n )
 {
-	std::cout << "=== dl294: t = 1 splat fov sweep, n = " << n << " (mean +/- sd; printed, NOT gated) ===" << std::endl;
+	std::cout << "=== dl294: t = 1 splat fov sweep, n = " << n << " SALTED (mean +/- sd; printed, NOT gated) ===" << std::endl;
 	for( int k = 0; k < kNumSweepFovs; k++ )
 	{
 		const double fov = kSweepFovs[k];
+		const unsigned int fovBase = SobolSequence::HashCombine( 0xD1294Eu, unsigned( k ) );
 		std::vector<double> pt, bL0, bG, vL0, vG, bc0, br0, vc0, vr0, vnG;
 		for( unsigned int i = 0; i < n; i++ ) {
-			pt.push_back( Render( Assemble( RastPT( 64 ), ReceiverScene( kSpot, false, 0.0, kWide, false, fov ) ), "m_pt" ) );
+			const unsigned int s = SobolSequence::HashCombine( fovBase, i );
+			pt.push_back( RenderSalted( Assemble( RastPT( 64 ), ReceiverScene( kSpot, false, 0.0, kWide, false, fov ) ), "m_pt",
+				SobolSequence::HashCombine( s, 0x1u ) ) );
 			std::vector<double> px;
-			bL0.push_back( Render( Assemble( RastBDPT( 1024 ), ReceiverScene( kSpot, false, 0.0, kWide, false, fov ) ), "m_bl0" ) );
-			bG.push_back( Render( Assemble( RastBDPT( 1024 ), ReceiverScene( kSpot, true, kSweepGap, kWide, false, fov ) ), "m_bg", &px ) );
+			bL0.push_back( RenderSalted( Assemble( RastBDPT( 1024 ), ReceiverScene( kSpot, false, 0.0, kWide, false, fov ) ), "m_bl0",
+				SobolSequence::HashCombine( s, 0x2u ) ) );
+			bG.push_back( RenderSalted( Assemble( RastBDPT( 1024 ), ReceiverScene( kSpot, true, kSweepGap, kWide, false, fov ) ), "m_bg",
+				SobolSequence::HashCombine( s, 0x3u ), &px ) );
 			EdgeRatios e = EdgeFingerprint( px, 16, 16 ); bc0.push_back( e.col0 ); br0.push_back( e.row0 );
-			vL0.push_back( Render( Assemble( RastVCM( 1024 ), ReceiverScene( kSpot, false, 0.0, kWide, false, fov ) ), "m_vl0" ) );
-			vG.push_back( Render( Assemble( RastVCM( 1024 ), ReceiverScene( kSpot, true, kSweepGap, kWide, false, fov ) ), "m_vg", &px ) );
+			vL0.push_back( RenderSalted( Assemble( RastVCM( 1024 ), ReceiverScene( kSpot, false, 0.0, kWide, false, fov ) ), "m_vl0",
+				SobolSequence::HashCombine( s, 0x4u ) ) );
+			vG.push_back( RenderSalted( Assemble( RastVCM( 1024 ), ReceiverScene( kSpot, true, kSweepGap, kWide, false, fov ) ), "m_vg",
+				SobolSequence::HashCombine( s, 0x5u ), &px ) );
 			e = EdgeFingerprint( px, 16, 16 ); vc0.push_back( e.col0 ); vr0.push_back( e.row0 );
-			vnG.push_back( Render( Assemble( RastVCMNoMerge( 1024 ), ReceiverScene( kSpot, true, kSweepGap, kWide, false, fov ) ), "m_vng" ) );
+			vnG.push_back( RenderSalted( Assemble( RastVCMNoMerge( 1024 ), ReceiverScene( kSpot, true, kSweepGap, kWide, false, fov ) ), "m_vng",
+				SobolSequence::HashCombine( s, 0x6u ) ) );
 		}
 		double mp, sp; MeanSd( pt, mp, sp );
 		auto rel = [&]( const std::vector<double>& v, double scale ) {

@@ -582,6 +582,20 @@ namespace {
 		const Scalar py = projected.y * height / vpScale.y + height * 0.5;
 
 		// DL-294: film membership is the splat film's decision.
+		//
+		// This guard-band check is DEAD CODE for a t = 1 splat under an
+		// orthographic camera (external review, 2026-09-29, P3-2): every
+		// ray an orthographic camera generates shares one direction, so
+		// there is no lens/aperture point for a light-subpath vertex to
+		// connect toward, and BDPT/VCM both skip the t = 1 strategy
+		// entirely for this camera type -- confirmed by rendering a
+		// caustic-only floor under BDPT with an orthographic camera in
+		// both the pre- and post-DL-294 builds: it reads exactly 0.0
+		// either way.  This function (via `RasterizeThrough`) is still
+		// exercised by `CameraImportanceTest`'s direct projection
+		// round-trip check and by any non-splat caller, so the guard-band
+		// widening is not itself wrong here, just unreachable from the
+		// splat path this file's `InRasterGuardBand` comment is about.
 		if( !BDPTCameraUtilities::InRasterGuardBand( px, py, width, height ) ) {
 			return false;
 		}

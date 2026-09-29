@@ -91,15 +91,61 @@ Film membership is decided in ONE place, by the film:
   instead of renormalising it onto the edge pixels.
 
 A splat that lands just outside the film is now evaluated (visibility, MIS)
-and then dropped by the film; that is the only extra work, confined to a
-one-pixel ring.
+and then dropped by the film; that is the only extra work.  It is NOT
+confined to a symmetric one-pixel ring: the strip is 0.5 px on the left/top
+(`InRasterGuardBand`'s [-1, 0) margin against the film's own [-0.5, 0)
+strip) and 1.5 px on the right/bottom (the guard band's [W, W+1) against a
+film that ends at W - 0.5) -- about 19 % extra t = 1 work on a 16 x 16
+film, about 0.2 % at 1080p, and efficiency-only (the dropped splats do not
+bias the image).
 
 **DL-368 is not decided here.**  `NearestPixel` encodes the rasterizers'
 CURRENT pixel convention; the fix removes the camera's second, different
-encoding of it.  If DL-368 moves sample placement to PBRT's convention
-(pixel i covering [i, i + 1)), `NearestPixel` must move in the same commit;
-`CameraImportanceTest` Test 9 check (c), the `fovsweep` edge fingerprints
-and topology W catch a one-sided change.
+encoding of it.  Whether `NearestPixel` needs to move with a future DL-368
+change depends on WHICH side that change fixes: a RASTERIZER-side fix
+(moving eye-ray sample placement to `x + u`, PBRT's convention) must move
+`NearestPixel` in the same commit, since it is the splat side's copy of
+that same convention; a CAMERA-side fix (changing every camera's film
+translation and its analytic inverse to agree with the rasterizers'
+CURRENT `x + u - 0.5`) leaves `NearestPixel` untouched, since the splat
+side would already be right.
+
+**Correction (external review, 2026-09-29): `CameraImportanceTest` Test 9,
+the `fovsweep` edge fingerprints and topology W do NOT catch a future
+ONE-SIDED convention change, contrary to what an earlier revision of this
+section and of Test 9's own comment claimed.**  The reviewer moved the eye
+sample placement to PBRT's `(x + u, H - y + v - 1)` in `BDPTPelRasterizer`,
+`VCMPelRasterizer` and `BoxPixelFilter::warpOnScreen` (which also covers
+PT's own box-filtered eye rays), left `SplatFilm::NearestPixel` untouched,
+and all three named guards stayed green: `fovsweep` 48/0, BDPT topology W
++0.066 %, VCM W1/W2 -0.127 % / +0.103 %, `CameraImportanceTest` 984/0.  A
+one-pixel stripe probe on the mutated build showed the real misregistration
+instead: PT's and BDPT's direct-emitter hit lit raster column 16 alone
+(0.159), while BDPT's t = 1 splat of the SAME physical stripe still split
+across columns 16 and 17 (0.0405 / 0.0390).  Two reasons the guards miss
+it: Test 9 hard-codes `x + offs - 0.5` in its own screen-coordinate
+construction instead of reading what the mutated rasterizer actually does,
+so it re-derives the very convention it exists to check rather than
+observing it; and `fovsweep`'s and topology W's frames are UNIFORMLY lit,
+so a half-pixel shift of the whole splat domain changes neither the mean
+nor the edge-to-interior ratio the existing fingerprints read.  **The real
+guard is `TestNarrowFovStripeGuard` (`BDPTStrategyBalanceTest.cpp`,
+`--narrow-fov-only`)**: a 32 x 32 pinhole box-filter fixture with an
+INTERIOR floor edge (not a whole-frame uniform field) rendered once via
+ordinary NEE/hit (PT) and once via a caustic-only t = 1 splat (BDPT, VCM
+with `merge_radius 0.0`), comparing the FRACTIONAL COVERAGE each side
+reads at the transition column PT itself locates (never hard-coded).  On
+the fixed build (n = 4 salted, three independent salt-base checks):
+PT-direct 0.5001, BDPT-splat 0.4989/0.4934/0.4993, VCM-splat
+0.5001/0.5012/0.4980 -- worst spread 0.0067, gated at a 0.03 band (a
+~4.5x margin over the measured spread, still >15x below a one-sided-shift
+defect).  Red-proofed against the reviewer's own mutation (the three files
+above reverted to the pre-DL-294 convention, `SplatFilm::NearestPixel`
+left alone): BDPT-splat fractional coverage read **-0.482**, VCM-splat
+**-0.476** -- a whole column of coverage moved off column 16 on the splat
+side only, while PT-direct stayed at 0.5001 (its own eye-ray convention
+moved too, so its OWN column split is internally consistent; it is the
+cross-convention comparison that fails).
 
 ## 5. Evidence
 
@@ -128,6 +174,41 @@ in full VCM's gap column (-1.05 % at fov 3) is its merge-radius blur of the
 spot's penumbra, which reaches into a 3 degree frame's top and bottom rows;
 it is absent with merging off and shrinks with VCM's progressive radius --
 not a splat effect.
+
+**"BDPT sd 0.000 at every cell" describes ONE FIXED QMC realisation, not
+zero variance, and P2-2 (external review, 2026-09-29) is right to call it
+fragile: the table above never salted the render, so a repeat is
+bit-identical by construction and its "n = 4" gave no error bar at all.**
+Salting the render (`SobolSamplerTestHooks::ValueSalt`, a genuinely
+different QMC draw per repeat -- `TestNarrowFovSplat` and
+`MeasureNarrowFovSplat` both do this now) exposes a real, fov-dependent
+spread: BDPT gap sd is **0.344 %** at fov 1 against 0.240 / 0.089 / 0.035 /
+0.033 % at fov 2 / 3 / 5 / 10 (n = 8, seed base 1000, this binary's own
+salting scheme); VCM-merging-off gap sd is 0.616 % at fov 1 against
+0.236 / 0.069 / 0.031 / 0.034 % at the other fovs.  The gated
+`TestNarrowFovSplat`'s pre-review fov-1 band was 1 % on these rows -- a
+~2.9 sd margin on BDPT and a band NARROWER than one VCM-merging-off sd --
+so an unrelated change perturbing the Sobol' pattern had a real chance of
+turning fov 1 red with no bias present.  Fixed: fov 1's gap band widened
+to 3 % (an ~8.7 sd margin on 0.344 %, ~4.9 sd on 0.616 %) for the three
+rows whose band was 1 % at other fovs; fov 2 and above keep their
+original bands, whose margins over the salted sd above are all >= 20x.
+Full n = 8 salted table (percent, mean +/- sd, BDPT gap / VCM-merging-off
+gap; the doc's own earlier single-realisation numbers above -- e.g. fov 10
+BDPT gap "+0.179 %" -- are ONE such draw, not an error bar):
+
+| fov | BDPT gap | VCM-merging-off gap |
+|---|---|---|
+| 1 | -0.410 +/- 0.344 | -0.126 +/- 0.616 |
+| 2 | +0.033 +/- 0.240 | +0.062 +/- 0.236 |
+| 3 | +0.012 +/- 0.089 | -0.012 +/- 0.069 |
+| 5 | +0.024 +/- 0.035 | +0.027 +/- 0.031 |
+| 10 | +0.060 +/- 0.033 | +0.059 +/- 0.034 |
+
+Every row's mean stays within the gated bands' margins above; none of
+these salted means show a bias the single-realisation table's numbers
+did not already suggest -- the finding is about the ERROR BAR, not the
+mean.
 
 Edge fingerprint of the fov 2 gap render (edge row/column mean over the
 interior mean): box filter, BDPT column 0 **0.494 -> 0.998**, row 0
@@ -178,21 +259,53 @@ two binaries interleaved:
 VCM's balance heuristic gives the splat a large share of caustic scenes, so
 its edge rows show the half-pixel misregistration at +/-8 %: the first
 column and row were half-starved of splat energy and the last ones carried
-the renormalised strip from beyond the film.  MLT's bootstrap luminance is
-identical to six digits and its image moves at three pixels by 3e-8 (its t = 1
-share on a diffuse Cornell box is negligible).  BDPT/VCM CLI renders are not
-bit-reproducible run to run (the two pre-fix renders of each scene already
-differ), so pixel hashes cannot be compared; interior pixels are untouched by
-construction (the same raster position, the same deposit), and farther than
-the filter support from the border for filtered renders.
+the renormalised strip from beyond the film.  On `cornellbox_vcm_caustics`
+specifically (128 x 128, 16 spp, OIDN off, n = 8 salted, single-threaded,
+pre vs post; edge-to-neighbour ratio = column 0 / column 1, last column /
+second-to-last, row 0 / row 1, last row / second-to-last): pre-fix
+0.871 / 1.007 / 0.882 / 1.064, post-fix **0.940 / 0.938 / 0.961 / 0.974**,
+against PT's own (unaffected) 0.934 / 0.943 / 0.951 / 0.977 on the same
+scene -- the fixed BDPT/VCM edges now match PT's, closing the dark
+left/top rim (95.3 -> 99.9 against a neighbour of 101.8 in an 8-bit
+zoomed-corner check) and the bright right/bottom rim (213.3 -> 209.2
+against 209.8).  MLT's bootstrap luminance is identical to six digits
+(0.517736 in both builds, single-threaded) and its image moves at three
+pixels by 3e-8 (its t = 1 share on a diffuse Cornell box is negligible).
+
+**"BDPT/VCM CLI renders are not bit-reproducible run to run" is true only
+MULTI-THREADED.**  With `force_number_of_threads 1`, PT, BDPT and VCM all
+reproduce bit for bit across repeated runs of the SAME binary.  Under that
+control, pre-fix vs post-fix images differ only at the film ring: interior
+pixels differ by at most 6e-16 relative (floating-point summation-order
+noise from the ring-adjacent code path, not a real change), and PT is
+bit-identical pre vs post everywhere.  That is stronger evidence than the
+multi-threaded non-reproducibility claim this paragraph used to lean on --
+"interior untouched" is not an assumption, it is a measured 6e-16.
+
+**The orthographic-camera guard-band edit is dead code for splats.**  BDPT
+and VCM both skip the t = 1 strategy entirely for an orthographic camera
+(every ray shares one direction, so there is no lens/aperture point for a
+light-subpath vertex to connect toward), confirmed by rendering a
+caustic-only floor under BDPT with an ortho camera in both builds: it
+renders exactly 0.0 either way.  So `InRasterGuardBand`'s ortho branch is
+exercised only by `CameraImportanceTest`'s direct projection round-trip
+check, never by an actual splat -- the DL-294 fix's own reach does not
+include the ortho topologies in `BDPTStrategyBalanceTest`/
+`VCMStrategyBalanceTest`, and neither would a hypothetical ortho-specific
+regression in that guard band.
 
 ## 7. Adjacent rows
 
-- **DL-354** (BDPT small directly-visible emitter too dark at low resolution)
-  is a different mechanism: its emitter's image sits in the interior of the
-  frame at every resolution the row quotes, and this fix changes only
-  splats whose home pixel is on (or within the filter support of) the film
-  border.  Not moved, not claimed.
+- **DL-354** (BDPT small directly-visible emitter too dark at low
+  resolution) is a different mechanism, unmoved: its emitter's image sits
+  in the interior of the frame at every resolution the row quotes, and
+  this fix changes only splats whose home pixel is on (or within the
+  filter support of) the film border.  Measured on `sms_k2_flatslab`'s
+  luminaire (100x75, box filter, OIDN off, window sum, n = 3): BDPT/PT
+  window-sum ratio 0.578 pre-fix, **0.568** post-fix (PT 704.96 +/- 14.5,
+  BDPT 407.2 +/- 9.3 pre / 400.3 +/- 3.3 post) -- the emitter's image sits
+  at row 2, close to the top edge but outside the affected half-pixel
+  strip, so the row needs no change.
 - **DL-330** (BDPT 2-6 % low through a weave gap) does not move: the DL-05
   area closed-form row reads BDPT L/L0 0.29614 +/- 0.00282 pre and
   0.29521 +/- 0.00361 post (n = 10 seed bases each, t ~ 0.6).  Its fov-10
@@ -200,4 +313,8 @@ the filter support from the border for filtered renders.
   negligible (s = 0 through the gap carries it); DL-330 is a different
   mechanism.
 - **DL-368** (the rasterizer's half-pixel sample placement vs the cameras'
-  film offset) is left to its own row; see section 4.
+  film offset) is left to its own row -- see section 4 for the
+  rasterizer-side-vs-camera-side distinction on whether `NearestPixel`
+  needs to move with it, and `SplatFilm::NearestPixel` /
+  `BDPTCameraUtilities::InRasterGuardBand` are the two splat-side sites
+  DL-368's own recipe should name.
