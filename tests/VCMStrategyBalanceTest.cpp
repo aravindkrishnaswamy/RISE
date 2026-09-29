@@ -1974,12 +1974,87 @@ static void TestRoughSSSEmptyContainerU()
 		"DL-307 topology U: VCM/PT inside the DL-317 pin [-5.72%, -5.00%] (pre-DL-307 read -6.1%)" );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Topology W: NARROW-FOV light-tracing splat (DL-294) -- VCM twin of
+// BDPTStrategyBalanceTest topology W (docs/DL294_NARROW_FOV_SPLAT.md).
+//
+// W1: BDPT's topology W scene verbatim -- a spot aimed up at a perfect
+// mirror, the reflected beam lighting a Lambertian floor that a pinhole
+// at fov 2 deg (16 x 16) sees edge to edge.  The floor's light is a
+// delta-light caustic: VCM reaches it only by the t = 1 splat and by
+// merging.  Closed form rho/pi * I / 3^2 (mirror image of the spot).
+// W2: the same framing with the spot pointing straight DOWN at the
+// floor from (0, 4, 0), no mirror -- an ordinary directly lit diffuse
+// floor, rho/pi * I / 4^2.  Under VCM's balance heuristic the splat
+// carries a real share of even this plain frame, which is where
+// DL-294's "-1.45 % no-sheet L0" came from.
+//
+// Before DL-294 the camera cut the splat at its nominal [0, 16) film
+// while SplatFilm rounds in [-0.5, 15.5): one half-pixel strip per axis
+// was lost.  Measured pre-fix: W1 -3.1 %, W2 -1.42 %; post-fix both
+// within a few tenths of a percent.  Band 0.8 %.
+//////////////////////////////////////////////////////////////////////
+static const char* kSceneNarrowFovCommonW =
+	"film\n{\n\twidth 16\n\theight 16\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 1 1.2\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 2.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_floor\n\tcolor 0.5 0.5 0.5\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+	"lambertian_material\n{\n\tname mat_floor\n\treflectance pnt_floor\n}\n\n"
+	"clippedplane_geometry\n{\n\tname geo_floor\n\tpta -1 0 1\n\tptb 1 0 1\n\tptc 1 0 -1\n\tptd -1 0 -1\n\tdoublesided TRUE\n}\n\n"
+	"standard_object\n{\n\tname obj_floor\n\tgeometry geo_floor\n\tmaterial mat_floor\n}\n\n";
+
+static const char* kSceneNarrowFovMirrorW1 =
+	"uniformcolor_painter\n{\n\tname pnt_mirror\n\tcolor 1 1 1\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+	"perfectreflector_material\n{\n\tname mat_mirror\n\treflectance pnt_mirror\n}\n\n"
+	"clippedplane_geometry\n{\n\tname geo_mirror\n\tpta -4 2 4\n\tptb 4 2 4\n\tptc 4 2 -4\n\tptd -4 2 -4\n\tdoublesided TRUE\n}\n\n"
+	"standard_object\n{\n\tname obj_mirror\n\tgeometry geo_mirror\n\tmaterial mat_mirror\n}\n\n"
+	"spot_light\n{\n\tname lgt\n\tposition 0 1 0\n\ttarget 0 2 0\n\tinner 4.0\n\touter 5.0\n\tcolor 1 1 1\n\tpower 16\n}\n";
+
+static const char* kSceneNarrowFovDirectW2 =
+	"spot_light\n{\n\tname lgt\n\tposition 0 4 0\n\ttarget 0 0 0\n\tinner 4.0\n\touter 5.0\n\tcolor 1 1 1\n\tpower 16\n}\n";
+
+static const char* kRasterizerVCMNarrowFovW =
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"vcm_pel_rasterizer\n{\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tsamples 1024\n\tmerge_radius 0.0\n"
+	"\tvc_enabled true\n\tvm_enabled true\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n"
+	"file_rasterizeroutput\n{\n\tpattern rendered/vcm_balance_vcm_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+
+static void RunNarrowFovRowW( const char* label, const char* lightBlock, const double dist )
+{
+	const std::string scene = std::string( "RISE ASCII SCENE 7\n" ) + kRasterizerVCMNarrowFovW + kSceneNarrowFovCommonW + lightBlock;
+	const std::string path = WriteSceneToTempFile( scene.c_str(), "narrowfov_w" );
+	const ImageStats st = path.empty() ? ImageStats{} : RenderAndComputeStats( path.c_str() );
+	if( !path.empty() ) std::remove( path.c_str() );
+	Check( st.valid, ( std::string( "Topology W: VCM render produced output: " ) + label ).c_str() );
+	if( !st.valid ) return;
+	const double expected = 0.5 / 3.14159265358979323846 * 16.0 / ( dist * dist );
+	const double m = ( st.mean[0] + st.mean[1] + st.mean[2] ) / 3.0;
+	char buf[256];
+	std::snprintf( buf, sizeof(buf),
+		"Topology W (%s): VCM mean %.6f vs closed form rho/pi*I/%.0f^2 = %.6f (%+.3f%%), within 0.8%% (DL-294)",
+		label, m, dist, expected, 100.0 * ( m / expected - 1.0 ) );
+	std::cout << "    " << buf << std::endl;
+	Check( std::fabs( m / expected - 1.0 ) <= 0.008, buf );
+}
+
+static void TestNarrowFovSplatW()
+{
+	std::cout << "Testing topology W: narrow-fov (2 deg) splat vs closed form (DL-294)" << std::endl;
+	RunNarrowFovRowW( "W1 spot -> mirror -> floor caustic", kSceneNarrowFovMirrorW1, 3.0 );
+	RunNarrowFovRowW( "W2 spot -> floor, no mirror", kSceneNarrowFovDirectW2, 4.0 );
+}
+
 int main( int argc, char** argv )
 {
 	std::cout << "=== VCMStrategyBalanceTest ===" << std::endl;
 
 	if( argc == 2 && std::strcmp( argv[1], "--sss-only" ) == 0 ) {
 		TestRoughSSSEmptyContainerU();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+
+	if( argc == 2 && std::strcmp( argv[1], "--narrow-fov-only" ) == 0 ) {
+		TestNarrowFovSplatW();
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
@@ -2000,6 +2075,7 @@ int main( int argc, char** argv )
 	TestNullBSDFMaterialContinuation();
 	TestRoughSSSEmptyContainerU();
 	TestNonfiniteCandidateRejected();
+	TestNarrowFovSplatW();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

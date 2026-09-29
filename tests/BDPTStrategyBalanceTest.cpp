@@ -3757,6 +3757,74 @@ static void TestBackFaceEmitterZ()
 }
 
 //////////////////////////////////////////////////////////////////////
+// Topology W: NARROW-FOV light-tracing splat (DL-294,
+// docs/DL294_NARROW_FOV_SPLAT.md) -- NO weave anywhere.
+//
+// A spot light at (0, 1, 0) aimed UP at a perfect mirror (y = 2); the
+// reflected beam lights a Lambertian floor (rho 0.5) that a pinhole at
+// fov 2 deg (16 x 16) sees edge to edge.  The floor's only light is the
+// caustic delta light -> mirror -> floor, which no eye strategy can
+// reach (PT reads 0; BDPT's only estimator is the t = 1 splat), and it
+// has a closed form: the mirror image of the spot at (0, 3, 0), so
+// E = I / 3^2 on the beam axis and L = rho/pi * I / 9 (the frame spans
+// +/-0.043 on the floor, inside the beam's full-intensity radius
+// 3 tan(2 deg) = 0.105; cos and 1/d^2 are constant to < 3e-4 over it,
+// and the floor <-> mirror interreflection is ~1e-4).
+//
+// Before DL-294 the camera's world-to-raster inverse cut the splat at
+// the camera's nominal [0, 16) film while the rasterizers sample (and
+// SplatFilm rounds in) [-0.5, 15.5): a half-pixel strip per axis was
+// lost and the frame read 1 - (15.5/16)^2 = 6.15 % low (measured
+// -6.1 %).  1.5 %: the post-fix residual is a seed-independent QMC
+// pattern that reads within a few tenths of a percent.
+//////////////////////////////////////////////////////////////////////
+static const double kNarrowFovW_I = 16.0;		// color 1 x power 16
+static const double kNarrowFovW_Rho = 0.5;
+
+static const char* kSceneNarrowFovMirrorW =
+	"film\n{\n\twidth 16\n\theight 16\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 1 1.2\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 2.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_floor\n\tcolor 0.5 0.5 0.5\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_mirror\n\tcolor 1 1 1\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+	"lambertian_material\n{\n\tname mat_floor\n\treflectance pnt_floor\n}\n\n"
+	"perfectreflector_material\n{\n\tname mat_mirror\n\treflectance pnt_mirror\n}\n\n"
+	"clippedplane_geometry\n{\n\tname geo_floor\n\tpta -1 0 1\n\tptb 1 0 1\n\tptc 1 0 -1\n\tptd -1 0 -1\n\tdoublesided TRUE\n}\n\n"
+	"clippedplane_geometry\n{\n\tname geo_mirror\n\tpta -4 2 4\n\tptb 4 2 4\n\tptc 4 2 -4\n\tptd -4 2 -4\n\tdoublesided TRUE\n}\n\n"
+	"standard_object\n{\n\tname obj_floor\n\tgeometry geo_floor\n\tmaterial mat_floor\n}\n\n"
+	"standard_object\n{\n\tname obj_mirror\n\tgeometry geo_mirror\n\tmaterial mat_mirror\n}\n\n"
+	"spot_light\n{\n\tname lgt\n\tposition 0 1 0\n\ttarget 0 2 0\n\tinner 4.0\n\touter 5.0\n\tcolor 1 1 1\n\tpower 16\n}\n";
+
+static const char* kRasterizerBDPTNarrowFovW =
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"bdpt_pel_rasterizer\n{\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tsamples 1024\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n"
+	"file_rasterizeroutput\n{\n\tpattern rendered/bdpt_balance_bdpt_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+
+static void TestNarrowFovSplatW()
+{
+	std::cout << "Testing topology W: narrow-fov (2 deg) caustic, t = 1 splat only, vs closed form (DL-294)" << std::endl;
+	const std::string scene = std::string( "RISE ASCII SCENE 7\n" ) + kRasterizerBDPTNarrowFovW + kSceneNarrowFovMirrorW;
+	const std::string path = WriteSceneToTempFile( scene.c_str(), "narrowfov_w" );
+	if( path.empty() ) {
+		Check( false, "Topology W: temp file write" );
+		return;
+	}
+	const ImageStats st = RenderAndComputeStats( path.c_str() );
+	std::remove( path.c_str() );
+	Check( st.valid, "Topology W: BDPT render produced output" );
+	if( !st.valid ) return;
+	PrintStats( "BDPT", st );
+	const double expected = kNarrowFovW_Rho / 3.14159265358979323846 * kNarrowFovW_I / 9.0;
+	for( int c = 0; c < 3; c++ ) {
+		char buf[256];
+		std::snprintf( buf, sizeof(buf),
+			"Topology W: BDPT channel %d mean %.6f vs closed form rho/pi*I/9 = %.6f (%+.3f%%), within 1.5%% (DL-294)",
+			c, st.mean[c], expected, 100.0 * ( st.mean[c] / expected - 1.0 ) );
+		std::cout << "  " << buf << std::endl;
+		Check( std::fabs( st.mean[c] / expected - 1.0 ) <= 0.015, buf );
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
 // Topologies U and V: DL-307 (docs/DL67_GUIDED_GENERATING_DENSITY.md
 // section 8, "DL-307").
 //
@@ -3968,6 +4036,12 @@ int main( int argc, char** argv )
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
+	// DL-294: topology W alone.
+	if( argc == 2 && std::strcmp(argv[1], "--narrow-fov-only") == 0 ) {
+		TestNarrowFovSplatW();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
 	// DL-320: topology Z alone (the focused before/after A/B).
 	if( argc == 2 && std::strcmp(argv[1], "--back-face-only") == 0 ) {
 		TestBackFaceEmitterZ();
@@ -3982,7 +4056,7 @@ int main( int argc, char** argv )
 	if( argc > 1 ) {
 		if( argc != 3 || std::strcmp(argv[1], "--spectral-only") != 0 ||
 			(std::strcmp(argv[2], "1") != 0 && std::strcmp(argv[2], "2") != 0) ) {
-			std::cerr << "Usage: BDPTStrategyBalanceTest [--spectral-only 1|2 | --spectral-aggregate-unit | --materials-only | --guided-only | --weave-gap-only | --sss-only | --back-face-only]" << std::endl;
+			std::cerr << "Usage: BDPTStrategyBalanceTest [--spectral-only 1|2 | --spectral-aggregate-unit | --materials-only | --guided-only | --weave-gap-only | --sss-only | --back-face-only | --narrow-fov-only]" << std::endl;
 			return 2;
 		}
 		spectralSampleScale = std::strcmp(argv[2], "2") == 0 ? 2 : 1;
@@ -4025,6 +4099,7 @@ int main( int argc, char** argv )
 	TestRoughSSSEmptyContainerU();
 	TestRandomWalkSphereEmptyContainerV();
 	TestBackFaceEmitterZ();
+	TestNarrowFovSplatW();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;
