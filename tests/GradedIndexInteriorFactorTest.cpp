@@ -1160,6 +1160,69 @@ static void RunIorFormRows( const double closedA )
 	}
 }
 
+
+//////////////////////////////////////////////////////////////////////
+// Row P (DL-292 item 5): the photon tracers.  A global photon map
+// gathered directly at the floor of a SHRUNK row-B scene (box, floor and
+// emitter 8 / 8 / 6 units wide, so a few million photons resolve the
+// camera's footprint), camera inside, rendered by `pixelpel_rasterizer`
+// with the global-map gather op.  Reference: the same scene under
+// `pathtracing_pel_rasterizer` (both estimate the straight-segment model;
+// a finite emitter is not bending-free, so the closed form is not the
+// reference here).  A constant-index control fixes the photon estimator's
+// own density-estimation bias; the gate is graded ratio == control ratio.
+// Before DL-292 the photon walk paid no importance-order factor, so the
+// gather priced the floor at (1/n_E)^2 short of the eye walk's pairing.
+//////////////////////////////////////////////////////////////////////
+static std::string ShrunkSeededScene( bool graded, const std::string& ras )
+{
+	std::string s = ReadFile( kSeededScene );
+	if( graded ) {
+		s = ReplaceOnce( s, "\twidth 60\n\theight 60\n\tdepth 2\n", "\twidth 8\n\theight 8\n\tdepth 2\n" );
+	} else {
+		std::string u = UniformBox( 1.4 );
+		u = ReplaceOnce( u, "\twidth 60\n\theight 60\n\tdepth 2\n", "\twidth 8\n\theight 8\n\tdepth 2\n" );
+		s = ReplaceSpan( s, "MEDIUM", u );
+	}
+	s = ReplaceOnce( s, kBigFloorCorners,
+		"\tpta -3.9 -3.9 0.02\n\tptb 3.9 -3.9 0.02\n\tptc 3.9 3.9 0.02\n\tptd -3.9 3.9 0.02\n" );
+	s = ReplaceOnce( s, "\tpta -28 -28 1.0\n\tptb -28 28 1.0\n\tptc 28 28 1.0\n\tptd 28 -28 1.0\n",
+		"\tpta -3 -3 1.0\n\tptb -3 3 1.0\n\tptc 3 3 1.0\n\tptd 3 -3 1.0\n" );
+	return ReplaceSpan( s, "RASTERIZER", ras );
+}
+
+static void RunPhotonMapRow()
+{
+	std::cout << std::endl << "-- Row P (DL-292 item 5): global photon map gathered at an interior floor, camera inside --" << std::endl;
+	const std::string photonRas =
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultGlobalPelPhotonMap\n}\n\n"
+		"pixelpel_rasterizer\n{\n\tsamples 16\n\tmax_recursion 10\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n\n"
+		"global_pel_photonmap\n{\n\tnum 3000000\n\tmax_recursion 10\n\tmin_importance 0.0001\n}\n\n"
+		"global_pel_gather\n{\n\tmax_photons 400\n\tradius 0.3\n}\n";
+	double r[2] = { -1, -1 };
+	for( int graded = 1; graded >= 0; graded-- ) {
+		const std::string pt = ShrunkSeededScene( graded != 0, RasterizerPT( 256 ) );
+		const std::string ph = ShrunkSeededScene( graded != 0, photonRas );
+		Check( !pt.empty() && !ph.empty(), "P: fixture built" );
+		if( pt.empty() || ph.empty() ) return;
+		const Stat a = RenderStat( pt, "photon_ref_pt" );
+		const Stat b = RenderStat( ph, "photon_gather" );
+		r[graded] = ( a.ok && b.ok && a.mean > 0 ) ? b.mean / a.mean : -1;
+		std::printf( "    %-9s pathtracing_pel mean=%.6f sd=%.6f   global photon gather mean=%.6f sd=%.6f   photon/PT=%.4f\n",
+			graded ? "graded" : "constant", a.mean, a.sd, b.mean, b.sd, r[graded] );
+	}
+	const double nC = TentN( 0.02 ), nE = TentN( 1.0 ), nS = TentN( 1.0 / 3.0 );
+	// Direct-light predictions (the gather is dominated by the emitter's
+	// first-hit photons): master, where neither the legacy eye walk nor the
+	// photons paid a factor, x(n_E/n_S)^2; the eye walk fixed (item 4) but
+	// the photons not, x(n_E/n_C)^2.
+	std::printf( "    graded/control predictions: master x(n_E/n_S)^2 = %.4f; eye walk fixed, photons not x(n_E/n_C)^2 = %.4f\n",
+		( nE / nS ) * ( nE / nS ), ( nE / nC ) * ( nE / nC ) );
+	Check( r[0] > 0 && std::fabs( r[0] - 1.0 ) < 0.05, "P: constant-index control photon gather == PT within 5%" );
+	Check( r[0] > 0 && r[1] > 0 && std::fabs( r[1] / r[0] - 1.0 ) < 0.03,
+		"P: graded photon/PT ratio == constant-control photon/PT ratio within 3% (photon walk Advances in importance order)" );
+}
+
 int main( int argc, char** argv )
 {
 	if( argc > 1 && argv[1] ) {
@@ -1197,6 +1260,7 @@ int main( int argc, char** argv )
 	if( on( 'M' ) ) RunRayCasterVolumeRow();
 	if( on( 'N' ) ) RunLegacyChainRow( closedB, preB );
 	if( on( 'O' ) ) RunIorFormRows( closedA );
+	if( on( 'P' ) ) RunPhotonMapRow();
 
 	std::cout << std::endl << "Passed: " << passCount << std::endl << "Failed: " << failCount << std::endl;
 	return failCount == 0 ? 0 : 1;
