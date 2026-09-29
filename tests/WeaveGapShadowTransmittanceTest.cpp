@@ -1138,22 +1138,35 @@ static void TestSMSEmissionThroughGap()
 	g_saltRenders = true;
 
 	// Closed forms, SMS on, black-yarn sheet (exact).  Pre-fix: every
-	// row but the env box reads 0.  Bands are >= 3.3 sd of six salted
-	// seeds (1000-6000) at these sample counts: area RGB 0.9 %, spectral
-	// 0.9 %, lookup 0.1 %, composite area 3.5 % (CompositeSPF's walker is
-	// the noisy estimator here, SMS or not) / lookup 1.2 %, env 0.03 %;
-	// HWSS parity 0.7-0.9 %, composite(dielectric) parity 1.8 % / 0.8 %.
+	// row but the env box reads 0.
+	//
+	// BANDS.  Every band is >= 3 sd of the MEASURED run-to-run spread of
+	// that row at these sample counts: n = 8 runs, seed bases 1000-8000
+	// (Sobol'-salted per render), docs/DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md
+	// section 9.3.  The Sobol' salt does NOT make a render reproducible:
+	// renders are multithreaded and each render thread's own RNG is seeded
+	// from libc rand() in thread-start order (SobolSampling2D's per-pixel
+	// film scramble, among others, draws from it), so the same seed AND
+	// salt read differently run to run -- measured, and deterministic with
+	// `force_number_of_threads 1`.  The spread below includes that.
+	// Relative sd (band / sd): area RGB 0.88 % (3.4), spectral 1.14 %
+	// (3.5), look-up 0.10 %, composite area 5.1 % (3.5) / look-up 1.9 %
+	// (5.3; 3.4 against the external review's pooled 2.9 %), env 0.06 %;
+	// HWSS parity 0.57-0.59 % (4.0 on look-up against the review's
+	// 1.08 %); composite(dielectric) 2.1 % (3.3) / 0.8 % (3.7); fabric,
+	// coated, direct-view 0.01-0.12 %; hand-off rows 0.57-1.38 % (>= 4.3),
+	// the slab-and-anchor row 2.4 % (3.7).
 	const std::string sheet = BlackWeaveSheet( g ), comp2 = CompositeTwoBlackWeavesSheet( g );
 	RatioRow( "area PT RGB (g*L0)", RastPTSMS( 512, true ),
 		ReceiverScene( kAreaLarge, false, 0.0, kWide ), ReceiverScene( kAreaLarge, true, g, kWide, false, sheet ), g, 0.03 );
 	RatioRow( "area PT spectral hwss=false (g*L0)", RastPTSpectralSMS( 1024, false, true ),
-		ReceiverScene( kAreaLarge, false, 0.0, kWide ), ReceiverScene( kAreaLarge, true, g, kWide, false, sheet ), g, 0.03 );
+		ReceiverScene( kAreaLarge, false, 0.0, kWide ), ReceiverScene( kAreaLarge, true, g, kWide, false, sheet ), g, 0.04 );
 	RatioRow( "lookup PT RGB (camera -> gap -> luminaire, g*L0)", RastPTSMS( 64, true ),
 		ReceiverScene( kAreaLarge, false, 0.0, kLookUp ), ReceiverScene( kAreaLarge, true, g, kLookUp, false, sheet ), g, 0.03 );
 	RatioRow( "area composite-of-two-weaves PT RGB (g^2*L0)", RastPTSMS( 8192, true ),
-		ReceiverScene( kAreaLarge, false, 0.0, kWide ), ReceiverScene( kAreaLarge, true, g, kWide, false, comp2 ), g * g, 0.12 );
+		ReceiverScene( kAreaLarge, false, 0.0, kWide ), ReceiverScene( kAreaLarge, true, g, kWide, false, comp2 ), g * g, 0.18 );
 	RatioRow( "lookup composite-of-two-weaves PT RGB (g^2*L0)", RastPTSMS( 8192, true ),
-		ReceiverScene( kAreaLarge, false, 0.0, kLookUp ), ReceiverScene( kAreaLarge, true, g, kLookUp, false, comp2 ), g * g, 0.04 );
+		ReceiverScene( kAreaLarge, false, 0.0, kLookUp ), ReceiverScene( kAreaLarge, true, g, kLookUp, false, comp2 ), g * g, 0.10 );
 	RatioRow( "env box PT RGB (g*L0, env escape)", RastPTSMS( 256, true, true ),
 		EnvBoxScene( false, 0.0 ), EnvBoxScene( true, g ), g, 0.03 );
 
@@ -1161,7 +1174,7 @@ static void TestSMSEmissionThroughGap()
 	ParityRow( "area PT HWSS", RastPTSpectralSMS( 2048, true, true ), RastPTSpectralSMS( 2048, true, false ),
 		ReceiverScene( kAreaLarge, true, g, kWide, false, sheet ), 0.05 );
 	ParityRow( "lookup PT HWSS", RastPTSpectralSMS( 512, true, true ), RastPTSpectralSMS( 512, true, false ),
-		ReceiverScene( kAreaLarge, true, g, kLookUp, false, sheet ), 0.03 );
+		ReceiverScene( kAreaLarge, true, g, kLookUp, false, sheet ), 0.04 );
 	ParityRow( "env box PT HWSS", RastPTSpectralSMS( 512, true, true, true ), RastPTSpectralSMS( 512, true, false, true ),
 		EnvBoxScene( true, g ), 0.03 );
 
@@ -1205,7 +1218,7 @@ static void TestSMSEmissionThroughGap()
 	ParityRow( "receiver -> gap -> smooth-SSS ceiling PT HWSS (SSS hand-off)", RastPTSpectralSMS( 2048, true, true ), RastPTSpectralSMS( 2048, true, false ),
 		CasterCeilingScene( false, true, false ), 0.06 );
 	ParityRow( "receiver -> gap -> slab -> smooth-SSS ceiling PT HWSS (no-BSDF hand-off)", RastPTSpectralSMS( 2048, true, true ), RastPTSpectralSMS( 2048, true, false ),
-		CasterCeilingScene( false, true, true ), 0.06 );
+		CasterCeilingScene( false, true, true ), 0.09 );
 	// MUST STAY SUPPRESSED: the same anchored chain with no gap is an SMS
 	// chain by PT's accounting (anchor, then a caster), so PT must not
 	// count it -- a regression that un-suppressed it would read PT+SMS/PT
