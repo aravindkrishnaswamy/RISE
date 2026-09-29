@@ -292,7 +292,8 @@ lambertian_luminaire_material
 {
 	name				warm_lum
 	exitance			pnt_warm_light
-	scale				200.0
+	# DL-320 (2026-09-28): 200 -> 67.3.  The ceiling panels are wound face-UP 0.02 below the ceiling, so the atrium was lit by their BACK faces, which next-event estimation and light subpaths ignored before DL-320; both faces now emit, and x0.3365 on all three panel materials returns the torus chain to its pre-DL-320 level.
+	scale				67.3
 	material			none
 }
 
@@ -300,7 +301,8 @@ lambertian_luminaire_material
 {
 	name				cool_lum
 	exitance			pnt_cool_light
-	scale				200.0
+	# DL-320 (2026-09-28): 200 -> 67.3.  The ceiling panels are wound face-UP 0.02 below the ceiling, so the atrium was lit by their BACK faces, which next-event estimation and light subpaths ignored before DL-320; both faces now emit, and x0.3365 on all three panel materials returns the torus chain to its pre-DL-320 level.
+	scale				67.3
 	material			none
 }
 
@@ -308,7 +310,8 @@ lambertian_luminaire_material
 {
 	name				neutral_lum
 	exitance			pnt_neutral_light
-	scale				2000.0
+	# DL-320 (2026-09-28): 2000 -> 673.  The ceiling panels are wound face-UP 0.02 below the ceiling, so the atrium was lit by their BACK faces, which next-event estimation and light subpaths ignored before DL-320; both faces now emit, and x0.3365 on all three panel materials returns the torus chain to its pre-DL-320 level.
+	scale				673.0
 	material			none
 }
 

@@ -250,7 +250,8 @@ lambertian_luminaire_material
 {
 	name				white_lum
 	exitance			color_white
-	scale				90.0
+	# DL-320 (2026-09-28): 90 -> 78.8.  The three panels are double-sided clipped planes, and since DL-320 both faces emit under every integrator; their back faces now light the back and side walls, and the bounce brightened the spheres and caustics.  78.8 returns the spheres/caustic band (the lower half of the frame) to its pre-DL-320 the photon-mapped direct-lighting chain level.  The triplecaustic / _pt_sms / _vcm trio no longer share one scale: before DL-320 each integrator counted the back faces differently (the photon-mapped direct chain not at all, PT and VCM in part, through MIS-weighted hits), so each scene is matched to its own former look.
+	scale				78.8
 	material			white
 }
 
