@@ -1187,22 +1187,24 @@ static void TestSMSEmissionThroughGap()
 	// Closed forms, SMS on, black-yarn sheet (exact).  Pre-fix: every
 	// row but the env box reads 0.
 	//
-	// BANDS.  Every band is >= 3 sd of the MEASURED run-to-run spread of
-	// that row at these sample counts: n = 8 runs, seed bases 1000-8000
-	// (Sobol'-salted per render), docs/DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md
-	// section 9.3.  The Sobol' salt does NOT make a render reproducible:
-	// renders are multithreaded and each render thread's own RNG is seeded
-	// from libc rand() in thread-start order (SobolSampling2D's per-pixel
-	// film scramble, among others, draws from it), so the same seed AND
-	// salt read differently run to run -- measured, and deterministic with
-	// `force_number_of_threads 1`.  The spread below includes that.
-	// Relative sd (band / sd): area RGB 0.88 % (3.4), spectral 1.14 %
-	// (3.5), look-up 0.10 %, composite area 5.1 % (3.5) / look-up 1.9 %
-	// (5.3; 3.4 against the external review's pooled 2.9 %), env 0.06 %;
-	// HWSS parity 0.57-0.59 % (4.0 on look-up against the review's
-	// 1.08 %); composite(dielectric) 2.1 % (3.3) / 0.8 % (3.7); fabric,
-	// coated, direct-view 0.01-0.12 %; hand-off rows 0.57-1.38 % (>= 4.3),
-	// the slab-and-anchor row 2.4 % (3.7).
+	// BANDS.  The suite runs on ONE render worker (see main), so a render
+	// is exactly reproducible from its seed base and a seed sweep IS the
+	// run-to-run spread.  Every band is >= 3.3 sd of a 12-seed sweep
+	// (seed bases 1000-12000) at these sample counts,
+	// docs/DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md section 9.3.  Relative
+	// sd (band / sd): area RGB 0.83 % (3.6), spectral 0.69 % (5.8),
+	// look-up 0.08 %, composite area 5.35 % (3.7) / look-up 2.14 % (7.0;
+	// 15 % also covers the external review's MULTITHREADED pooled 3.16 %
+	// at 4.7), env 0.05 %; HWSS parity area 1.00 % (5.0) / look-up 0.73 %
+	// (5.5) / env 0.90 % (4.4); composite(dielectric) 2.29 % (3.5) /
+	// 0.93 % (4.3); fabric, coated, direct-view <= 0.17 %; hand-off S1 /
+	// S4 0.44 / 0.53 % (>= 11); anchored ceiling RGB 1.26 % (4.8), HWSS
+	// SSS hand-off 2.29 % (3.9), no-BSDF hand-off 2.11 % (4.3); skin under
+	// a slab RGB 1.18 % (4.2), spectral 1.85 % (4.3).  Round 1 derived
+	// bands from MULTITHREADED runs, which are not reproducible (each
+	// worker's RNG is seeded from libc rand() in thread-start order and
+	// tiles go to workers nondeterministically), and two of them did not
+	// hold (external review P2-1).
 	const std::string sheet = BlackWeaveSheet( g ), comp2 = CompositeTwoBlackWeavesSheet( g );
 	RatioRow( "area PT RGB (g*L0)", RastPTSMS( 512, true ),
 		ReceiverScene( kAreaLarge, false, 0.0, kWide ), ReceiverScene( kAreaLarge, true, g, kWide, false, sheet ), g, 0.03 );
@@ -1211,9 +1213,9 @@ static void TestSMSEmissionThroughGap()
 	RatioRow( "lookup PT RGB (camera -> gap -> luminaire, g*L0)", RastPTSMS( 64, true ),
 		ReceiverScene( kAreaLarge, false, 0.0, kLookUp ), ReceiverScene( kAreaLarge, true, g, kLookUp, false, sheet ), g, 0.03 );
 	RatioRow( "area composite-of-two-weaves PT RGB (g^2*L0)", RastPTSMS( 8192, true ),
-		ReceiverScene( kAreaLarge, false, 0.0, kWide ), ReceiverScene( kAreaLarge, true, g, kWide, false, comp2 ), g * g, 0.18 );
+		ReceiverScene( kAreaLarge, false, 0.0, kWide ), ReceiverScene( kAreaLarge, true, g, kWide, false, comp2 ), g * g, 0.20 );
 	RatioRow( "lookup composite-of-two-weaves PT RGB (g^2*L0)", RastPTSMS( 8192, true ),
-		ReceiverScene( kAreaLarge, false, 0.0, kLookUp ), ReceiverScene( kAreaLarge, true, g, kLookUp, false, comp2 ), g * g, 0.10 );
+		ReceiverScene( kAreaLarge, false, 0.0, kLookUp ), ReceiverScene( kAreaLarge, true, g, kLookUp, false, comp2 ), g * g, 0.15 );
 	RatioRow( "env box PT RGB (g*L0, env escape)", RastPTSMS( 256, true, true ),
 		EnvBoxScene( false, 0.0 ), EnvBoxScene( true, g ), g, 0.03 );
 
@@ -1223,14 +1225,14 @@ static void TestSMSEmissionThroughGap()
 	ParityRow( "lookup PT HWSS", RastPTSpectralSMS( 512, true, true ), RastPTSpectralSMS( 512, true, false ),
 		ReceiverScene( kAreaLarge, true, g, kLookUp, false, sheet ), 0.04 );
 	ParityRow( "env box PT HWSS", RastPTSpectralSMS( 512, true, true, true ), RastPTSpectralSMS( 512, true, false, true ),
-		EnvBoxScene( true, g ), 0.03 );
+		EnvBoxScene( true, g ), 0.04 );
 
 	// Sibling: CompositeSPF's walker exits through a dielectric top leave
 	// REFRACTED -- delta-tagged, not a pass-through, not an SMS caster.
 	ParityRow( "area composite(dielectric over weave) PT RGB", RastPTSMS( 4096, true ), RastPTSMS( 4096, false ),
-		ReceiverScene( kAreaLarge, true, g, kWide, false, CompositeDielectricOverWeaveSheet() ), 0.07 );
+		ReceiverScene( kAreaLarge, true, g, kWide, false, CompositeDielectricOverWeaveSheet() ), 0.08 );
 	ParityRow( "lookup composite(dielectric over weave) PT RGB", RastPTSMS( 2048, true ), RastPTSMS( 2048, false ),
-		ReceiverScene( kAreaLarge, true, g, kLookUp, false, CompositeDielectricOverWeaveSheet() ), 0.03 );
+		ReceiverScene( kAreaLarge, true, g, kLookUp, false, CompositeDielectricOverWeaveSheet() ), 0.04 );
 	ParityRow( "lookup fabric over weave PT RGB", RastPTSMS( 256, true ), RastPTSMS( 256, false ),
 		ReceiverScene( kAreaLarge, true, g, kLookUp, false, FabricOverWeaveSheet() ), 0.03 );
 	ParityRow( "lookup coated over weave PT RGB", RastPTSMS( 256, true ), RastPTSMS( 256, false ),
@@ -1263,7 +1265,7 @@ static void TestSMSEmissionThroughGap()
 	ParityRow( "receiver -> gap -> smooth-SSS ceiling PT RGB", RastPTSMS( 2048, true ), RastPTSMS( 2048, false ),
 		CasterCeilingScene( false, true, false ), 0.06 );
 	ParityRow( "receiver -> gap -> smooth-SSS ceiling PT HWSS (SSS hand-off)", RastPTSpectralSMS( 2048, true, true ), RastPTSpectralSMS( 2048, true, false ),
-		CasterCeilingScene( false, true, false ), 0.06 );
+		CasterCeilingScene( false, true, false ), 0.09 );
 	ParityRow( "receiver -> gap -> slab -> smooth-SSS ceiling PT HWSS (no-BSDF hand-off)", RastPTSpectralSMS( 2048, true, true ), RastPTSpectralSMS( 2048, true, false ),
 		CasterCeilingScene( false, true, true ), 0.09 );
 	// DL-295 review round 2, P1-1: a surface with NO BSDF is not an SMS
