@@ -30,6 +30,7 @@
 #include "../Utilities/MISWeights.h"
 #include "../Utilities/Optics.h"
 #include "../Utilities/ExpressionMemo.h"
+#include "../Utilities/Threads/Threads.h"
 #include "../Interfaces/IObject.h"
 #include "../Interfaces/IGeometry.h"
 #include "../Scene.h"					// concrete Scene for the light-generation read (#2b(a))
@@ -39,30 +40,45 @@
 
 namespace
 {
-	// DL-315: hard safety ceiling on how many CastRay/CastRayNM/
-	// CastRayHWSS frames may be ACTIVE at once on one thread.  The depth
-	// cap (RayCaster::MaxRecursions) is a transport limit that follows the
-	// scene's path depth; this one is a STACK limit.  Every cast recurses
-	// in C++ (an SSS continuation nests CastRay -> shader -> integrator ->
-	// CastRay; a medium phase continuation nests CastRay -> CastRay), and
-	// render workers run on default-size thread stacks (512 KB for a
-	// secondary pthread on macOS).  Measured on a macOS release build: one
-	// nested SSS level costs about 13.2 KB of stack, so 16 levels are about
-	// 210 KB plus the rasterizer's base frames (about 26 KB).  The pre-fix
-	// depth cap of 10 allowed at most 11 nested casts, so this can never
-	// cut a path the old code kept, and no legacy scene nests deeper than
-	// its authored `max_recursion` (at most 10 in the shipped corpus) + 1.
-	const unsigned int kMaxCastNesting = 16;
-	thread_local unsigned int tlCastNesting = 0;
+	// DL-315: stack guard for a nested cast.  Every cast recurses in C++
+	// (an SSS continuation nests CastRay -> shader -> integrator -> CastRay;
+	// a legacy shader-op bounce and a medium phase continuation nest too),
+	// so the depth cap alone does not bound the stack: one nested SSS level
+	// measured 13.2 KB at -O3 and 34.5 KB at -O0, a legacy bounce about
+	// 6.2 KB at -O3.  Render workers get 8 MB stacks
+	// (ThreadPool::kWorkerStackBytes); a CALLING thread that also drains
+	// tiles may be smaller (a GUI render thread is a 512 KB std::thread on
+	// macOS).  A cast is refused when less than this much stack remains
+	// below its frame -- the budget for everything the cast runs before
+	// the next nested cast re-checks (measurement in
+	// docs/DL315_RAYCASTER_STACK_AND_RECURSION.md).  A refusal returns no
+	// radiance, exactly like the depth cap, and is COUNTED
+	// (RayCaster::StackGuardRefusals) and logged.
+	const size_t kCastStackMarginBytes = 256u * 1024u;
+	std::atomic<unsigned long long> sCastStackRefusals( 0 );
 
-	//! RAII count of the casts active on this thread.
-	struct CastNestingGuard
+	//! True when this thread cannot afford another nested cast.  Logs the
+	//! 1st, 2nd, 4th, 8th, ... refusal so a pathological scene cannot
+	//! flood the log.
+	inline bool CastStackExhausted()
 	{
-		CastNestingGuard() { ++tlCastNesting; }
-		~CastNestingGuard() { --tlCastNesting; }
-		CastNestingGuard( const CastNestingGuard& ) = delete;
-		CastNestingGuard& operator=( const CastNestingGuard& ) = delete;
-	};
+		const size_t remaining = RISE::Threading::riseRemainingStackBytes();
+		if( remaining >= kCastStackMarginBytes ) {
+			return false;
+		}
+		const unsigned long long n = sCastStackRefusals.fetch_add( 1, std::memory_order_relaxed ) + 1;
+		if( ( n & ( n - 1 ) ) == 0 ) {
+			RISE::GlobalLog()->PrintEx( RISE::eLog_Warning,
+				"RayCaster:: refused a nested cast with only %lu bytes of stack left (margin %lu); %llu refusal(s) so far.  That path is truncated (no radiance); render from a thread with a larger stack.",
+				static_cast<unsigned long>( remaining ), static_cast<unsigned long>( kCastStackMarginBytes ), n );
+		}
+		return true;
+	}
+}
+
+unsigned long long RISE::Implementation::RayCaster::StackGuardRefusals()
+{
+	return sCastStackRefusals.load( std::memory_order_relaxed );
 }
 
 //#define ENABLE_TERMINATION_MESSAGES
@@ -899,7 +915,7 @@ bool RayCaster::CastRay(
 			) const
 {
 #ifdef ENABLE_MAX_RECURSION
-	if( rs.depth > MaxRecursions( rc ) || tlCastNesting >= kMaxCastNesting )
+	if( rs.depth > MaxRecursions( rc ) || CastStackExhausted() )
 	{
 #ifdef ENABLE_TERMINATION_MESSAGES
 		GlobalLog()->PrintEasyInfo( "FORCED RECURSION TERMINATION" );
@@ -907,7 +923,6 @@ bool RayCaster::CastRay(
 
 		return false;
 	}
-	const CastNestingGuard nestingGuard;	// DL-315: see kMaxCastNesting
 #endif
 
 	// Unbiased Russian roulette: decide before the expensive
@@ -1728,14 +1743,13 @@ bool RayCaster::CastRayNM(
 	) const
 {
 #ifdef ENABLE_MAX_RECURSION
-	if( rs.depth > MaxRecursions( rc ) || tlCastNesting >= kMaxCastNesting )
+	if( rs.depth > MaxRecursions( rc ) || CastStackExhausted() )
 	{
 #ifdef ENABLE_TERMINATION_MESSAGES
 		GlobalLog()->PrintEasyInfo( "FORCED RECURSION TERMINATION" );
 #endif
 		return false;
 	}
-	const CastNestingGuard nestingGuard;	// DL-315: see kMaxCastNesting
 #endif
 
 	// Unbiased Russian roulette: decide before the expensive
@@ -3031,9 +3045,8 @@ bool RayCaster::CastRayHWSS(
 		c[i] = 0;
 
 #ifdef ENABLE_MAX_RECURSION
-	if( rs.depth > MaxRecursions( rc ) || tlCastNesting >= kMaxCastNesting )
+	if( rs.depth > MaxRecursions( rc ) || CastStackExhausted() )
 		return false;
-	const CastNestingGuard nestingGuard;	// DL-315: see kMaxCastNesting
 #endif
 
 	// Check for participating medium BEFORE Russian roulette.

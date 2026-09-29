@@ -246,6 +246,12 @@ namespace RISE
 			void ResolveXrayView_( RayIntersection& ri ) const;
 
 		public:
+			//! DL-315: how many nested casts, process-wide, the stack guard
+			//! refused because the calling thread had less than the margin
+			//! of stack left (see RayCaster.cpp's CastStackExhausted).  Zero
+			//! in any render whose threads are sized for the recursion.
+			static unsigned long long StackGuardRefusals();
+
 			RayCaster(
 				const bool seeRadianceMap,
 				const unsigned int maxR,
