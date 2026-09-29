@@ -3775,8 +3775,10 @@ static void TestBackFaceEmitterZ()
 // the camera's nominal [0, 16) film while the rasterizers sample (and
 // SplatFilm rounds in) [-0.5, 15.5): a half-pixel strip per axis was
 // lost and the frame read 1 - (15.5/16)^2 = 6.15 % low (measured
-// -6.1 %).  1.5 %: the post-fix residual is a seed-independent QMC
-// pattern that reads within a few tenths of a percent.
+// -6.246 %, isolated A/B; post-fix +0.066 %).  BDPT's render is
+// seed-independent here (its Sobol streams are keyed by pixel and
+// sample index), so the residual is a fixed QMC pattern, not noise;
+// 1.5 % is a >20x margin on it and 4x under the defect.
 //////////////////////////////////////////////////////////////////////
 static const double kNarrowFovW_I = 16.0;		// color 1 x power 16
 static const double kNarrowFovW_Rho = 0.5;

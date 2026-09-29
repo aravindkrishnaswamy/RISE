@@ -1991,8 +1991,13 @@ static void TestRoughSSSEmptyContainerU()
 //
 // Before DL-294 the camera cut the splat at its nominal [0, 16) film
 // while SplatFilm rounds in [-0.5, 15.5): one half-pixel strip per axis
-// was lost.  Measured pre-fix: W1 -3.1 %, W2 -1.42 %; post-fix both
-// within a few tenths of a percent.  Band 0.8 %.
+// was lost.  Measured (n = 3 runs each, isolated A/B):
+//   W1 pre -0.731 +/- 0.036 %   post -0.367 +/- 0.022 %
+//   W2 pre -1.463 +/- 0.001 %   post +0.021 +/- 0.000 %
+// W1's post-fix residual is VCM's merge-radius blur (auto radius 0.02)
+// reaching the beam's penumbra from the frame edge, not the splat --
+// BDPT's twin reads +0.07 % on the same scene.  Bands: W1 0.6 %, W2
+// 0.5 %.
 //////////////////////////////////////////////////////////////////////
 static const char* kSceneNarrowFovCommonW =
 	"film\n{\n\twidth 16\n\theight 16\n}\n\n"
@@ -2018,7 +2023,7 @@ static const char* kRasterizerVCMNarrowFovW =
 	"\tvc_enabled true\n\tvm_enabled true\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n"
 	"file_rasterizeroutput\n{\n\tpattern rendered/vcm_balance_vcm_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
 
-static void RunNarrowFovRowW( const char* label, const char* lightBlock, const double dist )
+static void RunNarrowFovRowW( const char* label, const char* lightBlock, const double dist, const double tol )
 {
 	const std::string scene = std::string( "RISE ASCII SCENE 7\n" ) + kRasterizerVCMNarrowFovW + kSceneNarrowFovCommonW + lightBlock;
 	const std::string path = WriteSceneToTempFile( scene.c_str(), "narrowfov_w" );
@@ -2030,17 +2035,17 @@ static void RunNarrowFovRowW( const char* label, const char* lightBlock, const d
 	const double m = ( st.mean[0] + st.mean[1] + st.mean[2] ) / 3.0;
 	char buf[256];
 	std::snprintf( buf, sizeof(buf),
-		"Topology W (%s): VCM mean %.6f vs closed form rho/pi*I/%.0f^2 = %.6f (%+.3f%%), within 0.8%% (DL-294)",
-		label, m, dist, expected, 100.0 * ( m / expected - 1.0 ) );
+		"Topology W (%s): VCM mean %.6f vs closed form rho/pi*I/%.0f^2 = %.6f (%+.3f%%), within %g%% (DL-294)",
+		label, m, dist, expected, 100.0 * ( m / expected - 1.0 ), 100.0 * tol );
 	std::cout << "    " << buf << std::endl;
-	Check( std::fabs( m / expected - 1.0 ) <= 0.008, buf );
+	Check( std::fabs( m / expected - 1.0 ) <= tol, buf );
 }
 
 static void TestNarrowFovSplatW()
 {
 	std::cout << "Testing topology W: narrow-fov (2 deg) splat vs closed form (DL-294)" << std::endl;
-	RunNarrowFovRowW( "W1 spot -> mirror -> floor caustic", kSceneNarrowFovMirrorW1, 3.0 );
-	RunNarrowFovRowW( "W2 spot -> floor, no mirror", kSceneNarrowFovDirectW2, 4.0 );
+	RunNarrowFovRowW( "W1 spot -> mirror -> floor caustic", kSceneNarrowFovMirrorW1, 3.0, 0.006 );
+	RunNarrowFovRowW( "W2 spot -> floor, no mirror", kSceneNarrowFovDirectW2, 4.0, 0.005 );
 }
 
 int main( int argc, char** argv )
