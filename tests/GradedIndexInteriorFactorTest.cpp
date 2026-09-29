@@ -1227,6 +1227,51 @@ static void RunPhotonMapRow()
 		"P: graded photon/PT ratio == constant-control photon/PT ratio within 8% (photon walk Advances in importance order)" );
 }
 
+
+//////////////////////////////////////////////////////////////////////
+// Row Q (DL-292 item 5, OPT-IN: GRADED_ROWS must name Q explicitly;
+// prints, does not gate).  SMS inside a graded medium: a small glass
+// sphere nested in the graded box focuses a small area emitter onto the
+// floor under the camera.  PT with SMS vs PT without (the latter reaches
+// the caustic by BSDF sampling through the sphere and is DL-09-priced),
+// graded vs a constant-index control.  A ratio-of-ratios != 1 is the
+// graded factor SMS's chain evaluation misses.
+//////////////////////////////////////////////////////////////////////
+static void RunSMSMeasurementRow()
+{
+	std::cout << std::endl << "-- Row Q (DL-292 item 5, measurement only): PT+SMS vs PT through a glass sphere nested in the graded box --" << std::endl;
+	// mode 1 = graded box, 0 = constant-index box, 2 = no box (air).
+	auto build = [&]( int mode, bool sms ) {
+		std::string s = ReadFile( kSeededScene );
+		if( mode == 0 ) s = ReplaceSpan( s, "MEDIUM", UniformBox( 1.4 ) );
+		if( mode == 2 ) s = ReplaceSpan( s, "MEDIUM", "" );
+		s = ReplaceOnce( s, "\tpta -28 -28 1.0\n\tptb -28 28 1.0\n\tptc 28 28 1.0\n\tptd 28 -28 1.0\n",
+			"\tpta 0.5 -0.1 1.0\n\tptb 0.5 0.1 1.0\n\tptc 0.7 0.1 1.0\n\tptd 0.7 -0.1 1.0\n" );
+		s = ReplaceOnce( s, "\tscale 1.0\n", "\tscale 40.0\n" );
+		s = ReplaceOnce( s, kEmitterObject, kEmitterObject +
+			"\ndielectric_material\n{\n\tname mat_ball\n\tior 1.5\n\ttau 1.0\n\tscattering 1000000\n}\n\n"
+			"sphere_geometry\n{\n\tname geo_ball\n\tradius 0.15\n}\n\n"
+			"standard_object\n{\n\tname ball\n\tgeometry geo_ball\n\tmaterial mat_ball\n\tposition 0.3 0 0.55\n}\n" );
+		return ReplaceSpan( s, "RASTERIZER", PTRasterizerOpts( 1024, sms ?
+			"\tsms_enabled TRUE\n\tsms_max_iterations 30\n\tsms_threshold 1e-4\n\tsms_max_chain_depth 10\n\tsms_biased TRUE\n" : "" ) );
+	};
+	double r[3] = { -1, -1, -1 };
+	const char* names[3] = { "constant", "graded", "air" };
+	for( int mode = 2; mode >= 0; mode-- ) {
+		const Stat a = RenderStat( build( mode, false ), "sms_off" );
+		const Stat b = RenderStat( build( mode, true ), "sms_on" );
+		// A third estimator: VCM (merges reach the caustic without SMS).
+		const Stat v = RenderStat( ReplaceSpan( build( mode, false ), "RASTERIZER", RasterizerVCM( 512 ) ), "sms_vcm" );
+		const Stat d = RenderStat( ReplaceSpan( build( mode, false ), "RASTERIZER", RasterizerBDPT( 512 ) ), "sms_bdpt" );
+		r[mode] = ( a.ok && b.ok && a.mean > 0 ) ? b.mean / a.mean : -1;
+		std::printf( "    %-9s PT %.6f  PT+SMS %.6f  BDPT %.6f  VCM %.6f   SMS/PT=%.4f  BDPT/PT=%.4f  VCM/PT=%.4f\n",
+			names[mode], a.mean, b.mean, d.mean, v.mean, r[mode],
+			( a.ok && a.mean > 0 ) ? d.mean / a.mean : -1.0, ( a.ok && a.mean > 0 ) ? v.mean / a.mean : -1.0 );
+	}
+	std::printf( "    graded/control SMS/PT ratio = %.4f (1 = SMS prices the graded medium like PT)\n",
+		( r[0] > 0 && r[1] > 0 ) ? r[1] / r[0] : -1.0 );
+}
+
 int main( int argc, char** argv )
 {
 	if( argc > 1 && argv[1] ) {
@@ -1265,6 +1310,8 @@ int main( int argc, char** argv )
 	if( on( 'N' ) ) RunLegacyChainRow( closedB, preB );
 	if( on( 'O' ) ) RunIorFormRows( closedA );
 	if( on( 'P' ) ) RunPhotonMapRow();
+	// Opt-in measurement row (named explicitly, never in the default run).
+	if( rowsEnv && std::strchr( rowsEnv, 'Q' ) ) RunSMSMeasurementRow();
 
 	std::cout << std::endl << "Passed: " << passCount << std::endl << "Failed: " << failCount << std::endl;
 	return failCount == 0 ? 0 : 1;
