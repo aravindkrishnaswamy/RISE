@@ -200,7 +200,18 @@ static double MeanLuminance( const CapturingRasterizerOutput& cap )
 	return sum / double( cap.pixels.size() );
 }
 
-static double Render( const std::string& sceneText, const char* tag )
+//! Per-pixel Rec.709 luminance of the composited-over-black radiance,
+//! row-major (image row 0 = top), for the DL-294 edge fingerprint.
+static void PixelLuminance( const CapturingRasterizerOutput& cap, std::vector<double>& out )
+{
+	out.resize( cap.pixels.size() );
+	for( size_t i = 0; i < cap.pixels.size(); i++ ) {
+		const RISEColor& c = cap.pixels[i];
+		out[i] = 0.2126 * c.base.r * c.a + 0.7152 * c.base.g * c.a + 0.0722 * c.base.b * c.a;
+	}
+}
+
+static double Render( const std::string& sceneText, const char* tag, std::vector<double>* pPixels = nullptr )
 {
 	char path[512];
 	std::snprintf( path, sizeof(path), "/tmp/weave_gap_shadow_%s_%d.RISEscene",
@@ -226,6 +237,7 @@ static double Render( const std::string& sceneText, const char* tag )
 			pJob->GetRasterizer()->AddRasterizerOutput( pCap );
 			if( pJob->Rasterize() ) {
 				result = MeanLuminance( *pCap );
+				if( pPixels ) PixelLuminance( *pCap, *pPixels );
 			}
 			safe_release( pCap );
 		}
@@ -339,13 +351,16 @@ enum CamKind { kTight, kWide };
 //! @a compositeSheet: the sheet is a `composite_material` of two such
 //! weaves (zero thickness, no extinction), whose only straight exit is
 //! gap -> gap, so the closed form becomes g^2.
-static std::string ReceiverScene( LightKind light, bool withSheet, double gap, CamKind cam = kTight, bool compositeSheet = false )
+//! @a fovDeg > 0 overrides the framing's field of view (the DL-294
+//! sweep; the patch size still follows @a cam).
+static std::string ReceiverScene( LightKind light, bool withSheet, double gap, CamKind cam = kTight, bool compositeSheet = false, double fovDeg = 0.0 )
 {
 	const bool wide = ( cam == kWide );
+	const double fov = fovDeg > 0.0 ? fovDeg : ( wide ? 10.0 : 2.0 );
 	std::ostringstream ss;
 	ss <<
 		"film\n{\n\twidth 16\n\theight 16\n}\n\n"
-		"pinhole_camera\n{\n\tlocation 0 1 1.2\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov " << ( wide ? "10.0" : "2.0" ) << "\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 1 1.2\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov " << fov << "\n}\n\n"
 		"uniformcolor_painter\n{\n\tname pnt_recv\n\tcolor " << kRho << " " << kRho << " " << kRho
 			<< "\n\tcolorspace Rec709RGB_Linear\n}\n\n"
 		"lambertian_material\n{\n\tname mat_recv\n\treflectance pnt_recv\n}\n\n"
@@ -890,24 +905,148 @@ static void TestTwoLayerLightOutside()
 }
 
 //////////////////////////////////////////////////////////////////////
-// dl294: printed, not gated -- see the file header.
+// fovsweep (gated) and dl294 (measurement aid): DL-294.
+//
+// The t = 1 light-tracing splat must cover EXACTLY the film the eye
+// subpaths sample.  Before DL-294 it did not: the camera's
+// world-to-raster inverse (BDPTCameraUtilities::Rasterize) accepted
+// raster x in [0, W) and y in [0, H) -- the camera's NOMINAL film --
+// while every rasterizer samples pixel (x, row y) at screen
+// (x + u - 0.5, H - y + v - 0.5), i.e. the film is x in [-0.5, W - 0.5),
+// y in [0.5, H + 0.5), and SplatFilm rounds a splat to the nearest
+// pixel CENTRE in that same convention.  A half-pixel strip along one
+// vertical and one horizontal film edge was rejected by the camera,
+// and the opposite strips were accepted and then dropped off the film
+// by the rounding: the splat covered 15.5 x 15.5 of a 16 x 16 film,
+// 1 - (15.5/16)^2 = 6.15 % of a uniformly lit frame, with image
+// column 0 and row 0 at exactly HALF their radiance.  Only a frame
+// that is lit edge to edge sees it, which is why it looked like a
+// narrow-FIELD-OF-VIEW defect on this fixture (the spot fills a 1-3
+// degree frame and leaves a 5-10 degree frame's edges dark).
+//
+// Every quantity is referenced to PT's no-sheet render at the SAME
+// fov (PT's estimator is NEE and never splats), so no closed form is
+// needed across the spot's penumbra: L_int(gap g) / (g * L0_PT) and
+// L0_int / L0_PT.
 //////////////////////////////////////////////////////////////////////
-static void PrintNarrowFovSplatResidual()
+static void MeanSd( const std::vector<double>& v, double& mean, double& sd );
+
+static const double kSweepFovs[] = { 1.0, 2.0, 3.0, 5.0, 10.0 };
+static const int kNumSweepFovs = 5;
+static const double kSweepGap = 0.3;
+
+//! Edge fingerprint of a pure-splat render: mean of image column 0 /
+//! row 0 / column W-1 / row H-1 over the mean of the interior pixels.
+struct EdgeRatios { double col0, row0, colLast, rowLast; };
+static EdgeRatios EdgeFingerprint( const std::vector<double>& px, unsigned int w, unsigned int h )
 {
-	std::cout << "=== dl294: bidirectional t=1 splat at fov 2 deg (printed, NOT gated) ===" << std::endl;
-	struct R { const char* label; std::string rast; };
-	const R rows[] = { { "BDPT RGB", RastBDPT( 1024 ) }, { "VCM RGB", RastVCM( 1024 ) }, { "PT RGB", RastPT( 64 ) } };
-	const double gaps[] = { 0.3, 0.1 };
-	for( const R& r : rows )
+	EdgeRatios e = { -1, -1, -1, -1 };
+	if( px.size() != size_t( w ) * h || w < 3 || h < 3 ) return e;
+	double interior = 0, c0 = 0, r0 = 0, cl = 0, rl = 0;
+	for( unsigned int y = 1; y + 1 < h; y++ )
+		for( unsigned int x = 1; x + 1 < w; x++ ) interior += px[y * w + x];
+	interior /= double( ( w - 2 ) * ( h - 2 ) );
+	for( unsigned int y = 1; y + 1 < h; y++ ) { c0 += px[y * w]; cl += px[y * w + w - 1]; }
+	for( unsigned int x = 1; x + 1 < w; x++ ) { r0 += px[x]; rl += px[( h - 1 ) * w + x]; }
+	if( !( interior > 0 ) ) return e;
+	e.col0 = c0 / double( h - 2 ) / interior;
+	e.colLast = cl / double( h - 2 ) / interior;
+	e.row0 = r0 / double( w - 2 ) / interior;
+	e.rowLast = rl / double( w - 2 ) / interior;
+	return e;
+}
+
+static void TestNarrowFovSplat()
+{
+	std::cout << "=== fovsweep: t = 1 splat vs PT at fov 1-10 deg, 2 x 2 patch, spot light (DL-294) ===" << std::endl;
+	for( int k = 0; k < kNumSweepFovs; k++ )
 	{
-		const double L0 = Render( Assemble( r.rast, ReceiverScene( kSpot, false, 0.0, kTight ) ), "d294_l0" );
-		const double analytic = kRho / 3.14159265358979323846 * kOmniPow / ( kLightY * kLightY );
-		std::printf( "  dl294 %s: L0 = %.6f (analytic %.6f, %+.3f%%)\n", r.label, L0, analytic, 100.0 * ( L0 / analytic - 1.0 ) );
-		for( double g : gaps ) {
-			const double L = Render( Assemble( r.rast, ReceiverScene( kSpot, true, g, kTight ) ), "d294_lg" );
-			std::printf( "  dl294 %s gap %.2f: L/L0 = %.5f (%+.3f%%)   L/(g*analytic) %+.3f%%\n",
-				r.label, g, L / L0, 100.0 * ( L / L0 / g - 1.0 ), 100.0 * ( L / ( g * analytic ) - 1.0 ) );
+		const double fov = kSweepFovs[k];
+		const double ptL0 = Render( Assemble( RastPT( 64 ), ReceiverScene( kSpot, false, 0.0, kWide, false, fov ) ), "fs_pt" );
+		Check( ptL0 > 0, "fovsweep: PT reference renders non-black" );
+		if( !( ptL0 > 0 ) ) continue;
+
+		struct R { const char* label; std::string rast; double tolGap; double tolL0; };
+		const R rows[] = {
+			{ "BDPT RGB", RastBDPT( 1024 ), 0.015, 0.01 },
+			{ "VCM RGB",  RastVCM( 1024 ),  0.015, 0.01 },
+		};
+		for( const R& r : rows )
+		{
+			const double L0 = Render( Assemble( r.rast, ReceiverScene( kSpot, false, 0.0, kWide, false, fov ) ), "fs_l0" );
+			std::vector<double> px;
+			const double Lg = Render( Assemble( r.rast, ReceiverScene( kSpot, true, kSweepGap, kWide, false, fov ) ), "fs_lg", &px );
+			char buf[256];
+			std::snprintf( buf, sizeof(buf), "fovsweep fov %4.1f %s: L0/L0_PT = %.5f (%+.3f%%)",
+				fov, r.label, L0 / ptL0, 100.0 * ( L0 / ptL0 - 1.0 ) );
+			std::cout << "  " << buf << std::endl;
+			Check( std::fabs( L0 / ptL0 - 1.0 ) <= r.tolL0, buf );
+			std::snprintf( buf, sizeof(buf), "fovsweep fov %4.1f %s: L(gap %.1f)/(g*L0_PT) = %.5f (%+.3f%%)",
+				fov, r.label, kSweepGap, Lg / ( kSweepGap * ptL0 ), 100.0 * ( Lg / ( kSweepGap * ptL0 ) - 1.0 ) );
+			std::cout << "  " << buf << std::endl;
+			Check( std::fabs( Lg / ( kSweepGap * ptL0 ) - 1.0 ) <= r.tolGap, buf );
+
+			// The fingerprint: at fov <= 3 the frame is lit edge to edge
+			// and the gap render is (BDPT) or is mostly (VCM) the splat,
+			// so every edge row / column must read like the interior.
+			if( fov <= 2.0 ) {
+				const EdgeRatios e = EdgeFingerprint( px, 16, 16 );
+				std::snprintf( buf, sizeof(buf), "fovsweep fov %4.1f %s gap render edges / interior: col0 %.4f row0 %.4f colLast %.4f rowLast %.4f",
+					fov, r.label, e.col0, e.row0, e.colLast, e.rowLast );
+				std::cout << "  " << buf << std::endl;
+				const double tolEdge = 0.05;
+				Check( std::fabs( e.col0 - 1.0 ) <= tolEdge && std::fabs( e.row0 - 1.0 ) <= tolEdge &&
+				       std::fabs( e.colLast - 1.0 ) <= tolEdge && std::fabs( e.rowLast - 1.0 ) <= tolEdge, buf );
+			}
 		}
+	}
+}
+
+//! dl294 (measurement aid, no assertions): the same sweep with n
+//! repeats (argv[2], default 4), mean +/- sample sd per cell, plus the
+//! NO-WEAVE control (the kTight 0.2 x 0.2 patch at fov 2 under the
+//! spot, no sheet, against the analytic rho/pi * I/d^2) and the edge
+//! fingerprint of each gap render.
+static void MeasureNarrowFovSplat( unsigned int n )
+{
+	std::cout << "=== dl294: t = 1 splat fov sweep, n = " << n << " (mean +/- sd; printed, NOT gated) ===" << std::endl;
+	for( int k = 0; k < kNumSweepFovs; k++ )
+	{
+		const double fov = kSweepFovs[k];
+		std::vector<double> pt, bL0, bG, vL0, vG, bc0, br0, vc0, vr0;
+		for( unsigned int i = 0; i < n; i++ ) {
+			pt.push_back( Render( Assemble( RastPT( 64 ), ReceiverScene( kSpot, false, 0.0, kWide, false, fov ) ), "m_pt" ) );
+			std::vector<double> px;
+			bL0.push_back( Render( Assemble( RastBDPT( 1024 ), ReceiverScene( kSpot, false, 0.0, kWide, false, fov ) ), "m_bl0" ) );
+			bG.push_back( Render( Assemble( RastBDPT( 1024 ), ReceiverScene( kSpot, true, kSweepGap, kWide, false, fov ) ), "m_bg", &px ) );
+			EdgeRatios e = EdgeFingerprint( px, 16, 16 ); bc0.push_back( e.col0 ); br0.push_back( e.row0 );
+			vL0.push_back( Render( Assemble( RastVCM( 1024 ), ReceiverScene( kSpot, false, 0.0, kWide, false, fov ) ), "m_vl0" ) );
+			vG.push_back( Render( Assemble( RastVCM( 1024 ), ReceiverScene( kSpot, true, kSweepGap, kWide, false, fov ) ), "m_vg", &px ) );
+			e = EdgeFingerprint( px, 16, 16 ); vc0.push_back( e.col0 ); vr0.push_back( e.row0 );
+		}
+		double mp, sp; MeanSd( pt, mp, sp );
+		auto rel = [&]( const std::vector<double>& v, double scale ) {
+			std::vector<double> r; for( double x : v ) r.push_back( 100.0 * ( x / ( scale * mp ) - 1.0 ) ); return r; };
+		double m1, s1, m2, s2, m3, s3, m4, s4, e1, f1, e2, f2, e3, f3, e4, f4;
+		MeanSd( rel( bL0, 1.0 ), m1, s1 ); MeanSd( rel( bG, kSweepGap ), m2, s2 );
+		MeanSd( rel( vL0, 1.0 ), m3, s3 ); MeanSd( rel( vG, kSweepGap ), m4, s4 );
+		MeanSd( bc0, e1, f1 ); MeanSd( br0, e2, f2 ); MeanSd( vc0, e3, f3 ); MeanSd( vr0, e4, f4 );
+		std::printf( "  dl294 fov %4.1f | PT L0 %.6f +/- %.6f | BDPT L0 %+.3f +/- %.3f %% gap %+.3f +/- %.3f %% | VCM L0 %+.3f +/- %.3f %% gap %+.3f +/- %.3f %%\n",
+			fov, mp, sp, m1, s1, m2, s2, m3, s3, m4, s4 );
+		std::printf( "  dl294 fov %4.1f | edges/interior: BDPT gap col0 %.4f +/- %.4f row0 %.4f +/- %.4f | VCM gap col0 %.4f +/- %.4f row0 %.4f +/- %.4f\n",
+			fov, e1, f1, e2, f2, e3, f3, e4, f4 );
+	}
+
+	// NO-WEAVE control: the tight 0.2 x 0.2 patch, fov 2, spot, no sheet.
+	const double analytic = kRho / 3.14159265358979323846 * kOmniPow / ( kLightY * kLightY );
+	struct R { const char* label; std::string rast; };
+	const R rows[] = { { "PT RGB", RastPT( 64 ) }, { "BDPT RGB", RastBDPT( 1024 ) }, { "VCM RGB", RastVCM( 1024 ) } };
+	for( const R& r : rows ) {
+		std::vector<double> v;
+		for( unsigned int i = 0; i < n; i++ )
+			v.push_back( 100.0 * ( Render( Assemble( r.rast, ReceiverScene( kSpot, false, 0.0, kTight ) ), "m_nw" ) / analytic - 1.0 ) );
+		double m, sd; MeanSd( v, m, sd );
+		std::printf( "  dl294 no-weave control (0.2 patch, fov 2, spot, NO sheet) %s: L0 vs analytic %+.3f +/- %.3f %%\n", r.label, m, sd );
 	}
 }
 
@@ -977,7 +1116,12 @@ int main( int argc, char** argv )
 
 	const char* filter = std::getenv( "WEAVE_GAP_FILTER" );
 	if( filter && std::strstr( filter, "dl294" ) ) {
-		PrintNarrowFovSplatResidual();
+		unsigned int n = 4;
+		if( argc > 2 ) {
+			const long v = std::strtol( argv[2], nullptr, 10 );
+			if( v > 0 ) n = (unsigned int)v;
+		}
+		MeasureNarrowFovSplat( n );
 		return 0;
 	}
 	if( filter && std::strstr( filter, "table" ) ) {
@@ -997,6 +1141,7 @@ int main( int argc, char** argv )
 	if( !filter || std::strstr( filter, "area" ) )        TestAreaPartitionGuard();
 	if( !filter || std::strstr( filter, "castsshadows" ) ) TestCastsShadowsFalseStepOver();
 	if( !filter || std::strstr( filter, "layers" ) )      TestTwoLayerLightOutside();
+	if( !filter || std::strstr( filter, "fovsweep" ) )    TestNarrowFovSplat();
 
 	std::cout << "Passed: " << passCount << "   Failed: " << failCount << std::endl;
 	return failCount == 0 ? 0 : 1;
