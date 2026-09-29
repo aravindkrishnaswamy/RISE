@@ -318,7 +318,8 @@ lambertian_luminaire_material
 {
 	name				warm_lum
 	exitance			pnt_warm_light
-	scale				180.0
+	# DL-320 (2026-09-28): 180 -> 84.  This panel is wound face-UP, so the scene below was lit by its BACK face, which next-event estimation and light subpaths ignored before DL-320; both faces now emit, and 84 (with cool_lum 140 -> 65) returns the glass and floor to their pre-DL-320 BDPT level.
+	scale				84.0
 	material			none
 }
 
@@ -326,7 +327,8 @@ lambertian_luminaire_material
 {
 	name				cool_lum
 	exitance			pnt_cool_light
-	scale				140.0
+	# DL-320 (2026-09-28): 140 -> 65, the same factor as warm_lum (see there).
+	scale				65.0
 	material			none
 }
 

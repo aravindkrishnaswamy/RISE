@@ -184,7 +184,7 @@ namespace RISE
 			//!              behavior.
 			//! `n == 0` maps to 128 (the historical default) rather than a cap
 			//! that would process zero vertices and return black.
-			void SetMaxPathDepth( unsigned int n ) { mMaxPathDepth = ( n == 0 ) ? 128 : n; }
+			void SetMaxPathDepth( unsigned int n ) { mMaxPathDepth = ( n == 0 ) ? kDefaultPathTracingMaxDepth : n; }
 
 			//! GUI render modes P2b `indirect` mode (docs/gui/RENDER_MODES.md
 			//! §3 Lighting): when true, suppresses the DIRECT contribution

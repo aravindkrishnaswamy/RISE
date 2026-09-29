@@ -926,8 +926,13 @@ static void SectionF( Fixtures& f )
 		  MakeComposite( *f.dSmooth, *f.dSmooth, 3, 3, 3, 3, 3, 0.0, *f.s0 ), true },
 		{ "F2 dielectric / composite(dielectric/white) -- the double-composite shape: the inner coat's delta reflection is a delta BOTTOM lobe (walker class)",
 		  MakeComposite( *f.dSmooth, *MakeComposite( *f.dSmooth, *f.lamb, 3, 3, 3, 3, 3, 0.0, *f.s0 ), 3, 3, 3, 3, 3, 0.0, *f.s0 ), true },
-		{ "F2b dielectric / polished(white, delta coat) -- KNOWN-DEFECT PIN [1.05, 1.15]: polished_material's GetBSDF() is the bare Lambertian its SPF does not sample (DL-285), so term (a) prices the wrong substrate",
-		  MakeComposite( *f.dSmooth, *f.polishedWhite, 3, 3, 3, 3, 3, 0.0, *f.s0 ), false },
+		// F2b was a KNOWN-DEFECT PIN at [1.05, 1.15] until DL-285 (2026-09-28):
+		// polished_material's GetBSDF() was the bare Lambertian its SPF does
+		// not sample, so term (a) priced the wrong substrate.  With the
+		// PolishedBRDF the bottom is one lossless function (tau F + Rd (1-F)
+		// at tau = Rd = 1), and the stack reads 0.996 / 0.995 -- gated at 1.
+		{ "F2b dielectric / polished(white, delta coat) -- lossless since DL-285 (the bottom's BSDF is the function its SPF samples)",
+		  MakeComposite( *f.dSmooth, *f.polishedWhite, 3, 3, 3, 3, 3, 0.0, *f.s0 ), true },
 		{ "F3 lossless translucent / white Lambertian",
 		  MakeComposite( *f.transLossless, *f.lamb, 3, 3, 3, 3, 3, 0.0, *f.s0 ), false },
 		{ "F4 translucent / red Lambertian (mat_wax_gold class)",
@@ -949,18 +954,8 @@ static void SectionF( Fixtures& f )
 				Check( std::fabs( s.mean - 1.0 ) <= std::max( 0.01, 5.0 * s.sem ),
 					std::string( "[F] " ) + c.name + " theta " + std::to_string( (int)kThetas[t] ) + " lossless -> 1" );
 			}
-			if( std::string( c.name ).compare( 0, 3, "F2b" ) == 0 ) {
-				// KNOWN-DEFECT PIN (DL-285, not this row's): polished_material's
-				// GetBSDF() is the bare Lambertian its SPF does not sample, so
-				// term (a) prices the wrong substrate and the stack reads over
-				// unity.  Pinned so it can neither silently worsen nor silently
-				// "improve" without this band being revisited.
-				Check( s.mean >= 1.05 && s.mean <= 1.15,
-					std::string( "[F] F2b (DL-285 known defect) theta " ) + std::to_string( (int)kThetas[t] ) + " pinned in [1.05, 1.15]" );
-			} else {
-				Check( s.mean <= 1.0 + std::max( 0.01, 5.0 * s.sem ),
-					std::string( "[F] " ) + c.name + " theta " + std::to_string( (int)kThetas[t] ) + " energy-bounded" );
-			}
+			Check( s.mean <= 1.0 + std::max( 0.01, 5.0 * s.sem ),
+				std::string( "[F] " ) + c.name + " theta " + std::to_string( (int)kThetas[t] ) + " energy-bounded" );
 		}
 		std::cout << "\n";
 		c.m->release();

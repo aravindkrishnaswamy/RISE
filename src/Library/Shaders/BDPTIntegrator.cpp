@@ -854,7 +854,8 @@ namespace
 	//
 	// PREMISES (doc §2).  (2) `IBSDF::value` and the SPF's `kray` describe
 	// ONE function -- the guide prices `value`, the kept lobes price
-	// `kray`; `polished_material` violates it (DL-285).  (3) 0 < a < 1
+	// `kray`; `polished_material` violated it until DL-285's PolishedBRDF
+	// (2026-09-28).  (3) 0 < a < 1
 	// where the kept technique owns mass the guide cannot reach (a delta
 	// lobe) -- enforced below through `GuidingOneSampleProbability`.
 	// (4) The continuation state must not depend on which technique chose
@@ -3840,11 +3841,25 @@ LuminaryRadiance( const BDPTVertex& vertex, const Vector3& dir, Tag tag )
 	}
 	RayIntersectionGeometric rig( Ray( vertex.position, dir ), nullRasterizerState );
 	PathVertexEval::PopulateRIGFromVertex( vertex, rig );
+	// DL-320: this is the LIGHT root evaluated toward an ARBITRARY
+	// direction (the s = 1 connection to an eye vertex, the t = 1 splat to
+	// the camera), not along the direction its subpath was sampled in.  A
+	// double-sided emitter radiates from the face toward `dir`, whichever
+	// face `SampleLight` happened to pick for the continuation; hand the
+	// emitter that face (and make the record agree with it).  A one-sided
+	// emitter keeps its winding normal and stays dark behind.
+	const Vector3 face = EmitterSides::FaceToward(
+		LightSampler::LuminaryIsTwoSided( vertex.pLuminary ), vertex.geomNormal, dir );
+	if( Vector3Ops::Dot( face, vertex.geomNormal ) < 0 ) {
+		rig.vNormal = -rig.vNormal;
+		rig.vGeomNormal = -rig.vGeomNormal;
+		rig.onb.FlipW();
+	}
 	if constexpr( SpectralValueTraits<Tag>::is_pel ) {
 		(void)tag;
-		return pEmitter->emittedRadiance( rig, dir, vertex.geomNormal );
+		return pEmitter->emittedRadiance( rig, dir, face );
 	} else {
-		return pEmitter->emittedRadianceNM( rig, dir, vertex.geomNormal, tag.nm );
+		return pEmitter->emittedRadianceNM( rig, dir, face, tag.nm );
 	}
 }
 
@@ -4279,9 +4294,15 @@ ConnectAndEvaluateImplCore(
 			if( eyeEnd.pMaterial ) {
 				const IEmitter* pEm = eyeEnd.pMaterial->GetEmitter();
 				if( pEm ) {
-					// Cosine-weighted hemisphere emission (one-sided)
-					const Scalar cosAtEmitter = Vector3Ops::Dot( eyeEnd.geomNormal, woFromEmitter );
-					emPdfDir = (cosAtEmitter > 0) ? (cosAtEmitter * INV_PI) : 0;
+					// Cosine-weighted emission: the density of
+					// `LightSampler::SampleLight`'s emission sampler, which
+					// for a double-sided emitter picks a face with
+					// probability 1/2 (DL-320).  `eyeEnd.geomNormal` is the
+					// ray-facing normal there, so the one-sided branch would
+					// double this density for the back face.
+					emPdfDir = EmitterSides::CosineEmissionPdf(
+						LightSampler::LuminaryIsTwoSided( eyeEnd.pObject ),
+						eyeEnd.geomNormal, woFromEmitter );
 				}
 			}
 
@@ -4839,9 +4860,12 @@ ConnectAndEvaluateImplCore(
 		{
 			Scalar emissionPdfDir = 0;
 			if( lightStart.pLuminary ) {
-				// Mesh luminary: cosine-weighted hemisphere emission (one-sided)
-				const Scalar cosAtLight = Vector3Ops::Dot( lightStart.geomNormal, -dirToLight );
-				emissionPdfDir = (cosAtLight > 0) ? (cosAtLight * INV_PI) : 0;
+				// Mesh luminary: cosine-weighted emission, halved per face
+				// for a double-sided emitter (DL-320) -- the same function
+				// `LightSampler::SampleLight` draws from.
+				emissionPdfDir = EmitterSides::CosineEmissionPdf(
+					LightSampler::LuminaryIsTwoSided( lightStart.pLuminary ),
+					lightStart.geomNormal, -dirToLight );
 			} else if( lightStart.pLight ) {
 				emissionPdfDir = lightStart.pLight->pdfDirection( -dirToLight );
 			} else if( envCase_s1 ) {
@@ -5072,8 +5096,11 @@ ConnectAndEvaluateImplCore(
 			{
 				Scalar emPdfDir = 0;
 				if( lightEnd.pLuminary ) {
-					const Scalar cosEmit = Vector3Ops::Dot( lightEnd.geomNormal, dirToCam );
-					emPdfDir = (cosEmit > 0) ? (cosEmit * INV_PI) : 0;
+					// DL-320: two-faced for a double-sided emitter, the same
+					// density `LightSampler::SampleLight` draws from.
+					emPdfDir = EmitterSides::CosineEmissionPdf(
+						LightSampler::LuminaryIsTwoSided( lightEnd.pLuminary ),
+						lightEnd.geomNormal, dirToCam );
 				} else if( lightEnd.pLight ) {
 					emPdfDir = lightEnd.pLight->pdfDirection( dirToCam );
 				}

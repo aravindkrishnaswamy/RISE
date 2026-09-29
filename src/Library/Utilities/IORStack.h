@@ -130,7 +130,15 @@ namespace RISE
 		};
 
 		MyIORStack iorstack;
-		mutable const IObject* pCurrentObject;
+		//! The object the ray is about to shade (set by the hit that owns
+		//! this stack, read by containsCurrent()/push()/pop()).  Part of
+		//! the stack's observable state, so NOT `mutable` (DL-315): it used
+		//! to be, and RayCaster::CastRay wrote each hit's object into its
+		//! CALLER's `const IORStack&`, so after PT's SSS continuation hit
+		//! an enclosure, the caller's own vertex read `containsCurrent()`
+		//! for the enclosure and absorbed its surface reflection.  A caller
+		//! that needs a different current object works on its own copy.
+		const IObject* pCurrentObject;
 
 	public:
 		// Explicit to prevent implicit conversion from Scalar / integer
@@ -224,8 +232,9 @@ namespace RISE
 			return iorstack.top().pObj;
 		}
 
-		// Sets the current object
-		inline void SetCurrentObject( const IObject* pObj ) const
+		// Sets the current object.  Non-const since DL-315 -- see
+		// pCurrentObject's doc.
+		inline void SetCurrentObject( const IObject* pObj )
 		{
 			if( pObj ) {
 				pCurrentObject = pObj;

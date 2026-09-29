@@ -30,6 +30,9 @@
 //    54-56. GGX conductor and thin-film conductor controls — the
 //           spec-only physical conductor plus diffuse/specular mixtures
 //           that must remain energy-bounded at every furnace angle
+//    60-62. polished_material with a GLOSSY coat (DL-285) -- the
+//           reciprocal coat + normalized substrate, gated against the
+//           model's own predicted curve
 //
 //  Build (matches existing GGXWhiteFurnaceTest / SPFBSDFConsistencyTest
 //  patterns):
@@ -1666,8 +1669,20 @@ int main()
 	//    the actual predicted number (not just an energy band), so a regression
 	//    that makes `tau` a no-op would still have to land within 0.002 of 1.0
 	//    to pass, which a broken deficit computation would not do at grazing.
+	//
+	//    DL-285 (2026-09-28) RE-DERIVED rows 8-10.  polished_material's
+	//    coat is now the RECIPROCAL lobe tau min(F(ci),F(co)) P 2/(ci+co)
+	//    (PolishedBRDF.h), whose albedo at the peak equals tau F(ci) but
+	//    falls slightly below it wherever the lobe reaches co != ci; the
+	//    substrate keeps Rd (1 - F(ci)) exactly.  At scattering 200000 the
+	//    lobe is 0.13 deg wide, so only the 60/80 deg columns move, by the
+	//    new model's own quadrature (independent Python, 4000 x 2048 nodes
+	//    about the mirror direction): coat albedo {0.02006, 0.02110,
+	//    0.05891, 0.34510} against F = {0.02006, 0.02111, 0.05913, 0.34692}.
+	//    Predicted rho = tau coat + (1 - F); measured (100000 samples) sits
+	//    within 0.0005 of it on every column.
 	{
-		static const double kPredicted8[NUM_THETA] = { 1.0, 1.0, 1.0, 1.0 };
+		static const double kPredicted8[NUM_THETA] = { 1.0000, 1.0000, 0.9998, 0.9982 };
 		ConfigReport& r = addPredicted( "8. Polished, tau=1.0 (full coverage)", 0,
 		    kPredicted8, 0.002 );
 		Run( r, *polishedTau1_0 );
@@ -1691,9 +1706,9 @@ int main()
 	//    energy band, which would pass both a no-op `tau` (rho -> 1.0) and an
 	//    unbounded/inverted deficit (rho -> 0.5 or below) without complaint.
 	{
-		static const double kPredicted9[NUM_THETA] = { 0.9900, 0.9894, 0.9704, 0.8265 };
+		static const double kPredicted9[NUM_THETA] = { 0.9900, 0.9894, 0.9703, 0.8256 };
 		ConfigReport& r = addPredicted( "9. Polished, tau=0.5 (worst-case dip)",
-		    "Rd*Rs*(1-c) deficit, c=0.5: predicted rho={0.9900,0.9894,0.9704,0.8265}, measured {0.9900,0.9894,0.9704,0.8265} -- matches to 0.0001",
+		    "Rd*Rs*(1-c) deficit, c=0.5, DL-285 reciprocal coat: predicted rho={0.9900,0.9894,0.9703,0.8256}, measured {0.9902,0.9894,0.9708,0.8256}",
 		    kPredicted9, 0.002 );
 		Run( r, *polishedTau0_5 );
 	}
@@ -1711,9 +1726,9 @@ int main()
 	//     kPostureMatchesPrediction, eps=0.002 around the stated prediction --
 	//     same regression-gate reasoning as #9.
 	{
-		static const double kPredicted10[NUM_THETA] = { 0.9980, 0.9979, 0.9941, 0.9653 };
+		static const double kPredicted10[NUM_THETA] = { 0.9980, 0.9979, 0.9939, 0.9637 };
 		ConfigReport& r = addPredicted( "10. Polished, tau=0.9 (recipe pooled value)",
-		    "Rd*Rs*(1-c) deficit, c=0.9 (recipe's pooled tau): predicted rho={0.9980,0.9979,0.9941,0.9653}, measured {0.9980,0.9979,0.9941,0.9653} -- matches to 0.0001",
+		    "Rd*Rs*(1-c) deficit, c=0.9 (recipe's pooled tau), DL-285 reciprocal coat: predicted rho={0.9980,0.9979,0.9939,0.9637}, measured {0.9979,0.9980,0.9940,0.9639}",
 		    kPredicted10, 0.002 );
 		Run( r, *polishedTau0_9 );
 	}
@@ -3026,6 +3041,54 @@ int main()
 		dSmoothMat->release();
 		dScat0Mat->release();
 		sScatDefault->release();
+	}
+
+	// 60-62. polished_material with a GLOSSY coat (DL-285, 2026-09-28).
+	//     Rows 8-10 run a near-mirror coat (scattering 200000); these run
+	//     the lobe WIDE, where the reciprocal coat's shape matters, at
+	//     tau = Rd = 1.  PolishedBRDF.h proves rho <= tau F(ci) + Rd (1 -
+	//     F(ci)) <= 1 (the pairing wo <-> rotation by pi about the mirror
+	//     direction), and the substrate's directional albedo is exactly
+	//     1 - F(ci), so each row is gated against the model's own
+	//     predicted curve: coat albedo by an independent Python quadrature
+	//     of the SAME formula (4000 x 2048 nodes about the mirror
+	//     direction, HG mass in closed form) plus 1 - F(ci).  Predictions
+	//     (coat / F): N 20, ior 1.5: {0.03905/0.04000, 0.03994/0.04152,
+	//     0.06932/0.08919, 0.19560/0.38770}; N 1, ior 1.33: {0.01550,
+	//     0.01556, 0.02656, 0.07761} over F {0.02006, 0.02111, 0.05913,
+	//     0.34692}; HG g 0.6, ior 1.5: {0.03293, 0.03327, 0.05082, 0.12350}.
+	//     eps 0.004 (4 sigma of the per-angle MC mean at these krays).
+	{
+		UniformScalarPainter* sScat20 = new UniformScalarPainter( 20.0 );  sScat20->addref();
+		UniformScalarPainter* sScat1  = new UniformScalarPainter( 1.0 );   sScat1->addref();
+		UniformScalarPainter* sG06    = new UniformScalarPainter( 0.6 );   sG06->addref();
+		PolishedSPF* polN20 = new PolishedSPF( *one, *sOne, *sIor,    *sScat20, false );  polN20->addref();
+		PolishedSPF* polN1  = new PolishedSPF( *one, *sOne, *sIor133, *sScat1,  false );  polN1->addref();
+		PolishedSPF* polHG  = new PolishedSPF( *one, *sOne, *sIor,    *sG06,    true  );  polHG->addref();
+		{
+			static const double kPred60[NUM_THETA] = { 0.9990, 0.9984, 0.9801, 0.8079 };
+			ConfigReport& r = addPredicted( "60. Polished glossy N=20, tau=Rd=1, ior 1.5 (DL-285)",
+			    "reciprocal coat + (1-F(ci))(1-F(co))/T_avg substrate; bounded by tau F + Rd (1-F)", kPred60, 0.004 );
+			Run( r, *polN20 );
+		}
+		{
+			static const double kPred61[NUM_THETA] = { 0.9954, 0.9944, 0.9674, 0.7307 };
+			ConfigReport& r = addPredicted( "61. Polished widest N=1, tau=Rd=1, ior 1.33 (DL-285)",
+			    "the reciprocal coat's largest departure from tau F(ci)", kPred61, 0.004 );
+			Run( r, *polN1 );
+		}
+		{
+			static const double kPred62[NUM_THETA] = { 0.9929, 0.9917, 0.9616, 0.7358 };
+			ConfigReport& r = addPredicted( "62. Polished HG g=0.6, tau=Rd=1, ior 1.5 (DL-285)",
+			    "forward-truncated HG coat (the pre-DL-285 retry loop was UB; its optimized build drew the untruncated lobe)", kPred62, 0.004 );
+			Run( r, *polHG );
+		}
+		polHG->release();
+		polN1->release();
+		polN20->release();
+		sG06->release();
+		sScat1->release();
+		sScat20->release();
 	}
 
 	PrintReport( reports );

@@ -199,6 +199,8 @@ namespace RISE
 
 			void UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const override;
 			Scalar GetArea() const override;
+			//! DL-320: the internal mesh flips back-face hits when m_bDoubleSided (see IGeometry).
+			bool IsDoubleSided() const override { return m_bDoubleSided; }
 
 			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const override;
 

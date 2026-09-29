@@ -52,7 +52,7 @@ void GlobalSpectralPhotonTracer::TracePhoton(
 	const Scalar nm,
 	bool bStorePhoton,
 	GlobalSpectralPhotonMap& pPhotonMap,
-	const IORStack& ior_stack,								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack,								///< [in] Index of refraction stack (not modified; DL-315)
 	const unsigned int depth								///< [in] Recursion depth (0 = primary photon emitted from the light)
 	) const
 {
@@ -97,8 +97,11 @@ void GlobalSpectralPhotonTracer::TracePhoton(
 			ri.geometric.ambientIOR = ( ambIOR > 0.0 ) ? ambIOR : 1.0;
 		}
 
-		// Set the current object on the IOR stack
-		ior_stack.SetCurrentObject( ri.pObject );
+		// DL-315: this hit's current object lives on a COPY; the caller's
+		// stack is `const` and is no longer written through (IORStack's
+		// pCurrentObject used to be `mutable`).
+		IORStack hitStack( ior_stack );
+		hitStack.SetCurrentObject( ri.pObject );
 
 		ISPF* pSPF = ri.pMaterial->GetSPF();
 
@@ -115,7 +118,7 @@ void GlobalSpectralPhotonTracer::TracePhoton(
 		// Scaling here too would cancel the non-symmetry and put every
 		// gather/merge that pairs a photon with an eye vertex back where
 		// it was.  See docs/REFRACTIVE_RADIANCE_SCALING.md.
-		pSPF->ScatterNM( ri.geometric, samplerWrapper, nm, scattered, ior_stack );
+		pSPF->ScatterNM( ri.geometric, samplerWrapper, nm, scattered, hitStack );
 
 			bool bDiffuseComponentAvailable = false;
 			for( unsigned int i=0; i<scattered.Count(); i++ ) {
@@ -134,14 +137,14 @@ void GlobalSpectralPhotonTracer::TracePhoton(
 				for( unsigned int i=0; i<scattered.Count(); i++ ) {
 					ScatteredRay& scat = scattered[i];
 					scat.ray.Advance( 1e-8 );
-					TracePhoton( scat.ray, power*scat.krayNM*PathVertexEval::ImportanceShadingNormalFactor( ri.geometric.vNormal, ri.geometric.vGeomNormal, -ray.Dir(), scat.ray.Dir() ), nm, scat.type==ScatteredRay::eRayDiffuse, pPhotonMap, scat.ior_stack?*scat.ior_stack:ior_stack, depth+1 );
+					TracePhoton( scat.ray, power*scat.krayNM*PathVertexEval::ImportanceShadingNormalFactor( ri.geometric.vNormal, ri.geometric.vGeomNormal, -ray.Dir(), scat.ray.Dir() ), nm, scat.type==ScatteredRay::eRayDiffuse, pPhotonMap, scat.ior_stack?*scat.ior_stack:hitStack, depth+1 );
 				}
 			} else {
 				Scalar selectedProbability=0;
 				ScatteredRay* pScat = scattered.RandomlySelect( random.CanonicalRandom(), true, &selectedProbability );
 				if( pScat ) {
 					pScat->ray.Advance( 1e-8 );
-					TracePhoton( pScat->ray, power*pScat->krayNM*(PathVertexEval::ImportanceShadingNormalFactor( ri.geometric.vNormal, ri.geometric.vGeomNormal, -ray.Dir(), pScat->ray.Dir() )/selectedProbability), nm, pScat->type==ScatteredRay::eRayDiffuse, pPhotonMap, pScat->ior_stack?*pScat->ior_stack:ior_stack, depth+1 );
+					TracePhoton( pScat->ray, power*pScat->krayNM*(PathVertexEval::ImportanceShadingNormalFactor( ri.geometric.vNormal, ri.geometric.vGeomNormal, -ray.Dir(), pScat->ray.Dir() )/selectedProbability), nm, pScat->type==ScatteredRay::eRayDiffuse, pPhotonMap, pScat->ior_stack?*pScat->ior_stack:hitStack, depth+1 );
 				}
 			}
 		}

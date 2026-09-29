@@ -18,6 +18,7 @@
 #include "../Interfaces/ILightPriv.h"
 #include "../Interfaces/IMaterial.h"
 #include "../Interfaces/IEmitter.h"
+#include "../Interfaces/IGeometry.h"
 #include "../Interfaces/IRayCaster.h"
 #include "../Rendering/RayCaster.h"		// concrete RayCaster — dynamic_cast target for transparent (Fresnel-attenuated) shadow rays
 #include "../Utilities/GeometricUtilities.h"
@@ -976,6 +977,15 @@ Point3 LightSampler::EmitterObjectPoint(
 	return Point3Ops::Transform( pLum->GetFinalInverseTransformMatrix(), ptWorld );
 }
 
+bool LightSampler::LuminaryIsTwoSided( const IObject* pLum )
+{
+	if( !pLum ) {
+		return false;
+	}
+	const IGeometry* pGeom = pLum->GetGeometry();
+	return pGeom && pGeom->IsDoubleSided();
+}
+
 void LightSampler::ApplyEmitterSurface(
 	RayIntersectionGeometric&		rig,
 	const EmitterSurfacePayload&	payload
@@ -1160,6 +1170,7 @@ void LightSampler::Prepare(
 				entry.lumIndex = 0;
 				entry.exitance = exitance;
 				entry.position = l->position();
+				entry.twoSided = false;
 				lightEntries.push_back( entry );
 			}
 		}
@@ -1185,7 +1196,15 @@ void LightSampler::Prepare(
 		if( pEmitter )
 		{
 			const Scalar area = luminaries[li].pLum->GetArea();
-			const RISEPel power = pEmitter->averageRadiantExitance() * area;
+			// DL-320: a double-sided luminary radiates from BOTH faces, so its
+			// total power -- the selection weight the alias table, the light
+			// BVH and RIS all read, and the partner `pdfSelect` every hit-side
+			// MIS weight reads back through `PdfSelectLuminary` -- is twice
+			// the one-sided `M * A`.  Any PMF would be unbiased as long as
+			// both sides read the same one; this one is the physical power.
+			const bool twoSided = LuminaryIsTwoSided( luminaries[li].pLum );
+			const RISEPel power = pEmitter->averageRadiantExitance() * area *
+				EmitterSides::FaceCount( twoSided );
 			const Scalar exitance = ColorMath::MaxValue( power );
 			if( exitance > 0 )
 			{
@@ -1193,6 +1212,7 @@ void LightSampler::Prepare(
 				entry.pLight = 0;
 				entry.lumIndex = li;
 				entry.exitance = exitance;
+				entry.twoSided = twoSided;
 
 				// Sample a representative position on the luminary surface
 				Point3 repPos;
@@ -1620,17 +1640,43 @@ bool LightSampler::SampleLight(
 		// pdfPosition = 1 / area (uniform sampling on surface)
 		sample.pdfPosition = (area > 0) ? (Scalar(1.0) / area) : 0;
 
-		// Build an orthonormal basis around the surface normal
+		// DL-320: which FACE this sample leaves from.  A one-sided emitter
+		// has one face, the winding normal `UniformRandomPoint` returned.  A
+		// double-sided one (`entry.twoSided`) radiates from both, exactly as
+		// every strategy that HITS it sees it, so the face is chosen with
+		// probability 1/2 -- by remapping the FIRST direction coordinate
+		// rather than drawing a new one, so the sampler's dimension budget is
+		// unchanged and a one-sided emitter's draw is bit-identical.
+		// `sample.normal` becomes the EMITTING face's normal: every
+		// consumer that dots it with `sample.direction` (the light-subpath
+		// root's cosine, `Le`, the BDPT/VCM rebuilds) then sees the same
+		// one-face record it always did.  Consumers that evaluate this point
+		// toward some OTHER direction (BDPT s = 1 / t = 1, VCM NEE) resolve
+		// the face for that direction themselves (`EmitterSides::FaceToward`).
+		const Vector3 windingNormal = sample.normal;
+		Point2 dirRand = sampler.Get2D();
+		if( entry.twoSided ) {
+			if( dirRand.x < Scalar( 0.5 ) ) {
+				dirRand.x = dirRand.x * Scalar( 2 );
+			} else {
+				dirRand.x = dirRand.x * Scalar( 2 ) - Scalar( 1 );
+				sample.normal = -sample.normal;
+			}
+		}
+
+		// Build an orthonormal basis around the emitting face's normal
 		// and sample a cosine-weighted hemisphere direction
 		OrthonormalBasis3D onb;
 		onb.CreateFromW( sample.normal );
 
-		const Point2 dirRand = sampler.Get2D();
 		sample.direction = GeometricUtilities::CreateDiffuseVector( onb, dirRand );
 
-		// pdfDirection = cos(theta) / pi for cosine-weighted hemisphere
-		const Scalar cosTheta = Vector3Ops::Dot( sample.direction, sample.normal );
-		sample.pdfDirection = (cosTheta > 0) ? (cosTheta * INV_PI) : 0;
+		// pdfDirection = cos(theta) / pi for a cosine-weighted hemisphere,
+		// halved for a double-sided emitter (the face choice): the SAME
+		// function `EmitterSides::CosineEmissionPdf` every hit-side MIS
+		// partner evaluates.
+		sample.pdfDirection = EmitterSides::CosineEmissionPdf(
+			entry.twoSided, windingNormal, sample.direction );
 
 		// THE SHADING PAYLOAD for this sampled point (slice S3 of
 		// docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5).  Probed ONCE
@@ -1654,9 +1700,14 @@ bool LightSampler::SampleLight(
 		// Gated inside the probe; `valid` stays false on every delta light
 		// and env sample (this branch is the only one that can fill it) and
 		// on refusal, and `ApplyEmitterSurface` is then a no-op.
+		//
+		// Probed along the WINDING normal, not the emitting face's: the
+		// payload describes the surface point, which is the same point from
+		// either face, and this keeps it identical to the pre-DL-320 record
+		// (and to the NEE arms, which probe along the winding normal too).
 		ProbeEmitterSurface(
 			lumEntry.pLum, scene.GetObjects(),
-			sample.position, sample.normal, sample.surface );
+			sample.position, windingNormal, sample.surface );
 
 		// `Po`, on the other hand, is NOT gated and costs no ray -- it is
 		// read by painters that register no signal demand.  Carried on the
@@ -2524,6 +2575,23 @@ RISEPel LightSampler::EvaluateDirectLighting(
 			// receiving BSDF.
 			const Scalar cosSurface = bFullSphere ?
 				std::fabs( cosSurfaceSigned ) : cosSurfaceSigned;
+			// DL-320: the FACE of the luminary this sample leaves from toward
+			// the receiver.  A double-sided emitter radiates from both faces
+			// (every strategy that HITS it sees the ray-facing normal), so the
+			// face toward `-vToLight` emits; a one-sided emitter keeps the
+			// winding normal and its back face stays dark (`cosLight <= 0`).
+			// Area-measure density is unchanged (1/area); the hit-side MIS
+			// partner (`fabs(cosLight)`, PathTracingIntegrator.cpp) already
+			// describes this two-faced density.
+			//
+			// `lumNormal` is flipped IN PLACE to that face, so every later use
+			// (the record, `Le`, the MIS cosine) reads the emitting face and a
+			// one-sided luminary runs the pre-DL-320 code unchanged; the
+			// surface-payload probe keeps the winding normal (`lumWinding`).
+			const Vector3 lumWinding = lumNormal;
+			if( entry.twoSided && Vector3Ops::Dot( -vToLight, lumNormal ) < 0 ) {
+				lumNormal = -lumNormal;
+			}
 			const Scalar cosLight = Vector3Ops::Dot( -vToLight, lumNormal );
 
 			// Optimal MIS training: count every NEE attempt including
@@ -2574,12 +2642,13 @@ RISEPel LightSampler::EvaluateDirectLighting(
 					// Emitted radiance at sampled point
 					RayIntersectionGeometric lumri( Ray( ptOnLum, -vToLight ), nullRasterizerState );
 					lumri.vNormal = lumNormal;
-					// `lumNormal` is `UniformRandomPoint`'s normal: the
-					// INTERPOLATED VERTEX normal on a mesh luminary that has
-					// per-vertex normals, the face normal when it has none
-					// (see `GeometricUtilities::PointOnTriangle`).  Mirror it
-					// so the record is self-consistent; no modifier runs
-					// here to make the two differ.
+					// `lumNormal` is `UniformRandomPoint`'s normal (negated
+					// only for a double-sided emitter's back face, DL-320):
+					// the INTERPOLATED VERTEX normal on a mesh luminary that
+					// has per-vertex normals, the face normal when it has
+					// none (see `GeometricUtilities::PointOnTriangle`).
+					// Mirror it so the record is self-consistent; no
+					// modifier runs here to make the two differ.
 					lumri.vGeomNormal = lumNormal;
 					lumri.ptCoord = lumCoord;
 					lumri.onb.CreateFromW( lumNormal );
@@ -2638,7 +2707,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
 						ProbeEmitterSurface(
 							lumEntry.pLum,
 							pPreparedScene ? pPreparedScene->GetObjects() : 0,
-							ptOnLum, lumNormal, lumSurface );
+							ptOnLum, lumWinding, lumSurface );
 						ApplyEmitterSurface( lumri, lumSurface );
 					}
 
@@ -3253,6 +3322,23 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 		// the RR `estimate`, and `contrib`.  `cosLight` stays signed.
 		const Scalar cosSurface = bFullSphere ?
 			std::fabs( cosSurfaceSigned ) : cosSurfaceSigned;
+		// DL-320: the FACE of the luminary this sample leaves from toward
+		// the receiver.  A double-sided emitter radiates from both faces
+		// (every strategy that HITS it sees the ray-facing normal), so the
+		// face toward `-vToLight` emits; a one-sided emitter keeps the
+		// winding normal and its back face stays dark (`cosLight <= 0`).
+		// Area-measure density is unchanged (1/area); the hit-side MIS
+		// partner (`fabs(cosLight)`, PathTracingIntegrator.cpp) already
+		// describes this two-faced density.
+		//
+		// `lumNormal` is flipped IN PLACE to that face, so every later use
+		// (the record, `Le`, the MIS cosine) reads the emitting face and a
+		// one-sided luminary runs the pre-DL-320 code unchanged; the
+		// surface-payload probe keeps the winding normal (`lumWinding`).
+		const Vector3 lumWinding = lumNormal;
+		if( entry.twoSided && Vector3Ops::Dot( -vToLight, lumNormal ) < 0 ) {
+			lumNormal = -lumNormal;
+		}
 		const Scalar cosLight = Vector3Ops::Dot( -vToLight, lumNormal );
 
 		// Optimal MIS training: count every spectral NEE attempt
@@ -3301,7 +3387,8 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 
 		RayIntersectionGeometric lumri( Ray( ptOnLum, -vToLight ), nullRasterizerState );
 		lumri.vNormal = lumNormal;
-		// `lumNormal` is `UniformRandomPoint`'s normal -- the INTERPOLATED
+		// `lumNormal` is `UniformRandomPoint`'s normal (negated only for a
+		// double-sided emitter's back face, DL-320) -- the INTERPOLATED
 		// VERTEX normal on a mesh luminary with per-vertex normals, the face
 		// normal otherwise (see the RGB twin above and
 		// `GeometricUtilities::PointOnTriangle`); mirror it so the record is
@@ -3320,7 +3407,7 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 			ProbeEmitterSurface(
 				lumEntry.pLum,
 				pPreparedScene ? pPreparedScene->GetObjects() : 0,
-				ptOnLum, lumNormal, lumSurface );
+				ptOnLum, lumWinding, lumSurface );
 			ApplyEmitterSurface( lumri, lumSurface );
 		}
 		lumri.ptObjIntersec = EmitterObjectPoint(

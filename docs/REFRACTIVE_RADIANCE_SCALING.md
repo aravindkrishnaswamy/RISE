@@ -1012,7 +1012,10 @@ entirely.
   fixture's quad was wound away from the scene.  Flipped, it reads
   BDPT/PT 0.9988 and VCM/PT 0.9927.  The convention doc already says a
   double-sided quad emits from both faces, so the HIT side is right and
-  NEE and light-subpath emission are the sides to fix.
+  NEE and light-subpath emission are the sides to fix.  Fixed the same
+  day (slice `debt-dl320`, docs/DL320_DOUBLE_SIDED_EMITTER.md): with its
+  ORIGINAL winding that fixture now reads BDPT/PT 0.9996 and VCM/PT 0.9981
+  at depth 32 (salted n = 4).
 
 **Not explained here, recorded.**  The "smaller BDPT deficits" of the
 DL-247b and DL-283 reviews do not depend on depth.  They are BDPT-only,
@@ -1039,6 +1042,16 @@ scattering box under BDPT at `max_light_depth` 0/1/2/20 reads
 0.674/0.832/0.864/0.872 against PT 0.915, while the same box with no
 medium is flat (0.88226 vs 0.88229).  Row C is immune: only s = 0 carries
 weight there.
+
+**Sister-suite closure (DL-365, 2026-09-28):** `tests/VCMStrategyBalanceTest.cpp`'s
+topology H and I (the file's own submerged-floor/TIR-trap scenes) carried
+this section's exact depth-5 mechanism and are now fixed the same way --
+`max_eye_depth`/`max_light_depth` raised to 16, every render salted
+(matching this file's `RenderAndComputeStats`), bands re-derived from
+measured sd; the file's other depth-3/depth-5 pairs were audited and left
+unchanged where genuinely converged.  See the DL-365/DL-366/DL-367 rows
+in [docs/DEBT_LEDGER.md](DEBT_LEDGER.md) for the full sweep and two
+salting-exposed sibling findings (neither a depth-cap issue).
 
 ## 12. Cross-references
 

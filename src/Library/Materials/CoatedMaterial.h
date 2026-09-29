@@ -256,8 +256,9 @@ namespace RISE
 			//! Rebind for the interactive editor.  Only the BRDF is
 			//! touched -- CoatedSPF reads every coat parameter back
 			//! through it, so there is no second copy to keep in
-			//! lockstep (contrast GGXMaterial / PolishedMaterial, which
-			//! must forward to BOTH their BRDF and their SPF).
+			//! lockstep (contrast GGXMaterial, which must forward to BOTH
+			//! its BRDF and its SPF; PolishedMaterial shares one painter
+			//! set the same way since DL-285).
 			//!
 			//! `base` is deliberately NOT rebindable: it is a MATERIAL,
 			//! not a painter, so it has no MaterialSlotRef kind, and

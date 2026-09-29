@@ -70,6 +70,53 @@ namespace RISE
 			const Point2& random										///< [in] Two random variables which determine the perturbation of the photon emmision vector
 			) const	= 0;
 	};
+
+	//! DL-320: the SIDEDNESS of an area emitter, shared by every strategy
+	//! that samples or prices one.  docs/DL320_DOUBLE_SIDED_EMITTER.md.
+	//!
+	//! An `IEmitter` is one-sided about the normal it is HANDED
+	//! (`LambertianEmitter::emittedRadiance` returns 0 when
+	//! `Dot(out, N) <= 0`).  On geometry whose `IGeometry::IsDoubleSided()`
+	//! is true a HIT hands it the RAY-FACING normal, so the emitter shines
+	//! from both faces for every strategy that hits it.  Every strategy
+	//! that instead SAMPLES a point on it (NEE, a light-subpath root, a
+	//! photon) only has the winding normal `UniformRandomPoint` returned,
+	//! and must turn it into the same two-faced source with these helpers:
+	//!
+	//!   * FaceToward -- the face an outgoing direction leaves from.  Hand
+	//!     it to `emittedRadiance{,NM}` and to any per-face record.
+	//!   * CosineEmissionPdf -- the solid-angle density of the light-
+	//!     subpath emission sampler: a cosine lobe about the winding normal
+	//!     for a one-sided emitter; for a two-sided one, a face chosen with
+	//!     probability 1/2 and a cosine lobe about it, i.e. |cos|/(2 pi).
+	//!     The hit-side MIS partners (BDPT s = 0, s = 1, t = 1; VCM S0 and
+	//!     NEE) must use the SAME function the sampler draws from.
+	//!   * FaceCount -- how many faces radiate: the emitter's total power
+	//!     (selection PMFs, photon budgets) is `M * A * FaceCount`.
+	//!
+	//! With `twoSided == false` every helper is the pre-DL-320 one-sided
+	//! expression, bit for bit.
+	namespace EmitterSides
+	{
+		inline Vector3 FaceToward( const bool twoSided, const Vector3& n, const Vector3& out )
+		{
+			return ( twoSided && Vector3Ops::Dot( out, n ) < 0 ) ? -n : n;
+		}
+
+		inline Scalar CosineEmissionPdf( const bool twoSided, const Vector3& n, const Vector3& out )
+		{
+			const Scalar c = Vector3Ops::Dot( n, out );
+			if( twoSided ) {
+				return ( c < 0 ? -c : c ) * INV_PI * Scalar( 0.5 );
+			}
+			return ( c > 0 ) ? ( c * INV_PI ) : Scalar( 0 );
+		}
+
+		inline Scalar FaceCount( const bool twoSided )
+		{
+			return twoSided ? Scalar( 2 ) : Scalar( 1 );
+		}
+	}
 }
 
 #endif

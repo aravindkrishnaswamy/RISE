@@ -129,9 +129,27 @@
 #include "../src/Library/Interfaces/IRasterImage.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
+#include "../src/Library/Utilities/SobolSampler.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+//! DL-365: per-render Sobol VALUE salt, DL-308's template
+//! (tests/RefractiveRadianceScalingTest.cpp).  Without it, every render
+//! of one scene reuses the IDENTICAL Sobol' points (the pixel seed is a
+//! function of the pixel alone) -- `std::srand` alone only perturbs libc
+//! `rand()`, which this file's renders never consult for pixel sampling,
+//! so two "independent" runs of the same topology were bit-identical
+//! draws from one QMC point set and their spread understated the true
+//! render-to-render variance by omitting the QMC error entirely (the
+//! mechanism that let topology H flip red/green with the unsalted
+//! pattern: DL-365).  `g_seedBase` is overridable via argv[1] so a
+//! caller can request an independent salted sample of the whole suite,
+//! exactly as RefractiveRadianceScalingTest's `main` does.
+static const unsigned int kDefaultSeedBase = 1729u;
+static unsigned int g_seedBase = kDefaultSeedBase;
+static unsigned int g_renderIndex = 0;
+static const uint32_t kSaltTag = 0x365u;
 
 namespace RISE
 {
@@ -309,11 +327,20 @@ static ImageStats RenderAndComputeStats( const char* scenePath )
 	GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "test capture output" );
 	pJob->GetRasterizer()->AddRasterizerOutput( pCap );
 
-	// Fresh libc seed per render; worker scheduling still makes repeats
-	// non-bit-reproducible. Repeat averages must not reuse one seed.
-	static unsigned renderIndex = 0;
-	std::srand(1729u + renderIndex++);
+	// DL-365: fresh libc seed AND a fresh Sobol' value salt per render.
+	// `std::srand` alone (the pre-DL-365 state of this function) leaves
+	// every render of a scene drawing the IDENTICAL Sobol' points --
+	// worker-thread scheduling still makes float summation order
+	// non-bit-reproducible, but that noise is orders of magnitude
+	// smaller than the QMC error a real independent sample carries.  The
+	// salt makes every render here an independent randomized-QMC
+	// replicate, exactly as tests/RefractiveRadianceScalingTest.cpp and
+	// tests/MediumInsideOutsideInvariantTest.cpp already do.
+	const uint32_t salt = SobolSequence::HashCombine( g_seedBase + g_renderIndex, kSaltTag );
+	SobolSamplerTestHooks::ValueSalt().store( salt );
+	std::srand( g_seedBase + g_renderIndex++ );
 	const bool bRendered = pJob->Rasterize();
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
 	if( !bRendered ) {
 		safe_release( pCap );
 		safe_release( pJob );
@@ -512,6 +539,17 @@ static const char* kRasterizerPT =
 // the configuration that revealed the foundSpecular delta-light bug —
 // without the VCMRasterizerBase fix, the auto-radius would activate VM
 // on these scenes and produce visible splotches that fail this test.
+//
+// DL-365 AUDIT (2026-09-28): this depth-3 budget drives topologies A/B/C
+// above, whose scene is one flat quad directly lit by the light (no
+// second surface exists to bounce off), so the only physically possible
+// paths are camera->quad->light -- depth 3 is already headroom, not a
+// cap. Confirmed by measurement, not just the geometry argument:
+// topology C ("mixed delta+mesh lights", the row with the largest
+// VCM/PT gap in this group) reads mean 0.9628 (sd 0.31%) at depth 3 and
+// 0.9611 (sd 0.20%) at depth 16, salted n=4 each -- 0.69 pooled sd
+// apart, i.e. the same VCM auto-radius/merge-density characteristic at
+// both depths, not a truncation.  Left at depth 3.
 static const char* kRasterizerVCM =
 	"standard_shader\n"
 	"{\n"
@@ -637,6 +675,15 @@ static const Tolerances kStrictTolerances{ 0.08, 0.25, 1.00 };
 // PT is the trusted reference; VCM must converge to the same image
 // distribution for non-caustic scenes.
 //////////////////////////////////////////////////////////////////////
+//! A tolerance as a percent label ("0.5", "8") -- `int( tol * 100 )`
+//! printed a 0.5 % band as "0%".
+static std::string PercentLabel( const double tol )
+{
+	char buf[32];
+	std::snprintf( buf, sizeof( buf ), "%g", tol * 100.0 );
+	return std::string( buf );
+}
+
 static void RunTopologyTest(
 	const char* topologyName,
 	const std::string& sceneCommonBlock,
@@ -685,7 +732,7 @@ static void RunTopologyTest(
 	const bool maxMatch  = ChannelsAgree( pt.max,  vcm.max,  tol.maxTol,  absFloor );
 
 	Check( meanMatch, ( std::string("VCM mean within ")
-		+ std::to_string(int(tol.meanTol*100)) + "% of PT: " + topologyName ).c_str() );
+		+ PercentLabel( tol.meanTol ) + "% of PT: " + topologyName ).c_str() );
 	Check( p99Match,  ( std::string("VCM p99 within ")
 		+ std::to_string(int(tol.p99Tol*100))  + "% of PT: " + topologyName ).c_str() );
 	Check( maxMatch,  ( std::string("VCM max within ")
@@ -881,6 +928,19 @@ static std::string SceneCommonThinLens(
 
 // 512-spp twins of kRasterizerPT / kRasterizerVCM -- identical in every
 // other respect so the pair still isolates the integrator.
+//
+// DL-365 AUDIT (2026-09-28): this depth-3 budget drives the thin-lens/
+// orthographic topologies (D-G), the same single-bounce flat-quad scene
+// as kRasterizerVCM above, just re-imaged through a finite-aperture or
+// orthographic camera -- no additional depth is reachable regardless of
+// the camera model. Measured at depth 3 vs depth 16 (salted n=4 each,
+// mean (sd), pooled-sd separation):
+//   f/22 focused:        1.0011 (1.10%) -> 0.9996 (0.64%)  -- 0.17 sd
+//   f/2.8 defocused:     0.9966 (1.50%) -> 0.9944 (1.30%)  -- 0.15 sd
+//   f/2.8 six-bladed:    0.9934 (0.74%) -> 0.9949 (1.02%)  -- 0.17 sd
+//   orthographic:        0.9997 (0.17%) -> 0.9998 (0.15%)  -- 0.08 sd
+// All four are well under 1 sd apart -- genuinely converged, left at
+// depth 3.
 static const char* kRasterizerPT512 =
 	"standard_shader\n"
 	"{\n"
@@ -1065,6 +1125,38 @@ static void TestOrthographicCamera()
 // tens of percent while the MEAN, which is the quantity the eta^2 bug
 // moves, is stable to ~1%.  Loosening the tail bands rather than
 // dropping them keeps a catastrophic tail regression visible.
+//
+// DL-365 (2026-09-28, this row's own DL-308 twin): the 8% mean band
+// above was sitting on the SAME `max_eye_depth 5` / `max_light_depth 5`
+// truncation docs/REFRACTIVE_RADIANCE_SCALING.md section 11 (DL-308)
+// found on this suite's row C.  Depth 5 admits exactly one floor bounce
+// under the water surface's total internal reflection; the rest of the
+// floor's light, trapped there, is cut -- VCM at depth 5 read 0.905 to
+// 0.925 of PT (matching PT at `max_diffuse_bounce 1`, the same one-
+// bounce truncation), on the band edge, flipping red or green with the
+// unsalted Sobol' pattern (a different `argv[1]` reused the identical
+// Sobol' points under a different libc `rand()` seed, so a "repeat"
+// never saw the QMC error at all -- see the kSaltTag comment above
+// `RenderAndComputeStats`).  Depth sweep, salted independent renders,
+// VCM/PT mean (sd), n as noted:
+//   depth  5 (n=8): 0.9323 (sd 1.15%) -- 2 of 8 runs fail the 8% band
+//   depth  8 (n=4): 0.9896 (sd 0.85%)
+//   depth 16 (n=8): 1.0027 (sd 0.98%)
+//   depth 32 (n=4): 0.9937 (sd 0.75%)
+// depth 16 is within noise of depth 32 (means 1.0027 vs 0.9937, well
+// under 1 sd apart), so both `max_eye_depth`/`max_light_depth` are now
+// 16 for this topology's VCM string (PT stays untruncated, matching
+// DL-308's row C fix).  The mean band tightens 8% -> 5%: at depth 16
+// the band sits 3-4 sd from the mean in the worse direction: the slice's
+// own n=8 batch read sd 0.98% (~4.9 sd), the merge review's independent
+// n=9 batch read sd 1.65% (~3.0 sd), pooled n=17 ~3.7 sd -- this TIR-trap
+// scene's sd is itself unstable across small batches, so do not quote a
+// single batch's figure.  That is comparable to DL-308's own row C margin
+// (">= 3.2 sd"), so 5% is not "as tight as the data allows", it is "no
+// wider than needed" while keeping roughly the same safety margin DL-308
+// set as precedent.  Every render in this file is now salted per
+// render index (`SobolSamplerTestHooks::ValueSalt`, DL-308's own
+// mechanism) -- see the file-level comment above `RenderAndComputeStats`.
 //////////////////////////////////////////////////////////////////////
 static const char* kSceneSubmergedFloor =
 	"film\n"
@@ -1192,8 +1284,8 @@ static const char* kRasterizerVCMSubmerged =
 	"\n"
 	"vcm_pel_rasterizer\n"
 	"{\n"
-	"\tmax_eye_depth 5\n"
-	"\tmax_light_depth 5\n"
+	"\tmax_eye_depth 16\n"
+	"\tmax_light_depth 16\n"
 	"\tsamples 2048\n"
 	"\tmerge_radius 0.0\n"
 	"\tvc_enabled true\n"
@@ -1210,7 +1302,7 @@ static const char* kRasterizerVCMSubmerged =
 	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
-static const Tolerances kSubmergedTolerances{ 0.08, 0.60, 4.00 };
+static const Tolerances kSubmergedTolerances{ 0.05, 0.60, 4.00 };
 
 static void TestSubmergedFloorAreaLight()
 {
@@ -1324,6 +1416,19 @@ static void TestSubmergedFloorAreaLight()
 // topology K header for the same experiment's BDPT twin, which reaches
 // the OPPOSITE conclusion for the opposite reason -- topology K's
 // gate does NOT catch the identical wrong edit at all.
+//
+// DL-365 AUDIT (2026-09-28): this topology shares topology H's
+// mechanism -- the floor and emitter are both submerged, reached only
+// by crossing the delta water surface, so `max_eye_depth`/
+// `max_light_depth 5` admits only a bounded number of floor bounces.
+// Salted independent renders, VCM/PT mean (sd), n=4 each:
+//   depth  5: 0.9619 (sd 0.14%)
+//   depth 16: 0.9945 (sd 0.27%)
+// The move (+3.26 pp, ~15 pooled sd) is far past the "moves > 1 sd"
+// threshold, so this row's VCM depth is raised to 16 alongside
+// topology H's.  The 8% mean band was never at risk at either depth
+// (worst-case deficit 3.8% at depth 5, 0.55% at depth 16) so it is left
+// unchanged -- this fix corrects the truncation, not a flaky gate.
 //////////////////////////////////////////////////////////////////////
 static const char* kSceneSubmergedCeiling =
 	"film\n"
@@ -1479,8 +1584,8 @@ static const char* kRasterizerVCMCeiling =
 	"\n"
 	"vcm_pel_rasterizer\n"
 	"{\n"
-	"\tmax_eye_depth 5\n"
-	"\tmax_light_depth 5\n"
+	"\tmax_eye_depth 16\n"
+	"\tmax_light_depth 16\n"
 	"\tsamples 1024\n"
 	"\tmerge_radius 0.0\n"
 	"\tvc_enabled true\n"
@@ -1568,6 +1673,17 @@ static void TestSubmergedCeilingMISCombination()
 // 5) because unlike the single-bounce Lambertian topologies above,
 // this scene has real interreflection and an unequal budget would be
 // a second free variable.
+//
+// DL-365 AUDIT (2026-09-28): unlike topology H/I this scene has no
+// delta interface and no TIR trap -- it is an open Schlick-walled
+// corner lit by a large area emitter, so it is genuinely converged at
+// depth 5, not merely under-tested.  Salted independent renders,
+// VCM/PT mean (sd), n=4 each (this pair also drives topology AB below,
+// measured the same way):
+//   topology L:  depth 5: 0.99915 (sd 0.03%); depth 16: 1.00011 (sd 0.13%) -- 0.92 pooled sd apart
+//   topology AB: depth 5: 0.99915 (sd 0.07%); depth 16: 0.99958 (sd 0.04%) -- 0.74 pooled sd apart
+// Both moves are under 1 sd, so both topologies stay at depth 5 --
+// raising it would only add render cost for no measurable change.
 //
 // MEAN BAND TIGHTENED TO 2% BY DL-103's CLOSURE (2026-09-17,
 // docs/DL103_PT_ESCAPE_MIS_PARTNER.md).  Until that row, un-guided PT's
@@ -1764,6 +1880,33 @@ static void TestSchlickMultiLobe()
 }
 
 //////////////////////////////////////////////////////////////////////
+// Topology AB: `polished_material` wall + floor (DL-285, 2026-09-28) --
+// BDPTStrategyBalanceTest's topology AB, VCM twin.  Until DL-285 the
+// material's `GetBSDF()` was a bare Lambertian while its SPF sampled a
+// Fresnel coat plus a (1-F) substrate; VCM's merges and connections price
+// `value`, its continuations `kray`, and it read -1.77 % under PT on this
+// scene (pre-fix library, 256 spp; n = 6 salted 1024-spp renders:
+// -1.746 % +- 0.008 % sem).  Post-fix -0.10 % (256 spp) / -0.041 % +-
+// 0.009 % (n = 6, 1024 spp).  Band 0.5 % on the mean.
+//////////////////////////////////////////////////////////////////////
+static void TestPolishedAB()
+{
+	std::string s( kSceneSchlickMultiLobeL );
+	const std::string head = "schlick_material\n{\n\tname mat_schlick\n";
+	const size_t a = s.find( head );
+	const size_t b = ( a == std::string::npos ) ? std::string::npos : s.find( "}\n", a );
+	Check( a != std::string::npos && b != std::string::npos, "topology AB: schlick_material chunk found in topology L" );
+	if( a != std::string::npos && b != std::string::npos ) {
+		s.replace( a, b + 2 - a,
+			"polished_material\n{\n\tname mat_schlick\n\treflectance pnt_rd\n"
+			"\ttau 0.9\n\tior 1.5\n\tscattering 20\n}\n" );
+	}
+	static const Tolerances kPolishedABTolerances{ 0.005, 0.25, 1.00 };
+	RunTopologyTest( "polished_material wall + floor (AB), VCM vs PT (DL-285)",
+		s, kPolishedABTolerances, kRasterizerPTSchlickL, kRasterizerVCMSchlickL );
+}
+
+//////////////////////////////////////////////////////////////////////
 // Topology J: biospec_skin_material receiver, mesh area emitter
 // (DL-126) -- VCM's twin of BDPTStrategyBalanceTest's topology N.
 //
@@ -1818,6 +1961,20 @@ static const char* kSceneNullBSDFSkin =
 	"\tmaterial mat_skin\n"
 	"}\n";
 
+// DL-365 (2026-09-28): 32 spp on this small (32x32) scene reads sd
+// ~7% on the VCM/PT mean ratio (salted, n=8, both depth 3 and depth 16
+// -- depth is NOT the driver here, see the file-level DL-365 comment
+// above kRasterizerVCM), so the shared 8% band flips red on roughly
+// half of all salted seeds -- exactly the "flip red/green" symptom
+// DL-365 was filed to fix, but from sample count, not a depth cap: a
+// biospec_skin_material re-emission (`kray=1, pdf=0`) is a spiky,
+// high-variance estimator at low spp, on BOTH integrators (PT's own
+// mean swings +/-6% across the same seeds).  Raised to 512 spp on both
+// sides (matching this file's own precedent for noisy topologies D-G,
+// "512-spp twins"), keeping `kRasterizerVCM`'s depth 3 -- this
+// topology gets its OWN VCM string so A/B/C's shared `kRasterizerVCM`
+// is untouched.  Salted n=8 at 512 spp: mean 0.9959, sd 0.78% (was
+// mean 1.026, sd 7.14% at 32 spp) -- the band now sits >= 10 sd away.
 static const char* kRasterizerPTModernBasic =
 	"standard_shader\n"
 	"{\n"
@@ -1827,7 +1984,7 @@ static const char* kRasterizerPTModernBasic =
 	"\n"
 	"pathtracing_pel_rasterizer\n"
 	"{\n"
-	"\tsamples 32\n"
+	"\tsamples 512\n"
 	"\tpixel_filter box\n"
 	"\toidn_denoise FALSE\n"
 	"}\n"
@@ -1840,11 +1997,38 @@ static const char* kRasterizerPTModernBasic =
 	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
+static const char* kRasterizerVCMNullBSDF =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"vcm_pel_rasterizer\n"
+	"{\n"
+	"\tmax_eye_depth 3\n"
+	"\tmax_light_depth 3\n"
+	"\tsamples 512\n"
+	"\tmerge_radius 0.0\n"
+	"\tvc_enabled true\n"
+	"\tvm_enabled true\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern rendered/vcm_balance_vcm_nullbsdf_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
+	"}\n";
+
 static void TestNullBSDFMaterialContinuation()
 {
 	RunTopologyTest( "biospec_skin_material receiver, mesh area emitter (DL-126)",
 		std::string( kSceneNullBSDFSkin ) + kLightMesh, kStrictTolerances,
-		kRasterizerPTModernBasic, kRasterizerVCM );
+		kRasterizerPTModernBasic, kRasterizerVCMNullBSDF );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1875,6 +2059,18 @@ static void TestNullBSDFMaterialContinuation()
 // and -6.10% .. -6.18% pre-fix over three runs each, so the pin
 // [-5.72%, -5.00%] sits >= 0.27% inside the post-fix readings and
 // >= 0.38% away from the pre-fix ones.
+//
+// THE EMITTER IS SINGLE-SIDED ON PURPOSE (DL-320, 2026-09-28).  Its
+// winding faces the sheets (-Z), and `clippedplane_geometry` defaults to
+// `doublesided TRUE`.  Since DL-320 a double-sided emitter emits from
+// BOTH faces for every strategy, so half of its light subpaths would
+// leave upward into empty space; the biased light-side strategies DL-317
+// is about would then carry less of the image and the pin would stop
+// measuring DL-317 (it read -2.93% with the default, against -5.9% for
+// the same scene single-sided -- the review's isolation: double-sided
+// -5.90% -> -3.50%, `doublesided FALSE` -5.88% -> -5.87%, a Lambertian
+// control +0.01% / +0.02%, salted n = 2).  `doublesided FALSE` keeps the
+// pin on the quantity it was derived for.
 //////////////////////////////////////////////////////////////////////
 static const char* kSceneRoughSSSU =
 	"film\n{\n\twidth 32\n\theight 32\n}\n\n"
@@ -1887,7 +2083,7 @@ static const char* kSceneRoughSSSU =
 	"standard_object\n{\n\tname obj_floor\n\tgeometry quad_floor\n\tmaterial mat_sss\n}\n\n"
 	"uniformcolor_painter\n{\n\tname pnt_emit_u\n\tcolor 1.0 1.0 1.0\n}\n\n"
 	"lambertian_luminaire_material\n{\n\tname mat_emit_u\n\texitance pnt_emit_u\n\tscale 0.5\n\tmaterial none\n}\n\n"
-	"clippedplane_geometry\n{\n\tname quad_emit_u\n\tpta -6 -6 4.2\n\tptb -6 6 4.2\n\tptc 6 6 4.2\n\tptd 6 -6 4.2\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_emit_u\n\tpta -6 -6 4.2\n\tptb -6 6 4.2\n\tptc 6 6 4.2\n\tptd 6 -6 4.2\n\tdoublesided FALSE\n}\n\n"
 	"standard_object\n{\n\tname obj_emit_u\n\tgeometry quad_emit_u\n\tmaterial mat_emit_u\n}\n";
 
 static const char* kRasterizerPTRoughSSSU =
@@ -1930,11 +2126,96 @@ int main( int argc, char** argv )
 {
 	std::cout << "=== VCMStrategyBalanceTest ===" << std::endl;
 
-	if( argc == 2 && std::strcmp( argv[1], "--sss-only" ) == 0 ) {
+	// DL-365: an optional trailing numeric argument is a seed-base
+	// override for the isolated filters below, matching
+	// RefractiveRadianceScalingTest's `main` -- a different seed base
+	// gives an independent SALTED sample of the filtered topology (see
+	// the kSaltTag comment above RenderAndComputeStats), not just a
+	// different libc rand() draw.
+	auto ApplySeedOverride = [&]( int idx ) {
+		if( argc > idx && argv[idx] ) {
+			const long v = std::strtol( argv[idx], nullptr, 10 );
+			if( v > 0 ) g_seedBase = (unsigned int)v;
+		}
+	};
+
+	if( argc >= 2 && std::strcmp( argv[1], "--sss-only" ) == 0 ) {
+		ApplySeedOverride( 2 );
 		TestRoughSSSEmptyContainerU();
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
+
+	// DL-365 red-proof / fix isolation: run topology H alone.
+	if( argc >= 2 && std::strcmp( argv[1], "--h-only" ) == 0 ) {
+		ApplySeedOverride( 2 );
+		TestSubmergedFloorAreaLight();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+
+	// DL-365 audit isolation: topology I (the ~L1518 depth-5 pair).
+	if( argc >= 2 && std::strcmp( argv[1], "--i-only" ) == 0 ) {
+		ApplySeedOverride( 2 );
+		TestSubmergedCeilingMISCombination();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+
+	// DL-365 audit isolation: topology L (the ~L1741 depth-5 pair,
+	// matched to PT's `max_diffuse_bounce`/`max_glossy_bounce` 5).
+	if( argc >= 2 && std::strcmp( argv[1], "--l-only" ) == 0 ) {
+		ApplySeedOverride( 2 );
+		TestSchlickMultiLobe();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+
+	// DL-365 audit isolation: topology AB, which shares topology L's
+	// exact depth-5 rasterizer pair (kRasterizerPTSchlickL /
+	// kRasterizerVCMSchlickL) with a polished_material substitution.
+	if( argc >= 2 && std::strcmp( argv[1], "--ab-only" ) == 0 ) {
+		ApplySeedOverride( 2 );
+		TestPolishedAB();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+
+	// DL-365 audit isolation: topology J (null-BSDF biospec skin),
+	// which reuses kRasterizerVCM (the depth-3 pair) against a DIFFERENT
+	// scene than A/B/C -- found flaky under salting, not in the brief's
+	// original list.
+	if( argc >= 2 && std::strcmp( argv[1], "--j-only" ) == 0 ) {
+		ApplySeedOverride( 2 );
+		TestNullBSDFMaterialContinuation();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+
+	// DL-365 audit isolation: topologies A/B/C, the file's shared
+	// depth-3 pair (~L524/917's first occurrence).
+	if( argc >= 2 && std::strcmp( argv[1], "--abc-only" ) == 0 ) {
+		ApplySeedOverride( 2 );
+		TestDeltaOmniLight();
+		TestMeshEmitterOnly();
+		TestMixedLights();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+
+	// DL-365 audit isolation: the thin-lens/ortho topologies sharing the
+	// 512-spp depth-3 pair (~L917/926's second occurrence).
+	if( argc >= 2 && std::strcmp( argv[1], "--thinlens-only" ) == 0 ) {
+		ApplySeedOverride( 2 );
+		TestThinLensStoppedDown();
+		TestThinLensWideOpenDefocused();
+		TestThinLensBladedAperture();
+		TestOrthographicCamera();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+
+	ApplySeedOverride( 1 );
 
 	if (!TestCompositedStats()) return 1;
 
@@ -1948,6 +2229,7 @@ int main( int argc, char** argv )
 	TestSubmergedFloorAreaLight();
 	TestSubmergedCeilingMISCombination();
 	TestSchlickMultiLobe();
+	TestPolishedAB();
 	TestNullBSDFMaterialContinuation();
 	TestRoughSSSEmptyContainerU();
 	TestNonfiniteCandidateRejected();

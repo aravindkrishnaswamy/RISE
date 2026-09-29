@@ -30,7 +30,7 @@ ThreadPool::ThreadPool( unsigned int numWorkers,
 	workers.reserve( numWorkers );
 	for( unsigned int i = 0; i < numWorkers; i++ ) {
 		RISETHREADID tid = 0;
-		Threading::riseCreateThread( WorkerProc, this, 0, 0, &tid );
+		Threading::riseCreateThread( WorkerProc, this, kWorkerStackBytes, 0, &tid );
 		workers.push_back( tid );
 	}
 }

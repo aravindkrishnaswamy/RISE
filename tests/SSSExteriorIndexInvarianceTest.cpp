@@ -82,6 +82,27 @@
 //      independent quadrature of the Fresnel integral.  Part B carries the
 //      DL-291 render rows (skin multipole PT/BDPT/PT-spectral/eta<1, the
 //      legacy dipole and skin shader-ops under pixelpel_rasterizer).
+//    Part E (DL-315) -- rendered, reference-free, two PT-only defects:
+//      E1  an ideal index-1.0 enclosure (no interface at all) around the
+//          white furnace changes nothing: enclosed/open ratio of the
+//          image mean must be 1.  Pre-fix `RayCaster::CastRay` wrote the
+//          continuation hit's object into the CALLER's const IOR stack, so
+//          once PT's SSS continuation reached the enclosure wall, the same
+//          vertex's `SubSurfaceScatteringSPF::Scatter` saw
+//          `containsCurrent()` and absorbed its surface reflection (an
+//          F0-sized loss).  BDPT and a Lambertian subject are controls.
+//      E2  a close-packed cluster of thirteen conservative random-walk
+//          spheres in the open-air white furnace must read 1 everywhere.
+//          Pre-fix PT's RayCaster was built with a hard-coded recursion
+//          cap of 10 while every SSS event nests its continuation cast at
+//          depth + 2, so paths hopping sphere to sphere were cut off.
+//      E3  the legacy shader-op chain: a distribution-tracing op's image
+//          expectation must not depend on its per-hit sample count.  The
+//          op re-runs the SPF's Scatter for every sample on the stack it
+//          was handed, and pre-fix each earlier sample's continuation
+//          cast had rewritten that stack's current object, so a later
+//          sample's entry push keyed the new stack entry on the WRONG
+//          object and the interior exit read as a second entry.
 //    Usage: [--unit-only] [--trials K (default 4)] [--only <label substring>]
 //
 //  Author: RISE debt-cleanup, slice `debt-dl49`
@@ -118,6 +139,7 @@
 #include "../src/Library/Utilities/Math3D/Constants.h"
 #include "../src/Library/Utilities/Ray.h"
 #include "../src/Library/Utilities/RandomNumbers.h"
+#include "../src/Library/Utilities/SobolSampler.h"
 #include "../src/Library/Utilities/BSSRDFSampling.h"
 #include "../src/Library/Utilities/RandomWalkSSS.h"
 #include "../src/Library/Utilities/SSSCoefficients.h"
@@ -1259,13 +1281,19 @@ namespace
 	// on a finite sphere carries a small energy GAIN of its own: H reads
 	// about 1.003 post-fix, a few sd of the mean above 1, inside the band).
 	double kFurnaceDiffusionScattering = 200;
-	std::string BuildFurnaceScene( Model model, Integrator integrator, Scalar ior, unsigned int samples )
+	//! `enclosure` > 0 wraps camera and subject in an ideal non-reflecting
+	//! enclosure of that index (DL-315 Part E); `cluster` replaces the one
+	//! sphere by a close-packed cluster of thirteen touching spheres
+	//! (centre + its twelve fcc neighbours) under a viewport it overfills.
+	std::string BuildFurnaceScene( Model model, Integrator integrator, Scalar ior, unsigned int samples,
+		Scalar enclosure = 0, bool cluster = false )
 	{
 		std::ostringstream s;
 		s << std::setprecision( 17 );
 		s << "RISE ASCII SCENE 7\n";
 		s << "film\n{\n\twidth 32\n\theight 32\n}\n\n";
-		s << "orthographic_camera\n{\n\tlocation 0 0 4\n\tlookat 0 0 0\n\tup 0 1 0\n\tviewport_scale 2 2\n}\n\n";
+		s << "orthographic_camera\n{\n\tlocation 0 0 " << ( cluster ? 8 : 4 ) << "\n\tlookat 0 0 0\n\tup 0 1 0\n\tviewport_scale "
+		  << ( cluster ? "4 4" : "2 2" ) << "\n}\n\n";
 		s << "uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n\n";
 		if( model == Model::Lambertian ) {
 			s << "lambertian_material\n{\n\tname subject\n\treflectance white\n}\n\n";
@@ -1277,7 +1305,28 @@ namespace
 			  << "\n\tabsorption 0\n\tscattering " << kFurnaceDiffusionScattering << "\n\tg 0\n\troughness 0\n}\n\n";
 		}
 		s << "sphere_geometry\n{\n\tname subject_geo\n\tradius 1\n}\n\n";
-		s << "standard_object\n{\n\tname subject_obj\n\tgeometry subject_geo\n\tmaterial subject\n}\n\n";
+		if( cluster ) {
+			// Centre sphere plus its twelve face-centred-cubic neighbours at
+			// centre distance exactly 2 (touching): the gaps between them
+			// return a sampled continuation to another sphere, so a path
+			// can chain many subsurface events.
+			const double c = 2.0 / std::sqrt( 2.0 );
+			const int nb[12][3] = { {1,1,0},{1,-1,0},{-1,1,0},{-1,-1,0},{1,0,1},{1,0,-1},{-1,0,1},{-1,0,-1},{0,1,1},{0,1,-1},{0,-1,1},{0,-1,-1} };
+			s << "standard_object\n{\n\tname subject_obj\n\tgeometry subject_geo\n\tmaterial subject\n}\n\n";
+			for( int i = 0; i < 12; ++i ) {
+				s << "standard_object\n{\n\tname subject_obj" << i << "\n\tgeometry subject_geo\n\tmaterial subject\n\tposition "
+				  << nb[i][0] * c << " " << nb[i][1] * c << " " << nb[i][2] * c << "\n}\n\n";
+			}
+		} else {
+			s << "standard_object\n{\n\tname subject_obj\n\tgeometry subject_geo\n\tmaterial subject\n}\n\n";
+		}
+		if( enclosure > 0 ) {
+			// Around camera and subject (the camera's IOR stack is seeded
+			// with it); refractance white, so at index 1.0 it is invisible.
+			s << "perfectrefractor_material\n{\n\tname enclosure_mat\n\tior " << enclosure << "\n\trefractance white\n}\n\n"
+			  << "box_geometry\n{\n\tname enclosure_geo\n\twidth 60\n\theight 60\n\tdepth 60\n}\n\n"
+			  << "standard_object\n{\n\tname enclosure\n\tgeometry enclosure_geo\n\tmaterial enclosure_mat\n}\n\n";
+		}
 		s << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
 		const char* env = "\tradiance_map white\n\tradiance_scale 1\n\tradiance_background TRUE\n";
 		switch( integrator ) {
@@ -1394,6 +1443,190 @@ namespace
 			Check( std::fabs( st.mean - 1.0 ) < row.band, label + ": reflection + transmission partition H within band of 1" );
 		}
 	}
+
+	//////////////////////////////////////////////////////////////////
+	// Part E (DL-315) -- two PT RayCaster defects, reference-free
+	//////////////////////////////////////////////////////////////////
+
+	//! Renders once and returns the RGB image mean (alpha-composited, per
+	//! channel averaged), or a negative value on failure.  Every Part E
+	//! render carries a Sobol value SALT derived from `seed` (DL-315
+	//! review; DL-308's template), so repeats are independent
+	//! randomized-QMC replicates -- unsalted, every render of a scene
+	//! reuses one fixed Sobol' pattern and a pattern offset reads as a
+	//! bias.  Paired rows pass the SAME seed to both sides (common random
+	//! numbers).
+	double RenderFurnaceMean( const std::string& path, unsigned int seed )
+	{
+		IJobPriv* job = nullptr;
+		if( !RISE_CreateJobPriv( &job ) || !job ) return -1;
+		if( !job->LoadAsciiSceneViaCst( path.c_str() ) ) { safe_release( job ); return -1; }
+		job->RemoveRasterizerOutputs();
+		CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
+		GlobalLog()->PrintNew( cap, __FILE__, __LINE__, "dl315 capture" );
+		job->GetRasterizer()->AddRasterizerOutput( cap );
+		SobolSamplerTestHooks::ValueSalt().store( SobolSequence::HashCombine( seed, 0x315u ) );
+		std::srand( seed );
+		const bool rendered = job->Rasterize();
+		SobolSamplerTestHooks::ValueSalt().store( 0u );
+		double mean = -1;
+		if( rendered && !cap->pixels.empty() ) {
+			double sum = 0;
+			bool finite = true;
+			for( const RISEColor& c : cap->pixels ) {
+				const double v = ( c.base.r + c.base.g + c.base.b ) * c.a / 3.0;
+				if( !std::isfinite( v ) ) { finite = false; break; }
+				sum += v;
+			}
+			if( finite ) mean = sum / double( cap->pixels.size() );
+		}
+		safe_release( cap );
+		safe_release( job );
+		return mean;
+	}
+
+	void TestRayCasterStackAndRecursion( const unsigned int trials, const std::string& only )
+	{
+		std::cout << "E: PT RayCaster caller-stack mutation and recursion cap (DL-315), n=" << trials << std::endl;
+		// E1: enclosed(1.0)/open-air ratio of the white-furnace image mean,
+		// one SSS sphere.  Paired libc seeds (common random numbers): the
+		// index-1.0 enclosure changes no sampled direction, so the two
+		// sides differ only through the defect.  Pre-fix the ratio reads
+		// about 1 - F0 (random walk and diffusion at index 1.5); the
+		// Lambertian subject and BDPT never nest a cast per event and are
+		// controls, green before and after.  Bands from SALTED renders
+		// (salted n = 8, paired per-pair sd: Lambertian 0.0008, random walk
+		// 0.0005, diffusion 0.0011, PT-spectral 0.0015, BDPT 0.0004).  The
+		// round-2 review measured the between-run sd of the n = 4 mean over
+		// 15 base seeds: every row's band is >= 6 sd except the Lambertian
+		// control's 0.002, which is ~3.5 sd (sd 0.00057) -- a control, so a
+		// rare false red there says "rerun", not "defect"
+		// (docs/DL315_RAYCASTER_STACK_AND_RECURSION.md).
+		struct EncRow { Model model; Integrator integrator; unsigned int samples; double band; Scalar eta; };
+		const EncRow encRows[] = {
+			{ Model::Lambertian, Integrator::PT,         16,  0.002, 1.0 },
+			{ Model::RandomWalk, Integrator::PT,         64,  0.004, 1.5 },
+			{ Model::Diffusion,  Integrator::PT,         64,  0.004, 1.5 },
+			{ Model::RandomWalk, Integrator::PTSpectral, 256, 0.01,  1.5 },
+			{ Model::RandomWalk, Integrator::BDPT,       64,  0.01,  1.5 },
+		};
+		unsigned int seed = 31500;
+		for( const EncRow& row : encRows ) {
+			std::ostringstream lab;
+			lab << "E1: " << ModelName( row.model ) << "/" << IntegratorName( row.integrator ) << " eta=" << std::setprecision( 4 ) << row.eta
+			    << " index-1.0 enclosure";
+			const std::string label = lab.str();
+			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
+			const std::string openPath = WriteScene( BuildFurnaceScene( row.model, row.integrator, row.eta, row.samples ), "dl315open" );
+			const std::string encPath = WriteScene( BuildFurnaceScene( row.model, row.integrator, row.eta, row.samples, 1.0 ), "dl315enc" );
+			Check( !openPath.empty() && !encPath.empty(), label + ": scene files written" );
+			std::vector<double> open, enc;
+			bool allValid = true;
+			for( unsigned int t = 0; t < trials; ++t ) {
+				const unsigned int pairSeed = seed++;
+				const double o = RenderFurnaceMean( openPath, pairSeed );
+				const double e = RenderFurnaceMean( encPath, pairSeed );
+				if( !( o > 0 ) || !( e > 0 ) ) allValid = false;
+				open.push_back( o );
+				enc.push_back( e );
+			}
+			std::remove( openPath.c_str() );
+			std::remove( encPath.c_str() );
+			Check( allValid, label + ": every render finite and non-black" );
+			if( !allValid ) continue;
+			std::vector<double> ratios;
+			for( size_t i = 0; i < open.size(); ++i ) ratios.push_back( enc[i] / open[i] );
+			const Stats so = Summarize( open ), se = Summarize( enc ), sr = Summarize( ratios );
+			const double ratio = se.mean / so.mean;
+			std::cout << std::setprecision( 6 ) << "    " << label.substr( 4 ) << " spp=" << row.samples
+				<< ": open " << so.mean << " +/- " << so.sd << "  enclosed " << se.mean << " +/- " << se.sd
+				<< "  ratio " << ratio << " (paired sd " << sr.sd << ", band " << row.band << ")" << std::endl;
+			Check( std::fabs( ratio - 1.0 ) < row.band, label + ": enclosed/open image mean ratio within band of 1" );
+		}
+		// E3: legacy pixelpel chain [distribution tracing, direct lighting]
+		// on a sphere that tracks containment (translucent, dielectric)
+		// inside a grey room lit by an omni light: DT with 4 samples per
+		// hit must read the same image mean as DT with 1 (one sample per
+		// hit is immune by construction: a single Scatter precedes every
+		// cast).  Pre-fix translucent read about 4.3% low and dielectric
+		// about 17% low at 4 samples; the renders are deterministic for a
+		// fixed libc seed, so the band only has to hold the estimator
+		// difference between 1 and 4 samples.
+		for( const char* subject : { "translucent", "dielectric" } ) {
+			const std::string label = std::string( "E3: legacy DT " ) + subject + " sample-count invariance";
+			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
+			auto build = [&]( unsigned int dtSamples ) {
+				std::ostringstream t;
+				t << "RISE ASCII SCENE 7\nfilm\n{\n\twidth 32\n\theight 32\n}\n\n"
+				  << "pinhole_camera\n{\n\tlocation 0 0 4.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
+				  << "uniformcolor_painter\n{\n\tname half\n\tcolor 0.5 0.5 0.5\n}\n\n"
+				  << "uniformcolor_painter\n{\n\tname grey\n\tcolor 0.6 0.6 0.6\n}\n\n";
+				if( std::string( subject ) == "translucent" ) {
+					t << "translucent_material\n{\n\tname subject\n\tref half\n\ttau half\n\text 0\n}\n\n";
+				} else {
+					t << "dielectric_material\n{\n\tname subject\n\tior 1.5\n\ttau 1\n\tscattering 1000000\n}\n\n";
+				}
+				t << "lambertian_material\n{\n\tname room_mat\n\treflectance grey\n}\n\n"
+				  << "sphere_geometry\n{\n\tname subject_geo\n\tradius 1\n}\n\n"
+				  << "standard_object\n{\n\tname subject_obj\n\tgeometry subject_geo\n\tmaterial subject\n}\n\n"
+				  << "sphere_geometry\n{\n\tname room_geo\n\tradius 12\n}\n\n"
+				  << "standard_object\n{\n\tname room\n\tgeometry room_geo\n\tmaterial room_mat\n}\n\n"
+				  << "omni_light\n{\n\tname light\n\tpower 40\n\tposition 2 3 3\n\tcolor 1 1 1\n}\n\n"
+				  << "distributiontracing_shaderop\n{\n\tname dt\n\tsamples " << dtSamples << "\n}\n\n"
+				  << "standard_shader\n{\n\tname global\n\tshaderop dt\n\tshaderop DefaultDirectLighting\n}\n\n"
+				  << "pixelpel_rasterizer\n{\n\tsamples 16\n\tmax_recursion 4\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n"
+				  << "file_rasterizeroutput\n{\n\tpattern rendered/dl315_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+				return t.str();
+			};
+			const std::string p1 = WriteScene( build( 1 ), "dl315dt1" );
+			const std::string p4 = WriteScene( build( 4 ), "dl315dt4" );
+			Check( !p1.empty() && !p4.empty(), label + ": scene files written" );
+			const unsigned int legacySeed = seed++;
+			const double m1 = RenderFurnaceMean( p1, legacySeed );
+			const double m4 = RenderFurnaceMean( p4, legacySeed );
+			std::remove( p1.c_str() );
+			std::remove( p4.c_str() );
+			Check( m1 > 0 && m4 > 0, label + ": both renders finite and non-black" );
+			if( !( m1 > 0 && m4 > 0 ) ) continue;
+			std::cout << std::setprecision( 6 ) << "    " << label.substr( 4 ) << ": DT samples 1 " << m1 << "  samples 4 " << m4
+				<< "  ratio " << m4 / m1 << " (band 0.01)" << std::endl;
+			Check( std::fabs( m4 / m1 - 1.0 ) < 0.01, label + ": DT(4) / DT(1) image mean within band of 1" );
+		}
+
+		// E2: a close-packed cluster of conservative random-walk spheres in
+		// the open-air white furnace (radiance exactly 1 under the RGB
+		// pipe): every pixel reads 1 whatever the geometry.  Pre-fix a
+		// path that chains more than about four sphere-to-sphere subsurface
+		// events hit the RayCaster's recursion cap of 10 and returned zero.
+		struct ClusterRow { Model model; Integrator integrator; unsigned int samples; double band; Scalar eta; };
+		const ClusterRow clusterRows[] = {
+			{ Model::Lambertian, Integrator::PT, 16, 0.006, 1.0 },
+			{ Model::RandomWalk, Integrator::PT, 64, 0.006, 1.5 },
+		};
+		for( const ClusterRow& row : clusterRows ) {
+			std::ostringstream lab;
+			lab << "E2: " << ModelName( row.model ) << "/" << IntegratorName( row.integrator ) << " eta=" << std::setprecision( 4 ) << row.eta
+			    << " sphere cluster";
+			const std::string label = lab.str();
+			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
+			const std::string path = WriteScene( BuildFurnaceScene( row.model, row.integrator, row.eta, row.samples, 0, true ), "dl315cluster" );
+			Check( !path.empty(), label + ": scene file written" );
+			std::vector<double> m;
+			bool allValid = true;
+			for( unsigned int t = 0; t < trials; ++t ) {
+				const double mi = RenderFurnaceMean( path, seed++ );
+				if( !( mi > 0 ) ) allValid = false;
+				m.push_back( mi );
+			}
+			std::remove( path.c_str() );
+			Check( allValid, label + ": every render finite and non-black" );
+			if( !allValid ) continue;
+			const Stats st = Summarize( m );
+			std::cout << std::setprecision( 6 ) << "    " << label.substr( 4 ) << " spp=" << row.samples
+				<< ": image mean " << st.mean << " +/- " << st.sd << " (sd of one render; band " << row.band << ")" << std::endl;
+			Check( std::fabs( st.mean - 1.0 ) < row.band, label + ": conservative furnace image mean within band of 1" );
+		}
+	}
 }
 
 int main( int argc, char** argv )
@@ -1425,6 +1658,7 @@ int main( int argc, char** argv )
 	if( !unitOnly ) {
 		TestRenderedInvariance( trials, only );
 		TestRenderedPartitionFurnace( trials, only );
+		TestRayCasterStackAndRecursion( trials, only );
 	}
 	std::cout << "=== " << passCount << " passed, " << failCount << " failed ===" << std::endl;
 	return failCount == 0 ? 0 : 1;
