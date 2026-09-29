@@ -80,7 +80,10 @@ with a finite merge radius.
 ## SMS proposal normalization
 
 The prepared LightSampler records alpha presence for its own scene. An unrelated
-live Job cannot switch SMS mode. For an alpha scene, both requested Snell/biased
+live Job cannot switch SMS mode. The census starts at visible scene roots and
+recurses through material-inheriting CSG operands (including nested snapshots).
+An explicit material at any level ends inheritance, so an opaque override
+suppresses child alpha; hidden unused objects are not roots. For an alpha scene, both requested Snell/biased
 and uniform settings use uniform-caster Bernoulli proposal normalization. Seed
 tracing still samples alpha, allowing discovery behind holes. Its success
 probability p includes that proposal thinning. Final solved-chain surface
@@ -108,7 +111,10 @@ new transport segment. The final-gather probe classifies the already traced
 sample and does not add radiance. BSSRDF chord candidates and random-walk SSS
 boundaries likewise define a geometric nonlocal-kernel proposal. They remain
 unthinned, with original candidate count/spatial PDF. Only the selected physical
-SSS endpoint receives coverage; accepted endpoint probability is forwarded to
+SSS endpoint receives coverage from its actual intersected material, captured
+before shading modifiers. CSG root or entry optical-kernel material is not a
+substitute for that effective endpoint binding. The random-walk front-face
+fallback obeys the same rule; accepted endpoint probability is forwarded to
 BDPT. This multiplies the opaque-domain SSS kernel by endpoint coverage; it does
 not simulate a physically perforated scattering volume or change every internal
 Fresnel event. Actual scene rays still null-pass rejected surfaces normally.
@@ -263,3 +269,26 @@ remove the snapshot's alpha. Existing baked/wrapped-material fallback still
 shares the material itself; its documented slot-mutation limitations remain.
 Nested wrappers retain root alpha rather than substituting a child's coverage.
 `AlphaSnapshotTest` pins these ownership and default-opaque behaviors.
+
+R2 composite/endpoint regression coverage: `AlphaCSGCapabilityTest` checks
+inherited, nested, snapshot, root/intermediate override and hidden/foreign-scene
+controls; `AlphaCSGTransportTest` renders PT/BDPT/VCM in RGB/NM/HWSS against
+matched zero-absorption and explicit-root controls. `AlphaSMSTransportTest`
+also checks inherited-CSG mode selection. `AlphaRandomWalkMaterialTest` pins
+actual endpoint material, pre-modifier UVs, fallback hits, exact final alpha draw
+count, unchanged proposal queries/PDF/weights and preserved shading modifiers.
+`AlphaBSSRDFMaterialTest` independently identifies mixed-material CSG endpoints
+and checks their coverage, pre-modifier context, unchanged chord counts and
+retained opaque-endpoint weights in RGB/NM.
+
+SSS coverage queries additionally copy the selected probe geometry and forward
+`ri.rast`, `ri.signals.pScene`, the root `pObject` as `pSelf`, and the actual
+pre-modifier endpoint as `ptWorld`. Only the alpha query receives this context;
+the raw hit used by existing modifiers and the optical proposal is unchanged.
+Opaque mode skips the copy. The probe's own ray/distance and local geometry
+remain its own, so this does not assert reciprocity for arbitrary ray-dependent
+coverage programs. There is no per-ray time field to forward, and scalar
+expression time retains its documented fixed-zero behavior.
+`AlphaSubsurfaceContextTest` checks the real `1-interior(2)` expression against
+an enclosing-sphere closed form and nonzero pixel coordinates in RGB/NM for
+both kernels; `BSSRDFEntrySignalsTest` checks existing downstream signal payloads.

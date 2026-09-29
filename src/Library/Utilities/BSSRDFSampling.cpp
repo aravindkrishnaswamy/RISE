@@ -186,7 +186,19 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 
 			if( !probeRI.geometric.bHit ) break;
 
-			const Scalar coverage = pMaterial->AlphaCoverage(probeRI.geometric);
+			// Entry material owns the optical proposal, but coverage belongs
+            // to this actual endpoint (CSG may inherit a different material).
+            Scalar coverage = 1;
+            if( probeRI.pMaterial && probeRI.pMaterial->GetAlphaMode() != eAlphaOpaque ) {
+                // Supply scene/raster context only to coverage. Preserve the raw
+                // probe record and existing modifier/proposal inputs.
+                RayIntersectionGeometric alphaRI(probeRI.geometric);
+                alphaRI.rast = ri.rast;
+                alphaRI.signals.pScene = ri.signals.pScene;
+                alphaRI.signals.pSelf = pObject;
+                alphaRI.signals.ptWorld = alphaRI.ptIntersection;
+                coverage = probeRI.pMaterial->AlphaCoverage(alphaRI);
+            }
             if( probeRI.pModifier ) {
 				probeRI.pModifier->Modify( probeRI.geometric );
 			}

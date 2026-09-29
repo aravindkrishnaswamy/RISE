@@ -1216,3 +1216,15 @@ See [ALPHA_COVERAGE.md](../docs/ALPHA_COVERAGE.md) for the estimator definitions
   endpoints, transformed/nested CSG, front/back and snapshot copies.
 - `AlphaSnapshotTest`: reconstructed material alpha mode/cutoff, painter
   lifetime, independent slot rebinding and existing wrapper fallback behavior.
+
+- `AlphaCSGCapabilityTest`, `AlphaCSGTransportTest`: effective inherited CSG
+  alpha census, nested/snapshot/root/intermediate overrides, hidden/foreign
+  isolation and production PT/BDPT/VCM RGB/NM/HWSS medium controls.
+- `AlphaRandomWalkMaterialTest`, `AlphaBSSRDFMaterialTest`: actual selected
+  endpoint materials and pre-modifier coverage; unchanged geometric proposals,
+  ordinary sampler draws, PDFs/weights and final-only alpha decisions.
+
+- `AlphaSubsurfaceContextTest`: real scene-relative scalar expression and
+  nonzero raster coordinates at selected endpoints, with paired proposal,
+  weight and final-only draw controls; `BSSRDFEntrySignalsTest` preserves the
+  established downstream entry-signal contract.

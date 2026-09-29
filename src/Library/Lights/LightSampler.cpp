@@ -32,10 +32,28 @@
 #include "../Utilities/OptimalMISAccumulator.h"
 #include "../Utilities/MISWeights.h"
 #include "../Interfaces/ISurfaceSignalProvider.h"	// SurfaceCurvatureDemand / SurfaceSignalDemand -- the emitter-probe gate
+#include "../Objects/CSGObject.h"
 #include "../Interfaces/IObjectManager.h"		// the `signals.pScene` the probe stamps
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+// Effective bindings follow the same override rule as CSG intersection:
+// an explicit material ends inheritance, including an OPAQUE override.
+// Start only at visible scene roots; hidden operands are reachable here only
+// through their composite. Snapshot CSG preserves this same operand tree.
+static bool HasEffectiveAlphaCoverage( const IObject* object )
+{
+    if( !object ) return false;
+    if( const IMaterial* material = object->GetMaterial() ) {
+        return material->GetAlphaMode() != eAlphaOpaque;
+    }
+    if( const CSGObject* csg = dynamic_cast<const CSGObject*>(object) ) {
+        return HasEffectiveAlphaCoverage(csg->GetOperandA()) ||
+            HasEffectiveAlphaCoverage(csg->GetOperandB());
+    }
+    return false;
+}
 
 // ----------------------------------------------------------------
 // Transparent (Fresnel-attenuated) shadow-ray helpers.
@@ -1316,7 +1334,7 @@ void LightSampler::Prepare(
 					found = true;
 					// Continue: alpha is an independent scene capability.
 				}
-                alpha |= obj.GetMaterial() && obj.GetMaterial()->GetAlphaMode() != eAlphaOpaque;
+                alpha |= HasEffectiveAlphaCoverage(&obj);
 				return true;  // continue
 			}
 		};
