@@ -18,6 +18,7 @@
 #include "../Utilities/IndependentSampler.h"
 #include "../Interfaces/ILog.h"
 #include "../Intersection/RayIntersection.h"
+#include "../Utilities/GradedIndexMedium.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -101,6 +102,28 @@ void GlobalSpectralPhotonTracer::TracePhoton(
 		// stack is `const` and is no longer written through (IORStack's
 		// pCurrentObject used to be `mutable`).
 		IORStack hitStack( ior_stack );
+
+		// DL-292: the interior-segment graded-index factor (DL-09) for the
+		// straight segment this photon just traced, in IMPORTANCE order
+		// (n(hit)/top)^2 -- a straight graded segment has no refraction
+		// Jacobian to supply it implicitly, unlike an interface.  Paid on
+		// the photon's power here, so a gather that pairs it with an eye
+		// walk (which pays its own radiance-order factors) prices the path
+		// as PT/BDPT do; the stack top is re-recorded as n(hit), so the
+		// next segment telescopes.  Exactly nothing happens unless the
+		// medium the photon travelled through is graded.  Before DL-292
+		// the photon tracers never Advanced: photon-map gathers kept the
+		// pre-DL-09 accounting.
+		Scalar gradedScale = 1;
+		if( GradedIndexMedium::Advance( hitStack, ri.geometric.ptIntersection,
+				GradedIndexMedium::eImportance, gradedScale ) ) {
+			const Scalar ambIOR = hitStack.top();
+			ri.geometric.ambientIOR = ( ambIOR > 0.0 ) ? ambIOR : 1.0;
+		}
+		Scalar hitPower( power );
+		if( gradedScale != Scalar( 1 ) ) {
+			hitPower = hitPower * gradedScale;
+		}
 		hitStack.SetCurrentObject( ri.pObject );
 
 		ISPF* pSPF = ri.pMaterial->GetSPF();
@@ -130,21 +153,21 @@ void GlobalSpectralPhotonTracer::TracePhoton(
 			}
 
 			if( bDiffuseComponentAvailable && bStorePhoton ) {
-				pPhotonMap.Store( power, nm, ri.geometric.ptIntersection, -ray.Dir() );
+				pPhotonMap.Store( hitPower, nm, ri.geometric.ptIntersection, -ray.Dir() );
 			}
 
 			if( bBranch ) {
 				for( unsigned int i=0; i<scattered.Count(); i++ ) {
 					ScatteredRay& scat = scattered[i];
 					scat.ray.Advance( 1e-8 );
-					TracePhoton( scat.ray, power*scat.krayNM*PathVertexEval::ImportanceShadingNormalFactor( ri.geometric.vNormal, ri.geometric.vGeomNormal, -ray.Dir(), scat.ray.Dir() ), nm, scat.type==ScatteredRay::eRayDiffuse, pPhotonMap, scat.ior_stack?*scat.ior_stack:hitStack, depth+1 );
+					TracePhoton( scat.ray, hitPower*scat.krayNM*PathVertexEval::ImportanceShadingNormalFactor( ri.geometric.vNormal, ri.geometric.vGeomNormal, -ray.Dir(), scat.ray.Dir() ), nm, scat.type==ScatteredRay::eRayDiffuse, pPhotonMap, scat.ior_stack?*scat.ior_stack:hitStack, depth+1 );
 				}
 			} else {
 				Scalar selectedProbability=0;
 				ScatteredRay* pScat = scattered.RandomlySelect( random.CanonicalRandom(), true, &selectedProbability );
 				if( pScat ) {
 					pScat->ray.Advance( 1e-8 );
-					TracePhoton( pScat->ray, power*pScat->krayNM*(PathVertexEval::ImportanceShadingNormalFactor( ri.geometric.vNormal, ri.geometric.vGeomNormal, -ray.Dir(), pScat->ray.Dir() )/selectedProbability), nm, pScat->type==ScatteredRay::eRayDiffuse, pPhotonMap, pScat->ior_stack?*pScat->ior_stack:hitStack, depth+1 );
+					TracePhoton( pScat->ray, hitPower*pScat->krayNM*(PathVertexEval::ImportanceShadingNormalFactor( ri.geometric.vNormal, ri.geometric.vGeomNormal, -ray.Dir(), pScat->ray.Dir() )/selectedProbability), nm, pScat->type==ScatteredRay::eRayDiffuse, pPhotonMap, pScat->ior_stack?*pScat->ior_stack:hitStack, depth+1 );
 				}
 			}
 		}
