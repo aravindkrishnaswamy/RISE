@@ -102,9 +102,8 @@
 //
 //    TOLERANCE: for A/B/C, tight enough to catch the 2x optical-depth
 //    error (exp(-2tau) vs exp(-tau) differ by exp(-tau); at tau ~ 1 that's
-//    ~2.7x) yet loose enough for MC noise.  For D/E, the floor/ceiling
-//    band is sized to the measured MIS-residual spread (documented above),
-//    not silently loosened.
+//    ~2.7x) yet loose enough for MC noise. D/E use the same relative band
+//    against their live zero-absorption references.
 //
 //    ------------------------------------------------------------------
 //    BDPT / VCM COVERAGE (cases G..N) — same analog bug, BDPT sites
@@ -142,7 +141,7 @@
 //    (S4) and is NOT cleanly isolable for the same reason (a finite-path
 //    camera-in-medium escape topology does not exist here): the eye ray
 //    only escapes through a medium when it is INSIDE one, and a bounded
-//    interior-medium boundary hit is a surface-hit event
+//    interior-medium boundary hit is a surface-hit event,
 //    while an unbounded global medium's escape path is infinite (-> 0).  It
 //    is guarded by `if( pMed_eye )` and byte-identical to the surface-hit
 //    fix; documented here rather than tested with a contrived setup.
@@ -176,7 +175,7 @@
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
 
-// DL-03 gate hygiene: seed each render invocation explicitly.
+// Each render has an explicit libc seed and a scoped Sobol scramble salt.
 static unsigned int g_renderSeed = 1729u;
 
 using namespace RISE;
@@ -763,7 +762,7 @@ static std::string BuildRGBSlabScene(
 // ratio tracking, so the OLD survival denominator MinValue(EvalTransmittance)
 // was a random estimate -> biased/noisy no-scatter weight.  The FIX uses the
 // DETERMINISTIC EvalDistancePdf(false) survival pdf, so the render converges
-// to the clean per-channel exp(-sigma_a[c]*d) with low variance.
+// to the clean per-channel exp(-sigma_a[c]*d) without a stochastic survival denominator.
 // REVERT-PROOF: temporarily restoring the MinValue(EvalTransmittance)
 // denominator makes THIS case bias/desaturate while cases A/B (homogeneous)
 // stay green (homogeneous EvalTransmittance is deterministic).
@@ -1968,21 +1967,22 @@ static std::string PTSpectralHetRasterizerChunk( int samples )
 	return ss.str();
 }
 
-static void TestHeterogeneousColored()
+static PixelRGB TestHeterogeneousColored( unsigned int spp = 4096u, unsigned int repeats = 6u )
 {
 	std::cout << "[O] HETEROGENEOUS (constant-density) RGB coloured absorber "
 		<< "(sigma_a = 0.2/0.6/1.2, d = " << kSlabDepth
 		<< ") — deterministic EvalDistancePdf survival denominator" << std::endl;
 	const double sar = 0.2, sag = 0.6, sab = 1.2;
-	// 4096 spp: the stochastic ratio-tracking transmittance NUMERATOR is
-	// noisier than the analytic homogeneous Tr, so more samples are needed to
-	// bring the MEAN inside the 8% band; the DENOMINATOR is now deterministic
-	// (that is the fix) so the estimator is unbiased and DOES converge.
-	const PixelRGB px = RenderCentralBlock(
-		BuildHeterogeneousSlabScene( PTPelHetRasterizerChunk( 4096 ), sar, sag, sab ),
-		"het_col" );
+	// DL-309: average six independently salted 4096-spp renders. In the
+	// selection batch (n=16), blue's distance to the nearer unchanged 8%
+	// boundary was 8.13 sample SD, including the mean offset; one 4096-spp
+	// render gave 2.53 SD. This is a measured budget, not a zero-flake guarantee.
+	// The stochastic ratio-tracking numerator remains part of the oracle.
+	const PixelRGB px = RenderCentralBlockAveraged(
+		BuildHeterogeneousSlabScene( PTPelHetRasterizerChunk( static_cast<int>(spp) ), sar, sag, sab ),
+		"het_col", repeats );
 	Check( px.valid, "O: render produced a frame" );
-	if( !px.valid ) return;
+	if( !px.valid ) return px;
 	const double er = Expected( sar ), eg = Expected( sag ), eb = Expected( sab );
 	std::cout << "    measured (" << px.r << ", " << px.g << ", " << px.b
 		<< ")  expected (" << er << ", " << eg << ", " << eb << ")" << std::endl;
@@ -1993,6 +1993,7 @@ static void TestHeterogeneousColored()
 	// randomize/collapse the chromatic ratio; the deterministic pdf keeps it.
 	Check( px.r > px.g * 1.2 && px.g > px.b * 1.2,
 		"O: het medium stays coloured (r > g > b, not desaturated)" );
+	return px;
 }
 
 static void TestHeterogeneousSpectral()
@@ -2084,8 +2085,8 @@ static void TestPositionalLightColored()
 		<< ") — selection-weight + desaturation discriminator" << std::endl;
 	const double sar = 0.2, sag = 0.6, sab = 1.2;
 	// P2-4: repeat-averaged -- see RenderCentralBlockAveraged's note for
-	// the measured single-render spread (3.13 % sd) that made this row's
-	// 8 % gate a ~2.6-sigma test.
+	// historical unsalted single-render spread; it did not include randomized-
+	// QMC error. The current helper salts every repeat and preserves the band.
 	const PixelRGB px = RenderCentralBlockAveraged(
 		BuildRGBSceneWithOmni( 1024, sar, sag, sab ), "omni_col" );
 	Check( px.valid, "R: render produced a frame" );
@@ -2173,7 +2174,8 @@ static void TestSpectralNoCurveBaselineGray()
 // Explicit budgets permit stock/post comparison without changing the assertions.
 static bool ParsePositiveUnsigned( const char* text, unsigned int& value )
 {
-	if( !text || !*text || *text == '-' || *text == '+' ) return false;
+	if( !text || !*text ) return false;
+	for( const char* p = text; *p; ++p ) if( *p < '0' || *p > '9' ) return false;
 	char* end = nullptr;
 	errno = 0;
 	const unsigned long parsed = std::strtoul( text, &end, 10 );
@@ -2199,18 +2201,10 @@ int main( int argc, char* argv[] )
 		for( unsigned int i = 0; i < trials; ++i ) {
 			const unsigned int firstSeed = g_renderSeed;
 			const auto start = std::chrono::steady_clock::now();
-			const PixelRGB px = RenderCentralBlockAveraged(
-				BuildHeterogeneousSlabScene( PTPelHetRasterizerChunk( static_cast<int>(spp) ), 0.2, 0.6, 1.2 ),
-				"het_measure", repeats );
+			const PixelRGB px = TestHeterogeneousColored( spp, repeats );
 			const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count();
 			std::printf("DL309 trial=%u spp=%u repeats=%u seed=%u salt=%u valid=%d rgb=%.17g,%.17g,%.17g seconds=%.9g\n",
 				i, spp, repeats, firstSeed, SobolSequence::HashCombine(firstSeed, 0x309u), px.valid, px.r, px.g, px.b, seconds);
-			Check(px.valid, "measurement render produced a frame");
-			if( px.valid ) {
-				Check(ChannelOk(px.r, Expected(0.2), "O.r"), "O red Beer-Lambert");
-				Check(ChannelOk(px.g, Expected(0.6), "O.g"), "O green Beer-Lambert");
-				Check(ChannelOk(px.b, Expected(1.2), "O.b"), "O blue Beer-Lambert");
-			}
 		}
 		return failCount ? 1 : 0;
 	}
@@ -2225,7 +2219,7 @@ int main( int argc, char* argv[] )
 	TestNMSpectral();
 
 	// Cases D/E/F: camera INSIDE a global medium (site S3), buggy-vs-fixed
-	// single-count-floor discriminator (see file header).
+	// single-count Beer-Lambert discriminator (see file header).
 	TestGlobalMediumGray();
 	TestGlobalMediumColored();
 	TestGlobalMediumSpectral();
