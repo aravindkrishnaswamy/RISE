@@ -12,6 +12,7 @@
 #include "../src/Library/Utilities/PathVertexEval.h"
 #include "../src/Library/Utilities/IndependentSampler.h"
 using namespace RISE;
+using namespace RISE::Implementation;
 static int checks=0, failures=0;
 static double Fresnel(double mu,double ni,double nt) {
     if(ni==nt) return 0;
@@ -57,8 +58,8 @@ int main() {
                 BSSRDFAdapters::BSSRDFEntryBSDF adapter(diff->GetDiffusionProfile(),0);
                 for(double mu:{1.,0.8,0.5,0.1,0.001}) {
                     const Vector3 wi(std::sqrt(1-mu*mu),0,mu); ri.ray=Ray(Point3(0,0,0),-wi);
-                    IORStack stack(ni); Implementation::RandomNumberGenerator rng; IndependentSampler sampler(rng);
-                    ScatteredRayContainer rays; diff->GetSPF()->ScatterNM(ri,sampler,rays,nm,stack);
+                    IORStack stack(ni); RandomNumberGenerator rng; IndependentSampler sampler(rng);
+                    ScatteredRayContainer rays; diff->GetSPF()->ScatterNM(ri,sampler,nm,rays,stack);
                     double r=0; for(unsigned j=0;j<rays.Count();j++)r+=rays[j].krayNM;
                     const double ref=Fresnel(mu,ni,nt);
                     Check(std::fabs(r-ref)<1e-6,"public SPF reflection",nm,r,ref);
