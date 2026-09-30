@@ -2339,7 +2339,9 @@ namespace {
 							BDPTVertex& prev = vertices[ vertices.size() - 2 ];
 							const Scalar revPdfSA = phasePdf;
 
-							if( prev.type == BDPTVertex::MEDIUM ) {
+							if( prev.pEnvLight ) {
+								prev.pdfRev = revPdfSA;
+							} else if( prev.type == BDPTVertex::MEDIUM ) {
 								prev.pdfRev = BDPTUtilities::SolidAngleToAreaMedium(
 									revPdfSA, prev.sigma_t_scalar, distSqMed );
 							} else if( prev.type == BDPTVertex::CAMERA ) {
@@ -2488,13 +2490,9 @@ namespace {
 					vEnv.pEnvLight = pEnvForEscape;
 					vEnv.isDelta = false;
 					vEnv.isConnectible = true;
-					// Eye-side pdfFwd at env vertex: pdfFwdPrev (SA on
-					// previous vertex) converted to area at env.  cosAtEnv
-					// = 1 by construction (geomNormal = -rayD, incoming =
-					// rayD).  distSq uses the actual eye→exit distance.
-					const Scalar distSqToExit = tExit * tExit;
-					vEnv.pdfFwd = BDPTUtilities::SolidAngleToArea(
-						pdfFwdPrev, Scalar( 1.0 ), distSqToExit );
+					// The environment endpoint is parameterized by sky direction.
+					// Synthetic sphere position carries no area density.
+					vEnv.pdfFwd = pdfFwdPrev;
 					// Apply the residual medium attenuation along the escape
 					// segment before the synthetic env vertex stores beta.
 					// This is a no-scatter SURVIVAL escape: the eye ray left the
@@ -3684,7 +3682,9 @@ namespace {
 				// (Veach SS11 medium area-pdf uses sigma_t).  Reading
 				// prev.geomNormal on a medium vertex would consume zero-
 				// init data; gate the dot product behind the type check.
-				if( prev.type == BDPTVertex::MEDIUM ) {
+				if( prev.pEnvLight ) {
+					prev.pdfRev = revPdfSA;
+				} else if( prev.type == BDPTVertex::MEDIUM ) {
 					prev.pdfRev = BDPTUtilities::SolidAngleToAreaMedium( revPdfSA, prev.sigma_t_scalar, distSq );
 				} else {
 					const Scalar absCosAtPrev = (prev.type == BDPTVertex::CAMERA)
@@ -4054,70 +4054,27 @@ ConnectAndEvaluateImplCore(
 			result.guidingValid = true;
 			}
 
-			// MIS weight: install pdfRev on eyeEnd as "the probability
-			// the s=1 NEE alternative would have sampled this env
-			// vertex" — in area-measure on the disc:
-			//   pdfRev_area = envSelectProb * pdfPosition_disc
-			//               = envSelectProb / (π · r_scene²)
-			// Post the 2026-05-29 continuous-PMF fix
-			// (IMPROVEMENTS.md §12, PRE_PHASE1_STATUS.md Session 9),
-			// `EnvSelectProbability()` returns a continuous positive
-			// value whenever env exists — env is now part of the
-			// alias-table selection space via the env-vs-alias roll
-			// in `LightSampler::SampleLight()`.  So `pdfRevReal` is
-			// strictly positive whenever this code is reached (the
-			// reach gate is `eyeEnd.pEnvLight != 0`, which requires
-			// env existed at sample time, which means
-			// `cachedEnvSelectProb > 0` per
-			// `RecomputeEnvSelectProbability`).  The prior
-			// `kEnvZeroSentinel = 1e-30` workaround that paired with
-			// MISWeight's `remap0` line for the binary-PMF mixed-
-			// scene case is therefore dead code — removed in the
-			// follow-up cleanup.  Restored after MIS call to preserve
-			// const-correctness for other (s,t) evaluations.
+			// A directly visible environment has no intermediate eye vertex:
+			// neither NEE nor an environment-root camera connection exists.
+			if( t == 2 ) { result.misWeight = Scalar(1); return result; }
+			// Common endpoint measure is dω. NEE samples q*p_env(w),
+			// while a light continuation conditioned on w samples the
+			// projected disc coordinate, p_disc*J(pred), without r².
 			const Scalar savedEyeEndPdfRev = eyeEnd.pdfRev;
 			const Scalar savedEyePredPdfRev = eyePred.pdfRev;
-			if( pLightSampler ) {
+			if( pLightSampler && pLightSampler->GetEnvironmentSampler() ) {
 				const Scalar envSelectProb =
 					pLightSampler->EnvSelectProbability();
-				const Scalar sceneRadius =
-					pLightSampler->GetCachedSceneRadius();
-				const Scalar discArea =
-					( sceneRadius > 0 ) ?
-					( PI * sceneRadius * sceneRadius ) : Scalar( 0 );
-				const Scalar pdfPositionDisc =
-					( discArea > 0 ) ? ( Scalar( 1 ) / discArea ) : Scalar( 0 );
 				const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
-					envSelectProb * pdfPositionDisc;
+					envSelectProb * pLightSampler->GetEnvironmentSampler()->Pdf( wiSky );
 			}
 			if( pLightSampler && pLightSampler->GetEnvironmentSampler() ) {
-				// Same continuous-PMF cleanup as the eyeEnd block
-				// above — sentinel removed.  envSelectProb is now
-				// continuous positive whenever env exists.
-				const Scalar envSelectProb =
-					pLightSampler->EnvSelectProbability();
-				const Scalar pdfSA = envSelectProb *
-					pLightSampler->GetEnvironmentSampler()->Pdf( wiSky );
-				const Vector3 dToPred = Vector3Ops::mkVector3(
-					eyePred.position, eyeEnd.position );
-				const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
-				Scalar predPdfRev = 0;
-				if( eyePred.type == BDPTVertex::CAMERA ) {
-					predPdfRev = BDPTUtilities::SolidAngleToArea(
-						pdfSA, Scalar( 1.0 ), distPredSq );
-				} else if( eyePred.type == BDPTVertex::MEDIUM ) {
-					// Volume-scatter vertex: use the medium area-
-					// Jacobian with sigma_t (matches s=1 NEE branch
-					// and the eye-subpath gen for symmetry).
-					predPdfRev = BDPTUtilities::SolidAngleToAreaMedium(
-						pdfSA, eyePred.sigma_t_scalar, distPredSq );
-				} else {
-					const Scalar absCosAtPred = fabs( Vector3Ops::Dot(
-						eyePred.geomNormal, Vector3Ops::Normalize( dToPred ) ) );
-					predPdfRev = BDPTUtilities::SolidAngleToArea(
-						pdfSA, absCosAtPred, distPredSq );
-				}
-				const_cast<BDPTVertex&>( eyePred ).pdfRev = predPdfRev;
+				const Scalar radius = pLightSampler->GetCachedSceneRadius();
+				const Scalar projectedPdf = radius > 0 ? Scalar(1)/(PI*radius*radius) : Scalar(0);
+				const Scalar targetJacobian = eyePred.type == BDPTVertex::MEDIUM
+					? eyePred.sigma_t_scalar : eyePred.type == BDPTVertex::CAMERA
+					? Scalar(1) : fabs(Vector3Ops::Dot(eyePred.geomNormal, wiSky));
+				const_cast<BDPTVertex&>( eyePred ).pdfRev = projectedPdf * targetJacobian;
 			}
 			result.misWeight = self.MISWeight( lightVerts, eyeVerts, s, t );
 			const_cast<BDPTVertex&>( eyeEnd ).pdfRev = savedEyeEndPdfRev;
@@ -4478,7 +4435,9 @@ ConnectAndEvaluateImplCore(
 			const Scalar pdfPredSA = PathValueOps::EvalPdfAtVertex<Tag>( lightEnd, dirToCam, wiAtLightEnd, tag );
 			const Vector3 dToPred = Vector3Ops::mkVector3( lightPred.position, lightEnd.position );
 			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
-			if( lightPred.type == BDPTVertex::MEDIUM ) {
+			if( lightPred.pEnvLight ) {
+				const_cast<BDPTVertex&>( lightPred ).pdfRev = pdfPredSA;
+			} else if( lightPred.type == BDPTVertex::MEDIUM ) {
 				const_cast<BDPTVertex&>( lightPred ).pdfRev =
 					BDPTUtilities::SolidAngleToAreaMedium( pdfPredSA, lightPred.sigma_t_scalar, distPredSq );
 			} else {
@@ -4573,7 +4532,7 @@ ConnectAndEvaluateImplCore(
 			const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.geomNormal,
 				Vector3Ops::Normalize( dToPred ) ) );
 			const_cast<BDPTVertex&>( lightPred ).pdfRev =
-				BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
+				lightPred.pEnvLight ? pdfPredSA : BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
 		}
 
 		result.misWeight = self.MISWeight( lightVerts, eyeVerts, s, t );
@@ -4867,7 +4826,7 @@ ConnectAndEvaluateImplCore(
 			const Scalar pdfRevSA = PathValueOps::EvalPdfAtVertex<Tag>( eyeEnd, woAtEye, dirForMIS_s1, tag );
 			const Scalar absCosAtLight = fabs( Vector3Ops::Dot( lightStart.geomNormal, dirForMIS_s1 ) );
 			const_cast<BDPTVertex&>( lightStart ).pdfRev =
-				BDPTUtilities::SolidAngleToArea( pdfRevSA, absCosAtLight, distSq_conn );
+				envCase_s1 ? pdfRevSA : BDPTUtilities::SolidAngleToArea( pdfRevSA, absCosAtLight, distSq_conn );
 		}
 
 		// eyeEnd.pdfRev: PDF that light-side would generate eyeEnd
@@ -4884,23 +4843,24 @@ ConnectAndEvaluateImplCore(
 			} else if( lightStart.pLight ) {
 				emissionPdfDir = lightStart.pLight->pdfDirection( -dirToLight );
 			} else if( envCase_s1 ) {
-				// Env-light: emission direction from disc = -wi.
-				// Query env sampler at wiForLight (= -geomNormal) —
-				// matches the wi used everywhere else for env.
+				// Conditioned on the sampled sky direction, emitted rays
+				// are parallel. Their first target density is p_disc*J,
+				// independent of the random disc-to-target distance.
 				const EnvironmentSampler* pEnvSamp =
 					pLightSampler ? pLightSampler->GetEnvironmentSampler() : 0;
 				if( pEnvSamp ) {
-					emissionPdfDir = pEnvSamp->Pdf( wiForLight );
+					const Scalar radius = pLightSampler->GetCachedSceneRadius();
+					emissionPdfDir = radius > 0 ? Scalar(1)/(PI*radius*radius) : Scalar(0);
 				}
 			}
 			// Medium vertices: sigma_t/dist^2 replaces |cos|/dist^2
 			if( eyeIsMedium_s1 ) {
 				const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
-					BDPTUtilities::SolidAngleToAreaMedium( emissionPdfDir, eyeEnd.sigma_t_scalar, distSq_conn );
+					BDPTUtilities::SolidAngleToAreaMedium( emissionPdfDir, eyeEnd.sigma_t_scalar, envCase_s1 ? Scalar(1) : distSq_conn );
 			} else {
 				const Scalar absCosAtEye = fabs( Vector3Ops::Dot( eyeEnd.geomNormal, dirForMIS_s1 ) );
 				const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
-					BDPTUtilities::SolidAngleToArea( emissionPdfDir, absCosAtEye, distSq_conn );
+					BDPTUtilities::SolidAngleToArea( emissionPdfDir, absCosAtEye, envCase_s1 ? Scalar(1) : distSq_conn );
 			}
 		}
 
@@ -5195,7 +5155,9 @@ ConnectAndEvaluateImplCore(
 			const Vector3 dToPred = Vector3Ops::mkVector3( lightPred.position, lightEnd.position );
 			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
 			// Medium predecessor: sigma_t/dist^2
-			if( lightPred.type == BDPTVertex::MEDIUM ) {
+			if( lightPred.pEnvLight ) {
+				const_cast<BDPTVertex&>( lightPred ).pdfRev = pdfPredSA;
+			} else if( lightPred.type == BDPTVertex::MEDIUM ) {
 				const_cast<BDPTVertex&>( lightPred ).pdfRev =
 					BDPTUtilities::SolidAngleToAreaMedium( pdfPredSA, lightPred.sigma_t_scalar, distPredSq );
 			} else {
@@ -5366,7 +5328,7 @@ ConnectAndEvaluateImplCore(
 			} else {
 				const Scalar absCosAtLight = fabs( Vector3Ops::Dot( lightEnd.geomNormal, dConnect ) );
 				const_cast<BDPTVertex&>( lightEnd ).pdfRev =
-					BDPTUtilities::SolidAngleToArea( pdfRevSA, absCosAtLight, distSq_conn );
+					lightEnd.pEnvLight ? pdfRevSA : BDPTUtilities::SolidAngleToArea( pdfRevSA, absCosAtLight, distSq_conn );
 			}
 		}
 
@@ -5399,7 +5361,9 @@ ConnectAndEvaluateImplCore(
 			const Scalar pdfPredSA = PathValueOps::EvalPdfAtVertex<Tag>( lightEnd, woAtLight, wiAtLight, tag );
 			const Vector3 dToPred = Vector3Ops::mkVector3( lightPred.position, lightEnd.position );
 			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
-			if( lightPred.type == BDPTVertex::MEDIUM ) {
+			if( lightPred.pEnvLight ) {
+				const_cast<BDPTVertex&>( lightPred ).pdfRev = pdfPredSA;
+			} else if( lightPred.type == BDPTVertex::MEDIUM ) {
 				const_cast<BDPTVertex&>( lightPred ).pdfRev =
 					BDPTUtilities::SolidAngleToAreaMedium( pdfPredSA, lightPred.sigma_t_scalar, distPredSq );
 			} else {
@@ -5499,6 +5463,7 @@ ConnectAndEvaluateImpl(
 			result.contribution = result.contribution * g;
 		}
 	}
+
 	return result;
 }
 
@@ -6523,19 +6488,17 @@ unsigned int GenerateLightSubpathImpl(
 		// vertex on an object with no TEXCOORD_1.
 		v.ptCoord = ls.ptCoord;
 
-		// pdfFwd is the probability of generating this light vertex
-		// = pdfSelect * pdfPosition
-		v.pdfFwd = ls.pdfSelect * ls.pdfPosition;
+		// The environment root is angular; finite roots use emitting area.
+		// Emission beta below retains the full joint direction/disc density.
+		v.pdfFwd = ls.pdfSelect * (ls.pEnvLight ? ls.pdfDirection : ls.pdfPosition);
 
-		// Store pdfSelect separately so VCM's `ConvertLightSubpath`
-		// can extract the geometric `emissionPdfW = pdfPos × pdfDir`
-		// from the joint `v.emissionPdfW = pdfSelect × pdfPos × pdfDir`
-		// when computing SmallVCM's `dVC = cosLight / emissionPdfW_geom`
-		// — see BDPTVertex.h's `pdfSelect` doc comment for the full
-		// continuous-PMF rationale.
+		// Retain selection metadata separately from the selected root
+		// and joint emission densities. VCM's eye-origin alternative
+		// keeps this selection event in the joint denominator.
 		v.pdfSelect = ls.pdfSelect;
 
-		// Throughput: Le / (pdfSelect * pdfPosition); pdfDirection folds in at
+		// Root throughput: Le / pdfFwd, so guiding recovers Le exactly.
+		// The full joint emission density folds in at
 		// trace time.  NM also broadcasts the scalar into the RISEPel throughput
 		// field for guiding-training Le recovery (the Pel path sets only
 		// throughput) -- preserved Pel/NM divergence.
@@ -6768,8 +6731,9 @@ unsigned int GenerateLightSubpathImpl(
 					StoreThroughput<Tag>( mv, beta );
 
 					const Scalar distSqMed = t_m * t_m;
-					mv.pdfFwd = BDPTUtilities::SolidAngleToAreaMedium(
-						pdfFwdPrev, mv.sigma_t_scalar, distSqMed );
+					mv.pdfFwd = vertices.size() == 1 && ls.pEnvLight
+						? ls.pdfPosition * mv.sigma_t_scalar
+						: BDPTUtilities::SolidAngleToAreaMedium( pdfFwdPrev, mv.sigma_t_scalar, distSqMed );
 					mv.pdfRev = 0;
 
 					// VCM post-pass uses sigma_t_scalar (not cosAtGen) for
@@ -6818,7 +6782,9 @@ unsigned int GenerateLightSubpathImpl(
 						BDPTVertex& prev = vertices[ vertices.size() - 2 ];
 						const Scalar revPdfSA = phasePdf;
 
-						if( prev.type == BDPTVertex::MEDIUM ) {
+						if( prev.pEnvLight ) {
+							prev.pdfRev = revPdfSA;
+						} else if( prev.type == BDPTVertex::MEDIUM ) {
 							prev.pdfRev = BDPTUtilities::SolidAngleToAreaMedium(
 								revPdfSA, prev.sigma_t_scalar, distSqMed );
 						} else if( prev.type == BDPTVertex::LIGHT ) {
@@ -6958,7 +6924,9 @@ unsigned int GenerateLightSubpathImpl(
 			ri.geometric.vGeomNormal,
 			-currentRay.Dir() ) );
 
-		v.pdfFwd = BDPTUtilities::SolidAngleToArea( pdfFwdPrev, absCosIn, distSq );
+		v.pdfFwd = vertices.size() == 1 && ls.pEnvLight
+			? ls.pdfPosition * absCosIn
+			: BDPTUtilities::SolidAngleToArea( pdfFwdPrev, absCosIn, distSq );
 		StoreThroughput<Tag>( v, beta );
 		if constexpr( Traits::is_nm ) {
 			// NM broadcasts the scalar throughput into the RISEPel field so
@@ -7847,7 +7815,9 @@ unsigned int GenerateLightSubpathImpl(
 			// reading it before the type guard would consume meaningless
 			// data even though the result is later ignored.
 			const Scalar d2 = distSq;
-			if( prev.type == BDPTVertex::MEDIUM ) {
+			if( prev.pEnvLight ) {
+				prev.pdfRev = revPdfSA;
+			} else if( prev.type == BDPTVertex::MEDIUM ) {
 				prev.pdfRev = BDPTUtilities::SolidAngleToAreaMedium( revPdfSA, prev.sigma_t_scalar, d2 );
 			} else {
 				const Scalar absCosAtPrev = fabs(

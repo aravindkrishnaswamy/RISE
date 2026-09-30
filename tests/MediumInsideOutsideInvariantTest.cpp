@@ -137,6 +137,7 @@
 #include <vector>
 #include <cmath>
 #include <string>
+#include <limits>
 
 #ifdef _WIN32
 	#include <process.h>
@@ -153,6 +154,14 @@
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
 #include "../src/Library/Utilities/SobolSampler.h"
+#include "../src/Library/Interfaces/IScenePriv.h"
+#include "../src/Library/Rendering/RayCaster.h"
+#include "../src/Library/Shaders/StandardShader.h"
+#include "../src/Library/Shaders/BDPTIntegrator.h"
+#include "../src/Library/Shaders/VCMIntegrator.h"
+#include "../src/Library/Lights/LightSampler.h"
+#include "../src/Library/Rendering/EnvironmentSampler.h"
+#include "../src/Library/Utilities/IndependentSampler.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -426,12 +435,19 @@ static std::string Rasterizer( const std::string& kind, const std::string& extra
 		       "\tnmbegin 380\n\tnmend 720\n\tnum_wavelengths 8\n\tspectral_samples 1\n";
 	} else if( kind == "bdpt" ) {
 		body = "bdpt_pel_rasterizer\n{\n\tmax_eye_depth 20\n\tmax_light_depth 20\n\tsamples 64\n";
+	} else if( kind == "bdptnm" ) {
+		body = "bdpt_spectral_rasterizer\n{\n\tmax_eye_depth 20\n\tmax_light_depth 20\n\tsamples 64\n"
+		       "\thwss FALSE\n\tnmbegin 380\n\tnmend 720\n\tnum_wavelengths 8\n\tspectral_samples 1\n";
 	} else if( kind == "bdpthwss" ) {
 		body = "bdpt_spectral_rasterizer\n{\n\tmax_eye_depth 20\n\tmax_light_depth 20\n\tsamples 64\n"
 		       "\thwss TRUE\n\tnmbegin 380\n\tnmend 720\n\tnum_wavelengths 8\n\tspectral_samples 1\n";
 	} else if( kind == "vcm" ) {
 		body = "vcm_pel_rasterizer\n{\n\tmax_eye_depth 20\n\tmax_light_depth 20\n\tsamples 64\n"
 		       "\tvc_enabled true\n\tvm_enabled false\n";
+	} else if( kind == "vcmnm" || kind == "vcmhwss" ) {
+		body = "vcm_spectral_rasterizer\n{\n\tmax_eye_depth 20\n\tmax_light_depth 20\n\tsamples 64\n"
+		       "\tvc_enabled true\n\tvm_enabled false\n\tnmbegin 380\n\tnmend 720\n\tnum_wavelengths 8\n\tspectral_samples 1\n";
+		body += kind == "vcmhwss" ? "\thwss TRUE\n" : "\thwss FALSE\n";
 	}
 	body += "\tpixel_filter box\n\toidn_denoise FALSE\n";
 	body += extra;
@@ -524,25 +540,160 @@ static Stats CapRender( const std::string& kind, unsigned int cap, unsigned int 
 	return RenderStats( BoxScene( Rasterizer( kind, extra ), kCameraInside ), Repeats(), seedBase );
 }
 
+// Independent probability oracle on actual generated light paths.  An
+// environment sample first chooses sky direction, then a parallel ray's
+// transverse disc coordinate.  Projecting parallel rays onto a surface
+// gives p_disc |n.w|, independent of the sampled disc-to-hit distance.
+static void EnvironmentGeneratedDensity()
+{
+ const std::string scene = BoxScene(Rasterizer("bdpt", ""), kCameraInside)
+  + "omni_light\n{\n\tname density_selection\n\tpower 1000\n\tcolor 1 1 1\n\tposition 0 1 0\n}\n";
+ const std::string path = "/tmp/dl346_density_" + std::to_string(getpid()) + ".RISEscene";
+ { std::ofstream out(path); out << scene; }
+ IJobPriv* job = nullptr;
+ const bool loaded = RISE_CreateJobPriv(&job) && job && job->LoadAsciiSceneViaCst(path.c_str());
+ std::remove(path.c_str());
+ Check(loaded, "DL346 density fixture loads");
+ if(!loaded) { safe_release(job); return; }
+ StandardShader* shader = new StandardShader(std::vector<IShaderOp*>());
+ RayCaster* caster = new RayCaster(false, 8, *shader, false);
+ caster->AttachScene(job->GetScene());
+ StabilityConfig cfg; cfg.rrMinDepth = 20;
+ BDPTIntegrator* integrator = new BDPTIntegrator(4,4,cfg);
+ const LightSampler* lights = caster->GetLightSampler();
+ integrator->SetLightSampler(lights);
+ Check(lights->EnvSelectProbability()>.05 && lights->EnvSelectProbability()<.95,"DL346 actual mixed-light selection is nonunit");
+ std::printf("DL346 density environment selection=%.17g\n",lights->EnvSelectProbability());
+ const double radius = lights->GetCachedSceneRadius();
+ const double pDisc = 1/(PI*radius*radius);
+ unsigned inspected[2] = {}; bool finite[2] = {true,true}; double worstRoot[2] = {}, worstTarget[2] = {}, worstVCM[2] = {};
+ for(int spectral=0; spectral<2; ++spectral) {
+  RandomNumberGenerator rng(346700u+unsigned(spectral)); IndependentSampler sampler(rng);
+  for(unsigned sample=0; sample<1024; ++sample) {
+   std::vector<BDPTVertex> vertices; std::vector<uint32_t> starts;
+   if(spectral) integrator->GenerateLightSubpathNM(*job->GetScene(),*caster,sampler,vertices,starts,550,rng,nullptr);
+   else integrator->GenerateLightSubpath(*job->GetScene(),*caster,sampler,vertices,starts,rng);
+   if(vertices.size()<2 || !vertices[0].pEnvLight) continue;
+   const auto& root=vertices[0]; const auto& target=vertices[1];
+   const Vector3 sky=-root.geomNormal;
+   const double expectedRoot=lights->EnvSelectProbability()*lights->GetEnvironmentSampler()->Pdf(sky);
+   const double jacobian=target.type==BDPTVertex::MEDIUM ? target.sigma_t_scalar
+    : std::fabs(Vector3Ops::Dot(target.geomNormal,sky));
+   const double expectedTarget=pDisc*jacobian;
+   if(expectedTarget<=0 || expectedRoot<=0) continue;
+   std::vector<LightVertex> stored; std::vector<VCMMisQuantities> recurrence;
+   VCMIntegrator::ConvertLightSubpath(vertices,ComputeNormalization(24,24,0,true,false),stored,&recurrence);
+   finite[spectral] = finite[spectral] && recurrence.size()>=2
+    && std::isfinite(expectedRoot) && std::isfinite(expectedTarget)
+    && std::isfinite(root.pdfFwd) && std::isfinite(target.pdfFwd)
+    && std::isfinite(root.emissionPdfW);
+   if(recurrence.size()<2) continue;
+   finite[spectral] = finite[spectral] && std::isfinite(recurrence[0].dVC)
+    && std::isfinite(recurrence[1].dVCM) && std::isfinite(recurrence[1].dVC);
+   // At the root the reciprocal eye-origin alternative contains the
+   // full selected emission density. Before scattering at the first
+   // target, dVCM=1/p(target|sky), dVC=1/p(sky,target).
+   worstVCM[spectral]=std::max(worstVCM[spectral],std::fabs(recurrence[0].dVC*root.emissionPdfW-1));
+   worstVCM[spectral]=std::max(worstVCM[spectral],std::fabs(recurrence[1].dVCM*expectedTarget-1));
+   worstVCM[spectral]=std::max(worstVCM[spectral],std::fabs(recurrence[1].dVC*root.emissionPdfW*jacobian-1));
+   ++inspected[spectral];
+   worstRoot[spectral]=std::max(worstRoot[spectral],std::fabs(root.pdfFwd/expectedRoot-1));
+   worstTarget[spectral]=std::max(worstTarget[spectral],std::fabs(target.pdfFwd/expectedTarget-1));
+  }
+  std::printf("DL346 density spectral=%d inspected=%u worstRoot=%.17g worstTarget=%.17g worstVCM=%.17g\n",spectral,inspected[spectral],worstRoot[spectral],worstTarget[spectral],worstVCM[spectral]);
+  Check(inspected[spectral]>100,"DL346 real environment target coverage");
+  Check(finite[spectral],"DL346 generated densities and recurrences are finite");
+  // The sampler stores float CDF entries; independently querying
+  // its returned direction incurs that float rounding, not energy noise.
+  Check(worstRoot[spectral]<4*std::numeric_limits<float>::epsilon(),"DL346 root is sky angular density within CDF precision");
+  Check(worstTarget[spectral]<1e-12,"DL346 first target is parallel projected-disc density");
+  Check(worstVCM[spectral]<1e-12,"DL346 VCM generated nonunit-selection ratios use joint measure");
+ }
+ // Finite sibling: the eye-origin alternative does not choose a light,
+ // so its reciprocal density retains 1/q even when an environment exists.
+ BDPTVertex finiteRoot; finiteRoot.type=BDPTVertex::LIGHT;
+ finiteRoot.pdfSelect=.23;finiteRoot.pdfFwd=.23*.25;
+ finiteRoot.emissionPdfW=.23*.25*.12;finiteRoot.cosAtGen=.4;
+ std::vector<LightVertex> finiteStored;std::vector<VCMMisQuantities> finiteMis;
+ VCMIntegrator::ConvertLightSubpath({finiteRoot},ComputeNormalization(24,24,0,true,false),finiteStored,&finiteMis);
+ Check(std::fabs(finiteMis[0].dVC*finiteRoot.emissionPdfW/.4-1)<1e-12,"DL346 finite sibling retains joint nonunit-selection ratio");
+ // Full-path densities are products of independent conditional factors,
+ // rather than a second implementation of the ratio-walk heuristic.
+ const double lightF[] = {.23*.079, pDisc*.7, .081*.7/2.3};
+ const double eyeF[] = {.073, .069*.7/1.8, 3.1*.7/2.4};
+ double densities[4] = {};
+ for(unsigned split=0; split<4; ++split) {
+  densities[split]=1;
+  for(unsigned node=0; node<3; ++node) densities[split]*=node<split?lightF[node]:eyeF[node];
+ }
+ double denominator=0; for(double density:densities) denominator+=density*density;
+ double sum=0;
+ for(unsigned split=0; split<4; ++split) {
+  std::vector<BDPTVertex> light, eye;
+  for(unsigned node=0; node<split; ++node) {
+   BDPTVertex v; v.type=node==0?BDPTVertex::LIGHT:BDPTVertex::MEDIUM;
+   v.pdfFwd=lightF[node];v.pdfRev=eyeF[node];light.push_back(v);
+  }
+  BDPTVertex camera;camera.type=BDPTVertex::CAMERA;camera.pdfFwd=1;eye.push_back(camera);
+  for(int node=2; node>=int(split); --node) {
+   BDPTVertex v;v.type=node==0?BDPTVertex::LIGHT:BDPTVertex::MEDIUM;
+   v.pdfFwd=eyeF[node];v.pdfRev=lightF[node];eye.push_back(v);
+  }
+  const double weight=integrator->MISWeight(light,eye,split,4-split);
+  const double oracle=densities[split]*densities[split]/denominator;
+  std::printf("DL346 partition s=%u t=%u density=%.17g weight=%.17g oracle=%.17g\n",split,4-split,densities[split],weight,oracle);
+  Check(std::fabs(weight-oracle)<1e-12,"DL346 all-strategy weight equals full density oracle");sum+=weight;
+ }
+ Check(std::fabs(sum-1)<1e-12,"DL346 complete admissible strategy weights partition unity");
+ safe_release(integrator);safe_release(caster);safe_release(shader);safe_release(job);
+}
+
 // DL-346 bounded diagnostic: salted, interleaved estimators of the same
 // environment-lit medium integral.  Zero-absorption white-floor furnace
 // has the independent physical oracle L = 1 everywhere.
-static void EnvironmentBalanceDiagnostic()
+static void EnvironmentBalanceDiagnostic(int mode = 0)
 {
- const int n = 3;
- for( int control = 0; control < 4; ++control ) {
+ const int n = 6;
+ for( int control = 0; control < 8; ++control ) {
+  const char* selected = std::getenv("RISE_DL346_CONTROL");
+  if( selected && control != std::atoi(selected) ) continue;
   double totals[3] = {}, squares[3] = {};
-  const char* kinds[] = { "pt", "bdpt", "vcm" };
+  const char* kinds[] = { mode == 0 ? "pt" : mode == 1 ? "ptnm" : "pthwss",
+   mode == 0 ? "bdpt" : mode == 1 ? "bdptnm" : "bdpthwss",
+   mode == 0 ? "vcm" : mode == 1 ? "vcmnm" : "vcmhwss" };
   for( int trial = 0; trial < n; ++trial ) {
    for( int k = 0; k < 3; ++k ) {
     std::string scene = BoxScene( Rasterizer( kinds[k], "\tmax_volume_bounce 256\n" ),
-      kCameraInside, kHomogeneous, control == 3 ? 1.0 : 0.8 );
+      control == 4 ? kCameraOutside : kCameraInside, kHomogeneous, (control == 3 || control == 4) ? 1.0 : 0.8, 24 );
     const std::string absorption = "absorption 0.3 0.3 0.3";
     const std::string scattering = "scattering 0.7 0.7 0.7";
-    if( control == 0 || control == 1 || control == 3 )
+    if( control == 0 || control == 1 || control == 3 || control == 4 )
      scene.replace( scene.find(absorption), absorption.size(), "absorption 0 0 0" );
-    if( control == 0 || control == 2 )
+    if( control == 0 || control == 2 || control == 6 )
      scene.replace( scene.find(scattering), scattering.size(), "scattering 0 0 0" );
+    if(control == 5) {
+     const std::string envColor="name pnt_env\n\tcolor 1.0 1.0 1.0";
+     scene.replace(scene.find(envColor),envColor.size(),"name pnt_env\n\tcolor 0 0 0");
+     scene += "omni_light\n{\n\tname interior\n\tpower 2\n\tcolor 1 1 1\n\tposition 0 1 0\n}\n";
+    }
+    if(control == 6 || control == 7) {
+     // A centered camera in a radius-2 index-matched sphere removes
+     // surface transport. Absorption truth is exp(-sigma_a*2).
+     const size_t floorBegin=scene.find("clippedplane_geometry");
+     const size_t rasterBegin=scene.find(Rasterizer(kinds[k],"\tmax_volume_bounce 256\n"));
+     scene.erase(floorBegin,rasterBegin-floorBegin);
+     const std::string box="box_geometry\n{\n\tname shell_box\n\twidth 4.0\n\theight 4.0\n\tdepth 4.0\n}";
+     scene.replace(scene.find(box),box.size(),"sphere_geometry\n{\n\tname shell_box\n\tradius 2\n}");
+     const std::string location="location 0 0 1.999900";
+     scene.replace(scene.find(location),location.size(),"location 0 0 0");
+     if(control == 7) {
+      scene.replace(scene.find(absorption),absorption.size(),"absorption 0 0 0");
+      const std::string cap="max_volume_bounce 256";
+      scene.replace(scene.find(cap),cap.size(),"max_volume_bounce 1");
+     }
+    }
+    const std::string samples="samples 64";
+    scene.replace(scene.find(samples),samples.size(),control == 5 ? "samples 512" : "samples 128");
     SobolSamplerTestHooks::ValueSalt().store( SobolSequence::HashCombine( 34600u + unsigned(trial), 0x346u ) );
     const double value = RenderMean( scene, 34600u + unsigned(trial) );
     SobolSamplerTestHooks::ValueSalt().store( 0u );
@@ -554,8 +705,33 @@ static void EnvironmentBalanceDiagnostic()
   for( int k = 0; k < 3; ++k ) {
    const double mean = totals[k]/n;
    const double sd = std::sqrt( std::max(0.0, (squares[k]-totals[k]*totals[k]/n)/(n-1)) );
-   std::printf( "DL346 summary control=%d kind=%s n=%d mean=%.9g sd=%.9g ratioPT=%.9g\n", control, kinds[k], n, mean, sd, totals[k]/totals[0] );
-   if( control == 3 ) Check( std::fabs(mean-1.0) < 0.02, "DL346 conservative furnace equals unit environment" );
+   std::printf( "DL346 summary control=%d kind=%s n=%d mean=%.9g sd=%.9g ratioPT=%.9g ci95=%.9g\n", control, kinds[k], n, mean, sd, totals[k]/totals[0], 2.571*sd/std::sqrt(double(n)) );
+   Check(2.571*sd/std::sqrt(double(n)) < .02*mean,"DL346 95% Student CI is narrower than unchanged 2% band");
+   if( control == 3 || control == 4 ) Check( std::fabs(mean-1.0) < 0.02, "DL346 conservative furnace equals unit environment" );
+   else if(control == 6) Check(std::fabs(mean/std::exp(-.6)-1)<.02,"DL346 absorption matches exp(-sigma_a radius)");
+   else if(control == 7) {
+    // One-scatter Neumann term, isotropic phase, sigma_s=.7, R=2:
+    // exp(-sigma R)+sigma integral_0^R exp(-sigma t)
+    // * (1/2) integral_-1^1 exp(-sigma l(t,mu)) dmu dt.
+    // Midpoint quadrature is independent of all transport helpers.
+    auto quadrature=[](int cells) {
+     double integral=0;
+     for(int i=0;i<cells;++i) {
+      const double t=2*(i+.5)/cells;double angular=0;
+      for(int j=0;j<cells;++j) {
+       const double mu=-1+2*(j+.5)/cells;
+       const double exit=-t*mu+std::sqrt(4-t*t*(1-mu*mu));
+       angular+=std::exp(-.7*exit);
+      }
+      integral+=std::exp(-.7*t)*angular/cells;
+     }
+     return std::exp(-1.4)+.7*2*integral/cells;
+    };
+    const double oracle=quadrature(1024);
+    Check(std::fabs(oracle-quadrature(512))<1e-5,"DL346 single-scatter quadrature converges");
+    std::printf("DL346 single-scatter oracle=%.12g mean=%.12g\n",oracle,mean);
+    Check(std::fabs(mean/oracle-1)<.02,"DL346 single scatter matches independent integral");
+   }
    else if( k > 0 ) Check( std::fabs(totals[k]/totals[0]-1.0) < 0.02, "DL346 environment estimator agrees with PT within 2%" );
   }
  }
@@ -564,12 +740,15 @@ static void EnvironmentBalanceDiagnostic()
 int main( int argc, char** argv )
 {
 	std::cout << "=== MediumInsideOutsideInvariantTest (DL-247) ===" << std::endl;
- if( argc == 2 && std::string(argv[1]) == "--env-balance" ) {
-  EnvironmentBalanceDiagnostic();
+ if( argc == 2 && (std::string(argv[1]) == "--env-balance" ||
+  std::string(argv[1]) == "--env-balance-nm" || std::string(argv[1]) == "--env-balance-hwss") ) {
+  EnvironmentGeneratedDensity();
+  EnvironmentBalanceDiagnostic(std::string(argv[1]) == "--env-balance-nm" ? 1 : std::string(argv[1]) == "--env-balance-hwss" ? 2 : 0);
   std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
   return failCount == 0 ? 0 : 1;
  }
 
+ EnvironmentGeneratedDensity();
 	// Band: +/- 3% -- see the header's BAND paragraph for the measurement.
 	const double kBand = 0.03;
 	// Heterogeneous rows: +/- 3% too -- see the header's DL-283 paragraph
