@@ -1298,5 +1298,5 @@ timing, first libc seed and first salt. Repeat `j` uses
 `bin/tests/VolumeAbsorptionAttenuationTest --heterogeneous-measure 4096 6 16 359001`
 measures 16 independent default-row outputs. The stock comparison uses
 `4096 1 16 319001`. Unknown flags, malformed integers, overflow and budgets
-above the documented parser limits fail with exit 2; this mode supplements
+above 1,048,576 spp, 1,024 repeats or 1,024 trials fail with exit 2; this mode supplements
 rather than replaces the full default gate.
