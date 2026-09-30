@@ -1,3 +1,4 @@
+#include "../Utilities/IndependentSampler.h"
 //////////////////////////////////////////////////////////////////////
 //
 //  AmbientOcclusionShaderOp.cpp - Implementation of the AmbientOcclusionShaderOp class
@@ -45,6 +46,13 @@ void AmbientOcclusionShaderOp::PerformOperation(
 	const ScatteredRayContainer* pScat			///< [in] Scattering information
 	) const
 {
+    IndependentSampler alphaFallback(rc.random);
+    ISampler& alphaSampler = rc.pSampler ? *rc.pSampler : static_cast<ISampler&>(alphaFallback);
+    auto alphaOccluded = [&](const Ray& ray, Scalar distance) {
+        RayIntersection hit(ray, ri.geometric.rast);
+        caster.GetAttachedScene()->GetObjects()->IntersectRaySampled(hit, alphaSampler, true, true, false, distance);
+        return hit.geometric.bHit;
+    };
 	c = RISEPel(0.0);
 
 	// Only do stuff on a normal pass or on final gather
@@ -132,7 +140,7 @@ void AmbientOcclusionShaderOp::PerformOperation(
 
 					if( bUseIrradianceCache && pCache ) {
 						RayIntersection	newri( ray, ri.geometric.rast );
-						caster.GetAttachedScene()->GetObjects()->IntersectRay( newri, true, true, false );
+						caster.GetAttachedScene()->GetObjects()->IntersectRaySampled( newri, alphaSampler );
 						if( !newri.geometric.bHit ) {
 							// Accumulate
 							if( pBRDF && bMultiplyBRDF ) {
@@ -149,7 +157,7 @@ void AmbientOcclusionShaderOp::PerformOperation(
 						// occluder with `casts_shadows FALSE` must still
 						// occlude here (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md
 						// section 8.1) -- CastOcclusionRay, not CastShadowRay.
-						if( !caster.CastOcclusionRay( ray, RISE_INFINITY ) ) {
+						if( !alphaOccluded( ray, RISE_INFINITY ) ) {
 							// Accumulate
 							if( pBRDF && bMultiplyBRDF ) {
 								accum = accum + pBRDF->valueStateful( dir, ri.geometric, &ior_stack ) * (pRadianceMap?pRadianceMap->GetRadiance(ray,ri.geometric.rast) : RISEPel(1,1,1));
@@ -201,6 +209,13 @@ Scalar AmbientOcclusionShaderOp::PerformOperationNM(
 	const ScatteredRayContainer* pScat			///< [in] Scattering information
 	) const
 {
+    IndependentSampler alphaFallback(rc.random);
+    ISampler& alphaSampler = rc.pSampler ? *rc.pSampler : static_cast<ISampler&>(alphaFallback);
+    auto alphaOccluded = [&](const Ray& ray, Scalar distance) {
+        RayIntersection hit(ray, ri.geometric.rast);
+        caster.GetAttachedScene()->GetObjects()->IntersectRaySampled(hit, alphaSampler, true, true, false, distance);
+        return hit.geometric.bHit;
+    };
 	Scalar c=0;
 
 	// Only do stuff on a normal pass or on final gather
@@ -245,7 +260,7 @@ Scalar AmbientOcclusionShaderOp::PerformOperationNM(
 				Ray const ray(ri.geometric.ptIntersection, dir);
 				// Geometry-presence query, not light-visibility -- see the
 				// RGB path's comment above.
-				if( !caster.CastOcclusionRay( ray, RISE_INFINITY ) ) {
+				if( !alphaOccluded( ray, RISE_INFINITY ) ) {
 					// Accumulate
 					if( pBRDF && bMultiplyBRDF ) {
 						accum += pBRDF->valueStatefulNM( dir, ri.geometric, nm, &ior_stack ) * (pRadianceMap?pRadianceMap->GetRadianceNM(ray,ri.geometric.rast,nm) : 1.0);

@@ -125,12 +125,9 @@ Useful filename families:
   normal perturbation threaded through `CoatedBRDF`/`CoatedSPF`, ABI v14,
   DL-192 -- money test: a known coat-normal tilt moves the coat specular
   peak by the closed-form reflected angle while the substrate's own diffuse
-  response is unaffected), `BlenderBridgeAlphaTest` (Principled Alpha -> a
-  per-material `advanced_shader` op chain built via the shared
-  `src/Library/Shaders/AdvancedShaderWiring.h` helper, ABI v14, DL-193 --
-  renders the same alpha-cutout scene under `pixelpel_rasterizer` (works,
-  matches closed form) and PT/BDPT (both ignore alpha per the DL-214
-  integrator-compatibility finding, both warn)).  The matching Python-side
+  response is unaffected), `BlenderBridgeAlphaTest` (Principled Alpha -> scalar material
+  coverage, ABI v14: legacy pixelpel and modern PT/BDPT cutout renders plus
+  threshold-adjacent numeric precision checks). The matching Python-side
   exporter (socket-reading) contract lives in
   `src/Blender/addons/rise_renderer/test_hair_export.py`, run separately
   since it needs no C++ build.
@@ -1188,3 +1185,67 @@ controls are supplemental consistency coverage.
 
 See [the transport derivation and scope](../docs/DL239_PHOTON_TRANSPORT.md).
 Final full-slice rendering, cost and review gates are still pending.
+
+### Material alpha coverage (DL-214)
+
+Build named targets with `make -C build/make/rise build-test/<Name>` and run
+`bin/tests/<Name>` from the repository root. `AlphaIntersectionTransportTest`
+contains render-level shadow, emission, continuation, spectral, MLT and active
+VCM merging checks. `AlphaMediumBoundaryTest`, `AlphaSamplerLaneTest`,
+`AlphaSMSReciprocalTest`, `AlphaSMSTransportTest`, and
+`AlphaSubsurfaceEndpointTest` isolate sampler, medium, SMS and nonlocal endpoint
+contracts. `GLTFAlphaImportTest` uses the committed Khronos RGBA alpha asset;
+`BlenderBridgeAlphaTest` checks both legacy and modern imported cutout behavior.
+`LegacyPhotonTransportTest` also measures alpha-compensated RGB/NM photon deposits.
+See [ALPHA_COVERAGE.md](../docs/ALPHA_COVERAGE.md) for the estimator definitions.
+
+- `AlphaRayContextTest`: MASK0 null traversal preserves full camera differential
+  footprints and UV Jacobians, including nonzero differential-origin offsets;
+  coverage painters receive the original segment ray and accumulated range.
+
+- `AlphaEmitterNormalizationTest`: actual rasterizer emission attempts, active
+  VM-only/VC-only/combined emitter coverage, RGB/NM/HWSS.
+- `AlphaShadowMediumTest`: shadow-disabled medium traversal, unused/foreign
+  alpha isolation, directional/mesh/environment queries and successive rays.
+- `AlphaPhotonEmissionTest`: real legacy emission loops, absolute multilight
+  power, spatial coverage/deposit efficiency, bounded reservoir/lifecycle,
+  cancellation, exact progress/time budgets, empty and zero-alpha cases.
+- `AlphaMediumTailTest`: finite light-endpoint attenuation in PT/BDPT/VCM,
+  RGB/NM/HWSS, and unrelated live alpha Job isolation.
+- `AlphaBoundaryEndpointTest`: raw boundary parameters, exact versus adjacent
+  endpoints, transformed/nested CSG, front/back and snapshot copies.
+- `AlphaSnapshotTest`: reconstructed material alpha mode/cutoff, painter
+  lifetime, independent slot rebinding and existing wrapper fallback behavior.
+
+- `AlphaCSGCapabilityTest`, `AlphaCSGTransportTest`: effective inherited CSG
+  alpha census, nested/snapshot/root/intermediate overrides, hidden/foreign
+  isolation and production PT/BDPT/VCM RGB/NM/HWSS medium controls.
+- `AlphaRandomWalkMaterialTest`, `AlphaBSSRDFMaterialTest`: actual selected
+  endpoint materials and pre-modifier coverage; unchanged geometric proposals,
+  ordinary sampler draws, PDFs/weights and final-only alpha decisions.
+
+- `AlphaSubsurfaceContextTest`: real scene-relative scalar expression and
+  nonzero raster coordinates at selected endpoints, with paired proposal,
+  weight and final-only draw controls; `BSSRDFEntrySignalsTest` preserves the
+  established downstream entry-signal contract.
+
+- `AlphaEndpointContextTest`: sampled-emitter/NEE physical scene and world
+  context, optional receiver raster, real scalar world-position renders in
+  RGB/NM/HWSS, and SMS seed-to-solved-point effective material coverage.
+  `SignalEmitterRecordTest` verifies the original emitted-radiance records;
+  `AlphaPhotonEmissionTest` includes all five emission-loop context families.
+
+- `AlphaSMSGeometryTest`: production SMS seed/solve endpoint records on SDF
+  and analytic geometry across scale/transforms, two-stage projection,
+  pre-modifier UV, nearby CSG faces, finite visibility draw bounds, and stale
+  or missing-record refusal. Uses independent control hits and affirmative
+  MASK1 visibility so negative coverage tests cannot pass vacuously.
+
+- `AlphaEmitterRecordTest`: real expression Le preserves the original manual
+  record in OPAQUE/MASK while physical world-P alpha remains affirmative;
+  separates legacy zero-P emission limitations from coverage correctness.
+  `AlphaPhotonEmissionTest` additionally checks actual RGB/NM Phong exponent
+  and direction records, with physical/local/curvature alpha-only context.
+  `AlphaBoundaryEndpointTest` pairs null/record finite bounds and exact alpha
+  draws, distinguishes physical medium events from occlusion intervals, and
+  explicitly retains the no-alpha raw-shadow exact-end convention.

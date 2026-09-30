@@ -354,6 +354,8 @@ namespace RISE
 		/// All other vertex types store area-measure pdfs as before.
 		bool IsInfiniteLight() const { return pEnvLight != 0; }
 
+        Scalar acceptedAlphaCoverage = 1;
+
 		BDPTVertex() :
 		type( SURFACE ),
 		ptCoord( Point2( 0, 0 ) ),

@@ -4687,6 +4687,10 @@ namespace RISE
 									const double coat_normal_scale	///< [in] DL-192: xy scale on the decoded tangent-space normal
 									) = 0;
 
+        //! DL-214: scalar coverage on an existing material (opaque/mask/blend).
+        virtual bool SetMaterialAlpha(const char* material, const char* alpha,
+            const char* mode, const double cutoff) = 0;
+
 	};
 
 

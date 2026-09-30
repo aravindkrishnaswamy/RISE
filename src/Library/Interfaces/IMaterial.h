@@ -20,6 +20,8 @@
 
 namespace RISE
 {
+	enum AlphaMode { eAlphaOpaque, eAlphaMask, eAlphaBlend };
+	class ISampler;
 	class ISPF;
 	class IBSDF;
 	class IEmitter;
@@ -102,8 +104,11 @@ namespace RISE
 	class IMaterial : public virtual IReference
 	{
 	protected:
-		IMaterial(){};
-		virtual ~IMaterial( ){};
+		IMaterial();
+		virtual ~IMaterial();
+		const IScalarPainter* alphaPainter_;
+		AlphaMode alphaMode_;
+		Scalar alphaCutoff_;
 
 	public:
 
@@ -291,6 +296,17 @@ namespace RISE
 		//! scene is still mutable, so no thread-safety concern.
 		/// \return TRUE if the material is a luminaire and applied the scale, FALSE otherwise
 		virtual bool SetEmissionScale( const Scalar scale ) { return false; }
+
+        //! DL-214: surface coverage, independent of scattering and wavelength.
+        //! Construction-time mutation only. Opaque is the default on every material.
+        void SetAlpha(const IScalarPainter* painter, AlphaMode mode, Scalar cutoff);
+        Scalar AlphaCoverage(const RayIntersectionGeometric& ri) const;
+        bool AcceptAlpha(const RayIntersectionGeometric& ri, ISampler& sampler) const;
+        static bool AnyAlphaMaterials();
+        AlphaMode GetAlphaMode() const { return alphaMode_; }
+        Scalar GetAlphaCutoff() const { return alphaCutoff_; }
+        const IScalarPainter* GetAlphaPainter() const { return alphaPainter_; }
+
 	};
 }
 

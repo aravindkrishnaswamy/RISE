@@ -1,70 +1,5 @@
-//////////////////////////////////////////////////////////////////////
-//
-//  BlenderBridgeAlphaTest.cpp - Contract test for DL-193: the Blender
-//    bridge's per-material alpha shader-op chain
-//    (`rise_blender_material`'s ABI v14 `alpha` / `alpha_texture_-
-//    painter_name` / `alpha_mode` / `alpha_threshold` fields,
-//    `rise_blender_object`'s new `shader_name` field, and
-//    `wire_alpha_shader_for_material` / `add_object`'s shader
-//    pass-through in rise_blender_bridge.cpp).
-//    docs/DEBT_LEDGER.md; docs/BLENDER_MATERIAL_TRANSLATION.md
-//    "Alpha".
-//
-//  WHY THIS TEST INCLUDES A .cpp.  Same reasoning as
-//  BlenderBridgeCoatTest.cpp's own banner: the bridge's translation
-//  functions live in an anonymous namespace inside a standalone
-//  shared library, so the only way to exercise the REAL, SHIPPING
-//  `add_material` / `add_object` / `rise_blender_render_scene` is to
-//  compile the bridge .cpp into this test's own translation unit.
-//
-//  RED-PROOF HISTORY: against a pre-DL-193 `rise_blender_bridge.h` /
-//  `.cpp` (no `alpha*` fields, no `shader_name` field, no
-//  `wire_alpha_shader_for_material` at all), this file fails to
-//  COMPILE.
-//
-//  ⚠ RASTERIZER-COMPATIBILITY CORRECTION (found WHILE building this
-//  test, not assumed from AlphaTestShaderOp.h's own -- WRONG -- prior
-//  claim): direct measurement here showed the alpha shader-op chain
-//  works under `pixelpel_rasterizer` (RISE's legacy direct-lighting-
-//  only rasterizer) but NOT under `pathtracing_pel_rasterizer` (the
-//  MODERN path tracer) -- `PathTracingIntegrator.cpp` has no reference
-//  to `RayCaster::SelectShader`/`ri.pShader` anywhere in it, so a
-//  per-object shader override (what `wire_alpha_shader_for_material`
-//  builds) is invisible to it.  `pixelpel_rasterizer` is therefore the
-//  ONLY rasterizer this mechanism reaches; PT joins BDPT/VCM/MLT in
-//  the "opaque, WARNED" caveat group `AlphaTestShaderOp.h`'s comment
-//  (now corrected) and `rise_blender_bridge.h`'s `alpha_mode` field
-//  comment both describe.  Filed as the general architecture gap
-//  DL-214 (docs/DEBT_LEDGER.md) -- not a Blender-bridge-specific
-//  defect, and not fixed here (see that row for why).
-//
-//  RENDER-LEVEL DESIGN.  A camera looks at a bright green EMISSIVE
-//  backdrop with two opaque blue-EMISSIVE "card" boxes in front of it
-//  (one in the left half of frame, one in the right).  Both cards
-//  bind `alpha_mode = CLIP` with `alpha_threshold = 0.5`; the LEFT
-//  card's `alpha = 0.0` (cut -- the ray continues past it, revealing
-//  the backdrop) and the RIGHT card's `alpha = 1.0` (kept -- the
-//  card's own emission wins).  Making both the backdrop and the cards
-//  self-emissive (rather than lit by a separate light) keeps this a
-//  pure VISIBILITY/OCCLUSION test -- no shadow rays, no noise-limited
-//  integration, so a handful of samples is enough to be deterministic.
-//
-//  A textured (per-texel) alpha channel was considered for the money
-//  test but declined: `ChannelPainter::CHAN_A` reads
-//  `IPainter::GetAlpha`, which defaults to 1.0 for every painter this
-//  test could build WITHOUT loading a real image file with a genuine
-//  alpha channel (a checker/uniform painter never overrides it) --
-//  the CONSTANT-alpha path exercises the identical
-//  `wire_alpha_shader_for_material` machinery end to end (painter
-//  construction, `AddAlphaTestShaderOp`, `AddAdvancedShader`,
-//  `AddObject`'s `shaderName`) and is the honest, deterministic
-//  choice here; `test_alpha_texture_reads_the_raw_texture_not_a_-
-//  flattened_view` (test_hair_export.py) pins that the exporter's OWN
-//  texture path registers the whole RGBA image rather than a
-//  scalar-flattened view, which is the half of the texture-alpha
-//  contract reachable without a real image file.
-//
-//////////////////////////////////////////////////////////////////////
+// DL-214: bridge alpha material coverage works under legacy and modern integrators.
+// The real bridge producer functions are included below; no warning replicas.
 
 #include <cmath>
 #include <cstddef>
@@ -300,20 +235,6 @@ bool RenderTwoCardScene(
 		return false;
 	}
 
-	// DL-193's own rasterizer-compatibility warning is checked from
-	// `rise_blender_render_scene`'s own vantage point: replicate ITS
-	// EXACT predicate here directly against the SAME `job`, rather than
-	// re-deriving a second copy of `configure_rasterizer`'s own (large)
-	// settings-building machinery just for this test.  PIXELPEL is the
-	// ONLY compatible kind (this file's own banner); Auto is excluded
-	// from the pre-render check the same way the real code excludes it
-	// (never selected by either test row here, so not exercised).
-	bool anyAlphaMaterial = true;   // both cards are alpha_mode=CLIP, established above
-	if( anyAlphaMaterial && rasterizerKind != RISE_BLENDER_RASTERIZER_PIXELPEL &&
-	    rasterizerKind != RISE_BLENDER_RASTERIZER_AUTO_PEL &&
-	    rasterizerKind != RISE_BLENDER_RASTERIZER_AUTO_SPECTRAL ) {
-		warningsOut.push_back( "alpha/integrator mismatch (test-side replica of rise_blender_render_scene's own DL-193 warning)" );
-	}
 
 	// Reuse the REAL bridge rasterizer-configuration function (the same
 	// one `rise_blender_render_scene` calls) rather than hand-building
@@ -473,11 +394,10 @@ void TestAlphaCutoutUnderPixelPel()
 	RISE::safe_release( cap );
 }
 
-//! Shared body for the "opaque, WARNED" caveat group -- BDPT and,
-//! per this file's own correction, the modern PT integrator too.
-void CheckAlphaIgnoredWithCaveat( const uint32_t rasterizerKind, const char* label )
+//! Shared coverage expectations across modern integrators.
+void CheckAlphaUnderModernIntegrator( const uint32_t rasterizerKind, const char* label )
 {
-	std::cout << "Test: under " << label << ", both alpha-masked cards render fully opaque (the documented caveat), and the mismatch is WARNED" << std::endl;
+	std::cout << "Test: under " << label << ", alpha-zero reveals the backdrop and alpha-one remains opaque" << std::endl;
 
 	CapturingRasterizerOutput* cap = 0;
 	std::vector<std::string> warnings;
@@ -497,45 +417,53 @@ void CheckAlphaIgnoredWithCaveat( const uint32_t rasterizerKind, const char* lab
 	ColumnMean( *cap, (unsigned int)( cap->width * 0.21875 ), (unsigned int)( cap->width * 0.4375 ), leftMean );
 	ColumnMean( *cap, (unsigned int)( cap->width * 0.5625 ), (unsigned int)( cap->width * 0.78125 ), rightMean );
 
-	std::cout << "  left (alpha=0, but " << label << " ignores it) mean:  " << leftMean[0] << " " << leftMean[1] << " " << leftMean[2] << std::endl;
+	std::cout << "  left (alpha=0 cutout) mean:  " << leftMean[0] << " " << leftMean[1] << " " << leftMean[2] << std::endl;
 	std::cout << "  right (alpha=1) mean: " << rightMean[0] << " " << rightMean[1] << " " << rightMean[2] << std::endl;
 
-	// THE CAVEAT: this rasterizer bypasses the shader-op pipeline
-	// entirely (AlphaTestShaderOp.h's own documented limitation), so
-	// even the alpha=0 card renders as fully opaque (its own blue
-	// emission, NOT the green backdrop).
-	Check( leftMean[2] > leftMean[1] * 2.0,
-		std::string( label ) + ": the alpha=0 card is documented to render OPAQUE (blue emission wins, backdrop hidden) -- the caveat, not a bug" );
-	Check( rightMean[2] > rightMean[1] * 2.0,
-		std::string( label ) + ": the alpha=1 card renders opaque, as it always would" );
-
-	Check( !warnings.empty(),
-		std::string( label ) + " + an alpha-active scene is WARNED (a real caveat notice, not a silent wrong render)" );
+	Check( leftMean[1] > leftMean[2] * 2.0,
+        std::string(label) + ": alpha-zero reveals green backdrop" );
+    Check( rightMean[2] > rightMean[1] * 2.0,
+        std::string(label) + ": alpha-one retains blue surface" );
+    Check( warnings.empty(), std::string(label) + ": material alpha needs no incompatibility warning" );
 
 	RISE::safe_release( cap );
 }
 
-void TestAlphaIgnoredUnderPTWithCaveat()
+void TestAlphaCutoutUnderPT()
 {
-	// THE CORRECTION this file's own banner describes: the MODERN path
-	// tracer is in the caveat group too, not the compatible one.
-	CheckAlphaIgnoredWithCaveat( RISE_BLENDER_RASTERIZER_PT_PEL, "PT" );
+	CheckAlphaUnderModernIntegrator( RISE_BLENDER_RASTERIZER_PT_PEL, "PT" );
 }
 
-void TestAlphaIgnoredUnderBDPTWithCaveat()
+void TestAlphaCutoutUnderBDPT()
 {
-	CheckAlphaIgnoredWithCaveat( RISE_BLENDER_RASTERIZER_BDPT_PEL, "BDPT" );
+	CheckAlphaUnderModernIntegrator( RISE_BLENDER_RASTERIZER_BDPT_PEL, "BDPT" );
+}
+
+void TestConstantAlphaPrecision() {
+    RISE::IJobPriv* job=nullptr;Check(RISE::RISE_CreateJobPriv(&job),"precision job created");if(!job)return;
+    double white[3]={1,1,1};job->AddUniformColorPainter("white",white,"Rec709RGB_Linear");
+    const double factors[]={1e-7,.4999996,.5000004};const double cutoffs[]={5e-8,.4999998,.5000002};const double expected[]={1,0,1};
+    for(int i=0;i<3;++i) {
+        const std::string name="precision"+std::to_string(i);job->AddLambertianMaterial(name.c_str(),"white");
+        rise_blender_material payload={};payload.name=name.c_str();payload.alpha=factors[i];payload.alpha_threshold=cutoffs[i];payload.alpha_mode=RISE_BLENDER_ALPHA_CLIP;
+        char error[512]={};Check(wire_alpha_shader_for_material(*job,payload,error,sizeof(error)),"production bridge binds precise alpha");
+        const RISE::IMaterial* m=job->GetMaterials()->GetItem(name.c_str());
+        RISE::RayIntersectionGeometric ri(RISE::Ray(RISE::Point3(0,0,1),RISE::Vector3(0,0,-1)),RISE::nullRasterizerState);
+        Check(m && m->AlphaCoverage(ri)==expected[i],"bridge constant MASK preserves double precision");
+    }
+    job->release();
 }
 
 int main()
 {
 	std::cout << "=== Blender bridge Alpha test (DL-193) ===" << std::endl;
 
+	TestConstantAlphaPrecision();
 	TestAbiVersionAndAlphaFields();
 	TestOpaqueMaterialUnaffected();
 	TestAlphaCutoutUnderPixelPel();
-	TestAlphaIgnoredUnderPTWithCaveat();
-	TestAlphaIgnoredUnderBDPTWithCaveat();
+	TestAlphaCutoutUnderPT();
+	TestAlphaCutoutUnderBDPT();
 
 	std::cout << "----------------------------------------" << std::endl;
 	std::cout << "checks: " << g_checks << "   failures: " << g_failures << std::endl;

@@ -1896,7 +1896,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		{
 			ri = RayIntersection( currentRay, rast );
 			ri.geometric.glossyFilterWidth = glossyFilterWidth;
-			scene.GetObjects()->IntersectRay( ri, true, true, false );
+			scene.GetObjects()->IntersectRaySampled( ri, sampler );
 
 			bool bHit = ri.geometric.bHit;
 
@@ -4580,7 +4580,7 @@ PathTracingIntegrator::IntegrateRayTemplated(
 
 	// Intersect camera ray
 	RayIntersection ri( cameraRay, rast );
-	scene.GetObjects()->IntersectRay( ri, true, true, false );
+	scene.GetObjects()->IntersectRaySampled( ri, sampler );
 	if constexpr ( Traits::supports_aov ) {
 		// Primary depth is independent of Accurate-mode albedo/normal
 		// traversal.  Never replace this camera-ray range with a later
@@ -4938,7 +4938,7 @@ PathTracingIntegrator::IntegrateRayTemplated(
 				// --- follow the continuation ---------------------------
 				//
 				RayIntersection ri2( walkRay, rast );
-				scene.GetObjects()->IntersectRay( ri2, true, true, false );
+				scene.GetObjects()->IntersectRaySampled( ri2, sampler );
 
 				const Scalar maxDist = ri2.geometric.bHit ? ri2.geometric.range : RISE_INFINITY;
 
@@ -5592,7 +5592,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		{
 			ri = RayIntersection( currentRay, rast );
 			ri.geometric.glossyFilterWidth = glossyFilterWidth;
-			scene.GetObjects()->IntersectRay( ri, true, true, false );
+			scene.GetObjects()->IntersectRaySampled( ri, sampler );
 
 			bool bHit = ri.geometric.bHit;
 
@@ -5818,7 +5818,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 							//
 							RayIntersection ri2( walkRay, rast );
 							ri2.geometric.glossyFilterWidth = glossyFilterWidth;
-							scene.GetObjects()->IntersectRay( ri2, true, true, false );
+							scene.GetObjects()->IntersectRaySampled( ri2, sampler );
 
 							//
 							// --- sample this wavelength's medium along it
@@ -6827,7 +6827,7 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 
 	// Intersect camera ray
 	RayIntersection ri( cameraRay, rast );
-	scene.GetObjects()->IntersectRay( ri, true, true, false );
+	scene.GetObjects()->IntersectRaySampled( ri, sampler );
 	// Capture before primary-medium sampling: HWSS can return from a volume
 	// scatter without ever entering IntegrateFromHitHWSS.
 	if( pAOV ) {
@@ -7033,7 +7033,7 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 					// --- follow the continuation ------------------------
 					//
 					RayIntersection ri2( walkRay, rast );
-					scene.GetObjects()->IntersectRay( ri2, true, true, false );
+					scene.GetObjects()->IntersectRaySampled( ri2, sampler );
 
 					//
 					// --- sample this wavelength's medium along it -------

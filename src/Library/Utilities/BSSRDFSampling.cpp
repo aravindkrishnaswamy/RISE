@@ -140,6 +140,7 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 	// of probeCenter -- no distinct "+axis" and "-axis" loop is needed.
 	//
 	struct ProbeHit {
+        Scalar coverage = 1;
 		Point3 point;
 		Vector3 normal;		///< Shading normal at probe-ray hit (post-modifier)
 		Vector3 geomNormal;	///< Geometric normal — area Jacobian and entry front-face gate
@@ -185,11 +186,25 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 
 			if( !probeRI.geometric.bHit ) break;
 
-			if( probeRI.pModifier ) {
+			// Entry material owns the optical proposal, but coverage belongs
+            // to this actual endpoint (CSG may inherit a different material).
+            Scalar coverage = 1;
+            if( probeRI.pMaterial && probeRI.pMaterial->GetAlphaMode() != eAlphaOpaque ) {
+                // Supply scene/raster context only to coverage. Preserve the raw
+                // probe record and existing modifier/proposal inputs.
+                RayIntersectionGeometric alphaRI(probeRI.geometric);
+                alphaRI.rast = ri.rast;
+                alphaRI.signals.pScene = ri.signals.pScene;
+                alphaRI.signals.pSelf = pObject;
+                alphaRI.signals.ptWorld = alphaRI.ptIntersection;
+                coverage = probeRI.pMaterial->AlphaCoverage(alphaRI);
+            }
+            if( probeRI.pModifier ) {
 				probeRI.pModifier->Modify( probeRI.geometric );
 			}
 
 			ProbeHit h;
+            h.coverage = coverage;
 			h.point = probeRI.geometric.ptIntersection;
 			h.normal = probeRI.geometric.vNormal;
 			h.geomNormal = probeRI.geometric.vGeomNormal;
@@ -349,6 +364,11 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 		sampler.Get1D() * numHits );
 	const int sel = (selected >= numHits) ? numHits - 1 : selected;
 
+    // Chord geometry defines the unchanged spatial proposal. Only the
+    // selected physical endpoint receives a coverage decision.
+    result.acceptedAlphaCoverage = hits[sel].coverage;
+    if (result.acceptedAlphaCoverage <= 0 || (result.acceptedAlphaCoverage < 1 &&
+        sampler.GetAlpha1D() >= result.acceptedAlphaCoverage)) return result;
 	Point3 entryPoint = hits[sel].point;
 	Vector3 entryNormal = hits[sel].normal;
 	Vector3 entryGeomNormal = hits[sel].geomNormal;

@@ -2530,6 +2530,7 @@ bool ManifoldSolver::UpdateVertexOnSurface(
 	// reason for existing.  See docs/SMS_TWO_STAGE_SOLVER.md.
 	if( smoothing > 0.0 )
 	{
+        vertex.alphaEndpoint.reset();
 		Point2 newUv( vertex.uv.x + du, vertex.uv.y + dv );
 		// Spherical-style pole wrap.  For sphere/ellipsoid parameter-
 		// isations, crossing a pole (v < 0 or v > 1) reflects the v
@@ -2589,7 +2590,7 @@ bool ManifoldSolver::UpdateVertexOnSurface(
 	// but always re-snap to the actual surface via intersection so
 	// we get accurate derivatives for the next Newton step.
 	const Scalar stepSize = sqrt( du * du + dv * dv );
-	if( stepSize < 1e-8 )
+	if( stepSize < 1e-8 && (!vertex.retainAlphaEndpoint || vertex.HasAlphaEndpoint()) )
 	{
 		// Negligible step — no change needed
 		vertex.valid = true;
@@ -2614,6 +2615,8 @@ bool ManifoldSolver::UpdateVertexOnSurface(
 
 		if( ri.geometric.bHit )
 		{
+            const auto endpoint = vertex.retainAlphaEndpoint ?
+                std::make_shared<const RayIntersection>(ri) : nullptr;
 			// Apply modifier — same reason as in BuildSeedChain.  Stage 2
 			// of the two-stage solver (smoothing == 0) wants the perturbed
 			// normal so SMS's chain matches PT's bumpy ray traversal.
@@ -2624,6 +2627,8 @@ bool ManifoldSolver::UpdateVertexOnSurface(
 			vertex.normal = ri.geometric.vNormal;
 			vertex.geomNormal = ri.geometric.UnflippedGeomNormal();	// DL-70: the TRUE outward normal (see ManifoldSolver.h)
 			vertex.uv = ri.geometric.ptCoord;
+            vertex.alphaEndpoint = endpoint;
+            vertex.alphaEndpointPosition = vertex.position;
 			snapped = true;
 		}
 	}
@@ -2641,6 +2646,8 @@ bool ManifoldSolver::UpdateVertexOnSurface(
 
 		if( ri2.geometric.bHit )
 		{
+            const auto endpoint = vertex.retainAlphaEndpoint ?
+                std::make_shared<const RayIntersection>(ri2) : nullptr;
 			if( ri2.pModifier ) {
 				ri2.pModifier->Modify( ri2.geometric );
 			}
@@ -2648,12 +2655,17 @@ bool ManifoldSolver::UpdateVertexOnSurface(
 			vertex.normal = ri2.geometric.vNormal;
 			vertex.geomNormal = ri2.geometric.UnflippedGeomNormal();	// DL-70: the TRUE outward normal (see ManifoldSolver.h)
 			vertex.uv = ri2.geometric.ptCoord;
+            vertex.alphaEndpoint = endpoint;
+            vertex.alphaEndpointPosition = vertex.position;
 			snapped = true;
 		}
 	}
 
 	if( !snapped )
 	{
+        // Alpha requires a position-producing geometric hit. Reject this
+        // Newton step instead of publishing an unverified linear endpoint.
+        if (vertex.retainAlphaEndpoint) return false;
 		// Fall back to the linear approximation (no re-snap)
 		vertex.position = newPos;
 		vertex.normal = newNormal;
@@ -2789,6 +2801,7 @@ bool ManifoldSolver::ComputeVertexDerivatives(
 	// timeline in docs/SMS_TWO_STAGE_SOLVER.md).
 	if( smoothing > 0.0 )
 	{
+        vertex.alphaEndpoint.reset();
 		Point3  aP;
 		Vector3 aN, aDpdu, aDpdv, aDndu, aDndv;
 		if( vertex.pObject->ComputeAnalyticalDerivatives(
@@ -2835,6 +2848,9 @@ bool ManifoldSolver::ComputeVertexDerivatives(
 		RayIntersection ri( probeRay, nullRasterizerState );
 		vertex.pObject->IntersectRay( ri, 2.0 * probeOffsetAnalytic, true, true, false );
 		if( ri.geometric.bHit ) {
+		    const bool initializeEndpoint = vertex.retainAlphaEndpoint && !vertex.HasAlphaEndpoint();
+		    const auto endpoint = vertex.retainAlphaEndpoint ?
+		        std::make_shared<const RayIntersection>(ri) : nullptr;
 			// Apply intersection modifier (bump map / normal map) so SMS
 			// sees the perturbed normal — same as RayCaster does for the
 			// rendering pipeline.  Without this, SMS's chain operates on
@@ -2844,8 +2860,21 @@ bool ManifoldSolver::ComputeVertexDerivatives(
 				ri.pModifier->Modify( ri.geometric );
 			}
 			onSurface = true;
+		    // Analytic Stage1 and synthetic seeds lack a physical record.
+		    // Publish this actual hit BEFORE Newton uses the vertex; never
+		    // associate a neighbouring FD hit with an unchanged endpoint.
+		    if (initializeEndpoint) {
+		        vertex.position = ri.geometric.ptIntersection;
+		        vertex.normal = ri.geometric.vNormal;
+		        vertex.geomNormal = ri.geometric.UnflippedGeomNormal();
+		        vertex.uv = ri.geometric.ptCoord;
+		        vertex.alphaEndpoint = endpoint;
+		        vertex.alphaEndpointPosition = vertex.position;
+		    }
 			if( ri.geometric.derivatives.valid ) {
 				vertex.position = ri.geometric.ptIntersection;
+		        vertex.alphaEndpoint = endpoint;
+		        vertex.alphaEndpointPosition = vertex.position;
 				vertex.normal = ri.geometric.vNormal;
 				vertex.geomNormal = ri.geometric.UnflippedGeomNormal();	// DL-70: the TRUE outward normal (see ManifoldSolver.h)
 				vertex.dpdu = ri.geometric.derivatives.dpdu;
@@ -2885,12 +2914,28 @@ bool ManifoldSolver::ComputeVertexDerivatives(
 			RayIntersection ri2( probeRay2, nullRasterizerState );
 			vertex.pObject->IntersectRay( ri2, 2.0 * probeOffsetAnalytic, true, true, false );
 			if( ri2.geometric.bHit ) {
+			    const bool initializeEndpoint = vertex.retainAlphaEndpoint && !vertex.HasAlphaEndpoint();
+			    const auto endpoint = vertex.retainAlphaEndpoint ?
+			        std::make_shared<const RayIntersection>(ri2) : nullptr;
 				if( ri2.pModifier ) {
 					ri2.pModifier->Modify( ri2.geometric );
 				}
 				onSurface = true;
+			    // Analytic Stage1 and synthetic seeds lack a physical record.
+			    // Publish this actual hit BEFORE Newton uses the vertex; never
+			    // associate a neighbouring FD hit with an unchanged endpoint.
+			    if (initializeEndpoint) {
+			        vertex.position = ri2.geometric.ptIntersection;
+			        vertex.normal = ri2.geometric.vNormal;
+			        vertex.geomNormal = ri2.geometric.UnflippedGeomNormal();
+			        vertex.uv = ri2.geometric.ptCoord;
+			        vertex.alphaEndpoint = endpoint;
+			        vertex.alphaEndpointPosition = vertex.position;
+			    }
 				if( ri2.geometric.derivatives.valid ) {
 					vertex.position = ri2.geometric.ptIntersection;
+			        vertex.alphaEndpoint = endpoint;
+			        vertex.alphaEndpointPosition = vertex.position;
 					vertex.normal = ri2.geometric.vNormal;
 					vertex.geomNormal = ri2.geometric.UnflippedGeomNormal();	// DL-70: the TRUE outward normal (see ManifoldSolver.h)
 					vertex.dpdu = ri2.geometric.derivatives.dpdu;
@@ -3818,9 +3863,12 @@ unsigned int ManifoldSolver::BuildSeedChain(
 	const IRayCaster& caster,
 	std::vector<ManifoldVertex>& chain,
 	bool applyEmitterStop,
-	const IORStack* pStartStack
+	const IORStack* pStartStack, ISampler* alphaSampler
 	) const
 {
+    RandomNumberGenerator alphaRandom;
+    IndependentSampler alphaFallback(alphaRandom);
+    ISampler& sampler = alphaSampler ? *alphaSampler : static_cast<ISampler&>(alphaFallback);
 	chain.clear();
 
 	Vector3 dir = Vector3Ops::mkVector3( end, start );
@@ -3868,7 +3916,7 @@ unsigned int ManifoldSolver::BuildSeedChain(
 	const unsigned int produced = SnellContinueChain(
 		currentOrigin, dir, totalDist,
 		currentIOR, seedIor,
-		scene, caster, chain, applyEmitterStop );
+		scene, caster, chain, applyEmitterStop, &sampler );
 
 	// TARGET BOUNCES: Mitsuba-faithful exact-length requirement.  When
 	// `config.targetBounces > 0`, reject seeds whose final chain length
@@ -3909,9 +3957,12 @@ unsigned int ManifoldSolver::SnellContinueChain(
 	const IScene& scene,
 	const IRayCaster& caster,
 	std::vector<ManifoldVertex>& chain,
-	bool applyEmitterStop
+	bool applyEmitterStop, ISampler* alphaSampler
 	) const
 {
+    RandomNumberGenerator alphaRandom;
+    IndependentSampler alphaFallback(alphaRandom);
+    ISampler& sampler = alphaSampler ? *alphaSampler : static_cast<ISampler&>(alphaFallback);
 	(void)caster;   // reserved for future visibility queries
 
 	const IObjectManager* pObjMgr = scene.GetObjects();
@@ -3977,7 +4028,13 @@ unsigned int ManifoldSolver::SnellContinueChain(
 		RayIntersection ri( ray, nullRasterizerState );
 
 		// Scene-wide intersection via the acceleration structure
-		pObjMgr->IntersectRay( ri, true, true, false );
+		pObjMgr->IntersectRaySampled(ri, sampler);
+        const bool retainAlphaEndpoint = caster.GetLightSampler() &&
+            caster.GetLightSampler()->SceneHasAlphaCoverage();
+        const std::shared_ptr<const RayIntersection> endpoint =
+            retainAlphaEndpoint && ri.geometric.bHit ?
+            std::make_shared<const RayIntersection>(ri) : nullptr;
+
 
 		// Apply intersection modifier (e.g. bump map / normal map) so the
 		// SMS chain's normals match what the rendering pipeline (RayCaster)
@@ -4083,6 +4140,10 @@ unsigned int ManifoldSolver::SnellContinueChain(
 		mv.uv = ri.geometric.ptCoord;
 		mv.pObject = ri.pObject;
 		mv.pMaterial = pMat;
+        mv.retainAlphaEndpoint = retainAlphaEndpoint;
+        mv.alphaEndpoint = endpoint;
+        mv.alphaEndpointPosition = mv.position;
+
 		mv.eta = specInfo.ior;
 		mv.attenuation = specInfo.attenuation;
 		mv.isReflection = !specInfo.canRefract;
@@ -4396,7 +4457,7 @@ unsigned int ManifoldSolver::BuildSeedChainBranching(
 
 	std::vector<ManifoldVertex> chain;
 	const unsigned int chainLen = BuildSeedChain(
-		start, end, scene, caster, chain, applyEmitterStop, pStartStack );
+		start, end, scene, caster, chain, applyEmitterStop, pStartStack, &sampler );
 	if( chainLen > 0 && !chain.empty() ) {
 		SeedChainResult sole;
 		sole.chain      = std::move( chain );
@@ -5158,7 +5219,7 @@ ManifoldResult ManifoldSolver::Solve(
 	for( unsigned int i = 0; i < specularChain.size(); i++ )
 	{
 		ManifoldVertex& v = specularChain[i];
-		if( !v.valid )
+		if( !v.valid || (v.retainAlphaEndpoint && !v.HasAlphaEndpoint()) )
 		{
 			if( !ComputeVertexDerivatives( v ) )
 			{
@@ -5820,9 +5881,12 @@ bool ManifoldSolver::ComputeTrialContribution(
 	RISEPel& outContribution,
 	bool clampGeometric,
 	Scalar* outSmsGeometric,
-	const IORStack* pIorStack
+	const IORStack* pIorStack, ISampler* alphaSampler
 	) const
 {
+    RandomNumberGenerator alphaRandom;
+    IndependentSampler alphaFallback(alphaRandom);
+    ISampler& sampler = alphaSampler ? *alphaSampler : static_cast<ISampler&>(alphaFallback);
 	outContribution = RISEPel( 0, 0, 0 );
 	outDir = Vector3( 0, 0, 0 );
 	(void)geomNormal;  // Reserved for receiver-side path-space cosines —
@@ -5837,7 +5901,7 @@ bool ManifoldSolver::ComputeTrialContribution(
 	// External-segment visibility (occluder between specular vertices,
 	// or between last specular and the light).
 	if( !CheckChainVisibility( pos, lightSample.position,
-		mResult.specularChain, caster ) ) {
+		mResult.specularChain, caster, &sampler ) ) {
 		return false;
 	}
 
@@ -5942,9 +6006,12 @@ bool ManifoldSolver::ComputeTrialContributionNM(
 	Scalar& outContribution,
 	bool clampGeometric,
 	Scalar* outSmsGeometric,
-	const IORStack* pIorStack
+	const IORStack* pIorStack, ISampler* alphaSampler
 	) const
 {
+    RandomNumberGenerator alphaRandom;
+    IndependentSampler alphaFallback(alphaRandom);
+    ISampler& sampler = alphaSampler ? *alphaSampler : static_cast<ISampler&>(alphaFallback);
 	outContribution = 0;
 	outDir = Vector3( 0, 0, 0 );
 	(void)geomNormal;  // See ComputeTrialContribution above.
@@ -5954,7 +6021,7 @@ bool ManifoldSolver::ComputeTrialContributionNM(
 	}
 
 	if( !CheckChainVisibility( pos, lightSample.position,
-		mResult.specularChain, caster ) ) {
+		mResult.specularChain, caster, &sampler ) ) {
 		return false;
 	}
 
@@ -6057,7 +6124,8 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	// structurally different enough — per-caster iteration vs single
 	// Snell-traced seed — that they live in separate functions.  See
 	// `docs/SMS_UNIFORM_SEEDING_PLAN.md`.
-	if( config.seedingMode == ManifoldSolverConfig::eSeedingUniform )
+	if( config.seedingMode == ManifoldSolverConfig::eSeedingUniform ||
+        (caster.GetLightSampler() && caster.GetLightSampler()->SceneHasAlphaCoverage()) )
 	{
 		// DL-290: forward the receiver's live IOR stack -- it was dropped
 		// here, so uniform mode's receiver record priced air (and its
@@ -6120,7 +6188,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	unsigned int chainLen = BuildSeedChain(
 		pos, lightSample.position,
 		scene, caster, seedChain,
-		/*applyEmitterStop=*/ true, pIorStack );	// DL-290: walk starts in the receiver's medium
+		/*applyEmitterStop=*/ true, pIorStack, &sampler );	// DL-290: walk starts in the receiver's medium
 	if( chainLen > 0 && !seedChain.empty() ) {
 		SeedChainResult lone;
 		lone.chain = seedChain;
@@ -6145,7 +6213,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		chainLen = BuildSeedChain(
 			pos, normalTarget,
 			scene, caster, seedChain,
-			/*applyEmitterStop=*/ false, pIorStack );	// DL-290
+			/*applyEmitterStop=*/ false, pIorStack, &sampler );	// DL-290
 		if( chainLen > 0 && !seedChain.empty() ) {
 			baseSeeds.clear();
 			SeedChainResult lone;
@@ -6173,7 +6241,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		chainLen = BuildSeedChain(
 			pos, midTarget,
 			scene, caster, seedChain,
-			/*applyEmitterStop=*/ false, pIorStack );	// DL-290
+			/*applyEmitterStop=*/ false, pIorStack, &sampler );	// DL-290
 		if( chainLen > 0 && !seedChain.empty() ) {
 			baseSeeds.clear();
 			SeedChainResult lone;
@@ -6245,7 +6313,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 			std::vector<ManifoldVertex> mirrorChain;
 			const unsigned int mirrorLen = BuildSeedChain(
 				pos, sp, scene, caster, mirrorChain,
-				/*applyEmitterStop=*/ false, pIorStack );	// DL-290
+				/*applyEmitterStop=*/ false, pIorStack, &sampler );	// DL-290
 			if( mirrorLen > 0 && !mirrorChain.empty() &&
 			    mirrorChain[0].pObject == pMirrorCaster ) {
 				SeedChainResult mc;
@@ -6768,7 +6836,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 
 		// Visibility: check external segments of the specular chain
 		const bool visible = CheckChainVisibility( pos, lightSample.position,
-			mResult.specularChain, caster );
+			mResult.specularChain, caster, &sampler );
 #if SMS_TRACE_DIAGNOSTIC
 		{
 			static std::atomic<int> g_visTotal{ 0 };
@@ -7092,6 +7160,10 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 	const IORStack* pIorStack
 	) const
 {
+    // Alpha changes seed-discovery probability. Bernoulli trials repeat that
+    // same proposal and account for it; heuristic deduplication does not.
+    const bool alphaCoverage = caster.GetLightSampler() && caster.GetLightSampler()->SceneHasAlphaCoverage();
+    const bool biased = config.biased && !alphaCoverage;
 	SMSContribution result;
 	(void)geomNormal;  // currently unused on the uniform path; kept for
 	                    // API symmetry with the snell entry point.
@@ -7199,7 +7271,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 		// the non-specular-hit terminator.
 		const unsigned int chainLen = BuildSeedChain(
 			pos, sp, scene, caster, trialSeed,
-			/*applyEmitterStop=*/ false, pIorStack );	// DL-290
+			/*applyEmitterStop=*/ false, pIorStack, &sampler );	// DL-290
 		if( chainLen == 0 || trialSeed.empty() ) return false;
 		if( trialSeed[0].pObject != pCasterObj ) return false;
 		return true;
@@ -7254,7 +7326,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 	{
 		if( !pCasterObj ) continue;
 
-		if( config.biased )
+		if( biased )
 		{
 			// M-trial biased mode (Zeltner 2020 §4.3 Algorithm 3 / Eq. 8;
 			// Mitsuba `manifold_ss.cpp:142-197`).  Per caster, run M
@@ -7294,7 +7366,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 					Scalar smsGeometric = 0;
 					if( !ComputeTrialContribution( pos, geomNormal, shadingNormal, onb, woOutgoing,
 						pBSDF, lightSample, mResult, caster, trialDir, trialContrib,
-						/*clampGeometric=*/ false, &smsGeometric, pIorStack ) )	// DL-290: the receiver's live stack
+						/*clampGeometric=*/ false, &smsGeometric, pIorStack, &sampler ) )	// DL-290: the receiver's live stack
 						continue;
 
 					if( seedResult.proposalPdf > 1e-20 ) {
@@ -7353,13 +7425,14 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 			RISEPel mainContrib;
 			if( !ComputeTrialContribution( pos, geomNormal, shadingNormal, onb, woOutgoing,
 				pBSDF, lightSample, mResult, caster, dirMain, mainContrib,
-				/*clampGeometric=*/ true, nullptr, pIorStack ) )	// DL-290: the receiver's live stack
+				/*clampGeometric=*/ true, nullptr, pIorStack, &sampler ) )	// DL-290: the receiver's live stack
 				continue;
 
 			// Geometric Bernoulli K-loop.  Cap on `maxBernoulliTrials`,
 			// hard-cap fallback at 1024 if config is 0 (prevents render
 			// hangs on casters Newton can never re-discover).
 			unsigned int K = 1;
+            SMSReciprocalTail alphaTail(config.maxBernoulliTrials);
 			bool capHit = false;
 			const unsigned int hardCap = config.maxBernoulliTrials > 0
 				? config.maxBernoulliTrials : 1024u;
@@ -7376,7 +7449,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 				std::vector<ManifoldVertex> trialChain;
 				bool match = false;
 				if( BuildSeedChain( pos, sp_t, scene, caster, trialChain,
-						/*applyEmitterStop=*/ false, pIorStack ) > 0 &&	// DL-290
+						/*applyEmitterStop=*/ false, pIorStack, &sampler ) > 0 &&	// DL-290
 					!trialChain.empty() && trialChain[0].pObject == pCasterObj )
 				{
 					ManifoldResult tResult = Solve(
@@ -7396,6 +7469,10 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 				}
 
 				if( match ) break;
+                if (alphaCoverage) {
+                    if (!alphaTail.ContinueAfterFailure(sampler)) break;
+                    continue;
+                }
 				K++;
 				if( K > hardCap ) {
 					capHit = true;
@@ -7405,7 +7482,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 
 			if( capHit ) continue;   // bias toward zero when cap fires
 
-			mainContrib = mainContrib * static_cast<Scalar>( K );
+			mainContrib = mainContrib * (alphaCoverage ? alphaTail.Estimate() : static_cast<Scalar>( K ));
 			totalContribution = totalContribution + mainContrib;
 			acceptedRoots.push_back( RootKey{ firstPos, chainLen, buildReflectMask( mResult.specularChain ) } );
 			validContributions++;
@@ -7419,7 +7496,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 	// through Newton, deduped against the per-caster set, and summed
 	// unweighted (paper Eq. 8 form: `Σ_l f(x₂⁽ˡ⁾)` is consistent for
 	// any seed distribution that covers basins with positive density).
-	if( config.biased && pPhotonMap && pPhotonMap->IsBuilt() )
+	if( biased && pPhotonMap && pPhotonMap->IsBuilt() )
 	{
 		Scalar r = config.photonSearchRadius;
 		if( r <= 0 ) {
@@ -7465,7 +7542,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 				Scalar smsGeometric = 0;
 				if( !ComputeTrialContribution( pos, geomNormal, shadingNormal, onb, woOutgoing,
 					pBSDF, lightSample, mResult, caster, trialDir, trialContrib,
-					/*clampGeometric=*/ false, &smsGeometric, pIorStack ) )	// DL-290: the receiver's live stack
+					/*clampGeometric=*/ false, &smsGeometric, pIorStack, &sampler ) )	// DL-290: the receiver's live stack
 					continue;
 
 				totalContribution = totalContribution + trialContrib;
@@ -7538,6 +7615,10 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 	const IORStack* pIorStack
 	) const
 {
+    // Alpha changes seed-discovery probability. Bernoulli trials repeat that
+    // same proposal and account for it; heuristic deduplication does not.
+    const bool alphaCoverage = caster.GetLightSampler() && caster.GetLightSampler()->SceneHasAlphaCoverage();
+    const bool biased = config.biased && !alphaCoverage;
 	SMSContributionNM result;
 	(void)geomNormal;  // see EvaluateAtShadingPointUniform.
 
@@ -7640,7 +7721,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 		// Uniform mode — see RGB variant comment.  applyEmitterStop=false.
 		const unsigned int chainLen = BuildSeedChain(
 			pos, sp, scene, caster, trialSeed,
-			/*applyEmitterStop=*/ false, pIorStack );	// DL-290
+			/*applyEmitterStop=*/ false, pIorStack, &sampler );	// DL-290
 		if( chainLen == 0 || trialSeed.empty() ) return false;
 		if( trialSeed[0].pObject != pCasterObj ) return false;
 		applyNMEtaToChain( trialSeed );
@@ -7689,7 +7770,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 	{
 		if( !pCasterObj ) continue;
 
-		if( config.biased )
+		if( biased )
 		{
 			const unsigned int M = std::max( config.multiTrials, 1u );
 
@@ -7715,7 +7796,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 					Scalar smsGeometric = 0;
 					if( !ComputeTrialContributionNM( pos, geomNormal, shadingNormal, onb, woOutgoing,
 						pBSDF, lightSample, mResult, caster, nm, trialDir, trialContrib,
-						/*clampGeometric=*/ false, &smsGeometric, pIorStack ) )	// DL-290: the receiver's live stack
+						/*clampGeometric=*/ false, &smsGeometric, pIorStack, &sampler ) )	// DL-290: the receiver's live stack
 						continue;
 
 					if( seedResult.proposalPdf > 1e-20 ) {
@@ -7756,10 +7837,11 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 			Scalar mainContrib;
 			if( !ComputeTrialContributionNM( pos, geomNormal, shadingNormal, onb, woOutgoing,
 				pBSDF, lightSample, mResult, caster, nm, dirMain, mainContrib,
-				/*clampGeometric=*/ true, nullptr, pIorStack ) )	// DL-290: the receiver's live stack
+				/*clampGeometric=*/ true, nullptr, pIorStack, &sampler ) )	// DL-290: the receiver's live stack
 				continue;
 
 			unsigned int K = 1;
+            SMSReciprocalTail alphaTail(config.maxBernoulliTrials);
 			bool capHit = false;
 			const unsigned int hardCap = config.maxBernoulliTrials > 0
 				? config.maxBernoulliTrials : 1024u;
@@ -7776,7 +7858,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 				std::vector<ManifoldVertex> trialChain;
 				bool match = false;
 				if( BuildSeedChain( pos, sp_t, scene, caster, trialChain,
-						/*applyEmitterStop=*/ false, pIorStack ) > 0 &&	// DL-290
+						/*applyEmitterStop=*/ false, pIorStack, &sampler ) > 0 &&	// DL-290
 					!trialChain.empty() && trialChain[0].pObject == pCasterObj )
 				{
 					applyNMEtaToChain( trialChain );
@@ -7797,6 +7879,10 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 				}
 
 				if( match ) break;
+                if (alphaCoverage) {
+                    if (!alphaTail.ContinueAfterFailure(sampler)) break;
+                    continue;
+                }
 				K++;
 				if( K > hardCap ) {
 					capHit = true;
@@ -7806,7 +7892,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 
 			if( capHit ) continue;
 
-			mainContrib *= static_cast<Scalar>( K );
+			mainContrib *= alphaCoverage ? alphaTail.Estimate() : static_cast<Scalar>( K );
 			totalContribution += mainContrib;
 			acceptedRoots.push_back( RootKey{ firstPos, chainLen, buildReflectMask( mResult.specularChain ) } );
 			validContributions++;
@@ -7816,7 +7902,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 	// Photon-aided trial extension (biased only).  Photon chain is
 	// reversed via the helper; per-vertex NM eta is then re-applied
 	// for dispersion correctness before Solve.
-	if( config.biased && pPhotonMap && pPhotonMap->IsBuilt() )
+	if( biased && pPhotonMap && pPhotonMap->IsBuilt() )
 	{
 		Scalar r = config.photonSearchRadius;
 		if( r <= 0 ) {
@@ -7860,7 +7946,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 				Scalar smsGeometric = 0;
 				if( !ComputeTrialContributionNM( pos, geomNormal, shadingNormal, onb, woOutgoing,
 					pBSDF, lightSample, mResult, caster, nm, trialDir, trialContrib,
-					/*clampGeometric=*/ false, &smsGeometric, pIorStack ) )	// DL-290: the receiver's live stack
+					/*clampGeometric=*/ false, &smsGeometric, pIorStack, &sampler ) )	// DL-290: the receiver's live stack
 					continue;
 
 				totalContribution += trialContrib;
@@ -7924,7 +8010,8 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	// Mitsuba-faithful uniform-on-shape seeding (opt-in via
 	// `sms_seeding "uniform"`).  Spectral-path counterpart of
 	// `EvaluateAtShadingPointUniform`.
-	if( config.seedingMode == ManifoldSolverConfig::eSeedingUniform )
+	if( config.seedingMode == ManifoldSolverConfig::eSeedingUniform ||
+        (caster.GetLightSampler() && caster.GetLightSampler()->SceneHasAlphaCoverage()) )
 	{
 		// DL-290: forward the live stack (see the RGB dispatch above).
 		return EvaluateAtShadingPointNMUniform(
@@ -7970,7 +8057,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	unsigned int chainLen = BuildSeedChain(
 		pos, lightSample.position,
 		scene, caster, seedChain,
-		/*applyEmitterStop=*/ true, pIorStack );	// DL-290: walk starts in the receiver's medium
+		/*applyEmitterStop=*/ true, pIorStack, &sampler );	// DL-290: walk starts in the receiver's medium
 
 	if( chainLen == 0 || seedChain.empty() )
 	{
@@ -7982,7 +8069,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		chainLen = BuildSeedChain(
 			pos, normalTarget,
 			scene, caster, seedChain,
-			/*applyEmitterStop=*/ false, pIorStack );	// DL-290
+			/*applyEmitterStop=*/ false, pIorStack, &sampler );	// DL-290
 	}
 
 	if( chainLen == 0 || seedChain.empty() )
@@ -7996,7 +8083,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		chainLen = BuildSeedChain(
 			pos, midTarget,
 			scene, caster, seedChain,
-			/*applyEmitterStop=*/ false, pIorStack );	// DL-290
+			/*applyEmitterStop=*/ false, pIorStack, &sampler );	// DL-290
 	}
 
 	if( chainLen == 0 || seedChain.empty() )
@@ -8258,7 +8345,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 
 		// Visibility: check external segments of the specular chain
 		if( !CheckChainVisibility( pos, lightSample.position,
-			mResult.specularChain, caster ) ) continue;
+			mResult.specularChain, caster, &sampler ) ) continue;
 
 		// Direction from shading point toward first specular vertex
 		const ManifoldVertex& firstSpec = mResult.specularChain[0];
@@ -8432,15 +8519,15 @@ namespace
 		const Vector3& dir,
 		const Scalar maxDist,
 		const IRayCaster& caster,
-		const std::vector<const IObject*>& allowedSpecularObjects )
+		const std::vector<const IObject*>& allowedSpecularObjects, ISampler& sampler )
 	{
 		const IScene* pScene = caster.GetAttachedScene();
 		if( !pScene ) {
-			return caster.CastShadowRay( Ray( start, dir ), maxDist );
+			return caster.CastShadowRaySampled( Ray( start, dir ), maxDist, sampler );
 		}
 		const IObjectManager* pObjMgr = pScene->GetObjects();
 		if( !pObjMgr ) {
-			return caster.CastShadowRay( Ray( start, dir ), maxDist );
+			return caster.CastShadowRaySampled( Ray( start, dir ), maxDist, sampler );
 		}
 
 		const unsigned int kMaxSpecularTraversals = 8;
@@ -8451,7 +8538,9 @@ namespace
 		{
 			Ray ray( curOrigin, dir );
 			RayIntersection ri( ray, nullRasterizerState );
-			pObjMgr->IntersectRay( ri, true, true, false );
+			// Do not sample endpoint coverage beyond this finite visibility
+            // interval; final endpoint acceptance is handled exactly once.
+            pObjMgr->IntersectRaySampled(ri, sampler, true, true, false, distRemaining);
 
 			if( !ri.geometric.bHit ) return false;
 			if( ri.geometric.range > distRemaining ) return false;
@@ -8494,10 +8583,40 @@ bool ManifoldSolver::CheckChainVisibility(
 	const Point3& shadingPoint,
 	const Point3& lightPoint,
 	const std::vector<ManifoldVertex>& chain,
-	const IRayCaster& caster
+	const IRayCaster& caster, ISampler* alphaSampler
 	) const
 {
+    RandomNumberGenerator alphaRandom;
+    IndependentSampler alphaFallback(alphaRandom);
+    ISampler& sampler = alphaSampler ? *alphaSampler : static_cast<ISampler&>(alphaFallback);
 	if( chain.empty() ) return true;
+    // Physical endpoint coverage belongs to the solved path, outside the
+    // seed-proposal Bernoulli normalization. Projection is geometry-only;
+    // exactly one alpha draw follows at the validated final surface point.
+    const bool sceneAlpha = caster.GetLightSampler() && caster.GetLightSampler()->SceneHasAlphaCoverage();
+    for (size_t i=0;i<chain.size();++i) {
+        const auto& v=chain[i];
+        // Newton can move a seed across an inherited CSG material boundary.
+        // Validate retained records in alpha scenes, even an opaque seed.
+        if (!sceneAlpha && (!v.pMaterial || v.pMaterial->GetAlphaMode()==eAlphaOpaque)) continue;
+        // Visibility consumes the physical hit that produced the solved
+        // endpoint. A second normal probe can hit a different SDF/CSG face.
+        // Publicly fabricated or moved vertices have no such certificate.
+        if (!v.HasAlphaEndpoint()) return false;
+        RayIntersection hit(*v.alphaEndpoint);
+        const Point3 prev=i?chain[i-1].position:shadingPoint;
+        hit.geometric.ray=Ray(prev,Vector3Ops::Normalize(Vector3Ops::mkVector3(v.position,prev)));
+        hit.geometric.range=Point3Ops::Distance(prev,v.position);
+        if (hit.pMaterial && hit.pMaterial->GetAlphaMode()!=eAlphaOpaque) {
+            RayIntersectionGeometric alphaRI(hit.geometric);
+            alphaRI.ptIntersection = v.position;
+            alphaRI.signals.pScene = caster.GetAttachedScene() ? caster.GetAttachedScene()->GetObjects() : nullptr;
+            alphaRI.signals.pSelf = v.pObject;
+            alphaRI.signals.ptWorld = v.position;
+            if (!hit.pMaterial->AcceptAlpha(alphaRI,sampler)) return false;
+        }
+    }
+
 
 #if SMS_TRACE_DIAGNOSTIC
 	static std::atomic<int> g_visTraceCount{ 0 };
@@ -8557,7 +8676,7 @@ bool ManifoldSolver::CheckChainVisibility(
 		{
 			Point3 origin = Point3Ops::mkPoint3( shadingPoint, dir * 1e-4 );
 			const bool blocked = SegmentOccludedByNonChainSpeculars(
-				origin, dir, dist - 2e-4, caster, chainCasters );
+				origin, dir, dist - 2e-4, caster, chainCasters, sampler );
 #if SMS_TRACE_DIAGNOSTIC
 			if( visTrace ) {
 				GlobalLog()->PrintEx( eLog_Event,
@@ -8599,7 +8718,7 @@ bool ManifoldSolver::CheckChainVisibility(
 		if( newDist > 1e-4 )
 		{
 			const bool blocked = SegmentOccludedByNonChainSpeculars(
-				biasedStart, newDir, newDist - 1e-4, caster, chainCasters );
+				biasedStart, newDir, newDist - 1e-4, caster, chainCasters, sampler );
 #if SMS_TRACE_DIAGNOSTIC
 			if( visTrace ) {
 				GlobalLog()->PrintEx( eLog_Event,
@@ -8667,7 +8786,7 @@ bool ManifoldSolver::CheckChainVisibility(
 		if( segDist < 1e-4 ) continue;
 
 		const bool blocked = SegmentOccludedByNonChainSpeculars(
-			biasedStart, segDir, segDist - 1e-4, caster, chainCasters );
+			biasedStart, segDir, segDist - 1e-4, caster, chainCasters, sampler );
 #if SMS_TRACE_DIAGNOSTIC
 		if( visTrace ) {
 			GlobalLog()->PrintEx( eLog_Event,

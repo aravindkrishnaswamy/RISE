@@ -708,101 +708,24 @@ walk keeps pricing it against air.  That divergence is RISE being
 physically consistent, not an export defect, and the exporter
 deliberately does not pre-divide the IOR by any enclosing medium.
 
-### Alpha -> a per-material `advanced_shader` op chain (ABI v14, DL-193)
+### Alpha -> scalar material coverage (ABI v14, DL-214)
 
-Alpha was never a missing ABI field — it was a missing SUBSYSTEM: RISE
-has always had a reachable construction-API alpha path
-(`IJob::AddAlphaTestShaderOp` for cutout, a `transparency_shaderop`
-for blend — both already used by `GLTFSceneImporter.cpp`'s
-`WireAlphaShader`), but both require building a per-material
-`advanced_shader` OP CHAIN that REPLACES the renderer's always-on
-default shader for that one object.  The Blender bridge now builds
-that chain.
+The existing ABI fields `alpha`, `alpha_texture_painter_name`, `alpha_mode`,
+and `alpha_threshold` now populate `IJob::SetMaterialAlpha`. CLIP uses MASK;
+BLEND and HASHED use stochastic BLEND. Texture alpha is read as linear scalar
+A and replaces the unlinked numeric Alpha value; the numeric value is used
+only when no texture is linked. For example, a numeric value of 0.2 and linked
+texture A of 0.8 produce coverage 0.8, not 0.16. This differs from glTF, which
+multiplies texture alpha by its factor. No RGB or spectral uplift is involved.
 
-`rise_blender_material` gained `alpha` (numeric fallback),
-`alpha_texture_painter_name` (a per-texel alpha channel — read via
-`AddChannelPainter`'s `CHAN_A` view of the connected image, mirroring
-`BuildAlphaPainter`'s own convention), `alpha_mode`
-(`RISE_BLENDER_ALPHA_OPAQUE` / `_CLIP` / `_BLEND`; Blender's HASHED
-maps to BLEND — RISE has no separate stochastic-alpha mechanism) and
-`alpha_threshold` (CLIP's cutoff).  `rise_blender_object` gained
-`shader_name`, mirroring `IJob::AddObject`'s own pre-existing (and,
-before this row, always-NULL) per-object `shader` override parameter.
+Coverage is applied before shading under legacy, PT, BDPT, VCM, MLT and photon
+transport. Importers do not install alpha shader ops. The bridge keeps the
+historical `<material>.shader` name with emission/direct ops only, so ABI-v14
+exported objects keep a valid binding without applying alpha a second time.
+The old incompatible-integrator warnings are removed.
 
-The chain itself is built by a new shared helper,
-`RISE::Utilities::WireAlphaAdvancedShader`
-([src/Library/Shaders/AdvancedShaderWiring.h](../src/Library/Shaders/AdvancedShaderWiring.h),
-header-only), used by BOTH `GLTFSceneImporter.cpp`'s `WireAlphaShader`
-and the Blender bridge's own `wire_alpha_shader_for_material` — so the
-two importers cannot silently drift apart on the chain's shape.  It
-builds `[DefaultEmission +, DefaultDirectLighting +,
-alpha_test_or_transparency =]`: CLIP binds an `AddAlphaTestShaderOp`
-cutout at `alpha_threshold`; BLEND (and HASHED) binds a
-`transparency_shaderop` at the resolved alpha value, matching
-`GLTFSceneImporter.cpp`'s own `alphaMode=BLEND` construction verbatim.
-A material with `alpha_mode OPAQUE` (the default) never wires a
-shader override at all — bit-identical to a pre-ABI-v14 payload.
-
-**Only `pixelpel_rasterizer` reaches this mechanism (DL-214).**  While
-building this row's own render-level red-proof, `AlphaTestShaderOp.h`'s
-prior comment claiming "the path tracer (PT)" also honours this chain
-was checked directly and found FALSE: `PathTracingIntegrator.cpp` —
-what `pathtracing_pel_rasterizer` actually runs, and this bridge's
-(and RISE's) DEFAULT integrator — has zero references to
-`RayCaster::SelectShader`/`ri.pShader` anywhere in it; it evaluates
-emission/BSDF/NEE directly against `ri.pMaterial`, entirely bypassing
-the shader-op pipeline this alpha mechanism lives in.
-`pixelpel_rasterizer` (RISE's legacy, direct-lighting-only rasterizer,
-built via `Job::SetPixelBasedPelRasterizer`) is the ONLY rasterizer
-kind that dispatches every hit through `RayCaster::CastRay`/
-`SelectShader`, and therefore the only one that can ever honour a
-per-object shader override — BDPT, VCM, MLT, and every photon tracer
-were already documented as incompatible; PT was wrongly documented as
-compatible and is not.  `AlphaTestShaderOp.h`'s comment,
-`rise_blender_bridge.h`'s `alpha_mode` field comment, and this
-section were all corrected to name the actual compatible set.  Filed
-as the general engine-architecture finding **DL-214** (not specific
-to this bridge — `GLTFSceneImporter.cpp`'s own alphaMode handling has
-had the identical gap since whichever PT rewrite superseded the
-shader-op-based implementation the stale comment once described), not
-fixed here.
-
-The bridge now warns at both the pre-render (explicit rasterizer kind)
-and post-render (Auto-resolved kind) checks for EVERY rasterizer kind
-except `pixelpel_rasterizer` whenever any material carries a non-OPAQUE
-`alpha_mode` — a correction from this slice's own first draft, which
-warned only for BDPT/VCM/MLT and would have silently under-warned for
-PT_PEL/PT_SPECTRAL/Auto.
-
-**Chain-aware MIS is automatic, not special-cased.**  This alpha op
-chain has no `DistributionTracingShaderOp`, so under the chain-aware
-MIS-partner rule DL-171 shipped (`StandardShader`/
-`AdvancedShader::ResolveChainFlagsForDepth`'s `chainHasBsdfContinuationOp`
-flag, resolved generically via `dynamic_cast<DistributionTracingShaderOp*>`
-over the shader's own op list) both `EmissionShaderOp` and
-`DirectLightingShaderOp`'s NEE arm correctly see "no competing
-BSDF-sampled continuation strategy exists in this chain" and resolve
-to full weight — the alpha op itself (CLIP/BLEND) is not a
-`DistributionTracingShaderOp` and does not register as one.  This
-needed no bridge-side code: the mechanism is generic over any shader's
-op list, and DL-171 landed on master (`ce044c93`, this slice's own
-base commit) before this row started.  Confirmed by inspection of
-`ResolveChainFlagsForDepth` (checks only for `DirectLightingShaderOp`
-and `DistributionTracingShaderOp`, matching neither alpha op) and by
-`tests/BlenderBridgeAlphaTest.cpp`'s `pixelpel_rasterizer` row, whose
-cut/kept card regions match the closed-form Lambertian-emitter
-radiance (`exitance/pi`) to four significant figures — a value that
-would be off by a factor of two under either a missing-partner
-double-count or an over-suppressed NEE arm.
-
-**Money test** (`tests/BlenderBridgeAlphaTest.cpp`, 22 checks): a
-two-card-over-an-emissive-backdrop scene, one card `alpha=0.0`/CLIP
-(cut) and one `alpha=1.0`/CLIP (kept), rendered under
-`pixelpel_rasterizer` (cut region reads pure backdrop; kept region
-reads the card's own colour), `pathtracing_pel_rasterizer`, and
-`bdpt_pel_rasterizer` (both ignore `alpha` on both cards, per the
-documented DL-214 caveat, and both trigger the rasterizer-compatibility
-warning).
+[Alpha coverage](ALPHA_COVERAGE.md) documents sampler ownership, light endpoints,
+medium boundaries, VCM deposition, and the SMS estimator choice for alpha scenes.
 
 ### Tangent -> anisotropy direction (ABI v14, DL-192 + DL-213 + DL-208)
 

@@ -1,3 +1,4 @@
+#include "../Utilities/IndependentSampler.h"
 //////////////////////////////////////////////////////////////////////
 //
 //  AreaLightShaderOp.cpp - Implementation of the AreaLightShaderOp class
@@ -70,6 +71,8 @@ void AreaLightShaderOp::PerformOperation(
 	const ScatteredRayContainer* pScat			///< [in] Scattering information
 	) const
 {
+    IndependentSampler alphaFallback(rc.random);
+    ISampler& alphaSampler = rc.pSampler ? *rc.pSampler : static_cast<ISampler&>(alphaFallback);
 	c = RISEPel(0.0);
 
 	// Only do stuff on a normal pass or on final gather
@@ -127,7 +130,7 @@ void AreaLightShaderOp::PerformOperation(
 			// Check to see if there is a shadow
 			if( ri.pObject->DoesReceiveShadows() ) {
 				const Ray		rayToLight( ri.geometric.ptIntersection, vToLight );
-				if( caster.CastShadowRay( rayToLight, fDistFromLight ) ) {
+				if( caster.CastShadowRaySampled( rayToLight, fDistFromLight, alphaSampler ) ) {
 					continue;
 				}
 			}		
@@ -159,6 +162,8 @@ Scalar AreaLightShaderOp::PerformOperationNM(
 	const ScatteredRayContainer* pScat			///< [in] Scattering information
 	) const
 {
+    IndependentSampler alphaFallback(rc.random);
+    ISampler& alphaSampler = rc.pSampler ? *rc.pSampler : static_cast<ISampler&>(alphaFallback);
 	Scalar c=0;
 
 	// Only do stuff on a normal pass or on final gather
@@ -208,7 +213,7 @@ Scalar AreaLightShaderOp::PerformOperationNM(
 			// Check to see if there is a shadow
 			if( ri.pObject->DoesReceiveShadows() ) {
 				const Ray		rayToLight( ri.geometric.ptIntersection, vToLight );
-				if( !caster.CastShadowRay( rayToLight, fDistFromLight ) ) {
+				if( !caster.CastShadowRaySampled( rayToLight, fDistFromLight, alphaSampler ) ) {
 					const Scalar	k = (pN + 1) * pow(fDot,pN) * (1.0 / TWO_PI);
 					const Scalar	attenuation_size_factor = area / (fDistFromLight * fDistFromLight);
 					// `emm` is the area light's EMISSION slot -> GetRadianceNM

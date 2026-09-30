@@ -36,19 +36,16 @@ bool ShadowPhotonMap::Store(
 	const bool shadow
 	)
 {
-	if( vphotons.size() >= nMaxPhotons ) {
-		return false;
-	}
 
 	ShadowPhoton p;
 
 	p.ptPosition = pos;
 	p.shadow = shadow;
 
-	bbox.Include( p.ptPosition );
-	vphotons.push_back( p );
+	if(!StorePacket(p)) return false;
+    bbox.Include( p.ptPosition );
 
-	maxPower = nMaxPhotons*nMaxPhotons;
+	maxPower = Scalar(nMaxPhotons)*Scalar(nMaxPhotons);
 
 	return true;
 }
@@ -186,6 +183,7 @@ void ShadowPhotonMap::Deserialize(
 	IReadBuffer&			buffer					///< [in] Buffer to deserialize from
 	)
 {
+    EndReservoir();
 	nMaxPhotons = buffer.getUInt();
 	nPrevScale = buffer.getUInt();
 	dGatherRadius = buffer.getDouble();
@@ -204,7 +202,7 @@ void ShadowPhotonMap::Deserialize(
 		Point3Ops::Deserialize( p.ptPosition, buffer );
 		p.plane = buffer.getUChar();
 		p.shadow = !!buffer.getChar();
-		vphotons.push_back( p );
+		vphotons.push_back(p);
 	}
 }
 

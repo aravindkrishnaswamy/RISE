@@ -168,7 +168,6 @@ void GlobalPelPhotonMap::RadianceEstimate( RISEPel& rad,
 bool GlobalPelPhotonMap::Store( const RISEPel& power,const Point3& pos,
  const Vector3& geometricNormal,const Vector3& dir )
 {
- if(vphotons.size()>=nMaxPhotons) return false;
  IrradPhoton photon;
  photon.incomingDirection=dir;photon.ptPosition=pos;photon.power=power;photon.geometricNormal=geometricNormal;
  int theta=int(acos(dir.z)*(256.0/PI));
@@ -176,7 +175,8 @@ bool GlobalPelPhotonMap::Store( const RISEPel& power,const Point3& pos,
  int phi=int(atan2(dir.y,dir.x)*(256.0/TWO_PI));
  phi=phi>255?255:phi;
  photon.phi=static_cast<unsigned char>(phi<0?phi+256:phi);
- bbox.Include(pos);vphotons.push_back(photon);
+ if(!StorePacket(photon)) return false;
+ bbox.Include(pos);
  maxPower=r_max(maxPower,ColorMath::MaxValue(power));
  // New positions invalidate the anchor set. The caller balances before
  // querying, then SetGatherParams/PrecomputeIrradiance rebuilds anchors.
@@ -242,7 +242,7 @@ bool GlobalPelPhotonMap::DeserializeChecked( IReadBuffer& buffer )
  }
  // Commit only after every field has been read and validated. Rebalancing
  // also repairs legacy files written with the old inclusive-end KD bug.
- vphotons.swap(packets);bbox=bounds;nMaxPhotons=maximum;nPrevScale=scaled;
+ EndReservoir();vphotons.swap(packets);bbox=bounds;nMaxPhotons=maximum;nPrevScale=scaled;
  dGatherRadius=radius;dEllipseRatio=ellipse;nMinPhotonsOnGather=minimum;nMaxPhotonsOnGather=gather;maxPower=power;
  hasGeometricNormals=geometry;anchors.clear();anchorSpacing=0;Balance();
  if(spacing) PrecomputeIrradiance(spacing,nullptr);

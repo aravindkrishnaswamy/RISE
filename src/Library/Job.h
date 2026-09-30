@@ -1201,6 +1201,8 @@ namespace RISE
 
 		//! DL-192: see IJob.h for the doc.
 		/// \return TRUE if successful, FALSE otherwise
+        bool SetMaterialAlpha(const char* material, const char* alpha, const char* mode, const double cutoff);
+
 		bool AddCoatedMaterialEx(
 									const char* name,
 									const char* base,

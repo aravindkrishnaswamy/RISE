@@ -26,6 +26,7 @@
 
 namespace RISE
 {
+    class ISampler;
 	class IORStack;
 	class IRayCaster;
 
@@ -284,6 +285,15 @@ namespace RISE
 			const bool bVolumeReceiver = false,				///< [in] See the RGB ComputeDirectLighting's doc
 			const IORStack* pIORStack = 0					///< [in] DL-157 P1 -- see the RGB ComputeDirectLighting's doc
 			) const;
+        virtual void ComputeDirectLightingSampled(const RayIntersectionGeometric& ri,
+            const IRayCaster& caster, const IBSDF& bsdf, bool shadows, RISEPel& amount,
+            bool fullSphere, bool volume, const IORStack* stack, ISampler& sampler, MediumBoundaryHits* boundaries = nullptr) const
+        { (void)sampler; if (boundaries) boundaries->clear(); ComputeDirectLighting(ri, caster, bsdf, shadows, amount, fullSphere, volume, stack); }
+        virtual Scalar ComputeDirectLightingSampledNM(const RayIntersectionGeometric& ri,
+            const IRayCaster& caster, const IBSDF& bsdf, bool shadows, Scalar nm,
+            bool fullSphere, bool volume, const IORStack* stack, ISampler& sampler, MediumBoundaryHits* boundaries = nullptr) const
+        { (void)sampler; if (boundaries) boundaries->clear(); return ComputeDirectLightingNM(ri, caster, bsdf, shadows, nm, fullSphere, volume, stack); }
+
 	};
 }
 

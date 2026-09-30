@@ -1,3 +1,9 @@
+> Current alpha implementation (2026-09-29, DL-214): OPAQUE/MASK/BLEND map to
+> scalar `IMaterial` coverage via `IJob::SetMaterialAlpha`, evaluated at transport
+> intersections and sampled emission endpoints. No alpha shader chain is
+> installed. Historical Phase 3/4 shader-op descriptions below are superseded
+> for imported alpha by [ALPHA_COVERAGE.md](ALPHA_COVERAGE.md).
+
 # glTF 2.0 Import for RISE — Analysis & Plan
 
 **Current status (2026-07-24): SUBSTANTIALLY IMPLEMENTED.** Mesh and scene
@@ -181,9 +187,9 @@ see docs/BLENDER_MATERIAL_TRANSLATION.md "Coat and Subsurface".
 | **PBR material wrapper** (`pbr_metallic_roughness_material`) | — | `Job::AddPBRMetallicRoughnessMaterial` constructs a GGX + painter graph; chunk parser registered. **Current GGX semantics**: the wrapper supplies `rd = baseColor * (1−metallic)` and F0, while GGX applies reciprocal single-pass `(1−Ai)*(1−Ao)` interface transmission in evaluation and selected diffuse throughput. The old `0.96 * baseColor` retention pre-multiplier is removed; diffuse recycling is intentionally omitted. Metals render at full F0 reflectance. See §4. | — |
 | **Schlick-from-F0 Fresnel mode on GGX BSDF** | — | `enum FresnelMode { eFresnelConductor, eFresnelSchlickF0 }` in `Interfaces/IMaterial.h`; new `fresnel_mode` parameter on `ggx_material` chunk (default `conductor`; the mode addition preserved pre-Phase-3 conductor behavior at that landing); `pbr_metallic_roughness_material` flips it to `schlick_f0`. Multiscatter uses closed-form Schlick hemisphere average `F0 + (1-F0)/21`. | — |
 | **`channel_painter`** for MR-texture extraction | — | Single-header `Painters/ChannelPainter.h` (R/G/B selector + scale + bias); chunk parser registered | — |
-| **Bulk scene import** (`gltf_import`) | — | `Importers/GLTFSceneImporter.{h,cpp}` walks scene tree, emits per-primitive geometries, materials, lights, cameras; `Job::ImportGLTFScene` + `RISE_API_ImportGLTFScene`; chunk parser registered. **Phase 3 update**: embedded `.glb` images go directly through `Job::AddInMemoryPNG/JPEGTexturePainter` (no disk round-trip); `.gltf_cache/` sidecar retired; node-world matrices flow through `Job::AddObjectMatrix` verbatim (no Euler decomposition); skinning / animation / morph targets warn-and-skip; alphaMode = MASK auto-wires per-material alpha-test shader. | — |
+| **Bulk scene import** (`gltf_import`) | — | `Importers/GLTFSceneImporter.{h,cpp}` walks scene tree, emits per-primitive geometries, materials, lights, cameras; `Job::ImportGLTFScene` + `RISE_API_ImportGLTFScene`; chunk parser registered. **Phase 3 update**: embedded `.glb` images go directly through `Job::AddInMemoryPNG/JPEGTexturePainter` (no disk round-trip); `.gltf_cache/` sidecar retired; node-world matrices flow through `Job::AddObjectMatrix` verbatim (no Euler decomposition); skinning / animation / morph targets warn-and-skip; Historically alphaMode = MASK wired a per-material alpha-test shader; DL-214 now binds scalar material coverage. | — |
 | **In-memory PNG / JPEG painters** | — | `Job::AddInMemoryPNGTexturePainter` / `AddInMemoryJPEGTexturePainter` consume a byte buffer (no disk path) and reuse the existing painter pipeline.  Used by `gltf_import` for embedded-image bytes. | — |
-| **Alpha modes** (`alpha_test_shaderop` for MASK) | — | `Shaders/AlphaTestShaderOp.{h,cpp}` + `alpha_test_shaderop` chunk + `Job::AddAlphaTestShaderOp` + `RISE_API_CreateAlphaTestShaderOp`.  glTF importer auto-wires per-material when `alphaMode = MASK`.  **Caveat**: shader-op is honoured only by integrators that route through `IShader::Shade()` — PT and legacy direct shaders.  BDPT, VCM, MLT, and photon tracers bypass the shader-op pipeline and treat MASK as opaque (no runtime warning). Per-pixel alpha uses `IPainter::GetAlpha()` and the alpha-aware painter support recorded below; the former `max(R,G,B)` proxy is retired. | Historical remaining pipeline work: alpha mask under BDPT/VCM/MLT and `alphaMode = BLEND`; see later Phase-4 status. |
+| **Alpha modes** (material intersection coverage, DL-214) | — | MASK compares scalar alpha against the cutoff; BLEND samples coverage. PT, BDPT, VCM, MLT, legacy shaders, and photon tracing share the intersection rule. Texture alpha is linear A multiplied by baseColorFactor alpha. Explicit legacy alpha shader operations remain available but are not installed by the importer. | Delivered; see `ALPHA_COVERAGE.md`. |
 | **Quaternion / matrix on `standard_object`** | — | New optional `quaternion` (xyzw) and `matrix` (16 doubles, column-major) parameters on `standard_object`; `Job::AddObjectMatrix` consumes a 4×4 directly.  Mutual-exclusion warnings if multiple are set; precedence is `matrix` > `quaternion` > `orientation` (Euler).  glTF importer uses the matrix path; `DecomposeAffine` deleted. | — |
 | **`mkFromQuaternion` bug** | — | `Math3D/MatricesOps.h:215-217` — `_2y` and `_2z` were both computing `2 * a.v.x` instead of `a.v.y` / `a.v.z`.  Fixed; needed by the new `standard_object { quaternion ... }` path. | — |
 | **Emissive on `ggx_material`** | — | Second `GGXMaterial` ctor takes optional `emissive` painter + `emissive_scale`, builds a `LambertianEmitter` and exposes it via `GetEmitter()`; `Job::AddGGXEmissiveMaterial`; parser params `emissive` / `emissive_scale` on `ggx_material` chunk | — |
@@ -191,7 +197,7 @@ see docs/BLENDER_MATERIAL_TRANSLATION.md "Coat and Subsurface".
 | **emissiveTexture × emissiveFactor multiply** | — | glTF spec §3.9.4: `emissive = emissiveTexture × emissiveFactor × emissiveStrength`.  Earlier revisions chose either-or (texture iff present, else factor), silently dropping non-white factors that tint or attenuate the texture.  Importer now builds a `BlendPainter(texture, zero, factor)` product when both are present (skipping the multiply when factor is identity-white or all-zero). | — |
 | **KHR_materials_unlit** | — | Importer detects `mat.unlit` and registers the material as `LambertianLuminaireMaterial(baseColor, zero-reflectance Lambertian, scale = π)` so the BSDF returns 0 and the emitter contributes baseColor as Lambertian radiance.  Supports alpha-mode interaction. | — |
 | **Per-pixel alpha (alpha-aware painter)** | — | New `IPainter::GetAlpha()` virtual (default 1.0); `TexturePainter` overrides to return the **straight** A channel.  `ChannelPainter` extended with `CHAN_A = 3` (clamped to [0,1]) so the chunk parser can route alpha through the standard channel-extraction flow.  Closes the Phase 3 `max(R,G,B)` proxy gap.  Phase 4 also fixed two latent bugs: (a) `BuildAlphaPainter` reads CHAN_A from the **raw** `baseColorTexturePainter`, not the composed product (a `BlendPainter` wouldn't propagate texture alpha and collapsed to the default 1.0); (b) `TexturePainter::GetColor` no longer pre-multiplies RGB by alpha (legacy semantic that double-dimmed glTF textures under BLEND once the shader-op also weighted by alpha). | — |
-| **alphaMode = BLEND** (`transparency_shaderop` wiring) | — | Per-material wiring: `BlendPainter(zero, white, alpha) = (1 − α)` produces the see-through factor for `transparency_shaderop`; composed via `advanced_shader` with operators `[+, +, =]` over `[DefaultEmission, DefaultDirectLighting, transparency]`.  PT-only (same integrator caveat as alphaMode = MASK). | — |
+| **alphaMode = BLEND** (`transparency_shaderop` wiring) | — | Per-material wiring: `BlendPainter(zero, white, alpha) = (1 − α)` produces the see-through factor for `transparency_shaderop`; composed via `advanced_shader` with operators `[+, +, =]` over `[DefaultEmission, DefaultDirectLighting, transparency]`.  All transport paths use material coverage (DL-214); the shader-op wiring described here is historical. | — |
 | **KHR_materials_sheen** (Charlie / Neubelt BRDF) | — | New `Materials/SheenBRDF.{h,cpp}`, `SheenSPF.{h,cpp}`, `SheenMaterial.h` + `Job::AddSheenMaterial` + `RISE_API_CreateSheenMaterial` + `sheen_material` chunk parser.  Charlie microfacet distribution + Neubelt visibility (Estevez & Kulla 2017).  **DELIVERED 2026-09-03** (docs/CLOTH_FABRIC_DESIGN.md §7(B)): the glTF import-time layer-over-PBR now imports onto `fabric_material` instead of `sheen_material`/`coated_material` -- see §15. | Per-pixel clearcoat/sheen textures beyond the two ALPHA/RGB channels already routed; clearcoat+sheen composes as coat-over-fabric since 2026-09-27 (see §15) |
 | **KHR_materials_transmission + volume + ior (scalar subset)** | — | Importer maps the trio to existing `DielectricMaterial(tau=white, ior, scattering=zero)` + `HomogeneousMedium(σ_a derived from attenuation_color / attenuation_distance)`; the medium is bound to the per-primitive object via `SetObjectInteriorMedium` during the scene walk.  IOR painter from KHR_materials_ior or default 1.5.  Requires `pathtracing_shaderop` for refraction (the legacy `DefaultDirectLighting` + `pixelpel_rasterizer` only evaluates BSDFs, and dielectrics have no BSDF).  **`transmission_texture` is NOT honoured** — assets that vary transmissivity per-pixel import as uniformly transmissive; importer emits a one-time warning per affected material. | Phase 5: per-pixel τ painter |
 | **KHR_materials_clearcoat** | — | **DELIVERED 2026-09-01** (WETNESS_COAT_DESIGN.md sec 13 item 9): imports onto `coated_material` over the PBR base -- `clearcoat_factor` -> `coat_weight`, `clearcoat_roughness_factor` squared -> `coat_roughness` (perceptual roughness -> GGX alpha), `coat_ior` fixed at 1.5 per spec.  The `clearcoat`/`clearcoatRoughness`/`clearcoatNormal` textures are not sampled -- uniform factors only, warned once per affected material. | Per-pixel clearcoat/roughness/normal textures |
@@ -490,16 +496,17 @@ is cleaner and avoids two chunks per PBR material.
 
 ### Alpha modes
 
-glTF `alphaMode = OPAQUE / MASK / BLEND` + `alphaCutoff`. In a path tracer:
+glTF `alphaMode = OPAQUE / MASK / BLEND` + `alphaCutoff` bind material
+intersection coverage (DL-214):
 
-- OPAQUE → no-op.
-- MASK → stochastic alpha test: at hit time, sample alpha; if `alpha < alphaCutoff` continue the ray.  *(DELIVERED Phase 3 via `alpha_test_shaderop`.)*
-- BLEND → stochastic transparency through `transparency_shaderop`.  *(DELIVERED Phase 4; per-pixel alpha read straight from baseColor via `IPainter::GetAlpha`; wired through an `advanced_shader [+,+,=]` over `[DefaultEmission, DefaultDirectLighting, transparency]`.  Same PT-only integrator caveat as MASK — BDPT/VCM/MLT/photon tracers bypass shader ops and treat BLEND as opaque.  See §15.)*
+- OPAQUE ignores alpha.
+- MASK accepts alpha at or above the cutoff, deterministically.
+- BLEND accepts with probability alpha, otherwise continuing the ray unchanged.
 
-Recommend: implement MASK in v1 (it's the common case for foliage / grates),
-defer BLEND to a later phase. Both can be added later without breaking v1.
-*(History: that v1 recommendation drove Phase 3, which shipped MASK.
-Phase 4 then closed BLEND.)*
+All transport integrators and photon tracers share these semantics. The importer
+uses linear texture A times baseColorFactor alpha, including transformed UVs.
+Historically Phase 3 and Phase 4 installed legacy alpha shader operations; that
+wiring has been replaced and is not applied in addition to material coverage.
 
 ### Normal maps
 
@@ -680,7 +687,7 @@ Euler. Minimal change to the chunk parser; storage is the same internally
 - **Morph targets.** Same.
 - **`KHR_draco_mesh_compression` / `EXT_meshopt_compression`.** Reject with clear error.
 - **`KHR_materials_*`** beyond `unlit`, `emissive_strength`, `ior` (which feeds GGX directly). Warn-and-skip with the extension name in the warning so users know what was lost.  *(Phase 4 update: `unlit`, `emissive_strength`, scalar `transmission` + `volume` + `ior` have since shipped; `clearcoat` (2026-09-01, via `coated_material`) and `sheen` (2026-09-03, via `fabric_material`) as a layer-over-PBR have since shipped too.  See §15.)*
-- **alphaMode = BLEND.** Only OPAQUE and MASK in v1.  *(Phase 4 update: BLEND now ships via `transparency_shaderop`.  See §15.)*
+- **Historical v1 alphaMode = BLEND limitation.** Phase 4 added a legacy transparency shader; DL-214 supersedes both MASK and BLEND wiring with shared material coverage.
 - **Multi-camera.** First camera wins.
 - **Multi-scene.** Honor `scene` field; ignore others.
 
@@ -800,7 +807,7 @@ pbr_metallic_roughness_material {
     normal_map     normal_painter        # painter (optional)
     emissive       emissive_painter      # painter (optional)
     ior            ior_painter           # default 1.5
-    alpha_mode     OPAQUE                # OPAQUE | MASK
+    alpha_mode     OPAQUE                # historical mesh metadata sketch; current materials: opaque | mask | blend
     alpha_cutoff   0.5                   # MASK only
     double_sided   FALSE
 }
@@ -980,7 +987,7 @@ thing.
   immediately.
 - `VertexColorTest` — COLOR_0 round-trip.
 - `MultiUVTest` — TEXCOORD_1.
-- `AlphaBlendModeTest` — alpha modes; v1 supports OPAQUE + MASK only, so this
+- `AlphaBlendModeTest` — alpha modes; the historical v1 supported OPAQUE + MASK only, so this
   partially fails by design.  Useful regression for what we *do* support.
 - `OrientationTest` — coordinate-system sanity; catches Y-up vs Z-up bugs fast.
 
@@ -1122,7 +1129,7 @@ without proportional value.
 |---|---|---|
 | Schlick-from-F0 mode on `GGXBRDF` | 3 | **Delivered.**  New `fresnel_mode` param on `ggx_material` (default `conductor`); `pbr_metallic_roughness_material` flips it to `schlick_f0`.  Fixes P1-1 / P1-2 / P1-3.  Three new test programs cover it (see §14). |
 | Direct diffuse interface transmission | 3 | **Current implementation.**  GGX uses reciprocal single-pass `(1-Ai)*(1-Ao)` transmission in BRDF evaluation and selected diffuse throughput; diffuse recycling is intentionally omitted. |
-| `alpha_test_modifier` for glTF MASK | 3 | **Delivered as `alpha_test_shaderop`** (renamed from the Phase 2 plan after review of `IModifier`'s lifecycle confirmed shader-ops are the right hook).  Caveat: works only under integrators that route through `IShader::Shade()` (PT + legacy direct shaders); BDPT, VCM, MLT, and photon tracers bypass and treat MASK as opaque.  Phase 4 candidate to promote into a hit-time concern. |
+| `alpha_test_modifier` for glTF MASK | 3 / DL-214 | **Delivered.** Phase 3 used an explicit shader operation. DL-214 supersedes importer wiring with scalar material intersection coverage across PT, BDPT, VCM, MLT, and photon tracing. |
 | `quaternion` / `matrix` parameter on `standard_object` | 3 | **Delivered.**  Both supported, with documented precedence (`matrix` > `quaternion` > `orientation`).  `Job::AddObjectMatrix` consumes a column-major 4×4 directly; the importer feeds the cgltf node-world matrix verbatim. |
 | In-memory `IRasterImage` path for embedded textures | 3 | **Delivered.**  `Job::AddInMemoryPNGTexturePainter` / `AddInMemoryJPEGTexturePainter` accept byte buffers; importer feeds them with the cgltf bufferView directly.  `.gltf_cache/` sidecar is retired. |
 | Orthonormality check in `DecomposeAffine` | 3 | **Resolved by deletion.**  After the matrix path landed, `DecomposeAffine` lost its only caller and was deleted from the importer; the gimbal-lock + shear failure mode it was paving over no longer exists. |
@@ -1174,7 +1181,7 @@ The work split into two cohorts.
 | **`KHR_materials_emissive_strength`** | Importer reads `mat.emissive_strength.emissive_strength` and forwards it as `emissive_scale` to `Job::AddPBRMetallicRoughnessMaterial`.  Trivial; integrates with the existing emissive pipeline. |
 | **`KHR_materials_unlit`** | Importer detects `mat.unlit` and registers a `LambertianLuminaireMaterial(baseColor, zero-reflectance Lambertian, scale=π)` so the material's BSDF returns 0 and only the emitter contributes baseColor as Lambertian radiance.  Result: surfaces look self-luminous regardless of scene lighting. |
 | **Per-pixel alpha** (alpha-aware painter) | `IPainter::GetAlpha()` virtual added (default 1.0). `TexturePainter` overrides to return un-premultiplied A. `ChannelPainter` extended with `CHAN_A=3` so the chunk parser routes alpha through the standard channel-extraction flow.  Closes the §13 `max(R,G,B)` proxy.  **Note:** the existing pre-Phase-4 `TexturePainter::GetColor` still returns `c.base * c.a` (premultiplied); Phase 4 added `GetAlpha` alongside without changing legacy color semantics. |
-| **`alphaMode = BLEND`** | Per-material wiring: `BlendPainter(zero=0, white=1, mask=alpha) = 1 − α` produces the see-through factor for `transparency_shaderop`; the shader-op formula `c = cthis*factor + c*(1-factor)` then yields the correct `surface*α + background*(1-α)`.  Composition uses an `advanced_shader` (NOT `standard_shader`) with operators `[+, +, =]` over `[DefaultEmission, DefaultDirectLighting, transparency]` — the `=` replace operator is essential because the additive `standard_shader` would double the surface contribution on opaque pixels.  PT-only (same integrator caveat as `alphaMode = MASK`). |
+| **`alphaMode = BLEND`** | Per-material wiring: `BlendPainter(zero=0, white=1, mask=alpha) = 1 − α` produces the see-through factor for `transparency_shaderop`; the shader-op formula `c = cthis*factor + c*(1-factor)` then yields the correct `surface*α + background*(1-α)`.  Composition uses an `advanced_shader` (NOT `standard_shader`) with operators `[+, +, =]` over `[DefaultEmission, DefaultDirectLighting, transparency]` — the `=` replace operator is essential because the additive `standard_shader` would double the surface contribution on opaque pixels.  All transport paths use material coverage (DL-214); the shader-op wiring described here is historical. |
 
 ### Cohort B — extension materials (PARTIAL)
 
@@ -1202,7 +1209,7 @@ The work split into two cohorts.
 |---|---|
 | **Clearcoat UNDER sheen (base -> clearcoat -> sheen), or a genuine 3-layer base+clearcoat+sheen stack** | Not attempted.  glTF itself only defines base -> sheen -> clearcoat layering (now DELIVERED, 2026-09-27 -- `coated_material` composes over the sheen's `fabric_material` result, see the "Clearcoat + sheen on the same material" paragraph above), so a clearcoat-UNDER-sheen composition isn't a spec requirement; expressing all three layers at once (base + a clearcoat below the sheen + the delivered clearcoat above it) would need `fabric_material` to grow a coat-under-sheen slot of its own or a new primitive -- the allowlist extension that unblocked the spec'd order (DL-23, docs/DEBT_LEDGER.md, closed 2026-09-14) does not by itself express the REVERSED order. |
 | **Per-pixel `sheenColorTexture` UV/wrap edge cases beyond the shared `WrapWithUVTransform` path** | Uses the same per-binding `KHR_texture_transform` wrapper every other glTF texture role does; not independently stress-tested beyond the delivered test coverage. |
-| **Alpha mask + blend under BDPT / VCM / MLT** | Same constraint as Phase 3: those integrators bypass the shader-op pipeline and treat alpha as opaque.  Promoting alpha-test to a hit-time geometry concern is a substantial cross-cutting refactor. |
+
 | **Animation / skinning / morph targets** | Carried forward from Phase 3+. |
 | **Other `KHR_materials_*`** (`specular`, `anisotropy`, `iridescence`, `dispersion`) | Phase 5+. |
 

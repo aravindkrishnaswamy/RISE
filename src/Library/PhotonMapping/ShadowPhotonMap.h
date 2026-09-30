@@ -31,6 +31,11 @@ namespace RISE
 				);
 			virtual ~ShadowPhotonMap( );
 
+            // Categorical presence cache: reservoir sampling changes which
+            // votes survive, not their labels. Preserve the historical 1/N
+            // automatic gather-radius convention; there is no flux to rescale.
+            Scalar StorageNormalization() const { return 1; }
+
 			// Stores the given photon with no direction
 			bool Store( 
 				const Point3& pos,

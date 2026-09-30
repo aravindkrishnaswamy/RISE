@@ -2638,14 +2638,10 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
 
     modifier_name = _direct_normal_modifier(material, wrapper, state)
 
-    # Alpha (DL-193, docs/DEBT_LEDGER.md; closes DL-186's own
-    # "deliberately left warn-only" decision now that the bridge has a
-    # shader-op-chain construction -- see `wire_alpha_shader_for_material`
-    # in rise_blender_bridge.cpp).  `blend_method` selects HOW: OPAQUE
-    # (default) wires nothing; CLIP builds an alpha-test cutout at
-    # `material.alpha_threshold`; BLEND/HASHED build a stochastic
-    # transparency (RISE has one blend mechanism, not a separate
-    # dithered one -- see rise_blender_alpha_mode's own comment).
+    # Alpha (ABI v14, DL-214): the bridge binds material intersection
+    # coverage. OPAQUE ignores the socket, CLIP applies alpha_threshold,
+    # and BLEND/HASHED use stochastic coverage across transport paths.
+    # A linked Alpha texture replaces the unlinked numeric socket value.
     #
     # Blender 4.2's EEVEE-Next replaced `blend_method` with
     # `surface_render_method` ('BLENDED'/'DITHERED') for the raster
@@ -2707,27 +2703,9 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
             # BLEND or HASHED -> RISE's single stochastic-transparency path.
             alpha_mode_value = ALPHA_MODE_BLEND
 
-        # Rasterizer-compatibility warning (AlphaTestShaderOp.h's own
-        # "integrator-compatibility caveat", corrected by DIRECT
-        # MEASUREMENT in the DL-193 slice: `pixelpel_rasterizer` --
-        # RISE's legacy DIRECT-lighting-only rasterizer -- is the ONLY
-        # rasterizer that honours the alpha shader-op chain.  BDPT, VCM,
-        # MLT, photon tracers, AND the modern path tracer
-        # (`pathtracing_pel_rasterizer`) all bypass the shader-op chain
-        # entirely and render this material fully opaque regardless of
-        # the wiring above -- `PathTracingIntegrator.cpp` has no
-        # reference to the shader-op pipeline at all; a stale, WRONG
-        # revision of this caveat used to claim the path tracer was
-        # compatible.  Filed as the general architecture gap DL-214,
-        # docs/DEBT_LEDGER.md.  Issued from the NATIVE bridge instead of
-        # here (`rise_blender_render_scene`'s
-        # own DL-193 blocks, alongside the pre-existing "Auto -> X"
-        # resolved-integrator surfacing that function already does) --
-        # the rasterizer kind lives in `rise_blender_render_settings`,
-        # which this export-time function has no access to (export and
-        # render-settings resolution are separate stages in this
-        # add-on), and the Auto dispatcher's actual choice isn't known
-        # until after rendering regardless of which stage asks.
+        # DL-214: the native bridge installs scalar material coverage for
+        # every integrator. No incompatible-rasterizer warning is needed.
+
 
     output_node = _find_material_output(material)
     interior_medium_name = None
@@ -2900,12 +2878,9 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
         )
 
     state.materials.append(payload)
-    # ABI v14 / DL-193: the alpha-aware shader `wire_alpha_shader_for_-
-    # material` (rise_blender_bridge.cpp) registers under `<name>.shader`
-    # whenever alpha is active -- same deterministic naming convention
-    # GLTFSceneImporter.cpp's own `matName + ".shader"` uses.  None for
-    # an opaque material (the default `_MaterialBinding.shader_name`,
-    # bit-identical to a pre-v14 payload).
+    # Preserve ABI v14's deterministic shader binding name. The bridge
+    # installs ordinary emission/direct ops here; alpha itself belongs to
+    # material intersection coverage and is not applied by this chain.
     shader_name = f"{payload.name}.shader" if alpha_mode_value != ALPHA_MODE_OPAQUE else None
     binding = _MaterialBinding(
         surface_material_name=payload.name,

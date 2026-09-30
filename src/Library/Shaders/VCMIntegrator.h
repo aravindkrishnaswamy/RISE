@@ -256,7 +256,7 @@ namespace RISE
 				const Point2& cameraLensSample,
 				SplatFilm& splatFilm,
 				const VCMNormalization& norm,
-				const IPixelFilter* pixelFilter	///< [in] Reconstruction kernel; null = round-to-nearest point splat
+				const IPixelFilter* pixelFilter, ISampler* alphaSampler = nullptr	///< [in] Reconstruction kernel; null = round-to-nearest point splat
 				) const;
 
 			/// Strategy (s>=2, t>=2): interior vertex connection.
@@ -273,7 +273,7 @@ namespace RISE
 				const std::vector<VCMMisQuantities>& lightMis,
 				const std::vector<BDPTVertex>& eyeVerts,
 				const std::vector<VCMMisQuantities>& eyeMis,
-				const VCMNormalization& norm
+				const VCMNormalization& norm, ISampler* alphaSampler = nullptr
 				) const;
 
 			/// Strategy (vertex merging): for each non-delta surface
@@ -342,7 +342,7 @@ namespace RISE
 				const VCMNormalization& norm,
 				const Scalar nm,
 				const IPixelFilter* pixelFilter,	///< [in] Reconstruction kernel; null = round-to-nearest point splat
-				const Scalar splatScale = 1.0		///< [in] DL-201/DL-217 spectral splat scale: (SampledWavelengths::N / surviving lanes) * mYNormalization at the spectral call sites -- so ~3.74 (not 1.0) when nothing terminated; 1.0 only for the Pel instantiation.
+				const Scalar splatScale = 1.0, ISampler* alphaSampler = nullptr		///< [in] DL-201/DL-217 spectral splat scale: (SampledWavelengths::N / surviving lanes) * mYNormalization at the spectral call sites -- so ~3.74 (not 1.0) when nothing terminated; 1.0 only for the Pel instantiation.
 				) const;
 
 			Scalar EvaluateInteriorConnectionsNM(
@@ -353,7 +353,7 @@ namespace RISE
 				const std::vector<BDPTVertex>& eyeVerts,
 				const std::vector<VCMMisQuantities>& eyeMis,
 				const VCMNormalization& norm,
-				const Scalar nm
+				const Scalar nm, ISampler* alphaSampler = nullptr
 				) const;
 
 			Scalar EvaluateMergesNM(

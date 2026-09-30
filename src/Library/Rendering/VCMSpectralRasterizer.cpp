@@ -464,7 +464,7 @@ void VCMSpectralRasterizer::IntegratePixel(
 							localLightVerts, lightMisSp,
 							pScene, *pCaster, *pCamera, cameraLensSample, *pSplatFilm,
 							mVCMNormalization, heroNM, pPixelFilter,
-							splatLaneScale * mYNormalization );
+							splatLaneScale * mYNormalization, &sampler );
 					}
 				}
 
@@ -490,7 +490,7 @@ void VCMSpectralRasterizer::IntegratePixel(
 							pScene, *pCaster,
 							localLightVerts, lightMisSp,
 							eyeVerts, eyeMis,
-							mVCMNormalization, heroNM );
+							mVCMNormalization, heroNM, &sampler );
 					}
 				}
 
@@ -563,7 +563,7 @@ void VCMSpectralRasterizer::IntegratePixel(
 								compLight, compLightMis,
 								pScene, *pCaster, *pCamera, cameraLensSample, *pSplatFilm,
 								mVCMNormalization, companionNM, pPixelFilter,
-								splatLaneScale * mYNormalization );
+								splatLaneScale * mYNormalization, &sampler );
 						}
 					}
 
@@ -586,7 +586,7 @@ void VCMSpectralRasterizer::IntegratePixel(
 								pScene, *pCaster,
 								compLight, compLightMis,
 								compEye, eyeMis,
-								mVCMNormalization, companionNM );
+								mVCMNormalization, companionNM, &sampler );
 						}
 					}
 

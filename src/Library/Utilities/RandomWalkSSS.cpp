@@ -153,6 +153,22 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 			exitRI = fallbackRI;
 		}
 
+        // Capture the effective physical endpoint before shading modification.
+        // This also covers the front-face fallback above. Internal Fresnel
+        // boundaries still define the opaque-domain proposal: no alpha draw
+        // occurs until this boundary is selected as the final exit below.
+        Scalar exitCoverage = 1;
+        if( exitRI.pMaterial && exitRI.pMaterial->GetAlphaMode() != eAlphaOpaque ) {
+            // Supply scene/raster context only to coverage. Preserve the raw
+            // probe record and existing modifier/proposal inputs.
+            RayIntersectionGeometric alphaRI(exitRI.geometric);
+            alphaRI.rast = ri.rast;
+            alphaRI.signals.pScene = ri.signals.pScene;
+            alphaRI.signals.pSelf = pObject;
+            alphaRI.signals.ptWorld = alphaRI.ptIntersection;
+            exitCoverage = exitRI.pMaterial->AlphaCoverage(alphaRI);
+        }
+
 		if( exitRI.pModifier ) {
 			exitRI.pModifier->Modify( exitRI.geometric );
 		}
@@ -488,6 +504,11 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 			// and prevents connection strategies from targeting a vertex
 			// whose spatial PDF is unknown.
 			result.pdfSurface = 0;
+            // Interior boundary queries define the random-walk domain.
+            // Apply coverage once to the physical surface endpoint.
+            result.acceptedAlphaCoverage = exitCoverage;
+            if (result.acceptedAlphaCoverage <= 0 || (result.acceptedAlphaCoverage < 1 &&
+                sampler.GetAlpha1D() >= result.acceptedAlphaCoverage)) return result;
 			result.valid = true;
 
 			return result;

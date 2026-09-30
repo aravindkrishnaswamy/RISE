@@ -50,6 +50,11 @@ namespace RISE
 		//! PSSMLTSampler and IndependentSampler return false because
 		//! they grow lazily or are purely random.
 		virtual bool HasFixedDimensionBudget() const { return false; };
+
+        //! Independent alpha lane: never consumes a fixed per-vertex budget.
+        //! Stateful MC samplers without streams simply draw the next value.
+        virtual Scalar GetAlpha1D() { return Get1D(); }
+
 	};
 }
 

@@ -1377,14 +1377,14 @@ namespace {
 		const IRayCaster& caster,
 		const Tag& tag,
 		const IObject* pStartMediumObject,
-		const IMedium* pStartMedium )
+		const IMedium* pStartMedium, const MediumBoundaryHits* boundaries )
 	{
 		typedef SpectralValueTraits<Tag> Traits;
 		typedef typename Traits::value_type V;
 
 		const IMedium* pGlobalMedium = scene.GetGlobalMedium();
 
-		if( maxDist < BDPT_RAY_EPSILON ) {
+		if( maxDist <= 0 ) {
 			return TrOne<Tag>();
 		}
 
@@ -1420,9 +1420,9 @@ namespace {
 		Scalar segStart = 0;
 		Scalar objectCoveredDist = 0;
 
-		for( int step = 0; step < MAX_WALK_STEPS && segStart < maxDist; step++ )
+		for( size_t step = 0; (boundaries || step < MAX_WALK_STEPS) && segStart < maxDist; step++ )
 		{
-			const Scalar castStart = segStart + WALK_EPSILON;
+			const Scalar castStart = segStart + (boundaries ? Scalar(0) : WALK_EPSILON);
 			if( castStart >= maxDist ) {
 				break;
 			}
@@ -1433,7 +1433,18 @@ namespace {
 
 			RasterizerState nullRast = {0};
 			RayIntersection ri( castRay, nullRast );
-			pObjects->IntersectRay( ri, true, true, false );
+			if (boundaries) {
+                if (step < boundaries->size()) {
+                    const bool reverse = boundaries->size() > 1 && Vector3Ops::Dot(
+                        Vector3Ops::mkVector3(boundaries->back().BoundaryPoint(),
+                            boundaries->front().BoundaryPoint()), connectionRay.Dir()) < 0;
+                    ri = (*boundaries)[reverse ? boundaries->size()-1-step : step];
+                    ri.geometric.range = Vector3Ops::Dot(
+                        Vector3Ops::mkVector3(ri.BoundaryPoint(), connectionRay.origin), d) - castStart;
+                }
+            } else {
+                pObjects->IntersectRay( ri, true, true, false );
+            }
 
 			if( !ri.geometric.bHit || ri.geometric.range >= castMax ) {
 				// No more boundaries before p2
@@ -1533,7 +1544,7 @@ namespace {
 		// Apply global medium for segments where no per-object medium was active
 		if( pGlobalMedium ) {
 			const Scalar globalDist = maxDist - objectCoveredDist;
-			if( globalDist > WALK_EPSILON ) {
+			if( globalDist > 0 ) {
 				Tr = Tr * EvalMediumTransmittance<Tag>( *pGlobalMedium, connectionRay, globalDist, tag );
 			}
 		}
@@ -1548,19 +1559,19 @@ RISEPel BDPTIntegrator::EvalConnectionTransmittance(
 	const IScene& scene,
 	const IRayCaster& caster,
 	const IObject* pStartMediumObject,
-	const IMedium* pStartMedium
+	const IMedium* pStartMedium, const MediumBoundaryHits* boundaries
 	) const
 {
 	Vector3 d = Vector3Ops::mkVector3( p2, p1 );
 	const Scalar maxDist = Vector3Ops::Magnitude( d );
-	if( maxDist < BDPT_RAY_EPSILON ) {
+	if( maxDist <= 0 ) {
 		return RISEPel( 1, 1, 1 );
 	}
 	d = d * (1.0 / maxDist);
 	const Ray connectionRay( p1, d );
 	return EvalConnectionTransmittance(
 		connectionRay, maxDist, scene, caster,
-		pStartMediumObject, pStartMedium );
+		pStartMediumObject, pStartMedium, boundaries );
 }
 
 RISEPel BDPTIntegrator::EvalConnectionTransmittance(
@@ -1569,12 +1580,12 @@ RISEPel BDPTIntegrator::EvalConnectionTransmittance(
 	const IScene& scene,
 	const IRayCaster& caster,
 	const IObject* pStartMediumObject,
-	const IMedium* pStartMedium
+	const IMedium* pStartMedium, const MediumBoundaryHits* boundaries
 	) const
 {
 	return EvalConnectionTransmittanceImpl<PelTag>(
 		connectionRay, maxDist, scene, caster, PelTag{},
-		pStartMediumObject, pStartMedium );
+		pStartMediumObject, pStartMedium, boundaries );
 }
 
 /// Spectral variant of EvalConnectionTransmittance.
@@ -1587,19 +1598,19 @@ Scalar BDPTIntegrator::EvalConnectionTransmittanceNM(
 	const IRayCaster& caster,
 	const Scalar nm,
 	const IObject* pStartMediumObject,
-	const IMedium* pStartMedium
+	const IMedium* pStartMedium, const MediumBoundaryHits* boundaries
 	) const
 {
 	Vector3 d = Vector3Ops::mkVector3( p2, p1 );
 	const Scalar maxDist = Vector3Ops::Magnitude( d );
-	if( maxDist < BDPT_RAY_EPSILON ) {
+	if( maxDist <= 0 ) {
 		return 1.0;
 	}
 	d = d * (1.0 / maxDist);
 	const Ray connectionRay( p1, d );
 	return EvalConnectionTransmittanceNM(
 		connectionRay, maxDist, scene, caster, nm,
-		pStartMediumObject, pStartMedium );
+		pStartMediumObject, pStartMedium, boundaries );
 }
 
 Scalar BDPTIntegrator::EvalConnectionTransmittanceNM(
@@ -1609,12 +1620,12 @@ Scalar BDPTIntegrator::EvalConnectionTransmittanceNM(
 	const IRayCaster& caster,
 	const Scalar nm,
 	const IObject* pStartMediumObject,
-	const IMedium* pStartMedium
+	const IMedium* pStartMedium, const MediumBoundaryHits* boundaries
 	) const
 {
 	return EvalConnectionTransmittanceImpl<NMTag>(
 		connectionRay, maxDist, scene, caster, NMTag( nm ),
-		pStartMediumObject, pStartMedium );
+		pStartMediumObject, pStartMedium, boundaries );
 }
 
 // SampleBSSRDFEntryPoint has been extracted to BSSRDFSampling.h.
@@ -2046,7 +2057,7 @@ namespace {
 
 			// Intersect the scene
 			RayIntersection ri( currentRay, nullRasterizerState );
-			scene.GetObjects()->IntersectRay( ri, true, true, false );
+			scene.GetObjects()->IntersectRaySampled( ri, sampler );
 			if( depth == 0 ) CaptureBDPTPrimaryAOV( rc, ri, pPrimaryAOV );
 
 			// ----------------------------------------------------------------
@@ -2615,6 +2626,7 @@ namespace {
 			v.signals = ri.geometric.signals;
 			v.txFootprint = ri.geometric.txFootprint;
 			v.pMaterial = ri.pMaterial;
+            v.acceptedAlphaCoverage = ri.acceptedAlphaCoverage;
 			v.pObject = ri.pObject;
 			v.pLight = 0;
 			v.pLuminary = 0;
@@ -2857,6 +2869,7 @@ namespace {
 							entryV.vColor = bssrdf.vColor;
 							entryV.bHasVertexColor = bssrdf.bHasVertexColor;
 							entryV.pMaterial = ri.pMaterial;
+            entryV.acceptedAlphaCoverage = bssrdf.acceptedAlphaCoverage;
 							entryV.pObject = ri.pObject;
 							entryV.pMediumObject = pMedObj_eye;
 							entryV.pMediumVol = pMed_eye;
@@ -3030,6 +3043,7 @@ namespace {
 							entryV.vColor = bssrdf.vColor;
 							entryV.bHasVertexColor = bssrdf.bHasVertexColor;
 							entryV.pMaterial = ri.pMaterial;
+            entryV.acceptedAlphaCoverage = bssrdf.acceptedAlphaCoverage;
 							entryV.pObject = ri.pObject;
 							entryV.pMediumObject = pMedObj_eye;
 							entryV.pMediumVol = pMed_eye;
@@ -3770,17 +3784,17 @@ template<> struct ConnectionResultFor<NMTag>  { typedef BDPTIntegrator::Connecti
 
 // Visibility test for connection edges -- F3a routes all four
 // connection-site visibility queries through this free function.
-inline bool ConnectionIsVisible( const IRayCaster& caster, const Point3& p1, const Point3& p2 )
+inline bool ConnectionIsVisible( const IRayCaster& caster, const Point3& p1, const Point3& p2, ISampler& sampler, MediumBoundaryHits* boundaries )
 {
 	Vector3 d = Vector3Ops::mkVector3( p2, p1 );
 	const Scalar dist = Vector3Ops::Magnitude( d );
-	if( dist < BDPT_RAY_EPSILON ) {
+	if( dist <= 0 || (!boundaries && dist < BDPT_RAY_EPSILON) ) {
 		return true;
 	}
 	d = d * (1.0 / dist);
 	Ray shadowRay( p1, d );
-	shadowRay.Advance( BDPT_RAY_EPSILON );
-	return !caster.CastShadowRay( shadowRay, dist - 2.0 * BDPT_RAY_EPSILON );
+	// The original ray covers both endpoint tails for medium records.
+	return !caster.CastShadowRaySampled( shadowRay, dist - BDPT_RAY_EPSILON, sampler, boundaries, dist, BDPT_RAY_EPSILON );
 }
 
 // Connection-edge transmittance dispatch -> the public (F1-templatized)
@@ -3789,26 +3803,26 @@ template<class Tag>
 typename SpectralValueTraits<Tag>::value_type
 EvalConnTr( const BDPTIntegrator& self, const Point3& p1, const Point3& p2,
 	const IScene& scene, const IRayCaster& caster,
-	const IObject* pStartMediumObject, const IMedium* pStartMedium, Tag tag )
+	const IObject* pStartMediumObject, const IMedium* pStartMedium, Tag tag, const MediumBoundaryHits* boundaries )
 {
 	if constexpr( SpectralValueTraits<Tag>::is_pel ) {
 		(void)tag;
-		return self.EvalConnectionTransmittance( p1, p2, scene, caster, pStartMediumObject, pStartMedium );
+		return self.EvalConnectionTransmittance( p1, p2, scene, caster, pStartMediumObject, pStartMedium, boundaries );
 	} else {
-		return self.EvalConnectionTransmittanceNM( p1, p2, scene, caster, tag.nm, pStartMediumObject, pStartMedium );
+		return self.EvalConnectionTransmittanceNM( p1, p2, scene, caster, tag.nm, pStartMediumObject, pStartMedium, boundaries );
 	}
 }
 template<class Tag>
 typename SpectralValueTraits<Tag>::value_type
 EvalConnTr( const BDPTIntegrator& self, const Ray& connectionRay, const Scalar maxDist,
 	const IScene& scene, const IRayCaster& caster,
-	const IObject* pStartMediumObject, const IMedium* pStartMedium, Tag tag )
+	const IObject* pStartMediumObject, const IMedium* pStartMedium, Tag tag, const MediumBoundaryHits* boundaries )
 {
 	if constexpr( SpectralValueTraits<Tag>::is_pel ) {
 		(void)tag;
-		return self.EvalConnectionTransmittance( connectionRay, maxDist, scene, caster, pStartMediumObject, pStartMedium );
+		return self.EvalConnectionTransmittance( connectionRay, maxDist, scene, caster, pStartMediumObject, pStartMedium, boundaries );
 	} else {
-		return self.EvalConnectionTransmittanceNM( connectionRay, maxDist, scene, caster, tag.nm, pStartMediumObject, pStartMedium );
+		return self.EvalConnectionTransmittanceNM( connectionRay, maxDist, scene, caster, tag.nm, pStartMediumObject, pStartMedium, boundaries );
 	}
 }
 
@@ -3964,8 +3978,10 @@ ConnectAndEvaluateImplCore(
 	// entrance APERTURE that a t==1 connection lands on.  Ignored by
 	// every camera whose aperture is a point.
 	const Point2& cameraLensSample,
-	Tag tag )
+	Tag tag, ISampler& sampler )
 {
+    MediumBoundaryHits boundaryHits;
+    const bool sceneAlpha = caster.GetLightSampler() && caster.GetLightSampler()->SceneHasAlphaCoverage();
 	typedef SpectralValueTraits<Tag> Traits;
 	typedef typename Traits::value_type V;
 	typename ConnectionResultFor<Tag>::type result;
@@ -4378,7 +4394,7 @@ ConnectAndEvaluateImplCore(
 
 		// Check visibility from camera to light vertex using standard shadow ray.
 		const Point3 camPos = apertureSample_t0.point;
-		if( !ConnectionIsVisible( caster, camPos, lightEnd.position ) ) {
+		if( !ConnectionIsVisible( caster, camPos, lightEnd.position, sampler, (sceneAlpha ? &boundaryHits : nullptr) ) ) {
 			return result;
 		}
 
@@ -4497,7 +4513,7 @@ ConnectAndEvaluateImplCore(
 		}
 
 		const Point3 camPos = apertureSample_t0.point;
-		if( !ConnectionIsVisible( caster, camPos, lightEnd.position ) ) {
+		if( !ConnectionIsVisible( caster, camPos, lightEnd.position, sampler, (sceneAlpha ? &boundaryHits : nullptr) ) ) {
 			return result;
 		}
 
@@ -4632,7 +4648,7 @@ ConnectAndEvaluateImplCore(
 					eyeEnd.position.y + wiForLight.y * kVisFar,
 					eyeEnd.position.z + wiForLight.z * kVisFar );
 			}
-			if( !ConnectionIsVisible( caster, eyeEnd.position, visTarget ) ) {
+			if( !ConnectionIsVisible( caster, eyeEnd.position, visTarget, sampler, (sceneAlpha ? &boundaryHits : nullptr) ) ) {
 				return result;
 			}
 		}
@@ -4726,10 +4742,10 @@ ConnectAndEvaluateImplCore(
 		if( envCase_s1 ) {
 			Ray envRay( eyeEnd.position, wiForLight );
 			Tr_conn_s1 = EvalConnTr<Tag>( self, envRay, RISE_INFINITY, scene, caster,
-				eyeEnd.pMediumObject, eyeEnd.pMediumVol, tag );
+				eyeEnd.pMediumObject, eyeEnd.pMediumVol, tag, (sceneAlpha ? &boundaryHits : nullptr) );
 		} else {
 			Tr_conn_s1 = EvalConnTr<Tag>( self, eyeEnd.position, lightStart.position, scene, caster,
-				eyeEnd.pMediumObject, eyeEnd.pMediumVol, tag );
+				eyeEnd.pMediumObject, eyeEnd.pMediumVol, tag, (sceneAlpha ? &boundaryHits : nullptr) );
 		}
 
 		// Contribution: eyeThroughput * fEye * G * Le / pdfLight
@@ -4994,7 +5010,7 @@ ConnectAndEvaluateImplCore(
 		// vertices; treating them as transparent here produces invalid
 		// splats and severe caustic fireflies.
 		const Point3 camPos = apertureSample.point;
-		if( !ConnectionIsVisible( caster, lightEnd.position, camPos ) ) {
+		if( !ConnectionIsVisible( caster, lightEnd.position, camPos, sampler, (sceneAlpha ? &boundaryHits : nullptr) ) ) {
 			return result;
 		}
 
@@ -5128,7 +5144,7 @@ ConnectAndEvaluateImplCore(
 
 		// Connection transmittance through participating media
 		const V Tr_conn_t1 = EvalConnTr<Tag>( self, lightEnd.position, camPos, scene, caster,
-			lightEnd.pMediumObject, lightEnd.pMediumVol, tag );
+			lightEnd.pMediumObject, lightEnd.pMediumVol, tag, (sceneAlpha ? &boundaryHits : nullptr) );
 
 		result.contribution = VertexThroughput<Tag>( lightEnd ) * fLight * Tr_conn_t1 * (G * We);
 		result.rasterPos = rasterPos;
@@ -5239,7 +5255,7 @@ ConnectAndEvaluateImplCore(
 		dConnect = dConnect * (1.0 / dist);
 
 		// Check visibility
-		if( !ConnectionIsVisible( caster, eyeEnd.position, lightEnd.position ) ) {
+		if( !ConnectionIsVisible( caster, eyeEnd.position, lightEnd.position, sampler, (sceneAlpha ? &boundaryHits : nullptr) ) ) {
 			return result;
 		}
 
@@ -5306,7 +5322,7 @@ ConnectAndEvaluateImplCore(
 		// included in MIS PDFs (see note on transmittance cancellation
 		// in the MISWeight documentation).
 		const V Tr_conn = EvalConnTr<Tag>( self, eyeEnd.position, lightEnd.position, scene, caster,
-			eyeEnd.pMediumObject, eyeEnd.pMediumVol, tag );
+			eyeEnd.pMediumObject, eyeEnd.pMediumVol, tag, (sceneAlpha ? &boundaryHits : nullptr) );
 
 		// Full path contribution
 			result.contribution = VertexThroughput<Tag>( lightEnd ) * fLight *
@@ -5467,11 +5483,11 @@ ConnectAndEvaluateImpl(
 	const IRayCaster& caster,
 	const ICamera& camera,
 	const Point2& cameraLensSample,
-	Tag tag )
+	Tag tag, ISampler& sampler )
 {
 	typename ConnectionResultFor<Tag>::type result = ConnectAndEvaluateImplCore<Tag>(
 		self, pLightSampler, lightVerts, eyeVerts, s, t, scene, caster, camera,
-		cameraLensSample, tag );
+		cameraLensSample, tag, sampler );
 	if( result.valid && s >= 1 && t >= 1 &&
 		s <= lightVerts.size() && t <= eyeVerts.size() )
 	{
@@ -5497,12 +5513,15 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 	const IScene& scene,
 	const IRayCaster& caster,
 	const ICamera& camera,
-	const Point2& cameraLensSample
+	const Point2& cameraLensSample, ISampler* alphaSampler
 	) const
 {
+    RandomNumberGenerator alphaRandom;
+    IndependentSampler alphaFallback(alphaRandom);
+    ISampler& sampler = alphaSampler ? *alphaSampler : static_cast<ISampler&>(alphaFallback);
 	return ConnectAndEvaluateImpl<PelTag>(
 		*this, pLightSampler, lightVerts, eyeVerts, s, t, scene, caster, camera,
-		cameraLensSample, PelTag{} );
+		cameraLensSample, PelTag{}, sampler );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -5534,13 +5553,13 @@ DispatchConnectAndEvaluate(
 	const IRayCaster& caster,
 	const ICamera& camera,
 	const Point2& cameraLensSample,
-	Tag tag )
+	Tag tag, ISampler& sampler )
 {
 	if constexpr( SpectralValueTraits<Tag>::is_pel ) {
 		(void)tag;
-		return self.ConnectAndEvaluate( lightVerts, eyeVerts, s, t, scene, caster, camera, cameraLensSample );
+		return self.ConnectAndEvaluate( lightVerts, eyeVerts, s, t, scene, caster, camera, cameraLensSample, &sampler );
 	} else {
-		return self.ConnectAndEvaluateNM( lightVerts, eyeVerts, s, t, scene, caster, camera, cameraLensSample, tag.nm );
+		return self.ConnectAndEvaluateNM( lightVerts, eyeVerts, s, t, scene, caster, camera, cameraLensSample, tag.nm, &sampler );
 	}
 }
 
@@ -5570,6 +5589,9 @@ EvaluateAllStrategiesImpl(
 #endif
 	Tag tag )
 {
+    RandomNumberGenerator alphaRandom;
+    IndependentSampler alphaFallback(alphaRandom);
+    ISampler& sampler = pSampler ? *pSampler : static_cast<ISampler&>(alphaFallback);
 	typedef SpectralValueTraits<Tag> Traits;
 	typedef typename ConnectionResultFor<Tag>::type CR;
 	const unsigned int nLight = static_cast<unsigned int>( lightVerts.size() );
@@ -5700,7 +5722,7 @@ EvaluateAllStrategiesImpl(
 					scene,
 					caster,
 					camera,
-					cameraLensSample );
+					cameraLensSample, &sampler );
 
 				cr.s = candidate.s;
 				cr.t = candidate.t;
@@ -5735,7 +5757,7 @@ EvaluateAllStrategiesImpl(
 				}
 
 				CR cr = DispatchConnectAndEvaluate<Tag>(
-					self, lightVerts, eyeVerts, s, t, scene, caster, camera, cameraLensSample, tag );
+					self, lightVerts, eyeVerts, s, t, scene, caster, camera, cameraLensSample, tag, sampler );
 				if constexpr( Traits::is_pel ) {
 					cr.s = s;
 					cr.t = t;
@@ -5913,8 +5935,8 @@ EvaluateAllStrategiesImpl(
 					PathVertexEval::BuildVertexIORStack( eyeEnd, zeroExitStack );
 					if constexpr( Traits::is_pel ) {
 					RISEPel amount( 0, 0, 0 );
-					l->ComputeDirectLighting( ri, caster, *pBSDF,
-						bReceivesShadows, amount, bFullSphere, false, &zeroExitStack );
+					l->ComputeDirectLightingSampled( ri, caster, *pBSDF,
+						bReceivesShadows, amount, bFullSphere, false, &zeroExitStack, sampler );
 
 					if( ColorMath::MaxValue( amount ) > 0 )
 					{
@@ -5934,9 +5956,9 @@ EvaluateAllStrategiesImpl(
 						// projection collapsed the surface's spectral
 						// character; the per-NM virtual queries brdf.valueNM
 						// at the connecting wavelength.
-						const Scalar leNM = l->ComputeDirectLightingNM(
+						const Scalar leNM = l->ComputeDirectLightingSampledNM(
 							ri, caster, *pBSDF, bReceivesShadows, tag.nm, bFullSphere,
-							false, &zeroExitStack );
+							false, &zeroExitStack, sampler );
 						if( leNM > 0 )
 						{
 							CR cr;
@@ -6659,7 +6681,7 @@ unsigned int GenerateLightSubpathImpl(
 
 		// Intersect the scene
 		RayIntersection ri( currentRay, nullRasterizerState );
-		scene.GetObjects()->IntersectRay( ri, true, true, false );
+		scene.GetObjects()->IntersectRaySampled( ri, sampler );
 
 		// ----------------------------------------------------------------
 		// Participating media: free-flight distance sampling (light subpath).
@@ -6909,6 +6931,7 @@ unsigned int GenerateLightSubpathImpl(
 		v.signals = ri.geometric.signals;
 		v.txFootprint = ri.geometric.txFootprint;
 		v.pMaterial = ri.pMaterial;
+            v.acceptedAlphaCoverage = ri.acceptedAlphaCoverage;
 		v.pObject = ri.pObject;
 		v.pLight = 0;
 		v.pLuminary = 0;
@@ -7160,6 +7183,7 @@ unsigned int GenerateLightSubpathImpl(
 						entryV.vColor = bssrdf.vColor;
 						entryV.bHasVertexColor = bssrdf.bHasVertexColor;
 						entryV.pMaterial = ri.pMaterial;
+            entryV.acceptedAlphaCoverage = bssrdf.acceptedAlphaCoverage;
 						entryV.pObject = ri.pObject;
 						entryV.pMediumObject = pMedObj_light;
 						entryV.pMediumVol = pMed_light;
@@ -7335,6 +7359,7 @@ unsigned int GenerateLightSubpathImpl(
 						entryV.vColor = bssrdf.vColor;
 						entryV.bHasVertexColor = bssrdf.bHasVertexColor;
 						entryV.pMaterial = ri.pMaterial;
+            entryV.acceptedAlphaCoverage = bssrdf.acceptedAlphaCoverage;
 						entryV.pObject = ri.pObject;
 						entryV.pMediumObject = pMedObj_light;
 						entryV.pMediumVol = pMed_light;
@@ -7921,12 +7946,15 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 	const IRayCaster& caster,
 	const ICamera& camera,
 	const Point2& cameraLensSample,
-	const Scalar nm
+	const Scalar nm, ISampler* alphaSampler
 	) const
 {
+    RandomNumberGenerator alphaRandom;
+    IndependentSampler alphaFallback(alphaRandom);
+    ISampler& sampler = alphaSampler ? *alphaSampler : static_cast<ISampler&>(alphaFallback);
 	return ConnectAndEvaluateImpl<NMTag>(
 		*this, pLightSampler, lightVerts, eyeVerts, s, t, scene, caster, camera,
-		cameraLensSample, NMTag( nm ) );
+		cameraLensSample, NMTag( nm ), sampler );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -7940,11 +7968,14 @@ std::vector<BDPTIntegrator::ConnectionResultNM> BDPTIntegrator::EvaluateAllStrat
 	const IRayCaster& caster,
 	const ICamera& camera,
 	const Point2& cameraLensSample,
-	const Scalar nm
+	const Scalar nm, ISampler* alphaSampler
 	) const
 {
+    RandomNumberGenerator alphaRandom;
+    IndependentSampler alphaFallback(alphaRandom);
+    ISampler& sampler = alphaSampler ? *alphaSampler : static_cast<ISampler&>(alphaFallback);
 	return EvaluateAllStrategiesImpl<NMTag>(
-		*this, lightVerts, eyeVerts, scene, caster, camera, cameraLensSample, nullptr,
+		*this, lightVerts, eyeVerts, scene, caster, camera, cameraLensSample, &sampler,
 #ifdef RISE_ENABLE_OPENPGL
 		pCompletePathGuide, completePathStrategySelectionEnabled, completePathStrategySampleCount,
 		&strategySelectionPathCount, &strategySelectionCandidateCount, &strategySelectionEvaluatedCount,

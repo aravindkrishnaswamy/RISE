@@ -89,6 +89,7 @@ namespace RISE
 		/// Result of BSSRDF importance sampling at a surface vertex
 		struct SampleResult
 		{
+            Scalar acceptedAlphaCoverage = 1;
 			Point3				entryPoint;		///< Entry point on the surface
 			Vector3				entryNormal;	///< Shading normal at entry point — drives the cosine-sampled
 												///< continuation frame and Sw Fresnel angular dependence.

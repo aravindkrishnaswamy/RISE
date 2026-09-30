@@ -851,6 +851,7 @@ const BoundingBox Object::getBoundingBox() const
 
 void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const
 {
+    ri.hasBoundaryRange = ri.hasBoundaryRange2 = false;
 	// NULL-GEOMETRY GUARD: see getBoundingBox()'s comment above.  Reachable as
 	// of 87 for a CONTAINER node, though the world-visible gate in
 	// ObjectManager::RayElementIntersection means no ray reaches a container
@@ -984,6 +985,10 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 	}
 
 	pGeometry->IntersectRay( ri.geometric, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
+    ri.hasBoundaryRange = ri.geometric.bHit;
+    ri.hasBoundaryRange2 = ri.geometric.bHit && bComputeExitInfo && ri.geometric.range2 != RISE_INFINITY;
+    if (ri.hasBoundaryRange) ri.boundaryRange = ri.geometric.range / factor;
+    if (ri.hasBoundaryRange2) ri.boundaryRange2 = ri.geometric.range2 / factor;
 	if( ri.geometric.bHit )
 	{
 		// PIXEL FOOTPRINT, for EVERY geometry

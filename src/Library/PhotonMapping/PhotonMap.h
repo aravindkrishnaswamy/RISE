@@ -27,6 +27,9 @@
 #include "Photon.h"
 #include "../Utilities/PathVertexEval.h"
 #include <vector>
+#include <random>
+#include <cstdint>
+#include <cstdlib>
 #include <algorithm>
 #include <limits>
 #include <type_traits>
@@ -105,7 +108,26 @@ namespace RISE
 			typedef std::vector< distance_container< PhotType > >	PhotonDistListType;
 			typedef std::vector< PhotType >							PhotonListType;
 
-			PhotonListType	vphotons;
+            PhotonListType vphotons;
+            // Shooting-only uniform reservoir. Its RNG never consumes transport
+            // or wavelength samples. Loaded/manual maps retain append semantics.
+            bool reservoirEnabled = false;
+            uint64_t depositCount = 0;
+            std::mt19937_64 reservoirRandom{0x444c323134ULL};
+            bool StorePacket(const PhotType& packet) {
+                if (!reservoirEnabled) {
+                    if (vphotons.size() >= nMaxPhotons) return false;
+                    vphotons.push_back(packet); return true;
+                }
+                if (depositCount == std::numeric_limits<uint64_t>::max()) std::abort();
+                ++depositCount;
+                if (vphotons.size() < nMaxPhotons) { vphotons.push_back(packet); return true; }
+                if (!nMaxPhotons) return false;
+                const uint64_t slot = std::uniform_int_distribution<uint64_t>(0, depositCount-1)(reservoirRandom);
+                if (slot >= nMaxPhotons) return false;
+                vphotons[static_cast<size_t>(slot)] = packet; return true;
+            }
+
 
 			unsigned int	nMaxPhotons;
 			unsigned int	nPrevScale;
@@ -492,6 +514,17 @@ namespace RISE
 				nmaxphotons = nMaxPhotonsOnGather;
 			}
 
+            bool EnableReservoir() {
+                if (!vphotons.empty()) return false;
+                depositCount=0;reservoirRandom.seed(0x444c323134ULL);reservoirEnabled=true;return true;
+            }
+            void EndReservoir() { reservoirEnabled=false;depositCount=0; }
+            // Apply exactly once, together with the launched-attempt divisor.
+            Scalar StorageNormalization() const {
+                return reservoirEnabled && !vphotons.empty() ? Scalar(depositCount)/Scalar(vphotons.size()) : 1;
+            }
+            uint64_t DepositsSeen() const { return depositCount; }
+
 			unsigned int NumStored( ){ return static_cast<unsigned int>(vphotons.size()); }
 			unsigned int MaxPhotons( ){ return nMaxPhotons; }
 
@@ -580,6 +613,7 @@ namespace RISE
                 return true;
             }
             void CommitExactBody(ExactPacketState& state) {
+                this->EndReservoir();
                 this->vphotons.swap(state.packets);this->bbox=state.bounds;this->nMaxPhotons=state.maximum;this->nPrevScale=state.scaled;
                 this->dGatherRadius=state.radius;this->dEllipseRatio=state.ellipse;this->nMinPhotonsOnGather=state.minimum;
                 this->nMaxPhotonsOnGather=state.gather;this->maxPower=state.power;this->Balance();
@@ -786,10 +820,6 @@ namespace RISE
 			// Stores the given photon with direction
 			bool Store( const RISEPel& power, const Point3& pos, const Vector3& dir )
 			{
-				if( this->vphotons.size() >= this->nMaxPhotons ) {
-					return false;
-				}
-
 				if( ColorMath::MaxValue(power) <= 0 ) {
 					return false;
 				}
@@ -810,8 +840,8 @@ namespace RISE
 
 				p.phi = (unsigned char)(phi);
 
-				this->bbox.Include( p.ptPosition );
-				this->vphotons.push_back( p );
+				if (!this->StorePacket(p)) return false;
+                this->bbox.Include( p.ptPosition );
 				this->maxPower = r_max( this->maxPower, ColorMath::MaxValue(power) );
 
 				return true;
@@ -857,17 +887,18 @@ namespace RISE
                 if(!samplingLaw.Contains(nm)){
                     GlobalLog()->PrintEasyError("SpectralPhotonMap::Store requires a configured sampling law and a wavelength in its support; no photon stored");return false;
                 }
-                if(vphotons.size()>=nMaxPhotons)return false;
+
                 SpectralPhoton p;p.ptPosition=position;p.power=power;p.nm=nm;p.incomingDirection=direction;
                 const int theta=int(acos(direction.z)*(256.0/PI));p.theta=static_cast<unsigned char>(theta>255?255:theta);
                 int phi=int(atan2(direction.y,direction.x)*(256.0/TWO_PI));phi=phi>255?255:phi;p.phi=static_cast<unsigned char>(phi<0?phi+256:phi);
-                bbox.Include(position);vphotons.push_back(p);maxPower=r_max(maxPower,power);return true;
+                if(!StorePacket(p))return false;
+                bbox.Include(position);maxPower=r_max(maxPower,power);return true;
             }
         public:
             bool ConfigureWavelengthSampling(Scalar begin,Scalar end,unsigned count) override {
                 SpectralPhotonSamplingLaw next;
                 if(!vphotons.empty()||!next.Configure(begin,end,count))return false;
-                samplingLaw=next;return true;
+                EndReservoir();samplingLaw=next;return true;
             }
             bool GetWavelengthSampling(Scalar& begin,Scalar& end,unsigned& count)const override {
                 if(!samplingLaw.Configured())return false;
