@@ -37,6 +37,15 @@ an arithmetic path; they are not authored-axis floors, epsilons, energy
 clamps, or finite-value suppression. Genuinely nonrepresentable final
 values remain nonrepresentable.
 
+Explicit HWSS companions retain their entire spectral quotient too:
+`Rs exp(-Q) cos_o / (4 pi ax ay hd² hz⁴ pdfHero)`. The standalone
+spectral lobe may round to zero while this quotient is representable;
+conversely `Rs cos_o/pdfHero` may overflow before multiplication by the
+Gaussian. A separate log helper keeps all terms inside the final
+exponent. Default (non-explicit) kray, diffuse semantics and the ordinary
+BRDF/density/generation helpers are unchanged. No performance claim is
+made for this newly changed HWSS path.
+
 Both samplers now construct Cartesian half-vector slopes and normalize
 with scaling and `hypot`, avoiding axis squares, `D=Inf`, and `0*Inf`.
 For the anisotropic sampler let `q=floor(4 xi1)`, `v=4 xi1-q`, and
@@ -76,10 +85,26 @@ anchors; relative checks remain sensitive to tiny nonzero expected values.
 With these exact final tests, clean library builds and exact target
 relinks give **17,162 passed / 149 failed** on first-candidate production
 `98473a987`, and **15,194 passed / 2,117 failed** on original production
-`cc516a0a8`. Axis-pole positive controls remain finite. The repaired
+`cc516a0a8`. Axis-pole positive controls remain finite. That earlier repaired
 focused run passes **17,315 / 0**. External provenance hashes every
 production/header/test state. Prior test counts and the first test
 ownership compile error are retained separately, not reused as final proof.
+
+A subsequent actual HWSS hero draw at 650 nm, with axes .0107 there and
+.01 at 550 nm, produces a finite stored density while the standalone
+550 nm lobe rounds to zero. Its explicit companion is nevertheless
+representable (approximately 6.1e-45 in the first control). A second
+subnormal-radial draw makes the prematurely formed `Rs/pdfHero` overflow.
+Final corrected tests on production `58b7709af` give 17,337 passed /
+4 failed, all four explicit-companion checks. The initial second-control
+oracle incorrectly assumed sampled `wo=wi`; subnormal random-number
+quantization slightly changes the draw. The non-explicit control now
+uses actual `2 cos_o/(cos_i+cos_o)`, and those two oracle-only failures
+are excluded. Final corrected-test/source hashes and clean library/exact
+relink provenance are retained externally. The final corrected focused
+GREEN passes **17,341 / 0** after a clean repaired library build and exact
+target relink. Earlier RED/GREEN counts
+above describe their declared earlier regression snapshots.
 
 On this Apple Silicon target, `long double` has binary64 precision; the
 oracle is independent by analytic formulation, not additional precision.
@@ -105,7 +130,7 @@ finite scan. Original partial-scene error and prior candidate's six fixed
 renders remain separate evidence. A finite bounded batch does not prove
 a zero rare-event rate or identify the historical lobe.
 
-All six final repaired-source EXRs independently scanned finite 800x600
+All six sampler-repair-source EXRs independently scanned finite 800x600
 RGBA values and neither trap fired. Prior-candidate twelve-image evidence
 and a preliminary repair six-image batch are retained separately; the
 latter preceded the final fast-path bound tightening and is excluded
@@ -123,6 +148,12 @@ states do not predict universal cost. Original-to-final showroom user
 CPU is 42.61±0.30 versus 42.87±0.25 seconds, wall 4.172±0.042 versus
 4.201±0.167 seconds, n=6/state. Scheduling, per-thread stream assignment
 and block order confound causality; no whole-render speedup is claimed.
+
+The later explicit-HWSS-only repair preserves the measured ordinary
+BRDF, Gaussian/density helpers, generation and replay sections byte for
+byte; an external section-hash manifest proves this against the measured
+source. Those bounded RGB scene/kernel measurements are reused with
+that attribution and do not measure the new spectral-companion path.
 
 Schlick's ruby paths have separate bounded rational distribution/masking
 machinery. They share tangent normalization but never feed its projection

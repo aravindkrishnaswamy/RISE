@@ -1307,5 +1307,7 @@ weights at finite rounded poles and grazing directions. The default suite
 also runs these probes. See [the formulation and oracle notes](../docs/DL324_WARD_FRAME_SLOPES.md). The review repair adds
 range-preserving analytic oracles for axes `1e-150`/`1e-170`, exponents
 700/750, reflectance-weighted quotients beyond the kernel's own range,
-actual asymmetric RGB/NM stored densities, and chromatic quarter replay.
+actual asymmetric RGB/NM stored densities, chromatic quarter replay,
+and actual HWSS hero draws whose complete companion is representable
+beyond the standalone lobe or prematurely formed reflectance ratio.
 
