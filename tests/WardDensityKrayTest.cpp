@@ -679,6 +679,35 @@ static void TestWardExponentRange(const IORStack& stack) {
         }
         a->release();
     }
+    // Actual HWSS hero draw: f(550) itself rounds to zero, but its
+    // quotient with the finite sampled p(650) is representable.
+    {
+        auto* a=new RGBScalarPainter(.0107,.01,.01);a->addref();
+        RayIntersectionGeometric ri=MakeIntersection(0);
+        const Vector3 incident=Vector3Ops::Normalize(ri.onb.u()*(std::sqrt(800.)*.01)+ri.onb.w());
+        ri.ray.Set(Point3(0,0,1),-incident);
+        for(int model=0;model<2;++model) {
+            ISPF* sp=model?static_cast<ISPF*>(new WardAnisotropicEllipticalGaussianSPF(*black,*spec,*a,*a)):static_cast<ISPF*>(new WardIsotropicGaussianSPF(*black,*spec,*a));sp->addref();
+            WardEndpointSampler sampler(0,std::exp(-800*std::pow(.01/.0107,2.)));ScatteredRayContainer rays;
+            sp->ScatterNM(ri,sampler,650,rays,stack);int count=0;
+            for(unsigned j=0;j<rays.Count();++j)if(rays[j].type==ScatteredRay::eRayReflection) {
+                ++count;const auto& r=rays[j];
+                const Vector3 wo=Vector3Ops::Normalize(r.ray.Dir()),h=Vector3Ops::Normalize(incident+wo);
+                const double hz=Vector3Ops::Dot(h,ri.onb.w()),hd=Vector3Ops::Dot(h,wo),co=Vector3Ops::Dot(wo,ri.onb.w());
+                const double sx=Vector3Ops::Dot(h,ri.onb.u())/hz/.01,sy=Vector3Ops::Dot(h,ri.onb.v())/hz/.01;
+                const double rs=GuardedGetColorNM(*spec,ri,550);
+                const double expected=std::exp(-sx*sx-sy*sy-log(4*PI)-2*log(.01)-2*log(hd)-4*log(hz)+log(rs)+log(co)-log(r.pdf));
+                Check(std::isfinite(r.pdf)&&r.pdf>0,"DL-324 HWSS range control actual hero density finite");
+                Check(sp->EvaluateLobeFNM(ri,wo,r.type,550,stack)==0,"DL-324 HWSS range control standalone target lobe genuinely unrepresentable");
+                Check(std::isfinite(expected)&&expected>0,"DL-324 independent complete HWSS quotient representable");
+                Check(WardRangeClose(sp->EvaluateKrayNM(ri,wo,r.type,550,stack,r.pdf),expected),"DL-324 actual hero companion retains range beyond standalone f");
+                Check(WardRangeClose(sp->EvaluateKrayNM(ri,wo,r.type,550,stack),rs),"DL-324 non-explicit kray remains unchanged in range control");
+            }
+            Check(count==1,"DL-324 HWSS range control actual hero reflection emitted");
+            sp->release();
+        }
+        a->release();
+    }
     // Asymmetric finite peaks and shared-pair chromatic replay. Quarter
     // boundaries and interior draws preserve Ward's folded-quarter law.
     for(int chromatic=0;chromatic<2;++chromatic) {
