@@ -524,9 +524,51 @@ static Stats CapRender( const std::string& kind, unsigned int cap, unsigned int 
 	return RenderStats( BoxScene( Rasterizer( kind, extra ), kCameraInside ), Repeats(), seedBase );
 }
 
+// DL-346 bounded diagnostic: salted, interleaved estimators of the same
+// environment-lit medium integral.  Zero-absorption white-floor furnace
+// has the independent physical oracle L = 1 everywhere.
+static void EnvironmentBalanceDiagnostic()
+{
+ const int n = 3;
+ for( int control = 0; control < 4; ++control ) {
+  double totals[3] = {}, squares[3] = {};
+  const char* kinds[] = { "pt", "bdpt", "vcm" };
+  for( int trial = 0; trial < n; ++trial ) {
+   for( int k = 0; k < 3; ++k ) {
+    std::string scene = BoxScene( Rasterizer( kinds[k], "\tmax_volume_bounce 256\n" ),
+      kCameraInside, kHomogeneous, control == 3 ? 1.0 : 0.8 );
+    const std::string absorption = "absorption 0.3 0.3 0.3";
+    const std::string scattering = "scattering 0.7 0.7 0.7";
+    if( control == 0 || control == 1 || control == 3 )
+     scene.replace( scene.find(absorption), absorption.size(), "absorption 0 0 0" );
+    if( control == 0 || control == 2 )
+     scene.replace( scene.find(scattering), scattering.size(), "scattering 0 0 0" );
+    SobolSamplerTestHooks::ValueSalt().store( SobolSequence::HashCombine( 34600u + unsigned(trial), 0x346u ) );
+    const double value = RenderMean( scene, 34600u + unsigned(trial) );
+    SobolSamplerTestHooks::ValueSalt().store( 0u );
+    Check( value > 0 && std::isfinite(value), "DL346 diagnostic produced finite radiance" );
+    totals[k] += value; squares[k] += value*value;
+    std::printf( "DL346 raw control=%d trial=%d kind=%s mean=%.9g\n", control, trial, kinds[k], value );
+   }
+  }
+  for( int k = 0; k < 3; ++k ) {
+   const double mean = totals[k]/n;
+   const double sd = std::sqrt( std::max(0.0, (squares[k]-totals[k]*totals[k]/n)/(n-1)) );
+   std::printf( "DL346 summary control=%d kind=%s n=%d mean=%.9g sd=%.9g ratioPT=%.9g\n", control, kinds[k], n, mean, sd, totals[k]/totals[0] );
+   if( control == 3 ) Check( std::fabs(mean-1.0) < 0.02, "DL346 conservative furnace equals unit environment" );
+   else if( k > 0 ) Check( std::fabs(totals[k]/totals[0]-1.0) < 0.02, "DL346 environment estimator agrees with PT within 2%" );
+  }
+ }
+}
+
 int main( int argc, char** argv )
 {
 	std::cout << "=== MediumInsideOutsideInvariantTest (DL-247) ===" << std::endl;
+ if( argc == 2 && std::string(argv[1]) == "--env-balance" ) {
+  EnvironmentBalanceDiagnostic();
+  std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
+  return failCount == 0 ? 0 : 1;
+ }
 
 	// Band: +/- 3% -- see the header's BAND paragraph for the measurement.
 	const double kBand = 0.03;
