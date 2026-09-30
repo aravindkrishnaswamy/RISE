@@ -662,6 +662,23 @@ static void TestWardExponentRange(const IORStack& stack) {
         }
         ++ai;a->release();
     }
+    // A kernel just above binary64 max becomes representable after Rs.
+    // The reflectance belongs inside the complete log quotient too.
+    {
+        auto* a=new UniformScalarPainter(1e-170);a->addref();
+        RayIntersectionGeometric ri=MakeIntersection(0);const Vector3 h(sqrt(70.2)*1e-170,0,1);ri.ray.Set(Point3(0,0,1),-h);
+        const double logKernel=-70.2-log(4*PI)-2*log(1e-170);
+        const double rs=GuardedGetColorNM(*spec,ri,550);
+        for(int model=0;model<2;++model) {
+            IBSDF* b=model?static_cast<IBSDF*>(new WardAnisotropicEllipticalGaussianBRDF(*black,*spec,*a,*a)):static_cast<IBSDF*>(new WardIsotropicGaussianBRDF(*black,*spec,*a));b->addref();
+            ISPF* sp=model?static_cast<ISPF*>(new WardAnisotropicEllipticalGaussianSPF(*black,*spec,*a,*a)):static_cast<ISPF*>(new WardIsotropicGaussianSPF(*black,*spec,*a));sp->addref();
+            Check(WardRangeClose(b->value(h,ri)[0],exp(logKernel+log(.5))),"DL-324 reflectance inside representable full RGB quotient");
+            Check(WardRangeClose(b->valueNM(h,ri,550),exp(logKernel+log(rs))),"DL-324 reflectance inside representable full NM quotient");
+            Check(WardRangeClose(sp->EvaluateLobeFNM(ri,h,ScatteredRay::eRayReflection,550,stack),exp(logKernel+log(rs))),"DL-324 reflectance inside representable full HWSS lobe quotient");
+            sp->release();b->release();
+        }
+        a->release();
+    }
     // Asymmetric finite peaks and shared-pair chromatic replay. Quarter
     // boundaries and interior draws preserve Ward's folded-quarter law.
     for(int chromatic=0;chromatic<2;++chromatic) {
