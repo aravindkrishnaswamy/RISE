@@ -105,7 +105,24 @@ finite scan. Original partial-scene error and prior candidate's six fixed
 renders remain separate evidence. A finite bounded batch does not prove
 a zero rare-event rate or identify the historical lobe.
 
-FINAL_REPAIR_MEASUREMENTS
+All six final repaired-source EXRs independently scanned finite 800x600
+RGBA values and neither trap fired. Prior-candidate twelve-image evidence
+and a preliminary repair six-image batch are retained separately; the
+latter preceded the final fast-path bound tightening and is excluded
+from final-source attribution.
+
+Three retained 500,000-call diagnostic public BRDF replicas/state
+(including warm-up) at 0/30/80 degrees measure isotropic `.01`
+18.62/15.25/13.80 ns original versus 30.83/24.05/22.93 ns final;
+anisotropic `.01/.37` measures 21.68/21.70/21.58 versus
+22.91/22.95/23.03 ns. The ordinary kernels are slower; this is the
+measured cost of the range checks and complete quotient. The same
+anisotropic finite trap was present in both diagnostic builds.
+External replicas and standard deviations are retained; these limited
+states do not predict universal cost. Original-to-final showroom user
+CPU is 42.61±0.30 versus 42.87±0.25 seconds, wall 4.172±0.042 versus
+4.201±0.167 seconds, n=6/state. Scheduling, per-thread stream assignment
+and block order confound causality; no whole-render speedup is claimed.
 
 Schlick's ruby paths have separate bounded rational distribution/masking
 machinery. They share tangent normalization but never feed its projection
