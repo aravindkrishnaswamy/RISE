@@ -1278,3 +1278,25 @@ and real collection instancers, and CYCLES/ALL output selection. Competing shade
 texture/scalar slots, failure cleanup and unchanged shared groups are checked by
 the actual exporter runtime. The bpy-free tangent suite has 18 tests; the runtime
 retains all 13 R1 markers and adds 4 R2 markers.
+
+### Volume absorption statistical coverage (DL-309, 2026-09-30)
+
+`VolumeAbsorptionAttenuationTest` runs all 89 assertions by default. Every
+render scopes `SobolSamplerTestHooks::ValueSalt` to a hash of its advancing
+libc seed and restores the previous hook after workers join; changing only
+`srand` does not independently scramble repeated Sobol points. This applies
+to every default fixture and to row R's existing four-render average.
+Row O preserves its constant-density RGB slab, central 4x4 observable,
+Beer-Lambert reference and 8% channel bands, while averaging six independently
+salted 4096-spp renders. The measured sample budget reduces blue variance;
+it does not guarantee zero false reds on all machines or schedules.
+
+The additional mode `--heterogeneous-measure spp repeats trials seedBase`
+runs the same five O assertions for each trial and reports full-precision RGB,
+timing, first libc seed and first salt. Repeat `j` uses
+`HashCombine(seedBase + trial*repeats + j, 0x309u)`. For example,
+`bin/tests/VolumeAbsorptionAttenuationTest --heterogeneous-measure 4096 6 16 359001`
+measures 16 independent default-row outputs. The stock comparison uses
+`4096 1 16 319001`. Unknown flags, malformed integers, overflow and budgets
+above 1,048,576 spp, 1,024 repeats or 1,024 trials fail with exit 2; this mode supplements
+rather than replaces the full default gate.
