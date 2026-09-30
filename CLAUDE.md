@@ -308,3 +308,5 @@ Process skills distilled from prior RISE sessions.  Auto-invoked via
 - **2026-09-30 — DL-334 spectral SSS boundaries:** NM diffusion transmission/normalization and RW parameter selection use the transported wavelength. Spectral containment uses the existing six-probe seeder; HWSS compares the full ambient chain and falls back to independent NM paths for dispersive incoming containment. RGB policy, DL-306 Fresnel, DL-04 eta², and MIS arithmetic are unchanged. See `docs/DL334_SSS_SPECTRAL_BOUNDARY.md`.
 
 - **2026-09-30 — DL334 critical-angle follow-up:** preserve absolute boundary indices and compensate the Snell discriminant; vector/scalar Fresnel share the same conditioned cosine. Local compiler controls preserve explicit FMA residuals under shipping fast-math. See `docs/DL334_SSS_CRITICAL_BOUNDARY.md`.
+
+- **2026-09-30 — DL334 near-unity follow-up:** both Snell orderings preserve the absolute index contrast; individual Decimal Fresnel R/T tests detect physical-law errors hidden by R+T=1. See `docs/DL334_SSS_NEAR_UNITY.md`.

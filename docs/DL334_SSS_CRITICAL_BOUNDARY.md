@@ -19,9 +19,10 @@ evaluation, and PT/BDPT RW coins all retain the absolute pair for pointwise Ft.
 
 For denser-to-rarer Snell refraction define q=nt/ni. The transmitted cosine obeys
 cosT^2=(mu^2+q^2-1)/q^2. Near critical, the small discriminant must not be formed
-from an already rounded sinT. The implementation retains the quotient residual
-fma(-q,ni,nt)/ni, both square residuals, and error-free TwoSum residuals when
-adding q^2, mu^2 and -1. All terms are scaled to at most one, avoiding squaring
+from an already rounded sinT. The first repair retained quotient and square residuals with TwoSum
+when adding q^2, mu^2 and -1. The follow-up formulation preserves the absolute
+index contrast on BOTH orderings; see DL334_SSS_NEAR_UNITY.md for the current
+derivation and individual R/T oracle. All terms are scaled to at most one, avoiding squaring
 large absolute indices. It rejects a negative computed discriminant and takes
 the square root of a nonnegative one. No expanded TIR epsilon, transmission
 clamp, changed acceptance tolerance, or energy correction is added.
@@ -42,7 +43,7 @@ these material/NM primitives; containment behavior is unchanged by this repair.
 Error-free residuals require ordered binary operations. Clang locally disables
 reassociation and implicit contraction in CalculateRefractedCosine; explicit fma
 remains intentional. GCC has a function-local no-fast-math attribute and MSVC a
-scoped precise pragma. The macOS shipping O3/LTO/fast-math LLVM IR retains all 36
+scoped precise pragma. The first repair macOS shipping O3/LTO/fast-math LLVM IR retained all 36
 residual binary/FMA operations without reassoc/contract flags and three explicit
 FMAs. Unary fabs/fneg/sqrt retain the normal shipping flags. Actual shipping Opto
 object execution is verified separately; GCC/MSVC execution is not claimed.

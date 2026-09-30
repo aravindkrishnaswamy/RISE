@@ -1318,3 +1318,5 @@ while distinguishing legitimately infinite standalone lobes.
 DL-334 adds `SSSBoundarySpectralTest` (independent public spectral partition, skin layer and RGB controls) and `SSSBoundaryFurnaceTest` (NM/HWSS conservative slabs, nested ambient and real boundary transitions). See [the boundary derivation](../docs/DL334_SSS_SPECTRAL_BOUNDARY.md).
 
 `SSSCriticalPartitionTest` adds Decimal90 reference fixtures for exact critical directions and ULP neighbors, with public diffusion/RW/skin and constant-index Pel controls. See `docs/DL334_SSS_CRITICAL_BOUNDARY.md`.
+
+- `SSSNearUnityFresnelTest`: independent Decimal110 adjacent-index/grazing R/T and Snell oracles for both orderings, public diffusion/RW/skin NM/raw/green/Pel consumers, critical neighbors, absolute and power-of-two scaling controls.
