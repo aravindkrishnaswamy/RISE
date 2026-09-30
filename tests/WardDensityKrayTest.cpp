@@ -683,12 +683,13 @@ static void TestWardExponentRange(const IORStack& stack) {
     // quotient with the finite sampled p(650) is representable.
     {
         auto* a=new RGBScalarPainter(.0107,.01,.01);a->addref();
+        for(double heroExponent:{800*std::pow(.01/.0107,2.),740.}) {
         RayIntersectionGeometric ri=MakeIntersection(0);
-        const Vector3 incident=Vector3Ops::Normalize(ri.onb.u()*(std::sqrt(800.)*.01)+ri.onb.w());
+        const Vector3 incident=Vector3Ops::Normalize(ri.onb.u()*(std::sqrt(heroExponent)*.0107)+ri.onb.w());
         ri.ray.Set(Point3(0,0,1),-incident);
         for(int model=0;model<2;++model) {
             ISPF* sp=model?static_cast<ISPF*>(new WardAnisotropicEllipticalGaussianSPF(*black,*spec,*a,*a)):static_cast<ISPF*>(new WardIsotropicGaussianSPF(*black,*spec,*a));sp->addref();
-            WardEndpointSampler sampler(0,std::exp(-800*std::pow(.01/.0107,2.)));ScatteredRayContainer rays;
+            WardEndpointSampler sampler(0,std::exp(-heroExponent));ScatteredRayContainer rays;
             sp->ScatterNM(ri,sampler,650,rays,stack);int count=0;
             for(unsigned j=0;j<rays.Count();++j)if(rays[j].type==ScatteredRay::eRayReflection) {
                 ++count;const auto& r=rays[j];
@@ -699,12 +700,14 @@ static void TestWardExponentRange(const IORStack& stack) {
                 const double expected=std::exp(-sx*sx-sy*sy-log(4*PI)-2*log(.01)-2*log(hd)-4*log(hz)+log(rs)+log(co)-log(r.pdf));
                 Check(std::isfinite(r.pdf)&&r.pdf>0,"DL-324 HWSS range control actual hero density finite");
                 Check(sp->EvaluateLobeFNM(ri,wo,r.type,550,stack)==0,"DL-324 HWSS range control standalone target lobe genuinely unrepresentable");
+                if(heroExponent==740.) Check(std::isinf(rs/r.pdf),"DL-324 HWSS range control premature Rs/pdfHero itself overflows");
                 Check(std::isfinite(expected)&&expected>0,"DL-324 independent complete HWSS quotient representable");
                 Check(WardRangeClose(sp->EvaluateKrayNM(ri,wo,r.type,550,stack,r.pdf),expected),"DL-324 actual hero companion retains range beyond standalone f");
                 Check(WardRangeClose(sp->EvaluateKrayNM(ri,wo,r.type,550,stack),rs),"DL-324 non-explicit kray remains unchanged in range control");
             }
             Check(count==1,"DL-324 HWSS range control actual hero reflection emitted");
             sp->release();
+        }
         }
         a->release();
     }
