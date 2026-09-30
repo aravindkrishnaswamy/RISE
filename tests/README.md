@@ -1271,3 +1271,10 @@ secondUV/ADD-zero nonuniform/tilted equivalence, valid large-scale bakes, explic
 backend failure, raw normal components, supported parallel-vector normal
 modifiers and material-domain validity/cleanup. Counts-only rotation
 smoke checks have independent world oracles.
+
+DL-213 R2 adds original Cycles controls for complete RNA properties versus terminal
+components, exact custom-key precedence, binary32 Fac threshold behavior, ordinary
+and real collection instancers, and CYCLES/ALL output selection. Competing shader
+texture/scalar slots, failure cleanup and unchanged shared groups are checked by
+the actual exporter runtime. The bpy-free tangent suite has 18 tests; the runtime
+retains all 13 R1 markers and adds 4 R2 markers.

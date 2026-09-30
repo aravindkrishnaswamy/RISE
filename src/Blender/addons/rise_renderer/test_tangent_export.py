@@ -5,6 +5,9 @@ from pathlib import Path
 from types import SimpleNamespace
 import unittest
 
+class bpy_prop: pass
+class bpy_prop_array: pass
+
 ROOT = Path(__file__).parent
 
 def load(name):
@@ -34,6 +37,11 @@ class M:
     def __matmul__(self, v): return V(a*b for a,b in zip(v,self.diagonal))
 
 class TangentExportTest(unittest.TestCase):
+    def test_attribute_fac_binary32_reciprocal(self):
+        rgba = [tangent._f32(v) for v in (.2,.4,.6,1)]
+        self.assertEqual(tangent._rgba_fac(rgba), 0.40000003576278687)
+        self.assertGreater(tangent._rgba_fac(rgba), tangent._f32(.4))
+
     def test_signed_linear_direction(self):
         self.assertEqual(tangent.decode_direction(V((0,.5,.5)), M((1,1,1)), V((0,0,1))),(-1,0,0,1))
     def test_nonuniform_inverse_direction(self):
@@ -90,13 +98,18 @@ class TangentExportTest(unittest.TestCase):
         self.assertGreater(len(h.keepalive),1)
     def test_rna_attribute_primary_type_contract(self):
         class Owner(dict):
-            def path_resolve(self, name):return {'location':(1.,2.,3.),'flag':True,'unsupported':'text'}[name]
+            def path_resolve(self, name, coerce=True):
+                value={'location':(1.,2.,3.),'flag':True,'unsupported':'text','location[0]':1.0}[name]
+                return value if coerce or name=='location[0]' else (bpy_prop_array() if isinstance(value,tuple) else bpy_prop())
         owner=Owner(custom=2.5)
         self.assertEqual(tangent._rna_rgba(owner,'custom'),[2.5,2.5,2.5,1])
         self.assertEqual(tangent._rna_rgba(owner,'location'),[1,2,3,1])
         self.assertEqual(tangent._rna_rgba(owner,'flag'),[1,1,1,1])
         self.assertIsNone(tangent._rna_rgba(owner,'unsupported'))
         self.assertIsNone(tangent._rna_rgba(owner,'missing'))
+        self.assertIsNone(tangent._rna_rgba(owner,'location[0]'))
+        owner['location[0]']=9.0
+        self.assertEqual(tangent._rna_rgba(owner,'location[0]'),[9,9,9,1])
     def test_context_uses_reachable_attribute_and_lookup_precedence(self):
         class Owner(dict):
             def path_resolve(self,name):raise ValueError(name)
@@ -113,6 +126,17 @@ class TangentExportTest(unittest.TestCase):
             info['is_instance']=False
             self.assertEqual(tangent._shader_context(None,Owner(value=1),info),[['INSTANCER','value',[1,1,1,1]]])
         finally:tangent._direction_dependencies=original
+    def test_output_renderer_target_and_active_tie(self):
+        def output(target,active=False):return SimpleNamespace(bl_idname='ShaderNodeOutputMaterial',target=target,is_active_output=active)
+        eevee=output('EEVEE',True);all1=output('ALL');all2=output('ALL',True);cycles1=output('CYCLES');cycles2=output('CYCLES',True)
+        material=SimpleNamespace(use_nodes=True,node_tree=SimpleNamespace(nodes=[eevee,all1,all2,cycles1,cycles2]))
+        self.assertIs(tangent.find_material_output(material),cycles2)
+        cycles2.is_active_output=False
+        self.assertIs(tangent.find_material_output(material),cycles1)
+        material.node_tree.nodes=[eevee,all1,all2]
+        self.assertIs(tangent.find_material_output(material),all2)
+        material.node_tree.nodes=[eevee]
+        self.assertIsNone(tangent.find_material_output(material))
     def test_old_payload_has_no_tangent(self):
         h=bridge._SceneHandle.__new__(bridge._SceneHandle);h.keepalive=[]
         mesh=SimpleNamespace(name='old',vertices=[],normals=[],uvs=[],vertex_indices=[],normal_indices=[],uv_indices=[],num_vertices=0,num_normals=0,num_uvs=0,num_triangles=0,double_sided=False,use_face_normals=False)

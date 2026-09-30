@@ -32,8 +32,10 @@ path (2).
 
 A material is **simple** (path 1) iff EVERY one of these holds:
 
-- The Material Output's `Surface` socket reaches exactly **one**
-  `ShaderNodeBsdfPrincipled` (transitively through `NodeReroute`s).
+- The selected Cycles Material Output's `Surface` socket reaches exactly **one**
+  `ShaderNodeBsdfPrincipled` (transitively through `NodeReroute`s). Exact
+  `CYCLES` takes precedence over `ALL`; active status breaks ties within one
+  target category; unrelated `EEVEE` outputs are excluded.
   Mix Shaders, Add Shaders, multiple Principleds, Glass + Diffuse
   combinations — all force-bake.
 
@@ -729,6 +731,14 @@ medium boundaries, VCM deposition, and the SMS estimator choice for alpha scenes
 
 ### Tangent -> anisotropy direction (ABI v16, DL-213)
 
+Material classification, direct slot translation and the Tangent producer select
+the Cycles-targeted Material Output (exact CYCLES takes precedence over ALL;
+active status breaks ties within one category). Unrelated EEVEE outputs do not
+select the material or socket. The copied bake retains the exact selected
+single-Principled identity and connects emission to the output Cycles evaluates.
+No competing multi-BSDF network compilation is added; missing supported output
+retains the documented complex/material fallback behavior.
+
 Global glTF/Indexed3 `Tangent4` xyz/sign still defines the authored UV basis,
 including normal-map decode and chart/mirror handedness. Blender's Principled
 Tangent socket is a different signal: it controls anisotropy independently of
@@ -797,9 +807,14 @@ color, custom properties and mainfile state remain intact.
 
 Reachable Object/Instancer Attribute nodes snapshot evaluated source RNA/custom
 properties before that transform snapshot can alter local `location` or other
-RNA fields. Cycles' scalar and float/int array (up to four components) RGBA
+RNA fields. Complete noncoerced RNA property references are required: full
+`location`, quoted custom vector keys and nested `data.vertices[1].co` work;
+terminal `location[0]`, `location.x` and nested vector components are missing,
+matching Cycles' property resolver without an array-index output. Exact custom
+ID keys win before path interpretation, even if their names look like paths. Cycles' scalar and float/int array (up to four components) RGBA
 conversion and Fac/Vector/Color/Alpha outputs are preserved, including missing
-attributes. Instancer lookup follows particle settings, private GN instance
+attributes. Fac follows binary32 `reduce_add(RGB) * (1.0f/3.0f)`, including
+discontinuous downstream thresholds; Python double division is not equivalent. Instancer lookup follows particle settings, private GN instance
 layers, parent, source object, source data precedence. Particle settings and
 parent RNA are available; private Geometry Nodes instance-layer attributes
 (`instance_data`/`instance_idx`) are not exposed by Blender4.5.7 instance RNA.
@@ -817,6 +832,7 @@ The context contracts above follow Blender4.5.7 primary source:
 [Cycles instance synchronization](https://github.com/blender/blender/blob/v4.5.7/intern/cycles/blender/object.cpp),
 [dupli coordinate getters](https://github.com/blender/blender/blob/v4.5.7/intern/cycles/kernel/svm/tex_coord.h),
 [RNA/private instance lookup and conversion](https://github.com/blender/blender/blob/v4.5.7/source/blender/blenkernel/intern/object_dupli.cc),
+[binary32 vector averaging](https://github.com/blender/blender/blob/v4.5.7/intern/cycles/util/math_float3.h),
 and [Attribute output conversion](https://github.com/blender/blender/blob/v4.5.7/intern/cycles/kernel/svm/attribute.h).
 The GN diagnostic is conservative: private layers may override an otherwise
 available parent/object value; it does not assert every requested name exists

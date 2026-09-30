@@ -1869,15 +1869,8 @@ def _export_heterogeneous_medium(
 
 
 def _find_material_output(material):
-    if not material.use_nodes or material.node_tree is None:
-        return None
-    for node in material.node_tree.nodes:
-        if node.bl_idname == "ShaderNodeOutputMaterial" and getattr(node, "is_active_output", False):
-            return node
-    for node in material.node_tree.nodes:
-        if node.bl_idname == "ShaderNodeOutputMaterial":
-            return node
-    return None
+    from .tangent_bake import find_material_output
+    return find_material_output(material)
 
 
 def _find_world_output(world):
@@ -2017,6 +2010,13 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
         return binding
 
     wrapper = PrincipledBSDFWrapper(material, is_readonly=True)
+    # Official wrapper scans node order without renderer-target semantics.
+    # Bind its read-only accessors to the SAME selected Surface/socket as the
+    # classifier and direction producer, retaining supported texture access.
+    from .material_bake import _find_principled_through_surface
+    selected_output = _find_material_output(material)
+    wrapper.node_out = selected_output
+    wrapper.node_principled_bsdf = _find_principled_through_surface(selected_output)
     if wrapper.node_principled_bsdf is None:
         # PrincipledBSDFWrapper couldn't trace from Material Output
         # Surface back to a single Principled BSDF — usually because
@@ -2025,7 +2025,8 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
         # BSDF anywhere in the graph; lossy (we drop the mix factor)
         # but produces sensible per-material results, vs. the prior
         # behaviour of using the viewport-grey `material.diffuse_color`.
-        any_principled = _find_any_principled_bsdf(material)
+        has_outputs = any(n.bl_idname == 'ShaderNodeOutputMaterial' for n in material.node_tree.nodes)
+        any_principled = _find_any_principled_bsdf(material) if selected_output is not None or not has_outputs else None
         if any_principled is not None:
             _warn_once(
                 state,
@@ -2035,7 +2036,7 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
         else:
             _warn_once(
                 state,
-                f"RISE falls back to viewport material values when '{material.name_full}' does not use a Principled BSDF output chain.",
+                f"RISE falls back to viewport material values when '{material.name_full}' has no supported Principled BSDF chain on the selected Cycles/ALL output.",
             )
             base = _add_uniform_painter(state, f"{material.name_full}_base", _float_color3(material.diffuse_color))
             payload = MaterialData(

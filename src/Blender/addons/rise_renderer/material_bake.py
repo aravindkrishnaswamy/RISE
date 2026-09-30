@@ -65,6 +65,7 @@ import tempfile
 from typing import Optional
 
 import bpy
+from .tangent_bake import find_material_output
 
 # ---------------------------------------------------------------------------
 # Classifier
@@ -190,11 +191,10 @@ def classify_material(material) -> str:
         return "simple"
 
     nt = material.node_tree
-    output_node = next(
-        (n for n in nt.nodes if n.bl_idname == "ShaderNodeOutputMaterial"),
-        None,
-    )
+    output_node = find_material_output(material)
     if output_node is None:
+        if any(n.bl_idname == 'ShaderNodeOutputMaterial' for n in nt.nodes):
+            return 'complex' # No Cycles/ALL output; unrelated targets are excluded.
         # No output node — fall back to default principled detection;
         # treat as simple so the existing exporter's first-principled
         # walk catches it.

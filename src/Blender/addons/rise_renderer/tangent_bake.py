@@ -14,13 +14,36 @@ import tempfile
 from pathlib import Path
 
 
+def find_material_output(material, target="CYCLES"):
+    """Mirror ntreeShaderOutputNode: exact renderer > ALL, then active tie.
+
+    The chosen Surface defines the intended single-Principled material. Do not
+    confuse the UI active flag on an unrelated renderer output with this one.
+    This bpy-free helper also runs in the disposable child process.
+    """
+    if material is None or not material.use_nodes or material.node_tree is None:
+        return None
+    output = None
+    for node in material.node_tree.nodes:
+        if node.bl_idname != 'ShaderNodeOutputMaterial':
+            continue
+        node_target = getattr(node, 'target', 'ALL')
+        if node_target not in {'ALL', target}:
+            continue
+        if (output is None or
+                (node_target == target and getattr(output, 'target', 'ALL') == 'ALL') or
+                (node_target == getattr(output, 'target', 'ALL') and
+                 getattr(node, 'is_active_output', False) and not getattr(output, 'is_active_output', False))):
+            output = node
+    return output
+
+
 def find_tangent_socket(material):
     if material is None or not material.use_nodes or material.node_tree is None:
         return None
     # Match the exporter's single-Principled material contract.
     from .material_bake import _find_principled_through_surface
-    output = next((n for n in material.node_tree.nodes
-                   if n.bl_idname == "ShaderNodeOutputMaterial" and n.is_active_output), None)
+    output = find_material_output(material)
     node = _find_principled_through_surface(output)
     return node.inputs.get("Tangent") if node else None
 
@@ -76,12 +99,28 @@ def _f32(value):
     return struct.unpack('f', struct.pack('f', value))[0]
 
 
+def _rgba_fac(rgba):
+    """Cycles math_float3.h average: binary32 reduce_add times reciprocal."""
+    return _f32(_f32(_f32(rgba[0] + rgba[1]) + rgba[2]) * _f32(1.0 / 3.0))
+
+
 def _rna_rgba(owner, name):
     """Cycles BKE_object_dupli_find_rgba_attribute scalar/array RNA contract."""
     if owner is None:
         return None
     try:
-        value = owner[name] if name in owner else owner.path_resolve(name)
+        if name in owner:
+            # Cycles exact ID-property key wins even when it looks like a path.
+            value = owner[name]
+        else:
+            # Python's default resolver returns terminal array COMPONENT values
+            # that Cycles RNA_path_resolve (without r_index) treats as missing.
+            # Request an RNA property reference, not a synthesized scalar value;
+            # complete nested pointer/collection properties remain supported.
+            reference = owner.path_resolve(name, False)
+            if type(reference).__name__ not in {'bpy_prop', 'bpy_prop_array'}:
+                return None
+            value = owner.path_resolve(name)
     except (KeyError, ValueError, AttributeError, TypeError):
         return None
     if isinstance(value, (bool, int, float)):
@@ -229,6 +268,7 @@ def _bake_graph(mesh, material, matrix_world, source_object, instance_info, used
             obj["rise_bake_target"] = True
         if instance_info and instance_info.get("is_instance"):
             obj["rise_instance_random_id"] = str(int(instance_info["random_id"]) & 0xffffffff)
+        obj['rise_principled_name'] = find_tangent_socket(material).node.name
         obj['rise_attribute_context'] = json.dumps(context)
         info = instance_info or {}
         generated = [_f32(_f32(.5 * v) - .5) for v in info.get('orco', (0, 0, 0))] if info.get('is_instance') else [0.0] * 3
@@ -339,15 +379,15 @@ def _run_bake(output_path):
                 color = tree.nodes.new('ShaderNodeRGB'); color.outputs[0].default_value = rgba
                 rewire(tree, n.outputs['Color'], color.outputs[0])
                 rewire(tree, n.outputs['Vector'], vector_constant(tree, rgba[:3]))
-                rewire(tree, n.outputs['Fac'], scalar_constant(tree, _f32(_f32(_f32(rgba[0] + rgba[1]) + rgba[2]) / 3)))
+                rewire(tree, n.outputs['Fac'], scalar_constant(tree, _rgba_fac(rgba)))
                 rewire(tree, n.outputs['Alpha'], scalar_constant(tree, rgba[3]))
     preserve_context(mat.node_tree)
     # Resolve the same Principled socket without importing the add-on package.
     nt = mat.node_tree
-    out = next(n for n in nt.nodes if n.bl_idname == "ShaderNodeOutputMaterial" and n.is_active_output)
-    node = out.inputs['Surface'].links[0].from_node
-    while node.bl_idname == 'NodeReroute':
-        node = node.inputs[0].links[0].from_node
+    out = find_material_output(mat)
+    node = nt.nodes.get(obj['rise_principled_name'])
+    if out is None or node is None or node.bl_idname != 'ShaderNodeBsdfPrincipled':
+        raise RuntimeError('RISE Tangent child lost the selected Cycles Principled/output identity.')
     source = node.inputs['Tangent'].links[0].from_socket
     normalize = nt.nodes.new('ShaderNodeVectorMath'); normalize.operation = 'NORMALIZE'
     nt.links.new(source, normalize.inputs[0])

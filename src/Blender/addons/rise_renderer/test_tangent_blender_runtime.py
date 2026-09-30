@@ -1,4 +1,4 @@
-import bpy,sys,math
+import bpy,sys,math,json
 from pathlib import Path
 from mathutils import Matrix
 sys.path.insert(0,str(Path(__file__).resolve().parent.parent))
@@ -334,3 +334,93 @@ finally:
     assert before==(len(bpy.data.scenes),len(bpy.data.objects),len(bpy.data.meshes),len(bpy.data.materials),len(nt.nodes),bpy.data.filepath)
 constant=nt.nodes.new('ShaderNodeCombineXYZ');constant.inputs['X'].default_value=1;nt.links.new(constant.outputs[0],nt.nodes.get('Principled BSDF').inputs['Tangent']);exported,_=exporter.export_scene(bpy.context.evaluated_depsgraph_get());assert any(mesh.tangent_attribute for mesh in exported.meshes)
 print('R1 GN PRIVATE ATTRIBUTE PRIMARY RENDER DIAGNOSTIC UNUSED NODE CLEANUP PASS',flush=True)
+
+# R2: complete-property RNA semantics against original actual Cycles.
+bpy.ops.wm.read_factory_settings(use_empty=True)
+me=bpy.data.meshes.new('RNA probe mesh');me.from_pydata([(0,0,0),(1,0,0),(0,1,0)],[],[(0,1,2)])
+u=me.uv_layers.new(name='UV')
+for l in me.loops:u.data[l.index].uv=[(0,0),(1,0),(0,1)][l.vertex_index]
+o=bpy.data.objects.new('RNA probe object',me);bpy.context.collection.objects.link(o);o.location=(.25,.5,0);o['vector']=[.2,.4,.6];o['flag']=True;o['text']='nonnumeric';o['wide']=[1.,2.,3.,4.,5.];o['intarray']=[1,2,3];o['boolarray']=[True,False,True];o['one']=[.6];o['two']=[.3,.9];o['four']=[.1,.2,.3,.4]
+ma=bpy.data.materials.new('RNA probe material');ma.use_nodes=True;me.materials.append(ma);nt=ma.node_tree;p=nt.nodes.get('Principled BSDF');out=nt.nodes.get('Material Output')
+a=nt.nodes.new('ShaderNodeAttribute');a.attribute_type='OBJECT'
+combine=nt.nodes.new('ShaderNodeCombineXYZ');combine.inputs['Y'].default_value=1;nt.links.new(a.outputs['Fac'],combine.inputs['X']);nt.links.new(combine.outputs[0],p.inputs['Tangent'])
+norm=nt.nodes.new('ShaderNodeVectorMath');norm.operation='NORMALIZE';nt.links.new(combine.outputs[0],norm.inputs[0]);scale=nt.nodes.new('ShaderNodeVectorMath');scale.operation='SCALE';scale.inputs['Scale'].default_value=.5;nt.links.new(norm.outputs[0],scale.inputs[0]);add=nt.nodes.new('ShaderNodeVectorMath');add.operation='ADD';add.inputs[1].default_value=(.5,.5,.5);nt.links.new(scale.outputs[0],add.inputs[0]);emit=nt.nodes.new('ShaderNodeEmission');nt.links.new(add.outputs[0],emit.inputs['Color'])
+bpy.context.scene.render.engine='CYCLES';bpy.context.scene.cycles.samples=1;bpy.context.scene.render.bake.target='VERTEX_COLORS';o.select_set(True);bpy.context.view_layer.objects.active=o
+def r2_snapshot():
+ def value(v):
+  if isinstance(v,(str,int,float,bool,type(None))):return v
+  try:return tuple(value(x) for x in v)
+  except TypeError:return getattr(v,'name',repr(v))
+ def tree_state(tree):
+  return (tree.name,tuple((n.name,n.bl_idname,getattr(n,'target',None),getattr(n,'is_active_output',None),getattr(n,'attribute_name',None),getattr(n,'attribute_type',None),getattr(getattr(n,'image',None),'filepath',None),tuple((i.name,value(i.default_value)) for i in n.inputs if hasattr(i,'default_value'))) for n in tree.nodes),tuple((l.from_node.name,l.from_socket.name,l.to_node.name,l.to_socket.name) for l in tree.links))
+ return (tuple(len(getattr(bpy.data,n)) for n in ('scenes','objects','meshes','materials','node_groups','images')),bpy.data.filepath,bpy.context.scene.render.engine,tree_state(nt),tuple(tree_state(g) for g in bpy.data.node_groups),tuple((obj.name,tuple(v for row in obj.matrix_world for v in row),obj.select_get(),tuple((key,value(obj[key])) for key in obj.keys())) for obj in bpy.data.objects),tuple((mesh.name,mesh.uv_layers.active_index,tuple((uv.name,tuple(tuple(v.uv) for v in uv.data)) for uv in mesh.uv_layers),tuple((attr.name,attr.domain,attr.data_type) for attr in mesh.color_attributes)) for mesh in bpy.data.meshes))
+
+rows=[]
+for kind in ('OBJECT','INSTANCER'):
+ a.attribute_type=kind
+ for name in ('location','location[0]','location.x','vector','vector[0]','["vector"][0]','flag','lock_location','text','wide','missing','data.auto_smooth_angle','intarray','boolarray','one','two','four','["vector"]','data.vertices[1].co','data.vertices[1].co[0]','data.vertices[1].co.x','data.use_mirror_x','hide_render','data.name'):
+  a.attribute_name=name;nt.links.new(emit.outputs[0],out.inputs['Surface']);bpy.context.view_layer.update();attr=me.color_attributes.new(name='Oracle',type='FLOAT_COLOR',domain='CORNER');me.color_attributes.active_color=attr;bpy.ops.object.bake(type='EMIT');oracle=Vector([2*x-1 for x in attr.data[0].color[:3]]).normalized();me.color_attributes.remove(attr);nt.links.new(p.outputs[0],out.inputs['Surface']);bpy.context.view_layer.update();before=r2_snapshot();dg=bpy.context.evaluated_depsgraph_get();ev=o.evaluated_get(dg);state=exporter._ExportState();exporter._mesh_buckets(ev,state,ev.matrix_world.copy());payload=state.meshes[0].tangent_attribute;actual=(ev.matrix_world.to_3x3()@Vector(payload[:3])).normalized();delta=(actual-oracle).length;assert before==r2_snapshot()
+  assert delta<1e-5,(kind,name,actual,oracle,delta)
+  row={'kind':kind,'name':name,'rna':tangent_bake._rna_rgba(ev,name),'oracle':list(oracle),'actual':list(actual),'delta':delta};rows.append(row);print('RNA ROW',json.dumps(row),flush=True)
+# Exact ID keys take precedence even when spelling resembles a component path.
+for key in ('location[0]','location.x','["vector"][0]','data.vertices[1].co[0]'):
+ o[key]=.7;o.update_tag();bpy.context.view_layer.update();a.attribute_type='OBJECT';a.attribute_name=key
+ nt.links.new(emit.outputs[0],out.inputs['Surface']);attr=me.color_attributes.new(name='Key oracle',type='FLOAT_COLOR',domain='CORNER');me.color_attributes.active_color=attr;bpy.ops.object.bake(type='EMIT');oracle=Vector([2*x-1 for x in attr.data[0].color[:3]]).normalized();me.color_attributes.remove(attr);nt.links.new(p.outputs[0],out.inputs['Surface']);bpy.context.view_layer.update();ev=o.evaluated_get(bpy.context.evaluated_depsgraph_get());state=exporter._ExportState();exporter._mesh_buckets(ev,state,ev.matrix_world.copy());actual=Vector(state.meshes[0].tangent_attribute[:3]);assert (actual-oracle).length<1e-5,(key,actual,oracle);assert (actual-Vector((.7,1,0)).normalized()).length<1e-5
+print('R2 RNA COMPLETE PROPERTY COMPONENT CUSTOM KEY ORDINARY INSTANCER CYCLES ORACLE PASS',flush=True)
+# Discontinuous downstream math proves exact Fac conversion, not just proximity.
+threshold=nt.nodes.new('ShaderNodeMath');threshold.operation='GREATER_THAN';threshold.inputs[1].default_value=.4
+for kind in ('OBJECT','INSTANCER'):
+ a.attribute_type=kind;a.attribute_name='["vector"]';nt.links.new(a.outputs['Fac'],threshold.inputs[0]);nt.links.new(threshold.outputs[0],combine.inputs['X']);nt.links.new(emit.outputs[0],out.inputs['Surface']);attr=me.color_attributes.new(name='Fac threshold oracle',type='FLOAT_COLOR',domain='CORNER');me.color_attributes.active_color=attr;bpy.ops.object.bake(type='EMIT');oracle=Vector([2*x-1 for x in attr.data[0].color[:3]]).normalized();me.color_attributes.remove(attr);assert (oracle-Vector((1,1,0)).normalized()).length<1e-6;nt.links.new(p.outputs[0],out.inputs['Surface']);bpy.context.view_layer.update();before=r2_snapshot();ev=o.evaluated_get(bpy.context.evaluated_depsgraph_get());state=exporter._ExportState();exporter._mesh_buckets(ev,state,ev.matrix_world.copy());assert (Vector(state.meshes[0].tangent_attribute[:3])-oracle).length<1e-6;assert before==r2_snapshot()
+nt.links.new(a.outputs['Fac'],combine.inputs['X']);nt.nodes.remove(threshold)
+print('R2 ATTRIBUTE FAC BINARY32 THRESHOLD CYCLES ORACLE PASS',flush=True)
+
+
+# Real collection-instancer RNA: independent original-scene render versus a
+# constant oracle, then actual export_scene with the same instance metadata.
+with tempfile.TemporaryDirectory(prefix='rise-r2-instancer-') as directory:
+ o.hide_render=True;collection=bpy.data.collections.new('R2 collection');prototype=bpy.data.objects.new('R2 prototype',me.copy());collection.objects.link(prototype);prototype.data.materials.clear();prototype.data.materials.append(ma)
+ parent=bpy.data.objects.new('R2 actual instancer',None);parent.instance_type='COLLECTION';parent.instance_collection=collection;parent.location=(.25,.5,0);parent['vector']=[.2,.4,.6];bpy.context.collection.objects.link(parent)
+ camera=bpy.data.objects.new('R2 camera',bpy.data.cameras.new('R2 camera'));bpy.context.collection.objects.link(camera);camera.location=(.55,.8,3);camera.data.type='ORTHO';camera.data.ortho_scale=.1;scene=bpy.context.scene;scene.camera=camera;scene.render.resolution_x=16;scene.render.resolution_y=16;scene.render.resolution_percentage=100;scene.render.image_settings.file_format='OPEN_EXR';a.attribute_type='INSTANCER'
+ import struct
+ def f32(v):return struct.unpack('f',struct.pack('f',v))[0]
+ vector_fac=f32(f32(f32(f32(.2)+f32(.4))+f32(.6))*f32(1/3))
+ constant_node=nt.nodes.new('ShaderNodeValue')
+ for key,value in (('location',.25),('location[0]',0),('location.x',0),('["vector"]',vector_fac),('["vector"][0]',0)):
+  a.attribute_name=key;nt.links.new(emit.outputs[0],out.inputs['Surface']);scene.render.filepath=directory+'/attribute.exr';bpy.ops.render.render(write_still=True);image=bpy.data.images.load(scene.render.filepath);observed=list(image.pixels[544:548]);bpy.data.images.remove(image)
+  constant_node.outputs[0].default_value=value;nt.links.new(constant_node.outputs[0],combine.inputs['X']);raw=Vector((value,1,0)).normalized();scene.render.filepath=directory+'/constant.exr';bpy.ops.render.render(write_still=True);image=bpy.data.images.load(scene.render.filepath);expected=list(image.pixels[544:548]);bpy.data.images.remove(image);assert max(abs(x-y) for x,y in zip(observed,expected))<1e-6,(key,observed,expected)
+  nt.links.new(a.outputs['Fac'],combine.inputs['X']);nt.links.new(p.outputs[0],out.inputs['Surface']);bpy.context.view_layer.update();before=r2_snapshot();exported,_=exporter.export_scene(bpy.context.evaluated_depsgraph_get());meshes={mesh.name:mesh for mesh in exported.meshes};instances=[obj for obj in exported.objects if 'R2_prototype' in obj.name];assert len(instances)==1
+  d=meshes[instances[0].geometry_name].tangent_attribute;assert (Vector(d[:3])-raw).length<1e-5,(key,d,raw);assert before==r2_snapshot()
+ print('R2 REAL INSTANCER RNA ORIGINAL CYCLES RENDER EXPORT LOOKUP PASS',flush=True)
+
+# CYCLES>ALL renderer selection and same-category active tie. The wrapper's
+# actual exported slot values/textures must belong to the selected shader.
+bpy.ops.wm.read_factory_settings(use_empty=True)
+me=bpy.data.meshes.new('R2 outputs');me.from_pydata([(0,0,0),(1,0,0),(0,1,0)],[],[(0,1,2)])
+u=me.uv_layers.new(name='UV')
+for l in me.loops:u.data[l.index].uv=[(0,0),(1,0),(0,1)][l.vertex_index]
+o=bpy.data.objects.new('R2 outputs',me);bpy.context.collection.objects.link(o);ma=bpy.data.materials.new('R2 outputs');ma.use_nodes=True;me.materials.append(ma);nt=ma.node_tree;p=nt.nodes.get('Principled BSDF');first=nt.nodes.get('Material Output');first.target='EEVEE';cycles=nt.nodes.new('ShaderNodeOutputMaterial');cycles.target='CYCLES';nt.links.new(p.outputs[0],cycles.inputs['Surface']);first.is_active_output=True
+xyz=nt.nodes.new('ShaderNodeCombineXYZ');xyz.inputs['Y'].default_value=1;nt.links.new(xyz.outputs[0],p.inputs['Tangent']);emit=nt.nodes.new('ShaderNodeEmission');emit.inputs['Color'].default_value=(.5,1,.5,1)
+scene=bpy.context.scene;scene.render.engine='CYCLES';scene.cycles.samples=1;scene.render.bake.target='VERTEX_COLORS';o.select_set(True);bpy.context.view_layer.objects.active=o
+from rise_renderer import material_bake
+for label in ('same-node EEVEE/CYCLES','CYCLES beats ALL','ALL excludes EEVEE','active same-target tie'):
+ if label=='CYCLES beats ALL':first.target='ALL';first.is_active_output=True
+ if label=='ALL excludes EEVEE':cycles.target='ALL';first.target='EEVEE'
+ if label=='active same-target tie':first.target='ALL';cycles.is_active_output=True
+ selected=tangent_bake.find_material_output(ma);assert selected == cycles,(label,selected.name)
+ nt.links.new(emit.outputs[0],selected.inputs['Surface']);attr=me.color_attributes.new(name='R2 output oracle',type='FLOAT_COLOR',domain='CORNER');me.color_attributes.active_color=attr;bpy.ops.object.bake(type='EMIT');assert max(abs(v-t) for v,t in zip(attr.data[0].color,(.5,1,.5,1)))<1e-6;me.color_attributes.remove(attr);nt.links.new(p.outputs[0],selected.inputs['Surface']);bpy.context.view_layer.update();before=r2_snapshot();state=exporter._ExportState();ev=o.evaluated_get(bpy.context.evaluated_depsgraph_get());exporter._mesh_buckets(ev,state,ev.matrix_world.copy());assert Vector(state.meshes[0].tangent_attribute[:3])==Vector((0,1,0));assert material_bake.classify_material(ma)=='simple';assert before==r2_snapshot()
+# Distinct target shaders: source Tangent, wrapper texture and scalar slots.
+with tempfile.TemporaryDirectory(prefix='rise-r2-output-slots-') as directory:
+ first.target='EEVEE';cycles.target='CYCLES';first.is_active_output=True
+ p2=nt.nodes.new('ShaderNodeBsdfPrincipled');p2.inputs['Roughness'].default_value=.27;p.inputs['Roughness'].default_value=.73;nt.links.new(p2.outputs[0],cycles.inputs['Surface']);different=nt.nodes.new('ShaderNodeCombineXYZ');different.inputs['X'].default_value=1;nt.links.new(different.outputs[0],p.inputs['Tangent']);nt.links.new(xyz.outputs[0],p2.inputs['Tangent'])
+ for node,label,color in ((p,'EEVEE',(.1,.8,.2,1)),(p2,'CYCLES',(.8,.2,.1,1))):
+  image=bpy.data.images.new('R2 '+label,1,1,float_buffer=True);image.pixels=color;image.filepath_raw=directory+'/'+label+'.exr';image.file_format='OPEN_EXR';image.save();texture=nt.nodes.new('ShaderNodeTexImage');texture.image=image;nt.links.new(texture.outputs[0],node.inputs['Base Color'])
+ assert tangent_bake.find_tangent_socket(ma).node == p2
+ bpy.context.view_layer.update();before=r2_snapshot();state=exporter._ExportState();ev=o.evaluated_get(bpy.context.evaluated_depsgraph_get());exporter._mesh_buckets(ev,state,ev.matrix_world.copy());payload=state.materials[0];painters={painter.name:painter for painter in state.painters};assert painters[payload.base_color_painter_name].path.endswith('/CYCLES.exr');assert abs(painters[payload.roughness_painter_name].color[0]-.27)<1e-6;assert Vector(state.meshes[0].tangent_attribute[:3])==Vector((0,1,0));assert material_bake.classify_material(ma)=='simple';assert before==r2_snapshot()
+ # Genuine invalid socket on the chosen output still fails and restores state.
+ xyz.inputs['Y'].default_value=0;bpy.context.view_layer.update();before=r2_snapshot()
+ try:exporter._mesh_buckets(ev,state,ev.matrix_world.copy());raise AssertionError('zero direction accepted')
+ except RuntimeError as error:assert 'zero/parallel' in str(error)
+ finally:assert before==r2_snapshot()
+ xyz.inputs['Y'].default_value=1
+ nt.nodes.remove(cycles);assert tangent_bake.find_material_output(ma) is None;assert tangent_bake.find_tangent_socket(ma) is None;assert material_bake.classify_material(ma)=='complex';bpy.context.view_layer.update();state=exporter._ExportState();exporter._mesh_buckets(o.evaluated_get(bpy.context.evaluated_depsgraph_get()),state,Matrix.Identity(4));assert state.materials[0].model==exporter.MATERIAL_LAMBERT;assert not state.meshes[0].tangent_attribute;assert any('selected Cycles/ALL output' in warning for warning in state.warnings)
+ print('R2 CYCLES TARGET ALL ACTIVE TIE SHADER SLOT IDENTITY CLEANUP PASS',flush=True)
