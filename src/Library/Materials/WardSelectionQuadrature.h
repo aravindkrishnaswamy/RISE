@@ -22,13 +22,13 @@ inline double SlopeExponent(double hx,double hy,double hz,double ax,double ay) {
 }
 inline double GaussianQuotient(double exponent,double hz,double hd,double ax,double ay,bool bsdf,double weight=1) {
     if(hz<=0 || hd<=0 || ax<=0 || ay<=0 || weight==0) return 0;
-    // Every denominator factor has magnitude in [2^-100,2^100],
+    // Every denominator factor has magnitude in [2^-64,2^64],
     // and there are at most eight factors. Its product stays normal.
-    // exp(-E)*weight is also normal for E<=600 and |weight|>=2^-100.
-    // The numerator is at least 2^-966. Division then rounds the
-    // final value directly, including a genuinely subnormal/zero result.
-    const double lo=0x1p-100,hi=0x1p100;
-    if(exponent<=600 && std::abs(weight)>=lo && std::abs(weight)<=hi && ax>=lo && ax<=hi && ay>=lo && ay<=hi &&
+    // With E<=300, even all nine factors combined with exp(-E)
+    // stay normal: the smallest magnitude exceeds 2^-1013. This
+    // remains safe under fast-math reassociation. Other ranges use logs.
+    const double lo=0x1p-64,hi=0x1p64;
+    if(exponent<=300 && std::abs(weight)>=lo && std::abs(weight)<=hi && ax>=lo && ax<=hi && ay>=lo && ay<=hi &&
        hz>=lo && hz<=hi && hd>=lo && hd<=hi) {
         const double densityDen=4*PI*ax*ay*hd*hz*hz*hz;
         return (std::exp(-exponent)*weight)/(bsdf ? densityDen*hd*hz : densityDen);

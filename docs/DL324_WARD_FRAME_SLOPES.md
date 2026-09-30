@@ -1,4 +1,4 @@
-# DL-324: Ward frame slopes at rounded poles
+# DL-324: Ward frame slopes and full Gaussian quotient range
 
 A finite binary64 normalized vector and frame normal can have a dot product
 slightly above one. Ward's isotropic and anisotropic BRDFs reconstructed
@@ -18,24 +18,40 @@ pS = pH / (4 h.wo)
 kray / Rs = 2 cos_o / (cos_i + cos_o)
 ```
 
-This removes redundant normalization and trigonometry. Squared slopes stay
-nonnegative when `hz` rounds above one. The exact pole has zero slopes and
-needs no chosen azimuth. Isotropic evaluation uses `ax=ay`; both models use
-the same scalar kernel in `WardSelectionQuadrature.h`. An underflowed
-Gaussian returns zero before multiplying or dividing extreme normalization
-factors. There is no new epsilon, downstream image repair, energy-policy
-change, API change, or object-layout change.
+Frame slopes stay nonnegative when `hz` rounds above one. The exact pole
+has zero slopes and needs no azimuth. Isotropic evaluation uses `ax=ay`.
+Both models share a complete quotient in `WardSelectionQuadrature.h`.
+The reflectance or aggregate selection coefficient enters that quotient
+before exponentiation: neither `exp(-Q)`, `ax*ay`, nor the unweighted
+kernel must be individually representable. The fallback evaluates
+`exp(-Q - log(denominator) + log(abs(weight)))` with the weight's sign.
+Positive axes are never rejected because their square underflows.
 
-The isotropic SPF previously used `(1-cosH²)/cosH²` in its density, while
-its chromatic replay separately clamped that complement. The anisotropic
-SPF already used `atan2` for azimuth, but its polar complement could still
-be negative. Both now evaluate the polar radius/exponent from tangent
-components. Anisotropic chromatic replay recovers the shared radial draw
-from that nonnegative exponent; `atan2` remains only for inverse azimuth.
-Sampling retains its existing inverse CDF and quadrant convention; stored
-isotropic sample densities use `sinTheta/cosTheta` from that draw rather
-than subtracting nearly equal squares. Conditional densities, lobe values,
-aggregate Pdf and HWSS companion evaluation retain their existing measures.
+The ordinary fast path requires every denominator factor and absolute
+weight in `[2^-64, 2^64]` and `Q<=300`. There are at most eight
+denominator factors (plus `4 pi`); their product stays normal. The
+combined exponent, weight, and denominator stay above approximately
+`2^-1013`, also normal, under any multiplication/division reassociation.
+Division rounds the final result directly. These bounds select
+an arithmetic path; they are not authored-axis floors, epsilons, energy
+clamps, or finite-value suppression. Genuinely nonrepresentable final
+values remain nonrepresentable.
+
+Both samplers now construct Cartesian half-vector slopes and normalize
+with scaling and `hypot`, avoiding axis squares, `D=Inf`, and `0*Inf`.
+For the anisotropic sampler let `q=floor(4 xi1)`, `v=4 xi1-q`, and
+`t=(pi/2)v`. Its existing folded-quarter convention draws
+`(ax cos(t), ay sin(t))*sqrt(-log(xi2))` with signs `++`, `-+`, `--`,
+`+-` for quarters 0 through 3. Thus quarters 1 and 3 run backwards in
+physical azimuth, exactly as the old `pi-phi`/`2pi-phi` construction.
+The inverse recovers `t=atan2(abs(hy/ay),abs(hx/ax))` and the signs;
+chromatic siblings replay the same recovered pair with their own axes.
+At shared quarter endpoints the duplicated axis maps replay identically.
+Isotropic azimuth remains uniform `2 pi xi1`. Stored conditional densities
+use the sampled `-log(xi2)` directly, while queried densities use the frame
+slopes. Radial endpoint zero is the excluded tangent limit. Selection
+quadrature/cache, accepted-lobe weighting, random dimensions, diffuse
+fallback, and energy policy are unchanged.
 
 `WardDensityKrayTest` exercises public `IBSDF` / `ISPF` consumers. Independent
 long-double projections evaluate the analytic GMD value, reciprocity, and
@@ -47,12 +63,23 @@ normal/tangent dots actually exceed one. It also exercises sampler zero,
 quadrant boundaries, `nextafter(1,0)`, and the excluded upper endpoint one
 as a finite pole control, at normal and 89.99-degree incidence.
 
-The final regression source was rebuilt against the original five Ward
-sources/header after a clean library build and exact test-target relink:
-15,136 passed / 1,845 failed, including the density sibling's small-axis
-controls (31 finite normal-dot overshoot cases). The axis-pole RGB/NM
-controls remained finite. Earlier development oracle failures are excluded
-from this final RED evidence.
+Review found two further range defects in the first candidate: finite
+off-pole quotients for axes `1e-170` at exponents 700/750 became infinity
+or zero, and actual anisotropic RGB/NM sampling at axes `1e-170/.5`
+stored NaN despite finite queried density. The final public regressions
+also cover `1e-150` controls, full RGB/NM values, HWSS lobe/explicit hero
+companions, conditional/aggregate densities, chromatic quarter replay,
+and representable reflectance-weighted values above the unweighted
+kernel's range. Independent log oracles agree with 80-digit Decimal
+anchors; relative checks remain sensitive to tiny nonzero expected values.
+
+With these exact final tests, clean library builds and exact target
+relinks give **17,162 passed / 149 failed** on first-candidate production
+`98473a987`, and **15,194 passed / 2,117 failed** on original production
+`cc516a0a8`. Axis-pole positive controls remain finite. The repaired
+focused run passes **17,315 / 0**. External provenance hashes every
+production/header/test state. Prior test counts and the first test
+ownership compile error are retained separately, not reused as final proof.
 
 On this Apple Silicon target, `long double` has binary64 precision; the
 oracle is independent by analytic formulation, not additional precision.
@@ -65,28 +92,20 @@ a zero diffuse BRDF. An independent elliptical-Gaussian horizon-tail
 integral checks this coefficient. These are accounted for explicitly,
 without changing their transport policies.
 
-The historical rare showroom block is not deterministically attributed by
-these probes. External evidence records a predeclared six-before/six-after
-budget, seeds 8102–8107, 800x600 pixelpel four samples, irradiance cache and
-OIDN off, and all cores available (`render_thread_reserve_count 0`). Temporary
-per-sample pixelpel and Ward-anisotropic material traps captured no nonfinite
-values; all twelve 32-bit EXR captures independently scanned finite. This
-bounds the investigation; it does not establish a zero rare-event rate or
-identify which lobe caused the historical block. CLI interactive render/quit
-normally returns one; validity instead required successful canonical load,
-all-pixels completion, fresh 800x600 EXR output and independent finite scan.
-An exploratory partial-scene output-configuration error is excluded.
+The historical rare showroom block is not deterministically attributed.
+The unchanged original six baseline renders are reused with their exact
+binary/scene/options/image provenance. Final repaired sampling arithmetic
+gets a fresh predeclared six fixed renders, seeds 8102–8107, 800x600
+pixelpel four samples, irradiance cache and OIDN off, and all cores
+available (`render_thread_reserve_count 0`). Temporary per-sample pixelpel
+and Ward-anisotropic material traps record the first nonfinite value.
+CLI interactive render/quit normally returns one; validity requires
+canonical scene load, all-pixels completion, fresh EXR and independent
+finite scan. Original partial-scene error and prior candidate's six fixed
+renders remain separate evidence. A finite bounded batch does not prove
+a zero rare-event rate or identify the historical lobe.
 
-External diagnostic-build measurements retain every replicate. Three
-500,000-call public BRDF batches per state measured isotropic `.01` at
-18.62/15.25/13.80 ns before versus 22.87/18.99/16.97 ns after at 0/30/80°;
-anisotropic `.01/.37` measured 21.68/21.70/21.58 versus
-17.74/17.66/17.66 ns. The anisotropic diagnostic finite trap was present
-in both builds; these are bounded microbenchmarks, not universal costs.
-Sequential blocked showroom batches measured user CPU 42.61±0.30 seconds
-before and 41.22±1.36 after (wall 4.172±0.042 versus 4.169±0.246 seconds,
-n=6 each). Scheduling and block order confound causal interpretation;
-no whole-render speedup is claimed.
+FINAL_REPAIR_MEASUREMENTS
 
 Schlick's ruby paths have separate bounded rational distribution/masking
 machinery. They share tangent normalization but never feed its projection

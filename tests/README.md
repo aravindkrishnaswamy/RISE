@@ -1304,4 +1304,8 @@ rather than replaces the full default gate.
 DL-324 adds `WardDensityKrayTest --robustness-only` for public RGB/NM Ward
 values, aggregate densities, chromatic sampler endpoints, and HWSS companion
 weights at finite rounded poles and grazing directions. The default suite
-also runs these probes. See [the formulation and oracle notes](../docs/DL324_WARD_FRAME_SLOPES.md).
+also runs these probes. See [the formulation and oracle notes](../docs/DL324_WARD_FRAME_SLOPES.md). The review repair adds
+range-preserving analytic oracles for axes `1e-150`/`1e-170`, exponents
+700/750, reflectance-weighted quotients beyond the kernel's own range,
+actual asymmetric RGB/NM stored densities, and chromatic quarter replay.
+
