@@ -617,6 +617,81 @@ static void TestRoundedWardPoles(const IORStack& stack)
     black->release(); white->release();
 }
 
+// DL-324 review repairs: independent log quotient keeps the FINAL value's
+// range. Decimal 80-digit anchors in external review evidence agree with
+// these four kernels; no production helper is used by this oracle.
+static bool WardRangeClose(double actual,double expected) {
+    return std::isfinite(actual) && expected>0 && fabs(actual/expected-1)<3e-11;
+}
+static void TestWardExponentRange(const IORStack& stack) {
+    auto* black=new UniformColorPainter(RISEPel(0,0,0));black->addref();
+    auto* spec=new UniformColorPainter(RISEPel(.5,.5,.5));spec->addref();
+    const double anchors[2][2]={{7.846081296132908e-6,1.5133128107028885e-27},
+                               {7.8460812961329084e34,1.5133128107028886e13}};
+    int ai=0;
+    for(double alpha:{1e-150,1e-170}) {
+        auto* a=new UniformScalarPainter(alpha);a->addref();int ei=0;
+        for(double exponent:{700.,750.}) {
+            RayIntersectionGeometric ri=MakeIntersection(0);
+            const Vector3 h(sqrt(exponent)*alpha,0,1);ri.ray.Set(Point3(0,0,1),-h);
+            const double oracle=exp(-exponent-log(4*PI)-2*log(alpha));
+            Check(WardRangeClose(oracle,anchors[ai][ei++]),"DL-324 log oracle agrees with independent 80-digit Decimal anchor");
+            const double rs=GuardedGetColorNM(*spec,ri,550),diffuse=GuardedGetColorNM(*black,ri,550)*INV_PI;
+            for(int model=0;model<2;++model) {
+                IBSDF* b=model?static_cast<IBSDF*>(new WardAnisotropicEllipticalGaussianBRDF(*black,*spec,*a,*a)):static_cast<IBSDF*>(new WardIsotropicGaussianBRDF(*black,*spec,*a));b->addref();
+                ISPF* sp=model?static_cast<ISPF*>(new WardAnisotropicEllipticalGaussianSPF(*black,*spec,*a,*a)):static_cast<ISPF*>(new WardIsotropicGaussianSPF(*black,*spec,*a));sp->addref();
+                Check(WardRangeClose(b->value(h,ri)[0],.5*oracle),"DL-324 representable off-pole full quotient RGB");
+                Check(WardRangeClose(b->valueNM(h,ri,550),rs*oracle+diffuse),"DL-324 representable off-pole full quotient NM");
+                Check(WardRangeClose(sp->EvaluateLobeFNM(ri,h,ScatteredRay::eRayReflection,550,stack),rs*oracle),"DL-324 representable off-pole HWSS lobe");
+                Check(WardRangeClose(sp->EvaluateKrayNM(ri,h,ScatteredRay::eRayReflection,550,stack,oracle),rs),"DL-324 off-pole HWSS explicit hero-density companion");
+                const double pdf=sp->Pdf(ri,h,stack),pn=sp->PdfNM(ri,h,550,stack);
+                Check(std::isfinite(pdf)&&std::isfinite(pn),"DL-324 off-pole aggregate RGB/NM density finite");
+                if(alpha==1e-170)Check(WardRangeClose(pdf,oracle),"DL-324 off-pole aggregate density keeps quotient range");
+                if(exponent==700)for(int nm=0;nm<2;++nm) {
+                    WardEndpointSampler sampler(0,exp(-exponent));ScatteredRayContainer rays;
+                    if(nm)sp->ScatterNM(ri,sampler,550,rays,stack);else sp->Scatter(ri,sampler,rays,stack);
+                    int count=0;for(unsigned j=0;j<rays.Count();++j)if(rays[j].type==ScatteredRay::eRayReflection) {
+                        ++count;const auto& r=rays[j];
+                        Check(WardRangeClose(r.pdf,oracle),"DL-324 actual iso/aniso RGB/NM range sampler stored density");
+                        Check(WardRangeClose(sp->EvaluateKrayNM(ri,r.ray.Dir(),r.type,550,stack,r.pdf),rs),"DL-324 actual range sampler hero-density companion");
+                    }
+                    Check(count==1,"DL-324 actual range sampler emits reflection");
+                }
+                sp->release();b->release();
+            }
+        }
+        ++ai;a->release();
+    }
+    // Asymmetric finite peaks and shared-pair chromatic replay. Quarter
+    // boundaries and interior draws preserve Ward's folded-quarter law.
+    for(int chromatic=0;chromatic<2;++chromatic) {
+        IScalarPainter* ax=chromatic?static_cast<IScalarPainter*>(new RGBScalarPainter(1e-170,2e-170,3e-170)):static_cast<IScalarPainter*>(new UniformScalarPainter(1e-170));ax->addref();
+        IScalarPainter* ay=chromatic?static_cast<IScalarPainter*>(new RGBScalarPainter(.5,.4,.3)):static_cast<IScalarPainter*>(new UniformScalarPainter(.5));ay->addref();
+        WardAnisotropicEllipticalGaussianSPF sp(*black,*spec,*ax,*ay);
+        WardAnisotropicEllipticalGaussianBRDF b(*black,*spec,*ax,*ay);
+        RayIntersectionGeometric ri=MakeIntersection(0);
+        for(double x:{0.,.125,.25,.375,.5,.625,.75,.875,std::nextafter(1.,0.)})for(int nm=0;nm<2;++nm) {
+            WardEndpointSampler sampler(x,.5);ScatteredRayContainer rays;
+            if(nm)sp.ScatterNM(ri,sampler,550,rays,stack);else sp.Scatter(ri,sampler,rays,stack);
+            int count=0;for(unsigned j=0;j<rays.Count();++j)if(rays[j].type==ScatteredRay::eRayReflection) {
+                ++count;const auto& r=rays[j];
+                Check(std::isfinite(r.pdf)&&r.pdf>0,"DL-324 asymmetric actual RGB/NM sampler density finite");
+                Check(std::isfinite(sp.Pdf(ri,r.ray.Dir(),stack))&&std::isfinite(sp.PdfNM(ri,r.ray.Dir(),550,stack)),"DL-324 asymmetric shared-pair replay aggregate finite");
+                Check(std::isfinite(b.value(r.ray.Dir(),ri)[0])&&std::isfinite(b.valueNM(r.ray.Dir(),ri,550)),"DL-324 asymmetric actual sampler RGB/NM BRDF finite");
+                Check(std::isfinite(sp.EvaluateLobeFNM(ri,r.ray.Dir(),r.type,550,stack))&&std::isfinite(sp.EvaluateKrayNM(ri,r.ray.Dir(),r.type,550,stack,r.pdf)),"DL-324 asymmetric actual sampler HWSS finite");
+                if(!chromatic&&x==0) {
+                    const double kernel=exp(-log(4*PI)-log(1e-170)-log(.5)-log(2.));
+                    Check(WardRangeClose(r.pdf,kernel),"DL-324 asymmetric stored density independent log oracle");
+                    Check(WardRangeClose(sp.Pdf(ri,r.ray.Dir(),stack),kernel),"DL-324 asymmetric stored/public density agreement");
+                }
+            }
+            Check(count==(chromatic&&!nm?3:1),"DL-324 asymmetric sampler emits expected lanes");
+        }
+        ax->release();ay->release();
+    }
+    spec->release();black->release();
+}
+
 int main(int argc, char** argv)
 {
 	GlobalLog();
@@ -629,6 +704,7 @@ int main(int argc, char** argv)
 
 	IORStack iorStack = MakeTestIORStack( g_stubObject );
     TestRoundedWardPoles(iorStack);
+    TestWardExponentRange(iorStack);
     if(argc>1 && std::string(argv[1])=="--robustness-only") {
         g_stubObject->release();
         std::cout << "Passed: " << passCount << " Failed: " << failCount << std::endl;
