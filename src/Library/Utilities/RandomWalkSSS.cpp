@@ -424,7 +424,7 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 			// for the RELATIVE boundary index (DL-49), with the exact
 			// dielectric law the SPF's surface reflection uses (DL-306).
 			const Scalar c_norm = BSSRDFSampling::BoundaryTransmissionNormalization( etaRel );
-			const Scalar FtEntry = BSSRDFSampling::BoundaryTransmission( cosTheta, etaRel );
+			const Scalar FtEntry = BSSRDFSampling::BoundaryTransmission( cosTheta, ior, nExterior );
 			const Scalar SwFactor = (c_norm > 1e-20) ? FtEntry / c_norm : FtEntry;
 
 			// IS weight for the cosine-sampled continuation direction.

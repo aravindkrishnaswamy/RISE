@@ -139,6 +139,14 @@ namespace RISE
 		virtual Scalar GetIOR(
 			const RayIntersectionGeometric& ri
 			) const = 0;
+        /// DL-334: spectral boundary queries. Appended to preserve existing slots.
+        /// Constant-index profiles retain their existing boundary law by default;
+        /// dispersive profiles override BOTH queries at the requested wavelength.
+        virtual Scalar GetIORNM(const RayIntersectionGeometric& ri, const Scalar /*nm*/) const
+        { return GetIOR(ri); }
+        virtual Scalar FresnelTransmissionNM(const Scalar cosTheta,
+            const RayIntersectionGeometric& ri, const Scalar /*nm*/) const
+        { return FresnelTransmission(cosTheta, ri); }
 	};
 }
 
