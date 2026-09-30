@@ -92,8 +92,8 @@ namespace BSSRDFAdapters
 			if( cosTheta <= 0 ) {
 				return 0;
 			}
-			const Scalar Ft = pProfile->FresnelTransmission( cosTheta, ri );
-			return BSSRDFSampling::EvaluateSwWithFresnel( Ft, RelativeEta( ri ) );
+			const Scalar Ft = pProfile->FresnelTransmissionNM( cosTheta, ri, nm );
+			return BSSRDFSampling::EvaluateSwWithFresnel( Ft, BSSRDFSampling::RelativeBoundaryIOR( pProfile->GetIORNM( ri, nm ), BSSRDFSampling::ExteriorIOR( ri ) ) );
 		}
 	};
 

@@ -279,3 +279,13 @@ RISEPel BurleyNormalizedDiffusionProfile::ComputeTotalExtinction(
 	// through EvaluateProfile() which has access to ri.
 	return RISEPel( 0, 0, 0 );
 }
+
+// DL-334: material and exterior indices describe the same wavelength.
+Scalar BurleyNormalizedDiffusionProfile::GetIORNM(const RayIntersectionGeometric& ri, const Scalar nm) const
+{ return pIOR->GetValueAtNM(ri, nm); }
+Scalar BurleyNormalizedDiffusionProfile::FresnelTransmissionNM(const Scalar cosTheta,
+    const RayIntersectionGeometric& ri, const Scalar nm) const
+{
+    return BSSRDFSampling::BoundaryTransmission(fabs(cosTheta),
+        BSSRDFSampling::RelativeBoundaryIOR(GetIORNM(ri, nm), BSSRDFSampling::ExteriorIOR(ri)));
+}

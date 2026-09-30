@@ -1785,10 +1785,8 @@ namespace {
 	/// SPF realization, so an empty (or unselectable) container is a ZERO
 	/// sample of the reflection technique and no reason to skip the
 	/// subsurface one -- exactly DL-67's ruling for the guide technique.
-	/// The NM specialization's third query (`GetRandomWalkSSSParamsNM`) is
-	/// dead today -- no material in src/ overrides it (2026-09-28) -- and is
-	/// kept only so this predicate cannot drift from the random-walk
-	/// block's own NM fallback, which still asks it.
+    /// RandomWalkSSSMaterial supplies both forms; NM generators prefer its
+    /// wavelength boundary parameters even when the RGB snapshot is present.
 	template<class Tag> inline bool HasSubsurfaceEntryBranch( const IMaterial& m, const Tag& tag );
 	template<> inline bool HasSubsurfaceEntryBranch<PelTag>( const IMaterial& m, const PelTag& )
 	{ return m.GetDiffusionProfile() != 0 || m.GetRandomWalkSSSParams() != 0; }
@@ -1996,7 +1994,7 @@ namespace {
 			// Seed from the CAMERA VERTEX, which on a finite-aperture
 			// camera is the sampled lens point rather than the lens
 			// centre (debt 28) -- the walk physically starts there.
-			IORStackSeeding::SeedFromPoint( iorStack, vertices[0].position, scene );
+			IORStackSeeding::SeedFromPoint( iorStack, vertices[0].position, scene, NmOrZero<Tag>(tag) );
 		}
 		// DL-09: the camera endpoint's graded medium and index, for a t==1
 		// connection's (n_camera/n_light)^2 factor.
@@ -2826,7 +2824,9 @@ namespace {
 				if( cosInGeom > NEARZERO )
 				{
 					ISubSurfaceDiffusionProfile* pProfile = ri.pMaterial->GetDiffusionProfile();
-					const Scalar Ft = pProfile->FresnelTransmission( cosIn, ri.geometric );
+					const Scalar Ft = Traits::is_nm
+                        ? pProfile->FresnelTransmissionNM( cosIn, ri.geometric, NmOrZero<Tag>( tag ) )
+                        : pProfile->FresnelTransmission( cosIn, ri.geometric );
 					const Scalar R = 1.0 - Ft;
 
 					if( Ft > NEARZERO && sampler.Get1D() < Ft )
@@ -2967,7 +2967,7 @@ namespace {
 					}
 				} else {
 					pRW = ri.pMaterial->GetRandomWalkSSSParams();
-					if( !pRW && ri.pMaterial->GetRandomWalkSSSParamsNM( tag.nm, rwParamsNM ) ) {
+					if( ri.pMaterial->GetRandomWalkSSSParamsNM( tag.nm, rwParamsNM ) ) {
 						pRW = &rwParamsNM;
 					}
 					cosIn = pRW ? Vector3Ops::Dot(
@@ -5850,7 +5850,7 @@ EvaluateAllStrategiesImpl(
 								eyeEnd.pMaterial->GetRandomWalkSSSParams();
 							[[maybe_unused]] RandomWalkSSSParams rwParamsNM;
 							if constexpr( !Traits::is_pel ) {
-								if( !pRW && eyeEnd.pMaterial->GetRandomWalkSSSParamsNM(
+								if( eyeEnd.pMaterial->GetRandomWalkSSSParamsNM(
 									tag.nm, rwParamsNM ) ) {
 									pRW = &rwParamsNM;
 								}
@@ -6390,7 +6390,7 @@ unsigned int GenerateLightSubpathImpl(
 	// which for an IOR-matched inner boundary turns into a noise-
 	// Fresnel reflection that destroys throughput by ~32 orders of
 	// magnitude and leaves the walls unlit.
-	IORStackSeeding::SeedFromPoint( iorStack, ls.position, scene );
+	IORStackSeeding::SeedFromPoint( iorStack, ls.position, scene, NmOrZero<Tag>(tag) );
 
 	vertices.reserve( maxLightDepth + 1 );
 
@@ -7136,7 +7136,9 @@ unsigned int GenerateLightSubpathImpl(
 			if( cosInGeom > NEARZERO )
 			{
 				ISubSurfaceDiffusionProfile* pProfile = ri.pMaterial->GetDiffusionProfile();
-				const Scalar Ft = pProfile->FresnelTransmission( cosIn, ri.geometric );
+				const Scalar Ft = Traits::is_nm
+                        ? pProfile->FresnelTransmissionNM( cosIn, ri.geometric, NmOrZero<Tag>( tag ) )
+                        : pProfile->FresnelTransmission( cosIn, ri.geometric );
 				const Scalar R = 1.0 - Ft;
 
 				if( Ft > NEARZERO && sampler.Get1D() < Ft )
@@ -7276,7 +7278,7 @@ unsigned int GenerateLightSubpathImpl(
 				}
 			} else {
 				pRW = ri.pMaterial->GetRandomWalkSSSParams();
-				if( !pRW && ri.pMaterial->GetRandomWalkSSSParamsNM( tag.nm, rwParamsNM ) ) {
+				if( ri.pMaterial->GetRandomWalkSSSParamsNM( tag.nm, rwParamsNM ) ) {
 					pRW = &rwParamsNM;
 				}
 				cosIn = pRW ? Vector3Ops::Dot(

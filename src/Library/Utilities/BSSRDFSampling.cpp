@@ -46,7 +46,8 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 	// Fresnel transmission at exit point
 	const Scalar cosExit = fabs( Vector3Ops::Dot( exitNormal,
 		Vector3Ops::Normalize( -ri.ray.Dir() ) ) );
-	const Scalar FtExit = pProfile->FresnelTransmission( cosExit, ri );
+	const Scalar FtExit = nm > 0 ? pProfile->FresnelTransmissionNM( cosExit, ri, nm )
+        : pProfile->FresnelTransmission( cosExit, ri );
 
 	if( FtExit < 1e-10 ) {
 		return result;
@@ -497,9 +498,10 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 	entryRig.ambientIOR = ExteriorIOR( ri );
 
 	const Scalar eta = RelativeBoundaryIOR(
-		pProfile->GetIOR( entryRig ), ExteriorIOR( entryRig ) );
+		(nm > 0 ? pProfile->GetIORNM( entryRig, nm ) : pProfile->GetIOR( entryRig )), ExteriorIOR( entryRig ) );
 	const Scalar SwNorm = BoundaryTransmissionNormalization( eta );
-	const Scalar FtEntry = pProfile->FresnelTransmission( cosTheta, entryRig );
+	const Scalar FtEntry = nm > 0 ? pProfile->FresnelTransmissionNM( cosTheta, entryRig, nm )
+        : pProfile->FresnelTransmission( cosTheta, entryRig );
 
 	// Full BSSRDF weight (for continuation path):
 	//   Rd(r) * Ft(exit) * Ft(entry) / (c * pdfSurface)

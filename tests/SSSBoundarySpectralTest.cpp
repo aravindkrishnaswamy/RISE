@@ -81,6 +81,50 @@ int main() {
         }
         diff->release();rw->release();if(view)view->release();
     }
+    // Public skin material: spectral boundary and spectral layer tables must
+    // agree with a constant-index material at the same wavelength, independent
+    // of the RGB slot anchor. Exact table nodes avoid interpolation ambiguity.
+    IScalarPainter* skinP[7]={};
+    const double skinV[7]={.02,.5,.002,.001,.005,.025,.7};
+    for(unsigned i=0;i<7;i++)RISE_API_CreateUniformScalarPainter(&skinP[i],skinV[i]);
+    IMaterial* skin=nullptr;
+    RISE_API_CreateDonnerJensenSkinBSSRDFMaterial(&skin,*skinP[0],*skinP[1],*skinP[2],*skinP[3],*skinP[4],*skinP[5],*curve,*sell,*skinP[6],0);
+    for(double nm:{400.,500.,700.}) {
+        RayIntersectionGeometric ri(Ray(Point3(0,0,0),Vector3(0,0,-1)),nullRasterizerState);
+        ri.vNormal=ri.vGeomNormal=Vector3(0,0,1);ri.onb.CreateFromW(ri.vNormal);
+        const double nt=curve->GetValueAtNM(ri,nm), nd=sell->GetValueAtNM(ri,nm);
+        IScalarPainter *ep=nullptr,*de=nullptr;IMaterial* reference=nullptr;
+        RISE_API_CreateUniformScalarPainter(&ep,nt);RISE_API_CreateUniformScalarPainter(&de,nd);
+        RISE_API_CreateDonnerJensenSkinBSSRDFMaterial(&reference,*skinP[0],*skinP[1],*skinP[2],*skinP[3],*skinP[4],*skinP[5],*ep,*de,*skinP[6],0);
+        for(double ni:{1.,1.2,nt,nt*1.2}) {
+            ri.ambientIOR=ni;
+            BSSRDFAdapters::BSSRDFEntryBSDF adapter(skin->GetDiffusionProfile(),0);
+            for(double mu:{1.,.5,.1}) {
+                const Vector3 wi(std::sqrt(1-mu*mu),0,mu);
+                const double t=adapter.valueNM(wi,ri,nm)*Norm(ni,nt)*PI;
+                Check(std::fabs(t-(1-Fresnel(mu,ni,nt)))<1e-6,"skin spectral boundary",nm,t,1-Fresnel(mu,ni,nt));
+            }
+            for(double r:{.001,.01,.1}) {
+                const double v=skin->GetDiffusionProfile()->EvaluateProfileNM(r,ri,nm);
+                const double ref=reference->GetDiffusionProfile()->EvaluateProfileNM(r,ri,nm);
+                Check(std::fabs(v-ref)<1e-10*std::fmax(1.,std::fabs(ref)),"skin spectral layer table",nm,v,ref);
+            }
+        }
+        reference->release();ep->release();de->release();
+    }
+    skin->release();for(auto* p:skinP)p->release();
+    // Exact constant/RGB policy controls. The parser view is green-anchored;
+    // raw Sellmeier painters retain their existing per-channel policy.
+    for(IScalarPainter* raw:{sell,curve,constant}) {
+        IScalarPainter* view=raw->MakeSingleScalarSlotView();const auto& ior=view?*view:*raw;
+        IMaterial* material=nullptr;RISE_API_CreateSubSurfaceScatteringMaterial(&material,ior,*zero,*scatter,0,0);
+        RayIntersectionGeometric ri(Ray(Point3(0,0,0),Vector3(0,0,-1)),nullRasterizerState);
+        ri.vNormal=ri.vGeomNormal=Vector3(0,0,1);ri.onb.CreateFromW(ri.vNormal);
+        const double nt=ior.GetValuesAt(ri).v[0];
+        Check(material->GetDiffusionProfile()->GetIOR(ri)==nt,"RGB slot preserved",549,material->GetDiffusionProfile()->GetIOR(ri),nt);
+        Check(std::fabs(material->GetDiffusionProfile()->FresnelTransmission(.5,ri)-(1-Fresnel(.5,1,nt)))<1e-12,"RGB Fresnel preserved",549,material->GetDiffusionProfile()->FresnelTransmission(.5,ri),1-Fresnel(.5,1,nt));
+        material->release();if(view)view->release();
+    }
     std::printf("Worst public partition nm=%.1f error=%.12g\nChecks: %d Failures: %d\n",worstNM,worst,checks,failures);
     sell->release();curve->release();constant->release();zero->release();scatter->release();
     return failures?1:0;

@@ -101,6 +101,15 @@ namespace RISE
 			  std::stack< IORDATA, std::vector<IORDATA> >( s )
 			{}
 
+            Scalar EnvironmentIOR() const { return c.front().ior; }
+            bool SameInterfaces(const MyIORStack& other) const {
+                if(c.size() != other.c.size()) return false;
+                for(std::size_t i=0; i<c.size(); ++i)
+                    if(c[i].pObj != other.c[i].pObj || c[i].ior != other.c[i].ior) return false;
+                return true;
+            }
+
+
 			~MyIORStack()
 			{};
 
@@ -193,6 +202,12 @@ namespace RISE
 		{
 			return iorstack.top().ior;
 		}
+
+        // Root index survives a wavelength-specific containment replay.
+        inline Scalar EnvironmentIOR() const { return iorstack.EnvironmentIOR(); }
+        inline bool SameInterfaces(const IORStack& other) const
+        { return iorstack.SameInterfaces(other.iorstack); }
+
 
 		// Checks if the current object is already in the IOR stack.
 		// Used as the authoritative "is the ray inside this object"

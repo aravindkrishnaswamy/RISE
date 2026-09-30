@@ -590,16 +590,16 @@ namespace RISE
 					PopulateRIGFromVertex( vertex, rig );
 
 					// DL-49: relative index, as in the RGB twin above.
-					const Scalar FtEntry = pProfile->FresnelTransmission( cosTheta, rig );
+					const Scalar FtEntry = pProfile->FresnelTransmissionNM( cosTheta, rig, nm );
 					const Scalar eta = BSSRDFSampling::RelativeBoundaryIOR(
-						pProfile->GetIOR( rig ), BSSRDFSampling::ExteriorIOR( rig ) );
+						pProfile->GetIORNM( rig, nm ), BSSRDFSampling::ExteriorIOR( rig ) );
 					return BSSRDFSampling::EvaluateSwWithFresnel( FtEntry, eta );
 				}
 
 				// Random-walk SSS: Sw with the exact dielectric transmission (DL-306)
 				const RandomWalkSSSParams* pRW = vertex.pMaterial->GetRandomWalkSSSParams();
 				RandomWalkSSSParams rwParamsNM;
-				if( !pRW && vertex.pMaterial->GetRandomWalkSSSParamsNM( nm, rwParamsNM ) ) {
+				if( vertex.pMaterial->GetRandomWalkSSSParamsNM( nm, rwParamsNM ) ) {
 					pRW = &rwParamsNM;
 				}
 				if( pRW ) {

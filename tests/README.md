@@ -1314,3 +1314,5 @@ alpha-one RGB/NM grazing draws at `1e-170`/`1e-200` independently check
 reconstructed half-vector range, aggregate density and both companion forms
 while distinguishing legitimately infinite standalone lobes.
 
+
+DL-334 adds `SSSBoundarySpectralTest` (independent public spectral partition, skin layer and RGB controls) and `SSSBoundaryFurnaceTest` (NM/HWSS conservative slabs, nested ambient and real boundary transitions). See [the boundary derivation](../docs/DL334_SSS_SPECTRAL_BOUNDARY.md).
