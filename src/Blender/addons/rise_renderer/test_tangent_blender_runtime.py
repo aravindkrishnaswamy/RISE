@@ -140,9 +140,10 @@ with tempfile.TemporaryDirectory(prefix='rise-tangent-runtime-') as directory:
     print('R1 CYCLES COAT NORMAL INDEPENDENT ORACLE PASS (SIMULTANEOUS BASE NORMAL LINK)',flush=True)
     rm.color_attributes.remove(color);tree.links.new(rp.outputs[0],out.inputs['Surface']);tree.links.remove(rp.inputs['Normal'].links[0])
     def r1_snapshot():
-        return (len(bpy.data.scenes),len(bpy.data.objects),len(bpy.data.meshes),len(bpy.data.materials),len(rm.color_attributes),len(tree.nodes),bpy.context.scene.render.engine,bpy.context.view_layer.objects.active,bpy.data.filepath,tuple(tuple(row) for row in ro.matrix_world),tuple(ob.name for ob in bpy.context.selected_objects))
-    def export_r1(matrix):
-        ro.matrix_world=matrix;bpy.context.view_layer.update();before=r1_snapshot();dg=bpy.context.evaluated_depsgraph_get();state=exporter._ExportState()
+        return (len(bpy.data.scenes),len(bpy.data.objects),len(bpy.data.meshes),len(bpy.data.materials),len(rm.color_attributes),len(tree.nodes),bpy.context.scene.render.engine,bpy.context.view_layer.objects.active,bpy.data.filepath,tuple(tuple(row) for row in ro.matrix_world),tuple(ob.name for ob in bpy.context.selected_objects),ro.parent,tuple(tuple(row) for row in ro.matrix_parent_inverse),tuple(ro.delta_location),tuple(ro.delta_scale),len(ro.constraints),tuple(ro.color),ro.get('rise_shader_custom'))
+    def export_r1(matrix, preserve_parent=False):
+        if not preserve_parent:ro.matrix_world=matrix
+        bpy.context.view_layer.update();before=r1_snapshot();dg=bpy.context.evaluated_depsgraph_get();state=exporter._ExportState()
         try:exporter._mesh_buckets(ro.evaluated_get(dg),state,matrix.copy())
         finally:assert r1_snapshot()==before,'R1 exporter state cleanup'
         mesh=state.meshes[0];assert mesh.tangent_is_shader_direction
@@ -187,6 +188,40 @@ with tempfile.TemporaryDirectory(prefix='rise-tangent-runtime-') as directory:
     tilted.calc_tangents(uvmap='Oblique');raw=tilted.loops[0].tangent.copy();tilted.free_tangents();world_t=matrix.to_3x3().inverted().transposed()@raw;world_n=(matrix.to_3x3().inverted().transposed()@tilted.corner_normals[0].vector).normalized();expected=(world_t-world_n*world_t.dot(world_n)).normalized();assert (results[0]-expected).length<1e-5,(results,expected)
     ro.data=old_mesh
     print('R1 SECOND UV TILTED NORMAL INDEPENDENT WORLD ORACLE PASS',flush=True)
+    # Real parent scale*child rotation yields shear; no synthetic matrix setter.
+    parent=bpy.data.objects.new('R1 nonuniform parent',None);bpy.context.collection.objects.link(parent)
+    info=tree.nodes.new('ShaderNodeObjectInfo');transform=tree.nodes.new('ShaderNodeVectorTransform');transform.vector_type='VECTOR';transform.convert_from='OBJECT';transform.convert_to='WORLD';transform.inputs[0].default_value=(1,1,1)
+    for scale in (2,-2):
+        ro.parent=parent;parent.scale=(scale,1,1);parent.location=(1,2,0);ro.matrix_parent_inverse=Matrix.Identity(4);ro.rotation_euler=(0,0,.7);ro.scale=(1,1,1);ro.location=(0,0,0);bpy.context.view_layer.update();matrix=ro.evaluated_get(bpy.context.evaluated_depsgraph_get()).matrix_world.copy()
+        expected=(matrix.to_3x3().inverted().transposed()@Vector((math.sqrt(.5),math.sqrt(.5),0))).normalized()
+        for socket in (tangent.outputs[0],identity.outputs[0]):
+            tree.links.new(socket,rp.inputs['Tangent']);d,angle=export_r1(matrix,True);world=(matrix.to_3x3()@Vector(d[:3])).normalized();assert (world-expected).length<1e-5,(scale,world,expected);cases.append((matrix,d,tuple(expected),angle))
+        for socket,raw in ((info.outputs['Location'],matrix.translation),(transform.outputs[0],matrix.to_3x3()@Vector((1,1,1)))):
+            tree.links.new(socket,rp.inputs['Tangent']);d,angle=export_r1(matrix,True);world=(matrix.to_3x3()@Vector(d[:3])).normalized();assert (world-raw.normalized()).length<1e-5,(scale,world,raw)
+            projected=Vector((raw.x,raw.y,0)).normalized();cases.append((matrix,d,tuple(projected),angle))
+    # Evaluated frozen target: delta transforms, animated location/color/custom
+    # property and constraint cannot reapply to the exact reopened child frame.
+    ro.delta_scale=(1.3,.8,1);ro.delta_location=(.4,.2,0);ro.location=(0,0,0);ro.keyframe_insert('location',frame=1);ro.location=(1,0,0);ro.keyframe_insert('location',frame=2)
+    driver=ro.driver_add('color',0).driver;driver.expression='.25+frame*.01';ro['rise_shader_custom']=0.0;driver=ro.driver_add('["rise_shader_custom"]').driver;driver.expression='2+frame*.5'
+    target=bpy.data.objects.new('R1 constraint dependency',None);bpy.context.collection.objects.link(target);target.location=(3,4,0);constraint=ro.constraints.new('COPY_LOCATION');constraint.target=target
+    bpy.context.scene.frame_set(2);bpy.context.view_layer.update();evaluated=ro.evaluated_get(bpy.context.evaluated_depsgraph_get());matrix=evaluated.matrix_world.copy()
+    tree.links.new(info.outputs['Color'],rp.inputs['Tangent']);d,angle=export_r1(matrix,True);raw=Vector(evaluated.color[:3]);world=(matrix.to_3x3()@Vector(d[:3])).normalized();assert (world-raw.normalized()).length<1e-5,(world,raw);cases.append((matrix,d,tuple(Vector((raw.x,raw.y,0)).normalized()),angle))
+    attribute=tree.nodes.new('ShaderNodeAttribute');attribute.attribute_type='OBJECT';attribute.attribute_name='rise_shader_custom';custom=tree.nodes.new('ShaderNodeCombineXYZ');tree.links.new(attribute.outputs['Fac'],custom.inputs['X']);custom.inputs['Y'].default_value=1;tree.links.new(custom.outputs[0],rp.inputs['Tangent'])
+    d,angle=export_r1(matrix,True);raw=Vector((evaluated['rise_shader_custom'],1,0));world=(matrix.to_3x3()@Vector(d[:3])).normalized();assert (world-raw.normalized()).length<1e-5,(world,raw);cases.append((matrix,d,tuple(raw.normalized()),angle))
+    for name in ('location','delta_location','delta_scale'):
+        attribute.attribute_name=name;tree.links.new(attribute.outputs['Vector'],rp.inputs['Tangent']);d,angle=export_r1(matrix,True);raw=Vector(evaluated.path_resolve(name));world=(matrix.to_3x3()@Vector(d[:3])).normalized();assert (world-raw.normalized()).length<1e-5,(name,world,raw)
+        cases.append((matrix,d,tuple(Vector((raw.x,raw.y,0)).normalized()),angle))
+    attribute.attribute_name='color'
+    for output in ('Vector','Color'):
+        tree.links.new(attribute.outputs[output],rp.inputs['Tangent']);d,angle=export_r1(matrix,True);raw=Vector(evaluated.color[:3]);assert ((matrix.to_3x3()@Vector(d[:3])).normalized()-raw.normalized()).length<1e-5
+    for output,value in (('Fac',sum(evaluated.color[:3])/3),('Alpha',evaluated.color[3])):
+        tree.links.new(attribute.outputs[output],custom.inputs['X']);tree.links.new(custom.outputs[0],rp.inputs['Tangent']);d,_=export_r1(matrix,True);raw=Vector((value,1,0));assert ((matrix.to_3x3()@Vector(d[:3])).normalized()-raw.normalized()).length<1e-5
+    rm['rise_data_attribute']=2.0;rm.update_tag();ro.update_tag();bpy.context.view_layer.update();assert ro.evaluated_get(bpy.context.evaluated_depsgraph_get()).data.get('rise_data_attribute')==2;attribute.attribute_name='rise_data_attribute';tree.links.new(attribute.outputs['Fac'],custom.inputs['X']);d,_=export_r1(matrix,True);assert ((matrix.to_3x3()@Vector(d[:3])).normalized()-Vector((2,1,0)).normalized()).length<1e-5
+    attribute.attribute_name='missing RNA';tree.links.new(attribute.outputs['Alpha'],custom.inputs['X']);tree.links.new(custom.outputs[0],rp.inputs['Tangent']);d,_=export_r1(matrix,True);assert ((matrix.to_3x3()@Vector(d[:3])).normalized()-Vector((0,1,0))).length<1e-5
+    print('R1 SOURCE RNA ATTRIBUTE VECTOR FAC ALPHA MISSING CONTEXT PASS',flush=True)
+    assert ro.constraints[0].target is target and target.location==Vector((3,4,0))
+    ro.animation_data_clear();ro.constraints.clear();ro.parent=None;ro.delta_scale=(1,1,1);ro.delta_location=(0,0,0)
+    print('R1 PARENT SHEAR MIRROR OBJECTINFO VECTORTRANSFORM FROZEN EVALUATED FRAME PASS',flush=True)
     # Generic raw normal component survives until the final shading normal.
     tree.links.new(xyz.outputs[0],rp.inputs['Tangent']);tree.links.new(base_normal.outputs[0],rp.inputs['Normal'])
     for raw in ((1,1,1),(0,0,1)):
@@ -201,6 +236,33 @@ with tempfile.TemporaryDirectory(prefix='rise-tangent-runtime-') as directory:
     try:export_r1(Matrix.Identity(4));raise AssertionError('parallel raw accepted without supported normal modifier')
     except RuntimeError as error:assert 'zero/parallel' in str(error),str(error)
     print('R1 RAW NORMAL COMPONENT AND SUPPORTED PARALLEL NORMAL MODIFIER PASS',flush=True)
+    # Preserve actual Cycles dupli coordinates, including group input bindings,
+    # ordinary zero defaults, and source/parent instancer RNA attributes.
+    context=tree.nodes.new('ShaderNodeTexCoord');context.from_instancer=True
+    context_add=tree.nodes.new('ShaderNodeVectorMath');context_add.operation='ADD';context_add.inputs[1].default_value=(2,1,0)
+    group=bpy.data.node_groups.new('R1 instancer passthrough','ShaderNodeTree');group.interface.new_socket(name='Input',in_out='INPUT',socket_type='NodeSocketVector');group.interface.new_socket(name='Output',in_out='OUTPUT',socket_type='NodeSocketVector');gi=group.nodes.new('NodeGroupInput');go=group.nodes.new('NodeGroupOutput');group.links.new(gi.outputs[0],go.inputs[0]);gn=tree.nodes.new('ShaderNodeGroup');gn.node_tree=group;tree.links.new(context_add.outputs[0],gn.inputs[0])
+    prototype.data.materials.clear();prototype.data.materials.append(rmat)
+    for output in ('Generated','UV'):
+        tree.links.new(context.outputs[output],context_add.inputs[0])
+        for socket in (context_add.outputs[0],gn.outputs[0]):
+            tree.links.new(socket,rp.inputs['Tangent']);before=r1_snapshot();d,_=export_r1(Matrix.Identity(4));assert (Vector(d[:3])-Vector((2,1,0)).normalized()).length<1e-5
+            dg=bpy.context.evaluated_depsgraph_get();expected={}
+            for item in dg.object_instances:
+                if item.is_instance and item.object.original is prototype:
+                    expected[round(item.matrix_world.translation.x)]=(Vector(item.orco)*.5-Vector((.5,.5,.5)) if output=='Generated' else Vector((*item.uv,0)))+Vector((2,1,0))
+            exported,_=exporter.export_scene(dg);meshes={mesh.name:mesh for mesh in exported.meshes}
+            for obj in exported.objects:
+                if round(obj.transform[3]) in expected:
+                    d=meshes[obj.geometry_name].tangent_attribute;assert (Vector(d[:3])-expected[round(obj.transform[3])].normalized()).length<1e-5,(output,d,expected)
+            assert before==r1_snapshot()
+    attribute.attribute_type='INSTANCER';attribute.attribute_name='location';tree.links.new(attribute.outputs['Vector'],context_add.inputs[0]);tree.links.new(context_add.outputs[0],gn.inputs[0]);tree.links.new(gn.outputs[0],rp.inputs['Tangent']);ro.location=(1,2,0)
+    dg=bpy.context.evaluated_depsgraph_get();expected={round(item.matrix_world.translation.x):Vector(item.parent.location)+Vector((2,1,0)) for item in dg.object_instances if item.is_instance and item.object.original is prototype}
+    exported,_=exporter.export_scene(dg);meshes={mesh.name:mesh for mesh in exported.meshes}
+    for obj in exported.objects:
+        if round(obj.transform[3]) in expected:
+            d=meshes[obj.geometry_name].tangent_attribute;assert (Vector(d[:3])-expected[round(obj.transform[3])].normalized()).length<1e-5,(d,expected)
+    tree.links.new(xyz.outputs[0],rp.inputs['Tangent']);xyz.inputs['X'].default_value=1;xyz.inputs['Y'].default_value=1;xyz.inputs['Z'].default_value=0
+    print('R1 ACTUAL INSTANCER GENERATED UV PARENT RNA ORDINARY DEFAULT GROUP CONTEXT PASS',flush=True)
     # Actual exported corner payload/material rotation through shipping bridge/core.
     path=Path(directory)/'cases.txt'
     rows=[str(len(cases))]
@@ -247,3 +309,28 @@ for scale in (1,1e3,1e5,1e7,1e9,1e11):
             try:tangent_bake.validate_baked_color(color);raise AssertionError('measured conditioning failure unexpectedly valid; reclassify runtime evidence')
             except RuntimeError as error:assert 'backend conditioning failure' in str(error),str(error)
 print('R1 CONSTANT ENCODED EMIT BACKEND CONDITIONING CONTROLS PASS',flush=True)
+
+# Private GN instance attributes: independent actual primary-render control.
+bpy.ops.wm.read_factory_settings(use_empty=True)
+mesh=bpy.data.meshes.new('prototype');mesh.from_pydata([(-1,-1,0),(1,-1,0),(1,1,0),(-1,1,0)],[],[(0,1,2,3)])
+prototype=bpy.data.objects.new('prototype',mesh)
+mat=bpy.data.materials.new('instancer attribute');mat.use_nodes=True;mesh.materials.append(mat);nt=mat.node_tree;a=nt.nodes.new('ShaderNodeAttribute');a.attribute_type='INSTANCER';a.attribute_name='private_direction';e=nt.nodes.new('ShaderNodeEmission');nt.links.new(a.outputs['Vector'],e.inputs['Color']);nt.links.new(e.outputs[0],nt.nodes.get('Material Output').inputs['Surface'])
+owner=bpy.data.objects.new('GN owner',bpy.data.meshes.new('empty'));bpy.context.collection.objects.link(owner)
+g=bpy.data.node_groups.new('private instance field','GeometryNodeTree');g.interface.new_socket(name='Geometry',in_out='OUTPUT',socket_type='NodeSocketGeometry');out=g.nodes.new('NodeGroupOutput');points=g.nodes.new('GeometryNodeMeshLine');points.inputs['Count'].default_value=1;info=g.nodes.new('GeometryNodeObjectInfo');info.inputs['Object'].default_value=prototype;info.inputs['As Instance'].default_value=True;instances=g.nodes.new('GeometryNodeInstanceOnPoints');g.links.new(points.outputs['Mesh'],instances.inputs['Points']);g.links.new(info.outputs['Geometry'],instances.inputs['Instance']);store=g.nodes.new('GeometryNodeStoreNamedAttribute');store.domain='INSTANCE';store.data_type='FLOAT_VECTOR';store.inputs['Name'].default_value='private_direction';store.inputs['Value'].default_value=(.2,.6,.8);g.links.new(instances.outputs['Instances'],store.inputs['Geometry']);g.links.new(store.outputs['Geometry'],out.inputs[0]);modifier=owner.modifiers.new('Geometry Nodes','NODES');modifier.node_group=g
+camera=bpy.data.objects.new('camera',bpy.data.cameras.new('camera'));bpy.context.collection.objects.link(camera);camera.location=(0,0,3);camera.data.type='ORTHO';camera.data.ortho_scale=2;scene=bpy.context.scene;scene.camera=camera;scene.render.engine='CYCLES';scene.cycles.samples=1;scene.render.resolution_x=16;scene.render.resolution_y=16;scene.render.resolution_percentage=100
+bpy.context.view_layer.update();dg=bpy.context.evaluated_depsgraph_get()
+for item in dg.object_instances:
+ if item.is_instance:print('GN INSTANCE RNA',item.object.name,item.parent.name,tuple(item.orco),tuple(item.uv),[p.identifier for p in item.bl_rna.properties],flush=True)
+with tempfile.TemporaryDirectory() as directory:
+ scene.render.image_settings.file_format='OPEN_EXR';scene.render.filepath=directory+'/oracle.exr';bpy.ops.render.render(write_still=True);image=bpy.data.images.load(scene.render.filepath);rgba=list(image.pixels[(8*16+8)*4:(8*16+8)*4+4]);print('GN ORIGINAL SCENE EMISSION ORACLE',rgba,flush=True);nt.links.remove(e.inputs['Color'].links[0]);e.inputs['Color'].default_value=(.2,.6,.8,1);scene.render.filepath=directory+'/constant.exr';bpy.ops.render.render(write_still=True);constant=bpy.data.images.load(scene.render.filepath);control=list(constant.pixels[(8*16+8)*4:(8*16+8)*4+4]);print('GN CONSTANT EMISSION CONTROL',control,flush=True);assert rgba==control,(rgba,control);print('GN PRIVATE ATTRIBUTE ORIGINAL SCENE CONTROL PASS',flush=True)
+
+nt.links.new(nt.nodes.get('Principled BSDF').outputs[0],nt.nodes.get('Material Output').inputs['Surface']);nt.links.new(a.outputs['Vector'],nt.nodes.get('Principled BSDF').inputs['Tangent'])
+bpy.context.view_layer.update();before=(len(bpy.data.scenes),len(bpy.data.objects),len(bpy.data.meshes),len(bpy.data.materials),len(nt.nodes),bpy.data.filepath)
+try:
+    exporter.export_scene(bpy.context.evaluated_depsgraph_get());raise AssertionError('private GN instancer attribute silently replaced')
+except RuntimeError as error:
+    assert 'private Geometry Nodes instancer attributes' in str(error),str(error)
+finally:
+    assert before==(len(bpy.data.scenes),len(bpy.data.objects),len(bpy.data.meshes),len(bpy.data.materials),len(nt.nodes),bpy.data.filepath)
+constant=nt.nodes.new('ShaderNodeCombineXYZ');constant.inputs['X'].default_value=1;nt.links.new(constant.outputs[0],nt.nodes.get('Principled BSDF').inputs['Tangent']);exported,_=exporter.export_scene(bpy.context.evaluated_depsgraph_get());assert any(mesh.tangent_attribute for mesh in exported.meshes)
+print('R1 GN PRIVATE ATTRIBUTE PRIMARY RENDER DIAGNOSTIC UNUSED NODE CLEANUP PASS',flush=True)

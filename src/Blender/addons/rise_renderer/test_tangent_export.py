@@ -88,6 +88,31 @@ class TangentExportTest(unittest.TestCase):
         self.assertEqual(payload.num_tangents,3)
         self.assertEqual([payload.tangent_attribute[i] for i in range(12)],mesh.tangent_attribute)
         self.assertGreater(len(h.keepalive),1)
+    def test_rna_attribute_primary_type_contract(self):
+        class Owner(dict):
+            def path_resolve(self, name):return {'location':(1.,2.,3.),'flag':True,'unsupported':'text'}[name]
+        owner=Owner(custom=2.5)
+        self.assertEqual(tangent._rna_rgba(owner,'custom'),[2.5,2.5,2.5,1])
+        self.assertEqual(tangent._rna_rgba(owner,'location'),[1,2,3,1])
+        self.assertEqual(tangent._rna_rgba(owner,'flag'),[1,1,1,1])
+        self.assertIsNone(tangent._rna_rgba(owner,'unsupported'))
+        self.assertIsNone(tangent._rna_rgba(owner,'missing'))
+    def test_context_uses_reachable_attribute_and_lookup_precedence(self):
+        class Owner(dict):
+            def path_resolve(self,name):raise ValueError(name)
+        node=SimpleNamespace(bl_idname='ShaderNodeAttribute',attribute_type='INSTANCER',attribute_name='value')
+        original=tangent._direction_dependencies
+        tangent._direction_dependencies=lambda socket:[SimpleNamespace(node=node)]
+        try:
+            info={'is_instance':True,'parent':Owner(value=2),'particle_settings':Owner(value=3),'private_instance_attributes':True}
+            self.assertEqual(tangent._shader_context(None,Owner(value=1),info),[['INSTANCER','value',[3,3,3,1]]])
+            info['particle_settings']=None
+            with self.assertRaisesRegex(RuntimeError,'private Geometry Nodes'):tangent._shader_context(None,Owner(value=1),info)
+            info['private_instance_attributes']=False
+            self.assertEqual(tangent._shader_context(None,Owner(value=1),info),[['INSTANCER','value',[2,2,2,1]]])
+            info['is_instance']=False
+            self.assertEqual(tangent._shader_context(None,Owner(value=1),info),[['INSTANCER','value',[1,1,1,1]]])
+        finally:tangent._direction_dependencies=original
     def test_old_payload_has_no_tangent(self):
         h=bridge._SceneHandle.__new__(bridge._SceneHandle);h.keepalive=[]
         mesh=SimpleNamespace(name='old',vertices=[],normals=[],uvs=[],vertex_indices=[],normal_indices=[],uv_indices=[],num_vertices=0,num_normals=0,num_uvs=0,num_triangles=0,double_sided=False,use_face_normals=False)

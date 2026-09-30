@@ -737,7 +737,7 @@ is 1 for the exporter's per-triangle-corner `tangent_attribute`; 0 retains the
 ABI15 global tangent convention. Native/Python versions must both be16.
 Corner expansion preserves normal/UV/material seams. The Indexed4 shader
 array is separate from Tangent4. Object and CSG promote it with the forward
-matrix into a canonical world `cross(N,T)` frame, while preserving the original
+matrix into a canonical world `cross(N,T)` frame, while preserving the
 original UV frame for normal decoding. Generic socket vectors retain their
 normal component: the core projects the promoted RAW vector against the current
 shading normal, and reprojects that raw vector after normal modifiers. The UV
@@ -789,8 +789,39 @@ Source settings, selection, active UV/color data, nodes, materials and mainfile
 path are unchanged; copies, child processes and temporary files are cleaned on
 success/error. Realized instance Object Info Random uses unsigned depsgraph ID
 and exact Cycles float32 conversion, recursively isolating copied nodegroups.
-Ordinary names/color/pass index remain shader-visible. View/ray-dependent nodes
-use bake context. Missing UVs, singular transforms and failed bakes abort.
+Evaluated animation, drivers and constraints are frozen on the disposable
+copy. An identity parent plus the full affine parent-inverse matrix preserves
+parent shear and mirrors exactly through serialization; the reopened child
+checks all world-matrix components before baking. Source parents, dependencies,
+color, custom properties and mainfile state remain intact.
+
+Reachable Object/Instancer Attribute nodes snapshot evaluated source RNA/custom
+properties before that transform snapshot can alter local `location` or other
+RNA fields. Cycles' scalar and float/int array (up to four components) RGBA
+conversion and Fac/Vector/Color/Alpha outputs are preserved, including missing
+attributes. Instancer lookup follows particle settings, private GN instance
+layers, parent, source object, source data precedence. Particle settings and
+parent RNA are available; private Geometry Nodes instance-layer attributes
+(`instance_data`/`instance_idx`) are not exposed by Blender4.5.7 instance RNA.
+A reachable Instancer Attribute requiring that unavailable context aborts with
+a specific diagnostic. An original-scene GN attribute render matches its
+constant-emission control, proving that substituting an object default would
+be wrong. Unused such nodes do not reject a supported direction graph.
+
+From Instancer Generated/UV coordinates ARE supported: snapshot exposed `orco`
+and `uv`, apply Cycles' binary32 `.5*orco-.5` Generated conversion, and preserve
+ordinary-object zero defaults. Rewrites follow reachable group input/output
+bindings and isolate copied groups. Ordinary names/color/pass index remain
+shader-visible. View/ray-dependent nodes use bake context. Missing UVs, singular transforms and failed bakes abort.
+The context contracts above follow Blender4.5.7 primary source:
+[Cycles instance synchronization](https://github.com/blender/blender/blob/v4.5.7/intern/cycles/blender/object.cpp),
+[dupli coordinate getters](https://github.com/blender/blender/blob/v4.5.7/intern/cycles/kernel/svm/tex_coord.h),
+[RNA/private instance lookup and conversion](https://github.com/blender/blender/blob/v4.5.7/source/blender/blenkernel/intern/object_dupli.cc),
+and [Attribute output conversion](https://github.com/blender/blender/blob/v4.5.7/intern/cycles/kernel/svm/attribute.h).
+The GN diagnostic is conservative: private layers may override an otherwise
+available parent/object value; it does not assert every requested name exists
+in a private layer.
+
 A process launch per linked material/instance and full scene serialization can
 be expensive; the executable must provide Cycles.
 

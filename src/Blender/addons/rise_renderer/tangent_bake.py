@@ -39,6 +39,90 @@ def uv_tangent_source(socket):
     return node if node.bl_idname == "ShaderNodeTangent" and node.direction_type == "UV_MAP" else None
 
 
+def _direction_dependencies(socket):
+    """Collect reachable outputs with node-group instance input bindings."""
+    seen, outputs = set(), []
+    def input_socket(inp, groups):
+        if inp.is_linked:
+            output_socket(inp.links[0].from_socket, groups)
+    def output_socket(out, groups):
+        key = (out.as_pointer(), tuple(group.as_pointer() for group in groups))
+        if key in seen:
+            return
+        seen.add(key)
+        outputs.append(out)
+        node = out.node
+        if node.bl_idname == 'NodeGroupInput':
+            if groups:
+                index = list(node.outputs).index(out)
+                if index < len(groups[-1].inputs):
+                    input_socket(groups[-1].inputs[index], groups[:-1])
+        elif node.bl_idname == 'ShaderNodeGroup' and node.node_tree:
+            output = next((n for n in node.node_tree.nodes
+                           if n.bl_idname == 'NodeGroupOutput' and n.is_active_output), None)
+            index = list(node.outputs).index(out)
+            if output and index < len(output.inputs):
+                input_socket(output.inputs[index], groups + (node,))
+        else:
+            for inp in node.inputs:
+                if not getattr(inp, 'is_unavailable', False):
+                    input_socket(inp, groups)
+    input_socket(socket, ())
+    return outputs
+
+
+def _f32(value):
+    import struct
+    return struct.unpack('f', struct.pack('f', value))[0]
+
+
+def _rna_rgba(owner, name):
+    """Cycles BKE_object_dupli_find_rgba_attribute scalar/array RNA contract."""
+    if owner is None:
+        return None
+    try:
+        value = owner[name] if name in owner else owner.path_resolve(name)
+    except (KeyError, ValueError, AttributeError, TypeError):
+        return None
+    if isinstance(value, (bool, int, float)):
+        return [_f32(value)] * 3 + [1.0]
+    try:
+        values = list(value)
+    except TypeError:
+        return None
+    if len(values) > 4 or not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in values):
+        return None
+    result = [0.0, 0.0, 0.0, 1.0]
+    result[:len(values)] = [_f32(v) for v in values]
+    return result
+
+
+def _shader_context(socket, source_object, instance_info):
+    """Freeze only source context lost by realizing an evaluated target."""
+    info = instance_info or {}
+    snapshots = {}
+    for out in _direction_dependencies(socket):
+        node = out.node
+        if node.bl_idname != 'ShaderNodeAttribute' or node.attribute_type not in {'OBJECT', 'INSTANCER'}:
+            continue
+        key = (node.attribute_type, node.attribute_name)
+        if key in snapshots:
+            continue
+        value = None
+        if node.attribute_type == 'INSTANCER' and info.get('is_instance'):
+            value = _rna_rgba(info.get('particle_settings'), node.attribute_name)
+            if value is None and info.get('private_instance_attributes'):
+                raise RuntimeError('RISE Tangent bake cannot reconstruct private Geometry Nodes instancer attributes from Blender DepsgraphObjectInstance RNA: ' + node.attribute_name)
+            if value is None:
+                value = _rna_rgba(info.get('parent'), node.attribute_name)
+        if value is None:
+            value = _rna_rgba(source_object, node.attribute_name)
+        if value is None:
+            value = _rna_rgba(getattr(source_object, 'data', None), node.attribute_name)
+        snapshots[key] = value if value is not None else [0.0] * 4
+    return [[kind, name, rgba] for (kind, name), rgba in snapshots.items()]
+
+
 def _unit(vector):
     """Normalize representation magnitude first; finite scale cannot mean zero."""
     if not all(math.isfinite(v) for v in vector):
@@ -115,8 +199,9 @@ def corner_tangents(mesh, material, matrix_world, source_object=None, instance_i
 
 def _bake_graph(mesh, material, matrix_world, source_object, instance_info, used_corners, allow_parallel):
     import bpy
-    from mathutils import Vector
-    scene = obj = copied_mesh = copied_material = None
+    from mathutils import Matrix, Vector
+    context = _shader_context(find_tangent_socket(material), source_object, instance_info)
+    scene = obj = affine_parent = copied_mesh = copied_material = None
     try:
         # Copy scene settings/world and retain the surrounding object dependencies:
         # AO and object-reference graphs must see the same scene, not a lone quad.
@@ -144,8 +229,23 @@ def _bake_graph(mesh, material, matrix_world, source_object, instance_info, used
             obj["rise_bake_target"] = True
         if instance_info and instance_info.get("is_instance"):
             obj["rise_instance_random_id"] = str(int(instance_info["random_id"]) & 0xffffffff)
+        obj['rise_attribute_context'] = json.dumps(context)
+        info = instance_info or {}
+        generated = [_f32(_f32(.5 * v) - .5) for v in info.get('orco', (0, 0, 0))] if info.get('is_instance') else [0.0] * 3
+        uv = list(info.get('uv', (0, 0))) + [0.0] if info.get('is_instance') else [0.0] * 3
+        obj['rise_dupli_generated'] = generated
+        obj['rise_dupli_uv'] = uv
         scene.collection.objects.link(obj)
-        obj.matrix_world = matrix_world
+        # RNA matrix_world assignment decomposes to TRS and loses parent shear.
+        # An identity parent with an arbitrary parent-inverse matrix preserves
+        # the exact affine frame through .blend serialization and child updates.
+        affine_parent = bpy.data.objects.new('RISE tangent affine parent', None)
+        scene.collection.objects.link(affine_parent)
+        obj.parent = affine_parent
+        obj.parent_type = 'OBJECT'
+        obj.matrix_parent_inverse = matrix_world
+        obj.matrix_basis = Matrix.Identity(4)
+        obj['rise_expected_world_matrix'] = [value for row in matrix_world for value in row]
         scene.render.engine = "CYCLES"
         scene.cycles.samples = 1
         with tempfile.TemporaryDirectory(prefix="rise-tangent-") as directory:
@@ -174,6 +274,8 @@ def _bake_graph(mesh, material, matrix_world, source_object, instance_info, used
         # Removing our copies releases their dependencies; original data remains.
         if obj is not None:
             bpy.data.objects.remove(obj, do_unlink=True)
+        if affine_parent is not None:
+            bpy.data.objects.remove(affine_parent, do_unlink=True)
         if scene is not None:
             bpy.data.scenes.remove(scene)
         if copied_mesh is not None:
@@ -195,29 +297,51 @@ def _run_bake(output_path):
             other.name = "RISE original bake source"
     bpy.context.view_layer.objects.active = obj
     obj.select_set(True)
+    bpy.context.view_layer.update()
+    actual = [value for row in obj.matrix_world for value in row]
+    expected = list(obj['rise_expected_world_matrix'])
+    if actual != expected:
+        raise RuntimeError('RISE Tangent child failed to preserve the exact affine world matrix.')
     if "rise_source_name" in obj:
         obj.name = obj["rise_source_name"]
     mesh = obj.data
     mat = mesh.materials[0]
-    # Realized instances lose Cycles' dupli random identity. Preserve exactly
-    # the value Cycles exports (intern/cycles/scene/object.cpp, Blender 4.5),
-    # rather than hashing the temporary object's name. Rewire inside the child
-    # only, recursively copying groups to isolate surrounding-scene materials.
-    if "rise_instance_random_id" in obj:
-        import struct
-        f32 = lambda x: struct.unpack('f', struct.pack('f', x))[0]
-        random_value = f32(f32(int(obj["rise_instance_random_id"])) * f32(1.0 / f32(0xFFFFFFFF)))
-        def replace_random(tree):
-            for n in list(tree.nodes):
-                if n.bl_idname == 'ShaderNodeGroup' and n.node_tree:
-                    n.node_tree = n.node_tree.copy()
-                    replace_random(n.node_tree)
-                elif n.bl_idname == 'ShaderNodeObjectInfo':
-                    value = tree.nodes.new('ShaderNodeValue')
-                    value.outputs[0].default_value = random_value
-                    for link in list(n.outputs['Random'].links):
-                        tree.links.new(value.outputs[0], link.to_socket)
-        replace_random(mat.node_tree)
+    # Isolate groups before replacing source identity/RNA/dupli constants.
+    # Surrounding scene dependencies retain their original shader graphs.
+    snapshots = {(kind, name): rgba for kind, name, rgba in json.loads(obj['rise_attribute_context'])}
+    random_value = None
+    if 'rise_instance_random_id' in obj:
+        random_value = _f32(_f32(int(obj['rise_instance_random_id'])) * _f32(1.0 / _f32(0xFFFFFFFF)))
+    def vector_constant(tree, values):
+        node = tree.nodes.new('ShaderNodeCombineXYZ')
+        for inp, value in zip(node.inputs, values):
+            inp.default_value = value
+        return node.outputs[0]
+    def scalar_constant(tree, value):
+        node = tree.nodes.new('ShaderNodeValue')
+        node.outputs[0].default_value = value
+        return node.outputs[0]
+    def rewire(tree, output, replacement):
+        for link in list(output.links):
+            tree.links.new(replacement, link.to_socket)
+    def preserve_context(tree):
+        for n in list(tree.nodes):
+            if n.bl_idname == 'ShaderNodeGroup' and n.node_tree:
+                n.node_tree = n.node_tree.copy()
+                preserve_context(n.node_tree)
+            elif n.bl_idname == 'ShaderNodeObjectInfo' and random_value is not None:
+                rewire(tree, n.outputs['Random'], scalar_constant(tree, random_value))
+            elif n.bl_idname == 'ShaderNodeTexCoord' and n.from_instancer:
+                for name, key in (('Generated', 'rise_dupli_generated'), ('UV', 'rise_dupli_uv')):
+                    rewire(tree, n.outputs[name], vector_constant(tree, obj[key]))
+            elif n.bl_idname == 'ShaderNodeAttribute' and (n.attribute_type, n.attribute_name) in snapshots:
+                rgba = snapshots[(n.attribute_type, n.attribute_name)]
+                color = tree.nodes.new('ShaderNodeRGB'); color.outputs[0].default_value = rgba
+                rewire(tree, n.outputs['Color'], color.outputs[0])
+                rewire(tree, n.outputs['Vector'], vector_constant(tree, rgba[:3]))
+                rewire(tree, n.outputs['Fac'], scalar_constant(tree, _f32(_f32(_f32(rgba[0] + rgba[1]) + rgba[2]) / 3)))
+                rewire(tree, n.outputs['Alpha'], scalar_constant(tree, rgba[3]))
+    preserve_context(mat.node_tree)
     # Resolve the same Principled socket without importing the add-on package.
     nt = mat.node_tree
     out = next(n for n in nt.nodes if n.bl_idname == "ShaderNodeOutputMaterial" and n.is_active_output)

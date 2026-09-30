@@ -4676,7 +4676,10 @@ def export_scene(depsgraph) -> tuple[SceneData, RenderSettingsData]:
 
             _warn_legacy_particle_hair(original_object, state)
 
-            mesh_buckets = _mesh_buckets(eval_object, state, object_instance.matrix_world.copy(), {"is_instance": object_instance.is_instance, "random_id": object_instance.random_id})
+            mesh_buckets = _mesh_buckets(eval_object, state, object_instance.matrix_world.copy(), {"is_instance": object_instance.is_instance, "random_id": object_instance.random_id,
+                "orco": tuple(object_instance.orco), "uv": tuple(object_instance.uv), "parent": object_instance.parent,
+                "particle_settings": object_instance.particle_system.settings if object_instance.particle_system else None,
+                "private_instance_attributes": bool(object_instance.is_instance and object_instance.parent and any(m.type == 'NODES' for m in object_instance.parent.modifiers))})
             if not mesh_buckets:
                 continue
 
