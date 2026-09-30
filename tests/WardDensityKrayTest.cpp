@@ -467,8 +467,32 @@ static double WardFullAlbedoTwoGrid( const IBSDF& brdf, const RayIntersectionGeo
 	return sum;
 }
 
+class WardEndpointSampler : public ISampler {
+    double x,y; unsigned int dimension;
+public:
+    WardEndpointSampler(double x_,double y_) : x(x_),y(y_),dimension(0) {}
+    Scalar Get1D() override { return (dimension++ & 1) ? y : x; }
+    Point2 Get2D() override { return Point2(Get1D(),Get1D()); }
+};
+
 // DL-324: finite rounded inputs, evaluated through the public material consumers.
 // Long-double frame projections are an independent analytic GMD Ward oracle.
+// Independent integral over elliptical Gaussian slopes: at each azimuth
+// the positive shading-horizon root S bounds accepted radii; radial tail
+// mass is exp(-S^2). Black diffuse is still an emitted fallback ray when
+// the specular sample is rejected, so even pure RGB spec has this Pdf term.
+static double WardBlackDiffuseFallback(const Vector3& wi,const OrthonormalBasis3D& onb,double ax,double ay) {
+    const long double ci=Vector3Ops::Dot(wi,onb.w()), vx=Vector3Ops::Dot(wi,onb.u()), vy=Vector3Ops::Dot(wi,onb.v());
+    long double total=0;
+    for(int i=0;i<2048;++i) {
+        const long double phi=2*acosl(-1.L)*(i+.5L)/2048;
+        const long double x=ax*cosl(phi), y=ay*sinl(phi), a2=x*x+y*y, sv=x*vx+y*vy;
+        const long double d=sqrtl(sv*sv+ci*ci*a2);
+        const long double root=sv<0 ? ci/(d-sv) : (d+sv)/(ci*a2);
+        total+=expl(-root*root);
+    }
+    return double(total/2048);
+}
 static void TestRoundedWardPoles(const IORStack& stack)
 {
     auto* black = new UniformColorPainter(RISEPel(0,0,0)); black->addref();
@@ -503,6 +527,7 @@ static void TestRoundedWardPoles(const IORStack& stack)
                                : static_cast<ISPF*>(new WardIsotropicGaussianSPF(*black,*white,*ax)); spf->addref();
                 const RISEPel f=brdf->value(out,ri);
                 const double fn=brdf->valueNM(out,ri,550), rs=GuardedGetColorNM(*white,ri,550);
+                const double diffuseNM=std::min(GuardedGetColorNM(*black,ri,550),std::max(0.0,1-rs))*INV_PI;
                 const double lf=spf->EvaluateLobeFNM(ri,out,ScatteredRay::eRayReflection,550,stack);
                 const double pdf=spf->Pdf(ri,out,stack), pn=spf->PdfNM(ri,out,550,stack);
                 Check(std::isfinite(f[0]) && std::isfinite(fn) && std::isfinite(lf) && std::isfinite(pdf) && std::isfinite(pn),
@@ -512,10 +537,16 @@ static void TestRoundedWardPoles(const IORStack& stack)
                 const long double exponent=-(hx*hx/(.01L*.01L)+hy*hy/((model?.37L:.01L)*(model?.37L:.01L)))/(hz*hz);
                 const double kernel=(double)(expl(exponent)/(4*acosl(-1.L)*.01L*(model?.37L:.01L)*hd*hd*hz*hz*hz*hz));
                 const double co=Vector3Ops::Dot(n,out), ci=Vector3Ops::Dot(n,in);
+                if(frame==0 && pair==0) std::cout << "axis pole model=" << model << " rgb=" << f[0] << " nm=" << fn << " expected=" << rs*kernel+diffuseNM << " rs=" << rs << " diffuseNM=" << GuardedGetColorNM(*black,ri,550) << " lobe=" << lf << " pdf=" << pdf << std::endl;
+
                 if(co>0 && ci>0) {
                     Check(std::isfinite(f[0]) && fabs(f[0]-.5*kernel)<=1e-8*(1+kernel), "DL-324 independent long-double analytic RGB value");
-                    Check(std::isfinite(fn) && fabs(fn-rs*kernel)<=1e-8*(1+kernel), "DL-324 independent long-double analytic NM value");
-                    Check(std::isfinite(lf) && fabs(lf-fn)<=1e-8*(1+fabs(fn)), "DL-324 HWSS companion lobe agrees with public valueNM");
+                    Check(std::isfinite(fn) && fabs(fn-(rs*kernel+diffuseNM))<=1e-8*(1+kernel), "DL-324 independent long-double analytic NM value");
+                    Check(std::isfinite(lf) && fabs(lf-(fn-diffuseNM))<=1e-8*(1+fabs(fn)), "DL-324 HWSS companion specular lobe agrees with public valueNM minus spectral diffuse");
+                    const double ratio=2*co/(ci+co);
+                    const double companion=spf->EvaluateKrayNM(ri,out,ScatteredRay::eRayReflection,550,stack,.37);
+                    Check(std::isfinite(companion) && fabs(companion-rs*kernel*co/.37)<=1e-8*(1+fabs(companion)), "DL-324 HWSS uses explicit hero density");
+                    Check(std::isfinite(pdf) && fabs(pdf-(kernel*co/ratio+WardBlackDiffuseFallback(in,onb,.01,model?.37:.01)*co*INV_PI))<=1e-5*(1+kernel), "DL-324 RGB Pdf includes analytic specular kray and independently integrated black-diffuse fallback");
                     RayIntersectionGeometric reverse=ri; reverse.ray.Set(Point3(0,0,1),-out);
                     const double rev=brdf->value(in,reverse)[0];
                     Check(std::isfinite(rev) && fabs(rev-f[0])<=1e-8*(1+fabs(f[0])), "DL-324 reciprocal rounded-pole value");
@@ -527,6 +558,62 @@ static void TestRoundedWardPoles(const IORStack& stack)
     std::cout << "DL-324 finite constructed dot>1 leads: normal=" << roundedNormal << " tangent=" << roundedTangent << std::endl;
     Check(roundedNormal>0, "DL-324 fixture really contains finite normalized dot > 1");
     Check(roundedTangent>0, "DL-324 fixture really contains finite tangential normalized dot > 1");
+    // The sampler contract is [0,1); include 1 as a finite pole control.
+    const double endpoints[]={0,.25,.5,.75,std::nextafter(1.0,0.0),1};
+    auto* axRGB=new RGBScalarPainter(.01,.03,.2); axRGB->addref();
+    auto* ayRGB=new RGBScalarPainter(.37,.01,.05); ayRGB->addref();
+    for(int model=0;model<2;++model) {
+        ISPF* spf=model?static_cast<ISPF*>(new WardAnisotropicEllipticalGaussianSPF(*black,*white,*axRGB,*ayRGB))
+                      :static_cast<ISPF*>(new WardIsotropicGaussianSPF(*black,*white,*axRGB));spf->addref();
+        IBSDF* brdf=model?static_cast<IBSDF*>(new WardAnisotropicEllipticalGaussianBRDF(*black,*white,*axRGB,*ayRGB))
+                        :static_cast<IBSDF*>(new WardIsotropicGaussianBRDF(*black,*white,*axRGB));brdf->addref();
+        for(double x:endpoints) for(double y:endpoints) for(int grazing=0;grazing<2;++grazing) {
+            RayIntersectionGeometric ri=MakeIntersection(grazing?89.99*PI/180:0);
+            ri.onb.CreateFromW(Vector3(.37,.43,.82));ri.vNormal=ri.vGeomNormal=ri.onb.w();
+            const double t=grazing?89.99*PI/180:0;
+            ri.ray.Set(Point3(0,0,1),-(ri.onb.w()*cos(t)+ri.onb.u()*sin(t)));
+            for(int spectral=0;spectral<2;++spectral) {
+                WardEndpointSampler sampler(x,y);ScatteredRayContainer rays;
+                if(spectral) spf->ScatterNM(ri,sampler,550,rays,stack); else spf->Scatter(ri,sampler,rays,stack);
+                for(unsigned int i=0;i<rays.Count();++i) {
+                    const ScatteredRay& ray=rays[i];
+                    Check(std::isfinite(ray.pdf) && ray.pdf>=0 && std::isfinite(ray.krayNM) && std::isfinite(ray.kray[0]) && std::isfinite(ray.ray.Dir().x), "DL-324 endpoint Scatter RGB/NM and chromatic replay finite");
+                    Check(std::isfinite(spf->Pdf(ri,ray.ray.Dir(),stack)) && std::isfinite(spf->PdfNM(ri,ray.ray.Dir(),550,stack)), "DL-324 endpoint query densities finite");
+                    const double f=brdf->valueNM(ray.ray.Dir(),ri,550);
+                    Check(std::isfinite(f) && std::isfinite(brdf->value(ray.ray.Dir(),ri)[0]), "DL-324 endpoint live BRDF finite");
+                    if(ray.type==ScatteredRay::eRayReflection && ray.pdf>0) {
+                        const double companion=spf->EvaluateKrayNM(ri,ray.ray.Dir(),ray.type,600,stack,ray.pdf);
+                        Check(std::isfinite(companion), "DL-324 endpoint HWSS companion with stored hero pdf finite");
+                    }
+                }
+            }
+        }
+        spf->release();brdf->release();
+    }
+    axRGB->release();ayRGB->release();
+    // Small finite axes amplify the SPF's formerly negative 1-cos^2
+    // exponent at dot>1. This checks the density sibling, not only acos.
+    auto* tiny=new UniformScalarPainter(1e-9);tiny->addref();
+    int tinyDotOvershoots=0;
+    for(int frame=1;frame<128;++frame) {
+        RayIntersectionGeometric ri=MakeIntersection(0);ri.onb.CreateFromW(Vector3(.17+frame*.013,.31-frame*.009,.83));
+        ri.vNormal=ri.vGeomNormal=ri.onb.w();ri.ray.Set(Point3(0,0,1),-ri.onb.w());
+        const Vector3 out=ri.onb.w();
+        const Vector3 h=Vector3Ops::Normalize(Vector3Ops::Normalize(out)+Vector3Ops::Normalize(out));
+        if(Vector3Ops::Dot(h,out)<=1) continue;
+        ++tinyDotOvershoots;
+        for(int model=0;model<2;++model) {
+            ISPF* spf=model?static_cast<ISPF*>(new WardAnisotropicEllipticalGaussianSPF(*black,*white,*tiny,*tiny))
+                          :static_cast<ISPF*>(new WardIsotropicGaussianSPF(*black,*white,*tiny));spf->addref();
+            const double p=spf->Pdf(ri,out,stack), pn=spf->PdfNM(ri,out,550,stack);
+            const double peak=1/(4*PI*1e-18);
+            Check(std::isfinite(p) && fabs(p/peak-1)<1e-8 && std::isfinite(pn) && fabs(pn/peak-1)<1e-3, "DL-324 small-axis dot>1 Pdf stays at finite pole peak, never a growing Gaussian");
+            spf->release();
+        }
+    }
+    Check(tinyDotOvershoots>0, "DL-324 small-axis fixture really exercises finite normalized dot>1");
+    std::cout << "DL-324 small-axis dot>1 cases=" << tinyDotOvershoots << std::endl;
+    tiny->release();
     black->release(); white->release();
 }
 

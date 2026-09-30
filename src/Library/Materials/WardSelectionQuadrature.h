@@ -4,9 +4,31 @@
 #ifndef RISE_WARD_SELECTION_QUADRATURE_H
 #define RISE_WARD_SELECTION_QUADRATURE_H
 #include "../Utilities/Math3D/Math3D.h"
+#include "../Utilities/Color/Color.h"
 #include <algorithm>
 #include <cmath>
 namespace RISE { namespace Implementation { namespace WardSelection {
+// DL-324: evaluate the Ward Gaussian from frame slopes. In an orthonormal
+// frame tan^2(theta) D(phi) = (hx/ax)^2/hz^2 + (hy/ay)^2/hz^2.
+// No acos domain, normalized zero tangent, or subtractive 1-hz^2 is needed.
+// Exact poles have zero slopes; a rounded hz > 1 still has a nonnegative
+// exponent. Returning an underflowed Gaussian before denominator arithmetic
+// avoids 0 * infinity at the grazing limit. This does not change energy policy.
+inline double SlopeExponent(double hx,double hy,double hz,double ax,double ay) {
+    const double sx=(hx/hz)/ax, sy=(hy/hz)/ay;
+    return sx*sx+sy*sy;
+}
+inline double SpecularKernel(double hx,double hy,double hz,double hd,double ax,double ay) {
+    if(hz<=0 || hd<=0 || ax<=0 || ay<=0) return 0;
+    const double gaussian=std::exp(-SlopeExponent(hx,hy,hz,ax,ay));
+    if(gaussian==0) return 0;
+    return gaussian/(4*PI*ax*ay*hd*hd*hz*hz*hz*hz);
+}
+inline RISEPel SpecularKernel(double hx,double hy,double hz,double hd,const RISEPel& ax,const RISEPel& ay) {
+    return RISEPel(SpecularKernel(hx,hy,hz,hd,ax[0],ay[0]),
+                   SpecularKernel(hx,hy,hz,hd,ax[1],ay[1]),
+                   SpecularKernel(hx,hy,hz,hd,ax[2],ay[2]));
+}
 // DL-310: Ward's coupled diffuse reflectance.  The reciprocal coupling
 // min(Rd, 1 - A(i), 1 - A(o)) (SchlickDirectionalAlbedo.h) with A = Rs --
 // the Geisler-Moroder-Duer specular family's own albedo BOUND (DL-212)

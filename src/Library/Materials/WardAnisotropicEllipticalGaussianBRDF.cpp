@@ -58,6 +58,7 @@ static void ComputeFactors(
 	const RayIntersectionGeometric& ri,
 	const Vector3& n,
 	const Vector3& u,
+	const Vector3& v,
 	const T& alphax,
 	const T& alphay
 	)
@@ -90,18 +91,9 @@ static void ComputeFactors(
 		const Vector3 h = Vector3Ops::Normalize(l+r);
 		const Scalar nh = Vector3Ops::Dot(n,h);
 
-		const Scalar phi = acos(Vector3Ops::Dot(u,Vector3Ops::Normalize(h-(nh*n))));
-
-		// Geisler-Moroder & Duer 2010, same normalization as isotropic.
-		const Scalar hv = Vector3Ops::Dot(h,r);
-		const Scalar first = 1.0 / (hv*hv*nh*nh*nh*nh);
-		const Scalar tanh = tan(acos(nh));
-
-		const T inside = (cos(phi)*cos(phi))/(alphax*alphax) + (sin(phi)*sin(phi))/(alphay*alphay);
-		const T second = exp( -(tanh*tanh)*inside );
-		const T third = 1.0 / (FOUR_PI*alphax*alphay);
-
-		specular = first*second*third;
+        const Scalar hu = Vector3Ops::Dot(h,u);
+        const Scalar hv = Vector3Ops::Dot(h,v);
+        specular = WardSelection::SpecularKernel(hu,hv,nh,Vector3Ops::Dot(h,r),alphax,alphay);
 	}
 }
 
@@ -117,14 +109,13 @@ RISEPel WardAnisotropicEllipticalGaussianBRDF::value( const Vector3& vLightIn, c
 	// WardAnisotropicEllipticalGaussianSPF's FlipW (same condition), so
 	// value() agrees with Scatter()/Pdf() on back-face hits.  FlipW negates
 	// both W and U (OrthonormalBasis3D::FlipW), so both are re-derived here
-	// even though ComputeFactors' phi term happens to be U-sign-invariant
-	// (acos()/squared usage) -- match the SPF's frame convention exactly
+	// even though the squared frame slopes are U-sign-invariant -- match the SPF's frame convention exactly
 	// rather than relying on that invariance.
 	OrthonormalBasis3D myonb = ri.onb;
 	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
 		myonb.FlipW();
 	}
-	ComputeFactors<RISEPel>( d, s, vLightIn, ri, myonb.w(), myonb.u(), ax, ay );
+	ComputeFactors<RISEPel>( d, s, vLightIn, ri, myonb.w(), myonb.u(), myonb.v(), ax, ay );
 
 	// DL-310: the diffuse term is coupled to the specular lobe's albedo
 	// bound -- see WardSelection::CoupledDiffuse.
@@ -143,7 +134,7 @@ Scalar WardAnisotropicEllipticalGaussianBRDF::valueNM( const Vector3& vLightIn, 
 	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) {
 		myonb.FlipW();
 	}
-	ComputeFactors<Scalar>( d, s, vLightIn, ri, myonb.w(), myonb.u(), pAlphaX->GetValueAtNM(ri,nm), pAlphaY->GetValueAtNM(ri,nm) );
+	ComputeFactors<Scalar>( d, s, vLightIn, ri, myonb.w(), myonb.u(), myonb.v(), pAlphaX->GetValueAtNM(ri,nm), pAlphaY->GetValueAtNM(ri,nm) );
 
 	const Scalar rsNM = GuardedGetColorNM( *pSpecular, ri, nm );
 	return d*WardSelection::CoupledDiffuse( GuardedGetColorNM( *pDiffuse, ri, nm ), rsNM ) + s*rsNM;

@@ -132,7 +132,8 @@ static inline Scalar WardAnisoHalfDensity(
 		return 0;
 	}
 	const Scalar c2 = cosThetaH * cosThetaH;
-	return exp( -tan2D ) / ( PI * ax * ay * c2 * cosThetaH );
+	const Scalar gaussian = exp(-tan2D);
+	return gaussian == 0 ? Scalar(0) : gaussian / (PI * ax * ay * c2 * cosThetaH);
 }
 
 //! DL-212, Geisler-Moroder & Duer (2010):
@@ -491,7 +492,8 @@ static Scalar WardAnisoSpecularDensity(
 	if( phi < 0 ) {
 		phi += TWO_PI;
 	}
-	const Scalar tan2 = ( 1.0 - cosThetaH*cosThetaH ) / ( cosThetaH*cosThetaH );
+	// Frame slopes remain nonnegative at rounded poles.
+	const Scalar slopeX = hu/cosThetaH, slopeY = hv/cosThetaH;
 
 	Scalar sum = 0;
 
@@ -500,9 +502,8 @@ static Scalar WardAnisoSpecularDensity(
 		if( axi <= 0 || ayi <= 0 ) {
 			continue;
 		}
-		const Scalar cp = cos( phi ), sp = sin( phi );
-		const Scalar denom_i = (cp*cp)/(axi*axi) + (sp*sp)/(ayi*ayi);
-		const Scalar pdf_i = WardAnisoHalfDensity( cosThetaH, tan2 * denom_i, axi, ayi )
+		const Scalar exponent_i = (slopeX/axi)*(slopeX/axi) + (slopeY/ayi)*(slopeY/ayi);
+		const Scalar pdf_i = WardAnisoHalfDensity( cosThetaH, exponent_i, axi, ayi )
 		                   / ( 4.0 * hdotwo );
 		if( pdf_i <= 0 ) {
 			continue;
@@ -516,7 +517,7 @@ static Scalar WardAnisoSpecularDensity(
 			// Invert lane i to the random pair it must have drawn, then
 			// replay every sibling through the SAME pair.
 			const Scalar xi1 = WardAnisoXiFromPhi( phi, axi, ayi );
-			const Scalar xi2Log = tan2 * denom_i;		// = -ln(xi2)
+			const Scalar xi2Log = exponent_i;		// = -ln(xi2)
 			for( int j = 0; j < lobes.count; j++ ) {
 				if( j == i ) {
 					continue;
@@ -716,14 +717,8 @@ Scalar WardAnisotropicEllipticalGaussianSPF::EvaluateLobeFNM(
 
 	const Scalar hu = Vector3Ops::Dot( h, myonb.u() );
 	const Scalar hv = Vector3Ops::Dot( h, myonb.v() );
-	Scalar phi = atan2( hv, hu );
-	if( phi < 0 ) {
-		phi += TWO_PI;
-	}
-	const Scalar tan2 = ( 1.0 - cos_h * cos_h ) / ( cos_h * cos_h );
-	const Scalar cp = cos( phi ), sp = sin( phi );
-	const Scalar denom = (cp*cp)/(ax*ax) + (sp*sp)/(ay*ay);
-	const Scalar pdf_h = WardAnisoHalfDensity( cos_h, tan2 * denom, ax, ay );
+    const Scalar exponent = WardSelection::SlopeExponent(hu,hv,cos_h,ax,ay);
+    const Scalar pdf_h = WardAnisoHalfDensity(cos_h,exponent,ax,ay);
 	const Scalar pdf = pdf_h / ( 4.0 * hdotwo );
 
 	const Scalar kray = GuardedGetColorNM( *pSpecular, ri, nm ) * ratio;

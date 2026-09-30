@@ -66,14 +66,14 @@ void WardIsotropicGaussianSPF::SetAlpha( const IScalarPainter& v )  { v.addref()
 //! `cos(theta_h) * exp(...) / (PI alpha^2)` instead -- the true density
 //! times `cos^4(theta_h)`, measured exactly that way per draw in
 //! `tests/WardDensityKrayTest.cpp` section C.
-static inline Scalar WardIsoHalfDensity( const Scalar cosThetaH, const Scalar alphaSq )
+static inline Scalar WardIsoHalfDensity( const Scalar cosThetaH, const Scalar alphaSq, const Scalar tan2 )
 {
 	if( cosThetaH <= 0 || alphaSq <= 0 ) {
 		return 0;
 	}
 	const Scalar c2 = cosThetaH * cosThetaH;
-	const Scalar tan2 = ( 1.0 - c2 ) / c2;
-	return exp( -tan2 / alphaSq ) / ( PI * alphaSq * c2 * cosThetaH );
+	const Scalar gaussian = exp(-tan2/alphaSq);
+	return gaussian == 0 ? Scalar(0) : gaussian / (PI * alphaSq * c2 * cosThetaH);
 }
 
 //! DL-212, Geisler-Moroder & Duer (2010):
@@ -191,7 +191,7 @@ static void GenerateSpecularRay(
 		// times `cos^4(theta_h)` -- so `Pdf`, MIS and the per-lobe
 		// pairing were all quoting a function that is not a density.
 		const Scalar alpha_sq = alpha * alpha;
-		const Scalar pdf_h = WardIsoHalfDensity( cos_theta, alpha_sq );
+		const Scalar pdf_h = WardIsoHalfDensity( cos_theta, alpha_sq, (sin_theta/cos_theta)*(sin_theta/cos_theta) );
 		const Scalar hdotwo = Vector3Ops::Dot( h, ret );
 		specular.pdf = ( hdotwo > 0 ) ? ( pdf_h / (4.0 * hdotwo) ) : Scalar(0);
 
@@ -417,12 +417,12 @@ static Scalar WardIsoSpecularDensity(
 	const Scalar cosP = ( hr > NEARZERO ) ? ( hu / hr ) : Scalar(1);
 	const Scalar sinP = ( hr > NEARZERO ) ? ( hv / hr ) : Scalar(0);
 
-	const Scalar tanThetaH = sqrt( r_max( Scalar(0), 1.0 - cosThetaH*cosThetaH ) ) / cosThetaH;
+	const Scalar tanThetaH = hr / cosThetaH;
 
 	Scalar sum = 0;
 
 	for( int i = 0; i < lobes.count; i++ ) {
-		const Scalar pdf_i = WardIsoHalfDensity( cosThetaH, lobes.alpha[i]*lobes.alpha[i] )
+		const Scalar pdf_i = WardIsoHalfDensity( cosThetaH, lobes.alpha[i]*lobes.alpha[i], tanThetaH*tanThetaH )
 		                   / ( 4.0 * hdotwo );
 		if( pdf_i <= 0 ) {
 			continue;
@@ -660,7 +660,9 @@ Scalar WardIsotropicGaussianSPF::EvaluateLobeFNM(
 
 	const Scalar kray = GuardedGetColorNM( *pSpecular, ri, nm ) * ratio;
 	const Scalar alpha = pAlpha->GetValueAtNM( ri, nm );
-	const Scalar pdf_h = WardIsoHalfDensity( cos_h, alpha * alpha );
+	const Scalar hu = Vector3Ops::Dot(h,myonb.u())/cos_h;
+	const Scalar hv = Vector3Ops::Dot(h,myonb.v())/cos_h;
+	const Scalar pdf_h = WardIsoHalfDensity( cos_h, alpha * alpha, hu*hu+hv*hv );
 	const Scalar pdf = pdf_h / (4.0 * hdotwo);
 
 	return ( kray * pdf ) / cos_o;

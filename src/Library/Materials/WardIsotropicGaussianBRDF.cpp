@@ -50,10 +50,11 @@ static void ComputeFactors(
 	T& specular,
 	const Vector3& vLightIn, 
 	const RayIntersectionGeometric& ri, 
-	const Vector3& n,
+	const OrthonormalBasis3D& onb,
 	const T& alpha
 	)
 {
+	const Vector3 n = onb.w();
 	Vector3 v = Vector3Ops::Normalize(vLightIn); // light vector
 	Vector3 r = Vector3Ops::Normalize(-ri.ray.Dir()); // outgoing ray vector
 
@@ -82,14 +83,8 @@ static void ComputeFactors(
 		const Vector3 h = Vector3Ops::Normalize(v+r);
 		const Scalar hn = Vector3Ops::Dot(n,h);
 
-		// Geisler-Moroder & Duer 2010 bounded-albedo normalization.
-		const Scalar hv = Vector3Ops::Dot(h,r);
-		const Scalar first = 1.0 / (hv*hv*hn*hn*hn*hn);
-		const Scalar tanh = tan(acos(hn));
-		const T sqralpha = alpha*alpha;
-		const T second = exp( -(tanh*tanh)/sqralpha ) / (FOUR_PI*sqralpha);
-
-		specular = first*second;
+        specular = WardSelection::SpecularKernel(Vector3Ops::Dot(h,onb.u()),
+            Vector3Ops::Dot(h,onb.v()),hn,Vector3Ops::Dot(h,r),alpha,alpha);
 	}
 }
 
@@ -103,8 +98,9 @@ RISEPel WardIsotropicGaussianBRDF::value( const Vector3& vLightIn, const RayInte
 	// FlipW (same condition), so value() agrees with Scatter()/Pdf() on
 	// back-face hits -- ComputeFactors' geomN gate orients to whatever n
 	// it's given, so the flip propagates through automatically.
-	const Vector3 n = ( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) ? -ri.onb.w() : ri.onb.w();
-	ComputeFactors<RISEPel>( d, s, vLightIn, ri, n, a );
+	OrthonormalBasis3D onb = ri.onb;
+	if(Vector3Ops::Dot(ri.ray.Dir(),onb.w())>NEARZERO) onb.FlipW();
+	ComputeFactors<RISEPel>( d, s, vLightIn, ri, onb, a );
 
 	// DL-310: the diffuse term is coupled to the specular lobe's albedo
 	// bound -- see WardSelection::CoupledDiffuse.
@@ -119,8 +115,9 @@ Scalar WardIsotropicGaussianBRDF::valueNM( const Vector3& vLightIn, const RayInt
 	Scalar d=0, s=0;
 
 	// Same ray-facing flip as value() above.
-	const Vector3 n = ( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) ? -ri.onb.w() : ri.onb.w();
-	ComputeFactors<Scalar>( d, s, vLightIn, ri, n, pAlpha->GetValueAtNM(ri,nm) );
+	OrthonormalBasis3D onb = ri.onb;
+	if(Vector3Ops::Dot(ri.ray.Dir(),onb.w())>NEARZERO) onb.FlipW();
+	ComputeFactors<Scalar>( d, s, vLightIn, ri, onb, pAlpha->GetValueAtNM(ri,nm) );
 
 	const Scalar rsNM = GuardedGetColorNM( *pSpecular, ri, nm );
 	return d*WardSelection::CoupledDiffuse( GuardedGetColorNM( *pDiffuse, ri, nm ), rsNM ) + s*rsNM;
