@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Modifiers/ModifierFrame.h"
 #include "Object.h"
 #include "SnapshotLeafClone.h"
 #include "../Interfaces/ILog.h"
@@ -852,6 +853,7 @@ const BoundingBox Object::getBoundingBox() const
 void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const
 {
     ri.hasBoundaryRange = ri.hasBoundaryRange2 = false;
+    ri.geometric.bHasShaderDirection=ri.geometric.bHasNormalMapFrame=false;
 	// NULL-GEOMETRY GUARD: see getBoundingBox()'s comment above.  Reachable as
 	// of 87 for a CONTAINER node, though the world-visible gate in
 	// ObjectManager::RayElementIntersection means no ray reaches a container
@@ -1236,6 +1238,8 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 		} else {
 			ri.geometric.onb.CreateFromW( ri.geometric.vNormal );
 		}
+
+        ModifierFrame::PromoteShaderDirection(ri.geometric,m_mxFinalTrans,m_mxInvTranspose,m_tangentFrameSign);
 
 		// Transform the per-vertex tangent (v3 storage path) from object
 		// space to world space.  Tangents transform with the forward

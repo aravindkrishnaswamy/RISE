@@ -1249,3 +1249,32 @@ See [ALPHA_COVERAGE.md](../docs/ALPHA_COVERAGE.md) for the estimator definitions
   `AlphaBoundaryEndpointTest` pairs null/record finite bounds and exact alpha
   draws, distinguishes physical medium events from occlusion intervals, and
   explicitly retains the no-alpha raw-shadow exact-end convention.
+
+## Blender tangent producers (DL-213)
+
+`BlenderBridgeTangentTest` renders the actual bridge mesh against authored-core,
+rotated-UV and glTF TANGENT controls; it also checks corner interpolation,
+front/back handedness, mirror/nonuniform object frames and native CST authoring.
+Build individually with `make -C build/make/rise build-test/BlenderBridgeTangentTest`.
+`src/Blender/addons/rise_renderer/test_tangent_export.py` is bpy-free arithmetic
+and ABI marshalling coverage. `test_tangent_blender_runtime.py` is a separate
+Blender integration script, run with `blender --background --factory-startup
+--python-exit-code 1 --python ...`; it executes actual exporter/bake production
+code and a RenderEngine render context, including injected-error restoration.
+The production addon must be rebuilt with native/Python ABI v16 together.
+`BlenderShaderDirectionTest` adds independent coat/base normal-map UV separation,
+canonical mirror/front/back rotation, RGB/NM value/Pdf/Scatter, nested CSG, hit
+lifecycle, interpolated raw vectors, CSG cavity complements, immutable original
+UV frames and modifier controls. The real Blender script passes actual exported
+payloads and material rotation to this shipping-consumer executable and asserts
+secondUV/ADD-zero nonuniform/tilted equivalence, valid large-scale bakes, explicit
+backend failure, raw normal components, supported parallel-vector normal
+modifiers and material-domain validity/cleanup. Counts-only rotation
+smoke checks have independent world oracles.
+
+DL-213 R2 adds original Cycles controls for complete RNA properties versus terminal
+components, exact custom-key precedence, binary32 Fac threshold behavior, ordinary
+and real collection instancers, and CYCLES/ALL output selection. Competing shader
+texture/scalar slots, failure cleanup and unchanged shared groups are checked by
+the actual exporter runtime. The bpy-free tangent suite has 18 tests; the runtime
+retains all 13 R1 markers and adds 4 R2 markers.

@@ -330,6 +330,8 @@ class MeshData:
     uv_indices: list[int]
     double_sided: bool
     use_face_normals: bool
+    tangent_attribute: list[float] = field(default_factory=list)
+    tangent_is_shader_direction: bool = False
 
     @property
     def num_vertices(self) -> int:
@@ -777,7 +779,8 @@ def _extract_mapping_transform(image_node, state: _ExportState | None, context_n
 
     # Each transform socket must be unlinked so we can read its
     # constant default_value.  Linked sockets imply per-point /
-    # procedural transforms RISE can't bake.
+    # procedural transforms this direct painter cannot translate. This
+    # restriction is separate from manual channel and Tangent child baking.
     def _socket_vec3(name: str, fallback: tuple[float, float, float]):
         sock = mapping.inputs.get(name)
         if sock is None or sock.is_linked:
@@ -1150,7 +1153,7 @@ class _ImageSocketWrapper:
 
 
 # Shader nodes that pass colour / scalar through a Principled BSDF input
-# without enough information for RISE to bake them.  We treat them as
+# without direct translation of their filtering effect. We treat them as
 # transparent for texture-discovery purposes: artists routinely drop an
 # RGB Curves / Hue/Saturation / Bright-Contrast on a base-colour texture
 # to mildly tweak it.  We can't reproduce the curve in RISE, so the
@@ -1867,15 +1870,8 @@ def _export_heterogeneous_medium(
 
 
 def _find_material_output(material):
-    if not material.use_nodes or material.node_tree is None:
-        return None
-    for node in material.node_tree.nodes:
-        if node.bl_idname == "ShaderNodeOutputMaterial" and getattr(node, "is_active_output", False):
-            return node
-    for node in material.node_tree.nodes:
-        if node.bl_idname == "ShaderNodeOutputMaterial":
-            return node
-    return None
+    from .tangent_bake import find_material_output
+    return find_material_output(material)
 
 
 def _find_world_output(world):
@@ -1916,19 +1912,13 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
         state.material_map[key] = binding
         return binding
 
-    # Bake-on-export consumer.  When the user has run "Bake
-    # Procedural Materials for RISE" (or the equivalent operator),
-    # complex materials carry ID properties pointing at PNG bakes of
-    # their Diffuse / Roughness / Normal channels.  See
-    # ``material_bake.py`` and docs/BLENDER_MATERIAL_TRANSLATION.md.
-    #
-    # When those PNGs exist, we skip the node-graph walker entirely
-    # and build a synthetic Principled-like material from the bakes.
-    # The bake captures the FULL graph output (Mix Shaders, AO,
-    # procedural noise, everything) — recombining via the wrapper
-    # would double-apply effects.  Other Principled features
-    # (metallic, transmission, sheen) are intentionally dropped:
-    # they're already folded into the baked diffuse / roughness.
+    # Consumer of the explicit manual channel-image cache; no automatic bake.
+    # Only an existing diffuse PNG selects this synthetic dielectric branch;
+    # roughness and normal are optional. Any-channel cache can affect the
+    # operator skip without satisfying this branch. No freshness hash is checked.
+    # DIFFUSE COLOR is not complete shader response or conductor F0. Metallic0
+    # and the three-channel approximation drop metallic/transmission/sheen/
+    # coat/emission/subsurface/alpha lobes instead of reconstructing them.
     try:
         from . import material_bake as _material_bake
         baked = _material_bake.baked_paths(material)
@@ -1977,16 +1967,10 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
                 )
             )
 
-        # Metallic — the C++ bridge's `add_pbr_metallic_roughness_material`
-        # rejects a payload with `metallic_painter_name == NULL`.  Baked
-        # diffuse already absorbs whatever conductor F0 the original
-        # shader had (the bake captures the visual result), so treat
-        # the baked material as a pure dielectric (metallic=0) and let
-        # the diffuse PNG carry the colour.  Authoring a metallic
-        # version would need a separate `EMIT` bake of the metallic
-        # channel via Emit-from-metallic-input — out of scope for the
-        # first pass, see docs/BLENDER_MATERIAL_TRANSLATION.md
-        # "Capabilities to extend later".
+        # Supply the required bridge slot as metallic0. DIFFUSE COLOR does
+        # not absorb conductor F0; a fully metallic shader can bake black.
+        # This synthetic dielectric is a lossy approximation, not the original
+        # material's full response. No metallic-channel bake is implemented.
         metallic_painter = _add_uniform_painter(
             state, f"{material.name_full}_baked_metallic_const", (0.0, 0.0, 0.0))
 
@@ -2015,6 +1999,13 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
         return binding
 
     wrapper = PrincipledBSDFWrapper(material, is_readonly=True)
+    # Official wrapper scans node order without renderer-target semantics.
+    # Bind its read-only accessors to the SAME selected Surface/socket as the
+    # classifier and direction producer, retaining supported texture access.
+    from .material_bake import _find_principled_through_surface
+    selected_output = _find_material_output(material)
+    wrapper.node_out = selected_output
+    wrapper.node_principled_bsdf = _find_principled_through_surface(selected_output)
     if wrapper.node_principled_bsdf is None:
         # PrincipledBSDFWrapper couldn't trace from Material Output
         # Surface back to a single Principled BSDF — usually because
@@ -2023,7 +2014,8 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
         # BSDF anywhere in the graph; lossy (we drop the mix factor)
         # but produces sensible per-material results, vs. the prior
         # behaviour of using the viewport-grey `material.diffuse_color`.
-        any_principled = _find_any_principled_bsdf(material)
+        has_outputs = any(n.bl_idname == 'ShaderNodeOutputMaterial' for n in material.node_tree.nodes)
+        any_principled = _find_any_principled_bsdf(material) if selected_output is not None or not has_outputs else None
         if any_principled is not None:
             _warn_once(
                 state,
@@ -2033,7 +2025,7 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
         else:
             _warn_once(
                 state,
-                f"RISE falls back to viewport material values when '{material.name_full}' does not use a Principled BSDF output chain.",
+                f"RISE falls back to viewport material values when '{material.name_full}' has no supported Principled BSDF chain on the selected Cycles/ALL output.",
             )
             base = _add_uniform_painter(state, f"{material.name_full}_base", _float_color3(material.diffuse_color))
             payload = MaterialData(
@@ -2209,95 +2201,10 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
         f"{material.name_full}_anisotropy",
         (anisotropy_value, anisotropy_value, anisotropy_value),
     ) if anisotropy_value > 1e-4 else None
-    # Tangent (DL-192, docs/DEBT_LEDGER.md; source heading DL-186's own
-    # sibling audit).  Principled BSDF's Tangent input controls the
-    # anisotropy direction's BASIS (as opposed to "Anisotropic
-    # Rotation" above, which only rotates whatever basis is already in
-    # play).  Three cases, matching the RULING this closure follows:
-    #
-    #  (i)  A `ShaderNodeTangent` in UV_MAP mode, naming the object's
-    #       ACTIVE uv map (or no uv_map override at all) -- this is
-    #       EXACTLY what `ggx_material`'s own anisotropy direction
-    #       already derives from BY CONSTRUCTION whenever no
-    #       `tangent_rotation`/`tangent_rotation_scalar` painter is
-    #       bound: GGXBRDF's `ResolveTangentONB` (GGXBRDF.cpp) returns
-    #       the mesh's own `ri.onb` UNCHANGED in that case, and
-    #       `ri.onb.u()` is built from the mesh's UV tangent (the SAME
-    #       tangent Blender's Tangent(UV_MAP) node reads).  So this
-    #       case needs no bridging at all -- documented here rather
-    #       than silently unhandled, and with NO warning, since nothing
-    #       is being dropped.
-    #  (ii) A CONSTANT rotation of that basis (a ShaderNodeVectorRotate
-    #       around the shading normal, fed by a Tangent(UV_MAP) node)
-    #       maps onto the SAME `anisotropy_rotation_*` slot as
-    #       Principled's own "Anisotropic Rotation" -- the two compose
-    #       by simple addition, since both are just angles around the
-    #       mesh tangent frame's own axis (DL-16's `tangent_rotation`/
-    #       `tangent_rotation_scalar`, which this add-on's
-    #       `anisotropy_rotation_painter_name` already binds to).  A
-    #       non-constant (linked/textured) Angle input is NOT this
-    #       case -- see (iii).
-    #  (iii) Anything else (a second UV map's tangent, a fully
-    #       procedural direction, a non-constant rotation angle) has no
-    #       RISE mechanism: RISE's anisotropy direction is always
-    #       derived from the mesh's OWN UV tangent basis (optionally
-    #       rotated by a single scalar), never an arbitrary per-texel
-    #       or per-vertex override vector.  Warned and dropped rather
-    #       than silently ignored -- filed as **DL-213**
-    #       (docs/DEBT_LEDGER.md) for the mesh-level tangent-override
-    #       mechanism this would need.
-    tangent_input = _node_input(principled_node, "Tangent")
-    if tangent_input is not None and tangent_input.is_linked:
-        tangent_source = _skip_reroutes(tangent_input.links[0].from_node)
-
-        def _is_active_uv_tangent(node) -> bool:
-            return (
-                node is not None
-                and node.bl_idname == "ShaderNodeTangent"
-                and getattr(node, "direction_type", "UV_MAP") == "UV_MAP"
-                and not getattr(node, "uv_map", "")
-            )
-
-        if _is_active_uv_tangent(tangent_source):
-            pass  # Case (i): already bridged by construction, see above.
-        elif tangent_source is not None and tangent_source.bl_idname == "ShaderNodeVectorRotate":
-            rotate_type = getattr(tangent_source, "rotation_type", getattr(tangent_source, "type", None))
-            vector_input = _node_input(tangent_source, "Vector")
-            rotated_source = (
-                _skip_reroutes(vector_input.links[0].from_node)
-                if vector_input is not None and vector_input.is_linked else None
-            )
-            angle_input = _node_input(tangent_source, "Angle")
-            if rotate_type == "Z_AXIS" and _is_active_uv_tangent(rotated_source) and angle_input is not None:
-                if angle_input.is_linked:
-                    _warn_once(
-                        state,
-                        f"RISE only supports a CONSTANT rotation angle on a Tangent-feeding "
-                        f"Vector Rotate node for '{material.name_full}'; a linked/textured angle "
-                        f"has no mesh-level tangent-override mechanism (DL-213, docs/DEBT_LEDGER.md).",
-                    )
-                else:
-                    # Case (ii): compose with Principled's own
-                    # "Anisotropic Rotation" by simple addition -- both
-                    # are angles around the same tangent-frame axis.
-                    anisotropy_rotation_value += float(angle_input.default_value)
-            else:
-                _warn_once(
-                    state,
-                    f"RISE's anisotropy direction always derives from the mesh's own UV tangent "
-                    f"basis (optionally rotated by one angle); the Tangent graph on "
-                    f"'{material.name_full}' is more than that and has no mesh-level "
-                    f"tangent-override mechanism (DL-213, docs/DEBT_LEDGER.md) -- dropped.",
-                )
-        else:
-            _warn_once(
-                state,
-                f"RISE's anisotropy direction always derives from the mesh's own UV tangent "
-                f"basis (optionally rotated by one angle); the Tangent input on "
-                f"'{material.name_full}' names something else (a second UV map, a procedural "
-                f"direction) and has no mesh-level tangent-override mechanism (DL-213, "
-                f"docs/DEBT_LEDGER.md) -- dropped.",
-            )
+    # DL-213: the mesh producer handles every linked Tangent graph. Vector
+    # Rotate belongs to that graph (world coordinates), not to this material's
+    # rotation slot; adding its angle here would rotate the baked basis twice.
+    # Principled's Anisotropic Rotation above remains a separate frame rotation.
 
     anisotropy_rotation_painter = _add_uniform_painter(
         state,
@@ -3132,7 +3039,8 @@ def _hair_graph_supported(node, material_name: str, state: _ExportState) -> bool
     all translate the same way regardless of which slot they land in);
     the only difference from the mesh path is that failing here has no
     bake escape hatch, so it is a hard refusal instead of a fallback
-    to a different (slower, but always-correct) translation strategy.
+    to the explicit manual channel approximation or existing fallback.
+    That mesh approximation does not reconstruct arbitrary BSDF lobes.
 
     Socket-scoped exemption: the three `_HAIR_UNSUPPORTED_RANDOM_
     SOCKETS` inputs are never read into the translated payload at all
@@ -3874,6 +3782,8 @@ def _register_area_light_mesh(light_object, matrix_world, state: _ExportState) -
 
 def _validate_mesh_payload(mesh: MeshData):
     expected_index_count = len(mesh.vertex_indices)
+    if mesh.tangent_attribute and len(mesh.tangent_attribute) != expected_index_count * 4:
+        raise RuntimeError(f"RISE mesh export produced an invalid tangent buffer for '{mesh.name}'.")
 
     if len(mesh.vertices) != mesh.num_vertices * 3:
         raise RuntimeError(f"RISE mesh export produced an invalid vertex buffer for '{mesh.name}'.")
@@ -3903,7 +3813,7 @@ def _validate_mesh_payload(mesh: MeshData):
         raise RuntimeError(f"RISE mesh export produced an out-of-range UV index for '{mesh.name}'.")
 
 
-def _mesh_buckets(eval_object, state: _ExportState) -> list[tuple[int, str, _MaterialBinding]]:
+def _mesh_buckets(eval_object, state: _ExportState, matrix_world=None, instance_info=None) -> list[tuple[int, str, _MaterialBinding]]:
     # GeometryNodes-instanced geometry reuses a small pool of
     # eval_object prototypes across many instances and rebinds their
     # materials in-place during depsgraph iteration.  Caching by
@@ -3915,9 +3825,17 @@ def _mesh_buckets(eval_object, state: _ExportState) -> list[tuple[int, str, _Mat
         s.material.name if s.material else None
         for s in eval_object.material_slots
     )
+    from . import tangent_bake
+    materials = [slot.material for slot in eval_object.material_slots]
+    materials.extend(getattr(getattr(eval_object, "data", None), "materials", []))
+    linked_tangent = any((socket := tangent_bake.find_tangent_socket(mat)) is not None
+                         and socket.is_linked for mat in materials)
+    matrix_world = matrix_world if matrix_world is not None else eval_object.matrix_world
+    # Object/world-dependent graph bakes are instance-local, including identical
+    # transforms. Generated mesh materials also participate in this decision.
     cache_key = (eval_object.as_pointer(), mat_signature)
     cached = state.geometry_cache.get(cache_key)
-    if cached is not None:
+    if cached is not None and not linked_tangent:
         return cached
 
     mesh = eval_object.to_mesh()
@@ -3983,6 +3901,7 @@ def _mesh_buckets(eval_object, state: _ExportState) -> list[tuple[int, str, _Mat
                     material = slot_material
 
             binding = _material_payload(material, state)
+            directions = tangent_bake.corner_tangents(mesh, material, matrix_world, eval_object, instance_info, bucket["normal_indices"], allow_parallel=bool(binding.modifier_name))
             mesh_name = _unique_name(state, "mesh", f"{eval_object.name_full}_m{material_index}")
             mesh_payload = MeshData(
                 name=mesh_name,
@@ -3994,6 +3913,9 @@ def _mesh_buckets(eval_object, state: _ExportState) -> list[tuple[int, str, _Mat
                 uv_indices=bucket["uv_indices"],
                 double_sided=binding.double_sided,
                 use_face_normals=False,
+                tangent_is_shader_direction=bool(directions),
+                tangent_attribute=([component for corner in bucket["normal_indices"]
+                                    for component in directions[corner]] if directions else []),
             )
             _validate_mesh_payload(mesh_payload)
             state.meshes.append(mesh_payload)
@@ -4001,7 +3923,8 @@ def _mesh_buckets(eval_object, state: _ExportState) -> list[tuple[int, str, _Mat
     finally:
         eval_object.to_mesh_clear()
 
-    state.geometry_cache[cache_key] = results
+    if not linked_tangent:
+        state.geometry_cache[cache_key] = results
     return results
 
 
@@ -4744,7 +4667,10 @@ def export_scene(depsgraph) -> tuple[SceneData, RenderSettingsData]:
 
             _warn_legacy_particle_hair(original_object, state)
 
-            mesh_buckets = _mesh_buckets(eval_object, state)
+            mesh_buckets = _mesh_buckets(eval_object, state, object_instance.matrix_world.copy(), {"is_instance": object_instance.is_instance, "random_id": object_instance.random_id,
+                "orco": tuple(object_instance.orco), "uv": tuple(object_instance.uv), "parent": object_instance.parent,
+                "particle_settings": object_instance.particle_system.settings if object_instance.particle_system else None,
+                "private_instance_attributes": bool(object_instance.is_instance and object_instance.parent and any(m.type == 'NODES' for m in object_instance.parent.modifiers))})
             if not mesh_buckets:
                 continue
 

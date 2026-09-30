@@ -6,53 +6,62 @@ sides of the translation: what's supported today, what's tracked, and
 how to extend either RISE core or the bridge when new Blender node
 types come up.
 
-## Two paths
+## Material-channel paths and independent Tangent export
 
-The bridge classifies every material into one of two paths:
+The ordinary material-channel classifier chooses between two paths:
 
-1. **Direct procedural translation** ("simple" graphs).  Walk the
-   Blender node graph, map each node 1:1 to a RISE painter, hand a
-   painter graph to RISE.  Cheap, animation-friendly (procedural
-   noise updates with time / frame).  Loses bit-for-bit Cycles parity
-   because Blender's noise basis isn't identical to RISE's, but the
-   visual character is preserved.
+1. **Direct procedural translation** ("simple" graphs). Walk supported
+   material input chains into RISE painters. Noise bases and some filters
+   are approximations, so this is not bit-for-bit Cycles rendering.
+2. **Explicit image baking** ("complex" graphs). Click **Bake Procedural
+   Materials** to run Cycles channel bakes and store PNG paths on the
+   material. An existing diffuse PNG selects the synthetic dielectric cache;
+   roughness and normal are optional. Other channels alone do not select it. This
+   is a static channel approximation, not compilation of the whole BSDF.
+   See the [manual workflow](#manual-material-channel-bake-workflow).
 
-2. **Bake-on-export** ("complex" graphs).  Drive Blender's own bake
-   API (`bpy.ops.object.bake`) to render each BSDF channel to a PNG
-   under the temp dir, then hand those PNGs to RISE as image
-   texture painters.  Matches Cycles bit-identically by construction
-   (Cycles does the bake).  Static — animated procedurals would
-   need a per-frame bake.
-
-The bridge tries path (1) first.  If the material's node graph uses
-anything in the "force-bake" list below, the bridge falls back to
-path (2).
+Principled **Tangent is excluded** from the ordinary supported-node,
+depth and force-bake input rules. Its independent corner-direction
+producer runs during export: direct UV cases use their documented fast
+paths, while linked procedural graphs use an isolated Cycles child.
+A custom group or Geometry node feeding only Tangent does not classify
+an otherwise simple material as complex and does not require the manual
+channel-bake operator. Terminal shader and other material-input limits
+still apply. See [Tangent](#tangent---anisotropy-direction-abi-v16-dl-213).
 
 ## Classifier rules
 
-A material is **simple** (path 1) iff EVERY one of these holds:
+For node materials with a selected output, the ordinary channel path is
+**simple** when all of the following hold:
 
-- The Material Output's `Surface` socket reaches exactly **one**
-  `ShaderNodeBsdfPrincipled` (transitively through `NodeReroute`s).
+- The selected Cycles Material Output's `Surface` socket reaches exactly **one**
+  `ShaderNodeBsdfPrincipled` (transitively through `NodeReroute`s). Exact
+  `CYCLES` takes precedence over `ALL`; active status breaks ties within one
+  target category; unrelated `EEVEE` outputs are excluded.
   Mix Shaders, Add Shaders, multiple Principleds, Glass + Diffuse
-  combinations — all force-bake.
+  combinations classify complex for the manual channel workflow.
 
-- Every Principled BSDF input socket's upstream chain consists ONLY
-  of nodes from the [supported-node table](#supported-node-table)
+- Every Principled BSDF input **except Tangent** has an upstream chain
+  consisting only of nodes from the [supported-node table](#supported-node-table)
   below.  Any other node type (Ambient Occlusion, Geometry,
   Layer Weight, Wireframe, custom group, Image Sequence input,
-  etc.) forces a bake.
+  etc.) classifies complex for the manual channel workflow.
 
-- No socket chain goes deeper than 16 nodes (heuristic — extremely
-  deep chains are usually pathological generators that will be more
-  reliable to bake).
+- The ordinary input traversal stays within its depth guard (initial
+  upstream node depth0; depth greater than16 classifies complex). This
+  does not constrain Tangent's separate full-graph producer. Surface
+  resolution has its own bounded single-Principled/reroute traversal.
 
-Otherwise the material is **complex** and goes through the bake
-path.
+Otherwise the material is **complex** and uses the manual channel-bake
+workflow when a viable proxy is available, with the fallback behavior
+described below. Legacy materials without a node tree/output retain
+the existing direct/default translation behavior. An unrelated renderer
+output alone does not select a Cycles material.
 
 ## Supported node table
 
-Listed by Blender's `bl_idname`.
+Listed by Blender's `bl_idname` for ordinary material inputs other than
+Tangent; this table is not a whitelist for its corner-direction graph.
 
 | Blender node | RISE equivalent | Notes |
 |--------------|-----------------|-------|
@@ -68,23 +77,27 @@ Listed by Blender's `bl_idname`.
 | `ShaderNodeValToRGB` (Color Ramp) | `colorramp_painter` | Scalar → colour via stops; multi-stop, multi-interpolation.  **Added to RISE core for this translation** (`docs/RISE_API.h` + parser). |
 | `ShaderNodeMix` (Color blend) | `blend_painter` | A / B + Factor → 2-stop blend.  When `clamp_factor=True` matches RISE behaviour. |
 | `ShaderNodeMixRGB` (legacy) | `blend_painter` | Identical to ShaderNodeMix in Color mode |
-| `ShaderNodeMath` (Add/Multiply/Multiply Add when one input is constant) | folded inline at export time | Math nodes that fold to scaling / offsetting of a single value are inlined into the downstream painter (e.g. a Multiply on a noise output absorbed into a ColorRamp position).  Other Math ops force-bake. |
+| `ShaderNodeMath` (Add/Multiply/Multiply Add when one input is constant) | folded inline at export time | Math nodes that fold to scaling / offsetting of a single value are inlined into the downstream painter (e.g. a Multiply on a noise output absorbed into a ColorRamp position).  The classifier admits Math regardless of operation; this does not promise direct translation of every operation or automatic manual-bake routing. |
 | `ShaderNodeRGBCurve` / `ShaderNodeHueSaturation` / `ShaderNodeBrightContrast` / `ShaderNodeGamma` / `ShaderNodeInvert` | pass-through (currently lossy) | Existing bridge walks through these and ignores the filter; future work could honour them via a remap painter. |
 | `ShaderNodeBump` | `BumpModifier` on the material | Driven by a painter (which must itself be a supported chain) |
 | `ShaderNodeNormalMap` | `NormalMapModifier` on the material | Requires a `ROMM_Linear` image painter (tangent vectors must bypass colour-space conversion) |
 
 ## Force-bake list
 
-Any of these in a graph forces the bake fallback:
+On the selected Surface shader chain or ordinary Principled inputs
+**other than Tangent**, these nodes classify the material as complex.
+They request the manual image-bake workflow when viable; they do not
+start an automatic channel bake. Nodes feeding only Tangent are handled
+by its independent producer, and unused nodes do not affect classification:
 
 - `ShaderNodeAmbientOcclusion` — Cycles' AO is a screen-/scene-space
   query (EEVEE uses SSAO; Cycles ray-traces).  RISE has no
   per-pixel-AO painter and synthesising one from RISE's photon /
   irradiance machinery is out of scope.
 - `ShaderNodeMixShader` / `ShaderNodeAddShader` — multiple BSDFs.
-  The bridge would have to ALSO bake the secondary BSDF separately
-  and recombine via colour-space tricks; baking the final shader
-  output is the reliable answer.
+  The direct path does not reconstruct these networks. The manual
+  channel-image fallback is an approximation, not a faithful mixed-BSDF
+  reconstruction.
 - `ShaderNodeGeometry` — incidence, position, true normal, etc.
   Each output has a different semantic; bake.
 - `ShaderNodeLayerWeight` / `ShaderNodeFresnel` — view-dependent
@@ -104,112 +117,94 @@ shows up later, move it to the supported-node table.  Add a row to
 [Capabilities to extend](#capabilities-to-extend-later) so the
 decision history is captured.
 
-## Bake-on-render contract
+## Manual material-channel bake workflow
 
-The bake runs automatically inside the RISE render engine's
-``render()`` callback BEFORE ``exporter.export_scene`` is invoked.
-The user just hits F12 — no manual operator, no separate step.  The
-auto-bake driver (``material_bake.auto_bake_complex_materials``):
+Whole-material channel images are **not baked automatically by F12**.
+`RISEBlenderRenderEngine.render()` calls `needs_bake_attempt(scene, mat)`.
+For a complex material with a viable mesh proxy, a never-tried graph or
+a detected attempted-fingerprint change triggers an error directing the user to **Properties →
+Render → RISE Material Baking → Bake Procedural Materials**. Render
+returns before export. A viable proxy has source-mesh vertices and uses
+the material; a geometry-nodes-only source mesh with no vertices does
+not qualify and therefore does not block rendering for a futile bake.
 
-1. Iterates every material in the scene; classifies each.  Materials
-   that classify as **simple** are skipped — the exporter translates
-   their node graphs directly into RISE painters (Option A path).
-2. For each **complex** material, checks the cache:
-   - If the material has no bake metadata at all → bake.
-   - If the material has bake metadata AND
-     `rise_baked_graph_hash` matches the current node graph hash AND
-     the cached PNG files still exist on disk → skip (cache hit).
-   - Otherwise (hash mismatch, missing PNG, etc.) → bake.
-3. Before baking ANY material, the driver snapshots the scene's
-   current render engine (typically `RISE_RENDER`), switches to
-   `CYCLES` (required by `bpy.ops.object.bake`), runs the bakes,
-   and restores the original engine in a `try/finally` so any
-   exception during a single bake leaves the scene's engine setting
-   correct.
-4. For each material to bake, finds a proxy object — a MESH in the
-   scene that uses the material AND has real source-mesh vertices
-   (i.e. not a geometry-nodes-only output).  Falls back to a
-   diagnostic when no suitable proxy exists; that material renders
-   as flat colour for the time being (see "Geometry-nodes proxy
-   bakes" in [Capabilities to extend](#capabilities-to-extend-later)).
-5. Ensures the proxy has a usable UV layer.  If the mesh has no UV
-   layer, runs Smart UV Project (`bpy.ops.uv.smart_project`) on it
-   once; the new UV layer persists so subsequent renders don't
-   re-unwrap.
-6. Creates a temporary `Image` per channel (Diffuse / Roughness /
-   Normal), drives `bpy.ops.object.bake`, saves each as a PNG under
-   `<temp_dir>/rise_baked/<material_name>_<channel>.png`.
-7. Stores the resulting paths and the captured node-graph hash on
-   the Material's ID properties:
-   - `rise_baked_diffuse_path`
-   - `rise_baked_roughness_path`
-   - `rise_baked_normal_path`
-   - `rise_baked_resolution`
-   - `rise_baked_frame`
-   - `rise_baked_graph_hash` — the content hash captured at bake time
+The explicit `RISE_OT_bake_materials` operator:
 
-The ID-property metadata persists across .blend save / load cycles,
-so a baked scene survives close-and-reopen without re-baking — as
-long as the PNG files on disk also persist (most users keep them in
-the persistent Blender temp dir or move them to a project-local
-folder).
+1. Temporarily switches the scene engine to Cycles, invokes
+   `bake_complex_materials_in_scene`, and restores the engine in
+   `finally`. It reports per-material results.
+2. Visits complex materials on scene MESH objects, once per material.
+   By default it retries them regardless of cache or attempted hash.
+   **Skip Already-Baked Materials**, when enabled, skips a material
+   whenever `baked_paths` finds any existing channel file; this is not
+   a graph-hash cache-validity check.
+3. Uses existing UVs or attempts Smart UV Project when none exist.
+   The new UV layer persists. Failed unwrap returns without a channel
+   attempt or attempted-hash stamp.
+4. Attempts **DIFFUSE with COLOR pass only**, Roughness and tangent-space Normal channels to PNGs under
+   `<temp_dir>/rise_baked/<material>_<channel>.png` (default resolution1024).
+   Temporary target nodes and selection are restored; saved image
+   datablocks remain available for inspection. This does not add a
+   full visual-result or conductor-F0 bake. The synthetic consumer supplies
+   metallic0, defaults missing roughness to0.5, and uses normal optionally.
+   Metallic, transmission, sheen, coat, emission, subsurface and alpha lobes
+   are dropped, not folded faithfully into these three channels.
+5. Stores successful channel paths plus resolution/frame. After the
+   channel stage and cleanup, it stamps `rise_baked_attempted_hash` even
+   when no channel succeeds. `rise_baked_graph_hash` is stamped only if
+   at least one channel succeeds. Failed channels do not clear old path or
+   success-hash metadata; the return/count describes newly saved channels,
+   not necessarily a usable diffuse cache. Unexpected exceptions before this
+   stamp or early validation failures can still leave a retry required.
 
-Auto-bake-on-render is invoked from
-``RISEBlenderRenderEngine.render()`` ([engine.py](../src/Blender/addons/rise_renderer/engine.py)):
+### Cache, retry and fallback
 
-```python
-material_bake.auto_bake_complex_materials(
-    scene, resolution=1024,
-    report=lambda msg: self.report({"INFO"}, msg))
-```
+`needs_bake_attempt` compares the **attempted** hash, not the success
+hash or PNG existence. For a viable complex material, matching the
+current limited fingerprint means render proceeds regardless of the prior
+outcome. This avoids a render/bake failure loop. A detected fingerprint change
+requires the manual operator again; undetected shader edits do not. Simple materials and materials without a viable
+proxy do not trigger this guard.
 
-The render engine emits per-material INFO lines so the user sees in
-the status bar / info panel exactly which materials baked and which
-were cache-hits — without having to look at a separate panel.
+`baked_paths` returns channel paths whose files currently exist.
+Only an existing **diffuse** file selects the synthetic cache consumer, with
+optional roughness/normal. No freshness check is enforced; stale diffuse may
+still be consumed. Roughness/normal-only cache can cause optional operator
+skipping but falls through to ordinary translation/slot/default fallback.
+Failed retries can retain old paths, including usable diffuse. Missing
+PNGs do not automatically retry or block render when the attempted hash
+still matches. Run the bake operator with **Skip Already-Baked Materials**
+disabled to refresh stale files or retry a failure.
 
-The (manual) `RISE_OT_bake_materials` operator and the
-`RISE_OT_clear_baked_materials` operator are retained as diagnostic
-affordances under Properties → Render → "RISE Material Baking":
+`baked_cache_is_stale` is a UI diagnostic: a stored success hash differing
+from the limited current fingerprint, or a recorded channel file missing from disk,
+marks the cache stale. An absent success hash is not itself stale.
+The limited hash includes top-level node type/name, input names and readable
+defaults (including linked inputs), upstream link node/socket names, image
+name/path and color-ramp interpolation/stops/colors. It omits other node
+properties, output targets, nested group contents, image pixels and scene/
+object/time/evaluation dependencies. For example, changing Math ADD to
+MULTIPLY can alter the shader while leaving the hash and render guard unchanged.
+Retry explicitly after shader changes; no hash-cost benchmark is claimed.
 
-- **Force Re-Bake All** — re-bakes every complex material in the
-  scene, ignoring the hash cache.  Useful when an external image
-  has changed but its filepath stayed identical (Blender doesn't
-  re-hash image contents — only filepath + name).
-- **Clear RISE Bake Cache** — removes all `rise_baked_*` ID
-  properties.  The next render rebakes from scratch.
+**Clear RISE Bake Cache** removes only the seven defined metadata keys
+(three channel paths, resolution, frame, success hash, attempted hash), for
+materials with any existing recorded channel file or a diffuse-path property.
+Other `rise_baked_*` custom keys remain. A viable
+complex material whose attempted marker is cleared needs a manual bake
+before render. An attempt-only failed material may not be selected by
+this clear operator; the default bake button still retries it.
+Clearing metadata does not delete the PNG files or start a bake.
+Paths and metadata can persist in a saved .blend; the files must also
+remain on disk. Procedural animation needs explicit bakes at the desired
+frame. Channel images preserve bake samples, not exact arbitrary BSDF
+behavior at all views; UV quality and image resolution limit fidelity.
 
-### Cache invalidation
-
-`material_bake.baked_cache_is_stale(mat)` returns True when:
-
-- The stored `rise_baked_graph_hash` doesn't match the current
-  `_material_graph_hash(mat)`, OR
-- Any of the cached PNG paths point at a file that no longer
-  exists on disk.
-
-`_material_graph_hash(mat)` captures everything that would change
-the baked output: per-node `bl_idname` + `name`, every input
-socket's `default_value`, every link, image identity for
-`ShaderNodeTexImage`, and the colour-ramp stops for
-`ShaderNodeValToRGB`.  Pixel contents of linked images aren't
-hashed (would be too slow) — `Force Re-Bake All` handles that case
-when needed.
-
-Limitations:
-
-- Static at the bake frame.  Animated procedurals (time-varying
-  Noise) need per-frame bakes — out of scope for the first cut.
-- The unwrap quality depends on the mesh.  Smart UV Project is good
-  for most procedural materials on opaque solids; UV-charged meshes
-  (a character with hand-painted Cycles textures using existing
-  UVs) keep their existing UV layout.
-- Memory: 1024² × 3 channels per material per frame.  A scene with
-  30 procedural materials at 1024² uses ~360 MB of disk during the
-  bake — manageable.  4K bakes are an opt-in per-material setting.
-- Emission, transmission, alpha — not in the first bake set.  Emission
-  on procedural materials forces a bake of an `EMISSION` channel
-  separately; transmission / alpha falls back to the Principled
-  default values.
+The **automatic Tangent corner bake is separate**: it serializes copied
+evaluated data and runs Cycles in a disposable background child during
+export. It does not swap the live render engine, call this manual image
+driver or populate the channel cache. Its source-context, material-domain,
+cleanup and measured backend limits are documented in the Tangent section.
 
 ## Capabilities to extend later
 
@@ -239,12 +234,16 @@ self-contained and small enough to land as one PR.
 
 ### Geometry-nodes proxy bakes
 
-`_find_object_using_material` skips MESH objects whose source mesh
+`find_bakeable_proxy_object` skips MESH objects whose source mesh
 has zero vertices (their visible geometry comes entirely from a
 Geometry Nodes modifier; no UV layout to bake against).  Materials
 used only on geometry-nodes-instanced objects therefore can't be
-auto-baked today — they render with the existing fallback (default
-Principled defaults from the wrapper).
+queued by the manual render guard today; when no other viable proxy
+exists the guard does not block. Existing diffuse cache can still select
+the synthetic approximation; otherwise ordinary translation/slot/default
+fallback applies. This
+channel-image limitation does not exclude the evaluated-mesh Tangent
+producer described separately above.
 
 To handle those:
 
@@ -426,33 +425,23 @@ in the same pass; see docs/GLTF_IMPORT.md §15.
 
 ### Velvet (legacy `Velvet BSDF` node)
 
-Blender removed the standalone `Velvet BSDF` node (`ShaderNodeBsdf-
-Velvet`) in the 4.0 release, folding its use case into Principled
-BSDF's reworked (multiscatter GGX) Sheen model — this is stated on
-Blender's own public 4.0 release notes; **it has not been independently
-re-verified against a running Blender's `bpy.types` registry from
-inside this repository**, since no `bpy` is available in this
-sandbox (see "Testing" below).  A future contributor who touches this
-again with an actual Blender available should confirm with
-`hasattr(bpy.types, "ShaderNodeBsdfVelvet")` before relying on this
-claim further.  Given this bridge's `bl_info` already declares Blender
-4.0 as its minimum supported version (`__init__.py`), no `.blend` file
-opened in a supported Blender can contain the legacy node at all, so
-the Principled Sheen mapping above is the complete sheen/velvet path
-for every Blender version this add-on runs on — there is no separate
-`ShaderNodeBsdfVelvet` branch to add.
+**Historical DL-18 version note:** the original source review described
+Blender4.0 as removing the standalone Velvet node in favor of Principled
+Sheen, and explicitly recorded that no runtime `bpy.types` registry check
+had been executed in that review environment. That historical attribution
+is not a current registry assertion or a DL-213 runtime control. The bridge
+has no separate Velvet-node translation; its actual terminal-shader routing
+is described below and does not rely on that version claim.
 
-Independently of that version claim, a material whose Surface output
-is NOT a single Principled BSDF — which is exactly what a bare legacy
-Velvet BSDF node feeding Material Output would be — already falls
-through to the EXISTING bake-on-export path (see "Two paths" above):
-the classifier's "reaches exactly one `ShaderNodeBsdfPrincipled`" rule
-fails, the material is `complex`, and Blender's own Cycles bake
-captures whatever it actually renders as (velvet sheen included) into
-a static diffuse/roughness/normal texture set.  Lossy (no live RISE
-`fabric_material`, no per-frame animation) but not silently dropped —
-the same fallback every other force-baked node (Mix Shader, a custom
-group, Ambient Occlusion, …) already gets.
+Independently of that historical version claim, a selected Surface chain
+ending at any shader other than a single Principled BSDF classifies complex.
+This routing does not run a bake on export. With a viable proxy the user can
+explicitly attempt the [manual channel approximation](#manual-material-channel-bake-workflow).
+It attempts DIFFUSE COLOR, Roughness and Normal; it does not preserve velvet
+sheen, mixed-BSDF lobes or whatever full response the original shader renders.
+An existing diffuse PNG selects a metallic0 synthetic dielectric; without it,
+the existing translation/default fallback applies. No unsupported legacy-node
+runtime fixture or faithful terminal-BSDF reconstruction is claimed.
 
 ## Specular Tint (Principled BSDF -> `ggx_material`'s F0 tint)
 
@@ -727,55 +716,143 @@ The old incompatible-integrator warnings are removed.
 [Alpha coverage](ALPHA_COVERAGE.md) documents sampler ownership, light endpoints,
 medium boundaries, VCM deposition, and the SMS estimator choice for alpha scenes.
 
-### Tangent -> anisotropy direction (ABI v14, DL-192 + DL-213 + DL-208)
+### Tangent -> anisotropy direction (ABI v16, DL-213)
 
-**Unit correction (DL-208, found by review round 1 of this same
-closure):** Blender's Principled "Anisotropic Rotation" socket is a
-[0, 1] FRACTION OF A FULL TURN — Cycles applies `2*pi*value`
-internally — not radians, unlike every other angle-typed socket this
-add-on reads (Principled Hair BSDF's "Offset"; a `ShaderNodeVectorRotate`
-"Angle" socket, case 2 below).  RISE's `tangent_rotation`/
-`tangent_rotation_scalar` are radians (`MicrofacetUtils::RotateTangent`
-calls raw `cos`/`sin`).  `exporter.py` now converts at the read site
-via a pure `anisotropic_rotation_turns_to_radians` helper in
-`hair_material_math.py` before anything (including case 2's own
-composition, below) uses the value — every Blender anisotropic
-material with a nonzero rotation exported wrong (off by a factor of
-`2*pi`/turn-fraction) since Landing 8 (`25d271df`) until this fix.
+Material classification, direct slot translation and the Tangent producer select
+the Cycles-targeted Material Output (exact CYCLES takes precedence over ALL;
+active status breaks ties within one category). Unrelated EEVEE outputs do not
+select the material or socket. The copied bake retains the exact selected
+single-Principled identity and connects emission to the output Cycles evaluates.
+No competing multi-BSDF network compilation is added; missing supported output
+retains the documented complex/material fallback behavior.
 
-RISE's `ggx_material` anisotropy direction is derived entirely from
-the mesh's own UV tangent basis (`Object::IntersectRay`'s
-`bShadingTangentFromGeometry` construction), optionally rotated by
-ONE scalar (`tangent_rotation`/`tangent_rotation_scalar`, DL-16) —
-there is no per-object, per-vertex, or per-texel tangent-BASIS
-override mechanism.  Blender's Principled "Tangent" input graph maps
-onto exactly three cases:
+Global glTF/Indexed3 `Tangent4` xyz/sign still defines the authored UV basis,
+including normal-map decode and chart/mirror handedness. Blender's Principled
+Tangent socket is a different signal: it controls anisotropy independently of
+Normal Map and Coat Normal UV axes. ABI16 tail flag `tangent_is_shader_direction`
+is 1 for the exporter's per-triangle-corner `tangent_attribute`; 0 retains the
+ABI15 global tangent convention. Native/Python versions must both be16.
+Corner expansion preserves normal/UV/material seams. The Indexed4 shader
+array is separate from Tangent4. Object and CSG promote it with the forward
+matrix into a canonical world `cross(N,T)` frame, while preserving the
+original UV frame for normal decoding. Generic socket vectors retain their
+normal component: the core projects the promoted RAW vector against the current
+shading normal, and reprojects that raw vector after normal modifiers. The UV
+decode uses its original N/U/V, including encoded Z, independently of earlier
+normal modifiers (independent shader-node/reference-frame semantics rather
+than legacy modifier layering). The frame is immutable through modifiers, but
+its own normal/tangent/sign
+still promote through Object/CSG/nested transforms and complements. BSDF/SPF
+still share one anisotropy ONB. No UV or mirror
+parity is applied to shader-direction rotation. Existing global tangents,
+glTF/Mikk signs, hair and noattribute semantics remain unchanged.
 
-1. **A `ShaderNodeTangent` in UV_MAP mode naming the active (or no) UV
-   map.**  Needs NO bridging at all — RISE's own mesh tangent basis
-   IS this direction by construction (`GGXBRDF::ResolveTangentONB`
-   returns the mesh's `ri.onb` unchanged when no rotation painter is
-   bound).  `exporter.py` now documents this explicitly (an
-   `_is_active_uv_tangent` predicate plus an explanatory comment)
-   instead of leaving the socket entirely unread and unremarked.
+An unlinked Tangent or a direct Tangent node on the active UV map retains the
+legacy noattribute fallback per the explicit unchanged-render requirement.
+That inherited path uses the renderer's forward UV surface-tangent convention;
+it differs from Blender's Tangent-node inverse-transpose convention under
+nonuniform scale. The NEW second-UV and generic graph paths consistently use
+the Blender socket semantics; the active-UV fallback distinction is not fixed
+by silently rewriting existing UV rendering.
 
-2. **A CONSTANT Z-axis `ShaderNodeVectorRotate` feeding a
-   Tangent(UV_MAP) node.**  Composes by simple addition onto the SAME
-   `anisotropy_rotation`/`tangent_rotation_scalar` slot Principled's
-   own "Anisotropic Rotation" input already binds (DL-16) — both are
-   angles around the mesh tangent frame's own axis, so the two sum.
+For direct second-UV nodes, `mesh.calc_tangents(uvmap=...)` supplies Mikk local
+vectors/signs. At the Blender boundary, transform the node vector with M^-T,
+project against the world shading normal (Cycles Tangent-node semantics), then
+inverse-transform into local shader-direction storage. Mikk sign is retained
+as source metadata but never reverses Principled world-normal rotation; the
+primary normal map keeps its own UV basis. Adding Vector Math ADD-zero to the
+same node therefore preserves its direction, including nonuniform/mirrored
+objects and tilted normals.
 
-3. **Anything else** — a second UV map's tangent basis, a fully
-   procedural direction (built from `Geometry`/`Object Info`/noise
-   nodes), or a non-constant (linked/textured) Vector Rotate angle.
-   RISE has no mechanism for any of these: closing it needs a
-   mesh-level tangent-BASIS override (e.g. importing a second UV map's
-   tangent as an alternate mesh attribute, or a per-vertex direction
-   buffer) threaded through the same place `Object::IntersectRay`
-   derives the coherent tangent — a materially larger, mesh-data-model
-   change than an ABI field or a material-slot fix.  This case is now
-   WARNED AND DROPPED (previously: silently unread, no warning at all)
-   naming **DL-213**, the mesh-level mechanism this would need.
+Other linked graphs, including procedural and textured Vector Rotate, feed
+normalized emission encoded as `0.5*d+0.5` into a separate background Cycles
+process and a linear FLOAT_COLOR CORNER target. The copied scene retains world,
+object and material dependencies and full evaluated geometry. Decode/validate
+ONLY the material bucket's used corners, preserving geometry-dependent inputs
+without rejecting values on unrelated material faces. Inverse transport keeps
+the full generic world socket vector; robust component rescaling makes validity
+independent of representation magnitude. Zero/nonfinite fields abort. A vector
+parallel to the unperturbed mesh normal aborts when no supported base-normal
+modifier was actually exported; with such a modifier it survives a temporary
+UV-frame fallback until the final normal makes its projection meaningful. A
+direction still parallel at a core shading hit uses the canonical degenerate
+frame fallback; direct UV nodes cannot recover components their node already
+projected away. Anisotropic Rotation remains a separate
+turns-to-radians world-normal rotation (DL-208); baked Vector Rotate is not
+added twice. Corner interpolation can alias high-frequency fields; this is
+export-time geometry sampling, not a live per-texel direction shader.
+
+Source settings, selection, active UV/color data, nodes, materials and mainfile
+path are unchanged; copies, child processes and temporary files are cleaned on
+success/error. Realized instance Object Info Random uses unsigned depsgraph ID
+and exact Cycles float32 conversion, recursively isolating copied nodegroups.
+Evaluated animation, drivers and constraints are frozen on the disposable
+copy. An identity parent plus the full affine parent-inverse matrix preserves
+parent shear and mirrors exactly through serialization; the reopened child
+checks all world-matrix components before baking. Source parents, dependencies,
+color, custom properties and mainfile state remain intact.
+
+Reachable Object/Instancer Attribute nodes snapshot evaluated source RNA/custom
+properties before that transform snapshot can alter local `location` or other
+RNA fields. Complete noncoerced RNA property references are required: full
+`location`, quoted custom vector keys and nested `data.vertices[1].co` work;
+terminal `location[0]`, `location.x` and nested vector components are missing,
+matching Cycles' property resolver without an array-index output. Exact custom
+ID keys win before path interpretation, even if their names look like paths. Cycles' scalar and float/int array (up to four components) RGBA
+conversion and Fac/Vector/Color/Alpha outputs are preserved, including missing
+attributes. Fac follows binary32 `reduce_add(RGB) * (1.0f/3.0f)`, including
+discontinuous downstream thresholds; Python double division is not equivalent. Instancer lookup follows particle settings, private GN instance
+layers, parent, source object, source data precedence. Particle settings and
+parent RNA are available; private Geometry Nodes instance-layer attributes
+(`instance_data`/`instance_idx`) are not exposed by Blender4.5.7 instance RNA.
+A reachable Instancer Attribute requiring that unavailable context aborts with
+a specific diagnostic. An original-scene GN attribute render matches its
+constant-emission control, proving that substituting an object default would
+be wrong. Unused such nodes do not reject a supported direction graph.
+
+From Instancer Generated/UV coordinates ARE supported: snapshot exposed `orco`
+and `uv`, apply Cycles' binary32 `.5*orco-.5` Generated conversion, and preserve
+ordinary-object zero defaults. Rewrites follow reachable group input/output
+bindings and isolate copied groups. Ordinary names/color/pass index remain
+shader-visible. View/ray-dependent nodes use bake context. Missing UVs, singular transforms and failed bakes abort.
+The context contracts above follow Blender4.5.7 primary source:
+[Cycles instance synchronization](https://github.com/blender/blender/blob/v4.5.7/intern/cycles/blender/object.cpp),
+[dupli coordinate getters](https://github.com/blender/blender/blob/v4.5.7/intern/cycles/kernel/svm/tex_coord.h),
+[RNA/private instance lookup and conversion](https://github.com/blender/blender/blob/v4.5.7/source/blender/blenkernel/intern/object_dupli.cc),
+[binary32 vector averaging](https://github.com/blender/blender/blob/v4.5.7/intern/cycles/util/math_float3.h),
+and [Attribute output conversion](https://github.com/blender/blender/blob/v4.5.7/intern/cycles/kernel/svm/attribute.h).
+The GN diagnostic is conservative: private layers may override an otherwise
+available parent/object value; it does not assert every requested name exists
+in a private layer.
+
+A process launch per linked material/instance and full scene serialization can
+be expensive; the executable must provide Cycles.
+
+Measured Blender4.5.7 macOS arm64 backend limit: constant encoded emission bakes
+correctly through world scale1e9, but a unit triangle at1e11 returns invalid
+black/unwritten corner buffers. This is NOT a zero shader vector. Export
+rejects unwritten alpha or decoded vectors outside the encoder's unit ball
+(with a binary32 roundoff allowance). These guards cannot prove every backend
+sample valid. No coordinate/dependency rescaling or support at that huge world
+geometry scale is claimed; the mathematical decoder itself is scale invariant.
+
+Inherited legacy distinction: with BOTH independently authored base Normal Map
+and Coat Normal Map, each encoded(.8,.5,.9), the old noattribute/global path
+uses its post-base-modifier frame for coat decoding (.96,0,.28 on the identity
+fixture). Cycles evaluates each node from the original triangle UV basis
+(.6,0,.8). The new shader-direction transport preserves that original frame
+and therefore follows the independent socket semantics. The legacy behavior
+remains unchanged under the explicit bit-identical fallback requirement.
+
+Native `indexedmesh_geometry` uses repeatable `vertex xyz`, `normal xyz`,
+`uv u v`, GLOBAL `tangent x y z sign`, and zero-based `triangle i j k`.
+Duplicate positions at authored seams. Tail-appended IJob methods separate
+`AddIndexedTriangleMeshGeometryWithTangents` (global UV/Mikk) from
+`AddIndexedTriangleMeshGeometryWithShaderDirections` (independent canonical
+anisotropy); both accept independently indexed normals/UVs and corner vec4s.
+The shader vec4's w is validated source metadata (not stored by Indexed4); it never controls
+anisotropy rotation. Empty payloads delegate the frozen indexed API. These
+optional arrays are live geometry data, not persisted by legacy .risemesh.
 
 ## Hair / fur export
 
@@ -864,8 +941,8 @@ A material whose Material Output.Surface is (transitively through
 `NodeReroute`s only) a single `ShaderNodeBsdfHairPrincipled` becomes a
 `HairMaterialData` via **direct mapping** — there is no bake path for
 hair at all (baking is meaningless for curve geometry: there is no UV
-unwrap to bake against). Consequently, where the mesh classifier falls
-back to a full-scene bake on anything unsupported, the hair classifier
+unwrap to bake against). Consequently, where unsupported ordinary mesh inputs can request the
+explicit manual three-channel approximation, the hair classifier
 **refuses the whole material** (falls back to a plausible default
 brown-black groom, with a warning) when:
 
@@ -1104,10 +1181,11 @@ material and names it:
 End-to-end material parity is regression-checked via:
 
 - `scenes/Tests/Materials/*.RISEscene` (hand-authored)
-- The Blender side has no auto-regression yet; visual diffs against
-  Cycles / EEVEE are by-hand for now.  A bake-cache snapshot test
-  would be a natural addition (compare current bake to a stored
-  reference).
+- The original material-translation visual comparison was manual. Current
+  DL-213 validation includes bpy-free exporter tests and actual Blender Tangent
+  runtime controls (documented below). Manual channel-cache controls were
+  separately executed during review; they are not a comprehensive stored-image
+  regression or proof of arbitrary BSDF fidelity.
 
 ### Sheen (ABI v12) coverage, and what still isn't covered
 

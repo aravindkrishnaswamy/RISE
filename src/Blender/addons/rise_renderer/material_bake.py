@@ -5,15 +5,19 @@ module owns:
 
 - ``classify_material(mat)`` — decides whether a material's node graph
   is "simple" (direct procedural translation possible) or "complex"
-  (must be baked to image textures).
+  (manual channel-image bake or existing fallback); Tangent is excluded
+  because it has an independent export-time corner producer.
 - ``bake_material_to_images(obj, mat, options)`` — drives Blender's
-  ``bpy.ops.object.bake`` to render the material's BSDF channels to
+  ``bpy.ops.object.bake`` for a three-channel approximation to
   PNG files, then stores the resulting paths as ID-property metadata
-  on the material so subsequent renders skip the bake.
+  on the material for subsequent exports to consume. Rendering does
+  not invoke this channel-image bake automatically.
 - ``baked_paths(mat)`` — accessor returning the cached PNG paths, or
-  ``None`` if the material hasn't been baked.
+  ``None`` if no recorded channel file exists. The synthetic exporter
+  requires diffuse; roughness and normal are optional.
 - ``baked_cache_is_stale(mat)`` — content-hash comparison so the UI
-  can flag materials needing re-bake after a node-graph edit.
+  can flag detected fingerprint changes or missing recorded files;
+  it does not detect every shader edit or enforce export freshness.
 - ``bake_complex_materials_in_scene(scene, …)`` — driver used by
   the user-facing operator ``RISE_OT_bake_materials``.
 
@@ -43,13 +47,14 @@ API failure modes:
 
 Each fix unlocked the next; the auto-bake-on-render architecture
 fundamentally fights `bpy.ops.object.bake`'s preconditions (it
-expects to be invoked from a user click in a 3D View).  The
-industry-standard workflow used by LuxCore, Octane, and Renderman
-Blender add-ons is exactly the explicit-operator UX we settled on
-here — same reason.
+expects to be invoked from a user click in a 3D View).  The supported channel-image workflow here is the explicit operator;
+these historical failures do not describe the separate Tangent child bake.
 
-`engine.render()` detects unbaked complex materials and aborts with
-a clear actionable error pointing the user at the Bake button.
+`engine.render()` gates viable complex materials whose limited current graph fingerprint
+has no matching attempted marker, directing the user to the Bake button. A
+matching attempted hash allows render despite failure or missing PNGs.
+The isolated automatic Tangent corner bake belongs to tangent_bake.py
+and does not use this manual channel driver or live engine swap.
 
 The simple-graph translator (the "Option A" half of the hybrid
 described in BLENDER_MATERIAL_TRANSLATION.md) lives in
@@ -65,12 +70,14 @@ import tempfile
 from typing import Optional
 
 import bpy
+from .tangent_bake import find_material_output
 
 # ---------------------------------------------------------------------------
 # Classifier
 # ---------------------------------------------------------------------------
 
-# Nodes the simple translator can handle (or transparently traverse).
+# Ordinary material-input nodes the simple translator can handle
+# (or transparently traverse); Tangent has a separate full-graph producer.
 # See docs/BLENDER_MATERIAL_TRANSLATION.md "Supported node table" — keep
 # the two in sync.
 _SIMPLE_TRAVERSABLE_NODES = frozenset({
@@ -86,7 +93,7 @@ _SIMPLE_TRAVERSABLE_NODES = frozenset({
     "ShaderNodeValToRGB",       # Color Ramp
     "ShaderNodeMix",            # 4.x mix node
     "ShaderNodeMixRGB",         # legacy mix node
-    "ShaderNodeMath",           # Some Math ops fold inline; full Math is force-bake
+    "ShaderNodeMath",           # Classifier admits Math; direct translation only folds some ops
     "ShaderNodeRGBCurve",       # currently lossy pass-through
     "ShaderNodeHueSaturation",  # currently lossy pass-through
     "ShaderNodeBrightContrast", # currently lossy pass-through
@@ -107,8 +114,9 @@ _SIMPLE_TRAVERSABLE_NODES = frozenset({
 SUPPORTED_UPSTREAM_NODES = _SIMPLE_TRAVERSABLE_NODES
 
 # Nodes that force the bake fallback — see docs/BLENDER_MATERIAL_TRANSLATION.md
-# "Force-bake list".  Anything not in _SIMPLE_TRAVERSABLE_NODES is implicitly
-# force-bake; this set is for documentation / fast-path diagnostics.
+# "Force-bake list". On ordinary inputs other than Tangent, nodes not in
+# _SIMPLE_TRAVERSABLE_NODES classify complex for the manual workflow.
+# This set is for documentation / fast-path diagnostics, not Tangent.
 _FORCE_BAKE_NODES = frozenset({
     "ShaderNodeAmbientOcclusion",
     "ShaderNodeMixShader",
@@ -163,7 +171,8 @@ def _find_principled_through_surface(output_node):
             continue
         # Any other terminal shader (Mix Shader, Add Shader, Glass BSDF,
         # Diffuse BSDF, Emission, Volume) is "not a single Principled"
-        # — force-bake the whole material.
+        # — classify complex for the manual channel-image approximation.
+        # This does not schedule an automatic or faithful whole-BSDF bake.
         return None
     return None
 
@@ -173,14 +182,17 @@ def classify_material(material) -> str:
 
     Simple iff:
       - exactly one Principled BSDF reaches Material Output.Surface,
-      - every node anywhere reachable from any Principled input is in
+      - each reachable node from inputs OTHER THAN Tangent is in
         ``_SIMPLE_TRAVERSABLE_NODES``,
-      - no socket chain exceeds 16 nodes.
+      - ordinary upstream traversal depth does not exceed16 (root0).
+    The selected Surface has its own bounded single-Principled walk.
     Otherwise complex.
 
-    The classifier inspects the WHOLE reachable subgraph from every
-    Principled input.  An Ambient Occlusion node feeding a Color Ramp
-    that feeds Base Color forces complex; an Image Texture chained
+    Tangent is excluded: its full graph uses the separate export-time
+    corner producer, not this whitelist/depth/manual image workflow.
+    The classifier inspects reachable subgraphs of all OTHER inputs.
+    An Ambient Occlusion node feeding a Color Ramp that feeds Base Color
+    forces complex; an Image Texture chained
     via Color Ramp + Math feeding Base Color stays simple.
     """
 
@@ -190,11 +202,10 @@ def classify_material(material) -> str:
         return "simple"
 
     nt = material.node_tree
-    output_node = next(
-        (n for n in nt.nodes if n.bl_idname == "ShaderNodeOutputMaterial"),
-        None,
-    )
+    output_node = find_material_output(material)
     if output_node is None:
+        if any(n.bl_idname == 'ShaderNodeOutputMaterial' for n in nt.nodes):
+            return 'complex' # No Cycles/ALL output; unrelated targets are excluded.
         # No output node — fall back to default principled detection;
         # treat as simple so the existing exporter's first-principled
         # walk catches it.
@@ -204,10 +215,13 @@ def classify_material(material) -> str:
     if principled is None:
         return "complex"
 
-    # Walk every Principled input back through the graph.  If any
-    # reachable node is not in _SIMPLE_TRAVERSABLE_NODES, complex.
+    # Walk ordinary inputs except Tangent. An unsupported reachable
+    # node classifies complex for the manual image-bake workflow.
     stack = []
     for socket in principled.inputs:
+        # DL-213: tangent directions have their own full-graph corner bake.
+        if socket.name == "Tangent":
+            continue
         if socket.is_linked:
             stack.append((socket.links[0].from_node, 0))
 
@@ -237,7 +251,7 @@ def classify_material(material) -> str:
 # ---------------------------------------------------------------------------
 
 # ID-property keys used to persist bake outputs on a Blender Material.
-# Lives in `mat["<key>"]` (a generic StringProperty added on demand).
+# Lives in `mat["<key>"]` (generic ID properties added on demand).
 # Keys are chosen to be obvious in the Blender UI's Custom Properties
 # panel — easy to diagnose / clear by hand if needed.
 BAKED_DIFFUSE_KEY = "rise_baked_diffuse_path"
@@ -245,38 +259,30 @@ BAKED_ROUGHNESS_KEY = "rise_baked_roughness_path"
 BAKED_NORMAL_KEY = "rise_baked_normal_path"
 BAKED_RESOLUTION_KEY = "rise_baked_resolution"
 BAKED_FRAME_KEY = "rise_baked_frame"
-# Content hash of the material's node graph at the last successful
-# bake.  Set only when `out` was non-empty (at least one channel
-# baked).  Used by `baked_cache_is_stale` to decide whether the
-# cached PNGs match the current graph or need re-baking.
+# Limited top-level fingerprint at the last attempt with any saved channel.
+# The UI compares it and recorded file existence; export does not enforce it.
 BAKED_GRAPH_HASH_KEY = "rise_baked_graph_hash"
-# Content hash captured at the last bake ATTEMPT, regardless of
-# whether the attempt succeeded.  Used by the render-gate filter:
-# the gate fires only for complex materials with NO attempted-hash
-# OR whose graph has changed since the last attempt.  Prevents the
-# user from getting stuck in a render → bake → render loop when a
-# material's bake can't succeed (hide_render, UV layout, etc.); the
-# render then proceeds and the exporter uses flat-colour fallback
-# for the never-baked material.
+# Limited fingerprint from the last completed channel-stage attempt, even if
+# no channel saved. The viable-complex render gate requires a matching marker.
+# Undetected edits do not reopen the gate. Existing diffuse cache may survive
+# a failed retry; otherwise export uses its existing translation/fallback.
 BAKED_ATTEMPTED_HASH_KEY = "rise_baked_attempted_hash"
 
 
 def _material_graph_hash(material) -> str:
-    """Compute a stable content hash of a material's node graph.
+    """Fingerprint selected top-level node data, not all bake dependencies.
 
-    Captures everything that would affect the baked outputs:
-    - Every node's ``bl_idname`` and ``name``
-    - Every input socket's default value (for unlinked sockets)
-    - Every link (from_node.name + from_socket.name)
-    - For ``ShaderNodeTexImage``: the image data block's ``name`` and
-      ``filepath`` (catches "user swapped the image but kept the node")
-    - For ``ShaderNodeValToRGB``: the colour-ramp stop positions and
-      colours (catches "user dragged a ColorRamp handle")
+    Includes node type/name, every input name and readable default (including
+    linked inputs), upstream node/socket links, image name/path, and color-ramp
+    interpolation/stops/colors. Omits other node properties (including Math
+    operation and output target), nested group contents, image pixels, and
+    object/scene/time/evaluation dependencies. No hashing-cost benchmark is
+    claimed. A shader edit can therefore leave this fingerprint unchanged.
 
-    Used by the auto-bake path to decide whether the cached PNGs are
-    stale.  Cheap: a 30-node material hashes in < 1 ms.
-
-    Stored alongside the bake outputs as ``rise_baked_graph_hash``.
+    Stored as attempted hash after the channel stage and as success hash only
+    when any channel saves. The render guard compares the attempted marker;
+    the UI compares success hash and file existence. Export consumes existing
+    diffuse cache without this freshness check; this is not an auto-bake path.
     """
 
     import hashlib
@@ -302,9 +308,8 @@ def _material_graph_hash(material) -> str:
                     .encode("utf-8")
                 )
         # Image identity for ShaderNodeTexImage — catches "user
-        # swapped the assigned image".  Image PIXEL contents aren't
-        # hashed (would be too slow); the filepath / name change is
-        # the usual user-edit signal.
+        # swapped the assigned image".  Image pixel contents are not
+        # hashed; name/path are only a partial dependency signal.
         if node.bl_idname == "ShaderNodeTexImage" and node.image is not None:
             h.update(node.image.name.encode("utf-8"))
             h.update(node.image.filepath.encode("utf-8"))
@@ -320,11 +325,10 @@ def _material_graph_hash(material) -> str:
 
 
 def baked_paths(material) -> Optional[dict[str, str]]:
-    """Returns the cached bake outputs for a material, or None if the
-    material hasn't been baked yet.  Dict keys: ``diffuse``,
-    ``roughness``, ``normal``; values are filesystem paths.  Missing
-    channels (e.g. material with no normal map) won't appear in the
-    dict.
+    """Return recorded channel paths whose files exist, or None if none do.
+    Keys are ``diffuse``, ``roughness``, ``normal``. No hash freshness check
+    occurs. Any existing channel controls the operator's optional skip, but
+    the synthetic exporter requires diffuse and uses the other two optionally.
     """
 
     if material is None:
@@ -343,8 +347,10 @@ def baked_paths(material) -> Optional[dict[str, str]]:
 
 
 def clear_baked_metadata(material) -> None:
-    """Remove the bake metadata so subsequent renders fall back to
-    direct procedural translation (or force a re-bake)."""
+    """Remove the seven defined keys below, not every rise_baked_* property.
+    Viable complex graphs then require a manual attempt.
+    This does not delete PNGs or start a bake. Simple graphs translate directly.
+    """
     if material is None:
         return
     for key in (
@@ -369,17 +375,18 @@ def needs_bake_attempt(scene, material) -> bool:
     Single source of truth: panel warning + render gate stay aligned.
 
     Rules:
-      - simple materials → False (direct translation, no bake)
-      - complex with no viable proxy → False (can't bake; flat-colour
-        fallback handled by exporter)
+      - simple materials → False (direct channels; Tangent is separate)
+      - complex with no viable proxy → False (cannot queue a bake;
+        existing slot/default fallback handled by exporter)
       - complex with viable proxy AND no attempted-hash → True
         (never tried)
       - complex with viable proxy AND attempted-hash differs from
-        current graph hash → True (user edited since last attempt)
+        current limited graph hash → True (a detected edit since last attempt)
       - complex with viable proxy AND attempted-hash matches current
         graph → False (we tried; whatever the outcome, render
-        proceeds with what we've got — successful PNGs consumed,
-        failed bakes use flat-colour fallback)
+        proceeds: existing diffuse selects the synthetic approximation,
+        with optional roughness/normal; otherwise existing translation/
+        slot/default fallback applies. Undetected edits do not gate)
     """
 
     if classify_material(material) != "complex":
@@ -393,14 +400,13 @@ def needs_bake_attempt(scene, material) -> bool:
 
 
 def baked_cache_is_stale(material) -> bool:
-    """Returns True if the material has bake metadata but the graph
-    hash no longer matches — i.e. the user has edited the node graph
-    since the last bake.  Also True if any of the cached PNG paths
-    on disk are missing (cleaned up by a temp-dir sweep, for
-    example).  False when the cache is current or absent entirely.
+    """UI diagnostic for a stored success fingerprint or recorded file.
 
-    Used by ``auto_bake_complex_materials`` to decide whether to
-    re-bake on the next render.
+    With a success hash, True means the limited current fingerprint differs
+    or a recorded channel file is missing. Without a success hash, False.
+    False does not prove shader freshness: omitted dependencies can change.
+    This neither enforces export freshness nor starts an automatic bake;
+    the render guard separately compares the attempted fingerprint.
     """
 
     if material is None:
@@ -411,7 +417,7 @@ def baked_cache_is_stale(material) -> bool:
     if str(cached_hash) != _material_graph_hash(material):
         return True
     # Hash matches; verify each cached PNG still exists on disk.  A
-    # vacated temp dir invalidates the cache transparently.
+    # missing recorded file marks the UI diagnostic stale, not an export gate.
     for key in (BAKED_DIFFUSE_KEY, BAKED_ROUGHNESS_KEY, BAKED_NORMAL_KEY):
         path = material.get(key)
         if path and not os.path.isfile(str(path)):
@@ -528,8 +534,7 @@ def _save_image_to_temp_png(image, out_path: str) -> bool:
     """Save the ``Image`` data block to ``out_path`` as PNG.  Returns
     True on success.
 
-    Uses Blender's ``Image.save_render`` if a render context is
-    available, falling back to ``Image.filepath_raw = …; save()``.
+    Sets ``filepath_raw`` and PNG format, then calls ``Image.save()``.
     """
     try:
         image.filepath_raw = out_path
@@ -551,8 +556,10 @@ def bake_material_to_images(
     bake_normal: bool = True,
 ) -> dict[str, str]:
     """Bake ``material`` on ``obj`` to PNG files.  Updates the
-    material's ID properties with the resulting paths and returns the
-    same dict that :func:`baked_paths` would.
+    material's ID properties for newly saved channels and returns only
+    those channels. Failed channels do not clear previous path metadata, so
+    this result can differ from :func:`baked_paths`. This approximates three
+    channels, not the complete BSDF or its view-dependent lobes.
 
     Requires:
     - The scene's render engine is CYCLES (caller switches and
@@ -560,11 +567,14 @@ def bake_material_to_images(
     - ``obj`` is selectable in the current view layer.
 
     Channels:
-    - Diffuse (Base Color) — always baked
-    - Roughness — baked when ``bake_roughness`` is True
-    - Normal — baked when ``bake_normal`` is True
+    - Diffuse COLOR pass only — always attempted; not lit reflectance or F0
+    - Roughness — attempted when ``bake_roughness`` is True
+    - Normal — tangent-space channel attempted when ``bake_normal`` is True
 
-    The output PNGs are colour-space-tagged appropriately when read
+    The synthetic consumer requires an existing diffuse PNG, supplies metallic0,
+    and drops transmission, sheen, coat, emission, subsurface and alpha lobes.
+    Roughness defaults to0.5 if absent; normal is optional. The output PNGs
+    are colour-space-tagged appropriately when read
     back via the bridge (sRGB for diffuse, Linear for roughness,
     ROMM-Linear for normal).
     """
@@ -593,17 +603,11 @@ def bake_material_to_images(
 
     # Make obj the active+selected; remember prior state to restore.
     #
-    # `bpy.context.selected_objects` / `view_layer` / `object` are
-    # blocked inside Blender's restricted context (e.g. when this
-    # function is reached from a `render_init` handler).  The caller
-    # in `auto_bake_complex_materials` provides a
-    # `bpy.context.temp_override` populated with the required
-    # selection state, but as belt-and-suspenders, fail soft on the
-    # state-snapshot reads.  When running from the user-driven
-    # operator path (`bake_complex_materials_in_scene`) the reads
-    # succeed and we restore selection on exit; when running from the
-    # handler path we don't bother (there's no user selection to
-    # preserve).
+    # The supported caller is the explicit user operator, outside a live
+    # render callback. Snapshot selection here and restore it on exit.
+    # Restricted-context reads historically failed in the abandoned
+    # render-handler experiment; these defensive fallbacks do not make
+    # that old automatic workflow supported.
     try:
         prev_active = bpy.context.view_layer.objects.active
         prev_selected = list(bpy.context.selected_objects)
@@ -623,9 +627,8 @@ def bake_material_to_images(
     try:
         bpy.ops.object.select_all(action="DESELECT")
     except RuntimeError:
-        # No active 3D view in this context — selection is managed by
-        # the temp_override the caller installed, so deselect-all is
-        # not necessary.
+        # A failed deselect is tolerated; the supported operator does not
+        # install a context override or guarantee this fallback selects correctly.
         pass
     obj.select_set(True)
     # Setting active via the view layer directly (rather than
@@ -635,8 +638,8 @@ def bake_material_to_images(
     try:
         bpy.context.view_layer.objects.active = obj
     except AttributeError:
-        # The temp_override owns the active-object slot; our caller
-        # already pointed it at `obj`, so no further action needed.
+        # Tolerate missing active-object access; no caller-installed override
+        # or successful bake in such a context is promised.
         pass
 
     # Remember the previously-active node on the material so we can
@@ -654,7 +657,7 @@ def bake_material_to_images(
     target_nodes: list[bpy.types.Node] = []
 
     try:
-        # Diffuse (Base Color).
+        # Diffuse COLOR pass; not a full visual-result or conductor-F0 bake.
         diffuse_img = bpy.data.images.new(
             f"_rise_bake_diffuse_{safe_name}",
             width=resolution,
@@ -740,10 +743,9 @@ def bake_material_to_images(
         if prev_active_node is not None and prev_active_node.name in nt.nodes:
             nt.nodes.active = prev_active_node
 
-        # Restore selection / active.  Both errors here are
-        # context-restriction symptoms when running from a handler —
-        # they're harmless because the temp_override the caller
-        # installed gets unwound on its own.
+        # Restore the explicit caller's selection/active state; tolerate
+        # unavailable contexts during teardown. No automatic handler
+        # or caller-installed override is assumed.
         try:
             bpy.ops.object.select_all(action="DESELECT")
             for o in prev_selected:
@@ -753,20 +755,16 @@ def bake_material_to_images(
         except (RuntimeError, AttributeError):
             pass
 
-        # We INTENTIONALLY don't bpy.data.images.remove() the temp
-        # images — they're saved to disk now, and removing the data
-        # block doesn't delete the file; keeping the data block lets
-        # the user inspect the bake result in Blender's Image Editor.
+        # Keep channel image datablocks, including failed targets, for inspection.
+        # Successfully saved PNGs persist separately; removing a datablock
+        # would not delete its file. No successful image is implied here.
 
-    # Stamp the "we tried this graph" marker UNCONDITIONALLY, even if
-    # the bake produced no usable channels.  The render-gate predicate
-    # `needs_bake_attempt` keys off this so the user isn't trapped in
-    # a render → bake → render loop when a material's bake can't
-    # succeed (e.g. hide_render-disabled GN-instanced meshes).  The
-    # SUCCESS marker (`BAKED_GRAPH_HASH_KEY`) is set below only when
-    # at least one channel landed, so `baked_paths()` still returns
-    # None for failed-bake materials and the exporter routes them
-    # through its flat-colour fallback.
+    # Stamp after the channel stage and cleanup, even if no channel saved.
+    # Early returns/exceptions before this point can leave the guard pending.
+    # Failed retries do not clear prior path/success metadata: existing diffuse
+    # may still select the synthetic approximation, otherwise export uses its
+    # existing translation/fallback. This marker prevents repeat gating only
+    # while the limited fingerprint matches, not after every shader edit.
     material[BAKED_ATTEMPTED_HASH_KEY] = pre_bake_hash
 
     # Commit the success-hash AFTER the finally block has restored
@@ -802,7 +800,8 @@ def find_bakeable_proxy_object(scene, material):
     Also used by ``engine.render()`` to decide whether a complex
     material is *bakeable* before deciding to abort the render with a
     "please bake" error.  Materials with no viable proxy fall through
-    to the exporter's flat-colour fallback instead of gating render.
+    without gating render: existing diffuse cache may still be consumed,
+    otherwise the existing translation/slot/default fallback applies.
     """
 
     for obj in scene.objects:
@@ -829,11 +828,14 @@ def bake_complex_materials_in_scene(
     report=print,
 ) -> int:
     """Walk the scene, find every object whose material classifies as
-    complex, and bake each.  Returns the number of materials baked.
+    complex, once per material, using the first encountered MESH object.
+    Returns the number with any newly saved channel, not necessarily diffuse
+    or a complete three-channel cache. A zero count may mean no eligible
+    material, all skipped, or all attempts failed.
 
-    ``only_unbaked``: when True, skip materials that already have a
-    ``rise_baked_diffuse_path`` ID property — useful for "bake
-    incrementally" workflows.
+    ``only_unbaked``: when True, skip materials with any existing
+    channel returned by ``baked_paths``. This does not check graph
+    freshness; False retries complex materials regardless of cache.
 
     The scene's render engine MUST be switched to ``CYCLES`` by the
     caller before invoking; the operator handles that.  We don't do
@@ -865,5 +867,5 @@ def bake_complex_materials_in_scene(
                 )
                 baked += 1
             else:
-                report(f"[RISE bake] {mat.name}: bake failed; will render as flat colour")
+                report(f"[RISE bake] {mat.name}: no new channels saved; existing diffuse cache or translation/fallback will be used")
     return baked

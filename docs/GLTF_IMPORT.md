@@ -4,6 +4,8 @@
 > installed. Historical Phase 3/4 shader-op descriptions below are superseded
 > for imported alpha by [ALPHA_COVERAGE.md](ALPHA_COVERAGE.md).
 
+> Current tangent producers (2026-09-29, DL-213): `KHR_materials_anisotropy` composes its scalar/per-texel rotation onto the imported glTF `TANGENT` frame (UV fallback when absent). This Indexed3/core/glTF support predates DL-213; the native inline mesh chunk and global IJob tangent path reuse it. Blender ABI16 instead transports a separate shader direction so Principled anisotropy does not redirect UV normal maps. `BlenderBridgeTangentTest` independently renders glTF authored-TANGENT and rotated-UV assets and requires identical pixels.
+
 # glTF 2.0 Import for RISE — Analysis & Plan
 
 **Current status (2026-07-24): SUBSTANTIALLY IMPLEMENTED.** Mesh and scene

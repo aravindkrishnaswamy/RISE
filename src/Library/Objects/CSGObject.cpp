@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Modifiers/ModifierFrame.h"
 #include <cmath>			// std::isfinite / std::fabs (the probe's range2 + margin guards, CSGObject::SelfHitRootFloor's ownership window)
 #include "CSGObject.h"
 
@@ -335,6 +336,8 @@ namespace
 		dst.vShadingTangent = src.vShadingTangent;
 		dst.shadingBitangentSign = src.shadingBitangentSign;
 		dst.bHasShadingTangent = src.bHasShadingTangent;
+        dst.vShaderDirection=src.vShaderDirection; dst.bHasShaderDirection=src.bHasShaderDirection;
+        dst.normalMapOnb=src.normalMapOnb; dst.bHasNormalMapFrame=src.bHasNormalMapFrame;
 
 		// Wireframe view-mode edge info is per-surface payload too (GUI
 		// render modes P1): the closest-edge point belongs to the SAME
@@ -797,6 +800,7 @@ namespace
 void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool, const bool, const bool ) const
 {
     ri.hasBoundaryRange = ri.hasBoundaryRange2 = false;
+    ri.geometric.bHasShaderDirection=ri.geometric.bHasNormalMapFrame=false;
 	// The hitting of front and back faces are IGNORED for CSG objects!
 
 	if( !pObjectA || !pObjectB ) {
@@ -1589,6 +1593,8 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 		} else {
 			ri.geometric.onb.CreateFromW( ri.geometric.vNormal );
 		}
+
+        ModifierFrame::PromoteShaderDirection(ri.geometric,m_mxFinalTrans,m_mxInvTranspose,m_tangentFrameSign);
 
 		// Transform the per-vertex tangent (P2-d) from THIS CSG object's
 		// local frame to world space -- exactly like vNormal above, and
