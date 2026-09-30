@@ -3146,8 +3146,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					// dielectric law, so this transmission and the SPF's
 					// reflection sum to 1.
 					const Scalar Ft = BSSRDFSampling::BoundaryTransmission( cosIn,
-						BSSRDFSampling::RelativeBoundaryIOR( pRWParams->ior,
-							BSSRDFSampling::ExteriorIOR( ri.geometric ) ) );
+						pRWParams->ior, BSSRDFSampling::ExteriorIOR( ri.geometric ) );
 
 					if( Ft > NEARZERO )
 					{

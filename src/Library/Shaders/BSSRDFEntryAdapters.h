@@ -116,7 +116,7 @@ namespace BSSRDFAdapters
 				ior, BSSRDFSampling::ExteriorIOR( ri ) );
 			const Scalar c = BSSRDFSampling::BoundaryTransmissionNormalization( eta );
 			const Scalar swScale = (c > 1e-20) ? 1.0 / (c * PI) : 0;
-			return BSSRDFSampling::BoundaryTransmission( cosTheta, eta ) * swScale;
+			return BSSRDFSampling::BoundaryTransmission( cosTheta, ior, BSSRDFSampling::ExteriorIOR( ri ) ) * swScale;
 		}
 
 	public:

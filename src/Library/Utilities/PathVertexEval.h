@@ -337,7 +337,8 @@ namespace RISE
 					// (`mediumIOR`, the IOR-stack top at the exit hit).
 					const Scalar eta = BSSRDFSampling::RelativeBoundaryIOR(
 						pRW->ior, ( vertex.mediumIOR > 0.0 ) ? vertex.mediumIOR : 1.0 );
-					const Scalar FtEntry = BSSRDFSampling::BoundaryTransmission( cosTheta, eta );
+					const Scalar FtEntry = BSSRDFSampling::BoundaryTransmission( cosTheta, pRW->ior,
+						( vertex.mediumIOR > 0.0 ) ? vertex.mediumIOR : 1.0 );
 					const Scalar Sw = BSSRDFSampling::EvaluateSwWithFresnel( FtEntry, eta );
 					return RISEPel( Sw, Sw, Sw );
 				}
@@ -610,7 +611,8 @@ namespace RISE
 					// DL-49: relative index, as in the RGB twin above.
 					const Scalar eta = BSSRDFSampling::RelativeBoundaryIOR(
 						pRW->ior, ( vertex.mediumIOR > 0.0 ) ? vertex.mediumIOR : 1.0 );
-					const Scalar FtEntry = BSSRDFSampling::BoundaryTransmission( cosTheta, eta );
+					const Scalar FtEntry = BSSRDFSampling::BoundaryTransmission( cosTheta, pRW->ior,
+						( vertex.mediumIOR > 0.0 ) ? vertex.mediumIOR : 1.0 );
 					return BSSRDFSampling::EvaluateSwWithFresnel( FtEntry, eta );
 				}
 

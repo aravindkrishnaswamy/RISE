@@ -359,12 +359,15 @@ int main() {
  RISE_API_CreateUniformScalarPainter(&constant,1.5);RISE_API_CreateUniformScalarPainter(&matched,1);
  RISE_API_CreateUniformScalarPainter(&zero,0);RISE_API_CreateUniformScalarPainter(&scatter,100);
  IScalarPainter* painters[3]={curve,constant,matched};
+ IScalarPainter* skinP[7]={};const double skinV[7]={.02,.5,.002,.001,.005,.025,.7};
+ for(unsigned i=0;i<7;i++)RISE_API_CreateUniformScalarPainter(&skinP[i],skinV[i]);
  RandomNumberGenerator rng(334);IndependentSampler sampler(rng);double worst=0;
  for(unsigned p=0;p<3;p++)for(bool slot:{false,true}) {
   IScalarPainter* view=slot?painters[p]->MakeSingleScalarSlotView():nullptr;const auto& ior=view?*view:*painters[p];
-  IMaterial *diff=nullptr,*rw=nullptr;
+  IMaterial *diff=nullptr,*rw=nullptr,*skin=nullptr;
   RISE_API_CreateSubSurfaceScatteringMaterial(&diff,ior,*zero,*scatter,0,0);
   RISE_API_CreateRandomWalkSSSMaterial(&rw,ior,*zero,*scatter,0,0,512);
+  RISE_API_CreateDonnerJensenSkinBSSRDFMaterial(&skin,*skinP[0],*skinP[1],*skinP[2],*skinP[3],*skinP[4],*skinP[5],ior,*constant,*skinP[6],0);
   for(const auto& c:cases)if(c.painter==p)for(unsigned axis=0;axis<3;axis++) {
    double nv[3]={},wv[3]={};nv[axis]=1;wv[axis]=c.mu;wv[(axis+1)%3]=c.mu==.031618823507523014?.99950000000000006:std::sqrt((1-c.mu)*(1+c.mu));
    Vector3 n(nv[0],nv[1],nv[2]),wi(wv[0],wv[1],wv[2]);
@@ -372,7 +375,7 @@ int main() {
    ri.bHit=true;ri.vNormal=ri.vGeomNormal=n;ri.onb.CreateFromW(n);ri.ambientIOR=c.ni;
    Check(ior.GetValueAtNM(ri,c.nm)==c.nt,"actual public wavelength",c.nm,ior.GetValueAtNM(ri,c.nm),c.nt);
    Check(std::fabs(Vector3Ops::Magnitude(wi)-1)<4e-16,"rounded unit direction",c.nm,Vector3Ops::Magnitude(wi),1);
-   for(const IMaterial* m:{diff,rw}) {
+   for(const IMaterial* m:{diff,rw,skin}) {
     // Entry adapters have open-hemisphere support; the profile law and
     // Optics still test exact tangent incidence separately.
     if(m==rw&&c.mu==0)continue;
@@ -387,6 +390,16 @@ int main() {
     Check(t>=0&&t<=1,"physical transmission",c.nm,t,1-c.reflect);
     Check(std::fabs(r-c.reflect)<=1e-6,"independent critical reflection",c.nm,r,c.reflect);
     Check(std::fabs(t-(1-c.reflect))<=1e-6,"independent critical transmission",c.nm,t,1-c.reflect);
+    if(p>0) {
+     ScatteredRayContainer rgb;m->GetSPF()->Scatter(ri,sampler,rgb,stack);
+     double rRGB=0;for(unsigned j=0;j<rgb.Count();j++)rRGB+=rgb[j].kray[0];
+     double tRGB;
+     if(m->GetDiffusionProfile())tRGB=m->GetDiffusionProfile()->FresnelTransmission(c.mu,ri);
+     else {BSSRDFAdapters::RandomWalkEntryBSDF adapter(c.nt);tRGB=adapter.value(wi,ri)[0]*BSSRDFSampling::BoundaryTransmissionNormalization(c.nt/c.ni)*PI;}
+     Check(std::fabs(rRGB+tRGB-1)<=1e-6,"RGB constant critical partition",c.nm,rRGB+tRGB,1);
+     Check(std::fabs(rRGB-c.reflect)<=1e-6,"RGB critical reflection oracle",c.nm,rRGB,c.reflect);
+     Check(std::fabs(tRGB-(1-c.reflect))<=1e-6,"RGB critical transmission oracle",c.nm,tRGB,1-c.reflect);
+    }
    }
    double ct=0;const bool trans=Optics::CalculateRefractedCosine(c.mu,c.ni,c.nt,ct);
    Check(trans==c.transmits,"exact Snell critical sign",c.nm,trans,c.transmits);
@@ -399,8 +412,8 @@ int main() {
     Check(std::fabs(r-c.reflect)<=1e-6,"vector Fresnel oracle",c.nm,r,c.reflect);
    }
   }
-  diff->release();rw->release();if(view)view->release();
+  diff->release();rw->release();skin->release();if(view)view->release();
  }
- curve->release();constant->release();matched->release();zero->release();scatter->release();
+ curve->release();constant->release();matched->release();zero->release();scatter->release();for(auto* p:skinP)p->release();
  std::printf("Cases: %zu Worst partition: %.17g\nChecks: %u Failures: %u\n",sizeof(cases)/sizeof(cases[0]),worst,checks,failures);return failures?1:0;
 }

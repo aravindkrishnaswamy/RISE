@@ -2986,9 +2986,8 @@ namespace {
 					// DL-306: the exact dielectric law, the SPF reflection's own,
 					// so the coin's reflect branch (weight R_spf / R) carries
 					// exactly 1 and the two branches partition the interface.
-					const Scalar etaRW = BSSRDFSampling::RelativeBoundaryIOR(
-						pRW->ior, BSSRDFSampling::ExteriorIOR( ri.geometric ) );
-					const Scalar Ft = BSSRDFSampling::BoundaryTransmission( cosIn, etaRW );
+					const Scalar Ft = BSSRDFSampling::BoundaryTransmission( cosIn,
+					pRW->ior, BSSRDFSampling::ExteriorIOR( ri.geometric ) );
 					const Scalar R = 1.0 - Ft;
 
 					if( Ft > NEARZERO && sampler.Get1D() < Ft )
@@ -7297,9 +7296,8 @@ unsigned int GenerateLightSubpathImpl(
 				// DL-306: the exact dielectric law, the SPF reflection's own,
 				// so the coin's reflect branch (weight R_spf / R) carries
 				// exactly 1 and the two branches partition the interface.
-				const Scalar etaRW = BSSRDFSampling::RelativeBoundaryIOR(
+				const Scalar Ft = BSSRDFSampling::BoundaryTransmission( cosIn,
 					pRW->ior, BSSRDFSampling::ExteriorIOR( ri.geometric ) );
-				const Scalar Ft = BSSRDFSampling::BoundaryTransmission( cosIn, etaRW );
 				const Scalar R = 1.0 - Ft;
 
 				if( Ft > NEARZERO && sampler.Get1D() < Ft )

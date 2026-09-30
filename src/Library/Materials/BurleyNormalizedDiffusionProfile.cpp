@@ -233,9 +233,8 @@ Scalar BurleyNormalizedDiffusionProfile::FresnelTransmission(
 	// the one SubSurfaceScatteringSPF prices the surface reflection of the
 	// same interface with, so reflection + transmission = 1 (a denser
 	// exterior is totally reflected past the critical angle).
-	const Scalar eta = BSSRDFSampling::RelativeBoundaryIOR(
+	return BSSRDFSampling::BoundaryTransmission( fabs( cosTheta ),
 		pIOR->GetValuesAt( ri ).v[0], BSSRDFSampling::ExteriorIOR( ri ) );
-	return BSSRDFSampling::BoundaryTransmission( fabs( cosTheta ), eta );
 }
 
 Scalar BurleyNormalizedDiffusionProfile::GetIOR(
@@ -287,5 +286,5 @@ Scalar BurleyNormalizedDiffusionProfile::FresnelTransmissionNM(const Scalar cosT
     const RayIntersectionGeometric& ri, const Scalar nm) const
 {
     return BSSRDFSampling::BoundaryTransmission(fabs(cosTheta),
-        BSSRDFSampling::RelativeBoundaryIOR(GetIORNM(ri, nm), BSSRDFSampling::ExteriorIOR(ri)));
+        GetIORNM(ri, nm), BSSRDFSampling::ExteriorIOR(ri));
 }
