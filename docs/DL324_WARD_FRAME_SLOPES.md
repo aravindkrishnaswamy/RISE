@@ -54,6 +54,9 @@ controls (31 finite normal-dot overshoot cases). The axis-pole RGB/NM
 controls remained finite. Earlier development oracle failures are excluded
 from this final RED evidence.
 
+On this Apple Silicon target, `long double` has binary64 precision; the
+oracle is independent by analytic formulation, not additional precision.
+
 Two existing contracts matter to the oracle. Nominal RGB black has a small
 nonzero lifted spectral reflectance, so full NM value includes that diffuse
 term. In RGB, the zero-weight diffuse ray remains an emitted fallback when
@@ -86,7 +89,10 @@ n=6 each). Scheduling and block order confound causal interpretation;
 no whole-render speedup is claimed.
 
 Schlick's ruby paths have separate bounded rational distribution/masking
-machinery and do not use Ward's tangent-normalization/complement expressions.
+machinery. They share tangent normalization but never feed its projection
+to `acos`; their inverse polar replay already bounds `hz²` to one. The
+shipped ruby has roughness `.05`, isotropy `1`, so its azimuth factor is
+identically one even at a rounded pole.
 Their existing density, masking and BRDF/kray suites remain gate controls.
 Integrator RGB/NM/HWSS consumers inherit the fixed material values; no
 integrator code changes were needed. Bare-material tests do not expand the
