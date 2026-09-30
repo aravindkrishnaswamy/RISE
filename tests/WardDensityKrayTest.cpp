@@ -741,6 +741,53 @@ static void TestWardExponentRange(const IORStack& stack) {
     spec->release();black->release();
 }
 
+// Actual alpha=1 draws whose wi+wo squared length underflows. This
+// independent max-component normalization never calls the production helper.
+static void TestWardHalfRange(const IORStack& stack) {
+    auto* black=new UniformColorPainter(RISEPel(0.0));black->addref();
+    auto* spec=new UniformColorPainter(RISEPel(.41));spec->addref();
+    auto* a=new UniformScalarPainter(1.0);a->addref();
+    for(int model=0;model<2;++model) {
+        ISPF* sp=model?static_cast<ISPF*>(new WardAnisotropicEllipticalGaussianSPF(*black,*spec,*a,*a)):static_cast<ISPF*>(new WardIsotropicGaussianSPF(*black,*spec,*a));sp->addref();
+        for(double grazing:{1e-170,1e-200})for(int nm=0;nm<2;++nm) {
+            RayIntersectionGeometric ri=MakeIntersection(0);
+            const Vector3 wi=ri.onb.v()+ri.onb.w()*grazing;
+            ri.ray.Set(Point3(0,0,1),-wi);
+            WardEndpointSampler sampler(0,std::nextafter(1.,0.));ScatteredRayContainer rays;
+            if(nm)sp->ScatterNM(ri,sampler,570,rays,stack);else sp->Scatter(ri,sampler,rays,stack);
+            int count=0;
+            for(unsigned j=0;j<rays.Count();++j)if(rays[j].type==ScatteredRay::eRayReflection) {
+                ++count;const auto& r=rays[j];const Vector3 wo=r.ray.Dir(),sum=wi+wo;
+                const double scale=std::max(std::abs(sum.x),std::max(std::abs(sum.y),std::abs(sum.z)));
+                const Vector3 scaled=sum*(1/scale);
+                const double len=std::sqrt(scaled.x*scaled.x+scaled.y*scaled.y+scaled.z*scaled.z);
+                const Vector3 h=scaled*(1/len);
+                const double hz=Vector3Ops::Dot(h,ri.onb.w()),hd=Vector3Ops::Dot(h,wo),co=Vector3Ops::Dot(wo,ri.onb.w());
+                const double sx=Vector3Ops::Dot(h,ri.onb.u())/hz,sy=Vector3Ops::Dot(h,ri.onb.v())/hz;
+                const double density=std::exp(-sx*sx-sy*sy-std::log(4*PI)-std::log(hd)-3*std::log(hz));
+                const double rs=nm?GuardedGetColorNM(*spec,ri,570):.41;
+                const double rd=nm?GuardedGetColorNM(*black,ri,570):0;
+                const double expectedKray=rs*2*co/(grazing+co);
+                const double expectedExplicit=std::exp(-sx*sx-sy*sy-std::log(4*PI)-2*std::log(hd)-4*std::log(hz)+std::log(rs)+std::log(co)-std::log(r.pdf));
+                const double q=expectedKray/(rd+expectedKray);
+                const double queried=nm?sp->PdfNM(ri,wo,570,stack):sp->Pdf(ri,wo,stack);
+                Check(std::isfinite(r.pdf)&&r.pdf>0,"DL-324 grazing actual alpha1 draw finite stored density");
+                Check(WardRangeClose(r.pdf,density),"DL-324 grazing actual draw independent conditional density");
+                Check(WardRangeClose(queried,q*density),"DL-324 grazing actual RGB/NM aggregate density retains half range");
+                Check(WardRangeClose(nm?r.krayNM:r.kray[0],expectedKray),"DL-324 grazing actual stored kray independent ratio");
+                const double rsNM=GuardedGetColorNM(*spec,ri,570);
+                Check(WardRangeClose(sp->EvaluateKrayNM(ri,wo,r.type,570,stack),rsNM*2*co/(grazing+co)),"DL-324 grazing default companion retains half range");
+                const double explicitNM=expectedExplicit*rsNM/rs;
+                Check(WardRangeClose(sp->EvaluateKrayNM(ri,wo,r.type,570,stack,r.pdf),explicitNM),"DL-324 grazing explicit companion finite despite infinite standalone f");
+                Check(std::isinf(sp->EvaluateLobeFNM(ri,wo,r.type,570,stack)),"DL-324 grazing standalone f legitimately exceeds binary64");
+            }
+            Check(count==1,"DL-324 grazing actual alpha1 reflection emitted");
+        }
+        sp->release();
+    }
+    a->release();spec->release();black->release();
+}
+
 int main(int argc, char** argv)
 {
 	GlobalLog();
@@ -754,6 +801,7 @@ int main(int argc, char** argv)
 	IORStack iorStack = MakeTestIORStack( g_stubObject );
     TestRoundedWardPoles(iorStack);
     TestWardExponentRange(iorStack);
+    TestWardHalfRange(iorStack);
     if(argc>1 && std::string(argv[1])=="--robustness-only") {
         g_stubObject->release();
         std::cout << "Passed: " << passCount << " Failed: " << failCount << std::endl;
