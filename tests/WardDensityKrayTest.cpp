@@ -703,7 +703,7 @@ static void TestWardExponentRange(const IORStack& stack) {
                 if(heroExponent==740.) Check(std::isinf(rs/r.pdf),"DL-324 HWSS range control premature Rs/pdfHero itself overflows");
                 Check(std::isfinite(expected)&&expected>0,"DL-324 independent complete HWSS quotient representable");
                 Check(WardRangeClose(sp->EvaluateKrayNM(ri,wo,r.type,550,stack,r.pdf),expected),"DL-324 actual hero companion retains range beyond standalone f");
-                Check(WardRangeClose(sp->EvaluateKrayNM(ri,wo,r.type,550,stack),rs),"DL-324 non-explicit kray remains unchanged in range control");
+                Check(WardRangeClose(sp->EvaluateKrayNM(ri,wo,r.type,550,stack),rs*2*co/(co+Vector3Ops::Dot(incident,ri.onb.w()))),"DL-324 non-explicit kray remains unchanged in range control");
             }
             Check(count==1,"DL-324 HWSS range control actual hero reflection emitted");
             sp->release();

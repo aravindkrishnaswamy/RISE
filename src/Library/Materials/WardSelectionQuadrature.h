@@ -49,6 +49,16 @@ inline RISEPel SpecularKernel(double hx,double hy,double hz,double hd,const RISE
                    SpecularKernel(hx,hy,hz,hd,ax[1],ay[1],weight[1]),
                    SpecularKernel(hx,hy,hz,hd,ax[2],ay[2],weight[2]));
 }
+// Explicit HWSS companions need not have a representable standalone f.
+// Preserve the entire Rs*Gaussian*cosO/(normalization*pdfHero) range;
+// in particular, neither f nor Rs*cosO/pdfHero is an intermediate.
+inline double HeroSpecularKernel(double hx,double hy,double hz,double hd,double cosO,
+                                 double ax,double ay,double rs,double pdfHero) {
+    if(hz<=0 || hd<=0 || cosO<=0 || ax<=0 || ay<=0 || rs<=0 || pdfHero<=0) return 0;
+    const double exponent=SlopeExponent(hx,hy,hz,ax,ay);
+    return std::exp(-exponent-std::log(4*PI)-std::log(ax)-std::log(ay)-
+        2*std::log(hd)-4*std::log(hz)+std::log(rs)+std::log(cosO)-std::log(pdfHero));
+}
 // Normalize Cartesian slopes without squaring an authored axis. Scaling
 // before hypot preserves tiny components and avoids an overflowing radius.
 inline Vector3 HalfFromSlopes(double sx,double sy) {

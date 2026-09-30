@@ -673,10 +673,12 @@ Scalar WardAnisotropicEllipticalGaussianSPF::EvaluateKrayNM(
 		return 0;
 	}
 
-	const Scalar f = EvaluateLobeFNM( ri, outDir, rayType, nm, ior_stack );
-	if( f <= 0 ) {
-		return 0;
-	}
-
-	return ( f * cos_o ) / pdfHero;
+	const Vector3 wi = Vector3Ops::Normalize(-ri.ray.Dir());
+	const Vector3 h = Vector3Ops::Normalize(wi+woNorm);
+	const Scalar hz = Vector3Ops::Dot(h,myonb.w()), hd = Vector3Ops::Dot(h,woNorm);
+	if(WardKrayRatio(hd,hz,cos_o,Vector3Ops::Dot(wi,myonb.w()))<=0) return 0;
+	const Scalar ax = pAlphaX->GetValueAtNM(ri,nm), ay = pAlphaY->GetValueAtNM(ri,nm);
+	return WardSelection::HeroSpecularKernel(Vector3Ops::Dot(h,myonb.u()),
+		Vector3Ops::Dot(h,myonb.v()),hz,hd,cos_o,ax,ay,
+		GuardedGetColorNM(*pSpecular,ri,nm),pdfHero);
 }
