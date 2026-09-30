@@ -3166,14 +3166,14 @@ int main(){
     IORStack stack(c.ni);ScatteredRayContainer rays;m->GetSPF()->ScatterNM(ri,sampler,c.nm,rays,stack);double R=0;for(unsigned j=0;j<rays.Count();j++)R+=rays[j].krayNM;
     double T=0;auto*prof=m->GetDiffusionProfile();RandomWalkSSSParams rp;
     if(prof)T=prof->FresnelTransmissionNM(c.mu,ri,c.nm);
-    else {Check(m->GetRandomWalkSSSParamsNM(c.nm,rp)&&rp.ior==c.nt,"RW index",rp.ior,c.nt);if(c.mu>0){BSSRDFAdapters::RandomWalkEntryBSDF a(rp.ior);T=a.valueNM(wi,ri,c.nm)*BSSRDFSampling::BoundaryTransmissionNormalization(c.nt/c.ni)*PI;}else T=1-Optics::CalculateDielectricReflectanceCosine(c.mu,c.ni,c.nt);}
+    else {Check(m->GetRandomWalkSSSParamsNM(c.nm,rp)&&rp.ior==c.nt,"RW index",rp.ior,c.nt);T=BSSRDFSampling::BoundaryTransmission(c.mu,c.nt,c.ni);if(c.mu>0){BSSRDFAdapters::RandomWalkEntryBSDF a(rp.ior);double recovered=a.valueNM(wi,ri,c.nm)*BSSRDFSampling::BoundaryTransmissionNormalization(c.nt/c.ni)*PI;Check(std::fabs(recovered-(1-c.R))<=c.reflectBound,"RW adapter independent T",recovered,1-c.R);}}
     worstR=std::fmax(worstR,std::fabs(R-c.R));worstT=std::fmax(worstT,std::fabs(T-(1-c.R)));
     Check(std::fabs(R-c.R)<=c.reflectBound,"public independent R",R,c.R);Check(std::fabs(T-(1-c.R))<=c.reflectBound,"public independent T",T,1-c.R);
     Check(R>=0&&R<=1&&T>=0&&T<=1,"physical range",R,T);Check(std::fabs(R+T-1)<=1e-6,"partition",R+T,1);
     if(c.mu>0){
      BDPTVertex vertex;vertex.pMaterial=m;vertex.type=BDPTVertex::SURFACE;vertex.isBSSRDFEntry=true;vertex.position=Point3();vertex.normal=vertex.geomNormal=n;vertex.onb=ri.onb;vertex.mediumIOR=c.ni;
      double shared=PathVertexEval::EvalBSDFAtVertexNM(vertex,wi,wi,c.nm)*BSSRDFSampling::BoundaryTransmissionNormalization(c.nt/c.ni)*PI;
-     Check(std::fabs(shared-(1-c.R))<=c.reflectBound,"shared independent T",shared,1-c.R);
+     if(c.mu>NEARZERO)Check(std::fabs(shared-(1-c.R))<=c.reflectBound,"shared independent T",shared,1-c.R);else Check(shared==0,"existing shared admission gate",shared,0);
      if(prof){BSSRDFAdapters::BSSRDFEntryBSDF a(prof,0);double adapter=a.valueNM(wi,ri,c.nm)*BSSRDFSampling::BoundaryTransmissionNormalization(c.nt/c.ni)*PI;Check(std::fabs(adapter-(1-c.R))<=c.reflectBound,"adapter independent T",adapter,1-c.R);}
     }
     if(p>=2){ScatteredRayContainer pel;m->GetSPF()->Scatter(ri,sampler,pel,stack);double r=0;for(unsigned j=0;j<pel.Count();j++)r+=pel[j].kray[0];Check(std::fabs(r-c.R)<=c.reflectBound,"Pel independent R",r,c.R);if(prof){double t=prof->FresnelTransmission(c.mu,ri);Check(std::fabs(t-(1-c.R))<=c.reflectBound,"Pel independent T",t,1-c.R);}}

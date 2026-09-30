@@ -117,30 +117,36 @@ bool Optics::CalculateRefractedCosine( Scalar cosI, Scalar Ni, Scalar Nt, Scalar
 	cosI = fmin( 1.0, fabs(cosI) );
 	if( Ni == Nt ) { cosT = cosI; return true; }
 	if( cosI == 1.0 ) { cosT = 1.0; return true; }
+	// Preserve the absolute index difference before division. In particular,
+	// adjacent distinct indices must not acquire a rounded ratio contrast.
+	const Scalar large = fmax(Ni,Nt), small = fmin(Ni,Nt);
+	const Scalar q = small/large;
+	const Scalar gap = large-small;
+	const Scalar virtualNegSmall = gap-large;
+	const Scalar gapError = (large-(gap-virtualNegSmall)) + (-small-virtualNegSmall);
+	const Scalar delta = gap/large;
+	const Scalar deltaLow = (std::fma(-delta,large,gap)+gapError)/large;
+	// 1-q^2 = delta*(2-delta). Keep product and subtraction residuals
+	// so its error scales with the physical contrast, including near unity.
+	const Scalar factor = 2-delta;
+	const Scalar virtualNegDelta = factor-2;
+	const Scalar factorLow = (2-(factor-virtualNegDelta)) + (-delta-virtualNegDelta) - deltaLow;
+	const Scalar contrast = delta*factor;
+	const Scalar contrastLow = std::fma(delta,factor,-contrast)
+		+ delta*factorLow + deltaLow*factor + deltaLow*factorLow;
 	if( Ni < Nt ) {
-		// Keep the small grazing cosine instead of subtracting it from one.
-		const Scalar r = Ni/Nt;
-		const Scalar rc = r*cosI;
-		cosT = sqrt( (1-r)*(1+r) + rc*rc );
+		// Noncancelling branch: cosT^2 = (1-q^2) + (q*cosI)^2.
+		const Scalar rc = q*cosI;
+		cosT = sqrt( contrast + (contrastLow + rc*rc) );
 	} else {
-		// cosT^2 = (cosI^2 + (Nt/Ni)^2 - 1) / (Nt/Ni)^2.
-		// Near critical, a rounded ratio or rounded sinT can erase the sign
-		// and the small positive cosine. Retain the quotient residual and
-		// both square residuals, then add with error-free TwoSum steps.
-		// All quantities are scaled to <= 1, avoiding index-square overflow.
-		const Scalar q = Nt/Ni;
-		const Scalar qLow = std::fma(-q, Ni, Nt)/Ni;
-		const Scalar qSquare = q*q;
-		const Scalar qError = std::fma(q, q, -qSquare) + 2*q*qLow + qLow*qLow;
+		// Critical branch: cosT^2 = (cosI^2 - (1-q^2))/q^2.
+		// TwoSum and the square residual retain the represented TIR side.
 		const Scalar muSquare = cosI*cosI;
-		const Scalar muError = std::fma(cosI, cosI, -muSquare);
-		const Scalar a = qSquare - 1;
-		const Scalar virtualMinusOne = a - qSquare;
-		const Scalar aError = (qSquare - (a - virtualMinusOne)) + (-1 - virtualMinusOne);
-		const Scalar high = a + muSquare;
-		const Scalar virtualMuSquare = high - a;
-		const Scalar sumError = (a - (high - virtualMuSquare)) + (muSquare - virtualMuSquare);
-		const Scalar discriminant = high + (aError + sumError + qError + muError);
+		const Scalar muError = std::fma(cosI,cosI,-muSquare);
+		const Scalar high = muSquare-contrast;
+		const Scalar virtualNegContrast = high-muSquare;
+		const Scalar sumError = (muSquare-(high-virtualNegContrast)) + (-contrast-virtualNegContrast);
+		const Scalar discriminant = high + (sumError + muError - contrastLow);
 		if( discriminant < 0 ) return false;
 		cosT = sqrt(discriminant)/q;
 	}
