@@ -1249,3 +1249,16 @@ See [ALPHA_COVERAGE.md](../docs/ALPHA_COVERAGE.md) for the estimator definitions
   `AlphaBoundaryEndpointTest` pairs null/record finite bounds and exact alpha
   draws, distinguishes physical medium events from occlusion intervals, and
   explicitly retains the no-alpha raw-shadow exact-end convention.
+
+## Blender tangent producers (DL-213)
+
+`BlenderBridgeTangentTest` renders the actual bridge mesh against authored-core,
+rotated-UV and glTF TANGENT controls; it also checks corner interpolation,
+front/back handedness, mirror/nonuniform object frames and native CST authoring.
+Build individually with `make -C build/make/rise build-test/BlenderBridgeTangentTest`.
+`src/Blender/addons/rise_renderer/test_tangent_export.py` is bpy-free arithmetic
+and ABI marshalling coverage. `test_tangent_blender_runtime.py` is a separate
+Blender integration script, run with `blender --background --factory-startup
+--python-exit-code 1 --python ...`; it executes actual exporter/bake production
+code and a RenderEngine render context, including injected-error restoration.
+The production addon must be rebuilt with native/Python ABI v15 together.

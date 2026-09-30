@@ -655,7 +655,7 @@ class BridgeAbiLayoutTest(unittest.TestCase):
         match = re.search(r"#define RISE_BLENDER_API_VERSION\s+(\d+)", self.source)
         self.assertIsNotNone(match)
         self.assertEqual(int(match.group(1)), bridge._EXPECTED_API_VERSION)
-        self.assertEqual(bridge._EXPECTED_API_VERSION, 14)
+        self.assertEqual(bridge._EXPECTED_API_VERSION, 15)
 
     def test_stale_dylib_version_fails_loudly(self):
         # Simulate a v13 dylib (built before this ABI bump) sitting
@@ -671,7 +671,7 @@ class BridgeAbiLayoutTest(unittest.TestCase):
         bridge._LOADED_CAPABILITIES = None
         fake_library = mock.MagicMock()
         fake_library.rise_blender_api_version.return_value = bridge._EXPECTED_API_VERSION - 1
-        with mock.patch.object(bridge.ctypes, "CDLL", return_value=fake_library):
+        with mock.patch.object(bridge, "resolve_bridge_path", return_value="/tmp/stale-rise-bridge.dylib"), mock.patch.object(bridge.ctypes, "CDLL", return_value=fake_library):
             with self.assertRaises(bridge.BridgeError) as ctx:
                 bridge._load_library()
         message = str(ctx.exception)
@@ -938,37 +938,14 @@ class ExporterCoatNormalAlphaTangentGatingTest(unittest.TestCase):
         body = self._material_payload_body()
         self.assertIn(f'_add_texture_painter(\n                            state, f"{{material.name_full}}_alpha"', body)
 
-    # --- Tangent (DL-192, three-case split) -----------------------------
+    # DL-213 moves Tangent production to mesh export. Behaviour is covered by
+    # test_tangent_export.py and the real Blender runtime gate.
+    def test_tangent_rotation_not_double_composed(self):
+        self.assertNotIn("anisotropy_rotation_value +=", self._material_payload_body())
 
-    def test_tangent_socket_is_read(self):
-        body = self._material_payload_body()
-        self.assertIn('_node_input(principled_node, "Tangent")', body)
-
-    def test_case_i_active_uv_tangent_is_recognized_without_warning(self):
-        body = self._material_payload_body()
-        self.assertIn("_is_active_uv_tangent", body)
-        self.assertIn("Case (i): already bridged by construction", body)
-
-    def test_case_ii_constant_vector_rotate_composes_with_anisotropy_rotation(self):
-        body = self._material_payload_body()
-        self.assertIn('tangent_source.bl_idname == "ShaderNodeVectorRotate"', body)
-        self.assertIn("anisotropy_rotation_value += float(angle_input.default_value)", body)
-
-    def test_case_iii_anything_else_warns_and_names_dl213(self):
-        body = self._material_payload_body()
-        # The explanatory comment plus both runtime warnings (the
-        # non-constant-angle sub-case and the fully-arbitrary sub-case)
-        # must name DL-213 -- neither warning path may silently drop
-        # without naming where the residual is tracked.
-        self.assertGreaterEqual(body.count("DL-213"), 3)
-        self.assertIn(
-            'f"RISE only supports a CONSTANT rotation angle',
-            body,
-        )
-        self.assertIn(
-            "RISE's anisotropy direction always derives from the mesh's own UV tangent",
-            body,
-        )
+    def test_mesh_producer_carries_corner_tangents(self):
+        self.assertIn("tangent_bake.corner_tangents(mesh, material, matrix_world, eval_object, instance_info)", self.source)
+        self.assertIn("tangent_attribute=", self.source)
 
 
 class _StubHairMaterial:

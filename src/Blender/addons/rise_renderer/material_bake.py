@@ -208,6 +208,9 @@ def classify_material(material) -> str:
     # reachable node is not in _SIMPLE_TRAVERSABLE_NODES, complex.
     stack = []
     for socket in principled.inputs:
+        # DL-213: tangent directions have their own full-graph corner bake.
+        if socket.name == "Tangent":
+            continue
         if socket.is_linked:
             stack.append((socket.links[0].from_node, 0))
 

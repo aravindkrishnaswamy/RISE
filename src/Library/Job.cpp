@@ -44,6 +44,8 @@
 #include "Utilities/Transformable.h"
 #include <algorithm>
 #include <cmath>
+#include <limits>
+#include "Geometry/GeometryUtilities.h"
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
@@ -6365,6 +6367,62 @@ bool Job::AddPathInstancesGeometry( const char* name, const char* szTemplate, co
 
 //! Adds a triangle mesh geometry from the pointers passed it
 /// \return TRUE if successful, FALSE otherwise
+bool Job::AddIndexedTriangleMeshGeometryWithTangents(
+            const char* name, const float* vertices, const float* normals, const float* coords,
+            const unsigned int* vertexface, const unsigned int* uvwface, const unsigned int* normalface,
+            const unsigned int numpts, const unsigned int numnormals, const unsigned int numcoords,
+            const unsigned int numfaces, const bool double_sided, const bool face_normals,
+            const float* corner_tangents, const unsigned int numtangents)
+{
+    if (!corner_tangents && !numtangents) {
+        return AddIndexedTriangleMeshGeometry(name, vertices, normals, coords, vertexface,
+            uvwface, normalface, numpts, numnormals, numcoords, numfaces, double_sided, face_normals);
+    }
+    if (!name || !vertices || !vertexface || !corner_tangents || !numfaces ||
+        numfaces > std::numeric_limits<unsigned int>::max()/3 || numtangents != numfaces*3) return false;
+    for (unsigned int c=0; c<numtangents; ++c) {
+        const float* t=corner_tangents+c*4;
+        if (vertexface[c]>=numpts || (normals && !face_normals && (!normalface || normalface[c]>=numnormals)) ||
+            (coords && (!uvwface || uvwface[c]>=numcoords)) ||
+            !std::isfinite(t[0]) || !std::isfinite(t[1]) || !std::isfinite(t[2]) ||
+            (t[0]==0 && t[1]==0 && t[2]==0) || (t[3]!=1 && t[3]!=-1)) return false;
+    }
+    ITriangleMeshGeometryIndexed* geometry=0;
+    RISE_API_CreateTriangleMeshGeometryIndexed(&geometry, double_sided, face_normals);
+    ITriangleMeshGeometryIndexed3* mesh=dynamic_cast<ITriangleMeshGeometryIndexed3*>(geometry);
+    if (!mesh) { safe_release(geometry); return false; }
+    // Compute smooth normals on the ORIGINAL topology before corner expansion.
+    NormalsListType generatedNormals;
+    if (!normals && !face_normals) {
+        VerticesListType positions; IndexTriangleListType triangles;
+        for (unsigned int v=0; v<numpts; ++v) positions.push_back(Vertex(vertices[v*3],vertices[v*3+1],vertices[v*3+2]));
+        for (unsigned int f=0; f<numfaces; ++f) triangles.push_back(MakeIndexedTriangleSameIdx(vertexface[f*3],vertexface[f*3+1],vertexface[f*3+2]));
+        if (!CalculateVertexNormals(triangles,generatedNormals,positions)) { safe_release(geometry); return false; }
+    }
+    mesh->BeginIndexedTriangles();
+    for (unsigned int c=0; c<numtangents; ++c) {
+        const unsigned int v=vertexface[c];
+        mesh->AddVertex(Vertex(vertices[v*3],vertices[v*3+1],vertices[v*3+2]));
+        if (normals && !face_normals) {
+            const unsigned int n=normalface[c];
+            mesh->AddNormal(Normal(normals[n*3],normals[n*3+1],normals[n*3+2]));
+        }
+        if (!normals && !face_normals) mesh->AddNormal(generatedNormals[v]);
+        if (coords) {
+            const unsigned int u=uvwface[c]; mesh->AddTexCoord(TexCoord(coords[u*3],coords[u*3+1]));
+        } else mesh->AddTexCoord(TexCoord(0,0));
+        Tangent4 t; t.dir=Vector3(corner_tangents[c*4],corner_tangents[c*4+1],corner_tangents[c*4+2]);
+        t.bitangentSign=corner_tangents[c*4+3]; mesh->AddTangent(t);
+    }
+    for (unsigned int f=0; f<numfaces; ++f) {
+        IndexedTriangle t;
+        for (unsigned int k=0; k<3; ++k) t.iVertices[k]=t.iNormals[k]=t.iCoords[k]=f*3+k;
+        mesh->AddIndexedTriangle(t);
+    }
+    mesh->DoneIndexedTriangles();
+    const bool ok=AddPrebuiltTriangleMeshGeometry(name,mesh); safe_release(geometry); return ok;
+}
+
 bool Job::AddIndexedTriangleMeshGeometry(
 					const char* name,						///< [in] Name of the geometry
 					const float* vertices,					///< [in] List of vertices

@@ -1568,7 +1568,7 @@ namespace
 			return false;
 		}
 
-		if( !job.AddIndexedTriangleMeshGeometry(
+		if( !job.AddIndexedTriangleMeshGeometryWithTangents(
 			mesh.name,
 			mesh.vertices,
 			mesh.normals,
@@ -1581,7 +1581,7 @@ namespace
 			mesh.num_uvs,
 			mesh.num_triangles,
 			mesh.double_sided != 0,
-			mesh.use_face_normals != 0 ) )
+			mesh.use_face_normals != 0, mesh.tangent_attribute, mesh.num_tangents ) )
 		{
 			write_error( error_message, error_message_size, "Failed to add indexed triangle mesh geometry to the RISE job" );
 			return false;

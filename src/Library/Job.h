@@ -1201,6 +1201,12 @@ namespace RISE
 
 		//! DL-192: see IJob.h for the doc.
 		/// \return TRUE if successful, FALSE otherwise
+        bool AddIndexedTriangleMeshGeometryWithTangents(
+            const char* name, const float* vertices, const float* normals, const float* coords,
+            const unsigned int* vertexface, const unsigned int* uvwface, const unsigned int* normalface,
+            const unsigned int numpts, const unsigned int numnormals, const unsigned int numcoords,
+            const unsigned int numfaces, const bool double_sided, const bool face_normals,
+            const float* corner_tangents, const unsigned int numtangents);
         bool SetMaterialAlpha(const char* material, const char* alpha, const char* mode, const double cutoff);
 
 		bool AddCoatedMaterialEx(

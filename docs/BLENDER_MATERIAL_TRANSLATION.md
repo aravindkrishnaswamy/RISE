@@ -727,55 +727,50 @@ The old incompatible-integrator warnings are removed.
 [Alpha coverage](ALPHA_COVERAGE.md) documents sampler ownership, light endpoints,
 medium boundaries, VCM deposition, and the SMS estimator choice for alpha scenes.
 
-### Tangent -> anisotropy direction (ABI v14, DL-192 + DL-213 + DL-208)
+### Tangent -> anisotropy direction (ABI v15, DL-213)
 
-**Unit correction (DL-208, found by review round 1 of this same
-closure):** Blender's Principled "Anisotropic Rotation" socket is a
-[0, 1] FRACTION OF A FULL TURN — Cycles applies `2*pi*value`
-internally — not radians, unlike every other angle-typed socket this
-add-on reads (Principled Hair BSDF's "Offset"; a `ShaderNodeVectorRotate`
-"Angle" socket, case 2 below).  RISE's `tangent_rotation`/
-`tangent_rotation_scalar` are radians (`MicrofacetUtils::RotateTangent`
-calls raw `cos`/`sin`).  `exporter.py` now converts at the read site
-via a pure `anisotropic_rotation_turns_to_radians` helper in
-`hair_material_math.py` before anything (including case 2's own
-composition, below) uses the value — every Blender anisotropic
-material with a nonzero rotation exported wrong (off by a factor of
-`2*pi`/turn-fraction) since Landing 8 (`25d271df`) until this fix.
+Indexed meshes already store interpolated object-local `Tangent4` xyz/sign;
+`Object::IntersectRay` transforms and projects the direction into the shading
+normal plane, with mirror parity applied to the bitangent. glTF `TANGENT`
+already feeds this storage. ABI v15 supplies the missing Blender producer:
+`tangent_attribute` has one xyz/sign quadruple per triangle corner; the bridge
+expands position indices so split UVs/normals and material boundaries survive.
+An omitted attribute calls the original indexed construction path unchanged.
 
-RISE's `ggx_material` anisotropy direction is derived entirely from
-the mesh's own UV tangent basis (`Object::IntersectRay`'s
-`bShadingTangentFromGeometry` construction), optionally rotated by
-ONE scalar (`tangent_rotation`/`tangent_rotation_scalar`, DL-16) —
-there is no per-object, per-vertex, or per-texel tangent-BASIS
-override mechanism.  Blender's Principled "Tangent" input graph maps
-onto exactly three cases:
+An unlinked Tangent or a direct Tangent node on the active UV map retains the
+existing UV-derived frame. A direct second-UV Tangent calls Blender's
+`mesh.calc_tangents(uvmap=...)` on the evaluated temporary mesh and preserves
+its MikkTSpace sign. Other linked graphs, including constant or textured
+Vector Rotate, are evaluated by Cycles at export into a temporary CORNER
+FLOAT_COLOR attribute. This is an export-time corner bake, with barycentric
+interpolation during rendering; tessellate sufficiently for rapidly changing
+procedural fields. It is not a live per-texel direction shader.
 
-1. **A `ShaderNodeTangent` in UV_MAP mode naming the active (or no) UV
-   map.**  Needs NO bridging at all — RISE's own mesh tangent basis
-   IS this direction by construction (`GGXBRDF::ResolveTangentONB`
-   returns the mesh's `ri.onb` unchanged when no rotation painter is
-   bound).  `exporter.py` now documents this explicitly (an
-   `_is_active_uv_tangent` predicate plus an explanatory comment)
-   instead of leaving the socket entirely unread and unremarked.
+The complete graph feeds normalized emission encoded as `0.5*d + 0.5` in a
+separate background Blender process. A copied scene retains world and object
+dependencies. Shader directions are world-space; the decoded direction is
+projected against the world shading normal FIRST, then inverse-transformed
+into object-local coordinates before storage (the operations do not commute
+under nonuniform scale). A vector alone defines local `cross(N,T)` with sign +1; a second UV
+map instead provides the actual Mikk sign. Principled Anisotropic Rotation
+remains a separate rotation, converted from turns to radians (DL-208).
+Vector Rotate is included in the baked graph and is never added twice.
 
-2. **A CONSTANT Z-axis `ShaderNodeVectorRotate` feeding a
-   Tangent(UV_MAP) node.**  Composes by simple addition onto the SAME
-   `anisotropy_rotation`/`tangent_rotation_scalar` slot Principled's
-   own "Anisotropic Rotation" input already binds (DL-16) — both are
-   angles around the mesh tangent frame's own axis, so the two sum.
+The source scene's settings, selection, active UV/color attribute, nodes,
+materials and mainfile path are untouched. Copied scene/object/mesh/material
+data and temporary files are removed on success or failure. Failed Cycles
+bakes, missing UV maps, singular transforms, or directions that project to
+zero abort export with a diagnostic; they do not silently drop the graph.
+The bake requires an executable `bpy.app.binary_path` with Cycles and may
+cost a background-process launch per linked material/object instance.
 
-3. **Anything else** — a second UV map's tangent basis, a fully
-   procedural direction (built from `Geometry`/`Object Info`/noise
-   nodes), or a non-constant (linked/textured) Vector Rotate angle.
-   RISE has no mechanism for any of these: closing it needs a
-   mesh-level tangent-BASIS override (e.g. importing a second UV map's
-   tangent as an alternate mesh attribute, or a per-vertex direction
-   buffer) threaded through the same place `Object::IntersectRay`
-   derives the coherent tangent — a materially larger, mesh-data-model
-   change than an ABI field or a material-slot fix.  This case is now
-   WARNED AND DROPPED (previously: silently unread, no warning at all)
-   naming **DL-213**, the mesh-level mechanism this would need.
+The native `indexedmesh_geometry` chunk also accepts repeatable `vertex xyz`,
+`normal xyz`, `uv u v`, `tangent x y z sign`, and `triangle i j k` parameters.
+Attributes are vertex-aligned and triangle indices start at zero; duplicate
+vertices at authored seams. `IJob::AddIndexedTriangleMeshGeometryWithTangents`
+is a tail-appended convenience path for independently indexed normal/UV data
+and triangle-corner tangents; the existing Indexed3 C API and prebuilt geometry
+registration remain usable.
 
 ## Hair / fur export
 

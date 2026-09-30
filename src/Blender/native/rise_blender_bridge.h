@@ -10,7 +10,7 @@
 #define RISE_BLENDER_EXPORT
 #endif
 
-#define RISE_BLENDER_API_VERSION 14
+#define RISE_BLENDER_API_VERSION 15
 
 #ifdef __cplusplus
 extern "C" {
@@ -471,6 +471,9 @@ typedef struct rise_blender_mesh {
 	uint32_t num_triangles;
 	int double_sided;
 	int use_face_normals;
+	// ABI v15: xyz/sign per triangle corner, absent = legacy UV basis.
+	const float* tangent_attribute;
+	uint32_t num_tangents;
 } rise_blender_mesh;
 
 typedef struct rise_blender_object {

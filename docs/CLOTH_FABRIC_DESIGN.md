@@ -4628,6 +4628,9 @@ yet known (§10.1).
 
 ## 15. Correctness debts and open items
 
+DL-213 producer update (2026-09-29; relates to items 4 and 12): Indexed3 authored tangent storage and glTF import already existed. Blender now supplies triangle-corner xyz/sign vectors for second-UV Mikk tangents and export-time Cycles direction-graph bakes. Object's coherent shading frame and material rotation remain shared by GGX/fabric/weave; vectors are object-local, with handedness retained through back faces/mirrors. See `BLENDER_MATERIAL_TRANSLATION.md` "Tangent" for interpolation and bake limits.
+
+
 1. ~~**Sheen has no reciprocity or consistency coverage.**~~ **CLOSED
    2026-09-03 (debt-ledger sweep, commit `f458f4f3`)** —
    [SPFBSDFConsistencyTest.cpp:1174](../tests/SPFBSDFConsistencyTest.cpp)

@@ -1,0 +1,82 @@
+RISE ASCII SCENE 7
+# DL-213 native tangent producer: xyz/sign overrides the primary UV direction.
+film
+{
+ width 65
+ height 65
+}
+pinhole_camera
+{
+ location 0 0 5
+ lookat 0 0 0
+ up 0 1 0
+ fov 40
+}
+uniformcolor_painter
+{
+ name black
+ color 0 0 0
+}
+uniformcolor_painter
+{
+ name white
+ color 1 1 1
+}
+ggx_material
+{
+ name brushed
+ rd black
+ rs white
+ alphax .04
+ alphay .35
+ fresnel_mode schlick_f0
+ ior 1.5
+ extinction 0
+}
+indexedmesh_geometry
+{
+ name quad
+ vertex -3 -3 0
+ vertex 3 -3 0
+ vertex 3 3 0
+ vertex -3 3 0
+ normal 0 0 1
+ normal 0 0 1
+ normal 0 0 1
+ normal 0 0 1
+ uv 0 0
+ uv 1 0
+ uv 1 1
+ uv 0 1
+ tangent 0 1 0 1
+ tangent 0 1 0 1
+ tangent 0 1 0 1
+ tangent 0 1 0 1
+ triangle 0 1 2
+ triangle 0 2 3
+}
+standard_object
+{
+ name surface
+ geometry quad
+ material brushed
+}
+directional_light
+{
+ name key
+ power 1
+ color 1 1 1
+ direction 0 0 1
+}
+pixelpel_rasterizer
+{
+ pixel_samples 1
+ max_recur 1
+}
+file_rasterizeroutput
+{
+ pattern authored_mesh_tangent
+ type PNG
+ bpp 8
+ color_space sRGB
+}
