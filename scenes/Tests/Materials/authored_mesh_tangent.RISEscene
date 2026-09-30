@@ -68,14 +68,21 @@ directional_light
  color 1 1 1
  direction 0 0 1
 }
+standard_shader
+{
+ name direct
+ shaderop DefaultDirectLighting
+}
 pixelpel_rasterizer
 {
- pixel_samples 1
- max_recur 1
+ defaultshader direct
+ samples 1
+ oidn_denoise FALSE
+ max_recursion 1
 }
 file_rasterizeroutput
 {
- pattern authored_mesh_tangent
+ pattern rendered/authored_mesh_tangent
  type PNG
  bpp 8
  color_space sRGB

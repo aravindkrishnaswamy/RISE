@@ -293,7 +293,7 @@ bool RenderTwoCardScene(
 
 void TestAbiVersionAndAlphaFields()
 {
-	std::cout << "Test: ABI version 14 and append-only v14 alpha fields" << std::endl;
+	std::cout << "Test: ABI version 15 and preserved append-only v14 alpha fields" << std::endl;
 
 	Check( RISE_BLENDER_API_VERSION == 15, "RISE_BLENDER_API_VERSION is 15" );
 

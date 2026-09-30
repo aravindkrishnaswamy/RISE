@@ -93,3 +93,21 @@ assert len(state.meshes[0].tangent_attribute)==12 and state.meshes[0].tangent_at
 assert len(state.meshes[1].tangent_attribute)==12 and state.meshes[1].tangent_attribute[0]<-.999
 assert state.meshes[0].uvs==state.meshes[1].uvs
 print('MATERIAL CORNER SEAM PAYLOAD PASS',flush=True)
+# Actual depsgraph collection instances carry distinct Random IDs into export_scene.
+collection=bpy.data.collections.new('tangent prototypes')
+prototype=bpy.data.objects.new('prototype',me.copy());prototype.data.materials.clear();prototype.data.materials.append(m);collection.objects.link(prototype)
+for name,location in [('instance A',(4,0,0)),('instance B',(6,0,0))]:
+ empty=bpy.data.objects.new(name,None);empty.instance_type='COLLECTION';empty.instance_collection=collection;empty.location=location;bpy.context.collection.objects.link(empty)
+bpy.context.view_layer.update();dg=bpy.context.evaluated_depsgraph_get()
+expected={}
+for instance in dg.object_instances:
+ if instance.is_instance and instance.object.original.name=='prototype':
+  expected[round(instance.matrix_world.translation.x)]=(instance.random_id & 0xffffffff)/0xffffffff
+exported,_=exporter.export_scene(dg);by_name={mesh.name:mesh for mesh in exported.meshes};observed={}
+for obj in exported.objects:
+ if round(obj.transform[3]) in expected:
+  d=by_name[obj.geometry_name].tangent_attribute;observed[round(obj.transform[3])]=d[0]/d[1]
+assert len(expected)==2 and len(observed)==2,(expected,observed,[(obj.name,obj.transform[3]) for obj in exported.objects])
+for location,r in expected.items():assert abs(observed[location]-r)<1e-5,(expected,observed)
+assert len(set(round(x,5) for x in observed.values()))==2,(expected,observed)
+print('ACTUAL DEPSGRAPH INSTANCE EXPORT PASS',expected,observed,flush=True)

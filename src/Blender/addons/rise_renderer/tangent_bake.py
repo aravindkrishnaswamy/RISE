@@ -110,7 +110,7 @@ def _bake_graph(mesh, material, matrix_world, source_object, instance_info):
             obj = bpy.data.objects.new("RISE tangent bake object", copied_mesh)
             obj["rise_bake_target"] = True
         if instance_info and instance_info.get("is_instance"):
-            obj["rise_instance_random_id"] = str(instance_info["random_id"])
+            obj["rise_instance_random_id"] = str(int(instance_info["random_id"]) & 0xffffffff)
         scene.collection.objects.link(obj)
         obj.matrix_world = matrix_world
         scene.render.engine = "CYCLES"

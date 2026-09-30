@@ -657,15 +657,18 @@ class BridgeAbiLayoutTest(unittest.TestCase):
         self.assertEqual(int(match.group(1)), bridge._EXPECTED_API_VERSION)
         self.assertEqual(bridge._EXPECTED_API_VERSION, 15)
 
+    def test_mesh_struct_matches(self):
+        self._assert_matches(bridge._Mesh, "rise_blender_mesh")
+
+    def test_tangent_payload_is_tail_appended(self):
+        self.assertEqual([name for name, _ in bridge._Mesh._fields_[-2:]], ["tangent_attribute", "num_tangents"])
+        self.assertGreater(bridge._Mesh.tangent_attribute.offset, bridge._Mesh.use_face_normals.offset)
+        self.assertEqual(bridge._Mesh.num_tangents.offset, bridge._Mesh.tangent_attribute.offset + ctypes.sizeof(ctypes.c_void_p))
+
     def test_stale_dylib_version_fails_loudly(self):
-        # Simulate a v13 dylib (built before this ABI bump) sitting
-        # next to a v14 add-on: `_load_library`'s version check must
-        # refuse it with a clear message, not silently marshal v14
-        # fields (coat_normal_*/alpha*/shader_name) into a v13 struct
-        # layout the native side never declared.  `ctypes.CDLL` is
-        # mocked rather than shipping a stale .dylib fixture -- the
-        # real bridge in this worktree is already v14, so a genuine
-        # stale binary isn't available to load.
+        # Simulate the previous v14 dylib beside a v15 addon. Mock both
+        # path resolution and loading: the ABI guard must be independent
+        # of whether a native build product exists in this checkout.
         bridge._LOADED_LIBRARY = None
         bridge._LOADED_PATH = None
         bridge._LOADED_CAPABILITIES = None

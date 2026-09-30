@@ -761,6 +761,10 @@ materials and mainfile path are untouched. Copied scene/object/mesh/material
 data and temporary files are removed on success or failure. Failed Cycles
 bakes, missing UV maps, singular transforms, or directions that project to
 zero abort export with a diagnostic; they do not silently drop the graph.
+Realized collection instances retain Cycles Object Info Random through their
+unsigned 32-bit depsgraph random ID; ordinary objects retain the original
+shader-visible name, color and pass index. View/ray-dependent graph nodes are
+sampled in Cycles' bake context rather than reevaluated for each render ray.
 The bake requires an executable `bpy.app.binary_path` with Cycles and may
 cost a background-process launch per linked material/object instance.
 

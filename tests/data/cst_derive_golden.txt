@@ -233,6 +233,7 @@ scenes/Tests/Materials/Enamel/enamel_swatch_goldruby.RISEscene  6368aecdcb860e59
 scenes/Tests/Materials/Enamel/enamel_swatch_silver.RISEscene  2fe528bb887339b4814aa2fe75299ea73c162ae0583e62cf9b21853a31725228  1994  31
 scenes/Tests/Materials/Enamel/silver_reference.RISEscene  456971d71f37be52f9dc17d5619d0978eb065daa2f1f839e6ac65a6985d8a3c5  1810  28
 scenes/Tests/Materials/anisotropic_uv_tangent.RISEscene  27a1eefdbef1849a2ce2897cef7022b94bfcdb73d7b0f8e4a9ce650d834de93e  1544  31
+scenes/Tests/Materials/authored_mesh_tangent.RISEscene  c807e270d309a88cf09063bef8f3164ce0456be13d32c71b1024edf4e31d8d6e  848  24
 scenes/Tests/Materials/coated_material.RISEscene  2b357bf0e8c8ea02b4347149b8f1578284dddaef4fd248f069949c9b4101feab  2225  37
 scenes/Tests/Materials/composite_material.RISEscene  01b52826b049718cfa18ff105806ac2db88b71be30eb3822f7346813d202071f  5082  67
 scenes/Tests/Materials/cooktorrance_multiscatter_test.RISEscene  ae1910442ff0cdf919129cc078a6ebd42655535c3a8da93373389be5772bb65e  3955  58
