@@ -666,7 +666,7 @@ class BridgeAbiLayoutTest(unittest.TestCase):
         self.assertEqual(bridge._Mesh.num_tangents.offset, bridge._Mesh.tangent_attribute.offset + ctypes.sizeof(ctypes.c_void_p))
 
     def test_stale_dylib_version_fails_loudly(self):
-        # Simulate the previous v14 dylib beside a v15 addon. Mock both
+        # Simulate a current-minus-one ABI dylib beside the current addon. Mock both
         # path resolution and loading: the ABI guard must be independent
         # of whether a native build product exists in this checkout.
         bridge._LOADED_LIBRARY = None

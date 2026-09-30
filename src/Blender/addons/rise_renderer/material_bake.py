@@ -5,11 +5,13 @@ module owns:
 
 - ``classify_material(mat)`` — decides whether a material's node graph
   is "simple" (direct procedural translation possible) or "complex"
-  (must be baked to image textures).
+  (manual channel-image bake or existing fallback); Tangent is excluded
+  because it has an independent export-time corner producer.
 - ``bake_material_to_images(obj, mat, options)`` — drives Blender's
   ``bpy.ops.object.bake`` to render the material's BSDF channels to
   PNG files, then stores the resulting paths as ID-property metadata
-  on the material so subsequent renders skip the bake.
+  on the material for subsequent exports to consume. Rendering does
+  not invoke this channel-image bake automatically.
 - ``baked_paths(mat)`` — accessor returning the cached PNG paths, or
   ``None`` if the material hasn't been baked.
 - ``baked_cache_is_stale(mat)`` — content-hash comparison so the UI
@@ -48,8 +50,11 @@ industry-standard workflow used by LuxCore, Octane, and Renderman
 Blender add-ons is exactly the explicit-operator UX we settled on
 here — same reason.
 
-`engine.render()` detects unbaked complex materials and aborts with
-a clear actionable error pointing the user at the Bake button.
+`engine.render()` gates viable complex materials whose current graph
+has never been attempted, directing the user to the Bake button. A
+matching attempted hash allows render despite failure or missing PNGs.
+The isolated automatic Tangent corner bake belongs to tangent_bake.py
+and does not use this manual channel driver or live engine swap.
 
 The simple-graph translator (the "Option A" half of the hybrid
 described in BLENDER_MATERIAL_TRANSLATION.md) lives in
@@ -71,7 +76,8 @@ from .tangent_bake import find_material_output
 # Classifier
 # ---------------------------------------------------------------------------
 
-# Nodes the simple translator can handle (or transparently traverse).
+# Ordinary material-input nodes the simple translator can handle
+# (or transparently traverse); Tangent has a separate full-graph producer.
 # See docs/BLENDER_MATERIAL_TRANSLATION.md "Supported node table" — keep
 # the two in sync.
 _SIMPLE_TRAVERSABLE_NODES = frozenset({
@@ -108,8 +114,9 @@ _SIMPLE_TRAVERSABLE_NODES = frozenset({
 SUPPORTED_UPSTREAM_NODES = _SIMPLE_TRAVERSABLE_NODES
 
 # Nodes that force the bake fallback — see docs/BLENDER_MATERIAL_TRANSLATION.md
-# "Force-bake list".  Anything not in _SIMPLE_TRAVERSABLE_NODES is implicitly
-# force-bake; this set is for documentation / fast-path diagnostics.
+# "Force-bake list". On ordinary inputs other than Tangent, nodes not in
+# _SIMPLE_TRAVERSABLE_NODES classify complex for the manual workflow.
+# This set is for documentation / fast-path diagnostics, not Tangent.
 _FORCE_BAKE_NODES = frozenset({
     "ShaderNodeAmbientOcclusion",
     "ShaderNodeMixShader",
@@ -174,14 +181,17 @@ def classify_material(material) -> str:
 
     Simple iff:
       - exactly one Principled BSDF reaches Material Output.Surface,
-      - every node anywhere reachable from any Principled input is in
+      - each reachable node from inputs OTHER THAN Tangent is in
         ``_SIMPLE_TRAVERSABLE_NODES``,
-      - no socket chain exceeds 16 nodes.
+      - ordinary upstream traversal depth does not exceed16 (root0).
+    The selected Surface has its own bounded single-Principled walk.
     Otherwise complex.
 
-    The classifier inspects the WHOLE reachable subgraph from every
-    Principled input.  An Ambient Occlusion node feeding a Color Ramp
-    that feeds Base Color forces complex; an Image Texture chained
+    Tangent is excluded: its full graph uses the separate export-time
+    corner producer, not this whitelist/depth/manual image workflow.
+    The classifier inspects reachable subgraphs of all OTHER inputs.
+    An Ambient Occlusion node feeding a Color Ramp that feeds Base Color
+    forces complex; an Image Texture chained
     via Color Ramp + Math feeding Base Color stays simple.
     """
 
@@ -204,8 +214,8 @@ def classify_material(material) -> str:
     if principled is None:
         return "complex"
 
-    # Walk every Principled input back through the graph.  If any
-    # reachable node is not in _SIMPLE_TRAVERSABLE_NODES, complex.
+    # Walk ordinary inputs except Tangent. An unsupported reachable
+    # node classifies complex for the manual image-bake workflow.
     stack = []
     for socket in principled.inputs:
         # DL-213: tangent directions have their own full-graph corner bake.
@@ -346,8 +356,9 @@ def baked_paths(material) -> Optional[dict[str, str]]:
 
 
 def clear_baked_metadata(material) -> None:
-    """Remove the bake metadata so subsequent renders fall back to
-    direct procedural translation (or force a re-bake)."""
+    """Remove metadata; viable complex graphs then require a manual attempt.
+    This does not delete PNGs or start a bake. Simple graphs translate directly.
+    """
     if material is None:
         return
     for key in (
@@ -372,9 +383,9 @@ def needs_bake_attempt(scene, material) -> bool:
     Single source of truth: panel warning + render gate stay aligned.
 
     Rules:
-      - simple materials → False (direct translation, no bake)
-      - complex with no viable proxy → False (can't bake; flat-colour
-        fallback handled by exporter)
+      - simple materials → False (direct channels; Tangent is separate)
+      - complex with no viable proxy → False (cannot queue a bake;
+        existing slot/default fallback handled by exporter)
       - complex with viable proxy AND no attempted-hash → True
         (never tried)
       - complex with viable proxy AND attempted-hash differs from
@@ -382,7 +393,7 @@ def needs_bake_attempt(scene, material) -> bool:
       - complex with viable proxy AND attempted-hash matches current
         graph → False (we tried; whatever the outcome, render
         proceeds with what we've got — successful PNGs consumed,
-        failed bakes use flat-colour fallback)
+        failed/no-cache bakes use existing slot/default fallback)
     """
 
     if classify_material(material) != "complex":
@@ -402,8 +413,9 @@ def baked_cache_is_stale(material) -> bool:
     on disk are missing (cleaned up by a temp-dir sweep, for
     example).  False when the cache is current or absent entirely.
 
-    Used by ``auto_bake_complex_materials`` to decide whether to
-    re-bake on the next render.
+    Used by the UI as a cache diagnostic, not an automatic bake trigger.
+    The render guard uses attempted hash via ``needs_bake_attempt``;
+    matching attempts allow render even when recorded PNGs are missing.
     """
 
     if material is None:
@@ -531,8 +543,7 @@ def _save_image_to_temp_png(image, out_path: str) -> bool:
     """Save the ``Image`` data block to ``out_path`` as PNG.  Returns
     True on success.
 
-    Uses Blender's ``Image.save_render`` if a render context is
-    available, falling back to ``Image.filepath_raw = …; save()``.
+    Sets ``filepath_raw`` and PNG format, then calls ``Image.save()``.
     """
     try:
         image.filepath_raw = out_path
@@ -596,17 +607,11 @@ def bake_material_to_images(
 
     # Make obj the active+selected; remember prior state to restore.
     #
-    # `bpy.context.selected_objects` / `view_layer` / `object` are
-    # blocked inside Blender's restricted context (e.g. when this
-    # function is reached from a `render_init` handler).  The caller
-    # in `auto_bake_complex_materials` provides a
-    # `bpy.context.temp_override` populated with the required
-    # selection state, but as belt-and-suspenders, fail soft on the
-    # state-snapshot reads.  When running from the user-driven
-    # operator path (`bake_complex_materials_in_scene`) the reads
-    # succeed and we restore selection on exit; when running from the
-    # handler path we don't bother (there's no user selection to
-    # preserve).
+    # The supported caller is the explicit user operator, outside a live
+    # render callback. Snapshot selection here and restore it on exit.
+    # Restricted-context reads historically failed in the abandoned
+    # render-handler experiment; these defensive fallbacks do not make
+    # that old automatic workflow supported.
     try:
         prev_active = bpy.context.view_layer.objects.active
         prev_selected = list(bpy.context.selected_objects)
@@ -743,10 +748,9 @@ def bake_material_to_images(
         if prev_active_node is not None and prev_active_node.name in nt.nodes:
             nt.nodes.active = prev_active_node
 
-        # Restore selection / active.  Both errors here are
-        # context-restriction symptoms when running from a handler —
-        # they're harmless because the temp_override the caller
-        # installed gets unwound on its own.
+        # Restore the explicit caller's selection/active state; tolerate
+        # unavailable contexts during teardown. No automatic handler
+        # or caller-installed override is assumed.
         try:
             bpy.ops.object.select_all(action="DESELECT")
             for o in prev_selected:
@@ -832,11 +836,11 @@ def bake_complex_materials_in_scene(
     report=print,
 ) -> int:
     """Walk the scene, find every object whose material classifies as
-    complex, and bake each.  Returns the number of materials baked.
+    complex, and explicitly bake each.  Returns the number of materials baked.
 
-    ``only_unbaked``: when True, skip materials that already have a
-    ``rise_baked_diffuse_path`` ID property — useful for "bake
-    incrementally" workflows.
+    ``only_unbaked``: when True, skip materials with any existing
+    channel returned by ``baked_paths``. This does not check graph
+    freshness; False retries complex materials regardless of cache.
 
     The scene's render engine MUST be switched to ``CYCLES`` by the
     caller before invoking; the operator handles that.  We don't do

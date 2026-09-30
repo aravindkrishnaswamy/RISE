@@ -363,15 +363,12 @@ class RISE_OT_bake_materials(bpy.types.Operator):
 
 
 class RISE_OT_clear_baked_materials(bpy.types.Operator):
-    """Clear the rise_baked_* ID properties on all materials so the
-    next RISE render falls back to direct procedural translation (or
-    forces a re-bake of materials with `only_unbaked=False`).
+    """Clear metadata for materials selected by the cache-path check.
 
-    Useful when:
-      - The user edits a Cycles material and wants to drop the stale
-        bake without re-running the bake immediately
-      - Investigating differences between the bake path and the
-        direct-translation path on a simple material
+    Viable complex materials with a cleared attempted marker require a
+    manual bake before render; no automatic bake or PNG deletion occurs.
+    Failed attempt-only materials may not pass the selection check below;
+    the default Bake button can retry them regardless of attempted hash.
     """
 
     bl_idname = "rise.clear_baked_materials"
@@ -392,18 +389,20 @@ class RISE_OT_clear_baked_materials(bpy.types.Operator):
 class RISE_RENDER_PT_materials(_RISEPanel):
     """Render-properties panel: the Bake button + cache diagnostics.
 
-    Workflow (see docs/BLENDER_MATERIAL_TRANSLATION.md "Two paths"):
+    Workflow (see docs/BLENDER_MATERIAL_TRANSLATION.md manual channel bake):
 
       1. User authors a Cycles material with a complex node graph
-         (Mix Shader, AO, procedural noise / Voronoi / ColorRamp …).
+         (Mix Shader or AO on an ordinary input other than Tangent).
       2. User clicks **Bake Procedural Materials** once.  RISE swaps
          to Cycles, bakes Diffuse / Roughness / Normal to PNGs under
          ``<tmp>/rise_baked/<material>_*.png``, stores the paths as
          ID properties, and swaps back.
       3. User clicks Render.  RISE consumes the cached PNGs.
-      4. When a node graph is edited, the cache's content-hash flips
-         to "stale" — the next Render will abort with a message
-         asking the user to re-bake.
+      4. A graph edit changes the attempted hash comparison; the next
+         Render asks for another manual attempt if a viable proxy exists.
+         A stored successful cache may also show a stale UI warning. Matching
+         attempted hashes allow render after failures or missing PNGs.
+         Tangent-only graphs have their own isolated export-time producer.
 
     This panel is the place users come to (a) trigger the bake and
     (b) confirm what's in the cache.

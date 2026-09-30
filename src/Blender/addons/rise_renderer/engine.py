@@ -113,7 +113,7 @@ class RISEBlenderRenderEngine(bpy.types.RenderEngine):
 
         try:
             # Material-bake gate: detect complex Cycles material graphs
-            # that haven't been baked to PNGs yet (or are stale) and
+            # with viable proxies and never-attempted/edited graphs; then
             # abort with a clear, actionable message pointing at the
             # `rise.bake_materials` operator.
             #
@@ -139,7 +139,9 @@ class RISEBlenderRenderEngine(bpy.types.RenderEngine):
             # bake operator before rendering (never-tried OR graph
             # edited since last attempt).  Materials with a tried
             # attempt that failed are NOT flagged — they fall through
-            # to the exporter's flat-colour fallback.
+            # to existing slot/default fallback when no usable cache remains.
+            # Missing PNGs alone do not gate a matching attempt. Tangent
+            # uses a separate isolated export-time child, not this driver.
             missing = [
                 mat.name
                 for mat in bpy.data.materials
