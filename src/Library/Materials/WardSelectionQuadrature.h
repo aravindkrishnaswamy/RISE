@@ -8,6 +8,19 @@
 #include <algorithm>
 #include <cmath>
 namespace RISE { namespace Implementation { namespace WardSelection {
+// Ward reconstruction can sum almost opposite unit rays to a tiny,
+// nonzero half-vector. Preserve its direction before squared length loses
+// range. In the ordinary path, max magnitude [2^-450,2^450] keeps the
+// squared norm normal and finite, so the established normalization applies.
+// Exact cancellation keeps the existing zero-vector convention.
+inline Vector3 ReconstructHalf(const Vector3& sum) {
+    const double scale=std::max(std::abs(sum.x),std::max(std::abs(sum.y),std::abs(sum.z)));
+    if(scale==0) return Vector3(0,0,0);
+    if(scale>=0x1p-450 && scale<=0x1p450) return Vector3Ops::Normalize(sum);
+    const double x=sum.x/scale,y=sum.y/scale,z=sum.z/scale;
+    const double length=std::hypot(std::hypot(x,y),z);
+    return Vector3(x/length,y/length,z/length);
+}
 // DL-324: frame slopes remove inverse-cosine domain and pole subtraction.
 // Keep exponent range through the complete Gaussian quotient: exp(-E)
 // and ax*ay need not themselves be representable when the quotient is.

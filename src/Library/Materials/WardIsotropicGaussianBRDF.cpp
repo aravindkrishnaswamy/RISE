@@ -81,7 +81,7 @@ static void ComputeFactors(
 
 		diffuse = INV_PI;
 
-		const Vector3 h = Vector3Ops::Normalize(v+r);
+		const Vector3 h = WardSelection::ReconstructHalf(v+r);
 		const Scalar hn = Vector3Ops::Dot(n,h);
 
         specular = WardSelection::SpecularKernel(Vector3Ops::Dot(h,onb.u()),

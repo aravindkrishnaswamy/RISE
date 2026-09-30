@@ -89,7 +89,7 @@ static void ComputeFactors(
 
 		diffuse = INV_PI;
 
-		const Vector3 h = Vector3Ops::Normalize(l+r);
+		const Vector3 h = WardSelection::ReconstructHalf(l+r);
 		const Scalar nh = Vector3Ops::Dot(n,h);
 
         const Scalar hu = Vector3Ops::Dot(h,u);

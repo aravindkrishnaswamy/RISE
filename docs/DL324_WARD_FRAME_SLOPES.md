@@ -82,7 +82,7 @@ and representable reflectance-weighted values above the unweighted
 kernel's range. Independent log oracles agree with 80-digit Decimal
 anchors; relative checks remain sensitive to tiny nonzero expected values.
 
-With these exact final tests, clean library builds and exact target
+With the earlier range/sampler test snapshot (`28b24143` SHA256), clean library builds and exact target
 relinks give **17,162 passed / 149 failed** on first-candidate production
 `98473a987`, and **15,194 passed / 2,117 failed** on original production
 `cc516a0a8`. Axis-pole positive controls remain finite. That earlier repaired

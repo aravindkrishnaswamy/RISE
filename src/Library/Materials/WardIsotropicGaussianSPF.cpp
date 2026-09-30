@@ -379,7 +379,7 @@ static Scalar WardIsoSpecularDensity(
 {
 	const Vector3& ew = myonb.w();
 	const Vector3  wi = Vector3Ops::Normalize( -ri.ray.Dir() );
-	const Vector3  h  = Vector3Ops::Normalize( wi + woNorm );
+	const Vector3  h  = WardSelection::ReconstructHalf( wi + woNorm );
 
 	const Scalar cosThetaH = Vector3Ops::Dot( h, ew );
 	const Scalar hdotwo    = Vector3Ops::Dot( h, woNorm );
@@ -627,7 +627,7 @@ Scalar WardIsotropicGaussianSPF::EvaluateLobeFNM(
 
 	const Vector3 wi = Vector3Ops::Normalize( -ri.ray.Dir() );
 	const Vector3 woNorm = Vector3Ops::Normalize( outDir );
-	const Vector3 h = Vector3Ops::Normalize( wi + woNorm );
+	const Vector3 h = WardSelection::ReconstructHalf( wi + woNorm );
 
 	const Scalar hdotwo = Vector3Ops::Dot( h, woNorm );
 	const Scalar cos_h = Vector3Ops::Dot( h, myonb.w() );
@@ -673,7 +673,7 @@ Scalar WardIsotropicGaussianSPF::EvaluateKrayNM(
 
 	const Vector3 wi = Vector3Ops::Normalize( -ri.ray.Dir() );
 	const Vector3 woNorm = Vector3Ops::Normalize( outDir );
-	const Vector3 h = Vector3Ops::Normalize( wi + woNorm );
+	const Vector3 h = WardSelection::ReconstructHalf( wi + woNorm );
 
 	const Scalar ratio = WardKrayRatio(
 		Vector3Ops::Dot( h, woNorm ),
@@ -720,7 +720,7 @@ Scalar WardIsotropicGaussianSPF::EvaluateKrayNM(
 	}
 
 	const Vector3 wi = Vector3Ops::Normalize(-ri.ray.Dir());
-	const Vector3 h = Vector3Ops::Normalize(wi+woNorm);
+	const Vector3 h = WardSelection::ReconstructHalf(wi+woNorm);
 	const Scalar hz = Vector3Ops::Dot(h,myonb.w()), hd = Vector3Ops::Dot(h,woNorm);
 	if(WardKrayRatio(hd,hz,cos_o,Vector3Ops::Dot(wi,myonb.w()))<=0) return 0;
 	const Scalar ax = pAlpha->GetValueAtNM(ri,nm), ay = ax;
