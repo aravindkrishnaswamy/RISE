@@ -81,3 +81,26 @@ where `ℓ=-tμ+sqrt(R²-t²(1-μ²))`. Independent midpoint quadrature checks i
 own refinement before comparing transport. Absorption alone is
 `exp(-σa R)`. Zero absorption and unit boundary/environment radiance give
 the exact multiple-scatter furnace solution `L=1`.
+
+## Regression and precision checks
+
+The final tests were clean-built and relinked against both baseline and
+corrected production. The baseline fails seven generated-density checks
+and the unit-radiance furnace; its six-trial Pel furnace mean is 0.949079
+with Student 95% half-width 0.002670. The corrected mean is 0.999823 with
+half-width 0.004910, retaining the same 2% physical band. NM and HWSS have
+the same baseline deficit and pass the corrected eight-control matrix.
+
+Real generated paths use environment selection probability 0.796392.
+Pel and NM first-target density errors are zero; VCM joint recurrence
+errors are below 3.4e-16. The root's independent direction query differs
+by at most 2.4e-8 because the environment CDF uses floats; the oracle
+accounts for that storage precision explicitly. First-target and
+joint-strategy density tolerances remain 1e-12. All four admissible BDPT
+split weights match independently multiplied path densities and sum to one.
+
+The physical-reference environment suite retains its original RGB/NM/HWSS
+mean bands and each estimator's peak cap. Cross-estimator p99 equality is
+removed because the estimators have different variances. Three independently
+salted full-suite runs each pass 107 checks; their largest paired-ratio
+95% half-width is 1.69%, below the smallest unchanged 3% comparison band.
