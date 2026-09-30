@@ -467,7 +467,70 @@ static double WardFullAlbedoTwoGrid( const IBSDF& brdf, const RayIntersectionGeo
 	return sum;
 }
 
-int main()
+// DL-324: finite rounded inputs, evaluated through the public material consumers.
+// Long-double frame projections are an independent analytic GMD Ward oracle.
+static void TestRoundedWardPoles(const IORStack& stack)
+{
+    auto* black = new UniformColorPainter(RISEPel(0,0,0)); black->addref();
+    auto* white = new UniformColorPainter(RISEPel(.5,.5,.5)); white->addref();
+    int roundedNormal = 0, roundedTangent = 0;
+    for(int frame=0; frame<128; ++frame) {
+        OrthonormalBasis3D onb;
+        if(frame) onb.CreateFromW(Vector3(.17+frame*.013, .31-frame*.009, .83));
+        const Vector3 n=onb.w(), u=onb.u(), v=onb.v();
+        for(int pair=0; pair<8; ++pair) {
+            const double tilt[]={0,1e-16,1e-12,1e-8,.001,.1,1,1e8};
+            const Vector3 wi=Vector3Ops::Normalize(n+u*.4);
+            const Vector3 hTarget=Vector3Ops::Normalize(n+u*tilt[pair]);
+            const Vector3 wo=Vector3Ops::Normalize(2*Vector3Ops::Dot(wi,hTarget)*hTarget-wi);
+            // pole with symmetric incoming/outgoing; horizon case uses wi=wo.
+            const Vector3 in = pair==7 ? hTarget : wi;
+            const Vector3 out = pair==7 ? hTarget : wo;
+            RayIntersectionGeometric ri=MakeIntersection(0);
+            ri.onb=onb; ri.vNormal=n; ri.vGeomNormal=n;
+            ri.ray.Set(Point3(0,0,1),-in);
+            const Vector3 h=Vector3Ops::Normalize(Vector3Ops::Normalize(in)+Vector3Ops::Normalize(out));
+            const double nh=Vector3Ops::Dot(n,h);
+            const double tangentDot=Vector3Ops::Dot(u,Vector3Ops::Normalize(h-nh*n));
+            if(nh>1) ++roundedNormal;
+            if(fabs(tangentDot)>1) ++roundedTangent;
+            for(int model=0;model<2;++model) {
+                auto* ax=new UniformScalarPainter(.01); ax->addref();
+                auto* ay=new UniformScalarPainter(model?.37:.01); ay->addref();
+                IBSDF* brdf=model ? static_cast<IBSDF*>(new WardAnisotropicEllipticalGaussianBRDF(*black,*white,*ax,*ay))
+                                  : static_cast<IBSDF*>(new WardIsotropicGaussianBRDF(*black,*white,*ax)); brdf->addref();
+                ISPF* spf=model ? static_cast<ISPF*>(new WardAnisotropicEllipticalGaussianSPF(*black,*white,*ax,*ay))
+                               : static_cast<ISPF*>(new WardIsotropicGaussianSPF(*black,*white,*ax)); spf->addref();
+                const RISEPel f=brdf->value(out,ri);
+                const double fn=brdf->valueNM(out,ri,550), rs=GuardedGetColorNM(*white,ri,550);
+                const double lf=spf->EvaluateLobeFNM(ri,out,ScatteredRay::eRayReflection,550,stack);
+                const double pdf=spf->Pdf(ri,out,stack), pn=spf->PdfNM(ri,out,550,stack);
+                Check(std::isfinite(f[0]) && std::isfinite(fn) && std::isfinite(lf) && std::isfinite(pdf) && std::isfinite(pn),
+                      "DL-324 public RGB/NM BRDF, lobe and Pdf finite at rounded poles/horizon");
+                auto dot=[](const Vector3&a,const Vector3&b) { return (long double)a.x*b.x+(long double)a.y*b.y+(long double)a.z*b.z; };
+                const long double hz=dot(h,n), hx=dot(h,u), hy=dot(h,v), hd=dot(h,in);
+                const long double exponent=-(hx*hx/(.01L*.01L)+hy*hy/((model?.37L:.01L)*(model?.37L:.01L)))/(hz*hz);
+                const double kernel=(double)(expl(exponent)/(4*acosl(-1.L)*.01L*(model?.37L:.01L)*hd*hd*hz*hz*hz*hz));
+                const double co=Vector3Ops::Dot(n,out), ci=Vector3Ops::Dot(n,in);
+                if(co>0 && ci>0) {
+                    Check(std::isfinite(f[0]) && fabs(f[0]-.5*kernel)<=1e-8*(1+kernel), "DL-324 independent long-double analytic RGB value");
+                    Check(std::isfinite(fn) && fabs(fn-rs*kernel)<=1e-8*(1+kernel), "DL-324 independent long-double analytic NM value");
+                    Check(std::isfinite(lf) && fabs(lf-fn)<=1e-8*(1+fabs(fn)), "DL-324 HWSS companion lobe agrees with public valueNM");
+                    RayIntersectionGeometric reverse=ri; reverse.ray.Set(Point3(0,0,1),-out);
+                    const double rev=brdf->value(in,reverse)[0];
+                    Check(std::isfinite(rev) && fabs(rev-f[0])<=1e-8*(1+fabs(f[0])), "DL-324 reciprocal rounded-pole value");
+                }
+                spf->release(); brdf->release(); ax->release(); ay->release();
+            }
+        }
+    }
+    std::cout << "DL-324 finite constructed dot>1 leads: normal=" << roundedNormal << " tangent=" << roundedTangent << std::endl;
+    Check(roundedNormal>0, "DL-324 fixture really contains finite normalized dot > 1");
+    Check(roundedTangent>0, "DL-324 fixture really contains finite tangential normalized dot > 1");
+    black->release(); white->release();
+}
+
+int main(int argc, char** argv)
 {
 	GlobalLog();
 
@@ -478,6 +541,13 @@ int main()
 	g_stubObject->addref();
 
 	IORStack iorStack = MakeTestIORStack( g_stubObject );
+    TestRoundedWardPoles(iorStack);
+    if(argc>1 && std::string(argv[1])=="--robustness-only") {
+        g_stubObject->release();
+        std::cout << "Passed: " << passCount << " Failed: " << failCount << std::endl;
+        return failCount ? 1 : 0;
+    }
+
 
 	UniformColorPainter* black = new UniformColorPainter( RISEPel( 0, 0, 0 ) ); black->addref();
 	UniformColorPainter* spec  = new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) ); spec->addref();
