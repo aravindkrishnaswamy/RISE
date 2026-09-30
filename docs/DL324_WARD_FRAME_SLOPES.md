@@ -47,6 +47,13 @@ normal/tangent dots actually exceed one. It also exercises sampler zero,
 quadrant boundaries, `nextafter(1,0)`, and the excluded upper endpoint one
 as a finite pole control, at normal and 89.99-degree incidence.
 
+The final regression source was rebuilt against the original five Ward
+sources/header after a clean library build and exact test-target relink:
+15,136 passed / 1,845 failed, including the density sibling's small-axis
+controls (31 finite normal-dot overshoot cases). The axis-pole RGB/NM
+controls remained finite. Earlier development oracle failures are excluded
+from this final RED evidence.
+
 Two existing contracts matter to the oracle. Nominal RGB black has a small
 nonzero lifted spectral reflectance, so full NM value includes that diffuse
 term. In RGB, the zero-weight diffuse ray remains an emitted fallback when
