@@ -51,7 +51,8 @@ static void ComputeFactors(
 	const Vector3& vLightIn, 
 	const RayIntersectionGeometric& ri, 
 	const OrthonormalBasis3D& onb,
-	const T& alpha
+	const T& alpha,
+	const T& rs
 	)
 {
 	const Vector3 n = onb.w();
@@ -84,7 +85,7 @@ static void ComputeFactors(
 		const Scalar hn = Vector3Ops::Dot(n,h);
 
         specular = WardSelection::SpecularKernel(Vector3Ops::Dot(h,onb.u()),
-            Vector3Ops::Dot(h,onb.v()),hn,Vector3Ops::Dot(h,r),alpha,alpha);
+            Vector3Ops::Dot(h,onb.v()),hn,Vector3Ops::Dot(h,r),alpha,alpha,rs);
 	}
 }
 
@@ -100,14 +101,15 @@ RISEPel WardIsotropicGaussianBRDF::value( const Vector3& vLightIn, const RayInte
 	// it's given, so the flip propagates through automatically.
 	OrthonormalBasis3D onb = ri.onb;
 	if(Vector3Ops::Dot(ri.ray.Dir(),onb.w())>NEARZERO) onb.FlipW();
-	ComputeFactors<RISEPel>( d, s, vLightIn, ri, onb, a );
+	const RISEPel rs = pSpecular->GetColor(ri);
+	ComputeFactors<RISEPel>( d, s, vLightIn, ri, onb, a, rs );
 
 	// DL-310: the diffuse term is coupled to the specular lobe's albedo
 	// bound -- see WardSelection::CoupledDiffuse.
-	const RISEPel rd = pDiffuse->GetColor(ri), rs = pSpecular->GetColor(ri);
+	const RISEPel rd = pDiffuse->GetColor(ri);
 	const RISEPel rdCoupled( WardSelection::CoupledDiffuse( rd[0], rs[0] ),
 		WardSelection::CoupledDiffuse( rd[1], rs[1] ), WardSelection::CoupledDiffuse( rd[2], rs[2] ) );
-	return d*rdCoupled + s*rs;
+	return d*rdCoupled + s;
 }
 
 Scalar WardIsotropicGaussianBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
@@ -117,10 +119,10 @@ Scalar WardIsotropicGaussianBRDF::valueNM( const Vector3& vLightIn, const RayInt
 	// Same ray-facing flip as value() above.
 	OrthonormalBasis3D onb = ri.onb;
 	if(Vector3Ops::Dot(ri.ray.Dir(),onb.w())>NEARZERO) onb.FlipW();
-	ComputeFactors<Scalar>( d, s, vLightIn, ri, onb, pAlpha->GetValueAtNM(ri,nm) );
+	const Scalar rsNM = GuardedGetColorNM(*pSpecular,ri,nm);
+	ComputeFactors<Scalar>( d, s, vLightIn, ri, onb, pAlpha->GetValueAtNM(ri,nm), rsNM );
 
-	const Scalar rsNM = GuardedGetColorNM( *pSpecular, ri, nm );
-	return d*WardSelection::CoupledDiffuse( GuardedGetColorNM( *pDiffuse, ri, nm ), rsNM ) + s*rsNM;
+	return d*WardSelection::CoupledDiffuse( GuardedGetColorNM( *pDiffuse, ri, nm ), rsNM ) + s;
 }
 
 RISEPel WardIsotropicGaussianBRDF::albedo( const RayIntersectionGeometric& ri ) const

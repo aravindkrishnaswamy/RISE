@@ -147,8 +147,7 @@ static void GenerateSpecularRay(
 	const Scalar sin_phi = sin(phi);
 
 	const Scalar exponent = -log(random.y);
-	const Scalar radius = alpha*sqrt(exponent);
-	const Vector3 a = std::isfinite(exponent) ? WardSelection::HalfFromSlopes(cos_phi*radius,sin_phi*radius) : Vector3(cos_phi,sin_phi,0);
+		const Vector3 a = std::isfinite(exponent) ? WardSelection::HalfFromRadius(alpha*cos_phi,alpha*sin_phi,sqrt(exponent)) : Vector3(cos_phi,sin_phi,0);
 	const Scalar cos_theta = a.z;
 
 	// Generate the actual vector from the half-way vector.  FRAME (DL-100,
@@ -403,8 +402,7 @@ static Scalar WardIsoSpecularDensity(
 	const Scalar cosP = ( hr > 0 ) ? ( hu / hr ) : Scalar(1);
 	const Scalar sinP = ( hr > 0 ) ? ( hv / hr ) : Scalar(0);
 
-	const Scalar tanThetaH = hr / cosThetaH;
-
+	
 	Scalar sum = 0;
 
 	for( int i = 0; i < lobes.count; i++ ) {
@@ -430,8 +428,8 @@ static Scalar WardIsoSpecularDensity(
 				if( j == i ) {
 					continue;
 				}
-				const Scalar tj = (tanThetaH/lobes.alpha[i])*lobes.alpha[j];
-				const Vector3 local = WardSelection::HalfFromSlopes(cosP*tj,sinP*tj);
+				const Scalar radius = sqrt(exponent);
+				const Vector3 local = WardSelection::HalfFromRadius(cosP*lobes.alpha[j],sinP*lobes.alpha[j],radius);
 				const Scalar cj = local.z;
 				const Scalar lx = local.x;
 				const Scalar ly = local.y;
@@ -471,7 +469,7 @@ static Scalar WardIsoSpecularDensity(
 			}
 		}
 
-		sum += q * pdf_i;
+		sum += WardSelection::ReflectionDensity(exponent,cosThetaH,hdotwo,ai,ai,q);
 	}
 
 	return sum;
@@ -646,8 +644,8 @@ Scalar WardIsotropicGaussianSPF::EvaluateLobeFNM(
 	}
 
 	const Scalar alpha = pAlpha->GetValueAtNM(ri,nm);
-	return GuardedGetColorNM(*pSpecular,ri,nm) * WardSelection::SpecularKernel(
-		Vector3Ops::Dot(h,myonb.u()),Vector3Ops::Dot(h,myonb.v()),cos_h,hdotwo,alpha,alpha);
+	return WardSelection::SpecularKernel(
+		Vector3Ops::Dot(h,myonb.u()),Vector3Ops::Dot(h,myonb.v()),cos_h,hdotwo,alpha,alpha,GuardedGetColorNM(*pSpecular,ri,nm));
 }
 
 Scalar WardIsotropicGaussianSPF::EvaluateKrayNM(

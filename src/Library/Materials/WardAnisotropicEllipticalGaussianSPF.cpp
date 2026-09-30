@@ -430,7 +430,7 @@ static Scalar WardAnisoSpecularDensity(
 			}
 		}
 
-		sum += q * pdf_i;
+		sum += WardSelection::ReflectionDensity(exponent_i,cosThetaH,hdotwo,axi,ayi,q);
 	}
 
 	return sum;
@@ -601,7 +601,7 @@ Scalar WardAnisotropicEllipticalGaussianSPF::EvaluateLobeFNM(
 
 	const Scalar hu = Vector3Ops::Dot( h, myonb.u() );
 	const Scalar hv = Vector3Ops::Dot( h, myonb.v() );
-	return GuardedGetColorNM(*pSpecular,ri,nm) * WardSelection::SpecularKernel(hu,hv,cos_h,hdotwo,ax,ay);
+	return WardSelection::SpecularKernel(hu,hv,cos_h,hdotwo,ax,ay,GuardedGetColorNM(*pSpecular,ri,nm));
 }
 
 Scalar WardAnisotropicEllipticalGaussianSPF::EvaluateKrayNM(

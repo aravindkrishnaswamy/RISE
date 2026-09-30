@@ -20,33 +20,34 @@ inline double SlopeExponent(double hx,double hy,double hz,double ax,double ay) {
     const double sx=ScaledSlope(hx,hz,ax),sy=ScaledSlope(hy,hz,ay);
     return sx*sx+sy*sy;
 }
-inline double GaussianQuotient(double exponent,double hz,double hd,double ax,double ay,bool bsdf) {
-    if(hz<=0 || hd<=0 || ax<=0 || ay<=0) return 0;
+inline double GaussianQuotient(double exponent,double hz,double hd,double ax,double ay,bool bsdf,double weight=1) {
+    if(hz<=0 || hd<=0 || ax<=0 || ay<=0 || weight==0) return 0;
     // Every denominator factor has magnitude in [2^-100,2^100],
     // and there are at most eight factors. Its product stays normal.
-    // exp(-E) is also normal for E<=700. Division then rounds the
+    // exp(-E)*weight is also normal for E<=600 and |weight|>=2^-100.
+    // The numerator is at least 2^-966. Division then rounds the
     // final value directly, including a genuinely subnormal/zero result.
     const double lo=0x1p-100,hi=0x1p100;
-    if(exponent<=700 && ax>=lo && ax<=hi && ay>=lo && ay<=hi &&
+    if(exponent<=600 && std::abs(weight)>=lo && std::abs(weight)<=hi && ax>=lo && ax<=hi && ay>=lo && ay<=hi &&
        hz>=lo && hz<=hi && hd>=lo && hd<=hi) {
         const double densityDen=4*PI*ax*ay*hd*hz*hz*hz;
-        return std::exp(-exponent)/(bsdf ? densityDen*hd*hz : densityDen);
+        return (std::exp(-exponent)*weight)/(bsdf ? densityDen*hd*hz : densityDen);
     }
     const double logDen=std::log(4*PI)+std::log(ax)+std::log(ay)+
         (bsdf?2:1)*std::log(hd)+(bsdf?4:3)*std::log(hz);
-    return std::exp(-exponent-logDen);
+    return std::copysign(std::exp(-exponent-logDen+std::log(std::abs(weight))),weight);
 }
-inline double ReflectionDensity(double exponent,double hz,double hd,double ax,double ay) {
-    return GaussianQuotient(exponent,hz,hd,ax,ay,false);
+inline double ReflectionDensity(double exponent,double hz,double hd,double ax,double ay,double weight=1) {
+    return GaussianQuotient(exponent,hz,hd,ax,ay,false,weight);
 }
-inline double SpecularKernel(double hx,double hy,double hz,double hd,double ax,double ay) {
+inline double SpecularKernel(double hx,double hy,double hz,double hd,double ax,double ay,double weight=1) {
     if(hz<=0 || hd<=0 || ax<=0 || ay<=0) return 0;
-    return GaussianQuotient(SlopeExponent(hx,hy,hz,ax,ay),hz,hd,ax,ay,true);
+    return GaussianQuotient(SlopeExponent(hx,hy,hz,ax,ay),hz,hd,ax,ay,true,weight);
 }
-inline RISEPel SpecularKernel(double hx,double hy,double hz,double hd,const RISEPel& ax,const RISEPel& ay) {
-    return RISEPel(SpecularKernel(hx,hy,hz,hd,ax[0],ay[0]),
-                   SpecularKernel(hx,hy,hz,hd,ax[1],ay[1]),
-                   SpecularKernel(hx,hy,hz,hd,ax[2],ay[2]));
+inline RISEPel SpecularKernel(double hx,double hy,double hz,double hd,const RISEPel& ax,const RISEPel& ay,const RISEPel& weight) {
+    return RISEPel(SpecularKernel(hx,hy,hz,hd,ax[0],ay[0],weight[0]),
+                   SpecularKernel(hx,hy,hz,hd,ax[1],ay[1],weight[1]),
+                   SpecularKernel(hx,hy,hz,hd,ax[2],ay[2],weight[2]));
 }
 // Normalize Cartesian slopes without squaring an authored axis. Scaling
 // before hypot preserves tiny components and avoids an overflowing radius.
@@ -55,6 +56,14 @@ inline Vector3 HalfFromSlopes(double sx,double sy) {
     const double x=sx/scale,y=sy/scale,z=1/scale;
     const double length=std::hypot(std::hypot(x,y),z);
     return Vector3(x/length,y/length,z/length);
+}
+inline Vector3 HalfFromRadius(double x,double y,double radius) {
+    const double sx=x*radius,sy=y*radius;
+    if(std::isfinite(sx) && std::isfinite(sy)) return HalfFromSlopes(sx,sy);
+    const double scale=std::max(std::abs(x),std::abs(y));
+    const double z=std::exp(-std::log(scale)-std::log(radius));
+    const double length=std::hypot(std::hypot(x/scale,y/scale),z);
+    return Vector3((x/scale)/length,(y/scale)/length,z/length);
 }
 // Existing folded-quarter convention: q0/q2 run forwards; q1/q3 run
 // backwards. (ax cos(psi),ay sin(psi))*sqrt(E) is exactly the old
@@ -72,7 +81,7 @@ inline Vector3 AnisoHalf(double xi,double exponent,double ax,double ay) {
         return Vector3((x/scale)/length,(y/scale)/length,0);
     }
     const double r=std::sqrt(exponent);
-    return HalfFromSlopes(x*r,y*r);
+    return HalfFromRadius(x,y,r);
 }
 inline double AnisoXi(double hx,double hy,double ax,double ay) {
     const double psi=std::atan2(std::abs(hy/ay),std::abs(hx/ax));
