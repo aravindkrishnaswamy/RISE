@@ -1568,7 +1568,11 @@ namespace
 			return false;
 		}
 
-		if( !job.AddIndexedTriangleMeshGeometryWithTangents(
+        if (mesh.tangent_is_shader_direction > 1) {
+            write_error(error_message,error_message_size,"Invalid tangent semantic"); return false;
+        }
+        const bool added = mesh.tangent_is_shader_direction
+            ? job.AddIndexedTriangleMeshGeometryWithShaderDirections(
 			mesh.name,
 			mesh.vertices,
 			mesh.normals,
@@ -1581,7 +1585,22 @@ namespace
 			mesh.num_uvs,
 			mesh.num_triangles,
 			mesh.double_sided != 0,
-			mesh.use_face_normals != 0, mesh.tangent_attribute, mesh.num_tangents ) )
+			mesh.use_face_normals != 0, mesh.tangent_attribute, mesh.num_tangents )
+            : job.AddIndexedTriangleMeshGeometryWithTangents(
+			mesh.name,
+			mesh.vertices,
+			mesh.normals,
+			mesh.uvs,
+			mesh.vertex_indices,
+			mesh.uv_indices,
+			mesh.normal_indices,
+			mesh.num_vertices,
+			mesh.num_normals,
+			mesh.num_uvs,
+			mesh.num_triangles,
+			mesh.double_sided != 0,
+			mesh.use_face_normals != 0, mesh.tangent_attribute, mesh.num_tangents );
+        if (!added)
 		{
 			write_error( error_message, error_message_size, "Failed to add indexed triangle mesh geometry to the RISE job" );
 			return false;

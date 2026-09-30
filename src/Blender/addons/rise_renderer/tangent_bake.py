@@ -39,28 +39,47 @@ def uv_tangent_source(socket):
     return node if node.bl_idname == "ShaderNodeTangent" and node.direction_type == "UV_MAP" else None
 
 
-def decode_direction(encoded, inverse_linear, normal):
-    """Linear encoded world direction -> projected object-local unit xyz/sign.
+def _unit(vector):
+    """Normalize representation magnitude first; finite scale cannot mean zero."""
+    if not all(math.isfinite(v) for v in vector):
+        raise RuntimeError("RISE Tangent bake produced a nonfinite direction.")
+    scale = max(abs(v) for v in vector)
+    if scale == 0:
+        raise RuntimeError("RISE Tangent bake produced a zero/parallel direction in the shading plane.")
+    result = vector / scale
+    result.normalize()
+    return result
 
-    A vector field supplies no independent bitangent: choose local cross(N,T),
-    sign +1. UV nodes instead carry Blender's actual MikkTSpace bitangent sign.
-    Project in WORLD space first: inverse/projection do not commute under
-    nonuniform scale. Then inverse-transform the projected direction. Object
-    later promotes the same vector with its established parity rule.
+
+def decode_direction(encoded, inverse_linear, normal, allow_parallel=False):
+    """Preserve the full world socket vector in object coordinates.
+
+    The core projects against the current shading normal, and reprojects the
+    raw vector after supported normal modifiers. Classify a physical parallel
+    vector at the mesh normal only when no exported base-normal modifier can
+    change that normal. Representation magnitude never affects validity.
     """
-    world = encoded.__class__((2*encoded[0]-1, 2*encoded[1]-1, 2*encoded[2]-1))
-    world_normal = inverse_linear.transposed() @ normal
-    world_normal.normalize()
-    world -= world_normal * world.dot(world_normal)
-    direction = inverse_linear @ world
-    direction -= normal * direction.dot(normal)
-    if not all(math.isfinite(v) for v in direction) or direction.length_squared < 1e-20:
-        raise RuntimeError("RISE Tangent bake produced a zero/nonfinite direction in the shading plane.")
-    direction.normalize()
-    return (*direction, 1.0)
+    world = _unit(encoded.__class__((2*encoded[0]-1, 2*encoded[1]-1, 2*encoded[2]-1)))
+    if not allow_parallel:
+        world_normal = _unit(inverse_linear.transposed() @ normal)
+        _unit(world_normal.cross(world).cross(world_normal))
+    return (*_unit(inverse_linear @ world), 1.0)
 
 
-def corner_tangents(mesh, material, matrix_world, source_object=None, instance_info=None):
+def validate_baked_color(color):
+    """Detect unwritten/impossible encoded results, not all Cycles backend faults.
+
+    Normalize limits decoded vectors to the unit ball; corner averaging is
+    convex. Allow 32 binary32 eps for normalization/arithmetic/store rounding,
+    independent of object scale. Alpha alone cannot detect black backend output.
+    """
+    allowance = 32 * 2**-23
+    if (len(color) != 4 or not all(math.isfinite(v) for v in color) or
+            color[3] != 1 or sum((2*c-1)**2 for c in color[:3]) > (1+allowance)**2):
+        raise RuntimeError("RISE Tangent Cycles bake returned an unwritten/impossible corner buffer (backend conditioning failure).")
+
+
+def corner_tangents(mesh, material, matrix_world, source_object=None, instance_info=None, used_corners=None, allow_parallel=False):
     """Return None for unlinked/active-UV fallback; else one vec4 per loop."""
     socket = find_tangent_socket(material)
     if socket is None or not socket.is_linked:
@@ -74,13 +93,27 @@ def corner_tangents(mesh, material, matrix_world, source_object=None, instance_i
             return None
         # The evaluated temporary mesh owns this data; no authored UV/normal edits.
         mesh.calc_tangents(uvmap=name)
-        result = [(*loop.tangent, loop.bitangent_sign) for loop in mesh.loops]
-        mesh.free_tangents()
-        return result
-    return _bake_graph(mesh, material, matrix_world, source_object, instance_info)
+        try:
+            inverse = matrix_world.to_3x3().inverted()
+            result = [None] * len(mesh.loops)
+            for i in (range(len(mesh.loops)) if used_corners is None else set(used_corners)):
+                loop = mesh.loops[i]
+                # Cycles Tangent socket uses object_normal_transform (M^-T),
+                # not the forward surface-vector convention of glTF TANGENT.
+                world = _unit(inverse.transposed() @ loop.tangent)
+                world_normal = _unit(inverse.transposed() @ mesh.corner_normals[i].vector)
+                # Tangent node itself projects its output, before the BSDF.
+                world = _unit(world_normal.cross(world).cross(world_normal))
+                encoded = world * .5 + world.__class__((.5,.5,.5))
+                direction = decode_direction(encoded, inverse, mesh.corner_normals[i].vector.copy())
+                result[i] = (*direction[:3], loop.bitangent_sign)
+            return result
+        finally:
+            mesh.free_tangents()
+    return _bake_graph(mesh, material, matrix_world, source_object, instance_info, used_corners, allow_parallel)
 
 
-def _bake_graph(mesh, material, matrix_world, source_object, instance_info):
+def _bake_graph(mesh, material, matrix_world, source_object, instance_info, used_corners, allow_parallel):
     import bpy
     from mathutils import Vector
     scene = obj = copied_mesh = copied_material = None
@@ -130,8 +163,13 @@ def _bake_graph(mesh, material, matrix_world, source_object, instance_info):
         if len(encoded) != len(mesh.loops):
             raise RuntimeError("RISE Tangent bake corner count changed.")
         inverse = matrix_world.to_3x3().inverted()
-        return [decode_direction(Vector(color[:3]), inverse, mesh.corner_normals[i].vector.copy())
-                for i, color in enumerate(encoded)]
+        directions = [None] * len(mesh.loops)
+        # Keep full evaluated geometry for generated coordinates/dependencies;
+        # unrelated material faces do not define this socket's validity domain.
+        for i in (range(len(mesh.loops)) if used_corners is None else set(used_corners)):
+            validate_baked_color(encoded[i])
+            directions[i] = decode_direction(Vector(encoded[i][:3]), inverse, mesh.corner_normals[i].vector.copy(), allow_parallel)
+        return directions
     finally:
         # Removing our copies releases their dependencies; original data remains.
         if obj is not None:

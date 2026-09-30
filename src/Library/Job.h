@@ -1207,6 +1207,12 @@ namespace RISE
             const unsigned int numpts, const unsigned int numnormals, const unsigned int numcoords,
             const unsigned int numfaces, const bool double_sided, const bool face_normals,
             const float* corner_tangents, const unsigned int numtangents);
+        bool AddIndexedTriangleMeshGeometryWithShaderDirections(
+            const char* name, const float* vertices, const float* normals, const float* coords,
+            const unsigned int* vertexface, const unsigned int* uvwface, const unsigned int* normalface,
+            const unsigned int numpts, const unsigned int numnormals, const unsigned int numcoords,
+            const unsigned int numfaces, const bool double_sided, const bool face_normals,
+            const float* corner_tangents, const unsigned int numtangents);
         bool SetMaterialAlpha(const char* material, const char* alpha, const char* mode, const double cutoff);
 
 		bool AddCoatedMaterialEx(
@@ -3503,6 +3509,12 @@ namespace RISE
 									);
 
 	private:
+        bool AddIndexedMeshDirections(
+            const char* name, const float* vertices, const float* normals, const float* coords,
+            const unsigned int* vertexface, const unsigned int* uvwface, const unsigned int* normalface,
+            const unsigned int numpts, const unsigned int numnormals, const unsigned int numcoords,
+            const unsigned int numfaces, const bool double_sided, const bool face_normals,
+            const float* corner_tangents, const unsigned int numtangents, const bool shader_direction);
 		//! P5 Slice 3 expansion: shared incremental + D2 re-derive tail for an already-edited CST Document
 		//! (closure anchored at `closureAnchorId`).  Activation-preserving D2 fallback.  Returns the 0/1/2/3
 		//! contract.  `entityName`/`role` are diagnostic-only.  Used by ApplyCstParamEdit + ApplyCstObjectMatrixEdit.

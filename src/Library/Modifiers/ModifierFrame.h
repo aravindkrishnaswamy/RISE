@@ -13,13 +13,15 @@
 //    1. TANGENT PRESERVATION.  When the hit carries a COHERENT tangent
 //       frame (HairGeometry's fibre tangent, SDFGeometry's heightfield
 //       mode, an analytic primitive's dpdu, a UV-mapped mesh's dpdu, an
-//       imported glTF TANGENT), `ri.onb.u()` at modifier time ALREADY IS
+//       imported glTF TANGENT or separate shader direction), `ri.onb.u()` at modifier time ALREADY IS
 //       that tangent -- Object::IntersectRay / CSGObject::IntersectRay
 //       promoted it to world space and built the ONB from it
 //       (CreateFromWU) before any modifier ran.  A plain CreateFromW
 //       discards it for an arbitrary canonical-axis pick and breaks the
 //       coherent frame HairBSDF and anisotropic `tangent_rotation`
-//       depend on.  So: project the CURRENT u into the new normal's
+//       depend on. Separate shader directions instead retain the raw
+//       world socket vector and reproject it against every new normal.
+//       For legacy surface tangents, project the CURRENT u into the new normal's
 //       tangent plane and rebuild with CreateFromWU, falling back to
 //       CreateFromW only when that projection degenerates (the perturbed
 //       normal swung onto the old tangent).
@@ -37,6 +39,9 @@
 //       discards the mirror correction for any mirrored, tangent-bearing
 //       hit that also carries a modifier.  So: capture the incoming
 //       handedness (sign of u.(v x w)) and restore it after the rebuild.
+//       Separate shader directions arrive with canonical world handedness;
+//       their original UV normalMapOnb is immutable through normal modifiers
+//       and promoted independently through Object/CSG transforms.
 //       NOT applied to the CreateFromW degenerate fallback: that branch
 //       discards u entirely for an arbitrary canonical-axis pick, so
 //       there is no supplied handedness left to preserve.
@@ -84,6 +89,41 @@ namespace RISE
 	{
 		namespace ModifierFrame
 		{
+            //! Promote independent shader direction; save the normal-map UV frame
+            //! before replacing anisotropy ONB. Never fold chart or instance parity
+            //! into world-normal Rodrigues rotation. Called at every nesting level.
+            inline void PromoteShaderDirection(RayIntersectionGeometric& ri, const Matrix4& transform,
+                const Matrix4& inverseTranspose, Scalar transformParity)
+            {
+                if (!ri.bHasShaderDirection) { ri.bHasNormalMapFrame=false; return; }
+                const Vector3 promoted=Vector3Ops::Transform(transform,ri.vShaderDirection);
+                const Scalar scale=std::max(std::fabs(promoted.x),std::max(std::fabs(promoted.y),std::fabs(promoted.z)));
+                if (!std::isfinite(scale) || scale==0) { ri.bHasShaderDirection=ri.bHasNormalMapFrame=false; return; }
+                const Vector3 direction=Vector3Ops::Normalize(Vector3(promoted.x/scale,promoted.y/scale,promoted.z/scale));
+                if (Vector3Ops::SquaredModulus(direction)==0) { ri.bHasShaderDirection=ri.bHasNormalMapFrame=false; return; }
+                ri.vShaderDirection=direction; // unprojected, for a nested parent
+                if (ri.bHasNormalMapFrame) {
+                    // This frame can predate a child object's normal modifier.
+                    // Transform its OWN N/U, not the child's perturbed normal.
+                    const Vector3 oldU=ri.normalMapOnb.u();
+                    const Scalar handedness=Vector3Ops::Dot(oldU,Vector3Ops::Cross(ri.normalMapOnb.v(),ri.normalMapOnb.w()));
+                    Vector3 uvN=Vector3Ops::Normalize(Vector3Ops::Transform(inverseTranspose,ri.normalMapOnb.w()));
+                    const Vector3 orientation=Vector3Ops::SquaredModulus(ri.vGeomNormal)>0 ? ri.vGeomNormal : ri.vNormal;
+                    if (Vector3Ops::Dot(uvN,orientation)<0) uvN=-uvN; // CSG complement/face orientation
+                    const Vector3 uvU=Vector3Ops::Transform(transform,oldU);
+                    ri.normalMapOnb.CreateFromWU(uvN,uvU);
+                    if (handedness*transformParity<0) ri.normalMapOnb.FlipV();
+                } else {
+                    ri.normalMapOnb=ri.onb;
+                    ri.bHasNormalMapFrame=true;
+                }
+                const Vector3 projected=direction-ri.vNormal*Vector3Ops::Dot(direction,ri.vNormal);
+                // A later supported normal modifier can make a raw parallel
+                // vector meaningful. Preserve it and the UV decode frame.
+                if (Vector3Ops::SquaredModulus(projected)==0) return;
+                ri.onb.CreateFromWU(ri.vNormal,projected);
+            }
+
 			//! Does this hit's incoming `ri.onb` carry a COHERENT tangent
 			//! -- i.e. did the intersection code build it with
 			//! `CreateFromWU` from a meaningful surface direction (and
@@ -123,14 +163,22 @@ namespace RISE
 			//! the conservative direction: it can only ever ADD frame
 			//! preservation, never remove it.
 			//!
-			//! A hit with NEITHER flag keeps the legacy `CreateFromW`
+			//! The legacy pair below defines UV decoding. HasCoherentTangent
+			//! additionally includes shader directions for modifier rebuilding,
+			//! using their RAW world vector rather than a previously projected u.
+			//! A hit with none of these flags keeps the legacy `CreateFromW`
 			//! rebuild -- pinned byte-for-byte by
 			//! HairTangentPlumbingTest tests 10 and 12.
-			inline bool HasCoherentTangent(
+			inline bool HasSurfaceTangentFrame(const RayIntersectionGeometric& ri)
+            {
+                return ri.bShadingTangentFromGeometry || ri.bHasShadingTangent;
+            }
+
+            inline bool HasCoherentTangent(
 				const RayIntersectionGeometric& ri		///< [in] The hit being modified
 				)
 			{
-				return ri.bShadingTangentFromGeometry || ri.bHasShadingTangent;
+				return HasSurfaceTangentFrame(ri) || ri.bHasShaderDirection;
 			}
 
 			//! Set `ri.vNormal` to `newN` and rebuild `ri.onb` about it,
@@ -151,16 +199,18 @@ namespace RISE
 				// write-back may have aliased.
 				const Vector3 n = newN;
 
-				const Vector3 oldU = ri.onb.u();
+                // The original primary-UV decode frame is independent of
+                // closure normal inputs; only Object/CSG transforms promote it.
+                const Vector3 oldU = ri.bHasShaderDirection ? ri.vShaderDirection : ri.onb.u();
 				const Scalar oldHandedness = Vector3Ops::Dot( oldU,
 					Vector3Ops::Cross( ri.onb.v(), ri.onb.w() ) );
 
 				ri.vNormal = n;
 
 				const Vector3 uProj = oldU - n * Vector3Ops::Dot( oldU, n );
-				if( Vector3Ops::SquaredModulus( uProj ) > Scalar(1e-12) ) {
+				if( Vector3Ops::SquaredModulus( uProj ) > (ri.bHasShaderDirection ? Scalar(0) : Scalar(1e-12)) ) {
 					ri.onb.CreateFromWU( n, uProj );
-					if( oldHandedness < Scalar(0) ) {
+					if( !ri.bHasShaderDirection && oldHandedness < Scalar(0) ) {
 						ri.onb.FlipV();
 					}
 				} else {

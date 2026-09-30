@@ -1,10 +1,10 @@
 > Current alpha implementation (2026-09-29, DL-214): OPAQUE/MASK/BLEND map to
-> Current tangent producers (2026-09-29, DL-213): `KHR_materials_anisotropy` composes its scalar/per-texel rotation onto the imported glTF `TANGENT` frame (UV fallback when absent). This Indexed3/core/glTF support predates DL-213; the new Blender corner producer, IJob convenience and native inline mesh chunk reuse it. `BlenderBridgeTangentTest` independently renders glTF authored-TANGENT and rotated-UV assets and requires identical pixels.
-
 > scalar `IMaterial` coverage via `IJob::SetMaterialAlpha`, evaluated at transport
 > intersections and sampled emission endpoints. No alpha shader chain is
 > installed. Historical Phase 3/4 shader-op descriptions below are superseded
 > for imported alpha by [ALPHA_COVERAGE.md](ALPHA_COVERAGE.md).
+
+> Current tangent producers (2026-09-29, DL-213): `KHR_materials_anisotropy` composes its scalar/per-texel rotation onto the imported glTF `TANGENT` frame (UV fallback when absent). This Indexed3/core/glTF support predates DL-213; the native inline mesh chunk and global IJob tangent path reuse it. Blender ABI16 instead transports a separate shader direction so Principled anisotropy does not redirect UV normal maps. `BlenderBridgeTangentTest` independently renders glTF authored-TANGENT and rotated-UV assets and requires identical pixels.
 
 # glTF 2.0 Import for RISE — Analysis & Plan
 

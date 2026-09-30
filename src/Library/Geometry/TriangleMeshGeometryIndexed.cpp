@@ -158,6 +158,7 @@ bool TriangleMeshGeometryIndexed::TessellateToMesh(
 
 void TriangleMeshGeometryIndexed::IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool /*bComputeExitInfo*/ ) const
 {
+    ri.bHasShaderDirection=ri.bHasNormalMapFrame=false;
 	// Triangle mesh geometry never generates exit information, it just ignores that command!
 
 	// Bump the mailbox ray ID so duplicate triangles in multiple BSP leaves are skipped
@@ -1670,6 +1671,7 @@ void TriangleMeshGeometryIndexed::Deserialize( IReadBuffer& buffer )
 	// Get geometry settings
 	bUseFaceNormals = !!buffer.getChar();
 
+	pShaderDirections.clear(); // live-only payload cannot survive topology deserialization
 	pPoints.clear();
 	pNormals.clear();
 	pCoords.clear();

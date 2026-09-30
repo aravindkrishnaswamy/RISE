@@ -4701,6 +4701,14 @@ namespace RISE
             const unsigned int numfaces, const bool double_sided, const bool face_normals,
             const float* corner_tangents, const unsigned int numtangents) = 0;
 
+        //! Full object-local shader vectors; canonical world rotation, independent original UV frame.
+        virtual bool AddIndexedTriangleMeshGeometryWithShaderDirections(
+            const char* name, const float* vertices, const float* normals, const float* coords,
+            const unsigned int* vertexface, const unsigned int* uvwface, const unsigned int* normalface,
+            const unsigned int numpts, const unsigned int numnormals, const unsigned int numcoords,
+            const unsigned int numfaces, const bool double_sided, const bool face_normals,
+            const float* corner_tangents, const unsigned int numtangents) = 0;
+
 	};
 
 

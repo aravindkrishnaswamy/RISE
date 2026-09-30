@@ -6373,6 +6373,22 @@ bool Job::AddIndexedTriangleMeshGeometryWithTangents(
             const unsigned int numpts, const unsigned int numnormals, const unsigned int numcoords,
             const unsigned int numfaces, const bool double_sided, const bool face_normals,
             const float* corner_tangents, const unsigned int numtangents)
+{ return AddIndexedMeshDirections(name,vertices,normals,coords,vertexface,uvwface,normalface,numpts,numnormals,numcoords,numfaces,double_sided,face_normals,corner_tangents,numtangents,false); }
+
+bool Job::AddIndexedTriangleMeshGeometryWithShaderDirections(
+            const char* name, const float* vertices, const float* normals, const float* coords,
+            const unsigned int* vertexface, const unsigned int* uvwface, const unsigned int* normalface,
+            const unsigned int numpts, const unsigned int numnormals, const unsigned int numcoords,
+            const unsigned int numfaces, const bool double_sided, const bool face_normals,
+            const float* corner_tangents, const unsigned int numtangents)
+{ return AddIndexedMeshDirections(name,vertices,normals,coords,vertexface,uvwface,normalface,numpts,numnormals,numcoords,numfaces,double_sided,face_normals,corner_tangents,numtangents,true); }
+
+bool Job::AddIndexedMeshDirections(
+            const char* name, const float* vertices, const float* normals, const float* coords,
+            const unsigned int* vertexface, const unsigned int* uvwface, const unsigned int* normalface,
+            const unsigned int numpts, const unsigned int numnormals, const unsigned int numcoords,
+            const unsigned int numfaces, const bool double_sided, const bool face_normals,
+            const float* corner_tangents, const unsigned int numtangents, const bool shader_direction)
 {
     if (!corner_tangents && !numtangents) {
         return AddIndexedTriangleMeshGeometry(name, vertices, normals, coords, vertexface,
@@ -6389,7 +6405,7 @@ bool Job::AddIndexedTriangleMeshGeometryWithTangents(
     }
     ITriangleMeshGeometryIndexed* geometry=0;
     RISE_API_CreateTriangleMeshGeometryIndexed(&geometry, double_sided, face_normals);
-    ITriangleMeshGeometryIndexed3* mesh=dynamic_cast<ITriangleMeshGeometryIndexed3*>(geometry);
+    ITriangleMeshGeometryIndexed4* mesh=dynamic_cast<ITriangleMeshGeometryIndexed4*>(geometry);
     if (!mesh) { safe_release(geometry); return false; }
     // Compute smooth normals on the ORIGINAL topology before corner expansion.
     NormalsListType generatedNormals;
@@ -6412,7 +6428,8 @@ bool Job::AddIndexedTriangleMeshGeometryWithTangents(
             const unsigned int u=uvwface[c]; mesh->AddTexCoord(TexCoord(coords[u*3],coords[u*3+1]));
         } else mesh->AddTexCoord(TexCoord(0,0));
         Tangent4 t; t.dir=Vector3(corner_tangents[c*4],corner_tangents[c*4+1],corner_tangents[c*4+2]);
-        t.bitangentSign=corner_tangents[c*4+3]; mesh->AddTangent(t);
+        t.bitangentSign=corner_tangents[c*4+3];
+        if (shader_direction) mesh->AddShaderDirection(t.dir); else mesh->AddTangent(t);
     }
     for (unsigned int f=0; f<numfaces; ++f) {
         IndexedTriangle t;

@@ -38,7 +38,7 @@ namespace RISE
 		//! starts with an empty cache), while object chunks are re-pointed
 		//! IN PLACE and would have kept a stale bake (§7.2's named trap).
 		class TriangleMeshGeometryIndexed :
-			public virtual ITriangleMeshGeometryIndexed3,
+			public virtual ITriangleMeshGeometryIndexed4,
 			public virtual Geometry,
 			public virtual TreeElementProcessor<const PointerTriangle*>,
 			public ISurfaceSignalProvider,
@@ -78,6 +78,7 @@ namespace RISE
 			//! Empty when absent.  Live-only state — not yet persisted in
 			//! the .risemesh format (Phase 1 glTF import has no consumer).
 			MyTangentsList			pTangents;
+            std::vector<Vector3> pShaderDirections; // position-indexed; independent of UV/Mikk tangents
 			//! Optional secondary UV set (TEXCOORD_1, v3 interface).
 			//! Indexed via face's iCoords[k] — same indices as primary UVs.
 			//! Empty when absent.  Same persistence note as pTangents.
@@ -403,7 +404,8 @@ namespace RISE
 			VertexColorsListType const& getColors() const override { return pColors; }
 
 			// ITriangleMeshGeometryIndexed3 — tangents + secondary UV set.
-			void AddTangent( const Tangent4& tangent ) override;
+			void AddShaderDirection(const Vector3& direction) override { pShaderDirections.push_back(direction); }
+            void AddTangent( const Tangent4& tangent ) override;
 			void AddTangents( const Tangent4ListType& tangents ) override;
 			unsigned int numTangents() const override { return static_cast<unsigned int>(pTangents.size()); }
 			Tangent4ListType const& getTangents() const override { return pTangents; }

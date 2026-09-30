@@ -727,54 +727,98 @@ The old incompatible-integrator warnings are removed.
 [Alpha coverage](ALPHA_COVERAGE.md) documents sampler ownership, light endpoints,
 medium boundaries, VCM deposition, and the SMS estimator choice for alpha scenes.
 
-### Tangent -> anisotropy direction (ABI v15, DL-213)
+### Tangent -> anisotropy direction (ABI v16, DL-213)
 
-Indexed meshes already store interpolated object-local `Tangent4` xyz/sign;
-`Object::IntersectRay` transforms and projects the direction into the shading
-normal plane, with mirror parity applied to the bitangent. glTF `TANGENT`
-already feeds this storage. ABI v15 supplies the missing Blender producer:
-`tangent_attribute` has one xyz/sign quadruple per triangle corner; the bridge
-expands position indices so split UVs/normals and material boundaries survive.
-An omitted attribute calls the original indexed construction path unchanged.
+Global glTF/Indexed3 `Tangent4` xyz/sign still defines the authored UV basis,
+including normal-map decode and chart/mirror handedness. Blender's Principled
+Tangent socket is a different signal: it controls anisotropy independently of
+Normal Map and Coat Normal UV axes. ABI16 tail flag `tangent_is_shader_direction`
+is 1 for the exporter's per-triangle-corner `tangent_attribute`; 0 retains the
+ABI15 global tangent convention. Native/Python versions must both be16.
+Corner expansion preserves normal/UV/material seams. The Indexed4 shader
+array is separate from Tangent4. Object and CSG promote it with the forward
+matrix into a canonical world `cross(N,T)` frame, while preserving the original
+original UV frame for normal decoding. Generic socket vectors retain their
+normal component: the core projects the promoted RAW vector against the current
+shading normal, and reprojects that raw vector after normal modifiers. The UV
+decode uses its original N/U/V, including encoded Z, independently of earlier
+normal modifiers (independent shader-node/reference-frame semantics rather
+than legacy modifier layering). The frame is immutable through modifiers, but
+its own normal/tangent/sign
+still promote through Object/CSG/nested transforms and complements. BSDF/SPF
+still share one anisotropy ONB. No UV or mirror
+parity is applied to shader-direction rotation. Existing global tangents,
+glTF/Mikk signs, hair and noattribute semantics remain unchanged.
 
 An unlinked Tangent or a direct Tangent node on the active UV map retains the
-existing UV-derived frame. A direct second-UV Tangent calls Blender's
-`mesh.calc_tangents(uvmap=...)` on the evaluated temporary mesh and preserves
-its MikkTSpace sign. Other linked graphs, including constant or textured
-Vector Rotate, are evaluated by Cycles at export into a temporary CORNER
-FLOAT_COLOR attribute. This is an export-time corner bake, with barycentric
-interpolation during rendering; tessellate sufficiently for rapidly changing
-procedural fields. It is not a live per-texel direction shader.
+legacy noattribute fallback per the explicit unchanged-render requirement.
+That inherited path uses the renderer's forward UV surface-tangent convention;
+it differs from Blender's Tangent-node inverse-transpose convention under
+nonuniform scale. The NEW second-UV and generic graph paths consistently use
+the Blender socket semantics; the active-UV fallback distinction is not fixed
+by silently rewriting existing UV rendering.
 
-The complete graph feeds normalized emission encoded as `0.5*d + 0.5` in a
-separate background Blender process. A copied scene retains world and object
-dependencies. Shader directions are world-space; the decoded direction is
-projected against the world shading normal FIRST, then inverse-transformed
-into object-local coordinates before storage (the operations do not commute
-under nonuniform scale). A vector alone defines local `cross(N,T)` with sign +1; a second UV
-map instead provides the actual Mikk sign. Principled Anisotropic Rotation
-remains a separate rotation, converted from turns to radians (DL-208).
-Vector Rotate is included in the baked graph and is never added twice.
+For direct second-UV nodes, `mesh.calc_tangents(uvmap=...)` supplies Mikk local
+vectors/signs. At the Blender boundary, transform the node vector with M^-T,
+project against the world shading normal (Cycles Tangent-node semantics), then
+inverse-transform into local shader-direction storage. Mikk sign is retained
+as source metadata but never reverses Principled world-normal rotation; the
+primary normal map keeps its own UV basis. Adding Vector Math ADD-zero to the
+same node therefore preserves its direction, including nonuniform/mirrored
+objects and tilted normals.
 
-The source scene's settings, selection, active UV/color attribute, nodes,
-materials and mainfile path are untouched. Copied scene/object/mesh/material
-data and temporary files are removed on success or failure. Failed Cycles
-bakes, missing UV maps, singular transforms, or directions that project to
-zero abort export with a diagnostic; they do not silently drop the graph.
-Realized collection instances retain Cycles Object Info Random through their
-unsigned 32-bit depsgraph random ID; ordinary objects retain the original
-shader-visible name, color and pass index. View/ray-dependent graph nodes are
-sampled in Cycles' bake context rather than reevaluated for each render ray.
-The bake requires an executable `bpy.app.binary_path` with Cycles and may
-cost a background-process launch per linked material/object instance.
+Other linked graphs, including procedural and textured Vector Rotate, feed
+normalized emission encoded as `0.5*d+0.5` into a separate background Cycles
+process and a linear FLOAT_COLOR CORNER target. The copied scene retains world,
+object and material dependencies and full evaluated geometry. Decode/validate
+ONLY the material bucket's used corners, preserving geometry-dependent inputs
+without rejecting values on unrelated material faces. Inverse transport keeps
+the full generic world socket vector; robust component rescaling makes validity
+independent of representation magnitude. Zero/nonfinite fields abort. A vector
+parallel to the unperturbed mesh normal aborts when no supported base-normal
+modifier was actually exported; with such a modifier it survives a temporary
+UV-frame fallback until the final normal makes its projection meaningful. A
+direction still parallel at a core shading hit uses the canonical degenerate
+frame fallback; direct UV nodes cannot recover components their node already
+projected away. Anisotropic Rotation remains a separate
+turns-to-radians world-normal rotation (DL-208); baked Vector Rotate is not
+added twice. Corner interpolation can alias high-frequency fields; this is
+export-time geometry sampling, not a live per-texel direction shader.
 
-The native `indexedmesh_geometry` chunk also accepts repeatable `vertex xyz`,
-`normal xyz`, `uv u v`, `tangent x y z sign`, and `triangle i j k` parameters.
-Attributes are vertex-aligned and triangle indices start at zero; duplicate
-vertices at authored seams. `IJob::AddIndexedTriangleMeshGeometryWithTangents`
-is a tail-appended convenience path for independently indexed normal/UV data
-and triangle-corner tangents; the existing Indexed3 C API and prebuilt geometry
-registration remain usable.
+Source settings, selection, active UV/color data, nodes, materials and mainfile
+path are unchanged; copies, child processes and temporary files are cleaned on
+success/error. Realized instance Object Info Random uses unsigned depsgraph ID
+and exact Cycles float32 conversion, recursively isolating copied nodegroups.
+Ordinary names/color/pass index remain shader-visible. View/ray-dependent nodes
+use bake context. Missing UVs, singular transforms and failed bakes abort.
+A process launch per linked material/instance and full scene serialization can
+be expensive; the executable must provide Cycles.
+
+Measured Blender4.5.7 macOS arm64 backend limit: constant encoded emission bakes
+correctly through world scale1e9, but a unit triangle at1e11 returns invalid
+black/unwritten corner buffers. This is NOT a zero shader vector. Export
+rejects unwritten alpha or decoded vectors outside the encoder's unit ball
+(with a binary32 roundoff allowance). These guards cannot prove every backend
+sample valid. No coordinate/dependency rescaling or support at that huge world
+geometry scale is claimed; the mathematical decoder itself is scale invariant.
+
+Inherited legacy distinction: with BOTH independently authored base Normal Map
+and Coat Normal Map, each encoded(.8,.5,.9), the old noattribute/global path
+uses its post-base-modifier frame for coat decoding (.96,0,.28 on the identity
+fixture). Cycles evaluates each node from the original triangle UV basis
+(.6,0,.8). The new shader-direction transport preserves that original frame
+and therefore follows the independent socket semantics. The legacy behavior
+remains unchanged under the explicit bit-identical fallback requirement.
+
+Native `indexedmesh_geometry` uses repeatable `vertex xyz`, `normal xyz`,
+`uv u v`, GLOBAL `tangent x y z sign`, and zero-based `triangle i j k`.
+Duplicate positions at authored seams. Tail-appended IJob methods separate
+`AddIndexedTriangleMeshGeometryWithTangents` (global UV/Mikk) from
+`AddIndexedTriangleMeshGeometryWithShaderDirections` (independent canonical
+anisotropy); both accept independently indexed normals/UVs and corner vec4s.
+The shader vec4's w is validated source metadata (not stored by Indexed4); it never controls
+anisotropy rotation. Empty payloads delegate the frozen indexed API. These
+optional arrays are live geometry data, not persisted by legacy .risemesh.
 
 ## Hair / fur export
 

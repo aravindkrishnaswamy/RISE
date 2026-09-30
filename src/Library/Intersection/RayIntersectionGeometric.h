@@ -789,6 +789,15 @@ namespace RISE
 		//! to before this field existed.  Consumers downstream of
 		//! intersection (e.g. `HairBSDF`) therefore always see this field
 		//! in world space, never object space.
+        //! Separate shader socket direction, promoted forward at each Object/CSG
+        //! level, retaining the RAW normal component for modifier reprojection.
+        //! Its anisotropy frame uses world cross(N,T), without UV parity.
+        //! normalMapOnb retains the ORIGINAL UV/global tangent frame: modifiers
+        //! do not tilt it; Object/CSG promote its own N/U/sign independently.
+        Vector3 vShaderDirection;
+        bool bHasShaderDirection;
+        OrthonormalBasis3D normalMapOnb;
+        bool bHasNormalMapFrame;
 		Vector3						vShadingTangent;
 		Scalar						shadingBitangentSign;	// +1 or -1 companion to vShadingTangent (DL-12)
 		bool						bHasShadingTangent;
@@ -850,6 +859,7 @@ namespace RISE
 		  bitangentSign( 1.0 ),
 		  bHasTangent( false ),
 		  bShadingTangentFromGeometry( false ),
+          bHasShaderDirection(false), bHasNormalMapFrame(false),
 		  shadingBitangentSign( 1.0 ),
 		  bHasShadingTangent( false ),
 		  bHasWireEdgeInfo( false ),
@@ -897,6 +907,8 @@ namespace RISE
 		  bitangentSign( r.bitangentSign ),
 		  bHasTangent( r.bHasTangent ),
 		  bShadingTangentFromGeometry( r.bShadingTangentFromGeometry ),
+          vShaderDirection(r.vShaderDirection), bHasShaderDirection(r.bHasShaderDirection),
+          normalMapOnb(r.normalMapOnb), bHasNormalMapFrame(r.bHasNormalMapFrame),
 		  vShadingTangent( r.vShadingTangent ),
 		  shadingBitangentSign( r.shadingBitangentSign ),
 		  bHasShadingTangent( r.bHasShadingTangent ),
@@ -945,6 +957,8 @@ namespace RISE
 			bitangentSign = r.bitangentSign;
 			bHasTangent = r.bHasTangent;
 			bShadingTangentFromGeometry = r.bShadingTangentFromGeometry;
+            vShaderDirection=r.vShaderDirection; bHasShaderDirection=r.bHasShaderDirection;
+            normalMapOnb=r.normalMapOnb; bHasNormalMapFrame=r.bHasNormalMapFrame;
 			vShadingTangent = r.vShadingTangent;
 			shadingBitangentSign = r.shadingBitangentSign;
 			bHasShadingTangent = r.bHasShadingTangent;

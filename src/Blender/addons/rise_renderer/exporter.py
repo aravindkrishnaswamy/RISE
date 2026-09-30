@@ -331,6 +331,7 @@ class MeshData:
     double_sided: bool
     use_face_normals: bool
     tangent_attribute: list[float] = field(default_factory=list)
+    tangent_is_shader_direction: bool = False
 
     @property
     def num_vertices(self) -> int:
@@ -3908,8 +3909,8 @@ def _mesh_buckets(eval_object, state: _ExportState, matrix_world=None, instance_
                 if slot_material is not None:
                     material = slot_material
 
-            directions = tangent_bake.corner_tangents(mesh, material, matrix_world, eval_object, instance_info)
             binding = _material_payload(material, state)
+            directions = tangent_bake.corner_tangents(mesh, material, matrix_world, eval_object, instance_info, bucket["normal_indices"], allow_parallel=bool(binding.modifier_name))
             mesh_name = _unique_name(state, "mesh", f"{eval_object.name_full}_m{material_index}")
             mesh_payload = MeshData(
                 name=mesh_name,
@@ -3921,6 +3922,7 @@ def _mesh_buckets(eval_object, state: _ExportState, matrix_world=None, instance_
                 uv_indices=bucket["uv_indices"],
                 double_sided=binding.double_sided,
                 use_face_normals=False,
+                tangent_is_shader_direction=bool(directions),
                 tangent_attribute=([component for corner in bucket["normal_indices"]
                                     for component in directions[corner]] if directions else []),
             )

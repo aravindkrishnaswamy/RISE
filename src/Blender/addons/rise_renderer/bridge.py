@@ -6,7 +6,7 @@ import sys
 from dataclasses import dataclass, field
 
 
-_EXPECTED_API_VERSION = 15
+_EXPECTED_API_VERSION = 16
 
 # Hair colour tiers -- must match `enum rise_blender_hair_tier` in
 # rise_blender_bridge.h.  The exporter's HairMaterialData.tier is the
@@ -183,6 +183,7 @@ class _Mesh(ctypes.Structure):
         ("use_face_normals", ctypes.c_int),
         ("tangent_attribute", ctypes.POINTER(ctypes.c_float)),
         ("num_tangents", ctypes.c_uint32),
+        ("tangent_is_shader_direction", ctypes.c_uint32),
     ]
 
 
@@ -774,6 +775,7 @@ class _SceneHandle:
         tangents = getattr(mesh, "tangent_attribute", [])
         payload.tangent_attribute = self._float_pointer(tangents)
         payload.num_tangents = len(tangents) // 4
+        payload.tangent_is_shader_direction = int(getattr(mesh, "tangent_is_shader_direction", False))
         return payload
 
     def _marshal_object(self, obj):

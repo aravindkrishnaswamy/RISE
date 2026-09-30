@@ -655,13 +655,13 @@ class BridgeAbiLayoutTest(unittest.TestCase):
         match = re.search(r"#define RISE_BLENDER_API_VERSION\s+(\d+)", self.source)
         self.assertIsNotNone(match)
         self.assertEqual(int(match.group(1)), bridge._EXPECTED_API_VERSION)
-        self.assertEqual(bridge._EXPECTED_API_VERSION, 15)
+        self.assertEqual(bridge._EXPECTED_API_VERSION, 16)
 
     def test_mesh_struct_matches(self):
         self._assert_matches(bridge._Mesh, "rise_blender_mesh")
 
     def test_tangent_payload_is_tail_appended(self):
-        self.assertEqual([name for name, _ in bridge._Mesh._fields_[-2:]], ["tangent_attribute", "num_tangents"])
+        self.assertEqual([name for name, _ in bridge._Mesh._fields_[-3:]], ["tangent_attribute", "num_tangents", "tangent_is_shader_direction"])
         self.assertGreater(bridge._Mesh.tangent_attribute.offset, bridge._Mesh.use_face_normals.offset)
         self.assertEqual(bridge._Mesh.num_tangents.offset, bridge._Mesh.tangent_attribute.offset + ctypes.sizeof(ctypes.c_void_p))
 
@@ -947,7 +947,7 @@ class ExporterCoatNormalAlphaTangentGatingTest(unittest.TestCase):
         self.assertNotIn("anisotropy_rotation_value +=", self._material_payload_body())
 
     def test_mesh_producer_carries_corner_tangents(self):
-        self.assertIn("tangent_bake.corner_tangents(mesh, material, matrix_world, eval_object, instance_info)", self.source)
+        self.assertIn('tangent_bake.corner_tangents(mesh, material, matrix_world, eval_object, instance_info, bucket["normal_indices"], allow_parallel=bool(binding.modifier_name))', self.source)
         self.assertIn("tangent_attribute=", self.source)
 
 

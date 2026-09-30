@@ -187,9 +187,9 @@ rise_blender_material PbrFixture( RISE::IJobPriv& job, const std::string& tag )
 
 void TestAbiVersionAndCoatNormalFields()
 {
-	std::cout << "Test: ABI version 15 and preserved append-only v14 coat-normal fields" << std::endl;
+	std::cout << "Test: ABI version 16 and preserved append-only v14 coat-normal fields" << std::endl;
 
-	Check( RISE_BLENDER_API_VERSION == 15, "RISE_BLENDER_API_VERSION is 15" );
+	Check( RISE_BLENDER_API_VERSION == 16, "RISE_BLENDER_API_VERSION is 16" );
 	Check( rise_blender_api_version() == RISE_BLENDER_API_VERSION,
 		"rise_blender_api_version() reports the compiled-in constant" );
 

@@ -1261,4 +1261,13 @@ and ABI marshalling coverage. `test_tangent_blender_runtime.py` is a separate
 Blender integration script, run with `blender --background --factory-startup
 --python-exit-code 1 --python ...`; it executes actual exporter/bake production
 code and a RenderEngine render context, including injected-error restoration.
-The production addon must be rebuilt with native/Python ABI v15 together.
+The production addon must be rebuilt with native/Python ABI v16 together.
+`BlenderShaderDirectionTest` adds independent coat/base normal-map UV separation,
+canonical mirror/front/back rotation, RGB/NM value/Pdf/Scatter, nested CSG, hit
+lifecycle, interpolated raw vectors, CSG cavity complements, immutable original
+UV frames and modifier controls. The real Blender script passes actual exported
+payloads and material rotation to this shipping-consumer executable and asserts
+secondUV/ADD-zero nonuniform/tilted equivalence, valid large-scale bakes, explicit
+backend failure, raw normal components, supported parallel-vector normal
+modifiers and material-domain validity/cleanup. Counts-only rotation
+smoke checks have independent world oracles.

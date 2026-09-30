@@ -190,11 +190,11 @@ namespace
 	//! DL-192: decode `coatNormal`'s tangent-space normal at `ri` and
 	//! perturb `baseOnb` (the substrate's own ray-facing frame) by it,
 	//! same glTF convention `NormalMap.cpp` uses (RGB [0,1] -> [-1,1],
-	//! z reconstructed).  `baseOnb.u()/.v()/.w()` serve directly as the
-	//! tangent/bitangent/normal triple -- see ResolveCoatFrame's own
-	//! comment (CoatedBRDF.h) for why that is the right frame to decode
-	//! into, and DL-100's frame trap for why there must be exactly ONE
-	//! such function.
+	//! z reconstructed). Independent shader directions retain normalMapOnb
+	//! for original UV decode, unaffected by base normal modifiers; legacy
+	//! hits use baseOnb unchanged (including their inherited layering). Anisotropy must
+	//! not redirect the normal texture's UV tilt. One shared function
+	//! serves all coat evaluation/sampling paths (DL-100).
 	inline RISE::Vector3 DecodeCoatPerturbedNormal(
 		const RISE::RayIntersectionGeometric& ri,
 		const RISE::OrthonormalBasis3D& baseOnb,
@@ -203,7 +203,7 @@ namespace
 	{
 		using namespace RISE;
 
-		if( !Implementation::ModifierFrame::HasCoherentTangent( ri ) &&
+		if( !ri.bShadingTangentFromGeometry && !ri.bHasShadingTangent &&
 		    !g_warnedCoatNoTangentFrame.exchange( true ) ) {
 			GlobalLog()->PrintEasyWarning(
 				"coated_material: coat_normal is bound at a hit with no coherent "
@@ -220,7 +220,9 @@ namespace
 		const Scalar nzSqr = Scalar(1) - nx*nx - ny*ny;
 		const Scalar nz = ( nzSqr > 0 ) ? std::sqrt( nzSqr ) : Scalar(0);
 
-		return Vector3Ops::Normalize( baseOnb.u()*nx + baseOnb.v()*ny + baseOnb.w()*nz );
+		OrthonormalBasis3D decodeFrame=ri.bHasNormalMapFrame ? ri.normalMapOnb : baseOnb;
+        if (Vector3Ops::Dot(decodeFrame.w(),baseOnb.w())<0) decodeFrame.FlipW();
+        return Vector3Ops::Normalize(decodeFrame.u()*nx+decodeFrame.v()*ny+decodeFrame.w()*nz);
 	}
 
 	//! Geometric-horizon gate, identical in construction to
