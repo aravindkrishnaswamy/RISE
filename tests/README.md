@@ -1309,5 +1309,8 @@ range-preserving analytic oracles for axes `1e-150`/`1e-170`, exponents
 700/750, reflectance-weighted quotients beyond the kernel's own range,
 actual asymmetric RGB/NM stored densities, chromatic quarter replay,
 and actual HWSS hero draws whose complete companion is representable
-beyond the standalone lobe or prematurely formed reflectance ratio.
+beyond the standalone lobe or prematurely formed reflectance ratio. Actual
+alpha-one RGB/NM grazing draws at `1e-170`/`1e-200` independently check
+reconstructed half-vector range, aggregate density and both companion forms
+while distinguishing legitimately infinite standalone lobes.
 

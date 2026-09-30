@@ -106,6 +106,30 @@ GREEN passes **17,341 / 0** after a clean repaired library build and exact
 target relink. Earlier RED/GREEN counts
 above describe their declared earlier regression snapshots.
 
+Fresh review then found an actual supported `alpha=1` draw at grazing
+cosine `1e-170`: `wi+wo` is nonzero but its squared length underflows.
+Global `Normalize` preserves that tiny sum, so the reconstructed `h.wo`
+underflows to zero before density/companion evaluation. Ward now locally
+normalizes reconstructed half-vectors by scaling and `hypot` when their
+largest component falls outside `[2^-450,2^450]`. Inside that interval,
+the squared norm is normal and finite, retaining the existing ordinary
+normalization path. Exact cancellation preserves zero. All ten Ward
+BRDF/SPF half reconstructions share this helper; the global vector utility,
+normal policy, sampler map, reflection vectors and selection policy do not
+change. Unit reflected vectors retain ordinary normalization because
+reflection of unit rays about unit halves has unit length.
+
+The appended public regression drives actual RGB/NM draws at `1e-170`
+and `1e-200` through both models. Independent max-component normalization
+checks stored/aggregate density and default/explicit companions, while
+allowing the standalone lobe to legitimately overflow. Clean production
+`5988ca758` with the final appended test gives **17,373 /32 failed**;
+clean repaired focused GREEN and canonical sanitizer give **17,405 /0**.
+The original reviewer draw now agrees with independent Decimal90 values:
+conditional density about `7.9577471545948e168`, default/explicit companion
+about `.40997650131854`; NM aggregate selection retains spectral diffuse.
+Earlier RED counts refer only to their declared earlier test snapshots.
+
 On this Apple Silicon target, `long double` has binary64 precision; the
 oracle is independent by analytic formulation, not additional precision.
 
@@ -138,9 +162,9 @@ from final-source attribution.
 
 Three retained 500,000-call diagnostic public BRDF replicas/state
 (including warm-up) at 0/30/80 degrees measure isotropic `.01`
-18.62/15.25/13.80 ns original versus 30.83/24.05/22.93 ns final;
+18.62/15.25/13.80 ns original versus 30.83/24.05/22.93 ns sampler-repair;
 anisotropic `.01/.37` measures 21.68/21.70/21.58 versus
-22.91/22.95/23.03 ns. The ordinary kernels are slower; this is the
+22.91/22.95/23.03 ns sampler-repair. The ordinary kernels are slower; this is the
 measured cost of the range checks and complete quotient. The same
 anisotropic finite trap was present in both diagnostic builds.
 External replicas and standard deviations are retained; these limited
@@ -149,11 +173,23 @@ CPU is 42.61±0.30 versus 42.87±0.25 seconds, wall 4.172±0.042 versus
 4.201±0.167 seconds, n=6/state. Scheduling, per-thread stream assignment
 and block order confound causality; no whole-render speedup is claimed.
 
-The later explicit-HWSS-only repair preserves the measured ordinary
+The earlier explicit-HWSS-only repair at `5988ca758` preserves the measured ordinary
 BRDF, Gaussian/density helpers, generation and replay sections byte for
 byte; an external section-hash manifest proves this against the measured
 source. Those bounded RGB scene/kernel measurements are reused with
 that attribution and do not measure the new spectral-companion path.
+
+The subsequent half-vector guard changes ordinary kernels, so the final
+half repair gets another predeclared six diagnostic renders and fresh
+three-replica 500,000-call kernel measurements. All six 800x600 RGBA EXRs
+are finite and neither first-nonfinite trap fires. Original-to-final
+isotropic timings are 18.62/15.25/13.80 versus 30.81/24.60/23.45 ns;
+anisotropic timings are 21.68/21.70/21.58 versus 23.88/23.89/23.47 ns.
+Showroom user CPU is 42.61±.30 versus 43.23±.44 s, wall 4.172±.042
+versus 4.354±.225 s, n=6/state. All prior measurements remain historical
+source-attributed evidence; these latest measurements cover the final
+ordinary paths. Block order, limited workloads and thread scheduling
+prevent a universal performance or causal speed claim.
 
 Schlick's ruby paths have separate bounded rational distribution/masking
 machinery. They share tangent normalization but never feed its projection
@@ -164,3 +200,10 @@ Their existing density, masking and BRDF/kray suites remain gate controls.
 Integrator RGB/NM/HWSS consumers inherit the fixed material values; no
 integrator code changes were needed. Bare-material tests do not expand the
 known wrapper/MIS or energy-policy claims in the parent document.
+
+The half-normalization audit also finds matching sums in Schlick's BRDF/SPF
+consumers. A bounded analogous actual grazing probe emits a zero-weight
+Schlick reflection, but its existing `nv < NEARZERO` kray gate already
+returns zero. It therefore does not establish the supported positive-weight
+Ward sampler/query defect in Schlick. This remains an out-of-scope pattern,
+not a claim that every Schlick normalization path is range-safe.
