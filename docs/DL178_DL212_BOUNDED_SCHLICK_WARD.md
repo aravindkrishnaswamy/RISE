@@ -425,10 +425,13 @@ bit-identical on a deterministic single-thread render.
   min clip to Cook-Torrance and Phong (the consistent choice) or revert
   Ward's half.  `AshikminShirleyAnisotropicPhongBRDF`'s coupled diffuse is
   bounded by design (max 0.996).
-* **DL-324** (new): an intermittent NaN in the shipped `showroom` on the
-  base build (about 1 in 33 renders); lead from the external review: Ward
-  anisotropic `ComputeFactors`' unclamped `acos` of a possibly zero-length
-  tangent (NaN on 46,912 of 200,000 constructed pairs), pre-existing.
+* **DL-324**: the historical intermittent showroom NaN remains distinct
+  from its deterministic material lead. Ward's redundant inverse-trig
+  reconstruction fails on finite rounded normal/tangent dots above one.
+  `Normalize(0)` returns zero, so the exact axis pole is a finite control,
+  not the alleged zero-normalization NaN. The frame-slope correction and
+  bounded scene investigation are documented in
+  [DL324_WARD_FRAME_SLOPES.md](DL324_WARD_FRAME_SLOPES.md).
 * The azimuth-maximum `A` over-darkens anisotropic Schlick in the clip band
   (above); Ward's supremum `A` over-darkens over-authored rough Ward.
   Both are bounded, reciprocal choices made on cost.  "Untouched where the

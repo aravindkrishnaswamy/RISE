@@ -1300,3 +1300,17 @@ measures 16 independent default-row outputs. The stock comparison uses
 `4096 1 16 319001`. Unknown flags, malformed integers, overflow and budgets
 above 1,048,576 spp, 1,024 repeats or 1,024 trials fail with exit 2; this mode supplements
 rather than replaces the full default gate.
+
+DL-324 adds `WardDensityKrayTest --robustness-only` for public RGB/NM Ward
+values, aggregate densities, chromatic sampler endpoints, and HWSS companion
+weights at finite rounded poles and grazing directions. The default suite
+also runs these probes. See [the formulation and oracle notes](../docs/DL324_WARD_FRAME_SLOPES.md). The review repair adds
+range-preserving analytic oracles for axes `1e-150`/`1e-170`, exponents
+700/750, reflectance-weighted quotients beyond the kernel's own range,
+actual asymmetric RGB/NM stored densities, chromatic quarter replay,
+and actual HWSS hero draws whose complete companion is representable
+beyond the standalone lobe or prematurely formed reflectance ratio. Actual
+alpha-one RGB/NM grazing draws at `1e-170`/`1e-200` independently check
+reconstructed half-vector range, aggregate density and both companion forms
+while distinguishing legitimately infinite standalone lobes.
+

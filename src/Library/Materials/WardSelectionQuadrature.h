@@ -4,9 +4,113 @@
 #ifndef RISE_WARD_SELECTION_QUADRATURE_H
 #define RISE_WARD_SELECTION_QUADRATURE_H
 #include "../Utilities/Math3D/Math3D.h"
+#include "../Utilities/Color/Color.h"
 #include <algorithm>
 #include <cmath>
 namespace RISE { namespace Implementation { namespace WardSelection {
+// Ward reconstruction can sum almost opposite unit rays to a tiny,
+// nonzero half-vector. Preserve its direction before squared length loses
+// range. In the ordinary path, max magnitude [2^-450,2^450] keeps the
+// squared norm normal and finite, so the established normalization applies.
+// Exact cancellation keeps the existing zero-vector convention.
+inline Vector3 ReconstructHalf(const Vector3& sum) {
+    const double scale=std::max(std::abs(sum.x),std::max(std::abs(sum.y),std::abs(sum.z)));
+    if(scale==0) return Vector3(0,0,0);
+    if(scale>=0x1p-450 && scale<=0x1p450) return Vector3Ops::Normalize(sum);
+    const double x=sum.x/scale,y=sum.y/scale,z=sum.z/scale;
+    const double length=std::hypot(std::hypot(x,y),z);
+    return Vector3(x/length,y/length,z/length);
+}
+// DL-324: frame slopes remove inverse-cosine domain and pole subtraction.
+// Keep exponent range through the complete Gaussian quotient: exp(-E)
+// and ax*ay need not themselves be representable when the quotient is.
+inline double ScaledSlope(double x,double z,double alpha) {
+    const double slope=(x/z)/alpha;
+    if(x==0 || (std::isfinite(slope) && slope!=0)) return slope;
+    return std::copysign(std::exp(std::log(std::abs(x))-std::log(z)-std::log(alpha)),x);
+}
+inline double SlopeExponent(double hx,double hy,double hz,double ax,double ay) {
+    const double sx=ScaledSlope(hx,hz,ax),sy=ScaledSlope(hy,hz,ay);
+    return sx*sx+sy*sy;
+}
+inline double GaussianQuotient(double exponent,double hz,double hd,double ax,double ay,bool bsdf,double weight=1) {
+    if(hz<=0 || hd<=0 || ax<=0 || ay<=0 || weight==0) return 0;
+    // Every denominator factor has magnitude in [2^-64,2^64],
+    // and there are at most eight factors. Its product stays normal.
+    // With E<=300, even all nine factors combined with exp(-E)
+    // stay normal: the smallest magnitude exceeds 2^-1013. This
+    // remains safe under fast-math reassociation. Other ranges use logs.
+    const double lo=0x1p-64,hi=0x1p64;
+    if(exponent<=300 && std::abs(weight)>=lo && std::abs(weight)<=hi && ax>=lo && ax<=hi && ay>=lo && ay<=hi &&
+       hz>=lo && hz<=hi && hd>=lo && hd<=hi) {
+        const double densityDen=4*PI*ax*ay*hd*hz*hz*hz;
+        return (std::exp(-exponent)*weight)/(bsdf ? densityDen*hd*hz : densityDen);
+    }
+    const double logDen=std::log(4*PI)+std::log(ax)+std::log(ay)+
+        (bsdf?2:1)*std::log(hd)+(bsdf?4:3)*std::log(hz);
+    return std::copysign(std::exp(-exponent-logDen+std::log(std::abs(weight))),weight);
+}
+inline double ReflectionDensity(double exponent,double hz,double hd,double ax,double ay,double weight=1) {
+    return GaussianQuotient(exponent,hz,hd,ax,ay,false,weight);
+}
+inline double SpecularKernel(double hx,double hy,double hz,double hd,double ax,double ay,double weight=1) {
+    if(hz<=0 || hd<=0 || ax<=0 || ay<=0) return 0;
+    return GaussianQuotient(SlopeExponent(hx,hy,hz,ax,ay),hz,hd,ax,ay,true,weight);
+}
+inline RISEPel SpecularKernel(double hx,double hy,double hz,double hd,const RISEPel& ax,const RISEPel& ay,const RISEPel& weight) {
+    return RISEPel(SpecularKernel(hx,hy,hz,hd,ax[0],ay[0],weight[0]),
+                   SpecularKernel(hx,hy,hz,hd,ax[1],ay[1],weight[1]),
+                   SpecularKernel(hx,hy,hz,hd,ax[2],ay[2],weight[2]));
+}
+// Explicit HWSS companions need not have a representable standalone f.
+// Preserve the entire Rs*Gaussian*cosO/(normalization*pdfHero) range;
+// in particular, neither f nor Rs*cosO/pdfHero is an intermediate.
+inline double HeroSpecularKernel(double hx,double hy,double hz,double hd,double cosO,
+                                 double ax,double ay,double rs,double pdfHero) {
+    if(hz<=0 || hd<=0 || cosO<=0 || ax<=0 || ay<=0 || rs<=0 || pdfHero<=0) return 0;
+    const double exponent=SlopeExponent(hx,hy,hz,ax,ay);
+    return std::exp(-exponent-std::log(4*PI)-std::log(ax)-std::log(ay)-
+        2*std::log(hd)-4*std::log(hz)+std::log(rs)+std::log(cosO)-std::log(pdfHero));
+}
+// Normalize Cartesian slopes without squaring an authored axis. Scaling
+// before hypot preserves tiny components and avoids an overflowing radius.
+inline Vector3 HalfFromSlopes(double sx,double sy) {
+    const double scale=std::max(1.0,std::max(std::abs(sx),std::abs(sy)));
+    const double x=sx/scale,y=sy/scale,z=1/scale;
+    const double length=std::hypot(std::hypot(x,y),z);
+    return Vector3(x/length,y/length,z/length);
+}
+inline Vector3 HalfFromRadius(double x,double y,double radius) {
+    const double sx=x*radius,sy=y*radius;
+    if(std::isfinite(sx) && std::isfinite(sy)) return HalfFromSlopes(sx,sy);
+    const double scale=std::max(std::abs(x),std::abs(y));
+    const double z=std::exp(-std::log(scale)-std::log(radius));
+    const double length=std::hypot(std::hypot(x/scale,y/scale),z);
+    return Vector3((x/scale)/length,(y/scale)/length,z/length);
+}
+// Existing folded-quarter convention: q0/q2 run forwards; q1/q3 run
+// backwards. (ax cos(psi),ay sin(psi))*sqrt(E) is exactly the old
+// phi=atan(ay/ax*tan(psi)), tan(theta)=sqrt(E/D(phi)) construction.
+inline Vector3 AnisoHalf(double xi,double exponent,double ax,double ay) {
+    const int quadrant=xi<.25?0:xi<.5?1:xi<.75?2:3;
+    const double angle=PI_OV_TWO*(4*xi-quadrant);
+    const double cp=std::cos(angle),sp=std::sin(angle);
+    const double x=(quadrant==1 || quadrant==2 ? -1:1)*ax*cp;
+    const double y=(quadrant>=2 ? -1:1)*ay*sp;
+    if(!std::isfinite(exponent)) {
+        // xi2=0 is the excluded radial limit; its half-vector is tangent.
+        const double scale=std::max(std::abs(x),std::abs(y));
+        const double length=std::hypot(x/scale,y/scale);
+        return Vector3((x/scale)/length,(y/scale)/length,0);
+    }
+    const double r=std::sqrt(exponent);
+    return HalfFromRadius(x,y,r);
+}
+inline double AnisoXi(double hx,double hy,double ax,double ay) {
+    const double psi=std::atan2(std::abs(hy/ay),std::abs(hx/ax));
+    const int quadrant=hx<0?(hy<0?2:1):(hy<0?3:0);
+    return (quadrant+psi/PI_OV_TWO)*.25;
+}
 // DL-310: Ward's coupled diffuse reflectance.  The reciprocal coupling
 // min(Rd, 1 - A(i), 1 - A(o)) (SchlickDirectionalAlbedo.h) with A = Rs --
 // the Geisler-Moroder-Duer specular family's own albedo BOUND (DL-212)
