@@ -15,7 +15,8 @@ The ordinary material-channel classifier chooses between two paths:
    are approximations, so this is not bit-for-bit Cycles rendering.
 2. **Explicit image baking** ("complex" graphs). Click **Bake Procedural
    Materials** to run Cycles channel bakes and store PNG paths on the
-   material. Subsequent export consumes available cached channels. This
+   material. An existing diffuse PNG selects the synthetic dielectric cache;
+   roughness and normal are optional. Other channels alone do not select it. This
    is a static channel approximation, not compilation of the whole BSDF.
    See the [manual workflow](#manual-material-channel-bake-workflow).
 
@@ -76,7 +77,7 @@ Tangent; this table is not a whitelist for its corner-direction graph.
 | `ShaderNodeValToRGB` (Color Ramp) | `colorramp_painter` | Scalar → colour via stops; multi-stop, multi-interpolation.  **Added to RISE core for this translation** (`docs/RISE_API.h` + parser). |
 | `ShaderNodeMix` (Color blend) | `blend_painter` | A / B + Factor → 2-stop blend.  When `clamp_factor=True` matches RISE behaviour. |
 | `ShaderNodeMixRGB` (legacy) | `blend_painter` | Identical to ShaderNodeMix in Color mode |
-| `ShaderNodeMath` (Add/Multiply/Multiply Add when one input is constant) | folded inline at export time | Math nodes that fold to scaling / offsetting of a single value are inlined into the downstream painter (e.g. a Multiply on a noise output absorbed into a ColorRamp position).  Other Math ops force-bake. |
+| `ShaderNodeMath` (Add/Multiply/Multiply Add when one input is constant) | folded inline at export time | Math nodes that fold to scaling / offsetting of a single value are inlined into the downstream painter (e.g. a Multiply on a noise output absorbed into a ColorRamp position).  The classifier admits Math regardless of operation; this does not promise direct translation of every operation or automatic manual-bake routing. |
 | `ShaderNodeRGBCurve` / `ShaderNodeHueSaturation` / `ShaderNodeBrightContrast` / `ShaderNodeGamma` / `ShaderNodeInvert` | pass-through (currently lossy) | Existing bridge walks through these and ignores the filter; future work could honour them via a remap painter. |
 | `ShaderNodeBump` | `BumpModifier` on the material | Driven by a painter (which must itself be a supported chain) |
 | `ShaderNodeNormalMap` | `NormalMapModifier` on the material | Requires a `ROMM_Linear` image painter (tangent vectors must bypass colour-space conversion) |
@@ -121,7 +122,7 @@ decision history is captured.
 Whole-material channel images are **not baked automatically by F12**.
 `RISEBlenderRenderEngine.render()` calls `needs_bake_attempt(scene, mat)`.
 For a complex material with a viable mesh proxy, a never-tried graph or
-an edited graph triggers an error directing the user to **Properties →
+a detected attempted-fingerprint change triggers an error directing the user to **Properties →
 Render → RISE Material Baking → Bake Procedural Materials**. Render
 returns before export. A viable proxy has source-mesh vertices and uses
 the material; a geometry-nodes-only source mesh with no vertices does
@@ -140,44 +141,56 @@ The explicit `RISE_OT_bake_materials` operator:
 3. Uses existing UVs or attempts Smart UV Project when none exist.
    The new UV layer persists. Failed unwrap returns without a channel
    attempt or attempted-hash stamp.
-4. Bakes Diffuse/Base Color, Roughness and Normal channels to PNGs under
+4. Attempts **DIFFUSE with COLOR pass only**, Roughness and tangent-space Normal channels to PNGs under
    `<temp_dir>/rise_baked/<material>_<channel>.png` (default resolution1024).
    Temporary target nodes and selection are restored; saved image
-   datablocks remain available for inspection. This does not add an
-   emission/transmission/alpha or arbitrary BSDF reconstruction workflow.
+   datablocks remain available for inspection. This does not add a
+   full visual-result or conductor-F0 bake. The synthetic consumer supplies
+   metallic0, defaults missing roughness to0.5, and uses normal optionally.
+   Metallic, transmission, sheen, coat, emission, subsurface and alpha lobes
+   are dropped, not folded faithfully into these three channels.
 5. Stores successful channel paths plus resolution/frame. After the
    channel stage and cleanup, it stamps `rise_baked_attempted_hash` even
    when no channel succeeds. `rise_baked_graph_hash` is stamped only if
-   at least one channel succeeds. Unexpected exceptions before this
+   at least one channel succeeds. Failed channels do not clear old path or
+   success-hash metadata; the return/count describes newly saved channels,
+   not necessarily a usable diffuse cache. Unexpected exceptions before this
    stamp or early validation failures can still leave a retry required.
 
 ### Cache, retry and fallback
 
 `needs_bake_attempt` compares the **attempted** hash, not the success
 hash or PNG existence. For a viable complex material, matching the
-current graph means render proceeds regardless of the prior outcome.
-This avoids a render/bake failure loop. A changed graph requires the
-manual operator again. Simple materials and materials without a viable
+current limited fingerprint means render proceeds regardless of the prior
+outcome. This avoids a render/bake failure loop. A detected fingerprint change
+requires the manual operator again; undetected shader edits do not. Simple materials and materials without a viable
 proxy do not trigger this guard.
 
 `baked_paths` returns channel paths whose files currently exist.
-The exporter consumes them without enforcing graph freshness; stale
-cached files may still be used. If no usable cache exists, the existing
-slot/default/viewport fallback applies, with its diagnostics. Missing
+Only an existing **diffuse** file selects the synthetic cache consumer, with
+optional roughness/normal. No freshness check is enforced; stale diffuse may
+still be consumed. Roughness/normal-only cache can cause optional operator
+skipping but falls through to ordinary translation/slot/default fallback.
+Failed retries can retain old paths, including usable diffuse. Missing
 PNGs do not automatically retry or block render when the attempted hash
 still matches. Run the bake operator with **Skip Already-Baked Materials**
 disabled to refresh stale files or retry a failure.
 
 `baked_cache_is_stale` is a UI diagnostic: a stored success hash differing
-from the current graph, or a recorded channel file missing from disk,
+from the limited current fingerprint, or a recorded channel file missing from disk,
 marks the cache stale. An absent success hash is not itself stale.
-The current graph hash covers top-level node identity, input defaults,
-links, image name/path and color-ramp settings. It is not a complete
-hash of all shader dependencies; image pixels and nested external
-changes may require an explicit retry even if no edit is detected.
+The limited hash includes top-level node type/name, input names and readable
+defaults (including linked inputs), upstream link node/socket names, image
+name/path and color-ramp interpolation/stops/colors. It omits other node
+properties, output targets, nested group contents, image pixels and scene/
+object/time/evaluation dependencies. For example, changing Math ADD to
+MULTIPLY can alter the shader while leaving the hash and render guard unchanged.
+Retry explicitly after shader changes; no hash-cost benchmark is claimed.
 
-**Clear RISE Bake Cache** removes bake metadata for materials the
-operator finds with cache paths or a diffuse-path property. A viable
+**Clear RISE Bake Cache** removes only the seven defined metadata keys
+(three channel paths, resolution, frame, success hash, attempted hash), for
+materials with any existing recorded channel file or a diffuse-path property.
+Other `rise_baked_*` custom keys remain. A viable
 complex material whose attempted marker is cleared needs a manual bake
 before render. An attempt-only failed material may not be selected by
 this clear operator; the default bake button still retries it.
@@ -226,7 +239,9 @@ has zero vertices (their visible geometry comes entirely from a
 Geometry Nodes modifier; no UV layout to bake against).  Materials
 used only on geometry-nodes-instanced objects therefore can't be
 queued by the manual render guard today; when no other viable proxy
-exists they render with the existing slot/default fallback. This
+exists the guard does not block. Existing diffuse cache can still select
+the synthetic approximation; otherwise ordinary translation/slot/default
+fallback applies. This
 channel-image limitation does not exclude the evaluated-mesh Tangent
 producer described separately above.
 
@@ -410,33 +425,23 @@ in the same pass; see docs/GLTF_IMPORT.md §15.
 
 ### Velvet (legacy `Velvet BSDF` node)
 
-Blender removed the standalone `Velvet BSDF` node (`ShaderNodeBsdf-
-Velvet`) in the 4.0 release, folding its use case into Principled
-BSDF's reworked (multiscatter GGX) Sheen model — this is stated on
-Blender's own public 4.0 release notes; **it has not been independently
-re-verified against a running Blender's `bpy.types` registry from
-inside this repository**, since no `bpy` is available in this
-sandbox (see "Testing" below).  A future contributor who touches this
-again with an actual Blender available should confirm with
-`hasattr(bpy.types, "ShaderNodeBsdfVelvet")` before relying on this
-claim further.  Given this bridge's `bl_info` already declares Blender
-4.0 as its minimum supported version (`__init__.py`), no `.blend` file
-opened in a supported Blender can contain the legacy node at all, so
-the Principled Sheen mapping above is the complete sheen/velvet path
-for every Blender version this add-on runs on — there is no separate
-`ShaderNodeBsdfVelvet` branch to add.
+**Historical DL-18 version note:** the original source review described
+Blender4.0 as removing the standalone Velvet node in favor of Principled
+Sheen, and explicitly recorded that no runtime `bpy.types` registry check
+had been executed in that review environment. That historical attribution
+is not a current registry assertion or a DL-213 runtime control. The bridge
+has no separate Velvet-node translation; its actual terminal-shader routing
+is described below and does not rely on that version claim.
 
-Independently of that version claim, a material whose Surface output
-is NOT a single Principled BSDF — which is exactly what a bare legacy
-Velvet BSDF node feeding Material Output would be — already falls
-through to the EXISTING bake-on-export path (see "Two paths" above):
-the classifier's "reaches exactly one `ShaderNodeBsdfPrincipled`" rule
-fails, the material is `complex`, and Blender's own Cycles bake
-captures whatever it actually renders as (velvet sheen included) into
-a static diffuse/roughness/normal texture set.  Lossy (no live RISE
-`fabric_material`, no per-frame animation) but not silently dropped —
-the same fallback every other force-baked node (Mix Shader, a custom
-group, Ambient Occlusion, …) already gets.
+Independently of that historical version claim, a selected Surface chain
+ending at any shader other than a single Principled BSDF classifies complex.
+This routing does not run a bake on export. With a viable proxy the user can
+explicitly attempt the [manual channel approximation](#manual-material-channel-bake-workflow).
+It attempts DIFFUSE COLOR, Roughness and Normal; it does not preserve velvet
+sheen, mixed-BSDF lobes or whatever full response the original shader renders.
+An existing diffuse PNG selects a metallic0 synthetic dielectric; without it,
+the existing translation/default fallback applies. No unsupported legacy-node
+runtime fixture or faithful terminal-BSDF reconstruction is claimed.
 
 ## Specular Tint (Principled BSDF -> `ggx_material`'s F0 tint)
 
@@ -936,8 +941,8 @@ A material whose Material Output.Surface is (transitively through
 `NodeReroute`s only) a single `ShaderNodeBsdfHairPrincipled` becomes a
 `HairMaterialData` via **direct mapping** — there is no bake path for
 hair at all (baking is meaningless for curve geometry: there is no UV
-unwrap to bake against). Consequently, where the mesh classifier falls
-back to a full-scene bake on anything unsupported, the hair classifier
+unwrap to bake against). Consequently, where unsupported ordinary mesh inputs can request the
+explicit manual three-channel approximation, the hair classifier
 **refuses the whole material** (falls back to a plausible default
 brown-black groom, with a warning) when:
 
@@ -1176,10 +1181,11 @@ material and names it:
 End-to-end material parity is regression-checked via:
 
 - `scenes/Tests/Materials/*.RISEscene` (hand-authored)
-- The Blender side has no auto-regression yet; visual diffs against
-  Cycles / EEVEE are by-hand for now.  A bake-cache snapshot test
-  would be a natural addition (compare current bake to a stored
-  reference).
+- The original material-translation visual comparison was manual. Current
+  DL-213 validation includes bpy-free exporter tests and actual Blender Tangent
+  runtime controls (documented below). Manual channel-cache controls were
+  separately executed during review; they are not a comprehensive stored-image
+  regression or proof of arbitrary BSDF fidelity.
 
 ### Sheen (ABI v12) coverage, and what still isn't covered
 

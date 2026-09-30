@@ -286,33 +286,26 @@ class RISE_RENDER_PT_bridge(_RISEPanel):
 
 
 class RISE_OT_bake_materials(bpy.types.Operator):
-    """Bake complex Cycles material node graphs (procedural noise,
-    AO masks, Mix Shaders, etc.) to PNG image textures so RISE can
-    render them with full fidelity.
+    """Explicit manual DIFFUSE COLOR / Roughness / Normal approximation.
 
-    For each material in the scene that the classifier deems
-    "complex" (see ``docs/BLENDER_MATERIAL_TRANSLATION.md``), this
-    operator:
-      1. Selects an arbitrary object using that material
-      2. Switches the scene render engine to Cycles
-      3. Bakes Diffuse / Roughness / Normal to PNGs under
-         ``<tmp>/rise_baked/<material_name>_*.png``
-      4. Stores the resulting paths as ID properties on the material
-         so subsequent RISE renders consume them automatically
-      5. Restores the previous render engine
-
-    Re-run this after editing a complex material's node graph; the
-    new bake replaces the previous file.  "Simple" materials are
-    skipped (the exporter translates their node graphs directly into
-    RISE painters).
+    Visits complex materials on scene MESH objects once using the first
+    encountered object, temporarily switches to Cycles, saves successful
+    channels, and restores the engine. Existing diffuse selects a synthetic
+    dielectric (metallic0), with optional roughness/normal, on later exports.
+    Other lobes are not preserved. Failed channels can retain prior cache.
+    Default retries regardless of metadata; optional skip uses any existing
+    channel file, even stale. Simple materials translate directly; supported
+    Noise can be simple. Tangent has its separate automatic corner producer.
+    Retry explicitly after shader changes: the limited fingerprint does not
+    detect every edit. See docs/BLENDER_MATERIAL_TRANSLATION.md.
     """
 
     bl_idname = "rise.bake_materials"
     bl_label = "Bake Procedural Materials for RISE"
     bl_description = (
-        "Bake complex Cycles material graphs (AO, Mix Shader, "
-        "procedural noise) to PNG textures.  Run once after material "
-        "edits.  Simple graphs are translated directly without baking."
+        "Manually approximate complex materials with Diffuse COLOR, Roughness "
+        "and Normal PNGs. Existing diffuse enables a dielectric cache; other "
+        "lobes are dropped. Retry after edits; not every edit is detected."
     )
     bl_options = {"REGISTER"}
 
@@ -326,10 +319,9 @@ class RISE_OT_bake_materials(bpy.types.Operator):
     only_unbaked: bpy.props.BoolProperty(
         name="Skip Already-Baked Materials",
         description=(
-            "When enabled, materials that already carry a "
-            "rise_baked_diffuse_path are skipped — useful for "
-            "incremental re-bakes after editing one material in a "
-            "scene with many"
+            "Skip materials with any existing recorded channel file, even stale "
+            "or without diffuse. A missing diffuse-path file alone does not "
+            "skip. Disable to retry regardless of cache."
         ),
         default=False,
     )
@@ -355,15 +347,17 @@ class RISE_OT_bake_materials(bpy.types.Operator):
         if count == 0:
             self.report(
                 {"INFO"},
-                "RISE: No complex materials needed baking (or all already baked)",
+                "RISE: No new channel images saved (no eligible materials, skipped, or failed)",
             )
         else:
-            self.report({"INFO"}, f"RISE: Baked {count} complex material(s)")
+            self.report({"INFO"}, f"RISE: Saved channel images for {count} complex material(s)")
         return {"FINISHED"}
 
 
 class RISE_OT_clear_baked_materials(bpy.types.Operator):
-    """Clear metadata for materials selected by the cache-path check.
+    """Clear the seven defined keys for the selected material subset.
+    Selection uses any existing channel file OR a diffuse-path property;
+    attempt-only failures and arbitrary rise_baked_* keys are not removed.
 
     Viable complex materials with a cleared attempted marker require a
     manual bake before render; no automatic bake or PNG deletion occurs.
@@ -373,7 +367,11 @@ class RISE_OT_clear_baked_materials(bpy.types.Operator):
 
     bl_idname = "rise.clear_baked_materials"
     bl_label = "Clear RISE Bake Cache"
-    bl_description = "Remove rise_baked_* ID properties from all materials"
+    bl_description = (
+        "Remove the seven defined bake metadata keys from materials with an "
+        "existing channel file or diffuse-path property. Attempt-only failures "
+        "and other custom keys remain; PNG files are not deleted."
+    )
     bl_options = {"REGISTER"}
 
     def execute(self, context):
@@ -397,11 +395,13 @@ class RISE_RENDER_PT_materials(_RISEPanel):
          to Cycles, bakes Diffuse / Roughness / Normal to PNGs under
          ``<tmp>/rise_baked/<material>_*.png``, stores the paths as
          ID properties, and swaps back.
-      3. User clicks Render.  RISE consumes the cached PNGs.
-      4. A graph edit changes the attempted hash comparison; the next
+      3. User clicks Render. Existing diffuse selects the synthetic dielectric
+         approximation; roughness/normal are optional and other lobes dropped.
+      4. A detected fingerprint edit changes the attempted comparison; the next
          Render asks for another manual attempt if a viable proxy exists.
          A stored successful cache may also show a stale UI warning. Matching
          attempted hashes allow render after failures or missing PNGs.
+         Not every shader edit changes the limited fingerprint.
          Tangent-only graphs have their own isolated export-time producer.
 
     This panel is the place users come to (a) trigger the bake and
@@ -463,13 +463,13 @@ class RISE_RENDER_PT_materials(_RISEPanel):
         )
         layout.label(
             text=(
-                "Complex graphs (Mix Shader, AO, procedural noise) "
-                "are baked once to PNG and reused on every render."
+                "Manual complex-material bakes approximate three channels; "
+                "existing diffuse enables the dielectric cache."
             ),
             icon="BLANK1",
         )
         layout.label(
-            text="Re-bake after editing a material's node graph.",
+            text="Retry after shader edits; the hash does not detect every change.",
             icon="BLANK1",
         )
 
@@ -481,7 +481,7 @@ class RISE_RENDER_PT_materials(_RISEPanel):
             box.label(text="  (no baked materials yet)")
         else:
             for name, channels, stale in already_baked:
-                stale_tag = " — STALE, re-bake before render" if stale else ""
+                stale_tag = " — STALE, retry manually (not a render gate)" if stale else ""
                 box.label(text=f"  {name}: {channels}{stale_tag}")
 
         layout.operator("rise.clear_baked_materials", icon="X")

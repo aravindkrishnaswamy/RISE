@@ -779,7 +779,8 @@ def _extract_mapping_transform(image_node, state: _ExportState | None, context_n
 
     # Each transform socket must be unlinked so we can read its
     # constant default_value.  Linked sockets imply per-point /
-    # procedural transforms RISE can't bake.
+    # procedural transforms this direct painter cannot translate. This
+    # restriction is separate from manual channel and Tangent child baking.
     def _socket_vec3(name: str, fallback: tuple[float, float, float]):
         sock = mapping.inputs.get(name)
         if sock is None or sock.is_linked:
@@ -1152,7 +1153,7 @@ class _ImageSocketWrapper:
 
 
 # Shader nodes that pass colour / scalar through a Principled BSDF input
-# without enough information for RISE to bake them.  We treat them as
+# without direct translation of their filtering effect. We treat them as
 # transparent for texture-discovery purposes: artists routinely drop an
 # RGB Curves / Hue/Saturation / Bright-Contrast on a base-colour texture
 # to mildly tweak it.  We can't reproduce the curve in RISE, so the
@@ -1911,19 +1912,13 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
         state.material_map[key] = binding
         return binding
 
-    # Bake-on-export consumer.  When the user has run "Bake
-    # Procedural Materials for RISE" (or the equivalent operator),
-    # complex materials carry ID properties pointing at PNG bakes of
-    # their Diffuse / Roughness / Normal channels.  See
-    # ``material_bake.py`` and docs/BLENDER_MATERIAL_TRANSLATION.md.
-    #
-    # When those PNGs exist, we skip the node-graph walker entirely
-    # and build a synthetic Principled-like material from the bakes.
-    # The bake captures the FULL graph output (Mix Shaders, AO,
-    # procedural noise, everything) — recombining via the wrapper
-    # would double-apply effects.  Other Principled features
-    # (metallic, transmission, sheen) are intentionally dropped:
-    # they're already folded into the baked diffuse / roughness.
+    # Consumer of the explicit manual channel-image cache; no automatic bake.
+    # Only an existing diffuse PNG selects this synthetic dielectric branch;
+    # roughness and normal are optional. Any-channel cache can affect the
+    # operator skip without satisfying this branch. No freshness hash is checked.
+    # DIFFUSE COLOR is not complete shader response or conductor F0. Metallic0
+    # and the three-channel approximation drop metallic/transmission/sheen/
+    # coat/emission/subsurface/alpha lobes instead of reconstructing them.
     try:
         from . import material_bake as _material_bake
         baked = _material_bake.baked_paths(material)
@@ -1972,16 +1967,10 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
                 )
             )
 
-        # Metallic — the C++ bridge's `add_pbr_metallic_roughness_material`
-        # rejects a payload with `metallic_painter_name == NULL`.  Baked
-        # diffuse already absorbs whatever conductor F0 the original
-        # shader had (the bake captures the visual result), so treat
-        # the baked material as a pure dielectric (metallic=0) and let
-        # the diffuse PNG carry the colour.  Authoring a metallic
-        # version would need a separate `EMIT` bake of the metallic
-        # channel via Emit-from-metallic-input — out of scope for the
-        # first pass, see docs/BLENDER_MATERIAL_TRANSLATION.md
-        # "Capabilities to extend later".
+        # Supply the required bridge slot as metallic0. DIFFUSE COLOR does
+        # not absorb conductor F0; a fully metallic shader can bake black.
+        # This synthetic dielectric is a lossy approximation, not the original
+        # material's full response. No metallic-channel bake is implemented.
         metallic_painter = _add_uniform_painter(
             state, f"{material.name_full}_baked_metallic_const", (0.0, 0.0, 0.0))
 
@@ -3050,7 +3039,8 @@ def _hair_graph_supported(node, material_name: str, state: _ExportState) -> bool
     all translate the same way regardless of which slot they land in);
     the only difference from the mesh path is that failing here has no
     bake escape hatch, so it is a hard refusal instead of a fallback
-    to a different (slower, but always-correct) translation strategy.
+    to the explicit manual channel approximation or existing fallback.
+    That mesh approximation does not reconstruct arbitrary BSDF lobes.
 
     Socket-scoped exemption: the three `_HAIR_UNSUPPORTED_RANDOM_
     SOCKETS` inputs are never read into the translated payload at all
