@@ -667,27 +667,27 @@ static void TestWardExponentRange(const IORStack& stack) {
     for(int chromatic=0;chromatic<2;++chromatic) {
         IScalarPainter* ax=chromatic?static_cast<IScalarPainter*>(new RGBScalarPainter(1e-170,2e-170,3e-170)):static_cast<IScalarPainter*>(new UniformScalarPainter(1e-170));ax->addref();
         IScalarPainter* ay=chromatic?static_cast<IScalarPainter*>(new RGBScalarPainter(.5,.4,.3)):static_cast<IScalarPainter*>(new UniformScalarPainter(.5));ay->addref();
-        WardAnisotropicEllipticalGaussianSPF sp(*black,*spec,*ax,*ay);
-        WardAnisotropicEllipticalGaussianBRDF b(*black,*spec,*ax,*ay);
+        auto* sp=new WardAnisotropicEllipticalGaussianSPF(*black,*spec,*ax,*ay);sp->addref();
+        auto* b=new WardAnisotropicEllipticalGaussianBRDF(*black,*spec,*ax,*ay);b->addref();
         RayIntersectionGeometric ri=MakeIntersection(0);
         for(double x:{0.,.125,.25,.375,.5,.625,.75,.875,std::nextafter(1.,0.)})for(int nm=0;nm<2;++nm) {
             WardEndpointSampler sampler(x,.5);ScatteredRayContainer rays;
-            if(nm)sp.ScatterNM(ri,sampler,550,rays,stack);else sp.Scatter(ri,sampler,rays,stack);
+            if(nm)sp->ScatterNM(ri,sampler,550,rays,stack);else sp->Scatter(ri,sampler,rays,stack);
             int count=0;for(unsigned j=0;j<rays.Count();++j)if(rays[j].type==ScatteredRay::eRayReflection) {
                 ++count;const auto& r=rays[j];
                 Check(std::isfinite(r.pdf)&&r.pdf>0,"DL-324 asymmetric actual RGB/NM sampler density finite");
-                Check(std::isfinite(sp.Pdf(ri,r.ray.Dir(),stack))&&std::isfinite(sp.PdfNM(ri,r.ray.Dir(),550,stack)),"DL-324 asymmetric shared-pair replay aggregate finite");
-                Check(std::isfinite(b.value(r.ray.Dir(),ri)[0])&&std::isfinite(b.valueNM(r.ray.Dir(),ri,550)),"DL-324 asymmetric actual sampler RGB/NM BRDF finite");
-                Check(std::isfinite(sp.EvaluateLobeFNM(ri,r.ray.Dir(),r.type,550,stack))&&std::isfinite(sp.EvaluateKrayNM(ri,r.ray.Dir(),r.type,550,stack,r.pdf)),"DL-324 asymmetric actual sampler HWSS finite");
+                Check(std::isfinite(sp->Pdf(ri,r.ray.Dir(),stack))&&std::isfinite(sp->PdfNM(ri,r.ray.Dir(),550,stack)),"DL-324 asymmetric shared-pair replay aggregate finite");
+                Check(std::isfinite(b->value(r.ray.Dir(),ri)[0])&&std::isfinite(b->valueNM(r.ray.Dir(),ri,550)),"DL-324 asymmetric actual sampler RGB/NM BRDF finite");
+                Check(std::isfinite(sp->EvaluateLobeFNM(ri,r.ray.Dir(),r.type,550,stack))&&std::isfinite(sp->EvaluateKrayNM(ri,r.ray.Dir(),r.type,550,stack,r.pdf)),"DL-324 asymmetric actual sampler HWSS finite");
                 if(!chromatic&&x==0) {
                     const double kernel=exp(-log(4*PI)-log(1e-170)-log(.5)-log(2.));
                     Check(WardRangeClose(r.pdf,kernel),"DL-324 asymmetric stored density independent log oracle");
-                    Check(WardRangeClose(sp.Pdf(ri,r.ray.Dir(),stack),kernel),"DL-324 asymmetric stored/public density agreement");
+                    Check(WardRangeClose(sp->Pdf(ri,r.ray.Dir(),stack),kernel),"DL-324 asymmetric stored/public density agreement");
                 }
             }
             Check(count==(chromatic&&!nm?3:1),"DL-324 asymmetric sampler emits expected lanes");
         }
-        ax->release();ay->release();
+        sp->release();b->release();ax->release();ay->release();
     }
     spec->release();black->release();
 }
