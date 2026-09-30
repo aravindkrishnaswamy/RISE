@@ -8,26 +8,76 @@
 #include <algorithm>
 #include <cmath>
 namespace RISE { namespace Implementation { namespace WardSelection {
-// DL-324: evaluate the Ward Gaussian from frame slopes. In an orthonormal
-// frame tan^2(theta) D(phi) = (hx/ax)^2/hz^2 + (hy/ay)^2/hz^2.
-// No acos domain, normalized zero tangent, or subtractive 1-hz^2 is needed.
-// Exact poles have zero slopes; a rounded hz > 1 still has a nonnegative
-// exponent. Returning an underflowed Gaussian before denominator arithmetic
-// avoids 0 * infinity at the grazing limit. This does not change energy policy.
+// DL-324: frame slopes remove inverse-cosine domain and pole subtraction.
+// Keep exponent range through the complete Gaussian quotient: exp(-E)
+// and ax*ay need not themselves be representable when the quotient is.
+inline double ScaledSlope(double x,double z,double alpha) {
+    const double slope=(x/z)/alpha;
+    if(x==0 || (std::isfinite(slope) && slope!=0)) return slope;
+    return std::copysign(std::exp(std::log(std::abs(x))-std::log(z)-std::log(alpha)),x);
+}
 inline double SlopeExponent(double hx,double hy,double hz,double ax,double ay) {
-    const double sx=(hx/hz)/ax, sy=(hy/hz)/ay;
+    const double sx=ScaledSlope(hx,hz,ax),sy=ScaledSlope(hy,hz,ay);
     return sx*sx+sy*sy;
+}
+inline double GaussianQuotient(double exponent,double hz,double hd,double ax,double ay,bool bsdf) {
+    if(hz<=0 || hd<=0 || ax<=0 || ay<=0) return 0;
+    // Every denominator factor has magnitude in [2^-100,2^100],
+    // and there are at most eight factors. Its product stays normal.
+    // exp(-E) is also normal for E<=700. Division then rounds the
+    // final value directly, including a genuinely subnormal/zero result.
+    const double lo=0x1p-100,hi=0x1p100;
+    if(exponent<=700 && ax>=lo && ax<=hi && ay>=lo && ay<=hi &&
+       hz>=lo && hz<=hi && hd>=lo && hd<=hi) {
+        const double densityDen=4*PI*ax*ay*hd*hz*hz*hz;
+        return std::exp(-exponent)/(bsdf ? densityDen*hd*hz : densityDen);
+    }
+    const double logDen=std::log(4*PI)+std::log(ax)+std::log(ay)+
+        (bsdf?2:1)*std::log(hd)+(bsdf?4:3)*std::log(hz);
+    return std::exp(-exponent-logDen);
+}
+inline double ReflectionDensity(double exponent,double hz,double hd,double ax,double ay) {
+    return GaussianQuotient(exponent,hz,hd,ax,ay,false);
 }
 inline double SpecularKernel(double hx,double hy,double hz,double hd,double ax,double ay) {
     if(hz<=0 || hd<=0 || ax<=0 || ay<=0) return 0;
-    const double gaussian=std::exp(-SlopeExponent(hx,hy,hz,ax,ay));
-    if(gaussian==0) return 0;
-    return gaussian/(4*PI*ax*ay*hd*hd*hz*hz*hz*hz);
+    return GaussianQuotient(SlopeExponent(hx,hy,hz,ax,ay),hz,hd,ax,ay,true);
 }
 inline RISEPel SpecularKernel(double hx,double hy,double hz,double hd,const RISEPel& ax,const RISEPel& ay) {
     return RISEPel(SpecularKernel(hx,hy,hz,hd,ax[0],ay[0]),
                    SpecularKernel(hx,hy,hz,hd,ax[1],ay[1]),
                    SpecularKernel(hx,hy,hz,hd,ax[2],ay[2]));
+}
+// Normalize Cartesian slopes without squaring an authored axis. Scaling
+// before hypot preserves tiny components and avoids an overflowing radius.
+inline Vector3 HalfFromSlopes(double sx,double sy) {
+    const double scale=std::max(1.0,std::max(std::abs(sx),std::abs(sy)));
+    const double x=sx/scale,y=sy/scale,z=1/scale;
+    const double length=std::hypot(std::hypot(x,y),z);
+    return Vector3(x/length,y/length,z/length);
+}
+// Existing folded-quarter convention: q0/q2 run forwards; q1/q3 run
+// backwards. (ax cos(psi),ay sin(psi))*sqrt(E) is exactly the old
+// phi=atan(ay/ax*tan(psi)), tan(theta)=sqrt(E/D(phi)) construction.
+inline Vector3 AnisoHalf(double xi,double exponent,double ax,double ay) {
+    const int quadrant=xi<.25?0:xi<.5?1:xi<.75?2:3;
+    const double angle=PI_OV_TWO*(4*xi-quadrant);
+    const double cp=std::cos(angle),sp=std::sin(angle);
+    const double x=(quadrant==1 || quadrant==2 ? -1:1)*ax*cp;
+    const double y=(quadrant>=2 ? -1:1)*ay*sp;
+    if(!std::isfinite(exponent)) {
+        // xi2=0 is the excluded radial limit; its half-vector is tangent.
+        const double scale=std::max(std::abs(x),std::abs(y));
+        const double length=std::hypot(x/scale,y/scale);
+        return Vector3((x/scale)/length,(y/scale)/length,0);
+    }
+    const double r=std::sqrt(exponent);
+    return HalfFromSlopes(x*r,y*r);
+}
+inline double AnisoXi(double hx,double hy,double ax,double ay) {
+    const double psi=std::atan2(std::abs(hy/ay),std::abs(hx/ax));
+    const int quadrant=hx<0?(hy<0?2:1):(hy<0?3:0);
+    return (quadrant+psi/PI_OV_TWO)*.25;
 }
 // DL-310: Ward's coupled diffuse reflectance.  The reciprocal coupling
 // min(Rd, 1 - A(i), 1 - A(o)) (SchlickDirectionalAlbedo.h) with A = Rs --

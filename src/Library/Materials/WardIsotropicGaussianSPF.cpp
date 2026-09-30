@@ -66,16 +66,6 @@ void WardIsotropicGaussianSPF::SetAlpha( const IScalarPainter& v )  { v.addref()
 //! `cos(theta_h) * exp(...) / (PI alpha^2)` instead -- the true density
 //! times `cos^4(theta_h)`, measured exactly that way per draw in
 //! `tests/WardDensityKrayTest.cpp` section C.
-static inline Scalar WardIsoHalfDensity( const Scalar cosThetaH, const Scalar alphaSq, const Scalar tan2 )
-{
-	if( cosThetaH <= 0 || alphaSq <= 0 ) {
-		return 0;
-	}
-	const Scalar c2 = cosThetaH * cosThetaH;
-	const Scalar gaussian = exp(-tan2/alphaSq);
-	return gaussian == 0 ? Scalar(0) : gaussian / (PI * alphaSq * c2 * cosThetaH);
-}
-
 //! DL-212, Geisler-Moroder & Duer (2010):
 //! f_S = Rs exp(-slope^2) / (4 pi ax ay (h.wi)^2 (n.h)^4).
 //! The unchanged p_S = exp(-slope^2)/(4 pi ax ay (n.h)^3 (h.wi))
@@ -156,12 +146,10 @@ static void GenerateSpecularRay(
 	const Scalar cos_phi = cos(phi);
 	const Scalar sin_phi = sin(phi);
 
-	const Scalar theta = atan(alpha*(sqrt(-log(random.y))));
-
-	const Scalar cos_theta = cos(theta);
-	const Scalar sin_theta = sin(theta);
-
-	const Vector3	a( cos_phi*sin_theta, sin_phi*sin_theta, cos_theta );
+	const Scalar exponent = -log(random.y);
+	const Scalar radius = alpha*sqrt(exponent);
+	const Vector3 a = std::isfinite(exponent) ? WardSelection::HalfFromSlopes(cos_phi*radius,sin_phi*radius) : Vector3(cos_phi,sin_phi,0);
+	const Scalar cos_theta = a.z;
 
 	// Generate the actual vector from the half-way vector.  FRAME (DL-100,
 	// fixed 2026-09-17): `onb`, the caller's SAMPLING frame -- Scatter's
@@ -190,10 +178,8 @@ static void GenerateSpecularRay(
 		// `cos(theta_h)*exp(...)/(PI alpha^2)` -- that same density
 		// times `cos^4(theta_h)` -- so `Pdf`, MIS and the per-lobe
 		// pairing were all quoting a function that is not a density.
-		const Scalar alpha_sq = alpha * alpha;
-		const Scalar pdf_h = WardIsoHalfDensity( cos_theta, alpha_sq, (sin_theta/cos_theta)*(sin_theta/cos_theta) );
-		const Scalar hdotwo = Vector3Ops::Dot( h, ret );
-		specular.pdf = ( hdotwo > 0 ) ? ( pdf_h / (4.0 * hdotwo) ) : Scalar(0);
+		const Scalar hdotwo = Vector3Ops::Dot(h,ret);
+		specular.pdf = WardSelection::ReflectionDensity(exponent,cos_theta,hdotwo,alpha,alpha);
 
 		// DL-177 defect (3): the transport weight this lobe must carry,
 		// minus the reflectance the caller multiplies in.
@@ -413,17 +399,18 @@ static Scalar WardIsoSpecularDensity(
 	// this call's `(xi1, xi2)` draws the SAME azimuth.
 	const Scalar hu = Vector3Ops::Dot( h, myonb.u() );
 	const Scalar hv = Vector3Ops::Dot( h, myonb.v() );
-	const Scalar hr = sqrt( hu*hu + hv*hv );
-	const Scalar cosP = ( hr > NEARZERO ) ? ( hu / hr ) : Scalar(1);
-	const Scalar sinP = ( hr > NEARZERO ) ? ( hv / hr ) : Scalar(0);
+	const Scalar hr = hypot(hu,hv);
+	const Scalar cosP = ( hr > 0 ) ? ( hu / hr ) : Scalar(1);
+	const Scalar sinP = ( hr > 0 ) ? ( hv / hr ) : Scalar(0);
 
 	const Scalar tanThetaH = hr / cosThetaH;
 
 	Scalar sum = 0;
 
 	for( int i = 0; i < lobes.count; i++ ) {
-		const Scalar pdf_i = WardIsoHalfDensity( cosThetaH, lobes.alpha[i]*lobes.alpha[i], tanThetaH*tanThetaH )
-		                   / ( 4.0 * hdotwo );
+		const Scalar ai = lobes.alpha[i];
+		const Scalar exponent = WardSelection::SlopeExponent(hu,hv,cosThetaH,ai,ai);
+		const Scalar pdf_i = WardSelection::ReflectionDensity(exponent,cosThetaH,hdotwo,ai,ai);
 		if( pdf_i <= 0 ) {
 			continue;
 		}
@@ -437,17 +424,17 @@ static Scalar WardIsoSpecularDensity(
 		// i's tangent -- no exp/log round trip needed.
 		Scalar wOther = 0;
 		int nAcceptedSpec = 1;
-		if( lobes.count > 1 && lobes.alpha[i] > NEARZERO ) {
+		if( lobes.count > 1 && lobes.alpha[i] > 0 ) {
 			const Vector3& d = ri.ray.Dir();
 			for( int j = 0; j < lobes.count; j++ ) {
 				if( j == i ) {
 					continue;
 				}
-				const Scalar tj = ( lobes.alpha[j] / lobes.alpha[i] ) * tanThetaH;
-				const Scalar cj = 1.0 / sqrt( 1.0 + tj*tj );
-				const Scalar sj = tj * cj;
-				const Scalar lx = cosP * sj;
-				const Scalar ly = sinP * sj;
+				const Scalar tj = (tanThetaH/lobes.alpha[i])*lobes.alpha[j];
+				const Vector3 local = WardSelection::HalfFromSlopes(cosP*tj,sinP*tj);
+				const Scalar cj = local.z;
+				const Scalar lx = local.x;
+				const Scalar ly = local.y;
 				const Vector3 hj( myonb.u().x*lx + myonb.v().x*ly + ew.x*cj,
 				                  myonb.u().y*lx + myonb.v().y*ly + ew.y*cj,
 				                  myonb.u().z*lx + myonb.v().z*ly + ew.z*cj );
@@ -658,14 +645,9 @@ Scalar WardIsotropicGaussianSPF::EvaluateLobeFNM(
 		return 0;
 	}
 
-	const Scalar kray = GuardedGetColorNM( *pSpecular, ri, nm ) * ratio;
-	const Scalar alpha = pAlpha->GetValueAtNM( ri, nm );
-	const Scalar hu = Vector3Ops::Dot(h,myonb.u())/cos_h;
-	const Scalar hv = Vector3Ops::Dot(h,myonb.v())/cos_h;
-	const Scalar pdf_h = WardIsoHalfDensity( cos_h, alpha * alpha, hu*hu+hv*hv );
-	const Scalar pdf = pdf_h / (4.0 * hdotwo);
-
-	return ( kray * pdf ) / cos_o;
+	const Scalar alpha = pAlpha->GetValueAtNM(ri,nm);
+	return GuardedGetColorNM(*pSpecular,ri,nm) * WardSelection::SpecularKernel(
+		Vector3Ops::Dot(h,myonb.u()),Vector3Ops::Dot(h,myonb.v()),cos_h,hdotwo,alpha,alpha);
 }
 
 Scalar WardIsotropicGaussianSPF::EvaluateKrayNM(
