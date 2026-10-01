@@ -140,6 +140,24 @@ two closed ior-1.5 slabs, a seed from y 2.2 toward an emitter point at
 y 1.5) -- k = 2 and an exit continuation parallel to the incident
 direction; the pre-fix walk returns k = 4.
 
+Shipped SMS scenes (`WeaveGapShadowTransmittanceTest` `scenehash`: single
+worker, `srand(4242)`, salt 0, 8 spp, pre-fix `43e9f3bb8` vs fix): 13 of
+21 hashes move, every one a scene whose seed walk leaves a refractive
+caster -- triplecaustic 0.636926 -> 0.636847, k1_botonly 0.170962 ->
+0.170955, k1_refract 0.180705 -> 0.181250 (+0.30 %), k2_flatslab 0.178864
+-> 0.178856, k2_glassblock 0.172475 -> 0.172404, k2_glasssphere 0.192965 ->
+0.192965, k2_glasssphere_tess 0.187861 -> 0.187861, ..._tess_disp
+0.186367 -> 0.186376, k2_torus_cross 0.192448 -> 0.192334,
+slab_close_pt_sms_hispp 0.322774 -> 0.322747, slab_close_sms 0.292578 ->
+0.292570, teapot_close_sms 0.332172 -> 0.332229, veach_egg_displaced
+0.4844081 -> 0.4844089.  Unchanged bit for bit: diacaustic (mirror
+chains), luminous_orb, veach_egg, veach_egg_bumpmap, visibility_occluded,
+visibility_unoccluded and both spectral scenes.  At 8 spp these moves are
+seed-path changes inside the noise; none is a resolved energy change.
+`ExteriorIndexInvarianceTest`'s not-gated A7-KF seed-walk lines (T6, T5c)
+print the same before and after, so moving the containment probe to the
+incident direction did not change those configurations.
+
 ## 6. The shared mechanism: proposed fix, not landed
 
 **Coverage-aware suppression.**  With deterministic seeding, SMS's

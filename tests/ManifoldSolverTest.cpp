@@ -1820,7 +1820,7 @@ static void TestSnellContinueChain_ExitRefraction()
 	assert( k4 == 4 );
 	const Vector3 d2 = Vector3Ops::Normalize( Vector3Ops::mkVector3( through[2].position, through[1].position ) );
 	std::cout << "  exit continuation . incident = " << Vector3Ops::Dot( d0, d2 ) << " (1 = parallel)" << std::endl;
-	assert( Vector3Ops::Dot( d0, d2 ) > 1.0 - 1e-9 );	// pre-fix: 0.82
+	assert( Vector3Ops::Dot( d0, d2 ) > 1.0 - 1e-9 );	// pre-fix: the inside direction
 
 	safe_release( pICaster );
 	safe_release( pShader );
