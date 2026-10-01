@@ -154,14 +154,19 @@ namespace
 	//     at w1 and beyond: every ordinary strategy.
 	//     NOT: anything that makes the light cover x_i and x_o (connect
 	//       x_o--x_i, merge at x_o through the jump, or deeper).
-	//   light-sampled jump: has the same coverage problem mirrored, and
-	//     no reverse jump density with which to MIS it against the eye-
+	//   light-sampled jump: the same coverage problem mirrored, and no
+	//     reverse jump density with which to MIS it against the eye-
 	//     sampled one.  Both families estimate the SAME integral, so
 	//     keeping both with each partition-of-unity closed over itself
-	//     would count the path twice.  VCM assigns every jump path to
-	//     the EYE-sampled family (PT's and BDPT's own estimator) and
-	//     evaluates no strategy at or past a light-side BSSRDF entry --
-	//     see UsableLightSubpathLength below.
+	//     counts the path twice.  The partition is therefore by PATH:
+	//     a path belongs to the EYE-sampled family whenever that family
+	//     has at least one strategy for it, and to the LIGHT-sampled
+	//     family only when it has none -- e.g. a point light feeding a
+	//     random-walk entry, which admits no NEE / connection / merge,
+	//     and which BSDF sampling onward can never hit.  Whether it has
+	//     one depends only on the light-side segment between the jump
+	//     and the light (or the previous kept jump), so the light walk
+	//     decides it: LightSegmentEyeCoverable / UsableLightSubpathLength.
 	//
 	// The running quantities follow directly.  At x_i, (dVCM, dVC, dVM)
 	// = 0: every term they carry reserves mass for a strategy in which
@@ -228,22 +233,104 @@ namespace
 			zero, cosThetaOut, bsdfDirPdfW, Scalar( 0 ), false, norm );
 	}
 
-	/// DL-317: the number of leading light-subpath vertices VCM may use
-	/// as a strategy endpoint -- everything before the first light-side
-	/// BSSRDF / random-walk entry (see the barrier comment above).  The
-	/// hit where the light walk went INTO the subsurface material stays
-	/// usable: it is an ordinary arrival, and only its continuation was
-	/// the jump.
-	inline std::size_t UsableLightSubpathLength(
-		const std::vector<BDPTVertex>& lightVerts
+	/// DL-317: merging is a live strategy (mirrors EvaluateMerges' gate).
+	inline bool MergingActive( const VCMNormalization& norm )
+	{
+		return norm.mEnableVM && norm.mMergeRadiusSq > 0 && norm.mVmNormalization > 0;
+	}
+
+	/// DL-317: does the EYE-sampled family have a strategy for a path whose
+	/// jump the light walk sampled at `verts[p] -> verts[p+1]` (the hit
+	/// where the light went in, then the entry)?  The eye would arrive at
+	/// the entry's point, jump to verts[p] (its own entry vertex there --
+	/// connectible exactly when verts[p+1] is), and must split the light-
+	/// side segment verts[s..p] somewhere; verts[s] is the light root
+	/// (s == 0) or the previous KEPT light entry.  The strategies, with
+	/// the eye covering verts[j..p] and the light verts[s..j-1]:
+	///   s=0 (eye hits the root): root not delta;
+	///   merge at verts[j]: merging live, verts[j] a non-delta surface;
+	///   NEE / connection at the edge (j-1, j): verts[j] non-delta and
+	///     connectible, and verts[j-1] the root (NEE reaches any light) or
+	///     a non-delta connectible vertex (a kept diffusion entry is one).
+	/// "Non-delta" is the path's own scatter at that vertex (the light
+	/// walk's sampled lobe), so the predicate is a function of the path.
+	inline bool LightSegmentEyeCoverable(
+		const std::vector<BDPTVertex>& verts,
+		const std::size_t s,
+		const std::size_t p,
+		const bool mergingActive
 		)
 	{
-		for( std::size_t i = 1; i < lightVerts.size(); i++ ) {
-			if( lightVerts[i].isBSSRDFEntry ) {
-				return i;
+		if( p + 1 >= verts.size() || p <= s ) {
+			return true;	// malformed: keep the cut (conservative, never double counts)
+		}
+		if( s == 0 && verts[0].type == BDPTVertex::LIGHT && !verts[0].isDelta ) {
+			return true;
+		}
+		for( std::size_t j = s + 1; j <= p; j++ ) {
+			const BDPTVertex& b = verts[j];
+			const bool bUsable = ( j == p )
+				? verts[p + 1].isConnectible
+				: ( b.isConnectible && !b.isDelta );
+			if( !bUsable ) {
+				continue;
+			}
+			if( mergingActive && b.type == BDPTVertex::SURFACE ) {
+				return true;
+			}
+			const BDPTVertex& a = verts[j - 1];
+			if( j - 1 == 0 && a.type == BDPTVertex::LIGHT ) {
+				return true;
+			}
+			if( a.isConnectible && !a.isDelta ) {
+				return true;
 			}
 		}
+		return false;
+	}
+
+	/// DL-317: the number of leading light-subpath vertices VCM may use as
+	/// a strategy endpoint.  Walks the light-side jumps in order; the first
+	/// one the eye family can cover ends the usable subpath (nothing at or
+	/// past it is a strategy).  A jump the eye family cannot cover is KEPT
+	/// -- the light-sampled family is then the only estimator of those
+	/// paths -- and the next segment starts at its entry.  The hit where
+	/// the light walk went INTO the material is always usable: it is an
+	/// ordinary arrival; only its continuation was the jump.
+	inline std::size_t UsableLightSubpathLength(
+		const std::vector<BDPTVertex>& lightVerts,
+		const VCMNormalization& norm
+		)
+	{
+		const bool merging = MergingActive( norm );
+		std::size_t segmentStart = 0;
+		for( std::size_t i = 1; i < lightVerts.size(); i++ ) {
+			if( !lightVerts[i].isBSSRDFEntry ) {
+				continue;
+			}
+			if( LightSegmentEyeCoverable( lightVerts, segmentStart, i - 1, merging ) ) {
+				return i;
+			}
+			segmentStart = i;
+		}
 		return lightVerts.size();
+	}
+
+	/// DL-317: running quantities for the vertex AFTER a KEPT light-side
+	/// entry `verts[i]` (whose own state is zero).  Only the connection
+	/// with the light ending AT the entry exists (a connectible diffusion
+	/// entry); a merge there does not -- entry vertices are never stored
+	/// for merging -- so dVC and dVM stay 0.
+	inline VCMMisQuantities ApplyLightEntryOnwardUpdate(
+		const std::vector<BDPTVertex>& verts,
+		const std::size_t i,
+		const VCMNormalization& norm
+		)
+	{
+		VCMMisQuantities r = ApplyBSSRDFEntryOnwardUpdate( verts, i, norm );
+		r.dVC = 0;
+		r.dVM = 0;
+		return r;
 	}
 
 	//////////////////////////////////////////////////////////////////
@@ -645,6 +732,7 @@ void VCMIntegrator::ConvertLightSubpath(
 	}
 
 	VCMMisQuantities mis;
+	std::size_t segmentStart = 0;	// DL-317: root, or the last KEPT light-side entry
 
 	for( std::size_t i = 0; i < n; i++ )
 	{
@@ -684,10 +772,19 @@ void VCMIntegrator::ConvertLightSubpath(
 		// BSSRDF re-entry vertex: the end of the usable light subpath
 		// (DL-317, see the barrier comment near the top of this file).
 		if( v.isBSSRDFEntry ) {
-			// DL-317: no strategy is evaluated at or past a light-side
-			// jump (UsableLightSubpathLength), so nothing past it is
-			// stored for merging and its outMis entries stay zero.
-			return;
+			// DL-317: a light-side jump the eye family can cover ends the
+			// usable subpath -- nothing at or past it is stored or used,
+			// and its outMis entries stay zero.  One it cannot cover is
+			// kept: zero state at the entry (never stored for merging),
+			// then the light-entry onward update.
+			if( LightSegmentEyeCoverable( verts, segmentStart, i - 1, MergingActive( norm ) ) ) {
+				return;
+			}
+			segmentStart = i;
+			mis = BSSRDFEntryVertexState();
+			if( outMis ) (*outMis)[i] = mis;
+			mis = ApplyLightEntryOnwardUpdate( verts, i, norm );
+			continue;
 		}
 
 		// Skip vertices that lack a valid area-measure conversion
@@ -1756,7 +1853,7 @@ namespace
 			BDPTCameraUtilities::SampleAperture( camera, cameraLensSample );
 		const Point3 camPos = apertureSample.point;
 
-		const std::size_t usableLightVerts = UsableLightSubpathLength( lightVerts );
+		const std::size_t usableLightVerts = UsableLightSubpathLength( lightVerts, norm );
 		for( std::size_t i = 0; i < usableLightVerts; i++ )
 		{
 			const BDPTVertex& v = lightVerts[i];
@@ -1873,8 +1970,13 @@ namespace
 				}
 				wiAtLight = wiAtLight * ( Scalar( 1 ) / wiDist );
 
-				const typename Traits::value_type fLight =
-					RISE::PathValueOps::EvalAreaBSDFAtVertex<Tag>( v, wiAtLight, dirToCam, tag );
+				// DL-317: a kept light-side entry re-emits with Sw in the
+				// direction it LEAVES toward the camera; the arrival
+				// "direction" from the hit where the light went in is the
+				// jump, not a ray, so it must not be the Sw argument.
+				const typename Traits::value_type fLight = v.isBSSRDFEntry
+					? RISE::PathValueOps::EvalAreaBSDFAtVertex<Tag>( v, dirToCam, wiAtLight, tag )
+					: RISE::PathValueOps::EvalAreaBSDFAtVertex<Tag>( v, wiAtLight, dirToCam, tag );
 				if( PositiveMagnitude( fLight ) <= 0 ) {
 					continue;
 				}
@@ -1896,7 +1998,10 @@ namespace
 				}
 			}
 
-			const Scalar wLight =
+			// DL-317: at a kept light-side entry the eye family has no
+			// strategy (nothing connects or merges across the jump, and
+			// entries are never stored for merging), so wLight is 0.
+			const Scalar wLight = v.isBSSRDFEntry ? Scalar( 0 ) :
 				( cameraPdfA / norm.mLightSubPathCount ) *
 				( norm.mMisVmWeightFactor + lightMis[i].dVCM + lightMis[i].dVC * bsdfRevPdfW );
 			const Scalar weight = Scalar( 1 ) / ( VCMMis( wLight ) + VCMMis( Scalar( 1 ) ) );
@@ -2035,7 +2140,7 @@ namespace
 			return total;
 		}
 
-		const std::size_t usableLightVerts = UsableLightSubpathLength( lightVerts );
+		const std::size_t usableLightVerts = UsableLightSubpathLength( lightVerts, norm );
 		for( std::size_t i = 1; i < usableLightVerts; i++ )
 		{
 			const BDPTVertex& lv = lightVerts[i];
@@ -2096,8 +2201,11 @@ namespace
 					continue;
 				}
 
-				const typename Traits::value_type fLight =
-					RISE::PathValueOps::EvalAreaBSDFAtVertex<Tag>( lv, wiAtLight, lightToEye, tag );
+				// DL-317: Sw at a kept light-side entry is evaluated in the
+				// direction it leaves toward the eye (see the splat twin).
+				const typename Traits::value_type fLight = lv.isBSSRDFEntry
+					? RISE::PathValueOps::EvalAreaBSDFAtVertex<Tag>( lv, lightToEye, wiAtLight, tag )
+					: RISE::PathValueOps::EvalAreaBSDFAtVertex<Tag>( lv, wiAtLight, lightToEye, tag );
 				if( PositiveMagnitude( fLight ) <= 0 ) {
 					continue;
 				}
@@ -2148,7 +2256,8 @@ namespace
 					? BDPTUtilities::SolidAngleToAreaMedium( lightBsdfDirPdfW, ev.sigma_t_scalar, distSq )
 					: BDPTUtilities::SolidAngleToArea( lightBsdfDirPdfW, cosAtEye, distSq );
 
-				const Scalar wLight = cameraBsdfDirPdfA
+				// DL-317: zero at a kept light-side entry (see the splat twin).
+				const Scalar wLight = lv.isBSSRDFEntry ? Scalar( 0 ) : cameraBsdfDirPdfA
 					* ( norm.mMisVmWeightFactor
 					    + lightMis[i].dVCM
 					    + lightMis[i].dVC * lightBsdfRevPdfW );

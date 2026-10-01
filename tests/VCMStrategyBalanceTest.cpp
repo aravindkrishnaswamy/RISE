@@ -2476,9 +2476,23 @@ static void RunDeltaLitWallRowDL317( const char* name, const char* light, int sp
 	CheckRatioDL317( std::string( "DL-317 wall-only VCM merging on / off: " ) + name, off, on, band );
 }
 
-#define BAND_D_SPP 256
-#define BAND_D_REPS 1
-#define BAND_D 0.10
+//! Bands: >= 4.6 x the ratio sd over four salted runs at 2048 spp
+//! (`--dl317-delta-only` seeds 101/202/303/404), on and off pooled:
+//! D1 3.1% -> 15% (an omni sends few light walks into the sphere, and
+//! the wall is reached only by light-family splats and connections);
+//! D2 0.65% -> 3.5%.  Readings, VCM/PT - 1 merging on / off: D1
+//! -1.2% / -1.7%, D2 -0.33% / -0.31% (post-fix).  On the first DL-317
+//! fix (3763e998, the light family cut everywhere) every ratio read
+//! -97% .. -98%; on master 43e9f3bb8 the external review measured D1
+//! ~-51% (phantom MIS mass at the entry).
+static void TestDeltaLitWallDL317()
+{
+	RunDeltaLitWallRowDL317( "D1 omni behind the wall lights a random-walk sphere; wall lit only through it",
+		kLightOmniDL317, 2048, 1, 0.15 );
+	RunDeltaLitWallRowDL317( "D2 spot behind the wall lights a random-walk sphere; wall lit only through it",
+		kLightSpotDL317, 2048, 1, 0.035 );
+}
+
 static void TestSSSBarrierDL317()
 {
 	RunSSSBarrierRowDL317( "F1 white furnace, conservative random walk (roughness 0.3)",
@@ -2493,10 +2507,7 @@ static void TestSSSBarrierDL317()
 	RunSSSBarrierRowDL317( "B2 backlit smooth-diffusion sphere filling the frame",
 		std::string( kSceneBacklitHeadDL317 ) + kMatBacklitSmoothDiffusionDL317 + kSceneBacklitTailDL317, nullptr,
 		1024, 3, 0.03, 0 );
-	RunDeltaLitWallRowDL317( "D1 omni behind the wall lights a random-walk sphere; wall lit only through it",
-		kLightOmniDL317, BAND_D_SPP, BAND_D_REPS, BAND_D );
-	RunDeltaLitWallRowDL317( "D2 spot behind the wall lights a random-walk sphere; wall lit only through it",
-		kLightSpotDL317, BAND_D_SPP, BAND_D_REPS, BAND_D );
+	TestDeltaLitWallDL317();
 	RunSSSBarrierRowDL317( "V front-lit random-walk sphere on Lambertian walls (light walks exit onto the walls)",
 		kSceneRandomWalkSphereVDL317, nullptr,
 		1024, 1, 0.007, 0 );
@@ -2518,6 +2529,14 @@ int main( int argc, char** argv )
 			if( v > 0 ) g_seedBase = (unsigned int)v;
 		}
 	};
+
+	// DL-317: the delta-lit random-walk wall rows (D1/D2) alone.
+	if( argc >= 2 && std::strcmp( argv[1], "--dl317-delta-only" ) == 0 ) {
+		ApplySeedOverride( 2 );
+		TestDeltaLitWallDL317();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
 
 	// DL-317: the SSS barrier rows (and topology U) alone.
 	if( argc >= 2 && std::strcmp( argv[1], "--dl317-only" ) == 0 ) {
