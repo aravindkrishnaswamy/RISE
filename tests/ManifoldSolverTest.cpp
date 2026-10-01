@@ -24,6 +24,7 @@
 // through BuildSeedChain / SnellContinueChain.  Needs real scene/object
 // plumbing the rest of this file doesn't otherwise touch.
 #include "../src/Library/Geometry/ClippedPlaneGeometry.h"
+#include "../src/Library/Geometry/BoxGeometry.h"
 #include "../src/Library/Objects/Object.h"
 #include "../src/Library/Managers/ObjectManager.h"
 #include "../src/Library/Scene.h"
@@ -1743,6 +1744,97 @@ static void TestSnellContinueChain_DoubleSidedSlab_bEnteringAlternates()
 		<< "would have been constant true->true pre-fix." << std::endl;
 }
 
+
+// ============================================================
+// Group 16: DL-373 -- the snell seed walk refracts at an EXIT
+// ============================================================
+
+//////////////////////////////////////////////////////////////////////
+//  SMS energy-loss push (DL-373).  `SnellContinueChain` refracted an
+//  exit with `specInfo.ior / currentIOR`; inside the object both are the
+//  object's own index, so every exit was index-matched and the seed left
+//  the caster along its INSIDE direction.  Fixture: the geometry of a
+//  measured DL-373 miss -- two closed ior-1.5 slabs (8 x 0.05 x 8 boxes
+//  at y 1.75 and y 1.0), a seed traced from a diffuser point at y 2.2
+//  toward an emitter point at y 1.5 between them.  The true chain is
+//  k = 2 (the upper slab); the emitter-projection cap ends the walk past
+//  the target.  Pre-fix the walk left the upper slab ~2.3x steeper than
+//  it entered, reached the lower slab inside the cap and seeded k = 4
+//  (Newton then failed on it: 4.0 % of the fixture's suppressed energy).
+//  Asserted: k = 2, and the continuation after the exit is parallel to
+//  the incident direction (a parallel slab), recovered from the two
+//  vertices of a second walk aimed through the lower slab.
+//////////////////////////////////////////////////////////////////////
+static void TestSnellContinueChain_ExitRefraction()
+{
+	std::cout << "Group 16: snell seed walk refracts at an exit (DL-373)" << std::endl;
+
+	UniformScalarPainter* tau = new UniformScalarPainter( 1.0 );  tau->addref();
+	UniformScalarPainter* ior = new UniformScalarPainter( 1.5 );  ior->addref();
+	UniformScalarPainter* scat = new UniformScalarPainter( 1000000.0 );  scat->addref();
+	DielectricMaterial* material = new DielectricMaterial( *tau, *ior, *scat, false );
+	material->addref();
+
+	BoxGeometry* gUpper = new BoxGeometry( 8, 0.05, 8 );
+	Object* oUpper = new Object( gUpper );  gUpper->release();
+	oUpper->SetPosition( Point3( 0, 1.75, 0 ) );
+	oUpper->FinalizeTransformations();
+	oUpper->AssignMaterial( *material );
+	BoxGeometry* gLower = new BoxGeometry( 8, 0.05, 8 );
+	Object* oLower = new Object( gLower );  gLower->release();
+	oLower->SetPosition( Point3( 0, 1.0, 0 ) );
+	oLower->FinalizeTransformations();
+	oLower->AssignMaterial( *material );
+
+	ObjectManager* manager = new ObjectManager( false, false, 4, 8 );
+	manager->addref();
+	manager->AddItem( oUpper, "slab_upper" );
+	manager->AddItem( oLower, "slab_lower" );
+	Scene* scene = new Scene();
+	scene->addref();
+	scene->SetObjectManager( manager );
+
+	std::vector<IShaderOp*> noOps;
+	IShader* pShader = 0;
+	RISE_API_CreateStandardShader( &pShader, noOps );
+	IRayCaster* pICaster = 0;
+	RISE_API_CreateRayCaster( &pICaster, false, 10, *pShader, true );
+
+	TestableManifoldSolver solver;
+	const Point3 start( 2.412, 2.2, -0.966 );
+	const Point3 end( 0.498, 1.5, -0.192 );
+	std::vector<ManifoldVertex> chain;
+	const unsigned int produced = solver.BuildSeedChain(
+		start, end, *scene, *pICaster, chain, /*applyEmitterStop*/true );
+	std::cout << "  seed toward the emitter point: k = " << produced << " (true chain k = 2)" << std::endl;
+	assert( produced == 2 );	// pre-fix: 4
+	assert( IsClose( chain[1].etaI, 1.5 ) && IsClose( chain[1].etaT, 1.0 ) );
+
+	// The continuation: aim the walk PAST the lower slab (no cap in reach)
+	// and read the direction between the upper slab's exit and the lower
+	// slab's entry.  A parallel slab returns the incident direction.
+	std::vector<ManifoldVertex> through;
+	const Vector3 d0 = Vector3Ops::Normalize( Vector3Ops::mkVector3( end, start ) );
+	const unsigned int k4 = solver.BuildSeedChain(
+		start, Point3Ops::mkPoint3( start, d0 * 10.0 ), *scene, *pICaster, through, /*applyEmitterStop*/false );
+	assert( k4 == 4 );
+	const Vector3 d2 = Vector3Ops::Normalize( Vector3Ops::mkVector3( through[2].position, through[1].position ) );
+	std::cout << "  exit continuation . incident = " << Vector3Ops::Dot( d0, d2 ) << " (1 = parallel)" << std::endl;
+	assert( Vector3Ops::Dot( d0, d2 ) > 1.0 - 1e-9 );	// pre-fix: 0.82
+
+	safe_release( pICaster );
+	safe_release( pShader );
+	scene->release();
+	manager->release();
+	oUpper->release();
+	oLower->release();
+	material->release();
+	scat->release();
+	ior->release();
+	tau->release();
+	std::cout << "  PASS" << std::endl;
+}
+
 // ============================================================
 // main
 // ============================================================
@@ -1866,6 +1958,9 @@ int main()
 	// Group 15: DL-70 chain-level pin (SnellContinueChain bEntering on a
 	// double-sided slab caster)
 	TestSnellContinueChain_DoubleSidedSlab_bEnteringAlternates();
+
+	// Group 16: DL-373 seed-walk exit refraction
+	TestSnellContinueChain_ExitRefraction();
 
 	std::cout << std::endl;
 	std::cout << "========================================" << std::endl;

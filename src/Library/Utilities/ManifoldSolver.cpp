@@ -4224,22 +4224,130 @@ unsigned int ManifoldSolver::SnellContinueChain(
 		// Follow refraction/reflection to determine the next ray direction.
 		if( specInfo.canRefract )
 		{
-			Vector3 n = mv.normal;
-			Scalar etaRatio;
+			// SMS energy-loss push (DL-373): resolve the medium on the far
+			// side of the interface BEFORE refracting.  The walk used to
+			// refract an EXIT with `specInfo.ior / currentIOR`, and
+			// `currentIOR` is the object's own index while the walk is
+			// inside it, so every exit was refracted as index-matched
+			// (ratio 1): the seed left a slab or sphere along its INSIDE
+			// direction, missed the emitter it was aimed at and ran on
+			// into the next caster (a k=2 chain seeded as k=4; Newton then
+			// fails on it).  Since the first commit (9da9d6a43) -- DL-290
+			// fixed which medium is on the far side, not this ratio.
+			// The destination stack is resolved on a copy and committed
+			// only when the refraction succeeds (TIR leaves the walk in
+			// the medium it is in).  The containment probe below runs
+			// along the INCIDENT direction: it asks whether the crossing
+			// point is inside Y, which for a closed Y does not depend on
+			// the direction, and both directions leave through this face.
+			IORStack destIor = seedIor;
+			Scalar destIOR;
 			if( bEntering ) {
-				etaRatio = currentIOR / specInfo.ior;
-				// normal already points outward relative to entering ray
+				destIOR = specInfo.ior;
+				destIor.SetCurrentObject( ri.pObject );
+				destIor.push( specInfo.ior );
+			} else if( sameObjectAgain ) {
+				// Only pop if we pushed earlier.  The legacy
+				// slabs-from-planes pattern uses cosI-based
+				// exiting without a matching stack entry.  After the
+				// pop the stack's top() is the IOR of the medium the
+				// walk re-enters (not 1.0 for nested dielectrics).
+				destIor.SetCurrentObject( ri.pObject );
+				destIor.pop();
+				destIOR = destIor.top();
 			} else {
-				etaRatio = specInfo.ior / currentIOR;
-				// For exiting, flip the normal to face the incoming ray
-				// (required by the Snell formula below).
-				if( Vector3Ops::Dot( dir, n ) > 0 ) {
-					n = n * (-1.0);
+				// No matching push for THIS object -- an open
+				// sheet crossed against its normal.  DL-290
+				// review P1-2: this used to be a hardcoded 1.0
+				// ("back to air"), which priced an immersed
+				// open-sheet caster against air.  Two geometries
+				// reach this branch:
+				//
+				//  (a) slabs-from-planes: the walk (or the camera
+				//      path that built the receiver stack) entered
+				//      the slab through a SIBLING sheet Y, which is
+				//      the stack top, and is now leaving through
+				//      this one.  Leaving the slab leaves Y's entry:
+				//      pop it; the far side is the medium beneath.
+				//  (b) a sheet crossed while the walk is inside a
+				//      medium Y that ENCLOSES the crossing (a lone
+				//      sheet in a water box, or no Y at all: the
+				//      root).  Nothing is popped; the far side is Y.
+				//
+				// Review round 2 (P1-A): the two are told apart by
+				// CONTAINMENT, never by comparing indices.  The
+				// round-1 rule ("pop iff Y's index equals this
+				// sheet's") misread every slab of two DIFFERENT
+				// indices as (b) and ended the chain inside the
+				// sibling's glass, and turned an index mismatch of
+				// 1e-9..1e-3 into a near-matched last vertex --
+				// a continuity cliff (flatslab floor -94 % at a
+				// top index of 2.2000002).  Here Y is probed along
+				// the incident direction (see above): an EXIT hit on Y means
+				// the walk is still inside Y after the crossing,
+				// i.e. Y encloses it -- (b); a miss, or an ENTRY
+				// hit, means Y was a sheet the walk has already
+				// passed -- (a).  For a CLOSED, outward-wound Y the
+				// first hit from inside is always an exit (concave
+				// or not).  The side test uses the TRUE face
+				// orientation (DL-70), so a double-sided closed
+				// mesh reads correctly; a ray-derived (hair)
+				// normal has no side and cannot enclose.  One ray
+				// against ONE object, only on this rare branch.
+				// In air with no enclosing object nothing
+				// changes: the top is the root, 1.0.
+				//
+				// Known residuals (review round 3; the open-sheet /
+				// winding convention family, DL-345, filed at
+				// merge), each measured with BuildSeedChain:
+				//  - Y is itself an OPEN sheet that bounds the
+				//    walk's medium: a lone 1.5 sheet inside a
+				//    two-sheet 2.2 slab reads [1.5 -> 1], correct
+				//    [1.5 -> 2.2] -- the probe misses the slab's
+				//    bottom sheet and pops it (A7-KF T6).
+				//  - Y is a closed solid wound INWARD (a
+				//    single-sided mesh) that the camera path
+				//    pushed: the probe's exit hit reads as an
+				//    entry, [2.2 -> 1][1 -> 1.33 entry] instead of
+				//    [2.2 -> 1.33][1.33 -> 1] (A7-KF T5c).
+				//  - Y is a closed solid with a HOLE and the walk
+				//    leaves through it: the probe misses and pops,
+				//    1.0 where the stack says 1.33 (ill-posed
+				//    geometry, no right answer).
+				//  - Two STACKED open slabs seen through their
+				//    sheets: the camera path pushed all four
+				//    sheets, and the walk reads the air gap between
+				//    the slabs as glass ([2.2 -> 2.2] x3) in every
+				//    post-DL-290 build; the pre-DL-290 walk, which
+				//    started from air, got it right.  This is the
+				//    receiver stack's own open-sheet convention
+				//    (DL-345), not this branch.
+				const IObject* pY = destIor.topObject();
+				if( pY ) {
+					bool yEnclosesCrossing = false;
+					const Ray probe( Point3Ops::mkPoint3( ri.geometric.ptIntersection, dir * offsetEps ), dir );
+					RayIntersection pri( probe, nullRasterizerState );
+					pY->IntersectRay( pri, RISE_INFINITY, true, true, false );
+					if( pri.geometric.bHit && pri.geometric.HasTrueGeomSide() ) {
+						yEnclosesCrossing = Vector3Ops::Dot( dir, pri.geometric.UnflippedGeomNormal() ) > 0;
+					}
+					if( !yEnclosesCrossing ) {
+						destIor.SetCurrentObject( pY );
+						destIor.pop();
+					}
 				}
+				destIOR = destIor.top();
 			}
-			// For entering case too, ensure normal opposes dir (may need flip
-			// for the thin-sheet "same object crossed again with same-side normal"
-			// scenario that we coerced to exiting, plus any other grazing cases).
+			if( !( destIOR > 0 && destIOR < RISE_INFINITY ) ) {
+				destIOR = 1.0;
+			}
+			const Scalar etaRatio = currentIOR / destIOR;
+
+			// Orient the normal against the incoming ray (required by the
+			// Snell formula below) -- for an exit, and for the thin-sheet
+			// "same object crossed again with same-side normal" scenario
+			// coerced to exiting, plus any other grazing cases.
+			Vector3 n = mv.normal;
 			if( Vector3Ops::Dot( dir, n ) > 0 ) {
 				n = n * (-1.0);
 			}
@@ -4253,114 +4361,12 @@ unsigned int ManifoldSolver::SnellContinueChain(
 				// Refraction succeeds
 				dir = dir * etaRatio + n * (etaRatio * cosI2 - cosT);
 				dir = Vector3Ops::Normalize( dir );
-
-				// Update current medium IOR and push/pop the object stack.
-				if( bEntering ) {
-					currentIOR = specInfo.ior;
-					seedIor.SetCurrentObject( ri.pObject );
-					seedIor.push( specInfo.ior );
-				} else {
-					if( sameObjectAgain ) {
-						// Only pop if we pushed earlier.  The legacy
-						// slabs-from-planes pattern uses cosI-based
-						// exiting without a matching stack entry.
-						seedIor.SetCurrentObject( ri.pObject );
-						seedIor.pop();
-						// After pop, the stack's top() is the IOR of
-						// the medium we just re-entered.  For nested
-						// dielectrics (e.g. air-cavity inside glass)
-						// this is NOT 1.0; for a single dielectric in
-						// air it IS 1.0 (the environment IOR pushed
-						// by the IORStack constructor).
-						currentIOR = seedIor.top();
-					} else {
-						// No matching push for THIS object -- an open
-						// sheet crossed against its normal.  DL-290
-						// review P1-2: this used to be a hardcoded 1.0
-						// ("back to air"), which priced an immersed
-						// open-sheet caster against air.  Two geometries
-						// reach this branch:
-						//
-						//  (a) slabs-from-planes: the walk (or the camera
-						//      path that built the receiver stack) entered
-						//      the slab through a SIBLING sheet Y, which is
-						//      the stack top, and is now leaving through
-						//      this one.  Leaving the slab leaves Y's entry:
-						//      pop it; the far side is the medium beneath.
-						//  (b) a sheet crossed while the walk is inside a
-						//      medium Y that ENCLOSES the crossing (a lone
-						//      sheet in a water box, or no Y at all: the
-						//      root).  Nothing is popped; the far side is Y.
-						//
-						// Review round 2 (P1-A): the two are told apart by
-						// CONTAINMENT, never by comparing indices.  The
-						// round-1 rule ("pop iff Y's index equals this
-						// sheet's") misread every slab of two DIFFERENT
-						// indices as (b) and ended the chain inside the
-						// sibling's glass, and turned an index mismatch of
-						// 1e-9..1e-3 into a near-matched last vertex --
-						// a continuity cliff (flatslab floor -94 % at a
-						// top index of 2.2000002).  Here Y is probed along
-						// the continuing direction: an EXIT hit on Y means
-						// the walk is still inside Y after the crossing,
-						// i.e. Y encloses it -- (b); a miss, or an ENTRY
-						// hit, means Y was a sheet the walk has already
-						// passed -- (a).  For a CLOSED, outward-wound Y the
-						// first hit from inside is always an exit (concave
-						// or not).  The side test uses the TRUE face
-						// orientation (DL-70), so a double-sided closed
-						// mesh reads correctly; a ray-derived (hair)
-						// normal has no side and cannot enclose.  One ray
-						// against ONE object, only on this rare branch.
-						// In air with no enclosing object nothing
-						// changes: the top is the root, 1.0.
-						//
-						// Known residuals (review round 3; the open-sheet /
-						// winding convention family, DL-345, filed at
-						// merge), each measured with BuildSeedChain:
-						//  - Y is itself an OPEN sheet that bounds the
-						//    walk's medium: a lone 1.5 sheet inside a
-						//    two-sheet 2.2 slab reads [1.5 -> 1], correct
-						//    [1.5 -> 2.2] -- the probe misses the slab's
-						//    bottom sheet and pops it (A7-KF T6).
-						//  - Y is a closed solid wound INWARD (a
-						//    single-sided mesh) that the camera path
-						//    pushed: the probe's exit hit reads as an
-						//    entry, [2.2 -> 1][1 -> 1.33 entry] instead of
-						//    [2.2 -> 1.33][1.33 -> 1] (A7-KF T5c).
-						//  - Y is a closed solid with a HOLE and the walk
-						//    leaves through it: the probe misses and pops,
-						//    1.0 where the stack says 1.33 (ill-posed
-						//    geometry, no right answer).
-						//  - Two STACKED open slabs seen through their
-						//    sheets: the camera path pushed all four
-						//    sheets, and the walk reads the air gap between
-						//    the slabs as glass ([2.2 -> 2.2] x3) in every
-						//    post-DL-290 build; the pre-DL-290 walk, which
-						//    started from air, got it right.  This is the
-						//    receiver stack's own open-sheet convention
-						//    (DL-345), not this branch.
-						const IObject* pY = seedIor.topObject();
-						if( pY ) {
-							bool yEnclosesCrossing = false;
-							const Ray probe( Point3Ops::mkPoint3( ri.geometric.ptIntersection, dir * offsetEps ), dir );
-							RayIntersection pri( probe, nullRasterizerState );
-							pY->IntersectRay( pri, RISE_INFINITY, true, true, false );
-							if( pri.geometric.bHit && pri.geometric.HasTrueGeomSide() ) {
-								yEnclosesCrossing = Vector3Ops::Dot( dir, pri.geometric.UnflippedGeomNormal() ) > 0;
-							}
-							if( !yEnclosesCrossing ) {
-								seedIor.SetCurrentObject( pY );
-								seedIor.pop();
-							}
-						}
-						currentIOR = seedIor.top();
-					}
+				seedIor = destIor;
+				currentIOR = destIOR;
+				if( !bEntering ) {
 					// Backfill the just-pushed vertex's etaT with the
-					// post-pop surrounding-medium IOR.  Provisional
-					// value (set above to currentIOR) used the OLD
-					// currentIOR = inside-object IOR, which is wrong
-					// for the half-vector math.
+					// post-pop surrounding-medium IOR (the provisional
+					// value above was the inside-object IOR).
 					chain[ idxJustPushed ].etaT = currentIOR;
 				}
 			}
@@ -4383,8 +4389,13 @@ unsigned int ManifoldSolver::SnellContinueChain(
 				// etaI/etaT as set above (per entering/exiting); the
 				// reflection branch of EvaluateConstraint and
 				// BuildJacobian doesn't read them anyway (it uses
-				// h = wi + wo with no IOR weighting).
+				// h = wi + wo with no IOR weighting).  An EXIT's etaT is the
+				// far medium's index, not the provisional inside index: the
+				// interface's Fresnel reads it.
 				chain[ idxJustPushed ].isReflection = true;
+				if( !bEntering ) {
+					chain[ idxJustPushed ].etaT = destIOR;
+				}
 				dir = dir + n * (2.0 * cosI2);
 				dir = Vector3Ops::Normalize( dir );
 			}
