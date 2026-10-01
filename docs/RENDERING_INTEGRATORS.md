@@ -288,6 +288,40 @@ queries. For a diffuse-dominated scene, BDPT or PT beats VCM on
 wall-clock per-pixel quality. See [VCM.md](VCM.md) for the design
 rationale and Veach-transparency handling.
 
+#### VCM automatic merge radius (DL-319, 2026-10-01)
+
+Merging is consistent, not unbiased: the kernel estimate blurs the
+image at the scale of the merge radius, so a radius wider than the
+feature the camera is looking at is a BIAS that more samples do not
+remove.  `merge_radius 0` (the default) sizes the initial radius as
+
+    r0 = min( 0.01 x median light segment ,  8 x eye-side pixel footprint )
+
+The first term is the historical light-side estimate (segments with a
+mergeable endpoint, from the pre-pass's one light subpath per pixel).
+It knows the photon density but not which surfaces the image sees: a
+small receiver inside a large enclosure gets a radius sized by the
+segments to the enclosure wall.  `RefractiveRadianceScalingTest`'s
+row E patch (0.14 wide) inside a radius-20 black room got r = 0.187
+and read 0.62 of its closed form.  The second term is the median
+world-space pixel spacing at the first vertex each camera ray merges
+at (one eye subpath per pixel of a <= 16k grid, walked through
+pure-delta interfaces, the camera ray's differentials carried as a
+cone along the path length).  It caps the blur at what the image
+resolves, and because a pass shoots W x H light subpaths over a visible
+area of ~W x H footprints squared, a radius of k footprints holds
+~pi k^2 x (light vertices per subpath landing in view) photons per
+query -- independent of resolution and of the enclosure.  k = 8 sits
+above every shipped VCM scene's own light-side radius (1.0-6.2
+footprints), so the clip leaves them untouched and only fires on
+outliers (row E's room: 73 footprints -> 1.00 of the closed form).
+The log line reports both scales and which one won
+(`effective_radius=... (eye-clipped|light)`).  An explicit
+`merge_radius` bypasses all of this.  The pre-pass disables merging
+when fewer than 8 light segments touch a mergeable surface; its
+warning now says whether the camera sees no mergeable surface at all
+or sees them but too few light paths land there.
+
 ### 5.4 Pick MLT (`mlt_rasterizer`) when…
 
 - BDPT and VCM both fail to find the important paths after long

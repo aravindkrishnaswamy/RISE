@@ -1001,7 +1001,11 @@ entirely.
   a black room of radius 20, that radius is 0.19, wider than the whole
   patch.  VCM then reads 0.60 of the closed form, and the same with the
   enclosure.  With merging off it reads 0.998 +/- 0.006 (salted n = 6).  This is why
-  row F's VCM uses an explicit `merge_radius`.
+  row F's VCM uses an explicit `merge_radius`.  **Fixed 2026-10-01
+  (`debt-dl319`)**: the auto radius is now clipped to 8 eye-side pixel
+  footprints (0.021 here), and the new "row E room" block gates VCM's
+  automatic radius against the closed form (0.62 -> 1.00); see
+  [RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) section 5.3.
   Separately, the "auto-radius failed" warning on rows B and E is
   correct behaviour: nothing, or too little, is mergeable.  The message
   now says so.

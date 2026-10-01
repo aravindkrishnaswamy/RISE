@@ -6,7 +6,7 @@ This document describes the VCM integrator, a unified bidirectional light transp
 
 - **VCMIntegrator** with **VCMPelRasterizer** (RGB) and **VCMSpectralRasterizer** (HWSS).
 - Surface-only merging.  Medium scatter vertices traverse the recurrence (geometric + phase-function sampling updates using `sigma_t_scalar`) but are not stored or merged.  Connection transmittance through media is Tr=1 in v1.
-- SPPM-style progressive radius shrinkage (global per-iteration, clamped by an adaptive density floor), with automatic median-segment-based fallback for the initial radius.  Set `vcm_disable_progressive_radius=true` in global options to revert to fixed-radius SmallVCM.
+- SPPM-style progressive radius shrinkage (global per-iteration, clamped by an adaptive density floor), with an automatic initial radius (the median-light-segment estimate clipped to 8 eye-side pixel footprints, DL-319).  Set `vcm_disable_progressive_radius=true` in global options to revert to fixed-radius SmallVCM.
 - Balance-heuristic MIS (matches SmallVCM, Mitsuba VCM, and the Georgiev 2012 reference); RISE BDPT's power-heuristic path is untouched.  See [MIS_HEURISTICS.md](MIS_HEURISTICS.md) for the full power-vs-balance reasoning.
 - No SMS interop; no OpenPGL guiding.
 
@@ -170,7 +170,7 @@ At 256 spp the diffuse Cornell box matches BDPT within 1% on both the pre-denois
 
 The `merge_radius` parameter controls VM merging:
 - **`merge_radius > 0`** — explicit radius in world units, used as the initial `r_0`.
-- **`merge_radius 0` + `vm_enabled true`** — automatic radius.  `VCMRasterizerBase::PreRenderSetup` runs a pre-pass over the generated light subpaths, collects the length of every segment where **at least one endpoint is a storeable vertex** (`isConnectible` surface), takes the **median** and multiplies by `0.01` to derive the initial merge radius `r_0`.  Filtering to storeable segments avoids skewing the median with long specular chains through glass.  The median is robust against outliers from infinite-plane hits at shallow angles.  The chosen value is logged as `auto-radius segments=... median_segment=... effective_radius=...`.
+- **`merge_radius 0` + `vm_enabled true`** — automatic radius.  `VCMRasterizerBase::PreRenderSetup` runs a pre-pass over the generated light subpaths, collects the length of every segment where **at least one endpoint is a storeable vertex** (`isConnectible` surface), takes the **median** and multiplies by `0.01` to derive the light-side radius, then clips it to 8 eye-side pixel footprints (DL-319, 2026-10-01; see [RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) §5.3 "VCM automatic merge radius") to give the initial merge radius `r_0`.  Filtering to storeable segments avoids skewing the median with long specular chains through glass.  The median is robust against outliers from infinite-plane hits at shallow angles.  The chosen value is logged as `auto-radius segments=... median_segment=... light_radius=... eye_footprint=... eye_radius=... effective_radius=... (eye-clipped|light)`.
   The pre-pass also decides **whether VM runs at all**: it sets `foundSpecular` when any
   light-subpath vertex is a DELTA **surface** (delta-position *lights* deliberately do not
   count — see [skills/bdpt-vcm-mis-balance.md](skills/bdpt-vcm-mis-balance.md)), and logs
@@ -195,7 +195,7 @@ By default (`mProgressiveRadiusEnabled = true`), `VCMRasterizerBase` applies the
 r_{n+1} = r_n * sqrt( (n + alpha) / (n + 1) )
 ```
 
-with `alpha = 2/3` (asymptotically optimal rate) and `n = mMergeRadiusPassCount`.  The shrunk radius is clamped below by `mMergeRadiusFloor`, an adaptive lower bound derived from `mTargetPhotonsPerQuery` (default 20) and the current photon density so that Poisson noise on photon count does not drown out bias reduction.  A scene-derived safety floor (`0.001 * medianSegment`) prevents the radius from collapsing below a geometric floor on pathologically sparse scenes.
+with `alpha = 2/3` (asymptotically optimal rate) and `n = mMergeRadiusPassCount`.  The shrunk radius is clamped below by `mMergeRadiusFloor`, an adaptive lower bound derived from `mTargetPhotonsPerQuery` (default 20) and the current photon density so that Poisson noise on photon count does not drown out bias reduction.  A scene-derived safety floor (`0.1 * r_0`, i.e. `0.001 * medianSegment` when the light-side radius wins) prevents the radius from collapsing below a geometric floor on pathologically sparse scenes.
 
 The photon-store build sets `mLightSubPathCount` to `pathsShot` each pass — equal to W×H since path-tree branching was removed in 2026-05; the renormalization is now a no-op but harmless.
 
