@@ -427,13 +427,16 @@ static void TestMediumVertexNotEmitted()
 }
 
 //
-// Test 5: BSSRDF entry vertices are not stored for merging, but the
-// parallel MIS array must carry their direct area-density state for
-// VC strategies that connect to them.
+// Test 5: a light-side BSSRDF entry ENDS the usable light subpath
+// (DL-317).  A path through a subsurface jump is owned by the EYE-
+// sampled jump -- the light-sampled one has no reverse jump density to
+// be MIS-combined with it -- so nothing at or past the entry is stored
+// for merging and its MIS entries stay zero.  The hit where the light
+// went INTO the material is an ordinary arrival and is stored.
 //
 static void TestBSSRDFEntryAreaPdf()
 {
-	printf( "Test 5: BSSRDF entry area PDF contributes to light-side MIS\n" );
+	printf( "Test 5: a light-side BSSRDF entry ends the usable light subpath (DL-317)\n" );
 
 	std::vector<BDPTVertex> verts;
 
@@ -496,15 +499,22 @@ static void TestBSSRDFEntryAreaPdf()
 	std::vector<VCMMisQuantities> outMis;
 	VCMIntegrator::ConvertLightSubpath( verts, norm, out, &outMis );
 
-	Check( out.size() == 2, "bssrdf: pre-entry and post-entry surfaces stored" );
+	Check( out.size() == 1, "bssrdf: only the pre-entry hit is stored (DL-317)" );
+	if( out.size() >= 1 ) {
+		Check( out[0].pathLength == 1, "bssrdf: the stored vertex is the hit where the light went in" );
+	}
 	Check( outMis.size() == 4, "bssrdf: MIS array parallel to input" );
 	if( outMis.size() != 4 ) {
 		return;
 	}
-	CheckClose( outMis[2].dVCM, 2.0, 1e-12, "bssrdf: dVCM = 1/pdfSurface" );
-	CheckClose( outMis[2].dVC, 0.0, 1e-15, "bssrdf: dVC reset" );
-	CheckClose( outMis[2].dVM, 0.0, 1e-15, "bssrdf: dVM reset" );
-	CheckClose( outMis[3].dVCM, 4.0, 1e-12, "bssrdf: onward cosine PDF reaches next vertex" );
+	// Pre-DL-317 these read dVCM = 1/pdfSurface = 2 at the entry and
+	// 1/p_w = 4 one vertex later, and the post-entry vertex was stored.
+	CheckClose( outMis[2].dVCM, 0.0, 1e-15, "bssrdf: no MIS state at the entry (DL-317)" );
+	CheckClose( outMis[2].dVC, 0.0, 1e-15, "bssrdf: dVC zero at the entry" );
+	CheckClose( outMis[2].dVM, 0.0, 1e-15, "bssrdf: dVM zero at the entry" );
+	CheckClose( outMis[3].dVCM, 0.0, 1e-15, "bssrdf: nothing computed past the entry (DL-317)" );
+	CheckClose( outMis[3].dVC, 0.0, 1e-15, "bssrdf: dVC zero past the entry" );
+	CheckClose( outMis[3].dVM, 0.0, 1e-15, "bssrdf: dVM zero past the entry" );
 }
 
 //////////////////////////////////////////////////////////////////////
