@@ -2371,6 +2371,114 @@ static void RunSSSBarrierRowDL317( const char* name, const std::string& body, co
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+// DL-317 review P1: rows lit by a DELTA light the eye family cannot
+// reach from a random-walk entry.  A random-walk entry admits no NEE,
+// connection or merge, so the eye family reaches the light from it only
+// by BSDF-sampling onward -- which never hits a point light.  The path
+// omni -> sphere -> walk -> exit -> wall -> camera therefore exists ONLY
+// in the light-sampled jump family; cutting that family everywhere (the
+// first DL-317 fix, 3763e998) left it estimated by nothing.  The wall is
+// lit only through the sphere: the light sits behind the wall plane, off
+// its edge.  Metric: the mean over wall-only pixels (sphere masked with a
+// one-pixel dilation), VCM merging on / off against PT.
+//////////////////////////////////////////////////////////////////////
+static const char* kSceneDeltaLitRandomWalkHeadDL317 =
+	"film\n{\n\twidth 32\n\theight 32\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
+	"randomwalk_sss_material\n{\n\tname mat_rw\n\tior 1.3\n\tabsorption 0.1\n"
+		"\tscattering 10.0\n\tg 0.0\n\troughness 0.3\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_alb_d\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"lambertian_material\n{\n\tname mat_lamb_d\n\treflectance pnt_alb_d\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_wall\n\tpta -1 -1 0\n\tptb 1 -1 0\n\tptc 1 1 0\n\tptd -1 1 0\n}\n\n"
+	"standard_object\n{\n\tname obj_wall\n\tgeometry quad_wall\n\tmaterial mat_lamb_d\n}\n\n"
+	"sphere_geometry\n{\n\tname sph_d\n\tradius 0.55\n}\n\n"
+	"standard_object\n{\n\tname obj_sph_d\n\tgeometry sph_d\n\tmaterial mat_rw\n\tposition 0 -0.45 0.6\n}\n\n";
+
+static const char* kLightOmniDL317 =
+	"omni_light\n{\n\tname lgt\n\tpower 20\n\tcolor 1 1 1\n\tposition 1.8 -0.4 -0.3\n}\n";
+
+static const char* kLightSpotDL317 =
+	"spot_light\n{\n\tname lgt\n\tposition 1.8 -0.4 -0.3\n\ttarget 0 -0.45 0.6\n\tinner 20.0\n\touter 30.0\n\tcolor 1 1 1\n\tpower 20\n}\n";
+
+//! True for a pixel whose (dilated) footprint misses the sphere of the
+//! delta-lit fixture: pinhole at (0,0,3.5), fov 30, 32x32, sphere r 0.55
+//! at (0,-0.45,0.6).  `row` counts from the top of the image.
+static bool WallPixelDL317( int row, int col )
+{
+	const double t = std::tan( 15.0 * 3.14159265358979323846 / 180.0 );
+	const double c[3] = { 0.0, -0.45, 0.6 }, o[3] = { 0.0, 0.0, 3.5 };
+	for( int di = -1; di <= 1; di++ ) for( int dj = -1; dj <= 1; dj++ ) {
+		const double x = ( col + dj + 0.5 ) / 16.0 - 1.0, y = 1.0 - ( row + di + 0.5 ) / 16.0;
+		double d[3] = { x * t, y * t, -1.0 };
+		const double l = std::sqrt( d[0]*d[0] + d[1]*d[1] + d[2]*d[2] );
+		for( double& v : d ) v /= l;
+		const double oc[3] = { o[0]-c[0], o[1]-c[1], o[2]-c[2] };
+		const double b = d[0]*oc[0] + d[1]*oc[1] + d[2]*oc[2];
+		const double q = b*b - ( oc[0]*oc[0] + oc[1]*oc[1] + oc[2]*oc[2] - 0.55*0.55 );
+		if( q > 0 ) return false;
+	}
+	return true;
+}
+
+//! Mean over wall pixels of `reps` salted renders (salting as in
+//! RenderAndComputeStats).
+static bool RenderWallMeanDL317( const std::string& scene, int reps, double& out )
+{
+	const std::string path = WriteSceneToTempFile( scene.c_str(), "dl317wall" );
+	if( path.empty() ) return false;
+	double sum = 0;
+	bool ok = true;
+	for( int r = 0; r < reps && ok; r++ ) {
+		ok = false;
+		IJobPriv* pJob = nullptr;
+		if( !RISE_CreateJobPriv( &pJob ) || !pJob ) break;
+		if( pJob->LoadAsciiSceneViaCst( path.c_str() ) ) {
+			pJob->RemoveRasterizerOutputs();
+			CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
+			GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "test capture output" );
+			pJob->GetRasterizer()->AddRasterizerOutput( pCap );
+			SobolSamplerTestHooks::ValueSalt().store( SobolSequence::HashCombine( g_seedBase + g_renderIndex, kSaltTag ) );
+			std::srand( g_seedBase + g_renderIndex++ );
+			const bool bRendered = pJob->Rasterize();
+			SobolSamplerTestHooks::ValueSalt().store( 0u );
+			if( bRendered && pCap->width == 32 && pCap->height == 32 ) {
+				double acc = 0; int cnt = 0;
+				for( int row = 0; row < 32; row++ ) for( int col = 0; col < 32; col++ ) {
+					if( !WallPixelDL317( row, col ) ) continue;
+					const RISEColor& px = pCap->pixels[ row * 32 + col ];
+					acc += ( px.base.r + px.base.g + px.base.b ) * px.a / 3.0;
+					cnt++;
+				}
+				if( cnt > 0 && std::isfinite( acc ) ) { sum += acc / cnt; ok = true; }
+			}
+			safe_release( pCap );
+		}
+		safe_release( pJob );
+	}
+	std::remove( path.c_str() );
+	out = sum / double( reps );
+	return ok && out > 0;
+}
+
+static void RunDeltaLitWallRowDL317( const char* name, const char* light, int spp, int reps, double band )
+{
+	std::cout << "Testing DL-317 " << name << std::endl;
+	const std::string body = std::string( kSceneDeltaLitRandomWalkHeadDL317 ) + light;
+	double pt = 0, on = 0, off = 0;
+	const bool ok = RenderWallMeanDL317( std::string( "RISE ASCII SCENE 7\n" ) + body + RasterizerDL317( "pt", spp, nullptr ), reps, pt )
+		&& RenderWallMeanDL317( std::string( "RISE ASCII SCENE 7\n" ) + body + RasterizerDL317( "vcm", spp, nullptr ), reps, on )
+		&& RenderWallMeanDL317( std::string( "RISE ASCII SCENE 7\n" ) + body + RasterizerDL317( "vcmnovm", spp, nullptr ), reps, off );
+	Check( ok, ( std::string( "DL-317 renders produced output: " ) + name ).c_str() );
+	if( !ok ) return;
+	CheckRatioDL317( std::string( "DL-317 wall-only VCM (merging on) / PT: " ) + name, pt, on, band );
+	CheckRatioDL317( std::string( "DL-317 wall-only VCM (merging off) / PT: " ) + name, pt, off, band );
+	CheckRatioDL317( std::string( "DL-317 wall-only VCM merging on / off: " ) + name, off, on, band );
+}
+
+#define BAND_D_SPP 256
+#define BAND_D_REPS 1
+#define BAND_D 0.10
 static void TestSSSBarrierDL317()
 {
 	RunSSSBarrierRowDL317( "F1 white furnace, conservative random walk (roughness 0.3)",
@@ -2385,6 +2493,10 @@ static void TestSSSBarrierDL317()
 	RunSSSBarrierRowDL317( "B2 backlit smooth-diffusion sphere filling the frame",
 		std::string( kSceneBacklitHeadDL317 ) + kMatBacklitSmoothDiffusionDL317 + kSceneBacklitTailDL317, nullptr,
 		1024, 3, 0.03, 0 );
+	RunDeltaLitWallRowDL317( "D1 omni behind the wall lights a random-walk sphere; wall lit only through it",
+		kLightOmniDL317, BAND_D_SPP, BAND_D_REPS, BAND_D );
+	RunDeltaLitWallRowDL317( "D2 spot behind the wall lights a random-walk sphere; wall lit only through it",
+		kLightSpotDL317, BAND_D_SPP, BAND_D_REPS, BAND_D );
 	RunSSSBarrierRowDL317( "V front-lit random-walk sphere on Lambertian walls (light walks exit onto the walls)",
 		kSceneRandomWalkSphereVDL317, nullptr,
 		1024, 1, 0.007, 0 );
