@@ -20,6 +20,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/IndependentSampler.h"
 #include "VCMIntegrator.h"
 #include "../Interfaces/IGeometry.h"		// CanBeAreaLight(): zero the s=0 competing light pdf for non-NEE-sampleable emitters
 #include "BDPTIntegrator.h"
@@ -121,17 +122,17 @@ namespace
 
 	// Local helper: unoccluded segment test.  Mirrors
 	// BDPTIntegrator::IsVisible so VCM doesn't touch BDPT.
-	inline bool VCMIsVisible( const IRayCaster& caster, const Point3& p1, const Point3& p2 )
+	inline bool VCMIsVisible( const IRayCaster& caster, const Point3& p1, const Point3& p2, ISampler& sampler, MediumBoundaryHits* boundaries )
 	{
 		Vector3 d = Vector3Ops::mkVector3( p2, p1 );
 		const Scalar dist = Vector3Ops::Magnitude( d );
-		if( dist < VCM_RAY_EPSILON ) {
+		if( dist <= 0 || (!boundaries && dist < VCM_RAY_EPSILON) ) {
 			return true;
 		}
 		d = d * ( Scalar( 1 ) / dist );
 		Ray shadowRay( p1, d );
-		shadowRay.Advance( VCM_RAY_EPSILON );
-		return !caster.CastShadowRay( shadowRay, dist - 2.0 * VCM_RAY_EPSILON );
+		// The original ray covers both endpoint tails for medium records.
+		return !caster.CastShadowRaySampled( shadowRay, dist - VCM_RAY_EPSILON, sampler, boundaries, dist, VCM_RAY_EPSILON );
 	}
 
 	inline VCMMisQuantities ApplyBSSRDFEntryAreaUpdate(
@@ -392,7 +393,7 @@ namespace
 		const Point3& p1, const Point3& p2,
 		const IScene& scene, const IRayCaster& caster,
 		const IObject* pStartMediumObject, const IMedium* pStartMedium,
-		const Tag& tag );
+		const Tag& tag, const MediumBoundaryHits* boundaries );
 
 	template<>
 	inline RISEPel EvalConnectionTr<PelTag>(
@@ -400,11 +401,11 @@ namespace
 		const Point3& p1, const Point3& p2,
 		const IScene& scene, const IRayCaster& caster,
 		const IObject* pStartMediumObject, const IMedium* pStartMedium,
-		const PelTag& )
+		const PelTag&, const MediumBoundaryHits* boundaries )
 	{
 		return bdpt.EvalConnectionTransmittance(
 			p1, p2, scene, caster,
-			pStartMediumObject, pStartMedium );
+			pStartMediumObject, pStartMedium, boundaries );
 	}
 
 	template<>
@@ -413,11 +414,11 @@ namespace
 		const Point3& p1, const Point3& p2,
 		const IScene& scene, const IRayCaster& caster,
 		const IObject* pStartMediumObject, const IMedium* pStartMedium,
-		const NMTag& tag )
+		const NMTag& tag, const MediumBoundaryHits* boundaries )
 	{
 		return bdpt.EvalConnectionTransmittanceNM(
 			p1, p2, scene, caster, tag.nm,
-			pStartMediumObject, pStartMedium );
+			pStartMediumObject, pStartMedium, boundaries );
 	}
 
 	template<class Tag>
@@ -427,7 +428,7 @@ namespace
 		const Ray& connectionRay, const Scalar maxDist,
 		const IScene& scene, const IRayCaster& caster,
 		const IObject* pStartMediumObject, const IMedium* pStartMedium,
-		const Tag& tag );
+		const Tag& tag, const MediumBoundaryHits* boundaries );
 
 	template<>
 	inline RISEPel EvalConnectionTrRay<PelTag>(
@@ -435,11 +436,11 @@ namespace
 		const Ray& connectionRay, const Scalar maxDist,
 		const IScene& scene, const IRayCaster& caster,
 		const IObject* pStartMediumObject, const IMedium* pStartMedium,
-		const PelTag& )
+		const PelTag&, const MediumBoundaryHits* boundaries )
 	{
 		return bdpt.EvalConnectionTransmittance(
 			connectionRay, maxDist, scene, caster,
-			pStartMediumObject, pStartMedium );
+			pStartMediumObject, pStartMedium, boundaries );
 	}
 
 	template<>
@@ -448,11 +449,11 @@ namespace
 		const Ray& connectionRay, const Scalar maxDist,
 		const IScene& scene, const IRayCaster& caster,
 		const IObject* pStartMediumObject, const IMedium* pStartMedium,
-		const NMTag& tag )
+		const NMTag& tag, const MediumBoundaryHits* boundaries )
 	{
 		return bdpt.EvalConnectionTransmittanceNM(
 			connectionRay, maxDist, scene, caster, tag.nm,
-			pStartMediumObject, pStartMedium );
+			pStartMediumObject, pStartMedium, boundaries );
 	}
 }
 
@@ -784,6 +785,11 @@ void VCMIntegrator::ConvertLightSubpath(
 			lv.pMaterial  = v.pMaterial;
 			lv.pObject    = v.pObject;
 			lv.throughput = v.throughput;
+            // The camera endpoint already realizes surface coverage. The
+            // photon store estimates incident flux CONDITIONED on that endpoint,
+            // so undo only this photon's deposit-acceptance probability. The
+            // continuing light subpath and shared MIS partition remain unchanged.
+            lv.throughput = lv.throughput * (1 / v.acceptedAlphaCoverage);
 			// Cache the NM-merge spectrum at deposit time -- see
 			// LightVertex::throughputSpectrum's comment
 			// (VCMLightVertex.h) and LightThroughputSpectrum's comment
@@ -1234,6 +1240,8 @@ namespace
 		const Tag& tag
 		)
 	{
+        MediumBoundaryHits boundaryHits;
+    const bool sceneAlpha = caster.GetLightSampler() && caster.GetLightSampler()->SceneHasAlphaCoverage();
 		using Traits = SpectralValueTraits<Tag>;
 		typename Traits::value_type total = Traits::zero();
 
@@ -1304,7 +1312,7 @@ namespace
 						v.position.y + wiVis.y * kVisFar,
 						v.position.z + wiVis.z * kVisFar );
 				}
-				if( !VCMIsVisible( caster, v.position, visTargetVCM ) ) {
+				if( !VCMIsVisible( caster, v.position, visTargetVCM, sampler, (sceneAlpha ? &boundaryHits : nullptr) ) ) {
 					continue;
 				}
 			}
@@ -1610,7 +1618,7 @@ namespace
 					EvalConnectionTrRay<Tag>(
 						bdpt, envRayVCM, RISE_INFINITY,
 						scene, caster,
-						v.pMediumObject, v.pMediumVol, tag );
+						v.pMediumObject, v.pMediumVol, tag, (sceneAlpha ? &boundaryHits : nullptr) );
 				const typename Traits::value_type contribution =
 					VertexThroughput<Tag>( v, tag ) * fEye * Le * Tr_conn_env *
 					( cosEyeWi / pdfSA ) * weight * invLightSelect;
@@ -1622,7 +1630,7 @@ namespace
 				EvalConnectionTr<Tag>(
 					bdpt, v.position, ls.position,
 					scene, caster,
-					v.pMediumObject, v.pMediumVol, tag );
+					v.pMediumObject, v.pMediumVol, tag, (sceneAlpha ? &boundaryHits : nullptr) );
 			// DL-09: the NEE connection segment's graded-index factor
 			// (n_eye/n_light)^2 when both ends lie in one graded medium
 			// (docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md §3(ii)); exactly 1
@@ -1700,9 +1708,11 @@ namespace
 		const VCMNormalization& norm,
 		const IPixelFilter* pixelFilter,
 		const Scalar splatScale,
-		const Tag& tag
+		const Tag& tag, ISampler& sampler
 		)
 	{
+        MediumBoundaryHits boundaryHits;
+    const bool sceneAlpha = caster.GetLightSampler() && caster.GetLightSampler()->SceneHasAlphaCoverage();
 		using Traits = SpectralValueTraits<Tag>;
 
 		if( lightVerts.size() != lightMis.size() || lightVerts.empty() ) {
@@ -1782,7 +1792,7 @@ namespace
 				continue;
 			}
 
-			if( !VCMIsVisible( caster, v.position, camPos ) ) {
+			if( !VCMIsVisible( caster, v.position, camPos, sampler, (sceneAlpha ? &boundaryHits : nullptr) ) ) {
 				continue;
 			}
 
@@ -1901,7 +1911,7 @@ namespace
 				EvalConnectionTr<Tag>(
 					bdpt, v.position, camPos,
 					scene, caster,
-					v.pMediumObject, v.pMediumVol, tag );
+					v.pMediumObject, v.pMediumVol, tag, (sceneAlpha ? &boundaryHits : nullptr) );
 
 			const typename Traits::value_type weighted = contribution * Tr_conn_splat * weight;
 
@@ -1957,14 +1967,17 @@ void VCMIntegrator::SplatLightSubpathToCamera(
 	const Point2& cameraLensSample,
 	SplatFilm& splatFilm,
 	const VCMNormalization& norm,
-	const IPixelFilter* pixelFilter
+	const IPixelFilter* pixelFilter, ISampler* alphaSampler
 	) const
 {
+    RandomNumberGenerator alphaRandom;
+    IndependentSampler alphaFallback(alphaRandom);
+    ISampler& sampler = alphaSampler ? *alphaSampler : static_cast<ISampler&>(alphaFallback);
 	const IFilm* pFilm = scene.GetFilm();
 	SplatLightSubpathToCameraImpl<PelTag>(
 		lightVerts, lightMis, scene, caster, *pGenerator, camera, cameraLensSample,
 		pFilm->GetWidth(), pFilm->GetHeight(),
-		splatFilm, norm, pixelFilter, 1.0, PelTag{} );
+		splatFilm, norm, pixelFilter, 1.0, PelTag{}, sampler );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -2017,9 +2030,11 @@ namespace
 		const std::vector<BDPTVertex>& eyeVerts,
 		const std::vector<VCMMisQuantities>& eyeMis,
 		const VCMNormalization& norm,
-		const Tag& tag
+		const Tag& tag, ISampler& sampler
 		)
 	{
+        MediumBoundaryHits boundaryHits;
+    const bool sceneAlpha = caster.GetLightSampler() && caster.GetLightSampler()->SceneHasAlphaCoverage();
 		using Traits = SpectralValueTraits<Tag>;
 		typename Traits::value_type total = Traits::zero();
 
@@ -2083,7 +2098,7 @@ namespace
 				lightToEye = lightToEye * ( Scalar( 1 ) / dist );
 				const Scalar distSq = dist * dist;
 
-				if( !VCMIsVisible( caster, lv.position, ev.position ) ) {
+				if( !VCMIsVisible( caster, lv.position, ev.position, sampler, (sceneAlpha ? &boundaryHits : nullptr) ) ) {
 					continue;
 				}
 
@@ -2159,7 +2174,7 @@ namespace
 					EvalConnectionTr<Tag>(
 						bdpt, ev.position, lv.position,
 						scene, caster,
-						ev.pMediumObject, ev.pMediumVol, tag );
+						ev.pMediumObject, ev.pMediumVol, tag, (sceneAlpha ? &boundaryHits : nullptr) );
 
 				// DL-09: the connection segment's graded-index factor.
 				const Scalar gradedScale = GradedIndexMedium::ConnectionScale(
@@ -2182,11 +2197,14 @@ RISEPel VCMIntegrator::EvaluateInteriorConnections(
 	const std::vector<VCMMisQuantities>& lightMis,
 	const std::vector<BDPTVertex>& eyeVerts,
 	const std::vector<VCMMisQuantities>& eyeMis,
-	const VCMNormalization& norm
+	const VCMNormalization& norm, ISampler* alphaSampler
 	) const
 {
+    RandomNumberGenerator alphaRandom;
+    IndependentSampler alphaFallback(alphaRandom);
+    ISampler& sampler = alphaSampler ? *alphaSampler : static_cast<ISampler&>(alphaFallback);
 	return EvaluateInteriorConnectionsImpl<PelTag>(
-		scene, caster, *pGenerator, lightVerts, lightMis, eyeVerts, eyeMis, norm, PelTag{} );
+		scene, caster, *pGenerator, lightVerts, lightMis, eyeVerts, eyeMis, norm, PelTag{}, sampler );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -2578,14 +2596,17 @@ void VCMIntegrator::SplatLightSubpathToCameraNM(
 	const VCMNormalization& norm,
 	const Scalar nm,
 	const IPixelFilter* pixelFilter,
-	const Scalar splatScale
+	const Scalar splatScale, ISampler* alphaSampler
 	) const
 {
+    RandomNumberGenerator alphaRandom;
+    IndependentSampler alphaFallback(alphaRandom);
+    ISampler& sampler = alphaSampler ? *alphaSampler : static_cast<ISampler&>(alphaFallback);
 	const IFilm* pFilm = scene.GetFilm();
 	SplatLightSubpathToCameraImpl<NMTag>(
 		lightVerts, lightMis, scene, caster, *pGenerator, camera, cameraLensSample,
 		pFilm->GetWidth(), pFilm->GetHeight(),
-		splatFilm, norm, pixelFilter, splatScale, NMTag( nm ) );
+		splatFilm, norm, pixelFilter, splatScale, NMTag( nm ), sampler );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -2600,11 +2621,14 @@ Scalar VCMIntegrator::EvaluateInteriorConnectionsNM(
 	const std::vector<BDPTVertex>& eyeVerts,
 	const std::vector<VCMMisQuantities>& eyeMis,
 	const VCMNormalization& norm,
-	const Scalar nm
+	const Scalar nm, ISampler* alphaSampler
 	) const
 {
+    RandomNumberGenerator alphaRandom;
+    IndependentSampler alphaFallback(alphaRandom);
+    ISampler& sampler = alphaSampler ? *alphaSampler : static_cast<ISampler&>(alphaFallback);
 	return EvaluateInteriorConnectionsImpl<NMTag>(
-		scene, caster, *pGenerator, lightVerts, lightMis, eyeVerts, eyeMis, norm, NMTag( nm ) );
+		scene, caster, *pGenerator, lightVerts, lightMis, eyeVerts, eyeMis, norm, NMTag( nm ), sampler );
 }
 
 //////////////////////////////////////////////////////////////////////

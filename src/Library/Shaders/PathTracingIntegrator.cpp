@@ -1956,7 +1956,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		{
 			ri = RayIntersection( currentRay, rast );
 			ri.geometric.glossyFilterWidth = glossyFilterWidth;
-			scene.GetObjects()->IntersectRay( ri, true, true, false );
+			scene.GetObjects()->IntersectRaySampled( ri, sampler );
 
 			bool bHit = ri.geometric.bHit;
 
@@ -2928,7 +2928,9 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					// a discontinuous Ft when shading swung past horizon.
 					const Scalar cosInShade = Vector3Ops::Dot( ri.geometric.vNormal, wo );
 					const Scalar cosIn = r_max( fabs( cosInShade ), Scalar( NEARZERO ) );
-					const Scalar Ft = pProfile->FresnelTransmission( cosIn, ri.geometric );
+					const Scalar Ft = Traits::is_nm
+                        ? pProfile->FresnelTransmissionNM( cosIn, ri.geometric, PTTagNm( tag ) )
+                        : pProfile->FresnelTransmission( cosIn, ri.geometric );
 
 					if( Ft > NEARZERO )
 					{
@@ -3143,12 +3145,10 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			const RandomWalkSSSParams* pRWParams =
 				ri.pMaterial ? ri.pMaterial->GetRandomWalkSSSParams() : 0;
 
-			// NM-only fallback (preserved asymmetry): when the material
-			// provides per-wavelength random-walk params but no RGB ones,
-			// the NM original synthesised them via GetRandomWalkSSSParamsNM.
+            // Prefer wavelength parameters; RGB is a fallback for constant models.
 			[[maybe_unused]] RandomWalkSSSParams rwParamsNM;
 			if constexpr ( Traits::is_nm ) {
-				if( !pRWParams && ri.pMaterial &&
+				if( ri.pMaterial &&
 					ri.pMaterial->GetRandomWalkSSSParamsNM( tag.nm, rwParamsNM ) ) {
 					pRWParams = &rwParamsNM;
 				}
@@ -3211,8 +3211,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					// dielectric law, so this transmission and the SPF's
 					// reflection sum to 1.
 					const Scalar Ft = BSSRDFSampling::BoundaryTransmission( cosIn,
-						BSSRDFSampling::RelativeBoundaryIOR( pRWParams->ior,
-							BSSRDFSampling::ExteriorIOR( ri.geometric ) ) );
+						pRWParams->ior, BSSRDFSampling::ExteriorIOR( ri.geometric ) );
 
 					if( Ft > NEARZERO )
 					{
@@ -4684,12 +4683,12 @@ PathTracingIntegrator::IntegrateRayTemplated(
 	// DielectricSPF wrong-side test drops the transmission lobe entirely.
 	// Free-space cameras: the probe finds no enclosing objects, no-op.
 	// Mirrors the eye-subpath seeding in BDPTIntegrator (GenerateEyeSubpath).
-	IORStackSeeding::SeedFromPoint( iorStack, cameraRay.origin, scene );
+	IORStackSeeding::SeedFromPoint( iorStack, cameraRay.origin, scene, PTTagNm( tag ) );
 	sampler.StartStream( 16 );
 
 	// Intersect camera ray
 	RayIntersection ri( cameraRay, rast );
-	scene.GetObjects()->IntersectRay( ri, true, true, false );
+	scene.GetObjects()->IntersectRaySampled( ri, sampler );
 	if constexpr ( Traits::supports_aov ) {
 		// Primary depth is independent of Accurate-mode albedo/normal
 		// traversal.  Never replace this camera-ray range with a later
@@ -5047,7 +5046,7 @@ PathTracingIntegrator::IntegrateRayTemplated(
 				// --- follow the continuation ---------------------------
 				//
 				RayIntersection ri2( walkRay, rast );
-				scene.GetObjects()->IntersectRay( ri2, true, true, false );
+				scene.GetObjects()->IntersectRaySampled( ri2, sampler );
 
 				const Scalar maxDist = ri2.geometric.bHit ? ri2.geometric.range : RISE_INFINITY;
 
@@ -5551,9 +5550,15 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		{
 			if( !swl.terminated[i] )
 			{
-				hwssResult[i] = IntegrateFromHitNM( rc, rast, firstHit,
+				// Replay physical containment for each lane: a camera already
+				// inside a dispersive ambient must not inherit the hero index.
+                    IORStack laneStack(initialIorStack.EnvironmentIOR());
+                    const Point3 probePoint = Point3Ops::mkPoint3(firstHit.geometric.ray.origin,
+                        firstHit.geometric.ray.Dir() * (firstHit.geometric.range * 0.5));
+                    IORStackSeeding::SeedFromPoint(laneStack, probePoint, scene, swl.lambda[i]);
+                    hwssResult[i] = IntegrateFromHitNM( rc, rast, firstHit,
 					swl.lambda[i], scene, caster, sampler, pRadianceMap,
-					startDepth, initialIorStack, bsdfPdf, 0,
+					startDepth, laneStack, bsdfPdf, 0,
 					considerEmission, importance, rayType,
 					diffuseBounces, glossyBounces, transmissionBounces,
 					translucentBounces, volumeBounces, glossyFilterWidth,
@@ -5596,9 +5601,15 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			{
 				if( !swl.terminated[i] )
 				{
-					hwssResult[i] = IntegrateFromHitNM( rc, rast, firstHit,
+					// Replay physical containment for each lane: a camera already
+				// inside a dispersive ambient must not inherit the hero index.
+                    IORStack laneStack(initialIorStack.EnvironmentIOR());
+                    const Point3 probePoint = Point3Ops::mkPoint3(firstHit.geometric.ray.origin,
+                        firstHit.geometric.ray.Dir() * (firstHit.geometric.range * 0.5));
+                    IORStackSeeding::SeedFromPoint(laneStack, probePoint, scene, swl.lambda[i]);
+                    hwssResult[i] = IntegrateFromHitNM( rc, rast, firstHit,
 						swl.lambda[i], scene, caster, sampler, pRadianceMap,
-						startDepth, initialIorStack, bsdfPdf, 0,
+						startDepth, laneStack, bsdfPdf, 0,
 						considerEmission, importance, rayType,
 						diffuseBounces, glossyBounces, transmissionBounces,
 						translucentBounces, volumeBounces, glossyFilterWidth,
@@ -5712,7 +5723,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		{
 			ri = RayIntersection( currentRay, rast );
 			ri.geometric.glossyFilterWidth = glossyFilterWidth;
-			scene.GetObjects()->IntersectRay( ri, true, true, false );
+			scene.GetObjects()->IntersectRaySampled( ri, sampler );
 
 			bool bHit = ri.geometric.bHit;
 
@@ -5939,7 +5950,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 							//
 							RayIntersection ri2( walkRay, rast );
 							ri2.geometric.glossyFilterWidth = glossyFilterWidth;
-							scene.GetObjects()->IntersectRay( ri2, true, true, false );
+							scene.GetObjects()->IntersectRaySampled( ri2, sampler );
 
 							//
 							// --- sample this wavelength's medium along it
@@ -6313,9 +6324,13 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					{
 						continue;
 					}
-					hwssResult[w] += throughputComp[w] * IntegrateFromHitNM(
+					IORStack laneStack(iorStack.EnvironmentIOR());
+                    const Point3 probePoint = Point3Ops::mkPoint3(ri.geometric.ray.origin,
+                        ri.geometric.ray.Dir() * (ri.geometric.range * 0.5));
+                    IORStackSeeding::SeedFromPoint(laneStack, probePoint, scene, swl.lambda[w]);
+                    hwssResult[w] += throughputComp[w] * IntegrateFromHitNM(
 						rc, rast, ri, swl.lambda[w], scene, caster, sampler,
-						pRadianceMap, depth, iorStack, bsdfPdf, 0,
+						pRadianceMap, depth, laneStack, bsdfPdf, 0,
 						considerEmission, importance, rayType,
 						diffuseBounces, glossyBounces, transmissionBounces,
 						translucentBounces, volumeBounces, glossyFilterWidth,
@@ -6968,12 +6983,31 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 	// DielectricSPF wrong-side test drops the transmission lobe entirely.
 	// Free-space cameras: the probe finds no enclosing objects, no-op.
 	// Mirrors the eye-subpath seeding in BDPTIntegrator (GenerateEyeSubpath).
-	IORStackSeeding::SeedFromPoint( iorStack, cameraRay.origin, scene );
+	IORStackSeeding::SeedFromPoint( iorStack, cameraRay.origin, scene, swl.HeroLambda() );
+    // A camera inside a dispersive enclosure has wavelength-dependent incoming
+    // interfaces before the first hit. Trace independent NM paths in that case:
+    // a hero stack cannot price a companion's eventual exit or radiance scaling.
+    // Compare the whole chain, including outer media hidden by a constant inner one.
+    bool dispersiveContainment = false;
+    for(unsigned int w=0; iorStack.topObject() && w<SampledWavelengths::N; ++w) {
+        if(swl.terminated[w]) continue;
+        IORStack laneStack(iorStack.EnvironmentIOR());
+        IORStackSeeding::SeedFromPoint(laneStack, cameraRay.origin, scene, swl.lambda[w]);
+        if(!laneStack.SameInterfaces(iorStack)) dispersiveContainment = true;
+    }
+    if(dispersiveContainment) {
+        for(unsigned int w=0; w<SampledWavelengths::N; ++w) {
+            if(!swl.terminated[w]) result[w] = IntegrateRayNM(rc, rast, cameraRay,
+                swl.lambda[w], scene, caster, sampler, pRadianceMap, pAOV);
+        }
+        return;
+    }
+
 	sampler.StartStream( 16 );
 
 	// Intersect camera ray
 	RayIntersection ri( cameraRay, rast );
-	scene.GetObjects()->IntersectRay( ri, true, true, false );
+	scene.GetObjects()->IntersectRaySampled( ri, sampler );
 	// Capture before primary-medium sampling: HWSS can return from a volume
 	// scatter without ever entering IntegrateFromHitHWSS.
 	if( pAOV ) {
@@ -7179,7 +7213,7 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 					// --- follow the continuation ------------------------
 					//
 					RayIntersection ri2( walkRay, rast );
-					scene.GetObjects()->IntersectRay( ri2, true, true, false );
+					scene.GetObjects()->IntersectRaySampled( ri2, sampler );
 
 					//
 					// --- sample this wavelength's medium along it -------

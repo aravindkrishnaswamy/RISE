@@ -469,7 +469,7 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 			// Evaluate hero wavelength
 			{
 				std::vector<BDPTIntegrator::ConnectionResultNM> heroResults =
-					pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, scene, *pCaster, camera, cameraLensSample, heroNM );
+					pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, scene, *pCaster, camera, cameraLensSample, heroNM, &sampler );
 				accumulateResults( heroResults, heroNM );
 				activeWavelengthCount++;
 			}
@@ -520,7 +520,7 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 
 				std::vector<BDPTIntegrator::ConnectionResultNM> compResults =
 					pIntegrator->EvaluateAllStrategiesNM(
-						compLight, compEye, scene, *pCaster, camera, cameraLensSample, companionNM );
+						compLight, compEye, scene, *pCaster, camera, cameraLensSample, companionNM, &sampler );
 				accumulateResults( compResults, companionNM );
 				activeWavelengthCount++;
 			}
@@ -549,7 +549,7 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 
 			pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, screenPos, scene, *pCaster, sampler, eyeVerts, eyeSubpathStarts, nm, nullptr );
 
-			results = pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, scene, *pCaster, camera, cameraLensSample, nm );
+			results = pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, scene, *pCaster, camera, cameraLensSample, nm, &sampler );
 
 			for( unsigned int r = 0; r < results.size(); r++ )
 			{

@@ -16,6 +16,7 @@
 #define RAY_INTERSECTION_
 
 #include "RayIntersectionGeometric.h"
+#include <vector>
 
 namespace RISE
 {
@@ -36,6 +37,18 @@ namespace RISE
 														// this should be a list of somesort... eventually
 		const IObject*					pObject;		// the object that was hit
 		const IRadianceMap*				pRadianceMap;	// the radiance map at the intersection
+
+        // Unbacked geometric boundary parameters in the CURRENT caller ray's
+        // distance units. Object captures these before its shading backoff;
+        // CSG selects entry/exit metadata alongside its selected surface and
+        // converts units once per nesting transform. Unknown producers leave
+        // availability false. These never replace published shading ranges.
+        bool hasBoundaryRange = false, hasBoundaryRange2 = false;
+        Scalar boundaryRange = 0, boundaryRange2 = 0;
+        Point3 BoundaryPoint() const {
+            return hasBoundaryRange ? geometric.ray.PointAtLength(boundaryRange) : geometric.ptIntersection;
+        }
+        Scalar acceptedAlphaCoverage = 1; // Exact acceptance probability, never re-evaluated for deposits.
 
 		RayIntersection( const Ray& ray, const RasterizerState& rast ) : 
 		  geometric( ray, rast ),
@@ -62,8 +75,13 @@ namespace RISE
 		  pModifier( r.pModifier ),
 		  pObject( r.pObject ),
 		  pRadianceMap( r.pRadianceMap )
-		{}
+		{ acceptedAlphaCoverage = r.acceptedAlphaCoverage;
+          hasBoundaryRange = r.hasBoundaryRange; hasBoundaryRange2 = r.hasBoundaryRange2;
+          boundaryRange = r.boundaryRange; boundaryRange2 = r.boundaryRange2; }
 	};
+	// Accepted medium boundaries from one sampled visibility segment.
+	// Each record retains its world point and true geometric side; no replay.
+	typedef std::vector<RayIntersection> MediumBoundaryHits;
 }
 
 #include "../Interfaces/IMaterial.h"

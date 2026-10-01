@@ -89,6 +89,7 @@ namespace RISE
 		/// Result of BSSRDF importance sampling at a surface vertex
 		struct SampleResult
 		{
+            Scalar acceptedAlphaCoverage = 1;
 			Point3				entryPoint;		///< Entry point on the surface
 			Vector3				entryNormal;	///< Shading normal at entry point — drives the cosine-sampled
 												///< continuation frame and Sw Fresnel angular dependence.
@@ -185,9 +186,17 @@ namespace RISE
 		/// function evaluates the transmitted cosine itself and returns
 		/// total reflection (Ft = 0) past the critical angle.  eta == 1 is
 		/// no interface (Ft = 1).
+		// Keep the ordered absolute pair for pointwise boundary queries: forming
+		// eta first discards an index-ratio residual amplified at critical incidence.
+		inline Scalar BoundaryTransmission( const Scalar mu,
+			const Scalar interiorIOR, const Scalar exteriorIOR )
+		{
+			return 1.0 - Optics::CalculateDielectricReflectanceCosine(mu, exteriorIOR, interiorIOR);
+		}
+		// Relative-index convenience for explicitly dimensionless laws/tests.
 		inline Scalar BoundaryTransmission( const Scalar mu, const Scalar eta )
 		{
-			return 1.0 - Optics::CalculateDielectricReflectanceCosine( mu, 1.0, eta );
+			return BoundaryTransmission(mu, eta, 1.0);
 		}
 
 		/// Closed-form cosine-hemisphere mean of the exact dielectric

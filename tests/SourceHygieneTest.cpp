@@ -4957,6 +4957,11 @@ int main()
 		//                                              later, never a
 		//                                              default-constructed
 		//                                              channel over a stamp.
+        //   ManifoldSolver.cpp                       DL-214 final solved-point alpha
+        //                                              query copy stamps attached scene,
+        //                                              actual root/self and validated
+        //                                              world endpoint before coverage.
+        //                                              Leaves optical/Le records intact.
 		//   RandomWalkSSS.cpp                          boundary exit hits capture the
 		//                                              live surface's `signals`, stamp the
 		//                                              cross-object triple, and re-pair on
@@ -4972,6 +4977,7 @@ int main()
 			"ExpressionEval.h",
 			"ExpressionPainter.cpp",
 			"LightSampler.cpp",
+			"ManifoldSolver.cpp",
 			"ObjectManager.cpp",
 			"PathTracingIntegrator.cpp",
 			"PathVertexEval.h",

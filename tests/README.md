@@ -125,12 +125,9 @@ Useful filename families:
   normal perturbation threaded through `CoatedBRDF`/`CoatedSPF`, ABI v14,
   DL-192 -- money test: a known coat-normal tilt moves the coat specular
   peak by the closed-form reflected angle while the substrate's own diffuse
-  response is unaffected), `BlenderBridgeAlphaTest` (Principled Alpha -> a
-  per-material `advanced_shader` op chain built via the shared
-  `src/Library/Shaders/AdvancedShaderWiring.h` helper, ABI v14, DL-193 --
-  renders the same alpha-cutout scene under `pixelpel_rasterizer` (works,
-  matches closed form) and PT/BDPT (both ignore alpha per the DL-214
-  integrator-compatibility finding, both warn)).  The matching Python-side
+  response is unaffected), `BlenderBridgeAlphaTest` (Principled Alpha -> scalar material
+  coverage, ABI v14: legacy pixelpel and modern PT/BDPT cutout renders plus
+  threshold-adjacent numeric precision checks). The matching Python-side
   exporter (socket-reading) contract lives in
   `src/Blender/addons/rise_renderer/test_hair_export.py`, run separately
   since it needs no C++ build.
@@ -1188,3 +1185,138 @@ controls are supplemental consistency coverage.
 
 See [the transport derivation and scope](../docs/DL239_PHOTON_TRANSPORT.md).
 Final full-slice rendering, cost and review gates are still pending.
+
+### Material alpha coverage (DL-214)
+
+Build named targets with `make -C build/make/rise build-test/<Name>` and run
+`bin/tests/<Name>` from the repository root. `AlphaIntersectionTransportTest`
+contains render-level shadow, emission, continuation, spectral, MLT and active
+VCM merging checks. `AlphaMediumBoundaryTest`, `AlphaSamplerLaneTest`,
+`AlphaSMSReciprocalTest`, `AlphaSMSTransportTest`, and
+`AlphaSubsurfaceEndpointTest` isolate sampler, medium, SMS and nonlocal endpoint
+contracts. `GLTFAlphaImportTest` uses the committed Khronos RGBA alpha asset;
+`BlenderBridgeAlphaTest` checks both legacy and modern imported cutout behavior.
+`LegacyPhotonTransportTest` also measures alpha-compensated RGB/NM photon deposits.
+See [ALPHA_COVERAGE.md](../docs/ALPHA_COVERAGE.md) for the estimator definitions.
+
+- `AlphaRayContextTest`: MASK0 null traversal preserves full camera differential
+  footprints and UV Jacobians, including nonzero differential-origin offsets;
+  coverage painters receive the original segment ray and accumulated range.
+
+- `AlphaEmitterNormalizationTest`: actual rasterizer emission attempts, active
+  VM-only/VC-only/combined emitter coverage, RGB/NM/HWSS.
+- `AlphaShadowMediumTest`: shadow-disabled medium traversal, unused/foreign
+  alpha isolation, directional/mesh/environment queries and successive rays.
+- `AlphaPhotonEmissionTest`: real legacy emission loops, absolute multilight
+  power, spatial coverage/deposit efficiency, bounded reservoir/lifecycle,
+  cancellation, exact progress/time budgets, empty and zero-alpha cases.
+- `AlphaMediumTailTest`: finite light-endpoint attenuation in PT/BDPT/VCM,
+  RGB/NM/HWSS, and unrelated live alpha Job isolation.
+- `AlphaBoundaryEndpointTest`: raw boundary parameters, exact versus adjacent
+  endpoints, transformed/nested CSG, front/back and snapshot copies.
+- `AlphaSnapshotTest`: reconstructed material alpha mode/cutoff, painter
+  lifetime, independent slot rebinding and existing wrapper fallback behavior.
+
+- `AlphaCSGCapabilityTest`, `AlphaCSGTransportTest`: effective inherited CSG
+  alpha census, nested/snapshot/root/intermediate overrides, hidden/foreign
+  isolation and production PT/BDPT/VCM RGB/NM/HWSS medium controls.
+- `AlphaRandomWalkMaterialTest`, `AlphaBSSRDFMaterialTest`: actual selected
+  endpoint materials and pre-modifier coverage; unchanged geometric proposals,
+  ordinary sampler draws, PDFs/weights and final-only alpha decisions.
+
+- `AlphaSubsurfaceContextTest`: real scene-relative scalar expression and
+  nonzero raster coordinates at selected endpoints, with paired proposal,
+  weight and final-only draw controls; `BSSRDFEntrySignalsTest` preserves the
+  established downstream entry-signal contract.
+
+- `AlphaEndpointContextTest`: sampled-emitter/NEE physical scene and world
+  context, optional receiver raster, real scalar world-position renders in
+  RGB/NM/HWSS, and SMS seed-to-solved-point effective material coverage.
+  `SignalEmitterRecordTest` verifies the original emitted-radiance records;
+  `AlphaPhotonEmissionTest` includes all five emission-loop context families.
+
+- `AlphaSMSGeometryTest`: production SMS seed/solve endpoint records on SDF
+  and analytic geometry across scale/transforms, two-stage projection,
+  pre-modifier UV, nearby CSG faces, finite visibility draw bounds, and stale
+  or missing-record refusal. Uses independent control hits and affirmative
+  MASK1 visibility so negative coverage tests cannot pass vacuously.
+
+- `AlphaEmitterRecordTest`: real expression Le preserves the original manual
+  record in OPAQUE/MASK while physical world-P alpha remains affirmative;
+  separates legacy zero-P emission limitations from coverage correctness.
+  `AlphaPhotonEmissionTest` additionally checks actual RGB/NM Phong exponent
+  and direction records, with physical/local/curvature alpha-only context.
+  `AlphaBoundaryEndpointTest` pairs null/record finite bounds and exact alpha
+  draws, distinguishes physical medium events from occlusion intervals, and
+  explicitly retains the no-alpha raw-shadow exact-end convention.
+
+## Blender tangent producers (DL-213)
+
+`BlenderBridgeTangentTest` renders the actual bridge mesh against authored-core,
+rotated-UV and glTF TANGENT controls; it also checks corner interpolation,
+front/back handedness, mirror/nonuniform object frames and native CST authoring.
+Build individually with `make -C build/make/rise build-test/BlenderBridgeTangentTest`.
+`src/Blender/addons/rise_renderer/test_tangent_export.py` is bpy-free arithmetic
+and ABI marshalling coverage. `test_tangent_blender_runtime.py` is a separate
+Blender integration script, run with `blender --background --factory-startup
+--python-exit-code 1 --python ...`; it executes actual exporter/bake production
+code and a RenderEngine render context, including injected-error restoration.
+The production addon must be rebuilt with native/Python ABI v16 together.
+`BlenderShaderDirectionTest` adds independent coat/base normal-map UV separation,
+canonical mirror/front/back rotation, RGB/NM value/Pdf/Scatter, nested CSG, hit
+lifecycle, interpolated raw vectors, CSG cavity complements, immutable original
+UV frames and modifier controls. The real Blender script passes actual exported
+payloads and material rotation to this shipping-consumer executable and asserts
+secondUV/ADD-zero nonuniform/tilted equivalence, valid large-scale bakes, explicit
+backend failure, raw normal components, supported parallel-vector normal
+modifiers and material-domain validity/cleanup. Counts-only rotation
+smoke checks have independent world oracles.
+
+DL-213 R2 adds original Cycles controls for complete RNA properties versus terminal
+components, exact custom-key precedence, binary32 Fac threshold behavior, ordinary
+and real collection instancers, and CYCLES/ALL output selection. Competing shader
+texture/scalar slots, failure cleanup and unchanged shared groups are checked by
+the actual exporter runtime. The bpy-free tangent suite has 18 tests; the runtime
+retains all 13 R1 markers and adds 4 R2 markers.
+
+### Volume absorption statistical coverage (DL-309, 2026-09-30)
+
+`VolumeAbsorptionAttenuationTest` runs all 89 assertions by default. Every
+render scopes `SobolSamplerTestHooks::ValueSalt` to a hash of its advancing
+libc seed and restores the previous hook after workers join; changing only
+`srand` does not independently scramble repeated Sobol points. This applies
+to every default fixture and to row R's existing four-render average.
+Row O preserves its constant-density RGB slab, central 4x4 observable,
+Beer-Lambert reference and 8% channel bands, while averaging six independently
+salted 4096-spp renders. The measured sample budget reduces blue variance;
+it does not guarantee zero false reds on all machines or schedules.
+
+The additional mode `--heterogeneous-measure spp repeats trials seedBase`
+runs the same five O assertions for each trial and reports full-precision RGB,
+timing, first libc seed and first salt. Repeat `j` uses
+`HashCombine(seedBase + trial*repeats + j, 0x309u)`. For example,
+`bin/tests/VolumeAbsorptionAttenuationTest --heterogeneous-measure 4096 6 16 359001`
+measures 16 independent default-row outputs. The stock comparison uses
+`4096 1 16 319001`. Unknown flags, malformed integers, overflow and budgets
+above 1,048,576 spp, 1,024 repeats or 1,024 trials fail with exit 2; this mode supplements
+rather than replaces the full default gate.
+
+DL-324 adds `WardDensityKrayTest --robustness-only` for public RGB/NM Ward
+values, aggregate densities, chromatic sampler endpoints, and HWSS companion
+weights at finite rounded poles and grazing directions. The default suite
+also runs these probes. See [the formulation and oracle notes](../docs/DL324_WARD_FRAME_SLOPES.md). The review repair adds
+range-preserving analytic oracles for axes `1e-150`/`1e-170`, exponents
+700/750, reflectance-weighted quotients beyond the kernel's own range,
+actual asymmetric RGB/NM stored densities, chromatic quarter replay,
+and actual HWSS hero draws whose complete companion is representable
+beyond the standalone lobe or prematurely formed reflectance ratio. Actual
+alpha-one RGB/NM grazing draws at `1e-170`/`1e-200` independently check
+reconstructed half-vector range, aggregate density and both companion forms
+while distinguishing legitimately infinite standalone lobes.
+
+
+DL-334 adds `SSSBoundarySpectralTest` (independent public spectral partition, skin layer and RGB controls) and `SSSBoundaryFurnaceTest` (NM/HWSS conservative slabs, nested ambient and real boundary transitions). See [the boundary derivation](../docs/DL334_SSS_SPECTRAL_BOUNDARY.md).
+
+`SSSCriticalPartitionTest` adds Decimal90 reference fixtures for exact critical directions and ULP neighbors, with public diffusion/RW/skin and constant-index Pel controls. See `docs/DL334_SSS_CRITICAL_BOUNDARY.md`.
+
+- `SSSNearUnityFresnelTest`: independent Decimal110 adjacent-index/grazing R/T and Snell oracles for both orderings, public diffusion/RW/skin NM/raw/green/Pel consumers, critical neighbors, absolute and power-of-two scaling controls.

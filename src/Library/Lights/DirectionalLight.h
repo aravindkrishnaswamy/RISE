@@ -165,6 +165,13 @@ namespace RISE
 			// For keyframamble interface
 			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value );
 			void SetIntermediateValue( const IKeyframeParameter& val );
+            void ComputeDirectLightingSampled(const RayIntersectionGeometric& ri,
+                const IRayCaster& caster, const IBSDF& bsdf, bool shadows, RISEPel& amount,
+                bool fullSphere, bool volume, const IORStack* stack, ISampler& sampler, MediumBoundaryHits* boundaries = nullptr) const;
+            Scalar ComputeDirectLightingSampledNM(const RayIntersectionGeometric& ri,
+                const IRayCaster& caster, const IBSDF& bsdf, bool shadows, Scalar nm,
+                bool fullSphere, bool volume, const IORStack* stack, ISampler& sampler, MediumBoundaryHits* boundaries = nullptr) const;
+
 		};
 	}
 }

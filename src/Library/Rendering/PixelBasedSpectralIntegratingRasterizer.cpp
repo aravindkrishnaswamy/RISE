@@ -104,18 +104,8 @@ bool PixelBasedSpectralIntegratingRasterizer::TakeSingleSample(
 	bool bHit = false;
 	c = ColorXYZ(0,0,0,0);
 
-	// Seed from the camera-ray origin: if the camera sits inside a
-	// dielectric (submerged camera, camera inside a medium volume), the
-	// first boundary crossing must see bFromInside==true or the
-	// DielectricSPF wrong-side test drops the transmission lobe
-	// entirely.  Free-space cameras: the probe finds no enclosing
-	// objects, no-op.  Shared across every wavelength sample below —
-	// they all originate from the same camera ray.
-	IORStack iorStack( 1.0 );
-	const IScene* pAttachedScene = pCaster->GetAttachedScene();
-	if( pAttachedScene ) {
-		IORStackSeeding::SeedFromPoint( iorStack, ray.origin, *pAttachedScene );
-	}
+    // Containment geometry is shared, but each wavelength needs its own indices.
+    const IScene* pAttachedScene = pCaster->GetAttachedScene();
 
 	if( nSpectralSamples == 1 )
 	{
@@ -123,6 +113,8 @@ bool PixelBasedSpectralIntegratingRasterizer::TakeSingleSample(
 		const Scalar nm = num_wavelengths < 10000 ?
 				(lambda_begin + int(rc.random.CanonicalRandom()*Scalar(num_wavelengths)) * wavelength_steps) :
 				(lambda_begin + rc.random.CanonicalRandom() * lambda_diff);
+        IORStack iorStack(1.0);
+        if(pAttachedScene) IORStackSeeding::SeedFromPoint(iorStack, ray.origin, *pAttachedScene, nm);
 		Scalar nmvalue = 0;
 		bHit = pCaster->CastRayNM( rc, rast, ray, nmvalue, IRayCaster::RAY_STATE(), nm, 0, 0, iorStack );
 
@@ -159,6 +151,8 @@ bool PixelBasedSpectralIntegratingRasterizer::TakeSingleSample(
 			SPECTRAL_SAMPLE	samp;
 			samp.nm = nm;
 
+            IORStack iorStack(1.0);
+            if(pAttachedScene) IORStackSeeding::SeedFromPoint(iorStack, ray.origin, *pAttachedScene, nm);
 			bool bThisHit = pCaster->CastRayNM( rc, rast, ray, samp.value, IRayCaster::RAY_STATE(), nm, 0, 0, iorStack );
 
 			if( bThisHit ) {
@@ -239,10 +233,31 @@ bool PixelBasedSpectralIntegratingRasterizer::TakeSingleSampleHWSS(
 		{
 			const IScene* pAttachedScene = pCaster->GetAttachedScene();
 			if( pAttachedScene ) {
-				IORStackSeeding::SeedFromPoint( cameraIorStack, ray.origin, *pAttachedScene );
+				IORStackSeeding::SeedFromPoint( cameraIorStack, ray.origin, *pAttachedScene, swl.HeroLambda() );
 			}
 		}
-		bool bThisHit = pCaster->CastRayHWSS( rc, rast, ray, cHWSS, rs, swl, 0, 0, cameraIorStack );
+        // A bundle starting inside a dispersive chain has different incident
+        // media per lane. Use independent NM casts before any hero refraction.
+        bool dispersiveContainment = false;
+        const IScene* attachedScene = pCaster->GetAttachedScene();
+        if(attachedScene && cameraIorStack.topObject()) {
+            for(unsigned w=0; w<SampledWavelengths::N; ++w) {
+                IORStack laneStack(cameraIorStack.EnvironmentIOR());
+                IORStackSeeding::SeedFromPoint(laneStack, ray.origin, *attachedScene, swl.lambda[w]);
+                if(!laneStack.SameInterfaces(cameraIorStack)) dispersiveContainment = true;
+            }
+        }
+        bool bThisHit = false;
+        if(dispersiveContainment) {
+            for(unsigned w=0; w<SampledWavelengths::N; ++w) {
+                IORStack laneStack(cameraIorStack.EnvironmentIOR());
+                IORStackSeeding::SeedFromPoint(laneStack, ray.origin, *attachedScene, swl.lambda[w]);
+                bThisHit = pCaster->CastRayNM(rc, rast, ray, cHWSS[w], rs,
+                    swl.lambda[w], 0, 0, laneStack) || bThisHit;
+            }
+        } else {
+            bThisHit = pCaster->CastRayHWSS(rc, rast, ray, cHWSS, rs, swl, 0, 0, cameraIorStack);
+        }
 
 		if( bThisHit ) {
 			bHit = true;

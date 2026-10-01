@@ -4628,6 +4628,9 @@ yet known (§10.1).
 
 ## 15. Correctness debts and open items
 
+DL-213 producer update (2026-09-29; items4/12): global Indexed3/glTF Tangent4 already existed and remains the UV/Mikk normal-map contract. Blender ABI16 instead supplies independent corner shader directions via Indexed4; canonical world-normal rotation drives shared GGX/fabric/weave ONB while primary UV normal/coat decode stays separate. SecondUV matches Cycles inverse-transpose Tangent-node semantics; full graphs are export-time corner bakes with material-domain validation. Unlinked/direct-activeUV fallback remains bit-identical by explicit scope ruling. See `BLENDER_MATERIAL_TRANSLATION.md` "Tangent" for backend, interpolation and cost limits.
+
+
 1. ~~**Sheen has no reciprocity or consistency coverage.**~~ **CLOSED
    2026-09-03 (debt-ledger sweep, commit `f458f4f3`)** —
    [SPFBSDFConsistencyTest.cpp:1174](../tests/SPFBSDFConsistencyTest.cpp)

@@ -1,3 +1,4 @@
+#include "../Utilities/IndependentSampler.h"
 //////////////////////////////////////////////////////////////////////
 //
 //  AOVBuffers.cpp - Implementation of AOV float buffers for denoiser
@@ -310,7 +311,8 @@ void RISE::Implementation::CollectFirstHitAOVRows(
 						if( aov.primaryDepthCaptured ) sampleDepth = aov.depth;
 					} else {
 						RayIntersection ri( ray, rast );
-						pObjects->IntersectRay( ri, true, true, false );
+						IndependentSampler alphaSampler(rc.random);
+                        pObjects->IntersectRaySampled( ri, alphaSampler );
 						if( ri.geometric.bHit ) {
 							if( ri.pModifier ) ri.pModifier->Modify( ri.geometric );
 							sampleNormal = ri.geometric.vNormal;
