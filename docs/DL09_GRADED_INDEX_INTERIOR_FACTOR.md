@@ -400,3 +400,82 @@ DRIFT · `SourceHygieneTest` 167/0 · `SSSRadianceScalingTest` 576220/0 ·
 `OptimalMISTrainingSitesTest` 111/0 · `RayCasterEnvEscapeMISTest` 91/0 ·
 `IScalarPainterTest` 134/0 · `TextureExpressionVMTest` 965/0 · `LightBVHTest`
 20/0.
+
+## 12. DL-292: coverage of the walks §10 left out (debt-dl292, 2026-10-01)
+
+§10's residuals were walks that did not `Advance` and `ior` forms not
+recognised as world-position fields.  They are closed by the same rule
+everywhere: a walk either `Advance`s at its own vertices or prices its
+segment from the walk's LIVE stack.
+
+1. **PT BSSRDF / random-walk SSS entry NEE** passes the walk's `iorStack`
+   (`PTEvaluateDirectLighting`'s `pGradedIndexStack` override), the stack
+   the continuation Advances from at its next hit.
+2. **NEE shadow segment.**  The skip used to key on `shadowT != 1`, which
+   also fired on a thin weave's delta gap (no crossing at all) and on a
+   nested object's through-trip with the light still inside the graded
+   medium.  `GradedIndexMedium::ShadowSegmentTrack` copies the shading
+   point's stack, mirrors every boundary crossing
+   `RayCaster::WalkShadowSegment` makes, Advances at each crossing and at
+   the light; a binary (unwalked) test leaves it un-Finished and the caller
+   falls back to `ConnectionScaleToPoint`.  Interfaces keep the
+   transparent-shadow convention (no eta²).
+3. **`RayCaster`'s own volume walk**: its NEE carries the walk's stack,
+   so the NEE and phase-sampled arms at a medium vertex price one integrand.
+4. **Legacy shader-op chain**: `RayCaster::CastRay{,NM,HWSS}` Advances the
+   hit's stack before shading and scales the shade -- the one choke point
+   every legacy op goes through -- and `DirectLightingShaderOp` prices its
+   NEE from that stack.  A `PathTracingShaderOp`'s own Advance at the same
+   point is then a no-op.
+5. **Photon tracers** (caustic / global Pel + spectral, translucent Pel)
+   pay `(n(hit)/top)^2` on the photon's power at every hit in IMPORTANCE
+   order, as BDPT's light walk does.
+6. **`ior` forms**: `Scaled` / `Multiply` / `Add` / `Atan2` scalar painters
+   are world-position fields when their result is one scalar, every operand
+   is a field or position-independent, and one operand is a field.  A
+   `dielectric_material` / `perfectrefractor_material` `ior` that reads `P`
+   but is not a single-scalar field (a `vec3` expression of `P`, `P` mixed
+   with `u`/`v`/`N`/a signal) is REFUSED with a diagnostic (DL-32's
+   hard-fail convention): n is undefined inside such a medium.  P-free
+   surface forms still load and keep the entry-index convention.
+
+**Merge with master (DL-214, DL-334).**  The graded track rides
+`CastShadowRayAutoSampled` and the alpha-aware `WalkShadowSegment`;
+crossings are recorded at ACCEPTED hits, so an alpha skip is not a
+crossing.  Photon deposits are `hitPower / acceptedAlphaCoverage`.
+DL-334's per-lane HWSS containment replay re-seeds each lane stack at the
+incoming segment's MIDPOINT, which records n(midpoint) as a graded top;
+the delegated NM walk then Advanced from the midpoint (row I hwss read
+BDPT/PT 1.10-1.12).  `GradedIndexMedium::AdoptTrackedTop` hands the lane
+stack the walk's own tracked index when both innermost media are the same
+graded object (a graded field is wavelength-independent; a no-op for
+constant and dispersive indices): 0.995-0.997.  The mid-path HWSS site is
+covered by construction, not by a row.
+
+**Measured** (`GradedIndexInteriorFactorTest`, reference-free): rows
+J/K graded/control 2.2057 -> 1.0000; L 0.4408 -> 0.99173 (closed form
+0.99174); M 1.1014 -> 1.0010; N 1.6316 -> 1.0002; P 1.6226 -> 1.0041;
+I 0.48 / 0.49 -> 0.995 / 0.994; O 2.2504 -> 1.0002.  The full table with
+controls, n and sd is the debt-dl292 slice note in DEBT_LEDGER.md.
+
+**Left open**, with numbers (opt-in rows, `GRADED_ROWS=QR`, single
+renders): SMS chains inside a graded medium (row Q, SMS/PT 1.9410 graded
+vs 0.7003 constant); VCM through a glass sphere nested in the graded box
+reads VCM/PT **0.5009** vs 0.9982 constant while BDPT reads 1.0078 --
+filed as **DL-335**; a connection through a graded object's own rough
+surface with one endpoint outside (row R1, BDPT/PT 1.0001, VCM/PT 0.9991)
+and BDPT t==1 at a thin-lens point across a lateral gradient (row R2,
+1.0001) measure at noise on their fixtures.
+
+**Gate** (merged tree; clean rebuild 0 warnings, library and every test
+target built): `GradedIndexInteriorFactorTest` 99/0 ·
+`RadianceEtaScaleGradedIndexTest` 0 failed · `WeaveGapShadowTransmittanceTest`
+207/0 · `MediumInsideOutsideInvariantTest` 52/0 · `VolumeEnvFurnaceTest`
+32/0 · `BSSRDFOpenSheetEntryTest` 73/0 · `SSSExteriorIndexInvarianceTest`
+254/0 · `SSSRadianceScalingTest` 576256/0 · `RefractiveRadianceScalingTest`
+60/0 · `BDPTStrategyBalanceTest` 297/0 · `VCMStrategyBalanceTest` 87/0 ·
+`LegacyChainMISPartnerTest` all passed · `AlphaPhotonEmissionTest` 242/0 ·
+`AlphaMediumBoundaryTest` 36/0 · `AlphaShadowMediumTest` 93/0 ·
+`AlphaCSGCapabilityTest` 48/0 · `CstDeriveGoldenTest` 457 MATCH / 0 DRIFT ·
+`SourceHygieneTest` 167/0.  Constant-index renders bit-identical and cost
+-0.06 % (single-thread) -- see the slice note.
