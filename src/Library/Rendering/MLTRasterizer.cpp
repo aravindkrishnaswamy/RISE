@@ -254,14 +254,15 @@ MLTRasterizer::MLTSample MLTRasterizer::EvaluateSample(
 	MLTSample result;
 
 	// Film position samples.  Must not conflict with BDPTIntegrator's
-	// internal streams (0-47, and up to 1039 at deep eye/volume bounces
-	// -- see BDPTCameraUtilities::kMaxBdptWalkStreamUnderPSSMLT).  This
+	// internal streams (0-47, and 2049-4050 for deep eye/light
+	// iterations since DL-286 -- see
+	// BDPTCameraUtilities::kBdptShallowWalkStreamEndUnderPSSMLT).  This
 	// used to be the literal stream 48, which the eye walk's own
 	// StartStream(16u+depth) reached at eye depth 32 (DL-08 / debt 29,
 	// docs/DL08_PSSMLT_LANE_LAYOUT.md) -- ordinary scattering-medium
 	// scenes get there with StabilityConfig::maxVolumeBounce's 64
-	// default and no unusual settings.  kPSSMLTFilmLensApertureStream is
-	// chosen comfortably above that ceiling.
+	// default and no unusual settings.  kPSSMLTFilmLensApertureStream
+	// sits between the walks' shallow and deep lanes.
 	sampler.StartStream( BDPTCameraUtilities::kPSSMLTFilmLensApertureStream );
 
 	// Use the first 2D sample to pick a film position.
@@ -362,7 +363,8 @@ MLTRasterizer::MLTSample MLTRasterizer::EvaluateSample(
 	}
 
 	// Generate light and eye subpaths using the MLT sampler.
-	// BDPTIntegrator manages its own streams internally (0-47).
+	// BDPTIntegrator manages its own streams internally (0-47, deep
+	// iterations 2049-4050 -- BDPTUtilities::LightWalkStream).
 	std::vector<BDPTVertex> lightVerts;
 	std::vector<BDPTVertex> eyeVerts;
 	std::vector<uint32_t> lightSubpathStarts;
@@ -652,14 +654,9 @@ void MLTRasterizer::RunChainSegment(
 					// point splat.  floor() here (via unsigned cast on a
 					// truncation) would introduce a consistent half-pixel
 					// bias; adding 0.5 before truncation rounds instead.
-					const Scalar rx = s.rasterPos.x + static_cast<Scalar>( 0.5 );
-					const Scalar ry = s.rasterPos.y + static_cast<Scalar>( 0.5 );
-					if( rx >= 0 && ry >= 0 ) {
-						const unsigned int sx = static_cast<unsigned int>( rx );
-						const unsigned int sy = static_cast<unsigned int>( ry );
-						if( sx < width && sy < height ) {
-							splatFilm.Splat( sx, sy, splatColor );
-						}
+					unsigned int sx = 0, sy = 0;
+					if( SplatFilm::NearestPixel( s.rasterPos.x, s.rasterPos.y, width, height, sx, sy ) ) {
+						splatFilm.Splat( sx, sy, splatColor );
 					}
 				}
 			}
@@ -678,14 +675,9 @@ void MLTRasterizer::RunChainSegment(
 					splatFilm.SplatFiltered( s.rasterPos.x, s.rasterPos.y,
 						splatColor, *pPixelFilter );
 				} else {
-					const Scalar rx = s.rasterPos.x + static_cast<Scalar>( 0.5 );
-					const Scalar ry = s.rasterPos.y + static_cast<Scalar>( 0.5 );
-					if( rx >= 0 && ry >= 0 ) {
-						const unsigned int sx = static_cast<unsigned int>( rx );
-						const unsigned int sy = static_cast<unsigned int>( ry );
-						if( sx < width && sy < height ) {
-							splatFilm.Splat( sx, sy, splatColor );
-						}
+					unsigned int sx = 0, sy = 0;
+					if( SplatFilm::NearestPixel( s.rasterPos.x, s.rasterPos.y, width, height, sx, sy ) ) {
+						splatFilm.Splat( sx, sy, splatColor );
 					}
 				}
 			}

@@ -618,7 +618,7 @@ void RayCaster::RebuildLightSamplers()
 unsigned int RayCaster::GetSamplerRebuildCount() { return s_samplerRebuildCount.load( std::memory_order_relaxed ); }
 void         RayCaster::ResetSamplerRebuildCount() { s_samplerRebuildCount.store( 0, std::memory_order_relaxed ); }
 
-void RayCaster::ResolveXrayView_( RayIntersection& ri ) const
+void RayCaster::ResolveXrayView_( RayIntersection& ri, ISampler& alphaSampler ) const
 {
 	// Original primary ray + origin, needed only if at least one skip
 	// happens (see the total-distance recompute below).
@@ -794,7 +794,7 @@ void RayCaster::ResolveXrayView_( RayIntersection& ri ) const
 			next.geometric.ray.diffs.rxDir = ri.geometric.ray.diffs.rxDir;
 			next.geometric.ray.diffs.ryDir = ri.geometric.ray.diffs.ryDir;
 		}
-		pScene->GetObjects()->IntersectRay( next, /*bHitFrontFaces*/true, /*bHitBackFaces*/true, /*bComputeExitInfo*/false );
+		pScene->GetObjects()->IntersectRaySampled( next, alphaSampler );
 
 		if( !next.geometric.bHit )
 		{
@@ -962,7 +962,9 @@ bool RayCaster::CastRay(
 	RayIntersection	ri( ray, rast );
 	ri.geometric.glossyFilterWidth = rs.glossyFilterWidth;
 	ri.geometric.bWantsWireEdgeInfo = bWantsWireEdgeInfo;
-	pScene->GetObjects()->IntersectRay( ri, true, true, false );
+	IndependentSampler alphaFallback(rc.random);
+    ISampler& alphaSampler = rc.pSampler ? *rc.pSampler : static_cast<ISampler&>(alphaFallback);
+    pScene->GetObjects()->IntersectRaySampled(ri, alphaSampler);
 	CapturePrimaryAOV( rc, ri );
 
 	bool bHit = ri.geometric.bHit;
@@ -979,7 +981,7 @@ bool RayCaster::CastRay(
 	// this point (including depth) sees the resolved hit with zero
 	// x-ray-specific knowledge.  Production casters never set the flag.
 	if( bXrayViewResolve && bHit ) {
-		ResolveXrayView_( ri );
+		ResolveXrayView_( ri, alphaSampler );
 		bHit = ri.geometric.bHit;
 
 		// Re-apply the same luminaire-suppression check to the RESOLVED
@@ -1824,7 +1826,9 @@ bool RayCaster::CastRayNM(
 	RayIntersection	ri( ray, rast );
 	ri.geometric.glossyFilterWidth = rs.glossyFilterWidth;
 	ri.geometric.bWantsWireEdgeInfo = bWantsWireEdgeInfo;
-	pScene->GetObjects()->IntersectRay( ri, true, true, false );
+	IndependentSampler alphaFallback(rc.random);
+    ISampler& alphaSampler = rc.pSampler ? *rc.pSampler : static_cast<ISampler&>(alphaFallback);
+    pScene->GetObjects()->IntersectRaySampled(ri, alphaSampler);
 	CapturePrimaryAOV( rc, ri );
 
 	bool bHit = ri.geometric.bHit;
@@ -1838,7 +1842,7 @@ bool RayCaster::CastRayNM(
 	// GUI render modes (docs/gui/RENDER_MODES.md "X-ray axis"): see
 	// CastRay's identical call site for the rationale.
 	if( bXrayViewResolve && bHit ) {
-		ResolveXrayView_( ri );
+		ResolveXrayView_( ri, alphaSampler );
 		bHit = ri.geometric.bHit;
 
 		// Re-apply the same luminaire-suppression check to the RESOLVED
@@ -2512,7 +2516,8 @@ bool RayCaster::WalkShadowSegment(
 	const bool bDielectrics,
 	const bool bDeltaPassThrough,
 	GradedIndexMedium::ShadowSegmentTrack* pGradedTrack,
-	const Point3* pSegmentEnd
+	const Point3* pSegmentEnd,
+    ISampler* alphaSampler, MediumBoundaryHits* boundaries, Scalar physicalDistance, Scalar occlusionStart
 	) const
 {
 	transmittance = RISEPel( 1.0, 1.0, 1.0 );
@@ -2556,14 +2561,21 @@ bool RayCaster::WalkShadowSegment(
 
 	Point3 origin = ray.origin;
 	Scalar remaining = dHowFar;
+    Scalar sampledStart = 0;
+    const Scalar physicalEnd = boundaries && physicalDistance >= 0 ? physicalDistance : dHowFar;
 
 	for( unsigned int crossing = 0; crossing < kMaxCrossings; crossing++ )
 	{
 		Ray segRay( origin, dir );
 		RayIntersection ri( segRay, nullRasterizerState );
-		pScene->GetObjects()->IntersectRay( ri, true, true, false );
+		if (alphaSampler) {
+            ri = RayIntersection(ray, nullRasterizerState);
+            pScene->GetObjects()->IntersectRaySampled(ri, *alphaSampler, true, true, false,
+                physicalEnd, true, boundaries, false, dHowFar, occlusionStart, sampledStart);
+        }
+        else pScene->GetObjects()->IntersectRay(ri, true, true, false);
 
-		if( !ri.geometric.bHit || ri.geometric.range >= remaining )
+        if( !ri.geometric.bHit || ri.geometric.range >= (alphaSampler ? dHowFar : remaining) )
 		{
 			// Reached the light with no further occluder along the
 			// remaining segment — the accumulated transmittance is final.
@@ -2580,13 +2592,15 @@ bool RayCaster::WalkShadowSegment(
 		// 1e-4 under-steps in very large scenes), while the 1e-4 floor
 		// covers small scenes.  Far below the thinnest real feature.
 		const Scalar relStep = ri.geometric.range * Scalar(1.0e-5);
-		const Scalar advance = ri.geometric.range + ( relStep > kStepEps ? relStep : kStepEps );
+		const Scalar advance = alphaSampler ? std::nextafter(ri.hasBoundaryRange ? ri.boundaryRange : ri.geometric.range, RISE_INFINITY) :
+            ri.geometric.range + ( relStep > kStepEps ? relStep : kStepEps );
 
 		// Not a shadow caster: the binary test never saw it -- step over.
 		if( ri.pObject && !ri.pObject->DoesCastShadows() )
 		{
-			origin = segRay.PointAtLength( advance );
-			remaining -= advance;
+			origin = alphaSampler ? ray.PointAtLength(advance) : segRay.PointAtLength(advance);
+            sampledStart = advance;
+            remaining = alphaSampler ? physicalEnd - advance : remaining - advance;
 			if( remaining <= 0.0 ) {
 				return reachedLight();
 			}
@@ -2617,8 +2631,9 @@ bool RayCaster::WalkShadowSegment(
 				transmittance = RISEPel( 0, 0, 0 );
 				return true;
 			}
-			origin = segRay.PointAtLength( advance );
-			remaining -= advance;
+			origin = alphaSampler ? ray.PointAtLength(advance) : segRay.PointAtLength(advance);
+            sampledStart = advance;
+            remaining = alphaSampler ? physicalEnd - advance : remaining - advance;
 			if( remaining <= 0.0 ) {
 				return reachedLight();
 			}
@@ -2809,8 +2824,9 @@ bool RayCaster::WalkShadowSegment(
 		// Step the origin to the hit point plus a small epsilon along
 		// the (unchanged) travel direction (`advance`, computed above);
 		// shrink the remaining range accordingly.
-		origin = segRay.PointAtLength( advance );
-		remaining -= advance;
+		origin = alphaSampler ? ray.PointAtLength(advance) : segRay.PointAtLength(advance);
+        sampledStart = advance;
+        remaining = alphaSampler ? physicalEnd - advance : remaining - advance;
 
 		if( remaining <= 0.0 )
 		{
@@ -3185,7 +3201,9 @@ bool RayCaster::CastRayHWSS(
 	RayIntersection ri( ray, rast );
 	ri.geometric.glossyFilterWidth = rs.glossyFilterWidth;
 	ri.geometric.bWantsWireEdgeInfo = bWantsWireEdgeInfo;
-	pScene->GetObjects()->IntersectRay( ri, true, true, false );
+	IndependentSampler alphaFallback(rc.random);
+    ISampler& alphaSampler = rc.pSampler ? *rc.pSampler : static_cast<ISampler&>(alphaFallback);
+    pScene->GetObjects()->IntersectRaySampled(ri, alphaSampler);
 	CapturePrimaryAOV( rc, ri );
 
 	bool bHit = ri.geometric.bHit;
@@ -3202,7 +3220,7 @@ bool RayCaster::CastRayHWSS(
 	// ever a view-mode/preview caster (those are Pel-only), so
 	// bXrayViewResolve is never set on a caster that reaches this path.
 	if( bXrayViewResolve && bHit ) {
-		ResolveXrayView_( ri );
+		ResolveXrayView_( ri, alphaSampler );
 		bHit = ri.geometric.bHit;
 
 		// Re-apply the same luminaire-suppression check to the RESOLVED
@@ -3331,4 +3349,26 @@ void RayCaster::SetLuminaireSampling(
 		pLumSampling = pLumSam;
 		pLumSampling->addref();
 	}
+}
+
+bool RayCaster::CastShadowRaySampled(const Ray& ray, Scalar distance, ISampler& sampler, MediumBoundaryHits* boundaries, Scalar physicalDistance, Scalar occlusionStart) const
+{
+    return pScene && pScene->GetObjects()->IntersectShadowRaySampled(ray, distance, sampler, boundaries, physicalDistance, occlusionStart);
+}
+bool RayCaster::CastShadowRayAutoSampled(const Ray& ray, Scalar distance, bool nmMode,
+    Scalar nm, RISEPel& transmittance, bool deltaLight, ISampler& sampler, MediumBoundaryHits* boundaries, Scalar physicalDistance, Scalar occlusionStart,
+    GradedIndexMedium::ShadowSegmentTrack* pGradedTrack, const Point3* pSegmentEnd) const
+{
+    if (boundaries) boundaries->clear();
+    const bool passThrough = deltaLight && bSceneHasDeltaPassThrough && pScene &&
+        !pScene->GetCausticPelMap() && !pScene->GetGlobalPelMap() &&
+        !pScene->GetTranslucentPelMap() && !pScene->GetCausticSpectralMap() &&
+        !pScene->GetGlobalSpectralMap();
+    if (bTransparentShadows || passThrough)
+        return WalkShadowSegment(ray, distance, nmMode, nm, transmittance,
+            bTransparentShadows, passThrough, pGradedTrack, pSegmentEnd, &sampler, boundaries, physicalDistance, occlusionStart);
+    // DL-292: the binary test leaves the track un-Finish()ed -- the caller
+    // prices the crossing-free segment with ConnectionScaleToPoint.
+    transmittance = RISEPel(1,1,1);
+    return CastShadowRaySampled(ray, distance, sampler, boundaries, physicalDistance, occlusionStart);
 }

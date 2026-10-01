@@ -100,9 +100,11 @@ namespace RISE
 		//     one lane share a stream exactly (the `mod`).
 		//   - PT main-loop depth <= 4080.  `StartStream( 16 + depth )` reaches
 		//     4096 = walk (lane 0, event 0) at depth 4080, and
-		//     `SetMaxPathDepth` is not clamped.  (The eye-walk bound 16 + 1023
-		//     is BDPT's, not PT's: PT's own loop cap is `mMaxPathDepth`,
-		//     default 128.)
+		//     `SetMaxPathDepth` is not clamped.  (BDPT's eye walk is a
+		//     different layout -- 16 + d for d < 31, a deep block past
+		//     that, BDPTUtilities::EyeWalkStream (DL-286) -- and never
+		//     shares a sampler with PT's: PT's own loop cap is
+		//     `mMaxPathDepth`, default 128.)
 		// Every stream here is past SobolSampler's 8192-dimension table
 		// (stream 256), so every walk draw is a WRAPPED Get1D: table row
 		// `32 * (event mod 256) + slot`, index Owen-permuted by the wrap

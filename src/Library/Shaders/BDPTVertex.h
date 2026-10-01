@@ -165,15 +165,16 @@ namespace RISE
 
 		RISEPel					throughput;		///< Cumulative throughput from subpath origin (alpha_i)
 		Scalar					throughputNM;	///< Spectral throughput for a single wavelength
-		Scalar					pdfFwd;			///< Forward PDF in area measure
-		Scalar					pdfRev;			///< Reverse PDF in area measure (filled during MIS weight computation)
+		Scalar					pdfFwd;			///< Forward PDF in the vertex's canonical measure: surface area, collision volume, or sky solid angle
+		Scalar					pdfRev;			///< Reverse PDF in the same canonical measure (filled during MIS weight computation)
 
-		/// Solid-angle emission / importance PDF at path endpoints, consumed
+		/// Joint emission / directional importance PDF at path endpoints, consumed
 		/// by the VCM post-pass when it recovers per-vertex dVCM/dVC/dVM
-		/// running quantities from this vertex's area-measure pdfFwd.
+		/// running quantities from this vertex's canonical-measure pdfFwd.
 		/// - Light endpoint (vertex 0 on a light subpath): pdfSelect *
-		///   pdfPosition * pdfDirection — the full emission solid-angle
-		///   direction PDF on the light.
+		///   pdfPosition * pdfDirection — the joint emission density.
+		///   For environment lights this is q * pSky * pDisc, while
+		///   pdfFwd is the marginal q * pSky.
 		/// - Camera endpoint (vertex 0 on an eye subpath): pdfCamDir — the
 		///   camera's directional importance PDF in solid-angle measure.
 		/// - All other vertices: unused; leave at zero.
@@ -205,18 +206,9 @@ namespace RISE
 		/// invariance on non-light vertices and on integrators that don't
 		/// thread selection probability through.
 		///
-		/// Consumed by `VCMIntegrator::ConvertLightSubpath` to extract
-		/// the geometric `emissionPdfW = pdfPos × pdfDir` from the
-		/// joint-storage `v.emissionPdfW = pdfSelect × pdfPos × pdfDir`
-		/// before computing `dVC = cosLight / emissionPdfW_geometric`.
-		/// Without this extraction `dVC` carries an implicit `1/pdfSelect`
-		/// inflation that propagates through `ApplyBsdfSamplingUpdate` and
-		/// over-weights mesh-NEE in VCM's SmallVCM `1/(wLight + 1 +
-		/// wCamera)` MIS formulas — invisible in master (where pdfSelect
-		/// was effectively constant per light-type) but causes env+mesh
-		/// VCM to over-count by ~27 % vs PT post the 2026-05-29
-		/// continuous-PMF fix.  See `VCMRecurrence::InitLight` for the
-		/// algebraic derivation.
+		/// The selection probability is already included in root and
+		/// joint emission densities. VCM keeps those joint densities:
+		/// an eye-generated alternative never selects this light.
 		Scalar					pdfSelect;
 
 		/// TRUE iff this vertex's `pdfRev` is a GENUINE zero -- "the
@@ -351,8 +343,12 @@ namespace RISE
 		/// light endpoint.  When true, pdfFwd / pdfRev are in
 		/// solid-angle measure (sr^-1); the area-Jacobian is skipped
 		/// at the env-vertex boundary by `BDPTUtilities::ConvertDensity`.
-		/// All other vertex types store area-measure pdfs as before.
+		/// Finite targets store surface-area or collision-volume pdfs.
+		/// The first target of an environment emission uses parallel
+		/// projected-disc density, with no inverse-distance Jacobian.
 		bool IsInfiniteLight() const { return pEnvLight != 0; }
+
+        Scalar acceptedAlphaCoverage = 1;
 
 		BDPTVertex() :
 		type( SURFACE ),

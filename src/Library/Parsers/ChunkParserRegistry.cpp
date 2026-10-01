@@ -1,3 +1,4 @@
+#include <limits>
 //////////////////////////////////////////////////////////////////////
 //
 //  ChunkParserRegistry.cpp - Definitions of every concrete
@@ -1036,7 +1037,7 @@ namespace RISE
 			}
 			template<typename PushFn>
 			static void AddPhotonMapGenerateCommonParams( PushFn P ) {
-				{ auto& p = P(); p.name = "num";                      p.kind = ValueKind::UInt;   p.description = "Photon count to shoot";                     p.defaultValueHint = "10000"; }
+				{ auto& p = P(); p.name = "num";                      p.kind = ValueKind::UInt;   p.description = "Attempted emissions and maximum stored packets (may store fewer)";                     p.defaultValueHint = "10000"; }
 				{ auto& p = P(); p.name = "power_scale";              p.kind = ValueKind::Double; p.description = "Photon power multiplier";                   p.defaultValueHint = "1.0"; }
 				{ auto& p = P(); p.name = "max_recursion";            p.kind = ValueKind::UInt;   p.description = "Max photon scattering depth";               p.defaultValueHint = "10"; }
 				{ auto& p = P(); p.name = "min_importance";           p.kind = ValueKind::Double; p.description = "Photon-throughput cutoff";                  p.defaultValueHint = "0.01"; }
@@ -5977,6 +5978,65 @@ namespace RISE
 					return d;
 				}
 			};
+
+            // DL-213 native producer: independent position/normal/UV indices
+            // are available through IJob; inline authoring uses vertex-aligned
+            // attributes and expands tangents to triangle corners at this edge.
+            struct IndexedMeshGeometryAsciiChunkParser : public IAsciiChunkParser
+            {
+                bool Finalize(const ParseStateBag& bag, IJob& job) const override {
+                    auto read = [&bag](const char* key, unsigned int arity, std::vector<float>& out) {
+                        for (const auto& line : bag.GetRepeatable(key)) {
+                            std::istringstream stream(line);
+                            for (unsigned int k=0; k<arity; ++k) {
+                                double x=0; if (!(stream>>x) || !std::isfinite(x) || std::abs(x)>std::numeric_limits<float>::max()) return false;
+                                out.push_back(static_cast<float>(x));
+                            }
+                        }
+                        return true;
+                    };
+                    std::vector<float> vertices, normals, uv, tangents, corners;
+                    if (!read("vertex",3,vertices) || !read("normal",3,normals) ||
+                        !read("uv",2,uv) || !read("tangent",4,tangents)) return false;
+                    const size_t count=vertices.size()/3;
+                    if (!count || (!normals.empty() && normals.size()/3!=count) ||
+                        (!uv.empty() && uv.size()/2!=count) || (!tangents.empty() && tangents.size()/4!=count)) return false;
+                    std::vector<unsigned int> faces;
+                    for (const auto& line : bag.GetRepeatable("triangle")) {
+                        std::istringstream stream(line);
+                        for (unsigned int k=0; k<3; ++k) {
+                            double x=0; if (!(stream>>x) || x<0 || x>=count || std::floor(x)!=x) return false;
+                            const unsigned int v=static_cast<unsigned int>(x); faces.push_back(v);
+                            if (!tangents.empty()) corners.insert(corners.end(),tangents.begin()+v*4,tangents.begin()+v*4+4);
+                        }
+                    }
+                    if (faces.empty()) return false;
+                    std::vector<float> uv3;
+                    for (size_t v=0; v<uv.size()/2; ++v) { uv3.push_back(uv[v*2]); uv3.push_back(uv[v*2+1]); uv3.push_back(0); }
+                    return job.AddIndexedTriangleMeshGeometryWithTangents(bag.GetString("name","noname").c_str(),
+                        vertices.data(), normals.empty()?nullptr:normals.data(), uv3.empty()?nullptr:uv3.data(),
+                        faces.data(),uv3.empty()?nullptr:faces.data(),normals.empty()?nullptr:faces.data(),
+                        static_cast<unsigned int>(count),static_cast<unsigned int>(normals.size()/3),static_cast<unsigned int>(uv.size()/2),
+                        static_cast<unsigned int>(faces.size()/3),bag.GetBool("double_sided",true),bag.GetBool("face_normals",false),
+                        corners.empty()?nullptr:corners.data(),static_cast<unsigned int>(corners.size()/4));
+                }
+                const ChunkDescriptor& Describe() const override {
+                    static const ChunkDescriptor d=[] {
+                        ChunkDescriptor cd; cd.keyword="indexedmesh_geometry"; cd.category=ChunkCategory::Geometry;
+                        cd.description="Inline indexed triangle mesh, optional object-local xyz/sign tangents override the UV shading basis. All attributes are vertex-aligned; duplicate vertices at seams. Indices are zero-based.";
+                        auto P=[&cd]() -> ParameterDescriptor& {cd.parameters.emplace_back();return cd.parameters.back();};
+                        {auto& p=P();p.name="name";p.kind=ValueKind::String;p.description="Unique geometry name";}
+                        {auto& p=P();p.name="vertex";p.kind=ValueKind::DoubleVec3;p.repeatable=true;p.description="Position xyz; repeat per vertex";}
+                        {auto& p=P();p.name="normal";p.kind=ValueKind::DoubleVec3;p.repeatable=true;p.description="Optional shading normal xyz; one per vertex";}
+                        {auto& p=P();p.name="uv";p.kind=ValueKind::DoubleVec2;p.repeatable=true;p.description="Optional primary uv; one per vertex";}
+                        {auto& p=P();p.name="tangent";p.kind=ValueKind::DoubleVec4;p.repeatable=true;p.description="Optional object-local tangent xyz and handedness sign (+1/-1); one per vertex";}
+                        {auto& p=P();p.name="triangle";p.kind=ValueKind::DoubleVec3;p.repeatable=true;p.description="Three zero-based integral vertex indices";}
+                        {auto& p=P();p.name="double_sided";p.kind=ValueKind::Bool;p.defaultValueHint="TRUE";p.description="Intersect front and back faces";}
+                        {auto& p=P();p.name="face_normals";p.kind=ValueKind::Bool;p.defaultValueHint="FALSE";p.description="Use face normals";}
+                        return cd;
+                    }();return d;
+                }
+            };
 
 			struct Mesh3DSGeometryAsciiChunkParser : public IAsciiChunkParser
 			{
@@ -13757,6 +13817,40 @@ namespace RISE
 		}
 	}
 
+    // Coverage is orthogonal to a material's scattering model. Decorating
+    // each material parser keeps one descriptor and one construction path.
+    class AlphaMaterialParser final : public IAsciiChunkParser {
+        std::unique_ptr<IAsciiChunkParser> base_;
+        ChunkDescriptor descriptor_;
+    public:
+        explicit AlphaMaterialParser(IAsciiChunkParser* base) : base_(base), descriptor_(base->Describe()) {
+            ParameterDescriptor alpha;
+            alpha.name = "alpha_coverage"; alpha.kind = ValueKind::Reference;
+            alpha.referenceCategories = {ChunkCategory::Painter};
+            alpha.semantics.pipe = ParameterPipe::Scalar;
+            alpha.defaultValueHint = "1";
+            alpha.description = "Scalar surface coverage in [0,1], independent of wavelength";
+            descriptor_.parameters.push_back(alpha);
+            ParameterDescriptor mode;
+            mode.name = "alpha_mode"; mode.kind = ValueKind::Enum;
+            mode.enumValues = {"opaque", "mask", "blend"}; mode.defaultValueHint = "opaque";
+            mode.description = "Opaque, threshold mask, or stochastic coverage";
+            descriptor_.parameters.push_back(mode);
+            ParameterDescriptor cutoff;
+            cutoff.name = "alpha_cutoff"; cutoff.kind = ValueKind::Double;
+            cutoff.defaultValueHint = "0.5"; cutoff.description = "Mask threshold (keep alpha >= cutoff)";
+            descriptor_.parameters.push_back(cutoff);
+        }
+        const ChunkDescriptor& Describe() const override { return descriptor_; }
+        bool Finalize(const ParseStateBag& bag, IJob& job) const override {
+            if (!base_->Finalize(bag, job)) return false;
+            const std::string mode = bag.GetString("alpha_mode", "opaque");
+            if (mode == "opaque") return true;
+            return job.SetMaterialAlpha(bag.GetString("name", "noname").c_str(),
+                bag.GetString("alpha_coverage", "1").c_str(), mode.c_str(), bag.GetDouble("alpha_cutoff", 0.5));
+        }
+    };
+
 	// Factory that creates one instance of every chunk parser the scene
 	// grammar supports.  Ownership transfers to the caller; when the
 	// returned vector goes out of scope all parsers are destroyed.  The
@@ -13771,7 +13865,8 @@ namespace RISE
 		auto add = [&entries]( const char* keyword, IAsciiChunkParser* parser ) {
 			ChunkParserEntry e;
 			e.keyword = keyword;
-			e.parser.reset( parser );
+			e.parser.reset( parser->Describe().category == ChunkCategory::Material
+                ? static_cast<IAsciiChunkParser*>(new AlphaMaterialParser(parser)) : parser );
 			entries.push_back( std::move(e) );
 		};
 
@@ -13876,6 +13971,7 @@ namespace RISE
 		add( "infiniteplane_geometry",                new InfinitePlaneGeometryAsciiChunkParser() );
 		add( "box_geometry",                          new BoxGeometryAsciiChunkParser() );
 		add( "clippedplane_geometry",                 new ClippedPlaneGeometryAsciiChunkParser() );
+		add( "indexedmesh_geometry",                  new IndexedMeshGeometryAsciiChunkParser() );
 		add( "3dsmesh_geometry",                      new Mesh3DSGeometryAsciiChunkParser() );
 		add( "rawmesh_geometry",                      new RAWMeshGeometryAsciiChunkParser() );
 		add( "rawmesh2_geometry",                     new RAWMesh2GeometryAsciiChunkParser() );

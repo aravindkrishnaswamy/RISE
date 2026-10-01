@@ -105,12 +105,12 @@ public:
 };
 class PelMap : public GlobalPelPhotonMap {
 public:
-    PelMap():GlobalPelPhotonMap(128,nullptr) {}
+    PelMap(unsigned n=128):GlobalPelPhotonMap(n,nullptr) {}
     double Sum() const { double total=0;for(const auto& p:vphotons)total+=p.power.r;return total; }
 };
 class NMMap : public GlobalSpectralPhotonMap {
 public:
-    NMMap():GlobalSpectralPhotonMap(128,nullptr) {ConfigureWavelengthSampling(400,700,160);}
+    NMMap(unsigned n=128):GlobalSpectralPhotonMap(n,nullptr) {ConfigureWavelengthSampling(400,700,160);}
     double Sum() const { double total=0;for(const auto& p:vphotons)total+=p.power;return total; }
 };
 void TestLiveSelection(double degrees=0) {
@@ -139,11 +139,11 @@ public:
     void Run(CausticSpectralPhotonMap& map) { const IORStack stack(1);TracePhoton(Ray(Point3(0,0,1),Vector3(0,0,-1)),1,550,false,map,stack,0); }
 };
 class CausticPelMap : public CausticPelPhotonMap {
-public: CausticPelMap():CausticPelPhotonMap(128,nullptr) {}
+public: CausticPelMap(unsigned n=128):CausticPelPhotonMap(n,nullptr) {}
     double Sum() const {double s=0;for(const auto& p:vphotons)s+=p.power.r;return s;}
 };
 class CausticNMMap : public CausticSpectralPhotonMap {
-public: CausticNMMap():CausticSpectralPhotonMap(128,nullptr) {ConfigureWavelengthSampling(400,700,160);}
+public: CausticNMMap(unsigned n=128):CausticSpectralPhotonMap(n,nullptr) {ConfigureWavelengthSampling(400,700,160);}
     double Sum() const {double s=0;for(const auto& p:vphotons)s+=p.power;return s;}
 };
 void TestCausticSelection(double degrees=0) {
@@ -419,7 +419,45 @@ void TestGather() {
     map->release();bsdf->release();paint->release();
 }
 }
-int main() { TestLiveSelection();TestCausticSelection();for(double tilt:{-30.,30.}){TestLiveSelection(tilt);TestCausticSelection(tilt);}TestDetector();TestRealSpectralDetector();TestOtherDetectors();TestShaderSelection();TestTranslucentContinuation();TestRareIntegratorSelection();
+
+// DL-214: a physical planar hit is offered once, so rejecting coverage
+// escapes rather than repeatedly offering the same synthetic intersection.
+class AlphaPlaneManager : public ObjectManager {
+    const IObject& object;const IMaterial& first;const IMaterial& second;
+public:
+    AlphaPlaneManager(const IObject& o,const IMaterial& a,const IMaterial& b):ObjectManager(false,false,4,8),object(o),first(a),second(b){}
+    void IntersectRay(RayIntersection& ri,bool,bool,bool) const override {
+        const bool front=ri.geometric.ray.Dir().z<0;
+        const Scalar t=((front?0.:1.)-ri.geometric.ray.origin.z)/ri.geometric.ray.Dir().z;
+        ri.geometric.bHit=t>1e-8;if(!ri.geometric.bHit)return;
+        ri.geometric.range=t;ri.geometric.ptIntersection=ri.geometric.ray.PointAtLength(t);
+        ri.geometric.vNormal=Vector3(0,0,front?1:-1);ri.geometric.vGeomNormal=ri.geometric.vNormal;
+        ri.geometric.onb.CreateFromW(ri.geometric.vNormal);ri.pMaterial=front?&first:&second;ri.pObject=&object;
+    }
+};
+void TestAlphaPhotonDeposits() {
+    const int N=20000;
+    auto* coverage=new UniformScalarPainter(.5);auto* object=new StubObject();
+    for(bool caustic:{false,true}){
+        auto* split=new SplitMaterial(1,false,caustic?ScatteredRay::eRayReflection:ScatteredRay::eRayDiffuse);
+        auto* paint=new UniformColorPainter(RISEPel(.5));IMaterial* sink=caustic?static_cast<IMaterial*>(new LambertianMaterial(*paint)):static_cast<IMaterial*>(new SplitMaterial(1,true));sink->SetAlpha(coverage,eAlphaBlend,.5);
+        auto* manager=new AlphaPlaneManager(*object,*split,*sink);auto* scene=new Scene();scene->SetObjectManager(manager);
+        if(caustic){
+            CausticPelMap map(N*2);auto* tracer=new CausticPelTracer(false);tracer->AttachScene(scene);for(int i=0;i<N;++i)tracer->Run(map);
+            Check(std::fabs(map.Sum()/N-1)<.03,"DL214 caustic Pel deposit is conditional incident flux",map.Sum()/N,1);tracer->release();
+            CausticNMMap nm(N*2);auto* spectral=new CausticNMTracer(false);spectral->AttachScene(scene);for(int i=0;i<N;++i)spectral->Run(nm);
+            Check(std::fabs(nm.Sum()/N-1)<.03,"DL214 caustic NM deposit is conditional incident flux",nm.Sum()/N,1);spectral->release();
+        }else{
+            PelMap map(N*2);auto* tracer=new PelTracer(false);tracer->AttachScene(scene);for(int i=0;i<N;++i)tracer->Run(map);
+            Check(std::fabs(map.Sum()/N-1)<.03,"DL214 global Pel deposit is conditional incident flux",map.Sum()/N,1);tracer->release();
+            NMMap nm(N*2);auto* spectral=new NMTracer(false);spectral->AttachScene(scene);for(int i=0;i<N;++i)spectral->Run(nm);
+            Check(std::fabs(nm.Sum()/N-1)<.03,"DL214 global NM deposit is conditional incident flux",nm.Sum()/N,1);spectral->release();
+        }
+        scene->release();manager->release();sink->release();paint->release();split->release();
+    }
+    object->release();coverage->release();
+}
+int main() { TestAlphaPhotonDeposits(); TestLiveSelection();TestCausticSelection();for(double tilt:{-30.,30.}){TestLiveSelection(tilt);TestCausticSelection(tilt);}TestDetector();TestRealSpectralDetector();TestOtherDetectors();TestShaderSelection();TestTranslucentContinuation();TestRareIntegratorSelection();
 #ifdef RISE_TEST_SMS_PRIVATE_PROBE
 for(double tilt:{0.,-30.,30.})TestSMSSelection(tilt);
 #endif

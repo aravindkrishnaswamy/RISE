@@ -447,7 +447,15 @@ namespace RISE
 				//! the raw phase pdf that volume NEE weights against), so
 				//! `PathTracingShaderOp` forwards `MisPartnerPdf()` here.
 				Scalar bsdfMisPdf_ = -1, ///< DL-74 -- see the RGB twin
-				Scalar castRRCompensation_ = 1 ///< DL-185 -- see the RGB twin
+				Scalar castRRCompensation_ = 1, ///< DL-185 -- see the RGB twin
+				//! DL-295: the caller's SMS-uncovered-chain state (see
+				//! `PTNextSMSChainUncovered` in the .cpp) -- true when the
+				//! specular chain that reached @a firstHit already crossed
+				//! a delta vertex SMS cannot represent, so SMS holds no
+				//! estimate for any emitter this chain goes on to hit.
+				//! Only the HWSS body's per-wavelength hand-offs pass it;
+				//! every other entry starts a chain and passes false.
+				bool smsChainUncovered_ = false
 				) const;
 
 			/// Traces a path starting from a pre-computed surface hit (HWSS).
@@ -583,7 +591,8 @@ namespace RISE
 				typename SpectralDispatch::SpectralValueTraits<Tag>::value_type* pDirectResult,
 				const Tag& tag,
 				Scalar bsdfMisPdf_ = -1,		///< DL-74 -- see IntegrateFromHit
-				Scalar castRRCompensation_ = 1	///< DL-185 -- see IntegrateFromHit
+				Scalar castRRCompensation_ = 1,	///< DL-185 -- see IntegrateFromHit
+				bool smsChainUncovered_ = false	///< DL-295 -- see IntegrateFromHitNM
 				) const;
 
 			/// Shared body of IntegrateRay / IntegrateRayNM.

@@ -85,7 +85,9 @@ void NormalMap::Modify( RayIntersectionGeometric& ri ) const
 	// per-vertex TANGENT (correct across UV seams and mirrored regions);
 	// fall back to the ONB-derived tangents when the source had none.
 	Vector3 T, B;
-	const Vector3 N = ri.vNormal;
+	// Independent shader directions preserve the original UV decoding N as
+	// well as T/B. Normal modifiers affect anisotropy, not node evaluation.
+	const Vector3 N = ri.bHasNormalMapFrame ? ri.normalMapOnb.w() : ri.vNormal;
 	if( ri.bHasTangent ) {
 		// Best path: imported per-vertex TANGENT.  Honours mirrored
 		// UVs via the bitangent sign (asset-author intent preserved).
@@ -140,7 +142,7 @@ void NormalMap::Modify( RayIntersectionGeometric& ri ) const
 		// exists to serve.  For an un-mirrored object the sign is +1 and this is
 		// byte-identical to the previous expression.
 		B = Vector3Ops::Cross( N, T ) * ri.bitangentSign;
-	} else if( ModifierFrame::HasCoherentTangent( ri ) ) {
+	} else if( ModifierFrame::HasSurfaceTangentFrame( ri ) ) {
 		// P2 fix (docs/CLOTH_FABRIC_DESIGN.md 9.9 fix round): no imported
 		// TANGENT and no `ri.derivatives` (e.g. ClippedPlaneGeometry, which
 		// writes a geometry-supplied shading tangent but by design never
@@ -154,7 +156,8 @@ void NormalMap::Modify( RayIntersectionGeometric& ri ) const
 		// UV/fiber-aligned frame, already correctly signed.  Use them
 		// directly, no warning.
 		//
-		// The predicate is ModifierFrame::HasCoherentTangent -- the SAME
+		// UV decoding uses HasSurfaceTangentFrame; a separate shader
+		// vector is only used by the later anisotropy-frame rebuild. The legacy
 		// flag pair Object::IntersectRay branches on to build that frame
 		// (bShadingTangentFromGeometry, OR the hair-only bHasShadingTangent)
 		// -- not `bHasShadingTangent` alone: an SDF heightfield hit sets only
@@ -185,8 +188,8 @@ void NormalMap::Modify( RayIntersectionGeometric& ri ) const
 		// here fixes that misalignment, only ceases to warn about the
 		// unrotated case where there was nothing to warn about.  The VALUES
 		// are unchanged either way; only the disclosure is corrected.
-		T = ri.onb.u();
-		B = ri.onb.v();
+		T = ri.bHasNormalMapFrame ? ri.normalMapOnb.u() : ri.onb.u();
+		B = ri.bHasNormalMapFrame ? ri.normalMapOnb.v() : ri.onb.v();
 	} else {
 		// Last-ditch fallback: no TANGENT, no surface derivatives, and no
 		// geometry-supplied shading tangent (some non-triangle geometry, or
@@ -207,8 +210,8 @@ void NormalMap::Modify( RayIntersectionGeometric& ri ) const
 				"mesh geometry (which populates derivatives).  This warning "
 				"fires once per process; subsequent fallbacks are silent." );
 		}
-		T = ri.onb.u();
-		B = ri.onb.v();
+		T = ri.bHasNormalMapFrame ? ri.normalMapOnb.u() : ri.onb.u();
+		B = ri.bHasNormalMapFrame ? ri.normalMapOnb.v() : ri.onb.v();
 	}
 
 	// World-space perturbed normal = T*nx + B*ny + N*nz, normalized.
@@ -217,7 +220,8 @@ void NormalMap::Modify( RayIntersectionGeometric& ri ) const
 
 	// Rebuild the ONB so SPFs (refraction / reflection) sample around the
 	// perturbed normal, not the original geometric one.  The rebuild body
-	// -- project the CURRENT u into the new normal's tangent plane,
+	// -- project legacy CURRENT u, or the independent RAW shader vector,
+	// into the new normal's tangent plane,
 	// CreateFromWU, restore the incoming handedness with FlipV, fall back
 	// to CreateFromW on a degenerate projection -- lives in
 	// ModifierFrame::RebuildPreservingTangent, which carries the full

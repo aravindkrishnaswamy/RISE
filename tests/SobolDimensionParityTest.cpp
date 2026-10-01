@@ -1007,7 +1007,12 @@ int main( int argc, char** argv )
 	//   MDa   BDPT medium block (side 0..1, iteration 0..63, draw
 	//         0..63) vs the unwrapped dimension on the same table row;
 	//   MDv   the same block draws vs the iteration's own vertex stream
-	//         (16 + d eye / 1 + d light, slots 0..7);
+	//         (BDPTUtilities::EyeWalkStream / LightWalkStream -- 16 + d
+	//         eye / 1 + d light for shallow iterations, the DL-286 deep
+	//         block past that; slots 0..7);
+	//   DWa   DL-286's deep walk streams (light iterations 15..78, eye
+	//         31..94, slots 0..7) vs the unwrapped dimension on the same
+	//         table row -- the shallow stream the same sample also opens;
 	//   MDx   eye block d vs light block d, draw k -- same table row,
 	//         different wrap counts;
 	//   floor ordinary adjacent production streams (s, s+1), s 16..40,
@@ -1019,7 +1024,7 @@ int main( int argc, char** argv )
 		const uint32_t stride = SobolSampler::kStreamStride;
 		const uint32_t seeds[4] = { 0x5eed1234u, 0x0badf00du, 0x283283u, 0x9e3779b9u };
 		typedef std::vector< std::pair<uint32_t, uint32_t> > PairList;
-		PairList pta, mda, mdv, mdx, flo;
+		PairList pta, mda, mdv, mdx, dwa, flo;
 		for( uint32_t lane = 0; lane < 4; lane++ )
 			for( uint32_t ev = 0; ev < 256; ev++ )
 				for( uint32_t slot = 0; slot < 8; slot++ ) {
@@ -1030,7 +1035,8 @@ int main( int argc, char** argv )
 			for( uint32_t it = 0; it < 64; it++ ) {
 				const uint32_t b = uint32_t( BDPTUtilities::MediumDistanceStream(
 					side ? BDPTUtilities::eLightWalk : BDPTUtilities::eEyeWalk, it ) ) * stride;
-				const uint32_t v = ( side ? 1u + it : 16u + it ) * stride;
+				const uint32_t v = uint32_t( side ? BDPTUtilities::LightWalkStream( it, true )
+				                                  : BDPTUtilities::EyeWalkStream( it, true ) ) * stride;
 				for( uint32_t k = 0; k < 64; k++ ) {
 					mda.push_back( std::make_pair( b + k, ( b + k ) % table ) );
 					mdv.push_back( std::make_pair( b + k, v + ( k % 8u ) ) );
@@ -1040,6 +1046,15 @@ int main( int argc, char** argv )
 						mdx.push_back( std::make_pair( b + k, bl + k ) );
 					}
 				}
+			}
+		for( uint32_t side = 0; side < 2; side++ )
+			for( uint32_t it = 0; it < 64; it++ ) {
+				const uint32_t d = side ? BDPTUtilities::kLightWalkShallowIterations + it
+				                        : BDPTUtilities::kEyeWalkShallowIterations + it;
+				const uint32_t w = uint32_t( side ? BDPTUtilities::LightWalkStream( d, true )
+				                                  : BDPTUtilities::EyeWalkStream( d, true ) ) * stride;
+				for( uint32_t slot = 0; slot < 8; slot++ )
+					dwa.push_back( std::make_pair( w + slot, ( w + slot ) % table ) );
 			}
 		for( uint32_t st = 16; st <= 40; st++ )
 			for( uint32_t a = 0; a < 8; a++ )
@@ -1051,6 +1066,7 @@ int main( int argc, char** argv )
 		bool rowPremise = true;
 		for( const auto& pr : pta ) if( pr.first == pr.second || pr.first % table != pr.second ) rowPremise = false;
 		for( const auto& pr : mda ) if( pr.first == pr.second || pr.first % table != pr.second ) rowPremise = false;
+		for( const auto& pr : dwa ) if( pr.first == pr.second || pr.first % table != pr.second ) rowPremise = false;
 		for( const auto& pr : mdx ) if( pr.first % table != pr.second % table || pr.first == pr.second ) rowPremise = false;
 		Check( rowPremise, "H: every aliased pair shares a table row at distinct raw dimensions" );
 
@@ -1076,13 +1092,15 @@ int main( int argc, char** argv )
 		};
 
 		std::cout << "    pairs x 4 seeds: PTa " << pta.size() << ", MDa " << mda.size()
-		          << ", MDv " << mdv.size() << ", MDx " << mdx.size() << ", floor " << flo.size() << std::endl;
+		          << ", MDv " << mdv.size() << ", MDx " << mdx.size() << ", DWa " << dwa.size()
+		          << ", floor " << flo.size() << std::endl;
 		for( unsigned int m = 2; m <= 8; m++ ) {
 			const double rPTa = rate( pta, m ), rMDa = rate( mda, m ), rMDv = rate( mdv, m ),
-				rMDx = rate( mdx, m ), rFlo = rate( flo, m );
+				rMDx = rate( mdx, m ), rDWa = rate( dwa, m ), rFlo = rate( flo, m );
 			std::cout << "    " << std::setw( 3 ) << ( 1u << m ) << " spp: PTa " << std::fixed
 			          << std::setprecision( 2 ) << std::setw( 6 ) << rPTa << "%  MDa " << std::setw( 6 ) << rMDa
 			          << "%  MDv " << std::setw( 6 ) << rMDv << "%  MDx " << std::setw( 6 ) << rMDx
+			          << "%  DWa " << std::setw( 6 ) << rDWa
 			          << "%   floor " << std::setw( 6 ) << rFlo << "%" << std::endl;
 			// Measured (this table): at 8 spp PTa 0.00, MDa 6.25, MDv 13.84,
 			// MDx 25.00 against a floor of 24.69 -- MDx sits AT the
@@ -1090,18 +1108,31 @@ int main( int argc, char** argv )
 			// pigeonhole as section G), not above it by more than noise.
 			// From 16 spp every family is exactly 0 while the floor is
 			// still 12.6 %.  Gate: at 8 spp within 1 point of the floor;
-			// from 16 spp exactly zero.
+			// from 16 spp exactly zero -- except MDv, since DL-286 moved
+			// the deep iterations' VERTEX streams into the wrap region
+			// too: a block draw and a deep vertex slot are then two
+			// index-permuted (wrap-keyed) rows, and at 2^M samples each
+			// one's leading digit is one of a finite family of affine
+			// functions of M index bits (section G's pigeonhole), so a
+			// few specific wrap pairs lock by chance.  Measured: 23 of
+			// 8192 MDv pairs (0.28 %, identically on all four seeds --
+			// Owen scrambling flips a locked pair's digit together) at
+			// 16 spp, all light iterations 52..55 (block wrap 301 vs
+			// vertex wrap 544); 0 from 32 spp.  MDv's gate from 16 spp is
+			// therefore a tenth of the production floor, not zero.
 			char msg[200];
 			if( m == 3 ) {
 				std::snprintf( msg, sizeof(msg),
 					"H: at 8 spp every wrap-region family is within 1 point of the production floor "
-					"(PTa %.2f MDa %.2f MDv %.2f MDx %.2f vs %.2f)", rPTa, rMDa, rMDv, rMDx, rFlo );
-				Check( rPTa <= rFlo + 1.0 && rMDa <= rFlo + 1.0 && rMDv <= rFlo + 1.0 && rMDx <= rFlo + 1.0, msg );
+					"(PTa %.2f MDa %.2f MDv %.2f MDx %.2f DWa %.2f vs %.2f)", rPTa, rMDa, rMDv, rMDx, rDWa, rFlo );
+				Check( rPTa <= rFlo + 1.0 && rMDa <= rFlo + 1.0 && rMDv <= rFlo + 1.0 && rMDx <= rFlo + 1.0 &&
+					rDWa <= rFlo + 1.0, msg );
 			} else if( m >= 4 ) {
 				std::snprintf( msg, sizeof(msg),
-					"H: at %u spp no wrap-region pair collapses (PTa %.2f MDa %.2f MDv %.2f MDx %.2f)",
-					1u << m, rPTa, rMDa, rMDv, rMDx );
-				Check( rPTa == 0.0 && rMDa == 0.0 && rMDv == 0.0 && rMDx == 0.0, msg );
+					"H: at %u spp no wrap-region pair collapses (PTa %.2f MDa %.2f MDx %.2f DWa %.2f) "
+					"and MDv %.2f <= a tenth of the floor %.2f",
+					1u << m, rPTa, rMDa, rMDx, rDWa, rMDv, rFlo );
+				Check( rPTa == 0.0 && rMDa == 0.0 && rMDv <= 0.1 * rFlo && rMDx == 0.0 && rDWa == 0.0, msg );
 			}
 		}
 	}

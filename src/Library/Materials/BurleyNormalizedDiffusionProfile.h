@@ -90,34 +90,38 @@ namespace RISE
 			RISEPel EvaluateProfile(
 				const Scalar r,
 				const RayIntersectionGeometric& ri
-				) const;
+				) const override;
 
 			Scalar EvaluateProfileNM(
 				const Scalar r,
 				const RayIntersectionGeometric& ri,
 				const Scalar nm
-				) const;
+				) const override;
 
 			Scalar SampleRadius(
 				const Scalar u,
 				const int channel,
 				const RayIntersectionGeometric& ri
-				) const;
+				) const override;
 
 			Scalar PdfRadius(
 				const Scalar r,
 				const int channel,
 				const RayIntersectionGeometric& ri
-				) const;
+				) const override;
 
 			Scalar FresnelTransmission(
 				const Scalar cosTheta,
 				const RayIntersectionGeometric& ri
-				) const;
+				) const override;
+
+            Scalar GetIORNM(const RayIntersectionGeometric& ri, const Scalar nm) const override;
+            Scalar FresnelTransmissionNM(const Scalar cosTheta,
+                const RayIntersectionGeometric& ri, const Scalar nm) const override;
 
 			Scalar GetIOR(
 				const RayIntersectionGeometric& ri
-				) const;
+				) const override;
 
 			//! Live-rebind the IOR painter for the interactive editor.
 			//! Must be called in lockstep with the BSDF/SPF SetIOR by
@@ -135,7 +139,7 @@ namespace RISE
 			/// (the exp(-s*r/(3*d)) term) to determine the cutoff.
 			Scalar GetMaximumDistanceForError(
 				const Scalar error
-				) const;
+				) const override;
 
 			/// Evaluates the profile as a "total extinction" for
 			/// compatibility with the existing ISubSurfaceExtinctionFunction
@@ -143,7 +147,7 @@ namespace RISE
 			/// each channel.
 			RISEPel ComputeTotalExtinction(
 				const Scalar distance
-				) const;
+				) const override;
 		};
 	}
 }

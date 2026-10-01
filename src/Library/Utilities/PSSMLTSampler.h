@@ -106,9 +106,10 @@ namespace RISE
 			// BDPTIntegrator uses streams 0-47 internally (light
 			// source=0, light bounces 1.., eye bounces 16.., SMS
 			// reserved 31-46, (s,t) strategy select=47) -- see
-			// BDPTCameraUtilities::kMaxBdptWalkStreamUnderPSSMLT
-			// (CameraUtilities.h) for the derived ceiling on how high
-			// the eye-walk bounce stream can actually reach (1039).  The
+			// BDPTCameraUtilities::kBdptShallowWalkStreamEndUnderPSSMLT
+			// (CameraUtilities.h; deep walk iterations use lanes
+			// 2049..4050 since DL-286) for the derived bound on how high
+			// the shallow eye-walk bounce stream can reach (46).  The
 			// MLT rasterizers reserve
 			// BDPTCameraUtilities::kPSSMLTFilmLensApertureStream (2048)
 			// for the film/lens/aperture block.
@@ -180,9 +181,14 @@ namespace RISE
 			//    large a stream number some future caller picks --
 			//    `kPSSMLTFilmLensApertureStream`'s specific value (2048)
 			//    no longer has to be load-bearing for collision safety,
-			//    though it is kept where DL-08 placed it (comfortably
-			//    above `kMaxBdptWalkStreamUnderPSSMLT`) for clarity and
-			//    defense in depth.  If a future consumer ever reserves
+			//    though it is kept where DL-08 placed it (outside every
+			//    walk lane -- `kBdptShallowWalkStreamEndUnderPSSMLT` below
+			//    it, DL-286's deep walk lanes 2049..4050 above it) for
+			//    clarity and defense in depth.  A deep MLT walk (DL-286)
+			//    puts up to one extra-tier lane per iteration past the
+			//    shallow ones here -- a few dozen on a dense-fog chain, as
+			//    before DL-286 (the eye walk's lanes >= 49 were already
+			//    extra-tier then).  If a future consumer ever reserves
 			//    MANY distinct extra streams per instance, revisit this
 			//    (a small sorted vector with binary search, or a map,
 			//    would beat linear scan past a few dozen entries) --
@@ -228,6 +234,7 @@ namespace RISE
 				unsigned int	sampleIdx;		///< valid iff !legacy: index into XExtra's vector for `stream`
 			};
 			std::vector<ModifiedLane>		modifiedIndices;	///< Lanes modified in current proposal (for fast rollback)
+			unsigned int alphaIndex = 0;
 			unsigned int					sampleIndex;		///< Current consumption position within current stream
 			unsigned int					currentIteration;	///< Global mutation counter
 
@@ -327,6 +334,8 @@ namespace RISE
 			/// (2048, DL-08) is reserved for the MLT film/lens/aperture
 			/// block -- see `kDefaultNumStreams`'s comment above for why
 			/// it is no longer the literal 48.
+            Scalar GetAlpha1D();
+
 			void StartStream( int streamIndex );
 
 			//////////////////////////////////////////////////////////////

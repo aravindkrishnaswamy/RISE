@@ -888,10 +888,129 @@ DL-283 review measured 0.0750 / 0.0743 / 0.0807).
 functions and asserts the wrap counts above, uniqueness, and disjointness from
 every other consumer of the same sampler; Test H drives BDPT's real light and
 eye generators (light sampler attached) and asserts no per-vertex stream
-overruns. G2 also pins the **pre-existing** overlaps among the fixed per-vertex
+overruns. G2 also pinned the then-**pre-existing** overlaps among the fixed per-vertex
 streams (the light walk reaches the eye walk's streams from light iteration 15,
 the strategy select at 46 and VCM's first NEE stream, 49, at 48; the eye walk
 reaches the select at 31 and the NEE at 33) — DL-286, opened by DL-283's
-sibling audit; Test H observes it on its homogeneous fixture (635 light/eye
-shared dimensions in 60 of 4096 samples).
+sibling audit and closed by §10 below; Test H observed it on its homogeneous
+fixture (635 light/eye shared dimensions in 60 of 4096 samples).
 
+
+## 10. DL-286 (2026-09-29) — the per-vertex walk layout overlapped itself, and it was a bias
+
+**The defect.** BDPT's light walk opened `StartStream(1 + d)` and its eye walk
+`StartStream(16 + d)`, and every BDPT/VCM/MLT sample draws BOTH walks off ONE
+sampler. From light iteration 15 the light walk re-opened the eye walk's
+streams (slot for slot: iteration 15 + k's phase / BSDF / roulette draws were
+eye iteration k's), and further up the strategy select (47) and VCM's NEE
+(`48 + i`). Iterations count medium scatters, so a dense medium gets there
+routinely. Under PSSMLT (MLT) the same indices are the same *lanes*: on a
+small-step iteration the second read of a lane is the first read's value
+mutated once more, i.e. nearly the same number.
+
+**Which overlaps can bias.** A contribution is biased only if ONE connection
+term uses two decisions drawn from one dimension. Term (s, t) uses the light
+prefix (streams 0 .. s−2) and the eye prefix (streams 16 .. 16 + t − 3), so the
+light↔eye overlap reaches terms with s ≳ 17 and t ≥ 3. VCM's NEE at eye vertex
+i (stream 48 + i) shares a term only with the eye prefix up to vertex i
+(streams < 16 + i), so the eye↔NEE and light↔NEE overlaps correlate DIFFERENT
+terms — a variance effect, not a bias. The strategy select (47) is used only by
+the experimental guided complete-path strategy selection.
+
+**Measured — salted Sobol' vs the independent-sampler reference**
+(`SobolSamplerTestHooks::ValueSalt` per render / `::Independent`; renders
+single-threaded, `std::srand(seedBase + n)`, fixed seeds; scratch harness,
+64×64 × 4 spp unless noted; fog scenes are a 4-unit index-matched box of
+homogeneous isotropic fog with a 0.4-radius emissive sphere inside, Lambertian
+0.8 floor, camera inside, depths 20/20, `max_volume_bounce` 64):
+
+| scene (σa / σs) | integrator | light walks reaching iteration 15 | n each | pre-fix Sobol'/indep − 1 | fixed |
+|---|---|---|---|---|---|
+| fog, 0.08 / 7.92 (albedo .99, σt 8) | BDPT | 52 % | 128 (fixed: 384 vs 512) | **−12.08 % (se 0.65, z −18.6)** | +0.03 % (se 0.42, z +0.08) |
+| same | VCM (vc only) | 52 % | 128 | **−12.11 % (se 0.74, z −16.4)** | −1.03 % (se 0.79, z −1.3) |
+| same | MLT bootstrap estimator, PSSMLT vs IndependentSampler | 52 % | N = 800 000 | **−12.93 % (se 1.12, z −11.6)** | +1.51 % (se 1.23, z +1.2) |
+| fog, 0.8 / 7.2 (albedo .9, σt 8) | BDPT | 52 % | 128 | **−5.67 % (se 1.10, z −5.2)** | −0.82 % (se 1.12, z −0.7) |
+| same | VCM (vc only) | 52 % | 128 | **−4.72 % (se 1.23, z −3.9)** | +0.18 % (se 1.24, z +0.1) |
+| fog, 0.04 / 3.96 (albedo .99, σt 4) | BDPT | 66 % | 256 | −0.06 % (se 0.20, z −0.3) | −0.00 % (se 0.21) |
+| env-lit box, 0.04 / 3.96, camera inside | BDPT | 12 % | 256 | −0.00 % (se 0.03, z −0.0) | +0.01 % (se 0.03, z +0.4) |
+| same | VCM (vc only) | 12 % | 256 | +0.19 % (se 0.10, z +1.9) | +0.06 % (se 0.10, z +0.6) |
+| DL-283 thin 256³ box, floor 0.8 (128×128) | BDPT | 0 % | 96 | −0.02 % (se 0.07, z −0.3) | unchanged by construction |
+
+Paired fixed − pre-fix (same salts): +12.6 % (VCM σt-8 albedo .99, z +24),
++5.15 % (BDPT albedo .9, z +26), +5.14 % (VCM albedo .9, z +19), +0.06 %
+(σt-4 fog, z +1.2), −0.13 % (env-lit VCM, z −3.8; the pre-fix +0.19 % moved
+toward zero), +0.01 % (env-lit BDPT). The bias is always NEGATIVE and grows
+with optical depth (σt 4 → 8 turns ~0 into −12 %): it lives in the long paths
+whose connection terms carry a light prefix past iteration 15. The mechanism
+was not isolated further (the measurement is the evidence, and the layout fix
+removes it everywhere measured).
+
+**The DL-283 review's +0.25 %** on the thin 256³ floor-0.8 box does not
+survive: −0.024 % ± 0.074 % (z −0.3) at n = 96 per side with independent
+references per side. DL-286 cannot reach that fixture anyway (0 of 4096 probed
+light walks reach iteration 15; the eye walk's deepest stream is 29); the
+review's reading used ONE shared reference for both builds, so a reference
+fluctuation of ~2.5 se moved both together.
+
+**The fix** (`BDPTUtilities::LightWalkStream` / `EyeWalkStream`): shallow
+iterations keep `1 + d` (d < 15) and `16 + d` (d < 31); deeper ones get a
+block of their own, light first then eye (1009 + 993 streams):
+
+| sampler | deep light iterations | deep eye iterations | wraps |
+|---|---|---|---|
+| fixed-budget (`SobolSampler`) | 139264 + (d − 15) | 140273 + (d − 31) | 544..551 (past the DL-283 blocks) |
+| unbounded-lane (`PSSMLTSampler`, MLT) | 2049 + (d − 15) | 3058 + (d − 31) | n/a — lanes ≥ 49 are extra-tier; below the 4096 sanity bound (static_assert) |
+
+Nothing below 139264 fits for Sobol': VCM's NEE owns 49..3121. Under PSSMLT the
+reserved film/lens/aperture lane 2048 now sits between the shallow lanes (< 48)
+and the deep ones (`kMaxBdptWalkStreamUnderPSSMLT` became
+`kBdptShallowWalkStreamEndUnderPSSMLT`). PSSMLT's legacy tier (lanes < 49) is
+untouched, so shallow MLT chains are bit-identical (`PSSMLTStreamAliasingTest`
+H part 1: 328/328; the DL-08 oracle, `cornellbox_mlt_fast`'s bootstrap mean,
+reads 0.521532 on both builds).
+
+**Bit-identity of shallow walks.** Single-thread FNV-1a over every float pixel
+(`force_number_of_threads 1`, `srand(1)`, one scene per process, two runs per
+build, all bit-stable), pre-fix vs fixed: IDENTICAL on every medium-free
+fixture — the DL-283 review's four free boxes (BDPT pel `5510360215ee3481`,
+BDPT hwss `cb637d1ff34e0578`, VCM `5d3800ce59aed1ae`, PT `c7fd4c90125c892b`),
+64×64 copies of `cornellbox_bdpt`, `cornellbox_bdpt_spectral`,
+`cornellbox_vcm_simple`, `cornellbox_vcm_spectral`, `bdpt_veach_egg`,
+`bdpt_luminous_orb` and `cornellbox_mlt_fast`, whose walks never reach
+light iteration 15 / eye iteration 31.  Being medium-free does NOT
+guarantee that (DL-286 review, 2026-10-01): `diamond_teapot_pour`
+(`vcm_pel_rasterizer`, `max_eye_depth`/`max_light_depth` 128) renders a
+DIFFERENT single-threaded hash pre-fix vs fixed (70×100, 4 spp,
+`srand(1)`; the fixed build reproduces its own hash), so its walks reach
+the old overlap; the depth-16 SSS scenes (`vcm_sss_dragon`,
+`bdpt_sss_dragon`, `bdpt_sss_different_bsdf`, `rwsss_bdpt`) can as well.
+The size of their pre-fix bias was not measured.
+DIFFERENT, as they must be, on the medium scenes whose walks go deep: the
+σt-8 fog (BDPT mean +7.4 %, VCM +10.7 % on the single unsalted render) and
+`bdpt_alchemists_sanctum` (48×32, mean −3.5e−6 relative: a few deep walks).
+
+**Wrap-region quality** (`SobolDimensionParityTest` H, new DWa family: deep
+walk slots vs the shallow stream sharing their table row): 100 % at 4 spp (the
+counting floor there is 49 %), 0 % from 8 spp. MDv (a medium block vs the
+vertex stream its iteration really opens) now includes deep vertex streams,
+which are wrapped too: 23 of 8192 pairs (0.28 %, light iterations 52..55,
+block wrap 301 vs vertex wrap 544) lock at 16 spp by the section-G pigeonhole,
+against a 12.56 % production floor, and 0 from 32 spp; that gate is a tenth of
+the floor rather than zero. Per-render sd on the σt-8 fog: fixed 5.4–6.4 %,
+independent 5.8–6.0 %, pre-fix 5.2 % (a biased estimate).
+
+**Cost.** Nothing measurable: interleaved single-thread user CPU, n = 3, three
+renders per process — σt-8 fog BDPT 11.04 s pre-fix vs 10.85 s fixed;
+`cornellbox_bdpt` at 128×128 × 16 spp 91.93 s vs 93.23 s (paired deltas
+−1.95 / +4.12 / +1.74 s, t 0.7).
+
+**Gates.** `SobolDimensionBudgetTest` G2 now enumerates the walk layout under
+both sampler kinds (shallow iterations pinned to their historical streams,
+all walk streams distinct) and asserts the whole fixed-consumer map with NO
+known exceptions; Test H gates light/eye shared Sobol' dimensions and shared
+PSSMLT primary samples on the real generators (pre-fix red: 635 dimensions in
+60 samples, 690 PSSMLT primary samples in 52 samples). `MediumInsideOutside
+InvariantTest` renders the σt-8 fog salted Sobol' vs independent for BDPT and
+VCM (band ±5 %, n = 32; pre-fix red at −12.7 % / −12.3 %, z −8.1 / −8.8) and,
+opt-in (`--deep-walk-mlt`), the MLT estimator (band ±7 %, N = 400 000; pre-fix
+red at −14.4 %, z −9.1).

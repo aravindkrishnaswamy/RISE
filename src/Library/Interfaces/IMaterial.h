@@ -20,6 +20,8 @@
 
 namespace RISE
 {
+	enum AlphaMode { eAlphaOpaque, eAlphaMask, eAlphaBlend };
+	class ISampler;
 	class ISPF;
 	class IBSDF;
 	class IEmitter;
@@ -102,8 +104,11 @@ namespace RISE
 	class IMaterial : public virtual IReference
 	{
 	protected:
-		IMaterial(){};
-		virtual ~IMaterial( ){};
+		IMaterial();
+		virtual ~IMaterial();
+		const IScalarPainter* alphaPainter_;
+		AlphaMode alphaMode_;
+		Scalar alphaCutoff_;
 
 	public:
 
@@ -143,16 +148,10 @@ namespace RISE
 		/// Compute wavelength-dependent random-walk SSS parameters.
 		/// Returns true if this material provides spectral RW SSS.
 		///
-		/// Intended for materials whose scattering coefficients vary
-		/// strongly with wavelength, where packing 3 wavelengths into
-		/// RGB channels produces intolerable per-channel weight
-		/// variance: such a material would return NULL from
-		/// GetRandomWalkSSSParams() (disabling RGB mode) and implement
-		/// this method for the spectral (NM) rendering path.  As of
-		/// 2026-09-28 NO material overrides it (BioSpec skin, once the
-		/// named example, does not), so every caller's NM fallback is
-		/// currently unreachable.
-		///
+        /// NM consumers prefer this query even when RGB parameters exist.
+        /// RandomWalkSSSMaterial keeps its coefficient snapshot but evaluates
+        /// the boundary IOR at nm. Spectral-only implementations can also supply
+        /// wavelength-dependent coefficients and return no RGB parameters.
 		/// The output params_out has all 3 RGB channels set to
 		/// the same scalar value for the requested wavelength,
 		/// so the walk's luminance-derived NM path uses the
@@ -291,6 +290,17 @@ namespace RISE
 		//! scene is still mutable, so no thread-safety concern.
 		/// \return TRUE if the material is a luminaire and applied the scale, FALSE otherwise
 		virtual bool SetEmissionScale( const Scalar scale ) { return false; }
+
+        //! DL-214: surface coverage, independent of scattering and wavelength.
+        //! Construction-time mutation only. Opaque is the default on every material.
+        void SetAlpha(const IScalarPainter* painter, AlphaMode mode, Scalar cutoff);
+        Scalar AlphaCoverage(const RayIntersectionGeometric& ri) const;
+        bool AcceptAlpha(const RayIntersectionGeometric& ri, ISampler& sampler) const;
+        static bool AnyAlphaMaterials();
+        AlphaMode GetAlphaMode() const { return alphaMode_; }
+        Scalar GetAlphaCutoff() const { return alphaCutoff_; }
+        const IScalarPainter* GetAlphaPainter() const { return alphaPainter_; }
+
 	};
 }
 

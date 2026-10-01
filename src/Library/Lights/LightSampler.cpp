@@ -33,10 +33,28 @@
 #include "../Utilities/OptimalMISAccumulator.h"
 #include "../Utilities/MISWeights.h"
 #include "../Interfaces/ISurfaceSignalProvider.h"	// SurfaceCurvatureDemand / SurfaceSignalDemand -- the emitter-probe gate
+#include "../Objects/CSGObject.h"
 #include "../Interfaces/IObjectManager.h"		// the `signals.pScene` the probe stamps
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+// Effective bindings follow the same override rule as CSG intersection:
+// an explicit material ends inheritance, including an OPAQUE override.
+// Start only at visible scene roots; hidden operands are reachable here only
+// through their composite. Snapshot CSG preserves this same operand tree.
+static bool HasEffectiveAlphaCoverage( const IObject* object )
+{
+    if( !object ) return false;
+    if( const IMaterial* material = object->GetMaterial() ) {
+        return material->GetAlphaMode() != eAlphaOpaque;
+    }
+    if( const CSGObject* csg = dynamic_cast<const CSGObject*>(object) ) {
+        return HasEffectiveAlphaCoverage(csg->GetOperandA()) ||
+            HasEffectiveAlphaCoverage(csg->GetOperandB());
+    }
+    return false;
+}
 
 // ----------------------------------------------------------------
 // Transparent (Fresnel-attenuated) shadow-ray helpers.
@@ -75,6 +93,7 @@ static bool ShadowOccludedRGB(
 	const Scalar dHowFar,
 	RISEPel& transmittance,
 	const bool bDeltaLight,		// DL-05: see RayCaster::CastShadowRayAuto
+    ISampler& sampler, MediumBoundaryHits* boundaries, Scalar physicalDistance = -1,
 	GradedIndexMedium::ShadowSegmentTrack* pGradedTrack = 0,	// DL-292: see RayCaster::CastShadowRayAuto
 	const Point3* pSegmentEnd = 0
 	)
@@ -85,10 +104,10 @@ static bool ShadowOccludedRGB(
 	const RayCaster* pRC = dynamic_cast<const RayCaster*>( &caster );
 	if( pRC )
 	{
-		return pRC->CastShadowRayAuto( ray, dHowFar, false, 0.0, transmittance, bDeltaLight, pGradedTrack, pSegmentEnd );
+		return pRC->CastShadowRayAutoSampled( ray, dHowFar, false, 0.0, transmittance, bDeltaLight, sampler, boundaries, physicalDistance, 0, pGradedTrack, pSegmentEnd );
 	}
 	transmittance = RISEPel( 1.0, 1.0, 1.0 );
-	return caster.CastShadowRay( ray, dHowFar );
+	return caster.CastShadowRaySampled( ray, dHowFar, sampler, boundaries, physicalDistance );
 }
 
 static bool ShadowOccludedNM(
@@ -98,6 +117,7 @@ static bool ShadowOccludedNM(
 	const Scalar nm,
 	Scalar& transmittance,
 	const bool bDeltaLight,		// DL-05: see RayCaster::CastShadowRayAuto
+    ISampler& sampler, MediumBoundaryHits* boundaries, Scalar physicalDistance = -1,
 	GradedIndexMedium::ShadowSegmentTrack* pGradedTrack = 0,	// DL-292: see RayCaster::CastShadowRayAuto
 	const Point3* pSegmentEnd = 0
 	)
@@ -107,12 +127,12 @@ static bool ShadowOccludedNM(
 	if( pRC )
 	{
 		RISEPel t( 1.0, 1.0, 1.0 );
-		const bool occluded = pRC->CastShadowRayAuto( ray, dHowFar, true, nm, t, bDeltaLight, pGradedTrack, pSegmentEnd );
+		const bool occluded = pRC->CastShadowRayAutoSampled( ray, dHowFar, true, nm, t, bDeltaLight, sampler, boundaries, physicalDistance, 0, pGradedTrack, pSegmentEnd );
 		transmittance = t.r;	// NM path fills all 3 channels equally
 		return occluded;
 	}
 	transmittance = 1.0;
-	return caster.CastShadowRay( ray, dHowFar );
+	return caster.CastShadowRaySampled( ray, dHowFar, sampler, boundaries, physicalDistance );
 }
 
 // ----------------------------------------------------------------
@@ -227,7 +247,7 @@ static RISEPel EvalShadowTransmittance(
 	const IMedium* pOriginMedium,
 	const IObject* pOriginMediumObject,
 	const IScene* pScene,
-	const bool bSceneHasObjectMedia
+	const bool bSceneHasObjectMedia, const MediumBoundaryHits* boundaries
 	)
 {
 	RISEPel Tr( 1, 1, 1 );
@@ -270,13 +290,13 @@ static RISEPel EvalShadowTransmittance(
 
 	if( pObjects )
 	{
-		for( int step = 0; step < MAX_WALK_STEPS && segStart < maxDist; step++ )
+		for( size_t step = 0; (boundaries || step < MAX_WALK_STEPS) && segStart < maxDist; step++ )
 		{
 			// Cast from segStart + epsilon to avoid re-hitting the
 			// boundary we just processed.  On the first iteration
 			// (segStart == 0) we still add epsilon to avoid self-
 			// intersection at the shading point.
-			const Scalar castStart = segStart + WALK_EPSILON;
+			const Scalar castStart = segStart + (boundaries ? Scalar(0) : WALK_EPSILON);
 			if( castStart >= maxDist ) {
 				break;
 			}
@@ -287,7 +307,18 @@ static RISEPel EvalShadowTransmittance(
 
 			RasterizerState nullRast = {0};
 			RayIntersection ri( castRay, nullRast );
-			pObjects->IntersectRay( ri, true, true, false );
+			if (boundaries) {
+                if (step < boundaries->size()) {
+                    const bool reverse = boundaries->size() > 1 && Vector3Ops::Dot(
+                        Vector3Ops::mkVector3(boundaries->back().BoundaryPoint(),
+                            boundaries->front().BoundaryPoint()), ray.Dir()) < 0;
+                    ri = (*boundaries)[reverse ? boundaries->size()-1-step : step];
+                    ri.geometric.range = Vector3Ops::Dot(
+                        Vector3Ops::mkVector3(ri.BoundaryPoint(), ray.origin), ray.Dir()) - castStart;
+                }
+            } else {
+                pObjects->IntersectRay( ri, true, true, false );
+            }
 
 			if( !ri.geometric.bHit || ri.geometric.range >= castMax ) {
 				// No more boundaries before maxDist.
@@ -414,7 +445,7 @@ static RISEPel EvalShadowTransmittance(
 	// maxDist minus the per-object distance.
 	if( pGlobalMedium ) {
 		const Scalar globalDist = maxDist - objectCoveredDist;
-		if( globalDist > WALK_EPSILON ) {
+		if( globalDist > 0 ) {
 			// For homogeneous global media this is exact (transmittance
 			// depends only on total distance).  For heterogeneous global
 			// media this is approximate — a per-segment evaluation would
@@ -438,7 +469,7 @@ static Scalar EvalShadowTransmittanceNM(
 	const IObject* pOriginMediumObject,
 	const IScene* pScene,
 	const bool bSceneHasObjectMedia,
-	const Scalar nm
+	const Scalar nm, const MediumBoundaryHits* boundaries
 	)
 {
 	Scalar Tr = 1;
@@ -474,9 +505,9 @@ static Scalar EvalShadowTransmittanceNM(
 
 	if( pObjects )
 	{
-		for( int step = 0; step < MAX_WALK_STEPS && segStart < maxDist; step++ )
+		for( size_t step = 0; (boundaries || step < MAX_WALK_STEPS) && segStart < maxDist; step++ )
 		{
-			const Scalar castStart = segStart + WALK_EPSILON;
+			const Scalar castStart = segStart + (boundaries ? Scalar(0) : WALK_EPSILON);
 			if( castStart >= maxDist ) {
 				break;
 			}
@@ -487,7 +518,18 @@ static Scalar EvalShadowTransmittanceNM(
 
 			RasterizerState nullRast = {0};
 			RayIntersection ri( castRay, nullRast );
-			pObjects->IntersectRay( ri, true, true, false );
+			if (boundaries) {
+                if (step < boundaries->size()) {
+                    const bool reverse = boundaries->size() > 1 && Vector3Ops::Dot(
+                        Vector3Ops::mkVector3(boundaries->back().BoundaryPoint(),
+                            boundaries->front().BoundaryPoint()), ray.Dir()) < 0;
+                    ri = (*boundaries)[reverse ? boundaries->size()-1-step : step];
+                    ri.geometric.range = Vector3Ops::Dot(
+                        Vector3Ops::mkVector3(ri.BoundaryPoint(), ray.origin), ray.Dir()) - castStart;
+                }
+            } else {
+                pObjects->IntersectRay( ri, true, true, false );
+            }
 
 			if( !ri.geometric.bHit || ri.geometric.range >= castMax ) {
 				const Scalar remaining = maxDist - segStart;
@@ -598,7 +640,7 @@ static Scalar EvalShadowTransmittanceNM(
 
 	if( pGlobalMedium ) {
 		const Scalar globalDist = maxDist - objectCoveredDist;
-		if( globalDist > WALK_EPSILON ) {
+		if( globalDist > 0 ) {
 			Tr *= pGlobalMedium->EvalTransmittanceNM( ray, globalDist, nm );
 		}
 	}
@@ -1018,6 +1060,22 @@ void LightSampler::ApplyEmitterSurface(
 	// NOT `ptObjIntersec`: the call sites set it themselves, ungated.
 }
 
+bool LightSampler::AcceptEmitterAlpha(
+    const IObject* luminary, const IObjectManager* objects,
+    const Point3& position, const RayIntersectionGeometric& context,
+    ISampler& sampler, const RasterizerState* raster )
+{
+    const IMaterial* material = luminary ? luminary->GetMaterial() : nullptr;
+    if( !material || material->GetAlphaMode() == eAlphaOpaque ) return true;
+    RayIntersectionGeometric alphaRI(context);
+    alphaRI.ptIntersection = position;
+    alphaRI.signals.pScene = objects;
+    alphaRI.signals.pSelf = luminary;
+    alphaRI.signals.ptWorld = position;
+    if( raster ) alphaRI.rast = *raster;
+    return material->AcceptAlpha(alphaRI, sampler);
+}
+
 LightSampler::LightSampler() :
   pPreparedScene( 0 ),
   pPreparedLuminaries( 0 ),
@@ -1289,19 +1347,22 @@ void LightSampler::Prepare(
 		struct MediaScan : public IEnumCallback<IObject>
 		{
 			bool found;
-			MediaScan() : found(false) {}
+			bool alpha = false;
+            MediaScan() : found(false) {}
 			bool operator()( const IObject& obj )
 			{
 				if( obj.GetInteriorMedium() ) {
 					found = true;
-					return false;  // stop enumeration
+					// Continue: alpha is an independent scene capability.
 				}
+                alpha |= HasEffectiveAlphaCoverage(&obj);
 				return true;  // continue
 			}
 		};
 		MediaScan scan;
 		scene.GetObjects()->EnumerateObjects( scan );
 		bSceneHasObjectMedia = scan.found;
+        bSceneHasAlphaCoverage = scan.alpha;
 	}
 
 	// Compute scene bounding sphere from visible objects' world AABBs.
@@ -1747,6 +1808,7 @@ bool LightSampler::SampleLight(
 		ApplyEmitterSurface( rig, sample.surface );
 		rig.ptObjIntersec = sample.ptObjIntersec;
 
+		if (!AcceptEmitterAlpha(lumEntry.pLum, scene.GetObjects(), sample.position, rig, sampler)) return false;
 		sample.Le = pEmitter->emittedRadiance( rig, sample.direction, sample.normal );
 	}
 
@@ -2140,6 +2202,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
 	const IORStack* pGradedIndexStack
 	) const
 {
+    MediumBoundaryHits boundaryHits;
 	RISEPel result( 0, 0, 0 );
 
 	if( !pPreparedScene )
@@ -2240,6 +2303,18 @@ RISEPel LightSampler::EvaluateDirectLighting(
 	// unaffected: the shadow ray they now cast can hit nothing.
 	const bool bReceivesShadows =
 		pShadingObject ? pShadingObject->DoesReceiveShadows() : true;
+    // Records are authoritative only for a completed query in this scene.
+    // Shadow-disabled rays still need alpha-thinned medium boundaries, but
+    // must pass ordinary blockers. Visibility-enabled rays reuse their one
+    // sampled boundary decision, never draw coverage a second time.
+    MediumBoundaryHits* sampledBoundaries = bSceneHasObjectMedia && bSceneHasAlphaCoverage ? &boundaryHits : nullptr;
+    const auto mediumRecords = [&](const Ray& ray, Scalar distance) -> const MediumBoundaryHits* {
+        if (sampledBoundaries && !bReceivesShadows) {
+            pPreparedScene->GetObjects()->CollectMediumBoundaryHitsSampled(ray, distance, sampler, boundaryHits);
+        }
+        return sampledBoundaries;
+    };
+
 
 	const ILightManager* pLightMgr = pPreparedScene->GetLights();
 
@@ -2288,9 +2363,10 @@ RISEPel LightSampler::EvaluateDirectLighting(
 				// DL-157 P1: the LIVE stack, so this Step-1 arm prices a
 				// stateful BSDF on the same SIDE the three sampled-light
 				// arms below already do.
-				l->ComputeDirectLighting( ri, caster, brdf,
+				if (sampledBoundaries) sampledBoundaries->clear();
+                l->ComputeDirectLightingSampled( ri, caster, brdf,
 					bReceivesShadows,
-					amount, bFullSphere, isVolumeScatter, pMisIorStack );
+					amount, bFullSphere, isVolumeScatter, pMisIorStack, sampler, sampledBoundaries );
 
 				// VOLUME RECEIVER -- part B of 2: MEDIUM ATTENUATION.
 				//
@@ -2344,7 +2420,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
 					const Ray rayToLight( ri.ptIntersection, l->emissionDirection() );
 					amount = amount * EvalShadowTransmittance( rayToLight,
 						RISE_INFINITY, pMedium, pMediumObject,
-						pPreparedScene, bSceneHasObjectMedia );
+						pPreparedScene, bSceneHasObjectMedia, mediumRecords(rayToLight, RISE_INFINITY) );
 				}
 
 				result = result + amount;
@@ -2534,7 +2610,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
 			if( bReceivesShadows )
 			{
 				const Ray rayToLight( ri.ptIntersection, vToLight );
-				if( ShadowOccludedRGB( caster, rayToLight, dist - 0.001, shadowT, true /*DL-05: delta light*/,
+				if( ShadowOccludedRGB( caster, rayToLight, dist - 0.001, shadowT, true /*DL-05: delta light*/ , sampler, sampledBoundaries, dist,
 						gradedTrack ? &*gradedTrack : 0, &lightPos ) )
 					break;
 			}
@@ -2554,7 +2630,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
 			// and global media; bounded by stack depth and step count).
 			{
 				const Ray rayToLight( ri.ptIntersection, vToLight );
-				const RISEPel Tr = EvalShadowTransmittance( rayToLight, dist, pMedium, pMediumObject, pPreparedScene, bSceneHasObjectMedia );
+				const RISEPel Tr = EvalShadowTransmittance( rayToLight, dist, pMedium, pMediumObject, pPreparedScene, bSceneHasObjectMedia, mediumRecords(rayToLight, dist) );
 				amount = amount * Tr;
 			}
 
@@ -2659,7 +2735,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
 				if( bReceivesShadows )
 				{
 					const Ray rayToLight( ri.ptIntersection, vToLight );
-					shadowed = ShadowOccludedRGB( caster, rayToLight, dist - 0.001, meshShadowT, false /*DL-05: area light -- see CastShadowRayAuto*/,
+					shadowed = ShadowOccludedRGB( caster, rayToLight, dist - 0.001, meshShadowT, false /*DL-05: area light -- see CastShadowRayAuto*/ , sampler, sampledBoundaries, dist,
 						gradedTrack ? &*gradedTrack : 0, &ptOnLum );
 				}
 
@@ -2745,7 +2821,8 @@ RISEPel LightSampler::EvaluateDirectLighting(
 					lumri.ptObjIntersec = EmitterObjectPoint(
 						lumEntry.pLum, ptOnLum, lumri.ptObjIntersec );
 
-					const RISEPel Le = pEmitter->emittedRadiance( lumri, -vToLight, lumNormal );
+					const RISEPel Le = AcceptEmitterAlpha(lumEntry.pLum, pPreparedScene ? pPreparedScene->GetObjects() : nullptr, ptOnLum, lumri, sampler, &ri.rast)
+                        ? pEmitter->emittedRadiance( lumri, -vToLight, lumNormal ) : RISEPel(0,0,0);
 
 					const Scalar geom = area * cosLight / (dist * dist);
 					RISEPel contrib = Le * cosSurface * geom * brdf.valueStateful( vToLight, ri, pMisIorStack ) * meshShadowT;
@@ -2754,7 +2831,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
 					// Multi-medium shadow transmittance.
 					{
 						const Ray rayToLight( ri.ptIntersection, vToLight );
-						const RISEPel Tr = EvalShadowTransmittance( rayToLight, dist, pMedium, pMediumObject, pPreparedScene, bSceneHasObjectMedia );
+						const RISEPel Tr = EvalShadowTransmittance( rayToLight, dist, pMedium, pMediumObject, pPreparedScene, bSceneHasObjectMedia, mediumRecords(rayToLight, dist) );
 						contrib = contrib * Tr;
 					}
 
@@ -2932,7 +3009,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
 			if( bReceivesShadows )
 			{
 				const Ray rayToEnv( ri.ptIntersection, envDir );
-				envShadowed = ShadowOccludedRGB( caster, rayToEnv, RISE_INFINITY, envShadowT, false /*DL-05: env light -- see CastShadowRayAuto*/ );
+				envShadowed = ShadowOccludedRGB( caster, rayToEnv, RISE_INFINITY, envShadowT, false /*DL-05: env light -- see CastShadowRayAuto*/ , sampler, sampledBoundaries );
 			}
 
 			if( !envShadowed )
@@ -2947,7 +3024,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
 				// Use a large but finite distance for the walk limit
 				// (environment rays go to infinity, but media are bounded).
 				{
-					const RISEPel Tr = EvalShadowTransmittance( envRay, RISE_INFINITY, pMedium, pMediumObject, pPreparedScene, bSceneHasObjectMedia );
+					const RISEPel Tr = EvalShadowTransmittance( envRay, RISE_INFINITY, pMedium, pMediumObject, pPreparedScene, bSceneHasObjectMedia, mediumRecords(envRay, RISE_INFINITY) );
 					envContrib = envContrib * Tr;
 				}
 
@@ -3066,6 +3143,7 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 	const IORStack* pGradedIndexStack
 	) const
 {
+    MediumBoundaryHits boundaryHits;
 	Scalar result = 0;
 
 	if( !pPreparedScene || !pPreparedLuminaries )
@@ -3090,6 +3168,18 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 	// were consequently unshadowed.
 	const bool bReceivesShadows =
 		pShadingObject ? pShadingObject->DoesReceiveShadows() : true;
+    // Records are authoritative only for a completed query in this scene.
+    // Shadow-disabled rays still need alpha-thinned medium boundaries, but
+    // must pass ordinary blockers. Visibility-enabled rays reuse their one
+    // sampled boundary decision, never draw coverage a second time.
+    MediumBoundaryHits* sampledBoundaries = bSceneHasObjectMedia && bSceneHasAlphaCoverage ? &boundaryHits : nullptr;
+    const auto mediumRecords = [&](const Ray& ray, Scalar distance) -> const MediumBoundaryHits* {
+        if (sampledBoundaries && !bReceivesShadows) {
+            pPreparedScene->GetObjects()->CollectMediumBoundaryHitsSampled(ray, distance, sampler, boundaryHits);
+        }
+        return sampledBoundaries;
+    };
+
 
 	// ----------------------------------------------------------------
 	// Step 1: Deterministic evaluation of lights with zero exitance
@@ -3131,9 +3221,10 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 				// (the `isVolumeScatter` flag and the medium
 				// transmittance) are derived in full there.
 				// DL-157 P1 -- see the RGB Step-1 site.
-				Scalar leNM = l->ComputeDirectLightingNM( ri, caster, brdf,
+				if (sampledBoundaries) sampledBoundaries->clear();
+                Scalar leNM = l->ComputeDirectLightingSampledNM( ri, caster, brdf,
 					bReceivesShadows,
-					nm, bFullSphere, isVolumeScatter, pMisIorStack );
+					nm, bFullSphere, isVolumeScatter, pMisIorStack, sampler, sampledBoundaries );
 
 				if( leNM > 0 &&
 					l->lightType() == ILight::LightType::Directional )
@@ -3141,7 +3232,7 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 					const Ray rayToLight( ri.ptIntersection, l->emissionDirection() );
 					leNM *= EvalShadowTransmittanceNM( rayToLight,
 						RISE_INFINITY, pMedium, pMediumObject,
-						pPreparedScene, bSceneHasObjectMedia, nm );
+						pPreparedScene, bSceneHasObjectMedia, nm, mediumRecords(rayToLight, RISE_INFINITY) );
 				}
 
 				result += leNM;
@@ -3294,7 +3385,7 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 			if( bReceivesShadows )
 			{
 				const Ray rayToLight( ri.ptIntersection, vToLight );
-				if( ShadowOccludedNM( caster, rayToLight, dist - 0.001, nm, shadowTNM, true /*DL-05: delta light*/,
+				if( ShadowOccludedNM( caster, rayToLight, dist - 0.001, nm, shadowTNM, true /*DL-05: delta light*/ , sampler, sampledBoundaries, dist,
 						gradedTrack ? &*gradedTrack : 0, &lightPos ) )
 					break;
 			}
@@ -3321,7 +3412,7 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 			// Multi-medium shadow transmittance.
 			{
 				const Ray rayToLight( ri.ptIntersection, vToLight );
-				neeContrib *= EvalShadowTransmittanceNM( rayToLight, dist, pMedium, pMediumObject, pPreparedScene, bSceneHasObjectMedia, nm );
+				neeContrib *= EvalShadowTransmittanceNM( rayToLight, dist, pMedium, pMediumObject, pPreparedScene, bSceneHasObjectMedia, nm, mediumRecords(rayToLight, dist) );
 			}
 
 			// DL-09: the connection segment's graded-index factor.
@@ -3408,8 +3499,8 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 		if( bReceivesShadows )
 		{
 			const Ray rayToLight( ri.ptIntersection, vToLight );
-			if( ShadowOccludedNM( caster, rayToLight, dist - 0.001, nm, meshShadowTNM, false /*DL-05: area light -- see CastShadowRayAuto*/,
-					gradedTrack ? &*gradedTrack : 0, &ptOnLum ) )
+			if( ShadowOccludedNM( caster, rayToLight, dist - 0.001, nm, meshShadowTNM, false /*DL-05: area light -- see CastShadowRayAuto*/ , sampler, sampledBoundaries, dist,
+						gradedTrack ? &*gradedTrack : 0, &ptOnLum ) )
 			{
 				break;
 			}
@@ -3443,7 +3534,8 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 		lumri.ptObjIntersec = EmitterObjectPoint(
 			lumEntry.pLum, ptOnLum, lumri.ptObjIntersec );
 
-		const Scalar Le = pEmitter->emittedRadianceNM( lumri, -vToLight, lumNormal, nm );
+		const Scalar Le = AcceptEmitterAlpha(lumEntry.pLum, pPreparedScene ? pPreparedScene->GetObjects() : nullptr, ptOnLum, lumri, sampler, &ri.rast)
+            ? pEmitter->emittedRadianceNM( lumri, -vToLight, lumNormal, nm ) : 0;
 
 		const Scalar geom = area * cosLight / (dist * dist);
 		Scalar contrib = Le * cosSurface * geom * brdf.valueStatefulNM( vToLight, ri, nm, pMisIorStack ) * meshShadowTNM;
@@ -3451,7 +3543,7 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 		// Multi-medium shadow transmittance.
 		{
 			const Ray rayToLight( ri.ptIntersection, vToLight );
-			contrib *= EvalShadowTransmittanceNM( rayToLight, dist, pMedium, pMediumObject, pPreparedScene, bSceneHasObjectMedia, nm );
+			contrib *= EvalShadowTransmittanceNM( rayToLight, dist, pMedium, pMediumObject, pPreparedScene, bSceneHasObjectMedia, nm, mediumRecords(rayToLight, dist) );
 		}
 
 		// MIS when selection PDF is tractable (alias table or BVH)
@@ -3551,7 +3643,7 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 			if( bReceivesShadows )
 			{
 				const Ray rayToEnv( ri.ptIntersection, envDir );
-				envShadowed = ShadowOccludedNM( caster, rayToEnv, RISE_INFINITY, nm, envShadowTNM, false /*DL-05: env light -- see CastShadowRayAuto*/ );
+				envShadowed = ShadowOccludedNM( caster, rayToEnv, RISE_INFINITY, nm, envShadowTNM, false /*DL-05: env light -- see CastShadowRayAuto*/ , sampler, sampledBoundaries );
 			}
 
 			if( !envShadowed )
@@ -3564,7 +3656,7 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 				// Apply medium transmittance for environment ray.
 				// Multi-medium shadow transmittance.
 				{
-					envContrib *= EvalShadowTransmittanceNM( envRay, RISE_INFINITY, pMedium, pMediumObject, pPreparedScene, bSceneHasObjectMedia, nm );
+					envContrib *= EvalShadowTransmittanceNM( envRay, RISE_INFINITY, pMedium, pMediumObject, pPreparedScene, bSceneHasObjectMedia, nm, mediumRecords(envRay, RISE_INFINITY) );
 				}
 
 				// Optimal MIS training (spectral env NEE): use full

@@ -45,9 +45,9 @@
 //      outside it has no honest auxiliary ray, so FisheyeCamera
 //      leaves hasDifferentials FALSE there rather than fabricating
 //      one, and those pixels fall back to point sampling.
-//    - The only two transfers in the renderer are straight-line,
-//      not scattering: RayCaster's x-ray continuation and
-//      CSGObject's reversed exit probe.
+//    - Straight-line transfers (not scattering) include RayCaster's
+//      x-ray continuation, CSGObject's reversed exit probe, and sampled
+//      alpha null traversal, which preserves both auxiliary ray lines.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: May 3, 2026

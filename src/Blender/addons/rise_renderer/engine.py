@@ -113,7 +113,7 @@ class RISEBlenderRenderEngine(bpy.types.RenderEngine):
 
         try:
             # Material-bake gate: detect complex Cycles material graphs
-            # that haven't been baked to PNGs yet (or are stale) and
+            # with viable proxies and missing/mismatched attempted fingerprints; then
             # abort with a clear, actionable message pointing at the
             # `rise.bake_materials` operator.
             #
@@ -128,18 +128,20 @@ class RISEBlenderRenderEngine(bpy.types.RenderEngine):
             # objects, and finally a libc malloc double-free on the
             # bake-target image teardown.  Each fix unlocked the next;
             # the auto-bake-on-render architecture is fundamentally
-            # fighting the bake operator's preconditions.  The
-            # industry-standard workflow (LuxCore, Octane, Renderman
-            # Blender add-ons) uses an explicit "Convert Materials"
-            # button for the same reason.
+            # fighting the bake operator's preconditions. These are historical
+            # failed attempts; the supported channel workflow is the manual
+            # operator, independent of the automatic Tangent child bake.
             scene = depsgraph.scene
             # `needs_bake_attempt` is the single source of truth that
             # `RISE_RENDER_PT_materials` also uses — they stay aligned
             # in lockstep.  Returns True iff the user should run the
-            # bake operator before rendering (never-tried OR graph
-            # edited since last attempt).  Materials with a tried
-            # attempt that failed are NOT flagged — they fall through
-            # to the exporter's flat-colour fallback.
+            # bake operator before rendering (missing marker OR detected limited
+            # fingerprint change). Undetected edits do not gate. A tried
+            # attempt that failed is not flagged while its fingerprint matches.
+            # Existing diffuse may be consumed; otherwise ordinary translation/
+            # slot/default fallback applies.
+            # Missing PNGs alone do not gate a matching attempt. Tangent
+            # uses a separate isolated export-time child, not this driver.
             missing = [
                 mat.name
                 for mat in bpy.data.materials

@@ -540,6 +540,50 @@ namespace
 			IRayCaster::RAY_STATE::eRaySpecular;
 	}
 
+	//! DL-295 (docs/DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md section 9):
+	//! is the specular chain this scatter extends one that SMS can NEVER
+	//! have estimated?  Returns the value of the "SMS-uncovered chain"
+	//! state AFTER @a scat:
+	//!  * a NON-delta scatter starts a new chain at a new SMS anchor -> false;
+	//!  * a chain already uncovered stays uncovered through every further
+	//!    delta vertex (SMS rejects the WHOLE chain, see below) -> true;
+	//!  * a delta scatter at a material SMS does not treat as a specular
+	//!    caster -> true.
+	//! SMS (ManifoldSolver) classifies a surface by
+	//! `IMaterial::GetSpecularInfo( ri, ior ).isSpecular` and nothing else:
+	//! its seed trace stops at the first hit reporting false, and its
+	//! chain-visibility test (`SegmentOccludedByNonChainSpeculars`) treats
+	//! such a hit as an opaque blocker.  So no SMS estimate ever contains
+	//! a vertex whose material reports false, and a chain through one --
+	//! a thin weave's delta GAP (DL-05's non-bending pass-through, and the
+	//! fabric / coated / composite / luminaire wrappers that forward it),
+	//! or CompositeSPF's delta-TAGGED walker exits (DL-24) -- has its only
+	//! estimator in PT's own continuation.  Suppressing that continuation's
+	//! emitter hit (PART 3's `nextConsiderEmission = false`, PART 1's
+	//! `smsSuppressEmission` latch) on the premise that SMS covers it
+	//! dropped the path outright: the DL-05 area closed form read 0 with
+	//! `sms_enabled TRUE` against g*L0 without.  The query is made only
+	//! at a delta vertex with SMS on, so every other render is untouched.
+	static inline bool PTNextSMSChainUncovered(
+		const bool bSMSEnabled,
+		const bool bUncoveredNow,
+		const ScatteredRay& scat,
+		const RayIntersection& ri,
+		const IORStack& iorStack
+		)
+	{
+		if( !scat.isDelta ) {
+			return false;
+		}
+		if( bUncoveredNow ) {
+			return true;
+		}
+		if( !bSMSEnabled ) {
+			return false;
+		}
+		return !( ri.pMaterial && ri.pMaterial->GetSpecularInfo( ri.geometric, iorStack ).isSpecular );
+	}
+
 	static inline Scalar GuidingTrainingLuminance( const RISEPel& pel )
 	{
 		return 0.212671 * pel[0] + 0.715160 * pel[1] + 0.072169 * pel[2];
@@ -1768,7 +1812,8 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 	typename SpectralValueTraits<Tag>::value_type* pDirectResult,
 	const Tag& tag,
 	Scalar bsdfMisPdf_,
-	Scalar castRRCompensation_
+	Scalar castRRCompensation_,
+	bool smsChainUncovered_initial
 	) const
 {
 	using Traits = SpectralValueTraits<Tag>;
@@ -1830,11 +1875,26 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 	// already accounts for those paths.  Without the non-specular
 	// check, paths like camera->glass->light would be incorrectly
 	// suppressed even though no SMS evaluation covered them.
-	// Initialize from caller so recursive CastRay calls (e.g. via
-	// SSS / BSSRDF entry, branching shader-op chains) carry the
-	// suppression state from the parent call.
+	// Initialize from caller so a recursive CastRay carries the
+	// suppression state from the parent call -- but only where the
+	// parent vertex was a real SMS anchor (DL-295: a non-delta vertex
+	// at which SMS was EVALUATED).  BSSRDF exits, SPF-only vertices and
+	// medium hand-offs pass smsHadNonSpecularShading = false.
 	bool bPassedThroughSpecular = smsPassedThroughSpecular_initial;
 	bool bHadNonSpecularShading = smsHadNonSpecularShading_initial;
+	// DL-295: true while the specular chain since the last non-delta
+	// vertex contains a delta vertex SMS cannot represent (see
+	// PTNextSMSChainUncovered) -- then no SMS estimate exists for this
+	// chain and neither SMS suppression may fire.  Kept SEPARATE from
+	// `bPassedThroughSpecular` on purpose: that latch also drives the GUI
+	// `indirect` mode's depth==1 MIS-partner test, for which a weave gap
+	// IS a delta event (NEE at the gap vertex cannot sample through it).
+	// Initialised from the caller: every entry but the HWSS body's
+	// per-wavelength hand-offs starts a chain (false); a hand-off that
+	// arrives mid-chain after a weave gap forwards true, or the first SMS
+	// caster past the hand-off would re-suppress the path (DL-295 review
+	// P1-1: a gap then a smooth-SSS reflection read 0 under HWSS).
+	bool bSMSChainUncovered = smsChainUncovered_initial;
 
 	const LightSampler* pLS = caster.GetLightSampler();
 
@@ -1911,7 +1971,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		{
 			ri = RayIntersection( currentRay, rast );
 			ri.geometric.glossyFilterWidth = glossyFilterWidth;
-			scene.GetObjects()->IntersectRay( ri, true, true, false );
+			scene.GetObjects()->IntersectRaySampled( ri, sampler );
 
 			bool bHit = ri.geometric.bHit;
 
@@ -2598,7 +2658,8 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			// != 0); the Pel original spelled this `pSolver && ...` inline,
 			// the NM original as the `smsSuppressEmission` flag used here.
 			const bool smsSuppressEmission = bSMSEnabled
-				&& bPassedThroughSpecular && bHadNonSpecularShading;
+				&& bPassedThroughSpecular && bHadNonSpecularShading
+				&& !bSMSChainUncovered;		// DL-295
 			// GUI render modes P2b `light solo` (docs/gui/RENDER_MODES.md
 			// §3): under solo, a BSDF-sampled hit contributes emission
 			// ONLY when the hit object IS the soloed mesh luminary --
@@ -2882,7 +2943,9 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					// a discontinuous Ft when shading swung past horizon.
 					const Scalar cosInShade = Vector3Ops::Dot( ri.geometric.vNormal, wo );
 					const Scalar cosIn = r_max( fabs( cosInShade ), Scalar( NEARZERO ) );
-					const Scalar Ft = pProfile->FresnelTransmission( cosIn, ri.geometric );
+					const Scalar Ft = Traits::is_nm
+                        ? pProfile->FresnelTransmissionNM( cosIn, ri.geometric, PTTagNm( tag ) )
+                        : pProfile->FresnelTransmission( cosIn, ri.geometric );
 
 					if( Ft > NEARZERO )
 					{
@@ -3037,12 +3100,16 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 										rs2.translucentBounces = nextTranslucentBounces;
 										rs2.glossyFilterWidth = glossyFilterWidth;
 										// BSSRDF emerges as a diffuse scatter at a
-										// non-specular shading point — propagate
-										// SMS emission-suppression state so an
-										// onwards child ray through glass to a
-										// light doesn't re-enable emission.
+										// non-specular point -- but NOT an SMS
+										// anchor: SMS is evaluated only in PART 2 at
+										// a vertex with a BSDF, never at a BSSRDF
+										// exit, so a chain the continuation starts
+										// (exit -> glass -> light) has no SMS
+										// estimate and must keep its emitter hit
+										// (DL-295 review round 2; this used to pass
+										// `true`, i.e. "SMS already covered it").
 										rs2.smsPassedThroughSpecular = false;
-										rs2.smsHadNonSpecularShading = true;
+										rs2.smsHadNonSpecularShading = false;
 										// DL-72 / DL-84 (round 4): the FULL vertex-local
 										// integrand of this exit sample, `weight *
 										// cosinePdf` -- see PTBssrdfTrainedBsdfTimesCos's
@@ -3097,12 +3164,10 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			const RandomWalkSSSParams* pRWParams =
 				ri.pMaterial ? ri.pMaterial->GetRandomWalkSSSParams() : 0;
 
-			// NM-only fallback (preserved asymmetry): when the material
-			// provides per-wavelength random-walk params but no RGB ones,
-			// the NM original synthesised them via GetRandomWalkSSSParamsNM.
+            // Prefer wavelength parameters; RGB is a fallback for constant models.
 			[[maybe_unused]] RandomWalkSSSParams rwParamsNM;
 			if constexpr ( Traits::is_nm ) {
-				if( !pRWParams && ri.pMaterial &&
+				if( ri.pMaterial &&
 					ri.pMaterial->GetRandomWalkSSSParamsNM( tag.nm, rwParamsNM ) ) {
 					pRWParams = &rwParamsNM;
 				}
@@ -3165,8 +3230,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					// dielectric law, so this transmission and the SPF's
 					// reflection sum to 1.
 					const Scalar Ft = BSSRDFSampling::BoundaryTransmission( cosIn,
-						BSSRDFSampling::RelativeBoundaryIOR( pRWParams->ior,
-							BSSRDFSampling::ExteriorIOR( ri.geometric ) ) );
+						pRWParams->ior, BSSRDFSampling::ExteriorIOR( ri.geometric ) );
 
 					if( Ft > NEARZERO )
 					{
@@ -3320,12 +3384,16 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 										rs2.translucentBounces = nextTranslucentBounces;
 										rs2.glossyFilterWidth = glossyFilterWidth;
 										// BSSRDF emerges as a diffuse scatter at a
-										// non-specular shading point — propagate
-										// SMS emission-suppression state so an
-										// onwards child ray through glass to a
-										// light doesn't re-enable emission.
+										// non-specular point -- but NOT an SMS
+										// anchor: SMS is evaluated only in PART 2 at
+										// a vertex with a BSDF, never at a BSSRDF
+										// exit, so a chain the continuation starts
+										// (exit -> glass -> light) has no SMS
+										// estimate and must keep its emitter hit
+										// (DL-295 review round 2; this used to pass
+										// `true`, i.e. "SMS already covered it").
 										rs2.smsPassedThroughSpecular = false;
-										rs2.smsHadNonSpecularShading = true;
+										rs2.smsHadNonSpecularShading = false;
 										// DL-72 / DL-84 (round 4): the FULL vertex-local
 										// integrand of this exit sample, `weight *
 										// cosinePdf` -- see PTBssrdfTrainedBsdfTimesCos's
@@ -3480,6 +3548,13 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				// flag tracking below -- see PT_PEL_NM_ASYMMETRY_AUDIT.md #1/#3.
 				const bool nextConsiderEmissionSPF = true;
 				rs2.considerEmission = nextConsiderEmissionSPF;
+				// DL-295: a BSDF-less material's delta lobe can be one SMS
+				// never represents too (a luminaire wrapper over a
+				// dielectric forwards no GetSpecularInfo; a CompositeSPF
+				// built without either layer's BSDF emits delta-tagged
+				// walker exits) -- same rule as PART 3.
+				const bool nextSMSChainUncoveredSPF = PTNextSMSChainUncovered(
+					bSMSEnabled, bSMSChainUncovered, *pS, ri, iorStack );
 				if( PropagateBounceLimits( rs, rs2, *pS, &stabilityConfig ) ) {
 					break;
 				}
@@ -3516,13 +3591,24 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				translucentBounces = rs2.translucentBounces;
 				glossyFilterWidth = rs2.glossyFilterWidth;
 
-				// Track specular transitions for SMS double-counting prevention
+				// Track specular transitions for SMS double-counting prevention.
+				// A NON-delta scatter here is NOT an SMS anchor (DL-295 review
+				// round 2, P1-1): this branch `continue`s before PART 2, so
+				// neither NEE nor SMS ever runs at a BSDF-less surface
+				// (`biospec_skin_material`, `generic_human_tissue_material`, a
+				// composite with no BSDF).  It used to set
+				// `bHadNonSpecularShading = true`, and the next caster chain
+				// then had its emitter hit suppressed with nothing estimating
+				// it: a skin receiver under a closed glass slab read 0 under
+				// PT+SMS.  An SMS anchor is a non-delta vertex at which SMS is
+				// EVALUATED -- one that reaches PART 2 with a BSDF.
 				if( pS->isDelta ) {
 					bPassedThroughSpecular = true;
 					} else {
 						bPassedThroughSpecular = false;
-						bHadNonSpecularShading = true;
+						bHadNonSpecularShading = false;
 					}
+				bSMSChainUncovered = nextSMSChainUncoveredSPF;
 
 				if constexpr ( Traits::is_pel ) {
 					if( ff ) {
@@ -4345,8 +4431,29 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				skipContinuation = true;
 			}
 
+			// SMS double-count guard: after a delta scatter the next
+			// emitter hit is SMS's to estimate -- but only when SMS can
+			// represent this chain at all (DL-295, PTNextSMSChainUncovered).
+			// A delta vertex keeps `bsdfMisPdf == 0` either way, so an
+			// emitter hit behind a weave gap takes MIS weight 1, which is
+			// the correct partition: the area / env NEE arm keeps a binary
+			// shadow at a pass-through (DL-05 section 2).
+			//
+			// ...and only when an SMS ANCHOR precedes the chain (DL-295
+			// review P2-2).  An SMS anchor is a non-delta vertex at which SMS
+			// is EVALUATED -- one that reaches PART 2 with a BSDF; SPF-only
+			// surfaces, BSSRDF exits and medium vertices are not anchors.
+			// SMS seeds from an anchor toward the light THROUGH the casters; a
+			// chain with no such vertex before it (camera -> smooth SSS or
+			// polished coat -> emitter) is never estimated by SMS, and NEE
+			// cannot sample a delta lobe, so suppressing it dropped a
+			// caster's whole area-light reflection (0 vs 0.31).  This is
+			// exactly PART 1's `bHadNonSpecularShading` condition; the SPF
+			// branch already relies on PART 1 alone for the same reason.
+			const bool nextSMSChainUncovered = PTNextSMSChainUncovered(
+				bSMSEnabled, bSMSChainUncovered, *pS, ri, iorStack );
 			bool nextConsiderEmission = true;
-			if( pS->isDelta && bSMSEnabled ) {
+			if( pS->isDelta && bSMSEnabled && bHadNonSpecularShading && !nextSMSChainUncovered ) {
 				nextConsiderEmission = false;
 			}
 
@@ -4415,6 +4522,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				bPassedThroughSpecular = false;
 				bHadNonSpecularShading = true;
 			}
+			bSMSChainUncovered = nextSMSChainUncovered;
 
 			currentRay = traceRay;
 			currentRay.Advance( 1e-8 );
@@ -4598,12 +4706,12 @@ PathTracingIntegrator::IntegrateRayTemplated(
 	// DielectricSPF wrong-side test drops the transmission lobe entirely.
 	// Free-space cameras: the probe finds no enclosing objects, no-op.
 	// Mirrors the eye-subpath seeding in BDPTIntegrator (GenerateEyeSubpath).
-	IORStackSeeding::SeedFromPoint( iorStack, cameraRay.origin, scene );
+	IORStackSeeding::SeedFromPoint( iorStack, cameraRay.origin, scene, PTTagNm( tag ) );
 	sampler.StartStream( 16 );
 
 	// Intersect camera ray
 	RayIntersection ri( cameraRay, rast );
-	scene.GetObjects()->IntersectRay( ri, true, true, false );
+	scene.GetObjects()->IntersectRaySampled( ri, sampler );
 	if constexpr ( Traits::supports_aov ) {
 		// Primary depth is independent of Accurate-mode albedo/normal
 		// traversal.  Never replace this camera-ray range with a later
@@ -4961,7 +5069,7 @@ PathTracingIntegrator::IntegrateRayTemplated(
 				// --- follow the continuation ---------------------------
 				//
 				RayIntersection ri2( walkRay, rast );
-				scene.GetObjects()->IntersectRay( ri2, true, true, false );
+				scene.GetObjects()->IntersectRaySampled( ri2, sampler );
 
 				const Scalar maxDist = ri2.geometric.bHit ? ri2.geometric.range : RISE_INFINITY;
 
@@ -5362,7 +5470,8 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 	bool smsHadNonSpecularShading_initial,
 	PixelAOV* pAOV,
 	Scalar bsdfMisPdf_,
-	Scalar castRRCompensation_
+	Scalar castRRCompensation_,
+	bool smsChainUncovered_
 	) const
 {
 	// Thin forwarder to the shared templated body.  pAOV carries the
@@ -5378,7 +5487,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 		glossyBounces, transmissionBounces, translucentBounces,
 		volumeBounces, glossyFilterWidth, smsPassedThroughSpecular_initial,
 		smsHadNonSpecularShading_initial, pAOV, nullptr, NMTag{ nm }, bsdfMisPdf_,
-		castRRCompensation_ );
+		castRRCompensation_, smsChainUncovered_ );
 }
 
 
@@ -5464,9 +5573,15 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		{
 			if( !swl.terminated[i] )
 			{
-				hwssResult[i] = IntegrateFromHitNM( rc, rast, firstHit,
+				// Replay physical containment for each lane: a camera already
+				// inside a dispersive ambient must not inherit the hero index.
+                    IORStack laneStack(initialIorStack.EnvironmentIOR());
+                    const Point3 probePoint = Point3Ops::mkPoint3(firstHit.geometric.ray.origin,
+                        firstHit.geometric.ray.Dir() * (firstHit.geometric.range * 0.5));
+                    IORStackSeeding::SeedFromPoint(laneStack, probePoint, scene, swl.lambda[i]);
+                    hwssResult[i] = IntegrateFromHitNM( rc, rast, firstHit,
 					swl.lambda[i], scene, caster, sampler, pRadianceMap,
-					startDepth, initialIorStack, bsdfPdf, 0,
+					startDepth, laneStack, bsdfPdf, 0,
 					considerEmission, importance, rayType,
 					diffuseBounces, glossyBounces, transmissionBounces,
 					translucentBounces, volumeBounces, glossyFilterWidth,
@@ -5509,9 +5624,15 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			{
 				if( !swl.terminated[i] )
 				{
-					hwssResult[i] = IntegrateFromHitNM( rc, rast, firstHit,
+					// Replay physical containment for each lane: a camera already
+				// inside a dispersive ambient must not inherit the hero index.
+                    IORStack laneStack(initialIorStack.EnvironmentIOR());
+                    const Point3 probePoint = Point3Ops::mkPoint3(firstHit.geometric.ray.origin,
+                        firstHit.geometric.ray.Dir() * (firstHit.geometric.range * 0.5));
+                    IORStackSeeding::SeedFromPoint(laneStack, probePoint, scene, swl.lambda[i]);
+                    hwssResult[i] = IntegrateFromHitNM( rc, rast, firstHit,
 						swl.lambda[i], scene, caster, sampler, pRadianceMap,
-						startDepth, initialIorStack, bsdfPdf, 0,
+						startDepth, laneStack, bsdfPdf, 0,
 						considerEmission, importance, rayType,
 						diffuseBounces, glossyBounces, transmissionBounces,
 						translucentBounces, volumeBounces, glossyFilterWidth,
@@ -5579,6 +5700,16 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 	// to IntegrateFromHitNM, which tracks its own copy -- so a plain local
 	// initialized false is correct with no carried-in initial value needed).
 	bool bPassedThroughSpecular = false;
+	// DL-295: HWSS twin of the Pel/NM loop's `bSMSChainUncovered` (see
+	// PTNextSMSChainUncovered).  This body has no PART 1 latch -- its only
+	// SMS suppression is PART 3's `nextConsiderEmission` -- so the state
+	// is read there, and forwarded to the no-BSDF NM delegation below.
+	bool bSMSChainUncovered = false;
+	// DL-295 review P2-2: HWSS twin of the Pel/NM loop's
+	// `bHadNonSpecularShading` -- has a non-delta BSDF vertex (where SMS
+	// is evaluated) preceded the current chain?  This loop is entered
+	// fresh at a camera-ray first hit, so it starts false.
+	bool bSMSAnchor = false;
 
 	const unsigned int rrMinDepth = stabilityConfig.rrMinDepth;
 	const Scalar rrThreshold = stabilityConfig.rrThreshold;
@@ -5615,7 +5746,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		{
 			ri = RayIntersection( currentRay, rast );
 			ri.geometric.glossyFilterWidth = glossyFilterWidth;
-			scene.GetObjects()->IntersectRay( ri, true, true, false );
+			scene.GetObjects()->IntersectRaySampled( ri, sampler );
 
 			bool bHit = ri.geometric.bHit;
 
@@ -5714,12 +5845,13 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					//   - the surface hand-off carries this loop's live
 					//     per-type bounce counters, `rayType` and
 					//     `glossyFilterWidth`, and passes
-					//     smsHadNonSpecularShading=true for the same reason
-					//     the no-BSDF and SSS delegations below do (this
-					//     site is likewise reachable only after >= 1
-					//     non-specular SMS anchor vertex, whose SMS pass
-					//     already counted the BSDF-sampled emission at the
-					//     light).
+					//     smsHadNonSpecularShading=true.  NOTE (DL-295 /
+					//     DL-340): that constant is WRONG -- the vertex
+					//     before this hand-off is a MEDIUM scatter, where
+					//     SMS is never evaluated, so it is not an SMS anchor
+					//     and a caster chain it starts has no SMS estimate.
+					//     The no-BSDF and SSS delegations below now forward
+					//     the chain's real state; this one is DL-340's.
 					//   - the escape mirrors the enclosing loop's own `!bHit`
 					//     env branch, INCLUDING its `pRadianceMap` fallback:
 					//     an escaping continuation is precisely what that
@@ -5841,7 +5973,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 							//
 							RayIntersection ri2( walkRay, rast );
 							ri2.geometric.glossyFilterWidth = glossyFilterWidth;
-							scene.GetObjects()->IntersectRay( ri2, true, true, false );
+							scene.GetObjects()->IntersectRaySampled( ri2, sampler );
 
 							//
 							// --- sample this wavelength's medium along it
@@ -6148,15 +6280,17 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 
 		// If we hit a material without BSDF mid-path (e.g. entered a
 		// dielectric), fall back to per-wavelength NM for remaining path.
-		// SMS double-count guard: this delegation is reached ONLY after the
-		// HWSS loop has processed >= 1 BSDF (non-specular) vertex where SMS
-		// was evaluated -- the first hit has a BSDF (else Fallback 1 returned)
-		// and needsIntersection gates re-intersection, so any prior vertex was
-		// a non-specular SMS anchor.  Pass smsHadNonSpecularShading=true so the
-		// delegated NM body suppresses the BSDF-sampled emission at the light
-		// that the HWSS-side SMS pass already counted.  Without it the SPF
-		// emission fix (asymmetry #1: considerEmission stays true through
-		// glass) would double-count diffuse->glass->light in HWSS mode.
+		// SMS double-count guard: forward whether an SMS anchor (a non-delta
+		// BSDF vertex, where SMS ran) precedes the current chain -- the HWSS
+		// loop's `bSMSAnchor` -- so the delegated NM body suppresses the
+		// BSDF-sampled emission at the light that the HWSS-side SMS pass
+		// already counted.  Without it the SPF emission fix (asymmetry #1:
+		// considerEmission stays true through glass) would double-count
+		// diffuse->glass->light in HWSS mode.  (DL-295 review round 1: this
+		// used to pass a constant `true` on the claim that a BSDF vertex
+		// always precedes this hand-off; the first hit is a BSDF vertex, but
+		// the chain reaching here need not be ANCHORED by one -- camera ->
+		// polished coat -> glass has no anchor.)
 		if( !pBRDFCur )
 		{
 			for( unsigned int w = 0; w < SampledWavelengths::N; w++ )
@@ -6176,7 +6310,17 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					considerEmission, importance, rayType,
 					diffuseBounces, glossyBounces, transmissionBounces,
 					translucentBounces, volumeBounces, glossyFilterWidth,
-					false, true, pAOV, misBsdfPdfComp[w] );
+					// DL-295: hand the delegated body this chain's SMS
+					// state -- whether an SMS anchor preceded it
+					// (`bSMSAnchor`, which used to be a constant `true` on
+					// the claim that a BSDF vertex always precedes this
+					// hand-off; a camera -> polished-coat -> glass chain has
+					// none) and whether it already crossed a delta vertex SMS
+					// cannot represent (`bSMSChainUncovered`, forwarded as its
+					// own parameter so the delegated body's PART 1 latch AND
+					// PART 3 both see it through the next SMS caster).
+					false, bSMSAnchor, pAOV, misBsdfPdfComp[w],
+					1, bSMSChainUncovered );
 			}
 			break;
 		}
@@ -6203,19 +6347,26 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					{
 						continue;
 					}
-					hwssResult[w] += throughputComp[w] * IntegrateFromHitNM(
+					IORStack laneStack(iorStack.EnvironmentIOR());
+                    const Point3 probePoint = Point3Ops::mkPoint3(ri.geometric.ray.origin,
+                        ri.geometric.ray.Dir() * (ri.geometric.range * 0.5));
+                    IORStackSeeding::SeedFromPoint(laneStack, probePoint, scene, swl.lambda[w]);
+                    hwssResult[w] += throughputComp[w] * IntegrateFromHitNM(
 						rc, rast, ri, swl.lambda[w], scene, caster, sampler,
-						pRadianceMap, depth, iorStack, bsdfPdf, 0,
+						pRadianceMap, depth, laneStack, bsdfPdf, 0,
 						considerEmission, importance, rayType,
 						diffuseBounces, glossyBounces, transmissionBounces,
 						translucentBounces, volumeBounces, glossyFilterWidth,
 						// SMS double-count guard — identical reasoning to the no-BSDF
-						// (glass) delegation above: this SSS mid-path fallback is reached
-						// only after >=1 non-specular SMS anchor, so pass
-						// smsHadNonSpecularShading=true to suppress the BSDF-sampled
-						// emission the HWSS-side SMS pass already counted.  Previously
-						// dropped (defaulted false/false), double-counting HWSS
+						// (glass) delegation above: forward whether an SMS anchor
+						// preceded this chain, so the delegated body suppresses the
+						// BSDF-sampled emission the HWSS-side SMS pass already counted.
+						// Previously dropped (defaulted false/false), double-counting HWSS
 						// SMS+SSS+glass+emitter paths — the HWSS sibling of Codex Finding 2.
+						// DL-295 review P1-1/P2-2: it used to pass a constant `true`
+						// ("reached only after >=1 non-specular SMS anchor", false for
+						// camera -> weave gap -> SSS) and no uncovered-chain state, so a
+						// gap followed by a smooth-SSS reflection read 0 under HWSS.
 						//
 						// DL-74 P2-1 (round-4 review): forward the incoming
 						// MIS PARTNER too.  Its three siblings -- the two
@@ -6225,7 +6376,8 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 						// DL-170: what they forward is now THIS LANE's own
 						// `misBsdfPdfComp[w]`, not the hero's -- see the
 						// no-BSDF delegation above.
-						false, true, pAOV, misBsdfPdfComp[w] );
+						false, bSMSAnchor, pAOV, misBsdfPdfComp[w],
+						1, bSMSChainUncovered );
 				}
 				break;
 			}
@@ -6743,8 +6895,13 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			skipContinuation = true;
 		}
 
+		// DL-295: suppress only a chain SMS can represent (the Pel/NM
+		// loop's PART 3 has the full note).
+		// (anchor condition: DL-295 review P2-2, see the Pel/NM PART 3).
+		const bool nextSMSChainUncovered = PTNextSMSChainUncovered(
+			bSMSEnabled, bSMSChainUncovered, *pS, ri, iorStack );
 		bool nextConsiderEmission = true;
-		if( pS->isDelta && bSMSEnabled ) {
+		if( pS->isDelta && bSMSEnabled && bSMSAnchor && !nextSMSChainUncovered ) {
 			nextConsiderEmission = false;
 		}
 
@@ -6776,6 +6933,10 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		// (see that site) -- records whether THIS depth's scatter was delta,
 		// read at the top of the NEXT iteration's emission/env-miss gate.
 		bPassedThroughSpecular = pS->isDelta;
+		bSMSChainUncovered = nextSMSChainUncovered;
+		if( !pS->isDelta ) {
+			bSMSAnchor = true;
+		}
 
 		currentRay = traceRay;
 		currentRay.Advance( 1e-8 );
@@ -6845,12 +7006,31 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 	// DielectricSPF wrong-side test drops the transmission lobe entirely.
 	// Free-space cameras: the probe finds no enclosing objects, no-op.
 	// Mirrors the eye-subpath seeding in BDPTIntegrator (GenerateEyeSubpath).
-	IORStackSeeding::SeedFromPoint( iorStack, cameraRay.origin, scene );
+	IORStackSeeding::SeedFromPoint( iorStack, cameraRay.origin, scene, swl.HeroLambda() );
+    // A camera inside a dispersive enclosure has wavelength-dependent incoming
+    // interfaces before the first hit. Trace independent NM paths in that case:
+    // a hero stack cannot price a companion's eventual exit or radiance scaling.
+    // Compare the whole chain, including outer media hidden by a constant inner one.
+    bool dispersiveContainment = false;
+    for(unsigned int w=0; iorStack.topObject() && w<SampledWavelengths::N; ++w) {
+        if(swl.terminated[w]) continue;
+        IORStack laneStack(iorStack.EnvironmentIOR());
+        IORStackSeeding::SeedFromPoint(laneStack, cameraRay.origin, scene, swl.lambda[w]);
+        if(!laneStack.SameInterfaces(iorStack)) dispersiveContainment = true;
+    }
+    if(dispersiveContainment) {
+        for(unsigned int w=0; w<SampledWavelengths::N; ++w) {
+            if(!swl.terminated[w]) result[w] = IntegrateRayNM(rc, rast, cameraRay,
+                swl.lambda[w], scene, caster, sampler, pRadianceMap, pAOV);
+        }
+        return;
+    }
+
 	sampler.StartStream( 16 );
 
 	// Intersect camera ray
 	RayIntersection ri( cameraRay, rast );
-	scene.GetObjects()->IntersectRay( ri, true, true, false );
+	scene.GetObjects()->IntersectRaySampled( ri, sampler );
 	// Capture before primary-medium sampling: HWSS can return from a volume
 	// scatter without ever entering IntegrateFromHitHWSS.
 	if( pAOV ) {
@@ -7056,7 +7236,7 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 					// --- follow the continuation ------------------------
 					//
 					RayIntersection ri2( walkRay, rast );
-					scene.GetObjects()->IntersectRay( ri2, true, true, false );
+					scene.GetObjects()->IntersectRaySampled( ri2, sampler );
 
 					//
 					// --- sample this wavelength's medium along it -------

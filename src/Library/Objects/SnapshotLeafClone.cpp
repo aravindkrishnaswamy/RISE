@@ -60,9 +60,12 @@ namespace
 {
 	// Build + log a fresh material clone uniformly.
 	template <class T>
-	T* NewClone( T* p )
+	T* NewClone( const IMaterial* source, T* p )
 	{
 		GlobalLog()->PrintNew( p, __FILE__, __LINE__, "snapshot material clone" );
+        // Scalar subleaves follow the existing addref-sharing policy. The
+        // independently reconstructed material owns its own slot binding.
+        static_cast<IMaterial*>(p)->SetAlpha(source->GetAlphaPainter(), source->GetAlphaMode(), source->GetAlphaCutoff());
 		return p;
 	}
 }
@@ -78,44 +81,44 @@ const IMaterial* RISE::Implementation::CloneMaterialForSnapshot( const IMaterial
 	// accessors; the sub-painters are addref-shared by the ctors.
 
 	if( const LambertianMaterial* m = dynamic_cast<const LambertianMaterial*>( mat ) ) {
-		return NewClone( new LambertianMaterial( m->GetReflectance() ) );
+		return NewClone( mat, new LambertianMaterial( m->GetReflectance() ) );
 	}
 	if( const PerfectReflectorMaterial* m = dynamic_cast<const PerfectReflectorMaterial*>( mat ) ) {
-		return NewClone( new PerfectReflectorMaterial( m->GetReflectance() ) );
+		return NewClone( mat, new PerfectReflectorMaterial( m->GetReflectance() ) );
 	}
 	if( const PerfectRefractorMaterial* m = dynamic_cast<const PerfectRefractorMaterial*>( mat ) ) {
-		return NewClone( new PerfectRefractorMaterial( m->GetRefractivity(), m->GetIOR() ) );
+		return NewClone( mat, new PerfectRefractorMaterial( m->GetRefractivity(), m->GetIOR() ) );
 	}
 	if( const PolishedMaterial* m = dynamic_cast<const PolishedMaterial*>( mat ) ) {
-		return NewClone( new PolishedMaterial(
+		return NewClone( mat, new PolishedMaterial(
 			m->GetDiffuseReflectance(), m->GetTransmittance(),
 			m->GetIOR(), m->GetScattering(), m->GetHG() ) );
 	}
 	if( const DielectricMaterial* m = dynamic_cast<const DielectricMaterial*>( mat ) ) {
-		return NewClone( new DielectricMaterial(
+		return NewClone( mat, new DielectricMaterial(
 			m->GetTransmittance(), m->GetIOR(), m->GetScattering(), m->GetHG(),
 			m->GetARLayerN(), m->GetARLayerK(), m->GetARLayerT(), m->GetARLayerCount() ) );
 	}
 	if( const IsotropicPhongMaterial* m = dynamic_cast<const IsotropicPhongMaterial*>( mat ) ) {
-		return NewClone( new IsotropicPhongMaterial( m->GetRd(), m->GetRs(), m->GetExponent() ) );
+		return NewClone( mat, new IsotropicPhongMaterial( m->GetRd(), m->GetRs(), m->GetExponent() ) );
 	}
 	if( const OrenNayarMaterial* m = dynamic_cast<const OrenNayarMaterial*>( mat ) ) {
-		return NewClone( new OrenNayarMaterial( m->GetReflectance(), m->GetRoughness() ) );
+		return NewClone( mat, new OrenNayarMaterial( m->GetReflectance(), m->GetRoughness() ) );
 	}
 	if( const SchlickMaterial* m = dynamic_cast<const SchlickMaterial*>( mat ) ) {
-		return NewClone( new SchlickMaterial(
+		return NewClone( mat, new SchlickMaterial(
 			m->GetDiffuse(), m->GetSpecular(), m->GetRoughness(), m->GetIsotropy() ) );
 	}
 	if( const SheenMaterial* m = dynamic_cast<const SheenMaterial*>( mat ) ) {
-		return NewClone( new SheenMaterial( m->GetColor(), m->GetRoughness() ) );
+		return NewClone( mat, new SheenMaterial( m->GetColor(), m->GetRoughness() ) );
 	}
 	if( const AshikminShirleyAnisotropicPhongMaterial* m =
 	    dynamic_cast<const AshikminShirleyAnisotropicPhongMaterial*>( mat ) ) {
-		return NewClone( new AshikminShirleyAnisotropicPhongMaterial(
+		return NewClone( mat, new AshikminShirleyAnisotropicPhongMaterial(
 			m->GetNu(), m->GetNv(), m->GetRd(), m->GetRs() ) );
 	}
 	if( const CookTorranceMaterial* m = dynamic_cast<const CookTorranceMaterial*>( mat ) ) {
-		return NewClone( new CookTorranceMaterial(
+		return NewClone( mat, new CookTorranceMaterial(
 			m->GetDiffuse(), m->GetSpecular(), m->GetMasking(),
 			m->GetIOR(), m->GetExtinction() ) );
 	}
@@ -127,7 +130,7 @@ const IMaterial* RISE::Implementation::CloneMaterialForSnapshot( const IMaterial
 		// addref-sharing it is therefore acceptable.  Only the non-emissive
 		// GGX is reconstructed.
 		if( !m->GetEmitter() ) {
-			return NewClone( new GGXMaterial(
+			return NewClone( mat, new GGXMaterial(
 				m->GetDiffuse(), m->GetSpecular(), m->GetAlphaX(), m->GetAlphaY(),
 				m->GetIOR(), m->GetExtinction(), m->GetFresnelMode(),
 				m->GetTangentRotation(),
@@ -137,16 +140,16 @@ const IMaterial* RISE::Implementation::CloneMaterialForSnapshot( const IMaterial
 	}
 	if( const WardIsotropicGaussianMaterial* m =
 	    dynamic_cast<const WardIsotropicGaussianMaterial*>( mat ) ) {
-		return NewClone( new WardIsotropicGaussianMaterial(
+		return NewClone( mat, new WardIsotropicGaussianMaterial(
 			m->GetDiffuse(), m->GetSpecular(), m->GetAlpha() ) );
 	}
 	if( const WardAnisotropicEllipticalGaussianMaterial* m =
 	    dynamic_cast<const WardAnisotropicEllipticalGaussianMaterial*>( mat ) ) {
-		return NewClone( new WardAnisotropicEllipticalGaussianMaterial(
+		return NewClone( mat, new WardAnisotropicEllipticalGaussianMaterial(
 			m->GetDiffuse(), m->GetSpecular(), m->GetAlphaX(), m->GetAlphaY() ) );
 	}
 	if( const TranslucentMaterial* m = dynamic_cast<const TranslucentMaterial*>( mat ) ) {
-		return NewClone( new TranslucentMaterial(
+		return NewClone( mat, new TranslucentMaterial(
 			m->GetRefFront(), m->GetTrans(), m->GetExtinction(),
 			m->GetN(), m->GetScat() ) );
 	}
