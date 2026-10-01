@@ -135,48 +135,89 @@ namespace
 		return !caster.CastShadowRaySampled( shadowRay, dist - VCM_RAY_EPSILON, sampler, boundaries, dist, VCM_RAY_EPSILON );
 	}
 
-	inline VCMMisQuantities ApplyBSSRDFEntryAreaUpdate(
-		const BDPTVertex& v
-		)
+	//////////////////////////////////////////////////////////////////
+	// DL-317: the BSSRDF / random-walk jump is a BARRIER in VCM's MIS.
+	//
+	// A subsurface event relocates the path from the hit where it went
+	// in (`x_o`, which the generator marks delta) to a sampled ENTRY
+	// vertex `x_i` (`isBSSRDFEntry`).  That relocation is not an edge:
+	// nothing can connect x_o to x_i, and the reverse density of the
+	// jump (sampling x_o from x_i) is never evaluated -- for a random
+	// walk it has no closed form at all.  So the strategies that can
+	// produce a path through the jump are exactly the ones that split
+	// it on the FAR side of the subpath that SAMPLED the jump:
+	//
+	//   eye-sampled jump (eye subpath ... x_o, x_i, w1 ...):
+	//     at x_i: NEE, a connection to a light vertex, and a merge with
+	//       a photon ARRIVING at x_i -- only if x_i is connectible
+	//       (diffusion entry: yes; random-walk entry: no);
+	//     at w1 and beyond: every ordinary strategy.
+	//     NOT: anything that makes the light cover x_i and x_o (connect
+	//       x_o--x_i, merge at x_o through the jump, or deeper).
+	//   light-sampled jump: has the same coverage problem mirrored, and
+	//     no reverse jump density with which to MIS it against the eye-
+	//     sampled one.  Both families estimate the SAME integral, so
+	//     keeping both with each partition-of-unity closed over itself
+	//     would count the path twice.  VCM assigns every jump path to
+	//     the EYE-sampled family (PT's and BDPT's own estimator) and
+	//     evaluates no strategy at or past a light-side BSSRDF entry --
+	//     see UsableLightSubpathLength below.
+	//
+	// The running quantities follow directly.  At x_i, (dVCM, dVC, dVM)
+	// = 0: every term they carry reserves mass for a strategy in which
+	// the light covers x_i AND what lies behind it, i.e. one that splits
+	// across the jump.  (The pre-DL-317 dVCM = 1/pdfSurface reserved the
+	// connection x_o--x_i.)  The onward update from x_i is the ordinary
+	// non-specular one applied to that zero state -- dVCM' = 1/p_w (NEE
+	// and connections at x_i), dVC' = (cos/p_w) * eta_VM and dVM' =
+	// cos/p_w (the merge at x_i) -- WHEN x_i is connectible; a non-
+	// connectible random-walk entry supports none of those, so all three
+	// stay 0.  (Pre-DL-317 it took the non-specular update regardless,
+	// reserving a phantom NEE-at-entry: DL-126's pattern.)
+	//////////////////////////////////////////////////////////////////
+
+	/// Running quantities AT a BSSRDF / random-walk entry vertex: nothing
+	/// on the far side of the jump is a strategy, so nothing is reserved.
+	inline VCMMisQuantities BSSRDFEntryVertexState()
 	{
-		VCMMisQuantities r;
-		if( v.pdfFwd > NEARZERO ) {
-			// BSSRDF entry sampling gives an area-density directly; there is
-			// no edge Jacobian to invert.  The VC MIS state at the entry
-			// therefore carries the reciprocal area PDF, so NEE/interior
-			// connections compete with the sampled BSSRDF transport.
-			r.dVCM = Scalar( 1 ) / v.pdfFwd;
-		}
-		return r;
+		return VCMMisQuantities();
 	}
 
+	/// Running quantities for the vertex AFTER a BSSRDF / random-walk
+	/// entry `verts[i]` (whose own state is BSSRDFEntryVertexState()).
 	inline VCMMisQuantities ApplyBSSRDFEntryOnwardUpdate(
-		const VCMMisQuantities& mis,
 		const std::vector<BDPTVertex>& verts,
 		const std::size_t i,
 		const VCMNormalization& norm
 		)
 	{
+		const VCMMisQuantities zero = BSSRDFEntryVertexState();
 		if( i + 1 >= verts.size() ) {
-			return mis;
+			return zero;
 		}
 
 		const BDPTVertex& v = verts[i];
+		// A non-connectible (random-walk) entry: no NEE, connection or
+		// merge can use it, so the vertex after it reserves nothing.
+		if( !v.isConnectible ) {
+			return zero;
+		}
+
 		const BDPTVertex& next = verts[i + 1];
 		if( next.pdfFwd <= 0 ) {
-			return mis;
+			return zero;
 		}
 
 		const Vector3 nextStep = Vector3Ops::mkVector3( next.position, v.position );
 		const Scalar nextDistSq = Vector3Ops::SquaredModulus( nextStep );
 		if( nextDistSq <= 0 ) {
-			return mis;
+			return zero;
 		}
 		const Scalar nextDist = std::sqrt( nextDistSq );
 		const Vector3 wo = nextStep * ( Scalar( 1 ) / nextDist );
 		const Scalar nextFactor = AreaToSolidAngleFactor( next, -wo );
 		if( nextFactor <= 0 ) {
-			return mis;
+			return zero;
 		}
 
 		// The recurrence tracks geometric area densities. The BSDF PDF
@@ -184,7 +225,25 @@ namespace
 		const Scalar cosThetaOut = AreaToSolidAngleFactor( v, wo );
 		const Scalar bsdfDirPdfW = next.pdfFwd * (next.pEnvLight ? Scalar(1) : nextDistSq) / nextFactor;
 		return ApplyBsdfSamplingUpdate(
-			mis, cosThetaOut, bsdfDirPdfW, Scalar( 0 ), false, norm );
+			zero, cosThetaOut, bsdfDirPdfW, Scalar( 0 ), false, norm );
+	}
+
+	/// DL-317: the number of leading light-subpath vertices VCM may use
+	/// as a strategy endpoint -- everything before the first light-side
+	/// BSSRDF / random-walk entry (see the barrier comment above).  The
+	/// hit where the light walk went INTO the subsurface material stays
+	/// usable: it is an ordinary arrival, and only its continuation was
+	/// the jump.
+	inline std::size_t UsableLightSubpathLength(
+		const std::vector<BDPTVertex>& lightVerts
+		)
+	{
+		for( std::size_t i = 1; i < lightVerts.size(); i++ ) {
+			if( lightVerts[i].isBSSRDFEntry ) {
+				return i;
+			}
+		}
+		return lightVerts.size();
 	}
 
 	//////////////////////////////////////////////////////////////////
@@ -565,11 +624,10 @@ static inline Scalar AreaToSolidAngleFactor(
 //                        plan's "medium support deferred" note.
 //   v[i] = CAMERA     -> never appears on a light subpath
 //
-// BSSRDF re-entry vertices carry their spatial sampling density in
-// area measure directly.  They skip the ordinary edge-Jacobian
-// inversion, are excluded from the merge store, and still populate the
-// parallel MIS array with dVCM = 1/pdfFwd so VC connections through SSS
-// compete with the sampled BSSRDF transport.
+// BSSRDF re-entry vertices end the usable light subpath (DL-317): a
+// path through a subsurface jump is owned by the EYE-sampled jump, so
+// nothing at or past a light-side entry is stored for merging, and the
+// splat / connection loops stop at UsableLightSubpathLength.
 //////////////////////////////////////////////////////////////////////
 void VCMIntegrator::ConvertLightSubpath(
 	const std::vector<BDPTVertex>& verts,
@@ -623,17 +681,13 @@ void VCMIntegrator::ConvertLightSubpath(
 		// isn't the tail vertex, a BSDF-sampling update.
 		//
 
-		// BSSRDF re-entry vertices carry their spatial sampling PDF
-		// directly in area measure.  They do not go through the ordinary
-		// edge Jacobian path below, but VC MIS still needs the reciprocal
-		// area PDF at the entry so connections through SSS compete with
-		// the sampled BSSRDF transport instead of receiving weight ~1.
+		// BSSRDF re-entry vertex: the end of the usable light subpath
+		// (DL-317, see the barrier comment near the top of this file).
 		if( v.isBSSRDFEntry ) {
-			mis = ApplyBSSRDFEntryAreaUpdate( v );
-			if( outMis ) (*outMis)[i] = mis;
-			mis = ApplyBSSRDFEntryOnwardUpdate(
-				mis, verts, i, norm );
-			continue;
+			// DL-317: no strategy is evaluated at or past a light-side
+			// jump (UsableLightSubpathLength), so nothing past it is
+			// stored for merging and its outMis entries stay zero.
+			return;
 		}
 
 		// Skip vertices that lack a valid area-measure conversion
@@ -1702,7 +1756,8 @@ namespace
 			BDPTCameraUtilities::SampleAperture( camera, cameraLensSample );
 		const Point3 camPos = apertureSample.point;
 
-		for( std::size_t i = 0; i < lightVerts.size(); i++ )
+		const std::size_t usableLightVerts = UsableLightSubpathLength( lightVerts );
+		for( std::size_t i = 0; i < usableLightVerts; i++ )
 		{
 			const BDPTVertex& v = lightVerts[i];
 
@@ -1980,7 +2035,8 @@ namespace
 			return total;
 		}
 
-		for( std::size_t i = 1; i < lightVerts.size(); i++ )
+		const std::size_t usableLightVerts = UsableLightSubpathLength( lightVerts );
+		for( std::size_t i = 1; i < usableLightVerts; i++ )
 		{
 			const BDPTVertex& lv = lightVerts[i];
 			if( lv.type != BDPTVertex::SURFACE && lv.type != BDPTVertex::MEDIUM ) {
@@ -2203,15 +2259,15 @@ void VCMIntegrator::ConvertEyeSubpath(
 		// isn't the tail vertex, a BSDF-sampling update.
 		//
 
-		// Mirror of ConvertLightSubpath's BSSRDF handling: the entry
-		// vertex supplies an area-density directly, so record its
-		// reciprocal for VC MIS and skip the ordinary edge-Jacobian path.
+		// BSSRDF / random-walk entry vertex: the jump the EYE sampled.
+		// Its area density needs no edge Jacobian; the MIS state restarts
+		// at the barrier (DL-317, see the comment near the top of this
+		// file).
 		if( v.isBSSRDFEntry ) {
-			mis = ApplyBSSRDFEntryAreaUpdate( v );
+			// DL-317: the jump is a barrier -- see BSSRDFEntryVertexState.
+			mis = BSSRDFEntryVertexState();
 			outMis[i] = mis;
-			// Eye side ungated — see comment at top of ConvertEyeSubpath.
-			mis = ApplyBSSRDFEntryOnwardUpdate(
-				mis, verts, i, norm );
+			mis = ApplyBSSRDFEntryOnwardUpdate( verts, i, norm );
 			continue;
 		}
 

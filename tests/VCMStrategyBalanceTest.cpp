@@ -2039,38 +2039,32 @@ static void TestNullBSDFMaterialContinuation()
 // BREAK on an empty scatter container before the BSSRDF entry branch
 // (DL-307): a rough front reflection drawn below the horizon is dropped
 // by the SPF and the subsurface branch it would have taken with
-// probability Ft was lost.  Unlike BDPT, VCM does NOT reach PT on this
-// scene even with the fix -- it reads ~5% under PT with or without
-// merging (vm_enabled false: -5.5%), a SEPARATE, pre-existing VCM
-// defect in its MIS running quantities at BSSRDF / random-walk entry
-// vertices recorded as DL-317.  This wall-dominated frame UNDERSTATES
-// it: BDPT's topology V (rough-0.8 random-walk sphere) reads -15.1%,
-// and frames the SSS object fills read -78% .. -97% (external review of
-// 2212f537; see the DL-317 row).  So this
-// row is a TWO-SIDED PIN of VCM/PT on the post-DL-307 value, not a
-// parity gate: it is red on the pre-fix generator (the DL-307 red-proof)
-// and it must be re-derived, deliberately, when DL-317 is fixed.
+// probability Ft was lost.  Unlike BDPT, VCM did not reach PT on this
+// scene even with that fix -- it read ~5% under PT with or without
+// merging, a separate, pre-existing defect in VCM's MIS at BSSRDF /
+// random-walk entry vertices (DL-317, see TestSSSBarrierDL317).  This
+// row was a two-sided PIN of that state ([-5.72%, -5.00%]) until
+// DL-317 closed it; it is now a PARITY band.
 //
-// Measured (32x32, 1024 spp, salted Sobol', n = 16 per build, two
-// separately built binaries run interleaved): VCM/PT - 1 = -6.000%
-// (z -182) pre-fix, -5.242% (z -148) post-fix.  This row's own
-// UNSALTED 2048-spp render (one fixed draw of the QMC error; its PT half
-// realizes ~0.2% above the salted mean) reads -5.34% .. -5.45% post-fix
-// and -6.10% .. -6.18% pre-fix over three runs each, so the pin
-// [-5.72%, -5.00%] sits >= 0.27% inside the post-fix readings and
-// >= 0.38% away from the pre-fix ones.
+// Measured (32x32, 2048 spp, salted Sobol', this row as written):
+// DL-307 (pre/post, n = 16 interleaved): -6.000% / -5.242%.  DL-317
+// fixed build, six independent salted runs (`--dl317-only <seed>`,
+// seeds 11/101/202/303/404/505): -0.148, +0.161, -0.003, -0.103,
+// +0.183, -0.208% -- mean -0.02%, sd 0.163% (both sides salted, so
+// that IS the decorrelated ratio sd).  Band +/- 0.8% = 4.9 sd; the
+// pre-DL-317 -5.2% is 27 sd outside it.
 //
 // THE EMITTER IS SINGLE-SIDED ON PURPOSE (DL-320, 2026-09-28).  Its
 // winding faces the sheets (-Z), and `clippedplane_geometry` defaults to
 // `doublesided TRUE`.  Since DL-320 a double-sided emitter emits from
 // BOTH faces for every strategy, so half of its light subpaths would
-// leave upward into empty space; the biased light-side strategies DL-317
-// is about would then carry less of the image and the pin would stop
-// measuring DL-317 (it read -2.93% with the default, against -5.9% for
-// the same scene single-sided -- the review's isolation: double-sided
-// -5.90% -> -3.50%, `doublesided FALSE` -5.88% -> -5.87%, a Lambertian
-// control +0.01% / +0.02%, salted n = 2).  `doublesided FALSE` keeps the
-// pin on the quantity it was derived for.
+// leave upward into empty space; the light-side strategies DL-317 was
+// about would then carry less of the image and the row would see less
+// of the defect (pre-DL-317 it read -2.93% with the default, against
+// -5.9% for the same scene single-sided -- the review's isolation:
+// double-sided -5.90% -> -3.50%, `doublesided FALSE` -5.88% -> -5.87%,
+// a Lambertian control +0.01% / +0.02%, salted n = 2).  `doublesided
+// FALSE` keeps the row sensitive to a regression of DL-317.
 //////////////////////////////////////////////////////////////////////
 static const char* kSceneRoughSSSU =
 	"film\n{\n\twidth 32\n\theight 32\n}\n\n"
@@ -2102,7 +2096,7 @@ static const char* kRasterizerVCMRoughSSSU =
 
 static void TestRoughSSSEmptyContainerU()
 {
-	std::cout << "Testing PT-vs-VCM: topology U, rough subsurfacescattering_material sheets (DL-307 / DL-317 pin)" << std::endl;
+	std::cout << "Testing PT-vs-VCM: topology U, rough subsurfacescattering_material sheets (DL-307 / DL-317)" << std::endl;
 	const std::string ptScene  = std::string( "RISE ASCII SCENE 7\n" ) + kRasterizerPTRoughSSSU  + kSceneRoughSSSU;
 	const std::string vcmScene = std::string( "RISE ASCII SCENE 7\n" ) + kRasterizerVCMRoughSSSU + kSceneRoughSSSU;
 	const std::string ptPath  = WriteSceneToTempFile( ptScene.c_str(),  "pt_sss"  );
@@ -2116,10 +2110,10 @@ static void TestRoughSSSEmptyContainerU()
 	const double mPT  = ( pt.mean[0]  + pt.mean[1]  + pt.mean[2]  ) / 3.0;
 	const double mVCM = ( vcm.mean[0] + vcm.mean[1] + vcm.mean[2] ) / 3.0;
 	const double rel = mVCM / mPT - 1.0;
-	std::printf( "    PT %.7f  VCM %.7f  VCM/PT %+.3f%%  (pin [-5.72%%, -5.00%%])\n",
+	std::printf( "    PT %.7f  VCM %.7f  VCM/PT %+.3f%%  (band +/- 0.8%%)\n",
 		mPT, mVCM, 100.0 * rel );
-	Check( std::isfinite( rel ) && rel >= -0.0572 && rel <= -0.0500,
-		"DL-307 topology U: VCM/PT inside the DL-317 pin [-5.72%, -5.00%] (pre-DL-307 read -6.1%)" );
+	Check( std::isfinite( rel ) && std::fabs( rel ) <= 0.008,
+		"DL-307 / DL-317 topology U: VCM/PT within +/- 0.8% (pre-DL-317 -5.2%, pre-DL-307 -6.1%)" );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -2196,6 +2190,202 @@ static void TestNarrowFovSplatW()
 	RunNarrowFovRowW( "W2 spot -> floor, no mirror", kSceneNarrowFovDirectW2, 4.0, 0.005 );
 }
 
+
+//////////////////////////////////////////////////////////////////////
+// DL-317: VCM's MIS at a BSSRDF / random-walk jump.
+//
+// A subsurface event relocates the path from the hit where it went in
+// to a sampled ENTRY vertex.  The relocation is not an edge -- nothing
+// connects the two points and the jump's reverse density is never
+// evaluated -- so the only strategies for a path through it are the
+// ones that split it on the far side of the subpath that sampled the
+// jump.  Pre-DL-317 VCM (a) reserved MIS mass at the entry for the
+// connection ACROSS the jump (dVCM = 1/pdfSurface), (b) reserved a
+// phantom NEE at a NON-connectible random-walk entry (the non-specular
+// onward update, DL-126's pattern), and (c) kept every strategy at or
+// past a LIGHT-side jump, whose own MIS chain was closed over itself --
+// a second copy of the eye-sampled family (measured: with (a) and (b)
+// fixed alone, the wall-dominated V row below read +3.5% merging on,
+// +2.65% off).  The fix is a barrier: zero state at the entry, the
+// ordinary onward update only from a connectible entry, and no
+// strategy at or past a light-side entry (VCMIntegrator.cpp,
+// BSSRDFEntryVertexState / UsableLightSubpathLength).
+//
+// Rows, all PT-referenced (PT samples only the eye side of a jump, as
+// BDPT effectively does), VCM with merging ON and OFF:
+//   F  white FURNACE (uniform environment radiance 1, the SSS sphere
+//      fills the frame): a conservative random walk (absorption 0,
+//      roughness 0.3) reads ~1 under PT (0.9975: the walk's own depth
+//      truncation); the dipole diffusion profile is not exactly
+//      conservative (PT ~0.954), so that row gates parity only.
+//   B  a BACKLIT sphere filling the frame (emitter hidden behind it):
+//      random walk roughness 0.8, and smooth diffusion.
+//   V  BDPTStrategyBalanceTest's topology V (random-walk sphere on
+//      Lambertian walls, front-lit) -- the row that sees (c): a light
+//      walk exits the sphere onto the walls.
+// Pre-fix (32x32, salted, n = 4, VCM/PT - 1, merging on / off):
+//   F random walk -28.4% / -28.3%, diffusion -18.9% / -18.9%;
+//   B random walk -85.3% / -85.2%, smooth diffusion -83.2% / -83.3%;
+//   V -15.0% / -15.1%; U (below) -5.2% / -5.5%.
+// Bands are >= 4.6 times the RATIO sd measured on the fixed build over
+// six independent salted runs of these exact rows (`--dl317-only <seed>`,
+// seeds 11/101/202/303/404/505), each row's three ratios pooled:
+//   F1 0.042% sd -> 0.25%;  F2 0.24% -> 1.25%;  B1 2.4% -> 12%
+//   (random-walk fireflies; F1 is the precise random-walk gate);
+//   B2 0.55% -> 3%;  V 0.14% -> 0.7%.
+// Post-fix readings (same runs, mean VCM/PT - 1, merging on / off):
+//   F1 -0.005% / +0.008%, F2 -0.064% / -0.020%, B1 +0.03% / +0.59%,
+//   B2 -0.52% / -0.36%, V +0.014% / +0.011%.  (B2's small negative
+//   offset is shared by BDPT -- -0.33% in a 4-run probe -- so it is a
+//   PT-vs-bidirectional depth/diffusion difference, not this barrier.)
+//////////////////////////////////////////////////////////////////////
+static const char* kSceneFurnaceHeadDL317 =
+	"film\n{\n\twidth 32\n\theight 32\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 1.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 20.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_env_f\n\tcolor 1 1 1\n}\n\n"
+	"sphere_geometry\n{\n\tname sph_f\n\tradius 1.0\n}\n\n"
+	"standard_object\n{\n\tname obj_sph_f\n\tgeometry sph_f\n\tmaterial mat_f\n}\n\n";
+
+static const char* kMatFurnaceRandomWalkDL317 =
+	"randomwalk_sss_material\n{\n\tname mat_f\n\tior 1.3\n\tabsorption 0.0\n\tscattering 4.0\n\tg 0.0\n\troughness 0.3\n}\n\n";
+
+static const char* kMatFurnaceDiffusionDL317 =
+	"subsurfacescattering_material\n{\n\tname mat_f\n\tior 1.3\n\tabsorption 0.0\n\tscattering 4.0\n\tg 0.0\n\troughness 0.0\n}\n\n";
+
+//! Backlit sphere: a small single-sided emitter BEHIND the sphere, facing
+//! it, hidden from the camera by it; only subsurface transport lights the
+//! frame.
+static const char* kSceneBacklitTailDL317 =
+	"sphere_geometry\n{\n\tname sph_b\n\tradius 0.6\n}\n\n"
+	"standard_object\n{\n\tname obj_sph_b\n\tgeometry sph_b\n\tmaterial mat_b\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_emit_b\n\tcolor 1.0 1.0 1.0\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname mat_emit_b\n\texitance pnt_emit_b\n\tscale 4.0\n\tmaterial none\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_emit_b\n\tpta -0.35 -0.35 -1.2\n\tptb 0.35 -0.35 -1.2\n\tptc 0.35 0.35 -1.2\n\tptd -0.35 0.35 -1.2\n\tdoublesided FALSE\n}\n\n"
+	"standard_object\n{\n\tname obj_emit_b\n\tgeometry quad_emit_b\n\tmaterial mat_emit_b\n}\n";
+
+static const char* kSceneBacklitHeadDL317 =
+	"film\n{\n\twidth 32\n\theight 32\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 25.0\n}\n\n";
+
+static const char* kMatBacklitRandomWalkDL317 =
+	"randomwalk_sss_material\n{\n\tname mat_b\n\tior 1.3\n\tabsorption 0.1\n\tscattering 10.0\n\tg 0.0\n\troughness 0.8\n}\n\n";
+
+static const char* kMatBacklitSmoothDiffusionDL317 =
+	"subsurfacescattering_material\n{\n\tname mat_b\n\tior 1.3\n\tabsorption 0.1\n\tscattering 1.0\n\tg 0.0\n\troughness 0.0\n}\n\n";
+
+//! BDPTStrategyBalanceTest's topology V scene, verbatim.
+static const char* kSceneRandomWalkSphereVDL317 =
+	"film\n{\n\twidth 32\n\theight 32\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
+	"randomwalk_sss_material\n{\n\tname mat_rw\n\tior 1.3\n\tabsorption 0.1\n"
+		"\tscattering 10.0\n\tg 0.0\n\troughness 0.8\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_alb_v\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"lambertian_material\n{\n\tname mat_lamb_v\n\treflectance pnt_alb_v\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_wall\n\tpta -1 -1 0\n\tptb 1 -1 0\n\tptc 1 1 0\n\tptd -1 1 0\n}\n\n"
+	"standard_object\n{\n\tname obj_wall\n\tgeometry quad_wall\n\tmaterial mat_lamb_v\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_floor\n\tpta -1 -1 0\n\tptb -1 -1 2\n\tptc 1 -1 2\n\tptd 1 -1 0\n}\n\n"
+	"standard_object\n{\n\tname obj_floor\n\tgeometry quad_floor\n\tmaterial mat_lamb_v\n}\n\n"
+	"sphere_geometry\n{\n\tname sph_v\n\tradius 0.55\n}\n\n"
+	"standard_object\n{\n\tname obj_sph_v\n\tgeometry sph_v\n\tmaterial mat_rw\n\tposition 0 -0.45 0.6\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_emit_v\n\tcolor 1.0 1.0 1.0\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname mat_emit_v\n\texitance pnt_emit_v\n\tscale 0.5\n\tmaterial none\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_emit_v\n\tpta -6 -6 4.2\n\tptb -6 6 4.2\n\tptc 6 6 4.2\n\tptd 6 -6 4.2\n}\n\n"
+	"standard_object\n{\n\tname obj_emit_v\n\tgeometry quad_emit_v\n\tmaterial mat_emit_v\n}\n";
+
+//! PT / VCM (merging on or off) chunks at depth 16 for the DL-317 rows.
+//! `envPainter` non-null adds a uniform environment from that painter.
+static std::string RasterizerDL317( const char* kind, int spp, const char* envPainter )
+{
+	char buf[1024];
+	char env[256] = "";
+	if( envPainter ) {
+		std::snprintf( env, sizeof(env), "\tradiance_map %s\n\tradiance_background TRUE\n", envPainter );
+	}
+	if( std::strcmp( kind, "pt" ) == 0 ) {
+		std::snprintf( buf, sizeof(buf), "pathtracing_pel_rasterizer\n{\n\tsamples %d\n\trr_min_depth 8\n"
+			"\tmax_diffuse_bounce 16\n\tmax_glossy_bounce 16\n%s\tpixel_filter box\n\toidn_denoise FALSE\n}\n", spp, env );
+	} else {
+		std::snprintf( buf, sizeof(buf), "vcm_pel_rasterizer\n{\n\tmax_eye_depth 16\n\tmax_light_depth 16\n"
+			"\tsamples %d\n\tmerge_radius 0.0\n\tvc_enabled true\n\tvm_enabled %s\n%s\tpixel_filter box\n\toidn_denoise FALSE\n}\n",
+			spp, std::strcmp( kind, "vcm" ) == 0 ? "true" : "false", env );
+	}
+	return std::string( "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n" ) + buf
+		+ "\nfile_rasterizeroutput\n{\n\tpattern rendered/vcm_balance_unused\n\ttype EXR\n\tbpp 32\n"
+		"\tcolor_space Rec709RGB_Linear\n}\n";
+}
+
+//! Mean achromatic image value over `reps` salted renders (each render
+//! gets its own salt through RenderAndComputeStats).  The rasterizer chunk
+//! goes AFTER the body so an environment painter is already declared.
+static bool RenderMeanDL317( const std::string& body, const std::string& rasterizer, int reps, double& out )
+{
+	const std::string scene = std::string( "RISE ASCII SCENE 7\n" ) + body + rasterizer;
+	const std::string path = WriteSceneToTempFile( scene.c_str(), "dl317" );
+	if( path.empty() ) return false;
+	double sum = 0;
+	bool ok = true;
+	for( int i = 0; i < reps && ok; i++ ) {
+		const ImageStats st = RenderAndComputeStats( path.c_str() );
+		ok = st.valid;
+		if( ok ) sum += ( st.mean[0] + st.mean[1] + st.mean[2] ) / 3.0;
+	}
+	std::remove( path.c_str() );
+	out = sum / double( reps );
+	return ok && std::isfinite( out ) && out > 0;
+}
+
+static void CheckRatioDL317( const std::string& label, double ref, double test, double band )
+{
+	const double rel = test / ref - 1.0;
+	char buf[512];
+	std::snprintf( buf, sizeof(buf), "%s: %.7f vs %.7f  %+.3f%%  (band +/- %.2f%%)",
+		label.c_str(), test, ref, 100.0 * rel, 100.0 * band );
+	std::cout << "    " << buf << std::endl;
+	Check( std::isfinite( rel ) && std::fabs( rel ) <= band, buf );
+}
+
+//! PT, VCM merging on, VCM merging off; VCM/PT for both and on/off.
+static void RunSSSBarrierRowDL317( const char* name, const std::string& body, const char* envPainter,
+	int spp, int reps, double band, double closedFormFloor )
+{
+	std::cout << "Testing DL-317 " << name << std::endl;
+	double pt = 0, on = 0, off = 0;
+	const bool ok = RenderMeanDL317( body, RasterizerDL317( "pt", spp, envPainter ), reps, pt )
+		&& RenderMeanDL317( body, RasterizerDL317( "vcm", spp, envPainter ), reps, on )
+		&& RenderMeanDL317( body, RasterizerDL317( "vcmnovm", spp, envPainter ), reps, off );
+	Check( ok, ( std::string( "DL-317 renders produced output: " ) + name ).c_str() );
+	if( !ok ) return;
+	CheckRatioDL317( std::string( "DL-317 VCM (merging on) / PT: " ) + name, pt, on, band );
+	CheckRatioDL317( std::string( "DL-317 VCM (merging off) / PT: " ) + name, pt, off, band );
+	CheckRatioDL317( std::string( "DL-317 VCM merging on / off: " ) + name, off, on, band );
+	if( closedFormFloor > 0 ) {
+		char buf[512];
+		std::snprintf( buf, sizeof(buf), "DL-317 %s: furnace reads >= %.3f (PT %.5f, VCM on %.5f, off %.5f)",
+			name, closedFormFloor, pt, on, off );
+		std::cout << "    " << buf << std::endl;
+		Check( pt >= closedFormFloor && on >= closedFormFloor && off >= closedFormFloor, buf );
+	}
+}
+
+static void TestSSSBarrierDL317()
+{
+	RunSSSBarrierRowDL317( "F1 white furnace, conservative random walk (roughness 0.3)",
+		std::string( kMatFurnaceRandomWalkDL317 ) + kSceneFurnaceHeadDL317, "pnt_env_f",
+		256, 1, 0.0025, 0.99 );
+	RunSSSBarrierRowDL317( "F2 white furnace, smooth diffusion (parity only)",
+		std::string( kMatFurnaceDiffusionDL317 ) + kSceneFurnaceHeadDL317, "pnt_env_f",
+		256, 1, 0.0125, 0 );
+	RunSSSBarrierRowDL317( "B1 backlit random-walk sphere (roughness 0.8) filling the frame",
+		std::string( kSceneBacklitHeadDL317 ) + kMatBacklitRandomWalkDL317 + kSceneBacklitTailDL317, nullptr,
+		1024, 3, 0.12, 0 );
+	RunSSSBarrierRowDL317( "B2 backlit smooth-diffusion sphere filling the frame",
+		std::string( kSceneBacklitHeadDL317 ) + kMatBacklitSmoothDiffusionDL317 + kSceneBacklitTailDL317, nullptr,
+		1024, 3, 0.03, 0 );
+	RunSSSBarrierRowDL317( "V front-lit random-walk sphere on Lambertian walls (light walks exit onto the walls)",
+		kSceneRandomWalkSphereVDL317, nullptr,
+		1024, 1, 0.007, 0 );
+}
+
 int main( int argc, char** argv )
 {
 	std::cout << "=== VCMStrategyBalanceTest ===" << std::endl;
@@ -2212,6 +2402,15 @@ int main( int argc, char** argv )
 			if( v > 0 ) g_seedBase = (unsigned int)v;
 		}
 	};
+
+	// DL-317: the SSS barrier rows (and topology U) alone.
+	if( argc >= 2 && std::strcmp( argv[1], "--dl317-only" ) == 0 ) {
+		ApplySeedOverride( 2 );
+		TestSSSBarrierDL317();
+		TestRoughSSSEmptyContainerU();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
 
 	if( argc >= 2 && std::strcmp( argv[1], "--sss-only" ) == 0 ) {
 		ApplySeedOverride( 2 );
@@ -2314,6 +2513,7 @@ int main( int argc, char** argv )
 	TestPolishedAB();
 	TestNullBSDFMaterialContinuation();
 	TestRoughSSSEmptyContainerU();
+	TestSSSBarrierDL317();
 	TestNonfiniteCandidateRejected();
 	TestNarrowFovSplatW();
 
