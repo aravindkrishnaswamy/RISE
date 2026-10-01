@@ -394,15 +394,19 @@ static void TestMediumPreservesIndex()
 }
 
 //
-// Test 5: A diffusion BSSRDF entry vertex carries an area-density
-// directly in pdfFwd.  The VCM post-pass must expose 1/pdfFwd as
-// dVCM so VC strategies through the entry point are MIS-weighted
-// against the sampled BSSRDF transport.  It must not leave the state
-// frozen from the previous delta-marked surface.
+// Test 5: the BSSRDF / random-walk jump is an MIS BARRIER (DL-317).
+// At the entry vertex nothing on the far side of the jump is a
+// strategy, so dVCM = dVC = dVM = 0 (pre-DL-317: dVCM = 1/pdfSurface,
+// reserving the connection ACROSS the jump).  One vertex later, a
+// CONNECTIBLE (diffusion) entry gives the ordinary onward update of that
+// zero state: dVCM = 1/p_w (NEE / connection at the entry), dVC =
+// (cos/p_w) * eta_VM (merge at the entry; 0 with VM off), dVM = cos/p_w.
+// A NON-connectible (random-walk) entry supports none of those, so the
+// next vertex reserves nothing.
 //
 static void TestBSSRDFEntryAreaPdf()
 {
-	printf( "Test 5: BSSRDF entry area PDF contributes to dVCM\n" );
+	printf( "Test 5: BSSRDF / random-walk entry is an MIS barrier (DL-317)\n" );
 
 	std::vector<BDPTVertex> verts;
 
@@ -465,10 +469,26 @@ static void TestBSSRDFEntryAreaPdf()
 	if( outMis.size() != 4 ) {
 		return;
 	}
-	CheckClose( outMis[2].dVCM, 4.0, 1e-12, "bssrdf: dVCM = 1/pdfSurface" );
-	CheckClose( outMis[2].dVC, 0.0, 1e-15, "bssrdf: dVC reset" );
-	CheckClose( outMis[2].dVM, 0.0, 1e-15, "bssrdf: dVM reset" );
+	CheckClose( outMis[2].dVCM, 0.0, 1e-15, "bssrdf: no MIS state at the entry (DL-317; was 1/pdfSurface = 4)" );
+	CheckClose( outMis[2].dVC, 0.0, 1e-15, "bssrdf: dVC zero at the entry" );
+	CheckClose( outMis[2].dVM, 0.0, 1e-15, "bssrdf: dVM zero at the entry" );
 	CheckClose( outMis[3].dVCM, 2.0, 1e-12, "bssrdf: onward cosine PDF reaches next vertex" );
+	CheckClose( outMis[3].dVC, 0.0, 1e-15, "bssrdf: no connection across the jump reserved (DL-317; was 8)" );
+	CheckClose( outMis[3].dVM, 2.0, 1e-12, "bssrdf: merge at the entry reserved, cos/p_w" );
+
+	// Random-walk entry: delta, NOT connectible, no area density.
+	verts[2].isDelta = true;
+	verts[2].isConnectible = false;
+	verts[2].pdfFwd = 0.0;
+	VCMIntegrator::ConvertEyeSubpath( verts, norm, outMis );
+	Check( outMis.size() == 4, "random walk: size 4" );
+	if( outMis.size() != 4 ) {
+		return;
+	}
+	CheckClose( outMis[2].dVCM, 0.0, 1e-15, "random walk: no MIS state at the entry" );
+	CheckClose( outMis[3].dVCM, 0.0, 1e-15, "random walk: no NEE / connection at a non-connectible entry (DL-317; was 2)" );
+	CheckClose( outMis[3].dVC, 0.0, 1e-15, "random walk: dVC zero after the entry" );
+	CheckClose( outMis[3].dVM, 0.0, 1e-15, "random walk: no merge at a non-connectible entry (DL-317; was 2)" );
 }
 
 //////////////////////////////////////////////////////////////////////
