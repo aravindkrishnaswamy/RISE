@@ -96,6 +96,11 @@
 //         is integrated numerically in the test.  PT, BDPT, VCM and a
 //         gathering legacy pixelpel chain against it.
 //
+//      E room. (DL-319) Row E's scene inside row F's black room, where
+//         VCM's auto radius actually merges: the automatic radius and a
+//         merging-off control against the same closed form (pre-DL-319
+//         the auto radius read 0.62).
+//
 //      F. (DL-308) Reference-free scale invariance of row E's scene:
 //         every index x1.5 inside an ideal index-1.5 enclosure (a black
 //         room around everything) must render the same image.
@@ -439,7 +444,8 @@ static std::string RasterizerBDPT( const char* samples, unsigned int depth = 5 )
 		"}\n";
 }
 
-static std::string RasterizerVCM( const char* samples, unsigned int depth = 5, const char* mergeRadius = "0.0" )
+static std::string RasterizerVCM( const char* samples, unsigned int depth = 5, const char* mergeRadius = "0.0",
+	bool vmEnabled = true )
 {
 	return std::string(
 		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
@@ -451,7 +457,7 @@ static std::string RasterizerVCM( const char* samples, unsigned int depth = 5, c
 		"\tpixel_filter box\n"
 		"\tmerge_radius " + mergeRadius + "\n"
 		"\tvc_enabled true\n"
-		"\tvm_enabled true\n"
+		"\tvm_enabled " + ( vmEnabled ? "true" : "false" ) + "\n"
 		"}\n";
 }
 
@@ -1214,11 +1220,12 @@ static void RunRowE()
 // BDPT 0.9999 +/- 0.0011, VCM 1.0002 +/- 0.0003.  An eta factor taken
 // from an ABSOLUTE index anywhere reads 1.5^2 = 2.25 or its inverse.
 //
-// VCM runs with an explicit merge radius here: the room's long light
-// segments set its auto radius to 0.19, larger than the whole patch, and
-// the merge's kernel estimate then reads ~0.6 of the truth on both sides
-// alike (DL-319).  The invariance holds either way; the explicit radius
-// keeps the row's absolute value meaningful.
+// VCM runs with an explicit merge radius here.  Before DL-319 the room's
+// long light segments set its auto radius to 0.19, larger than the whole
+// patch, and the merge's kernel estimate read ~0.6 of the truth on both
+// sides alike; the auto radius is now clipped to the eye-side pixel
+// footprint and the row E room block above gates it against the closed
+// form.  The invariance holds either way.
 //////////////////////////////////////////////////////////////////////
 static const char* kBlackRoom =
 	"uniformcolor_painter\n{\n\tname pnt_black\n\tcolor 0 0 0\n}\n\n"
@@ -1231,6 +1238,80 @@ static const char* kEnclosure15 =
 	"perfectrefractor_material\n{\n\tname mat_enc\n\tior 1.5\n\trefractance pnt_white_enc\n}\n\n"
 	"box_geometry\n{\n\tname enc_geo\n\twidth 60\n\theight 60\n\tdepth 60\n}\n\n"
 	"standard_object\n{\n\tname enclosure\n\tgeometry enc_geo\n\tmaterial mat_enc\n}\n\n";
+
+//////////////////////////////////////////////////////////////////////
+// Row E in a black room -- DL-319: VCM's AUTOMATIC merge radius against
+// row E's closed form.
+//
+// Row E's own VCM row never merges (its pre-pass lands too few light
+// segments on the small patch and disables VM).  Put the same scene
+// inside row F's black room and it does: the light pre-pass now sees
+// plenty of mergeable segments -- nearly all of them on the room wall,
+// 20 units out -- and the old auto radius (1 % of the median light
+// segment) came out at 0.187, wider than the whole 0.14 patch, so the
+// merge's kernel estimate (flux over pi r^2) read ~0.6 of the truth.
+// The room is black and nothing it returns reaches the patch, so the
+// closed form is row E's.  The radius is now clipped to 8 eye-side
+// pixel footprints at the camera's merge vertices (~0.02 here).
+//
+// MEASURED (salted, 32x32, VCM 512 spp, ratio to the closed form,
+// mean (sd of the per-render ratio), n = 4 per run, 2026-10-01; the "row
+// only" figures came from a scratch single-row harness (this file has no
+// row filter) -- only the "suite" figures reproduce from a full run; "row
+// only" runs start at render index 0, "suite" runs after rows A-E):
+//   auto radius, pre-DL-319 (radius 0.187), row only   0.6207 (0.0069)
+//   auto radius (radius 0.021, eye-clipped), row only  0.9961 (0.0124)
+//   auto radius (radius 0.021, eye-clipped), suite     1.0196 (0.0245)
+//   merging OFF, row only, pre / post                  1.0063 (0.0046) / 1.0066 (0.0050)
+//   merging OFF, suite                                 0.9971 (0.0063)
+//   explicit merge_radius 0.002, row only, pre / post  1.0014 (0.0055) / 1.0016 (0.0065)
+// The merged estimate is noisier than the connections alone: the patch
+// catches few of the light vertices the room absorbs, so a 0.021 query
+// holds few photons.  Bands: auto 5 % (the mean of 4 has sd <= 1.2 %),
+// off 2 %.
+//////////////////////////////////////////////////////////////////////
+static void RunRowERoom()
+{
+	bool inside = false;
+	const double expected = RowE::ClosedForm( inside );
+	std::cout << "Row E in a black room: VCM merging with the automatic radius"
+	          << "  (closed form " << expected << ")" << std::endl;
+	if( !( expected > 0 ) || !inside ) {
+		Check( false, "row E room: closed form evaluated" );
+		return;
+	}
+
+	const std::string head( "RISE ASCII SCENE 7\n" );
+	const std::string common = RowE::Scene( "1.33" ) + kBlackRoom;
+
+	struct Row { const char* name; std::string scene; int n; double band; };
+	const Row rows[] = {
+		{ "VCM auto radius", head + RasterizerVCM( "512", kSlabDepth, "0.0" )        + common, 4, 0.05 },
+		{ "VCM merging off", head + RasterizerVCM( "512", kSlabDepth, "0.0", false ) + common, 4, 0.02 },
+	};
+
+	for( const Row& r : rows ) {
+		double sum = 0.0, sum2 = 0.0;
+		bool ok = true;
+		for( int i = 0; i < r.n; i++ ) {
+			const ImageStats s = RenderAndComputeStats( r.scene, "rowEroom" );
+			if( !s.valid ) { ok = false; break; }
+			const double q = GreyMean( s ) / expected;
+			sum += q;
+			sum2 += q * q;
+		}
+		const std::string label = std::string( "row E room " ) + r.name;
+		Check( ok, label + ": every render produced output" );
+		if( !ok ) continue;
+		const double m = sum / double( r.n );
+		const double sd = std::sqrt( std::max( 0.0, ( sum2 - double( r.n ) * m * m ) / double( r.n - 1 ) ) );
+		std::cout << "    " << r.name << "  ratio-to-closed-form=" << m << " (sd " << sd
+		          << ", n=" << r.n << ")" << std::endl;
+		char buf[160];
+		std::snprintf( buf, sizeof(buf), ": mean == closed-form direct term within %.0f%%", r.band * 100.0 );
+		Check( std::fabs( m - 1.0 ) <= r.band, label + buf );
+	}
+}
 
 static void RunRowF()
 {
@@ -1295,6 +1376,7 @@ int main( int argc, char** argv )
 	RunRowC();
 	RunRowD();
 	RunRowE();
+	RunRowERoom();
 	RunRowF();
 	TestNonfiniteCandidateRejected();
 
