@@ -127,10 +127,16 @@ succeeds, and gives a TIR exit the far index as `etaT` (previously
 unreachable: a ratio-1 exit never reflected).  The containment probe now
 runs along the incident direction: it asks whether the crossing point is
 inside the stack-top object, which for a closed object does not depend
-on direction.
+on direction.  One branch keeps a mismatch (review P3-1, DL-345's family):
+at an exit through an open sheet that was never pushed onto the stack,
+the walk refracts with the stack's index while the vertex still records
+`etaI = specInfo.ior`; unmeasurable on `sms_k1_refract`.
 
 After: PT+SMS / PT **0.9840** on the same Sobol' points; found 97.3 %,
-Newton failure 0, other root 2.7 %.  The residual chains are k = 4 / 6 /
+Newton failure 0, other root 2.7 % (a share of the SUPPRESSED energy by
+per-hit classification; the image deficit is 1.6 %, which implies ~1.55 %
+of the suppressed energy -- the two figures are different quantities and
+are not reconciled further here).  The residual chains are k = 4 / 6 /
 8: paths that enter a slab through its side face and are guided by total
 internal reflection -- real roots no straight seed reaches, i.e. DL-372's
 mechanism.  The fix does not move DL-372 (0.917) or DL-336 (0.701).
@@ -171,7 +177,7 @@ classification above with "keep the emission unless found"):
 
 | Fixture | PT | PT+SMS now | PT+SMS, coverage-aware |
 |---|---|---|---|
-| DL-372 perfect-refractor twin | 4.1738 | 3.8325 | 4.1712 (-0.06 %) |
+| DL-372 perfect-refractor twin | 4.1738 | 3.8325 | 4.1712 (-0.06 %, single render) |
 | DL-336 row Q constant | 0.1204 | 0.0846 | 0.1224 (+1.6 %, single render) |
 | DL-373 (with the seed fix) | 0.013123 | 0.012914 | 0.013273 (+1.1 %, single render) |
 
