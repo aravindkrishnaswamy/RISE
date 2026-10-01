@@ -873,6 +873,13 @@ track photon merge flux vs total sample flux during the probe render at zero run
 `tests/AutoRasterizerTest.cpp` pins `diamond_teapot_pour -> VCM` alongside `glass_pavilion -> not VCM`
 and `jewel_vault -> not VCM`.
 
+**DL-319 (2026-10-01):** VCM's automatic merge radius is now the light-side median
+estimate clipped to 8 eye-side pixel footprints ([RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md)
+§5.3).  `vcmMergeShare` is radius-dependent, but at the probe's reduced resolution the
+footprint is larger still, and the clip fired in none of the 7 `AutoRasterizerTest` /
+30 `CausticReachHarnessTest` probe renders (every logged `effective_radius` is the
+light-side value), so the gate's inputs and its 0.10 threshold are unchanged.
+
 ---
 
 ## 7. UI integration (to design with the GUI bridges)

@@ -267,6 +267,8 @@ warning kind, and the verification commands are in [AGENTS.md](AGENTS.md) →
 
 - **DL-294 (debt-dl294, 2026-09-28): a light-traced (t = 1) splat's FILM MEMBERSHIP is decided by the film alone -- `SplatFilm::NearestPixel`, the nearest pixel centre in the convention every rasterizer samples its eye subpaths in -- and the camera projections (`BDPTCameraUtilities::Rasterize*`, `ThinLensCamera::RasterFromLensPoint`) reject only outside a one-pixel `InRasterGuardBand`; they used to clip at the camera's nominal [0,W) film, half a pixel off, losing the strips at image column 0 and row 0 (-6.15 % on a 16 x 16 frame lit edge to edge, the "narrow-fov" deficit; a half-pixel misregistration of the splat layer under the default gaussian filter, +/-8 % on splat-heavy VCM edge rows) -- if DL-368 changes the pixel convention, `NearestPixel` moves with it** ([docs/DL294_NARROW_FOV_SPLAT.md](docs/DL294_NARROW_FOV_SPLAT.md)).
 
+- **DL-319 (debt-dl319, 2026-10-01): VCM's automatic merge radius is `min(1 % of the median light segment, 8 eye-side pixel footprints)` -- merging is consistent, not unbiased, so a radius wider than the feature the camera sees is a bias (a small patch in a large black room read 0.62 of its closed form at the light-only radius); the clip is inert on every shipped VCM scene (1.0-6.2 footprints) and the log names which scale won** ([RENDERING_INTEGRATORS.md](docs/RENDERING_INTEGRATORS.md) §5.3).
+
 ## Thread priority — read before touching anything threading-related
 
 - **Production default (topology-aware):** every P-core gets a render worker, every E-core except **one** also gets a worker. The reserved E-core keeps UI / daemons responsive. macOS workers use `QOS_CLASS_USER_INITIATED`; Linux/Windows use CPU-affinity pinning.
