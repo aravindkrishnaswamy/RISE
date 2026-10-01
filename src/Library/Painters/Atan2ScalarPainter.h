@@ -91,6 +91,18 @@ namespace RISE
 				       ( pX && pX->HasPerChannelVariation() );
 			}
 
+			//! DL-292: a composite of world-position fields and
+			//! position-independent operands is a world-position field
+			//! (IScalarPainter.h, CompositeIsWorldPositionField).  Before
+			//! DL-292 this composite did not forward the question, so a
+			//! graded `ior` built from it kept the pre-DL-09 accounting.
+			bool IsWorldPositionField() const override
+			{
+				return CompositeIsWorldPositionField( pY, pX, HasPerChannelVariation() );
+			}
+			bool IsPositionIndependent() const override { return CompositeIsPositionIndependent( pY, pX ); }
+			bool ReadsWorldPosition() const override { return CompositeReadsWorldPosition( pY, pX ); }
+
 			//! Same rationale as MultiplyScalarPainter.h's sibling
 			//! method: only an operand that itself varies per-channel
 			//! needs its own single-scalar-slot view.  Returns nullptr

@@ -46,6 +46,13 @@
 //      G  the spectral pipes (PT NM hero, PT HWSS, BDPT HWSS; num_wavelengths
 //         160): scene A vs its closed form, and scene D PT-vs-BDPT.
 //
+//      I-O  DL-292 (debt-dl292 slice) coverage rows -- see the block
+//         comment above RunSSSEntryNEERow: PT's SSS entry NEE (I), the
+//         NEE shadow segment's factor keyed on boundary crossings, not on
+//         the transmittance value (J weave gap, K nested slab, L exit into
+//         an index-matched enclosure), RayCaster's own volume walk (M),
+//         the legacy shader-op chain (N), composite / refused ior forms (O).
+//
 //    Replicas: every render is split into 16 tiles; where the view is a
 //    uniformly lit floor (rows A-C, F, G scene A) the tiles are independent
 //    replicas (disjoint per-pixel Sobol seeds) and `sd` is their spread.
@@ -66,6 +73,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -700,6 +708,631 @@ static void RunSeedRow()
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+// DL-292 rows (debt-dl292 slice).  The coverage gaps DL-09 left open:
+// walks that do not Advance, and an NEE shadow segment whose graded
+// factor was keyed on the transmittance value instead of on a boundary
+// crossing.  Every row is REFERENCE-FREE -- it compares two renders that
+// must agree (a cross-integrator pair, a with/without-occluder ratio
+// against the same ratio in a constant-index control, or a boundary
+// against the one-object scene with the same index field) -- and prints
+// its pre-DL-292 prediction beside the measurement.
+//////////////////////////////////////////////////////////////////////
+static const char* kSeededScene = "scenes/Tests/Materials/graded_index_seeded_inside.RISEscene";
+static const std::string kOrthoInside =
+	"orthographic_camera\n{\n\tlocation 0 0 0.333333333333\n\tlookat 0 0 0\n\tup 0 1 0\n\tviewport_scale 0.2 0.2\n}\n";
+static const std::string kPinholeInside =
+	"pinhole_camera\n{\n\tlocation 0 0 0.333333333333\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 60\n}\n";
+static const std::string kBigFloorCorners =
+	"\tpta -28 -28 0.02\n\tptb 28 -28 0.02\n\tptc 28 28 0.02\n\tptd -28 28 0.02\n";
+static const std::string kEmitterObject =
+	"standard_object\n{\n\tname emitter\n\tgeometry geo_emit\n\tmaterial mat_emit\n}\n";
+
+//! Replace the first occurrence of `from` by `to`; empty string if absent
+//! (every caller Checks the result, so a fixture drift fails loudly).
+static std::string ReplaceOnce( const std::string& text, const std::string& from, const std::string& to )
+{
+	const std::size_t at = text.find( from );
+	if( text.empty() || at == std::string::npos ) return std::string();
+	std::string out = text;
+	out.replace( at, from.size(), to );
+	return out;
+}
+
+//! Insert chunk text right after the scene header line (so a medium /
+//! painter chunk precedes every use).
+static std::string AfterHeader( const std::string& text, const std::string& chunk )
+{
+	if( text.empty() ) return std::string();
+	std::string out = text;
+	out.insert( out.find( '\n' ) + 1, "\n" + chunk + "\n" );
+	return out;
+}
+
+static std::string PTRasterizerOpts( int spp, const std::string& extra )
+{
+	return ShaderBlock() + "pathtracing_pel_rasterizer\n{\n\tsamples " + std::to_string( spp ) +
+		"\n\toidn_denoise FALSE\n\tpixel_filter box\n" + extra + "}\n";
+}
+
+//////////////////////////////////////////////////////////////////////
+// Row I (DL-292 item 1): PT's BSSRDF / random-walk SSS ENTRY NEE inside a
+// graded medium.  The entry-point NEE used to pass no graded stack while
+// the SSS continuation (and BDPT's entry vertex) priced the medium: the
+// NEE arm carried (n_S/n_exit)^2 instead of (n_S/n_E)^2.  A small emitter
+// hands that arm most of the MIS weight.  PT vs BDPT on the graded box
+// must agree as closely as on a constant-index control.
+//////////////////////////////////////////////////////////////////////
+static std::string SSSSlabScene( const std::string& matChunk, bool graded, const std::string& ras )
+{
+	std::string s = WithSmallEmitter( ReadFile( kSeededScene ) );
+	if( !graded ) s = ReplaceSpan( s, "MEDIUM", UniformBox( 1.4 ) );
+	s = ReplaceSpan( s, "RASTERIZER", ras );
+	// Drop the floor object (keep its material chunk for nothing) and put
+	// an SSS slab z in [0.01, 0.11] under the camera.
+	s = ReplaceOnce( s, "standard_object\n{\n\tname floor\n\tgeometry geo_floor\n\tmaterial mat_floor\n}\n",
+		matChunk +
+		"box_geometry\n{\n\tname geo_slab\n\twidth 1.2\n\theight 1.2\n\tdepth 0.1\n}\n\n"
+		"standard_object\n{\n\tname slab\n\tgeometry geo_slab\n\tmaterial mat_sss\n\tposition 0 0 0.06\n}\n" );
+	return s;
+}
+
+static void RunSSSEntryNEERow()
+{
+	std::cout << std::endl << "-- Row I (DL-292 item 1): SSS entry NEE inside the graded box, PT vs BDPT --" << std::endl;
+	const std::string rw =
+		"randomwalk_sss_material\n{\n\tname mat_sss\n\tior 1.3\n\tabsorption 0.3 0.3 0.3\n\tscattering 20\n"
+		"\tg 0.0\n\troughness 0.0\n\tmax_bounces 64\n}\n\n";
+	const std::string diff =
+		"subsurfacescattering_material\n{\n\tname mat_sss\n\tior 1.3\n\tabsorption 0.3 0.3 0.3\n\tscattering 20\n"
+		"\tg 0.0\n\troughness 0.0\n}\n\n";
+	struct V { const char* name; const std::string* mat; };
+	const V vs[] = { { "random-walk SSS", &rw }, { "diffusion-profile SSS", &diff } };
+	for( const V& v : vs ) {
+		double ratio[2] = { 0, 0 };
+		for( int graded = 1; graded >= 0; graded-- ) {
+			const std::string pt = SSSSlabScene( *v.mat, graded != 0, RasterizerPT( 256 ) );
+			const std::string bd = SSSSlabScene( *v.mat, graded != 0, RasterizerBDPT( 128 ) );
+			Check( !pt.empty() && !bd.empty(), std::string( "I: " ) + v.name + " fixture built" );
+			if( pt.empty() || bd.empty() ) return;
+			const Stat p = RenderStat( pt, "sss_pt" );
+			const Stat b = RenderStat( bd, "sss_bdpt" );
+			ratio[graded] = ( p.ok && b.ok && p.mean > 0 ) ? b.mean / p.mean : -1;
+			std::printf( "    %-22s %-9s PT mean=%.6f sd=%.6f  BDPT mean=%.6f sd=%.6f  BDPT/PT=%.4f\n",
+				v.name, graded ? "graded" : "constant", p.mean, p.sd, b.mean, b.sd, ratio[graded] );
+		}
+		Check( ratio[0] > 0 && std::fabs( ratio[0] - 1.0 ) < 0.03,
+			std::string( "I: " ) + v.name + ": constant-index control BDPT == PT within 3%" );
+		Check( ratio[1] > 0 && std::fabs( ratio[1] - 1.0 ) < 0.03,
+			std::string( "I: " ) + v.name + ": graded BDPT == PT within 3% (entry NEE carries the graded stack)" );
+	}
+
+	// The HWSS twin delegates SSS to the per-wavelength walk; one spectral
+	// check on the random-walk variant keeps that delegation covered.
+	const std::string pt = SSSSlabScene( rw, true, RasterizerPTSpectral( 128, true ) );
+	const std::string bd = SSSSlabScene( rw, true, RasterizerBDPTSpectral( 64, true ) );
+	const Stat p = RenderStat( pt, "sss_pt_hwss" );
+	const Stat b = RenderStat( bd, "sss_bdpt_hwss" );
+	std::printf( "    random-walk SSS graded, spectral hwss: PT mean=%.6f  BDPT mean=%.6f  BDPT/PT=%.4f\n",
+		p.mean, b.mean, ( p.ok && p.mean > 0 ) ? b.mean / p.mean : -1.0 );
+	Check( p.ok && b.ok && p.mean > 0 && std::fabs( b.mean / p.mean - 1.0 ) < 0.04,
+		"I: random-walk SSS graded, spectral hwss: BDPT == PT within 4%" );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Rows J / K / L (DL-292 item 2): the NEE shadow segment's graded factor
+// must follow the segment's BOUNDARY CROSSINGS, not the value of its
+// transmittance.  Fixture: row B's seeded-inside camera looking down at a
+// small floor patch (so no floor-to-floor interreflection) lit by an omni
+// light at (2, 0, 1), n_L = 1.8, from the floor at n_C = n(0.02) = 1.212;
+// the occluder is a vertical sheet / slab at x = 1, met by the shadow ray
+// 26 deg off its normal (below the 41.8 deg at which the straight
+// transparent-shadow walk TIRs out of a 1.5 slab) and by no camera ray.
+//
+//   J  a `transmission thin` weave between floor and light: its delta gap
+//      returns t != 1 with NO boundary crossing.  The with/without-weave
+//      ratio in the graded box must equal the same ratio in a
+//      constant-index control (t, the weave's gap expectation at the hit,
+//      is what the control measures).  Pre-fix the graded ratio read
+//      t * (n_L/n_C)^2 = 2.2 t: the shadow ray's transmittance != 1 turned
+//      the graded factor off.
+//   K  the same with a thin NESTED constant-glass slab and
+//      `transparent_shadows TRUE`: the ray enters and leaves the slab, the
+//      light is still inside the graded medium.  Same ratio test; the
+//      Fresnel transmittance cancels between graded and control.
+//   L  the shadow ray EXITS the graded box into an enclosing constant box H
+//      whose index 1.2 matches the graded box's face: the graded segment up
+//      to the face must be priced.  Reference: ONE box whose index field
+//      max(1.2, tent) is the same function of position -- no interface, so
+//      an ordinary NEE.  Ratio must be the face's Fresnel transmittance
+//      T = 1 - R0(1.2) (the transparent-shadow walk starts its own stack in
+//      air); pre-fix it read T*(1.2/1.8)^2.
+//////////////////////////////////////////////////////////////////////
+static const double kShadowGap = 0.4;
+
+static std::string ShadowFixture( bool graded, double constIor, const std::string& occluder,
+	bool transparentShadows )
+{
+	std::string s = ReadFile( kSeededScene );
+	if( !graded ) s = ReplaceSpan( s, "MEDIUM", UniformBox( constIor ) );
+	s = ReplaceSpan( s, "RASTERIZER", PTRasterizerOpts( 64,
+		transparentShadows ? "\ttransparent_shadows TRUE\n" : "" ) );
+	s = ReplaceOnce( s, kBigFloorCorners,
+		"\tpta -0.2 -0.2 0.02\n\tptb 0.2 -0.2 0.02\n\tptc 0.2 0.2 0.02\n\tptd -0.2 0.2 0.02\n" );
+	s = ReplaceOnce( s, kEmitterObject,
+		"omni_light\n{\n\tname lgt\n\tposition 2.0 0 1.0\n\tcolor 1 1 1\n\tpower 16\n}\n\n" + occluder );
+	return s;
+}
+
+static std::string WeaveOccluder()
+{
+	char buf[1024];
+	std::snprintf( buf, sizeof(buf),
+		"uniformcolor_painter\n{\n\tname pnt_black\n\tcolor 0 0 0\n}\n\n"
+		"weave_material\n{\n\tname mat_sheet\n\tfabric custom\n\ttransmission thin\n\tgap %g\n"
+		"\twarp_color pnt_black\n\tweft_color pnt_black\n}\n\n"
+		"clippedplane_geometry\n{\n\tname geo_sheet\n\tpta 1.0 -2 0.03\n\tptb 1.0 2 0.03\n"
+		"\tptc 1.0 2 1.9\n\tptd 1.0 -2 1.9\n\tdoublesided TRUE\n}\n\n"
+		"standard_object\n{\n\tname obj_sheet\n\tgeometry geo_sheet\n\tmaterial mat_sheet\n}\n\n", kShadowGap );
+	return buf;
+}
+
+static std::string NestedSlabOccluder()
+{
+	return
+		"dielectric_material\n{\n\tname mat_slab\n\tior 1.5\n\ttau 1.0\n\tscattering 1000000\n}\n\n"
+		"box_geometry\n{\n\tname geo_slab\n\twidth 0.02\n\theight 4\n\tdepth 1.8\n}\n\n"
+		"standard_object\n{\n\tname slab\n\tgeometry geo_slab\n\tmaterial mat_slab\n\tposition 1.0 0 0.95\n}\n\n";
+}
+
+static void RunOccluderRatioRow( const char* row, const char* what, const std::string& occluder,
+	bool transparentShadows, const double closedRatio )
+{
+	const double nC = TentN( 0.02 ), nL = TentN( 1.0 );
+	double r[2] = { -1, -1 };
+	for( int graded = 1; graded >= 0; graded-- ) {
+		const std::string without = ShadowFixture( graded != 0, 1.3, "", transparentShadows );
+		const std::string with = ShadowFixture( graded != 0, 1.3, occluder, transparentShadows );
+		Check( !without.empty() && !with.empty(), std::string( row ) + ": fixture built" );
+		if( without.empty() || with.empty() ) return;
+		const Stat a = RenderStat( without, "occ_without" );
+		const Stat b = RenderStat( with, "occ_with" );
+		r[graded] = ( a.ok && b.ok && a.mean > 0 ) ? b.mean / a.mean : -1;
+		std::printf( "    %-9s without mean=%.6f sd=%.6f   with %s mean=%.6f sd=%.6f   with/without=%.5f\n",
+			graded ? "graded" : "constant", a.mean, a.sd, what, b.mean, b.sd, r[graded] );
+	}
+	std::printf( "    pre-DL-292 graded/control prediction x(n_L/n_C)^2 = %.4f; authored gap %.3f\n",
+		( nL / nC ) * ( nL / nC ), closedRatio );
+	// The control's ratio is the weave's gap expectation at the hit -- at
+	// most the authored gap (the threads' projected width grows off the
+	// sheet normal).  A sanity bound, not the gate.
+	Check( r[0] > 0.05 && r[0] <= closedRatio * 1.02,
+		std::string( row ) + ": constant-index control with/without ratio is a transmittance in (0.05, gap]" );
+	Check( r[0] > 0 && r[1] > 0 && std::fabs( r[1] / r[0] - 1.0 ) < 0.02,
+		std::string( row ) + ": graded with/without ratio == constant-control ratio within 2% (factor keyed on crossings, not on T)" );
+}
+
+static void RunShadowSkipRows()
+{
+	std::cout << std::endl << "-- Row J (DL-292 item 2, DL-05 merge): thin-weave gap between an interior floor and a delta light --" << std::endl;
+	RunOccluderRatioRow( "J", "weave", WeaveOccluder(), false, kShadowGap );
+
+	std::cout << std::endl << "-- Row K (DL-292 item 2): nested constant-glass slab, transparent shadows, light still inside the graded medium --" << std::endl;
+	// The two Fresnel crossings of the slab.  The walk starts its OWN stack
+	// in air (RayCaster::WalkShadowSegment), so each crossing reads 1 <-> 1.5
+	// in both builds and in both the graded and the control scene; the
+	// shadow direction from the floor centre to the light is 26.1 deg off
+	// the slab normal.  The closed form is used for the report only -- the
+	// gate is graded ratio == control ratio, which does not depend on it.
+	{
+		const double dx = 2.0, dz = 0.98;
+		const double cosI = dx / std::sqrt( dx * dx + dz * dz );
+		const double n = 1.5;
+		const double sinT = std::sqrt( 1.0 - cosI * cosI ) / n;
+		const double cosT = std::sqrt( 1.0 - sinT * sinT );
+		const double rs = ( cosI - n * cosT ) / ( cosI + n * cosT );
+		const double rp = ( n * cosI - cosT ) / ( n * cosI + cosT );
+		const double T1 = 1.0 - 0.5 * ( rs * rs + rp * rp );
+		std::cout << "    (per-crossing Fresnel T at the ROI centre: " << T1 << ", two crossings " << T1 * T1 << ")" << std::endl;
+		double r[2] = { -1, -1 };
+		for( int graded = 1; graded >= 0; graded-- ) {
+			const Stat a = RenderStat( ShadowFixture( graded != 0, 1.3, "", true ), "slab_without" );
+			const Stat b = RenderStat( ShadowFixture( graded != 0, 1.3, NestedSlabOccluder(), true ), "slab_with" );
+			r[graded] = ( a.ok && b.ok && a.mean > 0 ) ? b.mean / a.mean : -1;
+			std::printf( "    %-9s without mean=%.6f   with slab mean=%.6f   with/without=%.5f\n",
+				graded ? "graded" : "constant", a.mean, b.mean, r[graded] );
+		}
+		const double nC = TentN( 0.02 ), nL = TentN( 1.0 );
+		std::printf( "    pre-DL-292 graded/control prediction x%.4f\n", ( nL / nC ) * ( nL / nC ) );
+		Check( r[0] > 0 && std::fabs( r[0] / ( T1 * T1 ) - 1.0 ) < 0.03,
+			"K: constant-index control with/without ratio == two-crossing Fresnel T^2 within 3%" );
+		Check( r[0] > 0 && r[1] > 0 && std::fabs( r[1] / r[0] - 1.0 ) < 0.02,
+			"K: graded ratio == constant-control ratio within 2% (nested through-trip keeps the graded factor)" );
+	}
+
+	std::cout << std::endl << "-- Row L (DL-292 item 2): shadow ray EXITS the graded box into an index-matched enclosure --" << std::endl;
+	{
+		// Camera inside the graded box at z = 4/3 (n = 1.6) looking down at a
+		// floor patch at the tent's peak z = 1 (n_C = 1.8); omni light at
+		// z = 3, above the graded box's top face (n = 1.2).
+		const std::string h =
+			"dielectric_material\n{\n\tname mat_h\n\tior 1.2\n\ttau 1.0\n\tscattering 1000000\n}\n\n"
+			"box_geometry\n{\n\tname geo_h\n\twidth 64\n\theight 64\n\tdepth 4.5\n}\n\n"
+			"standard_object\n{\n\tname h\n\tgeometry geo_h\n\tmaterial mat_h\n\tposition 0 0 1.75\n}\n\n";
+		const std::string merged =
+			"scalar_painter\n{\n\tname ior_merged\n\texpression max(1.2,1.8-0.6*abs(P.z-1.0))\n}\n\n"
+			"dielectric_material\n{\n\tname mat_merged\n\tior ior_merged\n\ttau 1.0\n\tscattering 1000000\n}\n\n"
+			"box_geometry\n{\n\tname geo_merged\n\twidth 64\n\theight 64\n\tdepth 4.5\n}\n\n"
+			"standard_object\n{\n\tname merged\n\tgeometry geo_merged\n\tmaterial mat_merged\n\tposition 0 0 1.75\n}\n\n";
+		auto build = [&]( bool split ) {
+			std::string s = ReadFile( kSeededScene );
+			if( !split ) s = ReplaceSpan( s, "MEDIUM", merged );
+			s = ReplaceSpan( s, "RASTERIZER", PTRasterizerOpts( 64, "\ttransparent_shadows TRUE\n" ) );
+			s = ReplaceOnce( s, kOrthoInside,
+				"orthographic_camera\n{\n\tlocation 0 0 1.333333333333\n\tlookat 0 0 0\n\tup 0 1 0\n\tviewport_scale 0.2 0.2\n}\n" );
+			s = ReplaceOnce( s, kBigFloorCorners,
+				"\tpta -0.2 -0.2 1.0\n\tptb 0.2 -0.2 1.0\n\tptc 0.2 0.2 1.0\n\tptd -0.2 0.2 1.0\n" );
+			s = ReplaceOnce( s, kEmitterObject,
+				"omni_light\n{\n\tname lgt\n\tposition 0 0 3.0\n\tcolor 1 1 1\n\tpower 4\n}\n\n" + ( split ? h : std::string() ) );
+			return s;
+		};
+		const std::string split = build( true ), one = build( false );
+		Check( !split.empty() && !one.empty(), "L: fixtures built" );
+		if( split.empty() || one.empty() ) return;
+		const Stat a = RenderStat( one, "exit_ref" );
+		const Stat b = RenderStat( split, "exit_split" );
+		const double T = 1.0 - R0( 1.2 );		// normal incidence within 3 deg over the ROI
+		const double r = ( a.ok && b.ok && a.mean > 0 ) ? b.mean / a.mean : -1;
+		std::printf( "    one box max(1.2,tent) mean=%.6f sd=%.6f   graded box inside 1.2 box mean=%.6f sd=%.6f\n"
+			"    split/one=%.5f  closed form T=%.5f  pre-DL-292 prediction T*(1.2/1.8)^2=%.5f\n",
+			a.mean, a.sd, b.mean, b.sd, r, T, T * ( 1.2 / 1.8 ) * ( 1.2 / 1.8 ) );
+		Check( r > 0 && std::fabs( r / T - 1.0 ) < 0.02,
+			"L: shadow ray leaving the graded box prices the graded segment up to the face (split == one-box reference x T)" );
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// Row M (DL-292 item 3): RayCaster's OWN volume walk.  `pixelpel_rasterizer`
+// with a `DefaultPathTracing` shader traces its camera ray through
+// RayCaster::CastRay, whose medium walk does NEE at the scatter vertex and
+// continues with CastRay; the continuation's first surface hit Advances,
+// the NEE used to pass no stack.  The same scene under
+// `pathtracing_pel_rasterizer` (PT's own volume walk, row H) is the
+// reference; a constant-index control shows the two rasterizers agree
+// when no graded factor is involved.
+//////////////////////////////////////////////////////////////////////
+static std::string FogScene( bool graded, const std::string& ras )
+{
+	std::string s = WithSmallEmitter( ReadFile( kSeededScene ) );
+	s = ReplaceOnce( s, kOrthoInside, kPinholeInside );
+	if( graded ) {
+		s = ReplaceOnce( s, "\tmaterial mat_graded\n\tposition 0 0 1\n}\n",
+			"\tmaterial mat_graded\n\tposition 0 0 1\n\tinterior_medium fog\n}\n" );
+	} else {
+		std::string u = UniformBox( 1.4 );
+		u = ReplaceOnce( u, "\tmaterial mat_u\n\tposition 0 0 1\n}\n",
+			"\tmaterial mat_u\n\tposition 0 0 1\n\tinterior_medium fog\n}\n" );
+		s = ReplaceSpan( s, "MEDIUM", u );
+	}
+	s = ReplaceSpan( s, "RASTERIZER", ras );
+	return AfterHeader( s,
+		"homogeneous_medium\n{\n\tname fog\n\tabsorption 0.05 0.05 0.05\n\tscattering 0.6 0.6 0.6\n\tphase isotropic\n}\n" );
+}
+
+static std::string RasterizerPixelPel( int spp, const std::string& shader )
+{
+	return shader + "pixelpel_rasterizer\n{\n\tsamples " + std::to_string( spp ) +
+		"\n\tmax_recursion 10\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n";
+}
+
+static void RunRayCasterVolumeRow()
+{
+	std::cout << std::endl << "-- Row M (DL-292 item 3): RayCaster's own volume walk (pixelpel + pt shader op, fog in the graded box) --" << std::endl;
+	double r[2] = { -1, -1 };
+	for( int graded = 1; graded >= 0; graded-- ) {
+		const std::string pp = FogScene( graded != 0, RasterizerPixelPel( 256, ShaderBlock() ) );
+		const std::string pt = FogScene( graded != 0, RasterizerPT( 256 ) );
+		Check( !pp.empty() && !pt.empty(), "M: fixture built" );
+		if( pp.empty() || pt.empty() ) return;
+		const Stat a = RenderStat( pt, "fog_pt" );
+		const Stat b = RenderStat( pp, "fog_pixelpel" );
+		r[graded] = ( a.ok && b.ok && a.mean > 0 ) ? b.mean / a.mean : -1;
+		std::printf( "    %-9s pathtracing_pel mean=%.6f   pixelpel+pt mean=%.6f   pixelpel/PT=%.4f\n",
+			graded ? "graded" : "constant", a.mean, b.mean, r[graded] );
+	}
+	Check( r[0] > 0 && std::fabs( r[0] - 1.0 ) < 0.03, "M: constant-index control pixelpel+pt == pathtracing_pel within 3%" );
+	Check( r[1] > 0 && std::fabs( r[1] - 1.0 ) < 0.03,
+		"M: graded pixelpel+pt == pathtracing_pel within 3% (RayCaster volume NEE carries the walk's stack)" );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Row N (DL-292 item 4): the legacy shader-op chain.  Row B's scene
+// (camera inside, big emitter; closed form rho*L_e*cov*(n_S/n_E)^2 --
+// the value the PT nested-box reference of row B converges to) rendered
+// with pixelpel_rasterizer and the chain Emission + DirectLighting +
+// DistributionTracing.  Before DL-292 NO op in that chain paid the graded
+// factor (RayCaster::CastRay's hit did not Advance, DirectLighting's NEE
+// passed no stack), so the whole render read rho*L_e*cov = 1.65x.
+//////////////////////////////////////////////////////////////////////
+static void RunLegacyChainRow( const double closedB, const double preB )
+{
+	std::cout << std::endl << "-- Row N (DL-292 item 4): legacy chain Emission + DirectLighting + DistributionTracing, camera inside --" << std::endl;
+	const std::string shader =
+		"distributiontracing_shaderop\n{\n\tname dt\n\tsamples 1\n}\n\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultEmission\n\tshaderop DefaultDirectLighting\n\tshaderop dt\n}\n\n";
+	const std::string base = ReadFile( kSeededScene );
+	const std::string text = ReplaceSpan( base, "RASTERIZER", RasterizerPixelPel( 256, shader ) );
+	Check( !text.empty(), "N: fixture built" );
+	if( text.empty() ) return;
+	const Stat s = RenderStat( text, "legacy_dt" );
+	Report( "pixelpel legacy chain graded", s, closedB );
+	std::printf( "    pre-DL-292 prediction %.6f (x%.4f)\n", preB, preB / closedB );
+	Check( s.ok && std::fabs( s.mean / closedB - 1.0 ) < 0.03,
+		"N: legacy Emission+DirectLighting+dt chain graded == closed form within 3%" );
+
+	// The same chain on the uniform-ior control of row F, camera inside:
+	// its own closed form rho*L_e*cov (camera and emitter in the same
+	// constant medium).
+	const std::string ctrl = ReplaceSpan( text, "MEDIUM", UniformBox( 1.4 ) );
+	const Stat c = RenderStat( ctrl, "legacy_dt_ctrl" );
+	const double closedCtrl = kRho * kLe * Coverage();
+	Report( "pixelpel legacy chain uniform 1.4", c, closedCtrl );
+	Check( c.ok && std::fabs( c.mean / closedCtrl - 1.0 ) < 0.03,
+		"N: legacy chain uniform-1.4 control == rho*L_e*cov within 3%" );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Row O (DL-292 item 6): `ior` forms.  A composite of a world-position
+// field (`scalar_painter { base ... scale ... }`, `multiply`, `add`) IS a
+// world-position field and must be priced like the expression itself;
+// before DL-292 the composites did not forward IsWorldPositionField and
+// every graded render read the pre-DL-09 2.25x.  A form that READS the
+// world position but cannot be a single-scalar field (a per-channel vec3
+// expression of P, or P mixed with u/v) is refused at load with a
+// diagnostic instead of silently rendering the pre-DL-09 accounting.
+//////////////////////////////////////////////////////////////////////
+static bool LoadsOk( const std::string& text )
+{
+	const std::string path = WriteTemp( text, "load" );
+	if( path.empty() ) return false;
+	IJobPriv* pJob = nullptr;
+	bool ok = false;
+	if( RISE_CreateJobPriv( &pJob ) && pJob ) {
+		ok = pJob->LoadAsciiSceneViaCst( path.c_str() );
+	}
+	safe_release( pJob );
+	std::remove( path.c_str() );
+	return ok;
+}
+
+static void RunIorFormRows( const double closedA )
+{
+	std::cout << std::endl << "-- Row O (DL-292 item 6): composite ior painters and refused forms --" << std::endl;
+	const std::string base = ReplaceSpan( ReadFile( "scenes/Tests/Materials/graded_index_interior_gather.RISEscene" ),
+		"RASTERIZER", RasterizerPT( 64 ) );
+	const std::string tentExpr = "scalar_painter\n{\n\tname ior_tent\n\texpression 1.8-0.6*abs(P.z-1.0)\n}\n";
+	struct F { const char* name; std::string painters; };
+	const F forms[] = {
+		{ "scaled (base half-tent scale 2)",
+			"scalar_painter\n{\n\tname half_tent\n\texpression 0.9-0.3*abs(P.z-1.0)\n}\n\n"
+			"scalar_painter\n{\n\tname ior_tent\n\tbase half_tent\n\tscale 2\n}\n" },
+		{ "add (1.2 + ramp)",
+			"scalar_painter\n{\n\tname c12\n\tvalue 1.2\n}\n\n"
+			"scalar_painter\n{\n\tname ramp\n\texpression 0.6-0.6*abs(P.z-1.0)\n}\n\n"
+			"scalar_painter\n{\n\tname ior_tent\n\tadd c12 ramp\n}\n" },
+		{ "multiply (2 x half-tent)",
+			"scalar_painter\n{\n\tname two\n\tvalue 2.0\n}\n\n"
+			"scalar_painter\n{\n\tname half_tent\n\texpression 0.9-0.3*abs(P.z-1.0)\n}\n\n"
+			"scalar_painter\n{\n\tname ior_tent\n\tmultiply two half_tent\n}\n" },
+	};
+	for( const F& f : forms ) {
+		const std::string text = ReplaceOnce( base, tentExpr, f.painters );
+		Check( !text.empty(), std::string( "O: " ) + f.name + " fixture built" );
+		if( text.empty() ) continue;
+		const Stat s = RenderStat( text, "ior_form" );
+		char lbl[96];
+		std::snprintf( lbl, sizeof(lbl), "PT graded, ior %s", f.name );
+		Report( lbl, s, closedA );
+		Check( s.ok && std::fabs( s.mean / closedA - 1.0 ) < 0.03,
+			std::string( "O: composite ior " ) + f.name + " is a world-position field (== closed form within 3%)" );
+	}
+
+	struct R { const char* name; std::string painters; bool expectLoad; };
+	const R refused[] = {
+		{ "vec3 expression of P",
+			"scalar_painter\n{\n\tname ior_tent\n\texpression vec3(1.8-0.6*abs(P.z-1.0),1.81-0.6*abs(P.z-1.0),1.82-0.6*abs(P.z-1.0))\n}\n", false },
+		{ "P mixed with u",
+			"scalar_painter\n{\n\tname ior_tent\n\texpression 1.8-0.6*abs(P.z-1.0)+0.01*u\n}\n", false },
+		{ "composite of P and u",
+			"scalar_painter\n{\n\tname p_part\n\texpression 1.8-0.6*abs(P.z-1.0)\n}\n\n"
+			"scalar_painter\n{\n\tname u_part\n\texpression 0.01*u\n}\n\n"
+			"scalar_painter\n{\n\tname ior_tent\n\tadd p_part u_part\n}\n", false },
+		{ "u-driven (no P): surface index, loads", "scalar_painter\n{\n\tname ior_tent\n\texpression 1.5+0.1*u\n}\n", true },
+		{ "constant expression: loads", "scalar_painter\n{\n\tname ior_tent\n\texpression 1.5\n}\n", true },
+	};
+	for( const R& r : refused ) {
+		const std::string text = ReplaceOnce( base, tentExpr, r.painters );
+		Check( !text.empty(), std::string( "O: " ) + r.name + " fixture built" );
+		if( text.empty() ) continue;
+		const bool loaded = LoadsOk( text );
+		std::printf( "    ior %-40s loads=%d (expected %d)\n", r.name, loaded ? 1 : 0, r.expectLoad ? 1 : 0 );
+		Check( loaded == r.expectLoad, std::string( "O: ior " ) + r.name + ( r.expectLoad ? " loads" : " is refused at load" ) );
+	}
+}
+
+
+//////////////////////////////////////////////////////////////////////
+// Row P (DL-292 item 5): the photon tracers.  A global photon map
+// gathered directly at the floor of a SHRUNK row-B scene (box, floor and
+// emitter 8 / 8 / 6 units wide, so a few million photons resolve the
+// camera's footprint), camera inside, rendered by `pixelpel_rasterizer`
+// with the global-map gather op.  Reference: the same scene under
+// `pathtracing_pel_rasterizer` (both estimate the straight-segment model;
+// a finite emitter is not bending-free, so the closed form is not the
+// reference here).  A constant-index control fixes the photon estimator's
+// own density-estimation bias; the gate is graded ratio == control ratio.
+// Before DL-292 the photon walk paid no importance-order factor, so the
+// gather priced the floor at (1/n_E)^2 short of the eye walk's pairing.
+//////////////////////////////////////////////////////////////////////
+static std::string ShrunkSeededScene( bool graded, const std::string& ras )
+{
+	std::string s = ReadFile( kSeededScene );
+	if( graded ) {
+		s = ReplaceOnce( s, "\twidth 60\n\theight 60\n\tdepth 2\n", "\twidth 8\n\theight 8\n\tdepth 2\n" );
+	} else {
+		std::string u = UniformBox( 1.4 );
+		u = ReplaceOnce( u, "\twidth 60\n\theight 60\n\tdepth 2\n", "\twidth 8\n\theight 8\n\tdepth 2\n" );
+		s = ReplaceSpan( s, "MEDIUM", u );
+	}
+	s = ReplaceOnce( s, kBigFloorCorners,
+		"\tpta -3.9 -3.9 0.02\n\tptb 3.9 -3.9 0.02\n\tptc 3.9 3.9 0.02\n\tptd -3.9 3.9 0.02\n" );
+	s = ReplaceOnce( s, "\tpta -28 -28 1.0\n\tptb -28 28 1.0\n\tptc 28 28 1.0\n\tptd 28 -28 1.0\n",
+		"\tpta -3 -3 1.0\n\tptb -3 3 1.0\n\tptc 3 3 1.0\n\tptd 3 -3 1.0\n" );
+	return ReplaceSpan( s, "RASTERIZER", ras );
+}
+
+static void RunPhotonMapRow()
+{
+	std::cout << std::endl << "-- Row P (DL-292 item 5): global photon map gathered at an interior floor, camera inside --" << std::endl;
+	const std::string photonRas =
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultGlobalPelPhotonMap\n}\n\n"
+		"pixelpel_rasterizer\n{\n\tsamples 16\n\tmax_recursion 10\n\toidn_denoise FALSE\n\tpixel_filter box\n}\n\n"
+		"global_pel_photonmap\n{\n\tnum 3000000\n\tmax_recursion 10\n\tmin_importance 0.0001\n}\n\n"
+		"global_pel_gather\n{\n\tmax_photons 400\n\tradius 0.3\n}\n";
+	double r[2] = { -1, -1 };
+	for( int graded = 1; graded >= 0; graded-- ) {
+		const std::string pt = ShrunkSeededScene( graded != 0, RasterizerPT( 256 ) );
+		const std::string ph = ShrunkSeededScene( graded != 0, photonRas );
+		Check( !pt.empty() && !ph.empty(), "P: fixture built" );
+		if( pt.empty() || ph.empty() ) return;
+		const Stat a = RenderStat( pt, "photon_ref_pt" );
+		const Stat b = RenderStat( ph, "photon_gather" );
+		r[graded] = ( a.ok && b.ok && a.mean > 0 ) ? b.mean / a.mean : -1;
+		std::printf( "    %-9s pathtracing_pel mean=%.6f sd=%.6f   global photon gather mean=%.6f sd=%.6f   photon/PT=%.4f\n",
+			graded ? "graded" : "constant", a.mean, a.sd, b.mean, b.sd, r[graded] );
+	}
+	const double nC = TentN( 0.02 ), nE = TentN( 1.0 ), nS = TentN( 1.0 / 3.0 );
+	// Direct-light predictions (the gather is dominated by the emitter's
+	// first-hit photons): master, where neither the legacy eye walk nor the
+	// photons paid a factor, x(n_E/n_S)^2; the eye walk fixed (item 4) but
+	// the photons not, x(n_E/n_C)^2.
+	std::printf( "    graded/control predictions: master x(n_E/n_S)^2 = %.4f; eye walk fixed, photons not x(n_E/n_C)^2 = %.4f\n",
+		( nE / nS ) * ( nE / nS ), ( nE / nC ) * ( nE / nC ) );
+	// Tolerances: the photon gather's own run-to-run spread at 3M photons
+	// is ~2-3 % (seed bases 1000/2000/3000: control photon/PT 1.0006 /
+	// 1.0335 / 0.9778), so the gate sits at 8 % -- still 15x inside the
+	// 2.24 the unfixed photon walk reads.
+	Check( r[0] > 0 && std::fabs( r[0] - 1.0 ) < 0.08, "P: constant-index control photon gather == PT within 8%" );
+	Check( r[0] > 0 && r[1] > 0 && std::fabs( r[1] / r[0] - 1.0 ) < 0.08,
+		"P: graded photon/PT ratio == constant-control photon/PT ratio within 8% (photon walk Advances in importance order)" );
+}
+
+
+//////////////////////////////////////////////////////////////////////
+// Row Q (DL-292 item 5, OPT-IN: GRADED_ROWS must name Q explicitly;
+// prints, does not gate).  SMS inside a graded medium: a small glass
+// sphere nested in the graded box focuses a small area emitter onto the
+// floor under the camera.  PT with SMS vs PT without (the latter reaches
+// the caustic by BSDF sampling through the sphere and is DL-09-priced),
+// graded vs a constant-index control.  A ratio-of-ratios != 1 is the
+// graded factor SMS's chain evaluation misses.
+//////////////////////////////////////////////////////////////////////
+static void RunSMSMeasurementRow()
+{
+	std::cout << std::endl << "-- Row Q (DL-292 item 5, measurement only): PT+SMS vs PT through a glass sphere nested in the graded box --" << std::endl;
+	// mode 1 = graded box, 0 = constant-index box, 2 = no box (air).
+	auto build = [&]( int mode, bool sms ) {
+		std::string s = ReadFile( kSeededScene );
+		if( mode == 0 ) s = ReplaceSpan( s, "MEDIUM", UniformBox( 1.4 ) );
+		if( mode == 2 ) s = ReplaceSpan( s, "MEDIUM", "" );
+		s = ReplaceOnce( s, "\tpta -28 -28 1.0\n\tptb -28 28 1.0\n\tptc 28 28 1.0\n\tptd 28 -28 1.0\n",
+			"\tpta 0.5 -0.1 1.0\n\tptb 0.5 0.1 1.0\n\tptc 0.7 0.1 1.0\n\tptd 0.7 -0.1 1.0\n" );
+		s = ReplaceOnce( s, "\tscale 1.0\n", "\tscale 40.0\n" );
+		s = ReplaceOnce( s, kEmitterObject, kEmitterObject +
+			"\ndielectric_material\n{\n\tname mat_ball\n\tior 1.5\n\ttau 1.0\n\tscattering 1000000\n}\n\n"
+			"sphere_geometry\n{\n\tname geo_ball\n\tradius 0.15\n}\n\n"
+			"standard_object\n{\n\tname ball\n\tgeometry geo_ball\n\tmaterial mat_ball\n\tposition 0.3 0 0.55\n}\n" );
+		return ReplaceSpan( s, "RASTERIZER", PTRasterizerOpts( 1024, sms ?
+			"\tsms_enabled TRUE\n\tsms_max_iterations 30\n\tsms_threshold 1e-4\n\tsms_max_chain_depth 10\n\tsms_biased TRUE\n" : "" ) );
+	};
+	double r[3] = { -1, -1, -1 };
+	const char* names[3] = { "constant", "graded", "air" };
+	for( int mode = 2; mode >= 0; mode-- ) {
+		const Stat a = RenderStat( build( mode, false ), "sms_off" );
+		const Stat b = RenderStat( build( mode, true ), "sms_on" );
+		// A third estimator: VCM (merges reach the caustic without SMS).
+		const Stat v = RenderStat( ReplaceSpan( build( mode, false ), "RASTERIZER", RasterizerVCM( 512 ) ), "sms_vcm" );
+		const Stat d = RenderStat( ReplaceSpan( build( mode, false ), "RASTERIZER", RasterizerBDPT( 512 ) ), "sms_bdpt" );
+		r[mode] = ( a.ok && b.ok && a.mean > 0 ) ? b.mean / a.mean : -1;
+		std::printf( "    %-9s PT %.6f  PT+SMS %.6f  BDPT %.6f  VCM %.6f   SMS/PT=%.4f  BDPT/PT=%.4f  VCM/PT=%.4f\n",
+			names[mode], a.mean, b.mean, d.mean, v.mean, r[mode],
+			( a.ok && a.mean > 0 ) ? d.mean / a.mean : -1.0, ( a.ok && a.mean > 0 ) ? v.mean / a.mean : -1.0 );
+	}
+	std::printf( "    graded/control SMS/PT ratio = %.4f (1 = SMS prices the graded medium like PT)\n",
+		( r[0] > 0 && r[1] > 0 ) ? r[1] / r[0] : -1.0 );
+}
+
+
+//////////////////////////////////////////////////////////////////////
+// Row R (DL-292, OPT-IN: GRADED_ROWS must name R explicitly; prints, does
+// not gate).  The two L-sized residuals the row leaves open, measured:
+//   R1  a ROUGH graded dielectric (`scattering 3`, a non-delta
+//       transmission lobe) with the camera outside: a BDPT/VCM connection
+//       from an eye vertex ON the graded object's own surface (whose walk
+//       arrived through air, so it recorded no graded medium) to a light
+//       vertex inside prices no graded factor.  PT vs BDPT vs VCM, graded
+//       vs a constant-index control with the same roughness.
+//   R2  BDPT's t==1 splat prices the camera end with the camera VERTEX's
+//       recorded index, not n at the separately sampled thin-lens point: a
+//       wide-aperture thin-lens camera inside a medium whose index varies
+//       ACROSS the lens (a lateral gradient), BDPT vs PT, graded vs the
+//       same camera in a constant-index control.
+//////////////////////////////////////////////////////////////////////
+static void RunOpenResidualMeasurements()
+{
+	std::cout << std::endl << "-- Row R1 (measurement only): rough graded dielectric, camera outside --" << std::endl;
+	for( int graded = 1; graded >= 0; graded-- ) {
+		// A small emitter OFF the camera's axis (x in [0.3, 0.5]) so the
+		// camera sees it only through the rough top face's broad lobe --
+		// the strategies that connect the face vertex to the emitter carry
+		// real weight -- and never sees its unlit back.
+		std::string s = ReadFile( "scenes/Tests/Materials/graded_index_interior_gather.RISEscene" );
+		s = ReplaceOnce( s, "\tpta -28 -28 1.0\n\tptb -28 28 1.0\n\tptc 28 28 1.0\n\tptd 28 -28 1.0\n",
+			"\tpta 0.3 -0.1 1.0\n\tptb 0.3 0.1 1.0\n\tptc 0.5 0.1 1.0\n\tptd 0.5 -0.1 1.0\n" );
+		if( !graded ) s = ReplaceSpan( s, "MEDIUM", UniformBox( 1.4 ) );
+		s = graded ? ReplaceOnce( s, "\tname mat_graded\n\tior ior_tent\n\ttau 1.0\n\tscattering 1000000\n",
+				"\tname mat_graded\n\tior ior_tent\n\ttau 1.0\n\tscattering 3\n" )
+			: ReplaceOnce( s, "\tname mat_u\n\tior 1.4\n\ttau 1.0\n\tscattering 1000000\n",
+				"\tname mat_u\n\tior 1.4\n\ttau 1.0\n\tscattering 3\n" );
+		const Stat p = RenderStat( ReplaceSpan( s, "RASTERIZER", RasterizerPT( 512 ) ), "r1_pt" );
+		const Stat b = RenderStat( ReplaceSpan( s, "RASTERIZER", RasterizerBDPT( 256 ) ), "r1_bdpt" );
+		const Stat v = RenderStat( ReplaceSpan( s, "RASTERIZER", RasterizerVCM( 256 ) ), "r1_vcm" );
+		std::printf( "    %-9s PT %.6f  BDPT %.6f  VCM %.6f   BDPT/PT=%.4f  VCM/PT=%.4f\n",
+			graded ? "graded" : "constant", p.mean, b.mean, v.mean,
+			p.mean > 0 ? b.mean / p.mean : -1.0, p.mean > 0 ? v.mean / p.mean : -1.0 );
+	}
+
+	std::cout << std::endl << "-- Row R2 (measurement only): wide thin-lens camera inside, index varying across the lens --" << std::endl;
+	for( int graded = 1; graded >= 0; graded-- ) {
+		std::string s = WithSmallEmitter( ReadFile( kSeededScene ) );
+		s = ReplaceOnce( s, kOrthoInside,
+			"thinlens_camera\n{\n\tlocation 0 0 0.333333333333\n\tlookat 0 0 0\n\tup 0 1 0\n"
+			"\tsensor_size 36\n\tfocal_length 150\n\tfstop 0.5\n\tfocus_distance 0.313\n}\n" );
+		if( graded ) {
+			// Lateral gradient, clamped so the 60-wide box never reads a
+			// non-positive index: 0.5 per unit across the lens aperture.
+			s = ReplaceOnce( s, "\texpression 1.8-0.6*abs(P.z-1.0)\n",
+				"\texpression 1.8-0.6*abs(P.z-1.0)+0.5*clamp(P.x,-0.5,0.5)\n" );
+		} else {
+			s = ReplaceSpan( s, "MEDIUM", UniformBox( 1.4 ) );
+		}
+		const Stat p = RenderStat( ReplaceSpan( s, "RASTERIZER", RasterizerPT( 512 ) ), "r2_pt" );
+		const Stat b = RenderStat( ReplaceSpan( s, "RASTERIZER", RasterizerBDPT( 256 ) ), "r2_bdpt" );
+		std::printf( "    %-9s thin lens: PT %.6f  BDPT %.6f   BDPT/PT=%.4f\n",
+			graded ? "graded" : "constant", p.mean, b.mean, p.mean > 0 ? b.mean / p.mean : -1.0 );
+	}
+}
+
 int main( int argc, char** argv )
 {
 	if( argc > 1 && argv[1] ) {
@@ -717,14 +1350,30 @@ int main( int argc, char** argv )
 	const double closedB = kRho * kLe * cov * ( nS / nE ) * ( nS / nE );
 	const double preB    = kRho * kLe * cov;
 
-	RunSeedRow();
-	RunGatherRows( "A", "scenes/Tests/Materials/graded_index_interior_gather.RISEscene", closedA, preA );
-	RunGatherRows( "B", "scenes/Tests/Materials/graded_index_seeded_inside.RISEscene", closedB, preB );
-	RunSmallEmitterOutsideRow();
-	RunPinholeConsistencyRow();
-	RunSpectralRow( closedA );
-	RunMediumRow();
-	RunUniformControlRow();
+	// GRADED_ROWS (optional env var): run only the rows whose letters it
+	// contains, e.g. GRADED_ROWS=JKL.  Unset runs every row (the CI run).
+	const char* rowsEnv = std::getenv( "GRADED_ROWS" );
+	auto on = [rowsEnv]( char c ) { return !rowsEnv || std::strchr( rowsEnv, c ) != nullptr; };
+
+	if( on( 'E' ) ) RunSeedRow();
+	if( on( 'A' ) ) RunGatherRows( "A", "scenes/Tests/Materials/graded_index_interior_gather.RISEscene", closedA, preA );
+	if( on( 'B' ) ) RunGatherRows( "B", "scenes/Tests/Materials/graded_index_seeded_inside.RISEscene", closedB, preB );
+	if( on( 'C' ) ) RunSmallEmitterOutsideRow();
+	if( on( 'D' ) ) RunPinholeConsistencyRow();
+	if( on( 'G' ) ) RunSpectralRow( closedA );
+	if( on( 'H' ) ) RunMediumRow();
+	if( on( 'F' ) ) RunUniformControlRow();
+
+	// DL-292 (debt-dl292 slice): coverage rows.
+	if( on( 'I' ) ) RunSSSEntryNEERow();
+	if( on( 'J' ) || on( 'K' ) || on( 'L' ) ) RunShadowSkipRows();
+	if( on( 'M' ) ) RunRayCasterVolumeRow();
+	if( on( 'N' ) ) RunLegacyChainRow( closedB, preB );
+	if( on( 'O' ) ) RunIorFormRows( closedA );
+	if( on( 'P' ) ) RunPhotonMapRow();
+	// Opt-in measurement row (named explicitly, never in the default run).
+	if( rowsEnv && std::strchr( rowsEnv, 'Q' ) ) RunSMSMeasurementRow();
+	if( rowsEnv && std::strchr( rowsEnv, 'R' ) ) RunOpenResidualMeasurements();
 
 	std::cout << std::endl << "Passed: " << passCount << std::endl << "Failed: " << failCount << std::endl;
 	return failCount == 0 ? 0 : 1;

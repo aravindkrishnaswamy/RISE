@@ -255,7 +255,61 @@ namespace RISE
 		//! keeps the pre-DL-09 accounting (see the derivation doc, §4 and
 		//! §8, for why that is consistent on every completed path).
 		virtual bool IsWorldPositionField() const { return false; }
+
+		//! DL-292: is this painter's value independent of the hit record
+		//! altogether -- a constant, or a function of WAVELENGTH only (the
+		//! spectral curves), so it has the same value at every point?  Used
+		//! by the composite painters to decide that `base * scale`,
+		//! `a + b`, `a * b` of a world-position field and such a painter is
+		//! itself a world-position field.  Default false (conservative:
+		//! "may depend on the hit").
+		virtual bool IsPositionIndependent() const { return false; }
+
+		//! DL-292: does this painter read the WORLD POSITION `P` of the hit
+		//! at all (whether or not it also reads anything else)?  Used to
+		//! REFUSE a refractor `ior` that asks for a graded medium the
+		//! engine cannot price: one that reads `P` but is not a
+		//! single-scalar world-position field (per-channel, or also
+		//! reading u / v / N / a signal), since `n` is then undefined at an
+		//! interior point.  Default false (a painter that does not say is
+		//! treated as a surface quantity).
+		virtual bool ReadsWorldPosition() const { return false; }
 	};
+
+	//! DL-292: the world-position-field rule for a COMPOSITE of up to two
+	//! operands (a null operand is absent).  A composite is a
+	//! world-position field when its result is a single scalar, every
+	//! present operand is either a world-position field or
+	//! position-independent, and at least one IS a world-position field
+	//! (so the composite really varies with position, and a record
+	//! carrying only `ptIntersection` evaluates every operand).
+	inline bool CompositeIsWorldPositionField(
+		const IScalarPainter* pA, const IScalarPainter* pB, const bool bPerChannel )
+	{
+		if( bPerChannel || ( !pA && !pB ) ) {
+			return false;
+		}
+		const bool aOk = !pA || pA->IsWorldPositionField() || pA->IsPositionIndependent();
+		const bool bOk = !pB || pB->IsWorldPositionField() || pB->IsPositionIndependent();
+		const bool anyField = ( pA && pA->IsWorldPositionField() ) || ( pB && pB->IsWorldPositionField() );
+		return aOk && bOk && anyField;
+	}
+
+	//! DL-292: a composite is position-independent when every present
+	//! operand is.
+	inline bool CompositeIsPositionIndependent( const IScalarPainter* pA, const IScalarPainter* pB )
+	{
+		if( !pA && !pB ) {
+			return true;
+		}
+		return ( !pA || pA->IsPositionIndependent() ) && ( !pB || pB->IsPositionIndependent() );
+	}
+
+	//! DL-292: a composite reads the world position when any operand does.
+	inline bool CompositeReadsWorldPosition( const IScalarPainter* pA, const IScalarPainter* pB )
+	{
+		return ( pA && pA->ReadsWorldPosition() ) || ( pB && pB->ReadsWorldPosition() );
+	}
 }
 
 #endif

@@ -68,6 +68,20 @@ namespace RISE
 				return pChild ? pChild->HasPerChannelVariation() : false;
 			}
 
+			//! DL-292: `base * scale` of a world-position field is one (and
+			//! varies with position unless the scale is 0).  Before DL-292
+			//! this composite did not forward the question, so a graded
+			//! `ior` written as a scaled field kept the pre-DL-09 accounting.
+			bool IsWorldPositionField() const override
+			{
+				return scale != Scalar( 0 ) && CompositeIsWorldPositionField( pChild, 0, HasPerChannelVariation() );
+			}
+			bool IsPositionIndependent() const override
+			{
+				return scale == Scalar( 0 ) || CompositeIsPositionIndependent( pChild, 0 );
+			}
+			bool ReadsWorldPosition() const override { return CompositeReadsWorldPosition( pChild, 0 ); }
+
 			//! DL-09/precision-slice P2-1: forward the single-scalar-slot
 			//! view through the composite instead of losing it. Before
 			//! this, `scalar_painter { base <spectral curve> scale 1 }`

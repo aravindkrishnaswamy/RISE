@@ -55,6 +55,9 @@ namespace RISE
 			}
 
 			bool HasPerChannelVariation() const override { return false; }
+
+			//! DL-292: a constant.
+			bool IsPositionIndependent() const override { return true; }
 		};
 	}
 }

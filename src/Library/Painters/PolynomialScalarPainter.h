@@ -147,6 +147,10 @@ namespace RISE
 				if( bSingleSlotView ) return nullptr;	// already one
 				return new PolynomialScalarPainter( coeffs, true );
 			}
+
+			//! DL-292: the value depends on the wavelength only, never on
+			//! the hit (IScalarPainter::IsPositionIndependent).
+			bool IsPositionIndependent() const override { return true; }
 		};
 	}
 }

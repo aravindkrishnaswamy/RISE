@@ -1270,6 +1270,16 @@ namespace
 	// BSSRDF/RW-SSS entry NEE sites pass neither: their continuation's
 	// density is the BSSRDF cosine pdf, which is neither guided nor
 	// stack-dependent, so both sides already agree.
+	//
+	// DL-292: the graded-index NEE segment factor (DL-09) is priced from
+	// `pMisIorStack` by default -- the surface NEE's MIS stack IS the
+	// walk's live stack.  `pGradedIndexStack` overrides it for a caller
+	// whose MIS stack and graded-index stack differ: the BSSRDF / RW-SSS
+	// entry NEE passes no MIS stack (see above) but its continuation DOES
+	// carry the walk's `iorStack` and Advances from its top at the next
+	// hit, so that arm's segment must be priced from the same stack or the
+	// two arms price different integrands (DL-292 item 1: BDPT/PT 0.48 on
+	// an SSS slab inside a graded box, 0.99 in a constant-index control).
 	template<class Tag>
 	inline typename SpectralValueTraits<Tag>::value_type PTEvaluateDirectLighting(
 		const Implementation::LightSampler* pLS, const RayIntersectionGeometric& ri,
@@ -1278,25 +1288,30 @@ namespace
 		bool isVolumeScatter, const IObject* pMediumObject, const Tag& tag,
 		const IGuidedNEEPdfBlend* pGuidedBlend = 0,
 		const IORStack* pMisIorStack = 0,
-		Scalar neeTrainingScale = 1 );
+		Scalar neeTrainingScale = 1,
+		const IORStack* pGradedIndexStack = 0 );
 	template<> inline RISEPel PTEvaluateDirectLighting<PelTag>(
 		const Implementation::LightSampler* pLS, const RayIntersectionGeometric& ri,
 		const IBSDF& brdf, const IMaterial* pMaterial, const IRayCaster& caster,
 		ISampler& sampler, const IObject* pShadingObject, const IMedium* pMedium,
 		bool isVolumeScatter, const IObject* pMediumObject, const PelTag&,
 		const IGuidedNEEPdfBlend* pGuidedBlend, const IORStack* pMisIorStack,
-		Scalar neeTrainingScale )
+		Scalar neeTrainingScale, const IORStack* pGradedIndexStack )
 	{ return pLS->EvaluateDirectLighting( ri, brdf, pMaterial, caster, sampler, pShadingObject, pMedium, isVolumeScatter, pMediumObject, pGuidedBlend, pMisIorStack, neeTrainingScale,
-		/*bBsdfSamplingPartnerExists*/ true, /*pGradedIndexStack (DL-09: this walk Advances)*/ pMisIorStack ); }
+		/*bBsdfSamplingPartnerExists*/ true,
+		/*pGradedIndexStack (DL-09: this walk Advances; DL-292: explicit override wins)*/
+		pGradedIndexStack ? pGradedIndexStack : pMisIorStack ); }
 	template<> inline Scalar PTEvaluateDirectLighting<NMTag>(
 		const Implementation::LightSampler* pLS, const RayIntersectionGeometric& ri,
 		const IBSDF& brdf, const IMaterial* pMaterial, const IRayCaster& caster,
 		ISampler& sampler, const IObject* pShadingObject, const IMedium* pMedium,
 		bool isVolumeScatter, const IObject* pMediumObject, const NMTag& tag,
 		const IGuidedNEEPdfBlend* pGuidedBlend, const IORStack* pMisIorStack,
-		Scalar neeTrainingScale )
+		Scalar neeTrainingScale, const IORStack* pGradedIndexStack )
 	{ return pLS->EvaluateDirectLightingNM( ri, brdf, pMaterial, tag.nm, caster, sampler, pShadingObject, pMedium, isVolumeScatter, pMediumObject, pGuidedBlend, pMisIorStack, neeTrainingScale,
-		/*bBsdfSamplingPartnerExists*/ true, /*pGradedIndexStack (DL-09: this walk Advances)*/ pMisIorStack ); }
+		/*bBsdfSamplingPartnerExists*/ true,
+		/*pGradedIndexStack (DL-09: this walk Advances; DL-292: explicit override wins)*/
+		pGradedIndexStack ? pGradedIndexStack : pMisIorStack ); }
 
 	// BSDF value at a surface (guiding RIS / one-sample MIS).
 	template<class Tag>
@@ -3008,7 +3023,11 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 										pLS, entryRI, entryBSDF, &entryMaterial, caster,
 										bssrdfSampler, ri.pObject, 0, false, 0, tag,
 										0, 0, PTSurvivalMagnitude( bssrdfWeightSpatial ) *
-											( depth == startDepth ? castRRCompensation_ : Scalar( 1.0 ) ) );
+											( depth == startDepth ? castRRCompensation_ : Scalar( 1.0 ) ),
+										// DL-292: the SAME stack the continuation below
+										// carries (its next hit Advances from this top, so
+										// the NEE segment must be priced from it too).
+										&iorStack );
 									Value sssDirectContrib = throughput * bssrdfWeightSpatial * directSSS;
 									sssDirectContrib = ClampContribution( sssDirectContrib,
 										stabilityConfig.directClamp );
@@ -3288,7 +3307,11 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 										pLS, entryRI, entryBSDF, &entryMaterial, caster,
 										bssrdfSampler, ri.pObject, 0, false, 0, tag,
 										0, 0, PTSurvivalMagnitude( bssrdfWeightSpatial ) *
-											( depth == startDepth ? castRRCompensation_ : Scalar( 1.0 ) ) );
+											( depth == startDepth ? castRRCompensation_ : Scalar( 1.0 ) ),
+										// DL-292: the SAME stack the continuation below
+										// carries (its next hit Advances from this top, so
+										// the NEE segment must be priced from it too).
+										&iorStack );
 									Value sssDirectContrib = throughput * bssrdfWeightSpatial * directSSS;
 									sssDirectContrib = ClampContribution( sssDirectContrib,
 										stabilityConfig.directClamp );
@@ -5556,6 +5579,10 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
                     const Point3 probePoint = Point3Ops::mkPoint3(firstHit.geometric.ray.origin,
                         firstHit.geometric.ray.Dir() * (firstHit.geometric.range * 0.5));
                     IORStackSeeding::SeedFromPoint(laneStack, probePoint, scene, swl.lambda[i]);
+                    // DL-292: the midpoint seed recorded a graded medium's
+                    // index at the MIDPOINT; the delegated walk's first
+                    // Advance must telescope from the segment's start.
+                    GradedIndexMedium::AdoptTrackedTop( laneStack, initialIorStack );
                     hwssResult[i] = IntegrateFromHitNM( rc, rast, firstHit,
 					swl.lambda[i], scene, caster, sampler, pRadianceMap,
 					startDepth, laneStack, bsdfPdf, 0,
@@ -5607,6 +5634,10 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
                     const Point3 probePoint = Point3Ops::mkPoint3(firstHit.geometric.ray.origin,
                         firstHit.geometric.ray.Dir() * (firstHit.geometric.range * 0.5));
                     IORStackSeeding::SeedFromPoint(laneStack, probePoint, scene, swl.lambda[i]);
+                    // DL-292: the midpoint seed recorded a graded medium's
+                    // index at the MIDPOINT; the delegated walk's first
+                    // Advance must telescope from the segment's start.
+                    GradedIndexMedium::AdoptTrackedTop( laneStack, initialIorStack );
                     hwssResult[i] = IntegrateFromHitNM( rc, rast, firstHit,
 						swl.lambda[i], scene, caster, sampler, pRadianceMap,
 						startDepth, laneStack, bsdfPdf, 0,
@@ -6328,6 +6359,10 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
                     const Point3 probePoint = Point3Ops::mkPoint3(ri.geometric.ray.origin,
                         ri.geometric.ray.Dir() * (ri.geometric.range * 0.5));
                     IORStackSeeding::SeedFromPoint(laneStack, probePoint, scene, swl.lambda[w]);
+                    // DL-292: the hero stack was already Advanced to this hit
+                    // (its factor is in throughputComp), so the delegated walk's
+                    // Advance here must be a no-op, not a midpoint-to-hit factor.
+                    GradedIndexMedium::AdoptTrackedTop( laneStack, iorStack );
                     hwssResult[w] += throughputComp[w] * IntegrateFromHitNM(
 						rc, rast, ri, swl.lambda[w], scene, caster, sampler,
 						pRadianceMap, depth, laneStack, bsdfPdf, 0,

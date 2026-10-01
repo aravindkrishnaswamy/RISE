@@ -90,6 +90,10 @@ namespace RISE
 			{
 				return ! ( r == g && g == b );
 			}
+
+			//! DL-292: the value depends on the wavelength only, never on
+			//! the hit (IScalarPainter::IsPositionIndependent).
+			bool IsPositionIndependent() const override { return true; }
 		};
 	}
 }

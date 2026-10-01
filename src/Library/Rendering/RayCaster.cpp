@@ -22,6 +22,7 @@
 #include "../Utilities/RandomNumbers.h"
 #include "../Utilities/MediumTracking.h"
 #include "../Utilities/MediumTransport.h"
+#include "../Utilities/GradedIndexMedium.h"
 #include "../Utilities/IndependentSampler.h"
 #include "../Utilities/PathGuidingField.h"
 #include "../Utilities/PathTransportUtilities.h"
@@ -1311,9 +1312,20 @@ bool RayCaster::CastRay(
 			// integrand so its trained moment agrees with the BSDF-side
 			// (DL-148).  `rrCompensation` is already in scope in this
 			// function.
+			//
+			// DL-292: the NEE segment's graded-index factor is priced from
+			// THIS walk's stack (`ior_stack`, the same one the phase
+			// continuation below carries and whose first surface hit
+			// Advances from its top).  It has not been advanced to
+			// `scatterPt` -- medium vertices do not Advance -- so the NEE
+			// factor (top/n(light))^2 telescopes over the unpaid piece up to
+			// the scatter point exactly as the continuation's does.  Before
+			// DL-292 this passed no stack: NEE here carried no factor while
+			// the phase-sampled arm did (row M of
+			// GradedIndexInteriorFactorTest: pixelpel/PT 1.10 -> 1.00).
 			RISEPel Ld = MediumTransport::EvaluateInScattering(
 				scatterPt, wo, pMedium, *this, pLightSampler,
-				mediumSampler, rast, pMediumObject, rrCompensation );
+				mediumSampler, rast, pMediumObject, rrCompensation, &ior_stack );
 
 			// 2. Phase-function continuation (indirect in-scattering)
 			// Volume bounces are bounded independently of the general
@@ -1623,6 +1635,29 @@ bool RayCaster::CastRay(
 		// See
 		// docs/DL315_RAYCASTER_STACK_AND_RECURSION.md.
 		IORStack hitStack( ior_stack );
+
+		// DL-292: the interior-segment graded-index factor (DL-09) for the
+		// segment this cast just traced, paid HERE -- at the one choke point
+		// every shader that shades a RayCaster hit goes through -- instead
+		// of by whichever op happens to Advance.  Before DL-292 only a
+		// `PathTracingShaderOp` in the chain Advanced (inside
+		// IntegrateFromHit) while `DirectLightingShaderOp`, `EmissionShaderOp`
+		// and the distribution / reflection / refraction ops priced the
+		// hit at the entry index, so the legacy chain read the pre-DL-09
+		// 1.65x on a gather inside a graded medium (row N) and a chain
+		// mixing the two families priced its NEE and BSDF arms
+		// differently.  Every op now sees a stack whose top is n(hit) (so
+		// the refraction ops' RadianceEtaScale reads the fresh exit index,
+		// exactly as PT's does), `c` carries (top/n(hit))^2, and a
+		// PathTracingShaderOp's own Advance at the same point is a no-op
+		// (n unchanged -> no factor).  Exactly nothing happens unless the
+		// medium the ray travelled through is graded.
+		Scalar gradedScale = 1;
+		if( GradedIndexMedium::Advance( hitStack, ri.geometric.ptIntersection,
+				GradedIndexMedium::eRadiance, gradedScale ) ) {
+			const Scalar ambIOR = hitStack.top();
+			ri.geometric.ambientIOR = ( ambIOR > 0.0 ) ? ambIOR : 1.0;
+		}
 		hitStack.SetCurrentObject( ri.pObject );
 
 		// DL-185: hand the shader a copy of `rs` carrying THIS call's own
@@ -1637,6 +1672,9 @@ bool RayCaster::CastRay(
 
 		// Apply shade by calling the appropriate shader
 		SelectShader( ri ).Shade( rc, ri, *this, rsForShade, c, hitStack );
+		if( gradedScale != Scalar( 1 ) ) {
+			c = c * gradedScale;
+		}
 
 		// Analog no-scatter survival weight (see RayCasterSurvivalWeight):
 		// reaching this surface without a scatter event is a survival outcome
@@ -2033,9 +2071,10 @@ bool RayCaster::CastRayNM(
 
 			// NEE at scatter point
 			// DL-185 -- see the RGB twin's comment above.
+			// DL-292 -- see the RGB twin's comment above.
 			Scalar Ld = MediumTransport::EvaluateInScatteringNM(
 				scatterPt, wo, pMedium, nm, *this, pLightSampler,
-				mediumSampler, rast, pMediumObject, rrCompensation );
+				mediumSampler, rast, pMediumObject, rrCompensation, &ior_stack );
 
 			// Phase-function continuation
 			static const unsigned int nMaxVolumeBounces = 64;
@@ -2252,6 +2291,14 @@ bool RayCaster::CastRayNM(
 
 		// DL-315: shade with a copy -- see the RGB CastRay's identical site.
 		IORStack hitStack( ior_stack );
+
+		// DL-292 -- see the RGB CastRay's identical site.
+		Scalar gradedScale = 1;
+		if( GradedIndexMedium::Advance( hitStack, ri.geometric.ptIntersection,
+				GradedIndexMedium::eRadiance, gradedScale ) ) {
+			const Scalar ambIOR = hitStack.top();
+			ri.geometric.ambientIOR = ( ambIOR > 0.0 ) ? ambIOR : 1.0;
+		}
 		hitStack.SetCurrentObject( ri.pObject );
 
 		// DL-185 -- see the RGB CastRay's identical call site above.
@@ -2260,6 +2307,9 @@ bool RayCaster::CastRayNM(
 
 		// Apply shade by calling the appropriate shader
 		c = SelectShader( ri ).ShadeNM( rc, ri, *this, rsForShade, nm, hitStack );
+		if( gradedScale != Scalar( 1 ) ) {
+			c = c * gradedScale;
+		}
 
 		// Analog no-scatter survival: reaching this surface without a scatter
 		// event is a survival outcome whose probability already carries
@@ -2428,7 +2478,7 @@ bool RayCaster::CastShadowRayTransmittance(
 	RISEPel& transmittance
 	) const
 {
-	return WalkShadowSegment( ray, dHowFar, bNM, nm, transmittance, true, false );
+	return WalkShadowSegment( ray, dHowFar, bNM, nm, transmittance, true, false, 0, 0 );
 }
 
 // ================================================================
@@ -2465,10 +2515,22 @@ bool RayCaster::WalkShadowSegment(
 	RISEPel& transmittance,
 	const bool bDielectrics,
 	const bool bDeltaPassThrough,
+	GradedIndexMedium::ShadowSegmentTrack* pGradedTrack,
+	const Point3* pSegmentEnd,
     ISampler* alphaSampler, MediumBoundaryHits* boundaries, Scalar physicalDistance, Scalar occlusionStart
 	) const
 {
 	transmittance = RISEPel( 1.0, 1.0, 1.0 );
+
+	// DL-292: every "reached the light" return goes through here, so the
+	// graded-index track (if any) is priced up to the light point exactly
+	// when the segment is NOT occluded.
+	auto reachedLight = [pGradedTrack, pSegmentEnd]() -> bool {
+		if( pGradedTrack && pSegmentEnd ) {
+			pGradedTrack->Finish( *pSegmentEnd );
+		}
+		return false;
+	};
 
 	if( !pScene ) {
 		GlobalLog()->PrintSourceError( "RayCaster::WalkShadowSegment:: No scene", __FILE__, __LINE__ );
@@ -2517,7 +2579,7 @@ bool RayCaster::WalkShadowSegment(
 		{
 			// Reached the light with no further occluder along the
 			// remaining segment — the accumulated transmittance is final.
-			return false;
+			return reachedLight();
 		}
 
 		// There is a hit strictly before the light.  Decide whether it
@@ -2540,7 +2602,7 @@ bool RayCaster::WalkShadowSegment(
             sampledStart = advance;
             remaining = alphaSampler ? physicalEnd - advance : remaining - advance;
 			if( remaining <= 0.0 ) {
-				return false;
+				return reachedLight();
 			}
 			continue;
 		}
@@ -2573,7 +2635,7 @@ bool RayCaster::WalkShadowSegment(
             sampledStart = advance;
             remaining = alphaSampler ? physicalEnd - advance : remaining - advance;
 			if( remaining <= 0.0 ) {
-				return false;
+				return reachedLight();
 			}
 			continue;
 		}
@@ -2748,6 +2810,16 @@ bool RayCaster::WalkShadowSegment(
 			ior_stack.pop();
 		}
 
+		// DL-292: mirror this crossing onto the graded-index track, which
+		// starts from the SHADING POINT's walk stack (this walk's own
+		// Fresnel stack starts in air, deliberately -- see above -- so it
+		// cannot say which medium the light is in).  A weave gap or a
+		// non-shadow-caster above is not a crossing and does not reach
+		// here.
+		if( pGradedTrack ) {
+			pGradedTrack->Crossing( ri.geometric.ptIntersection, ri.pObject, bEntering, mediumIOR );
+		}
+
 		// Advance past this interface and continue toward the light.
 		// Step the origin to the hit point plus a small epsilon along
 		// the (unchanged) travel direction (`advance`, computed above);
@@ -2759,7 +2831,7 @@ bool RayCaster::WalkShadowSegment(
 		if( remaining <= 0.0 )
 		{
 			// Stepped at or past the light — nothing more occludes.
-			return false;
+			return reachedLight();
 		}
 	}
 
@@ -2790,7 +2862,9 @@ bool RayCaster::CastShadowRayAuto(
 	const bool bNM,
 	const Scalar nm,
 	RISEPel& transmittance,
-	const bool bDeltaLight
+	const bool bDeltaLight,
+	GradedIndexMedium::ShadowSegmentTrack* pGradedTrack,
+	const Point3* pSegmentEnd
 	) const
 {
 	// DL-05: may this shadow ray see through a delta pass-through?  Only
@@ -2807,7 +2881,7 @@ bool RayCaster::CastShadowRayAuto(
 		!pScene->GetGlobalSpectralMap();
 
 	if( bTransparentShadows ) {
-		return WalkShadowSegment( ray, dHowFar, bNM, nm, transmittance, true, bPassThrough );
+		return WalkShadowSegment( ray, dHowFar, bNM, nm, transmittance, true, bPassThrough, pGradedTrack, pSegmentEnd );
 	}
 	transmittance = RISEPel( 1.0, 1.0, 1.0 );
 	// The binary any-hit test first: a clear segment costs exactly what it
@@ -2828,7 +2902,10 @@ bool RayCaster::CastShadowRayAuto(
 		transmittance = RISEPel( 0, 0, 0 );
 		return true;
 	}
-	return WalkShadowSegment( ray, dHowFar, bNM, nm, transmittance, false, true );
+	// DL-292: a clear binary test above returned WITHOUT a walk, which
+	// leaves the track un-Finish()ed -- the caller then prices the
+	// crossing-free segment with ConnectionScaleToPoint.
+	return WalkShadowSegment( ray, dHowFar, bNM, nm, transmittance, false, true, pGradedTrack, pSegmentEnd );
 }
 
 void RayCaster::SetRISCandidates( const unsigned int M )
@@ -3165,6 +3242,16 @@ bool RayCaster::CastRayHWSS(
 
 		// DL-315: shade with a copy -- see the RGB CastRay's identical site.
 		IORStack hitStack( ior_stack );
+
+		// DL-292 -- see the RGB CastRay's identical site.  The graded field
+		// is a single scalar (IsWorldPositionField), so every lane pays the
+		// same factor.
+		Scalar gradedScale = 1;
+		if( GradedIndexMedium::Advance( hitStack, ri.geometric.ptIntersection,
+				GradedIndexMedium::eRadiance, gradedScale ) ) {
+			const Scalar ambIOR = hitStack.top();
+			ri.geometric.ambientIOR = ( ambIOR > 0.0 ) ? ambIOR : 1.0;
+		}
 		hitStack.SetCurrentObject( ri.pObject );
 
 		// DL-185 -- see RGB CastRay's identical call site above.  (The
@@ -3177,6 +3264,11 @@ bool RayCaster::CastRayHWSS(
 		// PerformOperationHWSS, enabling hero-wavelength
 		// directional sharing in PathTracingShaderOp.
 		SelectShader( ri ).ShadeHWSS( rc, ri, *this, rsForShade, c, swl, hitStack );
+		if( gradedScale != Scalar( 1 ) ) {
+			for( unsigned int i = 0; i < SampledWavelengths::N; i++ ) {
+				c[i] *= gradedScale;
+			}
+		}
 
 		if( distance ) {
 			*distance = ri.geometric.range;
@@ -3264,7 +3356,8 @@ bool RayCaster::CastShadowRaySampled(const Ray& ray, Scalar distance, ISampler& 
     return pScene && pScene->GetObjects()->IntersectShadowRaySampled(ray, distance, sampler, boundaries, physicalDistance, occlusionStart);
 }
 bool RayCaster::CastShadowRayAutoSampled(const Ray& ray, Scalar distance, bool nmMode,
-    Scalar nm, RISEPel& transmittance, bool deltaLight, ISampler& sampler, MediumBoundaryHits* boundaries, Scalar physicalDistance, Scalar occlusionStart) const
+    Scalar nm, RISEPel& transmittance, bool deltaLight, ISampler& sampler, MediumBoundaryHits* boundaries, Scalar physicalDistance, Scalar occlusionStart,
+    GradedIndexMedium::ShadowSegmentTrack* pGradedTrack, const Point3* pSegmentEnd) const
 {
     if (boundaries) boundaries->clear();
     const bool passThrough = deltaLight && bSceneHasDeltaPassThrough && pScene &&
@@ -3273,7 +3366,9 @@ bool RayCaster::CastShadowRayAutoSampled(const Ray& ray, Scalar distance, bool n
         !pScene->GetGlobalSpectralMap();
     if (bTransparentShadows || passThrough)
         return WalkShadowSegment(ray, distance, nmMode, nm, transmittance,
-            bTransparentShadows, passThrough, &sampler, boundaries, physicalDistance, occlusionStart);
+            bTransparentShadows, passThrough, pGradedTrack, pSegmentEnd, &sampler, boundaries, physicalDistance, occlusionStart);
+    // DL-292: the binary test leaves the track un-Finish()ed -- the caller
+    // prices the crossing-free segment with ConnectionScaleToPoint.
     transmittance = RISEPel(1,1,1);
     return CastShadowRaySampled(ray, distance, sampler, boundaries, physicalDistance, occlusionStart);
 }
