@@ -102,5 +102,5 @@ split weights match independently multiplied path densities and sum to one.
 The physical-reference environment suite retains its original RGB/NM/HWSS
 mean bands and each estimator's peak cap. Cross-estimator p99 equality is
 removed because the estimators have different variances. Three independently
-salted full-suite runs each pass 107 checks; their largest paired-ratio
+salted EnvLightBalanceTest runs each pass 107 checks; their largest paired-ratio
 95% half-width is 1.69%, below the smallest unchanged 3% comparison band.
