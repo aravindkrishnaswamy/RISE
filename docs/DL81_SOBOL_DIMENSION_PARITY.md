@@ -976,8 +976,15 @@ fixture — the DL-283 review's four free boxes (BDPT pel `5510360215ee3481`,
 BDPT hwss `cb637d1ff34e0578`, VCM `5d3800ce59aed1ae`, PT `c7fd4c90125c892b`),
 64×64 copies of `cornellbox_bdpt`, `cornellbox_bdpt_spectral`,
 `cornellbox_vcm_simple`, `cornellbox_vcm_spectral`, `bdpt_veach_egg`,
-`bdpt_luminous_orb` and `cornellbox_mlt_fast` (every shipped medium-free
-BDPT/VCM/MLT scene tops out at depth 14, so no walk reaches iteration 15).
+`bdpt_luminous_orb` and `cornellbox_mlt_fast`, whose walks never reach
+light iteration 15 / eye iteration 31.  Being medium-free does NOT
+guarantee that (DL-286 review, 2026-10-01): `diamond_teapot_pour`
+(`vcm_pel_rasterizer`, `max_eye_depth`/`max_light_depth` 128) renders a
+DIFFERENT single-threaded hash pre-fix vs fixed (70×100, 4 spp,
+`srand(1)`; the fixed build reproduces its own hash), so its walks reach
+the old overlap; the depth-16 SSS scenes (`vcm_sss_dragon`,
+`bdpt_sss_dragon`, `bdpt_sss_different_bsdf`, `rwsss_bdpt`) can as well.
+The size of their pre-fix bias was not measured.
 DIFFERENT, as they must be, on the medium scenes whose walks go deep: the
 σt-8 fog (BDPT mean +7.4 %, VCM +10.7 % on the single unsalted render) and
 `bdpt_alchemists_sanctum` (48×32, mean −3.5e−6 relative: a few deep walks).

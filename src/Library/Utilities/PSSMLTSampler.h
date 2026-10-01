@@ -109,7 +109,7 @@ namespace RISE
 			// BDPTCameraUtilities::kBdptShallowWalkStreamEndUnderPSSMLT
 			// (CameraUtilities.h; deep walk iterations use lanes
 			// 2049..4050 since DL-286) for the derived bound on how high
-			// the eye-walk bounce stream can actually reach (1039).  The
+			// the shallow eye-walk bounce stream can reach (46).  The
 			// MLT rasterizers reserve
 			// BDPTCameraUtilities::kPSSMLTFilmLensApertureStream (2048)
 			// for the film/lens/aperture block.
