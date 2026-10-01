@@ -3935,8 +3935,58 @@ static void TestRandomWalkSphereEmptyContainerV()
 	RunSSSTopology( "topology V (roughness-0.8 randomwalk_sss_material closed sphere, depth 16, 1024 spp)", kSceneRandomWalkSphereV, 16, 1024, 0, 0.0060 );
 }
 
+// DL-346: a conservative environment-lit medium has L=1 independently
+// of every MIS implementation. Index-matched boundaries and a white floor
+// conserve radiance; max_volume_bounce 256 makes the omitted tail negligible.
+// Six independently salted trials give an unchanged 2% physical band and
+// a separately checked Student confidence width. The baseline reads ~.952.
+static void TestEnvironmentScatteringMediumDL346()
+{
+ const std::string common="RISE ASCII SCENE 7\n"
+  "standard_shader\n{\n name global\n shaderop DefaultPathTracing\n}\n"
+  "film\n{\n width 24\n height 24\n}\n"
+  "pinhole_camera\n{\n location 0 0 1.9999\n lookat 0 -1 0\n up 0 1 0\n fov 50\n}\n"
+  "uniformcolor_painter\n{\n name white\n color 1 1 1\n}\n"
+  "lambertian_material\n{\n name floor\n reflectance white\n}\n"
+  "homogeneous_medium\n{\n name fog\n absorption 0 0 0\n scattering .7 .7 .7\n phase isotropic\n}\n"
+  "dielectric_material\n{\n name shell\n tau 1 1 1\n ior 1\n scattering 1000000\n}\n"
+  "box_geometry\n{\n name box\n width 4\n height 4\n depth 4\n}\n"
+  "standard_object\n{\n name enclosure\n geometry box\n material shell\n interior_medium fog\n}\n"
+  "clippedplane_geometry\n{\n name quad\n pta -1.9 -1.5 -1.9\n ptb -1.9 -1.5 1.9\n ptc 1.9 -1.5 1.9\n ptd 1.9 -1.5 -1.9\n}\n"
+  "standard_object\n{\n name receiver\n geometry quad\n material floor\n}\n";
+ const char* modes[]={"pathtracing_pel_rasterizer","bdpt_pel_rasterizer"};
+ double sums[2]={},squares[2]={};
+ for(unsigned trial=0;trial<6;++trial) for(unsigned mode=0;mode<2;++mode) {
+  std::string scene=common+std::string(modes[mode])+"\n{\n samples 128\n pixel_filter box\n oidn_denoise FALSE\n max_volume_bounce 256\n radiance_map white\n radiance_background TRUE\n";
+  if(mode) scene+=" max_eye_depth 20\n max_light_depth 20\n";
+  scene+="}\n";
+  const std::string path=WriteSceneToTempFile(scene.c_str(),mode?"dl346_bdpt":"dl346_pt");
+  SobolSamplerTestHooks::ValueSalt().store(SobolSequence::HashCombine(34600u+trial,0x346u));
+  const ImageStats result=RenderAndComputeStats(path.c_str());
+  SobolSamplerTestHooks::ValueSalt().store(0u);std::remove(path.c_str());
+  const double value=(result.mean[0]+result.mean[1]+result.mean[2])/3;
+  Check(result.valid && std::isfinite(value),"DL346 environment medium produces finite radiance");
+  sums[mode]+=value;squares[mode]+=value*value;
+  std::printf("DL346 strategy furnace trial=%u mode=%s mean=%.12g\n",trial,modes[mode],value);
+ }
+ for(unsigned mode=0;mode<2;++mode) {
+  const double mean=sums[mode]/6;
+  const double sd=std::sqrt(std::max(0.,(squares[mode]-sums[mode]*sums[mode]/6)/5));
+  const double ci=2.571*sd/std::sqrt(6.);
+  std::printf("DL346 strategy furnace mode=%s n=6 mean=%.12g sd=%.12g ci95=%.12g oracle=1\n",modes[mode],mean,sd,ci);
+  Check(std::fabs(mean-1)<.02,"DL346 environment medium matches unit-radiance oracle within 2%");
+  Check(ci<.02,"DL346 furnace Student CI narrower than unchanged 2% band");
+ }
+}
+
 int main( int argc, char** argv )
 {
+ if(argc == 2 && std::strcmp(argv[1],"--env-medium-only") == 0) {
+  TestEnvironmentScatteringMediumDL346();
+  std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+  return failCount == 0 ? 0 : 1;
+ }
+
 	// Focused repeated A/B measurement uses the exact shipped topology
 	// fixtures and unchanged gates without rerendering unrelated spectra.
 	if( argc == 2 && std::strcmp(argv[1], "--materials-only") == 0 ) {
@@ -4024,6 +4074,7 @@ int main( int argc, char** argv )
 	TestWeaveGapBoxAreaOutside();
 	TestRoughSSSEmptyContainerU();
 	TestRandomWalkSphereEmptyContainerV();
+ TestEnvironmentScatteringMediumDL346();
 	TestBackFaceEmitterZ();
 
 	std::cout << std::endl;

@@ -46,12 +46,15 @@ int main() {
         std::printf("diffuse RGB %.12g %.12g %.12g\n",rays[i].kray[0],rays[i].kray[1],rays[i].kray[2]);
         for(int c=0;c<3;++c) if(!std::isfinite(rays[i].kray[c]) || rays[i].kray[c]<0) good=false;
     }
-    // The public zero-diffuse albedo guide exposes the directional interface
-    // estimate; integrate it independently and compare its hemispherical guide.
+    // The zero-diffuse directional guide exposes macro-interface reflectance A.
+    // DL-123 made hemisphericalAlbedo integrate rough specular transport, so it
+    // cannot equal the angular mean of this flat-interface guide. Subtract the
+    // same bare substrate from the diffuse mixture: the independent diffuse
+    // integral is (1 - mean(A))^2, with the rough specular terms cancelling.
     auto* black = new UniformColorPainter(RISEPel(0.0));
     auto* bare = new GGXBRDF(*black,*white,*alpha,*alpha,*eta,*zero,eFresnelThinFilmConductor,nullptr,film,zero,zero);
     auto* mixed = new GGXBRDF(*white,*white,*alpha,*alpha,*eta,*zero,eFresnelThinFilmConductor,nullptr,film,zero,zero);
-    RISEPel integrated(0.0), mean(0.0);
+    RISEPel integrated(0.0), bareMean(0.0), mixedMean(0.0);
     const int quadrature = 4096;
     for(int i=0;i<quadrature;++i) {
         const Scalar cosine=(i+.5)/quadrature;
@@ -61,14 +64,15 @@ int main() {
         for(int c=0;c<3;++c) if(!std::isfinite(value[c]) || value[c]<0 || value[c]>1) good=false;
         integrated=integrated+value*(2*cosine/quadrature);
     }
-    if(!bare->hemisphericalAlbedo(ri,mean)) good=false;
+    if(!bare->hemisphericalAlbedo(ri,bareMean) || !mixed->hemisphericalAlbedo(ri,mixedMean)) good=false;
     Scalar maxGuideError=0;
     for(int c=0;c<3;++c) {
-        const Scalar error=std::fabs(mean[c]-integrated[c]);
+        const Scalar reference=(1-integrated[c])*(1-integrated[c]);
+        const Scalar error=std::fabs((mixedMean[c]-bareMean[c])-reference);
         if(!std::isfinite(error) || error>2e-4) good=false;
         maxGuideError=r_max(maxGuideError,error);
     }
-    std::printf("guide midpoint-vs-GL max error %.12g\n",maxGuideError);
+    std::printf("diffuse hemispherical midpoint-vs-interface-mean max error %.12g\n",maxGuideError);
     if(rays.Count()==1) {
         const Vector3 light=rays[0].ray.Dir();
         const RISEPel diffuse=mixed->value(light,ri)-bare->value(light,ri);

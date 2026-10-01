@@ -14,7 +14,7 @@ public:
  using PhotonMapCore<P>::CountPhotonsAt;
  Tree():PhotonMapCore<P>(0,nullptr){}
  void Serialize(IWriteBuffer&)const override{} void Deserialize(IReadBuffer&)override{}
- void RadianceEstimate(RISEPel&,const RayIntersectionGeometric&,const IBSDF&)const override{}
+ void RadianceEstimate(RISEPel&,const RayIntersectionGeometric&,const IBSDF&,const IORStack*)const override{}
  void Load(const std::vector<Point3>& points){this->vphotons.clear();this->bbox=BoundingBox(Point3(RISE_INFINITY,RISE_INFINITY,RISE_INFINITY),Point3(-RISE_INFINITY,-RISE_INFINITY,-RISE_INFINITY));for(const auto& p:points){P v;v.ptPosition=p;this->vphotons.push_back(v);this->bbox.Include(p);}this->Balance();}
  std::vector<Point3> All(const Point3& q,double r2)const{typename PhotonMapCore<P>::PhotonListType p;this->LocateAllPhotons(q,r2,p,0,static_cast<int>(this->vphotons.size())-1);std::vector<Point3> out;for(const auto& a:p)out.push_back(a.ptPosition);return out;}
  std::vector<double> Nearest(const Point3& q,double r2,unsigned k)const{typename PhotonMapCore<P>::PhotonDistListType p;this->LocatePhotons(q,r2,k,p,0,static_cast<int>(this->vphotons.size())-1);std::vector<double> out;for(const auto& a:p)out.push_back(a.distance);std::sort(out.begin(),out.end());return out;}

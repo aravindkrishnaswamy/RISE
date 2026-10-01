@@ -182,7 +182,7 @@ namespace
 		// The recurrence tracks geometric area densities. The BSDF PDF
 		// already contains its shading-frame sampling distribution.
 		const Scalar cosThetaOut = AreaToSolidAngleFactor( v, wo );
-		const Scalar bsdfDirPdfW = next.pdfFwd * nextDistSq / nextFactor;
+		const Scalar bsdfDirPdfW = next.pdfFwd * (next.pEnvLight ? Scalar(1) : nextDistSq) / nextFactor;
 		return ApplyBsdfSamplingUpdate(
 			mis, cosThetaOut, bsdfDirPdfW, Scalar( 0 ), false, norm );
 	}
@@ -512,7 +512,7 @@ static inline Scalar AreaToSolidAngleFactor(
 	if( v.type == BDPTVertex::MEDIUM ) {
 		return v.sigma_t_scalar;
 	}
-	if( v.type == BDPTVertex::CAMERA ) {
+	if( v.type == BDPTVertex::CAMERA || v.pEnvLight ) {
 		return Scalar( 1 );
 	}
 	// SURFACE, LIGHT, or anything else with a normal.
@@ -550,13 +550,7 @@ static inline Scalar AreaToSolidAngleFactor(
 // One special case: the first bounce from a light.  SmallVCM's
 // geometric update gates on "pathLength > 1 || isFiniteLight", i.e.
 // the distance^2 factor is SKIPPED when the light is infinite
-// (environment / directional).  RISE doesn't currently distinguish
-// finite vs infinite at the BDPTVertex level, so we approximate:
-// LIGHT vertices with finite pdfPosition are finite; delta-direction
-// lights (sun / spot) are technically both finite and infinite at
-// once.  We treat any BDPTVertex marked type==LIGHT as finite; the
-// infinite case is covered when VCM adds environment-map support in
-// a later step.
+// (environment). IsInfiniteLight() records that endpoint measure.
 //
 // Vertex types handled:
 //
@@ -609,24 +603,17 @@ void VCMIntegrator::ConvertLightSubpath(
 				return;
 			}
 
-			// directPdfA = v[0].pdfFwd (BDPT stores
-			// pdfSelect * pdfPosition here).  emissionPdfW
-			// is the combined area*solid-angle product.
-			// pdfSelect is stored separately on the vertex
-			// (post 2026-05-29 continuous-PMF follow-up) so
-			// InitLight can extract the geometric emissionPdfW
-			// for the SmallVCM-correct dVC formula — see
-			// VCMRecurrence::InitLight comments + BDPTVertex.h
-			// `pdfSelect` doc.
-			const bool isFinite = true;	// conservative: see comment block above
+			// Root marginal and joint emission use the same selected
+			// light measure. Infinite roots use angular direct density;
+			// their conditional first target is a parallel projection.
+			const bool isFinite = !v.pEnvLight;
 			mis = InitLight(
 				v.pdfFwd,
 				v.emissionPdfW,
 				v.cosAtGen,
 				isFinite,
 				v.isDelta,
-				norm,
-				v.pdfSelect );
+				norm );
 			if( outMis ) (*outMis)[0] = mis;
 			continue;
 		}
@@ -694,12 +681,8 @@ void VCMIntegrator::ConvertLightSubpath(
 			continue;
 		}
 
-		// Geometric update.  For the first bounce from the light
-		// (i==1) the distance-squared gate should be skipped for
-		// infinite lights.  All RISE lights currently routed
-		// through GenerateLightSubpath vertex 0 are treated as
-		// finite; keep the gate on for every bounce.
-		const bool applyDistSqToDVCM = true;
+		// A parallel environment emission has no first-edge r² factor.
+		const bool applyDistSqToDVCM = !(i == 1 && prev.pEnvLight);
 		mis = ApplyGeometricUpdate( mis, distSq, cosFix, applyDistSqToDVCM );
 
 		if( outMis ) (*outMis)[i] = mis;
@@ -723,13 +706,13 @@ void VCMIntegrator::ConvertLightSubpath(
 
 					const Scalar nextFactor = AreaToSolidAngleFactor( next, -wo );
 					const Scalar bsdfDirPdfW = ( nextFactor > 0 )
-						? next.pdfFwd * nextDistSq / nextFactor : Scalar( 0 );
+						? next.pdfFwd * (next.pEnvLight ? Scalar(1) : nextDistSq) / nextFactor : Scalar( 0 );
 
 					const Scalar invDist = ( distSq > 0 ) ? ( Scalar( 1 ) / std::sqrt( distSq ) ) : Scalar( 0 );
 					const Vector3 dirPrevToCur = step * invDist;
 					const Scalar prevFactor = AreaToSolidAngleFactor( prev, dirPrevToCur );
 					const Scalar bsdfRevPdfW = ( prev.pdfRev > 0 && prevFactor > 0 )
-						? prev.pdfRev * distSq / prevFactor : Scalar( 0 );
+						? prev.pdfRev * (prev.pEnvLight ? Scalar(1) : distSq) / prevFactor : Scalar( 0 );
 
 					mis = ApplyBsdfSamplingUpdate(
 						mis, cosThetaOutMed, bsdfDirPdfW, bsdfRevPdfW,
@@ -878,7 +861,7 @@ void VCMIntegrator::ConvertLightSubpath(
 			if( nextFactor <= 0 ) {
 				continue;
 			}
-			const Scalar bsdfDirPdfW_out = next.pdfFwd * nextDistSq / nextFactor;
+			const Scalar bsdfDirPdfW_out = next.pdfFwd * (next.pEnvLight ? Scalar(1) : nextDistSq) / nextFactor;
 
 			// Reverse bsdf pdf at THIS vertex for the direction
 			// back toward 'prev'.  prev.pdfRev is in area measure
@@ -890,7 +873,7 @@ void VCMIntegrator::ConvertLightSubpath(
 
 			Scalar bsdfRevPdfW_out = 0;
 			if( prev.pdfRev > 0 && prevFactor > 0 ) {
-				bsdfRevPdfW_out = prev.pdfRev * distSq / prevFactor;
+				bsdfRevPdfW_out = prev.pdfRev * (prev.pEnvLight ? Scalar(1) : distSq) / prevFactor;
 			}
 
 			mis = ApplyBsdfSamplingUpdate(
@@ -1004,32 +987,11 @@ namespace
 					continue;
 				}
 
-				// SmallVCM-style MIS weight for env-escape.  Mirrors
-				// the explicit-emitter weight formula at the bottom
-				// of this loop (lines ~847-853):
-				//   directPdfA  = envSelProb / discArea     [area on disc]
-				//   emissionPdfW = directPdfA * pdf_env_sa  [joint joint]
-				//   wCamera     = directPdfA * dVCM
-				//               + emissionPdfW * dVC
-				//   weight      = 1 / (VCMMis(1) + VCMMis(wCamera))
-				// When envSelProb = 0 (env not in alias table) both
-				// directPdfA and emissionPdfW are 0 → wCamera = 0 →
-				// weight = 1.  When envSelProb > 0 (env-only scene)
-				// the formula reduces to the same balance against
-				// NEE that EvaluateNEE applies on the other side, so
-				// the two strategies sum to ~1 unbiased.
-				// SmallVCM-style MIS weight for env-escape — mirrors
-				// the explicit-emitter formula at the bottom of this
-				// loop.  Keeping the SmallVCM weight family is
-				// necessary for composition with the rest of VCM's
-				// MIS strategies; a PT-style power-2 override was
-				// tested broken on spectral BDPT.
-				//   directPdfA  = envSelProb / discArea     [area on disc]
-				//   emissionPdfW = directPdfA * pdf_env_sa  [joint]
-				//   wCamera     = directPdfA * dVCM + emissionPdfW * dVC
-				//   weight      = 1 / (VCMMis(1) + VCMMis(wCamera))
+				// Root angular density and joint angular/disc emission density
+				// are the same selected-light densities used by NEE and LT.
+				// Direct camera visibility has no competing root connection.
 				Scalar weightEnv = Scalar( 1 );
-				{
+				if( i > 1 ) {
 					const Scalar envSelProb = pLS->EnvSelectProbability();
 					const Scalar sceneRadius = pLS->GetCachedSceneRadius();
 					const Scalar discArea = ( sceneRadius > 0 ) ?
@@ -1037,19 +999,13 @@ namespace
 					const EnvironmentSampler* pES = pLS->GetEnvironmentSampler();
 					const Scalar pdfEnvSA = ( pES ) ? pES->Pdf( wiSkyEnv ) : Scalar( 0 );
 					const Scalar directPdfA = ( discArea > 0 ) ?
-						( envSelProb / discArea ) : Scalar( 0 );
-					const Scalar emissionPdfW = directPdfA * pdfEnvSA;
-					// Geometric-emissionPdfW divide (matches mesh-emitter
-					// branch ~30 lines below and VCMRecurrence::InitLight's
-					// dVC fix).  pdfSelect for env is `envSelProb`.
-					// Δ5 bisect confirmed this divide is no-op in test
-					// scenes (envSelProb ≈ 1.0 for env-dominant); kept
-					// for consistency with mesh branch.
+						( envSelProb * pdfEnvSA ) : Scalar( 0 );
+					const Scalar emissionPdfW = discArea > 0 ? envSelProb * pdfEnvSA / discArea : Scalar(0);
 					const Scalar wCameraEnvJoint =
 						directPdfA * eyeMis[i].dVCM +
 						emissionPdfW * eyeMis[i].dVC;
 					const Scalar wCameraEnv = ( envSelProb > 0 ) ?
-						( wCameraEnvJoint / envSelProb ) : Scalar( 0 );
+						wCameraEnvJoint : Scalar( 0 );
 					weightEnv = Scalar( 1 ) /
 						( VCMMis( Scalar( 1 ) ) + VCMMis( wCameraEnv ) );
 				}
@@ -1156,25 +1112,13 @@ namespace
 			if( i == 1 ) {
 				weight = Scalar( 1 );
 			} else {
-				// SmallVCM partition-of-unity requires wCamera be
-				// expressed against the GEOMETRIC emission pdfs
-				// (no pdfSelect multiplier).  RISE's local
-				// `directPdfA = pdfSelect × pdfPosition` and
-				// `emissionPdfW = pdfSelect × pdfPosition ×
-				// emissionDirPdfSA` are JOINT — divide the
-				// composed wCamera by `pdfSelect` to extract the
-				// geometric value.  Mirrors the dVC fix at
-				// `VCMRecurrence::InitLight`; under continuous-PMF
-				// `pdfSelect` varies per sample (env-rooted vs
-				// alias-rooted) and the missing divide caused VCM
-				// env+mesh to over-count by ~27 % vs PT (2026-05-29
-				// follow-up to Session 9 continuous-PMF fix).
-				// Empirically verified by Δ4 bisect (reverting this
-				// divide moved env+mesh VCM from 0.780 → 0.807).
+				// NEE and LT sample the selected light; the eye-hit strategy
+				// does not. Dividing these joint densities by selection
+				// would reserve mass for the wrong alternative path density.
 				const Scalar wCameraJoint =
 					directPdfA * eyeMis[i].dVCM + emissionPdfW * eyeMis[i].dVC;
 				const Scalar wCamera = ( pdfSelect > 0 ) ?
-					( wCameraJoint / pdfSelect ) : Scalar( 0 );
+					wCameraJoint : Scalar( 0 );
 				weight = Scalar( 1 ) / ( VCMMis( Scalar( 1 ) ) + VCMMis( wCamera ) );
 			}
 
@@ -1460,7 +1404,7 @@ namespace
 
 			const Scalar directPdfW = ls.isDelta
 				? Scalar( 1 )
-				: ( ls.pdfPosition * distSq / cosAtLight );
+				: envCaseVCM ? ls.pdfDirection : ( ls.pdfPosition * distSq / cosAtLight );
 
 			Scalar emissionDirPdfSA = 0;
 			if( ls.pLuminary ) {
@@ -1558,7 +1502,7 @@ namespace
 			Scalar wCamera = 0;
 			if( emissionDirPdfSA > 0 && distSq > 0 ) {
 				const Scalar camFactor =
-					( emissionDirPdfSA * ( eyeIsMedium_vcm ? v.sigma_t_scalar : cosAtEye ) ) / distSq;
+					( (envCaseVCM ? ls.pdfPosition : emissionDirPdfSA / distSq) * ( eyeIsMedium_vcm ? v.sigma_t_scalar : cosAtEye ) );
 				wCamera = camFactor * (
 					norm.mMisVmWeightFactor
 					+ eyeMis[i].dVCM
@@ -2321,13 +2265,13 @@ void VCMIntegrator::ConvertEyeSubpath(
 
 					const Scalar nextFactor = AreaToSolidAngleFactor( next, -wo );
 					const Scalar bsdfDirPdfW = ( nextFactor > 0 )
-						? next.pdfFwd * nextDistSq / nextFactor : Scalar( 0 );
+						? next.pdfFwd * (next.pEnvLight ? Scalar(1) : nextDistSq) / nextFactor : Scalar( 0 );
 
 					const Scalar invDist = ( distSq > 0 ) ? ( Scalar( 1 ) / std::sqrt( distSq ) ) : Scalar( 0 );
 					const Vector3 dirPrevToCur = step * invDist;
 					const Scalar prevFactor = AreaToSolidAngleFactor( prev, dirPrevToCur );
 					const Scalar bsdfRevPdfW = ( prev.pdfRev > 0 && prevFactor > 0 )
-						? prev.pdfRev * distSq / prevFactor : Scalar( 0 );
+						? prev.pdfRev * (prev.pEnvLight ? Scalar(1) : distSq) / prevFactor : Scalar( 0 );
 
 					// Eye side ungated — see top-of-function comment.
 					mis = ApplyBsdfSamplingUpdate(
@@ -2372,7 +2316,7 @@ void VCMIntegrator::ConvertEyeSubpath(
 			if( nextFactor <= 0 ) {
 				continue;
 			}
-			const Scalar bsdfDirPdfW_out = next.pdfFwd * nextDistSq / nextFactor;
+			const Scalar bsdfDirPdfW_out = next.pdfFwd * (next.pEnvLight ? Scalar(1) : nextDistSq) / nextFactor;
 
 			const Scalar invDist = ( distSq > 0 ) ? ( Scalar( 1 ) / std::sqrt( distSq ) ) : Scalar( 0 );
 			const Vector3 dirPrevToCur = step * invDist;
@@ -2380,7 +2324,7 @@ void VCMIntegrator::ConvertEyeSubpath(
 
 			Scalar bsdfRevPdfW_out = 0;
 			if( prev.pdfRev > 0 && prevFactor > 0 ) {
-				bsdfRevPdfW_out = prev.pdfRev * distSq / prevFactor;
+				bsdfRevPdfW_out = prev.pdfRev * (prev.pEnvLight ? Scalar(1) : distSq) / prevFactor;
 			}
 
 			// Eye side ungated — see top-of-function comment.

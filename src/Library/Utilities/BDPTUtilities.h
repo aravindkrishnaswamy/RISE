@@ -115,9 +115,10 @@ namespace RISE
 		//! destinations the conversion is the IDENTITY — the env
 		//! vertex's pdfFwd / pdfRev are stored in solid-angle
 		//! measure (sr^-1) directly, matching PBRT-v4 §15.5.2
-		//! `ConvertDensity`.  This is what closes the disc-area
-		//! MIS gap on env-IBL paths (see IMPROVEMENTS.md #12 and
-		//! BDPTVertex.h's env-vertex semantics block).
+		//! `ConvertDensity`. This helper converts angular sampling at
+		//! a finite source. A parallel environment emission instead
+		//! requires its conditional projected-disc target density;
+		//! BDPT's generators install that density explicitly.
 		/// \return PDF in the destination's canonical measure.
 		inline Scalar ConvertDensity(
 			const Scalar pdfSolidAngle,				///< [in] PDF in SA measure at `from` [1/sr]
