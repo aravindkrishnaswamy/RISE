@@ -211,8 +211,42 @@ namespace RISE
 			APERTURE_CURRENT_STREAM
 		};
 
-		/// Maps a 3D world point to raster coordinates [0,width) x [0,height)
-		/// \return FALSE if the point is behind the camera or outside the image
+		/// DL-294: the raster guard band.  The camera-side projections
+		/// (`Rasterize`, `RasterizeThrough`, `ThinLensCamera::
+		/// RasterFromLensPoint`) do NOT decide which raster points are on
+		/// the film -- the FILM does, in the same pixel convention the
+		/// eye subpaths are sampled in (every rasterizer draws pixel
+		/// (x, row y) at screen (x + u - 0.5, H - y + v - 0.5), and
+		/// `SplatFilm` and the unfiltered splat fallbacks round a splat
+		/// to the nearest pixel centre in that convention).  Before
+		/// DL-294 the camera cut at its NOMINAL film [0, W) x [0, H),
+		/// which is half a pixel off that convention on both axes: the
+		/// eye film is screen x in [-0.5, W - 0.5), y in [0.5, H + 0.5),
+		/// so the camera rejected the strips x in [-0.5, 0) and
+		/// y in [H, H + 0.5) that lie ON it (the strips it accepted in
+		/// their place lie off it and were rightly dropped by the film),
+		/// and a light-traced (t = 1) splat covered (W - 0.5) x (H - 0.5)
+		/// of a W x H film (-6.15 % on a uniformly lit 16 x 16 frame,
+		/// image column 0 and row 0 at half radiance).  The projections
+		/// now reject only points outside this convention-agnostic
+		/// one-pixel band around the nominal film -- wide enough to
+		/// contain the film under any half-pixel convention, narrow
+		/// enough that every caller's integer cast of a rounded raster
+		/// coordinate stays in range.
+		inline bool InRasterGuardBand(
+			const Scalar px, const Scalar py,
+			const Scalar width, const Scalar height )
+		{
+			return px >= Scalar( -1 ) && px < width + Scalar( 1 ) &&
+			       py >= Scalar( -1 ) && py < height + Scalar( 1 );
+		}
+
+		/// Maps a 3D world point to raster coordinates.  The result is
+		/// NOT clipped to the film: see `InRasterGuardBand` (DL-294) --
+		/// the splat film decides membership.
+		/// \return FALSE if the point is behind the camera or outside
+		/// the one-pixel guard band around the nominal [0,width) x
+		/// [0,height) film
 		bool Rasterize(
 			const ICamera& cam,					///< [in] Camera to project through
 			const Point3& worldPoint,				///< [in] 3D world point to project
