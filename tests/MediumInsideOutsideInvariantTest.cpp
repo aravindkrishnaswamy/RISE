@@ -768,7 +768,7 @@ static Stats CapRender( const std::string& kind, unsigned int cap, unsigned int 
 // gives p_disc |n.w|, independent of the sampled disc-to-hit distance.
 static void EnvironmentGeneratedDensity()
 {
- const std::string scene = BoxScene(Rasterizer("bdpt", ""), kCameraInside)
+ const std::string scene = BoxScene(RasterizerChunk("bdpt", ""), kCameraInside)
   + "omni_light\n{\n\tname density_selection\n\tpower 1000\n\tcolor 1 1 1\n\tposition 0 1 0\n}\n";
  const std::string path = "/tmp/dl346_density_" + std::to_string(getpid()) + ".RISEscene";
  { std::ofstream out(path); out << scene; }
@@ -885,7 +885,7 @@ static void EnvironmentBalanceDiagnostic(int mode = 0)
    mode == 0 ? "vcm" : mode == 1 ? "vcmnm" : "vcmhwss" };
   for( int trial = 0; trial < n; ++trial ) {
    for( int k = 0; k < 3; ++k ) {
-    std::string scene = BoxScene( Rasterizer( kinds[k], "\tmax_volume_bounce 256\n" ),
+    std::string scene = BoxScene( RasterizerChunk( kinds[k], "\tmax_volume_bounce 256\n" ),
       control == 4 ? kCameraOutside : kCameraInside, kHomogeneous, (control == 3 || control == 4) ? 1.0 : 0.8, 24 );
     const std::string absorption = "absorption 0.3 0.3 0.3";
     const std::string scattering = "scattering 0.7 0.7 0.7";
@@ -902,7 +902,7 @@ static void EnvironmentBalanceDiagnostic(int mode = 0)
      // A centered camera in a radius-2 index-matched sphere removes
      // surface transport. Absorption truth is exp(-sigma_a*2).
      const size_t floorBegin=scene.find("clippedplane_geometry");
-     const size_t rasterBegin=scene.find(Rasterizer(kinds[k],"\tmax_volume_bounce 256\n"));
+     const size_t rasterBegin=scene.find(RasterizerChunk(kinds[k],"\tmax_volume_bounce 256\n"));
      scene.erase(floorBegin,rasterBegin-floorBegin);
      const std::string box="box_geometry\n{\n\tname shell_box\n\twidth 4.0\n\theight 4.0\n\tdepth 4.0\n}";
      scene.replace(scene.find(box),box.size(),"sphere_geometry\n{\n\tname shell_box\n\tradius 2\n}");
