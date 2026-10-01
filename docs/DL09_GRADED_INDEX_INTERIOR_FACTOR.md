@@ -449,8 +449,11 @@ the delegated NM walk then Advanced from the midpoint (row I hwss read
 BDPT/PT 1.10-1.12).  `GradedIndexMedium::AdoptTrackedTop` hands the lane
 stack the walk's own tracked index when both innermost media are the same
 graded object (a graded field is wavelength-independent; a no-op for
-constant and dispersive indices): 0.995-0.997.  The mid-path HWSS site is
-covered by construction, not by a row.
+constant and dispersive indices): 0.995-1.022 over four runs (two read
+1.02; band 4 %).  Row I's HWSS check uses `randomwalk_sss_material`, which
+always builds a BSDF, so it covers only the BSDF first-hit site; the
+SPF-only (no-BSDF) first-hit site and the mid-path site have no row and
+are covered by construction only (DL-292 review P3-1).
 
 **Measured** (`GradedIndexInteriorFactorTest`, reference-free): rows
 J/K graded/control 2.2057 -> 1.0000; L 0.4408 -> 0.99173 (closed form
@@ -459,8 +462,15 @@ I 0.48 / 0.49 -> 0.995 / 0.994; O 2.2504 -> 1.0002.  The full table with
 controls, n and sd is the debt-dl292 slice note in DEBT_LEDGER.md.
 
 **Left open**, with numbers (opt-in rows, `GRADED_ROWS=QR`, single
-renders): SMS chains inside a graded medium (row Q, SMS/PT 1.9410 graded
-vs 0.7003 constant); VCM through a glass sphere nested in the graded box
+renders): SMS chains inside a graded medium (row Q, SMS/PT 1.9410 graded;
+the 0.7003 "constant" control is a separate PT+SMS deficit in ANY
+constant ior-1.4 medium, DL-336 -- against an index-matched control the
+graded ratio is 1.98); env-NEE, Step-1 directional/ambient lights and
+BDPT's zero-exitance sweep carry no shadow track, so their graded piece
+still prices at 1 (code reading, unmeasured; DL-292 review P2-2); the
+track's exit from a constant object nested in the graded medium uses the
+stale parent index, DL-293's pattern on the NEE side (consistent with the
+BSDF arm, no partition break); VCM through a glass sphere nested in the graded box
 reads VCM/PT **0.5009** vs 0.9982 constant while BDPT reads 1.0078 --
 filed as **DL-335**; a connection through a graded object's own rough
 surface with one endpoint outside (row R1, BDPT/PT 1.0001, VCM/PT 0.9991)
