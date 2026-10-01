@@ -55,7 +55,9 @@
 #include "../Interfaces/ISurfaceSignalProvider.h"
 #include "../Interfaces/ILog.h"
 
+#include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <vector>
 
 using namespace RISE;
@@ -310,6 +312,128 @@ namespace
 }
 
 //////////////////////////////////////////////////////////////////////
+// Eye-side merge footprint (DL-319).
+//
+// The merge kernel blurs the image at the scale of the merge radius,
+// and VCM merging is CONSISTENT, not unbiased: a radius wider than the
+// features the image resolves is a bias, not noise (a 0.14-wide patch
+// under a 0.19 radius read 0.62 of its closed form).  The quantity that
+// says what the image resolves is the EYE side's pixel footprint at the
+// surfaces it merges on, so this traces one eye subpath per pixel of a
+// grid, walks it through pure-delta interfaces to the first vertex
+// EvaluateMergesImpl would merge at (SURFACE, material, isConnectible),
+// and measures the world-space pixel spacing there from the camera
+// ray's differentials propagated as a ray cone along the path length
+// (the cone ignores the curvature of the delta interfaces it crosses;
+// at a flat refraction into index n it overestimates the in-medium
+// part by up to n, toward the old, larger radius).
+//
+// The median over the grid is what PreRenderSetup clips the
+// light-segment radius to.  Why the pixel footprint is also the right
+// NOISE scale: a pass shoots W x H light subpaths, and the visible
+// region's area is ~W x H footprints squared, so a radius of k
+// footprints holds ~ pi k^2 x (light vertices landing in the visible
+// region per light subpath) photons per query -- independent of the
+// image resolution and of the enclosure size, which is exactly what
+// the light-segment median is not.
+//////////////////////////////////////////////////////////////////////
+namespace
+{
+	struct EyeMergeFootprint
+	{
+		std::size_t	samples = 0;		///< eye rays traced
+		std::size_t	mergeable = 0;		///< reached a merge vertex with a usable footprint
+		Scalar		medianFootprint = 0;	///< world-space pixel spacing there (median)
+	};
+
+	EyeMergeFootprint EstimateEyeMergeFootprint(
+		const IScene& scene,
+		const IRayCaster& caster,
+		const ICamera& camera,
+		const BDPTIntegrator& gen,
+		const RuntimeContext& rc,
+		const unsigned int width,
+		const unsigned int height
+		)
+	{
+		EyeMergeFootprint out;
+		if( width == 0 || height == 0 ) {
+			return out;
+		}
+
+		// At most ~16k eye rays: the pass stays small next to the
+		// W x H light pre-pass that runs beside it (+20-30 ms at 1 spp
+		// on the shipped caustic scenes, once per render).
+		const std::size_t kTarget = 16384;
+		const std::size_t pixels = static_cast<std::size_t>( width ) * height;
+		unsigned int stride = 1;
+		while( pixels / ( static_cast<std::size_t>( stride ) * stride ) > kTarget ) {
+			stride++;
+		}
+
+		std::vector<Scalar> footprints;
+		footprints.reserve( pixels / ( static_cast<std::size_t>( stride ) * stride ) + 1 );
+		std::vector<BDPTVertex> verts;
+		std::vector<uint32_t> starts;
+
+		for( unsigned int y = stride / 2; y < height; y += stride )
+		{
+			for( unsigned int x = stride / 2; x < width; x += stride )
+			{
+				const Point2 ptOnScreen( x, height - y );
+				Ray cameraRay;
+				if( !camera.GenerateRay( rc, cameraRay, ptOnScreen ) ) {
+					continue;
+				}
+				out.samples++;
+				if( !cameraRay.hasDifferentials ) {
+					continue;
+				}
+
+				SobolSampler sampler( 0, y * width + x );
+				verts.clear();
+				gen.GenerateEyeSubpath( rc, cameraRay, ptOnScreen, scene, caster, sampler, verts, starts, 0 );
+
+				// Walk pure-delta interfaces (non-connectible surfaces) to
+				// the first merge vertex.  Anything else first (a medium
+				// scatter, an emitter) ends the walk unrecorded: a
+				// scattered path has no pixel footprint.
+				Scalar pathLength = 0;
+				Point3 prev = cameraRay.origin;
+				for( std::size_t k = 1; k < verts.size(); k++ )
+				{
+					const BDPTVertex& v = verts[k];
+					pathLength += Vector3Ops::Magnitude( Vector3Ops::mkVector3( v.position, prev ) );
+					prev = v.position;
+					if( v.type != BDPTVertex::SURFACE || !v.pMaterial ) {
+						break;
+					}
+					if( !v.isConnectible ) {
+						continue;
+					}
+					const RayDifferentials& d = cameraRay.diffs;
+					const Scalar fx = Vector3Ops::Magnitude( d.rxOrigin + d.rxDir * pathLength );
+					const Scalar fy = Vector3Ops::Magnitude( d.ryOrigin + d.ryDir * pathLength );
+					const Scalar fp = Scalar( 0.5 ) * ( fx + fy );
+					if( fp > 0 && std::isfinite( fp ) ) {
+						footprints.push_back( fp );
+						out.mergeable++;
+					}
+					break;
+				}
+			}
+		}
+
+		if( !footprints.empty() ) {
+			std::nth_element( footprints.begin(),
+				footprints.begin() + footprints.size() / 2, footprints.end() );
+			out.medianFootprint = footprints[footprints.size() / 2];
+		}
+		return out;
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
 // PreRenderSetup — VCM light pass
 //
 // The initial light pass is parallelized via LightPassDispatcher.
@@ -539,37 +663,84 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 				"paths shot=0, light vertices stored=0, kd-tree built=0" );
 			return;
 		}
-		else if( segLens.size() >= 8 ) {
-			std::sort( segLens.begin(), segLens.end() );
-			const Scalar medianSeg = segLens[segLens.size() / 2];
-			effectiveMergeRadius = Scalar( 0.01 ) * medianSeg;
-			// Scene-geometric floor: 1/10th of the initial auto-radius.
-			// Prevents progressive shrinkage collapsing to sub-numeric-
-			// precision on pathological scenes.  Users can override via
-			// a scene param in a later step.
-			mGeometricRadiusFloor = Scalar( 0.001 ) * medianSeg;
+		else {
+			// DL-319: what the camera resolves at the vertices it merges on.
+			const EyeMergeFootprint eye = EstimateEyeMergeFootprint(
+				pScene, *pCaster, *pCamera, *pGen, rc, width, height );
 
-			GlobalLog()->PrintEx( eLog_Event,
-				"VCMRasterizerBase::PreRenderSetup:: auto-radius "
-				"segments=%zu median_segment=%g effective_radius=%g geom_floor=%g",
-				segLens.size(), (double)medianSeg,
-				(double)effectiveMergeRadius, (double)mGeometricRadiusFloor );
-		} else {
-			// Not a failure of VCM: the pre-pass found a delta surface but
-			// fewer than 8 light-subpath segments touching a MERGEABLE
-			// (non-delta) surface -- e.g. a camera inside a closed
-			// dielectric under an environment light, where nothing is
-			// diffuse, or a receiver too small for the pre-pass's one
-			// subpath per pixel to land on.  VM is disabled; the VC
-			// strategies are unaffected and stay unbiased
-			// (RefractiveRadianceScalingTest rows B and E read their
-			// closed forms through this branch).  DL-308.
-			GlobalLog()->PrintEx( eLog_Warning,
-				"VCMRasterizerBase::PreRenderSetup:: auto-radius: only %zu "
-				"pre-pass light segments reach a mergeable (non-delta) surface "
-				"(need 8) — disabling VM; set merge_radius to force it",
-				segLens.size() );
-			effectiveMergeRadius = 0;
+			if( segLens.size() >= 8 ) {
+				std::sort( segLens.begin(), segLens.end() );
+				const Scalar medianSeg = segLens[segLens.size() / 2];
+				// Light-side scale: 1 % of the median light segment.  It
+				// knows the photon density but not which surfaces the
+				// image sees.
+				const Scalar rLight = Scalar( 0.01 ) * medianSeg;
+				effectiveMergeRadius = rLight;
+				// Scene-geometric floor: 1/10th of the initial auto-radius.
+				// Prevents progressive shrinkage collapsing to sub-numeric-
+				// precision on pathological scenes.
+				mGeometricRadiusFloor = Scalar( 0.001 ) * medianSeg;
+
+				// Eye-side clip (DL-319): never wider than
+				// kMergeRadiusFootprints pixel footprints at the camera's
+				// merge vertices.  Where the light-side scale is already
+				// that small nothing changes: every shipped VCM scene and
+				// SMS `_ref` twin sits at 1.0-6.2 footprints (diacaustic
+				// 6.2, triplecaustic 3.0, pool 1.8, egg 1.5, SMS refs
+				// 1.0-1.1 -- measured 2026-10-01), so 8 leaves their
+				// hand-tuned noise/blur balance alone.  Where light paths
+				// mostly run to a large enclosure the image never sees
+				// (RefractiveRadianceScalingTest row E in its black room:
+				// ~70 footprints, wider than the receiver), the radius
+				// falls to what the image resolves.  DL-319.
+				const Scalar kMergeRadiusFootprints = Scalar( 8 );
+				const Scalar rEye = kMergeRadiusFootprints * eye.medianFootprint;
+				const bool eyeClipped = eye.mergeable > 0 && rEye > 0 && rEye < rLight;
+				if( eyeClipped ) {
+					effectiveMergeRadius = rEye;
+					mGeometricRadiusFloor = Scalar( 0.1 ) * rEye;
+				}
+
+				GlobalLog()->PrintEx( eLog_Event,
+					"VCMRasterizerBase::PreRenderSetup:: auto-radius "
+					"segments=%zu median_segment=%g light_radius=%g "
+					"eye_footprint=%g (%zu of %zu eye samples) eye_radius=%g "
+					"effective_radius=%g (%s) geom_floor=%g",
+					segLens.size(), (double)medianSeg, (double)rLight,
+					(double)eye.medianFootprint, eye.mergeable, eye.samples, (double)rEye,
+					(double)effectiveMergeRadius, eyeClipped ? "eye-clipped" : "light",
+					(double)mGeometricRadiusFloor );
+			} else {
+				// Not a failure of VCM: the pre-pass found a delta surface
+				// but fewer than 8 light-subpath segments touching a
+				// MERGEABLE (non-delta) surface.  VM is disabled; the VC
+				// strategies are unaffected and stay unbiased
+				// (RefractiveRadianceScalingTest rows B and E read their
+				// closed forms through this branch).  DL-308; the eye
+				// pass says which of the two reasons fired (DL-319).
+				if( eye.mergeable == 0 ) {
+					// e.g. a camera inside a closed dielectric under an
+					// environment light: nothing it sees is diffuse.
+					GlobalLog()->PrintEx( eLog_Warning,
+						"VCMRasterizerBase::PreRenderSetup:: auto-radius: the camera "
+						"sees no mergeable (non-delta) surface (0 of %zu eye samples) "
+						"and only %zu pre-pass light segments reach one (need 8) — "
+						"disabling VM; set merge_radius to force it",
+						eye.samples, segLens.size() );
+				} else {
+					// e.g. a small receiver: the camera sees it, but the
+					// pre-pass's one light subpath per pixel lands on
+					// mergeable surfaces fewer than 8 times.
+					GlobalLog()->PrintEx( eLog_Warning,
+						"VCMRasterizerBase::PreRenderSetup:: auto-radius: the camera "
+						"sees mergeable surfaces (%zu of %zu eye samples) but only %zu "
+						"pre-pass light segments reach a mergeable surface (need 8) — "
+						"too few light paths land there to size a radius; disabling VM; "
+						"set merge_radius to force it",
+						eye.mergeable, eye.samples, segLens.size() );
+				}
+				effectiveMergeRadius = 0;
+			}
 		}
 	}
 

@@ -2519,9 +2519,135 @@ static void TestSSSBarrierDL317()
 		1024, 1, 0.007, 0 );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Topology X: AUTOMATIC merge radius on a small lit patch inside a
+// large black room (DL-319).
+//
+// A 0.14-wide Lambertian patch, lit directly by a sphere emitter, seen
+// by a 2-degree pinhole that frames only its middle; around everything
+// a black (absorbing) room of radius 20, and a mirror sphere far below
+// the patch, out of view, whose only job is to give the light pre-pass
+// a delta surface so VCM enables merging at all.  Nothing but the
+// emitter lights the visible face (the room returns nothing, the
+// mirror's light reaches only the patch's underside), so the image is
+// the closed form rho/pi * E with E = M * (R/d)^2 * cos(theta) per
+// footprint point (a sphere's projected solid angle; M the luminaire's
+// exitance, L = M/pi).
+//
+// Before DL-319 the auto radius was 1 % of the median light-subpath
+// segment, and nearly every light segment runs to the room wall 20
+// units out: radius ~0.19, wider than the patch, so the merge's kernel
+// estimate under-read it.  The radius is now clipped to 8 eye-side
+// pixel footprints at the camera's merge vertices (~0.02 here).
+// Measured (VCM/closed form, one salted render per seed base 11/12/13,
+// 2048 spp, 2026-10-01): pre-DL-319 0.7852 / 0.7804 / 0.7676 (auto
+// radius 0.195, 73 footprints); post 1.0004 / 0.9997 / 1.0001 (radius
+// 0.0214, eye-clipped).  Band 1 % (> 20 sd of the post-fix spread).
+//////////////////////////////////////////////////////////////////////
+namespace TopologyX
+{
+	const double kPi = 3.14159265358979323846;
+	const double kYPatch = 0.05, kPatch = 0.07, kRho = 0.5;
+	const double kEmitX = 0.8, kEmitY = 2.5, kEmitZ = 0.0, kEmitR = 0.4, kEmitScale = 1.688;
+	const double kCamY = 2.5, kCamZ = 0.001, kFovDeg = 2.0;
+
+	//! Pixel mean over the pinhole footprint (16 x 16 grid, square film,
+	//! half-extent tan(fov/2)).  `inside` reports whether every footprint
+	//! sample landed on the patch.
+	double ClosedForm( bool& inside )
+	{
+		inside = true;
+		const double t = std::tan( 0.5 * kFovDeg * kPi / 180.0 );
+		double fx = 0.0, fy = -kCamY, fz = -kCamZ;
+		const double fl = std::sqrt( fx * fx + fy * fy + fz * fz );
+		fx /= fl; fy /= fl; fz /= fl;
+		// right = forward x up(0,0,1), up2 = right x forward.
+		double rx = fy, ry = -fx, rz = 0.0;
+		const double rl = std::sqrt( rx * rx + ry * ry + rz * rz );
+		rx /= rl; ry /= rl; rz /= rl;
+		const double ux = ry * fz - rz * fy, uy = rz * fx - rx * fz, uz = rx * fy - ry * fx;
+		const int G = 16;
+		double sum = 0.0;
+		for( int i = 0; i < G; i++ ) {
+			for( int j = 0; j < G; j++ ) {
+				const double u = ( ( i + 0.5 ) / G * 2.0 - 1.0 ) * t;
+				const double v = ( ( j + 0.5 ) / G * 2.0 - 1.0 ) * t;
+				const double dx = fx + u * rx + v * ux, dy = fy + u * ry + v * uy, dz = fz + u * rz + v * uz;
+				const double s = ( kYPatch - kCamY ) / dy;
+				const double px = s * dx, pz = kCamZ + s * dz;
+				if( std::fabs( px ) >= kPatch || std::fabs( pz ) >= kPatch ) inside = false;
+				const double vx = kEmitX - px, vy = kEmitY - kYPatch, vz = kEmitZ - pz;
+				const double d2 = vx * vx + vy * vy + vz * vz;
+				const double cosT = vy / std::sqrt( d2 );
+				sum += kEmitScale * ( kEmitR * kEmitR / d2 ) * cosT;
+			}
+		}
+		return kRho / kPi * sum / double( G * G );
+	}
+
+	std::string Scene()
+	{
+		char buf[4096];
+		std::snprintf( buf, sizeof(buf),
+			"film\n{\n\twidth 32\n\theight 32\n}\n\n"
+			"pinhole_camera\n{\n\tlocation 0.0 %g %g\n\tlookat 0 0 0\n\tup 0 0 1\n\tfov %g\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor %g %g %g\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+			"lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n"
+			"clippedplane_geometry\n{\n\tname quad\n"
+			"\tpta -%g %g %g\n\tptb %g %g %g\n\tptc %g %g -%g\n\tptd -%g %g -%g\n}\n\n"
+			"standard_object\n{\n\tname obj_quad\n\tgeometry quad\n\tmaterial mat_diffuse\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt_emit\n\tcolor 1.0 1.0 1.0\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+			"lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n\tscale %g\n\tmaterial none\n}\n\n"
+			"sphere_geometry\n{\n\tname geo_emit\n\tradius %g\n}\n\n"
+			"standard_object\n{\n\tname obj_emit\n\tgeometry geo_emit\n\tmaterial mat_emit\n\tposition %g %g %g\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt_mirror\n\tcolor 1 1 1\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+			"perfectreflector_material\n{\n\tname mat_mirror\n\treflectance pnt_mirror\n}\n\n"
+			"sphere_geometry\n{\n\tname geo_mirror\n\tradius 1.0\n}\n\n"
+			"standard_object\n{\n\tname obj_mirror\n\tgeometry geo_mirror\n\tmaterial mat_mirror\n\tposition 0 -4 0\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt_black\n\tcolor 0 0 0\n}\n\n"
+			"lambertian_material\n{\n\tname mat_black\n\treflectance pnt_black\n}\n\n"
+			"sphere_geometry\n{\n\tname room_geo\n\tradius 20\n}\n\n"
+			"standard_object\n{\n\tname room\n\tgeometry room_geo\n\tmaterial mat_black\n}\n",
+			kCamY, kCamZ, kFovDeg, kRho, kRho, kRho,
+			kPatch, kYPatch, kPatch, kPatch, kYPatch, kPatch, kPatch, kYPatch, kPatch, kPatch, kYPatch, kPatch,
+			kEmitScale, kEmitR, kEmitX, kEmitY, kEmitZ );
+		return std::string( buf );
+	}
+
+	const char* kRasterizerVCM =
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+		"vcm_pel_rasterizer\n{\n\tmax_eye_depth 5\n\tmax_light_depth 5\n\tsamples 2048\n\tmerge_radius 0.0\n"
+		"\tvc_enabled true\n\tvm_enabled true\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
+}
+
+static void TestAutoRadiusSmallPatchX()
+{
+	std::cout << "Testing topology X: VCM automatic merge radius, small patch in a large black room (DL-319)" << std::endl;
+	bool inside = false;
+	const double expected = TopologyX::ClosedForm( inside );
+	Check( expected > 0 && inside, "Topology X: closed form evaluated with the whole footprint on the patch" );
+	if( !( expected > 0 ) ) return;
+
+	const std::string scene = std::string( "RISE ASCII SCENE 7\n" ) + TopologyX::kRasterizerVCM + TopologyX::Scene();
+	const std::string path = WriteSceneToTempFile( scene.c_str(), "autoradius_x" );
+	const ImageStats st = path.empty() ? ImageStats{} : RenderAndComputeStats( path.c_str() );
+	if( !path.empty() ) std::remove( path.c_str() );
+	Check( st.valid, "Topology X: VCM render produced output" );
+	if( !st.valid ) return;
+	const double m = ( st.mean[0] + st.mean[1] + st.mean[2] ) / 3.0;
+	const double tol = 0.01;
+	char buf[256];
+	std::snprintf( buf, sizeof(buf),
+		"Topology X: VCM mean %.6f vs closed form %.6f (ratio %.4f), within %g%% (DL-319)",
+		m, expected, m / expected, 100.0 * tol );
+	std::cout << "    " << buf << std::endl;
+	Check( std::fabs( m / expected - 1.0 ) <= tol, buf );
+}
+
 int main( int argc, char** argv )
 {
 	std::cout << "=== VCMStrategyBalanceTest ===" << std::endl;
+
 
 	// DL-365: an optional trailing numeric argument is a seed-base
 	// override for the isolated filters below, matching
@@ -2549,6 +2675,14 @@ int main( int argc, char** argv )
 		ApplySeedOverride( 2 );
 		TestSSSBarrierDL317();
 		TestRoughSSSEmptyContainerU();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+
+	// DL-319: topology X alone.
+	if( argc >= 2 && std::strcmp( argv[1], "--x-only" ) == 0 ) {
+		ApplySeedOverride( 2 );
+		TestAutoRadiusSmallPatchX();
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
@@ -2657,6 +2791,7 @@ int main( int argc, char** argv )
 	TestSSSBarrierDL317();
 	TestNonfiniteCandidateRejected();
 	TestNarrowFovSplatW();
+	TestAutoRadiusSmallPatchX();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;
