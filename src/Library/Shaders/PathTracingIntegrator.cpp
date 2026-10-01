@@ -5579,6 +5579,10 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
                     const Point3 probePoint = Point3Ops::mkPoint3(firstHit.geometric.ray.origin,
                         firstHit.geometric.ray.Dir() * (firstHit.geometric.range * 0.5));
                     IORStackSeeding::SeedFromPoint(laneStack, probePoint, scene, swl.lambda[i]);
+                    // DL-292: the midpoint seed recorded a graded medium's
+                    // index at the MIDPOINT; the delegated walk's first
+                    // Advance must telescope from the segment's start.
+                    GradedIndexMedium::AdoptTrackedTop( laneStack, initialIorStack );
                     hwssResult[i] = IntegrateFromHitNM( rc, rast, firstHit,
 					swl.lambda[i], scene, caster, sampler, pRadianceMap,
 					startDepth, laneStack, bsdfPdf, 0,
@@ -5630,6 +5634,10 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
                     const Point3 probePoint = Point3Ops::mkPoint3(firstHit.geometric.ray.origin,
                         firstHit.geometric.ray.Dir() * (firstHit.geometric.range * 0.5));
                     IORStackSeeding::SeedFromPoint(laneStack, probePoint, scene, swl.lambda[i]);
+                    // DL-292: the midpoint seed recorded a graded medium's
+                    // index at the MIDPOINT; the delegated walk's first
+                    // Advance must telescope from the segment's start.
+                    GradedIndexMedium::AdoptTrackedTop( laneStack, initialIorStack );
                     hwssResult[i] = IntegrateFromHitNM( rc, rast, firstHit,
 						swl.lambda[i], scene, caster, sampler, pRadianceMap,
 						startDepth, laneStack, bsdfPdf, 0,
@@ -6351,6 +6359,10 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
                     const Point3 probePoint = Point3Ops::mkPoint3(ri.geometric.ray.origin,
                         ri.geometric.ray.Dir() * (ri.geometric.range * 0.5));
                     IORStackSeeding::SeedFromPoint(laneStack, probePoint, scene, swl.lambda[w]);
+                    // DL-292: the hero stack was already Advanced to this hit
+                    // (its factor is in throughputComp), so the delegated walk's
+                    // Advance here must be a no-op, not a midpoint-to-hit factor.
+                    GradedIndexMedium::AdoptTrackedTop( laneStack, iorStack );
                     hwssResult[w] += throughputComp[w] * IntegrateFromHitNM(
 						rc, rast, ri, swl.lambda[w], scene, caster, sampler,
 						pRadianceMap, depth, laneStack, bsdfPdf, 0,

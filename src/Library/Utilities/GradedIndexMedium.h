@@ -203,6 +203,25 @@ namespace RISE
 			}
 		}
 
+		//! A stack REBUILT mid-segment (HWSS's per-lane containment replay
+		//! seeds each lane at the incoming segment's midpoint, which records
+		//! n(midpoint)) adopts the index the walk's OWN stack tracks (n at
+		//! the segment's start if the walk has not Advanced to the hit yet,
+		//! n(hit) if it has and already paid the factor), so the delegated
+		//! walk's next Advance telescopes exactly as the walk's own stack
+		//! would -- never from the midpoint.  Only when both
+		//! stacks' innermost medium is the same graded object: a graded
+		//! field is wavelength-independent, so the hero's tracked value is
+		//! every lane's.  No-op otherwise (a constant or dispersive index
+		//! keeps the lane's own value).
+		inline void AdoptTrackedTop( IORStack& rebuilt, const IORStack& walk )
+		{
+			if( TopField( rebuilt ) && rebuilt.topObject() == walk.topObject() &&
+				IsUsableIOR( walk.top() ) ) {
+				rebuilt.SetTopIOR( walk.top() );
+			}
+		}
+
 		//! What a path VERTEX records for later connections: the graded
 		//! medium the walk was in when it arrived (null if none) and the
 		//! tracked index there (the stack top, which telescopes with the
