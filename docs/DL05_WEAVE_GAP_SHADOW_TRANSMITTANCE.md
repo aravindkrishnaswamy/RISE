@@ -444,7 +444,14 @@ fire only when both hold:
   exit continuations (`rs2.smsHadNonSpecularShading`, which passed `true`
   into a `CastRay` whose first vertex is the exit point -- also never
   SMS-evaluated; no measurable effect on the review's fixture, 0.9974 ->
-  1.0025, but the same wrong claim).  It cannot double-count: SMS never
+  1.0025, but the same wrong claim).  The reason it cannot move a shipped
+  render: the exit continuation re-enters through `RayCaster` and the
+  scene's `DefaultPathTracing` shader op, which is built with
+  `smsEnabled = false` (`Job.cpp`), so the nested call never reads the
+  flags; the round-3 review measured the SSS region of a skin + Lambertian
+  + smooth-SSS fixture at exactly 0.005504 under PT+SMS in both builds.
+  It matters only for a user-authored `pathtracing_shaderop` with
+  `sms_enabled TRUE`, or a nested call that reaches the NM body directly.  It cannot double-count: SMS never
   runs at either kind of vertex.  The medium vertex is the one remaining
   inhabitant of the same wrong claim (DL-340).
 - **The HWSS hand-offs (review P1-1, round 2).**  The HWSS body hands a
@@ -568,7 +575,14 @@ env 0.05 %; HWSS parity area 1.00 % (5.0) / look-up 0.73 % (5.5) / env
 coated, direct-view <= 0.17 %; S1 / S4 0.44 / 0.53 %; anchored ceiling
 RGB 1.26 % (4.8), HWSS SSS hand-off 2.29 % (9 % band: 3.9), no-BSDF
 hand-off 2.11 % (4.3); skin under a slab RGB 1.18 % (4.2), spectral
-1.85 % (4.3).
+1.85 % (4.3).  The round-3 review's own 12 salted replicates read the
+composite look-up at 3.18 % sd with SMS on (mean error +1.31 % +/- 0.92
+sem, no bias; 2.04 % with SMS off) and the composite area at 4.07 %, so
+the 15 % look-up band is >= 4.7 sd on the worst figure measured by
+anyone.  The single-threaded run is the default only when
+`RISE_OPTIONS_FILE` is unset: a caller-supplied options file without
+`force_number_of_threads 1` silently returns the suite to multithreaded,
+non-repeatable rendering.
 
 ### 9.4 Double-count audit (`WEAVE_GAP_FILTER=dl295audit`)
 

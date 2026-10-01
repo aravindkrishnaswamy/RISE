@@ -1860,9 +1860,11 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 	// already accounts for those paths.  Without the non-specular
 	// check, paths like camera->glass->light would be incorrectly
 	// suppressed even though no SMS evaluation covered them.
-	// Initialize from caller so recursive CastRay calls (e.g. via
-	// SSS / BSSRDF entry, branching shader-op chains) carry the
-	// suppression state from the parent call.
+	// Initialize from caller so a recursive CastRay carries the
+	// suppression state from the parent call -- but only where the
+	// parent vertex was a real SMS anchor (DL-295: a non-delta vertex
+	// at which SMS was EVALUATED).  BSSRDF exits, SPF-only vertices and
+	// medium hand-offs pass smsHadNonSpecularShading = false.
 	bool bPassedThroughSpecular = smsPassedThroughSpecular_initial;
 	bool bHadNonSpecularShading = smsHadNonSpecularShading_initial;
 	// DL-295: true while the specular chain since the last non-delta

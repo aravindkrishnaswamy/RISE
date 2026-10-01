@@ -147,11 +147,15 @@ light hits that SMS already covers.  Audit:
   through to `w=1` — so if suppression didn't set it to false, full
   emission is added.  This is the firefly mechanism behind the
   classic "random bright pixels on the floor OUTSIDE the caustic."
-- On recursive `CastRay` handoff (branching path, BSSRDF), the
-  child's `rs2.smsPassedThroughSpecular` and
-  `rs2.smsHadNonSpecularShading` must be populated from the parent's
-  state.  A fresh `RAY_STATE` starts with `false/false` and breaks
-  the suppression chain.
+- On a recursive `CastRay` handoff, the child's
+  `rs2.smsPassedThroughSpecular` / `rs2.smsHadNonSpecularShading` carry
+  the parent's state ONLY where the parent vertex really is an SMS
+  anchor (DL-295, next bullet).  A BSSRDF exit continuation, an SPF-only
+  (no-BSDF) vertex and a medium vertex are NOT anchors -- SMS never
+  runs there -- so they hand off `smsHadNonSpecularShading = false`;
+  passing `true` there suppresses an emitter hit nothing else estimates
+  (skin under a glass slab read exactly 0 under PT+SMS before DL-295
+  round 3).  Do not "restore" `true` at those hand-offs.
 - The OPPOSITE failure -- energy LOSS, not fireflies (DL-295,
   2026-09-28/29): suppression is only correct for a chain SMS actually
   estimates, which needs BOTH (1) an SMS anchor before the chain -- a
