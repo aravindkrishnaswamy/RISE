@@ -2207,9 +2207,15 @@ static void TestNarrowFovSplatW()
 // a second copy of the eye-sampled family (measured: with (a) and (b)
 // fixed alone, the wall-dominated V row below read +3.5% merging on,
 // +2.65% off).  The fix is a barrier: zero state at the entry, the
-// ordinary onward update only from a connectible entry, and no
-// strategy at or past a light-side entry (VCMIntegrator.cpp,
-// BSSRDFEntryVertexState / UsableLightSubpathLength).
+// ordinary onward update only from a connectible entry, and a
+// partition BY PATH between the two jump families -- a light-side jump
+// the eye family can cover (any NEE / connection / merge in the light
+// segment, or s=0) ends the usable light subpath; one it cannot cover
+// (a delta light feeding a random-walk entry: rows D1/D2) is kept
+// (VCMIntegrator.cpp, BSSRDFEntryVertexState / LightSegmentEyeCoverable
+// / UsableLightSubpathLength).  Cutting the light family everywhere --
+// the first DL-317 fix, 3763e998 -- left that class estimated by
+// nothing (D1/D2 -97%; external review).
 //
 // Rows, all PT-referenced (PT samples only the eye side of a jump, as
 // BDPT effectively does), VCM with merging ON and OFF:
