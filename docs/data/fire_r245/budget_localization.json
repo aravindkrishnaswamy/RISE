@@ -1,0 +1,1757 @@
+{
+  "status": "verified_budget_descriptive_localization_not_causal_proof",
+  "case": "a9369e770465bd76e2cc8d5fc3b79e7c2aac038ecb14a0e4424a97ba2f98d586",
+  "steps": 15315,
+  "frames": 235,
+  "end_time_s": 25.156864278920693,
+  "statistics_start_s": 10.531864278900095,
+  "statistics_duration_s": 14.625000000020599,
+  "scalar": {
+    "full": {
+      "Z": {
+        "beginning_inventory": 0.0,
+        "ending_inventory": 0.0016320110776306465,
+        "source_increment": 0.0,
+        "closure_residual": 1.2908658026267015e-11,
+        "interstep_inventory_change": 0.0,
+        "xmin_in": 8.003746796687753e-08,
+        "xmin_out": 5.8658871455634115e-08,
+        "xmax_in": 7.707767950848072e-08,
+        "xmax_out": 5.969863729400838e-08,
+        "ymin_in": 7.798229642191872e-08,
+        "ymin_out": 5.745299009320265e-08,
+        "ymax_in": 7.764923038786459e-08,
+        "ymax_out": 5.806829462409962e-08,
+        "bottom_in": 0.016594449150145164,
+        "bottom_out": 0.0,
+        "top_in": 9.951153873243057e-08,
+        "top_out": 0.014962616464846082,
+        "bottom_nonburner_in": 0.0,
+        "bottom_nonburner_out": 0.0,
+        "bottom_burner_in": 0.016594449150145164,
+        "bottom_burner_out": 0.0,
+        "units": "kg",
+        "lateral_in": 3.1274667428514157e-07,
+        "lateral_out": 2.3387879346694477e-07,
+        "inventory_change": 0.0016320110776306465
+      },
+      "CH4": {
+        "beginning_inventory": 0.0,
+        "ending_inventory": 0.0008370587851589271,
+        "source_increment": -0.009294826668875366,
+        "closure_residual": -3.5792821709689244e-10,
+        "interstep_inventory_change": 0.0,
+        "xmin_in": 1.2399934478658285e-07,
+        "xmin_out": 9.44590239717039e-08,
+        "xmax_in": 1.193428443177938e-07,
+        "xmax_out": 9.630042696347523e-08,
+        "ymin_in": 1.2073327162199874e-07,
+        "ymin_out": 9.26162187155663e-08,
+        "ymax_in": 1.2023008966307517e-07,
+        "ymax_out": 9.369551397937703e-08,
+        "bottom_in": 0.016594449150145164,
+        "bottom_out": 0.0,
+        "top_in": 1.0935286905273065e-07,
+        "top_out": 0.006462779925421941,
+        "bottom_nonburner_in": 0.0,
+        "bottom_nonburner_out": 0.0,
+        "bottom_burner_in": 0.016594449150145164,
+        "bottom_burner_out": 0.0,
+        "units": "kg",
+        "lateral_in": 4.843055503894506e-07,
+        "lateral_out": 3.7707118363012245e-07,
+        "inventory_change": 0.0008370587851589271
+      },
+      "O2": {
+        "beginning_inventory": 16.030910708331454,
+        "ending_inventory": 16.00271450361903,
+        "source_increment": -0.03707951443817286,
+        "closure_residual": -4.433634541955218e-06,
+        "interstep_inventory_change": 0.0,
+        "xmin_in": 0.8034719709240109,
+        "xmin_out": 0.01224032374582272,
+        "xmax_in": 0.8261682157008802,
+        "xmax_out": 0.01232567737839474,
+        "ymin_in": 0.8038189800311328,
+        "ymin_out": 0.011846797742274338,
+        "ymax_in": 0.8233250805609859,
+        "ymax_out": 0.012008673061014628,
+        "bottom_in": 0.0,
+        "bottom_out": 0.0,
+        "top_in": 1.2620470478977968,
+        "top_out": 4.461522079827014,
+        "bottom_nonburner_in": 0.0,
+        "bottom_nonburner_out": 0.0,
+        "bottom_burner_in": 0.0,
+        "bottom_burner_out": 0.0,
+        "units": "kg",
+        "lateral_in": 3.2567842472170097,
+        "lateral_out": 0.048421471927506426,
+        "inventory_change": -0.02819620471242601
+      },
+      "N2": {
+        "beginning_inventory": 52.79565092306473,
+        "ending_inventory": 52.713205776014156,
+        "source_increment": 0.0,
+        "closure_residual": 2.055918274016315e-06,
+        "interstep_inventory_change": 0.0,
+        "xmin_in": 2.646126867084758,
+        "xmin_out": 0.04031186156820702,
+        "xmax_in": 2.720873939120133,
+        "xmax_out": 0.04059293382103317,
+        "ymin_in": 2.6472697043529023,
+        "ymin_out": 0.0390158329403395,
+        "ymax_in": 2.711510434251179,
+        "ymax_out": 0.03954893077849737,
+        "bottom_in": 0.0,
+        "bottom_out": 0.0,
+        "top_in": 4.156306925305966,
+        "top_out": 14.805065513975723,
+        "bottom_nonburner_in": 0.0,
+        "bottom_nonburner_out": 0.0,
+        "bottom_burner_in": 0.0,
+        "bottom_burner_out": 0.0,
+        "units": "kg",
+        "lateral_in": 10.725780944808973,
+        "lateral_out": 0.15946955910807706,
+        "inventory_change": -0.08244514705057071
+      },
+      "CO2": {
+        "beginning_inventory": 0.0,
+        "ending_inventory": 0.0021808277844557905,
+        "source_increment": 0.025498627591399127,
+        "closure_residual": -8.960907421999492e-10,
+        "interstep_inventory_change": 0.0,
+        "xmin_in": 8.751858438152013e-08,
+        "xmin_out": 1.0963129988222322e-07,
+        "xmax_in": 8.936774629467638e-08,
+        "xmax_out": 1.0539021965856835e-07,
+        "ymin_in": 8.593750163287398e-08,
+        "ymin_out": 1.0669502257544033e-07,
+        "ymax_in": 8.697018626073144e-08,
+        "ymax_out": 1.0616112140161368e-07,
+        "bottom_in": 0.0,
+        "bottom_out": 0.0,
+        "top_in": 1.7333394199715374e-07,
+        "top_out": 0.02331789416114968,
+        "bottom_nonburner_in": 0.0,
+        "bottom_nonburner_out": 0.0,
+        "bottom_burner_in": 0.0,
+        "bottom_burner_out": 0.0,
+        "units": "kg",
+        "lateral_in": 3.4979401856980195e-07,
+        "lateral_out": 4.278776635178456e-07,
+        "inventory_change": 0.0021808277844557905
+      },
+      "H2O": {
+        "beginning_inventory": 0.0,
+        "ending_inventory": 0.0017854229656867737,
+        "source_increment": 0.020875714220751268,
+        "closure_residual": 1.119421848977194e-09,
+        "interstep_inventory_change": 0.0,
+        "xmin_in": 8.108764079389053e-08,
+        "xmin_out": 9.941846129738798e-08,
+        "xmax_in": 8.28467259899008e-08,
+        "xmax_out": 9.556638802854276e-08,
+        "ymin_in": 7.9680937138416e-08,
+        "ymin_out": 9.672263537534573e-08,
+        "ymax_in": 8.063198983507631e-08,
+        "ymax_out": 9.624951741221316e-08,
+        "bottom_in": 0.0,
+        "bottom_out": 0.0,
+        "top_in": 1.5543569468343014e-07,
+        "top_out": 0.019090384100472604,
+        "bottom_nonburner_in": 0.0,
+        "bottom_nonburner_out": 0.0,
+        "bottom_burner_in": 0.0,
+        "bottom_burner_out": 0.0,
+        "units": "kg",
+        "lateral_in": 3.2424729375728365e-07,
+        "lateral_out": 3.879570021134896e-07,
+        "inventory_change": 0.0017854229656867737
+      },
+      "CO": {
+        "beginning_inventory": 0.0,
+        "ending_inventory": -9.726352790496288e-08,
+        "source_increment": 0.0,
+        "closure_residual": -1.6265305750672153e-13,
+        "interstep_inventory_change": 0.0,
+        "xmin_in": 6.359377033783993e-08,
+        "xmin_out": 7.945981137152169e-08,
+        "xmax_in": 6.492907326776069e-08,
+        "xmax_out": 7.643071613479475e-08,
+        "ymin_in": 6.24503538613352e-08,
+        "ymin_out": 7.731278246060805e-08,
+        "ymax_in": 6.318954788417207e-08,
+        "ymax_out": 7.698886136786482e-08,
+        "bottom_in": 0.0,
+        "bottom_out": 0.0,
+        "top_in": 1.2503859342056988e-07,
+        "top_out": 1.6627253268879284e-07,
+        "bottom_nonburner_in": 0.0,
+        "bottom_nonburner_out": 0.0,
+        "bottom_burner_in": 0.0,
+        "bottom_burner_out": 0.0,
+        "units": "kg",
+        "lateral_in": 2.5416274535110786e-07,
+        "lateral_out": 3.1019217133478934e-07,
+        "inventory_change": -9.726352790496288e-08
+      },
+      "carbon": {
+        "beginning_inventory": 0.0,
+        "ending_inventory": 3.502778037565356e-08,
+        "source_increment": -6.794770137033664e-10,
+        "closure_residual": -8.291400000750033e-14,
+        "interstep_inventory_change": 0.0,
+        "xmin_in": 3.08788820792543e-08,
+        "xmin_out": 2.415126121526662e-08,
+        "xmax_in": 2.9707661635744723e-08,
+        "xmax_out": 2.4643121787246748e-08,
+        "ymin_in": 3.005535894484942e-08,
+        "ymin_out": 2.3698208170849062e-08,
+        "ymax_in": 2.99286221645093e-08,
+        "ymax_out": 2.398012973216575e-08,
+        "bottom_in": 0.0,
+        "bottom_out": 0.0,
+        "top_in": 5.139431575922444e-08,
+        "top_out": 3.978477937469728e-08,
+        "bottom_nonburner_in": 0.0,
+        "bottom_nonburner_out": 0.0,
+        "bottom_burner_in": 0.0,
+        "bottom_burner_out": 0.0,
+        "units": "kg",
+        "lateral_in": 1.2057052482435774e-07,
+        "lateral_out": 9.647272090552818e-08,
+        "inventory_change": 3.502778037565356e-08
+      },
+      "sensible_enthalpy": {
+        "beginning_inventory": 1.866243629289262e-09,
+        "ending_inventory": 32474.86864009002,
+        "source_increment": 402947.71022180666,
+        "closure_residual": 0.0032016044006493456,
+        "interstep_inventory_change": 0.0,
+        "xmin_in": 8.424951009537422e-10,
+        "xmin_out": 0.0034522097618170907,
+        "xmax_in": 1.035759819585425e-10,
+        "xmax_out": 0.0001013584230292231,
+        "ymin_in": 2.035418289668795e-08,
+        "ymin_out": 0.003343079748426514,
+        "ymax_in": 9.629373817392894e-11,
+        "ymax_out": 0.00024038205712989937,
+        "bottom_in": 3.090957021367767e-11,
+        "bottom_out": 0.0,
+        "top_in": 1.868313633401274,
+        "top_out": 370474.7059599489,
+        "bottom_nonburner_in": 0.0,
+        "bottom_nonburner_out": 0.0,
+        "bottom_burner_in": 3.090957021367767e-11,
+        "bottom_burner_out": 0.0,
+        "units": "J",
+        "lateral_in": 2.1396547717774165e-08,
+        "lateral_out": 0.007137029990402727,
+        "inventory_change": 32474.868640088152
+      },
+      "total_species_mass": {
+        "beginning_inventory": 68.82656163139617,
+        "ending_inventory": 68.72072352693274,
+        "source_increment": 2.562543174025325e-11,
+        "closure_residual": -2.377851110616171e-06,
+        "interstep_inventory_change": 0.0,
+        "xmin_in": 3.4495988181804593,
+        "xmin_out": 0.05255218552733575,
+        "xmax_in": 3.5470421427389702,
+        "xmax_out": 0.05291861125420418,
+        "ymin_in": 3.4510886664776828,
+        "ymin_out": 0.05086263096369309,
+        "ymax_in": 3.534835498656124,
+        "ymax_out": 0.05155760380816826,
+        "bottom_in": 0.016594449150145164,
+        "bottom_out": 0.0,
+        "top_in": 5.418322292984737,
+        "top_out": 19.315426563272535,
+        "bottom_nonburner_in": 0.0,
+        "bottom_nonburner_out": 0.0,
+        "bottom_burner_in": 0.016594449150145164,
+        "bottom_burner_out": 0.0,
+        "units": "kg",
+        "lateral_in": 13.982565126053236,
+        "lateral_out": 0.20789103155340127,
+        "inventory_change": -0.10583810446343023
+      }
+    },
+    "statistics": {
+      "Z": {
+        "beginning_inventory": 0.0016563520264612065,
+        "ending_inventory": 0.0016320110776306465,
+        "source_increment": 0.0,
+        "closure_residual": 1.3987632720290512e-10,
+        "interstep_inventory_change": 0.0,
+        "xmin_in": 5.066220458697586e-08,
+        "xmin_out": 3.864613111553773e-08,
+        "xmax_in": 4.906632546792717e-08,
+        "xmax_out": 3.9329078087764445e-08,
+        "ymin_in": 4.930416960561808e-08,
+        "ymin_out": 3.8177063635820056e-08,
+        "ymax_in": 4.978759741584696e-08,
+        "ymax_out": 3.789070154287881e-08,
+        "bottom_in": 0.009647220580850449,
+        "bottom_out": 0.0,
+        "top_in": 3.875894023863071e-08,
+        "top_out": 0.009671645205820211,
+        "bottom_nonburner_in": 0.0,
+        "bottom_nonburner_out": 0.0,
+        "bottom_burner_in": 0.009647220580850449,
+        "bottom_burner_out": 0.0,
+        "units": "kg",
+        "lateral_in": 1.9882029707636806e-07,
+        "lateral_out": 1.5404297438200104e-07,
+        "inventory_change": -2.4340948830559993e-05
+      },
+      "CH4": {
+        "beginning_inventory": 0.0007770686584289515,
+        "ending_inventory": 0.0008370587851589271,
+        "source_increment": -0.0052804380900160685,
+        "closure_residual": -2.669583939585594e-10,
+        "interstep_inventory_change": 0.0,
+        "xmin_in": 7.826065390895073e-08,
+        "xmin_out": 6.210653234371647e-08,
+        "xmax_in": 7.575864664750745e-08,
+        "xmax_out": 6.329848675640073e-08,
+        "ymin_in": 7.614114009099418e-08,
+        "ymin_out": 6.142543799130098e-08,
+        "ymax_in": 7.688432164203009e-08,
+        "ymax_out": 6.099539706784555e-08,
+        "bottom_in": 0.009647220580850449,
+        "bottom_out": 0.0,
+        "top_in": 6.420856324594563e-08,
+        "top_out": 0.004306915524617376,
+        "bottom_nonburner_in": 0.0,
+        "bottom_nonburner_out": 0.0,
+        "bottom_burner_in": 0.009647220580850449,
+        "bottom_burner_out": 0.0,
+        "units": "kg",
+        "lateral_in": 3.0704476228948245e-07,
+        "lateral_out": 2.4782585415926375e-07,
+        "inventory_change": 5.999012672997569e-05
+      },
+      "O2": {
+        "beginning_inventory": 15.999937620001234,
+        "ending_inventory": 16.00271450361903,
+        "source_increment": -0.021065060025379435,
+        "closure_residual": -1.8727163513292443e-05,
+        "interstep_inventory_change": 0.0,
+        "xmin_in": 0.4753931938789143,
+        "xmin_out": 0.00037053683073733236,
+        "xmax_in": 0.4829903599053884,
+        "xmax_out": 0.0008458920160575226,
+        "ymin_in": 0.4736732811942816,
+        "ymin_out": 0.00018700967592110443,
+        "ymax_in": 0.480622441382763,
+        "ymax_out": 0.0004269068488167864,
+        "bottom_in": 0.0,
+        "bottom_out": 0.0,
+        "top_in": 0.7053945731563915,
+        "top_out": 2.592382833339509,
+        "bottom_nonburner_in": 0.0,
+        "bottom_nonburner_out": 0.0,
+        "bottom_burner_in": 0.0,
+        "bottom_burner_out": 0.0,
+        "units": "kg",
+        "lateral_in": 1.9126792763613474,
+        "lateral_out": 0.0018303453715327457,
+        "inventory_change": 0.002776883617794823
+      },
+      "N2": {
+        "beginning_inventory": 52.70517228754841,
+        "ending_inventory": 52.713205776014156,
+        "source_increment": 0.0,
+        "closure_residual": -2.7922546148926642e-05,
+        "interstep_inventory_change": 0.0,
+        "xmin_in": 1.5656435527091286,
+        "xmin_out": 0.0012203154918668426,
+        "xmax_in": 1.5906638207383132,
+        "xmax_out": 0.0027858311813282444,
+        "ymin_in": 1.5599792598502522,
+        "ymin_out": 0.0006158914881554348,
+        "ymax_in": 1.5828653783821576,
+        "ymax_out": 0.0014059667820931318,
+        "bottom_in": 0.0,
+        "bottom_out": 0.0,
+        "top_in": 2.323095798360396,
+        "top_out": 8.608158394084898,
+        "bottom_nonburner_in": 0.0,
+        "bottom_nonburner_out": 0.0,
+        "bottom_burner_in": 0.0,
+        "bottom_burner_out": 0.0,
+        "units": "kg",
+        "lateral_in": 6.299152011679851,
+        "lateral_out": 0.006028004943443654,
+        "inventory_change": 0.008033488465748917
+      },
+      "CO2": {
+        "beginning_inventory": 0.0024121540068282915,
+        "ending_inventory": 0.0021808277844557905,
+        "source_increment": 0.01448589962043307,
+        "closure_residual": -6.701590644530233e-10,
+        "interstep_inventory_change": 0.0,
+        "xmin_in": 5.738710488675731e-08,
+        "xmin_out": 6.890774279264322e-08,
+        "xmax_in": 5.8597024975882533e-08,
+        "xmax_out": 6.667716068848134e-08,
+        "ymin_in": 5.6834187109068424e-08,
+        "ymin_out": 6.702349782200145e-08,
+        "ymax_in": 5.647437658818347e-08,
+        "ymax_out": 6.766812123655835e-08,
+        "bottom_in": 0.0,
+        "bottom_out": 0.0,
+        "top_in": 5.815238903402102e-08,
+        "top_out": 0.014717242341206567,
+        "bottom_nonburner_in": 0.0,
+        "bottom_nonburner_out": 0.0,
+        "bottom_burner_in": 0.0,
+        "bottom_burner_out": 0.0,
+        "units": "kg",
+        "lateral_in": 2.2929269355989173e-07,
+        "lateral_out": 2.7027652253968433e-07,
+        "inventory_change": -0.00023132622237250107
+      },
+      "H2O": {
+        "beginning_inventory": 0.0019748265624283464,
+        "ending_inventory": 0.0017854229656867737,
+        "source_increment": 0.011859598942281785,
+        "closure_residual": 9.030016454673956e-10,
+        "interstep_inventory_change": 0.0,
+        "xmin_in": 5.3102681299270203e-08,
+        "xmin_out": 6.239652702342294e-08,
+        "xmax_in": 5.426600098916384e-08,
+        "xmax_out": 6.038153154650756e-08,
+        "ymin_in": 5.2628296166014925e-08,
+        "ymin_out": 6.068810315401935e-08,
+        "ymax_in": 5.2302872937026116e-08,
+        "ymax_out": 6.126877035658188e-08,
+        "bottom_in": 0.0,
+        "bottom_out": 0.0,
+        "top_in": 5.370088730925852e-08,
+        "top_out": 0.012049024707831585,
+        "bottom_nonburner_in": 0.0,
+        "bottom_nonburner_out": 0.0,
+        "bottom_burner_in": 0.0,
+        "bottom_burner_out": 0.0,
+        "units": "kg",
+        "lateral_in": 2.1229985139147507e-07,
+        "lateral_out": 2.447349320805317e-07,
+        "inventory_change": -0.0001894035967415727
+      },
+      "CO": {
+        "beginning_inventory": -3.1715113524562875e-08,
+        "ending_inventory": -9.726352790496288e-08,
+        "source_increment": 0.0,
+        "closure_residual": -1.785644894550591e-13,
+        "interstep_inventory_change": 0.0,
+        "xmin_in": 4.1690978643205254e-08,
+        "xmin_out": 4.996241092786194e-08,
+        "xmax_in": 4.2569683131586884e-08,
+        "xmax_out": 4.835048063787724e-08,
+        "ymin_in": 4.129056538797498e-08,
+        "ymin_out": 4.8601053395552144e-08,
+        "ymax_in": 4.102969458615008e-08,
+        "ymax_out": 4.906843993080092e-08,
+        "bottom_in": 0.0,
+        "bottom_out": 0.0,
+        "top_in": 7.938312603854689e-08,
+        "top_out": 1.155298987112819e-07,
+        "bottom_nonburner_in": 0.0,
+        "bottom_nonburner_out": 0.0,
+        "bottom_burner_in": 0.0,
+        "bottom_burner_out": 0.0,
+        "units": "kg",
+        "lateral_in": 1.665809217489172e-07,
+        "lateral_out": 1.9598238489209225e-07,
+        "inventory_change": -6.55484143804e-08
+      },
+      "carbon": {
+        "beginning_inventory": 1.2563589969387737e-08,
+        "ending_inventory": 3.502778037565356e-08,
+        "source_increment": -4.2849949554902737e-10,
+        "closure_residual": -7.633770254315921e-14,
+        "interstep_inventory_change": 0.0,
+        "xmin_in": 1.9448783451432226e-08,
+        "xmin_out": 1.5855968758120034e-08,
+        "xmax_in": 1.8822007739295336e-08,
+        "xmax_out": 1.6176644261848962e-08,
+        "ymin_in": 1.892135608891273e-08,
+        "ymin_out": 1.5692563743519698e-08,
+        "ymax_in": 1.9103511980147722e-08,
+        "ymax_out": 1.5590365403703784e-08,
+        "bottom_in": 0.0,
+        "bottom_out": 0.0,
+        "top_in": 3.52997681025469e-08,
+        "top_out": 2.5387118955624995e-08,
+        "bottom_nonburner_in": 0.0,
+        "bottom_nonburner_out": 0.0,
+        "bottom_burner_in": 0.0,
+        "bottom_burner_out": 0.0,
+        "units": "kg",
+        "lateral_in": 7.629565925978801e-08,
+        "lateral_out": 6.331554216719247e-08,
+        "inventory_change": 2.246419040626582e-08
+      },
+      "sensible_enthalpy": {
+        "beginning_inventory": 35966.12639432918,
+        "ending_inventory": 32474.86864009002,
+        "source_increment": 211699.60073667287,
+        "closure_residual": -0.002240924417286231,
+        "interstep_inventory_change": 0.0,
+        "xmin_in": 6.101456988911219e-11,
+        "xmin_out": 0.0005821563013651737,
+        "xmax_in": 6.362479909647848e-11,
+        "xmax_out": 0.00010135842169280019,
+        "ymin_in": 2.195090066105236e-09,
+        "ymin_out": 1.4836873735635661e-05,
+        "ymax_in": 5.639787766725388e-11,
+        "ymax_out": 0.0002403820557816043,
+        "bottom_in": 1.7969348618482145e-11,
+        "bottom_out": 0.0,
+        "top_in": 0.07784994988323315,
+        "top_out": 215190.93316120637,
+        "bottom_nonburner_in": 0.0,
+        "bottom_nonburner_out": 0.0,
+        "bottom_burner_in": 1.7969348618482145e-11,
+        "bottom_burner_out": 0.0,
+        "units": "J",
+        "lateral_in": 2.3761273127580807e-09,
+        "lateral_out": 0.0009387336525752139,
+        "inventory_change": -3491.257754239159
+      },
+      "total_species_mass": {
+        "beginning_inventory": 68.71027393762579,
+        "ending_inventory": 68.72072352693274,
+        "source_increment": 1.8819695511256937e-11,
+        "closure_residual": -4.6649744032934174e-05,
+        "interstep_inventory_change": 0.0,
+        "xmin_in": 2.041036737219566,
+        "xmin_out": 0.0015908522931063112,
+        "xmax_in": 2.073654175715827,
+        "xmax_out": 0.003631723140449934,
+        "ymin_in": 2.0336525334110185,
+        "ymin_out": 0.0008029011456842041,
+        "ymax_in": 2.0634878108252894,
+        "ymax_out": 0.0018328734875887511,
+        "bottom_in": 0.009647220580850449,
+        "bottom_out": 0.0,
+        "top_in": 3.028478800837106,
+        "top_out": 11.231602689490629,
+        "bottom_nonburner_in": 0.0,
+        "bottom_nonburner_out": 0.0,
+        "bottom_burner_in": 0.009647220580850449,
+        "bottom_burner_out": 0.0,
+        "units": "kg",
+        "lateral_in": 8.211831257171701,
+        "lateral_out": 0.0078583500668292,
+        "inventory_change": 0.010449589306958273
+      }
+    }
+  },
+  "source_components": {
+    "full": {
+      "chemical_J": 464995.70756062126,
+      "radiated_J": 92376.67503672512,
+      "pilot_J": 30328.67872809036,
+      "reacted_fuel_kg": 0.009294826669562469
+    },
+    "statistics": {
+      "chemical_J": 264166.41733598185,
+      "radiated_J": 52466.816244264526,
+      "pilot_J": 0.0,
+      "reacted_fuel_kg": 0.005280438094795021
+    }
+  },
+  "top_fraction_of_open_boundary_mass_in": 0.2694301834386936,
+  "sampled_momentum_contract": "Arithmetic average of four distinct source-centred vertical faces at each height, then unweighted statistics over 235 published frames. Instantaneous accepted-step rates: no time integration, stationarity, spectrum, pressure/restoration split or dissipation causation claim.",
+  "maximum_absolute_sampled_mean_face_closure_kg_per_m2_s2": 0.0003627904868128695,
+  "provenance": {
+    "run": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1",
+    "verification": "/Volumes/SSD/RISE/fire_production_calibration/r245_full_verification.v2",
+    "full_budget_audit_sha256": "085f5674499c6677e6f356c5a1e18b1d8128e3e5062d1f987106c66ea9ad9c38",
+    "full_window_audit_sha256": "7fc398f818755441f0777bc35e922bf083aca258838e71c843d6ee4512e52bd5",
+    "final_step_sha256": "b68507e5b1f8afcf322f84f8e130bcb73ee4fdcbf57c0c2139b2079a96c364d7",
+    "analysis_sha256": "052ff86f64e01327a67faf9699471cd9e9ee0f35c42811412af113c972acca25",
+    "columns": [
+      {
+        "frame": 0,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00000.columns.csv",
+        "sha256": "420d62c75735242ebf7090b1faf00b318906c62df81ea203fac13cf48e0239e2"
+      },
+      {
+        "frame": 1,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00001.columns.csv",
+        "sha256": "e06aa4be5cac5aeea502421c375f4048a457f6c2ef9c91082246a0db820cb50f"
+      },
+      {
+        "frame": 2,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00002.columns.csv",
+        "sha256": "f395360a2bc519afe6da25d6476cbc09b5e1f911032d305c206b348b8ba7c2dd"
+      },
+      {
+        "frame": 3,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00003.columns.csv",
+        "sha256": "904457449331637d49f3bc31c8e5b3ecbdda6583c307b3eebc7b428b661e46a6"
+      },
+      {
+        "frame": 4,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00004.columns.csv",
+        "sha256": "6852f9af4b6dd06dad297d7a3271092b965a863389b4a72f771c3fe694dc510b"
+      },
+      {
+        "frame": 5,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00005.columns.csv",
+        "sha256": "269839e9f4e4cca0d7b927ff9c9dca94c9da4deea4d9a77433e2fb6d0e5d913d"
+      },
+      {
+        "frame": 6,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00006.columns.csv",
+        "sha256": "d02e2d32f525be1ab2e0f5020dfed7894bdaaf671e4942854b9792d1a72f2ab1"
+      },
+      {
+        "frame": 7,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00007.columns.csv",
+        "sha256": "53f00055f456ea29f33d799d8f47705f624254d65fb5ab77622db20faaea949f"
+      },
+      {
+        "frame": 8,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00008.columns.csv",
+        "sha256": "453bc9fbf8e77dd41a97040668d7136e5e5de971733403848df0ba87bebee2e3"
+      },
+      {
+        "frame": 9,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00009.columns.csv",
+        "sha256": "c6b7afd7bebba81b995f672dbcf4d21c43cd9a3b470d5371860a1bfca8ee2bec"
+      },
+      {
+        "frame": 10,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00010.columns.csv",
+        "sha256": "47c95165418740c04ba4df87315300d6fb0a9f2e3301a7d3ed775ec820fed6a1"
+      },
+      {
+        "frame": 11,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00011.columns.csv",
+        "sha256": "c1dec02557244848c9555ebe384df2e981ac22ba669adac5bcb3fa8ac91689fc"
+      },
+      {
+        "frame": 12,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00012.columns.csv",
+        "sha256": "717d1b5a0e9334f42f3792ae3fe65e4fe3bd1e006a047cad222dd5a8cfdb8049"
+      },
+      {
+        "frame": 13,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00013.columns.csv",
+        "sha256": "387e2cb6062baa37c78c865cfc92d208cc7dce230b4efd06f21717de9089b360"
+      },
+      {
+        "frame": 14,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00014.columns.csv",
+        "sha256": "023d70b153393c04747075aab292d66993724af1cc43914090e83c20d244eab0"
+      },
+      {
+        "frame": 15,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00015.columns.csv",
+        "sha256": "0a7db5ddf5b1e6741aa26af91c0cadb2ae4794dff2215795f1ff6546b228c8c0"
+      },
+      {
+        "frame": 16,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00016.columns.csv",
+        "sha256": "cbe0d1bc0bc9da2c18f4d25aa3642c223af5cdf2c16f78e78e5b10bd10969ed0"
+      },
+      {
+        "frame": 17,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00017.columns.csv",
+        "sha256": "564778c92a05116a1c7417c900a7b9903dcea46655f3e5559c7ddaa246256d25"
+      },
+      {
+        "frame": 18,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00018.columns.csv",
+        "sha256": "f4dd0307c17150fc2a54905d8973487846ab4b3dff461b9c359dce8bac55eb8f"
+      },
+      {
+        "frame": 19,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00019.columns.csv",
+        "sha256": "6781f171491a44185d1d342b3d557c9efe6c35d68f35e4ffc44b5dd6c1b4c653"
+      },
+      {
+        "frame": 20,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00020.columns.csv",
+        "sha256": "4c7fd53f5cc188d3cb3dc214d4342a16f9ce66d3dbff5adbd6e926a2b06a451c"
+      },
+      {
+        "frame": 21,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00021.columns.csv",
+        "sha256": "f4d8c123b980c869ce33793cc332d0b7a131759e44699709efb0a6a182bf86b6"
+      },
+      {
+        "frame": 22,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00022.columns.csv",
+        "sha256": "dce34d9f5fc99a406b722980e1aa8d163ca21a1d3fd67617f14a2fc0af09eb75"
+      },
+      {
+        "frame": 23,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00023.columns.csv",
+        "sha256": "8c18841e44c007c34d89d1a389e55a1dc4d0b196fbd32ff35f17e2d224949664"
+      },
+      {
+        "frame": 24,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00024.columns.csv",
+        "sha256": "b8a9f6d8cc6efc77fec410d5eebced5fdd72e035042e6a282a5c78473094e7ba"
+      },
+      {
+        "frame": 25,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00025.columns.csv",
+        "sha256": "4d490e49276674edc29d4b258f1cc68d3b2fdb346d9b5e04068784e7626dc2fa"
+      },
+      {
+        "frame": 26,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00026.columns.csv",
+        "sha256": "0c04b7a4a0a854b49766d2bbeb4dad6eb21097433780d918cab8da14b48d7bf5"
+      },
+      {
+        "frame": 27,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00027.columns.csv",
+        "sha256": "7ef7bc625859ffa176e267309471376e1cd2b341105edd9be7b2cc667de13c44"
+      },
+      {
+        "frame": 28,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00028.columns.csv",
+        "sha256": "12ba7b23781f3700ff8b19d57d7d773243707c7cec5ee17f13d560245e75a200"
+      },
+      {
+        "frame": 29,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00029.columns.csv",
+        "sha256": "07e161fb392cff39dee8bcb1d21a69cecdffdabaadb06d556cb90d4eb87ed713"
+      },
+      {
+        "frame": 30,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00030.columns.csv",
+        "sha256": "b58d2f7c99e7377239b4a217253c883eb25b0d88b7243724693289acc5bcbe2a"
+      },
+      {
+        "frame": 31,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00031.columns.csv",
+        "sha256": "6c29d1d74d8587add671112fa1ae57c3a3afedef196481a048dd944b9dccc37d"
+      },
+      {
+        "frame": 32,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00032.columns.csv",
+        "sha256": "de3c729e4ea640c613fbe72176a020560cdd9604eaf1bf936f4a31aad8766a07"
+      },
+      {
+        "frame": 33,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00033.columns.csv",
+        "sha256": "53421e62fde709e4a4c9701e4d59c6907751555c166bf32d1e139306bd8672ab"
+      },
+      {
+        "frame": 34,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00034.columns.csv",
+        "sha256": "761553111e12374af4e426a12f74db67ae2c8c4a9e8e543ada079fc0560f0067"
+      },
+      {
+        "frame": 35,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00035.columns.csv",
+        "sha256": "e1c26ee364fa442ea9dd91550da2c313bcf6763a2effb8448521b85b291b6d44"
+      },
+      {
+        "frame": 36,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00036.columns.csv",
+        "sha256": "cc24c711e45e4d787f9f99357655b983ace58bf0d7f19e48d56be035cf5fe9f2"
+      },
+      {
+        "frame": 37,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00037.columns.csv",
+        "sha256": "ad59d052be3c7f643611aecca9fef9a33aa6f93559038c6d6262a68b3ec22fbd"
+      },
+      {
+        "frame": 38,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00038.columns.csv",
+        "sha256": "09c69e63690b23419940467b80b46b3e500c082357125cfa12d04a3d89197857"
+      },
+      {
+        "frame": 39,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00039.columns.csv",
+        "sha256": "9b6458c25c61095851a2d0a0e18df53149be6ba3a0ca3d497cc958906d3661d8"
+      },
+      {
+        "frame": 40,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00040.columns.csv",
+        "sha256": "51de30c77b76a870ced86617058d7f77c4cfeea2df34ac9560b4d5a49f8a23da"
+      },
+      {
+        "frame": 41,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00041.columns.csv",
+        "sha256": "1fbaed383686e089ab11200473cd7f3252682304c8135c0c92e7ffc953c027d4"
+      },
+      {
+        "frame": 42,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00042.columns.csv",
+        "sha256": "c31cbce9602958380237fecc6c4243edcbd0d3ae73916f687e07c9e35d500e3a"
+      },
+      {
+        "frame": 43,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00043.columns.csv",
+        "sha256": "8b8f04bab5c2d64e0ae4a03c5ea3871c10fc68fd9a79dfdc7c55ce49a3ea9b6d"
+      },
+      {
+        "frame": 44,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00044.columns.csv",
+        "sha256": "fd587f535e5f196699c1fba888dde69cb2e2eb68c98dfa99d5e5b4dd2231bb6d"
+      },
+      {
+        "frame": 45,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00045.columns.csv",
+        "sha256": "9a489a8b5f09c507058154061444bdb365958ac1cf2fa103f8ba3b921e7eba1b"
+      },
+      {
+        "frame": 46,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00046.columns.csv",
+        "sha256": "986b3d865184d4eae118b83c1c1492855a9429d1043e4d0e8636bca0b4910c47"
+      },
+      {
+        "frame": 47,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00047.columns.csv",
+        "sha256": "1c385ba9963f21958c2963a0e76b237eca4361d656d0e2361106169cbf39eaed"
+      },
+      {
+        "frame": 48,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00048.columns.csv",
+        "sha256": "16977dc2871e2e473f865fe5483fbfefe8e7c1203cc003229fea2c465e961822"
+      },
+      {
+        "frame": 49,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00049.columns.csv",
+        "sha256": "babd03c7ae123eada87ff12a4ccc1f1e375a7e6778923cdac27e12bf8dae971d"
+      },
+      {
+        "frame": 50,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00050.columns.csv",
+        "sha256": "c11fcd89bc7a68a5119bb87056fb7c7f6d070cf4db314f74cfe3b29813006e61"
+      },
+      {
+        "frame": 51,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00051.columns.csv",
+        "sha256": "ef346b5e5f2ea71e665c390af3d29ed30e91247b66920e251e2eb3d3f684a036"
+      },
+      {
+        "frame": 52,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00052.columns.csv",
+        "sha256": "18e138bfb9b65654d53963c1e07cd88cda52e87a7a1bc447db0812bc234d37cf"
+      },
+      {
+        "frame": 53,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00053.columns.csv",
+        "sha256": "cc2ceb7812c92ce4abbf4b4309507de5e13878ab7febc19408695322778a0e3e"
+      },
+      {
+        "frame": 54,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00054.columns.csv",
+        "sha256": "a54685857190b16f95bd8ef86ba6652872e1b2995c3d3b772220e34a9d21f140"
+      },
+      {
+        "frame": 55,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00055.columns.csv",
+        "sha256": "92b61932cd20776ffe7d77c4c1b5b8f31bb21629c11a25c95845ed908c4b1e36"
+      },
+      {
+        "frame": 56,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00056.columns.csv",
+        "sha256": "f49f13528a21b26d1fe6aca9a8db4f9ccc65c3804dabc69c36eaea0f2fdc8474"
+      },
+      {
+        "frame": 57,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00057.columns.csv",
+        "sha256": "61f2ee4f9b68fb8b8e7ec836a2f3a5b760362358fc96e35a116d45235e5cfdf2"
+      },
+      {
+        "frame": 58,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00058.columns.csv",
+        "sha256": "c2d6b97da38f40466f3d7dd0cb9e589360abbe8fd753740b40fd14c99f638669"
+      },
+      {
+        "frame": 59,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00059.columns.csv",
+        "sha256": "4044dd3992b18287fa263f0f6b44d0142c6035b2e5c3d7512516b91e12ff605b"
+      },
+      {
+        "frame": 60,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00060.columns.csv",
+        "sha256": "39c97ec90d47a14707ec6093cb40985ca01c2e877f4d8254b2967575882fc2e2"
+      },
+      {
+        "frame": 61,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00061.columns.csv",
+        "sha256": "dbe4d0aea3f779d4cc1e73806ebb21e3d05cd3cdb5ae297fc409bdd62b7dae01"
+      },
+      {
+        "frame": 62,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00062.columns.csv",
+        "sha256": "a427eee94d7e3926aca59696c912e020f4953a2ad407f201e500eb7b1192b56a"
+      },
+      {
+        "frame": 63,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00063.columns.csv",
+        "sha256": "07b6b7c0ce849ac0b9bacf74ed08b259e2ba3d798ccb78b41c4a896d973dcce2"
+      },
+      {
+        "frame": 64,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00064.columns.csv",
+        "sha256": "bf05c6ec5424552bd77ec2cf3ff5f072fa027f07bcd606608cb894d2178aa3cd"
+      },
+      {
+        "frame": 65,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00065.columns.csv",
+        "sha256": "08b88be8d144f7311a48f0ecaa2206dc8683ab0baf056d2154256dc2c1cc9021"
+      },
+      {
+        "frame": 66,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00066.columns.csv",
+        "sha256": "6c2a8b1e8c006b31a788085aef615c9baa7f8a04edbe3bd51c5517992a61b164"
+      },
+      {
+        "frame": 67,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00067.columns.csv",
+        "sha256": "86ec3b03b16e8658b997d22d3f12588147414e86e877b72403d57eb2b7fedb5e"
+      },
+      {
+        "frame": 68,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00068.columns.csv",
+        "sha256": "08808e4f81489a731ac7c72c776a1a3b6c4e5524f78caceba2287de57c838cbe"
+      },
+      {
+        "frame": 69,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00069.columns.csv",
+        "sha256": "816cd1775c232caa456214888dd9c9852107ab71cf85b5ca52947b51e7c85ec8"
+      },
+      {
+        "frame": 70,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00070.columns.csv",
+        "sha256": "3c155194810f323579b01bdeac0a73f4b59d3610b66633c3fccb6b6010afeb66"
+      },
+      {
+        "frame": 71,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00071.columns.csv",
+        "sha256": "690071636733fb7a0ba74e161881fc52015092c11b739d4f998e3bb06bb5674a"
+      },
+      {
+        "frame": 72,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00072.columns.csv",
+        "sha256": "4dee9a341aa0a6f3a80ec9e41f7aa540f127d15d1dce30b5dcac9c73944192b2"
+      },
+      {
+        "frame": 73,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00073.columns.csv",
+        "sha256": "752e2f42839fc16f8888c3c2cc0725d29de34b0c8f9e60989b30305209b16abd"
+      },
+      {
+        "frame": 74,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00074.columns.csv",
+        "sha256": "c4d685303dba6a9f4c27580d99f07201facffcb139738fc9475ec681ff37520d"
+      },
+      {
+        "frame": 75,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00075.columns.csv",
+        "sha256": "e2406ec82afeffdefee499f387241e130eaca6d41733f725d9013fb7717eaf7c"
+      },
+      {
+        "frame": 76,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00076.columns.csv",
+        "sha256": "1d97318f4fb2ed6c1eb672ba14cae3c3dad720a7d55a9833ef2215e4d91ef2e2"
+      },
+      {
+        "frame": 77,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00077.columns.csv",
+        "sha256": "d9ae1b6eaf37eb8d6825eec759f4361a78c3c7a202e37c6fa5d3c7b410ae9cb7"
+      },
+      {
+        "frame": 78,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00078.columns.csv",
+        "sha256": "2e8ad8ad165665990a20298c40a3be534d53d465ab045679f796c2f9aaf3b165"
+      },
+      {
+        "frame": 79,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00079.columns.csv",
+        "sha256": "f5c8c6472ed69021d60da4a568b8b8dfda0d3ac5152e54ce6907db7d7bb962d2"
+      },
+      {
+        "frame": 80,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00080.columns.csv",
+        "sha256": "8c29f11800cb43d5f7e5034c2e9d061c364cd548a9500f1b7838f7893a150e23"
+      },
+      {
+        "frame": 81,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00081.columns.csv",
+        "sha256": "4ad0f456e713beff3cc2bbf70fb69e9ef75062fd29ed67d7d1fe75a73bd24b9e"
+      },
+      {
+        "frame": 82,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00082.columns.csv",
+        "sha256": "60414ceccb8ab32c110fd24b521de56562eaec871804a12449d8f0946d0ba378"
+      },
+      {
+        "frame": 83,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00083.columns.csv",
+        "sha256": "c0dd7fe28c9327af72b928cc1910da22dcb156b32151d73935a8ab8642073daa"
+      },
+      {
+        "frame": 84,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00084.columns.csv",
+        "sha256": "ddd697a2ad743832b4ec336855c8470dfda8251fd20bca5f602abfaf4a239f70"
+      },
+      {
+        "frame": 85,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00085.columns.csv",
+        "sha256": "6c10adb1d049a5764c790c309003efaada8d950e0ab098a28950a0cbcaa5f689"
+      },
+      {
+        "frame": 86,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00086.columns.csv",
+        "sha256": "97710dbde23145bbab234dde6f0cadbd7df1dff87a33434c23746a0af36f8c09"
+      },
+      {
+        "frame": 87,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00087.columns.csv",
+        "sha256": "8e6327904d06280b57c8e9ba7bfb5ac564e5f07ab57cf7f7967dae107498c877"
+      },
+      {
+        "frame": 88,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00088.columns.csv",
+        "sha256": "8e7b512a9f0244d24b8be40675c7b5657d4080ee4645c262a87346e828c215b8"
+      },
+      {
+        "frame": 89,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00089.columns.csv",
+        "sha256": "a173482add0ce7c6d0c031d259dfd08ada1fb045e0f8b14f852baee20fa2fd80"
+      },
+      {
+        "frame": 90,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00090.columns.csv",
+        "sha256": "41ad5703d1cc37d04ee270b890120814b91312673528b2df538410e0d1d685a3"
+      },
+      {
+        "frame": 91,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00091.columns.csv",
+        "sha256": "bb64e81ced5b7083ddbc762d0ae3a87ce0332b13b29011c78842595eedd16ad0"
+      },
+      {
+        "frame": 92,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00092.columns.csv",
+        "sha256": "9d92818c9e559150b039e8132086e8b140467c22d1017a76e93571bc15aa12d1"
+      },
+      {
+        "frame": 93,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00093.columns.csv",
+        "sha256": "a73a25faf0a64b8220e3e8e133398a7573eb5e342ba1300323d73530f4a82cc3"
+      },
+      {
+        "frame": 94,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00094.columns.csv",
+        "sha256": "db9a4ff688e59198e6690c82f4031d177d606dc53cad58de80fa42f64a5030d9"
+      },
+      {
+        "frame": 95,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00095.columns.csv",
+        "sha256": "0720bc812652e131a330fb26a8c97656b552b2e3a68b1a2ee18b81afe9341eeb"
+      },
+      {
+        "frame": 96,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00096.columns.csv",
+        "sha256": "2a0b8a2e0ea452823f55c9db4356090f4dcfb7088d9cb63ba5a3d4a6d2c1e4dd"
+      },
+      {
+        "frame": 97,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00097.columns.csv",
+        "sha256": "3e38e6fe0fa41287d2f3db57c97388436725d8c1d4ae7dc1e2d662f517b38e63"
+      },
+      {
+        "frame": 98,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00098.columns.csv",
+        "sha256": "f5f5d7b5dfa98b66b0874dd0b673955091faf90804b633f128d6aa377a5f26ed"
+      },
+      {
+        "frame": 99,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00099.columns.csv",
+        "sha256": "284bfea55e99f60198752fa077bb06b01dd40171599c9b985f1ba23981c0d8ce"
+      },
+      {
+        "frame": 100,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00100.columns.csv",
+        "sha256": "b260224d4f2858119ecd9bf7837f0bc2c1d6f13cc283a13ca7ae6ab4de791a45"
+      },
+      {
+        "frame": 101,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00101.columns.csv",
+        "sha256": "0d8e258a3db9e710e03f18ece0c3759e0121d273d49b67beb55ff9c3645b80a4"
+      },
+      {
+        "frame": 102,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00102.columns.csv",
+        "sha256": "10fb7de11ed8e93cc1eff430f79b79574aad0e50a76fc9a6956d2cc626be5dca"
+      },
+      {
+        "frame": 103,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00103.columns.csv",
+        "sha256": "ae0521e99682c920a20901af73c554da1bcb82f22614523229a7ed5ad5f878a6"
+      },
+      {
+        "frame": 104,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00104.columns.csv",
+        "sha256": "9549355c7ec19b3a91f34c360f8e216a614eba4cc318d2cc81329d26796af176"
+      },
+      {
+        "frame": 105,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00105.columns.csv",
+        "sha256": "4507db830f2c7e172323320aa3ba696362365ba8811f506727ea0c9cca34e872"
+      },
+      {
+        "frame": 106,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00106.columns.csv",
+        "sha256": "b81d74455dc22878f5350d55bc711a0618106dc115b1b8f0d8ab6ea671ceafb8"
+      },
+      {
+        "frame": 107,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00107.columns.csv",
+        "sha256": "5eece6ad8052d589784b86e2647f5d81ee0875bc97c91a6e78cd730f0dace88d"
+      },
+      {
+        "frame": 108,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00108.columns.csv",
+        "sha256": "8aad21ae47b99af9fc371a8e9fe469299e699c2551f8d5a16b8ede63f8b7f0c7"
+      },
+      {
+        "frame": 109,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00109.columns.csv",
+        "sha256": "b076d07e0e4321c8cfdbfc872eada255d13ea089e3d6049e139ac23a77201bd4"
+      },
+      {
+        "frame": 110,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00110.columns.csv",
+        "sha256": "736ac767d1f6bdab7f841ecf7079159a5362a7e8f3588715e725e96d829f196f"
+      },
+      {
+        "frame": 111,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00111.columns.csv",
+        "sha256": "9b737f0076bb83874c0172caff7526cd9db4e44193d12415616048ac187c8881"
+      },
+      {
+        "frame": 112,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00112.columns.csv",
+        "sha256": "84d8a318ba4fcdcc38cea3704666959afdc3747b9d876262ff251cab707d4e98"
+      },
+      {
+        "frame": 113,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00113.columns.csv",
+        "sha256": "598e787b39133399e3ba17e3c64ab0e70336e2b623ed6c14ba0cba60211d0164"
+      },
+      {
+        "frame": 114,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00114.columns.csv",
+        "sha256": "5c44af8d14f527d48d548572bc1f5a84487009d079ffea6e4d039e6d58e167f8"
+      },
+      {
+        "frame": 115,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00115.columns.csv",
+        "sha256": "7f34960821ffc61d56ba677d3ada0c0d983dc6ba71a4b36283ed33edf583a900"
+      },
+      {
+        "frame": 116,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00116.columns.csv",
+        "sha256": "f976f1f75b8e0065c71af28bd0b257edbb767ff9590550fd3c5e2d103475f614"
+      },
+      {
+        "frame": 117,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00117.columns.csv",
+        "sha256": "8bd3b50ce101ccda04b2190d51faf08bd1a3b4b050704884e83afecf35cb3a53"
+      },
+      {
+        "frame": 118,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00118.columns.csv",
+        "sha256": "82c292de34c9d6def4b8dacd628ca1f8f7f0dde1ffccc1eca2bb8e30b59acc8c"
+      },
+      {
+        "frame": 119,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00119.columns.csv",
+        "sha256": "5a9b13893da31ff3603fc2938dc2aedf93ed155a8eaf3749c0e33052b3ab58b0"
+      },
+      {
+        "frame": 120,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00120.columns.csv",
+        "sha256": "133962a15211a40d0e50cff1c36209220398cd4a378ccdc0fad4fe739397b409"
+      },
+      {
+        "frame": 121,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00121.columns.csv",
+        "sha256": "dbe9af9107de60b4e94d50b0840b62931eb12dc580244af99b36779b2713ce9e"
+      },
+      {
+        "frame": 122,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00122.columns.csv",
+        "sha256": "d234481d2f9a92b4ce4a73c76e671786ec6d2c13fe2bf5423259076ac8aed623"
+      },
+      {
+        "frame": 123,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00123.columns.csv",
+        "sha256": "69ce317bc0ff376a7460dc7db658e5cc6d9f24fa2ce185470893ef332616c444"
+      },
+      {
+        "frame": 124,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00124.columns.csv",
+        "sha256": "5c2dad20f091351a779c6a3878e095bc61788ab78ea256aa82846e0856233fa5"
+      },
+      {
+        "frame": 125,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00125.columns.csv",
+        "sha256": "cdae812835682e96be2a298a065ac276add0c3a375b3dee657832f3ddd40e4fc"
+      },
+      {
+        "frame": 126,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00126.columns.csv",
+        "sha256": "c9e2ea40c3446affc3a9509146d4faaf4ac089cbd3b0bc724c9ecba44c0b5db9"
+      },
+      {
+        "frame": 127,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00127.columns.csv",
+        "sha256": "86cdd78f0001fb8f552c07993f19a0adf86e86c0f583c2a8113d265e01545a49"
+      },
+      {
+        "frame": 128,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00128.columns.csv",
+        "sha256": "32cd64c1a0ab6c231db115aebc70b9c7362330acaaac0ed38af8d9313645abcd"
+      },
+      {
+        "frame": 129,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00129.columns.csv",
+        "sha256": "0c84452b89fa3641bdaa0404dad28ef0bf0ffe7cbcea598190acc2eb00c6d448"
+      },
+      {
+        "frame": 130,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00130.columns.csv",
+        "sha256": "06b31b1ab4d629985adbd9217792f32a6f5fd001ad718c536a067911028cf7a0"
+      },
+      {
+        "frame": 131,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00131.columns.csv",
+        "sha256": "ee3de4b42d02705cd5a5413345741e9d54720d9606f3f7e470f15e3c26055c72"
+      },
+      {
+        "frame": 132,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00132.columns.csv",
+        "sha256": "10c1d2368837243cbe7edfd493a699a39d4aa73de098c97249b61a3fccef6a57"
+      },
+      {
+        "frame": 133,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00133.columns.csv",
+        "sha256": "0e25bb8cb8275376a86c2bbff7ccfd8b0308f6a834660c7766f64445aafe4eba"
+      },
+      {
+        "frame": 134,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00134.columns.csv",
+        "sha256": "f5c4a884e98034737cd858fba0e9793a64ca819213cd6b4d1fb1b6bb8c8980cd"
+      },
+      {
+        "frame": 135,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00135.columns.csv",
+        "sha256": "3465fea82fd579892de9e166b174cbb2da4737df9cbea64122ae3c7d81f711f3"
+      },
+      {
+        "frame": 136,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00136.columns.csv",
+        "sha256": "f7e1279656222a9999f2811128fe9724bd4b5fb01134cb154fbe1ea8e9191ddf"
+      },
+      {
+        "frame": 137,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00137.columns.csv",
+        "sha256": "5fdbee89b72c4ae684dc1b4852e40884110bc7ce8a74cfcf53a9de0579738b2b"
+      },
+      {
+        "frame": 138,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00138.columns.csv",
+        "sha256": "2730665d75671e911e20698129ea050809c30fc5f7672a83f3c4d432d419f337"
+      },
+      {
+        "frame": 139,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00139.columns.csv",
+        "sha256": "200725dbafc49a70d9dc96bcc58e61bcfcfd294f140d89dacc7f3632779769c4"
+      },
+      {
+        "frame": 140,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00140.columns.csv",
+        "sha256": "16ed0f047013d1ba03e7aaf0246b16c4bc092ecb8e20850f38a98b7873e8e60c"
+      },
+      {
+        "frame": 141,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00141.columns.csv",
+        "sha256": "9a40abe468fbbdebf9a0a98c7a348601d33e0e05b4aaf7f8120539e8ae4ffa0c"
+      },
+      {
+        "frame": 142,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00142.columns.csv",
+        "sha256": "203c3af55f66b31892422745a52de180c1cdb2a9f5b968e10ceec2ff091b19a9"
+      },
+      {
+        "frame": 143,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00143.columns.csv",
+        "sha256": "2e382a5292c88b3ee348e60a97e3d3ec093ad7be9e083022c2e3a53b66cb8551"
+      },
+      {
+        "frame": 144,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00144.columns.csv",
+        "sha256": "e97084a986e37c89e871744e96e2b604f2fe6d0870ac377c192195205fb827d5"
+      },
+      {
+        "frame": 145,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00145.columns.csv",
+        "sha256": "709b3e332b73f87a8fbefd6415997a45741511fe1ca60cc6e43663c5c9b3720f"
+      },
+      {
+        "frame": 146,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00146.columns.csv",
+        "sha256": "11971a3238272be039013ed489b62963d47ff0c9d47d3d251b31e2988030954d"
+      },
+      {
+        "frame": 147,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00147.columns.csv",
+        "sha256": "9a1ee516de5e77148553ba7488e27bf89ee4a1ea91b876ae1dd93199034d98f9"
+      },
+      {
+        "frame": 148,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00148.columns.csv",
+        "sha256": "c3596f53d60ec1123a21967a938383db241ce56d34fd3c5a9b652ae5ea988e96"
+      },
+      {
+        "frame": 149,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00149.columns.csv",
+        "sha256": "b31f38925ac57a93f5e8e6c968207bdc95fd781a7ce9acc43aff69aa1ebfd5cd"
+      },
+      {
+        "frame": 150,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00150.columns.csv",
+        "sha256": "ed0ed8837a8e3d567442400e5d7c02a6119911f41c5225ba1edbb4f1ddbaa9e3"
+      },
+      {
+        "frame": 151,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00151.columns.csv",
+        "sha256": "a40ee4265d1608a6c7e6f2bda98f26f1255c1cd17b8ff4cadee5695b69f5b0b3"
+      },
+      {
+        "frame": 152,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00152.columns.csv",
+        "sha256": "5e9e6c679dc1d820e1645913c26b4c3fdec9ba01af93ab941f34006eec2f6cbd"
+      },
+      {
+        "frame": 153,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00153.columns.csv",
+        "sha256": "18e4969f31f4d25a6fe088243e23105123657dfab6269a05668dd2f14bed21f4"
+      },
+      {
+        "frame": 154,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00154.columns.csv",
+        "sha256": "5c3a311ee08e2aae76ab4803adc522ec5512c8d24bb1579fe4a51fc334acbea7"
+      },
+      {
+        "frame": 155,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00155.columns.csv",
+        "sha256": "43476ffe5d30b424722caf056ae2dc5bed41d66f33348159cf225916fd042451"
+      },
+      {
+        "frame": 156,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00156.columns.csv",
+        "sha256": "d60b0a6bb620496682b7a19b874d3cf0bb3824537caedf705b9acb9744ff8715"
+      },
+      {
+        "frame": 157,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00157.columns.csv",
+        "sha256": "64ebfcaf42f809ab0bd8b6ce6d743af814b9120f1f0356468e7e02d6c217feeb"
+      },
+      {
+        "frame": 158,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00158.columns.csv",
+        "sha256": "9039e4747e631ff6036bfd31d3c9cf8089d45a9efc0ac3bd98213bd7a6dfddee"
+      },
+      {
+        "frame": 159,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00159.columns.csv",
+        "sha256": "ddeb86fbad6d7e5a111cf0d974e6a9ef8b71057f2d7ca3b4df6365445d9fbfdb"
+      },
+      {
+        "frame": 160,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00160.columns.csv",
+        "sha256": "d6f4bee10349bee499ca7fe897fb3d9cd18ffb0f5b3b9ba5ac39b3b98802b4fe"
+      },
+      {
+        "frame": 161,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00161.columns.csv",
+        "sha256": "e1405e63286e31e95cb9a405a31665916493253d1e49cc869786fe48f525f52f"
+      },
+      {
+        "frame": 162,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00162.columns.csv",
+        "sha256": "cdaf36f69e2c56f8bb6b611efac1f47d1f17a304cff8e219c322bf2d4af2eb16"
+      },
+      {
+        "frame": 163,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00163.columns.csv",
+        "sha256": "d58d2c1c0638ea0940020d972cba185313dbb3b0168491e77255da495a48c7cf"
+      },
+      {
+        "frame": 164,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00164.columns.csv",
+        "sha256": "8a421f0a8cbb8a1037c859807f5c68d83423f56f90f3aca9e23b29600a69dad5"
+      },
+      {
+        "frame": 165,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00165.columns.csv",
+        "sha256": "68cf26eb0803dae4d59876bea0af39a05c5a0bffe08f138637079125006813be"
+      },
+      {
+        "frame": 166,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00166.columns.csv",
+        "sha256": "5a5e1d8cfcc8cf6ea29cf85ecb8cc4aca10b127df252ccc9be7931c811aa7bb5"
+      },
+      {
+        "frame": 167,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00167.columns.csv",
+        "sha256": "4cc136f91b524b3669470c3bde3ead2b099af140110fe82aeeccf4189094eb2e"
+      },
+      {
+        "frame": 168,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00168.columns.csv",
+        "sha256": "d9c0cc3b34c0be7f813cdffe7f2c82e59846a647518a0e08b7ebdc3536c11149"
+      },
+      {
+        "frame": 169,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00169.columns.csv",
+        "sha256": "9dae97eb562db777e6e5aec25e23092bb0f914fa774b8ecf0a050ac7dcf301bc"
+      },
+      {
+        "frame": 170,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00170.columns.csv",
+        "sha256": "3cab4c718c4daf361413a89d00800ddfe5bb1b91067b766f9f264473c4ad76c9"
+      },
+      {
+        "frame": 171,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00171.columns.csv",
+        "sha256": "c1a3ecb6f413473c5404e70f6cb6766ac1e765d4ec9450e77f39267648d3fdcb"
+      },
+      {
+        "frame": 172,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00172.columns.csv",
+        "sha256": "1455000c6bcb1496c8cf835b317a3d0188762649d634805ef2878c34700f048e"
+      },
+      {
+        "frame": 173,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00173.columns.csv",
+        "sha256": "3617ee1627f798f2f591b84913e21eefc2613b233291cf992df8bd973ce49cf8"
+      },
+      {
+        "frame": 174,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00174.columns.csv",
+        "sha256": "9a87315090f97e0d53438f54ad3b96a014a37c547a4341ee1ad05f9f1336d15b"
+      },
+      {
+        "frame": 175,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00175.columns.csv",
+        "sha256": "6c2e775052c930876d922cd7cf3833c3387c98054680e32286f518a7b4f16c4f"
+      },
+      {
+        "frame": 176,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00176.columns.csv",
+        "sha256": "092bb8ce12f0e5261cfb31d71a89d8bf675700a8f440f6000797459ec4538d51"
+      },
+      {
+        "frame": 177,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00177.columns.csv",
+        "sha256": "f87f981639ea983f168ee12d19e483a4a4bb95e850727187c894adb6ff8c0900"
+      },
+      {
+        "frame": 178,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00178.columns.csv",
+        "sha256": "84077c2fe9716f4db28129720dd75174a801a131f95e96a661760e3188e40200"
+      },
+      {
+        "frame": 179,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00179.columns.csv",
+        "sha256": "c2adb5b21605a64d32db6e9a06c4e02dcd0dbb5a7869edde560760e065411e1f"
+      },
+      {
+        "frame": 180,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00180.columns.csv",
+        "sha256": "540a9bfd3d3ce61928f1d4984ff53fa17e31d22f750bd593f233080c1e4eb9db"
+      },
+      {
+        "frame": 181,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00181.columns.csv",
+        "sha256": "02ff807ce5098e0fb628e371d7d8fd291a6cb744296446f6bb629dd50b6ee87f"
+      },
+      {
+        "frame": 182,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00182.columns.csv",
+        "sha256": "bf75c1d63085bc1b9bd7c26876563f3aae07d95e31f3f563bb1ab64786954cf1"
+      },
+      {
+        "frame": 183,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00183.columns.csv",
+        "sha256": "824455c6ac2397eb4c743cc2ffcd7de0914b24c268b3a0272218baee22516596"
+      },
+      {
+        "frame": 184,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00184.columns.csv",
+        "sha256": "126674a6447a8d9ce6adc84a0bbc472913e8d65450f4b73fbd21641347be103e"
+      },
+      {
+        "frame": 185,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00185.columns.csv",
+        "sha256": "8d2252d9f590dbace00b51e16d214810356314ef4e3fa21194495a4cea3b048e"
+      },
+      {
+        "frame": 186,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00186.columns.csv",
+        "sha256": "146ac3a68b1bb78082d64fe3030aab56971eeff4d84d11eadd40522f22b1ee2d"
+      },
+      {
+        "frame": 187,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00187.columns.csv",
+        "sha256": "f2b316e2099446121cd95c36763b5cdfab14b51cec1ba9a12c5e905394b92fcd"
+      },
+      {
+        "frame": 188,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00188.columns.csv",
+        "sha256": "bcfcb4d1e2b1f299f16e3e6374f0921432854ba822344a01a3372d904711f955"
+      },
+      {
+        "frame": 189,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00189.columns.csv",
+        "sha256": "1d05a6f2838f8f68800764c0412573f1ac63579a6ef5ad7202e7559a2eca4edd"
+      },
+      {
+        "frame": 190,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00190.columns.csv",
+        "sha256": "9d20c4c637137db5770acf78a7a943028abd052722ed4aeb0d8a5006e03a8c46"
+      },
+      {
+        "frame": 191,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00191.columns.csv",
+        "sha256": "0d581bdca9801af01a51fcf65cb01507d47312f4f0c910e7003cfb32475ab9d0"
+      },
+      {
+        "frame": 192,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00192.columns.csv",
+        "sha256": "a85faf829a112176929cd18e15bbf1679be67d249e38b72e5f6d251b5f112ed6"
+      },
+      {
+        "frame": 193,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00193.columns.csv",
+        "sha256": "e669aba787284ea39034914d2123b275cd346c358a3911391103ac0303c6f60f"
+      },
+      {
+        "frame": 194,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00194.columns.csv",
+        "sha256": "0de4cc8708a08f2797213b121e320279bb3cd15aa3743bb8f93c989f8dde81be"
+      },
+      {
+        "frame": 195,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00195.columns.csv",
+        "sha256": "3c1e3f1ef4c45476a706f3b9f835bc916866ff2d75288a4597e7f6e1aa01d9a4"
+      },
+      {
+        "frame": 196,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00196.columns.csv",
+        "sha256": "0742bc79d67249196d8a64a12e88932220af63855911e8df4dd4d50f5474bae4"
+      },
+      {
+        "frame": 197,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00197.columns.csv",
+        "sha256": "01c5dfcb42336f3a83baff415e1cc7402b51d3adc481e4c30c1e699a27272941"
+      },
+      {
+        "frame": 198,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00198.columns.csv",
+        "sha256": "e2d0d8eb1797f68735b1f1c4986c1632d812a78114f3b371463aab5ad723bc44"
+      },
+      {
+        "frame": 199,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00199.columns.csv",
+        "sha256": "94c93a14edfb77bf251136437ccf1a9b934d160f0c3111b716414b32f761ef15"
+      },
+      {
+        "frame": 200,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00200.columns.csv",
+        "sha256": "71da45dde781fd32f2cacf8c85dbe4b41da2f16515212fafd4f9cf85a566dc47"
+      },
+      {
+        "frame": 201,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00201.columns.csv",
+        "sha256": "6a5debd8349676d68b28a397f6fbd3ece85d1afdfc12ba59d74eb1ddaba93242"
+      },
+      {
+        "frame": 202,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00202.columns.csv",
+        "sha256": "ea5db5f26a24db695237501fadec01d87bae7d5b7cc54a98d1d469e265d24cc4"
+      },
+      {
+        "frame": 203,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00203.columns.csv",
+        "sha256": "08164d9b67f0aa65fbef82a86be31bb13f1c2989965186493402b9d0dd134c53"
+      },
+      {
+        "frame": 204,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00204.columns.csv",
+        "sha256": "497590f93b0c89cb4270af8f7ac6403100c3f124d94cacbeb53758a93495b842"
+      },
+      {
+        "frame": 205,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00205.columns.csv",
+        "sha256": "56cf0e332798861135dd6b674828cfdb44f80b87f866b09c2413e2e4272b09a9"
+      },
+      {
+        "frame": 206,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00206.columns.csv",
+        "sha256": "73c928275cab11465868943e5a73b249b566192ec81d7c563364b05be48e730f"
+      },
+      {
+        "frame": 207,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00207.columns.csv",
+        "sha256": "21be24c3c90e0dd2922223325bba1c4a8f04eaf04a77cbf0bc35de12a66511cc"
+      },
+      {
+        "frame": 208,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00208.columns.csv",
+        "sha256": "cb740345acb9c93914766841175a4f8fc57fe154d1a36b6f939c012c4df7a019"
+      },
+      {
+        "frame": 209,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00209.columns.csv",
+        "sha256": "ee940593b86ff4dd960c9065c56786abf1f98a07de23d62a90cee5b379765418"
+      },
+      {
+        "frame": 210,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00210.columns.csv",
+        "sha256": "c9b77208751bd0ea8ad16113a07ef1ecac7b3cd1cea5a892d9cef9bf60747894"
+      },
+      {
+        "frame": 211,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00211.columns.csv",
+        "sha256": "f386d4002c41957756b90b8f11f1ec5fc87272c51845de9cede9676faa2df634"
+      },
+      {
+        "frame": 212,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00212.columns.csv",
+        "sha256": "6b3dad32cfadcf505b70202228cbc600b4bf3b63b804b519370b6fbbdece570c"
+      },
+      {
+        "frame": 213,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00213.columns.csv",
+        "sha256": "2f9395f72791e36b54bd0cac5717bc7477dcf88e34916b1fd9497b293ad76acb"
+      },
+      {
+        "frame": 214,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00214.columns.csv",
+        "sha256": "41b7557179f863c6b2c3abb09c5b28e145c6fc73a0302ec15138e5d17774171f"
+      },
+      {
+        "frame": 215,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00215.columns.csv",
+        "sha256": "5502fc575d548f8680b99e65d754c301e7f8d528c9c38ea42a0bdc27bb16a8d0"
+      },
+      {
+        "frame": 216,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00216.columns.csv",
+        "sha256": "13803a06bdc4a3563456fe4dc00c210bd64f42af51edfaaff77df1a66714c7a7"
+      },
+      {
+        "frame": 217,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00217.columns.csv",
+        "sha256": "74f9d9a79601086e39c7dfc2c3a895ddd78c84a0952f41aed75a476a83533ef8"
+      },
+      {
+        "frame": 218,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00218.columns.csv",
+        "sha256": "1aa8cbbd891e8d722f440694ef0621da9bdb9d65253b86db6c8783786fd2f2e8"
+      },
+      {
+        "frame": 219,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00219.columns.csv",
+        "sha256": "a355a3f75a47fe0c2c62593a8de7b8aa0d5d9b58fcda4b660f67d3cf2f02f1f6"
+      },
+      {
+        "frame": 220,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00220.columns.csv",
+        "sha256": "1ea6b698f41e8802b2b34fafdde375f7a2df324986fcf3a2748e616286eb1fa3"
+      },
+      {
+        "frame": 221,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00221.columns.csv",
+        "sha256": "6164191ce6d50db8335b9068015456b5b87a73ef7e68fe4e477f4fd039600d60"
+      },
+      {
+        "frame": 222,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00222.columns.csv",
+        "sha256": "9e2bfbd505c4cbc1191ea09efaf8dbb4141d48b0f79a5247ee4e0fdbd093a13e"
+      },
+      {
+        "frame": 223,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00223.columns.csv",
+        "sha256": "d587e6f4d9d2d043332a07e999b0992079401e8eb78bd426d9f2af6452b5a5e0"
+      },
+      {
+        "frame": 224,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00224.columns.csv",
+        "sha256": "6a811cb9b9d99dd3cdfeefe422f7adbdce6dc52ab687ed8a4d6e8b560a903742"
+      },
+      {
+        "frame": 225,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00225.columns.csv",
+        "sha256": "027706e520cf384741c73441f375bb9b2bad76eab303da68ffb2088e29bc6575"
+      },
+      {
+        "frame": 226,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00226.columns.csv",
+        "sha256": "78f521bb1aa32fc3f3a1a018152f12f820ee74259fecc8447cb6b1252726fa8f"
+      },
+      {
+        "frame": 227,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00227.columns.csv",
+        "sha256": "efc18f459f2302ccf9e2726964feb8c6c54526d12d7486a0da8f86f2d5e025ff"
+      },
+      {
+        "frame": 228,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00228.columns.csv",
+        "sha256": "68530a91a0a7ef5f13c9ccee5e16a2d5e9e3fd25317d6a364d61899910469756"
+      },
+      {
+        "frame": 229,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00229.columns.csv",
+        "sha256": "bf1469dc4c709b6a90844edb20dfdcd265bcccbde6c7823d339b728e1e5026dd"
+      },
+      {
+        "frame": 230,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00230.columns.csv",
+        "sha256": "0441244f472c5651ddf805eb9c90baf4c2de4c1a78e4382e8475f33650589227"
+      },
+      {
+        "frame": 231,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00231.columns.csv",
+        "sha256": "6e703c63d02740a849773d5f6c4f5d993f767b6f31d5a3bb3c9b812ff0303eca"
+      },
+      {
+        "frame": 232,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00232.columns.csv",
+        "sha256": "1d4543913e5724629201f7c115f8f45871f54db8f872643f10c5df6a53ff0868"
+      },
+      {
+        "frame": 233,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00233.columns.csv",
+        "sha256": "d78cd2821c0c4d92b799dcdb9b4815042cbc604733e313c61a58d27cab13fcc9"
+      },
+      {
+        "frame": 234,
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets/frame_00234.columns.csv",
+        "sha256": "2b401fc902b5f78941046f40a07daf43e79c627069adfd12b0e1d295a03e3566"
+      }
+    ]
+  }
+}

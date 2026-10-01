@@ -1,0 +1,22 @@
+{
+  "reviewed_commit": "39c32a1c",
+  "reviewers": [
+    {
+      "agent": "r245_budget_pin_final_review",
+      "axis": "audited input binding and mutation controls",
+      "P1": 0,
+      "P2": 0,
+      "reproduced": "Unchanged GREEN + four REDs independently rerun."
+    },
+    {
+      "agent": "r245_budget_final_evidence_review",
+      "axis": "numeric evidence and interpretation fidelity",
+      "P1": 0,
+      "P2": 0,
+      "reproduced": "All235 column hashes and four-face means/RMS/std, final ledger/source/report hashes; max difference1.07e-14."
+    }
+  ],
+  "prior_P2": "fixed_and_freshly_reviewed",
+  "scope": "All15315 accepted ledger seal/clock/recurrence/history checks; full operand reconstruction at235 retained capsules. Not physical qualification.",
+  "next": "Top radial/time diagnostic before a numbered sensitivity design."
+}

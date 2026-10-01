@@ -1,6 +1,17 @@
 # r244 — matched tier-6 puffing campaign (in progress)
 
-## CURRENT: both full tier-6 spectra complete; budget localization next
+## CURRENT: r245 descriptive budgets reviewed; top spatial localization next
+
+The reviewed r245 observation-only budget run launched from zero at
+2026-09-30 03:24:04 UTC, through the unchanged doubled-domain full window.
+See [r245 current status](FIRE_SMOKE_BUDGET_LOCALIZATION_R245.md) for frozen
+binary, process/receipt paths and post-completion obligations. Host exclusivity
+was preserved through the sequential frame/history and budget verification,
+which both passed. Descriptive budget interpretation passed two fresh post-fix reviews.
+Top radial/time exchange localization precedes a numbered sensitivity design.
+The r245 simulation completed exit 0 at 2026-10-01 05:00:32 UTC, reporting
+15,315 steps and 235 frames; all ledgers and captured frame operands passed
+independent verification. Physical localization remains pending. Both r244 spectra below are already complete.
 
 The doubled-domain simulation completed exit 0 at 2026-09-29 18:56:55 UTC:
 15,315 accepted steps, final time 25.156864278920693 s, all 235 frames across

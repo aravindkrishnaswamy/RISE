@@ -1,0 +1,39 @@
+{
+  "status": "simulation_completed_independent_verification_pending",
+  "completion": {
+    "exit_code": 0,
+    "finished_utc": "2026-10-01T05:00:32.486411+00:00"
+  },
+  "producer_report": {
+    "accepted_steps": 15315,
+    "accepted_time_s": 25.156864278920693,
+    "frames": 235,
+    "hard_bound_retries": 0,
+    "physical_projection_retries": 0
+  },
+  "verification_root": "/Volumes/SSD/RISE/fire_production_calibration/r245_full_verification.v1",
+  "verification_launch": {
+    "pid": 87719,
+    "started_utc": "2026-10-01T05:18:32.691840+00:00",
+    "stages": [
+      [
+        "frame_history",
+        "/Users/aravind/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/Volumes/SSD/RISE/fire_production_calibration/r245_full_verification.v1/verify_full_window.py"
+      ],
+      [
+        "budget",
+        "/Users/aravind/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r245_budget_audit.py",
+        "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_lateral_budget.v1/budgets",
+        "--completion",
+        "/Volumes/SSD/RISE/fire_production_calibration/r245_tier6_budget_launch.v1/completion.json",
+        "--output",
+        "/Volumes/SSD/RISE/fire_production_calibration/r245_full_verification.v1/full_budget_audit.json"
+      ]
+    ],
+    "original_frame_verifier_sha256": "1e6e1843e91458f14f4f2828880e6e0ba2b29eeff6b3a1dcf445d061187968cc",
+    "adaptation": "Only repository root, run/case/receipt and report destinations changed; original checks retained. No lateral flag passed.",
+    "adapted_verifier_sha256": "7c043086ff25c685454bb3150749699b18f8bf95c71f451e16add2d67908cff6"
+  }
+}

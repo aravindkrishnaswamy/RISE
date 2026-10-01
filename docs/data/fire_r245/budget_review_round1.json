@@ -1,0 +1,28 @@
+{
+  "reviewed_commit": "9d301217",
+  "reviewers": [
+    {
+      "agent": "r245_budget_arithmetic_review",
+      "axis": "arithmetic and provenance",
+      "P1": 0,
+      "P2": 1,
+      "reproduced": "All retained values/hashes agree; independent four-face means/RMS/std agree within 4.47e-13."
+    },
+    {
+      "agent": "r245_budget_interpretation_review",
+      "axis": "physical interpretation and authority",
+      "P1": 0,
+      "P2": 0
+    }
+  ],
+  "findings": [
+    {
+      "severity": "P2",
+      "status": "fixed_full_audit_GREEN_RED_pass_fresh_review_pending",
+      "issue": "Localizer current seals not bound to prior full audit input bytes",
+      "RED": "Copied final statistics source chemical energy resealed to 9e9; old audit accepted by localizer. Originals untouched.",
+      "fix": "Audit retains final-step and per-frame column SHA; localizer compares before consumption. Fresh full audit and GREEN/RED controls underway."
+    }
+  ],
+  "recommendation": "Map retained top inflow/outflow by radius and time before selecting a numbered top-location sensitivity; do not change boundary law from gross inflow alone."
+}

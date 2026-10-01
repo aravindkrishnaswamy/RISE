@@ -192,7 +192,8 @@ def audit_capsule(directory, frame, metadata, rows, case):
                     float(raw[12*cells+9*faces+cell]), 'column cell/eddy binding')
 
     return {'frame': frame, 'accepted_step': int(metadata['accepted_step']), 'flux_root': metadata['flux_root'],
-            'native_root': metadata['native_root'], 'columns': len(column_rows)}
+            'native_root': metadata['native_root'], 'columns': len(column_rows),
+            'columns_sha256': hashlib.sha256(columns).hexdigest()}
 
 
 def source_components(metadata, key):
@@ -312,6 +313,7 @@ def audit(directory, fixture, completion=None):
             require(float(times[frame]['simulation_time_s']) == float(meta['beginning_time_s'])+float(meta['dt_s']), 'budget/VDB time mismatch')
     return {'status': 'focused_fixture_only' if fixture else 'full_budget_bytes_verified_not_physical_qualification',
             'case': case, 'steps': len(records), 'end_time_s': time, 'frames': summaries,
+            'final_step_sha256': hashlib.sha256(paths[-1].read_bytes()).hexdigest(),
             'audit_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
 
 
