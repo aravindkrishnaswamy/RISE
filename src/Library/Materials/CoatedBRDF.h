@@ -235,14 +235,11 @@ namespace RISE
 			//! Returns `baseOnb` UNCHANGED when no `coatNormal` painter
 			//! is bound (the common case) -- the ONE place this decision
 			//! is made, so `value`, `Scatter` and `Pdf` cannot drift
-			//! (DL-100's frame trap).  `baseOnb.u()/.v()/.w()` are used
-			//! directly as the decode's tangent/bitangent/normal triple
-			//! (ModifierFrame.h's own note: `Object::IntersectRay`
-			//! already built `ri.onb` from the object's tangent, via
-			//! `CreateFromWU`, so this is the SAME frame `NormalMap`
-			//! would independently re-derive in the common textured-mesh
-			//! case -- just already ray-facing, avoiding a second,
-			//! divergent flip decision).
+			//! (DL-100's frame trap). A separately transported shader direction
+            //! changes anisotropy only: decode against ri.normalMapOnb's UV
+            //! axes and the ray-facing normal. Legacy UV/global Tangent4 hits
+            //! use baseOnb unchanged. NormalMap follows the same separation.
+
 			OrthonormalBasis3D ResolveCoatFrame(
 				const RayIntersectionGeometric& ri,
 				const OrthonormalBasis3D& baseOnb

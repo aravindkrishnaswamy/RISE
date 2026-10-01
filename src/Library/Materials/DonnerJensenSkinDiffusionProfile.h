@@ -208,7 +208,8 @@ namespace RISE
 			void ComputePerLayerCoefficients(
 				const Scalar nm,
 				const RayIntersectionGeometric& ri,
-				LayerParams layers_out[2]
+				LayerParams layers_out[2],
+                const bool spectral
 				) const;
 
 			void PrecomputeProfiles();
@@ -228,7 +229,8 @@ namespace RISE
 				const Scalar exteriorIOR,
 				GaussianTerm terms_out[K_TERMS],
 				Scalar& total_weight_out,
-				Scalar cdf_out[K_TERMS]
+				Scalar cdf_out[K_TERMS],
+                const bool spectral
 				) const;
 
 			/// The tables for the exterior the record's ray arrived through
@@ -272,34 +274,38 @@ namespace RISE
 			RISEPel EvaluateProfile(
 				const Scalar r,
 				const RayIntersectionGeometric& ri
-				) const;
+				) const override;
 
 			Scalar EvaluateProfileNM(
 				const Scalar r,
 				const RayIntersectionGeometric& ri,
 				const Scalar nm
-				) const;
+				) const override;
 
 			Scalar SampleRadius(
 				const Scalar u,
 				const int channel,
 				const RayIntersectionGeometric& ri
-				) const;
+				) const override;
 
 			Scalar PdfRadius(
 				const Scalar r,
 				const int channel,
 				const RayIntersectionGeometric& ri
-				) const;
+				) const override;
 
 			Scalar FresnelTransmission(
 				const Scalar cosTheta,
 				const RayIntersectionGeometric& ri
-				) const;
+				) const override;
+
+            Scalar GetIORNM(const RayIntersectionGeometric& ri, const Scalar nm) const override;
+            Scalar FresnelTransmissionNM(const Scalar cosTheta,
+                const RayIntersectionGeometric& ri, const Scalar nm) const override;
 
 			Scalar GetIOR(
 				const RayIntersectionGeometric& ri
-				) const;
+				) const override;
 
 			//
 			// ISubSurfaceExtinctionFunction interface
@@ -307,7 +313,7 @@ namespace RISE
 
 			Scalar GetMaximumDistanceForError(
 				const Scalar error
-				) const;
+				) const override;
 
 			/// DL-291: the fit for a non-air exterior can activate a wider
 			/// Gaussian than the air fit, so the cutoff follows the record's
@@ -315,11 +321,11 @@ namespace RISE
 			Scalar GetMaximumDistanceForErrorAt(
 				const Scalar error,
 				const RayIntersectionGeometric& ri
-				) const;
+				) const override;
 
 			RISEPel ComputeTotalExtinction(
 				const Scalar distance
-				) const;
+				) const override;
 		};
 	}
 }

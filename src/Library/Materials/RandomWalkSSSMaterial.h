@@ -109,34 +109,48 @@ namespace RISE
 			}
 
 			/// \return The BSDF for this material.  NULL If there is no BSDF
-			inline IBSDF* GetBSDF() const {			return pBSDF; };
+			inline IBSDF* GetBSDF() const override {			return pBSDF; };
 
 			/// \return The SPF for this material.  NULL If there is no SPF
-			inline ISPF* GetSPF() const {			return pSPF; };
+			inline ISPF* GetSPF() const override {			return pSPF; };
 
 			/// \return The emission properties for this material.  NULL If there is not an emitter
-			inline IEmitter* GetEmitter() const {	return 0; };
+			inline IEmitter* GetEmitter() const override {	return 0; };
 
 			// SSS materials scatter light diffusely through the volume,
 			// so straight-line camera connections through them are unphysical.
-			inline bool CouldLightPassThrough() const { return false; };
+			inline bool CouldLightPassThrough() const override { return false; };
 
 			/// Random-walk SSS handles subsurface transport volumetrically
 			/// inside the mesh, but this is NOT the same as open-medium
 			/// volumetric rendering.  Return false so the raycaster does
 			/// not treat this as a participating medium.
-			inline bool IsVolumetric() const { return false; };
+			inline bool IsVolumetric() const override { return false; };
 
 			/// No diffusion profile — random walk replaces disk projection.
-			inline ISubSurfaceDiffusionProfile* GetDiffusionProfile() const { return 0; };
+			inline ISubSurfaceDiffusionProfile* GetDiffusionProfile() const override { return 0; };
 
 			/// \return Random walk SSS parameters for the integrators.
-			inline const RandomWalkSSSParams* GetRandomWalkSSSParams() const { return &m_rwParams; };
+			inline const RandomWalkSSSParams* GetRandomWalkSSSParams() const override { return &m_rwParams; };
+
+            // Coefficients keep the existing construction-time RGB snapshot.
+            // The boundary IOR is evaluated at lambda, at the same snapshot point.
+            bool GetRandomWalkSSSParamsNM(const Scalar nm, RandomWalkSSSParams& out) const override
+            {
+                out = m_rwParams;
+                RayIntersectionGeometric ri(Ray(Point3(0,0,0), Vector3(0,1,0)), nullRasterizerState);
+                ri.bHit = true;
+                ri.ptIntersection = Point3(0,0,0);
+                ri.vNormal = Vector3(0,1,0);
+                ri.onb.CreateFromW(ri.vNormal);
+                out.ior = pIORPainter->GetValueAtNM(ri, nm);
+                return true;
+            }
 
 			SpecularInfo GetSpecularInfo(
 				const RayIntersectionGeometric& ri,
 				const IORStack& ior_stack
-				) const
+				) const override
 			{
 				SpecularInfo info;
 				info.isSpecular = (surfaceRoughness * surfaceRoughness <= 1e-6);
@@ -150,7 +164,7 @@ namespace RISE
 				const RayIntersectionGeometric& ri,
 				const IORStack& ior_stack,
 				const Scalar nm
-				) const
+				) const override
 			{
 				SpecularInfo info;
 				info.isSpecular = (surfaceRoughness * surfaceRoughness <= 1e-6);

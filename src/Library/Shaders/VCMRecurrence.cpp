@@ -120,8 +120,8 @@ VCMNormalization RISE::Implementation::ComputeNormalization(
 //   dVC  = !isDelta ? (finite ? cosLight : 1) / emissionPdfW : 0
 //   dVM  = dVC * mMisVcWeightFactor   // NOTE: VC, not VM
 //
-// directPdfA is the AREA-measure pdf of selecting this light position
-// for direct lighting (pdfSelect * pdfPosition).  emissionPdfW is the
+// directPdfA is the selected endpoint marginal: q*pdfPosition for
+// finite lights, q*pdfEnv for environments. emissionPdfW is the
 // SmallVCM "combined area+solid-angle" emission pdf (the same value
 // RISE's BDPT generator stores in BDPTVertex::emissionPdfW).
 //////////////////////////////////////////////////////////////////////
@@ -131,36 +131,22 @@ VCMMisQuantities RISE::Implementation::InitLight(
 	const Scalar cosLight,
 	const bool isFiniteLight,
 	const bool isDelta,
-	const VCMNormalization& norm,
-	const Scalar pdfSelect
+	const VCMNormalization& norm
 	)
 {
 	VCMMisQuantities q;
 
 	if( emissionPdfW > 0 )
 	{
-		// dVCM = directPdfA / emissionPdfW.  In RISE's joint storage
-		// directPdfA = pdfSelect × pdfPos and emissionPdfW =
-		// pdfSelect × pdfPos × pdfDir, so the ratio is 1/pdfDir —
-		// pdfSelect cancels and matches SmallVCM's
-		// `dVCM = pdfPos / (pdfPos × pdfDir) = 1/pdfDir`.  No
-		// adjustment needed.
+		// The endpoint marginal divided by joint emission cancels q.
+		// It is 1/pdfDir for finite lights, 1/pdfDisc for environments.
 		q.dVCM = directPdfA / emissionPdfW;
 		if( !isDelta )
 		{
 			const Scalar usedCosLight = isFiniteLight ? cosLight : Scalar( 1 );
-			// dVC = cosLight / emissionPdfW_geometric where
-			// emissionPdfW_geometric = pdfPos × pdfDir (SmallVCM
-			// convention — no light-selection multiplier).  RISE
-			// stores joint `emissionPdfW = pdfSelect × pdfPos × pdfDir`,
-			// so divide-by-emissionPdfW alone leaves a residual
-			// 1/pdfSelect inflation.  Multiplying the numerator by
-			// pdfSelect extracts the geometric value.  Empirically
-			// no-op in test scenes (max_depth=3, merge_radius=0)
-			// per Δ7 bisect, but algebraically correct per SmallVCM
-			// and load-bearing in deeper paths / active VM.  See
-			// BDPTVertex.h's pdfSelect doc.
-			q.dVC = ( usedCosLight * pdfSelect ) / emissionPdfW;
+			// The eye alternative never selects this light. Retain the
+			// selection factor in the joint emission denominator.
+			q.dVC = usedCosLight / emissionPdfW;
 		}
 		else
 		{

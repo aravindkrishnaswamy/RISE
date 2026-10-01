@@ -216,7 +216,8 @@ namespace RISE
 			const IObjectManager* pObjects,
 			const Point3& pos,
 			const Vector3& dir,
-			ProbeEntry* out
+			ProbeEntry* out,
+            const Scalar nm = 0
 			)
 		{
 			Diagnostics::ProbeTraceCounter()++;
@@ -279,7 +280,8 @@ namespace RISE
 					// through.
 					IORStack queryStack( Scalar( 1.0 ) );
 					const SpecularInfo info =
-						ri.pMaterial->GetSpecularInfo( ri.geometric, queryStack );
+						nm > 0 ? ri.pMaterial->GetSpecularInfoNM( ri.geometric, queryStack, nm )
+                        : ri.pMaterial->GetSpecularInfo( ri.geometric, queryStack );
 					const bool bTrackable = info.canRefract ? (info.ior > 0) : info.hasInterior;
 					if( info.valid && bTrackable )
 					{
@@ -380,7 +382,8 @@ namespace RISE
 		inline void SeedFromPoint(
 			IORStack& stack,
 			const Point3& pos,
-			const IScene& scene
+			const IScene& scene,
+            const Scalar nm = 0
 			)
 		{
 			// Emergency off-switch for perf regression triage — set
@@ -403,7 +406,7 @@ namespace RISE
 			// and keeps results deterministic across threads.
 			ProbeEntry containing[kMaxProbeEntries];
 			const std::size_t containingCount =
-				TallyProbe( pObjects, pos, Vector3( 0, 0, 1 ), containing );
+				TallyProbe( pObjects, pos, Vector3( 0, 0, 1 ), containing, nm );
 
 			// P2-4 (review round 3): a single probe's parity is only a
 			// containment test for a CLOSED surface.  Every
@@ -477,7 +480,7 @@ namespace RISE
 				if( containing[i].parity > 0 ) { anyCandidate = true; break; }
 			}
 			if( anyCandidate ) {
-				reverseCount = TallyProbe( pObjects, pos, Vector3( 0, 0, -1 ), reverse );
+				reverseCount = TallyProbe( pObjects, pos, Vector3( 0, 0, -1 ), reverse, nm );
 			}
 
 			// DL-76 perf fix (2026-09-14): trace the X and Y confirmation
@@ -505,10 +508,10 @@ namespace RISE
 				}
 			}
 			if( anyZConfirmed ) {
-				xForwardCount = TallyProbe( pObjects, pos, Vector3( 1, 0, 0 ), xForward );
-				xReverseCount = TallyProbe( pObjects, pos, Vector3( -1, 0, 0 ), xReverse );
-				yForwardCount = TallyProbe( pObjects, pos, Vector3( 0, 1, 0 ), yForward );
-				yReverseCount = TallyProbe( pObjects, pos, Vector3( 0, -1, 0 ), yReverse );
+				xForwardCount = TallyProbe( pObjects, pos, Vector3( 1, 0, 0 ), xForward, nm );
+				xReverseCount = TallyProbe( pObjects, pos, Vector3( -1, 0, 0 ), xReverse, nm );
+				yForwardCount = TallyProbe( pObjects, pos, Vector3( 0, 1, 0 ), yForward, nm );
+				yReverseCount = TallyProbe( pObjects, pos, Vector3( 0, -1, 0 ), yReverse, nm );
 			}
 
 			// Push containing objects (parity > 0) onto the stack.

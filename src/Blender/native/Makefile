@@ -55,7 +55,7 @@ rise_archive:
 
 $(TARGET): rise_archive $(OBJS) ../../../bin/librise.a
 	@echo Linking $@
-	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(SHARED_FLAGS) -o $@ $(OBJS) ../../../bin/librise.a $(LDLIBS)
+	@$(CXX) $(CPPFLAGS) $(filter-out -fno-finite-math-only,$(CXXFLAGS)) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(SHARED_FLAGS) -o $@ $(OBJS) ../../../bin/librise.a $(LDLIBS)
 
 .SUFFIXES:
 .SUFFIXES: .cpp .o

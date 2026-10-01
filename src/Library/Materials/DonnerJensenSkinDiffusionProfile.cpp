@@ -188,7 +188,8 @@ Scalar DonnerJensenSkinDiffusionProfile::ComputeEpidermisScattering( const Scala
 void DonnerJensenSkinDiffusionProfile::ComputePerLayerCoefficients(
 	const Scalar nm,
 	const RayIntersectionGeometric& ri,
-	LayerParams layers_out[2]
+	LayerParams layers_out[2],
+    const bool spectral
 	) const
 {
 	// Extract painter values
@@ -198,8 +199,8 @@ void DonnerJensenSkinDiffusionProfile::ComputePerLayerCoefficients(
 	const Scalar C_bc = pnt_carotene_fraction.GetValuesAt(ri).v[0];
 	const Scalar C_hd = pnt_hemoglobin_dermis.GetValuesAt(ri).v[0];
 	const Scalar thickness_epi = pnt_epidermis_thickness.GetValuesAt(ri).v[0];
-	const Scalar ior_epi = pnt_ior_epidermis.GetValuesAt(ri).v[0];
-	const Scalar ior_derm = pnt_ior_dermis.GetValuesAt(ri).v[0];
+	const Scalar ior_epi = spectral ? pnt_ior_epidermis.GetValueAtNM(ri, nm) : pnt_ior_epidermis.GetValuesAt(ri).v[0];
+	const Scalar ior_derm = spectral ? pnt_ior_dermis.GetValueAtNM(ri, nm) : pnt_ior_dermis.GetValuesAt(ri).v[0];
 	const Scalar gamma = pnt_blood_oxygenation.GetValuesAt(ri).v[0];
 
 	const Scalar baseline = ComputeSkinBaselineAbsorption( nm );
@@ -306,12 +307,13 @@ void DonnerJensenSkinDiffusionProfile::PrecomputeProfileAtWavelength(
 	const Scalar exteriorIOR,
 	GaussianTerm terms_out[K_TERMS],
 	Scalar& total_weight_out,
-	Scalar cdf_out[K_TERMS]
+	Scalar cdf_out[K_TERMS],
+    const bool spectral
 	) const
 {
 	// Get per-layer optical properties at this wavelength
 	LayerParams layers[2];
-	ComputePerLayerCoefficients( nm, ri, layers );
+	ComputePerLayerCoefficients( nm, ri, layers, spectral );
 
 	// DL-291: each slab's extrapolation term A = (1+Fdr)/(1-Fdr) is a
 	// function of the layer index RELATIVE to the medium around the body
@@ -554,7 +556,7 @@ void DonnerJensenSkinDiffusionProfile::PrecomputeTables(
 	{
 		PrecomputeProfileAtWavelength(
 			ms_rgb_wavelengths[c], ri, exteriorIOR,
-			tables.rgb_terms[c], tables.rgb_total_weight[c], tables.rgb_cdf[c] );
+			tables.rgb_terms[c], tables.rgb_total_weight[c], tables.rgb_cdf[c], false );
 
 		for( int k = 0; k < K_TERMS; k++ )
 		{
@@ -569,7 +571,7 @@ void DonnerJensenSkinDiffusionProfile::PrecomputeTables(
 		Scalar dummy_cdf[K_TERMS];
 		PrecomputeProfileAtWavelength(
 			ms_spectral_wavelengths[w], ri, exteriorIOR,
-			tables.spectral_terms[w], tables.spectral_total_weight[w], dummy_cdf );
+			tables.spectral_terms[w], tables.spectral_total_weight[w], dummy_cdf, true );
 
 		for( int k = 0; k < K_TERMS; k++ )
 		{
@@ -757,9 +759,8 @@ Scalar DonnerJensenSkinDiffusionProfile::FresnelTransmission(
 	// the one SubSurfaceScatteringSPF prices the surface reflection of the
 	// same interface with, so reflection + transmission = 1 (a denser
 	// exterior is totally reflected past the critical angle).
-	const Scalar eta = BSSRDFSampling::RelativeBoundaryIOR(
+	return BSSRDFSampling::BoundaryTransmission( fabs( cosTheta ),
 		pnt_ior_epidermis.GetValuesAt(ri).v[0], BSSRDFSampling::ExteriorIOR( ri ) );
-	return BSSRDFSampling::BoundaryTransmission( fabs( cosTheta ), eta );
 }
 
 Scalar DonnerJensenSkinDiffusionProfile::GetIOR(
@@ -797,4 +798,14 @@ RISEPel DonnerJensenSkinDiffusionProfile::ComputeTotalExtinction(
 	) const
 {
 	return RISEPel( 0, 0, 0 );
+}
+
+// DL-334: material and exterior indices describe the same wavelength.
+Scalar DonnerJensenSkinDiffusionProfile::GetIORNM(const RayIntersectionGeometric& ri, const Scalar nm) const
+{ return pnt_ior_epidermis.GetValueAtNM(ri, nm); }
+Scalar DonnerJensenSkinDiffusionProfile::FresnelTransmissionNM(const Scalar cosTheta,
+    const RayIntersectionGeometric& ri, const Scalar nm) const
+{
+    return BSSRDFSampling::BoundaryTransmission(fabs(cosTheta),
+        GetIORNM(ri, nm), BSSRDFSampling::ExteriorIOR(ri));
 }

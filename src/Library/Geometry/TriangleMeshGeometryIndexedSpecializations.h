@@ -299,6 +299,19 @@ namespace RISE
 					ri.bHasTangent = false;
 				}
 
+                ri.bHasShaderDirection = false;
+                ri.bHasNormalMapFrame = false;
+                if (!pShaderDirections.empty() && !pPoints.empty()) {
+                    const Vertex* base = &pPoints[0];
+                    const size_t i0 = size_t(thisTri.pVertices[0]-base);
+                    const size_t i1 = size_t(thisTri.pVertices[1]-base);
+                    const size_t i2 = size_t(thisTri.pVertices[2]-base);
+                    if (i0<pShaderDirections.size() && i1<pShaderDirections.size() && i2<pShaderDirections.size()) {
+                        const Vector3& t0 = pShaderDirections[i0];
+                        ri.vShaderDirection = t0+(pShaderDirections[i1]-t0)*a+(pShaderDirections[i2]-t0)*b;
+                        ri.bHasShaderDirection = true;
+                    }
+                }
 				// Populate surface derivatives for SMS consumers.
 				//
 				// Strategy: use the per-vertex (u, v) texture coordinates

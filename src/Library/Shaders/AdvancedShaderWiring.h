@@ -5,13 +5,10 @@
 //    stochastic blend) needs to replace the renderer's always-on
 //    default shader for that material.
 //
-//  Both `GLTFSceneImporter.cpp`'s `WireAlphaShader` (glTF alphaMode
-//  MASK/BLEND) and `rise_blender_bridge.cpp`'s Blender Principled BSDF
-//  Alpha bridging (DL-193, docs/DEBT_LEDGER.md) build the IDENTICAL
-//  three-op chain -- `[Emission +, DirectLighting +, <op> =]` -- and
-//  differed only in the alpha-aware op's own name.  This is that one
-//  shared construction, extracted so the two importers cannot drift
-//  apart on it.
+//  Legacy helper for explicitly authored alpha shader-op chains. glTF and
+//  Blender now call IJob::SetMaterialAlpha instead; their transport alpha
+//  works before shader dispatch. The Blender bridge preserves its historical
+//  shader name with ordinary emission/direct ops only, without this helper.
 //
 //  WHY THE SHAPE IS FIXED.  `alpha_test_shaderop` / `transparency_-
 //  shaderop` REPLACE the running accumulator (the `=` operation)
@@ -24,20 +21,8 @@
 //  with the ordinary emission + direct-lighting response so the
 //  alpha-aware op has something to keep or discard.
 //
-//  See `AlphaTestShaderOp.h`'s own "integrator-compatibility caveat":
-//  this chain runs inside `IShader::Shade()`, reached only through
-//  `RayCaster::SelectShader(ri)`/`ri.pShader` at the
-//  `RayCaster::CastRay{,NM,HWSS}` call sites the LEGACY
-//  `pixelpel_rasterizer` dispatches every hit through.  DL-214
-//  (docs/DEBT_LEDGER.md) measured that the modern PT integrator
-//  (`PathTracingIntegrator.cpp`, RISE's -- and this bridge's --
-//  DEFAULT) has NO reference to `SelectShader`/`ri.pShader` at all; it
-//  evaluates emission/BSDF/NEE directly against `ri.pMaterial`,
-//  entirely bypassing this pipeline.  `pixelpel_rasterizer` is
-//  therefore the ONLY rasterizer this chain's alpha mask reaches --
-//  PT, BDPT, VCM, MLT, and every photon tracer all bypass it and
-//  render every alpha-masked/blended surface as fully opaque
-//  regardless of this wiring.
+//  This helper remains specific to legacy shader dispatch. The shared
+//  material coverage path is documented in docs/ALPHA_COVERAGE.md.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4

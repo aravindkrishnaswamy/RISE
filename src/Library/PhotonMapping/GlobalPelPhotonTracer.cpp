@@ -77,7 +77,8 @@ void GlobalPelPhotonTracer::TracePhoton(
 	// Cast the ray into the scene
 	RayIntersection	ri( ray, nullRasterizerState );
 	ri.geometric.ray.SetDir(Vector3Ops::Normalize(ri.geometric.ray.Dir()));
-	pScene->GetObjects()->IntersectRay( ri, true, true, false );
+	IndependentSampler alphaSampler(random);
+	pScene->GetObjects()->IntersectRaySampled(ri, alphaSampler);
 
 	if( ri.geometric.bHit )
 	{
@@ -133,7 +134,7 @@ void GlobalPelPhotonTracer::TracePhoton(
 				// Store incident flux before this surface response. The cache
 				// retains directions and the geometric anchor plane; the query
 				// supplies the BSDF, shading frame and material position.
-				pPhotonMap.Store( power, ri.geometric.ptIntersection, ri.geometric.vGeomNormal, -ray.Dir() );
+				pPhotonMap.Store( power * (1 / ri.acceptedAlphaCoverage), ri.geometric.ptIntersection, ri.geometric.vGeomNormal, -ray.Dir() );
 			}
 
 			if( bBranch ) {

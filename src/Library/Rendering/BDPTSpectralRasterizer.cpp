@@ -164,7 +164,7 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 	if( !eyeVerts.empty() )
 	{
 		std::vector<BDPTIntegrator::ConnectionResultNM> results =
-			pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, pScene, *pCaster, camera, cameraLensSample, nm );
+			pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, pScene, *pCaster, camera, cameraLensSample, nm, &sampler );
 
 		for( unsigned int r = 0; r < results.size(); r++ )
 		{
@@ -401,7 +401,7 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 				if( !eyeVerts.empty() )
 				{
 					std::vector<BDPTIntegrator::ConnectionResultNM> heroResults =
-						pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, pScene, *pCaster, camera, cameraLensSample, heroNM );
+						pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, pScene, *pCaster, camera, cameraLensSample, heroNM, &sampler );
 
 					for( unsigned int r = 0; r < heroResults.size(); r++ ) {
 						const BDPTIntegrator::ConnectionResultNM& cr = heroResults[r];
@@ -476,7 +476,7 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 
 					std::vector<BDPTIntegrator::ConnectionResultNM> compResults =
 						pIntegrator->EvaluateAllStrategiesNM(
-							compLight, compEye, pScene, *pCaster, camera, cameraLensSample, companionNM );
+							compLight, compEye, pScene, *pCaster, camera, cameraLensSample, companionNM, &sampler );
 
 					for( unsigned int r = 0; r < compResults.size(); r++ ) {
 						const BDPTIntegrator::ConnectionResultNM& cr = compResults[r];

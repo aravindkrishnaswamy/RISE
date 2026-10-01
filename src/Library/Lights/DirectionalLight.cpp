@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/IndependentSampler.h"
 #include "DirectionalLight.h"
 #include "../Animation/KeyframableHelper.h"
 #include "../Rendering/RayCaster.h"		// concrete RayCaster — dynamic_cast target for transparent (Fresnel-attenuated) shadow rays
@@ -47,7 +48,7 @@ DirectionalLight::~DirectionalLight( )
 {
 }
 
-void DirectionalLight::ComputeDirectLighting(
+void DirectionalLight::ComputeDirectLightingSampled(
 	const RayIntersectionGeometric& ri,
 	const IRayCaster& pCaster,
 	const IBSDF& brdf,
@@ -55,7 +56,8 @@ void DirectionalLight::ComputeDirectLighting(
 	RISEPel& amount,
 	const bool bFullSphereReceiver,
 	const bool bVolumeReceiver,
-	const IORStack* pIORStack
+	const IORStack* pIORStack,
+    ISampler& sampler, MediumBoundaryHits* boundaries
 	) const
 {
 	amount = RISEPel(0.0);
@@ -131,10 +133,10 @@ void DirectionalLight::ComputeDirectLighting(
 
 		const RayCaster* pRC = dynamic_cast<const RayCaster*>( &pCaster );
 		if( pRC ) {
-			if( pRC->CastShadowRayAuto( rayToLight, RISE_INFINITY, false, 0.0, shadowT, true /*DL-05: delta light*/ ) ) {
+			if( pRC->CastShadowRayAutoSampled( rayToLight, RISE_INFINITY, false, 0.0, shadowT, true /*DL-05: delta light*/ , sampler, boundaries ) ) {
 				return;
 			}
-		} else if( pCaster.CastShadowRay( rayToLight, RISE_INFINITY ) ) {
+		} else if( pCaster.CastShadowRaySampled( rayToLight, RISE_INFINITY , sampler, boundaries ) ) {
 			return;
 		}
 	}
@@ -142,7 +144,7 @@ void DirectionalLight::ComputeDirectLighting(
 	amount = (cColor * brdf.valueStateful( vDirection, ri , pIORStack)) * (fDot * radiantEnergy) * shadowT;
 }
 
-Scalar DirectionalLight::ComputeDirectLightingNM(
+Scalar DirectionalLight::ComputeDirectLightingSampledNM(
 	const RayIntersectionGeometric& ri,
 	const IRayCaster& pCaster,
 	const IBSDF& brdf,
@@ -150,7 +152,8 @@ Scalar DirectionalLight::ComputeDirectLightingNM(
 	const Scalar nm,
 	const bool bFullSphereReceiver,
 	const bool bVolumeReceiver,
-	const IORStack* pIORStack
+	const IORStack* pIORStack,
+    ISampler& sampler, MediumBoundaryHits* boundaries
 	) const
 {
 	// Same geometry as the RGB ComputeDirectLighting: cosine of angle
@@ -173,11 +176,11 @@ Scalar DirectionalLight::ComputeDirectLightingNM(
 		const RayCaster* pRC = dynamic_cast<const RayCaster*>( &pCaster );
 		if( pRC ) {
 			RISEPel t( 1.0, 1.0, 1.0 );
-			if( pRC->CastShadowRayAuto( rayToLight, RISE_INFINITY, true, nm, t, true /*DL-05: delta light*/ ) ) {
+			if( pRC->CastShadowRayAutoSampled( rayToLight, RISE_INFINITY, true, nm, t, true /*DL-05: delta light*/ , sampler, boundaries ) ) {
 				return Scalar(0);
 			}
 			shadowT = t.r;	// NM path fills all 3 channels equally
-		} else if( pCaster.CastShadowRay( rayToLight, RISE_INFINITY ) ) {
+		} else if( pCaster.CastShadowRaySampled( rayToLight, RISE_INFINITY , sampler, boundaries ) ) {
 			return Scalar(0);
 		}
 	}
@@ -247,3 +250,18 @@ void DirectionalLight::SetIntermediateValue( const IKeyframeParameter& val )
 }
 
 
+
+void DirectionalLight::ComputeDirectLighting(const RayIntersectionGeometric& ri,
+    const IRayCaster& caster, const IBSDF& bsdf, const bool shadows, RISEPel& amount,
+    const bool fullSphere, const bool volume, const IORStack* stack) const
+{
+    RandomNumberGenerator random; IndependentSampler sampler(random);
+    ComputeDirectLightingSampled(ri, caster, bsdf, shadows, amount, fullSphere, volume, stack, sampler, nullptr);
+}
+Scalar DirectionalLight::ComputeDirectLightingNM(const RayIntersectionGeometric& ri,
+    const IRayCaster& caster, const IBSDF& bsdf, const bool shadows, const Scalar nm,
+    const bool fullSphere, const bool volume, const IORStack* stack) const
+{
+    RandomNumberGenerator random; IndependentSampler sampler(random);
+    return ComputeDirectLightingSampledNM(ri, caster, bsdf, shadows, nm, fullSphere, volume, stack, sampler, nullptr);
+}
