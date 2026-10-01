@@ -398,6 +398,8 @@ static std::string RastVCMNoMerge( unsigned int spp )
 	ss << "vcm_pel_rasterizer\n{\n\tsamples " << spp * SppScale()
 	   << "\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tmerge_radius 0.0\n\tvc_enabled true\n\tvm_enabled false\n"
 	   << "\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n" << kOutputChunk;
+	return ss.str();
+}
 
 //! DL-295: the PT rasterizers with `sms_enabled` set either way.  The
 //! SMS section compares the two on scenes that contain NO SMS caster
