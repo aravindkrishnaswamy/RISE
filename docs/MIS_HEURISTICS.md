@@ -155,6 +155,60 @@ a winner-takes-all between two strategies that **both legitimately
 contribute** in caustic regions.  Balance gracefully blends them;
 power forces a binary choice between two unbiased estimators.
 
+#### 4a. A BSSRDF / random-walk jump is an MIS barrier (DL-317, 2026-10-01)
+
+A subsurface event relocates the path from the hit where it went in
+(`x_o`, which the generator marks delta) to a sampled ENTRY vertex
+`x_i` (`isBSSRDFEntry`).  The relocation is not an edge: nothing
+connects `x_o` to `x_i`, and the jump's REVERSE density (sampling
+`x_o` from `x_i`) is never evaluated -- for a random walk it has no
+closed form.  So the only strategies for a path through a jump are
+the ones that split it on the far side of the subpath that SAMPLED
+the jump.  For an eye-sampled jump:
+
+| at the entry `x_i` | diffusion entry (non-delta, connectible, `pdfFwd = pdfSurface`) | random-walk entry (delta, non-connectible, `pdfFwd = 0`) |
+|---|---|---|
+| NEE / connection to a light vertex | yes | no |
+| merge with a photon arriving at `x_i` | yes (merging on) | no |
+| anything with the light covering `x_i` AND `x_o` (connect `x_o`--`x_i`, merge at `x_o` through the jump, deeper) | no | no |
+| `(dVCM, dVC, dVM)` AT `x_i` | `0` | `0` |
+| state for the vertex AFTER `x_i` | the ordinary non-specular update of that zero state: `dVCM = 1/p_w`, `dVC = (cos/p_w) eta_VM`, `dVM = cos/p_w` | `0` |
+
+The light-sampled jump mirrors this, and the two families estimate
+the SAME integral with no reverse jump density to MIS-combine them;
+keeping both, each closed over itself, counts the path twice.  VCM
+therefore assigns every jump path to the EYE-sampled family (PT's and,
+in effect, BDPT's own estimator) and evaluates no strategy at or past
+a light-side entry: `ConvertLightSubpath` stops there (nothing past it
+is stored for merging) and the splat / connection loops stop at
+`UsableLightSubpathLength`.  The hit where the light walk went INTO the
+material stays usable -- an ordinary arrival; only its continuation was
+the jump.
+
+Pre-DL-317 VCM had all three defects: `dVCM = 1/pdfSurface` at the
+entry (reserving the connection across the jump), the non-specular
+onward update at a NON-connectible random-walk entry (a phantom NEE,
+DL-126's pattern), and the light-sampled family kept.  Fixing only the
+first two over-corrects: the light family then reads at full weight
+(`VCMStrategyBalanceTest` V row: +3.5% merging on, +2.65% off -- the
+"dVM over-correction" the DL-317 recipe suspected, which is in fact
+this double count and has nothing to do with merging).  Measured
+VCM/PT - 1 (32x32, salted; merging on / off; pre-fix F/B/V from n = 2-4
+probe renders):
+
+| row | pre-fix | post-fix (6 salted runs) |
+|---|---|---|
+| F1 random-walk sphere, white furnace | -28.4% / -28.3% | -0.005% / +0.008% (sd 0.04%) |
+| F2 smooth diffusion sphere, white furnace | -18.9% / -18.9% | -0.06% / -0.02% |
+| B1 backlit random-walk sphere filling the frame | -85.3% / -85.2% | +0.03% / +0.59% (sd ~2%) |
+| B2 backlit smooth-diffusion sphere filling the frame | -83.2% / -83.3% | -0.52% / -0.36% (BDPT -0.33%) |
+| V random-walk sphere on Lambertian walls | -15.0% / -15.1% | +0.01% / +0.01% |
+| U rough diffusion sheets (the row, merging on) | -5.3% | -0.02% (sd 0.16%) |
+
+The size of the old dilution scales with the profile area over the
+squared light distance, so room-scale shipped scenes barely moved
+(`vcm_sss_dragon`, `bdpt_sss_different_bsdf`: no significant change).
+
 ### 5. SMS — no per-strategy MIS reweight
 
 SMS contributions are splat-accumulated as an auxiliary technique.

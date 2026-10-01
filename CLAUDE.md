@@ -267,6 +267,8 @@ warning kind, and the verification commands are in [AGENTS.md](AGENTS.md) →
 
 - **DL-294 (debt-dl294, 2026-09-28): a light-traced (t = 1) splat's FILM MEMBERSHIP is decided by the film alone -- `SplatFilm::NearestPixel`, the nearest pixel centre in the convention every rasterizer samples its eye subpaths in -- and the camera projections (`BDPTCameraUtilities::Rasterize*`, `ThinLensCamera::RasterFromLensPoint`) reject only outside a one-pixel `InRasterGuardBand`; they used to clip at the camera's nominal [0,W) film, half a pixel off, losing the strips at image column 0 and row 0 (-6.15 % on a 16 x 16 frame lit edge to edge, the "narrow-fov" deficit; a half-pixel misregistration of the splat layer under the default gaussian filter, +/-8 % on splat-heavy VCM edge rows) -- if DL-368 changes the pixel convention, `NearestPixel` moves with it** ([docs/DL294_NARROW_FOV_SPLAT.md](docs/DL294_NARROW_FOV_SPLAT.md)).
 
+- **DL-317 (2026-10-01): in VCM a BSSRDF / random-walk jump is an MIS BARRIER** -- zero running quantities at the entry, the ordinary onward update only from a connectible (diffusion) entry, and no strategy at or past a LIGHT-side entry (the light-sampled jump family has no reverse jump density to MIS against the eye-sampled one, so keeping it double counts); VCM/PT on SSS-filled frames went from -15..-85% to noise ([MIS_HEURISTICS.md](docs/MIS_HEURISTICS.md) §4a).
+
 ## Thread priority — read before touching anything threading-related
 
 - **Production default (topology-aware):** every P-core gets a render worker, every E-core except **one** also gets a worker. The reserved E-core keeps UI / daemons responsive. macOS workers use `QOS_CLASS_USER_INITIATED`; Linux/Windows use CPU-affinity pinning.

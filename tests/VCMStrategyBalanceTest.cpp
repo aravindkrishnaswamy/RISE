@@ -2223,10 +2223,14 @@ static void TestNarrowFovSplatW()
 //   V  BDPTStrategyBalanceTest's topology V (random-walk sphere on
 //      Lambertian walls, front-lit) -- the row that sees (c): a light
 //      walk exits the sphere onto the walls.
-// Pre-fix (32x32, salted, n = 4, VCM/PT - 1, merging on / off):
+// Pre-fix (32x32, salted, VCM/PT - 1, merging on / off; n = 2 for F,
+// 4 for B and V, from probe renders of these exact scenes):
 //   F random walk -28.4% / -28.3%, diffusion -18.9% / -18.9%;
 //   B random walk -85.3% / -85.2%, smooth diffusion -83.2% / -83.3%;
-//   V -15.0% / -15.1%; U (below) -5.2% / -5.5%.
+//   V -15.0% / -15.1%; U (the row below, merging on) -5.3%.
+// Isolated red-proof (base VCMIntegrator.cpp, `--dl317-only 11`):
+// 11 passed / 12 failed -- every VCM/PT ratio, the F1 floor and U red;
+// only the on/off agreement checks pass (the defect hit both modes).
 // Bands are >= 4.6 times the RATIO sd measured on the fixed build over
 // six independent salted runs of these exact rows (`--dl317-only <seed>`,
 // seeds 11/101/202/303/404/505), each row's three ratios pooled:
