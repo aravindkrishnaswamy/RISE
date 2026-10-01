@@ -2000,6 +2000,14 @@ static std::string FormatMatrix16( const Matrix4& m )
 	return out;
 }
 
+// Camera target_orientation is a two-component theta/phi pair.
+static std::string FormatVec2( const Vector2& v )
+{
+	char buf[ 64 ];
+	std::snprintf( buf, sizeof( buf ), "%.17g %.17g", static_cast<double>( v.x ), static_cast<double>( v.y ) );
+	return std::string( buf );
+}
+
 // Format a Vector3 as "x y z" at full precision.
 static std::string FormatVec3( const Vector3& v )
 {
@@ -2857,9 +2865,9 @@ bool SceneEditor::CommitPendingCstCameraPose()
 			orientation.z * RAD_TO_DEG ) ).c_str() );
 	const Vector2 targetOrientation = common->GetTargetOrientation();
 	const String target(
-		FormatVec3( Vector3(
+		FormatVec2( Vector2(
 			targetOrientation.x * RAD_TO_DEG,
-			targetOrientation.y * RAD_TO_DEG, 0 ) ).c_str() );
+			targetOrientation.y * RAD_TO_DEG ) ).c_str() );
 	String basisW;
 	String basisV;
 	const OrthonormalBasis3D basis = common->GetCurrentBasis();
