@@ -147,11 +147,39 @@ light hits that SMS already covers.  Audit:
   through to `w=1` — so if suppression didn't set it to false, full
   emission is added.  This is the firefly mechanism behind the
   classic "random bright pixels on the floor OUTSIDE the caustic."
-- On recursive `CastRay` handoff (branching path, BSSRDF), the
-  child's `rs2.smsPassedThroughSpecular` and
-  `rs2.smsHadNonSpecularShading` must be populated from the parent's
-  state.  A fresh `RAY_STATE` starts with `false/false` and breaks
-  the suppression chain.
+- On a recursive `CastRay` handoff, the child's
+  `rs2.smsPassedThroughSpecular` / `rs2.smsHadNonSpecularShading` carry
+  the parent's state ONLY where the parent vertex really is an SMS
+  anchor (DL-295, next bullet).  A BSSRDF exit continuation, an SPF-only
+  (no-BSDF) vertex and a medium vertex are NOT anchors -- SMS never
+  runs there -- so they hand off `smsHadNonSpecularShading = false`;
+  passing `true` there suppresses an emitter hit nothing else estimates
+  (skin under a glass slab read exactly 0 under PT+SMS before DL-295
+  round 3).  Do not "restore" `true` at those hand-offs.
+- The OPPOSITE failure -- energy LOSS, not fireflies (DL-295,
+  2026-09-28/29): suppression is only correct for a chain SMS actually
+  estimates, which needs BOTH (1) an SMS anchor before the chain -- a
+  non-delta vertex at which SMS is EVALUATED, i.e. one that reaches PART 2
+  with a BSDF; BSDF-less (SPF-only) surfaces, BSSRDF exits and medium
+  vertices are NOT anchors, and a camera -> caster -> emitter chain has
+  none -- and (2) only casters in it (SMS classifies a surface by
+  `IMaterial::GetSpecularInfo().isSpecular` alone, so a weave gap, a
+  composite's delta walker exit, or any other non-caster delta lobe
+  breaks the chain).  `bHadNonSpecularShading` / `bSMSAnchor` carry (1)
+  and `PTNextSMSChainUncovered` / `bSMSChainUncovered` carry (2), in the
+  RGB/NM body, the HWSS body, and BOTH HWSS -> NM hand-offs (no-BSDF and
+  SSS; `IntegrateFromHitNM(..., smsChainUncovered_)`).  Setting the
+  anchor flag at a vertex where SMS never ran, reading only one of the
+  two, or a hand-off that passes a constant drops the path silently.
+  Reference-free check: on a scene with NO SMS caster, PT with
+  `sms_enabled TRUE` must equal PT without it
+  (`WeaveGapShadowTransmittanceTest` section `sms`, which runs
+  single-threaded so its bands mean something).  Open relatives: DL-340
+  (a medium vertex still counts as an anchor; the HWSS medium-walk
+  hand-off still passes a constant), DL-339 (an anchored refractive
+  caster's REFLECTION is left to SMS, which never estimates it), DL-372
+  (SMS's own refraction-chain coverage: turning SMS on loses 8.3 % of
+  shipped `sms_visibility_unoccluded`, 61 % over its caustic) and DL-373.
 
 ### 7. Audit the photon tracer's pre-scatter state
 
