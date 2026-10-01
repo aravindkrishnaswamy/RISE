@@ -2048,10 +2048,12 @@ namespace {
 
 		for( unsigned int depth = 0; depth < maxEyeTotalDepth; depth++ )
 		{
-			// Per-bounce stream offset on the eye subpath.  Streams
-			// [16, 16+maxEyeTotalDepth) are reserved for the eye walk;
-			// light walk uses [1, ...).
-			sampler.StartStream( 16u + depth );
+			// Per-bounce stream on the eye subpath: 16 + depth for the
+			// first 31 iterations, a block of its own past that (DL-286:
+			// 16 + depth used to reach the light walk's, the strategy
+			// select's and VCM NEE's streams) -- BDPTUtilities::
+			// EyeWalkStream.  The light walk has the twin mapping.
+			sampler.StartStream( BDPTUtilities::EyeWalkStream( depth, sampler.HasFixedDimensionBudget() ) );
 
 			// Intersect the scene
 			RayIntersection ri( currentRay, nullRasterizerState );
@@ -2123,7 +2125,7 @@ namespace {
 						t_m = SampleMediumDistance<Tag>(
 							*pMed, currentRay, maxDist, sampler, scattered, tag );
 						if( bOwnStream ) {
-							sampler.StartStream( 16u + depth );
+							sampler.StartStream( BDPTUtilities::EyeWalkStream( depth, sampler.HasFixedDimensionBudget() ) );
 						}
 					}
 
@@ -6636,10 +6638,11 @@ unsigned int GenerateLightSubpathImpl(
 
 	for( unsigned int depth = 0; depth < maxLightTotalDepth; depth++ )
 	{
-		// Per-bounce stream offset on the light subpath.  Streams
-		// [1, 1+maxLightTotalDepth) are reserved for the light walk;
-		// eye walk uses [16, ...).
-		sampler.StartStream( 1u + depth );
+		// Per-bounce stream on the light subpath: 1 + depth for the
+		// first 15 iterations, a block of its own past that (DL-286:
+		// 1 + depth used to run into the eye walk's streams from
+		// iteration 15) -- BDPTUtilities::LightWalkStream.
+		sampler.StartStream( BDPTUtilities::LightWalkStream( depth, sampler.HasFixedDimensionBudget() ) );
 
 		// Intersect the scene
 		RayIntersection ri( currentRay, nullRasterizerState );
@@ -6690,7 +6693,7 @@ unsigned int GenerateLightSubpathImpl(
 					t_m = SampleMediumDistance<Tag>(
 						*pMed, currentRay, maxDist, sampler, scattered, tag );
 					if( bOwnStream ) {
-						sampler.StartStream( 1u + depth );
+						sampler.StartStream( BDPTUtilities::LightWalkStream( depth, sampler.HasFixedDimensionBudget() ) );
 					}
 				}
 

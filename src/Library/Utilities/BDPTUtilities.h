@@ -36,8 +36,9 @@ namespace RISE
 		// Medium distance-sampling streams (DL-283).
 		//
 		// The eye and light walks give every loop iteration its own
-		// sampler stream (`StartStream( 16 + depth )` /
-		// `StartStream( 1 + depth )`, 32 Sobol' dimensions each).  An
+		// sampler stream (`EyeWalkStream` / `LightWalkStream` below --
+		// `16 + depth` / `1 + depth` for shallow iterations, DL-286 --
+		// 32 Sobol' dimensions each).  An
 		// `IMedium::SampleDistance` call is the one consumer inside
 		// that iteration whose draw count is OPEN-ENDED: heterogeneous
 		// delta tracking draws one value per majorant-grid cell it
@@ -64,13 +65,16 @@ namespace RISE
 		// i.e. [8192, 139264), 4.46M dimensions at most.  Both walk
 		// loops saturate their iteration count at
 		// `kWalkIterationCap` (1024), which is what bounds `d`.  Every
-		// other consumer of a BDPT/VCM sampler sits below 8192:
-		// film/light select 0, light walk 1..1024, eye walk 16..1039,
-		// strategy select 47, VCM NEE 49..3121 (48 + i, i >= 1), MLT film/lens 2048,
-		// thin-lens aperture 3322 -- and PT's own volume walks
-		// (`PTVolumeWalkStream`, 4096..8191) never share a sampler with
-		// these at all.  `tests/SobolDimensionBudgetTest.cpp` Test G2
-		// enumerates the whole map and asserts it is collision-free.
+		// other consumer of a BDPT/VCM sampler sits below 8192 except
+		// the DEEP walk iterations (DL-286, `LightWalkStream` /
+		// `EyeWalkStream` below, [139264, 141266)): film/light select 0,
+		// shallow light walk 1..15, shallow eye walk 16..46, strategy
+		// select 47, VCM NEE 49..3121 (48 + i, i >= 1), MLT film/lens
+		// 2048 (PSSMLT only), thin-lens aperture 3322 -- and PT's own
+		// volume walks (`PTVolumeWalkStream`, 4096..8191) never share a
+		// sampler with these at all.  `tests/SobolDimensionBudgetTest.cpp`
+		// Test G2 enumerates the whole map and asserts it is
+		// collision-free.
 		//
 		// Every block lies past SobolSampler's 8192-dimension table, so
 		// each draw is a wrapped dimension (an Owen-permuted index over
@@ -104,6 +108,105 @@ namespace RISE
 		//! One past the last stream the medium-distance layout can reach.
 		static const int kMediumDistanceStreamEnd = kMediumDistanceStreamBase +
 			2 * static_cast<int>( kWalkIterationCap ) * kMediumDistanceStreamsPerEvent;
+
+		//////////////////////////////////////////////////////////////
+		// Per-iteration WALK streams (DL-286).
+		//
+		// Loop iteration `d` of the light walk opens one sampler stream
+		// and iteration `d` of the eye walk another; everything a
+		// vertex draws (phase / BSDF direction, lobe choice, roulette,
+		// guiding) sits at fixed slots of that stream.  Both walks run
+		// off ONE sampler per BDPT/VCM/MLT sample, so their streams
+		// must be DISJOINT at every depth.  They used to be `1 + d` and
+		// `16 + d`, laid out for 15 bounces: from light iteration 15 the
+		// light walk re-opened the eye walk's streams (and the strategy
+		// select, 47, at 46 and VCM's first NEE stream, 49, at 48; the
+		// eye walk reached 47 at 31 and the NEE at 33).  Walk iterations
+		// count medium scatters, so dense media reach that routinely,
+		// and one Sobol' dimension (one PSSMLT primary sample) then
+		// drove a light-vertex decision AND an eye-vertex decision of
+		// ONE connected path -- a bias, not just a correlation: -12 % on
+		// a light inside albedo-0.99 / sigma_t-8 fog under BDPT with
+		// Sobol' and -13 % under MLT (docs/DL81_SOBOL_DIMENSION_PARITY.md
+		// section 10, the DL-286 ledger row).
+		//
+		// The SHALLOW iterations keep their historical streams, so a
+		// walk that never reaches light iteration 15 / eye iteration 31
+		// draws exactly what it drew before (every medium-free shipped
+		// scene; PSSMLT's legacy tier, streams < 49, is untouched):
+		//   light iteration d < 15:  1 + d      (1..15)
+		//   eye   iteration d < 31:  16 + d     (16..46)
+		// DEEP iterations move to a block of their own, light first:
+		//   light iteration d >= 15: base + (d - 15)            (1009 streams)
+		//   eye   iteration d >= 31: base + 1009 + (d - 31)     ( 993 streams)
+		// `d` < `kWalkIterationCap` (1024) always (both loops saturate).
+		// The base depends on the sampler, because the two stream
+		// spaces have different free regions:
+		//   fixed-budget (SobolSampler, `HasFixedDimensionBudget()`):
+		//     base 139264 = `kMediumDistanceStreamEnd`, i.e. streams
+		//     [139264, 141266), past the DL-283 medium-distance blocks,
+		//     in the wrap region (wraps 544..551).  Nothing below fits:
+		//     VCM's per-eye-vertex NEE owns 49..3121 (48 + i).
+		//   unbounded-lane (PSSMLTSampler, i.e. MLT; IndependentSampler
+		//     ignores streams): base 2049, i.e. lanes [2049, 4051) --
+		//     just above MLT's reserved film/lens/aperture lane 2048
+		//     (`BDPTCameraUtilities::kPSSMLTFilmLensApertureStream`) and
+		//     below PSSMLTSampler's 4096 stream sanity bound; lanes
+		//     >= 49 live in its extra tier, so the lane numbers cost
+		//     nothing.  VCM never drives a PSSMLTSampler, so its NEE
+		//     range is irrelevant here.
+		// `tests/SobolDimensionBudgetTest.cpp` Test G2 enumerates both
+		// layouts from these functions and asserts them collision-free;
+		// Test H asserts no light/eye shared dimension (Sobol') or
+		// shared primary sample (PSSMLT) on the real generators.
+		//////////////////////////////////////////////////////////////
+		static const unsigned int kLightWalkShallowIterations = 15;
+		static const unsigned int kEyeWalkShallowIterations = 31;
+		static const int kDeepLightWalkStreams =
+			static_cast<int>( kWalkIterationCap - kLightWalkShallowIterations );
+		static const int kDeepEyeWalkStreams =
+			static_cast<int>( kWalkIterationCap - kEyeWalkShallowIterations );
+		static const int kDeepWalkStreamBaseFixedBudget = kMediumDistanceStreamEnd;
+		static const int kDeepWalkStreamBaseUnboundedLanes = 2049;
+		//! PSSMLTSampler's stream sanity bound (`kDefaultNumStreams`,
+		//! protected there); the deep lanes must stay below it.
+		//! `tests/PSSMLTStreamAliasingTest.cpp` checks the two agree.
+		static const int kPSSMLTStreamSanityBound = 4096;
+		static_assert( kDeepWalkStreamBaseUnboundedLanes + kDeepLightWalkStreams +
+			kDeepEyeWalkStreams <= kPSSMLTStreamSanityBound,
+			"DL-286: the deep walk lanes must fit under PSSMLTSampler's stream bound" );
+
+		//! Stream for light-walk loop iteration `depth` (DL-286).
+		//! `bFixedBudget` is `ISampler::HasFixedDimensionBudget()`.
+		inline int LightWalkStream( const unsigned int depth, const bool bFixedBudget )
+		{
+			if( depth < kLightWalkShallowIterations ) {
+				return 1 + static_cast<int>( depth );
+			}
+			const unsigned int d = depth < kWalkIterationCap ? depth : kWalkIterationCap - 1u;
+			const int base = bFixedBudget ?
+				kDeepWalkStreamBaseFixedBudget : kDeepWalkStreamBaseUnboundedLanes;
+			return base + static_cast<int>( d - kLightWalkShallowIterations );
+		}
+
+		//! Stream for eye-walk loop iteration `depth` (DL-286).
+		inline int EyeWalkStream( const unsigned int depth, const bool bFixedBudget )
+		{
+			if( depth < kEyeWalkShallowIterations ) {
+				return 16 + static_cast<int>( depth );
+			}
+			const unsigned int d = depth < kWalkIterationCap ? depth : kWalkIterationCap - 1u;
+			const int base = bFixedBudget ?
+				kDeepWalkStreamBaseFixedBudget : kDeepWalkStreamBaseUnboundedLanes;
+			return base + kDeepLightWalkStreams + static_cast<int>( d - kEyeWalkShallowIterations );
+		}
+
+		//! One past the last deep-walk stream, per sampler kind.
+		inline int DeepWalkStreamEnd( const bool bFixedBudget )
+		{
+			return ( bFixedBudget ? kDeepWalkStreamBaseFixedBudget : kDeepWalkStreamBaseUnboundedLanes ) +
+				kDeepLightWalkStreams + kDeepEyeWalkStreams;
+		}
 
 		//! Convert a solid-angle PDF at `from` to the canonical
 		//! measure stored at `to`.

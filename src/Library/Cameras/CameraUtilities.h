@@ -33,8 +33,16 @@ namespace RISE
 		/// ranges, read off the code rather than off an old comment:
 		///
 		///   0                                    light source sampling
-		///   1 .. 1+maxLightDepth+maxVolumeBounce  light-subpath bounces
-		///   16 .. 16+maxEyeDepth+maxVolumeBounce  eye-subpath bounces
+		///   1 .. 15                               light-subpath bounces 0..14
+		///   16 .. 46                              eye-subpath bounces 0..30
+		///   139264 .. 141265                      DEEPER light / eye bounces
+		///                                          (DL-286: 1 + d and 16 + d
+		///                                          used to run into each
+		///                                          other; BDPTUtilities::
+		///                                          LightWalkStream /
+		///                                          EyeWalkStream -- under
+		///                                          PSSMLT the deep lanes
+		///                                          are 2049 .. 4050)
 		///   31 .. 46                              SMS (reserved; no
 		///                                          `StartStream` call
 		///                                          in this range today
@@ -60,9 +68,10 @@ namespace RISE
 		/// Both walk loops saturate their iteration count at 1024
 		/// (`GenerateEyeSubpath` / `GenerateLightSubpath`), and an
 		/// iteration appends at most three vertices (medium entry,
-		/// medium scatter, surface), so the largest stream index any
-		/// consumer can reach is bounded by
-		///     48 + (3 * 1024 + 1)  =  3121.
+		/// medium scatter, surface), so the largest stream index VCM's
+		/// NEE can reach is bounded by
+		///     48 + (3 * 1024 + 1)  =  3121,
+		/// and nothing else below the deep walk block goes past 47.
 		/// With `max_volume_bounce` at its 64 default and a typical
 		/// depth of 20 the real maximum is ~116.
 		///
@@ -99,32 +108,31 @@ namespace RISE
 		/// `GenerateRayWithLensSample` exists to give the primary ray).
 		static const int kApertureSamplerStream = 3322;
 
-		/// Upper bound on any stream index BDPTIntegrator's own
-		/// `StartStream` calls can reach WHILE DRIVEN BY A
-		/// `PSSMLTSampler` (i.e. under MLT).  Unlike `kApertureSamplerStream`
-		/// above (which has to clear Sobol's dimension-table wrap and
-		/// therefore uses a conservative bound that also covers VCM's
-		/// `48 + eye-vertex-index` NEE stream), VCM never drives a
-		/// PSSMLTSampler at all, so the relevant bound here is BDPT's own
-		/// two walks only:
-		///   light walk:  `StartStream( 1u + depth )`,  depth < 1024 (the
-		///                loop's saturating cap) -> max stream 1+1023 = 1024
-		///   eye walk:    `StartStream( 16u + depth )`, depth < 1024      -> max stream 16+1023 = 1039
-		///   BDPT (s,t) strategy select: fixed at stream 47
-		///   SMS (reserved, unused today): streams 31..46
-		/// giving a true maximum of 1039.  Written here as `16 +
-		/// kWalkIterationCap` (1024, not 1023) for the same one-off
-		/// margin `tests/SobolDimensionBudgetTest.cpp`'s
-		/// `TestApertureDrawConsumption` uses when it derives
-		/// `kMaxEyeWalkStream` the same way.
+		/// One past the last stream BELOW the MLT reserved lane that
+		/// BDPTIntegrator's own `StartStream` calls can open WHILE DRIVEN
+		/// BY A `PSSMLTSampler` (i.e. under MLT).  VCM never drives a
+		/// PSSMLTSampler, so its `48 + eye-vertex-index` NEE stream is not
+		/// in this set.  Since DL-286 the walks' lanes under PSSMLT are
+		///   light source sampling:        0
+		///   light walk, iterations 0..14:  1 .. 15   (1 + depth)
+		///   eye walk,   iterations 0..30:  16 .. 46  (16 + depth)
+		///   BDPT (s,t) strategy select:    47
+		///   deeper iterations of both walks: 2049 .. 4050, ABOVE the
+		///     reserved lane (`BDPTUtilities::LightWalkStream` /
+		///     `EyeWalkStream` with `bFixedBudget == false`; checked
+		///     against PSSMLTSampler's 4096 bound there)
+		/// so the reserved lane sits strictly BETWEEN the two ranges.
+		/// Before DL-286 the walks ran contiguously up to 16 + 1023 =
+		/// 1039 (this constant was `kMaxBdptWalkStreamUnderPSSMLT`,
+		/// `16 + 1024`), and the light walk re-opened the eye walk's lanes
+		/// from iteration 15 -- see the DL-286 ledger row.
 		///
-		/// DL-283: still the true bound under PSSMLT.  The per-event
-		/// medium distance-sampling blocks
-		/// (`BDPTUtilities::MediumDistanceStream`, streams 8192+) are
-		/// used only by fixed-budget samplers, never by PSSMLTSampler
-		/// (SobolDimensionBudgetTest Test H drives the generators with
-		/// one and asserts it).
-		static const int kMaxBdptWalkStreamUnderPSSMLT = 16 + 1024;
+		/// DL-283: the per-event medium distance-sampling blocks
+		/// (`BDPTUtilities::MediumDistanceStream`, streams 8192+) are used
+		/// only by fixed-budget samplers, never by PSSMLTSampler
+		/// (SobolDimensionBudgetTest Test H drives the generators with one
+		/// and asserts it).
+		static const int kBdptShallowWalkStreamEndUnderPSSMLT = 48;
 
 		/// Stream reserved for the MLT film / lens / (debt 28) aperture
 		/// block under `PSSMLTSampler` (DL-08 fix, 2026-09-17).  Used by
@@ -141,11 +149,13 @@ namespace RISE
 		/// path is that deep had its 32nd-bounce scattering direction and
 		/// its film position living in the literal same primary-sample
 		/// slot -- not modular aliasing, an outright integer collision.
-		/// Chosen comfortably above `kMaxBdptWalkStreamUnderPSSMLT` (1039)
-		/// so it can never collide with either walk at any depth
-		/// `PSSMLTSampler`'s own loop caps allow, with margin for future
-		/// per-stream lanes (e.g. a wider spectral wavelength count) to be
-		/// added without re-deriving this constant.  See
+		/// Chosen (DL-08) comfortably above the walks' then-contiguous
+		/// ceiling (1039); since DL-286 the walks' DEEP lanes start just
+		/// above it (2049), so it sits between
+		/// `kBdptShallowWalkStreamEndUnderPSSMLT` and
+		/// `BDPTUtilities::kDeepWalkStreamBaseUnboundedLanes` and can never
+		/// collide with either walk at any depth `PSSMLTSampler`'s own loop
+		/// caps allow (`tests/PSSMLTStreamAliasingTest.cpp` Test C3).  See
 		/// `tests/PSSMLTStreamAliasingTest.cpp` Test F for the red-proof
 		/// and `PSSMLTSampler::kDefaultNumStreams` (2048 -> 4096, DL-08)
 		/// for the paired modulus increase that keeps this a private lane.
@@ -195,12 +205,12 @@ namespace RISE
 			///
 			/// That residue argument only protects streams that STAY
 			/// below `kNumStreams`.  `kPSSMLTFilmLensApertureStream`
-			/// (2048) is chosen strictly above
-			/// `kMaxBdptWalkStreamUnderPSSMLT` (1039, BDPT's own
-			/// documented walk-stream ceiling under PSSMLT) specifically
-			/// so the eye walk's `StartStream( 16u + depth )` can never
-			/// reach it at ANY depth PSSMLTSampler's own loop caps
-			/// allow -- unlike the historical literal 48, which the eye
+			/// (2048) is chosen outside every lane BDPT's own walks open
+			/// under PSSMLT (0..47, then 2049..4050 for deep iterations
+			/// since DL-286 -- see `kBdptShallowWalkStreamEndUnderPSSMLT`)
+			/// specifically so the eye walk can never reach it at ANY
+			/// depth PSSMLTSampler's own loop caps allow -- unlike the
+			/// historical literal 48, which the eye
 			/// walk reached at eye depth 32
 			/// (`StabilityConfig::maxVolumeBounce` defaults to 64, so
 			/// ordinary scattering-medium scenes reached it with no
