@@ -1255,7 +1255,9 @@ static const char* kEnclosure15 =
 // pixel footprints at the camera's merge vertices (~0.02 here).
 //
 // MEASURED (salted, 32x32, VCM 512 spp, ratio to the closed form,
-// mean (sd of the per-render ratio), n = 4 per run, 2026-10-01; "row
+// mean (sd of the per-render ratio), n = 4 per run, 2026-10-01; the "row
+// only" figures came from a scratch single-row harness (this file has no
+// row filter) -- only the "suite" figures reproduce from a full run; "row
 // only" runs start at render index 0, "suite" runs after rows A-E):
 //   auto radius, pre-DL-319 (radius 0.187), row only   0.6207 (0.0069)
 //   auto radius (radius 0.021, eye-clipped), row only  0.9961 (0.0124)
