@@ -13,6 +13,7 @@
 
 #include "pch.h"
 #include "ThinLensCamera.h"
+#include "CameraUtilities.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "CameraTransforms.h"
 #include "../Animation/KeyframableHelper.h"
@@ -595,7 +596,9 @@ bool ThinLensCamera::RasterFromLensPoint(
 
 	const Scalar width  = Scalar( frame.GetWidth() );
 	const Scalar height = Scalar( frame.GetHeight() );
-	if( screenX < 0.0 || screenX >= width || screenY < 0.0 || screenY >= height ) {
+	// DL-294: film membership is the splat film's decision (see
+	// BDPTCameraUtilities::InRasterGuardBand).
+	if( !BDPTCameraUtilities::InRasterGuardBand( screenX, screenY, width, height ) ) {
 		return false;
 	}
 

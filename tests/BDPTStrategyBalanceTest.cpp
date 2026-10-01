@@ -3757,6 +3757,335 @@ static void TestBackFaceEmitterZ()
 }
 
 //////////////////////////////////////////////////////////////////////
+// Topology W: NARROW-FOV light-tracing splat (DL-294,
+// docs/DL294_NARROW_FOV_SPLAT.md) -- NO weave anywhere.
+//
+// A spot light at (0, 1, 0) aimed UP at a perfect mirror (y = 2); the
+// reflected beam lights a Lambertian floor (rho 0.5) that a pinhole at
+// fov 2 deg (16 x 16) sees edge to edge.  The floor's only light is the
+// caustic delta light -> mirror -> floor, which no eye strategy can
+// reach (PT reads 0; BDPT's only estimator is the t = 1 splat), and it
+// has a closed form: the mirror image of the spot at (0, 3, 0), so
+// E = I / 3^2 on the beam axis and L = rho/pi * I / 9 (the frame spans
+// +/-0.043 on the floor, inside the beam's full-intensity radius
+// 3 tan(1 deg) = 0.052 -- `inner` is the FULL cone angle; cos and 1/d^2 are constant to < 3e-4 over it,
+// and the floor <-> mirror interreflection is ~1e-4).
+//
+// Before DL-294 the camera's world-to-raster inverse cut the splat at
+// the camera's nominal [0, 16) film while the rasterizers sample (and
+// SplatFilm rounds in) [-0.5, 15.5): a half-pixel strip per axis was
+// lost and the frame read 1 - (15.5/16)^2 = 6.15 % low (measured
+// -6.246 %, isolated A/B; post-fix +0.066 %).  BDPT's render is
+// seed-independent here (its Sobol streams are keyed by pixel and
+// sample index), so the residual is a fixed QMC pattern, not noise;
+// 1.5 % is a >20x margin on it and 4x under the defect.
+//////////////////////////////////////////////////////////////////////
+static const double kNarrowFovW_I = 16.0;		// color 1 x power 16
+static const double kNarrowFovW_Rho = 0.5;
+
+static const char* kSceneNarrowFovMirrorW =
+	"film\n{\n\twidth 16\n\theight 16\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 1 1.2\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 2.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_floor\n\tcolor 0.5 0.5 0.5\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_mirror\n\tcolor 1 1 1\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+	"lambertian_material\n{\n\tname mat_floor\n\treflectance pnt_floor\n}\n\n"
+	"perfectreflector_material\n{\n\tname mat_mirror\n\treflectance pnt_mirror\n}\n\n"
+	"clippedplane_geometry\n{\n\tname geo_floor\n\tpta -1 0 1\n\tptb 1 0 1\n\tptc 1 0 -1\n\tptd -1 0 -1\n\tdoublesided TRUE\n}\n\n"
+	"clippedplane_geometry\n{\n\tname geo_mirror\n\tpta -4 2 4\n\tptb 4 2 4\n\tptc 4 2 -4\n\tptd -4 2 -4\n\tdoublesided TRUE\n}\n\n"
+	"standard_object\n{\n\tname obj_floor\n\tgeometry geo_floor\n\tmaterial mat_floor\n}\n\n"
+	"standard_object\n{\n\tname obj_mirror\n\tgeometry geo_mirror\n\tmaterial mat_mirror\n}\n\n"
+	"spot_light\n{\n\tname lgt\n\tposition 0 1 0\n\ttarget 0 2 0\n\tinner 2.0\n\touter 2.6\n\tcolor 1 1 1\n\tpower 16\n}\n";
+
+static const char* kRasterizerBDPTNarrowFovW =
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"bdpt_pel_rasterizer\n{\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tsamples 1024\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n"
+	"file_rasterizeroutput\n{\n\tpattern rendered/bdpt_balance_bdpt_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+
+static void TestNarrowFovSplatW()
+{
+	std::cout << "Testing topology W: narrow-fov (2 deg) caustic, t = 1 splat only, vs closed form (DL-294)" << std::endl;
+	const std::string scene = std::string( "RISE ASCII SCENE 7\n" ) + kRasterizerBDPTNarrowFovW + kSceneNarrowFovMirrorW;
+	const std::string path = WriteSceneToTempFile( scene.c_str(), "narrowfov_w" );
+	if( path.empty() ) {
+		Check( false, "Topology W: temp file write" );
+		return;
+	}
+	const ImageStats st = RenderAndComputeStats( path.c_str() );
+	std::remove( path.c_str() );
+	Check( st.valid, "Topology W: BDPT render produced output" );
+	if( !st.valid ) return;
+	PrintStats( "BDPT", st );
+	const double expected = kNarrowFovW_Rho / 3.14159265358979323846 * kNarrowFovW_I / 9.0;
+	for( int c = 0; c < 3; c++ ) {
+		char buf[256];
+		std::snprintf( buf, sizeof(buf),
+			"Topology W: BDPT channel %d mean %.6f vs closed form rho/pi*I/9 = %.6f (%+.3f%%), within 1.5%% (DL-294)",
+			c, st.mean[c], expected, 100.0 * ( st.mean[c] / expected - 1.0 ) );
+		std::cout << "  " << buf << std::endl;
+		Check( std::fabs( st.mean[c] / expected - 1.0 ) <= 0.015, buf );
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// Topology W-stripe (DL-294 P2-1): a real guard against a ONE-SIDED
+// half-pixel convention change between the eye-ray sampling convention
+// (PT/BDPT/VCM hits, `warpOnScreen`) and the splat rounding convention
+// (`SplatFilm::NearestPixel`, used only by the t = 1 light-tracing
+// splat).  The doc's and Test 9's earlier claim -- that `fovsweep`,
+// topology W and `CameraImportanceTest` "catch a future one-sided
+// change" -- was FALSE for topology W and Test 9: an external review
+// moved `BDPTPelRasterizer`, `VCMPelRasterizer` and
+// `BoxPixelFilter::warpOnScreen` to PBRT's ( x + u, H - y + v - 1 )
+// sample placement, left `NearestPixel` untouched, and topology W (a
+// UNIFORMLY lit frame) stayed green -- a shared, symmetric shift of a
+// uniform field changes neither its mean nor its edge fingerprint.
+// (Test 9 was separately blind because it hard-codes `x + offs - 0.5`
+// instead of reading what the rasterizer does.)
+//
+// This topology adds an INTERIOR, non-uniform signal instead: a hard
+// floor edge at world x = 0.  Two scenes share one camera (pinhole,
+// fov 2 deg, 32 x 32, box filter) and one floor split at x = 0 -- a
+// reflective LEFT half (rho 0.5) and a BLACK right half (rho 0):
+//
+//   "direct" -- an overhead omni light lights the floor directly; PT's
+//               estimator is ordinary NEE/hit, resolved through the
+//               EYE-RAY sampling convention (x + u - 0.5, H - y + v - 0.5).
+//   "splat"  -- topology W's own spot -> mirror -> floor caustic (the
+//               spot points straight up, away from the floor, so NEE
+//               reads exactly 0 and the ONLY estimator BDPT/VCM have is
+//               the t = 1 light-tracing splat), resolved through
+//               `SplatFilm::NearestPixel`.  VCM runs with
+//               `merge_radius 0.0` so its estimator is ALSO the pure
+//               splat, not a merge-blurred one.
+//
+// If the two conventions agree (today's code), the edge's fractional
+// coverage at a column is the SAME function of the SAME world position
+// under both paths, so PT-direct's, BDPT-splat's and VCM-splat's
+// fractional coverage at the transition column -- LOCATED from PT's own
+// profile, never hard-coded, so this test does not repeat Test 9's
+// mistake of assuming the convention it exists to check -- must agree
+// within Monte Carlo noise.  A one-sided shift moves the transition a
+// whole column on the shifted side only, which reads as an order-1
+// fractional-coverage mismatch at the column PT located, not a small
+// residual (P2-1's own probe: PT/BDPT direct lit column 16 alone while
+// BDPT's splat still split across columns 16 and 17).
+//
+// Red-proof (P2-1, run once by hand, not part of the automated suite):
+// mutate `BDPTPelRasterizer.cpp`'s and `VCMPelRasterizer.cpp`'s eye-ray
+// `ptOnScreen` and `BoxPixelFilter::warpOnScreen` (`BoxPixelFilter.h`) to
+// the reviewer's PBRT convention ( x + u, H - y + v - 1 ), leaving
+// `SplatFilm::NearestPixel` on the CURRENT convention -- rebuild, run
+// `--narrow-fov-only`, `git checkout HEAD -- <the three files>` to
+// restore, rebuild.  Measured: green build fractional coverage
+// BDPT-splat/VCM-splat within 0.0067 of PT-direct (n = 4 salted, three
+// salt-base checks, worst case); the mutated build moves PT-direct's OWN
+// eye-ray placement too, so the fixed-in-world-space floor edge now
+// falls INSIDE pixel 16 instead of straddling it -- PT-direct reads
+// 0.0000 at column 16 (the fixture-sanity check correctly FAILS), while
+// BDPT-splat is unaffected (a t = 1 splat's raster position comes from
+// `RasterizeThrough` + `NearestPixel`, neither mutated) and still reads
+// 0.4989, its green-build value -- a 0.4989 mismatch, a whole column of
+// coverage.  VCM-splat reads 0.0070 (its splat position is likewise
+// unaffected, but its eye-vertex generation shares the mutated formula
+// and perturbs its overall MIS mixture).  Whole test: 11/0 -> 9/2.
+//////////////////////////////////////////////////////////////////////
+static const char* kSceneStripeCommon =
+	"film\n{\n\twidth 32\n\theight 32\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 1 1.2\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 2.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_floor_left\n\tcolor 0.5 0.5 0.5\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_floor_right\n\tcolor 0 0 0\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+	"lambertian_material\n{\n\tname mat_floor_left\n\treflectance pnt_floor_left\n}\n\n"
+	"lambertian_material\n{\n\tname mat_floor_right\n\treflectance pnt_floor_right\n}\n\n"
+	"clippedplane_geometry\n{\n\tname geo_floor_left\n\tpta -1 0 1\n\tptb 0 0 1\n\tptc 0 0 -1\n\tptd -1 0 -1\n\tdoublesided TRUE\n}\n\n"
+	"clippedplane_geometry\n{\n\tname geo_floor_right\n\tpta 0 0 1\n\tptb 1 0 1\n\tptc 1 0 -1\n\tptd 0 0 -1\n\tdoublesided TRUE\n}\n\n"
+	"standard_object\n{\n\tname obj_floor_left\n\tgeometry geo_floor_left\n\tmaterial mat_floor_left\n}\n\n"
+	"standard_object\n{\n\tname obj_floor_right\n\tgeometry geo_floor_right\n\tmaterial mat_floor_right\n}\n\n";
+
+static const char* kSceneStripeDirectLight =
+	"omni_light\n{\n\tname lgt\n\tposition 0 2 0\n\tcolor 1 1 1\n\tpower 16\n}\n";
+
+static const char* kSceneStripeSplatLight =
+	"uniformcolor_painter\n{\n\tname pnt_mirror\n\tcolor 1 1 1\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+	"perfectreflector_material\n{\n\tname mat_mirror\n\treflectance pnt_mirror\n}\n\n"
+	"clippedplane_geometry\n{\n\tname geo_mirror\n\tpta -4 2 4\n\tptb 4 2 4\n\tptc 4 2 -4\n\tptd -4 2 -4\n\tdoublesided TRUE\n}\n\n"
+	"standard_object\n{\n\tname obj_mirror\n\tgeometry geo_mirror\n\tmaterial mat_mirror\n}\n\n"
+	"spot_light\n{\n\tname lgt\n\tposition 0 1 0\n\ttarget 0 2 0\n\tinner 2.0\n\touter 2.6\n\tcolor 1 1 1\n\tpower 16\n}\n";
+
+static const char* kRasterizerStripePT =
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 1024\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n"
+	"file_rasterizeroutput\n{\n\tpattern rendered/bdpt_balance_stripe_pt_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+
+static const char* kRasterizerStripeBDPT =
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"bdpt_pel_rasterizer\n{\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tsamples 1024\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n"
+	"file_rasterizeroutput\n{\n\tpattern rendered/bdpt_balance_stripe_bdpt_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+
+static const char* kRasterizerStripeVCM =
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"vcm_pel_rasterizer\n{\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tsamples 1024\n\tmerge_radius 0.0\n"
+	"\tvc_enabled true\n\tvm_enabled true\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n"
+	"file_rasterizeroutput\n{\n\tpattern rendered/bdpt_balance_stripe_vcm_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+
+//! Renders `scenePath` and returns the achromatic column-mean profile
+//! (averaged over height and the three channels, coverage-weighted the
+//! same way `ComputeStats` is) -- `width` entries, empty on failure.
+static std::vector<double> RenderColumnProfile( const char* scenePath )
+{
+	std::vector<double> profile;
+	IJobPriv* pJob = nullptr;
+	if( !RISE_CreateJobPriv( &pJob ) || !pJob ) return profile;
+	if( !pJob->LoadAsciiSceneViaCst( scenePath ) ) {
+		safe_release( pJob );
+		return profile;
+	}
+	pJob->RemoveRasterizerOutputs();
+	CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
+	GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "test capture output" );
+	pJob->GetRasterizer()->AddRasterizerOutput( pCap );
+	static unsigned renderIndex = 0;
+	std::srand( 1729u + renderIndex++ );
+	const bool bRendered = pJob->Rasterize();
+	if( bRendered && pCap->width > 0 && pCap->height > 0 ) {
+		profile.assign( pCap->width, 0.0 );
+		bool allFinite = true;
+		for( unsigned int x = 0; x < pCap->width && allFinite; x++ ) {
+			double sum = 0;
+			for( unsigned int y = 0; y < pCap->height; y++ ) {
+				const RISEColor& c = pCap->pixels[y * pCap->width + x];
+				const double cov = c.a;
+				const double v = ( c.base.r + c.base.g + c.base.b ) / 3.0 * cov;
+				if( !std::isfinite( v ) ) { allFinite = false; break; }
+				sum += v;
+			}
+			profile[x] = sum / double( pCap->height );
+		}
+		if( !allFinite ) profile.clear();
+	}
+	safe_release( pCap );
+	safe_release( pJob );
+	return profile;
+}
+
+//! Mean column profile over `n` salted replicates (n <= 0: one unsalted
+//! render).  Empty on any failure.  Salt reset to 0 on return.
+static std::vector<double> RenderColumnProfileSalted( const char* scenePath, int n, unsigned saltBase )
+{
+	const int reps = n > 0 ? n : 1;
+	std::vector<double> sum;
+	bool ok = true;
+	for( int i = 0; i < reps && ok; i++ ) {
+		SobolSamplerTestHooks::ValueSalt().store(
+			n > 0 ? SobolSequence::HashCombine( saltBase, unsigned( i ) ) : 0u );
+		std::vector<double> p = RenderColumnProfile( scenePath );
+		ok = !p.empty();
+		if( ok ) {
+			if( sum.empty() ) sum.assign( p.size(), 0.0 );
+			for( size_t k = 0; k < p.size(); k++ ) sum[k] += p[k];
+		}
+	}
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
+	if( !ok ) return std::vector<double>();
+	for( double& v : sum ) v /= double( reps );
+	return sum;
+}
+
+//! Index of the column with the largest 2-wide drop (profile[k-1] -
+//! profile[k+1]) -- the centre of the left-bright/right-dark transition.
+static size_t FindTransitionColumn( const std::vector<double>& profile )
+{
+	size_t best = profile.size() / 2;
+	double bestDrop = -std::numeric_limits<double>::infinity();
+	for( size_t k = 1; k + 1 < profile.size(); k++ ) {
+		const double drop = profile[k-1] - profile[k+1];
+		if( drop > bestDrop ) { bestDrop = drop; best = k; }
+	}
+	return best;
+}
+
+static void TestNarrowFovStripeGuard()
+{
+	std::cout << "Testing topology W-stripe: interior floor edge, hit vs splat column alignment (DL-294 P2-1)" << std::endl;
+
+	const std::string sceneDirect = std::string( "RISE ASCII SCENE 7\n" ) + kRasterizerStripePT + kSceneStripeCommon + kSceneStripeDirectLight;
+	const std::string sceneSplatBDPT = std::string( "RISE ASCII SCENE 7\n" ) + kRasterizerStripeBDPT + kSceneStripeCommon + kSceneStripeSplatLight;
+	const std::string sceneSplatVCM = std::string( "RISE ASCII SCENE 7\n" ) + kRasterizerStripeVCM + kSceneStripeCommon + kSceneStripeSplatLight;
+
+	const std::string pathDirect = WriteSceneToTempFile( sceneDirect.c_str(), "stripe_pt" );
+	const std::string pathBDPT = WriteSceneToTempFile( sceneSplatBDPT.c_str(), "stripe_bdpt" );
+	const std::string pathVCM = WriteSceneToTempFile( sceneSplatVCM.c_str(), "stripe_vcm" );
+	if( pathDirect.empty() || pathBDPT.empty() || pathVCM.empty() ) {
+		Check( false, "Topology W-stripe: temp file write" );
+		return;
+	}
+
+	const int kReplicates = 4;
+	const std::vector<double> ptProfile = RenderColumnProfileSalted( pathDirect.c_str(), kReplicates, 0x57721301u );
+	const std::vector<double> bdptProfile = RenderColumnProfileSalted( pathBDPT.c_str(), kReplicates, 0x57721302u );
+	const std::vector<double> vcmProfile = RenderColumnProfileSalted( pathVCM.c_str(), kReplicates, 0x57721303u );
+	std::remove( pathDirect.c_str() );
+	std::remove( pathBDPT.c_str() );
+	std::remove( pathVCM.c_str() );
+
+	Check( !ptProfile.empty(), "Topology W-stripe: PT direct render produced output" );
+	Check( !bdptProfile.empty(), "Topology W-stripe: BDPT splat render produced output" );
+	Check( !vcmProfile.empty(), "Topology W-stripe: VCM splat render produced output" );
+	if( ptProfile.empty() || bdptProfile.empty() || vcmProfile.empty() ) return;
+	Check( ptProfile.size() == 32 && bdptProfile.size() == 32 && vcmProfile.size() == 32,
+		"Topology W-stripe: all three profiles are 32 columns wide" );
+
+	// Located from PT alone -- never hard-coded -- so this test does not
+	// repeat Test 9's mistake of assuming the convention it exists to check.
+	const size_t k = FindTransitionColumn( ptProfile );
+	// Baselines comfortably inside each flat region, away from both the
+	// transition and the film edges (which the DL-294 library fix itself
+	// already covers, and which is not this topology's concern).
+	const size_t kLeftBaseIdx = 4, kRightBaseIdx = 27;
+
+	auto fractionalCoverage = [&]( const std::vector<double>& profile ) -> double {
+		const double leftBase = profile[kLeftBaseIdx];
+		const double rightBase = profile[kRightBaseIdx];
+		const double denom = leftBase - rightBase;
+		// Finite poison (SourceHygieneTest bans NaN sentinels): -1 fails
+		// every coverage check below, which all require a value in (0, 1).
+		return ( denom > 1e-9 ) ? ( profile[k] - rightBase ) / denom : -1.0;
+	};
+
+	const double ptFrac = fractionalCoverage( ptProfile );
+	const double bdptFrac = fractionalCoverage( bdptProfile );
+	const double vcmFrac = fractionalCoverage( vcmProfile );
+
+	std::printf( "    transition column %zu; fractional coverage PT-direct %.4f, BDPT-splat %.4f, VCM-splat %.4f\n",
+		k, ptFrac, bdptFrac, vcmFrac );
+
+	Check( std::isfinite( ptFrac ) && ptFrac > 0.05 && ptFrac < 0.95,
+		"Topology W-stripe: PT locates a genuine partial-coverage transition column (fixture sanity)" );
+
+	// Band: measured over three independent salt-base choices (n = 4
+	// each, so 12 renders per side), the fixed build's BDPT-splat vs
+	// PT-direct spread is {-0.0012, -0.0067, -0.0008}, VCM-splat vs
+	// PT-direct {0.0000, +0.0011, -0.0021} -- worst observed 0.0067.
+	// A one-sided half-pixel convention drift moves an ENTIRE column of
+	// coverage into (or out of) column 16 (the red-proof above measured
+	// PT-direct 0.0000 / BDPT-splat 0.4989, a 0.4989 mismatch), so 0.03
+	// is a ~4.5x margin over the measured spread and still a >15x margin
+	// below the defect it exists to catch.  See docs/DL294_NARROW_FOV_SPLAT.md section 4
+	// for the full salted table and the red-proof numbers.
+	const double kBand = 0.03;
+	char buf[256];
+	std::snprintf( buf, sizeof(buf),
+		"Topology W-stripe: BDPT-splat fractional coverage %.4f within %.2f of PT-direct %.4f (DL-294 P2-1)",
+		bdptFrac, kBand, ptFrac );
+	std::cout << "    " << buf << std::endl;
+	Check( std::isfinite( bdptFrac ) && std::fabs( bdptFrac - ptFrac ) <= kBand, buf );
+	std::snprintf( buf, sizeof(buf),
+		"Topology W-stripe: VCM-splat fractional coverage %.4f within %.2f of PT-direct %.4f (DL-294 P2-1)",
+		vcmFrac, kBand, ptFrac );
+	std::cout << "    " << buf << std::endl;
+	Check( std::isfinite( vcmFrac ) && std::fabs( vcmFrac - ptFrac ) <= kBand, buf );
+}
+
+//////////////////////////////////////////////////////////////////////
 // Topologies U and V: DL-307 (docs/DL67_GUIDED_GENERATING_DENSITY.md
 // section 8, "DL-307").
 //
@@ -4018,6 +4347,13 @@ int main( int argc, char** argv )
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
+	// DL-294: topology W alone (plus the P2-1 stripe guard).
+	if( argc == 2 && std::strcmp(argv[1], "--narrow-fov-only") == 0 ) {
+		TestNarrowFovSplatW();
+		TestNarrowFovStripeGuard();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
 	// DL-320: topology Z alone (the focused before/after A/B).
 	if( argc == 2 && std::strcmp(argv[1], "--back-face-only") == 0 ) {
 		TestBackFaceEmitterZ();
@@ -4032,7 +4368,7 @@ int main( int argc, char** argv )
 	if( argc > 1 ) {
 		if( argc != 3 || std::strcmp(argv[1], "--spectral-only") != 0 ||
 			(std::strcmp(argv[2], "1") != 0 && std::strcmp(argv[2], "2") != 0) ) {
-			std::cerr << "Usage: BDPTStrategyBalanceTest [--spectral-only 1|2 | --spectral-aggregate-unit | --materials-only | --guided-only | --weave-gap-only | --sss-only | --back-face-only]" << std::endl;
+			std::cerr << "Usage: BDPTStrategyBalanceTest [--spectral-only 1|2 | --spectral-aggregate-unit | --materials-only | --guided-only | --weave-gap-only | --sss-only | --back-face-only | --narrow-fov-only]" << std::endl;
 			return 2;
 		}
 		spectralSampleScale = std::strcmp(argv[2], "2") == 0 ? 2 : 1;
@@ -4076,6 +4412,8 @@ int main( int argc, char** argv )
 	TestRandomWalkSphereEmptyContainerV();
  TestEnvironmentScatteringMediumDL346();
 	TestBackFaceEmitterZ();
+	TestNarrowFovSplatW();
+	TestNarrowFovStripeGuard();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

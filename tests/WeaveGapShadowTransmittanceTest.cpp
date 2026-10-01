@@ -79,12 +79,20 @@
 //             (and its free-standing two-plane twin) with the omni
 //             light OUTSIDE.  PT/BDPT/VCM within 8%.
 //
-//    dl294    (opt-in only; WEAVE_GAP_FILTER=dl294)  Prints, does not
-//             gate, the pre-existing narrow-fov light-tracing residual
-//             DL-294: the `closed spot` rows re-run at fov 2 deg, where
-//             BDPT reads ~6 % and VCM ~1 % off the closed form before
-//             AND after DL-05 (the gap path reaches them only by t = 1
-//             light tracing, so this fixture isolates the splat).
+//    fovsweep DL-294 (docs/DL294_NARROW_FOV_SPLAT.md): the spot rows
+//             at fov 1/2/3/5/10 deg on the 2 x 2 patch, BDPT, VCM, VCM
+//             with merging off and BDPT under the default gaussian
+//             filter, every render referenced to PT's no-sheet render
+//             at the same fov, plus the gap render's edge-row/column
+//             fingerprint at fov 2.  The gap path reaches the
+//             bidirectional integrators only by t = 1 light tracing, so
+//             this isolates the splat: pre-fix BDPT read -6.05 % at
+//             fov 2 with column 0 and row 0 at half radiance.
+//    dl294    (opt-in only; WEAVE_GAP_FILTER=dl294; argv[2] = n,
+//             default 4)  The same sweep with n repeats, mean +/- sd,
+//             plus VCM-without-merging and the no-weave control (the
+//             0.2 x 0.2 patch at fov 2, spot, no sheet, vs the analytic
+//             value).  No assertions -- a measurement aid.
 //    scenehash (opt-in only; WEAVE_GAP_FILTER=scenehash)  Pixel hash
 //             of every scene in WEAVE_GAP_SCENES, fixed seed, for a
 //             pre/post bit-identity check (see HashScenes).
@@ -229,6 +237,17 @@ static double MeanLuminance( const CapturingRasterizerOutput& cap )
 	return sum / double( cap.pixels.size() );
 }
 
+//! Per-pixel Rec.709 luminance of the composited-over-black radiance,
+//! row-major (image row 0 = top), for the DL-294 edge fingerprint.
+static void PixelLuminance( const CapturingRasterizerOutput& cap, std::vector<double>& out )
+{
+	out.resize( cap.pixels.size() );
+	for( size_t i = 0; i < cap.pixels.size(); i++ ) {
+		const RISEColor& c = cap.pixels[i];
+		out[i] = 0.2126 * c.base.r * c.a + 0.7152 * c.base.g * c.a + 0.0722 * c.base.b * c.a;
+	}
+}
+
 //! FNV-1a over the captured pixels' float bytes (the scenehash section).
 static unsigned long long PixelHash( const CapturingRasterizerOutput& cap )
 {
@@ -247,7 +266,7 @@ static unsigned long long PixelHash( const CapturingRasterizerOutput& cap )
 static unsigned long long g_lastPixelHash = 0;
 static std::vector<RISEColor> g_lastPixels;
 
-static double Render( const std::string& sceneText, const char* tag )
+static double Render( const std::string& sceneText, const char* tag, std::vector<double>* pPixels = nullptr )
 {
 	char path[512];
 	std::snprintf( path, sizeof(path), "/tmp/weave_gap_shadow_%s_%d.RISEscene",
@@ -275,6 +294,7 @@ static double Render( const std::string& sceneText, const char* tag )
 			pJob->GetRasterizer()->AddRasterizerOutput( pCap );
 			if( pJob->Rasterize() ) {
 				result = MeanLuminance( *pCap );
+				if( pPixels ) PixelLuminance( *pCap, *pPixels );
 				g_lastPixelHash = PixelHash( *pCap );
 				g_lastPixels = pCap->pixels;
 			}
@@ -283,6 +303,24 @@ static double Render( const std::string& sceneText, const char* tag )
 		safe_release( pJob );
 	}
 	std::remove( path );
+	return result;
+}
+
+//! Render with an EXPLICIT Sobol' salt (P2-2, DL-294): BDPT's and VCM's
+//! Sobol' streams are keyed by pixel/sample index, not by libc `rand()`,
+//! so `Render`'s own `std::srand` increment leaves them BIT-IDENTICAL --
+//! every one of `Render`'s callers that repeats a scene without salting
+//! measures ONE fixed QMC realisation, not a distribution.  `salt` should
+//! come from `SobolSequence::HashCombine` over a caller-chosen base so
+//! repeats are independent draws; reset to 0 after so this function's
+//! callers cannot leak a salt into unrelated `Render()` calls elsewhere
+//! in this file.
+static double RenderSalted( const std::string& sceneText, const char* tag, unsigned int salt,
+	std::vector<double>* pPixels = nullptr )
+{
+	SobolSamplerTestHooks::ValueSalt().store( salt );
+	const double result = Render( sceneText, tag, pPixels );
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
 	return result;
 }
 
@@ -338,6 +376,28 @@ static std::string RastVCM( unsigned int spp )
 	   << "\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n" << kOutputChunk;
 	return ss.str();
 }
+
+//! RastBDPT with the DEFAULT reconstruction filter (gaussian, 2-pixel
+//! support): the filtered splat path, where DL-294 showed up not as a
+//! lost mean but as a half-pixel MISREGISTRATION of the splat layer
+//! (edge column 0 / row 0 at ~0.49 of the interior, the opposite
+//! edges at ~1.49).
+static std::string RastBDPTDefaultFilter( unsigned int spp )
+{
+	std::ostringstream ss;
+	ss << "bdpt_pel_rasterizer\n{\n\tsamples " << spp * SppScale()
+	   << "\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\toidn_denoise FALSE\n}\n\n" << kOutputChunk;
+	return ss.str();
+}
+
+//! RastVCM with merging OFF (vertex connection only): separates the
+//! splat from VCM's merge-radius blur in the DL-294 measurement.
+static std::string RastVCMNoMerge( unsigned int spp )
+{
+	std::ostringstream ss;
+	ss << "vcm_pel_rasterizer\n{\n\tsamples " << spp * SppScale()
+	   << "\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tmerge_radius 0.0\n\tvc_enabled true\n\tvm_enabled false\n"
+	   << "\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n" << kOutputChunk;
 
 //! DL-295: the PT rasterizers with `sms_enabled` set either way.  The
 //! SMS section compares the two on scenes that contain NO SMS caster
@@ -415,13 +475,11 @@ enum LightKind { kOmni, kSpot, kDirectional, kArea, kAreaLarge };
 //! footprint over which the omni's 1/d^2 and cosine are constant to
 //! < 1e-4, so the no-sheet render can be checked against rho/pi * I/d^2
 //! absolutely.  kWide: fov 10 deg on a 2 x 2 patch, for the
-//! BIDIRECTIONAL rows: BDPT's and VCM's light-tracing (t = 1) splat reads
-//! up to 6 % low on this fixture at fov 1-3 deg and exact from 5 deg up,
-//! identically before and after DL-05 and independent of the pixel
-//! sampler -- a pre-existing narrow-fov splat residual recorded as DL-294
-//! (WEAVE_GAP_FILTER=dl294 prints it), not a property of the gap.  Every
-//! kWide row is a RATIO against the same framing's no-sheet render, so it
-//! needs no absolute closed form.
+//! BIDIRECTIONAL rows (chosen before DL-294 was fixed, when BDPT's and
+//! VCM's t = 1 splat read up to 6 % low whenever the frame was lit edge
+//! to edge -- the `fovsweep` section gates that now).  Every kWide row
+//! is a RATIO against the same framing's no-sheet render, so it needs no
+//! absolute closed form.
 //! kLookUp (DL-295): the camera BELOW the sheet looking straight UP at
 //! the area luminaire through it (fov 4 deg: every pixel sees the 0.5 x
 //! 0.5 emitter 3 units away), so the ONLY vertex on the path is the
@@ -434,15 +492,21 @@ enum CamKind { kTight, kWide, kLookUp };
 //! @a sheetMaterialChunks / @a recvMaterialChunks (DL-295's SMS
 //! section, empty = the default): verbatim material chunks that define
 //! `mat_sheet` / `mat_recv` in place of the built-in ones.
+//! @a fovDeg > 0 overrides the framing's field of view (the DL-294
+//! sweep; the patch size still follows @a cam).
 static std::string ReceiverScene( LightKind light, bool withSheet, double gap, CamKind cam = kTight, bool compositeSheet = false,
-	const std::string& sheetMaterialChunks = std::string(), const std::string& recvMaterialChunks = std::string() )
+	const std::string& sheetMaterialChunks = std::string(), const std::string& recvMaterialChunks = std::string(),
+	double fovDeg = 0.0 )
 {
 	const bool wide = ( cam != kTight );
-	const char* camChunk = ( cam == kLookUp )
-		? "pinhole_camera\n{\n\tlocation 0 1 0\n\tlookat 0 4 0\n\tup 0 0 1\n\tfov 4.0\n}\n\n"
-		: ( wide
-			? "pinhole_camera\n{\n\tlocation 0 1 1.2\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 10.0\n}\n\n"
-			: "pinhole_camera\n{\n\tlocation 0 1 1.2\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 2.0\n}\n\n" );
+	const double fov = fovDeg > 0.0 ? fovDeg : ( cam == kLookUp ? 4.0 : ( wide ? 10.0 : 2.0 ) );
+	std::ostringstream camSs;
+	if( cam == kLookUp ) {
+		camSs << "pinhole_camera\n{\n\tlocation 0 1 0\n\tlookat 0 4 0\n\tup 0 0 1\n\tfov " << fov << "\n}\n\n";
+	} else {
+		camSs << "pinhole_camera\n{\n\tlocation 0 1 1.2\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov " << fov << "\n}\n\n";
+	}
+	const std::string camChunk = camSs.str();
 	std::ostringstream ss;
 	ss <<
 		"film\n{\n\twidth 16\n\theight 16\n}\n\n"
@@ -1566,24 +1630,205 @@ static void TestTwoLayerLightOutside()
 }
 
 //////////////////////////////////////////////////////////////////////
-// dl294: printed, not gated -- see the file header.
+// fovsweep (gated) and dl294 (measurement aid): DL-294.
+//
+// The t = 1 light-tracing splat must cover EXACTLY the film the eye
+// subpaths sample.  Before DL-294 it did not: the camera's
+// world-to-raster inverse (BDPTCameraUtilities::Rasterize) accepted
+// raster x in [0, W) and y in [0, H) -- the camera's NOMINAL film --
+// while every rasterizer samples pixel (x, row y) at screen
+// (x + u - 0.5, H - y + v - 0.5), i.e. the film is x in [-0.5, W - 0.5),
+// y in [0.5, H + 0.5), and SplatFilm rounds a splat to the nearest
+// pixel CENTRE in that same convention.  The camera rejected the
+// half-pixel strips x in [-0.5, 0) and y in [H, H + 0.5) -- ON that
+// film (the strips it accepted in their place are off it, and the film
+// rightly dropped them) -- so the splat covered 15.5 x 15.5 of a 16 x 16 film,
+// 1 - (15.5/16)^2 = 6.15 % of a uniformly lit frame, with image
+// column 0 and row 0 at exactly HALF their radiance.  Only a frame
+// that is lit edge to edge sees it, which is why it looked like a
+// narrow-FIELD-OF-VIEW defect on this fixture (the spot fills a 1-3
+// degree frame and leaves a 5-10 degree frame's edges dark).
+//
+// Every quantity is referenced to PT's no-sheet render at the SAME
+// fov (PT's estimator is NEE and never splats), so no closed form is
+// needed across the spot's penumbra: L_int(gap g) / (g * L0_PT) and
+// L0_int / L0_PT.
 //////////////////////////////////////////////////////////////////////
-static void PrintNarrowFovSplatResidual()
+static void MeanSd( const std::vector<double>& v, double& mean, double& sd );
+
+static const double kSweepFovs[] = { 1.0, 2.0, 3.0, 5.0, 10.0 };
+static const int kNumSweepFovs = 5;
+static const double kSweepGap = 0.3;
+
+//! Edge fingerprint of a pure-splat render: mean of image column 0 /
+//! row 0 / column W-1 / row H-1 over the mean of the interior pixels.
+struct EdgeRatios { double col0, row0, colLast, rowLast; };
+static EdgeRatios EdgeFingerprint( const std::vector<double>& px, unsigned int w, unsigned int h )
 {
-	std::cout << "=== dl294: bidirectional t=1 splat at fov 2 deg (printed, NOT gated) ===" << std::endl;
-	struct R { const char* label; std::string rast; };
-	const R rows[] = { { "BDPT RGB", RastBDPT( 1024 ) }, { "VCM RGB", RastVCM( 1024 ) }, { "PT RGB", RastPT( 64 ) } };
-	const double gaps[] = { 0.3, 0.1 };
-	for( const R& r : rows )
+	EdgeRatios e = { -1, -1, -1, -1 };
+	if( px.size() != size_t( w ) * h || w < 3 || h < 3 ) return e;
+	double interior = 0, c0 = 0, r0 = 0, cl = 0, rl = 0;
+	for( unsigned int y = 1; y + 1 < h; y++ )
+		for( unsigned int x = 1; x + 1 < w; x++ ) interior += px[y * w + x];
+	interior /= double( ( w - 2 ) * ( h - 2 ) );
+	for( unsigned int y = 1; y + 1 < h; y++ ) { c0 += px[y * w]; cl += px[y * w + w - 1]; }
+	for( unsigned int x = 1; x + 1 < w; x++ ) { r0 += px[x]; rl += px[( h - 1 ) * w + x]; }
+	if( !( interior > 0 ) ) return e;
+	e.col0 = c0 / double( h - 2 ) / interior;
+	e.colLast = cl / double( h - 2 ) / interior;
+	e.row0 = r0 / double( w - 2 ) / interior;
+	e.rowLast = rl / double( w - 2 ) / interior;
+	return e;
+}
+
+static void TestNarrowFovSplat()
+{
+	std::cout << "=== fovsweep: t = 1 splat vs PT at fov 1-10 deg, 2 x 2 patch, spot light (DL-294) ===" << std::endl;
+	for( int k = 0; k < kNumSweepFovs; k++ )
 	{
-		const double L0 = Render( Assemble( r.rast, ReceiverScene( kSpot, false, 0.0, kTight ) ), "d294_l0" );
-		const double analytic = kRho / 3.14159265358979323846 * kOmniPow / ( kLightY * kLightY );
-		std::printf( "  dl294 %s: L0 = %.6f (analytic %.6f, %+.3f%%)\n", r.label, L0, analytic, 100.0 * ( L0 / analytic - 1.0 ) );
-		for( double g : gaps ) {
-			const double L = Render( Assemble( r.rast, ReceiverScene( kSpot, true, g, kTight ) ), "d294_lg" );
-			std::printf( "  dl294 %s gap %.2f: L/L0 = %.5f (%+.3f%%)   L/(g*analytic) %+.3f%%\n",
-				r.label, g, L / L0, 100.0 * ( L / L0 / g - 1.0 ), 100.0 * ( L / ( g * analytic ) - 1.0 ) );
+		const double fov = kSweepFovs[k];
+		const unsigned int fovSaltBase = SobolSequence::HashCombine( 0xD1294Au, unsigned( k ) );
+		const double ptL0 = RenderSalted( Assemble( RastPT( 64 ), ReceiverScene( kSpot, false, 0.0, kWide, false, std::string(), std::string(), fov ) ), "fs_pt",
+			SobolSequence::HashCombine( fovSaltBase, 0x1u ) );
+		Check( ptL0 > 0, "fovsweep: PT reference renders non-black" );
+		if( !( ptL0 > 0 ) ) continue;
+
+		// Tolerances: BDPT and VCM-without-merging are the pure splat
+		// on the gap render; their post-fix residuals are QMC-pattern
+		// and read <= 0.18 % at fov >= 2 (a single realisation), so 1 %
+		// is a >5x margin while the pre-fix -6.05 % (fov 2) fails by 5x.
+		// Full VCM's gap render additionally carries its merge-radius
+		// blur of the spot's penumbra (-1.05 +/- 0.07 % at fov 3, n = 4;
+		// -0.02 % with merging off, so not the splat), hence 2 %.  Every L0
+		// (no-sheet) row is NEE-dominated and reads <= 0.10 %; pre-fix
+		// full VCM's L0 read -1.42 % at fov 2 (its balance-heuristic
+		// splat share times the 6 % loss), so 0.5 %.
+		//
+		// P2-2 (external review, 2026-09-29): at fov 1 the per-pixel
+		// splat count is low enough that this is NOT a single-realisation
+		// tolerance question -- every render here is now SALTED (a real
+		// QMC draw, not the one fixed point the pre-review test measured,
+		// whose "sd 0.000" was an artifact of measuring only that one
+		// point), and fov 1's true salted spread is much wider than at
+		// other fovs: n = 8 salted repeats (`WEAVE_GAP_FILTER=dl294`,
+		// this binary's own salting, seed base 1000) read BDPT gap
+		// -0.410 +/- 0.344 % (sd) and VCM-merging-off gap -0.126 +/-
+		// 0.616 % (sd) at fov 1, against BDPT gap sd 0.240 % (fov 2),
+		// 0.089 % (fov 3), 0.035 % (fov 5), 0.033 % (fov 10) -- see
+		// `docs/DL294_NARROW_FOV_SPLAT.md` section 5 for the full
+		// salted table.  So only fov 1's gap band widens, to 0.03 (an
+		// ~8.7 sd margin on BDPT's 0.344 % and ~4.9 sd on VCM-merging-
+		// off's 0.616 %) for the three rows whose tolGap was 0.01 at
+		// other fovs; VCM RGB (with merging) keeps its 0.02 band at
+		// every fov, since its own merge-radius blur already sets it,
+		// not the splat noise this row is about.
+		struct R { const char* label; std::string rast; double tolGap; double tolGapFov1; double tolL0; bool edge; };
+		const R rows[] = {
+			{ "BDPT RGB",              RastBDPT( 1024 ),       0.01, 0.03, 0.005, true },
+			{ "VCM RGB",               RastVCM( 1024 ),        0.02, 0.02, 0.005, false },
+			{ "VCM RGB merging OFF",   RastVCMNoMerge( 1024 ), 0.01, 0.03, 0.005, true },
+			{ "BDPT RGB gaussian filter", RastBDPTDefaultFilter( 1024 ), 0.01, 0.03, 0.005, true },
+		};
+		for( int ri = 0; ri < 4; ri++ )
+		{
+			const R& r = rows[ri];
+			const unsigned int rowSaltBase = SobolSequence::HashCombine( fovSaltBase, unsigned( ri ) + 0x10u );
+			const double L0 = RenderSalted( Assemble( r.rast, ReceiverScene( kSpot, false, 0.0, kWide, false, std::string(), std::string(), fov ) ), "fs_l0",
+				SobolSequence::HashCombine( rowSaltBase, 0x2u ) );
+			std::vector<double> px;
+			const double Lg = RenderSalted( Assemble( r.rast, ReceiverScene( kSpot, true, kSweepGap, kWide, false, std::string(), std::string(), fov ) ), "fs_lg",
+				SobolSequence::HashCombine( rowSaltBase, 0x3u ), &px );
+			const double tolGap = ( fov == 1.0 ) ? r.tolGapFov1 : r.tolGap;
+			char buf[256];
+			std::snprintf( buf, sizeof(buf), "fovsweep fov %4.1f %s: L0/L0_PT = %.5f (%+.3f%%)",
+				fov, r.label, L0 / ptL0, 100.0 * ( L0 / ptL0 - 1.0 ) );
+			std::cout << "  " << buf << std::endl;
+			Check( std::fabs( L0 / ptL0 - 1.0 ) <= r.tolL0, buf );
+			std::snprintf( buf, sizeof(buf), "fovsweep fov %4.1f %s: L(gap %.1f)/(g*L0_PT) = %.5f (%+.3f%%)",
+				fov, r.label, kSweepGap, Lg / ( kSweepGap * ptL0 ), 100.0 * ( Lg / ( kSweepGap * ptL0 ) - 1.0 ) );
+			std::cout << "  " << buf << std::endl;
+			Check( std::fabs( Lg / ( kSweepGap * ptL0 ) - 1.0 ) <= tolGap, buf );
+
+			// The fingerprint: at fov 2 the frame is lit edge to edge and
+			// the gap render IS the splat, so every edge row / column must
+			// read like the interior (pre-fix, box filter: column 0 and
+			// row 0 at 0.49 / 0.52; gaussian filter: 0.49 / 0.51 with
+			// the last column / row at 1.48 / 1.51 -- the filtered path
+			// renormalised the out-of-film strip onto them).  Not at fov 1, where the per-pixel splat count
+			// is low enough that a deterministic QMC pattern moves the
+			// edge means by up to 12 % in BOTH builds.
+			if( fov == 2.0 && r.edge ) {
+				const EdgeRatios e = EdgeFingerprint( px, 16, 16 );
+				std::snprintf( buf, sizeof(buf), "fovsweep fov %4.1f %s gap render edges / interior: col0 %.4f row0 %.4f colLast %.4f rowLast %.4f",
+					fov, r.label, e.col0, e.row0, e.colLast, e.rowLast );
+				std::cout << "  " << buf << std::endl;
+				const double tolEdge = 0.10;
+				Check( std::fabs( e.col0 - 1.0 ) <= tolEdge && std::fabs( e.row0 - 1.0 ) <= tolEdge &&
+				       std::fabs( e.colLast - 1.0 ) <= tolEdge && std::fabs( e.rowLast - 1.0 ) <= tolEdge, buf );
+			}
 		}
+	}
+}
+
+//! dl294 (measurement aid, no assertions): the same sweep with n SALTED
+//! repeats (argv[2], default 4; P2-2, external review 2026-09-29 --
+//! BDPT/VCM's Sobol' streams are keyed by pixel/sample index, so an
+//! UNSALTED repeat is bit-identical and its printed "sd" was always
+//! 0.000, not an error bar), mean +/- sample sd per cell, plus the
+//! NO-WEAVE control (the kTight 0.2 x 0.2 patch at fov 2 under the
+//! spot, no sheet, against the analytic rho/pi * I/d^2) and the edge
+//! fingerprint of each gap render.
+static void MeasureNarrowFovSplat( unsigned int n )
+{
+	std::cout << "=== dl294: t = 1 splat fov sweep, n = " << n << " SALTED (mean +/- sd; printed, NOT gated) ===" << std::endl;
+	for( int k = 0; k < kNumSweepFovs; k++ )
+	{
+		const double fov = kSweepFovs[k];
+		const unsigned int fovBase = SobolSequence::HashCombine( 0xD1294Eu, unsigned( k ) );
+		std::vector<double> pt, bL0, bG, vL0, vG, bc0, br0, vc0, vr0, vnG;
+		for( unsigned int i = 0; i < n; i++ ) {
+			const unsigned int s = SobolSequence::HashCombine( fovBase, i );
+			pt.push_back( RenderSalted( Assemble( RastPT( 64 ), ReceiverScene( kSpot, false, 0.0, kWide, false, std::string(), std::string(), fov ) ), "m_pt",
+				SobolSequence::HashCombine( s, 0x1u ) ) );
+			std::vector<double> px;
+			bL0.push_back( RenderSalted( Assemble( RastBDPT( 1024 ), ReceiverScene( kSpot, false, 0.0, kWide, false, std::string(), std::string(), fov ) ), "m_bl0",
+				SobolSequence::HashCombine( s, 0x2u ) ) );
+			bG.push_back( RenderSalted( Assemble( RastBDPT( 1024 ), ReceiverScene( kSpot, true, kSweepGap, kWide, false, std::string(), std::string(), fov ) ), "m_bg",
+				SobolSequence::HashCombine( s, 0x3u ), &px ) );
+			EdgeRatios e = EdgeFingerprint( px, 16, 16 ); bc0.push_back( e.col0 ); br0.push_back( e.row0 );
+			vL0.push_back( RenderSalted( Assemble( RastVCM( 1024 ), ReceiverScene( kSpot, false, 0.0, kWide, false, std::string(), std::string(), fov ) ), "m_vl0",
+				SobolSequence::HashCombine( s, 0x4u ) ) );
+			vG.push_back( RenderSalted( Assemble( RastVCM( 1024 ), ReceiverScene( kSpot, true, kSweepGap, kWide, false, std::string(), std::string(), fov ) ), "m_vg",
+				SobolSequence::HashCombine( s, 0x5u ), &px ) );
+			e = EdgeFingerprint( px, 16, 16 ); vc0.push_back( e.col0 ); vr0.push_back( e.row0 );
+			vnG.push_back( RenderSalted( Assemble( RastVCMNoMerge( 1024 ), ReceiverScene( kSpot, true, kSweepGap, kWide, false, std::string(), std::string(), fov ) ), "m_vng",
+				SobolSequence::HashCombine( s, 0x6u ) ) );
+		}
+		double mp, sp; MeanSd( pt, mp, sp );
+		auto rel = [&]( const std::vector<double>& v, double scale ) {
+			std::vector<double> r; for( double x : v ) r.push_back( 100.0 * ( x / ( scale * mp ) - 1.0 ) ); return r; };
+		double m1, s1, m2, s2, m3, s3, m4, s4, e1, f1, e2, f2, e3, f3, e4, f4;
+		MeanSd( rel( bL0, 1.0 ), m1, s1 ); MeanSd( rel( bG, kSweepGap ), m2, s2 );
+		MeanSd( rel( vL0, 1.0 ), m3, s3 ); MeanSd( rel( vG, kSweepGap ), m4, s4 );
+		MeanSd( bc0, e1, f1 ); MeanSd( br0, e2, f2 ); MeanSd( vc0, e3, f3 ); MeanSd( vr0, e4, f4 );
+		std::printf( "  dl294 fov %4.1f | PT L0 %.6f +/- %.6f | BDPT L0 %+.3f +/- %.3f %% gap %+.3f +/- %.3f %% | VCM L0 %+.3f +/- %.3f %% gap %+.3f +/- %.3f %%\n",
+			fov, mp, sp, m1, s1, m2, s2, m3, s3, m4, s4 );
+		double m5, s5; MeanSd( rel( vnG, kSweepGap ), m5, s5 );
+		std::printf( "  dl294 fov %4.1f | VCM merging OFF (vc only) gap %+.3f +/- %.3f %%\n", fov, m5, s5 );
+		std::printf( "  dl294 fov %4.1f | edges/interior: BDPT gap col0 %.4f +/- %.4f row0 %.4f +/- %.4f | VCM gap col0 %.4f +/- %.4f row0 %.4f +/- %.4f\n",
+			fov, e1, f1, e2, f2, e3, f3, e4, f4 );
+	}
+
+	// NO-WEAVE control: the tight 0.2 x 0.2 patch, fov 2, spot, no sheet.
+	const double analytic = kRho / 3.14159265358979323846 * kOmniPow / ( kLightY * kLightY );
+	struct R { const char* label; std::string rast; };
+	const R rows[] = { { "PT RGB", RastPT( 64 ) }, { "BDPT RGB", RastBDPT( 1024 ) }, { "VCM RGB", RastVCM( 1024 ) } };
+	for( const R& r : rows ) {
+		std::vector<double> v;
+		for( unsigned int i = 0; i < n; i++ )
+			v.push_back( 100.0 * ( Render( Assemble( r.rast, ReceiverScene( kSpot, false, 0.0, kTight ) ), "m_nw" ) / analytic - 1.0 ) );
+		double m, sd; MeanSd( v, m, sd );
+		std::printf( "  dl294 no-weave control (0.2 patch, fov 2, spot, NO sheet) %s: L0 vs analytic %+.3f +/- %.3f %%\n", r.label, m, sd );
 	}
 }
 
@@ -1859,7 +2104,12 @@ int main( int argc, char** argv )
 
 	const char* filter = std::getenv( "WEAVE_GAP_FILTER" );
 	if( filter && std::strstr( filter, "dl294" ) ) {
-		PrintNarrowFovSplatResidual();
+		unsigned int n = 4;
+		if( argc > 2 ) {
+			const long v = std::strtol( argv[2], nullptr, 10 );
+			if( v > 0 ) n = (unsigned int)v;
+		}
+		MeasureNarrowFovSplat( n );
 		return 0;
 	}
 	if( filter && std::strstr( filter, "dl295probe" ) ) {
@@ -1900,6 +2150,7 @@ int main( int argc, char** argv )
 	if( !filter || std::strstr( filter, "sms" ) )         TestSMSEmissionThroughGap();
 	if( !filter || std::strstr( filter, "castsshadows" ) ) TestCastsShadowsFalseStepOver();
 	if( !filter || std::strstr( filter, "layers" ) )      TestTwoLayerLightOutside();
+	if( !filter || std::strstr( filter, "fovsweep" ) )    TestNarrowFovSplat();
 
 	std::cout << "Passed: " << passCount << "   Failed: " << failCount << std::endl;
 	return failCount == 0 ? 0 : 1;
