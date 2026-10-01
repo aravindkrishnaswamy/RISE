@@ -4046,7 +4046,9 @@ static void TestNarrowFovStripeGuard()
 		const double leftBase = profile[kLeftBaseIdx];
 		const double rightBase = profile[kRightBaseIdx];
 		const double denom = leftBase - rightBase;
-		return ( denom > 1e-9 ) ? ( profile[k] - rightBase ) / denom : std::numeric_limits<double>::quiet_NaN();
+		// Finite poison (SourceHygieneTest bans NaN sentinels): -1 fails
+		// every coverage check below, which all require a value in (0, 1).
+		return ( denom > 1e-9 ) ? ( profile[k] - rightBase ) / denom : -1.0;
 	};
 
 	const double ptFrac = fractionalCoverage( ptProfile );
