@@ -223,7 +223,12 @@ namespace
 					RayIntersection gradRI( fgGradRay, rast );
 					pScene->GetObjects()->IntersectRay( gradRI, true, true, false );
 
-					if( gradRI.geometric.bHit && gradRI.pObject ) {
+					// Classification probe must describe the already sampled hit.
+                    // Alpha may have skipped the nearest geometric surface;
+                    // a mismatch supplies no translational gradient, not a
+                    // second stochastic traversal of the same radiance ray.
+                    if( gradRI.geometric.bHit && gradRI.pObject &&
+                        fabs(gradRI.geometric.range-tGrad) < 1e-5*r_max(Scalar(1),tGrad) ) {
 						sample.bUsableForTranslation = true;
 						sample.pObject = gradRI.pObject;
 						// Translational-gradient normal-similarity test
@@ -319,7 +324,7 @@ void FinalGatherShaderOp::PerformOperation(
 	const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 	RISEPel& c,									///< [in/out] Resultant color from op
-	const IORStack& ior_stack,			///< [in/out] Index of refraction stack
+	const IORStack& ior_stack,			///< [in] Index of refraction stack
 	const ScatteredRayContainer* pScat			///< [in] Scattering information
 	) const
 {
@@ -747,7 +752,7 @@ Scalar FinalGatherShaderOp::PerformOperationNM(
 	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 	const Scalar caccum,						///< [in] Current value for wavelength
 	const Scalar nm,							///< [in] Wavelength to shade
-	const IORStack& ior_stack,			///< [in/out] Index of refraction stack
+	const IORStack& ior_stack,			///< [in] Index of refraction stack
 	const ScatteredRayContainer* pScat			///< [in] Scattering information
 	) const
 {

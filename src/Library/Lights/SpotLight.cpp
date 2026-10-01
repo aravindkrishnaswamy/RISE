@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/IndependentSampler.h"
 #include "SpotLight.h"
 #include "../Animation/KeyframableHelper.h"
 #include "../Rendering/RayCaster.h"		// concrete RayCaster — dynamic_cast target for transparent (Fresnel-attenuated) shadow rays
@@ -54,7 +55,7 @@ SpotLight::~SpotLight( )
 {
 }
 
-void SpotLight::ComputeDirectLighting(
+void SpotLight::ComputeDirectLightingSampled(
 	const RayIntersectionGeometric& ri,
 	const IRayCaster& pCaster,
 	const IBSDF& brdf,
@@ -62,7 +63,8 @@ void SpotLight::ComputeDirectLighting(
 	RISEPel& amount,
 	const bool /*bFullSphereReceiver*/,	// no-op here; see the .h doc
 	const bool bVolumeReceiver,			// implemented; see the .h doc
-	const IORStack* pIORStack			// DL-157 P1: live stack for a stateful BSDF
+	const IORStack* pIORStack, // DL-157 P1: live stack for a stateful BSDF
+    ISampler& sampler, MediumBoundaryHits* boundaries
 	) const
 {
 	//
@@ -111,10 +113,10 @@ void SpotLight::ComputeDirectLighting(
 
 			const RayCaster* pRC = dynamic_cast<const RayCaster*>( &pCaster );
 			if( pRC ) {
-				if( pRC->CastShadowRayAuto( rayToLight, fDistFromLight, false, 0.0, shadowT, true /*DL-05: delta light*/ ) ) {
+				if( pRC->CastShadowRayAutoSampled( rayToLight, fDistFromLight, false, 0.0, shadowT, true /*DL-05: delta light*/ , sampler, boundaries ) ) {
 					return;
 				}
-			} else if( pCaster.CastShadowRay( rayToLight, fDistFromLight ) ) {
+			} else if( pCaster.CastShadowRaySampled( rayToLight, fDistFromLight , sampler, boundaries ) ) {
 				return;
 			}
 		}
@@ -132,7 +134,7 @@ void SpotLight::ComputeDirectLighting(
 	}
 }
 
-Scalar SpotLight::ComputeDirectLightingNM(
+Scalar SpotLight::ComputeDirectLightingSampledNM(
 	const RayIntersectionGeometric& ri,
 	const IRayCaster& pCaster,
 	const IBSDF& brdf,
@@ -140,7 +142,8 @@ Scalar SpotLight::ComputeDirectLightingNM(
 	const Scalar nm,
 	const bool /*bFullSphereReceiver*/,	// no-op here; see the .h doc
 	const bool bVolumeReceiver,			// implemented; see the .h doc
-	const IORStack* pIORStack			// DL-157 P1: live stack for a stateful BSDF
+	const IORStack* pIORStack, // DL-157 P1: live stack for a stateful BSDF
+    ISampler& sampler, MediumBoundaryHits* boundaries
 	) const
 {
 	// Same geometry / cone falloff as the RGB ComputeDirectLighting; only the
@@ -167,11 +170,11 @@ Scalar SpotLight::ComputeDirectLightingNM(
 		const RayCaster* pRC = dynamic_cast<const RayCaster*>( &pCaster );
 		if( pRC ) {
 			RISEPel t( 1.0, 1.0, 1.0 );
-			if( pRC->CastShadowRayAuto( rayToLight, fDistFromLight, true, nm, t, true /*DL-05: delta light*/ ) ) {
+			if( pRC->CastShadowRayAutoSampled( rayToLight, fDistFromLight, true, nm, t, true /*DL-05: delta light*/ , sampler, boundaries ) ) {
 				return Scalar(0);
 			}
 			shadowT = t.r;	// NM path fills all 3 channels equally
-		} else if( pCaster.CastShadowRay( rayToLight, fDistFromLight ) ) {
+		} else if( pCaster.CastShadowRaySampled( rayToLight, fDistFromLight , sampler, boundaries ) ) {
 			return Scalar(0);
 		}
 	}
@@ -280,4 +283,19 @@ void SpotLight::SetIntermediateValue( const IKeyframeParameter& val )
 	}
 
 	Transformable::SetIntermediateValue( val );
+}
+
+void SpotLight::ComputeDirectLighting(const RayIntersectionGeometric& ri,
+    const IRayCaster& caster, const IBSDF& bsdf, const bool shadows, RISEPel& amount,
+    const bool fullSphere, const bool volume, const IORStack* stack) const
+{
+    RandomNumberGenerator random; IndependentSampler sampler(random);
+    ComputeDirectLightingSampled(ri, caster, bsdf, shadows, amount, fullSphere, volume, stack, sampler, nullptr);
+}
+Scalar SpotLight::ComputeDirectLightingNM(const RayIntersectionGeometric& ri,
+    const IRayCaster& caster, const IBSDF& bsdf, const bool shadows, const Scalar nm,
+    const bool fullSphere, const bool volume, const IORStack* stack) const
+{
+    RandomNumberGenerator random; IndependentSampler sampler(random);
+    return ComputeDirectLightingSampledNM(ri, caster, bsdf, shadows, nm, fullSphere, volume, stack, sampler, nullptr);
 }

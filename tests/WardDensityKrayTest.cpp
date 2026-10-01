@@ -467,7 +467,328 @@ static double WardFullAlbedoTwoGrid( const IBSDF& brdf, const RayIntersectionGeo
 	return sum;
 }
 
-int main()
+class WardEndpointSampler : public ISampler {
+    double x,y; unsigned int dimension;
+public:
+    WardEndpointSampler(double x_,double y_) : x(x_),y(y_),dimension(0) {}
+    Scalar Get1D() override { return (dimension++ & 1) ? y : x; }
+    Point2 Get2D() override { return Point2(Get1D(),Get1D()); }
+};
+
+// DL-324: finite rounded inputs, evaluated through the public material consumers.
+// Long-double frame projections are an independent analytic GMD Ward oracle.
+// Independent integral over elliptical Gaussian slopes: at each azimuth
+// the positive shading-horizon root S bounds accepted radii; radial tail
+// mass is exp(-S^2). Black diffuse is still an emitted fallback ray when
+// the specular sample is rejected, so even pure RGB spec has this Pdf term.
+static double WardBlackDiffuseFallback(const Vector3& wi,const OrthonormalBasis3D& onb,double ax,double ay) {
+    const long double ci=Vector3Ops::Dot(wi,onb.w()), vx=Vector3Ops::Dot(wi,onb.u()), vy=Vector3Ops::Dot(wi,onb.v());
+    long double total=0;
+    for(int i=0;i<2048;++i) {
+        const long double phi=2*acosl(-1.L)*(i+.5L)/2048;
+        const long double x=ax*cosl(phi), y=ay*sinl(phi), a2=x*x+y*y, sv=x*vx+y*vy;
+        const long double d=sqrtl(sv*sv+ci*ci*a2);
+        const long double root=sv<0 ? ci/(d-sv) : (d+sv)/(ci*a2);
+        total+=expl(-root*root);
+    }
+    return double(total/2048);
+}
+static void TestRoundedWardPoles(const IORStack& stack)
+{
+    auto* black = new UniformColorPainter(RISEPel(0,0,0)); black->addref();
+    auto* white = new UniformColorPainter(RISEPel(.5,.5,.5)); white->addref();
+    int roundedNormal = 0, roundedTangent = 0;
+    for(int frame=0; frame<128; ++frame) {
+        OrthonormalBasis3D onb;
+        if(frame) onb.CreateFromW(Vector3(.17+frame*.013, .31-frame*.009, .83));
+        const Vector3 n=onb.w(), u=onb.u(), v=onb.v();
+        for(int pair=0; pair<8; ++pair) {
+            const double tilt[]={0,1e-16,1e-12,1e-8,.001,.1,1,1e8};
+            const Vector3 wi=Vector3Ops::Normalize(n+u*.4);
+            const Vector3 hTarget=Vector3Ops::Normalize(n+u*tilt[pair]);
+            const Vector3 wo=Vector3Ops::Normalize(2*Vector3Ops::Dot(wi,hTarget)*hTarget-wi);
+            // pole with symmetric incoming/outgoing; horizon case uses wi=wo.
+            const Vector3 in = pair==7 ? hTarget : wi;
+            const Vector3 out = pair==7 ? hTarget : wo;
+            RayIntersectionGeometric ri=MakeIntersection(0);
+            ri.onb=onb; ri.vNormal=n; ri.vGeomNormal=n;
+            ri.ray.Set(Point3(0,0,1),-in);
+            const Vector3 h=Vector3Ops::Normalize(Vector3Ops::Normalize(in)+Vector3Ops::Normalize(out));
+            const double nh=Vector3Ops::Dot(n,h);
+            const double tangentDot=Vector3Ops::Dot(u,Vector3Ops::Normalize(h-nh*n));
+            if(nh>1) ++roundedNormal;
+            if(fabs(tangentDot)>1) ++roundedTangent;
+            for(int model=0;model<2;++model) {
+                auto* ax=new UniformScalarPainter(.01); ax->addref();
+                auto* ay=new UniformScalarPainter(model?.37:.01); ay->addref();
+                IBSDF* brdf=model ? static_cast<IBSDF*>(new WardAnisotropicEllipticalGaussianBRDF(*black,*white,*ax,*ay))
+                                  : static_cast<IBSDF*>(new WardIsotropicGaussianBRDF(*black,*white,*ax)); brdf->addref();
+                ISPF* spf=model ? static_cast<ISPF*>(new WardAnisotropicEllipticalGaussianSPF(*black,*white,*ax,*ay))
+                               : static_cast<ISPF*>(new WardIsotropicGaussianSPF(*black,*white,*ax)); spf->addref();
+                const RISEPel f=brdf->value(out,ri);
+                const double fn=brdf->valueNM(out,ri,550), rs=GuardedGetColorNM(*white,ri,550);
+                const double diffuseNM=std::min(GuardedGetColorNM(*black,ri,550),std::max(0.0,1-rs))*INV_PI;
+                const double lf=spf->EvaluateLobeFNM(ri,out,ScatteredRay::eRayReflection,550,stack);
+                const double pdf=spf->Pdf(ri,out,stack), pn=spf->PdfNM(ri,out,550,stack);
+                Check(std::isfinite(f[0]) && std::isfinite(fn) && std::isfinite(lf) && std::isfinite(pdf) && std::isfinite(pn),
+                      "DL-324 public RGB/NM BRDF, lobe and Pdf finite at rounded poles/horizon");
+                auto dot=[](const Vector3&a,const Vector3&b) { return (long double)a.x*b.x+(long double)a.y*b.y+(long double)a.z*b.z; };
+                const long double hz=dot(h,n), hx=dot(h,u), hy=dot(h,v), hd=dot(h,in);
+                const long double exponent=-(hx*hx/(.01L*.01L)+hy*hy/((model?.37L:.01L)*(model?.37L:.01L)))/(hz*hz);
+                const double kernel=(double)(expl(exponent)/(4*acosl(-1.L)*.01L*(model?.37L:.01L)*hd*hd*hz*hz*hz*hz));
+                const double co=Vector3Ops::Dot(n,out), ci=Vector3Ops::Dot(n,in);
+                if(frame==0 && pair==0) std::cout << "axis pole model=" << model << " rgb=" << f[0] << " nm=" << fn << " expected=" << rs*kernel+diffuseNM << " rs=" << rs << " diffuseNM=" << GuardedGetColorNM(*black,ri,550) << " lobe=" << lf << " pdf=" << pdf << std::endl;
+
+                if(co>0 && ci>0) {
+                    Check(std::isfinite(f[0]) && fabs(f[0]-.5*kernel)<=1e-8*(1+kernel), "DL-324 independent long-double analytic RGB value");
+                    Check(std::isfinite(fn) && fabs(fn-(rs*kernel+diffuseNM))<=1e-8*(1+kernel), "DL-324 independent long-double analytic NM value");
+                    Check(std::isfinite(lf) && fabs(lf-(fn-diffuseNM))<=1e-8*(1+fabs(fn)), "DL-324 HWSS companion specular lobe agrees with public valueNM minus spectral diffuse");
+                    const double ratio=2*co/(ci+co);
+                    const double companion=spf->EvaluateKrayNM(ri,out,ScatteredRay::eRayReflection,550,stack,.37);
+                    Check(std::isfinite(companion) && fabs(companion-rs*kernel*co/.37)<=1e-8*(1+fabs(companion)), "DL-324 HWSS uses explicit hero density");
+                    Check(std::isfinite(pdf) && fabs(pdf-(kernel*co/ratio+WardBlackDiffuseFallback(in,onb,.01,model?.37:.01)*co*INV_PI))<=1e-5*(1+kernel), "DL-324 RGB Pdf includes analytic specular kray and independently integrated black-diffuse fallback");
+                    RayIntersectionGeometric reverse=ri; reverse.ray.Set(Point3(0,0,1),-out);
+                    const double rev=brdf->value(in,reverse)[0];
+                    Check(std::isfinite(rev) && fabs(rev-f[0])<=1e-8*(1+fabs(f[0])), "DL-324 reciprocal rounded-pole value");
+                }
+                spf->release(); brdf->release(); ax->release(); ay->release();
+            }
+        }
+    }
+    std::cout << "DL-324 finite constructed dot>1 leads: normal=" << roundedNormal << " tangent=" << roundedTangent << std::endl;
+    Check(roundedNormal>0, "DL-324 fixture really contains finite normalized dot > 1");
+    Check(roundedTangent>0, "DL-324 fixture really contains finite tangential normalized dot > 1");
+    // The sampler contract is [0,1); include 1 as a finite pole control.
+    const double endpoints[]={0,.25,.5,.75,std::nextafter(1.0,0.0),1};
+    auto* axRGB=new RGBScalarPainter(.01,.03,.2); axRGB->addref();
+    auto* ayRGB=new RGBScalarPainter(.37,.01,.05); ayRGB->addref();
+    for(int model=0;model<2;++model) {
+        ISPF* spf=model?static_cast<ISPF*>(new WardAnisotropicEllipticalGaussianSPF(*black,*white,*axRGB,*ayRGB))
+                      :static_cast<ISPF*>(new WardIsotropicGaussianSPF(*black,*white,*axRGB));spf->addref();
+        IBSDF* brdf=model?static_cast<IBSDF*>(new WardAnisotropicEllipticalGaussianBRDF(*black,*white,*axRGB,*ayRGB))
+                        :static_cast<IBSDF*>(new WardIsotropicGaussianBRDF(*black,*white,*axRGB));brdf->addref();
+        for(double x:endpoints) for(double y:endpoints) for(int grazing=0;grazing<2;++grazing) {
+            RayIntersectionGeometric ri=MakeIntersection(grazing?89.99*PI/180:0);
+            ri.onb.CreateFromW(Vector3(.37,.43,.82));ri.vNormal=ri.vGeomNormal=ri.onb.w();
+            const double t=grazing?89.99*PI/180:0;
+            ri.ray.Set(Point3(0,0,1),-(ri.onb.w()*cos(t)+ri.onb.u()*sin(t)));
+            for(int spectral=0;spectral<2;++spectral) {
+                WardEndpointSampler sampler(x,y);ScatteredRayContainer rays;
+                if(spectral) spf->ScatterNM(ri,sampler,550,rays,stack); else spf->Scatter(ri,sampler,rays,stack);
+                for(unsigned int i=0;i<rays.Count();++i) {
+                    const ScatteredRay& ray=rays[i];
+                    Check(std::isfinite(ray.pdf) && ray.pdf>=0 && std::isfinite(ray.krayNM) && std::isfinite(ray.kray[0]) && std::isfinite(ray.ray.Dir().x), "DL-324 endpoint Scatter RGB/NM and chromatic replay finite");
+                    Check(std::isfinite(spf->Pdf(ri,ray.ray.Dir(),stack)) && std::isfinite(spf->PdfNM(ri,ray.ray.Dir(),550,stack)), "DL-324 endpoint query densities finite");
+                    const double f=brdf->valueNM(ray.ray.Dir(),ri,550);
+                    Check(std::isfinite(f) && std::isfinite(brdf->value(ray.ray.Dir(),ri)[0]), "DL-324 endpoint live BRDF finite");
+                    if(ray.type==ScatteredRay::eRayReflection && ray.pdf>0) {
+                        const double companion=spf->EvaluateKrayNM(ri,ray.ray.Dir(),ray.type,600,stack,ray.pdf);
+                        Check(std::isfinite(companion), "DL-324 endpoint HWSS companion with stored hero pdf finite");
+                    }
+                }
+            }
+        }
+        spf->release();brdf->release();
+    }
+    axRGB->release();ayRGB->release();
+    // Small finite axes amplify the SPF's formerly negative 1-cos^2
+    // exponent at dot>1. This checks the density sibling, not only acos.
+    auto* tiny=new UniformScalarPainter(1e-9);tiny->addref();
+    int tinyDotOvershoots=0;
+    for(int frame=1;frame<128;++frame) {
+        RayIntersectionGeometric ri=MakeIntersection(0);ri.onb.CreateFromW(Vector3(.17+frame*.013,.31-frame*.009,.83));
+        ri.vNormal=ri.vGeomNormal=ri.onb.w();ri.ray.Set(Point3(0,0,1),-ri.onb.w());
+        const Vector3 out=ri.onb.w();
+        const Vector3 h=Vector3Ops::Normalize(Vector3Ops::Normalize(out)+Vector3Ops::Normalize(out));
+        if(Vector3Ops::Dot(h,out)<=1) continue;
+        ++tinyDotOvershoots;
+        for(int model=0;model<2;++model) {
+            ISPF* spf=model?static_cast<ISPF*>(new WardAnisotropicEllipticalGaussianSPF(*black,*white,*tiny,*tiny))
+                          :static_cast<ISPF*>(new WardIsotropicGaussianSPF(*black,*white,*tiny));spf->addref();
+            const double p=spf->Pdf(ri,out,stack), pn=spf->PdfNM(ri,out,550,stack);
+            const double peak=1/(4*PI*1e-18);
+            Check(std::isfinite(p) && fabs(p/peak-1)<1e-8 && std::isfinite(pn) && fabs(pn/peak-1)<1e-3, "DL-324 small-axis dot>1 Pdf stays at finite pole peak, never a growing Gaussian");
+            spf->release();
+        }
+    }
+    Check(tinyDotOvershoots>0, "DL-324 small-axis fixture really exercises finite normalized dot>1");
+    std::cout << "DL-324 small-axis dot>1 cases=" << tinyDotOvershoots << std::endl;
+    tiny->release();
+    black->release(); white->release();
+}
+
+// DL-324 review repairs: independent log quotient keeps the FINAL value's
+// range. Decimal 80-digit anchors in external review evidence agree with
+// these four kernels; no production helper is used by this oracle.
+static bool WardRangeClose(double actual,double expected) {
+    return std::isfinite(actual) && expected>0 && fabs(actual/expected-1)<3e-11;
+}
+static void TestWardExponentRange(const IORStack& stack) {
+    auto* black=new UniformColorPainter(RISEPel(0,0,0));black->addref();
+    auto* spec=new UniformColorPainter(RISEPel(.5,.5,.5));spec->addref();
+    const double anchors[2][2]={{7.846081296132908e-6,1.5133128107028885e-27},
+                               {7.8460812961329084e34,1.5133128107028886e13}};
+    int ai=0;
+    for(double alpha:{1e-150,1e-170}) {
+        auto* a=new UniformScalarPainter(alpha);a->addref();int ei=0;
+        for(double exponent:{700.,750.}) {
+            RayIntersectionGeometric ri=MakeIntersection(0);
+            const Vector3 h(sqrt(exponent)*alpha,0,1);ri.ray.Set(Point3(0,0,1),-h);
+            const double oracle=exp(-exponent-log(4*PI)-2*log(alpha));
+            Check(WardRangeClose(oracle,anchors[ai][ei++]),"DL-324 log oracle agrees with independent 80-digit Decimal anchor");
+            const double rs=GuardedGetColorNM(*spec,ri,550),diffuse=GuardedGetColorNM(*black,ri,550)*INV_PI;
+            for(int model=0;model<2;++model) {
+                IBSDF* b=model?static_cast<IBSDF*>(new WardAnisotropicEllipticalGaussianBRDF(*black,*spec,*a,*a)):static_cast<IBSDF*>(new WardIsotropicGaussianBRDF(*black,*spec,*a));b->addref();
+                ISPF* sp=model?static_cast<ISPF*>(new WardAnisotropicEllipticalGaussianSPF(*black,*spec,*a,*a)):static_cast<ISPF*>(new WardIsotropicGaussianSPF(*black,*spec,*a));sp->addref();
+                Check(WardRangeClose(b->value(h,ri)[0],.5*oracle),"DL-324 representable off-pole full quotient RGB");
+                Check(WardRangeClose(b->valueNM(h,ri,550),rs*oracle+diffuse),"DL-324 representable off-pole full quotient NM");
+                Check(WardRangeClose(sp->EvaluateLobeFNM(ri,h,ScatteredRay::eRayReflection,550,stack),rs*oracle),"DL-324 representable off-pole HWSS lobe");
+                Check(WardRangeClose(sp->EvaluateKrayNM(ri,h,ScatteredRay::eRayReflection,550,stack,oracle),rs),"DL-324 off-pole HWSS explicit hero-density companion");
+                const double pdf=sp->Pdf(ri,h,stack),pn=sp->PdfNM(ri,h,550,stack);
+                Check(std::isfinite(pdf)&&std::isfinite(pn),"DL-324 off-pole aggregate RGB/NM density finite");
+                if(alpha==1e-170)Check(WardRangeClose(pdf,oracle),"DL-324 off-pole aggregate density keeps quotient range");
+                if(exponent==700)for(int nm=0;nm<2;++nm) {
+                    WardEndpointSampler sampler(0,exp(-exponent));ScatteredRayContainer rays;
+                    if(nm)sp->ScatterNM(ri,sampler,550,rays,stack);else sp->Scatter(ri,sampler,rays,stack);
+                    int count=0;for(unsigned j=0;j<rays.Count();++j)if(rays[j].type==ScatteredRay::eRayReflection) {
+                        ++count;const auto& r=rays[j];
+                        Check(WardRangeClose(r.pdf,oracle),"DL-324 actual iso/aniso RGB/NM range sampler stored density");
+                        Check(WardRangeClose(sp->EvaluateKrayNM(ri,r.ray.Dir(),r.type,550,stack,r.pdf),rs),"DL-324 actual range sampler hero-density companion");
+                    }
+                    Check(count==1,"DL-324 actual range sampler emits reflection");
+                }
+                sp->release();b->release();
+            }
+        }
+        ++ai;a->release();
+    }
+    // A kernel just above binary64 max becomes representable after Rs.
+    // The reflectance belongs inside the complete log quotient too.
+    {
+        auto* a=new UniformScalarPainter(1e-170);a->addref();
+        RayIntersectionGeometric ri=MakeIntersection(0);const Vector3 h(sqrt(70.2)*1e-170,0,1);ri.ray.Set(Point3(0,0,1),-h);
+        const double logKernel=-70.2-log(4*PI)-2*log(1e-170);
+        const double rs=GuardedGetColorNM(*spec,ri,550);
+        for(int model=0;model<2;++model) {
+            IBSDF* b=model?static_cast<IBSDF*>(new WardAnisotropicEllipticalGaussianBRDF(*black,*spec,*a,*a)):static_cast<IBSDF*>(new WardIsotropicGaussianBRDF(*black,*spec,*a));b->addref();
+            ISPF* sp=model?static_cast<ISPF*>(new WardAnisotropicEllipticalGaussianSPF(*black,*spec,*a,*a)):static_cast<ISPF*>(new WardIsotropicGaussianSPF(*black,*spec,*a));sp->addref();
+            Check(WardRangeClose(b->value(h,ri)[0],exp(logKernel+log(.5))),"DL-324 reflectance inside representable full RGB quotient");
+            Check(WardRangeClose(b->valueNM(h,ri,550),exp(logKernel+log(rs))),"DL-324 reflectance inside representable full NM quotient");
+            Check(WardRangeClose(sp->EvaluateLobeFNM(ri,h,ScatteredRay::eRayReflection,550,stack),exp(logKernel+log(rs))),"DL-324 reflectance inside representable full HWSS lobe quotient");
+            sp->release();b->release();
+        }
+        a->release();
+    }
+    // Actual HWSS hero draw: f(550) itself rounds to zero, but its
+    // quotient with the finite sampled p(650) is representable.
+    {
+        auto* a=new RGBScalarPainter(.0107,.01,.01);a->addref();
+        for(double heroExponent:{800*std::pow(.01/.0107,2.),740.}) {
+        RayIntersectionGeometric ri=MakeIntersection(0);
+        const Vector3 incident=Vector3Ops::Normalize(ri.onb.u()*(std::sqrt(heroExponent)*.0107)+ri.onb.w());
+        ri.ray.Set(Point3(0,0,1),-incident);
+        for(int model=0;model<2;++model) {
+            ISPF* sp=model?static_cast<ISPF*>(new WardAnisotropicEllipticalGaussianSPF(*black,*spec,*a,*a)):static_cast<ISPF*>(new WardIsotropicGaussianSPF(*black,*spec,*a));sp->addref();
+            WardEndpointSampler sampler(0,std::exp(-heroExponent));ScatteredRayContainer rays;
+            sp->ScatterNM(ri,sampler,650,rays,stack);int count=0;
+            for(unsigned j=0;j<rays.Count();++j)if(rays[j].type==ScatteredRay::eRayReflection) {
+                ++count;const auto& r=rays[j];
+                const Vector3 wo=Vector3Ops::Normalize(r.ray.Dir()),h=Vector3Ops::Normalize(incident+wo);
+                const double hz=Vector3Ops::Dot(h,ri.onb.w()),hd=Vector3Ops::Dot(h,wo),co=Vector3Ops::Dot(wo,ri.onb.w());
+                const double sx=Vector3Ops::Dot(h,ri.onb.u())/hz/.01,sy=Vector3Ops::Dot(h,ri.onb.v())/hz/.01;
+                const double rs=GuardedGetColorNM(*spec,ri,550);
+                const double expected=std::exp(-sx*sx-sy*sy-log(4*PI)-2*log(.01)-2*log(hd)-4*log(hz)+log(rs)+log(co)-log(r.pdf));
+                Check(std::isfinite(r.pdf)&&r.pdf>0,"DL-324 HWSS range control actual hero density finite");
+                Check(sp->EvaluateLobeFNM(ri,wo,r.type,550,stack)==0,"DL-324 HWSS range control standalone target lobe genuinely unrepresentable");
+                if(heroExponent==740.) Check(std::isinf(rs/r.pdf),"DL-324 HWSS range control premature Rs/pdfHero itself overflows");
+                Check(std::isfinite(expected)&&expected>0,"DL-324 independent complete HWSS quotient representable");
+                Check(WardRangeClose(sp->EvaluateKrayNM(ri,wo,r.type,550,stack,r.pdf),expected),"DL-324 actual hero companion retains range beyond standalone f");
+                Check(WardRangeClose(sp->EvaluateKrayNM(ri,wo,r.type,550,stack),rs*2*co/(co+Vector3Ops::Dot(incident,ri.onb.w()))),"DL-324 non-explicit kray remains unchanged in range control");
+            }
+            Check(count==1,"DL-324 HWSS range control actual hero reflection emitted");
+            sp->release();
+        }
+        }
+        a->release();
+    }
+    // Asymmetric finite peaks and shared-pair chromatic replay. Quarter
+    // boundaries and interior draws preserve Ward's folded-quarter law.
+    for(int chromatic=0;chromatic<2;++chromatic) {
+        IScalarPainter* ax=chromatic?static_cast<IScalarPainter*>(new RGBScalarPainter(1e-170,2e-170,3e-170)):static_cast<IScalarPainter*>(new UniformScalarPainter(1e-170));ax->addref();
+        IScalarPainter* ay=chromatic?static_cast<IScalarPainter*>(new RGBScalarPainter(.5,.4,.3)):static_cast<IScalarPainter*>(new UniformScalarPainter(.5));ay->addref();
+        auto* sp=new WardAnisotropicEllipticalGaussianSPF(*black,*spec,*ax,*ay);sp->addref();
+        auto* b=new WardAnisotropicEllipticalGaussianBRDF(*black,*spec,*ax,*ay);b->addref();
+        RayIntersectionGeometric ri=MakeIntersection(0);
+        for(double x:{0.,.125,.25,.375,.5,.625,.75,.875,std::nextafter(1.,0.)})for(int nm=0;nm<2;++nm) {
+            WardEndpointSampler sampler(x,.5);ScatteredRayContainer rays;
+            if(nm)sp->ScatterNM(ri,sampler,550,rays,stack);else sp->Scatter(ri,sampler,rays,stack);
+            int count=0;for(unsigned j=0;j<rays.Count();++j)if(rays[j].type==ScatteredRay::eRayReflection) {
+                ++count;const auto& r=rays[j];
+                Check(std::isfinite(r.pdf)&&r.pdf>0,"DL-324 asymmetric actual RGB/NM sampler density finite");
+                Check(std::isfinite(sp->Pdf(ri,r.ray.Dir(),stack))&&std::isfinite(sp->PdfNM(ri,r.ray.Dir(),550,stack)),"DL-324 asymmetric shared-pair replay aggregate finite");
+                Check(std::isfinite(b->value(r.ray.Dir(),ri)[0])&&std::isfinite(b->valueNM(r.ray.Dir(),ri,550)),"DL-324 asymmetric actual sampler RGB/NM BRDF finite");
+                Check(std::isfinite(sp->EvaluateLobeFNM(ri,r.ray.Dir(),r.type,550,stack))&&std::isfinite(sp->EvaluateKrayNM(ri,r.ray.Dir(),r.type,550,stack,r.pdf)),"DL-324 asymmetric actual sampler HWSS finite");
+                if(!chromatic&&x==0) {
+                    const double kernel=exp(-log(4*PI)-log(1e-170)-log(.5)-log(2.));
+                    Check(WardRangeClose(r.pdf,kernel),"DL-324 asymmetric stored density independent log oracle");
+                    Check(WardRangeClose(sp->Pdf(ri,r.ray.Dir(),stack),kernel),"DL-324 asymmetric stored/public density agreement");
+                }
+            }
+            Check(count==(chromatic&&!nm?3:1),"DL-324 asymmetric sampler emits expected lanes");
+        }
+        sp->release();b->release();ax->release();ay->release();
+    }
+    spec->release();black->release();
+}
+
+// Actual alpha=1 draws whose wi+wo squared length underflows. This
+// independent max-component normalization never calls the production helper.
+static void TestWardHalfRange(const IORStack& stack) {
+    auto* black=new UniformColorPainter(RISEPel(0.0));black->addref();
+    auto* spec=new UniformColorPainter(RISEPel(.41));spec->addref();
+    auto* a=new UniformScalarPainter(1.0);a->addref();
+    for(int model=0;model<2;++model) {
+        ISPF* sp=model?static_cast<ISPF*>(new WardAnisotropicEllipticalGaussianSPF(*black,*spec,*a,*a)):static_cast<ISPF*>(new WardIsotropicGaussianSPF(*black,*spec,*a));sp->addref();
+        for(double grazing:{1e-170,1e-200})for(int nm=0;nm<2;++nm) {
+            RayIntersectionGeometric ri=MakeIntersection(0);
+            const Vector3 wi=ri.onb.v()+ri.onb.w()*grazing;
+            ri.ray.Set(Point3(0,0,1),-wi);
+            WardEndpointSampler sampler(0,std::nextafter(1.,0.));ScatteredRayContainer rays;
+            if(nm)sp->ScatterNM(ri,sampler,570,rays,stack);else sp->Scatter(ri,sampler,rays,stack);
+            int count=0;
+            for(unsigned j=0;j<rays.Count();++j)if(rays[j].type==ScatteredRay::eRayReflection) {
+                ++count;const auto& r=rays[j];const Vector3 wo=r.ray.Dir(),sum=wi+wo;
+                const double scale=std::max(std::abs(sum.x),std::max(std::abs(sum.y),std::abs(sum.z)));
+                const Vector3 scaled=sum*(1/scale);
+                const double len=std::sqrt(scaled.x*scaled.x+scaled.y*scaled.y+scaled.z*scaled.z);
+                const Vector3 h=scaled*(1/len);
+                const double hz=Vector3Ops::Dot(h,ri.onb.w()),hd=Vector3Ops::Dot(h,wo),co=Vector3Ops::Dot(wo,ri.onb.w());
+                const double sx=Vector3Ops::Dot(h,ri.onb.u())/hz,sy=Vector3Ops::Dot(h,ri.onb.v())/hz;
+                const double density=std::exp(-sx*sx-sy*sy-std::log(4*PI)-std::log(hd)-3*std::log(hz));
+                const double rs=nm?GuardedGetColorNM(*spec,ri,570):.41;
+                const double rd=nm?GuardedGetColorNM(*black,ri,570):0;
+                const double expectedKray=rs*2*co/(grazing+co);
+                const double expectedExplicit=std::exp(-sx*sx-sy*sy-std::log(4*PI)-2*std::log(hd)-4*std::log(hz)+std::log(rs)+std::log(co)-std::log(r.pdf));
+                const double q=expectedKray/(rd+expectedKray);
+                const double queried=nm?sp->PdfNM(ri,wo,570,stack):sp->Pdf(ri,wo,stack);
+                Check(std::isfinite(r.pdf)&&r.pdf>0,"DL-324 grazing actual alpha1 draw finite stored density");
+                Check(WardRangeClose(r.pdf,density),"DL-324 grazing actual draw independent conditional density");
+                Check(WardRangeClose(queried,q*density),"DL-324 grazing actual RGB/NM aggregate density retains half range");
+                Check(WardRangeClose(nm?r.krayNM:r.kray[0],expectedKray),"DL-324 grazing actual stored kray independent ratio");
+                const double rsNM=GuardedGetColorNM(*spec,ri,570);
+                Check(WardRangeClose(sp->EvaluateKrayNM(ri,wo,r.type,570,stack),rsNM*2*co/(grazing+co)),"DL-324 grazing default companion retains half range");
+                const double explicitNM=expectedExplicit*rsNM/rs;
+                Check(WardRangeClose(sp->EvaluateKrayNM(ri,wo,r.type,570,stack,r.pdf),explicitNM),"DL-324 grazing explicit companion finite despite infinite standalone f");
+                Check(std::isinf(sp->EvaluateLobeFNM(ri,wo,r.type,570,stack)),"DL-324 grazing standalone f legitimately exceeds binary64");
+            }
+            Check(count==1,"DL-324 grazing actual alpha1 reflection emitted");
+        }
+        sp->release();
+    }
+    a->release();spec->release();black->release();
+}
+
+int main(int argc, char** argv)
 {
 	GlobalLog();
 
@@ -478,6 +799,15 @@ int main()
 	g_stubObject->addref();
 
 	IORStack iorStack = MakeTestIORStack( g_stubObject );
+    TestRoundedWardPoles(iorStack);
+    TestWardExponentRange(iorStack);
+    TestWardHalfRange(iorStack);
+    if(argc>1 && std::string(argv[1])=="--robustness-only") {
+        g_stubObject->release();
+        std::cout << "Passed: " << passCount << " Failed: " << failCount << std::endl;
+        return failCount ? 1 : 0;
+    }
+
 
 	UniformColorPainter* black = new UniformColorPainter( RISEPel( 0, 0, 0 ) ); black->addref();
 	UniformColorPainter* spec  = new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) ); spec->addref();

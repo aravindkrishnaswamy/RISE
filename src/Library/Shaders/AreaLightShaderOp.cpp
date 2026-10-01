@@ -1,3 +1,4 @@
+#include "../Utilities/IndependentSampler.h"
 //////////////////////////////////////////////////////////////////////
 //
 //  AreaLightShaderOp.cpp - Implementation of the AreaLightShaderOp class
@@ -66,10 +67,12 @@ void AreaLightShaderOp::PerformOperation(
 	const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 	RISEPel& c,									///< [in/out] Resultant color from op
-	const IORStack& ior_stack,			///< [in/out] Index of refraction stack
+	const IORStack& ior_stack,			///< [in] Index of refraction stack
 	const ScatteredRayContainer* pScat			///< [in] Scattering information
 	) const
 {
+    IndependentSampler alphaFallback(rc.random);
+    ISampler& alphaSampler = rc.pSampler ? *rc.pSampler : static_cast<ISampler&>(alphaFallback);
 	c = RISEPel(0.0);
 
 	// Only do stuff on a normal pass or on final gather
@@ -127,7 +130,7 @@ void AreaLightShaderOp::PerformOperation(
 			// Check to see if there is a shadow
 			if( ri.pObject->DoesReceiveShadows() ) {
 				const Ray		rayToLight( ri.geometric.ptIntersection, vToLight );
-				if( caster.CastShadowRay( rayToLight, fDistFromLight ) ) {
+				if( caster.CastShadowRaySampled( rayToLight, fDistFromLight, alphaSampler ) ) {
 					continue;
 				}
 			}		
@@ -155,10 +158,12 @@ Scalar AreaLightShaderOp::PerformOperationNM(
 	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 	const Scalar caccum,						///< [in] Current value for wavelength
 	const Scalar nm,							///< [in] Wavelength to shade
-	const IORStack& ior_stack,			///< [in/out] Index of refraction stack
+	const IORStack& ior_stack,			///< [in] Index of refraction stack
 	const ScatteredRayContainer* pScat			///< [in] Scattering information
 	) const
 {
+    IndependentSampler alphaFallback(rc.random);
+    ISampler& alphaSampler = rc.pSampler ? *rc.pSampler : static_cast<ISampler&>(alphaFallback);
 	Scalar c=0;
 
 	// Only do stuff on a normal pass or on final gather
@@ -208,7 +213,7 @@ Scalar AreaLightShaderOp::PerformOperationNM(
 			// Check to see if there is a shadow
 			if( ri.pObject->DoesReceiveShadows() ) {
 				const Ray		rayToLight( ri.geometric.ptIntersection, vToLight );
-				if( !caster.CastShadowRay( rayToLight, fDistFromLight ) ) {
+				if( !caster.CastShadowRaySampled( rayToLight, fDistFromLight, alphaSampler ) ) {
 					const Scalar	k = (pN + 1) * pow(fDot,pN) * (1.0 / TWO_PI);
 					const Scalar	attenuation_size_factor = area / (fDistFromLight * fDistFromLight);
 					// `emm` is the area light's EMISSION slot -> GetRadianceNM

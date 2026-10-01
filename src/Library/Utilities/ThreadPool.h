@@ -41,6 +41,18 @@ namespace RISE
 		class ThreadPool
 		{
 		public:
+			//! DL-315: every worker's stack size.  Render work recurses in
+			//! C++ (each nested RayCaster cast -- an SSS continuation, a
+			//! legacy shader-op bounce, a medium phase continuation -- is a
+			//! frame chain of 6-35 KB depending on the build), and the
+			//! platform default for a secondary thread is only 512 KB on
+			//! macOS.  8 MB is the macOS / glibc main-thread default (a
+			//! Windows main thread defaults to 1 MB -- the VS2022 projects
+			//! set no StackReserveSize); on Windows it is a reservation
+			//! (STACK_SIZE_PARAM_IS_A_RESERVATION), elsewhere pages are
+			//! committed only as touched.
+			static const unsigned int kWorkerStackBytes = 8u * 1024u * 1024u;
+
 			//! Construct a pool.  `affinityMask` is the list of CPU IDs
 			//! the workers should be pinned to (Linux / Windows only;
 			//! macOS ignores this and relies on QoS class).  Pass an

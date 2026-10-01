@@ -15,6 +15,7 @@
 #define IRAYCASTER_
 
 #include "IReference.h"
+#include <vector>
 #include "ISampling2D.h"
 #include "IRadianceMap.h"
 #include "../Utilities/Ray.h"
@@ -23,6 +24,9 @@
 
 namespace RISE
 {
+    class ISampler;
+    class RayIntersection;
+    typedef std::vector<RayIntersection> MediumBoundaryHits;
 	class ILuminaryManager;
 	class IScene;
 	class IORStack;
@@ -232,7 +236,7 @@ namespace RISE
 			const RAY_STATE& rs,								///< [in] The ray state
 			Scalar* distance,									///< [in] If there was a hit, how far?
 			const IRadianceMap* pRadianceMap,					///< [in] Radiance map to use in case there is no hit
-			const IORStack& ior_stack							///< [in/out] Index of refraction stack
+			const IORStack& ior_stack							///< [in] Index of refraction stack (DL-315: never modified; the hit is shaded with a copy)
 			) const = 0;
 
 		//! Tells the ray caster to cast the specified ray into the scene for the specific wavelength
@@ -246,7 +250,7 @@ namespace RISE
 			const Scalar nm,									///< [in] Wavelength to cast
 			Scalar* distance,									///< [in] If there was a hit, how far?
 			const IRadianceMap* pRadianceMap,					///< [in] Radiance map to use in case there is no hit
-			const IORStack& ior_stack							///< [in/out] Index of refraction stack
+			const IORStack& ior_stack							///< [in] Index of refraction stack (DL-315: never modified; the hit is shaded with a copy)
 			) const = 0;
 
 		//! Casts a ray for a bundle of HWSS wavelengths.
@@ -262,7 +266,7 @@ namespace RISE
 			SampledWavelengths& swl,							///< [in/out] Wavelength bundle
 			Scalar* distance,									///< [in] If there was a hit, how far?
 			const IRadianceMap* pRadianceMap,					///< [in] Radiance map for misses
-			const IORStack& ior_stack							///< [in/out] Index of refraction stack
+			const IORStack& ior_stack							///< [in] Index of refraction stack (DL-315: never modified; the hit is shaded with a copy)
 			) const
 		{
 			bool anyHit = false;
@@ -377,7 +381,16 @@ namespace RISE
 			const Ray& ray,										///< [in] Ray to cast
 			const Scalar dHowFar								///< [in] How far to follow the ray, optimization
 			) const = 0;
-	};
+        //! DL-214: transport visibility owns an alpha sampler lane.
+        //! distance is the occlusion end parameter on the ORIGINAL ray.
+        //! Optional physicalDistance extends medium records to the actual
+        //! endpoint; occlusionStart excludes the starting surface. Neither
+        //! exclusion removes physical medium events. Records are complete
+        //! only when visibility succeeds. A negative physicalDistance uses
+        //! distance; without records the extra extent does no work.
+        virtual bool CastShadowRaySampled(const Ray& ray, Scalar distance, ISampler& sampler, MediumBoundaryHits* boundaries = nullptr, Scalar physicalDistance = -1, Scalar occlusionStart = 0) const
+        { (void)sampler; (void)boundaries; (void)physicalDistance; Ray shifted=ray; shifted.Advance(occlusionStart); return CastShadowRay(shifted, distance-occlusionStart); }
+    };
 }
 
 #include "ILuminaryManager.h"

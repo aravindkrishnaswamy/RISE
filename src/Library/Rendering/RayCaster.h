@@ -45,7 +45,27 @@ namespace RISE
 
 			bool						bConsiderRMapAsBackground;
 
+			//! Depth cap on a cast (`rs.depth > cap` returns nothing).  For
+			//! the legacy pixel-based rasterizers it is the scene's authored
+			//! `max_recursion`; for every integrator-owned caster it is
+			//! kDefaultPathTracingMaxDepth (DL-315 -- it used to be a
+			//! hard-coded 10, which cut PT's SSS continuations: each SSS
+			//! event nests its continuation cast at depth + 2).  Read it
+			//! through MaxRecursions(rc), never directly.
 			const unsigned int			nMaxRecursions;
+
+			//! DL-315: the effective depth cap for this cast.  A path
+			//! tracer's runtime path-vertex cap (`rc.pathTracingMaxDepth`,
+			//! installed by PathTracingPelRasterizer::SetMaxPathDepth) can
+			//! exceed the construction-time value, and the nested
+			//! PathTracingShaderOp integrator honours it, so the caster
+			//! honours it too.  A legacy rasterizer's context never carries
+			//! a variant config, so its authored cap stands.
+			unsigned int MaxRecursions( const RuntimeContext& rc ) const
+			{
+				return ( rc.hasPathTracingVariantConfig && rc.pathTracingMaxDepth > nMaxRecursions )
+					? rc.pathTracingMaxDepth : nMaxRecursions;
+			}
 
 			const bool					bShowLuminaires;
 
@@ -116,7 +136,8 @@ namespace RISE
 				const Scalar nm,
 				RISEPel& transmittance,
 				const bool bDielectrics,
-				const bool bDeltaPassThrough
+				const bool bDeltaPassThrough,
+                ISampler* alphaSampler = 0, MediumBoundaryHits* boundaries = nullptr, Scalar physicalDistance = -1, Scalar occlusionStart = 0
 				) const;
 
 			//! Runtime override for the environment radiance scale,
@@ -223,9 +244,15 @@ namespace RISE
 			//! CastRay/CastRayNM's existing modifier site runs
 			//! immediately after this returns and covers whatever `ri`
 			//! ends up being.
-			void ResolveXrayView_( RayIntersection& ri ) const;
+			void ResolveXrayView_( RayIntersection& ri, ISampler& alphaSampler ) const;
 
 		public:
+			//! DL-315: how many nested casts, process-wide, the stack guard
+			//! refused because the calling thread had less than the margin
+			//! of stack left (see RayCaster.cpp's CastStackExhausted).  Zero
+			//! in any render whose threads are sized for the recursion.
+			static unsigned long long StackGuardRefusals();
+
 			RayCaster(
 				const bool seeRadianceMap,
 				const unsigned int maxR,
@@ -270,7 +297,7 @@ namespace RISE
 				const RAY_STATE& rs,								///< [in] The ray state
 				Scalar* distance,									///< [in] If there was a hit, how far?
 				const IRadianceMap* pRadianceMap,					///< [in] Radiance map to use in case there is no hit
-				const IORStack& ior_stack							///< [in/out] Index of refraction stack
+				const IORStack& ior_stack							///< [in] Index of refraction stack (DL-315: never modified; the hit is shaded with a copy)
 				) const;
 
 			//! Tells the ray caster to cast the specified ray into the scene for the specific wavelength
@@ -284,7 +311,7 @@ namespace RISE
 				const Scalar nm,									///< [in] Wavelength to cast
 				Scalar* distance,									///< [in] If there was a hit, how far?
 				const IRadianceMap* pRadianceMap,					///< [in] Radiance map to use in case there is no hit
-				const IORStack& ior_stack							///< [in/out] Index of refraction stack
+				const IORStack& ior_stack							///< [in] Index of refraction stack (DL-315: never modified; the hit is shaded with a copy)
 				) const;
 
 			//! Casts a ray for a bundle of HWSS wavelengths with shared
@@ -301,7 +328,7 @@ namespace RISE
 				SampledWavelengths& swl,							///< [in/out] Wavelength bundle
 				Scalar* distance,									///< [in] If there was a hit, how far?
 				const IRadianceMap* pRadianceMap,					///< [in] Radiance map for misses
-				const IORStack& ior_stack							///< [in/out] Index of refraction stack
+				const IORStack& ior_stack							///< [in] Index of refraction stack (DL-315: never modified; the hit is shaded with a copy)
 				) const;
 
 			//! This function casts a ray into the scene and only checks to see if it intersects something.
@@ -351,6 +378,10 @@ namespace RISE
 			//!         reached dHowFar, with @a transmittance carrying the
 			//!         accumulated Fresnel transmittance (1.0 when the
 			//!         segment was clear of any geometry).
+            bool CastShadowRaySampled(const Ray& ray, Scalar distance, ISampler& sampler, MediumBoundaryHits* boundaries = nullptr, Scalar physicalDistance = -1, Scalar occlusionStart = 0) const;
+            bool CastShadowRayAutoSampled(const Ray& ray, Scalar distance, bool nmMode,
+                Scalar nm, RISEPel& transmittance, bool deltaLight, ISampler& sampler, MediumBoundaryHits* boundaries = nullptr, Scalar physicalDistance = -1, Scalar occlusionStart = 0) const;
+
 			bool CastShadowRayTransmittance(
 				const Ray& ray,										///< [in] Ray to cast (origin = shading point, dir = toward light, normalized)
 				const Scalar dHowFar,								///< [in] How far to follow the ray (distance to the light minus epsilon)

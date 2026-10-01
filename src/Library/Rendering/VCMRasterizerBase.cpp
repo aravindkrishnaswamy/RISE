@@ -253,21 +253,14 @@ namespace
 
 							tl.tmpLightVerts.clear();
 							static thread_local std::vector<uint32_t> tmpLightSubpathStarts;
-							// Single light subpath (no branching).
-							// Branching at multi-lobe delta vertices
-							// was excised in 2026-05; the
-							// `subpathStarts` outparam is retained
-							// for Phase-2 integrator cleanup but
-							// always contains exactly one [0, size)
-							// range.
-							pGen->GenerateLightSubpath( scene, caster, sampler, tl.tmpLightVerts, tmpLightSubpathStarts, rc.random );
-							if( tl.tmpLightVerts.empty() ) {
-								continue;
-							}
-
-							// pathsShot counts independent emissions
-							// (one per GenerateLightSubpath call).
-							tl.pathsShot++;
+                            // Count the independent emission proposal, including a
+                            // rejected alpha endpoint or an empty continuation.
+                            // Any branches belong to this same emission attempt.
+                            ++tl.pathsShot;
+                            pGen->GenerateLightSubpath( scene, caster, sampler, tl.tmpLightVerts, tmpLightSubpathStarts, rc.random );
+                            if( tl.tmpLightVerts.empty() ) {
+                                continue;
+                            }
 
 							tl.tmpConverted.clear();
 							VCMIntegrator::ConvertLightSubpath(
@@ -626,12 +619,8 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 		}
 	}
 
-	// Renormalize mVCMNormalization with the actual count of subpaths
-	// deposited.  Path-tree branching was excised in 2026-05, so
-	// `pathsShot == W×H` exactly and this renormalization is a
-	// provable no-op — kept for robustness against future code paths
-	// (e.g. RR-aborted light walks not contributing to pathsShot)
-	// that would re-introduce a discrepancy.
+    // Normalize by independent emission attempts, including empty paths.
+    // Deposits and any branches are not additional emission proposals.
 	if( pathsShot > 0 ) {
 		mVCMNormalization = ComputeNormalization(
 			width, height, effectiveMergeRadius,
@@ -813,9 +802,7 @@ void VCMRasterizerBase::OnProgressivePassBegin(
 		}
 	}
 
-	// Renormalize with actual pathsShot — see comment at the matching
-	// PreRenderSetup site for rationale.  Branching can produce more
-	// than W×H subpaths; the per-pixel VC/VM weights must match.
+    // Same attempted-emission denominator as the initial light pass.
 	if( pathsShot > 0 ) {
 		mVCMNormalization = ComputeNormalization(
 			width, height, mCurrentMergeRadius,

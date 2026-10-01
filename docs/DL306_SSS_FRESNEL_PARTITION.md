@@ -211,7 +211,12 @@ to 0 leaves the water rows unchanged), integrator Russian roulette
 (`E[Ft*W] = 0.8889` per event in every topology, valid fraction 1), the
 continuation's returned value, and a far-side exit.  Filed as **DL-315**
 (both defects, one row), not fixed here -- library code outside this
-slice's law change.
+slice's law change.  (**Fixed on `debt-dl315`, 2026-09-28**: salted, the water rows now read
+0.997-1.002 of the explicit volume (random walk within 0.02 %), and the
+same stack write turned out to reach the legacy distribution-tracing /
+final-gather ops -- see [DL315_RAYCASTER_STACK_AND_RECURSION.md](DL315_RAYCASTER_STACK_AND_RECURSION.md).
+The open-air diffusion "0.9956" / "0.99568" figures in this section are
+one unsalted Sobol' pattern; salted, diffusion in air reads about 1.000.)
 
 **Four more suites hard-coded the Schlick law as their oracle** and were
 moved to the exact law in this slice.  Three failed against the fix with

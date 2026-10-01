@@ -61,6 +61,7 @@
 #include "ISampler.h"
 #include "../Sampling/SobolSequence.h"
 #include <atomic>
+#include <cstdlib>
 
 namespace RISE
 {
@@ -116,6 +117,7 @@ namespace RISE
 		protected:
 			uint32_t sampleIndex;		// Which sample in the sequence
 			uint32_t seed;				// Per-pixel base scramble seed
+			unsigned int alphaDimension = 0;
 			unsigned int dimension;		// Current dimension counter
 			bool independent;			// SobolSamplerTestHooks::Independent at construction
 			uint64_t rngState;			// splitmix64 state, independent mode only
@@ -180,6 +182,15 @@ namespace RISE
 				if( independent ) { dimension++; return Scalar( NextIndependent() ); }
 				return Scalar( SobolSequence::Sample( sampleIndex, dimension++, seed ) );
 			}
+
+            //! Reserved dimensions [2^29,2^30), reset only with a new sample.
+            //! Variable-length alpha walks cannot overrun into a bounce stream.
+            Scalar GetAlpha1D()
+            {
+                if (alphaDimension >= (1u << 29)) std::abort();
+                if (independent) { ++alphaDimension; return Scalar(NextIndependent()); }
+                return Scalar(SobolSequence::Sample(sampleIndex, (1u << 29) + alphaDimension++, seed));
+            }
 
 			//! Returns a 2D Owen-scrambled Sobol sample in [0,1)^2.
 			//!

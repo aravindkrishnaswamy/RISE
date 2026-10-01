@@ -43,7 +43,7 @@ namespace RISE
 				const Ray& ray,
 				const RISEPel& power,
 				ShadowPhotonMap& pPhotonMap,
-				const IORStack& ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack								///< [in] Index of refraction stack
 				) const
 			{
 				TracePhoton( ray, false, pPhotonMap );

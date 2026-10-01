@@ -43,7 +43,7 @@ namespace RISE
 				const Scalar nm,
 				bool bFromSpecular,
 				CausticSpectralPhotonMap& pPhotonMap,
-				const IORStack& ior_stack,								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack,								///< [in] Index of refraction stack
 				const unsigned int depth								///< [in] Recursion depth (0 = primary photon emitted from the light)
 				) const;
 
@@ -54,7 +54,7 @@ namespace RISE
 				const Scalar power,
 				const Scalar nm,
 				CausticSpectralPhotonMap& pPhotonMap,
-				const IORStack& ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack								///< [in] Index of refraction stack
 				) const
 			{
 				TracePhoton( ray, power, nm, false, pPhotonMap, ior_stack, 0 );

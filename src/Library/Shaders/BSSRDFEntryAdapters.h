@@ -92,8 +92,8 @@ namespace BSSRDFAdapters
 			if( cosTheta <= 0 ) {
 				return 0;
 			}
-			const Scalar Ft = pProfile->FresnelTransmission( cosTheta, ri );
-			return BSSRDFSampling::EvaluateSwWithFresnel( Ft, RelativeEta( ri ) );
+			const Scalar Ft = pProfile->FresnelTransmissionNM( cosTheta, ri, nm );
+			return BSSRDFSampling::EvaluateSwWithFresnel( Ft, BSSRDFSampling::RelativeBoundaryIOR( pProfile->GetIORNM( ri, nm ), BSSRDFSampling::ExteriorIOR( ri ) ) );
 		}
 	};
 
@@ -116,7 +116,7 @@ namespace BSSRDFAdapters
 				ior, BSSRDFSampling::ExteriorIOR( ri ) );
 			const Scalar c = BSSRDFSampling::BoundaryTransmissionNormalization( eta );
 			const Scalar swScale = (c > 1e-20) ? 1.0 / (c * PI) : 0;
-			return BSSRDFSampling::BoundaryTransmission( cosTheta, eta ) * swScale;
+			return BSSRDFSampling::BoundaryTransmission( cosTheta, ior, BSSRDFSampling::ExteriorIOR( ri ) ) * swScale;
 		}
 
 	public:

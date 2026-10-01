@@ -70,8 +70,9 @@
 //  out degenerate (near-parallel to the normal, or collapsed to
 //  near-zero by a singular transform).  The separate `vTangent` /
 //  `bHasTangent` pair (RayIntersectionGeometric.h) is a DIFFERENT
-//  per-vertex tangent, glTF-only and consumed by the normal-map
-//  modifier -- unrelated to the fibre tangent described here.  This
+//  per-vertex global UV/Mikk tangent supplied by glTF or native
+//  construction and consumed by normal maps. Blender shader directions
+//  use separate raw metadata and a preserved primary-UV normal-map frame.  This
 //  file only reads `ri.onb.u()`, so it picks up whatever the fibre-
 //  tangent plumbing above produced -- PROVIDED nothing downstream
 //  rebuilds the ONB from the normal alone afterward.  RESOLVED, residual

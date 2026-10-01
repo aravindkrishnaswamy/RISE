@@ -20,6 +20,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/IndependentSampler.h"
 #include "VCMIntegrator.h"
 #include "../Interfaces/IGeometry.h"		// CanBeAreaLight(): zero the s=0 competing light pdf for non-NEE-sampleable emitters
 #include "BDPTIntegrator.h"
@@ -121,17 +122,17 @@ namespace
 
 	// Local helper: unoccluded segment test.  Mirrors
 	// BDPTIntegrator::IsVisible so VCM doesn't touch BDPT.
-	inline bool VCMIsVisible( const IRayCaster& caster, const Point3& p1, const Point3& p2 )
+	inline bool VCMIsVisible( const IRayCaster& caster, const Point3& p1, const Point3& p2, ISampler& sampler, MediumBoundaryHits* boundaries )
 	{
 		Vector3 d = Vector3Ops::mkVector3( p2, p1 );
 		const Scalar dist = Vector3Ops::Magnitude( d );
-		if( dist < VCM_RAY_EPSILON ) {
+		if( dist <= 0 || (!boundaries && dist < VCM_RAY_EPSILON) ) {
 			return true;
 		}
 		d = d * ( Scalar( 1 ) / dist );
 		Ray shadowRay( p1, d );
-		shadowRay.Advance( VCM_RAY_EPSILON );
-		return !caster.CastShadowRay( shadowRay, dist - 2.0 * VCM_RAY_EPSILON );
+		// The original ray covers both endpoint tails for medium records.
+		return !caster.CastShadowRaySampled( shadowRay, dist - VCM_RAY_EPSILON, sampler, boundaries, dist, VCM_RAY_EPSILON );
 	}
 
 	inline VCMMisQuantities ApplyBSSRDFEntryAreaUpdate(
@@ -181,7 +182,7 @@ namespace
 		// The recurrence tracks geometric area densities. The BSDF PDF
 		// already contains its shading-frame sampling distribution.
 		const Scalar cosThetaOut = AreaToSolidAngleFactor( v, wo );
-		const Scalar bsdfDirPdfW = next.pdfFwd * nextDistSq / nextFactor;
+		const Scalar bsdfDirPdfW = next.pdfFwd * (next.pEnvLight ? Scalar(1) : nextDistSq) / nextFactor;
 		return ApplyBsdfSamplingUpdate(
 			mis, cosThetaOut, bsdfDirPdfW, Scalar( 0 ), false, norm );
 	}
@@ -392,7 +393,7 @@ namespace
 		const Point3& p1, const Point3& p2,
 		const IScene& scene, const IRayCaster& caster,
 		const IObject* pStartMediumObject, const IMedium* pStartMedium,
-		const Tag& tag );
+		const Tag& tag, const MediumBoundaryHits* boundaries );
 
 	template<>
 	inline RISEPel EvalConnectionTr<PelTag>(
@@ -400,11 +401,11 @@ namespace
 		const Point3& p1, const Point3& p2,
 		const IScene& scene, const IRayCaster& caster,
 		const IObject* pStartMediumObject, const IMedium* pStartMedium,
-		const PelTag& )
+		const PelTag&, const MediumBoundaryHits* boundaries )
 	{
 		return bdpt.EvalConnectionTransmittance(
 			p1, p2, scene, caster,
-			pStartMediumObject, pStartMedium );
+			pStartMediumObject, pStartMedium, boundaries );
 	}
 
 	template<>
@@ -413,11 +414,11 @@ namespace
 		const Point3& p1, const Point3& p2,
 		const IScene& scene, const IRayCaster& caster,
 		const IObject* pStartMediumObject, const IMedium* pStartMedium,
-		const NMTag& tag )
+		const NMTag& tag, const MediumBoundaryHits* boundaries )
 	{
 		return bdpt.EvalConnectionTransmittanceNM(
 			p1, p2, scene, caster, tag.nm,
-			pStartMediumObject, pStartMedium );
+			pStartMediumObject, pStartMedium, boundaries );
 	}
 
 	template<class Tag>
@@ -427,7 +428,7 @@ namespace
 		const Ray& connectionRay, const Scalar maxDist,
 		const IScene& scene, const IRayCaster& caster,
 		const IObject* pStartMediumObject, const IMedium* pStartMedium,
-		const Tag& tag );
+		const Tag& tag, const MediumBoundaryHits* boundaries );
 
 	template<>
 	inline RISEPel EvalConnectionTrRay<PelTag>(
@@ -435,11 +436,11 @@ namespace
 		const Ray& connectionRay, const Scalar maxDist,
 		const IScene& scene, const IRayCaster& caster,
 		const IObject* pStartMediumObject, const IMedium* pStartMedium,
-		const PelTag& )
+		const PelTag&, const MediumBoundaryHits* boundaries )
 	{
 		return bdpt.EvalConnectionTransmittance(
 			connectionRay, maxDist, scene, caster,
-			pStartMediumObject, pStartMedium );
+			pStartMediumObject, pStartMedium, boundaries );
 	}
 
 	template<>
@@ -448,11 +449,11 @@ namespace
 		const Ray& connectionRay, const Scalar maxDist,
 		const IScene& scene, const IRayCaster& caster,
 		const IObject* pStartMediumObject, const IMedium* pStartMedium,
-		const NMTag& tag )
+		const NMTag& tag, const MediumBoundaryHits* boundaries )
 	{
 		return bdpt.EvalConnectionTransmittanceNM(
 			connectionRay, maxDist, scene, caster, tag.nm,
-			pStartMediumObject, pStartMedium );
+			pStartMediumObject, pStartMedium, boundaries );
 	}
 }
 
@@ -511,7 +512,7 @@ static inline Scalar AreaToSolidAngleFactor(
 	if( v.type == BDPTVertex::MEDIUM ) {
 		return v.sigma_t_scalar;
 	}
-	if( v.type == BDPTVertex::CAMERA ) {
+	if( v.type == BDPTVertex::CAMERA || v.pEnvLight ) {
 		return Scalar( 1 );
 	}
 	// SURFACE, LIGHT, or anything else with a normal.
@@ -549,13 +550,7 @@ static inline Scalar AreaToSolidAngleFactor(
 // One special case: the first bounce from a light.  SmallVCM's
 // geometric update gates on "pathLength > 1 || isFiniteLight", i.e.
 // the distance^2 factor is SKIPPED when the light is infinite
-// (environment / directional).  RISE doesn't currently distinguish
-// finite vs infinite at the BDPTVertex level, so we approximate:
-// LIGHT vertices with finite pdfPosition are finite; delta-direction
-// lights (sun / spot) are technically both finite and infinite at
-// once.  We treat any BDPTVertex marked type==LIGHT as finite; the
-// infinite case is covered when VCM adds environment-map support in
-// a later step.
+// (environment). IsInfiniteLight() records that endpoint measure.
 //
 // Vertex types handled:
 //
@@ -608,24 +603,17 @@ void VCMIntegrator::ConvertLightSubpath(
 				return;
 			}
 
-			// directPdfA = v[0].pdfFwd (BDPT stores
-			// pdfSelect * pdfPosition here).  emissionPdfW
-			// is the combined area*solid-angle product.
-			// pdfSelect is stored separately on the vertex
-			// (post 2026-05-29 continuous-PMF follow-up) so
-			// InitLight can extract the geometric emissionPdfW
-			// for the SmallVCM-correct dVC formula — see
-			// VCMRecurrence::InitLight comments + BDPTVertex.h
-			// `pdfSelect` doc.
-			const bool isFinite = true;	// conservative: see comment block above
+			// Root marginal and joint emission use the same selected
+			// light measure. Infinite roots use angular direct density;
+			// their conditional first target is a parallel projection.
+			const bool isFinite = !v.pEnvLight;
 			mis = InitLight(
 				v.pdfFwd,
 				v.emissionPdfW,
 				v.cosAtGen,
 				isFinite,
 				v.isDelta,
-				norm,
-				v.pdfSelect );
+				norm );
 			if( outMis ) (*outMis)[0] = mis;
 			continue;
 		}
@@ -693,12 +681,8 @@ void VCMIntegrator::ConvertLightSubpath(
 			continue;
 		}
 
-		// Geometric update.  For the first bounce from the light
-		// (i==1) the distance-squared gate should be skipped for
-		// infinite lights.  All RISE lights currently routed
-		// through GenerateLightSubpath vertex 0 are treated as
-		// finite; keep the gate on for every bounce.
-		const bool applyDistSqToDVCM = true;
+		// A parallel environment emission has no first-edge r² factor.
+		const bool applyDistSqToDVCM = !(i == 1 && prev.pEnvLight);
 		mis = ApplyGeometricUpdate( mis, distSq, cosFix, applyDistSqToDVCM );
 
 		if( outMis ) (*outMis)[i] = mis;
@@ -722,13 +706,13 @@ void VCMIntegrator::ConvertLightSubpath(
 
 					const Scalar nextFactor = AreaToSolidAngleFactor( next, -wo );
 					const Scalar bsdfDirPdfW = ( nextFactor > 0 )
-						? next.pdfFwd * nextDistSq / nextFactor : Scalar( 0 );
+						? next.pdfFwd * (next.pEnvLight ? Scalar(1) : nextDistSq) / nextFactor : Scalar( 0 );
 
 					const Scalar invDist = ( distSq > 0 ) ? ( Scalar( 1 ) / std::sqrt( distSq ) ) : Scalar( 0 );
 					const Vector3 dirPrevToCur = step * invDist;
 					const Scalar prevFactor = AreaToSolidAngleFactor( prev, dirPrevToCur );
 					const Scalar bsdfRevPdfW = ( prev.pdfRev > 0 && prevFactor > 0 )
-						? prev.pdfRev * distSq / prevFactor : Scalar( 0 );
+						? prev.pdfRev * (prev.pEnvLight ? Scalar(1) : distSq) / prevFactor : Scalar( 0 );
 
 					mis = ApplyBsdfSamplingUpdate(
 						mis, cosThetaOutMed, bsdfDirPdfW, bsdfRevPdfW,
@@ -784,6 +768,11 @@ void VCMIntegrator::ConvertLightSubpath(
 			lv.pMaterial  = v.pMaterial;
 			lv.pObject    = v.pObject;
 			lv.throughput = v.throughput;
+            // The camera endpoint already realizes surface coverage. The
+            // photon store estimates incident flux CONDITIONED on that endpoint,
+            // so undo only this photon's deposit-acceptance probability. The
+            // continuing light subpath and shared MIS partition remain unchanged.
+            lv.throughput = lv.throughput * (1 / v.acceptedAlphaCoverage);
 			// Cache the NM-merge spectrum at deposit time -- see
 			// LightVertex::throughputSpectrum's comment
 			// (VCMLightVertex.h) and LightThroughputSpectrum's comment
@@ -872,7 +861,7 @@ void VCMIntegrator::ConvertLightSubpath(
 			if( nextFactor <= 0 ) {
 				continue;
 			}
-			const Scalar bsdfDirPdfW_out = next.pdfFwd * nextDistSq / nextFactor;
+			const Scalar bsdfDirPdfW_out = next.pdfFwd * (next.pEnvLight ? Scalar(1) : nextDistSq) / nextFactor;
 
 			// Reverse bsdf pdf at THIS vertex for the direction
 			// back toward 'prev'.  prev.pdfRev is in area measure
@@ -884,7 +873,7 @@ void VCMIntegrator::ConvertLightSubpath(
 
 			Scalar bsdfRevPdfW_out = 0;
 			if( prev.pdfRev > 0 && prevFactor > 0 ) {
-				bsdfRevPdfW_out = prev.pdfRev * distSq / prevFactor;
+				bsdfRevPdfW_out = prev.pdfRev * (prev.pEnvLight ? Scalar(1) : distSq) / prevFactor;
 			}
 
 			mis = ApplyBsdfSamplingUpdate(
@@ -998,32 +987,11 @@ namespace
 					continue;
 				}
 
-				// SmallVCM-style MIS weight for env-escape.  Mirrors
-				// the explicit-emitter weight formula at the bottom
-				// of this loop (lines ~847-853):
-				//   directPdfA  = envSelProb / discArea     [area on disc]
-				//   emissionPdfW = directPdfA * pdf_env_sa  [joint joint]
-				//   wCamera     = directPdfA * dVCM
-				//               + emissionPdfW * dVC
-				//   weight      = 1 / (VCMMis(1) + VCMMis(wCamera))
-				// When envSelProb = 0 (env not in alias table) both
-				// directPdfA and emissionPdfW are 0 → wCamera = 0 →
-				// weight = 1.  When envSelProb > 0 (env-only scene)
-				// the formula reduces to the same balance against
-				// NEE that EvaluateNEE applies on the other side, so
-				// the two strategies sum to ~1 unbiased.
-				// SmallVCM-style MIS weight for env-escape — mirrors
-				// the explicit-emitter formula at the bottom of this
-				// loop.  Keeping the SmallVCM weight family is
-				// necessary for composition with the rest of VCM's
-				// MIS strategies; a PT-style power-2 override was
-				// tested broken on spectral BDPT.
-				//   directPdfA  = envSelProb / discArea     [area on disc]
-				//   emissionPdfW = directPdfA * pdf_env_sa  [joint]
-				//   wCamera     = directPdfA * dVCM + emissionPdfW * dVC
-				//   weight      = 1 / (VCMMis(1) + VCMMis(wCamera))
+				// Root angular density and joint angular/disc emission density
+				// are the same selected-light densities used by NEE and LT.
+				// Direct camera visibility has no competing root connection.
 				Scalar weightEnv = Scalar( 1 );
-				{
+				if( i > 1 ) {
 					const Scalar envSelProb = pLS->EnvSelectProbability();
 					const Scalar sceneRadius = pLS->GetCachedSceneRadius();
 					const Scalar discArea = ( sceneRadius > 0 ) ?
@@ -1031,19 +999,13 @@ namespace
 					const EnvironmentSampler* pES = pLS->GetEnvironmentSampler();
 					const Scalar pdfEnvSA = ( pES ) ? pES->Pdf( wiSkyEnv ) : Scalar( 0 );
 					const Scalar directPdfA = ( discArea > 0 ) ?
-						( envSelProb / discArea ) : Scalar( 0 );
-					const Scalar emissionPdfW = directPdfA * pdfEnvSA;
-					// Geometric-emissionPdfW divide (matches mesh-emitter
-					// branch ~30 lines below and VCMRecurrence::InitLight's
-					// dVC fix).  pdfSelect for env is `envSelProb`.
-					// Δ5 bisect confirmed this divide is no-op in test
-					// scenes (envSelProb ≈ 1.0 for env-dominant); kept
-					// for consistency with mesh branch.
+						( envSelProb * pdfEnvSA ) : Scalar( 0 );
+					const Scalar emissionPdfW = discArea > 0 ? envSelProb * pdfEnvSA / discArea : Scalar(0);
 					const Scalar wCameraEnvJoint =
 						directPdfA * eyeMis[i].dVCM +
 						emissionPdfW * eyeMis[i].dVC;
 					const Scalar wCameraEnv = ( envSelProb > 0 ) ?
-						( wCameraEnvJoint / envSelProb ) : Scalar( 0 );
+						wCameraEnvJoint : Scalar( 0 );
 					weightEnv = Scalar( 1 ) /
 						( VCMMis( Scalar( 1 ) ) + VCMMis( wCameraEnv ) );
 				}
@@ -1150,25 +1112,13 @@ namespace
 			if( i == 1 ) {
 				weight = Scalar( 1 );
 			} else {
-				// SmallVCM partition-of-unity requires wCamera be
-				// expressed against the GEOMETRIC emission pdfs
-				// (no pdfSelect multiplier).  RISE's local
-				// `directPdfA = pdfSelect × pdfPosition` and
-				// `emissionPdfW = pdfSelect × pdfPosition ×
-				// emissionDirPdfSA` are JOINT — divide the
-				// composed wCamera by `pdfSelect` to extract the
-				// geometric value.  Mirrors the dVC fix at
-				// `VCMRecurrence::InitLight`; under continuous-PMF
-				// `pdfSelect` varies per sample (env-rooted vs
-				// alias-rooted) and the missing divide caused VCM
-				// env+mesh to over-count by ~27 % vs PT (2026-05-29
-				// follow-up to Session 9 continuous-PMF fix).
-				// Empirically verified by Δ4 bisect (reverting this
-				// divide moved env+mesh VCM from 0.780 → 0.807).
+				// NEE and LT sample the selected light; the eye-hit strategy
+				// does not. Dividing these joint densities by selection
+				// would reserve mass for the wrong alternative path density.
 				const Scalar wCameraJoint =
 					directPdfA * eyeMis[i].dVCM + emissionPdfW * eyeMis[i].dVC;
 				const Scalar wCamera = ( pdfSelect > 0 ) ?
-					( wCameraJoint / pdfSelect ) : Scalar( 0 );
+					wCameraJoint : Scalar( 0 );
 				weight = Scalar( 1 ) / ( VCMMis( Scalar( 1 ) ) + VCMMis( wCamera ) );
 			}
 
@@ -1234,6 +1184,8 @@ namespace
 		const Tag& tag
 		)
 	{
+        MediumBoundaryHits boundaryHits;
+    const bool sceneAlpha = caster.GetLightSampler() && caster.GetLightSampler()->SceneHasAlphaCoverage();
 		using Traits = SpectralValueTraits<Tag>;
 		typename Traits::value_type total = Traits::zero();
 
@@ -1304,7 +1256,7 @@ namespace
 						v.position.y + wiVis.y * kVisFar,
 						v.position.z + wiVis.z * kVisFar );
 				}
-				if( !VCMIsVisible( caster, v.position, visTargetVCM ) ) {
+				if( !VCMIsVisible( caster, v.position, visTargetVCM, sampler, (sceneAlpha ? &boundaryHits : nullptr) ) ) {
 					continue;
 				}
 			}
@@ -1452,7 +1404,7 @@ namespace
 
 			const Scalar directPdfW = ls.isDelta
 				? Scalar( 1 )
-				: ( ls.pdfPosition * distSq / cosAtLight );
+				: envCaseVCM ? ls.pdfDirection : ( ls.pdfPosition * distSq / cosAtLight );
 
 			Scalar emissionDirPdfSA = 0;
 			if( ls.pLuminary ) {
@@ -1550,7 +1502,7 @@ namespace
 			Scalar wCamera = 0;
 			if( emissionDirPdfSA > 0 && distSq > 0 ) {
 				const Scalar camFactor =
-					( emissionDirPdfSA * ( eyeIsMedium_vcm ? v.sigma_t_scalar : cosAtEye ) ) / distSq;
+					( (envCaseVCM ? ls.pdfPosition : emissionDirPdfSA / distSq) * ( eyeIsMedium_vcm ? v.sigma_t_scalar : cosAtEye ) );
 				wCamera = camFactor * (
 					norm.mMisVmWeightFactor
 					+ eyeMis[i].dVCM
@@ -1610,7 +1562,7 @@ namespace
 					EvalConnectionTrRay<Tag>(
 						bdpt, envRayVCM, RISE_INFINITY,
 						scene, caster,
-						v.pMediumObject, v.pMediumVol, tag );
+						v.pMediumObject, v.pMediumVol, tag, (sceneAlpha ? &boundaryHits : nullptr) );
 				const typename Traits::value_type contribution =
 					VertexThroughput<Tag>( v, tag ) * fEye * Le * Tr_conn_env *
 					( cosEyeWi / pdfSA ) * weight * invLightSelect;
@@ -1622,7 +1574,7 @@ namespace
 				EvalConnectionTr<Tag>(
 					bdpt, v.position, ls.position,
 					scene, caster,
-					v.pMediumObject, v.pMediumVol, tag );
+					v.pMediumObject, v.pMediumVol, tag, (sceneAlpha ? &boundaryHits : nullptr) );
 			// DL-09: the NEE connection segment's graded-index factor
 			// (n_eye/n_light)^2 when both ends lie in one graded medium
 			// (docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md §3(ii)); exactly 1
@@ -1700,9 +1652,11 @@ namespace
 		const VCMNormalization& norm,
 		const IPixelFilter* pixelFilter,
 		const Scalar splatScale,
-		const Tag& tag
+		const Tag& tag, ISampler& sampler
 		)
 	{
+        MediumBoundaryHits boundaryHits;
+    const bool sceneAlpha = caster.GetLightSampler() && caster.GetLightSampler()->SceneHasAlphaCoverage();
 		using Traits = SpectralValueTraits<Tag>;
 
 		if( lightVerts.size() != lightMis.size() || lightVerts.empty() ) {
@@ -1782,7 +1736,7 @@ namespace
 				continue;
 			}
 
-			if( !VCMIsVisible( caster, v.position, camPos ) ) {
+			if( !VCMIsVisible( caster, v.position, camPos, sampler, (sceneAlpha ? &boundaryHits : nullptr) ) ) {
 				continue;
 			}
 
@@ -1901,7 +1855,7 @@ namespace
 				EvalConnectionTr<Tag>(
 					bdpt, v.position, camPos,
 					scene, caster,
-					v.pMediumObject, v.pMediumVol, tag );
+					v.pMediumObject, v.pMediumVol, tag, (sceneAlpha ? &boundaryHits : nullptr) );
 
 			const typename Traits::value_type weighted = contribution * Tr_conn_splat * weight;
 
@@ -1951,14 +1905,17 @@ void VCMIntegrator::SplatLightSubpathToCamera(
 	const Point2& cameraLensSample,
 	SplatFilm& splatFilm,
 	const VCMNormalization& norm,
-	const IPixelFilter* pixelFilter
+	const IPixelFilter* pixelFilter, ISampler* alphaSampler
 	) const
 {
+    RandomNumberGenerator alphaRandom;
+    IndependentSampler alphaFallback(alphaRandom);
+    ISampler& sampler = alphaSampler ? *alphaSampler : static_cast<ISampler&>(alphaFallback);
 	const IFilm* pFilm = scene.GetFilm();
 	SplatLightSubpathToCameraImpl<PelTag>(
 		lightVerts, lightMis, scene, caster, *pGenerator, camera, cameraLensSample,
 		pFilm->GetWidth(), pFilm->GetHeight(),
-		splatFilm, norm, pixelFilter, 1.0, PelTag{} );
+		splatFilm, norm, pixelFilter, 1.0, PelTag{}, sampler );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -2011,9 +1968,11 @@ namespace
 		const std::vector<BDPTVertex>& eyeVerts,
 		const std::vector<VCMMisQuantities>& eyeMis,
 		const VCMNormalization& norm,
-		const Tag& tag
+		const Tag& tag, ISampler& sampler
 		)
 	{
+        MediumBoundaryHits boundaryHits;
+    const bool sceneAlpha = caster.GetLightSampler() && caster.GetLightSampler()->SceneHasAlphaCoverage();
 		using Traits = SpectralValueTraits<Tag>;
 		typename Traits::value_type total = Traits::zero();
 
@@ -2077,7 +2036,7 @@ namespace
 				lightToEye = lightToEye * ( Scalar( 1 ) / dist );
 				const Scalar distSq = dist * dist;
 
-				if( !VCMIsVisible( caster, lv.position, ev.position ) ) {
+				if( !VCMIsVisible( caster, lv.position, ev.position, sampler, (sceneAlpha ? &boundaryHits : nullptr) ) ) {
 					continue;
 				}
 
@@ -2153,7 +2112,7 @@ namespace
 					EvalConnectionTr<Tag>(
 						bdpt, ev.position, lv.position,
 						scene, caster,
-						ev.pMediumObject, ev.pMediumVol, tag );
+						ev.pMediumObject, ev.pMediumVol, tag, (sceneAlpha ? &boundaryHits : nullptr) );
 
 				// DL-09: the connection segment's graded-index factor.
 				const Scalar gradedScale = GradedIndexMedium::ConnectionScale(
@@ -2176,11 +2135,14 @@ RISEPel VCMIntegrator::EvaluateInteriorConnections(
 	const std::vector<VCMMisQuantities>& lightMis,
 	const std::vector<BDPTVertex>& eyeVerts,
 	const std::vector<VCMMisQuantities>& eyeMis,
-	const VCMNormalization& norm
+	const VCMNormalization& norm, ISampler* alphaSampler
 	) const
 {
+    RandomNumberGenerator alphaRandom;
+    IndependentSampler alphaFallback(alphaRandom);
+    ISampler& sampler = alphaSampler ? *alphaSampler : static_cast<ISampler&>(alphaFallback);
 	return EvaluateInteriorConnectionsImpl<PelTag>(
-		scene, caster, *pGenerator, lightVerts, lightMis, eyeVerts, eyeMis, norm, PelTag{} );
+		scene, caster, *pGenerator, lightVerts, lightMis, eyeVerts, eyeMis, norm, PelTag{}, sampler );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -2297,13 +2259,13 @@ void VCMIntegrator::ConvertEyeSubpath(
 
 					const Scalar nextFactor = AreaToSolidAngleFactor( next, -wo );
 					const Scalar bsdfDirPdfW = ( nextFactor > 0 )
-						? next.pdfFwd * nextDistSq / nextFactor : Scalar( 0 );
+						? next.pdfFwd * (next.pEnvLight ? Scalar(1) : nextDistSq) / nextFactor : Scalar( 0 );
 
 					const Scalar invDist = ( distSq > 0 ) ? ( Scalar( 1 ) / std::sqrt( distSq ) ) : Scalar( 0 );
 					const Vector3 dirPrevToCur = step * invDist;
 					const Scalar prevFactor = AreaToSolidAngleFactor( prev, dirPrevToCur );
 					const Scalar bsdfRevPdfW = ( prev.pdfRev > 0 && prevFactor > 0 )
-						? prev.pdfRev * distSq / prevFactor : Scalar( 0 );
+						? prev.pdfRev * (prev.pEnvLight ? Scalar(1) : distSq) / prevFactor : Scalar( 0 );
 
 					// Eye side ungated — see top-of-function comment.
 					mis = ApplyBsdfSamplingUpdate(
@@ -2348,7 +2310,7 @@ void VCMIntegrator::ConvertEyeSubpath(
 			if( nextFactor <= 0 ) {
 				continue;
 			}
-			const Scalar bsdfDirPdfW_out = next.pdfFwd * nextDistSq / nextFactor;
+			const Scalar bsdfDirPdfW_out = next.pdfFwd * (next.pEnvLight ? Scalar(1) : nextDistSq) / nextFactor;
 
 			const Scalar invDist = ( distSq > 0 ) ? ( Scalar( 1 ) / std::sqrt( distSq ) ) : Scalar( 0 );
 			const Vector3 dirPrevToCur = step * invDist;
@@ -2356,7 +2318,7 @@ void VCMIntegrator::ConvertEyeSubpath(
 
 			Scalar bsdfRevPdfW_out = 0;
 			if( prev.pdfRev > 0 && prevFactor > 0 ) {
-				bsdfRevPdfW_out = prev.pdfRev * distSq / prevFactor;
+				bsdfRevPdfW_out = prev.pdfRev * (prev.pEnvLight ? Scalar(1) : distSq) / prevFactor;
 			}
 
 			// Eye side ungated — see top-of-function comment.
@@ -2572,14 +2534,17 @@ void VCMIntegrator::SplatLightSubpathToCameraNM(
 	const VCMNormalization& norm,
 	const Scalar nm,
 	const IPixelFilter* pixelFilter,
-	const Scalar splatScale
+	const Scalar splatScale, ISampler* alphaSampler
 	) const
 {
+    RandomNumberGenerator alphaRandom;
+    IndependentSampler alphaFallback(alphaRandom);
+    ISampler& sampler = alphaSampler ? *alphaSampler : static_cast<ISampler&>(alphaFallback);
 	const IFilm* pFilm = scene.GetFilm();
 	SplatLightSubpathToCameraImpl<NMTag>(
 		lightVerts, lightMis, scene, caster, *pGenerator, camera, cameraLensSample,
 		pFilm->GetWidth(), pFilm->GetHeight(),
-		splatFilm, norm, pixelFilter, splatScale, NMTag( nm ) );
+		splatFilm, norm, pixelFilter, splatScale, NMTag( nm ), sampler );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -2594,11 +2559,14 @@ Scalar VCMIntegrator::EvaluateInteriorConnectionsNM(
 	const std::vector<BDPTVertex>& eyeVerts,
 	const std::vector<VCMMisQuantities>& eyeMis,
 	const VCMNormalization& norm,
-	const Scalar nm
+	const Scalar nm, ISampler* alphaSampler
 	) const
 {
+    RandomNumberGenerator alphaRandom;
+    IndependentSampler alphaFallback(alphaRandom);
+    ISampler& sampler = alphaSampler ? *alphaSampler : static_cast<ISampler&>(alphaFallback);
 	return EvaluateInteriorConnectionsImpl<NMTag>(
-		scene, caster, *pGenerator, lightVerts, lightMis, eyeVerts, eyeMis, norm, NMTag( nm ) );
+		scene, caster, *pGenerator, lightVerts, lightMis, eyeVerts, eyeMis, norm, NMTag( nm ), sampler );
 }
 
 //////////////////////////////////////////////////////////////////////

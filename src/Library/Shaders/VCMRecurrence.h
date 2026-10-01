@@ -136,18 +136,10 @@ namespace RISE
 		/// directional) to suppress the distance-squared term in the
 		/// first bounce update.
 		///
-		/// `pdfSelect` is the per-sample light-selection probability
-		/// returned by `LightSampler::SampleLight`.  Used to extract
-		/// the SmallVCM-geometric `emissionPdfW_geom = pdfPos × pdfDir`
-		/// from the joint `emissionPdfW = pdfSelect × pdfPos × pdfDir`
-		/// when computing `dVC = cosLight / emissionPdfW_geom`.  Pass
-		/// 1.0 when there is no selection mixing — preserves the prior
-		/// behaviour for direct numeric callers (VCMRecurrenceTest /
-		/// VCMSpectralRecurrenceTest) where pdfSelect was effectively
-		/// 1.0 anyway under the binary `EnvSelectProbability` regime.
-		/// See `docs/IMPROVEMENTS.md` §12 and BDPTVertex.h's `pdfSelect`
-		/// field doc-comment for the continuous-PMF rationale (2026-05-
-		/// 29 follow-up to the Session 9 architectural fix).
+		/// Both densities include light selection. dVC must preserve
+		/// 1/pdfSelect: its alternatives arrive from the camera rather
+		/// than sampling this light. Infinite direct density is q*p_env
+		/// in solid angle; joint emission is q*p_env*p_disc.
 		///
 		/// Step 0: returns a zeroed-out struct.  Step 2 fills this in.
 		VCMMisQuantities InitLight(
@@ -156,8 +148,7 @@ namespace RISE
 			const Scalar cosLight,
 			const bool isFiniteLight,
 			const bool isDelta,
-			const VCMNormalization& norm,
-			const Scalar pdfSelect = Scalar( 1 )
+			const VCMNormalization& norm
 			);
 
 		/// Initialize (dVCM, dVC, dVM) at the camera vertex.

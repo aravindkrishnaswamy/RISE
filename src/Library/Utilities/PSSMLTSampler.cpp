@@ -172,7 +172,7 @@ Scalar PSSMLTSampler::Get1D()
 	// streamIndex, e.g. from an uninitialized or overflowed depth
 	// counter) loudly instead of silently building an unbounded
 	// `XExtra` entry.
-	if( streamIndex < 0 || streamIndex >= kNumStreams )
+	if( streamIndex < 0 || (streamIndex >= kNumStreams && streamIndex != 3072) )
 	{
 		fprintf( stderr,
 			"FATAL: PSSMLTSampler::Get1D: streamIndex %d is out of the "
@@ -296,6 +296,7 @@ void PSSMLTSampler::StartStream( int stream )
 
 void PSSMLTSampler::StartIteration()
 {
+	alphaIndex = 0;
 	isLargeStep = ( rng.CanonicalRandom() < largeStepProb );
 	streamIndex = 0;
 	sampleIndex = 0;
@@ -343,4 +344,17 @@ void PSSMLTSampler::Reject()
 
 	currentIteration++;
 	modifiedIndices.clear();
+}
+
+Scalar PSSMLTSampler::GetAlpha1D()
+{
+    const int savedStream = streamIndex;
+    const unsigned int savedIndex = sampleIndex;
+    streamIndex = 3072;
+    sampleIndex = alphaIndex;
+    const Scalar value = Get1D();
+    alphaIndex = sampleIndex;
+    streamIndex = savedStream;
+    sampleIndex = savedIndex;
+    return value;
 }

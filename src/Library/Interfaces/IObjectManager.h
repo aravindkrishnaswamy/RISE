@@ -23,6 +23,7 @@
 namespace RISE
 {
 	class IObjectPriv;
+	class ISampler;
 
 	class IObjectManager : public virtual IManager<IObjectPriv>
 	{
@@ -424,7 +425,19 @@ namespace RISE
 			const bool bHitFrontFaces,					///< [in] Should we process the intersection if the element is front facing?
 			const bool bHitBackFaces					///< [in] Should we process the intersection if the element is back facing?
 			) const = 0;
-	};
+        //! Coverage-aware transport traversal. Skips are not path vertices;
+        //! the published ray and range still describe the complete segment.
+        //! With records, traversal spans [startDistance,maxDistance); only
+        //! [occlusionStart,occlusionEnd) may return an occluder. A record is
+        //! the single accepted event, in original-ray coordinates, even when
+        //! a DL-05 caller resumes after a previous accepted interface.
+        void IntersectRaySampled(RayIntersection& ri, ISampler& sampler,
+            bool front = true, bool back = true, bool exit = false,
+            Scalar maxDistance = RISE_INFINITY, bool shadows = false, MediumBoundaryHits* boundaries = nullptr, bool boundariesOnly = false, Scalar occlusionEnd = RISE_INFINITY, Scalar occlusionStart = 0, Scalar startDistance = 0) const;
+        //! Collect accepted medium boundaries over the full segment, ignoring ordinary occluders.
+        void CollectMediumBoundaryHitsSampled(const Ray& ray, Scalar distance, ISampler& sampler, MediumBoundaryHits& boundaries) const;
+        bool IntersectShadowRaySampled(const Ray& ray, Scalar distance, ISampler& sampler, MediumBoundaryHits* boundaries = nullptr, Scalar physicalDistance = -1, Scalar occlusionStart = 0) const;
+    };
 }
 
 #include "IObjectPriv.h"

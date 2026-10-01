@@ -39,6 +39,14 @@ namespace RISE
 {
 	struct PixelAOV;	// First-hit albedo/normal AOV side-data (AOVBuffers.h)
 
+	//! The path tracer's default path-vertex cap (PathTracingIntegrator's
+	//! loop bound, `SetMaxPathDepth`'s 0 fallback).  DL-315: also the depth
+	//! cap of every RayCaster an integrator owns (PT / Auto / BDPT / VCM /
+	//! MLT, all built in Job.cpp) -- a nested continuation cast shades
+	//! through the scene's PathTracingShaderOp, whose integrator already
+	//! stops at this depth, so the caster must never stop it sooner.
+	static const unsigned int kDefaultPathTracingMaxDepth = 128;
+
 	// Per-thread rendering state, allocated and owned by each rasterizer thread.
 	// Not part of the shared scene graph — mutable fields here are correct because
 	// each thread has its own RuntimeContext instance.
@@ -205,7 +213,7 @@ namespace RISE
 		  pSampler( 0 ),
 		  bFastPreview( false ),
 		  hasPathTracingVariantConfig( false ),
-		  pathTracingMaxDepth( 128 ),
+		  pathTracingMaxDepth( kDefaultPathTracingMaxDepth ),
 		  pathTracingIndirectOnly( false ),
 		  pathTracingClayOverride( false ),
 		  pStabilityConfig( 0 ),
