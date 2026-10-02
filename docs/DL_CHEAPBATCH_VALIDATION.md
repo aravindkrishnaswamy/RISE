@@ -183,3 +183,10 @@ source switched, all four canonical scenes at seeds3400/4400/5400
 are pixel-hash identical: 12/12 pairs. Baseline/fixed calls alternate for
 each seed. Each binary rebuilt with zero warnings; each invocation
 passed4/0. Runtime per four-scene invocation12.97–13.30s.
+
+CST integration: preliminary coverage gate457 MATCH/0 DRIFT/1 UNCOVERED
+identified only the newly added uniform twin. Reviewed regeneration adds
+exactly its one manifest row, no existing digest changes. Its object-state
+digest matches the original scene because the geometry/materials are
+identical; rasterizer-mode behavior is covered by the shipped smoke.
+Final clean gate below includes the updated458-entry manifest.
