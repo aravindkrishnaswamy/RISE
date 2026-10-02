@@ -1736,8 +1736,8 @@ static void SectionD()
 	// composite{composite{glass/water}/Lambertian 0.8} back PT 0.374 /
 	// BDPT 0.367 / VCM 0.368 against front 0.684; a translucent top read
 	// UnflippedGeomNormal() and opposed the composite's frame: back 0.711
-	// against front 0.860 (also on master).  Gate: back / front per half
-	// within 3 %, PT, BDPT and VCM (translucent: PT and BDPT).
+	// against front 0.860 (also on master).  Gate: back / front per half,
+	// PT, BDPT and VCM (translucent: PT and BDPT); bands below.
 	{
 		const std::string mats8 =
 			"uniformcolor_painter\n{\n\tname pnt_env\n\tcolor 1.0 1.0 1.0\n}\n\n"
@@ -1767,11 +1767,16 @@ static void SectionD()
 			  << "}\n\nfile_rasterizeroutput\n{\n\tpattern rendered/composite_energy_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n\n";
 			return s.str();
 		};
-		struct Cfg8 { const char* name; const char* mat; int nInt; };
+		// The nested tops run the per-branch estimator, so their single
+		// renders are noisy (a 256-spp front / back pair differed by up to
+		// 3.1 %): 1024 spp and a 5 % band (~5 sigma of the difference);
+		// the broken state reads ~-48 %.  The translucent rows are near
+		// deterministic (0.1 %) and keep 3 % (broken: -17 %).
+		struct Cfg8 { const char* name; const char* mat; int nInt; int spp; double band; };
 		const Cfg8 cfgs[] = {
-			{ "nested composite{composite{glass/water}/Lambertian 0.8}", "mat_gwl", 3 },
-			{ "nested composite{composite{glass/glass}/Lambertian 0.8}", "mat_ggl", 3 },
-			{ "composite{translucent/Lambertian 0.8}", "mat_trl", 2 },
+			{ "nested composite{composite{glass/water}/Lambertian 0.8}", "mat_gwl", 3, 1024, 0.05 },
+			{ "nested composite{composite{glass/glass}/Lambertian 0.8}", "mat_ggl", 3, 1024, 0.05 },
+			{ "composite{translucent/Lambertian 0.8}", "mat_trl", 2, 256, 0.03 },
 		};
 		for( const Cfg8& c : cfgs ) {
 			for( int r = 0; r < c.nInt; ++r ) {
@@ -1784,7 +1789,7 @@ static void SectionD()
 						mats8 + geo8 +
 						"standard_object\n{\n\tname M\n\tgeometry qm\n\tmaterial " + c.mat + "\n}\n\n"
 						"standard_object\n{\n\tname C\n\tgeometry qc\n\tmaterial " + c.mat + "\n}\n\n" +
-						( r == 0 ? PtRasterizer( true, 256 ) : r == 1 ? BdptRasterizer( true, 256 ) : vcm8( 256 ) );
+						( r == 0 ? PtRasterizer( true, c.spp ) : r == 1 ? BdptRasterizer( true, c.spp ) : vcm8( c.spp ) );
 					CapturingRasterizerOutput* cap = 0;
 					const bool ok = Render( scene, "nested_sheet", cap, 81920u + 7u * (unsigned)r + (unsigned)side );
 					const double lh = ok ? RegionMean( *cap, 2, cap->width / 2 - 2 ) : -1;
@@ -1798,9 +1803,9 @@ static void SectionD()
 				const char* in = ( r == 0 ) ? "PT  " : ( r == 1 ) ? "BDPT" : "VCM ";
 				std::cout << "    D8 " << c.name << ", " << in << ": mesh front / back " << std::setprecision(5)
 				          << mesh[0] << " / " << mesh[1] << ", clipped plane front / back " << plane[0] << " / " << plane[1] << "\n";
-				Check( mesh[0] > 0 && std::fabs( mesh[1] / mesh[0] - 1.0 ) <= 0.03,
+				Check( mesh[0] > 0 && std::fabs( mesh[1] / mesh[0] - 1.0 ) <= c.band,
 					std::string( "[D8] open mesh sheet, back == front, " ) + c.name + " (" + in + ")" );
-				Check( plane[0] > 0 && std::fabs( plane[1] / plane[0] - 1.0 ) <= 0.03,
+				Check( plane[0] > 0 && std::fabs( plane[1] / plane[0] - 1.0 ) <= c.band,
 					std::string( "[D8] open clipped-plane sheet, back == front, " ) + c.name + " (" + in + ")" );
 			}
 		}

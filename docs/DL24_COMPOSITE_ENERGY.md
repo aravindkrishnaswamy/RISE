@@ -1056,6 +1056,36 @@ round-1 report of 1.0056 was an unsalted 128-spp artifact.
   the DL-223 family), independent of DL-412's double-sided defect, which is
   fixed.  The DL-412 row is reworded.
 
+### 9.4c Review round 4 (2026-10-02): FAIL, 1 P1, 1 P2, P3s -- addressed
+
+* **P1 -- a NESTED composite unflipped mid-walk.**  When the outer
+  composite KEPT a flipped record (an open double-sided sheet's back face,
+  an unseeded inside hit) it still handed its layers the record with
+  `bGeomNormalOrientedToRay` set.  A nested composite used as the top then
+  re-decided the unflip from the walk's INTERNAL stack -- which holds O from
+  the inner's own earlier crossing -- and unflipped on the return trip: a
+  spurious interface, and an exit stack claiming inside.
+  composite{composite{glass/water}/Lambertian 0.8} on an open sheet, white
+  env furnace, back view PT 0.374 / BDPT 0.367 / VCM 0.368 against the front
+  0.684 (the round-4 reviewer, salted n = 3).  Fix (the reviewer's, validated
+  and applied as prototyped): a flipped record kept flipped is copied with
+  the flag CLEARED -- the walk's frame IS now the record's frame, so every
+  layer, nested composites included, sees one consistent frame.
+* **P2, fixed by the same change -- composite{translucent/Lambertian} back
+  face** read 0.711 against 0.860 front (-17 %, pre-existing: master 0.715):
+  the translucent layer read `UnflippedGeomNormal()` off the layer record and
+  built its exit frame against the composite's.
+* **Row D8:** the two nested-top composites (glass/water and glass/glass
+  over a 0.8 Lambertian) on a mesh quad and its clipped-plane twin, back vs
+  front, PT / BDPT / VCM, and composite{translucent/Lambertian} back vs front
+  (PT, BDPT), gated within 3 % per half; red / green in section 9.3's
+  measurement protocol (numbers in the DL-341 ledger row).
+* **P3s (DL-407):** three more stackless / reseeded paths are recorded
+  there -- the stackless CausticSpectralPhotonMap gather, PT's HWSS
+  mid-path SSS lane reseed (`SeedFromPoint` cannot see composites), and a
+  lost O (stack capacity drop, layers that never push), which degrades to
+  top-on-both-faces.
+
 ### 9.5 Residuals
 
 * **DL-406** -- term (a) still prices a Henyey-Greenstein-warped or a
