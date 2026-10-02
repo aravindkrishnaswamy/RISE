@@ -383,7 +383,10 @@ screen overlay projection (both continuous widget coordinates through the
 camera's own matrix), ray differentials (`+1` pixel offsets).  The legacy
 `PixelBasedSpectralIntegratingRasterizerRGB.cpp` is excluded from every
 build and does not compile against the current filter interface; it is
-not touched.
+not touched.  `MediumInsideOutsideInvariantTest`'s DL-286 MLT row
+re-implements `MLTRasterizer::EvaluateSample`'s film mapping with the OLD
+`- 0.5` offset; it compares two samplers through the same mapping, so it is
+self-consistent and left alone (it is not a convention check).
 
 **Red / green** (`tests/PixelCenterConventionTest.cpp`, new):
 
@@ -468,17 +471,28 @@ PT's level; 702 +/- 46 here, n = 3, 64 spp).
 Measured (window energy, n = 3 salted): pure light tracing of the
 luminaire (t == 1 only, weight 1) reads 687.98 with sd 0.0005 at all three
 resolutions; BDPT 687.4 / 692.2 / 688.6; BDPT spectral `hwss FALSE`
-419 -> 675 (PT spectral 689, n = 4, 256 spp), `hwss TRUE` 395 -> 686.
+419 -> 675 (n = 4, 256 spp), `hwss TRUE` 395 -> 686 (256 spp, sd 1.2 %),
+against a real PT SPECTRAL render of 688.3 (sd 1.0 %, n = 4, 4096 spp).
+(Review correction, 2026-10-02: the first revision quoted "PT spectral
+689" from a probe whose "pts" kind fell through to the PT PEL rasterizer,
+because `"pt"` is a prefix of `"pts"`; the pel figure happened to agree.)
 MLT shares BDPT's strategy dispatch, so it is fixed by construction, but
 its window energy on a few-pixel feature is not a usable measurement: one
 unsalted render reads 286 (pre) and 609 (post) at 256 mutations / pixel,
 and 241 (post) at 1024 -- chain allocation noise, not resolved here.
 
 `BDPTStrategyBalanceTest --dl354-only` (`TestSmallVisibleEmitterResolution
-Sweep`, also in the full suite): BDPT/PT 100 x 75 and 200 x 150, BDPT
-spectral HWSS / PT spectral 100 x 75, bands 3 / 2.5 / 4 %.  Red on the
-reverted integrator: 0.5746 / 0.9549 / 0.5696 (0 / 3); green
-1.0086 / 0.9957 / 0.9932 (3 / 0).
+Sweep`, also in the full suite): BDPT/PT 100 x 75 (n = 6) and 200 x 150
+(n = 3), and BDPT `hwss TRUE` (256 spp) / PT SPECTRAL (4096 spp) at
+100 x 75 (n = 4), bands 3 / 2.5 / 5 % (each >= 4.4 measured ratio sd; PT
+spectral's per-render sd read 1.0 % and 2.7 % in two salt sets -- the hero
+wavelength gives a tiny emitter a heavy tail).  Red on the reverted
+integrator: 0.5753 / 0.9554 / 0.5826 (0 / 3); green 0.9873 / 0.9987 /
+1.0074 (3 / 0).
+
+**Review P3 (2026-10-02).**  The revived (1,1) branch now rejects an
+environment-light root before the raster projection and the visibility
+ray (the LIGHT branch already returned for it, after both).
 
 **Cost.**  One more connection per BDPT sample (a raster projection and a
 shadow ray when the light root is a luminary).  `cornellbox_bdpt` at
