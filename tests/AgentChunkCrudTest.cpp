@@ -5460,21 +5460,24 @@ static void TestMaterialScaffoldFamilies()
 		// the grain painter); dark/light tone endpoints differ by a
 		// 0.35-0.60 factor, easily > 0.01 spread.
 		{ "weathered_wood",  "pbr_metallic_roughness_material", 4, 0.01,  0.0   },
-		// rough_stone: rd (colour, worley pebble) + facets (scalar,
+		// DL-400: rough_stone / brushed_metal / aged_bronze emit `ggx_material`
+		// (they were cooktorrance / ward_anisotropic, both deprecated since
+		// DL-323); the facet field now binds alphax AND alphay.
+		// rough_stone: rd (colour, worley pebble) + alphax/alphay (scalar,
 		// band [0.07, 0.30] at wear=0.6 -> span ~0.23).  FOUR chunks since
 		// 88 S5: the facet field is ONE scalar_painter{expression} reading
 		// `P` at the pebble frequency, replacing the UV-only
 		// expression_function2d + scalar_painter{function2d} pair -- same
 		// band, one fewer chunk, and now in the same world-space domain as
 		// the pebble field it is supposed to track.
-		{ "rough_stone",     "cooktorrance_material",           4, 0.01,  0.01  },
+		{ "rough_stone",     "ggx_material",                     4, 0.01,  0.01  },
 		// brushed_metal: alphax/alphay (scalar only) -- the NARROWEST
 		// amplitude family by design (alphax span ~0.02 at wear=0.6).
-		{ "brushed_metal",   "ward_anisotropic_material",       5, 0.0,   0.002 },
+		{ "brushed_metal",   "ggx_material",                     5, 0.0,   0.002 },
 		// aged_bronze: rd (colour, reaction-diffusion patina) + facets
 		// (scalar, band [0.054, 0.204] at wear=0.6 -> span ~0.15).  FOUR
 		// chunks since 88 S5, rebased for rough_stone's reason.
-		{ "aged_bronze",     "cooktorrance_material",           4, 0.01,  0.01  },
+		{ "aged_bronze",     "ggx_material",                     4, 0.01,  0.01  },
 		// glazed_ceramic: alphax/alphay (scalar only) -- DELIBERATELY
 		// "low-alpha with SUBTLE scalar variation" (span ~0.014 at
 		// wear=0.6) -- the tightest epsilon of the five, honestly so.

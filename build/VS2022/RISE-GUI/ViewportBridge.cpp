@@ -2289,6 +2289,17 @@ QStringList ViewportBridge::paletteKeywords(int category) const
     return out;
 }
 
+QString ViewportBridge::paletteDeprecationReplacement(const QString& keyword) const
+{
+    if (!m_controller || keyword.isEmpty()) return QString();
+    char buf[1024] = {0};
+    const QByteArray kw = keyword.toUtf8();
+    if (!RISE_API_SceneEditController_PaletteKeywordDeprecation(m_controller, kw.constData(), buf, sizeof(buf))) {
+        return QString();
+    }
+    return QString::fromUtf8(buf);
+}
+
 // ---- Environment / IBL section --------------------------------------
 
 bool ViewportBridge::environmentInfo(EnvironmentInfo* out) const

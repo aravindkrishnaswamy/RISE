@@ -739,7 +739,7 @@ private:
                 this, [this](int) { reloadKeywords(); });
         connect(m_searchEdit, &QLineEdit::textChanged, this, [this](const QString&) { applyFilter(); });
         connect(m_keywordList, &QListWidget::itemActivated, this, [this](QListWidgetItem* item) {
-            selectKeyword(item->text());
+            selectKeyword(item->data(Qt::UserRole).toString());
         });
     }
 
@@ -790,7 +790,20 @@ private:
         m_keywordList->clear();
         const QString needle = m_searchEdit->text().trimmed().toLower();
         for (const QString& kw : std::as_const(m_keywords)) {
-            if (needle.isEmpty() || kw.toLower().contains(needle)) m_keywordList->addItem(kw);
+            if (!needle.isEmpty() && !kw.toLower().contains(needle)) continue;
+            // DL-401: a deprecated chunk type (already sorted after the modern
+            // ones by the core) is badged; the keyword itself rides Qt::UserRole
+            // so selectKeyword never parses the badge back out of the text.
+            const QString replacement = m_bridge ? m_bridge->paletteDeprecationReplacement(kw) : QString();
+            auto* item = new QListWidgetItem(replacement.isEmpty()
+                ? kw
+                : tr("%1  (deprecated \u2192 %2)").arg(kw, replacement.section(QLatin1Char(' '), 0, 0)));
+            item->setData(Qt::UserRole, kw);
+            if (!replacement.isEmpty()) {
+                item->setToolTip(tr("Deprecated: use %1").arg(replacement));
+                item->setForeground(palette().color(QPalette::Disabled, QPalette::Text));
+            }
+            m_keywordList->addItem(item);
         }
     }
 
