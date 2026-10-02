@@ -13,6 +13,7 @@
 
 #include "pch.h"
 #include <atomic>
+#include <memory>
 #include <cstring>   // review-p2d: std::strcmp for the reserved "environment" solo name
 #include "RayCaster.h"
 #include "LuminaryManager.h"
@@ -23,6 +24,7 @@
 #include "../Utilities/MediumTracking.h"
 #include "../Utilities/MediumTransport.h"
 #include "../Utilities/GradedIndexMedium.h"
+#include "../Utilities/IORStackSeeding.h"
 #include "../Utilities/IndependentSampler.h"
 #include "../Utilities/PathGuidingField.h"
 #include "../Utilities/PathTransportUtilities.h"
@@ -2735,7 +2737,22 @@ bool RayCaster::WalkShadowSegment(
 		// on exit: medium -> outside (outside taken from the stack just
 		// below the current object, falling back to air).
 		Scalar Ni, Nt;
-		if( bEntering )
+		// DL-345: a PROVABLY OPEN sheet is crossed by its face (the sign test
+		// above, which this walk already used) AND its far side is resolved
+		// the way the transmissive SPFs resolve it -- an unpushed exit pops
+		// the sibling sheet the walk entered a slab through unless that
+		// object encloses the crossing (IORStackSeeding::
+		// ResolveOpenSheetCrossing).  `openSheetStack` is the stack after
+		// the crossing, committed below.
+		std::unique_ptr<IORStack> openSheetStack;
+		if( ri.geometric.bProvablyNoInterior ) {
+			openSheetStack.reset( new IORStack( ior_stack ) );
+			const IORStackSeeding::OpenSheetCrossing c =
+				IORStackSeeding::ResolveOpenSheetCrossing( ri.geometric, mediumIOR, *openSheetStack );
+			Ni = c.etaFrom;
+			Nt = c.etaTo;
+		}
+		else if( bEntering )
 		{
 			Ni = ior_stack.top();		// current outside medium (air, or an enclosing dielectric)
 			Nt = mediumIOR;
@@ -2804,7 +2821,9 @@ bool RayCaster::WalkShadowSegment(
 		// interface sees the correct enclosing medium.  The exit pop is
 		// guarded on containsCurrent() for the originates-inside-a-
 		// dielectric case (see the exit-peek note above).
-		if( bEntering ) {
+		if( openSheetStack ) {
+			ior_stack = *openSheetStack;
+		} else if( bEntering ) {
 			ior_stack.push( mediumIOR );
 		} else if( ior_stack.containsCurrent() ) {
 			ior_stack.pop();

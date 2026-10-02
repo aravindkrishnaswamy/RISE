@@ -1246,6 +1246,8 @@ namespace
 	// themselves (DL-345, filed at merge); on S the references agree to
 	// 1-2 %.  Renders are salted (independent randomized-QMC replicates).
 	//
+	// (HISTORY -- the settings and bands below are SUPERSEDED by DL-345,
+	// 2026-10-02: see the comment on kSmsSpp in TestShippedMatchedIndexScenes.)
 	// Bands, re-derived in review round 3 on the coverage > 0.99 mask from
 	// two salted n = 6 runs: flatslab 0.9998 / 0.9994 (SE 0.0014 / 0.0021),
 	// glassblock 0.8810 / 0.8828 (SE 0.0020 / 0.0026).  With the larger
@@ -1310,13 +1312,28 @@ namespace
 
 	void TestShippedMatchedIndexScenes( const unsigned int trials, const std::string& only )
 	{
-		std::cout << "C: shipped two-sheet SMS scenes vs their VCM _ref twin on the slab pixels S, n=" << trials << " per side, salted" << std::endl;
+		std::cout << "C: shipped two-sheet SMS scenes vs their VCM _ref twin on the slab pixels S, n=" << ( trials > 8 ? trials : 8 ) << " per side, salted" << std::endl;
 		struct SceneRow { const char* name; double lo, hi; };
 		const SceneRow rows[] = {
-			{ "sms_k2_flatslab",   0.964, 1.036 },
-			{ "sms_k2_glassblock", 0.842, 1.040 },
+			{ "sms_k2_flatslab",   0.885, 1.130 },
+			{ "sms_k2_glassblock", 0.840, 1.180 },
 		};
-		const unsigned int kW = 100, kH = 75, kSmsSpp = 256, kVcmSpp = 512, kMaskSpp = 256;
+		// DL-345 (2026-10-02): the SMS side renders at 2048 spp over >= 8
+		// replicates.  Once the open sheets are crossed by their face the
+		// slab has REAL internal Fresnel reflections (the bottom sheet is no
+		// longer an index-matched entry), and those k >= 4 chains are not
+		// SMS's root, so DL-372's split leaves them to PT, which reaches the
+		// small luminaire through them only rarely: at 256 spp the SMS-on S
+		// mean had an 8-13 % per-replicate sd (n = 8: 0.9587 +/- 0.029, the
+		// old band failing on noise).  Bands re-derived from one salted
+		// n = 16 run at these settings by the rule below: flatslab ratio
+		// 1.0067, per-replicate sd 4.8 % (SMS) / 0.7 % (VCM) -> n = 8 SE
+		// 0.017 -> [0.885, 1.130]; glassblock 1.0120 (DL-352's -12 % is now
+		// carried by PT's kept paths), sd 4.4 % / 5.3 % -> SE 0.025 ->
+		// [0.840, 1.180].  Both still fail the DL-290 Newton cliff
+		// (0.26 / 0.23) and the pre-review 0.11 / 0.12 by a wide margin.
+		const unsigned int kW = 100, kH = 75, kSmsSpp = 2048, kVcmSpp = 512, kMaskSpp = 256;
+		const unsigned int partCTrials = trials > 8 ? trials : 8;
 		const uint32_t kMaskSalt = 0x5ca1ab1eu;
 		const char* media = std::getenv( "RISE_MEDIA_PATH" );
 		const std::string root = media ? std::string( media ) : std::string();
@@ -1362,7 +1379,7 @@ namespace
 			const std::string refPath = WriteScene( refText, "shipped_ref" );
 			std::vector<double> sms, ref;
 			bool allValid = true;
-			for( unsigned int t = 0; t < trials; ++t ) {
+			for( unsigned int t = 0; t < partCTrials; ++t ) {
 				const unsigned int sd = seed++;
 				const uint32_t salt = 0x9E3779B9u * sd;
 				const double a = RenderMean( smsPath, sd, 1.0, false, Point3( 0, 0, 0 ), label + " sms", &S, nullptr, salt );
@@ -1377,8 +1394,8 @@ namespace
 			if( !allValid ) continue;
 			const Stats sa = Summarize( sms ), sb = Summarize( ref );
 			const double ratio = sa.mean / sb.mean;
-			const double ratioSd = ratio * std::sqrt( ( sa.sd / sa.mean ) * ( sa.sd / sa.mean ) / trials +
-				( sb.sd / sb.mean ) * ( sb.sd / sb.mean ) / trials );
+			const double ratioSd = ratio * std::sqrt( ( sa.sd / sa.mean ) * ( sa.sd / sa.mean ) / partCTrials +
+				( sb.sd / sb.mean ) * ( sb.sd / sb.mean ) / partCTrials );
 			std::cout << std::setprecision( 6 ) << "    " << row.name << " on S: SMS(" << kSmsSpp << "spp) " << sa.mean << " +/- " << sa.sd
 				<< "  VCM(" << kVcmSpp << "spp) " << sb.mean << " +/- " << sb.sd
 				<< "  ratio " << ratio << " +/- " << ratioSd << " (band " << row.lo << ".." << row.hi << ")" << std::endl;

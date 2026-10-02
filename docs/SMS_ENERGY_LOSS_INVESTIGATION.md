@@ -355,3 +355,15 @@ Newton-assignment branch, not only finite-scattering dielectrics.  The
 totals carry SMS's open-sheet pricing (~2.5x, DL-339 (b) / DL-345), which
 the old rule half-hid behind its losses.  Closed dielectrics (every
 other fixture above) read within ~1-2 %.
+
+**Update 2026-10-02 (`debt-smsopen`, DL-345 / DL-339 (b)): the open-sheet
+"over-pricing" was not SMS's.**  SMS's seed walk decides a crossing by its
+FACE; the transmissive materials decided it by the IOR stack ("entering
+unless already inside"), so on an open sheet PT's paths and SMS's roots used
+two conventions.  With the materials crossing a provably open sheet by its
+face too ([DL345_OPEN_SHEET_FACE_RULE.md](DL345_OPEN_SHEET_FACE_RULE.md)),
+the flat ior-1.5 sheet reads SMS on / off 2.2506 -> 1.0004 with the SMS-on
+value UNCHANGED (0.20261 both builds; PT moved 0.090 -> 0.203), and the
+shipped scenes PT+SMS / PT: `sms_k1_refract` 1.0958 -> 0.9997 (PT / VCM
+0.953 -> 1.004), `sms_k2_flatslab` 1.0604 -> 0.9951, `sms_k2_glassblock`
+1.0219 -> 0.9992 (256 spp, single renders).

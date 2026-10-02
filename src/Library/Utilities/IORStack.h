@@ -149,13 +149,27 @@ namespace RISE
 		//! that needs a different current object works on its own copy.
 		const IObject* pCurrentObject;
 
+		//! DL-345: the index the crossing that PRODUCED this stack refracted
+		//! FROM, when that differs from the walk's own stack top; 0 (the
+		//! default) means "read the walk's `before.top()`".  Set only by a
+		//! transmissive SPF resolving an OPEN-SHEET crossing by its face
+		//! (IORStackSeeding::ResolveOpenSheetCrossing) on the stack it
+		//! allocates for the scattered ray -- the one case where the walk's
+		//! stack does not say which medium the ray left (a sheet reached
+		//! from behind without crossing it).  Read by RadianceEtaScale.
+		//! NOT copied by the copy constructor or assignment: it describes
+		//! one crossing, and the walk's next stack (a copy) must not carry
+		//! it into a later vertex's reflection copy.
+		Scalar crossingEtaFrom;
+
 	public:
 		// Explicit to prevent implicit conversion from Scalar / integer
 		// literal when a function expects `const IORStack&`.  A bare `0`
 		// at such a call site used to construct IORStack(0), giving an
 		// environment IOR of 0 and causing Ni=0 refraction errors.
 		explicit IORStack( const Scalar ior ) :
-		  pCurrentObject( 0 )
+		  pCurrentObject( 0 ),
+		  crossingEtaFrom( 0 )
 		{
 			// An empty IOR stack always has the environment's IOR
 			iorstack.push( IORDATA(0,ior) );
@@ -163,8 +177,21 @@ namespace RISE
 
 		IORStack( const IORStack& s ) : 
 		  iorstack( s.iorstack ),
-		  pCurrentObject( s.pCurrentObject )
+		  pCurrentObject( s.pCurrentObject ),
+		  crossingEtaFrom( 0 )
 		{}
+
+		IORStack& operator=( const IORStack& s )
+		{
+			iorstack = s.iorstack;
+			pCurrentObject = s.pCurrentObject;
+			crossingEtaFrom = 0;
+			return *this;
+		}
+
+		//! DL-345: see `crossingEtaFrom`.
+		inline void SetCrossingEtaFrom( const Scalar eta ) { crossingEtaFrom = eta; }
+		inline Scalar CrossingEtaFrom() const { return crossingEtaFrom; }
 
 		~IORStack()
 		{
@@ -247,6 +274,11 @@ namespace RISE
 			return iorstack.top().pObj;
 		}
 
+		inline const IObject* currentObject() const
+		{
+			return pCurrentObject;
+		}
+
 		// Sets the current object.  Non-const since DL-315 -- see
 		// pCurrentObject's doc.
 		inline void SetCurrentObject( const IObject* pObj )
@@ -301,6 +333,12 @@ namespace RISE
 	//!   change DielectricSPF priced between two other indices.  Scenes
 	//!   that avoid that pathology (see the file header's guidance) are
 	//!   unaffected.
+	//! - **Open sheets -- DL-345.**  A provably open sheet is crossed by
+	//!   its FACE (front enters, back exits); reached from behind without
+	//!   having been crossed, the walk's `before.top()` is not the index
+	//!   the crossing refracted from, and the SPF records that index on
+	//!   the scattered stack (`CrossingEtaFrom`), which this function
+	//!   reads in place of `before.top()`.
 	//! - **Spatially varying `ior` -- DL-09, fixed 2026-09-28 by keeping
 	//!   `before.top()` CURRENT, not by changing this function.**  Read
 	//!   docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md before touching either.
@@ -344,7 +382,11 @@ namespace RISE
 		if( !after ) {
 			return Scalar( 1 );
 		}
-		const Scalar etaBefore = before.top();
+		// DL-345: an open-sheet crossing resolved by its face records the
+		// index it actually refracted from when the walk's stack says
+		// otherwise (see IORStack::crossingEtaFrom).
+		const Scalar etaBefore = after->CrossingEtaFrom() > Scalar( 0 )
+			? after->CrossingEtaFrom() : before.top();
 		const Scalar etaAfter  = after->top();
 		// Equal IORs -> exact 1 with no division, which keeps the
 		// overwhelmingly common reflection / same-index case bit-identical

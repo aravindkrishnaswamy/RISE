@@ -64,8 +64,9 @@
 //             SSS / polished caster seen with no SMS anchor, the HWSS
 //             SSS and no-BSDF hand-offs with and without an anchor); an
 //             anchored no-gap caster reflection is pinned SUPPRESSED
-//             (DL-339 (a)); perfect refractor planes are printed (the
-//             ior-1.5 open sheet is DL-339 (b)).  Renders here are
+//             (DL-339 (a)); the ior-1.0 perfect refractor plane is
+//             printed and the ior-1.5 open sheet (DL-339 (b)) is SMS-on
+//             vs SMS-off parity since DL-345.  Renders here are
 //             Sobol'-salted per (seed base, index) but NOT reproducible
 //             run to run -- see the band note in the section.
 //    castsshadows  P2-2 (external review): the transparent-shadow walk
@@ -1448,15 +1449,18 @@ static void TestSMSEmissionThroughGap()
 		CasterCeilingScene( false, false, false ), 0.035 );
 
 	// Control: an SMS CASTER, where the suppression's premise is SMS's to
-	// honour and this fix changes nothing.  Printed, not gated.  Before
-	// master's DL-290 the ior-1.0 plane read 0 with SMS on; since, it reads
-	// ~1.0 (SMS's matched-index seed walk).  The ior-1.5 OPEN plane reads
-	// ~2.25x in every build -- the open-sheet index convention (DL-339 (b),
-	// DL-345's family); a closed slab of it agrees with PT and VCM.
+	// honour and this fix changes nothing.  The ior-1.0 row is printed, not
+	// gated: before master's DL-290 the plane read 0 with SMS on; since, it
+	// reads ~1.0 (SMS's matched-index seed walk).  The ior-1.5 OPEN plane
+	// read 2.2515 in every build until DL-345 (2026-10-02): the material
+	// decided the receiver's crossing by the IOR stack (an ENTRY, from
+	// below) while SMS decided it by the face (an EXIT); with the sheet
+	// crossed by its face everywhere it reads 1.00044 (SMS-on unchanged at
+	// 0.20261, PT 0.0900 -> 0.2025).  Gated since DL-345 (DL-339 (b)).
 	ParityRow( "area perfectrefractor ior 1 PT RGB (SMS caster -- control, printed)", RastPTSMS( 256, true ), RastPTSMS( 256, false ),
 		ReceiverScene( kAreaLarge, true, g, kWide, false, PerfectRefractorSheet( "1.0" ) ), -1.0 );
-	ParityRow( "area perfectrefractor ior 1.5 PT RGB (SMS caster -- control, printed)", RastPTSMS( 256, true ), RastPTSMS( 256, false ),
-		ReceiverScene( kAreaLarge, true, g, kWide, false, PerfectRefractorSheet( "1.5" ) ), -1.0 );
+	ParityRow( "area perfectrefractor ior 1.5 open sheet PT RGB (DL-339 (b) / DL-345)", RastPTSMS( 256, true ), RastPTSMS( 256, false ),
+		ReceiverScene( kAreaLarge, true, g, kWide, false, PerfectRefractorSheet( "1.5" ) ), 0.03 );
 	g_saltRenders = false;
 	SobolSamplerTestHooks::ValueSalt().store( 0u );
 }
