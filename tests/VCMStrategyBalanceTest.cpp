@@ -2932,7 +2932,11 @@ static void TestSeveralLuminariesY()
 	Row( "4 luminaries, pinhole vs PT", "bdpt", kFour, true, false, ptPin.mean, tolCF );
 	const Stat ptEnv = Row( "env + 4 luminaries, ortho (PT reference)", "pt", kFour, false, true, 0.0, -1.0 );
 	// The environment rows are noisier (BDPT per-render sd ~1.2 %), so a
-	// 2 % band (> 4 sd of the n = 4 mean).
+	// 2 % band (> 4 sd of the n = 4 mean).  A NON-REGRESSION control, not
+	// a red row: pre-fix it read VCM 0.9972 / BDPT 1.0062 -- the env takes
+	// most of SampleLight's selection mass, so NEE to a quad is rare and
+	// the eye-hit strategy carries the quads at weight ~1 under either
+	// selection pmf.  It pins the (1 - envSelectProb) share the fix keeps.
 	const double tolEnv = 0.02;
 	Row( "env + 4 luminaries, ortho vs PT", "vcm", kFour, false, true, ptEnv.mean, tolEnv );
 	Row( "env + 4 luminaries, ortho vs PT", "bdpt", kFour, false, true, ptEnv.mean, tolEnv );
@@ -2981,6 +2985,44 @@ int main( int argc, char** argv )
 		TestRoughSSSEmptyContainerU();
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
 		return failCount == 0 ? 0 : 1;
+	}
+
+	// DL-348: salted mean of a shipped scene file, `--scene-mean <path>
+	// <n> <spp> <res>` -- film width/height and every `samples` line are
+	// overridden; the scene's own outputs are replaced by the capture.
+	// Used for the slice's shipped-scene before/after (opt-in only).
+	if( argc >= 6 && std::strcmp( argv[1], "--scene-mean" ) == 0 ) {
+		const int n = std::atoi( argv[3] ), spp = std::atoi( argv[4] ), res = std::atoi( argv[5] );
+		std::ifstream ifs( argv[2] );
+		if( !ifs.is_open() || n < 1 ) { std::cout << "cannot open " << argv[2] << std::endl; return 1; }
+		std::string text, line;
+		while( std::getline( ifs, line ) ) {
+			const size_t k = line.find_first_not_of( " \t" );
+			auto key = [&]( const char* w ) {
+				const size_t L = std::strlen( w );
+				return k != std::string::npos && line.compare( k, L, w ) == 0 &&
+					( line.size() == k + L || line[k + L] == ' ' || line[k + L] == '\t' );
+			};
+			if( key( "samples" ) ) line = "\tsamples " + std::to_string( spp );
+			else if( key( "width" ) || key( "height" ) ) line = line.substr( 0, k + ( key( "width" ) ? 5 : 6 ) ) + " " + std::to_string( res );
+			text += line + "\n";
+		}
+		const std::string path = WriteSceneToTempFile( text.c_str(), "scene_mean" );
+		std::vector<double> v;
+		for( int i = 0; i < n; i++ ) {
+			const ImageStats st = RenderAndComputeStats( path.c_str() );
+			if( !st.valid ) { std::cout << "render failed" << std::endl; break; }
+			v.push_back( ( st.mean[0] + st.mean[1] + st.mean[2] ) / 3.0 );
+			std::printf( "scene-mean %s render %d: %.7f\n", argv[2], i, v.back() );
+		}
+		std::remove( path.c_str() );
+		double m = 0, ss = 0;
+		for( double x : v ) m += x;
+		m /= std::max<size_t>( v.size(), 1 );
+		for( double x : v ) ss += ( x - m ) * ( x - m );
+		std::printf( "scene-mean %s: mean %.7f sd %.7f n=%zu\n", argv[2], m,
+			v.size() > 1 ? std::sqrt( ss / ( v.size() - 1 ) ) : 0.0, v.size() );
+		return 0;
 	}
 
 	// DL-348: topology Y alone.

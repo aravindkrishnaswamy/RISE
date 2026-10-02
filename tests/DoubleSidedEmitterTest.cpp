@@ -488,10 +488,14 @@ static void TestZ2()
 	std::cout << "\n-- Z2: back-lit double-sided quad + single-sided quad (selection PMF consistency) --" << std::endl;
 	const double cf = ClosedFormImageMean( true );
 	std::printf( "    closed form image mean = %.6f\n", cf );
+	// DL-348 (2026-10-02): 2 % -> 0.6 %.  Three luminaries build the light
+	// BVH, and the eye-hit strategy's selection pmf used to be the BVH's
+	// while NEE / light tracing sample the alias table: VCM read 0.98-0.99
+	// here.  Every estimator now reads within 0.1 % (sd <= 0.1 %, n = 4).
 	const std::vector<Ras> rs = {
-		{ "PT",                     RasPT( 64 ),           0.02 },
-		{ "BDPT",                   RasBDPT( 64 ),         0.02 },
-		{ "VCM (connections only)", RasVCM( 64, false ),   0.02 },
+		{ "PT",                     RasPT( 64 ),           0.006 },
+		{ "BDPT",                   RasBDPT( 64 ),         0.006 },
+		{ "VCM (connections only)", RasVCM( 64, false ),   0.006 },
 	};
 	for( const Ras& r : rs ) {
 		const Stat f = RenderN( Header() + r.text + SceneBody( true, true, true ), "z2f", g_repeats );
