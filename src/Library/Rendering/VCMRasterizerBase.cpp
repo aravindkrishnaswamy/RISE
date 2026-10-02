@@ -1014,10 +1014,15 @@ void VCMRasterizerBase::OnProgressivePassBegin(
 	// would freeze at the initial auto-radius.  The geometric floor
 	// (0.001 * medianSegment, set in PreRenderSetup) is the hard
 	// lower bound to avoid sub-numeric-precision collapse.
-	if( mProgressiveRadiusEnabled && mBaseMergeRadius > 0 && totalStored > 0 ) {
+	// DL-380: density over the ORDINARY vertices (the store the
+	// pre-DL-380 partition kept), so the floor is unchanged by the
+	// jump-cover vertices stored since.
+	const std::size_t ordinaryStored = ( mProgressiveRadiusEnabled && mBaseMergeRadius > 0 && totalStored > 0 )
+		? pLightVertexStore->CountOrdinaryVertices() : 0;
+	if( mProgressiveRadiusEnabled && mBaseMergeRadius > 0 && ordinaryStored > 0 ) {
 		const Scalar surfaceArea = pLightVertexStore->ComputeBBoxSurfaceArea();
 		if( surfaceArea > NEARZERO ) {
-			const Scalar density = static_cast<Scalar>( totalStored ) / surfaceArea;
+			const Scalar density = static_cast<Scalar>( ordinaryStored ) / surfaceArea;
 			if( density > NEARZERO ) {
 				const Scalar rFloorRaw = std::sqrt( mTargetPhotonsPerQuery / ( PI * density ) );
 				const Scalar rFloorCapped = std::min( rFloorRaw, mBaseMergeRadius * Scalar( 0.5 ) );
