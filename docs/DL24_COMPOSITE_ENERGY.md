@@ -814,9 +814,10 @@ bottom now refracts from the GAP's index (the old two-stack walk's "scope gap
 (b)": glass/glass refracted 1.0 -> 1.5 twice).
 
 Per entry side, decided by the TRUE geometric facing (review round 1: a
-flipped double-sided record is unflipped first, section 9.4; a provably open
-sheet keeps its flipped frame), with the shading normal oriented into the
-true geometric normal's hemisphere:
+flipped double-sided record of a CLOSED solid is unflipped first, section
+9.4; an open sheet -- `bOpenSheet` or `bProvablyNoInterior` -- keeps its
+flipped frame, section 9.4a), with the shading normal oriented into the true
+geometric normal's hemisphere:
 
 * from above and against the shading normal -- the DIRECT / COVERED / WALKER
   mixture, starting at OUT (unchanged except for the stacks);
@@ -961,6 +962,58 @@ composite-dominated scene (base 96.7, fixed 104.2 s; paired differences 7.6 /
   16 draws (a nested glass/glass top misses with ~1e-17).  The base-run count
   above is corrected (269/33).
 
+**Correction to the D6 entry above (review round 2).**  There was no BDPT
+offset to explain: the round-2 reviewer's n = 8 salted renders at 2048 spp
+read PT 1.00065 +- 0.00068 and BDPT 1.00038 +- 0.00056, and the sd of one
+salted render at 128 spp is ~0.011 (not the 0.0065 quoted above), so the
+round-1 report of 1.0056 was an unsalted 128-spp artifact.
+
+### 9.4a Review round 2 (2026-10-02): FAIL, 1 P1 -- addressed
+
+* **P1 -- round 1's unflip broke OPEN double-sided composite sheets.**  The
+  unflip was keyed on "not provably open" only, so an `indexedmesh_geometry`
+  quad (double-sided by default, NOT certified watertight: `bOpenSheet`) or a
+  Bezier patch set hit from behind was unflipped and walked from below,
+  delta-tagged: an omni light on the camera side no longer lit it (PT 1.253
+  -> 0), and BDPT / VCM disagreed with PT (coat over a 0.8 Lambertian, white
+  env furnace, back view: base 0.632 / 0.635 / 0.634 -> 0.800 / 0.909 /
+  1.010; glass/glass 0.487 -> 0.977) because PathVertexEval::
+  PopulateRIGFromVertex rebuilt the connection record WITHOUT
+  `bGeomNormalOrientedToRay`, so the composite repriced it in the flipped
+  frame its Scatter had unflipped -- the DL-100 frame trap.  Fixed twice
+  over: (1) only a CLOSED solid is unflipped (`!bOpenSheet` added: an open
+  sheet presents its top on both faces, as the base did); (2) `BDPTVertex`
+  now mirrors the four surface-identity flags (`bGeomNormalOrientedToRay`,
+  `bGeomNormalRayDerived`, `bOpenSheet`, `bProvablyNoInterior`) and
+  `PopulateRIGFromVertex` replays them, so a closed double-sided vertex is
+  repriced in the frame Scatter used (`tests/BDPTVertexRIGRebuildTest.cpp`
+  one-hot passes: 68/20 without the replay, 88/0 with it).
+* Round 1's no-pop rule ALONE does not keep D5 at 1, by derivation: without
+  the unflip a hit from inside a closed double-sided mesh reads as an entry
+  from above, the top (keyed O, stack holding O) takes its from-inside branch
+  and its ray continues "down" in the flipped frame to the bottom, which is
+  keyed by its own key and reads "entering from outside" -- it refracts and
+  pushes again, so the exit claims to be inside.  The unflip is needed for
+  closed solids.
+* New row **D7**: an open double-sided mesh quad beside its clipped-plane
+  twin, camera BEHIND, PT / BDPT / VCM, coat over a 0.8 Lambertian and
+  glass/glass under the env furnace and the coat under an omni light on the
+  camera side; gated mesh / plane within 3 % and BDPT / VCM against PT
+  within 4 %.  Round-2 library: 7 failures (mesh 0.800 / 0.907 / 1.008
+  against the plane's ~0.63; glass/glass 0.977 against 0.467; omni mesh 0);
+  now all green (e.g. coat env PT / BDPT / VCM mesh 0.632 / 0.632 / 0.630,
+  glass/glass 0.467 everywhere, omni PT 1.241 / BDPT 1.249).  Note that the
+  back view of an open glass/glass sheet now reads 0.467 like the front (base
+  0.487), the DL-341 bottom-index correction.
+* **Side effect, measured:** the flag replay also fixes a translucent
+  defect the round-2 reviewer found (not a composite one): a closed
+  DOUBLE-SIDED `translucent_material` mesh box under BDPT read 0.563
+  against 0.962 single-sided, because the rebuilt record's
+  `UnflippedGeomNormal()` was the ray-facing normal.  On this build the
+  same scenes read BDPT 0.971 / 0.970 (double / single-sided) and PT
+  0.997 / 0.994 (single unsalted renders, 64 spp).  Filed as DL-412 (fixed
+  here, pending strike).
+
 ### 9.5 Residuals
 
 * **DL-406** -- term (a) still prices a Henyey-Greenstein-warped or a
@@ -972,5 +1025,7 @@ composite-dominated scene (base 96.7, fixed 104.2 s; paired differences 7.6 /
   pre-existing.  (2) An OPEN composite sheet (a provably open clipped plane)
   presents its top on both faces instead of following DL-345's face rule, so
   the separate-pair equivalence holds front-side only (from below: 0.467
-  against the pair's 4.52); pre-existing, unchanged.  Double-sided CLOSED
-  meshes are no longer in it (fixed in round 1, D5).
+  against the pair's 4.52); pre-existing, unchanged -- and that holds for
+  every OPEN double-sided sheet, mesh or Bezier set as well as a clipped
+  plane (round 2, D7).  Double-sided CLOSED meshes are no longer in it
+  (fixed in round 1, D5).
