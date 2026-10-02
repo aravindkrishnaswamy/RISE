@@ -813,9 +813,10 @@ it, and refracts from the index of the medium the ray is actually in: the
 bottom now refracts from the GAP's index (the old two-stack walk's "scope gap
 (b)": glass/glass refracted 1.0 -> 1.5 twice).
 
-Per entry side, decided by the GEOMETRIC normal oriented into the shading
-normal's hemisphere (a double-sided mesh, which flips both normals together,
-keeps its frame):
+Per entry side, decided by the TRUE geometric facing (review round 1: a
+flipped double-sided record is unflipped first, section 9.4; a provably open
+sheet keeps its flipped frame), with the shading normal oriented into the
+true geometric normal's hemisphere:
 
 * from above and against the shading normal -- the DIRECT / COVERED / WALKER
   mixture, starting at OUT (unchanged except for the stacks);
@@ -836,7 +837,8 @@ crossed ray is inside the glass, exactly as below one open
 `F + (1 - F) / eta^2` = 0.467 at normal incidence.  A white environment of
 radiance 1 seen inside a medium of index 1.5 is not an equilibrium (that
 would be `n^2` = 2.25).  D3 now renders the literal separate pair beside the
-composite and gates the ratio.
+composite and gates the ratio.  This equivalence holds seen from ABOVE only:
+an open composite sheet seen from below still presents its top (DL-407).
 
 **One consequence the fix exposed.**  Term (a) connects a substrate to the
 exit by inverting Snell's law at the gap/outside index ratio.  A NESTED
@@ -867,9 +869,10 @@ ideal: **DL-406**.
 
 ### 9.3 Evidence
 
-`CompositeEnergyConservationTest` **302/0**; the same file against the base
-library (`74236b3cb`, the five library files checked out over a WIP commit)
-**271/31**:
+`CompositeEnergyConservationTest` **302/0** at round 0; the same file against
+the base library (`74236b3cb`, the five library files checked out over a WIP
+commit) **271/31** as first measured, **269/33** with D4's tightened band (the
+reviewer's count; see the D4 note below):
 
 | row | base | fixed |
 |---|---|---|
@@ -909,14 +912,65 @@ behind-normal or transmitting composite.  **Cost** +7.7 % user CPU on that
 composite-dominated scene (base 96.7, fixed 104.2 s; paired differences 7.6 /
 8.9 / 6.0 s), all from the warped term (a) the default glass now takes.
 
-### 9.4 Residuals
+### 9.4 Review round 1 (2026-10-02): FAIL, 1 P1, 2 P2, 1 P3 -- addressed
+
+* **P1 -- closed DOUBLE-SIDED meshes rendered 53 % dark.**  A double-sided
+  mesh flips both normals toward the ray, so a hit from INSIDE presented the
+  composite's top and was walked as an entry from above; round 0's OUT then
+  popped O, the dielectric top refracted 1.0 -> 1.5 instead of 1.5 -> 1.0 and
+  the exit claimed to be still inside: an `indexedmesh_geometry` box
+  (`double_sided` defaults TRUE) of composite{glass/glass} read **0.46687**
+  in the white furnace (base 1.00000; the same mesh single-sided 1.0000).
+  Round 0's DL-407 claim that this was pre-existing was WRONG: the base
+  handed the top the unpopped stack, and the top's own from-inside branch
+  was right.  Fixed twice over: (1) `CompositeLayerFrame` UNFLIPS a flipped
+  record (`bGeomNormalOrientedToRay`, a true side, not a provably open sheet):
+  the geometric normal goes back to the true outward one (DL-70
+  `UnflippedGeomNormal()`) and the shading normal and frame are oriented into
+  its hemisphere, so the entry side is the TRUE facing and the walk sees the
+  solid exactly as a single-sided mesh; (2) a walk entered from above never
+  pops O (`OutRef` returns the entry stack): an above entry whose stack holds
+  O is an inconsistent state and is trusted as the base trusted it.  Only a
+  from-below walk pops.  A provably open sheet (a clipped plane) keeps the
+  flipped frame and presents its top on both faces, as before.  New render
+  row **D5** (that mesh box, composite and plain-glass control, PT and
+  BDPT): round-0 library 0.46687 / 0.46687, now 1.00000 / 1.00000.
+* **P2 -- nested composite{composite{glass/glass}/glass} box read 1.0056.**
+  Not reproduced.  New row **D6** renders it beside a glass box at 2048 spp,
+  n = 4 SALTED renders per integrator (independent randomized-QMC
+  replicates), gated at max(0.2 %, 4 sem) with sem < 0.125 % enforced, so it
+  resolves 0.5 %: the round-0 library reads PT 1.00045 +- 0.00056, BDPT
+  0.99994 +- 0.00104; round 1 PT 1.00071 +- 0.00072, BDPT 0.99900 +- 0.00016
+  (the glass control 1.00004).  At the reviewer's 128 spp the per-render sd
+  is 0.0065 here, so a 0.5 % reading there is within one render's noise.
+  The SPF-level twin **H5** (full-sphere furnace from above and from inside,
+  and the eta^2-weighted sum against one plain glass interface, from above
+  and inside at 20 / 35 / 60 deg) is green.
+* **P2 -- "renders like the separate pair" holds FRONT-side only.**  Seen
+  from BELOW, an open composite sheet still presents its top (a clipped
+  plane is provably open, and the composite does not apply DL-345's face
+  rule to itself): composite 0.467 against the separate pair's 4.52 (the
+  reviewer's measurement).  That is a real defect of the DL-345 class (a
+  light walk entering from above and an eye walk from below refract
+  differently at the same sheet), filed in DL-407.
+* **P3 -- `GapStackForBelow`.**  Every multi-emit top (dielectric, perfect
+  refractor, translucent) shows its transmission on the FIRST hashed draw at
+  normal incidence and a top that declares a deterministic split stops
+  there, so the result is a deterministic function of the record; only a
+  single-emit stochastic top (nested composite, tissue) is sampled, now up to
+  16 draws (a nested glass/glass top misses with ~1e-17).  The base-run count
+  above is corrected (269/33).
+
+### 9.5 Residuals
 
 * **DL-406** -- term (a) still prices a Henyey-Greenstein-warped or a
   per-channel / dispersive RGB top as an ideal refraction (shape only; energy
   exact).
-* **DL-407** -- composite containment is only as good as the stack it is
-  handed: `CompositeMaterial` reports no `SpecularInfo`, so a camera or light
-  inside a closed composite is never seeded (from-below hits then read the
-  outside medium as BELOW), and on a double-sided mesh both faces present the
-  top (the frame flips with the normals), so a ray from inside reads as an
-  entry from above.  Pre-existing; no shipped scene reaches either.
+* **DL-407** (re-scoped by review round 1) -- (1) `CompositeMaterial`
+  reports no `SpecularInfo`, so a camera or light inside a closed composite
+  is never seeded (from-below hits then read the outside medium as BELOW);
+  pre-existing.  (2) An OPEN composite sheet (a provably open clipped plane)
+  presents its top on both faces instead of following DL-345's face rule, so
+  the separate-pair equivalence holds front-side only (from below: 0.467
+  against the pair's 4.52); pre-existing, unchanged.  Double-sided CLOSED
+  meshes are no longer in it (fixed in round 1, D5).
