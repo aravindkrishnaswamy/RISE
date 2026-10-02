@@ -79,7 +79,7 @@ namespace RISE
 			/// the beauty filter, no prefilter pass) and Accurate (run
 			/// dedicated prefilter passes on each aux buffer first, then
 			/// the beauty filter).  See docs/OIDN.md OIDN-P1-1.
-			/// estimatedRenderSeconds = pixels * authored spp * family cost / 1e6.
+			/// workPerMegapixel = configured/adaptive spp * family policy weight.
 			/// It is a scene-static policy estimate, never measured wall-clock.
 			void Denoise(
 				float* beautyBuffer,
@@ -91,7 +91,7 @@ namespace RISE
 				OidnQuality requestedQuality,
 				OidnDevice requestedDevice,
 				OidnPrefilter requestedPrefilter,
-				double estimatedRenderSeconds
+				double workPerMegapixel
 				);
 
 			/// Collects first-hit albedo and normal AOVs by casting one
@@ -109,8 +109,8 @@ namespace RISE
 			/// given AOV buffers.  Allocates temporary float buffers,
 			/// converts, denoises, and writes back.  See Denoise() for
 			/// requestedQuality / requestedDevice / requestedPrefilter
-			/// semantics. estimatedRenderSeconds describes the full image's
-			/// configured work, independent of elapsed time or early stopping.
+			/// semantics. workPerMegapixel is independent of image/region area,
+			/// elapsed time or early stopping.
 			void ApplyDenoise(
 				IRasterImage& image,
 				const AOVBuffers& aovBuffers,
@@ -119,7 +119,7 @@ namespace RISE
 				OidnQuality requestedQuality,
 				OidnDevice requestedDevice,
 				OidnPrefilter requestedPrefilter,
-				double estimatedRenderSeconds
+				double workPerMegapixel
 				);
 
 			/// Region-restricted counterpart used by RasterizeRegion. The OIDN
@@ -137,7 +137,7 @@ namespace RISE
 				OidnQuality requestedQuality,
 				OidnDevice requestedDevice,
 				OidnPrefilter requestedPrefilter,
-				double estimatedRenderSeconds
+				double workPerMegapixel
 				);
 #endif
 

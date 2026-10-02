@@ -1262,11 +1262,11 @@ void BDPTRasterizerBase::RasterizeScene(
 			mDenoiser->ApplyDenoiseRegion( *pImage, *pAOVBuffers, width, height,
 				pRect->left, pRect->top, pRect->right, pRect->bottom,
 				mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-				EstimateDenoiseRenderSeconds( width, height ) );
+				EstimateDenoiseWorkPerMegapixel() );
 		} else {
 			mDenoiser->ApplyDenoise( *pImage, *pAOVBuffers, width, height,
 				mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-				EstimateDenoiseRenderSeconds( width, height ) );
+				EstimateDenoiseWorkPerMegapixel() );
 		}
 	}
 #endif

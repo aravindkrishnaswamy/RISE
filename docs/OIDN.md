@@ -189,14 +189,15 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
   HIGH).
 - **Auto heuristic (DL-360, 2026-10-02):** Compute a deterministic work
   estimate `estimated_seconds = pixels * configured_spp * family_cost / 1e6`,
-  then `r = estimated_seconds / megapixels`. Family costs are fixed quality
+  then carry the algebraically equivalent `r = configured_spp * family_cost`
+  directly, avoiding area multiply/divide roundoff at preset thresholds. Family costs are fixed quality
   policy constants (seconds per million samples), not hardware benchmarks:
   legacy pixel renderers 0.1, PT RGB 0.2, PT spectral 0.8, bidirectional
   BDPT/VCM 0.6, MLT RGB 0.4, MLT spectral 1.6. Adaptive pixel renderers use
   the maximum of their configured sample budget and adaptive target.
   Cancellation, convergence, machine load and elapsed time do not choose
-  quality. Region denoise scales the estimate to its pixel count; its
-  per-megapixel policy matches full-frame denoise. Direct-companion PT
+  quality. Region denoise uses the same per-megapixel rate directly, so its
+  policy matches full-frame denoise even exactly at a preset threshold. Direct-companion PT
   denoise uses the same configured budget and PT family policy.
   Map:
 

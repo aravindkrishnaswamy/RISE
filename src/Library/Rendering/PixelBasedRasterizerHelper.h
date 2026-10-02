@@ -266,7 +266,7 @@ namespace RISE
 
 			// DL-360: fixed family policy in seconds per million samples.
 			virtual double DenoiseWorkPerMegaSample() const { return 0.1; }
-			double EstimateDenoiseRenderSeconds( unsigned int width, unsigned int height ) const;
+			double EstimateDenoiseWorkPerMegapixel() const;
 
 #endif
 

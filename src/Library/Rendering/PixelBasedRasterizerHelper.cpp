@@ -125,13 +125,11 @@ unsigned int PixelBasedRasterizerHelper::GetProgressiveTotalSPP() const
 }
 
 #ifdef RISE_ENABLE_OIDN
-double PixelBasedRasterizerHelper::EstimateDenoiseRenderSeconds(
-	unsigned int width, unsigned int height ) const
+double PixelBasedRasterizerHelper::EstimateDenoiseWorkPerMegapixel() const
 {
 	const unsigned int configured = pSampling ? pSampling->GetNumSamples() : 1;
 	const unsigned int spp = r_max( configured, GetAdaptiveTargetSamples() );
-	return static_cast<double>(width) * height * r_max(spp, 1u) *
-		DenoiseWorkPerMegaSample() / 1.0e6;
+	return r_max(spp, 1u) * DenoiseWorkPerMegaSample();
 }
 
 bool PixelBasedRasterizerHelper::ShouldDenoise() const
@@ -1415,11 +1413,11 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 					mDenoiser->ApplyDenoiseRegion( *pImage, *pAOVBuffers, width, height,
 						pRect->left, pRect->top, pRect->right, pRect->bottom,
 						mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-						EstimateDenoiseRenderSeconds( width, height ) );
+						EstimateDenoiseWorkPerMegapixel() );
 				} else {
 					mDenoiser->ApplyDenoise( *pImage, *pAOVBuffers, width, height,
 						mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-						EstimateDenoiseRenderSeconds( width, height ) );
+						EstimateDenoiseWorkPerMegapixel() );
 				}
 				appliedDenoise = true;
 			}
@@ -2239,11 +2237,11 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 					mDenoiser->ApplyDenoiseRegion( *pImage, *pAOVBuffers, width, height,
 						pRect->left, pRect->top, pRect->right, pRect->bottom,
 						mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-						EstimateDenoiseRenderSeconds( width, height ) );
+						EstimateDenoiseWorkPerMegapixel() );
 				} else {
 					mDenoiser->ApplyDenoise( *pImage, *pAOVBuffers, width, height,
 						mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-						EstimateDenoiseRenderSeconds( width, height ) );
+						EstimateDenoiseWorkPerMegapixel() );
 				}
 			}
 			FlushDenoisedToOutputs( *pImage, pRect, frameIdx );

@@ -200,14 +200,15 @@ void OIDNDenoiser::FloatBufferToImage(
 
 namespace
 {
-	// DL-360: deterministic work-policy thresholds. Inputs are estimated
-	// seconds, formed from pixel count, configured spp and a fixed family
-	// cost. They express quality policy, not measured hardware throughput.
+	// DL-360: deterministic work-policy thresholds. Carry configured spp
+	// times family weight directly: multiplying by image area then dividing
+	// can cross a threshold through roundoff, especially on cropped regions.
+	// These are policy units, not measured hardware throughput.
 	static constexpr double kAutoFastUntilSecPerMP     = 3.0;
 	static constexpr double kAutoBalancedUntilSecPerMP = 20.0;
 
 	OidnQuality ResolveAutoQuality(
-		double estimatedSeconds,
+		double workRate,
 		unsigned int w,
 		unsigned int h,
 		double& outR,			// estimated policy seconds per megapixel (for logging)
@@ -215,7 +216,7 @@ namespace
 		)
 	{
 		outMP = ( static_cast<double>( w ) * static_cast<double>( h ) ) / 1.0e6;
-		outR  = ( outMP > 0.0 ) ? estimatedSeconds / outMP : 0.0;
+		outR = workRate;
 		if( outR < kAutoFastUntilSecPerMP ) {
 			return OidnQuality::Fast;
 		}
@@ -386,17 +387,17 @@ void OIDNDenoiser::Denoise(
 	OidnQuality requestedQuality,
 	OidnDevice requestedDevice,
 	OidnPrefilter requestedPrefilter,
-	double estimatedRenderSeconds
+	double workPerMegapixel
 	)
 {
 	// Resolve Auto from configured work; explicit presets pass through.
 	OidnQuality resolvedQuality = requestedQuality;
 	if( requestedQuality == OidnQuality::Auto ) {
 		double r = 0.0, mp = 0.0;
-		resolvedQuality = ResolveAutoQuality( estimatedRenderSeconds, w, h, r, mp );
+		resolvedQuality = ResolveAutoQuality( workPerMegapixel, w, h, r, mp );
 		GlobalLog()->PrintEx( eLog_Event,
-			"OIDN auto: estimated-work=%.2fs, image=%ux%u (%.2f MP), r=%.2f s/MP -> %s",
-			estimatedRenderSeconds, w, h, mp, r,
+			"OIDN auto: image=%ux%u (%.2f MP), r=%.2f policy s/MP -> %s",
+			w, h, mp, r,
 			OidnQualityName( resolvedQuality ) );
 	}
 
@@ -723,7 +724,7 @@ void OIDNDenoiser::ApplyDenoise(
 	OidnQuality requestedQuality,
 	OidnDevice requestedDevice,
 	OidnPrefilter requestedPrefilter,
-	double estimatedRenderSeconds
+	double workPerMegapixel
 	)
 {
 	GlobalLog()->PrintEx( eLog_Info, "Running OIDN denoiser (%ux%u)...", w, h );
@@ -747,7 +748,7 @@ void OIDNDenoiser::ApplyDenoise(
 		requestedQuality,
 		requestedDevice,
 		requestedPrefilter,
-		estimatedRenderSeconds );
+		workPerMegapixel );
 	FloatBufferToImage( mState->denoisedStaging.data(), image, w, h );
 
 	const auto t_end = std::chrono::steady_clock::now();
@@ -768,7 +769,7 @@ void OIDNDenoiser::ApplyDenoiseRegion(
 	OidnQuality requestedQuality,
 	OidnDevice requestedDevice,
 	OidnPrefilter requestedPrefilter,
-	double estimatedRenderSeconds
+	double workPerMegapixel
 	)
 {
 	if( fullWidth == 0 || fullHeight == 0 || left > right || top > bottom
@@ -818,8 +819,7 @@ void OIDNDenoiser::ApplyDenoiseRegion(
 	Denoise( mState->beautyStaging.data(), albedo, normal,
 		regionWidth, regionHeight, mState->denoisedStaging.data(),
 		requestedQuality, requestedDevice, requestedPrefilter,
-		estimatedRenderSeconds * (static_cast<double>(regionWidth) * regionHeight) /
-			(static_cast<double>(fullWidth) * fullHeight) );
+		workPerMegapixel );
 
 	for( unsigned int y=0; y<regionHeight; ++y ) {
 		for( unsigned int x=0; x<regionWidth; ++x ) {

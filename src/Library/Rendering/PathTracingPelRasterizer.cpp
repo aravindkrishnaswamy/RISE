@@ -550,13 +550,13 @@ void PathTracingPelRasterizer::PostRenderCleanup() const
 				mDirectCompanionRegion.left, mDirectCompanionRegion.top,
 				mDirectCompanionRegion.right, mDirectCompanionRegion.bottom,
 				mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-				EstimateDenoiseRenderSeconds( pDirectCompanionImage->GetWidth(), pDirectCompanionImage->GetHeight() ) );
+				EstimateDenoiseWorkPerMegapixel() );
 		} else {
 			mDenoiser->ApplyDenoise(
 				*pDirectCompanionImage, *pAOVBuffers,
 				pDirectCompanionImage->GetWidth(), pDirectCompanionImage->GetHeight(),
 				mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-				EstimateDenoiseRenderSeconds( pDirectCompanionImage->GetWidth(), pDirectCompanionImage->GetHeight() ) );
+				EstimateDenoiseWorkPerMegapixel() );
 		}
 		mDirectCompanionDenoised = true;
 	}
