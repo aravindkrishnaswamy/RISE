@@ -61,13 +61,22 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 		}
 	}
 
-	// Luminance-derived scalar coefficients for the NM (spectral) path.
-	// The material stores RGB coefficients; for single-wavelength tracing
-	// we collapse to a scalar using Rec. 709 luminance weights.  This
-	// defines physical collision and survival transmittance. A fallback
-	// proposal may use another rate, which event weights must divide out.
-	const Scalar sigma_a_nm = 0.2126 * sigma_a[0] + 0.7152 * sigma_a[1] + 0.0722 * sigma_a[2];
-	const Scalar sigma_s_nm = 0.2126 * sigma_s[0] + 0.7152 * sigma_s[1] + 0.0722 * sigma_s[2];
+	// Scalar coefficients for the NM (single-wavelength) path.  NM callers
+	// pass the material's coefficients AT THE TRACED WAVELENGTH, broadcast
+	// to all three channels (IMaterial::GetRandomWalkSSSParamsNM; DL-374),
+	// and a broadcast triple is read exactly.  A non-broadcast triple is an
+	// RGB caller's colour; it is collapsed to its Rec. 709 luminance as a
+	// last resort, which makes the walk wavelength-independent (grey) --
+	// before DL-374 the material handed this path its RGB snapshot, so every
+	// spectral render of random-walk SSS was achromatic.  These define
+	// physical collision and survival transmittance. A fallback proposal may
+	// use another rate, which event weights must divide out.
+	auto nmScalar = []( const RISEPel& c ) -> Scalar {
+		return ( c[0] == c[1] && c[1] == c[2] ) ? c[0]
+			: 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+	};
+	const Scalar sigma_a_nm = nmScalar( sigma_a );
+	const Scalar sigma_s_nm = nmScalar( sigma_s );
 	const Scalar sigma_t_nm = sigma_a_nm + sigma_s_nm;
 
 	//
@@ -187,8 +196,8 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 
 		if( nm > 0 )
 		{
-			// Spectral mode: single channel, use luminance-derived
-			// extinction for consistent distance sampling.
+			// Spectral mode: single channel, the traced wavelength's
+			// extinction (sigma_t_nm, DL-374).
 			ch = 0;
 			sigma_t_ch = (sigma_t_nm > 1e-20) ? sigma_t_nm : sigma_t_max;
 		}

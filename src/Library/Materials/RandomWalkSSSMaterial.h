@@ -56,13 +56,33 @@ namespace RISE
 			//! at construction; per-slot live edit on the walk params is
 			//! out of scope).
 			const IScalarPainter*			pIORPainter;
+			//! DL-374: the coefficient painters are kept so the spectral
+			//! query can evaluate them at the requested wavelength.
+			const IScalarPainter*			pAbsorptionPainter;
+			const IScalarPainter*			pScatteringPainter;
 			const Scalar					surfaceRoughness;
+
+			//! The fixed snapshot record every coefficient query reads
+			//! (constructor, NM query and SetIOR use the same point).
+			static RayIntersectionGeometric SnapshotRecord()
+			{
+				RayIntersectionGeometric ri(
+					Ray( Point3(0,0,0), Vector3(0,1,0) ),
+					nullRasterizerState );
+				ri.bHit = true;
+				ri.ptIntersection = Point3( 0, 0, 0 );
+				ri.vNormal = Vector3( 0, 1, 0 );
+				ri.onb.CreateFromW( ri.vNormal );
+				return ri;
+			}
 
 			virtual ~RandomWalkSSSMaterial()
 			{
 				safe_release( pBSDF );
 				safe_release( pSPF );
 				safe_release( pIORPainter );
+				safe_release( pAbsorptionPainter );
+				safe_release( pScatteringPainter );
 			}
 
 		public:
@@ -75,9 +95,13 @@ namespace RISE
 				const unsigned int maxBounces
 				) :
 			pIORPainter( &ior ),
+			pAbsorptionPainter( &absorption ),
+			pScatteringPainter( &scattering ),
 			surfaceRoughness( roughness )
 			{
 				pIORPainter->addref();
+				pAbsorptionPainter->addref();
+				pScatteringPainter->addref();
 
 				pBSDF = new SubSurfaceScatteringBSDF( ior, g, roughness );
 				GlobalLog()->PrintNew( pBSDF, __FILE__, __LINE__, "BSDF" );
@@ -88,13 +112,7 @@ namespace RISE
 				// Evaluate painters at a dummy intersection to extract
 				// scalar coefficients for the random walk.  Same
 				// flatten-to-constant LIMITATION as before.
-				RayIntersectionGeometric dummyRI(
-					Ray( Point3(0,0,0), Vector3(0,1,0) ),
-					nullRasterizerState );
-				dummyRI.bHit = true;
-				dummyRI.ptIntersection = Point3( 0, 0, 0 );
-				dummyRI.vNormal = Vector3( 0, 1, 0 );
-				dummyRI.onb.CreateFromW( dummyRI.vNormal );
+				const RayIntersectionGeometric dummyRI = SnapshotRecord();
 
 				const ScalarTriple sa_t = absorption.GetValuesAt( dummyRI );
 				const ScalarTriple ss_t = scattering.GetValuesAt( dummyRI );
@@ -133,19 +151,29 @@ namespace RISE
 			/// \return Random walk SSS parameters for the integrators.
 			inline const RandomWalkSSSParams* GetRandomWalkSSSParams() const override { return &m_rwParams; };
 
-            // Coefficients keep the existing construction-time RGB snapshot.
-            // The boundary IOR is evaluated at lambda, at the same snapshot point.
-            bool GetRandomWalkSSSParamsNM(const Scalar nm, RandomWalkSSSParams& out) const override
-            {
-                out = m_rwParams;
-                RayIntersectionGeometric ri(Ray(Point3(0,0,0), Vector3(0,1,0)), nullRasterizerState);
-                ri.bHit = true;
-                ri.ptIntersection = Point3(0,0,0);
-                ri.vNormal = Vector3(0,1,0);
-                ri.onb.CreateFromW(ri.vNormal);
-                out.ior = pIORPainter->GetValueAtNM(ri, nm);
-                return true;
-            }
+			//! DL-374: the coefficients AND the boundary IOR at lambda.
+			//! The walk's NM mode prices one wavelength, so it needs the
+			//! absorption/scattering spectra evaluated there
+			//! (IScalarPainter::GetValueAtNM, the same query the diffusion
+			//! profiles' EvaluateProfileNM makes), broadcast to all three
+			//! channels per IMaterial's contract.  Before DL-374 this
+			//! returned the RGB snapshot unchanged and RandomWalkSSS
+			//! collapsed it to its Rec.709 luminance -- one grey walk for
+			//! every wavelength, so every spectral render of this material
+			//! was achromatic.  Same flatten-to-constant snapshot point as
+			//! the RGB parameters.
+			bool GetRandomWalkSSSParamsNM( const Scalar nm, RandomWalkSSSParams& out ) const override
+			{
+				out = m_rwParams;
+				const RayIntersectionGeometric ri = SnapshotRecord();
+				const Scalar sa = pAbsorptionPainter->GetValueAtNM( ri, nm );
+				const Scalar ss = pScatteringPainter->GetValueAtNM( ri, nm );
+				out.sigma_a = RISEPel( sa, sa, sa );
+				out.sigma_s = RISEPel( ss, ss, ss );
+				SSSCoefficients::FromCoefficients( out.sigma_a, out.sigma_s, out.sigma_t );
+				out.ior = pIORPainter->GetValueAtNM( ri, nm );
+				return true;
+			}
 
 			SpecularInfo GetSpecularInfo(
 				const RayIntersectionGeometric& ri,
@@ -194,13 +222,7 @@ namespace RISE
 				// same dummy intersection used in the constructor.  See
 				// the ctor body above — the snapshot model is unchanged;
 				// only the painter being snapshotted changes.
-				RayIntersectionGeometric dummyRI(
-					Ray( Point3(0,0,0), Vector3(0,1,0) ),
-					nullRasterizerState );
-				dummyRI.bHit = true;
-				dummyRI.ptIntersection = Point3( 0, 0, 0 );
-				dummyRI.vNormal = Vector3( 0, 1, 0 );
-				dummyRI.onb.CreateFromW( dummyRI.vNormal );
+				const RayIntersectionGeometric dummyRI = SnapshotRecord();
 				m_rwParams.ior = v.GetValuesAt( dummyRI ).v[0];
 			}
 		};
