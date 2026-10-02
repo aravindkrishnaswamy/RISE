@@ -745,7 +745,7 @@ void TestPopulateRIG_SurfaceIdentityFlags()
 		ri.bGeomNormalRayDerived    = !v.bGeomNormalRayDerived;
 		ri.bOpenSheet               = !v.bOpenSheet;
 		ri.bProvablyNoInterior      = !v.bProvablyNoInterior;
-		PopulateRIGFromVertex( v, ri );
+		PathVertexEval::PopulateRIGFromVertex( v, ri );
 		Check( ri.bGeomNormalOrientedToRay == ( hot == 0 ), "bGeomNormalOrientedToRay should mirror the vertex" );
 		Check( ri.bGeomNormalRayDerived    == ( hot == 1 ), "bGeomNormalRayDerived should mirror the vertex" );
 		Check( ri.bOpenSheet               == ( hot == 2 ), "bOpenSheet should mirror the vertex" );
