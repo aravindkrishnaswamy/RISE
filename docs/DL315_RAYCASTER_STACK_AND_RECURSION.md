@@ -394,7 +394,10 @@ cast; the guard is a thread-local read and a compare.
   0.999, four touching walls (open tube) 0.914, the same with 0.02 corner
   gaps 1.000, the closed room touching 0.706, with 0.02 gaps 1.000; BDPT
   gapped 1.000, and BDPT at eye/light depth 32/128/512/2048 all ~0.70 with
-  0 refusals.
+  0 refusals.  **Fixed 2026-10-02 (`debt-dl370`):** the walk now crosses into a
+  touching random-walk neighbour instead of exiting into it
+  ([DL49_SSS_EXTERIOR_INDEX.md](DL49_SSS_EXTERIOR_INDEX.md) section 12);
+  the diffusion-profile sibling and non-random-walk neighbours are DL-408.
 - **The stack guard can still truncate on a small calling thread** (a
   512 KB GUI render thread): counted and logged, section 2.  A render
   thread with an 8 MB stack, or not draining tiles on the caller, would

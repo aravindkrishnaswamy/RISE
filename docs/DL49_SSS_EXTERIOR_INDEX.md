@@ -1306,3 +1306,79 @@ pass, `WeaveGapShadowTransmittanceTest` 132/0, `SSSExteriorIndexInvarianceTest`
 227/0, `RefractiveRadianceScalingTest` 60/0, `CstDeriveGoldenTest` 456 MATCH
 / 0 DRIFT, `SourceHygieneTest` 167/0.  (§11.7's red counts, 218/10 and 212/9,
 were taken on the 228-check file.)
+
+## 12. DL-370: touching random-walk bodies (slice `debt-dl370`, 2026-10-02)
+
+### 12.1 The defect
+
+The random walk confines itself to one object (`pObject->IntersectRay`,
+back faces only), so a walk that reached a face it SHARES with a touching
+neighbour left through it as if into the exterior.  `SampleExit` then
+offsets the exit vertex `BSSRDF_RAY_EPSILON` (1e-6) along the outward
+normal -- which puts the NEE and continuation origin INSIDE the neighbour.
+The continuation meets the neighbour's far face from behind with an IOR
+stack that never entered it: the random-walk entry gate rejects a back
+face and `SubSurfaceScatteringSPF` absorbs it (`bAbsorbBackFace`), so the
+path dies.  Discriminator (the decisive one): a closed room of six
+conservative random-walk slabs under the white environment reads 0.6956
+touching, **0.6787 with a 5e-7 gap** (inside the offset) and 1.0002 with a
+2e-6 gap (outside it); 0.9992 with 0.02 gaps.  Depth caps, the DL-315 stack
+guard and albedo were already excluded by the filing review.
+
+### 12.2 Ruling
+
+A face shared with another SSS body is not a boundary to the exterior: the
+medium on its far side is the neighbour.  At every exit event the walk
+probes the scene along its own ray for the nearest FRONT face (its own exit
+face is a back face, so the probe cannot return it).  If that face belongs
+to another object whose material is a random walk and lies within
+`BSSRDF_RAY_EPSILON` of the exit (measured along the normal -- exactly the
+configuration the outward offset crosses), the walk CROSSES: the interface
+is a dielectric boundary of relative index `n_nb / n_cur` (Snell + exact
+Fresnel coin, TIR reflects; none at all when the indices match -- the
+"non-interface" of two equal SSS bodies), and a transmitted walk continues
+from the NEIGHBOUR's face with the neighbour's coefficients and phase
+asymmetry.  The final exit to the exterior is priced at the body actually
+left (`SampleResult::pExitObject` / `pExitMaterial` / `exitIOR`), which PT
+(NEE self object, entry Sw index) and both BDPT walks (entry vertex
+`pMaterial`/`pObject`, so every re-evaluation reads the exit body's Sw)
+consume.  The probe draws no samples: a walk that never meets a coincident
+neighbour is unchanged bit for bit (four shipped random-walk scenes,
+single-threaded, 8 spp: identical pixel hashes master vs fix; 31.6 s vs
+31.3 s total, one run each -- no resolvable cost).
+
+Resuming from the neighbour's face, not this body's, matters across a
+sub-offset gap: a first version resumed 1e-6 along the ray from THIS
+body's exit point, which lands in the gap for exit cosines below ~0.5; the
+neighbour's back-face-only query then falls back to its NEAR (front) face
+as the "exit" and the walk leaves into the gap -- the 5e-7 pair read 0.931.
+
+### 12.3 Red-proof (`SSSExteriorIndexInvarianceTest` Part F, salted, n = 4)
+
+| row | master | fix |
+|---|---|---|
+| F room PT, touching | 0.6956 +/- 0.0028 | 0.9986 +/- 0.0026 |
+| F room PT, 5e-7 gap | 0.6787 +/- 0.0025 | 1.0002 +/- 0.0008 |
+| F room PT, 0.02 gap (control) | 0.9992 +/- 0.0010 | 0.9992 +/- 0.0010 |
+| F room BDPT, touching | 0.6914 +/- 0.0009 | 1.0009 +/- 0.0019 |
+| F2 pair PT ior 1.5/1.5, touching / 2e-6 gap | 0.8674 | 0.9995 |
+| F2 pair PT ior 1.5/1.3 (real interface, g 0.3 right) | 0.8658 | 1.0023 |
+| F2 pair PT-spectral 1.5/1.5 (NM walk) | 0.8666 | 1.0002 |
+| F2 pair diffusion (printed only, DL-408) | 0.9609 | 0.9605 |
+
+(sd of one render; the F2 ratios are paired-seed touching/gapped means.)
+Suite 277/0 (red on the master library: 6 of the gated Part F rows).
+
+### 12.4 Sibling audit
+
+The pattern is "an SSS exit's outward vertex offset crosses into a
+coincident neighbour".  `BSSRDFSampling::SampleEntryPoint` (the diffusion
+profile, `subsurfacescattering_material`) offsets its exit vertex the same
+way and its probe also sees only its own object; the touching diffusion
+pair reads 0.961 of its 2e-6-gap twin (the gapped side is heavy-tailed on
+a finite cube, sd 0.015).  A diffusion profile cannot hand its transport
+to a neighbour, and the continuation cannot see a coincident face (any
+origin on the shared plane puts both bodies' roots under the self-hit
+floor), so it is filed, not fixed: **DL-408**, which also covers a random
+walk meeting a coincident NON-random-walk neighbour (a diffusion body, an
+opaque table under a wax block), where the walk keeps the old behaviour.
