@@ -1466,19 +1466,24 @@ section is the legacy -> modern table.
 **Legacy -> modern mapping.**  The translations are *starting points*:
 the modern model is energy-bounded and multiple-scattering-compensated, so
 a converted material is physically better but is not pixel-identical, and
-the parametrisations differ (Phong exponent vs GGX alpha, etc.).  The one
-exact translation is Cook-Torrance, whose BRDF already evaluates the GGX
-distribution.
+the parametrisations differ (Phong exponent vs GGX alpha, etc.).  **No
+translation is exact.**  The closest is Cook-Torrance, which shares the GGX
+distribution `D` with `ggx_material` -- but its `G` is the separable
+`G1(wi) G1(wo)` where GGX uses the height-correlated `G2`, its multiscatter
+compensation reads the separable `LookupEss`/`LookupEavg` tables where GGX
+reads the `G2` twins (DL-63), and it adds an uncoupled `Rd/pi` diffuse where
+GGX applies DL-37's `(1-A(i))(1-A(o))`; so even that one is a close
+starting point, not identical.
 
 | legacy chunk | modern replacement | parameter translation |
 |---|---|---|
-| `cooktorrance_material` | `ggx_material`, `fresnel_mode conductor` (the default) | `rd`->`rd`, `rs`->`rs`, `ior`->`ior`, `extinction`->`extinction`, `facets`->`alphax` and `alphay` (**exact**: `facets` IS the GGX alpha).  For a glTF-style metal or plastic use `pbr_metallic_roughness_material` instead (`roughness` = sqrt(alpha)) |
-| `isotropic_phong_material` | `ggx_material`, `fresnel_mode schlick_f0` | `rd`->`rd`, `rs`->`rs` (becomes the F0 tint), `alphax = alphay = sqrt(2/(N+2))` |
+| `cooktorrance_material` | `ggx_material`, `fresnel_mode conductor` (the default) | `rd`->`rd`, `rs`->`rs`, `ior`->`ior`, `extinction`->`extinction`, `facets`->`alphax` and `alphay` (same GGX `D`, so the highlight width matches; `G`, the multiscatter LUT and the diffuse coupling differ -- a close starting point, not identical).  For a glTF-style metal or plastic use `pbr_metallic_roughness_material` instead (`roughness` = sqrt(alpha)) |
+| `isotropic_phong_material` | `ggx_material`, `fresnel_mode schlick_f0` | `rd`->`rd`, `rs`->`rs` (becomes the F0 tint), `alphax = alphay = 1/sqrt(2N+1)`: the Phong lobe is `cos^N` about the REFLECTION vector (`IsotropicPhongBRDF.cpp`), whose angle is twice the half-vector angle, so the half-vector-equivalent exponent is `4N` (the Blinn-Phong rule) and `alpha = sqrt(2/(4N+2))` |
 | `ashikminshirley_anisotropicphong_material` | `ggx_material`, `fresnel_mode schlick_f0` | `rd`->`rd`, `rs`->`rs` (F0; Ashikhmin-Shirley already uses Schlick Fresnel), `alphax = sqrt(2/(nu+2))`, `alphay = sqrt(2/(nv+2))`; brush direction via `tangent_rotation_scalar` |
 | `schlick_material` | `ggx_material`, `fresnel_mode schlick_f0` | `rd`->`rd`, `rs`->`rs`, `alphax = alphay = sqrt(roughness)` (Schlick's `r` is the GGX alpha squared: its Z(t) is the GGX D without the 1/pi).  `isotropy < 1` has no exact translation -- pick `alphax != alphay` by eye |
 | `ward_isotropic_material` | `ggx_material`, `fresnel_mode schlick_f0` | `rd`->`rd`, `rs`->`rs`, `alphax = alphay = alpha` (GGX has heavier tails than a Gaussian lobe of the same width, so expect a slightly broader halo) |
 | `ward_anisotropic_material` | `ggx_material`, `fresnel_mode schlick_f0` | `alphax`->`alphax`, `alphay`->`alphay`; `tangent_rotation_scalar` for the direction |
-| `polished_material` | `coated_material` over a `lambertian_material` | `base` = a `lambertian_material` with the same `reflectance`; `coat_ior = ior`; `coat_roughness = sqrt(2/(scattering+2))` (0 for `scattering` >= ~1e5, the delta case); `coat_tint` / `coat_absorption` carry `tau`.  `add_wetness` already emits this shape |
+| `polished_material` | `coated_material` over a `lambertian_material` | `base` = a `lambertian_material` with the same `reflectance`; `coat_ior = ior`; `coat_roughness = 1/sqrt(2*scattering+1)` (the coat lobe is `cos^N` about the reflection vector, `PolishedBRDF::ComponentDensity`, same 4N rule as Phong), 0 for `scattering` >= ~1e5 (the delta case).  **`tau` has no equivalent**: it is NOT a transmittance tint -- `PolishedBRDF` multiplies only the coat REFLECTION by `tau` (`tau min(F(ci),F(co))` glossy, `tau F(ci)` delta) while the substrate term `(1-F(ci))(1-F(co))` is `tau`-independent; `tau 1` is a full coat, and `coat_weight` is the nearest knob for a weaker one (`coat_tint` / `coat_absorption` act on transmission, a different thing).  `henyey-greenstein TRUE` has no equivalent either.  `add_wetness` already emits the `coated_material` shape |
 
 **Producers audited (2026-10-02).**  Nothing in the importers emits a
 deprecated chunk: the glTF importer and the Blender bridge build

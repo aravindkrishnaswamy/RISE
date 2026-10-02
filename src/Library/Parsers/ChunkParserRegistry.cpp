@@ -3638,7 +3638,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "ior";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; p.semantics.pipe = ParameterPipe::Scalar; }
 						{ auto& p = P(); p.name = "scattering";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; p.defaultValueHint = "64"; p.semantics.pipe = ParameterPipe::Scalar; }
 						{ auto& p = P(); p.name = "henyey-greenstein"; p.kind = ValueKind::Bool;      p.description = "Use Henyey-Greenstein phase"; p.defaultValueHint = "FALSE"; }
-						MarkDeprecated( cd, "coated_material over a lambertian_material (base = a lambertian_material with the same reflectance; coat_ior = ior; coat_roughness = sqrt(2/(scattering+2)), 0 for scattering of 1e5 or more; coat_tint / coat_absorption carry tau).  add_wetness already emits this shape." );
+						MarkDeprecated( cd, "coated_material over a lambertian_material (base = a lambertian_material with the same reflectance; coat_ior = ior; coat_roughness = 1/sqrt(2*scattering+1) (its lobe is cos^N about the reflection vector), 0 for scattering of 1e5 or more; tau multiplies ONLY the coat reflection and has no coated_material equivalent -- tau 1 is a full coat, coat_weight is the nearest knob for less).  add_wetness already emits this shape." );
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -4303,7 +4303,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "rd";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "rs";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "N";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Phong exponent (scalar_painter, or inline `r g b` or scalar)"; p.semantics.pipe = ParameterPipe::Scalar; }
-						MarkDeprecated( cd, "ggx_material with fresnel_mode schlick_f0 (rd carries over, rs becomes the F0 tint, alphax = alphay = sqrt(2/(N+2)) from the Phong exponent N), or pbr_metallic_roughness_material." );
+						MarkDeprecated( cd, "ggx_material with fresnel_mode schlick_f0 (rd carries over, rs becomes the F0 tint, alphax = alphay = 1/sqrt(2N+1) from the Phong exponent N, because the Phong lobe is cos^N about the REFLECTION vector and the half-vector-equivalent exponent is 4N), or pbr_metallic_roughness_material." );
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -4888,7 +4888,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "ior";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel IOR (scalar_painter, or inline `r g b` or scalar)"; p.semantics.pipe = ParameterPipe::Scalar; }
 						{ auto& p = P(); p.name = "extinction"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel extinction (scalar_painter, or inline `r g b` or scalar)"; p.semantics.pipe = ParameterPipe::Scalar; }
 						{ auto& p = P(); p.name = "fresnel_mode"; p.kind = ValueKind::String; p.description = "Fresnel model: conductor (only).  `thinfilm` is GGX-only and rejected here."; p.defaultValueHint = "conductor"; }
-						MarkDeprecated( cd, "ggx_material with fresnel_mode conductor (rd, rs, ior, extinction carry over unchanged; alphax = alphay = facets, because this Cook-Torrance already evaluates the GGX distribution), or pbr_metallic_roughness_material for a glTF-style metal or dielectric." );
+						MarkDeprecated( cd, "ggx_material with fresnel_mode conductor (rd, rs, ior, extinction carry over; alphax = alphay = facets -- the same GGX D, but G (separable vs height-correlated), the multiscatter LUT and the diffuse coupling differ, so a close starting point, not identical), or pbr_metallic_roughness_material for a glTF-style metal or dielectric." );
 						AddVariantTagParam( cd );
 						return cd;
 					}();

@@ -144,12 +144,20 @@ static std::string SceneText()
 	return ss.str();
 }
 
+//! TMPDIR-honouring temp path (the suites' usual helper, e.g. AgentAddFuzzTest).
+static std::string TempPath( const std::string& name )
+{
+	const char* base = std::getenv( "TMPDIR" );
+	std::string dir = base ? base : "/tmp";
+	if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += '/';
+	return dir + name;
+}
+
 static bool RenderHash( unsigned long long& hash, double& mean )
 {
-	char path[512];
-	std::snprintf( path, sizeof( path ), "/tmp/deprecated_material_identity_%d.RISEscene", static_cast<int>( ::getpid() ) );
+	const std::string path = TempPath( "deprecated_material_identity_" + std::to_string( static_cast<int>( ::getpid() ) ) + ".RISEscene" );
 	{
-		std::ofstream ofs( path );
+		std::ofstream ofs( path.c_str() );
 		if( !ofs.is_open() ) return false;
 		ofs << SceneText();
 	}
@@ -159,7 +167,7 @@ static bool RenderHash( unsigned long long& hash, double& mean )
 	bool ok = false;
 	IJobPriv* pJob = nullptr;
 	if( RISE_CreateJobPriv( &pJob ) && pJob ) {
-		if( pJob->LoadAsciiSceneViaCst( path ) ) {
+		if( pJob->LoadAsciiSceneViaCst( path.c_str() ) ) {
 			pJob->RemoveRasterizerOutputs();
 			CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
 			GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "test capture output" );
@@ -175,7 +183,7 @@ static bool RenderHash( unsigned long long& hash, double& mean )
 		}
 		safe_release( pJob );
 	}
-	std::remove( path );
+	std::remove( path.c_str() );
 	return ok;
 }
 
@@ -191,7 +199,7 @@ int main()
 	std::printf( "DeprecatedMaterialRenderIdentityTest (DL-323 follow-through)\n" );
 
 	if( !std::getenv( "RISE_OPTIONS_FILE" ) ) {
-		std::snprintf( g_optPath, sizeof( g_optPath ), "/tmp/deprecated_material_options_%d.txt", static_cast<int>( ::getpid() ) );
+		std::snprintf( g_optPath, sizeof( g_optPath ), "%s", TempPath( "deprecated_material_options_" + std::to_string( static_cast<int>( ::getpid() ) ) + ".txt" ).c_str() );
 		std::atexit( []() { std::remove( g_optPath ); } );
 		std::ofstream opt( g_optPath );
 		opt << "force_number_of_threads 1\n";

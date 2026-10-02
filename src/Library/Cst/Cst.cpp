@@ -3163,7 +3163,7 @@ static bool ExpandSourceInstance(
 	return true;
 }
 
-int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diagnostics, ReferenceGraph* outRecorded, const char* activeVariantOverride )
+int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diagnostics, ReferenceGraph* outRecorded, const char* activeVariantOverride, bool warnDeprecated )
 {
 	std::vector<std::string> local;
 	std::vector<std::string>& diags = diagnostics ? *diagnostics : local;
@@ -3453,6 +3453,7 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 	}
 	// DL-323 follow-through: ONE warning per deprecated chunk type met above (docs/SCENE_CONVENTIONS.md
 	// "Deprecated materials").  The chunks were applied exactly as before; this is advice only.
+	if( warnDeprecated )
 	for( const std::pair< const ChunkDescriptor*, int >& d : deprecatedSeen )
 		GlobalLog()->PrintEx( eLog_Warning,
 			"DeriveToJob:: `%s` is DEPRECATED (%d chunk(s) in this scene; they still render exactly as before): use %s  "

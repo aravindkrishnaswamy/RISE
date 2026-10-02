@@ -17,7 +17,8 @@
 //                chunks that have NO real replacement (translucent,
 //                phong_luminaire) and every modern material are NOT
 //                flagged.
-//    [warn]      DeriveToJob logs exactly ONE eLog_Warning per
+//    [warn]      DeriveToJob called with warnDeprecated=true (only
+//                Job::LoadAsciiSceneViaCst does) logs exactly ONE eLog_Warning per
 //                deprecated keyword per derive (two schlick chunks -> one
 //                warning that says "2 chunk(s)"), none for modern chunks,
 //                and the deprecation never becomes a derive diagnostic
@@ -48,11 +49,19 @@
 #include "CstRenderEquivalence.h"      // Job
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <mutex>
 #include <set>
 #include <string>
 #include <vector>
+#ifdef _WIN32
+	#include <process.h>
+	#define getpid _getpid
+#else
+	#include <unistd.h>
+#endif
 
 using namespace RISE;
 using namespace RISE::Cst;
@@ -187,7 +196,7 @@ int main()
 		Job* j = new Job();
 		std::vector<std::string> diags;
 		Document d = ParseToCst( mixed );
-		const int n = DeriveToJob( d, *j, &diags );
+		const int n = DeriveToJob( d, *j, &diags, nullptr, nullptr, /*warnDeprecated=*/true );
 		const std::string tag = std::string( "load " ) + std::to_string( load + 1 ) + ": ";
 		Check( n > 0 && diags.empty(), tag + "the scene loads cleanly with ZERO derive diagnostics (a deprecation is not a failure)" );
 		Check( log->Count( "`schlick_material` is DEPRECATED" ) == 1, tag + "schlick_material (2 chunks) warns exactly once" );
@@ -204,6 +213,45 @@ int main()
 		j->release();
 	}
 
+	// Only a REAL scene load warns.  A staging / dry-run / gate / re-derive (every other DeriveToJob caller:
+	// the agent's throwaway-Job derives, Job::DeriveEditedCstDocument_, the full re-derives) passes the default
+	// warnDeprecated = false and must stay silent, or the notice repeats on every agent edit.
+	log->Reset();
+	{
+		Job* j = new Job();
+		std::vector<std::string> diags;
+		Document d = ParseToCst( mixed );
+		const int n = DeriveToJob( d, *j, &diags );   // the default: a staging / dry-run derive
+		Check( n > 0 && diags.empty(), "[staging] a default DeriveToJob of a deprecated-chunk scene derives cleanly" );
+		Check( log->Total() == 0, "[staging] ...and logs NO deprecation message (warnDeprecated defaults off)" );
+		j->release();
+	}
+	{
+		// ...while the real load entry point still warns, once per type.
+		const char* tmpBase = std::getenv( "TMPDIR" );
+		std::string dir = tmpBase ? tmpBase : "/tmp";
+		if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += '/';
+		const std::string path = dir + "deprecated_material_warning_" + std::to_string( (long)::getpid() ) + ".RISEscene";
+		{ std::ofstream o( path.c_str(), std::ios::binary ); o << mixed; }
+		Job* j = new Job();
+		log->Reset();
+		const bool ok = j->LoadAsciiSceneViaCst( path.c_str() );
+		std::remove( path.c_str() );
+		Check( ok, "[load] Job::LoadAsciiSceneViaCst of the deprecated-chunk scene succeeds" );
+		Check( log->Count( "`schlick_material` is DEPRECATED" ) == 1 && log->Count( "`cooktorrance_material` is DEPRECATED" ) == 1
+			&& log->Count( "`polished_material` is DEPRECATED" ) == 1 && log->Total() == 3,
+			"[load] a real scene load warns exactly once per deprecated type" );
+		// A later staging derive on the SAME loaded Job's document is still silent (the notice was given at load).
+		log->Reset();
+		Job* j2 = new Job();
+		std::vector<std::string> diags2;
+		Document d2 = ParseToCst( mixed );
+		DeriveToJob( d2, *j2, &diags2 );
+		Check( log->Total() == 0, "[load] a staging derive after the load stays silent" );
+		j2->release();
+		j->release();
+	}
+
 	log->Reset();
 	{
 		Job* j = new Job();
@@ -211,7 +259,7 @@ int main()
 		Document d = ParseToCst( Scene(
 			"ggx_material\n{\nname gg\nrd pnt\nrs pnt\nalphax 0.2\nalphay 0.2\n}\n"
 			"translucent_material\n{\nname tr\nref pnt\ntau pnt_t\n}\n" ) );
-		const int n = DeriveToJob( d, *j, &diags );
+		const int n = DeriveToJob( d, *j, &diags, nullptr, nullptr, true );
 		Check( n > 0 && diags.empty(), "a scene of modern + no-replacement chunks loads cleanly" );
 		Check( log->Total() == 0, "...and logs no deprecation message at all" );
 		j->release();

@@ -438,7 +438,13 @@ namespace RISE
 		//! Covers `GenericManager`-backed entities AND participating media (slice 2 hooks the
 		//! Job's separate `mediaMap` -- `Add*Medium` + `SetObjectInteriorMedium`/`SetGlobalMedium`
 		//! -- since media bypass the GenericManager chokepoint).
-		int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diagnostics = nullptr, ReferenceGraph* outRecorded = nullptr, const char* activeVariantOverride = nullptr );
+		//!
+		//! `warnDeprecated` (DL-323 follow-through): when true, log ONE eLog_Warning per DEPRECATED chunk type
+		//! applied (see ChunkDescriptor::deprecated).  Default FALSE, and only `Job::LoadAsciiSceneViaCst` -- the
+		//! real scene load -- passes true: every other caller (agent dry-run / staging / gate derives on a throwaway
+		//! Job, `Job::DeriveEditedCstDocument_`, the full re-derives after an edit or a variant switch) re-derives
+		//! a scene the author was already told about, so warning there would repeat the notice on every edit.
+		int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diagnostics = nullptr, ReferenceGraph* outRecorded = nullptr, const char* activeVariantOverride = nullptr, bool warnDeprecated = false );
 
 		//! Incrementally re-apply ONLY a closure (DocEditClosure) into an
 		//! already-derived Job after an edit, instead of a full DeriveToJob: it recreates

@@ -192,8 +192,10 @@ scalar_painter
 #    microfacet roughness, ior/extinction = conductor Fresnel; the default
 #    fresnel_mode is conductor).  Both alphas are bound to the
 #    scalar_painter above instead of one constant.  (The legacy
-#    cooktorrance_material this replaces is deprecated; its `facets` IS
-#    this GGX alpha, so the translation is facets -> alphax + alphay.)
+#    cooktorrance_material this replaces is deprecated; its `facets` is
+#    the same GGX alpha, so facets -> alphax + alphay is a close starting
+#    point, though not identical: G, the multiscatter LUT and the diffuse
+#    coupling differ.)
 ggx_material
 {
 	name		mat_gold
