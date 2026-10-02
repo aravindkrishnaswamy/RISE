@@ -287,6 +287,15 @@ namespace RISE
 		bool isLightSubpathVertex;
 		bool					isConnectible;	///< True if material has at least one non-delta BxDF component
 		bool					isBSSRDFEntry;	///< True if this vertex is a BSSRDF re-emission point (Sw vertex)
+		/// DL-357: on a DIFFUSION-profile BSSRDF entry vertex, the jump's
+		/// exit-to-entry distance and exit cosine (BSSRDFSampling::
+		/// SampleResult::jumpDistance / exitCos).  The exit hit is the
+		/// PREVIOUS vertex.  Read only by RecomputeSubpathThroughputNM to
+		/// re-price Rd(r) * Ft(exit) at an HWSS companion wavelength; no
+		/// RayIntersectionGeometric counterpart, so the field-parity
+		/// contract above does not apply.  0 elsewhere.
+		Scalar					bssrdfJumpDistance;
+		Scalar					bssrdfExitCos;
 		Scalar					mediumIOR;		///< Top-of-stack IOR seen at this vertex before scattering
 		bool					insideObject;	///< True if the current object was already in the IOR stack
 		/// DL-09 (docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md): the graded-index
@@ -386,6 +395,8 @@ namespace RISE
 		isLightSubpathVertex( false ),
 		isConnectible( true ),
 		isBSSRDFEntry( false ),
+		bssrdfJumpDistance( 0 ),
+		bssrdfExitCos( 0 ),
 		mediumIOR( 1.0 ),
 		insideObject( false ),
 		pGradedMedium( 0 ),

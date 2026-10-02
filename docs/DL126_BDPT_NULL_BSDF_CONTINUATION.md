@@ -1057,3 +1057,53 @@ band needed re-deriving, but its SPECTRAL VCM rows DID move under DL-217,
 by up to +4.7% (topology means 0.579766 -> 0.606845, 0.601256 -> 0.619435,
 0.615919 -> 0.626362; another row 0.605476 -> 0.627115).  Its RGB rows are
 unchanged to 4-5 significant figures.
+
+### 7.8 DL-357 (2026-10-02, debt-dl357 slice): a subsurface jump in the companion ladder
+
+A BSSRDF / random-walk jump is the other vertex kind whose weight
+`RecomputeSubpathThroughputNM` could not see.  The generators fold the
+jump into the ENTRY vertex's own throughput at the hero wavelength
+(diffusion: `Rd(r) Ft(exit) / pdfSurface` over the coin's `Ft(exit)`;
+random walk: the walk weight) and store the exit hit delta, so Phase 3
+skipped the exit and priced only the entry's `Sw` continuation.  Every
+companion inherited the hero's spatial profile / walk weight:
+`hwss TRUE` diffusion SSS rendered grey (B/R 0.993-0.996 against
+1.055-1.070 for `hwss FALSE`) and random-walk SSS fully grey (B/R 0.94
+against 8.3).
+
+**Diffusion: re-priced exactly (Phase 1b).**  The entry density
+`pdfSurface` is wavelength-INDEPENDENT -- an RGB-channel mixture of the
+profile's radius pdfs, positive at every r -- and the coin probability is
+the hero's `Ft`, so the companion's estimator over the SAME sampled
+entry point is its own `Rd(r; lc) Ft(cos; lc)` over the same
+denominator, and the ratio is
+`[Rd(r; lc) Ft(cos; lc)] / [Rd(r; lh) Ft(cos; lh)]`, both evaluated
+through one record rebuilt from the exit vertex.  The jump distance and
+exit cosine are recorded on the entry vertex
+(`BDPTVertex::bssrdfJumpDistance` / `bssrdfExitCos`, from
+`BSSRDFSampling::SampleResult::jumpDistance` / `exitCos`); the entry's
+own `Sw` stays priced by Phase 3 as before.  `Ft` carries a spectral
+`ior` painter's dispersion.
+
+**Random walk: terminate the secondaries.**  The walk's free paths,
+collisions and boundary survival were sampled from the hero's
+coefficients and are not recorded.  An unbiased re-pricing does exist in
+principle (record every segment and divide the companion's
+`prod sigma_s,c exp(-sigma_t,c d)` by the hero's proposal density), but
+with a single hero proposal its weight grows as
+`exp((sigma_t,h - sigma_t,c) L)` wherever the companion's extinction is
+lower -- unbounded variance, which PBRT-v4 only tames with spectral MIS
+over all lanes' proposals -- and it would need `RandomWalkSSS` to record
+its walk.  So `BDPTIntegrator::HasRandomWalkSSSEntryVertex` joins
+`HasNullBSDFContinuationVertex` in all three spectral rasterizers' up-front
+termination test (DL-126 / DL-201 accounting: the terminated lanes leave
+the active count and the splat lane scale), and Phase 1b zeroes the
+companion as a belt-and-braces mirror.  A random-walk `hwss TRUE` render
+is therefore hero-only per bundle: correct mean, `hwss FALSE`-like
+variance.
+
+Gate: `tests/SSSHWSSCompanionTest.cpp` (n = 4 salted means,
+`num_wavelengths 160` -- hwss FALSE's default 10-node grid misreports red
+by ~6 % on a plain chromatic Lambertian, which would otherwise swamp the
+comparison) and `RandomWalkSSSSpectralColourTest`'s now-gated BDPT/VCM
+`hwss TRUE` rows.  Numbers in docs/DEBT_LEDGER.md DL-357.

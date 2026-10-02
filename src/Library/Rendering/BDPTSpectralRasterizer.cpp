@@ -332,7 +332,9 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 			// and the hero's own SPLAT deposit below needs `splatLaneScale`,
 			// which is not final until the surviving-lane count is.
 			if( BDPTIntegrator::HasNullBSDFContinuationVertex( lightVerts ) ||
-				BDPTIntegrator::HasNullBSDFContinuationVertex( eyeVerts ) )
+				BDPTIntegrator::HasNullBSDFContinuationVertex( eyeVerts ) ||
+				BDPTIntegrator::HasRandomWalkSSSEntryVertex( lightVerts ) ||	// DL-357
+				BDPTIntegrator::HasRandomWalkSSSEntryVertex( eyeVerts ) )
 			{
 				swl.TerminateSecondary();
 			}
