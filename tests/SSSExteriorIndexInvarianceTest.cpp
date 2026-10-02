@@ -1121,9 +1121,6 @@ namespace
 	//! seeded exterior index (the enclosure really is the exterior).
 	double RenderMean( const std::string& path, unsigned int seed, Scalar expectedExterior, bool checkSeed, const std::string& label )
 	{
-		// DL-392: control construction-time RNGs and the cached global stream.
-		std::srand( seed );
-		GlobalRNG() = RandomNumberGenerator( seed );
 		IJobPriv* job = nullptr;
 		if( !RISE_CreateJobPriv( &job ) || !job ) return -1;
 		if( !job->LoadAsciiSceneViaCst( path.c_str() ) ) { safe_release( job ); return -1; }
@@ -1139,7 +1136,6 @@ namespace
 		job->GetRasterizer()->AddRasterizerOutput( cap );
 		SobolSamplerTestHooks::ValueSalt().store( SobolSequence::HashCombine( seed, 0x332u ) );
 		std::srand( seed );
-		GlobalRNG() = RandomNumberGenerator( seed );
 		const bool rendered = job->Rasterize();
 		SobolSamplerTestHooks::ValueSalt().store( 0u );
 		double mean = -1;
@@ -1167,25 +1163,6 @@ namespace
 		double ss = 0;
 		for( double x : v ) ss += ( x - m ) * ( x - m );
 		return Stats{ m, v.size() > 1 ? std::sqrt( ss / double( v.size() - 1 ) ) : 0.0 };
-	}
-
-	void TestRenderSeedContract()
-	{
-		const std::string path = WriteScene( BuildScene( Model::LegacyDipole,
-			Integrator::PixelPel, 1.0, kAirInterior, 4 ), "seedcontract" );
-		Check( !path.empty(), "seed contract scene written" );
-		double first = -1;
-		for( unsigned int t=0; t<4; ++t ) {
-			// The caller's prior streams must not change this fixed input.
-			std::srand(100u+t);
-			GlobalRNG() = RandomNumberGenerator(100u+t);
-			const double mean = RenderMean(path,392000u,1.0,false,"seed contract");
-			Check(mean>0 && std::isfinite(mean),"seed contract render finite and lit");
-			if(t==0) first=mean;
-			else Check(mean==first,"same explicit seed ignores prior libc/global RNG state");
-			std::cout << "seed contract replicate=" << t << " mean=" << std::setprecision(17) << mean << std::endl;
-		}
-		std::remove(path.c_str());
 	}
 
 	void TestRenderedInvariance( const unsigned int trials, const std::string& only )
@@ -1676,7 +1653,6 @@ int main( int argc, char** argv )
 	TestPointSetOctreeStackForwarding();
 	TestLegacyDipoleRelativeIndex();
 	if( !unitOnly ) {
-		if(only.empty() || only=="seedcontract") TestRenderSeedContract();
 		TestRenderedInvariance( trials, only );
 		TestRenderedPartitionFurnace( trials, only );
 		TestRayCasterStackAndRecursion( trials, only );

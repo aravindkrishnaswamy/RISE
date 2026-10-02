@@ -209,13 +209,16 @@ BDPT128. The five completed weave gates (217/0 each) remain valid: its
 test and executable renderer behavior did not change in this adjustment.
 API follow-up only replaced comments; final build refresh includes it.
 
-## DL-392 controlled SSS inputs
+## Withdrawn RNG audit (DL-392 candidate)
 
-Code audit found RenderMean seeded libc only after scene load and left the
-cached global Mersenne stream untouched. That is separate from Sobol value
-salting: scene-construction RNGs and fallback draws depended on prior work.
-The first increased-budget SSS run was stopped intentionally after233.91s
-(own verified PID38947); it is not a completed gate. The helper now resets
-libc and GlobalRNG before job construction/loading and again before tracing.
-A four-render fixed-seed contract deliberately varies both caller streams;
-its red/green follows. Existing higher budgets remain, bands unchanged.
+A code audit proposed controlling libc before scene load and cached global
+Mersenne state in RenderMean. The first increased-budget full SSS run was
+stopped intentionally after233.91s (own verified PID38947), not a gate pass.
+Two candidate four-render fixed-seed contracts varied caller RNG streams.
+Both stayed green with the original helper: BDPT rough mean
+0.010877361946996062 and legacy PixelPel dipole0.0054271243319558016,
+117/0 each. They did not establish a defect. The helper change, contract
+and candidate ledger row DL-392 were withdrawn; no causal claim attributes
+the full-suite spread to those RNG streams. Retain the measured-budget
+adjustment and existing explicit value-salt contract. Final rows are
+DL-390 and DL-391 only.
