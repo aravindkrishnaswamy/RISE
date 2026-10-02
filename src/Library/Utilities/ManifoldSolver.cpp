@@ -713,51 +713,49 @@ namespace
 		return ( n > 0 && n < RISE_INFINITY ) ? n : Scalar( 1.0 );
 	}
 
-	//////////////////////////////////////////////////////////////////
-	// SMS spectral source term (Stage C slice 2).
-	//
-	// `LightSample::Le` is an RGB radiance the light sampler already
-	// computed (mesh luminary: `IEmitter::emittedRadiance` at the
-	// sampled point).  The NM paths used to project it with
-	// `ColorMath::Luminance`, i.e. reuse ONE Rec.709 luma scalar at
-	// every wavelength.  Now that every other source in the engine
-	// emits the D65-shaped reference illuminant, that projection is
-	// DIFFERENTIALLY wrong: a flat spectrum resolves to
-	// (1.205, 0.948, 0.909) on this film and a coloured light comes
-	// out grey.  Uplift as an ILLUMINANT so the caustic round-trips
-	// to the same RGB the RGB SMS path produces.
-	//
-	// Why the uplift rather than the emitter's own
-	// `emittedRadianceNM`: `LightSample` carries no wavelength-
-	// resolved Le and no `RayIntersectionGeometric` for the sampled
-	// point (only position / normal), so reaching the exact value
-	// would mean widening the struct and the sampler's fill path.
-	// The uplift is exact for a grey/white emitter and a
-	// chroma-preserving approximation otherwise -- the same trade
-	// `FinalGatherShaderOp` and the SSS ops make for a COMPUTED
-	// radiance.  Delta lights do NOT go through here: they have an
-	// `ILight::emittedRadianceNM` and the call sites use it.
-	//
-	// One open hole, stated explicitly (2026-09-02): a mesh luminaire
-	// whose exitance is bound to a `piecewise_linear_function`
-	// (Function1DSpectralPainter -- its RGB `GetColor` is black by
-	// construction, the physical spectrum only exists on the NM path)
-	// has `LightSample::Le` == (0,0,0), because `Le` is filled from the
-	// emitter's RGB `emittedRadiance`.  SMSLeNM's uplift of a black RGB
-	// triple is exactly black, so an SMS caustic cast by that emitter
-	// renders EXACTLY BLACK on the NM path, while direct NEE lights the
-	// same emitter correctly (LightSampler.cpp's spectral NEE loop
-	// calls `pEmitter->emittedRadianceNM(...)` with the full sampled
-	// geometry, reaching the authored spectral curve).  This is not a
-	// NEW regression -- `ColorMath::Luminance(RISEPel(0,0,0))` was also
-	// 0, so the pre-uplift code produced the same black caustic -- it
-	// is the one case where "chroma-preserving approximation" above is
-	// not just approximate but wrong (0 instead of the emitter's true
-	// nonzero spectral Le).  The real fix is widening `LightSample`
-	// with the sampled hit's `RayIntersectionGeometric` (or at least
-	// its normal + the `IEmitter*`) so `emittedRadianceNM` becomes
-	// reachable here too -- the sampler already has both at fill time,
-	// so this is a struct-widening change, not a new capability.
+	// DL-347: a sampled emission point must be re-evaluated toward the
+	// solved chain. Its sampled light-subpath direction is unrelated.
+	inline RayIntersectionGeometric SMSEmitterContext(
+		const LightSample& sample, const Vector3& out, Vector3& normal )
+	{
+		normal = EmitterSides::FaceToward(
+			LightSampler::LuminaryIsTwoSided( sample.pLuminary ), sample.normal, out );
+		RayIntersectionGeometric rig( Ray( sample.position, out ), nullRasterizerState );
+		rig.bHit = true;
+		rig.ptIntersection = sample.position;
+		rig.vNormal = normal;
+		rig.vGeomNormal = normal;
+		rig.ptCoord = sample.ptCoord;
+		rig.ptObjIntersec = sample.ptObjIntersec;
+		rig.onb.CreateFromW( normal );
+		LightSampler::ApplyEmitterSurface( rig, sample.surface );
+		return rig;
+	}
+
+	inline RISEPel SMSAreaLe( const LightSample& sample, const Vector3& out )
+	{
+		if( !sample.pLuminary ) return sample.Le;
+		if( !sample.pLuminary->GetMaterial() ) return RISEPel( 0, 0, 0 );
+		const IEmitter* emitter = sample.pLuminary->GetMaterial()->GetEmitter();
+		if( !emitter ) return RISEPel( 0, 0, 0 );
+		Vector3 normal;
+		const auto rig = SMSEmitterContext( sample, out, normal );
+		return emitter->emittedRadiance( rig, out, normal );
+	}
+
+	inline Scalar SMSAreaLeNM( const LightSample& sample, const Vector3& out, const Scalar nm )
+	{
+		if( !sample.pLuminary || !sample.pLuminary->GetMaterial() ) return 0;
+		const IEmitter* emitter = sample.pLuminary->GetMaterial()->GetEmitter();
+		if( !emitter ) return 0;
+		Vector3 normal;
+		const auto rig = SMSEmitterContext( sample, out, normal );
+		return emitter->emittedRadianceNM( rig, out, normal, nm );
+	}
+
+	// Legacy delta samples without an ILight pointer have only RGB Le.
+	// Preserve the illuminant uplift for that fallback and environment
+	// samples; real area emitters now use their own emittedRadianceNM.
 	inline Scalar SMSLeNM( const RISEPel& Le, const Scalar nm )
 	{
 		RISEPel c = Le;
@@ -6006,7 +6004,8 @@ bool ManifoldSolver::ComputeTrialContribution(
 	} else {
 		cosAtLight = fabs( Vector3Ops::Dot( lightSample.normal, dirSpecToLight ) );
 		if( cosAtLight <= 0 ) return false;
-		actualLe = lightSample.Le;
+		actualLe = SMSAreaLe( lightSample, dirSpecToLight );
+		if( ColorMath::MaxValue(actualLe) <= 0 ) return false;
 	}
 	(void)cosAtLight;   // Implicit in detDvDy via (I - wo⊗wo) projection.
 
@@ -6039,10 +6038,9 @@ bool ManifoldSolver::ComputeTrialContribution(
 //
 //   Spectral counterpart of ComputeTrialContribution.  Same logic,
 //   per-wavelength throughput via EvaluateChainThroughputNM and
-//   per-wavelength BSDF via valueNM.  Le is luminance-projected
-//   (the spectral path computes a single scalar value per wavelength
-//   and luminance is the appropriate scalar projection of an
-//   RGB Le).
+//   per-wavelength BSDF via valueNM. Area/delta emitters provide their
+//   own wavelength radiance; legacy samples without an emitter pointer
+//   retain the RGB illuminant-uplift fallback.
 //////////////////////////////////////////////////////////////////////
 
 bool ManifoldSolver::ComputeTrialContributionNM(
@@ -6130,7 +6128,9 @@ bool ManifoldSolver::ComputeTrialContributionNM(
 	} else {
 		cosAtLight = fabs( Vector3Ops::Dot( lightSample.normal, dirSpecToLight ) );
 		if( cosAtLight <= 0 ) return false;
-		Le = SMSLeNM( lightSample.Le, nm );
+		Le = lightSample.pLuminary ? SMSAreaLeNM( lightSample, dirSpecToLight, nm )
+			: SMSLeNM( lightSample.Le, nm );
+		if( Le <= 0 ) return false;
 	}
 	(void)cosAtLight;
 
@@ -6871,7 +6871,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		const Scalar cosAtShading = fabs( Vector3Ops::Dot( shadingNormal, wiAtShading ) );
 		if( cosAtShading <= 0 ) continue;
 
-		// Direction and distance from last specular vertex to light
+		// Direction from light to last specular vertex and their distance
 		// (needed for cosine evaluation at the light surface).
 		const ManifoldVertex& lastSpec = mResult.specularChain.back();
 		Vector3 dirSpecToLight = Vector3Ops::mkVector3(
@@ -6897,7 +6897,8 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		} else {
 			cosAtLight = fabs( Vector3Ops::Dot( lightSample.normal, dirSpecToLight ) );
 			if( cosAtLight <= 0 ) continue;
-			actualLe = lightSample.Le;
+			actualLe = SMSAreaLe( lightSample, dirSpecToLight );
+			if( ColorMath::MaxValue(actualLe) <= 0 ) continue;
 		}
 
 		// SMS measure-conversion via implicit function theorem.
@@ -8117,26 +8118,10 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		+ static_cast<unsigned int>( photonSeeds.size() )
 		+ ( N > 0 ? N - 1 : 0 );
 
-	// Hoisted out of the per-trial loop below: `lightSample` is drawn
-	// ONCE above (before the trial loop), and SMSLeNM's mesh-light
-	// projection depends only on `lightSample.Le` and `nm` — neither of
-	// which varies per trial (unlike `cosAtLight`, which depends on the
-	// per-trial converged chain's last vertex and stays inside the
-	// loop).  Every trial that reaches the non-delta branch, or the
-	// delta-without-`pLight` branch, was recomputing the identical JH
-	// LUT uplift.  Bit-identical to calling SMSLeNM(lightSample.Le, nm)
-	// fresh inside the loop; this only moves WHEN it is computed.
-	//
-	// LAZY: the delta-light-with-`pLight` case (below) never reads
-	// `meshLeNM` at all — it uses `pLight->emittedRadianceNM` instead —
-	// and that is the DOMINANT case for ordinary point/spot lights.
-	// `lightSample.isDelta`/`.pLight` are already fixed for every trial
-	// (set once when `lightSample` was drawn), so the guard is a single
-	// loop-invariant check, not a per-trial branch: skip the LUT lookup
-	// entirely when it can't be used, instead of computing it "hoisted"
-	// but unused.
+	// Only a legacy delta sample without its light pointer uses RGB
+	// uplift. Area emitters must be evaluated per solved-chain direction.
 	Scalar meshLeNM = 0;
-	if( !( lightSample.isDelta && lightSample.pLight ) ) {
+	if( lightSample.isDelta && !lightSample.pLight ) {
 		meshLeNM = SMSLeNM( lightSample.Le, nm );
 	}
 
@@ -8297,7 +8282,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		Scalar chainThroughput = EvaluateChainThroughputNM(
 			pos, lightSample.position, mResult.specularChain, nm );
 
-		// Direction from last specular vertex to light (for cosine eval)
+		// Direction from light to last specular vertex (for emission eval)
 		const ManifoldVertex& lastSpec = mResult.specularChain.back();
 		Vector3 dirSpecToLight = Vector3Ops::mkVector3(
 			lastSpec.position, lightSample.position );
@@ -8319,7 +8304,9 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		} else {
 			cosAtLight = fabs( Vector3Ops::Dot( lightSample.normal, dirSpecToLight ) );
 			if( cosAtLight <= 0 ) continue;
-			Le = meshLeNM;	// hoisted -- see the comment above the trial loop
+			Le = lightSample.pLuminary ? SMSAreaLeNM( lightSample, dirSpecToLight, nm )
+			: SMSLeNM( lightSample.Le, nm );
+			if( Le <= 0 ) continue;
 		}
 
 		// SMS measure-conversion factor — must match the RGB path exactly
