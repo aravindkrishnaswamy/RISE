@@ -2148,16 +2148,23 @@ namespace RISE
 	//! back to the true outward one (DL-70 `UnflippedGeomNormal()`), the
 	//! shading normal and frame oriented into its hemisphere -- so the
 	//! walk sees the solid's true sides exactly as a single-sided mesh
-	//! does.  A PROVABLY open sheet (`bProvablyNoInterior`: a clipped
-	//! plane) keeps the flipped frame and presents its top on both faces,
-	//! as before (it has no inside for the bottom to face); hair's
-	//! ray-derived normal has no true side and is left alone.
+	//! does.  Only a CLOSED solid is unflipped: an open sheet -- provably
+	//! open (`bProvablyNoInterior`, a clipped plane) or merely not certified
+	//! closed (`bOpenSheet`: a double-sided mesh that is not watertight, a
+	//! Bezier patch set, any non-indexed double-sided mesh) -- keeps the
+	//! flipped frame and presents its top on both faces, as before (review
+	//! round 2: unflipping an OPEN double-sided mesh quad sent its back face
+	//! to the delta-tagged walker, so delta lights could no longer light it
+	//! and BDPT / VCM disagreed with PT).  Hair's ray-derived normal has no
+	//! true side and is left alone.  BDPT / VCM reprice a connection on a
+	//! record rebuilt by PathVertexEval::PopulateRIGFromVertex, which
+	//! replays these flags (BDPTVertex), so they see the same frame.
 	static inline const RayIntersectionGeometric& CompositeLayerFrame(
 		const RayIntersectionGeometric& ri,
 		std::optional<RayIntersectionGeometric>& store
 		)
 	{
-		const bool unflip = ri.bGeomNormalOrientedToRay && ri.HasTrueGeomSide() && !ri.bProvablyNoInterior;
+		const bool unflip = ri.bGeomNormalOrientedToRay && ri.HasTrueGeomSide() && !ri.bProvablyNoInterior && !ri.bOpenSheet;
 		if( !ri.bProvablyNoInterior && !unflip ) {
 			return ri;
 		}

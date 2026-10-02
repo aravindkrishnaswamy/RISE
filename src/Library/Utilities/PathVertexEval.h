@@ -231,6 +231,13 @@ namespace RISE
 			ri.ptIntersection  = vertex.position;
 			ri.vNormal         = vertex.normal;
 			ri.vGeomNormal     = vertex.geomNormal;
+			// DL-341 review round 2: the surface-identity flags, so the
+			// rebuilt record's true side (UnflippedGeomNormal), open-sheet
+			// and no-interior certificates match the live hit's.
+			ri.bGeomNormalOrientedToRay = vertex.bGeomNormalOrientedToRay;
+			ri.bGeomNormalRayDerived    = vertex.bGeomNormalRayDerived;
+			ri.bOpenSheet               = vertex.bOpenSheet;
+			ri.bProvablyNoInterior      = vertex.bProvablyNoInterior;
 			ri.onb             = vertex.onb;
 			ri.ptCoord         = vertex.ptCoord;
 			ri.ptCoord1        = vertex.ptCoord1;

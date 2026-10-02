@@ -719,6 +719,40 @@ void TestPopulateRIG_AmbientIOR()
 //////////////////////////////////////////////////////////////////////
 // main
 //////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////
+// TestPopulateRIG_SurfaceIdentityFlags (DL-341 review round 2)
+//
+// The four surface-identity booleans BDPTVertex mirrors.  Same-struct
+// booleans, so per the file header they need distinguishing patterns: four
+// ONE-HOT passes (each flag true alone) make every pair differ in some pass,
+// so a dropped flag OR a swapped pair fails; the all-false pass is the
+// default.  Before the fields existed a rebuilt record always read all four
+// false, so `UnflippedGeomNormal()` on a double-sided mesh vertex returned
+// the ray-facing normal and a composite repriced the connection in the
+// flipped frame its Scatter had unflipped.
+//////////////////////////////////////////////////////////////////////
+void TestPopulateRIG_SurfaceIdentityFlags()
+{
+	std::cout << "Testing PopulateRIGFromVertex surface-identity flags (one-hot passes)..." << std::endl;
+	for( int hot = -1; hot < 4; ++hot ) {
+		BDPTVertex v = MakeSentinelSurfaceVertex();
+		v.bGeomNormalOrientedToRay = ( hot == 0 );
+		v.bGeomNormalRayDerived    = ( hot == 1 );
+		v.bOpenSheet               = ( hot == 2 );
+		v.bProvablyNoInterior      = ( hot == 3 );
+		RayIntersectionGeometric ri( Ray( Point3( 0, 0, 0 ), Vector3( 0, 0, -1 ) ), nullRasterizerState );
+		ri.bGeomNormalOrientedToRay = !v.bGeomNormalOrientedToRay;
+		ri.bGeomNormalRayDerived    = !v.bGeomNormalRayDerived;
+		ri.bOpenSheet               = !v.bOpenSheet;
+		ri.bProvablyNoInterior      = !v.bProvablyNoInterior;
+		PopulateRIGFromVertex( v, ri );
+		Check( ri.bGeomNormalOrientedToRay == ( hot == 0 ), "bGeomNormalOrientedToRay should mirror the vertex" );
+		Check( ri.bGeomNormalRayDerived    == ( hot == 1 ), "bGeomNormalRayDerived should mirror the vertex" );
+		Check( ri.bOpenSheet               == ( hot == 2 ), "bOpenSheet should mirror the vertex" );
+		Check( ri.bProvablyNoInterior      == ( hot == 3 ), "bProvablyNoInterior should mirror the vertex" );
+	}
+}
+
 int main()
 {
 	std::cout << "=== BDPTVertexRIGRebuildTest ===" << std::endl;
@@ -727,6 +761,7 @@ int main()
 	TestPopulateRIG_DefaultsAlsoCopy();
 	TestPopulateRIG_MixedBooleanPatterns();
 	TestPopulateRIG_AmbientIOR();
+	TestPopulateRIG_SurfaceIdentityFlags();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;
