@@ -121,6 +121,10 @@
 //      F3  a random-walk body coincident with the walker's exit face on
 //          the WALKER's side (an inset, an open sheet): nothing may cross
 //          into it; the sheet row is a DL-409 pin.
+//      F4  a NON-touching random-walk mesh neighbour whose box contains
+//          part of the walker, wound outward or INWARD: no crossing
+//          (round 2 read the inward one inside-out); the certified
+//          inward row is a pin at master's own 0.766.
 //    Usage: [--unit-only] [--trials K (default 4)] [--only <label substring>]
 //
 //  Author: RISE debt-cleanup, slice `debt-dl49`
@@ -1909,6 +1913,86 @@ namespace
 		}
 	}
 
+	//! Review round 2 of DL-370 (its fixture, transcribed): a conservative
+	//! random-walk cube A (single-sided mesh) seen orthographically, NOT
+	//! touching a random-walk octahedron B (double-sided indexed mesh) whose
+	//! bounding box contains part of A, white furnace.  `variant` 0: B
+	//! wound OUTWARD (plus one duplicated triangle, so uncertified); 1: B
+	//! wound INWARD, uncertified the same way; 2: B wound inward with no
+	//! duplicate, so certified watertight.  The walk must not cross into
+	//! B from outside it, whatever B's winding: round 2's true-facing test
+	//! read an inward-wound B inside-out (variant 1: master 0.9989 ->
+	//! 0.8225; variant 2: 0.7658 -> 0.6640).  Variant 2 reads 0.766 on
+	//! master already (a random-walk mesh wound inward, an authoring error,
+	//! loses energy at its own entry gate), so it is pinned at that value.
+	std::string BuildWindingScene( int variant, unsigned int samples )
+	{
+		std::ostringstream s;
+		s << std::setprecision( 17 );
+		s << "RISE ASCII SCENE 7\n";
+		s << "film\n{\n\twidth 32\n\theight 32\n}\n\n";
+		s << "orthographic_camera\n{\n\tlocation -3 0.55 0.55\n\tlookat 0 0.55 0.55\n\tup 0 1 0\n\tviewport_scale 0.36 0.36\n}\n\n";
+		s << "uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n\n";
+		for( const char* m : { "mA", "mB" } ) {
+			s << "randomwalk_sss_material\n{\n\tname " << m
+			  << "\n\tior 1.5\n\tabsorption 0\n\tscattering 2\n\tg 0.0\n\troughness 0\n\tmax_bounces 8192\n}\n\n";
+		}
+		s << "indexedmesh_geometry\n{\n\tname geoA\n"
+		  << "\tvertex -0.2 -0.2 -0.2\n\tvertex 0.2 -0.2 -0.2\n\tvertex 0.2 0.2 -0.2\n\tvertex -0.2 0.2 -0.2\n"
+		  << "\tvertex -0.2 -0.2 0.2\n\tvertex 0.2 -0.2 0.2\n\tvertex 0.2 0.2 0.2\n\tvertex -0.2 0.2 0.2\n"
+		  << "\ttriangle 0 3 2\n\ttriangle 0 2 1\n\ttriangle 4 5 6\n\ttriangle 4 6 7\n\ttriangle 0 4 7\n\ttriangle 0 7 3\n"
+		  << "\ttriangle 1 2 6\n\ttriangle 1 6 5\n\ttriangle 0 1 5\n\ttriangle 0 5 4\n\ttriangle 3 7 6\n\ttriangle 3 6 2\n"
+		  << "\tdouble_sided FALSE\n\tface_normals TRUE\n}\n\n";
+		// Octahedron |x| + |y| + |z| <= 1; `out` lists each face wound outward.
+		const int out[8][3] = { {0,2,4},{0,5,2},{0,4,3},{0,3,5},{1,4,2},{1,2,5},{1,3,4},{1,5,3} };
+		s << "indexedmesh_geometry\n{\n\tname geoB\n"
+		  << "\tvertex 1 0 0\n\tvertex -1 0 0\n\tvertex 0 1 0\n\tvertex 0 -1 0\n\tvertex 0 0 1\n\tvertex 0 0 -1\n";
+		const bool inward = variant != 0;
+		for( const auto& t : out ) {
+			s << "\ttriangle " << t[0] << " " << ( inward ? t[2] : t[1] ) << " " << ( inward ? t[1] : t[2] ) << "\n";
+		}
+		if( variant != 2 ) {
+			s << "\ttriangle 0 " << ( inward ? "4 2" : "2 4" ) << "\n";		// duplicate: uncertified
+		}
+		s << "\tdouble_sided TRUE\n\tface_normals TRUE\n}\n\n";
+		s << "standard_object\n{\n\tname A\n\tgeometry geoA\n\tmaterial mA\n\tposition 0.5 0.55 0.55\n}\n\n";
+		s << "standard_object\n{\n\tname B\n\tgeometry geoB\n\tmaterial mB\n\tposition 1.2 0 0\n}\n\n";
+		s << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
+		s << "pathtracing_pel_rasterizer\n{\n\tsamples " << samples
+		  << "\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n\tpathguiding FALSE\n\tadaptive_max_samples 0\n"
+		  << "\tradiance_map white\n\tradiance_scale 1\n\tradiance_background TRUE\n}\n\n";
+		s << "file_rasterizeroutput\n{\n\tpattern rendered/dl370_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+		return s.str();
+	}
+
+	void TestNeighbourWinding( const unsigned int trials, const std::string& only )
+	{
+		std::cout << "F4: non-touching random-walk mesh neighbour, both windings (DL-370), n=" << trials << std::endl;
+		const char* names[3] = { "outward uncertified neighbour", "inward uncertified neighbour", "inward certified neighbour" };
+		const double expected[3] = { 1.0, 1.0, 0.7658 };
+		unsigned int seed = 37300;
+		for( int v = 0; v < 3; ++v ) {
+			const std::string label = std::string( "F4: random_walk/PT " ) + names[v];
+			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
+			const std::string path = WriteScene( BuildWindingScene( v, 64 ), "dl370wind" );
+			Check( !path.empty(), label + ": scene file written" );
+			std::vector<double> m;
+			bool allValid = true;
+			for( unsigned int t = 0; t < trials; ++t ) {
+				const double mi = RenderFurnaceMean( path, seed++ );
+				if( !( mi > 0 ) ) allValid = false;
+				m.push_back( mi );
+			}
+			std::remove( path.c_str() );
+			Check( allValid, label + ": every render finite and non-black" );
+			if( !allValid ) continue;
+			const Stats st = Summarize( m );
+			std::cout << std::setprecision( 6 ) << "    " << label.substr( 4 ) << " spp=64: image mean " << st.mean << " +/- " << st.sd
+				<< " (sd of one render; expected " << expected[v] << ", band 0.01)" << std::endl;
+			Check( std::fabs( st.mean - expected[v] ) < 0.01, label + ": image mean within band of its expected value" );
+		}
+	}
+
 	void TestTouchingSSSRoom( const unsigned int trials, const std::string& only )
 	{
 		std::cout << "F: closed room of touching conservative SSS slabs (DL-370), n=" << trials << std::endl;
@@ -1986,6 +2070,7 @@ int main( int argc, char** argv )
 		TestTouchingSSSRoom( trials, only );
 		TestTouchingSSSPair( trials, only );
 		TestCoincidentOwnSideNeighbour( trials, only );
+		TestNeighbourWinding( trials, only );
 	}
 	std::cout << "=== " << passCount << " passed, " << failCount << " failed ===" << std::endl;
 	return failCount == 0 ? 0 : 1;

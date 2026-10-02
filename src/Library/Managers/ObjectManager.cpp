@@ -1337,6 +1337,33 @@ const IObject* ObjectManager::RandomWalkObjectContaining( const Point3& ptWorld,
 		if( !pMat || !pMat->GetRandomWalkSSSParams() ) {
 			return;
 		}
+		// (1) A body that can sign a distance answers containment exactly
+		// and WINDING-INDEPENDENTLY: an analytic solid in closed form, a
+		// certified-watertight mesh by a parity count of every crossing
+		// (TriangleMeshGeometryIndexed::RayParityInsideTest), a CSG
+		// composite by its composed field.  Only the sign is read; 0 is
+		// "no information" (a CSG seam) and is not containment.  The
+		// budget is an effort hint, never a range refusal.
+		Scalar f = 0;
+		bool exact = false;
+		if( obj->SignedDistanceLower( ptWorld, Scalar( 1e-3 ), f, exact ) ) {
+			if( f < 0 ) {
+				found = obj;
+			}
+			return;
+		}
+		// (2) A body that cannot (an open or uncertified mesh, a sheet
+		// family) has no certified inside.  A DOUBLE-SIDED one's winding is
+		// not trustworthy either -- nothing renders it by its winding, and
+		// an inward-wound one read inside-out here (review round 2: 0.9989
+		// -> 0.8225) -- so it is never crossed into (the pre-DL-370
+		// behaviour).  A SINGLE-SIDED one is rendered by its winding, so its
+		// first face along the probe decides: the point is inside iff that
+		// face is LEFT by its TRUE facing (DL-70).
+		const IGeometry* pGeom = obj->GetGeometry();
+		if( pGeom && pGeom->IsDoubleSided() ) {
+			return;
+		}
 		RayIntersection probe( Ray( ptWorld, probeDir ), nullRasterizerState );
 		obj->IntersectRay( probe, RISE_INFINITY, true, true, false );
 		if( probe.geometric.bHit && !probe.geometric.bProvablyNoInterior &&
