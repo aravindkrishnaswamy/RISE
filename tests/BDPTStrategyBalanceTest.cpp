@@ -4264,6 +4264,123 @@ static void TestRandomWalkSphereEmptyContainerV()
 	RunSSSTopology( "topology V (roughness-0.8 randomwalk_sss_material closed sphere, depth 16, 1024 spp)", kSceneRandomWalkSphereV, 16, 1024, 0, 0.0060 );
 }
 
+//////////////////////////////////////////////////////////////////////
+// DL-375: a random-walk sphere lit by a DELTA light (omni / spot).  The
+// fixture is VCMStrategyBalanceTest's DL-317 D1/D2 scene: a Lambertian
+// wall, the sphere in front of it, the light behind the wall plane off its
+// edge, so the wall is lit ONLY through the sphere.  Two regions:
+//   sphere pixels (S1/S2): the sphere seen DIRECTLY.  Before DL-375 no
+//     BDPT strategy reached light -> sphere -> walk -> exit -> camera: the
+//     eye family's random-walk entry was non-connectible (no NEE /
+//     connection) and BSDF sampling onward never hits a point light, and
+//     the light family's random-walk entry could not splat either.  BDPT
+//     read ~-98.6% of PT, which NEEs from the exit (RandomWalkEntryBSDF).
+//   wall pixels (D1/D2): light -> sphere -> walk -> exit -> wall ->
+//     camera.  Before DL-375 only the light-sampled jump family reached
+//     it; now the eye family does (NEE at its random-walk entry), the
+//     light family is cut there by the by-path partition
+//     (BDPTUtilities::UsableLightSubpathLength), and the row checks that
+//     the path is counted exactly once.
+//////////////////////////////////////////////////////////////////////
+static const char* kSceneDeltaLitRandomWalkDL375 =
+	"film\n{\n\twidth 32\n\theight 32\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
+	"randomwalk_sss_material\n{\n\tname mat_rw\n\tior 1.3\n\tabsorption 0.1\n"
+		"\tscattering 10.0\n\tg 0.0\n\troughness 0.3\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_alb_d\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"lambertian_material\n{\n\tname mat_lamb_d\n\treflectance pnt_alb_d\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_wall\n\tpta -1 -1 0\n\tptb 1 -1 0\n\tptc 1 1 0\n\tptd -1 1 0\n}\n\n"
+	"standard_object\n{\n\tname obj_wall\n\tgeometry quad_wall\n\tmaterial mat_lamb_d\n}\n\n"
+	"sphere_geometry\n{\n\tname sph_d\n\tradius 0.55\n}\n\n"
+	"standard_object\n{\n\tname obj_sph_d\n\tgeometry sph_d\n\tmaterial mat_rw\n\tposition 0 -0.45 0.6\n}\n\n";
+
+static const char* kLightOmniDL375 =
+	"omni_light\n{\n\tname lgt\n\tpower 20\n\tcolor 1 1 1\n\tposition 1.8 -0.4 -0.3\n}\n";
+
+static const char* kLightSpotDL375 =
+	"spot_light\n{\n\tname lgt\n\tposition 1.8 -0.4 -0.3\n\ttarget 0 -0.45 0.6\n\tinner 20.0\n\touter 30.0\n\tcolor 1 1 1\n\tpower 20\n}\n";
+
+//! Nine dilated sample points per pixel against the sphere (pinhole at
+//! (0,0,3.5), fov 30, 32x32, sphere r 0.55 at (0,-0.45,0.6)): 0 hits is a
+//! wall pixel, 9 a sphere-interior pixel.  `row` counts from the top.
+static int SphereHitsDL375( int row, int col )
+{
+	const double t = std::tan( 15.0 * 3.14159265358979323846 / 180.0 );
+	const double c[3] = { 0.0, -0.45, 0.6 }, o[3] = { 0.0, 0.0, 3.5 };
+	int hits = 0;
+	for( int di = -1; di <= 1; di++ ) for( int dj = -1; dj <= 1; dj++ ) {
+		const double x = ( col + dj + 0.5 ) / 16.0 - 1.0, y = 1.0 - ( row + di + 0.5 ) / 16.0;
+		double d[3] = { x * t, y * t, -1.0 };
+		const double l = std::sqrt( d[0]*d[0] + d[1]*d[1] + d[2]*d[2] );
+		for( double& v : d ) v /= l;
+		const double oc[3] = { o[0]-c[0], o[1]-c[1], o[2]-c[2] };
+		const double b = d[0]*oc[0] + d[1]*oc[1] + d[2]*oc[2];
+		const double q = b*b - ( oc[0]*oc[0] + oc[1]*oc[1] + oc[2]*oc[2] - 0.55*0.55 );
+		if( q > 0 ) hits++;
+	}
+	return hits;
+}
+
+//! One salted render; the achromatic means over sphere-interior and wall
+//! pixels.
+static bool RenderRegionMeansDL375( const std::string& rasterizer, const char* light, unsigned salt,
+	double& outSphere, double& outWall )
+{
+	const std::string scene = std::string( "RISE ASCII SCENE 7\n" ) + rasterizer + kSceneDeltaLitRandomWalkDL375 + light;
+	const std::string path = WriteSceneToTempFile( scene.c_str(), "dl375" );
+	if( path.empty() ) return false;
+	bool ok = false;
+	IJobPriv* pJob = nullptr;
+	if( RISE_CreateJobPriv( &pJob ) && pJob ) {
+		if( pJob->LoadAsciiSceneViaCst( path.c_str() ) ) {
+			pJob->RemoveRasterizerOutputs();
+			CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
+			GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "test capture output" );
+			pJob->GetRasterizer()->AddRasterizerOutput( pCap );
+			SobolSamplerTestHooks::ValueSalt().store( SobolSequence::HashCombine( 0x375u, salt ) );
+			std::srand( 3750u + salt );
+			const bool bRendered = pJob->Rasterize();
+			SobolSamplerTestHooks::ValueSalt().store( 0u );
+			if( bRendered && pCap->width == 32 && pCap->height == 32 ) {
+				double accS = 0, accW = 0; int nS = 0, nW = 0;
+				for( int row = 0; row < 32; row++ ) for( int col = 0; col < 32; col++ ) {
+					const int h = SphereHitsDL375( row, col );
+					const RISEColor& px = pCap->pixels[ row * 32 + col ];
+					const double v = ( px.base.r + px.base.g + px.base.b ) * px.a / 3.0;
+					if( h == 9 ) { accS += v; nS++; }
+					else if( h == 0 ) { accW += v; nW++; }
+				}
+				outSphere = nS ? accS / nS : 0;
+				outWall = nW ? accW / nW : 0;
+				ok = nS > 0 && nW > 0 && std::isfinite( outSphere ) && std::isfinite( outWall ) && outSphere > 0;
+			}
+			safe_release( pCap );
+		}
+		safe_release( pJob );
+	}
+	std::remove( path.c_str() );
+	return ok;
+}
+
+static void RunDeltaLitRandomWalkRowDL375( const char* name, const char* light, int spp,
+	double sphereBand, double wallBand )
+{
+	std::cout << "Testing DL-375 " << name << std::endl;
+	double ptS = 0, ptW = 0, bdS = 0, bdW = 0;
+	const bool ok = RenderRegionMeansDL375( SSSRasterizer( "pt", 16, spp ), light, 1u, ptS, ptW )
+		&& RenderRegionMeansDL375( SSSRasterizer( "bdpt", 16, spp ), light, 1u, bdS, bdW );
+	Check( ok, ( std::string( "DL-375 renders produced output: " ) + name ).c_str() );
+	if( !ok ) return;
+	CheckSSSMeanBand( ( std::string( "DL-375 sphere pixels, BDPT / PT: " ) + name ).c_str(), ptS, bdS, sphereBand );
+	CheckSSSMeanBand( ( std::string( "DL-375 wall pixels (lit only through the walk), BDPT / PT: " ) + name ).c_str(), ptW, bdW, wallBand );
+}
+
+static void TestDeltaLitRandomWalkDL375()
+{
+	RunDeltaLitRandomWalkRowDL375( "omni (S1 sphere / D1 wall)", kLightOmniDL375, 2048, 0.05, 0.15 );
+	RunDeltaLitRandomWalkRowDL375( "spot (S2 sphere / D2 wall)", kLightSpotDL375, 2048, 0.05, 0.05 );
+}
+
 // DL-346: a conservative environment-lit medium has L=1 independently
 // of every MIS implementation. Index-matched boundaries and a white floor
 // conserve radiance; max_volume_bounce 256 makes the omitted tail negligible.
@@ -4339,6 +4456,11 @@ int main( int argc, char** argv )
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
+	if( argc == 2 && std::strcmp(argv[1], "--dl375-only") == 0 ) {
+		TestDeltaLitRandomWalkDL375();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
 	if( argc == 2 && std::strcmp(argv[1], "--weave-gap-only") == 0 ) {
 		TestBacklitThinCurtain();
 		TestGappedCurtainAreaLight();
@@ -4368,7 +4490,7 @@ int main( int argc, char** argv )
 	if( argc > 1 ) {
 		if( argc != 3 || std::strcmp(argv[1], "--spectral-only") != 0 ||
 			(std::strcmp(argv[2], "1") != 0 && std::strcmp(argv[2], "2") != 0) ) {
-			std::cerr << "Usage: BDPTStrategyBalanceTest [--spectral-only 1|2 | --spectral-aggregate-unit | --materials-only | --guided-only | --weave-gap-only | --sss-only | --back-face-only | --narrow-fov-only]" << std::endl;
+			std::cerr << "Usage: BDPTStrategyBalanceTest [--spectral-only 1|2 | --spectral-aggregate-unit | --materials-only | --guided-only | --weave-gap-only | --sss-only | --dl375-only | --back-face-only | --narrow-fov-only]" << std::endl;
 			return 2;
 		}
 		spectralSampleScale = std::strcmp(argv[2], "2") == 0 ? 2 : 1;
@@ -4410,6 +4532,7 @@ int main( int argc, char** argv )
 	TestWeaveGapBoxAreaOutside();
 	TestRoughSSSEmptyContainerU();
 	TestRandomWalkSphereEmptyContainerV();
+	TestDeltaLitRandomWalkDL375();
  TestEnvironmentScatteringMediumDL346();
 	TestBackFaceEmitterZ();
 	TestNarrowFovSplatW();
