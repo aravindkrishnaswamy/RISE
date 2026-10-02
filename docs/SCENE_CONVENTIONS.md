@@ -1489,11 +1489,15 @@ starting point, not identical.
 deprecated chunk: the glTF importer and the Blender bridge build
 `pbr_metallic_roughness_material` / `ggx_material` / `coated_material` /
 `fabric_material` / `randomwalk_sss_material` only, and `add_wetness`
-wraps with `coated_material`.  What still emits one, deliberately left
-unchanged because a swap is not look-neutral and the tests pin the kinds
-(DL-400): the agent texture recipes `rough_stone` and `aged_bronze`
-(`cooktorrance_material`) and `brushed_metal` (`ward_anisotropic_material`)
-in `AgentSession.cpp`, plus the eval fixtures that name those kinds.  The
+wraps with `coated_material`.  The agent texture recipes
+`rough_stone` and `aged_bronze` (were `cooktorrance_material`) and
+`brushed_metal` (was `ward_anisotropic_material`) in `AgentSession.cpp`
+emit `ggx_material` since DL-400 (2026-10-02; `conductor` with
+`extinction 1` for the first two, `schlick_f0` for the third; a measured
+look change, numbers in the DL-400 ledger row); the eval
+fixtures that name the legacy kinds are hand-written scenes and keep them.
+The GUI node palettes list the deprecated kinds last with a
+"(deprecated -> ...)" badge (DL-401).  The
 agent's skill docs now steer to the modern chunks
 (`skills/agent/materials-and-media-basics.md`).  The 3ds Max plugin
 (`src/3DSMax`) calls the legacy `IJob` entry points directly and is not

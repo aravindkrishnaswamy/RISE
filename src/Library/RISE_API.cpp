@@ -12234,6 +12234,17 @@ namespace RISE
 		return true;
 	}
 
+	bool RISE_API_SceneEditController_PaletteKeywordDeprecation(
+		SceneEditController* p, const char* keyword,
+		char* outReplacement, unsigned int outReplacementLen )
+	{
+		if( !p || !keyword ) return false;
+		const std::string replacement = p->PaletteKeywordDeprecation( String( keyword ) );
+		if( replacement.empty() ) return false;
+		if( outReplacement && outReplacementLen > 0 ) CopyToBuf( String( replacement.c_str() ), outReplacement, outReplacementLen );
+		return true;
+	}
+
 	bool RISE_API_SceneEditController_RemoveEntity(
 		SceneEditController* p, int category, const char* name,
 		char* outStatus, unsigned int outStatusLen,

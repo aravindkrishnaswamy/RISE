@@ -347,8 +347,8 @@ confirmed, `insert_material_scaffold {family:"rough_stone",
 name:"block1", tone:"0.5 0.48 0.44", wear:0.6, scale:1.2}` expands a
 family template (`weathered_wood`, `rough_stone`, `brushed_metal`,
 `aged_bronze`, `glazed_ceramic`) into a wired painter graph -- here a
-`cooktorrance_material` (`tmpl_block1_mat`) with both `rd` and `facets`
-bound to real painters -- in place of hand-typing the painter chain
+`ggx_material` (`tmpl_block1_mat`) with `rd` and both
+`alphax`/`alphay` bound to real painters -- in place of hand-typing the painter chain
 yourself; point any `standard_object.material` at `tmpl_block1_mat` and
 continue the refine pass from there.
 
