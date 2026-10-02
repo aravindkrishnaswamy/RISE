@@ -221,6 +221,14 @@ namespace RISE
 				if( d.unnamedRepeatable ) {
 					out += ",\"unnamedRepeatable\":true";
 				}
+				// DL-323 follow-through: emitted ONLY when true, like unnamedRepeatable.  Tells the agent
+				// the chunk still works but a modern replacement exists (and how to translate to it);
+				// the description is ALSO prefixed with the notice, so a reader of `description` alone
+				// sees it too.
+				if( d.deprecated ) {
+					out += ",\"deprecated\":true,\"replacement\":";
+					AppendJsonString( out, d.replacement );
+				}
 				if( !d.description.empty() ) {
 					out += ",\"description\":";
 					AppendJsonString( out, d.description );

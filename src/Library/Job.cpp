@@ -12728,7 +12728,8 @@ bool Job::LoadAsciiSceneViaCst( const char* filename )
 	}
 
 	std::vector<std::string> diags;
-	RISE::Cst::DeriveToJob( *doc, *this, &diags );
+	// DL-323 follow-through: THE real scene load -- the only DeriveToJob caller that warns about deprecated chunk types.
+	RISE::Cst::DeriveToJob( *doc, *this, &diags, nullptr, nullptr, /*warnDeprecated=*/true );
 	if( !diags.empty() ) {
 		for( size_t i = 0; i < diags.size() && i < 8u; ++i ) {
 			GlobalLog()->PrintEx( eLog_Error, "Job::LoadAsciiSceneViaCst:: derive diagnostic: %s", diags[i].c_str() );
