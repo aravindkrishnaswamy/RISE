@@ -32,6 +32,7 @@
 
 #include "../Interfaces/IRasterImage.h"
 #include "../Interfaces/IPixelFilter.h"
+#include "../Interfaces/ICamera.h"
 #include "../Utilities/Reference.h"
 #include "../Utilities/Color/Color.h"
 #include "../Utilities/Color/Color_Template.h"
@@ -73,18 +74,19 @@ namespace RISE
 				);
 
 			//! DL-294: THE film-membership rule for a fractional splat
-			//! position (image-row convention: y = 0 at the top).  The
-			//! splat's home pixel is the NEAREST pixel centre, pixel i
-			//! covering [i - 0.5, i + 0.5) -- the convention every
-			//! rasterizer samples its eye subpaths in (pixel (x, row y)
-			//! at screen (x + u - 0.5, H - y + v - 0.5)), so a
-			//! light-traced splat lands on the film exactly where an eye
-			//! sample could have.  The camera's world-to-raster
-			//! projection deliberately does NOT clip to the film
-			//! (BDPTCameraUtilities::InRasterGuardBand): this function
-			//! is the one place that decides.  FALSE (and @a ix / @a iy
-			//! untouched) when the home pixel is off the film or the
-			//! position is not finite.
+			//! position (FILM coordinates: fx = screen x, fy = H - screen
+			//! y, so fy = 0 at the top).  The splat's home pixel is the
+			//! pixel CONTAINING it -- equivalently the nearest pixel
+			//! centre, centres at (i + 0.5, j + 0.5) -- in the convention
+			//! every rasterizer samples its eye subpaths in (DL-368:
+			//! ICamera.h's RasterConvention, pixel (x, row y) covering
+			//! screen [x, x+1) x [H-1-y, H-y)), so a light-traced splat
+			//! lands on the film exactly where an eye sample could have.
+			//! The camera's world-to-raster projection deliberately does
+			//! NOT clip to the film (BDPTCameraUtilities::InRasterGuardBand):
+			//! this function is the one place that decides.  FALSE (and
+			//! @a ix / @a iy untouched) when the home pixel is off the
+			//! film or the position is not finite.
 			static inline bool NearestPixel(
 				const Scalar fx,
 				const Scalar fy,
@@ -93,14 +95,12 @@ namespace RISE
 				unsigned int& ix,
 				unsigned int& iy )
 			{
-				const Scalar rx = fx + Scalar( 0.5 );
-				const Scalar ry = fy + Scalar( 0.5 );
-				if( !( rx >= Scalar( 0 ) && ry >= Scalar( 0 ) &&
-				       rx < static_cast<Scalar>( w ) && ry < static_cast<Scalar>( h ) ) ) {
+				if( !( fx >= Scalar( 0 ) && fy >= Scalar( 0 ) &&
+				       fx < static_cast<Scalar>( w ) && fy < static_cast<Scalar>( h ) ) ) {
 					return false;
 				}
-				ix = static_cast<unsigned int>( rx );
-				iy = static_cast<unsigned int>( ry );
+				ix = static_cast<unsigned int>( fx );
+				iy = static_cast<unsigned int>( fy );
 				return true;
 			}
 

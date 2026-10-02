@@ -226,12 +226,14 @@ namespace RISE
 		/// RasterFromLensPoint`) do NOT decide which raster points are on
 		/// the film -- the FILM does, in the same pixel convention the
 		/// eye subpaths are sampled in (every rasterizer draws pixel
-		/// (x, row y) at screen (x + u - 0.5, H - y + v - 0.5), and
-		/// `SplatFilm` and the unfiltered splat fallbacks round a splat
-		/// to the nearest pixel centre in that convention).  Before
-		/// DL-294 the camera cut at its NOMINAL film [0, W) x [0, H),
-		/// which is half a pixel off that convention on both axes: the
-		/// eye film is screen x in [-0.5, W - 0.5), y in [0.5, H + 0.5),
+		/// (x, row y) at `RasterConvention::PixelToScreen`, ICamera.h,
+		/// and `SplatFilm` and the unfiltered splat fallbacks send a
+		/// splat to the pixel containing it in that convention).  Since
+		/// DL-368 that convention IS the camera's nominal film
+		/// [0, W) x [0, H); the band below stays convention-agnostic.
+		/// Before DL-294 the camera cut at its NOMINAL film while the
+		/// rasterizers sampled half a pixel off it on both axes: the
+		/// eye film was screen x in [-0.5, W - 0.5), y in [0.5, H + 0.5),
 		/// so the camera rejected the strips x in [-0.5, 0) and
 		/// y in [H, H + 0.5) that lie ON it (the strips it accepted in
 		/// their place lie off it and were rightly dropped by the film),

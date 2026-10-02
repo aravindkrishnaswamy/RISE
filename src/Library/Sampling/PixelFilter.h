@@ -15,6 +15,7 @@
 #define PIXELFILTER_
 
 #include "../Interfaces/IPixelFilter.h"
+#include "../Interfaces/ICamera.h"
 
 namespace RISE
 {
@@ -33,7 +34,7 @@ namespace RISE
 			{
 				Point2 w;
 				const Scalar weight = warp( random, canonical, w );
-				warped = Point2( w.x+x, w.y+y );
+				warped = Point2( w.x + x + RasterConvention::kPixelCentre, w.y + y + RasterConvention::kPixelCentre );
 				return weight;
 			}
 

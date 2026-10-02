@@ -4542,10 +4542,22 @@ ConnectAndEvaluateImplCore(
 	}
 
 	//
-	// Case: s == 1, t > 0
+	// Case: s == 1, t >= 2
 	// Connect the last eye vertex to a new light sample (next event estimation)
 	//
-	if( s == 1 )
+	// DL-354: (s, t) == (1, 1) -- the light vertex on an emitter connected
+	// straight to the camera -- is NOT this case.  It used to enter here,
+	// find eyeVerts[0] (the CAMERA) failing the surface/medium check below
+	// and return invalid, so the strategy was never evaluated while
+	// MISWeight(0, 2) (the camera ray hitting the same emitter) still
+	// counted it in its denominator: a directly visible emitter lost the
+	// (1,1) share of its energy, r^2 / (1 + r^2) with r the light's area
+	// density over the per-pixel camera density at the emitter point --
+	// 40 % at 100 x 75 on `sms_k2_flatslab`'s 0.08-unit luminaire, falling
+	// as 1/(W H)^2 with resolution.  It is now evaluated by the t == 1
+	// case below, whose LIGHT-vertex branch was written for it and was
+	// unreachable.
+	if( s == 1 && t >= 2 )
 	{
 		const BDPTVertex& eyeEnd = eyeVerts[t - 1];
 		const BDPTVertex& lightStart = lightVerts[0];
@@ -4644,7 +4656,8 @@ ConnectAndEvaluateImplCore(
 			woAtEye = Vector3Ops::mkVector3( eyeVerts[t - 2].position, eyeEnd.position );
 			woAtEye = Vector3Ops::Normalize( woAtEye );
 		} else {
-			// t == 1 means connecting camera directly to light, handled by t==0 case above
+			// Unreachable: this case is entered only for t >= 2 (DL-354;
+			// (1, 1) is the t == 1 case below).
 			return result;
 		}
 
@@ -5044,12 +5057,20 @@ ConnectAndEvaluateImplCore(
 				Scalar(1.0) : fabs( Vector3Ops::Dot( lightEnd.geomNormal, dirToCam ) );
 			const Scalar G = absCosLight / distSq;
 
+			// DL-354: this branch was unreachable until (1,1) was routed
+			// here, and it never applied the connection's medium
+			// transmittance -- the camera ray hitting the same emitter
+			// (s == 0) does, so a fogged view of a visible emitter would
+			// have been over-bright by the (1,1) share.
+			const V Tr_conn_11 = EvalConnTr<Tag>( self, lightEnd.position, camPos, scene, caster,
+				lightEnd.pMediumObject, lightEnd.pMediumVol, tag, (sceneAlpha ? &boundaryHits : nullptr) );
+
 			// Contribution association preserved per tag (Pel parenthesises the
 			// G*We/pdf factor; NM chains it left-to-right) -- value-identical.
 			if constexpr( Traits::is_pel ) {
-				result.contribution = LeToCam * (G * We / pdfLight);
+				result.contribution = LeToCam * Tr_conn_11 * (G * We / pdfLight);
 			} else {
-				result.contribution = LeToCam * G * We / pdfLight;
+				result.contribution = LeToCam * Tr_conn_11 * G * We / pdfLight;
 			}
 			result.rasterPos = rasterPos;
 			result.needsSplat = true;
@@ -6538,6 +6559,14 @@ unsigned int GenerateLightSubpathImpl(
 		// DL-09: the light endpoint's graded medium and index (SeedFromPoint
 		// recorded n at the light point), for s==1 connections.
 		GradedIndexMedium::RecordVertex( iorStack, v.pGradedMedium, v.gradedIOR );
+		// DL-354: the medium enclosing the light point, the start medium
+		// of the (1,1) light-vertex-to-camera connection's transmittance
+		// (the same role a surface vertex's fields play for (s >= 2, 1)).
+		{
+			const IObject* pMedObjRoot = 0;
+			v.pMediumVol = MediumTracking::GetCurrentMediumWithObject( iorStack, &scene, pMedObjRoot );
+			v.pMediumObject = pMedObjRoot;
+		}
 		vertices.push_back( v );
 	}
 
