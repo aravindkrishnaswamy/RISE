@@ -1,7 +1,7 @@
 # debt-cheapbatch validation (2026-10-02)
 
 Branched from master `a74c400b2`; changes remain in `debt-cheapbatch`.
-Final gates and red proofs are recorded below as they complete.
+Source red proofs, final full-suite variance and serial gates are recorded below.
 
 ## DL-311 stopped experiment
 
@@ -30,9 +30,9 @@ single-render standard deviation.
 
 The original-spp salted measurement used n=16 and took 496 seconds.
 The raised-spp BDPT subset used n=4 and took 388 seconds (including its
-matching Part E control). Historical dense DL-49 red 0.9839 is 7.4 SE
-from 1 at the new budget; historical smooth/RW reds are farther away.
-Rough's historical 0.9929 lies 13.3 SE from 1. The 256-spp spectral
+matching Part E control). At this initial isolated calibration, historical dense DL-49 red 0.9839
+was 7.4 estimated SE from 1; rough red 0.9929 was 13.3 estimated SE.
+These estimates are superseded by the final full-suite measurements below. The 256-spp spectral
 rows took 22.2/22.6 seconds. Restoring the original unsalted helper while
 keeping the new capture contract failed 8/8 salt assertions (110/8);
 restored committed helper passed 118/0. The initial red-proof filter
@@ -222,3 +222,75 @@ and candidate ledger row DL-392 were withdrawn; no causal claim attributes
 the full-suite spread to those RNG streams. Retain the measured-budget
 adjustment and existing explicit value-salt contract. Final rows are
 DL-390 and DL-391 only.
+
+
+## Final five-run Monte Carlo gate
+
+Each full run uses a distinct seed base; each tested default SSS ratio
+averages four independently salted renders per side. The SD below is
+measured directly across five full-run tested means, rather than inferred
+from square-root sample scaling or one run's local delta-method estimate.
+Some individual local SE estimates are larger; these empirical five-run
+SDs describe the tested statistic and are not a universal variance bound.
+
+| SSS row | final spp | five tested ratios | sample SD | band | band/SD |
+|---|---:|---|---:|---:|---:|
+| smooth BDPT | 512 | 0.989989, 1.005970, 1.005010, 0.998938, 1.001830 | 0.00641939 | 0.020 | 3.12 |
+| rough BDPT | 8192 | 1.000150, 1.000750, 1.001050, 1.000510, 1.000440 | 0.000338821 | 0.006 | 17.71 |
+| dense smooth BDPT | 4096 | 0.997308, 0.999644, 1.002450, 1.002760, 0.999146 | 0.00231197 | 0.008 | 3.46 |
+| random-walk BDPT | 128 | 0.990527, 0.993888, 0.999516, 1.013200, 0.991854 | 0.00926903 | 0.100 | 10.79 |
+| smooth PT spectral | 1024 | 0.997182, 0.999543, 1.008230, 1.004790, 1.004640 | 0.00444328 | 0.040 | 9.00 |
+| random-walk PT spectral | 256 | 0.984862, 1.006510, 0.997813, 0.984752, 1.001690 | 0.00991049 | 0.050 | 5.05 |
+
+Historical dense 0.9839 is 6.96 final SD from 1; rough 0.9929 is
+20.96 SD from 1 and 3.25 SD below the lower acceptance edge. The original
+DL-49 physical reds (0.62–0.66 and 0.89–0.91) remain many SD outside.
+SSS seed offsets 0/1000/2000/3000/4000 each passed 406/0 in
+1119.27/1167.01/1178.21/1176.33/1119.20 seconds. The earlier 465.14-second
+preliminary pass used smaller budgets; these are observed whole-test costs,
+not a controlled benchmark of the individual changes.
+
+Weave bases 1000/2000/3000/4000/5000 each passed 217/0 in
+625.98/613.48/607.29/614.11/601.66 seconds. Its n=32 composite BDPT
+normalized means were 1.02215, 1.01815, 0.98449, 0.98443, 0.99486:
+sample SD 0.018208, retained band 0.06 = 3.30 SD. The narrow-fov gap
+error SDs across five full runs were 0.80565/0.24952/0.54308/0.16822
+percentage points for BDPT/VCM/merging-off/Gaussian; their retained
+3/2/3/3-percent bands exceed 3 SD. These five runs predate comment-only
+API corrections and the SSS-only budget adjustment; their executable
+Weave behavior is unchanged on the final production tree.
+
+
+## Final clean build and serial integration gate
+
+Clean library rebuild (`make -C build/make/rise clean`, then `-j8 all`)
+completed in 68.69 seconds with zero warnings. All 17 test targets were
+built individually, checking successful make exit and zero warnings before
+execution. The later SSS-only budget/helper withdrawal was rebuilt with
+zero warnings before its final five runs. Production source is unchanged
+since the clean rebuild; no builds overlapped any test execution.
+
+| Gate | passed / failed | runtime seconds |
+|---|---:|---:|
+| SourceHygieneTest | 167 / 0 | 1.21 |
+| CstDeriveGoldenTest | 458 MATCH, 0 DRIFT, 0 UNCOVERED, 0 STALE | 29.74 |
+| ManifoldSolverTest | all assertions pass | 0.01 |
+| WeaveGapShadowTransmittanceTest | 217 / 0 each, five bases | 3062.52 total |
+| SSSExteriorIndexInvarianceTest | 406 / 0 each, five offsets | 5760.02 total |
+| ExteriorIndexInvarianceTest | 231 / 0 | 447.71 |
+| PTGuidingMISPartitionTest | 185 / 0 | 50.29 |
+| MediumInsideOutsideInvariantTest | 52 / 0 | 489.14 |
+| OIDNAutoDeterminismTest | 51 / 0 | 130.98 |
+| SMSMediumAnchorTest | 27 / 0 | 520.50 |
+| SMSEmitterDirectionTest | 168 / 0 | 60.59 |
+| SMSUniformDispersionTest | 22 / 0 | 238.11 |
+| SMSUniformDispersionTest --shipped | 10 / 0 | 0.24 |
+| SSSRadianceScalingTest | 576256 / 0 | 72.92 |
+| DoubleSidedEmitterTest | 34 / 0 | 14.55 |
+| FrameStoreTest | 123 / 0 | 0.77 |
+| RasterizerDefaultsConsistencyTest | 164 / 0 | 0.36 |
+| AgentEvalCheckTest | 2075 / 0 | 50.09 |
+
+Source proofs and canonical controls are recorded above. The independent
+review verdict is reported with the final branch HEAD after this record
+is committed, so no later documentation edit can stale that verdict.
