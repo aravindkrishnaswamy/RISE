@@ -1,5 +1,6 @@
 #pragma once
-// Shared, undenoised, salted capture support for the cheapbatch SMS regressions.
+// Shared salted capture support for cheapbatch render regressions.
+// Callers disable denoise except the intentional OIDN Auto check.
 #include <cstdio>
 #include <atomic>
 #include <thread>
