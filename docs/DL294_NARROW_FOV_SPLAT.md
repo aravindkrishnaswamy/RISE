@@ -162,6 +162,28 @@ checks) where the fixed build reads 11/0.
 
 ## 5. Evidence
 
+**DL-390 correction (2026-10-02, debt-cheapbatch):** the old
+`RenderSalted` helper had its explicit salt overwritten by `Render`.
+The earlier spread table below is historical and is superseded for the
+current helper by this n=4, seed-1000 audit (sample sd, percent):
+
+| fov | BDPT gap error / sd | VCM gap error / sd | VCM no-merge gap error / sd |
+|---|---|---|---|
+| 1 | +0.362 / 0.946 | -0.174 / 0.394 | +0.237 / 0.274 |
+| 2 | -0.165 / 0.128 | -0.242 / 0.073 | +0.145 / 0.186 |
+| 3 | +0.036 / 0.068 | -1.103 / 0.075 | -0.053 / 0.090 |
+| 5 | +0.037 / 0.017 | -0.201 / 0.166 | +0.002 / 0.033 |
+| 10 | +0.019 / 0.030 | +0.175 / 0.140 | +0.040 / 0.025 |
+
+The retained fov-1 BDPT band 3% is 3.17 sample sd; VCM's 2% and
+no-merge's 3% are 5.08 and 10.95 sd. Other fovs have wider margins.
+Corrected Gaussian-filter measurements and five full-suite gates are in
+[the batch record](DL_CHEAPBATCH_VALIDATION.md). Edge fingerprints remain
+individual salted captures. The transport fix and its red fingerprint
+are unchanged.
+
+### Historical evidence (before the DL-390 helper correction)
+
 Isolated A/B: the fix files reverted to `82de1d42b` (the pre-fix commit
 carrying the new tests), rebuilt, run, restored.  BDPT's render of these
 fixtures is independent of the libc seed (its Sobol streams are keyed by
