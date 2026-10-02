@@ -45,14 +45,19 @@ namespace RISE
 			Point2& warped						///< [in] Warped value
 			) const = 0;
 
-		//! Warps some value as a point on a virtual screen
+		//! Warps some value as a point on a virtual screen, around the
+		//! CENTRE of the pixel whose lower-left screen corner is (x, y):
+		//! the result is the filter's warp offset plus
+		//! (x + RasterConvention::kPixelCentre, y + RasterConvention::kPixelCentre).
+		//! Callers pass (x, height - 1 - row) for image row `row` (DL-368;
+		//! ICamera.h's RasterConvention).
 		/// \return The weight of the warped sample
 		virtual Scalar warpOnScreen(
 			const RandomNumberGenerator& random,///< [in] Random number generator
 			const Point2& canonical,			///< [in] Value to warp
 			Point2& warped,						///< [in] Warped value
-			const unsigned int x,				///< [in] Screen x value
-			const unsigned int y				///< [in] Screen y value
+			const unsigned int x,				///< [in] Screen x of the pixel's left edge
+			const unsigned int y				///< [in] Screen y of the pixel's lower edge
 			) const = 0;
 
 		//! Evaluates the filter at an offset (dx, dy) from the pixel center.

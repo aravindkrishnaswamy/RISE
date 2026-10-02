@@ -1646,7 +1646,8 @@ static void TestTwoLayerLightOutside()
 // world-to-raster inverse (BDPTCameraUtilities::Rasterize) accepted
 // raster x in [0, W) and y in [0, H) -- the camera's NOMINAL film --
 // while every rasterizer samples pixel (x, row y) at screen
-// (x + u - 0.5, H - y + v - 0.5), i.e. the film is x in [-0.5, W - 0.5),
+// (x + u - 0.5, H - y + v - 0.5) (the convention before DL-368, which
+// later moved every rasterizer to the camera's nominal film), i.e. the film is x in [-0.5, W - 0.5),
 // y in [0.5, H + 0.5), and SplatFilm rounds a splat to the nearest
 // pixel CENTRE in that same convention.  The camera rejected the
 // half-pixel strips x in [-0.5, 0) and y in [H, H + 0.5) -- ON that

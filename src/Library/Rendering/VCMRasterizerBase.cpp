@@ -380,7 +380,7 @@ namespace
 		{
 			for( unsigned int x = stride / 2; x < width; x += stride )
 			{
-				const Point2 ptOnScreen( x, height - y );
+				const Point2 ptOnScreen = RasterConvention::PixelCentreToScreen( x, y, height );
 				Ray cameraRay;
 				if( !camera.GenerateRay( rc, cameraRay, ptOnScreen ) ) {
 					continue;

@@ -624,13 +624,11 @@ void PixelBasedPelRasterizer::IntegratePixel(
 				const bool filmMode = (pFilteredFilm != 0);
 				Scalar weight;
 				if( filmMode ) {
-					ptOnScreen = Point2(
-						static_cast<Scalar>(x) + (*m).x - 0.5,
-						static_cast<Scalar>(height-y) + (*m).y - 0.5 );
+					ptOnScreen = RasterConvention::PixelToScreen( x, y, height, (*m).x, (*m).y );
 					weight = 1.0;
 					weights += 1.0;
 				} else {
-					weight = pPixelFilter->warpOnScreen( rc.random, *m, ptOnScreen, x, height-y );
+					weight = pPixelFilter->warpOnScreen( rc.random, *m, ptOnScreen, x, height-1-y );
 					weights += weight;
 				}
 
@@ -778,7 +776,7 @@ void PixelBasedPelRasterizer::IntegratePixel(
 
 		RISEPel	c;
 		Ray ray;
-		if( pScene.GetCamera()->GenerateRay( rc, ray, Point2(x, height-y) ) ) {
+		if( pScene.GetCamera()->GenerateRay( rc, ray, RasterConvention::PixelCentreToScreen( x, y, height ) ) ) {
 			PixelAOV aov;
 			rc.pAOV = pAOVBuffers ? &aov : 0;
 			// Seed from the camera-ray origin: if the camera sits inside a

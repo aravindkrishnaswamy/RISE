@@ -272,11 +272,9 @@ void VCMSpectralRasterizer::IntegratePixel(
 			// BDPTPelRasterizer::IntegratePixel for the rationale
 			// (filter.warp causes severe blur with wide kernels).
 			if( bMultiSample ) {
-				ptOnScreen = Point2(
-					static_cast<Scalar>(x) + (*m).x - 0.5,
-					static_cast<Scalar>(height - y) + (*m).y - 0.5 );
+				ptOnScreen = RasterConvention::PixelToScreen( x, y, height, (*m).x, (*m).y );
 			} else {
-				ptOnScreen = Point2( x, height - y );
+				ptOnScreen = RasterConvention::PixelCentreToScreen( x, y, height );
 			}
 			weightsAccrued += weight;
 

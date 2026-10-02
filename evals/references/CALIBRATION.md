@@ -769,3 +769,13 @@ lighting from every angle, better than an empty stage from every angle —
 which no run in the July-2026 baseline achieved.** Until then,
 `checkpointFraction` for this eval should be read as "how far from an empty
 stage," not "how close to passing."
+
+**2026-10-02 (DL-368, `debt-dl354`): all four reference PNGs regenerated
+with `generate_references.sh`, unchanged poses and settings.**  DL-368 moved
+every rasterizer's pixels half a pixel onto the camera's nominal film (PBRT's
+pixel-centre convention), so every render shifted by half a pixel.  With
+only the convention files reverted the committed references pass
+(`AgentEvalCheckTest` 2075/0); with the shift and the OLD references,
+`image_reconstruct_multi` read view2 / view3 RMSE 0.013323 / 0.015339
+against its 0.012 max (2071/4).  The shift was the sole cause, so the
+references were regenerated rather than the thresholds widened: 2075/0.
