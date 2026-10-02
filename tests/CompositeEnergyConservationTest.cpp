@@ -569,7 +569,14 @@ static void SectionE2( Fixtures& f )
 	UniformScalarPainter* sDelta = new UniformScalarPainter( 1000000.0 );  sDelta->addref();
 	UniformScalarPainter* sExt   = new UniformScalarPainter( 1.0 );  sExt->addref();
 	DielectricMaterial* smooth = new DielectricMaterial( *f.s1, *f.s15, *sDelta, false );  smooth->addref();
-	CompositeMaterial* m = MakeComposite( *smooth, *smooth, 3, 3, 3, 3, 3, 1.0, *sExt );
+	// The BOTTOM is a denser glass (2.4): since DL-341 the gap -> bottom
+	// interface refracts from the GAP's index (1.5), so a 1.5 bottom is
+	// index-matched and reflects nothing back up -- no walker exit through
+	// the top would exist (the pre-DL-341 bottom refracted from 1.0 and
+	// reflected 4 %).  1.5 -> 2.4 reflects ~5 %.
+	UniformScalarPainter* s24 = new UniformScalarPainter( 2.4 );  s24->addref();
+	DielectricMaterial* dense = new DielectricMaterial( *f.s1, *s24, *sDelta, false );  dense->addref();
+	CompositeMaterial* m = MakeComposite( *smooth, *dense, 3, 3, 3, 3, 3, 1.0, *sExt );
 	const ISPF& spf = *m->GetSPF();
 	const double th = 30.0 * kPi / 180.0;
 	const Vector3 d( std::sin( th ), 0, -std::cos( th ) );
@@ -601,12 +608,12 @@ static void SectionE2( Fixtures& f )
 			if( rel > 1e-6 ) { mism++; worst = std::max( worst, rel ); }
 		}
 	}
-	std::cout << "    glass(1e6)/glass, t 1, grey ext 1.0, theta 30, hero 550 / companion 600: up-going " << up
+	std::cout << "    glass(1e6)/glass(2.4), t 1, grey ext 1.0, theta 30, hero 550 / companion 600: up-going " << up
 	          << ", reconstructed " << recon << ", declined " << declined << " (walker " << walkerDeclined
 	          << "), mismatched " << mism << ", worst rel " << worst << "\n";
 	Check( up > 10000 && recon > 1000 && walkerDeclined > 1000, "[E2] both classes present (direct reflections reconstructed, walker exits declined)" );
 	Check( mism == 0, "[E2] no reconstructed companion weight differs from the grey stack's hero weight" );
-	m->release(); smooth->release(); sDelta->release(); sExt->release();
+	m->release(); smooth->release(); dense->release(); s24->release(); sDelta->release(); sExt->release();
 }
 
 //////////////////////////////////////////////////////////////////////
