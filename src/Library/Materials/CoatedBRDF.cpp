@@ -330,7 +330,7 @@ namespace
 	{
 		using namespace RISE::Implementation;
 		const RISE::Scalar tau = CoatedLayer::OpticalDepth( cp.thickness, cp.absorption, tint, cp.tinted );
-		return CoatedLayer::InteriorDiffuseTransport( cp.eta, tau, cp.re, cp.ri );
+		return CoatedLayer::InteriorDiffuseTransportCached( cp.eta, tau, cp.re, cp.ri );
 	}
 
 	inline InteriorRGB InteriorDiffuseRGB( const RISE::Implementation::CoatedBRDF::CoatParams& cp )

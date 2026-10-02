@@ -554,6 +554,42 @@ namespace RISE
 				return out;
 			}
 
+			//! InteriorDiffuseTransport behind a 4-entry per-thread memo
+			//! keyed on (eta, tau) -- `re` and `ri` are functions of eta
+			//! alone, so the key is complete.  The quadrature costs
+			//! ~170 ns; a coat bound to uniform painters asks the same
+			//! one to three (eta, tau) pairs (one per RGB channel when
+			//! tinted) on every evaluation, which the memo answers in a
+			//! few compares.  A textured coat misses and pays the
+			//! quadrature.  Bit-identical to the uncached call.
+			inline InteriorDiffuse InteriorDiffuseTransportCached(
+				const Scalar eta,
+				const Scalar tau,
+				const Scalar re,
+				const Scalar ri
+				)
+			{
+				if( !( tau > Scalar(0) ) ) {
+					return InteriorDiffuseTransport( eta, tau, re, ri );		// clear coat: no quadrature to save
+				}
+				struct Entry { Scalar eta; Scalar tau; InteriorDiffuse value; bool valid; };
+				static thread_local Entry cache[4] = {};
+				static thread_local unsigned int next = 0;
+				for( unsigned int i = 0; i < 4; ++i ) {
+					if( cache[i].valid && cache[i].eta == eta && cache[i].tau == tau ) {
+						return cache[i].value;
+					}
+				}
+				const InteriorDiffuse v = InteriorDiffuseTransport( eta, tau, re, ri );
+				Entry& e = cache[next];
+				next = ( next + 1 ) & 3u;
+				e.eta = eta;
+				e.tau = tau;
+				e.value = v;
+				e.valid = true;
+				return v;
+			}
+
 			//! 7.4's recycling factor  1 / ( 1 - E_ret * R ).
 			//! `R` is the substrate's directional-hemispherical albedo
 			//! and `returned` the round trip's returned fraction --
