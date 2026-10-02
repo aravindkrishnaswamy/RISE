@@ -87,11 +87,41 @@ static void PolicyBoundaries()
     }
 #endif
 }
+static void WarmCacheTransitions()
+{
+#ifdef RISE_ENABLE_OIDN
+    const unsigned w=16,h=16;
+    std::vector<float> input(w*h*3), output(w*h*3);
+    for(size_t i=0;i<input.size();++i) input[i]=float(0.1+double(i%37)/37);
+    OIDNDenoiser warmed;
+    for(double rate : {2.8,3.0,20.0,2.8}) {
+        const OidnQuality q=rate<3 ? OidnQuality::Fast : rate<20 ? OidnQuality::Balanced : OidnQuality::High;
+        OIDNDenoiser fresh;
+        std::vector<float> expected(output.size());
+        warmed.Denoise(input.data(),nullptr,nullptr,w,h,output.data(),OidnQuality::Auto,OidnDevice::CPU,OidnPrefilter::Fast,rate);
+        fresh.Denoise(input.data(),nullptr,nullptr,w,h,expected.data(),q,OidnDevice::CPU,OidnPrefilter::Fast,rate);
+        Check(warmed.GetLastResolvedQuality()==q,"warmed Auto cache crosses quality buckets");
+        Check(output==expected,"warmed Auto equals fresh explicit preset");
+        Check(warmed.GetDeviceGeneration()==1,"quality changes reuse CPU device");
+    }
+    unsigned generation=warmed.GetDeviceGeneration();
+    for(OidnDevice request : {OidnDevice::GPU,OidnDevice::CPU,OidnDevice::Auto,OidnDevice::CPU}) {
+        warmed.Denoise(input.data(),nullptr,nullptr,w,h,output.data(),OidnQuality::Balanced,request,OidnPrefilter::Fast,3);
+        Check(warmed.GetDeviceGeneration()==++generation,"changed backend request resolves a new device");
+        Check(request!=OidnDevice::CPU || warmed.GetLastResolvedDevice()==OidnDevice::CPU,"CPU forces actual CPU after warmed GPU/Auto");
+        OIDNDenoiser fresh;
+        std::vector<float> expected(output.size());
+        fresh.Denoise(input.data(),nullptr,nullptr,w,h,expected.data(),OidnQuality::Balanced,request,OidnPrefilter::Fast,3);
+        Check(warmed.GetLastResolvedDevice()==fresh.GetLastResolvedDevice() && output==expected,"changed backend matches fresh resolver/output including GPU fallback");
+    }
+#endif
+}
 int main(int argc,char** argv)
 {
     ConfigureTestWorker(); // Scene loading can initialize cached global options.
     FamilyPolicy();
     PolicyBoundaries();
+    WarmCacheTransitions();
     if(argc>1 && std::string(argv[1])=="--policy-only") {
         std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
         return failCount ? 1 : 0;

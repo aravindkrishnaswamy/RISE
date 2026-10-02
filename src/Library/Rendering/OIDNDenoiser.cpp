@@ -71,6 +71,8 @@ struct OIDNDenoiser::State
 	unsigned int		height;
 	bool				hasAlbedo;
 	bool				hasNormal;
+	OidnDevice requestedDevice = OidnDevice::Auto;
+	unsigned int deviceGeneration = 0;
 	OidnQuality			resolvedQuality;	// post-Auto resolution
 	OidnPrefilter		prefilter;			// Fast vs Accurate
 
@@ -115,6 +117,12 @@ struct OIDNDenoiser::State
 #endif
 
 #ifdef RISE_ENABLE_OIDN
+unsigned int OIDNDenoiser::GetDeviceGeneration() const { return mState->deviceGeneration; }
+OidnDevice OIDNDenoiser::GetLastResolvedDevice() const {
+	if( !mState->device ) return OidnDevice::Auto;
+	return mState->useSharedBuffers ? OidnDevice::CPU : OidnDevice::GPU;
+}
+
 OidnQuality OIDNDenoiser::GetLastResolvedQuality() const
 {
 	return mState->resolvedQuality;
@@ -408,6 +416,22 @@ void OIDNDenoiser::Denoise(
 			OidnQualityName( resolvedQuality ) );
 	}
 
+	// An idle caller may change the backend. Release every dependent handle
+	// before the device, preserving staging vectors whose pointers are inputs.
+	if( mState->device && mState->requestedDevice != requestedDevice ) {
+		mState->filter = oidn::FilterRef();
+		mState->albedoFilter = oidn::FilterRef();
+		mState->normalFilter = oidn::FilterRef();
+		mState->colorBuf = oidn::BufferRef();
+		mState->outputBuf = oidn::BufferRef();
+		mState->albedoBuf = oidn::BufferRef();
+		mState->normalBuf = oidn::BufferRef();
+		mState->device = oidn::DeviceRef();
+		mState->initialized = false;
+		mState->width = mState->height = 0;
+		mState->boundColorPtr = mState->boundOutputPtr = 0;
+		mState->boundAlbedoPtr = mState->boundNormalPtr = 0;
+	}
 	const bool hasAlbedo = ( albedoBuffer != 0 );
 	const bool hasNormal = ( normalBuffer != 0 );
 	const size_t bufBytes = static_cast<size_t>( w ) * h * 3 * sizeof( float );
@@ -438,9 +462,8 @@ void OIDNDenoiser::Denoise(
 		|| ptrsChanged;
 
 	if( needsRebuild ) {
-		// Lazy device creation.  Only happens once per OIDNDenoiser
-		// lifetime regardless of how many cache rebuilds follow — the
-		// device is dimension-agnostic.  Resolution honours the
+		// Lazy device creation. The device survives filter rebuilds when
+		// the requested backend is unchanged. Resolution honours the
 		// `requestedDevice` knob with fall-back semantics documented
 		// in OidnConfig.h.
 		//
@@ -467,6 +490,8 @@ void OIDNDenoiser::Denoise(
 					"OIDN: failed to create any device (CPU fallback also failed); skipping denoise" );
 				return;
 			}
+			mState->requestedDevice = requestedDevice;
+			++mState->deviceGeneration;
 			mState->device.setErrorFunction( OidnErrorCallback, 0 );
 
 			const int actualType = mState->device.get<int>( "type" );
@@ -481,7 +506,7 @@ void OIDNDenoiser::Denoise(
 				( actualType == static_cast<int>( oidn::DeviceType::CPU ) );
 
 			GlobalLog()->PrintEx( eLog_Info,
-				"OIDN: creating %s device (one-time per rasterizer)%s",
+				"OIDN: creating %s device (cached while backend request is unchanged)%s",
 				OidnDeviceTypeName( actualType ),
 				mState->useSharedBuffers ? " [zero-copy shared buffers]" : "" );
 		}

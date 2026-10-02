@@ -211,7 +211,7 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
   Apple Silicon CPU; see `OIDN-P0-3` for the
   historical Metal-backend recalibration note. Frames with the same sample
   budget and rasterizer family select the same bucket. The log reports
-  `OIDN auto: estimated-work=...`, image dimensions and the selected quality.
+  `OIDN auto: image=...`, `r=... policy s/MP` and the selected quality.
 
   Thresholds live as `static constexpr` in `OIDNDenoiser.cpp` so they're
   easy to tune later from real-world telemetry.
@@ -262,11 +262,12 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
   and network commit.  At interactive frame rates that overhead alone
   caps the achievable fps; caching makes the steady-state denoise cost
   essentially "execute + memcpy."
-- **Cache key:** `(width, height, hasAlbedo, hasNormal, resolvedQuality)`.
+- **Cache key:** `(width, height, hasAlbedo, hasNormal, resolvedQuality, prefilter, requestedDevice)`.
   Mismatch on any → tear down filter and (only if dims change) reallocate
   buffers, rebuild filter, re-commit.  Match → reuse, skip the commit.
-  Device is created once on first denoise and survives the rasterizer
-  lifetime; only filter and buffers re-key.
+  Device is created lazily and reused while the requested backend is unchanged.
+  Changing Auto/CPU/GPU while idle releases the device, filters and buffers
+  and resolves the new request with the same fallback policy.
 - **Lifetime:** Cache lives on the `Rasterizer` base via an opaque pImpl
   pointer so OIDNDenoiser internals stay out of the public header and
   the cache naturally dies with the rasterizer.
@@ -1431,9 +1432,9 @@ from a reviewer, or has its priority moved. Most recent first.
   re-commits.  Buffers are re-allocated only when dimensions change;
   toggling aux presence keeps existing color/output buffers and just
   allocates / releases the aux ones.  Device is built lazily on first
-  denoise and survives the entire rasterizer lifetime regardless of
-  filter rebuilds.
-- New log lines: one-shot `OIDN: creating CPU device (one-time per rasterizer)`,
+  denoise and survives filter rebuilds while the backend request is unchanged.
+  An idle backend-request change rebuilds device, filters and buffers.
+- Device creation logs `OIDN: creating CPU device (cached while backend request is unchanged)`,
   per-render `OIDN cache: rebuild filter (...)` or `OIDN cache: hit (...)`,
   and total denoise wall-clock appended to the existing
   `OIDN denoising complete.` line as `(N.N ms)`.

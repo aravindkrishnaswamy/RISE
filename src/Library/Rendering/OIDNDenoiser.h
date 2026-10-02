@@ -33,7 +33,7 @@ namespace RISE
 		/// filter, and per-buffer handles across calls; cross-render
 		/// reuse on the same rasterizer pays the device.commit() and
 		/// filter.commit() cost only once per cache key (resolution ×
-		/// quality × aux presence).  Held by the Rasterizer base for
+		/// quality × aux presence × backend request).  Held by the Rasterizer base for
 		/// the rasterizer's lifetime.
 		///
 		/// Stateless helpers (ImageToFloatBuffer, FloatBufferToImage,
@@ -69,6 +69,10 @@ namespace RISE
 #ifdef RISE_ENABLE_OIDN
 			/// Read while idle: cached preset (High before the first successful setup).
 			OidnQuality GetLastResolvedQuality() const;
+			/// Read while idle: Auto before device creation, otherwise actual CPU/GPU.
+			OidnDevice GetLastResolvedDevice() const;
+			/// Successful backend creations; unchanged requests reuse the device.
+			unsigned int GetDeviceGeneration() const;
 
 			/// Runs the OIDN RT filter on the given buffers.
 			/// beautyBuffer is the noisy input (w*h*3 floats, HDR).
