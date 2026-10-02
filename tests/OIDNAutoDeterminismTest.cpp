@@ -26,6 +26,7 @@ static void PolicyBoundaries()
             OIDNDenoiser autoDenoiser,explicitDenoiser;
             autoDenoiser.ApplyDenoise(*a,guides,w,h,OidnQuality::Auto,OidnDevice::CPU,OidnPrefilter::Fast,rate);
             explicitDenoiser.ApplyDenoise(*b,guides,w,h,expected,OidnDevice::CPU,OidnPrefilter::Fast,rate);
+            Check(autoDenoiser.GetLastResolvedQuality()==expected,"full-frame configured preset equals boundary policy");
             bool equal=true;
             for(unsigned y=0;y<h;++y) for(unsigned x=0;x<w;++x) {
                 const auto ac=a->GetPEL(x,y),bc=b->GetPEL(x,y);
@@ -37,6 +38,7 @@ static void PolicyBoundaries()
             Check(equal,"full-frame Auto equals explicit boundary preset");
             autoDenoiser.ApplyDenoiseRegion(*a,guides,w,h,0,0,w-2,h-2,OidnQuality::Auto,OidnDevice::CPU,OidnPrefilter::Fast,rate);
             explicitDenoiser.ApplyDenoiseRegion(*b,guides,w,h,0,0,w-2,h-2,expected,OidnDevice::CPU,OidnPrefilter::Fast,rate);
+            Check(autoDenoiser.GetLastResolvedQuality()==expected,"crop configured preset equals boundary policy");
             equal=true;
             for(unsigned y=0;y<h;++y) for(unsigned x=0;x<w;++x) {
                 const auto ac=a->GetPEL(x,y),bc=b->GetPEL(x,y);

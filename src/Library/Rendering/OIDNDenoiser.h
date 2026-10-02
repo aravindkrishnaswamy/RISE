@@ -67,6 +67,9 @@ namespace RISE
 				);
 
 #ifdef RISE_ENABLE_OIDN
+			/// Actual configured preset from the last successful filter setup.
+			OidnQuality GetLastResolvedQuality() const;
+
 			/// Runs the OIDN RT filter on the given buffers.
 			/// beautyBuffer is the noisy input (w*h*3 floats, HDR).
 			/// albedoBuffer and normalBuffer are optional (may be NULL).

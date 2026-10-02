@@ -114,6 +114,13 @@ struct OIDNDenoiser::State
 };
 #endif
 
+#ifdef RISE_ENABLE_OIDN
+OidnQuality OIDNDenoiser::GetLastResolvedQuality() const
+{
+	return mState->resolvedQuality;
+}
+#endif
+
 OIDNDenoiser::OIDNDenoiser()
 #ifdef RISE_ENABLE_OIDN
   : mState( new State() )
