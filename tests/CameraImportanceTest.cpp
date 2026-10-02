@@ -995,7 +995,8 @@ static void TestFisheyeFilmResponse( double pixelAR )
 // the eye subpaths sample.
 //
 // Every rasterizer draws pixel (x, image row y) at screen position
-// (x + u - 0.5, H - y + v - 0.5), u, v in [0, 1), and a t = 1 splat is
+// RasterConvention::PixelToScreen = (x + u, H - 1 - y + v), u, v in [0, 1)
+// (DL-368; before it, (x + u - 0.5, H - y + v - 0.5)), and a t = 1 splat is
 // deposited at SplatFilm::NearestPixel( raster.x, H - raster.y ).  So
 // for every screen point an eye sample can have, the camera's
 // world-to-raster inverse must (a) accept the point on the ray,
@@ -1058,8 +1059,8 @@ static void TestProjectionCoversEyeFilm()
 
 	// Sub-pixel offsets (u, v) out to the extreme edges of a pixel.  The
 	// exact boundary u or v == 0 is left out: it is measure-zero, and the
-	// rasterizers' row mapping H - y + v - 0.5 closes a pixel at the
-	// opposite end from NearestPixel's round-half-up (a tie, not a strip).
+	// rasterizers' row mapping H - 1 - y + v closes a pixel at the
+	// opposite end from NearestPixel's floor (a tie, not a strip).
 	const double offs[] = { 0.001, 0.25, 0.5, 0.75, 0.999 };
 	const unsigned int nOff = sizeof( offs ) / sizeof( offs[0] );
 
@@ -1080,7 +1081,9 @@ static void TestProjectionCoversEyeFilm()
 				if( !border && !( x == c.w / 2 && y == c.h / 2 ) ) continue;
 				for( unsigned int a = 0; a < nOff; a++ ) {
 					for( unsigned int b = 0; b < nOff; b++ ) {
-						const Point2 screen( double( x ) + offs[a] - 0.5, double( c.h - y ) + offs[b] - 0.5 );
+						// DL-368: the SHARED convention helper every rasterizer
+						// places its eye rays with -- not a private copy of it.
+						const Point2 screen = RasterConvention::PixelToScreen( x, y, c.h, offs[a], offs[b] );
 						Ray r;
 						const bool ok = c.thin ? c.thin->GenerateRayWithLensSample( rc, r, screen, lensUV )
 						                       : c.cam->GenerateRay( rc, r, screen );

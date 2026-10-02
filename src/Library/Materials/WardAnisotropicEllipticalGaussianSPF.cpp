@@ -185,7 +185,7 @@ void WardAnisotropicEllipticalGaussianSPF::Scatter(
 		// DL-310: coupled diffuse (WardSelection::CoupledDiffuse) -- the
 		// same constant min(Rd, 1 - Rs) value() uses.
 		{
-			const RISEPel rd = pDiffuse->GetColor(ri), rs = pSpecular->GetColor(ri);
+			const RISEPel rd = ReflectanceColor( *pDiffuse, ri ), rs = ReflectanceColor( *pSpecular, ri );
 			d.kray = RISEPel( WardSelection::CoupledDiffuse( rd[0], rs[0] ),
 				WardSelection::CoupledDiffuse( rd[1], rs[1] ), WardSelection::CoupledDiffuse( rd[2], rs[2] ) );
 		}
@@ -207,14 +207,14 @@ void WardAnisotropicEllipticalGaussianSPF::Scatter(
 		if( Vector3Ops::Dot( s.ray.Dir(), myonb.w() ) > 0.0 && Vector3Ops::Dot( s.ray.Dir(), geomN ) > 0.0 ) {
 			// DL-177 defect (3): `kray_I` is this lobe's own
 			// `f_I cos / p_I`, not the reflectance painter's colour.
-			s.kray = pSpecular->GetColor(ri) * ratio;
+			s.kray = ReflectanceColor( *pSpecular, ri ) * ratio;
 			scattered.AddScatteredRay( s );
 		}
 	}
 	else
 	{
 		const Point2 ptrand( sampler.Get1D(),sampler.Get1D() );
-		const RISEPel spec = pSpecular->GetColor(ri);
+		const RISEPel spec = ReflectanceColor( *pSpecular, ri );
 		for( int i=0; i<3; i++ ) {
 			// DL-101: a FRESH ScatteredRay every iteration -- see
 			// SchlickSPF.cpp's identical fix and
@@ -268,14 +268,14 @@ void WardAnisotropicEllipticalGaussianSPF::ScatterNM(
 	// frame lobes are actually sampled around (post-FlipW), not the raw
 	// ri.onb.w() which differs by sign on a back-face hit.
 	if( Vector3Ops::Dot( d.ray.Dir(), myonb.w() ) > 0.0 && Vector3Ops::Dot( d.ray.Dir(), geomN ) > 0.0 ) {
-		d.krayNM = WardSelection::CoupledDiffuse( GuardedGetColorNM( *pDiffuse, ri, nm ), GuardedGetColorNM( *pSpecular, ri, nm ) );
+		d.krayNM = WardSelection::CoupledDiffuse( ReflectanceColorNM( *pDiffuse, ri, nm ), ReflectanceColorNM( *pSpecular, ri, nm ) );
 		const Scalar cos_theta = Vector3Ops::Dot( d.ray.Dir(), myonb.w() );
 		d.pdf = cos_theta * INV_PI;
 		scattered.AddScatteredRay( d );
 	}
 	if( Vector3Ops::Dot( s.ray.Dir(), myonb.w() ) > 0.0 && Vector3Ops::Dot( s.ray.Dir(), geomN ) > 0.0 ) {
 		// DL-177 defect (3), NM twin of Scatter's line.
-		s.krayNM = GuardedGetColorNM( *pSpecular, ri, nm ) * sRatio;
+		s.krayNM = ReflectanceColorNM( *pSpecular, ri, nm ) * sRatio;
 		scattered.AddScatteredRay( s );
 	}
 }
@@ -493,7 +493,7 @@ Scalar WardAnisotropicEllipticalGaussianSPF::Pdf(
 {
 	const ScalarTriple axt = pAlphaX->GetValuesAt(ri);
 	const ScalarTriple ayt = pAlphaY->GetValuesAt(ri);
-	const RISEPel spec = pSpecular->GetColor(ri);
+	const RISEPel spec = ReflectanceColor( *pSpecular, ri );
 
 	// Mirror Scatter's own branch EXACTLY.
 	WardAnisoLobeSet lobes;
@@ -512,7 +512,7 @@ Scalar WardAnisotropicEllipticalGaussianSPF::Pdf(
 	}
 
 	// DL-310: the diffuse ray's realized weight is its coupled kray.
-	const RISEPel rdP = pDiffuse->GetColor(ri), rsP = pSpecular->GetColor(ri);
+	const RISEPel rdP = ReflectanceColor( *pDiffuse, ri ), rsP = ReflectanceColor( *pSpecular, ri );
 	const Scalar wDiff = ColorMath::MaxValue( RISEPel( WardSelection::CoupledDiffuse( rdP[0], rsP[0] ),
 		WardSelection::CoupledDiffuse( rdP[1], rsP[1] ), WardSelection::CoupledDiffuse( rdP[2], rsP[2] ) ) );
 
@@ -532,9 +532,9 @@ Scalar WardAnisotropicEllipticalGaussianSPF::PdfNM(
 	lobes.count = 1;
 	lobes.ax[0] = pAlphaX->GetValueAtNM(ri,nm);
 	lobes.ay[0] = pAlphaY->GetValueAtNM(ri,nm);
-	lobes.w[0]  = fabs( GuardedGetColorNM( *pSpecular, ri, nm ) );
+	lobes.w[0]  = fabs( ReflectanceColorNM( *pSpecular, ri, nm ) );
 
-	const Scalar wDiff = fabs( WardSelection::CoupledDiffuse( GuardedGetColorNM( *pDiffuse, ri, nm ), GuardedGetColorNM( *pSpecular, ri, nm ) ) );
+	const Scalar wDiff = fabs( WardSelection::CoupledDiffuse( ReflectanceColorNM( *pDiffuse, ri, nm ), ReflectanceColorNM( *pSpecular, ri, nm ) ) );
 
 	return WardAnisotropicPdf( ri, wo, lobes, wDiff );
 }
@@ -563,7 +563,7 @@ Scalar WardAnisotropicEllipticalGaussianSPF::EvaluateLobeFNM(
 	) const
 {
 	if( rayType == ScatteredRay::eRayDiffuse ) {
-		return WardSelection::CoupledDiffuse( GuardedGetColorNM( *pDiffuse, ri, nm ), GuardedGetColorNM( *pSpecular, ri, nm ) ) * INV_PI;
+		return WardSelection::CoupledDiffuse( ReflectanceColorNM( *pDiffuse, ri, nm ), ReflectanceColorNM( *pSpecular, ri, nm ) ) * INV_PI;
 	}
 
 	if( rayType != ScatteredRay::eRayReflection ) {
@@ -601,7 +601,7 @@ Scalar WardAnisotropicEllipticalGaussianSPF::EvaluateLobeFNM(
 
 	const Scalar hu = Vector3Ops::Dot( h, myonb.u() );
 	const Scalar hv = Vector3Ops::Dot( h, myonb.v() );
-	return WardSelection::SpecularKernel(hu,hv,cos_h,hdotwo,ax,ay,GuardedGetColorNM(*pSpecular,ri,nm));
+	return WardSelection::SpecularKernel(hu,hv,cos_h,hdotwo,ax,ay,ReflectanceColorNM(*pSpecular,ri,nm));
 }
 
 Scalar WardAnisotropicEllipticalGaussianSPF::EvaluateKrayNM(
@@ -613,7 +613,7 @@ Scalar WardAnisotropicEllipticalGaussianSPF::EvaluateKrayNM(
 	) const
 {
 	if( rayType == ScatteredRay::eRayDiffuse ) {
-		return WardSelection::CoupledDiffuse( GuardedGetColorNM( *pDiffuse, ri, nm ), GuardedGetColorNM( *pSpecular, ri, nm ) );
+		return WardSelection::CoupledDiffuse( ReflectanceColorNM( *pDiffuse, ri, nm ), ReflectanceColorNM( *pSpecular, ri, nm ) );
 	}
 
 	if( rayType != ScatteredRay::eRayReflection ) {
@@ -638,7 +638,7 @@ Scalar WardAnisotropicEllipticalGaussianSPF::EvaluateKrayNM(
 		return 0;						// a genuine zero, not "unimplemented"
 	}
 
-	return GuardedGetColorNM( *pSpecular, ri, nm ) * ratio;
+	return ReflectanceColorNM( *pSpecular, ri, nm ) * ratio;
 }
 
 Scalar WardAnisotropicEllipticalGaussianSPF::EvaluateKrayNM(
@@ -655,7 +655,7 @@ Scalar WardAnisotropicEllipticalGaussianSPF::EvaluateKrayNM(
 	}
 
 	if( rayType == ScatteredRay::eRayDiffuse ) {
-		return WardSelection::CoupledDiffuse( GuardedGetColorNM( *pDiffuse, ri, nm ), GuardedGetColorNM( *pSpecular, ri, nm ) );
+		return WardSelection::CoupledDiffuse( ReflectanceColorNM( *pDiffuse, ri, nm ), ReflectanceColorNM( *pSpecular, ri, nm ) );
 	}
 
 	if( rayType != ScatteredRay::eRayReflection ) {
@@ -680,5 +680,5 @@ Scalar WardAnisotropicEllipticalGaussianSPF::EvaluateKrayNM(
 	const Scalar ax = pAlphaX->GetValueAtNM(ri,nm), ay = pAlphaY->GetValueAtNM(ri,nm);
 	return WardSelection::HeroSpecularKernel(Vector3Ops::Dot(h,myonb.u()),
 		Vector3Ops::Dot(h,myonb.v()),hz,hd,cos_o,ax,ay,
-		GuardedGetColorNM(*pSpecular,ri,nm),pdfHero);
+		ReflectanceColorNM(*pSpecular,ri,nm),pdfHero);
 }

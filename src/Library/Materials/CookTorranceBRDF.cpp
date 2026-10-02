@@ -130,7 +130,7 @@ RISEPel CookTorranceBRDF::value( const Vector3& vLightIn, const RayIntersectionG
 
 	const RISEPel factor = ComputeFactor<RISEPel>( vLightIn, ri, n, alphaColor );
 
-	const RISEPel specColor = pSpecular->GetColor(ri);
+	const RISEPel specColor = ReflectanceColor( *pSpecular, ri );
 	const ScalarTriple iorT = pIOR->GetValuesAt(ri);
 	const ScalarTriple extT = pExtinction->GetValuesAt(ri);
 	const RISEPel ior( iorT.v[0], iorT.v[1], iorT.v[2] );
@@ -170,7 +170,7 @@ RISEPel CookTorranceBRDF::value( const Vector3& vLightIn, const RayIntersectionG
 		}
 	}
 
-	return pDiffuse->GetColor(ri)*INV_PI + specular;
+	return ReflectanceColor( *pDiffuse, ri )*INV_PI + specular;
 }
 
 Scalar CookTorranceBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
@@ -184,7 +184,7 @@ Scalar CookTorranceBRDF::valueNM( const Vector3& vLightIn, const RayIntersection
 		alpha = r_min( alpha + ri.glossyFilterWidth, Scalar(1.0) );
 	}
 
-	const Scalar specColor = GuardedGetColorNM( *pSpecular, ri, nm );
+	const Scalar specColor = ReflectanceColorNM( *pSpecular, ri, nm );
 	const Scalar iorVal = pIOR->GetValueAtNM(ri,nm);
 	const Scalar extVal = pExtinction->GetValueAtNM(ri,nm);
 
@@ -230,7 +230,7 @@ Scalar CookTorranceBRDF::valueNM( const Vector3& vLightIn, const RayIntersection
 		}
 	}
 
-	return GuardedGetColorNM( *pDiffuse, ri, nm )*INV_PI + specular;
+	return ReflectanceColorNM( *pDiffuse, ri, nm )*INV_PI + specular;
 }
 
 RISEPel CookTorranceBRDF::albedo( const RayIntersectionGeometric& ri ) const
@@ -246,5 +246,5 @@ RISEPel CookTorranceBRDF::albedo( const RayIntersectionGeometric& ri ) const
 	const RISEPel ext( extT.v[0], extT.v[1], extT.v[2] );
 	const RISEPel fresnel = Optics::CalculateConductorReflectance<RISEPel>(
 		ri.ray.Dir(), n, RISEPel( CookTorranceBRDF::AmbientIOR( ri ) ), ior, ext );	// DL-290: live exterior, as value()
-	return pDiffuse->GetColor( ri ) + pSpecular->GetColor( ri ) * fresnel;
+	return ReflectanceColor( *pDiffuse, ri ) + ReflectanceColor( *pSpecular, ri ) * fresnel;
 }

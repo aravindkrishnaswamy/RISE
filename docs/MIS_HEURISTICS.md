@@ -327,7 +327,9 @@ merging-off row also at the DL-317 merge revision and through the CLI):
   from its `colorspace ROMMRGB_Linear` wall painters, whose Rec.709
   reflectances carry NEGATIVE channels -- red wall (1.134, -0.100, 0.020),
   green (-0.233, 0.462, -0.029).  Clamping only the negative channels
-  closes it to noise (DL-386, open: a policy question, not an SSS one).
+  closes it to noise (DL-386, a policy question, not an SSS one; FIXED
+  2026-10-02 by clamping negative reflectance channels at every material
+  read -- `BDPTStrategyBalanceTest --dl386-only`, [DL386_NEGATIVE_REFLECTANCE_CLAMP.md](DL386_NEGATIVE_REFLECTANCE_CLAMP.md)).
 - Merging ON at the scene's authored `merge_radius 0.1` reads +1.5..+3.3 %
   on the frame and up to ~+15 % on the dragon -- kernel bias of a fixed
   radius that is wide against the dragon's thin, backlit features: it

@@ -647,8 +647,8 @@ namespace RISE { namespace Implementation { namespace TranslucentSPFDetail
 		if( bEntering )
 		{
 			// --- entry front reflection (clipped cosine, kray = ref) ---
-			const RISEPel refC = bNM ? RISEPel(0,0,0) : refFront.GetColor(ri);
-			const Scalar  refN = bNM ? GuardedGetColorNM( refFront, ri, nm ) : Scalar(0);
+			const RISEPel refC = bNM ? RISEPel(0,0,0) : ReflectanceColor( refFront, ri );
+			const Scalar  refN = bNM ? ReflectanceColorNM( refFront, ri, nm ) : Scalar(0);
 			if( bNM ? (refN > 0) : (ColorMath::MaxValue(refC) > 0) ) {
 				const Vector3 nFront = OrientedLobeAxis( n, geomN );
 				if( ExitValidFraction( nFront, geomN ) >= kExitVanishThreshold ) {
@@ -657,8 +657,8 @@ namespace RISE { namespace Implementation { namespace TranslucentSPFDetail
 			}
 
 			// --- entry transmission (clipped Phong, kray = tau) ---
-			const RISEPel tauC = bNM ? RISEPel(0,0,0) : trans.GetColor(ri);
-			const Scalar  tauN = bNM ? GuardedGetColorNM( trans, ri, nm ) : Scalar(0);
+			const RISEPel tauC = bNM ? RISEPel(0,0,0) : ReflectanceColor( trans, ri );
+			const Scalar  tauN = bNM ? ReflectanceColorNM( trans, ri, nm ) : Scalar(0);
 			if( bNM ? (tauN > 0) : (ColorMath::MaxValue(tauC) > 0) ) {
 				const Vector3 intoSolid = -geomN;
 				const Vector3 nEnter = OrientedLobeAxis( n, intoSolid );
@@ -869,7 +869,7 @@ void TranslucentSPF::Scatter(
 	{
 		// Going in
 		// Front face
-		front.kray = pRefFront->GetColor(ri);
+		front.kray = ReflectanceColor( *pRefFront, ri );
 		front.type = ScatteredRay::eRayDiffuse;
 
 		// MaxValue, not channel 0 alone (C2, review round 3): a reflectance
@@ -917,7 +917,7 @@ void TranslucentSPF::Scatter(
 			}
 		}
 
-		trans.kray = pTrans->GetColor(ri);
+		trans.kray = ReflectanceColor( *pTrans, ri );
 		trans.type = ScatteredRay::eRayTranslucent;
 
 		// MaxValue, not channel 0 alone -- see the front-lobe gate above
@@ -1187,7 +1187,7 @@ void TranslucentSPF::ScatterNM(
 	if( bEnteringNM )
 	{
 		// Extinction check
-		front.krayNM = GuardedGetColorNM( *pRefFront, ri, nm );
+		front.krayNM = ReflectanceColorNM( *pRefFront, ri, nm );
 		front.type = ScatteredRay::eRayDiffuse;
 
 		if( front.krayNM > 0 ) {
@@ -1204,7 +1204,7 @@ void TranslucentSPF::ScatterNM(
 			}
 		}
 
-		trans.krayNM = GuardedGetColorNM( *pTrans, ri, nm );
+		trans.krayNM = ReflectanceColorNM( *pTrans, ri, nm );
 		trans.type = ScatteredRay::eRayTranslucent;
 
 		if( trans.krayNM > 0 ) {

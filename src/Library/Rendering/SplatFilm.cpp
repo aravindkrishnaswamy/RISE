@@ -81,9 +81,7 @@ void SplatFilm::SplatFiltered(
 	// so behaviour is consistent across the codebase.
 	if( halfW <= 0.501 && halfH <= 0.501 )
 	{
-		// Round to nearest pixel center.  Pixel centers live at
-		// integer coordinates (matches BoxPixelFilter::warpOnScreen
-		// which returns canonical.x + x - 0.5 for canonical ∈ [0,1));
+		// The pixel containing the splat (centres at i + 0.5, DL-368);
 		// NearestPixel is the film-membership rule (DL-294).
 		unsigned int ix = 0, iy = 0;
 		if( NearestPixel( screenX, screenY, width, height, ix, iy ) ) {
@@ -135,11 +133,15 @@ void SplatFilm::SplatFiltered(
 
 	// Filter footprint expansion.  Mirrors FilteredFilm::Splat so
 	// the two accumulators agree on which pixels receive weight
-	// from a given fractional sample position.
-	const int minPX = static_cast<int>( floor( screenX - halfW ) );
-	const int maxPX = static_cast<int>( floor( screenX + halfW ) );
-	const int minPY = static_cast<int>( floor( screenY - halfH ) );
-	const int maxPY = static_cast<int>( floor( screenY + halfH ) );
+	// from a given fractional sample position.  (cx, cy) is the
+	// position measured in pixel-CENTRE units: pixel (px, py) has its
+	// centre at (px + 0.5, py + 0.5) (DL-368), i.e. at integer (cx, cy).
+	const Scalar cx = screenX - RasterConvention::kPixelCentre;
+	const Scalar cy = screenY - RasterConvention::kPixelCentre;
+	const int minPX = static_cast<int>( floor( cx - halfW ) );
+	const int maxPX = static_cast<int>( floor( cx + halfW ) );
+	const int minPY = static_cast<int>( floor( cy - halfH ) );
+	const int maxPY = static_cast<int>( floor( cy + halfH ) );
 
 	const int x0 = minPX < 0 ? 0 : minPX;
 	const int x1 = maxPX >= static_cast<int>( width ) ?
@@ -157,7 +159,7 @@ void SplatFilm::SplatFiltered(
 	// SplatFilm::Resolve divides every pixel by a SCALAR global
 	// sampleCount — it does not track a per-pixel weight sum like
 	// FilteredFilm does.  That means the DISCRETE sum
-	//     Σ_i EvaluateFilter(px_i - screenX, py_i - screenY)
+	//     Σ_i EvaluateFilter(cx - px_i, cy - py_i)
 	// over the affected pixels must equal 1.0 for every fractional
 	// splat position, otherwise each splat deposits more or less
 	// than one sample's worth of energy and the resolved image is
@@ -190,10 +192,10 @@ void SplatFilm::SplatFiltered(
 		int k = 0;
 		for( int py = y0; py <= y1; py++ )
 		{
-			const Scalar dy = screenY - static_cast<Scalar>( py );
+			const Scalar dy = cy - static_cast<Scalar>( py );
 			for( int px = x0; px <= x1; px++, k++ )
 			{
-				const Scalar dx = screenX - static_cast<Scalar>( px );
+				const Scalar dx = cx - static_cast<Scalar>( px );
 				const Scalar w = filter.EvaluateFilter( dx, dy );
 				weights[k] = w;
 				weightSum += w;

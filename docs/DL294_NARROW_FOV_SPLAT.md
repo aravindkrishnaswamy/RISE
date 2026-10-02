@@ -20,6 +20,10 @@ of a 5-10 degree frame dark.  The defect lives only at the film edges.
 
 ## 2. Mechanism
 
+(Historical: section 8 below moved the convention to PBRT's under DL-368;
+the mechanism is described here in the convention that was live at the
+time.)
+
 Every rasterizer draws pixel (x, image row y) at screen position
 `(x + u - 0.5, H - y + v - 0.5)`, u, v in [0, 1) -- so the film the eye
 subpaths sample is screen x in [-0.5, W - 0.5), y in [0.5, H + 0.5) -- and
@@ -331,3 +335,186 @@ regression in that guard band.
   needs to move with it, and `SplatFilm::NearestPixel` /
   `BDPTCameraUtilities::InRasterGuardBand` are the two splat-side sites
   DL-368's own recipe should name.
+
+## 8. Follow-ups: DL-368 (pixel convention) and DL-354 (the dead (1,1) strategy), 2026-10-02
+
+Branch `debt-dl354`, from `master` `f03359223`.  Both rows left open for the
+supervisor to strike after a fresh review.
+
+### 8.1 DL-368 -- every rasterizer now samples the camera's nominal film
+
+**Convention chosen: PBRT's.**  Pixel (x, image row y) covers screen
+[x, x+1) x [H-1-y, H-y) -- the camera's nominal film [0, W) x [0, H) --
+centre (x + 0.5, H - y - 0.5); in film coordinates (fx, fy = H - screen y)
+it covers [x, x+1) x (y, y+1], centre (x + 0.5, y + 0.5).  The camera side
+was left alone: every camera already translates screen space by
+(-W/2, -H/2), so the optical axis sits on the corner shared by the four
+centre pixels, and every analytic inverse (`Rasterize*`,
+`RasterFromLensPoint`, the fisheye and orthographic maps) already returns
+screen coordinates in that frame.  Moving the cameras instead would have
+needed an ASYMMETRIC translation (x by -(W-1)/2, y by -(H+1)/2, because the
+old rasterizer y mapping centred row y on H - y) in five cameras and five
+inverses.
+
+The convention lives in ONE place, `RasterConvention` in `ICamera.h`
+(`kPixelCentre`, `PixelToScreen`, `PixelCentreToScreen`), and every
+consumer reads it:
+
+- eye-ray placement: PT pel / spectral (film mode and the no-filter
+  fallback), pixelpel, pixelintegratingspectral (the `rasterize_pixel`
+  single-ray entries too), BDPT pel / spectral, VCM pel / spectral and the
+  VCM auto-radius pre-pass (`VCMRasterizerBase`), MLT pel / spectral (a
+  uniform film sample now needs no offset at all), and the AOV guide pass
+  (`AOVBuffers` -- which ALREADY sampled [x, x+1), i.e. its albedo / normal
+  OIDN guides were half a pixel off the beauty pass before this change);
+- filter warps: `IPixelFilter::warpOnScreen` now warps around the pixel
+  CENTRE (x + 0.5, y + 0.5) of the lower-left corner it is handed, and every
+  caller passes `(x, height - 1 - y)` (`PixelFilter`, `BoxPixelFilter`);
+- reconstruction: `FilteredFilm::Splat` and `SplatFilm::SplatFiltered`
+  measure filter offsets from (px + 0.5, py + 0.5), and
+  `SplatFilm::NearestPixel` is now a floor (the pixel CONTAINING the
+  position) -- moved in the same commit, as section 4 required.
+
+Unchanged and already consistent: the camera projections and
+`InRasterGuardBand` (convention-agnostic by construction),
+`PixelBasedRasterizerHelper`'s whole-film timing samples
+(`width * u`, already [0, W)), the scene editor's pick ray and world-to-
+screen overlay projection (both continuous widget coordinates through the
+camera's own matrix), ray differentials (`+1` pixel offsets).  The legacy
+`PixelBasedSpectralIntegratingRasterizerRGB.cpp` is excluded from every
+build and does not compile against the current filter interface; it is
+not touched.  `MediumInsideOutsideInvariantTest`'s DL-286 MLT row
+re-implements `MLTRasterizer::EvaluateSample`'s film mapping with the OLD
+`- 0.5` offset; it compares two samplers through the same mapping, so it is
+self-consistent and left alone (it is not a convention check).
+
+**Red / green** (`tests/PixelCenterConventionTest.cpp`, new):
+
+- Row A, the quadrant probe: four sub-pixel emitters touching the optical
+  axis, one per quadrant, rendered through 11 rasterizers (PT, PT spectral,
+  PT spectral HWSS, pixelpel, pixelintegratingspectral, BDPT, BDPT spectral
+  HWSS, VCM, VCM spectral, MLT, MLT spectral) x 4 cameras (orthographic,
+  pinhole, thin lens focused on the plane, fisheye).  Pre-fix every one of
+  the 44 renders put ALL the energy in one pixel (block 0 / 0 / 0 / 1.0000);
+  post-fix the 2 x 2 block around the axis holds 1.0000 of it, a quarter
+  per pixel up to MC noise (worst block pixel 0.11 with 0.25 expected, MLT /
+  VCM spectral at 64-256 spp).  The check is orientation-agnostic, so no
+  camera's mirror convention can fake it.
+- Row B, the row's own closed form: orthographic, view 1, 32 px, one small
+  face-down quad at x = +2 / -2.  PT 0.9794 / 1.0209 and BDPT
+  0.9794 / 1.0210 pre-fix; 1.0000 / 1.0000 for both post-fix.
+- 48 checks: 0 / 48 on the reverted convention files, 48 / 0 fixed.
+
+`CameraImportanceTest` Test 9 now builds its screen points with
+`RasterConvention::PixelToScreen` -- the shared helper the rasterizers use
+-- so it no longer carries a private copy of the convention (984 / 0).
+`BDPTStrategyBalanceTest`'s `TestNarrowFovStripeGuard` stays the hit-vs-
+splat guard, with its floor edge moved from world x = 0 to x = 0.00085
+(half a pixel at the floor): the optical axis is now a pixel BOUNDARY, so
+an edge on it split no pixel and PT, BDPT and VCM all read 0.0000 at the
+transition column (the fixture-sanity check failed with all three in
+agreement).  With the edge mid-pixel: PT 0.4990, BDPT splat 0.4984, VCM
+splat 0.4986.
+
+`BDPTStrategyBalanceTest`'s DL-381 rows compare against an independent MC
+that bins photons by RISE's pixel centres; with the old centres the gate
+read PT sphere +9.5 % and BDPT sphere +8.6 % (bands 4 %).  The tool
+(`tools/DL381RandomWalkReciprocityMC.cpp`) now uses the new centres and
+its constants were re-run (DL381_RANDOM_WALK_RECIPROCITY.md, "DL-368
+re-baseline"); 9 / 0.
+
+**What moves.**  Every render's image shifts by half a pixel right and half
+a pixel down relative to the camera (equivalently: the camera now sits
+where its parameters say).  Means are unchanged wherever the scene is
+symmetric about the film or uniform near its edges; a lone off-axis feature
+near the frame moves by its gradient times half a pixel (row B).  No stored
+reference image needed regenerating (section 8.3).
+
+### 8.2 DL-354 -- BDPT never evaluated the (1,1) strategy it MIS-weighted against
+
+Re-measured on `f03359223` first (sms_k2_flatslab's luminaire, box filter,
+OIDN off, window energy in 100 x 75 units, 64 spp, n = 3 salted): PT
+668.5 / 684.7 / 687.6, BDPT 400.4 / 654.9 / 685.8 at 100 x 75 / 200 x 150 /
+400 x 300 -- BDPT/PT **0.599 / 0.957 / 0.997**.  Not gone, and not DL-294's
+(section 7 already measured it unmoved).  Re-aiming the camera so the
+luminaire sits at frame centre made it WORSE (PT 560, BDPT 261, 0.465), so
+it is not an edge effect either.
+
+**Root cause.**  `ConnectAndEvaluateImplCore` tests `s == 1` before
+`t == 1`, so (s, t) = (1, 1) -- the light vertex ON the emitter connected
+straight to the camera -- entered the NEE case, found `eyeVerts[0]` (the
+CAMERA) failing its surface / medium check, and returned invalid.  The
+t == 1 case's LIGHT-vertex branch, written for exactly this strategy, was
+unreachable.  `MISWeight(0, 2)` (the camera ray hitting the emitter)
+nevertheless counted (1,1) in its denominator, so a directly visible
+emitter lost the share `r^2 / (1 + r^2)`, r = (light area density) /
+(per-pixel camera density at the emitter point).  The camera density is
+PER PIXEL (`PdfDirection` = d^2 / (A_pixel cos^3)), so r falls as
+1 / (W H): 40 % lost at 100 x 75 on a 0.08-unit luminaire, 4 % at
+200 x 150, 0.3 % at 400 x 300 -- the measured curve.  Per-strategy
+instrumentation (temporary, reverted) confirmed it directly: the t == 1
+layer deposited exactly 0 in the emitter's window, and the s == 0 layer
+alone reproduced BDPT's 400.
+
+**Fix.**  The NEE case is entered only for `t >= 2`, so (1,1) reaches the
+t == 1 case.  That branch had never run, and it lacked the connection's
+medium transmittance the s == 0 strategy carries (a fogged view of a
+visible emitter would have read high by the (1,1) share): it now applies
+`EvalConnTr` from the light vertex, whose root now records its enclosing
+medium (`GetCurrentMediumWithObject` after `SeedFromPoint`, the role a
+surface vertex's medium fields play for s >= 2).  Delta lights are
+unaffected (their root vertex is not connectible, the branch returns), and
+so are environment roots (the branch returns for them, as before).  VCM is
+separate code (its splat skips the light root, and the row measured it at
+PT's level; 702 +/- 46 here, n = 3, 64 spp).
+
+Measured (window energy, n = 3 salted): pure light tracing of the
+luminaire (t == 1 only, weight 1) reads 687.98 with sd 0.0005 at all three
+resolutions; BDPT 687.4 / 692.2 / 688.6; BDPT spectral `hwss FALSE`
+419 -> 675 (n = 4, 256 spp), `hwss TRUE` 395 -> 686 (256 spp, sd 1.2 %),
+against a real PT SPECTRAL render of 688.3 (sd 1.0 %, n = 4, 4096 spp).
+(Review correction, 2026-10-02: the first revision quoted "PT spectral
+689" from a probe whose "pts" kind fell through to the PT PEL rasterizer,
+because `"pt"` is a prefix of `"pts"`; the pel figure happened to agree.)
+MLT shares BDPT's strategy dispatch, so it is fixed by construction, but
+its window energy on a few-pixel feature is not a usable measurement: one
+unsalted render reads 286 (pre) and 609 (post) at 256 mutations / pixel,
+and 241 (post) at 1024 -- chain allocation noise, not resolved here.
+
+`BDPTStrategyBalanceTest --dl354-only` (`TestSmallVisibleEmitterResolution
+Sweep`, also in the full suite): BDPT/PT 100 x 75 (n = 6) and 200 x 150
+(n = 3), and BDPT `hwss TRUE` (256 spp) / PT SPECTRAL (4096 spp) at
+100 x 75 (n = 4), bands 3 / 2.5 / 5 % (each >= 4.4 measured ratio sd; PT
+spectral's per-render sd read 1.0 % and 2.7 % in two salt sets -- the hero
+wavelength gives a tiny emitter a heavy tail).  Red on the reverted
+integrator: 0.5753 / 0.9554 / 0.5826 (0 / 3); green 0.9873 / 0.9987 /
+1.0074 (3 / 0).
+
+**Review P3 (2026-10-02).**  The revived (1,1) branch now rejects an
+environment-light root before the raster projection and the visibility
+ray (the LIGHT branch already returned for it, after both).
+
+**Cost.**  One more connection per BDPT sample (a raster projection and a
+shadow ray when the light root is a luminary).  `cornellbox_bdpt` at
+256 x 256, 64 spp, OIDN off, interleaved n = 3: user CPU 115.7 s before,
+110.9 s after -- no resolvable cost.
+
+**Not changed: the per-pixel camera density in the MIS ratios.**  BDPT's
+MIS uses the per-pixel camera pdf on both sides of every ratio, so its
+weights partition to one and the estimator is unbiased; the multi-sample
+balance-heuristic optimum for one light subpath per eye sample uses the
+whole-film density (PBRT; SmallVCM divides by the light path count), which
+would give the light-tracing strategies W H times more weight.  That is a
+variance question across every BDPT render, recorded as DL-402, not done
+here.
+
+### 8.3 Stored references
+
+`CstDeriveGoldenTest` compares derived scene state, not images: 457 MATCH /
+0 DRIFT.  `AgentEvalCheckTest` read 2071 / 4 after the shift
+(`image_reconstruct_multi` view2 / view3 RMSE 0.0133 / 0.0153 against a
+0.012 max) and 2075 / 0 with only the convention files reverted, so the
+shift was the sole cause; the four `evals/references` PNGs were
+regenerated with `generate_references.sh` (2075 / 0).  The showcase suites
+(Pavilion 57/0, ShelfBunny 63/0, TidalStones 122/0), AgentEvalReplay 272/0
+and AgentEvalLiveTransport 452/0 needed nothing.

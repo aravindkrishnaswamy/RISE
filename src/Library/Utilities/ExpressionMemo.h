@@ -492,7 +492,7 @@ namespace RISE
 		//! or a filter but no samples, leaves `pPixelFilter` null.  The
 		//! per-sample loop's `else` branch for that case
 		//! (PathTracingPelRasterizer.cpp's per-sample loop,
-		//! `ptOnScreen = Point2( x, height-y )`) has NO jitter at all --
+		//! `ptOnScreen = RasterConvention::PixelCentreToScreen( x, y, height )`) has NO jitter at all --
 		//! every sample in a pixel lands on the SAME point -- and is only
 		//! unreachable in practice because every shipped factory routes
 		//! through that `pSamples && pFilter` gate.  A future API surface

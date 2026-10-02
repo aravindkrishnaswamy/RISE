@@ -320,14 +320,12 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 				const bool filmMode = (pFilteredFilm != 0);
 				Scalar weight;
 				if( filmMode ) {
-					ptOnScreen = Point2(
-						static_cast<Scalar>(x) + (*m).x - 0.5,
-						static_cast<Scalar>(height-y) + (*m).y - 0.5 );
+					ptOnScreen = RasterConvention::PixelToScreen( x, y, height, (*m).x, (*m).y );
 					weight = 1.0;
 				} else if( pPixelFilter ) {
-					weight = pPixelFilter->warpOnScreen( rc.random, *m, ptOnScreen, x, height-y );
+					weight = pPixelFilter->warpOnScreen( rc.random, *m, ptOnScreen, x, height-1-y );
 				} else {
-					ptOnScreen = Point2( x, height-y );
+					ptOnScreen = RasterConvention::PixelCentreToScreen( x, y, height );
 					weight = 1.0;
 				}
 				weights += weight;
@@ -457,7 +455,7 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 
 		PixelAOV aov;
 		const XYZPel sampleXYZ = IntegratePixelSpectral(
-			rc, rast, Point2(x, height-y), pScene, sampler, pRadianceMap,
+			rc, rast, RasterConvention::PixelCentreToScreen( x, y, height ), pScene, sampler, pRadianceMap,
 			pAOVBuffers ? &aov : 0 );
 		if( pAOVBuffers ) {
 			if( aov.valid ) {

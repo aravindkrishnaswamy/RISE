@@ -124,7 +124,7 @@ void FabricBRDF::ResolveFabric( const RayIntersectionGeometric& ri, const Scalar
 	// the lobe-selection weight are achromatic by construction, and
 	// making them wavelength-dependent would desync Scatter's stored
 	// hero pdf from a companion-wavelength Pdf() call.
-	const RISEPel rgb = pSheenColor->GetColor( ri );
+	const RISEPel rgb = ReflectanceColor( *pSheenColor, ri );
 	out.m = r_min( Scalar(1), r_max( Scalar(0), ColorMath::MaxValue( rgb ) ) );
 
 	if( nm < 0 ) {
@@ -139,7 +139,7 @@ void FabricBRDF::ResolveFabric( const RayIntersectionGeometric& ri, const Scalar
 		// identical -- same predicate, same fallback (IPainter.h).
 		out.tintNM = IsUntintedWhite( rgb )
 			? Scalar(1)
-			: pSheenColor->GetColorNM( ri, nm );
+			: r_max( Scalar(0), pSheenColor->GetColorNM( ri, nm ) );	// DL-386: negative -> 0, as ReflectanceColorNM
 	}
 
 	// requireSingle on the descriptor, and ACHROMATIC in both regimes:

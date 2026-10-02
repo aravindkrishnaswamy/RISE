@@ -203,10 +203,10 @@ void GGXSPF::Scatter(
 	// only; the other two modes keep the pre-DL-64 raw-tint weight, which
 	// was never the defect.
 	const GGXInterfaceFresnel interfaceFresnel { ri, fresnelMode, *pSpecular, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness };
-	const Scalar wd = ColorMath::MaxValue( pDiffuse->GetColor(ri) );
+	const Scalar wd = ColorMath::MaxValue( ReflectanceColor( *pDiffuse, ri ) );
 	const Scalar ws = (fresnelMode == eFresnelSchlickF0)
 		? ColorMath::MaxValue( interfaceFresnel.Mean() )
-		: ColorMath::MaxValue( pSpecular->GetColor(ri) );
+		: ColorMath::MaxValue( ReflectanceColor( *pSpecular, ri ) );
 	// DL-63: every LookupEavg/LookupEss/MSLobeZ/MSPdf/SampleMSCosTheta
 	// call in this file uses the "G2" (height-correlated) LUT variant,
 	// matching the Smith height-correlated G2 masking-shadowing GGXBRDF
@@ -270,7 +270,7 @@ void GGXSPF::Scatter(
 			// `interfaceFresnel` is the same instance computed above for
 			// the wsSel weight (DL-64) -- reused here for the diffuse
 			// entry/exit transmission (DL-37), unchanged formula.
-			const RISEPel kray = pDiffuse->GetColor(ri) * (1.0 / pDiffuseSelect) *
+			const RISEPel kray = ReflectanceColor( *pDiffuse, ri ) * (1.0 / pDiffuseSelect) *
 				GGXInterfaceFresnel::Transmission( interfaceFresnel.Directional(cosWi), interfaceFresnel.Directional(cosTheta) );
 
 			ScatteredRay diffuse;
@@ -309,7 +309,7 @@ void GGXSPF::Scatter(
 							(wd * diffPdf + wms * msPdfHere + ws * vndfPdf) / total : vndfPdf;
 
 						// Fresnel evaluated at microfacet normal m, not macrosurface normal
-						const RISEPel specColor = pSpecular->GetColor(ri);
+						const RISEPel specColor = ReflectanceColor( *pSpecular, ri );
 						RISEPel F;
 						if( fresnelMode == eFresnelSchlickF0 )
 						{
@@ -420,7 +420,7 @@ void GGXSPF::Scatter(
 				// Ess_i, cosWi computed once at the top of Scatter() (shared
 				// with the direction-aware wms selection weight).
 
-				const RISEPel specColor = pSpecular->GetColor(ri);
+				const RISEPel specColor = ReflectanceColor( *pSpecular, ri );
 				RISEPel F_ms;
 				if( fresnelMode == eFresnelSchlickF0 )
 				{
@@ -534,8 +534,8 @@ void GGXSPF::ScatterNM(
 	// remains the true per-wavelength painter sample for the
 	// per-direction Fresnel evaluations below (specColor/F0), which are
 	// unaffected by this fix.
-	const Scalar wd = GuardedGetColorNM( *pDiffuse, ri, nm );
-	const Scalar wsF0 = GuardedGetColorNM( *pSpecular, ri, nm );
+	const Scalar wd = ReflectanceColorNM( *pDiffuse, ri, nm );
+	const Scalar wsF0 = ReflectanceColorNM( *pSpecular, ri, nm );
 	const GGXInterfaceFresnel interfaceFresnel { ri, fresnelMode, *pSpecular, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness };
 	const Scalar ws = (fresnelMode == eFresnelSchlickF0) ? interfaceFresnel.MeanNM( nm ) : wsF0;
 	// DL-77 (fixed, see Scatter()'s twin comment): LookupEavgG2Aniso/
@@ -816,11 +816,11 @@ Scalar GGXSPF::Pdf(
 	// the cheap raw-tint weight); otherwise this reported density would
 	// disagree with the sampler it is meant to describe (MIS /
 	// SPFPdfConsistencyTest).
-	const Scalar wd = ColorMath::MaxValue( pDiffuse->GetColor(ri) );
+	const Scalar wd = ColorMath::MaxValue( ReflectanceColor( *pDiffuse, ri ) );
 	const GGXInterfaceFresnel interfaceFresnel { ri, fresnelMode, *pSpecular, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness };
 	const Scalar ws = (fresnelMode == eFresnelSchlickF0)
 		? ColorMath::MaxValue( interfaceFresnel.Mean() )
-		: ColorMath::MaxValue( pSpecular->GetColor(ri) );
+		: ColorMath::MaxValue( ReflectanceColor( *pSpecular, ri ) );
 	// H6: direction-aware MS selection weight (see Scatter()'s twin
 	// comment).  DL-77 P2: per-azimuth energy term (wi's local x,y),
 	// matching Scatter()/ScatterNM()'s wms so the reported density stays
@@ -879,9 +879,9 @@ Scalar GGXSPF::PdfNM(
 	// P2-1: `ws` matches the mixture ScatterNM() actually samples from --
 	// the hemispherical Fresnel-weighted albedo ONLY in eFresnelSchlickF0
 	// mode (see ScatterNM()'s twin comment).
-	const Scalar wd = GuardedGetColorNM( *pDiffuse, ri, nm );
+	const Scalar wd = ReflectanceColorNM( *pDiffuse, ri, nm );
 	const GGXInterfaceFresnel interfaceFresnel { ri, fresnelMode, *pSpecular, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness };
-	const Scalar ws = (fresnelMode == eFresnelSchlickF0) ? interfaceFresnel.MeanNM( nm ) : GuardedGetColorNM( *pSpecular, ri, nm );
+	const Scalar ws = (fresnelMode == eFresnelSchlickF0) ? interfaceFresnel.MeanNM( nm ) : ReflectanceColorNM( *pSpecular, ri, nm );
 	// H6: direction-aware MS selection weight (see Scatter()'s twin
 	// comment).  DL-77 P2: per-azimuth energy term (wi's local x,y),
 	// matching Scatter()/ScatterNM()'s wms so the reported density stays

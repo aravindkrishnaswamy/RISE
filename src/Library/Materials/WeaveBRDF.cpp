@@ -879,7 +879,7 @@ void WeaveBRDF::ResolveWeave( const RayIntersectionGeometric& ri, const Scalar n
 		// whose directional albedo is normalised to <= 1, so an authored
 		// painter above 1 would make the family return more light than
 		// it receives.  Nothing else refuses such a painter.
-		const RISEPel rgb = s.color->GetColor( ri );
+		const RISEPel rgb = ReflectanceColor( *s.color, ri );
 		if( nm < 0 ) {
 			d.tint = rgb;
 			ColorMath::Clamp( d.tint, Scalar( 0 ), Scalar( 1 ) );

@@ -94,7 +94,7 @@ RISEPel SheenBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometri
 	const Scalar D = CharlieSheen::D( alpha, nDotH );
 	const Scalar V = CharlieSheen::V( alpha, nDotL, nDotV );
 
-	return pColor->GetColor( ri ) * (D * V);
+	return ReflectanceColor( *pColor, ri ) * (D * V);
 }
 
 Scalar SheenBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
@@ -127,7 +127,7 @@ Scalar SheenBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometr
 	const Scalar D = CharlieSheen::D( alpha, nDotH );
 	const Scalar V = CharlieSheen::V( alpha, nDotL, nDotV );
 
-	return GuardedGetColorNM( *pColor, ri, nm ) * D * V;
+	return ReflectanceColorNM( *pColor, ri, nm ) * D * V;
 }
 
 RISEPel SheenBRDF::albedo( const RayIntersectionGeometric& ri ) const
@@ -137,5 +137,5 @@ RISEPel SheenBRDF::albedo( const RayIntersectionGeometric& ri ) const
 	// directional albedo that drops below 1 as roughness decreases, but
 	// this is used for RR / importance estimation, not for the rendered
 	// image, so a slightly conservative (over-)estimate is fine.
-	return pColor->GetColor( ri );
+	return ReflectanceColor( *pColor, ri );
 }

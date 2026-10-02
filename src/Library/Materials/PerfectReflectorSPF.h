@@ -55,7 +55,7 @@ namespace RISE
 				// applies the mirror's actual colour.  Without this, the SMS
 				// reflective-caustic path multiplied by the default white
 				// (1,1,1) and lost the orange tint of e.g. a metallic ring.
-				info.attenuation = pReflectivity->GetColor( ri );
+				info.attenuation = ReflectanceColor( *pReflectivity, ri );
 				info.valid = true;
 				return info;
 			}
