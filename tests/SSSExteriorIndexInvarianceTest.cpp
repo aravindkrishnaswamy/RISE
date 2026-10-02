@@ -1171,8 +1171,8 @@ namespace
 
 	void TestRenderSeedContract()
 	{
-		const std::string path = WriteScene( BuildScene( Model::DiffusionRough,
-			Integrator::BDPT, 1.0, kAirInterior, 32 ), "seedcontract" );
+		const std::string path = WriteScene( BuildScene( Model::LegacyDipole,
+			Integrator::PixelPel, 1.0, kAirInterior, 4 ), "seedcontract" );
 		Check( !path.empty(), "seed contract scene written" );
 		double first = -1;
 		for( unsigned int t=0; t<4; ++t ) {
