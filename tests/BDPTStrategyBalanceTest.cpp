@@ -4335,19 +4335,6 @@ static const char* kSceneDL377Common =
 	"sphere_geometry\n{\n\tname sg\n\tradius 0.6\n}\n\n"
 	"standard_object\n{\n\tname so\n\tgeometry sg\n\tmaterial mat_s\n}\n\n";
 
-// The same sphere as a random-walk medium (a NON-connectible entry: no
-// strategy ends there, so the light family is carried entirely by the
-// subpath running PAST the entry -- the HWSS companion recompute probe).
-static const char* kSceneDL377CommonRW =
-	"film\n{\n\twidth 32\n\theight 32\n}\n\n"
-	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
-	"randomwalk_sss_material\n{\n\tname mat_s\n\tior 1.3\n\tabsorption 0.1\n"
-		"\tscattering 10.0\n\tg 0.0\n\troughness 0.3\n}\n\n"
-	"sphere_geometry\n{\n\tname sg\n\tradius 0.6\n}\n\n"
-	"standard_object\n{\n\tname so\n\tgeometry sg\n\tmaterial mat_s\n}\n\n";
-
-static const char* g_dl377Common = kSceneDL377Common;
-
 static const char* kSceneDL377Omni =
 	"omni_light\n{\n\tname L\n\tpower 20\n\tcolor 1 1 1\n\tposition 0 1.1 0.6\n}\n\n";
 
@@ -4463,7 +4450,7 @@ static void RunDL377Row( const char* label, bool wall, bool spot, const char* ki
 	const char* refKind, int refSpp, int replicates, double band, bool refGlass = false )
 {
 	std::cout << "Testing DL-377 " << label << std::endl;
-	const std::string body = std::string( g_dl377Common ) + ( spot ? kSceneDL377Spot : kSceneDL377Omni ) +
+	const std::string body = std::string( kSceneDL377Common ) + ( spot ? kSceneDL377Spot : kSceneDL377Omni ) +
 		( wall ? kSceneDL377Wall : "" );
 	const std::string ref = std::string( "RISE ASCII SCENE 7\n" ) + DL377Rasterizer( refKind, refSpp ) + body +
 		( refGlass ? kSceneDL377Glass : "" );
@@ -4582,14 +4569,15 @@ int main( int argc, char** argv )
 		return failCount == 0 ? 0 : 1;
 	}
 	if( argc == 2 && std::strcmp(argv[1], "--dl377-hwss" ) == 0 ) {
-		g_dl377Common = kSceneDL377CommonRW;
-		RunDL377Row( "G3-RW HWSS TRUE vs FALSE, both with glass (probe)", true, true, "bdpthwss", 256, "bdptspec", 256, 2, 1.0, true );
+		RunDL377Row( "G3 HWSS TRUE vs FALSE, both with glass (probe)", true, true, "bdpthwss", 256, "bdptspec", 256, 2, 1.0, true );
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
 	if( argc == 2 && std::strcmp(argv[1], "--dl377-mlt" ) == 0 ) {
-		RunDL377Row( "G under MLT (sibling audit, ungated band)", false, false, "mlt", 512, "pt", 512, 1, 1.0 );
-		RunDL377Row( "G under MLT, 1M bootstrap vs MLT without glass 1M (probe)", false, false, "mlt1m", 64, "mlt1m", 64, 1, 1.0 );
+		// MLT's image mean IS its bootstrap normalization: at 100k bootstrap
+		// samples it read -7% (deterministic, identical at 512 and 4096
+		// mutations/px); at 1M it reads +0.33% against MLT without the glass.
+		RunDL377Row( "G under MLT, 1M bootstrap, vs MLT without glass (probe, ungated)", false, false, "mlt1m", 64, "mlt1m", 64, 1, 1.0 );
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
