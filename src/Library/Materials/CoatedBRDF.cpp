@@ -159,7 +159,7 @@ void CoatedBRDF::ResolveCoat(
 	// `value` reaches the exit factor through the DIRECTIONAL
 	// T(theta_o), whose hemispherical average is (1 - r_e)/eta^2 ==
 	// (1 - r_i) and which no toggle touches, while `albedo` carries
-	// (1 - r_i) explicitly.  Consumers of the toggle therefore gate the
+	// the interior-transport `escape` term (== 1 - r_i for a clear coat).  Consumers of the toggle therefore gate the
 	// recycling factor itself -- see RecyclingFactor* below.
 	out.ri = CoatedLayer::InternalDiffuseFresnel( out.eta );
 }

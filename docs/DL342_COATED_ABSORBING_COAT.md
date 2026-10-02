@@ -69,7 +69,10 @@ with `escape == entry / eta^2` by reciprocity.  With them:
 * `albedo` (AOV) = `F(co) + T(co) a(mu_o) R escape / (1 - E_ret R)`.
 
 At `tau = 0` the three are `r_i`, `1 - r_i`, `1 - r_e` and every changed
-expression reduces BIT FOR BIT to the old one (`OpticalDepth` is exactly
+expression reduces to the old one -- BIT FOR BIT in `value`/`valueNM`; `albedo` (the
+OIDN guide AOV) and `hemisphericalAlbedoNM` move by 1 ulp because fast-math
+reorders the new product (review, 2026-10-02), so rendered pixels are unchanged
+but denoised clear-coat output is not guaranteed bit-identical (`OpticalDepth` is exactly
 0 for an untinted, non-absorbing coat and `InteriorDiffuseTransport`
 returns those values untouched).  `add_wetness` emits exactly such a coat
 (`coat_thickness`/`coat_absorption`/`coat_tint` left at their defaults),
