@@ -12,9 +12,11 @@ Profiles now expose wavelength boundary queries with constant-profile defaults.
 Burley and Donner-Jensen override both index and transmission. NM entry adapters,
 shared vertex evaluation, diffusion sampling entry/exit, and PT/BDPT eye/light
 coins use these queries. NM random-walk consumers prefer the material NM query
-even when RGB parameters exist. RandomWalkSSSMaterial keeps its existing
-coefficient snapshot and evaluates its IOR painter at the constructor's existing
-dummy point for NM; this does not add spatially varying coefficient support.
+even when RGB parameters exist. RandomWalkSSSMaterial evaluates its IOR
+painter at the constructor's existing dummy point for NM; this does not add
+spatially varying coefficient support. (Superseded for the coefficients by
+DL-374, below: as written here the NM query returned the RGB coefficient
+snapshot, which made every spectral random-walk render achromatic.)
 Donner-Jensen spectral table construction also evaluates both layer indices at
 its table wavelength; RGB tables keep their existing scalar policy.
 
@@ -75,3 +77,38 @@ source audits plus existing affected suites, not a new camera-inside full image
 or photon-distribution oracle. World-position graded-index machinery has its
 existing scalar field contract; this patch does not introduce dispersive graded
 fields. Independent reviews assess these explicit coverage limits.
+
+## DL-374 follow-up (`debt-dl374`, 2026-10-01): coefficients at the wavelength
+
+`RandomWalkSSSMaterial::GetRandomWalkSSSParamsNM` used to return the
+construction-time RGB `sigma_a`/`sigma_s` snapshot (only the IOR was evaluated
+at lambda), and `RandomWalkSSS::SampleExit`'s NM mode collapsed that triple to
+its Rec. 709 luminance, so every wavelength walked one grey medium and every
+spectral integrator -- PT, PT `hwss TRUE`, BDPT and VCM measured, MLT by its shared BDPT generator -- rendered the
+material achromatic. The NM query now evaluates the absorption and scattering
+painters at lambda (`IScalarPainter::GetValueAtNM`, the query the diffusion
+profiles' `EvaluateProfileNM` already makes) at the same snapshot point,
+broadcast per `IMaterial`'s contract, and the walk reads a broadcast triple
+exactly (a non-broadcast triple keeps the luminance fallback). Red-proof
+`tests/RandomWalkSSSSpectralColourTest.cpp` (58/0; 26/32 with the two source
+files reverted): the walk's NM weight at 650/550/450 nm equals the RGB walk's
+R/G/B channel weight within |z| <= 0.4 (pre-fix every wavelength read 0.26,
+z up to -187), and a chromatic white-furnace sphere (absorption 3.0/0.5/0.02)
+renders B/R ~8.3-9.2 spectrally against RGB 5.6 (pre-fix 0.97-1.00). The
+spectral render is not the RGB render: an RGB-authored coefficient is a
+three-node piecewise-linear curve under spectral rendering
+(`RGBScalarPainter`, nodes 450/550/650 nm), so green and blue agree within 5 %
+while red reads 0.61-0.66x.  That gap is PREDICTED, not just attributed
+(DL-374 review, 2026-10-01): integrating the RGB-render reflectance-vs-
+sigma_a curve over this piecewise-linear sigma_a(lambda) against the env's
+radiance spectrum, the CMFs and the XYZ->Rec709 matrix gives spectral
+0.0632 / 0.3031 / 0.5721 (red 0.611x RGB); PT `hwss TRUE` renders
+0.06321 / 0.30298 / 0.57396.  The red CMF's negative lobe sits where
+this medium reflects most.  Non-HWSS PT/BDPT/VCM spectral read red ~6 %
+above the prediction (0.067-0.069); a grey-medium control shows the same
++3.5 % red before and after the fix, so that offset is the non-HWSS
+spectral path's wavelength-sampling residual, not DL-374.  Note also that
+`RGBScalarPainter` places an RGB triple at 450/550/650 nm while
+wavelength-varying painters use `ScalarPainterRGB::kChannelNM`
+611/549/465 nm in RGB mode -- an older, separate convention. BDPT `hwss TRUE` still renders this material grey
+(B/R 0.94): its companions inherit the hero's walk weight, which is DL-357.

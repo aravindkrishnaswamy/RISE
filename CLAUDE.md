@@ -324,3 +324,5 @@ Process skills distilled from prior RISE sessions.  Auto-invoked via
 - **2026-09-30 — DL334 critical-angle follow-up:** preserve absolute boundary indices and compensate the Snell discriminant; vector/scalar Fresnel share the same conditioned cosine. Local compiler controls preserve explicit FMA residuals under shipping fast-math. See `docs/DL334_SSS_CRITICAL_BOUNDARY.md`.
 
 - **2026-09-30 — DL334 near-unity follow-up:** both Snell orderings preserve the absolute index contrast; individual Decimal Fresnel R/T tests detect physical-law errors hidden by R+T=1. See `docs/DL334_SSS_NEAR_UNITY.md`.
+
+- **2026-10-01 — DL-374 (`debt-dl374`):** `randomwalk_sss_material`'s NM query evaluates absorption/scattering at the traced wavelength (it returned the RGB snapshot, which the walk collapsed to luminance, so every spectral integrator rendered random-walk SSS grey); an RGB-authored coefficient is a 3-node 450/550/650 nm curve spectrally, so red legitimately differs from the RGB render, and BDPT `hwss TRUE` (measured; VCM/MLT share the companion ladder) stays grey until DL-357. See `docs/DL334_SSS_SPECTRAL_BOUNDARY.md`.
