@@ -110,6 +110,13 @@ painters are either in gamut or unused (`pnt_absorption` -- the SSS materials
 author their coefficients inline -- and `composite_wacky_creature`'s
 `hdr_scatter_*`).
 
+**Review correction (2026-10-02):** that scan covered ROMM-authored painters
+only.  `scenes/FeatureBased/Parser/sombrero.RISEscene` authors 1796 of its
+3721 `uniformcolor_painter` literals with a NEGATIVE blue channel (down to
+-0.587) in the default colourspace, all bound to `lambertian_material`
+reflectance (direct-lit `pixelpel_rasterizer`), so its blue channel changes
+too: surfaces that subtracted blue light now reflect none.  Not measured.
+
 Whole-frame mean per channel, 160x120, shipped spp (64), OIDN off, linear
 Rec.709 EXR, n = 3 CLI renders per build (sd in parentheses):
 
