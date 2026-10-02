@@ -1196,6 +1196,30 @@ Consequently:
 
 ---
 
+## 8.9. An open glass sheet: its FRONT is the outside, its BACK is the glass
+
+A `dielectric_material` / `perfectrefractor_material` on an OPEN sheet -- a
+`clippedplane_geometry`, or a `displaced_geometry` over a flat convex one --
+is an interface, not a solid: the side its normal points to (the winding's
+front) is the surrounding medium and the side behind it is glass.  Every ray
+refracts by the face it strikes (front: enters, back: exits), in every
+integrator and in SMS (DL-345, 2026-10-02,
+[DL345_OPEN_SHEET_FACE_RULE.md](DL345_OPEN_SHEET_FACE_RULE.md)).  So:
+
+- a slab built from two sheets needs both normals pointing OUT of the slab
+  (top facing up, bottom facing down); a sheet wound the other way makes
+  the slab's inside "air" and its outside "glass";
+- such a slab still differs from a `box_geometry` slab at its open side
+  edges (light leaves through them instead of meeting a side face) -- a few
+  percent near the edges on `sms_k2_flatslab`; author a closed solid when
+  the edges matter;
+- a lone sheet is a half-space of glass behind it: a receiver seen directly
+  under it is lit as if it sat in that glass.
+- only provably open surfaces get this rule: an open triangle MESH, a
+  Bezier patch set or a CSG of sheets is not certified open and keeps the
+  stack-based ("entering unless already inside") convention, which is not
+  reciprocal on open sheets (DL-382).
+
 ## 9. Sanity-check workflow
 
 When a new scene renders unexpectedly:

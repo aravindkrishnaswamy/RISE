@@ -160,7 +160,7 @@ static double Render( const std::string& sceneText )
 static const char* kOutputChunk =
 	"file_rasterizeroutput\n{\n\tpattern rendered/open_sheet_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
 
-enum Integrator { kPT, kPTSMS, kBDPT, kVCM, kNumIntegrators };
+enum Integrator { kPT, kPTSMS, kBDPT, kVCM, kNumIntegrators, kPTTransparentShadows };
 static const char* kIntegratorName[kNumIntegrators] = { "PT", "PT+SMS", "BDPT", "VCM" };
 
 static std::string Rasterizer( Integrator which )
@@ -171,6 +171,9 @@ static std::string Rasterizer( Integrator which )
 	case kPTSMS:
 		ss << "pathtracing_pel_rasterizer\n{\n\tsamples 256\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n"
 		   << "\tsms_enabled " << ( which == kPTSMS ? "TRUE" : "FALSE" ) << "\n}\n\n";
+		break;
+	case kPTTransparentShadows:
+		ss << "pathtracing_pel_rasterizer\n{\n\tsamples 64\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n\ttransparent_shadows TRUE\n}\n\n";
 		break;
 	case kBDPT:
 		ss << "bdpt_pel_rasterizer\n{\n\tsamples 128\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n";
@@ -190,7 +193,7 @@ static std::string Rasterizer( Integrator which )
 // refractor, 8 x 8.  A clipped plane wound (-x,+z) -> (+x,+z) -> (+x,-z)
 // faces UP (+y); the reverse winding faces DOWN.
 //////////////////////////////////////////////////////////////////////
-enum Glass { kSingleSheet, kOpenSlab, kDisplacedSlab, kClosedSlab };
+enum Glass { kSingleSheet, kOpenSlab, kDisplacedSlab, kClosedSlab, kOpenStacked, kClosedStacked };
 enum Camera { kBelow, kAbove };
 
 static std::string PlaneChunk( const char* name, double y, bool up )
@@ -206,7 +209,7 @@ static std::string PlaneChunk( const char* name, double y, bool up )
 	return ss.str();
 }
 
-static std::string Scene( Glass glass, Camera cam )
+static std::string Scene( Glass glass, Camera cam, bool omni = false )
 {
 	std::ostringstream ss;
 	ss << "film\n{\n\twidth 16\n\theight 16\n}\n\n";
@@ -222,8 +225,10 @@ static std::string Scene( Glass glass, Camera cam )
 		"standard_object\n{\n\tname obj_recv\n\tgeometry geo_recv\n\tmaterial mat_recv\n}\n\n"
 		"uniformcolor_painter\n{\n\tname pnt_emit\n\tcolor 1 1 1\n\tcolorspace Rec709RGB_Linear\n}\n\n"
 		"lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n\tscale 4.0\n\tmaterial none\n}\n\n"
-		"clippedplane_geometry\n{\n\tname geo_emit\n\tpta -2 4 -2\n\tptb 2 4 -2\n\tptc 2 4 2\n\tptd -2 4 2\n\tdoublesided FALSE\n}\n\n"
-		"standard_object\n{\n\tname obj_emit\n\tgeometry geo_emit\n\tmaterial mat_emit\n}\n\n"
+		<< ( omni
+			? "omni_light\n{\n\tname lgt\n\tposition 0 4 0\n\tcolor 1 1 1\n\tpower 16\n}\n\n"
+			: "clippedplane_geometry\n{\n\tname geo_emit\n\tpta -2 4 -2\n\tptb 2 4 -2\n\tptc 2 4 2\n\tptd -2 4 2\n\tdoublesided FALSE\n}\n\n"
+			  "standard_object\n{\n\tname obj_emit\n\tgeometry geo_emit\n\tmaterial mat_emit\n}\n\n" ) <<
 		"uniformcolor_painter\n{\n\tname pnt_glass\n\tcolor 1 1 1\n\tcolorspace Rec709RGB_Linear\n}\n\n"
 		"perfectrefractor_material\n{\n\tname mat_glass\n\trefractance pnt_glass\n\tior 1.5\n}\n\n";
 
@@ -247,6 +252,20 @@ static std::string Scene( Glass glass, Camera cam )
 		      "standard_object\n{\n\tname obj_top\n\tgeometry geo_disp\n\torientation -90 0 0\n\tposition 0 2.1 0\n\tmaterial mat_glass\n}\n\n"
 		      "standard_object\n{\n\tname obj_bot\n\tgeometry geo_disp\n\torientation 90 0 0\n\tposition 0 1.9 0\n\tmaterial mat_glass\n}\n\n";
 		break;
+	case kOpenStacked:
+		// Two open-sheet slabs with an AIR gap between them (DL-345's T7:
+		// the gap used to read as glass).  Camera above sees through both.
+		ss << PlaneChunk( "geo_t1", 2.5, true ) << PlaneChunk( "geo_b1", 2.3, false )
+		   << PlaneChunk( "geo_t2", 1.7, true ) << PlaneChunk( "geo_b2", 1.5, false );
+		for( const char* g : { "geo_t1", "geo_b1", "geo_t2", "geo_b2" } ) {
+			ss << "standard_object\n{\n\tname obj_" << g << "\n\tgeometry " << g << "\n\tmaterial mat_glass\n}\n\n";
+		}
+		break;
+	case kClosedStacked:
+		ss << "box_geometry\n{\n\tname geo_box\n\twidth 8\n\theight 0.2\n\tdepth 8\n}\n\n"
+		      "standard_object\n{\n\tname obj_box1\n\tgeometry geo_box\n\tposition 0 2.4 0\n\tmaterial mat_glass\n}\n\n"
+		      "standard_object\n{\n\tname obj_box2\n\tgeometry geo_box\n\tposition 0 1.6 0\n\tmaterial mat_glass\n}\n\n";
+		break;
 	default:
 		ss << "box_geometry\n{\n\tname geo_box\n\twidth 8\n\theight 0.2\n\tdepth 8\n}\n\n"
 		      "standard_object\n{\n\tname obj_box\n\tgeometry geo_box\n\tposition 0 2 0\n\tmaterial mat_glass\n}\n\n";
@@ -255,20 +274,20 @@ static std::string Scene( Glass glass, Camera cam )
 	return ss.str();
 }
 
-static std::string Assemble( Integrator which, Glass glass, Camera cam )
+static std::string Assemble( Integrator which, Glass glass, Camera cam, bool omni = false )
 {
 	return std::string( "RISE ASCII SCENE 7\n" )
 		+ "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
-		+ Rasterizer( which ) + Scene( glass, cam );
+		+ Rasterizer( which ) + Scene( glass, cam, omni );
 }
 
 struct Stat { double mean, sd; };
 
-static Stat Measure( Integrator which, Glass glass, Camera cam, unsigned int n )
+static Stat Measure( Integrator which, Glass glass, Camera cam, unsigned int n, bool omni = false )
 {
 	std::vector<double> v;
 	for( unsigned int i = 0; i < n; i++ ) {
-		v.push_back( Render( Assemble( which, glass, cam ) ) );
+		v.push_back( Render( Assemble( which, glass, cam, omni ) ) );
 	}
 	double m = 0;
 	for( double x : v ) m += x;
@@ -341,6 +360,27 @@ int main( int argc, char** argv )
 			RatioRow( l1.c_str(), open, closed, 0.05 );
 			RatioRow( l2.c_str(), disp, closed, 0.05 );
 		}
+	}
+
+	// stacked: two slabs with an air gap, camera above, through both.
+	std::cout << "two stacked slabs, camera above (through both)" << std::endl;
+	for( Integrator i : { kPT, kPTSMS, kVCM } ) {
+		const Stat closed = Measure( i, kClosedStacked, kAbove, n );
+		const Stat open = Measure( i, kOpenStacked, kAbove, n );
+		std::string l = std::string( "stacked open slabs / closed boxes " ) + kIntegratorName[i];
+		RatioRow( l.c_str(), open, closed, 0.05 );
+	}
+
+	// tshadow: the opt-in transparent-shadow walk through an open slab
+	// (an omni light's NEE is its only light: two Fresnel transmissions
+	// through the closed box, which an unpushed exit used to price as one).
+	std::cout << "transparent shadows, omni light, camera below" << std::endl;
+	{
+		const Stat closed = Measure( kPTTransparentShadows, kClosedSlab, kBelow, n, true );
+		const Stat open = Measure( kPTTransparentShadows, kOpenSlab, kBelow, n, true );
+		const Stat disp = Measure( kPTTransparentShadows, kDisplacedSlab, kBelow, n, true );
+		RatioRow( "transparent shadows open slab / closed box", open, closed, 0.01 );
+		RatioRow( "transparent shadows displaced open slab / closed box", disp, closed, 0.01 );
 	}
 
 	std::cout << "Passed: " << passCount << "   Failed: " << failCount << std::endl;
