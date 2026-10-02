@@ -4449,6 +4449,88 @@ static void TestDeltaLitRandomWalkDL375()
 	RunDeltaLitRandomWalkRowDL375( "spot (S2 sphere / D2 wall)", kLightSpotDL375, 2048, 0.05, 0.05 );
 }
 
+//////////////////////////////////////////////////////////////////////
+// DL-380: the by-path subsurface partition under DEPTH CAPS.  Same
+// fixture, wall pixels only (lit only through the random-walk sphere:
+// light -> sphere -> walk -> exit -> wall -> camera).  The eye family
+// covers that path by NEE at its random-walk entry, which needs TWO eye
+// surface vertices (the wall, then the sphere it jumps from), so at
+// `max_eye_depth 1` it has no strategy and the light family is the only
+// estimator.  The partition used to decide from vertex types alone, cut
+// the light family anyway, and the path was lost (-99.95%).  The
+// reference is PT (no subpath caps): every path the wall pixels see at
+// first order is reachable through the light family at E1/L16 (a
+// connection at the wall, or a splat), so the capped render must match.
+// E16/L1 is the mirror: the LIGHT walk is the truncated one (it stops at
+// the entry), the eye family owns the path, and the row checks nothing
+// is counted twice.  MLT goes through the same EvaluateAllStrategies.
+//////////////////////////////////////////////////////////////////////
+static std::string DL380Rasterizer( const char* kind, int eyeDepth, int lightDepth, int spp )
+{
+	char buf[1024];
+	if( std::strcmp( kind, "pt" ) == 0 ) {
+		return SSSRasterizer( "pt", 16, spp );
+	} else if( std::strcmp( kind, "mlt" ) == 0 ) {
+		std::snprintf( buf, sizeof(buf), "mlt_rasterizer\n{\n\tmax_eye_depth %d\n\tmax_light_depth %d\n"
+			"\tbootstrap_samples 1000000\n\tchains 512\n\tmutations_per_pixel %d\n"
+			"\tlarge_step_prob 0.3\n\toidn_denoise FALSE\n}\n", eyeDepth, lightDepth, spp );
+	} else {
+		std::snprintf( buf, sizeof(buf), "bdpt_pel_rasterizer\n{\n\tmax_eye_depth %d\n\tmax_light_depth %d\n"
+			"\tsamples %d\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n", eyeDepth, lightDepth, spp );
+	}
+	return std::string( "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n" ) + buf +
+		"\nfile_rasterizeroutput\n{\n\tpattern rendered/bdpt_balance_unused\n\ttype EXR\n"
+		"\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+}
+
+//! Mean and sd of the wall-pixel mean over `n` salted renders.
+static bool DL380WallMean( const std::string& rasterizer, const char* light, int n, unsigned saltBase,
+	double& mean, double& sd )
+{
+	double sum = 0, sumSq = 0;
+	for( int i = 0; i < n; i++ ) {
+		double s = 0, w = 0;
+		if( !RenderRegionMeansDL375( rasterizer, light, saltBase + unsigned( i ), s, w ) ) return false;
+		sum += w; sumSq += w * w;
+	}
+	mean = sum / n;
+	sd = n > 1 ? std::sqrt( std::max( 0.0, ( sumSq - n * mean * mean ) / ( n - 1 ) ) ) : 0;
+	return true;
+}
+
+static void RunDL380Row( const char* name, const char* light, const char* kind, int eyeDepth, int lightDepth,
+	int spp, int n, double ptMean, double band )
+{
+	std::cout << "Testing DL-380 " << name << std::endl;
+	double m = 0, sd = 0;
+	const bool ok = DL380WallMean( DL380Rasterizer( kind, eyeDepth, lightDepth, spp ), light, n, 380u, m, sd );
+	Check( ok, ( std::string( "DL-380 renders produced output: " ) + name ).c_str() );
+	if( !ok ) return;
+	std::printf( "    wall mean %.7f (sd %.7f, n %d) vs PT %.7f\n", m, sd, n, ptMean );
+	CheckSSSMeanBand( ( std::string( "DL-380 wall pixels / PT: " ) + name ).c_str(), ptMean, m, band );
+}
+
+static void TestDepthCappedPartitionDL380( bool withMLT )
+{
+	const int n = 3;
+	double ptOmni = 0, ptSpot = 0, sdOmni = 0, sdSpot = 0;
+	const bool ok = DL380WallMean( DL380Rasterizer( "pt", 16, 16, 2048 ), kLightOmniDL375, n, 380u, ptOmni, sdOmni )
+		&& DL380WallMean( DL380Rasterizer( "pt", 16, 16, 2048 ), kLightSpotDL375, n, 380u, ptSpot, sdSpot );
+	Check( ok, "DL-380 PT references produced output" );
+	if( !ok ) return;
+	std::printf( "    PT wall reference: D1 omni %.7f (sd %.7f), D2 spot %.7f (sd %.7f), n %d\n",
+		ptOmni, sdOmni, ptSpot, sdSpot, n );
+	RunDL380Row( "D1 omni, BDPT max_eye_depth 1 / max_light_depth 16", kLightOmniDL375, "bdpt", 1, 16, 2048, n, ptOmni, 0.05 );
+	RunDL380Row( "D2 spot, BDPT max_eye_depth 1 / max_light_depth 16", kLightSpotDL375, "bdpt", 1, 16, 2048, n, ptSpot, 0.05 );
+	RunDL380Row( "D2 spot, BDPT max_eye_depth 16 / max_light_depth 1 (light truncated: no double count)",
+		kLightSpotDL375, "bdpt", 16, 1, 2048, n, ptSpot, 0.05 );
+	RunDL380Row( "D2 spot, BDPT max_eye_depth 2 / max_light_depth 16 (eye covers exactly at its cap)",
+		kLightSpotDL375, "bdpt", 2, 16, 2048, n, ptSpot, 0.05 );
+	if( withMLT ) {
+		RunDL380Row( "D2 spot, MLT max_eye_depth 1 / max_light_depth 16", kLightSpotDL375, "mlt", 1, 16, 256, 1, ptSpot, 0.10 );
+	}
+}
+
 // DL-346: a conservative environment-lit medium has L=1 independently
 // of every MIS implementation. Index-matched boundaries and a white floor
 // conserve radiance; max_volume_bounce 256 makes the omitted tail negligible.
@@ -5062,6 +5144,12 @@ int main( int argc, char** argv )
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
+	// DL-380: the depth-capped partition rows (BDPT; MLT with --dl380-mlt).
+	if( argc == 2 && ( std::strcmp(argv[1], "--dl380-only") == 0 || std::strcmp(argv[1], "--dl380-mlt") == 0 ) ) {
+		TestDepthCappedPartitionDL380( std::strcmp(argv[1], "--dl380-mlt") == 0 );
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
 	if( argc == 2 && std::strcmp(argv[1], "--weave-gap-only") == 0 ) {
 		TestBacklitThinCurtain();
 		TestGappedCurtainAreaLight();
@@ -5141,7 +5229,7 @@ int main( int argc, char** argv )
 	if( argc > 1 ) {
 		if( argc != 3 || std::strcmp(argv[1], "--spectral-only") != 0 ||
 			(std::strcmp(argv[2], "1") != 0 && std::strcmp(argv[2], "2") != 0) ) {
-			std::cerr << "Usage: BDPTStrategyBalanceTest [--spectral-only 1|2 | --spectral-aggregate-unit | --materials-only | --guided-only | --weave-gap-only | --sss-only | --dl375-only | --back-face-only | --narrow-fov-only | --dl377-only | --dl377-mlt | --dl333-only | --dl386-only | --dl381-only | --dl381-probe kind spp mat glass n | --dl354-only | --dl354-probe kind W H spp n]" << std::endl;
+			std::cerr << "Usage: BDPTStrategyBalanceTest [--spectral-only 1|2 | --spectral-aggregate-unit | --materials-only | --guided-only | --weave-gap-only | --sss-only | --dl375-only | --dl380-only | --dl380-mlt | --back-face-only | --narrow-fov-only | --dl377-only | --dl377-mlt | --dl333-only | --dl386-only | --dl381-only | --dl381-probe kind spp mat glass n | --dl354-only | --dl354-probe kind W H spp n]" << std::endl;
 			return 2;
 		}
 		spectralSampleScale = std::strcmp(argv[2], "2") == 0 ? 2 : 1;
@@ -5185,6 +5273,7 @@ int main( int argc, char** argv )
 	TestRandomWalkSphereEmptyContainerV();
 	TestSmoothDiffusionSphereDL333();
 	TestDeltaLitRandomWalkDL375();
+	TestDepthCappedPartitionDL380( false );
  TestEnvironmentScatteringMediumDL346();
 	TestBackFaceEmitterZ();
 	TestNarrowFovSplatW();
