@@ -4385,7 +4385,7 @@ ConnectAndEvaluateImplCore(
 			}
 
 			if( s >= 2 ) {
-				fLight = PathValueOps::EvalAreaBSDFAtVertex<Tag>( lightEnd, wiAtLight, dirToCam, tag );
+				fLight = PathValueOps::EvalLightEndAreaBSDFAtVertex<Tag>( lightEnd, wiAtLight, dirToCam, tag );
 			}
 		}
 
@@ -4494,7 +4494,7 @@ ConnectAndEvaluateImplCore(
 		if( lightEnd.type == BDPTVertex::SURFACE && lightEnd.pMaterial && s >= 2 ) {
 			Vector3 wiAtLight = Vector3Ops::mkVector3( lightVerts[s - 2].position, lightEnd.position );
 			wiAtLight = Vector3Ops::Normalize( wiAtLight );
-			fLightNM = PathValueOps::EvalAreaBSDFAtVertex<Tag>( lightEnd, wiAtLight, dirToCam, tag );
+			fLightNM = PathValueOps::EvalLightEndAreaBSDFAtVertex<Tag>( lightEnd, wiAtLight, dirToCam, tag );
 		}
 
 		const Scalar distSq = dist * dist;
@@ -5001,7 +5001,7 @@ ConnectAndEvaluateImplCore(
 			}
 
 			if( s >= 2 ) {
-				fLight = PathValueOps::EvalAreaBSDFAtVertex<Tag>( lightEnd, wiAtLight, dirToCam, tag );
+				fLight = PathValueOps::EvalLightEndAreaBSDFAtVertex<Tag>( lightEnd, wiAtLight, dirToCam, tag );
 			}
 		} else if( lightEnd.type == BDPTVertex::LIGHT ) {
 			// s == 1: the light source directly connects to the camera.
@@ -5231,7 +5231,9 @@ ConnectAndEvaluateImplCore(
 		// wo at lightEnd = direction toward eye vertex (connection)
 		const Vector3 woAtLight = -dConnect;
 
-		const V fLight = PathValueOps::EvalAreaBSDFAtVertex<Tag>( lightEnd, wiAtLight, woAtLight, tag );
+		// DL-377: a light-side BSSRDF entry re-emits toward the eye vertex
+		// (see EvalLightEndAreaBSDFAtVertex); `wiAtLight` is the jump chord there.
+		const V fLight = PathValueOps::EvalLightEndAreaBSDFAtVertex<Tag>( lightEnd, wiAtLight, woAtLight, tag );
 
 		if( PositiveMagnitude<Tag>( fLight ) <= 0 ) {
 			return result;
@@ -8188,8 +8190,11 @@ void BDPTIntegrator::RecomputeSubpathThroughputNM(
 
 				// Light subpath: wi = toward light (prev), wo = toward eye (next)
 				// Eye subpath:   wi = toward light (next), wo = toward eye (prev)
+				// DL-377: a LIGHT-path BSSRDF entry is reached by the jump
+				// (dirToPrev is the chord, not a ray) and re-emits toward
+				// `next`, so Sw is evaluated there -- the eye path's order.
 				Vector3 wi, wo;
-				if( isLightPath ) {
+				if( isLightPath && !v.isBSSRDFEntry ) {
 					wi = dirToPrev;
 					wo = dirToNext;
 				} else {

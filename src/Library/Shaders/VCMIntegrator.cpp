@@ -1974,9 +1974,8 @@ namespace
 				// direction it LEAVES toward the camera; the arrival
 				// "direction" from the hit where the light went in is the
 				// jump, not a ray, so it must not be the Sw argument.
-				const typename Traits::value_type fLight = v.isBSSRDFEntry
-					? RISE::PathValueOps::EvalAreaBSDFAtVertex<Tag>( v, dirToCam, wiAtLight, tag )
-					: RISE::PathValueOps::EvalAreaBSDFAtVertex<Tag>( v, wiAtLight, dirToCam, tag );
+				const typename Traits::value_type fLight =
+					RISE::PathValueOps::EvalLightEndAreaBSDFAtVertex<Tag>( v, wiAtLight, dirToCam, tag );
 				if( PositiveMagnitude( fLight ) <= 0 ) {
 					continue;
 				}
@@ -2203,9 +2202,8 @@ namespace
 
 				// DL-317: Sw at a kept light-side entry is evaluated in the
 				// direction it leaves toward the eye (see the splat twin).
-				const typename Traits::value_type fLight = lv.isBSSRDFEntry
-					? RISE::PathValueOps::EvalAreaBSDFAtVertex<Tag>( lv, lightToEye, wiAtLight, tag )
-					: RISE::PathValueOps::EvalAreaBSDFAtVertex<Tag>( lv, wiAtLight, lightToEye, tag );
+				const typename Traits::value_type fLight =
+					RISE::PathValueOps::EvalLightEndAreaBSDFAtVertex<Tag>( lv, wiAtLight, lightToEye, tag );
 				if( PositiveMagnitude( fLight ) <= 0 ) {
 					continue;
 				}
