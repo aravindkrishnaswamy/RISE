@@ -26,10 +26,12 @@
 //       e. If t >= exitDist: exit the mesh.  Compute Fresnel at exit.
 //          If total internal reflection: reflect back inside and
 //          continue.  Otherwise refract out and return the exit point.
-//          DL-370: if the exit face is shared with a TOUCHING random-walk
-//          body (nearest front face along the walk ray within
-//          BSSRDF_RAY_EPSILON), the walk crosses that interface instead
-//          and continues inside the neighbour with its coefficients.
+//          DL-370: if the point the continuation would start from (the
+//          exit offset BSSRDF_RAY_EPSILON outward) lies inside another
+//          random-walk body -- a touching or overlapping neighbour,
+//          `IObjectManager::RandomWalkObjectContaining` -- the walk
+//          crosses that interface instead and continues inside the
+//          neighbour with its coefficients.
 //    3. At exit: generate a cosine-weighted scattered direction from
 //       the exit normal and compute the BSSRDF weight.
 //

@@ -111,10 +111,16 @@
 //          continuation, offset 1e-6 outward, started INSIDE the
 //          neighbour, met its far face from behind and died (the SSS
 //          SPF absorbs back faces): 0.70.  A 5e-7 gap (inside the
-//          offset) reads the same; a 0.02 gap is the control.
+//          offset) reads the same; a 0.02 gap is the control.  The
+//          double-sided indexed-mesh rows are the case review round 1
+//          found a walk-ray probe could not resolve (0.887).
 //      F2  two touching cubes against the same pair 2e-6 apart (wider
-//          than the offset, optically nothing), paired seeds.  The
+//          than the offset, optically nothing), paired seeds; box and
+//          double-sided mesh, a real 1.5/1.3 interface, the NM walk.  The
 //          diffusion profile row is printed only (DL-408).
+//      F3  a random-walk body coincident with the walker's exit face on
+//          the WALKER's side (an inset, an open sheet): nothing may cross
+//          into it; the sheet row is a DL-409 pin.
 //    Usage: [--unit-only] [--trials K (default 4)] [--only <label substring>]
 //
 //  Author: RISE debt-cleanup, slice `debt-dl49`
@@ -1831,13 +1837,16 @@ namespace
 
 	//! A conservative random-walk cube (edge 1, single-sided primitive) with
 	//! a second random-walk body coincident with its TOP face on the
-	//! cube's OWN side, under the white environment, seen from above: every
-	//! pixel reads 1.  `kind` 0: a double-sided mesh cube of half size
-	//! inset flush with the top face; 1: the same inset as a box primitive
-	//! (the control); 2: an open double-sided mesh quad lying ON the top
-	//! face.  A neighbour on the walker's own side of its exit face is not
-	//! where the exit leads, so nothing may cross into it (DL-370 review
-	//! round 1: a walk-ray probe did, and the inset read 0.944).
+	//! cube's OWN side, under the white environment, seen from above.
+	//! `kind` 0: a double-sided mesh cube of half size inset flush with the
+	//! top face; 1: the same inset as a box primitive; 2: an open
+	//! double-sided mesh quad lying ON the top face.  A walk in the cube
+	//! that exits its top face is past the inset / sheet, so nothing may
+	//! cross into them (DL-370 review round 1: a whole-scene probe along the
+	//! walk ray did, and read 0.880 / 0.851 on rows 0 / 2).  The insets
+	//! OVERLAP the cube (it still fills their volume), so a walk inside an
+	//! inset leaves it INTO the cube: master read 0.892 on rows 0 and 1, the
+	//! loss DL-370 removes by crossing into the containing body.
 	std::string BuildInsetScene( int kind, unsigned int samples )
 	{
 		std::ostringstream s;
@@ -1870,8 +1879,13 @@ namespace
 
 	void TestCoincidentOwnSideNeighbour( const unsigned int trials, const std::string& only )
 	{
-		std::cout << "F3: random-walk neighbour coincident on the walker's own side (DL-370), n=" << trials << std::endl;
-		const char* names[3] = { "double-sided mesh inset", "box inset (control)", "open double-sided mesh sheet on the face" };
+		std::cout << "F3: random-walk body coincident on the walker's own side (DL-370), n=" << trials << std::endl;
+		const char* names[3] = { "double-sided mesh inset", "box inset", "open double-sided mesh sheet on the face" };
+		// Row 2 is PINNED, not furnace-gated: a random walk entering an
+		// OPEN sheet has no interior to walk in and dies (DL-409), which
+		// master reads as 0.8775 +/- 0.0005 (n = 4).  The pin catches a
+		// crossing INTO the sheet (round 1 of DL-370 read 0.851).
+		const double expected[3] = { 1.0, 1.0, 0.8775 };
 		unsigned int seed = 37200;
 		for( int kind = 0; kind < 3; ++kind ) {
 			const std::string label = std::string( "F3: random_walk/PT " ) + names[kind];
@@ -1890,8 +1904,8 @@ namespace
 			if( !allValid ) continue;
 			const Stats st = Summarize( m );
 			std::cout << std::setprecision( 6 ) << "    " << label.substr( 4 ) << " spp=64: image mean " << st.mean << " +/- " << st.sd
-				<< " (sd of one render; band 0.01)" << std::endl;
-			Check( std::fabs( st.mean - 1.0 ) < 0.01, label + ": conservative furnace image mean within band of 1" );
+				<< " (sd of one render; expected " << expected[kind] << ", band 0.01)" << std::endl;
+			Check( std::fabs( st.mean - expected[kind] ) < 0.01, label + ": image mean within band of its expected value" );
 		}
 	}
 
