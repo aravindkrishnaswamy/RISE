@@ -1421,7 +1421,7 @@ static void SectionD()
 	// (second interface index-matched).  Lossless and identical in both, so
 	// the ratio is 1; a box also traps some directions by TIR, the same in
 	// both.  Until DL-341 the composite's exits between ~30 and 42 deg
-	// ping-ponged to the walk cap.
+	// ping-ponged to the walk cap (0.981).
 	{
 		const std::string glassComp =
 			"dielectric_material\n{\n\tname mat_glass2\n\ttau 1\n\tior 1.5\n}\n\n"
@@ -1443,7 +1443,11 @@ static void SectionD()
 			std::cout << "    D4 closed composite{glass/glass} box vs glass box under env, " << ( r == 0 ? "PT  " : "BDPT" )
 			          << ": composite = " << std::setprecision(5) << mL << ", glass box = " << mR
 			          << ", ratio = " << ( mR > 0 ? mL / mR : -1 ) << "  (truth: ratio 1)\n";
-			Check( ok && mR > 0 && std::fabs( mL / mR - 1.0 ) <= 0.02,
+			// Every path here is lossless and all-delta, so each sample
+			// carries exactly the env radiance: both boxes read 1.00000
+			// with zero variance and the band only absorbs rounding.  Base
+			// (pre-DL-341) 0.98089 PT / 0.98063 BDPT.
+			Check( ok && mR > 0 && std::fabs( mL / mR - 1.0 ) <= 0.005,
 				std::string( "[D4] closed composite box == the glass box it stands for (" ) + ( r == 0 ? "PT" : "BDPT" ) + ")" );
 			if( cap ) safe_release( cap );
 		}
