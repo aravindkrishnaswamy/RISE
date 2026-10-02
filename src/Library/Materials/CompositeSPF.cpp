@@ -2138,7 +2138,7 @@ namespace RISE
 	//! when the flag is set.
 	//!
 	//! DL-341 review round 1 (2026-10-02): the entry side is the TRUE
-	//! geometric one.  A double-sided mesh / Bezier set flips BOTH normals
+	//! geometric one.  A double-sided mesh / Bezier patch flips BOTH normals
 	//! toward the ray (`bGeomNormalOrientedToRay`), so a hit from INSIDE a
 	//! closed solid presented the composite's TOP to the ray and was walked
 	//! as an entry from above: OUT popped O, the dielectric top refracted
@@ -2148,23 +2148,40 @@ namespace RISE
 	//! back to the true outward one (DL-70 `UnflippedGeomNormal()`), the
 	//! shading normal and frame oriented into its hemisphere -- so the
 	//! walk sees the solid's true sides exactly as a single-sided mesh
-	//! does.  Only a CLOSED solid is unflipped: an open sheet -- provably
-	//! open (`bProvablyNoInterior`, a clipped plane) or merely not certified
-	//! closed (`bOpenSheet`: a double-sided mesh that is not watertight, a
-	//! Bezier patch set, any non-indexed double-sided mesh) -- keeps the
-	//! flipped frame and presents its top on both faces, as before (review
-	//! round 2: unflipping an OPEN double-sided mesh quad sent its back face
-	//! to the delta-tagged walker, so delta lights could no longer light it
-	//! and BDPT / VCM disagreed with PT).  Hair's ray-derived normal has no
-	//! true side and is left alone.  BDPT / VCM reprice a connection on a
-	//! record rebuilt by PathVertexEval::PopulateRIGFromVertex, which
-	//! replays these flags (BDPTVertex), so they see the same frame.
+	//! does.
+	//!
+	//! WHEN TO UNFLIP is decided by the WALK'S STACK, not by a geometry
+	//! certificate (review rounds 2 and 3): a flipped record is unflipped
+	//! only when the caller's IOR stack already holds this object -- the
+	//! ray really is inside, it crossed in earlier.  `bOpenSheet` cannot
+	//! decide it (on an indexed mesh it means NOT CERTIFIED watertight, and
+	//! one T-junction un-certifies a closed box: round 3 read 0.466 there),
+	//! and `BezierPatchGeometry` never sets it at all (DL-220), so a single
+	//! open patch read as closed.  With the stack rule an open sheet hit on
+	//! its back with no prior crossing keeps the flipped frame and presents
+	//! its top on both faces, as the base did; a provably open sheet
+	//! (`bProvablyNoInterior`) is never unflipped; hair's ray-derived normal
+	//! has no true side.  BDPT / VCM reprice a connection on a record
+	//! rebuilt by PathVertexEval::PopulateRIGFromVertex (which replays the
+	//! surface-identity flags, BDPTVertex) against the stack
+	//! BuildVertexIORStack rebuilds from the vertex's own `insideObject` --
+	//! the same two inputs Scatter decided from, so the same frame.
+	//!
+	//! A STACKLESS caller (`IBSDF::value` without a stack, and
+	//! DeltaPassThroughTransmittance, which has none) is never unflipped:
+	//! it sees the reported frame, as before DL-341.  (For the straight
+	//! pass-through the order of the two layers does not change the
+	//! product `t1 * Beer * t2`.)  A camera or light INSIDE a closed
+	//! composite is not seeded (DL-407), so its first inside hits keep the
+	//! flipped frame too.
 	static inline const RayIntersectionGeometric& CompositeLayerFrame(
 		const RayIntersectionGeometric& ri,
-		std::optional<RayIntersectionGeometric>& store
+		std::optional<RayIntersectionGeometric>& store,
+		const IORStack* pStack
 		)
 	{
-		const bool unflip = ri.bGeomNormalOrientedToRay && ri.HasTrueGeomSide() && !ri.bProvablyNoInterior && !ri.bOpenSheet;
+		const bool unflip = ri.bGeomNormalOrientedToRay && ri.HasTrueGeomSide() && !ri.bProvablyNoInterior &&
+			pStack && pStack->currentObject() && pStack->containsCurrent();
 		if( !ri.bProvablyNoInterior && !unflip ) {
 			return ri;
 		}
@@ -2186,7 +2203,7 @@ RISEPel CompositeSPF::DeltaPassThroughTransmittance(
 	) const
 {
 	std::optional<RayIntersectionGeometric> layerStore;
-	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore );
+	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore, 0 );
 
 	const Vector3 dir = ri.ray.Dir();
 	const Scalar  d   = Vector3Ops::Dot( dir, ri.onb.w() );
@@ -2220,7 +2237,7 @@ Scalar CompositeSPF::DeltaPassThroughTransmittanceNM(
 	) const
 {
 	std::optional<RayIntersectionGeometric> layerStore;
-	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore );
+	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore, 0 );
 
 	const Vector3 dir = ri.ray.Dir();
 	const Scalar  d   = Vector3Ops::Dot( dir, ri.onb.w() );
@@ -2256,7 +2273,7 @@ void CompositeSPF::Scatter(
 			) const
 {
 	std::optional<RayIntersectionGeometric> layerStore;
-	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore );
+	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore, &ior_stack );
 
 	CompositeSPFImpl::ScatterImpl<CompositeSPFImpl::PipeRGB>( *this, ri, sampler, Scalar( -1 ), scattered, ior_stack );
 }
@@ -2270,7 +2287,7 @@ void CompositeSPF::ScatterNM(
 	) const
 {
 	std::optional<RayIntersectionGeometric> layerStore;
-	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore );
+	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore, &ior_stack );
 
 	CompositeSPFImpl::ScatterImpl<CompositeSPFImpl::PipeNM>( *this, ri, sampler, nm, scattered, ior_stack );
 }
@@ -2282,7 +2299,7 @@ Scalar CompositeSPF::Pdf(
 	) const
 {
 	std::optional<RayIntersectionGeometric> layerStore;
-	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore );
+	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore, &ior_stack );
 
 	return CompositeSPFImpl::PdfImpl<CompositeSPFImpl::PipeRGB>( *this, ri, wo, Scalar( -1 ), ior_stack );
 }
@@ -2295,7 +2312,7 @@ Scalar CompositeSPF::PdfNM(
 	) const
 {
 	std::optional<RayIntersectionGeometric> layerStore;
-	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore );
+	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore, &ior_stack );
 
 	return CompositeSPFImpl::PdfImpl<CompositeSPFImpl::PipeNM>( *this, ri, wo, nm, ior_stack );
 }
@@ -2307,7 +2324,7 @@ RISEPel CompositeSPF::EvaluateLayered(
 	) const
 {
 	std::optional<RayIntersectionGeometric> layerStore;
-	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore );
+	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore, pStack );
 
 	RISEPel direct, walked;
 	CompositeSPFImpl::EvaluateLayeredParts<CompositeSPFImpl::PipeRGB>( *this, vLightIn, ri, pStack, Scalar( -1 ), direct, walked );
@@ -2322,7 +2339,7 @@ Scalar CompositeSPF::EvaluateLayeredNM(
 	) const
 {
 	std::optional<RayIntersectionGeometric> layerStore;
-	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore );
+	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore, pStack );
 
 	Scalar direct = 0, walked = 0;
 	CompositeSPFImpl::EvaluateLayeredParts<CompositeSPFImpl::PipeNM>( *this, vLightIn, ri, pStack, nm, direct, walked );
@@ -2338,7 +2355,7 @@ Scalar CompositeSPF::EvaluateLobeFNM(
 	) const
 {
 	std::optional<RayIntersectionGeometric> layerStore;
-	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore );
+	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore, &ior_stack );
 
 	// Every non-delta emission in AGGREGATE mode is priced
 	// value(dir) * cos / Pdf(dir) with the deterministic layered value, so
@@ -2365,7 +2382,7 @@ Scalar CompositeSPF::EvaluateKrayNM(
 	) const
 {
 	std::optional<RayIntersectionGeometric> layerStore;
-	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore );
+	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore, &ior_stack );
 
 	// Reached for DELTA rays (the HWSS ladders pass pdfHero = -1 for them).
 	// A DIRECT delta ray is the top's own delta up-going REFLECTION,

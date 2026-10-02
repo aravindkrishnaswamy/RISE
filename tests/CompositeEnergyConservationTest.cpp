@@ -1566,25 +1566,39 @@ static void SectionD()
 		const std::string scene5 = head + mesh +
 			"standard_object\n{\n\tname boxL\n\tgeometry mb\n\tposition -2 0 0\n\tmaterial mat_gg\n}\n\n"
 			"standard_object\n{\n\tname boxR\n\tgeometry mb\n\tposition 2 0 0\n\tmaterial mat_glass\n}\n\n";
+		// D5b (review round 3): the same closed box with ONE T-junction (a
+		// vertex in the middle of a top edge, so the mesh is NOT certified
+		// watertight -- `bOpenSheet` -- although it is closed).  Round 3
+		// keyed the unflip on that certificate and read 0.46639 here.
+		const std::string meshTJ =
+			"indexedmesh_geometry\n{\n\tname tb\n"
+			"\tvertex -1.95 -3 -0.5\n\tvertex 1.95 -3 -0.5\n\tvertex 1.95 3 -0.5\n\tvertex -1.95 3 -0.5\n"
+			"\tvertex -1.95 -3 0.5\n\tvertex 1.95 -3 0.5\n\tvertex 1.95 3 0.5\n\tvertex -1.95 3 0.5\n\tvertex 0 -3 0.5\n"
+			"\ttriangle 0 2 1\n\ttriangle 0 3 2\n\ttriangle 4 8 6\n\ttriangle 8 5 6\n\ttriangle 4 6 7\n\ttriangle 0 1 5\n\ttriangle 0 5 4\n"
+			"\ttriangle 3 7 6\n\ttriangle 3 6 2\n\ttriangle 0 4 7\n\ttriangle 0 7 3\n\ttriangle 1 2 6\n\ttriangle 1 6 5\n"
+			"\tdouble_sided TRUE\n\tface_normals TRUE\n}\n\n";
+		const std::string scene5b = head + meshTJ +
+			"standard_object\n{\n\tname boxL\n\tgeometry tb\n\tposition -2 0 0\n\tmaterial mat_gg\n}\n\n"
+			"standard_object\n{\n\tname boxR\n\tgeometry tb\n\tposition 2 0 0\n\tmaterial mat_glass\n}\n\n";
 		const std::string scene6 = head +
 			"box_geometry\n{\n\tname bx\n\twidth 3.9\n\theight 6\n\tdepth 1\n}\n\n"
 			"standard_object\n{\n\tname boxL\n\tgeometry bx\n\tposition -2 0 0\n\tmaterial mat_nest\n}\n\n"
 			"standard_object\n{\n\tname boxR\n\tgeometry bx\n\tposition 2 0 0\n\tmaterial mat_glass\n}\n\n";
-		for( int sc = 0; sc < 2; ++sc ) {
+		for( int sc = 0; sc < 3; ++sc ) {
 			for( int r = 0; r < 2; ++r ) {
 				// D5 is zero-variance (one render); D6's nested top runs the
 				// per-branch estimator, so it is n = 4 SALTED renders
 				// (independent randomized-QMC replicates) and gated on
 				// mean +- sem, a band that resolves 0.5 %.
-				const int nRep = ( sc == 0 ) ? 1 : 4;
+				const int nRep = ( sc == 1 ) ? 4 : 1;
 				std::vector<double> L, Rr;
 				bool ok = true;
 				for( int k = 0; k < nRep; ++k ) {
-					const int spp = ( sc == 0 ) ? 128 : 2048;
-					const std::string scene = ( sc == 0 ? scene5 : scene6 ) + ( r == 0 ? PtRasterizer( true, spp ) : BdptRasterizer( true, spp ) );
+					const int spp = ( sc == 1 ) ? 2048 : 128;
+					const std::string scene = ( sc == 0 ? scene5 : sc == 1 ? scene6 : scene5b ) + ( r == 0 ? PtRasterizer( true, spp ) : BdptRasterizer( true, spp ) );
 					CapturingRasterizerOutput* cap = 0;
-					SobolSamplerTestHooks::ValueSalt().store( sc == 0 ? 0u : 0x9E3779B9u * (unsigned)( k + 1 ) + (unsigned)r );
-					const bool okk = Render( scene, sc == 0 ? ( r == 0 ? "dsbox_pt" : "dsbox_bdpt" ) : ( r == 0 ? "nest_pt" : "nest_bdpt" ), cap, 61440u + 2u * sc + r + 16u * k );
+					SobolSamplerTestHooks::ValueSalt().store( sc != 1 ? 0u : 0x9E3779B9u * (unsigned)( k + 1 ) + (unsigned)r );
+					const bool okk = Render( scene, sc != 1 ? ( r == 0 ? "dsbox_pt" : "dsbox_bdpt" ) : ( r == 0 ? "nest_pt" : "nest_bdpt" ), cap, 61440u + 2u * sc + r + 16u * k );
 					SobolSamplerTestHooks::ValueSalt().store( 0u );
 					ok = ok && okk;
 					L.push_back( okk ? RegionMean( *cap, 2, cap->width / 2 - 2 ) : -1 );
@@ -1596,6 +1610,7 @@ static void SectionD()
 				double vL = 0; for( int k = 0; k < nRep; ++k ) vL += ( L[k] - mL ) * ( L[k] - mL );
 				const double semL = nRep > 1 ? std::sqrt( vL / ( nRep - 1 ) / nRep ) : 0.0;
 				const char* tag = ( sc == 0 ) ? "D5 double-sided mesh box, composite{glass/glass} | plain glass"
+				                : ( sc == 2 ) ? "D5b double-sided mesh box with a T-junction (not certified watertight), composite{glass/glass} | plain glass"
 				                              : "D6 nested composite{composite{glass/glass}/glass} box | glass box";
 				std::cout << "    " << tag << ", " << ( r == 0 ? "PT  " : "BDPT" ) << ": "
 				          << std::setprecision(5) << mL << " (sem " << semL << ", n " << nRep << ") | " << mR << "  (truth 1 | 1)\n";
@@ -1653,11 +1668,27 @@ static void SectionD()
 			{ "glass/glass, env furnace", "mat_gg", true },
 			{ "coat over Lambertian 0.8, omni on the camera side", "mat_cc", false },
 		};
+		// D7b (review round 3): a single open BEZIER patch (a 4x4 control
+		// net of a flat quad) in place of the mesh.  `BezierPatchGeometry`
+		// never sets `bOpenSheet` (DL-220), so round 3's certificate-keyed
+		// unflip read it as closed: 0.800 against the plane's 0.63, omni 0,
+		// glass/glass 0.977 against 0.467.
+		char bzPath[512];
+		std::snprintf( bzPath, sizeof( bzPath ), "/tmp/composite_energy_sheet_%d.bezier", (int)getpid() );
+		{
+			std::ofstream bz( bzPath );
+			bz << "1\n";
+			for( int j = 0; j < 4; ++j ) for( int i = 0; i < 4; ++i ) bz << ( -4.0 + 4.0 * i / 3.0 ) << " " << ( -3.0 + 2.0 * j ) << " 0\n";
+		}
+		const std::string geoBz = std::string( "bezierpatch_geometry\n{\n\tname qm\n\tfile " ) + bzPath + "\n}\n\n"
+			"clippedplane_geometry\n{\n\tname qc\n\tpta 0 -3 0\n\tptb 4 -3 0\n\tptc 4 3 0\n\tptd 0 3 0\n}\n\n";
+		for( int g = 0; g < 2; ++g )
 		for( const Cfg7& c : cfgs ) {
+			const char* gname = ( g == 0 ) ? "mesh" : "Bezier patch";
 			double perInt[3] = { -1, -1, -1 };
 			for( int r = 0; r < 3; ++r ) {
 				if( !c.env && r == 2 ) continue;	// VCM has no point-light row here
-				std::string scene = std::string( "RISE ASCII SCENE 7\n" ) + cam7 + mats7 + geo7 +
+				std::string scene = std::string( "RISE ASCII SCENE 7\n" ) + cam7 + mats7 + ( g == 0 ? geo7 : geoBz ) +
 					"standard_object\n{\n\tname M\n\tgeometry qm\n\tmaterial " + c.mat + "\n}\n\n"
 					"standard_object\n{\n\tname C\n\tgeometry qc\n\tmaterial " + c.mat + "\n}\n\n";
 				if( !c.env ) scene += "omni_light\n{\n\tname ol\n\tpower 200\n\tcolor 1 1 1\n\tposition 0 0 -5\n}\n\n";
@@ -1669,20 +1700,21 @@ static void SectionD()
 				const double mC = ok ? RegionMean( *cap, 2, cap->width / 2 - 2 ) : -1;
 				const double mM = ok ? RegionMean( *cap, cap->width / 2 + 2, cap->width - 2 ) : -1;
 				const char* in = ( r == 0 ) ? "PT  " : ( r == 1 ) ? "BDPT" : "VCM ";
-				std::cout << "    D7 open double-sided sheet from behind, " << c.name << ", " << in
-				          << ": mesh = " << std::setprecision(5) << mM << ", clipped plane = " << mC
+				std::cout << "    D7 open double-sided sheet from behind (" << gname << "), " << c.name << ", " << in
+				          << ": " << gname << " = " << std::setprecision(5) << mM << ", clipped plane = " << mC
 				          << ", ratio = " << ( mC > 0 ? mM / mC : -1 ) << "\n";
 				Check( ok && mC > 0 && std::fabs( mM / mC - 1.0 ) <= 0.03,
-					std::string( "[D7] open mesh sheet == clipped-plane twin from behind, " ) + c.name + " (" + in + ")" );
+					std::string( "[D7] open " ) + gname + " sheet == clipped-plane twin from behind, " + c.name + " (" + in + ")" );
 				perInt[r] = mM;
 				if( cap ) safe_release( cap );
 			}
 			for( int r = 1; r < 3; ++r ) {
 				if( perInt[r] < 0 ) continue;
 				Check( perInt[0] > 0 && std::fabs( perInt[r] / perInt[0] - 1.0 ) <= 0.04,
-					std::string( "[D7] open mesh sheet from behind, " ) + ( r == 1 ? "BDPT" : "VCM" ) + " == PT, " + c.name );
+					std::string( "[D7] open " ) + gname + " sheet from behind, " + ( r == 1 ? "BDPT" : "VCM" ) + " == PT, " + c.name );
 			}
 		}
+		std::remove( bzPath );
 	}
 }
 
