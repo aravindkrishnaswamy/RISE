@@ -617,8 +617,9 @@ inline bool ParsePropertyBool( const String& valueStr, bool& out )
 // the object on screen during the drag's low-res frames.
 //
 // Derivation (intermediate values in mxTrans's source space —
-// current-pixel-Y-UP per `PixelBasedPelRasterizer.cpp:614`'s
-// `Point2(x, height - y)` feed of `GenerateRay`):
+// current-pixel-Y-UP: the rasterizers feed `GenerateRay` screen points
+// from `RasterConvention::PixelToScreen` (ICamera.h, DL-368), pixel
+// (x, row) at [x, x+1) x [H-1-row, H-row), i.e. y up):
 //
 //   `mxTrans` maps screen point S=(sx,sy_image,0) → world point T.
 //   The ray fired through S has origin O and direction (O - T) (see

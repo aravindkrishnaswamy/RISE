@@ -52,13 +52,12 @@
 //          single-sided face-down quads off to the sides (x in +/-[3.1,
 //          3.9], so no emitter shadows another's light onto the viewed
 //          floor square and the closed forms simply add; placed as a
-//          MIRROR PAIR because the image is offset by half a pixel
-//          against the camera's footprint -- the PT pel rasterizer places
-//          samples at `x + u - 0.5` while the cameras translate by
-//          `-0.5 * width`, for every camera type (DL-368, recorded in
-//          docs/DL320_DOUBLE_SIDED_EMITTER.md) -- which a single off-axis
-//          emitter reads as a 2-5 % bias and a mirror pair cancels to
-//          first order).  VCM reads ~1.2 % low here whichever way the big
+//          MIRROR PAIR because, when this row was written, the image was
+//          offset by half a pixel against the camera's footprint (DL-368,
+//          fixed 2026-10-02: every rasterizer now samples the camera's
+//          nominal film; tests/PixelCenterConventionTest.cpp row B is the
+//          lone-emitter closed form) -- which a single off-axis emitter
+//          read as a ~2 % bias and a mirror pair cancels to first order).  VCM reads ~1.2 % low here whichever way the big
 //          quad faces, and read ~1.7 % low before DL-320: VCM's pre-
 //          existing multi-luminary deficit, DL-348, inside this row's 2 %
 //          band.  The double-sided emitter's

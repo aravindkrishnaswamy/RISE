@@ -11,8 +11,8 @@
 //  albedo 0.5, double sided.  The pinhole at (0,0,3.5) (fov 30, 32x32)
 //  is replaced by an aperture disk of radius 0.15 at the pinhole; a
 //  photon reaching it is binned by the pinhole-centre projection of its
-//  last surface point, with RISE's pixel centres (ndc col/16 - 1,
-//  1 - row/16).  The interior walk is RandomWalkSSS::SampleExit's loop
+//  last surface point, with RISE's pixel centres (ndc (col+0.5)/16 - 1,
+//  1 - (row+0.5)/16) since DL-368 (col/16 - 1, 1 - row/16 before).  The interior walk is RandomWalkSSS::SampleExit's loop
 //  (one iteration per scatter OR boundary event, cap 64).
 //
 //  Modes (the only thing that changes is the two boundary ends):
@@ -118,9 +118,9 @@ int main(int argc, char** argv){
 				if(what<0) break;
 				if(what==2){ // camera aperture: pixel from pinhole projection of the origin
 					if(first) break; V dc = o-Cam; if(dc.z>=0) break;
-					double xn=(dc.x/(-dc.z))/TAN15, yn=(dc.y/(-dc.z))/TAN15; int col=(int)std::floor((xn+1)*16+0.5), row=(int)std::floor((1-yn)*16+0.5); // RISE pixel centres sit at ndc col/16-1 (DL-368)
+					double xn=(dc.x/(-dc.z))/TAN15, yn=(dc.y/(-dc.z))/TAN15; int col=(int)std::floor((xn+1)*16), row=(int)std::floor((1-yn)*16); // RISE pixel centres sit at ndc (col+0.5)/16-1 since DL-368 (2026-10-02; col/16-1 before)
 					if(col<0||col>31||row<0||row>31) break;
-					double xc=(col/16.0-1)*TAN15, yc=(1-row/16.0)*TAN15; double cp=1.0/std::sqrt(1+xc*xc+yc*yc);
+					double xc=((col+0.5)/16.0-1)*TAN15, yc=(1-(row+0.5)/16.0)*TAN15; double cp=1.0/std::sqrt(1+xc*xc+yc*yc);
 					double omp = (TAN15/16.0)*(TAN15/16.0)*cp*cp*cp; double L = w/(M_PI*AP*AP*d.z*omp);
 					if(!firstSpec) T.A[row*32+col]+=L; if(!lastFirstSpec) T.B[row*32+col]+=L; break; }
 				V p = o+d*tmin; lastFirstSpec=false;

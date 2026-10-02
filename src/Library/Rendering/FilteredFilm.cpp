@@ -13,6 +13,7 @@
 
 #include "pch.h"
 #include "FilteredFilm.h"
+#include "../Interfaces/ICamera.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -49,11 +50,15 @@ void FilteredFilm::Splat(
 	Scalar halfW, halfH;
 	filter.GetFilterSupport( halfW, halfH );
 
-	// Compute the range of pixels affected by this sample
-	const int minPX = static_cast<int>( floor(screenX - halfW) );
-	const int maxPX = static_cast<int>( floor(screenX + halfW) );
-	const int minPY = static_cast<int>( floor(screenY - halfH) );
-	const int maxPY = static_cast<int>( floor(screenY + halfH) );
+	// Compute the range of pixels affected by this sample.  (cx, cy) is
+	// the position in pixel-CENTRE units: pixel (px, py) has its centre
+	// at (px + 0.5, py + 0.5) (DL-368, ICamera.h's RasterConvention).
+	const Scalar cx = screenX - RasterConvention::kPixelCentre;
+	const Scalar cy = screenY - RasterConvention::kPixelCentre;
+	const int minPX = static_cast<int>( floor(cx - halfW) );
+	const int maxPX = static_cast<int>( floor(cx + halfW) );
+	const int minPY = static_cast<int>( floor(cy - halfH) );
+	const int maxPY = static_cast<int>( floor(cy + halfH) );
 
 	// Clamp to image bounds
 	const int x0 = minPX < 0 ? 0 : minPX;
@@ -64,13 +69,13 @@ void FilteredFilm::Splat(
 	// Splat to each affected pixel, locking one row at a time
 	for( int py = y0; py <= y1; py++ )
 	{
-		const Scalar dy = screenY - static_cast<Scalar>(py);
+		const Scalar dy = cy - static_cast<Scalar>(py);
 
 		rowMutexes[py]->lock();
 
 		for( int px = x0; px <= x1; px++ )
 		{
-			const Scalar dx = screenX - static_cast<Scalar>(px);
+			const Scalar dx = cx - static_cast<Scalar>(px);
 			const Scalar w = filter.EvaluateFilter( dx, dy );
 
 			if( w != 0.0 )
