@@ -383,7 +383,7 @@ void IsotropicPhongSPF::Scatter(
 		//      = Rs * (N+2)/(N+1) * cos_o
 		// This is bounded since cos_o ∈ [0,1] and (N+2)/(N+1) ∈ (1,2]
 		const Scalar cos_o = Vector3Ops::Dot( Vector3Ops::Normalize(specular.ray.Dir()), n );
-		specular.kray = pRs->GetColor(ri) * ((N[0]+2.0)/(N[0]+1.0)) * r_max(cos_o, 0.0);
+		specular.kray = ReflectanceColor( *pRs, ri ) * ((N[0]+2.0)/(N[0]+1.0)) * r_max(cos_o, 0.0);
 
 		// PDF for phong lobe: (N+1)/(2*pi) * cos^N(alpha), alpha = angle from reflection direction
 		const Scalar cosAlpha = Vector3Ops::Dot( Vector3Ops::Normalize(specular.ray.Dir()), Vector3Ops::Normalize(reflected) );
@@ -398,7 +398,7 @@ void IsotropicPhongSPF::Scatter(
 			scattered.AddScatteredRay( specular );
 		}
 	} else {
-		const RISEPel spec = pRs->GetColor(ri);
+		const RISEPel spec = ReflectanceColor( *pRs, ri );
 		const Point2 ptrand( sampler.Get1D(), sampler.Get1D() );
 		for( int i=0; i<3; i++ ) {
 			GenerateSpecularRay( specular, n, reflected, ri,  ptrand, N[i] );
@@ -422,7 +422,7 @@ void IsotropicPhongSPF::Scatter(
 		}
 	}
 
-	diffuse.kray = pRd->GetColor(ri);
+	diffuse.kray = ReflectanceColor( *pRd, ri );
 	if( Vector3Ops::Dot( diffuse.ray.Dir(), geomN ) > 0 ) {
 		scattered.AddScatteredRay( diffuse );
 	}
@@ -463,10 +463,10 @@ void IsotropicPhongSPF::ScatterNM(
 	GenerateDiffuseRay( diffuse, rdotn, ri,  Point2( sampler.Get1D(), sampler.Get1D() ) );
 	GenerateSpecularRay( specular, n, reflected, ri,  Point2( sampler.Get1D(), sampler.Get1D() ),  N );
 
-	diffuse.krayNM = GuardedGetColorNM( *pRd, ri, nm );
+	diffuse.krayNM = ReflectanceColorNM( *pRd, ri, nm );
 	{
 		const Scalar cos_o = Vector3Ops::Dot( Vector3Ops::Normalize(specular.ray.Dir()), n );
-		specular.krayNM = GuardedGetColorNM( *pRs, ri, nm ) * ((N+2.0)/(N+1.0)) * r_max(cos_o, 0.0);
+		specular.krayNM = ReflectanceColorNM( *pRs, ri, nm ) * ((N+2.0)/(N+1.0)) * r_max(cos_o, 0.0);
 	}
 
 	// Set PDF for diffuse ray
@@ -526,8 +526,8 @@ Scalar IsotropicPhongSPF::Pdf(
 	const Scalar cosTheta = Vector3Ops::Dot( woNorm, n );
 	const Scalar diffusePdf = (cosTheta > 0) ? cosTheta * INV_PI : 0;
 
-	const RISEPel rd = pRd->GetColor(ri);
-	const RISEPel rs = pRs->GetColor(ri);
+	const RISEPel rd = ReflectanceColor( *pRd, ri );
+	const RISEPel rs = ReflectanceColor( *pRs, ri );
 	const Scalar wD = ColorMath::MaxValue(rd);
 
 	// The lanes Scatter() would have emitted.  Branch on the SAME predicate
@@ -594,14 +594,14 @@ Scalar IsotropicPhongSPF::PdfNM(
 	const Scalar cosTheta = Vector3Ops::Dot( woNorm, n );
 	const Scalar diffusePdf = (cosTheta > 0) ? cosTheta * INV_PI : 0;
 
-	const Scalar wD = GuardedGetColorNM( *pRd, ri, nm );
+	const Scalar wD = ReflectanceColorNM( *pRd, ri, nm );
 
 	// ScatterNM has no per-channel branch, so there is always exactly one
 	// specular lane.
 	PhongLobeSet lobes;
 	lobes.count  = 1;
 	lobes.N[0]   = pExponent->GetValueAtNM(ri,nm);
-	lobes.rs[0]  = GuardedGetColorNM( *pRs, ri, nm );
+	lobes.rs[0]  = ReflectanceColorNM( *pRs, ri, nm );
 
 	OrthonormalBasis3D uvw;
 	uvw.CreateFromU( reflected );
@@ -648,7 +648,7 @@ Scalar IsotropicPhongSPF::EvaluateLobeFNM(
 	) const
 {
 	if( rayType == ScatteredRay::eRayDiffuse ) {
-		return GuardedGetColorNM( *pRd, ri, nm ) * INV_PI;
+		return ReflectanceColorNM( *pRd, ri, nm ) * INV_PI;
 	}
 
 	if( rayType != ScatteredRay::eRayReflection ) {
@@ -671,7 +671,7 @@ Scalar IsotropicPhongSPF::EvaluateLobeFNM(
 	}
 
 	const Scalar N = pExponent->GetValueAtNM( ri, nm );
-	return GuardedGetColorNM( *pRs, ri, nm ) * ((N + 2.0) * (INV_PI * 0.5)) * pow( cosAlpha, N );
+	return ReflectanceColorNM( *pRs, ri, nm ) * ((N + 2.0) * (INV_PI * 0.5)) * pow( cosAlpha, N );
 }
 
 Scalar IsotropicPhongSPF::EvaluateKrayNM(
@@ -683,7 +683,7 @@ Scalar IsotropicPhongSPF::EvaluateKrayNM(
 	) const
 {
 	if( rayType == ScatteredRay::eRayDiffuse ) {
-		return GuardedGetColorNM( *pRd, ri, nm );
+		return ReflectanceColorNM( *pRd, ri, nm );
 	}
 
 	if( rayType != ScatteredRay::eRayReflection ) {
@@ -696,7 +696,7 @@ Scalar IsotropicPhongSPF::EvaluateKrayNM(
 	const Scalar N = pExponent->GetValueAtNM( ri, nm );
 	const Scalar cos_o = Vector3Ops::Dot( Vector3Ops::Normalize( outDir ), n );
 
-	return GuardedGetColorNM( *pRs, ri, nm ) * ((N+2.0)/(N+1.0)) * r_max( cos_o, 0.0 );
+	return ReflectanceColorNM( *pRs, ri, nm ) * ((N+2.0)/(N+1.0)) * r_max( cos_o, 0.0 );
 }
 
 Scalar IsotropicPhongSPF::EvaluateKrayNM(
@@ -713,7 +713,7 @@ Scalar IsotropicPhongSPF::EvaluateKrayNM(
 	}
 
 	if( rayType == ScatteredRay::eRayDiffuse ) {
-		return GuardedGetColorNM( *pRd, ri, nm );
+		return ReflectanceColorNM( *pRd, ri, nm );
 	}
 
 	if( rayType != ScatteredRay::eRayReflection ) {

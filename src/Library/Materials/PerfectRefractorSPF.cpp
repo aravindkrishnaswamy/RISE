@@ -235,9 +235,9 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 	if( ref < 1.0 ) {
 		specular.ray.Set( ri.ptIntersection, vRefracted );
 		if( oneofthree ) {
-			specular.kray[oneofthree-1] = pRefractivity->GetColor(ri)[oneofthree-1] * ((1.0-ref));
+			specular.kray[oneofthree-1] = ReflectanceColor( *pRefractivity, ri )[oneofthree-1] * ((1.0-ref));
 		} else {
-			specular.kray = pRefractivity->GetColor(ri) * (1.0-ref);
+			specular.kray = ReflectanceColor( *pRefractivity, ri ) * (1.0-ref);
 		}
 
 		scattered.AddScatteredRay( specular );
@@ -461,7 +461,7 @@ void PerfectRefractorSPF::ScatterNM(
 
 	if( ref < 1.0 ) {
 		specular.ray.Set( ri.ptIntersection, vRefracted );
-		specular.krayNM = GuardedGetColorNM( *pRefractivity, ri, nm ) * (1.0-ref);
+		specular.krayNM = ReflectanceColorNM( *pRefractivity, ri, nm ) * (1.0-ref);
 
 		scattered.AddScatteredRay( specular );
 	}

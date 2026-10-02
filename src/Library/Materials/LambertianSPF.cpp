@@ -61,7 +61,7 @@ void LambertianSPF::Scatter(
 		diffuse.ray.Set( ri.ptIntersection, GeometricUtilities::CreateDiffuseVector( ri.onb, ptrand ) );
 	}
 
-	diffuse.kray = pReflectance->GetColor(ri);
+	diffuse.kray = ReflectanceColor( *pReflectance, ri );
 
 	// Set the sampling PDF: cosine-weighted hemisphere = cos(theta) / pi
 	diffuse.pdf = fabs( Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() ) ) * INV_PI;
@@ -110,7 +110,7 @@ void LambertianSPF::ScatterNM(
 		diffuse.ray.Set( ri.ptIntersection, GeometricUtilities::CreateDiffuseVector( ri.onb, ptrand ) );
 	}
 	
-	diffuse.krayNM = GuardedGetColorNM( *pReflectance, ri, nm );
+	diffuse.krayNM = ReflectanceColorNM( *pReflectance, ri, nm );
 
 	// Set the sampling PDF: cosine-weighted hemisphere = cos(theta) / pi
 	diffuse.pdf = fabs( Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() ) ) * INV_PI;

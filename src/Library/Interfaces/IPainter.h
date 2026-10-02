@@ -235,6 +235,54 @@ namespace RISE
 		}
 		return p.GetColorNM( ri, nm );
 	}
+
+	//! DL-386 (docs/DEBT_LEDGER.md, ruled 2026-10-02): THE accessor every
+	//! material uses to read a REFLECTANCE-type colour slot (diffuse /
+	//! specular reflectance, sheen and yarn colour, coat tint,
+	//! reflectivity / refractivity / transmittance colours, hair target
+	//! reflectance) on the RGB pipe.  It clamps NEGATIVE channels to 0 and
+	//! leaves every other value -- including channels ABOVE 1 -- exactly as
+	//! authored.
+	//!
+	//! Why: a colour authored outside the Rec.709 working gamut (e.g.
+	//! `uniformcolor_painter` with `colorspace ROMMRGB_Linear`, converted by
+	//! matrix only: the classic Cornell red becomes (1.134, -0.100, 0.020))
+	//! carries a negative reflectance channel.  A negative albedo is not a
+	//! physical quantity, a negative `kray` reverses
+	//! `ScatteredRayContainer::RandomlySelect`'s CDF (cf. DL-100), and PT
+	//! and BDPT measurably disagreed on it.  The spectral pipe already
+	//! clamped: `RGBAlbedoSpectrum::FromRGB` clamps its input to [0, 1]
+	//! before the Jakob-Hanika lookup, so after this accessor the RGB and
+	//! spectral reads of a negative channel agree (both 0).  (Above 1 they
+	//! still differ, by the ruling: RGB keeps the authored value, the
+	//! albedo uplift saturates -- pre-existing and unchanged.)
+	//!
+	//! NOT for emission / radiance slots (`GetRadianceNM`, emitters),
+	//! normal-map painters, rotation / data painters, or `IScalarPainter`
+	//! -- those read the painter directly.  SourceHygieneTest pins that
+	//! every RGB `GetColor(ri)` read under src/Library/Materials goes
+	//! through this function except a short allowlist of those.
+	inline RISEPel ReflectanceColor( const IPainter& p, const RayIntersectionGeometric& ri )
+	{
+		RISEPel c = p.GetColor( ri );
+		if( c[0] < 0 ) c[0] = 0;
+		if( c[1] < 0 ) c[1] = 0;
+		if( c[2] < 0 ) c[2] = 0;
+		return c;
+	}
+
+	//! DL-386: the spectral twin of ReflectanceColor -- GuardedGetColorNM
+	//! (exact 1 at authored white) with a negative sample clamped to 0.
+	//! For every RGB-sourced painter the clamp is a no-op (the albedo
+	//! uplift is already non-negative); it matters only for spectrally
+	//! AUTHORED data (`spectral_painter`, a `piecewise_linear_function`,
+	//! a blend of them) that dips below zero.  Used by every material
+	//! reflectance read on the NM / HWSS pipe.
+	inline Scalar ReflectanceColorNM( const IPainter& p, const RayIntersectionGeometric& ri, const Scalar nm )
+	{
+		const Scalar v = GuardedGetColorNM( p, ri, nm );
+		return v < 0 ? Scalar(0) : v;
+	}
 }
 
 #include "../Intersection/RayIntersectionGeometric.h"

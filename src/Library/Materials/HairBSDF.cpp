@@ -883,7 +883,7 @@ void HairScatteringBase::SigmaARGB(
 		return;
 	}
 	if( pColor ) {														// tier 3
-		const RISEPel C = pColor->GetColor( ri );
+		const RISEPel C = ReflectanceColor( *pColor, ri );
 		const Scalar D = ReflectanceDenom( betaN );
 		for( int c = 0; c < 3; c++ ) {
 			out[c] = SigmaAFromReflectance( C[(unsigned int)c], D );
@@ -929,7 +929,7 @@ Scalar HairScatteringBase::SigmaANM(
 		// spectral renders.  Same near-white discontinuity precedent as
 		// CoatedLayer.h's "KNOWN RESIDUAL" block (~line 331) for a
 		// textured tint straddling white.
-		return SigmaAFromReflectance( GuardedGetColorNM( *pColor, ri, nm ), ReflectanceDenom( betaN ) );
+		return SigmaAFromReflectance( ReflectanceColorNM( *pColor, ri, nm ), ReflectanceDenom( betaN ) );
 	}
 	if( pSigmaA ) {														// tier 2
 		const Scalar s = pSigmaA->GetValueAtNM( ri, nm );
@@ -983,7 +983,7 @@ void HairScatteringBase::ReflectanceRGB(
 	// --- the absorption-driven (coloured) part -----------------------
 	if( bColorTierValid && pColor ) {
 		// Tier 3 authored the target reflectance directly.
-		const RISEPel C = pColor->GetColor( ri );
+		const RISEPel C = ReflectanceColor( *pColor, ri );
 		for( int c = 0; c < 3; c++ ) {
 			out[c] = Clamp( C[(unsigned int)c], 0.0, 1.0 );
 		}
