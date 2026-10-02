@@ -228,6 +228,13 @@ namespace RISE
 				) const;
 
 
+			//! DL-341: a composite's delta-tagged exits are whole layer
+			//! walks, not refractions of the incoming direction.
+			bool DeltaTransmissionIsRefraction() const
+			{
+				return false;
+			}
+
 			//! The density of the NON-DELTA directions Scatter emits (the
 			//! DL-67 Slice 0 contract): the top's own density over its
 			//! up-going lobes plus the covered class's known proposal

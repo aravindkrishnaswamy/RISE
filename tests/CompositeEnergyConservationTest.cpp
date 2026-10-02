@@ -663,8 +663,15 @@ static void SectionH( Fixtures& f )
 		  MakeComposite( *tissue, *f.lamb, 3, 3, 3, 3, 3, 0.0, *f.s0 ), 16, true, 0, 0 },
 		{ "H2 composite{dielectric / lossless translucent} (single-emit nested, has a BSDF) / white",
 		  MakeComposite( *inner, *f.lamb, 3, 3, 3, 3, 3, 0.0, *f.s0 ), 32, true, 0, 0 },
-		{ "H3 composite{dielectric / dielectric} (nested, no BSDF) / white -- KNOWN RESIDUAL PIN [0.40, 0.62]: the nested composite is walked FROM BELOW with the outer gap's stack, which already holds the shared object key, and the two-stack convention (defined for from-top walks) leaves its layers reading the wrong side -- see docs/DL24_COMPOSITE_ENERGY.md section 5",
-		  MakeComposite( *innerGG, *f.lamb, 3, 3, 3, 3, 3, 0.0, *f.s0 ), 16, false, 0.40, 0.62 },
+		// H3 was a KNOWN RESIDUAL PIN [0.40, 0.62] until DL-341 (2026-10-02):
+		// the nested composite is walked FROM BELOW with the outer gap's stack,
+		// which holds the shared object key, and the pre-DL-341 two-stack rule
+		// (defined for from-top walks) left its layers reading each other's
+		// side -- a lossless TIR ping-pong dropped at the 256-event cap (base
+		// 0.4795 / 0.5064).  Gated at 1 since the stack convention is defined
+		// for every entry side.
+		{ "H3 composite{dielectric / dielectric} (nested, no BSDF, walked from below) / white",
+		  MakeComposite( *innerGG, *f.lamb, 3, 3, 3, 3, 3, 0.0, *f.s0 ), 16, true, 0, 0 },
 	};
 	for( const Cfg& c : cfgs ) {
 		std::cout << "    " << c.name << "\n      ";
@@ -682,22 +689,24 @@ static void SectionH( Fixtures& f )
 		std::cout << "\n";
 		c.m->release();
 	}
-	// H4 -- the same residual on its own: composite{dielectric/dielectric}
-	// struck FROM INSIDE (a closed object seen from within: the ray
-	// travels upward and the stack already holds the object's entry).
-	// Below the critical angle the stack passes it through (gated at 1);
-	// at 35 deg the two layers read each other's side, total-internally-
-	// reflect forever and the energy is dropped at the walk cap
-	// (pre-existing: the base 5c9eeb96 reads the same 0.086).  Pinned.
+	// H4 -- the from-below case on its own: composite{dielectric/dielectric}
+	// struck FROM INSIDE (a closed object seen from within: the ray travels
+	// upward and the stack already holds the object's entry).  Lossless, so
+	// the full-sphere furnace is 1 at every angle: below the critical angle
+	// most of it leaves through the top, above it (41.8 deg) a genuine TIR
+	// sends it back down through the index-matched bottom.  Until DL-341
+	// (2026-10-02) the 35 deg row read 0.0868 (base 5c9eeb96 0.086): the two
+	// layers read each other's side, total-internally-reflected forever and
+	// the energy was dropped at the walk cap.
 	{
-		std::cout << "    H4 composite{dielectric / dielectric} struck from INSIDE (stack holds the object) -- KNOWN RESIDUAL PIN at 35 deg [0.04, 0.20]\n      ";
+		std::cout << "    H4 composite{dielectric / dielectric} struck from INSIDE (stack holds the object), lossless -> 1\n      ";
 		const ISPF& spf = *innerGG->GetSPF();
-		for( const double thDeg : { 20.0, 35.0 } ) {
+		for( const double thDeg : { 20.0, 35.0, 60.0 } ) {
 			RandomNumberGenerator rng( 4242u );
 			IndependentSampler sampler( rng );
 			const double th = thDeg * kPi / 180.0;
 			const Vector3 d( std::sin( th ), 0, std::cos( th ) );
-			double sum = 0;
+			double sum = 0, sum2 = 0;
 			const int N = 100000;
 			for( int i = 0; i < N; ++i ) {
 				const Point3 p( rng.CanonicalRandom() * 10, rng.CanonicalRandom() * 10, 0 );
@@ -709,15 +718,15 @@ static void SectionH( Fixtures& f )
 				st.push( 1.5 );
 				ScatteredRayContainer sc;
 				spf.Scatter( ri, sampler, sc, st );
-				for( unsigned j = 0; j < sc.Count(); ++j ) sum += ColorMath::MaxValue( sc[j].kray );
+				double v = 0;
+				for( unsigned j = 0; j < sc.Count(); ++j ) v += ColorMath::MaxValue( sc[j].kray );
+				sum += v; sum2 += v * v;
 			}
 			const double rho = sum / N;
-			std::cout << std::fixed << std::setprecision( 4 ) << thDeg << "deg: " << rho << "   ";
-			if( thDeg < 30.0 ) {
-				Check( std::fabs( rho - 1.0 ) <= 0.02, "[H] H4 struck from inside below the critical angle -> 1" );
-			} else {
-				Check( rho >= 0.04 && rho <= 0.20, "[H] H4 (known nested/inside residual) 35 deg inside its pin band" );
-			}
+			const double sem = std::sqrt( std::max( 0.0, sum2 / N - rho * rho ) / N );
+			std::cout << std::fixed << std::setprecision( 4 ) << thDeg << "deg: " << rho << " +- " << sem << "   ";
+			Check( std::fabs( rho - 1.0 ) <= std::max( 0.01, 5.0 * sem ),
+				std::string( "[H] H4 struck from inside, lossless -> 1, theta " ) + std::to_string( (int)thDeg ) );
 		}
 		std::cout << "\n";
 	}
@@ -757,7 +766,7 @@ static RayIntersectionGeometric MakeTiltedIntersection( double thDeg, const Poin
 	return ri;
 }
 
-static RISEPel ReferenceLayerWalk( const ISPF& top, const ISPF& bot, const RayIntersectionGeometric& ri, ISampler& smp )
+static RISEPel ReferenceLayerWalk( const ISPF& top, const ISPF& bot, const RayIntersectionGeometric& ri, ISampler& smp, Vector3* outDir = 0 )
 {
 	const Vector3 n = ri.onb.w();
 	IORStack outside = MakeTestIORStack( g_stub );
@@ -767,6 +776,7 @@ static RISEPel ReferenceLayerWalk( const ISPF& top, const ISPF& bot, const RayIn
 	const ScatteredRay* r = c0.RandomlySelect( smp.Get1D(), false, &q );
 	if( !r || !( q > 0 ) ) return RISEPel( 0, 0, 0 );
 	RISEPel beta = r->kray * ( 1.0 / q );
+	if( outDir ) *outDir = r->ray.Dir();
 	if( Vector3Ops::Dot( r->ray.Dir(), n ) >= 0 ) return beta;
 	IORStack gap( r->ior_stack ? *r->ior_stack : outside );
 	Vector3 w = Vector3Ops::Normalize( r->ray.Dir() );
@@ -781,6 +791,7 @@ static RISEPel ReferenceLayerWalk( const ISPF& top, const ISPF& bot, const RayIn
 		r = c.RandomlySelect( smp.Get1D(), false, &q );
 		if( !r || !( q > 0 ) ) return RISEPel( 0, 0, 0 );
 		beta = beta * r->kray * ( 1.0 / q );
+		if( outDir ) *outDir = r->ray.Dir();
 		const Scalar cosN = Vector3Ops::Dot( r->ray.Dir(), n );
 		if( atBottom ) {
 			if( cosN <= 0 ) return beta;
@@ -860,17 +871,21 @@ static void SectionT( Fixtures& f )
 			}
 		}
 		// A ray that arrives BEHIND the tilted shading normal (tilt 35,
-		// theta 60: d . n_s = +0.087) is classified up-going and takes the
-		// from-below walker, which the independent from-top walk above does
-		// not model.  Pre-existing (the base reads the same ~0.09) and part
-		// of DL-341's stack-gap family; pinned, not gated against the walk.
+		// theta 60: d . n_s = +0.087) is geometrically from ABOVE, so it is
+		// walked naturally from the top (DL-341, 2026-10-02) -- exactly what
+		// the independent walk does.  Until DL-341 it was classified from
+		// below by the shading normal and read 0.0899 / 0.0900 / 0.0904 /
+		// 0.0903 for the four tops (base 0.0907), pinned in [0.06, 0.12].
 		{
 			const FurnaceStats a = TiltedFurnace( m->GetSPF(), 0, 0, 60.0, 35.0, 8, 20000, 7717u + (unsigned)k );
+			const FurnaceStats r = TiltedFurnace( 0, tops[k]->GetSPF(), f.lamb->GetSPF(), 60.0, 35.0, 8, 20000, 8818u + (unsigned)k );
+			const double sig = std::sqrt( a.sem * a.sem + r.sem * r.sem );
 			std::cout << std::fixed << std::setprecision( 4 ) << "    " << names[k]
-			          << ", tilt 35, theta 60 (ray BEHIND the shading normal) -- KNOWN RESIDUAL PIN [0.06, 0.12] (DL-341): composite "
-			          << a.mean << " +- " << a.sem << "\n";
-			Check( a.mean >= 0.06 && a.mean <= 0.12,
-				std::string( "[T] behind-shading-normal arrival (DL-341 residual) inside its pin band, " ) + names[k] );
+			          << ", tilt 35, theta 60 (ray BEHIND the shading normal): composite " << a.mean << " +- " << a.sem
+			          << ", independent walk " << r.mean << " +- " << r.sem
+			          << ", z " << std::setprecision( 2 ) << ( a.mean - r.mean ) / std::max( 1e-12, sig ) << "\n";
+			Check( std::fabs( a.mean - r.mean ) <= 0.001 + 5.0 * sig,
+				std::string( "[T] behind-shading-normal arrival == independent walk (DL-341), " ) + names[k] );
 		}
 		m->release();
 	}
@@ -910,6 +925,97 @@ static void SectionT( Fixtures& f )
 		m->release();
 	}
 	dScat5->release(); s5->release(); dDelta->release(); s1e6->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+//  Section W -- DL-297: THE SHAPE OF A WARPED COAT'S EXIT.
+//
+//  DielectricSPF with a finite `scattering` warps its delta-tagged
+//  transmission by a clipped Phong cos^N lobe about the Snell direction.
+//  The furnace sections cannot see whether the layered evaluator's term
+//  (a) reproduces that warp: an ideal-Snell connection conserves the same
+//  energy, it just puts it in the wrong DIRECTIONS.  So this section bins
+//  the exit energy by cos(theta_out) -- composite emissions (covered +
+//  direct + walker, the kray of every emitted up-going ray) against the
+//  independent natural layer walk of Section T, which follows the warp
+//  because it calls the top's own Scatter.  Untilted, jittered position,
+//  per-bin band 5 sigma + 0.002.  Pre-fix (ideal-Snell term (a)) the
+//  scattering-0 row at theta 0 read evaluator 0.013 / 0.064 / 0.128 /
+//  0.193 / 0.251 / 0.349 against the walk's 0.123 / 0.136 / 0.150 /
+//  0.167 / 0.185 / 0.239 (the DL-297 ledger row); the parser default
+//  (scattering 10000) is a control that agrees either way.
+//////////////////////////////////////////////////////////////////////
+static const int kWarpBins = 6;
+
+static void WarpHistogram( const ISPF* composite, const ISPF* top, const ISPF* bot, double thDeg,
+	int batches, int perBatch, unsigned seedBase, double mean[kWarpBins], double sem[kWarpBins] )
+{
+	std::vector<double> per[kWarpBins];
+	for( int b = 0; b < batches; ++b ) {
+		RandomNumberGenerator rng( seedBase + 7919u * (unsigned)b );
+		IndependentSampler smp( rng );
+		double acc[kWarpBins] = { 0 };
+		for( int i = 0; i < perBatch; ++i ) {
+			const Point3 p( rng.CanonicalRandom() * 10, rng.CanonicalRandom() * 10, 0 );
+			const RayIntersectionGeometric ri = MakeTiltedIntersection( thDeg, p, 0.0 );
+			if( composite ) {
+				IORStack st = MakeTestIORStack( g_stub );
+				ScatteredRayContainer sc;
+				composite->Scatter( ri, smp, sc, st );
+				for( unsigned j = 0; j < sc.Count(); ++j ) {
+					const Vector3 d = Vector3Ops::Normalize( sc[j].ray.Dir() );
+					if( d.z <= 0 ) continue;
+					acc[ std::min( kWarpBins - 1, (int)( d.z * kWarpBins ) ) ] += ColorMath::MaxValue( sc[j].kray );
+				}
+			} else {
+				Vector3 d( 0, 0, 0 );
+				const RISEPel v = ReferenceLayerWalk( *top, *bot, ri, smp, &d );
+				d = Vector3Ops::Normalize( d );
+				if( d.z > 0 ) {
+					acc[ std::min( kWarpBins - 1, (int)( d.z * kWarpBins ) ) ] += ColorMath::MaxValue( v );
+				}
+			}
+		}
+		for( int k = 0; k < kWarpBins; ++k ) per[k].push_back( acc[k] / perBatch );
+	}
+	for( int k = 0; k < kWarpBins; ++k ) {
+		double m = 0; for( double v : per[k] ) m += v; m /= per[k].size();
+		double var = 0; for( double v : per[k] ) var += ( v - m ) * ( v - m );
+		var /= std::max<size_t>( 1, per[k].size() - 1 );
+		mean[k] = m; sem[k] = std::sqrt( var / per[k].size() );
+	}
+}
+
+static void SectionW( Fixtures& f )
+{
+	std::cout << "\n[W] DL-297: exit-energy histogram by cos(theta_out), 6 bins grazing -> normal, composite{dielectric / white} vs the independent layer walk (16 x 20000 each)\n";
+	UniformScalarPainter* s5 = new UniformScalarPainter( 5.0 );  s5->addref();
+	DielectricMaterial* dScat5 = new DielectricMaterial( *f.s1, *f.s15, *s5, false );  dScat5->addref();
+	const IMaterial* tops[] = { f.dScat0, dScat5, f.dSmooth };
+	const char* names[] = { "scattering 0", "scattering 5", "scattering 10000 (parser default, control)" };
+	for( int k = 0; k < 3; ++k ) {
+		CompositeMaterial* m = MakeComposite( *tops[k], *f.lamb, 3, 3, 3, 3, 3, 0.0, *f.s0 );
+		for( const double th : { 0.0, 45.0 } ) {
+			double am[kWarpBins], as[kWarpBins], rm[kWarpBins], rs[kWarpBins];
+			WarpHistogram( m->GetSPF(), 0, 0, th, 16, 20000, 3301u + (unsigned)th + 31u * (unsigned)k, am, as );
+			WarpHistogram( 0, tops[k]->GetSPF(), f.lamb->GetSPF(), th, 16, 20000, 4403u + (unsigned)th + 37u * (unsigned)k, rm, rs );
+			std::cout << "    " << names[k] << ", theta " << th << "\n      composite:";
+			for( int b = 0; b < kWarpBins; ++b ) std::cout << " " << std::fixed << std::setprecision( 4 ) << am[b];
+			std::cout << "\n      walk     :";
+			for( int b = 0; b < kWarpBins; ++b ) std::cout << " " << std::fixed << std::setprecision( 4 ) << rm[b];
+			std::cout << "\n      z        :";
+			for( int b = 0; b < kWarpBins; ++b ) {
+				const double sig = std::sqrt( as[b] * as[b] + rs[b] * rs[b] );
+				std::cout << " " << std::setprecision( 2 ) << ( am[b] - rm[b] ) / std::max( 1e-12, sig );
+				Check( std::fabs( am[b] - rm[b] ) <= 0.002 + 5.0 * sig,
+					std::string( "[W] warped-coat exit histogram == independent walk, " ) + names[k] +
+					" theta " + std::to_string( (int)th ) + " bin " + std::to_string( b ) );
+			}
+			std::cout << "\n";
+		}
+		m->release();
+	}
+	dScat5->release(); s5->release();
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1257,14 +1363,18 @@ static void SectionD()
 	}
 
 	// D3: a TRANSMITTING composite, glass / glass with zero gap, under the
-	// same env furnace.  Lossless, so the truth is 1; it reads ~0.49
-	// because the walker's exit through the BOTTOM carries the
-	// inside-the-object stack, so the escaping ray is priced at the
-	// eta^-2 = 0.444 basic-radiance factor of a medium it never entered.
-	// Pre-existing (the base 5c9eeb96 reads 0.484-0.487 across PT/BDPT
-	// pel, spectral and HWSS) and part of DL-341's stack-gap family.
-	// KNOWN RESIDUAL PIN [0.43, 0.54]; the plain glass quad on the right
-	// is printed as a record only.
+	// same env furnace, against the EQUIVALENT PAIR OF SEPARATE SURFACES it
+	// stands for: two separate open glass quads, the second 0.002 below the
+	// first, both facing up.  Under the DL-345 face rule the second sheet is
+	// an index-matched entry, so the pair reads like ONE glass sheet:
+	// F + (1 - F) / eta^2 = 0.467 at normal incidence -- the ray that crossed
+	// is inside the glass, and a white environment of radiance 1 seen inside
+	// a medium of index 1.5 is not an equilibrium (that would be n^2 = 2.25),
+	// so 1 was never the expectation.  The composite must equal the pair.
+	// Until DL-341 (2026-10-02) the composite's BOTTOM refracted 1.0 -> 1.5
+	// (the outside index, not the gap's: a second Fresnel reflection and a
+	// second bend) and read 0.48737 against the pair's 0.46693 (+4.4 %),
+	// pinned in [0.43, 0.54] under a "truth 1" that DL-341 corrects.
 	{
 		const std::string glassComp =
 			"dielectric_material\n{\n\tname mat_glass2\n\ttau 1\n\tior 1.5\n}\n\n"
@@ -1276,8 +1386,10 @@ static void SectionD()
 			kLayers + glassComp +
 			"clippedplane_geometry\n{\n\tname qL\n\tpta -4 -3 0\n\tptb 0 -3 0\n\tptc 0 3 0\n\tptd -4 3 0\n}\n\n"
 			"clippedplane_geometry\n{\n\tname qR\n\tpta 0 -3 0\n\tptb 4 -3 0\n\tptc 4 3 0\n\tptd 0 3 0\n}\n\n"
+			"clippedplane_geometry\n{\n\tname qR2\n\tpta 0 -3 -0.002\n\tptb 4 -3 -0.002\n\tptc 4 3 -0.002\n\tptd 0 3 -0.002\n}\n\n"
 			"standard_object\n{\n\tname objL\n\tgeometry qL\n\tmaterial mat_gg\n}\n\n"
-			"standard_object\n{\n\tname objR\n\tgeometry qR\n\tmaterial mat_glass\n}\n\n";
+			"standard_object\n{\n\tname objR\n\tgeometry qR\n\tmaterial mat_glass\n}\n\n"
+			"standard_object\n{\n\tname objR2\n\tgeometry qR2\n\tmaterial mat_glass2\n}\n\n";
 		for( int r = 0; r < 2; ++r ) {
 			const std::string scene = scene3 + ( r == 0 ? PtRasterizer( true, 64 ) : BdptRasterizer( true, 64 ) );
 			CapturingRasterizerOutput* cap = 0;
@@ -1285,10 +1397,47 @@ static void SectionD()
 			const double mL = ok ? RegionMean( *cap, 2, cap->width / 2 - 2 ) : -1;
 			const double mR = ok ? RegionMean( *cap, cap->width / 2 + 2, cap->width - 2 ) : -1;
 			std::cout << "    D3 transmitting composite glass/glass under env, " << ( r == 0 ? "PT  " : "BDPT" )
-			          << ": composite = " << std::setprecision(5) << mL << " (truth 1; KNOWN RESIDUAL PIN [0.43, 0.54], DL-341)"
-			          << ", plain glass quad (record) = " << mR << "\n";
-			Check( ok && mL >= 0.43 && mL <= 0.54,
-				std::string( "[D3] transmitting composite (DL-341 residual) inside its pin band (" ) + ( r == 0 ? "PT" : "BDPT" ) + ")" );
+			          << ": composite = " << std::setprecision(5) << mL << ", separate glass pair = " << mR
+			          << ", ratio = " << ( mR > 0 ? mL / mR : -1 ) << "  (truth: ratio 1; the pair is F + (1-F)/eta^2 = 0.467 at normal incidence)\n";
+			Check( ok && mR > 0 && std::fabs( mL / mR - 1.0 ) <= 0.015,
+				std::string( "[D3] transmitting composite == the equivalent pair of separate sheets (" ) + ( r == 0 ? "PT" : "BDPT" ) + ")" );
+			if( cap ) safe_release( cap );
+		}
+	}
+
+	// D4: the same stack as a CLOSED object -- a composite{glass/glass} box
+	// beside a plain glass box, both 3.9 x 6 x 1, under the env furnace, the
+	// camera outside.  Every path that enters must leave through the far
+	// faces, which it meets FROM INSIDE (the H4 case at render level: the
+	// stack holds the object, the ray travels up through the bottom first),
+	// so the composite box must render like the glass box it stands for
+	// (second interface index-matched).  Lossless and identical in both, so
+	// the ratio is 1; a box also traps some directions by TIR, the same in
+	// both.  Until DL-341 the composite's exits between ~30 and 42 deg
+	// ping-ponged to the walk cap.
+	{
+		const std::string glassComp =
+			"dielectric_material\n{\n\tname mat_glass2\n\ttau 1\n\tior 1.5\n}\n\n"
+			"composite_material\n{\n\tname mat_gg\n\ttop mat_glass\n\tbottom mat_glass2\n\tthickness 0\n\textinction 0.0\n}\n\n";
+		const std::string scene4 = std::string( "RISE ASCII SCENE 7\n" ) +
+			"film\n{\n\twidth 32\n\theight 16\n}\n\n"
+			"pinhole_camera\n{\n\tlocation 0 0 7.0\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt_env\n\tcolor 1.0 1.0 1.0\n}\n\n" +
+			kLayers + glassComp +
+			"box_geometry\n{\n\tname bx\n\twidth 3.9\n\theight 6\n\tdepth 1\n}\n\n"
+			"standard_object\n{\n\tname boxL\n\tgeometry bx\n\tposition -2 0 0\n\tmaterial mat_gg\n}\n\n"
+			"standard_object\n{\n\tname boxR\n\tgeometry bx\n\tposition 2 0 0\n\tmaterial mat_glass\n}\n\n";
+		for( int r = 0; r < 2; ++r ) {
+			const std::string scene = scene4 + ( r == 0 ? PtRasterizer( true, 128 ) : BdptRasterizer( true, 128 ) );
+			CapturingRasterizerOutput* cap = 0;
+			const bool ok = Render( scene, r == 0 ? "box_pt" : "box_bdpt", cap, 51200u + r );
+			const double mL = ok ? RegionMean( *cap, 2, cap->width / 2 - 2 ) : -1;
+			const double mR = ok ? RegionMean( *cap, cap->width / 2 + 2, cap->width - 2 ) : -1;
+			std::cout << "    D4 closed composite{glass/glass} box vs glass box under env, " << ( r == 0 ? "PT  " : "BDPT" )
+			          << ": composite = " << std::setprecision(5) << mL << ", glass box = " << mR
+			          << ", ratio = " << ( mR > 0 ? mL / mR : -1 ) << "  (truth: ratio 1)\n";
+			Check( ok && mR > 0 && std::fabs( mL / mR - 1.0 ) <= 0.02,
+				std::string( "[D4] closed composite box == the glass box it stands for (" ) + ( r == 0 ? "PT" : "BDPT" ) + ")" );
 			if( cap ) safe_release( cap );
 		}
 	}
@@ -1512,6 +1661,15 @@ int main( int argc, char** argv )
 		std::cout << "\n" << passCount << " passed, " << failCount << " failed" << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
+	if( argc > 1 && std::string( argv[1] ) == "--stack-only" ) {
+		// DL-341 / DL-297 rows only: H, T, W (and D with --render).
+		SectionH( f );
+		SectionT( f );
+		SectionW( f );
+		if( argc > 2 && std::string( argv[2] ) == "--render" ) SectionD();
+		std::cout << "\n" << passCount << " passed, " << failCount << " failed" << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
 	if( argc > 1 && std::string( argv[1] ) == "--tilt-only" ) {
 		SectionT( f );
 		if( argc > 2 && std::string( argv[2] ) == "--render" ) SectionD();
@@ -1527,6 +1685,7 @@ int main( int argc, char** argv )
 	SectionF( f );
 	SectionH( f );
 	SectionT( f );
+	SectionW( f );
 	SectionG( f );
 	SectionK( f );
 	if( !skipRender ) {

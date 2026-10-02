@@ -1051,7 +1051,8 @@ namespace RISE
 				P::Scatter( s.top, rt, hs, nm, ct, cb[bestUp].ior_stack ? KeyedTop( *cb[bestUp].ior_stack, outside ) : gap );
 				for( unsigned int i = 0; i < ct.Count(); i++ ) {
 					const ScatteredRay& r = ct[i];
-					if( Vector3Ops::Dot( r.ray.Dir(), n ) >= 0 && !r.isDelta && !s.pTopBSDF ) {
+					if( Vector3Ops::Dot( r.ray.Dir(), n ) >= 0 &&
+						( ( !r.isDelta && !s.pTopBSDF ) || ( r.isDelta && !s.top.DeltaTransmissionIsRefraction() ) ) ) {
 						pr.walkerPossible = true;
 					}
 				}
@@ -1310,7 +1311,10 @@ namespace RISE
 			//  at each layer); exits are accounted by (a)/(b), never
 			//  sampled.  A Henyey-Greenstein warp (which also keeps a delta
 			//  part) and a per-channel RGB warp have no single-density form
-			//  and are still priced as ideal (DL-297's residual).
+			//  and are still priced as ideal (DL-297's residual).  A top
+			//  whose delta-tagged transmissions are not refractions at all
+			//  (a nested composite: they are whole walks) has no term (a);
+			//  the walker carries that class (DL-341).
 			// -----------------------------------------------------------
 			// -----------------------------------------------------------
 			//  THE EVALUATOR'S WALK, built once per shading point.
@@ -1547,7 +1551,7 @@ namespace RISE
 
 				// Term (a): every bottom visit connects to wOut through the
 				// top's delta transmission at u.
-				if( s.pBottomBSDF && !path.betaBot.empty() ) {
+				if( s.pBottomBSDF && !path.betaBot.empty() && s.top.DeltaTransmissionIsRefraction() ) {
 					const Scalar nOut = path.out.top();
 					const Scalar nGap = path.gap0.top();
 					const Scalar eta = ( nOut > 0 && nGap > 0 ) ? ( nGap / nOut ) : Scalar( 1 );
@@ -1874,10 +1878,13 @@ namespace RISE
 							// Out through the top.  Covered iff the evaluator
 							// prices it: term (b) (non-delta exit, top has a
 							// BSDF) or term (a) (delta exit right after a
-							// non-delta bottom event with a BSDF).
+							// non-delta bottom event with a BSDF, through a
+							// top whose delta transmission is a refraction --
+							// ISPF::DeltaTransmissionIsRefraction; a nested
+							// composite's exits are whole walks, DL-341).
 							const bool covered = ( start == eStartCoveredTop ) && (
 								( !r->isDelta && s.pTopBSDF ) ||
-								( r->isDelta && lastBottomEvaluable ) );
+								( r->isDelta && lastBottomEvaluable && s.top.DeltaTransmissionIsRefraction() ) );
 							if( !covered ) {
 								P::SetKray( *r, P::Mul( beta, P::Scaled( P::Kray( *r ), Scalar( 1 ) / q ) ) );
 								r->isDelta = true;

@@ -303,6 +303,20 @@ namespace RISE
 			return 0;
 		}
 
+		//! DL-341.  True when every DELTA-tagged transmission this SPF emits
+		//! leaves along the Snell refraction of the incoming direction about
+		//! the shading normal (a pass-through being the index-matched case),
+		//! or along a warp of it described by DeltaTransmissionWarpExponent /
+		//! DeltaTransmissionWarpPdf.  CompositeSPF's layered evaluator
+		//! connects a substrate to the exit through such a transmission by
+		//! inverting Snell's law; an SPF whose delta-tagged transmissions are
+		//! whole stochastic walks (CompositeSPF itself, used as another
+		//! composite's top) answers false, and that transport is walked.
+		virtual bool DeltaTransmissionIsRefraction() const
+		{
+			return true;
+		}
+
 		//! DL-297.  The Phong exponent N of the angular WARP this SPF applies
 		//! to its DELTA-TAGGED transmission at this record and wavelength
 		//! (`nm <= 0` selects the RGB pipe): a `DielectricSPF` with a finite
