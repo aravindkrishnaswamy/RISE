@@ -41,16 +41,19 @@ just those two strategies, `r = p_A / p_bsdf->A`:
 
     w_0 + w_1 = 1/(1 + q_B r) + q r/(1 + q r)  !=  1   unless q_B = q .
 
-The BVH concentrates mass on the lights that matter at `x_{k-1}`, i.e. on
-the light a BSDF-sampled continuation actually hits, so `q_B > q` on the
-paths that carry energy and the sum is below one: the render reads low,
-more so with more lights, and not at all with one light (no BVH) or with
-one multi-quad mesh luminary (one table entry) -- the row's discriminator.
+The sum is below one where `q_B > q` and above one where `q_B < q`, so
+the sign is geometry-dependent.  On a floor close under its lights (the
+row's fixtures) the BVH ranks the light a BSDF-sampled continuation
+actually hits above its power share, `q_B > q` dominates and the render
+reads low, more so with more lights; with one light (no BVH) or one
+multi-quad mesh luminary (one table entry) there is nothing to disagree --
+the row's discriminator.  A scene whose energy arrives from lights ranked
+BELOW their power share reads high instead (§4).
 The two reference conventions agree with the fix: SmallVCM's
 `lightPickProb` is the same uniform pmf in `GenerateLightSample`,
-`DirectIllumination` and `GetLightRadiance`, and PBRT-v4's BDPT evaluates
-its MIS light-selection PMF with the same context-free light sampler that
-roots its light subpaths.  PT is a different family: its NEE samples the
+`DirectIllumination` and `GetLightRadiance`, and PBRT-v4's BDPT holds a
+context-free power light sampler and evaluates its MIS light-selection PMF
+with the same sampler that roots its light subpaths.  PT is a different family: its NEE samples the
 BVH (`EvaluateDirectLighting`), and its BSDF-hit partner,
 `CachedPdfSelectLuminary`, correctly stays BVH-based.
 
@@ -89,7 +92,11 @@ PT reads 0.9987-0.9995 of the closed form throughout (a constant ~0.1 %,
 identical in both builds).  Per-render sd <= 0.2 % (closed-form rows),
 <= 1.2 % (BDPT environment row).  Bands: 0.6 % (closed form / pinhole),
 2 % (environment).  The suite reads 13/6 on the master library and 19/0
-on the fix.  The environment row is a non-regression control, not a red
+on the fix.  `DoubleSidedEmitterTest` Z2 (three luminaries, one large
+quad dominating) read VCM 0.9977 / 0.9978 of its closed form on master and
+0.9996 / 0.9992 on the fix; its bands went 2 % -> 0.6 % as a consistency
+pin, not a red row.  `EnvLightBalanceTest` cannot move: each of its scenes
+has at most one non-environment light, so no BVH is built.  The environment row is a non-regression control, not a red
 row: the environment takes most of `SampleLight`'s selection mass, NEE to a
 quad is rare, and the eye-hit strategy carries the quads at weight ~1 under
 either pmf; it pins the `(1 - q_env)` share the fix keeps.
@@ -97,15 +104,18 @@ either pmf; it pins the `(1 - q_env)` share the fix keeps.
 **BDPT** carried the same defect through the same query (it is the row's
 "BDPT -2.0 % with four lights"), smaller because its power heuristic
 saturates `w_0` toward 1 sooner than VCM's balance heuristic.  The row's
-"-3.5 % unexplained remainder" after its `pdfSelect` patch is this term
-(measured on the reviewer's own fixture, not re-run here).  DL-368's
+"-3.5 % unexplained remainder" after its `pdfSelect` patch is consistent
+with this term (the reviewer's own fixture was not re-run here).  DL-368's
 half-pixel offset is not involved: pinhole and orthographic rows close
 alike.
 
 ## 4. Shipped scene
 
 `scenes/Tests/VCM/triplecaustic_vcm.RISEscene` (three separate emitter
-panels): see the ledger row for the before/after salted means.  Its
-luminaire `scale` was matched in DL-320 to its pre-DL-320 VCM look, which
-carried this bias; the scene now renders brighter by the amount recorded
-there and was not re-tuned.
+panels), 128 x 128, 32 spp, n = 3 salted (`VCMStrategyBalanceTest
+--scene-mean`): master 0.62676 (sd 0.00200), fix 0.61942 (sd 0.00146),
+-1.17 %, t = 5.1.  The move is DOWN, consistent with §2's geometry-dependent
+sign (paths reaching a panel the BVH ranks below its power share from the
+scatter point were over-counted); that attribution is not separately
+measured.  The scene's luminaire `scale` was matched in DL-320 to its
+pre-DL-320 VCM look, which carried this bias; it was not re-tuned.
