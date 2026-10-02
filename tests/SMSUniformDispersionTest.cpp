@@ -33,7 +33,7 @@ static double Centroid( const RenderResult& r )
     }
     return sum>0 ? weighted/sum : -1;
 }
-static void UVIndexControl()
+static void UVIndexControl( bool objectSpace = false )
 {
     // The origin has a different IOR; every interior sample is 1.78.
     // Paired paths should be pixel-identical to constant 1.78. No noisy
@@ -50,6 +50,11 @@ static void UVIndexControl()
             std::string uv=control;
             const auto mat=uv.find("perfectrefractor_material");
             uv.insert(mat,"expression_function2d\n{\n name uv_index_fn\n expr 1.78 - 0.68 * ( 1 - step( 0.000001, u*u + v*v ) )\n}\nscalar_painter\n{\n name uv_index\n function2d uv_index_fn\n}\n");
+            if(objectSpace) {
+                const auto begin=uv.find("expression_function2d");
+                const auto end=uv.find("perfectrefractor_material",begin);
+                uv.replace(begin,end-begin,"scalar_painter\n{\n name uv_index\n expression 1.78 - 0.68 * (1 - step(0.000001, dot(Po,Po)))\n}\n");
+            }
             const auto ior=uv.find("ior 1.78");
             uv.replace(ior,std::string("ior 1.78").size(),"ior uv_index");
             const unsigned index=g_renderIndex;
@@ -57,8 +62,8 @@ static void UVIndexControl()
             g_renderIndex=index;
             const auto b=Render(uv,"uv_index");
             Check(a.ok && b.ok && a.mean>0 && b.mean>0,"off-origin UV IOR fixtures finite and lit");
-            std::cout << "UV hwss=" << hwss << " uniform=" << uniform << " a=" << a.mean << " b=" << b.mean << " hashes=" << a.hash << "," << b.hash << std::endl;
-            Check(a.hash==b.hash,"NM material query uses vertex UV, matching constant interior IOR");
+            std::cout << "context object=" << objectSpace << " hwss=" << hwss << " uniform=" << uniform << " a=" << a.mean << " b=" << b.mean << " hashes=" << a.hash << "," << b.hash << std::endl;
+            Check(a.hash==b.hash,"NM material query preserves sampled context, matching constant interior IOR");
         }
     }
 }
@@ -67,6 +72,7 @@ int main( int argc, char** argv )
     ConfigureTestWorker();
     if(argc>1 && std::string(argv[1])=="--uv-only") {
         UVIndexControl();
+        UVIndexControl(true);
         std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
         return failCount ? 1 : 0;
     }
@@ -100,6 +106,7 @@ int main( int argc, char** argv )
         return failCount ? 1 : 0;
     }
     UVIndexControl();
+    UVIndexControl(true);
     g_renderIndex=0; // Retain the independently calibrated dispersion salts.
     for(bool hwss : {false,true}) for(bool dispersion : {false,true}) {
         std::vector<double> shifts;

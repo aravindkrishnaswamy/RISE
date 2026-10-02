@@ -18,6 +18,7 @@
 #include <cassert>
 #include <cmath>
 #include "TestableManifoldSolver.h"
+#include "../src/Library/Utilities/SMSPhoton.h"
 
 // DL-70 P2-1 chain-level pin: a double-sided dielectric "slab" caster
 // (two independent double-sided ClippedPlaneGeometry objects) end-to-end
@@ -1839,8 +1840,51 @@ static void TestSnellContinueChain_ExitRefraction()
 // main
 // ============================================================
 
+// DL-395: the real photon reconstruction invokes both RGB and NM material
+// queries with captured UV/Po, rather than the synthetic record's origin.
+class ContextIndex : public UniformScalarPainter {
+public:
+    ContextIndex() : UniformScalarPainter(1.0) {}
+    ScalarTriple GetValuesAt(const RayIntersectionGeometric& r) const override {
+        return ScalarTriple(1.2 + 0.2*r.ptCoord.x + 0.3*r.ptObjIntersec.y);
+    }
+    Scalar GetValueAtNM(const RayIntersectionGeometric& r, Scalar nm) const override {
+        return GetValuesAt(r)[0] + nm*0.0001;
+    }
+    bool IsPositionIndependent() const override { return false; }
+};
+static void TestPhotonMaterialContext() {
+    auto* tau=new UniformScalarPainter(1.0);
+    auto* index=new ContextIndex();
+    auto* scatter=new UniformScalarPainter(1000000.0);
+    auto* material=new DielectricMaterial(*tau,*index,*scatter,false);
+    SMSPhoton photon;
+    photon.chainLen=1;
+    photon.chain[0].position=Point3(3,4,5);
+    photon.chain[0].objectPosition=Point3(0.4,0.7,0.2);
+    photon.chain[0].uv=Point2(0.6,0.8);
+    photon.chain[0].normal=Vector3(0,1,0);
+    photon.chain[0].geomNormal=Vector3(0,1,0);
+    photon.chain[0].pMaterial=material;
+    // Attenuation uses the same context-sensitive scalar too.
+    material->SetTransmittance(*index);
+    TestableManifoldSolver solver;
+    for(Scalar nm : {Scalar(0),Scalar(450),Scalar(650)}) {
+        std::vector<ManifoldVertex> chain;
+        assert(solver.ReversePhotonChainForSeed(photon,chain,nm)==1);
+        const Scalar expected=1.53 + nm*0.0001;
+        if(nm==0) assert(IsClose(chain[0].attenuation.r,expected));
+        if(nm>0) assert(IsClose(chain[0].eta,expected));
+        assert(IsClose(chain[0].uv.x,0.6));
+        assert(IsClose(chain[0].objectPosition.y,0.7));
+    }
+    material->release();tau->release();index->release();scatter->release();
+    std::cout << "Photon UV/Po RGB and 450/650nm context assertions passed" << std::endl;
+}
+
 int main()
 {
+	TestPhotonMaterialContext();
 	std::cout << std::endl;
 	std::cout << "========================================" << std::endl;
 	std::cout << "  ManifoldSolver Unit Tests" << std::endl;

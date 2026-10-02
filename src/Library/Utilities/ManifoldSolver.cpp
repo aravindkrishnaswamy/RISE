@@ -2668,6 +2668,7 @@ bool ManifoldSolver::UpdateVertexOnSurface(
 			vertex.normal = ri.geometric.vNormal;
 			vertex.geomNormal = ri.geometric.UnflippedGeomNormal();	// DL-70: the TRUE outward normal (see ManifoldSolver.h)
 			vertex.uv = ri.geometric.ptCoord;
+			vertex.objectPosition = ri.geometric.ptObjIntersec;
             vertex.alphaEndpoint = endpoint;
             vertex.alphaEndpointPosition = vertex.position;
 			snapped = true;
@@ -2696,6 +2697,7 @@ bool ManifoldSolver::UpdateVertexOnSurface(
 			vertex.normal = ri2.geometric.vNormal;
 			vertex.geomNormal = ri2.geometric.UnflippedGeomNormal();	// DL-70: the TRUE outward normal (see ManifoldSolver.h)
 			vertex.uv = ri2.geometric.ptCoord;
+			vertex.objectPosition = ri2.geometric.ptObjIntersec;
             vertex.alphaEndpoint = endpoint;
             vertex.alphaEndpointPosition = vertex.position;
 			snapped = true;
@@ -2909,6 +2911,7 @@ bool ManifoldSolver::ComputeVertexDerivatives(
 		        vertex.normal = ri.geometric.vNormal;
 		        vertex.geomNormal = ri.geometric.UnflippedGeomNormal();
 		        vertex.uv = ri.geometric.ptCoord;
+		        vertex.objectPosition = ri.geometric.ptObjIntersec;
 		        vertex.alphaEndpoint = endpoint;
 		        vertex.alphaEndpointPosition = vertex.position;
 		    }
@@ -2970,6 +2973,7 @@ bool ManifoldSolver::ComputeVertexDerivatives(
 			        vertex.normal = ri2.geometric.vNormal;
 			        vertex.geomNormal = ri2.geometric.UnflippedGeomNormal();
 			        vertex.uv = ri2.geometric.ptCoord;
+			        vertex.objectPosition = ri2.geometric.ptObjIntersec;
 			        vertex.alphaEndpoint = endpoint;
 			        vertex.alphaEndpointPosition = vertex.position;
 			    }
@@ -4179,6 +4183,7 @@ unsigned int ManifoldSolver::SnellContinueChain(
 		// and always-on; harmless for the FD-probe path which doesn't read
 		// vertex.uv anyway.
 		mv.uv = ri.geometric.ptCoord;
+		mv.objectPosition = ri.geometric.ptObjIntersec;
 		mv.pObject = ri.pObject;
 		mv.pMaterial = pMat;
         mv.retainAlphaEndpoint = retainAlphaEndpoint;
@@ -5857,7 +5862,8 @@ ManifoldResult ManifoldSolver::Solve(
 
 unsigned int ManifoldSolver::ReversePhotonChainForSeed(
 	const SMSPhoton& photon,
-	std::vector<ManifoldVertex>& chain
+	std::vector<ManifoldVertex>& chain,
+	Scalar nm
 	) const
 {
 	const unsigned int k = photon.chainLen;
@@ -5872,6 +5878,8 @@ unsigned int ManifoldSolver::ReversePhotonChainForSeed(
 		const SMSPhotonChainVertex& pv = photon.chain[ k - 1 - i ];
 		ManifoldVertex& mv = chain[i];
 		mv.position    = pv.position;
+		mv.objectPosition = pv.objectPosition;
+		mv.uv = pv.uv;
 		mv.normal      = pv.normal;
 		// Photon record now stores geomNormal alongside shading (see
 		// SMSPhoton.h::SMSPhotonChainVertex).  Fall back to shading only
@@ -5887,6 +5895,8 @@ unsigned int ManifoldSolver::ReversePhotonChainForSeed(
 			RayIntersectionGeometric rigLocal( dummyRay, nullRasterizerState );
 			rigLocal.bHit          = true;
 			rigLocal.ptIntersection = pv.position;
+			rigLocal.ptObjIntersec = pv.objectPosition;
+			rigLocal.ptCoord = pv.uv;
 			rigLocal.vNormal       = pv.normal;
 			// Mirror the geometric normal so any future GetSpecularInfo
 			// implementation that consults vGeomNormal (dielectric side
@@ -5894,7 +5904,10 @@ unsigned int ManifoldSolver::ReversePhotonChainForSeed(
 			// value instead of the (0,0,0) sentinel — falling back to
 			// shading on legacy photons whose geomNormal slot is zero.
 			rigLocal.vGeomNormal   = mv.geomNormal;
-			SpecularInfo spec = pv.pMaterial->GetSpecularInfo( rigLocal, queryIor );
+			SpecularInfo spec = nm > 0 ?
+				pv.pMaterial->GetSpecularInfoNM( rigLocal, queryIor, nm ) :
+				pv.pMaterial->GetSpecularInfo( rigLocal, queryIor );
+			if( nm > 0 ) mv.eta = spec.ior;
 			mv.attenuation = spec.attenuation;
 			mv.canRefract  = spec.canRefract;
 		} else {
@@ -6682,6 +6695,8 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 				const SMSPhotonChainVertex& pv = ph.chain[ k - 1 - i ];
 				ManifoldVertex& mv = newChain[i];
 				mv.position    = pv.position;
+				mv.objectPosition = pv.objectPosition;
+				mv.uv = pv.uv;
 				mv.normal      = pv.normal;
 				mv.geomNormal  = ( Vector3Ops::SquaredModulus( pv.geomNormal ) > NEARZERO )
 					? pv.geomNormal : pv.normal;
@@ -6702,6 +6717,8 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 					RayIntersectionGeometric rigLocal( dummyRay, nullRasterizerState );
 					rigLocal.bHit = true;
 					rigLocal.ptIntersection = pv.position;
+					rigLocal.ptObjIntersec = pv.objectPosition;
+					rigLocal.ptCoord = pv.uv;
 					rigLocal.vNormal = pv.normal;
 					rigLocal.vGeomNormal = mv.geomNormal;
 					SpecularInfo spec = pv.pMaterial->GetSpecularInfo( rigLocal, queryIor );
@@ -7684,6 +7701,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 				rigLocal.vNormal       = v.normal;
 				rigLocal.vGeomNormal   = v.geomNormal;
 				rigLocal.ptCoord       = v.uv;
+				rigLocal.ptObjIntersec = v.objectPosition;
 				SpecularInfo specNM = v.pMaterial->GetSpecularInfoNM( rigLocal, queryIor, nm );
 				v.eta         = specNM.ior;
 				// DL-353: the solve reads the explicit interface pair, not
@@ -8160,68 +8178,8 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 				continue;
 			}
 
-			std::vector<ManifoldVertex> newChain( k );
-			IORStack queryIor( 1.0 );
-			for( unsigned int i = 0; i < k; i++ )
-			{
-				const SMSPhotonChainVertex& pv = ph.chain[ k - 1 - i ];
-				ManifoldVertex& mv = newChain[i];
-				mv.position    = pv.position;
-				mv.normal      = pv.normal;
-				mv.geomNormal  = ( Vector3Ops::SquaredModulus( pv.geomNormal ) > NEARZERO )
-					? pv.geomNormal : pv.normal;
-				mv.pObject     = pv.pObject;
-				mv.pMaterial   = pv.pMaterial;
-				// mv.attenuation is set alongside mv.eta below from the
-				// per-wavelength SpecularInfo (dropping the hardcoded white
-				// that previously bypassed material colour).
-				// Chain-vertex semantics recovered from the photon record;
-				// see the RGB path above for the full rationale.
-				mv.isReflection = ( ( pv.flags & 0x2 ) != 0 );
-				mv.isExiting    = mv.isReflection
-				                ? ( ( pv.flags & 0x1 ) != 0 )    // preserve
-				                : ( ( pv.flags & 0x1 ) == 0 );   // flip
-				mv.valid       = false;
-
-				// Per-wavelength eta override (dispersion).  Also take the
-				// per-wavelength attenuation at this vertex — a coloured or
-				// absorbing glass's caustic otherwise comes out white/too-
-				// bright whenever a multi-trial round discovers a root
-				// through photon-aided seeding.
-				if( pv.pMaterial )
-				{
-					Ray dummyRay( pv.position, pv.normal );
-					RayIntersectionGeometric rigLocal( dummyRay, nullRasterizerState );
-					rigLocal.bHit = true;
-					rigLocal.ptIntersection = pv.position;
-					rigLocal.vNormal = pv.normal;
-					rigLocal.vGeomNormal = mv.geomNormal;
-					SpecularInfo specNM = pv.pMaterial->GetSpecularInfoNM(
-						rigLocal, queryIor, nm );
-					mv.eta = specNM.ior;
-					mv.attenuation = specNM.attenuation;
-					mv.canRefract  = specNM.canRefract;
-				} else {
-					mv.eta = pv.eta;
-					mv.attenuation = RISEPel( 1, 1, 1 );
-					mv.canRefract  = true;
-				}
-				// Photon-aided seed reconstruction does not currently
-				// store the IOR-stack snapshot at each vertex — the
-				// SMSPhoton record only carries `eta` (the surface
-				// material's IOR).  As a result, mv.etaI and mv.etaT
-				// stay at their default 1.0 here, and downstream
-				// math (EvaluateConstraint, BuildJacobian, etc.) falls
-				// back to the air-on-other-side assumption via
-				// GetEffectiveEtas.  Correct for single-dielectric-in-
-				// air photon caustics (the typical SMS photon use
-				// case); WRONG for nested-dielectric scenes seeded via
-				// photons.  Fixing this requires extending SMSPhoton
-				// per-vertex storage with (etaIncidentRGB, etaT) at
-				// emission time — left as a future extension for when
-				// nested-dielectric scenes actually use SMS photon
-				// seeding (PathMLT defaults to photonCount=0).
-			}
+			std::vector<ManifoldVertex> newChain;
+			if( ReversePhotonChainForSeed( ph, newChain, nm ) == 0 ) continue;
 			trialSeed = newChain;
 		}
 
@@ -8480,6 +8438,7 @@ unsigned int ManifoldSolver::BuildSnellBaseSeed(
 				rig.vNormal = chain[i].normal;
 				rig.vGeomNormal = chain[i].geomNormal;
 				rig.ptCoord = chain[i].uv;
+				rig.ptObjIntersec = chain[i].objectPosition;
 
 				SpecularInfo specNM = chain[i].pMaterial->GetSpecularInfoNM(
 					rig, queryIor, nm );
@@ -8621,6 +8580,7 @@ SMSChainCoverage ManifoldSolver::ClassifyEmitterHitCoverage(
 			mv.normal = rec.v[i].normal;
 			mv.geomNormal = rec.v[i].geomNormal;
 			mv.uv = rec.v[i].uv;
+			mv.objectPosition = rec.v[i].objectPosition;
 			mv.dpdu = Vector3Ops::Normalize( Vector3Ops::Perpendicular( mv.normal ) );
 			mv.dpdv = Vector3Ops::Normalize( Vector3Ops::Cross( mv.normal, mv.dpdu ) );
 			mv.dndu = Vector3( 0, 0, 0 );

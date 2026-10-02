@@ -138,6 +138,7 @@ namespace RISE
 			Vector3				dpdv;			///< Position derivative w.r.t. second surface param (world space)
 			Vector3				dndu;			///< Normal derivative w.r.t. first surface param (world space)
 			Vector3				dndv;			///< Normal derivative w.r.t. second surface param (world space)
+			Point3				objectPosition;	///< Exact hit in the geometry/CSG child frame for Po painters
 			Point2				uv;				///< Surface parameters
 			Scalar				eta;			///< Surface MATERIAL'S IOR at this vertex (e.g. 1.5 for typical glass).  Kept for backward compatibility with callers that just want "the dielectric's nominal IOR".  For half-vector / Snell / Fresnel math, prefer (etaI, etaT) below — they encode the actual interface, including nested-dielectric cases where neither side is air.
 			Scalar				etaI;			///< IOR on the INCOMING (`wi`) side of the interface — Walter et al. 2007 notation η_i.  This is the medium the ray is travelling FROM as it hits this vertex.  Default 1.0 (air).
@@ -173,6 +174,7 @@ namespace RISE
 			geomNormal( Vector3(0,0,0) ),
 			dpdu( Vector3(0,0,0) ), dpdv( Vector3(0,0,0) ),
 			dndu( Vector3(0,0,0) ), dndv( Vector3(0,0,0) ),
+			objectPosition( Point3(0,0,0) ),
 			uv( Point2(0,0) ),
 			eta( 1.0 ),
 			etaI( 1.0 ),
@@ -375,6 +377,7 @@ namespace RISE
 				Point3			position;		///< PT's hit point at this delta vertex
 				Vector3			normal;			///< shading normal (post-modifier), as RayCaster published it
 				Vector3			geomNormal;		///< TRUE outward geometric normal (DL-70)
+				Point3			objectPosition;
 				Point2			uv;
 				const IObject*	pObject;
 				bool			isReflection;	///< the PT path stayed on the incident side here
@@ -414,6 +417,7 @@ namespace RISE
 					w.normal = rig.vNormal;
 					w.geomNormal = rig.UnflippedGeomNormal();
 					w.uv = rig.ptCoord;
+					w.objectPosition = rig.ptObjIntersec;
 					w.pObject = pObj;
 					const Vector3& n = rig.vGeomNormal;
 					w.isReflection = Vector3Ops::Dot( dIn, n ) * Vector3Ops::Dot( dOut, n ) < 0;
@@ -869,6 +873,8 @@ namespace RISE
 			///
 			/// Re-queries each vertex's material for `attenuation` /
 			/// `canRefract` (avoids relying on stale photon-deposit data).
+			/// Positive nm also re-queries spectral IOR; zero preserves RGB eta.
+			/// Restores exact UV and object-frame hit coordinates.
 			/// Sets `mv.valid = false` so `Solve` recomputes derivatives.
 			///
 			/// `mv.etaI` / `mv.etaT` stay at the default 1.0 — RISE's
@@ -883,7 +889,8 @@ namespace RISE
 			///         when the photon's chain length is invalid.
 			unsigned int ReversePhotonChainForSeed(
 				const SMSPhoton& photon,
-				std::vector<ManifoldVertex>& chain
+				std::vector<ManifoldVertex>& chain,
+				Scalar nm = 0
 				) const;
 
 			/// Computes a single converged trial's contribution at the
