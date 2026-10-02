@@ -425,6 +425,36 @@ namespace RISE
 			const bool bHitFrontFaces,					///< [in] Should we process the intersection if the element is front facing?
 			const bool bHitBackFaces					///< [in] Should we process the intersection if the element is back facing?
 			) const = 0;
+
+		//! DL-370: the world-visible object OTHER than `self` whose material
+		//! is a random-walk SSS material (`IMaterial::GetRandomWalkSSSParams()
+		//! != 0`) and whose interior contains `ptWorld`, or null.  Candidates
+		//! are the objects whose world box contains the point (the
+		//! `DeepestOtherContainment` candidate source and staleness
+		//! contract).  Each is then asked ALONE, in this order:
+		//!   1. `IObject::SignedDistanceLower` -- if the candidate answers,
+		//!      its SIGN decides (< 0 inside; 0, a CSG seam, is not).  This
+		//!      is exact and WINDING-INDEPENDENT for an analytic solid, a
+		//!      certified-watertight mesh (a parity count of crossings) and a
+		//!      CSG composite.
+		//!   2. Otherwise (an open or uncertified mesh, a sheet family --
+		//!      most imported meshes, which DL-143 cannot certify) by the
+		//!      PARITY of that one candidate's crossings along `probeDir` AND
+		//!      along `-probeDir`: inside iff BOTH counts are odd.
+		//!      Winding-independent.  A closed body is answered exactly
+		//!      (barring a ray through an edge or vertex); an open sheet, a
+		//!      point in a non-convex body's notch, and a ray that slips
+		//!      through a hole are rejected.  Not exact for every open body:
+		//!      a point between two disjoint parallel sheets of ONE object
+		//!      reads inside.
+		//! A hit with no interior (`bProvablyNoInterior`, a ray-derived
+		//! normal) refuses the candidate.  Reads the material live.  Appended at the
+		//! interface tail (see IntersectOcclusionRay).
+		virtual const IObject* RandomWalkObjectContaining(
+			const Point3& ptWorld,						///< [in] The world-space point to test
+			const Vector3& probeDir,					///< [in] Unit direction of the containment ray
+			const IObject* self							///< [in] Never counts.  May be null
+			) const = 0;
         //! Coverage-aware transport traversal. Skips are not path vertices;
         //! the published ray and range still describe the complete segment.
         //! With records, traversal spans [startDistance,maxDistance); only
