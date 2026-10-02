@@ -111,18 +111,13 @@ namespace RISE
 			//! `transparent_shadows` flag.
 			bool						bTransparentShadows;
 
-			//! DL-344: SMS is on for this caster's PT rasterizer.  Then a
-			//! delta light SMS samples (bLightSampledBySMS) keeps a binary
-			//! shadow through dielectrics -- SMS estimates that transport
-			//! through the real refracted chain -- while a directional
-			//! light, which SMS never samples, keeps the walk.
-			bool						bSMSEnabled;
-
 			//! DL-344: whether the `transparent_shadows` dielectric walk
 			//! applies to a given shadow ray.
-			bool DielectricShadowWalk( const bool bDeltaLight, const bool bLightSampledBySMS ) const
+			//! applies to a given shadow ray: a DELTA light's, and not where
+			//! SMS was evaluated at the same point for that light.
+			bool DielectricShadowWalk( const bool bDeltaLight, const bool bSMSCoversLight ) const
 			{
-				return bTransparentShadows && bDeltaLight && !( bSMSEnabled && bLightSampledBySMS );
+				return bTransparentShadows && bDeltaLight && !bSMSCoversLight;
 			}
 
 			//! DL-05: true when some material reachable by a ray hit
@@ -405,7 +400,7 @@ namespace RISE
                 Scalar nm, RISEPel& transmittance, bool deltaLight, ISampler& sampler, MediumBoundaryHits* boundaries = nullptr, Scalar physicalDistance = -1, Scalar occlusionStart = 0,
                 GradedIndexMedium::ShadowSegmentTrack* pGradedTrack = 0,	///< [in/out] DL-292: as CastShadowRayAuto's
                 const Point3* pSegmentEnd = 0,							///< [in] DL-292: as CastShadowRayAuto's
-                bool lightSampledBySMS = false) const;					///< [in] DL-344: as CastShadowRayAuto's
+                bool smsCoversLight = false) const;					///< [in] DL-344: as CastShadowRayAuto's bSMSCoversLight
 
 			bool CastShadowRayTransmittance(
 				const Ray& ray,										///< [in] Ray to cast (origin = shading point, dir = toward light, normalized)
@@ -469,7 +464,7 @@ namespace RISE
 				const bool bDeltaLight,								///< [in] DL-05: the caller is a delta light's shadow test (see above)
 				GradedIndexMedium::ShadowSegmentTrack* pGradedTrack = 0,	///< [in/out] DL-292: when a hit-by-hit walk runs, it records the graded-index factor of the segment on this track (null: not tracked)
 				const Point3* pSegmentEnd = 0,						///< [in] DL-292: the light point the track is Finish()ed at (required with a track)
-				const bool bLightSampledBySMS = false				///< [in] DL-344: the light is in LightSampler's SampleLight table (omni, spot, mesh, env), so SMS estimates it when SMS is on; false for directional / ambient
+				const bool bSMSCoversLight = false					///< [in] DL-344: SMS was EVALUATED at this shading point and samples this light (only PT's PART-2 surface NEE with a manifold solver, via LightSampler's delta arm); the dielectric walk is then off for this ray
 				) const;
 
 			//! DL-05 read-back (tests): whether the last AttachScene found a
@@ -520,9 +515,6 @@ namespace RISE
 			/// directional only) route through the Fresnel-transmittance
 			/// walk.  Default disabled (binary).
 			void SetTransparentShadows( const bool enable ) { bTransparentShadows = enable; }
-
-			/// DL-344: tells the shadow walk SMS is on (see bSMSEnabled).
-			void SetSMSEnabledForShadows( const bool enable ) { bSMSEnabled = enable; }
 
 			/// \return Whether transparent shadow rays are enabled.  Read
 			/// by LightSampler's NEE evaluators (via a dynamic_cast to the

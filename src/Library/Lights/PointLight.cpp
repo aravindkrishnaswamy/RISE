@@ -133,7 +133,7 @@ void PointLight::ComputeDirectLightingSampled(
 
 		const RayCaster* pRC = dynamic_cast<const RayCaster*>( &pCaster );
 		if( pRC ) {
-			if( pRC->CastShadowRayAutoSampled( rayToLight, fDistFromLight, false, 0.0, shadowT, true /*DL-05: delta light*/ , sampler, boundaries, -1, 0, 0, 0, true /*DL-344: in SampleLight's table, so SMS samples it*/ ) ) {
+			if( pRC->CastShadowRayAutoSampled( rayToLight, fDistFromLight, false, 0.0, shadowT, true /*DL-05: delta light*/ , sampler, boundaries ) ) {
 				return;
 			}
 		} else if( pCaster.CastShadowRaySampled( rayToLight, fDistFromLight , sampler, boundaries ) ) {
@@ -181,7 +181,7 @@ Scalar PointLight::ComputeDirectLightingSampledNM(
 		const RayCaster* pRC = dynamic_cast<const RayCaster*>( &pCaster );
 		if( pRC ) {
 			RISEPel t( 1.0, 1.0, 1.0 );
-			if( pRC->CastShadowRayAutoSampled( rayToLight, fDistFromLight, true, nm, t, true /*DL-05: delta light*/ , sampler, boundaries, -1, 0, 0, 0, true /*DL-344: in SampleLight's table, so SMS samples it*/ ) ) {
+			if( pRC->CastShadowRayAutoSampled( rayToLight, fDistFromLight, true, nm, t, true /*DL-05: delta light*/ , sampler, boundaries ) ) {
 				return Scalar(0);
 			}
 			shadowT = t.r;	// NM path fills all 3 channels equally

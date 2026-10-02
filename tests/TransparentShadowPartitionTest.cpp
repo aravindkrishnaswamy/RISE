@@ -17,10 +17,10 @@
 //  only a DELTA light's shadow ray sees through a clear dielectric,
 //  because no BSDF-sampled strategy can ever hit a delta light, so that
 //  ray is the path's only estimator; area/env NEE keeps a binary shadow
-//  there.  With SMS enabled, also not for a delta light SMS samples (omni,
-//  spot: SMS estimates their light through a specular caster, so the
-//  straight walk would double count it); a directional light, which SMS
-//  never samples, keeps the walk.
+//  there.  And not at a surface point where SMS is evaluated for the same
+//  light (omni, spot under PT + SMS): SMS estimates that light through a
+//  specular caster, so the straight walk would double count it.  Volume
+//  and subsurface-entry receivers, and directional lights, keep the walk.
 //
 //  Rows (all reference-free ratios of paired renders; every render is
 //  salted -- SobolSamplerTestHooks::ValueSalt -- so repeats are
@@ -38,15 +38,19 @@
 //       == 1.  A control -- the feature this flag exists for (a delta
 //       light seen through an index-matched transmitter, whose only
 //       estimator is this shadow ray); green before AND after.
-//    E1 PT + SMS, omni light, the index-1.0 box / open air: what SMS
-//       returns through an invisible caster, against a reference.  Pinned
-//       at 0.5 (DL-413: SMS returns half a delta light); red pre-fix (SMS
-//       plus the walk, about 1.5).
+//    E1/E3 PT + SMS, omni / spot light, the index-1.0 box / plain PT in
+//       open air: what SMS returns through an invisible caster, against a
+//       reference.  Red pre-fix (SMS plus the walk, about 1.5) and before
+//       DL-413 (SMS returned half a delta light: 0.4994).
 //    E2 PT + SMS, omni light through the 1.5 box: flag TRUE / FALSE == 1.
 //       Red pre-fix (2.46x); equal by construction after.
 //    F  a DIRECTIONAL light through the 1.5 box: PT + SMS / PT, flag
 //       TRUE, == 1 -- SMS never samples a directional light, so turning
 //       the walk off for it under SMS (the slice's first revision) read 0.
+//    G  receivers where SMS does not run (diffusion and random-walk SSS
+//       entry NEE, fog in-scattering) behind an index-1.0 wall, omni
+//       light: PT + SMS / PT, flag TRUE, == 1 -- the walk must stay on
+//       there (a per-light gate blacked them out).
 //
 //  Usage: TransparentShadowPartitionTest [--trials N] [--only <substr>]
 //
@@ -112,10 +116,10 @@ namespace
 		}
 	};
 
-	enum class Model { Lambertian, RandomWalk, Diffusion };
+	enum class Model { Lambertian, RandomWalk, Diffusion, None };
 	enum class Integrator { PT, PTSpectral, PTSMS };
-	enum class Light { Env, Area, Omni, Directional };
-	enum class Wall { None, MatchedRoom, GlassAroundSubject };
+	enum class Light { Env, Area, Omni, Spot, Directional };
+	enum class Wall { None, MatchedRoom, GlassAroundSubject, MatchedFogBox };
 
 	struct SceneSpec
 	{
@@ -141,12 +145,16 @@ namespace
 		case Model::RandomWalk:
 			o << "randomwalk_sss_material\n{\n\tname subject\n\tior 1.5\n\tabsorption 0\n\tscattering 2\n\tg 0\n\troughness 0\n\tmax_bounces 8192\n}\n\n";
 			break;
+		case Model::None:
+			break;
 		case Model::Diffusion:
 			o << "subsurfacescattering_material\n{\n\tname subject\n\tior 1.5\n\tabsorption 0\n\tscattering 200\n\tg 0\n\troughness 0\n}\n\n";
 			break;
 		}
-		o << "sphere_geometry\n{\n\tname subject_geo\n\tradius 1\n}\n\n";
-		o << "standard_object\n{\n\tname subject_obj\n\tgeometry subject_geo\n\tmaterial subject\n}\n\n";
+		if( s.model != Model::None ) {
+			o << "sphere_geometry\n{\n\tname subject_geo\n\tradius 1\n}\n\n";
+			o << "standard_object\n{\n\tname subject_obj\n\tgeometry subject_geo\n\tmaterial subject\n}\n\n";
+		}
 
 		// The walls.  MatchedRoom: an ideal index-1.0 refractor around the
 		// camera and the subject (camera at z = 4, sphere radius 1), with
@@ -158,6 +166,14 @@ namespace
 			o << "perfectrefractor_material\n{\n\tname wall_mat\n\tior 1.0\n\trefractance white\n}\n\n"
 			  << "box_geometry\n{\n\tname wall_geo\n\twidth 4\n\theight 4\n\tdepth 10\n}\n\n"
 			  << "standard_object\n{\n\tname wall\n\tgeometry wall_geo\n\tmaterial wall_mat\n}\n\n";
+		} else if( s.wall == Wall::MatchedFogBox ) {
+			// An index-1.0 refractor box around the subject only, filled
+			// with isotropic fog: its volume vertices' NEE crosses the
+			// wall to the light outside.
+			o << "perfectrefractor_material\n{\n\tname wall_mat\n\tior 1.0\n\trefractance white\n}\n\n"
+			  << "homogeneous_medium\n{\n\tname fog\n\tabsorption 0 0 0\n\tscattering 0.5 0.5 0.5\n\tphase isotropic\n}\n\n"
+			  << "box_geometry\n{\n\tname wall_geo\n\twidth 3\n\theight 3\n\tdepth 3\n}\n\n"
+			  << "standard_object\n{\n\tname wall\n\tgeometry wall_geo\n\tmaterial wall_mat\n\tinterior_medium fog\n}\n\n";
 		} else if( s.wall == Wall::GlassAroundSubject ) {
 			o << "perfectrefractor_material\n{\n\tname wall_mat\n\tior 1.5\n\trefractance white\n}\n\n"
 			  << "box_geometry\n{\n\tname wall_geo\n\twidth 3\n\theight 3\n\tdepth 3\n}\n\n"
@@ -171,6 +187,8 @@ namespace
 			  << "standard_object\n{\n\tname obj_emit\n\tgeometry geo_emit\n\tmaterial mat_emit\n}\n\n";
 		} else if( s.light == Light::Omni ) {
 			o << "omni_light\n{\n\tname lgt\n\tposition 0.5 3 0.5\n\tcolor 1 1 1\n\tpower 20\n}\n\n";
+		} else if( s.light == Light::Spot ) {
+			o << "spot_light\n{\n\tname lgt\n\tposition 0.5 3 0.5\n\ttarget 0 0 0\n\tinner 40\n\touter 50\n\tcolor 1 1 1\n\tpower 20\n}\n\n";
 		} else if( s.light == Light::Directional ) {
 			o << "directional_light\n{\n\tname lgt\n\tdirection 0.3 1 0.2\n\tcolor 1 1 1\n\tpower 3\n}\n\n";
 		}
@@ -330,17 +348,43 @@ int main( int argc, char** argv )
 		{ Model::Lambertian, Integrator::PT, Light::Omni, Wall::None, true, 64 },
 		0.01, trials, seed, only );
 
-	// E1: PT + SMS, omni light through the index-1.0 room / the same with
-	// no room: what SMS returns through an invisible caster, against a
-	// reference.  KNOWN DEFECT DL-413 PINNED at 0.5: SMS delivers HALF a
-	// delta light's direct light through a specular caster (0.4994 here;
-	// dielectric or perfect refractor, ior 1.0 or 1.01, biased or not).
-	// When DL-413 is fixed, move `expected` to 1.  Pre-fix (SMS plus the
-	// walk) it read about 1.5, so the pin is red there too.
-	RatioRow( "E1: lambertian/PT+SMS index-1.0 room / open air (omni) [DL-413 pin 0.5]",
+	// E1 / E3: PT + SMS, an omni (E1) or spot (E3) light through the
+	// index-1.0 room / plain PT in open air: what SMS returns through an
+	// invisible caster, against a reference.  DL-413: SMS used to build
+	// the light-endpoint tangent plane perpendicular to the delta light's
+	// random photon direction and read 0.4994 here; pre-DL-344 (SMS plus
+	// the walk) about 1.5.
+	RatioRow( "E1: lambertian/PT+SMS index-1.0 room / PT open air (omni)",
 		{ Model::Lambertian, Integrator::PTSMS, Light::Omni, Wall::MatchedRoom, true, 64 },
-		{ Model::Lambertian, Integrator::PTSMS, Light::Omni, Wall::None, true, 64 },
-		0.02, trials, seed, only, 0.5 );
+		{ Model::Lambertian, Integrator::PT, Light::Omni, Wall::None, true, 64 },
+		0.02, trials, seed, only );
+	RatioRow( "E3: lambertian/PT+SMS index-1.0 room / PT open air (spot)",
+		{ Model::Lambertian, Integrator::PTSMS, Light::Spot, Wall::MatchedRoom, true, 64 },
+		{ Model::Lambertian, Integrator::PT, Light::Spot, Wall::None, true, 64 },
+		0.02, trials, seed, only );
+
+	// G: receivers where SMS does NOT run -- the BSSRDF entry NEE of a
+	// diffusion / random-walk sphere, and the volume in-scattering of fog
+	// -- behind an index-1.0 wall, omni light, flag on: PT + SMS must
+	// equal walk-only PT (the walk is exact through index 1.0).  A
+	// per-LIGHT SMS gate (round 2) turned the walk off there too and those
+	// receivers lost the light (diffusion 0.0746 -> 0).
+	RatioRow( "G: diffusion/PT+SMS / PT, flag TRUE, index-1.0 room (omni)",
+		{ Model::Diffusion, Integrator::PTSMS, Light::Omni, Wall::MatchedRoom, true, 64 },
+		{ Model::Diffusion, Integrator::PT, Light::Omni, Wall::MatchedRoom, true, 64 },
+		0.02, trials, seed, only );
+	RatioRow( "G: random_walk/PT+SMS / PT, flag TRUE, index-1.0 room (omni)",
+		{ Model::RandomWalk, Integrator::PTSMS, Light::Omni, Wall::MatchedRoom, true, 256 },
+		{ Model::RandomWalk, Integrator::PT, Light::Omni, Wall::MatchedRoom, true, 256 },
+		0.03, trials, seed, only );	// random walk: per-pair sd ~0.009 at 256 spp
+	// The fog box holds NO surface: SMS has no anchor anywhere, so every
+	// receiver is a volume vertex.  (With a Lambertian sphere inside the
+	// fog the two differ by +21 % for an unrelated, pre-existing reason:
+	// SMS prices its chain with no medium transmittance at all.)
+	RatioRow( "G: fog/PT+SMS / PT, flag TRUE, index-1.0 fog box (omni)",
+		{ Model::None, Integrator::PTSMS, Light::Omni, Wall::MatchedFogBox, true, 64 },
+		{ Model::None, Integrator::PT, Light::Omni, Wall::MatchedFogBox, true, 64 },
+		0.02, trials, seed, only );
 
 	// E2: PT + SMS, omni light through 1.5 glass, flag TRUE / FALSE.  Equal
 	// by construction once SMS-sampled lights keep a binary shadow; its

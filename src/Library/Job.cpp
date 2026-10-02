@@ -10431,19 +10431,17 @@ bool Job::SetAutoSpectralRasterizer(
 	return true;
 }
 
-// DL-344: with SMS on, the `transparent_shadows` walk keeps seeing
-// through clear dielectrics only for the delta lights SMS never samples
-// (directional: it is not in LightSampler's SampleLight table); an omni /
-// spot light's light through a specular caster is SMS's to estimate, and
-// the straight walk on top of it counted it twice (PT+SMS, omni through a
-// 1.5 glass box: 2.46x).  The gate itself is per light, in
-// RayCaster::DielectricShadowWalk; this only wires the flags and says so.
+// DL-344: with SMS on, the `transparent_shadows` walk is off for an
+// omni / spot light at the surface points where SMS is evaluated (PT's
+// PART-2 NEE): SMS estimates that light through the caster, and the
+// straight walk on top of it counted it twice (PT+SMS, omni through a 1.5
+// glass box: 2.46x).  The gate is per evaluation point (LightSampler's
+// `bSMSCoversDeltaLights`); this only wires the flag and says so.
 static void WireTransparentShadows( RISE::Implementation::RayCaster& caster, const bool transparentShadows, const bool smsEnabled )
 {
 	caster.SetTransparentShadows( transparentShadows );
-	caster.SetSMSEnabledForShadows( smsEnabled );
 	if( transparentShadows && smsEnabled ) {
-		GlobalLog()->PrintEasyWarning( "Job:: with `sms_enabled TRUE`, `transparent_shadows TRUE` applies only to directional lights; omni / spot light reaching a receiver through a specular caster is estimated by SMS instead (both together count it twice, DL-344)" );
+		GlobalLog()->PrintEasyWarning( "Job:: with `sms_enabled TRUE`, `transparent_shadows TRUE` does not see omni / spot light through a specular caster at the surface points SMS evaluates (SMS estimates it there; both together count it twice, DL-344); directional lights, volume receivers and subsurface entry points keep the walk" );
 	}
 }
 

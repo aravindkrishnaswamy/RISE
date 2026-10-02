@@ -127,8 +127,8 @@ void DirectionalLight::ComputeDirectLightingSampled(
 	// blocking it), else (1,1,1).  Routed through CastShadowRayAuto so the flag
 	// is honored for directional lights exactly as for the omni/spot NEE
 	// path — and uniformly across analytic-primitive and SDF dielectrics.
-	// DL-344: CastShadowRayAutoSampled's lightSampledBySMS stays false here:
-	// a directional light is not in LightSampler's SampleLight table, so SMS
+	// DL-344: CastShadowRayAutoSampled's smsCoversLight stays false here: a
+	// directional light is not in LightSampler's SampleLight table, so SMS
 	// never estimates it and the walk stays on even with sms_enabled TRUE.
 	RISEPel shadowT( 1.0, 1.0, 1.0 );
 	if( bReceivesShadows ) {
