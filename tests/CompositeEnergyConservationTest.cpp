@@ -1664,15 +1664,17 @@ static void SectionD()
 				scene += ( r == 0 ) ? PtRasterizer( c.env, 256 ) : ( r == 1 ) ? BdptRasterizer( c.env, 256 ) : vcm( c.env, 256 );
 				CapturingRasterizerOutput* cap = 0;
 				const bool ok = Render( scene, "opensheet", cap, 71680u + 3u * (unsigned)r );
-				const double mL = ok ? RegionMean( *cap, 2, cap->width / 2 - 2 ) : -1;
-				const double mR = ok ? RegionMean( *cap, cap->width / 2 + 2, cap->width - 2 ) : -1;
+				// Seen from behind the image is mirrored: its LEFT half is
+				// the clipped plane (world +x), its RIGHT half the mesh.
+				const double mC = ok ? RegionMean( *cap, 2, cap->width / 2 - 2 ) : -1;
+				const double mM = ok ? RegionMean( *cap, cap->width / 2 + 2, cap->width - 2 ) : -1;
 				const char* in = ( r == 0 ) ? "PT  " : ( r == 1 ) ? "BDPT" : "VCM ";
 				std::cout << "    D7 open double-sided sheet from behind, " << c.name << ", " << in
-				          << ": mesh = " << std::setprecision(5) << mL << ", clipped plane = " << mR
-				          << ", ratio = " << ( mR > 0 ? mL / mR : -1 ) << "\n";
-				Check( ok && mR > 0 && std::fabs( mL / mR - 1.0 ) <= 0.03,
+				          << ": mesh = " << std::setprecision(5) << mM << ", clipped plane = " << mC
+				          << ", ratio = " << ( mC > 0 ? mM / mC : -1 ) << "\n";
+				Check( ok && mC > 0 && std::fabs( mM / mC - 1.0 ) <= 0.03,
 					std::string( "[D7] open mesh sheet == clipped-plane twin from behind, " ) + c.name + " (" + in + ")" );
-				perInt[r] = mL;
+				perInt[r] = mM;
 				if( cap ) safe_release( cap );
 			}
 			for( int r = 1; r < 3; ++r ) {
