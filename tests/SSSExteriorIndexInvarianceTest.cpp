@@ -103,6 +103,18 @@
 //          cast had rewritten that stack's current object, so a later
 //          sample's entry push keyed the new stack entry on the WRONG
 //          object and the interior exit read as a second entry.
+//    Part F (DL-370) -- rendered, reference-free, touching SSS objects:
+//      F   a closed room of six conservative random-walk slabs whose
+//          side walls TOUCH the floor, ceiling and each other, camera
+//          inside, white environment: every pixel reads 1.  Pre-fix the
+//          walk exited through a face shared with a neighbour and its
+//          continuation, offset 1e-6 outward, started INSIDE the
+//          neighbour, met its far face from behind and died (the SSS
+//          SPF absorbs back faces): 0.70.  A 5e-7 gap (inside the
+//          offset) reads the same; a 0.02 gap is the control.
+//      F2  two touching cubes against the same pair 2e-6 apart (wider
+//          than the offset, optically nothing), paired seeds.  The
+//          diffusion profile row is printed only (DL-408).
 //    Usage: [--unit-only] [--trials K (default 4)] [--only <label substring>]
 //
 //  Author: RISE debt-cleanup, slice `debt-dl49`
@@ -1627,6 +1639,176 @@ namespace
 			Check( std::fabs( st.mean - 1.0 ) < row.band, label + ": conservative furnace image mean within band of 1" );
 		}
 	}
+
+	//////////////////////////////////////////////////////////////////
+	// Part F (DL-370) -- touching SSS objects, reference-free
+	//////////////////////////////////////////////////////////////////
+
+	//! A closed room of six conservative (absorption 0) SSS slabs around a
+	//! pinhole camera at the origin, under the white environment: the only
+	//! way in is THROUGH the walls, every wall conserves energy, so every
+	//! pixel reads exactly 1.  `gap` == 0 makes the slabs TOUCH (each side
+	//! wall's end faces are coincident with the floor/ceiling and the
+	//! front/back walls' faces); `gap` > 0 shrinks the side and front walls
+	//! so every contact becomes an air gap of that width (the room then
+	//! leaks through the gaps, which the white environment also fills at
+	//! 1 -- the gapped room is the control).
+	std::string BuildTouchingRoomScene( Integrator integrator, Scalar gap, unsigned int samples )
+	{
+		std::ostringstream s;
+		s << std::setprecision( 17 );
+		s << "RISE ASCII SCENE 7\n";
+		s << "film\n{\n\twidth 32\n\theight 32\n}\n\n";
+		s << "pinhole_camera\n{\n\tlocation 0 0 0\n\tlookat 0 0 -1\n\tup 0 1 0\n\tfov 90.0\n}\n\n";
+		s << "uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n\n";
+		s << "randomwalk_sss_material\n{\n\tname wall\n\tior 1.5\n\tabsorption 0\n\tscattering 2\n\tg 0\n\troughness 0\n\tmax_bounces 8192\n}\n\n";
+		// Interior [-1,1]^3, walls 0.5 thick.  Floor / ceiling span the full
+		// 3 x 3 footprint; the x walls sit between them; the z walls sit
+		// between the x walls and between floor and ceiling.
+		struct Slab { const char* name; double w, h, d, x, y, z; };
+		const double g = gap;
+		const Slab slabs[6] = {
+			{ "floor",   3.0,           0.5,           3.0,           0,     -1.25, 0 },
+			{ "ceiling", 3.0,           0.5,           3.0,           0,      1.25, 0 },
+			{ "xneg",    0.5,           2.0 - 2 * g,   3.0,          -1.25,   0,    0 },
+			{ "xpos",    0.5,           2.0 - 2 * g,   3.0,           1.25,   0,    0 },
+			{ "zneg",    2.0 - 2 * g,   2.0 - 2 * g,   0.5,           0,      0,   -1.25 },
+			{ "zpos",    2.0 - 2 * g,   2.0 - 2 * g,   0.5,           0,      0,    1.25 },
+		};
+		for( const Slab& b : slabs ) {
+			s << "box_geometry\n{\n\tname " << b.name << "_geo\n\twidth " << b.w << "\n\theight " << b.h << "\n\tdepth " << b.d << "\n}\n\n";
+			s << "standard_object\n{\n\tname " << b.name << "\n\tgeometry " << b.name << "_geo\n\tmaterial wall\n\tposition "
+			  << b.x << " " << b.y << " " << b.z << "\n}\n\n";
+		}
+		s << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
+		const char* env = "\tradiance_map white\n\tradiance_scale 1\n\tradiance_background TRUE\n";
+		if( integrator == Integrator::BDPT ) {
+			s << "bdpt_pel_rasterizer\n{\n\tmax_eye_depth 64\n\tmax_light_depth 64\n\tsamples " << samples
+			  << "\n\tpixel_filter box\n\toidn_denoise FALSE\n" << env << "}\n\n";
+		} else {
+			s << "pathtracing_pel_rasterizer\n{\n\tsamples " << samples
+			  << "\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n\tpathguiding FALSE\n\tadaptive_max_samples 0\n"
+			  << env << "}\n\n";
+		}
+		s << "file_rasterizeroutput\n{\n\tpattern rendered/dl370_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+		return s.str();
+	}
+
+	//! Two conservative SSS cubes side by side (edge 1, contact plane x = 0
+	//! when `gap` == 0) under the white environment, seen orthographically
+	//! face-on: every pixel reads 1.  Unlike the closed room this works for
+	//! the diffusion profile too (whose transport cannot cross a thick wall).
+	std::string BuildTouchingPairScene( Model model, Scalar scattering, Scalar gap, unsigned int samples )
+	{
+		std::ostringstream s;
+		s << std::setprecision( 17 );
+		s << "RISE ASCII SCENE 7\n";
+		s << "film\n{\n\twidth 32\n\theight 16\n}\n\n";
+		s << "orthographic_camera\n{\n\tlocation 0 0 4\n\tlookat 0 0 0\n\tup 0 1 0\n\tviewport_scale 2 1\n}\n\n";
+		s << "uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n\n";
+		if( model == Model::RandomWalk ) {
+			s << "randomwalk_sss_material\n{\n\tname block\n\tior 1.5\n\tabsorption 0\n\tscattering " << scattering
+			  << "\n\tg 0\n\troughness 0\n\tmax_bounces 8192\n}\n\n";
+		} else {
+			s << "subsurfacescattering_material\n{\n\tname block\n\tior 1.5\n\tabsorption 0\n\tscattering " << scattering
+			  << "\n\tg 0\n\troughness 0\n}\n\n";
+		}
+		s << "box_geometry\n{\n\tname block_geo\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n";
+		s << "standard_object\n{\n\tname left\n\tgeometry block_geo\n\tmaterial block\n\tposition " << -0.5 - gap / 2 << " 0 0\n}\n\n";
+		s << "standard_object\n{\n\tname right\n\tgeometry block_geo\n\tmaterial block\n\tposition " << 0.5 + gap / 2 << " 0 0\n}\n\n";
+		s << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
+		s << "pathtracing_pel_rasterizer\n{\n\tsamples " << samples
+		  << "\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n\tpathguiding FALSE\n\tadaptive_max_samples 0\n"
+		  << "\tradiance_map white\n\tradiance_scale 1\n\tradiance_background TRUE\n}\n\n";
+		s << "file_rasterizeroutput\n{\n\tpattern rendered/dl370_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+		return s.str();
+	}
+
+	void TestTouchingSSSPair( const unsigned int trials, const std::string& only )
+	{
+		std::cout << "F2: two touching conservative SSS cubes vs a 2e-6 gap (DL-370), n=" << trials << std::endl;
+		// The 2e-6 gap is wider than the 1e-6 outward offset an SSS exit
+		// gives its continuation (BSSRDF_RAY_EPSILON) and optically nothing,
+		// so the pair differs ONLY in whether that offset crosses into the
+		// neighbour.  Paired seeds (common random numbers).  The diffusion
+		// row is printed, not gated: its profile probe cannot cross into a
+		// neighbour at all, so the same offset still lands inside it there
+		// (DL-408); and on a finite cube the profile is not energy
+		// conserving, so its gapped side is heavy-tailed.
+		struct Row { Model model; Scalar scattering; unsigned int samples; double band; bool gated; };
+		const Row rows[] = {
+			{ Model::RandomWalk, 2,  64, 0.01, true },
+			{ Model::Diffusion,  20, 64, 0.0,  false },
+		};
+		unsigned int seed = 37100;
+		for( const Row& row : rows ) {
+			const std::string label = std::string( "F2: " ) + ModelName( row.model ) + "/PT touching pair";
+			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
+			const std::string tPath = WriteScene( BuildTouchingPairScene( row.model, row.scattering, 0.0, row.samples ), "dl370pairT" );
+			const std::string gPath = WriteScene( BuildTouchingPairScene( row.model, row.scattering, 2e-6, row.samples ), "dl370pairG" );
+			Check( !tPath.empty() && !gPath.empty(), label + ": scene files written" );
+			std::vector<double> tm, gm;
+			bool allValid = true;
+			for( unsigned int t = 0; t < trials; ++t ) {
+				const unsigned int pairSeed = seed++;
+				const double a = RenderFurnaceMean( tPath, pairSeed );
+				const double b = RenderFurnaceMean( gPath, pairSeed );
+				if( !( a > 0 ) || !( b > 0 ) ) allValid = false;
+				tm.push_back( a );
+				gm.push_back( b );
+			}
+			std::remove( tPath.c_str() );
+			std::remove( gPath.c_str() );
+			Check( allValid, label + ": every render finite and non-black" );
+			if( !allValid ) continue;
+			const Stats st = Summarize( tm ), sg = Summarize( gm );
+			std::cout << std::setprecision( 6 ) << "    " << label.substr( 4 ) << " spp=" << row.samples
+				<< ": touching " << st.mean << " +/- " << st.sd << "  gapped " << sg.mean << " +/- " << sg.sd
+				<< "  ratio " << st.mean / sg.mean;
+			if( row.gated ) {
+				std::cout << " (band " << row.band << ")" << std::endl;
+				Check( std::fabs( st.mean / sg.mean - 1.0 ) < row.band, label + ": touching / gapped image mean within band of 1" );
+			} else {
+				std::cout << " (not gated: DL-408)" << std::endl;
+			}
+		}
+	}
+
+	void TestTouchingSSSRoom( const unsigned int trials, const std::string& only )
+	{
+		std::cout << "F: closed room of touching conservative SSS slabs (DL-370), n=" << trials << std::endl;
+		struct Row { Model model; Integrator integrator; Scalar gap; unsigned int samples; double band; };
+		const Row rows[] = {
+			{ Model::RandomWalk, Integrator::PT,   0.0,  16, 0.01 },
+			{ Model::RandomWalk, Integrator::PT,   5e-7, 16, 0.01 },
+			{ Model::RandomWalk, Integrator::PT,   0.02, 16, 0.01 },
+			{ Model::RandomWalk, Integrator::BDPT, 0.0,  16, 0.01 },
+		};
+		unsigned int seed = 37000;
+		for( const Row& row : rows ) {
+			std::ostringstream lab;
+			lab << "F: " << ModelName( row.model ) << "/" << IntegratorName( row.integrator )
+			    << " room gap=" << row.gap;
+			const std::string label = lab.str();
+			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
+			const std::string path = WriteScene( BuildTouchingRoomScene( row.integrator, row.gap, row.samples ), "dl370room" );
+			Check( !path.empty(), label + ": scene file written" );
+			std::vector<double> m;
+			bool allValid = true;
+			for( unsigned int t = 0; t < trials; ++t ) {
+				const double mi = RenderFurnaceMean( path, seed++ );
+				if( !( mi > 0 ) ) allValid = false;
+				m.push_back( mi );
+			}
+			std::remove( path.c_str() );
+			Check( allValid, label + ": every render finite and non-black" );
+			if( !allValid ) continue;
+			const Stats st = Summarize( m );
+			std::cout << std::setprecision( 6 ) << "    " << label.substr( 3 ) << " spp=" << row.samples
+				<< ": image mean " << st.mean << " +/- " << st.sd << " (sd of one render; band " << row.band << ")" << std::endl;
+			Check( std::fabs( st.mean - 1.0 ) < row.band, label + ": conservative furnace image mean within band of 1" );
+		}
+	}
 }
 
 int main( int argc, char** argv )
@@ -1659,6 +1841,8 @@ int main( int argc, char** argv )
 		TestRenderedInvariance( trials, only );
 		TestRenderedPartitionFurnace( trials, only );
 		TestRayCasterStackAndRecursion( trials, only );
+		TestTouchingSSSRoom( trials, only );
+		TestTouchingSSSPair( trials, only );
 	}
 	std::cout << "=== " << passCount << " passed, " << failCount << " failed ===" << std::endl;
 	return failCount == 0 ? 0 : 1;
