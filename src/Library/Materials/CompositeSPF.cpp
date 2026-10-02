@@ -429,7 +429,7 @@ namespace RISE
 			static const uint64_t kSaltEvaluate = 0x5A17C0DE00000004ull;
 			static const uint64_t kSaltEvaluateExit = 0x5A17C0DE00000005ull;
 			static const uint64_t kSaltGapBelow = 0x5A17C0DE00000006ull;
-			static const int      kGapBelowDraws    = 4;
+			static const int      kGapBelowDraws    = 16;
 			static const int      kPerBranchProbes  = 8;
 
 			//! PCG32 (O'Neill 2014).  Local, stack-allocated, never shared
@@ -611,17 +611,19 @@ namespace RISE
 				return out;
 			}
 
-			//! OUT without a copy in the ordinary case: an entry stack that
-			//! does not hold O already IS the medium above the top.  For the
-			//! READ-ONLY uses (a layer's Pdf / BSDF, the probe's masses) and
-			//! for a top-layer Scatter it is also the right key (O).
-			static inline const IORStack& OutRef( const IORStack& S, std::optional<IORStack>& store )
+			//! The stack a walk ENTERED FROM ABOVE starts from: the entry
+			//! stack itself.  It normally does not hold O (that IS the
+			//! medium above the top).  When it does -- an inconsistent
+			//! state for a geometric from-above entry, e.g. a surface the
+			//! stack crossed into without ever crossing back -- the stack is
+			//! trusted as the pre-DL-341 walk trusted it: the top is handed
+			//! it unpopped and takes its own from-inside branch (DL-341
+			//! review round 1: popping it there turned the double-sided
+			//! closed-mesh exit into an entry).  Only a FROM-BELOW walk pops
+			//! O (OutsideOf).
+			static inline const IORStack& OutRef( const IORStack& S, std::optional<IORStack>& )
 			{
-				if( !( S.currentObject() && S.containsCurrent() ) ) {
-					return S;
-				}
-				store.emplace( OutsideOf( S ) );
-				return *store;
+				return S;
 			}
 
 			//! The EXTERNAL form of the internal stack a ray leaves the
@@ -1378,7 +1380,7 @@ namespace RISE
 				auto isUpBottom = [&n]( const ScatteredRay& r ) { return Vector3Ops::Dot( r.ray.Dir(), n ) > 0; };
 				auto isDownTop  = [&n]( const ScatteredRay& r ) { return Vector3Ops::Dot( r.ray.Dir(), n ) < 0; };
 
-				path.out = OutsideOf( entry );
+				path.out = entry;		// from above only (OutRef)
 				const IORStack& outside = path.out;
 				const IObject* const kB = BottomKey( s );
 
@@ -1769,7 +1771,18 @@ namespace RISE
 				rp.ray.SetDir( n );
 				rp.ray.Advance( Scalar( 1 ) );
 				rp.ray.SetDir( -n );
+				// Every multi-emit top (dielectric, perfect refractor,
+				// translucent: all lobes emitted per Scatter) shows its
+				// transmission on the FIRST draw at normal incidence, so the
+				// answer is a deterministic function of the record; a top
+				// that DECLARES a deterministic split and transmits nothing
+				// on that draw never pushes, and stops there too.  Only a
+				// single-emit stochastic top (a nested composite, tissue) is
+				// SAMPLED: up to kGapBelowDraws hashed draws, so a top that
+				// transmits with probability p misses with (1-p)^16 (a
+				// nested glass/glass composite: p ~ 0.92, ~1e-17).
 				const uint64_t seed = HashPoint( kSaltGapBelow, ri.ptIntersection );
+				const bool declared = s.top.SelectionMassIsDeterministic( rp, nm );
 				for( int i = 0; i < kGapBelowDraws; i++ ) {
 					HashedSampler hs( seed + uint64_t( i ) * 0x9E3779B97F4A7C15ull );
 					ScatteredRayContainer c;
@@ -1785,6 +1798,9 @@ namespace RISE
 					}
 					if( best >= 0 ) {
 						return KeyedTop( *c[best].ior_stack, out );
+					}
+					if( declared || c.Count() > 1 ) {
+						break;		// multi-emit / declared: this draw is the answer
 					}
 				}
 				return out;
@@ -1805,7 +1821,8 @@ namespace RISE
 				typedef typename P::T T;
 				const Vector3 n = ri.onb.w();
 				const IObject* const kB = BottomKey( s );
-				const IORStack out = OutsideOf( entry );
+				// OUT: popped only for a walk from below (OutRef).
+				const IORStack out = ( start == eStartNaturalBottom ) ? OutsideOf( entry ) : entry;
 
 				// ONE internal stack (DL-341): the bottom is called with its
 				// own key, the top with O; refreshed after every crossing.
@@ -2119,16 +2136,41 @@ namespace RISE
 	//! certification: the composite keeps its pre-DL-345 containment
 	//! semantics on a clipped plane as on any other surface.  Copies only
 	//! when the flag is set.
+	//!
+	//! DL-341 review round 1 (2026-10-02): the entry side is the TRUE
+	//! geometric one.  A double-sided mesh / Bezier set flips BOTH normals
+	//! toward the ray (`bGeomNormalOrientedToRay`), so a hit from INSIDE a
+	//! closed solid presented the composite's TOP to the ray and was walked
+	//! as an entry from above: OUT popped O, the dielectric top refracted
+	//! 1.0 -> 1.5 instead of 1.5 -> 1.0, and the exit claimed to be still
+	//! inside (a closed double-sided glass/glass mesh box read 0.467 in a
+	//! white furnace).  Such a record is UNFLIPPED here -- geometric normal
+	//! back to the true outward one (DL-70 `UnflippedGeomNormal()`), the
+	//! shading normal and frame oriented into its hemisphere -- so the
+	//! walk sees the solid's true sides exactly as a single-sided mesh
+	//! does.  A PROVABLY open sheet (`bProvablyNoInterior`: a clipped
+	//! plane) keeps the flipped frame and presents its top on both faces,
+	//! as before (it has no inside for the bottom to face); hair's
+	//! ray-derived normal has no true side and is left alone.
 	static inline const RayIntersectionGeometric& CompositeLayerFrame(
 		const RayIntersectionGeometric& ri,
 		std::optional<RayIntersectionGeometric>& store
 		)
 	{
-		if( !ri.bProvablyNoInterior ) {
+		const bool unflip = ri.bGeomNormalOrientedToRay && ri.HasTrueGeomSide() && !ri.bProvablyNoInterior;
+		if( !ri.bProvablyNoInterior && !unflip ) {
 			return ri;
 		}
 		store.emplace( ri );
 		store->bProvablyNoInterior = false;
+		if( unflip ) {
+			store->vGeomNormal = ri.UnflippedGeomNormal();
+			store->bGeomNormalOrientedToRay = false;
+			if( Vector3Ops::Dot( store->vNormal, store->vGeomNormal ) < 0 ) {
+				store->vNormal = -store->vNormal;
+				store->onb.FlipW();
+			}
+		}
 		return *store;
 	}
 

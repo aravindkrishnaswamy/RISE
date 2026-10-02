@@ -93,6 +93,7 @@
 #include "../src/Library/Interfaces/IRasterImage.h"
 #include "../src/Library/Interfaces/ILog.h"
 
+#include "../src/Library/Utilities/SobolSampler.h"
 #include "TestStubObject.h"
 
 using namespace RISE;
@@ -736,6 +737,87 @@ static void SectionH( Fixtures& f )
 				std::string( "[H] H4 struck from inside, lossless -> 1, theta " ) + std::to_string( (int)thDeg ) );
 		}
 		std::cout << "\n";
+	}
+	// H5 (DL-341 review round 1): the NESTED stack of the review's D6 box,
+	// composite{composite{glass/glass}/glass}, full-sphere furnace from
+	// above (jittered) and struck from inside at 20 / 35 / 60 deg.  Lossless:
+	// 1 everywhere.  An SPF-level twin of D6 that separates a biased walk
+	// estimator from a render-level stack / eta^2 defect.
+	{
+		CompositeMaterial* nest = MakeComposite( *innerGG, *f.dSmooth, 3, 3, 3, 3, 3, 0.0, *f.s0 );
+		std::cout << "    H5 composite{composite{glass/glass}/glass}, from above (jittered) and from inside, lossless -> 1\n      ";
+		for( int t = 0; t < 4; t += 2 ) {
+			const FurnaceStats st = JitteredFurnace( *nest->GetSPF(), kThetas[t], 16, 20000, 1311u + t );
+			std::cout << std::fixed << std::setprecision( 4 ) << "above " << kThetas[t] << "deg: " << st.mean << " +- " << st.sem << "   ";
+			Check( std::fabs( st.mean - 1.0 ) <= std::max( 0.005, 5.0 * st.sem ), std::string( "[H] H5 nested from above, theta " ) + std::to_string( (int)kThetas[t] ) );
+		}
+		const ISPF& spf = *nest->GetSPF();
+		for( const double thDeg : { 20.0, 35.0, 60.0 } ) {
+			RandomNumberGenerator rng( 5151u );
+			IndependentSampler sampler( rng );
+			const double th = thDeg * kPi / 180.0;
+			const Vector3 d( std::sin( th ), 0, std::cos( th ) );
+			double sum = 0, sum2 = 0;
+			const int N = 200000;
+			for( int i = 0; i < N; ++i ) {
+				const Point3 p( rng.CanonicalRandom() * 10, rng.CanonicalRandom() * 10, 0 );
+				const RasterizerState rs = { 0, 0 };
+				RayIntersectionGeometric ri( Ray( Point3( p.x - d.x, p.y, -1.0 ), d ), rs );
+				ri.bHit = true; ri.range = 1.0; ri.ptIntersection = p;
+				ri.vNormal = Vector3( 0, 0, 1 ); ri.vGeomNormal = Vector3( 0, 0, 1 ); ri.onb.CreateFromW( Vector3( 0, 0, 1 ) );
+				IORStack stk = MakeTestIORStack( g_stub );
+				stk.push( 1.5 );
+				ScatteredRayContainer sc;
+				spf.Scatter( ri, sampler, sc, stk );
+				double v = 0;
+				for( unsigned j = 0; j < sc.Count(); ++j ) v += ColorMath::MaxValue( sc[j].kray );
+				sum += v; sum2 += v * v;
+			}
+			const double rho = sum / N;
+			const double sem = std::sqrt( std::max( 0.0, sum2 / N - rho * rho ) / N );
+			std::cout << "inside " << thDeg << "deg: " << rho << " +- " << sem << "   ";
+			Check( std::fabs( rho - 1.0 ) <= std::max( 0.005, 5.0 * sem ), std::string( "[H] H5 nested from inside, theta " ) + std::to_string( (int)thDeg ) );
+		}
+		std::cout << "\n";
+		// The same stack under a RADIANCE consumer's eta^2 factor: below its
+		// top the nested stack is index-matched, so sum kray * RadianceEtaScale
+		// must equal one plain glass interface's (F + (1-F)/eta^2 from
+		// above, F + (1-F) eta^2 from inside), angle by angle.
+		std::cout << "      eta^2-weighted, nested | plain glass: ";
+		for( int side = 0; side < 2; ++side ) {
+			for( const double thDeg : { 20.0, 35.0, 60.0 } ) {
+				double acc[2] = { 0, 0 }, acc2[2] = { 0, 0 };
+				const int N = 100000;
+				for( int which = 0; which < 2; ++which ) {
+					const ISPF& sp = which == 0 ? *nest->GetSPF() : *f.dSmooth->GetSPF();
+					RandomNumberGenerator rng( 6161u + (unsigned)thDeg );
+					IndependentSampler sampler( rng );
+					const double th = thDeg * kPi / 180.0;
+					const Vector3 d( std::sin( th ), 0, side == 0 ? -std::cos( th ) : std::cos( th ) );
+					for( int i = 0; i < N; ++i ) {
+						const Point3 p( rng.CanonicalRandom() * 10, rng.CanonicalRandom() * 10, 0 );
+						const RasterizerState rs = { 0, 0 };
+						RayIntersectionGeometric ri( Ray( Point3( p.x - d.x, p.y, -d.z ), d ), rs );
+						ri.bHit = true; ri.range = 1.0; ri.ptIntersection = p;
+						ri.vNormal = Vector3( 0, 0, 1 ); ri.vGeomNormal = Vector3( 0, 0, 1 ); ri.onb.CreateFromW( Vector3( 0, 0, 1 ) );
+						IORStack stk = MakeTestIORStack( g_stub );
+						if( side == 1 ) stk.push( 1.5 );
+						ScatteredRayContainer sc;
+						sp.Scatter( ri, sampler, sc, stk );
+						double v = 0;
+						for( unsigned j = 0; j < sc.Count(); ++j ) v += ColorMath::MaxValue( sc[j].kray ) * RadianceEtaScale( stk, sc[j].ior_stack );
+						acc[which] += v; acc2[which] += v * v;
+					}
+				}
+				const double a = acc[0] / N, b = acc[1] / N;
+				const double sa = std::sqrt( std::max( 0.0, acc2[0] / N - a * a ) / N );
+				std::cout << ( side == 0 ? "above " : "inside " ) << thDeg << ": " << std::setprecision( 4 ) << a << " | " << b << "   ";
+				Check( std::fabs( a - b ) <= std::max( 0.003, 5.0 * sa ),
+					std::string( "[H] H5 nested eta^2-weighted == plain glass, " ) + ( side == 0 ? "above " : "inside " ) + std::to_string( (int)thDeg ) );
+			}
+		}
+		std::cout << "\n";
+		nest->release();
 	}
 	inner->release(); innerGG->release(); tissue->release();
 }
@@ -1450,6 +1532,81 @@ static void SectionD()
 			Check( ok && mR > 0 && std::fabs( mL / mR - 1.0 ) <= 0.005,
 				std::string( "[D4] closed composite box == the glass box it stands for (" ) + ( r == 0 ? "PT" : "BDPT" ) + ")" );
 			if( cap ) safe_release( cap );
+		}
+	}
+
+	// D5 / D6 (DL-341 review round 1, 2026-10-02): the same closed-box
+	// furnace on the cases the round-0 fix got wrong or never measured.
+	// D5: a DOUBLE-SIDED indexed-mesh box (indexedmesh_geometry's default):
+	// both normals flip toward the ray, so a hit from INSIDE presented the
+	// composite's top; the round-0 fix then popped O and refracted the exit
+	// as an entry -- 0.46687 against base 1.00000 (PT and BDPT).  The left
+	// half is the composite, the right half the same double-sided mesh in
+	// plain glass (a control that must read 1 too).  D6: a NESTED
+	// composite{composite{glass/glass}/glass} box_geometry box beside a
+	// glass box (base 0.971; round 0 1.0056, a gain).  Every path is
+	// lossless and all-delta, so each sample is exactly the env radiance
+	// and the band only absorbs rounding.
+	{
+		const std::string mesh =
+			"indexedmesh_geometry\n{\n\tname mb\n"
+			"\tvertex -1.95 -3 -0.5\n\tvertex 1.95 -3 -0.5\n\tvertex 1.95 3 -0.5\n\tvertex -1.95 3 -0.5\n"
+			"\tvertex -1.95 -3 0.5\n\tvertex 1.95 -3 0.5\n\tvertex 1.95 3 0.5\n\tvertex -1.95 3 0.5\n"
+			"\ttriangle 0 2 1\n\ttriangle 0 3 2\n\ttriangle 4 5 6\n\ttriangle 4 6 7\n\ttriangle 0 1 5\n\ttriangle 0 5 4\n"
+			"\ttriangle 3 7 6\n\ttriangle 3 6 2\n\ttriangle 0 4 7\n\ttriangle 0 7 3\n\ttriangle 1 2 6\n\ttriangle 1 6 5\n"
+			"\tdouble_sided TRUE\n\tface_normals TRUE\n}\n\n";
+		const std::string glassComp =
+			"dielectric_material\n{\n\tname mat_glass2\n\ttau 1\n\tior 1.5\n}\n\n"
+			"composite_material\n{\n\tname mat_gg\n\ttop mat_glass\n\tbottom mat_glass2\n\tthickness 0\n\textinction 0.0\n}\n\n"
+			"composite_material\n{\n\tname mat_nest\n\ttop mat_gg\n\tbottom mat_glass2\n\tthickness 0\n\textinction 0.0\n}\n\n";
+		const std::string head = std::string( "RISE ASCII SCENE 7\n" ) +
+			"film\n{\n\twidth 32\n\theight 16\n}\n\n"
+			"pinhole_camera\n{\n\tlocation 0 0 7.0\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt_env\n\tcolor 1.0 1.0 1.0\n}\n\n" + kLayers + glassComp;
+		const std::string scene5 = head + mesh +
+			"standard_object\n{\n\tname boxL\n\tgeometry mb\n\tposition -2 0 0\n\tmaterial mat_gg\n}\n\n"
+			"standard_object\n{\n\tname boxR\n\tgeometry mb\n\tposition 2 0 0\n\tmaterial mat_glass\n}\n\n";
+		const std::string scene6 = head +
+			"box_geometry\n{\n\tname bx\n\twidth 3.9\n\theight 6\n\tdepth 1\n}\n\n"
+			"standard_object\n{\n\tname boxL\n\tgeometry bx\n\tposition -2 0 0\n\tmaterial mat_nest\n}\n\n"
+			"standard_object\n{\n\tname boxR\n\tgeometry bx\n\tposition 2 0 0\n\tmaterial mat_glass\n}\n\n";
+		for( int sc = 0; sc < 2; ++sc ) {
+			for( int r = 0; r < 2; ++r ) {
+				// D5 is zero-variance (one render); D6's nested top runs the
+				// per-branch estimator, so it is n = 4 SALTED renders
+				// (independent randomized-QMC replicates) and gated on
+				// mean +- sem, a band that resolves 0.5 %.
+				const int nRep = ( sc == 0 ) ? 1 : 4;
+				std::vector<double> L, Rr;
+				bool ok = true;
+				for( int k = 0; k < nRep; ++k ) {
+					const int spp = ( sc == 0 ) ? 128 : 2048;
+					const std::string scene = ( sc == 0 ? scene5 : scene6 ) + ( r == 0 ? PtRasterizer( true, spp ) : BdptRasterizer( true, spp ) );
+					CapturingRasterizerOutput* cap = 0;
+					SobolSamplerTestHooks::ValueSalt().store( sc == 0 ? 0u : 0x9E3779B9u * (unsigned)( k + 1 ) + (unsigned)r );
+					const bool okk = Render( scene, sc == 0 ? ( r == 0 ? "dsbox_pt" : "dsbox_bdpt" ) : ( r == 0 ? "nest_pt" : "nest_bdpt" ), cap, 61440u + 2u * sc + r + 16u * k );
+					SobolSamplerTestHooks::ValueSalt().store( 0u );
+					ok = ok && okk;
+					L.push_back( okk ? RegionMean( *cap, 2, cap->width / 2 - 2 ) : -1 );
+					Rr.push_back( okk ? RegionMean( *cap, cap->width / 2 + 2, cap->width - 2 ) : -1 );
+					if( cap ) safe_release( cap );
+				}
+				double mL = 0, mR = 0; for( int k = 0; k < nRep; ++k ) { mL += L[k]; mR += Rr[k]; }
+				mL /= nRep; mR /= nRep;
+				double vL = 0; for( int k = 0; k < nRep; ++k ) vL += ( L[k] - mL ) * ( L[k] - mL );
+				const double semL = nRep > 1 ? std::sqrt( vL / ( nRep - 1 ) / nRep ) : 0.0;
+				const char* tag = ( sc == 0 ) ? "D5 double-sided mesh box, composite{glass/glass} | plain glass"
+				                              : "D6 nested composite{composite{glass/glass}/glass} box | glass box";
+				std::cout << "    " << tag << ", " << ( r == 0 ? "PT  " : "BDPT" ) << ": "
+				          << std::setprecision(5) << mL << " (sem " << semL << ", n " << nRep << ") | " << mR << "  (truth 1 | 1)\n";
+				Check( ok && std::fabs( mL - 1.0 ) <= std::max( 0.002, 4.0 * semL ),
+					std::string( "[D5/D6] " ) + tag + ": left == 1 (" + ( r == 0 ? "PT" : "BDPT" ) + ")" );
+				Check( ok && std::fabs( mR - 1.0 ) <= 0.002,
+					std::string( "[D5/D6] " ) + tag + ": glass control == 1 (" + ( r == 0 ? "PT" : "BDPT" ) + ")" );
+				if( sc == 1 ) {
+					Check( semL < 0.00125, std::string( "[D6] the salted band resolves 0.5 % (5 sem < 0.5 %), " ) + ( r == 0 ? "PT" : "BDPT" ) );
+				}
+			}
 		}
 	}
 }
