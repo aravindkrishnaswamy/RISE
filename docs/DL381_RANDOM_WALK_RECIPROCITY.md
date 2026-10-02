@@ -153,3 +153,5 @@ options for DL-384 are: keep the status quo; Lambertian at both ends
 front-lit); or a non-delta exit lobe shaped by the walk's arrival direction
 at both ends (moves both families toward physics and each other; changes
 PT's look in a scene-dependent direction).
+
+**Ruling (user, 2026-10-02): status quo.** The Lambertian exit lobe stays; DL-384 is closed. Reopen only with a concrete scene where the scene-dependent error matters.
