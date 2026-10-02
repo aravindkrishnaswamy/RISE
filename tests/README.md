@@ -884,6 +884,15 @@ and asserts the conservative-reject gate itself holds (`bDidFlip` true,
 (21/1). See
 [docs/DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md](../docs/DL20_DL116_PATCH_CURVATURE_AND_POLE_WELDING.md).
 
+## Deprecated Legacy Materials (DL-323 follow-through)
+
+The seven legacy non-physically-based material chunks (`cooktorrance_material`, `isotropic_phong_material`, `ashikminshirley_anisotropicphong_material`, `schlick_material`, `ward_isotropic_material`, `ward_anisotropic_material`, `polished_material`) are DEPRECATED, not retrofitted: they keep rendering exactly as before.  Mapping table and classification: [../docs/SCENE_CONVENTIONS.md](../docs/SCENE_CONVENTIONS.md) section 11.5.
+
+| Test | What it pins |
+|---|---|
+| `DeprecatedMaterialWarningTest` | the deprecated set is exactly those seven (every other chunk, incl. `translucent_material` / `phong_luminaire_material`, is not); each replacement hint names a registered non-deprecated material; `DeriveToJob` logs exactly ONE `eLog_Warning` per deprecated type per load (two `schlick_material` chunks -> one warning saying "2 chunk(s)"), none for modern chunks, never as a derive diagnostic, again on a second load; `read_schema` carries `"deprecated":true` + `"replacement"` for a deprecated chunk and neither for a modern one.  187 checks.  No `argv`/env knobs. |
+| `DeprecatedMaterialRenderIdentityTest` | a 40 x 16, 16 spp, single-worker PT render of ten spheres binding all seven deprecated chunks plus `translucent_material` / `ggx_material` / `lambertian_material` controls hashes (FNV-1a over every pixel double) to the value measured by building the PARENT commit `f03359223` (before any deprecation code) and running this same file in a fresh process.  One render per process (a second in-process render is not bit-identical).  `DEPRECATED_RENDER_PRINT=1` prints mean and hash.  Re-measure the constant only by rebuilding a commit that predates the change in question. |
+
 ## Style Of Test Used Here
 
 - Each file is an executable with its own `main`.
