@@ -296,3 +296,39 @@ since the clean rebuild; no builds overlapped any test execution.
 Source proofs and canonical controls are recorded above. The independent
 review verdict is reported with the final branch HEAD after this record
 is committed, so no later documentation edit can stale that verdict.
+
+
+## Independent review round 1 and repairs
+
+Round1 on `ddc418273` found two P1s: missing UV in uniform/Snell spectral
+material queries, and full/region Auto threshold roundoff. Its third
+contract/cost lens found no P1/P2. The test lens also requested broader
+policy coverage (P2). Fixes are filed as DL-394 and DL-393 respectively.
+Uniform and Snell companion rigs now pass vertex UV; the companion also
+passes geometric normal. OIDN carries the algebraically cancelled
+per-megapixel policy rate directly through every caller, avoiding
+area multiply/divide threshold drift. Nonvirtual diagnostic accessors
+expose actual configured family rates and the last configured OIDN preset.
+
+New UV regression uses an origin-only low-IOR texel with literal1.78
+elsewhere; four paired salts for each NM/HWSS and uniform/Snell combination
+must match the constant1.78 pixel hash. Initial arithmetic/stripe controls
+were rejected because they were not identical physical inputs on every
+path. Final fixed32/0; restoring pre-review solver `ddc418273` while
+retaining new assertions gives16/16 (all16 hash comparisons fail).
+Examples: HWSS uniform mean0.446594 vs0.417150 with old query context.
+The dispersion portion resets its salt index to preserve its original
+calibration; UV controls are a separate paired-input contract.
+
+OIDN threshold regression checks configured preset AND output against
+explicit presets at rates2.8/3/3.2/19.2/20/20.8, full/cropped19x24 and16x32.
+Pixel-only version red20/4, green24/0 exposed a coverage limit: Balanced
+and High can produce identical CPU pixels on these small inputs. Adding
+a read-only last-configured-preset accessor strengthens it to red28/20,
+green48/0. Red restores all pre-review rendering source files; only the
+read-only preset accessor is retained as instrumentation. Further cheap
+scene-loading checks cover ten rasterizer variants, family weights and
+configured/adaptive max budgets. No renders are needed for those checks.
+All preliminary repair builds were successful and warning-free.
+Final restored-source clean re-gate follows; fresh review will inspect
+its committed HEAD rather than reuse round1 verdicts.

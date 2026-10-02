@@ -6,6 +6,43 @@
 #include "../src/Library/Rendering/OIDNDenoiser.h"
 #include "../src/Library/Rendering/AOVBuffers.h"
 #include "../src/Library/RasterImages/RasterImage.h"
+#include "../src/Library/Rendering/PixelBasedRasterizerHelper.h"
+#include "../src/Library/Rendering/MLTSpectralRasterizer.h"
+static void FamilyPolicy()
+{
+#ifdef RISE_ENABLE_OIDN
+    struct Row { const char* type; double weight; bool mlt; bool adaptive; };
+    const Row rows[]={{"pixelpel_rasterizer",0.1,false,false},
+        {"pixelintegratingspectral_rasterizer",0.1,false,false},
+        {"pathtracing_pel_rasterizer",0.2,false,true},
+        {"pathtracing_spectral_rasterizer",0.8,false,true},
+        {"bdpt_pel_rasterizer",0.6,false,true},{"vcm_pel_rasterizer",0.6,false,true},
+        {"bdpt_spectral_rasterizer",0.6,false,true},{"vcm_spectral_rasterizer",0.6,false,true},
+        {"mlt_rasterizer",0.4,true,false},{"mlt_spectral_rasterizer",1.6,true,false}};
+    for(const auto& row : rows) for(bool adaptive : {false,true}) {
+        std::string scene=ReadScene("scenes/Tests/Materials/fabric_presets.RISEscene");
+        std::ostringstream chunk;
+        chunk << row.type << "\n{\n " << (row.mlt ? "mutations_per_pixel" : "samples") << " 25\n oidn_denoise TRUE\n";
+        if(adaptive && row.adaptive) chunk << " adaptive_max_samples 40\n";
+        chunk << "}\n";
+        ReplaceFirstChunk(scene,"pixelpel_rasterizer",chunk.str());
+        const std::string path="/tmp/cheapbatch_policy_family_"+std::to_string(::getpid())+".RISEscene";
+        {std::ofstream f(path);f << scene;}
+        IJobPriv* job=nullptr;
+        const bool loaded=RISE_CreateJobPriv(&job) && job && job->LoadAsciiSceneViaCst(path.c_str());
+        Check(loaded,"policy family scene loads");
+        double rate=-1;
+        if(loaded) {
+            auto* raster=job->GetRasterizer();
+            if(auto* spectral=dynamic_cast<MLTSpectralRasterizer*>(raster)) rate=spectral->EstimateDenoiseWorkPerMegapixel();
+            else if(auto* mlt=dynamic_cast<MLTRasterizer*>(raster)) rate=mlt->EstimateDenoiseWorkPerMegapixel();
+            else if(auto* pixel=dynamic_cast<PixelBasedRasterizerHelper*>(raster)) rate=pixel->EstimateDenoiseWorkPerMegapixel();
+        }
+        Check(rate==(adaptive && row.adaptive ? 40 : 25)*row.weight,"actual rasterizer configured/adaptive family policy rate");
+        safe_release(job);std::remove(path.c_str());
+    }
+#endif
+}
 static void PolicyBoundaries()
 {
 #ifdef RISE_ENABLE_OIDN
@@ -52,6 +89,7 @@ static void PolicyBoundaries()
 }
 int main(int argc,char** argv)
 {
+    FamilyPolicy();
     PolicyBoundaries();
     if(argc>1 && std::string(argv[1])=="--policy-only") {
         std::cout << passCount << " passed, " << failCount << " failed" << std::endl;

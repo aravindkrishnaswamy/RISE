@@ -131,6 +131,9 @@ namespace RISE
 				) const;
 
 		public:
+#ifdef RISE_ENABLE_OIDN
+			double EstimateDenoiseWorkPerMegapixel() const { return nMutationsPerPixel * 1.6; }
+#endif
 			MLTSpectralRasterizer(
 				IRayCaster* pCaster_,
 				const unsigned int maxEyeDepth,

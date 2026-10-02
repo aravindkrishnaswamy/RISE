@@ -1338,7 +1338,7 @@ void MLTRasterizer::RasterizeScene(
 			// Accurate semantics. Feed the same authored mode to OIDN.
 			mDenoiser->ApplyDenoise( *pImage, *aovBuffers, width, height,
 				mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-				nMutationsPerPixel * 0.4 );
+				EstimateDenoiseWorkPerMegapixel() );
 
 			FlushDenoisedToOutputs( *pImage, 0, 0 );
 		} else
@@ -1505,7 +1505,7 @@ void MLTRasterizer::RasterizeSceneAnimation(
 				// the cold filter/device rebuild cost.
 				mDenoiser->ApplyDenoise( *pImage, *aovBuffers, width, height,
 					mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-					nMutationsPerPixel * 0.4 );
+					EstimateDenoiseWorkPerMegapixel() );
 
 				FlushDenoisedToOutputs( *pImage, 0, frameIdx );
 			} else

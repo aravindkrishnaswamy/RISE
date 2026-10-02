@@ -65,8 +65,8 @@ static void UVIndexControl()
 int main( int argc, char** argv )
 {
     ConfigureTestWorker();
-    UVIndexControl();
     if(argc>1 && std::string(argv[1])=="--uv-only") {
+        UVIndexControl();
         std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
         return failCount ? 1 : 0;
     }
@@ -99,6 +99,8 @@ int main( int argc, char** argv )
         std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
         return failCount ? 1 : 0;
     }
+    UVIndexControl();
+    g_renderIndex=0; // Retain the independently calibrated dispersion salts.
     for(bool hwss : {false,true}) for(bool dispersion : {false,true}) {
         std::vector<double> shifts;
         for(int t=0;t<4;++t) {
