@@ -4931,6 +4931,9 @@ static void TestSmallVisibleEmitterResolutionSweep()
 		std::cout << "    " << buf << std::endl;
 		Check( ok && mr > 0 && std::fabs( m / mr - 1.0 ) <= r.band, buf );
 	}
+}
+
+//////////////////////////////////////////////////////////////////////
 // DL-386 (2026-10-02): the `vcm_sss_dragon` room with the dragon replaced
 // by a Lambertian sphere.  Its red and green walls are authored
 // `colorspace ROMMRGB_Linear`, which converts by matrix to Rec.709
