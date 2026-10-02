@@ -133,9 +133,18 @@ firefly tail (DL-333 / DL-356 record the same tail; the sd's are n = 3 on a
 heavy-tailed quantity) -- the walls' blue channel moves only through the green
 wall's -0.029.
 
-Scenes without a negative reflectance channel are bit-identical: a
+Scenes without a negative reflectance channel do not move.  A
 single-threaded, pinned-seed pixel hash (`WeaveGapShadowTransmittanceTest`
 scenehash mode, 4 spp) of every shipped scene binding a `spectral_painter` or
-`blackbody_painter` plus six ROMM-authored in-gamut scenes and the
-Cornell materials box matches before and after; the two dragon scenes in the
-same list change (section 7 of the slice note in the ledger).
+`blackbody_painter` (21), six ROMM-authored in-gamut scenes and the Cornell
+materials box matches before and after on 22 of those 28; the two dragon
+scenes in the same list change.  The other six (`planetary_survey`,
+`spectral_dispersive_caustic`, `hwss_mlt_spectral_cornellbox`,
+`hwss_cornellbox_pt_ref`, `cornellbox_pointlight_spectral`,
+`dielectrics_changing_ior`) are not reproducible in that harness: rerunning
+the last three on the SAME fixed binary gives hashes and means that differ from
+the first fixed run as much as the base run does (e.g.
+`cornellbox_pointlight_spectral` 0.30877 / 0.31485 fix, 0.31295 base).  None
+of the six binds a negative reflectance: the spectral rasterizers read the
+true SPD, `dielectrics_changing_ior`'s ROMM painters are in gamut, and
+`planetary_survey`'s only spectral painter (a blackbody) is an emitter.
