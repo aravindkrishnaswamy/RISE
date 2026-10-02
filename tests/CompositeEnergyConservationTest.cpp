@@ -1682,23 +1682,32 @@ static void SectionD()
 		}
 		const std::string geoBz = std::string( "bezierpatch_geometry\n{\n\tname qm\n\tfile " ) + bzPath + "\n}\n\n"
 			"clippedplane_geometry\n{\n\tname qc\n\tpta 0 -3 0\n\tptb 4 -3 0\n\tptc 4 3 0\n\tptd 0 3 0\n}\n\n";
-		for( int g = 0; g < 2; ++g )
+		// The patch's raw normal is -z for this control net (the plane's is
+		// +z), so its BACK face is seen from z = +7: the Bezier variant is
+		// rendered from BOTH sides (g == 1: camera -7, g == 2: camera +7),
+		// one of which is the plane's front and the patch's back.
+		const std::string cam7f = "film\n{\n\twidth 32\n\theight 16\n}\n\n"
+			"pinhole_camera\n{\n\tlocation 0 0 7.0\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n";
+		for( int g = 0; g < 3; ++g )
 		for( const Cfg7& c : cfgs ) {
-			const char* gname = ( g == 0 ) ? "mesh" : "Bezier patch";
+			const char* gname = ( g == 0 ) ? "mesh" : ( g == 1 ) ? "Bezier patch, camera -z" : "Bezier patch, camera +z";
 			double perInt[3] = { -1, -1, -1 };
 			for( int r = 0; r < 3; ++r ) {
 				if( !c.env && r == 2 ) continue;	// VCM has no point-light row here
-				std::string scene = std::string( "RISE ASCII SCENE 7\n" ) + cam7 + mats7 + ( g == 0 ? geo7 : geoBz ) +
+				std::string scene = std::string( "RISE ASCII SCENE 7\n" ) + ( g == 2 ? cam7f : cam7 ) + mats7 + ( g == 0 ? geo7 : geoBz ) +
 					"standard_object\n{\n\tname M\n\tgeometry qm\n\tmaterial " + c.mat + "\n}\n\n"
 					"standard_object\n{\n\tname C\n\tgeometry qc\n\tmaterial " + c.mat + "\n}\n\n";
-				if( !c.env ) scene += "omni_light\n{\n\tname ol\n\tpower 200\n\tcolor 1 1 1\n\tposition 0 0 -5\n}\n\n";
+				if( !c.env ) scene += std::string( "omni_light\n{\n\tname ol\n\tpower 200\n\tcolor 1 1 1\n\tposition 0 0 " ) + ( g == 2 ? "5" : "-5" ) + "\n}\n\n";
 				scene += ( r == 0 ) ? PtRasterizer( c.env, 256 ) : ( r == 1 ) ? BdptRasterizer( c.env, 256 ) : vcm( c.env, 256 );
 				CapturingRasterizerOutput* cap = 0;
 				const bool ok = Render( scene, "opensheet", cap, 71680u + 3u * (unsigned)r );
 				// Seen from behind the image is mirrored: its LEFT half is
 				// the clipped plane (world +x), its RIGHT half the mesh.
-				const double mC = ok ? RegionMean( *cap, 2, cap->width / 2 - 2 ) : -1;
-				const double mM = ok ? RegionMean( *cap, cap->width / 2 + 2, cap->width - 2 ) : -1;
+				const double leftHalf  = ok ? RegionMean( *cap, 2, cap->width / 2 - 2 ) : -1;
+				const double rightHalf = ok ? RegionMean( *cap, cap->width / 2 + 2, cap->width - 2 ) : -1;
+				// From +z the image's left half is world -x (the mesh / patch).
+				const double mC = ( g == 2 ) ? rightHalf : leftHalf;
+				const double mM = ( g == 2 ) ? leftHalf : rightHalf;
 				const char* in = ( r == 0 ) ? "PT  " : ( r == 1 ) ? "BDPT" : "VCM ";
 				std::cout << "    D7 open double-sided sheet from behind (" << gname << "), " << c.name << ", " << in
 				          << ": " << gname << " = " << std::setprecision(5) << mM << ", clipped plane = " << mC
