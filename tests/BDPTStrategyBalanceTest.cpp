@@ -4322,12 +4322,12 @@ static int SphereHitsDL375( int row, int col )
 	return hits;
 }
 
-//! One salted render; the achromatic means over sphere-interior and wall
-//! pixels.
-static bool RenderRegionMeansDL375( const std::string& rasterizer, const char* light, unsigned salt,
+//! One salted render of `body` (film, camera, objects, lights); the
+//! achromatic means over sphere-interior and wall pixels.
+static bool RenderRegionMeansBodyDL375( const std::string& rasterizer, const std::string& body, unsigned salt,
 	double& outSphere, double& outWall )
 {
-	const std::string scene = std::string( "RISE ASCII SCENE 7\n" ) + rasterizer + kSceneDeltaLitRandomWalkDL375 + light;
+	const std::string scene = std::string( "RISE ASCII SCENE 7\n" ) + rasterizer + body;
 	const std::string path = WriteSceneToTempFile( scene.c_str(), "dl375" );
 	if( path.empty() ) return false;
 	bool ok = false;
@@ -4361,6 +4361,13 @@ static bool RenderRegionMeansDL375( const std::string& rasterizer, const char* l
 	}
 	std::remove( path.c_str() );
 	return ok;
+}
+
+//! One salted render of the DL-375 scene lit by `light`.
+static bool RenderRegionMeansDL375( const std::string& rasterizer, const char* light, unsigned salt,
+	double& outSphere, double& outWall )
+{
+	return RenderRegionMeansBodyDL375( rasterizer, std::string( kSceneDeltaLitRandomWalkDL375 ) + light, salt, outSphere, outWall );
 }
 
 static void RunDeltaLitRandomWalkRowDL375( const char* name, const char* light, int spp,
@@ -4622,6 +4629,107 @@ static void TestLightSideDiffusionEntryDL377()
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+// DL-381: the light family through a random-walk jump (fixture G-RW =
+// the DL-375 omni scene with the omni inside an index-matched glass
+// sphere, so only the light family reaches the paths).
+//////////////////////////////////////////////////////////////////////
+
+static const char* kGlassAroundOmniDL381 =
+	"dielectric_material\n{\n\tname mat_g381\n\ttau 1.0\n\tior 1.0\n\tscattering 1000000\n}\n\n"
+	"sphere_geometry\n{\n\tname gg381\n\tradius 0.25\n}\n\n"
+	"standard_object\n{\n\tname og381\n\tgeometry gg381\n\tmaterial mat_g381\n\tposition 1.8 -0.4 -0.3\n}\n\n";
+
+//! The DL-375 scene body with the sphere's material variant `mat`
+//! ("rw03" shipped, "rw0" smooth boundary, "lamb" Lambertian 0.5) and,
+//! when `glass`, the omni inside an index-matched glass sphere.
+static std::string DL381Body( const char* mat, bool glass )
+{
+	std::string body = kSceneDeltaLitRandomWalkDL375;
+	const std::string rwOld = "\troughness 0.3\n";
+	if( std::strcmp( mat, "rw0" ) == 0 ) {
+		body.replace( body.find( rwOld ), rwOld.size(), "\troughness 0.0\n" );
+	} else if( std::strcmp( mat, "rw0black" ) == 0 ) {
+		// The smooth boundary over an interior that absorbs everything: only
+		// the boundary's specular reflection lights the wall.
+		body.replace( body.find( rwOld ), rwOld.size(), "\troughness 0.0\n" );
+		const std::string ab = "\tabsorption 0.1\n\tscattering 10.0\n";
+		body.replace( body.find( ab ), ab.size(), "\tabsorption 1000.0\n\tscattering 0.001\n" );
+	} else if( std::strcmp( mat, "lamb" ) == 0 ) {
+		const size_t a = body.find( "randomwalk_sss_material" );
+		const size_t b = body.find( "}\n\n", a ) + 3;
+		body.replace( a, b - a, "uniformcolor_painter\n{\n\tname pnt_s381\n\tcolor 0.5 0.5 0.5\n}\n\n"
+			"lambertian_material\n{\n\tname mat_rw\n\treflectance pnt_s381\n}\n\n" );
+	}
+	return body + kLightOmniDL375 + ( glass ? kGlassAroundOmniDL381 : "" );
+}
+
+//! Mean and per-render sample standard deviation of `n` salted renders'
+//! sphere/wall means.
+static bool MeasureDL381( const char* kind, int spp, const char* mat, bool glass, int n, unsigned saltBase,
+	double& s, double& sSd, double& w, double& wSd )
+{
+	double ss = 0, ss2 = 0, ww = 0, ww2 = 0;
+	for( int i = 0; i < n; i++ ) {
+		double a = 0, b = 0;
+		if( !RenderRegionMeansBodyDL375( DL377Rasterizer( kind, spp ), DL381Body( mat, glass ), saltBase + unsigned( i ), a, b ) ) {
+			return false;
+		}
+		ss += a; ss2 += a * a; ww += b; ww2 += b * b;
+	}
+	s = ss / n; w = ww / n;
+	sSd = n > 1 ? std::sqrt( std::max( 0.0, ( ss2 - ss * ss / n ) / ( n - 1 ) ) ) : 0;
+	wSd = n > 1 ? std::sqrt( std::max( 0.0, ( ww2 - ww * ww / n ) / ( n - 1 ) ) ) : 0;
+	return true;
+}
+
+//! DL-381: the random-walk model is NON-RECIPROCAL by construction -- the
+//! walk starts along the REFRACTED direction of whichever end it is traced
+//! from and leaves the other end through the cosine lobe Ft(cos)/c -- so
+//! the eye family (PT, BDPT/VCM wherever the DL-375 partition gives it the
+//! path) and the light family (the only family when a delta light reaches
+//! the object through a delta interface, fixture G-RW) estimate DIFFERENT
+//! functions.  Neither is a defect: each integrator is pinned here to an
+//! INDEPENDENT light tracer of its own model function
+//! (tools/DL381RandomWalkReciprocityMC.cpp, 4e8 photons; constants and
+//! their 16-batch standard errors below).  Exact physics (refracted at both
+//! ends) reads sphere 0.1186 / wall 0.0190: the light family's -11% is
+//! CLOSER to it than PT's -18%, so "fixing" the light family to PT's
+//! number would move BDPT/VCM AWAY from physics.  A light family that
+//! reproduced PT's function (sphere -7.4%) or a reciprocal both-ends-cosine
+//! model (sphere -18%) fails the sphere band.  Smooth boundary (roughness
+//! 0) so the MC needs no microfacet model; the walk itself ignores
+//! roughness.  docs/DL381_RANDOM_WALK_RECIPROCITY.md.
+static void CheckDL381( const char* label, double measured, double reference, double band )
+{
+	const double rel = measured / reference - 1.0;
+	std::printf( "    %s: %.7f vs model reference %.7f  rel %+.3f%%  (band +/- %.1f%%)\n",
+		label, measured, reference, 100.0 * rel, 100.0 * band );
+	Check( std::fabs( rel ) <= band, ( std::string( "DL-381 " ) + label ).c_str() );
+}
+
+static void TestRandomWalkReciprocityDL381()
+{
+	struct Row { const char* kind; bool glass; double refS, refW; const char* what; };
+	// MC references (standard error over 16 batches): EYE model, tally A: sphere
+	// 0.097403 (0.00064), wall 0.019723 (0.00014); LIGHT model, tally B:
+	// sphere 0.105191 (0.00047), wall 0.019601 (0.00012).
+	const Row rows[] = {
+		{ "pt",     false, 0.097403, 0.019723, "PT (eye family, no glass) vs the EYE-model MC" },
+		{ "bdpt",   true,  0.105191, 0.019601, "BDPT G-RW (light family only) vs the LIGHT-model MC" },
+		{ "vcmoff", true,  0.105191, 0.019601, "VCM merging off G-RW (light family only) vs the LIGHT-model MC" },
+	};
+	for( const Row& r : rows ) {
+		std::cout << "Testing DL-381 " << r.what << std::endl;
+		double s = 0, sSd = 0, w = 0, wSd = 0;
+		const bool ok = MeasureDL381( r.kind, 1024, "rw0", r.glass, 4, 0x3810u, s, sSd, w, wSd );
+		Check( ok && s > 0 && w > 0, ( std::string( "DL-381 renders produced output: " ) + r.kind ).c_str() );
+		if( !ok ) continue;
+		CheckDL381( ( std::string( r.kind ) + " sphere pixels" ).c_str(), s, r.refS, 0.03 );
+		CheckDL381( ( std::string( r.kind ) + " wall pixels" ).c_str(), w, r.refW, 0.04 );
+	}
+}
+
 int main( int argc, char** argv )
 {
  if(argc == 2 && std::strcmp(argv[1],"--env-medium-only") == 0) {
@@ -4679,6 +4787,21 @@ int main( int argc, char** argv )
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
+	if( argc == 2 && std::strcmp( argv[1], "--dl381-only" ) == 0 ) {
+		TestRandomWalkReciprocityDL381();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+	// DL-381 probe: `--dl381-probe kind spp mat glass n` prints the
+	// sphere/wall means and standard errors (no gate).
+	if( argc == 7 && std::strcmp( argv[1], "--dl381-probe" ) == 0 ) {
+		double s = 0, sSe = 0, w = 0, wSe = 0;
+		const bool ok = MeasureDL381( argv[2], std::atoi( argv[3] ), argv[4], std::atoi( argv[5] ) != 0,
+			std::atoi( argv[6] ), 0x381u, s, sSe, w, wSe );
+		std::printf( "DL381 %s spp=%s mat=%s glass=%s n=%s ok=%d sphere %.7f (sd %.7f) wall %.7f (sd %.7f)\n",
+			argv[2], argv[3], argv[4], argv[5], argv[6], int( ok ), s, sSe, w, wSe );
+		return ok ? 0 : 1;
+	}
 	// DL-377: fixture G and its wall variant (the focused before/after A/B).
 	if( argc == 2 && std::strcmp(argv[1], "--dl377-only") == 0 ) {
 		TestLightSideDiffusionEntryDL377();
@@ -4717,7 +4840,7 @@ int main( int argc, char** argv )
 	if( argc > 1 ) {
 		if( argc != 3 || std::strcmp(argv[1], "--spectral-only") != 0 ||
 			(std::strcmp(argv[2], "1") != 0 && std::strcmp(argv[2], "2") != 0) ) {
-			std::cerr << "Usage: BDPTStrategyBalanceTest [--spectral-only 1|2 | --spectral-aggregate-unit | --materials-only | --guided-only | --weave-gap-only | --sss-only | --dl375-only | --back-face-only | --narrow-fov-only | --dl377-only | --dl377-mlt]" << std::endl;
+			std::cerr << "Usage: BDPTStrategyBalanceTest [--spectral-only 1|2 | --spectral-aggregate-unit | --materials-only | --guided-only | --weave-gap-only | --sss-only | --dl375-only | --back-face-only | --narrow-fov-only | --dl377-only | --dl377-mlt | --dl381-only | --dl381-probe kind spp mat glass n]" << std::endl;
 			return 2;
 		}
 		spectralSampleScale = std::strcmp(argv[2], "2") == 0 ? 2 : 1;
@@ -4765,6 +4888,7 @@ int main( int argc, char** argv )
 	TestNarrowFovSplatW();
 	TestNarrowFovStripeGuard();
 	TestLightSideDiffusionEntryDL377();
+	TestRandomWalkReciprocityDL381();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;
