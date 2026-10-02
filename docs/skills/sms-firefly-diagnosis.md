@@ -180,6 +180,29 @@ light hits that SMS already covers.  Audit:
   caster's REFLECTION is left to SMS, which never estimates it), DL-372
   (SMS's own refraction-chain coverage: turning SMS on loses 8.3 % of
   shipped `sms_visibility_unoccluded`, 61 % over its caustic) and DL-373.
+- The split rule (2026-10-01, DL-372 / DL-336,
+  docs/SMS_ENERGY_LOSS_INVESTIGATION.md section 7): where SMS is
+  deterministic in (anchor, emitter point) -- snell, biased, no photons,
+  no alpha, RGB without a pure-mirror caster (`SplitSuppressionExact`) --
+  a suppressible hit is suppressed ONLY if SMS's own base seed + solve
+  from the recorded anchor reaches PT's chain
+  (`ClassifyEmitterHitCoverage`); otherwise it is kept at full weight.
+  So in the default mode a missed root, a Newton failure, a refractive
+  caster's reflection (DL-339 (a)) or an emitter SMS cannot sample is
+  counted by PT, not lost.  Two consequences for diagnosis: (1) a
+  double count now has a new candidate -- PT keeping a hit SMS DID
+  estimate, i.e. the classifier and the evaluator disagreeing (they share
+  `BuildSnellBaseSeed` and `Solve`; anything you add to one evaluator's
+  seed set -- a new fallback, random trials -- must either be replayed by
+  the classifier or turn `SplitSuppressionExact` off); (2) the anchor and
+  chain are carried in `SMSChainRecord` -- every scatter site and hand-off
+  that updates `bPassedThroughSpecular` / `bHadNonSpecularShading` must
+  update it too (append a delta vertex, `SetAnchor` on a non-delta BSDF
+  scatter after PART 2, `Invalidate` on a non-anchor, `broken` at a
+  medium vertex).  Non-exact modes and the HWSS body's own PART 3
+  suppression keep the suppress-all rule (DL-378); a finite-`scattering`
+  dielectric is split by the root Newton reaches from PT's chain, a few
+  percent off at a focus (DL-379).
 
 ### 7. Audit the photon tracer's pre-scatter state
 

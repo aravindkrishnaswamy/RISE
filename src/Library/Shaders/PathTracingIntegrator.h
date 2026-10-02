@@ -455,7 +455,14 @@ namespace RISE
 				//! estimate for any emitter this chain goes on to hit.
 				//! Only the HWSS body's per-wavelength hand-offs pass it;
 				//! every other entry starts a chain and passes false.
-				bool smsChainUncovered_ = false
+				bool smsChainUncovered_ = false,
+				//! DL-372 / DL-336: the SMS anchor + delta chain recorded
+				//! before this hand-off (see `SMSChainRecord`), so an
+				//! emitter hit past it can ask whether SMS's own seed
+				//! reaches it.  Only the HWSS body's per-wavelength
+				//! hand-offs pass it; null (no record) keeps today's
+				//! suppress-everything rule for an inherited anchor.
+				const SMSChainRecord* pSMSChain_ = nullptr
 				) const;
 
 			/// Traces a path starting from a pre-computed surface hit (HWSS).
@@ -592,7 +599,8 @@ namespace RISE
 				const Tag& tag,
 				Scalar bsdfMisPdf_ = -1,		///< DL-74 -- see IntegrateFromHit
 				Scalar castRRCompensation_ = 1,	///< DL-185 -- see IntegrateFromHit
-				bool smsChainUncovered_ = false	///< DL-295 -- see IntegrateFromHitNM
+				bool smsChainUncovered_ = false,	///< DL-295 -- see IntegrateFromHitNM
+				const SMSChainRecord* pSMSChain_ = nullptr	///< DL-372 -- see IntegrateFromHitNM
 				) const;
 
 			/// Shared body of IntegrateRay / IntegrateRayNM.

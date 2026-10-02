@@ -99,6 +99,7 @@
 #include "../src/Library/Utilities/IORStack.h"
 #include "../src/Library/Utilities/IORStackSeeding.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
+#include "../src/Library/Utilities/SobolSampler.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -110,6 +111,10 @@ namespace RISE
 
 static unsigned int g_seedBase = 1000u;
 static unsigned int g_renderIndex = 0;
+//! Row S salts each render's Sobol' VALUE scramble with (seed base,
+//! render index) so repeats are independent randomized-QMC replicates
+//! (unsalted, every repeat reuses the same points).  Off elsewhere.
+static bool g_saltRenders = false;
 static int passCount = 0;
 static int failCount = 0;
 
@@ -223,6 +228,8 @@ static std::vector<double> RenderTiles( const std::string& sceneText, const char
 		CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
 		GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "capture" );
 		pJob->GetRasterizer()->AddRasterizerOutput( pCap );
+		SobolSamplerTestHooks::ValueSalt().store( g_saltRenders
+			? SobolSequence::HashCombine( 0xD336u + g_seedBase, g_renderIndex ) : 0u );
 		std::srand( g_seedBase + g_renderIndex++ );
 		if( pJob->Rasterize() ) {
 			tiles = TileMeansOf( *pCap, kFilm, kFilm );
@@ -1272,6 +1279,69 @@ static void RunSMSMeasurementRow()
 		( r[0] > 0 && r[1] > 0 ) ? r[1] / r[0] : -1.0 );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Row S (DL-336, gated): row Q's constant ior-1.4 box and its air
+// control, PT+SMS / PT.  In the box the r 0.15 glass ball (relative index
+// 1.5/1.4) is a weak lens that images an off-axis floor point twice and
+// snell-mode SMS's single seed reaches one image; PT used to drop both
+// (pre-split 0.70).  PT now keeps the hits SMS's own seed does not reach
+// (DL-372 split suppression), so both modes read ~1.  The air control is
+// the case where SMS finds (nearly) every root.  GRADED_SPLIT_N=n: print
+// n salted replicates of each ratio instead of gating (the band source).
+//////////////////////////////////////////////////////////////////////
+static const int kSplitRowSpp = 512;
+
+static void RunSMSSplitRow()
+{
+	std::cout << std::endl << "-- Row S (DL-336): PT+SMS / PT through a glass ball, constant ior-1.4 box and air --" << std::endl;
+	auto build = [&]( bool box, bool sms ) {
+		std::string s = ReadFile( kSeededScene );
+		s = ReplaceSpan( s, "MEDIUM", box ? UniformBox( 1.4 ) : std::string() );
+		s = ReplaceOnce( s, "\tpta -28 -28 1.0\n\tptb -28 28 1.0\n\tptc 28 28 1.0\n\tptd 28 -28 1.0\n",
+			"\tpta 0.5 -0.1 1.0\n\tptb 0.5 0.1 1.0\n\tptc 0.7 0.1 1.0\n\tptd 0.7 -0.1 1.0\n" );
+		s = ReplaceOnce( s, "\tscale 1.0\n", "\tscale 40.0\n" );
+		s = ReplaceOnce( s, kEmitterObject, kEmitterObject +
+			"\ndielectric_material\n{\n\tname mat_ball\n\tior 1.5\n\ttau 1.0\n\tscattering 1000000\n}\n\n"
+			"sphere_geometry\n{\n\tname geo_ball\n\tradius 0.15\n}\n\n"
+			"standard_object\n{\n\tname ball\n\tgeometry geo_ball\n\tmaterial mat_ball\n\tposition 0.3 0 0.55\n}\n" );
+		return ReplaceSpan( s, "RASTERIZER", PTRasterizerOpts( kSplitRowSpp, sms ?
+			"\tsms_enabled TRUE\n\tsms_max_iterations 30\n\tsms_threshold 1e-4\n\tsms_max_chain_depth 10\n\tsms_biased TRUE\n" : "" ) );
+	};
+	g_saltRenders = true;
+	const char* nEnv = std::getenv( "GRADED_SPLIT_N" );
+	const int n = nEnv ? std::atoi( nEnv ) : 0;
+	const char* names[2] = { "air", "constant" };
+	for( int box = 0; box < 2; box++ ) {
+		std::vector<double> q;
+		for( int i = 0; i < ( n > 0 ? n : 1 ); i++ ) {
+			const Stat a = RenderStat( build( box != 0, false ), "split_off" );
+			const Stat b = RenderStat( build( box != 0, true ), "split_on" );
+			q.push_back( ( a.ok && b.ok && a.mean > 0 ) ? b.mean / a.mean : -1.0 );
+		}
+		double m = 0;
+		for( double x : q ) m += x;
+		m /= double( q.size() );
+		double sd = 0;
+		for( double x : q ) sd += ( x - m ) * ( x - m );
+		sd = q.size() > 1 ? std::sqrt( sd / double( q.size() - 1 ) ) : 0.0;
+		if( n > 0 ) {
+			std::printf( "    %-9s SMS/PT %.5f +/- %.5f (n %d, salted)\n", names[box], m, sd, n );
+			continue;
+		}
+		// Bands from GRADED_SPLIT_N=8 (docs/SMS_ENERGY_LOSS_INVESTIGATION.md
+		// section 7), >= 4 sd either side: air 0.98449 +/- 0.01236
+		// (pre-split 0.98466 +/- 0.01261 -- the control does not move),
+		// constant 1.01232 +/- 0.01044 (pre-split 0.70040 +/- 0.00634).
+		const double lo = 0.935, hi = 1.065;
+		char buf[256];
+		std::snprintf( buf, sizeof(buf), "row S %s: PT+SMS/PT = %.5f in [%.3f, %.3f]", names[box], m, lo, hi );
+		std::cout << "    " << buf << std::endl;
+		Check( m >= lo && m <= hi, buf );
+	}
+	g_saltRenders = false;
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
+}
+
 
 //////////////////////////////////////////////////////////////////////
 // Row R (DL-292, OPT-IN: GRADED_ROWS must name R explicitly; prints, does
@@ -1372,6 +1442,7 @@ int main( int argc, char** argv )
 	if( on( 'O' ) ) RunIorFormRows( closedA );
 	if( on( 'P' ) ) RunPhotonMapRow();
 	// Opt-in measurement row (named explicitly, never in the default run).
+	if( on( 'S' ) ) RunSMSSplitRow();
 	if( rowsEnv && std::strchr( rowsEnv, 'Q' ) ) RunSMSMeasurementRow();
 	if( rowsEnv && std::strchr( rowsEnv, 'R' ) ) RunOpenResidualMeasurements();
 
