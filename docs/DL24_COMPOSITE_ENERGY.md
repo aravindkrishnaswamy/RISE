@@ -185,9 +185,11 @@ and a fixed-position furnace would read one walk realisation.
 | A4 water(1.33)/white, 3/3 | 0.5360±.0041 / 0.5360±.0036 / 0.5573±.0043 / 0.6903±.0023 | 0.9993±.0073 / 0.9999±.0031 / 1.0003±.0042 / 0.9995±.0053 | 0.9993±.0072 / 1.0000±.0030 / 1.0004±.0040 / 0.9995±.0054 |
 | control `coated_material` (ior 1.5, rough 0.001)/white | ~1.000 | 0.9998 / 1.0001 / 1.0001 / 1.0001 (±≤.0011) | |
 
-A1 equals A2 bit for bit post-fix because the evaluator treats the top's
-delta transmission as ideal Snell whatever its `scattering` is.  That is
-DL-297.
+A1 equalled A2 bit for bit because the evaluator treated the top's
+delta transmission as ideal Snell whatever its `scattering` was -- DL-297,
+fixed 2026-10-02 (section 9): A1 (`scattering 0`, the widest warp) now
+carries its own estimate, still 1 within noise but with a larger
+per-evaluation spread (sd of the batch means up to 0.017 at 60 deg).
 
 Section A is **production transport**, so it is gated in
 `LayeredWhiteFurnaceTest` too.  Config 3 was pinned at the truncated
@@ -464,8 +466,9 @@ warnings**.
   cost: a delta light (point/spot/directional) contributes nothing through
   it, and an area light reaches it only via BSDF-sampled hits.
   `ScattersFullSphere` is false.  The recipe is in the ledger row.
-* **DL-297 — term (a) treats the top's delta-tagged transmission as ideal
-  Snell.**  A `DielectricSPF` with finite `scattering` warps its
+* **DL-297 — FIXED 2026-10-02, section 9 (Phong warps; HG and per-channel
+  RGB warps are DL-406).  Historical record: term (a) treated the top's
+  delta-tagged transmission as ideal Snell.**  A `DielectricSPF` with finite `scattering` warps its
   transmitted direction (Phong `cos^N` about the Snell axis) while still
   tagging it delta.  The evaluator connects through the ideal direction.
   Energy is exact, but the warp's angular blur is lost.  Energy-weighted
@@ -477,7 +480,9 @@ warnings**.
   | scat 0, walker-only (follows the warp) | 0.123 / 0.136 / 0.150 / 0.167 / 0.185 / 0.239 |
   | scat 1e4 (the parser default) | evaluator and walker agree within noise |
 
-* **DL-341 (filed at merge by the supervisor) -- the composite's IOR-stack
+* **DL-341 (filed at merge by the supervisor) -- FIXED 2026-10-02, section
+  9; its D3 "truth 1" was wrong (the derived truth is the equivalent pair
+  of separate sheets, 0.467).  Historical record: the composite's IOR-stack
   gap family.**  Three presentations, one cause: the two-stack convention
   and the walk's exits are only right for a walk that enters from ABOVE
   and leaves through the TOP.  (i) **Nested composites walked FROM
@@ -776,3 +781,142 @@ the shipped scene the BDPT/PT ratio sits 0.55-0.59 % low, and 0.24 % low
 on a composite-free version of it -- unattributed.  The merge commit
 `3e860735` also carries the P1-A fix and the 8-probe change, so a bisect
 landing on it tests three changes at once.
+
+## 9. DL-341 + DL-297 (slice `debt-composite`, 2026-10-02)
+
+Branched from `master` `74236b3cb`.  Both rows fixed, left unstruck for a
+fresh review; DL-406 and DL-407 opened (residuals, below).
+
+### 9.1 The stack convention (DL-341)
+
+Derived from what the EQUIVALENT PAIR OF SEPARATE SURFACES does: two
+coincident interfaces with the same orientation (both fronts on the
+shading-normal side), the top's material above the bottom's.  Under RISE's
+stack rules -- a closed solid, or two open sheets under DL-345's face rule,
+which read the same -- a ray that crosses both from above is INSIDE both,
+in the medium the bottom defines; one that leaves upward through both is
+back outside.  For an object `O`:
+
+| state | stack | where |
+|---|---|---|
+| OUT | entry stack with `O` popped (when it held it) | above the top |
+| GAP | OUT + what the top pushes crossing down (`O` at the gap's index; nothing for a top that does not push) | between the layers |
+| BELOW | GAP + what the bottom pushes crossing down | under the bottom |
+
+The shared `IObject*` key was what made one threaded stack unworkable (the
+top's push read as the bottom's).  The walk now keys the BOTTOM layer with
+its own per-instance key (`BottomKey`, the address of the composite's
+`instanceId`, compared and never dereferenced) and keeps `O` for the top, so
+ONE internal stack is threaded and refreshed after every crossing in either
+direction.  Each layer then reads "inside" exactly when the ray is behind
+it, and refracts from the index of the medium the ray is actually in: the
+bottom now refracts from the GAP's index (the old two-stack walk's "scope gap
+(b)": glass/glass refracted 1.0 -> 1.5 twice).
+
+Per entry side, decided by the GEOMETRIC normal oriented into the shading
+normal's hemisphere (a double-sided mesh, which flips both normals together,
+keeps its frame):
+
+* from above and against the shading normal -- the DIRECT / COVERED / WALKER
+  mixture, starting at OUT (unchanged except for the stacks);
+* from above but BEHIND a tilted shading normal -- a natural walk from the
+  TOP, every exit delta-tagged (`value` and `Pdf` are 0 there);
+* from below -- a natural walk from the BOTTOM, starting at BELOW: OUT, the
+  GAP entry the top would push (read off one hashed from-above Scatter of the
+  top, `GapStackForBelow`), and the bottom's key at the entry stack's top.
+
+Both exits carry the EXTERNAL form (`ToExternal`): OUT through the top, OUT
+plus `O` at the BELOW index through the bottom.  `DeltaPassThroughTransmittance`
+picks its first layer by the same geometric side (DL-05 lockstep).
+
+**D3's "truth 1" was wrong.**  A transmitting composite{glass/glass} on an
+open quad is, by this derivation, the pair of separate glass sheets: the
+crossed ray is inside the glass, exactly as below one open
+`dielectric_material` sheet (DL-345), so a white env furnace reads
+`F + (1 - F) / eta^2` = 0.467 at normal incidence.  A white environment of
+radiance 1 seen inside a medium of index 1.5 is not an equilibrium (that
+would be `n^2` = 2.25).  D3 now renders the literal separate pair beside the
+composite and gates the ratio.
+
+**One consequence the fix exposed.**  Term (a) connects a substrate to the
+exit by inverting Snell's law at the gap/outside index ratio.  A NESTED
+composite used as a top emits delta-tagged exits that are whole walks, not
+refractions; the old wrong gap index (1.0) happened to make eta = 1 and hid
+it (energy right, shape wrong), the corrected one (1.5) confined the
+connection to the critical cone and lost 45 % (H2 0.546).  New
+`ISPF::DeltaTransmissionIsRefraction()` (default true; `CompositeSPF`
+false): such a top has no term (a), and the walker carries that class --
+unbiased, but invisible to NEE (the DL-296 family).
+
+### 9.2 The warped coat (DL-297)
+
+New `ISPF::DeltaTransmissionWarpExponent` / `DeltaTransmissionWarpPdf`
+(`DielectricSPF`: the Phong `scattering` warp; the density reuses
+`GenerateScatteredRay`'s own axis, DL-111 re-derivation included, and
+`PerturbClipped`'s arc).  Term (a) for a warped top draws the outside
+direction `t` from the ADJOINT warp (the same `cos^N` lobe about the query
+direction, clipped to the exit hemisphere; plus a 10 % cosine share when the
+shading normal is tilted, where the forward axis can be re-derived off `t`),
+inverts Snell to `u`, and weights the ideal term by
+`q(w | u) cos t / (p(t) cos w)`.  The draw comes from the (wi, wo, position)
+stream, so `value` stays a deterministic function and
+`kray * Pdf == value * cos` holds (section C green).  A Henyey-Greenstein
+warp (its draws past 90 deg stay on the axis: a delta part with no density)
+and a per-channel / dispersive RGB top have no single-density form and stay
+ideal: **DL-406**.
+
+### 9.3 Evidence
+
+`CompositeEnergyConservationTest` **302/0**; the same file against the base
+library (`74236b3cb`, the five library files checked out over a WIP commit)
+**271/31**:
+
+| row | base | fixed |
+|---|---|---|
+| H3 composite{glass/glass} as a top, walked from below (truth 1) | 0.4795 / 0.5064 | 0.9926 / 1.0144 (sem 0.007) |
+| H4 struck from inside, 20 / 35 / 60 deg (truth 1) | 1.0000 / **0.0868** / -- | 1.0000 / 1.0000 / 1.0000 |
+| T behind a 35-deg tilt, theta 60, four tops vs the independent walk | 0.090 vs 0.80-0.94 (z -584 .. -1075) | \|z\| <= 1.67 |
+| W exit histogram, scattering 0 and 5, theta 0 and 45 (24 bins) | z -241 .. +91 | \|z\| <= 2.02; the scattering-10000 control green in both |
+| D3 composite / separate glass pair, PT and BDPT | 1.0438 | 0.99974 |
+| D4 closed composite box / glass box, PT and BDPT | 0.98089 / 0.98063 | 1.00000 / 1.00000 |
+
+(D4's band was tightened to 0.5 % after the base run -- both boxes are a
+zero-variance lossless delta furnace post-fix; base sits outside it.)
+`CompositeExtinctionTest` section 6b gated the dielectric(1.5)/dielectric
+(1.33) stack's crossed energy at ">10 % over the bare top": that threshold
+was the old 1.0 -> 1.33 bottom interface (0.0185); the gap -> bottom
+interface is 1.5 -> 1.33 and the check now gates the closed form
+`T F_b T / (1 - F_b F_t)` = 0.00333 (measured 0.00347, +-25 %).  E2's bottom
+became an ior-2.4 glass: a 1.5 bottom is now index-matched and reflects
+nothing back up.
+
+Gates: LayeredWhiteFurnaceTest 0 of 63 failed; TranslucentLobeConsistencyTest
+1226/0; OpenSheetIndexConventionTest 24/0; TransmissionPushGateTest 416/0;
+SPFBSDFConsistencyTest pass; SPFPdfConsistencyTest pass; HWSSCompanionKrayTest
+193/0; SourceHygieneTest 167/0; CstDeriveGoldenTest 457 MATCH / 0 DRIFT;
+CompositeExtinctionTest all pass; WeaveGapShadowTransmittanceTest `query`
+75/0 and `composite` 2/0; BDPTStrategyBalanceTest `--materials-only` 26/0.
+DL-345's open-sheet rule is untouched for composites: every layer call
+still sees the record without `bProvablyNoInterior` (D1-D3 are composites on
+clipped planes).
+
+**Shipped scene** (`composite_material.RISEscene` at 512 x 288, 64 spp, OIDN
+off, linear, n = 3 salted renders per binary, interleaved, twice): every
+region within noise except the clearcoat red sphere, +0.08 % / +0.105 %
+(t 2.3 / 2.6) -- the default `scattering 10000` warp now reaches term (a);
+whole image +0.002 % / -0.005 %.  No shipped scene has a from-below,
+behind-normal or transmitting composite.  **Cost** +7.7 % user CPU on that
+composite-dominated scene (base 96.7, fixed 104.2 s; paired differences 7.6 /
+8.9 / 6.0 s), all from the warped term (a) the default glass now takes.
+
+### 9.4 Residuals
+
+* **DL-406** -- term (a) still prices a Henyey-Greenstein-warped or a
+  per-channel / dispersive RGB top as an ideal refraction (shape only; energy
+  exact).
+* **DL-407** -- composite containment is only as good as the stack it is
+  handed: `CompositeMaterial` reports no `SpecularInfo`, so a camera or light
+  inside a closed composite is never seeded (from-below hits then read the
+  outside medium as BELOW), and on a double-sided mesh both faces present the
+  top (the frame flips with the normals), so a ray from inside reads as an
+  entry from above.  Pre-existing; no shipped scene reaches either.
