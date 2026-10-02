@@ -378,7 +378,9 @@ cast; the guard is a thread-local read and a compare.
   reproduces it on a sphere (1.138177 vs 0.99986).  Independent of DL-315.
   It is the same double count DL-05 declined for area/env NEE (forcing
   that arm through a weave gap read +103 % on the closed-form area row,
-  which is why DL-05 kept area/env NEE binary).
+  which is why DL-05 kept area/env NEE binary).  **Fixed 2026-10-02
+  (`debt-dl344`)**: the walk now sees through only for delta lights, and
+  not with SMS on -- [DL344_TRANSPARENT_SHADOW_PARTITION.md](DL344_TRANSPARENT_SHADOW_PARTITION.md).
 - **Withdrawn: the round-1 "DL-343"** (diffusion reading 0.30 % higher
   with env NEE blocked than in open air).  Not a bias: salted n = 6 per
   side the slab reads open 1.000319 +/- 0.00065, boxed 1.000320 +/-

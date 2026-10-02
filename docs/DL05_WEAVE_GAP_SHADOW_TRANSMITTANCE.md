@@ -265,7 +265,7 @@ last part is the energy the fix recovers, not overhead: on the design-doc box
 | `CompositeMaterial` with weave layers | FIXED here: PT read 0 through a composite of two gapped weaves, BDPT g^2 L0; now both g^2 L0 |
 | Luminaire wrappers over a weave | FIXED here: forward the capability |
 | `TranslucentMaterial` | no delta lobe at all (clipped cosine / Phong lobes) -- nothing to forward |
-| thin dielectric sheets | the existing opt-in `transparent_shadows` Fresnel walk (a BENDING lobe, approximated); unchanged except it now steps over non-shadow-casters |
+| thin dielectric sheets | the existing opt-in `transparent_shadows` Fresnel walk (a BENDING lobe, approximated); unchanged except it now steps over non-shadow-casters. **DL-344 (2026-10-02)** applied this section's ruling to that walk too: delta lights only, and off with SMS ([DL344_TRANSPARENT_SHADOW_PARTITION.md](DL344_TRANSPARENT_SHADOW_PARTITION.md)) |
 | `PerfectRefractor` at matched index | non-bending in the limit but an IOR-stack interface, left to the dielectric walk |
 | BDPT / VCM connections | unchanged by ruling (§2) |
 | BDPT zero-exitance sweep | fixed for free (it calls `ComputeDirectLighting`) |
