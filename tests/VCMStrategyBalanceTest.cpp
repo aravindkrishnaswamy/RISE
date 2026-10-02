@@ -2562,6 +2562,59 @@ static void TestSSSBarrierDL317()
 }
 
 //////////////////////////////////////////////////////////////////////
+// DL-333 / DL-356 consistency pins (2026-10-02): topology V's Lambertian
+// wall + floor around a SMOOTH (roughness 0) diffusion
+// `subsurfacescattering_material` sphere, once analytic and once
+// tessellated (`displaced_geometry`, displacement none, detail 64 -- an
+// indexed triangle mesh, the class DL-356 suspected).  DL-356 quoted VCM
+// +21 % (merging on) / +61..71 % (off) over PT on the shipped
+// `vcm_sss_dragon`; re-measured on master and at the DL-317 merge
+// revision, merging off agrees with PT and the merging-on excess is the
+// authored fixed `merge_radius 0.1`'s kernel bias (it shrinks with the
+// radius and a Lambertian dragon shows it too) -- see
+// docs/MIS_HEURISTICS.md section 4a, "DL-333 / DL-356".  These rows gate
+// that diffusion SSS on an analytic and on a meshed sphere is VCM / PT
+// consistent with merging on (automatic radius) and off.  Green on the
+// base as well (a pin, not a red-proof).  Measured (32x32, 1024 spp,
+// salted, n = 3): VCM off / PT +0.05 % / +0.06 %, on / PT +0.08 % /
+// +0.10 %, per-render sd ~0.1 %.
+//////////////////////////////////////////////////////////////////////
+static std::string SmoothDiffusionSphereBodyDL333( bool tessellated )
+{
+	std::string s =
+		"film\n{\n\twidth 32\n\theight 32\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
+		"subsurfacescattering_material\n{\n\tname mat_sss\n\tior 1.3\n\tabsorption 0.1\n"
+			"\tscattering 1.0\n\tg 0.0\n\troughness 0.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_alb_w\n\tcolor 0.5 0.5 0.5\n}\n\n"
+		"lambertian_material\n{\n\tname mat_lamb_w\n\treflectance pnt_alb_w\n}\n\n"
+		"clippedplane_geometry\n{\n\tname quad_wall\n\tpta -1 -1 0\n\tptb 1 -1 0\n\tptc 1 1 0\n\tptd -1 1 0\n}\n\n"
+		"standard_object\n{\n\tname obj_wall\n\tgeometry quad_wall\n\tmaterial mat_lamb_w\n}\n\n"
+		"clippedplane_geometry\n{\n\tname quad_floor\n\tpta -1 -1 0\n\tptb -1 -1 2\n\tptc 1 -1 2\n\tptd 1 -1 0\n}\n\n"
+		"standard_object\n{\n\tname obj_floor\n\tgeometry quad_floor\n\tmaterial mat_lamb_w\n}\n\n"
+		"sphere_geometry\n{\n\tname sph_w\n\tradius 0.55\n}\n\n";
+	if( tessellated ) {
+		s += "displaced_geometry\n{\n\tname sph_w_mesh\n\tbase_geometry sph_w\n\tdetail 64\n"
+			"\tdisplacement none\n\tdisp_scale 0\n}\n\n";
+	}
+	s += std::string( "standard_object\n{\n\tname obj_sph_w\n\tgeometry " ) + ( tessellated ? "sph_w_mesh" : "sph_w" )
+		+ "\n\tmaterial mat_sss\n\tposition 0 -0.45 0.6\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_emit_w\n\tcolor 1.0 1.0 1.0\n}\n\n"
+		"lambertian_luminaire_material\n{\n\tname mat_emit_w\n\texitance pnt_emit_w\n\tscale 0.5\n\tmaterial none\n}\n\n"
+		"clippedplane_geometry\n{\n\tname quad_emit_w\n\tpta -6 -6 4.2\n\tptb -6 6 4.2\n\tptc 6 6 4.2\n\tptd 6 -6 4.2\n}\n\n"
+		"standard_object\n{\n\tname obj_emit_w\n\tgeometry quad_emit_w\n\tmaterial mat_emit_w\n}\n";
+	return s;
+}
+
+static void TestSmoothDiffusionSphereDL333()
+{
+	RunSSSBarrierRowDL317( "DL-333 pin: smooth diffusion analytic sphere on Lambertian walls",
+		SmoothDiffusionSphereBodyDL333( false ), nullptr, 1024, 3, 0.006, 0 );
+	RunSSSBarrierRowDL317( "DL-333 pin: smooth diffusion tessellated sphere on Lambertian walls",
+		SmoothDiffusionSphereBodyDL333( true ), nullptr, 1024, 3, 0.006, 0 );
+}
+
+//////////////////////////////////////////////////////////////////////
 // Topology X: AUTOMATIC merge radius on a small lit patch inside a
 // large black room (DL-319).
 //
@@ -2731,6 +2784,14 @@ int main( int argc, char** argv )
 		return failCount == 0 ? 0 : 1;
 	}
 
+	// DL-333 / DL-356: the smooth-diffusion sphere pins alone.
+	if( argc >= 2 && std::strcmp( argv[1], "--dl333-only" ) == 0 ) {
+		ApplySeedOverride( 2 );
+		TestSmoothDiffusionSphereDL333();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+
 	// DL-319: topology X alone.
 	if( argc >= 2 && std::strcmp( argv[1], "--x-only" ) == 0 ) {
 		ApplySeedOverride( 2 );
@@ -2841,6 +2902,7 @@ int main( int argc, char** argv )
 	TestNullBSDFMaterialContinuation();
 	TestRoughSSSEmptyContainerU();
 	TestSSSBarrierDL317();
+	TestSmoothDiffusionSphereDL333();
 	TestNonfiniteCandidateRejected();
 	TestNarrowFovSplatW();
 	TestAutoRadiusSmallPatchX();
