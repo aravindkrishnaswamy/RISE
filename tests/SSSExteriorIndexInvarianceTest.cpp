@@ -1644,6 +1644,29 @@ namespace
 	// Part F (DL-370) -- touching SSS objects, reference-free
 	//////////////////////////////////////////////////////////////////
 
+	//! An axis-aligned w x h x d box centred at the origin as an
+	//! `indexedmesh_geometry` (8 shared corners, 12 outward-wound triangles,
+	//! face normals).  Double-sided is the indexed mesh's default and the
+	//! Blender exporter's; it makes the mesh report every hit's normal
+	//! FACING the ray (DL-70), the case a box primitive never exercises.
+	std::string MeshBox( const std::string& name, double w, double h, double d, bool doubleSided )
+	{
+		std::ostringstream s;
+		s << std::setprecision( 17 );
+		s << "indexedmesh_geometry\n{\n\tname " << name << "\n";
+		for( int i = 0; i < 8; ++i ) {
+			s << "\tvertex " << ( ( i & 1 ) ? w / 2 : -w / 2 ) << " " << ( ( i & 2 ) ? h / 2 : -h / 2 ) << " "
+			  << ( ( i & 4 ) ? d / 2 : -d / 2 ) << "\n";
+		}
+		const int tri[12][3] = { {0,4,6},{0,6,2}, {1,3,7},{1,7,5}, {0,1,5},{0,5,4},
+		                         {2,6,7},{2,7,3}, {0,2,3},{0,3,1}, {4,5,7},{4,7,6} };
+		for( const auto& t : tri ) {
+			s << "\ttriangle " << t[0] << " " << t[1] << " " << t[2] << "\n";
+		}
+		s << "\tdouble_sided " << ( doubleSided ? "TRUE" : "FALSE" ) << "\n\tface_normals TRUE\n}\n\n";
+		return s.str();
+	}
+
 	//! A closed room of six conservative (absorption 0) SSS slabs around a
 	//! pinhole camera at the origin, under the white environment: the only
 	//! way in is THROUGH the walls, every wall conserves energy, so every
@@ -1653,7 +1676,7 @@ namespace
 	//! so every contact becomes an air gap of that width (the room then
 	//! leaks through the gaps, which the white environment also fills at
 	//! 1 -- the gapped room is the control).
-	std::string BuildTouchingRoomScene( Integrator integrator, Scalar gap, unsigned int samples )
+	std::string BuildTouchingRoomScene( Integrator integrator, Scalar gap, unsigned int samples, bool doubleSidedMesh = false )
 	{
 		std::ostringstream s;
 		s << std::setprecision( 17 );
@@ -1676,7 +1699,11 @@ namespace
 			{ "zpos",    2.0 - 2 * g,   2.0 - 2 * g,   0.5,           0,      0,    1.25 },
 		};
 		for( const Slab& b : slabs ) {
-			s << "box_geometry\n{\n\tname " << b.name << "_geo\n\twidth " << b.w << "\n\theight " << b.h << "\n\tdepth " << b.d << "\n}\n\n";
+			if( doubleSidedMesh ) {
+				s << MeshBox( std::string( b.name ) + "_geo", b.w, b.h, b.d, true );
+			} else {
+				s << "box_geometry\n{\n\tname " << b.name << "_geo\n\twidth " << b.w << "\n\theight " << b.h << "\n\tdepth " << b.d << "\n}\n\n";
+			}
 			s << "standard_object\n{\n\tname " << b.name << "\n\tgeometry " << b.name << "_geo\n\tmaterial wall\n\tposition "
 			  << b.x << " " << b.y << " " << b.z << "\n}\n\n";
 		}
@@ -1702,7 +1729,7 @@ namespace
 	//! is then a real dielectric interface); `spectral` renders with the
 	//! spectral path tracer (the walk's NM branch).
 	std::string BuildTouchingPairScene( Model model, Scalar scattering, Scalar gap, unsigned int samples,
-		Scalar iorRight = 1.5, bool spectral = false )
+		Scalar iorRight = 1.5, bool spectral = false, bool doubleSidedMesh = false )
 	{
 		std::ostringstream s;
 		s << std::setprecision( 17 );
@@ -1721,7 +1748,11 @@ namespace
 			s << "subsurfacescattering_material\n{\n\tname block_right\n\tior " << iorRight << "\n\tabsorption 0\n\tscattering " << scattering
 			  << "\n\tg 0\n\troughness 0\n}\n\n";
 		}
-		s << "box_geometry\n{\n\tname block_geo\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n";
+		if( doubleSidedMesh ) {
+			s << MeshBox( "block_geo", 1, 1, 1, true );
+		} else {
+			s << "box_geometry\n{\n\tname block_geo\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n";
+		}
 		s << "standard_object\n{\n\tname left\n\tgeometry block_geo\n\tmaterial block\n\tposition " << -0.5 - gap / 2 << " 0 0\n}\n\n";
 		s << "standard_object\n{\n\tname right\n\tgeometry block_geo\n\tmaterial block_right\n\tposition " << 0.5 + gap / 2 << " 0 0\n}\n\n";
 		s << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
@@ -1752,22 +1783,24 @@ namespace
 		// row's right cube has g 0.3, so a crossing must also switch the
 		// phase function): the shared face is then a real 1.5 / 1.3
 		// interface, Fresnel-partitioned and TIR-capable from the left.
-		struct Row { Model model; Scalar scattering; unsigned int samples; double band; bool gated; Scalar iorRight; bool spectral; };
+		struct Row { Model model; Scalar scattering; unsigned int samples; double band; bool gated; Scalar iorRight; bool spectral; bool mesh; };
 		const Row rows[] = {
-			{ Model::RandomWalk, 2,  64,  0.01, true,  1.5, false },
-			{ Model::RandomWalk, 2,  64,  0.01, true,  1.3, false },
-			{ Model::RandomWalk, 2,  256, 0.01, true,  1.5, true },
-			{ Model::Diffusion,  20, 64,  0.0,  false, 1.5, false },
+			{ Model::RandomWalk, 2,  64,  0.01, true,  1.5, false, false },
+			{ Model::RandomWalk, 2,  64,  0.01, true,  1.3, false, false },
+			{ Model::RandomWalk, 2,  256, 0.01, true,  1.5, true,  false },
+			{ Model::RandomWalk, 2,  64,  0.01, true,  1.5, false, true },
+			{ Model::Diffusion,  20, 64,  0.0,  false, 1.5, false, false },
 		};
 		unsigned int seed = 37100;
 		for( const Row& row : rows ) {
 			std::ostringstream lab;
-			lab << "F2: " << ModelName( row.model ) << ( row.spectral ? "/PT-spectral" : "/PT" ) << " touching pair ior "
+			lab << "F2: " << ModelName( row.model ) << ( row.spectral ? "/PT-spectral" : "/PT" )
+			    << ( row.mesh ? " double-sided mesh" : "" ) << " touching pair ior "
 			    << std::setprecision( 3 ) << "1.5|" << row.iorRight;
 			const std::string label = lab.str();
 			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
-			const std::string tPath = WriteScene( BuildTouchingPairScene( row.model, row.scattering, 0.0, row.samples, row.iorRight, row.spectral ), "dl370pairT" );
-			const std::string gPath = WriteScene( BuildTouchingPairScene( row.model, row.scattering, 2e-6, row.samples, row.iorRight, row.spectral ), "dl370pairG" );
+			const std::string tPath = WriteScene( BuildTouchingPairScene( row.model, row.scattering, 0.0, row.samples, row.iorRight, row.spectral, row.mesh ), "dl370pairT" );
+			const std::string gPath = WriteScene( BuildTouchingPairScene( row.model, row.scattering, 2e-6, row.samples, row.iorRight, row.spectral, row.mesh ), "dl370pairG" );
 			Check( !tPath.empty() && !gPath.empty(), label + ": scene files written" );
 			std::vector<double> tm, gm;
 			bool allValid = true;
@@ -1796,24 +1829,97 @@ namespace
 		}
 	}
 
+	//! A conservative random-walk cube (edge 1, single-sided primitive) with
+	//! a second random-walk body coincident with its TOP face on the
+	//! cube's OWN side, under the white environment, seen from above: every
+	//! pixel reads 1.  `kind` 0: a double-sided mesh cube of half size
+	//! inset flush with the top face; 1: the same inset as a box primitive
+	//! (the control); 2: an open double-sided mesh quad lying ON the top
+	//! face.  A neighbour on the walker's own side of its exit face is not
+	//! where the exit leads, so nothing may cross into it (DL-370 review
+	//! round 1: a walk-ray probe did, and the inset read 0.944).
+	std::string BuildInsetScene( int kind, unsigned int samples )
+	{
+		std::ostringstream s;
+		s << std::setprecision( 17 );
+		s << "RISE ASCII SCENE 7\n";
+		s << "film\n{\n\twidth 32\n\theight 32\n}\n\n";
+		s << "orthographic_camera\n{\n\tlocation 0 4 0\n\tlookat 0 0 0\n\tup 0 0 -1\n\tviewport_scale 1.4 1.4\n}\n\n";
+		s << "uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n\n";
+		s << "randomwalk_sss_material\n{\n\tname block\n\tior 1.5\n\tabsorption 0\n\tscattering 2\n\tg 0\n\troughness 0\n\tmax_bounces 8192\n}\n\n";
+		s << "box_geometry\n{\n\tname outer_geo\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n";
+		s << "standard_object\n{\n\tname outer\n\tgeometry outer_geo\n\tmaterial block\n}\n\n";
+		if( kind == 0 ) {
+			s << MeshBox( "inset_geo", 0.5, 0.5, 0.5, true );
+		} else if( kind == 1 ) {
+			s << "box_geometry\n{\n\tname inset_geo\n\twidth 0.5\n\theight 0.5\n\tdepth 0.5\n}\n\n";
+		} else {
+			s << "indexedmesh_geometry\n{\n\tname inset_geo\n"
+			  << "\tvertex -0.25 0 -0.25\n\tvertex 0.25 0 -0.25\n\tvertex 0.25 0 0.25\n\tvertex -0.25 0 0.25\n"
+			  << "\ttriangle 0 3 2\n\ttriangle 0 2 1\n\tdouble_sided TRUE\n\tface_normals TRUE\n}\n\n";
+		}
+		s << "standard_object\n{\n\tname inset\n\tgeometry inset_geo\n\tmaterial block\n\tposition 0 "
+		  << ( kind == 2 ? 0.5 : 0.25 ) << " 0\n}\n\n";
+		s << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
+		s << "pathtracing_pel_rasterizer\n{\n\tsamples " << samples
+		  << "\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n\tpathguiding FALSE\n\tadaptive_max_samples 0\n"
+		  << "\tradiance_map white\n\tradiance_scale 1\n\tradiance_background TRUE\n}\n\n";
+		s << "file_rasterizeroutput\n{\n\tpattern rendered/dl370_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+		return s.str();
+	}
+
+	void TestCoincidentOwnSideNeighbour( const unsigned int trials, const std::string& only )
+	{
+		std::cout << "F3: random-walk neighbour coincident on the walker's own side (DL-370), n=" << trials << std::endl;
+		const char* names[3] = { "double-sided mesh inset", "box inset (control)", "open double-sided mesh sheet on the face" };
+		unsigned int seed = 37200;
+		for( int kind = 0; kind < 3; ++kind ) {
+			const std::string label = std::string( "F3: random_walk/PT " ) + names[kind];
+			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
+			const std::string path = WriteScene( BuildInsetScene( kind, 64 ), "dl370inset" );
+			Check( !path.empty(), label + ": scene file written" );
+			std::vector<double> m;
+			bool allValid = true;
+			for( unsigned int t = 0; t < trials; ++t ) {
+				const double mi = RenderFurnaceMean( path, seed++ );
+				if( !( mi > 0 ) ) allValid = false;
+				m.push_back( mi );
+			}
+			std::remove( path.c_str() );
+			Check( allValid, label + ": every render finite and non-black" );
+			if( !allValid ) continue;
+			const Stats st = Summarize( m );
+			std::cout << std::setprecision( 6 ) << "    " << label.substr( 4 ) << " spp=64: image mean " << st.mean << " +/- " << st.sd
+				<< " (sd of one render; band 0.01)" << std::endl;
+			Check( std::fabs( st.mean - 1.0 ) < 0.01, label + ": conservative furnace image mean within band of 1" );
+		}
+	}
+
 	void TestTouchingSSSRoom( const unsigned int trials, const std::string& only )
 	{
 		std::cout << "F: closed room of touching conservative SSS slabs (DL-370), n=" << trials << std::endl;
-		struct Row { Model model; Integrator integrator; Scalar gap; unsigned int samples; double band; };
+		// `mesh` rows build the slabs as double-sided indexed meshes: every
+		// hit there reports a ray-facing normal, so a walk's own exit face
+		// and a touching neighbour's face are indistinguishable by facing
+		// alone (review round 1 of DL-370: a probe along the walk ray tied
+		// between them and read 0.887).
+		struct Row { Model model; Integrator integrator; Scalar gap; unsigned int samples; double band; bool mesh; };
 		const Row rows[] = {
-			{ Model::RandomWalk, Integrator::PT,   0.0,  16, 0.01 },
-			{ Model::RandomWalk, Integrator::PT,   5e-7, 16, 0.01 },
-			{ Model::RandomWalk, Integrator::PT,   0.02, 16, 0.01 },
-			{ Model::RandomWalk, Integrator::BDPT, 0.0,  16, 0.01 },
+			{ Model::RandomWalk, Integrator::PT,   0.0,  16, 0.01, false },
+			{ Model::RandomWalk, Integrator::PT,   5e-7, 16, 0.01, false },
+			{ Model::RandomWalk, Integrator::PT,   0.02, 16, 0.01, false },
+			{ Model::RandomWalk, Integrator::BDPT, 0.0,  16, 0.01, false },
+			{ Model::RandomWalk, Integrator::PT,   0.0,  16, 0.01, true },
+			{ Model::RandomWalk, Integrator::BDPT, 0.0,  16, 0.01, true },
 		};
 		unsigned int seed = 37000;
 		for( const Row& row : rows ) {
 			std::ostringstream lab;
 			lab << "F: " << ModelName( row.model ) << "/" << IntegratorName( row.integrator )
-			    << " room gap=" << row.gap;
+			    << ( row.mesh ? " double-sided mesh" : "" ) << " room gap=" << row.gap;
 			const std::string label = lab.str();
 			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
-			const std::string path = WriteScene( BuildTouchingRoomScene( row.integrator, row.gap, row.samples ), "dl370room" );
+			const std::string path = WriteScene( BuildTouchingRoomScene( row.integrator, row.gap, row.samples, row.mesh ), "dl370room" );
 			Check( !path.empty(), label + ": scene file written" );
 			std::vector<double> m;
 			bool allValid = true;
@@ -1865,6 +1971,7 @@ int main( int argc, char** argv )
 		TestRayCasterStackAndRecursion( trials, only );
 		TestTouchingSSSRoom( trials, only );
 		TestTouchingSSSPair( trials, only );
+		TestCoincidentOwnSideNeighbour( trials, only );
 	}
 	std::cout << "=== " << passCount << " passed, " << failCount << " failed ===" << std::endl;
 	return failCount == 0 ? 0 : 1;

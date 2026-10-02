@@ -425,6 +425,26 @@ namespace RISE
 			const bool bHitFrontFaces,					///< [in] Should we process the intersection if the element is front facing?
 			const bool bHitBackFaces					///< [in] Should we process the intersection if the element is back facing?
 			) const = 0;
+
+		//! DL-370: the world-visible object OTHER than `self` whose material
+		//! is a random-walk SSS material (`IMaterial::GetRandomWalkSSSParams()
+		//! != 0`) and whose interior contains `ptWorld`, or null.  Candidates
+		//! are the objects whose world box contains the point (the
+		//! `DeepestOtherContainment` candidate source and staleness
+		//! contract); each is then asked ALONE, by a ray from the point along
+		//! `probeDir`: the point is inside the candidate iff that ray's first
+		//! hit on it LEAVES it -- its TRUE facing (`TrueGeomFacing`, DL-70)
+		//! agrees with the ray.  Per object, so a coincident face of ANOTHER
+		//! body at the same distance cannot tie with it.  A hit with no
+		//! interior to be in (`bProvablyNoInterior`, or a ray-derived normal)
+		//! never counts.  Exact for a closed candidate; an open one answers by
+		//! its first face along the probe.  Reads the material live.
+		//! Appended at the interface tail (see IntersectOcclusionRay).
+		virtual const IObject* RandomWalkObjectContaining(
+			const Point3& ptWorld,						///< [in] The world-space point to test
+			const Vector3& probeDir,					///< [in] Unit direction of the containment ray
+			const IObject* self							///< [in] Never counts.  May be null
+			) const = 0;
         //! Coverage-aware transport traversal. Skips are not path vertices;
         //! the published ray and range still describe the complete segment.
         //! With records, traversal spans [startDistance,maxDistance); only

@@ -391,6 +391,13 @@ namespace RISE
 				const bool bHitBackFaces
 				) const;
 
+			//! See IObjectManager::RandomWalkObjectContaining (DL-370).
+			const IObject* RandomWalkObjectContaining(
+				const Point3& ptWorld,
+				const Vector3& probeDir,
+				const IObject* self
+				) const;
+
 			//! See IObjectManager::NearestOtherSurface's contract comment.
 			bool NearestOtherSurface(
 				const Point3& ptWorld,

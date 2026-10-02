@@ -385,47 +385,70 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 			//
 			// 3e. Fresnel at exit boundary
 			//
-			// DL-370: a face this body shares with a TOUCHING random-walk
-			// neighbour is not a boundary to the exterior: the medium on its
-			// far side is the neighbour, not the exterior.  The walk used to
-			// leave through it anyway, and its continuation, offset
-			// BSSRDF_RAY_EPSILON outward below, then started INSIDE the
-			// neighbour, met the neighbour's far face from behind and died
-			// there (the SSS SPF absorbs back faces; the random-walk entry
-			// gate rejects them): a closed room of touching conservative
-			// walls read 0.70 in a white furnace, a 5e-7 gap the same, a
-			// 2e-6 gap 1.  So the walk CROSSES into the neighbour: the
-			// interface between the two bodies is a dielectric boundary of
-			// relative index n_neighbour / n_current (no boundary at all
-			// when they match), and a transmitted walk continues with the
-			// neighbour's coefficients until it leaves the assembly.
+			// DL-370: an exit whose continuation would start INSIDE another
+			// random-walk body is not an exit to the exterior.  The caller
+			// starts the continuation (and NEE) at the exit point offset
+			// BSSRDF_RAY_EPSILON along the outward normal (`entryPoint`
+			// below).  When a touching neighbour's face coincides with this
+			// one -- or lies within that offset -- the offset point is
+			// inside the neighbour, the continuation meets the neighbour's
+			// far face from behind with a stack that never entered it, and
+			// the path dies there (the random-walk entry gate rejects a back
+			// face; the SSS SPF absorbs it): a closed room of touching
+			// conservative walls read 0.70 in a white furnace.  So the walk
+			// CROSSES: the interface between the two bodies is a dielectric
+			// boundary of relative index n_neighbour / n_current (none at
+			// all when they match), and a transmitted walk continues inside
+			// the neighbour with its coefficients until it leaves the
+			// assembly.
 			//
-			// "Touching" is exactly the configuration the outward offset
-			// crosses: the nearest FRONT face along the walk ray (the walk's
-			// own exit face is a BACK face, so the scene probe never returns
-			// it) belongs to another object and lies within
-			// BSSRDF_RAY_EPSILON of this exit, measured along the normal.
-			// A wider gap keeps the old behaviour, which is right there: the
-			// continuation leaves into the gap and enters the neighbour
-			// through its own front face.  Only random-walk neighbours are
-			// crossed into; any other coincident neighbour (a diffusion
-			// body, an opaque surface) is DL-408.  The probe draws nothing
-			// from the sampler, so a walk that never meets a coincident
-			// neighbour is unchanged bit for bit.  A record without a scene
-			// (a unit test's synthetic hit) skips it.
+			// CONTAINMENT of that offset point is asked of the scene
+			// (`IObjectManager::RandomWalkObjectContaining`), one candidate
+			// object at a time: a ray from the point along the outward normal
+			// LEAVES the body that contains it -- its first hit on that body
+			// has a TRUE facing (`TrueGeomFacing`, DL-70: a double-sided mesh
+			// reports a ray-facing normal) along the ray.  Asking each body
+			// ALONE is what makes the answer immune to coincident faces: a
+			// probe along the walk ray over the whole scene tied between the
+			// walker's own exit face and the neighbour's (both at the exit,
+			// indistinguishable by facing on a double-sided mesh), and a
+			// whole-scene probe from the offset point ties again wherever the
+			// neighbour's far face touches a third body (the corners of a
+			// closed room of touching walls).  The point is past the walker's
+			// own exit face, so a body coincident with that face on the
+			// WALKER's side (an inset part flush with the surface, a sheet
+			// lying on it) is behind it and is never reported.  Hits with no
+			// interior to be in are skipped: a provably open sheet
+			// (`bProvablyNoInterior`) and a ray-derived normal (hair).  Only
+			// random-walk neighbours are crossed into; any other body the
+			// offset point lies inside (a diffusion body, an opaque surface)
+			// keeps the old behaviour (DL-408).  Residuals: shells of the
+			// walker's OWN object (the neighbour must be another object),
+			// bodies overlapping by more than the offset are entered only
+			// when the offset point is still inside them, the walk keeps the
+			// entry body's boundaryFilter / maxBounces / maxDepth, and the
+			// neighbour's alpha coverage (DL-214) is not consulted.
+			//
+			// COST: the per-object rays run only for random-walk objects
+			// whose world box contains the offset point; a walk exit near no
+			// other random-walk body pays one box-tree walk.  Nothing draws
+			// from the sampler, so a walk that never meets a neighbour is
+			// unchanged bit for bit.  A record without a scene (a unit test's
+			// synthetic hit) skips it.
+			const Point3 offsetPoint = Point3Ops::mkPoint3( exitPoint,
+				exitNormal * BSSRDFSampling::BSSRDF_RAY_EPSILON );
 			if( ri.signals.pScene )
 			{
-				RayIntersection probeRI( walkRay, nullRasterizerState );
-				ri.signals.pScene->IntersectRay( probeRI, true, false, false );
-				const Scalar cosExit = fabs( Vector3Ops::Dot( dir, exitGeomNormal ) );
+				const IObject* pNeighbour = ri.signals.pScene->RandomWalkObjectContaining(
+					offsetPoint, exitNormal, pCur );
+				const IMaterial* pNbMaterial = pNeighbour ? pNeighbour->GetMaterial() : 0;
 				RandomWalkSSSParams nbParams;
 				bool nbWalkable = false;
-				if( probeRI.geometric.bHit && probeRI.pObject && probeRI.pObject != pCur && probeRI.pMaterial &&
-					fabs( probeRI.geometric.range - exitDist ) * cosExit <= BSSRDFSampling::BSSRDF_RAY_EPSILON )
+				if( pNbMaterial )
 				{
-					if( nm > 0 && probeRI.pMaterial->GetRandomWalkSSSParamsNM( nm, nbParams ) ) {
+					if( nm > 0 && pNbMaterial->GetRandomWalkSSSParamsNM( nm, nbParams ) ) {
 						nbWalkable = true;
-					} else if( const RandomWalkSSSParams* pNb = probeRI.pMaterial->GetRandomWalkSSSParams() ) {
+					} else if( const RandomWalkSSSParams* pNb = pNbMaterial->GetRandomWalkSSSParams() ) {
 						nbParams = *pNb;
 						nbWalkable = true;
 					}
@@ -452,20 +475,19 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 						}
 					}
 					// Transmitted into the neighbour (stochastic Fresnel: the
-					// 1/(1-F) of the coin cancels the physical (1-F)).
-					pCur = probeRI.pObject;
-					pCurMaterial = probeRI.pMaterial;
+					// 1/(1-F) of the coin cancels the physical (1-F)).  The walk
+					// resumes at the offset point, which the probe just showed
+					// is inside the neighbour.
+					pCur = pNeighbour;
+					pCurMaterial = pNbMaterial;
 					cur_sigma_a = nbParams.sigma_a;
 					cur_sigma_s = nbParams.sigma_s;
 					cur_sigma_t = nbParams.sigma_t;
 					curG = nbParams.g;
 					curIOR = nbParams.ior;
 					loadCoefficients();
-					// Resume from the NEIGHBOUR's face, not this body's: across
-					// a sub-offset gap the two differ, and a walk resumed from
-					// this body's face can start in the gap.
 					dir = intoNeighbour;
-					pos = Point3Ops::mkPoint3( probeRI.geometric.ptIntersection, dir * BSSRDFSampling::BSSRDF_RAY_EPSILON );
+					pos = offsetPoint;
 					continue;
 				}
 			}
