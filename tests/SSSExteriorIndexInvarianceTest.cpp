@@ -1659,19 +1659,23 @@ namespace
 	//! face normals).  Double-sided is the indexed mesh's default and the
 	//! Blender exporter's; it makes the mesh report every hit's normal
 	//! FACING the ray (DL-70), the case a box primitive never exercises.
-	std::string MeshBox( const std::string& name, double w, double h, double d, bool doubleSided )
+	std::string MeshBox( const std::string& name, double w, double h, double d, bool doubleSided,
+		bool inward = false, bool duplicateFace = false, double ox = 0 )
 	{
 		std::ostringstream s;
 		s << std::setprecision( 17 );
 		s << "indexedmesh_geometry\n{\n\tname " << name << "\n";
 		for( int i = 0; i < 8; ++i ) {
-			s << "\tvertex " << ( ( i & 1 ) ? w / 2 : -w / 2 ) << " " << ( ( i & 2 ) ? h / 2 : -h / 2 ) << " "
+			s << "\tvertex " << ox + ( ( i & 1 ) ? w / 2 : -w / 2 ) << " " << ( ( i & 2 ) ? h / 2 : -h / 2 ) << " "
 			  << ( ( i & 4 ) ? d / 2 : -d / 2 ) << "\n";
 		}
 		const int tri[12][3] = { {0,4,6},{0,6,2}, {1,3,7},{1,7,5}, {0,1,5},{0,5,4},
 		                         {2,6,7},{2,7,3}, {0,2,3},{0,3,1}, {4,5,7},{4,7,6} };
 		for( const auto& t : tri ) {
-			s << "\ttriangle " << t[0] << " " << t[1] << " " << t[2] << "\n";
+			s << "\ttriangle " << t[0] << " " << ( inward ? t[2] : t[1] ) << " " << ( inward ? t[1] : t[2] ) << "\n";
+		}
+		if( duplicateFace ) {		// a repeated triangle: DL-143 cannot certify the mesh
+			s << "\ttriangle " << tri[0][0] << " " << ( inward ? tri[0][2] : tri[0][1] ) << " " << ( inward ? tri[0][1] : tri[0][2] ) << "\n";
 		}
 		s << "\tdouble_sided " << ( doubleSided ? "TRUE" : "FALSE" ) << "\n\tface_normals TRUE\n}\n\n";
 		return s.str();
@@ -1739,7 +1743,7 @@ namespace
 	//! is then a real dielectric interface); `spectral` renders with the
 	//! spectral path tracer (the walk's NM branch).
 	std::string BuildTouchingPairScene( Model model, Scalar scattering, Scalar gap, unsigned int samples,
-		Scalar iorRight = 1.5, bool spectral = false, bool doubleSidedMesh = false )
+		Scalar iorRight = 1.5, bool spectral = false, bool doubleSidedMesh = false, int uncertifiedRight = 0 )
 	{
 		std::ostringstream s;
 		s << std::setprecision( 17 );
@@ -1763,8 +1767,13 @@ namespace
 		} else {
 			s << "box_geometry\n{\n\tname block_geo\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n";
 		}
+		// uncertifiedRight 1: the right cube is a double-sided mesh with one
+		// duplicated triangle (DL-143 cannot certify it), wound outward; 2:
+		// the same wound INWARD.
+		s << MeshBox( "right_geo", 1, 1, 1, true, uncertifiedRight == 2, true );
 		s << "standard_object\n{\n\tname left\n\tgeometry block_geo\n\tmaterial block\n\tposition " << -0.5 - gap / 2 << " 0 0\n}\n\n";
-		s << "standard_object\n{\n\tname right\n\tgeometry block_geo\n\tmaterial block_right\n\tposition " << 0.5 + gap / 2 << " 0 0\n}\n\n";
+		s << "standard_object\n{\n\tname right\n\tgeometry " << ( uncertifiedRight ? "right_geo" : "block_geo" )
+		  << "\n\tmaterial block_right\n\tposition " << 0.5 + gap / 2 << " 0 0\n}\n\n";
 		s << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
 		if( spectral ) {
 			s << "pathtracing_spectral_rasterizer\n{\n\tsamples " << samples
@@ -1793,24 +1802,31 @@ namespace
 		// row's right cube has g 0.3, so a crossing must also switch the
 		// phase function): the shared face is then a real 1.5 / 1.3
 		// interface, Fresnel-partitioned and TIR-capable from the left.
-		struct Row { Model model; Scalar scattering; unsigned int samples; double band; bool gated; Scalar iorRight; bool spectral; bool mesh; };
+		// The `uncert` rows' right cube is a double-sided mesh with one
+		// duplicated triangle, so it cannot be certified and cannot sign a
+		// distance (the common imported-mesh case): the crossing must come
+		// from its two-way crossing parity, which does not read the winding
+		// (1 outward, 2 INWARD).
+		struct Row { Model model; Scalar scattering; unsigned int samples; double band; bool gated; Scalar iorRight; bool spectral; bool mesh; int uncert; };
 		const Row rows[] = {
-			{ Model::RandomWalk, 2,  64,  0.01, true,  1.5, false, false },
-			{ Model::RandomWalk, 2,  64,  0.01, true,  1.3, false, false },
-			{ Model::RandomWalk, 2,  256, 0.01, true,  1.5, true,  false },
-			{ Model::RandomWalk, 2,  64,  0.01, true,  1.5, false, true },
-			{ Model::Diffusion,  20, 64,  0.0,  false, 1.5, false, false },
+			{ Model::RandomWalk, 2,  64,  0.01, true,  1.5, false, false, 0 },
+			{ Model::RandomWalk, 2,  64,  0.01, true,  1.3, false, false, 0 },
+			{ Model::RandomWalk, 2,  256, 0.01, true,  1.5, true,  false, 0 },
+			{ Model::RandomWalk, 2,  64,  0.01, true,  1.5, false, true,  0 },
+			{ Model::RandomWalk, 2,  64,  0.01, true,  1.5, false, false, 1 },
+			{ Model::RandomWalk, 2,  64,  0.01, true,  1.5, false, false, 2 },
+			{ Model::Diffusion,  20, 64,  0.0,  false, 1.5, false, false, 0 },
 		};
 		unsigned int seed = 37100;
 		for( const Row& row : rows ) {
 			std::ostringstream lab;
 			lab << "F2: " << ModelName( row.model ) << ( row.spectral ? "/PT-spectral" : "/PT" )
-			    << ( row.mesh ? " double-sided mesh" : "" ) << " touching pair ior "
+			    << ( row.mesh ? " double-sided mesh" : "" ) << ( row.uncert == 1 ? " outward-uncertified right" : row.uncert == 2 ? " inward-uncertified right" : "" ) << " touching pair ior "
 			    << std::setprecision( 3 ) << "1.5|" << row.iorRight;
 			const std::string label = lab.str();
 			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
-			const std::string tPath = WriteScene( BuildTouchingPairScene( row.model, row.scattering, 0.0, row.samples, row.iorRight, row.spectral, row.mesh ), "dl370pairT" );
-			const std::string gPath = WriteScene( BuildTouchingPairScene( row.model, row.scattering, 2e-6, row.samples, row.iorRight, row.spectral, row.mesh ), "dl370pairG" );
+			const std::string tPath = WriteScene( BuildTouchingPairScene( row.model, row.scattering, 0.0, row.samples, row.iorRight, row.spectral, row.mesh, row.uncert ), "dl370pairT" );
+			const std::string gPath = WriteScene( BuildTouchingPairScene( row.model, row.scattering, 2e-6, row.samples, row.iorRight, row.spectral, row.mesh, row.uncert ), "dl370pairG" );
 			Check( !tPath.empty() && !gPath.empty(), label + ": scene files written" );
 			std::vector<double> tm, gm;
 			bool allValid = true;
@@ -1965,16 +1981,62 @@ namespace
 		return s.str();
 	}
 
+	//! Two disjoint closed boxes in ONE double-sided, uncertified (a
+	//! duplicated triangle) random-walk mesh, wound INWARD, flanking a
+	//! random-walk cube with a 0.1 gap on each side: every exit of the cube
+	//! through its +x / -x face has an offset point OUTSIDE the mesh but
+	//! with mesh faces along both the probe and its reverse.  A two-way
+	//! FACING test reads both first hits as exits (inward winding) and
+	//! crosses; the two-way crossing PARITY sees two crossings each way and
+	//! does not.  White furnace: must read 1.
+	std::string BuildNotchScene( unsigned int samples )
+	{
+		std::ostringstream s;
+		s << std::setprecision( 17 );
+		s << "RISE ASCII SCENE 7\n";
+		s << "film\n{\n\twidth 32\n\theight 32\n}\n\n";
+		s << "orthographic_camera\n{\n\tlocation 0 0 4\n\tlookat 0 0 0\n\tup 0 1 0\n\tviewport_scale 0.36 0.36\n}\n\n";
+		s << "uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n\n";
+		s << "randomwalk_sss_material\n{\n\tname block\n\tior 1.5\n\tabsorption 0\n\tscattering 2\n\tg 0\n\troughness 0\n\tmax_bounces 8192\n}\n\n";
+		s << "box_geometry\n{\n\tname walker_geo\n\twidth 0.4\n\theight 0.4\n\tdepth 0.4\n}\n\n";
+		// The two arms x in [-0.7,-0.3] and [0.3,0.7], one mesh.
+		s << "indexedmesh_geometry\n{\n\tname arms_geo\n";
+		const int tri[12][3] = { {0,4,6},{0,6,2}, {1,3,7},{1,7,5}, {0,1,5},{0,5,4},
+		                         {2,6,7},{2,7,3}, {0,2,3},{0,3,1}, {4,5,7},{4,7,6} };
+		for( int arm = 0; arm < 2; ++arm ) {
+			const double cx = arm ? 0.5 : -0.5;
+			for( int i = 0; i < 8; ++i ) {
+				s << "\tvertex " << cx + ( ( i & 1 ) ? 0.2 : -0.2 ) << " " << ( ( i & 2 ) ? 0.3 : -0.3 ) << " "
+				  << ( ( i & 4 ) ? 0.3 : -0.3 ) << "\n";
+			}
+		}
+		for( int arm = 0; arm < 2; ++arm ) {
+			for( const auto& t : tri ) {		// inward: the two last indices swapped
+				s << "\ttriangle " << t[0] + 8 * arm << " " << t[2] + 8 * arm << " " << t[1] + 8 * arm << "\n";
+			}
+		}
+		s << "\ttriangle 0 6 4\n\tdouble_sided TRUE\n\tface_normals TRUE\n}\n\n";
+		s << "standard_object\n{\n\tname walker\n\tgeometry walker_geo\n\tmaterial block\n}\n\n";
+		s << "standard_object\n{\n\tname arms\n\tgeometry arms_geo\n\tmaterial block\n}\n\n";
+		s << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
+		s << "pathtracing_pel_rasterizer\n{\n\tsamples " << samples
+		  << "\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n\tpathguiding FALSE\n\tadaptive_max_samples 0\n"
+		  << "\tradiance_map white\n\tradiance_scale 1\n\tradiance_background TRUE\n}\n\n";
+		s << "file_rasterizeroutput\n{\n\tpattern rendered/dl370_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+		return s.str();
+	}
+
 	void TestNeighbourWinding( const unsigned int trials, const std::string& only )
 	{
 		std::cout << "F4: non-touching random-walk mesh neighbour, both windings (DL-370), n=" << trials << std::endl;
-		const char* names[3] = { "outward uncertified neighbour", "inward uncertified neighbour", "inward certified neighbour" };
-		const double expected[3] = { 1.0, 1.0, 0.7658 };
+		const char* names[4] = { "outward uncertified neighbour", "inward uncertified neighbour", "inward certified neighbour",
+			"inward uncertified two-box neighbour, walker between" };
+		const double expected[4] = { 1.0, 1.0, 0.7658, 1.0 };
 		unsigned int seed = 37300;
-		for( int v = 0; v < 3; ++v ) {
+		for( int v = 0; v < 4; ++v ) {
 			const std::string label = std::string( "F4: random_walk/PT " ) + names[v];
 			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
-			const std::string path = WriteScene( BuildWindingScene( v, 64 ), "dl370wind" );
+			const std::string path = WriteScene( v == 3 ? BuildNotchScene( 64 ) : BuildWindingScene( v, 64 ), "dl370wind" );
 			Check( !path.empty(), label + ": scene file written" );
 			std::vector<double> m;
 			bool allValid = true;

@@ -1323,6 +1323,31 @@ bool ObjectManager::IntersectOcclusionRay( const Ray& ray, const Scalar dHowFar,
 	}
 }
 
+//! DL-370: does a ray from `pt` along `dir` cross `obj` (alone) an ODD
+//! number of times?  False on any hit with no interior to be in, and on a
+//! runaway count.  See RandomWalkObjectContaining.
+static bool OddCrossings( const IObjectPriv* obj, const Point3& pt, const Vector3& dir )
+{
+	static const int kMaxCrossings = 64;
+	const Scalar kStep = Scalar( 1e-9 );
+	Point3 origin = pt;
+	int crossings = 0;
+	for( int iter = 0; iter < kMaxCrossings; ++iter ) {
+		RayIntersection probe( Ray( origin, dir ), nullRasterizerState );
+		obj->IntersectRay( probe, RISE_INFINITY, true, true, false );
+		if( !probe.geometric.bHit ) {
+			return ( crossings % 2 ) == 1;
+		}
+		if( probe.geometric.bProvablyNoInterior || !probe.geometric.HasTrueGeomSide() ||
+			!( probe.geometric.range >= Scalar( 0 ) ) || !RISE::IsFiniteDouble( (double)probe.geometric.range ) ) {
+			return false;
+		}
+		++crossings;
+		origin = Point3Ops::mkPoint3( origin, dir * ( probe.geometric.range + kStep ) );
+	}
+	return false;
+}
+
 const IObject* ObjectManager::RandomWalkObjectContaining( const Point3& ptWorld, const Vector3& probeDir, const IObject* self ) const
 {
 	// DL-370; see the interface comment.  The box walk is the cheap gate
@@ -1352,22 +1377,22 @@ const IObject* ObjectManager::RandomWalkObjectContaining( const Point3& ptWorld,
 			}
 			return;
 		}
-		// (2) A body that cannot (an open or uncertified mesh, a sheet
-		// family) has no certified inside.  A DOUBLE-SIDED one's winding is
-		// not trustworthy either -- nothing renders it by its winding, and
-		// an inward-wound one read inside-out here (review round 2: 0.9989
-		// -> 0.8225) -- so it is never crossed into (the pre-DL-370
-		// behaviour).  A SINGLE-SIDED one is rendered by its winding, so its
-		// first face along the probe decides: the point is inside iff that
-		// face is LEFT by its TRUE facing (DL-70).
-		const IGeometry* pGeom = obj->GetGeometry();
-		if( pGeom && pGeom->IsDoubleSided() ) {
-			return;
-		}
-		RayIntersection probe( Ray( ptWorld, probeDir ), nullRasterizerState );
-		obj->IntersectRay( probe, RISE_INFINITY, true, true, false );
-		if( probe.geometric.bHit && !probe.geometric.bProvablyNoInterior &&
-			probe.geometric.HasTrueGeomSide() && probe.geometric.TrueGeomFacing( probeDir ) > 0 ) {
+		// (2) A body that cannot sign (an open or uncertified mesh, a sheet
+		// family) has no certified inside, and its winding is not
+		// trustworthy (round 3's facing test read an inward-wound one
+		// inside-out: 0.9989 -> 0.8225).  It is asked by the PARITY of its
+		// own crossings along BOTH the probe direction and its reverse,
+		// counted on that one candidate: a point inside a closed body sees
+		// an odd count each way, a point outside sees an even count in at
+		// least one direction, whatever the winding.  Both must be odd.  An
+		// open sheet (one crossing on one side, none on the other) and a
+		// point in a non-convex body's notch (two crossings each way) fail;
+		// a hole or crack the ray slips through fails conservatively.  A
+		// hit with no interior to be in (`bProvablyNoInterior`, a
+		// ray-derived normal) refuses the candidate.  Each crossing is
+		// stepped past by a tiny world advance, which also merges a
+		// duplicated coincident face into one crossing.
+		if( OddCrossings( obj, ptWorld, probeDir ) && OddCrossings( obj, ptWorld, -probeDir ) ) {
 			found = obj;
 		}
 	};
