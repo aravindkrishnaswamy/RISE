@@ -858,24 +858,30 @@ namespace RISE
 				LightSample& sample									///< [out] The generated light sample
 				) const;
 
-			/// Returns the probability of selecting a given non-mesh light
+			/// Returns the probability that SampleLight() selects a given
+			/// non-mesh light: (1 - envSelectProb) * alias pmf.  Never the
+			/// light BVH's pmf -- SampleLight() does not use it (DL-348).
 			/// \return Selection probability proportional to exitance
 			Scalar PdfSelectLight(
 				const IScene& scene,								///< [in] The scene containing lights
 				const LuminaryManager::LuminariesList& luminaries,	///< [in] List of mesh luminaries
 				const ILight& light,								///< [in] The light to query
-				const Point3& shadingPoint,							///< [in] Shading point (used for BVH PDF; ignored when BVH inactive)
-				const Vector3& shadingNormal						///< [in] Shading normal (used for BVH PDF; ignored when BVH inactive)
+				const Point3& shadingPoint,							///< [in] Unused (SampleLight's pmf is shading-point independent)
+				const Vector3& shadingNormal						///< [in] Unused
 				) const;
 
-			/// Returns the probability of selecting a given mesh luminary
+			/// Returns the probability that SampleLight() selects a given
+			/// mesh luminary: (1 - envSelectProb) * alias pmf.  The MIS
+			/// partner of BDPT/VCM/MLT's light-rooted strategies; never the
+			/// light BVH's pmf (DL-348).  PT's own NEE partner is
+			/// CachedPdfSelectLuminary.
 			/// \return Selection probability proportional to exitance
 			Scalar PdfSelectLuminary(
 				const IScene& scene,								///< [in] The scene containing lights
 				const LuminaryManager::LuminariesList& luminaries,	///< [in] List of mesh luminaries
 				const IObject& luminary,							///< [in] The luminary to query
-				const Point3& shadingPoint,							///< [in] Shading point (used for BVH PDF; ignored when BVH inactive)
-				const Vector3& shadingNormal						///< [in] Shading normal (used for BVH PDF; ignored when BVH inactive)
+				const Point3& shadingPoint,							///< [in] Unused (SampleLight's pmf is shading-point independent)
+				const Vector3& shadingNormal						///< [in] Unused
 				) const;
 
 			//

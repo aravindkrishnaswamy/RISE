@@ -100,6 +100,13 @@ namespace RISE
 			//! DL-320: a back-face hit reports a ray-facing normal (see IGeometry).
 			bool IsDoubleSided() const override { return bDoubleSided; }
 
+			//! DL-345: a coplanar, convex quad -- the case whose traced
+			//! bilinear patch is the planar polygon its corners outline.
+			//! A DisplacedGeometry over such a base displaces every vertex
+			//! along ONE normal, so its mesh is the graph of a function over
+			//! that polygon and provably encloses no volume.
+			bool IsPlanarConvexQuad() const { return bCornersCoplanar && bCornersConvex; }
+
 			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const override;
 
 			//! IGeometry::DistanceToSurface -- EXACT on a PLANAR **CONVEX** quad,

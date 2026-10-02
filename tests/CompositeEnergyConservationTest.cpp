@@ -1294,6 +1294,208 @@ static void SectionD()
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+//  Section K -- DL-342: `coated_material` UNDER AN ABSORBING COAT.
+//
+//  The DL-24 composite matches Section G's independent closed form, so
+//  it is the reference.  `coated_material`'s recycling term used to be
+//  r_i * a(mu_bar)^2 with mu_bar the refraction of an outer cosine 0.5,
+//  where the exact round trip is E_ret = INT 2 mu a(mu)^2 F_in(mu) dmu
+//  (the TIR-dominated, LONGEST paths carry most of r_i).  Three gates:
+//
+//   K1 (deterministic, sharp).  For a smooth coat over a Lambertian the
+//      coated value at an off-specular pair IS ClosedFormLayered, exactly,
+//      at every coat optical depth: RGB and NM, grey and tinted coats.
+//   K2 (deterministic).  IBSDF::hemisphericalAlbedo against the white-sky
+//      closed form r_e + R T_h^2 / (n^2 (1 - R E_ret)).
+//   K3 (Monte Carlo).  Directional albedo of coated vs the composite of
+//      the same physical layers: Lambertian gated to MC noise, GGX pinned
+//      on its measured residual band (DL-388, see the comment there).
+//
+//  Optical depth is coat_absorption * coat_thickness (thickness 1 here)
+//  for coated and extinction * thickness for the composite: the same
+//  normal-incidence Beer exponent, raised to 1/mu inside the film.
+//////////////////////////////////////////////////////////////////////
+static double FresnelOutside15( const double c, const double n )
+{
+	// Outer->coat unpolarised Fresnel, written out independently.
+	const double s2 = ( 1.0 - c * c ) / ( n * n );
+	const double ct = std::sqrt( std::max( 0.0, 1.0 - s2 ) );
+	const double rs = ( c - n * ct ) / ( c + n * ct );
+	const double rp = ( n * c - ct ) / ( n * c + ct );
+	return 0.5 * ( rs * rs + rp * rp );
+}
+
+struct WhiteSky { double re, entry, ret; };
+
+static WhiteSky WhiteSkyTerms( const double tau, const double n )
+{
+	WhiteSky w = { 0, 0, 0 };
+	const int N = 40000;
+	for( int i = 0; i < N; ++i ) {
+		const double x = ( i + 0.5 ) / N;
+		// outer cosine x: entry
+		const double F = FresnelOutside15( x, n );
+		const double mu = std::sqrt( 1.0 - ( 1.0 - x * x ) / ( n * n ) );
+		w.re    += 2.0 * x * F / N;
+		w.entry += 2.0 * x * ( 1.0 - F ) * std::exp( -tau / mu ) / N;
+		// internal cosine x: one round trip
+		w.ret   += 2.0 * x * std::exp( -2.0 * tau / x ) * FresnelInside15( x, n ) / N;
+	}
+	return w;
+}
+
+static CoatedMaterial* MakeCoated( const IMaterial& base, double sigma, const IPainter& tint )
+{
+	UniformScalarPainter* w  = new UniformScalarPainter( 1.0 );
+	UniformScalarPainter* n  = new UniformScalarPainter( 1.5 );
+	UniformScalarPainter* a  = new UniformScalarPainter( 0.001 );
+	UniformScalarPainter* th = new UniformScalarPainter( 1.0 );
+	UniformScalarPainter* ab = new UniformScalarPainter( sigma );
+	CoatedMaterial* m = new CoatedMaterial( base, *w, *n, *a, *th, *ab, tint );
+	m->addref();
+	return m;
+}
+
+static void SectionK( Fixtures& f )
+{
+	std::cout << "\n[K] DL-342: coated_material under an ABSORBING coat (smooth 1.5 coat, thickness 1)\n";
+	const double eta = 1.5;
+	const double sigmas[] = { 0.0, 0.2, 0.5, 1.0, 2.0 };
+
+	// ---- K1: value vs ClosedFormLayered, Lambertian (0.8, 0.2, 0.2) ----
+	{
+		const double pairs[][2] = { { 0, 40 }, { 30, 60 }, { 60, 30 }, { 75, 10 } };
+		double worst = 0;
+		std::cout << "    K1 value / closed form, red Lambertian substrate, off-specular pairs (ch0 rho .8, ch1 rho .2):\n";
+		for( double sg : sigmas ) {
+			CoatedMaterial* m = MakeCoated( *f.lambRed, sg, *f.white );
+			std::cout << "      sigma_t " << std::setprecision(3) << sg << ":";
+			for( const auto& pr : pairs ) {
+				const double ti = pr[0] * kPi / 180.0, to = pr[1] * kPi / 180.0;
+				const Vector3 wo( std::sin( to ) * std::cos( 2.0944 ), std::sin( to ) * std::sin( 2.0944 ), std::cos( to ) );
+				const RayIntersectionGeometric ri = MakeIntersection( ti );
+				const RISEPel v = m->GetBSDF()->value( wo, ri );
+				const double vNM = m->GetBSDF()->valueNM( wo, ri, 550.0 );
+				const double rhoNM = f.lambRed->GetBSDF()->valueNM( wo, ri, 550.0 ) * kPi;
+				const double t0 = ClosedFormLayered( ti, to, 0.8, sg, 1.0, eta );
+				const double t1 = ClosedFormLayered( ti, to, 0.2, sg, 1.0, eta );
+				const double tNM = ClosedFormLayered( ti, to, rhoNM, sg, 1.0, eta );
+				const double e0 = v[0] / t0 - 1.0, e1 = v[1] / t1 - 1.0, eNM = vNM / tNM - 1.0;
+				worst = std::max( worst, std::max( std::fabs( e0 ), std::max( std::fabs( e1 ), std::fabs( eNM ) ) ) );
+				std::cout << "  (" << (int)pr[0] << "," << (int)pr[1] << ") " << std::setprecision(4) << std::showpos
+				          << 100.0 * e0 << "%/" << 100.0 * e1 << "%/NM " << 100.0 * eNM << "%" << std::noshowpos;
+				const std::string tag = std::string( "[K1] sigma " ) + std::to_string( sg ) + " (" +
+					std::to_string( (int)pr[0] ) + "," + std::to_string( (int)pr[1] ) + ") ";
+				Check( std::fabs( e0 ) <= 1e-3, tag + "ch0 coated value == closed form" );
+				Check( std::fabs( e1 ) <= 1e-3, tag + "ch1 coated value == closed form" );
+				Check( std::fabs( eNM ) <= 1e-3, tag + "NM coated value == closed form" );
+			}
+			std::cout << "\n";
+			m->release();
+		}
+		// A tinted, non-absorbing coat: per-channel optical depth -ln(tint).
+		{
+			UniformColorPainter* tint = new UniformColorPainter( RISEPel( 0.9, 0.6, 0.3 ) );  tint->addref();
+			CoatedMaterial* m = MakeCoated( *f.lamb, 0.0, *tint );
+			const double ti = 30.0 * kPi / 180.0, to = 60.0 * kPi / 180.0;
+			const Vector3 wo( std::sin( to ) * std::cos( 2.0944 ), std::sin( to ) * std::sin( 2.0944 ), std::cos( to ) );
+			const RISEPel v = m->GetBSDF()->value( wo, MakeIntersection( ti ) );
+			const double tints[3] = { 0.9, 0.6, 0.3 };
+			std::cout << "      tinted coat (0.9, 0.6, 0.3), white substrate, (30,60):";
+			for( int ch = 0; ch < 3; ++ch ) {
+				const double t = ClosedFormLayered( ti, to, 1.0, -std::log( tints[ch] ), 1.0, eta );
+				const double e = v[ch] / t - 1.0;
+				worst = std::max( worst, std::fabs( e ) );
+				std::cout << " ch" << ch << " " << std::showpos << std::setprecision(4) << 100.0 * e << "%" << std::noshowpos;
+				Check( std::fabs( e ) <= 1e-3, std::string( "[K1] tinted coat ch" ) + std::to_string( ch ) + " coated value == closed form" );
+			}
+			std::cout << "\n";
+			m->release(); tint->release();
+		}
+		std::cout << "      worst |coated/closed form - 1| = " << std::setprecision(3) << 100.0 * worst << "%\n";
+	}
+
+	// ---- K2: hemisphericalAlbedo vs the white-sky closed form ----------
+	{
+		std::cout << "    K2 hemisphericalAlbedo / white-sky closed form, white and red Lambertian:\n      ";
+		for( double sg : sigmas ) {
+			const WhiteSky w = WhiteSkyTerms( sg, eta );
+			for( int sub = 0; sub < 2; ++sub ) {
+				CoatedMaterial* m = MakeCoated( sub == 0 ? (const IMaterial&)*f.lamb : (const IMaterial&)*f.lambRed, sg, *f.white );
+				RISEPel H;
+				const bool ok = m->GetBSDF()->hemisphericalAlbedo( MakeIntersection( 0.3 ), H );
+				const double R = ( sub == 0 ) ? 1.0 : 0.8;
+				const double truth = w.re + R * w.entry * w.entry / ( eta * eta * ( 1.0 - R * w.ret ) );
+				const double e = H[0] / truth - 1.0;
+				std::cout << "s" << sg << ( sub ? "/red " : "/white " ) << std::showpos << std::setprecision(4) << 100.0 * e << "%" << std::noshowpos << "  ";
+				Check( ok && std::fabs( e ) <= 1e-3,
+					std::string( "[K2] hemisphericalAlbedo sigma " ) + std::to_string( sg ) + ( sub ? " red" : " white" ) + " == white-sky closed form" );
+				m->release();
+			}
+		}
+		std::cout << "\n";
+	}
+
+	// ---- K3: directional albedo, coated vs composite (MC) -------------
+	{
+		UniformScalarPainter* sDelta = new UniformScalarPainter( 1000000.0 );  sDelta->addref();
+		DielectricMaterial* smooth = new DielectricMaterial( *f.s1, *f.s15, *sDelta, false );  smooth->addref();
+		UniformColorPainter* ggxDiff = new UniformColorPainter( RISEPel( 0.8, 0.8, 0.8 ) );  ggxDiff->addref();
+		UniformColorPainter* ggxSpec = new UniformColorPainter( RISEPel( 0.04, 0.04, 0.04 ) );  ggxSpec->addref();
+		GGXMaterial* ggx = new GGXMaterial( *ggxDiff, *ggxSpec, *f.sAlpha, *f.sAlpha, *f.s15, *f.s0, eFresnelSchlickF0 );
+		ggx->addref();
+		const double thetas[] = { 0.0, 60.0 };
+		struct Sub { const char* name; const IMaterial* m; bool gateTight; };
+		const Sub subs[] = { { "Lambertian white", f.lamb, true }, { "GGX (diffuse .8, F0 .04, alpha .16)", ggx, false } };
+		std::cout << "    K3 directional albedo, coated vs composite (8 x 20000 draws each; mean +- sem):\n";
+		for( const Sub& sb : subs ) {
+			for( double sg : sigmas ) {
+				UniformScalarPainter* ext = new UniformScalarPainter( sg );  ext->addref();
+				CompositeMaterial* comp = MakeComposite( *smooth, *sb.m, 3, 3, 3, 3, 3, 1.0, *ext );
+				CoatedMaterial* coat = MakeCoated( *sb.m, sg, *f.white );
+				for( double th : thetas ) {
+					const FurnaceStats sc = Furnace( *coat->GetSPF(), th, false, false, 8, 20000, 7001u + (unsigned)th );
+					const FurnaceStats sp = Furnace( *comp->GetSPF(), th, false, false, 8, 20000, 9001u + (unsigned)th );
+					const double ratio = sc.mean / sp.mean;
+					const double semR = ratio * std::sqrt( std::pow( sc.sem / sc.mean, 2 ) + std::pow( sp.sem / sp.mean, 2 ) );
+					std::cout << "      " << sb.name << " sigma_t " << std::setprecision(3) << sg << " theta " << (int)th
+					          << ": coated " << std::setprecision(5) << sc.mean << " +- " << sc.sem
+					          << "  composite " << sp.mean << " +- " << sp.sem
+					          << "  coated/composite " << ratio << " +- " << semR << "\n";
+					// Lambertian: the coated model is exact, so it must agree
+					// with the composite within MC noise (floor 1 %).
+					//
+					// GGX: KNOWN RESIDUAL, DL-388, pinned in [0.92, 1.02].
+					// coated_material evaluates the substrate BRDF at the
+					// UNREFRACTED (outer) directions, which is exact only for
+					// a Lambertian: GGX's diffuse (1 - A(o)) factor is read at
+					// the outer grazing angle where the light actually leaves
+					// the substrate at the critical angle, so the escape is
+					// undercounted (0.3107 vs 0.3215 at sigma_t 0.2, separable
+					// analysis in docs/DL342_COATED_ABSORBING_COAT.md).  At
+					// sigma_t 0 an over-read recycling term hid it; DL-342's
+					// exact round trip removes that cancellation, so the GGX
+					// rows read 3-6 % LOW of the composite here (they read up
+					// to 4 % HIGH pre-fix, the two errors partly cancelling).
+					if( sb.gateTight ) {
+						Check( std::fabs( ratio - 1.0 ) <= std::max( 0.01, 5.0 * semR ),
+							std::string( "[K3] " ) + sb.name + " sigma " + std::to_string( sg ) + " theta " +
+							std::to_string( (int)th ) + " coated / composite == 1" );
+					} else {
+						Check( ratio >= 0.92 && ratio <= 1.02,
+							std::string( "[K3] " ) + sb.name + " sigma " + std::to_string( sg ) + " theta " +
+							std::to_string( (int)th ) + " coated / composite inside the DL-388 residual pin [0.92, 1.02]" );
+					}
+				}
+				coat->release(); comp->release(); ext->release();
+			}
+		}
+		ggx->release(); ggxSpec->release(); ggxDiff->release(); smooth->release(); sDelta->release();
+	}
+}
+
+
 int main( int argc, char** argv )
 {
 	std::cout << "CompositeEnergyConservationTest (DL-24 / DL-221)" << std::endl;
@@ -1305,6 +1507,11 @@ int main( int argc, char** argv )
 	Fixtures f = MakeFixtures();
 
 	const bool skipRender = ( argc > 1 && std::string( argv[1] ) == "--no-render" );
+	if( argc > 1 && std::string( argv[1] ) == "--coated-only" ) {
+		SectionK( f );
+		std::cout << "\n" << passCount << " passed, " << failCount << " failed" << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
 	if( argc > 1 && std::string( argv[1] ) == "--tilt-only" ) {
 		SectionT( f );
 		if( argc > 2 && std::string( argv[2] ) == "--render" ) SectionD();
@@ -1321,6 +1528,7 @@ int main( int argc, char** argv )
 	SectionH( f );
 	SectionT( f );
 	SectionG( f );
+	SectionK( f );
 	if( !skipRender ) {
 		SectionD();
 	}

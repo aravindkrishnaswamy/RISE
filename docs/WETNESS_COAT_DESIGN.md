@@ -2024,7 +2024,10 @@ single-bounce approximation is weakest. The harness to detect that already exist
   alongside `T_in` double-counts the entry transmittance (`T_in ≡ 1 − F(θ_i)`).
   As implemented:
   `f = c·f_coat + (c·K + (1−c))·f_base`, with
-  `K = T(θ_i)·T(θ_o)·A_in·A_out / (η²·(1 − r_i·R·A_rt))`, `f_coat` the GGX coat
+  `K = T(θ_i)·T(θ_o)·A_in·A_out / (η²·(1 − E_ret·R))` (`E_ret = r_i` for a clear
+  coat; for an absorbing one the exact path-length average of the trapped
+  field's round trip, DL-342, [DL342_COATED_ABSORBING_COAT.md](DL342_COATED_ABSORBING_COAT.md) --
+  it was `r_i·A_rt` with one Beer factor at outer cosine 0.5, up to 15 % bright), `f_coat` the GGX coat
   lobe carrying its own Fresnel, and `R` the substrate albedo made
   **direction-free** (a reciprocity requirement — a view-dependent `R` breaks
   `f(a→b) = f(b→a)` on exactly the BDPT-connection path this phase exists to
