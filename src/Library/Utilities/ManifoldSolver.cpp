@@ -7685,6 +7685,11 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 				rigLocal.vGeomNormal   = v.geomNormal;
 				SpecularInfo specNM = v.pMaterial->GetSpecularInfoNM( rigLocal, queryIor, nm );
 				v.eta         = specNM.ior;
+				// DL-353: the solve reads the explicit interface pair, not
+				// the legacy single-index field. Match companion replay:
+				// replace the material side; retain the seeded exterior.
+				if( v.isExiting ) v.etaI = specNM.ior;
+				else v.etaT = specNM.ior;
 				v.attenuation = specNM.attenuation;
 				v.canRefract  = specNM.canRefract;
 			}
