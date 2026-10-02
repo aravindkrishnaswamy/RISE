@@ -3999,18 +3999,16 @@ ConnectAndEvaluateImplCore(
 		return result;
 	}
 
-	// DL-377: a strategy whose light endpoint is a light-side BSSRDF entry
-	// exists only for paths the EYE-sampled family cannot cover -- the by-
-	// path partition of docs/MIS_HEURISTICS.md section 4a (DL-317 for VCM).
-	// With Sw evaluated toward the eye (EvalLightEndAreaBSDFAtVertex) such
-	// a strategy is no longer ~0, and on a covered path the eye family's
-	// own strategies (NEE / connection at its entry, a non-delta root hit)
-	// already partition to one without it, so keeping it double counts.
-	// Strategies whose light subpath runs PAST a light entry are left as
-	// they were (DL-380).
-	if( s >= 2 && lightVerts[s - 1].isBSSRDFEntry &&
-		BDPTUtilities::UsableLightSubpathLength( lightVerts, false ) < s )
-	{
+	// DL-377: the BSSRDF jump is an MIS barrier partitioned BY PATH
+	// (docs/MIS_HEURISTICS.md section 4a; DL-317 for VCM).  A light
+	// strategy whose light subpath runs through a light-sampled jump the
+	// EYE family can cover does not exist: that path belongs to the eye-
+	// sampled family, which (with MISWeight's barrier) partitions it to one
+	// on its own.  Only a jump the eye family cannot cover -- a delta light
+	// behind a delta interface, say -- keeps its light-family strategies,
+	// including the splat / connection AT the light entry, whose Sw is
+	// evaluated toward the eye (EvalLightEndAreaBSDFAtVertex).
+	if( s >= 2 && BDPTUtilities::UsableLightSubpathLength( lightVerts, false ) < s ) {
 		return result;
 	}
 
@@ -6101,6 +6099,15 @@ Scalar BDPTIntegrator::MISWeight(
 
 		for( int i = static_cast<int>(s) - 1; i >= 0; i-- )
 		{
+			// DL-377 barrier: a strategy that would have the EYE cover a
+			// light-sampled jump (the entry lightVerts[i+1] AND the hit it
+			// jumped from, lightVerts[i]) does not exist -- nothing samples
+			// the jump in reverse (docs/MIS_HEURISTICS.md section 4a).  The
+			// ratio chain cannot continue past it, so neither can the walk.
+			if( static_cast<unsigned int>( i ) + 1 < s && lightVerts[i + 1].isBSSRDFEntry ) {
+				break;
+			}
+
 			// Vertex at position i in the light subpath.
 			//
 			// The `eyeVerts[0]` arm is DEAD and is kept only as a
@@ -6201,6 +6208,16 @@ Scalar BDPTIntegrator::MISWeight(
 
 		for( int j = static_cast<int>(t) - 1; j > 0; j-- )
 		{
+			// DL-377 barrier, the eye-side twin: no strategy has the LIGHT
+			// cover an eye-sampled jump (the entry eyeVerts[j+1] and the hit
+			// it jumped from, eyeVerts[j]).  Before this the walk reserved
+			// weight across the jump with phantom densities for the light-
+			// family version of the path, which the by-path partition in
+			// ConnectAndEvaluate now removes when the eye family covers it.
+			if( static_cast<unsigned int>( j ) + 1 < t && eyeVerts[j + 1].isBSSRDFEntry ) {
+				break;
+			}
+
 			// Vertex at position j in the eye subpath
 			const BDPTVertex& vj = (static_cast<unsigned int>(j) < eyeVerts.size()) ?
 				eyeVerts[j] : lightVerts[0];
