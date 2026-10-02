@@ -5,8 +5,8 @@
 //
 //  WHAT THIS CATCHES (measured 2026-09-01)
 //
-//  Before the CompositeSPF ior-stack walk fix (now the two-stack
-//  EvalStack / GapStackBelowTop design), `extinction` and `thickness`
+//  Before the CompositeSPF ior-stack walk fix (the two-stack design of
+//  2026-09-01, one keyed stack since DL-341), `extinction` and `thickness`
 //  were COMPLETELY INERT: an env-lit dielectric-over-diffuse composite
 //  rendered bit-near-identically for extinction 0.001 vs 1000, for thickness
 //  0.0001 vs 50, and an asymmetric per-channel extinction (R=1000, G=1000,
@@ -559,10 +559,13 @@ int main()
 	//    walk that threads the top's pushed stack straight down into the
 	//    bottom makes the bottom read containsCurrent()==true for a ray that
 	//    is physically ENTERING it from the gap above, and it takes its
-	//    from-inside branch.  The fix threads TWO stacks (see
-	//    CompositeSPF::EvalStack): `outside` (without this object's entry) and
-	//    `gap` (with it), and evaluates every DOWN-going ray against `outside`
-	//    and every UP-going ray against `gap`.
+	//    from-inside branch.  The 2026-09-01 fix threaded TWO stacks
+	//    (`outside` without this object's entry, `gap` with it: every
+	//    DOWN-going ray against `outside`, every UP-going one against `gap`).
+	//    DL-341 (2026-10-02) replaced that with ONE threaded stack and a
+	//    per-instance key for the bottom layer (CompositeSPF.cpp, "THE STACK
+	//    CONVENTION"), which also lets the bottom refract from the gap's
+	//    index -- see 6b.
 	//
 	//    RED-PROOF (measured 2026-09-01 against the single-stack walk, i.e.
 	//    the state right after the EffectiveStack commit 24888c67):
@@ -620,8 +623,25 @@ int main()
 	//     way back out through the top.  On the single-stack walk the bottom
 	//     emits nothing at all, so the up-exiting total collapses to exactly
 	//     the bare first-interface Fresnel level.
-	Check( dd.total > bare.total * 1.10,
-	       "up-exiting energy exceeds the bare-top Fresnel-only floor by >10%" );
+	//
+	//     DL-341 (2026-10-02) made the bottom refract from the GAP's index:
+	//     the gap -> bottom interface is 1.5 -> 1.33, not 1.0 -> 1.33 (the
+	//     "scope gap (b)" the two-stack walk baked in, whose 0.0185 of
+	//     crossed energy this check's old ">10 % over the bare floor"
+	//     threshold assumed).  At normal incidence the crossed energy is
+	//     T_top * F(1.5 -> 1.33) * T_top / (1 - F_b F_top), the gap's 0.02 x
+	//     0.001 extinction negligible: 0.96 * 0.003609 * 0.96 = 0.003327.
+	//     Gated within 25 % (~6 sigma at ~700 crossings).  Red on both
+	//     earlier regimes: 0 on the single-stack walk, 0.0185 on the
+	//     two-stack one.
+	{
+		const double Fb = std::pow( ( 1.5 - 1.33 ) / ( 1.5 + 1.33 ), 2.0 );
+		const double Ft = std::pow( 0.5 / 2.5, 2.0 );
+		const double crossedCF = ( 1.0 - Ft ) * Fb * ( 1.0 - Ft ) / ( 1.0 - Fb * Ft );
+		std::cout << "    crossed energy " << dd.crossed << " vs closed form " << crossedCF << std::endl;
+		Check( dd.nCrossed > 0 && std::fabs( dd.crossed / crossedCF - 1.0 ) < 0.25,
+		       "light reflected off the bottom (gap index 1.5 -> 1.33) leaves through the top at the closed-form rate (+-25%)" );
+	}
 
 	// 6c. Translucent bottom -- the mat_double_composite shape.  The
 	//     up-exiting eRayRefraction population can ONLY be produced by a ray

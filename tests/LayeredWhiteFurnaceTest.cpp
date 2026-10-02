@@ -1481,8 +1481,9 @@ int main()
 	//    path died inside the walk, which is why this row sat at exactly the
 	//    bare-Fresnel reflectance and why composite_material's `extinction` and
 	//    `thickness` were completely inert.  Fixed via the two-stack walk
-	//    (CompositeSPF::EvalStack / GapStackBelowTop); guarded by
-	//    tests/CompositeExtinctionTest.
+	//    (then CompositeSPF::EvalStack / GapStackBelowTop; since DL-341,
+	//    2026-10-02, one threaded stack with a per-instance bottom-layer
+	//    key); guarded by tests/CompositeExtinctionTest.
 	//
 	//    Measured here: {0.0400, 0.0415, 0.0892, 0.3877} before the fix ->
 	//    {0.3339, 0.3044, 0.3128, 0.5324} after, bit-identical across runs.
