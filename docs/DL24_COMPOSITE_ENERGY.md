@@ -813,11 +813,13 @@ it, and refracts from the index of the medium the ray is actually in: the
 bottom now refracts from the GAP's index (the old two-stack walk's "scope gap
 (b)": glass/glass refracted 1.0 -> 1.5 twice).
 
-Per entry side, decided by the TRUE geometric facing (review round 1: a
-flipped double-sided record of a CLOSED solid is unflipped first, section
-9.4; an open sheet -- `bOpenSheet` or `bProvablyNoInterior` -- keeps its
-flipped frame, section 9.4a), with the shading normal oriented into the true
-geometric normal's hemisphere:
+Per entry side, decided by the TRUE geometric facing, with the shading
+normal oriented into the true geometric normal's hemisphere.  A record a
+double-sided geometry flipped toward the ray is unflipped first exactly when
+the walk's IOR stack already holds the composite's object (the ray crossed
+in earlier); otherwise -- an open sheet's back face with no prior crossing, a
+provably open clipped plane, a stackless caller -- it keeps the flipped frame
+and presents the top (sections 9.4, 9.4a, 9.4b):
 
 * from above and against the shading normal -- the DIRECT / COVERED / WALKER
   mixture, starting at OUT (unchanged except for the stacks);
@@ -982,7 +984,8 @@ round-1 report of 1.0056 was an unsalted 128-spp artifact.
   `bGeomNormalOrientedToRay`, so the composite repriced it in the flipped
   frame its Scatter had unflipped -- the DL-100 frame trap.  Fixed twice
   over: (1) only a CLOSED solid is unflipped (`!bOpenSheet` added: an open
-  sheet presents its top on both faces, as the base did); (2) `BDPTVertex`
+  sheet presents its top on both faces, as the base did -- SUPERSEDED in
+  round 3, section 9.4b: `bOpenSheet` is not a closedness test); (2) `BDPTVertex`
   now mirrors the four surface-identity flags (`bGeomNormalOrientedToRay`,
   `bGeomNormalRayDerived`, `bOpenSheet`, `bProvablyNoInterior`) and
   `PopulateRIGFromVertex` replays them, so a closed double-sided vertex is
@@ -1011,8 +1014,47 @@ round-1 report of 1.0056 was an unsalted 128-spp artifact.
   against 0.962 single-sided, because the rebuilt record's
   `UnflippedGeomNormal()` was the ray-facing normal.  On this build the
   same scenes read BDPT 0.971 / 0.970 (double / single-sided) and PT
-  0.997 / 0.994 (single unsalted renders, 64 spp).  Filed as DL-412 (fixed
-  here, pending strike).
+  0.997 / 0.994 (double / single-sided; single unsalted renders, 64 spp,
+  whose spread is ~0.5 %).  Filed as DL-412 (fixed here, pending strike).
+
+### 9.4b Review round 3 (2026-10-02): FAIL, 2 P1, 1 P2, 1 P3 -- addressed
+
+* **Both P1s were the unflip predicate.**  `bOpenSheet` is not a closedness
+  test: on an indexed mesh it means NOT CERTIFIED watertight (DL-143 -- no
+  audited real asset certifies), so a closed double-sided box with ONE
+  T-junction read 0.46639 again (PT and BDPT, master 1.00000); and
+  `BezierPatchGeometry` never sets it (DL-220), so a single open Bezier patch
+  seen from its back was unflipped (coat 0.800 against the plane's 0.63, omni
+  0, glass/glass 0.977 against 0.467).  Round 2's comment, section 9.4a and
+  the DL-407 row claimed the Bezier case was covered: wrong.
+* **Fix: the unflip is decided by the walk's STACK.**  A flipped record
+  (`bGeomNormalOrientedToRay`, a true side, not `bProvablyNoInterior`) is
+  unflipped only when the caller's IOR stack already holds the composite's
+  object: the ray crossed in earlier, so it really is inside.  An open sheet
+  hit on its back with no prior crossing keeps top-on-both-faces.  BDPT / VCM
+  reprice on a record rebuilt with the replayed flags (round 2) against the
+  stack `BuildVertexIORStack` rebuilds from the vertex's own `insideObject`
+  -- the same two inputs Scatter decided from, so PT, BDPT and VCM see one
+  frame.  A STACKLESS caller (`IBSDF::value` with no stack;
+  `DeltaPassThroughTransmittance`, which has none) never unflips and sees the
+  reported frame, as before DL-341; for the straight pass-through the layer
+  order does not change `t1 * Beer * t2`.  Certification was NOT kept as an
+  extra trigger: `BezierPatchGeometry` reports "certified" for an open patch.
+  The unseeded camera inside a closed composite stays DL-407.
+* **Rows.**  D5b: the T-junction double-sided box beside a plain-glass twin
+  (PT and BDPT): round-3 library 0.46687, now 1.00000.  D7 Bezier variant:
+  the single patch beside its clipped-plane twin, rendered from BOTH sides
+  (its raw normal is -z, so its back face is seen from +z, where the plane
+  shows its front), PT / BDPT / VCM, env coat, env glass/glass and omni coat:
+  round-3 library 9 failures from +z (0.800, 0.977 and 0 as above), now
+  green from both sides.  `CompositeEnergyConservationTest`
+  `--stack-only --render` against the round-3 library: 150/11.
+* **P2 -- DL-412's remaining BDPT shortfall is NOT depth.**  The round-3
+  reviewer measured the translucent box at BDPT 0.9731 / 0.9728 / 0.9728 for
+  `max_eye_depth` 12 / 32 / 64, and the single-sided box reads 0.9718 on
+  master: a pre-existing, unattributed BDPT translucent shortfall (possibly
+  the DL-223 family), independent of DL-412's double-sided defect, which is
+  fixed.  The DL-412 row is reworded.
 
 ### 9.5 Residuals
 
@@ -1026,6 +1068,7 @@ round-1 report of 1.0056 was an unsalted 128-spp artifact.
   presents its top on both faces instead of following DL-345's face rule, so
   the separate-pair equivalence holds front-side only (from below: 0.467
   against the pair's 4.52); pre-existing, unchanged -- and that holds for
-  every OPEN double-sided sheet, mesh or Bezier set as well as a clipped
-  plane (round 2, D7).  Double-sided CLOSED meshes are no longer in it
+  every OPEN double-sided sheet seen from behind with no prior crossing,
+  mesh, Bezier patch or clipped plane (round 3: decided by the walk's stack,
+  D7).  Double-sided CLOSED meshes are no longer in it
   (fixed in round 1, D5).
