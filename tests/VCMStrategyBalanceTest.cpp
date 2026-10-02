@@ -2410,10 +2410,13 @@ static const char* kLightSpotDL317 =
 //! True for a pixel whose (dilated) footprint misses the sphere of the
 //! delta-lit fixture: pinhole at (0,0,3.5), fov 30, 32x32, sphere r 0.55
 //! at (0,-0.45,0.6).  `row` counts from the top of the image.
-static bool WallPixelDL317( int row, int col )
+//! `SphereHitsDL317` counts how many of the nine dilated sample points hit
+//! the sphere: 0 is a wall pixel, 9 a sphere-interior pixel (DL-375).
+static int SphereHitsDL317( int row, int col )
 {
 	const double t = std::tan( 15.0 * 3.14159265358979323846 / 180.0 );
 	const double c[3] = { 0.0, -0.45, 0.6 }, o[3] = { 0.0, 0.0, 3.5 };
+	int hits = 0;
 	for( int di = -1; di <= 1; di++ ) for( int dj = -1; dj <= 1; dj++ ) {
 		const double x = ( col + dj + 0.5 ) / 16.0 - 1.0, y = 1.0 - ( row + di + 0.5 ) / 16.0;
 		double d[3] = { x * t, y * t, -1.0 };
@@ -2422,14 +2425,17 @@ static bool WallPixelDL317( int row, int col )
 		const double oc[3] = { o[0]-c[0], o[1]-c[1], o[2]-c[2] };
 		const double b = d[0]*oc[0] + d[1]*oc[1] + d[2]*oc[2];
 		const double q = b*b - ( oc[0]*oc[0] + oc[1]*oc[1] + oc[2]*oc[2] - 0.55*0.55 );
-		if( q > 0 ) return false;
+		if( q > 0 ) hits++;
 	}
-	return true;
+	return hits;
 }
 
-//! Mean over wall pixels of `reps` salted renders (salting as in
-//! RenderAndComputeStats).
-static bool RenderWallMeanDL317( const std::string& scene, int reps, double& out )
+static bool WallPixelDL317( int row, int col ) { return SphereHitsDL317( row, col ) == 0; }
+static bool SpherePixelDL375( int row, int col ) { return SphereHitsDL317( row, col ) == 9; }
+
+//! Mean over wall pixels (or, `spherePixels`, over sphere-interior pixels:
+//! DL-375) of `reps` salted renders (salting as in RenderAndComputeStats).
+static bool RenderWallMeanDL317( const std::string& scene, int reps, double& out, bool spherePixels = false )
 {
 	const std::string path = WriteSceneToTempFile( scene.c_str(), "dl317wall" );
 	if( path.empty() ) return false;
@@ -2451,7 +2457,7 @@ static bool RenderWallMeanDL317( const std::string& scene, int reps, double& out
 			if( bRendered && pCap->width == 32 && pCap->height == 32 ) {
 				double acc = 0; int cnt = 0;
 				for( int row = 0; row < 32; row++ ) for( int col = 0; col < 32; col++ ) {
-					if( !WallPixelDL317( row, col ) ) continue;
+					if( spherePixels ? !SpherePixelDL375( row, col ) : !WallPixelDL317( row, col ) ) continue;
 					const RISEColor& px = pCap->pixels[ row * 32 + col ];
 					acc += ( px.base.r + px.base.g + px.base.b ) * px.a / 3.0;
 					cnt++;
@@ -2499,6 +2505,41 @@ static void TestDeltaLitWallDL317()
 		kLightSpotDL317, 2048, 1, 0.035 );
 }
 
+//////////////////////////////////////////////////////////////////////
+// DL-375: the SAME delta-lit fixture, the SPHERE's own pixels.  The
+// random-walk sphere is seen directly, so the path is light -> sphere ->
+// walk -> exit -> camera.  Before DL-375 a random-walk entry admitted no
+// NEE / connection / merge on either side, so no VCM strategy reached it
+// (eye family: BSDF sampling onward never hits a point light; light
+// family: the light-side entry could not splat) -- VCM read ~-98.6%,
+// while PT reaches it by NEE at the exit through RandomWalkEntryBSDF.
+// The random-walk entry is now connectible (Sw = the exact-Fresnel
+// RandomWalkEntryBSDF, MIS density the walk's cosine exit), the eye
+// family owns the path, and the light-side jump is cut there
+// (LightSegmentEyeCoverable reads the entry's connectibility).
+//////////////////////////////////////////////////////////////////////
+static void RunDeltaLitSphereRowDL375( const char* name, const char* light, int spp, double band )
+{
+	std::cout << "Testing DL-375 " << name << std::endl;
+	const std::string body = std::string( kSceneDeltaLitRandomWalkHeadDL317 ) + light;
+	double pt = 0, on = 0, off = 0;
+	const bool ok = RenderWallMeanDL317( std::string( "RISE ASCII SCENE 7\n" ) + body + RasterizerDL317( "pt", spp, nullptr ), 1, pt, true )
+		&& RenderWallMeanDL317( std::string( "RISE ASCII SCENE 7\n" ) + body + RasterizerDL317( "vcm", spp, nullptr ), 1, on, true )
+		&& RenderWallMeanDL317( std::string( "RISE ASCII SCENE 7\n" ) + body + RasterizerDL317( "vcmnovm", spp, nullptr ), 1, off, true );
+	Check( ok, ( std::string( "DL-375 renders produced output: " ) + name ).c_str() );
+	if( !ok ) return;
+	CheckRatioDL317( std::string( "DL-375 sphere-only VCM (merging on) / PT: " ) + name, pt, on, band );
+	CheckRatioDL317( std::string( "DL-375 sphere-only VCM (merging off) / PT: " ) + name, pt, off, band );
+}
+
+static void TestDeltaLitSphereDL375()
+{
+	RunDeltaLitSphereRowDL375( "S1 omni lights a directly-seen random-walk sphere (sphere pixels)",
+		kLightOmniDL317, 2048, 0.05 );
+	RunDeltaLitSphereRowDL375( "S2 spot lights a directly-seen random-walk sphere (sphere pixels)",
+		kLightSpotDL317, 2048, 0.05 );
+}
+
 static void TestSSSBarrierDL317()
 {
 	RunSSSBarrierRowDL317( "F1 white furnace, conservative random walk (roughness 0.3)",
@@ -2514,6 +2555,7 @@ static void TestSSSBarrierDL317()
 		std::string( kSceneBacklitHeadDL317 ) + kMatBacklitSmoothDiffusionDL317 + kSceneBacklitTailDL317, nullptr,
 		1024, 3, 0.03, 0 );
 	TestDeltaLitWallDL317();
+	TestDeltaLitSphereDL375();
 	RunSSSBarrierRowDL317( "V front-lit random-walk sphere on Lambertian walls (light walks exit onto the walls)",
 		kSceneRandomWalkSphereVDL317, nullptr,
 		1024, 1, 0.007, 0 );
@@ -2665,6 +2707,16 @@ int main( int argc, char** argv )
 	// DL-317: the delta-lit random-walk wall rows (D1/D2) alone.
 	if( argc >= 2 && std::strcmp( argv[1], "--dl317-delta-only" ) == 0 ) {
 		ApplySeedOverride( 2 );
+		TestDeltaLitWallDL317();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+
+	// DL-375: the directly-seen delta-lit random-walk sphere rows, plus
+	// the D1/D2 wall rows they share a fixture with.
+	if( argc >= 2 && std::strcmp( argv[1], "--dl375-only" ) == 0 ) {
+		ApplySeedOverride( 2 );
+		TestDeltaLitSphereDL375();
 		TestDeltaLitWallDL317();
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
 		return failCount == 0 ? 0 : 1;

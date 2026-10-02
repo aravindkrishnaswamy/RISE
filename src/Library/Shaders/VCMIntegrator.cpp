@@ -149,8 +149,10 @@ namespace
 	//
 	//   eye-sampled jump (eye subpath ... x_o, x_i, w1 ...):
 	//     at x_i: NEE, a connection to a light vertex, and a merge with
-	//       a photon ARRIVING at x_i -- only if x_i is connectible
-	//       (diffusion entry: yes; random-walk entry: no);
+	//       a photon ARRIVING at x_i -- every entry is connectible since
+	//       DL-375 (a random-walk entry prices Sw with the exact
+	//       dielectric transmission, RandomWalkEntryBSDF; before it a
+	//       random-walk entry admitted none of these);
 	//     at w1 and beyond: every ordinary strategy.
 	//     NOT: anything that makes the light cover x_i and x_o (connect
 	//       x_o--x_i, merge at x_o through the jump, or deeper).
@@ -161,9 +163,12 @@ namespace
 	//     counts the path twice.  The partition is therefore by PATH:
 	//     a path belongs to the EYE-sampled family whenever that family
 	//     has at least one strategy for it, and to the LIGHT-sampled
-	//     family only when it has none -- e.g. a point light feeding a
-	//     random-walk entry, which admits no NEE / connection / merge,
-	//     and which BSDF sampling onward can never hit.  Whether it has
+	//     family only when it has none -- e.g. a point light reaching
+	//     the jump only through a delta interface (index-matched glass
+	//     around it), which no NEE / connection / merge at the entry can
+	//     cross and BSDF sampling onward can never hit.  (Before DL-375
+	//     a point light feeding a random-walk entry directly was such a
+	//     class too; a connectible random-walk entry covers it.)  Whether it has
 	//     one depends only on the light-side segment between the jump
 	//     and the light (or the previous kept jump), so the light walk
 	//     decides it: LightSegmentEyeCoverable / UsableLightSubpathLength.
@@ -175,10 +180,11 @@ namespace
 	// connection x_o--x_i.)  The onward update from x_i is the ordinary
 	// non-specular one applied to that zero state -- dVCM' = 1/p_w (NEE
 	// and connections at x_i), dVC' = (cos/p_w) * eta_VM and dVM' =
-	// cos/p_w (the merge at x_i) -- WHEN x_i is connectible; a non-
-	// connectible random-walk entry supports none of those, so all three
-	// stay 0.  (Pre-DL-317 it took the non-specular update regardless,
-	// reserving a phantom NEE-at-entry: DL-126's pattern.)
+	// cos/p_w (the merge at x_i) -- WHEN x_i is connectible (every entry
+	// since DL-375); a non-connectible entry would support none of those,
+	// so all three would stay 0.  (Pre-DL-317 it took the non-specular
+	// update regardless, reserving a phantom NEE at the then
+	// non-connectible random-walk entry: DL-126's pattern.)
 	//////////////////////////////////////////////////////////////////
 
 	/// Running quantities AT a BSSRDF / random-walk entry vertex: nothing
@@ -202,8 +208,9 @@ namespace
 		}
 
 		const BDPTVertex& v = verts[i];
-		// A non-connectible (random-walk) entry: no NEE, connection or
-		// merge can use it, so the vertex after it reserves nothing.
+		// A non-connectible entry: no NEE, connection or merge can use
+		// it, so the vertex after it reserves nothing.  (Random-walk
+		// entries were the case until DL-375 made them connectible.)
 		if( !v.isConnectible ) {
 			return zero;
 		}
@@ -239,32 +246,12 @@ namespace
 		return norm.mEnableVM && norm.mMergeRadiusSq > 0 && norm.mVmNormalization > 0;
 	}
 
-	/// DL-317: does the EYE-sampled family have a strategy for a path whose
-	/// jump the light walk sampled at `verts[p] -> verts[p+1]` (the hit
-	/// where the light went in, then the entry)?  The eye would arrive at
-	/// the entry's point, jump to verts[p] (its own entry vertex there --
-	/// connectible exactly when verts[p+1] is), and must split the light-
-	/// side segment verts[s..p] somewhere; verts[s] is the light root
-	/// (s == 0) or the previous KEPT light entry.  The strategies, with
-	/// the eye covering verts[j..p] and the light verts[s..j-1]:
-	///   s=0 (eye hits the root): root not delta;
-	///   merge at verts[j]: merging live, verts[j] a non-delta surface;
-	///   NEE / connection at the edge (j-1, j): verts[j] non-delta and
-	///     connectible, and verts[j-1] the root (NEE reaches any light) or
-	///     a non-delta connectible vertex (a kept diffusion entry is one).
-	/// "Non-delta" is the path's own scatter at that vertex (the light
-	/// walk's sampled lobe), so the predicate is a function of the path.
-	inline bool LightSegmentEyeCoverable(
-		const std::vector<BDPTVertex>& verts,
-		const std::size_t s,
-		const std::size_t p,
-		const bool mergingActive
-		)
-	{
-		// Shared with BDPT (DL-377): one predicate, one partition.
-		return BDPTUtilities::LightSegmentEyeCoverable( verts, s, p, mergingActive );
-	}
-
+	/// DL-317: whether the EYE-sampled family has a strategy for a path
+	/// through a light-sampled jump is `BDPTUtilities::
+	/// LightSegmentEyeCoverable` (shared with BDPT/MLT since DL-375, which
+	/// made random-walk entries connectible -- so a delta light feeding a
+	/// random-walk entry is now eye-coverable through NEE at the eye's
+	/// entry, and the light family is cut there).
 	/// DL-317: the number of leading light-subpath vertices VCM may use as
 	/// a strategy endpoint.  Walks the light-side jumps in order; the first
 	/// one the eye family can cover ends the usable subpath (nothing at or
@@ -742,7 +729,7 @@ void VCMIntegrator::ConvertLightSubpath(
 			// and its outMis entries stay zero.  One it cannot cover is
 			// kept: zero state at the entry (never stored for merging),
 			// then the light-entry onward update.
-			if( LightSegmentEyeCoverable( verts, segmentStart, i - 1, MergingActive( norm ) ) ) {
+			if( BDPTUtilities::LightSegmentEyeCoverable( verts, segmentStart, i - 1, MergingActive( norm ) ) ) {
 				return;
 			}
 			segmentStart = i;

@@ -27,7 +27,6 @@
 
 #include "Math3D/Math3D.h"
 #include "../Shaders/BDPTVertex.h"
-#include <cstddef>
 #include <vector>
 
 namespace RISE
@@ -400,13 +399,30 @@ namespace RISE
 		}
 
 		//////////////////////////////////////////////////////////////
-		// BSSRDF jump partition by PATH (DL-317 for VCM, DL-377 for
-		// BDPT/MLT).  A subsurface jump has no reverse density, so the
-		// eye-sampled and the light-sampled family of a path through a
-		// jump cannot be MIS-combined; a path belongs to the EYE family
-		// whenever that family has a strategy for it, and to the LIGHT
-		// family only when it has none.  Full rationale:
-		// docs/MIS_HEURISTICS.md section 4a.
+		// Subsurface jumps partition paths BY PATH between the two
+		// jump families (DL-317 in VCM; shared with BDPT/MLT since
+		// DL-375).  A BSSRDF / random-walk event relocates the path
+		// from the hit where it went in (`x_o`, marked delta) to a
+		// sampled ENTRY vertex (`isBSSRDFEntry`); the relocation is not
+		// an edge and its reverse density is never evaluated, so the
+		// eye-sampled and light-sampled jump families estimate the
+		// SAME integral with nothing to MIS them against each other.
+		// A path belongs to the EYE-sampled family whenever that family
+		// has a strategy for it, and to the light-sampled family only
+		// when it has none; within the owning family the MIS walks stop
+		// at the jump (VCM: zero running quantities at the entry; BDPT:
+		// `MISWeight` breaks at an entry).
+		//
+		// Since DL-375 BOTH entry kinds are connectible: a diffusion
+		// entry prices Sw with its profile's Fresnel, a random-walk
+		// entry with the exact dielectric transmission
+		// (`RandomWalkEntryBSDF`, PT's own NEE adapter); the MIS
+		// density of either is the cosine exit its continuation is
+		// sampled from.  So the delta-lit random-walk class that
+		// DL-317 had to KEEP in the light family (a point light
+		// feeding a random-walk entry) is now eye-coverable through NEE
+		// at the eye's entry, and the predicate below -- which reads
+		// the entry's `isConnectible` -- cuts it.
 		//////////////////////////////////////////////////////////////
 
 		/// Does the EYE-sampled family have a strategy for a path whose
@@ -415,17 +431,19 @@ namespace RISE
 		/// arrive at the entry's point, jump to verts[p] (its own entry
 		/// vertex there -- connectible exactly when verts[p+1] is), and
 		/// must split the light-side segment verts[s..p] somewhere;
-		/// verts[s] is the light root (s == 0) or the previous KEPT light
-		/// entry.  The strategies, with the eye covering verts[j..p] and
-		/// the light verts[s..j-1]:
+		/// verts[s] is the light root (s == 0) or the previous KEPT
+		/// light entry.  The strategies, with the eye covering
+		/// verts[j..p] and the light verts[s..j-1]:
 		///   s=0 (eye hits the root): root not delta;
-		///   merge at verts[j]: merging live, verts[j] a non-delta surface;
-		///   NEE / connection at the edge (j-1, j): verts[j] non-delta and
-		///     connectible, and verts[j-1] the root (NEE reaches any light)
-		///     or a non-delta connectible vertex (a kept diffusion entry is
+		///   merge at verts[j] (VCM only): merging live, verts[j] a
+		///     non-delta surface;
+		///   NEE / connection at the edge (j-1, j): verts[j] non-delta
+		///     and connectible, and verts[j-1] the root (NEE reaches any
+		///     light) or a non-delta connectible vertex (a kept entry is
 		///     one).
-		/// "Non-delta" is the path's own scatter at that vertex (the light
-		/// walk's sampled lobe), so the predicate is a function of the path.
+		/// "Non-delta" is the path's own scatter at that vertex (the
+		/// light walk's sampled lobe), so the predicate is a function of
+		/// the path.
 		inline bool LightSegmentEyeCoverable(
 			const std::vector<BDPTVertex>& verts,
 			const std::size_t s,
@@ -461,13 +479,15 @@ namespace RISE
 			return false;
 		}
 
-		/// The number of leading light-subpath vertices that may be a
-		/// light-family strategy endpoint under the by-path partition.
-		/// Walks the light-side jumps in order; the first one the eye
-		/// family can cover ends the usable subpath.  A jump the eye family
-		/// cannot cover is KEPT and the next segment starts at its entry.
-		/// The hit where the light walk went INTO the material is always
-		/// usable: only its continuation was the jump.
+		/// The number of leading light-subpath vertices usable as a
+		/// strategy endpoint.  Walks the light-side jumps in order; the
+		/// first one the eye family can cover ends the usable subpath
+		/// (nothing at or past it is a strategy).  A jump the eye family
+		/// cannot cover is KEPT -- the light-sampled family is then the
+		/// only estimator of those paths -- and the next segment starts
+		/// at its entry.  The hit where the light walk went INTO the
+		/// material is always usable: it is an ordinary arrival; only
+		/// its continuation was the jump.
 		inline std::size_t UsableLightSubpathLength(
 			const std::vector<BDPTVertex>& lightVerts,
 			const bool mergingActive
