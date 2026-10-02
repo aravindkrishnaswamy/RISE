@@ -313,6 +313,37 @@ The size of the old dilution scales with the profile area over the
 squared light distance, so room-scale shipped scenes barely moved
 (`vcm_sss_dragon`, `bdpt_sss_different_bsdf`: no significant change).
 
+**DL-333 / DL-356 re-measured (2026-10-02, `debt-dl333`): no residual SSS
+bias.**  The two rows quoted BDPT +7.9 % over PT on `bdpt_sss_dragon` made
+smooth and VCM +21 % (merging on) / +61..71 % (off) on `vcm_sss_dragon`.
+Re-measured on master (salted Sobol', OIDN off, in-process capture; the
+merging-off row also at the DL-317 merge revision and through the CLI):
+
+- Merging OFF, BDPT and smooth diffusion agree with PT to ~0.2 % on the whole
+  frame; the +7.9 % is a firefly tail -- one BDPT render in twelve carried a
+  blue cluster worth +8 % of the frame mean, and PT shows the same tail.
+- Every bidirectional-vs-PT gap left in that ROOM (+1..+3.5 % on all
+  indirectly lit surfaces, a Lambertian sphere for the dragon included) comes
+  from its `colorspace ROMMRGB_Linear` wall painters, whose Rec.709
+  reflectances carry NEGATIVE channels -- red wall (1.134, -0.100, 0.020),
+  green (-0.233, 0.462, -0.029).  Clamping only the negative channels
+  closes it to noise (DL-386, open: a policy question, not an SSS one).
+- Merging ON at the scene's authored `merge_radius 0.1` reads +1.5..+3.3 %
+  on the frame and up to ~+15 % on the dragon -- kernel bias of a fixed
+  radius that is wide against the dragon's thin, backlit features: it
+  shrinks with the radius (0.025: +0.4 %), a Lambertian dragon shows it too
+  (+6.7 % on its region), and the automatic radius (DL-319) reads +0.1 %.
+
+Discriminators that rule out the mesh suspects (`bOpenSheet` /
+`BSSRDFEntryFacing`, the probe orientation, `AreaToSolidAngleFactor`): a
+smooth diffusion sphere on Lambertian walls, analytic vs tessellated, reads
+BDPT/PT +0.05 % / +0.07 % and VCM/PT within 0.13 % merging on and off --
+pinned by `BDPTStrategyBalanceTest --dl333-only` and
+`VCMStrategyBalanceTest --dl333-only`.  Lesson: before attributing a
+bidirectional gap to the material on screen, render the same room with that
+material made Lambertian AND look at the walls; a block map of BDPT/PT over
+the whole frame is two renders.
+
 ### 5. SMS — no per-strategy MIS reweight
 
 SMS contributions are splat-accumulated as an auxiliary technique.
