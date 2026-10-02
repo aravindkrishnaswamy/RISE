@@ -73,7 +73,9 @@ Auto resolves from pixel count, configured sample budget and a fixed
 rasterizer-family quality policy. The constants are policy weights, not
 hardware performance measurements. Adaptive budgets use the maximum of
 the configured sampling and adaptive target. Region and direct-companion
-paths use the same family policy. Explicit quality settings retain their
+paths use the same family policy. The implementation carries spp times
+family weight directly in per-megapixel policy units, avoiding area
+multiply/divide roundoff at preset thresholds. Explicit quality settings retain their
 meaning. Eight fabric replays hold raw input constant and alternate an
 8-second intermediate-output delay, which perturbs the old clock policy. Auto must also equal a pinned Balanced
 reference (64 spp times legacy policy weight 0.1 gives r=6.4), so an old

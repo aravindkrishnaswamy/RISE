@@ -7683,6 +7683,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 				rigLocal.ptIntersection = v.position;
 				rigLocal.vNormal       = v.normal;
 				rigLocal.vGeomNormal   = v.geomNormal;
+				rigLocal.ptCoord       = v.uv;
 				SpecularInfo specNM = v.pMaterial->GetSpecularInfoNM( rigLocal, queryIor, nm );
 				v.eta         = specNM.ior;
 				// DL-353: the solve reads the explicit interface pair, not
@@ -8477,6 +8478,8 @@ unsigned int ManifoldSolver::BuildSnellBaseSeed(
 				rig.bHit = true;
 				rig.ptIntersection = chain[i].position;
 				rig.vNormal = chain[i].normal;
+				rig.vGeomNormal = chain[i].geomNormal;
+				rig.ptCoord = chain[i].uv;
 
 				SpecularInfo specNM = chain[i].pMaterial->GetSpecularInfoNM(
 					rig, queryIor, nm );
