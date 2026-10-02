@@ -549,7 +549,7 @@ void AshikminShirleyAnisotropicPhongSPF::Scatter(
 	ScatteredRay	specular;
 	specular.type = ScatteredRay::eRayReflection;
 
-	const RISEPel rho = pRs->GetColor(ri);
+	const RISEPel rho = ReflectanceColor( *pRs, ri );
 
 	if( !pNu->HasPerChannelVariation() && !pNv->HasPerChannelVariation() )
 	{
@@ -616,7 +616,7 @@ void AshikminShirleyAnisotropicPhongSPF::Scatter(
 	static const Scalar diffuseNorm = 28.0 / 23.0;
 
 	const RISEPel oneMinusRs = RISEPel(1,1,1) - rho;
-	diffuse.kray = pRd->GetColor(ri) * oneMinusRs * (diffuseNorm * fromK1 * fromK2);
+	diffuse.kray = ReflectanceColor( *pRd, ri ) * oneMinusRs * (diffuseNorm * fromK1 * fromK2);
 
 	if( Vector3Ops::Dot( diffuse.ray.Dir(), geomN ) > 0 ) {
 		scattered.AddScatteredRay( diffuse );
@@ -653,7 +653,7 @@ void AshikminShirleyAnisotropicPhongSPF::ScatterNM(
 	Scalar specFactor=0;
 	Scalar diffuseFactor=0;
 
-	const Scalar rho = GuardedGetColorNM( *pRs, ri, nm );
+	const Scalar rho = ReflectanceColorNM( *pRs, ri, nm );
 
 	if( GenerateSpecularRay( specular, diffuseFactor, specFactor, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), NU, NV, rho ) ) {
 		// specFactor already includes Fresnel (which contains Rs) — no extra rho.
@@ -680,7 +680,7 @@ void AshikminShirleyAnisotropicPhongSPF::ScatterNM(
 		const Scalar fromK2 = 1.0 - pow( 1.0 - r_max(0.0, cos_i) * 0.5, 5.0 );
 		static const Scalar diffuseNorm = 28.0 / 23.0;
 
-		diffuse.krayNM = GuardedGetColorNM( *pRd, ri, nm ) * (1.0 - rho) * (diffuseNorm * fromK1 * fromK2);
+		diffuse.krayNM = ReflectanceColorNM( *pRd, ri, nm ) * (1.0 - rho) * (diffuseNorm * fromK1 * fromK2);
 		if( Vector3Ops::Dot( diffuse.ray.Dir(), geomN ) > 0 ) {
 			scattered.AddScatteredRay( diffuse );
 		}
@@ -744,8 +744,8 @@ Scalar AshikminShirleyAnisotropicPhongSPF::Pdf(
 	// AshikminShirleySPFPdfConsistencyTest was blind to it.  The remaining
 	// per-direction scalars (fromK1/fromK2/diffuseNorm) are channel-
 	// independent and factor cleanly out of the reduction.
-	const RISEPel rdCol = pRd->GetColor(ri);
-	const RISEPel rhoCol = pRs->GetColor(ri);
+	const RISEPel rdCol = ReflectanceColor( *pRd, ri );
+	const RISEPel rhoCol = ReflectanceColor( *pRs, ri );
 	const Scalar wDBase = ColorMath::MaxValue( rdCol * ( RISEPel(1,1,1) - rhoCol ) );
 	const Scalar rho = ColorMath::MaxValue( rhoCol );
 	static const Scalar diffuseNorm = 28.0 / 23.0;
@@ -836,8 +836,8 @@ Scalar AshikminShirleyAnisotropicPhongSPF::PdfNM(
 	// not apply, so on a (non-physical) negative reflectance it described a
 	// distribution `ScatterNM` does not draw from.  Matching the sampler is
 	// the whole contract of this function.
-	const Scalar rd  = GuardedGetColorNM( *pRd, ri, nm );
-	const Scalar rho = GuardedGetColorNM( *pRs, ri, nm );
+	const Scalar rd  = ReflectanceColorNM( *pRd, ri, nm );
+	const Scalar rho = ReflectanceColorNM( *pRs, ri, nm );
 	static const Scalar diffuseNorm = 28.0 / 23.0;
 	const Scalar fromK1 = 1.0 - pow( 1.0 - cosO*0.5, 5.0 );
 	const Scalar fromK2 = 1.0 - pow( 1.0 - cos_i*0.5, 5.0 );
@@ -921,7 +921,7 @@ Scalar AshikminShirleyAnisotropicPhongSPF::EvaluateLobeFNM(
 		myonb.FlipW();
 	}
 
-	const Scalar rho = GuardedGetColorNM( *pRs, ri, nm );
+	const Scalar rho = ReflectanceColorNM( *pRs, ri, nm );
 
 	if( rayType == ScatteredRay::eRayDiffuse ) {
 		const Scalar cos_o_diff = Vector3Ops::Dot( outDir, myonb.w() );
@@ -930,7 +930,7 @@ Scalar AshikminShirleyAnisotropicPhongSPF::EvaluateLobeFNM(
 		const Scalar fromK1 = 1.0 - pow( 1.0 - r_max(0.0, cos_o_diff) * 0.5, 5.0 );
 		const Scalar fromK2 = 1.0 - pow( 1.0 - r_max(0.0, cos_i) * 0.5, 5.0 );
 		static const Scalar diffuseNorm = 28.0 / 23.0;
-		return GuardedGetColorNM( *pRd, ri, nm ) * (1.0 - rho) * (diffuseNorm * fromK1 * fromK2) * INV_PI;
+		return ReflectanceColorNM( *pRd, ri, nm ) * (1.0 - rho) * (diffuseNorm * fromK1 * fromK2) * INV_PI;
 	}
 
 	if( rayType != ScatteredRay::eRayReflection ) {
@@ -972,7 +972,7 @@ Scalar AshikminShirleyAnisotropicPhongSPF::EvaluateKrayNM(
 		myonb.FlipW();
 	}
 
-	const Scalar rho = GuardedGetColorNM( *pRs, ri, nm );
+	const Scalar rho = ReflectanceColorNM( *pRs, ri, nm );
 
 	if( rayType == ScatteredRay::eRayDiffuse ) {
 		const Scalar cos_o_diff = Vector3Ops::Dot( outDir, myonb.w() );
@@ -981,7 +981,7 @@ Scalar AshikminShirleyAnisotropicPhongSPF::EvaluateKrayNM(
 		const Scalar fromK1 = 1.0 - pow( 1.0 - r_max(0.0, cos_o_diff) * 0.5, 5.0 );
 		const Scalar fromK2 = 1.0 - pow( 1.0 - r_max(0.0, cos_i) * 0.5, 5.0 );
 		static const Scalar diffuseNorm = 28.0 / 23.0;
-		return GuardedGetColorNM( *pRd, ri, nm ) * (1.0 - rho) * (diffuseNorm * fromK1 * fromK2);
+		return ReflectanceColorNM( *pRd, ri, nm ) * (1.0 - rho) * (diffuseNorm * fromK1 * fromK2);
 	}
 
 	if( rayType != ScatteredRay::eRayReflection ) {

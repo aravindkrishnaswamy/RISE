@@ -101,12 +101,12 @@ RISEPel WardIsotropicGaussianBRDF::value( const Vector3& vLightIn, const RayInte
 	// it's given, so the flip propagates through automatically.
 	OrthonormalBasis3D onb = ri.onb;
 	if(Vector3Ops::Dot(ri.ray.Dir(),onb.w())>NEARZERO) onb.FlipW();
-	const RISEPel rs = pSpecular->GetColor(ri);
+	const RISEPel rs = ReflectanceColor( *pSpecular, ri );
 	ComputeFactors<RISEPel>( d, s, vLightIn, ri, onb, a, rs );
 
 	// DL-310: the diffuse term is coupled to the specular lobe's albedo
 	// bound -- see WardSelection::CoupledDiffuse.
-	const RISEPel rd = pDiffuse->GetColor(ri);
+	const RISEPel rd = ReflectanceColor( *pDiffuse, ri );
 	const RISEPel rdCoupled( WardSelection::CoupledDiffuse( rd[0], rs[0] ),
 		WardSelection::CoupledDiffuse( rd[1], rs[1] ), WardSelection::CoupledDiffuse( rd[2], rs[2] ) );
 	return d*rdCoupled + s;
@@ -119,10 +119,10 @@ Scalar WardIsotropicGaussianBRDF::valueNM( const Vector3& vLightIn, const RayInt
 	// Same ray-facing flip as value() above.
 	OrthonormalBasis3D onb = ri.onb;
 	if(Vector3Ops::Dot(ri.ray.Dir(),onb.w())>NEARZERO) onb.FlipW();
-	const Scalar rsNM = GuardedGetColorNM(*pSpecular,ri,nm);
+	const Scalar rsNM = ReflectanceColorNM(*pSpecular,ri,nm);
 	ComputeFactors<Scalar>( d, s, vLightIn, ri, onb, pAlpha->GetValueAtNM(ri,nm), rsNM );
 
-	return d*WardSelection::CoupledDiffuse( GuardedGetColorNM( *pDiffuse, ri, nm ), rsNM ) + s;
+	return d*WardSelection::CoupledDiffuse( ReflectanceColorNM( *pDiffuse, ri, nm ), rsNM ) + s;
 }
 
 RISEPel WardIsotropicGaussianBRDF::albedo( const RayIntersectionGeometric& ri ) const
@@ -131,7 +131,7 @@ RISEPel WardIsotropicGaussianBRDF::albedo( const RayIntersectionGeometric& ri ) 
 	// to at most Rs. Saturate only this OIDN AOV, whose contract is [0,1];
 	// additive authored reflectances remain unchanged in transport.
 	// DL-310: the coupled diffuse min(Rd, 1 - Rs) plus the specular bound.
-	const RISEPel rd=pDiffuse->GetColor(ri), rs=pSpecular->GetColor(ri);
+	const RISEPel rd=ReflectanceColor( *pDiffuse, ri ), rs=ReflectanceColor( *pSpecular, ri );
 	RISEPel result=rs;
 	for(int ch=0;ch<3;++ch) result[ch]+=WardSelection::CoupledDiffuse(rd[ch],rs[ch]);
 	for(int ch=0;ch<3;++ch) result[ch]=r_max(Scalar(0),r_min(Scalar(1),result[ch]));

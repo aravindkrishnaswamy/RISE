@@ -85,7 +85,7 @@ namespace
 
 RISEPel GGXInterfaceFresnel::Directional( const Scalar cosine ) const
 {
-	const RISEPel tint = specular.GetColor( ri );
+	const RISEPel tint = ReflectanceColor( specular, ri );
 	if( mode == eFresnelSchlickF0 ) {
 		return Optics::CalculateFresnelReflectanceSchlick<RISEPel>( tint, cosine );
 	}
@@ -116,7 +116,7 @@ RISEPel GGXInterfaceFresnel::Directional( const Scalar cosine ) const
 
 Scalar GGXInterfaceFresnel::DirectionalNM( const Scalar cosine, const Scalar nm ) const
 {
-	const Scalar tint = GuardedGetColorNM( specular, ri, nm );
+	const Scalar tint = ReflectanceColorNM( specular, ri, nm );
 	if( mode == eFresnelSchlickF0 ) {
 		return Optics::CalculateFresnelReflectanceSchlick<Scalar>( tint, cosine );
 	}
@@ -132,7 +132,7 @@ Scalar GGXInterfaceFresnel::DirectionalNM( const Scalar cosine, const Scalar nm 
 
 RISEPel GGXInterfaceFresnel::Mean() const
 {
-	const RISEPel tint = specular.GetColor( ri );
+	const RISEPel tint = ReflectanceColor( specular, ri );
 	if( mode == eFresnelSchlickF0 ) return SchlickFresnelAvg<RISEPel>( tint );
 	if( mode == eFresnelThinFilmConductor ) {
 		// Integrate the same projected directional function. Projecting an
@@ -152,7 +152,7 @@ RISEPel GGXInterfaceFresnel::Mean() const
 
 Scalar GGXInterfaceFresnel::MeanNM( const Scalar nm ) const
 {
-	const Scalar tint = GuardedGetColorNM( specular, ri, nm );
+	const Scalar tint = ReflectanceColorNM( specular, ri, nm );
 	if( mode == eFresnelSchlickF0 ) return SchlickFresnelAvg<Scalar>( tint );
 	if( mode == eFresnelThinFilmConductor ) {
 		return tint * ThinFilm::FresnelAvgConductor( nm, ri.ambientIOR, Scalar(0),
@@ -302,7 +302,7 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 	// Single-scatter specular: D * G2 / (4 * cosWi * cosWo)
 	const Scalar specFactor = D * G2 / (4.0 * nv * nr);
 
-	const RISEPel specColor = pSpecular->GetColor(ri);
+	const RISEPel specColor = ReflectanceColor( *pSpecular, ri );
 
 	RISEPel specular(0,0,0);
 
@@ -450,7 +450,7 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 	// Diffuse interface transmission on entry and exit, shared with the
 	// selected cosine lobe in GGXSPF. No diffuse recycling is added.
 	const GGXInterfaceFresnel interfaceFresnel { ri, fresnelMode, *pSpecular, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness };
-	const RISEPel diffuse = pDiffuse->GetColor(ri) * INV_PI *
+	const RISEPel diffuse = ReflectanceColor( *pDiffuse, ri ) * INV_PI *
 		GGXInterfaceFresnel::Transmission( interfaceFresnel.Directional(nv), interfaceFresnel.Directional(nr) );
 
 	return diffuse + specular;
@@ -516,7 +516,7 @@ Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric
 	const Scalar G2 = MicrofacetUtils::GGX_G2_Aniso( alphaX, alphaY, wi_local, wo_local );
 	const Scalar specFactor = D * G2 / (4.0 * nv * nr);
 
-	const Scalar specColor = GuardedGetColorNM( *pSpecular, ri, nm );
+	const Scalar specColor = ReflectanceColorNM( *pSpecular, ri, nm );
 
 	Scalar specular = 0;
 
@@ -618,7 +618,7 @@ Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric
 	}
 
 	const GGXInterfaceFresnel interfaceFresnel { ri, fresnelMode, *pSpecular, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness };
-	const Scalar diffuse = GuardedGetColorNM( *pDiffuse, ri, nm ) * INV_PI *
+	const Scalar diffuse = ReflectanceColorNM( *pDiffuse, ri, nm ) * INV_PI *
 		GGXInterfaceFresnel::Transmission( interfaceFresnel.DirectionalNM(nv,nm), interfaceFresnel.DirectionalNM(nr,nm) );
 
 	return diffuse + specular;
@@ -632,7 +632,7 @@ RISEPel GGXBRDF::albedo( const RayIntersectionGeometric& ri ) const
 	const GGXInterfaceFresnel interfaceFresnel { ri, fresnelMode, *pSpecular, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness };
 	const Scalar cosine = fabs( Vector3Ops::Dot( Vector3Ops::Normalize(-ri.ray.Dir()), ri.onb.w() ) );
 	const RISEPel outgoing = interfaceFresnel.Directional( cosine );
-	return outgoing + pDiffuse->GetColor(ri) * GGXInterfaceFresnel::Transmission( outgoing, interfaceFresnel.Mean() );
+	return outgoing + ReflectanceColor( *pDiffuse, ri ) * GGXInterfaceFresnel::Transmission( outgoing, interfaceFresnel.Mean() );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -2164,11 +2164,11 @@ bool GGXBRDF::hemisphericalAlbedo( const RayIntersectionGeometric& ri, RISEPel& 
 	ResolveGGXHemisphericalAlphas( *pAlphaX, *pAlphaY, ri, alphaX, alphaY );
 	const Scalar EavgAniso = LookupEavgG2AnisoForHemisphericalAlbedo( alphaX, alphaY );
 	const RISEPel R_ss = GGXSpecularSingleScatterBihemispherical( interfaceFresnel, alphaX, alphaY );
-	const RISEPel specColor = pSpecular->GetColor(ri);
+	const RISEPel specColor = ReflectanceColor( *pSpecular, ri );
 	const RISEPel F_ms = ComputeGGXFms( ri, fresnelMode, specColor, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness, EavgAniso );
 	const RISEPel R_ms = F_ms * (Scalar(1) - EavgAniso);
 
-	out = R_ss + R_ms + pDiffuse->GetColor(ri) * GGXInterfaceFresnel::Transmission( mean, mean );
+	out = R_ss + R_ms + ReflectanceColor( *pDiffuse, ri ) * GGXInterfaceFresnel::Transmission( mean, mean );
 	return true;
 }
 
@@ -2181,10 +2181,10 @@ bool GGXBRDF::hemisphericalAlbedoNM( const RayIntersectionGeometric& ri, const S
 	ResolveGGXHemisphericalAlphasNM( *pAlphaX, *pAlphaY, ri, nm, alphaX, alphaY );
 	const Scalar EavgAniso = LookupEavgG2AnisoForHemisphericalAlbedo( alphaX, alphaY );
 	const Scalar R_ss = GGXSpecularSingleScatterBihemisphericalNM( interfaceFresnel, alphaX, alphaY, nm );
-	const Scalar specColor = GuardedGetColorNM( *pSpecular, ri, nm );
+	const Scalar specColor = ReflectanceColorNM( *pSpecular, ri, nm );
 	const Scalar F_ms = ComputeGGXFmsNM( ri, fresnelMode, specColor, *pIOR, *pExtinction, pFilmIOR, pFilmExtinction, pFilmThickness, nm, EavgAniso );
 	const Scalar R_ms = F_ms * (Scalar(1) - EavgAniso);
 
-	out = R_ss + R_ms + GuardedGetColorNM( *pDiffuse, ri, nm ) * GGXInterfaceFresnel::Transmission( mean, mean );
+	out = R_ss + R_ms + ReflectanceColorNM( *pDiffuse, ri, nm ) * GGXInterfaceFresnel::Transmission( mean, mean );
 	return true;
 }

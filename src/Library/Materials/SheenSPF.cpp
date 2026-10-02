@@ -107,7 +107,7 @@ void SheenSPF::Scatter(
 
 	// kray = f(wo) · cosθ_o / pdf(wo); pdf for cosine-hemisphere is
 	// cosθ_o / π, so kray = f · π.
-	const RISEPel kray = pColor->GetColor( ri ) * (D * V * PI);
+	const RISEPel kray = ReflectanceColor( *pColor, ri ) * (D * V * PI);
 
 	ScatteredRay s;
 	s.type = ScatteredRay::eRayDiffuse;
@@ -158,7 +158,7 @@ void SheenSPF::ScatterNM(
 	ScatteredRay s;
 	s.type = ScatteredRay::eRayDiffuse;
 	s.ray.Set( ri.ptIntersection, wo );
-	s.krayNM = GuardedGetColorNM( *pColor, ri, nm ) * D * V * PI;
+	s.krayNM = ReflectanceColorNM( *pColor, ri, nm ) * D * V * PI;
 	s.pdf = nDotL * INV_PI;
 	s.isDelta = false;
 	scattered.AddScatteredRay( s );

@@ -211,10 +211,10 @@ RISEPel SchlickBRDF::value( const Vector3& vLightIn, const RayIntersectionGeomet
 	}
 	const RISEPel factor = SchlickChannelFactors( g, rPel, iPel );
 	if( ColorMath::MaxValue(factor) > 0 ) {
-		const RISEPel rho = pSpecular->GetColor(ri);
+		const RISEPel rho = ReflectanceColor( *pSpecular, ri );
 		// DL-310: the diffuse term is coupled to the specular lobe's own
 		// directional albedo -- see SchlickDirectionalAlbedo.h.
-		const RISEPel rdCoupled = SchlickCoupledDiffuse( g, pDiffuse->GetColor(ri), rho, rPel, iPel );
+		const RISEPel rdCoupled = SchlickCoupledDiffuse( g, ReflectanceColor( *pDiffuse, ri ), rho, rPel, iPel );
 		return (rdCoupled*INV_PI) + ((rho + (RISEPel(1.0,1.0,1.0)-rho)*g.fresnel) * factor);
 	}
 
@@ -240,12 +240,12 @@ Scalar SchlickBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeome
 	const Scalar isotropyNM = pIsotropy->GetValueAtNM(ri,nm);
 	const Scalar factor = SchlickLaneFactor( g, roughnessNM, isotropyNM );
 	if( factor > 0 ) {
-		const Scalar rho = GuardedGetColorNM( *pSpecular, ri, nm );
+		const Scalar rho = ReflectanceColorNM( *pSpecular, ri, nm );
 		// DL-310: coupled diffuse, spectral twin of value() above.
 		SchlickDirectionalAlbedo::Lane lane;
 		SchlickDirectionalAlbedo::PrepareLane( lane, roughnessNM, isotropyNM );
 		const Scalar rdCoupled = SchlickDirectionalAlbedo::CoupledDiffuseAt(
-			lane, rho, GuardedGetColorNM( *pDiffuse, ri, nm ), g.nv, g.nl );
+			lane, rho, ReflectanceColorNM( *pDiffuse, ri, nm ), g.nv, g.nl );
 		return (rdCoupled*INV_PI) + (rho + (1.0-rho)*g.fresnel) * factor;
 	}
 
@@ -271,7 +271,7 @@ RISEPel SchlickBRDF::albedo( const RayIntersectionGeometric& ri ) const
 	const Scalar vx=Vector3Ops::Dot(v,onb.u()), vy=Vector3Ops::Dot(v,onb.v());
 	const Scalar gx=Vector3Ops::Dot(g,onb.u()), gy=Vector3Ops::Dot(g,onb.v());
 	const Scalar gz=Vector3Ops::Dot(g,onb.w()), vg=Vector3Ops::Dot(v,g);
-	const RISEPel rd=pDiffuse->GetColor(ri), rho=pSpecular->GetColor(ri);
+	const RISEPel rd=ReflectanceColor( *pDiffuse, ri ), rho=ReflectanceColor( *pSpecular, ri );
 	ScalarTriple rough=pRoughness->GetValuesAt(ri);
 	const ScalarTriple iso=pIsotropy->GetValuesAt(ri);
 	const int nt=16, np=32;

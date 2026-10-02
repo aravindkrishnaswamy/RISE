@@ -658,6 +658,17 @@ namespace RISE
 		std::vector<ParameterDescriptor> parameters;
 		std::string                      description;
 		bool                             unnamedRepeatable = false;              //!< true iff multiple UNNAMED chunks of this keyword may coexist -- the derive APPENDS rather than last-wins (e.g. timeline); consumed by the agent insert/remove verbs
+
+		//! DL-323 follow-through (2026-10-02): the chunk TYPE is deprecated.  A deprecated chunk
+		//! still parses, derives and RENDERS exactly as it always did (it is a deprecation, not a
+		//! retrofit) -- the only behavioural consequence is that DeriveToJob logs ONE
+		//! eLog_Warning per deprecated keyword per derive (never a derive diagnostic, so it can
+		//! never turn a successful load into a failed one) naming `replacement`.  The flag is
+		//! also surfaced to the agent schema (SchemaGen) and the editor's chunk-property panel.
+		//! Set through MarkDeprecated() in ChunkParserRegistry.cpp; see docs/SCENE_CONVENTIONS.md
+		//! "Deprecated materials" for the legacy -> modern mapping table.
+		bool                             deprecated = false;
+		std::string                      replacement;                            //!< human-readable replacement hint (names the modern keyword(s) + the parameter translation); non-empty iff `deprecated`
 	};
 
 	inline void ParseStateBag::ValidateAccess(const std::string& key) const

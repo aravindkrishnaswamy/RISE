@@ -134,7 +134,7 @@ RISEPel IsotropicPhongBRDF::value( const Vector3& vLightIn, const RayIntersectio
 	const RISEPel exp( e.v[0], e.v[1], e.v[2] );
 	ComputeDiffuseSpecularFactors( diffuseFactor, specularFactor, vLightIn, ri, exp );
 
-	return ((pRd->GetColor(ri) * diffuseFactor) + (pRs->GetColor(ri)*specularFactor));
+	return ((ReflectanceColor( *pRd, ri ) * diffuseFactor) + (ReflectanceColor( *pRs, ri )*specularFactor));
 }
 
 Scalar IsotropicPhongBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
@@ -142,12 +142,12 @@ Scalar IsotropicPhongBRDF::valueNM( const Vector3& vLightIn, const RayIntersecti
 	Scalar diffuseFactor=0, specularFactor=0;
 	ComputeDiffuseSpecularFactors( diffuseFactor, specularFactor, vLightIn, ri, pExponent->GetValueAtNM(ri,nm) );
 
-	return ((GuardedGetColorNM( *pRd, ri, nm ) * diffuseFactor) + (GuardedGetColorNM( *pRs, ri, nm )*specularFactor));
+	return ((ReflectanceColorNM( *pRd, ri, nm ) * diffuseFactor) + (ReflectanceColorNM( *pRs, ri, nm )*specularFactor));
 }
 
 RISEPel IsotropicPhongBRDF::albedo( const RayIntersectionGeometric& ri ) const
 {
 	// Conventional Phong reflectance: Rd + Rs (the normalized lobe
 	// integrates to ≈ Rs over the hemisphere).
-	return pRd->GetColor( ri ) + pRs->GetColor( ri );
+	return ReflectanceColor( *pRd, ri ) + ReflectanceColor( *pRs, ri );
 }

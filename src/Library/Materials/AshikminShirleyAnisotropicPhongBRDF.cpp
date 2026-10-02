@@ -156,7 +156,7 @@ RISEPel AshikminShirleyAnisotropicPhongBRDF::value( const Vector3& vLightIn, con
 {
 	// rsCol = Rs painter SAMPLED at this point — distinct from the
 	// `pRs` MEMBER (the painter pointer itself).
-	RISEPel	rsCol = pRs->GetColor(ri);
+	RISEPel	rsCol = ReflectanceColor( *pRs, ri );
 	RISEPel	OMRs = RISEPel(1.0,1.0,1.0) - rsCol;
 
 	RISEPel diffuseFactor, specularFactor;
@@ -175,7 +175,7 @@ RISEPel AshikminShirleyAnisotropicPhongBRDF::value( const Vector3& vLightIn, con
 	}
 	ComputeDiffuseSpecularFactors( diffuseFactor, specularFactor, vLightIn, ri, myonb.w(), myonb.u(), myonb.v(), NUp, NVp, rsCol );
 
-	const RISEPel diffuse = (pRd->GetColor(ri) * OMRs * diffuseFactor);
+	const RISEPel diffuse = (ReflectanceColor( *pRd, ri ) * OMRs * diffuseFactor);
 	// specularFactor already contains Fresnel F(h·k) = Rs + (1-Rs)(1-cos)^5,
 	// so no extra Rs multiplication is needed (per Ashikmin-Shirley 2000 paper)
 	const RISEPel specular = specularFactor;
@@ -185,7 +185,7 @@ RISEPel AshikminShirleyAnisotropicPhongBRDF::value( const Vector3& vLightIn, con
 
 Scalar AshikminShirleyAnisotropicPhongBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
 {
-	const Scalar	rsCol = GuardedGetColorNM( *pRs, ri, nm );
+	const Scalar	rsCol = ReflectanceColorNM( *pRs, ri, nm );
 	const Scalar	OMRs = 1.0 - rsCol;
 
 	Scalar diffuseFactor, specularFactor;
@@ -197,7 +197,7 @@ Scalar AshikminShirleyAnisotropicPhongBRDF::valueNM( const Vector3& vLightIn, co
 	}
 	ComputeDiffuseSpecularFactors( diffuseFactor, specularFactor, vLightIn, ri, myonb.w(), myonb.u(), myonb.v(), pNu->GetValueAtNM(ri,nm), pNv->GetValueAtNM(ri,nm), rsCol );
 
-	const Scalar diffuse = (GuardedGetColorNM( *pRd, ri, nm ) * OMRs * diffuseFactor);
+	const Scalar diffuse = (ReflectanceColorNM( *pRd, ri, nm ) * OMRs * diffuseFactor);
 	// specularFactor already contains Fresnel — no extra Rs multiplication
 	const Scalar specular = specularFactor;
 
@@ -209,6 +209,6 @@ RISEPel AshikminShirleyAnisotropicPhongBRDF::albedo( const RayIntersectionGeomet
 	// AS-2000 factors as `Rd·(1-Rs)·diffuse_factor + spec_factor` where
 	// the spec lobe carries Fresnel(F0=Rs) and integrates to ≈ Rs.
 	// Total: Rd·(1-Rs) + Rs — symmetric in the diffuse/spec coupling.
-	const RISEPel rsCol = pRs->GetColor( ri );
-	return pRd->GetColor( ri ) * ( RISEPel(1,1,1) - rsCol ) + rsCol;
+	const RISEPel rsCol = ReflectanceColor( *pRs, ri );
+	return ReflectanceColor( *pRd, ri ) * ( RISEPel(1,1,1) - rsCol ) + rsCol;
 }

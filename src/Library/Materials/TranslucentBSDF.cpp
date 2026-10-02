@@ -138,5 +138,5 @@ RISEPel TranslucentBSDF::albedo( const RayIntersectionGeometric& ri ) const
 	// Only the reflective lobe returns energy back toward the camera --
 	// transmitted energy reaches the OIDN beauty pass via what's behind
 	// the surface, not via this BSDF's albedo AOV.
-	return pRefFront->GetColor( ri );
+	return ReflectanceColor( *pRefFront, ri );
 }

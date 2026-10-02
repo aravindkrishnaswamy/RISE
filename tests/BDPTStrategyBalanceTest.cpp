@@ -4272,6 +4272,60 @@ static void TestRandomWalkSphereEmptyContainerV()
 }
 
 //////////////////////////////////////////////////////////////////////
+// DL-333 / DL-356 consistency pins (2026-10-02): a SMOOTH (roughness 0)
+// diffusion `subsurfacescattering_material` sphere on topology V's
+// Lambertian wall + floor, once as the analytic `sphere_geometry` and
+// once tessellated (`displaced_geometry`, displacement none, detail 64 --
+// an indexed triangle mesh, the class DL-356 suspected through
+// `bOpenSheet` / the probe orientation on meshes).  DL-333 quoted BDPT
+// +7.9 % over PT on the shipped `bdpt_sss_dragon` made smooth; re-measured
+// on master that number does not survive (see docs/MIS_HEURISTICS.md
+// section 4a, "DL-333 / DL-356"): the dragon room's residual comes from
+// its ROMM-authored wall painters converting to NEGATIVE Rec.709
+// reflectance channels (DL-386), plus rare blue fireflies in PT and BDPT
+// alike.  These rows gate that smooth diffusion SSS itself, analytic and
+// meshed, is PT / BDPT / guided-BDPT consistent.  Green on the base as
+// well (a pin, not a red-proof).  Measured (32x32, 1024 spp, salted
+// probe, n = 6 per integrator): BDPT/PT +0.05 % (analytic) / +0.07 %
+// (mesh), per-render sd 0.05-0.08 %; the mean of 3 salted replicates
+// puts the ratio sd near 0.06 %, so the 0.5 % band is ~8 sd.
+//////////////////////////////////////////////////////////////////////
+static std::string SmoothDiffusionSphereScene( bool tessellated )
+{
+	std::string s =
+		"film\n{\n\twidth 32\n\theight 32\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
+		"subsurfacescattering_material\n{\n\tname mat_sss\n\tior 1.3\n\tabsorption 0.1\n"
+			"\tscattering 1.0\n\tg 0.0\n\troughness 0.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_alb_w\n\tcolor 0.5 0.5 0.5\n}\n\n"
+		"lambertian_material\n{\n\tname mat_lamb_w\n\treflectance pnt_alb_w\n}\n\n"
+		"clippedplane_geometry\n{\n\tname quad_wall\n\tpta -1 -1 0\n\tptb 1 -1 0\n\tptc 1 1 0\n\tptd -1 1 0\n}\n\n"
+		"standard_object\n{\n\tname obj_wall\n\tgeometry quad_wall\n\tmaterial mat_lamb_w\n}\n\n"
+		"clippedplane_geometry\n{\n\tname quad_floor\n\tpta -1 -1 0\n\tptb -1 -1 2\n\tptc 1 -1 2\n\tptd 1 -1 0\n}\n\n"
+		"standard_object\n{\n\tname obj_floor\n\tgeometry quad_floor\n\tmaterial mat_lamb_w\n}\n\n"
+		"sphere_geometry\n{\n\tname sph_w\n\tradius 0.55\n}\n\n";
+	if( tessellated ) {
+		s += "displaced_geometry\n{\n\tname sph_w_mesh\n\tbase_geometry sph_w\n\tdetail 64\n"
+			"\tdisplacement none\n\tdisp_scale 0\n}\n\n";
+	}
+	s += std::string( "standard_object\n{\n\tname obj_sph_w\n\tgeometry " ) + ( tessellated ? "sph_w_mesh" : "sph_w" )
+		+ "\n\tmaterial mat_sss\n\tposition 0 -0.45 0.6\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_emit_w\n\tcolor 1.0 1.0 1.0\n}\n\n"
+		"lambertian_luminaire_material\n{\n\tname mat_emit_w\n\texitance pnt_emit_w\n\tscale 0.5\n\tmaterial none\n}\n\n"
+		"clippedplane_geometry\n{\n\tname quad_emit_w\n\tpta -6 -6 4.2\n\tptb -6 6 4.2\n\tptc 6 6 4.2\n\tptd 6 -6 4.2\n}\n\n"
+		"standard_object\n{\n\tname obj_emit_w\n\tgeometry quad_emit_w\n\tmaterial mat_emit_w\n}\n";
+	return s;
+}
+
+static void TestSmoothDiffusionSphereDL333()
+{
+	const std::string analytic = SmoothDiffusionSphereScene( false );
+	const std::string meshed = SmoothDiffusionSphereScene( true );
+	RunSSSTopology( "DL-333 pin: smooth diffusion analytic sphere (depth 16, 1024 spp x 3 salted)", analytic.c_str(), 16, 1024, 3, 0.005 );
+	RunSSSTopology( "DL-333 pin: smooth diffusion tessellated sphere (depth 16, 1024 spp x 3 salted)", meshed.c_str(), 16, 1024, 3, 0.005 );
+}
+
+//////////////////////////////////////////////////////////////////////
 // DL-375: a random-walk sphere lit by a DELTA light (omni / spot).  The
 // fixture is VCMStrategyBalanceTest's DL-317 D1/D2 scene: a Lambertian
 // wall, the sphere in front of it, the light behind the wall plane off its
@@ -4877,6 +4931,78 @@ static void TestSmallVisibleEmitterResolutionSweep()
 		std::cout << "    " << buf << std::endl;
 		Check( ok && mr > 0 && std::fabs( m / mr - 1.0 ) <= r.band, buf );
 	}
+// DL-386 (2026-10-02): the `vcm_sss_dragon` room with the dragon replaced
+// by a Lambertian sphere.  Its red and green walls are authored
+// `colorspace ROMMRGB_Linear`, which converts by matrix to Rec.709
+// reflectances with NEGATIVE channels -- red (1.134, -0.100, 0.020),
+// green (-0.233, 0.462, -0.029).  PT and BDPT disagreed on that signed
+// albedo (review on master f03359223: BDPT/PT +0.23 % whole frame,
+// -0.005 % with the negatives clamped); the mechanism was localised only
+// by the clamp, not attributed.  Since DL-386 every material reflectance
+// read clamps negative channels to 0 (IPainter.h `ReflectanceColor`), so
+// the two integrators see the same non-negative albedo.  Whole-frame
+// achromatic mean, salted replicates, the SAME salts for both integrators.
+//////////////////////////////////////////////////////////////////////
+static const char* kSceneRommRoomDL386 =
+	"film\n{\n\twidth 48\n\theight 36\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0.2 0 19.5\n\tlookat 0.2 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_white\n\tcolor 0.73 0.73 0.73\n\tcolorspace ROMMRGB_Linear\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_red\n\tcolor 0.57 0.025 0.025\n\tcolorspace ROMMRGB_Linear\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_green\n\tcolor 0.025 0.38 0.025\n\tcolorspace ROMMRGB_Linear\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_light\n\tcolor 1.0 0.95 0.85\n\tcolorspace ROMMRGB_Linear\n}\n\n"
+	"lambertian_material\n{\n\tname white\n\treflectance pnt_white\n}\n\n"
+	"lambertian_material\n{\n\tname red\n\treflectance pnt_red\n}\n\n"
+	"lambertian_material\n{\n\tname green\n\treflectance pnt_green\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname lum\n\texitance pnt_light\n\tscale 5\n\tmaterial none\n}\n\n"
+	"sphere_geometry\n{\n\tname sph\n\tradius 2.2\n}\n\n"
+	"standard_object\n{\n\tname ball\n\tgeometry sph\n\tposition 1 -1.3 0\n\tmaterial white\n}\n\n"
+	"clippedplane_geometry\n{\n\tname wallgeom\n\tpta -14.1 -14.1 0\n\tptb 14.1 -14.1 0\n\tptc 14.1 14.1 0\n\tptd -14.1 14.1 0\n}\n\n"
+	"standard_object\n{\n\tname rwall\n\tgeometry wallgeom\n\tposition 5.5 0 0\n\torientation 0 -90 0\n\tmaterial red\n}\n\n"
+	"standard_object\n{\n\tname bwall\n\tgeometry wallgeom\n\tposition 0 0 -10.5\n\tmaterial white\n}\n\n"
+	"standard_object\n{\n\tname twall\n\tgeometry wallgeom\n\tposition 0 3.5 0\n\torientation 90 0 0\n\tmaterial white\n}\n\n"
+	"standard_object\n{\n\tname botwall\n\tgeometry wallgeom\n\tposition 0 -3.5 0\n\torientation -90 0 0\n\tmaterial white\n}\n\n"
+	"standard_object\n{\n\tname lwall\n\tgeometry wallgeom\n\tposition -6 0 0\n\torientation 0 90 0\n\tmaterial green\n}\n\n"
+	"clippedplane_geometry\n{\n\tname lightgeom\n\tpta -5.0 -5.0 0\n\tptb 5.0 -5.0 0\n\tptc 5.0 5.0 0\n\tptd -5.0 5.0 0\n}\n\n"
+	"standard_object\n{\n\tname light\n\tgeometry lightgeom\n\tmaterial lum\n\tposition 0 0 -10.0\n}\n";
+
+static bool MeasureRommRoomDL386( const char* kind, int spp, int n, double& mean, double& sd )
+{
+	const std::string scene = std::string( "RISE ASCII SCENE 7\n" ) + SSSRasterizer( kind, 16, spp ) + kSceneRommRoomDL386;
+	const std::string path = WriteSceneToTempFile( scene.c_str(), "dl386_room" );
+	if( path.empty() ) return false;
+	std::vector<double> v;
+	for( int i = 0; i < n; i++ ) {
+		SobolSamplerTestHooks::ValueSalt().store( SobolSequence::HashCombine( 0x386u, unsigned( i ) ) );
+		const ImageStats st = RenderAndComputeStats( path.c_str() );
+		if( !st.valid ) break;
+		v.push_back( ( st.mean[0] + st.mean[1] + st.mean[2] ) / 3.0 );
+	}
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
+	std::remove( path.c_str() );
+	if( int( v.size() ) != n || n < 2 ) return false;
+	double s = 0;
+	for( double x : v ) s += x;
+	mean = s / n;
+	double ss = 0;
+	for( double x : v ) ss += ( x - mean ) * ( x - mean );
+	sd = std::sqrt( ss / ( n - 1 ) );
+	return std::isfinite( mean ) && mean > 0;
+}
+
+static void TestNegativeReflectanceRoomDL386()
+{
+	std::cout << "Testing DL-386 ROMM-walled room, Lambertian sphere (PT vs BDPT, 48x36, 512 spp x 4 salted)" << std::endl;
+	double pt = 0, ptSd = 0, bd = 0, bdSd = 0;
+	const bool okPT = MeasureRommRoomDL386( "pt", 512, 4, pt, ptSd );
+	const bool okBD = MeasureRommRoomDL386( "bdpt", 512, 4, bd, bdSd );
+	Check( okPT && okBD, "DL-386 renders produced output" );
+	if( !okPT || !okBD ) return;
+	const double rel = bd / pt - 1.0;
+	// Standard error of the ratio from the two replicate spreads (n = 4 each).
+	const double se = std::sqrt( ( ptSd / pt ) * ( ptSd / pt ) + ( bdSd / bd ) * ( bdSd / bd ) ) / 2.0;
+	std::printf( "    PT %.7f (sd %.7f)  BDPT %.7f (sd %.7f)  BDPT/PT %+.4f%% (se %.4f%%)\n",
+		pt, ptSd, bd, bdSd, 100.0 * rel, 100.0 * se );
+	Check( std::fabs( rel ) <= 0.0010, "DL-386 BDPT whole-frame mean agrees with PT to 0.10 % on the ROMM-walled room" );
 }
 
 int main( int argc, char** argv )
@@ -4894,6 +5020,11 @@ int main( int argc, char** argv )
 		std::printf( "DL354 %s %sx%s spp=%s n=%s ok=%d window %.4f (sd %.4f)\n", argv[2], argv[3], argv[4], argv[5], argv[6], int( ok ), m, sd );
 		return ok ? 0 : 1;
 	}
+ if(argc == 2 && std::strcmp(argv[1],"--dl386-only") == 0) {
+  TestNegativeReflectanceRoomDL386();
+  std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+  return failCount == 0 ? 0 : 1;
+ }
  if(argc == 2 && std::strcmp(argv[1],"--env-medium-only") == 0) {
   TestEnvironmentScatteringMediumDL346();
   std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
@@ -4946,6 +5077,11 @@ int main( int argc, char** argv )
 	// DL-320: topology Z alone (the focused before/after A/B).
 	if( argc == 2 && std::strcmp(argv[1], "--back-face-only") == 0 ) {
 		TestBackFaceEmitterZ();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+	if( argc == 2 && std::strcmp( argv[1], "--dl333-only" ) == 0 ) {
+		TestSmoothDiffusionSphereDL333();
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
@@ -5002,7 +5138,7 @@ int main( int argc, char** argv )
 	if( argc > 1 ) {
 		if( argc != 3 || std::strcmp(argv[1], "--spectral-only") != 0 ||
 			(std::strcmp(argv[2], "1") != 0 && std::strcmp(argv[2], "2") != 0) ) {
-			std::cerr << "Usage: BDPTStrategyBalanceTest [--spectral-only 1|2 | --spectral-aggregate-unit | --materials-only | --guided-only | --weave-gap-only | --sss-only | --dl375-only | --back-face-only | --narrow-fov-only | --dl377-only | --dl377-mlt | --dl381-only | --dl381-probe kind spp mat glass n | --dl354-only | --dl354-probe kind W H spp n]" << std::endl;
+			std::cerr << "Usage: BDPTStrategyBalanceTest [--spectral-only 1|2 | --spectral-aggregate-unit | --materials-only | --guided-only | --weave-gap-only | --sss-only | --dl375-only | --back-face-only | --narrow-fov-only | --dl377-only | --dl377-mlt | --dl333-only | --dl386-only | --dl381-only | --dl381-probe kind spp mat glass n | --dl354-only | --dl354-probe kind W H spp n]" << std::endl;
 			return 2;
 		}
 		spectralSampleScale = std::strcmp(argv[2], "2") == 0 ? 2 : 1;
@@ -5044,6 +5180,7 @@ int main( int argc, char** argv )
 	TestWeaveGapBoxAreaOutside();
 	TestRoughSSSEmptyContainerU();
 	TestRandomWalkSphereEmptyContainerV();
+	TestSmoothDiffusionSphereDL333();
 	TestDeltaLitRandomWalkDL375();
  TestEnvironmentScatteringMediumDL346();
 	TestBackFaceEmitterZ();
