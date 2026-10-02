@@ -775,9 +775,52 @@ namespace
 ManifoldSolver::ManifoldSolver( const ManifoldSolverConfig& cfg ) :
 config( cfg ),
 pLightSampler( 0 ),
-pPhotonMap( 0 )
+pPhotonMap( 0 ),
+mHasPureMirrorCaster( false )
 {
 	pLightSampler = new LightSampler();
+}
+
+namespace
+{
+	//! Snell mode's pure-mirror classification of a caster (the probe the
+	//! supplemental-seed loop in EvaluateAtShadingPoint has always used):
+	//! a deterministic mid-surface sample's specular info, canRefract
+	//! false.  Shared so SetSpecularCasters' exactness flag and the loop
+	//! classify casters identically.
+	bool ProbeIsPureMirrorCaster( const IObject* pCaster )
+	{
+		if( !pCaster ) return false;
+		const IMaterial* pMat = pCaster->GetMaterial();
+		if( !pMat ) return false;
+		Point3 probePos;
+		Vector3 probeNormal;
+		Point2 probeUv;
+		pCaster->UniformRandomPoint(
+			&probePos, &probeNormal, &probeUv,
+			Point3( 0.5, 0.5, 0.5 ) );
+		Ray probeRay( probePos, probeNormal );
+		RayIntersectionGeometric probeRig( probeRay, nullRasterizerState );
+		probeRig.bHit          = true;
+		probeRig.ptIntersection = probePos;
+		probeRig.vNormal       = probeNormal;
+		probeRig.ptCoord       = probeUv;
+		IORStack probeIor( 1.0 );
+		const SpecularInfo probeSpec = pMat->GetSpecularInfo( probeRig, probeIor );
+		return !probeSpec.canRefract;
+	}
+}
+
+void ManifoldSolver::SetSpecularCasters( std::vector<const IObject*> list )
+{
+	mSpecularCasters = std::move( list );
+	mHasPureMirrorCaster = false;
+	for( const IObject* pCaster : mSpecularCasters ) {
+		if( ProbeIsPureMirrorCaster( pCaster ) ) {
+			mHasPureMirrorCaster = true;
+			break;
+		}
+	}
 }
 
 ManifoldSolver::~ManifoldSolver()
@@ -6194,72 +6237,19 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	// in 2026-05 (matches Mitsuba SOTA: single stochastic seed per
 	// trial; multi-trial averaging via `multiTrials` for variance
 	// reduction on multi-modal scenes).
+	// The deterministic base seed (BuildSeedChain toward the light, then
+	// the normal-target and midpoint fallbacks) -- shared with PT's DL-372
+	// split-suppression classifier, ClassifyEmitterHitCoverage.
 	std::vector<SeedChainResult> baseSeeds;
 	std::vector<ManifoldVertex> seedChain;
-	unsigned int chainLen = BuildSeedChain(
-		pos, lightSample.position,
-		scene, caster, seedChain,
-		/*applyEmitterStop=*/ true, pIorStack, &sampler );	// DL-290: walk starts in the receiver's medium
+	unsigned int chainLen = BuildSnellBaseSeed(
+		pos, geomNormal, lightSample.position, scene, caster,
+		seedChain, pIorStack, &sampler, 0 );
 	if( chainLen > 0 && !seedChain.empty() ) {
 		SeedChainResult lone;
 		lone.chain = seedChain;
 		lone.proposalPdf = 1.0;
 		baseSeeds.push_back( std::move( lone ) );
-	}
-
-	if( chainLen == 0 || seedChain.empty() )
-	{
-		// Fallback: trace along the surface normal — geometric so the
-		// probe direction is the actual outward face direction.  Pass
-		// `applyEmitterStop = false`: the 100-unit `normalTarget` is a
-		// synthesized direction-probe, NOT the emitter — applying the
-		// projection cap (which fires at `100 × 1.05 = 105`) would
-		// silently reject every specular surface farther than 105 units
-		// from the shading point.  Without the flag this fallback is
-		// non-functional on any scene whose first specular surface is
-		// > 105 units from the shading point (e.g. wall→egg ~141 units
-		// in the cornell-box / Veach-egg layout).
-		const Point3 normalTarget = Point3Ops::mkPoint3(
-			pos, geomNormal * 100.0 );
-		chainLen = BuildSeedChain(
-			pos, normalTarget,
-			scene, caster, seedChain,
-			/*applyEmitterStop=*/ false, pIorStack, &sampler );	// DL-290
-		if( chainLen > 0 && !seedChain.empty() ) {
-			baseSeeds.clear();
-			SeedChainResult lone;
-			lone.chain = seedChain;
-			lone.proposalPdf = 1.0;
-			baseSeeds.push_back( std::move( lone ) );
-		}
-	}
-
-	if( chainLen == 0 || seedChain.empty() )
-	{
-		// Fallback: try tracing toward the midpoint between pos and
-		// the light.  For tilted geometry, the specular object may lie
-		// between the two endpoints at a position that neither the
-		// light-direction nor the normal-direction ray can reach.
-		// `applyEmitterStop = false` for the same reason as the normal-
-		// target fallback above (synthesized 100-unit probe direction,
-		// not an actual emitter).
-		const Point3 midpoint(
-			(pos.x + lightSample.position.x) * 0.5,
-			(pos.y + lightSample.position.y) * 0.5,
-			(pos.z + lightSample.position.z) * 0.5 );
-		const Point3 midTarget = Point3Ops::mkPoint3(
-			pos, Vector3Ops::Normalize( Vector3Ops::mkVector3( midpoint, pos ) ) * 100.0 );
-		chainLen = BuildSeedChain(
-			pos, midTarget,
-			scene, caster, seedChain,
-			/*applyEmitterStop=*/ false, pIorStack, &sampler );	// DL-290
-		if( chainLen > 0 && !seedChain.empty() ) {
-			baseSeeds.clear();
-			SeedChainResult lone;
-			lone.chain = seedChain;
-			lone.proposalPdf = 1.0;
-			baseSeeds.push_back( std::move( lone ) );
-		}
 	}
 
 	// Pure-mirror caster supplemental seeds.
@@ -6284,29 +6274,12 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	// would silently truncate diacaustic chains to k=1.
 	for( const IObject* pMirrorCaster : mSpecularCasters )
 	{
-		if( !pMirrorCaster ) continue;
-		const IMaterial* pMat = pMirrorCaster->GetMaterial();
-		if( !pMat ) continue;
-
 		// Probe whether this caster is a pure mirror (canRefract=false).
 		// A deterministic prand here is fine — the result is a binary
-		// caster classification, not a sampling step.
-		Point3 probePos;
-		Vector3 probeNormal;
-		Point2 probeUv;
-		pMirrorCaster->UniformRandomPoint(
-			&probePos, &probeNormal, &probeUv,
-			Point3( 0.5, 0.5, 0.5 ) );
-		Ray probeRay( probePos, probeNormal );
-		RayIntersectionGeometric probeRig( probeRay, nullRasterizerState );
-		probeRig.bHit          = true;
-		probeRig.ptIntersection = probePos;
-		probeRig.vNormal       = probeNormal;
-		probeRig.ptCoord       = probeUv;
-		IORStack probeIor( 1.0 );
-		SpecularInfo probeSpec = pMat->GetSpecularInfo( probeRig, probeIor );
-		if( probeSpec.canRefract ) {
-			continue;   // dielectric — skip in snell-mode supplement
+		// caster classification, not a sampling step.  Dielectrics are
+		// skipped in the snell-mode supplement.
+		if( !ProbeIsPureMirrorCaster( pMirrorCaster ) ) {
+			continue;
 		}
 
 		const unsigned int M = std::max( config.multiTrials, 1u );
@@ -8063,84 +8036,17 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	SMSLoopSampler loopScope( sampler );
 	ISampler& loopSampler = loopScope.sampler;
 
-	// Build seed chain toward light, with fallbacks (see RGB variant).
+	// Build seed chain toward light, with fallbacks (see RGB variant), and
+	// the per-wavelength eta override -- shared with PT's DL-372 split-
+	// suppression classifier via BuildSnellBaseSeed.
 	std::vector<ManifoldVertex> seedChain;
-	unsigned int chainLen = BuildSeedChain(
-		pos, lightSample.position,
-		scene, caster, seedChain,
-		/*applyEmitterStop=*/ true, pIorStack, &sampler );	// DL-290: walk starts in the receiver's medium
-
-	if( chainLen == 0 || seedChain.empty() )
-	{
-		// Probe direction: geometric (actual outward face).  See RGB
-		// variant for the `applyEmitterStop = false` rationale (synth
-		// 100-unit target, not an emitter).
-		const Point3 normalTarget = Point3Ops::mkPoint3(
-			pos, geomNormal * 100.0 );
-		chainLen = BuildSeedChain(
-			pos, normalTarget,
-			scene, caster, seedChain,
-			/*applyEmitterStop=*/ false, pIorStack, &sampler );	// DL-290
-	}
-
-	if( chainLen == 0 || seedChain.empty() )
-	{
-		const Point3 midpoint(
-			(pos.x + lightSample.position.x) * 0.5,
-			(pos.y + lightSample.position.y) * 0.5,
-			(pos.z + lightSample.position.z) * 0.5 );
-		const Point3 midTarget = Point3Ops::mkPoint3(
-			pos, Vector3Ops::Normalize( Vector3Ops::mkVector3( midpoint, pos ) ) * 100.0 );
-		chainLen = BuildSeedChain(
-			pos, midTarget,
-			scene, caster, seedChain,
-			/*applyEmitterStop=*/ false, pIorStack, &sampler );	// DL-290
-	}
+	const unsigned int chainLen = BuildSnellBaseSeed(
+		pos, geomNormal, lightSample.position, scene, caster,
+		seedChain, pIorStack, &sampler, nm );
 
 	if( chainLen == 0 || seedChain.empty() )
 	{
 		return result;
-	}
-
-	// Override each vertex's IOR with the wavelength-dependent value.
-	// This is what makes dispersion work — the Newton solver will find
-	// a different position for each wavelength due to the different IOR.
-	IORStack queryIor( 1.0 );
-	for( unsigned int i = 0; i < seedChain.size(); i++ )
-	{
-		if( seedChain[i].pMaterial )
-		{
-			// Build a minimal RayIntersectionGeometric for the query
-			Ray dummyRay( seedChain[i].position, seedChain[i].normal );
-			RayIntersectionGeometric rig( dummyRay, nullRasterizerState );
-			rig.bHit = true;
-			rig.ptIntersection = seedChain[i].position;
-			rig.vNormal = seedChain[i].normal;
-
-			SpecularInfo specNM = seedChain[i].pMaterial->GetSpecularInfoNM(
-				rig, queryIor, nm );
-			seedChain[i].eta = specNM.ior;
-			// Also update the wavelength-dependent side of the
-			// (etaI, etaT) pair populated by BuildSeedChain.  The
-			// vertex's "outgoing-medium IOR" for entering, or
-			// "incoming-medium IOR" for exiting, IS the surface
-			// material's IOR — which is what specNM.ior gives us
-			// per wavelength (dispersion).  The OPPOSITE side's IOR
-			// (the surrounding medium) is left as set by the RGB
-			// BuildSeedChain pass; for typical SMS scenes (single
-			// dielectric in air, surrounding = 1.0) this is
-			// wavelength-independent and correct.  For doubly-
-			// nested dispersive scenes (e.g. dispersive-glass inside
-			// dispersive-glass) the surrounding side would also be
-			// wavelength-dependent and needs a separate per-vertex
-			// stack-of-NM-IORs to track exactly — left for a future
-			// extension when such a scene exists.
-			if( seedChain[i].isExiting ) {
-				seedChain[i].etaI = specNM.ior;
-			} else {
-				seedChain[i].etaT = specNM.ior;
-			}
-		}
 	}
 
 	// Multi-trial SMS with photon-aided seeding + root-dedupe — see
@@ -8493,6 +8399,273 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	result.valid = true;
 
 	return result;
+}
+
+//////////////////////////////////////////////////////////////////////
+// BuildSnellBaseSeed -- the deterministic snell-mode base seed.
+//////////////////////////////////////////////////////////////////////
+
+unsigned int ManifoldSolver::BuildSnellBaseSeed(
+	const Point3& pos,
+	const Vector3& geomNormal,
+	const Point3& lightPos,
+	const IScene& scene,
+	const IRayCaster& caster,
+	std::vector<ManifoldVertex>& chain,
+	const IORStack* pIorStack,
+	ISampler* pSampler,
+	const Scalar nm
+	) const
+{
+	unsigned int chainLen = BuildSeedChain(
+		pos, lightPos,
+		scene, caster, chain,
+		/*applyEmitterStop=*/ true, pIorStack, pSampler );	// DL-290: walk starts in the receiver's medium
+
+	if( chainLen == 0 || chain.empty() )
+	{
+		// Fallback: trace along the surface normal — geometric so the
+		// probe direction is the actual outward face direction.  Pass
+		// `applyEmitterStop = false`: the 100-unit `normalTarget` is a
+		// synthesized direction-probe, NOT the emitter — applying the
+		// projection cap (which fires at `100 × 1.05 = 105`) would
+		// silently reject every specular surface farther than 105 units
+		// from the shading point.  Without the flag this fallback is
+		// non-functional on any scene whose first specular surface is
+		// > 105 units from the shading point (e.g. wall→egg ~141 units
+		// in the cornell-box / Veach-egg layout).
+		const Point3 normalTarget = Point3Ops::mkPoint3(
+			pos, geomNormal * 100.0 );
+		chainLen = BuildSeedChain(
+			pos, normalTarget,
+			scene, caster, chain,
+			/*applyEmitterStop=*/ false, pIorStack, pSampler );	// DL-290
+	}
+
+	if( chainLen == 0 || chain.empty() )
+	{
+		// Fallback: try tracing toward the midpoint between pos and
+		// the light.  For tilted geometry, the specular object may lie
+		// between the two endpoints at a position that neither the
+		// light-direction nor the normal-direction ray can reach.
+		// `applyEmitterStop = false` for the same reason as the normal-
+		// target fallback above (synthesized 100-unit probe direction,
+		// not an actual emitter).
+		const Point3 midpoint(
+			(pos.x + lightPos.x) * 0.5,
+			(pos.y + lightPos.y) * 0.5,
+			(pos.z + lightPos.z) * 0.5 );
+		const Point3 midTarget = Point3Ops::mkPoint3(
+			pos, Vector3Ops::Normalize( Vector3Ops::mkVector3( midpoint, pos ) ) * 100.0 );
+		chainLen = BuildSeedChain(
+			pos, midTarget,
+			scene, caster, chain,
+			/*applyEmitterStop=*/ false, pIorStack, pSampler );	// DL-290
+	}
+
+	if( chainLen == 0 || chain.empty() )
+	{
+		chain.clear();
+		return 0;
+	}
+
+	if( nm > 0 )
+	{
+		// Override each vertex's IOR with the wavelength-dependent value.
+		// This is what makes dispersion work — the Newton solver will find
+		// a different position for each wavelength due to the different IOR.
+		IORStack queryIor( 1.0 );
+		for( unsigned int i = 0; i < chain.size(); i++ )
+		{
+			if( chain[i].pMaterial )
+			{
+				// Build a minimal RayIntersectionGeometric for the query
+				Ray dummyRay( chain[i].position, chain[i].normal );
+				RayIntersectionGeometric rig( dummyRay, nullRasterizerState );
+				rig.bHit = true;
+				rig.ptIntersection = chain[i].position;
+				rig.vNormal = chain[i].normal;
+
+				SpecularInfo specNM = chain[i].pMaterial->GetSpecularInfoNM(
+					rig, queryIor, nm );
+				chain[i].eta = specNM.ior;
+				// Also update the wavelength-dependent side of the
+				// (etaI, etaT) pair populated by BuildSeedChain.  The
+				// vertex's "outgoing-medium IOR" for entering, or
+				// "incoming-medium IOR" for exiting, IS the surface
+				// material's IOR — which is what specNM.ior gives us
+				// per wavelength (dispersion).  The OPPOSITE side's IOR
+				// (the surrounding medium) is left as set by the RGB
+				// BuildSeedChain pass; for typical SMS scenes (single
+				// dielectric in air, surrounding = 1.0) this is
+				// wavelength-independent and correct.  For doubly-
+				// nested dispersive scenes (e.g. dispersive-glass inside
+				// dispersive-glass) the surrounding side would also be
+				// wavelength-dependent and needs a separate per-vertex
+				// stack-of-NM-IORs to track exactly — left for a future
+				// extension when such a scene exists.
+				if( chain[i].isExiting ) {
+					chain[i].etaI = specNM.ior;
+				} else {
+					chain[i].etaT = specNM.ior;
+				}
+			}
+		}
+	}
+
+	return static_cast<unsigned int>( chain.size() );
+}
+
+//////////////////////////////////////////////////////////////////////
+// DL-372 / DL-336 split suppression
+//
+//   PT used to drop EVERY BSDF-sampled emitter hit that followed an SMS
+//   anchor and an all-caster delta chain, on the assumption that SMS had
+//   estimated that path.  Snell-mode SMS seeds ONE deterministic chain per
+//   light sample, so where an emitter point has several roots (a ball lens
+//   near focus, a weak lens's second image) the roots the seed does not
+//   reach were dropped by PT and never estimated by SMS.  With a
+//   deterministic seed + solve, SMS's estimator at anchor x is
+//   sum_{k in F(x,y)} w_k(y) / p(y), F(x,y) the roots the seed reaches; PT
+//   keeps exactly the complement by re-running that seed + solve toward
+//   its own hit point and suppressing only when the result is its chain.
+//   docs/SMS_ENERGY_LOSS_INVESTIGATION.md section 7.
+//////////////////////////////////////////////////////////////////////
+
+bool ManifoldSolver::SplitSuppressionExact( const IRayCaster& caster, bool spectral ) const
+{
+	// Uniform seeding samples its seeds; the unbiased estimator weights
+	// each found root by an estimated 1/p (it estimates every root, so
+	// suppressing them all is its partition); photon-aided trials and the
+	// RGB pure-mirror supplement add random seeds; alpha coverage routes
+	// snell mode to the uniform evaluator.
+	if( config.seedingMode != ManifoldSolverConfig::eSeedingSnell ) return false;
+	if( !config.biased ) return false;
+	if( pPhotonMap && pPhotonMap->IsBuilt() ) return false;
+	const LightSampler* pLS = caster.GetLightSampler();
+	if( !pLS || pLS->SceneHasAlphaCoverage() ) return false;
+	if( !spectral && mHasPureMirrorCaster ) return false;
+	return true;
+}
+
+SMSChainCoverage ManifoldSolver::ClassifyEmitterHitCoverage(
+	const SMSChainRecord& rec,
+	const Point3& y,
+	const Vector3& yNormal,
+	const IScene& scene,
+	const IRayCaster& caster,
+	const Scalar nm
+	) const
+{
+	if( !rec.anchorValid || rec.broken ) {
+		return eSMSChainCoverageUnknown;
+	}
+	const unsigned int k = rec.count;
+	if( k == 0 || k > SMSChainRecord::kMaxVertices ) {
+		return eSMSChainCoverageUnknown;
+	}
+
+	// The exact mode draws nothing: no alpha coverage (the seed walk's
+	// intersection draws only at partial coverage) and a biased Solve
+	// (its sampler feeds only EstimatePDF and the disabled phys-fail
+	// restart).  A local sampler keeps PT's own stream untouched anyway.
+	RandomNumberGenerator localRng;
+	IndependentSampler localSampler( localRng );
+
+	// SMS's own seed for this (anchor, emitter point) pair.
+	std::vector<ManifoldVertex> seed;
+	BuildSnellBaseSeed( rec.anchorPos, rec.anchorGeomNormal, y, scene, caster,
+		seed, &rec.anchorStack, &localSampler, nm );
+	if( seed.empty() ) {
+		return eSMSChainNotCovered;		// no seed: SMS estimates nothing here
+	}
+	// RGB snell mode replaces a k = 1 mirror base seed by a RANDOM surface
+	// sample (EvaluateAtShadingPoint's surface-sample fallback): no exact
+	// answer.  The spectral evaluator has no such fallback.
+	if( nm <= 0 && seed.size() == 1 && !seed[0].canRefract ) {
+		return eSMSChainCoverageUnknown;
+	}
+
+	const ManifoldResult rs = Solve( rec.anchorPos, rec.anchorShadingNormal,
+		y, yNormal, seed, localSampler );
+	if( !rs.valid ) {
+		return eSMSChainNotCovered;		// Newton failure / rejected root
+	}
+	const std::vector<ManifoldVertex>& R = rs.specularChain;
+	if( R.size() != k ) {
+		return eSMSChainNotCovered;
+	}
+	for( unsigned int i = 0; i < k; i++ ) {
+		if( R[i].pObject != rec.v[i].pObject || R[i].isReflection != rec.v[i].isReflection ) {
+			return eSMSChainNotCovered;	// a different chain topology
+		}
+	}
+
+	// Root identity, relative to the path length: two converged solves of
+	// the same root agree to Newton precision; distinct roots closer than
+	// 1e-3 of the path are merging at a fold, where the partition's error
+	// is that sliver.
+	Scalar L = Point3Ops::Distance( rec.anchorPos, R[0].position ) + Point3Ops::Distance( R[k-1].position, y );
+	for( unsigned int i = 0; i + 1 < k; i++ ) {
+		L += Point3Ops::Distance( R[i].position, R[i+1].position );
+	}
+	const Scalar tol = 1e-3 * L;
+
+	bool same = true;
+	for( unsigned int i = 0; i < k && same; i++ ) {
+		same = Point3Ops::Distance( R[i].position, rec.v[i].position ) <= tol;
+	}
+
+	if( !same )
+	{
+		// PT's chain through SMS's own vertex records, at PT's positions.
+		std::vector<ManifoldVertex> proj( R );
+		for( unsigned int i = 0; i < k; i++ ) {
+			ManifoldVertex& mv = proj[i];
+			mv.position = rec.v[i].position;
+			mv.normal = rec.v[i].normal;
+			mv.geomNormal = rec.v[i].geomNormal;
+			mv.uv = rec.v[i].uv;
+			mv.dpdu = Vector3Ops::Normalize( Vector3Ops::Perpendicular( mv.normal ) );
+			mv.dpdv = Vector3Ops::Normalize( Vector3Ops::Cross( mv.normal, mv.dpdu ) );
+			mv.dndu = Vector3( 0, 0, 0 );
+			mv.dndv = Vector3( 0, 0, 0 );
+			mv.valid = false;
+		}
+		// An exact delta chain (a perfect refractor) is already a root:
+		// a different one from SMS's.
+		std::vector<Scalar> C;
+		EvaluateConstraint( proj, rec.anchorPos, y, C );
+		Scalar norm2 = 0;
+		for( std::size_t i = 0; i < C.size(); i++ ) norm2 += C[i] * C[i];
+		if( std::sqrt( norm2 ) < config.solverThreshold ) {
+			return eSMSChainNotCovered;
+		}
+		// A warped delta lobe (a dielectric with finite `scattering`):
+		// PT's chain is near, not on, the manifold.  Assign it to the root
+		// Newton reaches from it -- in the delta limit, the root it is on.
+		for( unsigned int i = 0; i < k; i++ ) {
+			proj[i].dpdu = Vector3( 0, 0, 0 );
+			proj[i].dpdv = Vector3( 0, 0, 0 );
+		}
+		const ManifoldResult rp = Solve( rec.anchorPos, rec.anchorShadingNormal,
+			y, yNormal, proj, localSampler );
+		if( !rp.valid || rp.specularChain.size() != k ) {
+			return eSMSChainNotCovered;
+		}
+		for( unsigned int i = 0; i < k; i++ ) {
+			if( rp.specularChain[i].isReflection != R[i].isReflection ||
+				Point3Ops::Distance( rp.specularChain[i].position, R[i].position ) > tol ) {
+				return eSMSChainNotCovered;
+			}
+		}
+	}
+
+	// SMS drops a root whose external segments are occluded.
+	if( !CheckChainVisibility( rec.anchorPos, y, R, caster, &localSampler ) ) {
+		return eSMSChainNotCovered;
+	}
+	return eSMSChainCovered;
 }
 
 //////////////////////////////////////////////////////////////////////

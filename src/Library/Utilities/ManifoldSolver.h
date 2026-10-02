@@ -360,6 +360,76 @@ namespace RISE
 			}
 		};
 
+		/// DL-372 / DL-336 split suppression: what PT carries from the SMS
+		/// ANCHOR (the non-delta vertex whose SMS evaluation estimates the
+		/// chain) through the delta chain to an emitter hit, so the hit can
+		/// ask `ManifoldSolver::ClassifyEmitterHitCoverage` whether SMS's
+		/// own deterministic seed + solve reaches the same path.  See
+		/// docs/SMS_ENERGY_LOSS_INVESTIGATION.md section 7.
+		struct SMSChainRecord
+		{
+			static const unsigned int kMaxVertices = 16;
+
+			struct Vertex
+			{
+				Point3			position;		///< PT's hit point at this delta vertex
+				Vector3			normal;			///< shading normal (post-modifier), as RayCaster published it
+				Vector3			geomNormal;		///< TRUE outward geometric normal (DL-70)
+				Point2			uv;
+				const IObject*	pObject;
+				bool			isReflection;	///< the PT path stayed on the incident side here
+			};
+
+			bool			anchorValid;		///< the anchor's SMS inputs are recorded below
+			bool			broken;				///< the path left the specular-chain model (a medium scatter) -- no exact answer
+			Point3			anchorPos;
+			Vector3			anchorGeomNormal;
+			Vector3			anchorShadingNormal;
+			IORStack		anchorStack;		///< the receiver stack SMS's seed walk started from
+			unsigned int	count;				///< delta vertices since the anchor (may exceed kMaxVertices)
+			Vertex			v[kMaxVertices];
+
+			SMSChainRecord() : anchorValid( false ), broken( false ), anchorStack( 1.0 ), count( 0 ) {}
+
+			//! A non-delta vertex that is NOT an SMS anchor (SPF-only,
+			//! BSSRDF): no SMS estimate covers what follows.
+			void Invalidate() { anchorValid = false; broken = false; count = 0; }
+
+			//! A new anchor: the vertex whose SMS evaluation recorded
+			//! these inputs scattered non-delta.
+			void SetAnchor( const Point3& p, const Vector3& gN, const Vector3& sN, const IORStack& s )
+			{
+				anchorValid = true; broken = false; count = 0;
+				anchorPos = p; anchorGeomNormal = gN; anchorShadingNormal = sN; anchorStack = s;
+			}
+
+			//! One delta vertex of the chain: @a dIn the incident ray
+			//! direction, @a dOut the scattered one.
+			void Append( const RayIntersectionGeometric& rig, const IObject* pObj,
+				const Vector3& dIn, const Vector3& dOut )
+			{
+				if( count < kMaxVertices ) {
+					Vertex& w = v[count];
+					w.position = rig.ptIntersection;
+					w.normal = rig.vNormal;
+					w.geomNormal = rig.UnflippedGeomNormal();
+					w.uv = rig.ptCoord;
+					w.pObject = pObj;
+					const Vector3& n = rig.vGeomNormal;
+					w.isReflection = Vector3Ops::Dot( dIn, n ) * Vector3Ops::Dot( dOut, n ) < 0;
+				}
+				count++;
+			}
+		};
+
+		/// Answer of `ManifoldSolver::ClassifyEmitterHitCoverage`.
+		enum SMSChainCoverage
+		{
+			eSMSChainCovered,			///< SMS's estimator contains this path: PT suppresses it
+			eSMSChainNotCovered,		///< SMS never estimates this path: PT keeps it
+			eSMSChainCoverageUnknown	///< no exact answer: PT keeps today's rule (suppress)
+		};
+
 		/// Specular Manifold Sampling solver.
 		///
 		/// Given two non-specular endpoints (a shading point and an emitter),
@@ -395,6 +465,12 @@ namespace RISE
 			/// rasterizer hasn't populated it.
 			std::vector<const IObject*> mSpecularCasters;
 
+			/// True when `mSpecularCasters` holds a pure-mirror caster, so
+			/// RGB snell mode adds random supplemental seeds (see
+			/// EvaluateAtShadingPoint) and its root set is not a
+			/// deterministic function of (anchor, emitter point).
+			bool mHasPureMirrorCaster;
+
 			virtual ~ManifoldSolver();
 
 		public:
@@ -410,9 +486,7 @@ namespace RISE
 			/// Attach the cached specular-caster list.  Call once at
 			/// scene-prep (after EnumerateSpecularCasters).  Pass an
 			/// empty vector to clear.
-			void SetSpecularCasters( std::vector<const IObject*> list ) {
-				mSpecularCasters = std::move( list );
-			}
+			void SetSpecularCasters( std::vector<const IObject*> list );
 			const std::vector<const IObject*>& GetSpecularCasters() const {
 				return mSpecularCasters;
 			}
@@ -739,6 +813,51 @@ namespace RISE
 				const Point3& lightPoint,
 				const std::vector<ManifoldVertex>& chain,
 				const IRayCaster& caster, ISampler* alphaSampler = nullptr
+				) const;
+
+			/// The snell-mode BASE seed SMS builds at @a pos for emitter
+			/// point @a lightPos: BuildSeedChain toward the light, then the
+			/// surface-normal and midpoint fallbacks, and (spectral, @a nm
+			/// > 0) the per-wavelength eta override.  Shared by
+			/// EvaluateAtShadingPoint{,NM} and ClassifyEmitterHitCoverage,
+			/// so the two cannot drift apart.  @a chain is empty when no
+			/// seed exists.
+			unsigned int BuildSnellBaseSeed(
+				const Point3& pos,
+				const Vector3& geomNormal,
+				const Point3& lightPos,
+				const IScene& scene,
+				const IRayCaster& caster,
+				std::vector<ManifoldVertex>& chain,
+				const IORStack* pIorStack,
+				ISampler* pSampler,
+				const Scalar nm
+				) const;
+
+			/// DL-372 / DL-336: true when SMS's estimator at an anchor is a
+			/// DETERMINISTIC function of (anchor, emitter point) -- snell
+			/// seeding, biased, no photon map, no alpha coverage, and (RGB
+			/// only, @a spectral false) no pure-mirror caster.  Only then
+			/// can PT keep exactly the paths SMS does not estimate; in
+			/// every other mode PT keeps today's suppress-everything rule.
+			bool SplitSuppressionExact( const IRayCaster& caster, bool spectral ) const;
+
+			/// DL-372 / DL-336: does SMS's own snell seed + solve, run from
+			/// the anchor recorded in @a rec toward emitter point @a y,
+			/// reach the chain PT traced (same vertex objects, same
+			/// reflect/refract pattern, same root)?  A PT chain through a
+			/// WARPED delta lobe (a dielectric with finite `scattering`) is
+			/// not exactly a root; it is assigned to the root Newton
+			/// reaches from PT's own vertices (the delta-limit partition).
+			/// @a nm 0 = the RGB estimator, > 0 = the spectral one at that
+			/// wavelength.  Call only when SplitSuppressionExact holds.
+			SMSChainCoverage ClassifyEmitterHitCoverage(
+				const SMSChainRecord& rec,
+				const Point3& y,
+				const Vector3& yNormal,
+				const IScene& scene,
+				const IRayCaster& caster,
+				const Scalar nm
 				) const;
 
 			/// Reverses a photon's recorded specular chain (stored in

@@ -38,6 +38,7 @@
 #include "../Intersection/RayIntersectionGeometric.h"
 #include "../Intersection/RayIntersection.h"
 #include "../Rendering/AOVBuffers.h"
+#include <optional>
 #ifdef RISE_ENABLE_OPENPGL
 #include "../Utilities/PathGuidingField.h"
 #endif
@@ -1813,7 +1814,8 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 	const Tag& tag,
 	Scalar bsdfMisPdf_,
 	Scalar castRRCompensation_,
-	bool smsChainUncovered_initial
+	bool smsChainUncovered_initial,
+	const SMSChainRecord* pSMSChain_initial
 	) const
 {
 	using Traits = SpectralValueTraits<Tag>;
@@ -1896,6 +1898,36 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 	// P1-1: a gap then a smooth-SSS reflection read 0 under HWSS).
 	bool bSMSChainUncovered = smsChainUncovered_initial;
 
+	// DL-372 / DL-336 split suppression (docs/SMS_ENERGY_LOSS_INVESTIGATION.md
+	// section 7).  Where SMS's estimator is a deterministic function of
+	// (anchor, emitter point), PART 1 suppresses an anchored caster chain's
+	// emitter hit only if SMS's own seed + solve from the anchor reaches
+	// it, and keeps it at full weight otherwise; `smsChain` carries the
+	// anchor (the inputs PART 2 gave SMS) and the delta chain since it.  In
+	// every other mode it stays disengaged and today's rule applies.  An
+	// anchor inherited from a caller without a record (a medium hand-off)
+	// leaves `anchorValid` false: today's rule again.
+	const bool bSMSSplit = bSMSEnabled &&
+		pSolver->SplitSuppressionExact( caster, !Traits::is_pel );
+	std::optional<SMSChainRecord> smsChain;
+	if( bSMSSplit ) {
+		if( pSMSChain_initial ) {
+			smsChain.emplace( *pSMSChain_initial );
+		} else {
+			smsChain.emplace();
+		}
+	}
+	// This vertex's SMS inputs (PART 2), committed as the anchor when PART 3
+	// scatters non-delta.
+	bool smsPendingValid = false;
+	Point3 smsPendingPos;
+	Vector3 smsPendingGN, smsPendingSN;
+	std::optional<IORStack> smsPendingStack;
+	// PART 3's SMS guard turns `considerEmission` off after a delta lobe at
+	// an anchor; this remembers that it was the guard (not another rule),
+	// so PART 1 can still keep a hit SMS does not reach.
+	bool smsGuardedEmission = false;
+
 	const LightSampler* pLS = caster.GetLightSampler();
 
 #ifdef RISE_ENABLE_OPENPGL
@@ -1918,6 +1950,8 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 	for( unsigned int depth = startDepth; depth < maxDepth; depth++ )
 	{
+		smsPendingValid = false;	// DL-372: PART 2 of THIS vertex records it
+
 		// Runaway-throughput guard.  PT can compound per-bounce BSDF
 		// kray amplification (Ward / multi-lobe-select divides by
 		// selection probability < 1) into exponential throughput
@@ -2290,6 +2324,13 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 						bsdfTimesCos = trainedPhaseVal;
 					}
 					considerEmission = true;
+					smsGuardedEmission = false;
+					// DL-372: a medium vertex breaks the specular chain
+					// SMS models; no exact answer past it (DL-340 keeps
+					// today's rule there).
+					if( smsChain ) {
+						smsChain->broken = true;
+					}
 					volumeBounces++;
 					continue;  // Re-enter loop: needsIntersection is still true
 				}
@@ -2673,9 +2714,41 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			// drift out of sync.
 			const bool soloSuppressEmission = pLS && pLS->IsSoloActive() &&
 				!( ri.pObject && pLS->IsSoloTargetLuminary( ri.pObject ) );
-			if( pEmitter && considerEmission && !soloSuppressEmission )
+			// DL-372 / DL-336: PART 3's SMS guard (`smsGuardedEmission`)
+			// turned `considerEmission` off for exactly the hits
+			// `smsSuppressEmission` names; let them reach the split below.
+			const bool emissionGate = considerEmission ||
+				( smsGuardedEmission && smsSuppressEmission );
+			if( pEmitter && emissionGate && !soloSuppressEmission )
 			{
-				if( smsSuppressEmission )
+				// DL-372 / DL-336 split suppression: SMS seeds ONE
+				// deterministic chain per emitter point, so at a multi-root
+				// caustic it estimates only the root that seed reaches.
+				// Suppress only when SMS's own seed + solve from the anchor
+				// toward this hit point converges to this chain; otherwise
+				// keep the hit (at full weight: the last vertex was delta).
+				// An emitter SMS's light sampler cannot draw (not an area
+				// light) is never estimated by SMS.  `smsChain` is engaged
+				// only where SMS is deterministic (SplitSuppressionExact).
+				bool smsSuppressThisHit = smsSuppressEmission;
+				if( smsSuppressThisHit && smsChain )
+				{
+					const IGeometry* pHitGeom = ri.pObject ? ri.pObject->GetGeometry() : 0;
+					SMSChainCoverage coverage = eSMSChainNotCovered;
+					if( pHitGeom && pHitGeom->CanBeAreaLight() ) {
+						Scalar smsNM = 0;
+						if constexpr ( !Traits::is_pel ) {
+							smsNM = tag.nm;
+						}
+						coverage = pSolver->ClassifyEmitterHitCoverage( *smsChain,
+							ri.geometric.ptIntersection, ri.geometric.vGeomNormal,
+							scene, caster, smsNM );
+					}
+					if( coverage == eSMSChainNotCovered ) {
+						smsSuppressThisHit = false;
+					}
+				}
+				if( smsSuppressThisHit )
 				{
 					// Skip emission entirely; SMS handles this contribution.
 					// SMS_DIAG counters + the firefly trace are Pel-only
@@ -3584,6 +3657,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				bsdfMisPdf = rs2.bsdfMisPdf;
 				bsdfTimesCos = Traits::zero();
 				considerEmission = nextConsiderEmissionSPF;
+				smsGuardedEmission = false;
 				rayType = rs2.type;
 				diffuseBounces = rs2.diffuseBounces;
 				glossyBounces = rs2.glossyBounces;
@@ -3609,6 +3683,16 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 						bHadNonSpecularShading = false;
 					}
 				bSMSChainUncovered = nextSMSChainUncoveredSPF;
+				// DL-372: a delta vertex extends the recorded chain; a
+				// non-delta one here is no SMS anchor (no PART 2 ran).
+				if( smsChain ) {
+					if( pS->isDelta ) {
+						smsChain->Append( ri.geometric, ri.pObject,
+							ri.geometric.ray.Dir(), pS->ray.Dir() );
+					} else {
+						smsChain->Invalidate();
+					}
+				}
 
 				if constexpr ( Traits::is_pel ) {
 					if( ff ) {
@@ -3793,6 +3877,17 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				g_smsDiag_evals.fetch_add( 1, std::memory_order_relaxed );
 			}
 #endif
+			// DL-372: the inputs this SMS evaluation is given, so a chain
+			// leaving this vertex can re-run its seed (committed as the
+			// anchor if PART 3 scatters non-delta).
+			if( smsChain ) {
+				smsPendingValid = true;
+				smsPendingPos = ri.geometric.ptIntersection;
+				smsPendingGN = ri.geometric.vGeomNormal;
+				smsPendingSN = ri.geometric.vNormal;
+				smsPendingStack = iorStack;
+			}
+
 			// SMS receiver: pass BOTH geometric and shading normals.
 			// Shading drives BSDF eval and cosine factor (Veach §5.3.6),
 			// geometric drives probe-direction fallback / chain topology.
@@ -4490,6 +4585,9 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			bsdfMisPdf = misBsdfPdf;
 			bsdfTimesCos = bsdfTimesCosVal;
 			considerEmission = nextConsiderEmission;
+			// DL-372: the SMS guard above is the only rule that turns it off
+			// here; PART 1 may still keep a hit SMS does not reach.
+			smsGuardedEmission = !nextConsiderEmission;
 			rayType = rs2.type;
 			diffuseBounces = rs2.diffuseBounces;
 			glossyBounces = rs2.glossyBounces;
@@ -4523,6 +4621,20 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				bHadNonSpecularShading = true;
 			}
 			bSMSChainUncovered = nextSMSChainUncovered;
+			// DL-372: a delta lobe extends the chain since the anchor; a
+			// non-delta one makes THIS vertex the anchor (PART 2 recorded
+			// what SMS was given here).
+			if( smsChain ) {
+				if( pS->isDelta ) {
+					smsChain->Append( ri.geometric, ri.pObject,
+						ri.geometric.ray.Dir(), traceRay.Dir() );
+				} else if( smsPendingValid ) {
+					smsChain->SetAnchor( smsPendingPos, smsPendingGN,
+						smsPendingSN, *smsPendingStack );
+				} else {
+					smsChain->Invalidate();
+				}
+			}
 
 			currentRay = traceRay;
 			currentRay.Advance( 1e-8 );
@@ -5471,7 +5583,8 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 	PixelAOV* pAOV,
 	Scalar bsdfMisPdf_,
 	Scalar castRRCompensation_,
-	bool smsChainUncovered_
+	bool smsChainUncovered_,
+	const SMSChainRecord* pSMSChain_
 	) const
 {
 	// Thin forwarder to the shared templated body.  pAOV carries the
@@ -5487,7 +5600,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 		glossyBounces, transmissionBounces, translucentBounces,
 		volumeBounces, glossyFilterWidth, smsPassedThroughSpecular_initial,
 		smsHadNonSpecularShading_initial, pAOV, nullptr, NMTag{ nm }, bsdfMisPdf_,
-		castRRCompensation_, smsChainUncovered_ );
+		castRRCompensation_, smsChainUncovered_, pSMSChain_ );
 }
 
 
@@ -5718,6 +5831,21 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 	// is evaluated) preceded the current chain?  This loop is entered
 	// fresh at a camera-ray first hit, so it starts false.
 	bool bSMSAnchor = false;
+	// DL-372 / DL-336: the anchor + delta chain record (see the Pel/NM
+	// loop), kept here only to hand to the per-wavelength NM delegations
+	// below, whose PART 1 then applies the split suppression.  This
+	// body's own suppression (PART 3's `nextConsiderEmission` after a
+	// delta lobe at a BSDF vertex) keeps today's rule: SMS ran per lane,
+	// so a split would be a per-lane decision on one shared hero path
+	// (DL-378).
+	std::optional<SMSChainRecord> smsChainHWSS;
+	if( pSolver && pSolver->SplitSuppressionExact( caster, true ) ) {
+		smsChainHWSS.emplace();
+	}
+	bool smsPendingValidHWSS = false;
+	Point3 smsPendingPosHWSS;
+	Vector3 smsPendingGNHWSS, smsPendingSNHWSS;
+	std::optional<IORStack> smsPendingStackHWSS;
 
 	const unsigned int rrMinDepth = stabilityConfig.rrMinDepth;
 	const Scalar rrThreshold = stabilityConfig.rrThreshold;
@@ -5729,6 +5857,8 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 
 	for( unsigned int depth = startDepth; depth < maxDepth; depth++ )
 	{
+		smsPendingValidHWSS = false;
+
 		// Runaway-throughput guard -- see RGB IntegrateFromHit.  HWSS
 		// carries per-wavelength throughput in throughputComp[]; take
 		// the max across the bundle.
@@ -6328,7 +6458,8 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					// own parameter so the delegated body's PART 1 latch AND
 					// PART 3 both see it through the next SMS caster).
 					false, bSMSAnchor, pAOV, misBsdfPdfComp[w],
-					1, bSMSChainUncovered );
+					1, bSMSChainUncovered,
+					smsChainHWSS ? &*smsChainHWSS : nullptr );
 			}
 			break;
 		}
@@ -6389,7 +6520,8 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 						// `misBsdfPdfComp[w]`, not the hero's -- see the
 						// no-BSDF delegation above.
 						false, bSMSAnchor, pAOV, misBsdfPdfComp[w],
-						1, bSMSChainUncovered );
+						1, bSMSChainUncovered,
+						smsChainHWSS ? &*smsChainHWSS : nullptr );
 				}
 				break;
 			}
@@ -6577,6 +6709,15 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 
 			IndependentSampler fallbackSampler( rc.random );
 			ISampler& smsSampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
+
+			// DL-372: what every lane's SMS evaluation below is given.
+			if( smsChainHWSS ) {
+				smsPendingValidHWSS = true;
+				smsPendingPosHWSS = ri.geometric.ptIntersection;
+				smsPendingGNHWSS = ri.geometric.vGeomNormal;
+				smsPendingSNHWSS = ri.geometric.vNormal;
+				smsPendingStackHWSS = iorStack;
+			}
 
 			for( unsigned int w = 0; w < SampledWavelengths::N; w++ )
 			{
@@ -6948,6 +7089,18 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		bSMSChainUncovered = nextSMSChainUncovered;
 		if( !pS->isDelta ) {
 			bSMSAnchor = true;
+		}
+		// DL-372: the record handed to the NM delegations (Pel/NM PART 3).
+		if( smsChainHWSS ) {
+			if( pS->isDelta ) {
+				smsChainHWSS->Append( ri.geometric, ri.pObject,
+					ri.geometric.ray.Dir(), traceRay.Dir() );
+			} else if( smsPendingValidHWSS ) {
+				smsChainHWSS->SetAnchor( smsPendingPosHWSS, smsPendingGNHWSS,
+					smsPendingSNHWSS, *smsPendingStackHWSS );
+			} else {
+				smsChainHWSS->Invalidate();
+			}
 		}
 
 		currentRay = traceRay;

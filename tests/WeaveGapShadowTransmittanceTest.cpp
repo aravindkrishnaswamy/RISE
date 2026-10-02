@@ -989,18 +989,17 @@ static void ParityRow( const char* label, const std::string& rastOn, const std::
 	}
 }
 
-//! An anchored chain PT must leave to SMS: SMS on must read under 5 % of
-//! SMS off (see the call site for why it reads ~0 rather than ~1).
-static void SuppressedRow( const char* label, const std::string& rastOn, const std::string& rastOff,
-	const std::string& scene )
+//! SMS on / SMS off must fall in [lo, hi] (the DL-372 split rows).
+static void RatioBandRow( const char* label, const std::string& rastOn, const std::string& rastOff,
+	const std::string& scene, double lo, double hi )
 {
-	const double Lon  = Render( Assemble( rastOn, scene ), "sms_sup_on" );
-	const double Loff = Render( Assemble( rastOff, scene ), "sms_sup_off" );
+	const double Lon  = Render( Assemble( rastOn, scene ), "sms_band_on" );
+	const double Loff = Render( Assemble( rastOff, scene ), "sms_band_off" );
 	char buf[320];
-	std::snprintf( buf, sizeof(buf), "sms suppressed %s: SMS on %.6f / off %.6f = %.5f (must stay < 0.05)",
-		label, Lon, Loff, Lon / Loff );
+	std::snprintf( buf, sizeof(buf), "sms split %s: SMS on %.6f / off %.6f = %.5f (band [%.3f, %.3f])",
+		label, Lon, Loff, Lon / Loff, lo, hi );
 	std::cout << "  " << buf << std::endl;
-	Check( Loff > 0 && Lon >= 0 && Lon / Loff < 0.05, buf );
+	Check( Loff > 0 && Lon >= 0 && Lon / Loff >= lo && Lon / Loff <= hi, buf );
 }
 
 //! Sibling materials for the parity rows.
@@ -1429,20 +1428,24 @@ static void TestSMSEmissionThroughGap()
 	ParityRow( "skin receiver under a closed slab PT spectral hwss=false", RastPTSpectralSMS( 256, false, true ), RastPTSpectralSMS( 256, false, false ),
 		UnderSlabScene( 1, true ), 0.08 );
 
-	// MUST STAY SUPPRESSED: the same anchored chain with no gap is an SMS
-	// chain by PT's accounting (anchor, then a caster), so PT must not
-	// count it -- a regression that un-suppressed it would read PT+SMS/PT
-	// ~1 (or ~2 had SMS estimated it).  It reads ~0: SMS treats these
-	// casters as refractors (`canRefract`) and never estimates their
-	// REFLECTION chain, so PT+SMS loses it entirely, before and after this
-	// slice -- a pre-existing premise failure recorded in DL-339, pinned
-	// here so a change to it is deliberate.
-	SuppressedRow( "receiver -> smooth-SSS ceiling (anchored, no gap) PT RGB", RastPTSMS( 256, true ), RastPTSMS( 256, false ),
-		CasterCeilingScene( false, false, false ) );
-	SuppressedRow( "receiver -> polished ceiling (anchored, no gap) PT RGB", RastPTSMS( 256, true ), RastPTSMS( 256, false ),
-		CasterCeilingScene( true, false, false ) );
-	SuppressedRow( "receiver -> smooth-SSS ceiling (anchored, no gap) PT HWSS", RastPTSpectralSMS( 256, true, true ), RastPTSpectralSMS( 256, true, false ),
-		CasterCeilingScene( false, false, false ) );
+	// The same anchored chain with no gap: an SMS chain by PT's old
+	// accounting (anchor, then a caster), which read ~0 here -- SMS treats
+	// these casters as refractors (`canRefract`) and never estimates their
+	// REFLECTION chain (DL-339's premise failure).  Since the DL-372 split
+	// suppression PT asks SMS's own seed + solve whether it reaches the
+	// hit; it does not (it refracts), so PT keeps it: ~1, and ~2 would be a
+	// double count.  Measured (MeasureSplitRows, n 8, salted): 1.00268 +/-
+	// 0.00668, 0.99680 +/- 0.00789, HWSS 0.99780 +/- 0.00717 (n 4); pre-
+	// split 0.00026, 0.00000, 0.00028.  Bands >= 4.4 sd.  The HWSS row
+	// reaches the split through the SSS hand-off's record; a BSDF caster
+	// whose reflection the HWSS body suppresses itself keeps today's rule
+	// (DL-378).
+	ParityRow( "receiver -> smooth-SSS ceiling (anchored, no gap) PT RGB", RastPTSMS( 256, true ), RastPTSMS( 256, false ),
+		CasterCeilingScene( false, false, false ), 0.035 );
+	ParityRow( "receiver -> polished ceiling (anchored, no gap) PT RGB", RastPTSMS( 256, true ), RastPTSMS( 256, false ),
+		CasterCeilingScene( true, false, false ), 0.035 );
+	ParityRow( "receiver -> smooth-SSS ceiling (anchored, no gap) PT HWSS", RastPTSpectralSMS( 256, true, true ), RastPTSpectralSMS( 256, true, false ),
+		CasterCeilingScene( false, false, false ), 0.035 );
 
 	// Control: an SMS CASTER, where the suppression's premise is SMS's to
 	// honour and this fix changes nothing.  Printed, not gated.  Before
@@ -2070,6 +2073,107 @@ static void MeasureCausticAudit( unsigned int n, unsigned int ptSpp, unsigned in
 	SobolSamplerTestHooks::ValueSalt().store( 0u );
 }
 
+//////////////////////////////////////////////////////////////////////
+// split (DL-372 / DL-336 split suppression).  PT with `sms_enabled` used
+// to drop every BSDF-sampled emitter hit behind an SMS anchor and an
+// all-caster chain; snell-mode SMS seeds ONE deterministic chain per
+// light sample, so at a multi-root caustic the roots the seed misses were
+// dropped by PT and estimated by nobody.  PT now suppresses a hit only if
+// SMS's own seed + solve from the anchor reaches it
+// (ManifoldSolver::ClassifyEmitterHitCoverage).
+//
+// The fixture is `sms_visibility_unoccluded`'s ball lens (r 1 at y 1.5,
+// the floor at its paraxial focus) with the camera framing the caustic
+// under it (24 x 24, fov 6): pre-fix PT+SMS/PT reads ~0.37 there (single
+// render) where the shipped 200 x 200 view averages it to 0.917.  The
+// same lens as a perfect refractor (every PT chain is exactly a root) and
+// as the shipped dielectric (`scattering 100000`, a warped lobe: PT's
+// chain is assigned to the root Newton reaches from it).  Bands: see
+// TestSMSSplitSuppression.
+//////////////////////////////////////////////////////////////////////
+static std::string BallLensCausticScene( bool dielectric )
+{
+	std::ostringstream ss;
+	ss << "film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	      "pinhole_camera\n{\n\tlocation 0 4 8\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 6.0\n}\n\n"
+	      "uniformcolor_painter\n{\n\tname pnt_floor\n\tcolor 0.7 0.7 0.7\n}\n\n"
+	      "uniformcolor_painter\n{\n\tname pnt_light\n\tcolor 1.0 1.0 1.0\n}\n\n"
+	      "uniformcolor_painter\n{\n\tname pnt_glass_tau\n\tcolor 0.999 0.999 0.999\n}\n\n"
+	      "lambertian_material\n{\n\tname floor_mat\n\treflectance pnt_floor\n}\n\n"
+	      "lambertian_luminaire_material\n{\n\tname light_mat\n\texitance pnt_light\n\tscale 500.0\n\tmaterial none\n}\n\n";
+	if( dielectric ) {
+		ss << "dielectric_material\n{\n\tname glass_mat\n\ttau 0.999\n\tior 1.5\n\tscattering 100000\n}\n\n";
+	} else {
+		ss << "perfectrefractor_material\n{\n\tname glass_mat\n\trefractance pnt_glass_tau\n\tior 1.5\n}\n\n";
+	}
+	ss << "sphere_geometry\n{\n\tname sphere_geom\n\tradius 1.0\n}\n\n"
+	      "clippedplane_geometry\n{\n\tname floor_geom\n\tpta -5.0 0.0 -5.0\n\tptb -5.0 0.0 5.0\n\tptc 5.0 0.0 5.0\n\tptd 5.0 0.0 -5.0\n}\n\n"
+	      "clippedplane_geometry\n{\n\tname light_geom\n\tpta -1.5 0.0 -1.5\n\tptb 1.5 0.0 -1.5\n\tptc 1.5 0.0 1.5\n\tptd -1.5 0.0 1.5\n}\n\n"
+	      "standard_object\n{\n\tname floor\n\tgeometry floor_geom\n\tmaterial floor_mat\n}\n\n"
+	      "standard_object\n{\n\tname glass_sphere\n\tgeometry sphere_geom\n\tposition 0 1.5 0\n\tmaterial glass_mat\n}\n\n"
+	      "standard_object\n{\n\tname area_light\n\tgeometry light_geom\n\tposition 0 5.0 0\n\tmaterial light_mat\n}\n\n";
+	return ss.str();
+}
+
+static const unsigned int kSplitSpp = 256;
+
+//! Opt-in band measurement (WEAVE_GAP_FILTER=splitmeasure, argv[2] = n):
+//! n salted replicates of each gated split row, mean +/- sd of SMS on/off.
+static void MeasureSplitRows( unsigned int n )
+{
+	g_saltRenders = true;
+	struct M { const char* label; std::string scene; bool hwss; };
+	const M rows[] = {
+		{ "ball lens caustic, perfect refractor", BallLensCausticScene( false ), false },
+		{ "ball lens caustic, dielectric scattering 1e5", BallLensCausticScene( true ), false },
+		{ "receiver -> smooth-SSS ceiling (anchored, no gap)", CasterCeilingScene( false, false, false ), false },
+		{ "receiver -> polished ceiling (anchored, no gap)", CasterCeilingScene( true, false, false ), false },
+		{ "receiver -> smooth-SSS ceiling (anchored, no gap) HWSS", CasterCeilingScene( false, false, false ), true },
+		{ "ball lens caustic, perfect refractor HWSS", BallLensCausticScene( false ), true },
+	};
+	const char* only = std::getenv( "WEAVE_GAP_SPLIT_ROWS" );	// e.g. "0145"
+	for( size_t ri = 0; ri < sizeof( rows ) / sizeof( rows[0] ); ri++ ) {
+		const M& r = rows[ri];
+		if( only && !std::strchr( only, char( '0' + ri ) ) ) continue;
+		std::vector<double> q;
+		for( unsigned int i = 0; i < n; i++ ) {
+			const double on  = Render( Assemble( r.hwss ? RastPTSpectralSMS( kSplitSpp, true, true ) : RastPTSMS( kSplitSpp, true ), r.scene ), "split_on" );
+			const double off = Render( Assemble( r.hwss ? RastPTSpectralSMS( kSplitSpp, true, false ) : RastPTSMS( kSplitSpp, false ), r.scene ), "split_off" );
+			q.push_back( off > 0 ? on / off : -1.0 );
+		}
+		double m = 0, sd = 0;
+		MeanSd( q, m, sd );
+		std::printf( "  splitmeasure %-52s SMS on/off %.5f +/- %.5f (n %u)\n", r.label, m, sd, n );
+	}
+	g_saltRenders = false;
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
+}
+
+static void TestSMSSplitSuppression()
+{
+	std::cout << "=== split: PT keeps the anchored emitter hits SMS's seed does not reach (DL-372 / DL-336) ===" << std::endl;
+	g_saltRenders = true;
+	// BANDS from MeasureSplitRows (single worker, seed base 1000, salted),
+	// docs/SMS_ENERGY_LOSS_INVESTIGATION.md section 7; each band holds the
+	// measured mean by >= 4 sd and excludes the pre-split value by > 40 sd.
+	//   perfect refractor      0.99661 +/- 0.00772 (n 8); pre-split 0.38101 +/- 0.00703
+	//   dielectric 1e5         1.03378 +/- 0.01055 (n 8); pre-split 0.38278 +/- 0.00850
+	//   perfect refractor HWSS 0.99218 +/- 0.00636 (n 4); pre-split 0.38609 +/- 0.01050 (n 8)
+	// The dielectric's +3.4 % is the warped-lobe residual: its PT chain is
+	// not a root, and is assigned to the root Newton reaches from it -- the
+	// delta-limit partition, not an exact one (at the paraxial focus a 3e-3
+	// rad warp scatters PT's chains across roots).  The shipped 200 x 200
+	// view, where the caustic is a fraction of the image, reads 1.0025.
+	RatioBandRow( "ball lens caustic, perfect refractor (DL-372 twin)",
+		RastPTSMS( kSplitSpp, true ), RastPTSMS( kSplitSpp, false ), BallLensCausticScene( false ), 0.96, 1.035 );
+	RatioBandRow( "ball lens caustic, dielectric scattering 1e5 (shipped DL-372)",
+		RastPTSMS( kSplitSpp, true ), RastPTSMS( kSplitSpp, false ), BallLensCausticScene( true ), 0.99, 1.08 );
+	RatioBandRow( "ball lens caustic, perfect refractor HWSS (no-BSDF hand-off carries the record)",
+		RastPTSpectralSMS( kSplitSpp, true, true ), RastPTSpectralSMS( kSplitSpp, true, false ), BallLensCausticScene( false ), 0.96, 1.03 );
+	g_saltRenders = false;
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
+}
+
 static char g_optPath[512] = { 0 };
 
 int main( int argc, char** argv )
@@ -2130,6 +2234,15 @@ int main( int argc, char** argv )
 			vcmSppEnv ? (unsigned int)std::strtol( vcmSppEnv, nullptr, 10 ) : 1024u );
 		return 0;
 	}
+	if( filter && std::strstr( filter, "splitmeasure" ) ) {
+		unsigned int n = 8;
+		if( argc > 2 ) {
+			const long v = std::strtol( argv[2], nullptr, 10 );
+			if( v > 0 ) n = (unsigned int)v;
+		}
+		MeasureSplitRows( n );
+		return 0;
+	}
 	if( filter && std::strstr( filter, "scenehash" ) ) {
 		HashScenes();
 		return 0;
@@ -2153,6 +2266,7 @@ int main( int argc, char** argv )
 	if( !filter || std::strstr( filter, "castsshadows" ) ) TestCastsShadowsFalseStepOver();
 	if( !filter || std::strstr( filter, "layers" ) )      TestTwoLayerLightOutside();
 	if( !filter || std::strstr( filter, "fovsweep" ) )    TestNarrowFovSplat();
+	if( !filter || std::strstr( filter, "split" ) )       TestSMSSplitSuppression();
 
 	std::cout << "Passed: " << passCount << "   Failed: " << failCount << std::endl;
 	return failCount == 0 ? 0 : 1;
