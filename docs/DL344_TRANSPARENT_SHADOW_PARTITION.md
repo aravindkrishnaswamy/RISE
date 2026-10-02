@@ -201,3 +201,15 @@ refractor box filled with isotropic fog (`scattering 0.5`), omni light
 outside, PT + SMS / PT (flag TRUE, so PT's walk carries the fog
 transmittance) = 1.207 (salted n = 4, per-pair sd 0.011).  Pre-existing,
 independent of DL-344; row G's fog box therefore holds no surface.
+
+**Gate note (round 3).**  `ExteriorIndexInvarianceTest`'s
+`B: sms_lambertian_via_glass_sphere/PT/sms-uniform/k1` and `/k2` rows fail
+at the suite's fixed seeds on the merged tree (229/2, a re-run 230/1),
+with an UNPAIRED firefly: one air render near twice the others while its
+enclosed twin is clean.  The same tree with `ManifoldSolver.cpp` reverted
+to pre-DL-413 fails the same two rows (k1 0.934, k2 0.738), and both
+builds show a heavy tail at n = 32 (per-render sd 0.40 before, 0.42-0.49
+after DL-413).  The rows use an omni light and no `transparent_shadows`,
+so neither of this slice's changes reaches them except DL-413's
+rescaling; the flake is SMS uniform mode's point-light caustic tail and
+needs its own row.
