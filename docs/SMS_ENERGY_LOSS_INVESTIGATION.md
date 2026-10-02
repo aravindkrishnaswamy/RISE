@@ -340,7 +340,18 @@ estimate E, `E - (split - PT)` the PT energy the split leaves to SMS):
 paths (2.6x), `sms_k2_flatslab` 0.02526 / 0.01425 (1.8x).  SMS prices an
 open sheet's roots differently from PT -- the flat open ior-1.5 sheet of
 `WeaveGapShadowTransmittanceTest` reads 2.25x with SMS on in every build,
-split included (2.2515) -- so on open sheets the split is exact in which
-paths each estimator takes but the totals carry SMS's open-sheet pricing,
-which the old rule half-hid behind its losses.  Closed dielectrics (every
+split included (2.2515).  Review (2026-10-01, instrumented single renders
+of `sms_k1_refract` at 200x150): the overshoot is NOT specific to
+displacement (a flat open sheet in that layout moves 1.028 -> 1.095, the
+same as the displaced one) and NOT a double count -- every root SMS's own
+evaluator accepted re-classifies as covered, PT keeps only pairs SMS has
+no estimate for (no seed / failed solve), and a CLOSED flat slab reads
+1.0006 with SMS energy 0.997 of what it replaced.  On open sheets the
+guarantee is therefore that each (anchor, emitter point) pair goes to
+exactly one estimator -- NOT exact path identity: PT's perfect-refractor
+paths are not exact roots of SMS's open-sheet model (DL-345's index
+mismatch), so ~92-93 % of suppressed hits there go through the
+Newton-assignment branch, not only finite-scattering dielectrics.  The
+totals carry SMS's open-sheet pricing (~2.5x, DL-339 (b) / DL-345), which
+the old rule half-hid behind its losses.  Closed dielectrics (every
 other fixture above) read within ~1-2 %.
