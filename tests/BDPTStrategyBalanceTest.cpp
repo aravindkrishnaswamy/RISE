@@ -4377,7 +4377,7 @@ static void RunDeltaLitRandomWalkRowDL375( const char* name, const char* light, 
 
 static void TestDeltaLitRandomWalkDL375()
 {
-	RunDeltaLitRandomWalkRowDL375( "omni (S1 sphere / D1 wall)", kLightOmniDL375, 2048, 0.05, 0.15 );
+	RunDeltaLitRandomWalkRowDL375( "omni (S1 sphere / D1 wall)", kLightOmniDL375, 2048, 0.05, 0.05 );
 	RunDeltaLitRandomWalkRowDL375( "spot (S2 sphere / D2 wall)", kLightSpotDL375, 2048, 0.05, 0.05 );
 }
 
