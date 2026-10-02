@@ -8356,7 +8356,8 @@ void BDPTIntegrator::RecomputeSubpathThroughputNM(
 				cumulativeRatio = 0;
 			}
 		}
-		// Delta, BSSRDF, medium, endpoints: scatter ratio = 1.0
+		// Delta, medium, endpoints and a BSSRDF EXIT hit: scatter ratio = 1.0
+		// (the jump itself is priced at its entry vertex, Phase 1b).
 	}
 }
 
