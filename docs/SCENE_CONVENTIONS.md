@@ -1215,6 +1215,10 @@ integrator and in SMS (DL-345, 2026-10-02,
   the edges matter;
 - a lone sheet is a half-space of glass behind it: a receiver seen directly
   under it is lit as if it sat in that glass.
+  This holds for the SHEET'S OWN crossing only: another refractor behind a
+  lone sheet sees the walk's stack, which is air when the walk was seeded
+  behind the sheet (an ior-1.5 sphere under a water sheet reads ~10 % low
+  in PT/BDPT/VCM against the closed-water twin; DL-382 (4)).
 - only provably open surfaces get this rule: an open triangle MESH, a
   Bezier patch set or a CSG of sheets is not certified open and keeps the
   stack-based ("entering unless already inside") convention, which is not

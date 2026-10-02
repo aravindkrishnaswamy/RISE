@@ -198,9 +198,15 @@ water-surface sheet.  The old rule ENTERED the surface from below (air ->
 1.33, no Beer); the face rule EXITS it (1.33 -> air): Snell's window with
 total internal reflection of the seabed outside it, and the surface's `tau`
 charged on the underwater segment, as for a closed water body.  200 x 150,
-16 spp, OIDN off, single CLI renders: **0.77356 -> 0.67650 (-12.5 %)** and
-**0.74891 -> 0.65413 (-12.7 %)**.  This is a LOOK change of a shipped scene
-(the supervisor rules on re-tuning, as for DL-320).
+16 spp, OIDN off, single CLI renders, DISPLAY-ENCODED (default sRGB output):
+**0.77356 -> 0.67650 (-12.5 %)** and **0.74891 -> 0.65413 (-12.7 %)**.  In
+LINEAR Rec.709 (review, 2026-10-02) the first scene moves **0.68795 -> 0.46310
+(-32.7 %)**, the top third of the frame (the surface seen past Snell's window,
+now totally internally reflected) **1.0168 -> 0.5648 (-44 %)**; the surface
+`tau` accounts for about 4 points of it (tau 1 reads 0.48130).  The `_v2`
+linear figure was not measured.  The scene's surface `tau` now stacks on
+`med_ocean`'s absorption -- consistent with the model, an authoring call.
+This is a LOOK change of a shipped scene; the user accepted it (2026-10-02).
 
 ## 6. Residuals
 
