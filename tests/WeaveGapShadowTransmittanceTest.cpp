@@ -2200,6 +2200,7 @@ static void TestExplicitSaltContract()
     const std::string scene = Assemble( RastBDPT( 64 ), ReceiverScene( kSpot, true, 0.3, kWide, true ) );
     unsigned long long previous = 0;
     const unsigned int startIndex=g_renderIndex;
+    const RandomNumberGenerator priorRng=GlobalRNG();
     for( unsigned int i = 0; i < 4; ++i ) {
         // Hold both RNGs fixed so only the explicit value salt changes.
         GlobalRNG()=RandomNumberGenerator(390u);
@@ -2209,6 +2210,7 @@ static void TestExplicitSaltContract()
         if( i ) Check( g_lastPixelHash != previous, "salt contract: distinct value salts change BDPT point set" );
         previous = g_lastPixelHash;
     }
+    GlobalRNG()=priorRng;
     g_renderIndex=startIndex+4;
 }
 
@@ -2242,6 +2244,8 @@ int main( int argc, char** argv )
 		const long v = std::strtol( argv[1], nullptr, 10 );
 		if( v > 0 ) g_seedBase = (unsigned int)v;
 	}
+	std::srand(g_seedBase);
+	GlobalRNG()=RandomNumberGenerator(g_seedBase);
 	std::cout << "WeaveGapShadowTransmittanceTest (DL-05)   seed base = " << g_seedBase << std::endl;
 
 	const char* filter = std::getenv( "WEAVE_GAP_FILTER" );
