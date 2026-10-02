@@ -609,6 +609,14 @@ namespace RISE
 			return false;
 		}
 
+		//! Result of ResolveOpenSheetCrossing (below).
+		struct OpenSheetCrossing
+		{
+			bool   bEntering;
+			Scalar etaFrom;
+			Scalar etaTo;
+		};
+
 		//! DL-345: one crossing of a PROVABLY OPEN transmissive sheet
 		//! (`RayIntersectionGeometric::bProvablyNoInterior`).
 		//!
@@ -646,14 +654,7 @@ namespace RISE
 		//!
 		//! @param dest  a COPY of the walk's stack whose current object is
 		//!              the sheet; on return, the stack after transmission.
-		//! @return      true when the crossing enters.
-		struct OpenSheetCrossing
-		{
-			bool   bEntering;
-			Scalar etaFrom;
-			Scalar etaTo;
-		};
-
+		//! @return      whether the crossing enters, and the index pair it refracts between.
 		inline OpenSheetCrossing ResolveOpenSheetCrossing(
 			const RayIntersectionGeometric& ri,
 			const Scalar sheetIOR,
