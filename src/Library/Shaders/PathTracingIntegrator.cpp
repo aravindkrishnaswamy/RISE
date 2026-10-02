@@ -3346,7 +3346,9 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 							// prices Sw for ior / ambientIOR.
 							entryRI.ambientIOR = ri.geometric.ambientIOR;
 
-							RandomWalkEntryBSDF entryBSDF( pRWParams->ior );
+							// DL-370: the exit body's index -- a walk that crossed
+							// into a touching neighbour leaves through it.
+							RandomWalkEntryBSDF entryBSDF( bssrdf.ExitIOR( pRWParams->ior ) );
 							BSSRDFEntryMaterial entryMaterial;
 
 							const unsigned int nextTranslucentBounces = translucentBounces + 1;
@@ -3378,7 +3380,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 									// scaled by it.
 									Value directSSS = PTEvaluateDirectLighting<Tag>(
 										pLS, entryRI, entryBSDF, &entryMaterial, caster,
-										bssrdfSampler, ri.pObject, 0, false, 0, tag,
+										bssrdfSampler, bssrdf.ExitObject( ri.pObject ), 0, false, 0, tag,
 										0, 0, PTSurvivalMagnitude( bssrdfWeightSpatial ) *
 											( depth == startDepth ? castRRCompensation_ : Scalar( 1.0 ) ),
 										// DL-292: the SAME stack the continuation below

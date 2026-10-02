@@ -1698,7 +1698,11 @@ namespace
 	//! when `gap` == 0) under the white environment, seen orthographically
 	//! face-on: every pixel reads 1.  Unlike the closed room this works for
 	//! the diffusion profile too (whose transport cannot cross a thick wall).
-	std::string BuildTouchingPairScene( Model model, Scalar scattering, Scalar gap, unsigned int samples )
+	//! `iorRight` != 1.5 gives the right cube another index (the shared face
+	//! is then a real dielectric interface); `spectral` renders with the
+	//! spectral path tracer (the walk's NM branch).
+	std::string BuildTouchingPairScene( Model model, Scalar scattering, Scalar gap, unsigned int samples,
+		Scalar iorRight = 1.5, bool spectral = false )
 	{
 		std::ostringstream s;
 		s << std::setprecision( 17 );
@@ -1709,17 +1713,26 @@ namespace
 		if( model == Model::RandomWalk ) {
 			s << "randomwalk_sss_material\n{\n\tname block\n\tior 1.5\n\tabsorption 0\n\tscattering " << scattering
 			  << "\n\tg 0\n\troughness 0\n\tmax_bounces 8192\n}\n\n";
+			s << "randomwalk_sss_material\n{\n\tname block_right\n\tior " << iorRight << "\n\tabsorption 0\n\tscattering " << scattering
+			  << "\n\tg 0.3\n\troughness 0\n\tmax_bounces 8192\n}\n\n";
 		} else {
 			s << "subsurfacescattering_material\n{\n\tname block\n\tior 1.5\n\tabsorption 0\n\tscattering " << scattering
+			  << "\n\tg 0\n\troughness 0\n}\n\n";
+			s << "subsurfacescattering_material\n{\n\tname block_right\n\tior " << iorRight << "\n\tabsorption 0\n\tscattering " << scattering
 			  << "\n\tg 0\n\troughness 0\n}\n\n";
 		}
 		s << "box_geometry\n{\n\tname block_geo\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n";
 		s << "standard_object\n{\n\tname left\n\tgeometry block_geo\n\tmaterial block\n\tposition " << -0.5 - gap / 2 << " 0 0\n}\n\n";
-		s << "standard_object\n{\n\tname right\n\tgeometry block_geo\n\tmaterial block\n\tposition " << 0.5 + gap / 2 << " 0 0\n}\n\n";
+		s << "standard_object\n{\n\tname right\n\tgeometry block_geo\n\tmaterial block_right\n\tposition " << 0.5 + gap / 2 << " 0 0\n}\n\n";
 		s << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
-		s << "pathtracing_pel_rasterizer\n{\n\tsamples " << samples
-		  << "\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n\tpathguiding FALSE\n\tadaptive_max_samples 0\n"
-		  << "\tradiance_map white\n\tradiance_scale 1\n\tradiance_background TRUE\n}\n\n";
+		if( spectral ) {
+			s << "pathtracing_spectral_rasterizer\n{\n\tsamples " << samples
+			  << "\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n";
+		} else {
+			s << "pathtracing_pel_rasterizer\n{\n\tsamples " << samples
+			  << "\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n\tpathguiding FALSE\n\tadaptive_max_samples 0\n";
+		}
+		s << "\tradiance_map white\n\tradiance_scale 1\n\tradiance_background TRUE\n}\n\n";
 		s << "file_rasterizeroutput\n{\n\tpattern rendered/dl370_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
 		return s.str();
 	}
@@ -1735,17 +1748,26 @@ namespace
 		// neighbour at all, so the same offset still lands inside it there
 		// (DL-408); and on a finite cube the profile is not energy
 		// conserving, so its gapped side is heavy-tailed.
-		struct Row { Model model; Scalar scattering; unsigned int samples; double band; bool gated; };
+		// The mismatched row gives the right cube index 1.3 and g 0.3 (every
+		// row's right cube has g 0.3, so a crossing must also switch the
+		// phase function): the shared face is then a real 1.5 / 1.3
+		// interface, Fresnel-partitioned and TIR-capable from the left.
+		struct Row { Model model; Scalar scattering; unsigned int samples; double band; bool gated; Scalar iorRight; bool spectral; };
 		const Row rows[] = {
-			{ Model::RandomWalk, 2,  64, 0.01, true },
-			{ Model::Diffusion,  20, 64, 0.0,  false },
+			{ Model::RandomWalk, 2,  64,  0.01, true,  1.5, false },
+			{ Model::RandomWalk, 2,  64,  0.01, true,  1.3, false },
+			{ Model::RandomWalk, 2,  256, 0.01, true,  1.5, true },
+			{ Model::Diffusion,  20, 64,  0.0,  false, 1.5, false },
 		};
 		unsigned int seed = 37100;
 		for( const Row& row : rows ) {
-			const std::string label = std::string( "F2: " ) + ModelName( row.model ) + "/PT touching pair";
+			std::ostringstream lab;
+			lab << "F2: " << ModelName( row.model ) << ( row.spectral ? "/PT-spectral" : "/PT" ) << " touching pair ior "
+			    << std::setprecision( 3 ) << "1.5|" << row.iorRight;
+			const std::string label = lab.str();
 			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
-			const std::string tPath = WriteScene( BuildTouchingPairScene( row.model, row.scattering, 0.0, row.samples ), "dl370pairT" );
-			const std::string gPath = WriteScene( BuildTouchingPairScene( row.model, row.scattering, 2e-6, row.samples ), "dl370pairG" );
+			const std::string tPath = WriteScene( BuildTouchingPairScene( row.model, row.scattering, 0.0, row.samples, row.iorRight, row.spectral ), "dl370pairT" );
+			const std::string gPath = WriteScene( BuildTouchingPairScene( row.model, row.scattering, 2e-6, row.samples, row.iorRight, row.spectral ), "dl370pairG" );
 			Check( !tPath.empty() && !gPath.empty(), label + ": scene files written" );
 			std::vector<double> tm, gm;
 			bool allValid = true;

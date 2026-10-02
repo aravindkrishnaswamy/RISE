@@ -122,7 +122,25 @@ namespace RISE
 			/// `SampleEntryPoint` only; 0 from `RandomWalkSSS::SampleExit`.
 			Scalar				jumpDistance;
 			Scalar				exitCos;
+			/// DL-370: the object the subsurface event actually LEFT, its
+			/// material, and that material's absolute index.  A random walk
+			/// that reaches a face it shares with a touching random-walk
+			/// neighbour crosses into the neighbour and may leave through
+			/// it, so the exit vertex belongs to that object (its Sw, its
+			/// connections, its self-exclusion).  Null / 0 = the entry
+			/// object (every diffusion result, and every walk that never
+			/// crossed); `ExitObject` / `ExitMaterial` resolve that.
+			const IObject*		pExitObject;
+			const IMaterial*	pExitMaterial;
+			Scalar				exitIOR;
 			bool				valid;			///< True if sampling succeeded
+
+			const IObject* ExitObject( const IObject* pEntryObject ) const
+			{ return pExitObject ? pExitObject : pEntryObject; }
+			const IMaterial* ExitMaterial( const IMaterial* pEntryMaterial ) const
+			{ return pExitMaterial ? pExitMaterial : pEntryMaterial; }
+			Scalar ExitIOR( const Scalar entryIOR ) const
+			{ return exitIOR > 0 ? exitIOR : entryIOR; }
 
 			SampleResult() :
 			bHasTexCoord1( false ),
@@ -130,7 +148,8 @@ namespace RISE
 			bHasVertexColor( false ),
 			weight( RISEPel(0,0,0) ), weightSpatial( RISEPel(0,0,0) ),
 			weightNM(0), weightSpatialNM(0),
-			cosinePdf(0), pdfSurface(0), jumpDistance(0), exitCos(0), valid(false) {}
+			cosinePdf(0), pdfSurface(0), jumpDistance(0), exitCos(0),
+			pExitObject(0), pExitMaterial(0), exitIOR(0), valid(false) {}
 		};
 
 		//////////////////////////////////////////////////////////////
