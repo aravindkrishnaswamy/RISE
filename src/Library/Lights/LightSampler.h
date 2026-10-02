@@ -985,8 +985,8 @@ namespace RISE
 			/// \return Selection probability, or 0 if luminary not found
 			Scalar CachedPdfSelectLuminary(
 				const IObject& luminary,							///< [in] The luminary to query
-				const Point3& shadingPoint,							///< [in] Unused (SampleLight's pmf is shading-point independent)
-				const Vector3& shadingNormal						///< [in] Unused
+				const Point3& shadingPoint,							///< [in] Shading point (used for BVH PDF; ignored when BVH inactive)
+				const Vector3& shadingNormal						///< [in] Shading normal (used for BVH PDF; ignored when BVH inactive)
 				) const;
 
 			/// Returns whether RIS spatial resampling is active.

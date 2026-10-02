@@ -4232,7 +4232,9 @@ ConnectAndEvaluateImplCore(
 			// since DL-348 it returns SampleLight()'s own alias pmf -- the
 			// density the s >= 1 strategies actually root their light
 			// subpaths with, strictly positive for any in-set light -- so
-			// the two coincide, but set membership remains the property
+			// the two agree except for a luminary dropped from the table for
+			// zero average exitance (area > 0, but it emits nothing, so the
+			// difference carries no energy); set membership remains the property
 			// the s >= 1 family depends on, and it is what PT gates on too
 			// (PathTracingIntegrator.cpp:2173, `pEmitGeom &&
 			// pEmitGeom->CanBeAreaLight()` plus its own `area > 0`).
