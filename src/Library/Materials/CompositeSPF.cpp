@@ -2182,19 +2182,30 @@ namespace RISE
 	{
 		const bool unflip = ri.bGeomNormalOrientedToRay && ri.HasTrueGeomSide() && !ri.bProvablyNoInterior &&
 			pStack && pStack->currentObject() && pStack->containsCurrent();
-		if( !ri.bProvablyNoInterior && !unflip ) {
+		if( !ri.bProvablyNoInterior && !ri.bGeomNormalOrientedToRay ) {
 			return ri;
 		}
 		store.emplace( ri );
 		store->bProvablyNoInterior = false;
 		if( unflip ) {
 			store->vGeomNormal = ri.UnflippedGeomNormal();
-			store->bGeomNormalOrientedToRay = false;
 			if( Vector3Ops::Dot( store->vNormal, store->vGeomNormal ) < 0 ) {
 				store->vNormal = -store->vNormal;
 				store->onb.FlipW();
 			}
 		}
+		// Review round 4 (2026-10-02): a flipped record KEPT flipped is
+		// handed on with the flag CLEARED too.  The walk's frame IS now
+		// the record's frame, and a layer that reads the true side off the
+		// record must see that frame: a NESTED composite (another
+		// composite's top) re-decided the unflip mid-walk from the walk's
+		// internal stack -- which holds O from its own earlier crossing --
+		// and unflipped on a back face its parent had kept flipped
+		// (composite{composite{glass/water}/Lambertian} back view 0.374 vs
+		// front 0.684); a translucent layer read UnflippedGeomNormal() and
+		// built its exit frame against the composite's (composite{translucent
+		// /Lambertian} back 0.711 vs front 0.860, also on master).
+		store->bGeomNormalOrientedToRay = false;
 		return *store;
 	}
 

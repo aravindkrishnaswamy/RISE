@@ -1725,7 +1725,88 @@ static void SectionD()
 		}
 		std::remove( bzPath );
 	}
+	// D8 (DL-341 review round 4, 2026-10-02): a NESTED composite (another
+	// composite as the TOP) and a translucent-topped composite on an OPEN
+	// double-sided sheet -- the mesh quad and its clipped-plane twin side by
+	// side -- seen from BEHIND must read as from the FRONT (an open sheet
+	// presents its top on both faces).  Round 4 kept the outer's record
+	// flipped but left `bGeomNormalOrientedToRay` set, so the inner
+	// composite re-decided the unflip from the walk's internal stack (which
+	// holds O from its own crossing) and unflipped mid-walk:
+	// composite{composite{glass/water}/Lambertian 0.8} back PT 0.374 /
+	// BDPT 0.367 / VCM 0.368 against front 0.684; a translucent top read
+	// UnflippedGeomNormal() and opposed the composite's frame: back 0.711
+	// against front 0.860 (also on master).  Gate: back / front per half
+	// within 3 %, PT, BDPT and VCM (translucent: PT and BDPT).
+	{
+		const std::string mats8 =
+			"uniformcolor_painter\n{\n\tname pnt_env\n\tcolor 1.0 1.0 1.0\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt_w8\n\tcolor 0.8 0.8 0.8\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt_tr\n\tcolor 0.3 0.3 0.3\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt_tt\n\tcolor 0.7 0.7 0.7\n}\n\n"
+			"lambertian_material\n{\n\tname mat_l8\n\treflectance pnt_w8\n}\n\n"
+			"dielectric_material\n{\n\tname mat_glass\n\ttau 1\n\tior 1.5\n}\n\n"
+			"dielectric_material\n{\n\tname mat_glass2\n\ttau 1\n\tior 1.5\n}\n\n"
+			"dielectric_material\n{\n\tname mat_water\n\ttau 1\n\tior 1.33\n}\n\n"
+			"translucent_material\n{\n\tname mat_tr\n\tref pnt_tr\n\ttau pnt_tt\n\text 0\n\tN 10\n\tscattering 0\n}\n\n"
+			"composite_material\n{\n\tname mat_gw\n\ttop mat_glass\n\tbottom mat_water\n\tthickness 0\n\textinction 0.0\n}\n\n"
+			"composite_material\n{\n\tname mat_gg\n\ttop mat_glass\n\tbottom mat_glass2\n\tthickness 0\n\textinction 0.0\n}\n\n"
+			"composite_material\n{\n\tname mat_gwl\n\ttop mat_gw\n\tbottom mat_l8\n\tthickness 0\n\textinction 0.0\n}\n\n"
+			"composite_material\n{\n\tname mat_ggl\n\ttop mat_gg\n\tbottom mat_l8\n\tthickness 0\n\textinction 0.0\n}\n\n"
+			"composite_material\n{\n\tname mat_trl\n\ttop mat_tr\n\tbottom mat_l8\n\tthickness 0\n\textinction 0.0\n}\n\n";
+		const std::string geo8 =
+			"indexedmesh_geometry\n{\n\tname qm\n\tvertex -4 -3 0\n\tvertex 0 -3 0\n\tvertex 0 3 0\n\tvertex -4 3 0\n"
+			"\ttriangle 0 1 2\n\ttriangle 0 2 3\n\tdouble_sided TRUE\n\tface_normals TRUE\n}\n\n"
+			"clippedplane_geometry\n{\n\tname qc\n\tpta 0 -3 0\n\tptb 4 -3 0\n\tptc 4 3 0\n\tptd 0 3 0\n}\n\n";
+		auto vcm8 = []( int spp ) {
+			std::ostringstream s;
+			s << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+			  << "vcm_pel_rasterizer\n{\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tsamples " << spp
+			  << "\n\tmerge_radius 0.0\n\tvc_enabled true\n\tvm_enabled true\n\toidn_denoise FALSE\n\tpixel_filter box\n"
+			  << "\tradiance_map pnt_env\n\tradiance_scale 1.0\n\tradiance_background TRUE\n"
+			  << "}\n\nfile_rasterizeroutput\n{\n\tpattern rendered/composite_energy_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n\n";
+			return s.str();
+		};
+		struct Cfg8 { const char* name; const char* mat; int nInt; };
+		const Cfg8 cfgs[] = {
+			{ "nested composite{composite{glass/water}/Lambertian 0.8}", "mat_gwl", 3 },
+			{ "nested composite{composite{glass/glass}/Lambertian 0.8}", "mat_ggl", 3 },
+			{ "composite{translucent/Lambertian 0.8}", "mat_trl", 2 },
+		};
+		for( const Cfg8& c : cfgs ) {
+			for( int r = 0; r < c.nInt; ++r ) {
+				double mesh[2] = { -1, -1 }, plane[2] = { -1, -1 };	// [0] front, [1] back
+				for( int side = 0; side < 2; ++side ) {
+					const char* z = ( side == 0 ) ? "7.0" : "-7.0";
+					const std::string scene = std::string( "RISE ASCII SCENE 7\n" ) +
+						"film\n{\n\twidth 32\n\theight 16\n}\n\n"
+						"pinhole_camera\n{\n\tlocation 0 0 " + z + "\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n" +
+						mats8 + geo8 +
+						"standard_object\n{\n\tname M\n\tgeometry qm\n\tmaterial " + c.mat + "\n}\n\n"
+						"standard_object\n{\n\tname C\n\tgeometry qc\n\tmaterial " + c.mat + "\n}\n\n" +
+						( r == 0 ? PtRasterizer( true, 256 ) : r == 1 ? BdptRasterizer( true, 256 ) : vcm8( 256 ) );
+					CapturingRasterizerOutput* cap = 0;
+					const bool ok = Render( scene, "nested_sheet", cap, 81920u + 7u * (unsigned)r + (unsigned)side );
+					const double lh = ok ? RegionMean( *cap, 2, cap->width / 2 - 2 ) : -1;
+					const double rh = ok ? RegionMean( *cap, cap->width / 2 + 2, cap->width - 2 ) : -1;
+					// From +z the image's left half is world -x (the mesh);
+					// from -z it is mirrored.
+					mesh[side]  = ( side == 0 ) ? lh : rh;
+					plane[side] = ( side == 0 ) ? rh : lh;
+					if( cap ) safe_release( cap );
+				}
+				const char* in = ( r == 0 ) ? "PT  " : ( r == 1 ) ? "BDPT" : "VCM ";
+				std::cout << "    D8 " << c.name << ", " << in << ": mesh front / back " << std::setprecision(5)
+				          << mesh[0] << " / " << mesh[1] << ", clipped plane front / back " << plane[0] << " / " << plane[1] << "\n";
+				Check( mesh[0] > 0 && std::fabs( mesh[1] / mesh[0] - 1.0 ) <= 0.03,
+					std::string( "[D8] open mesh sheet, back == front, " ) + c.name + " (" + in + ")" );
+				Check( plane[0] > 0 && std::fabs( plane[1] / plane[0] - 1.0 ) <= 0.03,
+					std::string( "[D8] open clipped-plane sheet, back == front, " ) + c.name + " (" + in + ")" );
+			}
+		}
+	}
 }
+
 
 //////////////////////////////////////////////////////////////////////
 //  Section K -- DL-342: `coated_material` UNDER AN ABSORBING COAT.
