@@ -4759,10 +4759,11 @@ static std::string DL354Scene( const char* kind, unsigned w, unsigned h, unsigne
 		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
 	char buf[512];
 	const bool centred = kind[0] && kind[std::strlen( kind ) - 1] == 'c';
-	if( std::strncmp( kind, "pt", 2 ) == 0 ) {
-		std::snprintf( buf, sizeof(buf), "pathtracing_pel_rasterizer\n{\n\tsamples %u\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n", spp );
-	} else if( std::strncmp( kind, "pts", 3 ) == 0 ) {
+	// "pts" before "pt": "pt" is a prefix of it (and of "ptc").
+	if( std::strncmp( kind, "pts", 3 ) == 0 ) {
 		std::snprintf( buf, sizeof(buf), "pathtracing_spectral_rasterizer\n{\n\tsamples %u\n\thwss FALSE\n\tnum_wavelengths 160\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n", spp );
+	} else if( std::strncmp( kind, "pt", 2 ) == 0 ) {
+		std::snprintf( buf, sizeof(buf), "pathtracing_pel_rasterizer\n{\n\tsamples %u\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n", spp );
 	} else if( std::strncmp( kind, "bdpts", 5 ) == 0 || std::strncmp( kind, "bdpth", 5 ) == 0 ) {
 		std::snprintf( buf, sizeof(buf), "bdpt_spectral_rasterizer\n{\n\tsamples %u\n\thwss %s\n\tnum_wavelengths 160\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n",
 			spp, kind[4] == 'h' ? "TRUE" : "FALSE" );
@@ -4847,21 +4848,29 @@ static bool DL354WindowEnergy( const char* kind, unsigned w, unsigned h, unsigne
 //! BDPT read r^2/(1+r^2) low with r the light's area density over the
 //! PER-PIXEL camera density at the emitter: measured (n = 3 salted, 64 spp
 //! BDPT, PT 256 spp) 0.58 at 100 x 75, 0.957 at 200 x 150, 0.997 at
-//! 400 x 300.  The ratio's sd is ~0.8 % at 100 x 75 and ~0.5 % at
-//! 200 x 150 (the PT side dominates); bands 3 % / 2.5 %.
+//! 400 x 300.  Per-render sd ~1.1-1.2 % on both sides at 100 x 75 (n = 6
+//! there: ratio sd ~0.7 %, the 3 % band ~4.4 sd) and ~0.2-0.6 % at
+//! 200 x 150 (n = 3); bands 3 % / 2.5 %.  The spectral row
+//! compares BDPT `hwss TRUE` (256 spp) against a real PT SPECTRAL render
+//! (4096 spp; a review found the first revision's "pts" kind fell through
+//! to the PT pel rasterizer).  Per-render sd: BDPT HWSS 1.2 % (n = 4);
+//! PT spectral 1.0 % and 2.7 % in two salt sets (n = 4, n = 3 -- its hero
+//! wavelength gives the tiny emitter a heavy tail), pooled ~1.8 %.  With
+//! n = 4 renders a side the ratio sd is ~1.1 % and the 5 % band ~4.6 sd;
+//! pre-fix BDPT HWSS read ~394 against PT spectral's ~688 (0.57).
 static void TestSmallVisibleEmitterResolutionSweep()
 {
-	struct Row { const char* kind; const char* ref; unsigned w, h, spp, refSpp; double band; };
+	struct Row { const char* kind; const char* ref; unsigned w, h, spp, refSpp; double band; int n; };
 	const Row rows[] = {
-		{ "bdpt",  "pt",  100, 75,  64, 256, 0.03 },
-		{ "bdpt",  "pt",  200, 150, 64, 256, 0.025 },
-		{ "bdpth", "pts", 100, 75,  64, 256, 0.04 },
+		{ "bdpt",  "pt",  100, 75,  64, 256, 0.03, 6 },
+		{ "bdpt",  "pt",  200, 150, 64, 256, 0.025, 3 },
+		{ "bdpth", "pts", 100, 75, 256, 4096, 0.05, 4 },
 	};
 	for( const Row& r : rows ) {
 		std::printf( "Testing DL-354 small visible emitter: %s vs %s at %u x %u\n", r.kind, r.ref, r.w, r.h );
 		double m = 0, sd = 0, mr = 0, sdr = 0;
-		const bool ok = DL354WindowEnergy( r.kind, r.w, r.h, r.spp, 3, 0x354B1u, m, sd ) &&
-			DL354WindowEnergy( r.ref, r.w, r.h, r.refSpp, 3, 0x354B2u, mr, sdr );
+		const bool ok = DL354WindowEnergy( r.kind, r.w, r.h, r.spp, r.n, 0x354B1u, m, sd ) &&
+			DL354WindowEnergy( r.ref, r.w, r.h, r.refSpp, r.n, 0x354B2u, mr, sdr );
 		char buf[256];
 		std::snprintf( buf, sizeof(buf), "DL-354 %s/%s window energy at %u x %u: %.2f (sd %.2f) / %.2f (sd %.2f) = %.4f (band %.1f%%)",
 			r.kind, r.ref, r.w, r.h, m, sd, mr, sdr, mr > 0 ? m / mr : 0.0, 100.0 * r.band );

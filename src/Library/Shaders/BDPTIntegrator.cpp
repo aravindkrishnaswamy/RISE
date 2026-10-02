@@ -4943,6 +4943,13 @@ ConnectAndEvaluateImplCore(
 			return result;
 		}
 
+		// An environment light root has no position to connect to the
+		// camera (the LIGHT branch below returns for it too); reject it
+		// before the projection and the visibility ray (DL-354 review).
+		if( s == 1 && lightEnd.pEnvLight ) {
+			return result;
+		}
+
 		// Only connect surface or medium vertices to camera
 		if( s >= 2 && lightEnd.type != BDPTVertex::SURFACE && lightEnd.type != BDPTVertex::MEDIUM ) {
 			return result;
