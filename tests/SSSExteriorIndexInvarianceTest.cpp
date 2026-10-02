@@ -185,6 +185,7 @@ namespace
 	}
 
 	// Air configuration and its uniformly scaled twin (relative 1.33 both).
+	unsigned int g_seedOffset = 0;
 	const Scalar kAirExterior = 1.0;
 	const Scalar kAirInterior = 1.33;
 	const Scalar kScale = 1.5;
@@ -951,6 +952,7 @@ namespace
 	{
 	public:
 		std::vector<RISEColor> pixels;
+		unsigned int expectedSalt = 0;
 		CapturingRasterizerOutput() {}
 	protected:
 		virtual ~CapturingRasterizerOutput() {}
@@ -958,6 +960,7 @@ namespace
 		virtual void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
 		virtual void OutputImage( const IRasterImage& image, const Rect*, const unsigned int ) override
 		{
+			if( expectedSalt ) Check( SobolSamplerTestHooks::ValueSalt().load() == expectedSalt, "DL-332: independent value salt reaches the render" );
 			pixels.resize( size_t( image.GetWidth() ) * image.GetHeight() );
 			for( unsigned int y = 0; y < image.GetHeight(); y++ )
 				for( unsigned int x = 0; x < image.GetWidth(); x++ )
@@ -1129,9 +1132,12 @@ namespace
 		job->RemoveRasterizerOutputs();
 		CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
 		GlobalLog()->PrintNew( cap, __FILE__, __LINE__, "dl49 capture" );
+		cap->expectedSalt = SobolSequence::HashCombine( seed, 0x332u );
 		job->GetRasterizer()->AddRasterizerOutput( cap );
+		SobolSamplerTestHooks::ValueSalt().store( SobolSequence::HashCombine( seed, 0x332u ) );
 		std::srand( seed );
 		const bool rendered = job->Rasterize();
+		SobolSamplerTestHooks::ValueSalt().store( 0u );
 		double mean = -1;
 		if( rendered && !cap->pixels.empty() ) {
 			double sum = 0;
@@ -1174,34 +1180,27 @@ namespace
 		// so these rows are what pin BDPTVertex::mediumIOR on the entry
 		// vertices that PathVertexEval re-evaluates.
 		const Scalar kDense = 1.33 / 1.5;
-		// Bands: several times the measured sd of the ratio at these sample
-		// counts and far below the pre-DL-49 deviations of the same rows
-		// (both recorded in docs/DL49_SSS_EXTERIOR_INDEX.md).  BDPT renders
-		// are deterministic for a fixed libc seed, and the pairs share one,
-		// so the BDPT diffusion rows read exactly 1 after the fix -- at THIS
-		// seed order only: common random numbers do not make the two sides
-		// bit-identical in general (the pre-DL-307 build reads 0.99958 on
-		// the rough row and 1.00336 on the dense row when either is run
-		// alone with --only, i.e. at the first seeds), because a path whose
-		// branch decisions differ in the last ulp diverges from its twin.
-		// DL-307 (2026-09-28) lets rough-SSS BDPT subpaths continue where
-		// they used to die, so more pairs diverge and the rough row read
-		// 1.0066 +/- 0.0066 at 32 spp -- a 1-sigma reading against a band
-		// the independent-sides noise never supported.  It now renders at
-		// 512 spp (ratio sd 0.0016, band 3.7 sd; 0.99881 in the full run,
-		// 0.99919 alone).
+		// DL-332: deliberately independent Sobol salts for BDPT/spectral pairs.
+		// RGB PT retains common random numbers; BDPT/spectral calibration
+		// uses decorrelated noise. Dense BDPT: n=4, 2048spp SE=0.002168,
+		// band=0.008 (3.69 SE); its pre-DL-49 0.9839 is 7.4 SE from 1.
+		// Rough BDPT: n=4, 2048spp SE=0.0005355; band=0.006 (11.2 SE).
+		// Smooth BDPT: n=4, 512spp SE=0.004860; band=0.02 (4.1 SE).
+		// Spectral diffusion/RW: 256spp SE=0.007296/0.006355;
+		// retained bands 0.04/0.05 are 5.48/7.87 SE. Fixed libc seeds
+		// alone do not randomize BDPT's Sobol pattern.
 		const Row rows[] = {
 			{ Model::Lambertian,     Integrator::PT,         16,  0.02,  kAirInterior, kScale },
 			{ Model::Diffusion,      Integrator::PT,         64,  0.02,  kAirInterior, kScale },
 			{ Model::DiffusionRough, Integrator::PT,         64,  0.01,  kAirInterior, kScale },
 			{ Model::RandomWalk,     Integrator::PT,         64,  0.04,  kAirInterior, kScale },
-			{ Model::Diffusion,      Integrator::BDPT,       32,  0.02,  kAirInterior, kScale },
-			{ Model::DiffusionRough, Integrator::BDPT,       512, 0.006, kAirInterior, kScale },
+			{ Model::Diffusion,      Integrator::BDPT,       512, 0.02,  kAirInterior, kScale },
+			{ Model::DiffusionRough, Integrator::BDPT,       2048, 0.006, kAirInterior, kScale },
 			{ Model::RandomWalk,     Integrator::BDPT,       128, 0.10,  kAirInterior, kScale },
-			{ Model::Diffusion,      Integrator::PTSpectral, 64,  0.04,  kAirInterior, kScale },
-			{ Model::RandomWalk,     Integrator::PTSpectral, 64,  0.05,  kAirInterior, kScale },
+			{ Model::Diffusion,      Integrator::PTSpectral, 256, 0.04,  kAirInterior, kScale },
+			{ Model::RandomWalk,     Integrator::PTSpectral, 256, 0.05,  kAirInterior, kScale },
 			{ Model::Diffusion,      Integrator::PT,         256, 0.008, kDense,       kScale },
-			{ Model::Diffusion,      Integrator::BDPT,       32,  0.005, kDense,       kScale },
+			{ Model::Diffusion,      Integrator::BDPT,       2048, 0.008, kDense,       kScale },
 			{ Model::RandomWalk,     Integrator::PT,         64,  0.04,  kDense,       kScale },
 			// DL-291 rows (bands set from measured sd; see
 			// docs/DL49_SSS_EXTERIOR_INDEX.md section 10).  The skin BDPT
@@ -1218,7 +1217,7 @@ namespace
 			{ Model::LegacyDipole,   Integrator::PixelPel,   4,   0.03,  1.3 / 1.5,    kScale },
 			{ Model::LegacySkinOp,   Integrator::PixelPel,   4,   0.02,  1.4,          kScale },
 		};
-		unsigned int seed = 49000;
+		unsigned int seed = 49000 + g_seedOffset;
 		for( const Row& row : rows ) {
 			const std::string label = std::string( "B: " ) + ModelName( row.model ) +
 				( row.airInterior < 1.0 ? "_dense" : "" ) + "/" + IntegratorName( row.integrator );
@@ -1229,15 +1228,12 @@ namespace
 			Check( !airPath.empty() && !scaledPath.empty(), label + ": scene files written" );
 			std::vector<double> air, scaled;
 			bool allValid = true;
-			// Interleave the two sides so machine-load drift cannot bias the
-			// ratio, and give each pair the SAME libc seed (common random
-			// numbers: the invariance says the two sides are the same
-			// function, so correlating their noise only tightens the ratio;
-			// the independent-sides sd printed below is then conservative).
+			// Interleave independent randomized-QMC replicates.
 			for( unsigned int t = 0; t < trials; ++t ) {
-				const unsigned int pairSeed = seed++;
+				const unsigned int pairSeed = seed;
+				seed += 2;
 				const double a = RenderMean( airPath, pairSeed, 1.0, t == 0, label + " air" );
-				const double s = RenderMean( scaledPath, pairSeed, row.exterior, t == 0, label + " enclosed" );
+				const double s = RenderMean( scaledPath, row.integrator == Integrator::PT ? pairSeed : pairSeed + 1, row.exterior, t == 0, label + " enclosed" );
 				if( !( a > 0 ) || !( s > 0 ) ) allValid = false;
 				air.push_back( a );
 				scaled.push_back( s );
@@ -1419,7 +1415,7 @@ namespace
 			{ Model::RandomWalk, Integrator::PTSpectral, 512, 0.01, 1.128 },
 			{ Model::Diffusion,  Integrator::PT,         64, 0.01, 1.05 },
 		};
-		unsigned int seed = 30600;
+		unsigned int seed = 30600 + g_seedOffset;
 		for( const Row& row : rows ) {
 			std::ostringstream lab;
 			lab << "C: " << ModelName( row.model ) << "/" << IntegratorName( row.integrator ) << " eta=" << std::setprecision( 4 ) << row.eta;
@@ -1510,7 +1506,7 @@ namespace
 			{ Model::RandomWalk, Integrator::PTSpectral, 256, 0.01,  1.5 },
 			{ Model::RandomWalk, Integrator::BDPT,       64,  0.01,  1.5 },
 		};
-		unsigned int seed = 31500;
+		unsigned int seed = 31500 + g_seedOffset;
 		for( const EncRow& row : encRows ) {
 			std::ostringstream lab;
 			lab << "E1: " << ModelName( row.model ) << "/" << IntegratorName( row.integrator ) << " eta=" << std::setprecision( 4 ) << row.eta
@@ -1639,6 +1635,7 @@ int main( int argc, char** argv )
 		if( a == "--unit-only" ) unitOnly = true;
 		else if( a == "--only" && i + 1 < argc ) only = argv[++i];
 		else if( a == "--diffusion-scattering" && i + 1 < argc ) kFurnaceDiffusionScattering = std::atof( argv[++i] );
+		else if( a == "--seed" && i + 1 < argc ) g_seedOffset = static_cast<unsigned int>( std::strtoul( argv[++i], nullptr, 10 ) );
 		else if( a == "--trials" && i + 1 < argc ) trials = static_cast<unsigned int>( std::atoi( argv[++i] ) );
 	}
 	if( trials < 2 ) trials = 2;
