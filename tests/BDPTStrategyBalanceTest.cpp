@@ -4366,6 +4366,10 @@ static std::string DL377Rasterizer( const char* kind, int spp )
 	} else if( std::strcmp( kind, "bdpt" ) == 0 ) {
 		std::snprintf( buf, sizeof(buf), "bdpt_pel_rasterizer\n{\n\tmax_eye_depth 16\n\tmax_light_depth 16\n"
 			"\tsamples %d\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n", spp );
+	} else if( std::strcmp( kind, "vcmoff" ) == 0 ) {
+		std::snprintf( buf, sizeof(buf), "vcm_pel_rasterizer\n{\n\tmax_eye_depth 16\n\tmax_light_depth 16\n"
+			"\tsamples %d\n\tmerge_radius 0.0\n\tvc_enabled true\n\tvm_enabled false\n"
+			"\tpixel_filter box\n\toidn_denoise FALSE\n}\n", spp );
 	} else {
 		std::snprintf( buf, sizeof(buf), "mlt_rasterizer\n{\n\tmax_eye_depth 16\n\tmax_light_depth 16\n"
 			"\tbootstrap_samples 100000\n\tchains 512\n\tmutations_per_pixel %d\n"
@@ -4435,12 +4439,12 @@ static bool RenderDL377Mean( const std::string& scene, const char* tag, bool wal
 	return std::isfinite( outMean ) && outMean >= 0;
 }
 
-static void RunDL377Row( const char* label, bool wall, bool spot, const char* kind, int spp, int replicates, double band )
+static void RunDL377Row( const char* label, bool wall, bool spot, const char* kind, int spp, int ptSpp, int replicates, double band )
 {
 	std::cout << "Testing DL-377 " << label << std::endl;
 	const std::string body = std::string( kSceneDL377Common ) + ( spot ? kSceneDL377Spot : kSceneDL377Omni ) +
 		( wall ? kSceneDL377Wall : "" );
-	const std::string ref = std::string( "RISE ASCII SCENE 7\n" ) + DL377Rasterizer( "pt", 512 ) + body;
+	const std::string ref = std::string( "RISE ASCII SCENE 7\n" ) + DL377Rasterizer( "pt", ptSpp ) + body;
 	const std::string test = std::string( "RISE ASCII SCENE 7\n" ) + DL377Rasterizer( kind, spp ) + body + kSceneDL377Glass;
 	double pt = 0, x = 0, ptSd = 0, xSd = 0;
 	const bool okPT = RenderDL377Mean( ref, "dl377_pt", wall, replicates, 0x377A, pt, &ptSd );
@@ -4453,11 +4457,15 @@ static void RunDL377Row( const char* label, bool wall, bool spot, const char* ki
 	Check( std::fabs( rel ) <= band, ( std::string( "DL-377 light-side diffusion entry re-emits toward the camera: " ) + label ).c_str() );
 }
 
-static void TestLightSideDiffusionEntryDL377()
+static void TestLightSideDiffusionEntryDL377( bool onlyG3 = false )
 {
-	RunDL377Row( "G (omni in index-matched glass, diffusion sphere, whole frame)", false, false, "bdpt", 512, 4, 0.03 );
-	RunDL377Row( "G2 (G + Lambertian wall, wall pixels only)", true, false, "bdpt", 512, 4, 0.03 );
-	RunDL377Row( "G3 (G2 with a spot confined to the sphere, wall pixels only)", true, true, "bdpt", 512, 4, 0.03 );
+	if( onlyG3 ) {
+		RunDL377Row( "G3 (G2 with a spot confined to the sphere, wall pixels only)", true, true, "bdpt", 512, 8192, 4, 0.03 );
+		return;
+	}
+	RunDL377Row( "G (omni in index-matched glass, diffusion sphere, whole frame)", false, false, "bdpt", 512, 512, 4, 0.03 );
+	RunDL377Row( "G2 (G + Lambertian wall, wall pixels only)", true, false, "bdpt", 512, 512, 4, 0.03 );
+	RunDL377Row( "G3 (G2 with a spot confined to the sphere, wall pixels only)", true, true, "bdpt", 512, 8192, 4, 0.03 );
 }
 
 int main( int argc, char** argv )
@@ -4518,8 +4526,18 @@ int main( int argc, char** argv )
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
+	if( argc == 2 && std::strcmp(argv[1], "--dl377-g3" ) == 0 ) {
+		TestLightSideDiffusionEntryDL377( true );
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+	if( argc == 2 && std::strcmp(argv[1], "--dl377-vcm" ) == 0 ) {
+		RunDL377Row( "G3 under VCM merging off (cross-check, ungated band)", true, true, "vcmoff", 512, 8192, 4, 1.0 );
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
 	if( argc == 2 && std::strcmp(argv[1], "--dl377-mlt" ) == 0 ) {
-		RunDL377Row( "G under MLT (sibling audit, ungated band)", false, false, "mlt", 512, 1, 1.0 );
+		RunDL377Row( "G under MLT (sibling audit, ungated band)", false, false, "mlt", 512, 512, 1, 1.0 );
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
