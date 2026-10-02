@@ -222,8 +222,8 @@ Both stayed green with the original helper: BDPT rough mean
 117/0 each. They did not establish a defect. The helper change, contract
 and candidate ledger row DL-392 were withdrawn; no causal claim attributes
 the full-suite spread to those RNG streams. Retain the measured-budget
-adjustment and existing explicit value-salt contract. Final rows are
-DL-390 and DL-391 only.
+adjustment and existing explicit value-salt contract. At that audit point, the new rows were
+DL-390 and DL-391 only; review subsequently added DL-393 and DL-394.
 
 
 ## Final five-run Monte Carlo gate
@@ -263,7 +263,7 @@ API corrections and the SSS-only budget adjustment; their executable
 Weave behavior is unchanged on the final production tree.
 
 
-## Final clean build and serial integration gate
+## Pre-review clean build and serial integration gate
 
 Clean library rebuild (`make -C build/make/rise clean`, then `-j8 all`)
 completed in 68.69 seconds with zero warnings. All 17 test targets were
@@ -332,3 +332,62 @@ configured/adaptive max budgets. No renders are needed for those checks.
 All preliminary repair builds were successful and warning-free.
 Final restored-source clean re-gate follows; fresh review will inspect
 its committed HEAD rather than reuse round1 verdicts.
+
+
+The first post-review OIDN full run stopped the serial gate at117/22:
+family scene loading initialized cached options before Render's worker
+setup, so raw replay inputs varied (e.g. replicate7 raw6645350380224412891).
+This was an invalid clock-comparison fixture, not an Auto policy failure.
+Move ConfigureTestWorker to main's start, before any job/scene load;
+rebuild and resume the remaining serial gate. Earlier completed tests and
+production source are unchanged; they are not rerun for this test-only
+precondition repair. The stopped attempt is not counted as a pass.
+
+
+## Post-review final integration gate
+
+Fresh clean library build67.91s and all17 serial test builds succeeded
+with zero warnings. Every integration test was repeated once on the
+repaired production tree; the earlier five independently seeded full-run
+measurements remain the variance calibration. Their budgets, bands and
+Weave/SSS test behavior did not change in the review repairs. The OIDN
+fixture-only configuration fix was rebuilt with zero warnings before
+resuming the serial gate. No build overlapped a test execution.
+
+| Gate | passed / failed | runtime seconds |
+|---|---:|---:|
+| SourceHygieneTest | 167 / 0 | 1.53 |
+| CstDeriveGoldenTest | 458 MATCH, 0 DRIFT, 0 UNCOVERED, 0 STALE | 31.93 |
+| ManifoldSolverTest | all assertions pass | 0.53 |
+| WeaveGapShadowTransmittanceTest 1000 | 217 / 0 | 614.29 |
+| SSSExteriorIndexInvarianceTest --seed 0 | 406 / 0 | 1125.52 |
+| ExteriorIndexInvarianceTest | 231 / 0 | 460.01 |
+| PTGuidingMISPartitionTest | 185 / 0 | 44.08 |
+| MediumInsideOutsideInvariantTest | 52 / 0 | 465.86 |
+| OIDNAutoDeterminismTest | 139 / 0 | 138.44 |
+| SMSMediumAnchorTest | 27 / 0 | 534.90 |
+| SMSEmitterDirectionTest | 168 / 0 | 58.64 |
+| SMSUniformDispersionTest | 54 / 0 | 275.09 |
+| SMSUniformDispersionTest --shipped | 10 / 0 | 0.28 |
+| SSSRadianceScalingTest | 576256 / 0 | 86.74 |
+| DoubleSidedEmitterTest | 34 / 0 | 17.78 |
+| FrameStoreTest | 123 / 0 | 0.71 |
+| RasterizerDefaultsConsistencyTest | 164 / 0 | 0.25 |
+| AgentEvalCheckTest | 2075 / 0 | 64.69 |
+
+All32 UV checks pass in the expanded dispersion gate, whose22 original
+wavelength/scene checks still reproduce the calibrated means. The shipped
+smoke remains separate10/0. OIDN139/0 comprises40 scene-load/rate checks,
+48 boundary/preset/output checks and51 original fabric replay checks.
+The raw/final fabric hashes remain4322452475926386811 /
+10375815737409270508. Header-only comment cleanup after this gate clarifies
+that buffer converters remain available without OIDN, and that cached
+preset diagnostics must be read while idle (High before initial setup).
+It changes no compiled behavior. Library dependency rebuild and final
+SourceHygiene check are recorded before the committed-head fresh review.
+
+Final header-comment dependency rebuild succeeded with zero warnings;
+SourceHygieneTest rebuilt successfully with zero warnings and passed167/0
+again after the worker-setup ordering repair. No behavior changed after
+the post-review integration gate. The branch is committed before fresh
+round2 review; its exact verdict and HEAD are reported in the final answer.

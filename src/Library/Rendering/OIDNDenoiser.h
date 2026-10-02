@@ -1,8 +1,8 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  OIDNDenoiser.h - Wrapper around Intel Open Image Denoise for
-//  post-process denoising of rendered images.  Entire file is
-//  compiled only when RISE_ENABLE_OIDN is defined.
+//  post-process denoising. Filter methods require RISE_ENABLE_OIDN;
+//  buffer conversion helpers are available without OIDN.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: March 28, 2026
@@ -67,7 +67,7 @@ namespace RISE
 				);
 
 #ifdef RISE_ENABLE_OIDN
-			/// Actual configured preset from the last successful filter setup.
+			/// Read while idle: cached preset (High before the first successful setup).
 			OidnQuality GetLastResolvedQuality() const;
 
 			/// Runs the OIDN RT filter on the given buffers.

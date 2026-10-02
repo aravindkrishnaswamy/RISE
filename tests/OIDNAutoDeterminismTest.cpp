@@ -89,6 +89,7 @@ static void PolicyBoundaries()
 }
 int main(int argc,char** argv)
 {
+    ConfigureTestWorker(); // Scene loading can initialize cached global options.
     FamilyPolicy();
     PolicyBoundaries();
     if(argc>1 && std::string(argv[1])=="--policy-only") {
