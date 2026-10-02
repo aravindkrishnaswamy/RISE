@@ -18,15 +18,19 @@
 //     f_sub_through_coat(wi,wo)
 //        =  T(cos_i) * T(cos_o) * A_in * A_out
 //           ------------------------------------- * f_base(wi,wo)
-//              eta^2 * ( 1 - r_i * R * A_rt )
+//              eta^2 * ( 1 - E_ret * R )
 //
 //  where T(cos) = 1 - F(cos, eta) is the interface transmittance,
 //  A_* are the coat's Beer-Lambert pass transmittances, R is the
-//  substrate's directional-hemispherical albedo, and r_i is the
-//  internal diffuse Fresnel reflectance.  The `1/(1 - r_i R)` factor
-//  IS the recycling series of 7.4; the `1/eta^2` is the radiance
+//  substrate's directional-hemispherical albedo, and E_ret is the
+//  fraction of the trapped diffuse field one round trip returns to the
+//  substrate: r_i, the internal diffuse Fresnel reflectance, for a
+//  clear coat, and its exact path-length average through an absorbing
+//  one (InteriorDiffuseTransport below, DL-342).  The `1/(1 - E_ret R)`
+//  factor IS the recycling series of 7.4; the `1/eta^2` is the radiance
 //  compression on exit.  Same shape as Mitsuba's `plastic` /
-//  `roughplastic` `nonlinear` mode and PBRT's coated diffuse.
+//  `roughplastic` `nonlinear` mode and PBRT's coated diffuse; for a
+//  smooth coat over a Lambertian it is EXACT, absorbing or not.
 //
 //  WHY THIS EXACTLY CONSERVES ENERGY (the 7.6 furnace gate).
 //  For a Lambertian substrate of albedo R, the hemispherical integral
@@ -75,6 +79,7 @@
 #include "../Utilities/Color/Color.h"
 #include <array>
 #include <cmath>
+#include <limits>
 
 namespace RISE
 {
@@ -96,16 +101,6 @@ namespace RISE
 			//! CoatedMaterial does not override GetSpecularInfo -- see
 			//! the note in CoatedMaterial.h.
 			constexpr Scalar kMinCoatAlpha = Scalar( 1e-3 );
-
-			//! Cosine used for the recycling round-trip's Beer-Lambert
-			//! path length.  The internally-recycled field is diffuse,
-			//! so no single angle is right; 0.5 is the conventional
-			//! diffuse-mean stand-in (the exact mean of 1/cos over a
-			//! cosine-weighted hemisphere diverges).  Only reachable
-			//! when the coat actually absorbs -- at the default
-			//! (absorption 0, tint white) the round trip is exactly 1
-			//! and this constant never influences a result.
-			constexpr Scalar kRecycleMeanCos = Scalar( 0.5 );
 
 			//! Largest relative IOR the layer math is tabulated for.
 			//! Covers every dielectric coat anyone authors (water 1.33,
@@ -424,30 +419,192 @@ namespace RISE
 					PassTransmittance( cosThetaI, eta, thickness, absorption, tint[2], applyTint ) );
 			}
 
-			//! Round-trip (substrate -> coat underside -> substrate)
-			//! transmittance that attenuates the recycling series.
-			//! Evaluated at kRecycleMeanCos; exactly 1 at the defaults.
-			inline Scalar RecycleRoundTrip(
-				const Scalar eta,
+			//! NORMAL-INCIDENCE optical depth of ONE traversal of the
+			//! coat film, for one channel: the exponent PassTransmittance
+			//! raises to the obliquity 1/cos(theta_t), i.e.
+			//!   PassTransmittance(...) == exp( -tau / cos(theta_t) )
+			//! with  tau = absorption * thickness - ln(tint)  (the tint
+			//! term only when `applyTint`), clamped at 0 exactly where
+			//! PassTransmittance clamps its result at 1.  +infinity for a
+			//! zero tint (an opaque coat).  Exactly 0 at the shipping
+			//! defaults, which is what keeps every non-absorbing result
+			//! on the pre-DL-342 code path.
+			inline Scalar OpticalDepth(
 				const Scalar thickness,
 				const Scalar absorption,
 				const Scalar tint,
 				const bool applyTint
 				)
 			{
-				const Scalar a = PassTransmittance( kRecycleMeanCos, eta, thickness, absorption, tint, applyTint );
-				return a * a;
+				Scalar tau = Scalar(0);
+				if( absorption > Scalar(0) && thickness > Scalar(0) ) {
+					tau += absorption * thickness;
+				}
+				if( applyTint ) {
+					if( !( tint > Scalar(0) ) ) {
+						return std::numeric_limits<Scalar>::infinity();
+					}
+					tau -= log( tint );
+				}
+				return r_max( tau, Scalar(0) );
 			}
 
-			//! 7.4's recycling factor  1 / ( 1 - r_i * R * A_rt ).
-			//! `R` is the substrate's directional-hemispherical albedo.
-			//! Clamped so a substrate reporting an albedo slightly over
-			//! unity (GGXBRDF::albedo is an estimate, not a bound)
-			//! cannot drive the denominator to zero.
-			inline Scalar Recycling( const Scalar ri, Scalar R, const Scalar roundTrip )
+			//! Hemispherical transport of the DIFFUSE field trapped
+			//! inside an absorbing coat (DL-342).  Three numbers, all
+			//! exact for a smooth interface over a Lambertian substrate:
+			//!
+			//!   returned  E_ret = INT_0^1 2 mu a(mu)^2 F_in(mu) dmu
+			//!             the fraction of a cosine-distributed upwelling
+			//!             field that comes back to the substrate after one
+			//!             round trip (up the film, Fresnel/TIR at the
+			//!             underside, down the film);
+			//!   escape    INT_0^1 2 mu a(mu) (1 - F_in(mu)) dmu
+			//!             the fraction of the same field that leaves;
+			//!   entry     INT_0^1 2 c (1 - F(c)) a(mu(c)) dc
+			//!             the fraction of a uniform OUTSIDE field that
+			//!             reaches the substrate (white-sky entry);
+			//!
+			//! with a(mu) = exp(-tau/mu) one traversal at the INTERNAL
+			//! cosine mu.  Reciprocity makes escape == entry / eta^2.
+			//!
+			//! WHY NOT ONE BEER FACTOR.  The pre-DL-342 model wrote
+			//! E_ret = r_i * a(mu_bar)^2 with mu_bar the refraction of an
+			//! outer cosine 0.5.  But the trapped field's reflected part
+			//! is DOMINATED by total internal reflection, which happens
+			//! exactly at the internal cosines below the critical one
+			//! (mu < sqrt(1 - 1/eta^2), 0.745 at eta 1.5) -- the
+			//! LONGEST paths, which absorb most.  E_ret is therefore far
+			//! below r_i * a(mu_bar)^2: 0.2583 against 0.3654 at eta 1.5,
+			//! tau 0.2.  No single mean cosine fixes that, because the
+			//! weighting by F_in is what moves the answer.
+			//!
+			//! QUADRATURE.  Split at the critical cosine.  Below it F_in
+			//! is 1 and the integrand is mu exp(-2 tau/mu); above it the
+			//! substitution mu = mu(c) (c the OUTER cosine Snell pairs
+			//! with mu, mu dmu = c dc / eta^2) turns F_in(mu) into the
+			//! external F(c) and removes the square-root kink at the
+			//! critical angle, so both pieces are smooth and 21-point
+			//! Gauss-Legendre on each is accurate to ~1e-6 for every
+			//! eta in [1, 3] and tau in [0, 10] (measured against a
+			//! 4e5-point midpoint rule).  Each piece is evaluated as a
+			//! DEFICIT against its tau = 0 value (r_i and 1 - r_e, which
+			//! the rest of this file already holds), so the result is
+			//! continuous into tau = 0 instead of jumping by the
+			//! quadrature's own error, and tau == 0 returns those values
+			//! untouched (bit-identical to the pre-DL-342 model).
+			struct InteriorDiffuse
+			{
+				Scalar returned;		//!< E_ret, multiplies R in the recycling denominator
+				Scalar escape;			//!< hemispherical exit fraction of the trapped field
+				Scalar entry;			//!< white-sky entry fraction to the substrate
+			};
+
+			inline InteriorDiffuse InteriorDiffuseTransport(
+				const Scalar eta,
+				const Scalar tau,
+				const Scalar re,			//!< ExternalDiffuseFresnel( eta )
+				const Scalar ri				//!< InternalDiffuseFresnel( eta )
+				)
+			{
+				InteriorDiffuse out;
+				if( !( tau > Scalar(0) ) ) {
+					out.returned = ri;
+					out.escape   = Scalar(1) - ri;
+					out.entry    = Scalar(1) - re;
+					return out;
+				}
+				if( !( tau < std::numeric_limits<Scalar>::infinity() ) ) {
+					out.returned = Scalar(0);
+					out.escape   = Scalar(0);
+					out.entry    = Scalar(0);
+					return out;
+				}
+
+				const std::array<Scalar, 21>& nodes = Detail::GLNodes();
+				const std::array<Scalar, 21>& wts   = Detail::GLWeights();
+				const Scalar invEta2 = ( eta > Scalar(1) ) ? Scalar(1) / ( eta * eta ) : Scalar(1);
+				const Scalar muC2 = ( eta > Scalar(1) ) ? ( Scalar(1) - invEta2 ) : Scalar(0);
+				const Scalar muC  = sqrt( r_max( muC2, Scalar(0) ) );
+
+				Scalar dTIR = 0;		// INT_0^muC 2 mu (1 - a^2) dmu
+				Scalar dRefl = 0;		// INT_0^1 2 c F(c) (1 - a^2) dc   (times 1/eta^2 below)
+				Scalar dEntry = 0;		// INT_0^1 2 c (1 - F(c)) (1 - a) dc
+				for( std::size_t i = 0; i < nodes.size(); ++i )
+				{
+					const Scalar x = nodes[i];
+					const Scalar w = wts[i];
+
+					if( muC > Scalar(0) ) {
+						const Scalar mu = x * muC;
+						dTIR += w * muC * Scalar(2) * mu * ( -expm1( Scalar(-2) * tau / mu ) );
+					}
+
+					const Scalar c  = x;
+					const Scalar mu = sqrt( r_max( Scalar(1) - ( Scalar(1) - c * c ) * invEta2, Scalar(1e-300) ) );
+					const Scalar F  = Fresnel( c, eta );
+					const Scalar oneMinusA  = -expm1( -tau / mu );
+					const Scalar oneMinusA2 = -expm1( Scalar(-2) * tau / mu );
+					dRefl  += w * Scalar(2) * c * F * oneMinusA2;
+					dEntry += w * Scalar(2) * c * ( Scalar(1) - F ) * oneMinusA;
+				}
+
+				out.returned = r_max( Scalar(0), ri - dTIR - dRefl * invEta2 );
+				out.entry    = r_max( Scalar(0), ( Scalar(1) - re ) - dEntry );
+				out.escape   = out.entry * invEta2;
+				return out;
+			}
+
+			//! InteriorDiffuseTransport behind a 4-entry per-thread memo
+			//! keyed on (eta, tau) -- `re` and `ri` are functions of eta
+			//! alone, so the key is complete.  The quadrature costs
+			//! ~170 ns; a coat bound to uniform painters asks the same
+			//! one to three (eta, tau) pairs (one per RGB channel when
+			//! tinted) on every evaluation, which the memo answers in a
+			//! few compares.  A textured coat misses and pays the
+			//! quadrature.  Bit-identical to the uncached call.
+			inline InteriorDiffuse InteriorDiffuseTransportCached(
+				const Scalar eta,
+				const Scalar tau,
+				const Scalar re,
+				const Scalar ri
+				)
+			{
+				if( !( tau > Scalar(0) ) ) {
+					return InteriorDiffuseTransport( eta, tau, re, ri );		// clear coat: no quadrature to save
+				}
+				struct Entry { Scalar eta; Scalar tau; InteriorDiffuse value; bool valid; };
+				static thread_local Entry cache[4] = {};
+				static thread_local unsigned int next = 0;
+				for( unsigned int i = 0; i < 4; ++i ) {
+					if( cache[i].valid && cache[i].eta == eta && cache[i].tau == tau ) {
+						return cache[i].value;
+					}
+				}
+				const InteriorDiffuse v = InteriorDiffuseTransport( eta, tau, re, ri );
+				Entry& e = cache[next];
+				next = ( next + 1 ) & 3u;
+				e.eta = eta;
+				e.tau = tau;
+				e.value = v;
+				e.valid = true;
+				return v;
+			}
+
+			//! 7.4's recycling factor  1 / ( 1 - E_ret * R ).
+			//! `R` is the substrate's directional-hemispherical albedo
+			//! and `returned` the round trip's returned fraction --
+			//! r_i for a clear coat, InteriorDiffuse::returned for an
+			//! absorbing one (DL-342).  `roundTrip` multiplies
+			//! `returned` and is 1 at every in-tree call site; it is
+			//! kept so callers holding the clear-coat form
+			//! (r_i, round trip 1) read unchanged.  Clamped so a
+			//! substrate reporting an albedo slightly over unity
+			//! (GGXBRDF::albedo is an estimate, not a bound) cannot
+			//! drive the denominator to zero.
+			inline Scalar Recycling( const Scalar returned, Scalar R, const Scalar roundTrip )
 			{
 				R = r_min( r_max( R, Scalar(0) ), Scalar(1) );
-				const Scalar denom = Scalar(1) - ri * R * roundTrip;
+				const Scalar denom = Scalar(1) - returned * R * roundTrip;
 				return ( denom > Scalar(1e-6) ) ? ( Scalar(1) / denom ) : Scalar(1e6);
 			}
 
@@ -455,12 +612,12 @@ namespace RISE
 			//! wet CHROMA BOOST (2.1) -- the high-albedo channels are
 			//! amplified more than the dark ones, which is precisely
 			//! what a single grey recycling factor would destroy.
-			inline RISEPel RecyclingRGB( const Scalar ri, const RISEPel& R, const RISEPel& roundTrip )
+			inline RISEPel RecyclingRGB( const RISEPel& returned, const RISEPel& R )
 			{
 				return RISEPel(
-					Recycling( ri, R[0], roundTrip[0] ),
-					Recycling( ri, R[1], roundTrip[1] ),
-					Recycling( ri, R[2], roundTrip[2] ) );
+					Recycling( returned[0], R[0], Scalar(1) ),
+					Recycling( returned[1], R[1], Scalar(1) ),
+					Recycling( returned[2], R[2], Scalar(1) ) );
 			}
 		}
 	}

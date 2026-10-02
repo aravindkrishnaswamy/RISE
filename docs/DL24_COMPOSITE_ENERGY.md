@@ -537,7 +537,8 @@ warnings**.
   8-probe weights (section 8) reduce the worst of it (a floored walker
   share weighting rare exits ~100x); they do not remove it.
 * **DL-342 (filed at merge) -- `coated_material` too bright under an
-  ABSORBING coat** (~15-17 %; its recycling approximation), section 7.
+  ABSORBING coat** (~15-17 %; its recycling approximation), section 7.  FIXED 2026-10-02 ([DL342_COATED_ABSORBING_COAT.md](DL342_COATED_ABSORBING_COAT.md)):
+  coated now matches Section G's closed form; a GGX substrate exposes DL-388.
 * **DL-285** (polished bottom, now PINNED in [1.05, 1.15]) and **config 7 /
   F6** (reflection-only GGX top) are unchanged.  So is the
   RefractiveRadianceScalingTest row C regression (DL-308).
