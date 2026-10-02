@@ -94,9 +94,21 @@ exactly (a non-broadcast triple keeps the luminance fallback). Red-proof
 files reverted): the walk's NM weight at 650/550/450 nm equals the RGB walk's
 R/G/B channel weight within |z| <= 0.4 (pre-fix every wavelength read 0.26,
 z up to -187), and a chromatic white-furnace sphere (absorption 3.0/0.5/0.02)
-renders B/R 8.5-9.2 spectrally against RGB 5.6 (pre-fix 0.97-1.00). The
+renders B/R ~8.3-9.2 spectrally against RGB 5.6 (pre-fix 0.97-1.00). The
 spectral render is not the RGB render: an RGB-authored coefficient is a
 three-node piecewise-linear curve under spectral rendering
 (`RGBScalarPainter`, nodes 450/550/650 nm), so green and blue agree within 5 %
-while red reads 0.61-0.66x. BDPT `hwss TRUE` still renders this material grey
+while red reads 0.61-0.66x.  That gap is PREDICTED, not just attributed
+(DL-374 review, 2026-10-01): integrating the RGB-render reflectance-vs-
+sigma_a curve over this piecewise-linear sigma_a(lambda) against the env's
+radiance spectrum, the CMFs and the XYZ->Rec709 matrix gives spectral
+0.0632 / 0.3031 / 0.5721 (red 0.611x RGB); PT `hwss TRUE` renders
+0.06321 / 0.30298 / 0.57396.  The red CMF's negative lobe sits where
+this medium reflects most.  Non-HWSS PT/BDPT/VCM spectral read red ~6 %
+above the prediction (0.067-0.069); a grey-medium control shows the same
++3.5 % red before and after the fix, so that offset is the non-HWSS
+spectral path's wavelength-sampling residual, not DL-374.  Note also that
+`RGBScalarPainter` places an RGB triple at 450/550/650 nm while
+wavelength-varying painters use `ScalarPainterRGB::kChannelNM`
+611/549/465 nm in RGB mode -- an older, separate convention. BDPT `hwss TRUE` still renders this material grey
 (B/R 0.94): its companions inherit the hero's walk weight, which is DL-357.
