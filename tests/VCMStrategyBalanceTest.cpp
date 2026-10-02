@@ -2721,7 +2721,8 @@ namespace TopologyY
 	const double kScale = 6.0;		// exitance M (white painter x scale)
 	const double kOff = 1.5;		// emitter centre offset
 	const double kView = 4.0;		// orthographic viewport width
-	const double kEnvL = 0.3;		// uniform environment radiance (env row)
+	const double kEnvL = 0.05;		// uniform environment radiance (env row; small enough
+								// that the quads carry ~70 % of the image)
 	const int kSpp = 64;
 	const int kRepeats = 4;
 
@@ -2864,13 +2865,21 @@ namespace TopologyY
 	}
 
 	//! Render `kind` n times on (layout, camera, env) and check its mean
-	//! against `ref` within `tol`.  Returns the measured stat.
+	//! against `ref` within `tol` (tol < 0: a reference row, printed and
+	//! only checked for a valid render).  Returns the measured stat.
 	Stat Row( const char* label, const char* kind, const Layout& L, const bool pinhole,
 		const bool env, const double ref, const double tol )
 	{
 		const std::string scene = std::string( "RISE ASCII SCENE 7\n" ) + Rasterizer( kind, env ) + Scene( L, pinhole );
 		const Stat st = RenderN( scene, kind );
 		char buf[512];
+		if( tol < 0 ) {
+			std::snprintf( buf, sizeof(buf), "Topology Y (DL-348): %s: %s mean %.6f (sd %.6f, n=%d salted)",
+				label, kind, st.mean, st.sd, kRepeats );
+			std::cout << "    " << buf << std::endl;
+			Check( st.ok && st.mean > 0, buf );
+			return st;
+		}
 		std::snprintf( buf, sizeof(buf),
 			"Topology Y (DL-348): %s: %s mean %.6f (sd %.6f, n=%d salted) vs ref %.6f -> ratio %.4f, within %g%%",
 			label, kind, st.mean, st.sd, kRepeats, ref, ref > 0 ? st.mean / ref : -1.0, 100.0 * tol );
@@ -2901,7 +2910,9 @@ static void TestSeveralLuminariesY()
 		Check( std::fabs( a - q ) < 1e-6, "Topology Y: analytic form factor matches brute-force quadrature" );
 	}
 
-	const double tolCF = 0.015;
+	// Post-fix every row reads 0.998-1.002 (per-render sd <= 0.4 %, so the
+	// n = 4 mean's sd <= 0.2 %; PT itself sits 0.1 % under the closed form).
+	const double tolCF = 0.006;
 	const struct { const char* label; const Layout* L; } ortho[] = {
 		{ "1 luminary, ortho vs closed form", &kOne },
 		{ "2 luminaries, ortho vs closed form", &kTwo },
@@ -2916,12 +2927,15 @@ static void TestSeveralLuminariesY()
 	}
 
 	// Pinhole and env + 4 lights: PT is the reference.
-	const Stat ptPin = Row( "4 luminaries, pinhole (PT reference)", "pt", kFour, true, false, 1.0, 1e9 );
+	const Stat ptPin = Row( "4 luminaries, pinhole (PT reference)", "pt", kFour, true, false, 0.0, -1.0 );
 	Row( "4 luminaries, pinhole vs PT", "vcm", kFour, true, false, ptPin.mean, tolCF );
 	Row( "4 luminaries, pinhole vs PT", "bdpt", kFour, true, false, ptPin.mean, tolCF );
-	const Stat ptEnv = Row( "env + 4 luminaries, ortho (PT reference)", "pt", kFour, false, true, 1.0, 1e9 );
-	Row( "env + 4 luminaries, ortho vs PT", "vcm", kFour, false, true, ptEnv.mean, tolCF );
-	Row( "env + 4 luminaries, ortho vs PT", "bdpt", kFour, false, true, ptEnv.mean, tolCF );
+	const Stat ptEnv = Row( "env + 4 luminaries, ortho (PT reference)", "pt", kFour, false, true, 0.0, -1.0 );
+	// The environment rows are noisier (BDPT per-render sd ~1.2 %), so a
+	// 2 % band (> 4 sd of the n = 4 mean).
+	const double tolEnv = 0.02;
+	Row( "env + 4 luminaries, ortho vs PT", "vcm", kFour, false, true, ptEnv.mean, tolEnv );
+	Row( "env + 4 luminaries, ortho vs PT", "bdpt", kFour, false, true, ptEnv.mean, tolEnv );
 }
 
 int main( int argc, char** argv )

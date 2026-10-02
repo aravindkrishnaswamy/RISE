@@ -4148,8 +4148,8 @@ ConnectAndEvaluateImplCore(
 			const LuminaryManager::LuminariesList& luminaries = pLumManager ?
 				const_cast<LuminaryManager*>( pLumManager )->getLuminaries() : emptyList;
 
-			// For BVH PDF, the shading point is the predecessor vertex
-			// (where NEE would have selected this emitter from).
+			// SampleLight()'s selection pmf (alias, shading-point
+			// independent -- DL-348): the s >= 1 strategies root here.
 			const BDPTVertex& predVert_s0 = eyeVerts[t - 2];
 			const Scalar pdfSelect = pLightSampler->PdfSelectLuminary(
 				scene, luminaries, *eyeEnd.pObject,
@@ -4226,31 +4226,22 @@ ConnectAndEvaluateImplCore(
 			// (LuminaryManager refuses it), CanBeAreaLight() == false (an
 			// SDF whose sampling mesh proved it misses renderable surface;
 			// see SDFGeometry.h), or a degenerate zero-area emitter -- and
-			// deliberately NOT `eyeEndPdfRev <= 0`.  The two differ on one
-			// real case: with `light_bvh` enabled (opt-in),
-			// `PdfSelectLuminary` can return 0 for an emitter that IS in the
-			// set (an orientation-zeroed cluster -- NodeImportance's
-			// max(0, cos thetaPrime) drives probL to 0 from THIS shading
-			// point), while the s >= 1 strategies actually root their light
-			// subpaths with the shading-point-independent alias draw, which
-			// is strictly positive for any in-set light.  Keying off the
-			// pdf would then delete EXISTING strategies from the
-			// denominator, pushing the weights' sum above 1 -- an energy
-			// EXCESS, the opposite error to the one being fixed.  Set
-			// membership is the property the s >= 1 family actually depends
-			// on, and it is what PT gates on too
+			// deliberately NOT `eyeEndPdfRev <= 0`.  The two used to differ
+			// when `PdfSelectLuminary` returned the light BVH's
+			// shading-point pmf (zero for an orientation-zeroed cluster);
+			// since DL-348 it returns SampleLight()'s own alias pmf -- the
+			// density the s >= 1 strategies actually root their light
+			// subpaths with, strictly positive for any in-set light -- so
+			// the two coincide, but set membership remains the property
+			// the s >= 1 family depends on, and it is what PT gates on too
 			// (PathTracingIntegrator.cpp:2173, `pEmitGeom &&
 			// pEmitGeom->CanBeAreaLight()` plus its own `area > 0`).
 			//
 			// For an out-of-set emitter this restores agreement with PT
 			// (which skips its emission-MIS block entirely, leaving
 			// emissionMiWeight = 1) and with VCM (`pdfSelect > 0 ?
-			// wCameraJoint / pdfSelect : 0`).  It says nothing about the
-			// zero-pdf-but-in-set case, which the three integrators handle
-			// differently by design and which this flag no longer touches --
-			// PT there falls back to pdfSelect = 1.0 and down-weights
-			// (PathTracingIntegrator.cpp:2206-2213), and BDPT keeps the
-			// treatment it has always had.
+			// wCameraJoint : 0`).  (PT's own zero-BVH-pdf-but-in-set case
+			// is PT's business: its NEE does sample the BVH.)
 			const_cast<BDPTVertex&>( eyeEnd ).lightSamplingStrategyAbsent =
 				( !eyeEndAreaSampleable || area <= 0 );
 		}
