@@ -3999,6 +3999,21 @@ ConnectAndEvaluateImplCore(
 		return result;
 	}
 
+	// DL-377: a strategy whose light endpoint is a light-side BSSRDF entry
+	// exists only for paths the EYE-sampled family cannot cover -- the by-
+	// path partition of docs/MIS_HEURISTICS.md section 4a (DL-317 for VCM).
+	// With Sw evaluated toward the eye (EvalLightEndAreaBSDFAtVertex) such
+	// a strategy is no longer ~0, and on a covered path the eye family's
+	// own strategies (NEE / connection at its entry, a non-delta root hit)
+	// already partition to one without it, so keeping it double counts.
+	// Strategies whose light subpath runs PAST a light entry are left as
+	// they were (DL-380).
+	if( s >= 2 && lightVerts[s - 1].isBSSRDFEntry &&
+		BDPTUtilities::UsableLightSubpathLength( lightVerts, false ) < s )
+	{
+		return result;
+	}
+
 	//
 	// Case: s == 0, t > 0
 	// Pure eye path -- last eye vertex hits an emitter directly

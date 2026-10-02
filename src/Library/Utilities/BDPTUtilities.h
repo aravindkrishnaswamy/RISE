@@ -27,6 +27,8 @@
 
 #include "Math3D/Math3D.h"
 #include "../Shaders/BDPTVertex.h"
+#include <cstddef>
+#include <vector>
 
 namespace RISE
 {
@@ -395,6 +397,93 @@ namespace RISE
 			}
 
 			return 1.0 / distSq;
+		}
+
+		//////////////////////////////////////////////////////////////
+		// BSSRDF jump partition by PATH (DL-317 for VCM, DL-377 for
+		// BDPT/MLT).  A subsurface jump has no reverse density, so the
+		// eye-sampled and the light-sampled family of a path through a
+		// jump cannot be MIS-combined; a path belongs to the EYE family
+		// whenever that family has a strategy for it, and to the LIGHT
+		// family only when it has none.  Full rationale:
+		// docs/MIS_HEURISTICS.md section 4a.
+		//////////////////////////////////////////////////////////////
+
+		/// Does the EYE-sampled family have a strategy for a path whose
+		/// jump the light walk sampled at `verts[p] -> verts[p+1]` (the
+		/// hit where the light went in, then the entry)?  The eye would
+		/// arrive at the entry's point, jump to verts[p] (its own entry
+		/// vertex there -- connectible exactly when verts[p+1] is), and
+		/// must split the light-side segment verts[s..p] somewhere;
+		/// verts[s] is the light root (s == 0) or the previous KEPT light
+		/// entry.  The strategies, with the eye covering verts[j..p] and
+		/// the light verts[s..j-1]:
+		///   s=0 (eye hits the root): root not delta;
+		///   merge at verts[j]: merging live, verts[j] a non-delta surface;
+		///   NEE / connection at the edge (j-1, j): verts[j] non-delta and
+		///     connectible, and verts[j-1] the root (NEE reaches any light)
+		///     or a non-delta connectible vertex (a kept diffusion entry is
+		///     one).
+		/// "Non-delta" is the path's own scatter at that vertex (the light
+		/// walk's sampled lobe), so the predicate is a function of the path.
+		inline bool LightSegmentEyeCoverable(
+			const std::vector<BDPTVertex>& verts,
+			const std::size_t s,
+			const std::size_t p,
+			const bool mergingActive
+			)
+		{
+			if( p + 1 >= verts.size() || p <= s ) {
+				return true;	// malformed: keep the cut (conservative, never double counts)
+			}
+			if( s == 0 && verts[0].type == BDPTVertex::LIGHT && !verts[0].isDelta ) {
+				return true;
+			}
+			for( std::size_t j = s + 1; j <= p; j++ ) {
+				const BDPTVertex& b = verts[j];
+				const bool bUsable = ( j == p )
+					? verts[p + 1].isConnectible
+					: ( b.isConnectible && !b.isDelta );
+				if( !bUsable ) {
+					continue;
+				}
+				if( mergingActive && b.type == BDPTVertex::SURFACE ) {
+					return true;
+				}
+				const BDPTVertex& a = verts[j - 1];
+				if( j - 1 == 0 && a.type == BDPTVertex::LIGHT ) {
+					return true;
+				}
+				if( a.isConnectible && !a.isDelta ) {
+					return true;
+				}
+			}
+			return false;
+		}
+
+		/// The number of leading light-subpath vertices that may be a
+		/// light-family strategy endpoint under the by-path partition.
+		/// Walks the light-side jumps in order; the first one the eye
+		/// family can cover ends the usable subpath.  A jump the eye family
+		/// cannot cover is KEPT and the next segment starts at its entry.
+		/// The hit where the light walk went INTO the material is always
+		/// usable: only its continuation was the jump.
+		inline std::size_t UsableLightSubpathLength(
+			const std::vector<BDPTVertex>& lightVerts,
+			const bool mergingActive
+			)
+		{
+			std::size_t segmentStart = 0;
+			for( std::size_t i = 1; i < lightVerts.size(); i++ ) {
+				if( !lightVerts[i].isBSSRDFEntry ) {
+					continue;
+				}
+				if( LightSegmentEyeCoverable( lightVerts, segmentStart, i - 1, mergingActive ) ) {
+					return i;
+				}
+				segmentStart = i;
+			}
+			return lightVerts.size();
 		}
 	}
 }

@@ -261,32 +261,8 @@ namespace
 		const bool mergingActive
 		)
 	{
-		if( p + 1 >= verts.size() || p <= s ) {
-			return true;	// malformed: keep the cut (conservative, never double counts)
-		}
-		if( s == 0 && verts[0].type == BDPTVertex::LIGHT && !verts[0].isDelta ) {
-			return true;
-		}
-		for( std::size_t j = s + 1; j <= p; j++ ) {
-			const BDPTVertex& b = verts[j];
-			const bool bUsable = ( j == p )
-				? verts[p + 1].isConnectible
-				: ( b.isConnectible && !b.isDelta );
-			if( !bUsable ) {
-				continue;
-			}
-			if( mergingActive && b.type == BDPTVertex::SURFACE ) {
-				return true;
-			}
-			const BDPTVertex& a = verts[j - 1];
-			if( j - 1 == 0 && a.type == BDPTVertex::LIGHT ) {
-				return true;
-			}
-			if( a.isConnectible && !a.isDelta ) {
-				return true;
-			}
-		}
-		return false;
+		// Shared with BDPT (DL-377): one predicate, one partition.
+		return BDPTUtilities::LightSegmentEyeCoverable( verts, s, p, mergingActive );
 	}
 
 	/// DL-317: the number of leading light-subpath vertices VCM may use as
@@ -302,18 +278,7 @@ namespace
 		const VCMNormalization& norm
 		)
 	{
-		const bool merging = MergingActive( norm );
-		std::size_t segmentStart = 0;
-		for( std::size_t i = 1; i < lightVerts.size(); i++ ) {
-			if( !lightVerts[i].isBSSRDFEntry ) {
-				continue;
-			}
-			if( LightSegmentEyeCoverable( lightVerts, segmentStart, i - 1, merging ) ) {
-				return i;
-			}
-			segmentStart = i;
-		}
-		return lightVerts.size();
+		return BDPTUtilities::UsableLightSubpathLength( lightVerts, MergingActive( norm ) );
 	}
 
 	/// DL-317: running quantities for the vertex AFTER a KEPT light-side

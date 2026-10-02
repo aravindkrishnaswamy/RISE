@@ -4439,13 +4439,13 @@ static bool RenderDL377Mean( const std::string& scene, const char* tag, bool wal
 	return std::isfinite( outMean ) && outMean >= 0;
 }
 
-static void RunDL377Row( const char* label, bool wall, bool spot, const char* kind, int spp, int ptSpp, int replicates, double band )
+static void RunDL377Row( const char* label, bool wall, bool spot, const char* kind, int spp, int ptSpp, int replicates, double band, bool glass = true )
 {
 	std::cout << "Testing DL-377 " << label << std::endl;
 	const std::string body = std::string( kSceneDL377Common ) + ( spot ? kSceneDL377Spot : kSceneDL377Omni ) +
 		( wall ? kSceneDL377Wall : "" );
 	const std::string ref = std::string( "RISE ASCII SCENE 7\n" ) + DL377Rasterizer( "pt", ptSpp ) + body;
-	const std::string test = std::string( "RISE ASCII SCENE 7\n" ) + DL377Rasterizer( kind, spp ) + body + kSceneDL377Glass;
+	const std::string test = std::string( "RISE ASCII SCENE 7\n" ) + DL377Rasterizer( kind, spp ) + body + ( glass ? kSceneDL377Glass : "" );
 	double pt = 0, x = 0, ptSd = 0, xSd = 0;
 	const bool okPT = RenderDL377Mean( ref, "dl377_pt", wall, replicates, 0x377A, pt, &ptSd );
 	const bool okX = RenderDL377Mean( test, "dl377_x", wall, replicates, 0x377B, x, &xSd );
@@ -4528,6 +4528,12 @@ int main( int argc, char** argv )
 	}
 	if( argc == 2 && std::strcmp(argv[1], "--dl377-g3" ) == 0 ) {
 		TestLightSideDiffusionEntryDL377( true );
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+	if( argc == 2 && std::strcmp(argv[1], "--dl377-probe" ) == 0 ) {
+		RunDL377Row( "G2 BDPT WITHOUT glass (probe, ungated)", true, false, "bdpt", 512, 512, 4, 1.0, false );
+		RunDL377Row( "G2 VCM merging off with glass (probe, ungated)", true, false, "vcmoff", 512, 512, 4, 1.0 );
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
