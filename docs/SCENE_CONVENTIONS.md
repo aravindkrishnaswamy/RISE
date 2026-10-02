@@ -1499,7 +1499,12 @@ agent's skill docs now steer to the modern chunks
 (`src/3DSMax`) calls the legacy `IJob` entry points directly and is not
 built here.
 
-**Shipped scenes (not migrated -- their looks are kept).**  Of the 464
+**Shipped scenes (not migrated -- their looks are kept).**  Counted by
+CHUNK-HEADER match (a line that is exactly the keyword, optionally with a
+trailing comment; not a word grep) over `git ls-files scenes` at the merge
+with master `0dfda8c05` -- untracked / gitignored local scenes such as
+`scenes/Internal` are NOT counted (a filesystem grep of a developer
+checkout reads higher, 40 / 19 in the main checkout today).  Of the 464
 tracked `.RISEscene` files, **35** use at least one deprecated chunk:
 `polished_material` 17 scenes / 139 chunks, `cooktorrance_material` 11 /
 26, `isotropic_phong_material` 9 / 9, `ward_anisotropic_material` 6 / 6,
