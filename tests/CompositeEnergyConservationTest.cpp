@@ -1609,6 +1609,79 @@ static void SectionD()
 			}
 		}
 	}
+
+	// D7 (DL-341 review round 2, 2026-10-02): an OPEN double-sided composite
+	// SHEET seen from BEHIND.  Left half: an `indexedmesh_geometry` quad
+	// (double-sided by default, not certified watertight -> `bOpenSheet`);
+	// right half: its `clippedplane_geometry` twin (provably open).  The
+	// camera is at z = -7, behind both.  An open sheet has no inside for the
+	// bottom to face, so both present the composite's TOP to the ray on
+	// either face and the two halves must agree, in PT, BDPT and VCM alike.
+	// Round 2 unflipped the mesh half and walked it from below, delta-tagged:
+	// coat over a 0.8 Lambertian under the env furnace read PT / BDPT / VCM
+	// 0.800 / 0.909 / 1.010 on the mesh against ~0.635 on the plane (BDPT
+	// repriced its connections on a rebuilt record that had lost the flip),
+	// glass/glass 0.977 against 0.487, and an omni light on the camera side
+	// lit the mesh half at 0 against 1.25.  Base: the halves agree.
+	{
+		const std::string mats7 =
+			"uniformcolor_painter\n{\n\tname pnt_env\n\tcolor 1.0 1.0 1.0\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt_w8\n\tcolor 0.8 0.8 0.8\n}\n\n"
+			"lambertian_material\n{\n\tname mat_l8\n\treflectance pnt_w8\n}\n\n"
+			"dielectric_material\n{\n\tname mat_glass\n\ttau 1\n\tior 1.5\n}\n\n"
+			"dielectric_material\n{\n\tname mat_glass2\n\ttau 1\n\tior 1.5\n}\n\n"
+			"composite_material\n{\n\tname mat_cc\n\ttop mat_glass\n\tbottom mat_l8\n\tthickness 0\n\textinction 0.0\n}\n\n"
+			"composite_material\n{\n\tname mat_gg\n\ttop mat_glass\n\tbottom mat_glass2\n\tthickness 0\n\textinction 0.0\n}\n\n";
+		const std::string geo7 =
+			"indexedmesh_geometry\n{\n\tname qm\n\tvertex -4 -3 0\n\tvertex 0 -3 0\n\tvertex 0 3 0\n\tvertex -4 3 0\n"
+			"\ttriangle 0 1 2\n\ttriangle 0 2 3\n\tdouble_sided TRUE\n\tface_normals TRUE\n}\n\n"
+			"clippedplane_geometry\n{\n\tname qc\n\tpta 0 -3 0\n\tptb 4 -3 0\n\tptc 4 3 0\n\tptd 0 3 0\n}\n\n";
+		const std::string cam7 = "film\n{\n\twidth 32\n\theight 16\n}\n\n"
+			"pinhole_camera\n{\n\tlocation 0 0 -7.0\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n";
+		auto vcm = []( bool env, int spp ) {
+			std::ostringstream s;
+			s << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+			  << "vcm_pel_rasterizer\n{\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tsamples " << spp
+			  << "\n\tmerge_radius 0.0\n\tvc_enabled true\n\tvm_enabled true\n\toidn_denoise FALSE\n\tpixel_filter box\n";
+			if( env ) s << "\tradiance_map pnt_env\n\tradiance_scale 1.0\n\tradiance_background TRUE\n";
+			s << "}\n\nfile_rasterizeroutput\n{\n\tpattern rendered/composite_energy_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n\n";
+			return s.str();
+		};
+		struct Cfg7 { const char* name; const char* mat; bool env; };
+		const Cfg7 cfgs[] = {
+			{ "coat over Lambertian 0.8, env furnace", "mat_cc", true },
+			{ "glass/glass, env furnace", "mat_gg", true },
+			{ "coat over Lambertian 0.8, omni on the camera side", "mat_cc", false },
+		};
+		for( const Cfg7& c : cfgs ) {
+			double perInt[3] = { -1, -1, -1 };
+			for( int r = 0; r < 3; ++r ) {
+				if( !c.env && r == 2 ) continue;	// VCM has no point-light row here
+				std::string scene = std::string( "RISE ASCII SCENE 7\n" ) + cam7 + mats7 + geo7 +
+					"standard_object\n{\n\tname M\n\tgeometry qm\n\tmaterial " + c.mat + "\n}\n\n"
+					"standard_object\n{\n\tname C\n\tgeometry qc\n\tmaterial " + c.mat + "\n}\n\n";
+				if( !c.env ) scene += "omni_light\n{\n\tname ol\n\tpower 200\n\tcolor 1 1 1\n\tposition 0 0 -5\n}\n\n";
+				scene += ( r == 0 ) ? PtRasterizer( c.env, 256 ) : ( r == 1 ) ? BdptRasterizer( c.env, 256 ) : vcm( c.env, 256 );
+				CapturingRasterizerOutput* cap = 0;
+				const bool ok = Render( scene, "opensheet", cap, 71680u + 3u * (unsigned)r );
+				const double mL = ok ? RegionMean( *cap, 2, cap->width / 2 - 2 ) : -1;
+				const double mR = ok ? RegionMean( *cap, cap->width / 2 + 2, cap->width - 2 ) : -1;
+				const char* in = ( r == 0 ) ? "PT  " : ( r == 1 ) ? "BDPT" : "VCM ";
+				std::cout << "    D7 open double-sided sheet from behind, " << c.name << ", " << in
+				          << ": mesh = " << std::setprecision(5) << mL << ", clipped plane = " << mR
+				          << ", ratio = " << ( mR > 0 ? mL / mR : -1 ) << "\n";
+				Check( ok && mR > 0 && std::fabs( mL / mR - 1.0 ) <= 0.03,
+					std::string( "[D7] open mesh sheet == clipped-plane twin from behind, " ) + c.name + " (" + in + ")" );
+				perInt[r] = mL;
+				if( cap ) safe_release( cap );
+			}
+			for( int r = 1; r < 3; ++r ) {
+				if( perInt[r] < 0 ) continue;
+				Check( perInt[0] > 0 && std::fabs( perInt[r] / perInt[0] - 1.0 ) <= 0.04,
+					std::string( "[D7] open mesh sheet from behind, " ) + ( r == 1 ? "BDPT" : "VCM" ) + " == PT, " + c.name );
+			}
+		}
+	}
 }
 
 //////////////////////////////////////////////////////////////////////
