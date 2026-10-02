@@ -200,23 +200,22 @@ void OIDNDenoiser::FloatBufferToImage(
 
 namespace
 {
-	// Auto-quality heuristic thresholds (s / megapixel).  See docs/OIDN.md
-	// (OIDN-P0-1) for derivation and OIDN-P0-3 for the Metal-backend
-	// recalibration note.  Tuned against Apple Silicon CPU; faster
-	// devices will leave the heuristic underspending.
+	// DL-360: deterministic work-policy thresholds. Inputs are estimated
+	// seconds, formed from pixel count, configured spp and a fixed family
+	// cost. They express quality policy, not measured hardware throughput.
 	static constexpr double kAutoFastUntilSecPerMP     = 3.0;
 	static constexpr double kAutoBalancedUntilSecPerMP = 20.0;
 
 	OidnQuality ResolveAutoQuality(
-		double renderSeconds,
+		double estimatedSeconds,
 		unsigned int w,
 		unsigned int h,
-		double& outR,			// render seconds per megapixel (for logging)
+		double& outR,			// estimated policy seconds per megapixel (for logging)
 		double& outMP			// megapixels (for logging)
 		)
 	{
 		outMP = ( static_cast<double>( w ) * static_cast<double>( h ) ) / 1.0e6;
-		outR  = ( outMP > 0.0 ) ? renderSeconds / outMP : 0.0;
+		outR  = ( outMP > 0.0 ) ? estimatedSeconds / outMP : 0.0;
 		if( outR < kAutoFastUntilSecPerMP ) {
 			return OidnQuality::Fast;
 		}
@@ -387,20 +386,17 @@ void OIDNDenoiser::Denoise(
 	OidnQuality requestedQuality,
 	OidnDevice requestedDevice,
 	OidnPrefilter requestedPrefilter,
-	double renderSecondsBeforeDenoise
+	double estimatedRenderSeconds
 	)
 {
-	// Resolve Auto via the render-time / megapixels heuristic; explicit
-	// presets pass through unchanged.  When Auto fires, log the inputs
-	// and the picked preset so the threshold constants can be tuned
-	// from real-world telemetry without re-running the render.
+	// Resolve Auto from configured work; explicit presets pass through.
 	OidnQuality resolvedQuality = requestedQuality;
 	if( requestedQuality == OidnQuality::Auto ) {
 		double r = 0.0, mp = 0.0;
-		resolvedQuality = ResolveAutoQuality( renderSecondsBeforeDenoise, w, h, r, mp );
+		resolvedQuality = ResolveAutoQuality( estimatedRenderSeconds, w, h, r, mp );
 		GlobalLog()->PrintEx( eLog_Event,
-			"OIDN auto: render=%.2fs, image=%ux%u (%.2f MP), r=%.2f s/MP -> %s",
-			renderSecondsBeforeDenoise, w, h, mp, r,
+			"OIDN auto: estimated-work=%.2fs, image=%ux%u (%.2f MP), r=%.2f s/MP -> %s",
+			estimatedRenderSeconds, w, h, mp, r,
 			OidnQualityName( resolvedQuality ) );
 	}
 
@@ -727,7 +723,7 @@ void OIDNDenoiser::ApplyDenoise(
 	OidnQuality requestedQuality,
 	OidnDevice requestedDevice,
 	OidnPrefilter requestedPrefilter,
-	double renderSecondsBeforeDenoise
+	double estimatedRenderSeconds
 	)
 {
 	GlobalLog()->PrintEx( eLog_Info, "Running OIDN denoiser (%ux%u)...", w, h );
@@ -751,7 +747,7 @@ void OIDNDenoiser::ApplyDenoise(
 		requestedQuality,
 		requestedDevice,
 		requestedPrefilter,
-		renderSecondsBeforeDenoise );
+		estimatedRenderSeconds );
 	FloatBufferToImage( mState->denoisedStaging.data(), image, w, h );
 
 	const auto t_end = std::chrono::steady_clock::now();
@@ -772,7 +768,7 @@ void OIDNDenoiser::ApplyDenoiseRegion(
 	OidnQuality requestedQuality,
 	OidnDevice requestedDevice,
 	OidnPrefilter requestedPrefilter,
-	double renderSecondsBeforeDenoise
+	double estimatedRenderSeconds
 	)
 {
 	if( fullWidth == 0 || fullHeight == 0 || left > right || top > bottom
@@ -822,7 +818,8 @@ void OIDNDenoiser::ApplyDenoiseRegion(
 	Denoise( mState->beautyStaging.data(), albedo, normal,
 		regionWidth, regionHeight, mState->denoisedStaging.data(),
 		requestedQuality, requestedDevice, requestedPrefilter,
-		renderSecondsBeforeDenoise );
+		estimatedRenderSeconds * (static_cast<double>(regionWidth) * regionHeight) /
+			(static_cast<double>(fullWidth) * fullHeight) );
 
 	for( unsigned int y=0; y<regionHeight; ++y ) {
 		for( unsigned int x=0; x<regionWidth; ++x ) {

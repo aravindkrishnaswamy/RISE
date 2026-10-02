@@ -102,7 +102,7 @@ namespace RISE
 			//! Wall-clock timestamp captured at the start of RasterizeScene
 			//! by derived rasterizers via BeginRenderTimer().  Read by the
 			//! denoise call site immediately before oidn::Filter::execute()
-			//! to drive the OidnQuality::Auto heuristic.  See docs/OIDN.md
+			//! for render-duration telemetry (Auto uses configured work since DL-360).  See docs/OIDN.md
 			//! (OIDN-P0-1) for the heuristic itself.
 			mutable std::chrono::steady_clock::time_point mRenderStartTime;
 
@@ -139,7 +139,7 @@ namespace RISE
 			}
 
 			//! Seconds elapsed since BeginRenderTimer().  Used by the
-			//! denoise call site to feed the auto heuristic.
+			//! denoise call site for telemetry.
 			double GetRenderElapsedSeconds() const {
 				const auto now = std::chrono::steady_clock::now();
 				const std::chrono::duration<double> elapsed = now - mRenderStartTime;

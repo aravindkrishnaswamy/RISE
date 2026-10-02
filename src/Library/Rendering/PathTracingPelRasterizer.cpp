@@ -53,7 +53,6 @@ PathTracingPelRasterizer::PathTracingPelRasterizer(
 	  pDirectCompanionImage( 0 ),
 	  pDirectCompanionRawImage( 0 ),
 	  mDirectCompanionDenoised( false ),
-	  mDirectCompanionRenderSeconds( 0.0 ),
 	  mDirectCompanionHasRegion( false ),
 	  mDirectCompanionRegion( 0, 0, 0, 0 ),
 	  pSMSPhotonMap( 0 ),
@@ -72,11 +71,7 @@ bool PathTracingPelRasterizer::ShouldDenoise() const
 		&& PixelBasedPelRasterizer::ShouldDenoise();
 }
 
-void PathTracingPelRasterizer::OnBeforeDenoise(
-	double renderElapsedSeconds ) const
-{
-	mDirectCompanionRenderSeconds = renderElapsedSeconds;
-}
+
 #endif
 
 void PathTracingPelRasterizer::SetMaxPathDepth( unsigned int n )
@@ -150,7 +145,6 @@ void PathTracingPelRasterizer::PreRenderSetup(
 	PixelBasedPelRasterizer::PreRenderSetup( pScene, pRect );
 	safe_release( pDirectCompanionRawImage );
 	mDirectCompanionDenoised = false;
-	mDirectCompanionRenderSeconds = 0.0;
 	mDirectCompanionHasRegion = pRect != 0;
 	if( pRect ) {
 		mDirectCompanionRegion = *pRect;
@@ -556,13 +550,13 @@ void PathTracingPelRasterizer::PostRenderCleanup() const
 				mDirectCompanionRegion.left, mDirectCompanionRegion.top,
 				mDirectCompanionRegion.right, mDirectCompanionRegion.bottom,
 				mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-				mDirectCompanionRenderSeconds );
+				EstimateDenoiseRenderSeconds( pDirectCompanionImage->GetWidth(), pDirectCompanionImage->GetHeight() ) );
 		} else {
 			mDenoiser->ApplyDenoise(
 				*pDirectCompanionImage, *pAOVBuffers,
 				pDirectCompanionImage->GetWidth(), pDirectCompanionImage->GetHeight(),
 				mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-				mDirectCompanionRenderSeconds );
+				EstimateDenoiseRenderSeconds( pDirectCompanionImage->GetWidth(), pDirectCompanionImage->GetHeight() ) );
 		}
 		mDirectCompanionDenoised = true;
 	}

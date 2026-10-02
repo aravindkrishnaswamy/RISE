@@ -187,10 +187,17 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
   `filter.set("quality", oidn::Quality::*)` call. New default: `auto` (see
   heuristic below) — replaces OIDN's `DEFAULT` (which is just an alias for
   HIGH).
-- **Auto heuristic:** Compute `r = render_time_seconds / megapixels`, where
-  `render_time_seconds` is wall-clock from rasterizer start to immediately
-  before `oidn::Filter::execute()` runs (includes sample accumulation, AOV
-  retrace, and buffer marshalling — everything the user has already paid).
+- **Auto heuristic (DL-360, 2026-10-02):** Compute a deterministic work
+  estimate `estimated_seconds = pixels * configured_spp * family_cost / 1e6`,
+  then `r = estimated_seconds / megapixels`. Family costs are fixed quality
+  policy constants (seconds per million samples), not hardware benchmarks:
+  legacy pixel renderers 0.1, PT RGB 0.2, PT spectral 0.8, bidirectional
+  BDPT/VCM 0.6, MLT RGB 0.4, MLT spectral 1.6. Adaptive pixel renderers use
+  the maximum of their configured sample budget and adaptive target.
+  Cancellation, convergence, machine load and elapsed time do not choose
+  quality. Region denoise scales the estimate to its pixel count; its
+  per-megapixel policy matches full-frame denoise. Direct-companion PT
+  denoise uses the same configured budget and PT family policy.
   Map:
 
   | `r` (s/MP) | Quality | Interpretation |
@@ -199,10 +206,11 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
   | `3 ≤ r < 20` | **BALANCED** | Working render — fair trade |
   | `r ≥ 20` | **HIGH** | Final-quality render — extra denoise seconds well-spent |
 
-  Thresholds calibrated against Apple Silicon CPU; see `OIDN-P0-3` for the
-  Metal-backend recalibration note. Each frame computes its own `r` and picks
-  independently — animations with consistent per-frame render times converge
-  to the same bucket. Logged per render: `OIDN auto: render=12.5s, image=1920x1080 (2.07 MP), r=6.04 s/MP → BALANCED`.
+  These retained 3/20 policy thresholds were originally calibrated against
+  Apple Silicon CPU; see `OIDN-P0-3` for the
+  historical Metal-backend recalibration note. Frames with the same sample
+  budget and rasterizer family select the same bucket. The log reports
+  `OIDN auto: estimated-work=...`, image dimensions and the selected quality.
 
   Thresholds live as `static constexpr` in `OIDNDenoiser.cpp` so they're
   easy to tune later from real-world telemetry.
@@ -230,7 +238,7 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
   `auto` flips between FAST / BALANCED / HIGH around the documented
   thresholds. ABI-evolving change → review against the
   retired `abi-preserving-api-evolution` skill.
-- **Result:**
+- **Historical result (2026-04-29; timing-based Auto superseded by DL-360):**
   - `make -C build/make/rise -j8 all` clean (no new warnings).
   - `./run_all_tests.sh` clean: **72/72 pass**.
   - Sample render of `scenes/Tests/Geometry/shapes.RISEscene` (800×800, 0.82 s
@@ -954,7 +962,8 @@ from a reviewer, or has its priority moved. Most recent first.
     animator `EvaluateAtTime` + `InvalidateSpatialStructure`
     (when keyframed) + `PrepareForRendering` + `SetSceneTime`
     between frames; per-frame `BeginRenderTimer()` so the
-    OidnQuality::Auto heuristic decides each frame independently;
+    timing telemetry describes each frame independently (Auto uses static
+    work since DL-360);
     cancel-mid-frame abandons the frame entirely (no flush, no
     denoise) so the MOV writer's tail stays clean.
 - **Per-frame OIDN flow** mirrors `PixelBasedRasterizerHelper::
@@ -1026,7 +1035,8 @@ from a reviewer, or has its priority moved. Most recent first.
   did not).
 - Two-part change in `PixelBasedRasterizerHelper`:
   1. **`RenderFrameOfAnimation`** gains the per-frame setup:
-     `BeginRenderTimer()` so the OidnQuality::Auto heuristic decides
+     `BeginRenderTimer()` for per-frame telemetry (Auto uses static work
+     since DL-360); originally the timing heuristic decided
      each frame independently rather than inflating with cumulative
      animation time; `pAOVBuffers` allocate-or-reset per frame so
      each frame starts with a fresh AOV; AOV normalization after
@@ -1429,7 +1439,7 @@ from a reviewer, or has its priority moved. Most recent first.
 - Verified: 800x800 back-to-back render shows 94.1 ms cold → 69.7 ms /
   68.2 ms warm (~25 ms saved per frame).
 
-### 2026-04-29 — OIDN-P0-1 code complete
+### 2026-04-29 — OIDN-P0-1 code complete (timing policy superseded by DL-360)
 - Implementation lands all of: `OidnQuality` enum in
   `src/Library/Utilities/OidnConfig.h`; full plumbing through `IJob.h`,
   `Job.h/cpp`, `RISE_API.h/cpp`; `Rasterizer` base gains
@@ -1448,7 +1458,7 @@ from a reviewer, or has its priority moved. Most recent first.
   `kAutoBalancedUntilSecPerMP`) are `static constexpr` in
   `OIDNDenoiser.cpp` so they're easy to retune from real telemetry.
 
-### 2026-04-29 — OIDN-P0-1 started; auto heuristic agreed
+### 2026-04-29 — OIDN-P0-1 started; auto heuristic agreed (superseded by DL-360)
 - Heuristic: `r = render_time_seconds / megapixels`; `r<3` FAST, `r<20`
   BALANCED, else HIGH. Calibrated for Apple Silicon CPU.
 - Independent of `oidn_denoise`: `oidn_quality` is parsed and stored even

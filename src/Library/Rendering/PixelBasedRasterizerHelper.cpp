@@ -125,6 +125,15 @@ unsigned int PixelBasedRasterizerHelper::GetProgressiveTotalSPP() const
 }
 
 #ifdef RISE_ENABLE_OIDN
+double PixelBasedRasterizerHelper::EstimateDenoiseRenderSeconds(
+	unsigned int width, unsigned int height ) const
+{
+	const unsigned int configured = pSampling ? pSampling->GetNumSamples() : 1;
+	const unsigned int spp = r_max( configured, GetAdaptiveTargetSamples() );
+	return static_cast<double>(width) * height * r_max(spp, 1u) *
+		DenoiseWorkPerMegaSample() / 1.0e6;
+}
+
 bool PixelBasedRasterizerHelper::ShouldDenoise() const
 {
 	// Cancellation state is intentionally NOT consulted here — see the
@@ -1033,8 +1042,8 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 #endif
 
 #ifdef RISE_ENABLE_OIDN
-	// Stamp render-start wall clock so the OIDN auto-quality heuristic
-	// can compute render_seconds / megapixels at denoise time.
+	// Stamp render-start wall clock for duration telemetry.
+	// Auto quality uses configured work (DL-360), never this timer.
 	BeginRenderTimer();
 #endif
 
@@ -1406,11 +1415,11 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 					mDenoiser->ApplyDenoiseRegion( *pImage, *pAOVBuffers, width, height,
 						pRect->left, pRect->top, pRect->right, pRect->bottom,
 						mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-						renderElapsedSeconds );
+						EstimateDenoiseRenderSeconds( width, height ) );
 				} else {
 					mDenoiser->ApplyDenoise( *pImage, *pAOVBuffers, width, height,
 						mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-						renderElapsedSeconds );
+						EstimateDenoiseRenderSeconds( width, height ) );
 				}
 				appliedDenoise = true;
 			}
@@ -2230,11 +2239,11 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 					mDenoiser->ApplyDenoiseRegion( *pImage, *pAOVBuffers, width, height,
 						pRect->left, pRect->top, pRect->right, pRect->bottom,
 						mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-						renderElapsedSeconds );
+						EstimateDenoiseRenderSeconds( width, height ) );
 				} else {
 					mDenoiser->ApplyDenoise( *pImage, *pAOVBuffers, width, height,
 						mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-						renderElapsedSeconds );
+						EstimateDenoiseRenderSeconds( width, height ) );
 				}
 			}
 			FlushDenoisedToOutputs( *pImage, pRect, frameIdx );

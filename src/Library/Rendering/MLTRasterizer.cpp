@@ -1287,8 +1287,8 @@ void MLTRasterizer::RasterizeScene(
 	}
 
 #ifdef RISE_ENABLE_OIDN
-	// Stamp render-start wall clock so the OIDN auto-quality heuristic
-	// can compute render_seconds / megapixels at denoise time.
+	// Stamp render-start wall clock for duration telemetry.
+	// Auto quality uses configured work (DL-360), never this timer.
 	BeginRenderTimer();
 #endif
 
@@ -1338,7 +1338,7 @@ void MLTRasterizer::RasterizeScene(
 			// Accurate semantics. Feed the same authored mode to OIDN.
 			mDenoiser->ApplyDenoise( *pImage, *aovBuffers, width, height,
 				mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-				GetRenderElapsedSeconds() );
+				static_cast<double>(width) * height * nMutationsPerPixel * 0.4 / 1.0e6 );
 
 			FlushDenoisedToOutputs( *pImage, 0, 0 );
 		} else
@@ -1441,10 +1441,7 @@ void MLTRasterizer::RasterizeSceneAnimation(
 			frameIdx + 1, num_frames, curtime );
 
 #ifdef RISE_ENABLE_OIDN
-		// Per-frame timer reset so the OidnQuality::Auto heuristic
-		// decides each frame independently rather than inflating
-		// with cumulative animation time.  Mirrors PixelBased's
-		// RenderFrameOfAnimation.
+		// Reset per-frame duration telemetry (Auto uses static work).
 		BeginRenderTimer();
 #endif
 
@@ -1508,7 +1505,7 @@ void MLTRasterizer::RasterizeSceneAnimation(
 				// the cold filter/device rebuild cost.
 				mDenoiser->ApplyDenoise( *pImage, *aovBuffers, width, height,
 					mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-					GetRenderElapsedSeconds() );
+					static_cast<double>(width) * height * nMutationsPerPixel * 0.4 / 1.0e6 );
 
 				FlushDenoisedToOutputs( *pImage, 0, frameIdx );
 			} else
