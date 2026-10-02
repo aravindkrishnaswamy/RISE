@@ -806,16 +806,25 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 	// to median × 20 to control the worst variance while preserving
 	// caustic structure.
 	{
+		// DL-380: the median is taken over the vertices NOT past an
+		// eye-coverable subsurface jump -- exactly the store the pre-DL-380
+		// partition kept -- so the threshold is unchanged; the vertices
+		// past such a jump (now stored, merged only where the eye walk's
+		// depth caps leave the eye family without a strategy) are clamped
+		// against it like every other.
 		const std::size_t storeSize = pLightVertexStore->Size();
-		if( storeSize > 16 ) {
-			std::vector<Scalar> throughputLums;
-			throughputLums.reserve( storeSize );
-			for( std::size_t k = 0; k < storeSize; k++ ) {
-				const LightVertex& lv = pLightVertexStore->Get( k );
-				throughputLums.push_back( ColorMath::MaxValue( lv.throughput ) );
+		std::vector<Scalar> throughputLums;
+		throughputLums.reserve( storeSize );
+		for( std::size_t k = 0; k < storeSize; k++ ) {
+			const LightVertex& lv = pLightVertexStore->Get( k );
+			if( lv.flags & kLVF_JumpCover ) {
+				continue;
 			}
+			throughputLums.push_back( ColorMath::MaxValue( lv.throughput ) );
+		}
+		if( throughputLums.size() > 16 ) {
 			std::sort( throughputLums.begin(), throughputLums.end() );
-			const Scalar medianThroughput = throughputLums[storeSize / 2];
+			const Scalar medianThroughput = throughputLums[throughputLums.size() / 2];
 			const Scalar clampThreshold = medianThroughput * Scalar( 20 );
 
 			unsigned long long clamped = 0;

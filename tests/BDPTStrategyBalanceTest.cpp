@@ -4340,7 +4340,7 @@ static void TestSmoothDiffusionSphereDL333()
 //     camera.  Before DL-375 only the light-sampled jump family reached
 //     it; now the eye family does (NEE at its random-walk entry), the
 //     light family is cut there by the by-path partition
-//     (BDPTUtilities::UsableLightSubpathLength), and the row checks that
+//     (BDPTUtilities::LightJumpPartition), and the row checks that
 //     the path is counted exactly once.
 //////////////////////////////////////////////////////////////////////
 static const char* kSceneDeltaLitRandomWalkDL375 =
@@ -4520,15 +4520,18 @@ static void TestDepthCappedPartitionDL380( bool withMLT )
 	if( !ok ) return;
 	std::printf( "    PT wall reference: D1 omni %.7f (sd %.7f), D2 spot %.7f (sd %.7f), n %d\n",
 		ptOmni, sdOmni, ptSpot, sdSpot, n );
+	if( withMLT ) {
+		// MLT normalizes its image by its bootstrap, which goes through the
+		// same EvaluateAllStrategies; one render, probe band.
+		RunDL380Row( "D2 spot, MLT max_eye_depth 1 / max_light_depth 16", kLightSpotDL375, "mlt", 1, 16, 256, 1, ptSpot, 0.10 );
+		return;
+	}
 	RunDL380Row( "D1 omni, BDPT max_eye_depth 1 / max_light_depth 16", kLightOmniDL375, "bdpt", 1, 16, 2048, n, ptOmni, 0.05 );
 	RunDL380Row( "D2 spot, BDPT max_eye_depth 1 / max_light_depth 16", kLightSpotDL375, "bdpt", 1, 16, 2048, n, ptSpot, 0.05 );
 	RunDL380Row( "D2 spot, BDPT max_eye_depth 16 / max_light_depth 1 (light truncated: no double count)",
 		kLightSpotDL375, "bdpt", 16, 1, 2048, n, ptSpot, 0.05 );
 	RunDL380Row( "D2 spot, BDPT max_eye_depth 2 / max_light_depth 16 (eye covers exactly at its cap)",
 		kLightSpotDL375, "bdpt", 2, 16, 2048, n, ptSpot, 0.05 );
-	if( withMLT ) {
-		RunDL380Row( "D2 spot, MLT max_eye_depth 1 / max_light_depth 16", kLightSpotDL375, "mlt", 1, 16, 256, 1, ptSpot, 0.10 );
-	}
 }
 
 // DL-346: a conservative environment-lit medium has L=1 independently
@@ -5144,7 +5147,7 @@ int main( int argc, char** argv )
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
-	// DL-380: the depth-capped partition rows (BDPT; MLT with --dl380-mlt).
+	// DL-380: the depth-capped partition rows (BDPT; --dl380-mlt: the MLT row alone).
 	if( argc == 2 && ( std::strcmp(argv[1], "--dl380-only") == 0 || std::strcmp(argv[1], "--dl380-mlt") == 0 ) ) {
 		TestDepthCappedPartitionDL380( std::strcmp(argv[1], "--dl380-mlt") == 0 );
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;

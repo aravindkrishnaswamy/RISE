@@ -169,9 +169,13 @@ namespace
 	//     cross and BSDF sampling onward can never hit.  (Before DL-375
 	//     a point light feeding a random-walk entry directly was such a
 	//     class too; a connectible random-walk entry covers it.)  Whether it has
-	//     one depends only on the light-side segment between the jump
-	//     and the light (or the previous kept jump), so the light walk
-	//     decides it: LightSegmentEyeCoverable / UsableLightSubpathLength.
+	//     one depends on the light-side segment between the jump and
+	//     the light (or the previous kept jump) -- which strategies the
+	//     eye family has there, BDPTUtilities::LightSegmentEyeWitness --
+	//     and (DL-380) on whether the eye walk's depth caps let it
+	//     generate the covering subpath, which depends on the eye part
+	//     of the path too: BDPTUtilities::LightJumpPartition, per
+	//     strategy.
 	//
 	// The running quantities follow directly.  At x_i, (dVCM, dVC, dVM)
 	// = 0: every term they carry reserves mass for a strategy in which
@@ -246,26 +250,15 @@ namespace
 		return norm.mEnableVM && norm.mMergeRadiusSq > 0 && norm.mVmNormalization > 0;
 	}
 
-	/// DL-317: whether the EYE-sampled family has a strategy for a path
-	/// through a light-sampled jump is `BDPTUtilities::
-	/// LightSegmentEyeCoverable` (shared with BDPT/MLT since DL-375, which
-	/// made random-walk entries connectible -- so a delta light feeding a
-	/// random-walk entry is now eye-coverable through NEE at the eye's
-	/// entry, and the light family is cut there).
-	/// DL-317: the number of leading light-subpath vertices VCM may use as
-	/// a strategy endpoint.  Walks the light-side jumps in order; the first
-	/// one the eye family can cover ends the usable subpath (nothing at or
-	/// past it is a strategy).  A jump the eye family cannot cover is KEPT
-	/// -- the light-sampled family is then the only estimator of those
-	/// paths -- and the next segment starts at its entry.  The hit where
-	/// the light walk went INTO the material is always usable: it is an
-	/// ordinary arrival; only its continuation was the jump.
-	inline std::size_t UsableLightSubpathLength(
-		const std::vector<BDPTVertex>& lightVerts,
-		const VCMNormalization& norm
-		)
+	/// DL-317 / DL-380: whether the LIGHT family keeps a strategy whose
+	/// light part ends at lightVerts[k] -- i.e. whether the EYE family has
+	/// no strategy for that path within the eye walk's depth caps
+	/// (`BDPTUtilities::LightJumpPartition`, shared with BDPT/MLT).
+	/// `eyeSurface` is the eye part's own eye-walk surface count.
+	inline BDPTUtilities::EyeWalkCaps VCMEyeWalkCaps( const BDPTIntegrator& bdpt )
 	{
-		return BDPTUtilities::UsableLightSubpathLength( lightVerts, MergingActive( norm ) );
+		return BDPTUtilities::MakeEyeWalkCaps(
+			bdpt.GetMaxEyeDepth(), bdpt.GetStabilityConfig().maxVolumeBounce );
 	}
 
 	/// DL-317: running quantities for the vertex AFTER a KEPT light-side
@@ -663,10 +656,13 @@ static inline Scalar AreaToSolidAngleFactor(
 //                        plan's "medium support deferred" note.
 //   v[i] = CAMERA     -> never appears on a light subpath
 //
-// BSSRDF re-entry vertices end the usable light subpath (DL-317): a
-// path through a subsurface jump is owned by the EYE-sampled jump, so
-// nothing at or past a light-side entry is stored for merging, and the
-// splat / connection loops stop at UsableLightSubpathLength.
+// BSSRDF re-entry vertices (DL-317): a path through a subsurface jump
+// is owned by the EYE-sampled jump whenever the eye walk can generate a
+// strategy for it, and that depends on the eye walk's depth caps and the
+// eye part of the path (DL-380).  So every vertex past a light-side
+// entry is converted and stored, carrying the jump's cover
+// (kLVF_JumpCover), and the splat / connection / merge sites decide per
+// strategy through BDPTUtilities::LightJumpPartition.
 //////////////////////////////////////////////////////////////////////
 void VCMIntegrator::ConvertLightSubpath(
 	const std::vector<BDPTVertex>& verts,
@@ -684,7 +680,10 @@ void VCMIntegrator::ConvertLightSubpath(
 	}
 
 	VCMMisQuantities mis;
-	std::size_t segmentStart = 0;	// DL-317: root, or the last KEPT light-side entry
+	// DL-380: the light-side jump covers, stamped on every stored vertex
+	// so a merge can decide the partition against its own eye part.
+	static thread_local BDPTUtilities::LightJumpPartition partition;
+	partition.Build( verts, MergingActive( norm ) );
 
 	for( std::size_t i = 0; i < n; i++ )
 	{
@@ -721,18 +720,15 @@ void VCMIntegrator::ConvertLightSubpath(
 		// isn't the tail vertex, a BSDF-sampling update.
 		//
 
-		// BSSRDF re-entry vertex: the end of the usable light subpath
-		// (DL-317, see the barrier comment near the top of this file).
+		// BSSRDF re-entry vertex (DL-317, see the barrier comment near
+		// the top of this file): zero state at the entry (never stored
+		// for merging), then the light-entry onward update.  DL-380:
+		// whether the light family keeps a path through this jump
+		// depends on the eye walk's depth caps AND on the eye part of the
+		// path, so it is decided per strategy (splat / connection /
+		// merge) through `partition`; everything past the entry is
+		// converted and stored with the jump's cover stamped on it.
 		if( v.isBSSRDFEntry ) {
-			// DL-317: a light-side jump the eye family can cover ends the
-			// usable subpath -- nothing at or past it is stored or used,
-			// and its outMis entries stay zero.  One it cannot cover is
-			// kept: zero state at the entry (never stored for merging),
-			// then the light-entry onward update.
-			if( BDPTUtilities::LightSegmentEyeCoverable( verts, segmentStart, i - 1, MergingActive( norm ) ) ) {
-				return;
-			}
-			segmentStart = i;
 			mis = BSSRDFEntryVertexState();
 			if( outMis ) (*outMis)[i] = mis;
 			mis = ApplyLightEntryOnwardUpdate( verts, i, norm );
@@ -856,6 +852,20 @@ void VCMIntegrator::ConvertLightSubpath(
 			if( v.bHasVertexColor  ) lv.flags |= kLVF_HasVertexColor;
 			lv.pathLength = static_cast<unsigned short>( i );
 			lv.volumeBounces = v.volumeBounces;
+			{
+				// DL-380: a merge AT verts[i] has D = S_eye + L(i) - 1
+				// (the shared vertex counts once); store what the eye
+				// walk would need beyond its own S_eye.
+				const BDPTUtilities::LightJumpCover& c = partition.Cover( i );
+				if( c.exists ) {
+					lv.flags |= kLVF_JumpCover;
+					if( c.escape ) lv.flags |= kLVF_JumpCoverEscape;
+					const long long need = static_cast<long long>( partition.SurfaceCount( i ) ) - 1 - c.surfaceBefore;
+					lv.jumpCoverSurface = static_cast<unsigned short>( need < 0 ? 0 : ( need > 65535 ? 65535 : need ) );
+					const unsigned int vol = v.volumeBounces >= c.volumeBefore ? v.volumeBounces - c.volumeBefore : 0u;
+					lv.jumpCoverVolume = static_cast<unsigned short>( vol > 65535u ? 65535u : vol );
+				}
+			}
 			lv.normal     = v.normal;
 			lv.geomNormal = v.geomNormal;
 			// Direction FROM the previous vertex TO this one.
@@ -1805,12 +1815,19 @@ namespace
 			BDPTCameraUtilities::SampleAperture( camera, cameraLensSample );
 		const Point3 camPos = apertureSample.point;
 
-		const std::size_t usableLightVerts = UsableLightSubpathLength( lightVerts, norm );
-		for( std::size_t i = 0; i < usableLightVerts; i++ )
+		// DL-317 / DL-380: the by-path subsurface partition, per vertex.
+		static thread_local BDPTUtilities::LightJumpPartition partition;
+		partition.Build( lightVerts, MergingActive( norm ) );
+		const BDPTUtilities::EyeWalkCaps eyeCaps = VCMEyeWalkCaps( bdpt );
+		for( std::size_t i = 0; i < lightVerts.size(); i++ )
 		{
 			const BDPTVertex& v = lightVerts[i];
 
 			if( v.volumeBounces > bdpt.GetStabilityConfig().maxVolumeBounce ) {
+				continue;
+			}
+			// The camera vertex counts no surface hit (eye part S = 0).
+			if( !partition.Keeps( i, 0u, v.volumeBounces, eyeCaps ) ) {
 				continue;
 			}
 
@@ -2091,8 +2108,16 @@ namespace
 			return total;
 		}
 
-		const std::size_t usableLightVerts = UsableLightSubpathLength( lightVerts, norm );
-		for( std::size_t i = 1; i < usableLightVerts; i++ )
+		// DL-317 / DL-380: the by-path subsurface partition, per strategy.
+		static thread_local BDPTUtilities::LightJumpPartition partition;
+		partition.Build( lightVerts, MergingActive( norm ) );
+		const BDPTUtilities::EyeWalkCaps eyeCaps = VCMEyeWalkCaps( bdpt );
+		static thread_local std::vector<unsigned int> eyeSurface;	// eye-walk surface count of eyeVerts[0..j]
+		eyeSurface.assign( eyeVerts.size(), 0u );
+		for( std::size_t j = 1; j < eyeVerts.size(); j++ ) {
+			eyeSurface[j] = eyeSurface[j - 1] + ( BDPTUtilities::CountsAsSurfaceHit( eyeVerts[j] ) ? 1u : 0u );
+		}
+		for( std::size_t i = 1; i < lightVerts.size(); i++ )
 		{
 			const BDPTVertex& lv = lightVerts[i];
 			if( lv.type != BDPTVertex::SURFACE && lv.type != BDPTVertex::MEDIUM ) {
@@ -2128,6 +2153,9 @@ namespace
 				}
 
 				if( lv.volumeBounces + ev.volumeBounces > bdpt.GetStabilityConfig().maxVolumeBounce ) {
+					continue;
+				}
+				if( !partition.Keeps( i, eyeSurface[j], lv.volumeBounces + ev.volumeBounces, eyeCaps ) ) {
 					continue;
 				}
 				const bool eyeIsMedium = ( ev.type == BDPTVertex::MEDIUM );
@@ -2497,6 +2525,15 @@ namespace
 			candidates.reserve( 256 );
 		}
 
+		// DL-380: eye-walk surface count of eyeVerts[0..i] (merge vertex
+		// included) and the eye walk's caps, for the per-merge partition.
+		const BDPTUtilities::EyeWalkCaps eyeCaps = VCMEyeWalkCaps( bdpt );
+		static thread_local std::vector<unsigned int> eyeSurface;
+		eyeSurface.assign( eyeVerts.size(), 0u );
+		for( std::size_t j = 1; j < eyeVerts.size(); j++ ) {
+			eyeSurface[j] = eyeSurface[j - 1] + ( BDPTUtilities::CountsAsSurfaceHit( eyeVerts[j] ) ? 1u : 0u );
+		}
+
 		for( std::size_t i = 1; i < eyeVerts.size(); i++ )
 		{
 			const BDPTVertex& v = eyeVerts[i];
@@ -2532,6 +2569,19 @@ namespace
 				}
 
 				if( lv.volumeBounces + v.volumeBounces > bdpt.GetStabilityConfig().maxVolumeBounce ) {
+					continue;
+				}
+				// DL-317 / DL-380: a light vertex past an eye-coverable
+				// light-side jump merges only when the eye walk cannot
+				// generate the covering subpath (the light family then owns
+				// the path).  The covering walk needs this eye subpath's own
+				// surface hits plus `jumpCoverSurface` more.
+				if( ( lv.flags & kLVF_JumpCover ) &&
+					BDPTUtilities::EyeWalkCanGenerate(
+						static_cast<long long>( eyeSurface[i] ) + lv.jumpCoverSurface,
+						static_cast<long long>( v.volumeBounces ) + lv.jumpCoverVolume,
+						( lv.flags & kLVF_JumpCoverEscape ) != 0, eyeCaps ) )
+				{
 					continue;
 				}
 

@@ -2212,8 +2212,9 @@ static void TestNarrowFovSplatW()
 // the eye family can cover (any NEE / connection / merge in the light
 // segment, or s=0) ends the usable light subpath; one it cannot cover
 // (a delta light feeding a random-walk entry: rows D1/D2) is kept
-// (VCMIntegrator.cpp, BSSRDFEntryVertexState / LightSegmentEyeCoverable
-// / UsableLightSubpathLength).  Cutting the light family everywhere --
+// (VCMIntegrator.cpp, BSSRDFEntryVertexState; BDPTUtilities::
+// LightSegmentEyeWitness / LightJumpPartition -- per strategy and under
+// the eye depth caps since DL-380).  Cutting the light family everywhere --
 // the first DL-317 fix, 3763e998 -- left that class estimated by
 // nothing (D1/D2 -97%; external review).
 //
@@ -2516,7 +2517,7 @@ static void TestDeltaLitWallDL317()
 // The random-walk entry is now connectible (Sw = the exact-Fresnel
 // RandomWalkEntryBSDF, MIS density the walk's cosine exit), the eye
 // family owns the path, and the light-side jump is cut there
-// (LightSegmentEyeCoverable reads the entry's connectibility).
+// (LightSegmentEyeWitness reads the entry's connectibility).
 //////////////////////////////////////////////////////////////////////
 static void RunDeltaLitSphereRowDL375( const char* name, const char* light, int spp, double band )
 {
