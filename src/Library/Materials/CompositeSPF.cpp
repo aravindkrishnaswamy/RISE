@@ -15,6 +15,7 @@
 
 #include "pch.h"
 #include "CompositeSPF.h"
+#include <optional>
 #include "../Interfaces/ILog.h"
 
 #include "../Utilities/GeometricUtilities.h"
@@ -1814,10 +1815,36 @@ namespace RISE
 // reaches -- so no budget changes the EXPECTED straight-through weight, and
 // the gates are gone.  So is the old importance floor on the attenuation:
 // the walker stops only at an exactly zero throughput.
+	//! DL-345: a composite's layers live INSIDE one thin surface, and its
+	//! walk keys every internal layer crossing on the IOR stacks it builds
+	//! (`outside` / `gap`, CompositeSPF::EvalStack).  The open-sheet FACE
+	//! rule the transmissive SPFs apply to a provably open sheet
+	//! (IORStackSeeding::ResolveOpenSheetCrossing) would reinterpret those
+	//! internal crossings -- an up-going walk ray meets the top from the
+	//! sheet's back -- so every layer call sees the record WITHOUT that
+	//! certification: the composite keeps its pre-DL-345 containment
+	//! semantics on a clipped plane as on any other surface.  Copies only
+	//! when the flag is set.
+	static inline const RayIntersectionGeometric& CompositeLayerFrame(
+		const RayIntersectionGeometric& ri,
+		std::optional<RayIntersectionGeometric>& store
+		)
+	{
+		if( !ri.bProvablyNoInterior ) {
+			return ri;
+		}
+		store.emplace( ri );
+		store->bProvablyNoInterior = false;
+		return *store;
+	}
+
 RISEPel CompositeSPF::DeltaPassThroughTransmittance(
-	const RayIntersectionGeometric& ri
+	const RayIntersectionGeometric& riIn
 	) const
 {
+	std::optional<RayIntersectionGeometric> layerStore;
+	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore );
+
 	const Vector3 dir = ri.ray.Dir();
 	const Scalar  d   = Vector3Ops::Dot( dir, ri.onb.w() );
 	const bool fromAbove = ( d <= 0 );
@@ -1845,10 +1872,13 @@ RISEPel CompositeSPF::DeltaPassThroughTransmittance(
 }
 
 Scalar CompositeSPF::DeltaPassThroughTransmittanceNM(
-	const RayIntersectionGeometric& ri,
+	const RayIntersectionGeometric& riIn,
 	const Scalar nm
 	) const
 {
+	std::optional<RayIntersectionGeometric> layerStore;
+	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore );
+
 	const Vector3 dir = ri.ray.Dir();
 	const Scalar  d   = Vector3Ops::Dot( dir, ri.onb.w() );
 	const bool fromAbove = ( d <= 0 );
@@ -1876,51 +1906,66 @@ Scalar CompositeSPF::DeltaPassThroughTransmittanceNM(
 }
 
 void CompositeSPF::Scatter(
-			const RayIntersectionGeometric& ri,
+			const RayIntersectionGeometric& riIn,
 			ISampler& sampler,
 			ScatteredRayContainer& scattered,
 			const IORStack& ior_stack
 			) const
 {
+	std::optional<RayIntersectionGeometric> layerStore;
+	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore );
+
 	CompositeSPFImpl::ScatterImpl<CompositeSPFImpl::PipeRGB>( *this, ri, sampler, Scalar( -1 ), scattered, ior_stack );
 }
 
 void CompositeSPF::ScatterNM(
-	const RayIntersectionGeometric& ri,
+	const RayIntersectionGeometric& riIn,
 	ISampler& sampler,
 	const Scalar nm,
 	ScatteredRayContainer& scattered,
 	const IORStack& ior_stack
 	) const
 {
+	std::optional<RayIntersectionGeometric> layerStore;
+	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore );
+
 	CompositeSPFImpl::ScatterImpl<CompositeSPFImpl::PipeNM>( *this, ri, sampler, nm, scattered, ior_stack );
 }
 
 Scalar CompositeSPF::Pdf(
-	const RayIntersectionGeometric& ri,
+	const RayIntersectionGeometric& riIn,
 	const Vector3& wo,
 	const IORStack& ior_stack
 	) const
 {
+	std::optional<RayIntersectionGeometric> layerStore;
+	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore );
+
 	return CompositeSPFImpl::PdfImpl<CompositeSPFImpl::PipeRGB>( *this, ri, wo, Scalar( -1 ), ior_stack );
 }
 
 Scalar CompositeSPF::PdfNM(
-	const RayIntersectionGeometric& ri,
+	const RayIntersectionGeometric& riIn,
 	const Vector3& wo,
 	const Scalar nm,
 	const IORStack& ior_stack
 	) const
 {
+	std::optional<RayIntersectionGeometric> layerStore;
+	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore );
+
 	return CompositeSPFImpl::PdfImpl<CompositeSPFImpl::PipeNM>( *this, ri, wo, nm, ior_stack );
 }
 
 RISEPel CompositeSPF::EvaluateLayered(
 	const Vector3& vLightIn,
-	const RayIntersectionGeometric& ri,
+	const RayIntersectionGeometric& riIn,
 	const IORStack* pStack
 	) const
 {
+	std::optional<RayIntersectionGeometric> layerStore;
+	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore );
+
 	RISEPel direct, walked;
 	CompositeSPFImpl::EvaluateLayeredParts<CompositeSPFImpl::PipeRGB>( *this, vLightIn, ri, pStack, Scalar( -1 ), direct, walked );
 	return direct + walked;
@@ -1928,24 +1973,30 @@ RISEPel CompositeSPF::EvaluateLayered(
 
 Scalar CompositeSPF::EvaluateLayeredNM(
 	const Vector3& vLightIn,
-	const RayIntersectionGeometric& ri,
+	const RayIntersectionGeometric& riIn,
 	const Scalar nm,
 	const IORStack* pStack
 	) const
 {
+	std::optional<RayIntersectionGeometric> layerStore;
+	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore );
+
 	Scalar direct = 0, walked = 0;
 	CompositeSPFImpl::EvaluateLayeredParts<CompositeSPFImpl::PipeNM>( *this, vLightIn, ri, pStack, nm, direct, walked );
 	return direct + walked;
 }
 
 Scalar CompositeSPF::EvaluateLobeFNM(
-	const RayIntersectionGeometric& ri,
+	const RayIntersectionGeometric& riIn,
 	const Vector3& outDir,
 	ScatteredRay::ScatRayType /*rayType*/,
 	Scalar nm,
 	const IORStack& ior_stack
 	) const
 {
+	std::optional<RayIntersectionGeometric> layerStore;
+	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore );
+
 	// Every non-delta emission in AGGREGATE mode is priced
 	// value(dir) * cos / Pdf(dir) with the deterministic layered value, so
 	// the companion weight is exactly valueNM(dir; nm) * cos / pdfHero --
@@ -1963,13 +2014,16 @@ Scalar CompositeSPF::EvaluateLobeFNM(
 }
 
 Scalar CompositeSPF::EvaluateKrayNM(
-	const RayIntersectionGeometric& ri,
+	const RayIntersectionGeometric& riIn,
 	const Vector3& outDir,
 	ScatteredRay::ScatRayType rayType,
 	Scalar nm,
 	const IORStack& ior_stack
 	) const
 {
+	std::optional<RayIntersectionGeometric> layerStore;
+	const RayIntersectionGeometric& ri = CompositeLayerFrame( riIn, layerStore );
+
 	// Reached for DELTA rays (the HWSS ladders pass pdfHero = -1 for them).
 	// A DIRECT delta ray is the top's own delta up-going REFLECTION,
 	// emitted with kray_r / q (q its natural selection probability, since

@@ -362,7 +362,9 @@ namespace
 			const bool bEntering = bReflection
 			    ? ( cosI < 0 )          // reflection: medium unchanged; keep
 			                             // cosI-based side for Fresnel lookup
-			    : ( !bSameObjectAlreadyPreScatter ); // refraction: pre-scatter stack state
+			    : ( ri.geometric.bProvablyNoInterior
+			        ? ( cosI < 0 )       // DL-345: an open sheet is crossed by its face
+			        : !bSameObjectAlreadyPreScatter ); // refraction: pre-scatter stack state
 
 			// Record vertex in photon-direction order.
 			SMSPhotonChainVertex& v = out.chain[specularHits];

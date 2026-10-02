@@ -4226,7 +4226,23 @@ unsigned int ManifoldSolver::SnellContinueChain(
 		const Vector3& sideN = ( Vector3Ops::SquaredModulus( mv.geomNormal )
 			> NEARZERO ) ? mv.geomNormal : mv.normal;
 		const Scalar cosI = Vector3Ops::Dot( dir, sideN );
-		const bool bEntering = sameObjectAgain ? false : (cosI < 0);
+		// DL-345: a PROVABLY OPEN sheet is crossed by its FACE alone -- the
+		// rule the transmissive SPFs apply (IORStackSeeding::
+		// ResolveOpenSheetCrossing), so this walk and PT's / BDPT's / VCM's
+		// walks bend at the same sheet.  A front hit while the sheet is
+		// already on the stack (the walk left its back region around the
+		// sheet's edge) re-enters: the stale entry is dropped first.
+		const bool bOpenSheetHit = ri.geometric.bProvablyNoInterior;
+		const bool bEntering = bOpenSheetHit ? ( cosI < 0 ) : ( sameObjectAgain ? false : (cosI < 0) );
+		const bool bStaleReentry = bEntering && sameObjectAgain;
+		if( bStaleReentry ) {
+			IORStack outer( seedIor );
+			outer.pop();
+			currentIOR = outer.top();
+			if( !( currentIOR > 0 && currentIOR < RISE_INFINITY ) ) {
+				currentIOR = 1.0;
+			}
+		}
 		mv.isExiting = !bEntering;
 
 		// Populate (etaI, etaT) — Walter et al. 2007 η_i / η_t for the
@@ -4285,9 +4301,20 @@ unsigned int ManifoldSolver::SnellContinueChain(
 			// the direction, and both directions leave through this face.
 			IORStack destIor = seedIor;
 			Scalar destIOR;
+			// The index the crossing refracts FROM.  For an entry and for a
+			// pushed exit it is the walk's own medium; for an UNPUSHED exit
+			// (an open sheet crossed against its normal) it is the sheet's
+			// index -- what `mv.etaI` records and Newton solves with
+			// (DL-290 review P3-1 / DL-345: the walk used to refract with
+			// the stack's index there, so the seed and the constraint
+			// described different interfaces).
+			Scalar etaFrom = currentIOR;
 			if( bEntering ) {
 				destIOR = specInfo.ior;
 				destIor.SetCurrentObject( ri.pObject );
+				if( bStaleReentry ) {
+					destIor.pop();
+				}
 				destIor.push( specInfo.ior );
 			} else if( sameObjectAgain ) {
 				// Only pop if we pushed earlier.  The legacy
@@ -4365,6 +4392,7 @@ unsigned int ManifoldSolver::SnellContinueChain(
 				//    started from air, got it right.  This is the
 				//    receiver stack's own open-sheet convention
 				//    (DL-345), not this branch.
+				etaFrom = specInfo.ior;
 				const IObject* pY = destIor.topObject();
 				if( pY ) {
 					bool yEnclosesCrossing = false;
@@ -4384,7 +4412,10 @@ unsigned int ManifoldSolver::SnellContinueChain(
 			if( !( destIOR > 0 && destIOR < RISE_INFINITY ) ) {
 				destIOR = 1.0;
 			}
-			const Scalar etaRatio = currentIOR / destIOR;
+			if( !( etaFrom > 0 && etaFrom < RISE_INFINITY ) ) {
+				etaFrom = 1.0;
+			}
+			const Scalar etaRatio = etaFrom / destIOR;
 
 			// Orient the normal against the incoming ray (required by the
 			// Snell formula below) -- for an exit, and for the thin-sheet
