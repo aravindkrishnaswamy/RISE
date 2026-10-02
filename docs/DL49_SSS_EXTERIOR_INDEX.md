@@ -1335,11 +1335,16 @@ continuation would start from -- the exit offset `BSSRDF_RAY_EPSILON` along
 the outward normal, i.e. exactly the point the defect puts inside the
 neighbour -- lies inside another world-visible random-walk object.
 Candidates are the objects whose world box contains the point (the
-`DeepestOtherContainment` box tree); each is then asked ALONE, by a ray
-from the point along the outward normal: the point is inside the candidate
-iff that ray's first hit on it LEAVES it, i.e. its TRUE facing
-(`TrueGeomFacing`, DL-70) agrees with the ray.  Hits with no interior to be
-in (`bProvablyNoInterior`, a ray-derived hair normal) never count.  If a
+`DeepestOtherContainment` box tree); each is then asked ALONE (round 3,
+section 12.6): if it can sign a distance (`IObject::SignedDistanceLower` --
+an analytic solid, a certified-watertight mesh by parity, a CSG composite)
+its SIGN decides, winding-independently; a double-sided body that cannot (an
+open or uncertified mesh) is never crossed into; a single-sided one is
+judged by a ray from the point along the outward normal, inside iff its
+first hit on the candidate LEAVES it by its TRUE facing (`TrueGeomFacing`,
+DL-70) -- the one arm that needs the candidate to be CLOSED and
+OUTWARD-wound.  Hits with no interior to be in (`bProvablyNoInterior`, a
+ray-derived hair normal) never count.  If a
 neighbour contains the point, the walk CROSSES: a dielectric boundary of
 relative index `n_nb / n_cur` (Snell + exact Fresnel coin, TIR reflects;
 none at all when the indices match -- the "non-interface" of two equal SSS
@@ -1373,14 +1378,22 @@ face touches a THIRD wall, and a scene ray there tied between leaving the
 neighbour and entering the third wall (an intermediate version read 0.92
 on the touching room while the 5e-7 gap read 1.000).
 
-**Cost.**  The per-object rays run only for random-walk objects whose
-world box contains the offset point, so a scene with one random-walk body
-pays a box-tree walk per exit event and nothing else: shipped
-`rwsss_sphere` PT, 480x360 at 512 spp, three interleaved runs of each
-binary, user CPU master 306.91 / 307.23 / 306.71 s vs fix 306.54 / 304.02 /
-302.67 s (-0.8 %, inside run-to-run spread).  The round-1 whole-scene probe
-cost +6 % there (review measurement).  Assemblies of touching random-walk
-bodies pay one object ray per candidate per exit near a contact.
+**Cost.**  Every walk exit event -- including the ones that then reflect at
+the boundary -- whose offset point lies in ANOTHER random-walk object's
+world bounding box pays the containment query (a closed-form signed
+distance for an analytic solid; a closest-point query plus a parity ray
+walk for a certified mesh), touching or not; an exit in no such box pays
+one box-tree walk.  User CPU, interleaved, n = 5 each, master vs round 3:
+shipped `rwsss_sphere` (one random-walk body; round 2's measurement, the
+box gate is unchanged since) 306.95 vs 304.41 s, -0.8 %, noise; 32
+NON-touching random-walk spheres with overlapping boxes 40.30 +/- 0.51 vs
+42.79 +/- 0.14 s, **+6.2 %** (review round 2 measured +7.2 % for round 2's
+one-ray test); six intersecting random-walk dragons 50.57 +/- 0.96 vs
+58.25 +/- 0.90 s, **+15.2 %**, which includes a real transport change (the
+dragons overlap, so walks now cross).  No sound cheaper pre-test was
+found: the query result changes the Fresnel at the boundary itself (an
+index-matched neighbour has none), so it cannot be deferred until after
+the exterior Fresnel coin, and only the box excludes a body cheaply.
 
 **Resume point.**  A first version resumed 1e-6 along the ray from THIS
 body's exit point, which lands in a sub-offset gap for exit cosines below
@@ -1391,10 +1404,12 @@ construction of the test.
 
 ### 12.3 Red-proof (`SSSExteriorIndexInvarianceTest` Part F, salted, n = 4)
 
-Three builds of the same test file: master `b2a4460b9`, the round-1 head
-`6f1c7a1fd` (walk-ray probe), and the shipped round-2 fix.
+Builds of the same test file: master (`b2a4460b9` for F1-F3, `8dcf20d69`
+for F4), an earlier round (round 1 `6f1c7a1fd`, the walk-ray probe, for
+F1-F3; round 2 `c18d75282`, the facing-only per-object test, for F4), and
+the fix.
 
-| row | master | round 1 | fix |
+| row | master | earlier round | fix |
 |---|---|---|---|
 | F room PT, touching (box) | 0.6956 +/- 0.0028 | 0.9986 | 0.9986 +/- 0.0026 |
 | F room PT, 5e-7 gap | 0.6787 +/- 0.0025 | 1.0002 | 1.0005 +/- 0.0011 |
@@ -1410,10 +1425,16 @@ Three builds of the same test file: master `b2a4460b9`, the round-1 head
 | F3 double-sided mesh inset (expected 1) | 0.8923 | **0.8801** | 0.9993 +/- 0.0004 |
 | F3 box inset (expected 1) | 0.8921 | 0.8923 | 0.9999 +/- 0.0003 |
 | F3 open sheet on the face (DL-409 pin 0.8775) | 0.8774 | **0.8510** | 0.8773 +/- 0.0008 |
+| F4 non-touching neighbour, outward uncertified (expected 1) | 0.9999 | 1.0003 | 1.0003 |
+| F4 non-touching neighbour, INWARD uncertified (expected 1) | 1.0006 | **0.8223** | 1.0007 |
+| F4 non-touching neighbour, INWARD certified (pin 0.7658) | 0.7667 | **0.6663** | 0.7671 |
 
 (sd of one render; F2 entries are paired-seed touching/gapped ratios.)
-Master library: 12 Part F rows red; round-1 library: 6 red (bold); fix:
-Part F green.  The inset rows were red on master too: an inset OVERLAPS
+Master library: 12 Part F rows red (F1-F3); round-1 library: 6 red (bold);
+round-2 library: the two F4 inward rows red (bold, the round-2 fresh
+review's regression); fix: Part F green.  The fix column is round 3 for
+F4 and round 2 for F1-F3 (round 3 re-ran F1-F3 green: e.g. box room
+1.0014, double-sided mesh room 0.9991, mesh pair 0.9978).  The inset rows were red on master too: an inset OVERLAPS
 the cube, a walk in the inset leaves it into the cube, and master's
 continuation died there -- the containment test covers overlap as well as
 contact.  The sheet row is a pin, not a furnace gate: a random walk
@@ -1448,5 +1469,35 @@ opaque table under a wax block), where the walk keeps the old behaviour.
   parameters, and it always reports filter 1 and depth 0).
 - The neighbour's alpha coverage (DL-214) is not consulted by the
   containment test.
-- An open (uncertified) mesh neighbour answers by its first face along the
-  probe; only a closed body's answer is exact.
+- An UNCERTIFIED DOUBLE-SIDED mesh neighbour (most imported meshes fail
+  DL-143's certification) is never crossed into, so touching pieces of
+  such meshes keep the loss; certify the mesh (watertight, welded) to get
+  the crossing.  An uncertified SINGLE-SIDED neighbour is judged by its
+  winding and is right only when closed and outward-wound.
+- Cost: see section 12.2 (+6.2 % / +15.2 % on dense random-walk scenes
+  with overlapping boxes).
+- A random-walk inward-wound certified mesh loses energy on its own (F4's
+  pinned row reads 0.766 on master and after); an authoring error, not
+  filed separately.
+- DL-411: a random-walk CSG body is not energy-conserving (~0.62 in a white
+  furnace, master and fix, touching or not).
+
+### 12.6 Review round 2 (round-3 fix): the neighbour's winding
+
+Round 2's per-object test trusted the neighbour's TRUE facing, which is
+containment only for a closed, OUTWARD-wound body.  The fresh review built
+a random-walk cube next to a NON-touching random-walk octahedron (a
+double-sided indexed mesh whose box contains part of the cube) and wound
+the octahedron inward: master 0.9989, round 2 **0.8225** (an outside point
+read as inside, so the walk crossed into a body it was not in);
+certified-watertight and inward 0.7658 -> **0.6640**; outward 0.9991 /
+0.9996.  Master's walk never looks at a neighbour, so this was a
+regression.  Round 3 asks the candidate to sign a distance first
+(`IObject::SignedDistanceLower`): an analytic solid in closed form, a
+certified mesh by a parity count of every crossing
+(`TriangleMeshGeometryIndexed::RayParityInsideTest`), a CSG composite by
+its field -- all winding-independent.  A body that cannot sign (open or
+uncertified meshes, sheets) has no certified inside, and parity is
+meaningless on it, so a double-sided one is never crossed into and a
+single-sided one keeps the facing test (it is rendered by its winding).
+F4 transcribes the review's three fixtures as gated rows.

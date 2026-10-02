@@ -431,15 +431,24 @@ namespace RISE
 		//! != 0`) and whose interior contains `ptWorld`, or null.  Candidates
 		//! are the objects whose world box contains the point (the
 		//! `DeepestOtherContainment` candidate source and staleness
-		//! contract); each is then asked ALONE, by a ray from the point along
-		//! `probeDir`: the point is inside the candidate iff that ray's first
-		//! hit on it LEAVES it -- its TRUE facing (`TrueGeomFacing`, DL-70)
-		//! agrees with the ray.  Per object, so a coincident face of ANOTHER
-		//! body at the same distance cannot tie with it.  A hit with no
-		//! interior to be in (`bProvablyNoInterior`, or a ray-derived normal)
-		//! never counts.  Exact for a closed candidate; an open one answers by
-		//! its first face along the probe.  Reads the material live.
-		//! Appended at the interface tail (see IntersectOcclusionRay).
+		//! contract).  Each is then asked ALONE, in this order:
+		//!   1. `IObject::SignedDistanceLower` -- if the candidate answers,
+		//!      its SIGN decides (< 0 inside; 0, a CSG seam, is not).  This
+		//!      is exact and WINDING-INDEPENDENT for an analytic solid, a
+		//!      certified-watertight mesh (a parity count of crossings) and a
+		//!      CSG composite.
+		//!   2. Otherwise (an open or uncertified mesh, a sheet family) a
+		//!      DOUBLE-SIDED candidate is never reported: it has no certified
+		//!      inside and nothing makes its winding trustworthy (an
+		//!      inward-wound one would read inside-out).
+		//!   3. A SINGLE-SIDED uncertified candidate is reported iff a ray
+		//!      from the point along `probeDir` first meets it on a face it
+		//!      LEAVES by the face's TRUE facing (DL-70) -- correct only for
+		//!      a CLOSED, OUTWARD-wound body; a single-sided body is rendered
+		//!      by its winding, so an inward-wound one is already inside-out.
+		//! A hit with no interior (`bProvablyNoInterior`, a ray-derived
+		//! normal) never counts.  Reads the material live.  Appended at the
+		//! interface tail (see IntersectOcclusionRay).
 		virtual const IObject* RandomWalkObjectContaining(
 			const Point3& ptWorld,						///< [in] The world-space point to test
 			const Vector3& probeDir,					///< [in] Unit direction of the containment ray

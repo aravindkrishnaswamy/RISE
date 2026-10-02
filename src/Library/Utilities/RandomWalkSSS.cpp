@@ -404,37 +404,41 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 			//
 			// CONTAINMENT of that offset point is asked of the scene
 			// (`IObjectManager::RandomWalkObjectContaining`), one candidate
-			// object at a time: a ray from the point along the outward normal
-			// LEAVES the body that contains it -- its first hit on that body
-			// has a TRUE facing (`TrueGeomFacing`, DL-70: a double-sided mesh
-			// reports a ray-facing normal) along the ray.  Asking each body
-			// ALONE is what makes the answer immune to coincident faces: a
-			// probe along the walk ray over the whole scene tied between the
-			// walker's own exit face and the neighbour's (both at the exit,
+			// object at a time, and decided winding-independently wherever
+			// the candidate can sign a distance (an analytic solid, a
+			// certified-watertight mesh, a CSG composite); a double-sided
+			// body that cannot is never crossed into, and a single-sided one
+			// is judged by its first face along the outward normal (see that
+			// interface's comment for the order and the closed + outward
+			// condition the last arm needs).  Asking each body ALONE is what
+			// makes the answer immune to coincident faces: a probe along the
+			// walk ray over the whole scene tied between the walker's own
+			// exit face and the neighbour's (both at the exit,
 			// indistinguishable by facing on a double-sided mesh), and a
-			// whole-scene probe from the offset point ties again wherever the
+			// whole-scene ray from the offset point ties again wherever the
 			// neighbour's far face touches a third body (the corners of a
 			// closed room of touching walls).  The point is past the walker's
 			// own exit face, so a body coincident with that face on the
 			// WALKER's side (an inset part flush with the surface, a sheet
-			// lying on it) is behind it and is never reported.  Hits with no
-			// interior to be in are skipped: a provably open sheet
-			// (`bProvablyNoInterior`) and a ray-derived normal (hair).  Only
+			// lying on it) does not contain it and is never reported.  Only
 			// random-walk neighbours are crossed into; any other body the
 			// offset point lies inside (a diffusion body, an opaque surface)
 			// keeps the old behaviour (DL-408).  Residuals: shells of the
-			// walker's OWN object (the neighbour must be another object),
-			// bodies overlapping by more than the offset are entered only
-			// when the offset point is still inside them, the walk keeps the
-			// entry body's boundaryFilter / maxBounces / maxDepth, and the
-			// neighbour's alpha coverage (DL-214) is not consulted.
+			// walker's OWN object (the neighbour must be another object), an
+			// uncertified DOUBLE-SIDED mesh neighbour (never crossed into),
+			// the walk keeps the entry body's boundaryFilter / maxBounces /
+			// maxDepth, and the neighbour's alpha coverage (DL-214) is not
+			// consulted.
 			//
-			// COST: the per-object rays run only for random-walk objects
-			// whose world box contains the offset point; a walk exit near no
-			// other random-walk body pays one box-tree walk.  Nothing draws
-			// from the sampler, so a walk that never meets a neighbour is
-			// unchanged bit for bit.  A record without a scene (a unit test's
-			// synthetic hit) skips it.
+			// COST: every exit event -- including the ones that then reflect
+			// at the boundary -- whose offset point lies in ANOTHER
+			// random-walk object's world bounding box pays the containment
+			// query (a closed-form signed distance for an analytic solid; a
+			// closest-point query plus a parity ray walk for a certified
+			// mesh), touching or not.  An exit in no such box pays one
+			// box-tree walk.  Nothing draws from the sampler, so a walk that
+			// never meets a neighbour is unchanged bit for bit.  A record
+			// without a scene (a unit test's synthetic hit) skips it.
 			const Point3 offsetPoint = Point3Ops::mkPoint3( exitPoint,
 				exitNormal * BSSRDFSampling::BSSRDF_RAY_EPSILON );
 			if( ri.signals.pScene )
