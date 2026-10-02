@@ -4725,8 +4725,12 @@ static void TestRandomWalkReciprocityDL381()
 		const bool ok = MeasureDL381( r.kind, 1024, "rw0", r.glass, 4, 0x3810u, s, sSd, w, wSd );
 		Check( ok && s > 0 && w > 0, ( std::string( "DL-381 renders produced output: " ) + r.kind ).c_str() );
 		if( !ok ) continue;
-		CheckDL381( ( std::string( r.kind ) + " sphere pixels" ).c_str(), s, r.refS, 0.03 );
-		CheckDL381( ( std::string( r.kind ) + " wall pixels" ).c_str(), w, r.refW, 0.04 );
+		// Bands widened at the DL-381 review: two runs of the pinned salts read
+		// VCM sphere -2.32 / -0.28 %, BDPT wall -1.65 / -2.78 % (the renders are
+		// not bit-repeatable multithreaded); 4 % / 5 % still separate the
+		// current model from PT's function (-7.4 %) and both-Lambertian (-18 %).
+		CheckDL381( ( std::string( r.kind ) + " sphere pixels" ).c_str(), s, r.refS, 0.04 );
+		CheckDL381( ( std::string( r.kind ) + " wall pixels" ).c_str(), w, r.refW, 0.05 );
 	}
 }
 

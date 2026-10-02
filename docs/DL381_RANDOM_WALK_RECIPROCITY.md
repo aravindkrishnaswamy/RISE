@@ -79,7 +79,7 @@ which is why the pixel convention matters so much there.
   2.3 % low (see §6).
 - **Physics is above both models on the sphere.** The light model reads
   -11.3 % and PT's eye model -17.9 %. On the wall, physics A is 0.018984;
-  the light model reads +0.9 % and the eye model +3.9 %. **On this fixture
+  the light model reads +3.25 % against physics A (+0.9 % against physics B, its own tally) and the eye model +3.9 %. **On this fixture
   the light family is the closer one.** The light enters at grazing
   incidence, and the eye model drops the incidence-angle dependence at the
   light end.
@@ -123,3 +123,33 @@ model would read -18 % and fail too.
   against the MC's 0.000432 ± 0.000006, which is -4.4 % at z of about 2.2.
 - Both are within about 2σ. More renders are needed before calling either one
   a defect.
+
+
+## Review correction (2026-10-02): the error's sign is scene-dependent
+
+The fresh review re-ran the standalone tracer (cap lifted to 1e5 so the
+default `max_bounces 64` truncation, ~1.8 % of the sphere's energy here,
+does not enter) and showed the exit-lobe error is an ANGULAR
+REDISTRIBUTION, not a loss: each exit keeps exactly the physical flux (the
+Fresnel coin plus a mean-1 cosine lobe), and when the internal radiance is
+isotropic the model equals exact transport. Its sign follows the light
+geometry:
+
+| fixture | PT (eye model) vs physics | light model vs physics |
+|---|---|---|
+| this doc's back-lit grazing fixture, sigma_s 10 | -17.5 % | -11.1 % |
+| same sphere FRONT-lit (omni at (1.2, 0.8, 2.5)), sigma_s 10 | +8.5 % | +5.2 % |
+| front-lit, sigma_s 100 (optically thick) | +1.5 % +/- 0.45 | +0.2 % |
+| back-lit, sigma_s 100, sigma_a 0.1 | -3.0 % +/- 3.2 | -5.5 % +/- 3.1 |
+
+So PT is not uniformly dark: thin / low-albedo translucent objects lit
+from behind read dark, lit from the front read bright, and optically thick
+objects are within a few percent. The Lambertian exit is a documented
+design choice (`RandomWalkSSS.cpp`, "standard approach ... Chiang & Burley
+2016"), not an oversight. A truly exact refracted exit is not available to
+NEE-based PT for point lights (it is a delta lobe), so the buildable
+options for DL-384 are: keep the status quo; Lambertian at both ends
+(families agree, further from physics: -27.6 % back-lit, +15.3 %
+front-lit); or a non-delta exit lobe shaped by the walk's arrival direction
+at both ends (moves both families toward physics and each other; changes
+PT's look in a scene-dependent direction).
