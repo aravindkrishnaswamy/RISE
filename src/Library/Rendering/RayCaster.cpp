@@ -2862,8 +2862,9 @@ bool RayCaster::WalkShadowSegment(
 // CastShadowRayAuto — flag-aware NEE shadow occlusion.
 //
 // One source of truth for "shadow test that honors transparent_shadows":
-// when the flag is on, walk the segment with the Fresnel-transmittance test
-// (clear dielectrics attenuate rather than block); when off, the binary test.
+// when the flag is on AND the caller is a DELTA light (DL-344), walk the
+// segment with the Fresnel-transmittance test (clear dielectrics attenuate
+// rather than block); otherwise the binary test.
 // Used by BOTH the LightSampler NEE evaluators (omni / spot / area) and the
 // directional / ambient Step-1 lights, so the flag applies uniformly across
 // light types.
@@ -2899,7 +2900,15 @@ bool RayCaster::CastShadowRayAuto(
 		!pScene->GetTranslucentPelMap() && !pScene->GetCausticSpectralMap() &&
 		!pScene->GetGlobalSpectralMap();
 
-	if( bTransparentShadows ) {
+	// DL-344: the `transparent_shadows` dielectric walk, like DL-05's
+	// pass-through, sees through only for a DELTA light.  An area or env
+	// light is already reached THROUGH a clear dielectric by PT's
+	// BSDF-sampled continuation at MIS weight 1 (its partner is reset at
+	// the delta vertex), so letting this arm through as well counts the
+	// path twice (an index-1.0 box read 1.14x open air, an area emitter
+	// 1.97x).  docs/DL344_TRANSPARENT_SHADOW_PARTITION.md.
+	const bool bDielectrics = bTransparentShadows && bDeltaLight;
+	if( bDielectrics ) {
 		return WalkShadowSegment( ray, dHowFar, bNM, nm, transmittance, true, bPassThrough, pGradedTrack, pSegmentEnd );
 	}
 	transmittance = RISEPel( 1.0, 1.0, 1.0 );
@@ -3383,9 +3392,11 @@ bool RayCaster::CastShadowRayAutoSampled(const Ray& ray, Scalar distance, bool n
         !pScene->GetCausticPelMap() && !pScene->GetGlobalPelMap() &&
         !pScene->GetTranslucentPelMap() && !pScene->GetCausticSpectralMap() &&
         !pScene->GetGlobalSpectralMap();
-    if (bTransparentShadows || passThrough)
+    // DL-344: dielectrics see-through for DELTA lights only (see CastShadowRayAuto).
+    const bool dielectrics = bTransparentShadows && deltaLight;
+    if (dielectrics || passThrough)
         return WalkShadowSegment(ray, distance, nmMode, nm, transmittance,
-            bTransparentShadows, passThrough, pGradedTrack, pSegmentEnd, &sampler, boundaries, physicalDistance, occlusionStart);
+            dielectrics, passThrough, pGradedTrack, pSegmentEnd, &sampler, boundaries, physicalDistance, occlusionStart);
     // DL-292: the binary test leaves the track un-Finish()ed -- the caller
     // prices the crossing-free segment with ConnectionScaleToPoint.
     transmittance = RISEPel(1,1,1);

@@ -401,7 +401,14 @@ namespace RISE
 
 			//! Flag-aware NEE shadow occlusion — the SINGLE entry point that
 			//! routes to the Fresnel-transmittance walk when
-			//! `transparent_shadows` is enabled, else the binary CastShadowRay.
+			//! `transparent_shadows` is enabled AND @a bDeltaLight is true,
+			//! else the binary CastShadowRay.  DL-344: the dielectric
+			//! see-through obeys DL-05's rule below for the same reason --
+			//! PT's continuation already reaches an area / env light through
+			//! a clear dielectric at MIS weight 1, so a see-through area/env
+			//! shadow ray counts the path twice; for a delta light this ray
+			//! is the only estimator (an approximation through a refracting
+			//! interface: straight, Fresnel only, no focusing).
 			//!
 			//! DL-05: when @a bDeltaLight is true -- the caller is a DELTA
 			//! light's shadow test (omni, spot, directional; the LightSampler
@@ -492,8 +499,9 @@ namespace RISE
 
 			/// Enables or disables transparent (Fresnel-attenuated) shadow
 			/// rays for NEE.  When enabled, the unidirectional path
-			/// tracer's shadow tests route through
-			/// CastShadowRayTransmittance.  Default disabled (binary).
+			/// tracer's DELTA-light shadow tests (DL-344: omni / spot /
+			/// directional only) route through the Fresnel-transmittance
+			/// walk.  Default disabled (binary).
 			void SetTransparentShadows( const bool enable ) { bTransparentShadows = enable; }
 
 			/// \return Whether transparent shadow rays are enabled.  Read

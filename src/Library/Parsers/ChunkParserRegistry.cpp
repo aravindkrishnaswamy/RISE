@@ -12747,7 +12747,7 @@ namespace RISE
 						// Transparent (Fresnel-attenuated) shadow rays — PT-only
 						// opt-in; not part of the shared StabilityConfig params
 						// because BDPT/VCM/auto don't honour it.
-						{ auto& p = P(); p.name = "transparent_shadows"; p.kind = ValueKind::Bool; p.description = "NEE shadow rays pass through specular dielectrics with Fresnel transmittance (PT only)"; p.defaultValueHint = to_hint(false); }
+						{ auto& p = P(); p.name = "transparent_shadows"; p.kind = ValueKind::Bool; p.description = "Delta-light (omni/spot/directional) NEE shadow rays pass straight through clear specular dielectrics with Fresnel transmittance (PT only; ignored with sms_enabled; area/env lights keep binary shadows, DL-344)"; p.defaultValueHint = to_hint(false); }
 						AddOptimalMISParams( P );
 						AddProgressiveParams( P );
 						return cd;
@@ -12889,7 +12889,7 @@ namespace RISE
 						AddStabilityConfigParams( P );
 						// Transparent (Fresnel-attenuated) shadow rays — PT-only
 						// opt-in; honoured on the spectral NEE path too.
-						{ auto& p = P(); p.name = "transparent_shadows"; p.kind = ValueKind::Bool; p.description = "NEE shadow rays pass through specular dielectrics with Fresnel transmittance (PT only)"; p.defaultValueHint = to_hint(false); }
+						{ auto& p = P(); p.name = "transparent_shadows"; p.kind = ValueKind::Bool; p.description = "Delta-light (omni/spot/directional) NEE shadow rays pass straight through clear specular dielectrics with Fresnel transmittance (PT only; ignored with sms_enabled; area/env lights keep binary shadows, DL-344)"; p.defaultValueHint = to_hint(false); }
 						// Intentionally NO AddOptimalMISParams: spectral
 						// parent doesn't allocate the accumulator.  See
 						// Finalize note and SPECTRAL_PARITY_AUDIT.md §2.4.
