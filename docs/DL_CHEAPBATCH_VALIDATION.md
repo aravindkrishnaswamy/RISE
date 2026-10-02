@@ -12,7 +12,7 @@ finite-area controls were 0.443173 / 0.443129 / 0.446933. Finishing this
 requires the reserved BDPT integrator. The guard and transient test were
 withdrawn; only the ledger disposition was committed.
 
-## DL-332 calibration
+## DL-332 initial slice calibration (superseded budgets below)
 
 Part B now uses explicit, independent Sobol salts on the two sides of
 BDPT/spectral pairs. RGB PT retains common random numbers. Standard error
@@ -190,3 +190,21 @@ exactly its one manifest row, no existing digest changes. Its object-state
 digest matches the original scene because the geometry/materials are
 identical; rasterizer-mode behavior is covered by the shipped smoke.
 Final clean gate below includes the updated458-entry manifest.
+
+## Full-suite calibration adjustment
+
+The first preliminary full SSS run passed406/0 in465.14s. The second
+was intentionally stopped at385.63s (own verified PID15570, SIGTERM)
+after decisive Part B evidence; it is not a full gate pass. Spectral
+diffusion at256 spp gave0.981429 and1.02423 in the first two full-suite
+seed groups. Even if three remaining means were their midpoint, n=5
+sample SD would be at least0.015132, so band0.04 cannot be3 SD.
+Full-suite rough/dense BDPT at2048 spp also printed mean-SE estimates
+0.00292615/0.00284663: bands0.006/0.008 are only2.05/2.81 SE.
+The isolated slice underestimated that variance. Raise rough/dense BDPT
+to8192/4096 spp and spectral diffusion to1024 spp; keep every band
+unchanged. Final five full-suite results below validate the new budgets.
+Random-walk spectral remains256 spp; smooth BDPT512 and random-walk
+BDPT128. The five completed weave gates (217/0 each) remain valid: its
+test and executable renderer behavior did not change in this adjustment.
+API follow-up only replaced comments; final build refresh includes it.

@@ -1181,26 +1181,26 @@ namespace
 		// vertices that PathVertexEval re-evaluates.
 		const Scalar kDense = 1.33 / 1.5;
 		// DL-332: deliberately independent Sobol salts for BDPT/spectral pairs.
-		// RGB PT retains common random numbers; BDPT/spectral calibration
-		// uses decorrelated noise. Dense BDPT: n=4, 2048spp SE=0.002168,
-		// band=0.008 (3.69 SE); its pre-DL-49 0.9839 is 7.4 SE from 1.
-		// Rough BDPT: n=4, 2048spp SE=0.0005355; band=0.006 (11.2 SE).
-		// Smooth BDPT: n=4, 512spp SE=0.004860; band=0.02 (4.1 SE).
-		// Spectral diffusion/RW: 256spp SE=0.007296/0.006355;
-		// retained bands 0.04/0.05 are 5.48/7.87 SE. Fixed libc seeds
-		// alone do not randomize BDPT's Sobol pattern.
+		// RGB PT retains common random numbers. Full-suite calibration
+		// exposed more variance than isolated slices: at 2048 spp rough/
+		// dense BDPT ratio SE reached 0.002926/0.002847; at 256 spp
+		// spectral diffusion means differed by 0.0428 across two seeds.
+		// Raise their budgets to 8192/4096/1024 respectively, retaining
+		// bands 0.006/0.008/0.04. Five full salted runs measure the
+		// actual spread of each tested mean (validation record).
+		// Fixed libc seeds alone do not randomize BDPT's Sobol pattern.
 		const Row rows[] = {
 			{ Model::Lambertian,     Integrator::PT,         16,  0.02,  kAirInterior, kScale },
 			{ Model::Diffusion,      Integrator::PT,         64,  0.02,  kAirInterior, kScale },
 			{ Model::DiffusionRough, Integrator::PT,         64,  0.01,  kAirInterior, kScale },
 			{ Model::RandomWalk,     Integrator::PT,         64,  0.04,  kAirInterior, kScale },
 			{ Model::Diffusion,      Integrator::BDPT,       512, 0.02,  kAirInterior, kScale },
-			{ Model::DiffusionRough, Integrator::BDPT,       2048, 0.006, kAirInterior, kScale },
+			{ Model::DiffusionRough, Integrator::BDPT,       8192, 0.006, kAirInterior, kScale },
 			{ Model::RandomWalk,     Integrator::BDPT,       128, 0.10,  kAirInterior, kScale },
-			{ Model::Diffusion,      Integrator::PTSpectral, 256, 0.04,  kAirInterior, kScale },
+			{ Model::Diffusion,      Integrator::PTSpectral, 1024, 0.04,  kAirInterior, kScale },
 			{ Model::RandomWalk,     Integrator::PTSpectral, 256, 0.05,  kAirInterior, kScale },
 			{ Model::Diffusion,      Integrator::PT,         256, 0.008, kDense,       kScale },
-			{ Model::Diffusion,      Integrator::BDPT,       2048, 0.008, kDense,       kScale },
+			{ Model::Diffusion,      Integrator::BDPT,       4096, 0.008, kDense,       kScale },
 			{ Model::RandomWalk,     Integrator::PT,         64,  0.04,  kDense,       kScale },
 			// DL-291 rows (bands set from measured sd; see
 			// docs/DL49_SSS_EXTERIOR_INDEX.md section 10).  The skin BDPT
