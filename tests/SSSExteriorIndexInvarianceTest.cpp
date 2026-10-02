@@ -103,6 +103,28 @@
 //          cast had rewritten that stack's current object, so a later
 //          sample's entry push keyed the new stack entry on the WRONG
 //          object and the interior exit read as a second entry.
+//    Part F (DL-370) -- rendered, reference-free, touching SSS objects:
+//      F   a closed room of six conservative random-walk slabs whose
+//          side walls TOUCH the floor, ceiling and each other, camera
+//          inside, white environment: every pixel reads 1.  Pre-fix the
+//          walk exited through a face shared with a neighbour and its
+//          continuation, offset 1e-6 outward, started INSIDE the
+//          neighbour, met its far face from behind and died (the SSS
+//          SPF absorbs back faces): 0.70.  A 5e-7 gap (inside the
+//          offset) reads the same; a 0.02 gap is the control.  The
+//          double-sided indexed-mesh rows are the case review round 1
+//          found a walk-ray probe could not resolve (0.887).
+//      F2  two touching cubes against the same pair 2e-6 apart (wider
+//          than the offset, optically nothing), paired seeds; box and
+//          double-sided mesh, a real 1.5/1.3 interface, the NM walk.  The
+//          diffusion profile row is printed only (DL-408).
+//      F3  a random-walk body coincident with the walker's exit face on
+//          the WALKER's side (an inset, an open sheet): nothing may cross
+//          into it; the sheet row is a DL-409 pin.
+//      F4  a NON-touching random-walk mesh neighbour whose box contains
+//          part of the walker, wound outward or INWARD: no crossing
+//          (round 2 read the inward one inside-out); the certified
+//          inward row is a pin at master's own 0.766.
 //    Usage: [--unit-only] [--trials K (default 4)] [--only <label substring>]
 //
 //  Author: RISE debt-cleanup, slice `debt-dl49`
@@ -1627,6 +1649,455 @@ namespace
 			Check( std::fabs( st.mean - 1.0 ) < row.band, label + ": conservative furnace image mean within band of 1" );
 		}
 	}
+
+	//////////////////////////////////////////////////////////////////
+	// Part F (DL-370) -- touching SSS objects, reference-free
+	//////////////////////////////////////////////////////////////////
+
+	//! An axis-aligned w x h x d box centred at the origin as an
+	//! `indexedmesh_geometry` (8 shared corners, 12 outward-wound triangles,
+	//! face normals).  Double-sided is the indexed mesh's default and the
+	//! Blender exporter's; it makes the mesh report every hit's normal
+	//! FACING the ray (DL-70), the case a box primitive never exercises.
+	std::string MeshBox( const std::string& name, double w, double h, double d, bool doubleSided,
+		bool inward = false, bool duplicateFace = false, double ox = 0 )
+	{
+		std::ostringstream s;
+		s << std::setprecision( 17 );
+		s << "indexedmesh_geometry\n{\n\tname " << name << "\n";
+		for( int i = 0; i < 8; ++i ) {
+			s << "\tvertex " << ox + ( ( i & 1 ) ? w / 2 : -w / 2 ) << " " << ( ( i & 2 ) ? h / 2 : -h / 2 ) << " "
+			  << ( ( i & 4 ) ? d / 2 : -d / 2 ) << "\n";
+		}
+		const int tri[12][3] = { {0,4,6},{0,6,2}, {1,3,7},{1,7,5}, {0,1,5},{0,5,4},
+		                         {2,6,7},{2,7,3}, {0,2,3},{0,3,1}, {4,5,7},{4,7,6} };
+		for( const auto& t : tri ) {
+			s << "\ttriangle " << t[0] << " " << ( inward ? t[2] : t[1] ) << " " << ( inward ? t[1] : t[2] ) << "\n";
+		}
+		if( duplicateFace ) {		// a repeated triangle: DL-143 cannot certify the mesh
+			s << "\ttriangle " << tri[0][0] << " " << ( inward ? tri[0][2] : tri[0][1] ) << " " << ( inward ? tri[0][1] : tri[0][2] ) << "\n";
+		}
+		s << "\tdouble_sided " << ( doubleSided ? "TRUE" : "FALSE" ) << "\n\tface_normals TRUE\n}\n\n";
+		return s.str();
+	}
+
+	//! A closed room of six conservative (absorption 0) SSS slabs around a
+	//! pinhole camera at the origin, under the white environment: the only
+	//! way in is THROUGH the walls, every wall conserves energy, so every
+	//! pixel reads exactly 1.  `gap` == 0 makes the slabs TOUCH (each side
+	//! wall's end faces are coincident with the floor/ceiling and the
+	//! front/back walls' faces); `gap` > 0 shrinks the side and front walls
+	//! so every contact becomes an air gap of that width (the room then
+	//! leaks through the gaps, which the white environment also fills at
+	//! 1 -- the gapped room is the control).
+	std::string BuildTouchingRoomScene( Integrator integrator, Scalar gap, unsigned int samples, bool doubleSidedMesh = false )
+	{
+		std::ostringstream s;
+		s << std::setprecision( 17 );
+		s << "RISE ASCII SCENE 7\n";
+		s << "film\n{\n\twidth 32\n\theight 32\n}\n\n";
+		s << "pinhole_camera\n{\n\tlocation 0 0 0\n\tlookat 0 0 -1\n\tup 0 1 0\n\tfov 90.0\n}\n\n";
+		s << "uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n\n";
+		s << "randomwalk_sss_material\n{\n\tname wall\n\tior 1.5\n\tabsorption 0\n\tscattering 2\n\tg 0\n\troughness 0\n\tmax_bounces 8192\n}\n\n";
+		// Interior [-1,1]^3, walls 0.5 thick.  Floor / ceiling span the full
+		// 3 x 3 footprint; the x walls sit between them; the z walls sit
+		// between the x walls and between floor and ceiling.
+		struct Slab { const char* name; double w, h, d, x, y, z; };
+		const double g = gap;
+		const Slab slabs[6] = {
+			{ "floor",   3.0,           0.5,           3.0,           0,     -1.25, 0 },
+			{ "ceiling", 3.0,           0.5,           3.0,           0,      1.25, 0 },
+			{ "xneg",    0.5,           2.0 - 2 * g,   3.0,          -1.25,   0,    0 },
+			{ "xpos",    0.5,           2.0 - 2 * g,   3.0,           1.25,   0,    0 },
+			{ "zneg",    2.0 - 2 * g,   2.0 - 2 * g,   0.5,           0,      0,   -1.25 },
+			{ "zpos",    2.0 - 2 * g,   2.0 - 2 * g,   0.5,           0,      0,    1.25 },
+		};
+		for( const Slab& b : slabs ) {
+			if( doubleSidedMesh ) {
+				s << MeshBox( std::string( b.name ) + "_geo", b.w, b.h, b.d, true );
+			} else {
+				s << "box_geometry\n{\n\tname " << b.name << "_geo\n\twidth " << b.w << "\n\theight " << b.h << "\n\tdepth " << b.d << "\n}\n\n";
+			}
+			s << "standard_object\n{\n\tname " << b.name << "\n\tgeometry " << b.name << "_geo\n\tmaterial wall\n\tposition "
+			  << b.x << " " << b.y << " " << b.z << "\n}\n\n";
+		}
+		s << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
+		const char* env = "\tradiance_map white\n\tradiance_scale 1\n\tradiance_background TRUE\n";
+		if( integrator == Integrator::BDPT ) {
+			s << "bdpt_pel_rasterizer\n{\n\tmax_eye_depth 64\n\tmax_light_depth 64\n\tsamples " << samples
+			  << "\n\tpixel_filter box\n\toidn_denoise FALSE\n" << env << "}\n\n";
+		} else {
+			s << "pathtracing_pel_rasterizer\n{\n\tsamples " << samples
+			  << "\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n\tpathguiding FALSE\n\tadaptive_max_samples 0\n"
+			  << env << "}\n\n";
+		}
+		s << "file_rasterizeroutput\n{\n\tpattern rendered/dl370_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+		return s.str();
+	}
+
+	//! Two conservative SSS cubes side by side (edge 1, contact plane x = 0
+	//! when `gap` == 0) under the white environment, seen orthographically
+	//! face-on: every pixel reads 1.  Unlike the closed room this works for
+	//! the diffusion profile too (whose transport cannot cross a thick wall).
+	//! `iorRight` != 1.5 gives the right cube another index (the shared face
+	//! is then a real dielectric interface); `spectral` renders with the
+	//! spectral path tracer (the walk's NM branch).
+	std::string BuildTouchingPairScene( Model model, Scalar scattering, Scalar gap, unsigned int samples,
+		Scalar iorRight = 1.5, bool spectral = false, bool doubleSidedMesh = false, int uncertifiedRight = 0 )
+	{
+		std::ostringstream s;
+		s << std::setprecision( 17 );
+		s << "RISE ASCII SCENE 7\n";
+		s << "film\n{\n\twidth 32\n\theight 16\n}\n\n";
+		s << "orthographic_camera\n{\n\tlocation 0 0 4\n\tlookat 0 0 0\n\tup 0 1 0\n\tviewport_scale 2 1\n}\n\n";
+		s << "uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n\n";
+		if( model == Model::RandomWalk ) {
+			s << "randomwalk_sss_material\n{\n\tname block\n\tior 1.5\n\tabsorption 0\n\tscattering " << scattering
+			  << "\n\tg 0\n\troughness 0\n\tmax_bounces 8192\n}\n\n";
+			s << "randomwalk_sss_material\n{\n\tname block_right\n\tior " << iorRight << "\n\tabsorption 0\n\tscattering " << scattering
+			  << "\n\tg 0.3\n\troughness 0\n\tmax_bounces 8192\n}\n\n";
+		} else {
+			s << "subsurfacescattering_material\n{\n\tname block\n\tior 1.5\n\tabsorption 0\n\tscattering " << scattering
+			  << "\n\tg 0\n\troughness 0\n}\n\n";
+			s << "subsurfacescattering_material\n{\n\tname block_right\n\tior " << iorRight << "\n\tabsorption 0\n\tscattering " << scattering
+			  << "\n\tg 0\n\troughness 0\n}\n\n";
+		}
+		if( doubleSidedMesh ) {
+			s << MeshBox( "block_geo", 1, 1, 1, true );
+		} else {
+			s << "box_geometry\n{\n\tname block_geo\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n";
+		}
+		// uncertifiedRight 1: the right cube is a double-sided mesh with one
+		// duplicated triangle (DL-143 cannot certify it), wound outward; 2:
+		// the same wound INWARD.
+		s << MeshBox( "right_geo", 1, 1, 1, true, uncertifiedRight == 2, true );
+		s << "standard_object\n{\n\tname left\n\tgeometry block_geo\n\tmaterial block\n\tposition " << -0.5 - gap / 2 << " 0 0\n}\n\n";
+		s << "standard_object\n{\n\tname right\n\tgeometry " << ( uncertifiedRight ? "right_geo" : "block_geo" )
+		  << "\n\tmaterial block_right\n\tposition " << 0.5 + gap / 2 << " 0 0\n}\n\n";
+		s << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
+		if( spectral ) {
+			s << "pathtracing_spectral_rasterizer\n{\n\tsamples " << samples
+			  << "\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n";
+		} else {
+			s << "pathtracing_pel_rasterizer\n{\n\tsamples " << samples
+			  << "\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n\tpathguiding FALSE\n\tadaptive_max_samples 0\n";
+		}
+		s << "\tradiance_map white\n\tradiance_scale 1\n\tradiance_background TRUE\n}\n\n";
+		s << "file_rasterizeroutput\n{\n\tpattern rendered/dl370_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+		return s.str();
+	}
+
+	void TestTouchingSSSPair( const unsigned int trials, const std::string& only )
+	{
+		std::cout << "F2: two touching conservative SSS cubes vs a 2e-6 gap (DL-370), n=" << trials << std::endl;
+		// The 2e-6 gap is wider than the 1e-6 outward offset an SSS exit
+		// gives its continuation (BSSRDF_RAY_EPSILON) and optically nothing,
+		// so the pair differs ONLY in whether that offset crosses into the
+		// neighbour.  Paired seeds (common random numbers).  The diffusion
+		// row is printed, not gated: its profile probe cannot cross into a
+		// neighbour at all, so the same offset still lands inside it there
+		// (DL-408); and on a finite cube the profile is not energy
+		// conserving, so its gapped side is heavy-tailed.
+		// The mismatched row gives the right cube index 1.3 and g 0.3 (every
+		// row's right cube has g 0.3, so a crossing must also switch the
+		// phase function): the shared face is then a real 1.5 / 1.3
+		// interface, Fresnel-partitioned and TIR-capable from the left.
+		// The `uncert` rows' right cube is a double-sided mesh with one
+		// duplicated triangle, so it cannot be certified and cannot sign a
+		// distance (the common imported-mesh case): the crossing must come
+		// from its two-way crossing parity, which does not read the winding
+		// (1 outward, 2 INWARD).
+		struct Row { Model model; Scalar scattering; unsigned int samples; double band; bool gated; Scalar iorRight; bool spectral; bool mesh; int uncert; };
+		const Row rows[] = {
+			{ Model::RandomWalk, 2,  64,  0.01, true,  1.5, false, false, 0 },
+			{ Model::RandomWalk, 2,  64,  0.01, true,  1.3, false, false, 0 },
+			{ Model::RandomWalk, 2,  256, 0.01, true,  1.5, true,  false, 0 },
+			{ Model::RandomWalk, 2,  64,  0.01, true,  1.5, false, true,  0 },
+			{ Model::RandomWalk, 2,  64,  0.01, true,  1.5, false, false, 1 },
+			{ Model::RandomWalk, 2,  64,  0.01, true,  1.5, false, false, 2 },
+			{ Model::Diffusion,  20, 64,  0.0,  false, 1.5, false, false, 0 },
+		};
+		unsigned int seed = 37100;
+		for( const Row& row : rows ) {
+			std::ostringstream lab;
+			lab << "F2: " << ModelName( row.model ) << ( row.spectral ? "/PT-spectral" : "/PT" )
+			    << ( row.mesh ? " double-sided mesh" : "" ) << ( row.uncert == 1 ? " outward-uncertified right" : row.uncert == 2 ? " inward-uncertified right" : "" ) << " touching pair ior "
+			    << std::setprecision( 3 ) << "1.5|" << row.iorRight;
+			const std::string label = lab.str();
+			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
+			const std::string tPath = WriteScene( BuildTouchingPairScene( row.model, row.scattering, 0.0, row.samples, row.iorRight, row.spectral, row.mesh, row.uncert ), "dl370pairT" );
+			const std::string gPath = WriteScene( BuildTouchingPairScene( row.model, row.scattering, 2e-6, row.samples, row.iorRight, row.spectral, row.mesh, row.uncert ), "dl370pairG" );
+			Check( !tPath.empty() && !gPath.empty(), label + ": scene files written" );
+			std::vector<double> tm, gm;
+			bool allValid = true;
+			for( unsigned int t = 0; t < trials; ++t ) {
+				const unsigned int pairSeed = seed++;
+				const double a = RenderFurnaceMean( tPath, pairSeed );
+				const double b = RenderFurnaceMean( gPath, pairSeed );
+				if( !( a > 0 ) || !( b > 0 ) ) allValid = false;
+				tm.push_back( a );
+				gm.push_back( b );
+			}
+			std::remove( tPath.c_str() );
+			std::remove( gPath.c_str() );
+			Check( allValid, label + ": every render finite and non-black" );
+			if( !allValid ) continue;
+			const Stats st = Summarize( tm ), sg = Summarize( gm );
+			std::cout << std::setprecision( 6 ) << "    " << label.substr( 4 ) << " spp=" << row.samples
+				<< ": touching " << st.mean << " +/- " << st.sd << "  gapped " << sg.mean << " +/- " << sg.sd
+				<< "  ratio " << st.mean / sg.mean;
+			if( row.gated ) {
+				std::cout << " (band " << row.band << ")" << std::endl;
+				Check( std::fabs( st.mean / sg.mean - 1.0 ) < row.band, label + ": touching / gapped image mean within band of 1" );
+			} else {
+				std::cout << " (not gated: DL-408)" << std::endl;
+			}
+		}
+	}
+
+	//! A conservative random-walk cube (edge 1, single-sided primitive) with
+	//! a second random-walk body coincident with its TOP face on the
+	//! cube's OWN side, under the white environment, seen from above.
+	//! `kind` 0: a double-sided mesh cube of half size inset flush with the
+	//! top face; 1: the same inset as a box primitive; 2: an open
+	//! double-sided mesh quad lying ON the top face.  A walk in the cube
+	//! that exits its top face is past the inset / sheet, so nothing may
+	//! cross into them (DL-370 review round 1: a whole-scene probe along the
+	//! walk ray did, and read 0.880 / 0.851 on rows 0 / 2).  The insets
+	//! OVERLAP the cube (it still fills their volume), so a walk inside an
+	//! inset leaves it INTO the cube: master read 0.892 on rows 0 and 1, the
+	//! loss DL-370 removes by crossing into the containing body.
+	std::string BuildInsetScene( int kind, unsigned int samples )
+	{
+		std::ostringstream s;
+		s << std::setprecision( 17 );
+		s << "RISE ASCII SCENE 7\n";
+		s << "film\n{\n\twidth 32\n\theight 32\n}\n\n";
+		s << "orthographic_camera\n{\n\tlocation 0 4 0\n\tlookat 0 0 0\n\tup 0 0 -1\n\tviewport_scale 1.4 1.4\n}\n\n";
+		s << "uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n\n";
+		s << "randomwalk_sss_material\n{\n\tname block\n\tior 1.5\n\tabsorption 0\n\tscattering 2\n\tg 0\n\troughness 0\n\tmax_bounces 8192\n}\n\n";
+		s << "box_geometry\n{\n\tname outer_geo\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n";
+		s << "standard_object\n{\n\tname outer\n\tgeometry outer_geo\n\tmaterial block\n}\n\n";
+		if( kind == 0 ) {
+			s << MeshBox( "inset_geo", 0.5, 0.5, 0.5, true );
+		} else if( kind == 1 ) {
+			s << "box_geometry\n{\n\tname inset_geo\n\twidth 0.5\n\theight 0.5\n\tdepth 0.5\n}\n\n";
+		} else {
+			s << "indexedmesh_geometry\n{\n\tname inset_geo\n"
+			  << "\tvertex -0.25 0 -0.25\n\tvertex 0.25 0 -0.25\n\tvertex 0.25 0 0.25\n\tvertex -0.25 0 0.25\n"
+			  << "\ttriangle 0 3 2\n\ttriangle 0 2 1\n\tdouble_sided TRUE\n\tface_normals TRUE\n}\n\n";
+		}
+		s << "standard_object\n{\n\tname inset\n\tgeometry inset_geo\n\tmaterial block\n\tposition 0 "
+		  << ( kind == 2 ? 0.5 : 0.25 ) << " 0\n}\n\n";
+		s << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
+		s << "pathtracing_pel_rasterizer\n{\n\tsamples " << samples
+		  << "\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n\tpathguiding FALSE\n\tadaptive_max_samples 0\n"
+		  << "\tradiance_map white\n\tradiance_scale 1\n\tradiance_background TRUE\n}\n\n";
+		s << "file_rasterizeroutput\n{\n\tpattern rendered/dl370_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+		return s.str();
+	}
+
+	void TestCoincidentOwnSideNeighbour( const unsigned int trials, const std::string& only )
+	{
+		std::cout << "F3: random-walk body coincident on the walker's own side (DL-370), n=" << trials << std::endl;
+		const char* names[3] = { "double-sided mesh inset", "box inset", "open double-sided mesh sheet on the face" };
+		// Row 2 is PINNED, not furnace-gated: a random walk entering an
+		// OPEN sheet has no interior to walk in and dies (DL-409), which
+		// master reads as 0.8775 +/- 0.0005 (n = 4).  The pin catches a
+		// crossing INTO the sheet (round 1 of DL-370 read 0.851).
+		const double expected[3] = { 1.0, 1.0, 0.8775 };
+		unsigned int seed = 37200;
+		for( int kind = 0; kind < 3; ++kind ) {
+			const std::string label = std::string( "F3: random_walk/PT " ) + names[kind];
+			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
+			const std::string path = WriteScene( BuildInsetScene( kind, 64 ), "dl370inset" );
+			Check( !path.empty(), label + ": scene file written" );
+			std::vector<double> m;
+			bool allValid = true;
+			for( unsigned int t = 0; t < trials; ++t ) {
+				const double mi = RenderFurnaceMean( path, seed++ );
+				if( !( mi > 0 ) ) allValid = false;
+				m.push_back( mi );
+			}
+			std::remove( path.c_str() );
+			Check( allValid, label + ": every render finite and non-black" );
+			if( !allValid ) continue;
+			const Stats st = Summarize( m );
+			std::cout << std::setprecision( 6 ) << "    " << label.substr( 4 ) << " spp=64: image mean " << st.mean << " +/- " << st.sd
+				<< " (sd of one render; expected " << expected[kind] << ", band 0.01)" << std::endl;
+			Check( std::fabs( st.mean - expected[kind] ) < 0.01, label + ": image mean within band of its expected value" );
+		}
+	}
+
+	//! Review round 2 of DL-370 (its fixture, transcribed): a conservative
+	//! random-walk cube A (single-sided mesh) seen orthographically, NOT
+	//! touching a random-walk octahedron B (double-sided indexed mesh) whose
+	//! bounding box contains part of A, white furnace.  `variant` 0: B
+	//! wound OUTWARD (plus one duplicated triangle, so uncertified); 1: B
+	//! wound INWARD, uncertified the same way; 2: B wound inward with no
+	//! duplicate, so certified watertight.  The walk must not cross into
+	//! B from outside it, whatever B's winding: round 2's true-facing test
+	//! read an inward-wound B inside-out (variant 1: master 0.9989 ->
+	//! 0.8225; variant 2: 0.7658 -> 0.6640).  Variant 2 reads 0.766 on
+	//! master already (a random-walk mesh wound inward, an authoring error,
+	//! loses energy at its own entry gate), so it is pinned at that value
+	//! (filed as DL-414).
+	std::string BuildWindingScene( int variant, unsigned int samples )
+	{
+		std::ostringstream s;
+		s << std::setprecision( 17 );
+		s << "RISE ASCII SCENE 7\n";
+		s << "film\n{\n\twidth 32\n\theight 32\n}\n\n";
+		s << "orthographic_camera\n{\n\tlocation -3 0.55 0.55\n\tlookat 0 0.55 0.55\n\tup 0 1 0\n\tviewport_scale 0.36 0.36\n}\n\n";
+		s << "uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n\n";
+		for( const char* m : { "mA", "mB" } ) {
+			s << "randomwalk_sss_material\n{\n\tname " << m
+			  << "\n\tior 1.5\n\tabsorption 0\n\tscattering 2\n\tg 0.0\n\troughness 0\n\tmax_bounces 8192\n}\n\n";
+		}
+		s << "indexedmesh_geometry\n{\n\tname geoA\n"
+		  << "\tvertex -0.2 -0.2 -0.2\n\tvertex 0.2 -0.2 -0.2\n\tvertex 0.2 0.2 -0.2\n\tvertex -0.2 0.2 -0.2\n"
+		  << "\tvertex -0.2 -0.2 0.2\n\tvertex 0.2 -0.2 0.2\n\tvertex 0.2 0.2 0.2\n\tvertex -0.2 0.2 0.2\n"
+		  << "\ttriangle 0 3 2\n\ttriangle 0 2 1\n\ttriangle 4 5 6\n\ttriangle 4 6 7\n\ttriangle 0 4 7\n\ttriangle 0 7 3\n"
+		  << "\ttriangle 1 2 6\n\ttriangle 1 6 5\n\ttriangle 0 1 5\n\ttriangle 0 5 4\n\ttriangle 3 7 6\n\ttriangle 3 6 2\n"
+		  << "\tdouble_sided FALSE\n\tface_normals TRUE\n}\n\n";
+		// Octahedron |x| + |y| + |z| <= 1; `out` lists each face wound outward.
+		const int out[8][3] = { {0,2,4},{0,5,2},{0,4,3},{0,3,5},{1,4,2},{1,2,5},{1,3,4},{1,5,3} };
+		s << "indexedmesh_geometry\n{\n\tname geoB\n"
+		  << "\tvertex 1 0 0\n\tvertex -1 0 0\n\tvertex 0 1 0\n\tvertex 0 -1 0\n\tvertex 0 0 1\n\tvertex 0 0 -1\n";
+		const bool inward = variant != 0;
+		for( const auto& t : out ) {
+			s << "\ttriangle " << t[0] << " " << ( inward ? t[2] : t[1] ) << " " << ( inward ? t[1] : t[2] ) << "\n";
+		}
+		if( variant != 2 ) {
+			s << "\ttriangle 0 " << ( inward ? "4 2" : "2 4" ) << "\n";		// duplicate: uncertified
+		}
+		s << "\tdouble_sided TRUE\n\tface_normals TRUE\n}\n\n";
+		s << "standard_object\n{\n\tname A\n\tgeometry geoA\n\tmaterial mA\n\tposition 0.5 0.55 0.55\n}\n\n";
+		s << "standard_object\n{\n\tname B\n\tgeometry geoB\n\tmaterial mB\n\tposition 1.2 0 0\n}\n\n";
+		s << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
+		s << "pathtracing_pel_rasterizer\n{\n\tsamples " << samples
+		  << "\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n\tpathguiding FALSE\n\tadaptive_max_samples 0\n"
+		  << "\tradiance_map white\n\tradiance_scale 1\n\tradiance_background TRUE\n}\n\n";
+		s << "file_rasterizeroutput\n{\n\tpattern rendered/dl370_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+		return s.str();
+	}
+
+	//! Two disjoint closed boxes in ONE double-sided, uncertified (a
+	//! duplicated triangle) random-walk mesh, wound INWARD, flanking a
+	//! random-walk cube with a 0.1 gap on each side: every exit of the cube
+	//! through its +x / -x face has an offset point OUTSIDE the mesh but
+	//! with mesh faces along both the probe and its reverse.  A two-way
+	//! FACING test reads both first hits as exits (inward winding) and
+	//! crosses; the two-way crossing PARITY sees two crossings each way and
+	//! does not.  White furnace: must read 1.
+	std::string BuildNotchScene( unsigned int samples )
+	{
+		std::ostringstream s;
+		s << std::setprecision( 17 );
+		s << "RISE ASCII SCENE 7\n";
+		s << "film\n{\n\twidth 32\n\theight 32\n}\n\n";
+		s << "orthographic_camera\n{\n\tlocation 0 0 4\n\tlookat 0 0 0\n\tup 0 1 0\n\tviewport_scale 0.36 0.36\n}\n\n";
+		s << "uniformcolor_painter\n{\n\tname white\n\tcolor 1 1 1\n}\n\n";
+		s << "randomwalk_sss_material\n{\n\tname block\n\tior 1.5\n\tabsorption 0\n\tscattering 2\n\tg 0\n\troughness 0\n\tmax_bounces 8192\n}\n\n";
+		s << "box_geometry\n{\n\tname walker_geo\n\twidth 0.4\n\theight 0.4\n\tdepth 0.4\n}\n\n";
+		// The two arms x in [-0.7,-0.3] and [0.3,0.7], one mesh.
+		s << "indexedmesh_geometry\n{\n\tname arms_geo\n";
+		const int tri[12][3] = { {0,4,6},{0,6,2}, {1,3,7},{1,7,5}, {0,1,5},{0,5,4},
+		                         {2,6,7},{2,7,3}, {0,2,3},{0,3,1}, {4,5,7},{4,7,6} };
+		for( int arm = 0; arm < 2; ++arm ) {
+			const double cx = arm ? 0.5 : -0.5;
+			for( int i = 0; i < 8; ++i ) {
+				s << "\tvertex " << cx + ( ( i & 1 ) ? 0.2 : -0.2 ) << " " << ( ( i & 2 ) ? 0.3 : -0.3 ) << " "
+				  << ( ( i & 4 ) ? 0.3 : -0.3 ) << "\n";
+			}
+		}
+		for( int arm = 0; arm < 2; ++arm ) {
+			for( const auto& t : tri ) {		// inward: the two last indices swapped
+				s << "\ttriangle " << t[0] + 8 * arm << " " << t[2] + 8 * arm << " " << t[1] + 8 * arm << "\n";
+			}
+		}
+		s << "\ttriangle 0 6 4\n\tdouble_sided TRUE\n\tface_normals TRUE\n}\n\n";
+		s << "standard_object\n{\n\tname walker\n\tgeometry walker_geo\n\tmaterial block\n}\n\n";
+		s << "standard_object\n{\n\tname arms\n\tgeometry arms_geo\n\tmaterial block\n}\n\n";
+		s << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
+		s << "pathtracing_pel_rasterizer\n{\n\tsamples " << samples
+		  << "\n\trr_min_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n\tpathguiding FALSE\n\tadaptive_max_samples 0\n"
+		  << "\tradiance_map white\n\tradiance_scale 1\n\tradiance_background TRUE\n}\n\n";
+		s << "file_rasterizeroutput\n{\n\tpattern rendered/dl370_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+		return s.str();
+	}
+
+	void TestNeighbourWinding( const unsigned int trials, const std::string& only )
+	{
+		std::cout << "F4: non-touching random-walk mesh neighbour, both windings (DL-370), n=" << trials << std::endl;
+		const char* names[4] = { "outward uncertified neighbour", "inward uncertified neighbour", "inward certified neighbour",
+			"inward uncertified two-box neighbour, walker between" };
+		const double expected[4] = { 1.0, 1.0, 0.7658, 1.0 };
+		unsigned int seed = 37300;
+		for( int v = 0; v < 4; ++v ) {
+			const std::string label = std::string( "F4: random_walk/PT " ) + names[v];
+			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
+			const std::string path = WriteScene( v == 3 ? BuildNotchScene( 64 ) : BuildWindingScene( v, 64 ), "dl370wind" );
+			Check( !path.empty(), label + ": scene file written" );
+			std::vector<double> m;
+			bool allValid = true;
+			for( unsigned int t = 0; t < trials; ++t ) {
+				const double mi = RenderFurnaceMean( path, seed++ );
+				if( !( mi > 0 ) ) allValid = false;
+				m.push_back( mi );
+			}
+			std::remove( path.c_str() );
+			Check( allValid, label + ": every render finite and non-black" );
+			if( !allValid ) continue;
+			const Stats st = Summarize( m );
+			std::cout << std::setprecision( 6 ) << "    " << label.substr( 4 ) << " spp=64: image mean " << st.mean << " +/- " << st.sd
+				<< " (sd of one render; expected " << expected[v] << ", band 0.01)" << std::endl;
+			Check( std::fabs( st.mean - expected[v] ) < 0.01, label + ": image mean within band of its expected value" );
+		}
+	}
+
+	void TestTouchingSSSRoom( const unsigned int trials, const std::string& only )
+	{
+		std::cout << "F: closed room of touching conservative SSS slabs (DL-370), n=" << trials << std::endl;
+		// `mesh` rows build the slabs as double-sided indexed meshes: every
+		// hit there reports a ray-facing normal, so a walk's own exit face
+		// and a touching neighbour's face are indistinguishable by facing
+		// alone (review round 1 of DL-370: a probe along the walk ray tied
+		// between them and read 0.887).
+		struct Row { Model model; Integrator integrator; Scalar gap; unsigned int samples; double band; bool mesh; };
+		const Row rows[] = {
+			{ Model::RandomWalk, Integrator::PT,   0.0,  16, 0.01, false },
+			{ Model::RandomWalk, Integrator::PT,   5e-7, 16, 0.01, false },
+			{ Model::RandomWalk, Integrator::PT,   0.02, 16, 0.01, false },
+			{ Model::RandomWalk, Integrator::BDPT, 0.0,  16, 0.01, false },
+			{ Model::RandomWalk, Integrator::PT,   0.0,  16, 0.01, true },
+			{ Model::RandomWalk, Integrator::BDPT, 0.0,  16, 0.01, true },
+		};
+		unsigned int seed = 37000;
+		for( const Row& row : rows ) {
+			std::ostringstream lab;
+			lab << "F: " << ModelName( row.model ) << "/" << IntegratorName( row.integrator )
+			    << ( row.mesh ? " double-sided mesh" : "" ) << " room gap=" << row.gap;
+			const std::string label = lab.str();
+			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
+			const std::string path = WriteScene( BuildTouchingRoomScene( row.integrator, row.gap, row.samples, row.mesh ), "dl370room" );
+			Check( !path.empty(), label + ": scene file written" );
+			std::vector<double> m;
+			bool allValid = true;
+			for( unsigned int t = 0; t < trials; ++t ) {
+				const double mi = RenderFurnaceMean( path, seed++ );
+				if( !( mi > 0 ) ) allValid = false;
+				m.push_back( mi );
+			}
+			std::remove( path.c_str() );
+			Check( allValid, label + ": every render finite and non-black" );
+			if( !allValid ) continue;
+			const Stats st = Summarize( m );
+			std::cout << std::setprecision( 6 ) << "    " << label.substr( 3 ) << " spp=" << row.samples
+				<< ": image mean " << st.mean << " +/- " << st.sd << " (sd of one render; band " << row.band << ")" << std::endl;
+			Check( std::fabs( st.mean - 1.0 ) < row.band, label + ": conservative furnace image mean within band of 1" );
+		}
+	}
 }
 
 int main( int argc, char** argv )
@@ -1659,6 +2130,10 @@ int main( int argc, char** argv )
 		TestRenderedInvariance( trials, only );
 		TestRenderedPartitionFurnace( trials, only );
 		TestRayCasterStackAndRecursion( trials, only );
+		TestTouchingSSSRoom( trials, only );
+		TestTouchingSSSPair( trials, only );
+		TestCoincidentOwnSideNeighbour( trials, only );
+		TestNeighbourWinding( trials, only );
 	}
 	std::cout << "=== " << passCount << " passed, " << failCount << " failed ===" << std::endl;
 	return failCount == 0 ? 0 : 1;

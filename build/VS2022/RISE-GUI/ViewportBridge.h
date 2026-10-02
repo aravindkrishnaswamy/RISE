@@ -1762,6 +1762,12 @@ public:
     /// Empty for an unmodeled category or a null controller.
     QStringList paletteKeywords(int category) const;
 
+    /// DL-401: the replacement hint (modern keyword first, then the parameter
+    /// translation) when `keyword` is a DEPRECATED chunk type, else an empty
+    /// string. `paletteKeywords` already sorts deprecated keywords after the
+    /// modern ones; the add-node palette badges them with this.
+    QString paletteDeprecationReplacement(const QString& keyword) const;
+
     /// Clone the currently-active camera under a new name and
     /// promote the clone to active. `proposedName` is canonicalized to a
     /// CST-safe identifier, then deduplicated with a numeric suffix.

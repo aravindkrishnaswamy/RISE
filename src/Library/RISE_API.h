@@ -5501,6 +5501,16 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		SceneEditController* p, int category, unsigned int idx,
 		char* outKeyword, unsigned int outKeywordLen );
 
+	//! DL-401 -- is `keyword` a DEPRECATED chunk type (DL-323 follow-through)?
+	//! Returns true and fills `outReplacement` (optional; the descriptor's
+	//! replacement hint, modern keyword first) when it is; false (buffer
+	//! untouched) for a modern or unknown keyword or a null controller.
+	//! The palette list itself already sorts deprecated keywords last; the
+	//! GUI badges them with this.  Pure descriptor read.
+	bool RISE_API_SceneEditController_PaletteKeywordDeprecation(
+		SceneEditController* p, const char* keyword,
+		char* outReplacement, unsigned int outReplacementLen );
+
 	//! Remove the named entity in `category` (see
 	//! SceneEditController::RemoveEntity) — refused with a non-empty
 	//! `outMessage` if it is still referenced (e.g. a material a

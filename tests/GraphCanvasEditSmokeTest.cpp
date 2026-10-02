@@ -68,6 +68,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <algorithm>
 #include <cstring>
 #include <fstream>
 #include <set>
@@ -75,6 +76,7 @@
 #include <vector>
 
 #include "../src/Library/Job.h"
+#include "../src/Library/RISE_API.h"
 #include "../src/Library/Cst/Cst.h"
 #include "../src/Library/SceneEditor/ChunkDescriptorRegistry.h"
 #include "../src/Library/SceneEditor/ConnectionLegality.h"
@@ -184,6 +186,38 @@ int main()
 		// controller method must not silently diverge from what it wraps.
 		const std::vector<String> direct = AllKeywordsForCategory( ChunkCategory::Painter );
 		Check( direct.size() == painters.size(), "PART1: controller passthrough matches the registry directly" );
+
+		// DL-401: deprecated chunk types sort AFTER every modern keyword
+		// (each group lexicographic), are badgeable through the deprecation
+		// accessor + its C ABI twin, and the plain registry order is untouched.
+		const char* const kLegacy[] = { "cooktorrance_material", "isotropic_phong_material",
+			"ashikminshirley_anisotropicphong_material", "schlick_material", "ward_isotropic_material",
+			"ward_anisotropic_material", "polished_material" };
+		auto indexOf = [&]( const char* s ) -> int {
+			for( std::size_t i = 0; i < materials.size(); ++i ) if( std::string( materials[i].c_str() ) == s ) return int( i );
+			return -1;
+		};
+		int firstLegacy = int( materials.size() ), lastModern = -1;
+		for( const String& kw : materials ) {
+			const bool legacy = !c.PaletteKeywordDeprecation( kw ).empty();
+			const int i = indexOf( kw.c_str() );
+			if( legacy ) firstLegacy = std::min( firstLegacy, i ); else lastModern = std::max( lastModern, i );
+		}
+		Check( lastModern >= 0 && lastModern < firstLegacy, "PART1(DL-401): every deprecated material keyword sorts after every modern one" );
+		for( const char* legacy : kLegacy ) {
+			Check( indexOf( legacy ) >= firstLegacy, std::string( "PART1(DL-401): `" ) + legacy + "` is in the deprecated tail" );
+			Check( !c.PaletteKeywordDeprecation( String( legacy ) ).empty(), std::string( "PART1(DL-401): `" ) + legacy + "` reports a replacement hint" );
+		}
+		Check( c.PaletteKeywordDeprecation( String( "ggx_material" ) ).empty(), "PART1(DL-401): ggx_material is not deprecated" );
+		Check( c.PaletteKeywordDeprecation( String( "no_such_chunk" ) ).empty(), "PART1(DL-401): an unknown keyword is not deprecated" );
+		char rep[1024] = {0};
+		Check( RISE_API_SceneEditController_PaletteKeywordDeprecation( &c, "polished_material", rep, sizeof( rep ) ) &&
+		       std::string( rep ).find( "coated_material" ) == 0, "PART1(DL-401): the C ABI returns polished_material's replacement (coated_material first)" );
+		Check( !RISE_API_SceneEditController_PaletteKeywordDeprecation( &c, "ggx_material", rep, sizeof( rep ) ), "PART1(DL-401): the C ABI reports false for a modern keyword" );
+		const std::vector<String> plain = AllKeywordsForCategory( ChunkCategory::Material );
+		bool plainSorted = true;
+		for( std::size_t i = 1; i < plain.size(); ++i ) if( std::strcmp( plain[i - 1].c_str(), plain[i].c_str() ) > 0 ) plainSorted = false;
+		Check( plainSorted && plain.size() == materials.size(), "PART1(DL-401): AllKeywordsForCategory keeps its plain alphabetical order" );
 	}
 
 	unsigned int epoch = c.SceneEpoch();

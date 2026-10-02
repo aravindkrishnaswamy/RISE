@@ -270,7 +270,8 @@ directional_light
 view-shifting `iridescent_painter` tint; for a subject with real surface
 texture instead, `insert_material_scaffold {family:"brushed_metal",
 name:"fixture1", tone:"0.55 0.56 0.6", wear:0.5, scale:4.0}` expands
-into a wired `ward_anisotropic_material` (`tmpl_fixture1_mat`) with
+into a wired `ggx_material` (`tmpl_fixture1_mat`, `fresnel_mode
+schlick_f0`) with
 both `alphax`/`alphay` bound to a spatially-varying scalar field, in
 one call -- point `mat_subject`'s slot at it, or reference it from a
 fresh `standard_object.material`.

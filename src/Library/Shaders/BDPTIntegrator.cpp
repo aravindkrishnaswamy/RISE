@@ -3047,9 +3047,9 @@ namespace {
 							entryV.ptObjIntersec = bssrdf.ptObjIntersec;
 							entryV.vColor = bssrdf.vColor;
 							entryV.bHasVertexColor = bssrdf.bHasVertexColor;
-							entryV.pMaterial = ri.pMaterial;
+							entryV.pMaterial = bssrdf.ExitMaterial( ri.pMaterial );	// DL-370: the body the walk left
             entryV.acceptedAlphaCoverage = bssrdf.acceptedAlphaCoverage;
-							entryV.pObject = ri.pObject;
+							entryV.pObject = bssrdf.ExitObject( ri.pObject );
 							entryV.pMediumObject = pMedObj_eye;
 							entryV.pMediumVol = pMed_eye;
 							// DL-49: the entry point shares the exit hit's exterior medium
@@ -7396,9 +7396,9 @@ unsigned int GenerateLightSubpathImpl(
 						entryV.ptObjIntersec = bssrdf.ptObjIntersec;
 						entryV.vColor = bssrdf.vColor;
 						entryV.bHasVertexColor = bssrdf.bHasVertexColor;
-						entryV.pMaterial = ri.pMaterial;
+						entryV.pMaterial = bssrdf.ExitMaterial( ri.pMaterial );	// DL-370: the body the walk left
             entryV.acceptedAlphaCoverage = bssrdf.acceptedAlphaCoverage;
-						entryV.pObject = ri.pObject;
+						entryV.pObject = bssrdf.ExitObject( ri.pObject );
 						entryV.pMediumObject = pMedObj_light;
 						entryV.pMediumVol = pMed_light;
 						// DL-49: the entry point shares the exit hit's exterior medium

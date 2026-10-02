@@ -4591,7 +4591,18 @@ namespace RISE
 		//! `BuildPainterMaterialGraphSeedsLocked_`'s own comment). Pure
 		//! descriptor read, same "no scene state, no locking" posture as
 		//! `ChunkNodeRequirements` above.
+		//!
+		//! DL-401: DEPRECATED chunk types (`ChunkDescriptor::deprecated`)
+		//! sort AFTER the modern keywords (each group lexicographic).
+		//! `AllKeywordsForCategory` keeps its plain alphabetical order.
 		std::vector<String> PaletteKeywords( ChunkCategory category ) const;
+
+		//! DL-401: the descriptor's replacement hint for @a keyword when
+		//! that chunk type is deprecated (names the modern keyword first,
+		//! then the parameter translation), else the EMPTY string.  The
+		//! GUI node palettes read it to badge a deprecated row.  Pure
+		//! descriptor read, same posture as `PaletteKeywords`.
+		std::string PaletteKeywordDeprecation( const String& keyword ) const;
 
 		//! Create ONE new painter/material chunk of type `keyword`, named
 		//! from `baseName` (deduped `_2`, `_3`, ... exactly as
