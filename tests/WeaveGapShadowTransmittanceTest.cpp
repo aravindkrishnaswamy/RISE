@@ -2199,12 +2199,17 @@ static void TestExplicitSaltContract()
 {
     const std::string scene = Assemble( RastBDPT( 64 ), ReceiverScene( kSpot, true, 0.3, kWide, true ) );
     unsigned long long previous = 0;
+    const unsigned int startIndex=g_renderIndex;
     for( unsigned int i = 0; i < 4; ++i ) {
+        // Hold both RNGs fixed so only the explicit value salt changes.
+        GlobalRNG()=RandomNumberGenerator(390u);
+        g_renderIndex=startIndex;
         const double v = RenderSalted( scene, "salt_contract", SobolSequence::HashCombine( 390u, i ) );
         Check( v >= 0, "salt contract: valid render" );
         if( i ) Check( g_lastPixelHash != previous, "salt contract: distinct value salts change BDPT point set" );
         previous = g_lastPixelHash;
     }
+    g_renderIndex=startIndex+4;
 }
 
 int main( int argc, char** argv )
