@@ -155,7 +155,7 @@ a winner-takes-all between two strategies that **both legitimately
 contribute** in caustic regions.  Balance gracefully blends them;
 power forces a binary choice between two unbiased estimators.
 
-#### 4a. A BSSRDF / random-walk jump is an MIS barrier (DL-317, 2026-10-01)
+#### 4a. A BSSRDF / random-walk jump is an MIS barrier (DL-317, 2026-10-01; BDPT/MLT and connectible random-walk entries: DL-375; BDPT's kept light-entry direction: DL-377)
 
 A subsurface event relocates the path from the hit where it went in
 (`x_o`, which the generator marks delta) to a sampled ENTRY vertex
@@ -166,13 +166,22 @@ closed form.  So the only strategies for a path through a jump are
 the ones that split it on the far side of the subpath that SAMPLED
 the jump.  For an eye-sampled jump:
 
-| at the entry `x_i` | diffusion entry (non-delta, connectible, `pdfFwd = pdfSurface`) | random-walk entry (delta, non-connectible, `pdfFwd = 0`) |
+| at the entry `x_i` | diffusion entry (non-delta, connectible, `pdfFwd = pdfSurface`) | random-walk entry (non-delta, connectible since DL-375, `pdfFwd = 0`) |
 |---|---|---|
-| NEE / connection to a light vertex | yes | no |
-| merge with a photon arriving at `x_i` | yes (merging on) | no |
+| NEE / connection to a light vertex | yes | yes (DL-375; before it: no) |
+| merge with a photon arriving at `x_i` | yes (merging on) | yes (merging on; DL-375) |
 | anything with the light covering `x_i` AND `x_o` (connect `x_o`--`x_i`, merge at `x_o` through the jump, deeper) | no | no |
 | `(dVCM, dVC, dVM)` AT `x_i` | `0` | `0` |
-| state for the vertex AFTER `x_i` | the ordinary non-specular update of that zero state: `dVCM = 1/p_w`, `dVC = (cos/p_w) eta_VM`, `dVM = cos/p_w` | `0` |
+| state for the vertex AFTER `x_i` | the ordinary non-specular update of that zero state: `dVCM = 1/p_w`, `dVC = (cos/p_w) eta_VM`, `dVM = cos/p_w` | the same (before DL-375: `0`) |
+
+A random-walk entry's response is Sw with the exact dielectric
+transmission -- `PathVertexEval::EvalBSDFAtVertex`, the same function as
+PT's `RandomWalkEntryBSDF` NEE adapter -- and its MIS density is the
+cosine exit its continuation is sampled from (`cos/pi` about the exit
+normal; the walk's IS weight `Ft/c` is exactly `Sw cos / pdf`).  Its
+`pdfFwd` stays 0: the walk has no analytic area density for the exit
+POINT, and no strategy reads it, because nothing splits the path across
+the jump.
 
 The light-sampled jump mirrors this, and the two families estimate
 the SAME integral with no reverse jump density to MIS-combine them;
@@ -181,32 +190,87 @@ partition is BY PATH: a path belongs to the EYE-sampled family whenever
 that family has at least one strategy for it, and to the LIGHT-sampled
 family only when it has none.  Which case holds depends only on the
 light-side segment between the jump and the light root (or the previous
-kept jump), so the light walk decides it (`LightSegmentEyeCoverable`):
+kept jump), so the light walk decides it
+(`BDPTUtilities::LightSegmentEyeCoverable`, shared by VCM and -- since
+DL-375 -- BDPT and MLT):
 the eye family covers the path if it can hit the root (s=0: a non-delta
 light), merge anywhere in the segment (merging on, a non-delta surface,
 including its own entry when that is connectible), or NEE / connect
 across an edge whose two ends are non-delta and connectible (the root
 counts for NEE).  A covered light-side jump ends the usable light
 subpath -- `ConvertLightSubpath` stops there and the splat / connection
-loops stop at `UsableLightSubpathLength`; an uncovered one is KEPT:
+loops stop at `UsableLightSubpathLength` (BDPT: `EvaluateAllStrategies`
+enumerates `s` only up to it); an uncovered one is KEPT:
 zero state at the light entry, no merge there (entries are never
 stored), the light-entry onward update (connection at the entry only),
 and Sw evaluated in the direction the entry re-emits toward the eye
 (the "arrival" direction there is the jump, not a ray).  The hit where
-the light walk went INTO the material is always usable.
+the light walk went INTO the material is always usable.  In BDPT the
+barrier is `MISWeight`'s two ratio walks breaking at an entry vertex:
+the term at an entry, and every term beyond it, is a strategy that
+splits the path across the jump.
 
-The canonical uncovered case is a DELTA light feeding a random-walk
-entry: that entry admits no NEE, connection or merge, so the eye family
-reaches the light from it only by BSDF sampling onward, which never hits
-a point light.  Note that the eye family is therefore NOT PT's
-estimator: PT does NEE at the random-walk exit through
-`RandomWalkEntryBSDF`, which VCM's (and BDPT's) eye family cannot.  A
-first DL-317 fix cut the light family everywhere and left this class
-estimated by nothing (`VCMStrategyBalanceTest` D1/D2: -97%, against
-~-50% on the pre-DL-317 code).  What neither family reaches at all --
-a random-walk sphere lit by a point light and seen DIRECTLY by the
-camera (no diffuse vertex between the exit and the camera) -- reads
-~-98.6% in BDPT and VCM alike, before and after DL-317: DL-375.
+Before DL-375 the canonical uncovered case was a DELTA light feeding a
+random-walk entry: that entry admitted no NEE, connection or merge, so
+the eye family reached the light from it only by BSDF sampling onward,
+which never hits a point light, and the eye family was therefore NOT
+PT's estimator (PT does NEE at the random-walk exit through
+`RandomWalkEntryBSDF`).  A first DL-317 fix cut the light family
+everywhere and left this class estimated by nothing
+(`VCMStrategyBalanceTest` D1/D2: -97%, against ~-50% on the pre-DL-317
+code).  And a random-walk sphere lit by a point light and seen DIRECTLY
+(no diffuse vertex between the exit and the camera) had no estimator in
+either family -- BDPT and VCM read ~-98.6% (DL-375).  Since DL-375 the
+random-walk entry is connectible, the eye family covers both classes
+through NEE at its entry, and the light family is cut there; the class
+that still keeps a light-side jump is a delta light reaching the
+material only through a delta interface (index-matched glass around it).
+
+DL-375 (`debt-dl375`, 2026-10-01; sphere-interior / wall-only pixel
+means, 32x32, 2048 spp, depth 16, one salted render each, X/PT - 1):
+
+| row | before | after |
+|---|---|---|
+| S1 omni, random-walk sphere seen directly: BDPT | -99.21% | -0.36% |
+| S1: VCM merging on / off | -96.02% / -99.22% | -0.18% / -0.17% |
+| S2 spot, same: BDPT | -99.92% | +2.72% |
+| S2: VCM merging on / off | -96.44% / -99.93% | +1.46% / +1.48% |
+| D1 omni, wall lit only through the sphere: BDPT | -3.93% | +0.15% |
+| D1: VCM merging on / off | -3.03% / -3.36% | +0.33% / +0.38% |
+| D2 spot, same: BDPT | -2.02% | +0.48% |
+| D2: VCM merging on / off | -0.39% / -0.20% | +1.02% / -0.03% |
+
+On the D rows the estimator CHANGED family (light-sampled before, NEE at
+the eye's random-walk entry after) and both read PT within noise -- the
+path is counted once.
+
+**BDPT now uses VCM's direction rule at a kept light entry (DL-377,
+`debt-dl377`, 2026-10-01).**  At a LIGHT-subpath endpoint that is an
+entry, Sw is evaluated in the direction the entry re-emits -- toward the
+camera (t=1 splat) or the connecting eye vertex -- through one helper,
+`PathValueOps::EvalLightEndAreaBSDFAtVertex`, shared by BDPT's splat and
+connection sites and VCM's; `RecomputeSubpathThroughputNM` applies the
+same rule at an interior light entry (DL-375).  BDPT used to pass the
+jump chord there, which faces INTO a convex surface, so Sw read exactly
+0: a diffusion sphere lit only through a delta interface by a delta
+light rendered black.  The fix needs the partition above -- on its own
+it double counts every path the eye family covers -- so what changes is
+precisely the kept class.  `BDPTStrategyBalanceTest --dl377-only`
+(32x32, salted n = 4; G: an omni inside an index-matched ior-1.0 glass
+sphere lighting a diffusion sphere; G2 adds a Lambertian wall, wall
+pixels only; G3 replaces the omni by a spot confined to the sphere, so
+the wall is lit only through it):
+
+| row | reference | before | after |
+|---|---|---|---|
+| G, whole frame | PT without glass | -100% (exactly 0) | +0.37% |
+| G2, wall pixels | VCM merging off, no glass | -2.68% | +0.21% |
+| G3, wall pixels | VCM merging off, with glass | -98.6% | +1.48% |
+
+G2/G3 are not referenced to PT: every bidirectional estimator reads
+~+1% above PT on G2's wall independently of this fix, and PT's mean of
+G3's dim wall is heavy-tailed.  The direction fix alone (before merging
+DL-375) moved G2 from -1.95% to +1.91% against PT -- the double count.
 
 Pre-DL-317 VCM had all three defects: `dVCM = 1/pdfSurface` at the
 entry (reserving the connection across the jump), the non-specular

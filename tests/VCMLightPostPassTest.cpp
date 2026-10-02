@@ -525,6 +525,13 @@ static void TestBSSRDFEntryAreaPdf()
 // s=0 (delta light), so this light-sampled path is the only estimator.
 // The same light feeding a DIFFUSION entry is covered (NEE at the eye's
 // entry) and cut, as is a random-walk entry under a non-delta root (s=0).
+// DL-375: the generator now emits EVERY entry connectible (a random-walk
+// entry prices Sw through RandomWalkEntryBSDF), so a point light feeding a
+// random-walk entry has the `connectibleEntry = true` shape and is CUT --
+// the eye family covers it through NEE at its entry.  The kept case below
+// is the predicate's logic for a non-connectible entry (the pre-DL-375
+// random-walk shape); a delta light behind a delta interface is the class
+// that still keeps a light-side jump.
 //
 static std::vector<BDPTVertex> MakeJumpLightPath( const bool deltaRoot, const bool connectibleEntry )
 {

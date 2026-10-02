@@ -134,6 +134,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <fstream>
+#include <iterator>
 #include <vector>
 #include <cmath>
 #include <limits>
@@ -4264,6 +4265,123 @@ static void TestRandomWalkSphereEmptyContainerV()
 	RunSSSTopology( "topology V (roughness-0.8 randomwalk_sss_material closed sphere, depth 16, 1024 spp)", kSceneRandomWalkSphereV, 16, 1024, 0, 0.0060 );
 }
 
+//////////////////////////////////////////////////////////////////////
+// DL-375: a random-walk sphere lit by a DELTA light (omni / spot).  The
+// fixture is VCMStrategyBalanceTest's DL-317 D1/D2 scene: a Lambertian
+// wall, the sphere in front of it, the light behind the wall plane off its
+// edge, so the wall is lit ONLY through the sphere.  Two regions:
+//   sphere pixels (S1/S2): the sphere seen DIRECTLY.  Before DL-375 no
+//     BDPT strategy reached light -> sphere -> walk -> exit -> camera: the
+//     eye family's random-walk entry was non-connectible (no NEE /
+//     connection) and BSDF sampling onward never hits a point light, and
+//     the light family's random-walk entry could not splat either.  BDPT
+//     read ~-98.6% of PT, which NEEs from the exit (RandomWalkEntryBSDF).
+//   wall pixels (D1/D2): light -> sphere -> walk -> exit -> wall ->
+//     camera.  Before DL-375 only the light-sampled jump family reached
+//     it; now the eye family does (NEE at its random-walk entry), the
+//     light family is cut there by the by-path partition
+//     (BDPTUtilities::UsableLightSubpathLength), and the row checks that
+//     the path is counted exactly once.
+//////////////////////////////////////////////////////////////////////
+static const char* kSceneDeltaLitRandomWalkDL375 =
+	"film\n{\n\twidth 32\n\theight 32\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
+	"randomwalk_sss_material\n{\n\tname mat_rw\n\tior 1.3\n\tabsorption 0.1\n"
+		"\tscattering 10.0\n\tg 0.0\n\troughness 0.3\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_alb_d\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"lambertian_material\n{\n\tname mat_lamb_d\n\treflectance pnt_alb_d\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_wall\n\tpta -1 -1 0\n\tptb 1 -1 0\n\tptc 1 1 0\n\tptd -1 1 0\n}\n\n"
+	"standard_object\n{\n\tname obj_wall\n\tgeometry quad_wall\n\tmaterial mat_lamb_d\n}\n\n"
+	"sphere_geometry\n{\n\tname sph_d\n\tradius 0.55\n}\n\n"
+	"standard_object\n{\n\tname obj_sph_d\n\tgeometry sph_d\n\tmaterial mat_rw\n\tposition 0 -0.45 0.6\n}\n\n";
+
+static const char* kLightOmniDL375 =
+	"omni_light\n{\n\tname lgt\n\tpower 20\n\tcolor 1 1 1\n\tposition 1.8 -0.4 -0.3\n}\n";
+
+static const char* kLightSpotDL375 =
+	"spot_light\n{\n\tname lgt\n\tposition 1.8 -0.4 -0.3\n\ttarget 0 -0.45 0.6\n\tinner 20.0\n\touter 30.0\n\tcolor 1 1 1\n\tpower 20\n}\n";
+
+//! Nine dilated sample points per pixel against the sphere (pinhole at
+//! (0,0,3.5), fov 30, 32x32, sphere r 0.55 at (0,-0.45,0.6)): 0 hits is a
+//! wall pixel, 9 a sphere-interior pixel.  `row` counts from the top.
+static int SphereHitsDL375( int row, int col )
+{
+	const double t = std::tan( 15.0 * 3.14159265358979323846 / 180.0 );
+	const double c[3] = { 0.0, -0.45, 0.6 }, o[3] = { 0.0, 0.0, 3.5 };
+	int hits = 0;
+	for( int di = -1; di <= 1; di++ ) for( int dj = -1; dj <= 1; dj++ ) {
+		const double x = ( col + dj + 0.5 ) / 16.0 - 1.0, y = 1.0 - ( row + di + 0.5 ) / 16.0;
+		double d[3] = { x * t, y * t, -1.0 };
+		const double l = std::sqrt( d[0]*d[0] + d[1]*d[1] + d[2]*d[2] );
+		for( double& v : d ) v /= l;
+		const double oc[3] = { o[0]-c[0], o[1]-c[1], o[2]-c[2] };
+		const double b = d[0]*oc[0] + d[1]*oc[1] + d[2]*oc[2];
+		const double q = b*b - ( oc[0]*oc[0] + oc[1]*oc[1] + oc[2]*oc[2] - 0.55*0.55 );
+		if( q > 0 ) hits++;
+	}
+	return hits;
+}
+
+//! One salted render; the achromatic means over sphere-interior and wall
+//! pixels.
+static bool RenderRegionMeansDL375( const std::string& rasterizer, const char* light, unsigned salt,
+	double& outSphere, double& outWall )
+{
+	const std::string scene = std::string( "RISE ASCII SCENE 7\n" ) + rasterizer + kSceneDeltaLitRandomWalkDL375 + light;
+	const std::string path = WriteSceneToTempFile( scene.c_str(), "dl375" );
+	if( path.empty() ) return false;
+	bool ok = false;
+	IJobPriv* pJob = nullptr;
+	if( RISE_CreateJobPriv( &pJob ) && pJob ) {
+		if( pJob->LoadAsciiSceneViaCst( path.c_str() ) ) {
+			pJob->RemoveRasterizerOutputs();
+			CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
+			GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "test capture output" );
+			pJob->GetRasterizer()->AddRasterizerOutput( pCap );
+			SobolSamplerTestHooks::ValueSalt().store( SobolSequence::HashCombine( 0x375u, salt ) );
+			std::srand( 3750u + salt );
+			const bool bRendered = pJob->Rasterize();
+			SobolSamplerTestHooks::ValueSalt().store( 0u );
+			if( bRendered && pCap->width == 32 && pCap->height == 32 ) {
+				double accS = 0, accW = 0; int nS = 0, nW = 0;
+				for( int row = 0; row < 32; row++ ) for( int col = 0; col < 32; col++ ) {
+					const int h = SphereHitsDL375( row, col );
+					const RISEColor& px = pCap->pixels[ row * 32 + col ];
+					const double v = ( px.base.r + px.base.g + px.base.b ) * px.a / 3.0;
+					if( h == 9 ) { accS += v; nS++; }
+					else if( h == 0 ) { accW += v; nW++; }
+				}
+				outSphere = nS ? accS / nS : 0;
+				outWall = nW ? accW / nW : 0;
+				ok = nS > 0 && nW > 0 && std::isfinite( outSphere ) && std::isfinite( outWall ) && outSphere > 0;
+			}
+			safe_release( pCap );
+		}
+		safe_release( pJob );
+	}
+	std::remove( path.c_str() );
+	return ok;
+}
+
+static void RunDeltaLitRandomWalkRowDL375( const char* name, const char* light, int spp,
+	double sphereBand, double wallBand )
+{
+	std::cout << "Testing DL-375 " << name << std::endl;
+	double ptS = 0, ptW = 0, bdS = 0, bdW = 0;
+	const bool ok = RenderRegionMeansDL375( SSSRasterizer( "pt", 16, spp ), light, 1u, ptS, ptW )
+		&& RenderRegionMeansDL375( SSSRasterizer( "bdpt", 16, spp ), light, 1u, bdS, bdW );
+	Check( ok, ( std::string( "DL-375 renders produced output: " ) + name ).c_str() );
+	if( !ok ) return;
+	CheckSSSMeanBand( ( std::string( "DL-375 sphere pixels, BDPT / PT: " ) + name ).c_str(), ptS, bdS, sphereBand );
+	CheckSSSMeanBand( ( std::string( "DL-375 wall pixels (lit only through the walk), BDPT / PT: " ) + name ).c_str(), ptW, bdW, wallBand );
+}
+
+static void TestDeltaLitRandomWalkDL375()
+{
+	RunDeltaLitRandomWalkRowDL375( "omni (S1 sphere / D1 wall)", kLightOmniDL375, 2048, 0.05, 0.05 );
+	RunDeltaLitRandomWalkRowDL375( "spot (S2 sphere / D2 wall)", kLightSpotDL375, 2048, 0.05, 0.05 );
+}
+
 // DL-346: a conservative environment-lit medium has L=1 independently
 // of every MIS implementation. Index-matched boundaries and a white floor
 // conserve radiance; max_volume_bounce 256 makes the omitted tail negligible.
@@ -4308,6 +4426,202 @@ static void TestEnvironmentScatteringMediumDL346()
  }
 }
 
+//////////////////////////////////////////////////////////////////////
+// DL-377: a LIGHT-side diffusion BSSRDF entry re-emits toward the camera.
+//
+// Fixture G of the DL-317 round-2 review: an omni light sits inside an
+// index-matched (ior 1.0, delta) glass sphere and lights a smooth
+// `subsurfacescattering_material` sphere.  The glass is optically absent,
+// so the reference-free truth is PT on the SAME scene WITHOUT the glass;
+// with it, every eye-side strategy is blocked (NEE cannot pass a delta
+// interface, and BSDF sampling never hits a point light), so BDPT renders
+// the sphere through the light-sampled jump alone -- the t=1 splat and the
+// connection AT the light-side entry.  Pre-fix those evaluated Sw along the
+// jump chord (`wiAtLight`, the arrival "direction" from the hit where the
+// light went in), which on a convex shape faces INTO the surface: Sw = 0
+// exactly.  G2 adds a Lambertian wall behind the sphere and reads only
+// wall pixels (outside a disk around the sphere's silhouette): the wall
+// sees the sphere's re-emission, again light-family only, through the
+// splat at the wall and the connection entry--wall.
+//////////////////////////////////////////////////////////////////////
+
+static const char* kSceneDL377Common =
+	"film\n{\n\twidth 32\n\theight 32\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
+	"subsurfacescattering_material\n{\n\tname mat_s\n\tior 1.3\n\tabsorption 0.1\n"
+		"\tscattering 1.0\n\tg 0.0\n\troughness 0.0\n}\n\n"
+	"sphere_geometry\n{\n\tname sg\n\tradius 0.6\n}\n\n"
+	"standard_object\n{\n\tname so\n\tgeometry sg\n\tmaterial mat_s\n}\n\n";
+
+static const char* kSceneDL377Omni =
+	"omni_light\n{\n\tname L\n\tpower 20\n\tcolor 1 1 1\n\tposition 0 1.1 0.6\n}\n\n";
+
+// A narrow spot from the same point, aimed at the sphere's centre: its
+// cone (outer 14 deg) lies inside the sphere's 28.6 deg half-angle, so the
+// wall receives light ONLY through the sphere.
+static const char* kSceneDL377Spot =
+	"spot_light\n{\n\tname L\n\tpower 20\n\tcolor 1 1 1\n\tposition 0 1.1 0.6\n"
+		"\ttarget 0 0 0\n\tinner 10\n\touter 14\n}\n\n";
+
+static const char* kSceneDL377Wall =
+	"uniformcolor_painter\n{\n\tname pw2\n\tcolor 0.7 0.7 0.7\n}\n\n"
+	"lambertian_material\n{\n\tname mat_w\n\treflectance pw2\n}\n\n"
+	"clippedplane_geometry\n{\n\tname qw\n\tpta -1.5 -1.5 -0.7\n\tptb 1.5 -1.5 -0.7\n"
+		"\tptc 1.5 1.5 -0.7\n\tptd -1.5 1.5 -0.7\n}\n\n"
+	"standard_object\n{\n\tname ow\n\tgeometry qw\n\tmaterial mat_w\n}\n\n";
+
+static const char* kSceneDL377Glass =
+	"dielectric_material\n{\n\tname mat_g\n\ttau 1.0\n\tior 1.0\n\tscattering 1000000\n}\n\n"
+	"sphere_geometry\n{\n\tname gg\n\tradius 0.25\n}\n\n"
+	"standard_object\n{\n\tname og\n\tgeometry gg\n\tmaterial mat_g\n\tposition 0 1.1 0.6\n}\n\n";
+
+static std::string DL377Rasterizer( const char* kind, int spp )
+{
+	char buf[1024];
+	if( std::strcmp( kind, "pt" ) == 0 ) {
+		std::snprintf( buf, sizeof(buf), "pathtracing_pel_rasterizer\n{\n\tsamples %d\n\trr_min_depth 8\n"
+			"\tmax_diffuse_bounce 16\n\tmax_glossy_bounce 16\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n", spp );
+	} else if( std::strcmp( kind, "bdpt" ) == 0 ) {
+		std::snprintf( buf, sizeof(buf), "bdpt_pel_rasterizer\n{\n\tmax_eye_depth 16\n\tmax_light_depth 16\n"
+			"\tsamples %d\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n", spp );
+	} else if( std::strcmp( kind, "bdptspec" ) == 0 || std::strcmp( kind, "bdpthwss" ) == 0 ) {
+		std::snprintf( buf, sizeof(buf), "bdpt_spectral_rasterizer\n{\n\tmax_eye_depth 16\n\tmax_light_depth 16\n"
+			"\tsamples %d\n\thwss %s\n\tnum_wavelengths 160\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n",
+			spp, std::strcmp( kind, "bdpthwss" ) == 0 ? "TRUE" : "FALSE" );
+	} else if( std::strcmp( kind, "vcmoff" ) == 0 ) {
+		std::snprintf( buf, sizeof(buf), "vcm_pel_rasterizer\n{\n\tmax_eye_depth 16\n\tmax_light_depth 16\n"
+			"\tsamples %d\n\tmerge_radius 0.0\n\tvc_enabled true\n\tvm_enabled false\n"
+			"\tpixel_filter box\n\toidn_denoise FALSE\n}\n", spp );
+	} else {
+		std::snprintf( buf, sizeof(buf), "mlt_rasterizer\n{\n\tmax_eye_depth 16\n\tmax_light_depth 16\n"
+			"\tbootstrap_samples %d\n\tchains 512\n\tmutations_per_pixel %d\n"
+			"\tlarge_step_prob 0.3\n\toidn_denoise FALSE\n}\n",
+			std::strcmp( kind, "mlt1m" ) == 0 ? 1000000 : 100000, spp );
+	}
+	return std::string( "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n" ) + buf +
+		"\nfile_rasterizeroutput\n{\n\tpattern rendered/bdpt_balance_unused\n\ttype EXR\n"
+		"\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+}
+
+//! Achromatic coverage-weighted mean over the whole frame, or (wallOnly)
+//! over the pixels farther than 13 px from the frame centre -- outside the
+//! sphere's ~10.4 px silhouette disk, so wall only.  `replicates` salted
+//! renders (salt base fixed per call site); false on any failure.
+static bool RenderDL377Mean( const std::string& scene, const char* tag, bool wallOnly,
+	int replicates, unsigned saltBase, double& outMean, double* outSd = nullptr )
+{
+	const std::string path = WriteSceneToTempFile( scene.c_str(), tag );
+	if( path.empty() ) return false;
+	double sum = 0, sumSq = 0;
+	bool ok = true;
+	for( int i = 0; i < replicates && ok; i++ ) {
+		SobolSamplerTestHooks::ValueSalt().store( SobolSequence::HashCombine( saltBase, unsigned( i ) ) );
+		IJobPriv* pJob = nullptr;
+		ok = RISE_CreateJobPriv( &pJob ) && pJob;
+		if( !ok ) break;
+		ok = pJob->LoadAsciiSceneViaCst( path.c_str() );
+		if( ok ) {
+			pJob->RemoveRasterizerOutputs();
+			CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
+			GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "test capture output" );
+			pJob->GetRasterizer()->AddRasterizerOutput( pCap );
+			std::srand( 3770u + unsigned( i ) );
+			ok = pJob->Rasterize() && pCap->width > 0 && pCap->height > 0;
+			double acc = 0;
+			unsigned count = 0;
+			for( unsigned int y = 0; ok && y < pCap->height; y++ ) {
+				for( unsigned int x = 0; x < pCap->width; x++ ) {
+					const double dx = double( x ) + 0.5 - 0.5 * double( pCap->width );
+					const double dy = double( y ) + 0.5 - 0.5 * double( pCap->height );
+					if( wallOnly && dx * dx + dy * dy < 13.0 * 13.0 ) continue;
+					const RISEColor& c = pCap->pixels[y * pCap->width + x];
+					const double v = ( c.base.r + c.base.g + c.base.b ) / 3.0 * c.a;
+					if( !std::isfinite( v ) ) { ok = false; break; }
+					acc += v;
+					count++;
+				}
+			}
+			if( ok && count > 0 ) {
+				const double m = acc / double( count );
+				sum += m;
+				sumSq += m * m;
+			}
+			safe_release( pCap );
+		}
+		safe_release( pJob );
+	}
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
+	std::remove( path.c_str() );
+	if( !ok ) return false;
+	outMean = sum / double( replicates );
+	if( outSd ) {
+		*outSd = replicates > 1
+			? std::sqrt( std::max( 0.0, ( sumSq - sum * sum / double( replicates ) ) / double( replicates - 1 ) ) )
+			: 0.0;
+	}
+	return std::isfinite( outMean ) && outMean >= 0;
+}
+
+//! `kind` renders the scene WITH the index-matched glass; `refKind` renders
+//! it WITHOUT (the glass is optically absent, so the two must agree).
+static void RunDL377Row( const char* label, bool wall, bool spot, const char* kind, int spp,
+	const char* refKind, int refSpp, int replicates, double band, bool refGlass = false )
+{
+	std::cout << "Testing DL-377 " << label << std::endl;
+	const std::string body = std::string( kSceneDL377Common ) + ( spot ? kSceneDL377Spot : kSceneDL377Omni ) +
+		( wall ? kSceneDL377Wall : "" );
+	const std::string ref = std::string( "RISE ASCII SCENE 7\n" ) + DL377Rasterizer( refKind, refSpp ) + body +
+		( refGlass ? kSceneDL377Glass : "" );
+	const std::string test = std::string( "RISE ASCII SCENE 7\n" ) + DL377Rasterizer( kind, spp ) + body + kSceneDL377Glass;
+	double r = 0, x = 0, rSd = 0, xSd = 0;
+	const bool okR = RenderDL377Mean( ref, "dl377_ref", wall, replicates, 0x377A, r, &rSd );
+	const bool okX = RenderDL377Mean( test, "dl377_x", wall, replicates, 0x377B, x, &xSd );
+	Check( okR && okX && r > 0, ( std::string( "DL-377 renders produced output: " ) + label ).c_str() );
+	if( !okR || !okX || !( r > 0 ) ) return;
+	const double rel = x / r - 1.0;
+	std::printf( "    %s: %s-%s %.7f (sd %.7f)  %s-with-glass %.7f (sd %.7f)  rel %+.3f%%  (band +/- %.2f%%, n=%d)\n",
+		label, refKind, refGlass ? "with-glass" : "no-glass", r, rSd, kind, x, xSd, 100.0 * rel, 100.0 * band, replicates );
+	Check( std::fabs( rel ) <= band, ( std::string( "DL-377 light-side diffusion entry re-emits toward the camera: " ) + label ).c_str() );
+}
+
+//! G: the light family alone renders the sphere; truth is PT without glass.
+//! G2 reads wall pixels against VCM (merging off) WITHOUT the glass, where
+//! the eye family covers the paths and VCM's DL-317 by-path partition
+//! holds.  Not PT: on G2's wall every bidirectional estimator reads above
+//! it (VCM merging off +1.0%, n = 4, independently of this row).  G3's wall
+//! is lit ONLY through the sphere and is dim, so the no-glass estimators of
+//! it are heavy-tailed (PT at 8192 spp 0.000891..0.000917 across runs, VCM
+//! sd 17% per render); it is referenced to VCM merging off WITH the glass
+//! -- the light-sampled family DL-317 validated against PT
+//! (VCMStrategyBalanceTest D1/D2) -- whose spread is ~1% per render.  G4 is
+//! G3 WITHOUT the glass under BDPT: the eye family covers the path (NEE at
+//! its entry reaches the spot), so it checks the partition from the other
+//! side -- before DL-375's barrier it read -93% (MISWeight reserved weight
+//! across the jump with phantom densities).  The eye family's estimate of
+//! this dim, spot-lit wall is heavy-tailed (+2.3% at n = 2, +7.7% at n = 4
+//! with the same salts), so G4's band only separates that failure.
+static void TestLightSideDiffusionEntryDL377()
+{
+	RunDL377Row( "G (omni in index-matched glass, diffusion sphere, whole frame)", false, false, "bdpt", 1024, "pt", 512, 4, 0.03 );
+	RunDL377Row( "G2 (G + Lambertian wall, wall pixels only)", true, false, "bdpt", 512, "vcmoff", 512, 4, 0.01 );
+	RunDL377Row( "G3 (G2 with a spot confined to the sphere, wall pixels only)", true, true, "bdpt", 1024, "vcmoff", 1024, 4, 0.03, true );
+	{
+		std::cout << "Testing DL-377 G4 (G3 WITHOUT glass under BDPT vs VCM merging off WITH glass)" << std::endl;
+		const std::string body = std::string( kSceneDL377Common ) + kSceneDL377Spot + kSceneDL377Wall;
+		double v = 0, b = 0;
+		const bool okV = RenderDL377Mean( std::string( "RISE ASCII SCENE 7\n" ) + DL377Rasterizer( "vcmoff", 1024 ) + body +
+			kSceneDL377Glass, "dl377_g4v", true, 4, 0x377A, v );
+		const bool okB = RenderDL377Mean( std::string( "RISE ASCII SCENE 7\n" ) + DL377Rasterizer( "bdpt", 1024 ) + body,
+			"dl377_g4b", true, 4, 0x377C, b );
+		Check( okV && okB && v > 0, "DL-377 G4 renders produced output" );
+		if( okV && okB && v > 0 ) {
+			const double rel = b / v - 1.0;
+			std::printf( "    G4: vcmoff-with-glass %.7f  bdpt-no-glass %.7f  rel %+.3f%%  (band +/- 20.00%%, n=4)\n", v, b, 100.0 * rel );
+			Check( std::fabs( rel ) <= 0.20, "DL-377 G4: the eye family alone renders a delta-lit diffusion jump it covers" );
+		}
+	}
+}
+
 int main( int argc, char** argv )
 {
  if(argc == 2 && std::strcmp(argv[1],"--env-medium-only") == 0) {
@@ -4339,6 +4653,11 @@ int main( int argc, char** argv )
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
+	if( argc == 2 && std::strcmp(argv[1], "--dl375-only") == 0 ) {
+		TestDeltaLitRandomWalkDL375();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
 	if( argc == 2 && std::strcmp(argv[1], "--weave-gap-only") == 0 ) {
 		TestBacklitThinCurtain();
 		TestGappedCurtainAreaLight();
@@ -4360,6 +4679,36 @@ int main( int argc, char** argv )
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
+	// DL-377: fixture G and its wall variant (the focused before/after A/B).
+	if( argc == 2 && std::strcmp(argv[1], "--dl377-only") == 0 ) {
+		TestLightSideDiffusionEntryDL377();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+	// DL-377 shipped-scene A/B: whole-frame achromatic mean of a scene file
+	// over `n` salted renders (prints mean and sd; no gate).
+	if( argc == 4 && std::strcmp(argv[1], "--dl377-scene" ) == 0 ) {
+		std::ifstream ifs( argv[2] );
+		const std::string scene( ( std::istreambuf_iterator<char>( ifs ) ), std::istreambuf_iterator<char>() );
+		double m = 0, sd = 0;
+		const int n = std::atoi( argv[3] );
+		const bool ok = !scene.empty() && n > 0 && RenderDL377Mean( scene, "dl377_scene", false, n, 0x377D, m, &sd );
+		std::printf( "DL-377 scene %s: ok=%d n=%d mean=%.7f sd=%.7f\n", argv[2], int( ok ), n, m, sd );
+		return ok ? 0 : 1;
+	}
+	if( argc == 2 && std::strcmp(argv[1], "--dl377-hwss" ) == 0 ) {
+		RunDL377Row( "G3 HWSS TRUE vs FALSE, both with glass (probe)", true, true, "bdpthwss", 256, "bdptspec", 256, 2, 1.0, true );
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+	if( argc == 2 && std::strcmp(argv[1], "--dl377-mlt" ) == 0 ) {
+		// MLT's image mean IS its bootstrap normalization: at 100k bootstrap
+		// samples it read -7% (deterministic, identical at 512 and 4096
+		// mutations/px); at 1M it reads +0.33% against MLT without the glass.
+		RunDL377Row( "G under MLT, 1M bootstrap, vs MLT without glass (probe, ungated)", false, false, "mlt1m", 64, "mlt1m", 64, 1, 1.0 );
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
 	if( argc == 2 && std::strcmp(argv[1], "--spectral-aggregate-unit") == 0 ) {
 		TestSpectralRepeatAggregation();
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
@@ -4368,7 +4717,7 @@ int main( int argc, char** argv )
 	if( argc > 1 ) {
 		if( argc != 3 || std::strcmp(argv[1], "--spectral-only") != 0 ||
 			(std::strcmp(argv[2], "1") != 0 && std::strcmp(argv[2], "2") != 0) ) {
-			std::cerr << "Usage: BDPTStrategyBalanceTest [--spectral-only 1|2 | --spectral-aggregate-unit | --materials-only | --guided-only | --weave-gap-only | --sss-only | --back-face-only | --narrow-fov-only]" << std::endl;
+			std::cerr << "Usage: BDPTStrategyBalanceTest [--spectral-only 1|2 | --spectral-aggregate-unit | --materials-only | --guided-only | --weave-gap-only | --sss-only | --dl375-only | --back-face-only | --narrow-fov-only | --dl377-only | --dl377-mlt]" << std::endl;
 			return 2;
 		}
 		spectralSampleScale = std::strcmp(argv[2], "2") == 0 ? 2 : 1;
@@ -4410,10 +4759,12 @@ int main( int argc, char** argv )
 	TestWeaveGapBoxAreaOutside();
 	TestRoughSSSEmptyContainerU();
 	TestRandomWalkSphereEmptyContainerV();
+	TestDeltaLitRandomWalkDL375();
  TestEnvironmentScatteringMediumDL346();
 	TestBackFaceEmitterZ();
 	TestNarrowFovSplatW();
 	TestNarrowFovStripeGuard();
+	TestLightSideDiffusionEntryDL377();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

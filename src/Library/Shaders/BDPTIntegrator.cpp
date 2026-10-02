@@ -3053,9 +3053,9 @@ namespace {
 							// interface.
 							entryV.mediumIOR = vertices.back().mediumIOR;
 
-							// See RGB light subpath block for rationale.
-							entryV.isDelta = true;
-							entryV.isConnectible = false;
+							// DL-375: see the light subpath twin's comment.
+							entryV.isDelta = false;
+							entryV.isConnectible = true;
 							entryV.isBSSRDFEntry = true;
 							StoreThroughput<Tag>( entryV, betaSpatial );
 							entryV.pdfFwd = 0;
@@ -4385,7 +4385,7 @@ ConnectAndEvaluateImplCore(
 			}
 
 			if( s >= 2 ) {
-				fLight = PathValueOps::EvalAreaBSDFAtVertex<Tag>( lightEnd, wiAtLight, dirToCam, tag );
+				fLight = PathValueOps::EvalLightEndAreaBSDFAtVertex<Tag>( lightEnd, wiAtLight, dirToCam, tag );
 			}
 		}
 
@@ -4494,7 +4494,7 @@ ConnectAndEvaluateImplCore(
 		if( lightEnd.type == BDPTVertex::SURFACE && lightEnd.pMaterial && s >= 2 ) {
 			Vector3 wiAtLight = Vector3Ops::mkVector3( lightVerts[s - 2].position, lightEnd.position );
 			wiAtLight = Vector3Ops::Normalize( wiAtLight );
-			fLightNM = PathValueOps::EvalAreaBSDFAtVertex<Tag>( lightEnd, wiAtLight, dirToCam, tag );
+			fLightNM = PathValueOps::EvalLightEndAreaBSDFAtVertex<Tag>( lightEnd, wiAtLight, dirToCam, tag );
 		}
 
 		const Scalar distSq = dist * dist;
@@ -5001,7 +5001,7 @@ ConnectAndEvaluateImplCore(
 			}
 
 			if( s >= 2 ) {
-				fLight = PathValueOps::EvalAreaBSDFAtVertex<Tag>( lightEnd, wiAtLight, dirToCam, tag );
+				fLight = PathValueOps::EvalLightEndAreaBSDFAtVertex<Tag>( lightEnd, wiAtLight, dirToCam, tag );
 			}
 		} else if( lightEnd.type == BDPTVertex::LIGHT ) {
 			// s == 1: the light source directly connects to the camera.
@@ -5231,7 +5231,9 @@ ConnectAndEvaluateImplCore(
 		// wo at lightEnd = direction toward eye vertex (connection)
 		const Vector3 woAtLight = -dConnect;
 
-		const V fLight = PathValueOps::EvalAreaBSDFAtVertex<Tag>( lightEnd, wiAtLight, woAtLight, tag );
+		// DL-377: a light-side BSSRDF entry re-emits toward the eye vertex
+		// (see EvalLightEndAreaBSDFAtVertex); `wiAtLight` is the jump chord there.
+		const V fLight = PathValueOps::EvalLightEndAreaBSDFAtVertex<Tag>( lightEnd, wiAtLight, woAtLight, tag );
 
 		if( PositiveMagnitude<Tag>( fLight ) <= 0 ) {
 			return result;
@@ -5560,7 +5562,15 @@ EvaluateAllStrategiesImpl(
     ISampler& sampler = pSampler ? *pSampler : static_cast<ISampler&>(alphaFallback);
 	typedef SpectralValueTraits<Tag> Traits;
 	typedef typename ConnectionResultFor<Tag>::type CR;
-	const unsigned int nLight = static_cast<unsigned int>( lightVerts.size() );
+	// DL-375: the by-path partition between the two subsurface-jump
+	// families (DL-317's, shared through BDPTUtilities).  A light-side jump
+	// the eye family can cover ends the usable light subpath: no strategy
+	// may use a light vertex at or past it, because the eye family already
+	// estimates those paths and nothing MIS-combines the two families.
+	// Without a light-side jump this is lightVerts.size().  BDPT has no
+	// merging.
+	const unsigned int nLight = static_cast<unsigned int>(
+		BDPTUtilities::UsableLightSubpathLength( lightVerts, false ) );
 	const unsigned int nEye = static_cast<unsigned int>( eyeVerts.size() );
 
 	std::vector<CR> results;
@@ -5785,14 +5795,10 @@ EvaluateAllStrategiesImpl(
 					// BSSRDF material under BDPT/MLT (docs/DL207_BDPT_ZERO_EXITANCE_BSSRDF.md).
 					//
 					// This branch deliberately BYPASSES the general
-					// `isConnectible` gate below: a random-walk SSS entry
-					// vertex is marked `isConnectible = false` so that the
-					// GENERAL (s>=1) connection strategies -- which divide
-					// by a real area-measure `pdfFwd`/`pdfRev` for MIS --
-					// never target a vertex whose `pdfSurface` is only a
-					// placeholder (see that vertex's own construction
-					// comment, "Mark the vertex as delta + non-connectible").
-					// THIS sweep's MIS weight is unconditionally 1.0 for
+					// `isConnectible` gate below.  (Written when a
+					// random-walk SSS entry was non-connectible; since
+					// DL-375 every entry is connectible, so the bypass is
+					// now moot for entries but harmless.)  THIS sweep's MIS weight is unconditionally 1.0 for
 					// every zero-exitance light (the comment above this
 					// block), so no pdf consistency is needed and the
 					// exemption is safe -- it is the same reasoning that
@@ -6101,6 +6107,18 @@ Scalar BDPTIntegrator::MISWeight(
 			const BDPTVertex& vi = (static_cast<unsigned int>(i) < lightVerts.size()) ?
 				lightVerts[i] : eyeVerts[0];
 
+			// DL-375: a subsurface jump is an MIS BARRIER (DL-317's rule,
+			// docs/MIS_HEURISTICS.md section 4a).  The term at a LIGHT-side
+			// entry `vi` is the strategy whose eye covers vi, i.e. connects
+			// lightVerts[i-1] (the hit where the light went in) to vi --
+			// across the jump, which no strategy does -- and every later
+			// term needs the eye to cover the jump too.  None exists, so
+			// the walk ends here.  (It used to pass through on remap0 and
+			// reserve that mass with pdfs measured across the jump.)
+			if( vi.isBSSRDFEntry ) {
+				break;
+			}
+
 			// Compute the ratio: pdfRev / pdfFwd at this vertex.
 			// Use remap0 (Veach/PBRT convention): map zero PDFs to 1
 			// so that the ratio chain propagates through delta vertices.
@@ -6187,6 +6205,14 @@ Scalar BDPTIntegrator::MISWeight(
 			// Vertex at position j in the eye subpath
 			const BDPTVertex& vj = (static_cast<unsigned int>(j) < eyeVerts.size()) ?
 				eyeVerts[j] : lightVerts[0];
+
+			// DL-375: the eye-side twin of the barrier above -- the term
+			// at an EYE-side entry vj makes the light cover vj and connect
+			// to eyeVerts[j-1], the hit where the eye went in, across the
+			// jump; it and everything beyond it do not exist.
+			if( vj.isBSSRDFEntry ) {
+				break;
+			}
 
 			// STRATEGY-DOES-NOT-EXIST ZERO (fixed 2026-08-01; this was the
 			// "known defect, deferred" note from fix round 3's Opus MIS
@@ -7341,16 +7367,27 @@ unsigned int GenerateLightSubpathImpl(
 						// interface.
 						entryV.mediumIOR = vertices.back().mediumIOR;
 
-						// The random walk has no analytic area PDF for
-						// the exit point — pdfSurface is a placeholder.
-						// Mark the vertex as delta + non-connectible so
-						// that (a) no connection strategy targets it,
-						// and (b) the MIS ratio chain passes through
-						// cleanly (remap0(0)/remap0(0) = 1).  The PT
-						// path still does NEE at entry points via
-						// EvaluateDirectLighting.
-						entryV.isDelta = true;
-						entryV.isConnectible = false;
+						// DL-375: a random-walk entry is CONNECTIBLE and
+						// non-delta, exactly like a diffusion entry.  Its
+						// response is Sw with the exact dielectric
+						// transmission (`PathVertexEval::EvalBSDFAtVertex`,
+						// the same function as PT's `RandomWalkEntryBSDF`
+						// NEE adapter; the throughput stored here is
+						// `weightSpatial`, Sw NOT baked in), and its MIS
+						// density is the cosine exit the walk samples its
+						// continuation from (`EvalPdfAtVertex`'s cos/pi,
+						// `pdfFwdPrev = cosinePdf` below) -- one function
+						// for sampler, density and evaluator.  It used to
+						// be delta + non-connectible, which left a delta
+						// light feeding the walk with NO strategy when the
+						// sphere is seen directly (BDPT/VCM -98.6%).
+						// The walk has no analytic area density for the
+						// exit POINT, so `pdfFwd` stays 0: no strategy
+						// splits the path across the jump, and `MISWeight`
+						// stops its walks at an entry before reading it
+						// (the jump is an MIS barrier, as in VCM, DL-317).
+						entryV.isDelta = false;
+						entryV.isConnectible = true;
 						entryV.isBSSRDFEntry = true;
 						StoreThroughput<Tag>( entryV, betaSpatial );
 						entryV.pdfFwd = 0;
@@ -8188,8 +8225,14 @@ void BDPTIntegrator::RecomputeSubpathThroughputNM(
 
 				// Light subpath: wi = toward light (prev), wo = toward eye (next)
 				// Eye subpath:   wi = toward light (next), wo = toward eye (prev)
+				// DL-375: a BSSRDF / random-walk ENTRY prices Sw in the
+				// direction it re-emits (toward `next`) on either subpath;
+				// on the light side `prev` is the hit where the light went
+				// in, and the "arrival" from it is the jump, not a ray
+				// (the interior-vertex twin of DL-377's endpoint
+				// rule, PathValueOps::EvalLightEndAreaBSDFAtVertex).
 				Vector3 wi, wo;
-				if( isLightPath ) {
+				if( isLightPath && !v.isBSSRDFEntry ) {
 					wi = dirToPrev;
 					wo = dirToNext;
 				} else {

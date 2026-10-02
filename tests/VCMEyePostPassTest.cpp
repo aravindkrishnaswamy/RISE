@@ -476,19 +476,23 @@ static void TestBSSRDFEntryAreaPdf()
 	CheckClose( outMis[3].dVC, 0.0, 1e-15, "bssrdf: no connection across the jump reserved (DL-317; was 8)" );
 	CheckClose( outMis[3].dVM, 2.0, 1e-12, "bssrdf: merge at the entry reserved, cos/p_w" );
 
-	// Random-walk entry: delta, NOT connectible, no area density.
+	// A NON-connectible entry: delta, no area density.  This was every
+	// random-walk entry's shape until DL-375 made random-walk entries
+	// connectible (Sw = RandomWalkEntryBSDF; the generator now emits the
+	// diffusion shape above for both); the recurrence must still keep a
+	// non-connectible entry closed.
 	verts[2].isDelta = true;
 	verts[2].isConnectible = false;
 	verts[2].pdfFwd = 0.0;
 	VCMIntegrator::ConvertEyeSubpath( verts, norm, outMis );
-	Check( outMis.size() == 4, "random walk: size 4" );
+	Check( outMis.size() == 4, "non-connectible entry: size 4" );
 	if( outMis.size() != 4 ) {
 		return;
 	}
-	CheckClose( outMis[2].dVCM, 0.0, 1e-15, "random walk: no MIS state at the entry" );
-	CheckClose( outMis[3].dVCM, 0.0, 1e-15, "random walk: no NEE / connection at a non-connectible entry (DL-317; was 2)" );
-	CheckClose( outMis[3].dVC, 0.0, 1e-15, "random walk: dVC zero after the entry" );
-	CheckClose( outMis[3].dVM, 0.0, 1e-15, "random walk: no merge at a non-connectible entry (DL-317; was 2)" );
+	CheckClose( outMis[2].dVCM, 0.0, 1e-15, "non-connectible entry: no MIS state at the entry" );
+	CheckClose( outMis[3].dVCM, 0.0, 1e-15, "non-connectible entry: no NEE / connection at it (DL-317; was 2)" );
+	CheckClose( outMis[3].dVC, 0.0, 1e-15, "non-connectible entry: dVC zero after the entry" );
+	CheckClose( outMis[3].dVM, 0.0, 1e-15, "non-connectible entry: no merge at it (DL-317; was 2)" );
 }
 
 //////////////////////////////////////////////////////////////////////

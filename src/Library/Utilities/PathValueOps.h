@@ -119,6 +119,25 @@ namespace RISE
 				PathVertexEval::RadianceShadingNormalFactor( vertex, wi );
 		}
 
+		// Area-measure response at a LIGHT-subpath endpoint that connects
+		// (or splats) toward `woOut`; `wiArrival` points back toward the
+		// previous light vertex.  A BSSRDF entry vertex (`isBSSRDFEntry`)
+		// is reached by the subsurface JUMP from the hit where the light
+		// went in, so `wiArrival` there is the jump chord, not a ray: the
+		// entry re-emits with Sw in the direction it LEAVES, i.e. toward
+		// `woOut` (DL-317 for VCM, DL-377 for BDPT/MLT).  Evaluating Sw
+		// along the chord instead reads exactly 0 on a convex shape, whose
+		// chord faces INTO the surface at the entry.
+		template<class Tag>
+		inline typename SpectralValueTraits<Tag>::value_type EvalLightEndAreaBSDFAtVertex(
+			const BDPTVertex& vertex, const Vector3& wiArrival, const Vector3& woOut,
+			const Tag& tag )
+		{
+			return vertex.isBSSRDFEntry
+				? EvalAreaBSDFAtVertex<Tag>( vertex, woOut, wiArrival, tag )
+				: EvalAreaBSDFAtVertex<Tag>( vertex, wiArrival, woOut, tag );
+		}
+
 		//////////////////////////////////////////////////////////////
 		// PDF evaluation at a path vertex.  PDFs are wavelength-
 		// independent in their return type (always Scalar) but the
