@@ -134,6 +134,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <fstream>
+#include <iterator>
 #include <vector>
 #include <cmath>
 #include <limits>
@@ -4567,6 +4568,17 @@ int main( int argc, char** argv )
 		TestLightSideDiffusionEntryDL377();
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
 		return failCount == 0 ? 0 : 1;
+	}
+	// DL-377 shipped-scene A/B: whole-frame achromatic mean of a scene file
+	// over `n` salted renders (prints mean and sd; no gate).
+	if( argc == 4 && std::strcmp(argv[1], "--dl377-scene" ) == 0 ) {
+		std::ifstream ifs( argv[2] );
+		const std::string scene( ( std::istreambuf_iterator<char>( ifs ) ), std::istreambuf_iterator<char>() );
+		double m = 0, sd = 0;
+		const int n = std::atoi( argv[3] );
+		const bool ok = !scene.empty() && n > 0 && RenderDL377Mean( scene, "dl377_scene", false, n, 0x377D, m, &sd );
+		std::printf( "DL-377 scene %s: ok=%d n=%d mean=%.7f sd=%.7f\n", argv[2], int( ok ), n, m, sd );
+		return ok ? 0 : 1;
 	}
 	if( argc == 2 && std::strcmp(argv[1], "--dl377-hwss" ) == 0 ) {
 		RunDL377Row( "G3 HWSS TRUE vs FALSE, both with glass (probe)", true, true, "bdpthwss", 256, "bdptspec", 256, 2, 1.0, true );
