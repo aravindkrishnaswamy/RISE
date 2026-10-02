@@ -313,43 +313,73 @@ namespace
 		return r_max( Scalar(0), spec );
 	}
 
-	//! Per-channel round-trip attenuation for the recycling series.
-	inline RISE::RISEPel RecycleRoundTripRGB( const RISE::Implementation::CoatedBRDF::CoatParams& cp )
+	//! DL-342: the coat's interior diffuse transport (CoatedLayer.h's
+	//! InteriorDiffuseTransport) per RGB channel.  A grey (untinted)
+	//! coat has one optical depth for all three channels, so the
+	//! quadrature runs once; a tinted coat runs it per channel.
+	struct InteriorRGB
+	{
+		RISE::RISEPel returned;
+		RISE::RISEPel escape;
+		RISE::RISEPel entry;
+	};
+
+	inline RISE::Implementation::CoatedLayer::InteriorDiffuse InteriorAt(
+		const RISE::Implementation::CoatedBRDF::CoatParams& cp,
+		const RISE::Scalar tint )
+	{
+		using namespace RISE::Implementation;
+		const RISE::Scalar tau = CoatedLayer::OpticalDepth( cp.thickness, cp.absorption, tint, cp.tinted );
+		return CoatedLayer::InteriorDiffuseTransport( cp.eta, tau, cp.re, cp.ri );
+	}
+
+	inline InteriorRGB InteriorDiffuseRGB( const RISE::Implementation::CoatedBRDF::CoatParams& cp )
 	{
 		using namespace RISE;
-		return RISEPel(
-			CoatedLayer::RecycleRoundTrip( cp.eta, cp.thickness, cp.absorption, cp.tint[0], cp.tinted ),
-			CoatedLayer::RecycleRoundTrip( cp.eta, cp.thickness, cp.absorption, cp.tint[1], cp.tinted ),
-			CoatedLayer::RecycleRoundTrip( cp.eta, cp.thickness, cp.absorption, cp.tint[2], cp.tinted ) );
+		InteriorRGB out;
+		if( !cp.tinted ) {
+			const Implementation::CoatedLayer::InteriorDiffuse d = InteriorAt( cp, Scalar(1) );
+			out.returned = RISEPel( d.returned, d.returned, d.returned );
+			out.escape   = RISEPel( d.escape,   d.escape,   d.escape );
+			out.entry    = RISEPel( d.entry,    d.entry,    d.entry );
+			return out;
+		}
+		for( int c = 0; c < 3; ++c ) {
+			const Implementation::CoatedLayer::InteriorDiffuse d = InteriorAt( cp, cp.tint[c] );
+			out.returned[c] = d.returned;
+			out.escape[c]   = d.escape;
+			out.entry[c]    = d.entry;
+		}
+		return out;
 	}
 
 	//! 7.4's geometric series, or unity when the red-proof lever has
 	//! switched it off.  The ONE place the toggle acts, so `value`,
 	//! `valueNM`, `albedo` and `hemisphericalAlbedo{,NM}` cannot drift
-	//! apart on it.
+	//! apart on it.  `returned` is the round trip's returned fraction
+	//! E_ret (r_i for a clear coat; DL-342 for an absorbing one).
 	inline RISE::RISEPel RecyclingFactorRGB(
 		const bool enabled,
-		const RISE::Implementation::CoatedBRDF::CoatParams& cp,
+		const RISE::RISEPel& returned,
 		const RISE::RISEPel& R )
 	{
 		using namespace RISE;
 		if( !enabled ) {
 			return RISEPel( 1, 1, 1 );
 		}
-		return CoatedLayer::RecyclingRGB( cp.ri, R, RecycleRoundTripRGB( cp ) );
+		return Implementation::CoatedLayer::RecyclingRGB( returned, R );
 	}
 
 	inline RISE::Scalar RecyclingFactorNM(
 		const bool enabled,
-		const RISE::Implementation::CoatedBRDF::CoatParams& cp,
+		const RISE::Scalar returned,
 		const RISE::Scalar R )
 	{
 		using namespace RISE;
 		if( !enabled ) {
 			return Scalar(1);
 		}
-		const Scalar rt = CoatedLayer::RecycleRoundTrip( cp.eta, cp.thickness, cp.absorption, cp.tint[0], cp.tinted );
-		return CoatedLayer::Recycling( cp.ri, R, rt );
+		return Implementation::CoatedLayer::Recycling( returned, R, Scalar(1) );
 	}
 }
 
@@ -409,7 +439,7 @@ RISEPel CoatedBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometr
 		const RISEPel Aout = CoatedLayer::PassTransmittanceRGB( absNv, cp.eta, cp.thickness, cp.absorption, cp.tint, cp.tinted );
 
 		const RISEPel R   = SubstrateAlbedo( ri );
-		const RISEPel rec = RecyclingFactorRGB( bRecycling, cp, R );
+		const RISEPel rec = RecyclingFactorRGB( bRecycling, InteriorDiffuseRGB( cp ).returned, R );
 		const RISEPel K   = Ain * Aout * rec * ( Tin * Tout / ( cp.eta * cp.eta ) );
 
 		// No separate coat term: the coat's own GGX lobe is
@@ -463,7 +493,10 @@ RISEPel CoatedBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometr
 	const RISEPel Aout = CoatedLayer::PassTransmittanceRGB( nv, cp.eta, cp.thickness, cp.absorption, cp.tint, cp.tinted );
 
 	const RISEPel R   = SubstrateAlbedo( ri );		// VIEW-INDEPENDENT -- see SubstrateAlbedo
-	const RISEPel rec = RecyclingFactorRGB( bRecycling, cp, R );
+	// DL-342: the round trip's returned fraction is the EXACT
+	// path-length average over the trapped diffuse field, not r_i times
+	// one mean-cosine Beer factor -- see CoatedLayer::InteriorDiffuseTransport.
+	const RISEPel rec = RecyclingFactorRGB( bRecycling, InteriorDiffuseRGB( cp ).returned, R );
 
 	const RISEPel K = Ain * Aout * rec * ( Tin * Tout / ( cp.eta * cp.eta ) );
 
@@ -505,7 +538,7 @@ Scalar CoatedBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeomet
 		const Scalar Aout = CoatedLayer::PassTransmittance( absNv, cp.eta, cp.thickness, cp.absorption, cp.tint[0], cp.tinted );
 
 		const Scalar R  = SubstrateAlbedoNM( ri, nm );
-		const Scalar K  = Ain * Aout * RecyclingFactorNM( bRecycling, cp, R ) * ( Tin * Tout / ( cp.eta * cp.eta ) );
+		const Scalar K  = Ain * Aout * RecyclingFactorNM( bRecycling, InteriorAt( cp, cp.tint[0] ).returned, R ) * ( Tin * Tout / ( cp.eta * cp.eta ) );
 
 		return fBaseT * ( cp.weight * K + ( Scalar(1) - cp.weight ) );
 	}
@@ -542,7 +575,7 @@ Scalar CoatedBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeomet
 	// more -- darkening and chroma boost from transport, not from a
 	// fitted exponent.
 	const Scalar R  = SubstrateAlbedoNM( ri, nm );
-	const Scalar K  = Ain * Aout * RecyclingFactorNM( bRecycling, cp, R ) * ( Tin * Tout / ( cp.eta * cp.eta ) );
+	const Scalar K  = Ain * Aout * RecyclingFactorNM( bRecycling, InteriorAt( cp, cp.tint[0] ).returned, R ) * ( Tin * Tout / ( cp.eta * cp.eta ) );
 
 	return cp.weight * fCoat + ( cp.weight * K + ( Scalar(1) - cp.weight ) ) * fBase;
 }
@@ -624,16 +657,22 @@ RISEPel CoatedBRDF::albedo( const RayIntersectionGeometric& ri ) const
 	}
 
 	// Hemispherical form of the same layer model: the coat returns
-	// F(cos_o); the rest enters, and what comes back out is
-	// R * (1 - r_i) / (1 - r_i R) attenuated by two coat traversals.
-	// At R = 1, A = 1 this is F + (1 - F) = 1 exactly, so the AOV
-	// stays in [0,1] as IBSDF::albedo requires.
+	// F(cos_o); the rest enters through ONE traversal at the view's
+	// refracted angle, A(cos_o), and what comes back out is
+	// R * escape / (1 - E_ret R) -- `escape` the trapped diffuse field's
+	// exit fraction, (1 - r_i) for a clear coat and its path-length
+	// average through an absorbing one (DL-342; the pre-DL-342 form
+	// charged the exit a second traversal at the VIEW's angle, which
+	// the diffuse field does not take).  At R = 1, A = 1 this is
+	// F + (1 - F) = 1 exactly, so the AOV stays in [0,1] as
+	// IBSDF::albedo requires.
 	const Scalar  F = CoatedLayer::Fresnel( nr, cp.eta );
 	const Scalar  T = Scalar(1) - F;
 	const RISEPel A = CoatedLayer::PassTransmittanceRGB( nr, cp.eta, cp.thickness, cp.absorption, cp.tint, cp.tinted );
-	const RISEPel rec = RecyclingFactorRGB( bRecycling, cp, R );
+	const InteriorRGB in = InteriorDiffuseRGB( cp );
+	const RISEPel rec = RecyclingFactorRGB( bRecycling, in.returned, R );
 
-	const RISEPel sub = A * A * R * rec * ( T * ( Scalar(1) - cp.ri ) );
+	const RISEPel sub = A * R * rec * ( in.escape * T );
 	const RISEPel coated = RISEPel( F, F, F ) + sub;
 
 	const RISEPel result = coated * cp.weight + R * ( Scalar(1) - cp.weight );
@@ -648,9 +687,10 @@ RISEPel CoatedBRDF::albedo( const RayIntersectionGeometric& ri ) const
 // the coated stack itself.
 //
 // Same layer algebra as `albedo` above, with the coat's own Fresnel
-// replaced by its HEMISPHERICAL AVERAGE r_e and the coat traversal
-// evaluated at the diffuse-mean cosine, so nothing here reads
-// `ri.ray` -- the contract IBSDF.h states.
+// replaced by its HEMISPHERICAL AVERAGE r_e and the entry traversal
+// replaced by its white-sky average (CoatedLayer::InteriorDiffuse::entry,
+// DL-342 -- it used to be one Beer factor at an outer cosine of 0.5),
+// so nothing here reads `ri.ray` -- the contract IBSDF.h states.
 //
 // `coated_material` refuses a coated substrate (the allowlist admits
 // only lambertian / orennayar / ggx), so nothing in tree consumes this
@@ -671,13 +711,16 @@ bool CoatedBRDF::hemisphericalAlbedo( const RayIntersectionGeometric& ri, RISEPe
 		return true;
 	}
 
+	// White-sky form (DL-342): the coat returns r_e; `entry` of the
+	// outside field reaches the substrate, `escape` of what the
+	// substrate returns leaves, and the round trip returns E_ret --
+	// all three exact path-length averages through an absorbing coat,
+	// and (1 - r_e), (1 - r_i), r_i for a clear one.
 	const Scalar  F = cp.re;						// hemispherical, not F(cos_o)
-	const Scalar  T = Scalar(1) - F;
-	const RISEPel A = CoatedLayer::PassTransmittanceRGB(
-		CoatedLayer::kRecycleMeanCos, cp.eta, cp.thickness, cp.absorption, cp.tint, cp.tinted );
-	const RISEPel rec = RecyclingFactorRGB( bRecycling, cp, R );
+	const InteriorRGB in = InteriorDiffuseRGB( cp );
+	const RISEPel rec = RecyclingFactorRGB( bRecycling, in.returned, R );
 
-	const RISEPel sub = A * A * R * rec * ( T * ( Scalar(1) - cp.ri ) );
+	const RISEPel sub = R * rec * ( in.entry * in.escape );
 	const RISEPel result = ( RISEPel( F, F, F ) + sub ) * cp.weight + R * ( Scalar(1) - cp.weight );
 
 	out = RISEPel(
@@ -699,11 +742,9 @@ bool CoatedBRDF::hemisphericalAlbedoNM( const RayIntersectionGeometric& ri, cons
 	}
 
 	const Scalar F = cp.re;
-	const Scalar T = Scalar(1) - F;
-	const Scalar A = CoatedLayer::PassTransmittance(
-		CoatedLayer::kRecycleMeanCos, cp.eta, cp.thickness, cp.absorption, cp.tint[0], cp.tinted );
+	const CoatedLayer::InteriorDiffuse in = InteriorAt( cp, cp.tint[0] );
 
-	const Scalar sub = A * A * R * RecyclingFactorNM( bRecycling, cp, R ) * T * ( Scalar(1) - cp.ri );
+	const Scalar sub = R * RecyclingFactorNM( bRecycling, in.returned, R ) * ( in.entry * in.escape );
 	const Scalar result = cp.weight * ( F + sub ) + ( Scalar(1) - cp.weight ) * R;
 	out = r_min( r_max( result, Scalar(0) ), Scalar(1) );
 	return true;
