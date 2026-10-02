@@ -272,6 +272,19 @@ G2/G3 are not referenced to PT: every bidirectional estimator reads
 G3's dim wall is heavy-tailed.  The direction fix alone (before merging
 DL-375) moved G2 from -1.95% to +1.91% against PT -- the double count.
 
+**A kept random-walk entry estimates a DIFFERENT function than the eye
+family (DL-381, `debt-dl381`, 2026-10-02).**  The random-walk model is
+exact (refracted direction) at the end its walk starts from and
+Lambertian (`Ft/c` cosine lobe) at the other, so the light family's kept
+class is not the transpose of PT's function: on G-RW (the DL-375 omni
+scene with the omni inside the same index-matched glass) it reads ~+5-8% over PT on the sphere and ~-2-3% on the wall.
+This is not a partition or weight defect -- an independent light tracer
+(`tools/DL381RandomWalkReciprocityMC.cpp`) reproduces each family from
+its own model, and exact transport sits above both, with the light family
+the closer one ([DL381_RANDOM_WALK_RECIPROCITY.md](DL381_RANDOM_WALK_RECIPROCITY.md)).
+The diffusion BSSRDF has `Sw` at both ends and is reciprocal, which is
+why G agrees with PT there.
+
 Pre-DL-317 VCM had all three defects: `dVCM = 1/pdfSurface` at the
 entry (reserving the connection across the jump), the non-specular
 onward update at a NON-connectible random-walk entry (a phantom NEE,
