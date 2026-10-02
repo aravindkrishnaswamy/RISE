@@ -162,6 +162,20 @@ namespace RISE
 				return info;
 			}
 
+			//! DL-297: see ISPF.  The Phong `scattering` warp of the delta-
+			//! tagged transmission (HG and per-channel RGB report none).
+			Scalar DeltaTransmissionWarpExponent(
+				const RayIntersectionGeometric& ri,
+				const Scalar nm
+				) const;
+
+			Scalar DeltaTransmissionWarpPdf(
+				const RayIntersectionGeometric& ri,
+				const Vector3& w,
+				const Scalar nm,
+				const IORStack& ior_stack
+				) const;
+
 			//! Given parameters describing the intersection of a ray with a surface, this will return
 			//! the reflected and transmitted rays along with attenuation factors.
 			void	Scatter(

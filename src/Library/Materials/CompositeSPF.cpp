@@ -241,103 +241,66 @@ Scalar CompositeSPF::GapPathLength(
 }
 
 // ---------------------------------------------------------------------------
-//  THE TWO-STACK WALK
+//  THE STACK CONVENTION (DL-341, 2026-10-02)
 //
 //  A composite is ONE IObject with TWO interfaces, and IORStack keys its
-//  entries on `pCurrentObject` (see IORStack.h) -- a single pointer for the
-//  whole material.  An entry the TOP layer pushed is therefore
-//  indistinguishable from an entry belonging to the BOTTOM layer.  That is
-//  what makes a single stack threaded through the walk unworkable, and it is
-//  the reason this walk carries two.
+//  entries on `pCurrentObject` -- one pointer for the whole material.  The
+//  convention is DERIVED from what the equivalent pair of SEPARATE surfaces
+//  would do: two coincident interfaces with the same orientation (both
+//  fronts on the shading-normal side), the top's material above the bottom's.
+//  Under RISE's stack rules (a closed solid; or two open sheets under the
+//  DL-345 face rule, which reads the same) a ray that crosses both from above
+//  is INSIDE both, in the medium the bottom layer defines; one that leaves
+//  upward through both is back outside.  So, for an object O:
 //
-//  The two stacks name the two media a walk step can be evaluated against:
+//    OUT    the stack without O's entry -- the medium above the top
+//           (OutsideOf: the entry stack with O popped if it held it);
+//    GAP    OUT plus what the TOP pushed crossing down (O at the gap's
+//           index; nothing for a top that does not push);
+//    BELOW  GAP plus what the BOTTOM pushed crossing down.
 //
-//    outside_stack : the stack WITHOUT this object's entry -- the medium
-//                    above the top interface.  For a from-above walk this is
-//                    simply the stack Scatter() was entered with.
-//    gap_stack     : the stack of the inter-layer gap -- WITH the entry the
-//                    top interface pushed.  Initialised to the entry stack
-//                    (a top layer that pushes nothing leaves the gap medium
-//                    equal to the outer medium, which is correct) and updated
-//                    the moment the top layer's own scattered ray tells us
-//                    what it pushed.
+//  The shared key is what used to make one threaded stack unworkable (the
+//  top's push read as the bottom's, so a stack-sensitive bottom took its
+//  from-inside branch -- the two failure modes the pre-DL-341 two-stack
+//  walk was built around, guarded by CompositeExtinctionTest section 6).
+//  The walk now gives the BOTTOM layer its own key, `BottomKey(s)` (an
+//  address inside this composite instance, never dereferenced), and the top
+//  keeps O.  With two keys ONE internal stack is threaded through the whole
+//  walk and refreshed after EVERY crossing in either direction: the top sees
+//  "inside" exactly when the ray is in the gap or below, the bottom exactly
+//  when the ray is below, and each refracts from the index of the medium the
+//  ray is actually in (the bottom now refracts from the GAP's index, not the
+//  outside one -- the pre-DL-341 "scope gap (b)": a glass/glass stack
+//  refracted 1.0 -> 1.5 twice).
 //
-//  EvalStack() below picks between them by the direction of the ray arriving
-//  at the layer, and the rule is the same for both layers: a DOWN-going ray
-//  is arriving from the medium above that layer (outside for the top layer,
-//  the gap for the bottom layer -- and the bottom layer must read
-//  "entering from outside", which is what the WITHOUT-entry stack gives it),
-//  while an UP-going ray is arriving from inside the object and must see the
-//  gap stack so that a dielectric top layer correctly takes its from-inside
-//  branch and refracts OUT.
+//  ENTRY SIDE is the GEOMETRIC one, in the composite's own frame (the
+//  geometric normal oriented into the shading normal's hemisphere, so a
+//  double-sided mesh that flips both normals together keeps its old frame):
+//    * from above, agreeing with the shading normal -- the DIRECT / COVERED /
+//      WALKER mixture, starting at OUT;
+//    * from above but BEHIND a tilted shading normal (`d . n_s > 0`) -- a
+//      natural walk that starts at the TOP, every exit delta-tagged (the
+//      layered evaluator does not price it, so `value` and `Pdf` are 0
+//      there);
+//    * from below -- a natural walk that starts at the BOTTOM from BELOW:
+//      OUT, plus the GAP entry the top would push (read off one hashed
+//      from-above Scatter of the top, GapStackForBelow), plus the bottom's
+//      key at the index of the medium the ray is in (the entry stack's top).
+//  Every emitted ray carries the EXTERNAL form of the stack it ends in
+//  (ToExternal): OUT for an exit up through the top, OUT plus O at the
+//  BELOW medium's index for an exit down through the bottom -- so a
+//  radiance consumer's eta^2 factor (RadianceEtaScale) sees the medium the
+//  ray really entered, and a ray that leaves upward from inside pops O.
 //
-//  HISTORY -- the two failure modes this replaces, one at each interface:
-//
-//   1. Passing the entry (outside) stack everywhere killed the RETURN trip
-//      through a dielectric TOP layer: the up-going ray arrived with an
-//      OUTSIDE stack, containsCurrent() reported false, DielectricSPF took
-//      its "entering from outside" branch, and BOTH lobes were culled -- the
-//      transmission lobe by the hemisphere gate (an upward direction cannot
-//      be a transmission when entering from above) and the Fresnel lobe by
-//      the geometric-normal gate (reflecting an upward ray about -N points
-//      down).  Every gap-crossing path died inside the walk, which made
-//      `extinction` and `thickness` -- which only ever apply to gap-crossing
-//      legs -- exactly inert.
-//
-//   2. Threading each scattered ray's own stack UNCONDITIONALLY fixed (1) but
-//      broke the BOTTOM interface by the same shared-key confusion, one layer
-//      down: the down-going ray carries the top's push, so a stack-sensitive
-//      bottom layer (DielectricSPF, TranslucentSPF, PerfectRefractorSPF, the
-//      subsurface shaders, a nested CompositeSPF) read containsCurrent()==true
-//      for a ray physically ENTERING it and took its from-inside branch.  A
-//      dielectric bottom lost both of its lobes to the same two gates as (1)
-//      -- a black interface; a translucent bottom ran its exit branch and
-//      POPPED the entry the top had pushed (find_and_destroy matches on the
-//      shared key), so the up-going lobe reached the top with a popped stack
-//      and was double-culled -- failure (1), re-introduced.
-//
-//  tests/CompositeExtinctionTest.cpp section 6 is the regression guard for
-//  (2); sections 1-5 guard (1).
-//
-//  KNOWN SCOPE GAPS -- both reviewer-verified, both UNCHANGED from the
-//  pre-two-stack baseline, and both deliberately left alone here:
-//
-//   (a) A walk ENTERED FROM BELOW (Scatter() called on an up-going ray, i.e.
-//       the camera/photon is inside a closed composite volume) starts BOTH
-//       stacks at the entry stack -- and that stack already contains this
-//       object's entry, because the ray is inside it.  So on a subsequent
-//       DOWN-going leg the bottom layer is handed a WITH-entry stack even
-//       though `EvalStack` is selecting the nominally "outside" one, and a
-//       stack-sensitive bottom reads containsCurrent()==true for a ray
-//       entering it.  Fixing this needs a stack that can express "the outside
-//       medium" independently of the entry stack, which IORStack's shared
-//       per-IObject key cannot do; it is the same structural limit as (2)
-//       above, and no shipped scene puts a camera inside a composite.
-//
-//   (b) The BOTTOM interface's incident IOR is the OUTSIDE medium's, not the
-//       gap's.  `EvalStack` gives a down-going ray the without-entry stack so
-//       the bottom classifies the crossing correctly (entering, not exiting) --
-//       but that stack also carries the IOR the bottom will refract against.
-//       For a dielectric top over a dielectric bottom the gap->bottom crossing
-//       is therefore computed as 1.0 -> 1.33 rather than 1.5 -> 1.33.  Again
-//       structural: IORStack cannot express "the gap's IOR WITHOUT this
-//       object's entry", because the entry IS how the gap's IOR got recorded.
-//       Classification correctness was chosen over Ni fidelity, which is also
-//       exactly what the pre-fix down-leg did -- so this is not a regression,
-//       and the section-6 numbers bake it in.
+//  What this convention says about a TRANSMITTING composite on an OPEN
+//  sheet (CompositeEnergyConservationTest D3): the ray that crossed both
+//  layers is inside the bottom's medium, exactly as below a single open
+//  `dielectric_material` sheet, so a glass/glass composite renders like the
+//  pair of separate glass sheets it stands for (0.467 in a white env furnace
+//  at normal incidence, F + (1 - F) / eta^2) -- not 1.  A white environment
+//  of radiance 1 seen inside a medium of index 1.5 is not an equilibrium
+//  (that would be n^2 = 2.25), so "truth 1" was never the expectation there.
 // ---------------------------------------------------------------------------
-
-// Picks the stack a layer's Scatter() is evaluated against, by the direction
-// of the arriving ray.  See the block comment above for the rule and why it
-// is the same for both layers.
-const IORStack& CompositeSPF::EvalStack(
-	const RayIntersectionGeometric& ri,
-	const IORStack& outside_stack,
-	const IORStack& gap_stack
-	)
-{
-	return ( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) <= 0 ) ? outside_stack : gap_stack;
-}
 
 
 // Continuation of `type` out of the walk event at `steps`: the old
@@ -465,6 +428,8 @@ namespace RISE
 			static const uint64_t kSaltProbeC   = 0x5A17C0DE00000003ull;
 			static const uint64_t kSaltEvaluate = 0x5A17C0DE00000004ull;
 			static const uint64_t kSaltEvaluateExit = 0x5A17C0DE00000005ull;
+			static const uint64_t kSaltGapBelow = 0x5A17C0DE00000006ull;
+			static const int      kGapBelowDraws    = 4;
 			static const int      kPerBranchProbes  = 8;
 
 			//! PCG32 (O'Neill 2014).  Local, stack-allocated, never shared
@@ -576,12 +541,122 @@ namespace RISE
 			//  Geometry helpers.
 			// -----------------------------------------------------------
 
-			//! The composite is entered through its TOP when the ray arrives
-			//! against the shading normal -- the convention the walk has
-			//! always used.
-			static inline bool EntryFromTop( const RayIntersectionGeometric& ri )
+			//! DL-341: the side the ray arrives from is the GEOMETRIC one,
+			//! read in the composite's own frame -- the geometric normal
+			//! oriented into the shading normal's hemisphere, so a
+			//! double-sided mesh (which flips both normals together) keeps
+			//! the frame it always had, and only the wedge between a TILTED
+			//! shading normal and the true surface changes classification.
+			//! Hair's ray-derived normal carries no side: the shading normal
+			//! stands in.
+			static inline bool EnteredFromAbove( const RayIntersectionGeometric& ri )
 			{
-				return Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) <= 0;
+				const Vector3 n = ri.onb.w();
+				Vector3 g = ri.HasTrueGeomSide() ? ri.vGeomNormal : n;
+				if( !( Vector3Ops::SquaredModulus( g ) > Scalar( 1e-12 ) ) ) {
+					g = n;
+				}
+				if( Vector3Ops::Dot( g, n ) < 0 ) {
+					g = -g;
+				}
+				return Vector3Ops::Dot( ri.ray.Dir(), g ) <= 0;
+			}
+
+			//! The entries the DIRECT / COVERED / WALKER mixture (and so the
+			//! layered evaluator and `Pdf`) handles: from above AND against
+			//! the shading normal.  Everything else is walked naturally and
+			//! delta-tagged.
+			static inline bool CoveredEntry( const RayIntersectionGeometric& ri )
+			{
+				return EnteredFromAbove( ri ) && Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) <= 0;
+			}
+
+			// -----------------------------------------------------------
+			//  DL-341 stack helpers -- see "THE STACK CONVENTION" above.
+			// -----------------------------------------------------------
+
+			//! The bottom layer's own key: an address inside THIS composite
+			//! instance (so a nested composite's key never collides with
+			//! its parent's), compared by IORStack and never dereferenced.
+			static inline const IObject* BottomKey( const CompositeSPF& s )
+			{
+				return reinterpret_cast<const IObject*>( &s.instanceId );
+			}
+
+			static inline IORStack Keyed( const IORStack& st, const IObject* key )
+			{
+				IORStack c( st );
+				c.SetCurrentObject( key );
+				return c;
+			}
+
+			//! A stack handed back to the TOP layer: re-keyed to O (a ray
+			//! the bottom reflected carries the bottom's key).
+			static inline IORStack KeyedTop( const IORStack& st, const IORStack& out )
+			{
+				IORStack c( st );
+				if( out.currentObject() ) {
+					c.SetCurrentObject( out.currentObject() );
+				}
+				return c;
+			}
+
+			//! OUT: the entry stack without this object's entry.
+			static inline IORStack OutsideOf( const IORStack& S )
+			{
+				IORStack out( S );
+				if( S.currentObject() && S.containsCurrent() ) {
+					out.pop();
+				}
+				return out;
+			}
+
+			//! OUT without a copy in the ordinary case: an entry stack that
+			//! does not hold O already IS the medium above the top.  For the
+			//! READ-ONLY uses (a layer's Pdf / BSDF, the probe's masses) and
+			//! for a top-layer Scatter it is also the right key (O).
+			static inline const IORStack& OutRef( const IORStack& S, std::optional<IORStack>& store )
+			{
+				if( !( S.currentObject() && S.containsCurrent() ) ) {
+					return S;
+				}
+				store.emplace( OutsideOf( S ) );
+				return *store;
+			}
+
+			//! The EXTERNAL form of the internal stack a ray leaves the
+			//! walk with: BELOW (the bottom key innermost) becomes OUT plus
+			//! O at the below medium's index; anything else (OUT after an
+			//! exit up through the top; GAP after a non-pushing bottom) is
+			//! already in external form.  `out` carries O as its current
+			//! object.
+			static IORStack* ToExternal( const CompositeSPF& s, const IORStack& internalSt, const IORStack& out )
+			{
+				IORStack* p = 0;
+				if( internalSt.topObject() == BottomKey( s ) ) {
+					p = new IORStack( out );
+					if( out.currentObject() ) {
+						p->push( internalSt.top() );
+					}
+				} else {
+					p = new IORStack( internalSt );
+					if( out.currentObject() ) {
+						p->SetCurrentObject( out.currentObject() );
+					}
+				}
+				GlobalLog()->PrintNew( p, __FILE__, __LINE__, "ior stack" );
+				return p;
+			}
+
+			//! Hands `r` (owned by a layer's container) the external stack.
+			static inline void SetExternalStack( const CompositeSPF& s, ScatteredRay& r, const IORStack& internalSt, const IORStack& out )
+			{
+				IORStack* p = ToExternal( s, internalSt, out );
+				if( r.delete_stack ) {
+					safe_delete( r.ior_stack );
+				}
+				r.ior_stack = p;
+				r.delete_stack = true;
 			}
 
 			//! Ray-anchored geometric-horizon test (the tree-wide idiom:
@@ -846,10 +921,12 @@ namespace RISE
 			static Probe ComputeProbe(
 				const CompositeSPF& s,
 				const RayIntersectionGeometric& ri,
-				const IORStack& outside,
+				const IORStack& entry,
 				const Scalar nm
 				)
 			{
+				std::optional<IORStack> outStore;
+				const IORStack& outside = OutRef( entry, outStore );
 				const Vector3 n = ri.onb.w();
 				auto isUp   = [&n]( const ScatteredRay& r ) { return Vector3Ops::Dot( r.ray.Dir(), n ) >= 0; };
 				auto isDown = [&n]( const ScatteredRay& r ) { return Vector3Ops::Dot( r.ray.Dir(), n ) < 0; };
@@ -951,7 +1028,7 @@ namespace RISE
 
 				HashedSampler hs( seed ^ kSaltProbeC );
 				ScatteredRayContainer cb;
-				P::Scatter( s.bottom, rb, hs, nm, cb, outside );
+				P::Scatter( s.bottom, rb, hs, nm, cb, Keyed( gap, BottomKey( s ) ) );
 				int bestUp = -1;
 				bestW = -1;
 				for( unsigned int i = 0; i < cb.Count(); i++ ) {
@@ -971,7 +1048,7 @@ namespace RISE
 				const Vector3 wu = Vector3Ops::Normalize( cb[bestUp].ray.Dir() );
 				const RayIntersectionGeometric rt = LayerRecord( ri, wu, CompositeSPF::GapPathLength( wu, n, s.thickness ) );
 				ScatteredRayContainer ct;
-				P::Scatter( s.top, rt, hs, nm, ct, gap );
+				P::Scatter( s.top, rt, hs, nm, ct, cb[bestUp].ior_stack ? KeyedTop( *cb[bestUp].ior_stack, outside ) : gap );
 				for( unsigned int i = 0; i < ct.Count(); i++ ) {
 					const ScatteredRay& r = ct[i];
 					if( Vector3Ops::Dot( r.ray.Dir(), n ) >= 0 && !r.isDelta && !s.pTopBSDF ) {
@@ -1105,6 +1182,7 @@ namespace RISE
 			static const Scalar kShareFloor;
 			static const Scalar kWalkerShareIfPossible;
 			static const Scalar kWalkerShareFloor;
+			static const Scalar kAdjointCosineShare;		// DL-297: cosine share of the adjoint warp draw under a tilted shading normal
 
 			static Weights MakeWeights( const CompositeSPF& s, const Probe& pr )
 			{
@@ -1203,25 +1281,36 @@ namespace RISE
 			//  WITHOUT the outgoing cosine.
 			//
 			//  (a) At every bottom visit, CONNECT to wOut through the top's
-			//      DELTA refraction: the internal direction ux that refracts
-			//      to wOut is fixed by Snell, so the term is
-			//          beta * f_bottom(ux) * W(ux) * Tr(ux) / eta^2
-			//      with W the top's delta up-going kray from inside along ux
+			//      DELTA transmission out of the gap.  For an IDEAL delta the
+			//      internal direction u that refracts to wOut is fixed by
+			//      Snell, and the term is
+			//          beta * f_bottom(u) * W(u) * Tr(u) / eta^2
+			//      with W the top's delta up-going kray from inside along u
 			//      (FORWARD evaluation, so a layer's own interior absorption
 			//      -- DielectricSPF's tau^distance -- is included exactly as
 			//      the walk applies it) and 1/eta^2 the solid-angle
 			//      compression of the exit: n_out^2 cos dw_out ==
-			//      n_gap^2 cos dw_in, i.e. integrating (a) against
-			//      cos dw_out reproduces the walk's own bottom-then-exit
-			//      step term for term.
+			//      n_gap^2 cos dw_in.
+			//      DL-297 (2026-10-02): a top whose delta-tagged transmission
+			//      is WARPED (DielectricSPF with a finite `scattering`, a
+			//      clipped Phong cos^N lobe about the Snell direction t)
+			//      lands at wOut with density q(wOut | u), so
+			//          f(wOut) cos(wOut) = INT dt cos(t)/eta^2 g(u(t)) q(wOut | u(t))
+			//      (g = beta f_bottom W Tr; u(t) the inverse Snell map).  One
+			//      sample of t from the ADJOINT warp p(t) -- the same cos^N
+			//      lobe about wOut, clipped to the exit hemisphere -- gives
+			//          beta f_bottom(u) W(u) Tr(u) / eta^2 * q cos(t) / ( p(t) cos(wOut) ),
+			//      which reduces to the ideal term when q and p are deltas.
+			//      q comes from the top itself (ISPF::DeltaTransmissionWarpPdf),
+			//      so it is the density of the draw its Scatter makes, clip
+			//      and DL-111 re-derivation included.
 			//  (b) At every top visit from below, the top's own BSDF for its
 			//      NON-DELTA exit lobes.
 			//  The walk continues by CONDITIONAL selection (reflections only
 			//  at each layer); exits are accounted by (a)/(b), never
-			//  sampled.  A delta-tagged top is priced as an IDEAL
-			//  refraction by (a): DielectricSPF's finite-`scattering`
-			//  transmission warp, which it itself tags delta, is not
-			//  reproduced on the exit crossing (see the DL-24 doc).
+			//  sampled.  A Henyey-Greenstein warp (which also keeps a delta
+			//  part) and a per-channel RGB warp have no single-density form
+			//  and are still priced as ideal (DL-297's residual).
 			// -----------------------------------------------------------
 			// -----------------------------------------------------------
 			//  THE EVALUATOR'S WALK, built once per shading point.
@@ -1235,30 +1324,37 @@ namespace RISE
 			//  every exit query at the same shading point -- the emitted
 			//  ray's own value, every NEE sample, every BDPT connection --
 			//  re-evaluates only the connections against it (DL-24 review
-			//  P2-3; +40 % render cost before).  Term (a)'s top transmission
-			//  at ux is drawn from its own stream seeded by (wi, wOut,
+			//  P2-3; +40 % render cost before).  Term (a)'s draws at the
+			//  exit come from their own stream seeded by (wi, wOut,
 			//  position), so `value` stays a deterministic function of its
 			//  arguments.  Sharing one walk across a vertex's exits
 			//  CORRELATES those estimates; each is still unbiased.
+			//
+			//  STACKS (DL-341): the walk threads ONE internal stack, the
+			//  bottom keyed by BottomKey(s), the top by O.  The bottom is
+			//  therefore evaluated against the GAP medium (its own key not
+			//  yet pushed), the top from below against the gap with O in it.
 			// -----------------------------------------------------------
 			template<class P>
 			struct WalkPath
 			{
 				typedef typename P::T T;
 				bool                   entered;
+				IORStack               out;			//!< OUT (the medium above the top; term (a)'s n_out)
 				IORStack               gap0;			//!< gap stack after the entry transmission (term (a)'s eta and top scatter)
 				std::vector<T>         betaBot;		//!< throughput ARRIVING at each bottom visit
 				std::vector<Vector3>   wBot;
 				std::vector<Scalar>    LBot;
+				std::vector<IORStack>  gapBot;		//!< stack the bottom sees at that visit (bottom-keyed)
 				std::vector<T>         betaTop;		//!< throughput ARRIVING at each top-underside visit
 				std::vector<Vector3>   wTop;
 				std::vector<Scalar>    LTop;
 				std::vector<IORStack>  gapTop;		//!< gap stack the top sees at that visit
-				WalkPath() : entered( false ), gap0( Scalar( 1 ) ) {}
+				WalkPath() : entered( false ), out( Scalar( 1 ) ), gap0( Scalar( 1 ) ) {}
 				void Clear()
 				{
 					entered = false;
-					betaBot.clear(); wBot.clear(); LBot.clear();
+					betaBot.clear(); wBot.clear(); LBot.clear(); gapBot.clear();
 					betaTop.clear(); wTop.clear(); LTop.clear(); gapTop.clear();
 				}
 			};
@@ -1267,7 +1363,7 @@ namespace RISE
 			static void BuildWalk(
 				const CompositeSPF& s,
 				const RayIntersectionGeometric& ri,
-				const IORStack& outside,
+				const IORStack& entry,
 				const Scalar nm,
 				WalkPath<P>& path
 				)
@@ -1277,6 +1373,10 @@ namespace RISE
 				const Vector3 n = ri.onb.w();
 				auto isUpBottom = [&n]( const ScatteredRay& r ) { return Vector3Ops::Dot( r.ray.Dir(), n ) > 0; };
 				auto isDownTop  = [&n]( const ScatteredRay& r ) { return Vector3Ops::Dot( r.ray.Dir(), n ) < 0; };
+
+				path.out = OutsideOf( entry );
+				const IORStack& outside = path.out;
+				const IObject* const kB = BottomKey( s );
 
 				HashedSampler hs( HashPoint( HashVector( kSaltEvaluate, ri.ray.Dir() ), ri.ptIntersection ) );
 
@@ -1312,15 +1412,19 @@ namespace RISE
 					path.betaBot.push_back( beta );
 					path.wBot.push_back( w );
 					path.LBot.push_back( Ld );
+					path.gapBot.push_back( Keyed( gap, kB ) );
 					SetLayerRay( rec, ri, w, Ld );
 					ScatteredRayContainer cb;
-					P::Scatter( s.bottom, rec, hs, nm, cb, outside );
+					P::Scatter( s.bottom, rec, hs, nm, cb, path.gapBot.back() );
 					k = SelectCarried<P>( cb, isUpBottom, beta, hs.Get1D(), q );
 					if( k < 0 ) {
 						return;
 					}
 					beta = P::Mul( beta, P::Scaled( P::Kray( cb[k] ), Scalar( 1 ) / q ) );
 					w = Vector3Ops::Normalize( cb[k].ray.Dir() );
+					if( cb[k].ior_stack ) {
+						gap = KeyedTop( *cb[k].ior_stack, outside );
+					}
 					if( !Roulette<P>( s, beta, cb[k].type, steps, hs ) ) {
 						return;
 					}
@@ -1358,13 +1462,77 @@ namespace RISE
 				}
 			}
 
+			//! DL-297: one draw of the ADJOINT of a cos^N warp -- the lobe
+			//! about `w`, clipped to the exit hemisphere `t . n > 0` (the
+			//! Snell image of any internal direction lies there) -- and
+			//! its exact density.  Where the shading normal is TILTED off
+			//! the geometric one the forward warp may be re-derived about
+			//! the true surface (DL-111), so its support is not guaranteed
+			//! to lie inside this lobe's: a cosine-hemisphere component
+			//! (`kAdjointCosineShare`) then keeps every exit direction
+			//! reachable.  Returns false (no sample) on a degenerate arc.
+			static bool SampleAdjointWarp(
+				const Vector3& w,
+				const Vector3& n,
+				const Scalar N,
+				const bool tilted,
+				const OrthonormalBasis3D& onb,
+				ISampler& smp,
+				Vector3& t,
+				Scalar& pdf
+				)
+			{
+				const Scalar eps = tilted ? kAdjointCosineShare : Scalar( 0 );
+				const Scalar uSel = smp.Get1D();
+				const Point2 u2 = smp.Get2D();
+				if( uSel < eps ) {
+					t = GeometricUtilities::CreateDiffuseVector( onb, u2 );
+				} else {
+					const Scalar down = acos( r_min( Scalar( 1 ), pow( u2.x, Scalar( 1 ) / ( N + Scalar( 1 ) ) ) ) );
+					Scalar half = 0;
+					t = ( down > 0 ) ? GeometricUtilities::PerturbClipped( w, down, n, u2.y, &half ) : w;
+					if( down > 0 && !( half > 0 ) ) {
+						return false;
+					}
+				}
+				t = Vector3Ops::Normalize( t );
+				const Scalar cn = Vector3Ops::Dot( t, n );
+				if( !( cn > 0 ) ) {
+					return false;
+				}
+				Scalar pPhong = 0;
+				const Scalar ct = Vector3Ops::Dot( t, w );
+				if( ct > 0 ) {
+					const Scalar down = acos( r_min( Scalar( 1 ), ct ) );
+					Scalar half = PI;
+					if( down > 0 ) {
+						GeometricUtilities::PerturbClipped( w, down, n, Scalar( 0.5 ), &half );
+					}
+					if( half > 0 ) {
+						pPhong = ( N + Scalar( 1 ) ) * pow( ct, N ) / ( Scalar( 2 ) * half );
+					}
+				}
+				pdf = ( Scalar( 1 ) - eps ) * pPhong + eps * cn * INV_PI;
+				return pdf > 0;
+			}
+
+			//! True when the shading normal is tilted off the geometric one
+			//! (the DielectricSPF::SelectionMassIsDeterministic test).
+			static inline bool ShadingTilted( const RayIntersectionGeometric& ri )
+			{
+				if( !ri.HasTrueGeomSide() || !( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar( 1e-12 ) ) ) {
+					return false;
+				}
+				const Scalar c = fabs( Vector3Ops::Dot( Vector3Ops::Normalize( ri.vGeomNormal ), ri.onb.w() ) );
+				return c < Scalar( 1 ) - Scalar( 1e-12 );
+			}
+
 			//! The connection terms against a recorded walk.
 			template<class P>
 			static typename P::T EvaluateFromWalk(
 				const CompositeSPF& s,
 				const RayIntersectionGeometric& ri,
 				const Vector3& wOut,
-				const IORStack& outside,
 				const Scalar nm,
 				const WalkPath<P>& path
 				)
@@ -1378,29 +1546,54 @@ namespace RISE
 				RayIntersectionGeometric rec( ri );
 
 				// Term (a): every bottom visit connects to wOut through the
-				// top's delta refraction at ux.
+				// top's delta transmission at u.
 				if( s.pBottomBSDF && !path.betaBot.empty() ) {
-					const Scalar nOut = outside.top();
+					const Scalar nOut = path.out.top();
 					const Scalar nGap = path.gap0.top();
 					const Scalar eta = ( nOut > 0 && nGap > 0 ) ? ( nGap / nOut ) : Scalar( 1 );
+					HashedSampler hx( HashPoint( HashVector( HashVector( kSaltEvaluateExit, ri.ray.Dir() ), wOut ), ri.ptIntersection ) );
+
+					// DL-297: a WARPED delta transmission is connected
+					// through an adjoint draw of its warp (see above).
+					const Scalar warpN = s.top.DeltaTransmissionWarpExponent( ri, nm );
+					Vector3 t = wOut;
+					Scalar pT = 0;
+					bool ok = true;
+					if( warpN >= 0 ) {
+						ok = SampleAdjointWarp( wOut, n, warpN, ShadingTilted( ri ), ri.onb, hx, t, pT );
+					}
 					Vector3 ux( 0, 0, 1 );
-					if( InternalDirectionForExit( wOut, n, eta, ux ) ) {
+					if( ok && InternalDirectionForExit( t, n, eta, ux ) ) {
 						const Scalar Lx = CompositeSPF::GapPathLength( ux, n, s.thickness );
 						SetLayerRay( rec, ri, ux, Lx );
-						HashedSampler hx( HashPoint( HashVector( HashVector( kSaltEvaluateExit, ri.ray.Dir() ), wOut ), ri.ptIntersection ) );
 						ScatteredRayContainer cx;
 						P::Scatter( s.top, rec, hx, nm, cx, path.gap0 );
 						T W = P::Zero();
-						for( unsigned int i = 0; i < cx.Count(); i++ ) {
-							if( cx[i].isDelta && Vector3Ops::Dot( cx[i].ray.Dir(), n ) >= 0 ) {
-								W = W + P::Kray( cx[i] );
+						Scalar adj = 1;
+						if( warpN >= 0 ) {
+							// The transmission's weight wherever its warp
+							// happened to land on this draw (its density is
+							// q, below): identified by type, not direction.
+							for( unsigned int i = 0; i < cx.Count(); i++ ) {
+								if( cx[i].isDelta && cx[i].type == ScatteredRay::eRayRefraction ) {
+									W = W + P::Kray( cx[i] );
+								}
+							}
+							const Scalar q = s.top.DeltaTransmissionWarpPdf( rec, wOut, nm, path.gap0 );
+							const Scalar cOut = Vector3Ops::Dot( wOut, n );
+							adj = ( q > 0 && cOut > 0 ) ? q * Vector3Ops::Dot( t, n ) / ( pT * cOut ) : Scalar( 0 );
+						} else {
+							for( unsigned int i = 0; i < cx.Count(); i++ ) {
+								if( cx[i].isDelta && Vector3Ops::Dot( cx[i].ray.Dir(), n ) >= 0 ) {
+									W = W + P::Kray( cx[i] );
+								}
 							}
 						}
-						if( P::MaxOf( W ) > 0 ) {
-							const T aFactor = P::Scaled( P::Mul( W, P::GapAtt( s.extinction, ri, nm, Lx ) ), Scalar( 1 ) / ( eta * eta ) );
+						if( P::MaxOf( W ) > 0 && adj > 0 ) {
+							const T aFactor = P::Scaled( P::Mul( W, P::GapAtt( s.extinction, ri, nm, Lx ) ), adj / ( eta * eta ) );
 							for( size_t i = 0; i < path.betaBot.size(); i++ ) {
 								SetLayerRay( rec, ri, path.wBot[i], path.LBot[i] );
-								f = f + P::Mul( P::Mul( path.betaBot[i], P::Value( *s.pBottomBSDF, ux, rec, nm, &outside ) ), aFactor );
+								f = f + P::Mul( P::Mul( path.betaBot[i], P::Value( *s.pBottomBSDF, ux, rec, nm, &path.gapBot[i] ) ), aFactor );
 							}
 						}
 					}
@@ -1459,7 +1652,7 @@ namespace RISE
 				if( !outermost ) {
 					WalkPath<P> local;
 					BuildWalk<P>( s, ri, outside, nm, local );
-					return EvaluateFromWalk<P>( s, ri, wOut, outside, nm, local );
+					return EvaluateFromWalk<P>( s, ri, wOut, nm, local );
 				}
 
 				Scalar key[kProbeKeySize];
@@ -1468,7 +1661,7 @@ namespace RISE
 					const Entry& e = cache[i];
 					if( e.valid && e.id == s.instanceId && e.nm == nm &&
 						std::memcmp( e.key, key, sizeof( key ) ) == 0 ) {
-						return EvaluateFromWalk<P>( s, ri, wOut, outside, nm, e.path );
+						return EvaluateFromWalk<P>( s, ri, wOut, nm, e.path );
 					}
 				}
 				Entry& e = cache[next];
@@ -1479,7 +1672,7 @@ namespace RISE
 				e.nm = nm;
 				std::memcpy( e.key, key, sizeof( key ) );
 				e.valid = true;
-				return EvaluateFromWalk<P>( s, ri, wOut, outside, nm, e.path );
+				return EvaluateFromWalk<P>( s, ri, wOut, nm, e.path );
 			}
 
 			//! Direct + covered non-delta response at `vLightIn`.
@@ -1496,7 +1689,7 @@ namespace RISE
 			{
 				direct = P::Zero();
 				walked = P::Zero();
-				if( !EntryFromTop( ri ) ) {
+				if( !CoveredEntry( ri ) ) {
 					return;
 				}
 				const Vector3 w = Vector3Ops::Normalize( vLightIn );
@@ -1504,7 +1697,8 @@ namespace RISE
 					return;
 				}
 				if( s.pTopBSDF ) {
-					direct = P::Value( *s.pTopBSDF, vLightIn, ri, nm, pStack );
+					std::optional<IORStack> outStore;
+					direct = P::Value( *s.pTopBSDF, vLightIn, ri, nm, pStack ? &OutRef( *pStack, outStore ) : pStack );
 				}
 				if( !s.HasLayeredValue() || !PassesGeomGate( ri, w ) ) {
 					return;
@@ -1533,6 +1727,58 @@ namespace RISE
 				}
 			}
 
+			//! Where a walker starts (DL-341).
+			enum WalkStart
+			{
+				eStartCoveredTop,		//!< the WALKER branch of a covered entry: conditional entry transmission, covered exits not emitted
+				eStartNaturalTop,		//!< from above but behind a tilted shading normal: natural walk from the top, every exit emitted
+				eStartNaturalBottom		//!< from below: natural walk from the bottom, every exit emitted
+			};
+
+			//! DL-341: the GAP stack a walk entered from BELOW starts its
+			//! return trip into -- OUT plus whatever the top pushes when it
+			//! transmits a ray DOWN (read off a hashed from-above Scatter of
+			//! the top at normal incidence; a top that pushes nothing leaves
+			//! the gap at OUT).  The bottom's exit out of the BELOW medium
+			//! refracts into this index, and the top's own exit pops it.
+			template<class P>
+			static IORStack GapStackForBelow(
+				const CompositeSPF& s,
+				const RayIntersectionGeometric& ri,
+				const IORStack& out,
+				const Scalar nm
+				)
+			{
+				if( !out.currentObject() ) {
+					return out;
+				}
+				const Vector3 n = ri.onb.w();
+				RayIntersectionGeometric rp( ri );
+				rp.ray.origin = ri.ptIntersection;
+				rp.ray.SetDir( n );
+				rp.ray.Advance( Scalar( 1 ) );
+				rp.ray.SetDir( -n );
+				const uint64_t seed = HashPoint( kSaltGapBelow, ri.ptIntersection );
+				for( int i = 0; i < kGapBelowDraws; i++ ) {
+					HashedSampler hs( seed + uint64_t( i ) * 0x9E3779B97F4A7C15ull );
+					ScatteredRayContainer c;
+					P::Scatter( s.top, rp, hs, nm, c, out );
+					int best = -1;
+					Scalar bestW = -1;
+					for( unsigned int j = 0; j < c.Count(); j++ ) {
+						if( c[j].ior_stack && Vector3Ops::Dot( c[j].ray.Dir(), n ) < 0 &&
+							c[j].ior_stack->containsCurrent() && P::Weight( c[j] ) > bestW ) {
+							bestW = P::Weight( c[j] );
+							best = (int)j;
+						}
+					}
+					if( best >= 0 ) {
+						return KeyedTop( *c[best].ior_stack, out );
+					}
+				}
+				return out;
+			}
+
 			template<class P>
 			static void Walker(
 				const CompositeSPF& s,
@@ -1540,24 +1786,29 @@ namespace RISE
 				ISampler& sampler,
 				const Scalar nm,
 				ScatteredRayContainer& scattered,
-				const IORStack& outside,
+				const IORStack& entry,
 				const Scalar weightScale,
-				const bool fromTop
+				const WalkStart start
 				)
 			{
 				typedef typename P::T T;
 				const Vector3 n = ri.onb.w();
-				IORStack gap( outside );
+				const IObject* const kB = BottomKey( s );
+				const IORStack out = OutsideOf( entry );
+
+				// ONE internal stack (DL-341): the bottom is called with its
+				// own key, the top with O; refreshed after every crossing.
+				IORStack st( out );
 				T beta = P::Scaled( P::One(), weightScale );
 				unsigned int steps = 0;
-				bool atBottom = true;
+				bool atBottom = false;
 				bool lastBottomEvaluable = false;
 				RayIntersectionGeometric cur( ri );
 
-				if( fromTop ) {
+				if( start == eStartCoveredTop ) {
 					auto isDownTop = [&n]( const ScatteredRay& r ) { return Vector3Ops::Dot( r.ray.Dir(), n ) < 0; };
 					ScatteredRayContainer c0;
-					P::Scatter( s.top, ri, sampler, nm, c0, outside );
+					P::Scatter( s.top, ri, sampler, nm, c0, out );
 					Scalar q = 0;
 					const int k = SelectSubset<P>( c0, isDownTop, sampler.Get1D(), q );
 					if( k < 0 ) {
@@ -1566,7 +1817,7 @@ namespace RISE
 					beta = P::Mul( beta, P::Scaled( P::Kray( c0[k] ), Scalar( 1 ) / q ) );
 					const Vector3 w = Vector3Ops::Normalize( c0[k].ray.Dir() );
 					if( c0[k].ior_stack ) {
-						gap = *c0[k].ior_stack;
+						st = *c0[k].ior_stack;
 					}
 					if( !Roulette<P>( s, beta, c0[k].type, 0, sampler ) ) {
 						return;
@@ -1575,6 +1826,15 @@ namespace RISE
 					const Scalar L = CompositeSPF::GapPathLength( w, n, s.thickness );
 					beta = P::Mul( beta, P::GapAtt( s.extinction, ri, nm, L ) );
 					SetLayerRay( cur, ri, w, L );
+					atBottom = true;
+				} else if( start == eStartNaturalBottom ) {
+					// From below: the ray is in the BELOW medium (the
+					// entry stack's top -- O's index when the stack holds
+					// O, the medium the ray is in when it does not).
+					st = GapStackForBelow<P>( s, ri, out, nm );
+					st.SetCurrentObject( kB );
+					st.push( entry.top() );
+					atBottom = true;
 				}
 
 				for( unsigned int ev = 0; ev < CompositeSPF::kMaxWalkEvents; ev++ )
@@ -1583,7 +1843,11 @@ namespace RISE
 						return;
 					}
 					ScatteredRayContainer c;
-					P::Scatter( atBottom ? s.bottom : s.top, cur, sampler, nm, c, CompositeSPF::EvalStack( cur, outside, gap ) );
+					if( atBottom ) {
+						P::Scatter( s.bottom, cur, sampler, nm, c, Keyed( st, kB ) );
+					} else {
+						P::Scatter( s.top, cur, sampler, nm, c, KeyedTop( st, out ) );
+					}
 					Scalar q = 0;
 					auto any = []( const ScatteredRay& ) { return true; };
 					const int kSel = SelectCarried<P>( c, any, beta, sampler.Get1D(), q );
@@ -1592,6 +1856,7 @@ namespace RISE
 					}
 					ScatteredRay* r = &c[kSel];
 					const Scalar cosN = Vector3Ops::Dot( r->ray.Dir(), n );
+					const IORStack after( r->ior_stack ? *r->ior_stack : st );
 
 					if( atBottom ) {
 						if( cosN <= 0 ) {
@@ -1599,6 +1864,7 @@ namespace RISE
 							// evaluator.
 							P::SetKray( *r, P::Mul( beta, P::Scaled( P::Kray( *r ), Scalar( 1 ) / q ) ) );
 							r->isDelta = true;
+							SetExternalStack( s, *r, after, out );
 							Emit( scattered, *r );
 							return;
 						}
@@ -1609,20 +1875,19 @@ namespace RISE
 							// prices it: term (b) (non-delta exit, top has a
 							// BSDF) or term (a) (delta exit right after a
 							// non-delta bottom event with a BSDF).
-							const bool covered = fromTop && (
+							const bool covered = ( start == eStartCoveredTop ) && (
 								( !r->isDelta && s.pTopBSDF ) ||
 								( r->isDelta && lastBottomEvaluable ) );
 							if( !covered ) {
 								P::SetKray( *r, P::Mul( beta, P::Scaled( P::Kray( *r ), Scalar( 1 ) / q ) ) );
 								r->isDelta = true;
+								SetExternalStack( s, *r, after, out );
 								Emit( scattered, *r );
 							}
 							return;
 						}
-						if( r->ior_stack ) {
-							gap = *r->ior_stack;
-						}
 					}
+					st = after;
 
 					beta = P::Mul( beta, P::Scaled( P::Kray( *r ), Scalar( 1 ) / q ) );
 					const Vector3 w = Vector3Ops::Normalize( r->ray.Dir() );
@@ -1647,6 +1912,7 @@ namespace RISE
 				const RayIntersectionGeometric& ri,
 				const Scalar nm,
 				ScatteredRayContainer& scattered,
+				const IORStack& entry,
 				const IORStack& outside,
 				const Probe& pr,
 				const Weights& W,
@@ -1659,7 +1925,7 @@ namespace RISE
 				Scalar walkedPdf = 0;
 				const Scalar pdf = MixturePdf<P>( s, ri, w, outside, nm, pr, W, &walkedPdf );
 				T direct, walked;
-				EvaluateLayeredParts<P>( s, w, ri, &outside, nm, direct, walked );
+				EvaluateLayeredParts<P>( s, w, ri, &entry, nm, direct, walked );
 				const Scalar cosO = fabs( Vector3Ops::Dot( w, ri.vNormal ) );
 
 				ScatteredRay out;
@@ -1692,12 +1958,18 @@ namespace RISE
 				const IORStack& ior_stack
 				)
 			{
-				// Both stacks start at the stack Scatter() was entered with:
-				// nothing has crossed the top interface yet, so the gap medium
-				// is still the outer one.
-				if( !EntryFromTop( ri ) ) {
-					Walker<P>( s, ri, sampler, nm, scattered, ior_stack, Scalar( 1 ), false );
+				// DL-341: the entry side is the GEOMETRIC one (EnteredFromAbove);
+				// an arrival from below, or from above but behind a tilted
+				// shading normal, is walked naturally from the layer it
+				// meets first and delta-tagged (the evaluator does not price
+				// it).  See "THE STACK CONVENTION".
+				if( !EnteredFromAbove( ri ) ) {
+					Walker<P>( s, ri, sampler, nm, scattered, ior_stack, Scalar( 1 ), eStartNaturalBottom );
+				} else if( !CoveredEntry( ri ) ) {
+					Walker<P>( s, ri, sampler, nm, scattered, ior_stack, Scalar( 1 ), eStartNaturalTop );
 				} else {
+					std::optional<IORStack> outStore;
+					const IORStack& outside = OutRef( ior_stack, outStore );
 					const Probe pr = DoProbe<P>( s, ri, ior_stack, nm );
 					bool any = false;
 					const Weights W = NormalizedWeights( s, pr, any );
@@ -1710,7 +1982,7 @@ namespace RISE
 					if( u < W.w1 ) {
 						auto isUp = [&n]( const ScatteredRay& r ) { return Vector3Ops::Dot( r.ray.Dir(), n ) >= 0; };
 						ScatteredRayContainer c;
-						P::Scatter( s.top, ri, sampler, nm, c, ior_stack );
+						P::Scatter( s.top, ri, sampler, nm, c, outside );
 						Scalar q = 0;
 						const int k = SelectSubset<P>( c, isUp, sampler.Get1D(), q );
 						if( k >= 0 ) {
@@ -1729,28 +2001,28 @@ namespace RISE
 								}
 								Emit( scattered, r );
 							} else {
-								EmitNonDelta<P>( s, ri, nm, scattered, ior_stack, pr, W,
+								EmitNonDelta<P>( s, ri, nm, scattered, ior_stack, outside, pr, W,
 									Vector3Ops::Normalize( r.ray.Dir() ), r.type, false );
 							}
 						}
 					} else if( u < W.w1 + W.w2 ) {
 						const Vector3 w = GeometricUtilities::CreateDiffuseVector( ri.onb, sampler.Get2D() );
 						if( PassesGeomGate( ri, w ) ) {
-							EmitNonDelta<P>( s, ri, nm, scattered, ior_stack, pr, W,
+							EmitNonDelta<P>( s, ri, nm, scattered, ior_stack, outside, pr, W,
 								w, ScatteredRay::eRayDiffuse, !W.aggregate );
 						}
 					} else if( u < W.w1 + W.w2 + W.w3 ) {
 						ScatteredRayContainer c;
-						P::Scatter( s.bottom, ri, sampler, nm, c, ior_stack );
+						P::Scatter( s.bottom, ri, sampler, nm, c, outside );
 						Scalar q = 0;
 						const ScatteredRay* r = c.RandomlySelect( sampler.Get1D(), P::kNM, &q );
 						if( r && !r->isDelta && Vector3Ops::Dot( r->ray.Dir(), n ) > 0 ) {
-							EmitNonDelta<P>( s, ri, nm, scattered, ior_stack, pr, W,
+							EmitNonDelta<P>( s, ri, nm, scattered, ior_stack, outside, pr, W,
 								Vector3Ops::Normalize( r->ray.Dir() ), r->type, !W.aggregate );
 						}
 					} else {
 						if( W.w4 > 0 ) {
-							Walker<P>( s, ri, sampler, nm, scattered, ior_stack, Scalar( 1 ) / W.w4, true );
+							Walker<P>( s, ri, sampler, nm, scattered, ior_stack, Scalar( 1 ) / W.w4, eStartCoveredTop );
 						}
 					}
 				}
@@ -1770,7 +2042,7 @@ namespace RISE
 				const IORStack& ior_stack
 				)
 			{
-				if( !EntryFromTop( ri ) ) {
+				if( !CoveredEntry( ri ) ) {
 					return 0;
 				}
 				const Vector3 w = Vector3Ops::Normalize( wo );
@@ -1783,7 +2055,8 @@ namespace RISE
 				if( !any ) {
 					return 0;
 				}
-				return MixturePdf<P>( s, ri, w, ior_stack, nm, pr, W, 0 );
+				std::optional<IORStack> outStore;
+				return MixturePdf<P>( s, ri, w, OutRef( ior_stack, outStore ), nm, pr, W, 0 );
 			}
 		};
 
@@ -1791,6 +2064,7 @@ namespace RISE
 		const Scalar CompositeSPFImpl::kShareFloor            = Scalar( 0.02 );
 		const Scalar CompositeSPFImpl::kWalkerShareIfPossible = Scalar( 0.5 );
 		const Scalar CompositeSPFImpl::kWalkerShareFloor      = Scalar( 0.05 );
+		const Scalar CompositeSPFImpl::kAdjointCosineShare    = Scalar( 0.1 );
 	}
 }
 
@@ -1798,9 +2072,11 @@ namespace RISE
 // pass-through -> gap crossing -> second-layer pass-through (any other lobe
 // turns the ray, and a turned ray never re-aligns with the incoming
 // direction).  The first layer is chosen exactly as Scatter chooses it
-// (EntryFromTop: top when the ray travels down or is edge-on).  A top
-// pass-through that already reads as up-going (the numerically edge-on
-// `d == 0` case) is emitted by the DIRECT branch as the whole answer.
+// (DL-341: by the GEOMETRIC side, EnteredFromAbove -- top from above, bottom
+// from below).  A first-layer pass-through that already leaves on its own
+// side of the shading plane (from above: up-going, the edge-on `d == 0` case
+// or a ray behind a tilted shading normal; from below: down-going, the
+// mirror case) is an immediate exit of the walk, so it is the whole answer.
 // Otherwise it is emitted only by the WALKER, as a delta-tagged exit through
 // the far layer, with weight beta = (1/w4) * (kray1/q1) * Beer * (kray2/q2)
 // on a draw of probability w4 * q1 * q2 -- expectation t1 * Beer * t2 for
@@ -1816,8 +2092,8 @@ namespace RISE
 // the gates are gone.  So is the old importance floor on the attenuation:
 // the walker stops only at an exactly zero throughput.
 	//! DL-345: a composite's layers live INSIDE one thin surface, and its
-	//! walk keys every internal layer crossing on the IOR stacks it builds
-	//! (`outside` / `gap`, CompositeSPF::EvalStack).  The open-sheet FACE
+	//! walk keys every internal layer crossing on the IOR stack it threads
+	//! (DL-341, "THE STACK CONVENTION" above).  The open-sheet FACE
 	//! rule the transmissive SPFs apply to a provably open sheet
 	//! (IORStackSeeding::ResolveOpenSheetCrossing) would reinterpret those
 	//! internal crossings -- an up-going walk ray meets the top from the
@@ -1847,7 +2123,7 @@ RISEPel CompositeSPF::DeltaPassThroughTransmittance(
 
 	const Vector3 dir = ri.ray.Dir();
 	const Scalar  d   = Vector3Ops::Dot( dir, ri.onb.w() );
-	const bool fromAbove = ( d <= 0 );
+	const bool fromAbove = CompositeSPFImpl::EnteredFromAbove( ri );
 	const ISPF& first  = fromAbove ? top : bottom;
 	const ISPF& second = fromAbove ? bottom : top;
 
@@ -1855,7 +2131,7 @@ RISEPel CompositeSPF::DeltaPassThroughTransmittance(
 	if( !( ColorMath::MaxValue( t1 ) > 0 ) ) {
 		return RISEPel( 0, 0, 0 );
 	}
-	if( fromAbove && d >= 0 ) {
+	if( ( fromAbove && d >= 0 ) || ( !fromAbove && d <= 0 ) ) {
 		return t1;
 	}
 
@@ -1881,7 +2157,7 @@ Scalar CompositeSPF::DeltaPassThroughTransmittanceNM(
 
 	const Vector3 dir = ri.ray.Dir();
 	const Scalar  d   = Vector3Ops::Dot( dir, ri.onb.w() );
-	const bool fromAbove = ( d <= 0 );
+	const bool fromAbove = CompositeSPFImpl::EnteredFromAbove( ri );
 	const ISPF& first  = fromAbove ? top : bottom;
 	const ISPF& second = fromAbove ? bottom : top;
 
@@ -1889,7 +2165,7 @@ Scalar CompositeSPF::DeltaPassThroughTransmittanceNM(
 	if( !( t1 > 0 ) ) {
 		return 0;
 	}
-	if( fromAbove && d >= 0 ) {
+	if( ( fromAbove && d >= 0 ) || ( !fromAbove && d <= 0 ) ) {
 		return t1;
 	}
 
@@ -2003,7 +2279,7 @@ Scalar CompositeSPF::EvaluateLobeFNM(
 	// the ISPF default's 6-argument EvaluateKrayNM supplies the cos and the
 	// division.  PER-BRANCH mode (a top whose selection is itself random)
 	// prices each branch's own class instead, which this cannot recover.
-	if( !CompositeSPFImpl::EntryFromTop( ri ) ) {
+	if( !CompositeSPFImpl::CoveredEntry( ri ) ) {
 		return -1;
 	}
 	const CompositeSPFImpl::Probe pr = CompositeSPFImpl::DoProbe<CompositeSPFImpl::PipeNM>( *this, ri, ior_stack, nm );
@@ -2051,7 +2327,7 @@ Scalar CompositeSPF::EvaluateKrayNM(
 	if( rayType != ScatteredRay::eRayReflection ) {
 		return -1;
 	}
-	if( !CompositeSPFImpl::EntryFromTop( ri ) ) {
+	if( !CompositeSPFImpl::CoveredEntry( ri ) ) {
 		return -1;
 	}
 	const Vector3 n = ri.onb.w();
@@ -2071,7 +2347,8 @@ Scalar CompositeSPF::EvaluateKrayNM(
 	ScatteredRayContainer c;
 	{
 		CompositeSPFImpl::HashedSampler hs( seed ^ CompositeSPFImpl::kSaltProbeA );
-		top.ScatterNM( ri, hs, nm, c, ior_stack );
+		std::optional<IORStack> outStore;
+		top.ScatterNM( ri, hs, nm, c, CompositeSPFImpl::OutRef( ior_stack, outStore ) );
 	}
 	const unsigned int count = c.Count();
 	Scalar total = 0;
