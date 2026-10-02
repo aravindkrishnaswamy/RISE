@@ -149,13 +149,15 @@ namespace RISE
 		/// Returns true if this material provides spectral RW SSS.
 		///
         /// NM consumers prefer this query even when RGB parameters exist.
-        /// RandomWalkSSSMaterial keeps its coefficient snapshot but evaluates
-        /// the boundary IOR at nm. Spectral-only implementations can also supply
+        /// RandomWalkSSSMaterial evaluates its absorption, scattering and
+        /// boundary IOR at nm (same snapshot point as its RGB parameters;
+        /// DL-374). Spectral-only implementations can also supply
         /// wavelength-dependent coefficients and return no RGB parameters.
-		/// The output params_out has all 3 RGB channels set to
-		/// the same scalar value for the requested wavelength,
-		/// so the walk's luminance-derived NM path uses the
-		/// correct per-wavelength extinction.
+		/// The output params_out MUST have all 3 RGB channels set to
+		/// the same scalar value for the requested wavelength:
+		/// RandomWalkSSS reads a broadcast triple exactly, and
+		/// collapses anything else to a wavelength-independent
+		/// (grey) luminance.
 		///
 		/// \param nm         Wavelength in nm
 		/// \param params_out Filled with coefficients at this wavelength
