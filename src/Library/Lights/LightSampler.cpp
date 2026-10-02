@@ -1961,12 +1961,33 @@ bool LightSampler::SampleEnvLightEmission(
 	return true;
 }
 
+//
+// PdfSelectLight / PdfSelectLuminary -- the selection pmf of SampleLight()
+// (DL-348, 2026-10-02).
+//
+// These are the MIS partner densities of the strategies SampleLight() roots:
+// BDPT/VCM/MLT NEE (s = 1), light tracing (t = 1), the s >= 2 connections
+// and VCM merging all select their light with SampleLight()'s single
+// env-vs-alias roll.  The light BVH is NEVER consulted there -- it drives
+// PT's own NEE only (EvaluateDirectLighting, whose partner is
+// CachedPdfSelectLuminary).  These queries used to return the BVH's
+// shading-point-dependent pmf whenever the BVH was built (`light_bvh`
+// defaults TRUE, built for 2+ lights), so the eye-hits-emitter strategy
+// (VCM EvaluateS0Impl, BDPT s = 0) weighted against a selection density
+// its competitors never used: a partition-of-unity violation, VCM 0.92 /
+// BDPT 0.96 of the closed form with four equal quads under an
+// orthographic camera (VCMStrategyBalanceTest topology Y).  One light
+// (no BVH) and one multi-quad mesh luminary (one table entry) were
+// immune.  The shading point / normal arguments are therefore unused;
+// the signature is kept so callers state where the alternative would
+// have selected from.
+//
 Scalar LightSampler::PdfSelectLight(
-	const IScene& scene,
-	const LuminaryManager::LuminariesList& luminaries,
+	const IScene& /*scene*/,
+	const LuminaryManager::LuminariesList& /*luminaries*/,
 	const ILight& light,
-	const Point3& shadingPoint,
-	const Vector3& shadingNormal
+	const Point3& /*shadingPoint*/,
+	const Vector3& /*shadingNormal*/
 	) const
 {
 	// Find the matching entry in the light table
@@ -1983,14 +2004,9 @@ Scalar LightSampler::PdfSelectLight(
 			// weights that compare "what would the alternative NEE
 			// strategy have produced" against the actual SampleLight
 			// pdf are inconsistent — and VCM env+mesh over-counts at
-			// 128% of PT (Session 9 follow-up bug).  The LightBVH
-			// branch needs the same factor for the same reason.
+			// 128% of PT (Session 9 follow-up bug).  Alias-only:
+			// SampleLight() never consults the light BVH (DL-348).
 			const Scalar aliasShare = Scalar( 1 ) - cachedEnvSelectProb;
-			if( pLightBVH && pLightBVH->IsBuilt() )
-			{
-				return aliasShare *
-					pLightBVH->Pdf( i, shadingPoint, shadingNormal );
-			}
 			return aliasShare *
 				static_cast<Scalar>( aliasTable.Pdf( i ) );
 		}
@@ -2000,11 +2016,11 @@ Scalar LightSampler::PdfSelectLight(
 }
 
 Scalar LightSampler::PdfSelectLuminary(
-	const IScene& scene,
-	const LuminaryManager::LuminariesList& luminaries,
+	const IScene& /*scene*/,
+	const LuminaryManager::LuminariesList& /*luminaries*/,
 	const IObject& luminary,
-	const Point3& shadingPoint,
-	const Vector3& shadingNormal
+	const Point3& /*shadingPoint*/,
+	const Vector3& /*shadingNormal*/
 	) const
 {
 	if( !pPreparedLuminaries )
@@ -2020,13 +2036,8 @@ Scalar LightSampler::PdfSelectLuminary(
 			if( (*pPreparedLuminaries)[lightEntries[i].lumIndex].pLum == &luminary )
 			{
 				// Continuous-PMF rescale — see `PdfSelectLight` above
-				// for the full rationale.
+				// for the full rationale; alias-only (DL-348).
 				const Scalar aliasShare = Scalar( 1 ) - cachedEnvSelectProb;
-				if( pLightBVH && pLightBVH->IsBuilt() )
-				{
-					return aliasShare *
-						pLightBVH->Pdf( i, shadingPoint, shadingNormal );
-				}
 				return aliasShare *
 					static_cast<Scalar>( aliasTable.Pdf( i ) );
 			}

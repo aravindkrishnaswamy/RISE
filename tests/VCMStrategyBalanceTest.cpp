@@ -2686,6 +2686,262 @@ static void TestAutoRadiusSmallPatchX()
 	Check( std::fabs( m / expected - 1.0 ) <= tol, buf );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Topology Y: SEVERAL equal luminaries (DL-348).
+//
+// A Lambertian floor (rho 0.5) under N equal, single-sided, face-down
+// 0.8 x 0.8 emitter quads at height 1.4 (N = 1 at the centre; N = 2 at
+// x = +/-1.5; N = 4 at (+/-1.5, +/-1.5)), seen by an orthographic
+// camera framing the floor square [-2, 2]^2.  The quads reflect
+// nothing (`material none`), so the image is the closed form
+// rho/pi * mean(E), E = M * sum_i F_i (the point-to-parallel-rectangle
+// form factor) -- no interreflection exists.  Two controls: the SAME
+// four quads as ONE luminary (an indexed mesh, so one light-table
+// entry), and a pinhole view of the four-light scene against PT.  The
+// last row adds a uniform environment to the four quads (vs PT).
+//
+// Defect (DL-348): `PdfSelectLuminary`, the selection probability the
+// eye-hits-emitter strategy (VCM `EvaluateS0Impl`, BDPT s = 0) uses in
+// its MIS weight, returned the LIGHT-BVH's shading-point-dependent pmf
+// whenever the BVH was built (`light_bvh` defaults TRUE; built for 2+
+// lights), while every strategy it competes with -- NEE (s = 1), the
+// t = 1 splat, the s >= 2 connections, merging -- roots its light
+// subpath through `SampleLight`, the shading-point-INDEPENDENT alias
+// table.  Two different selection densities for one strategy is a
+// partition-of-unity violation; one light (no BVH) and one mesh
+// luminary are immune by construction, which is the row's own
+// discriminator.  Numbers: docs/DL348_MULTI_LUMINARY_SELECTION_PDF.md.
+//////////////////////////////////////////////////////////////////////
+namespace TopologyY
+{
+	const double kPi = 3.14159265358979323846;
+	const double kRho = 0.5;
+	const double kH = 1.4;			// emitter height above the floor
+	const double kHalf = 0.4;		// emitter half-width
+	const double kScale = 6.0;		// exitance M (white painter x scale)
+	const double kOff = 1.5;		// emitter centre offset
+	const double kView = 4.0;		// orthographic viewport width
+	const double kEnvL = 0.05;		// uniform environment radiance (env row; small enough
+								// that the quads carry ~70 % of the image)
+	const int kSpp = 64;
+	const int kRepeats = 4;
+
+	struct Layout { int n; double cx[4]; double cy[4]; bool oneMesh; };
+
+	const Layout kOne    = { 1, { 0, 0, 0, 0 }, { 0, 0, 0, 0 }, false };
+	const Layout kTwo    = { 2, { -kOff, kOff, 0, 0 }, { 0, 0, 0, 0 }, false };
+	const Layout kFour   = { 4, { -kOff, kOff, -kOff, kOff }, { -kOff, -kOff, kOff, kOff }, false };
+	const Layout kFourMesh = { 4, { -kOff, kOff, -kOff, kOff }, { -kOff, -kOff, kOff, kOff }, true };
+
+	double CornerF( const double a, const double b, const double h )
+	{
+		const double A = a / h, B = b / h;
+		const double sA = std::sqrt( 1.0 + A * A ), sB = std::sqrt( 1.0 + B * B );
+		return ( A / sA * std::atan( B / sA ) + B / sB * std::atan( A / sB ) ) / ( 2.0 * kPi );
+	}
+
+	//! Point (x, y) on the floor to a parallel rectangle at height h.
+	double RectF( double x, double y, double x1, double x2, double y1, double y2, double h )
+	{
+		return CornerF( x2 - x, y2 - y, h ) - CornerF( x1 - x, y2 - y, h )
+			- CornerF( x2 - x, y1 - y, h ) + CornerF( x1 - x, y1 - y, h );
+	}
+
+	//! Orthographic image mean: rho/pi * mean(E) over [-kView/2, kView/2]^2.
+	double ClosedForm( const Layout& L )
+	{
+		const int N = 400;
+		double sum = 0;
+		for( int j = 0; j < N; j++ ) {
+			for( int i = 0; i < N; i++ ) {
+				const double x = -kView / 2 + ( i + 0.5 ) * kView / N;
+				const double y = -kView / 2 + ( j + 0.5 ) * kView / N;
+				for( int k = 0; k < L.n; k++ ) {
+					sum += kScale * RectF( x, y, L.cx[k] - kHalf, L.cx[k] + kHalf,
+						L.cy[k] - kHalf, L.cy[k] + kHalf, kH );
+				}
+			}
+		}
+		return kRho / kPi * sum / double( N * N );
+	}
+
+	std::string Fmt( const char* f, double a = 0, double b = 0, double c = 0, double d = 0,
+		double e = 0, double g = 0, double h = 0, double i = 0, double j = 0, double k = 0,
+		double l = 0, double m = 0 )
+	{
+		char buf[1024];
+		std::snprintf( buf, sizeof(buf), f, a, b, c, d, e, g, h, i, j, k, l, m );
+		return std::string( buf );
+	}
+
+	std::string Scene( const Layout& L, const bool pinhole )
+	{
+		std::string s = "film\n{\n\twidth 32\n\theight 32\n}\n\n";
+		if( pinhole ) {
+			s += "pinhole_camera\n{\n\tlocation 0 0 1\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 90\n}\n\n";
+		} else {
+			s += Fmt( "orthographic_camera\n{\n\tlocation 0 0 1\n\tlookat 0 0 0\n\tup 0 1 0\n"
+				"\tviewport_scale %g %g\n}\n\n", kView, kView );
+		}
+		s += Fmt( "uniformcolor_painter\n{\n\tname pnt_floor\n\tcolor %g %g %g\n}\n\n", kRho, kRho, kRho );
+		s += "lambertian_material\n{\n\tname mat_floor\n\treflectance pnt_floor\n}\n\n"
+			"clippedplane_geometry\n{\n\tname geo_floor\n"
+			"\tpta -200 -200 0\n\tptb 200 -200 0\n\tptc 200 200 0\n\tptd -200 200 0\n\tdoublesided FALSE\n}\n\n"
+			"standard_object\n{\n\tname floor\n\tgeometry geo_floor\n\tmaterial mat_floor\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt_emit\n\tcolor 1 1 1\n}\n\n";
+		s += Fmt( "lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n\tscale %g\n\tmaterial none\n}\n\n", kScale );
+		// Face-down winding: normal = Cross( ptb - pta, ptd - pta ) = -Z.
+		if( L.oneMesh ) {
+			s += "indexedmesh_geometry\n{\n\tname geo_emit\n";
+			for( int k = 0; k < L.n; k++ ) {
+				const double x1 = L.cx[k] - kHalf, x2 = L.cx[k] + kHalf;
+				const double y1 = L.cy[k] - kHalf, y2 = L.cy[k] + kHalf;
+				s += Fmt( "\tvertex %g %g %g\n\tvertex %g %g %g\n\tvertex %g %g %g\n\tvertex %g %g %g\n",
+					x1, y2, kH, x2, y2, kH, x2, y1, kH, x1, y1, kH );
+			}
+			for( int k = 0; k < L.n; k++ ) {
+				const double b = 4.0 * k;
+				s += Fmt( "\ttriangle %g %g %g\n\ttriangle %g %g %g\n", b, b + 1, b + 2, b, b + 2, b + 3 );
+			}
+			s += "\tdouble_sided FALSE\n\tface_normals TRUE\n}\n\n"
+				"standard_object\n{\n\tname emit\n\tgeometry geo_emit\n\tmaterial mat_emit\n}\n\n";
+		} else {
+			for( int k = 0; k < L.n; k++ ) {
+				const double x1 = L.cx[k] - kHalf, x2 = L.cx[k] + kHalf;
+				const double y1 = L.cy[k] - kHalf, y2 = L.cy[k] + kHalf;
+				char nm[32];
+				std::snprintf( nm, sizeof(nm), "emit%d", k );
+				s += std::string( "clippedplane_geometry\n{\n\tname geo_" ) + nm + "\n";
+				s += Fmt( "\tpta %g %g %g\n\tptb %g %g %g\n\tptc %g %g %g\n\tptd %g %g %g\n\tdoublesided FALSE\n}\n\n",
+					x1, y2, kH, x2, y2, kH, x2, y1, kH, x1, y1, kH );
+				s += std::string( "standard_object\n{\n\tname " ) + nm + "\n\tgeometry geo_" + nm
+					+ "\n\tmaterial mat_emit\n}\n\n";
+			}
+		}
+		return s;
+	}
+
+	std::string Rasterizer( const char* kind, const bool env )
+	{
+		std::string envLines;
+		std::string envPainter;
+		if( env ) {
+			envPainter = Fmt( "uniformcolor_painter\n{\n\tname pnt_env\n\tcolor %g %g %g\n}\n\n", kEnvL, kEnvL, kEnvL );
+			envLines = "\tradiance_map pnt_env\n\tradiance_scale 1.0\n";
+		}
+		std::string s = envPainter +
+			"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
+		const std::string common = Fmt( "\tsamples %g\n\tpixel_filter box\n\toidn_denoise FALSE\n", double( kSpp ) ) + envLines;
+		if( std::strcmp( kind, "pt" ) == 0 ) {
+			s += "pathtracing_pel_rasterizer\n{\n" + common + "}\n\n";
+		} else if( std::strcmp( kind, "bdpt" ) == 0 ) {
+			s += "bdpt_pel_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n" + common + "}\n\n";
+		} else {
+			s += "vcm_pel_rasterizer\n{\n\tmax_eye_depth 4\n\tmax_light_depth 4\n\tmerge_radius 0.0\n"
+				"\tvc_enabled true\n\tvm_enabled true\n" + common + "}\n\n";
+		}
+		return s;
+	}
+
+	struct Stat { double mean; double sd; bool ok; };
+
+	Stat RenderN( const std::string& scene, const char* tag )
+	{
+		Stat st{ 0, 0, true };
+		std::vector<double> v;
+		for( int r = 0; r < kRepeats; r++ ) {
+			const std::string path = WriteSceneToTempFile( scene.c_str(), tag );
+			const ImageStats is = path.empty() ? ImageStats{} : RenderAndComputeStats( path.c_str() );
+			if( !path.empty() ) std::remove( path.c_str() );
+			if( !is.valid ) { st.ok = false; return st; }
+			v.push_back( ( is.mean[0] + is.mean[1] + is.mean[2] ) / 3.0 );
+		}
+		for( double x : v ) st.mean += x;
+		st.mean /= double( v.size() );
+		double ss = 0;
+		for( double x : v ) ss += ( x - st.mean ) * ( x - st.mean );
+		st.sd = std::sqrt( ss / double( v.size() - 1 ) );
+		return st;
+	}
+
+	//! Render `kind` n times on (layout, camera, env) and check its mean
+	//! against `ref` within `tol` (tol < 0: a reference row, printed and
+	//! only checked for a valid render).  Returns the measured stat.
+	Stat Row( const char* label, const char* kind, const Layout& L, const bool pinhole,
+		const bool env, const double ref, const double tol )
+	{
+		const std::string scene = std::string( "RISE ASCII SCENE 7\n" ) + Rasterizer( kind, env ) + Scene( L, pinhole );
+		const Stat st = RenderN( scene, kind );
+		char buf[512];
+		if( tol < 0 ) {
+			std::snprintf( buf, sizeof(buf), "Topology Y (DL-348): %s: %s mean %.6f (sd %.6f, n=%d salted)",
+				label, kind, st.mean, st.sd, kRepeats );
+			std::cout << "    " << buf << std::endl;
+			Check( st.ok && st.mean > 0, buf );
+			return st;
+		}
+		std::snprintf( buf, sizeof(buf),
+			"Topology Y (DL-348): %s: %s mean %.6f (sd %.6f, n=%d salted) vs ref %.6f -> ratio %.4f, within %g%%",
+			label, kind, st.mean, st.sd, kRepeats, ref, ref > 0 ? st.mean / ref : -1.0, 100.0 * tol );
+		std::cout << "    " << buf << std::endl;
+		Check( st.ok && ref > 0 && std::fabs( st.mean / ref - 1.0 ) <= tol, buf );
+		return st;
+	}
+}
+
+static void TestSeveralLuminariesY()
+{
+	using namespace TopologyY;
+	std::cout << "Testing topology Y: several equal luminaries, ortho closed form + pinhole/env vs PT (DL-348)" << std::endl;
+
+	// Closed-form cross-check of RectF against brute-force quadrature.
+	{
+		const int N = 600;
+		const double x = 0.7, y = -0.3, x1 = -kOff - kHalf, x2 = -kOff + kHalf, y1 = -kHalf, y2 = kHalf;
+		double q = 0;
+		const double dx = ( x2 - x1 ) / N, dy = ( y2 - y1 ) / N;
+		for( int j = 0; j < N; j++ ) for( int i = 0; i < N; i++ ) {
+			const double u = x1 + ( i + 0.5 ) * dx - x, v = y1 + ( j + 0.5 ) * dy - y;
+			const double d2 = u * u + v * v + kH * kH;
+			q += kH * kH / ( kPi * d2 * d2 );
+		}
+		q *= dx * dy;
+		const double a = RectF( x, y, x1, x2, y1, y2, kH );
+		Check( std::fabs( a - q ) < 1e-6, "Topology Y: analytic form factor matches brute-force quadrature" );
+	}
+
+	// Post-fix every row reads 0.998-1.002 (per-render sd <= 0.4 %, so the
+	// n = 4 mean's sd <= 0.2 %; PT itself sits 0.1 % under the closed form).
+	const double tolCF = 0.006;
+	const struct { const char* label; const Layout* L; } ortho[] = {
+		{ "1 luminary, ortho vs closed form", &kOne },
+		{ "2 luminaries, ortho vs closed form", &kTwo },
+		{ "4 luminaries, ortho vs closed form", &kFour },
+		{ "4 quads as ONE mesh luminary (control), ortho vs closed form", &kFourMesh },
+	};
+	for( const auto& r : ortho ) {
+		const double cf = ClosedForm( *r.L );
+		Row( r.label, "pt", *r.L, false, false, cf, tolCF );
+		Row( r.label, "vcm", *r.L, false, false, cf, tolCF );
+		Row( r.label, "bdpt", *r.L, false, false, cf, tolCF );
+	}
+
+	// Pinhole and env + 4 lights: PT is the reference.
+	const Stat ptPin = Row( "4 luminaries, pinhole (PT reference)", "pt", kFour, true, false, 0.0, -1.0 );
+	Row( "4 luminaries, pinhole vs PT", "vcm", kFour, true, false, ptPin.mean, tolCF );
+	Row( "4 luminaries, pinhole vs PT", "bdpt", kFour, true, false, ptPin.mean, tolCF );
+	const Stat ptEnv = Row( "env + 4 luminaries, ortho (PT reference)", "pt", kFour, false, true, 0.0, -1.0 );
+	// The environment rows are noisier (BDPT per-render sd ~1.2 %), so a
+	// 2 % band (> 4 sd of the n = 4 mean).  A NON-REGRESSION control, not
+	// a red row: pre-fix it read VCM 0.9972 / BDPT 1.0062 -- the env takes
+	// most of SampleLight's selection mass, so NEE to a quad is rare and
+	// the eye-hit strategy carries the quads at weight ~1 under either
+	// selection pmf.  It pins the (1 - envSelectProb) share the fix keeps.
+	const double tolEnv = 0.02;
+	Row( "env + 4 luminaries, ortho vs PT", "vcm", kFour, false, true, ptEnv.mean, tolEnv );
+	Row( "env + 4 luminaries, ortho vs PT", "bdpt", kFour, false, true, ptEnv.mean, tolEnv );
+}
+
 int main( int argc, char** argv )
 {
 	std::cout << "=== VCMStrategyBalanceTest ===" << std::endl;
@@ -2727,6 +2983,52 @@ int main( int argc, char** argv )
 		ApplySeedOverride( 2 );
 		TestSSSBarrierDL317();
 		TestRoughSSSEmptyContainerU();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+
+	// DL-348: salted mean of a shipped scene file, `--scene-mean <path>
+	// <n> <spp> <res>` -- film width/height and every `samples` line are
+	// overridden; the scene's own outputs are replaced by the capture.
+	// Used for the slice's shipped-scene before/after (opt-in only).
+	if( argc >= 6 && std::strcmp( argv[1], "--scene-mean" ) == 0 ) {
+		const int n = std::atoi( argv[3] ), spp = std::atoi( argv[4] ), res = std::atoi( argv[5] );
+		std::ifstream ifs( argv[2] );
+		if( !ifs.is_open() || n < 1 ) { std::cout << "cannot open " << argv[2] << std::endl; return 1; }
+		std::string text, line;
+		while( std::getline( ifs, line ) ) {
+			const size_t k = line.find_first_not_of( " \t" );
+			auto key = [&]( const char* w ) {
+				const size_t L = std::strlen( w );
+				return k != std::string::npos && line.compare( k, L, w ) == 0 &&
+					( line.size() == k + L || line[k + L] == ' ' || line[k + L] == '\t' );
+			};
+			if( key( "samples" ) ) line = "\tsamples " + std::to_string( spp );
+			else if( key( "width" ) || key( "height" ) ) line = line.substr( 0, k + ( key( "width" ) ? 5 : 6 ) ) + " " + std::to_string( res );
+			text += line + "\n";
+		}
+		const std::string path = WriteSceneToTempFile( text.c_str(), "scene_mean" );
+		std::vector<double> v;
+		for( int i = 0; i < n; i++ ) {
+			const ImageStats st = RenderAndComputeStats( path.c_str() );
+			if( !st.valid ) { std::cout << "render failed" << std::endl; break; }
+			v.push_back( ( st.mean[0] + st.mean[1] + st.mean[2] ) / 3.0 );
+			std::printf( "scene-mean %s render %d: %.7f\n", argv[2], i, v.back() );
+		}
+		std::remove( path.c_str() );
+		double m = 0, ss = 0;
+		for( double x : v ) m += x;
+		m /= std::max<size_t>( v.size(), 1 );
+		for( double x : v ) ss += ( x - m ) * ( x - m );
+		std::printf( "scene-mean %s: mean %.7f sd %.7f n=%zu\n", argv[2], m,
+			v.size() > 1 ? std::sqrt( ss / ( v.size() - 1 ) ) : 0.0, v.size() );
+		return 0;
+	}
+
+	// DL-348: topology Y alone.
+	if( argc >= 2 && std::strcmp( argv[1], "--y-only" ) == 0 ) {
+		ApplySeedOverride( 2 );
+		TestSeveralLuminariesY();
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
@@ -2844,6 +3146,7 @@ int main( int argc, char** argv )
 	TestNonfiniteCandidateRejected();
 	TestNarrowFovSplatW();
 	TestAutoRadiusSmallPatchX();
+	TestSeveralLuminariesY();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

@@ -399,6 +399,19 @@ where PBRT-v4's raw `We` carries `cos⁴`, is in
 [RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) §6.1; the defect
 that made it matter is debt 28 in the same file's §7.
 
+## The light-selection pmf: one per strategy family (DL-348)
+
+Every BDPT / VCM / MLT strategy that roots a light subpath (NEE, light
+tracing, the s >= 2 connections, merging) selects its light with
+`LightSampler::SampleLight()`, a shading-point-independent env-vs-alias
+roll.  The eye-hits-emitter strategy must therefore reconstruct exactly
+that pmf for its MIS partner: `PdfSelectLuminary` / `PdfSelectLight`
+return `(1 - q_env) a(L)` and never the light BVH's pmf.  The BVH is PT's
+NEE sampler only, so PT's partner (`CachedPdfSelectLuminary`) is
+BVH-based.  Mixing the two families' pmfs breaks the partition; with
+`light_bvh` on (the default) and several lights VCM read 0.92 of the
+closed form until 2026-10-02 -- [DL348_MULTI_LUMINARY_SELECTION_PDF.md](DL348_MULTI_LUMINARY_SELECTION_PDF.md).
+
 ## When BDPT and VCM disagree on the same scene
 
 On diffuse scenes the two integrators agree to within ~1% at 256 spp.
