@@ -77,7 +77,7 @@ static bool ShouldReflect( const Vector3& vLightIn, const RayIntersectionGeometr
 RISEPel LambertianBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const
 {
 	if( ShouldReflect( vLightIn, ri, ri.onb.w() ) ) {
-		return pReflectance->GetColor(ri) * INV_PI;
+		return ReflectanceColor( *pReflectance, ri ) * INV_PI;
 	}
    
 	return RISEPel(0,0,0);
@@ -86,7 +86,7 @@ RISEPel LambertianBRDF::value( const Vector3& vLightIn, const RayIntersectionGeo
 Scalar LambertianBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
 {
 	if( ShouldReflect( vLightIn, ri, ri.onb.w() ) ) {
-		return GuardedGetColorNM( *pReflectance, ri, nm ) * INV_PI;
+		return ReflectanceColorNM( *pReflectance, ri, nm ) * INV_PI;
 	}
 
 	return 0;
@@ -95,19 +95,19 @@ Scalar LambertianBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGe
 RISEPel LambertianBRDF::albedo( const RayIntersectionGeometric& ri ) const
 {
 	// Exact: ∫ f cos θ dω = Rd for a Lambertian.
-	return pReflectance->GetColor( ri );
+	return ReflectanceColor( *pReflectance, ri );
 }
 
 bool LambertianBRDF::hemisphericalAlbedo( const RayIntersectionGeometric& ri, RISEPel& out ) const
 {
 	// Exact and trivially view-independent: a Lambertian reflects Rd of
 	// whatever arrives, from any distribution, in any direction.
-	out = pReflectance->GetColor( ri );
+	out = ReflectanceColor( *pReflectance, ri );
 	return true;
 }
 
 bool LambertianBRDF::hemisphericalAlbedoNM( const RayIntersectionGeometric& ri, const Scalar nm, Scalar& out ) const
 {
-	out = GuardedGetColorNM( *pReflectance, ri, nm );
+	out = ReflectanceColorNM( *pReflectance, ri, nm );
 	return true;
 }

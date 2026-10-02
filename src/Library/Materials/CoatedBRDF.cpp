@@ -130,7 +130,7 @@ void CoatedBRDF::ResolveCoat(
 	// CoatedLayer::PassTransmittance / IPainter.h's IsUntintedWhite for
 	// the measured curve either way.  Epsilon guards the RGB side against
 	// a painter that returns 1 - 1e-16 rather than exactly 1.
-	const RISEPel tintRGB = pCoatTint->GetColor( ri );
+	const RISEPel tintRGB = ReflectanceColor( *pCoatTint, ri );
 	const Scalar  minTint = r_min( r_min( tintRGB[0], tintRGB[1] ), tintRGB[2] );
 	out.tinted = ( minTint < Scalar(1) - Scalar(1e-6) );
 
@@ -142,7 +142,7 @@ void CoatedBRDF::ResolveCoat(
 		// reading it sees the authored value.
 		out.tint = RISEPel( 1, 1, 1 );
 	} else if( spectral ) {
-		const Scalar t = pCoatTint->GetColorNM( ri, nm );
+		const Scalar t = r_max( Scalar(0), pCoatTint->GetColorNM( ri, nm ) );	// DL-386: negative -> 0, as ReflectanceColorNM
 		out.tint = RISEPel( t, t, t );
 	} else {
 		out.tint = tintRGB;
