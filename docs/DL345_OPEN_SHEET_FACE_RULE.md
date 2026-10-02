@@ -163,6 +163,47 @@ one multithreaded render; a repeat in the same build read 0.1304 (S PT+SMS
 | `sms_k2_flatslab` | **1.0604**, 1.0347, 0.9758 | 0.9951, 0.9895, 0.9944 |
 | `sms_k2_glassblock` | 1.0219, 0.9977, 0.9762 | 0.9992, 1.0082, 1.0090 |
 
+**Scene hashes** (`WeaveGapShadowTransmittanceTest` `scenehash`: one worker,
+pinned `srand`, salt 0, 8 spp, shipped resolution; master -> this slice).
+Bit-identical: `diacaustic_pt_sms`, `sms_k2_glasssphere` (+ `_tess`,
+`_tess_disp`), `sms_luminous_orb`, `sms_slab_close_pt_sms_hispp`,
+`sms_slab_close_sms`, `sms_veach_egg`, `sms_veach_egg_bumpmap`,
+`sms_visibility_occluded`, `sms_visibility_unoccluded`,
+`sms_through_glass_emitter_pt_sms`, `spectral_dispersive_caustic_pt_sms`, and
+the non-SMS `pool_caustics`.  Moved:
+
+| Scene | mean master -> slice | |
+|---|---|---|
+| `sms_k1_botonly` | 0.182392 -> 0.178831 (-1.95 %) | open sheet |
+| `sms_k1_refract` | 0.193081 -> 0.186993 (-3.15 %) | open sheet |
+| `sms_k2_flatslab` | 0.193351 -> 0.183537 (-5.08 %) | open sheets |
+| `sms_k2_glassblock` | 0.186601 -> 0.179202 (-3.97 %) | open sheets |
+| `triplecaustic_pt_sms` | 0.649794 -> 0.649813 (+0.003 %) | seed walk (no open sheet) |
+| `sms_k2_torus_cross` | 0.192334 -> 0.192334 (+1e-6) | seed walk |
+| `sms_teapot_close_sms` | 0.332229 -> 0.332182 (-0.014 %) | seed walk |
+| `sms_veach_egg_displaced` | 0.749161 -> 0.749161 (-3e-8) | seed walk |
+| `pool_caustics_vcm` (non-SMS) | 0.0932245 -> 0.0932246 (+8e-7) | open water sheet |
+
+The four "seed walk" scenes have no provably open sheet; they move because
+an UNPUSHED exit in the SMS seed walk now refracts from the sheet's own
+index for every geometry (the P3-1 consistency fix), which changes some
+seeds and so Newton's iterates, not its roots.
+
+**Shipped non-SMS scenes with an open transmissive clipped plane** (every
+`standard_object` binding a dielectric / perfect refractor to a clipped
+plane or a displaced one, whole corpus): `pool_caustics` (bit-identical),
+`pool_caustics_vcm` (+8e-7), and the two underwater benchmarks
+`dreamscape_coral_queens_hour` / `_v2`, whose camera sits UNDER a displaced
+water-surface sheet.  The old rule ENTERED the surface from below (air ->
+1.33, no Beer); the face rule EXITS it (1.33 -> air): Snell's window with
+total internal reflection of the seabed outside it, and the surface's `tau`
+charged on the underwater segment, as for a closed water body.  200 x 150,
+16 spp, OIDN off, single CLI renders: **0.77356 -> 0.67650 (-12.5 %)** and
+**0.74891 -> 0.65413 (-12.7 %)**.  This is a LOOK change of a shipped scene
+(the supervisor rules on re-tuning, as for DL-320).
+
 ## 6. Residuals
 
-See the DL-345 row and DL-382.
+See the DL-345 row and DL-382.  Not measured here: MLT (shares BDPT's
+walks) and the spectral / HWSS integrators (the SPF NM paths carry the same
+rule; no spectral row was rendered).
