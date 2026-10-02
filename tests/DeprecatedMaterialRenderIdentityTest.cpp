@@ -180,8 +180,9 @@ static bool RenderHash( unsigned long long& hash, double& mean )
 }
 
 //! Measured on the parent commit f03359223 (no deprecation code).
-//! 0 = unmeasured placeholder; the test then only prints.
-static const unsigned long long kParentHash = 0ull;
+//! Measured by building f03359223 verbatim (library + this test) and running
+//! the test in a fresh process three times: mean 0.607363772, hash identical.
+static const unsigned long long kParentHash = 0x13c3910b9964ab63ull;
 
 static char g_optPath[512] = { 0 };
 
