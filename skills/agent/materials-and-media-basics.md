@@ -1313,9 +1313,9 @@ material -- base colour AND microsurface both bound to a real painter --
 in one call instead of a multi-chunk hand-wired graph:
 `insert_material_scaffold {family:"aged_bronze", name:"urn1",
 tone:"0.35 0.22 0.12", wear:0.5, scale:2.5}` expands into a
-`cooktorrance_material` (`tmpl_urn1_mat`) with `rd` bound to a
-reaction-diffusion patina field and `facets` bound to a spatially-varying
-scalar field.  Every generated `tmpl_*` chunk is an ordinary chunk like
+`ggx_material` (`tmpl_urn1_mat`, conductor Fresnel) with `rd` bound to a
+reaction-diffusion patina field and `alphax`/`alphay` both bound to a
+spatially-varying scalar field.  Every generated `tmpl_*` chunk is an ordinary chunk like
 any other -- `propose_patch`/`remove_chunk` retune or rebind it exactly
 as they would a hand-authored one.
 

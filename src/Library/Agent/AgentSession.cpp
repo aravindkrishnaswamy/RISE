@@ -13494,31 +13494,21 @@ namespace RISE
 				} );
 			}
 
-			std::string ScaffoldCookTorranceText( const std::string& name, const std::string& rd, const std::string& rs,
-			                                      const std::string& facets )
-			{
-				return ScaffoldChunkText( "cooktorrance_material", {
-					{ "name", name }, { "rd", rd }, { "rs", rs }, { "facets", facets },
-				} );
-			}
-
-			std::string ScaffoldWardAnisotropicText( const std::string& name, const std::string& rd, const std::string& rs,
-			                                         const std::string& alphax, const std::string& alphay )
-			{
-				return ScaffoldChunkText( "ward_anisotropic_material", {
-					{ "name", name }, { "rd", rd }, { "rs", rs },
-					{ "alphax", alphax }, { "alphay", alphay },
-				} );
-			}
-
+			//! `extinction` (empty = leave the descriptor default 3.45) matters only in
+			//! `conductor` mode; the rough_stone / aged_bronze recipes pass the value
+			//! `cooktorrance_material` defaulted to (1) so the metal's Fresnel is
+			//! unchanged by the DL-400 move off the deprecated chunk.
 			std::string ScaffoldGGXText( const std::string& name, const std::string& rd, const std::string& rs,
-			                            const std::string& alphax, const std::string& alphay, const std::string& fresnelMode )
+			                            const std::string& alphax, const std::string& alphay, const std::string& fresnelMode,
+			                            const std::string& extinction = std::string() )
 			{
-				return ScaffoldChunkText( "ggx_material", {
+				std::vector<std::pair<std::string,std::string>> kv = {
 					{ "name", name }, { "rd", rd }, { "rs", rs },
 					{ "alphax", alphax }, { "alphay", alphay },
 					{ "fresnel_mode", fresnelMode },
-				} );
+				};
+				if( !extinction.empty() ) kv.push_back( { "extinction", extinction } );
+				return ScaffoldChunkText( "ggx_material", kv );
 			}
 
 			//! `tone` is "r g b", each 0..1 -- parsed strictly (no trailing
@@ -13623,7 +13613,7 @@ namespace RISE
 				return out;
 			}
 
-			//! rough_stone: cooktorrance_material, rd bound to a worley3d
+			//! rough_stone: ggx_material (conductor; was cooktorrance_material until DL-400), rd bound to a worley3d
 			//! pebble/cell field (colora=tone, colorb="none"), facets bound
 			//! to ONE `scalar_painter { expression ... }` fbm wear field.
 			//! `wear` widens and raises the facet band; `scale` sets the
@@ -13668,16 +13658,21 @@ namespace RISE
 						ScaffoldJitterRange( name, "stone_wearcontrast", 1.3, 2.1 ),
 						ScaffoldJitterRange( name, "stone_wearseed", 0.0, 100.0 ), false ) } );
 
-				out.chunks.push_back( { "cooktorrance_material", nMat,
-					ScaffoldCookTorranceText( nMat, nPebble, "none", nFacets ) } );
+				// DL-400: ggx_material (conductor Fresnel, ior default 2.45 as
+				// cooktorrance_material had it, extinction 1 = cooktorrance's own
+				// default -- GGX's would be 3.45), the facet field driving BOTH axes
+				// (cooktorrance's single `facets` was an isotropic GGX alpha).
+				out.chunks.push_back( { "ggx_material", nMat,
+					ScaffoldGGXText( nMat, nPebble, "none", nFacets, nFacets, "conductor", "1" ) } );
 				out.materialName = nMat;
-				out.materialKind = "cooktorrance_material";
-				out.boundSlots.push_back( { "facets", nFacets } );
+				out.materialKind = "ggx_material";
+				out.boundSlots.push_back( { "alphax", nFacets } );
+				out.boundSlots.push_back( { "alphay", nFacets } );
 				out.boundSlots.push_back( { "rd", nPebble } );
 				return out;
 			}
 
-			//! brushed_metal: ward_anisotropic_material, alphax (narrow,
+			//! brushed_metal: ggx_material schlick_f0 (was ward_anisotropic_material until DL-400), alphax (narrow,
 			//! along the brush direction) AND alphay (wide, across it) both
 			//! bound to scalar_painter{function2d} wrapping the SAME
 			//! groove expression_function2d at different scale/bias --
@@ -13717,16 +13712,21 @@ namespace RISE
 				out.chunks.push_back( { "scalar_painter", nAlphaY,
 					ScaffoldScalarFn2DText( nAlphaY, nGroove, 0.05 + 0.25 * wear, 0.10 + 0.10 * wear ) } );
 
-				out.chunks.push_back( { "ward_anisotropic_material", nMat,
-					ScaffoldWardAnisotropicText( nMat, "none", nTint, nAlphaX, nAlphaY ) } );
+				// DL-400: ggx_material with fresnel_mode schlick_f0 (rs is the F0
+				// tint, as ward's `rs` was the specular colour); alphax/alphay carry
+				// over unchanged and the brush direction stays the surface tangent,
+				// exactly where ward_anisotropic_material put it (no
+				// tangent_rotation_scalar -- there is no rotation to translate).
+				out.chunks.push_back( { "ggx_material", nMat,
+					ScaffoldGGXText( nMat, "none", nTint, nAlphaX, nAlphaY, "schlick_f0" ) } );
 				out.materialName = nMat;
-				out.materialKind = "ward_anisotropic_material";
+				out.materialKind = "ggx_material";
 				out.boundSlots.push_back( { "alphax", nAlphaX } );
 				out.boundSlots.push_back( { "alphay", nAlphaY } );
 				return out;
 			}
 
-			//! aged_bronze: cooktorrance_material, rd bound to a
+			//! aged_bronze: ggx_material (conductor; was cooktorrance_material until DL-400), rd bound to a
 			//! reactiondiffusion3d patina field (its OWN description names
 			//! "oxidation blooms" -- the honest fit for bronze patina,
 			//! deliberately distinct from rough_stone's worley so the two
@@ -13770,11 +13770,14 @@ namespace RISE
 						ScaffoldJitterRange( name, "bronze_wearcontrast", 1.3, 2.1 ),
 						ScaffoldJitterRange( name, "bronze_wearseed", 0.0, 100.0 ), false ) } );
 
-				out.chunks.push_back( { "cooktorrance_material", nMat,
-					ScaffoldCookTorranceText( nMat, nPatina, nTone, nFacets ) } );
+				// DL-400: see rough_stone -- ggx_material, conductor Fresnel with
+				// cooktorrance's own extinction default, the pitting field on both axes.
+				out.chunks.push_back( { "ggx_material", nMat,
+					ScaffoldGGXText( nMat, nPatina, nTone, nFacets, nFacets, "conductor", "1" ) } );
 				out.materialName = nMat;
-				out.materialKind = "cooktorrance_material";
-				out.boundSlots.push_back( { "facets", nFacets } );
+				out.materialKind = "ggx_material";
+				out.boundSlots.push_back( { "alphax", nFacets } );
+				out.boundSlots.push_back( { "alphay", nFacets } );
 				out.boundSlots.push_back( { "rd", nPatina } );
 				return out;
 			}

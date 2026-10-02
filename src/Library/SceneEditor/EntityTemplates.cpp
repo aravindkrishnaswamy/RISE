@@ -771,7 +771,15 @@ namespace
 		// tau/ext.  The other scalar slots on these same chunks already
 		// default to a numeric literal in their own Finalize and need
 		// nothing here.)
-		{ "polished_material",     "tau",        "1.0" },
+		// DL-401: `polished_material` used to be seeded here (`tau 1.0`, a
+		// visible coat).  It is DEPRECATED now (DL-323 follow-through), so
+		// the create path no longer dresses it up; the modern replacement,
+		// `coated_material` over a `lambertian_material`, needs NO seed --
+		// its required `base` is a Material reference the create verb
+		// already satisfies with a Lambertian stand-in (S18g), and its
+		// descriptor defaults are a full-coverage clear coat that shows.
+		// A bare `polished_material` still derives (`tau` defaults to the
+		// literal 0.0, i.e. no coat reflection).
 		{ "dielectric_material",   "tau",        "1.0" },
 		{ "translucent_material",  "ext",        "1.0" },
 		{ "generic_human_tissue_material", "g",  "0.0" },

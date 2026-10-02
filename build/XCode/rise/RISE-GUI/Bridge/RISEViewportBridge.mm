@@ -2687,6 +2687,16 @@ static NSArray<NSString *> *RISESplitJoinedNames(const char *buf) {
     return out;
 }
 
+- (nullable NSString *)paletteDeprecationReplacementForKeyword:(NSString *)keyword {
+    if (!_controller || keyword.length == 0) return nil;
+    char buf[1024] = {0};
+    if (!RISE_API_SceneEditController_PaletteKeywordDeprecation(
+            _controller, keyword.UTF8String, buf, sizeof(buf))) {
+        return nil;
+    }
+    return [NSString stringWithUTF8String:buf];
+}
+
 #pragma mark - Environment / IBL section
 
 - (nullable RISEEnvironmentInfo *)environmentInfo {
