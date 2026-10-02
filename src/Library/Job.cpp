@@ -10508,8 +10508,8 @@ bool Job::SetPathTracingPelRasterizer(
 	// opt-in.  Routed through the concrete RayCaster (LightSampler
 	// dynamic_casts to it); off by default.  BDPT/VCM/MLT do NOT wire
 	// this — their NEE stays binary.  DL-344: the walk applies to delta
-	// lights only, and with SMS on only to the delta lights SMS does not
-	// sample (directional) -- see WireTransparentShadows.
+	// lights only, and not at a PT surface vertex where SMS already
+	// estimated that delta light (per evaluation point, DL-344 round 3).
 	{
 		RISE::Implementation::RayCaster* pConcreteCaster =
 			dynamic_cast<RISE::Implementation::RayCaster*>( pCaster );
@@ -10617,7 +10617,7 @@ bool Job::SetPathTracingSpectralRasterizer(
 
 	// Transparent (Fresnel-attenuated) shadow rays — unidirectional PT
 	// opt-in (spectral path).  See the pel PT factory for rationale
-	// (DL-344: delta lights only; with SMS, directional only).
+	// (DL-344: delta lights only; not where SMS ran at that vertex).
 	{
 		RISE::Implementation::RayCaster* pConcreteCaster =
 			dynamic_cast<RISE::Implementation::RayCaster*>( pCaster );
