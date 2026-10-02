@@ -155,7 +155,7 @@ a winner-takes-all between two strategies that **both legitimately
 contribute** in caustic regions.  Balance gracefully blends them;
 power forces a binary choice between two unbiased estimators.
 
-#### 4a. A BSSRDF / random-walk jump is an MIS barrier (DL-317, 2026-10-01; BDPT/MLT and connectible random-walk entries: DL-375)
+#### 4a. A BSSRDF / random-walk jump is an MIS barrier (DL-317, 2026-10-01; BDPT/MLT and connectible random-walk entries: DL-375; BDPT's kept light-entry direction: DL-377)
 
 A subsurface event relocates the path from the hit where it went in
 (`x_o`, which the generator marks delta) to a sampled ENTRY vertex
@@ -243,6 +243,34 @@ means, 32x32, 2048 spp, depth 16, one salted render each, X/PT - 1):
 On the D rows the estimator CHANGED family (light-sampled before, NEE at
 the eye's random-walk entry after) and both read PT within noise -- the
 path is counted once.
+
+**BDPT now uses VCM's direction rule at a kept light entry (DL-377,
+`debt-dl377`, 2026-10-01).**  At a LIGHT-subpath endpoint that is an
+entry, Sw is evaluated in the direction the entry re-emits -- toward the
+camera (t=1 splat) or the connecting eye vertex -- through one helper,
+`PathValueOps::EvalLightEndAreaBSDFAtVertex`, shared by BDPT's splat and
+connection sites and VCM's; `RecomputeSubpathThroughputNM` applies the
+same rule at an interior light entry (DL-375).  BDPT used to pass the
+jump chord there, which faces INTO a convex surface, so Sw read exactly
+0: a diffusion sphere lit only through a delta interface by a delta
+light rendered black.  The fix needs the partition above -- on its own
+it double counts every path the eye family covers -- so what changes is
+precisely the kept class.  `BDPTStrategyBalanceTest --dl377-only`
+(32x32, salted n = 4; G: an omni inside an index-matched ior-1.0 glass
+sphere lighting a diffusion sphere; G2 adds a Lambertian wall, wall
+pixels only; G3 replaces the omni by a spot confined to the sphere, so
+the wall is lit only through it):
+
+| row | reference | before | after |
+|---|---|---|---|
+| G, whole frame | PT without glass | -100% (exactly 0) | +0.37% |
+| G2, wall pixels | VCM merging off, no glass | -2.68% | +0.21% |
+| G3, wall pixels | VCM merging off, with glass | -98.6% | +1.48% |
+
+G2/G3 are not referenced to PT: every bidirectional estimator reads
+~+1% above PT on G2's wall independently of this fix, and PT's mean of
+G3's dim wall is heavy-tailed.  The direction fix alone (before merging
+DL-375) moved G2 from -1.95% to +1.91% against PT -- the double count.
 
 Pre-DL-317 VCM had all three defects: `dVCM = 1/pdfSurface` at the
 entry (reserving the connection across the jump), the non-specular
