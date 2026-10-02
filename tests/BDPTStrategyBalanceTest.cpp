@@ -4788,8 +4788,88 @@ static void TestRandomWalkReciprocityDL381()
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+// DL-386 (2026-10-02): the `vcm_sss_dragon` room with the dragon replaced
+// by a Lambertian sphere.  Its red and green walls are authored
+// `colorspace ROMMRGB_Linear`, which converts by matrix to Rec.709
+// reflectances with NEGATIVE channels -- red (1.134, -0.100, 0.020),
+// green (-0.233, 0.462, -0.029).  PT and BDPT disagreed on that signed
+// albedo (review on master f03359223: BDPT/PT +0.23 % whole frame,
+// -0.005 % with the negatives clamped); the mechanism was localised only
+// by the clamp, not attributed.  Since DL-386 every material reflectance
+// read clamps negative channels to 0 (IPainter.h `ReflectanceColor`), so
+// the two integrators see the same non-negative albedo.  Whole-frame
+// achromatic mean, salted replicates, the SAME salts for both integrators.
+//////////////////////////////////////////////////////////////////////
+static const char* kSceneRommRoomDL386 =
+	"film\n{\n\twidth 48\n\theight 36\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0.2 0 19.5\n\tlookat 0.2 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_white\n\tcolor 0.73 0.73 0.73\n\tcolorspace ROMMRGB_Linear\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_red\n\tcolor 0.57 0.025 0.025\n\tcolorspace ROMMRGB_Linear\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_green\n\tcolor 0.025 0.38 0.025\n\tcolorspace ROMMRGB_Linear\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_light\n\tcolor 1.0 0.95 0.85\n\tcolorspace ROMMRGB_Linear\n}\n\n"
+	"lambertian_material\n{\n\tname white\n\treflectance pnt_white\n}\n\n"
+	"lambertian_material\n{\n\tname red\n\treflectance pnt_red\n}\n\n"
+	"lambertian_material\n{\n\tname green\n\treflectance pnt_green\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname lum\n\texitance pnt_light\n\tscale 5\n\tmaterial none\n}\n\n"
+	"sphere_geometry\n{\n\tname sph\n\tradius 2.2\n}\n\n"
+	"standard_object\n{\n\tname ball\n\tgeometry sph\n\tposition 1 -1.3 0\n\tmaterial white\n}\n\n"
+	"clippedplane_geometry\n{\n\tname wallgeom\n\tpta -14.1 -14.1 0\n\tptb 14.1 -14.1 0\n\tptc 14.1 14.1 0\n\tptd -14.1 14.1 0\n}\n\n"
+	"standard_object\n{\n\tname rwall\n\tgeometry wallgeom\n\tposition 5.5 0 0\n\torientation 0 -90 0\n\tmaterial red\n}\n\n"
+	"standard_object\n{\n\tname bwall\n\tgeometry wallgeom\n\tposition 0 0 -10.5\n\tmaterial white\n}\n\n"
+	"standard_object\n{\n\tname twall\n\tgeometry wallgeom\n\tposition 0 3.5 0\n\torientation 90 0 0\n\tmaterial white\n}\n\n"
+	"standard_object\n{\n\tname botwall\n\tgeometry wallgeom\n\tposition 0 -3.5 0\n\torientation -90 0 0\n\tmaterial white\n}\n\n"
+	"standard_object\n{\n\tname lwall\n\tgeometry wallgeom\n\tposition -6 0 0\n\torientation 0 90 0\n\tmaterial green\n}\n\n"
+	"clippedplane_geometry\n{\n\tname lightgeom\n\tpta -5.0 -5.0 0\n\tptb 5.0 -5.0 0\n\tptc 5.0 5.0 0\n\tptd -5.0 5.0 0\n}\n\n"
+	"standard_object\n{\n\tname light\n\tgeometry lightgeom\n\tmaterial lum\n\tposition 0 0 -10.0\n}\n";
+
+static bool MeasureRommRoomDL386( const char* kind, int spp, int n, double& mean, double& sd )
+{
+	const std::string scene = std::string( "RISE ASCII SCENE 7\n" ) + SSSRasterizer( kind, 16, spp ) + kSceneRommRoomDL386;
+	const std::string path = WriteSceneToTempFile( scene.c_str(), "dl386_room" );
+	if( path.empty() ) return false;
+	std::vector<double> v;
+	for( int i = 0; i < n; i++ ) {
+		SobolSamplerTestHooks::ValueSalt().store( SobolSequence::HashCombine( 0x386u, unsigned( i ) ) );
+		const ImageStats st = RenderAndComputeStats( path.c_str() );
+		if( !st.valid ) break;
+		v.push_back( ( st.mean[0] + st.mean[1] + st.mean[2] ) / 3.0 );
+	}
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
+	std::remove( path.c_str() );
+	if( int( v.size() ) != n || n < 2 ) return false;
+	double s = 0;
+	for( double x : v ) s += x;
+	mean = s / n;
+	double ss = 0;
+	for( double x : v ) ss += ( x - mean ) * ( x - mean );
+	sd = std::sqrt( ss / ( n - 1 ) );
+	return std::isfinite( mean ) && mean > 0;
+}
+
+static void TestNegativeReflectanceRoomDL386()
+{
+	std::cout << "Testing DL-386 ROMM-walled room, Lambertian sphere (PT vs BDPT, 48x36, 512 spp x 4 salted)" << std::endl;
+	double pt = 0, ptSd = 0, bd = 0, bdSd = 0;
+	const bool okPT = MeasureRommRoomDL386( "pt", 512, 4, pt, ptSd );
+	const bool okBD = MeasureRommRoomDL386( "bdpt", 512, 4, bd, bdSd );
+	Check( okPT && okBD, "DL-386 renders produced output" );
+	if( !okPT || !okBD ) return;
+	const double rel = bd / pt - 1.0;
+	// Standard error of the ratio from the two replicate spreads (n = 4 each).
+	const double se = std::sqrt( ( ptSd / pt ) * ( ptSd / pt ) + ( bdSd / bd ) * ( bdSd / bd ) ) / 2.0;
+	std::printf( "    PT %.7f (sd %.7f)  BDPT %.7f (sd %.7f)  BDPT/PT %+.4f%% (se %.4f%%)\n",
+		pt, ptSd, bd, bdSd, 100.0 * rel, 100.0 * se );
+	Check( std::fabs( rel ) <= 0.0010, "DL-386 BDPT whole-frame mean agrees with PT to 0.10 % on the ROMM-walled room" );
+}
+
 int main( int argc, char** argv )
 {
+ if(argc == 2 && std::strcmp(argv[1],"--dl386-only") == 0) {
+  TestNegativeReflectanceRoomDL386();
+  std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+  return failCount == 0 ? 0 : 1;
+ }
  if(argc == 2 && std::strcmp(argv[1],"--env-medium-only") == 0) {
   TestEnvironmentScatteringMediumDL346();
   std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
