@@ -10431,18 +10431,20 @@ bool Job::SetAutoSpectralRasterizer(
 	return true;
 }
 
-// DL-344: `transparent_shadows` and SMS estimate the same transport -- a
-// (delta) light reaching a receiver through a clear specular caster -- so
-// enabling both would count it twice (PT+SMS, omni light through a 1.5
-// glass box: 2.46x the SMS-only render).  SMS, which follows the real
-// refracted chain, wins; the request is logged and dropped.
-static bool TransparentShadowsWithSMS( const bool transparentShadows, const bool smsEnabled )
+// DL-344: with SMS on, the `transparent_shadows` walk keeps seeing
+// through clear dielectrics only for the delta lights SMS never samples
+// (directional: it is not in LightSampler's SampleLight table); an omni /
+// spot light's light through a specular caster is SMS's to estimate, and
+// the straight walk on top of it counted it twice (PT+SMS, omni through a
+// 1.5 glass box: 2.46x).  The gate itself is per light, in
+// RayCaster::DielectricShadowWalk; this only wires the flags and says so.
+static void WireTransparentShadows( RISE::Implementation::RayCaster& caster, const bool transparentShadows, const bool smsEnabled )
 {
+	caster.SetTransparentShadows( transparentShadows );
+	caster.SetSMSEnabledForShadows( smsEnabled );
 	if( transparentShadows && smsEnabled ) {
-		GlobalLog()->PrintEasyWarning( "Job:: `transparent_shadows TRUE` is ignored while `sms_enabled TRUE`: SMS already estimates light reaching a receiver through a specular caster, and both together count it twice (DL-344)" );
-		return false;
+		GlobalLog()->PrintEasyWarning( "Job:: with `sms_enabled TRUE`, `transparent_shadows TRUE` applies only to directional lights; omni / spot light reaching a receiver through a specular caster is estimated by SMS instead (both together count it twice, DL-344)" );
 	}
-	return transparentShadows;
 }
 
 bool Job::SetPathTracingPelRasterizer(
@@ -10508,15 +10510,13 @@ bool Job::SetPathTracingPelRasterizer(
 	// opt-in.  Routed through the concrete RayCaster (LightSampler
 	// dynamic_casts to it); off by default.  BDPT/VCM/MLT do NOT wire
 	// this — their NEE stays binary.  DL-344: the walk applies to delta
-	// lights only (RayCaster::CastShadowRayAuto), and not at all with SMS
-	// on -- SMS is itself an estimator of a (delta) light reaching the
-	// receiver through a specular caster, so the straight walk would add
-	// the same transport a second time.
+	// lights only, and with SMS on only to the delta lights SMS does not
+	// sample (directional) -- see WireTransparentShadows.
 	{
 		RISE::Implementation::RayCaster* pConcreteCaster =
 			dynamic_cast<RISE::Implementation::RayCaster*>( pCaster );
 		if( pConcreteCaster ) {
-			pConcreteCaster->SetTransparentShadows( TransparentShadowsWithSMS( stabilityConfig.transparentShadows, smsConfig.enabled ) );
+			WireTransparentShadows( *pConcreteCaster, stabilityConfig.transparentShadows, smsConfig.enabled );
 		}
 	}
 
@@ -10619,12 +10619,12 @@ bool Job::SetPathTracingSpectralRasterizer(
 
 	// Transparent (Fresnel-attenuated) shadow rays — unidirectional PT
 	// opt-in (spectral path).  See the pel PT factory for rationale
-	// (DL-344: delta lights only, off with SMS).
+	// (DL-344: delta lights only; with SMS, directional only).
 	{
 		RISE::Implementation::RayCaster* pConcreteCaster =
 			dynamic_cast<RISE::Implementation::RayCaster*>( pCaster );
 		if( pConcreteCaster ) {
-			pConcreteCaster->SetTransparentShadows( TransparentShadowsWithSMS( stabilityConfig.transparentShadows, smsConfig.enabled ) );
+			WireTransparentShadows( *pConcreteCaster, stabilityConfig.transparentShadows, smsConfig.enabled );
 		}
 	}
 

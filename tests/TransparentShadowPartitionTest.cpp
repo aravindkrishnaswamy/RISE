@@ -17,9 +17,10 @@
 //  only a DELTA light's shadow ray sees through a clear dielectric,
 //  because no BSDF-sampled strategy can ever hit a delta light, so that
 //  ray is the path's only estimator; area/env NEE keeps a binary shadow
-//  there.  And not while SMS is enabled: SMS is itself an estimator of
-//  light (delta lights included) reaching a receiver through a specular
-//  caster, so the straight-through walk would double count it.
+//  there.  With SMS enabled, also not for a delta light SMS samples (omni,
+//  spot: SMS estimates their light through a specular caster, so the
+//  straight walk would double count it); a directional light, which SMS
+//  never samples, keeps the walk.
 //
 //  Rows (all reference-free ratios of paired renders; every render is
 //  salted -- SobolSamplerTestHooks::ValueSalt -- so repeats are
@@ -37,9 +38,15 @@
 //       == 1.  A control -- the feature this flag exists for (a delta
 //       light seen through an index-matched transmitter, whose only
 //       estimator is this shadow ray); green before AND after.
-//    E  PT + SMS, the 1.5 box around the subject, an OMNI light:
-//       transparent_shadows TRUE / FALSE == 1.  Red pre-fix (the
-//       straight walk adds on top of SMS's own refracted estimate).
+//    E1 PT + SMS, omni light, the index-1.0 box / open air: what SMS
+//       returns through an invisible caster, against a reference.  Pinned
+//       at 0.5 (DL-413: SMS returns half a delta light); red pre-fix (SMS
+//       plus the walk, about 1.5).
+//    E2 PT + SMS, omni light through the 1.5 box: flag TRUE / FALSE == 1.
+//       Red pre-fix (2.46x); equal by construction after.
+//    F  a DIRECTIONAL light through the 1.5 box: PT + SMS / PT, flag
+//       TRUE, == 1 -- SMS never samples a directional light, so turning
+//       the walk off for it under SMS (the slice's first revision) read 0.
 //
 //  Usage: TransparentShadowPartitionTest [--trials N] [--only <substr>]
 //
@@ -107,7 +114,7 @@ namespace
 
 	enum class Model { Lambertian, RandomWalk, Diffusion };
 	enum class Integrator { PT, PTSpectral, PTSMS };
-	enum class Light { Env, Area, Omni };
+	enum class Light { Env, Area, Omni, Directional };
 	enum class Wall { None, MatchedRoom, GlassAroundSubject };
 
 	struct SceneSpec
@@ -164,6 +171,8 @@ namespace
 			  << "standard_object\n{\n\tname obj_emit\n\tgeometry geo_emit\n\tmaterial mat_emit\n}\n\n";
 		} else if( s.light == Light::Omni ) {
 			o << "omni_light\n{\n\tname lgt\n\tposition 0.5 3 0.5\n\tcolor 1 1 1\n\tpower 20\n}\n\n";
+		} else if( s.light == Light::Directional ) {
+			o << "directional_light\n{\n\tname lgt\n\tdirection 0.3 1 0.2\n\tcolor 1 1 1\n\tpower 3\n}\n\n";
 		}
 
 		o << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
@@ -240,8 +249,11 @@ namespace
 
 	//! Renders `test` and `ref` with paired seeds and gates the ratio of
 	//! their means against 1 within `band`.
+	//! @a expected is the ratio the row gates against (1 unless the row
+	//! pins a known defect).
 	void RatioRow( const std::string& label, const SceneSpec& test, const SceneSpec& ref,
-		double band, unsigned int trials, unsigned int& seed, const std::string& only )
+		double band, unsigned int trials, unsigned int& seed, const std::string& only,
+		double expected = 1.0 )
 	{
 		if( !only.empty() && label.find( only ) == std::string::npos ) return;
 		const std::string tPath = WriteScene( BuildScene( test ), "test" );
@@ -267,7 +279,7 @@ namespace
 		std::cout << std::setprecision( 6 ) << "  " << label << ": test " << st.mean << " +/- " << st.sd
 			<< "  ref " << sr.mean << " +/- " << sr.sd << "  ratio " << ratio
 			<< " (per-pair sd " << sq.sd << ", band " << band << ")" << std::endl;
-		Check( std::fabs( ratio - 1.0 ) < band, label + ": ratio within band of 1" );
+		Check( std::fabs( ratio - expected ) < band, label + ": ratio within band of expected" );
 	}
 }
 
@@ -318,10 +330,34 @@ int main( int argc, char** argv )
 		{ Model::Lambertian, Integrator::PT, Light::Omni, Wall::None, true, 64 },
 		0.01, trials, seed, only );
 
-	// E: PT + SMS, omni light through 1.5 glass.
-	RatioRow( "E: lambertian/PT+SMS glass-1.5 flag TRUE / FALSE (omni)",
+	// E1: PT + SMS, omni light through the index-1.0 room / the same with
+	// no room: what SMS returns through an invisible caster, against a
+	// reference.  KNOWN DEFECT DL-413 PINNED at 0.5: SMS delivers HALF a
+	// delta light's direct light through a specular caster (0.4994 here;
+	// dielectric or perfect refractor, ior 1.0 or 1.01, biased or not).
+	// When DL-413 is fixed, move `expected` to 1.  Pre-fix (SMS plus the
+	// walk) it read about 1.5, so the pin is red there too.
+	RatioRow( "E1: lambertian/PT+SMS index-1.0 room / open air (omni) [DL-413 pin 0.5]",
+		{ Model::Lambertian, Integrator::PTSMS, Light::Omni, Wall::MatchedRoom, true, 64 },
+		{ Model::Lambertian, Integrator::PTSMS, Light::Omni, Wall::None, true, 64 },
+		0.02, trials, seed, only, 0.5 );
+
+	// E2: PT + SMS, omni light through 1.5 glass, flag TRUE / FALSE.  Equal
+	// by construction once SMS-sampled lights keep a binary shadow; its
+	// value is the pre-fix red (2.46x), which E1 above checks against a
+	// reference.
+	RatioRow( "E2: lambertian/PT+SMS glass-1.5 flag TRUE / FALSE (omni)",
 		{ Model::Lambertian, Integrator::PTSMS, Light::Omni, Wall::GlassAroundSubject, true, 64 },
 		{ Model::Lambertian, Integrator::PTSMS, Light::Omni, Wall::GlassAroundSubject, false, 64 },
+		0.02, trials, seed, only );
+
+	// F: a DIRECTIONAL light through 1.5 glass.  SMS never samples it (it is
+	// not in LightSampler's SampleLight table), so PT + SMS with the flag
+	// must equal plain PT with the flag; a global "flag off under SMS"
+	// rule rendered it black.
+	RatioRow( "F: lambertian/PT+SMS / PT, flag TRUE, glass-1.5 (directional)",
+		{ Model::Lambertian, Integrator::PTSMS, Light::Directional, Wall::GlassAroundSubject, true, 64 },
+		{ Model::Lambertian, Integrator::PT, Light::Directional, Wall::GlassAroundSubject, true, 64 },
 		0.02, trials, seed, only );
 
 	std::cout << "=== " << passCount << " passed, " << failCount << " failed ===" << std::endl;

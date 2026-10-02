@@ -69,11 +69,15 @@ uniformcolor_painter
 	color			1 1 1
 }
 
-# Spectral PT: the colorant media carry real absorption spectra; transparent
-# shadows let NEE light the domes + fume body THROUGH the dielectric slab with
-# Fresnel transmittance (shadow rays do not refract, so NEE cannot align a
-# facet's mirror lobe -- the discrete in-depth flashes arrive via BSDF
-# sampling; see the key-light comment for the angular-size requirement).
+# Spectral PT: the colorant media carry real absorption spectra.  (2026-10-02,
+# DL-344: `transparent_shadows` now sees through the dielectric slab only for
+# DELTA lights, and this scene has none -- its env and two panel lights reach
+# the domes + fume body through the slab by BSDF sampling, which already
+# carried that light; the old NEE see-through counted it twice.  The flag is
+# kept but inert here.  Measured, salted n = 4, OIDN off, linear: whole frame
+# -0.30 %, the under-slab blocks -1.5 .. -5.0 %.  The discrete in-depth
+# flashes always arrived via BSDF sampling; see the key-light comment for the
+# angular-size requirement.)
 pathtracing_spectral_rasterizer
 {
 	# 1024: the in-depth flecks are 1-2px peaks sitting on spectral chroma

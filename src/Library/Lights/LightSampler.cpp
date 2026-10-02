@@ -104,7 +104,7 @@ static bool ShadowOccludedRGB(
 	const RayCaster* pRC = dynamic_cast<const RayCaster*>( &caster );
 	if( pRC )
 	{
-		return pRC->CastShadowRayAutoSampled( ray, dHowFar, false, 0.0, transmittance, bDeltaLight, sampler, boundaries, physicalDistance, 0, pGradedTrack, pSegmentEnd );
+		return pRC->CastShadowRayAutoSampled( ray, dHowFar, false, 0.0, transmittance, bDeltaLight, sampler, boundaries, physicalDistance, 0, pGradedTrack, pSegmentEnd , true /*DL-344: every light reaching these arms is in SampleLight's table*/ );
 	}
 	transmittance = RISEPel( 1.0, 1.0, 1.0 );
 	return caster.CastShadowRaySampled( ray, dHowFar, sampler, boundaries, physicalDistance );
@@ -127,7 +127,7 @@ static bool ShadowOccludedNM(
 	if( pRC )
 	{
 		RISEPel t( 1.0, 1.0, 1.0 );
-		const bool occluded = pRC->CastShadowRayAutoSampled( ray, dHowFar, true, nm, t, bDeltaLight, sampler, boundaries, physicalDistance, 0, pGradedTrack, pSegmentEnd );
+		const bool occluded = pRC->CastShadowRayAutoSampled( ray, dHowFar, true, nm, t, bDeltaLight, sampler, boundaries, physicalDistance, 0, pGradedTrack, pSegmentEnd , true /*DL-344: every light reaching these arms is in SampleLight's table*/ );
 		transmittance = t.r;	// NM path fills all 3 channels equally
 		return occluded;
 	}

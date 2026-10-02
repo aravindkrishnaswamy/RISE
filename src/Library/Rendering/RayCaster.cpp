@@ -296,6 +296,7 @@ RayCaster::RayCaster(
   iPendingRISCandidates( -1 ),
   builtLightGeneration( 0 ),
   bTransparentShadows( false ),
+  bSMSEnabled( false ),
   bSceneHasDeltaPassThrough( false ),
   dRadianceScaleOverride( -1.0 ),		// negative = no override (use the map's own scale)
   bWantsWireEdgeInfo( false ),
@@ -2444,9 +2445,14 @@ bool RayCaster::CastOcclusionRay( const Ray& ray, const Scalar dHowFar ) const
 //     and re-emerge) is ignored; only the direct (1-F)-per-interface
 //     transmission is accounted for.
 //   * One REPRESENTATIVE eta per interface is used (see below).
-// It trades a small physical inaccuracy for a large NEE-variance
-// reduction when a lit surface sits under a thin transparent shell
-// (e.g. a watch dial under a sapphire crystal).  Used ONLY by the
+// It is the only PT estimator of a DELTA light (omni / spot /
+// directional) seen through a clear dielectric -- no BSDF-sampled
+// continuation can hit a delta light -- so for those lights it lights a
+// surface under a thin transparent shell (e.g. a watch dial under a
+// sapphire crystal) that binary NEE would leave black.  DL-344: it is
+// NOT used for area / env lights (the continuation already reaches them
+// through the shell at MIS weight 1, so it would count the path twice),
+// nor, with SMS on, for the lights SMS samples.  Used ONLY by the
 // unidirectional PT integrator; BDPT / VCM / MLT keep binary shadows.
 //
 // eta source:
@@ -2884,7 +2890,8 @@ bool RayCaster::CastShadowRayAuto(
 	RISEPel& transmittance,
 	const bool bDeltaLight,
 	GradedIndexMedium::ShadowSegmentTrack* pGradedTrack,
-	const Point3* pSegmentEnd
+	const Point3* pSegmentEnd,
+	const bool bLightSampledBySMS
 	) const
 {
 	// DL-05: may this shadow ray see through a delta pass-through?  Only
@@ -2906,8 +2913,12 @@ bool RayCaster::CastShadowRayAuto(
 	// BSDF-sampled continuation at MIS weight 1 (its partner is reset at
 	// the delta vertex), so letting this arm through as well counts the
 	// path twice (an index-1.0 box read 1.14x open air, an area emitter
-	// 1.97x).  docs/DL344_TRANSPARENT_SHADOW_PARTITION.md.
-	const bool bDielectrics = bTransparentShadows && bDeltaLight;
+	// 1.98x).  With SMS on, a delta light SMS samples (one in
+	// LightSampler's table: omni, spot) is ALSO estimated through the
+	// caster by SMS, so the walk is off for it; a directional light is
+	// not in that table, SMS never sees it, and the walk stays its only
+	// estimator.  docs/DL344_TRANSPARENT_SHADOW_PARTITION.md.
+	const bool bDielectrics = DielectricShadowWalk( bDeltaLight, bLightSampledBySMS );
 	if( bDielectrics ) {
 		return WalkShadowSegment( ray, dHowFar, bNM, nm, transmittance, true, bPassThrough, pGradedTrack, pSegmentEnd );
 	}
@@ -3385,15 +3396,16 @@ bool RayCaster::CastShadowRaySampled(const Ray& ray, Scalar distance, ISampler& 
 }
 bool RayCaster::CastShadowRayAutoSampled(const Ray& ray, Scalar distance, bool nmMode,
     Scalar nm, RISEPel& transmittance, bool deltaLight, ISampler& sampler, MediumBoundaryHits* boundaries, Scalar physicalDistance, Scalar occlusionStart,
-    GradedIndexMedium::ShadowSegmentTrack* pGradedTrack, const Point3* pSegmentEnd) const
+    GradedIndexMedium::ShadowSegmentTrack* pGradedTrack, const Point3* pSegmentEnd, bool lightSampledBySMS) const
 {
     if (boundaries) boundaries->clear();
     const bool passThrough = deltaLight && bSceneHasDeltaPassThrough && pScene &&
         !pScene->GetCausticPelMap() && !pScene->GetGlobalPelMap() &&
         !pScene->GetTranslucentPelMap() && !pScene->GetCausticSpectralMap() &&
         !pScene->GetGlobalSpectralMap();
-    // DL-344: dielectrics see-through for DELTA lights only (see CastShadowRayAuto).
-    const bool dielectrics = bTransparentShadows && deltaLight;
+    // DL-344: dielectrics see-through for DELTA lights SMS does not
+    // estimate (see CastShadowRayAuto).
+    const bool dielectrics = DielectricShadowWalk(deltaLight, lightSampledBySMS);
     if (dielectrics || passThrough)
         return WalkShadowSegment(ray, distance, nmMode, nm, transmittance,
             dielectrics, passThrough, pGradedTrack, pSegmentEnd, &sampler, boundaries, physicalDistance, occlusionStart);
