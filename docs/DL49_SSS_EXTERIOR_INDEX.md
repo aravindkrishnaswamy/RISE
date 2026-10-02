@@ -1391,7 +1391,14 @@ noise; 32 NON-touching random-walk spheres with overlapping boxes 39.85 +/-
 random-walk dragons (uncertified meshes, so now on the parity arm) 50.44
 +/- 0.64 vs 65.03 +/- 0.11 s, **+28.9 %** [+15.2 %], which includes a real
 transport change (the dragons overlap, so more walks now cross and keep
-walking).  No sound cheaper pre-test was found: the query sets the
+walking).  Review round 3 split it with a query-only build (the query runs,
+its answer is discarded), user CPU, 3 interleaved reps: 6 intersecting
+dragons query +23.5 % / transport +14.1 % (total +37.6 % on that machine);
+37 intersecting spheres +4.6 % / +6.0 %; 21 non-touching spheres +2.8 % /
++1.0 %; one dragon and `rwsss_sphere` ~0.  So on dense uncertified meshes
+the QUERY dominates.  P3 left: a certified neighbour's sign comes from
+`SignedDistanceLower`, which runs a closest-point query before its parity
+test -- calling the parity test directly would save that.  No sound cheaper pre-test was found: the query sets the
 boundary's own Fresnel (an index-matched neighbour has none), so it cannot
 be deferred past the exterior Fresnel coin, and only the box excludes a
 body cheaply.
@@ -1475,7 +1482,14 @@ opaque table under a wax block), where the walk keeps the old behaviour.
   containment test.
 - An uncertified neighbour is judged by two-way crossing parity, exact for
   a closed body (barring a ray through an edge or vertex); a point between
-  two disjoint parallel open sheets of ONE object reads inside.
+  two disjoint parallel open sheets of ONE object reads inside -- and more
+  generally ANY point inside an open tube, sleeve, lampshade, zero-thickness
+  cup or uncapped cylinder mesh reads inside for most normals (one wall
+  crossing each way).  Review round 3 measured a closed conservative
+  random-walk sphere inside an open, double-sided, ABSORBING random-walk
+  tube mesh (not touching): master 0.4538 -> 0.3370 (-26 %); with a
+  conservative tube 0.4533 -> 0.6091 (master already wrong there, DL-409).
+  Needs a random-walk material on an open mesh.
 - Cost: see section 12.2 (+7.1 % / +28.9 % on dense random-walk scenes
   with overlapping boxes).
 - A random-walk inward-wound certified mesh loses energy on its own (F4's

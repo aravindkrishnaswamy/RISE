@@ -1940,7 +1940,8 @@ namespace
 	//! read an inward-wound B inside-out (variant 1: master 0.9989 ->
 	//! 0.8225; variant 2: 0.7658 -> 0.6640).  Variant 2 reads 0.766 on
 	//! master already (a random-walk mesh wound inward, an authoring error,
-	//! loses energy at its own entry gate), so it is pinned at that value.
+	//! loses energy at its own entry gate), so it is pinned at that value
+	//! (filed as DL-414).
 	std::string BuildWindingScene( int variant, unsigned int samples )
 	{
 		std::ostringstream s;
