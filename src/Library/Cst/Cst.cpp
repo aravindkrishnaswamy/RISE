@@ -3381,6 +3381,10 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 
 	int count = 0;
 	int failedCount = 0;   // chunks whose Finalize/expansion failed -- see the header comment above
+	// DL-323 follow-through: deprecated chunk TYPES met by this derive, in first-seen order, with how
+	// many chunks of each; logged once per type after the loop (never a `diags` entry -- a deprecation
+	// must not turn a successful load into a failed one).
+	std::vector< std::pair< const ChunkDescriptor*, int > > deprecatedSeen;
 	for( Pending& p : pending ) {
 		// scene_variant bake (doc 63): apply the ACTIVE definition per material name.  An active override is applied at
 		// its overridden BASE's slot (so objects bind it by name regardless of the override chunk's file position -- the
@@ -3393,6 +3397,15 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 			if( !svv.empty() ) continue;   // variant-tagged: the active override is applied at its base's slot (below); inactive ones dropped
 			std::map<std::string, size_t>::const_iterator ov = svActiveOverride.find( p.bag.GetString( "name", "noname" ) );
 			if( ov != svActiveOverride.end() ) applyP = &pending[ ov->second ];   // overridden base -> apply the active override HERE
+		}
+		if( !applyP->isSourceInstance && applyP->parser ) {
+			const ChunkDescriptor& dd = applyP->parser->Describe();
+			if( dd.deprecated ) {
+				bool seen = false;
+				for( std::pair< const ChunkDescriptor*, int >& d : deprecatedSeen )
+					if( d.first == &dd ) { ++d.second; seen = true; break; }
+				if( !seen ) deprecatedSeen.push_back( std::make_pair( &dd, 1 ) );
+			}
 		}
 		std::vector<const void*> produced, resolved;
 		if( outRecorded ) { g_cstProductionSink = &produced; g_cstResolutionSink = &resolved; }
@@ -3438,6 +3451,13 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 		// and to be diagnosed BY NAME if it too fails, rather than vanishing
 		// silently behind this one's diagnostic.
 	}
+	// DL-323 follow-through: ONE warning per deprecated chunk type met above (docs/SCENE_CONVENTIONS.md
+	// "Deprecated materials").  The chunks were applied exactly as before; this is advice only.
+	for( const std::pair< const ChunkDescriptor*, int >& d : deprecatedSeen )
+		GlobalLog()->PrintEx( eLog_Warning,
+			"DeriveToJob:: `%s` is DEPRECATED (%d chunk(s) in this scene; they still render exactly as before): use %s  "
+			"See docs/SCENE_CONVENTIONS.md \"Deprecated materials\" for the full legacy -> modern table.",
+			d.first->keyword.c_str(), d.second, d.first->replacement.c_str() );
 	// Summary LOG LINE (not a `diags` entry) when anything failed above:
 	// `diags` is already non-empty (each failure pushed its own named
 	// diagnostic), which is what every caller actually keys "did the derive

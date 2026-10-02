@@ -238,6 +238,20 @@ namespace RISE
 				p.description = "If set, this chunk overrides the base same-named chunk when scene_variant <name> is active.";
 			}
 
+			// DL-323 follow-through (2026-10-02): mark a chunk TYPE deprecated.  The chunk keeps parsing,
+			// deriving and rendering EXACTLY as before; the flag only (a) makes DeriveToJob log one
+			// warning per deprecated keyword per derive, (b) is surfaced by the agent schema and the
+			// editor's chunk panel.  `replacement` names the modern keyword(s) AND the parameter
+			// translation (the full table is docs/SCENE_CONVENTIONS.md "Deprecated materials").  The
+			// description is prefixed too, so every consumer that only shows `description` (the
+			// property panel, the agent's read_schema catalog) carries the notice without a code change.
+			static void MarkDeprecated( ChunkDescriptor& cd, const char* replacement )
+			{
+				cd.deprecated = true;
+				cd.replacement = replacement;
+				cd.description = std::string( "DEPRECATED (still renders exactly as before): use " ) + replacement + "  " + cd.description;
+			}
+
 			// Tracks uniform color painter values so that material parsers
 			// can validate energy conservation at scene-definition time.
 			struct PainterColor { double c[3]; };
@@ -3624,6 +3638,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "ior";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; p.semantics.pipe = ParameterPipe::Scalar; }
 						{ auto& p = P(); p.name = "scattering";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here)"; p.defaultValueHint = "64"; p.semantics.pipe = ParameterPipe::Scalar; }
 						{ auto& p = P(); p.name = "henyey-greenstein"; p.kind = ValueKind::Bool;      p.description = "Use Henyey-Greenstein phase"; p.defaultValueHint = "FALSE"; }
+						MarkDeprecated( cd, "coated_material over a lambertian_material (base = a lambertian_material with the same reflectance; coat_ior = ior; coat_roughness = sqrt(2/(scattering+2)), 0 for scattering of 1e5 or more; coat_tint / coat_absorption carry tau).  add_wetness already emits this shape." );
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -4258,6 +4273,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "rs";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "nu";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "U-direction exponent (scalar_painter, or inline `r g b` or scalar)"; p.semantics.pipe = ParameterPipe::Scalar; }
 						{ auto& p = P(); p.name = "nv";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "V-direction exponent (scalar_painter, or inline `r g b` or scalar)"; p.semantics.pipe = ParameterPipe::Scalar; }
+						MarkDeprecated( cd, "ggx_material with fresnel_mode schlick_f0 (rd carries over, rs becomes the F0 tint, alphax = sqrt(2/(nu+2)), alphay = sqrt(2/(nv+2)); steer the brush direction with tangent_rotation_scalar)." );
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -4287,6 +4303,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "rd";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "rs";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "N";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Phong exponent (scalar_painter, or inline `r g b` or scalar)"; p.semantics.pipe = ParameterPipe::Scalar; }
+						MarkDeprecated( cd, "ggx_material with fresnel_mode schlick_f0 (rd carries over, rs becomes the F0 tint, alphax = alphay = sqrt(2/(N+2)) from the Phong exponent N), or pbr_metallic_roughness_material." );
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -4611,6 +4628,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "rd";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "rs";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "alpha"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Surface slope RMS (scalar_painter, or inline `r g b` or scalar)"; p.semantics.pipe = ParameterPipe::Scalar; }
+						MarkDeprecated( cd, "ggx_material with fresnel_mode schlick_f0 (rd carries over, rs becomes the F0 tint, alphax = alphay = alpha as a starting point -- GGX has heavier tails than a Gaussian lobe of the same width)." );
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -4642,6 +4660,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "rs";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "alphax"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "X-direction slope RMS (scalar_painter, or inline `r g b` or scalar)"; p.semantics.pipe = ParameterPipe::Scalar; }
 						{ auto& p = P(); p.name = "alphay"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Y-direction slope RMS (scalar_painter, or inline `r g b` or scalar)"; p.semantics.pipe = ParameterPipe::Scalar; }
+						MarkDeprecated( cd, "ggx_material with fresnel_mode schlick_f0 (rd carries over, rs becomes the F0 tint, alphax and alphay carry over as a starting point; steer the brush direction with tangent_rotation_scalar)." );
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -4869,6 +4888,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "ior";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel IOR (scalar_painter, or inline `r g b` or scalar)"; p.semantics.pipe = ParameterPipe::Scalar; }
 						{ auto& p = P(); p.name = "extinction"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel extinction (scalar_painter, or inline `r g b` or scalar)"; p.semantics.pipe = ParameterPipe::Scalar; }
 						{ auto& p = P(); p.name = "fresnel_mode"; p.kind = ValueKind::String; p.description = "Fresnel model: conductor (only).  `thinfilm` is GGX-only and rejected here."; p.defaultValueHint = "conductor"; }
+						MarkDeprecated( cd, "ggx_material with fresnel_mode conductor (rd, rs, ior, extinction carry over unchanged; alphax = alphay = facets, because this Cook-Torrance already evaluates the GGX distribution), or pbr_metallic_roughness_material for a glTF-style metal or dielectric." );
 						AddVariantTagParam( cd );
 						return cd;
 					}();
@@ -4963,6 +4983,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "rs";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "roughness"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Surface roughness (scalar_painter, or inline `r g b` or scalar)"; p.semantics.pipe = ParameterPipe::Scalar; }
 						{ auto& p = P(); p.name = "isotropy";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Isotropy factor (scalar_painter, or inline `r g b` or scalar)"; p.semantics.pipe = ParameterPipe::Scalar; }
+						MarkDeprecated( cd, "ggx_material with fresnel_mode schlick_f0 (rd carries over, rs becomes the F0 tint, alphax = alphay = sqrt(roughness) because Schlick's roughness r is the GGX alpha squared; isotropy below 1 has no exact translation, pick alphax != alphay by eye), or pbr_metallic_roughness_material." );
 						AddVariantTagParam( cd );
 						return cd;
 					}();
