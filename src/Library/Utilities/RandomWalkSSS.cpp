@@ -406,11 +406,10 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 			// (`IObjectManager::RandomWalkObjectContaining`), one candidate
 			// object at a time, and decided winding-independently wherever
 			// the candidate can sign a distance (an analytic solid, a
-			// certified-watertight mesh, a CSG composite); a double-sided
-			// body that cannot is never crossed into, and a single-sided one
-			// is judged by its first face along the outward normal (see that
-			// interface's comment for the order and the closed + outward
-			// condition the last arm needs).  Asking each body ALONE is what
+			// certified-watertight mesh, a CSG composite), and otherwise by
+			// the parity of the candidate's own crossings along the outward
+			// normal AND its reverse (both odd), which does not read the
+			// winding either (see that interface's comment).  Asking each body ALONE is what
 			// makes the answer immune to coincident faces: a probe along the
 			// walk ray over the whole scene tied between the walker's own
 			// exit face and the neighbour's (both at the exit,
@@ -424,9 +423,9 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 			// random-walk neighbours are crossed into; any other body the
 			// offset point lies inside (a diffusion body, an opaque surface)
 			// keeps the old behaviour (DL-408).  Residuals: shells of the
-			// walker's OWN object (the neighbour must be another object), an
-			// uncertified DOUBLE-SIDED mesh neighbour (never crossed into),
-			// the walk keeps the entry body's boundaryFilter / maxBounces /
+			// walker's OWN object (the neighbour must be another object), a
+			// point between two disjoint open sheets of one object reads
+			// inside, the walk keeps the entry body's boundaryFilter / maxBounces /
 			// maxDepth, and the neighbour's alpha coverage (DL-214) is not
 			// consulted.
 			//
@@ -435,7 +434,8 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 			// random-walk object's world bounding box pays the containment
 			// query (a closed-form signed distance for an analytic solid; a
 			// closest-point query plus a parity ray walk for a certified
-			// mesh), touching or not.  An exit in no such box pays one
+			// mesh; one ray per crossing each way for an uncertified one),
+			// touching or not.  An exit in no such box pays one
 			// box-tree walk.  Nothing draws from the sampler, so a walk that
 			// never meets a neighbour is unchanged bit for bit.  A record
 			// without a scene (a unit test's synthetic hit) skips it.

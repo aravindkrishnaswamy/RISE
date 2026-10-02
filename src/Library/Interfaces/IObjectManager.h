@@ -437,17 +437,18 @@ namespace RISE
 		//!      is exact and WINDING-INDEPENDENT for an analytic solid, a
 		//!      certified-watertight mesh (a parity count of crossings) and a
 		//!      CSG composite.
-		//!   2. Otherwise (an open or uncertified mesh, a sheet family) a
-		//!      DOUBLE-SIDED candidate is never reported: it has no certified
-		//!      inside and nothing makes its winding trustworthy (an
-		//!      inward-wound one would read inside-out).
-		//!   3. A SINGLE-SIDED uncertified candidate is reported iff a ray
-		//!      from the point along `probeDir` first meets it on a face it
-		//!      LEAVES by the face's TRUE facing (DL-70) -- correct only for
-		//!      a CLOSED, OUTWARD-wound body; a single-sided body is rendered
-		//!      by its winding, so an inward-wound one is already inside-out.
+		//!   2. Otherwise (an open or uncertified mesh, a sheet family --
+		//!      most imported meshes, which DL-143 cannot certify) by the
+		//!      PARITY of that one candidate's crossings along `probeDir` AND
+		//!      along `-probeDir`: inside iff BOTH counts are odd.
+		//!      Winding-independent.  A closed body is answered exactly
+		//!      (barring a ray through an edge or vertex); an open sheet, a
+		//!      point in a non-convex body's notch, and a ray that slips
+		//!      through a hole are rejected.  Not exact for every open body:
+		//!      a point between two disjoint parallel sheets of ONE object
+		//!      reads inside.
 		//! A hit with no interior (`bProvablyNoInterior`, a ray-derived
-		//! normal) never counts.  Reads the material live.  Appended at the
+		//! normal) refuses the candidate.  Reads the material live.  Appended at the
 		//! interface tail (see IntersectOcclusionRay).
 		virtual const IObject* RandomWalkObjectContaining(
 			const Point3& ptWorld,						///< [in] The world-space point to test
