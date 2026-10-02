@@ -58,6 +58,7 @@ DisplacedGeometry::DisplacedGeometry(
   m_bDoubleSided( bDoubleSided ),
   m_bUseFaceNormals( bUseFaceNormals ),
   m_bSeamFold( bSeamFold ),
+  m_pPlaneBase( dynamic_cast<const ClippedPlaneGeometry*>( pBase ) ),
   m_pMesh( 0 ),
   m_bRealized( false ),
   m_displacementSubscription()
@@ -359,6 +360,18 @@ void DisplacedGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool b
 		return;
 	}
 	m_pMesh->IntersectRay( ri, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
+
+	// DL-345: displacing a coplanar convex clipped plane moves every vertex
+	// along ONE normal (its analytic tessellation normal is constant), so the
+	// mesh is the graph of a function over the quad -- an embedded disk,
+	// which provably encloses no volume.  The shipped open displaced glass
+	// sheets (`sms_k1_refract`, `sms_k2_flatslab`, ...) are exactly this, and
+	// the transmissive SPFs cross such a sheet by its FACE.  The base is
+	// re-asked per hit because its corners can be keyframed.  Any other base
+	// (a mesh, a closed analytic primitive) leaves the mesh's own `false`.
+	if( ri.bHit && m_pPlaneBase && m_pPlaneBase->IsPlanarConvexQuad() ) {
+		ri.bProvablyNoInterior = true;
+	}
 }
 
 bool DisplacedGeometry::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const

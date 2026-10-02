@@ -194,7 +194,11 @@ void ClippedPlaneGeometry::IntersectRay( RayIntersectionGeometric& ri, const boo
 	ri.bOpenSheet = isBackFaceHit;
 	// DL-157 review round 2: a PLANE cannot enclose a volume, so this is a
 	// real certification rather than "uncertified" -- see the flag's doc.
-	ri.bProvablyNoInterior = isBackFaceHit;
+	// DL-345: stamped on EVERY hit (it used to be back-face only, which no
+	// consumer needed beyond): the transmissive SPFs cross an open sheet
+	// by its face, and a FRONT hit must be recognised as one too, or a
+	// front hit with the sheet already on the stack reads as an exit.
+	ri.bProvablyNoInterior = true;
 	ri.ptCoord = Point2( h.u, h.v );
 
 	// docs/CLOTH_FABRIC_DESIGN.md 9.1: `dpdu` above is the bilinear

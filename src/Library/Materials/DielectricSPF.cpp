@@ -17,6 +17,8 @@
 #include "../Interfaces/ILog.h"
 #include "../Utilities/Optics.h"
 #include "../Utilities/ThinFilm.h"
+#include "../Utilities/IORStackSeeding.h"
+#include <memory>
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -230,21 +232,31 @@ Scalar DielectricSPF::GenerateScatteredRay(
 	// at the same interface.
 	Scalar Ni = 1.0, Nt = 1.0;
 
+	// DL-345: a PROVABLY OPEN sheet is crossed by its FACE, not by the
+	// stack (IORStackSeeding::ResolveOpenSheetCrossing has the ruling; the
+	// caller's `bFromInside` already applied the same face test).
+	std::unique_ptr<IORStack> pOpenSheetStack;
+	IORStackSeeding::OpenSheetCrossing openSheet = { false, Scalar( 1 ), Scalar( 1 ) };
+	if( ri.bProvablyNoInterior ) {
+		pOpenSheetStack.reset( new IORStack( ior_stack ) );
+		openSheet = IORStackSeeding::ResolveOpenSheetCrossing( ri, rIndex, *pOpenSheetStack );
+	}
+
 	if( bFromInside )
 	{
 		// Determine the exit IOR: the medium the ray enters after leaving
 		// this object.  Pop the current object from a temporary copy of
 		// the stack so that top() reveals the underlying medium's IOR.
-		IORStack exitStack( ior_stack );
-		exitStack.pop();
+		IORStack exitStack( pOpenSheetStack ? *pOpenSheetStack : ior_stack );
+		if( !pOpenSheetStack ) {
+			exitStack.pop();
+		}
 		Scalar exitIOR = exitStack.top();
 		Ni = rIndex;
 		Nt = exitIOR;
 
 		if( Optics::CalculateRefractedRay( -ri.onb.w(), rIndex, exitIOR, refracted ) ) {
-			dielectric.ior_stack = new IORStack( ior_stack );
-			dielectric.ior_stack->pop();
-			GlobalLog()->PrintNew( dielectric.ior_stack, __FILE__, __LINE__, "ior stack" );
+			dielectric.ior_stack = IORStackSeeding::NewTransmittedStack( ior_stack, pOpenSheetStack.get(), openSheet.etaFrom, false, rIndex );
 			if( arStack.nLayers > 0 ) {
 				const Scalar cosI = fabs( Vector3Ops::Dot( ri.onb.w(), ri.ray.Dir() ) );
 				const Scalar lam = ( nm > 0.0 ) ? nm : 550.0;
@@ -259,20 +271,18 @@ Scalar DielectricSPF::GenerateScatteredRay(
 	}
 	else
 	{
-		Ni = ior_stack.top();
+		Ni = pOpenSheetStack ? openSheet.etaFrom : ior_stack.top();
 		Nt = rIndex;
 
-		if( Optics::CalculateRefractedRay( ri.onb.w(), ior_stack.top(), rIndex, refracted ) ) {
+		if( Optics::CalculateRefractedRay( ri.onb.w(), Ni, rIndex, refracted ) ) {
 			if( arStack.nLayers > 0 ) {
 				const Scalar cosI = fabs( Vector3Ops::Dot( ri.onb.w(), ri.ray.Dir() ) );
 				const Scalar lam = ( nm > 0.0 ) ? nm : 550.0;
-				ref = ARStackReflectance( arStack, /*fromInside*/ false, cosI, lam, ior_stack.top(), rIndex );
+				ref = ARStackReflectance( arStack, /*fromInside*/ false, cosI, lam, Ni, rIndex );
 			} else {
-				ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), refracted, ri.onb.w(), ior_stack.top(), rIndex );
+				ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), refracted, ri.onb.w(), Ni, rIndex );
 			}
-			dielectric.ior_stack = new IORStack( ior_stack );
-			dielectric.ior_stack->push( rIndex );
-			GlobalLog()->PrintNew( dielectric.ior_stack, __FILE__, __LINE__, "ior stack" );
+			dielectric.ior_stack = IORStackSeeding::NewTransmittedStack( ior_stack, pOpenSheetStack.get(), openSheet.etaFrom, true, rIndex );
 		} else {
 			ref = 1.0;
 		}
@@ -538,7 +548,9 @@ void DielectricSPF::DoSingleRGBComponent(
 	// is currently inside, so if this object is in the stack we must be
 	// exiting. This is more robust than the normal-based cosine test at
 	// grazing angles where numerical precision can give wrong results.
-	if( ior_stack.containsCurrent() ) {
+	// DL-345: EXCEPT on a provably open sheet, which is crossed by its
+	// FACE (IORStackSeeding::ResolveOpenSheetCrossing has the ruling).
+	if( ri.bProvablyNoInterior ? IORStackSeeding::OpenSheetBackFace( ri ) : ior_stack.containsCurrent() ) {
 		// We are coming from the inside of the object
 		const Scalar distance = Vector3Ops::Magnitude( Vector3Ops::mkVector3(ri.ray.origin, ri.ptIntersection) );
 		bFromInside = true;
@@ -652,8 +664,9 @@ void DielectricSPF::ScatterNM(
 	bool		bFromInside = false;
 
 	// Use the IOR stack as the authoritative source for inside/outside
-	// determination when available (see DoSingleRGBComponent for details)
-	if( ior_stack.containsCurrent() ) {
+	// determination when available (see DoSingleRGBComponent for details;
+	// DL-345: a provably open sheet is crossed by its face)
+	if( ri.bProvablyNoInterior ? IORStackSeeding::OpenSheetBackFace( ri ) : ior_stack.containsCurrent() ) {
 		// We are coming from the inside of the object
 		const Scalar distance = Vector3Ops::Magnitude( Vector3Ops::mkVector3(ri.ray.origin, ri.ptIntersection) );
 		bFromInside = true;
