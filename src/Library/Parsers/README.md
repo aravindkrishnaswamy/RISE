@@ -109,6 +109,7 @@ No chunk parser overrides `ParseChunk` directly. The default `ParseChunk` impl (
 - the syntax highlighters (Qt + AppKit, via `SceneGrammar` in [SceneEditorSuggestions/](../SceneEditorSuggestions/))
 - the scene-editor suggestion engine (right-click context menu and inline autocomplete in both GUI apps)
 - any future grammar consumer (linters, doc generators, …)
+- the deprecation surface (`ChunkDescriptor::deprecated` + `replacement`, set via `MarkDeprecated()` in [ChunkParserRegistry.cpp](ChunkParserRegistry.cpp)): `DeriveToJob` logs one warning per deprecated chunk type per load, the agent `read_schema` JSON carries `"deprecated":true` + `"replacement"`, and the description is prefixed `DEPRECATED (...)` so completion popups and the property panel show it. A deprecated chunk still parses and renders exactly as before (docs/SCENE_CONVENTIONS.md "Deprecated materials").
 
 `Describe()` and `Finalize()` are both `[[nodiscard]] = 0` pure virtual on `IAsciiChunkParser`, so a chunk parser cannot ship without both — the build fails until they're implemented.
 

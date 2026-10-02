@@ -1429,6 +1429,91 @@ model this follows.
 
 ---
 
+## 11.5. Deprecated materials (DL-323 follow-through, 2026-10-02)
+
+**Ruling (user, 2026-10-02):** the legacy non-physically-based material
+chunks are being DEPRECATED, not retrofitted.  A deprecated chunk **keeps
+parsing, deriving and rendering exactly as it always has** -- no
+energy-conservation clip is added to it (that is the DL-310 policy, which
+stops at Schlick and Ward; DL-323 recorded that Cook-Torrance and Phong
+exceed 1 at grazing).  New scenes should use the modern chunks; this
+section is the legacy -> modern table.
+
+**What deprecation does.**  `ChunkDescriptor::deprecated` + `replacement`
+(set by `MarkDeprecated()` in `ChunkParserRegistry.cpp`):
+
+- `DeriveToJob` logs ONE `eLog_Warning` per deprecated chunk TYPE per
+  scene load (`` `schlick_material` is DEPRECATED (2 chunk(s) in this scene;
+  they still render exactly as before): use ggx_material ... ``).  It is
+  never a derive diagnostic, so a successful load stays successful.
+- the agent's `read_schema` JSON carries `"deprecated":true` and a
+  `"replacement"` string; the descriptor `description` is prefixed
+  `DEPRECATED (...)`, so the keyword completion popup and the property
+  panel's chunk-type row show it too.
+- nothing else moves: `tests/DeprecatedMaterialRenderIdentityTest.cpp`
+  renders a scene binding all seven chunks and requires the pixel hash
+  measured on the parent commit.
+
+**Classification of every material chunk.**
+
+| chunk | verdict | why |
+|---|---|---|
+| `cooktorrance_material`, `isotropic_phong_material`, `ashikminshirley_anisotropicphong_material`, `schlick_material`, `ward_isotropic_material`, `ward_anisotropic_material`, `polished_material` | **DEPRECATED** | legacy lobe models, each fully covered by `ggx_material` (+ `coated_material` for polished); see the table below |
+| `ggx_material`, `pbr_metallic_roughness_material`, `coated_material`, `fabric_material`, `weave_material`, `composite_material`, `sheen_material`, `hair_material`, `lambertian_material`, `orennayar_material`, `dielectric_material`, `perfectreflector_material`, `perfectrefractor_material`, the SSS / skin / tissue family, `lambertian_luminaire_material`, `datadriven_material` | modern / specialised -- keep | physically based, or an ideal/measured model with no deprecated twin (Oren-Nayar is a physically derived rough-diffuse whose albedo is baked exactly, DL-07; `datadriven_material` is measured data) |
+| `translucent_material` | **NOT deprecated** (no real replacement) | the only two-sided diffuse-transmitting THIN-sheet model (leaf, paper, lampshade) with per-side `ref`/`tau` and Beer extinction.  Considered and rejected as replacements: `dielectric_material` (a Fresnel interface with an IOR-stack, no per-side diffuse reflect/transmit split), `subsurfacescattering_material` / `randomwalk_sss_material` (volumetric SOLIDS that need a closed body and a mean free path), `weave_material transmission thin` (cloth gap).  It was also rebuilt as one consistent sampler/density/evaluator in DL-157/DL-41.  Revisit if a thin-sheet material is added |
+| `phong_luminaire_material` | **NOT deprecated** (no real replacement) | an emission PROFILE (`cos^N` directional exitance) over another material; `lambertian_luminaire_material` has no equivalent shaping, and `spot_light` is a different entity |
+
+**Legacy -> modern mapping.**  The translations are *starting points*:
+the modern model is energy-bounded and multiple-scattering-compensated, so
+a converted material is physically better but is not pixel-identical, and
+the parametrisations differ (Phong exponent vs GGX alpha, etc.).  **No
+translation is exact.**  The closest is Cook-Torrance, which shares the GGX
+distribution `D` with `ggx_material` -- but its `G` is the separable
+`G1(wi) G1(wo)` where GGX uses the height-correlated `G2`, its multiscatter
+compensation reads the separable `LookupEss`/`LookupEavg` tables where GGX
+reads the `G2` twins (DL-63), and it adds an uncoupled `Rd/pi` diffuse where
+GGX applies DL-37's `(1-A(i))(1-A(o))`; so even that one is a close
+starting point, not identical.
+
+| legacy chunk | modern replacement | parameter translation |
+|---|---|---|
+| `cooktorrance_material` | `ggx_material`, `fresnel_mode conductor` (the default) | `rd`->`rd`, `rs`->`rs`, `ior`->`ior`, `extinction`->`extinction`, `facets`->`alphax` and `alphay` (same GGX `D`, so the highlight width matches; `G`, the multiscatter LUT and the diffuse coupling differ -- a close starting point, not identical).  For a glTF-style metal or plastic use `pbr_metallic_roughness_material` instead (`roughness` = sqrt(alpha)) |
+| `isotropic_phong_material` | `ggx_material`, `fresnel_mode schlick_f0` | `rd`->`rd`, `rs`->`rs` (becomes the F0 tint), `alphax = alphay = 1/sqrt(2N+1)`: the Phong lobe is `cos^N` about the REFLECTION vector (`IsotropicPhongBRDF.cpp`), whose angle is twice the half-vector angle, so the half-vector-equivalent exponent is `4N` (the Blinn-Phong rule) and `alpha = sqrt(2/(4N+2))` |
+| `ashikminshirley_anisotropicphong_material` | `ggx_material`, `fresnel_mode schlick_f0` | `rd`->`rd`, `rs`->`rs` (F0; Ashikhmin-Shirley already uses Schlick Fresnel), `alphax = sqrt(2/(nu+2))`, `alphay = sqrt(2/(nv+2))`; brush direction via `tangent_rotation_scalar` |
+| `schlick_material` | `ggx_material`, `fresnel_mode schlick_f0` | `rd`->`rd`, `rs`->`rs`, `alphax = alphay = sqrt(roughness)` (Schlick's `r` is the GGX alpha squared: its Z(t) is the GGX D without the 1/pi).  `isotropy < 1` has no exact translation -- pick `alphax != alphay` by eye |
+| `ward_isotropic_material` | `ggx_material`, `fresnel_mode schlick_f0` | `rd`->`rd`, `rs`->`rs`, `alphax = alphay = alpha` (GGX has heavier tails than a Gaussian lobe of the same width, so expect a slightly broader halo) |
+| `ward_anisotropic_material` | `ggx_material`, `fresnel_mode schlick_f0` | `alphax`->`alphax`, `alphay`->`alphay`; `tangent_rotation_scalar` for the direction |
+| `polished_material` | `coated_material` over a `lambertian_material` | `base` = a `lambertian_material` with the same `reflectance`; `coat_ior = ior`; `coat_roughness = 1/sqrt(2*scattering+1)` (the coat lobe is `cos^N` about the reflection vector, `PolishedBRDF::ComponentDensity`, same 4N rule as Phong), and for the delta case (`scattering` >= 1e6, `kPhongDeltaThreshold`) use the smallest `coat_roughness` (it is floored at 1e-3, so `coated_material` is never a true delta).  **`tau` has no equivalent**: it is NOT a transmittance tint -- `PolishedBRDF` multiplies only the coat REFLECTION by `tau` (`tau min(F(ci),F(co))` glossy, `tau F(ci)` delta) while the substrate term `(1-F(ci))(1-F(co))` is `tau`-independent; `tau 1` is a full coat, and `coat_weight` is the nearest knob for a weaker one (`coat_tint` / `coat_absorption` act on transmission, a different thing).  `henyey-greenstein TRUE` has no equivalent either.  `add_wetness` already emits the `coated_material` shape |
+
+**Producers audited (2026-10-02).**  Nothing in the importers emits a
+deprecated chunk: the glTF importer and the Blender bridge build
+`pbr_metallic_roughness_material` / `ggx_material` / `coated_material` /
+`fabric_material` / `randomwalk_sss_material` only, and `add_wetness`
+wraps with `coated_material`.  What still emits one, deliberately left
+unchanged because a swap is not look-neutral and the tests pin the kinds
+(DL-400): the agent texture recipes `rough_stone` and `aged_bronze`
+(`cooktorrance_material`) and `brushed_metal` (`ward_anisotropic_material`)
+in `AgentSession.cpp`, plus the eval fixtures that name those kinds.  The
+agent's skill docs now steer to the modern chunks
+(`skills/agent/materials-and-media-basics.md`).  The 3ds Max plugin
+(`src/3DSMax`) calls the legacy `IJob` entry points directly and is not
+built here.
+
+**Shipped scenes (not migrated -- their looks are kept).**  Counted by
+CHUNK-HEADER match (a line that is exactly the keyword, optionally with a
+trailing comment; not a word grep) over `git ls-files scenes` at the merge
+with master `0dfda8c05` -- untracked / gitignored local scenes such as
+`scenes/Internal` are NOT counted (a filesystem grep of a developer
+checkout reads higher, 40 / 19 in the main checkout today).  Of the 464
+tracked `.RISEscene` files, **35** use at least one deprecated chunk:
+`polished_material` 17 scenes / 139 chunks, `cooktorrance_material` 11 /
+26, `isotropic_phong_material` 9 / 9, `ward_anisotropic_material` 6 / 6,
+`ward_isotropic_material` 5 / 11, `ashikminshirley_anisotropicphong_material`
+5 / 5, `schlick_material` 4 / 4.  (Not deprecated, for reference:
+`translucent_material` 12 scenes / 14 chunks, `phong_luminaire_material`
+1 / 1.)  Loading any of them now logs the warnings above and renders
+unchanged; `CstDeriveGoldenTest` (derive-state digests) is unaffected.
+
 ## See also
 
 - [scenes/README.md](../scenes/README.md): where to put scenes

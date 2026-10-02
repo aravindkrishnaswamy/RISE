@@ -22,21 +22,28 @@ read_schema (only if unsure of a param) -> insert_chunk -> propose_patch
   painter-family map and two verified recipes.  This skill covers the
   material and how its slots bind; that one covers what fills the
   colour slot.
-- **Default to `pbr_metallic_roughness_material`, not `ggx_material` /
-  `cooktorrance_material`, for ordinary metal/shiny asks.**  Verified
-  against the chunk parsers (`ChunkParserRegistry.cpp` /
-  `Job::AddPBRMetallicRoughnessMaterial` vs `Job::AddGGXMaterial` /
-  `Job::AddCookTorranceMaterial`): PBR-MR's `metallic` and `roughness`
+- **Default to `pbr_metallic_roughness_material`, not `ggx_material`, for
+  ordinary metal/shiny asks -- and never reach for the legacy
+  `cooktorrance_material` / `schlick_material` / `isotropic_phong_material` /
+  `ashikminshirley_anisotropicphong_material` / `ward_*_material` /
+  `polished_material` chunks.**  Those seven are DEPRECATED (they still load
+  and render exactly as before, but a scene load logs a warning and
+  `read_schema` flags them `"deprecated":true` with the replacement);
+  `ggx_material`, `pbr_metallic_roughness_material` and `coated_material`
+  cover every use (legacy -> modern table: docs/SCENE_CONVENTIONS.md
+  "Deprecated materials").  Verified against the chunk parsers
+  (`ChunkParserRegistry.cpp` / `Job::AddPBRMetallicRoughnessMaterial` vs
+  `Job::AddGGXMaterial`): PBR-MR's `metallic` and `roughness`
   accept EITHER a painter reference OR a bare inline scalar string
   (`metallic 1.0`, `roughness 0.1` — no painter needed); only
   `base_color` must be a real painter name (reuse one).  `ggx_material`
-  / `cooktorrance_material` are stricter: their `rd` and `rs`
+  is stricter: its `rd` and `rs`
   (diffuse/specular reflectance) MUST each be an existing painter
   name — there is NO inline-number fallback for `rd`/`rs` (a bare `rs
-  0.9 0.9 0.9` is rejected), even though their *other* params
-  (`alphax`/`alphay`/`ior`/`extinction`/`facets`) DO accept a single
+  0.9 0.9 0.9` is rejected), even though its *other* params
+  (`alphax`/`alphay`/`ior`/`extinction`) DO accept a single
   inline scalar (`ior 2.5`).  That asymmetry is what burns tool-call
-  budget: reach for ggx/cooktorrance only when the task needs explicit
+  budget: reach for ggx only when the task needs explicit
   conductor Fresnel control; otherwise PBR-MR does the same job for
   fewer calls because it needs only one painter reference, not two.
 
@@ -161,9 +168,10 @@ dielectric_material
 	scattering	100000.0
 }
 
-# SCALAR pipe: facets is a physical scalar, so it takes a scalar_painter,
-# never a colour painter -- a worn gold surface polishes unevenly with
-# handling rather than holding one uniform facet size everywhere.
+# SCALAR pipe: alphax/alphay are physical scalars, so they take a
+# scalar_painter, never a colour painter -- a worn gold surface polishes
+# unevenly with handling rather than holding one uniform roughness
+# everywhere.
 expression_function2d
 {
 	name	fn_gold_wear
@@ -180,15 +188,21 @@ scalar_painter
 	bias		0.03
 }
 
-# 3. Metal: a glossy Cook-Torrance conductor (rd/rs tints, facets =
-#    microfacet roughness, ior/extinction = conductor Fresnel).  facets
-#    is bound to the scalar_painter above instead of one constant.
-cooktorrance_material
+# 3. Metal: a glossy GGX conductor (rd/rs tints, alphax = alphay =
+#    microfacet roughness, ior/extinction = conductor Fresnel; the default
+#    fresnel_mode is conductor).  Both alphas are bound to the
+#    scalar_painter above instead of one constant.  (The legacy
+#    cooktorrance_material this replaces is deprecated; its `facets` is
+#    the same GGX alpha, so facets -> alphax + alphay is a close starting
+#    point, though not identical: G, the multiscatter LUT and the diffuse
+#    coupling differ.)
+ggx_material
 {
 	name		mat_gold
 	rd			pnt_gold_deep
 	rs			pnt_gold_warm
-	facets		sp_gold_wear
+	alphax		sp_gold_wear
+	alphay		sp_gold_wear
 	ior			2.5
 	extinction	3.0
 }
@@ -303,7 +317,7 @@ directional_light
 
 Use this whenever a surface is bigger than a trinket: real objects are
 polished in some places and worn in others, and one constant in
-`roughness`/`alphax`/`facets` is the flat-plastic look no amount of
+`roughness`/`alphax` is the flat-plastic look no amount of
 lighting fixes.  A `scalar_painter { expression ... }` is the whole fix —
 ONE chunk, no colourspace, no adapter chain.  Note the shape to copy:
 every art-directable number is a `param` with `min`/`max`/`step`/`label`
@@ -1058,8 +1072,10 @@ colour.  If a scene genuinely needs to ART-DIRECT the darkening amount
 independent of the coat physics, the Phase-1 hand recipe (an
 `expression_painter` mixing the base colour toward `pow(base_rgb, k)`
 under the damp mask, feeding a `polished_material`'s `reflectance`
-instead of a `coated_material` wrap) is still valid RISE and still the
-only route with an explicit, tunable exponent — just be aware it is a
+instead of a `coated_material` wrap) still works and is still the
+only route with an explicit, tunable exponent — but `polished_material`
+is DEPRECATED (a load warns; it renders unchanged), so prefer baking the
+darkened colour into a `coated_material`'s `base` — and be aware it is a
 DIFFERENT material shape from what `add_wetness` now emits, with the
 sec 6.9 caveats that come with `polished_material`'s own dry-NEE gap.
 
