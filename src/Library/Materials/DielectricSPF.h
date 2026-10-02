@@ -89,7 +89,8 @@ namespace RISE
 				const Scalar scatfunc,
 				const Scalar rIndex,
 				const Scalar nm,
-				const IORStack& ior_stack								///< [in] Index of refraction stack
+				const IORStack& ior_stack,								///< [in] Index of refraction stack
+				const bool bAllocateStacks = true						///< [in] false: the caller reads only directions and weights (DL-297's density query), so the scattered rays get no IOR stacks
 				) const;
 
 			void DoSingleRGBComponent(

@@ -1489,31 +1489,38 @@ namespace RISE
 				const Scalar eps = tilted ? kAdjointCosineShare : Scalar( 0 );
 				const Scalar uSel = smp.Get1D();
 				const Point2 u2 = smp.Get2D();
+				Scalar pPhong = 0;
+				bool havePhong = false;
 				if( uSel < eps ) {
 					t = GeometricUtilities::CreateDiffuseVector( onb, u2 );
 				} else {
-					const Scalar down = acos( r_min( Scalar( 1 ), pow( u2.x, Scalar( 1 ) / ( N + Scalar( 1 ) ) ) ) );
-					Scalar half = 0;
-					t = ( down > 0 ) ? GeometricUtilities::PerturbClipped( w, down, n, u2.y, &half ) : w;
-					if( down > 0 && !( half > 0 ) ) {
+					// The lobe's own draw: polar cosine u^(1/(N+1)), azimuth
+					// on the valid arc -- its density is known from the draw.
+					const Scalar c = r_min( Scalar( 1 ), pow( u2.x, Scalar( 1 ) / ( N + Scalar( 1 ) ) ) );
+					Scalar half = PI;
+					t = ( c < Scalar( 1 ) ) ? GeometricUtilities::PerturbClipped( w, acos( c ), n, u2.y, &half ) : w;
+					if( !( half > 0 ) ) {
 						return false;
 					}
+					pPhong = ( N + Scalar( 1 ) ) * pow( c, N ) / ( Scalar( 2 ) * half );
+					havePhong = true;
 				}
 				t = Vector3Ops::Normalize( t );
 				const Scalar cn = Vector3Ops::Dot( t, n );
 				if( !( cn > 0 ) ) {
 					return false;
 				}
-				Scalar pPhong = 0;
-				const Scalar ct = Vector3Ops::Dot( t, w );
-				if( ct > 0 ) {
-					const Scalar down = acos( r_min( Scalar( 1 ), ct ) );
-					Scalar half = PI;
-					if( down > 0 ) {
-						GeometricUtilities::PerturbClipped( w, down, n, Scalar( 0.5 ), &half );
-					}
-					if( half > 0 ) {
-						pPhong = ( N + Scalar( 1 ) ) * pow( ct, N ) / ( Scalar( 2 ) * half );
+				if( !havePhong ) {
+					// A cosine draw: evaluate the Phong component at it.
+					const Scalar ct = Vector3Ops::Dot( t, w );
+					if( ct > 0 ) {
+						Scalar half = PI;
+						if( ct < Scalar( 1 ) ) {
+							GeometricUtilities::PerturbClipped( w, acos( ct ), n, Scalar( 0.5 ), &half );
+						}
+						if( half > 0 ) {
+							pPhong = ( N + Scalar( 1 ) ) * pow( ct, N ) / ( Scalar( 2 ) * half );
+						}
 					}
 				}
 				pdf = ( Scalar( 1 ) - eps ) * pPhong + eps * cn * INV_PI;
@@ -1847,11 +1854,15 @@ namespace RISE
 						return;
 					}
 					ScatteredRayContainer c;
+					// Re-key the one internal stack in place (no copy): the
+					// layer reads it through a const reference and pushes or
+					// pops only on its own copy.
 					if( atBottom ) {
-						P::Scatter( s.bottom, cur, sampler, nm, c, Keyed( st, kB ) );
-					} else {
-						P::Scatter( s.top, cur, sampler, nm, c, KeyedTop( st, out ) );
+						st.SetCurrentObject( kB );
+					} else if( out.currentObject() ) {
+						st.SetCurrentObject( out.currentObject() );
 					}
+					P::Scatter( atBottom ? s.bottom : s.top, cur, sampler, nm, c, st );
 					Scalar q = 0;
 					auto any = []( const ScatteredRay& ) { return true; };
 					const int kSel = SelectCarried<P>( c, any, beta, sampler.Get1D(), q );

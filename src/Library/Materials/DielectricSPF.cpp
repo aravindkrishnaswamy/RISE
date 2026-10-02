@@ -163,7 +163,8 @@ Scalar DielectricSPF::GenerateScatteredRay(
 	const Scalar scatfunc,
 	const Scalar rIndex,
 	const Scalar nm,
-	const IORStack& ior_stack								///< [in] Index of refraction stack
+	const IORStack& ior_stack,								///< [in] Index of refraction stack
+	const bool bAllocateStacks
 	) const
 {
 	dielectric.type = ScatteredRay::eRayRefraction;
@@ -256,7 +257,9 @@ Scalar DielectricSPF::GenerateScatteredRay(
 		Nt = exitIOR;
 
 		if( Optics::CalculateRefractedRay( -ri.onb.w(), rIndex, exitIOR, refracted ) ) {
-			dielectric.ior_stack = IORStackSeeding::NewTransmittedStack( ior_stack, pOpenSheetStack.get(), openSheet.etaFrom, false, rIndex );
+			if( bAllocateStacks ) {
+				dielectric.ior_stack = IORStackSeeding::NewTransmittedStack( ior_stack, pOpenSheetStack.get(), openSheet.etaFrom, false, rIndex );
+			}
 			if( arStack.nLayers > 0 ) {
 				const Scalar cosI = fabs( Vector3Ops::Dot( ri.onb.w(), ri.ray.Dir() ) );
 				const Scalar lam = ( nm > 0.0 ) ? nm : 550.0;
@@ -282,7 +285,9 @@ Scalar DielectricSPF::GenerateScatteredRay(
 			} else {
 				ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), refracted, ri.onb.w(), Ni, rIndex );
 			}
-			dielectric.ior_stack = IORStackSeeding::NewTransmittedStack( ior_stack, pOpenSheetStack.get(), openSheet.etaFrom, true, rIndex );
+			if( bAllocateStacks ) {
+				dielectric.ior_stack = IORStackSeeding::NewTransmittedStack( ior_stack, pOpenSheetStack.get(), openSheet.etaFrom, true, rIndex );
+			}
 		} else {
 			ref = 1.0;
 		}
@@ -418,8 +423,10 @@ Scalar DielectricSPF::GenerateScatteredRay(
 		// re-derivation branch below IS the one place both come from
 		// `geomN`.
 		if( bFromInside ) {
-			fresnel.ior_stack = new IORStack( ior_stack );
-			GlobalLog()->PrintNew( fresnel.ior_stack, __FILE__, __LINE__, "ior stack" );
+			if( bAllocateStacks ) {
+				fresnel.ior_stack = new IORStack( ior_stack );
+				GlobalLog()->PrintNew( fresnel.ior_stack, __FILE__, __LINE__, "ior stack" );
+			}
 			fresnel.ray = Ray( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), ri.onb.w() ) );
 		} else {
 			fresnel.ray = Ray( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), -ri.onb.w() ) );
@@ -765,7 +772,7 @@ Scalar DielectricSPF::DeltaTransmissionWarpPdf(
 	ScatteredRay dielectric;
 	ScatteredRay fresnel;
 	bool bDielectric = false, bFresnel = false;
-	const Scalar ref = GenerateScatteredRay( dielectric, fresnel, bDielectric, bFresnel, bFromInside, ri, Point2( 1.0, 0.5 ), N, rIndex, nm, ior_stack );
+	const Scalar ref = GenerateScatteredRay( dielectric, fresnel, bDielectric, bFresnel, bFromInside, ri, Point2( 1.0, 0.5 ), N, rIndex, nm, ior_stack, false );
 	if( !bDielectric || !( ref < 1.0 ) ) {
 		return 0;
 	}
