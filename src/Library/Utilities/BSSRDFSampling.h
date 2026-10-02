@@ -114,6 +114,14 @@ namespace RISE
 			Scalar				weightSpatialNM;///< Scalar spatial-only weight for spectral path
 			Scalar				cosinePdf;		///< PDF of the cosine-weighted direction
 			Scalar				pdfSurface;		///< Spatial sampling PDF in area measure
+			/// DL-357: the diffusion jump's own wavelength-dependent inputs,
+			/// so an HWSS companion can re-price the jump at its own
+			/// wavelength (`BDPTIntegrator::RecomputeSubpathThroughputNM`):
+			/// the 3-D exit-to-entry distance Rd was evaluated at, and the
+			/// exit cosine Ft(exit) was evaluated at.  Set by
+			/// `SampleEntryPoint` only; 0 from `RandomWalkSSS::SampleExit`.
+			Scalar				jumpDistance;
+			Scalar				exitCos;
 			bool				valid;			///< True if sampling succeeded
 
 			SampleResult() :
@@ -122,7 +130,7 @@ namespace RISE
 			bHasVertexColor( false ),
 			weight( RISEPel(0,0,0) ), weightSpatial( RISEPel(0,0,0) ),
 			weightNM(0), weightSpatialNM(0),
-			cosinePdf(0), pdfSurface(0), valid(false) {}
+			cosinePdf(0), pdfSurface(0), jumpDistance(0), exitCos(0), valid(false) {}
 		};
 
 		//////////////////////////////////////////////////////////////

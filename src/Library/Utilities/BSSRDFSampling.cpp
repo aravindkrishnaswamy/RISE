@@ -558,6 +558,8 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 	result.scatteredRay = Ray( result.entryPoint, cosineDir );
 	result.cosinePdf = cosTheta * INV_PI;
 	result.pdfSurface = pdfSurface;
+	result.jumpDistance = rActual;
+	result.exitCos = cosExit;
 	result.valid = true;
 
 	return result;
