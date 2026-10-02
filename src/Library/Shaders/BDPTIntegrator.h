@@ -528,6 +528,19 @@ namespace RISE
 			static bool HasNullBSDFContinuationVertex(
 				const std::vector<BDPTVertex>& verts
 				);
+
+			/// DL-357.  True if the subpath crosses a RANDOM-WALK subsurface
+			/// jump (a BSSRDF entry vertex whose material has no diffusion
+			/// profile).  The walk was sampled from the hero wavelength's
+			/// coefficients and its segments are not recorded, so
+			/// `RecomputeSubpathThroughputNM` cannot re-price it and zeroes
+			/// every companion from that vertex on; the caller must
+			/// terminate secondary wavelengths on a true return, exactly as
+			/// for `HasNullBSDFContinuationVertex`.  (A diffusion-profile
+			/// jump IS re-priced there, Phase 1b.)
+			static bool HasRandomWalkSSSEntryVertex(
+				const std::vector<BDPTVertex>& verts
+				);
 		};
 	}
 }

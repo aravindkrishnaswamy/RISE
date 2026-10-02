@@ -110,5 +110,6 @@ above the prediction (0.067-0.069); a grey-medium control shows the same
 spectral path's wavelength-sampling residual, not DL-374.  Note also that
 `RGBScalarPainter` places an RGB triple at 450/550/650 nm while
 wavelength-varying painters use `ScalarPainterRGB::kChannelNM`
-611/549/465 nm in RGB mode -- an older, separate convention. BDPT `hwss TRUE` still renders this material grey
-(B/R 0.94): its companions inherit the hero's walk weight, which is DL-357.
+611/549/465 nm in RGB mode -- an older, separate convention. BDPT `hwss TRUE` rendered this material grey
+(B/R 0.94) because its companions inherited the hero's walk weight (DL-357); since 2026-10-02 BDPT/VCM/MLT
+terminate the companions at a random-walk jump and re-price a diffusion jump per companion.

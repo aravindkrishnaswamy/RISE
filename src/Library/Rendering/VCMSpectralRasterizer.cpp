@@ -415,7 +415,9 @@ void VCMSpectralRasterizer::IntegratePixel(
 				if( bUseHWSS )
 				{
 					if( BDPTIntegrator::HasNullBSDFContinuationVertex( localLightVerts ) ||
-						BDPTIntegrator::HasNullBSDFContinuationVertex( eyeVerts ) )
+						BDPTIntegrator::HasNullBSDFContinuationVertex( eyeVerts ) ||
+						BDPTIntegrator::HasRandomWalkSSSEntryVertex( localLightVerts ) ||	// DL-357
+						BDPTIntegrator::HasRandomWalkSSSEntryVertex( eyeVerts ) )
 					{
 						swl.TerminateSecondary();
 					}

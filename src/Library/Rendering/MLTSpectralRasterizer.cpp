@@ -476,7 +476,9 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 			// here too rather than let those always-zero companions
 			// silently corrupt the companion's own colour.
 			if( BDPTIntegrator::HasNullBSDFContinuationVertex( lightVerts ) ||
-				BDPTIntegrator::HasNullBSDFContinuationVertex( eyeVerts ) )
+				BDPTIntegrator::HasNullBSDFContinuationVertex( eyeVerts ) ||
+				BDPTIntegrator::HasRandomWalkSSSEntryVertex( lightVerts ) ||	// DL-357
+				BDPTIntegrator::HasRandomWalkSSSEntryVertex( eyeVerts ) )
 			{
 				swl.TerminateSecondary();
 			}

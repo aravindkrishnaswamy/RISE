@@ -2882,6 +2882,8 @@ namespace {
 							entryV.isDelta = false;
 							entryV.isConnectible = true;
 							entryV.isBSSRDFEntry = true;
+							entryV.bssrdfJumpDistance = bssrdf.jumpDistance;	// DL-357
+							entryV.bssrdfExitCos = bssrdf.exitCos;
 							StoreThroughput<Tag>( entryV, betaSpatial );
 							entryV.pdfFwd = bssrdf.pdfSurface;
 							entryV.pdfRev = 0;
@@ -7194,6 +7196,8 @@ unsigned int GenerateLightSubpathImpl(
 						entryV.isDelta = false;
 						entryV.isConnectible = true;
 						entryV.isBSSRDFEntry = true;
+						entryV.bssrdfJumpDistance = bssrdf.jumpDistance;	// DL-357
+						entryV.bssrdfExitCos = bssrdf.exitCos;
 						StoreThroughput<Tag>( entryV, betaSpatial );
 						entryV.pdfFwd = bssrdf.pdfSurface;
 						entryV.pdfRev = 0;
@@ -8064,6 +8068,52 @@ void BDPTIntegrator::RecomputeSubpathThroughputNM(
 			}
 		}
 
+		// ---- Phase 1b (DL-357): a subsurface jump ENDING at this vertex ----
+		// The jump's weight (Rd(r) * Ft(exit) / pdfSurface, over the coin's
+		// Ft(exit)) is folded into this entry vertex's own throughput by the
+		// generator, at the HERO wavelength, and the exit hit before it is
+		// stored delta (Phase 3 never prices it).  Without this block every
+		// companion inherited the hero's spatial profile and diffusion SSS
+		// rendered grey under `hwss TRUE`.
+		//
+		// Diffusion: the companion re-uses the hero's sampled entry point,
+		// whose density `pdfSurface` is wavelength-INDEPENDENT (an RGB
+		// channel mixture of the profile's radius pdfs, positive at every
+		// r), so the companion's estimator is its own Rd * Ft(exit) over the
+		// SAME pdf and the same hero coin probability Ft_h: the ratio is
+		// [Rd(r; lc) Ft(cos; lc)] / [Rd(r; lh) Ft(cos; lh)], hero and
+		// companion evaluated through one rebuilt exit record.
+		//
+		// Random walk: the walk's free paths, collisions and boundary
+		// survival were all sampled from the HERO's coefficients and are not
+		// recorded, so no ratio exists here.  Zero the companion; every
+		// spectral rasterizer terminates the secondaries up front for such a
+		// subpath (HasRandomWalkSSSEntryVertex), keeping them out of the
+		// active-lane count -- DL-126 / DL-201's protocol.
+		if( v.isBSSRDFEntry && i > 0 )
+		{
+			ISubSurfaceDiffusionProfile* pProfile =
+				v.pMaterial ? v.pMaterial->GetDiffusionProfile() : 0;
+			if( pProfile && v.bssrdfJumpDistance > 0 )
+			{
+				const BDPTVertex& exitV = verts[i-1];
+				Ray exitRay( Point3Ops::mkPoint3( exitV.position, exitV.normal ), -exitV.normal );
+				RayIntersectionGeometric exitRig( exitRay, nullRasterizerState );
+				PathVertexEval::PopulateRIGFromVertex( exitV, exitRig );
+				const Scalar heroJ =
+					pProfile->EvaluateProfileNM( v.bssrdfJumpDistance, exitRig, heroNM ) *
+					pProfile->FresnelTransmissionNM( v.bssrdfExitCos, exitRig, heroNM );
+				const Scalar compJ =
+					pProfile->EvaluateProfileNM( v.bssrdfJumpDistance, exitRig, companionNM ) *
+					pProfile->FresnelTransmissionNM( v.bssrdfExitCos, exitRig, companionNM );
+				cumulativeRatio = ( heroJ > NEARZERO ) ? cumulativeRatio * ( compJ / heroJ ) : 0;
+			}
+			else
+			{
+				cumulativeRatio = 0;
+			}
+		}
+
 		// ---- Phase 2: apply accumulated ratio to this vertex ----
 		v.throughputNM *= cumulativeRatio;
 
@@ -8306,7 +8356,8 @@ void BDPTIntegrator::RecomputeSubpathThroughputNM(
 				cumulativeRatio = 0;
 			}
 		}
-		// Delta, BSSRDF, medium, endpoints: scatter ratio = 1.0
+		// Delta, medium, endpoints and a BSSRDF EXIT hit: scatter ratio = 1.0
+		// (the jump itself is priced at its entry vertex, Phase 1b).
 	}
 }
 
@@ -8367,6 +8418,28 @@ bool BDPTIntegrator::HasDispersiveDeltaVertex(
 		}
 	}
 
+	return false;
+}
+
+//////////////////////////////////////////////////////////////////////
+// HasRandomWalkSSSEntryVertex — DL-357.  See the header comment.
+//////////////////////////////////////////////////////////////////////
+bool BDPTIntegrator::HasRandomWalkSSSEntryVertex(
+	const std::vector<BDPTVertex>& verts
+	)
+{
+	// Mirrors RecomputeSubpathThroughputNM's Phase-1b zeroing branch
+	// exactly: any index > 0 (the jump's weight sits in the entry vertex's
+	// OWN throughput, so a subpath ENDING at the entry is affected too).
+	for( unsigned int i = 1; i < verts.size(); i++ )
+	{
+		const BDPTVertex& v = verts[i];
+		if( v.isBSSRDFEntry &&
+			!( v.pMaterial && v.pMaterial->GetDiffusionProfile() && v.bssrdfJumpDistance > 0 ) )
+		{
+			return true;
+		}
+	}
 	return false;
 }
 

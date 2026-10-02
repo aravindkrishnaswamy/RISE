@@ -34,8 +34,8 @@
 //       PT spectral, BDPT spectral and VCM spectral must reproduce the
 //       PT RGB render's chromaticity (G/R and B/R) and per-channel level.
 //       The spectral reconstruction of a 3-node coefficient curve is not
-//       the RGB model, so the bands are measured, not "noise".  A hwss
-//       TRUE BDPT row is PRINTED, not gated: its companions are DL-357.
+//       the RGB model, so the bands are measured, not "noise".  The hwss
+//       TRUE BDPT and VCM rows are gated since DL-357 (2026-10-02).
 //
 //    Usage: [--unit-only]
 //
@@ -414,7 +414,11 @@ namespace
 			{ "PT spectral hwss",     "pathtracing_spectral_rasterizer", true,  true },
 			{ "BDPT spectral",        "bdpt_spectral_rasterizer",        false, true },
 			{ "VCM spectral",         "vcm_spectral_rasterizer",         false, true },
-			{ "BDPT spectral hwss",   "bdpt_spectral_rasterizer",        true,  false },
+			// DL-357: BDPT/VCM hwss TRUE terminate the companions at a
+			// random-walk jump (hero-only bundle), so they are gated like the
+			// hero-only rows.  Pre-fix they read grey (B/R 0.94).
+			{ "BDPT spectral hwss",   "bdpt_spectral_rasterizer",        true,  true },
+			{ "VCM spectral hwss",    "vcm_spectral_rasterizer",         true,  true },
 		};
 		// Bands, measured on the fixed build (see docs/DEBT_LEDGER.md DL-374).
 		// The spectral medium is the RGBScalarPainter's 3-node piecewise-linear
@@ -431,7 +435,7 @@ namespace
 			const bool ok = RenderChannelMeans( BuildScene( Rasterizer( r.kind, kSpp, r.hwss ), ChromaticAbsorption() ), sp );
 			Check( ok || !r.gated, std::string( "B: render produced output: " ) + r.label );
 			if( !ok ) continue;
-			PrintRow( r.label, sp, pel, r.gated ? "" : "  (printed only: DL-357)", buf, sizeof( buf ) );
+			PrintRow( r.label, sp, pel, r.gated ? "" : "  (printed only)", buf, sizeof( buf ) );
 			if( !r.gated ) continue;
 			Check( std::fabs( sp[1] / pel[1] - 1.0 ) <= 0.08, std::string( "B: green channel within 8% of RGB: " ) + buf );
 			Check( std::fabs( sp[2] / pel[2] - 1.0 ) <= 0.08, std::string( "B: blue channel within 8% of RGB: " ) + buf );
