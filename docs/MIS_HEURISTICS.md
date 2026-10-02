@@ -394,7 +394,7 @@ pixels / PT, n = 3 salted renders each, 2048 spp; MLT one render):
 | D2 spot, E1/L16: BDPT | -97.71% | -0.67% |
 | D1 omni, E1/L16: VCM merging on / off | -99.08% / -98.88% | -2.26% / -3.48% |
 | D2 spot, E1/L16: VCM merging on / off | -97.53% / -97.54% | +0.06% / +0.31% |
-| D2 spot, E1/L16: MLT | (same strategy set) | +0.58% |
+| D2 spot, E1/L16: MLT (one render) | -97.41% | +0.58% |
 | D2 spot, E16/L1 (light truncated): BDPT | +0.41% | -0.44% |
 | D2 spot, E16/L1: VCM merging on / off | -2.17% / -2.49% | -2.63% / -1.78% |
 | D2 spot, E2/L16 (eye covers at its cap): BDPT | -3.47% | -2.32% |
