@@ -4333,8 +4333,17 @@ static const char* kSceneDL377Common =
 	"subsurfacescattering_material\n{\n\tname mat_s\n\tior 1.3\n\tabsorption 0.1\n"
 		"\tscattering 1.0\n\tg 0.0\n\troughness 0.0\n}\n\n"
 	"sphere_geometry\n{\n\tname sg\n\tradius 0.6\n}\n\n"
-	"standard_object\n{\n\tname so\n\tgeometry sg\n\tmaterial mat_s\n}\n\n"
+	"standard_object\n{\n\tname so\n\tgeometry sg\n\tmaterial mat_s\n}\n\n";
+
+static const char* kSceneDL377Omni =
 	"omni_light\n{\n\tname L\n\tpower 20\n\tcolor 1 1 1\n\tposition 0 1.1 0.6\n}\n\n";
+
+// A narrow spot from the same point, aimed at the sphere's centre: its
+// cone (outer 14 deg) lies inside the sphere's 28.6 deg half-angle, so the
+// wall receives light ONLY through the sphere.
+static const char* kSceneDL377Spot =
+	"spot_light\n{\n\tname L\n\tpower 20\n\tcolor 1 1 1\n\tposition 0 1.1 0.6\n"
+		"\ttarget 0 0 0\n\tinner 10\n\touter 14\n}\n\n";
 
 static const char* kSceneDL377Wall =
 	"uniformcolor_painter\n{\n\tname pw2\n\tcolor 0.7 0.7 0.7\n}\n\n"
@@ -4426,10 +4435,11 @@ static bool RenderDL377Mean( const std::string& scene, const char* tag, bool wal
 	return std::isfinite( outMean ) && outMean >= 0;
 }
 
-static void RunDL377Row( const char* label, bool wall, const char* kind, int spp, int replicates, double band )
+static void RunDL377Row( const char* label, bool wall, bool spot, const char* kind, int spp, int replicates, double band )
 {
 	std::cout << "Testing DL-377 " << label << std::endl;
-	const std::string body = std::string( kSceneDL377Common ) + ( wall ? kSceneDL377Wall : "" );
+	const std::string body = std::string( kSceneDL377Common ) + ( spot ? kSceneDL377Spot : kSceneDL377Omni ) +
+		( wall ? kSceneDL377Wall : "" );
 	const std::string ref = std::string( "RISE ASCII SCENE 7\n" ) + DL377Rasterizer( "pt", 512 ) + body;
 	const std::string test = std::string( "RISE ASCII SCENE 7\n" ) + DL377Rasterizer( kind, spp ) + body + kSceneDL377Glass;
 	double pt = 0, x = 0, ptSd = 0, xSd = 0;
@@ -4445,8 +4455,9 @@ static void RunDL377Row( const char* label, bool wall, const char* kind, int spp
 
 static void TestLightSideDiffusionEntryDL377()
 {
-	RunDL377Row( "G (omni in index-matched glass, diffusion sphere, whole frame)", false, "bdpt", 512, 4, 0.03 );
-	RunDL377Row( "G2 (G + Lambertian wall, wall pixels only)", true, "bdpt", 512, 4, 0.03 );
+	RunDL377Row( "G (omni in index-matched glass, diffusion sphere, whole frame)", false, false, "bdpt", 512, 4, 0.03 );
+	RunDL377Row( "G2 (G + Lambertian wall, wall pixels only)", true, false, "bdpt", 512, 4, 0.03 );
+	RunDL377Row( "G3 (G2 with a spot confined to the sphere, wall pixels only)", true, true, "bdpt", 512, 4, 0.03 );
 }
 
 int main( int argc, char** argv )
@@ -4508,7 +4519,7 @@ int main( int argc, char** argv )
 		return failCount == 0 ? 0 : 1;
 	}
 	if( argc == 2 && std::strcmp(argv[1], "--dl377-mlt" ) == 0 ) {
-		RunDL377Row( "G under MLT (sibling audit, ungated band)", false, "mlt", 512, 1, 1.0 );
+		RunDL377Row( "G under MLT (sibling audit, ungated band)", false, false, "mlt", 512, 1, 1.0 );
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
