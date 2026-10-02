@@ -208,3 +208,14 @@ Random-walk spectral remains256 spp; smooth BDPT512 and random-walk
 BDPT128. The five completed weave gates (217/0 each) remain valid: its
 test and executable renderer behavior did not change in this adjustment.
 API follow-up only replaced comments; final build refresh includes it.
+
+## DL-392 controlled SSS inputs
+
+Code audit found RenderMean seeded libc only after scene load and left the
+cached global Mersenne stream untouched. That is separate from Sobol value
+salting: scene-construction RNGs and fallback draws depended on prior work.
+The first increased-budget SSS run was stopped intentionally after233.91s
+(own verified PID38947); it is not a completed gate. The helper now resets
+libc and GlobalRNG before job construction/loading and again before tracing.
+A four-render fixed-seed contract deliberately varies both caller streams;
+its red/green follows. Existing higher budgets remain, bands unchanged.
