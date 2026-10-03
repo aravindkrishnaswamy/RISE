@@ -49,8 +49,37 @@ Domain checkpoint at `1c19bbf42`: **3253/0**, including the 328 positive polishe
 
 On arm64, the diagnostic reports bytes: `SpecularInfo` 56, `ManifoldVertex` 336, `SMSChainRecord` 2176, internal `ManifoldSolverConfig` 96, `SMSDomainVertex` 1584, `SMSMediumCapture` 1264, `SMSStartingMedia` 40, and `SMSDomainCounters` 32. Standalone arm64 header probes against committed master `ffc70c1c2` and candidate `f94e5dca3` confirm `SpecularInfo` 56, `ManifoldVertex` 336, `SMSChainRecord` 2176 and `IORStack` 40 in both. Internal `ManifoldSolverConfig` grows 80→96 bytes and `ManifoldSolver` 160→184 bytes. Evidence: `record-size-driver.log`, with zero-warning builds of copied committed headers whose relative includes resolve to the worktree. The config adds internal opt-in/diagnostic fields; the solver adds its warning latch. Capture scratch holds one identity/context per enclosing object, plus temporary scene-object enumeration. This is not the later proposal scratch-budget measurement.
 
-Clean make: **376 compilation actions, exit 0, zero warnings/errors** (`final-clean-library-build.log`). Clean Xcode RISE-GUI Deployment and RISE-GUI-Opto builds: **393 CompileC actions each, exit 0, zero compiler warnings/errors**. Each emits exactly the two documented checkout/tool notices: missing `extlib/oidn/install/lib` linker search path and skipped AppIntents extraction. These are excluded under AGENTS.md's explicit instructions; no compiler warning was suppressed. The initial Xcode source checkpoint matched the helper after removing the redundant polished flag change. Following the participating-medium refusal fix, clean make and clean Xcode Deployment have passed again (376 and 393 actions respectively); the final Opto rebuild is in progress.
+Clean make: **376 compilation actions, exit 0, zero warnings/errors** (`final-clean-library-build.log`). Clean Xcode RISE-GUI Deployment and RISE-GUI-Opto builds: **393 CompileC actions each, exit 0, zero compiler warnings/errors**. Each emits exactly the two documented checkout/tool notices: missing `extlib/oidn/install/lib` linker search path and skipped AppIntents extraction. These are excluded under AGENTS.md's explicit instructions; no compiler warning was suppressed. The initial Xcode source checkpoint matched the helper after removing the redundant polished flag change. Following the participating-medium refusal fix, clean make and clean Xcode Deployment have passed again (376 and 393 actions respectively); the final Opto rebuild has also passed (393 CompileC actions).
 
 ## Acceptance gate
 
-The full individually built regression gate and fresh three-lens review remain in progress. The updated domain test additionally passes bit-identical HWSS lane outputs on the real composite fixtures with the extended flag ignored; its final serial-gate rebuild remains pending. Clean make and Xcode Deployment/Opto build gates have passed. Final results and merge provenance must replace this status before a phase is marked implemented.
+All 20 required test/mode entries have latest exit **0**, each built individually with checked exit code and no build warnings. Source fixes after the early gate entries affect only opt-in primitives; the unchanged legacy paths were tested throughout, and the final domain executable was rebuilt after every helper fix. Logs are in `.claude/logs/sms-phase1/gate`; `results.json` preserves the initial artifact-only hygiene failure as well as its passing rerun. `final-verification.json` checks the latest result for each entry.
+
+| Test/mode | Result |
+|---|---:|
+| ManifoldSolverTest | 388/0 counted DL-435 assertions; other unit groups pass (no aggregate count emitted) |
+| SMSUniformDispersionTest | 300/0 |
+| SMSUniformDispersionTest --shipped | 10/0 |
+| ExteriorIndexInvarianceTest | 299/0 |
+| SMSEmitterDirectionTest | 344/0 |
+| SMSMediumAnchorTest | 27/0 |
+| TransparentShadowPartitionTest | 42/0 |
+| WeaveGapShadowTransmittanceTest | 244/0 |
+| OpenSheetIndexConventionTest | 24/0 |
+| GradedIndexInteriorFactorTest | 101/0 |
+| ManifoldNormalDerivativeTest | 141/0 |
+| DoubleSidedEmitterTest | 34/0 |
+| AlphaSMSGeometryTest | 216/0 |
+| AlphaSMSTransportTest | 20/0 |
+| AlphaSMSReciprocalTest | 27/0 |
+| PTGuidingMISPartitionTest | 185/0 |
+| SourceHygieneTest | 169/0 |
+| CstDeriveGoldenTest | 458 match, 0 drift; 465 corpus, 0 uncovered/stale |
+| SMSDomainReplayTest | 3789/0 |
+| SMSLegacyModeTest | 21/0 |
+
+Final off-mode output was compared against all 16 salted committed-master A checkpoints: raw hashes **and means match exactly**. The final HWSS ignore guard emits exactly 16 warnings for 16 extended render instances. The final clean make and Xcode Deployment/Opto builds pass with zero compiler warnings. Both Xcode configurations have the two documented environment/tool notices only.
+
+The first hygiene run reported 168/1 because generated GUI resource copies lived in `DerivedData-Deployment` and `DerivedData-Opto`, names outside the scanner's existing `DerivedData` exclusion. Products were relocated under `.claude/logs/sms-phase1/DerivedData/{Deployment,Opto}` without changing maintained sources or the test. The preserved failed scan is `SourceHygieneTest-artifact-failure-run.log`; the rebuilt/rerun test passes 169/0. Build stdout remains at its original log path, and `xcode-products-relocation.json` records the artifact relocation.
+
+Fresh estimator/partition, material/medium/API and cost/test/doc reviews remain pending. No phase merge or debt closure is claimed. Review must distinguish this primitive/rejection increment from the later proposal, full ordered scene visibility/acceptance, reference estimator and canonical ownership gates. In particular, final-root refresh currently re-intersects the recorded objects; the later production proposal/validation must establish full scene order and supported intervening hits before pricing a physical estimator contribution.
