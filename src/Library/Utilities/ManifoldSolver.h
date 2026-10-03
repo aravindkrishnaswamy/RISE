@@ -109,6 +109,7 @@ namespace RISE
             Scalar attenuation = 1;
             bool reflection = false, transmission = false;
             bool dielectricInterface = false;
+            bool deltaLimitProxy = false; // adopted finite-Phong dielectric approximation
             bool interiorTransmittance = false, reflectionTint = false;
             bool customFresnel = false;
         };

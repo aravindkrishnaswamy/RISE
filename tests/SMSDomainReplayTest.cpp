@@ -392,6 +392,9 @@ static void FiniteDielectricCases()
             Check(supported,"adopted finite-dielectric delta-limit domain remains eligible");
             if(supported) Check(query.reflection&&query.transmission&&Near(query.index,1.5),
                 "finite dielectric retains native index and both interface events");
+            if(supported) Check(query.deltaLimitProxy==
+                (hit.pMaterial->GetSPF()->DeltaTransmissionWarpExponent(hit.geometric,550)>-1),
+                "query explicitly records the native finite-Phong approximation");
         }
     }
 }

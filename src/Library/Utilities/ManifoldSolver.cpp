@@ -44,11 +44,13 @@ bool RISE::Implementation::SMSDomainReplay::Query(const IMaterial& material,
     const IScalarPainter* scattering = nullptr;
     const IScalarPainter* coatTint = nullptr;
     bool hg = false;
+    bool finiteDielectric = false;
     bool polishedReflectionOnly = false;
     if(const auto* dielectric = dynamic_cast<const DielectricMaterial*>(&material)) {
         index = &dielectric->GetIOR();
         scattering = &dielectric->GetScattering();
         hg = dielectric->GetHG();
+        finiteDielectric = true;
     }
     else if(const auto* refractor = dynamic_cast<const PerfectRefractorMaterial*>(&material))
         index = &refractor->GetIOR();
@@ -68,7 +70,11 @@ bool RISE::Implementation::SMSDomainReplay::Query(const IMaterial& material,
         : material.GetSpecularInfoNM(hit, stack, domain.nm);
     const Scalar s = scattering ? (domain.kind == SMSQueryDomain::RGBComponent
         ? scattering->GetValuesAt(hit)[domain.component] : scattering->GetValueAtNM(hit, domain.nm)) : 0;
-    if(!info.valid || (scattering ? !(hg ? s >= 1 : s >= 1000000) : !info.isSpecular)) return false;
+    // Finite-Phong dielectrics remain eligible at their adopted delta
+    // limit. Polished's finite coat is genuinely glossy and has no
+    // delta-tagged transmission; it needs the native exact-delta limit.
+    if(!info.valid || (scattering ? (!std::isfinite(s)
+        || !(hg ? s >= 1 : finiteDielectric ? s > -1 : s >= 1000000)) : !info.isSpecular)) return false;
     result.index = index ? (domain.kind == SMSQueryDomain::RGBComponent
         ? index->GetValuesAt(hit)[domain.component] : index->GetValueAtNM(hit, domain.nm)) : info.ior;
     result.attenuation = domain.kind == SMSQueryDomain::RGBComponent
@@ -78,6 +84,7 @@ bool RISE::Implementation::SMSDomainReplay::Query(const IMaterial& material,
     result.reflection = true;
     result.transmission = info.canRefract && !polishedReflectionOnly;
     result.dielectricInterface = index != nullptr;
+    result.deltaLimitProxy = finiteDielectric && !hg && s < 1000000;
     result.interiorTransmittance = info.attenuationIsInteriorTransmittance;
     result.reflectionTint = info.attenuationAppliesToReflection;
     result.customFresnel = info.hasCustomSpecularFresnel;
