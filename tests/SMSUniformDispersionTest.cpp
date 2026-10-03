@@ -73,9 +73,60 @@ static void UVIndexControl( bool objectSpace = false )
         }
     }
 }
+
+static void AttenuationControlDL435()
+{
+    // Cover the entire camera footprint with the caster: all source paths
+    // cross it, so changing only refractance scales the expected image by
+    // .25 in expectation. Throughput-dependent continuation changes paired
+    // sample decisions. Both windings exercise double-sided sheet entry/exit.
+    for(bool mesh : {false,true}) for(bool flipped : {false,true})
+    for(bool hwss : {false,true}) for(bool uniform : {false,true}) {
+        std::vector<double> ratios;
+        for(int t=0;t<4;++t) {
+            std::string white=Fixture(550,hwss,false,mesh);
+            ReplaceFirstChunk(white,"film","film\n{\n width 16\n height 8\n}");
+            white.replace(white.find("samples 128"),11,"samples 8");
+            if(!uniform) white.replace(white.find("sms_seeding uniform"),19,"sms_seeding snell");
+            if(mesh) ReplaceNamedChunk(white,"indexedmesh_geometry","name caster",
+                std::string("indexedmesh_geometry\n{\n name caster\n")+
+                " vertex -5 1 -5\n vertex 5 1 -5\n vertex 5 1 5\n vertex -5 1 5\n"
+                " uv 0 0\n uv 1 0\n uv 1 1\n uv 0 1\n"+
+                (flipped ? " triangle 0 2 1\n triangle 0 3 2\n" : " triangle 0 1 2\n triangle 0 2 3\n")+
+                " double_sided TRUE\n face_normals TRUE\n}");
+            else ReplaceNamedChunk(white,"clippedplane_geometry","name caster",
+                flipped ? "clippedplane_geometry\n{\n name caster\n pta -5 1 -5\n ptb -5 1 5\n ptc 5 1 5\n ptd 5 1 -5\n doublesided TRUE\n}"
+                        : "clippedplane_geometry\n{\n name caster\n pta -5 1 -5\n ptb 5 1 -5\n ptc 5 1 5\n ptd -5 1 5\n doublesided TRUE\n}");
+            std::string grey=white;
+            const auto mat=grey.find("perfectrefractor_material");
+            grey.insert(mat,"uniformcolor_painter\n{\n name quarter\n color 0.25 0.25 0.25\n colorspace Rec709RGB_Linear\n}\n");
+            grey.replace(grey.find("refractance white"),17,"refractance quarter");
+            const unsigned index=g_renderIndex;
+            const auto a=Render(white,"attenuation_pair");
+            g_renderIndex=index;
+            const auto b=Render(grey,"attenuation_pair");
+            Check(a.ok && b.ok && a.mean>0 && b.mean>0,"DL-435 salted sheet fixture finite and lit");
+            if(a.mean>0) ratios.push_back(b.mean/a.mean);
+        }
+        const auto stats=Summarize(ratios);
+        std::cout << "DL-435 mesh="<<mesh<<" flipped="<<flipped<<" hwss="<<hwss<<" uniform="<<uniform
+                  <<" ratio="<<stats.mean<<" render sd="<<stats.sd<<" n="<<ratios.size()<<std::endl;
+        // n4 pilot: worst ratio render SD .00529804; mean SD .00264902.
+        // .01 is 3.775 mean SDs; each run checks the measured precision.
+        const double band=.01;
+        Check(ratios.size()==4 && 3*stats.sd/2<band,"DL-435 paired attenuation band resolves three mean SDs");
+        Check(std::fabs(stats.mean-.25)<band,"DL-435 wavelength attenuation scales transmitted caustic by .25");
+    }
+}
+
 int main( int argc, char** argv )
 {
     ConfigureTestWorker();
+    if(argc>1 && std::string(argv[1])=="--attenuation-only") {
+        AttenuationControlDL435();
+        std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
+        return failCount ? 1 : 0;
+    }
     if(argc>1 && std::string(argv[1])=="--uv-only") {
         UVIndexControl();
         UVIndexControl(true);
@@ -111,6 +162,7 @@ int main( int argc, char** argv )
         std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
         return failCount ? 1 : 0;
     }
+    AttenuationControlDL435();
     UVIndexControl();
     UVIndexControl(true);
     g_renderIndex=0; // Retain the independently calibrated dispersion salts.

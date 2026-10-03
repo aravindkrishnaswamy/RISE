@@ -43,20 +43,27 @@ namespace RISE
 			}
 
 			/// \return The BRDF for this material.  NULL If there is no BRDF
-			inline IBSDF* GetBSDF() const {		return 0; };
+			inline IBSDF* GetBSDF() const override {		return 0; };
 
 			/// \return The SPF for this material.  NULL If there is no SPF
-			inline ISPF* GetSPF() const {			return pSPF; };
+			inline ISPF* GetSPF() const override {			return pSPF; };
 
 			/// \return The emission properties for this material.  NULL If there is not an emitter
-			inline IEmitter* GetEmitter() const {	return 0; };
+			inline IEmitter* GetEmitter() const override {	return 0; };
 
 			SpecularInfo GetSpecularInfo(
 				const RayIntersectionGeometric& ri,
 				const IORStack& ior_stack
-				) const
+				) const override
 			{
 				return pSPF->GetSpecularInfo( ri, ior_stack );
+			}
+
+			SpecularInfo GetSpecularInfoNM(
+				const RayIntersectionGeometric& ri, const IORStack& ior_stack,
+				const Scalar nm ) const override
+			{
+				return pSPF->GetSpecularInfoNM( ri, ior_stack, nm );
 			}
 
 			//! Read-back + rebind for the interactive editor.

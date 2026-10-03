@@ -143,6 +143,7 @@ namespace RISE
 				info.ior = pRIndex->GetValuesAt( ri ).v[0];
 				const ScalarTriple t = pTau->GetValuesAt( ri );
 				info.attenuation = RISEPel( t.v[0], t.v[1], t.v[2] );
+				info.attenuationIsInteriorTransmittance = true;
 				info.valid = true;
 				info.clearTransmission = true;
 				return info;
@@ -158,6 +159,8 @@ namespace RISE
 				info.isSpecular = true;
 				info.canRefract = true;
 				info.ior = pRIndex->GetValueAtNM( ri, nm );
+				info.attenuationNM = r_max( Scalar(0), pTau->GetValueAtNM( ri, nm ) );
+				info.attenuationIsInteriorTransmittance = true;
 				info.valid = true;
 				info.clearTransmission = true;
 				return info;

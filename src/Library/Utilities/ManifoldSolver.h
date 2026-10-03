@@ -148,6 +148,8 @@ namespace RISE
 			///<
 			///< Populated by BuildSeedChain (RGB and NM variants) at the time of each hit, using the same `currentIOR` and IOR-stack the seed-trace already maintains.  Single-IOR scenes (the existing test corpus) get etaI=1.0 (entering) or etaT=1.0 (exiting), matching the old hardcoded defaults — so unchanged behaviour for those scenes.  ValidateChainPhysics may also fall back to `eta` when (etaI, etaT) are at default-1.0 for back-compat with hand-constructed chains.
 			RISEPel				attenuation;	///< Color attenuation at this vertex (e.g., colored glass refractance, mirror reflectance)
+			Scalar				attenuationNM;	///< Cached wavelength-resolved multiplier, filled by spectral seed/reconstruction queries.
+			bool				attenuationIsInteriorTransmittance;	///< Dielectric per-unit-distance tau; exiting transmission only.
 			bool				isReflection;	///< True if the chain ray bounces off (mirror, Fresnel reflection on glass, or TIR); false if it refracts through.
 			bool				canRefract;		///< True if the underlying material can refract (dielectric).  False for pure mirrors / conductors.  Selects the throughput law: dielectrics use Fresnel(cosI, η_i, η_t) (covers reflection, refraction, and TIR); mirrors take full reflectance from the painter without an angle-dependent Fresnel factor.  Default true so hand-constructed test chains and pre-existing back-compat callers behave as dielectrics — the prior implicit assumption.
 			bool				isExiting;		///< True if ray EXITS the object at this vertex (glass→air).  Set at seed-build time via IOR-stack object tracking.  Refraction-direction code uses this (NOT a local dot test) because a double-sided thin-sheet mesh can be crossed twice with the normal pointing in the same direction at both hits.
@@ -180,6 +182,8 @@ namespace RISE
 			etaI( 1.0 ),
 			etaT( 1.0 ),
 			attenuation( 1.0, 1.0, 1.0 ),
+			attenuationNM( 1.0 ),
+			attenuationIsInteriorTransmittance( false ),
 			isReflection( false ),
 			canRefract( true ),
 			isExiting( false ),
@@ -647,7 +651,9 @@ namespace RISE
 				) const;
 
 			/// Computes Fresnel-weighted transmittance/reflectance product
-			/// along a converged specular chain, including Beer's law attenuation.
+			/// along a chain. Boundary multipliers apply per event; dielectric
+			/// tau applies per world-unit distance on exiting transmission,
+			/// matching DielectricSPF. Participating-medium extinction is DL-419.
 			///
 			/// \return Per-channel attenuation factor for the chain
 			RISEPel EvaluateChainThroughput(

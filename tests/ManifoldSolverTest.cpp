@@ -13,6 +13,8 @@
 #include <vector>
 #include <cassert>
 #include <cmath>
+#include <chrono>
+#include <string>
 #include "TestableManifoldSolver.h"
 #include "../src/Library/Utilities/SMSPhoton.h"
 
@@ -22,10 +24,14 @@
 // plumbing the rest of this file doesn't otherwise touch.
 #include "../src/Library/Geometry/ClippedPlaneGeometry.h"
 #include "../src/Library/Geometry/BoxGeometry.h"
+#include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
 #include "../src/Library/Objects/Object.h"
 #include "../src/Library/Managers/ObjectManager.h"
 #include "../src/Library/Scene.h"
 #include "../src/Library/Materials/DielectricMaterial.h"
+#include "../src/Library/Materials/PerfectReflectorMaterial.h"
+#include "../src/Library/Materials/PerfectRefractorMaterial.h"
+#include "../src/Library/Painters/UniformColorPainter.h"
 #include "../src/Library/Painters/UniformScalarPainter.h"
 #include "../src/Library/Rendering/RayCaster.h"
 #include "../src/Library/RISE_API.h"
@@ -1898,8 +1904,197 @@ static void TestPhotonMaterialContext() {
     std::cout << "Photon UV/Po RGB and 450/650nm context assertions passed" << std::endl;
 }
 
-int main()
+
+// DL-435 adapters keep the committed-master proof executable. The old
+// metadata has no NM slot; its RGB channel fallback exposes the old query
+// contract, while old NM throughput still fails the independent oracles.
+template<class Metadata>
+static auto SpectralAttenuation(const Metadata& v, int) -> decltype(v.attenuationNM) {
+    return v.attenuationNM;
+}
+template<class Metadata>
+static Scalar SpectralAttenuation(const Metadata& v, long) { return v.attenuation.r; }
+template<class Metadata>
+static auto InteriorAttenuation(const Metadata& v, int) -> decltype(v.attenuationIsInteriorTransmittance) {
+    return v.attenuationIsInteriorTransmittance;
+}
+template<class Metadata>
+static bool InteriorAttenuation(const Metadata&, long) { return false; }
+template<class Vertex>
+static auto SetSpectralAttenuation(Vertex& v, Scalar value, bool interior, int)
+    -> decltype(v.attenuationNM = value, void()) {
+    v.attenuationNM = value;
+    v.attenuationIsInteriorTransmittance = interior;
+}
+template<class Vertex>
+static void SetSpectralAttenuation(Vertex& v, Scalar value, bool, long) {
+    v.attenuation = RISEPel(value,value,value);
+}
+static int TestSpectralAttenuationDL435() {
+    int failures=0, checks=0;
+    auto check=[&](bool ok,const char* label) {
+        ++checks; if(!ok) {++failures; std::cout << "FAIL DL-435 " << label << std::endl;}
+    };
+    TestableManifoldSolver solver;
+    const Point3 start(0,2,0), reflectedEnd(0,2,0), transmittedEnd(0,-2,0);
+    ManifoldVertex v=MakeVertex(Point3(0,0,0),Vector3(0,1,0),Vector3(1,0,0),Vector3(0,0,1),1.5,true);
+    v.canRefract=false;v.attenuation=RISEPel(.25,.25,.25);
+    SetSpectralAttenuation(v,.25,false,0);
+    std::vector<ManifoldVertex> chain(1,v);
+    check(IsClose(solver.EvaluateChainThroughputNM(start,reflectedEnd,chain,550),.25),"quarter mirror attenuation");
+    chain[0].canRefract=true;chain[0].etaI=1;chain[0].etaT=1.5;
+    check(IsClose(solver.EvaluateChainThroughputNM(start,reflectedEnd,chain,550),.25*.04),"tinted Fresnel reflection");
+    chain[0].isReflection=false;
+    check(IsClose(solver.EvaluateChainThroughputNM(start,transmittedEnd,chain,550),.25*.96/2.25),"entering attenuation and radiance rescale");
+    chain[0].isExiting=true;chain[0].etaI=1.5;chain[0].etaT=1;
+    check(IsClose(solver.EvaluateChainThroughputNM(start,transmittedEnd,chain,550),.25*.96*2.25),"exiting radiance rescale");
+    SetSpectralAttenuation(chain[0],.25,true,0);
+    check(IsClose(solver.EvaluateChainThroughputNM(start,transmittedEnd,chain,550),std::pow(.25,2)*.96*2.25),"two world-unit dielectric transmission");
+    check(IsClose(solver.EvaluateChainThroughput(start,transmittedEnd,chain).r,std::pow(.25,2)*.96*2.25),"RGB dielectric tau uses same distance contract");
+    chain[0].isExiting=false;chain[0].etaI=1;chain[0].etaT=1.5;
+    check(IsClose(solver.EvaluateChainThroughputNM(start,transmittedEnd,chain,550),.96/2.25),"dielectric entry does not pay interior tau");
+    chain[0].isReflection=true;chain[0].isExiting=true;chain[0].etaI=1.5;chain[0].etaT=1;
+    check(IsClose(solver.EvaluateChainThroughputNM(start,reflectedEnd,chain,550),.04),"dielectric reflection retains SPF tau convention");
+
+    // This painter supplies independent NM values using the captured UV/Po.
+    // It cannot pass by reading an RGB channel or querying the origin.
+    auto* index=new ContextIndex();
+    auto* eta=new UniformScalarPainter(1.5);
+    auto* scattering=new UniformScalarPainter(1000000.0);
+    class ContextColor final : public UniformColorPainter {
+    public:
+        ContextColor():UniformColorPainter(RISEPel(.3,.3,.3)) {}
+        RISEPel GetColor(const RayIntersectionGeometric& r) const override {
+            const Scalar v=.3+.2*r.ptCoord.x+.3*r.ptObjIntersec.y;
+            return RISEPel(v,v,v);
+        }
+        Scalar GetColorNM(const RayIntersectionGeometric& r,Scalar nm) const override {
+            return GetColor(r).r+nm*.0001;
+        }
+    };
+    auto* color=new ContextColor();
+    auto* mirror=new PerfectReflectorMaterial(*color);
+    auto* refractor=new PerfectRefractorMaterial(*color,*eta);
+    auto* dielectric=new DielectricMaterial(*index,*eta,*scattering,false);
+    RayIntersectionGeometric ri(Ray(Point3(0,2,0),Vector3(0,-1,0)),nullRasterizerState);
+    ri.ptCoord=Point2(.6,.8);ri.ptObjIntersec=Point3(.4,.7,.2);
+    IORStack stack(1.0);
+    for(Scalar nm : {Scalar(450),Scalar(650)}) {
+        const Scalar expected=1.53+nm*.0001;
+        for(const IMaterial* material : {static_cast<const IMaterial*>(mirror),static_cast<const IMaterial*>(refractor),static_cast<const IMaterial*>(dielectric)}) {
+            const SpecularInfo info=material->GetSpecularInfoNM(ri,stack,nm);
+            check(IsClose(SpectralAttenuation(info,0),material==dielectric ? expected : .63+nm*.0001),"direct spectral material query preserves wavelength/UV/Po");
+            check(InteriorAttenuation(info,0)==(material==dielectric),"boundary versus interior transmission metadata");
+        }
+    }
+    SMSPhoton photon;photon.chainLen=1;
+    photon.chain[0].position=Point3(3,4,5);photon.chain[0].normal=Vector3(0,1,0);
+    photon.chain[0].geomNormal=Vector3(0,1,0);photon.chain[0].pMaterial=dielectric;
+    photon.chain[0].uv=ri.ptCoord;photon.chain[0].objectPosition=ri.ptObjIntersec;
+    for(Scalar nm : {Scalar(450),Scalar(650)}) {
+        std::vector<ManifoldVertex> reconstructed;
+        check(ReconstructPhotonAtNM(solver,photon,reconstructed,nm,0)==1,"photon chain reconstructed");
+        check(reconstructed.size()==1 && IsClose(SpectralAttenuation(reconstructed[0],0),1.53+nm*.0001),"photon carries wavelength attenuation and captured UV/Po");
+        check(reconstructed.size()==1 && InteriorAttenuation(reconstructed[0],0),"photon retains interior transmission law");
+    }
+    // Exact neutral fallback avoids a LUT and preserves values above1.
+    // Probe the actual default virtual fallback through a material extension.
+    class RGBOnlyMirror final : public PerfectReflectorMaterial {
+    public:
+        explicit RGBOnlyMirror(const IPainter& p):PerfectReflectorMaterial(p) {}
+        SpecularInfo GetSpecularInfoNM(const RayIntersectionGeometric& r,const IORStack& st,Scalar nm) const override {
+            return IMaterial::GetSpecularInfoNM(r,st,nm);
+        }
+    };
+    auto* grey=new UniformColorPainter(RISEPel(.25,.25,.25));
+    auto* legacy=new RGBOnlyMirror(*grey);
+    check(IsClose(SpectralAttenuation(legacy->GetSpecularInfoNM(ri,stack,550),0),.25),"RGB-only neutral extension fallback");
+    legacy->release();grey->release();
+    auto* tint=new UniformColorPainter(RISEPel(.2,.6,.8),eSpectrumKind_Unbounded);
+    auto* legacyTint=new RGBOnlyMirror(*tint);
+    for(Scalar nm : {Scalar(450),Scalar(650)})
+        check(IsClose(SpectralAttenuation(legacyTint->GetSpecularInfoNM(ri,stack,nm),0),tint->GetColorNM(ri,nm)),"RGB-only colored extension uses spectral uplift rather than red channel");
+    legacyTint->release();tint->release();
+
+    // Real double-sided indexedmesh_geometry, both windings and approach
+    // sides. A two-unit incoming segment independently prices .25^2 on
+    // an exiting transmission, and no tau on entry.
+    auto* neutralTau=new UniformScalarPainter(.25);
+    auto* sheetMaterial=new DielectricMaterial(*neutralTau,*eta,*scattering,false);
+    for(bool flipped : {false,true}) {
+        auto* geometry=new TriangleMeshGeometryIndexed(true,true);
+        geometry->BeginIndexedTriangles();
+        for(const Point3& point : {Point3(-5,0,-5),Point3(5,0,-5),Point3(5,0,5),Point3(-5,0,5)}) geometry->AddVertex(point);
+        for(const Point2& uv : {Point2(0,0),Point2(1,0),Point2(1,1),Point2(0,1)}) geometry->AddTexCoord(uv);
+        geometry->AddNormal(Vector3(0,flipped ? 1 : -1,0));
+        for(int corner : {2,3}) {
+            IndexedTriangle tri;
+            const unsigned vertices[3]={0,static_cast<unsigned>(corner==2 ? 1 : 2),static_cast<unsigned>(corner)};
+            for(unsigned i=0;i<3;++i) {
+                const unsigned source=flipped ? (i==0 ? 0 : 3-i) : i;
+                tri.iVertices[i]=vertices[source];tri.iCoords[i]=vertices[source];tri.iNormals[i]=0;
+            }
+            geometry->AddIndexedTriangle(tri);
+        }
+        geometry->DoneIndexedTriangles();
+        auto* object=new Object(geometry);geometry->release();
+        object->FinalizeTransformations();object->AssignMaterial(*sheetMaterial);
+        auto* manager=new ObjectManager(false,false,4,8);manager->AddItem(object,"attenuation_sheet");
+        auto* scene=new Scene();scene->SetObjectManager(manager);
+        std::vector<IShaderOp*> ops;IShader* shader=nullptr;IRayCaster* caster=nullptr;
+        RISE_API_CreateStandardShader(&shader,ops);RISE_API_CreateRayCaster(&caster,false,10,*shader,true);
+        for(bool above : {false,true}) {
+            const Point3 eye(.3,above ? 2 : -2,.2), light(.3,above ? -2 : 2,.2);
+            std::vector<ManifoldVertex> seeded;
+            const unsigned k=solver.BuildSnellBaseSeed(eye,Vector3(0,above ? -1 : 1,0),light,*scene,*caster,seeded,nullptr,nullptr,550);
+            const bool exits=above!=flipped;
+            check(k==1 && seeded.size()==1,"double-sided indexedmesh generates one spectral sheet vertex");
+            if(seeded.size()==1) {
+                check(seeded[0].isExiting==exits,"indexedmesh face determines entry/exit for either winding");
+                check(InteriorAttenuation(seeded[0],0) && IsClose(SpectralAttenuation(seeded[0],0),.25),"indexedmesh seed retains scalar tau and distance law");
+                const Scalar expected=.96*(exits ? 2.25 : 1/2.25)*(exits ? .0625 : 1);
+                check(IsClose(solver.EvaluateChainThroughputNM(eye,light,seeded,550),expected),"indexedmesh spectral exit pays two-unit tau and radiance factor");
+                check(IsClose(solver.EvaluateChainThroughput(eye,light,seeded).r,expected),"indexedmesh RGB uses the same distance contract");
+            }
+        }
+        safe_release(caster);safe_release(shader);scene->release();manager->release();object->release();
+    }
+    sheetMaterial->release();neutralTau->release();
+    mirror->release();refractor->release();dielectric->release();
+    index->release();color->release();eta->release();scattering->release();
+    std::cout << "DL-435 " << checks-failures << " passed, " << failures << " failed" << std::endl;
+    return failures;
+}
+
+
+static void BenchmarkAttenuationDL435() {
+    TestableManifoldSolver solver;
+    ManifoldVertex v=MakeVertex(Point3(0,0,0),Vector3(0,1,0),Vector3(1,0,0),Vector3(0,0,1),1.5,false);
+    v.etaI=1.5;v.etaT=1;v.isExiting=true;
+    std::vector<ManifoldVertex> chain(1,v);
+    const unsigned count=200000;
+    volatile Scalar sink=0;
+    std::cout<<"DL-435 sizeof SpecularInfo="<<sizeof(SpecularInfo)<<" ManifoldVertex="<<sizeof(ManifoldVertex)<<std::endl;
+    for(bool interior : {false,true}) {
+        SetSpectralAttenuation(chain[0],interior ? .25 : 1,interior,0);
+        for(int trial=0;trial<5;++trial) {
+            const auto begin=std::chrono::steady_clock::now();
+            for(unsigned i=0;i<count;++i) {
+                chain[0].position.x=Scalar(i%31)*.001;
+                sink=solver.EvaluateChainThroughputNM(Point3(0,2,0),Point3(0,-2,0),chain,550);
+            }
+            const double seconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-begin).count();
+            std::cout<<"DL-435 benchmark interior="<<interior<<" trial="<<trial<<" ns/call="<<seconds*1e9/count<<std::endl;
+        }
+    }
+    std::cout<<"benchmark consumed="<<sink<<std::endl;
+}
+
+int main(int argc, char** argv)
 {
+    if(argc>1 && std::string(argv[1])=="--dl435-benchmark") {BenchmarkAttenuationDL435();return 0;}
+    if(argc>1 && std::string(argv[1])=="--dl435-only") return TestSpectralAttenuationDL435() ? 1 : 0;
+    assert(TestSpectralAttenuationDL435()==0);
 	TestPhotonMaterialContext();
 	std::cout << std::endl;
 	std::cout << "========================================" << std::endl;

@@ -180,16 +180,18 @@ namespace RISE
 			return SpecularInfo();
 		}
 
-		/// \return Spectral variant of GetSpecularInfo for wavelength-dependent IOR.
-		/// Default delegates to GetSpecularInfo.  DielectricMaterial overrides
-		/// to use wavelength-specific IOR for dispersion.
+		/// \return Wavelength-specific IOR and attenuationNM (DL-435).
+		/// Default uplifts RGB metadata for RGB-only extensions. Materials with
+		/// authored spectral painters override this to query them directly.
 		virtual SpecularInfo GetSpecularInfoNM(
 			const RayIntersectionGeometric& ri,
 			const IORStack& ior_stack,
 			const Scalar nm
 			) const
 		{
-			return GetSpecularInfo( ri, ior_stack );
+			SpecularInfo info = GetSpecularInfo( ri, ior_stack );
+			info.SetSpectralAttenuationFromRGB( nm );
+			return info;
 		}
 
 		/// \return DL-09 (docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md): the

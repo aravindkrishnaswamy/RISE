@@ -4194,6 +4194,8 @@ unsigned int ManifoldSolver::SnellContinueChain(
 
 		mv.eta = specInfo.ior;
 		mv.attenuation = specInfo.attenuation;
+		mv.attenuationNM = specInfo.attenuationNM;
+		mv.attenuationIsInteriorTransmittance = specInfo.attenuationIsInteriorTransmittance;
 		mv.isReflection = !specInfo.canRefract;
 		mv.canRefract = specInfo.canRefract;
 		mv.valid = false;  // Derivatives not yet computed; Solve will handle it
@@ -4751,6 +4753,17 @@ RISEPel ManifoldSolver::EvaluateChainThroughput(
 		//   (true,  false)  refraction — Fresnel transmission (1 − Fr) with
 		//                   the tau (refractance) painter and the (η_i/η_t)²
 		//                   radiance rescale across the dielectric boundary.
+		RISEPel attenuation = v.attenuation;
+		if( v.attenuationIsInteriorTransmittance ) {
+			attenuation = RISEPel( 1, 1, 1 );
+			if( v.isExiting && !v.isReflection ) {
+				const Scalar distance = Point3Ops::Distance( prevPos, v.position );
+				for( unsigned int c = 0; c < 3; ++c )
+					attenuation[c] = v.attenuation[c] == 1 ? Scalar(1)
+						: std::pow( r_max( Scalar(0), v.attenuation[c] ), distance );
+			}
+		}
+
 		if( v.isReflection )
 		{
 			Scalar R;
@@ -4762,7 +4775,7 @@ RISEPel ManifoldSolver::EvaluateChainThroughput(
 			{
 				R = 1.0;
 			}
-			throughput = throughput * v.attenuation * R;
+			throughput = throughput * attenuation * R;
 		}
 		else
 		{
@@ -4796,7 +4809,7 @@ RISEPel ManifoldSolver::EvaluateChainThroughput(
 			const Scalar fr = ComputeDielectricFresnel( cosI, eta_i, eta_t );
 			const Scalar eta_ratio = eta_i / eta_t;
 			const Scalar radiance_rescale = eta_ratio * eta_ratio;
-			throughput = throughput * v.attenuation * (1.0 - fr) * radiance_rescale;
+			throughput = throughput * attenuation * (1.0 - fr) * radiance_rescale;
 		}
 	}
 
@@ -4835,7 +4848,7 @@ Scalar ManifoldSolver::EvaluateChainThroughputNM(
 		// Exact dielectric Fresnel reflectance — use the chain-topological
 		// flag (see EvaluateChainThroughput RGB variant for full comment).
 		// Pull (η_i, η_t) from the per-vertex fields populated by
-		// BuildSeedChainNM — same air-on-other-side bug fix as the
+		// spectral seed/replay queries — same air-on-other-side fix as the
 		// RGB variant.
 		const Scalar cosI = fabs( Vector3Ops::Dot( wi, v.normal ) );
 		Scalar eta_i, eta_t;
@@ -4846,20 +4859,31 @@ Scalar ManifoldSolver::EvaluateChainThroughputNM(
 		// refraction use Fresnel.  See EvaluateChainThroughput for the
 		// full discussion of why ComputeDielectricFresnel(cosI, 1, 1)
 		// would silently zero the throughput on a mirror.
+		// Cached scalar is queried at this wavelength by the seed/replay
+		// path, never selected from an RGB channel. No painter query or
+		// allocation occurs in this throughput loop.
+		Scalar attenuation = v.attenuationNM;
+		if( v.attenuationIsInteriorTransmittance ) {
+			attenuation = v.isExiting && !v.isReflection
+				? ( attenuation == 1 ? Scalar(1)
+					: std::pow( attenuation, Point3Ops::Distance( prevPos, v.position ) ) )
+				: Scalar(1);
+		}
 		if( v.isReflection )
 		{
 			if( v.canRefract )
 			{
-				throughput *= ComputeDielectricFresnel( cosI, eta_i, eta_t );
+				throughput *= attenuation * ComputeDielectricFresnel( cosI, eta_i, eta_t );
 			}
-			// else: pure mirror — multiply by 1 (no-op).  Spectral
-			// reflectance painters aren't queried in this NM throughput
-			// path; surface colour is applied at the integrator level.
+			else {
+				throughput *= attenuation;
+			}
 		}
 		else
 		{
 			const Scalar fr = ComputeDielectricFresnel( cosI, eta_i, eta_t );
-			throughput *= (1.0 - fr);
+			const Scalar eta_ratio = eta_i / eta_t;
+			throughput *= attenuation * (1.0 - fr) * eta_ratio * eta_ratio;
 		}
 	}
 
@@ -5975,9 +5999,13 @@ unsigned int ManifoldSolver::ReversePhotonChainForSeed(
 				pv.pMaterial->GetSpecularInfo( rigLocal, queryIor );
 			if( nm > 0 ) mv.eta = spec.ior;
 			mv.attenuation = spec.attenuation;
+			mv.attenuationNM = spec.attenuationNM;
+			mv.attenuationIsInteriorTransmittance = spec.attenuationIsInteriorTransmittance;
 			mv.canRefract  = spec.canRefract;
 		} else {
 			mv.attenuation = RISEPel( 1, 1, 1 );
+			mv.attenuationNM = 1;
+			mv.attenuationIsInteriorTransmittance = false;
 			mv.canRefract  = true;
 		}
 		mv.isReflection = ( ( pv.flags & 0x2 ) != 0 );
@@ -6790,9 +6818,13 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 					rigLocal.vGeomNormal = mv.geomNormal;
 					SpecularInfo spec = pv.pMaterial->GetSpecularInfo( rigLocal, queryIor );
 					mv.attenuation = spec.attenuation;
+					mv.attenuationNM = spec.attenuationNM;
+					mv.attenuationIsInteriorTransmittance = spec.attenuationIsInteriorTransmittance;
 					mv.canRefract  = spec.canRefract;
 				} else {
 					mv.attenuation = RISEPel( 1, 1, 1 );
+			mv.attenuationNM = 1;
+			mv.attenuationIsInteriorTransmittance = false;
 					mv.canRefract  = true;   // safe default: dielectric Fresnel path
 				}
 				// Chain-vertex semantics recovered from the photon record:
@@ -7775,6 +7807,8 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 				if( v.isExiting ) v.etaI = specNM.ior;
 				else v.etaT = specNM.ior;
 				v.attenuation = specNM.attenuation;
+				v.attenuationNM = specNM.attenuationNM;
+				v.attenuationIsInteriorTransmittance = specNM.attenuationIsInteriorTransmittance;
 				v.canRefract  = specNM.canRefract;
 			}
 			v.valid = false;
@@ -8508,6 +8542,8 @@ unsigned int ManifoldSolver::BuildSnellBaseSeed(
 				SpecularInfo specNM = chain[i].pMaterial->GetSpecularInfoNM(
 					rig, queryIor, nm );
 				chain[i].eta = specNM.ior;
+				chain[i].attenuationNM = specNM.attenuationNM;
+				chain[i].attenuationIsInteriorTransmittance = specNM.attenuationIsInteriorTransmittance;
 				// Also update the wavelength-dependent side of the
 				// (etaI, etaT) pair populated by BuildSeedChain.  The
 				// vertex's "outgoing-medium IOR" for entering, or

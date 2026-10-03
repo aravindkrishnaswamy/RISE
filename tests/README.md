@@ -1368,3 +1368,14 @@ DL-334 adds `SSSBoundarySpectralTest` (independent public spectral partition, sk
 `SSSCriticalPartitionTest` adds Decimal90 reference fixtures for exact critical directions and ULP neighbors, with public diffusion/RW/skin and constant-index Pel controls. See `docs/DL334_SSS_CRITICAL_BOUNDARY.md`.
 
 - `SSSNearUnityFresnelTest`: independent Decimal110 adjacent-index/grazing R/T and Snell oracles for both orderings, public diffusion/RW/skin NM/raw/green/Pel consumers, critical neighbors, absolute and power-of-two scaling controls.
+
+DL-435 attenuation gates: `ManifoldSolverTest --dl435-only` checks the
+scalar metadata, Fresnel/eta factors, native/fallback painter queries,
+photon propagation and both sides/windings of an actual double-sided
+indexed mesh. `--dl435-benchmark` reports metadata sizes and five focused
+varying-position throughput timings. `SMSUniformDispersionTest
+--attenuation-only` runs sixteen n4 salted quarter/white sheet pairs
+(NM/HWSS, Snell/uniform, plane/indexedmesh, both windings), with a0.01
+ratio band checked against three measured mean SDs. Both new regressions
+also run in their default targets. Design and limits:
+[DL435_SPECTRAL_SMS_ATTENUATION.md](../docs/DL435_SPECTRAL_SMS_ATTENUATION.md).

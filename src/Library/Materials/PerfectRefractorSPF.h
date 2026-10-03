@@ -83,6 +83,7 @@ namespace RISE
 				info.isSpecular = true;
 				info.canRefract = true;
 				info.ior = pNt->GetValueAtNM( ri, nm );
+				info.attenuationNM = ReflectanceColorNM( *pRefractivity, ri, nm );
 				info.valid = true;
 				info.clearTransmission = true;
 				return info;

@@ -251,14 +251,17 @@ namespace RISE
 			return SpecularInfo();
 		}
 
-		//! Spectral variant of GetSpecularInfo.
+		//! Spectral IOR and attenuationNM. Default uplifts RGB-only metadata;
+		//! spectral painters require a direct NM override (DL-435).
 		virtual SpecularInfo GetSpecularInfoNM(
 			const RayIntersectionGeometric& ri,
 			const IORStack& ior_stack,
 			const Scalar nm
 			) const
 		{
-			return GetSpecularInfo( ri, ior_stack );
+			SpecularInfo info = GetSpecularInfo( ri, ior_stack );
+			info.SetSpectralAttenuationFromRGB( nm );
+			return info;
 		}
 
 		//! DL-05.  The EXPECTED throughput of this SPF's NON-BENDING delta

@@ -1077,3 +1077,32 @@ doc corrections need a fresh review along with the chosen disposition.
 Master remains115aee62e, unmodified, and no merge or push occurred. The
 prospective integration ledger is284 rows/45 open/239 closed, including
 DL-435; master retains273/47/226 until actual integration.
+
+### DL-435 continuation: user-authorized design and repair
+
+The user explicitly requested a practical, performant and thorough
+attenuation system and repair. The accepted implementation direction is
+recorded in DL435_SPECTRAL_SMS_ATTENUATION.md: explicit cached NM scalar,
+material-specific boundary versus interior tau convention, native spectral
+painter queries, RGB-only metadata fallback, complete Snell/uniform/photon
+propagation, and the missing eta-radiance factor. No new Library file or
+allocation/cache is introduced. C++ metadata layouts grow, so clients
+sharing those structures must rebuild; C construction ABI is unchanged.
+
+The first deterministic gate passed21/0, then27/0 with photon propagation;
+full manifold assertions pass. The initial n4 render pilot used an
+unjustified0.001 band and failed86/10. Throughput-dependent continuation
+changes sample decisions: paired images do not scale exactly even though
+the expectation does. Worst ratio render SD0.00529804 means mean
+SD0.00264902; the final new0.01 band is3.775 mean SDs and each row checks
+its own three-SD precision. The unchanged8-spp budget passes96/0 in6.22s
+across sixteen geometry/winding/NM-HWSS/Snell-uniform configurations.
+These are calibration results, not final committed-source proof or review.
+
+The expanded deterministic gate passes49/0, including an actual dielectric
+indexed mesh with both windings/approach sides and independent two-unit
+RGB/NM tau oracles. Default Manifold assertions pass. The full dispersion
+pilot passes210/0 in414.14s. SF11 centroid shifts now resolve about0.3125
+pixels after the missing radiance scale is restored; constant-index
+controls remain near zero, and the existing dispersion bands are retained.
+The source/test/design tree is frozen for committed baseline/master proofs.
