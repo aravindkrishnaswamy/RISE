@@ -1136,3 +1136,17 @@ guarantee or an interleaved whole-render comparison. The fixed cached
 loop performs the missing work. The small n4 render matrix takes6.22s
 on the old library and6.26s restored, also not a statistical cost bound.
 Logs: /tmp/rise-dl435-proof-{pre435,head}-benchmark.log.
+
+### DL-435 focused sanitizer gate
+
+A fresh clean instrumented library build passes0 warnings in126.61s,
+followed by individually checked instrumented builds for ManifoldSolver
+and SMSUniformDispersion. Full manifold assertions pass (DL-43549/0,
+0.53s); the attenuation matrix passes96/0 in38.51s. No ASan/UBSan report
+is present; UBSan halts on findings. As in the earlier macOS gate, leak
+detection is disabled and external prebuilt dependencies are not
+instrumented, so this is not a leak-free or all-dependency claim. These
+checks exercise the new metadata layouts, native/fallback queries,
+photon propagation, actual dielectric mesh seeds and rendered matrix.
+Records: /tmp/rise-dl435-sanitizer.json. A fresh normal clean library
+build and full integration test gate follow; their results are pending.
