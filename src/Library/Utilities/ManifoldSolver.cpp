@@ -7205,10 +7205,11 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 //   choice (manifold_ss.cpp lines 32-42 explicitly disclaim
 //   shape-picking).
 //
-//   Phase 4 of the Mitsuba-faithful SMS port: single-trial, biased
-//   semantics (no Bernoulli).  Phase 5 will layer the geometric
-//   `K = first-success-index` estimator on top, and Phase 7 the
-//   photon-aided trial integration.
+//   Biased mode draws config.multiTrials uniform-area seeds per caster,
+//   sums unique solved roots, and may supplement them with photon seeds.
+//   Unbiased mode uses the geometric Bernoulli reciprocal-probability
+//   estimator with the same uniform-area proposal in every trial. Alpha
+//   coverage also selects that Bernoulli path rather than biased dedupe.
 //
 //   See `docs/SMS_UNIFORM_SEEDING_PLAN.md` for the full plan.
 //////////////////////////////////////////////////////////////////////
@@ -7231,8 +7232,6 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
     const bool alphaCoverage = caster.GetLightSampler() && caster.GetLightSampler()->SceneHasAlphaCoverage();
     const bool biased = config.biased && !alphaCoverage;
 	SMSContribution result;
-	(void)geomNormal;  // currently unused on the uniform path; kept for
-	                    // API symmetry with the snell entry point.
 
 	if( !pMaterial ) return result;
 
@@ -7686,7 +7685,6 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
     const bool alphaCoverage = caster.GetLightSampler() && caster.GetLightSampler()->SceneHasAlphaCoverage();
     const bool biased = config.biased && !alphaCoverage;
 	SMSContributionNM result;
-	(void)geomNormal;  // see EvaluateAtShadingPointUniform.
 
 	if( !pMaterial ) return result;
 

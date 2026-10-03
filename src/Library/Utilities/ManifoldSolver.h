@@ -733,8 +733,9 @@ namespace RISE
 			///      lines 32-42).
 			///
 			/// Selected at runtime by `config.seedingMode == eSeedingUniform`.
-			/// Geometric Bernoulli `1/p` (Phase 5) and photon-aided trial
-			/// integration (Phase 7) layer on top of this scaffold.
+			/// Biased mode sums unique roots from multiTrials area seeds and
+			/// optional photon seeds. Unbiased mode (also selected for alpha
+			/// coverage) uses Bernoulli `1/p` with area seeds only.
 			SMSContribution EvaluateAtShadingPointUniform(
 				const Point3& pos,
 				const Vector3& geomNormal,
