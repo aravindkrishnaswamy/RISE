@@ -836,3 +836,48 @@ photon/known-failure diagnostics stay non-gated.
 Logs and runtimes: `/tmp/cheapbatch-review5-gate.json`.
 The final independent review verdict will be reported against the full
 resulting HEAD; this record is committed before that review.
+
+
+## Takeover integration checkpoint (2026-10-03; incomplete)
+
+Master `115aee62e` was merged into this branch. The four conflicts were
+resolved; SMS retains both solved-direction emitter sidedness (DL-347)
+and master's delta-light endpoint tangent plane (DL-413). The weave helper
+uses one explicit/default-salt contract. SSS retains the DL-332 Part B
+calibration and master's DL-370 Part F rows. The master DL-345 Part C
+bands and minimum eight replicates are retained, with the batch sampling
+budgets and paired covariance calculation.
+
+A clean make library build passed with zero warnings (63.03s). Each test
+below was built separately, with its build exit checked and zero warnings,
+then run serially with RISE_MEDIA_PATH set. No build overlapped a render.
+
+| Test | Result | Seconds |
+|---|---:|---:|
+| SourceHygieneTest | pass (before later mesh/comment additions) | see checkpoint log |
+| CstDeriveGoldenTest | 458 MATCH, zero DRIFT/UNCOVERED/STALE | see checkpoint log |
+| ManifoldSolverTest | all assertions pass | see checkpoint log |
+| WeaveGapShadowTransmittanceTest 1000 | 244/0 | 769.79 |
+| SSSExteriorIndexInvarianceTest --seed 0 | 510/0 | 1069.06 |
+| ExteriorIndexInvarianceTest | **273/2** | 1440.82 |
+
+The two Exterior failures are the mean and precision checks on RGB
+uniform-SMS glass-sphere k1: at 1024 spp, n4, enclosed/air 0.96636,
+paired mean SD 0.00767094, retained band 0.02. Master already tracks this
+point-light caustic tail as DL-418, whose recipe calls for n>=8 salted
+replicates. A fixed higher-spp pilot (4096 spp, n4, seed offset0) failed
+both checks again: ratio 0.971551, paired mean SD 0.0166977; air mean
+2.58284 with render SD 1.81623. A second fixed seed panel and larger
+replicate measurements remain pending. No band change is claimed.
+
+Both Part C shipped comparisons passed: flat-slab n8 SMS4096/VCM1024,
+ratio 0.996254, paired mean SD 0.0118433, band [0.885,1.130]; glass-block
+n8 SMS16384/VCM512, ratio 1.03898, paired mean SD 0.011489, band
+[0.840,1.180]. The SSS furnace minimum band/mean-SD was 5.25833.
+
+The remaining gate, committed red proofs for the added double-sided
+indexed-mesh rows, Xcode gate, and fresh independent review have NOT yet
+completed. This checkpoint does not supersede the old isolated-branch
+results above with a claim of a green merged tree. No rows are closed,
+and no merge to master has occurred. Local logs:
+`/tmp/rise-takeover-gate.json`, `/tmp/rise-takeover-exterior-pilot.json`.
