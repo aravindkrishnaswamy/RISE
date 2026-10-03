@@ -9,7 +9,7 @@ Excluding non-finite/infinite emitter power made the images finite, but
 removed BDPT's camera-visible emitter coverage. Scale-2 infinite-plane
 means were PT 0.453129, BDPT RGB 0.0305721 and BDPT spectral 0.0309033;
 finite-area controls were 0.443173 / 0.443129 / 0.446933. Finishing this
-requires the reserved BDPT integrator. The guard and transient test were
+requires a BDPT design for the missing camera strategy. The guard and transient test were
 withdrawn; only the ledger disposition was committed.
 
 ## DL-332 initial slice calibration (superseded budgets below)
@@ -883,7 +883,7 @@ and no merge to master has occurred. Local logs:
 `/tmp/rise-takeover-gate.json`, `/tmp/rise-takeover-exterior-pilot.json`.
 
 
-### DL-418 tail attribution and DL-434 repair (gate still incomplete)
+### DL-418 tail attribution and DL-434 repair (historical failed checkpoint)
 
 The second fixed4096-spp n4 panel also failed: enclosed/air0.962416,
 paired mean SD0.0142349 (605.61s). The larger1024-spp n16 panel at seed
@@ -920,10 +920,9 @@ now exports raw geometry and applies a requested positive individual cap;
 both helpers disable nonpositive caps, consistently with the four sum
 clamps. Default cap10 is unchanged. Logs: /tmp/rise-dl434-proof.json.
 
-Two fixed n8 panels at1024 spp, seed offsets0/10000, are pending before
-setting the final test budget or claiming that the measured tail is
-controlled. No band widening, new solver design, final green integration
-gate, independent-review verdict, or master merge is claimed here.
+At this checkpoint, two fixed n8 panels at1024 spp, seed offsets0/10000,
+were pending. Their completed measurements and the final test budget are
+recorded below. No band widening or solver-threshold design change was made.
 
 
 ### Repaired tail calibration and added mesh/source proofs
@@ -967,3 +966,86 @@ helper repair, and neither suite enables uniform seeding or SMS photons.
 The final run repeats all remaining/affected targets, including full
 Exterior, manifold, both mesh suites and master-overlap targeted gates.
 Xcode Deployment/Opto and fresh independent review remain pending.
+
+### Final integrated normal gate, 2026-10-03
+
+The production/test tree through1376d8d24 passed a fresh clean make
+library build (60.59s) with zero compiler warnings. Every test was built
+individually, its exit/warnings checked before running, with
+RISE_MEDIA_PATH pointing at this worktree. No stale binary was accepted.
+The table lists test runtime, excluding its individual checked build.
+
+| Target | Result | Seconds |
+| --- | --- | --- |
+| SourceHygieneTest | 169/0 | 1.47 |
+| CstDeriveGoldenTest | 458 MATCH / 0 DRIFT / 0 UNCOVERED / 0 STALE | 28.17 |
+| ManifoldSolverTest | all assertions pass | 0.29 |
+| ExteriorIndexInvarianceTest | 299/0 | 1295.93 |
+| PTGuidingMISPartitionTest | 185/0 | 40.57 |
+| MediumInsideOutsideInvariantTest | 52/0 | 427.66 |
+| OIDNAutoDeterminismTest | 163/0 | 130.41 |
+| SMSMediumAnchorTest | 27/0 | 502.40 |
+| SMSEmitterDirectionTest | 344/0 | 231.85 |
+| SMSUniformDispersionTest | 114/0 | 401.42 |
+| SMSUniformDispersionTest-shipped | 10/0 | 0.26 |
+| SSSRadianceScalingTest | 576256/0 | 73.43 |
+| DoubleSidedEmitterTest | 34/0 | 14.81 |
+| FrameStoreTest | 123/0 | 0.73 |
+| RasterizerDefaultsConsistencyTest | 164/0 | 0.30 |
+| AgentEvalCheckTest | 2075/0 | 49.07 |
+| TransparentShadowPartitionTest | 42/0 | 66.58 |
+| OpenSheetIndexConventionTest | 24/0 | 43.26 |
+
+Full Exterior reproduces the calibrated RGB uniform k1 ratio0.999687
+with paired mean SD0.000227643 (n8,16spp); k2 is1.000000 with mean
+SD6.87161e-08 (n8). Part C flat/glass ratios0.996254/1.03898 have paired
+mean SD0.0118433/0.011489 within the retained master bands. The photon
+k2 residual1.03978 (mean SD0.00136612) remains nongated under DL-331.
+The full suite took1295.93s, so the historical ten-minute estimate is
+not the integration runtime. Dispersion includes both plane and
+double-sided indexedmesh, with/without HWSS and constant-index controls.
+Earlier full weave244/0 and SSS exterior510/0 gate reuse is justified
+above; they do not exercise the subsequently repaired helper contract.
+
+Normal-gate logs: /tmp/rise-takeover-final-gate.json. Fresh Xcode
+Deployment/Opto builds and independent review are pending at this
+checkpoint; no master merge is claimed.
+
+### Integration self-audit and review scope
+
+Likely failure surfaces for the fresh review are: (1) four RGB/NM,
+Snell/uniform SMS emission sites must retain both solved-direction
+sidedness and master's delta-light Jacobian normal; (2) geometric output
+and individual/sum caps must agree without altering the existing cap10
+policy or claiming an unbiased clipped estimator; (3) UV/child-frame Po
+and dispersive eta refresh must survive companion/photon reconstruction;
+(4) OIDN's fixed sampling-budget policy must reach every rasterizer, crop,
+companion and MLT path, and warmed backend changes must release filters
+before devices; (5) salted tests must measure independent inputs, preserve
+filtered/full-suite seeds, and use paired covariance in their precision
+guards. Critical files are ManifoldSolver, SMSPhoton/Map, OIDNDenoiser,
+OidnConfig and all rasterizer/Job/API callers, plus the Exterior, SSS,
+Weave, OIDN and SMS test families. No new solver tolerance was introduced.
+
+Review is against master115aee62e plus the completed integration tree.
+Known user-directed design stops remain open: DL-311, DL-353 remainder,
+DL-391, DL-396 and DL-398. DL-331's printed photon residual is also open.
+The ledger's thirteen strikes and dated recount are prospective on this
+branch; they take effect on master only after zero-P1 review and no-ff
+integration. No pushed state is involved.
+
+### Fresh Xcode gate, 2026-10-03
+
+Clean Deployment/RISE-GUI and Opto/RISE-GUI-Opto builds pass with zero
+compiler or linker warnings in55.78/103.52s. Each reports only Xcode's
+AppIntents metadata-extraction notice (no framework dependency), excluded
+by the repository's explicit warning-gate rule. The first Deployment
+attempt built successfully but failed the strict warning gate because
+this worktree lacked extlib/oidn/install/lib. Checkout-only install
+include/lib links now resolve to the same CPU-only Homebrew OIDN2.5.0
+used by the passing make/test gate. No dependency upgrade, project edit
+or warning suppression was made; actual GPU transition remains untested.
+Fresh build records: /tmp/rise-takeover-xcode-gate.json.
+
+All required integration gates are now green. Independent review and
+master integration remain pending at this committed checkpoint.
