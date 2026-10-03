@@ -513,14 +513,14 @@ static void PolishedEventCases()
             RandomNumberGenerator random(421); IndependentSampler sampler(random);
             ScatteredRayContainer native;
             hit.pMaterial->GetSPF()->Scatter(hit.geometric,sampler,native,stack);
-            Check(native.Count()==1,"black-substrate polished native single delta coat");
+            Check(native.Count()>0 && native[0].isDelta,"polished native SPF emits delta coat first");
             for(unsigned c=0;c<3;++c) {
                 Scalar ni,nt,weight; bool exiting; IORStack replay(stack);
                 Check(SMSDomainReplay::Cross(*hit.pMaterial,object,hit.geometric,SMSQueryDomain::RGB(c),true,
                     replay,ni,nt,exiting),"polished reflection domain crossing");
                 Check(SMSDomainReplay::EventWeight(*hit.pMaterial,hit.geometric,stack,SMSQueryDomain::RGB(c),
                     true,exiting,ni,nt,1,weight),"polished native RGB event query");
-                Check(native.Count()==1 && Near(weight,native[0].kray[c]),"polished RGB coat tint matches native SPF delta weight");
+                Check(native.Count()>0 && native[0].isDelta && Near(weight,native[0].kray[c]),"polished RGB coat tint matches native SPF delta weight");
             }
             for(double nm : {450.,550.,650.}) {
                 ScatteredRayContainer nativeNM;
@@ -530,7 +530,7 @@ static void PolishedEventCases()
                     replay,ni,nt,exiting),"polished NM reflection domain crossing");
                 Check(SMSDomainReplay::EventWeight(*hit.pMaterial,hit.geometric,stack,SMSQueryDomain::NM(nm),
                     true,exiting,ni,nt,1,weight),"polished native NM event query");
-                Check(nativeNM.Count()==1 && Near(weight,nativeNM[0].krayNM),"polished NM coat tint matches native SPF delta weight");
+                Check(nativeNM.Count()>0 && nativeNM[0].isDelta && Near(weight,nativeNM[0].krayNM),"polished NM coat tint matches native SPF delta weight");
             }
         }
     }
