@@ -1831,18 +1831,19 @@ bool LightSampler::SampleLight(
 
 		// THE SHADING PAYLOAD for this sampled point (slice S3 of
 		// docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5).  Probed ONCE
-		// here and carried on the sample, because FIVE records are built
+		// here and carried on the sample, because consumers build records
 		// from this one point and every one of them must read the same
 		// channel: this `rig`, `GenerateLightSubpathImpl`'s NM hero `Le`
 		// rebuild, its HWSS companion-wavelength twin `rigW`, the BDPT
-		// `type == LIGHT` root vertex, and `VCMIntegrator`'s light-vertex
-		// NEE record.  Probing per consumer would cost five rays and --
+		// `type == LIGHT` root vertex, `VCMIntegrator`'s light-vertex
+		// NEE record, and SMS's solved-chain emission queries (DL-347).
+		// Probing per consumer would add redundant rays and --
 		// worse -- could disagree between the hero and its companion
 		// wavelengths, which is the spectral form of the very defect this
 		// slice closes.
 		//
 		// The probe is NORMAL-ALIGNED: no single direction is "the"
-		// direction this record is viewed from (the five consumers each
+		// direction this record is viewed from (the consumers each
 		// look from somewhere else), so it stands off along the sampled
 		// normal and fires back onto the point.  Since the round-2
 		// transport review the two NEE sites use this SAME entry point, so
@@ -1862,12 +1863,12 @@ bool LightSampler::SampleLight(
 
 		// `Po`, on the other hand, is NOT gated and costs no ray -- it is
 		// read by painters that register no signal demand.  Carried on the
-		// sample for the same five consumers, for the same reason.
+		// sample for the same consumers, for the same reason.
 		sample.ptObjIntersec = EmitterObjectPoint(
 			lumEntry.pLum, sample.position, sample.ptObjIntersec );
 
 		// DL-44: the surface UV `UniformRandomPoint` returned for this
-		// sample, carried for the same five rebuild sites `ptObjIntersec`
+		// sample, carried for the same rebuild sites `ptObjIntersec`
 		// is (see `LightSample::ptCoord`'s doc comment).  Ungated and
 		// ray-free, like `Po` above -- it is simply `coord`, already
 		// computed a few lines up.
