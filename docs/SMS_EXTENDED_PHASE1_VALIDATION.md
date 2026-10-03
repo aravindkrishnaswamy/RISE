@@ -22,7 +22,7 @@ Additional committed-helper regressions:
 
 - Finite-Phong query eligibility before correction: **168/96**; corrected query-only suite **504/0**. Exponents 1e4 and 1e5 are admitted at their native delta-limit approximation; the query records that approximation. HG partial coherent mixtures remain unsupported. This is a new helper defect, not a claimed master defect.
 - Pixel-context isolated corrected fixture: **16/0**. The initial diagnostic had one bad setup assertion (the existing `AssignMaterial` return value), which is excluded from numerical evidence; the committed-master proof above compares actual native material queries at caller raster coordinates.
-- Inherited composite CSG boundaries at committed `ac7802caa`: **6/2**, both failures are missing rejection for start-inside membership. Correction and complete gate verification are pending below.
+- Inherited composite CSG boundaries at committed `ac7802caa`: **6/2**, both failures are missing rejection for start-inside membership. Corrected complete domain suite at `7e66dc267`: **2925/0**, with the same 120/184/118/2 diagnostics. The two missing rejection assertions now pass. Complete phase acceptance remains pending below.
 
 ## Default-path cost and output
 
