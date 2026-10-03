@@ -68,8 +68,8 @@
 //      Default SMS budgets 4096/16384 spp, full-film VCM 1024/512 spp; SMS
 //      uses the mask bounding rectangle without changing camera/film.
 //      Four controlled replay pairs pin fixture input reproducibility.
-//    Usage: [--unit-only] [--trials K (default/minimum 4)] [--only <label substring>]
-//      [--seed-offset N] [--shipped-sms-spp N] [--replay-only]
+//    Usage: [--unit-only] [--trials K (default/minimum 4; RGB uniform glass minimum 8)] [--only <label substring>]
+//      [--seed-offset N] [--shipped-sms-spp N] [--uniform-sms-spp N] [--replay-only]
 //
 //  Author: RISE debt-cleanup, slice `debt-dl290`
 //  Tabs: 4
@@ -1249,7 +1249,7 @@ namespace
 
 	void TestRenderedInvariance( const unsigned int trials, const std::string& only )
 	{
-		std::cout << "B: rendered scale invariance, air (1, n) vs enclosed (1.5, 1.5 n), n=" << trials << " per side" << std::endl;
+		std::cout << "B: rendered scale invariance, air (1, n) vs enclosed (1.5, 1.5 n), n=" << trials << " per side (RGB uniform glass minimum 8)" << std::endl;
 		struct Row { Model model; Integrator integrator; unsigned int samples; double band; const char* sms; bool gated = true; unsigned int bounces = 1; };
 		// Bands: several times the measured sd of the ratio (common random
 		// numbers per pair) and far below the pre-fix deviations of the
@@ -1275,7 +1275,7 @@ namespace
 			// k = 1: the sphere's Fresnel REFLECTION chain; k = 2: the
 			// refraction chain through it.
 			{ Model::SMSGlass,     Integrator::PT,         16,  0.01, "snell" },
-			{ Model::SMSGlass,     Integrator::PT,         uniformSmsSppOverride ? uniformSmsSppOverride : 1024, 0.02, "uniform" },
+			{ Model::SMSGlass,     Integrator::PT,         uniformSmsSppOverride ? uniformSmsSppOverride : 16, 0.02, "uniform" },
 			{ Model::SMSGlass,     Integrator::PTSpectral, 64,  0.03, "snell" },
 			{ Model::SMSGlass,     Integrator::PTSpectral, 64,  0.03, "uniform" },
 			{ Model::SMSGlass,     Integrator::PT,         64,  0.02, "uniform", true, 2 },
@@ -1283,9 +1283,16 @@ namespace
 			{ Model::SMSOpenSheet, Integrator::PT,         16,  0.01, "snell" },
 			{ Model::SMSOpenSheet, Integrator::PTSpectral, 64,  0.03, "snell" },
 		};
+		// DL-418/434: RGB uniform glass needs at least eight independently
+		// salted pairs. Reserve the same seed span for every row so filtering
+		// preserves seeds and longer rows never overlap a sibling's range.
+		const unsigned int seedSpan = std::max( trials, 8u );
 		unsigned int rowIndex = 0;
 		for( const Row& row : rows ) {
-			unsigned int seed = 290000 + renderSeedOffset + rowIndex++ * trials;
+			const bool uniformGlass = row.model == Model::SMSGlass && row.integrator == Integrator::PT &&
+				row.sms && std::string(row.sms) == "uniform";
+			const unsigned int rowTrials = uniformGlass ? seedSpan : trials;
+			unsigned int seed = 290000 + renderSeedOffset + rowIndex++ * seedSpan;
 			const std::string label = std::string( "B: " ) + ModelName( row.model ) + "/" + IntegratorName( row.integrator ) +
 				( row.sms ? std::string( "/sms-" ) + row.sms + "/k" + std::to_string( row.bounces ) : std::string() );
 			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
@@ -1296,7 +1303,7 @@ namespace
 			Check( !airPath.empty() && !scaledPath.empty(), label + ": scene files written" );
 			std::vector<double> air, scaled;
 			bool allValid = true;
-			for( unsigned int t = 0; t < trials; ++t ) {
+			for( unsigned int t = 0; t < rowTrials; ++t ) {
 				const unsigned int pairSeed = seed++;
 				const double a = RenderMean( airPath, pairSeed, 1.0, t == 0, camera, label + " air" );
 				const double sc = RenderMean( scaledPath, pairSeed, kScale, t == 0, camera, label + " enclosed" );
@@ -1312,7 +1319,7 @@ namespace
 			const double ratio = ss.mean / sa.mean;
 			const double ratioSd = PairedRatioMeanSD(air,scaled,ratio,sa.mean);
 			std::cout << std::setprecision( 6 ) << "    " << label.substr( 3 )
-				<< " spp=" << row.samples << ": air " << sa.mean << " +/- " << sa.sd
+				<< " spp=" << row.samples << " n=" << rowTrials << ": air " << sa.mean << " +/- " << sa.sd
 				<< "  enclosed " << ss.mean << " +/- " << ss.sd
 				<< "  ratio " << ratio << " +/- " << ratioSd << " (band " << row.band << ")" << std::endl;
 			if( row.gated ) {
