@@ -1278,6 +1278,16 @@ See [ALPHA_COVERAGE.md](../docs/ALPHA_COVERAGE.md) for the estimator definitions
   0.9950, 34/8; green 42/0. The field is deliberately nonzero at the origin
   (DL-431: the emitter's own `averageRadiantExitance` is estimated at P = 0).
 
+- `BDPTZeroDensityConnectibleTest` (DL-430): a 0.5 Lambertian floor lit by a
+  one-sided 4x4 area emitter, with the floor's material swapped after load for
+  a test-local material whose BSDF is that Lambertian and whose SPF is either
+  absent or the Lambertian SPF restricted to world x >= 0 (`Pdf` 0 elsewhere).
+  Direct-only scene, so PT on the plain Lambertian floor is exact; each image
+  half of PT / BDPT / VCM on both materials (and BDPT on the plain floor) must
+  sit within 3 % of it (4 salted renders each, half-mean sd <= 0.0006). Red on
+  `388907e94`: BDPT null SPF 0.0039x on both halves, BDPT half SPF 0.592x /
+  0.411x, 11/4; green 15/0. VCM and PT read 1.000 in both builds.
+
 ## Blender tangent producers (DL-213)
 
 `BlenderBridgeTangentTest` renders the actual bridge mesh against authored-core,
