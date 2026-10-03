@@ -1049,3 +1049,31 @@ Fresh build records: /tmp/rise-takeover-xcode-gate.json.
 
 All required integration gates are now green. Independent review and
 master integration remain pending at this committed checkpoint.
+
+### Fresh integration review round1 — stopped before merge
+
+Three independent read-only reviewers examined300d4eff4. The test lens
+found one P1: README accidentally restored DL-348's historical VCM Z2
+deficit instead of master's corrected0.6% gate description. The transport
+lens found the incorrect sign still present in DL-347's recipe (source
+uses the correct light-to-chain vector) and an existing spectral SMS
+throughput omission. The OIDN/API/ledger lens found zero P1/P2. Both
+doc defects are corrected; the implementation tree is unchanged.
+
+The spectral finding is new DL-435. A temporary deterministic helper
+probe built successfully with zero warnings, then exited1: quarter-grey
+mirror RGB0.25/NM1; white entering dielectric1-to-1.5 RGB0.426666666667/
+NM0.96. It used the committed library, RISE_MEDIA_PATH set, and was
+removed afterward. Its build/run logs are /tmp/rise-dl435-proof-build.log
+and /tmp/rise-dl435-proof-run.log. Several spectral specular queries
+currently leave attenuation white or inherit an RGB triple; fixing this
+properly needs a defined wavelength-resolved metadata contract as well as
+the missing throughput factors. No partial production repair was made.
+
+Per the user's explicit stop-on-design-decision rule, integration is
+stopped for the DL-435 decision. Round1 is NOT a zero-P1 verdict. The
+normal/Xcode gates remain green for the unchanged implementation; the
+doc corrections need a fresh review along with the chosen disposition.
+Master remains115aee62e, unmodified, and no merge or push occurred. The
+prospective integration ledger is284 rows/45 open/239 closed, including
+DL-435; master retains273/47/226 until actual integration.
