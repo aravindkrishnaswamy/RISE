@@ -225,6 +225,15 @@ RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::Solve
     const IScene& scene, const IORStack& startingStack, SMSQueryDomain domain,
     std::vector<SMSDomainVertex>& vertices, ISampler& sampler, Scalar positionTolerance) const
 {
+    struct Attempt {
+        SMSDomainCounters* counters;
+        bool accepted = false;
+        ~Attempt() {
+            if(counters) (accepted ? counters->acceptedRoots : counters->rejectedRoots)
+                .fetch_add(1, std::memory_order_relaxed);
+        }
+    } attempt{config.domainCounters};
+    if(attempt.counters) attempt.counters->attempts.fetch_add(1, std::memory_order_relaxed);
     ManifoldResult failed;
     if(vertices.empty() || vertices.size() > config.maxChainDepth
         || !std::isfinite(positionTolerance) || positionTolerance < 0) return failed;
@@ -298,6 +307,7 @@ RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::Solve
     result.contributionNM = throughput;
     if(domain.kind == SMSQueryDomain::RGBComponent) result.contribution[domain.component] = throughput;
     vertices = std::move(refreshed);
+    attempt.accepted = true;
     return result;
 }
 
@@ -3600,6 +3610,7 @@ bool ManifoldSolver::NewtonSolve(
 
 	for( unsigned int iter = 0; iter < config.maxIterations; iter++ )
 	{
+        if(config.domainCounters) config.domainCounters->newtonIterations.fetch_add(1, std::memory_order_relaxed);
 #if SMS_SOLVE_DIAG
 		if( config.useLevenbergMarquardt ) {
 			g_solveDiag_lmTotalIters.fetch_add( 1, std::memory_order_relaxed );

@@ -91,6 +91,11 @@ namespace RISE
         };
 
         // Extended-domain records are separate from legacy vertex metadata.
+        struct SMSDomainCounters {
+            std::atomic<unsigned long long> attempts{0}, newtonIterations{0};
+            std::atomic<unsigned long long> acceptedRoots{0}, rejectedRoots{0};
+        };
+
         struct SMSQueryDomain {
             enum Kind { RGBComponent, Wavelength } kind;
             unsigned int component;
@@ -262,6 +267,7 @@ namespace RISE
 		{
 			bool			enabled;				///< Master switch: when false, no ManifoldSolver is created
             bool extendedMode;             ///< Internal opt-in; no parser/API exposure.
+            SMSDomainCounters* domainCounters; ///< Optional diagnostics; caller owns lifetime.
 			unsigned int	maxIterations;			///< Newton iteration limit
 			Scalar			solverThreshold;		///< Convergence threshold on ||C||
 			Scalar			uniquenessThreshold;	///< Threshold to distinguish solutions
@@ -392,6 +398,7 @@ namespace RISE
 			ManifoldSolverConfig() :
 			enabled( false ),
             extendedMode( false ),
+            domainCounters( nullptr ),
 			maxIterations( 15 ),
 			solverThreshold( 1e-4 ),
 			uniquenessThreshold( 1e-2 ),

@@ -57,6 +57,7 @@ static RayIntersection Hit(const IObject& object, Point3 origin, Vector3 directi
     return hit;
 }
 #ifdef RISE_SMS_DOMAIN_REPLAY
+static SMSDomainCounters domainCounters;
 static void ComponentAndCrossingCases()
 {
     for(bool closed : {false,true}) for(bool reverse : {false,true}) for(bool transformed : {false,true}) {
@@ -137,6 +138,7 @@ static void SolvedRootCases()
     auto seed=Hit(*object,start,Vector3(0,0,1));
     ManifoldSolverConfig config;
     config.biased=true; config.maxIterations=40; config.solverThreshold=1e-9;
+    config.domainCounters=&domainCounters;
     ManifoldSolver* solver=new ManifoldSolver(config);
     RandomNumberGenerator random(17);
     IndependentSampler sampler(random);
@@ -236,6 +238,7 @@ static void ClosedChainCases()
             IORStack stack(1);
             if(inside) { stack.SetCurrentObject(object); stack.push(1.3); }
             ManifoldSolverConfig config; config.biased=true; config.solverThreshold=1e-9;
+            config.domainCounters=&domainCounters;
             ManifoldSolver* solver=new ManifoldSolver(config);
             RandomNumberGenerator random(45); IndependentSampler sampler(random);
             const auto result=solver->SolveDomain(inside?Point3(3,0,0):start,direction,end,-direction,
@@ -337,6 +340,11 @@ int main()
     CoatedEventCases();
     ClosedChainCases();
     CompositePTCases();
+    std::cout << "DOMAIN counters attempts=" << domainCounters.attempts.load()
+        << " Newton iterations=" << domainCounters.newtonIterations.load()
+        << " accepted=" << domainCounters.acceptedRoots.load()
+        << " rejected=" << domainCounters.rejectedRoots.load()
+        << " retries=0 tail events=0 owned=0 (isolated biased solves, no proposal/ownership estimator)\n";
     std::cout << passCount << " passed, " << failCount << " failed\n";
     return failCount?1:0;
 }
