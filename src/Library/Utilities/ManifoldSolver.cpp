@@ -116,7 +116,7 @@ bool RISE::Implementation::SMSDomainReplay::Capture(const IScene& scene,
     result = SMSStartingMedia();
     result.environmentIndex = live.EnvironmentIOR();
     if(!std::isfinite(result.environmentIndex) || result.environmentIndex <= 0
-        || !scene.GetObjects()) return false;
+        || !scene.GetObjects() || scene.GetGlobalMedium()) return false;
     struct Objects : IEnumCallback<IObject> {
         std::vector<const IObject*> items;
         bool operator()(const IObject& object) override { items.push_back(&object); return true; }
@@ -131,13 +131,15 @@ bool RISE::Implementation::SMSDomainReplay::Capture(const IScene& scene,
         if(std::find(keys.begin(), keys.end(), required) == keys.end()) return false;
     // Live open-sheet membership can legitimately exceed geometric containment;
     // preserve it rather than replacing the walk's state with a fresh seed.
+    // Participating local media are excluded, including uncertain containment
+    // when their boundary does not provide reconstructible IOR membership.
     // DL-407: composite containment can be missing from the live stack.
     // Inside an object's world bounds we cannot certify absence of
     // composite membership. Refuse that uncertainty even when back-face
     // culling would hide every inside-origin ray intersection.
     for(const IObject* object : objects.items) {
         if(!object->IsWorldVisible()
-            || !HasCompositeBoundary(*object)) continue;
+            || (!HasCompositeBoundary(*object) && !object->GetInteriorMedium())) continue;
         if(std::find(keys.begin(), keys.end(), object) != keys.end()) return false;
         const BoundingBox bounds = object->getBoundingBox();
         const bool outside = anchor.x < bounds.ll.x || anchor.x > bounds.ur.x
@@ -148,7 +150,7 @@ bool RISE::Implementation::SMSDomainReplay::Capture(const IScene& scene,
     for(const IObject* key : keys) {
         if(std::find(objects.items.begin(), objects.items.end(), key) == objects.items.end())
             return false; // opaque non-scene identities must never be dereferenced
-        if(!key->GetMaterial()) return false;
+        if(!key->GetMaterial() || key->GetInteriorMedium()) return false;
         bool captured = false;
         for(const Vector3& direction : directions) {
             RayIntersection hit(Ray(anchor, direction), nullRasterizerState);
@@ -172,7 +174,7 @@ bool RISE::Implementation::SMSDomainReplay::BuildStack(const SMSStartingMedia& m
         || !std::isfinite(media.environmentIndex) || media.environmentIndex <= 0) return false;
     IORStack replay(media.environmentIndex);
     for(const SMSMediumCapture& entry : media.enclosing) {
-        if(!entry.identity || !entry.material) return false;
+        if(!entry.identity || !entry.material || entry.identity->GetInteriorMedium()) return false;
         replay.SetCurrentObject(entry.identity);
         if(replay.containsCurrent()) return false;
         SMSNativeMaterialQuery query;
@@ -189,7 +191,7 @@ bool RISE::Implementation::SMSDomainReplay::Cross(const IMaterial& material,
     SMSQueryDomain domain, bool reflection, IORStack& stack,
     Scalar& etaI, Scalar& etaT, bool& exiting)
 {
-    if(!identity) return false;
+    if(!identity || identity->GetInteriorMedium()) return false;
     IORStack next(stack);
     next.SetCurrentObject(identity);
     SMSNativeMaterialQuery query;

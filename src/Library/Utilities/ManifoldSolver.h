@@ -137,7 +137,8 @@ namespace RISE
                                     const IORStack&, SMSQueryDomain, bool reflection,
                                     bool exiting, Scalar etaI, Scalar etaT,
                                     Scalar segmentLength, Scalar& weight);
-            // The caller retains the real hit context, including the open-sheet certificate.
+            // Identity is a live scene object, not an opaque stack token. The caller
+            // retains the real hit context, including the open-sheet certificate.
             // Reflection leaves membership unchanged; transmission applies the native crossing.
             static bool Cross(const IMaterial&, const IObject*, const RayIntersectionGeometric&,
                               SMSQueryDomain, bool reflection, IORStack&,
