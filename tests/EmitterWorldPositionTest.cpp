@@ -55,7 +55,12 @@
 #include <cmath>
 #include <string>
 #include <algorithm>
-#include <unistd.h>
+#ifdef _WIN32
+	#include <process.h>
+	#define getpid _getpid
+#else
+	#include <unistd.h>
+#endif
 
 #include "../src/Library/Interfaces/IJob.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
@@ -125,8 +130,10 @@ static double MeanLuminance( const CapturingRasterizerOutput& cap )
 static std::string WriteSceneToTempFile( const std::string& sceneText, const char* tag )
 {
 	char path[512];
-	std::snprintf( path, sizeof(path), "/tmp/emitter_world_position_%s_%d.RISEscene",
-		tag, static_cast<int>( ::getpid() ) );
+	const char* tmpBase = std::getenv( "TMPDIR" );
+	if( !tmpBase || !*tmpBase ) tmpBase = "/tmp";
+	std::snprintf( path, sizeof(path), "%s/emitter_world_position_%s_%d.RISEscene",
+		tmpBase, tag, static_cast<int>( ::getpid() ) );
 	std::ofstream ofs( path );
 	if( !ofs.is_open() ) return std::string();
 	ofs << sceneText;
