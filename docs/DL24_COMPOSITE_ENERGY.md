@@ -1078,13 +1078,68 @@ round-1 report of 1.0056 was an unsalted 128-spp artifact.
 * **Row D8:** the two nested-top composites (glass/water and glass/glass
   over a 0.8 Lambertian) on a mesh quad and its clipped-plane twin, back vs
   front, PT / BDPT / VCM, and composite{translucent/Lambertian} back vs front
-  (PT, BDPT), gated within 3 % per half; red / green in section 9.3's
+  (PT, BDPT).  Gates per half: the nested rows are single 1024-spp renders
+  in a 5 % band (their tops run the per-branch estimator; a 256-spp front /
+  back pair differed by up to 3.1 % on noise alone, and the broken state
+  reads ~-48 %), the translucent rows single 256-spp renders in a 3 % band
+  (near deterministic, broken -17 %).  Red / green in section 9.3's
   measurement protocol (numbers in the DL-341 ledger row).
 * **P3s (DL-407):** three more stackless / reseeded paths are recorded
   there -- the stackless CausticSpectralPhotonMap gather, PT's HWSS
   mid-path SSS lane reseed (`SeedFromPoint` cannot see composites), and a
   lost O (stack capacity drop, layers that never push), which degrades to
   top-on-both-faces.
+
+### 9.4d Review round 5 (2026-10-02): FAIL, 1 P1, P3s -- addressed
+
+* **P1 -- a closed double-sided mesh WOUND INWARD.**  On such a mesh an
+  inside hit is a front face by winding, so the geometry does not flip the
+  normal and `bGeomNormalOrientedToRay` is never set; the round-3 rule keyed
+  the unflip on that flag, so the hit was walked from above while the stack
+  held O and the exit carried an inside stack.  composite{glass/glass} box,
+  white furnace (the reviewer, salted n = 3, 256 spp): all 12 triangles
+  reversed PT / BDPT / VCM 0.4667 / 0.4667 / 0.4668, back face only 0.5065,
+  front only 0.9801 (master 1.0000; plain glass 1.0000 on both builds).
+  Fix (the reviewer's rule, with the arrival made explicit): unflip when the
+  stack holds O AND the reported geometric normal OPPOSES THE ARRIVING RAY --
+  inside a closed solid the ray reaching its boundary is leaving it, so a
+  reported normal against the arrival points inward whoever oriented it.
+  The flip flag stays a sufficient condition (a flipped record opposes its
+  arrival by construction; this keeps exactly the round-3 set and is immune
+  to a grazing rounding of the dot).  The unflipped normal is
+  `-vGeomNormal`.
+* **The caveat (the reviewer's): which ray is "arriving".**  A live record's
+  `ray` is the arrival, but a record rebuilt by
+  `PathVertexEval::PopulateRIGFromVertex` is aimed per query along `-wi`: on
+  a light-subpath vertex, in every reverse-pdf query (the generators query
+  the same vertex with the two directions swapped) and at a connection
+  (`EvalPdfAtVertex( lightEnd, dirToCam, ... )` aims it at `-dirToCam`) it
+  is not the walk's incoming segment.  Reading the facing off that ray would
+  let the frame of one vertex change with the query direction -- the DL-100
+  frame trap the round-2 flag mirroring exists to avoid.  So the facing is
+  recorded at the live hit, `BDPTVertex::bGeomNormalOpposesArrival` (both
+  generators), and replayed as `RayIntersectionGeometric::arrivalGeomFacing`
+  (0 on a live record: read it off `ray`; -1 / +1 on a rebuilt one), read
+  through `GeomNormalOpposesArrival()`.  The composite resets it to 0 on the
+  frame it hands its layers, whose walk rays are live.
+* **Row D9** (`--winding-only`): the consistent and the inverted double-sided
+  mesh box side by side (all / back / front faces reversed), composite
+  {glass/glass} and plain glass (each half == 1 within 0.002: lossless,
+  all-delta, zero variance) and composite{glass/translucent} (thickness
+  0.05, extinction 0.2; inverted / consistent within 2 %), PT / BDPT / VCM.
+  Against the round-4 library (29fe9f3ef): **29 / 16** -- glass/glass
+  inverted 0.46669 (all), 0.50587 (back), 0.9799 (front) under all three
+  integrators; glass/translucent inverted/consistent +1.3 % to +4.4 % (red
+  on BDPT / VCM in all three modes and PT on back-only); the plain-glass
+  controls 1 on both.  Round 5: **45 / 0**, glass/glass 1.0000 (VCM 1.0001)
+  everywhere, glass/translucent within 0.1 % (PT) and 0.4 % (BDPT / VCM).
+* **Not this row (the reviewer's measurement): a composite with a subsurface layer
+  reads ~0.017-0.045 in a white furnace** (head, round 4 and master alike)
+  -- `CompositeMaterial` forwards neither `GetDiffusionProfile()` nor
+  `GetRandomWalkSSSParams()`, so an SSS or random-walk layer contributes only
+  its SPF's own reflection lobe and every BSSRDF / random-walk transport
+  through it is lost.  Filed as **DL-422**.
+* **P3:** D8's bands corrected in 9.4c above (5 % nested, 3 % translucent).
 
 ### 9.5 Residuals
 
@@ -1102,3 +1157,6 @@ round-1 report of 1.0056 was an unsalted 128-spp artifact.
   mesh, Bezier patch or clipped plane (round 3: decided by the walk's stack,
   D7).  Double-sided CLOSED meshes are no longer in it
   (fixed in round 1, D5).
+* **DL-422** (filed review round 5) -- a composite with an SSS / random-walk
+  layer drops all subsurface transport (no BSSRDF forwarding): ~0.017-0.045
+  in a white furnace; pre-existing on master.
