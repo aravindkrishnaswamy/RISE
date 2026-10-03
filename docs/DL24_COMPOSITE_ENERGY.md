@@ -185,9 +185,11 @@ and a fixed-position furnace would read one walk realisation.
 | A4 water(1.33)/white, 3/3 | 0.5360±.0041 / 0.5360±.0036 / 0.5573±.0043 / 0.6903±.0023 | 0.9993±.0073 / 0.9999±.0031 / 1.0003±.0042 / 0.9995±.0053 | 0.9993±.0072 / 1.0000±.0030 / 1.0004±.0040 / 0.9995±.0054 |
 | control `coated_material` (ior 1.5, rough 0.001)/white | ~1.000 | 0.9998 / 1.0001 / 1.0001 / 1.0001 (±≤.0011) | |
 
-A1 equals A2 bit for bit post-fix because the evaluator treats the top's
-delta transmission as ideal Snell whatever its `scattering` is.  That is
-DL-297.
+A1 equalled A2 bit for bit because the evaluator treated the top's
+delta transmission as ideal Snell whatever its `scattering` was -- DL-297,
+fixed 2026-10-02 (section 9): A1 (`scattering 0`, the widest warp) now
+carries its own estimate, still 1 within noise but with a larger
+per-evaluation spread (sd of the batch means up to 0.017 at 60 deg).
 
 Section A is **production transport**, so it is gated in
 `LayeredWhiteFurnaceTest` too.  Config 3 was pinned at the truncated
@@ -464,8 +466,9 @@ warnings**.
   cost: a delta light (point/spot/directional) contributes nothing through
   it, and an area light reaches it only via BSDF-sampled hits.
   `ScattersFullSphere` is false.  The recipe is in the ledger row.
-* **DL-297 — term (a) treats the top's delta-tagged transmission as ideal
-  Snell.**  A `DielectricSPF` with finite `scattering` warps its
+* **DL-297 — FIXED 2026-10-02, section 9 (Phong warps; HG and per-channel
+  RGB warps are DL-406).  Historical record: term (a) treated the top's
+  delta-tagged transmission as ideal Snell.**  A `DielectricSPF` with finite `scattering` warps its
   transmitted direction (Phong `cos^N` about the Snell axis) while still
   tagging it delta.  The evaluator connects through the ideal direction.
   Energy is exact, but the warp's angular blur is lost.  Energy-weighted
@@ -477,7 +480,9 @@ warnings**.
   | scat 0, walker-only (follows the warp) | 0.123 / 0.136 / 0.150 / 0.167 / 0.185 / 0.239 |
   | scat 1e4 (the parser default) | evaluator and walker agree within noise |
 
-* **DL-341 (filed at merge by the supervisor) -- the composite's IOR-stack
+* **DL-341 (filed at merge by the supervisor) -- FIXED 2026-10-02, section
+  9; its D3 "truth 1" was wrong (the derived truth is the equivalent pair
+  of separate sheets, 0.467).  Historical record: the composite's IOR-stack
   gap family.**  Three presentations, one cause: the two-stack convention
   and the walk's exits are only right for a walk that enters from ABOVE
   and leaves through the TOP.  (i) **Nested composites walked FROM
@@ -776,3 +781,483 @@ the shipped scene the BDPT/PT ratio sits 0.55-0.59 % low, and 0.24 % low
 on a composite-free version of it -- unattributed.  The merge commit
 `3e860735` also carries the P1-A fix and the 8-probe change, so a bisect
 landing on it tests three changes at once.
+
+## 9. DL-341 + DL-297 (slice `debt-composite`, 2026-10-02)
+
+Branched from `master` `74236b3cb`.  Both rows fixed, left unstruck for a
+fresh review; DL-406 and DL-407 opened (residuals, below).
+
+### 9.1 The stack convention (DL-341)
+
+Derived from what the EQUIVALENT PAIR OF SEPARATE SURFACES does: two
+coincident interfaces with the same orientation (both fronts on the
+shading-normal side), the top's material above the bottom's.  Under RISE's
+stack rules -- a closed solid, or two open sheets under DL-345's face rule,
+which read the same -- a ray that crosses both from above is INSIDE both,
+in the medium the bottom defines; one that leaves upward through both is
+back outside.  For an object `O`:
+
+| state | stack | where |
+|---|---|---|
+| OUT | entry stack with `O` popped (when it held it) | above the top |
+| GAP | OUT + what the top pushes crossing down (`O` at the gap's index; nothing for a top that does not push) | between the layers |
+| BELOW | GAP + what the bottom pushes crossing down | under the bottom |
+
+The shared `IObject*` key was what made one threaded stack unworkable (the
+top's push read as the bottom's).  The walk now keys the BOTTOM layer with
+its own per-instance key (`BottomKey`, the address of the composite's
+`instanceId`, compared and never dereferenced) and keeps `O` for the top, so
+ONE internal stack is threaded and refreshed after every crossing in either
+direction.  Each layer then reads "inside" exactly when the ray is behind
+it, and refracts from the index of the medium the ray is actually in: the
+bottom now refracts from the GAP's index (the old two-stack walk's "scope gap
+(b)": glass/glass refracted 1.0 -> 1.5 twice).
+
+Per entry side, decided by the TRUE geometric facing, with the shading
+normal oriented into the true geometric normal's hemisphere.  A record a
+double-sided geometry flipped toward the ray is unflipped first exactly when
+the walk's IOR stack already holds the composite's object (the ray crossed
+in earlier); otherwise -- an open sheet's back face with no prior crossing, a
+provably open clipped plane, a stackless caller -- it keeps the flipped frame
+and presents the top (sections 9.4, 9.4a, 9.4b):
+
+* from above and against the shading normal -- the DIRECT / COVERED / WALKER
+  mixture, starting at OUT (unchanged except for the stacks);
+* from above but BEHIND a tilted shading normal -- a natural walk from the
+  TOP, every exit delta-tagged (`value` and `Pdf` are 0 there);
+* from below -- a natural walk from the BOTTOM, starting at BELOW: OUT, the
+  GAP entry the top would push (read off one hashed from-above Scatter of the
+  top, `GapStackForBelow`), and the bottom's key at the entry stack's top.
+
+Both exits carry the EXTERNAL form (`ToExternal`): OUT through the top, OUT
+plus `O` at the BELOW index through the bottom.  `DeltaPassThroughTransmittance`
+picks its first layer by the same geometric side (DL-05 lockstep).
+
+**D3's "truth 1" was wrong.**  A transmitting composite{glass/glass} on an
+open quad is, by this derivation, the pair of separate glass sheets: the
+crossed ray is inside the glass, exactly as below one open
+`dielectric_material` sheet (DL-345), so a white env furnace reads
+`F + (1 - F) / eta^2` = 0.467 at normal incidence.  A white environment of
+radiance 1 seen inside a medium of index 1.5 is not an equilibrium (that
+would be `n^2` = 2.25).  D3 now renders the literal separate pair beside the
+composite and gates the ratio.  This equivalence holds seen from ABOVE only:
+an open composite sheet seen from below still presents its top (DL-407).
+
+**One consequence the fix exposed.**  Term (a) connects a substrate to the
+exit by inverting Snell's law at the gap/outside index ratio.  A NESTED
+composite used as a top emits delta-tagged exits that are whole walks, not
+refractions; the old wrong gap index (1.0) happened to make eta = 1 and hid
+it (energy right, shape wrong), the corrected one (1.5) confined the
+connection to the critical cone and lost 45 % (H2 0.546).  New
+`ISPF::DeltaTransmissionIsRefraction()` (default true; `CompositeSPF`
+false): such a top has no term (a), and the walker carries that class --
+unbiased, but invisible to NEE (the DL-296 family).
+
+### 9.2 The warped coat (DL-297)
+
+New `ISPF::DeltaTransmissionWarpExponent` / `DeltaTransmissionWarpPdf`
+(`DielectricSPF`: the Phong `scattering` warp; the density reuses
+`GenerateScatteredRay`'s own axis, DL-111 re-derivation included, and
+`PerturbClipped`'s arc).  Term (a) for a warped top draws the outside
+direction `t` from the ADJOINT warp (the same `cos^N` lobe about the query
+direction, clipped to the exit hemisphere; plus a 10 % cosine share when the
+shading normal is tilted, where the forward axis can be re-derived off `t`),
+inverts Snell to `u`, and weights the ideal term by
+`q(w | u) cos t / (p(t) cos w)`.  The draw comes from the (wi, wo, position)
+stream, so `value` stays a deterministic function and
+`kray * Pdf == value * cos` holds (section C green).  A Henyey-Greenstein
+warp (its draws past 90 deg stay on the axis: a delta part with no density)
+and a per-channel / dispersive RGB top have no single-density form and stay
+ideal: **DL-406**.
+
+### 9.3 Evidence
+
+`CompositeEnergyConservationTest` **302/0** at round 0; the same file against
+the base library (`74236b3cb`, the five library files checked out over a WIP
+commit) **271/31** as first measured, **269/33** with D4's tightened band (the
+reviewer's count; see the D4 note below):
+
+| row | base | fixed |
+|---|---|---|
+| H3 composite{glass/glass} as a top, walked from below (truth 1) | 0.4795 / 0.5064 | 0.9926 / 1.0144 (sem 0.007) |
+| H4 struck from inside, 20 / 35 / 60 deg (truth 1) | 1.0000 / **0.0868** / -- | 1.0000 / 1.0000 / 1.0000 |
+| T behind a 35-deg tilt, theta 60, four tops vs the independent walk | 0.090 vs 0.80-0.94 (z -584 .. -1075) | \|z\| <= 1.67 |
+| W exit histogram, scattering 0 and 5, theta 0 and 45 (24 bins) | z -241 .. +91 | \|z\| <= 2.02; the scattering-10000 control green in both |
+| D3 composite / separate glass pair, PT and BDPT | 1.0438 | 0.99974 |
+| D4 closed composite box / glass box, PT and BDPT | 0.98089 / 0.98063 | 1.00000 / 1.00000 |
+
+(D4's band was tightened to 0.5 % after the base run -- both boxes are a
+zero-variance lossless delta furnace post-fix; base sits outside it.)
+`CompositeExtinctionTest` section 6b gated the dielectric(1.5)/dielectric
+(1.33) stack's crossed energy at ">10 % over the bare top": that threshold
+was the old 1.0 -> 1.33 bottom interface (0.0185); the gap -> bottom
+interface is 1.5 -> 1.33 and the check now gates the closed form
+`T F_b T / (1 - F_b F_t)` = 0.00333 (measured 0.00347, +-25 %).  E2's bottom
+became an ior-2.4 glass: a 1.5 bottom is now index-matched and reflects
+nothing back up.
+
+Gates: LayeredWhiteFurnaceTest 0 of 63 failed; TranslucentLobeConsistencyTest
+1226/0; OpenSheetIndexConventionTest 24/0; TransmissionPushGateTest 416/0;
+SPFBSDFConsistencyTest pass; SPFPdfConsistencyTest pass; HWSSCompanionKrayTest
+193/0; SourceHygieneTest 167/0; CstDeriveGoldenTest 457 MATCH / 0 DRIFT;
+CompositeExtinctionTest all pass; WeaveGapShadowTransmittanceTest `query`
+75/0 and `composite` 2/0; BDPTStrategyBalanceTest `--materials-only` 26/0.
+DL-345's open-sheet rule is untouched for composites: every layer call
+still sees the record without `bProvablyNoInterior` (D1-D3 are composites on
+clipped planes).
+
+**Shipped scene** (`composite_material.RISEscene` at 512 x 288, 64 spp, OIDN
+off, linear, n = 3 salted renders per binary, interleaved, twice): every
+region within noise except the clearcoat red sphere, +0.08 % / +0.105 %
+(t 2.3 / 2.6) -- the default `scattering 10000` warp now reaches term (a);
+whole image +0.002 % / -0.005 %.  No shipped scene has a from-below,
+behind-normal or transmitting composite.  **Cost** +7.7 % user CPU on that
+composite-dominated scene (base 96.7, fixed 104.2 s; paired differences 7.6 /
+8.9 / 6.0 s), all from the warped term (a) the default glass now takes.
+
+### 9.4 Review round 1 (2026-10-02): FAIL, 1 P1, 2 P2, 1 P3 -- addressed
+
+* **P1 -- closed DOUBLE-SIDED meshes rendered 53 % dark.**  A double-sided
+  mesh flips both normals toward the ray, so a hit from INSIDE presented the
+  composite's top and was walked as an entry from above; round 0's OUT then
+  popped O, the dielectric top refracted 1.0 -> 1.5 instead of 1.5 -> 1.0 and
+  the exit claimed to be still inside: an `indexedmesh_geometry` box
+  (`double_sided` defaults TRUE) of composite{glass/glass} read **0.46687**
+  in the white furnace (base 1.00000; the same mesh single-sided 1.0000).
+  Round 0's DL-407 claim that this was pre-existing was WRONG: the base
+  handed the top the unpopped stack, and the top's own from-inside branch
+  was right.  Fixed twice over: (1) `CompositeLayerFrame` UNFLIPS a flipped
+  record (`bGeomNormalOrientedToRay`, a true side, not a provably open sheet):
+  the geometric normal goes back to the true outward one (DL-70
+  `UnflippedGeomNormal()`) and the shading normal and frame are oriented into
+  its hemisphere, so the entry side is the TRUE facing and the walk sees the
+  solid exactly as a single-sided mesh; (2) a walk entered from above never
+  pops O (`OutRef` returns the entry stack): an above entry whose stack holds
+  O is an inconsistent state and is trusted as the base trusted it.  Only a
+  from-below walk pops.  A provably open sheet (a clipped plane) keeps the
+  flipped frame and presents its top on both faces, as before.  New render
+  row **D5** (that mesh box, composite and plain-glass control, PT and
+  BDPT): round-0 library 0.46687 / 0.46687, now 1.00000 / 1.00000.
+* **P2 -- nested composite{composite{glass/glass}/glass} box read 1.0056.**
+  Not reproduced.  New row **D6** renders it beside a glass box at 2048 spp,
+  n = 4 SALTED renders per integrator (independent randomized-QMC
+  replicates), gated at max(0.2 %, 4 sem) with sem < 0.125 % enforced, so it
+  resolves 0.5 %: the round-0 library reads PT 1.00045 +- 0.00056, BDPT
+  0.99994 +- 0.00104; round 1 PT 1.00071 +- 0.00072, BDPT 0.99900 +- 0.00016
+  (the glass control 1.00004).  At the reviewer's 128 spp the per-render sd
+  is 0.0065 here, so a 0.5 % reading there is within one render's noise.
+  The SPF-level twin **H5** (full-sphere furnace from above and from inside,
+  and the eta^2-weighted sum against one plain glass interface, from above
+  and inside at 20 / 35 / 60 deg) is green.
+* **P2 -- "renders like the separate pair" holds FRONT-side only.**  Seen
+  from BELOW, an open composite sheet still presents its top (a clipped
+  plane is provably open, and the composite does not apply DL-345's face
+  rule to itself): composite 0.467 against the separate pair's 4.52 (the
+  reviewer's measurement).  That is a real defect of the DL-345 class (a
+  light walk entering from above and an eye walk from below refract
+  differently at the same sheet), filed in DL-407.
+* **P3 -- `GapStackForBelow`.**  Every multi-emit top (dielectric, perfect
+  refractor, translucent) shows its transmission on the FIRST hashed draw at
+  normal incidence and a top that declares a deterministic split stops
+  there, so the result is a deterministic function of the record; only a
+  single-emit stochastic top (nested composite, tissue) is sampled, now up to
+  16 draws (a nested glass/glass top misses with ~1e-17).  The base-run count
+  above is corrected (269/33).
+
+**Correction to the D6 entry above (review round 2).**  There was no BDPT
+offset to explain: the round-2 reviewer's n = 8 salted renders at 2048 spp
+read PT 1.00065 +- 0.00068 and BDPT 1.00038 +- 0.00056, and the sd of one
+salted render at 128 spp is ~0.011 (not the 0.0065 quoted above), so the
+round-1 report of 1.0056 was an unsalted 128-spp artifact.
+
+### 9.4a Review round 2 (2026-10-02): FAIL, 1 P1 -- addressed
+
+* **P1 -- round 1's unflip broke OPEN double-sided composite sheets.**  The
+  unflip was keyed on "not provably open" only, so an `indexedmesh_geometry`
+  quad (double-sided by default, NOT certified watertight: `bOpenSheet`) or a
+  Bezier patch set hit from behind was unflipped and walked from below,
+  delta-tagged: an omni light on the camera side no longer lit it (PT 1.253
+  -> 0), and BDPT / VCM disagreed with PT (coat over a 0.8 Lambertian, white
+  env furnace, back view: base 0.632 / 0.635 / 0.634 -> 0.800 / 0.909 /
+  1.010; glass/glass 0.487 -> 0.977) because PathVertexEval::
+  PopulateRIGFromVertex rebuilt the connection record WITHOUT
+  `bGeomNormalOrientedToRay`, so the composite repriced it in the flipped
+  frame its Scatter had unflipped -- the DL-100 frame trap.  Fixed twice
+  over: (1) only a CLOSED solid is unflipped (`!bOpenSheet` added: an open
+  sheet presents its top on both faces, as the base did -- SUPERSEDED in
+  round 3, section 9.4b: `bOpenSheet` is not a closedness test); (2) `BDPTVertex`
+  now mirrors the four surface-identity flags (`bGeomNormalOrientedToRay`,
+  `bGeomNormalRayDerived`, `bOpenSheet`, `bProvablyNoInterior`) and
+  `PopulateRIGFromVertex` replays them, so a closed double-sided vertex is
+  repriced in the frame Scatter used (`tests/BDPTVertexRIGRebuildTest.cpp`
+  one-hot passes: 68/20 without the replay, 88/0 with it).
+* Round 1's no-pop rule ALONE does not keep D5 at 1, by derivation: without
+  the unflip a hit from inside a closed double-sided mesh reads as an entry
+  from above, the top (keyed O, stack holding O) takes its from-inside branch
+  and its ray continues "down" in the flipped frame to the bottom, which is
+  keyed by its own key and reads "entering from outside" -- it refracts and
+  pushes again, so the exit claims to be inside.  The unflip is needed for
+  closed solids.
+* New row **D7**: an open double-sided mesh quad beside its clipped-plane
+  twin, camera BEHIND, PT / BDPT / VCM, coat over a 0.8 Lambertian and
+  glass/glass under the env furnace and the coat under an omni light on the
+  camera side; gated mesh / plane within 3 % and BDPT / VCM against PT
+  within 4 %.  Round-2 library: 7 failures (mesh 0.800 / 0.907 / 1.008
+  against the plane's ~0.63; glass/glass 0.977 against 0.467; omni mesh 0);
+  now all green (e.g. coat env PT / BDPT / VCM mesh 0.632 / 0.632 / 0.630,
+  glass/glass 0.467 everywhere, omni PT 1.241 / BDPT 1.249).  Note that the
+  back view of an open glass/glass sheet now reads 0.467 like the front (base
+  0.487), the DL-341 bottom-index correction.
+* **Side effect, measured:** the flag replay also fixes a translucent
+  defect the round-2 reviewer found (not a composite one): a closed
+  DOUBLE-SIDED `translucent_material` mesh box under BDPT read 0.563
+  against 0.962 single-sided, because the rebuilt record's
+  `UnflippedGeomNormal()` was the ray-facing normal.  On this build the
+  same scenes read BDPT 0.971 / 0.970 (double / single-sided) and PT
+  0.997 / 0.994 (double / single-sided; single unsalted renders, 64 spp,
+  whose spread is ~0.5 %).  Filed as DL-412 (fixed here, pending strike).
+
+### 9.4b Review round 3 (2026-10-02): FAIL, 2 P1, 1 P2, 1 P3 -- addressed
+
+* **Both P1s were the unflip predicate.**  `bOpenSheet` is not a closedness
+  test: on an indexed mesh it means NOT CERTIFIED watertight (DL-143 -- no
+  audited real asset certifies), so a closed double-sided box with ONE
+  T-junction read 0.46639 again (PT and BDPT, master 1.00000); and
+  `BezierPatchGeometry` never sets it (DL-220), so a single open Bezier patch
+  seen from its back was unflipped (coat 0.800 against the plane's 0.63, omni
+  0, glass/glass 0.977 against 0.467).  Round 2's comment, section 9.4a and
+  the DL-407 row claimed the Bezier case was covered: wrong.
+* **Fix: the unflip is decided by the walk's STACK.**  A flipped record
+  (`bGeomNormalOrientedToRay`, a true side, not `bProvablyNoInterior`) is
+  unflipped only when the caller's IOR stack already holds the composite's
+  object: the ray crossed in earlier, so it really is inside.  An open sheet
+  hit on its back with no prior crossing keeps top-on-both-faces.  BDPT / VCM
+  reprice on a record rebuilt with the replayed flags (round 2) against the
+  stack `BuildVertexIORStack` rebuilds from the vertex's own `insideObject`
+  -- the same two inputs Scatter decided from, so PT, BDPT and VCM see one
+  frame.  A STACKLESS caller (`IBSDF::value` with no stack;
+  `DeltaPassThroughTransmittance`, which has none) never unflips and sees the
+  reported frame, as before DL-341; for the straight pass-through the layer
+  order does not change `t1 * Beer * t2`.  Certification was NOT kept as an
+  extra trigger: `BezierPatchGeometry` reports "certified" for an open patch.
+  The unseeded camera inside a closed composite stays DL-407.
+* **Rows.**  D5b: the T-junction double-sided box beside a plain-glass twin
+  (PT and BDPT): round-3 library 0.46687, now 1.00000.  D7 Bezier variant:
+  the single patch beside its clipped-plane twin, rendered from BOTH sides
+  (its raw normal is -z, so its back face is seen from +z, where the plane
+  shows its front), PT / BDPT / VCM, env coat, env glass/glass and omni coat:
+  round-3 library 9 failures from +z (0.800, 0.977 and 0 as above), now
+  green from both sides.  `CompositeEnergyConservationTest`
+  `--stack-only --render` against the round-3 library: 150/11.
+* **P2 -- DL-412's remaining BDPT shortfall is NOT depth.**  The round-3
+  reviewer measured the translucent box at BDPT 0.9731 / 0.9728 / 0.9728 for
+  `max_eye_depth` 12 / 32 / 64, and the single-sided box reads 0.9718 on
+  master: a pre-existing, unattributed BDPT translucent shortfall (possibly
+  the DL-223 family), independent of DL-412's double-sided defect, which is
+  fixed.  The DL-412 row is reworded.
+
+### 9.4c Review round 4 (2026-10-02): FAIL, 1 P1, 1 P2, P3s -- addressed
+
+* **P1 -- a NESTED composite unflipped mid-walk.**  When the outer
+  composite KEPT a flipped record (an open double-sided sheet's back face,
+  an unseeded inside hit) it still handed its layers the record with
+  `bGeomNormalOrientedToRay` set.  A nested composite used as the top then
+  re-decided the unflip from the walk's INTERNAL stack -- which holds O from
+  the inner's own earlier crossing -- and unflipped on the return trip: a
+  spurious interface, and an exit stack claiming inside.
+  composite{composite{glass/water}/Lambertian 0.8} on an open sheet, white
+  env furnace, back view PT 0.374 / BDPT 0.367 / VCM 0.368 against the front
+  0.684 (the round-4 reviewer, salted n = 3).  Fix (the reviewer's, validated
+  and applied as prototyped): a flipped record kept flipped is copied with
+  the flag CLEARED -- the walk's frame IS now the record's frame, so every
+  layer, nested composites included, sees one consistent frame.
+* **P2, fixed by the same change -- composite{translucent/Lambertian} back
+  face** read 0.711 against 0.860 front (-17 %, pre-existing: master 0.715):
+  the translucent layer read `UnflippedGeomNormal()` off the layer record and
+  built its exit frame against the composite's.
+* **Row D8:** the two nested-top composites (glass/water and glass/glass
+  over a 0.8 Lambertian) on a mesh quad and its clipped-plane twin, back vs
+  front, PT / BDPT / VCM, and composite{translucent/Lambertian} back vs front
+  (PT, BDPT).  Gates per half: the nested rows are single 1024-spp renders
+  in a 5 % band (their tops run the per-branch estimator; a 256-spp front /
+  back pair differed by up to 3.1 % on noise alone, and the broken state
+  reads ~-48 %), the translucent rows single 256-spp renders in a 3 % band
+  (near deterministic, broken -17 %).  Red / green in section 9.3's
+  measurement protocol (numbers in the DL-341 ledger row).
+* **P3s (DL-407):** three more stackless / reseeded paths are recorded
+  there -- the stackless CausticSpectralPhotonMap gather, PT's HWSS
+  mid-path SSS lane reseed (`SeedFromPoint` cannot see composites), and a
+  lost O (stack capacity drop, layers that never push), which degrades to
+  top-on-both-faces.
+
+### 9.4d Review round 5 (2026-10-02): FAIL, 1 P1, P3s -- addressed
+
+* **P1 -- a closed double-sided mesh WOUND INWARD.**  On such a mesh an
+  inside hit is a front face by winding, so the geometry does not flip the
+  normal and `bGeomNormalOrientedToRay` is never set; the round-3 rule keyed
+  the unflip on that flag, so the hit was walked from above while the stack
+  held O and the exit carried an inside stack.  composite{glass/glass} box,
+  white furnace (the reviewer, salted n = 3, 256 spp): all 12 triangles
+  reversed PT / BDPT / VCM 0.4667 / 0.4667 / 0.4668, back face only 0.5065,
+  front only 0.9801 (master 1.0000; plain glass 1.0000 on both builds).
+  Fix (the reviewer's rule, with the arrival made explicit): unflip when the
+  stack holds O AND the reported geometric normal OPPOSES THE ARRIVING RAY --
+  inside a closed solid the ray reaching its boundary is leaving it, so a
+  reported normal against the arrival points inward whoever oriented it.
+  The flip flag stays a sufficient condition (a flipped record opposes its
+  arrival by construction; this keeps exactly the round-3 set and is immune
+  to a grazing rounding of the dot).  The unflipped normal is
+  `-vGeomNormal`.
+* **The caveat (the reviewer's): which ray is "arriving".**  A live record's
+  `ray` is the arrival, but a record rebuilt by
+  `PathVertexEval::PopulateRIGFromVertex` is aimed per query along `-wi`: on
+  a light-subpath vertex, in every reverse-pdf query (the generators query
+  the same vertex with the two directions swapped) and at a connection
+  (`EvalPdfAtVertex( lightEnd, dirToCam, ... )` aims it at `-dirToCam`) it
+  is not the walk's incoming segment.  Reading the facing off that ray would
+  let the frame of one vertex change with the query direction -- the DL-100
+  frame trap the round-2 flag mirroring exists to avoid.  So the facing is
+  recorded at the live hit, `BDPTVertex::bGeomNormalOpposesArrival` (both
+  generators), and replayed as `RayIntersectionGeometric::arrivalGeomFacing`
+  (0 on a live record: read it off `ray`; -1 / +1 on a rebuilt one), read
+  through `GeomNormalOpposesArrival()`.  The composite resets it to 0 on the
+  frame it hands its layers, whose walk rays are live.
+* **Row D9** (`--winding-only`): the consistent and the inverted double-sided
+  mesh box side by side (all / back / front faces reversed), composite
+  {glass/glass} and plain glass (each half == 1 within 0.002: lossless,
+  all-delta, zero variance) and composite{glass/translucent} (thickness
+  0.05, extinction 0.2; inverted / consistent within 2 %), PT / BDPT / VCM.
+  Against the round-4 library (29fe9f3ef): **29 / 16** -- glass/glass
+  inverted 0.46669 (all), 0.50587 (back), 0.9799 (front) under all three
+  integrators; glass/translucent inverted/consistent +1.3 % to +4.4 % (red
+  on BDPT / VCM in all three modes and PT on back-only); the plain-glass
+  controls 1 on both.  Round 5: **45 / 0**, glass/glass 1.0000 (VCM 1.0001)
+  everywhere, glass/translucent within 0.1 % (PT) and 0.4 % (BDPT / VCM).
+* **Not this row (the reviewer's measurement): a composite with a subsurface layer
+  reads ~0.017-0.045 in a white furnace** (head, round 4 and master alike)
+  -- `CompositeMaterial` forwards neither `GetDiffusionProfile()` nor
+  `GetRandomWalkSSSParams()`, so an SSS or random-walk layer contributes only
+  its SPF's own reflection lobe and every BSSRDF / random-walk transport
+  through it is lost.  Filed as **DL-422**.
+* **P3:** D8's bands corrected in 9.4c above (5 % nested, 3 % translucent).
+
+### 9.4e Review round 6 (2026-10-02): FAIL, 1 P1, P3s -- addressed
+
+* **P1 -- a closed SINGLE-sided mesh wound inward** (fully or partly; single
+  sided is the default for ply / glTF / 3ds / raw meshes, and ply even has
+  `invert_faces`).  An outside hit on such a mesh meets a BACK face, which
+  round 6 walked from below; that walk's upward exit treated the crossing as
+  leaving the object, so O was never pushed, and the later inside hit (no O,
+  so round 6 did not unflip it) was walked from above and carried O out:
+  1/eta^2.  The reviewer (white furnace, salted n = 3): composite{glass/glass}
+  all triangles reversed 0.4444 under PT / BDPT / VCM (master 0.979, plain
+  glass 1.0); light inside, camera outside 0.222 (master 0.1046, glass
+  0.1055); glass/translucent front face reversed 0.652 (master 0.940,
+  consistent 0.917); nested 0.446 / 0.567; and a single-sided open sheet hit
+  from behind with an empty stack disagreed with plain glass (two separate
+  panes 0.936 vs 0.467; a mirror return 0.678 vs 0.929).
+* **Fix (the reviewer's prototype, folded into one rule):** the frame is
+  oriented BY THE WALK'S STACK.  Outside the object (stack lacks O) the
+  arriving ray meets the top -- a reported normal that does not oppose the
+  arrival is turned; inside (stack holds O) it meets the bottom -- a reported
+  normal that opposes the arrival is turned (round 6).  Winding, sidedness
+  and the flip flag no longer decide anything; the flag stays a sufficient
+  condition for "opposes".  Provably open sheets (clipped planes), hair and
+  stackless callers are never turned (unchanged).  This is the rule a plain
+  `dielectric_material` follows, so every mesh cell below follows the
+  dielectric's "separate sheets" convention.
+* **Section M, the sidedness matrix** (`--sidedness-only`, ~10 min).
+  {single, double}-sided x {outward, inward, mixed (every odd triangle
+  reversed)} winding x {closed box in the furnace, camera outside; closed box
+  with a light inside, no environment; open quad in the furnace} x
+  {composite{glass/glass}, composite{glass/translucent} (thickness 0.05,
+  extinction 0.2), nested composite{composite{glass/water}/glass}} x {PT,
+  BDPT, VCM at depth 12}: 162 cells, each beside its twin -- plain glass on
+  the SAME geometry / sidedness / winding for glass/glass, the double-sided
+  outward version of the same geometry for the others.  Plus three
+  glass/glass sheet families against plain glass over sidedness x winding x
+  integrator: one object holding two panes, two separate one-pane objects,
+  and a sheet over a mirror (54 cells).  Every render salted.
+
+  | Cell | Expected (each half) | Convention |
+  |---|---|---|
+  | closed box, furnace, glass/glass | 1, and its plain-glass twin 1 | index-matched stack = one glass interface |
+  | closed box, furnace, nested | 1 (lossless), == twin | -- |
+  | closed box, furnace, glass/translucent | == twin (~0.915) | -- |
+  | closed box, light inside | == twin (glass/glass ~0.105) | -- |
+  | open sheet, furnace | == twin; glass/glass 0.467 = F + (1-F)/eta^2 | separate sheets: a ray that crossed is inside |
+  | two panes, one object | == plain glass (1.0, a slab) | separate sheets |
+  | two panes, separate objects | == plain glass (0.467) | separate sheets |
+  | sheet over a mirror | == plain glass (0.929) | separate sheets (the return meets the sheet from behind with O on the stack) |
+
+  No cell is "top on both faces": that convention belongs to the provably
+  open clipped plane alone (DL-407), which is not in the matrix.  Bands:
+  zero-variance all-delta cells 0.2 % (the mirror return 0.5 %: BDPT / VCM
+  are not zero-variance there, a gate run read 0.24 %); glass/translucent
+  2 % (256 spp);
+  nested 5 % (1024 spp, per-branch estimator: 144 furnace / sheet ratios
+  over four full runs read sd 0.69 % with a heavy tail -- max +3.47 %, which
+  failed a 3 % band once); light inside 1024 spp, every
+  cell the mean of 3 salted renders: 3 % glass/glass (a single render's
+  ratio sd is ~0.5 % under PT / BDPT but ~1.1 % under VCM -- 10 repeats,
+  the round-7 review; a single VCM render in a 3 % band was a ~2.5 sd gate,
+  4-7 % spurious failures per run), 5 % translucent / nested (a single
+  render's sd is ~1.5 % per half).  Every regression the
+  section exists for moves a cell by 5 % or more.
+
+  **Red / green.**  Round-6 library: **187 / 83** (270 checks).  The red
+  cells are exactly the single-sided inward and mixed ones, under all three
+  integrators: glass/glass closed box 0.4445 (inward) / 0.779 (mixed) against
+  1; light inside 0.2225 against 0.1055 (inward) and 0.100 against 0.106
+  (mixed); open sheet 0.977 / 0.699 against 0.467; glass/translucent box
+  0.418 / 0.749 against 0.915, light inside 0.194 / 0.173 against 0.151,
+  sheet 0.694 / 0.607 against 0.534; nested box 0.446 / 0.78 against 1, light
+  inside 0.218 / 0.099 against 0.105, sheet 0.975 / 0.703 against 0.47;
+  two panes one object 0.966 / 0.979 against 1.0; separate panes 0.936 /
+  0.655 against 0.467; mirror 0.677 against 0.929.  Every double-sided and
+  every single-sided outward cell was already green (round 6 fixed those).
+  Round 7: **270 / 0** with the final bands (the one failure in an earlier
+  run, glass/translucent single mixed light inside PT 0.155 vs 0.148, was a
+  single-render ~2.5 sd excursion; four salted repeats of that cell read
+  0.150-0.154 per half, which is why every light-inside cell now averages
+  three renders -- glass/glass too since the round-7 review measured VCM's
+  ratio sd there).
+* **Not changed, measured (the round-7 reviewer): a camera INSIDE a closed
+  composite** (DL-407, not seeded) -- composite{glass/glass} reads 0.444
+  under PT / BDPT / VCM against the seeded plain-glass truth 2.25 (master
+  0.465).  With the stack deciding the frame, the unseeded first inside hit
+  reads as an outside arrival, meets the top and refracts as an entry.
+* **P3 -- the arrival-facing replay is correct by construction and
+  unit-tested only.**  With the replay line removed from
+  `PopulateRIGFromVertex` the whole matrix still reads 270 / 0 and no cell
+  moves outside its noise (the largest shifts, ~3 %, are in light-inside
+  cells and include PT, which never rebuilds a record).  The replay matters
+  only for a reverse-pdf or connection query whose rebuilt ray faces the
+  other way from the arrival AT A NON-DELTA vertex on a turned record -- an
+  MIS-weight input, not a throughput one -- and no fixture found moves a
+  render with it.  `BDPTVertexRIGRebuildTest` pins the plumbing (93 / 11
+  with the replay line removed).
+* **P3 -- depth.**  D9's glass/translucent rows read ~1.3 % lower under
+  BDPT / VCM than PT on BOTH boxes alike: the depth-8 rasterizer helpers
+  truncate the box's internal bounces (0.3 % at depth 12).  D9 and M now run
+  BDPT / VCM at depth 12.
+
+### 9.5 Residuals
+
+* **DL-406** -- term (a) still prices a Henyey-Greenstein-warped or a
+  per-channel / dispersive RGB top as an ideal refraction (shape only; energy
+  exact).
+* **DL-407** (re-scoped by review round 1) -- (1) `CompositeMaterial`
+  reports no `SpecularInfo`, so a camera or light inside a closed composite
+  is never seeded (from-below hits then read the outside medium as BELOW);
+  pre-existing.  (2) An OPEN composite sheet (a provably open clipped plane)
+  presents its top on both faces instead of following DL-345's face rule, so
+  the separate-pair equivalence holds front-side only (from below: 0.467
+  against the pair's 4.52); pre-existing, unchanged -- and that holds for
+  every OPEN double-sided sheet seen from behind with no prior crossing,
+  mesh, Bezier patch or clipped plane (round 3: decided by the walk's stack,
+  D7).  Double-sided CLOSED meshes are no longer in it
+  (fixed in round 1, D5).
+* **DL-422** (filed review round 5) -- a composite with an SSS / random-walk
+  layer drops all subsurface transport (no BSSRDF forwarding): ~0.017-0.045
+  in a white furnace; pre-existing on master.

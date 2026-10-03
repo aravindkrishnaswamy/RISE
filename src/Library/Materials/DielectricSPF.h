@@ -89,7 +89,8 @@ namespace RISE
 				const Scalar scatfunc,
 				const Scalar rIndex,
 				const Scalar nm,
-				const IORStack& ior_stack								///< [in] Index of refraction stack
+				const IORStack& ior_stack,								///< [in] Index of refraction stack
+				const bool bAllocateStacks = true						///< [in] false: the caller reads only directions and weights (DL-297's density query), so the scattered rays get no IOR stacks
 				) const;
 
 			void DoSingleRGBComponent(
@@ -161,6 +162,20 @@ namespace RISE
 				info.clearTransmission = true;
 				return info;
 			}
+
+			//! DL-297: see ISPF.  The Phong `scattering` warp of the delta-
+			//! tagged transmission (HG and per-channel RGB report none).
+			Scalar DeltaTransmissionWarpExponent(
+				const RayIntersectionGeometric& ri,
+				const Scalar nm
+				) const;
+
+			Scalar DeltaTransmissionWarpPdf(
+				const RayIntersectionGeometric& ri,
+				const Vector3& w,
+				const Scalar nm,
+				const IORStack& ior_stack
+				) const;
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return
 			//! the reflected and transmitted rays along with attenuation factors.

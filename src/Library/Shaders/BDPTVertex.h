@@ -298,6 +298,24 @@ namespace RISE
 		Scalar					bssrdfExitCos;
 		Scalar					mediumIOR;		///< Top-of-stack IOR seen at this vertex before scattering
 		bool					insideObject;	///< True if the current object was already in the IOR stack
+		/// DL-341 review round 2 (2026-10-02): the hit's SURFACE-IDENTITY
+		/// flags (RayIntersectionGeometric's own docs), mirrored so that
+		/// PopulateRIGFromVertex rebuilds the record a connection-time BSDF
+		/// / Pdf query sees with the same flags the live hit had.  Without
+		/// them a rebuilt record's `UnflippedGeomNormal()` silently became
+		/// the reported (ray-facing) normal on a double-sided mesh, and a
+		/// material whose frame depends on the true side (`composite_material`
+		/// unflips a closed double-sided record) priced the connection in a
+		/// different frame than its Scatter used -- the DL-100 frame trap.
+		bool					bGeomNormalOrientedToRay;
+		bool					bGeomNormalRayDerived;
+		bool					bOpenSheet;
+		bool					bProvablyNoInterior;
+		/// DL-341 review round 6: whether the reported `geomNormal` opposed
+		/// the ray that arrived at this vertex.  Replayed as
+		/// RayIntersectionGeometric::arrivalGeomFacing, because a rebuilt
+		/// record's ray is aimed per query and is not that arrival.
+		bool					bGeomNormalOpposesArrival;
 		/// DL-09 (docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md): the graded-index
 		/// medium the walk was travelling in when it produced this vertex
 		/// (null if that medium is not a world-position `ior` field) and the
@@ -399,6 +417,11 @@ namespace RISE
 		bssrdfExitCos( 0 ),
 		mediumIOR( 1.0 ),
 		insideObject( false ),
+		bGeomNormalOrientedToRay( false ),
+		bGeomNormalRayDerived( false ),
+		bOpenSheet( false ),
+		bProvablyNoInterior( false ),
+		bGeomNormalOpposesArrival( false ),
 		pGradedMedium( 0 ),
 		gradedIOR( 0 ),
 		pMediumVol( 0 ),

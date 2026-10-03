@@ -36,7 +36,8 @@
 //                a mirror), walks whose last non-delta event is followed
 //                by more delta events (glass over a polished coat),
 //                layers with no BSDF (skin), transmission out through the
-//                BOTTOM, and walks entered from below.  These are sampled
+//                BOTTOM, walks entered from below and arrivals behind a
+//                tilted shading normal (DL-341).  These are sampled
 //                by an unbiased single-path random walk and emitted
 //                DELTA-TAGGED: no NEE / connection strategy prices them,
 //                so the MIS partition is exact and the emitted weight is
@@ -129,25 +130,13 @@ namespace RISE
 			//! material the old one's branch weights.
 			const unsigned long long instanceId;
 
-			//! The walk carries TWO stacks -- `outside` (without this object's
-			//! IOR-stack entry, i.e. the medium above the top interface) and
-			//! `gap` (with the entry the top interface pushed).  A single
-			//! stack cannot work: IORStack keys its entries on the IObject*,
-			//! which is shared by both layers, so the top's push is
-			//! indistinguishable from an entry of the bottom's.
-			//!
-			//! EvalStack picks which one a layer's Scatter() sees: a
-			//! DOWN-going ray is arriving from the medium above that layer and
-			//! must see `outside` (so a stack-sensitive bottom layer reads
-			//! "entering from outside"); an UP-going ray is arriving from
-			//! inside and must see `gap` (so a dielectric top layer takes its
-			//! from-inside branch and refracts OUT).  Full failure-mode
-			//! history in the block comment in CompositeSPF.cpp.
-			static const IORStack& EvalStack(
-					const RayIntersectionGeometric& ri,							///< [in] The intersection whose ray direction selects the stack
-					const IORStack& outside_stack,								///< [in] Stack without this object's entry
-					const IORStack& gap_stack									///< [in] Stack of the inter-layer gap
-					);
+			//! DL-341: the IOR-stack convention of the walk (one internal
+			//! stack, the bottom layer keyed by its own per-instance key,
+			//! entry side by the GEOMETRIC normal, emitted rays carrying the
+			//! external form) lives in CompositeSPF.cpp, "THE STACK
+			//! CONVENTION".  It replaced the pre-DL-341 two-stack
+			//! (`outside` / `gap`) EvalStack rule, which was defined only for
+			//! a walk entered from above.
 
 			//! True when a continuation of `type` leaving the walk event at
 			//! `steps` has passed its budget and may be Russian-rouletted.
@@ -166,12 +155,12 @@ namespace RISE
 			//! Russian roulette ends a walk that loses energy long before
 			//! this.  It is reached by a LOSSLESS trapping pair (a mirror
 			//! facing down over an albedo-1 bottom, whose energy can never
-			//! leave the stack) AND by the DL-341 stack-gap residual: a
-			//! nested composite{dielectric/dielectric} walked from below
-			//! (or struck from inside a closed object) reads each layer on
-			//! the wrong side and total-internally-reflects losslessly --
-			//! 91,323 of 100,000 walks of CompositeEnergyConservationTest
-			//! H4 at 35 deg reach the cap, and that energy is LOST.
+			//! leave the stack).  Before DL-341 (2026-10-02) it was also
+			//! reached by a stack-convention defect -- a nested
+			//! composite{dielectric/dielectric} walked from below read each
+			//! layer on the wrong side and total-internally-reflected
+			//! without end (91,323 of 100,000 walks of
+			//! CompositeEnergyConservationTest H4 at 35 deg).
 			static const unsigned int kMaxWalkEvents;
 
 			//! The slant distance a ray travels crossing the inter-layer gap:
@@ -238,6 +227,13 @@ namespace RISE
 				const Scalar nm
 				) const;
 
+
+			//! DL-341: a composite's delta-tagged exits are whole layer
+			//! walks, not refractions of the incoming direction.
+			bool DeltaTransmissionIsRefraction() const
+			{
+				return false;
+			}
 
 			//! The density of the NON-DELTA directions Scatter emits (the
 			//! DL-67 Slice 0 contract): the top's own density over its
