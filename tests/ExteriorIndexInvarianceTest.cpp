@@ -1178,6 +1178,32 @@ namespace
 		return Stats{ m, v.size() > 1 ? std::sqrt( ss / double( v.size() - 1 ) ) : 0.0 };
 	}
 
+
+	// Delta-method SD of a ratio of paired means. Residuals retain
+	// covariance even when the two renderers use different Sobol salts.
+	double PairedRatioMeanSD( const std::vector<double>& denominator,
+		const std::vector<double>& numerator, double ratio, double denominatorMean )
+	{
+		double residualSquares = 0;
+		for( std::size_t i = 0; i < denominator.size(); ++i ) {
+			const double residual = numerator[i] - ratio * denominator[i];
+			residualSquares += residual * residual;
+		}
+		const double n = double(denominator.size());
+		return std::sqrt( residualSquares / ( n * (n-1) ) ) / denominatorMean;
+	}
+
+	void TestPairedRatioUncertainty()
+	{
+		const std::vector<double> a{1,2,3,4}, twice{2,4,6,8}, opposite{4,3,2,1};
+		Check( PairedRatioMeanSD(a,twice,2,2.5) == 0,
+			"DL-399: proportional paired samples have zero ratio uncertainty" );
+		// Var(a)=Var(b)=5/3, Cov(a,b)=-5/3; means=2.5 and n=4.
+		// The ratio variance is (Var(a)+Var(b)-2Cov)/(n*mean^2)=4/15.
+		Check( std::fabs(PairedRatioMeanSD(a,opposite,1,2.5)-std::sqrt(4.0/15.0)) < 1e-12,
+			"DL-399: negative covariance contributes to ratio uncertainty" );
+	}
+
 	void TestRenderedInvariance( const unsigned int trials, const std::string& only )
 	{
 		std::cout << "B: rendered scale invariance, air (1, n) vs enclosed (1.5, 1.5 n), n=" << trials << " per side" << std::endl;
@@ -1241,14 +1267,7 @@ namespace
 			if( !allValid ) continue;
 			const Stats sa = Summarize( air ), ss = Summarize( scaled );
 			const double ratio = ss.mean / sa.mean;
-			// Delta-method uncertainty of the ratio of paired means. Using
-			// paired residuals retains covariance (exact twins have zero SD).
-			double residualSquares = 0;
-			for( unsigned int t = 0; t < trials; ++t ) {
-				const double residual = scaled[t] - ratio * air[t];
-				residualSquares += residual * residual;
-			}
-			const double ratioSd = std::sqrt( residualSquares / ( double(trials) * (trials-1) ) ) / sa.mean;
+			const double ratioSd = PairedRatioMeanSD(air,scaled,ratio,sa.mean);
 			std::cout << std::setprecision( 6 ) << "    " << label.substr( 3 )
 				<< " spp=" << row.samples << ": air " << sa.mean << " +/- " << sa.sd
 				<< "  enclosed " << ss.mean << " +/- " << ss.sd
@@ -1435,8 +1454,7 @@ namespace
 			if( !allValid ) continue;
 			const Stats sa = Summarize( sms ), sb = Summarize( ref );
 			const double ratio = sa.mean / sb.mean;
-			const double ratioSd = ratio * std::sqrt( ( sa.sd / sa.mean ) * ( sa.sd / sa.mean ) / trials +
-				( sb.sd / sb.mean ) * ( sb.sd / sb.mean ) / trials );
+			const double ratioSd = PairedRatioMeanSD(ref,sms,ratio,sb.mean);
 			std::cout << std::setprecision( 6 ) << "    " << row.name << " on S: SMS(" << smsSpp << "spp) " << sa.mean << " +/- " << sa.sd
 				<< "  VCM(" << row.vcmSpp << "spp) " << sb.mean << " +/- " << sb.sd
 				<< "  ratio " << ratio << " +/- " << ratioSd << " (band " << row.lo << ".." << row.hi << ")" << std::endl;
@@ -1502,6 +1520,7 @@ int main( int argc, char** argv )
 	TestSeedWalkOpenSheets();
 	TestSeedWalkKnownFailures();
 	TestNewtonIndexContinuity();
+	TestPairedRatioUncertainty();
 	if( !unitOnly ) {
 		if(!replayOnly) TestRenderedInvariance( trials, only );
 		TestShippedMatchedIndexScenes( trials, only );

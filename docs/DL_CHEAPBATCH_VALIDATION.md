@@ -570,12 +570,13 @@ Derive a0.02 band (3.46 estimated SDs) from these four salted paired inputs,
 while retaining1024 spp. This band change is measured, not an arbitrary
 widening; the16-spp controlled ratio0.975822 still fails its mean threshold
 and its much larger uncertainty fails the precision threshold.
-Part B pairs use residual variance of scaled_i-ratio*air_i to retain
-covariance; Part C prints the uncorrelated delta-method approximation.
+Part B pairs used residual variance of scaled_i-ratio*air_i to retain
+covariance; the Part C pilot values above used an uncorrelated delta-method
+approximation. The final fixture correction below supersedes that assumption.
 These n=4 estimates are not claimed as the five-independent-default-statistic
 calibration performed for the user-requested SSS/Weave rows.
 
-## DL-399 accepted sampling calibration
+## DL-399 sampling-budget calibration (Part C pilot covariance approximation)
 
 Every row below uses four independently salted pairs. Uncertainty is the
 estimated SD of the ratio of default means, not a single-render SD.
@@ -593,3 +594,57 @@ allowance (8.65 and4.21 SD). RGB uniform k1's earlier103/2 result
 used0.01; its measured0.02 threshold is validated in the final gate,
 rather than inventing a rerun count. The original low-budget inputs
 are restored only after committing the new assertions, below.
+
+## DL-399 committed mutation proofs
+
+After commit3c6014900, the test retained all new assertions while restoring
+original helper inputs (no worker pin, no pre-load/global RNG reset, fallback
+Sobol salt0). Its build succeeded with zero warnings. Four8-spp replay
+pairs failed all four equality assertions:103/4 in1.46 s.
+
+Restoring committed inputs, then mutating only budgets back to original
+RGB uniform k1=16, shipped SMS=256 and VCM=512, kept the newly measured
+0.02 RGB band and all precision assertions. The SMS subset returned191/4
+in334.70 s: RGB uniform ratio0.975822, paired mean SD0.0235596 failed both
+mean and precision; flat-slab1.01377, estimated SD0.0191912 and glass-block
+0.958070, estimated SD0.0315601 failed precision despite passing their
+physics means. Thus these assertions detect under-sampling independently
+of a lucky mean. Build exit0, zero warnings.
+
+The test source was restored from HEAD, rebuilt with exit0/zero warnings,
+and its replay checks passed107/0 in3.79 s. Whole-fixture green follows
+in the final integration gate. Proof logs/JSON:
+`/tmp/cheapbatch-dl399-proofs.json` and its listed log files.
+
+## ASan/UBSan focused gate
+
+A separate clean build instrumented every library object and the three
+focused test targets with AddressSanitizer and UndefinedBehaviorSanitizer.
+All builds exited0 with zero warnings; the library build took140.90 s.
+OIDN policy passed112/0 (1.22 s), all Manifold assertions passed (0.32 s),
+and UV/Po controls passed64/0 (130.15 s). No sanitizer report occurred.
+UBSan was configured to halt on a finding; leak detection was disabled
+on macOS. Prebuilt external dependencies were not instrumented.
+This validates the exercised query/cache paths, not every renderer path.
+Logs and build/run timings are in `/tmp/cheapbatch-sanitizer.json`.
+The normal integration gate performs another clean rebuild afterward,
+so it does not execute sanitizer binaries by accident.
+
+## DL-399 covariance correction before shipped final-gate execution
+
+Self-audit found that Part C pairs share legacy RNG inputs despite distinct
+Sobol salts. Ignoring covariance is therefore not generally justified.
+A common PairedRatioMeanSD helper now uses residual variance for both Parts
+B and C. Two deterministic four-sample controls pin the statistic:
+proportional pairs have zero uncertainty; perfectly anti-correlated
+means2.5 with sample variances5/3 have ratio variance4/15. The old
+uncorrelated formula produces a false nonzero proportional uncertainty
+and understates the anti-correlated uncertainty.
+
+The integration runner pauses between tests while the existing SSS child
+continues; no build overlaps that render. The affected exterior target
+is rebuilt before its first final-gate execution, and SourceHygiene is
+rescanned after the correction. Production sources remain identical to
+the successful clean rebuild. The pilot estimates above remain historical
+and are not called the final paired SDs; final measured C values follow
+below. Mutation proof is recorded after committing this correction.
