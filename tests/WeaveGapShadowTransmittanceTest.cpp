@@ -489,6 +489,11 @@ enum LightKind { kOmni, kSpot, kDirectional, kArea, kAreaLarge };
 //! sheet itself -- a gap draw at depth 0 with no SMS anchor anywhere.
 enum CamKind { kTight, kWide, kLookUp };
 
+//! DL-329: when true, ReceiverScene builds the sheet as a double-sided
+//! `indexedmesh_geometry` instead of a double-sided clipped plane.  A
+//! file-scope switch (default false) so no existing call site changes.
+static bool g_meshSheet = false;
+
 //! @a compositeSheet: the sheet is a `composite_material` of two such
 //! weaves (zero thickness, no extinction), whose only straight exit is
 //! gap -> gap, so the closed form becomes g^2.
@@ -532,10 +537,24 @@ static std::string ReceiverScene( LightKind light, bool withSheet, double gap, C
 				? std::string( "weave_material\n{\n\tname mat_layer\n\tfabric custom\n\ttransmission thin\n\tgap " ) + std::to_string( gap ) + "\n}\n\n"
 				  "composite_material\n{\n\tname mat_sheet\n\ttop mat_layer\n\tbottom mat_layer\n}\n\n"
 				: std::string( "weave_material\n{\n\tname mat_sheet\n\tfabric custom\n\ttransmission thin\n\tgap " ) + std::to_string( gap ) + "\n}\n\n" ) <<
-			"clippedplane_geometry\n{\n\tname geo_sheet\n"
-				"\tpta -4 " << kSheetY << " 4\n\tptb 4 " << kSheetY << " 4\n"
-				"\tptc 4 " << kSheetY << " -4\n\tptd -4 " << kSheetY << " -4\n"
-				"\tdoublesided TRUE\n}\n\n"
+			( g_meshSheet
+				// DL-329 DOUBLE-SIDED rule: the same 8 x 8 sheet as a
+				// double-sided `indexedmesh_geometry` (two triangles,
+				// shared corners, per-vertex UVs) -- the mesh class
+				// flips BOTH normals toward the ray (DL-70), where the
+				// clipped plane flips only on a back-face hit.
+				? std::string( "indexedmesh_geometry\n{\n\tname geo_sheet\n" )
+					+ "\tvertex -4 " + std::to_string( kSheetY ) + " 4\n"
+					+ "\tvertex 4 " + std::to_string( kSheetY ) + " 4\n"
+					+ "\tvertex 4 " + std::to_string( kSheetY ) + " -4\n"
+					+ "\tvertex -4 " + std::to_string( kSheetY ) + " -4\n"
+					+ "\tuv 0 0\n\tuv 1 0\n\tuv 1 1\n\tuv 0 1\n"
+					+ "\ttriangle 0 1 2\n\ttriangle 0 2 3\n"
+					+ "\tdouble_sided TRUE\n\tface_normals TRUE\n}\n\n"
+				: std::string( "clippedplane_geometry\n{\n\tname geo_sheet\n" )
+					+ "\tpta -4 " + std::to_string( kSheetY ) + " 4\n\tptb 4 " + std::to_string( kSheetY ) + " 4\n"
+					+ "\tptc 4 " + std::to_string( kSheetY ) + " -4\n\tptd -4 " + std::to_string( kSheetY ) + " -4\n"
+					+ "\tdoublesided TRUE\n}\n\n" ) <<
 			"standard_object\n{\n\tname obj_sheet\n\tgeometry geo_sheet\n\tmaterial mat_sheet\n}\n\n";
 	}
 
@@ -899,6 +918,106 @@ static void TestAreaPartitionGuard()
 	rows.push_back( { "PT RGB", RastPT( 1024 ), 0.05, kWide } );
 	rows.push_back( { "BDPT RGB", RastBDPT( 512 ), -1.0, kWide } );
 	RunReceiverRows( "area", kArea, rows, gaps, 1 );
+}
+
+//////////////////////////////////////////////////////////////////////
+// hwssgap: DL-329 / DL-330.  The area closed form (g * L0) again, now
+// through the SPECTRAL rasterizers.  The path receiver -> gap -> emitter
+// is reached ONLY by a Scatter()-sampled CONTINUATION through the delta
+// gap lobe (the area NEE arm keeps its binary shadow, DL-05 section 2),
+// so every HWSS companion lane is priced by the companion ladder at the
+// gap vertex -- PT's `IntegrateFromHitHWSS` (DL-329: WeaveSPF had no
+// `EvaluateKrayNM`, so a companion fell back to the CONTINUUM weave BSDF
+// at the gap's undeviated direction and read ~0, dropping 3 of 4 lanes)
+// and BDPT's `RecomputeSubpathThroughputNM`.
+//
+// Each row: n salted repeats (WEAVE_GAP_HWSS_N, default 4) of the
+// (L0, L) pair through the SAME rasterizer, the ratio of the repeat
+// means against g, and the per-repeat ratio's sd.  Rows run on the
+// clipped-plane sheet AND (DOUBLE-SIDED rule) on a double-sided
+// `indexedmesh_geometry` sheet.
+//////////////////////////////////////////////////////////////////////
+static void MeanSd( const std::vector<double>& v, double& mean, double& sd );
+
+static std::string RastBDPTSpectral( unsigned int spp, bool hwss )
+{
+	std::ostringstream ss;
+	ss << "bdpt_spectral_rasterizer\n{\n\tsamples " << spp * SppScale()
+	   << "\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n"
+	   << "\tnmbegin 380\n\tnmend 720\n\tnum_wavelengths 8\n\tspectral_samples 1\n"
+	   << "\thwss " << ( hwss ? "true" : "false" ) << "\n}\n\n" << kOutputChunk;
+	return ss.str();
+}
+
+static unsigned int HwssRepeats()
+{
+	const char* s = std::getenv( "WEAVE_GAP_HWSS_N" );
+	const long v = s ? std::strtol( s, nullptr, 10 ) : 4;
+	return v > 1 ? (unsigned int)v : 4u;
+}
+
+struct HwssRow
+{
+	const char* label;
+	std::string rast;
+	bool mesh;
+	double tol;		// two-sided band on mean(L)/mean(L0)/g - 1; < 0 = print only
+};
+
+//! Renders @a row's (L0, L) pair @a n times with independent Sobol' salts
+//! and returns mean(L)/mean(L0); @a sdRatio receives the per-repeat
+//! ratio's sample sd.
+static double HwssRatio( const HwssRow& row, LightKind light, double g, unsigned int n, unsigned int saltBase,
+	double& sdRatio, double& meanL0 )
+{
+	std::vector<double> l0s, ls, rs;
+	const bool savedMesh = g_meshSheet;
+	g_meshSheet = row.mesh;
+	for( unsigned int r = 0; r < n; r++ )
+	{
+		const unsigned int salt = SobolSequence::HashCombine( saltBase + g_seedBase, r );
+		const double L0 = RenderSalted( Assemble( row.rast, ReceiverScene( light, false, 0.0, kWide ) ), "h_l0", salt );
+		const double L  = RenderSalted( Assemble( row.rast, ReceiverScene( light, true, g, kWide ) ), "h_lg",
+			SobolSequence::HashCombine( salt, 0x51u ) );
+		l0s.push_back( L0 ); ls.push_back( L );
+		if( L0 > 0 ) rs.push_back( L / L0 );
+	}
+	g_meshSheet = savedMesh;
+	double mL0 = 0, sdL0 = 0, mL = 0, sdL = 0, mR = 0;
+	MeanSd( l0s, mL0, sdL0 );
+	MeanSd( ls, mL, sdL );
+	MeanSd( rs, mR, sdRatio );
+	meanL0 = mL0;
+	return mL0 > 0 ? mL / mL0 : -1.0;
+}
+
+static void TestHWSSGapContinuation()
+{
+	std::cout << "=== hwssgap: AREA closed form through the spectral rasterizers (DL-329 / DL-330) ===" << std::endl;
+	const double g = 0.3;
+	const unsigned int n = HwssRepeats();
+	std::vector<HwssRow> rows;
+	rows.push_back( { "PT spectral hwss=false",          RastPTSpectral( 1024, false ),   false, 0.05 } );
+	rows.push_back( { "PT spectral hwss=true",           RastPTSpectral( 1024, true ),    false, 0.05 } );
+	rows.push_back( { "PT spectral hwss=true  (mesh)",   RastPTSpectral( 1024, true ),    true,  0.05 } );
+	rows.push_back( { "BDPT RGB",                        RastBDPT( 512 ),                 false, -1.0 } );
+	rows.push_back( { "BDPT spectral hwss=false",        RastBDPTSpectral( 512, false ),  false, -1.0 } );
+	rows.push_back( { "BDPT spectral hwss=true",         RastBDPTSpectral( 512, true ),   false, -1.0 } );
+	rows.push_back( { "BDPT spectral hwss=true  (mesh)", RastBDPTSpectral( 512, true ),   true,  -1.0 } );
+	unsigned int k = 0;
+	for( const HwssRow& row : rows )
+	{
+		double sd = 0, L0 = 0;
+		const double ratio = HwssRatio( row, kArea, g, n, 0xD329u + 0x100u * k++, sd, L0 );
+		char buf[320];
+		std::snprintf( buf, sizeof(buf),
+			"hwssgap %s gap %.2f: L/L0 = %.5f +/- %.5f (sd, n = %u)  (closed form %.5f, rel err %+.3f%%)  L0 = %.6g",
+			row.label, g, ratio, sd, n, g, 100.0 * ( ratio / g - 1.0 ), L0 );
+		std::cout << "  " << buf << ( row.tol < 0 ? "   [printed, not gated]" : "" ) << std::endl;
+		if( row.tol >= 0 ) {
+			Check( ratio > 0 && std::fabs( ratio / g - 1.0 ) <= row.tol, buf );
+		}
+	}
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -2267,6 +2386,7 @@ int main( int argc, char** argv )
 	if( !filter || std::strstr( filter, "composite" ) )   TestClosedFormComposite();
 	if( !filter || std::strstr( filter, "directional" ) ) TestClosedFormDirectional();
 	if( !filter || std::strstr( filter, "area" ) )        TestAreaPartitionGuard();
+	if( !filter || std::strstr( filter, "hwssgap" ) )     TestHWSSGapContinuation();
 	if( !filter || std::strstr( filter, "sms" ) )         TestSMSEmissionThroughGap();
 	if( !filter || std::strstr( filter, "castsshadows" ) ) TestCastsShadowsFalseStepOver();
 	if( !filter || std::strstr( filter, "layers" ) )      TestTwoLayerLightOutside();
