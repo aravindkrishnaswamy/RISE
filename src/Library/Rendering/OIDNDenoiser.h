@@ -74,7 +74,8 @@ namespace RISE
 
 			/// Runs the OIDN RT filter on the given buffers.
 			/// beautyBuffer is the noisy input (w*h*3 floats, HDR).
-			/// albedoBuffer and normalBuffer are optional (may be NULL).
+			/// albedoBuffer and normalBuffer are optional (may be NULL), read-only.
+			/// Accurate prefiltering uses owned copies; caller inputs stay unchanged.
 			/// outputBuffer receives the denoised result (may alias beautyBuffer).
 			/// requestedQuality selects the OIDN quality preset; Auto picks
 			/// from a deterministic work estimate (DL-360; see docs/OIDN.md).

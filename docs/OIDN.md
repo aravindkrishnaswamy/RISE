@@ -618,12 +618,13 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
     `device.newBuffer(host_ptr, bytes)` for color / output / albedo /
     normal (with `const_cast` on the input-only aux pointers — safe
     in Fast mode since OIDN doesn't write through them; in Accurate
-    mode the prefilter writes back in-place, which is intentional
-    and harmless because `AOVBuffers::Reset()` zeroes the buffers
-    before each render).  Non-shared mode keeps the original
-    `newBuffer(bytes)` device-owned path.
-  - Per-call write/read are gated on `!useSharedBuffers` — in shared
-    mode the data is already aliased and the copies are no-ops.
+    mode this historical implementation wrote into caller aux storage.
+    DL-440 corrects that const violation: Accurate aux uses reusable owned
+    `newBuffer(bytes)` storage on CPU too, with fresh input copies each call.
+    Beauty/output remain shared. Non-shared mode keeps device-owned buffers.
+  - Fast CPU skips all input/output copies; Accurate CPU copies each supplied
+    auxiliary input and retains shared beauty/output. GPU uploads/readback
+    retain their existing behavior.
   - Build clean, 72/72 tests pass.  Smoke tests on M1 Max:
     - **CPU shared** (`oidn_device cpu`) at 200×150 + glass scene:
       cold-cache 12 ms, warm-cache 5.9 ms.  Log shows
@@ -1148,8 +1149,11 @@ from a reviewer, or has its priority moved. Most recent first.
 - `OIDNDenoiser::Denoise` now uses
   `oidn::DeviceRef::newBuffer(host_ptr, bytes)` (the C++ wrapper for
   `oidnNewSharedBuffer`) on CPU device, eliminating up to 4
-  image-sized memcpy operations per denoise (color in, albedo in,
-  normal in, output out — each was ~50 MB at 4K RGB).
+  image-sized memcpy operations per Fast denoise (color in, albedo in,
+  normal in, output out — each was ~50 MB at 4K RGB). DL-440 keeps
+  Accurate auxiliary inputs in owned mutable buffers: up to two extra
+  image-sized allocations retained by the cache and two input copies per
+  call. No measured end-to-end cost bound is claimed for this correction.
 - **Auto-detection over user knob:** mode is decided by introspecting
   `device.get<int>("type") == CPU` AFTER device creation.  This is
   more robust than trusting the user's `oidn_device` parameter
@@ -1166,15 +1170,14 @@ from a reviewer, or has its priority moved. Most recent first.
   miss.  In practice the State staging vectors (`beautyStaging`,
   `denoisedStaging`) and `AOVBuffers` are stable across calls of
   the same dimensions, so cache hits are the common case.
-- **Const correctness deliberately relaxed:** input-only aux
-  pointers are `const float*` in the API, but
-  `oidn::Buffer::newBuffer(void*, size_t)` requires a non-const
-  pointer.  `const_cast` is safe in Fast mode (OIDN doesn't write
-  inputs).  In Accurate mode the in-place prefilter writes back
-  to the aux buffer through the shared alias, which mutates the
-  host AOV vector — that's intentional and harmless because
-  `AOVBuffers::Reset()` zeroes the buffers before each render.
-  Documented in the OIDN-P1-2 entry.
+- **Const-correctness correction (DL-440, 2026-10-03):** the historical
+  Accurate shared-aux path violated the public `const float*` contract.
+  Accurate now owns mutable auxiliary buffers and copies the supplied
+  inputs before each execution, including cache hits. Fast auxiliary
+  pointers remain input-only shared buffers; its cast is solely at the
+  third-party read-only interface. Caller auxiliary inputs stay unchanged
+  on either backend. The former “harmless because AOVBuffers resets”
+  justification did not cover direct callers and is withdrawn.
 - **GPU path unchanged:** Metal / SYCL / CUDA / HIP devices keep
   the original `newBuffer(bytes)` + `buffer.write` / `read` round
   trip because their memory is not host-mapped.  Smoke test

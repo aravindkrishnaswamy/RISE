@@ -85,7 +85,8 @@ struct OIDNDenoiser::State
 	// around the host-side staging vectors / AOV pointers via
 	// `oidnNewSharedBuffer`, so the per-call `buffer.write` / `read`
 	// path is skipped (the data is already aliased; a memcpy of up
-	// to 4 image-sized buffers per denoise becomes zero copies).
+	// to 4 image-sized buffers per Fast denoise becomes zero copies).
+	// Accurate aux uses owned buffers and copies each supplied input.
 	//
 	// Shared buffers pin to a specific host pointer at filter-commit
 	// time.  If the caller passes a different pointer on a later
@@ -509,7 +510,7 @@ void OIDNDenoiser::Denoise(
 			GlobalLog()->PrintEx( eLog_Info,
 				"OIDN: creating %s device (cached while backend request is unchanged)%s",
 				OidnDeviceTypeName( actualType ),
-				mState->useSharedBuffers ? " [zero-copy shared buffers]" : "" );
+				mState->useSharedBuffers ? " [shared beauty/output; Fast aux shared]" : "" );
 		}
 
 		// Reallocate buffers when dimensions change OR we're in shared-
@@ -522,18 +523,9 @@ void OIDNDenoiser::Denoise(
 		const bool rebuildBuffers = dimsChanged || mState->useSharedBuffers || !mState->colorBuf;
 
 		if( mState->useSharedBuffers ) {
-			// Shared buffers wrap the caller's host memory directly.
-			// The C++ wrapper exposes this as an overload of
-			// `newBuffer(void*, size_t)` (vs. the device-owned
-			// `newBuffer(size_t)` used in the GPU path below); under
-			// the hood it calls `oidnNewSharedBuffer`.  Input-only
-			// buffers (`albedo` / `normal` in Fast mode) are const-
-			// cast safely because OIDN does not write to them when
-			// they're set as inputs.  In Accurate mode the aux
-			// prefilter writes back in-place, mutating the host AOV
-			// buffer — that's intentional and harmless because
-			// AOVBuffers is reset before each render (see
-			// PixelBasedRasterizerHelper::RasterizeScene).
+			// Beauty/output alias caller storage. Fast aux is input-only and
+			// may also alias it. Accurate prefilters write in place, so their
+			// aux buffers must be owned: the public inputs are const (DL-440).
 			if( rebuildBuffers ) {
 				mState->colorBuf  = mState->device.newBuffer(
 					static_cast<void*>( beautyBuffer ), bufBytes );
@@ -543,16 +535,27 @@ void OIDNDenoiser::Denoise(
 				mState->boundOutputPtr = outputBuffer;
 			}
 			if( hasAlbedo ) {
-				mState->albedoBuf = mState->device.newBuffer(
-					const_cast<float*>( albedoBuffer ), bufBytes );
+				if( requestedPrefilter == OidnPrefilter::Accurate ) {
+					if( dimsChanged || !mState->albedoBuf || mState->prefilter != OidnPrefilter::Accurate )
+						mState->albedoBuf = mState->device.newBuffer( bufBytes );
+				} else {
+					// OIDN reads Fast auxiliary inputs without writing them.
+					mState->albedoBuf = mState->device.newBuffer(
+						const_cast<float*>( albedoBuffer ), bufBytes );
+				}
 				mState->boundAlbedoPtr = albedoBuffer;
 			} else {
 				mState->albedoBuf = oidn::BufferRef();
 				mState->boundAlbedoPtr = 0;
 			}
 			if( hasNormal ) {
-				mState->normalBuf = mState->device.newBuffer(
-					const_cast<float*>( normalBuffer ), bufBytes );
+				if( requestedPrefilter == OidnPrefilter::Accurate ) {
+					if( dimsChanged || !mState->normalBuf || mState->prefilter != OidnPrefilter::Accurate )
+						mState->normalBuf = mState->device.newBuffer( bufBytes );
+				} else {
+					mState->normalBuf = mState->device.newBuffer(
+						const_cast<float*>( normalBuffer ), bufBytes );
+				}
 				mState->boundNormalPtr = normalBuffer;
 			} else {
 				mState->normalBuf = oidn::BufferRef();
@@ -678,31 +681,22 @@ void OIDNDenoiser::Denoise(
 			( mState->prefilter == OidnPrefilter::Accurate ) ? "accurate" : "fast" );
 	}
 
-	// Copy the per-render data into the cached buffers.  Use
-	// `buffer.write` rather than `memcpy(getData(), …)` so the same
-	// code path works on GPU devices (where getData() isn't host-
-	// mapped, and a direct memcpy would segfault).
-	//
-	// OIDN-P1-2: when the device is CPU and we used `newSharedBuffer`,
-	// the OIDN buffers already alias host memory — `write` would just
-	// memcpy from the host pointer to itself.  Skipping the write
-	// saves up to 4 image-sized memcpys per denoise (color in,
-	// albedo in, normal in, output out — see the read below).  At 4K
-	// RGB that's ~50 MB × 4 = 200 MB of bandwidth saved.
+	// GPU buffers receive all inputs. CPU beauty/output are shared; Fast
+	// auxiliary inputs are shared too. Accurate auxiliary buffers are owned
+	// and must receive fresh copies on every call, including cache hits.
 	if( !mState->useSharedBuffers ) {
 		mState->colorBuf.write( 0, bufBytes, beautyBuffer );
-		if( hasAlbedo ) {
-			mState->albedoBuf.write( 0, bufBytes, albedoBuffer );
-		}
-		if( hasNormal ) {
-			mState->normalBuf.write( 0, bufBytes, normalBuffer );
-		}
+	}
+	if( !mState->useSharedBuffers || requestedPrefilter == OidnPrefilter::Accurate ) {
+		if( hasAlbedo ) mState->albedoBuf.write( 0, bufBytes, albedoBuffer );
+		if( hasNormal ) mState->normalBuf.write( 0, bufBytes, normalBuffer );
 	}
 
 	// Accurate mode: prefilter the (noisy) aux buffers in-place so
 	// the beauty filter sees clean aux.  Both filters write back into
 	// the same albedoBuf / normalBuf the beauty filter reads, so
-	// there's no extra I/O — just two extra `execute()` calls.  On
+	// CPU Accurate copies const auxiliary inputs into owned buffers;
+	// GPU uses its existing uploads. There are two extra executions. On
 	// Metal at 1080p this adds ~80-150 ms per call (smaller networks
 	// than the beauty filter).
 	if( requestedPrefilter == OidnPrefilter::Accurate ) {

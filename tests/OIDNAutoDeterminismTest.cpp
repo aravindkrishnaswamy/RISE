@@ -116,9 +116,55 @@ static void WarmCacheTransitions()
     }
 #endif
 }
+// DL-440: public const aux inputs must survive CPU Accurate prefilters.
+// Repeated calls exercise cache hits; mode/presence/dimension changes
+// exercise ownership transitions. Fresh explicit runs are the output oracle.
+static void ConstAuxiliaryInputs()
+{
+#ifdef RISE_ENABLE_OIDN
+    struct Row { unsigned w,h; bool albedo,normal; OidnPrefilter mode; };
+    const Row rows[]={{16,16,true,true,OidnPrefilter::Fast},
+        {16,16,true,true,OidnPrefilter::Accurate},{16,16,true,true,OidnPrefilter::Accurate},
+        {16,16,true,false,OidnPrefilter::Accurate},{16,16,false,false,OidnPrefilter::Accurate},
+        {24,19,true,true,OidnPrefilter::Accurate},{24,19,true,true,OidnPrefilter::Fast},
+        {16,16,true,true,OidnPrefilter::Accurate}};
+    OIDNDenoiser warmed;
+    for(const auto& row : rows) {
+        std::vector<float> beauty(row.w*row.h*3),albedo(beauty.size()),normal(beauty.size());
+        for(size_t i=0;i<beauty.size();++i) {
+            beauty[i]=float(.1+double((i*37)%97)/97);
+            albedo[i]=float(.1+.8*double((i*13)%31)/31);
+            normal[i]=i%3==2 ? .8f : float(.3*double((i*7)%23)/23);
+        }
+        std::vector<float> output(beauty.size()),expected(beauty.size());
+        for(unsigned repeat=0;repeat<2;++repeat) {
+        // Same pointers on the second call, with new data, exercise cache
+        // hits and require a fresh Accurate input copy each time.
+        albedo[0]+=0.001f;normal[0]+=0.001f;
+        const auto originalAlbedo=albedo,originalNormal=normal;
+        warmed.Denoise(beauty.data(),row.albedo ? albedo.data() : nullptr,
+            row.normal ? normal.data() : nullptr,row.w,row.h,output.data(),
+            OidnQuality::Balanced,OidnDevice::CPU,row.mode,3);
+        Check(albedo==originalAlbedo && normal==originalNormal,"const auxiliary inputs unchanged after warmed CPU filter");
+        OIDNDenoiser fresh;
+        fresh.Denoise(beauty.data(),row.albedo ? originalAlbedo.data() : nullptr,
+            row.normal ? originalNormal.data() : nullptr,row.w,row.h,expected.data(),
+            OidnQuality::Balanced,OidnDevice::CPU,row.mode,3);
+        Check(output==expected,"aux ownership/cache transitions match fresh denoiser");
+        Check(std::any_of(output.begin(),output.end(),[](float x){return x>0;}),"const aux control produces lit output");
+        Check(warmed.GetDeviceGeneration()==1,"aux ownership transitions reuse CPU device");
+        }
+    }
+#endif
+}
 int main(int argc,char** argv)
 {
     ConfigureTestWorker(); // Scene loading can initialize cached global options.
+    ConstAuxiliaryInputs();
+    if(argc>1 && std::string(argv[1])=="--const-aux-only") {
+        std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
+        return failCount ? 1 : 0;
+    }
     FamilyPolicy();
     PolicyBoundaries();
     WarmCacheTransitions();

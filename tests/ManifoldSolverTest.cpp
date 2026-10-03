@@ -1876,7 +1876,8 @@ static auto CapturedPhotonObjectY(const Vertex& vertex, int)
 }
 template<class Vertex>
 static Scalar CapturedPhotonObjectY(const Vertex&, long) { return 0; }
-static void TestPhotonMaterialContext() {
+static bool TestPhotonMaterialContext() {
+    bool ok=true;
     auto* tau=new UniformScalarPainter(1.0);
     auto* index=new ContextIndex();
     auto* scatter=new UniformScalarPainter(1000000.0);
@@ -1894,15 +1895,16 @@ static void TestPhotonMaterialContext() {
     TestableManifoldSolver solver;
     for(Scalar nm : {Scalar(0),Scalar(450),Scalar(650)}) {
         std::vector<ManifoldVertex> chain;
-        assert(ReconstructPhotonAtNM(solver,photon,chain,nm,0)==1);
+        const unsigned count=ReconstructPhotonAtNM(solver,photon,chain,nm,0);
         const Scalar expected=1.53 + nm*0.0001;
-        if(nm==0) assert(IsClose(chain[0].attenuation.r,expected));
-        if(nm>0) assert(IsClose(chain[0].eta,expected));
-        assert(IsClose(chain[0].uv.x,0.6));
-        assert(IsClose(CapturedPhotonObjectY(chain[0],0),0.7));
+        ok &= count==1 && chain.size()==1;
+        if(chain.size()!=1) continue;
+        ok &= nm==0 ? IsClose(chain[0].attenuation.r,expected) : IsClose(chain[0].eta,expected);
+        ok &= IsClose(chain[0].uv.x,0.6) && IsClose(CapturedPhotonObjectY(chain[0],0),0.7);
     }
     material->release();tau->release();index->release();scatter->release();
-    std::cout << "Photon UV/Po RGB and 450/650nm context assertions passed" << std::endl;
+    std::cout << "Photon UV/Po RGB and 450/650nm context " << (ok ? "passed" : "FAILED") << std::endl;
+    return ok;
 }
 
 
@@ -2125,6 +2127,41 @@ static int TestSpectralAttenuationDL435() {
                 const Scalar expected=.96*(exits ? 2.25 : 1/2.25)*(exits ? .0625 : 1);
                 check(IsClose(solver.EvaluateChainThroughputNM(eye,light,seeded,550),expected),"indexedmesh spectral exit pays two-unit tau and radiance factor");
                 check(IsClose(solver.EvaluateChainThroughput(eye,light,seeded).r,expected),"indexedmesh RGB uses the same distance contract");
+                // DL-439: reconstruct actual mesh material/side metadata into
+                // dirty output vectors of shorter/same/longer lengths.
+                for(Scalar wavelength : {Scalar(0),Scalar(450),Scalar(650)}) for(unsigned photonLength : {1u,2u}) {
+                    SMSPhoton reusedPhoton;reusedPhoton.chainLen=photonLength;
+                    for(unsigned j=0;j<photonLength;++j) {
+                        auto& pv=reusedPhoton.chain[j];
+                        pv.position=seeded[0].position;pv.normal=seeded[0].normal;pv.geomNormal=seeded[0].geomNormal;
+                        pv.pObject=object;pv.pMaterial=sheetMaterial;pv.eta=seeded[0].eta;
+                        pv.uv=seeded[0].uv;pv.objectPosition=seeded[0].objectPosition;
+                        pv.flags=exits ? 0 : 1; // photon order reverses transmission side
+                    }
+                    std::vector<ManifoldVertex> fresh;
+                    check(ReconstructPhotonAtNM(solver,reusedPhoton,fresh,wavelength,0)==photonLength,"fresh mesh photon reconstruction");
+                    for(unsigned dirtyLength : {photonLength-1,photonLength,photonLength+1}) {
+                        ManifoldVertex dirty=seeded[0];dirty.etaI=1.33;dirty.etaT=1.6;
+                        dirty.dpdu=dirty.dpdv=dirty.dndu=dirty.dndv=Vector3(7,8,9);
+                        dirty.retainAlphaEndpoint=true;
+                        dirty.alphaEndpoint=std::make_shared<RayIntersection>(Ray(eye,Vector3(0,1,0)),nullRasterizerState);
+                        dirty.alphaEndpointPosition=Point3(7,8,9);dirty.valid=true;
+                        std::vector<ManifoldVertex> reused(dirtyLength,dirty);
+                        check(ReconstructPhotonAtNM(solver,reusedPhoton,reused,wavelength,0)==photonLength && reused.size()==fresh.size(),"dirty output lengths reconstruct exactly");
+                        bool defaults=reused.size()==fresh.size();
+                        for(const auto& item : reused) {
+                            defaults &= item.etaI==1 && item.etaT==1 && !item.retainAlphaEndpoint && !item.alphaEndpoint && !item.valid;
+                            for(const auto& derivative : {item.dpdu,item.dpdv,item.dndu,item.dndv})
+                                defaults &= Vector3Ops::SquaredModulus(derivative)==0;
+                        }
+                        check(defaults,"reused photon discards ordered IOR/derivative/alpha solver state");
+                        if(photonLength==1 && reused.size()==1) {
+                            const Scalar actual=wavelength>0 ? solver.EvaluateChainThroughputNM(eye,light,reused,wavelength)
+                                : solver.EvaluateChainThroughput(eye,light,reused).r;
+                            check(IsClose(actual,expected),"reused mesh photon throughput matches independent air-interface oracle");
+                        }
+                    }
+                }
             }
         }
         // Actual coated indexed mesh, both windings/entry-exit sides. The
@@ -2261,10 +2298,11 @@ static void BenchmarkAttenuationDL435() {
 
 int main(int argc, char** argv)
 {
+    if(argc>1 && std::string(argv[1])=="--photon-context-only") return TestPhotonMaterialContext() ? 0 : 1;
     if(argc>1 && std::string(argv[1])=="--dl435-benchmark") {BenchmarkAttenuationDL435();return 0;}
     if(argc>1 && std::string(argv[1])=="--dl435-only") return TestSpectralAttenuationDL435() ? 1 : 0;
     if(TestSpectralAttenuationDL435()!=0) return 1;
-	TestPhotonMaterialContext();
+	if(!TestPhotonMaterialContext()) return 1;
 	std::cout << std::endl;
 	std::cout << "========================================" << std::endl;
 	std::cout << "  ManifoldSolver Unit Tests" << std::endl;

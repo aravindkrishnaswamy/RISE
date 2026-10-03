@@ -1395,3 +1395,5 @@ directory; options-file creation failures fail the fixture. Windows
 execution has not been measured on this macOS host.
 Design and limits:
 [DL435_SPECTRAL_SMS_ATTENUATION.md](../docs/DL435_SPECTRAL_SMS_ATTENUATION.md).
+
+DL-439 photon output reuse is covered by the unconditional ManifoldSolverTest attenuation gate; `--photon-context-only` isolates the NDEBUG-safe UV/Po and spectral IOR query control. OIDNAutoDeterminismTest `--const-aux-only` isolates DL-440 unchanged auxiliary inputs, fresh-output equality and cache/mode/dimension transitions on CPU. The default and `--policy-only` runs include these controls.

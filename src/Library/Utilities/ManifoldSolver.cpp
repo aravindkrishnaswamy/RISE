@@ -5979,6 +5979,9 @@ unsigned int ManifoldSolver::ReversePhotonChainForSeed(
 	{
 		const SMSPhotonChainVertex& pv = photon.chain[ k - 1 - i ];
 		ManifoldVertex& mv = chain[i];
+		// Output buffers may be reused: discarded solver/IOR/alpha state must
+		// not override the photon reconstruction defaults (DL-439).
+		mv = ManifoldVertex();
 		mv.position    = pv.position;
 		mv.objectPosition = pv.objectPosition;
 		mv.uv = pv.uv;
