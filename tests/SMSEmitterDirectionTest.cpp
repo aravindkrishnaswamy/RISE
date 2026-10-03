@@ -26,6 +26,39 @@ static std::string Fixture( bool sms, bool uniform, bool spectral, bool phong, b
     ReplaceFirstChunk(scene,"pathtracing_pel_rasterizer",rast.str());
     return scene;
 }
+// The same emitter as two indexed triangles, viewed from both authored
+// sides. Double-sided emission must be invariant under winding reversal.
+static std::string MeshFixture( bool uniform, bool spectral, bool phong, bool reversed )
+{
+    std::string scene=Fixture(true,uniform,spectral,phong,true);
+    ReplaceNamedChunk(scene,"clippedplane_geometry","name light_geom",
+        std::string("indexedmesh_geometry\n{\n name light_geom\n")+
+        " vertex -0.1 0 0.1\n vertex 0.1 0 0.1\n vertex 0.1 0 -0.1\n vertex -0.1 0 -0.1\n"
+        " uv 0 0\n uv 1 0\n uv 1 1\n uv 0 1\n"+
+        (reversed ? " triangle 0 2 1\n triangle 0 3 2\n" : " triangle 0 1 2\n triangle 0 2 3\n")+
+        " double_sided TRUE\n face_normals TRUE\n}");
+    return scene;
+}
+static void TestDoubleSidedMesh()
+{
+    for(bool spectral : {false,true}) for(bool uniform : {false,true}) for(bool phong : {false,true}) {
+        std::vector<double> ratios;
+        for(int t=0;t<4;++t) {
+            const unsigned int pairIndex=g_renderIndex;
+            const auto front=Render(MeshFixture(uniform,spectral,phong,false),"mesh_front");
+            g_renderIndex=pairIndex;
+            const auto back=Render(MeshFixture(uniform,spectral,phong,true),"mesh_back");
+            Check(front.ok && back.ok && front.mean>0 && back.mean>0,"double-sided indexed emitter finite and lit from both sides");
+            ratios.push_back(front.mean>0 ? back.mean/front.mean : -1);
+        }
+        const auto stats=Summarize(ratios);
+        const double meanSD=stats.sd/2.0;
+        std::cout << "DL-347 indexedmesh spectral=" << spectral << " uniform=" << uniform << " phong=" << phong
+            << " winding ratio=" << stats.mean << " mean SD=" << meanSD << " n=4" << std::endl;
+        Check(3*meanSD<0.05,"mesh winding band covers three salted mean SDs");
+        Check(std::fabs(stats.mean-1)<0.05,"double-sided indexed emitter winding leaves SMS emission unchanged");
+    }
+}
 int main( int argc, char** argv )
 {
     if(argc>1 && std::string(argv[1])=="--canonical") {
@@ -61,6 +94,7 @@ int main( int argc, char** argv )
         std::cout << "DL-347 spectral=" << spectral << " uniform=" << uniform << " phong=" << phong << " SMS/PT=" << stats.mean << " sd=" << stats.sd << " n=4" << std::endl;
         Check(std::fabs(stats.mean-1)<0.05,"back-facing emitter cannot create an SMS caustic");
     }
+    TestDoubleSidedMesh();
     std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
     return failCount ? 1 : 0;
 }

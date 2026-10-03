@@ -2,7 +2,7 @@
 #include <sstream>
 // N-SF11 coefficients: SCHOTT optical glass datasheet (B1..3,C1..3).
 // https://media.schott.com/api/public/content/78e83df5ca2c4da4ad4490a52c80a146?v=1a468147
-static std::string Fixture( double nm, bool hwss, bool dispersive )
+static std::string Fixture( double nm, bool hwss, bool dispersive, bool mesh = false )
 {
     std::ostringstream s;
     s << "RISE ASCII SCENE 7\nfilm\n{\n width 64\n height 16\n}\n"
@@ -20,7 +20,13 @@ static std::string Fixture( double nm, bool hwss, bool dispersive )
          "standard_shader\n{\n name global\n shaderop DefaultPathTracing\n}\n"
          "pathtracing_spectral_rasterizer\n{\n samples 128\n oidn_denoise FALSE\n pixel_filter box\n sms_enabled TRUE\n sms_seeding uniform\n sms_target_bounces 1\n sms_biased TRUE\n sms_multi_trials 4\n num_wavelengths 1\n spectral_samples 1\n hwss " << (hwss ? "TRUE" : "FALSE")
       << "\n nmbegin " << nm << "\n nmend " << nm+0.01 << "\n}\n";
-    return s.str();
+    std::string scene=s.str();
+    if(mesh) ReplaceNamedChunk(scene,"clippedplane_geometry","name caster",
+        "indexedmesh_geometry\n{\n name caster\n"
+        " vertex -0.5 1 -0.5\n vertex 0.5 1 -0.5\n vertex 0.5 1 0.5\n vertex -0.5 1 0.5\n"
+        " uv 0 0\n uv 1 0\n uv 1 1\n uv 0 1\n"
+        " triangle 0 1 2\n triangle 0 2 3\n double_sided TRUE\n face_normals TRUE\n}");
+    return scene;
 }
 static double Centroid( const RenderResult& r )
 {
@@ -108,20 +114,23 @@ int main( int argc, char** argv )
     UVIndexControl();
     UVIndexControl(true);
     g_renderIndex=0; // Retain the independently calibrated dispersion salts.
+    for(bool mesh : {false,true}) {
+    g_renderIndex=0; // Use the same four independently salted pairs for each geometry.
     for(bool hwss : {false,true}) for(bool dispersion : {false,true}) {
         std::vector<double> shifts;
         for(int t=0;t<4;++t) {
             const unsigned index=g_renderIndex;
-            const auto blue=Render(Fixture(450,hwss,dispersion),"uniform_blue");
+            const auto blue=Render(Fixture(450,hwss,dispersion,mesh),"uniform_blue");
             g_renderIndex=index;
-            const auto red=Render(Fixture(650,hwss,dispersion),"uniform_red");
+            const auto red=Render(Fixture(650,hwss,dispersion,mesh),"uniform_red");
             Check(blue.ok && red.ok && blue.mean>0 && red.mean>0,"uniform spectral fixture finite and lit");
             shifts.push_back(Centroid(blue)-Centroid(red));
         }
         const auto stats=Summarize(shifts);
-        std::cout << "DL-353 hwss=" << hwss << " dispersion=" << dispersion << " centroid shift=" << stats.mean << " sd=" << stats.sd << " n=4" << std::endl;
+        std::cout << "DL-353 indexedmesh=" << mesh << " hwss=" << hwss << " dispersion=" << dispersion << " centroid shift=" << stats.mean << " sd=" << stats.sd << " n=4" << std::endl;
         if(dispersion) Check(std::fabs(stats.mean)>0.02,"N-SF11 caustic moves with wavelength");
         else Check(std::fabs(stats.mean)<0.005,"constant-index control has no wavelength displacement");
+    }
     }
     std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
     return failCount ? 1 : 0;
