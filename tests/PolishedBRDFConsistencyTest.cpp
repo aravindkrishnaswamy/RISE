@@ -38,8 +38,10 @@
 //       different function than its SPF samples).  Every pair already in
 //       SPFBSDFConsistencyTest's furnace is covered there; the two that
 //       were not are run here: `sheen_material` (gates 1-4, green) and
-//       `datadriven_material`, which has a BSDF and NO SPF at all -- the
-//       sampled function is identically 0 -- pinned as DL-325.
+//       `datadriven_material`, which had a BSDF and NO SPF at all (DL-325,
+//       CLOSED: `DataDrivenSPF` now samples the table) -- run through
+//       gates 1, 2, 4, 5 on a constant and a varied chromatic table, plus
+//       the back-face (blind side) contract.
 //    0. The model's building blocks (post-fix API; the gate-1..5 rows are
 //       the red-proof and compile against the pre-fix tree): the model's
 //       g-form Fresnel equals `Optics::CalculateDielectricReflectanceCosine`,
@@ -590,33 +592,89 @@ static void RunSiblingAudit( unsigned int& seed )
 		safe_release( white );
 	}
 
-	// datadriven_material: a synthetic constant table (value 0.4/pi on
-	// both hemispheres of the view/light pair), so its BSDF integrates to
-	// exactly 0.4 -- while it has no SPF, i.e. the sampled function is 0.
-	// KNOWN-DEFECT PIN (DL-325): PT terminates at it (direct light only),
-	// BDPT renders it black, VCM prices indirect light into it.
-	{
+	// datadriven_material (DL-325, CLOSED): the material used to have a BSDF
+	// and NO SPF -- the sampled function was identically 0 (PT terminated at
+	// it, BDPT rendered it black).  `DataDrivenSPF` now samples the same
+	// tabulated BRDF (cosine-weighted, kray = f cos / pdf from the BSDF
+	// itself), so it is run through the SAME gates 1, 2, 4, 5 as polished and
+	// sheen, on two synthetic tables:
+	//   constant -- value 0.4/pi on every view/light pair (a Lambertian 0.4);
+	//   varied   -- chromatic, direction-dependent, positive everywhere, so
+	//               a kray that disagreed with the BSDF in SHAPE (not just in
+	//               mass) cannot hide behind a flat function.
+	// The table is reflection-only (DataDrivenBSDF::value is 0 whenever the
+	// view or the light is behind the shading normal), so the back-face row
+	// pins the other half of the contract: nothing to sample, nothing emitted.
+	const double kPI = PI;
+	for( int variant = 0; variant < 2; ++variant ) {
 		char path[256];
-		std::snprintf( path, sizeof(path), "/tmp/dl285_const04_%d.bdf", (int)::getpid() );
+		std::snprintf( path, sizeof(path), "dl325_table%d_%d.bdf", variant, (int)::getpid() );
 		{
 			std::ofstream f( path, std::ios::binary );
-			const int hdr[4] = { 0xBDF, 1, 1, 2 };
-			f.write( reinterpret_cast<const char*>( hdr ), sizeof( hdr ) );
-			const double v = 0.4 / PI;
-			const double rec[21] = { PI / 2,
-				0.0, PI / 4, v, v, v,   0.0, PI / 4, 0, 0, 0,
-				PI / 4, PI / 2, v, v, v,   PI / 4, PI / 2, 0, 0, 0 };
-			f.write( reinterpret_cast<const char*>( rec ), sizeof( rec ) );
+			if( variant == 0 ) {
+				const int hdr[4] = { 0xBDF, 1, 1, 2 };
+				f.write( reinterpret_cast<const char*>( hdr ), sizeof( hdr ) );
+				const double v = 0.4 / kPI;
+				const double rec[21] = { kPI / 2,
+					0.0, kPI / 4, v, v, v,   0.0, kPI / 4, 0, 0, 0,
+					kPI / 4, kPI / 2, v, v, v,   kPI / 4, kPI / 2, 0, 0, 0 };
+				f.write( reinterpret_cast<const char*>( rec ), sizeof( rec ) );
+			} else {
+				const int hdr[4] = { 0xBDF, 1, 2, 3 };		// 2 emitter positions, 3 patches each
+				f.write( reinterpret_cast<const char*>( hdr ), sizeof( hdr ) );
+				const double emitTheta[2] = { kPI / 3, kPI / 2 };
+				for( int e = 0; e < 2; ++e ) {
+					f.write( reinterpret_cast<const char*>( &emitTheta[e] ), sizeof( double ) );
+					// File order is DESCENDING in theta (the loader reverses it).
+					for( int pi = 2; pi >= 0; --pi ) {
+						const double begin = pi * kPI / 6, end = ( pi + 1 ) * kPI / 6;
+						const double rec[10] = {
+							kPI / 2 - end, kPI / 2 - begin,
+							( 0.25 + 0.15 * pi + 0.10 * e ) / kPI,
+							( 0.50 - 0.12 * pi + 0.05 * e ) / kPI,
+							( 0.20 + 0.05 * pi * pi + 0.02 * e ) / kPI,
+							begin, end, 0, 0, 0 };
+						f.write( reinterpret_cast<const char*>( rec ), sizeof( rec ) );
+					}
+				}
+			}
 		}
 		DataDrivenMaterial* dd = new DataDrivenMaterial( path );  dd->addref();
-		const RayIntersectionGeometric ri = MakeRI( Fixture{ 30.0, 0.0, false } );
-		double B = 0;
-		SphereQuadrature( Vector3( 0, 0, 1 ), 600, 256, [&]( const Vector3& w, double dOm ) {
-			B += dd->GetBSDF()->value( w, ri )[0] * std::fabs( w.z ) * dOm;
-		} );
-		std::cout << "  datadriven_material: BSDF albedo " << B << ", SPF " << ( dd->GetSPF() ? "present" : "ABSENT (sampled function == 0)" ) << std::endl;
-		Check( std::fabs( B - 0.4 ) < 0.01, "gate 6 (DL-325 pin): datadriven BSDF integrates to its table's 0.4" );
-		Check( dd->GetSPF() == 0, "gate 6 (DL-325 pin): datadriven_material has no SPF -- the known defect; closing DL-325 flips this" );
+		Check( dd->GetSPF() != 0, variant == 0 ? "gate 6 (DL-325): datadriven_material (constant table) HAS an SPF"
+		                                       : "gate 6 (DL-325): datadriven_material (varied table) HAS an SPF" );
+		if( dd->GetSPF() ) {
+			const char* nm = variant == 0 ? "datadriven constant 0.4" : "datadriven varied chromatic";
+			RunRowMaterial( *dd, nm, Fixture{ 0.0,  0.0, false }, 400000, seed++ );
+			RunRowMaterial( *dd, nm, Fixture{ 30.0, 0.0, false }, 400000, seed++ );
+			RunRowMaterial( *dd, nm, Fixture{ 70.0, 0.0, false }, 400000, seed++ );
+			if( variant == 0 ) {
+				const RayIntersectionGeometric ri = MakeRI( Fixture{ 30.0, 0.0, false } );
+				double B = 0;
+				SphereQuadrature( Vector3( 0, 0, 1 ), 600, 256, [&]( const Vector3& w, double dOm ) {
+					B += dd->GetBSDF()->value( w, ri )[0] * std::fabs( w.z ) * dOm;
+				} );
+				Check( std::fabs( B - 0.4 ) < 0.01, "gate 6 (DL-325): the constant table's BSDF integrates to 0.4" );
+			}
+			// The blind side: a ray arriving at the BACK of a single-sided
+			// surface has BSDF == 0 everywhere, so the SPF must emit nothing
+			// and report no density.
+			{
+				const RayIntersectionGeometric ri = MakeRI( Fixture{ 30.0, 0.0, true } );
+				const IORStack stack = MakeTestIORStack( g_stub );
+				RandomNumberGenerator rng( seed++ );
+				IndependentSampler sampler( rng );
+				int emitted = 0;  double pdfMass = 0;
+				for( int k = 0; k < 2000; ++k ) {
+					ScatteredRayContainer sc_;
+					dd->GetSPF()->Scatter( ri, sampler, sc_, stack );
+					emitted += int( sc_.Count() );
+				}
+				SphereQuadrature( Vector3( 0, 0, -1 ), 200, 64, [&]( const Vector3& w, double dOm ) {
+					pdfMass += dd->GetSPF()->Pdf( ri, w, stack ) * dOm;
+				} );
+				Check( emitted == 0 && pdfMass == 0.0, "gate 6 (DL-325): back-face hit -- nothing emitted, Pdf == 0 (the BSDF is 0 there)" );
+			}
+		}
 		safe_release( dd );
 		std::remove( path );
 	}

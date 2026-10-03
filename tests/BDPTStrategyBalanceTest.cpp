@@ -2449,6 +2449,154 @@ static void TestCompositeMaterial()
 }
 
 //////////////////////////////////////////////////////////////////////
+// Topology AD (DL-325): `datadriven_material` walls and floor on topology
+// L's geometry, camera and emitter, against the SAME scene with
+// `lambertian_material` at the table's albedo.
+//
+// WHAT WAS BROKEN.  `DataDrivenMaterial::GetSPF()` returned 0: the BSDF
+// (`DataDrivenBSDF`, a tabulated reflection function) was evaluable but
+// nothing sampled it, so PT stopped at the surface (next-event estimation
+// only, no indirect light), BDPT's eye walk ended there and rendered it
+// essentially black, and VCM priced indirect light into it only through its
+// connection strategies.  Measured on the DL-285 sibling audit's fixture
+// (this scene, a constant table): PT 0.0375, BDPT 1.81e-6, VCM 0.0387.
+//
+// THE REFERENCE.  A constant table of 0.4/pi on every view/light pair IS a
+// Lambertian surface of albedo 0.4 (value() is exactly 0.4/pi at every angle
+// -- gate 6 of PolishedBRDFConsistencyTest integrates it to 0.4), so the
+// Lambertian render of the same scene is a reference-free oracle for ALL
+// THREE integrators at once:
+//     dd_X / lambertian_X  == 1   for X in {PT, BDPT, VCM}
+// plus the cross-integrator agreement dd_BDPT / dd_PT, dd_VCM / dd_PT.
+// Every figure is the mean of N salted renders (the SAME salts for every
+// scene/integrator, so the gated ratio is not one fixed QMC draw).
+//////////////////////////////////////////////////////////////////////
+static const char* kRasterizerVCMSchlickL =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"vcm_pel_rasterizer\n"
+	"{\n"
+	"\tmax_eye_depth 5\n"
+	"\tmax_light_depth 5\n"
+	"\tsamples 256\n"
+	"\tmerge_radius 0.0\n"
+	"\tvc_enabled true\n"
+	"\tvm_enabled true\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern rendered/bdpt_balance_vcm_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
+	"}\n";
+
+//! Writes a one-emitter, two-patch constant-reflectance .bdf (the DL-285
+//! fixture: value `albedo / pi` on every view/light pair).
+static bool WriteConstantBDF( const char* path, const double albedo )
+{
+	std::ofstream f( path, std::ios::binary );
+	if( !f.is_open() ) return false;
+	const double PI_ = 3.14159265358979323846;
+	const int hdr[4] = { 0xBDF, 1, 1, 2 };
+	f.write( reinterpret_cast<const char*>( hdr ), sizeof( hdr ) );
+	const double v = albedo / PI_;
+	const double rec[21] = { PI_ / 2,
+		0.0, PI_ / 4, v, v, v,   0.0, PI_ / 4, 0, 0, 0,
+		PI_ / 4, PI_ / 2, v, v, v,   PI_ / 4, PI_ / 2, 0, 0, 0 };
+	f.write( reinterpret_cast<const char*>( rec ), sizeof( rec ) );
+	return f.good();
+}
+
+//! Topology L with the schlick_material chunk replaced by `materialChunk`.
+static std::string TopologyLWithMaterial( const std::string& materialChunk )
+{
+	std::string s( kSceneSchlickMultiLobeL );
+	const std::string head = "schlick_material\n{\n\tname mat_schlick\n";
+	const size_t a = s.find( head );
+	const size_t b = ( a == std::string::npos ) ? std::string::npos : s.find( "}\n", a );
+	Check( a != std::string::npos && b != std::string::npos, "topology AD: schlick_material chunk found in topology L" );
+	if( a != std::string::npos && b != std::string::npos ) {
+		s.replace( a, b + 2 - a, materialChunk );
+	}
+	return s;
+}
+
+//! Mean (achromatic) and standard deviation over `n` salted renders.
+static bool SaltedImageMean( const std::string& rasterizer, const std::string& body, int n, unsigned saltBase,
+	double& mean, double& sd )
+{
+	const std::string scene = std::string( "RISE ASCII SCENE 7\n" ) + rasterizer + body;
+	const std::string path = WriteSceneToTempFile( scene.c_str(), "dl325" );
+	if( path.empty() ) return false;
+	double sum = 0, sumSq = 0;
+	bool ok = true;
+	for( int i = 0; i < n && ok; i++ ) {
+		SobolSamplerTestHooks::ValueSalt().store( SobolSequence::HashCombine( saltBase, unsigned( i ) ) );
+		const ImageStats st = RenderAndComputeStats( path.c_str() );
+		ok = st.valid;
+		if( ok ) {
+			const double m = ( st.mean[0] + st.mean[1] + st.mean[2] ) / 3.0;
+			sum += m;  sumSq += m * m;
+		}
+	}
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
+	std::remove( path.c_str() );
+	if( !ok ) return false;
+	mean = sum / n;
+	sd = n > 1 ? std::sqrt( std::max( 0.0, ( sumSq - n * mean * mean ) / ( n - 1 ) ) ) : 0;
+	return std::isfinite( mean );
+}
+
+static void TestDataDrivenSPFDL325()
+{
+	std::cout << "Testing topology AD: datadriven_material (constant 0.4/pi table) vs lambertian_material 0.4 (DL-325)" << std::endl;
+	char bdf[256];
+	std::snprintf( bdf, sizeof( bdf ), "/tmp/dl325_const04_%d.bdf", static_cast<int>( ::getpid() ) );
+	Check( WriteConstantBDF( bdf, 0.4 ), "topology AD: synthetic constant .bdf written" );
+
+	const std::string sceneDD = TopologyLWithMaterial(
+		std::string( "datadriven_material\n{\n\tname mat_schlick\n\tfilename " ) + bdf + "\n}\n" );
+	const std::string sceneLamb = TopologyLWithMaterial(
+		"lambertian_material\n{\n\tname mat_schlick\n\treflectance pnt_rd\n}\n" );
+
+	struct Integrator { const char* name; const char* rasterizer; };
+	const Integrator integrators[3] = {
+		{ "PT",   kRasterizerPTSchlickL },
+		{ "BDPT", kRasterizerBDPTSchlickL },
+		{ "VCM",  kRasterizerVCMSchlickL } };
+	const int N = 4;
+	double ddMean[3] = { 0, 0, 0 }, ddSd[3] = { 0, 0, 0 }, lbMean[3] = { 0, 0, 0 }, lbSd[3] = { 0, 0, 0 };
+	for( int k = 0; k < 3; k++ ) {
+		const bool ok = SaltedImageMean( integrators[k].rasterizer, sceneDD,   N, 0x325Du, ddMean[k], ddSd[k] )
+		             && SaltedImageMean( integrators[k].rasterizer, sceneLamb, N, 0x325Du, lbMean[k], lbSd[k] );
+		Check( ok, ( std::string( "topology AD: renders produced output (" ) + integrators[k].name + ")" ).c_str() );
+		if( !ok ) { std::remove( bdf ); return; }
+		std::printf( "  %-4s datadriven %.6f (sd %.6f)   lambertian %.6f (sd %.6f)   dd/lamb %.5f\n",
+			integrators[k].name, ddMean[k], ddSd[k], lbMean[k], lbSd[k], ddMean[k] / lbMean[k] );
+	}
+	std::remove( bdf );
+
+	for( int k = 0; k < 3; k++ ) {
+		const double r = ddMean[k] / lbMean[k];
+		Check( std::fabs( r - 1.0 ) < 0.02,
+			( std::string( "topology AD (DL-325): datadriven " ) + integrators[k].name +
+			  " matches the same-albedo Lambertian render within 2%" ).c_str() );
+	}
+	Check( std::fabs( ddMean[1] / ddMean[0] - 1.0 ) < 0.03,
+		"topology AD (DL-325): datadriven BDPT / PT within 3%" );
+	Check( std::fabs( ddMean[2] / ddMean[0] - 1.0 ) < 0.04,
+		"topology AD (DL-325): datadriven VCM / PT within 4%" );
+}
+
+//////////////////////////////////////////////////////////////////////
 // Topology L, GUIDED (DL-67, docs/DL67_GUIDED_GENERATING_DENSITY.md).
 //
 // Topology L's geometry and `schlick_material` walls with OpenPGL path
@@ -5261,6 +5409,12 @@ int main( int argc, char** argv )
 		TestSchlickMultiLobe();
 		TestGGXLambertianControl();
 		TestCompositeMaterial();
+		TestDataDrivenSPFDL325();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+	if( argc == 2 && std::strcmp(argv[1], "--dl325-only") == 0 ) {
+		TestDataDrivenSPFDL325();
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
@@ -5369,7 +5523,7 @@ int main( int argc, char** argv )
 	if( argc > 1 ) {
 		if( argc != 3 || std::strcmp(argv[1], "--spectral-only") != 0 ||
 			(std::strcmp(argv[2], "1") != 0 && std::strcmp(argv[2], "2") != 0) ) {
-			std::cerr << "Usage: BDPTStrategyBalanceTest [--spectral-only 1|2 | --spectral-aggregate-unit | --materials-only | --guided-only | --weave-gap-only | --sss-only | --dl375-only | --dl380-only | --dl380-mlt | --back-face-only | --narrow-fov-only | --dl377-only | --dl377-mlt | --dl333-only | --dl386-only | --dl381-only | --dl381-probe kind spp mat glass n | --dl354-only | --dl354-probe kind W H spp n]" << std::endl;
+			std::cerr << "Usage: BDPTStrategyBalanceTest [--spectral-only 1|2 | --spectral-aggregate-unit | --materials-only | --dl325-only | --guided-only | --weave-gap-only | --sss-only | --dl375-only | --dl380-only | --dl380-mlt | --back-face-only | --narrow-fov-only | --dl377-only | --dl377-mlt | --dl333-only | --dl386-only | --dl381-only | --dl381-probe kind spp mat glass n | --dl354-only | --dl354-probe kind W H spp n]" << std::endl;
 			return 2;
 		}
 		spectralSampleScale = std::strcmp(argv[2], "2") == 0 ? 2 : 1;
@@ -5396,6 +5550,7 @@ int main( int argc, char** argv )
 	TestSchlickMultiLobe();
 	TestGGXLambertianControl();
 	TestCompositeMaterial();
+	TestDataDrivenSPFDL325();
 	TestSchlickMultiLobeGuided();
 	TestPolishedGuidedAB();
 	TestSpectralHWSSCompanionLadder();
