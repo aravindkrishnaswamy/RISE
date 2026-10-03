@@ -24,6 +24,8 @@ Additional committed-helper regressions:
 - Pixel-context isolated corrected fixture: **16/0**. The initial diagnostic had one bad setup assertion (the existing `AssignMaterial` return value), which is excluded from numerical evidence; the committed-master proof above compares actual native material queries at caller raster coordinates.
 - Inherited composite CSG boundaries at committed `ac7802caa`: **6/2**, both failures are missing rejection for start-inside membership. Corrected complete domain suite at `7e66dc267`: **2925/0**, with the same 120/184/118/2 diagnostics. The two missing rejection assertions now pass. Complete phase acceptance remains pending below.
 
+The polished native-SPF audit is a positive law oracle, not a bug fix: the corrected fixture passes **328/0** on committed pre-audit helper sources. The initial fixture assumed the native black substrate emitted no diffuse ray; native SPF emits a zero-weight diffuse ray too. Its count-based failures are not numerical red evidence. `SpecularInfo` already defaults reflection tint to true, so the suspected pricing defect was disproved and the redundant source change removed.
+
 ## Default-path cost and output
 
 Interleaved coherent master/candidate source builds (A=`ffc70c1c2`, B=`4108e8f96`) used four salts for each fixture, sequential rendering, identical worker policy and bounded 64×64/64 spp settings with denoising disabled. All **16 matched raw hashes and image means were identical**. Subsequent finite-domain, pixel-refresh and CSG changes are confined to opt-in helper paths; they were not included in this timing checkpoint.
