@@ -119,9 +119,126 @@ static void AttenuationControlDL435()
     }
 }
 
+
+static void InterfaceControlDL435()
+{
+    // Reflection-only illumination: upward spot cannot directly light the
+    // floor. A refractor's reflected lobe must ignore its transmission tint.
+    // Entry-facing refractor reflection seeds are a separate DL-437
+    // design question. This reachable reversed-winding control exercises
+    // reflected roots; both sides/windings remain deterministic unit cases.
+    const bool flipped=true;
+    for(int mode=0;mode<3;++mode) {
+        std::vector<double> ratios;
+        for(int t=0;t<4;++t) {
+            std::string white=Fixture(550,mode==2,false,true);
+            ReplaceFirstChunk(white,"film","film\n{\n width 16\n height 8\n}");
+            ReplaceNamedChunk(white,"indexedmesh_geometry","name caster",
+                std::string("indexedmesh_geometry\n{\n name caster\n")+
+                " vertex -2 1 -2\n vertex 2 1 -2\n vertex 2 1 2\n vertex -2 1 2\n"
+                " uv 0 0\n uv 1 0\n uv 1 1\n uv 0 1\n"+
+                (flipped ? " triangle 0 2 1\n triangle 0 3 2\n" : " triangle 0 1 2\n triangle 0 2 3\n")+
+                " double_sided TRUE\n face_normals TRUE\n}\n");
+            ReplaceFirstChunk(white,"omni_light","spot_light\n{\n name source\n position 0 0.5 0\n target 0 2 0\n color 1 1 1\n power 40\n inner 10\n outer 30\n}\n");
+            std::ostringstream raster;
+            raster<<(mode==0 ? "pathtracing_pel_rasterizer" : "pathtracing_spectral_rasterizer")
+                  <<"\n{\n samples 32\n oidn_denoise FALSE\n pixel_filter box\n sms_enabled TRUE\n sms_seeding uniform\n sms_target_bounces 1\n sms_biased TRUE\n sms_multi_trials 4\n";
+            if(mode!=0) raster<<" num_wavelengths 1\n spectral_samples 1\n hwss "<<(mode==2 ? "TRUE" : "FALSE")<<"\n nmbegin 550\n nmend 550.01\n";
+            raster<<"}\n";
+            ReplaceFirstChunk(white,"pathtracing_spectral_rasterizer",raster.str());
+            std::string grey=white;
+            const auto at=grey.find("perfectrefractor_material");
+            grey.insert(at,"uniformcolor_painter\n{\n name quarter\n color 0.25 0.25 0.25\n colorspace Rec709RGB_Linear\n}\n");
+            grey.replace(grey.find("refractance white"),17,"refractance quarter");
+            const unsigned index=g_renderIndex;
+            const auto a=Render(white,"reflection_pair");g_renderIndex=index;
+            const auto b=Render(grey,"reflection_pair");
+            Check(a.ok && b.ok && a.mean>0 && b.mean>0,"DL-435 reflection-only fixtures finite and lit");
+            if(a.mean>0) ratios.push_back(b.mean/a.mean);
+        }
+        const auto stats=Summarize(ratios);
+        std::cout<<"DL-435 native reflection mode="<<mode<<" flipped="<<flipped<<" ratio="<<stats.mean<<" render sd="<<stats.sd<<" n="<<ratios.size()<<std::endl;
+        const double band=.02;
+        Check(ratios.size()==4 && 3*stats.sd/2<band,"native reflection band resolves three salted mean SDs");
+        Check(std::fabs(stats.mean-1)<band,"native reflected caustic ignores transmission-only tint");
+    }
+}
+
+
+static void CoatingControlDL436()
+{
+    // A distant point source approaches normal incidence on the camera
+    // footprint, giving a lossless single-interface
+    // transmission ratio. Independent Airy normal-incidence formula; no
+    // production thin-film helper is used by the oracle. A 0.0001
+    // receiver albedo bounds floor/sheet feedback below 0.0001 relative
+    // even for a perfectly reflecting sheet; it cannot explain a 0.1% band.
+    const auto reflectance=[](double nm) {
+        const double nf=std::sqrt(1.5), d=550/(4*nf);
+        const double r01=(1-nf)/(1+nf), r12=(nf-1.5)/(nf+1.5);
+        const double phase=4*3.14159265358979323846*nf*d/nm;
+        return (r01*r01+r12*r12+2*r01*r12*std::cos(phase)) /
+               (1+r01*r01*r12*r12+2*r01*r12*std::cos(phase));
+    };
+    for(bool flipped : {false,true}) for(int mode=0;mode<3;++mode)
+    for(bool uniform : {false,true}) {
+        std::vector<double> ratios;
+        for(int t=0;t<4;++t) {
+            std::string bare=Fixture(550,mode==2,false,true);
+            ReplaceNamedChunk(bare,"uniformcolor_painter","name grey",
+                "uniformcolor_painter\n{\n name grey\n color 0.0001 0.0001 0.0001\n colorspace Rec709RGB_Linear\n}\n");
+            ReplaceFirstChunk(bare,"film","film\n{\n width 16\n height 8\n}\n");
+            ReplaceNamedChunk(bare,"indexedmesh_geometry","name caster",
+                std::string("indexedmesh_geometry\n{\n name caster\n")+
+                " vertex -5 1 -5\n vertex 5 1 -5\n vertex 5 1 5\n vertex -5 1 5\n"
+                " uv 0 0\n uv 1 0\n uv 1 1\n uv 0 1\n"+
+                (flipped ? " triangle 0 2 1\n triangle 0 3 2\n" : " triangle 0 1 2\n triangle 0 2 3\n")+
+                " double_sided TRUE\n face_normals TRUE\n}\n");
+            ReplaceFirstChunk(bare,"perfectrefractor_material",
+                "dielectric_material\n{\n name glass\n tau 1\n ior 1.5\n scattering 1000000\n}\n");
+            ReplaceFirstChunk(bare,"omni_light",
+                "omni_light\n{\n name source\n position 0 100 0\n color 1 1 1\n power 40\n}\n");
+            std::ostringstream raster;
+            raster<<(mode==0 ? "pathtracing_pel_rasterizer" : "pathtracing_spectral_rasterizer")
+                  <<"\n{\n samples 32\n oidn_denoise FALSE\n pixel_filter box\n sms_enabled TRUE\n sms_seeding "<<(uniform ? "uniform" : "snell")
+                  <<"\n sms_target_bounces 1\n sms_biased TRUE\n sms_multi_trials 4\n";
+            if(mode!=0) raster<<" num_wavelengths 1\n spectral_samples 1\n hwss "<<(mode==2 ? "TRUE" : "FALSE")<<"\n nmbegin 550\n nmend 550.01\n";
+            raster<<"}\n";
+            ReplaceFirstChunk(bare,"pathtracing_spectral_rasterizer",raster.str());
+            std::string coated=bare;
+            ReplaceFirstChunk(coated,"dielectric_material",
+                "dielectric_material\n{\n name glass\n tau 1\n ior 1.5\n scattering 1000000\n ar_layer 1.224744871391589 112.26827987812466 0\n}\n");
+            const unsigned index=g_renderIndex;
+            const auto a=Render(bare,"coating_pair");g_renderIndex=index;
+            const auto b=Render(coated,"coating_pair");
+            Check(a.ok && b.ok && a.mean>0 && b.mean>0,"DL-436 coated and bare controls finite and lit");
+            if(a.mean>0) ratios.push_back(b.mean/a.mean);
+        }
+        const auto stats=Summarize(ratios);
+        const double expected=mode==0 ?
+            (3-reflectance(611)-reflectance(549)-reflectance(465))/(3*.96) : 1/.96;
+        std::cout<<"DL-436 coating mode="<<mode<<" flipped="<<flipped<<" uniform="<<uniform<<" ratio="<<stats.mean<<" expected="<<expected<<" render sd="<<stats.sd<<" n="<<ratios.size()<<std::endl;
+        // n4 pilot maximum render SD 1.26e-6 (mean SD 6.3e-7).
+        // .001 also leaves room for the bounded feedback and finite angle.
+        const double band=.001;
+        Check(ratios.size()==4 && 3*stats.sd/2<band,"coating band resolves three salted mean SDs");
+        Check(std::fabs(stats.mean-expected)<band,"native coating transmission matches independent Airy ratio");
+    }
+}
+
 int main( int argc, char** argv )
 {
     ConfigureTestWorker();
+    if(argc>1 && std::string(argv[1])=="--coating-only") {
+        CoatingControlDL436();
+        std::cout<<passCount<<" passed, "<<failCount<<" failed"<<std::endl;
+        return failCount ? 1 : 0;
+    }
+    if(argc>1 && std::string(argv[1])=="--interface-only") {
+        InterfaceControlDL435();
+        std::cout<<passCount<<" passed, "<<failCount<<" failed"<<std::endl;
+        return failCount ? 1 : 0;
+    }
     if(argc>1 && std::string(argv[1])=="--attenuation-only") {
         AttenuationControlDL435();
         std::cout << passCount << " passed, " << failCount << " failed" << std::endl;
@@ -163,6 +280,8 @@ int main( int argc, char** argv )
         return failCount ? 1 : 0;
     }
     AttenuationControlDL435();
+    InterfaceControlDL435();
+    CoatingControlDL436();
     UVIndexControl();
     UVIndexControl(true);
     g_renderIndex=0; // Retain the independently calibrated dispersion salts.

@@ -66,6 +66,7 @@ namespace RISE
 				SpecularInfo info;
 				info.isSpecular = true;
 				info.canRefract = true;
+				info.attenuationAppliesToReflection = false;
 				info.ior = pNt->GetValuesAt( ri ).v[0];
 				info.attenuation = ReflectanceColor( *pRefractivity, ri );
 				info.valid = true;
@@ -82,6 +83,7 @@ namespace RISE
 				SpecularInfo info;
 				info.isSpecular = true;
 				info.canRefract = true;
+				info.attenuationAppliesToReflection = false;
 				info.ior = pNt->GetValueAtNM( ri, nm );
 				info.attenuationNM = ReflectanceColorNM( *pRefractivity, ri, nm );
 				info.valid = true;

@@ -1371,11 +1371,27 @@ DL-334 adds `SSSBoundarySpectralTest` (independent public spectral partition, sk
 
 DL-435 attenuation gates: `ManifoldSolverTest --dl435-only` checks the
 scalar metadata, Fresnel/eta factors, native/fallback painter queries,
-photon propagation and both sides/windings of an actual double-sided
-indexed mesh. `--dl435-benchmark` reports metadata sizes and five focused
-varying-position throughput timings. `SMSUniformDispersionTest
---attenuation-only` runs sixteen n4 salted quarter/white sheet pairs
-(NM/HWSS, Snell/uniform, plane/indexedmesh, both windings), with a 0.01
-ratio band checked against three measured mean SDs. Both new regressions
-also run in their default targets. Design and limits:
+transmission-only native refractance, coated native SPF and independent
+Airy controls, photon propagation and both sides/windings of an actual
+double-sided indexed mesh. These checks run outside `assert`, including
+in a default invocation with `NDEBUG`. `--dl435-benchmark` reports metadata
+sizes and five focused varying-position throughput timings, including
+zero-, one-, and eight-layer native coatings in NM and RGB.
+`SMSUniformDispersionTest --attenuation-only` runs sixteen n4 salted
+quarter/white sheet pairs (NM/HWSS, Snell/uniform, plane/indexedmesh, both
+windings), with a 0.01 ratio band checked against three measured mean SDs.
+`--interface-only` compares white and quarter-tinted refractors in a
+reflection-only spot fixture: RGB/NM/HWSS, n4, reversed mesh winding,
+0.02 ratio band and measured precision check. The entry-facing winding
+produced no reflected seed in the pilot and is recorded separately as
+DL-437; it is not a valid attenuation ratio control.
+`--coating-only` runs twelve n4 coated/bare comparisons against the
+independent normal-incidence Airy ratio: RGB/NM/HWSS, Snell/uniform,
+both mesh windings, 0.001 band. A low-albedo receiver bounds sheet/floor
+feedback, and a distant point light approaches normal incidence. These
+controls also run in the default target.
+The shared SMS fixture and OIDN policy helper use the platform temporary
+directory; options-file creation failures fail the fixture. Windows
+execution has not been measured on this macOS host.
+Design and limits:
 [DL435_SPECTRAL_SMS_ATTENUATION.md](../docs/DL435_SPECTRAL_SMS_ATTENUATION.md).

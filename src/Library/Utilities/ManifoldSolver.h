@@ -149,6 +149,8 @@ namespace RISE
 			///< Populated by BuildSeedChain (RGB and NM variants) at the time of each hit, using the same `currentIOR` and IOR-stack the seed-trace already maintains.  Single-IOR scenes (the existing test corpus) get etaI=1.0 (entering) or etaT=1.0 (exiting), matching the old hardcoded defaults — so unchanged behaviour for those scenes.  ValidateChainPhysics may also fall back to `eta` when (etaI, etaT) are at default-1.0 for back-compat with hand-constructed chains.
 			RISEPel				attenuation;	///< Color attenuation at this vertex (e.g., colored glass refractance, mirror reflectance)
 			Scalar				attenuationNM;	///< Cached wavelength-resolved multiplier, filled by spectral seed/reconstruction queries.
+			bool				attenuationAppliesToReflection; ///< Native refractor tint is transmission-only.
+			bool				hasCustomSpecularFresnel; ///< Reuse the material SPF coating law at the solved angle.
 			bool				attenuationIsInteriorTransmittance;	///< Dielectric per-unit-distance tau; exiting transmission only.
 			bool				isReflection;	///< True if the chain ray bounces off (mirror, Fresnel reflection on glass, or TIR); false if it refracts through.
 			bool				canRefract;		///< True if the underlying material can refract (dielectric).  False for pure mirrors / conductors.  Selects the throughput law: dielectrics use Fresnel(cosI, η_i, η_t) (covers reflection, refraction, and TIR); mirrors take full reflectance from the painter without an angle-dependent Fresnel factor.  Default true so hand-constructed test chains and pre-existing back-compat callers behave as dielectrics — the prior implicit assumption.
@@ -183,6 +185,8 @@ namespace RISE
 			etaT( 1.0 ),
 			attenuation( 1.0, 1.0, 1.0 ),
 			attenuationNM( 1.0 ),
+			attenuationAppliesToReflection( true ),
+			hasCustomSpecularFresnel( false ),
 			attenuationIsInteriorTransmittance( false ),
 			isReflection( false ),
 			canRefract( true ),
@@ -980,6 +984,9 @@ namespace RISE
 
 			/// Subtracts 2x2 blocks: C = A - B.
 			static void Sub2x2( const Scalar* A, const Scalar* B, Scalar* C );
+
+			static Scalar EvaluateVertexFresnel( const ManifoldVertex& v, Scalar cosI, Scalar etaI, Scalar etaT, Scalar nm );
+			static RISEPel EvaluateVertexFresnelRGB( const ManifoldVertex& v, Scalar cosI, Scalar etaI, Scalar etaT );
 
 			/// Exact dielectric Fresnel reflectance (unpolarized average).
 			/// \param cosI     Cosine of incidence angle (positive)

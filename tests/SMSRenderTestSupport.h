@@ -14,6 +14,7 @@
 #include <vector>
 #include <cmath>
 #include <string>
+#include <filesystem>
 #ifdef _WIN32
 	#include <process.h>
 	#define getpid _getpid
@@ -118,33 +119,42 @@ inline constexpr uint32_t kSaltTag = 0xCBu;
 
 // Configure before the first cached GlobalOptions read. Paired inputs
 // differ only in the contract under test, not worker RNG start order.
-inline void ConfigureTestWorker()
+inline std::string TestTempPath( const std::string& leaf )
+{
+    std::error_code error;
+    const auto directory=std::filesystem::temp_directory_path(error);
+    return error ? std::string() : (directory/leaf).string();
+}
+
+inline bool ConfigureTestWorker()
 {
     static const bool configured=[]() {
         if(!std::getenv("RISE_OPTIONS_FILE")) {
-            static char optionsPath[512];
-            std::snprintf(optionsPath,sizeof(optionsPath),"/tmp/cheapbatch_options_%d.txt",int(::getpid()));
+            static const std::string optionsPath=TestTempPath("cheapbatch_options_"+std::to_string(::getpid())+".txt");
+            if(optionsPath.empty()) return false;
             std::ofstream options(optionsPath);
+            if(!options.is_open()) return false;
             options << "force_number_of_threads 1\n";
             options.close();
+            if(!options) return false;
 #ifdef _WIN32
-            _putenv_s("RISE_OPTIONS_FILE",optionsPath);
+            if(_putenv_s("RISE_OPTIONS_FILE",optionsPath.c_str())!=0) return false;
 #else
-            setenv("RISE_OPTIONS_FILE",optionsPath,1);
+            if(setenv("RISE_OPTIONS_FILE",optionsPath.c_str(),1)!=0) return false;
 #endif
-            std::atexit([](){ std::remove(optionsPath); });
+            std::atexit([](){ std::remove(optionsPath.c_str()); });
         }
         return true;
     }();
-    (void)configured;
+    return configured;
 }
 
 inline RenderResult Render( const std::string& sceneText, const char* tag, unsigned int delayMs = 0 )
 {
-	ConfigureTestWorker();
 	RenderResult r{ {}, 0, 0, 0, 0, false };
-	char path[512];
-	std::snprintf( path, sizeof(path), "/tmp/cheapbatch_%s_%d.RISEscene", tag, static_cast<int>( ::getpid() ) );
+	if(!ConfigureTestWorker()) return r;
+	const std::string path=TestTempPath("cheapbatch_"+std::string(tag)+"_"+std::to_string(::getpid())+".RISEscene");
+	if(path.empty()) return r;
 	{
 		std::ofstream ofs( path );
 		if( !ofs.is_open() ) return r;
@@ -154,8 +164,8 @@ inline RenderResult Render( const std::string& sceneText, const char* tag, unsig
 	std::srand(seed);
 	GlobalRNG()=RandomNumberGenerator(seed);
 	IJobPriv* pJob = nullptr;
-	if( !RISE_CreateJobPriv( &pJob ) || !pJob ) { std::remove( path ); return r; }
-	if( pJob->LoadAsciiSceneViaCst( path ) ) {
+	if( !RISE_CreateJobPriv( &pJob ) || !pJob ) { std::remove( path.c_str() ); return r; }
+	if( pJob->LoadAsciiSceneViaCst( path.c_str() ) ) {
 		pJob->RemoveRasterizerOutputs();
 		CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
 		GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "capture" );
@@ -188,7 +198,7 @@ inline RenderResult Render( const std::string& sceneText, const char* tag, unsig
 		safe_release( pCap );
 	}
 	safe_release( pJob );
-	std::remove( path );
+	std::remove( path.c_str() );
 	return r;
 }
 

@@ -15,6 +15,7 @@
 #include <cmath>
 #include <chrono>
 #include <string>
+#include "../src/Library/Utilities/IndependentSampler.h"
 #include "TestableManifoldSolver.h"
 #include "../src/Library/Utilities/SMSPhoton.h"
 
@@ -1930,6 +1931,22 @@ template<class Vertex>
 static void SetSpectralAttenuation(Vertex& v, Scalar value, bool, long) {
     v.attenuation = RISEPel(value,value,value);
 }
+template<class Metadata>
+static auto ReflectionAttenuation(const Metadata& v, int) -> decltype(v.attenuationAppliesToReflection) { return v.attenuationAppliesToReflection; }
+template<class Metadata>
+static bool ReflectionAttenuation(const Metadata&, long) { return true; }
+template<class Metadata>
+static auto CustomFresnel(const Metadata& v, int) -> decltype(v.hasCustomSpecularFresnel) { return v.hasCustomSpecularFresnel; }
+template<class Metadata>
+static bool CustomFresnel(const Metadata&, long) { return false; }
+template<class Vertex,class Metadata>
+static auto SetEventMetadata(Vertex& v,const Metadata& info,int)
+    -> decltype(v.attenuationAppliesToReflection=info.attenuationAppliesToReflection,void()) {
+    v.attenuationAppliesToReflection=info.attenuationAppliesToReflection;
+    v.hasCustomSpecularFresnel=info.hasCustomSpecularFresnel;
+}
+template<class Vertex,class Metadata>
+static void SetEventMetadata(Vertex&,const Metadata&,long) {}
 static int TestSpectralAttenuationDL435() {
     int failures=0, checks=0;
     auto check=[&](bool ok,const char* label) {
@@ -1943,7 +1960,7 @@ static int TestSpectralAttenuationDL435() {
     std::vector<ManifoldVertex> chain(1,v);
     check(IsClose(solver.EvaluateChainThroughputNM(start,reflectedEnd,chain,550),.25),"quarter mirror attenuation");
     chain[0].canRefract=true;chain[0].etaI=1;chain[0].etaT=1.5;
-    check(IsClose(solver.EvaluateChainThroughputNM(start,reflectedEnd,chain,550),.25*.04),"tinted Fresnel reflection");
+    check(IsClose(solver.EvaluateChainThroughputNM(start,reflectedEnd,chain,550),.25*.04),"generic boundary extension can tint Fresnel reflection");
     chain[0].isReflection=false;
     check(IsClose(solver.EvaluateChainThroughputNM(start,transmittedEnd,chain,550),.25*.96/2.25),"entering attenuation and radiance rescale");
     chain[0].isExiting=true;chain[0].etaI=1.5;chain[0].etaT=1;
@@ -1987,6 +2004,49 @@ static int TestSpectralAttenuationDL435() {
             check(InteriorAttenuation(info,0)==(material==dielectric),"boundary versus interior transmission metadata");
         }
     }
+    // Native refractivity is transmission-only, unlike a generic extension
+    // multiplier. Compare SMS with the real SPF, not a copied Fresnel formula.
+    auto* nativeGeometry=new BoxGeometry(2,2,2);
+    auto* nativeObject=new Object(nativeGeometry);nativeGeometry->release();
+    IORStack nativeStack(1);nativeStack.SetCurrentObject(nativeObject);
+    RandomNumberGenerator nativeRng(435);
+    IndependentSampler nativeSampler(nativeRng);
+    ri.bHit=true;ri.ptIntersection=Point3(0,0,0);
+    ri.vNormal=ri.vGeomNormal=Vector3(0,1,0);ri.onb.CreateFromW(ri.vNormal);
+    for(Scalar nm : {Scalar(450),Scalar(650)}) {
+        const auto info=refractor->GetSpecularInfoNM(ri,stack,nm);
+        check(!ReflectionAttenuation(info,0),"native refractor advertises transmission-only tint");
+        ManifoldVertex native=v;native.canRefract=true;native.etaI=1;native.etaT=1.5;
+        native.isReflection=true;native.isExiting=false;native.pMaterial=refractor;
+        SetSpectralAttenuation(native,SpectralAttenuation(info,0),false,0);
+        SetEventMetadata(native,info,0);
+        ScatteredRayContainer rays;refractor->GetSPF()->ScatterNM(ri,nativeSampler,nm,rays,nativeStack);
+        Scalar reflection=0;bool sawReflection=false;
+        for(unsigned i=0;i<rays.Count();++i) if(rays[i].type==ScatteredRay::eRayReflection) {reflection+=rays[i].krayNM;sawReflection=true;}
+        check(sawReflection && IsClose(reflection,.04),"native SPF reflection ignores transmission painter");
+        check(IsClose(solver.EvaluateChainThroughputNM(start,reflectedEnd,{native},nm),reflection),"NM native refractor reflection matches its SPF");
+        native.attenuation=refractor->GetSpecularInfo(ri,stack).attenuation;
+        check(IsClose(solver.EvaluateChainThroughput(start,reflectedEnd,{native}).r,reflection),"RGB native refractor reflection matches its SPF");
+    }
+    // Native TIR also carries no transmission tint.
+    {
+        const Scalar sine=std::sqrt(Scalar(.75));
+        const Point3 eye(-2*sine,-1,0);
+        RayIntersectionGeometric hit(Ray(eye,Vector3(sine,.5,0)),nullRasterizerState);
+        hit.bHit=true;hit.ptIntersection=Point3(0,0,0);
+        hit.vNormal=hit.vGeomNormal=Vector3(0,1,0);hit.onb.CreateFromW(hit.vNormal);
+        IORStack inside(1);inside.SetCurrentObject(nativeObject);inside.push(1.5);
+        const auto info=refractor->GetSpecularInfoNM(hit,inside,550);
+        ManifoldVertex tir=v;tir.canRefract=true;tir.isReflection=true;tir.isExiting=true;
+        tir.etaI=1.5;tir.etaT=1;tir.pMaterial=refractor;
+        tir.attenuation=refractor->GetSpecularInfo(hit,inside).attenuation;
+        SetSpectralAttenuation(tir,SpectralAttenuation(info,0),false,0);SetEventMetadata(tir,info,0);
+        ScatteredRayContainer rays;refractor->GetSPF()->ScatterNM(hit,nativeSampler,550,rays,inside);
+        Scalar reflection=0;for(unsigned i=0;i<rays.Count();++i) if(rays[i].type==ScatteredRay::eRayReflection) reflection+=rays[i].krayNM;
+        check(IsClose(reflection,1),"native perfect refractor TIR is uncolored unit reflection");
+        check(IsClose(solver.EvaluateChainThroughputNM(eye,eye,{tir},550),reflection),"NM native TIR does not pay transmission tint");
+        check(IsClose(solver.EvaluateChainThroughput(eye,eye,{tir}).r,reflection),"RGB native TIR does not pay transmission tint");
+    }
     SMSPhoton photon;photon.chainLen=1;
     photon.chain[0].position=Point3(3,4,5);photon.chain[0].normal=Vector3(0,1,0);
     photon.chain[0].geomNormal=Vector3(0,1,0);photon.chain[0].pMaterial=dielectric;
@@ -1996,6 +2056,12 @@ static int TestSpectralAttenuationDL435() {
         check(ReconstructPhotonAtNM(solver,photon,reconstructed,nm,0)==1,"photon chain reconstructed");
         check(reconstructed.size()==1 && IsClose(SpectralAttenuation(reconstructed[0],0),1.53+nm*.0001),"photon carries wavelength attenuation and captured UV/Po");
         check(reconstructed.size()==1 && InteriorAttenuation(reconstructed[0],0),"photon retains interior transmission law");
+    }
+    photon.chain[0].pMaterial=refractor;photon.chain[0].flags=2;
+    {
+        std::vector<ManifoldVertex> reconstructed;
+        check(ReconstructPhotonAtNM(solver,photon,reconstructed,550,0)==1,"native refractor reflection photon reconstructed");
+        check(reconstructed.size()==1 && !ReflectionAttenuation(reconstructed[0],0),"photon replay retains transmission-only refractance event law");
     }
     // Exact neutral fallback avoids a LUT and preserves values above1.
     // Probe the actual default virtual fallback through a material extension.
@@ -2021,6 +2087,10 @@ static int TestSpectralAttenuationDL435() {
     // an exiting transmission, and no tau on entry.
     auto* neutralTau=new UniformScalarPainter(.25);
     auto* sheetMaterial=new DielectricMaterial(*neutralTau,*eta,*scattering,false);
+    const Scalar filmIndex=std::sqrt(Scalar(1.5));
+    const Scalar filmK=0,filmThickness=550/(4*filmIndex);
+    auto* coatedMaterial=new DielectricMaterial(*neutralTau,*eta,*scattering,false,&filmIndex,&filmK,&filmThickness,1);
+
     for(bool flipped : {false,true}) {
         auto* geometry=new TriangleMeshGeometryIndexed(true,true);
         geometry->BeginIndexedTriangles();
@@ -2057,10 +2127,80 @@ static int TestSpectralAttenuationDL435() {
                 check(IsClose(solver.EvaluateChainThroughput(eye,light,seeded).r,expected),"indexedmesh RGB uses the same distance contract");
             }
         }
+        // Actual coated indexed mesh, both windings/entry-exit sides. The
+        // independent normal-incidence Airy expression has no ThinFilm helper.
+        object->AssignMaterial(*coatedMaterial);
+        for(bool above : {false,true}) for(Scalar nm : {Scalar(450),Scalar(550),Scalar(650)}) {
+            const Point3 eye(.3,above ? 2 : -2,.2),light(.3,above ? -2 : 2,.2);
+            std::vector<ManifoldVertex> seeded;
+            const unsigned k=solver.BuildSnellBaseSeed(eye,Vector3(0,above ? -1 : 1,0),light,*scene,*caster,seeded,nullptr,nullptr,nm);
+            const bool exits=above!=flipped;
+            check(k==1 && seeded.size()==1,"coated indexedmesh generates spectral sheet seed");
+            if(seeded.size()!=1) continue;
+            auto airy=[&](Scalar wavelength) {
+                const Scalar ni=exits ? 1.5 : 1,nt=exits ? 1 : 1.5;
+                const Scalar a=(ni-filmIndex)/(ni+filmIndex),b=(filmIndex-nt)/(filmIndex+nt);
+                const Scalar cross=2*a*b*std::cos(4*kPi*filmIndex*filmThickness/wavelength);
+                return (a*a+b*b+cross)/(1+a*a*b*b+cross);
+            };
+            check(CustomFresnel(seeded[0],0) && seeded[0].isExiting==exits,"coated mesh carries interface law and side");
+            const Scalar f=airy(nm),scale=(exits ? 2.25*.0625 : 1/2.25);
+            check(IsClose(solver.EvaluateChainThroughputNM(eye,light,seeded,nm),(1-f)*scale,1e-10),"coated NM transmission matches independent Airy/eta/tau oracle");
+            seeded[0].isReflection=true;
+            check(IsClose(solver.EvaluateChainThroughputNM(eye,eye,seeded,nm),f,1e-10),"coated NM reflection matches independent Airy oracle");
+            // Real SPF is a separate consumer of the same material law.
+            IORStack crossing(1);crossing.SetCurrentObject(object);if(exits) crossing.push(1.5);
+            RayIntersectionGeometric hit(Ray(eye,Vector3(0,above ? -1 : 1,0)),nullRasterizerState);
+            hit.bHit=true;hit.ptIntersection=seeded[0].position;
+            hit.vNormal=seeded[0].normal;hit.vGeomNormal=seeded[0].geomNormal;hit.onb.CreateFromW(hit.vNormal);
+            ScatteredRayContainer rays;coatedMaterial->GetSPF()->ScatterNM(hit,nativeSampler,nm,rays,crossing);
+            Scalar reflection=0,transmission=0;
+            for(unsigned i=0;i<rays.Count();++i) {
+                if(rays[i].type==ScatteredRay::eRayReflection) reflection+=rays[i].krayNM;
+                if(rays[i].type==ScatteredRay::eRayRefraction) transmission+=rays[i].krayNM;
+            }
+            check(IsClose(reflection,f,1e-10),"coated native SPF reflection agrees with independent oracle");
+            seeded[0].isReflection=false;
+            check(IsClose(solver.EvaluateChainThroughputNM(eye,light,seeded,nm),transmission*(exits ? 2.25 : 1/2.25),1e-10),"coated SMS transmission matches native SPF and radiance convention");
+            // RGB uses exactly the SPF's shared representative wavelengths.
+            seeded[0].isReflection=true;
+            const RISEPel rgbReflection=solver.EvaluateChainThroughput(eye,eye,seeded);
+            for(unsigned c=0;c<3;++c)
+                check(IsClose(rgbReflection[c],airy(ScalarPainterRGB::kChannelNM[c]),1e-10),"RGB coating uses native representative channel wavelength");
+        }
         safe_release(caster);safe_release(shader);scene->release();manager->release();object->release();
     }
-    sheetMaterial->release();neutralTau->release();
+    // A non-symmetric two-film stack at oblique incidence distinguishes
+    // inside/outside layer order. Compare production SMS with native SPF.
+    const Scalar multiN[2]={1.38,2.1},multiK[2]={0,0},multiT[2]={80,50};
+    auto* multi=new DielectricMaterial(*neutralTau,*eta,*scattering,false,multiN,multiK,multiT,2);
+    for(bool exits : {false,true}) for(Scalar cosine : {Scalar(.82),Scalar(.5)})
+    for(Scalar nm : {Scalar(450),Scalar(550),Scalar(650)}) {
+        const Scalar sine=std::sqrt(1-cosine*cosine);
+        const Vector3 incoming(sine,exits ? cosine : -cosine,0);
+        const Point3 eye(-2*incoming.x,-2*incoming.y,0);
+        RayIntersectionGeometric hit(Ray(eye,incoming),nullRasterizerState);
+        hit.bHit=true;hit.ptIntersection=Point3(0,0,0);
+        hit.vNormal=hit.vGeomNormal=Vector3(0,1,0);hit.onb.CreateFromW(hit.vNormal);
+        IORStack crossing(1);crossing.SetCurrentObject(nativeObject);if(exits) crossing.push(1.5);
+        const auto info=multi->GetSpecularInfoNM(hit,crossing,nm);
+        ManifoldVertex vertex=v;vertex.canRefract=true;vertex.isReflection=true;vertex.isExiting=exits;
+        vertex.etaI=exits ? 1.5 : 1;vertex.etaT=exits ? 1 : 1.5;vertex.pMaterial=multi;
+        SetSpectralAttenuation(vertex,SpectralAttenuation(info,0),true,0);SetEventMetadata(vertex,info,0);
+        ScatteredRayContainer rays;multi->GetSPF()->ScatterNM(hit,nativeSampler,nm,rays,crossing);
+        Scalar reflection=0;for(unsigned i=0;i<rays.Count();++i) if(rays[i].type==ScatteredRay::eRayReflection) reflection+=rays[i].krayNM;
+        check(IsClose(solver.EvaluateChainThroughputNM(eye,eye,{vertex},nm),reflection,1e-10),"oriented multilayer coating/TIR reflection matches native SPF");
+    }
+    photon.chain[0].pMaterial=multi;photon.chain[0].flags=3;
+    {
+        std::vector<ManifoldVertex> reconstructed;
+        check(ReconstructPhotonAtNM(solver,photon,reconstructed,550,0)==1,"coated reflection photon reconstructed");
+        check(reconstructed.size()==1 && CustomFresnel(reconstructed[0],0),"photon replay retains native coating law");
+    }
+    multi->release();
+    coatedMaterial->release();sheetMaterial->release();neutralTau->release();
     mirror->release();refractor->release();dielectric->release();
+    nativeObject->release();
     index->release();color->release();eta->release();scattering->release();
     std::cout << "DL-435 " << checks-failures << " passed, " << failures << " failed" << std::endl;
     return failures;
@@ -2087,6 +2227,35 @@ static void BenchmarkAttenuationDL435() {
             std::cout<<"DL-435 benchmark interior="<<interior<<" trial="<<trial<<" ns/call="<<seconds*1e9/count<<std::endl;
         }
     }
+    auto* tau=new UniformScalarPainter(1);
+    auto* index=new UniformScalarPainter(1.5);
+    auto* scattering=new UniformScalarPainter(1000000);
+    const Scalar filmN[8]={1.38,2.1,1.38,2.1,1.38,2.1,1.38,2.1};
+    const Scalar filmK[8]={0,0,0,0,0,0,0,0};
+    const Scalar filmT[8]={80,50,80,50,80,50,80,50};
+    RayIntersectionGeometric ri(Ray(Point3(0,2,0),Vector3(0,-1,0)),nullRasterizerState);
+    IORStack ior(1);
+    for(int layers : {0,1,8}) {
+        auto* material=new DielectricMaterial(*tau,*index,*scattering,false,filmN,filmK,filmT,layers);
+        chain[0].pMaterial=material;
+        chain[0].attenuation=material->GetSpecularInfo(ri,ior).attenuation;
+        const SpecularInfo info=material->GetSpecularInfoNM(ri,ior,550);
+        SetSpectralAttenuation(chain[0],SpectralAttenuation(info,0),true,0);
+        SetEventMetadata(chain[0],info,0);
+        for(bool rgb : {false,true}) for(int trial=0;trial<5;++trial) {
+            const auto begin=std::chrono::steady_clock::now();
+            for(unsigned i=0;i<count;++i) {
+                chain[0].position.x=Scalar(i%31)*.001;
+                sink=rgb ? solver.EvaluateChainThroughput(Point3(0,2,0),Point3(0,-2,0),chain).r
+                         : solver.EvaluateChainThroughputNM(Point3(0,2,0),Point3(0,-2,0),chain,550);
+            }
+            const double seconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-begin).count();
+            std::cout<<"DL-436 benchmark layers="<<layers<<" rgb="<<rgb<<" trial="<<trial<<" ns/call="<<seconds*1e9/count<<std::endl;
+        }
+        chain[0].pMaterial=nullptr;
+        material->release();
+    }
+    tau->release();index->release();scattering->release();
     std::cout<<"benchmark consumed="<<sink<<std::endl;
 }
 
@@ -2094,7 +2263,7 @@ int main(int argc, char** argv)
 {
     if(argc>1 && std::string(argv[1])=="--dl435-benchmark") {BenchmarkAttenuationDL435();return 0;}
     if(argc>1 && std::string(argv[1])=="--dl435-only") return TestSpectralAttenuationDL435() ? 1 : 0;
-    assert(TestSpectralAttenuationDL435()==0);
+    if(TestSpectralAttenuationDL435()!=0) return 1;
 	TestPhotonMaterialContext();
 	std::cout << std::endl;
 	std::cout << "========================================" << std::endl;

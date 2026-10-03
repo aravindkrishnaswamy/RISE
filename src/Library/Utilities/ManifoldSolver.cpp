@@ -19,6 +19,7 @@
 #include "SMSPhotonMap.h"
 #include "Optics.h"
 #include "BDPTUtilities.h"
+#include "../Interfaces/IScalarPainter.h"
 
 // File-scope diagnostic gate.  Set to 1 to enable targeted per-pixel
 // SMS/Solve/BuildSeedChain trace logging (used while debugging the
@@ -4195,6 +4196,8 @@ unsigned int ManifoldSolver::SnellContinueChain(
 		mv.eta = specInfo.ior;
 		mv.attenuation = specInfo.attenuation;
 		mv.attenuationNM = specInfo.attenuationNM;
+		mv.attenuationAppliesToReflection = specInfo.attenuationAppliesToReflection;
+		mv.hasCustomSpecularFresnel = specInfo.hasCustomSpecularFresnel;
 		mv.attenuationIsInteriorTransmittance = specInfo.attenuationIsInteriorTransmittance;
 		mv.isReflection = !specInfo.canRefract;
 		mv.canRefract = specInfo.canRefract;
@@ -4674,6 +4677,29 @@ Scalar ManifoldSolver::EvaluateChainCosineProduct(
 
 //////////////////////////////////////////////////////////////////////
 
+Scalar ManifoldSolver::EvaluateVertexFresnel( const ManifoldVertex& v,
+	Scalar cosI, Scalar etaI, Scalar etaT, Scalar nm )
+{
+	if( v.hasCustomSpecularFresnel && v.pMaterial ) {
+		const ISPF* spf = v.pMaterial->GetSPF();
+		Scalar reflectance;
+		if( spf && spf->EvaluateSpecularFresnel( cosI, etaI, etaT, v.isExiting, nm, reflectance ) )
+			return reflectance;
+	}
+	return ComputeDielectricFresnel( cosI, etaI, etaT );
+}
+
+RISEPel ManifoldSolver::EvaluateVertexFresnelRGB( const ManifoldVertex& v,
+	Scalar cosI, Scalar etaI, Scalar etaT )
+{
+	if( !v.hasCustomSpecularFresnel )
+		return RISEPel( ComputeDielectricFresnel( cosI, etaI, etaT ) );
+	return RISEPel(
+		EvaluateVertexFresnel( v, cosI, etaI, etaT, ScalarPainterRGB::kChannelNM[0] ),
+		EvaluateVertexFresnel( v, cosI, etaI, etaT, ScalarPainterRGB::kChannelNM[1] ),
+		EvaluateVertexFresnel( v, cosI, etaI, etaT, ScalarPainterRGB::kChannelNM[2] ) );
+}
+
 RISEPel ManifoldSolver::EvaluateChainThroughput(
 	const Point3& startPoint,
 	const Point3& endPoint,
@@ -4732,28 +4758,14 @@ RISEPel ManifoldSolver::EvaluateChainThroughput(
 		Scalar eta_i, eta_t;
 		GetEffectiveEtas( v, eta_i, eta_t );
 
-		// Three semantically distinct vertex kinds drive three different
-		// throughput laws.  The dispatch is on (canRefract, isReflection):
-		//
-		//   (false, true)   pure mirror — full reflectance from the painter,
-		//                   no Fresnel angle factor.  PerfectReflectorSPF
-		//                   models an idealized 100%-reflective surface;
-		//                   ComputeDielectricFresnel(cosI, 1, 1) would give
-		//                   the wrong answer (=0) here because the dielectric
-		//                   formula is meaningless on a non-refracting medium.
-		//   (true,  true)   dielectric reflection — Fresnel reflection on
-		//                   glass, OR total internal reflection (the latter
-		//                   falls out automatically: ComputeDielectricFresnel
-		//                   returns 1.0 when sin²θ_t ≥ 1).  Reflection at a
-		//                   dielectric interface is uncolored (the painter's
-		//                   refractance only enters via Beer's law during
-		//                   transmission) — matches PerfectRefractorSPF::
-		//                   Scatter, which sets the Fresnel-reflection ray's
-		//                   kray = (Fr, Fr, Fr) without a tau multiplier.
-		//   (true,  false)  refraction — Fresnel transmission (1 − Fr) with
-		//                   the tau (refractance) painter and the (η_i/η_t)²
-		//                   radiance rescale across the dielectric boundary.
+		// Mirrors use their painter reflectance without a dielectric factor.
+		// Refracting interfaces use Fresnel (the native SPF's coating law when
+		// advertised). PerfectRefractor tint applies to transmission only;
+		// generic boundary multipliers may apply to both events. Dielectric
+		// per-unit tau follows its SPF's exiting-transmission convention.
 		RISEPel attenuation = v.attenuation;
+		if( v.isReflection && !v.attenuationAppliesToReflection )
+			attenuation = RISEPel(1,1,1);
 		if( v.attenuationIsInteriorTransmittance ) {
 			attenuation = RISEPel( 1, 1, 1 );
 			if( v.isExiting && !v.isReflection ) {
@@ -4766,14 +4778,14 @@ RISEPel ManifoldSolver::EvaluateChainThroughput(
 
 		if( v.isReflection )
 		{
-			Scalar R;
+			RISEPel R;
 			if( v.canRefract )
 			{
-				R = ComputeDielectricFresnel( cosI, eta_i, eta_t );
+				R = EvaluateVertexFresnelRGB( v, cosI, eta_i, eta_t );
 			}
 			else
 			{
-				R = 1.0;
+				R = RISEPel(1,1,1);
 			}
 			throughput = throughput * attenuation * R;
 		}
@@ -4806,10 +4818,10 @@ RISEPel ManifoldSolver::EvaluateChainThroughput(
 			// eta_i is the index on the x-receiver side, eta_t on the
 			// y-source side, in the photon's FORWARD direction.  The
 			// forward rescale is (n_receiver / n_source)^2 = (eta_i / eta_t)^2.
-			const Scalar fr = ComputeDielectricFresnel( cosI, eta_i, eta_t );
+			const RISEPel fr = EvaluateVertexFresnelRGB( v, cosI, eta_i, eta_t );
 			const Scalar eta_ratio = eta_i / eta_t;
 			const Scalar radiance_rescale = eta_ratio * eta_ratio;
-			throughput = throughput * attenuation * (1.0 - fr) * radiance_rescale;
+			throughput = throughput * attenuation * (RISEPel(1,1,1) - fr) * radiance_rescale;
 		}
 	}
 
@@ -4862,7 +4874,7 @@ Scalar ManifoldSolver::EvaluateChainThroughputNM(
 		// Cached scalar is queried at this wavelength by the seed/replay
 		// path, never selected from an RGB channel. No painter query or
 		// allocation occurs in this throughput loop.
-		Scalar attenuation = v.attenuationNM;
+		Scalar attenuation = v.isReflection && !v.attenuationAppliesToReflection ? Scalar(1) : v.attenuationNM;
 		if( v.attenuationIsInteriorTransmittance ) {
 			attenuation = v.isExiting && !v.isReflection
 				? ( attenuation == 1 ? Scalar(1)
@@ -4873,7 +4885,7 @@ Scalar ManifoldSolver::EvaluateChainThroughputNM(
 		{
 			if( v.canRefract )
 			{
-				throughput *= attenuation * ComputeDielectricFresnel( cosI, eta_i, eta_t );
+				throughput *= attenuation * EvaluateVertexFresnel( v, cosI, eta_i, eta_t, nm );
 			}
 			else {
 				throughput *= attenuation;
@@ -4881,7 +4893,7 @@ Scalar ManifoldSolver::EvaluateChainThroughputNM(
 		}
 		else
 		{
-			const Scalar fr = ComputeDielectricFresnel( cosI, eta_i, eta_t );
+			const Scalar fr = EvaluateVertexFresnel( v, cosI, eta_i, eta_t, nm );
 			const Scalar eta_ratio = eta_i / eta_t;
 			throughput *= attenuation * (1.0 - fr) * eta_ratio * eta_ratio;
 		}
@@ -6000,11 +6012,15 @@ unsigned int ManifoldSolver::ReversePhotonChainForSeed(
 			if( nm > 0 ) mv.eta = spec.ior;
 			mv.attenuation = spec.attenuation;
 			mv.attenuationNM = spec.attenuationNM;
+			mv.attenuationAppliesToReflection = spec.attenuationAppliesToReflection;
+			mv.hasCustomSpecularFresnel = spec.hasCustomSpecularFresnel;
 			mv.attenuationIsInteriorTransmittance = spec.attenuationIsInteriorTransmittance;
 			mv.canRefract  = spec.canRefract;
 		} else {
 			mv.attenuation = RISEPel( 1, 1, 1 );
 			mv.attenuationNM = 1;
+			mv.attenuationAppliesToReflection = true;
+			mv.hasCustomSpecularFresnel = false;
 			mv.attenuationIsInteriorTransmittance = false;
 			mv.canRefract  = true;
 		}
@@ -6819,12 +6835,16 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 					SpecularInfo spec = pv.pMaterial->GetSpecularInfo( rigLocal, queryIor );
 					mv.attenuation = spec.attenuation;
 					mv.attenuationNM = spec.attenuationNM;
+					mv.attenuationAppliesToReflection = spec.attenuationAppliesToReflection;
+					mv.hasCustomSpecularFresnel = spec.hasCustomSpecularFresnel;
 					mv.attenuationIsInteriorTransmittance = spec.attenuationIsInteriorTransmittance;
 					mv.canRefract  = spec.canRefract;
 				} else {
 					mv.attenuation = RISEPel( 1, 1, 1 );
-			mv.attenuationNM = 1;
-			mv.attenuationIsInteriorTransmittance = false;
+					mv.attenuationNM = 1;
+					mv.attenuationAppliesToReflection = true;
+					mv.hasCustomSpecularFresnel = false;
+					mv.attenuationIsInteriorTransmittance = false;
 					mv.canRefract  = true;   // safe default: dielectric Fresnel path
 				}
 				// Chain-vertex semantics recovered from the photon record:
@@ -7808,6 +7828,8 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 				else v.etaT = specNM.ior;
 				v.attenuation = specNM.attenuation;
 				v.attenuationNM = specNM.attenuationNM;
+				v.attenuationAppliesToReflection = specNM.attenuationAppliesToReflection;
+				v.hasCustomSpecularFresnel = specNM.hasCustomSpecularFresnel;
 				v.attenuationIsInteriorTransmittance = specNM.attenuationIsInteriorTransmittance;
 				v.canRefract  = specNM.canRefract;
 			}
@@ -8543,6 +8565,8 @@ unsigned int ManifoldSolver::BuildSnellBaseSeed(
 					rig, queryIor, nm );
 				chain[i].eta = specNM.ior;
 				chain[i].attenuationNM = specNM.attenuationNM;
+				chain[i].attenuationAppliesToReflection = specNM.attenuationAppliesToReflection;
+				chain[i].hasCustomSpecularFresnel = specNM.hasCustomSpecularFresnel;
 				chain[i].attenuationIsInteriorTransmittance = specNM.attenuationIsInteriorTransmittance;
 				// Also update the wavelength-dependent side of the
 				// (etaI, etaT) pair populated by BuildSeedChain.  The

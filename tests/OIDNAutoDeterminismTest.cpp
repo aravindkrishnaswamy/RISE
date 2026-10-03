@@ -26,7 +26,7 @@ static void FamilyPolicy()
         if(adaptive && row.adaptive) chunk << " adaptive_max_samples 40\n";
         chunk << "}\n";
         ReplaceFirstChunk(scene,"pixelpel_rasterizer",chunk.str());
-        const std::string path="/tmp/cheapbatch_policy_family_"+std::to_string(::getpid())+".RISEscene";
+        const std::string path=TestTempPath("cheapbatch_policy_family_"+std::to_string(::getpid())+".RISEscene");
         {std::ofstream f(path);f << scene;}
         IJobPriv* job=nullptr;
         const bool loaded=RISE_CreateJobPriv(&job) && job && job->LoadAsciiSceneViaCst(path.c_str());

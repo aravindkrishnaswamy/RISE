@@ -32,6 +32,8 @@ namespace RISE
 		Scalar  ior;			///< Index of refraction at this point (for refraction; 1.0 if reflection-only)
 		RISEPel attenuation;	///< Color attenuation for transmitted/reflected light (e.g., colored glass refractance)
 		Scalar attenuationNM; ///< Wavelength-resolved multiplier from GetSpecularInfoNM; never an RGB channel.
+		bool attenuationAppliesToReflection; ///< False for transmission-only refractance (PerfectRefractorSPF).
+		bool hasCustomSpecularFresnel; ///< SPF supplies a coating/interface law; query it at the solved angle.
 		bool attenuationIsInteriorTransmittance; ///< Dielectric tau per world-unit distance, paid only on an exiting transmission (same contract as DielectricSPF).
 		bool    valid;			///< True if this info was successfully computed
 		bool    clearTransmission;	///< True ONLY for a CLEAR transmissive dielectric boundary (Dielectric / PerfectRefractor): light passes into a NON-scattering medium and out the far side.  Distinguishes a clear glass shell from a subsurface-scattering surface or a coat-over-substrate (Polished), which share isSpecular && canRefract but must BLOCK a transparent shadow ray.  Default false.
@@ -55,6 +57,8 @@ namespace RISE
 		ior( 1.0 ),
 		attenuation( 1.0, 1.0, 1.0 ),
 		attenuationNM( 1.0 ),
+		attenuationAppliesToReflection( true ),
+		hasCustomSpecularFresnel( false ),
 		attenuationIsInteriorTransmittance( false ),
 		valid( false ),
 		clearTransmission( false ),
