@@ -87,7 +87,7 @@ bool RISE::Implementation::SMSDomainReplay::Query(const IMaterial& material,
     result.dielectricInterface = index != nullptr;
     result.deltaLimitProxy = finiteDielectric && !hg && s < 1000000;
     result.interiorTransmittance = info.attenuationIsInteriorTransmittance;
-    result.reflectionTint = info.attenuationAppliesToReflection;
+    result.reflectionTint = info.attenuationAppliesToReflection || polishedReflectionOnly;
     result.customFresnel = info.hasCustomSpecularFresnel;
     return std::isfinite(result.index) && result.index > 0
         && std::isfinite(result.attenuation) && result.attenuation >= 0;
