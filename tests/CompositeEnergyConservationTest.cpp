@@ -1488,9 +1488,48 @@ static void SectionK4K6( Fixtures& f )
 		}
 	}
 
+	// ---- K7: double-sided indexed mesh, front vs back (render) ---------
+	//  The refracted-frame substrate record is built from the RAY-FACING
+	//  frame (CoatedBRDF::MakeSubstrateRecord).  A double_sided
+	//  indexedmesh_geometry flips both normals toward the ray, so the same
+	//  coated GGX quad must render identically whichever winding faces the
+	//  camera.  Left half: winding facing AWAY from the camera; right half:
+	//  facing it.  A directional light 30 deg off the normal reaches both
+	//  only through NEE (a delta light), so the ratio is read off
+	//  GetBSDF()->value.
+	{
+		std::ostringstream sc;
+		sc << "RISE ASCII SCENE 7\n"
+		   << "film\n{\n\twidth 32\n\theight 16\n}\n\n"
+		   << "pinhole_camera\n{\n\tlocation 0 0 7.0\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
+		   << "uniformcolor_painter\n{\n\tname pnt_rd\n\tcolor 0.5 0.5 0.5\n}\n\n"
+		   << "uniformcolor_painter\n{\n\tname pnt_rs\n\tcolor 0.5 0.5 0.5\n}\n\n"
+		   << "ggx_material\n{\n\tname mat_base\n\trd pnt_rd\n\trs pnt_rs\n\talphax 0.3\n\talphay 0.3\n\tfresnel_mode schlick_f0\n}\n\n"
+		   << "coated_material\n{\n\tname mat_coat\n\tbase mat_base\n\tcoat_ior 1.5\n\tcoat_roughness 0.02\n}\n\n"
+		   << "indexedmesh_geometry\n{\n\tname qL\n\tvertex -4 -3 0\n\tvertex 0 -3 0\n\tvertex 0 3 0\n\tvertex -4 3 0\n"
+		   << "\ttriangle 0 2 1\n\ttriangle 0 3 2\n\tdouble_sided TRUE\n\tface_normals TRUE\n}\n\n"
+		   << "indexedmesh_geometry\n{\n\tname qR\n\tvertex 0 -3 0\n\tvertex 4 -3 0\n\tvertex 4 3 0\n\tvertex 0 3 0\n"
+		   << "\ttriangle 0 1 2\n\ttriangle 0 2 3\n\tdouble_sided TRUE\n\tface_normals TRUE\n}\n\n"
+		   << "standard_object\n{\n\tname objL\n\tgeometry qL\n\tmaterial mat_coat\n}\n\n"
+		   << "standard_object\n{\n\tname objR\n\tgeometry qR\n\tmaterial mat_coat\n}\n\n"
+		   << "directional_light\n{\n\tname key\n\tpower 1.0\n\tcolor 1 1 1\n\tdirection 0.5 0 0.8660254\n}\n\n";
+		for( int r = 0; r < 2; ++r ) {
+			const std::string scene = sc.str() + ( r == 0 ? PtRasterizer( false, 64 ) : BdptRasterizer( false, 64 ) );
+			CapturingRasterizerOutput* cap = 0;
+			const bool ok = Render( scene, r == 0 ? "k7_pt" : "k7_bdpt", cap, 7070u + r );
+			const double mL = ok ? RegionMean( *cap, 2, cap->width / 2 - 2 ) : -1;
+			const double mR = ok ? RegionMean( *cap, cap->width / 2 + 2, cap->width - 2 ) : -1;
+			std::cout << "    K7 double-sided indexed mesh, coated GGX, " << ( r == 0 ? "PT  " : "BDPT" )
+			          << ": back-wound " << std::setprecision(5) << mL << ", front-wound " << mR
+			          << ", ratio " << ( mR > 0 ? mL / mR : -1 ) << "  (truth 1)\n";
+			Check( ok && mR > 0 && std::fabs( mL / mR - 1.0 ) <= 0.02,
+				std::string( "[K7] double-sided indexed mesh: back-wound == front-wound coated GGX (" ) + ( r == 0 ? "PT" : "BDPT" ) + ")" );
+			if( cap ) safe_release( cap );
+		}
+	}
+
 	smooth->release(); sDelta->release();
 }
-
 
 static void SectionK( Fixtures& f )
 {
