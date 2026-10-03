@@ -495,6 +495,23 @@ static std::vector<RISEColor> TraceCompositeGrid(LoadedScene& loaded, bool exten
     integrator->release(); caster->release(); shader->release();
     return pixels;
 }
+static void CompositeCSGCases()
+{
+    for(bool reverse : {false,true}) {
+        LoadedScene loaded(Materials(true)+Mesh(true,reverse)+
+            "standard_object\n{\n name composite_child\n geometry shape\n material layers\n}\n"
+            "sphere_geometry\n{\n name tiny\n radius 0.1\n}\n"
+            "standard_object\n{\n name other\n geometry tiny\n material inner\n position 4 0 0\n}\n"
+            "csg_object\n{\n name enclosing\n obja composite_child\n objb other\n operation union\n}\n");
+        const IObject* enclosing=loaded.Object("enclosing");
+        if(!enclosing) { Check(false,"composite CSG exists"); continue; }
+        const auto hit=Hit(*enclosing,Point3(0,0,0),Vector3(0,0,1));
+        Check(hit.pMaterial==loaded.Object("composite_child")->GetMaterial(),"CSG boundary uses real composite operand material");
+        IORStack missing(1); SMSStartingMedia capture;
+        Check(!SMSDomainReplay::Capture(loaded.Scene(),Point3(0,0,0),missing,capture),
+            "DL-407 composite CSG membership uncertainty rejects anchor");
+    }
+}
 static void CompositePTCases()
 {
     for(bool nm:{false,true}) for(bool reverse : {false,true}) for(bool startInside : {false,true}) {
@@ -551,11 +568,17 @@ int main(int argc,char** argv)
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";
         return failCount?1:0;
     }
+    if(argc>1 && std::string(argv[1])=="--composite-only") {
+        CompositeCSGCases();
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";
+        return failCount?1:0;
+    }
     if(argc>1 && std::string(argv[1])=="--raster-only") {
         RasterContextCases();
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";
         return failCount?1:0;
     }
+    CompositeCSGCases();
     RasterContextCases();
     ComponentAndCrossingCases();
     NestedAndCompositeCases();
