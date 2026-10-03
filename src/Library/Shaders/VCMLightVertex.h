@@ -71,6 +71,8 @@ namespace RISE
 			kLVF_IsDelta		= 1 << 0,	///< Sampled interaction at this vertex is a delta (specular) BSDF lobe
 			kLVF_IsConnectible	= 1 << 1,	///< Material has at least one non-delta BxDF component
 			kLVF_IsBSSRDFEntry	= 1 << 2,	///< Skip: non-analytic PDF, recurrence terminates here
+			kLVF_JumpCover		= 1 << 4,	///< DL-380: a light-side subsurface jump before this vertex has an eye-family witness (jumpCover* below)
+			kLVF_JumpCoverEscape	= 1 << 5,	///< DL-380: that witness is the eye escaping to an environment root (one extra eye-walk iteration)
 			kLVF_HasVertexColor	= 1 << 3	///< Set when vColor was populated from a colored mesh hit at store time. No merge-path reader exists (verified 2026-09-11: `lv.vColor` / this bit have exactly one write site, VCMIntegrator.cpp's ConvertLightSubpath, and no reader anywhere in tree) -- the light side's material response is already folded into `throughput` by the time it reaches the store. Kept for the KD-tree layout and any future consumer.
 		};
 
@@ -84,6 +86,12 @@ namespace RISE
 			unsigned char		flags;			///< LightVertexFlags bitmask
 			unsigned short		pathLength;		///< Light-subpath bounces to reach this vertex
 			unsigned int		volumeBounces;	///< Light-subpath volume bounces to reach this vertex
+			unsigned short		jumpCoverSurface;	///< DL-380 (when kLVF_JumpCover): eye-walk surface hits a covering eye
+													///< walk needs BEYOND the merging eye subpath's own, i.e.
+													///< L(k-1) - L(w-1) (+1 for an area-root witness) -- see
+													///< BDPTUtilities::LightJumpPartition
+			unsigned short		jumpCoverVolume;	///< DL-380 (when kLVF_JumpCover): medium vertices of this light
+													///< prefix past the witness split, volumeBounces - VL(w-1)
 
 			Vector3				normal;			///< Shading normal at the vertex (BSDF-frame; merge-time BSDF eval)
 			Vector3				geomNormal;		///< Geometric flat-face normal at the vertex.
@@ -136,6 +144,8 @@ namespace RISE
 				flags( 0 ),
 				pathLength( 0 ),
 				volumeBounces( 0 ),
+				jumpCoverSurface( 0 ),
+				jumpCoverVolume( 0 ),
 				normal( 0, 0, 1 ),
 				geomNormal( 0, 0, 1 ),
 				wi( 0, 0, 0 ),

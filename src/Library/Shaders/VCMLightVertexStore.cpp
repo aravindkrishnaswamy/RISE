@@ -573,19 +573,43 @@ Scalar LightVertexStore::ComputeBBoxDiagonal() const
 	return Vector3Ops::Magnitude( d );
 }
 
+std::size_t LightVertexStore::CountOrdinaryVertices() const
+{
+	std::size_t c = 0;
+	for( std::size_t i = 0; i < mVertices.size(); i++ ) {
+		if( !( mVertices[i].flags & kLVF_JumpCover ) ) {
+			c++;
+		}
+	}
+	return c;
+}
+
 Scalar LightVertexStore::ComputeBBoxSurfaceArea() const
 {
 	if( mVertices.empty() ) {
 		return 0;
 	}
 
-	Point3 mn = mVertices[0].ptPosition;
+	// DL-380: over the ORDINARY vertices only (see the header).
+	bool any = false;
+	Point3 mn( 0, 0, 0 );
 	Point3 mx = mn;
-	for( std::size_t i = 1; i < mVertices.size(); i++ ) {
+	for( std::size_t i = 0; i < mVertices.size(); i++ ) {
+		if( mVertices[i].flags & kLVF_JumpCover ) {
+			continue;
+		}
 		const Point3& p = mVertices[i].ptPosition;
+		if( !any ) {
+			mn = mx = p;
+			any = true;
+			continue;
+		}
 		if( p.x < mn.x ) mn.x = p.x;  if( p.x > mx.x ) mx.x = p.x;
 		if( p.y < mn.y ) mn.y = p.y;  if( p.y > mx.y ) mx.y = p.y;
 		if( p.z < mn.z ) mn.z = p.z;  if( p.z > mx.z ) mx.z = p.z;
+	}
+	if( !any ) {
+		return 0;
 	}
 
 	const Scalar dx = mx.x - mn.x;
@@ -626,17 +650,28 @@ void LightVertexStore::ClampOutlierThroughputs(
 	// store's mVertices directly would let nth_element reorder photons,
 	// breaking later index-based access; the auxiliary copy is the
 	// only correct option.
+	// DL-380: the percentile is taken over the ORDINARY vertices only
+	// (not past an eye-coverable subsurface jump -- see the header), so
+	// the threshold is the pre-DL-380 one; every vertex is clamped
+	// against it.
 	const std::size_t n = mVertices.size();
 	std::vector<Scalar> lums;
 	lums.reserve( n );
 	for( std::size_t i = 0; i < n; i++ ) {
+		if( mVertices[i].flags & kLVF_JumpCover ) {
+			continue;
+		}
 		lums.push_back( LightVertexLuminance( mVertices[i].throughput ) );
+	}
+	if( lums.empty() ) {
+		return;
 	}
 
 	// Find the percentile via nth_element (O(n) average).  Clamp the
-	// index to [0, n-1] so percentile=1.0 doesn't run off the end.
-	std::size_t k = static_cast<std::size_t>( percentile * static_cast<double>( n ) );
-	if( k >= n ) k = n - 1;
+	// index to [0, m-1] so percentile=1.0 doesn't run off the end.
+	const std::size_t m = lums.size();
+	std::size_t k = static_cast<std::size_t>( percentile * static_cast<double>( m ) );
+	if( k >= m ) k = m - 1;
 	std::nth_element( lums.begin(), lums.begin() + k, lums.end() );
 	const Scalar pctValue = lums[k];
 

@@ -25,6 +25,7 @@
 
 #include "../src/Library/Shaders/VCMIntegrator.h"
 #include "../src/Library/Shaders/BDPTVertex.h"
+#include "../src/Library/Utilities/BDPTUtilities.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -427,16 +428,29 @@ static void TestMediumVertexNotEmitted()
 }
 
 //
-// Test 5: a light-side BSSRDF entry ENDS the usable light subpath
-// (DL-317).  A path through a subsurface jump is owned by the EYE-
-// sampled jump -- the light-sampled one has no reverse jump density to
-// be MIS-combined with it -- so nothing at or past the entry is stored
-// for merging and its MIS entries stay zero.  The hit where the light
-// went INTO the material is an ordinary arrival and is stored.
+// Test 5: a light-side BSSRDF entry is an MIS BARRIER (DL-317), and since
+// DL-380 the light subpath is NOT truncated there.  A path through a
+// subsurface jump is owned by the EYE-sampled jump only when the eye walk
+// can generate a covering strategy within its depth caps, which depends on
+// the eye part of the path -- so every vertex past the entry is converted
+// and stored, carrying the jump's cover (kLVF_JumpCover), and the merge
+// decides.  The entry itself carries zero state and is never stored; the
+// vertex after it carries the light-entry onward update.
+//
+// Hand derivation of the stamp (BDPTUtilities::LightJumpPartition): the
+// jump's segment is verts[0..1]; the witness is w = 1 (verts[1] usable
+// because the entry is connectible, verts[0] the root: NEE), so
+// surfaceBefore = L(0) = 0 and volumeBefore = 0.  The stored vertex
+// k = 3 has L(3) = 1 (x_o) + 0 (entry) + 1 = 2, and a merge there shares
+// it: jumpCoverSurface = L(3) - 1 - 0 = 1, jumpCoverVolume = 0.  The MIS
+// state at k = 3: the onward update from the entry is dVCM = 1/p_w with
+// p_w = next.pdfFwd * dist^2 / cos = 0.25 (dVC, dVM zeroed: only the
+// connection AT the entry exists), then the geometric update at k = 3
+// multiplies dVCM by dist^2 = 1 and divides by cosAtGen = 1: (4, 0, 0).
 //
 static void TestBSSRDFEntryAreaPdf()
 {
-	printf( "Test 5: a light-side BSSRDF entry ends the usable light subpath (DL-317)\n" );
+	printf( "Test 5: a light-side BSSRDF entry is an MIS barrier; the subpath continues with its cover (DL-317/DL-380)\n" );
 
 	std::vector<BDPTVertex> verts;
 
@@ -499,21 +513,37 @@ static void TestBSSRDFEntryAreaPdf()
 	std::vector<VCMMisQuantities> outMis;
 	VCMIntegrator::ConvertLightSubpath( verts, norm, out, &outMis );
 
-	Check( out.size() == 1, "bssrdf: only the pre-entry hit is stored (DL-317)" );
-	if( out.size() >= 1 ) {
-		Check( out[0].pathLength == 1, "bssrdf: the stored vertex is the hit where the light went in" );
+	Check( out.size() == 2, "bssrdf: the pre-entry hit and the vertex past the entry are stored (DL-380)" );
+	if( out.size() == 2 ) {
+		Check( out[0].pathLength == 1, "bssrdf: the first stored vertex is the hit where the light went in" );
+		Check( ( out[0].flags & kLVF_JumpCover ) == 0, "bssrdf: no jump precedes the pre-entry hit" );
+		Check( out[1].pathLength == 3, "bssrdf: the second stored vertex is past the entry (index 3)" );
+		Check( ( out[1].flags & kLVF_JumpCover ) != 0, "bssrdf: the past-entry vertex carries the jump's cover" );
+		Check( ( out[1].flags & kLVF_JumpCoverEscape ) == 0, "bssrdf: witness is NEE at verts[1], not an escape" );
+		Check( out[1].jumpCoverSurface == 1, "bssrdf: jumpCoverSurface = L(3) - 1 - L(0) = 1" );
+		Check( out[1].jumpCoverVolume == 0, "bssrdf: jumpCoverVolume = 0" );
+		CheckClose( out[1].mis.dVCM, 4.0, 1e-12, "bssrdf: stored past-entry dVCM = 1/p_w = 4" );
+		// The stamp decides a merge with an eye subpath of ONE surface hit
+		// (the wall of DL-375's D1): the covering eye walk needs 1 + 1 = 2
+		// hits, so at max_eye_depth 1 the light family keeps the merge and
+		// at max_eye_depth 2 the eye family owns it.
+		const BDPTUtilities::EyeWalkCaps e1 = BDPTUtilities::MakeEyeWalkCaps( 1, 64 );
+		const BDPTUtilities::EyeWalkCaps e2 = BDPTUtilities::MakeEyeWalkCaps( 2, 64 );
+		Check( !BDPTUtilities::EyeWalkCanGenerate( 1 + out[1].jumpCoverSurface, out[1].jumpCoverVolume, false, e1 ),
+			"bssrdf: at max_eye_depth 1 the eye walk cannot cover (light family keeps the merge)" );
+		Check( BDPTUtilities::EyeWalkCanGenerate( 1 + out[1].jumpCoverSurface, out[1].jumpCoverVolume, false, e2 ),
+			"bssrdf: at max_eye_depth 2 the eye walk covers (eye family owns the merge)" );
 	}
 	Check( outMis.size() == 4, "bssrdf: MIS array parallel to input" );
 	if( outMis.size() != 4 ) {
 		return;
 	}
-	// Pre-DL-317 these read dVCM = 1/pdfSurface = 2 at the entry and
-	// 1/p_w = 4 one vertex later, and the post-entry vertex was stored.
+	// Pre-DL-317 these read dVCM = 1/pdfSurface = 2 at the entry.
 	CheckClose( outMis[2].dVCM, 0.0, 1e-15, "bssrdf: no MIS state at the entry (DL-317)" );
 	CheckClose( outMis[2].dVC, 0.0, 1e-15, "bssrdf: dVC zero at the entry" );
 	CheckClose( outMis[2].dVM, 0.0, 1e-15, "bssrdf: dVM zero at the entry" );
-	CheckClose( outMis[3].dVCM, 0.0, 1e-15, "bssrdf: nothing computed past the entry (DL-317)" );
-	CheckClose( outMis[3].dVC, 0.0, 1e-15, "bssrdf: dVC zero past the entry" );
+	CheckClose( outMis[3].dVCM, 4.0, 1e-12, "bssrdf: past the entry, the light-entry onward update (DL-380)" );
+	CheckClose( outMis[3].dVC, 0.0, 1e-15, "bssrdf: dVC zero past the entry (no merge at the entry)" );
 	CheckClose( outMis[3].dVM, 0.0, 1e-15, "bssrdf: dVM zero past the entry" );
 }
 
@@ -524,7 +554,13 @@ static void TestBSSRDFEntryAreaPdf()
 // and find no NEE / connection / merge there (non-connectible) and no
 // s=0 (delta light), so this light-sampled path is the only estimator.
 // The same light feeding a DIFFUSION entry is covered (NEE at the eye's
-// entry) and cut, as is a random-walk entry under a non-delta root (s=0).
+// entry), as is a random-walk entry under a non-delta root (s=0).  Since
+// DL-380 "covered" is decided per merge against the eye walk's caps, so a
+// covered jump's past-entry vertex is stored with its cover stamped:
+// diffusion entry, witness w = 1 (NEE): jumpCoverSurface = L(3)-1-L(0) = 1;
+// non-connectible entry under an AREA root, witness w = 0 (the eye hits
+// the root, and that hit counts): surfaceBefore = -1, so
+// jumpCoverSurface = 2 - 1 + 1 = 2.  The uncoverable case gets no cover.
 // DL-375: the generator now emits EVERY entry connectible (a random-walk
 // entry prices Sw through RandomWalkEntryBSDF), so a point light feeding a
 // random-walk entry has the `connectibleEntry = true` shape and is CUT --
@@ -575,19 +611,32 @@ static void TestUncoverableLightJumpKept()
 			CheckClose( out[1].mis.dVCM, 0.0, 1e-15, "kept random-walk entry: no connection to it reserved" );
 			CheckClose( out[1].mis.dVC, 0.0, 1e-15, "kept random-walk entry: dVC zero past it" );
 			CheckClose( out[1].mis.dVM, 0.0, 1e-15, "kept random-walk entry: dVM zero past it" );
+			Check( ( out[1].flags & kLVF_JumpCover ) == 0, "point light -> random-walk entry: no eye witness, no cover" );
 		}
 	}
 	{
 		std::vector<LightVertex> out;
 		std::vector<VCMMisQuantities> outMis;
 		VCMIntegrator::ConvertLightSubpath( MakeJumpLightPath( true, true ), norm, out, &outMis );
-		Check( out.size() == 1, "point light -> diffusion entry: covered by the eye's NEE, cut" );
+		Check( out.size() == 2, "point light -> diffusion entry: past-entry vertex stored (DL-380)" );
+		if( out.size() == 2 ) {
+			Check( ( out[1].flags & kLVF_JumpCover ) != 0 && ( out[1].flags & kLVF_JumpCoverEscape ) == 0,
+				"point light -> diffusion entry: covered by the eye's NEE (cover stamped)" );
+			Check( out[1].jumpCoverSurface == 1, "point light -> diffusion entry: jumpCoverSurface 1" );
+			Check( out[1].jumpCoverVolume == 0, "point light -> diffusion entry: jumpCoverVolume 0" );
+		}
 	}
 	{
 		std::vector<LightVertex> out;
 		std::vector<VCMMisQuantities> outMis;
 		VCMIntegrator::ConvertLightSubpath( MakeJumpLightPath( false, false ), norm, out, &outMis );
-		Check( out.size() == 1, "area light -> random-walk entry: covered by the eye's s=0, cut" );
+		Check( out.size() == 2, "area light -> random-walk entry: past-entry vertex stored (DL-380)" );
+		if( out.size() == 2 ) {
+			Check( ( out[1].flags & kLVF_JumpCover ) != 0 && ( out[1].flags & kLVF_JumpCoverEscape ) == 0,
+				"area light -> random-walk entry: covered by the eye's s=0 (cover stamped)" );
+			Check( out[1].jumpCoverSurface == 2, "area light -> random-walk entry: jumpCoverSurface 2 (the root hit counts)" );
+			Check( out[1].jumpCoverVolume == 0, "area light -> random-walk entry: jumpCoverVolume 0" );
+		}
 	}
 }
 

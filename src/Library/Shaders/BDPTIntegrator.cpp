@@ -2039,12 +2039,10 @@ namespace {
 		// half of the ternary doesn't underflow.
 		// The cap is BDPTUtilities::kWalkIterationCap, which also bounds
 		// the per-iteration medium-distance stream layout (DL-283).
-		const unsigned int kCap = BDPTUtilities::kWalkIterationCap;
+		// DL-380: BDPTUtilities::WalkIterationBudget is also what the
+		// by-path subsurface partition reads, so the two cannot drift.
 		const unsigned int maxEyeTotalDepth =
-			( maxEyeDepth >= kCap ||
-			  stabilityConfig.maxVolumeBounce > kCap - maxEyeDepth ) ?
-				kCap :
-				maxEyeDepth + stabilityConfig.maxVolumeBounce;
+			BDPTUtilities::WalkIterationBudget( maxEyeDepth, stabilityConfig.maxVolumeBounce );
 
 		for( unsigned int depth = 0; depth < maxEyeTotalDepth; depth++ )
 		{
@@ -5592,14 +5590,29 @@ EvaluateAllStrategiesImpl(
 	typedef typename ConnectionResultFor<Tag>::type CR;
 	// DL-375: the by-path partition between the two subsurface-jump
 	// families (DL-317's, shared through BDPTUtilities).  A light-side jump
-	// the eye family can cover ends the usable light subpath: no strategy
-	// may use a light vertex at or past it, because the eye family already
+	// the eye family can cover takes every strategy whose light part
+	// crosses it away from the light family, because the eye family already
 	// estimates those paths and nothing MIS-combines the two families.
-	// Without a light-side jump this is lightVerts.size().  BDPT has no
-	// merging.
-	const unsigned int nLight = static_cast<unsigned int>(
-		BDPTUtilities::UsableLightSubpathLength( lightVerts, false ) );
+	// DL-380: "can cover" is decided per PATH under the eye walk's depth
+	// caps (`LightJumpPartition::Keeps`), not from vertex types alone --
+	// a covering eye strategy past `max_eye_depth` does not exist, and the
+	// light family must then keep the path.  BDPT has no merging.
+	const unsigned int nLight = static_cast<unsigned int>( lightVerts.size() );
 	const unsigned int nEye = static_cast<unsigned int>( eyeVerts.size() );
+	static thread_local BDPTUtilities::LightJumpPartition partition;
+	partition.Build( lightVerts, false );
+	const BDPTUtilities::EyeWalkCaps eyeCaps = BDPTUtilities::MakeEyeWalkCaps(
+		self.GetMaxEyeDepth(), self.GetStabilityConfig().maxVolumeBounce );
+	// Eye-walk surface count of eyeVerts[0..t-1], t = 0..nEye.
+	static thread_local std::vector<unsigned int> eyeSurface;
+	eyeSurface.assign( nEye + 1, 0u );
+	for( unsigned int t = 1; t <= nEye; t++ ) {
+		eyeSurface[t] = eyeSurface[t - 1] +
+			( BDPTUtilities::CountsAsSurfaceHit( eyeVerts[t - 1] ) ? 1u : 0u );
+	}
+	auto lightFamilyKeeps = [&]( unsigned int s, unsigned int t, unsigned int volBounces ) {
+		return s == 0 || partition.Keeps( s - 1, eyeSurface[t], volBounces, eyeCaps );
+	};
 
 	std::vector<CR> results;
 	results.reserve( (nLight + 1) * (nEye + 1) );
@@ -5647,6 +5660,9 @@ EvaluateAllStrategiesImpl(
 					(s > 0 ? lightVerts[s-1].volumeBounces : 0) +
 					(t > 0 ? eyeVerts[t-1].volumeBounces : 0);
 				if( volBounces > self.GetStabilityConfig().maxVolumeBounce ) {
+					continue;
+				}
+				if( !lightFamilyKeeps( s, t, volBounces ) ) {
 					continue;
 				}
 
@@ -5757,6 +5773,9 @@ EvaluateAllStrategiesImpl(
 					(s > 0 ? lightVerts[s-1].volumeBounces : 0) +
 					(t > 0 ? eyeVerts[t-1].volumeBounces : 0);
 				if( volBounces > self.GetStabilityConfig().maxVolumeBounce ) {
+					continue;
+				}
+				if( !lightFamilyKeeps( s, t, volBounces ) ) {
 					continue;
 				}
 
@@ -6691,12 +6710,8 @@ unsigned int GenerateLightSubpathImpl(
 	// Saturating add to avoid underflow when a scene sets maxLightDepth
 	// pathologically high (≥1024).
 	// Cap: BDPTUtilities::kWalkIterationCap (DL-283 stream layout).
-	const unsigned int kCap = BDPTUtilities::kWalkIterationCap;
 	const unsigned int maxLightTotalDepth =
-		( maxLightDepth >= kCap ||
-		  stabilityConfig.maxVolumeBounce > kCap - maxLightDepth ) ?
-			kCap :
-			maxLightDepth + stabilityConfig.maxVolumeBounce;
+		BDPTUtilities::WalkIterationBudget( maxLightDepth, stabilityConfig.maxVolumeBounce );
 
 	for( unsigned int depth = 0; depth < maxLightTotalDepth; depth++ )
 	{
