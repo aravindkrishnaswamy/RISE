@@ -41,6 +41,7 @@ namespace RISE
 		{
 		protected:
 			mutable bool smsPolicyPrepared = false;
+			mutable bool smsHasComposite = false;
 			mutable std::string smsFirstCompositeObject;
 			virtual ~ObjectManager();
 
@@ -521,7 +522,7 @@ namespace RISE
 			void PrepareForRendering() const;
 
 			// Prepared static-scene policy; read-only during worker execution.
-			bool ExtendedSMSAllowed() const { return smsPolicyPrepared && smsFirstCompositeObject.empty(); }
+			bool ExtendedSMSAllowed() const { return smsPolicyPrepared && !smsHasComposite; }
 			const std::string& FirstCompositeObject() const { return smsFirstCompositeObject; }
 
 			void InvalidateSpatialStructure() const;

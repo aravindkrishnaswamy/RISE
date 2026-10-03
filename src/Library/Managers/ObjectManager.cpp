@@ -2087,15 +2087,17 @@ void ObjectManager::PrepareForRendering() const
 
     // One decision per preparation, including hidden CSG operands. No probes
     // or IOR history can certify their absence under DL-407.
+    smsHasComposite = false;
     smsFirstCompositeObject.clear();
     for(const auto& item : items) {
         if(ObjectWrapsComposite(*item.second.first)) {
+            smsHasComposite = true;
             smsFirstCompositeObject = item.first.c_str();
             break;
         }
     }
     smsPolicyPrepared = true;
-    if(!smsFirstCompositeObject.empty()) {
+    if(smsHasComposite) {
         GlobalLog()->PrintEx(eLog_Warning,
             "Extended SMS is inert for this prepared scene: composite object '%s'; using legacy SMS and suppression.",
             smsFirstCompositeObject.c_str());
