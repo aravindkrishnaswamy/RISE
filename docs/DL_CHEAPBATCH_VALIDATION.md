@@ -494,11 +494,11 @@ triggered. No reserved implementation file was changed.
 | DL-332 | tests/SSSExteriorIndexInvarianceTest.cpp; shared records. DL-392 helper experiment withdrawn. |
 | DL-355 / 390 | tests/WeaveGapShadowTransmittanceTest.cpp; docs/DL294_NARROW_FOV_SPLAT.md; shared records. |
 | DL-340 | src/Library/Shaders/PathTracingIntegrator.cpp; tests/SMSMediumAnchorTest.cpp; tests/SMSRenderTestSupport.h; shared records. |
-| DL-347 | src/Library/Utilities/ManifoldSolver.cpp; tests/SMSEmitterDirectionTest.cpp; tests/SMSRenderTestSupport.h; shared records. |
+| DL-347 | src/Library/Utilities/ManifoldSolver.cpp; tests/SMSEmitterDirectionTest.cpp; tests/SMSRenderTestSupport.h; docs/DL44_LIGHTSAMPLE_UV.md (historical audit qualification); shared records. |
 | DL-353 / 394 | src/Library/Utilities/ManifoldSolver.cpp; tests/SMSUniformDispersionTest.cpp; tests/SMSRenderTestSupport.h; scenes/Tests/Spectral/spectral_dispersive_caustic_pt_sms_uniform.RISEscene; scenes/Tests/README.md; tests/data/cst_derive_golden.txt; shared records. |
 | DL-395 | src/Library/Utilities/ManifoldSolver.cpp and .h; SMSPhoton.h; SMSPhotonMap.cpp; tests/ManifoldSolverTest.cpp; tests/SMSUniformDispersionTest.cpp; shared records. |
 | DL-397 | src/Library/Rendering/OIDNDenoiser.cpp and .h; src/Library/Utilities/OidnConfig.h; tests/OIDNAutoDeterminismTest.cpp; docs/OIDN.md; shared records. |
-| DL-399 | tests/ExteriorIndexInvarianceTest.cpp; shared records. |
+| DL-399 | tests/ExteriorIndexInvarianceTest.cpp; tests/SSSExteriorIndexInvarianceTest.cpp (separate Part C furnace salting); shared records. |
 | DL-391 / 396 / 398 stopped | docs/DEBT_LEDGER.md; this validation record. No implementation patch for the stopped contracts. |
 
 DL-360 / 393 files (including API comment consistency):
@@ -682,7 +682,7 @@ variance bound or the separate five-default-statistic calibration used
 for DL-332/DL-355. Correcting covariance changes only the reported
 uncertainty and precision guard, not the rendered means.
 
-## Final normal integration gate
+## Pre-round4 normal integration gate (superseded below)
 
 The clean library rebuild and all17 sequential test builds exited0 with
 zero compiler warnings. The test-only covariance correction was rebuilt
@@ -778,3 +778,61 @@ focused nine-row C run passed177/0 in7.90s at unchanged bands/budgets:
 These are local n4 sample SD/sqrt(n) estimates, not a universal bound.
 Log: `/tmp/cheapbatch-r4-furnace-calibration.log`. Source mutation proof
 and refreshed full integration results follow after committing the fix.
+
+After committing11c1ca552, the new capture/precision assertions were
+retained while only the furnace salt application was removed. Checked
+red build exited0, zero warnings (26.46s); all36 per-render salt checks
+failed,141/36 in8.25s. Restoring HEAD, checked build exited0, zero
+warnings (31.88s), passed177/0 in8.34s. Logs:
+`/tmp/cheapbatch-r4-furnace-proof.json`. No production behavior change
+accompanies this test helper correction. The full18-run normal integration
+gate is now repeated on the restored final tree.
+
+The DL-352 ledger description of Part C pinning a~0.89 glass-block
+deficit is also qualified as historical: controlled calibrated DL-399
+SMS/VCM gives1.01021. The current gate does not reproduce the historical
+deficit and does not claim a solver/transport repair. DL-352 remains open
+for its dedicated displacement audit and PT-no-SMS comparison.
+
+## Final refreshed normal integration gate
+
+After the round4 furnace repair and committed red/green proof, the
+library was cleaned and rebuilt (74.39s, exit0, zero warnings); all17
+test targets built sequentially with exit0 and zero warnings. All18
+serial runs below exited0. No builds overlapped renders, and this run
+had no collection pause. The source/test tree stayed unchanged during
+the gate; subsequent edits only record results and qualify historical
+claims. No production memory/lifetime behavior changed after the clean
+focused ASan/UBSan gate.
+
+| Test / arguments | Result | Seconds |
+|---|---:|---:|
+| SourceHygieneTest | 167/0 | 1.43 |
+| CstDeriveGoldenTest | 458 MATCH; 0 DRIFT/UNCOVERED/STALE | 32.16 |
+| ManifoldSolverTest | all assertions passed | 0.22 |
+| WeaveGapShadowTransmittanceTest 1000 | 217/0 | 626.22 |
+| SSSExteriorIndexInvarianceTest --seed 0 | 451/0 | 1139.32 |
+| ExteriorIndexInvarianceTest | 275/0 | 1322.16 |
+| PTGuidingMISPartitionTest | 185/0 | 44.18 |
+| MediumInsideOutsideInvariantTest | 52/0 | 476.93 |
+| OIDNAutoDeterminismTest | 163/0 | 145.04 |
+| SMSMediumAnchorTest | 27/0 | 552.04 |
+| SMSEmitterDirectionTest | 168/0 | 61.01 |
+| SMSUniformDispersionTest | 86/0 | 274.22 |
+| SMSUniformDispersionTest --shipped | 10/0 | 0.26 |
+| SSSRadianceScalingTest | 576256/0 | 79.11 |
+| DoubleSidedEmitterTest | 34/0 | 15.31 |
+| FrameStoreTest | 123/0 | 0.72 |
+| RasterizerDefaultsConsistencyTest | 164/0 | 0.27 |
+| AgentEvalCheckTest | 2075/0 | 54.98 |
+
+Full SSS furnace: all9 precision guards pass; the smallest observed
+band/mean-SD is6.01528. The focused C pilot above remains a separate
+local estimate, not an extra independent full-suite calibration point.
+Weave base1000 and SSS seed0 repeat prior calibration inputs; their
+Part B results are not pooled as new independent calibration means.
+Exterior reproduces the final paired ratios/SDs above. Existing non-gated
+photon/known-failure diagnostics stay non-gated.
+Logs and runtimes: `/tmp/cheapbatch-review5-gate.json`.
+The final independent review verdict will be reported against the full
+resulting HEAD; this record is committed before that review.

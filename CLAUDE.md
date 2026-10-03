@@ -91,7 +91,7 @@ warning kind, and the verification commands are in [AGENTS.md](AGENTS.md) →
 
 ## High-Value Facts
 
-- **2026-10-02 (debt-cheapbatch):** OIDN Auto selects quality from a static sample-budget policy and idle backend changes rebuild its device; PT medium scatter clears the SMS anchor, SMS evaluates area emission toward the solved chain, and spectral SMS preserves sampled material coordinates while updating the interface indices at each wavelength.
+- **2026-10-02 (debt-cheapbatch):** OIDN Auto selects quality from a static sample-budget policy and idle backend changes rebuild its device; PT medium scatter clears the SMS anchor, SMS evaluates area emission toward the solved chain, and spectral SMS preserves sampled material coordinates while updating the material-side interface indices at each wavelength.
 
 - **Ward rounded poles (DL-324, 2026-09-30)**: use frame slopes and preserve range through the full Gaussian quotient (including reflectance/selection weight) across isotropic/anisotropic BRDF and SPF density/replay/companion paths. Cartesian sampler slopes preserve the folded-quarter convention without underflowed axis squares. Local scaled half-vector normalization preserves nearly opposite supported rays before squared length underflows. A normalized dot can round above one; reconstructing `acos` or `1-cos²` then fails. `Normalize(0)` preserves zero, so the exact axis pole is a finite control. [Formulation, analytic oracle and bounded scene evidence](docs/DL324_WARD_FRAME_SLOPES.md).
 
