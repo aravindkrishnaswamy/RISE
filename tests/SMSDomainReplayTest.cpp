@@ -16,6 +16,15 @@
 #include "../src/Library/Painters/UniformColorPainter.h"
 #include "../src/Library/Painters/UniformScalarPainter.h"
 
+static void ReportRecordSizes()
+{
+    std::cout<<"ABI bytes SpecularInfo="<<sizeof(SpecularInfo)<<" ManifoldVertex="<<sizeof(ManifoldVertex)
+        <<" ManifoldSolverConfig="<<sizeof(ManifoldSolverConfig)<<" SMSChainRecord="<<sizeof(SMSChainRecord)<<"\n";
+#ifdef RISE_SMS_DOMAIN_REPLAY
+    std::cout<<"internal bytes domain vertex="<<sizeof(SMSDomainVertex)<<" medium capture="<<sizeof(SMSMediumCapture)
+        <<" starting media="<<sizeof(SMSStartingMedia)<<" counters="<<sizeof(SMSDomainCounters)<<"\n";
+#endif
+}
 static bool Near(double a, double b) { return std::fabs(a-b)<1e-11; }
 static std::string Materials(bool composite)
 {
@@ -603,6 +612,7 @@ static void CompositePTCases()
 }
 int main(int argc,char** argv)
 {
+    ReportRecordSizes();
     if(argc>1 && std::string(argv[1])=="--finite-only") {
         FiniteDielectricCases();
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";
@@ -651,6 +661,7 @@ int main(int argc,char** argv)
 // their bugs. New-domain primitives above cannot compile against master.
 int main()
 {
+    ReportRecordSizes();
     LoadedScene loaded(Materials(false)+
         "expression_function2d\n{\n name tint_fn\n expr 0.2 + 0.3 * (u + v)\n}\n"
         "function2d_painter\n{\n name tint\n function2d tint_fn\n}\n"
