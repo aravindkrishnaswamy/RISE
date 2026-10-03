@@ -416,3 +416,40 @@ After each coherent production increment, apply [the independent review loop](sk
 ## Integration evidence
 
 The pre-design master gate for the attenuation integration (`a8fa56224`) is recorded in [DL_CHEAPBATCH_VALIDATION.md](DL_CHEAPBATCH_VALIDATION.md) under "Post-merge master gate". This design introduces no source changes and claims no extended-SMS render results. No ledger row is closed by this proposal.
+
+## Phase 1 implementation clarification pending (2026-10-03)
+
+Setup branch `sms-ext` brings this contract into master `ffc70c1c2` at
+`e37b8e288`. No implementation phase has passed or merged.
+
+A read-only independent composite-scope check found that the initial-domain
+reconstructibility and neutral-provider rules permit rejection, while the
+medium contract explicitly mentions composite per-instance keys and phase 1
+requires composite coverage. The document does not specify whether that
+coverage means positive support for composite enclosing media, positive
+support for composite SMS casters, or explicit conservative rejection tests.
+These are distinct obligations; enclosing-medium replay alone need not make
+the composite's internal layer walk a manifold chain.
+
+Code evidence at the setup tree:
+- `CompositeMaterial` has no `GetSpecularInfo` override; the inherited
+  `IMaterial` query returns invalid metadata.
+- `IORStackSeeding::TallyProbe` requires valid, trackable metadata, so it
+  cannot reconstruct ordinary composite membership. DL-407 already records
+  native composite start-inside and unseeded back-side limitations; its
+  historical render numbers are not new measurements for this phase.
+- `IORStack` stores identities and scalar indices, without provider or
+  intersection context.
+- `CompositeSPFImpl::BottomKey` is an internal synthetic identity.
+  `CompositeSPFImpl::ToExternal` normalizes bottom membership to the external
+  scene-object key; synthetic-key escape into PT is not assumed here.
+- `CompositeSPF` defines OUT/GAP/BELOW states and individual layer records,
+  but this design does not define proposal/pricing topology for treating an
+  entire composite walker as an SMS caster.
+
+**Requested ruling, not an adopted contract change:** either cover composites
+with conservative rejection tests in the initial extended domain and defer
+positive replay support, or specify the positive composite replay scope and
+its relationship to DL-407 before implementation. No renderer source was
+changed while awaiting this ruling. No ledger closure, gate, warning-count,
+cost, or red/green result is claimed by this clarification.
