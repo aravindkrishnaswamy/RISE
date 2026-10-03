@@ -140,6 +140,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Materials/CookTorranceBRDF.cpp"
     "${RISE_LIB}/Materials/CookTorranceSPF.cpp"
     "${RISE_LIB}/Materials/DataDrivenBSDF.cpp"
+    "${RISE_LIB}/Materials/DataDrivenSPF.cpp"
     "${RISE_LIB}/Materials/DielectricSPF.cpp"
     "${RISE_LIB}/Materials/GGXBRDF.cpp"
     "${RISE_LIB}/Materials/GGXSPF.cpp"
