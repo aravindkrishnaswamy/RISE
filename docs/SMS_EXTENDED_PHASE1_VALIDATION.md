@@ -39,6 +39,14 @@ Interleaved coherent master/candidate source builds (A=`ffc70c1c2`, B=`4108e8f96
 
 The HWSS checkpoint has a small positive cost change; no zero-overhead claim is made. The design promises no whole-render cost bound. Evidence: `.claude/logs/sms-phase1/interleaved-cost.json` and the A/B build/run logs. `SMSLegacyModeTest` alone is a finite/lit probe; hash equivalence is asserted by the interleaved driver.
 
+## Record and build diagnostics
+
+Final domain gate at `1c19bbf42`: **3253/0**, including the 328 positive polished native-law checks. Counters remain 120 attempts / 184 Newton iterations / 118 accepted / 2 rejected; no estimator retries, tails or ownership are exercised.
+
+On arm64, the diagnostic reports bytes: `SpecularInfo` 56, `ManifoldVertex` 336, `SMSChainRecord` 2176, internal `ManifoldSolverConfig` 96, `SMSDomainVertex` 1584, `SMSMediumCapture` 1264, `SMSStartingMedia` 40, and `SMSDomainCounters` 32. Public specular/vertex/chain layouts are unchanged; the config adds internal opt-in/diagnostic fields. Capture scratch holds one identity/context per enclosing object, plus temporary scene-object enumeration. This is not the later proposal scratch-budget measurement.
+
+Clean make: **376 compilation actions, exit 0, zero warnings/errors** (`final-clean-library-build.log`). Clean Xcode RISE-GUI Deployment and RISE-GUI-Opto builds: **393 CompileC actions each, exit 0, zero compiler warnings/errors**. Each emits exactly the two documented checkout/tool notices: missing `extlib/oidn/install/lib` linker search path and skipped AppIntents extraction. These are excluded under AGENTS.md's explicit instructions; no compiler warning was suppressed. Xcode source state matches the final helper: the intervening redundant polished flag change was removed.
+
 ## Acceptance gate
 
-The full individually built regression gate, clean make warning gate, Xcode Deployment/Opto builds, and fresh three-lens review remain in progress. Final results and merge provenance must replace this status before a phase is marked implemented.
+The full individually built regression gate and fresh three-lens review remain in progress. Clean make and Xcode Deployment/Opto build gates have passed. Final results and merge provenance must replace this status before a phase is marked implemented.
