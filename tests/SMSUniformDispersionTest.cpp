@@ -171,7 +171,7 @@ static void CoatingControlDL436()
     // footprint, giving a lossless single-interface
     // transmission ratio. Independent Airy normal-incidence formula; no
     // production thin-film helper is used by the oracle. A 0.0001
-    // receiver albedo bounds floor/sheet feedback below 0.0001 relative
+    // receiver albedo bounds floor/sheet feedback below 0.000101 relative
     // even for a perfectly reflecting sheet; it cannot explain a 0.1% band.
     const auto reflectance=[](double nm) {
         const double nf=std::sqrt(1.5), d=550/(4*nf);

@@ -32,7 +32,9 @@ DL-436 extends the interface law: native AR-coated `DielectricSPF` advertises
 and transmitted indices, entry/exit orientation, and wavelength. It reuses
 the SPF's AR stack, including reversed layer order on exit and its Snell/TIR
 classifier. RGB evaluates the same representative wavelengths as the SPF
-(611, 549, 465 nm). Uncoated vertices use bare Fresnel without an optional
+(611, 549, 465 nm), using the chain's existing scalar interface indices.
+It does not construct separate RGB-channel refraction geometries (DL-438).
+The RGB Airy controls deliberately use a constant IOR. Uncoated vertices use bare Fresnel without an optional
 virtual call. Coated transmission uses `1-F`, matching the native SPF;
 this is not a new general transport model for absorbing films.
 

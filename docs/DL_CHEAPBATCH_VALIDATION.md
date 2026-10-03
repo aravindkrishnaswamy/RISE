@@ -1004,8 +1004,10 @@ k2 residual1.03978 (mean SD0.00136612) remains nongated under DL-331.
 The full suite took1295.93s, so the historical ten-minute estimate is
 not the integration runtime. Dispersion includes both plane and
 double-sided indexedmesh, with/without HWSS and constant-index controls.
-Earlier full weave244/0 and SSS exterior510/0 gate reuse is justified
-above; they do not exercise the subsequently repaired helper contract.
+Earlier full SSS exterior510/0 reuse remains applicable because that target
+does not enable SMS. The earlier weave244/0 is a historical full-suite
+result: its SMS/split cases exercise the changed helper and are being
+renewed explicitly on the attenuation repair (see the final gate below).
 
 Normal-gate logs: /tmp/rise-takeover-final-gate.json. Fresh Xcode
 Deployment/Opto builds and independent review are pending at this
@@ -1201,7 +1203,7 @@ The attenuation implementation/test commit is `f3061e1abe455320b564c9ad94674d0ff
 
 Exterior retains the established Part C bands: flat slab SMS/VCM 0.996254 +/- 0.0118433, glass block 1.03898 +/- 0.011489. The existing non-gated photon nested-IOR residual remains 1.03978 +/- 0.00136612; this is not claimed fixed. The default dispersion target includes all 96 new attenuation checks. SF11's centroid shift is about -0.3125 pixels in both NM/HWSS and plane/indexedmesh; constant-index controls stay near zero. No established dispersion band was widened.
 
-The earlier full WeaveGapShadowTransmittance 244/0 and SSSExteriorIndexInvariance 510/0 results remain applicable: those targets do not enable the SMS chain-throughput paths changed by DL-434/435. The target sources and tests are unchanged since those gates. This reuse does not substitute for the full SMS and exterior gates above. Exact normal records: `/tmp/rise-dl435-final-gate.json`; per-step logs use `/tmp/rise-dl435-final-<label>.log`.
+The earlier full SSSExteriorIndexInvariance510/0 remains applicable: it does not enable SMS, and its target/fixture sources are unchanged. The earlier full WeaveGapShadowTransmittance244/0 is historical; the earlier reuse claim was too broad because its SMS/split cases include a tinted refractor ball lens. Those cases require a fresh targeted run on the attenuation repair. Neither reuse nor the targeted weave run substitutes for the full SMS and exterior gates above. Exact normal records: `/tmp/rise-dl435-final-gate.json`; per-step logs use `/tmp/rise-dl435-final-<label>.log`.
 
 ### DL-435 final clean Xcode gate and integration candidate
 
@@ -1217,6 +1219,56 @@ The refined source distinguishes transmission-only refractance, and advertises a
 
 A 32-spp n4 reflection-only upward-spot pilot is not a valid control for one sheet winding: all RGB/NM/HWSS rows are dark. The reversed winding is measurable, with quarter/white ratios1.00309/1.00043/1.00308 (render SD0.00472881/0.00244014/0.00504575). Its0.02 band exceeds three mean SDs. The dark rows expose a separate seed-coverage design question (DL-437); they are not used to claim a throughput fix. Pilot logs: `/tmp/rise-dl435-r2-interface-pilot.log`.
 
-Coating render pilot refinement: the first directional fixture was entirely dark and invalid; the distant-point fixture with receiver albedo 0.5 initially failed the single-interface oracle (60/12), because it also admits floor/sheet feedback. Reducing only the receiver albedo to 0.0001 bounds that feedback below 0.0001 relative. The corrected fixture passes 72/0 over twelve n4 pairs (RGB/NM/HWSS, Snell/uniform, both mesh windings): RGB ratios1.04015 vs independent Airy1.04016; NM/HWSS1.04166 vs1.04167; maximum render SD1.25981e-6 (mean SD6.29905e-7). The0.001 band resolves >1587 measured mean SDs and allows the finite-angle/feedback approximation. This is a control-scene correction, not a widened noisy band or an undisclosed transport repair. Pilot log: `/tmp/rise-dl435-r2-coating-pilot4.log`.
+Coating render pilot refinement: the first directional fixture was entirely dark and invalid; the distant-point fixture with receiver albedo 0.5 initially failed the single-interface oracle (60/12), because it also admits floor/sheet feedback. Reducing only the receiver albedo to 0.0001 bounds the geometric-series feedback below 0.000101 relative (rho/(1-rho)). The corrected fixture passes 72/0 over twelve n4 pairs (RGB/NM/HWSS, Snell/uniform, both mesh windings): RGB ratios1.04015 vs independent Airy1.04016; NM/HWSS1.04166 vs1.04167; maximum render SD1.25981e-6 (mean SD6.29905e-7). The0.001 band resolves >1587 measured mean SDs and allows the finite-angle/feedback approximation. This is a control-scene correction, not a widened noisy band or an undisclosed transport repair. Pilot log: `/tmp/rise-dl435-r2-coating-pilot4.log`.
 
 Round2 focused cost pilot (five trials x200,000 varying-position calls per case, same optimized make build): metadata remains SpecularInfo56 / ManifoldVertex336 bytes; 0 layers, NM: 10.71..11.33 ns/call; 0 layers, RGB: 14.06..15.00 ns/call; 1 layers, NM: 133.82..135.75 ns/call; 1 layers, RGB: 376.87..382.42 ns/call; 8 layers, NM: 558.47..573.01 ns/call; 8 layers, RGB: 1662.37..1709.14 ns/call. These are throughput-query costs, not render times; coated RGB runs three wavelength evaluations. The eight-layer cap is substantially more expensive than bare Fresnel and is used only on advertised coated vertices. Earlier pre-DL435 timing checkpoints remain historical, not a claim of a whole-render speed bound. Record: `/tmp/rise-dl435-r2-benchmark-final.log`.
+
+### Round2 committed-state failure proofs
+
+Repair commit `7bdc53cdd` is red-proved with the current tests against both committed pre-round2 source `650cca605` and committed master `115aee62e`: the ten fixed Library files (including DielectricSPF.cpp and the shared interfaces) are restored together, each library/test build succeeds with zero warnings, and each required regression run exits1. Pre-round2 unit81/103, reflection15/3, coating60/12; master unit52/132, original attenuation74/22, reflection17/1, coating60/12. Restoring HEAD yields full ManifoldSolver green (DL435184/0), attenuation96/0, reflection18/0, coating72/0. Each binary is run only after a checked successful warning-free build. Records: `/tmp/rise-dl435-r3-redproof.json` and `/tmp/rise-dl435-r3-proof-*.log`. Fresh sanitizer, integration and Xcode gates remain pending at this note.
+
+Round2 fresh sanitizer gate passes: clean instrumented library125.17s, full ManifoldSolver184/0 (build68.64s/run0.52s), attenuation96/0 (38.09s), reflection18/0 (24.46s), coating72/0 (61.76s), render target build66.29s. All builds exit0 with zero warnings; no ASan/UBSan reports. UBSan halts on error; macOS ASan leak detection is disabled, and foreign libraries are not instrumented. Records: `/tmp/rise-dl435-r3-sanitizer.json`. A fresh normal rebuild and integration/Xcode gates follow.
+
+Round2 self-audit before fresh review: the main failure surfaces are (1) event applicability drifting from native SPF reflection, pinned with real perfect-refractor RGB/NM/TIR controls and the reflection-only render; (2) coating incidence, orientation or wavelength being stale, pinned with independent Airy, native-SPF two-layer oblique/TIR, both-sided/wound mesh and photon reconstruction; (3) spectral metadata losing UV/child-Po or tau distance, pinned by retained context/distance controls; (4) silently accepting dark root-coverage rows, explicitly rejected and filed as DL-437; (5) interface/lifetime/test execution assumptions, addressed with the C++ rebuild disclosure, scoped native objects, portable temporary paths and an unconditional new deterministic gate. The existing final-root, nested-spectral-IOR and participating-medium limitations remain named rather than claimed solved.
+
+The interface-law audit additionally confirms an existing RGB model limitation by code reading: native refracting metadata selects IOR GetValuesAt.v[0], while native RGB scatter uses three channel indices; ManifoldVertex stores only scalar interface indices. The coating callback uses the SPF's three film wavelengths against that existing scalar pair, not three refraction geometries. Filed as DL-438 and asked alongside DL-437 whether to defer or extend the SMS design. The constant-IOR RGB Airy controls do not claim to cover dispersive RGB geometry. No runtime magnitude or convergence result is claimed for this code-reading finding.
+
+Sibling metadata-adapter audit: the native DielectricMaterial forwards metadata and SPF to the same DielectricSPF; mirrors/refractors forward to their own SPF. Composite and Coated adapters do not advertise this delta-specular metadata, so they do not accidentally forward a custom-law flag to an unsupported wrapper callback. Polished and SSS native specular metadata retain their neutral surface multipliers and default custom-law flag. This is a code-reading audit, not a new render-coverage claim.
+
+Round2 fresh integration progress on repair commit `7bdc53cdd`: clean normal library61.37s, zero warnings; SourceHygiene169/0; CST458 MATCH/0 DRIFT/0 UNCOVERED/0 STALE; full Manifold184/0; full Exterior299/0 (1298.21s; flatslab0.996254 +/-0.0118433 and glassblock1.03898 +/-0.011489 at the existing bands); PTGuiding185/0; Medium52/0 (424.48s); OIDN163/0 (128.66s). All builds and runs exit0, with zero build warnings. Further integration targets and clean Xcode builds are still running; this is not a final or zero-P1 verdict. Records: `/tmp/rise-dl435-r3-final-gate.json`.
+
+### Round2 completed normal and Xcode gate
+
+Production repair commit `7bdc53cdd` passes all 37 fresh normal build/run steps after a clean library rebuild (61.37s). Every target was built individually with checked exit0 and zero compiler warnings before its sequential run with `RISE_MEDIA_PATH` set. The only subsequent test edit corrects the feedback-bound comment to0.000101; that comment was compiled by this normal gate.
+
+| Target | Build (s) | Run (s) | Result |
+|---|---:|---:|---|
+| SourceHygieneTest | 5.82 | 1.49 | 169/0 |
+| CstDeriveGoldenTest | 24.64 | 27.55 | 458 MATCH; zero DRIFT/UNCOVERED/STALE |
+| ManifoldSolverTest | 7.31 | 0.39 | 184/0 plus legacy assertions |
+| ExteriorIndexInvarianceTest | 24.56 | 1298.21 | 299/0 |
+| PTGuidingMISPartitionTest | 23.69 | 40.25 | 185/0 |
+| MediumInsideOutsideInvariantTest | 23.49 | 424.48 | 52/0 |
+| OIDNAutoDeterminismTest | 24.05 | 128.66 | 163/0 |
+| SMSMediumAnchorTest | 23.14 | 493.18 | 27/0 |
+| SMSEmitterDirectionTest | 23.32 | 231.25 | 344/0 |
+| SMSUniformDispersionTest | 23.41 | 417.03 | 300/0 |
+| SSSRadianceScalingTest | 23.90 | 73.31 | 576256/0 |
+| DoubleSidedEmitterTest | 23.36 | 14.60 | 34/0 |
+| FrameStoreTest | 2.82 | 0.75 | 123/0 |
+| RasterizerDefaultsConsistencyTest | 6.72 | 0.30 | 164/0 |
+| AgentEvalCheckTest | 36.71 | 48.53 | 2075/0 |
+| TransparentShadowPartitionTest | 24.21 | 65.59 | 42/0 |
+| OpenSheetIndexConventionTest | 23.27 | 42.40 | 24/0 |
+
+The shipped dispersion scenes additionally pass10/0 (0.25s). Existing exterior bands and the ungated photon residual reported above are unchanged. The expanded default dispersion includes attenuation96/0, reflection18/0 and coating72/0; its coating maximum mean SD is8.22e-7, below the retained0.001 band. All established bands remain unchanged. Records: `/tmp/rise-dl435-r3-final-gate.json`.
+
+Fresh clean Xcode Deployment and Opto builds pass in57.07s and100.85s, with zero compiler/linker warnings. Each has only the AppIntents metadata notice excluded by AGENTS.md. The same CPU-only OIDN2.5.0 dependency and checkout-only links are used; actual GPU transitions remain unmeasured. Records: `/tmp/rise-dl435-r3-xcode-gate.json`. The fresh relevant weave SMS/split and portable temporary-directory checks are recorded below.
+
+### Round2 weave and portable temporary-directory gates
+
+Fresh WeaveGapShadowTransmittanceTest build exits0 with zero warnings (24.70s); `WEAVE_GAP_FILTER=sms,split` passes31/0 in182.24s. The three split SMS on/off ratios are0.98352 (perfect refractor),1.03394 (native dielectric) and0.99735 (perfect refractor HWSS), within their unchanged established bands. This fresh run covers the tinted ball-lens throughput paths missed by the earlier reuse note. Other non-SMS weave groups retain their earlier full244/0 evidence; the full non-SMS SSS exterior510/0 evidence also remains applicable. Records: `/tmp/rise-dl435-r3-extra-gate.json`.
+
+With TMPDIR set to the worktree-local `.claude/test-tmp space` and inherited RISE_OPTIONS_FILE cleared, already checked normal binaries pass reflection18/0 (3.17s) and OIDN policy112/0 (0.12s); exit cleanup leaves zero temporary entries. This checks macOS custom-directory handling and spaces, not a Windows execution claim. Records: `/tmp/rise-dl435-r3-temp-gate.json` and driver log.
+
+The complete current tree is ready for fresh independent review. DL-437 reflection seed coverage and DL-438 RGB channel-index geometry are pending user design dispositions; neither is silently treated as an approved deferral. The ledger recount is287 main rows,47 open and240 prospectively closed, unique IDs through438 (next439;404/405 remain unused). Master remains clean at115aee62e. No merge or push has occurred.
