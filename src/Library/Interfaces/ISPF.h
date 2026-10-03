@@ -303,6 +303,55 @@ namespace RISE
 			return 0;
 		}
 
+		//! DL-341.  True when every DELTA-tagged transmission this SPF emits
+		//! leaves along the Snell refraction of the incoming direction about
+		//! the shading normal (a pass-through being the index-matched case),
+		//! or along a warp of it described by DeltaTransmissionWarpExponent /
+		//! DeltaTransmissionWarpPdf.  CompositeSPF's layered evaluator
+		//! connects a substrate to the exit through such a transmission by
+		//! inverting Snell's law; an SPF whose delta-tagged transmissions are
+		//! whole stochastic walks (CompositeSPF itself, used as another
+		//! composite's top) answers false, and that transport is walked.
+		virtual bool DeltaTransmissionIsRefraction() const
+		{
+			return true;
+		}
+
+		//! DL-297.  The Phong exponent N of the angular WARP this SPF applies
+		//! to its DELTA-TAGGED transmission at this record and wavelength
+		//! (`nm <= 0` selects the RGB pipe): a `DielectricSPF` with a finite
+		//! `scattering` perturbs its Snell direction by a `cos^N` lobe,
+		//! clipped to the crossing half-space (DL-111), and still tags the
+		//! ray delta.  Negative when that transmission is an ideal delta
+		//! (no warp), and also when its warp has no single-exponent Phong
+		//! form -- a Henyey-Greenstein warp (which keeps a delta part), or
+		//! a per-channel RGB warp / dispersion -- so a caller then treats
+		//! the transmission as ideal.  The default: no warp.
+		virtual Scalar DeltaTransmissionWarpExponent(
+			const RayIntersectionGeometric& ri,							///< [in] Hit (only its painters' position is read)
+			const Scalar nm												///< [in] Wavelength, or <= 0 for the RGB pipe
+			) const
+		{
+			return -1;
+		}
+
+		//! DL-297.  The solid-angle density with which the warped delta
+		//! transmission of the ray arriving along `ri.ray.Dir()` lands at
+		//! the unit direction `w`: exactly the density of the draw Scatter
+		//! makes (its clip and DL-111 re-derivation included), 0 off its
+		//! support.  Meaningful only where DeltaTransmissionWarpExponent is
+		//! non-negative at the same record; CompositeSPF's layered
+		//! evaluator prices a warped coat's exit with it.
+		virtual Scalar DeltaTransmissionWarpPdf(
+			const RayIntersectionGeometric& ri,							///< [in] Hit (ray direction = the incoming direction)
+			const Vector3& w,											///< [in] Unit outgoing direction
+			const Scalar nm,											///< [in] Wavelength, or <= 0 for the RGB pipe
+			const IORStack& ior_stack									///< [in] Index of refraction stack
+			) const
+		{
+			return 0;
+		}
+
 		/// Evaluate the spectral throughput weight (krayNM) for a
 		/// previously sampled scattered ray at a different wavelength.
 		///

@@ -2579,6 +2579,11 @@ namespace {
 			v.scatterIncomingDistance = ri.geometric.range;
 			v.normal = ri.geometric.vNormal;
 			v.geomNormal = ri.geometric.vGeomNormal;
+			v.bGeomNormalOrientedToRay = ri.geometric.bGeomNormalOrientedToRay;
+			v.bGeomNormalRayDerived = ri.geometric.bGeomNormalRayDerived;
+			v.bOpenSheet = ri.geometric.bOpenSheet;
+			v.bProvablyNoInterior = ri.geometric.bProvablyNoInterior;
+			v.bGeomNormalOpposesArrival = ri.geometric.GeomNormalOpposesArrival();
 			v.onb = ri.geometric.onb;
 			v.ptCoord = ri.geometric.ptCoord;
 			v.ptCoord1 = ri.geometric.ptCoord1;
@@ -7065,6 +7070,11 @@ unsigned int GenerateLightSubpathImpl(
 		v.isLightSubpathVertex = true;
 		v.normal = ri.geometric.vNormal;
 		v.geomNormal = ri.geometric.vGeomNormal;
+		v.bGeomNormalOrientedToRay = ri.geometric.bGeomNormalOrientedToRay;
+		v.bGeomNormalRayDerived = ri.geometric.bGeomNormalRayDerived;
+		v.bOpenSheet = ri.geometric.bOpenSheet;
+		v.bProvablyNoInterior = ri.geometric.bProvablyNoInterior;
+		v.bGeomNormalOpposesArrival = ri.geometric.GeomNormalOpposesArrival();
 		v.onb = ri.geometric.onb;
 		v.ptCoord = ri.geometric.ptCoord;
 		v.ptCoord1 = ri.geometric.ptCoord1;
