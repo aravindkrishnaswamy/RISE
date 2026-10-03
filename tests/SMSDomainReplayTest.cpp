@@ -106,6 +106,20 @@ static void NestedAndCompositeCases()
             auto hit=Hit(*outer,Point3(0,0,3),Vector3(0,0,-1));
             SMSNativeMaterialQuery q;
             Check(!SMSDomainReplay::Query(*hit.pMaterial,hit.geometric,unseeded,SMSQueryDomain::RGB(1),q),"composite caster rejected");
+            Check(!SMSDomainReplay::Query(*hit.pMaterial,hit.geometric,unseeded,SMSQueryDomain::NM(550),q),"NM composite caster rejected");
+            SMSDomainVertex record(hit.geometric); record.geometry.position=hit.geometric.ptIntersection;
+            record.geometry.normal=hit.geometric.vNormal; record.geometry.geomNormal=hit.geometric.UnflippedGeomNormal();
+            record.geometry.pObject=outer; record.geometry.pMaterial=hit.pMaterial;
+            record.geometry.isReflection=false;
+            std::vector<SMSDomainVertex> records{record};
+            ManifoldSolverConfig config; config.biased=true; config.domainCounters=&domainCounters;
+            ManifoldSolver* solver=new ManifoldSolver(config);
+            RandomNumberGenerator random(19); IndependentSampler sampler(random);
+            const auto rejected=solver->SolveDomain(Point3(0,0,3),Vector3(0,0,-1),Point3(0,0,-3),Vector3(0,0,1),
+                loaded.Scene(),unseeded,SMSQueryDomain::RGB(1),records,sampler,1e-4);
+            Check(!rejected.valid&&rejected.specularChain.empty()&&rejected.contributionNM==0,
+                "unsupported composite record is an ordinary zero solve trial");
+            solver->release();
             continue;
         }
         for(auto domain : {SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(550),SMSQueryDomain::NM(650)}) {
@@ -121,14 +135,28 @@ static void NestedAndCompositeCases()
         }
     }
 }
-static void SolvedRootCases()
+static double FilmReflectance(double ni,double nt,double cosine,double nm)
+{
+    const double nf=std::sqrt(1.5), thickness=550/(4*nf), sin2=1-cosine*cosine;
+    const double cf=std::sqrt(1-ni*ni*sin2/(nf*nf)), ct=std::sqrt(1-ni*ni*sin2/(nt*nt));
+    const double phase=4*3.14159265358979323846*nf*thickness*cf/nm;
+    const auto airy=[phase](double a,double b) {
+        return (a*a+b*b+2*a*b*std::cos(phase))/(1+a*a*b*b+2*a*b*std::cos(phase));
+    };
+    const double rs=airy((ni*cosine-nf*cf)/(ni*cosine+nf*cf),(nf*cf-nt*ct)/(nf*cf+nt*ct));
+    const double rp=airy((nf*cosine-ni*cf)/(nf*cosine+ni*cf),(nt*cf-nf*ct)/(nt*cf+nf*ct));
+    return (rs+rp)/2;
+}
+static void SolvedRootCases(bool coated=false)
 {
     // Off-seed tint is evaluated at the converged point, independently of
     // its seed value. All three RGB geometries use their authored indices.
     std::string scene=Materials(false)+
         "expression_function2d\n{\n name tint_fn\n expr 0.2 + 0.3 * (u + v)\n}\n"
         "function2d_painter\n{\n name tint\n function2d tint_fn\n}\n"
-        "perfectrefractor_material\n{\n name tinted\n refractance tint\n ior triple\n}\n"
+        +std::string(coated?
+        "dielectric_material\n{\n name tinted\n tau 1\n ior triple\n scattering 1000000\n ar_layer 1.224744871391589 112.26827987812466 0\n}\n":
+        "perfectrefractor_material\n{\n name tinted\n refractance tint\n ior triple\n}\n")+
         "clippedplane_geometry\n{\n name sheet\n pta -2 -2 0\n ptb -2 2 0\n ptc 2 2 0\n ptd 2 -2 0\n doublesided TRUE\n}\n"
         "standard_object\n{\n name caster\n geometry sheet\n material tinted\n}\n";
     LoadedScene loaded(scene);
@@ -165,10 +193,13 @@ static void SolvedRootCases()
         const double sinT=std::sqrt(outgoing.x*outgoing.x+outgoing.y*outgoing.y);
         Check(std::fabs(v.etaI*sinI-v.etaT*sinT)<1e-8,"native-index Snell oracle at solved geometry");
         const double tint=seed.pMaterial->GetSpecularInfo(vertices[0].context,stack).attenuation[c];
-        const double fresnel=Optics::CalculateDielectricReflectanceCosine(std::fabs(incoming.z),v.etaI,v.etaT);
+        const double fresnel=coated?FilmReflectance(v.etaI,v.etaT,std::fabs(incoming.z),ScalarPainterRGB::kChannelNM[c]):
+            Optics::CalculateDielectricReflectanceCosine(std::fabs(incoming.z),v.etaI,v.etaT);
         const double expected=tint*(1-fresnel)*(v.etaI/v.etaT)*(v.etaI/v.etaT);
         Check(Near(result.contribution[c],expected),"solved-root tint and native Fresnel refreshed");
-        Check(tint!=seed.pMaterial->GetSpecularInfo(seed.geometric,stack).attenuation[c],"off-seed tint oracle distinguishes stale query");
+        if(coated) Check(!Near(fresnel,FilmReflectance(v.etaI,v.etaT,1,ScalarPainterRGB::kChannelNM[c])),
+            "solved-incidence coating oracle distinguishes seed-normal pricing");
+        else Check(tint!=seed.pMaterial->GetSpecularInfo(seed.geometric,stack).attenuation[c],"off-seed tint oracle distinguishes stale query");
     }
     Check(positions.size()==3 && positions[0]!=positions[1] && positions[1]!=positions[2],"distinct authored RGB indices produce distinct roots");
     solver->release();
@@ -256,8 +287,93 @@ static void ClosedChainCases()
         }
     }
 }
+static void SF11AbsentExteriorCases()
+{
+    const auto sf11=[](double nm) {
+        const double x=nm*nm/1000000;
+        return std::sqrt(1+1.73759695*x/(x-0.013188707)+0.313747346*x/(x-0.0623068142)
+            +1.898781010*x/(x-155.23629));
+    };
+    for(bool reverse:{false,true}) for(int side:{-1,1}) {
+        LoadedScene loaded(Materials(false)+
+            "scalar_painter\n{\n name sf11\n sellmeier 1.73759695 0.313747346 1.898781010 0.013188707 0.0623068142 155.23629\n}\n"
+            "perfectrefractor_material\n{\n name dispersive_outer\n refractance white\n ior sf11\n}\n"+
+            Mesh(true,reverse)+
+            "standard_object\n{\n name outer\n geometry shape\n material dispersive_outer\n position 3 0 0\n scale 2 2 2\n}\n"
+            "sphere_geometry\n{\n name sphere\n radius 0.5\n}\n"
+            "standard_object\n{\n name inner_obj\n geometry sphere\n material inner\n position 3 0 0\n}\n");
+        const auto* outer=loaded.Object("outer"); const auto* inner=loaded.Object("inner_obj");
+        if(!outer || !inner) { Check(false,"SF11 controls present"); continue; }
+        const Point3 start(3.2,0,0), end(3.7,0,side*1.5);
+        auto seed=Hit(*inner,start,Vector3Ops::Normalize(Vector3Ops::mkVector3(end,start)));
+        IORStack live(1); live.SetCurrentObject(outer); live.push(sf11(611));
+        live.SetCurrentObject(inner); live.push(1.2);
+        std::vector<double> roots;
+        for(double nm:{450,550,650}) {
+            SMSDomainVertex record(seed.geometric); auto& v=record.geometry;
+            v.position=seed.geometric.ptIntersection; v.normal=seed.geometric.vNormal;
+            v.geomNormal=seed.geometric.UnflippedGeomNormal(); v.pObject=inner;
+            v.pMaterial=seed.pMaterial; v.isReflection=false;
+            std::vector<SMSDomainVertex> chain{record};
+            ManifoldSolverConfig config; config.biased=true; config.maxIterations=40;
+            config.solverThreshold=1e-9; config.domainCounters=&domainCounters;
+            ManifoldSolver* solver=new ManifoldSolver(config);
+            RandomNumberGenerator random(48); IndependentSampler sampler(random);
+            const auto result=solver->SolveDomain(start,Vector3(0,0,side),end,Vector3(0,0,-side),
+                loaded.Scene(),live,SMSQueryDomain::NM(nm),chain,sampler,1e-4);
+            Check(result.valid,"nested SF11 exterior absent from chain converges");
+            if(result.valid) {
+                const auto& root=result.specularChain[0]; roots.push_back(root.position.x);
+                Check(Near(root.etaI,1.2)&&Near(root.etaT,sf11(nm)),"independent Sellmeier index restored from starting membership");
+                const auto wi=Vector3Ops::Normalize(Vector3Ops::mkVector3(root.position,start));
+                const auto wo=Vector3Ops::Normalize(Vector3Ops::mkVector3(end,root.position));
+                Check(std::fabs(1.2*Vector3Ops::Magnitude(Vector3Ops::Cross(wi,root.geomNormal))-
+                    sf11(nm)*Vector3Ops::Magnitude(Vector3Ops::Cross(wo,root.geomNormal)))<1e-8,
+                    "nested SF11 final-root native Snell oracle");
+                std::cout<<"SF11 absent exterior reverse="<<reverse<<" side="<<side<<" nm="<<nm
+                    <<" etaT="<<root.etaT<<" x="<<root.position.x<<'\n';
+            }
+            solver->release();
+        }
+        Check(roots.size()==3&&!Near(roots[0],roots[1])&&!Near(roots[1],roots[2]),"absent SF11 exterior changes NM root geometry");
+    }
+}
+static void NativeTIRAndSheetCases()
+{
+    for(unsigned shape=0;shape<4;++shape) for(bool reverse:{false,true}) for(int side:{-1,1}) {
+        const std::string geometry=shape<2?Mesh(shape==1,reverse):shape==2?
+            "sphere_geometry\n{\n name shape\n radius 1\n}\n":
+            "clippedplane_geometry\n{\n name shape\n pta -1 -1 0\n ptb -1 1 0\n ptc 1 1 0\n ptd 1 -1 0\n doublesided TRUE\n}\n";
+        LoadedScene loaded(Materials(false)+geometry+
+            "standard_object\n{\n name caster\n geometry shape\n material glass\n position 3 0 0\n}\n");
+        const auto* object=loaded.Object("caster");
+        if(!object) { Check(false,"TIR/sheet caster"); continue; }
+        const Point3 origin=shape==2?Point3(3.6,0,0):shape==3?Point3(2.1,0,-side):Point3(2.1,0,0);
+        const Vector3 direction=shape==2?Vector3(0,0,side):Vector3(0.6,0,shape==0?-0.8:side*0.8);
+        auto hit=Hit(*object,origin,direction);
+        for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),
+            SMSQueryDomain::NM(450),SMSQueryDomain::NM(550),SMSQueryDomain::NM(650)}) {
+            IORStack stack(1); SMSNativeMaterialQuery query;
+            Check(SMSDomainReplay::Query(*hit.pMaterial,hit.geometric,stack,domain,query),"native TIR query");
+            stack.SetCurrentObject(object); stack.push(query.index);
+            const IORStack before(stack); double ni=0,nt=0,weight=0; bool exiting=false;
+            Check(SMSDomainReplay::Cross(*hit.pMaterial,object,hit.geometric,domain,true,stack,ni,nt,exiting),"R remains supported at TIR");
+            const bool expectedExit=!hit.geometric.bProvablyNoInterior||hit.geometric.TrueGeomFacing(direction)>0;
+            Check(exiting==expectedExit&&Near(ni,expectedExit?query.index:1)&&Near(nt,expectedExit?1:query.index),
+                "certified open plane uses native face rule; closed/uncertified geometry uses membership");
+            Check(stack.SameInterfaces(before),"TIR reflection does not change membership");
+            const double cosine=std::fabs(Vector3Ops::Dot(direction,hit.geometric.vNormal));
+            const bool possible=ni*std::sqrt(1-cosine*cosine)<=nt;
+            Check(SMSDomainReplay::EventWeight(*hit.pMaterial,hit.geometric,before,domain,true,exiting,ni,nt,1,weight),"native reflection priced at critical-angle control");
+            Check(Near(weight,Optics::CalculateDielectricReflectanceCosine(cosine,ni,nt)),"native reflection includes selected-domain TIR law");
+            Check(SMSDomainReplay::Cross(*hit.pMaterial,object,hit.geometric,domain,false,stack,ni,nt,exiting)==possible,
+                "impossible T is rejected in its selected domain without relabeling");
+            if(!possible) Check(stack.SameInterfaces(before),"rejected T preserves original stack");
+        }
+    }
+}
 static std::vector<RISEColor> TraceCompositeGrid(LoadedScene& loaded, bool extended,
-    bool startInside, unsigned salt)
+    bool startInside, unsigned salt, bool nm=false)
 {
     std::vector<IShaderOp*> ops;
     IShader* shader=nullptr;
@@ -289,7 +405,9 @@ static std::vector<RISEColor> TraceCompositeGrid(LoadedScene& loaded, bool exten
             RasterizerState raster{}; raster.x=x; raster.y=y;
             const Point3 origin((double(x)-3.5)*0.025,(double(y)-3.5)*0.025,startInside?0:-3);
             const Vector3 direction(0,0,startInside?-1:1);
-            sum=sum+integrator->IntegrateRay(context,raster,Ray(origin,direction),
+            if(nm) sum=sum+RISEPel(integrator->IntegrateRayNM(context,raster,Ray(origin,direction),550,
+                loaded.Scene(),*caster,sampler,nullptr,nullptr));
+            else sum=sum+integrator->IntegrateRay(context,raster,Ray(origin,direction),
                 loaded.Scene(),*caster,sampler,nullptr,nullptr);
         }
         pixels.emplace_back(sum*(1.0/32),1);
@@ -300,7 +418,7 @@ static std::vector<RISEColor> TraceCompositeGrid(LoadedScene& loaded, bool exten
 }
 static void CompositePTCases()
 {
-    for(bool reverse : {false,true}) for(bool startInside : {false,true}) {
+    for(bool nm:{false,true}) for(bool reverse : {false,true}) for(bool startInside : {false,true}) {
         std::string scene=Materials(true)+Mesh(startInside,reverse)+
             "standard_object\n{\n name composite\n geometry shape\n material layers\n scale 2 2 2\n}\n"
             "lambertian_luminaire_material\n{\n name emitter_mat\n material none\n exitance white\n scale 2\n}\n"
@@ -314,8 +432,8 @@ static void CompositePTCases()
         std::vector<double> differences, offMeans, onMeans;
         for(unsigned trial=0;trial<4;++trial) {
             const unsigned salt=SobolSequence::HashCombine(9000+trial,0x534d5344);
-            const auto off=TraceCompositeGrid(loaded,false,startInside,salt);
-            const auto on=TraceCompositeGrid(loaded,true,startInside,salt);
+            const auto off=TraceCompositeGrid(loaded,false,startInside,salt,nm);
+            const auto on=TraceCompositeGrid(loaded,true,startInside,salt,nm);
             double a=0,b=0;
             for(const auto& pixel:off) a+=(pixel.base.r+pixel.base.g+pixel.base.b)/3;
             for(const auto& pixel:on) b+=(pixel.base.r+pixel.base.g+pixel.base.b)/3;
@@ -326,7 +444,7 @@ static void CompositePTCases()
             differences.push_back(b-a); offMeans.push_back(a); onMeans.push_back(b);
         }
         const auto d=Summarize(differences), a=Summarize(offMeans), b=Summarize(onMeans);
-        std::cout << "composite PT reverse=" << reverse << " startInside=" << startInside
+        std::cout << "composite PT nm=" << nm << " reverse=" << reverse << " startInside=" << startInside
             << " off=" << a.mean << " sd=" << a.sd << " on=" << b.mean << " sd=" << b.sd
             << " paired delta=" << d.mean << " sd=" << d.sd << " n=4\n";
         Check(d.mean==0 || std::fabs(d.mean)<=3*d.sd/2,"composite mode parity within three measured mean SDs");
@@ -337,9 +455,14 @@ int main()
     ComponentAndCrossingCases();
     NestedAndCompositeCases();
     SolvedRootCases();
+    SolvedRootCases(true);
     CoatedEventCases();
     ClosedChainCases();
+    SF11AbsentExteriorCases();
+    NativeTIRAndSheetCases();
     CompositePTCases();
+    Check(domainCounters.attempts.load()==domainCounters.acceptedRoots.load()+domainCounters.rejectedRoots.load(),
+        "every domain trial is accounted as accepted or rejected");
     std::cout << "DOMAIN counters attempts=" << domainCounters.attempts.load()
         << " Newton iterations=" << domainCounters.newtonIterations.load()
         << " accepted=" << domainCounters.acceptedRoots.load()
