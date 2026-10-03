@@ -279,8 +279,16 @@ static double Render( const std::string& sceneText, const char* tag, std::vector
 	}
 
 	std::srand( g_seedBase + g_renderIndex );
-	SobolSamplerTestHooks::ValueSalt().store( g_saltRenders
-		? SobolSequence::HashCombine( 0xD295u + g_seedBase, g_renderIndex ) : 0u );
+	// Only the DL-295 section's global switch writes the salt here.  Every
+	// other caller leaves it as found: 0 (the default, and what
+	// `RenderSalted` restores) or `RenderSalted`'s own explicit salt.
+	// (DL-330 slice: this used to store 0 whenever the switch was off,
+	// silently discarding RenderSalted's salt -- its "salted repeats" all
+	// reused one Sobol' point set.)
+	if( g_saltRenders ) {
+		SobolSamplerTestHooks::ValueSalt().store(
+			SobolSequence::HashCombine( 0xD295u + g_seedBase, g_renderIndex ) );
+	}
 	g_renderIndex++;
 
 	double result = -1.0;
@@ -938,6 +946,8 @@ static void TestAreaPartitionGuard()
 // `indexedmesh_geometry` sheet.
 //////////////////////////////////////////////////////////////////////
 static void MeanSd( const std::vector<double>& v, double& mean, double& sd );
+static std::string BlackWeaveSheet( double gap );	// defined with the sms section below
+static std::string PerfectRefractorSheet( const char* ior );
 
 static std::string RastBDPTSpectral( unsigned int spp, bool hwss )
 {
@@ -962,6 +972,8 @@ struct HwssRow
 	std::string rast;
 	bool mesh;
 	double tol;		// two-sided band on mean(L)/mean(L0)/g - 1; < 0 = print only
+	int sheet;		// 0 black-yarn weave (exact g * L0); 1 DL-05's own `fabric custom` sheet (reflective
+					// yarn, NOT an exact closed form); 2 an ior-1.0 perfect refractor (exact 1 * L0)
 };
 
 //! Renders @a row's (L0, L) pair @a n times with independent Sobol' salts
@@ -977,7 +989,8 @@ static double HwssRatio( const HwssRow& row, LightKind light, double g, unsigned
 	{
 		const unsigned int salt = SobolSequence::HashCombine( saltBase + g_seedBase, r );
 		const double L0 = RenderSalted( Assemble( row.rast, ReceiverScene( light, false, 0.0, kWide ) ), "h_l0", salt );
-		const double L  = RenderSalted( Assemble( row.rast, ReceiverScene( light, true, g, kWide ) ), "h_lg",
+		const double L  = RenderSalted( Assemble( row.rast, ReceiverScene( light, true, g, kWide, false,
+			row.sheet == 1 ? std::string() : row.sheet == 2 ? PerfectRefractorSheet( "1.0" ) : BlackWeaveSheet( g ) ) ), "h_lg",
 			SobolSequence::HashCombine( salt, 0x51u ) );
 		l0s.push_back( L0 ); ls.push_back( L );
 		if( L0 > 0 ) rs.push_back( L / L0 );
@@ -994,30 +1007,57 @@ static double HwssRatio( const HwssRow& row, LightKind light, double g, unsigned
 static void TestHWSSGapContinuation()
 {
 	std::cout << "=== hwssgap: AREA closed form through the spectral rasterizers (DL-329 / DL-330) ===" << std::endl;
-	const double g = 0.3;
+	// Measurement aids: WEAVE_GAP_HWSS_G overrides the gap (gating then
+	// still applies against the overridden g); WEAVE_GAP_HWSS_ROWS keeps
+	// only rows whose label contains that substring.
+	const char* gEnv = std::getenv( "WEAVE_GAP_HWSS_G" );
+	const double g = gEnv ? std::strtod( gEnv, nullptr ) : 0.3;
+	const char* rowFilter = std::getenv( "WEAVE_GAP_HWSS_ROWS" );
+	// WEAVE_GAP_HWSS_INDEPENDENT=1: SobolSamplerTestHooks::Independent --
+	// i.i.d. draws through the identical code path, the unbiased
+	// reference no Sobol' dimension correlation can reach.
+	const bool independent = std::getenv( "WEAVE_GAP_HWSS_INDEPENDENT" ) != nullptr;
+	SobolSamplerTestHooks::Independent().store( independent );
+	if( independent ) std::cout << "  (SobolSamplerTestHooks::Independent ON)" << std::endl;
 	const unsigned int n = HwssRepeats();
+	// BLACK-yarn sheet (BlackWeaveSheet: no fibre albedo, no Fresnel):
+	// nothing reflects between the receiver and the sheet's underside, so
+	// L = g * L0 EXACTLY.  The `custom` rows are DL-05's own fixture,
+	// whose reflective yarn adds a receiver <-> sheet interreflection
+	// that is NOT negligible on this 2 x 2 patch (printed only).
 	std::vector<HwssRow> rows;
-	rows.push_back( { "PT spectral hwss=false",          RastPTSpectral( 1024, false ),   false, 0.05 } );
-	rows.push_back( { "PT spectral hwss=true",           RastPTSpectral( 1024, true ),    false, 0.05 } );
-	rows.push_back( { "PT spectral hwss=true  (mesh)",   RastPTSpectral( 1024, true ),    true,  0.05 } );
-	rows.push_back( { "BDPT RGB",                        RastBDPT( 512 ),                 false, -1.0 } );
-	rows.push_back( { "BDPT spectral hwss=false",        RastBDPTSpectral( 512, false ),  false, -1.0 } );
-	rows.push_back( { "BDPT spectral hwss=true",         RastBDPTSpectral( 512, true ),   false, -1.0 } );
-	rows.push_back( { "BDPT spectral hwss=true  (mesh)", RastBDPTSpectral( 512, true ),   true,  -1.0 } );
+	rows.push_back( { "PT RGB",                          RastPT( 1024 ),                  false, 0.03, 0 } );
+	rows.push_back( { "PT spectral hwss=false",          RastPTSpectral( 1024, false ),   false, 0.05, 0 } );
+	rows.push_back( { "PT spectral hwss=true",           RastPTSpectral( 1024, true ),    false, 0.03, 0 } );
+	rows.push_back( { "PT spectral hwss=true  (mesh)",   RastPTSpectral( 1024, true ),    true,  0.03, 0 } );
+	rows.push_back( { "BDPT RGB",                        RastBDPT( 512 ),                 false, -1.0, 0 } );
+	rows.push_back( { "BDPT spectral hwss=false",        RastBDPTSpectral( 512, false ),  false, -1.0, 0 } );
+	rows.push_back( { "BDPT spectral hwss=true",         RastBDPTSpectral( 512, true ),   false, -1.0, 0 } );
+	rows.push_back( { "BDPT spectral hwss=true  (mesh)", RastBDPTSpectral( 512, true ),   true,  -1.0, 0 } );
+	rows.push_back( { "VCM RGB",                         RastVCM( 512 ),                  false, -1.0, 0 } );
+	rows.push_back( { "PT RGB            (custom)",      RastPT( 1024 ),                  false, -1.0, 1 } );
+	rows.push_back( { "PT spectral hwss=true (custom)",  RastPTSpectral( 1024, true ),    false, -1.0, 1 } );
+	rows.push_back( { "BDPT RGB          (custom)",      RastBDPT( 512 ),                 false, -1.0, 1 } );
+	rows.push_back( { "PT RGB            (refractor 1.0)", RastPT( 1024 ),                 false, -1.0, 2 } );
+	rows.push_back( { "BDPT RGB          (refractor 1.0)", RastBDPT( 512 ),                false, -1.0, 2 } );
 	unsigned int k = 0;
 	for( const HwssRow& row : rows )
 	{
+		const unsigned int rowSalt = 0xD329u + 0x100u * k++;
+		if( rowFilter && !std::strstr( row.label, rowFilter ) ) continue;
 		double sd = 0, L0 = 0;
-		const double ratio = HwssRatio( row, kArea, g, n, 0xD329u + 0x100u * k++, sd, L0 );
+		const double ratio = HwssRatio( row, kArea, g, n, rowSalt, sd, L0 );
+		const double cf = ( row.sheet == 2 ) ? 1.0 : g;
 		char buf[320];
 		std::snprintf( buf, sizeof(buf),
 			"hwssgap %s gap %.2f: L/L0 = %.5f +/- %.5f (sd, n = %u)  (closed form %.5f, rel err %+.3f%%)  L0 = %.6g",
-			row.label, g, ratio, sd, n, g, 100.0 * ( ratio / g - 1.0 ), L0 );
+			row.label, g, ratio, sd, n, cf, 100.0 * ( ratio / cf - 1.0 ), L0 );
 		std::cout << "  " << buf << ( row.tol < 0 ? "   [printed, not gated]" : "" ) << std::endl;
 		if( row.tol >= 0 ) {
-			Check( ratio > 0 && std::fabs( ratio / g - 1.0 ) <= row.tol, buf );
+			Check( ratio > 0 && std::fabs( ratio / cf - 1.0 ) <= row.tol, buf );
 		}
 	}
+	SobolSamplerTestHooks::Independent().store( false );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1446,6 +1486,7 @@ static void ProbeReviewScenes()
 	}
 	g_saltRenders = false;
 	SobolSamplerTestHooks::ValueSalt().store( 0u );
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
 }
 
 static void TestSMSEmissionThroughGap()
@@ -1581,6 +1622,7 @@ static void TestSMSEmissionThroughGap()
 	ParityRow( "area perfectrefractor ior 1.5 open sheet PT RGB (DL-339 (b) / DL-345)", RastPTSMS( 256, true ), RastPTSMS( 256, false ),
 		ReceiverScene( kAreaLarge, true, g, kWide, false, PerfectRefractorSheet( "1.5" ) ), 0.03 );
 	g_saltRenders = false;
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
 	SobolSamplerTestHooks::ValueSalt().store( 0u );
 }
 
@@ -2000,6 +2042,12 @@ static void MeasureDesignDocTable( unsigned int nRepeats )
 	};
 	// WEAVE_GAP_TABLE_ROWS (optional): only rows whose label contains it.
 	const char* rowFilter = std::getenv( "WEAVE_GAP_TABLE_ROWS" );
+	// SALTED (DL-330 slice, 2026-10-02): every repeat is an independent
+	// randomized-QMC replicate.  Before, the repeats differed only in libc
+	// `rand()` -- which no Sobol' stream reads -- so the "+/- sd" columns
+	// of section 5's table were ~0 by construction and every BDPT/PT and
+	// VCM/PT ratio there is ONE Sobol' point set, not a distribution.
+	g_saltRenders = true;
 	for( const T& r : rows )
 	{
 		if( rowFilter && !std::strstr( r.label, rowFilter ) ) continue;
@@ -2015,6 +2063,8 @@ static void MeasureDesignDocTable( unsigned int nRepeats )
 		std::printf( "  | %-34s | PT %.5f +/- %.5f | BDPT %.5f +/- %.5f | VCM %.5f +/- %.5f | BDPT/PT %.4f | VCM/PT %.4f |\n",
 			r.label, mp, sp, mb, sb, mv, sv, mb / mp, mv / mp );
 	}
+	g_saltRenders = false;
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -2195,6 +2245,7 @@ static void MeasureCausticAudit( unsigned int n, unsigned int ptSpp, unsigned in
 	}
 	g_saltRenders = false;
 	SobolSamplerTestHooks::ValueSalt().store( 0u );
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -2271,6 +2322,7 @@ static void MeasureSplitRows( unsigned int n )
 	}
 	g_saltRenders = false;
 	SobolSamplerTestHooks::ValueSalt().store( 0u );
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
 }
 
 static void TestSMSSplitSuppression()
@@ -2295,6 +2347,7 @@ static void TestSMSSplitSuppression()
 	RatioBandRow( "ball lens caustic, perfect refractor HWSS (no-BSDF hand-off carries the record)",
 		RastPTSpectralSMS( kSplitSpp, true, true ), RastPTSpectralSMS( kSplitSpp, true, false ), BallLensCausticScene( false ), 0.96, 1.03 );
 	g_saltRenders = false;
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
 	SobolSamplerTestHooks::ValueSalt().store( 0u );
 }
 
