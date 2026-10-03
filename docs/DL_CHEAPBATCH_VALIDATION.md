@@ -1030,8 +1030,8 @@ Weave, OIDN and SMS test families. No new solver tolerance was introduced.
 Review is against master115aee62e plus the completed integration tree.
 Known user-directed design stops remain open: DL-311, DL-353 remainder,
 DL-391, DL-396 and DL-398. DL-331's printed photon residual is also open.
-The ledger's thirteen strikes and dated recount are prospective on this
-branch; they take effect on master only after zero-P1 review and no-ff
+At this pre-DL-435 checkpoint, the ledger's thirteen strikes and dated
+recount are prospective on this branch; they take effect on master only after zero-P1 review and no-ff
 integration. No pushed state is involved.
 
 ### Fresh Xcode gate, 2026-10-03
@@ -1052,6 +1052,7 @@ master integration remain pending at this committed checkpoint.
 
 ### Fresh integration review round1 — stopped before merge
 
+This is checkpoint history before the authorized DL-435 repair below.
 Three independent read-only reviewers examined300d4eff4. The test lens
 found one P1: README accidentally restored DL-348's historical VCM Z2
 deficit instead of master's corrected0.6% gate description. The transport
@@ -1149,4 +1150,61 @@ instrumented, so this is not a leak-free or all-dependency claim. These
 checks exercise the new metadata layouts, native/fallback queries,
 photon propagation, actual dielectric mesh seeds and rendered matrix.
 Records: /tmp/rise-dl435-sanitizer.json. A fresh normal clean library
-build and full integration test gate follow; their results are pending.
+build and full integration test gate follow; their results are recorded below.
+
+### DL-435 pre-review self-audit
+
+The most likely misses are (1) an NM producer or Snell/uniform/photon
+replay dropping the cached scalar or distance-law flag; (2) reversed
+photon or double-sided mesh exits charging the wrong segment; (3) a
+material boundary multiplier being mistaken for dielectric per-unit tau;
+(4) an eta-radiance factor being omitted or applied twice; and (5) a
+paired render or cost measurement claiming more than it demonstrates.
+The critical surfaces are SpecularInfo, IMaterial/ISPF defaults, native
+reflector/refractor/dielectric metadata and all ManifoldSolver metadata
+assignments and throughput callers. The deterministic 49-check gate
+exercises native/fallback queries, photon replay, scalar/radiance factors
+and both windings and approach sides of real dielectric indexed meshes.
+The sixteen-row render matrix covers NM/HWSS and Snell/uniform; its band
+is derived from salted paired ratios rather than exact-image scaling.
+
+Fresh review must also check the complete cheapbatch diff against master,
+including prior emitter-sidedness/Jacobian changes, OIDN configuration
+plumbing, test integrity, and ledger/design/cost fidelity. Existing
+user-stopped DL-391/396/398/311 and the partial DL-353 remain explicitly
+separate; this repair makes no claim to resolve their design choices.
+
+### DL-435 final normal integration gate
+
+The attenuation implementation/test commit is `f3061e1abe455320b564c9ad94674d0ffdc75973`. Subsequent edits record evidence and clarify documentation; implementation and test code remain unchanged. After the fresh sanitizer gate, a normal clean rebuild completed in 61.97s with zero compiler warnings. Every test below was built individually, its exit code and warnings checked, then run sequentially with `RISE_MEDIA_PATH` set to this worktree. All 37 normal build/run steps pass.
+
+| Target | Checked build (s) | Run (s) | Result |
+|---|---:|---:|---|
+| SourceHygieneTest | 5.98 | 1.50 | 169/0 |
+| CstDeriveGoldenTest | 25.25 | 27.90 | 458 MATCH; zero DRIFT/UNCOVERED/STALE |
+| ManifoldSolverTest | 7.32 | 0.41 | all assertions; DL-435 49/0 |
+| ExteriorIndexInvarianceTest | 25.28 | 1327.19 | 299/0 |
+| PTGuidingMISPartitionTest | 24.57 | 40.90 | 185/0 |
+| MediumInsideOutsideInvariantTest | 24.28 | 430.79 | 52/0 |
+| OIDNAutoDeterminismTest | 24.69 | 130.62 | 163/0 |
+| SMSMediumAnchorTest | 24.24 | 499.18 | 27/0 |
+| SMSEmitterDirectionTest | 24.05 | 233.83 | 344/0 |
+| SMSUniformDispersionTest | 24.02 | 411.27 | 210/0 |
+| SMSUniformDispersionTest-shipped | 24.02 | 0.26 | 10/0 |
+| SSSRadianceScalingTest | 24.31 | 73.49 | 576256/0 |
+| DoubleSidedEmitterTest | 23.95 | 14.69 | 34/0 |
+| FrameStoreTest | 2.90 | 0.75 | 123/0 |
+| RasterizerDefaultsConsistencyTest | 6.85 | 0.29 | 164/0 |
+| AgentEvalCheckTest | 37.78 | 49.93 | 2075/0 |
+| TransparentShadowPartitionTest | 24.75 | 65.97 | 42/0 |
+| OpenSheetIndexConventionTest | 23.91 | 42.64 | 24/0 |
+
+Exterior retains the established Part C bands: flat slab SMS/VCM 0.996254 +/- 0.0118433, glass block 1.03898 +/- 0.011489. The existing non-gated photon nested-IOR residual remains 1.03978 +/- 0.00136612; this is not claimed fixed. The default dispersion target includes all 96 new attenuation checks. SF11's centroid shift is about -0.3125 pixels in both NM/HWSS and plane/indexedmesh; constant-index controls stay near zero. No established dispersion band was widened.
+
+The earlier full WeaveGapShadowTransmittance 244/0 and SSSExteriorIndexInvariance 510/0 results remain applicable: those targets do not enable the SMS chain-throughput paths changed by DL-434/435. The target sources and tests are unchanged since those gates. This reuse does not substitute for the full SMS and exterior gates above. Exact normal records: `/tmp/rise-dl435-final-gate.json`; per-step logs use `/tmp/rise-dl435-final-<label>.log`.
+
+### DL-435 final clean Xcode gate and integration candidate
+
+Clean Deployment/RISE-GUI and Opto/RISE-GUI-Opto builds pass in 57.97s and 103.06s with zero compiler or linker warnings. Each build reports only the AppIntents metadata notice explicitly excluded by AGENTS.md. The checkout-only OIDN include/lib links still resolve to the same CPU-only Homebrew OIDN 2.5.0 used above; no dependency upgrade, project modification or warning suppression occurs. Actual GPU transitions remain untested. Records: `/tmp/rise-dl435-xcode-gate.json`.
+
+The complete gate evidence and prospective DL-435 closure are prepared for fresh independent review. Integration is permitted only after a fresh zero-P1 verdict on the final committed tree, followed by a no-ff merge and targeted gate at the master merge commit. The fourteen prospective closures yield 284 main rows, 44 open and 240 closed; master remains at 115aee62e until integration. The merge commit must identify the exact reviewed tree and verdicts.

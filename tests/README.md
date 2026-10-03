@@ -1375,7 +1375,7 @@ photon propagation and both sides/windings of an actual double-sided
 indexed mesh. `--dl435-benchmark` reports metadata sizes and five focused
 varying-position throughput timings. `SMSUniformDispersionTest
 --attenuation-only` runs sixteen n4 salted quarter/white sheet pairs
-(NM/HWSS, Snell/uniform, plane/indexedmesh, both windings), with a0.01
+(NM/HWSS, Snell/uniform, plane/indexedmesh, both windings), with a 0.01
 ratio band checked against three measured mean SDs. Both new regressions
 also run in their default targets. Design and limits:
 [DL435_SPECTRAL_SMS_ATTENUATION.md](../docs/DL435_SPECTRAL_SMS_ATTENUATION.md).

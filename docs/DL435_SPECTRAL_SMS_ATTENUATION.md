@@ -60,8 +60,8 @@ required wavelength painter evaluation to a query already needed for IOR;
 the throughput loop reads cached scalars. Neutral dielectric segments skip
 `pow`; absorbing exits evaluate it once per NM vertex (or per RGB channel).
 The fallback uses a LUT only for a non-neutral RGB extension. Storage-size
-and focused runtime measurements are recorded in batch validation when
-complete; no renderer-wide speed claim is made.
+and focused runtime measurements are recorded in batch validation;
+no renderer-wide speed claim is made.
 
 No exported C construction function or IJob virtual order changes.
 `SpecularInfo` and `ManifoldVertex` gain fields: C++ clients sharing these
