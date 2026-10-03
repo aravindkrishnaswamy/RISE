@@ -95,7 +95,8 @@ static bool ShadowOccludedRGB(
 	const bool bDeltaLight,		// DL-05: see RayCaster::CastShadowRayAuto
     ISampler& sampler, MediumBoundaryHits* boundaries, Scalar physicalDistance = -1,
 	GradedIndexMedium::ShadowSegmentTrack* pGradedTrack = 0,	// DL-292: see RayCaster::CastShadowRayAuto
-	const Point3* pSegmentEnd = 0
+	const Point3* pSegmentEnd = 0,
+	const bool bSMSCoversLight = false	// DL-344: SMS was evaluated at THIS point for this light (see RayCaster::CastShadowRayAuto)
 	)
 {
 	// Delegate to RayCaster::CastShadowRayAuto, the single source of truth for
@@ -104,7 +105,7 @@ static bool ShadowOccludedRGB(
 	const RayCaster* pRC = dynamic_cast<const RayCaster*>( &caster );
 	if( pRC )
 	{
-		return pRC->CastShadowRayAutoSampled( ray, dHowFar, false, 0.0, transmittance, bDeltaLight, sampler, boundaries, physicalDistance, 0, pGradedTrack, pSegmentEnd );
+		return pRC->CastShadowRayAutoSampled( ray, dHowFar, false, 0.0, transmittance, bDeltaLight, sampler, boundaries, physicalDistance, 0, pGradedTrack, pSegmentEnd , bSMSCoversLight );
 	}
 	transmittance = RISEPel( 1.0, 1.0, 1.0 );
 	return caster.CastShadowRaySampled( ray, dHowFar, sampler, boundaries, physicalDistance );
@@ -119,7 +120,8 @@ static bool ShadowOccludedNM(
 	const bool bDeltaLight,		// DL-05: see RayCaster::CastShadowRayAuto
     ISampler& sampler, MediumBoundaryHits* boundaries, Scalar physicalDistance = -1,
 	GradedIndexMedium::ShadowSegmentTrack* pGradedTrack = 0,	// DL-292: see RayCaster::CastShadowRayAuto
-	const Point3* pSegmentEnd = 0
+	const Point3* pSegmentEnd = 0,
+	const bool bSMSCoversLight = false	// DL-344: SMS was evaluated at THIS point for this light (see RayCaster::CastShadowRayAuto)
 	)
 {
 	// Delegate to RayCaster::CastShadowRayAuto (see ShadowOccludedRGB).
@@ -127,7 +129,7 @@ static bool ShadowOccludedNM(
 	if( pRC )
 	{
 		RISEPel t( 1.0, 1.0, 1.0 );
-		const bool occluded = pRC->CastShadowRayAutoSampled( ray, dHowFar, true, nm, t, bDeltaLight, sampler, boundaries, physicalDistance, 0, pGradedTrack, pSegmentEnd );
+		const bool occluded = pRC->CastShadowRayAutoSampled( ray, dHowFar, true, nm, t, bDeltaLight, sampler, boundaries, physicalDistance, 0, pGradedTrack, pSegmentEnd , bSMSCoversLight );
 		transmittance = t.r;	// NM path fills all 3 channels equally
 		return occluded;
 	}
@@ -2210,7 +2212,8 @@ RISEPel LightSampler::EvaluateDirectLighting(
 	const IORStack* pMisIorStack,
 	const Scalar neeTrainingScale,
 	const bool bBsdfSamplingPartnerExists,
-	const IORStack* pGradedIndexStack
+	const IORStack* pGradedIndexStack,
+	const bool bSMSCoversDeltaLights
 	) const
 {
     MediumBoundaryHits boundaryHits;
@@ -2622,7 +2625,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
 			{
 				const Ray rayToLight( ri.ptIntersection, vToLight );
 				if( ShadowOccludedRGB( caster, rayToLight, dist - 0.001, shadowT, true /*DL-05: delta light*/ , sampler, sampledBoundaries, dist,
-						gradedTrack ? &*gradedTrack : 0, &lightPos ) )
+						gradedTrack ? &*gradedTrack : 0, &lightPos, bSMSCoversDeltaLights ) )
 					break;
 			}
 
@@ -3151,7 +3154,8 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 	const IORStack* pMisIorStack,
 	const Scalar neeTrainingScale,
 	const bool bBsdfSamplingPartnerExists,
-	const IORStack* pGradedIndexStack
+	const IORStack* pGradedIndexStack,
+	const bool bSMSCoversDeltaLights
 	) const
 {
     MediumBoundaryHits boundaryHits;
@@ -3397,7 +3401,7 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 			{
 				const Ray rayToLight( ri.ptIntersection, vToLight );
 				if( ShadowOccludedNM( caster, rayToLight, dist - 0.001, nm, shadowTNM, true /*DL-05: delta light*/ , sampler, sampledBoundaries, dist,
-						gradedTrack ? &*gradedTrack : 0, &lightPos ) )
+						gradedTrack ? &*gradedTrack : 0, &lightPos, bSMSCoversDeltaLights ) )
 					break;
 			}
 

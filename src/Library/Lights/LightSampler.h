@@ -951,7 +951,16 @@ namespace RISE
 				//! partner pdf stacklessly yet still sits in a graded
 				//! medium.  Exactly no effect unless the stack's innermost
 				//! medium is graded.
-				const IORStack* pGradedIndexStack = 0
+				const IORStack* pGradedIndexStack = 0,
+				//! DL-344: SMS IS evaluated at THIS point (PT's PART-2
+				//! surface NEE with a manifold solver).  Only then is a
+				//! delta light's light through a specular caster SMS's to
+				//! estimate, so the delta arm keeps a binary shadow there
+				//! instead of the `transparent_shadows` walk.  Default
+				//! false: every other caller (volume in-scattering, the
+				//! BSSRDF entry NEE, the legacy chain, BDPT) has no SMS at
+				//! its point, and the walk is the light's only estimator.
+				const bool bSMSCoversDeltaLights = false
 				) const;
 
 			/// Spectral variant of EvaluateDirectLighting.
@@ -973,7 +982,9 @@ namespace RISE
 				//! DL-171/DL-209 -- see the RGB overload's doc.
 				const bool bBsdfSamplingPartnerExists = true,
 				//! DL-09 -- see the RGB overload's doc.
-				const IORStack* pGradedIndexStack = 0
+				const IORStack* pGradedIndexStack = 0,
+				//! DL-344 -- see the RGB overload's doc.
+				const bool bSMSCoversDeltaLights = false
 				) const;
 
 			/// Returns the alias-table selection probability for a given

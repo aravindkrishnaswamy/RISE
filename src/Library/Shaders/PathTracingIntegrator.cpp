@@ -1290,29 +1290,30 @@ namespace
 		const IGuidedNEEPdfBlend* pGuidedBlend = 0,
 		const IORStack* pMisIorStack = 0,
 		Scalar neeTrainingScale = 1,
-		const IORStack* pGradedIndexStack = 0 );
+		const IORStack* pGradedIndexStack = 0,
+		bool bSMSCoversDeltaLights = false );	// DL-344: true ONLY at PART 2 with a manifold solver
 	template<> inline RISEPel PTEvaluateDirectLighting<PelTag>(
 		const Implementation::LightSampler* pLS, const RayIntersectionGeometric& ri,
 		const IBSDF& brdf, const IMaterial* pMaterial, const IRayCaster& caster,
 		ISampler& sampler, const IObject* pShadingObject, const IMedium* pMedium,
 		bool isVolumeScatter, const IObject* pMediumObject, const PelTag&,
 		const IGuidedNEEPdfBlend* pGuidedBlend, const IORStack* pMisIorStack,
-		Scalar neeTrainingScale, const IORStack* pGradedIndexStack )
+		Scalar neeTrainingScale, const IORStack* pGradedIndexStack, bool bSMSCoversDeltaLights )
 	{ return pLS->EvaluateDirectLighting( ri, brdf, pMaterial, caster, sampler, pShadingObject, pMedium, isVolumeScatter, pMediumObject, pGuidedBlend, pMisIorStack, neeTrainingScale,
 		/*bBsdfSamplingPartnerExists*/ true,
 		/*pGradedIndexStack (DL-09: this walk Advances; DL-292: explicit override wins)*/
-		pGradedIndexStack ? pGradedIndexStack : pMisIorStack ); }
+		pGradedIndexStack ? pGradedIndexStack : pMisIorStack, bSMSCoversDeltaLights ); }
 	template<> inline Scalar PTEvaluateDirectLighting<NMTag>(
 		const Implementation::LightSampler* pLS, const RayIntersectionGeometric& ri,
 		const IBSDF& brdf, const IMaterial* pMaterial, const IRayCaster& caster,
 		ISampler& sampler, const IObject* pShadingObject, const IMedium* pMedium,
 		bool isVolumeScatter, const IObject* pMediumObject, const NMTag& tag,
 		const IGuidedNEEPdfBlend* pGuidedBlend, const IORStack* pMisIorStack,
-		Scalar neeTrainingScale, const IORStack* pGradedIndexStack )
+		Scalar neeTrainingScale, const IORStack* pGradedIndexStack, bool bSMSCoversDeltaLights )
 	{ return pLS->EvaluateDirectLightingNM( ri, brdf, pMaterial, tag.nm, caster, sampler, pShadingObject, pMedium, isVolumeScatter, pMediumObject, pGuidedBlend, pMisIorStack, neeTrainingScale,
 		/*bBsdfSamplingPartnerExists*/ true,
 		/*pGradedIndexStack (DL-09: this walk Advances; DL-292: explicit override wins)*/
-		pGradedIndexStack ? pGradedIndexStack : pMisIorStack ); }
+		pGradedIndexStack ? pGradedIndexStack : pMisIorStack, bSMSCoversDeltaLights ); }
 
 	// BSDF value at a surface (guiding RIS / one-sample MIS).
 	template<class Tag>
@@ -3827,7 +3828,13 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				// the FIRST vertex of this call (see the BSSRDF entry
 				// NEE's identical comment above) -- 1.0 (no-op) for every
 				// deeper iteration of this loop.
-				depth == startDepth ? castRRCompensation_ : Scalar( 1.0 ) );
+				depth == startDepth ? castRRCompensation_ : Scalar( 1.0 ),
+				/*pGradedIndexStack*/ 0,
+				// DL-344: SMS runs at this very vertex (the `if( pSolver )`
+				// block below), so an omni / spot light's light through a
+				// specular caster is SMS's; the transparent-shadow walk
+				// must not add it again.  Everywhere else it stays on.
+				/*bSMSCoversDeltaLights*/ pSolver != 0 );
 			directAll = ClampContribution( directAll, stabilityConfig.directClamp );
 			// GUI render modes P2b `indirect`: suppress NEE's direct-
 			// lighting contribution at the camera-visible vertex only --
@@ -6687,7 +6694,8 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					// 1.0 (no-op) for every deeper iteration of this loop.
 					depth == startDepth ? castRRCompensation_ : Scalar( 1.0 ),
 					/*bBsdfSamplingPartnerExists*/ true,
-					/*pGradedIndexStack (DL-09: this walk Advances)*/ &iorStack );
+					/*pGradedIndexStack (DL-09: this walk Advances)*/ &iorStack,
+					/*bSMSCoversDeltaLights (DL-344: SMS runs below)*/ pSolver != 0 );
 				directNM = ClampContribution( directNM, stabilityConfig.directClamp );
 				// GUI render modes P2b `indirect` (HWSS twin): suppress
 				// NEE's direct-lighting contribution at the camera-visible

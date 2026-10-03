@@ -5048,6 +5048,39 @@ void ManifoldSolver::ComputeLastBlockLightJacobian(
 }
 
 //////////////////////////////////////////////////////////////////////
+// JacobianLightNormal (DL-413)
+//
+//   The normal of the light-endpoint tangent plane the chain Jacobian
+//   perturbs y in.  For an AREA light it is the emitter's surface normal:
+//   G_x_v1 * |det dv1/dy| is then dw_x / dA_y in the light's own area
+//   measure, which is what its area pdf divides.  A DELTA (point) light has
+//   no area measure: the estimator is f * I(w) * cos_x * dw_x/dw_y-style,
+//   i.e. a vanishing emitter of radiance I/A facing the chain, whose area
+//   element is perpendicular to the direction it emits along.  So the
+//   plane must be perpendicular to the last segment (v_k -> y): then the
+//   (I - wo wo) projection in ComputeLastBlockLightJacobian is the
+//   identity on it and no cosine at y enters, exactly as a point light's
+//   NEE carries none.  LightSampler::SampleLight stores the light's
+//   random photon direction in `normal` for a delta light, a tangent
+//   plane at a random angle to the true one, which weighted every SMS
+//   sample by |cos| of that angle -- 1/2 on average for an omni light
+//   (row E1 of TransparentShadowPartitionTest read 0.4994).
+//////////////////////////////////////////////////////////////////////
+
+static Vector3 JacobianLightNormal(
+	const LightSample& lightSample,
+	const std::vector<ManifoldVertex>& chain
+	)
+{
+	if( !lightSample.isDelta || chain.empty() ) {
+		return lightSample.normal;
+	}
+	Vector3 d = Vector3Ops::mkVector3( lightSample.position, chain.back().position );
+	const Scalar len = Vector3Ops::NormalizeMag( d );
+	return len > NEARZERO ? d : lightSample.normal;
+}
+
+//////////////////////////////////////////////////////////////////////
 // ComputeLightToFirstVertexJacobianDet
 //
 //   Implicit-function-theorem application: the chain constraint
@@ -6054,7 +6087,7 @@ bool ManifoldSolver::ComputeTrialContribution(
 	const Scalar cosV1atX = fabs( Vector3Ops::Dot( v1SideN, dirXtoV1 ) );
 	const Scalar G_x_v1 = cosV1atX / ( distXtoV1 * distXtoV1 );
 	const Scalar detDvDy = ComputeLightToFirstVertexJacobianDet(
-		mResult.specularChain, pos, lightSample.position, lightSample.normal );
+		mResult.specularChain, pos, lightSample.position, JacobianLightNormal( lightSample, mResult.specularChain ) );
 	const Scalar smsGeometric = G_x_v1 * detDvDy;
 
 	outContribution = fBSDF
@@ -6174,7 +6207,7 @@ bool ManifoldSolver::ComputeTrialContributionNM(
 	const Scalar cosV1atX = fabs( Vector3Ops::Dot( v1SideN, dirXtoV1 ) );
 	const Scalar G_x_v1 = cosV1atX / ( distXtoV1 * distXtoV1 );
 	const Scalar detDvDy = ComputeLightToFirstVertexJacobianDet(
-		mResult.specularChain, pos, lightSample.position, lightSample.normal );
+		mResult.specularChain, pos, lightSample.position, JacobianLightNormal( lightSample, mResult.specularChain ) );
 	const Scalar smsGeometric = G_x_v1 * detDvDy;
 	if( outSmsGeometric ) {
 		*outSmsGeometric = smsGeometric;
@@ -6969,7 +7002,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		const Scalar G_x_v1 = cosV1atX / (distXtoV1 * distXtoV1);
 
 		const Scalar detDvDy = ComputeLightToFirstVertexJacobianDet(
-			mResult.specularChain, pos, lightSample.position, lightSample.normal );
+			mResult.specularChain, pos, lightSample.position, JacobianLightNormal( lightSample, mResult.specularChain ) );
 
 		const Scalar smsGeometric = G_x_v1 * detDvDy;
 
@@ -8372,7 +8405,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		const Scalar cosV1atX = fabs( Vector3Ops::Dot( v1SideN, dirXtoV1 ) );
 		const Scalar G_x_v1 = cosV1atX / (distXtoV1 * distXtoV1);
 		const Scalar detDvDy = ComputeLightToFirstVertexJacobianDet(
-			mResult.specularChain, pos, lightSample.position, lightSample.normal );
+			mResult.specularChain, pos, lightSample.position, JacobianLightNormal( lightSample, mResult.specularChain ) );
 		const Scalar smsGeometric = G_x_v1 * detDvDy;
 		// Sum-level clamp (matches RGB snell): leave the geometric term
 		// UNCLAMPED here and apply the cap to the SUM across all unique
