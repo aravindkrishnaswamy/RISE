@@ -59,8 +59,6 @@ static RayIntersection Hit(const IObject& object, Point3 origin, Vector3 directi
     Check(hit.geometric.bHit,"actual geometry intersection");
     return hit;
 }
-#ifdef RISE_SMS_DOMAIN_REPLAY
-static SMSDomainCounters domainCounters;
 class RasterTintPainter final : public UniformColorPainter {
 public:
     RasterTintPainter() : UniformColorPainter(RISEPel(0.5)) {}
@@ -71,6 +69,8 @@ public:
         return 0.2+0.01*hit.rast.y;
     }
 };
+#ifdef RISE_SMS_DOMAIN_REPLAY
+static SMSDomainCounters domainCounters;
 static void RasterContextCases()
 {
     LoadedScene loaded(Materials(false)+
@@ -81,7 +81,8 @@ static void RasterContextCases()
     auto* tint=new RasterTintPainter(); auto* index=new UniformScalarPainter(1.5);
     IMaterial* material=nullptr;
     Check(RISE_API_CreatePerfectRefractorMaterial(&material,*tint,*index),"raster-dependent native material created");
-    Check(material&&object->AssignMaterial(*material),"raster-dependent material assigned");
+    if(material) object->AssignMaterial(*material);
+    Check(material&&object->GetMaterial()==material,"raster-dependent material assigned");
     safe_release(material); tint->release(); index->release();
     const Point3 start(0,0,-2), end(1,0,2);
     RasterizerState raster{}; raster.x=17; raster.y=23;
@@ -595,6 +596,26 @@ int main()
         const double tint=actual.pMaterial->GetSpecularInfo(actual.geometric,stack).attenuation[c];
         const double f=Optics::CalculateDielectricReflectanceCosine(std::fabs(wi.z),1,n[c]);
         Check(Near(result.contribution[c],tint*(1-f)/(n[c]*n[c])),"final-root selected-domain tint/Fresnel oracle");
+    }
+    auto* pixelObject=loaded.job->GetObjects()->GetItem("caster");
+    auto* pixelTint=new RasterTintPainter(); auto* pixelIndex=new UniformScalarPainter(1.5);
+    IMaterial* pixelMaterial=nullptr;
+    Check(RISE_API_CreatePerfectRefractorMaterial(&pixelMaterial,*pixelTint,*pixelIndex),"master pixel material created");
+    if(pixelMaterial) pixelObject->AssignMaterial(*pixelMaterial);
+    Check(pixelMaterial&&pixelObject->GetMaterial()==pixelMaterial,"master pixel material assigned");
+    safe_release(pixelMaterial); pixelTint->release(); pixelIndex->release();
+    std::vector<ManifoldVertex> pixelChain;
+    solver->BuildSnellBaseSeed(start,Vector3(0,0,1),end,loaded.Scene(),*caster,pixelChain,&stack,&sampler,550);
+    const auto pixelResult=solver->Solve(start,Vector3(0,0,1),end,Vector3(0,0,-1),pixelChain,sampler);
+    Check(pixelResult.valid,"master pixel-context plane solve converges");
+    if(pixelResult.valid) {
+        const auto& root=pixelResult.specularChain[0];
+        const auto incoming=Vector3Ops::Normalize(Vector3Ops::mkVector3(root.position,start));
+        const double f=Optics::CalculateDielectricReflectanceCosine(std::fabs(incoming.z),1,1.5);
+        for(unsigned c=0;c<3;++c) Check(Near(pixelResult.contribution[c],0.37*(1-f)/2.25),
+            "master seed/solve preserves native caller pixel tint in RGB");
+        Check(Near(solver->EvaluateChainThroughputNM(start,end,pixelResult.specularChain,550),0.43*(1-f)/2.25),
+            "master seed/solve preserves native caller pixel tint in NM");
     }
     LoadedScene nested(Materials(false)+Mesh(true,false)+
         "standard_object\n{\n name outer\n geometry shape\n material glass\n scale 2 2 2\n}\n"

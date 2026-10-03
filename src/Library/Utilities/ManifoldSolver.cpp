@@ -272,7 +272,7 @@ RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::Solve
         ManifoldVertex& vertex = chain[i];
         if(vertex.isReflection != vertices[i].geometry.isReflection) return failed;
         const Vector3 direction = Vector3Ops::Normalize(Vector3Ops::mkVector3(vertex.position, previous));
-        RayIntersection hit(Ray(previous, direction), nullRasterizerState);
+        RayIntersection hit(Ray(previous, direction), vertices[i].context.rast);
         if(i != 0) hit.geometric.ray.Advance(1e-8); // native surface-walk self-hit offset
         vertex.pObject->IntersectRay(hit, RISE_INFINITY, true, true, false);
         if(!hit.geometric.bHit || hit.pObject != vertex.pObject || hit.pMaterial != vertex.pMaterial
