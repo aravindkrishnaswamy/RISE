@@ -1195,9 +1195,12 @@ round-1 report of 1.0056 was an unsalted 128-spp artifact.
   zero-variance all-delta cells 0.2 % (the mirror return 0.5 %: BDPT / VCM
   are not zero-variance there, a gate run read 0.24 %); glass/translucent
   2 % (256 spp);
-  nested 3 % (1024 spp, per-branch estimator); light inside 1024 spp, 3 %
-  glass/glass (one render), 5 % translucent / nested (mean of 3 salted
-  renders; a single render's sd is ~1.5 % per half).  Every regression the
+  nested 3 % (1024 spp, per-branch estimator); light inside 1024 spp, every
+  cell the mean of 3 salted renders: 3 % glass/glass (a single render's
+  ratio sd is ~0.5 % under PT / BDPT but ~1.1 % under VCM -- 10 repeats,
+  the round-7 review; a single VCM render in a 3 % band was a ~2.5 sd gate,
+  4-7 % spurious failures per run), 5 % translucent / nested (a single
+  render's sd is ~1.5 % per half).  Every regression the
   section exists for moves a cell by 5 % or more.
 
   **Red / green.**  Round-6 library: **187 / 83** (270 checks).  The red
@@ -1214,8 +1217,14 @@ round-1 report of 1.0056 was an unsalted 128-spp artifact.
   Round 7: **270 / 0** with the final bands (the one failure in an earlier
   run, glass/translucent single mixed light inside PT 0.155 vs 0.148, was a
   single-render ~2.5 sd excursion; four salted repeats of that cell read
-  0.150-0.154 per half, which is why light-inside translucent / nested
-  cells now average three renders).
+  0.150-0.154 per half, which is why every light-inside cell now averages
+  three renders -- glass/glass too since the round-7 review measured VCM's
+  ratio sd there).
+* **Not changed, measured (the round-7 reviewer): a camera INSIDE a closed
+  composite** (DL-407, not seeded) -- composite{glass/glass} reads 0.444
+  under PT / BDPT / VCM against the seeded plain-glass truth 2.25 (master
+  0.465).  With the stack deciding the frame, the unseeded first inside hit
+  reads as an outside arrival, meets the top and refracts as an entry.
 * **P3 -- the arrival-facing replay is correct by construction and
   unit-tested only.**  With the replay line removed from
   `PopulateRIGFromVertex` the whole matrix still reads 270 / 0 and no cell

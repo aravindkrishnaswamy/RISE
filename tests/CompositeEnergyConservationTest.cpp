@@ -1514,10 +1514,11 @@ static void SectionD9()
 //  (glass/glass, plain glass; furnace and sheets); glass/translucent
 //  furnace / sheet 2 % (256 spp); nested 3 % (1024 spp, per-branch
 //  estimator, ~0.5 % sd per half); the mirror-return sheets 0.5 % (BDPT /
-//  VCM are not zero-variance there); light-inside cells 1024 spp: glass/
-//  glass one render, 3 % (ratio sd ~0.5 %), translucent / nested the mean
-//  of 3 salted renders, 5 % (single-render sd ~1.5 % per half, so the
-//  mean's ratio sd is ~1.2 %).  Every regression this section exists for moves a cell by 5 %
+//  VCM are not zero-variance there); light-inside cells 1024 spp, each the
+//  mean of 3 salted renders: glass/glass 3 % (single-render ratio sd
+//  ~0.5 % under PT / BDPT but ~1.1 % under VCM, so the mean's is
+//  <= ~0.65 %), translucent / nested 5 % (single-render sd ~1.5 % per half,
+//  the mean's ratio sd ~1.2 %).  Every regression this section exists for moves a cell by 5 %
 //  or more (0.444 / 0.467 against 1; 0.222 against 0.105; 0.65 against
 //  0.92).
 //////////////////////////////////////////////////////////////////////
@@ -1645,10 +1646,12 @@ static void SectionM()
 					const char* gName = ( g == 0 ) ? "closed box, furnace" : ( g == 1 ) ? "closed box, light inside" : "open sheet, furnace";
 					for( int r = 0; r < 3; ++r ) {
 						const std::string scene = head + geo + objs + ( g == 1 ? lights : std::string() ) + rast( r, env, spp );
-						// A light inside a translucent / nested box is the
-						// noisiest cell (single-render sd ~1.5 % per half):
-						// mean of 3 salted replicates.
-						const int nRep = ( g == 1 && c.kind != 0 ) ? 3 : 1;
+						// A light inside the box is the noisiest geometry
+						// (single-render ratio sd up to ~1.1 % for glass/glass
+						// under VCM over 10 repeats, ~1.5 % per half for the
+						// translucent / nested boxes): mean of 3 salted
+						// replicates for every light-inside cell.
+						const int nRep = ( g == 1 ) ? 3 : 1;
 						double mL = 0, mR = 0;
 						bool ok = true;
 						for( int k = 0; k < nRep; ++k ) {
