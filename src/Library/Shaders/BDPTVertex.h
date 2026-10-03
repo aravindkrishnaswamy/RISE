@@ -311,6 +311,11 @@ namespace RISE
 		bool					bGeomNormalRayDerived;
 		bool					bOpenSheet;
 		bool					bProvablyNoInterior;
+		/// DL-341 review round 6: whether the reported `geomNormal` opposed
+		/// the ray that arrived at this vertex.  Replayed as
+		/// RayIntersectionGeometric::arrivalGeomFacing, because a rebuilt
+		/// record's ray is aimed per query and is not that arrival.
+		bool					bGeomNormalOpposesArrival;
 		/// DL-09 (docs/DL09_GRADED_INDEX_INTERIOR_FACTOR.md): the graded-index
 		/// medium the walk was travelling in when it produced this vertex
 		/// (null if that medium is not a world-position `ior` field) and the
@@ -416,6 +421,7 @@ namespace RISE
 		bGeomNormalRayDerived( false ),
 		bOpenSheet( false ),
 		bProvablyNoInterior( false ),
+		bGeomNormalOpposesArrival( false ),
 		pGradedMedium( 0 ),
 		gradedIOR( 0 ),
 		pMediumVol( 0 ),

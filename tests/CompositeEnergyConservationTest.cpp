@@ -1366,6 +1366,107 @@ static std::string BdptRasterizer( bool env, int spp )
 	return s.str();
 }
 
+//////////////////////////////////////////////////////////////////////
+//  Section D9 -- DL-341 review round 6 (2026-10-02): a closed DOUBLE-SIDED
+//  mesh box WOUND INWARD.  On such a mesh an inside hit is a FRONT face by
+//  winding, so the geometry does not flip the normal and the round-3/4
+//  flip-flag rule never unflipped it: the hit was walked from above while
+//  the stack held the object, and the exit carried an inside stack.  An
+//  all-inverted composite{glass/glass} box read 0.467 in a white furnace
+//  (back face only inverted 0.507, front only 0.980; master 1.000).
+//
+//  Each scene: left half the consistently wound box, right half the same
+//  box with the named faces' winding reversed, both double-sided, under
+//  the white env furnace, camera outside; PT, BDPT and VCM.
+//    - composite{glass/glass} and the plain-glass control are lossless and
+//      all-delta, so every sample is exactly the env radiance: both halves
+//      == 1 within rounding (VCM's merges read 1.00014 on both builds).
+//    - composite{glass/translucent} (thickness 0.05, extinction 0.2) has
+//      no closed form: the inverted box must equal the consistent one,
+//      right / left within 2 % (single 256-spp renders; the reviewer's
+//      salted repeats put the per-half sd near 0.2 %).
+//////////////////////////////////////////////////////////////////////
+static std::string VcmRasterizer( bool env, int spp )
+{
+	std::ostringstream s;
+	s << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	  << "vcm_pel_rasterizer\n{\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tsamples " << spp
+	  << "\n\tmerge_radius 0.0\n\tvc_enabled true\n\tvm_enabled true\n\toidn_denoise FALSE\n\tpixel_filter box\n";
+	if( env ) s << "\tradiance_map pnt_env\n\tradiance_scale 1.0\n\tradiance_background TRUE\n";
+	s << "}\n\nfile_rasterizeroutput\n{\n\tpattern rendered/composite_energy_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n\n";
+	return s.str();
+}
+
+static std::string WindingBox( const char* name, const std::vector<int>& reversed )
+{
+	static const int T[12][3] = { {0,2,1},{0,3,2},{4,5,6},{4,6,7},{0,1,5},{0,5,4},{3,7,6},{3,6,2},{0,4,7},{0,7,3},{1,2,6},{1,6,5} };
+	std::ostringstream s;
+	s << "indexedmesh_geometry\n{\n\tname " << name << "\n"
+	  << "\tvertex -1.95 -3 -0.5\n\tvertex 1.95 -3 -0.5\n\tvertex 1.95 3 -0.5\n\tvertex -1.95 3 -0.5\n"
+	  << "\tvertex -1.95 -3 0.5\n\tvertex 1.95 -3 0.5\n\tvertex 1.95 3 0.5\n\tvertex -1.95 3 0.5\n";
+	for( int i = 0; i < 12; ++i ) {
+		const bool rev = std::find( reversed.begin(), reversed.end(), i ) != reversed.end();
+		s << "\ttriangle " << T[i][0] << " " << ( rev ? T[i][2] : T[i][1] ) << " " << ( rev ? T[i][1] : T[i][2] ) << "\n";
+	}
+	s << "\tdouble_sided TRUE\n\tface_normals TRUE\n}\n\n";
+	return s.str();
+}
+
+static void SectionD9()
+{
+	std::cout << "\n[D9] Inward-wound closed double-sided mesh box (DL-341 round 6)\n";
+	const std::string mats =
+		"uniformcolor_painter\n{\n\tname pnt_env\n\tcolor 1.0 1.0 1.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_tr\n\tcolor 0.3 0.3 0.3\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_tt\n\tcolor 0.7 0.7 0.7\n}\n\n"
+		"dielectric_material\n{\n\tname mat_glass\n\ttau 1\n\tior 1.5\n}\n\n"
+		"dielectric_material\n{\n\tname mat_glass2\n\ttau 1\n\tior 1.5\n}\n\n"
+		"translucent_material\n{\n\tname mat_tr\n\tref pnt_tr\n\ttau pnt_tt\n\text 0\n\tN 10\n\tscattering 0\n}\n\n"
+		"composite_material\n{\n\tname mat_gg\n\ttop mat_glass\n\tbottom mat_glass2\n\tthickness 0\n\textinction 0.0\n}\n\n"
+		"composite_material\n{\n\tname mat_gtr\n\ttop mat_glass\n\tbottom mat_tr\n\tthickness 0.05\n\textinction 0.2\n}\n\n";
+	struct Mode { const char* name; std::vector<int> faces; };
+	const Mode modes[] = {
+		{ "all 12 triangles reversed", { 0,1,2,3,4,5,6,7,8,9,10,11 } },
+		{ "back (-z) face reversed",   { 0,1 } },
+		{ "front (+z) face reversed",  { 2,3 } },
+	};
+	struct MatCfg { const char* name; const char* mat; bool exact; int spp; };
+	const MatCfg cfgs[] = {
+		{ "composite{glass/glass}",       "mat_gg",    true,  128 },
+		{ "plain glass (control)",        "mat_glass", true,  128 },
+		{ "composite{glass/translucent}", "mat_gtr",   false, 256 },
+	};
+	unsigned seed = 98304u;
+	for( const Mode& m : modes ) {
+		for( const MatCfg& c : cfgs ) {
+			for( int r = 0; r < 3; ++r ) {
+				const std::string scene = std::string( "RISE ASCII SCENE 7\n" ) +
+					"film\n{\n\twidth 32\n\theight 16\n}\n\n"
+					"pinhole_camera\n{\n\tlocation 0 0 7.0\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n" +
+					mats + WindingBox( "bg", std::vector<int>() ) + WindingBox( "bw", m.faces ) +
+					"standard_object\n{\n\tname L\n\tgeometry bg\n\tposition -2 0 0\n\tmaterial " + c.mat + "\n}\n\n"
+					"standard_object\n{\n\tname Rr\n\tgeometry bw\n\tposition 2 0 0\n\tmaterial " + c.mat + "\n}\n\n" +
+					( r == 0 ? PtRasterizer( true, c.spp ) : r == 1 ? BdptRasterizer( true, c.spp ) : VcmRasterizer( true, c.spp ) );
+				CapturingRasterizerOutput* cap = 0;
+				const bool ok = Render( scene, "winding", cap, seed++ );
+				const double mL = ok ? RegionMean( *cap, 2, cap->width / 2 - 2 ) : -1;
+				const double mR = ok ? RegionMean( *cap, cap->width / 2 + 2, cap->width - 2 ) : -1;
+				if( cap ) safe_release( cap );
+				const char* in = ( r == 0 ) ? "PT  " : ( r == 1 ) ? "BDPT" : "VCM ";
+				std::cout << "    D9 " << m.name << ", " << c.name << ", " << in << ": consistent " << std::setprecision(5)
+				          << mL << " | inverted " << mR << ( c.exact ? "  (truth 1 | 1)\n" : "  (truth: equal)\n" );
+				const std::string tag = std::string( m.name ) + ", " + c.name + " (" + in + ")";
+				if( c.exact ) {
+					Check( ok && std::fabs( mL - 1.0 ) <= 0.002, "[D9] consistent box == 1, " + tag );
+					Check( ok && std::fabs( mR - 1.0 ) <= 0.002, "[D9] inward-wound box == 1, " + tag );
+				} else {
+					Check( ok && mL > 0 && std::fabs( mR / mL - 1.0 ) <= 0.02, "[D9] inward-wound box == consistent box, " + tag );
+				}
+			}
+		}
+	}
+}
+
 static void SectionD()
 {
 	std::cout << "\n[D] Render-level closed forms (PT pel, BDPT pel)\n";
@@ -1810,6 +1911,8 @@ static void SectionD()
 			}
 		}
 	}
+
+	SectionD9();
 }
 
 
@@ -2037,6 +2140,11 @@ int main( int argc, char** argv )
 		SectionT( f );
 		SectionW( f );
 		if( argc > 2 && std::string( argv[2] ) == "--render" ) SectionD();
+		std::cout << "\n" << passCount << " passed, " << failCount << " failed" << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+	if( argc > 1 && std::string( argv[1] ) == "--winding-only" ) {
+		SectionD9();
 		std::cout << "\n" << passCount << " passed, " << failCount << " failed" << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}

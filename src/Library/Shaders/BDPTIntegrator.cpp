@@ -2585,6 +2585,7 @@ namespace {
 			v.bGeomNormalRayDerived = ri.geometric.bGeomNormalRayDerived;
 			v.bOpenSheet = ri.geometric.bOpenSheet;
 			v.bProvablyNoInterior = ri.geometric.bProvablyNoInterior;
+			v.bGeomNormalOpposesArrival = ri.geometric.GeomNormalOpposesArrival();
 			v.onb = ri.geometric.onb;
 			v.ptCoord = ri.geometric.ptCoord;
 			v.ptCoord1 = ri.geometric.ptCoord1;
@@ -6946,6 +6947,7 @@ unsigned int GenerateLightSubpathImpl(
 		v.bGeomNormalRayDerived = ri.geometric.bGeomNormalRayDerived;
 		v.bOpenSheet = ri.geometric.bOpenSheet;
 		v.bProvablyNoInterior = ri.geometric.bProvablyNoInterior;
+		v.bGeomNormalOpposesArrival = ri.geometric.GeomNormalOpposesArrival();
 		v.onb = ri.geometric.onb;
 		v.ptCoord = ri.geometric.ptCoord;
 		v.ptCoord1 = ri.geometric.ptCoord1;

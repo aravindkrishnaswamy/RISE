@@ -238,6 +238,9 @@ namespace RISE
 			ri.bGeomNormalRayDerived    = vertex.bGeomNormalRayDerived;
 			ri.bOpenSheet               = vertex.bOpenSheet;
 			ri.bProvablyNoInterior      = vertex.bProvablyNoInterior;
+			// DL-341 round 6: this record's ray is aimed per query, so the
+			// live hit's arrival facing is replayed rather than re-derived.
+			ri.arrivalGeomFacing        = vertex.bGeomNormalOpposesArrival ? -1 : 1;
 			ri.onb             = vertex.onb;
 			ri.ptCoord         = vertex.ptCoord;
 			ri.ptCoord1        = vertex.ptCoord1;

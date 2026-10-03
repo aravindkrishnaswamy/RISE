@@ -2151,9 +2151,11 @@ namespace RISE
 	//! does.
 	//!
 	//! WHEN TO UNFLIP is decided by the WALK'S STACK, not by a geometry
-	//! certificate (review rounds 2 and 3): a flipped record is unflipped
-	//! only when the caller's IOR stack already holds this object -- the
-	//! ray really is inside, it crossed in earlier.  `bOpenSheet` cannot
+	//! certificate (review rounds 2 and 3): a record is unflipped only when
+	//! the caller's IOR stack already holds this object -- the ray really
+	//! is inside, it crossed in earlier -- and its reported normal faces
+	//! the arriving ray (round 6, below: a flipped record always does, an
+	//! inward-WOUND double-sided mesh does with no flip at all).  `bOpenSheet` cannot
 	//! decide it (on an indexed mesh it means NOT CERTIFIED watertight, and
 	//! one T-junction un-certifies a closed box: round 3 read 0.466 there),
 	//! and `BezierPatchGeometry` never sets it at all (DL-220), so a single
@@ -2180,15 +2182,35 @@ namespace RISE
 		const IORStack* pStack
 		)
 	{
-		const bool unflip = ri.bGeomNormalOrientedToRay && ri.HasTrueGeomSide() && !ri.bProvablyNoInterior &&
-			pStack && pStack->currentObject() && pStack->containsCurrent();
-		if( !ri.bProvablyNoInterior && !ri.bGeomNormalOrientedToRay ) {
+		// Review round 6 (2026-10-02): the unflip test is (stack says
+		// inside) AND (the reported normal faces the ARRIVING ray), not the
+		// geometry's flip flag.  Inside a closed solid the ray that reaches
+		// its boundary is leaving it, so the true outward normal is the one
+		// the arrival travels along; a reported normal that opposes the
+		// arrival points INTO the solid whoever oriented it.  The flag only
+		// covered the geometry's own orient-to-ray flip: a double-sided
+		// mesh wound INWARD reports its inward winding normal on an inside
+		// hit with no flip at all, and an all-inverted composite{glass/glass}
+		// box read 0.467 (back face only 0.507, front only 0.980; master
+		// 1.000).  A flipped record opposes its arrival by construction, so
+		// the flag is kept as a sufficient condition (exactly the round-3
+		// set, immune to a grazing rounding of the dot).  The facing is a
+		// fact of the VERTEX: a record rebuilt for a BDPT / VCM query aims
+		// its ray per query (-wi), so it carries the live hit's answer in
+		// `arrivalGeomFacing` and `GeomNormalOpposesArrival()` reads that.
+		const bool unflip = ri.HasTrueGeomSide() && !ri.bProvablyNoInterior &&
+			pStack && pStack->currentObject() && pStack->containsCurrent() &&
+			( ri.bGeomNormalOrientedToRay || ri.GeomNormalOpposesArrival() );
+		if( !ri.bProvablyNoInterior && !ri.bGeomNormalOrientedToRay && !unflip && ri.arrivalGeomFacing == 0 ) {
 			return ri;
 		}
 		store.emplace( ri );
 		store->bProvablyNoInterior = false;
+		// Every layer record copied from the frame gets a LIVE walk ray, so
+		// a replayed arrival facing must not reach a nested composite.
+		store->arrivalGeomFacing = 0;
 		if( unflip ) {
-			store->vGeomNormal = ri.UnflippedGeomNormal();
+			store->vGeomNormal = -ri.vGeomNormal;
 			if( Vector3Ops::Dot( store->vNormal, store->vGeomNormal ) < 0 ) {
 				store->vNormal = -store->vNormal;
 				store->onb.FlipW();

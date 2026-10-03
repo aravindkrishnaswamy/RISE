@@ -468,6 +468,32 @@ namespace RISE
 		//! stacked, while photon gathers and SMS still have stackless sites).  See DL-157's closure doc section 3.1.
 		bool						bProvablyNoInterior;
 
+		//! DL-341 review round 6 (2026-10-02): which way the reported
+		//! `vGeomNormal` faced the ray that ARRIVED at this hit, for a
+		//! record whose `ray` is NOT that arrival.  0 (the default, every
+		//! live hit) means "read it off `ray`": `ray` is the arrival.  A
+		//! REBUILT record (`PathVertexEval::PopulateRIGFromVertex`) aims
+		//! `ray` per query -- along `-wi`, which on a light-subpath vertex,
+		//! a reverse-pdf query or a connection is not the walk's own
+		//! incoming segment -- so it records the live hit's answer here:
+		//! -1 = the reported normal OPPOSED the arrival, +1 = it did not.
+		//! Read through `GeomNormalOpposesArrival()`.  The one consumer is
+		//! `composite_material`'s layer frame, which recovers a closed
+		//! surface's true outward normal from (stack says inside) and
+		//! (reported normal opposes the arrival) -- a fact of the VERTEX,
+		//! so it must not change with the query direction.  Not a surface
+		//! property: a consumer that builds a new record with a new live
+		//! ray from a copy of this one must reset it to 0.
+		signed char					arrivalGeomFacing;
+
+		//! True when the reported geometric normal opposed the ray that
+		//! arrived at this hit (see `arrivalGeomFacing`).
+		inline bool GeomNormalOpposesArrival() const
+		{
+			return ( arrivalGeomFacing != 0 ) ? ( arrivalGeomFacing < 0 )
+				: ( Vector3Ops::Dot( vGeomNormal, ray.Dir() ) < 0 );
+		}
+
 		//! Signed cosine in the shading hemisphere facing the incoming
 		//! view ray. Ordinary two-sided BRDFs/SPFs orient this hemisphere
 		//! to -ray.Dir(); a strong normal perturbation can cross the view
@@ -849,6 +875,7 @@ namespace RISE
 		  bGeomNormalRayDerived( false ),
 		  bOpenSheet( false ),
 		  bProvablyNoInterior( false ),
+		  arrivalGeomFacing( 0 ),
 		  bHasTexCoord1( false ),
 		  bUVGeneratorApplied( false ),
 		  pmxWorldToObject( 0 ),
@@ -885,6 +912,7 @@ namespace RISE
 		  bGeomNormalRayDerived( r.bGeomNormalRayDerived ),
 		  bOpenSheet( r.bOpenSheet ),
 		  bProvablyNoInterior( r.bProvablyNoInterior ),
+		  arrivalGeomFacing( r.arrivalGeomFacing ),
 		  ptCoord( r.ptCoord ),
 		  ptCoord1( r.ptCoord1 ),
 		  bHasTexCoord1( r.bHasTexCoord1 ),
@@ -936,6 +964,7 @@ namespace RISE
 			bGeomNormalRayDerived = r.bGeomNormalRayDerived;
 			bOpenSheet = r.bOpenSheet;
 			bProvablyNoInterior = r.bProvablyNoInterior;
+			arrivalGeomFacing = r.arrivalGeomFacing;
 			ptCoord = r.ptCoord;
 			ptCoord1 = r.ptCoord1;
 			bHasTexCoord1 = r.bHasTexCoord1;
