@@ -4543,7 +4543,7 @@ static void RunDL380Row( const char* name, const char* light, const char* kind, 
 //! wall path) against BDPT at E16/L16 (the eye family owns it, by NEE at its
 //! entry).  Band 7 %: per-render sd measured 3.4 % (E1, n = 10) and 0.7 %
 //! (E16, n = 6) on the review's runs, so the ratio sd at n = 8 / 4 is
-//! ~1.3 %; the measured offset -1.4 % (DL-351: MISWeight ignores the caps)
+//! ~1.3 %; measured -0.38 % (n=16, review round 2; +0.1..+0.4 % in gate runs)
 //! plus 4 sd is 6.6 %.
 static void RunDL380DiffusionD1Row()
 {
