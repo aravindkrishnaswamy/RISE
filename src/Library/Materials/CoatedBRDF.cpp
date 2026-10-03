@@ -500,6 +500,13 @@ namespace
 		return t * t;
 	}
 
+	//! View-cosine nodes: (j + 1) / N, so the last node is normal incidence
+	//! itself.  Every view a refracted direction can take lies in
+	//! [sqrt(1 - 1/eta^2), 1], and a node grid that stopped half a bin
+	//! short of 1 read the normal-incidence lobe from a view tilted 10 deg
+	//! (its spill toward the critical angle 1.7 % too high).
+	inline Scalar LobeViewNode( const int j ) { return Scalar( j + 1 ) / Scalar(kLobeN); }
+
 	struct LobeSpillTable
 	{
 		std::vector<Scalar> t0;		//!< F = 1
@@ -520,7 +527,7 @@ namespace
 		for( int a = 0; a < kLobeA; ++a ) {
 			const Scalar alpha = LobeAlphaNode( a );
 			for( int j = 0; j < kLobeN; ++j ) {
-				const Scalar mu = ( Scalar(j) + Scalar(0.5) ) / Scalar(kLobeN);
+				const Scalar mu = LobeViewNode( j );
 				const Scalar s  = sqrt( r_max( Scalar(0), Scalar(1) - mu * mu ) );
 				const Vector3 w = Vector3Ops::Normalize( onb.u() * s + onb.w() * mu );
 				const Vector3 wl( Vector3Ops::Dot( w, onb.u() ), Vector3Ops::Dot( w, onb.v() ), Vector3Ops::Dot( w, onb.w() ) );
@@ -676,7 +683,7 @@ namespace
 		// Hemispherical integrals on the sub-grid, against the node arrays
 		// interpolated exactly as LobeDirection reads them.
 		auto interp = []( const Scalar* arr, const Scalar mu ) {
-			Scalar xi = mu * Scalar(kLobeN) - Scalar(0.5);
+			Scalar xi = mu * Scalar(kLobeN) - Scalar(1);
 			xi = r_min( r_max( xi, Scalar(0) ), Scalar(kLobeN - 1) );
 			const int    i = r_min( (int)xi, kLobeN - 2 );
 			const Scalar f = xi - Scalar(i);
@@ -733,7 +740,7 @@ namespace
 
 	inline Scalar LobeNode( const Scalar* arr, const Scalar mu )
 	{
-		Scalar x = mu * Scalar(kLobeN) - Scalar(0.5);
+		Scalar x = mu * Scalar(kLobeN) - Scalar(1);
 		x = r_min( r_max( x, Scalar(0) ), Scalar(kLobeN - 1) );
 		const int    i = r_min( (int)x, kLobeN - 2 );
 		const Scalar f = x - Scalar(i);
