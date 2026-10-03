@@ -372,6 +372,29 @@ static void NativeTIRAndSheetCases()
         }
     }
 }
+static void FiniteDielectricCases()
+{
+    for(double exponent:{10000,100000,1000000}) for(bool closed:{false,true})
+    for(bool reverse:{false,true}) for(int side:{-1,1}) {
+        LoadedScene loaded(Materials(false)+
+            "dielectric_material\n{\n name finite\n tau 1\n ior 1.5\n scattering "+std::to_string(exponent)+"\n}\n"+
+            Mesh(closed,reverse)+"standard_object\n{\n name caster\n geometry shape\n material finite\n position 3 0 0\n}\n");
+        const auto* object=loaded.Object("caster");
+        if(!object) { Check(false,"finite dielectric caster"); continue; }
+        auto hit=Hit(*object,Point3(3,0,side*3),Vector3(0,0,-side));
+        IORStack stack(1);
+        Check(hit.pMaterial->GetSpecularInfo(hit.geometric,stack).isSpecular,
+            "native finite dielectric advertises its delta-tagged interaction");
+        for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),
+            SMSQueryDomain::NM(450),SMSQueryDomain::NM(550),SMSQueryDomain::NM(650)}) {
+            SMSNativeMaterialQuery query;
+            const bool supported=SMSDomainReplay::Query(*hit.pMaterial,hit.geometric,stack,domain,query);
+            Check(supported,"adopted finite-dielectric delta-limit domain remains eligible");
+            if(supported) Check(query.reflection&&query.transmission&&Near(query.index,1.5),
+                "finite dielectric retains native index and both interface events");
+        }
+    }
+}
 static std::vector<RISEColor> TraceCompositeGrid(LoadedScene& loaded, bool extended,
     bool startInside, unsigned salt, bool nm=false)
 {
@@ -460,6 +483,7 @@ int main()
     ClosedChainCases();
     SF11AbsentExteriorCases();
     NativeTIRAndSheetCases();
+    FiniteDielectricCases();
     CompositePTCases();
     Check(domainCounters.attempts.load()==domainCounters.acceptedRoots.load()+domainCounters.rejectedRoots.load(),
         "every domain trial is accounted as accepted or rejected");
