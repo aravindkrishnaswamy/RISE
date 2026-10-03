@@ -386,11 +386,12 @@ every BDPT MIS weight (DL-351).
 
 `BDPTStrategyBalanceTest --dl380-only` / `--dl380-mlt` and
 `VCMStrategyBalanceTest --dl380-only` (the DL-375 D1/D2 walls, wall
-pixels / PT, n = 3 salted renders each, 2048 spp; MLT one render):
+pixels / PT, n = 3 salted renders each, 2048 spp; MLT one render; the
+BDPT D1 row is a diffusion-sphere twin, see below):
 
 | row | before | after |
 |---|---|---|
-| D1 omni, E1/L16: BDPT | -99.95% | -2.78% |
+| D1 omni, DIFFUSION twin, E1/L16 vs BDPT E16/L16 (n = 8 / 4): BDPT | -99.95% | +0.39% |
 | D2 spot, E1/L16: BDPT | -97.71% | -0.67% |
 | D1 omni, E1/L16: VCM merging on / off | -99.08% / -98.88% | -2.26% / -3.48% |
 | D2 spot, E1/L16: VCM merging on / off | -97.53% / -97.54% | +0.06% / +0.31% |
@@ -400,9 +401,26 @@ pixels / PT, n = 3 salted renders each, 2048 spp; MLT one render):
 | D2 spot, E2/L16 (eye covers at its cap): BDPT | -3.47% | -2.32% |
 
 The E16/L1 rows are the double-count control (green before and after);
-E2/L16 gains the paths whose eye part sits at the cap.  The VCM
-throughput-clamp median is taken over the store the pre-DL-380 partition
-kept, so its threshold is unchanged.
+E2/L16 gains the paths whose eye part sits at the cap.
+
+The BDPT D1 row is gated on a smooth-diffusion twin of the sphere against
+BDPT's OWN E16/L16 render, not on the random walk against PT: at E1 the
+light family owns the wall path and at E16 the eye family does, and only
+a reciprocal model makes the two estimate the same function.  On the
+random walk the light family reads ~-4.2 % +/- 0.6 % against PT at E1
+(16 salted renders, external review; an earlier single-batch -2.78 %
+did not reproduce): not a partition hole, but the random-walk light
+family's model offset (DL-381 -> DL-384) plus DL-351 (MISWeight ignores
+the caps).  The diffusion twin reads +0.39 % (and -1.4 % +/- 1.1 % in the
+review's runs).
+
+VCM's three store statistics -- the pass-0 throughput-clamp median,
+`ClampOutlierThroughputs`' percentile in later progressive passes, and the
+adaptive radius floor's density and bounding box -- are taken over the
+vertices NOT flagged `kLVF_JumpCover`, i.e. the store the pre-DL-380
+partition kept, so none of them moves; every vertex is still clamped
+against the threshold.  (The flagged vertices grow the store by ~7 % on
+`vcm_sss_dragon` and ~62 % on an SSS-walled room.)
 
 ### 5. SMS — no per-strategy MIS reweight
 
