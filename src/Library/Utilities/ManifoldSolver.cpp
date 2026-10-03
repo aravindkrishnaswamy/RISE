@@ -21,6 +21,286 @@
 #include "BDPTUtilities.h"
 #include "../Interfaces/IScalarPainter.h"
 
+#include "../Materials/DielectricMaterial.h"
+#include "../Materials/PerfectRefractorMaterial.h"
+#include "../Materials/PerfectReflectorMaterial.h"
+#include "../Materials/PolishedMaterial.h"
+#include "../Materials/CompositeMaterial.h"
+#include "IORStackSeeding.h"
+
+bool RISE::Implementation::SMSQueryDomain::Valid() const
+{
+    return kind == RGBComponent ? component < 3
+        : kind == Wavelength && std::isfinite(nm) && nm > 0;
+}
+
+bool RISE::Implementation::SMSDomainReplay::Query(const IMaterial& material,
+    const RayIntersectionGeometric& hit, const IORStack& stack,
+    SMSQueryDomain domain, SMSNativeMaterialQuery& result)
+{
+    result = SMSNativeMaterialQuery();
+    if(!domain.Valid()) return false;
+    const IScalarPainter* index = nullptr;
+    const IScalarPainter* scattering = nullptr;
+    const IScalarPainter* coatTint = nullptr;
+    bool hg = false;
+    bool polishedReflectionOnly = false;
+    if(const auto* dielectric = dynamic_cast<const DielectricMaterial*>(&material)) {
+        index = &dielectric->GetIOR();
+        scattering = &dielectric->GetScattering();
+        hg = dielectric->GetHG();
+    }
+    else if(const auto* refractor = dynamic_cast<const PerfectRefractorMaterial*>(&material))
+        index = &refractor->GetIOR();
+    else if(const auto* polished = dynamic_cast<const PolishedMaterial*>(&material)) {
+        index = &polished->GetIOR();
+        scattering = &polished->GetScattering();
+        hg = polished->GetHG();
+        coatTint = &polished->GetTransmittance();
+        polishedReflectionOnly = true; // the substrate has no clear delta transmission
+    }
+    else if(!dynamic_cast<const PerfectReflectorMaterial*>(&material))
+        return false;
+    // A successful point query does not certify constant IOR throughout a root basin.
+    if(index && !index->IsPositionIndependent()) return false;
+    const SpecularInfo info = domain.kind == SMSQueryDomain::RGBComponent
+        ? material.GetSpecularInfo(hit, stack)
+        : material.GetSpecularInfoNM(hit, stack, domain.nm);
+    const Scalar s = scattering ? (domain.kind == SMSQueryDomain::RGBComponent
+        ? scattering->GetValuesAt(hit)[domain.component] : scattering->GetValueAtNM(hit, domain.nm)) : 0;
+    if(!info.valid || (scattering ? !(hg ? s >= 1 : s >= 1000000) : !info.isSpecular)) return false;
+    result.index = index ? (domain.kind == SMSQueryDomain::RGBComponent
+        ? index->GetValuesAt(hit)[domain.component] : index->GetValueAtNM(hit, domain.nm)) : info.ior;
+    result.attenuation = domain.kind == SMSQueryDomain::RGBComponent
+        ? info.attenuation[domain.component] : info.attenuationNM;
+    if(coatTint) result.attenuation = domain.kind == SMSQueryDomain::RGBComponent
+        ? coatTint->GetValuesAt(hit)[domain.component] : coatTint->GetValueAtNM(hit, domain.nm);
+    result.reflection = true;
+    result.transmission = info.canRefract && !polishedReflectionOnly;
+    result.dielectricInterface = index != nullptr;
+    result.interiorTransmittance = info.attenuationIsInteriorTransmittance;
+    result.reflectionTint = info.attenuationAppliesToReflection;
+    result.customFresnel = info.hasCustomSpecularFresnel;
+    return std::isfinite(result.index) && result.index > 0
+        && std::isfinite(result.attenuation) && result.attenuation >= 0;
+}
+
+bool RISE::Implementation::SMSDomainReplay::Capture(const IScene& scene,
+    const Point3& anchor, const IORStack& live, SMSStartingMedia& result)
+{
+    result = SMSStartingMedia();
+    result.environmentIndex = live.EnvironmentIOR();
+    if(!std::isfinite(result.environmentIndex) || result.environmentIndex <= 0
+        || !scene.GetObjects()) return false;
+    struct Objects : IEnumCallback<IObject> {
+        std::vector<const IObject*> items;
+        bool operator()(const IObject& object) override { items.push_back(&object); return true; }
+    } objects;
+    scene.GetObjects()->EnumerateObjects(objects);
+    const Vector3 directions[] = {Vector3(1,0,0), Vector3(-1,0,0),
+        Vector3(0,1,0), Vector3(0,-1,0), Vector3(0,0,1), Vector3(0,0,-1)};
+    const std::vector<const IObject*> keys = live.ObjectKeys();
+    IORStack geometricMembership(live.EnvironmentIOR());
+    IORStackSeeding::SeedFromPoint(geometricMembership, anchor, scene);
+    for(const IObject* required : geometricMembership.ObjectKeys())
+        if(std::find(keys.begin(), keys.end(), required) == keys.end()) return false;
+    // Live open-sheet membership can legitimately exceed geometric containment;
+    // preserve it rather than replacing the walk's state with a fresh seed.
+    // DL-407: composite containment can be missing from the live stack.
+    // Inside an object's world bounds we cannot certify absence of
+    // composite membership. Refuse that uncertainty even when back-face
+    // culling would hide every inside-origin ray intersection.
+    for(const IObject* object : objects.items) {
+        if(!object->IsWorldVisible()
+            || !dynamic_cast<const CompositeMaterial*>(object->GetMaterial())) continue;
+        if(std::find(keys.begin(), keys.end(), object) != keys.end()) return false;
+        const BoundingBox bounds = object->getBoundingBox();
+        const bool outside = anchor.x < bounds.ll.x || anchor.x > bounds.ur.x
+            || anchor.y < bounds.ll.y || anchor.y > bounds.ur.y
+            || anchor.z < bounds.ll.z || anchor.z > bounds.ur.z;
+        if(!outside) return false;
+    }
+    for(const IObject* key : keys) {
+        if(std::find(objects.items.begin(), objects.items.end(), key) == objects.items.end())
+            return false; // opaque non-scene identities must never be dereferenced
+        if(!key->GetMaterial()) return false;
+        bool captured = false;
+        for(const Vector3& direction : directions) {
+            RayIntersection hit(Ray(anchor, direction), nullRasterizerState);
+            key->IntersectRay(hit, RISE_INFINITY, true, true, false);
+            if(!hit.geometric.bHit) continue;
+            if(hit.pModifier) hit.pModifier->Modify(hit.geometric);
+            result.enclosing.emplace_back(key, hit.pMaterial, hit.geometric);
+            captured = true;
+            break;
+        }
+        if(!captured) return false;
+    }
+    result.reconstructible = true;
+    return true;
+}
+
+bool RISE::Implementation::SMSDomainReplay::BuildStack(const SMSStartingMedia& media,
+    SMSQueryDomain domain, IORStack& result)
+{
+    if(!media.reconstructible || !domain.Valid()
+        || !std::isfinite(media.environmentIndex) || media.environmentIndex <= 0) return false;
+    IORStack replay(media.environmentIndex);
+    for(const SMSMediumCapture& entry : media.enclosing) {
+        if(!entry.identity || !entry.material) return false;
+        replay.SetCurrentObject(entry.identity);
+        if(replay.containsCurrent()) return false;
+        SMSNativeMaterialQuery query;
+        if(!Query(*entry.material, entry.context, replay, domain, query)
+            || !query.transmission) return false;
+        replay.push(query.index);
+    }
+    result = replay;
+    return true;
+}
+
+bool RISE::Implementation::SMSDomainReplay::Cross(const IMaterial& material,
+    const IObject* identity, const RayIntersectionGeometric& hit,
+    SMSQueryDomain domain, bool reflection, IORStack& stack,
+    Scalar& etaI, Scalar& etaT, bool& exiting)
+{
+    if(!identity) return false;
+    IORStack next(stack);
+    next.SetCurrentObject(identity);
+    SMSNativeMaterialQuery query;
+    if(!Query(material, hit, next, domain, query)
+        || (reflection ? !query.reflection : !query.transmission)) return false;
+    if(!std::isfinite(next.top()) || next.top() <= 0) return false;
+    if(hit.bProvablyNoInterior) {
+        const auto crossing = IORStackSeeding::ResolveOpenSheetCrossing(hit, query.index, next);
+        etaI = crossing.etaFrom;
+        etaT = crossing.etaTo;
+        exiting = !crossing.bEntering;
+    } else {
+        exiting = next.containsCurrent();
+        etaI = next.top();
+        if(exiting) next.pop();
+        etaT = exiting ? next.top() : query.index;
+        if(!reflection && !exiting) next.push(query.index);
+    }
+    if(!std::isfinite(etaI) || etaI <= 0 || !std::isfinite(etaT) || etaT <= 0) return false;
+    Scalar cosT;
+    if(!reflection && !Optics::CalculateRefractedCosine(
+        std::fabs(Vector3Ops::Dot(hit.ray.Dir(), hit.vNormal)), etaI, etaT, cosT))
+        return false; // impossible transmission is a zero trial, never relabeled
+    if(!reflection) stack = next;
+    return true;
+}
+
+bool RISE::Implementation::SMSDomainReplay::EventWeight(const IMaterial& material,
+    const RayIntersectionGeometric& hit, const IORStack& stack, SMSQueryDomain domain,
+    bool reflection, bool exiting, Scalar etaI, Scalar etaT, Scalar distance, Scalar& weight)
+{
+    weight = 0;
+    SMSNativeMaterialQuery query;
+    if(!Query(material, hit, stack, domain, query) || !std::isfinite(distance) || distance < 0
+        || !std::isfinite(etaI) || etaI <= 0 || !std::isfinite(etaT) || etaT <= 0
+        || (reflection ? !query.reflection : !query.transmission)) return false;
+    const Scalar cosine = std::fabs(Vector3Ops::Dot(hit.ray.Dir(), hit.vNormal));
+    Scalar fresnel = 1;
+    if(query.dielectricInterface) {
+        fresnel = Optics::CalculateDielectricReflectanceCosine(cosine, etaI, etaT);
+        const Scalar wavelength = domain.kind == SMSQueryDomain::Wavelength ? domain.nm
+            : ScalarPainterRGB::kChannelNM[domain.component];
+        if(query.customFresnel && (!material.GetSPF()
+            || !material.GetSPF()->EvaluateSpecularFresnel(cosine, etaI, etaT, exiting, wavelength, fresnel)))
+            return false;
+    }
+    Scalar attenuation = query.attenuation;
+    if(reflection && !query.reflectionTint) attenuation = 1;
+    if(query.interiorTransmittance)
+        attenuation = exiting && !reflection ? std::pow(attenuation, distance) : Scalar(1);
+    const Scalar etaRatio = etaI/etaT;
+    weight = attenuation * (reflection ? fresnel : (1-fresnel)*etaRatio*etaRatio);
+    return std::isfinite(weight) && weight >= 0;
+}
+
+RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::SolveDomain(
+    const Point3& start, const Vector3& startNormal, const Point3& end, const Vector3& endNormal,
+    const IScene& scene, const IORStack& startingStack, SMSQueryDomain domain,
+    std::vector<SMSDomainVertex>& vertices, ISampler& sampler, Scalar positionTolerance) const
+{
+    ManifoldResult failed;
+    if(vertices.empty() || vertices.size() > config.maxChainDepth
+        || !std::isfinite(positionTolerance) || positionTolerance < 0) return failed;
+    SMSStartingMedia media;
+    IORStack replay(startingStack.EnvironmentIOR());
+    if(!SMSDomainReplay::Capture(scene, start, startingStack, media)
+        || !SMSDomainReplay::BuildStack(media, domain, replay)) return failed;
+    std::vector<ManifoldVertex> chain;
+    chain.reserve(vertices.size());
+    for(const SMSDomainVertex& record : vertices) {
+        ManifoldVertex vertex = record.geometry;
+        if(!vertex.pMaterial || !vertex.pObject) return failed;
+        SMSNativeMaterialQuery query;
+        if(!SMSDomainReplay::Query(*vertex.pMaterial, record.context, replay, domain, query)
+            || !SMSDomainReplay::Cross(*vertex.pMaterial, vertex.pObject, record.context,
+                domain, vertex.isReflection, replay, vertex.etaI, vertex.etaT, vertex.isExiting)) return failed;
+        vertex.eta = query.index;
+        vertex.canRefract = query.dielectricInterface;
+        chain.push_back(vertex);
+    }
+    ManifoldResult result = Solve(start, startNormal, end, endNormal, chain, sampler);
+    if(!result.valid || chain.size() != vertices.size()) return failed;
+    if(!SMSDomainReplay::BuildStack(media, domain, replay)) return failed;
+    Scalar throughput = 1;
+    std::vector<SMSDomainVertex> refreshed;
+    refreshed.reserve(vertices.size());
+    Point3 previous = start;
+    for(std::size_t i=0; i<chain.size(); ++i) {
+        ManifoldVertex& vertex = chain[i];
+        if(vertex.isReflection != vertices[i].geometry.isReflection) return failed;
+        const Vector3 direction = Vector3Ops::Normalize(Vector3Ops::mkVector3(vertex.position, previous));
+        RayIntersection hit(Ray(previous, direction), nullRasterizerState);
+        if(i != 0) hit.geometric.ray.Advance(1e-8); // native surface-walk self-hit offset
+        vertex.pObject->IntersectRay(hit, RISE_INFINITY, true, true, false);
+        if(!hit.geometric.bHit || hit.pObject != vertex.pObject || hit.pMaterial != vertex.pMaterial
+            || Point3Ops::Distance(hit.geometric.ptIntersection, vertex.position) > positionTolerance) return failed;
+        if(hit.pModifier) hit.pModifier->Modify(hit.geometric);
+        const IORStack before(replay);
+        Scalar etaI, etaT; bool exiting;
+        if(!SMSDomainReplay::Cross(*vertex.pMaterial, vertex.pObject, hit.geometric, domain,
+            vertex.isReflection, replay, etaI, etaT, exiting)
+            || exiting != vertex.isExiting || etaI != vertex.etaI || etaT != vertex.etaT) return failed;
+        Scalar eventWeight;
+        if(!SMSDomainReplay::EventWeight(*vertex.pMaterial, hit.geometric, before, domain,
+            vertex.isReflection, exiting, etaI, etaT, Point3Ops::Distance(previous, vertex.position), eventWeight)) return failed;
+        throughput *= eventWeight;
+        if(!std::isfinite(throughput)) return failed;
+        SMSNativeMaterialQuery query;
+        if(!SMSDomainReplay::Query(*vertex.pMaterial, hit.geometric, before, domain, query)) return failed;
+        vertex.attenuation = RISEPel(query.attenuation);
+        vertex.attenuationNM = query.attenuation;
+        vertex.attenuationAppliesToReflection = query.reflectionTint;
+        vertex.attenuationIsInteriorTransmittance = query.interiorTransmittance;
+        vertex.hasCustomSpecularFresnel = query.customFresnel;
+        vertex.normal = hit.geometric.vNormal;
+        vertex.geomNormal = hit.geometric.UnflippedGeomNormal();
+        vertex.uv = hit.geometric.ptCoord;
+        vertex.objectPosition = hit.geometric.ptObjIntersec;
+        refreshed.emplace_back(hit.geometric);
+        refreshed.back().geometry = vertex;
+        previous = vertex.position;
+    }
+    std::vector<Scalar> refreshedResidual;
+    EvaluateConstraint(chain, start, end, refreshedResidual);
+    Scalar residualSquared = 0;
+    for(Scalar component : refreshedResidual) residualSquared += component*component;
+    if(!std::isfinite(residualSquared) || std::sqrt(residualSquared) > config.solverThreshold
+        || !ValidateChainPhysics(chain, start, end)) return failed;
+    result.specularChain = chain;
+    result.contribution = RISEPel(0,0,0);
+    result.contributionNM = throughput;
+    if(domain.kind == SMSQueryDomain::RGBComponent) result.contribution[domain.component] = throughput;
+    vertices = std::move(refreshed);
+    return result;
+}
+
 // File-scope diagnostic gate.  Set to 1 to enable targeted per-pixel
 // SMS/Solve/BuildSeedChain trace logging (used while debugging the
 // torus-intersection accuracy issue that led to the OQS replacement).
@@ -812,6 +1092,7 @@ namespace
 
 void ManifoldSolver::SetSpecularCasters( std::vector<const IObject*> list )
 {
+    hwssExtendedWarningEmitted.store(false, std::memory_order_relaxed);
 	mSpecularCasters = std::move( list );
 	mHasPureMirrorCaster = false;
 	for( const IObject* pCaster : mSpecularCasters ) {
@@ -4673,6 +4954,29 @@ Scalar ManifoldSolver::EvaluateChainCosineProduct(
 	}
 
 	return cosProduct;
+}
+
+void ManifoldSolver::WarnHWSSLegacyMode()
+{
+    if(!hwssExtendedWarningEmitted.exchange(true, std::memory_order_relaxed))
+        GlobalLog()->PrintEasyWarning("Extended SMS is ignored for HWSS until lane geometry and ownership are implemented; using legacy SMS.");
+}
+
+bool ManifoldSolver::ExtendedAnchorEligible(const IScene& scene, const IRayCaster& caster,
+    const Point3& point, const IORStack& stack, Scalar nm) const
+{
+    if(!config.extendedMode) return true;
+    if(config.photonCount || scene.GetGlobalMedium()
+        || (caster.GetLightSampler() && caster.GetLightSampler()->SceneHasAlphaCoverage())) return false;
+    SMSStartingMedia media;
+    if(!SMSDomainReplay::Capture(scene, point, stack, media)) return false;
+    const unsigned int components = nm > 0 ? 1 : 3;
+    for(unsigned int c=0; c<components; ++c) {
+        const SMSQueryDomain domain = nm > 0 ? SMSQueryDomain::NM(nm) : SMSQueryDomain::RGB(c);
+        IORStack evaluated(stack.EnvironmentIOR());
+        if(!SMSDomainReplay::BuildStack(media, domain, evaluated)) return false;
+    }
+    return true;
 }
 
 //////////////////////////////////////////////////////////////////////
