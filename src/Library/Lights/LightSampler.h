@@ -316,10 +316,12 @@ namespace RISE
 		//! records leave DEFAULT *and* that only a signal consumer reads.
 		//! Everything the sampled point already determines --
 		//! `ptIntersection`, `vNormal`, `vGeomNormal`, `onb`, `ptCoord` -- is
-		//! deliberately NOT carried, so the emission geometry and every pdf
-		//! derived from it (`cosLight`, `pdfPosition`, `pdfDirection`) stay
-		//! bit-for-bit what they are today and the only thing the PROBE can
-		//! move is a signal read.
+		//! deliberately NOT carried on this payload, so the emission geometry
+		//! and every pdf derived from it (`cosLight`, `pdfPosition`,
+		//! `pdfDirection`) cannot be moved by the PROBE -- the only thing it
+		//! can move is a signal read.  Those fields are filled, at every
+		//! record, by `LightSampler::FillEmitterRecord` (DL-298), which is
+		//! ungated and ray-free and carries the physical world position too.
 		//!
 		//! SIZE: 416 bytes (168 + 136 + 104 + a bool, measured at this
 		//! tree's HEAD; an earlier comment said 440).  That is why the call

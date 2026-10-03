@@ -1260,9 +1260,23 @@ See [ALPHA_COVERAGE.md](../docs/ALPHA_COVERAGE.md) for the estimator definitions
   separates legacy zero-P emission limitations from coverage correctness.
   `AlphaPhotonEmissionTest` additionally checks actual RGB/NM Phong exponent
   and direction records, with physical/local/curvature alpha-only context.
+  Since DL-298 the ORIGINAL records carry the physical world position too
+  (`AlphaEmitterRecordTest`: `Le` 25.4648 vs 12.7324 at the origin record;
+  `AlphaPhotonEmissionTest`: exponent 1 -> 83..110), and the first sentence
+  above no longer describes a limitation.
   `AlphaBoundaryEndpointTest` pairs null/record finite bounds and exact alpha
   draws, distinguishes physical medium events from occlusion intervals, and
   explicitly retains the no-alpha raw-shadow exact-end convention.
+
+- `EmitterWorldPositionTest` (DL-298): a luminaire whose exitance (Lambertian
+  `0.25 + 1.125 (P.x^2+P.y^2)`) or Phong exponent (`2 + 3 (P.x^2+P.y^2)`) is a
+  world-position expression, on the DL-44 wall-and-camera rig, rendered in
+  PT RGB / BDPT RGB / VCM RGB / PT spectral / PT spectral HWSS / BDPT spectral
+  (4 salted renders each) against the equivalent UV-keyed control and an
+  independent closed-form quadrature. Red on `c35591fb9`: PT P/UV 0.2534
+  (Lambertian) / 0.6325 (Phong), PT spectral and HWSS the same, VCM 0.9896 /
+  0.9950, 34/8; green 42/0. The field is deliberately nonzero at the origin
+  (DL-431: the emitter's own `averageRadiantExitance` is estimated at P = 0).
 
 ## Blender tangent producers (DL-213)
 
