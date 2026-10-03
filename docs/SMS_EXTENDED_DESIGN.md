@@ -1,6 +1,6 @@
 # Extended SMS: event proposals, channel geometry, and path ownership
 
-**Status: proposed design, 2026-10-03 (revised the same day after a code-verified design review). No extended solver is implemented by this document.**
+**Status: adopted implementation contract, 2026-10-03. Phase 1 is in progress on `sms-ext`; no implementation phase has merged.**
 
 Base: master `a8fa56224ff1e4d9284e907fcf1d1d05534530e6`, the reviewed attenuation integration. DL-437 and DL-438 remain open. The user authorized deferring them for that integration and asked for this extended design next. This proposal keeps the native material conventions established by [DL-435](DL435_SPECTRAL_SMS_ATTENUATION.md). It does not replace them with a general participating-medium or absorbing-film model.
 
@@ -309,7 +309,7 @@ Switching any one alone double-counts or loses light.
 
 Anchors that keep the existing solver must also carry a mode bit in their chain record, so PT applies the matching suppression rule (the existing split rule, or suppress-all) rather than the extended predicate.
 
-**Finite-scattering dielectrics.** The parser default is 1e4, and shipped SMS scenes use 1e5. `DielectricSPF` advertises such a warp through `DeltaTransmissionWarpExponent() > -1`. Excluding them would exclude nearly every real dielectric. **Proposed ruling (needs user confirmation before implementation):** they are eligible and treated at their delta limit, as DL-379's split suppression does today. The resulting bias is measured as a gate against VCM, never hidden, and DL-379 stays open for the exact treatment.
+**Finite-scattering dielectrics.** The parser default is 1e4, and shipped SMS scenes use 1e5. `DielectricSPF` advertises such a warp through `DeltaTransmissionWarpExponent() > -1`. Excluding them would exclude nearly every real dielectric. **Adopted user ruling:** they are eligible and treated at their delta limit, as DL-379's split suppression does today. The resulting bias is measured as a gate against VCM, never hidden, and DL-379 stays open for the exact treatment.
 
 **Legacy `SMSShaderOp`** keeps its existing behaviour and is out of scope; it has no suppression partner, so "every PT/SMS entry" in this document means the PT integrator paths and `PathTracingShaderOp`.
 
@@ -407,15 +407,15 @@ Shipped SMS scenes must stay bit-identical while the extended mode is off.
 
 After each coherent production increment, apply [the independent review loop](skills/implementation-review-loop.md), with separate lenses for estimator/partition, material/medium/API, and cost/doc fidelity. No merge until a fresh final tree has zero P1, followed by the targeted master gate. Stop and record any new design decision outside this proposal before changing that contract.
 
-## Open decisions for the user
+## Adopted initial decisions
 
-1. Finite-scattering casters: eligible at their delta limit, with the bias measured (proposed), or excluded until DL-379 has an exact treatment.
-2. Uncertain root classification goes to PT (proposed), reversing today's "unknown suppresses" rule.
-3. Phase order: delta lights before the area-emitter partition (proposed), because estimator A needs no ownership machinery and covers DL-437's own fixture.
+1. Finite-scattering casters are eligible at their delta limit, with bias measured in Phase 3; DL-379 remains open for exact treatment.
+2. Uncertain root classification goes to PT, reversing today's "unknown suppresses" rule.
+3. Delta lights precede the area-emitter partition, because estimator A needs no ownership machinery and covers DL-437's own fixture.
 
 ## Integration evidence
 
-The pre-design master gate for the attenuation integration (`a8fa56224`) is recorded in [DL_CHEAPBATCH_VALIDATION.md](DL_CHEAPBATCH_VALIDATION.md) under "Post-merge master gate". This design introduces no source changes and claims no extended-SMS render results. No ledger row is closed by this proposal.
+The pre-design master gate for the attenuation integration (`a8fa56224`) is recorded in [DL_CHEAPBATCH_VALIDATION.md](DL_CHEAPBATCH_VALIDATION.md) under "Post-merge master gate". The design import introduced no source changes. Current Phase 1 primitive and rejection evidence is recorded in [SMS_EXTENDED_PHASE1_VALIDATION.md](SMS_EXTENDED_PHASE1_VALIDATION.md); production activation and acceptance remain pending. No ledger row closes on the contract statement.
 
 ## Adopted composite exclusion (2026-10-03)
 
