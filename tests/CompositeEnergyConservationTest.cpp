@@ -1513,9 +1513,10 @@ static void SectionD9()
 //  is an independent replicate): zero-variance all-delta cells 0.2 %
 //  (glass/glass, plain glass; furnace and sheets); glass/translucent
 //  furnace / sheet 2 % (256 spp); nested 3 % (1024 spp, per-branch
-//  estimator, ~0.5 % sd per half); light-inside cells 1024 spp, 3 %
-//  glass/glass and 4 % translucent / nested (single-render ratio sd up to
-//  ~1 %).  Every regression this section exists for moves a cell by 5 %
+//  estimator, ~0.5 % sd per half); light-inside cells 1024 spp: glass/
+//  glass one render, 3 % (ratio sd ~0.5 %), translucent / nested the mean
+//  of 3 salted renders, 5 % (single-render sd ~1.5 % per half, so the
+//  mean's ratio sd is ~1.2 %).  Every regression this section exists for moves a cell by 5 %
 //  or more (0.444 / 0.467 against 1; 0.222 against 0.105; 0.65 against
 //  0.92).
 //////////////////////////////////////////////////////////////////////
@@ -1628,7 +1629,7 @@ static void SectionM()
 					const bool env = ( g != 1 );
 					int spp = ( c.kind == 0 ) ? 128 : ( c.kind == 1 ) ? 256 : 1024;
 					if( g == 1 ) spp = 1024;
-					const double band = ( g == 1 ) ? ( c.kind == 0 ? 0.03 : 0.04 ) : ( c.kind == 0 ) ? 0.002 : ( c.kind == 1 ) ? 0.02 : 0.03;
+					const double band = ( g == 1 ) ? ( c.kind == 0 ? 0.03 : 0.05 ) : ( c.kind == 0 ) ? 0.002 : ( c.kind == 1 ) ? 0.02 : 0.03;
 					std::string geo, objs;
 					const std::string twinMat = ( c.kind == 0 ) ? "mat_glass" : c.mat;
 					if( g < 2 ) {
@@ -1643,8 +1644,17 @@ static void SectionM()
 					const char* gName = ( g == 0 ) ? "closed box, furnace" : ( g == 1 ) ? "closed box, light inside" : "open sheet, furnace";
 					for( int r = 0; r < 3; ++r ) {
 						const std::string scene = head + geo + objs + ( g == 1 ? lights : std::string() ) + rast( r, env, spp );
-						double mL = -1, mR = -1;
-						const bool ok = runPair( scene, mL, mR );
+						// A light inside a translucent / nested box is the
+						// noisiest cell (single-render sd ~1.5 % per half):
+						// mean of 3 salted replicates.
+						const int nRep = ( g == 1 && c.kind != 0 ) ? 3 : 1;
+						double mL = 0, mR = 0;
+						bool ok = true;
+						for( int k = 0; k < nRep; ++k ) {
+							double l = -1, rr = -1;
+							ok = runPair( scene, l, rr ) && ok;
+							mL += l / nRep; mR += rr / nRep;
+						}
 						std::cout << "    M " << c.name << " | " << ( ds ? "double" : "single" ) << " | " << wName[w] << " | "
 						          << gName << " | " << inName[r] << ": " << std::setprecision(5) << mL << " vs twin " << mR << "\n";
 						const std::string tag = std::string( c.name ) + ", " + ( ds ? "double" : "single" ) + "-sided, " + wName[w] + ", " + gName + " (" + inName[r] + ")";
@@ -2372,17 +2382,6 @@ int main( int argc, char** argv )
 		if( argc > 2 && std::string( argv[2] ) == "--render" ) SectionD();
 		std::cout << "\n" << passCount << " passed, " << failCount << " failed" << std::endl;
 		return failCount == 0 ? 0 : 1;
-	}
-	if( argc > 2 && std::string( argv[1] ) == "--probe-TEMP" ) {
-		std::ifstream ifs( argv[2] ); std::stringstream ss; ss << ifs.rdbuf();
-		for( int k = 0; k < ( argc > 3 ? atoi( argv[3] ) : 1 ); ++k ) {
-			CapturingRasterizerOutput* cap = 0;
-			SobolSamplerTestHooks::ValueSalt().store( 0x9E3779B9u * (unsigned)( k + 1 ) );
-			const bool ok = Render( ss.str(), "probe", cap, 777u + k );
-			if( ok ) std::cout << "PROBE L " << RegionMean( *cap, 2, cap->width / 2 - 2 ) << " R " << RegionMean( *cap, cap->width / 2 + 2, cap->width - 2 ) << std::endl;
-			if( cap ) safe_release( cap );
-		}
-		return 0;
 	}
 	if( argc > 1 && std::string( argv[1] ) == "--sidedness-only" ) {
 		SectionM();

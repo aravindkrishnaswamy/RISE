@@ -1141,6 +1141,94 @@ round-1 report of 1.0056 was an unsalted 128-spp artifact.
   through it is lost.  Filed as **DL-422**.
 * **P3:** D8's bands corrected in 9.4c above (5 % nested, 3 % translucent).
 
+### 9.4e Review round 6 (2026-10-02): FAIL, 1 P1, P3s -- addressed
+
+* **P1 -- a closed SINGLE-sided mesh wound inward** (fully or partly; single
+  sided is the default for ply / glTF / 3ds / raw meshes, and ply even has
+  `invert_faces`).  An outside hit on such a mesh meets a BACK face, which
+  round 6 walked from below; that walk's upward exit treated the crossing as
+  leaving the object, so O was never pushed, and the later inside hit (no O,
+  so round 6 did not unflip it) was walked from above and carried O out:
+  1/eta^2.  The reviewer (white furnace, salted n = 3): composite{glass/glass}
+  all triangles reversed 0.4444 under PT / BDPT / VCM (master 0.979, plain
+  glass 1.0); light inside, camera outside 0.222 (master 0.1046, glass
+  0.1055); glass/translucent front face reversed 0.652 (master 0.940,
+  consistent 0.917); nested 0.446 / 0.567; and a single-sided open sheet hit
+  from behind with an empty stack disagreed with plain glass (two separate
+  panes 0.936 vs 0.467; a mirror return 0.678 vs 0.929).
+* **Fix (the reviewer's prototype, folded into one rule):** the frame is
+  oriented BY THE WALK'S STACK.  Outside the object (stack lacks O) the
+  arriving ray meets the top -- a reported normal that does not oppose the
+  arrival is turned; inside (stack holds O) it meets the bottom -- a reported
+  normal that opposes the arrival is turned (round 6).  Winding, sidedness
+  and the flip flag no longer decide anything; the flag stays a sufficient
+  condition for "opposes".  Provably open sheets (clipped planes), hair and
+  stackless callers are never turned (unchanged).  This is the rule a plain
+  `dielectric_material` follows, so every mesh cell below follows the
+  dielectric's "separate sheets" convention.
+* **Section M, the sidedness matrix** (`--sidedness-only`, ~10 min).
+  {single, double}-sided x {outward, inward, mixed (every odd triangle
+  reversed)} winding x {closed box in the furnace, camera outside; closed box
+  with a light inside, no environment; open quad in the furnace} x
+  {composite{glass/glass}, composite{glass/translucent} (thickness 0.05,
+  extinction 0.2), nested composite{composite{glass/water}/glass}} x {PT,
+  BDPT, VCM at depth 12}: 162 cells, each beside its twin -- plain glass on
+  the SAME geometry / sidedness / winding for glass/glass, the double-sided
+  outward version of the same geometry for the others.  Plus three
+  glass/glass sheet families against plain glass over sidedness x winding x
+  integrator: one object holding two panes, two separate one-pane objects,
+  and a sheet over a mirror (54 cells).  Every render salted.
+
+  | Cell | Expected (each half) | Convention |
+  |---|---|---|
+  | closed box, furnace, glass/glass | 1, and its plain-glass twin 1 | index-matched stack = one glass interface |
+  | closed box, furnace, nested | 1 (lossless), == twin | -- |
+  | closed box, furnace, glass/translucent | == twin (~0.915) | -- |
+  | closed box, light inside | == twin (glass/glass ~0.105) | -- |
+  | open sheet, furnace | == twin; glass/glass 0.467 = F + (1-F)/eta^2 | separate sheets: a ray that crossed is inside |
+  | two panes, one object | == plain glass (1.0, a slab) | separate sheets |
+  | two panes, separate objects | == plain glass (0.467) | separate sheets |
+  | sheet over a mirror | == plain glass (0.929) | separate sheets (the return meets the sheet from behind with O on the stack) |
+
+  No cell is "top on both faces": that convention belongs to the provably
+  open clipped plane alone (DL-407), which is not in the matrix.  Bands:
+  zero-variance all-delta cells 0.2 %; glass/translucent 2 % (256 spp);
+  nested 3 % (1024 spp, per-branch estimator); light inside 1024 spp, 3 %
+  glass/glass (one render), 5 % translucent / nested (mean of 3 salted
+  renders; a single render's sd is ~1.5 % per half).  Every regression the
+  section exists for moves a cell by 5 % or more.
+
+  **Red / green.**  Round-6 library: **187 / 83** (270 checks).  The red
+  cells are exactly the single-sided inward and mixed ones, under all three
+  integrators: glass/glass closed box 0.4445 (inward) / 0.779 (mixed) against
+  1; light inside 0.2225 against 0.1055 (inward) and 0.100 against 0.106
+  (mixed); open sheet 0.977 / 0.699 against 0.467; glass/translucent box
+  0.418 / 0.749 against 0.915, light inside 0.194 / 0.173 against 0.151,
+  sheet 0.694 / 0.607 against 0.534; nested box 0.446 / 0.78 against 1, light
+  inside 0.218 / 0.099 against 0.105, sheet 0.975 / 0.703 against 0.47;
+  two panes one object 0.966 / 0.979 against 1.0; separate panes 0.936 /
+  0.655 against 0.467; mirror 0.677 against 0.929.  Every double-sided and
+  every single-sided outward cell was already green (round 6 fixed those).
+  Round 7: **270 / 0** with the final bands (the one failure in an earlier
+  run, glass/translucent single mixed light inside PT 0.155 vs 0.148, was a
+  single-render ~2.5 sd excursion; four salted repeats of that cell read
+  0.150-0.154 per half, which is why light-inside translucent / nested
+  cells now average three renders).
+* **P3 -- the arrival-facing replay is correct by construction and
+  unit-tested only.**  With the replay line removed from
+  `PopulateRIGFromVertex` the whole matrix still reads 270 / 0 and no cell
+  moves outside its noise (the largest shifts, ~3 %, are in light-inside
+  cells and include PT, which never rebuilds a record).  The replay matters
+  only for a reverse-pdf or connection query whose rebuilt ray faces the
+  other way from the arrival AT A NON-DELTA vertex on a turned record -- an
+  MIS-weight input, not a throughput one -- and no fixture found moves a
+  render with it.  `BDPTVertexRIGRebuildTest` pins the plumbing (93 / 11
+  with the replay line removed).
+* **P3 -- depth.**  D9's glass/translucent rows read ~1.3 % lower under
+  BDPT / VCM than PT on BOTH boxes alike: the depth-8 rasterizer helpers
+  truncate the box's internal bounces (0.3 % at depth 12).  D9 and M now run
+  BDPT / VCM at depth 12.
+
 ### 9.5 Residuals
 
 * **DL-406** -- term (a) still prices a Henyey-Greenstein-warped or a
