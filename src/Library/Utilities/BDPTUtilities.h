@@ -27,6 +27,7 @@
 
 #include "Math3D/Math3D.h"
 #include "../Shaders/BDPTVertex.h"
+#include "../Interfaces/IMaterial.h"
 #include <vector>
 
 namespace RISE
@@ -537,11 +538,62 @@ namespace RISE
 		/// "Non-delta" is the path's own scatter at that vertex (the
 		/// light walk's sampled lobe), so the witness is a function of
 		/// the path.  Returns -1 when no strategy exists at any depth.
+		/// DL-330 (review P1).  Is verts[1..j-1] a straight chain of delta
+		/// PASS-THROUGHS (thin-weave gap draws) from a delta-position light
+		/// root verts[0] to verts[j]?  That is exactly the light-side shape
+		/// BDPT's see-through s = 1 connection reaches: an eye vertex at
+		/// verts[j] connects to the root through those gaps
+		/// (`CastShadowRayAutoSampled`, at most 32 crossings).  The chain is
+		/// a function of the path: each gap draw continues the incoming ray
+		/// undeviated, so the segment directions must all equal
+		/// root -> verts[j].
+		inline bool DeltaPassThroughChainToRoot(
+			const std::vector<BDPTVertex>& verts,
+			const std::size_t j
+			)
+		{
+			if( j < 2 || j - 1 > 32 || j >= verts.size() ) {
+				return false;
+			}
+			const BDPTVertex& root = verts[0];
+			if( root.type != BDPTVertex::LIGHT || !root.isDelta || !root.pLight || root.pEnvLight ) {
+				return false;
+			}
+			const Vector3 d0 = Vector3Ops::Normalize(
+				Vector3Ops::mkVector3( verts[j].position, root.position ) );
+			for( std::size_t i = 1; i <= j; i++ ) {
+				if( i < j ) {
+					const BDPTVertex& v = verts[i];
+					if( v.type != BDPTVertex::SURFACE || !v.isDelta || !v.pMaterial ||
+						!v.pMaterial->HasDeltaPassThrough() ) {
+						return false;
+					}
+				}
+				const Vector3 di = Vector3Ops::Normalize(
+					Vector3Ops::mkVector3( verts[i].position, verts[i - 1].position ) );
+				if( Vector3Ops::Dot( di, d0 ) < Scalar( 1 ) - Scalar( 1e-9 ) ) {
+					return false;
+				}
+			}
+			return true;
+		}
+
+		/// @a seeThroughNEE (DL-330 review P1): the eye family also has
+		/// BDPT's see-through s = 1 connection -- NEE from an eye vertex to a
+		/// delta light root across a straight chain of delta pass-throughs
+		/// (DeltaPassThroughChainToRoot), taken whenever no standard
+		/// strategy covers the path.  It is then a witness like any other
+		/// NEE split: the eye covers verts[w..p], the light only the root,
+		/// the gaps being crossed by the connection.  BDPT and MLT pass
+		/// true when the scene's pass-through shadow walk is live
+		/// (`RayCaster::DeltaPassThroughShadowsActive`); VCM, which has no
+		/// such connection, passes false.
 		inline int LightSegmentEyeWitness(
 			const std::vector<BDPTVertex>& verts,
 			const std::size_t s,
 			const std::size_t p,
-			const bool mergingActive
+			const bool mergingActive,
+			const bool seeThroughNEE = false
 			)
 		{
 			if( p + 1 >= verts.size() || p <= s ) {
@@ -563,6 +615,9 @@ namespace RISE
 					return static_cast<int>( j );
 				}
 				if( a.isConnectible && !a.isDelta ) {
+					return static_cast<int>( j );
+				}
+				if( seeThroughNEE && s == 0 && DeltaPassThroughChainToRoot( verts, j ) ) {
 					return static_cast<int>( j );
 				}
 			}
@@ -629,7 +684,8 @@ namespace RISE
 
 			void Build(
 				const std::vector<BDPTVertex>& verts,
-				const bool mergingActive
+				const bool mergingActive,
+				const bool seeThroughNEE = false	///< DL-330: see LightSegmentEyeWitness
 				)
 			{
 				const std::size_t n = verts.size();
@@ -646,7 +702,7 @@ namespace RISE
 					surfaceCount[i] = L;
 					if( i > 0 && verts[i].isBSSRDFEntry ) {
 						anyJump = true;
-						const int w = LightSegmentEyeWitness( verts, segmentStart, i - 1, mergingActive );
+						const int w = LightSegmentEyeWitness( verts, segmentStart, i - 1, mergingActive, seeThroughNEE );
 						if( w >= 1 ) {
 							running.exists = true;
 							running.surfaceBefore = static_cast<int>( surfaceCount[w - 1] );

@@ -473,6 +473,13 @@ namespace RISE
 			//! material with a delta pass-through.
 			bool SceneHasDeltaPassThrough() const { return bSceneHasDeltaPassThrough; }
 
+			//! DL-330: whether a delta light's shadow walk sees through delta
+			//! pass-throughs in this scene -- the scene has one AND carries no
+			//! radiance photon map (CastShadowRayAuto's suppression).  The ONE
+			//! definition CastShadowRayAutoSampled and BDPT's see-through
+			//! connection / jump partition all read.
+			bool DeltaPassThroughShadowsActive() const;
+
 			//! To retreive the current scene
 			/// \return Pointer to currently attached scene, NULL if no scene is currently attached
 			const IScene* GetAttachedScene() const { return pScene; };

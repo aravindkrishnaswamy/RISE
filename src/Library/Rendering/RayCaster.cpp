@@ -3401,6 +3401,14 @@ bool RayCaster::CastShadowRaySampled(const Ray& ray, Scalar distance, ISampler& 
 {
     return pScene && pScene->GetObjects()->IntersectShadowRaySampled(ray, distance, sampler, boundaries, physicalDistance, occlusionStart);
 }
+bool RayCaster::DeltaPassThroughShadowsActive() const
+{
+    return bSceneHasDeltaPassThrough && pScene &&
+        !pScene->GetCausticPelMap() && !pScene->GetGlobalPelMap() &&
+        !pScene->GetTranslucentPelMap() && !pScene->GetCausticSpectralMap() &&
+        !pScene->GetGlobalSpectralMap();
+}
+
 bool RayCaster::CastShadowRayAutoSampled(const Ray& ray, Scalar distance, bool nmMode,
     Scalar nm, RISEPel& transmittance, bool deltaLight, ISampler& sampler, MediumBoundaryHits* boundaries, Scalar physicalDistance, Scalar occlusionStart,
     GradedIndexMedium::ShadowSegmentTrack* pGradedTrack, const Point3* pSegmentEnd, bool smsCoversLight,
@@ -3408,10 +3416,7 @@ bool RayCaster::CastShadowRayAutoSampled(const Ray& ray, Scalar distance, bool n
 {
     if (pPassThroughCrossings) *pPassThroughCrossings = 0;
     if (boundaries) boundaries->clear();
-    const bool passThrough = deltaLight && bSceneHasDeltaPassThrough && pScene &&
-        !pScene->GetCausticPelMap() && !pScene->GetGlobalPelMap() &&
-        !pScene->GetTranslucentPelMap() && !pScene->GetCausticSpectralMap() &&
-        !pScene->GetGlobalSpectralMap();
+    const bool passThrough = deltaLight && DeltaPassThroughShadowsActive();
     // DL-344: dielectrics see-through for DELTA lights, except where SMS
     // was evaluated at this point for this light (see CastShadowRayAuto).
     const bool dielectrics = DielectricShadowWalk(deltaLight, smsCoversLight);

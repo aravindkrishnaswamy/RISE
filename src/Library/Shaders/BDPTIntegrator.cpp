@@ -4700,7 +4700,7 @@ ConnectAndEvaluateImplCore(
 					return result;
 				}
 				const RayCaster* pRC = dynamic_cast<const RayCaster*>( &caster );
-				if( !pRC || !pRC->SceneHasDeltaPassThrough() ) {
+				if( !pRC || !pRC->DeltaPassThroughShadowsActive() ) {
 					return result;
 				}
 				const unsigned int lightBudget = BDPTUtilities::WalkIterationBudget(
@@ -5720,8 +5720,17 @@ EvaluateAllStrategiesImpl(
 	// light family must then keep the path.  BDPT has no merging.
 	const unsigned int nLight = static_cast<unsigned int>( lightVerts.size() );
 	const unsigned int nEye = static_cast<unsigned int>( eyeVerts.size() );
+	// DL-330 (review P1): the see-through s = 1 connection is an eye-family
+	// strategy too, so a light-side jump whose segment from a delta root
+	// is a straight chain of delta pass-throughs IS eye-coverable when the
+	// pass-through shadow walk is live (BDPTUtilities::
+	// LightSegmentEyeWitness); without it both families counted the path.
 	static thread_local BDPTUtilities::LightJumpPartition partition;
-	partition.Build( lightVerts, false );
+	{
+		const RayCaster* pRCPartition = dynamic_cast<const RayCaster*>( &caster );
+		partition.Build( lightVerts, false,
+			pRCPartition && pRCPartition->DeltaPassThroughShadowsActive() );
+	}
 	const BDPTUtilities::EyeWalkCaps eyeCaps = BDPTUtilities::MakeEyeWalkCaps(
 		self.GetMaxEyeDepth(), self.GetStabilityConfig().maxVolumeBounce );
 	// Eye-walk surface count of eyeVerts[0..t-1], t = 0..nEye.
