@@ -11,6 +11,7 @@
 #include "../src/Library/Utilities/RuntimeContext.h"
 #include "../src/Library/RISE_API.h"
 #include <sstream>
+#include <cstring>
 #include "../src/Library/Utilities/IndependentSampler.h"
 #include "../src/Library/Utilities/Optics.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
@@ -462,7 +463,7 @@ static void FiniteDielectricCases()
     }
 }
 static std::vector<RISEColor> TraceCompositeGrid(LoadedScene& loaded, bool extended,
-    bool startInside, unsigned salt, bool nm=false)
+    bool startInside, unsigned salt, bool nm=false, std::vector<Scalar>* hwssLanes=nullptr)
 {
     std::vector<IShaderOp*> ops;
     IShader* shader=nullptr;
@@ -494,7 +495,15 @@ static std::vector<RISEColor> TraceCompositeGrid(LoadedScene& loaded, bool exten
             RasterizerState raster{}; raster.x=x; raster.y=y;
             const Point3 origin((double(x)-3.5)*0.025,(double(y)-3.5)*0.025,startInside?0:-3);
             const Vector3 direction(0,0,startInside?-1:1);
-            if(nm) sum=sum+RISEPel(integrator->IntegrateRayNM(context,raster,Ray(origin,direction),550,
+            if(hwssLanes) {
+                SampledWavelengths wavelengths=SampledWavelengths::SampleEquidistant(sampler.Get1D(),380,780);
+                Scalar result[SampledWavelengths::N]{};
+                integrator->IntegrateRayHWSS(context,raster,Ray(origin,direction),wavelengths,
+                    loaded.Scene(),*caster,sampler,nullptr,result);
+                for(unsigned w=0;w<SampledWavelengths::N;++w) hwssLanes->push_back(result[w]);
+                sum=sum+RISEPel(result[0],result[1],result[2]);
+            }
+            else if(nm) sum=sum+RISEPel(integrator->IntegrateRayNM(context,raster,Ray(origin,direction),550,
                 loaded.Scene(),*caster,sampler,nullptr,nullptr));
             else sum=sum+integrator->IntegrateRay(context,raster,Ray(origin,direction),
                 loaded.Scene(),*caster,sampler,nullptr,nullptr);
@@ -580,6 +589,15 @@ static void CompositePTCases()
             const unsigned salt=SobolSequence::HashCombine(9000+trial,0x534d5344);
             const auto off=TraceCompositeGrid(loaded,false,startInside,salt,nm);
             const auto on=TraceCompositeGrid(loaded,true,startInside,salt,nm);
+            if(!nm) {
+                std::vector<Scalar> lanesOff,lanesOn;
+                const auto hwssOff=TraceCompositeGrid(loaded,false,startInside,salt,false,&lanesOff);
+                const auto hwssOn=TraceCompositeGrid(loaded,true,startInside,salt,false,&lanesOn);
+                Check(lanesOff.size()==64*32*SampledWavelengths::N && lanesOff.size()==lanesOn.size()
+                    && std::memcmp(lanesOff.data(),lanesOn.data(),lanesOff.size()*sizeof(Scalar))==0,
+                    "HWSS ignores extended mode bit-identically in every lane and NM delegation");
+                Check(HashPixels(hwssOff)==HashPixels(hwssOn),"HWSS composite image keeps legacy output with extended flag on");
+            }
             double a=0,b=0;
             for(const auto& pixel:off) a+=(pixel.base.r+pixel.base.g+pixel.base.b)/3;
             for(const auto& pixel:on) b+=(pixel.base.r+pixel.base.g+pixel.base.b)/3;

@@ -41,7 +41,7 @@ The HWSS checkpoint has a small positive cost change; no zero-overhead claim is 
 
 ## Record and build diagnostics
 
-Final domain gate at `1c19bbf42`: **3253/0**, including the 328 positive polished native-law checks. Counters remain 120 attempts / 184 Newton iterations / 118 accepted / 2 rejected; no estimator retries, tails or ownership are exercised.
+Domain checkpoint at `1c19bbf42`: **3253/0**, including the 328 positive polished native-law checks. Counters remain 120 attempts / 184 Newton iterations / 118 accepted / 2 rejected; no estimator retries, tails or ownership are exercised.
 
 On arm64, the diagnostic reports bytes: `SpecularInfo` 56, `ManifoldVertex` 336, `SMSChainRecord` 2176, internal `ManifoldSolverConfig` 96, `SMSDomainVertex` 1584, `SMSMediumCapture` 1264, `SMSStartingMedia` 40, and `SMSDomainCounters` 32. Public specular/vertex/chain layouts are unchanged; the config adds internal opt-in/diagnostic fields. Capture scratch holds one identity/context per enclosing object, plus temporary scene-object enumeration. This is not the later proposal scratch-budget measurement.
 
@@ -49,4 +49,4 @@ Clean make: **376 compilation actions, exit 0, zero warnings/errors** (`final-cl
 
 ## Acceptance gate
 
-The full individually built regression gate and fresh three-lens review remain in progress. Clean make and Xcode Deployment/Opto build gates have passed. Final results and merge provenance must replace this status before a phase is marked implemented.
+The full individually built regression gate and fresh three-lens review remain in progress. The updated domain test additionally checks bit-identical HWSS lane outputs on the real composite fixtures with the extended flag ignored; its final count is pending the serial gate. Clean make and Xcode Deployment/Opto build gates have passed. Final results and merge provenance must replace this status before a phase is marked implemented.
