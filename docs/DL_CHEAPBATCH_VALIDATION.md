@@ -744,3 +744,37 @@ storage. Physics and statistics reviewers reported zero P1/P2 on33de960d9.
 All round3 corrections are comments/documentation only.
 The library rebuild exited0 with zero warnings in36.15 s; checked
 SourceHygiene build exited0 with zero warnings in4.40 s, run167/0.
+
+## Independent review round 4 and furnace salting repair
+
+Two fresh reviewers examined cf11c9df97d1acbee9d1fa68b833a01b7a6d6f51
+(the third spawn hit the agent thread limit; the required2-4 reviewer
+range is met). Physics/API/cache lifetime found zero P1/P2. Statistics/
+document fidelity found one P1: the separate RenderFurnaceH helper in
+SSS Part C changed libc seeds but did not apply Sobol ValueSalt. It now
+applies a nonzero salt derived from each trial seed, checks that salt
+at capture, and resets it after rendering. Filtered runs preserve the
+full-suite row seeds, and each row guards its existing band against
+three measured SDs of the independently salted mean. Minimum trials is4.
+Part B behavior and its completed five-run calibration are unchanged.
+The OIDN source-comment twin of the shared-buffer documentation issue
+(P2) now distinguishes CPU handle rebuilding from GPU storage reuse.
+
+Library/test builds exited0 with zero warnings (37.26/26.37s). The
+focused nine-row C run passed177/0 in7.90s at unchanged bands/budgets:
+
+| Furnace row | H mean | SD of n4 mean | band/SD |
+|---|---:|---:|---:|
+| Lambertian PT eta1 |1.00026|0.000337534|29.63|
+| RW PT eta1.05 |1.00033|0.000303296|32.97|
+| RW PT eta1.128 |0.999851|0.000302985|33.00|
+| RW PT eta1.5 |0.999558|0.000536454|7.46|
+| RW PT eta0.8867 |1.00058|0.000260409|38.40|
+| RW BDPT eta1.05 |0.999626|0.000669444|14.94|
+| RW BDPT eta0.8867 |0.999586|0.000156084|64.07|
+| RW spectral eta1.128 |0.996364|0.00106498|9.39|
+| diffusion PT eta1.05 |1.00108|0.00198353|5.04|
+
+These are local n4 sample SD/sqrt(n) estimates, not a universal bound.
+Log: `/tmp/cheapbatch-r4-furnace-calibration.log`. Source mutation proof
+and refreshed full integration results follow after committing the fix.

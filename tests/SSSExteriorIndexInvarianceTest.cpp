@@ -960,7 +960,7 @@ namespace
 		virtual void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
 		virtual void OutputImage( const IRasterImage& image, const Rect*, const unsigned int ) override
 		{
-			if( expectedSalt ) Check( SobolSamplerTestHooks::ValueSalt().load() == expectedSalt, "DL-332: independent value salt reaches the render" );
+			if( expectedSalt ) Check( SobolSamplerTestHooks::ValueSalt().load() == expectedSalt, "independent value salt reaches the render" );
 			pixels.resize( size_t( image.GetWidth() ) * image.GetHeight() );
 			for( unsigned int y = 0; y < image.GetHeight(); y++ )
 				for( unsigned int x = 0; x < image.GetWidth(); x++ )
@@ -1365,9 +1365,13 @@ namespace
 		job->RemoveRasterizerOutputs();
 		CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
 		GlobalLog()->PrintNew( cap, __FILE__, __LINE__, "dl306 capture" );
+		const unsigned int salt = SobolSequence::HashCombine( seed, 0x399u );
+		cap->expectedSalt = salt ? salt : 399u;
 		job->GetRasterizer()->AddRasterizerOutput( cap );
+		SobolSamplerTestHooks::ValueSalt().store( cap->expectedSalt );
 		std::srand( seed );
 		const bool rendered = job->Rasterize();
+		SobolSamplerTestHooks::ValueSalt().store( 0u );
 		double h = -1;
 		const unsigned int side = 32;
 		if( rendered && cap->pixels.size() == size_t( side ) * side ) {
@@ -1402,8 +1406,9 @@ namespace
 	{
 		std::cout << "C: rendered R+T white furnace (DL-306), n=" << trials << std::endl;
 		struct Row { Model model; Integrator integrator; unsigned int samples; double band; Scalar eta; };
-		// Bands: several times the measured sd of H at these sample counts,
-		// far below the pre-DL-306 deviations (docs/DL306_SSS_FRESNEL_PARTITION.md).
+		// Retain historical physics bands, with a per-row check that they
+		// cover at least three measured SDs of the salted mean H.
+		// Pre-DL-306 deviations: docs/DL306_SSS_FRESNEL_PARTITION.md.
 		const Row rows[] = {
 			{ Model::Lambertian, Integrator::PT,         64, 0.01, 1.0 },
 			{ Model::RandomWalk, Integrator::PT,         64, 0.01, 1.05 },
@@ -1415,8 +1420,9 @@ namespace
 			{ Model::RandomWalk, Integrator::PTSpectral, 512, 0.01, 1.128 },
 			{ Model::Diffusion,  Integrator::PT,         64, 0.01, 1.05 },
 		};
-		unsigned int seed = 30600 + g_seedOffset;
+		unsigned int rowIndex = 0;
 		for( const Row& row : rows ) {
+			unsigned int seed = 30600 + g_seedOffset + rowIndex++ * trials;
 			std::ostringstream lab;
 			lab << "C: " << ModelName( row.model ) << "/" << IntegratorName( row.integrator ) << " eta=" << std::setprecision( 4 ) << row.eta;
 			const std::string label = lab.str();
@@ -1436,6 +1442,10 @@ namespace
 			const Stats st = Summarize( h );
 			std::cout << std::setprecision( 6 ) << "    " << label.substr( 3 ) << " spp=" << row.samples
 				<< ": H = <R>+<T> = " << st.mean << " +/- " << st.sd << " (sd of one render; band " << row.band << ")" << std::endl;
+			const double meanSD = st.sd / std::sqrt( double( trials ) );
+			std::cout << "    salted furnace mean SD=" << meanSD
+				<< " band/meanSD=" << ( meanSD > 0 ? row.band / meanSD : 0 ) << std::endl;
+			Check( 3.0 * meanSD < row.band, label + ": band covers three measured SDs of salted mean H" );
 			Check( std::fabs( st.mean - 1.0 ) < row.band, label + ": reflection + transmission partition H within band of 1" );
 		}
 	}
@@ -1638,7 +1648,7 @@ int main( int argc, char** argv )
 		else if( a == "--seed" && i + 1 < argc ) g_seedOffset = static_cast<unsigned int>( std::strtoul( argv[++i], nullptr, 10 ) );
 		else if( a == "--trials" && i + 1 < argc ) trials = static_cast<unsigned int>( std::atoi( argv[++i] ) );
 	}
-	if( trials < 2 ) trials = 2;
+	if( trials < 4 ) trials = 4;
 
 	std::cout << "=== DL-49 SSS exterior-index invariance ===" << std::endl;
 	TestProfileFresnel();

@@ -451,8 +451,9 @@ void OIDNDenoiser::Denoise(
 
 	// Cache key match?  If yes, skip the (expensive) device.commit() and
 	// filter.commit() steps and just memcpy + execute.  If no, tear down
-	// the filter and rebuild — buffers only get reallocated when the
-	// dimensions changed, otherwise they're reused.
+	// the filter and rebuild. GPU storage survives unchanged dimensions;
+	// CPU shared-buffer handles rebuild for configuration/pointer changes.
+	// A changed backend request recreates the device and buffers above.
 	const bool needsRebuild = !mState->initialized
 		|| dimsChanged
 		|| mState->hasAlbedo != hasAlbedo
