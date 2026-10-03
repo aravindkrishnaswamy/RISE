@@ -1876,6 +1876,10 @@ static auto CapturedPhotonObjectY(const Vertex& vertex, int)
 }
 template<class Vertex>
 static Scalar CapturedPhotonObjectY(const Vertex&, long) { return 0; }
+template<class Vertex>
+static auto CapturedObjectPosition(const Vertex& v,int)->decltype(v.objectPosition) {return v.objectPosition;}
+template<class Vertex>
+static Point3 CapturedObjectPosition(const Vertex&,long) {return Point3(0,0,0);}
 static bool TestPhotonMaterialContext() {
     bool ok=true;
     auto* tau=new UniformScalarPainter(1.0);
@@ -2135,7 +2139,7 @@ static int TestSpectralAttenuationDL435() {
                         auto& pv=reusedPhoton.chain[j];
                         pv.position=seeded[0].position;pv.normal=seeded[0].normal;pv.geomNormal=seeded[0].geomNormal;
                         pv.pObject=object;pv.pMaterial=sheetMaterial;pv.eta=seeded[0].eta;
-                        pv.uv=seeded[0].uv;pv.objectPosition=seeded[0].objectPosition;
+                        pv.uv=seeded[0].uv;pv.objectPosition=CapturedObjectPosition(seeded[0],0);
                         pv.flags=exits ? 0 : 1; // photon order reverses transmission side
                     }
                     std::vector<ManifoldVertex> fresh;
