@@ -502,6 +502,11 @@ enum CamKind { kTight, kWide, kLookUp };
 //! file-scope switch (default false) so no existing call site changes.
 static bool g_meshSheet = false;
 
+//! DL-330 review: when true, ReceiverScene's receiver is a CLOSED sphere
+//! (radius 0.5, centred (0, -0.5, 0), top at the origin) instead of the
+//! open patch -- a random walk needs a closed body (DL-409).
+static bool g_recvSphere = false;
+
 //! @a compositeSheet: the sheet is a `composite_material` of two such
 //! weaves (zero thickness, no extinction), whose only straight exit is
 //! gap -> gap, so the closed form becomes g^2.
@@ -531,13 +536,16 @@ static std::string ReceiverScene( LightKind light, bool withSheet, double gap, C
 			<< "\n\tcolorspace Rec709RGB_Linear\n}\n\n"
 		<< ( recvMaterialChunks.empty()
 			? std::string( "lambertian_material\n{\n\tname mat_recv\n\treflectance pnt_recv\n}\n\n" )
-			: recvMaterialChunks ) <<
-		"clippedplane_geometry\n{\n\tname geo_recv\n"
-		<< ( wide
-			? "\tpta -1 0 1\n\tptb 1 0 1\n\tptc 1 0 -1\n\tptd -1 0 -1\n"
-			: "\tpta -0.1 0 0.1\n\tptb 0.1 0 0.1\n\tptc 0.1 0 -0.1\n\tptd -0.1 0 -0.1\n" ) <<
-			"\tdoublesided TRUE\n}\n\n"
-		"standard_object\n{\n\tname obj_recv\n\tgeometry geo_recv\n\tmaterial mat_recv\n}\n\n";
+			: recvMaterialChunks )
+		<< ( g_recvSphere
+			? std::string( "sphere_geometry\n{\n\tname geo_recv\n\tradius 0.5\n}\n\n"
+				"standard_object\n{\n\tname obj_recv\n\tgeometry geo_recv\n\tmaterial mat_recv\n\tposition 0 -0.5 0\n}\n\n" )
+			: std::string( "clippedplane_geometry\n{\n\tname geo_recv\n" )
+				+ ( wide
+					? "\tpta -1 0 1\n\tptb 1 0 1\n\tptc 1 0 -1\n\tptd -1 0 -1\n"
+					: "\tpta -0.1 0 0.1\n\tptb 0.1 0 0.1\n\tptc 0.1 0 -0.1\n\tptd -0.1 0 -0.1\n" )
+				+ "\tdoublesided TRUE\n}\n\n"
+				"standard_object\n{\n\tname obj_recv\n\tgeometry geo_recv\n\tmaterial mat_recv\n}\n\n" );
 
 	if( withSheet ) {
 		ss
@@ -1187,6 +1195,99 @@ static void TestBDPTSeeThroughDeltaLight()
 		std::cout << "  " << buf << ( r.tol < 0 ? "   [printed, not gated]" : "" ) << std::endl;
 		if( r.tol >= 0 ) {
 			Check( ratio > 0 && std::fabs( ratio / cf - 1.0 ) <= r.tol, buf );
+		}
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// sssgap: DL-330 review P1.  An SSS receiver (the kWide patch as
+// `subsurfacescattering_material` or `randomwalk_sss_material`) under the
+// black-yarn gapped sheet, a DELTA light above it, the camera seeing the
+// receiver directly.  BDPT's light family samples  L - gap - B ~jump~ A
+// and splats / connects from A (BDPTUtilities::LightJumpPartition keeps
+// it: no plain split covers [L, gap, B]), while the eye family samples
+// E - A ~jump~ B and reaches L from B only through the see-through
+// connection -- so the partition must hand the path to exactly one of
+// them.  Before the fix both counted it (BDPT 2.06x the closed form).
+// Closed form: L = g * L0 exactly (the sheet attenuates every light path
+// to the receiver by g; whatever the receiver does with the light, it
+// does with and without the sheet).  The random-walk rows use a closed
+// sphere receiver (g_recvSphere).  Default caps and a shallow eye cap
+// (max_eye_depth 1: the eye walk still reaches A and jumps to B).
+//////////////////////////////////////////////////////////////////////
+static std::string RastBDPTDepth( unsigned int spp, unsigned int eyeDepth, unsigned int lightDepth )
+{
+	std::ostringstream ss;
+	ss << "bdpt_pel_rasterizer\n{\n\tsamples " << spp * SppScale()
+	   << "\n\tmax_eye_depth " << eyeDepth << "\n\tmax_light_depth " << lightDepth
+	   << "\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n" << kOutputChunk;
+	return ss.str();
+}
+
+static std::string RastMLT( unsigned int mutations, unsigned int eyeDepth, unsigned int lightDepth )
+{
+	std::ostringstream ss;
+	ss << "mlt_rasterizer\n{\n\tmax_eye_depth " << eyeDepth << "\n\tmax_light_depth " << lightDepth
+	   << "\n\tbootstrap_samples 200000\n\tchains 256\n\tmutations_per_pixel " << mutations * SppScale()
+	   << "\n\tlarge_step_prob 0.3\n\toidn_denoise FALSE\n}\n\n" << kOutputChunk;
+	return ss.str();
+}
+
+static std::string SSSReceiverChunks( bool randomWalk )
+{
+	return randomWalk
+		? "randomwalk_sss_material\n{\n\tname mat_recv\n\tior 1.3\n\tabsorption 0.1\n\tscattering 10.0\n\tg 0.0\n\troughness 0.3\n}\n\n"
+		: "subsurfacescattering_material\n{\n\tname mat_recv\n\tior 1.3\n\tabsorption 0.1\n\tscattering 1.0\n\tg 0.0\n\troughness 0.3\n}\n\n";
+}
+
+static void TestSSSBehindGap()
+{
+	std::cout << "=== sssgap: SSS receiver behind a gapped weave, delta light (DL-330 review P1) ===" << std::endl;
+	const double g = 0.3;
+	const unsigned int n = 4;
+	struct R { const char* label; LightKind light; bool rw; std::string rast; double tol; };
+	const R rows[] = {
+		{ "spot, diffusion SSS, PT",                 kSpot, false, RastPT( 256 ),              0.06 },
+		{ "spot, diffusion SSS, BDPT 8/8",           kSpot, false, RastBDPTDepth( 256, 8, 8 ), 0.06 },
+		{ "spot, diffusion SSS, BDPT eye 1",         kSpot, false, RastBDPTDepth( 256, 1, 8 ), 0.06 },
+		{ "spot, diffusion SSS, MLT 8/8",            kSpot, false, RastMLT( 256, 8, 8 ),       0.10 },
+		{ "spot, random-walk SSS sphere, PT",        kSpot, true,  RastPT( 256 ),              0.06 },
+		{ "spot, random-walk SSS sphere, BDPT 8/8",  kSpot, true,  RastBDPTDepth( 256, 8, 8 ), 0.06 },
+		{ "spot, random-walk SSS sphere, BDPT eye 1",kSpot, true,  RastBDPTDepth( 256, 1, 8 ), 0.06 },
+		{ "spot, random-walk SSS sphere, MLT 8/8",   kSpot, true,  RastMLT( 256, 8, 8 ),       0.10 },
+		// Omni: light tracing finds the receiver with a small solid angle,
+		// so these carry ~12 % per-repeat sd at 1024 spp; 25 % still
+		// fails the 2x double count by a wide margin.
+		{ "omni, diffusion SSS, PT",                 kOmni, false, RastPT( 256 ),               0.06 },
+		{ "omni, diffusion SSS, BDPT 8/8",           kOmni, false, RastBDPTDepth( 1024, 8, 8 ), 0.25 },
+		{ "omni, random-walk SSS sphere, BDPT 8/8",  kOmni, true,  RastBDPTDepth( 1024, 8, 8 ), 0.25 },
+	};
+	unsigned int k = 0;
+	for( const R& r : rows )
+	{
+		std::vector<double> l0s, ls, rs;
+		g_recvSphere = r.rw;
+		for( unsigned int rep = 0; rep < n; rep++ ) {
+			const unsigned int salt = SobolSequence::HashCombine( 0xD330Bu + 0x100u * k + g_seedBase, rep );
+			const double L0 = RenderSalted( Assemble( r.rast, ReceiverScene( r.light, false, 0.0, kWide, false,
+				std::string(), SSSReceiverChunks( r.rw ) ) ), "sg_l0", salt );
+			const double L  = RenderSalted( Assemble( r.rast, ReceiverScene( r.light, true, g, kWide, false,
+				BlackWeaveSheet( g ), SSSReceiverChunks( r.rw ) ) ), "sg_lg", SobolSequence::HashCombine( salt, 0x51u ) );
+			l0s.push_back( L0 ); ls.push_back( L );
+			if( L0 > 0 ) rs.push_back( L / L0 );
+		}
+		g_recvSphere = false;
+		k++;
+		double m0, s0, m1, s1, mr, sr;
+		MeanSd( l0s, m0, s0 ); MeanSd( ls, m1, s1 ); MeanSd( rs, mr, sr );
+		const double ratio = m0 > 0 ? m1 / m0 : -1.0;
+		char buf[320];
+		std::snprintf( buf, sizeof(buf),
+			"sssgap %s: L/L0 = %.5f +/- %.5f (sd, n = %u)  (closed form %.5f, rel err %+.3f%%)  L0 = %.6g",
+			r.label, ratio, sr, n, g, 100.0 * ( ratio / g - 1.0 ), m0 );
+		std::cout << "  " << buf << ( r.tol < 0 ? "   [printed, not gated]" : "" ) << std::endl;
+		if( r.tol >= 0 ) {
+			Check( ratio > 0 && std::fabs( ratio / g - 1.0 ) <= r.tol, buf );
 		}
 	}
 }
@@ -2716,6 +2817,7 @@ int main( int argc, char** argv )
 	if( !filter || std::strstr( filter, "hwssgap" ) )     TestHWSSGapContinuation();
 	if( !filter || std::strstr( filter, "hwsstint" ) )    TestHWSSTintedCoatGap();
 	if( !filter || std::strstr( filter, "seethrough" ) )  TestBDPTSeeThroughDeltaLight();
+	if( !filter || std::strstr( filter, "sssgap" ) )      TestSSSBehindGap();
 	if( !filter || std::strstr( filter, "sms" ) )         TestSMSEmissionThroughGap();
 	if( !filter || std::strstr( filter, "castsshadows" ) ) TestCastsShadowsFalseStepOver();
 	if( !filter || std::strstr( filter, "layers" ) )      TestTwoLayerLightOutside();
