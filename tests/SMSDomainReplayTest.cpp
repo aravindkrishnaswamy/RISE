@@ -527,6 +527,7 @@ static std::vector<RISEColor> TraceCompositeGrid(LoadedScene& loaded, bool exten
 class DispatchSMSOp final : public PathTracingShaderOp {
 public:
     mutable unsigned nmCalls=0, nestedCalls=0, lostMode=0;
+    bool expectLegacy=true;
     DispatchSMSOp(const ManifoldSolverConfig& config,const StabilityConfig& stability)
         : PathTracingShaderOp(config,stability) { SetMaxPathDepth(12); }
     void Prepare(const IScene& scene) {
@@ -540,7 +541,7 @@ public:
         ++nmCalls;
         if(state.depth>1) ++nestedCalls;
 #ifdef RISE_SMS_SCENE_POLICY
-        if(!rc.smsForceLegacy) ++lostMode;
+        if(expectLegacy&&!rc.smsForceLegacy) ++lostMode;
 #endif
         return PathTracingShaderOp::PerformOperationNM(rc,hit,caster,state,accum,nm,stack,scat);
     }
@@ -565,13 +566,13 @@ static std::string DispatchScene(int kind,const std::string& compositeMaterial="
     return text;
 }
 static std::vector<Scalar> DispatchHWSS(LoadedScene& loaded,bool extended,unsigned salt,
-    unsigned& nmCalls,unsigned& nestedCalls,unsigned& lostMode)
+    unsigned& nmCalls,unsigned& nestedCalls,unsigned& lostMode,bool hwss=true)
 {
     ManifoldSolverConfig config; config.enabled=true; config.extendedMode=extended;
     config.seedingMode=ManifoldSolverConfig::eSeedingUniform; config.targetBounces=1;
     config.biased=true; config.multiTrials=4; config.photonCount=1;
     StabilityConfig stability; stability.rrMinDepth=20;
-    auto* op=new DispatchSMSOp(config,stability); op->Prepare(loaded.Scene());
+    auto* op=new DispatchSMSOp(config,stability); op->expectLegacy=hwss; op->Prepare(loaded.Scene());
     std::vector<IShaderOp*> ops{op}; IShader* shader=nullptr;
     Check(RISE_API_CreateStandardShader(&shader,ops),"dispatch HWSS shader created");
     if(!shader) { op->release(); return {}; }
@@ -584,11 +585,18 @@ static std::vector<Scalar> DispatchHWSS(LoadedScene& loaded,bool extended,unsign
         SampledWavelengths swl=SampledWavelengths::SampleEquidistant(sampler.Get1D(),380,780);
         Scalar result[SampledWavelengths::N]{}; IRayCaster::RAY_STATE state;
         IORStack stack(1);
-        caster->CastRayHWSS(context,nullRasterizerState,Ray(Point3(0,0,-0.9),Vector3(0,0,1)),
-            result,state,swl,nullptr,nullptr,stack);
-        for(Scalar lane:result) values.push_back(lane);
+        const Ray ray(Point3(0,0,-0.9),Vector3(0,0,1));
+        if(hwss) {
+            caster->CastRayHWSS(context,nullRasterizerState,ray,
+                result,state,swl,nullptr,nullptr,stack);
+            for(Scalar lane:result) values.push_back(lane);
+        } else {
+            Scalar value=0;
+            caster->CastRayNM(context,nullRasterizerState,ray,value,state,550,nullptr,nullptr,stack);
+            values.push_back(value);
+        }
 #ifdef RISE_SMS_SCENE_POLICY
-        Check(!context.smsForceLegacy,"HWSS cast restores caller mode after nested shader dispatch");
+        Check(!context.smsForceLegacy,"transport call restores caller mode after nested shader dispatch");
 #endif
     }
     nmCalls=op->nmCalls; nestedCalls=op->nestedCalls; lostMode=op->lostMode;
@@ -653,7 +661,7 @@ static void PreparedCompositePolicyCases()
             "scene preparation logs exactly one composite policy warning");
         Check(!log->messages.empty()&&log->messages.back().find("'remote_composite'")!=std::string::npos,
             "policy warning names the first composite object");
-        ManifoldSolverConfig config; config.extendedMode=true;
+        ManifoldSolverConfig config; config.enabled=true; config.extendedMode=true;
         auto* solver=new ManifoldSolver(config);
 #ifdef RISE_SMS_SCENE_POLICY
         Check(!solver->ExtendedModeActive(loaded.Scene()),"prepared wrapped composite disables extended mode scene-wide");
@@ -692,11 +700,24 @@ static void PreparedCompositePolicyCases()
     LoadedScene control(DispatchScene(-1));
     GlobalLog()->FlushPrinters();
     Check(log->messages.size()==warningsBefore,"composite-free preparation emits no composite policy warning");
-    ManifoldSolverConfig config; config.extendedMode=true; auto* solver=new ManifoldSolver(config);
+    ManifoldSolverConfig config; config.enabled=true; config.extendedMode=true; auto* solver=new ManifoldSolver(config);
 #ifdef RISE_SMS_SCENE_POLICY
     Check(solver->ExtendedModeActive(control.Scene()),"prepared composite-free scene still runs extended mode");
 #endif
     solver->release();
+    for(unsigned trial=0;trial<4;++trial) {
+        const unsigned salt=SobolSequence::HashCombine(3100+trial,0x4e4d4354);
+        unsigned nm=0,nested=0,lost=0;
+        const auto off=DispatchHWSS(control,false,salt,nm,nested,lost,false);
+        const auto on=DispatchHWSS(control,true,salt,nm,nested,lost,false);
+        bool finite=true; double a=0,b=0;
+        for(Scalar v:off) { finite=finite&&std::isfinite(v); a+=v; }
+        for(Scalar v:on) { finite=finite&&std::isfinite(v); b+=v; }
+        Check(finite&&a>0&&b>=0,"composite-free NM rejection control is finite with a lit legacy baseline");
+        Check(!off.empty()&&off.size()==on.size()&&std::memcmp(off.data(),on.data(),off.size()*sizeof(Scalar))!=0,
+            "composite-free NM executes extended unsupported-photon eligibility rather than legacy bypass");
+        std::cout<<"NM eligibility control salt="<<salt<<" off sum="<<a<<" on sum="<<b<<"\n";
+    }
     config.photonCount=1; solver=new ManifoldSolver(config);
     std::vector<IShaderOp*> ops; IShader* shader=nullptr;
     Check(RISE_API_CreateStandardShader(&shader,ops),"composite-free eligibility control shader");
@@ -733,7 +754,7 @@ static void ParticipatingMediumCases()
         Check(RISE_API_CreateStandardShader(&shader,ops),"medium eligibility shader exists");
         if(!shader) continue;
         RayCaster* caster=new RayCaster(false,16,*shader,true); caster->AttachScene(&loaded.Scene());
-        ManifoldSolverConfig config; config.extendedMode=true; ManifoldSolver* solver=new ManifoldSolver(config);
+        ManifoldSolverConfig config; config.enabled=true; config.extendedMode=true; ManifoldSolver* solver=new ManifoldSolver(config);
         Check(!solver->ExtendedAnchorEligible(loaded.Scene(),*caster,Point3(offset,0,0),live),
             "participating starting medium disables coupled extended switches");
         solver->release(); caster->release(); shader->release();
