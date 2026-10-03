@@ -12,6 +12,7 @@
 #include "../src/Library/Rendering/RayCaster.h"
 #include "../src/Library/Utilities/RuntimeContext.h"
 #include "../src/Library/RISE_API.h"
+#include "../src/Library/Interfaces/ILogPriv.h"
 #include <sstream>
 #include <cstring>
 #include "../src/Library/Utilities/IndependentSampler.h"
@@ -616,27 +617,48 @@ static void HWSSDispatchCases()
             Check(onLost==0,"every dispatched NM continuation inherits HWSS anchor mode");
 #endif
             std::cout<<"HWSS dispatch kind="<<kind<<" salt="<<salt<<" NM="<<onNM
-                <<" nested="<<onNested<<" lost="<<onLost<<" sum="<<sum<<"\n";
+                <<" nested="<<onNested<<" lost="
+#ifdef RISE_SMS_SCENE_POLICY
+                <<onLost
+#else
+                <<"unavailable"
+#endif
+                <<" sum="<<sum<<"\n";
         }
     }
 }
+class CompositePolicyLog final : public virtual ILogPrinter, public virtual Reference {
+public:
+    std::vector<std::string> messages;
+    void Print(const LogEvent& event) override {
+        const std::string message(event.szMessage);
+        if(message.find("Extended SMS is inert for this prepared scene:")!=std::string::npos)
+            messages.push_back(message);
+    }
+    void Flush() override {}
+};
 static void PreparedCompositePolicyCases()
 {
+    auto* log=new CompositePolicyLog(); GlobalLogPriv()->AddPrinter(log);
     const std::string wrappers[]={
         "lambertian_luminaire_material\n{\n name wrapped\n material layers\n exitance white\n scale 0\n}\n",
         "phong_luminaire_material\n{\n name wrapped\n material layers\n exitance white\n scale 0\n N 10\n}\n",
         "composite_material\n{\n name nested\n top layers\n bottom inner\n thickness 0.02\n extinction 0\n}\n"
         "lambertian_luminaire_material\n{\n name wrapped\n material nested\n exitance white\n scale 0\n}\n"};
     for(const auto& wrapper:wrappers) {
+        const size_t warningsBefore=log->messages.size();
         LoadedScene loaded(DispatchScene(-1,wrapper));
+        GlobalLog()->FlushPrinters();
+        Check(log->messages.size()==warningsBefore+1,
+            "scene preparation logs exactly one composite policy warning");
+        Check(!log->messages.empty()&&log->messages.back().find("'remote_composite'")!=std::string::npos,
+            "policy warning names the first composite object");
         ManifoldSolverConfig config; config.extendedMode=true;
         auto* solver=new ManifoldSolver(config);
 #ifdef RISE_SMS_SCENE_POLICY
         Check(!solver->ExtendedModeActive(loaded.Scene()),"prepared wrapped composite disables extended mode scene-wide");
         const auto* objects=dynamic_cast<const ObjectManager*>(loaded.Scene().GetObjects());
         Check(objects&&objects->FirstCompositeObject()=="remote_composite","prepared policy names first composite object");
-#else
-        Check(!config.extendedMode,"prepared scene must make requested extended mode inert");
 #endif
         SMSStartingMedia uncertain; IORStack missing(1);
         Check(!SMSDomainReplay::Capture(loaded.Scene(),Point3(0,0,0),missing,uncertain),
@@ -654,8 +676,22 @@ static void PreparedCompositePolicyCases()
             Check(finite&&sum>0,"remote wrapped composite legacy control is finite and lit");
             Check(HashPixels(off)==HashPixels(on),"remote wrapped composite keeps RGB/NM legacy rendering bit-identically");
         }
+#ifdef RISE_SMS_SCENE_POLICY
+        auto* object=loaded.job->GetObjects()->GetItem("remote_composite");
+        const IMaterial* native=loaded.Object("pane")->GetMaterial();
+        object->AssignMaterial(*native);
+        Check(object->GetMaterial()==native,"prepared policy mutation control uses native material");
+        auto* cached=new ManifoldSolver(config);
+        Check(!cached->ExtendedModeActive(loaded.Scene()),"policy is read from preparation, not rescanned at an anchor");
+        loaded.Scene().GetObjects()->PrepareForRendering();
+        Check(cached->ExtendedModeActive(loaded.Scene()),"next preparation refreshes policy after removing effective composite");
+        cached->release();
+#endif
     }
+    const size_t warningsBefore=log->messages.size();
     LoadedScene control(DispatchScene(-1));
+    GlobalLog()->FlushPrinters();
+    Check(log->messages.size()==warningsBefore,"composite-free preparation emits no composite policy warning");
     ManifoldSolverConfig config; config.extendedMode=true; auto* solver=new ManifoldSolver(config);
 #ifdef RISE_SMS_SCENE_POLICY
     Check(solver->ExtendedModeActive(control.Scene()),"prepared composite-free scene still runs extended mode");
@@ -672,6 +708,7 @@ static void PreparedCompositePolicyCases()
         caster->release(); shader->release();
     }
     solver->release();
+    log->release(); // The global logger owns its remaining reference.
 }
 
 static void ParticipatingMediumCases()

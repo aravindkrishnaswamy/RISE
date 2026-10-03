@@ -463,6 +463,8 @@ namespace RISE
 				//! hand-offs pass it; null (no record) keeps today's
 				//! suppress-everything rule for an inherited anchor.
 				const SMSChainRecord* pSMSChain_ = nullptr,
+                //! Internal HWSS hand-off mode; its RuntimeContext scope also
+                //! carries legacy provenance through NM shader/SSS recasts.
                 bool smsIgnoreExtended_ = false
 				) const;
 
@@ -602,6 +604,8 @@ namespace RISE
 				Scalar castRRCompensation_ = 1,	///< DL-185 -- see IntegrateFromHit
 				bool smsChainUncovered_ = false,	///< DL-295 -- see IntegrateFromHitNM
 				const SMSChainRecord* pSMSChain_ = nullptr,
+                //! Internal HWSS hand-off mode; its RuntimeContext scope also
+                //! carries legacy provenance through NM shader/SSS recasts.
                 bool smsIgnoreExtended_ = false	///< DL-372 -- see IntegrateFromHitNM
 				) const;
 
