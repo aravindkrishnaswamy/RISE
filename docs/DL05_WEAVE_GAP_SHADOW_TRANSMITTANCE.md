@@ -824,8 +824,9 @@ spot light read BDPT 0.593 / MLT 0.602 against the closed form 0.30, n = 4
 salted).  The see-through is now an eye-family WITNESS in that partition:
 `LightSegmentEyeWitness( ..., seeThroughNEE )` accepts a split at verts[j]
 whose light side verts[1..j-1] is a straight chain of delta pass-throughs
-back to a delta-position root (`DeltaPassThroughChainToRoot`, at most 32
-gaps -- the walk's crossing cap), with the eye-walk caps applied by the
+back to a delta-position root (`DeltaPassThroughChainToRoot`, at most 31
+gaps -- the walk's crossing cap, `kShadowWalkMaxCrossings` in IRayCaster.h,
+shared by the walk, the connection and the witness), with the eye-walk caps applied by the
 same `EyeFamilyCovers` test, so the light family cuts exactly the paths
 the see-through owns.  BDPT and MLT pass it when
 `RayCaster::DeltaPassThroughShadowsActive()` (the one definition of "the
@@ -866,6 +867,11 @@ was missing.
   heavy tail on small receivers (the `seethrough` VCM row).  Variance, not
   bias; the BDPT construction above would transfer only with a
   merging-aware partition.
+- **DL-425** (new, round-2 review P2): the see-through yields every path a
+  standard strategy covers, so a directly seen diffuse receiver under an
+  OMNI light behind a gap is left to light tracing alone (BDPT 1024 spp
+  0.265 vs 0.30, 63 % per-render sd; PT exact at 64 spp).  The fix is a
+  real NEE density in `MISWeight`, not a weight-0/1 rule.
 - **DL-221** (unchanged): a composite of gapped weaves still drops HWSS
   lanes on a continuation through its walker gap ray (`CompositeSPF`
   declines `eRayRefraction`).

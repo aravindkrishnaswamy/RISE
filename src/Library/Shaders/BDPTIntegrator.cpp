@@ -4706,10 +4706,11 @@ ConnectAndEvaluateImplCore(
 				const unsigned int lightBudget = BDPTUtilities::WalkIterationBudget(
 					self.GetMaxLightDepth(), self.GetStabilityConfig().maxVolumeBounce );
 				const int coverSlack = DeltaPassThroughCoverSlack( eyeVerts, t, self.GetMaxLightDepth(), lightBudget );
-				// The walk reports at most kMaxCrossings (32) crossings and
-				// answers "blocked" past that, so a slack that large is
-				// covered whatever k turns out to be: skip the walk.
-				if( coverSlack >= 32 ) {
+				// A walk that reaches the light crossed at most
+				// kShadowWalkMaxCrossings (31) surfaces (IRayCaster.h), so
+				// a slack that large is covered whatever k turns out to
+				// be: skip the walk.
+				if( coverSlack >= static_cast<int>( kShadowWalkMaxCrossings ) ) {
 					return result;
 				}
 				Scalar walkNM = 0;

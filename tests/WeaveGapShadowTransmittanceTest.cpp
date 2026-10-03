@@ -1226,11 +1226,15 @@ static std::string RastBDPTDepth( unsigned int spp, unsigned int eyeDepth, unsig
 	return ss.str();
 }
 
-static std::string RastMLT( unsigned int mutations, unsigned int eyeDepth, unsigned int lightDepth )
+//! @a bootstrap: PSSMLT never reads the Sobol' salt and renders
+//! bit-identically run to run, so a caller that wants INDEPENDENT MLT
+//! draws varies the bootstrap sample count (which reseeds every chain).
+static std::string RastMLT( unsigned int mutations, unsigned int eyeDepth, unsigned int lightDepth,
+	unsigned int bootstrap = 200000 )
 {
 	std::ostringstream ss;
 	ss << "mlt_rasterizer\n{\n\tmax_eye_depth " << eyeDepth << "\n\tmax_light_depth " << lightDepth
-	   << "\n\tbootstrap_samples 200000\n\tchains 256\n\tmutations_per_pixel " << mutations * SppScale()
+	   << "\n\tbootstrap_samples " << bootstrap << "\n\tchains 256\n\tmutations_per_pixel " << mutations * SppScale()
 	   << "\n\tlarge_step_prob 0.3\n\toidn_denoise FALSE\n}\n\n" << kOutputChunk;
 	return ss.str();
 }
@@ -1258,23 +1262,26 @@ static void TestSSSBehindGap()
 		{ "spot, random-walk SSS sphere, BDPT 8/8",  kSpot, true,  RastBDPTDepth( 256, 8, 8 ), 0.06 },
 		{ "spot, random-walk SSS sphere, BDPT eye 1",kSpot, true,  RastBDPTDepth( 256, 1, 8 ), 0.06 },
 		{ "spot, random-walk SSS sphere, MLT 8/8",   kSpot, true,  RastMLT( 256, 8, 8 ),       0.10 },
-		// Omni: light tracing finds the receiver with a small solid angle,
-		// so these carry ~12 % per-repeat sd at 1024 spp; 25 % still
-		// fails the 2x double count by a wide margin.
+		// Omni: measured per-repeat sd 0.3-1.2 % at 1024 spp (the
+		// see-through connection is an NEE estimator), so 6 % is >= 10 se.
 		{ "omni, diffusion SSS, PT",                 kOmni, false, RastPT( 256 ),               0.06 },
-		{ "omni, diffusion SSS, BDPT 8/8",           kOmni, false, RastBDPTDepth( 1024, 8, 8 ), 0.25 },
-		{ "omni, random-walk SSS sphere, BDPT 8/8",  kOmni, true,  RastBDPTDepth( 1024, 8, 8 ), 0.25 },
+		{ "omni, diffusion SSS, BDPT 8/8",           kOmni, false, RastBDPTDepth( 1024, 8, 8 ), 0.06 },
+		{ "omni, random-walk SSS sphere, BDPT 8/8",  kOmni, true,  RastBDPTDepth( 1024, 8, 8 ), 0.06 },
 	};
 	unsigned int k = 0;
 	for( const R& r : rows )
 	{
 		std::vector<double> l0s, ls, rs;
 		g_recvSphere = r.rw;
+		const bool isMLT = r.rast.find( "mlt_rasterizer" ) != std::string::npos;
 		for( unsigned int rep = 0; rep < n; rep++ ) {
 			const unsigned int salt = SobolSequence::HashCombine( 0xD330Bu + 0x100u * k + g_seedBase, rep );
-			const double L0 = RenderSalted( Assemble( r.rast, ReceiverScene( r.light, false, 0.0, kWide, false,
+			// MLT: an independent draw per render through its bootstrap count.
+			const std::string rast0 = isMLT ? RastMLT( 256, 8, 8, 200000 + 1000 * rep ) : r.rast;
+			const std::string rastG = isMLT ? RastMLT( 256, 8, 8, 200500 + 1000 * rep ) : r.rast;
+			const double L0 = RenderSalted( Assemble( rast0, ReceiverScene( r.light, false, 0.0, kWide, false,
 				std::string(), SSSReceiverChunks( r.rw ) ) ), "sg_l0", salt );
-			const double L  = RenderSalted( Assemble( r.rast, ReceiverScene( r.light, true, g, kWide, false,
+			const double L  = RenderSalted( Assemble( rastG, ReceiverScene( r.light, true, g, kWide, false,
 				BlackWeaveSheet( g ), SSSReceiverChunks( r.rw ) ) ), "sg_lg", SobolSequence::HashCombine( salt, 0x51u ) );
 			l0s.push_back( L0 ); ls.push_back( L );
 			if( L0 > 0 ) rs.push_back( L / L0 );

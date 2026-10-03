@@ -2554,8 +2554,10 @@ bool RayCaster::WalkShadowSegment(
 	// of nested dielectrics.
 	// (counts interface CROSSINGS, not objects: a meniscus shell is 2,
 	// nested glass-in-glass 4; 32 leaves headroom before the safe-but-
-	// darkening conservative block kicks in.)
-	static const unsigned int kMaxCrossings = 32;
+	// darkening conservative block kicks in.)  The last iteration is the
+	// reach-the-light check, so at most kShadowWalkMaxCrossings (31)
+	// surfaces are crossed (IRayCaster.h; DL-330 reads the same pair).
+	static const unsigned int kMaxCrossings = kShadowWalkMaxIterations;
 
 	// Small step-off so the next IntersectRay does not re-hit the
 	// surface we just crossed.  Matches the order of magnitude of the

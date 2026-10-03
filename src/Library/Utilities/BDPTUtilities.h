@@ -28,6 +28,7 @@
 #include "Math3D/Math3D.h"
 #include "../Shaders/BDPTVertex.h"
 #include "../Interfaces/IMaterial.h"
+#include "../Interfaces/IRayCaster.h"		// kShadowWalkMaxCrossings (DL-330)
 #include <vector>
 
 namespace RISE
@@ -518,32 +519,13 @@ namespace RISE
 			return v.type == BDPTVertex::SURFACE && !v.isBSSRDFEntry;
 		}
 
-		/// The largest split index w at which the EYE-sampled family has
-		/// a strategy for a path whose jump the light walk sampled at
-		/// `verts[p] -> verts[p+1]` (the hit where the light went in,
-		/// then the entry), ignoring depth caps.  The eye would arrive at
-		/// the entry's point, jump to verts[p] (its own entry vertex there
-		/// -- connectible exactly when verts[p+1] is), and must split the
-		/// light-side segment verts[s..p] somewhere; verts[s] is the light
-		/// root (s == 0) or the previous KEPT light entry.  The
-		/// strategies, with the eye covering verts[w..p] and the light
-		/// verts[s..w-1]:
-		///   w = 0 (eye hits the root): s == 0, root not delta;
-		///   merge at verts[w] (VCM only): merging live, verts[w] a
-		///     non-delta surface;
-		///   NEE / connection at the edge (w-1, w): verts[w] non-delta
-		///     and connectible, and verts[w-1] the root (NEE reaches any
-		///     light) or a non-delta connectible vertex (a kept entry is
-		///     one).
-		/// "Non-delta" is the path's own scatter at that vertex (the
-		/// light walk's sampled lobe), so the witness is a function of
-		/// the path.  Returns -1 when no strategy exists at any depth.
 		/// DL-330 (review P1).  Is verts[1..j-1] a straight chain of delta
 		/// PASS-THROUGHS (thin-weave gap draws) from a delta-position light
 		/// root verts[0] to verts[j]?  That is exactly the light-side shape
 		/// BDPT's see-through s = 1 connection reaches: an eye vertex at
 		/// verts[j] connects to the root through those gaps
-		/// (`CastShadowRayAutoSampled`, at most 32 crossings).  The chain is
+		/// (`CastShadowRayAutoSampled`, which crosses at most
+		/// kShadowWalkMaxCrossings = 31 surfaces).  The chain is
 		/// a function of the path: each gap draw continues the incoming ray
 		/// undeviated, so the segment directions must all equal
 		/// root -> verts[j].
@@ -552,7 +534,7 @@ namespace RISE
 			const std::size_t j
 			)
 		{
-			if( j < 2 || j - 1 > 32 || j >= verts.size() ) {
+			if( j < 2 || j - 1 > kShadowWalkMaxCrossings || j >= verts.size() ) {
 				return false;
 			}
 			const BDPTVertex& root = verts[0];
@@ -578,6 +560,27 @@ namespace RISE
 			return true;
 		}
 
+		/// The largest split index w at which the EYE-sampled family has
+		/// a strategy for a path whose jump the light walk sampled at
+		/// `verts[p] -> verts[p+1]` (the hit where the light went in,
+		/// then the entry), ignoring depth caps.  The eye would arrive at
+		/// the entry's point, jump to verts[p] (its own entry vertex there
+		/// -- connectible exactly when verts[p+1] is), and must split the
+		/// light-side segment verts[s..p] somewhere; verts[s] is the light
+		/// root (s == 0) or the previous KEPT light entry.  The
+		/// strategies, with the eye covering verts[w..p] and the light
+		/// verts[s..w-1]:
+		///   w = 0 (eye hits the root): s == 0, root not delta;
+		///   merge at verts[w] (VCM only): merging live, verts[w] a
+		///     non-delta surface;
+		///   NEE / connection at the edge (w-1, w): verts[w] non-delta
+		///     and connectible, and verts[w-1] the root (NEE reaches any
+		///     light) or a non-delta connectible vertex (a kept entry is
+		///     one).
+		/// "Non-delta" is the path's own scatter at that vertex (the
+		/// light walk's sampled lobe), so the witness is a function of
+		/// the path.  Returns -1 when no strategy exists at any depth.
+		///
 		/// @a seeThroughNEE (DL-330 review P1): the eye family also has
 		/// BDPT's see-through s = 1 connection -- NEE from an eye vertex to a
 		/// delta light root across a straight chain of delta pass-throughs
