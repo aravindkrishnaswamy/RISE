@@ -1276,7 +1276,20 @@ See [ALPHA_COVERAGE.md](../docs/ALPHA_COVERAGE.md) for the estimator definitions
   independent closed-form quadrature. Red on `c35591fb9`: PT P/UV 0.2534
   (Lambertian) / 0.6325 (Phong), PT spectral and HWSS the same, VCM 0.9896 /
   0.9950, 34/8; green 42/0. The field is deliberately nonzero at the origin
-  (DL-431: the emitter's own `averageRadiantExitance` is estimated at P = 0).
+  (the emitter's own `averageRadiantExitance` was estimated at P = 0 until
+  DL-431, below).
+
+- `EmitterAverageExitanceTest` (DL-431): the luminary's average exitance
+  (light-selection weight, photon power / budget) over its own surface points.
+  Row 1 renders the wall-and-camera rig with `1.5 (P.x^2+P.y^2)` (zero at the
+  origin) in PT / BDPT / VCM RGB and PT / BDPT spectral against a UV-keyed
+  control and a closed form (4 salted renders each); row 2 drives the real
+  `PhotonTracer` / `SpectralPhotonTracer` loops with an ideal sink on a unit
+  sphere (flux `4 pi`, flux-weighted `<z^2>` 1/5, plus an origin-value-150
+  displaced sphere); row 3 checks `LightSampler::AverageLuminaryExitance`
+  directly (P-keyed 9.9, UV-keyed equals the old grid, constant is verbatim,
+  composite local exitance). Red on `388907e94`: PT 0.0011 / BDPT 0.0001 of the
+  closed form, photon flux 0 and 150x, 18/12; green 37/0.
 
 ## Blender tangent producers (DL-213)
 

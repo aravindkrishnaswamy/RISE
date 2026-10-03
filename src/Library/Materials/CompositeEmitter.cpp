@@ -176,14 +176,33 @@ Scalar CompositeEmitter::averageRadiantExitanceNM( const Scalar nm ) const
 	return averageSpectrum.ValueAtNM( int(nm) );
 }
 
+// DL-431: the LOCAL counterpart of the constructor's average -- the same
+// `top + bottom * exp(-2 * thickness * extinction)` combination (the mean path
+// length 2 * thickness), with every term read at the record's own point
+// instead of the construction-time averages.
+RISEPel CompositeEmitter::radiantExitanceAt( const RayIntersectionGeometric& ri ) const
+{
+	const ScalarTriple e = extinction.GetValuesAt( ri );
+	const RISEPel attenuation = ColorMath::exponential( RISEPel( e.v[0], e.v[1], e.v[2] ) * (-2.0 * thickness) );
+	return topEmitter.radiantExitanceAt( ri ) + bottomEmitter.radiantExitanceAt( ri ) * attenuation;
+}
+
+Scalar CompositeEmitter::radiantExitanceAtNM( const RayIntersectionGeometric& ri, const Scalar nm ) const
+{
+	const Scalar attenuation = exp( -extinction.GetValueAtNM( ri, nm ) * 2.0 * thickness );
+	return topEmitter.radiantExitanceAtNM( ri, nm ) + bottomEmitter.radiantExitanceAtNM( ri, nm ) * attenuation;
+}
+
 Vector3 CompositeEmitter::getEmmittedPhotonDir(
 	const RayIntersectionGeometric& ri,
 	const Point2& random
 	) const
 {
 	// Choose which emitter to emit from, weighted by their relative exitances
-	const Scalar topWeight = ColorMath::MaxValue( topEmitter.averageRadiantExitance() );
-	const Scalar bottomWeight = ColorMath::MaxValue( bottomEmitter.averageRadiantExitance() );
+	// AT THIS POINT (DL-431: the construction-time averages were taken at
+	// P = Po = 0, so a position-keyed layer was weighted by its origin value).
+	const Scalar topWeight = ColorMath::MaxValue( topEmitter.radiantExitanceAt( ri ) );
+	const Scalar bottomWeight = ColorMath::MaxValue( bottomEmitter.radiantExitanceAt( ri ) );
 	const Scalar totalWeight = topWeight + bottomWeight;
 
 	if( totalWeight < NEARZERO ) {

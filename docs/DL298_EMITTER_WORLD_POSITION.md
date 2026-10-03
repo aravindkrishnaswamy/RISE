@@ -103,7 +103,7 @@ origin record, ratio 2; NEE `P.y` 3.99999).  The SMS seed-photon site calls the
 same helper but has no direct recorder (same call, same arguments as the two
 tracers; recorded as unmeasured).
 
-## Not fixed here: DL-431
+## Not fixed here: DL-431 (since FIXED 2026-10-03, see [DL431_EMITTER_AVERAGE_EXITANCE.md](DL431_EMITTER_AVERAGE_EXITANCE.md))
 
 `LambertianEmitter` / `PhongEmitter` / `CompositeEmitter::RefreshAverages`
 estimate `averageRadiantExitance()` (and the NM spectrum) at construction from a

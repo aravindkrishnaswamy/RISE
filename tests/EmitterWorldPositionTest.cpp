@@ -31,11 +31,10 @@
 //    reference-free oracle for the position key; a deterministic
 //    quadrature of the closed form gives an independent absolute check.
 //    At the origin M = 0.25 (a quarter of the area average 1.0), so the
-//    unfixed paths render the P-keyed wall ~4x too dark.  (The field is
-//    deliberately NONZERO at the origin: the emitter's own `averageRadiantExitance`
-//    -- light-selection weight and photon power -- is estimated at P = 0
-//    and a field that vanishes there would never be sampled at all; that
-//    separate gap is DL-431.)
+//    unfixed paths render the P-keyed wall ~4x too dark.  (The field is nonzero at the
+//    origin so this test isolates DL-298 alone: the emitter's own `averageRadiantExitance`
+//    was estimated at P = 0 until DL-431, and a field that vanishes there was never
+//    sampled -- EmitterAverageExitanceTest covers that.)
 //
 //    A second topology keys a PHONG exponent N(P) = 2 + 3(P.x^2+P.y^2)
 //    the same way (emitted radiance = (N+1) cos^N / (2 pi)), which is
