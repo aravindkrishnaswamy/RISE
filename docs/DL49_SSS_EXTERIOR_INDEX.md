@@ -1084,7 +1084,9 @@ measurement that matters for those 19: no resolvable mean change.
 SERIAL runs of any build -- means 0.1648 and 0.1914, round 1, round 2 and
 the merged pre-round build alike.  **Round-3 correction:** the cause is
 OIDN's Auto quality choosing FAST or BALANCED from measured render time,
-not a race -- see the §11.3 bullet and DL-360, filed at merge.)
+not a race -- see the §11.3 bullet and DL-360, filed at merge.
+This is historical: DL-360 now resolves Auto from the scene sampling
+budget, so measured render duration no longer selects its quality.)
 
 **P1-B -- glassblock's gap is SMS's, not VCM's; Part C is gated on the
 slab pixels.**  (Round 3, §11.8: the S mask below was the UNION of the slab
