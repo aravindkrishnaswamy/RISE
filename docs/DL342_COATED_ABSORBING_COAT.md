@@ -221,5 +221,8 @@ by construction (section 2).
 ## 6. Residuals
 
 * **DL-388** (opened) -- substrate evaluated in the outer frame; section 4.
+  FIXED 2026-10-02 (`debt-dl388`): Oren-Nayar and GGX substrates are now
+  evaluated in the coat's refracted frame with a first-bounce-return
+  recycling term -- [DL388_COATED_REFRACTED_FRAME.md](DL388_COATED_REFRACTED_FRAME.md).
 * The `1/eta^2`-exact claim is for a SMOOTH coat over a Lambertian; a
   rough coat's transmission is still the macro-surface Fresnel, as before.
