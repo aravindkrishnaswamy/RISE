@@ -63,8 +63,8 @@
 //             SMS-off parity, as are the review-round rows (a smooth
 //             SSS / polished caster seen with no SMS anchor, the HWSS
 //             SSS and no-BSDF hand-offs with and without an anchor); an
-//             anchored no-gap caster reflection is pinned SUPPRESSED
-//             (DL-339 (a)); the ior-1.0 perfect refractor plane is
+//             anchored no-gap caster reflection is parity under DL-372
+//             (the historical DL-339 (a) suppression is removed); the ior-1.0 perfect refractor plane is
 //             printed and the ior-1.5 open sheet (DL-339 (b)) is SMS-on
 //             vs SMS-off parity since DL-345.  Renders here are
 //             Sobol'-salted per (seed base, index) but NOT reproducible

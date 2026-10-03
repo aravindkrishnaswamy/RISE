@@ -1379,15 +1379,15 @@ namespace
 			{ "sms_k2_glassblock", 0.840, 1.180, 16384, 512 },
 		};
 		const unsigned int kW = 100, kH = 75, kMaskSpp = 256;
-	// Keep DL-345 physics bands and minimum eight replicates; retain
-	// DL-399 controlled inputs, larger budgets and paired precision checks.
-	const unsigned int partCTrials = trials > 8 ? trials : 8;
+		// Keep DL-345 physics bands and minimum eight replicates; retain
+		// DL-399 controlled inputs, larger budgets and paired precision checks.
+		const unsigned int partCTrials = trials > 8 ? trials : 8;
 		const uint32_t kMaskSalt = 0x5ca1ab1eu;
 		const char* media = std::getenv( "RISE_MEDIA_PATH" );
 		const std::string root = media ? std::string( media ) : std::string();
 		unsigned int rowIndex = 0;
 		for( const SceneRow& row : rows ) {
-			const unsigned int rowSeed = 291000 + renderSeedOffset + rowIndex++ * trials;
+			const unsigned int rowSeed = 291000 + renderSeedOffset + rowIndex++ * partCTrials;
 			unsigned int seed = rowSeed;
 			const std::string label = std::string( "C: " ) + row.name;
 			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
