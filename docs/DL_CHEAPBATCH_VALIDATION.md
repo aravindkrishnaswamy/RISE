@@ -924,3 +924,46 @@ Two fixed n8 panels at1024 spp, seed offsets0/10000, are pending before
 setting the final test budget or claiming that the measured tail is
 controlled. No band widening, new solver design, final green integration
 gate, independent-review verdict, or master merge is claimed here.
+
+
+### Repaired tail calibration and added mesh/source proofs
+
+Both repaired1024-spp n8 panels passed131/0: seed offsets0/10000 give
+0.999884/0.999867 with paired mean SD0.0000128219/0.0000112882,
+in302.51/303.44s. Both16-spp n8 panels also passed131/0, in4.96/4.94s:
+0.999687/0.999916 with paired mean SD0.000227643/0.00000245457.
+The retained0.02 band covers87.9 times the worst measured n8 mean SD.
+Commitac1db39ff restores the16-spp k1 budget and requires at least8
+pairs for RGB uniform glass (including k2). All Part B rows reserve a
+seed span of max(trials,8), so filtered/full-suite inputs agree and the
+longer rows do not overlap siblings. The low-budget panels use exactly
+those default k1 seeds. The known photon residual remains nongated.
+Logs: /tmp/rise-dl434-pilots.json and /tmp/rise-dl434-lowbudget.json.
+
+With committed source replaced by master cpp+header, the expanded
+SMSEmitterDirectionTest built0 warnings and failed337/7 (234.98s);
+SMSUniformDispersionTest built0 warnings and failed90/24 (399.14s).
+Restoring HEAD, their checked builds passed0 warnings and tests passed
+344/0 (230.08s) and114/0 (398.83s). Both geometry kinds resolve the
+SF11 displacement at about0.0562pixels, versus master's0.0016pixels;
+constant-index controls remain near zero. The added double-sided indexed
+emitter rows preserve winding-invariant Lambertian/Phong emission in
+RGB/NM, Snell/uniform. Logs: /tmp/rise-takeover-sms-redproof.json.
+
+Commit1376d8d24 lets the photon-context regression compile against the
+old solver API using test-only overload/field adapters. Master cpp+header
+now builds successfully0 warnings (19.51s) and the test fails at the
+intended material-context attenuation assertion in0.35s (SIGABRT), rather
+than failing to compile. Restoring HEAD builds0 warnings (23.52s) and
+passes the full ManifoldSolverTest in0.25s. The context oracle expects
+1.2 + 0.2*0.6 + 0.3*0.7 =1.53 at the captured UV/object point; NM
+adds wavelength*0.0001 at450/650nm. Log:
+/tmp/rise-takeover-photon-redproof.json.
+
+The final normal gate is now running after a fresh clean library build.
+The earlier full weave244/0 and SSS510/0 integration results remain valid:
+source/test behavior exercised by them is unchanged by the geometric
+helper repair, and neither suite enables uniform seeding or SMS photons.
+The final run repeats all remaining/affected targets, including full
+Exterior, manifold, both mesh suites and master-overlap targeted gates.
+Xcode Deployment/Opto and fresh independent review remain pending.
