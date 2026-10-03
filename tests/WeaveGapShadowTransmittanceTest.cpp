@@ -1088,10 +1088,15 @@ static void TestHWSSGapContinuation()
 	// whose reflective yarn adds a receiver <-> sheet interreflection
 	// that is NOT negligible on this 2 x 2 patch (printed only).
 	std::vector<HwssRow> rows;
-	rows.push_back( { "PT RGB",                          RastPT( 1024 ),                  false, 0.03, 0 } );
-	rows.push_back( { "PT spectral hwss=false",          RastPTSpectral( 1024, false ),   false, 0.05, 0 } );
-	rows.push_back( { "PT spectral hwss=true",           RastPTSpectral( 1024, true ),    false, 0.03, 0 } );
-	rows.push_back( { "PT spectral hwss=true  (mesh)",   RastPTSpectral( 1024, true ),    true,  0.03, 0 } );
+	// Gated: the two PT hwss=true rows (DL-329 read 0.0765 / 0.0742, -75 %,
+	// here).  Their per-repeat sd at 2048 spp is ~1-2.5 % (a BSDF sample
+	// must find the 0.5 x 0.5 emitter through the gap), so 6 % is >= 4.8
+	// se at n = 4.  PT RGB and hwss=false are not DL-329 targets and carry
+	// 4-6 % per-repeat sd at 1024 spp: printed.
+	rows.push_back( { "PT RGB",                          RastPT( 1024 ),                  false, -1.0, 0 } );
+	rows.push_back( { "PT spectral hwss=false",          RastPTSpectral( 1024, false ),   false, -1.0, 0 } );
+	rows.push_back( { "PT spectral hwss=true",           RastPTSpectral( 2048, true ),    false, 0.06, 0 } );
+	rows.push_back( { "PT spectral hwss=true  (mesh)",   RastPTSpectral( 2048, true ),    true,  0.06, 0 } );
 	rows.push_back( { "BDPT RGB",                        RastBDPT( 512 ),                 false, -1.0, 0 } );
 	rows.push_back( { "BDPT spectral hwss=false",        RastBDPTSpectral( 512, false ),  false, -1.0, 0 } );
 	rows.push_back( { "BDPT spectral hwss=true",         RastBDPTSpectral( 512, true ),   false, -1.0, 0 } );

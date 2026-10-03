@@ -180,8 +180,11 @@ The composite override reverted fails 9 (query 0 vs sampled 0.0067-0.029).
 
 `WEAVE_GAP_FILTER=table ./WeaveGapShadowTransmittanceTest 1000 4`: 24 x 24,
 512 spp, `fabric custom transmission thin warp/weft_transmit 0.25`, omni at
-(0,0,-3) power 6, camera (0,0,3.2) fov 34, n = 4 per integrator (the sd is
-run-to-run; RISE renders are not bit-reproducible).
+(0,0,-3) power 6, camera (0,0,3.2) fov 34, n = 4 per integrator.
+**Correction (2026-10-02, section 10.1): these repeats were NOT salted** --
+they differed only in libc `rand()`, which no Sobol' stream reads, so every
+"+/- sd" below is ~0 by construction and each ratio is ONE Sobol' point
+set.  The table section salts every repeat since `debt-weavegap`.
 
 | scene | PT pre | BDPT/PT pre | VCM/PT pre | PT post | BDPT/PT post | VCM/PT post |
 |---|---|---|---|---|---|---|
@@ -290,6 +293,9 @@ last part is the energy the fix recovers, not overhead: on the design-doc box
   the test's `fovsweep` section now gates it.
 - **DL-295** (new): the SMS emission suppression after a weave gap (§7);
   fixed in section 9.
+- (Both bullets below are resolved in section 10: DL-329 fixed; DL-330's
+  area and BDPT-HWSS claims were unsalted artifacts, its sphere deficit a
+  missing BDPT strategy, fixed.)
 - **OVERCLAIM correction (external review P2-1), filed as DL-329 at merge:
   "PT HWSS 0.30030" and every "PT now agrees with BDPT/VCM" statement in
   this doc hold for RGB and non-HWSS spectral only.**  Under
@@ -720,3 +726,123 @@ default) hashes identical pre/post in two interleaved rounds (all four listings 
   SMS ignores emitter sidedness (DL-347, on master: a one-sided emitter
   facing away behind a slab reads PT+SMS 0.1009 against PT / VCM 0).
 - DL-329 is untouched: the HWSS rows above are parity rows because of it.
+
+## 10. DL-329 and DL-330: the gap under HWSS, and BDPT's missing strategy
+
+Slice `debt-weavegap`, branched from `master` `c8c3486fa`, 2026-10-02.
+Regressions: `tests/WeaveGapShadowTransmittanceTest.cpp` sections
+`query` (companion-kray rows), `hwssgap`, `hwsstint`, `seethrough`, opt-in
+`dl330`; `tests/BDPTStrategyBalanceTest.cpp` topology Q/R HWSS twins.
+
+### 10.1 A measurement correction first: the DL-330 evidence was not salted
+
+`Render()` in the weave-gap suite stored `ValueSalt` = 0 whenever the
+DL-295 switch was off (a DL-295-era line), which silently overwrote
+`RenderSalted`'s explicit salt -- so DL-294's `fovsweep` / `dl294` "salted
+repeats" reused one Sobol' point set after DL-295 merged, and the
+section-5 `table` (the source of DL-330's sphere numbers) never salted at
+all (`std::srand` reaches no Sobol' stream).  Both are fixed (Render leaves
+the salt as found; the DL-295 sections reset it on exit; the table salts
+every repeat).  Re-measured SALTED (n = 8 unless stated):
+
+| claim (section 8 / DL-330 row) | unsalted (as filed) | salted | verdict |
+|---|---|---|---|
+| area closed form, BDPT/PT `fabric custom` sheet | 0.979 (t ~ 4) | 1.004 +/- 0.009 (4x spp, n = 16) | REFUTED: one QMC point set |
+| area closed form, BDPT-HWSS vs closed form | -11.9 % (t ~ 29) | +1.5 % +/- 1.2 % (black sheet, 4x spp, n = 16) | REFUTED |
+| closed weave sphere gap 0.3, BDPT vs PT / VCM | -6.1 % / -4.5 % | BDPT/PT 0.938, VCM/PT 1.019 +/- 0.012 (8x spp) | REAL -- section 10.3 |
+
+The `fabric custom` sheet is also not an exact closed form on the 2 x 2
+(`kWide`) patch: its reflective yarn adds a receiver <-> underside
+interreflection (PT +1.96 % +/- 0.39 %, BDPT +2.38 % +/- 0.8 % above g at
+4x spp).  `hwssgap` gates against a BLACK-yarn sheet, exact `g * L0`.
+
+### 10.2 DL-329: the gap ray under HWSS
+
+`WeaveSPF` had no `EvaluateKrayNM`, so PT's HWSS companion loop priced a
+CONTINUATION through the delta gap with the continuum weave BSDF at the
+undeviated direction (~0) and dropped 3 of 4 lanes.  `WeaveSPF`,
+`FabricSPF` and `CoatedSPF` now answer `EvaluateKrayNM` for the gap ray
+ONLY (the sole `eRayRefraction` ray each emits; every continuum ray still
+declines -- CoatedSPF.h point 3's argument is unchanged): the weave returns
+1 (the achromatic gap's coefficient over the hero's selection probability),
+the wrappers re-price the base's answer exactly as their `ScatterImpl`
+delta branches do, at the companion wavelength.  The luminaire wrappers
+forward the weave's SPF.  `CompositeSPF` still declines its walker gap ray
+(DL-221).  `BDPTIntegrator::RecomputeSubpathThroughputNM` used ratio 1 at
+every delta vertex -- exact for a bare weave, wrong for a TINTED coat over
+it -- and now prices a delta pass-through vertex by the
+`EvaluateKrayNM(comp)/EvaluateKrayNM(hero)` ratio.
+
+| row (salted) | pre | post |
+|---|---|---|
+| `query`: EvaluateKrayNM == ScatterNM's gap krayNM (6 materials x 4 views x 3 nm) | -1 on every draw | exact (rel <= 2e-16) |
+| `hwssgap` PT hwss=true, area closed form g = 0.3 (clipped / mesh sheet) | 0.0765 / 0.0742 | 0.3002 / 0.2994 (4x spp, n = 16, se 0.5 %) |
+| BDPTStrategyBalanceTest Q / R, PT hwss TRUE / pel | 0.625 / 0.318 | 0.996 / 0.989 |
+| Q / R, BDPT hwss TRUE / pel (control) | 1.004 / 1.003 | 1.004 / 1.001 |
+| `hwsstint` (red-tinted coat over the gap), BDPT/PT hwss TRUE (R, G) | (0.489, 3.744) with only the BDPT ratio reverted | (1.0005, 0.998) |
+
+The `hwsstint` reference is PT's own HWSS render, not `hwss false`: a
+single-wavelength sample of that saturated red lies far outside Rec.709
+and the per-sample conversion does not average to the bundle's (hwss false
+reads blue > 0 where the bundle reads 0).
+
+### 10.3 DL-330: a path class BDPT had no strategy for
+
+With a delta light and delta pass-throughs a path such as
+`L - S(gap) - D - S(gap) - E` (the camera seeing, through a gap, a surface
+lit only through another gap) has a delta end on EVERY edge: the s = 1
+connection D -> L is blocked by the binary shadow, light tracing to D
+cannot connect past the camera-side gap, and no BSDF sample can hit a
+point light.  PT reaches it with this file's see-through NEE, VCM by
+merging.  Not an MIS or contribution defect: per-(s,t) instrumentation on
+the sphere showed every (3,1) path through a light-side gap at MIS weight
+exactly 1, and the deficit is delta-light specific (salted, light moved
+off-axis so the emitter is not seen directly: omni BDPT/PT 0.929 with
+VCM/PT 1.002; gap 0 BDPT = VCM).
+
+Fix: the s = 1 connection to a DELTA light blocked only by delta
+pass-throughs walks them (`RayCaster::CastShadowRayAutoSampled`, gaining
+an optional crossing count) and contributes with MIS weight 1 on exactly
+the paths no standard strategy generates, 0 elsewhere (skipped, no walk
+when the cover slack makes the answer certain).  No new MIS term: the
+standard strategies never counted it, so on the paths they cover their
+weights already sum to 1.  "Generates" is MISWeight's own test -- a
+connectible, non-delta eye edge (the connection's endpoint D counts as
+non-delta, as MISWeight treats an endpoint) not past an eye-side BSSRDF
+entry -- under the light walk's depth caps: that strategy's light subpath
+crosses all k gaps, so it exists only if the light walk reaches it in
+`max_light_depth` surface hits and `WalkIterationBudget` iterations
+(DL-380's lesson).  A first draft read the endpoint's own `isDelta` (the
+eye walk's CONTINUATION past D) and double-counted the class-A paths light
+tracing covers: BDPT/PT 1.10, fixed before commit.  MLT inherits it (it
+drives `BDPTIntegrator`); VCM is unchanged (merging covers the class).
+
+| row (salted) | pre | post |
+|---|---|---|
+| `seethrough` L - gap - patch - gap - E, closed form g^2 = 0.09: BDPT RGB / mesh / HWSS / HWSS mesh | 0 / 0 / 0 / 0 | 0.09005 / 0.08998 / 0.09001 / 0.08998 (PT 0.09000) |
+| closed sphere gap 0.3 on-axis, BDPT/PT (VCM/PT) | 0.937 (1.039 +/- 0.03) | 1.008 (VCM 8x: 1.019 +/- 0.012) |
+| same, omni off-axis (3,0,-2) | 0.929 | 1.0075 (VCM/PT 1.002) |
+| sphere gap 0.0 (control, no pass-through) | BDPT/PT 1.042 | 1.042 (PT's closed-shell residual, debt 25) |
+| Q (box, omni outside) BDPT/PT, RunTopologyTest | 0.994 (unsalted) | 1.002 |
+
+The `seethrough` VCM row is printed only: merging on a 0.2 x 0.2 patch lit
+by a point light reads 0.137 +/- 0.27 (sd, n = 4) -- unbiased-in-the-limit
+but heavy-tailed, the variance cost of having no connection strategy for
+the class (DL-424).
+
+### 10.4 Residuals
+
+- **DL-424** (new): VCM has no vertex-connection strategy for
+  `L - S - D - S - E` with a delta light either; merging covers it with a
+  heavy tail on small receivers (the `seethrough` VCM row).  Variance, not
+  bias; the BDPT construction above would transfer only with a
+  merging-aware partition.
+- **DL-221** (unchanged): a composite of gapped weaves still drops HWSS
+  lanes on a continuation through its walker gap ray (`CompositeSPF`
+  declines `eRayRefraction`).
+- A DISPERSIVE `coat_ior` (or spectral `coat_weight`) over a gapped weave
+  prices the companion with its own `1 - pCoat` instead of the hero's (the
+  DL-216 class, documented on `CoatedSPF::EvaluateKrayNM`).
+- No shipped scene moves: the two shipped thin-weave scenes
+  (`sheer_curtain`, `weave_presets`) render with `pathtracing_pel_rasterizer`,
+  whose code path no part of this slice touches.
