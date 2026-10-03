@@ -442,7 +442,8 @@ unsigned int SMSPhotonMap::Build(
 			// DL-320: both faces of a double-sided luminary radiate.
 			const bool twoSided = i->pLum->GetGeometry() && i->pLum->GetGeometry()->IsDoubleSided();
 			const Scalar area = i->pLum->GetArea() * EmitterSides::FaceCount( twoSided );
-			const RISEPel pw = i->pLum->GetMaterial()->GetEmitter()->averageRadiantExitance() * area;
+			// DL-431: the luminary's own surface mean, not the emitter's P = Po = 0 estimate.
+			const RISEPel pw = LightSampler::AverageLuminaryExitance( i->pLum ).average * area;
 			totalExitance += ColorMath::MaxValue( pw );
 		}
 	}
@@ -487,7 +488,7 @@ unsigned int SMSPhotonMap::Build(
 		// seed photon leaves from a face chosen with probability 1/2.
 		const bool twoSided = i->pLum->GetGeometry() && i->pLum->GetGeometry()->IsDoubleSided();
 		const Scalar area = i->pLum->GetArea() * EmitterSides::FaceCount( twoSided );
-		const RISEPel emitterTotal = pEmitter->averageRadiantExitance() * area;
+		const RISEPel emitterTotal = LightSampler::AverageLuminaryExitance( i->pLum ).average * area;
 
 		const unsigned int target = static_cast<unsigned int>(
 			ColorMath::MaxValue( emitterTotal ) / totalExitance * numPhotons );

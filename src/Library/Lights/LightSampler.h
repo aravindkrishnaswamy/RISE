@@ -762,6 +762,36 @@ namespace RISE
 			//! and docs/DL320_DOUBLE_SIDED_EMITTER.md.
 			static bool LuminaryIsTwoSided( const IObject* pLum );
 
+			//! DL-431: the surface-mean radiant exitance of ONE luminary.
+			//!
+			//! `IEmitter::averageRadiantExitance()` is estimated at emitter
+			//! CONSTRUCTION over a default-constructed record, i.e. at
+			//! `P = Po = (0,0,0)` with a 10x10 UV grid, because an emitter does
+			//! not know its geometry.  That is wrong for any emission keyed on
+			//! world / object position, and the average is the light-selection
+			//! importance weight (`Prepare`) and the photon power / budget
+			//! (PhotonTracer, SpectralPhotonTracer, SMSPhotonMap).  This
+			//! helper evaluates the emitter's LOCAL exitance
+			//! (`IEmitter::radiantExitanceAt`) at a deterministic 10x10
+			//! stratified set of `UniformRandomPoint` draws on the luminary
+			//! itself, each through `FillEmitterRecord` so the record carries
+			//! the physical `P` / `Po` / UV / normals.
+			//!
+			//! `uniform` is true when every sample read the identical value
+			//! (a constant, spectral or blackbody exitance -- every shipped
+			//! emitter): `average` is then the emitter's OWN cached average,
+			//! returned verbatim, so a P-independent emitter weights and
+			//! shoots bit for bit as before.  On a clipped plane the sample
+			//! points are exactly the old UV grid's cell centres, so a
+			//! UV-keyed painter averages to the same value as well.
+			//! \sa docs/DL431_EMITTER_AVERAGE_EXITANCE.md
+			struct LuminaryExitance
+			{
+				RISEPel	average;		///< surface-mean exitance (before area / face count)
+				bool	uniform;		///< true: constant over the surface, `average` is the emitter's cached one
+			};
+			static LuminaryExitance AverageLuminaryExitance( const IObject* pLum );
+
 			//
 			// LIGHT SOLO — render with exactly one light enabled.
 			//

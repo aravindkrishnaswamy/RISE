@@ -96,18 +96,21 @@ namespace RISE
             void TraceNPhotons(const unsigned int numPhotons, PhotonMapType* pPhotonMap,
                 const Scalar /*legacyTotalExitance*/, uint64_t& numshot, Scalar batchWeight = 1) const
             {
-                struct Source { const IObject* object; const ILightPriv* light; Scalar weight; };
+                struct Source { const IObject* object; const ILightPriv* light; Scalar weight; bool uniform; };
                 std::vector<Source> sources;
                 Scalar total = 0;
-                const auto add = [&](const IObject* object, const ILightPriv* light, Scalar weight) {
-                    if (weight > 0 && std::isfinite(weight)) { sources.push_back({object,light,weight}); total += weight; }
+                const auto add = [&](const IObject* object, const ILightPriv* light, Scalar weight, bool uniform = true) {
+                    if (weight > 0 && std::isfinite(weight)) { sources.push_back({object,light,weight,uniform}); total += weight; }
                 };
                 if (bShootFromMeshLights)
                 for (const auto& entry : pLumManager->getLuminaries()) {
                     const IObject* object = entry.pLum;
                     const bool twoSided = object->GetGeometry() && object->GetGeometry()->IsDoubleSided();
                     const Scalar area = object->GetArea()*EmitterSides::FaceCount(twoSided);
-                    add(object, nullptr, ColorMath::MaxValue(object->GetMaterial()->GetEmitter()->averageRadiantExitance())*area);
+                    // DL-431: weight by the luminary's own surface mean (the emitter's
+                    // construction-time average is taken at P = Po = 0).
+                    const LightSampler::LuminaryExitance mean = LightSampler::AverageLuminaryExitance(object);
+                    add(object, nullptr, ColorMath::MaxValue(mean.average)*area, mean.uniform);
                 }
                 if (bShootFromNonMeshLights && pScene->GetLights())
                     for (const auto* light : pScene->GetLights()->getLights())
@@ -127,7 +130,6 @@ namespace RISE
                         const IEmitter* pEmitter = object->GetMaterial()->GetEmitter();
                         const bool twoSided = object->GetGeometry() && object->GetGeometry()->IsDoubleSided();
                         const Scalar area = object->GetArea()*EmitterSides::FaceCount(twoSided);
-                        const RISEPel power = pEmitter->averageRadiantExitance()*area*(dPowerScale*batchWeight/q);
 						// To find out where the photon starts off, ask the luminary for a uniform random point
 						Ray	r;
 						Vector3 normal;
@@ -170,6 +172,15 @@ namespace RISE
                             }
                         }
 						r.SetDir(pEmitter->getEmmittedPhotonDir( rig, dirRand ));
+
+						// DL-431: the flux this photon carries is the exitance AT its
+						// emission point (the position is drawn uniformly by area, so
+						// the unbiased estimate of a non-uniform luminary's flux
+						// distribution is `M(P) * A / q`, with `q` the source's selection
+						// probability).  A uniform luminary keeps the emitter's own
+						// cached average, bit for bit.
+						const RISEPel exitance = selected->uniform ? pEmitter->averageRadiantExitance() : pEmitter->radiantExitanceAt( rig );
+						const RISEPel power = exitance*area*(dPowerScale*batchWeight/q);
 
 						// Fresh per-photon stack seeded from THIS photon's
 						// origin: a luminaire sealed inside nested
