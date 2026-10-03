@@ -92,7 +92,7 @@ Rules for providers and records:
 
 Medium membership and evaluated index are distinct.
 - Store stable medium/object identities and the native crossing policy in the chain's starting state, then evaluate those media in the requested domain.
-- Reflection preserves membership. Transmission applies the shared native push/pop rules, including the DL-345 open-sheet face rule (`IORStackSeeding::ResolveOpenSheetCrossing`) and composite per-instance keys.
+- Reflection preserves membership. Transmission applies the shared native push/pop rules, including the DL-345 open-sheet face rule (`IORStackSeeding::ResolveOpenSheetCrossing`). Composite membership is rejected under the adopted exclusion below; its per-instance keys are not replayed in this domain.
 - Exiting a nested solid restores the enclosing medium, not the previous vertex's scalar `etaT`.
 - A medium absent from the chain must still be resolved from starting membership.
 - `IORStack` carries object keys but no evaluation context. Phase 1 must add an internal capture/replay record holding identity plus the context needed to evaluate each enclosing medium in the requested domain, rather than inventing an index.
@@ -344,7 +344,7 @@ Keep public knobs minimal: one opt-in extended mode, plus the existing depth and
 
 1. **Domain and medium replay.**
    - Build native RGB per-component and NM index oracles.
-   - Cover nested outer/inner media, start-inside, open sheets (DL-345 face rule) and composites; check final-root tint and AR coatings.
+   - Cover nested outer/inner media, start-inside, open sheets (DL-345 face rule) and composite rejection; check final-root tint and AR coatings.
    - Preserve legacy-neutral providers.
    - Close DL-438, DL-391 and the DL-353 remainder only after measured gates, not after adding a field.
 2. **R/T proposal and estimator A, in isolated tests, then delta-light production.**
@@ -417,39 +417,29 @@ After each coherent production increment, apply [the independent review loop](sk
 
 The pre-design master gate for the attenuation integration (`a8fa56224`) is recorded in [DL_CHEAPBATCH_VALIDATION.md](DL_CHEAPBATCH_VALIDATION.md) under "Post-merge master gate". This design introduces no source changes and claims no extended-SMS render results. No ledger row is closed by this proposal.
 
-## Phase 1 implementation clarification pending (2026-10-03)
+## Adopted composite exclusion (2026-10-03)
 
-Setup branch `sms-ext` brings this contract into master `ffc70c1c2` at
-`e37b8e288`. No implementation phase has passed or merged.
+The user ruled that composites are outside the initial extended domain.
+- A `composite_material` object is never an extended-SMS caster. A proposal
+  walk that hits one returns an ordinary zero trial (unsupported hit).
+- An anchor whose starting membership includes a composite is ineligible.
+  An anchor whose membership cannot be reconstructed because of DL-407 is
+  also ineligible. All three switches are off together: no SMS contribution,
+  no PT emitter-hit suppression, and no delta-light shadow opacity.
+- A PT chain crossing a composite is never owned; PT keeps its emitter hit.
+- Phase 1 composite coverage means rejection tests, not positive replay.
+  Use real composite geometry, double-sided indexed meshes with both
+  windings, and a closed-object start-inside case. Verify rejected casters
+  and enclosing media, PT-kept emission, and extended-on/off render parity:
+  bit-identical for deterministic paths, otherwise n >= 4 salted renders
+  within three measured standard deviations.
 
-A read-only independent composite-scope check found that the initial-domain
-reconstructibility and neutral-provider rules permit rejection, while the
-medium contract explicitly mentions composite per-instance keys and phase 1
-requires composite coverage. The document does not specify whether that
-coverage means positive support for composite enclosing media, positive
-support for composite SMS casters, or explicit conservative rejection tests.
-These are distinct obligations; enclosing-medium replay alone need not make
-the composite's internal layer walk a manifold chain.
+Positive composite replay requires a separate later design, a DL-407 fix,
+and an estimator for the composite walker; this design provides none.
+`CompositeMaterial` currently supplies no index metadata, and containment
+seeding skips it. `CompositeSPFImpl::BottomKey` is internal; `ToExternal`
+normalizes bottom membership to the external scene-object identity. Do not
+infer that the synthetic bottom key necessarily escapes into PT.
 
-Code evidence at the setup tree:
-- `CompositeMaterial` has no `GetSpecularInfo` override; the inherited
-  `IMaterial` query returns invalid metadata.
-- `IORStackSeeding::TallyProbe` requires valid, trackable metadata, so it
-  cannot reconstruct ordinary composite membership. DL-407 already records
-  native composite start-inside and unseeded back-side limitations; its
-  historical render numbers are not new measurements for this phase.
-- `IORStack` stores identities and scalar indices, without provider or
-  intersection context.
-- `CompositeSPFImpl::BottomKey` is an internal synthetic identity.
-  `CompositeSPFImpl::ToExternal` normalizes bottom membership to the external
-  scene-object key; synthetic-key escape into PT is not assumed here.
-- `CompositeSPF` defines OUT/GAP/BELOW states and individual layer records,
-  but this design does not define proposal/pricing topology for treating an
-  entire composite walker as an SMS caster.
-
-**Requested ruling, not an adopted contract change:** either cover composites
-with conservative rejection tests in the initial extended domain and defer
-positive replay support, or specify the positive composite replay scope and
-its relationship to DL-407 before implementation. No renderer source was
-changed while awaiting this ruling. No ledger closure, gate, warning-count,
-cost, or red/green result is claimed by this clarification.
+Setup branch `sms-ext` imported the contract at `e37b8e288` from master
+`ffc70c1c2`. No implementation phase is claimed complete by this decision.
