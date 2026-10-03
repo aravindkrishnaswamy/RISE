@@ -2018,6 +2018,60 @@ static void MeanSd( const std::vector<double>& v, double& mean, double& sd )
 	}
 }
 
+//! Opt-in (WEAVE_GAP_FILTER=dl330, argv[2] = n): the closed weave sphere
+//! (gap 0.3 and 0.0) lit from outside by the omni light (a DELTA light)
+//! and by a small spherical AREA emitter at the same place, PT / BDPT /
+//! VCM, salted repeats.  Discriminates a delta-light-specific BDPT
+//! coverage gap (light -> gap -> diffuse -> gap -> eye has no BDPT
+//! strategy when the light is a point) from an MIS / contribution bias,
+//! which would not care what kind of light it is.
+static void MeasureDL330( unsigned int nRepeats )
+{
+	std::cout << "=== dl330: closed weave sphere, omni vs small area light (24x24, 512 spp, n = "
+		<< nRepeats << ") ===" << std::endl;
+	g_saltRenders = true;
+	for( int light = 0; light < 2; light++ ) {
+		for( int gi = 0; gi < 2; gi++ ) {
+			const double gap = gi == 0 ? 0.3 : 0.0;
+			std::string body = LayerScene( kSphere, gap, -3.0, 24 );
+			// Off-axis (3, 0, -2): behind the sphere but OUTSIDE the
+			// frustum, so the area emitter is never seen directly
+			// through two gaps (that term would swamp the comparison).
+			{
+				const std::string onAxis = "\tposition 0 0 -3\n";
+				const size_t p = body.find( onAxis );
+				if( p != std::string::npos ) body.replace( p, onAxis.size(), "\tposition 3 0 -2\n" );
+			}
+			if( light == 1 ) {
+				// Swap the omni for a radius-0.05 sphere emitter of the same
+				// total power: Phi = 4 pi I = 4 pi * 6; a Lambertian sphere
+				// of radius r and exitance M emits 4 pi r^2 M, so
+				// M = 6 / r^2 = 2400 (exitance 1 * scale 2400).
+				const std::string omni = "omni_light\n{\n\tname lgt\n\tposition 3 0 -2\n\tcolor 1.0 1.0 1.0\n\tpower 6.0\n}\n\n";
+				const size_t at = body.find( omni );
+				if( at == std::string::npos ) { std::cout << "  omni chunk not found" << std::endl; return; }
+				body.replace( at, omni.size(),
+					"uniformcolor_painter\n{\n\tname pnt_e\n\tcolor 1 1 1\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+					"lambertian_luminaire_material\n{\n\tname mat_e\n\texitance pnt_e\n\tscale 2400.0\n\tmaterial none\n}\n\n"
+					"sphere_geometry\n{\n\tname g_e\n\tradius 0.05\n}\n\n"
+					"standard_object\n{\n\tname o_e\n\tgeometry g_e\n\tmaterial mat_e\n\tposition 3 0 -2\n}\n\n" );
+			}
+			std::vector<double> pt, bd, vc;
+			for( unsigned int i = 0; i < nRepeats; i++ ) {
+				pt.push_back( Render( Assemble( RastPT( 512 ),   body ), "d330_pt" ) );
+				bd.push_back( Render( Assemble( RastBDPT( 512 ), body ), "d330_bdpt" ) );
+				vc.push_back( Render( Assemble( RastVCM( 512 ),  body ), "d330_vcm" ) );
+			}
+			double mp, sp, mb, sb, mv, sv;
+			MeanSd( pt, mp, sp ); MeanSd( bd, mb, sb ); MeanSd( vc, mv, sv );
+			std::printf( "  | %-6s gap %.1f | PT %.6f +/- %.6f | BDPT %.6f +/- %.6f | VCM %.6f +/- %.6f | BDPT/PT %.4f | VCM/PT %.4f |\n",
+				light == 0 ? "omni" : "area", gap, mp, sp, mb, sb, mv, sv, mb / mp, mv / mp );
+		}
+	}
+	g_saltRenders = false;
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
+}
+
 static void MeasureDesignDocTable( unsigned int nRepeats )
 {
 	std::cout << "=== table: docs/CLOTH_FABRIC_DESIGN.md section 15 item 27 (24x24, 512 spp, n = "
@@ -2422,6 +2476,15 @@ int main( int argc, char** argv )
 	}
 	if( filter && std::strstr( filter, "scenehash" ) ) {
 		HashScenes();
+		return 0;
+	}
+	if( filter && std::strstr( filter, "dl330" ) ) {
+		unsigned int n = 4;
+		if( argc > 2 ) {
+			const long v = std::strtol( argv[2], nullptr, 10 );
+			if( v > 0 ) n = (unsigned int)v;
+		}
+		MeasureDL330( n );
 		return 0;
 	}
 	if( filter && std::strstr( filter, "table" ) ) {
