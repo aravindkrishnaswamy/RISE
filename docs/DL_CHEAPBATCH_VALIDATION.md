@@ -881,3 +881,46 @@ completed. This checkpoint does not supersede the old isolated-branch
 results above with a claim of a green merged tree. No rows are closed,
 and no merge to master has occurred. Local logs:
 `/tmp/rise-takeover-gate.json`, `/tmp/rise-takeover-exterior-pilot.json`.
+
+
+### DL-418 tail attribution and DL-434 repair (gate still incomplete)
+
+The second fixed4096-spp n4 panel also failed: enclosed/air0.962416,
+paired mean SD0.0142349 (605.61s). The larger1024-spp n16 panel at seed
+offset0 failed much more severely: ratio1.64433, paired mean SD0.710774;
+air1.81994 with render SD0.685688, enclosed2.99257 with render SD5.00188
+(595.77s). A three-SD band exceeds200% and would be uninformative. The
+second n16 panel and the conditional remaining-gate runner were stopped
+by their explicit task-owned process ids after identifying the defect
+below; no result from that incomplete panel is claimed.
+
+Source attribution found a concrete broken existing contract, present
+on master115aee62e: RGB ComputeTrialContribution neither applies its
+clampGeometric flag nor writes outSmsGeometric. Biased uniform/photon
+callers initialize the geometric output to0, so their sum clamp cannot
+operate. NM does write the raw geometric term, but its individual clamp
+treats nonpositive limits differently from the existing sum-clamp paths.
+This is filed as DL-434. The absolute-IOR threshold candidate remains
+unattributed; no solver threshold/normalization policy changed.
+
+The regression uses a planar mirror and an independently unfolded
+virtual point light: raw geometric factor1/(0.6^2+2^2). Four cap settings
+(-1,0,0.01,1), RGB/NM exported raw terms, finite positive contributions,
+and capped/unclamped ratios pin both helper contracts. An initial fixture
+forgot to populate light pdf fields and produced non-finite ratios;
+that trial is discarded. The corrected fixture sets both pdfs to1 and
+asserts finiteness explicitly. It fails116/9 before the fix.
+
+Commits0cdb610fd/983aaa895 contain the test and repair. On committed
+state, both ManifoldSolver.cpp and its header were checked out from
+master; the checked build passed with zero warnings (40.60s), then the
+unit gate failed116/9 (0.67s). Restoring HEAD, checked build passed with
+zero warnings (40.75s), then unit gate passed125/0 (0.63s). The RGB helper
+now exports raw geometry and applies a requested positive individual cap;
+both helpers disable nonpositive caps, consistently with the four sum
+clamps. Default cap10 is unchanged. Logs: /tmp/rise-dl434-proof.json.
+
+Two fixed n8 panels at1024 spp, seed offsets0/10000, are pending before
+setting the final test budget or claiming that the measured tail is
+controlled. No band widening, new solver design, final green integration
+gate, independent-review verdict, or master merge is claimed here.
