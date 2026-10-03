@@ -1849,6 +1849,26 @@ public:
     }
     bool IsPositionIndependent() const override { return false; }
 };
+// Keep the regression buildable against committed pre-DL-395 headers so
+// red proof measures the material query rather than an API compile failure.
+template<class Solver>
+static auto ReconstructPhotonAtNM(Solver& solver, const SMSPhoton& photon,
+    std::vector<ManifoldVertex>& chain, Scalar nm, int)
+    -> decltype(solver.ReversePhotonChainForSeed(photon,chain,nm)) {
+    return solver.ReversePhotonChainForSeed(photon,chain,nm);
+}
+template<class Solver>
+static unsigned int ReconstructPhotonAtNM(Solver& solver, const SMSPhoton& photon,
+    std::vector<ManifoldVertex>& chain, Scalar, long) {
+    return solver.ReversePhotonChainForSeed(photon,chain);
+}
+template<class Vertex>
+static auto CapturedPhotonObjectY(const Vertex& vertex, int)
+    -> decltype(vertex.objectPosition.y) {
+    return vertex.objectPosition.y;
+}
+template<class Vertex>
+static Scalar CapturedPhotonObjectY(const Vertex&, long) { return 0; }
 static void TestPhotonMaterialContext() {
     auto* tau=new UniformScalarPainter(1.0);
     auto* index=new ContextIndex();
@@ -1867,12 +1887,12 @@ static void TestPhotonMaterialContext() {
     TestableManifoldSolver solver;
     for(Scalar nm : {Scalar(0),Scalar(450),Scalar(650)}) {
         std::vector<ManifoldVertex> chain;
-        assert(solver.ReversePhotonChainForSeed(photon,chain,nm)==1);
+        assert(ReconstructPhotonAtNM(solver,photon,chain,nm,0)==1);
         const Scalar expected=1.53 + nm*0.0001;
         if(nm==0) assert(IsClose(chain[0].attenuation.r,expected));
         if(nm>0) assert(IsClose(chain[0].eta,expected));
         assert(IsClose(chain[0].uv.x,0.6));
-        assert(IsClose(chain[0].objectPosition.y,0.7));
+        assert(IsClose(CapturedPhotonObjectY(chain[0],0),0.7));
     }
     material->release();tau->release();index->release();scatter->release();
     std::cout << "Photon UV/Po RGB and 450/650nm context assertions passed" << std::endl;
