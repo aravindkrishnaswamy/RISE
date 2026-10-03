@@ -746,6 +746,58 @@ static void CheckQueryMatchesSampler( const char* label, const IMaterial& mat )
 	}
 }
 
+//! DL-329: the HWSS companion ladders (PT's IntegrateFromHitHWSS, the
+//! BDPT generators, BDPT's RecomputeSubpathThroughputNM) price a DELTA
+//! gap ray through `ISPF::EvaluateKrayNM` -- the 6-parameter overload
+//! with pdfHero = -1, which forwards to the 5-parameter one.  It must
+//! return exactly the krayNM the SPF's own ScatterNM emits on that ray at
+//! that wavelength.  Before DL-329 every one of these returned -1 and the
+//! integrators fell back to the CONTINUUM BSDF (~0 along the gap).
+//! @a gated false: printed only (CompositeSPF, DL-221).
+static void CheckCompanionKrayMatchesScatter( const char* label, const IMaterial& mat, bool gated )
+{
+	const ISPF* pSPF = mat.GetSPF();
+	if( !pSPF ) return;
+	const double angles[] = { 0.0, 40.0, 75.0, 140.0 };
+	const double nms[] = { 450.0, 550.0, 650.0 };
+	RandomNumberGenerator rng( 4242u );
+	IndependentSampler sampler( rng );
+	IORStack stack( 1.0 );
+	int found = 0, mismatched = 0;
+	double worst = 0;
+	for( double a : angles ) {
+		const double r = a * 3.14159265358979323846 / 180.0;
+		const RayIntersectionGeometric ri = MakeHit( Vector3( std::sin( r ), 0.0, std::cos( r ) ) );
+		const Vector3 dir = Vector3Ops::Normalize( ri.ray.Dir() );
+		for( double nm : nms ) {
+			for( int attempt = 0; attempt < 20000; ++attempt ) {
+				ScatteredRayContainer scattered;
+				pSPF->ScatterNM( ri, sampler, nm, scattered, stack );
+				bool done = false;
+				for( unsigned int j = 0; j < scattered.Count(); ++j ) {
+					const ScatteredRay& sr = scattered[j];
+					if( !sr.isDelta ) continue;
+					if( Vector3Ops::Dot( Vector3Ops::Normalize( sr.ray.Dir() ), dir ) < 1.0 - 1e-9 ) continue;
+					const Scalar k = pSPF->EvaluateKrayNM( ri, sr.ray.Dir(), sr.type, nm, stack, -1.0 );
+					const double rel = std::fabs( k - sr.krayNM ) / std::fmax( 1e-12, std::fabs( sr.krayNM ) );
+					found++;
+					if( !( rel <= 1e-9 ) ) mismatched++;
+					worst = std::fmax( worst, k < 0 ? 1e30 : rel );
+					done = true;
+				}
+				if( done ) break;
+			}
+		}
+	}
+	char buf[256];
+	std::snprintf( buf, sizeof(buf), "query %s: EvaluateKrayNM == ScatterNM's gap-ray krayNM on %d/%d draws (worst rel %.2e)%s",
+		label, found - mismatched, found, worst, gated ? "" : "   [printed, not gated: DL-221]" );
+	std::cout << "  " << buf << std::endl;
+	if( gated ) {
+		Check( found > 0 && mismatched == 0, buf );
+	}
+}
+
 static void TestQueryMatchesSampler()
 {
 	std::cout << "=== query: DeltaPassThroughTransmittance == the SPF's own sampled pass-through ===" << std::endl;
@@ -821,6 +873,14 @@ static void TestQueryMatchesSampler()
 	CheckQueryMatchesSampler( "coated over fabric over weave", *coatFab );
 	CheckQueryMatchesSampler( "luminaire over weave", *lum );
 	CheckQueryMatchesSampler( "composite(weave | fabric-over-weave, gap 0.1 ext 1.5)", *compWW );
+
+	CheckCompanionKrayMatchesScatter( "weave(thin, gap 0.2)", *thin.Material(), true );
+	CheckCompanionKrayMatchesScatter( "fabric(rot 0.6) over weave", *fabThin, true );
+	CheckCompanionKrayMatchesScatter( "coated(clear) over weave", *coatThin, true );
+	CheckCompanionKrayMatchesScatter( "coated(tinted, absorbing) over weave", *coatTint, true );
+	CheckCompanionKrayMatchesScatter( "coated over fabric over weave", *coatFab, true );
+	CheckCompanionKrayMatchesScatter( "luminaire over weave", *lum, true );
+	CheckCompanionKrayMatchesScatter( "composite(weave | fabric-over-weave)", *compWW, false );
 
 	safe_release( compWL ); safe_release( compWW ); safe_release( ext );
 	safe_release( lum ); safe_release( coatFab ); safe_release( coatTint ); safe_release( coatThin );
@@ -948,6 +1008,8 @@ static void TestAreaPartitionGuard()
 static void MeanSd( const std::vector<double>& v, double& mean, double& sd );
 static std::string BlackWeaveSheet( double gap );	// defined with the sms section below
 static std::string PerfectRefractorSheet( const char* ior );
+static std::string BlackPainterChunk();
+static std::string BlackWeaveChunk( const char* name, double gap );
 
 static std::string RastBDPTSpectral( unsigned int spp, bool hwss )
 {
@@ -1058,6 +1120,150 @@ static void TestHWSSGapContinuation()
 		}
 	}
 	SobolSamplerTestHooks::Independent().store( false );
+}
+
+//////////////////////////////////////////////////////////////////////
+// seethrough: DL-330.  The closed-form receiver (kTight, omni overhead)
+// with a SECOND black-yarn gapped weave hung VERTICALLY between the
+// camera and the patch (z = 0.6, x in [-1, 1], y in [-0.5, 1.6]: every
+// camera ray crosses it, no light ray from the omni to the patch does).
+// The only light path is  L - S(horizontal gap) - D(patch) - S(vertical
+// gap) - E:  every edge has a delta end, so before DL-330 NO BDPT
+// strategy generated it (BDPT read 0; no BSDF sample can hit a point
+// light) while PT reads it through DL-05's see-through NEE and VCM by
+// merging.  Closed form: L = g * g * L0 exactly (black yarn: nothing
+// reflects; L0 is the same rasterizer's render with neither sheet).
+// The horizontal sheet is also run as the double-sided mesh.
+//////////////////////////////////////////////////////////////////////
+static std::string VerticalBlackSheetChunks()
+{
+	return "clippedplane_geometry\n{\n\tname geo_vsheet\n"
+		"\tpta -1 -0.5 0.6\n\tptb 1 -0.5 0.6\n\tptc 1 1.6 0.6\n\tptd -1 1.6 0.6\n"
+		"\tdoublesided TRUE\n}\n\n"
+		"standard_object\n{\n\tname obj_vsheet\n\tgeometry geo_vsheet\n\tmaterial mat_sheet\n}\n\n";
+}
+
+static void TestBDPTSeeThroughDeltaLight()
+{
+	std::cout << "=== seethrough: L - gap - patch - gap - camera, omni light (DL-330) ===" << std::endl;
+	const double g = 0.3, cf = g * g;
+	const unsigned int n = 4;
+	struct R { const char* label; std::string rast; bool mesh; double tol; };
+	const R rows[] = {
+		{ "PT RGB",                          RastPT( 16 ),                    false, 0.02 },
+		{ "BDPT RGB",                        RastBDPT( 64 ),                  false, 0.03 },
+		{ "BDPT RGB         (mesh)",         RastBDPT( 64 ),                  true,  0.03 },
+		{ "BDPT spectral hwss=true",         RastBDPTSpectral( 512, true ),   false, 0.04 },
+		{ "BDPT spectral hwss=true  (mesh)", RastBDPTSpectral( 512, true ),   true,  0.04 },
+		{ "VCM RGB",                         RastVCM( 256 ),                  false, -1.0 },
+	};
+	unsigned int k = 0;
+	for( const R& r : rows )
+	{
+		std::vector<double> l0s, ls, rs;
+		g_meshSheet = r.mesh;
+		for( unsigned int rep = 0; rep < n; rep++ ) {
+			const unsigned int salt = SobolSequence::HashCombine( 0xD330u + 0x100u * k + g_seedBase, rep );
+			const double L0 = RenderSalted( Assemble( r.rast, ReceiverScene( kOmni, false, 0.0, kTight ) ), "st_l0", salt );
+			const double L  = RenderSalted( Assemble( r.rast, ReceiverScene( kOmni, true, g, kTight, false,
+				BlackWeaveSheet( g ) + VerticalBlackSheetChunks() ) ), "st_lg", SobolSequence::HashCombine( salt, 0x51u ) );
+			l0s.push_back( L0 ); ls.push_back( L );
+			if( L0 > 0 ) rs.push_back( L / L0 );
+		}
+		g_meshSheet = false;
+		k++;
+		double m0, s0, m1, s1, mr, sr;
+		MeanSd( l0s, m0, s0 ); MeanSd( ls, m1, s1 ); MeanSd( rs, mr, sr );
+		const double ratio = m0 > 0 ? m1 / m0 : -1.0;
+		char buf[320];
+		std::snprintf( buf, sizeof(buf),
+			"seethrough %s: L/L0 = %.5f +/- %.5f (sd, n = %u)  (closed form g^2 = %.5f, rel err %+.3f%%)",
+			r.label, ratio, sr, n, cf, 100.0 * ( ratio / cf - 1.0 ) );
+		std::cout << "  " << buf << ( r.tol < 0 ? "   [printed, not gated]" : "" ) << std::endl;
+		if( r.tol >= 0 ) {
+			Check( ratio > 0 && std::fabs( ratio / cf - 1.0 ) <= r.tol, buf );
+		}
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// hwsstint: DL-329's CHROMATIC half.  A RED-tinted, absorbing
+// `coated_material` over the black-yarn gapped weave: the gap ray's
+// companion kray is the coat's two-crossing transmittance AT THE
+// COMPANION WAVELENGTH (CoatedSPF::EvaluateKrayNM; BDPT's companion
+// ladder reads its ratio at the gap vertex,
+// RecomputeSubpathThroughputNM).  Reference-free invariant: hwss TRUE
+// must reproduce hwss FALSE's per-channel transmittance L/L0 (the
+// hero-only render prices every wavelength by its own Scatter).  The
+// 4 x 4 emitter (kAreaLarge) keeps the BSDF-sampled gap path cheap.
+//////////////////////////////////////////////////////////////////////
+static std::string TintedCoatOverWeaveSheet()
+{
+	return BlackPainterChunk() + BlackWeaveChunk( "mat_layer", 0.3 )
+		+ "uniformcolor_painter\n{\n\tname pnt_tint\n\tcolor 0.9 0.3 0.1\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+		  "coated_material\n{\n\tname mat_sheet\n\tbase mat_layer\n\tcoat_weight 1.0\n\tcoat_ior 1.5\n"
+		  "\tcoat_roughness 0.05\n\tcoat_thickness 0.2\n\tcoat_absorption 0.5\n\tcoat_tint pnt_tint\n}\n\n";
+}
+
+static void ChannelMeans( const std::vector<RISEColor>& px, double out[3] )
+{
+	out[0] = out[1] = out[2] = 0;
+	for( const RISEColor& c : px ) {
+		out[0] += c.base.r * c.a; out[1] += c.base.g * c.a; out[2] += c.base.b * c.a;
+	}
+	for( int i = 0; i < 3; i++ ) out[i] /= px.empty() ? 1.0 : double( px.size() );
+}
+
+//! Per-channel mean(L)/mean(L0) over @a n salted (L0, L) repeats of the
+//! tinted-coat sheet under @a rast; @a sd receives the per-repeat ratio sd.
+static void TintedChannelTransmittance( const std::string& rast, unsigned int n, unsigned int saltBase,
+	double tr[3], double sd[3] )
+{
+	std::vector<double> l0[3], ls[3], rr[3];
+	for( unsigned int rep = 0; rep < n; rep++ ) {
+		const unsigned int salt = SobolSequence::HashCombine( saltBase + g_seedBase, rep );
+		double a[3], b[3];
+		RenderSalted( Assemble( rast, ReceiverScene( kAreaLarge, false, 0.0, kWide ) ), "t_l0", salt );
+		ChannelMeans( g_lastPixels, a );
+		RenderSalted( Assemble( rast, ReceiverScene( kAreaLarge, true, 0.3, kWide, false, TintedCoatOverWeaveSheet() ) ),
+			"t_lg", SobolSequence::HashCombine( salt, 0x51u ) );
+		ChannelMeans( g_lastPixels, b );
+		for( int c = 0; c < 3; c++ ) {
+			l0[c].push_back( a[c] ); ls[c].push_back( b[c] );
+			if( a[c] > 0 ) rr[c].push_back( b[c] / a[c] );
+		}
+	}
+	for( int c = 0; c < 3; c++ ) {
+		double m0, s0, m1, s1, mr;
+		MeanSd( l0[c], m0, s0 ); MeanSd( ls[c], m1, s1 ); MeanSd( rr[c], mr, sd[c] );
+		tr[c] = m0 > 0 ? m1 / m0 : -1.0;
+	}
+}
+
+static void TestHWSSTintedCoatGap()
+{
+	std::cout << "=== hwsstint: tinted coat over a gapped weave, BDPT HWSS vs PT HWSS per channel (DL-329) ===" << std::endl;
+	const char* nEnv = std::getenv( "WEAVE_GAP_HWSS_N" );
+	const unsigned int n = nEnv ? HwssRepeats() : 8u;
+	// The REFERENCE is PT's own HWSS render: its companion lanes are the
+	// CoatedSPF::EvaluateKrayNM numbers the `query` section pins to
+	// ScatterNM exactly.  The hwss=false renders are printed, not used:
+	// a single-wavelength sample of this saturated red is far outside
+	// Rec.709 and the per-sample conversion does not average to the
+	// bundle's (its blue channel reads > 0 where the bundle's reads 0).
+	double pt[3], ptSd[3], bd[3], bdSd[3], ptOff[3], bdOff[3], tmp[3];
+	TintedChannelTransmittance( RastPTSpectral( 256, true ),    n, 0xD32A0u, pt, ptSd );
+	TintedChannelTransmittance( RastBDPTSpectral( 128, true ),  n, 0xD32A1u, bd, bdSd );
+	TintedChannelTransmittance( RastPTSpectral( 256, false ),   n, 0xD32A2u, ptOff, tmp );
+	TintedChannelTransmittance( RastBDPTSpectral( 128, false ), n, 0xD32A3u, bdOff, tmp );
+	char buf[480];
+	std::snprintf( buf, sizeof(buf),
+		"hwsstint: L/L0 (R, G)  PT hwss=true (%.5f +/- %.5f, %.5f +/- %.5f)  BDPT hwss=true (%.5f +/- %.5f, %.5f +/- %.5f)  "
+		"BDPT/PT (%.4f, %.4f)  [hwss=false: PT (%.5f, %.5f) BDPT (%.5f, %.5f)]  n = %u",
+		pt[0], ptSd[0], pt[1], ptSd[1], bd[0], bdSd[0], bd[1], bdSd[1], bd[0] / pt[0], bd[1] / pt[1],
+		ptOff[0], ptOff[1], bdOff[0], bdOff[1], n );
+	std::cout << "  " << buf << std::endl;
+	Check( std::fabs( bd[0] / pt[0] - 1.0 ) <= 0.04 && std::fabs( bd[1] / pt[1] - 1.0 ) <= 0.06, buf );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -2503,6 +2709,8 @@ int main( int argc, char** argv )
 	if( !filter || std::strstr( filter, "directional" ) ) TestClosedFormDirectional();
 	if( !filter || std::strstr( filter, "area" ) )        TestAreaPartitionGuard();
 	if( !filter || std::strstr( filter, "hwssgap" ) )     TestHWSSGapContinuation();
+	if( !filter || std::strstr( filter, "hwsstint" ) )    TestHWSSTintedCoatGap();
+	if( !filter || std::strstr( filter, "seethrough" ) )  TestBDPTSeeThroughDeltaLight();
 	if( !filter || std::strstr( filter, "sms" ) )         TestSMSEmissionThroughGap();
 	if( !filter || std::strstr( filter, "castsshadows" ) ) TestCastsShadowsFalseStepOver();
 	if( !filter || std::strstr( filter, "layers" ) )      TestTwoLayerLightOutside();
