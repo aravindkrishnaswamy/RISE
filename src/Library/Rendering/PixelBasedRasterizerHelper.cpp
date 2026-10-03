@@ -125,6 +125,13 @@ unsigned int PixelBasedRasterizerHelper::GetProgressiveTotalSPP() const
 }
 
 #ifdef RISE_ENABLE_OIDN
+double PixelBasedRasterizerHelper::EstimateDenoiseWorkPerMegapixel() const
+{
+	const unsigned int configured = pSampling ? pSampling->GetNumSamples() : 1;
+	const unsigned int spp = r_max( configured, GetAdaptiveTargetSamples() );
+	return r_max(spp, 1u) * DenoiseWorkPerMegaSample();
+}
+
 bool PixelBasedRasterizerHelper::ShouldDenoise() const
 {
 	// Cancellation state is intentionally NOT consulted here — see the
@@ -1033,8 +1040,8 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 #endif
 
 #ifdef RISE_ENABLE_OIDN
-	// Stamp render-start wall clock so the OIDN auto-quality heuristic
-	// can compute render_seconds / megapixels at denoise time.
+	// Stamp render-start wall clock for duration telemetry.
+	// Auto quality uses configured work (DL-360), never this timer.
 	BeginRenderTimer();
 #endif
 
@@ -1406,11 +1413,11 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 					mDenoiser->ApplyDenoiseRegion( *pImage, *pAOVBuffers, width, height,
 						pRect->left, pRect->top, pRect->right, pRect->bottom,
 						mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-						renderElapsedSeconds );
+						EstimateDenoiseWorkPerMegapixel() );
 				} else {
 					mDenoiser->ApplyDenoise( *pImage, *pAOVBuffers, width, height,
 						mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-						renderElapsedSeconds );
+						EstimateDenoiseWorkPerMegapixel() );
 				}
 				appliedDenoise = true;
 			}
@@ -1574,10 +1581,8 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 	ExpressionMemo::Invalidate();
 
 #ifdef RISE_ENABLE_OIDN
-	// Per-frame timer reset so OidnQuality::Auto's render-seconds-per-
-	// megapixel heuristic decides each frame independently rather than
-	// inflating with cumulative animation time.  See docs/OIDN.md
-	// (OIDN-P0-1) for the heuristic.
+	// Reset per-frame wall-time telemetry instead of accumulating animation
+	// time. Auto quality uses configured work (DL-360), never this timer.
 	BeginRenderTimer();
 #endif
 	// Each frame starts a fresh planned AOV accumulation, whether or not
@@ -2230,11 +2235,11 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 					mDenoiser->ApplyDenoiseRegion( *pImage, *pAOVBuffers, width, height,
 						pRect->left, pRect->top, pRect->right, pRect->bottom,
 						mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-						renderElapsedSeconds );
+						EstimateDenoiseWorkPerMegapixel() );
 				} else {
 					mDenoiser->ApplyDenoise( *pImage, *pAOVBuffers, width, height,
 						mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-						renderElapsedSeconds );
+						EstimateDenoiseWorkPerMegapixel() );
 				}
 			}
 			FlushDenoisedToOutputs( *pImage, pRect, frameIdx );

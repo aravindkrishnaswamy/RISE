@@ -9550,7 +9550,7 @@ bool Job::SetPixelBasedPelRasterizer(
 	const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
 	const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
 	const bool oidnDenoise,									///< [in] Should we denoise the output with OIDN?
-	const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = render-time heuristic)
+	const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = scene-static work policy)
 	const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 	const OidnPrefilter oidnPrefilter,						///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 	const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
@@ -9663,7 +9663,7 @@ bool Job::SetPixelBasedSpectralIntegratingRasterizer(
 	const double rgb_spd_g[],								///< [in] Array that contains the RGB SPD amplitudes for green
 	const double rgb_spd_b[],								///< [in] Array that contains the RGB SPD amplitudes for blue
 	const bool oidnDenoise,									///< [in] Should we denoise the output with OIDN?
-	const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = render-time heuristic)
+	const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = scene-static work policy)
 	const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 	const OidnPrefilter oidnPrefilter,						///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 	const StabilityConfig& stabilityConfig					///< [in] Production stability controls
@@ -10675,7 +10675,7 @@ bool Job::SetMLTRasterizer(
 	const char* shader,
 	const bool bShowLuminaires,
 	const bool oidnDenoise,									///< [in] Should we denoise the output with OIDN?
-	const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = render-time heuristic)
+	const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = scene-static work policy)
 	const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 	const OidnPrefilter oidnPrefilter,						///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 	const PixelFilterConfig& pixelFilterConfig,

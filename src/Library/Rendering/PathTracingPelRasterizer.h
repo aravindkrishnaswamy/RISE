@@ -38,6 +38,9 @@ namespace RISE
 			public PixelBasedPelRasterizer
 		{
 		protected:
+#ifdef RISE_ENABLE_OIDN
+			double DenoiseWorkPerMegaSample() const override { return 0.2; }
+#endif
 			virtual ~PathTracingPelRasterizer();
 
 			PathTracingIntegrator*	pIntegrator;
@@ -50,7 +53,6 @@ namespace RISE
 			mutable IRasterImage*   pDirectCompanionImage;
 			mutable IRasterImage*   pDirectCompanionRawImage;
 			mutable bool            mDirectCompanionDenoised;
-			mutable double          mDirectCompanionRenderSeconds;
 			mutable bool            mDirectCompanionHasRegion;
 			mutable Rect            mDirectCompanionRegion;
 			mutable std::vector<RISEPel> mDirectCompanionSums;
@@ -67,7 +69,6 @@ namespace RISE
 
 #ifdef RISE_ENABLE_OIDN
 			bool ShouldDenoise() const override;
-			void OnBeforeDenoise( double renderElapsedSeconds ) const override;
 #endif
 
 			void IntegratePixel(

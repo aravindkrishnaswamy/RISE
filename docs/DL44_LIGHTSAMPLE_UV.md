@@ -51,13 +51,16 @@ BDPT eye-path vertex directly hitting an emitter) and BDPT's own s=0
 emission strategy rebuild from a `BDPTVertex` that was populated from a
 *real* ray intersection (`v.ptCoord = ri.geometric.ptCoord` in the eye
 subpath generator), not from a `LightSample`, so their UV was always
-correct. `ManifoldSolver.cpp` (Specular Manifold Sampling's light-directed
-seeding) reads `LightSample::Le` directly — the RGB value `SampleLight`
+correct. At this slice's closure, `ManifoldSolver.cpp` (Specular Manifold
+Sampling's light-directed seeding) read `LightSample::Le` directly — the RGB value `SampleLight`
 already evaluated correctly — and derives its own spectral approximation
 via `RGBIlluminantSpectrum::FromRGB(Le)`, never re-evaluating
 `emittedRadianceNM` against a rebuilt record, so it was unaffected too
 (a pre-existing, separately documented approximation gap of its own, not
-this bug).
+this bug). DL-347 subsequently replaced that SMS evaluation with
+directional RGB/NM emission queries, rebuilding the sampled UV, object
+position and surface context toward the solved chain. The description
+above records the historical DL-44 audit, not the current SMS query.
 
 ## Repair
 

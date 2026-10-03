@@ -752,9 +752,9 @@ int main()
 	// OutputImage; IRasterizerOutput::OutputDenoisedImage's default
 	// implementation forwards POST-denoise pixels there, and oidn_denoise
 	// defaults TRUE -- so a suite that never sets `oidn_denoise FALSE` is
-	// silently comparing OIDN-denoised images, and OIDN's timing-based
-	// `auto` quality flips between runs (debt-26 sibling sweep, 2026-09-05;
-	// see docs/skills/bdpt-vcm-mis-balance.md's "Sibling sweep" addendum).
+	// silently comparing OIDN-denoised images rather than the estimator.
+	// Auto is deterministic since DL-360; filtering still changes means.
+	// See docs/skills/bdpt-vcm-mis-balance.md's "Sibling sweep" addendum.
 	// Opt out with an "OIDN-DENOISED-OK" comment documenting why a suite
 	// is allowed to stay denoised.
 	//

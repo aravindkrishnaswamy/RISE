@@ -338,7 +338,7 @@ namespace RISE
 		//! painter elsewhere in the process happened to keep a signal demand
 		//! alive.  It is instead computed UNGATED and WITHOUT a ray at every
 		//! emitter-record site by `LightSampler::EmitterObjectPoint`, and
-		//! carried on `LightSample::ptObjIntersec` for the five consumers
+		//! carried on `LightSample::ptObjIntersec` for the consumers
 		//! that rebuild their own record.
 		//!
 		//! `pmxWorldToObject` is likewise not carried: its only consumer is an
@@ -379,13 +379,14 @@ namespace RISE
 			const IRadianceMap*	pEnvLight;
 			/// The shading payload `SampleLight` recovered for `position` by
 			/// probing the luminary (see EmitterSurfacePayload above).  Rides
-			/// on the sample because FIVE consumers rebuild their own record
+			/// on the sample because consumers rebuild their own record
 			/// from this one point and must all see the same channel:
 			/// `SampleLight`'s own `Le` record, `GenerateLightSubpathImpl`'s
 			/// NM hero `Le` rebuild AND its HWSS companion-wavelength twin,
 			/// the BDPT `type == LIGHT` root vertex (a direct field copy,
-			/// not through `ApplyEmitterSurface`), and `VCMIntegrator`'s
-			/// light-vertex NEE record.  Apply it with
+			/// not through `ApplyEmitterSurface`), `VCMIntegrator`'s
+			/// light-vertex NEE record, and SMS's solved-chain emission queries
+			/// (DL-347). Apply it with
 			/// `LightSampler::ApplyEmitterSurface`.  `valid` false on every
 			/// delta light and every env sample (no surface exists) and
 			/// whenever the probe was gated off or refused.

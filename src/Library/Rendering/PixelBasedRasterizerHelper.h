@@ -264,6 +264,13 @@ namespace RISE
 			//! preview overrides to 1 for latency.
 			virtual unsigned int GetDenoiseAOVSamplesPerPixel() const;
 
+			// DL-360: fixed family policy in seconds per million samples.
+			virtual double DenoiseWorkPerMegaSample() const { return 0.1; }
+		public:
+			// Scene-static policy rate, also available to diagnostics.
+			double EstimateDenoiseWorkPerMegapixel() const;
+		protected:
+
 #endif
 
 			//! L8 round 6 / 9 / 13 — Whether `SPRasterizeSingleBlock`
@@ -507,7 +514,7 @@ namespace RISE
 #ifdef RISE_ENABLE_OIDN
 		/// Called immediately before the canonical beauty denoiser.  Subclasses
 		/// with companion outputs can reuse the same pre-denoise render timing
-		/// so Auto quality is not biased by the first denoiser's own latency.
+		/// for any derived rasterizer that needs render-duration telemetry.
 		virtual void OnBeforeDenoise( double /*renderElapsedSeconds*/ ) const {}
 #endif
 

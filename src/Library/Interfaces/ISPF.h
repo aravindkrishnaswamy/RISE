@@ -251,14 +251,17 @@ namespace RISE
 			return SpecularInfo();
 		}
 
-		//! Spectral variant of GetSpecularInfo.
+		//! Spectral IOR and attenuationNM. Default uplifts RGB-only metadata;
+		//! spectral painters require a direct NM override (DL-435).
 		virtual SpecularInfo GetSpecularInfoNM(
 			const RayIntersectionGeometric& ri,
 			const IORStack& ior_stack,
 			const Scalar nm
 			) const
 		{
-			return GetSpecularInfo( ri, ior_stack );
+			SpecularInfo info = GetSpecularInfo( ri, ior_stack );
+			info.SetSpectralAttenuationFromRGB( nm );
+			return info;
 		}
 
 		//! DL-05.  The EXPECTED throughput of this SPF's NON-BENDING delta
@@ -518,6 +521,18 @@ namespace RISE
 		{
 			return false;
 		}
+		//! Optional material-specific interface reflectance (DL-435). Metadata
+		//! advertises it with hasCustomSpecularFresnel. Ordered indices and
+		//! solved incidence are supplied by the chain; no painter re-query.
+		//! RGB consumers pass ScalarPainterRGB's representative wavelengths.
+		//! Appended virtual: C++ SPF implementations must rebuild.
+		virtual bool EvaluateSpecularFresnel(
+			Scalar /*cosI*/, Scalar /*etaI*/, Scalar /*etaT*/,
+			bool /*exiting*/, Scalar /*nm*/, Scalar& /*reflectance*/ ) const
+		{
+			return false;
+		}
+
 	};
 
 	//! DL-125.  One-shot (per process, per class) warning when the HWSS

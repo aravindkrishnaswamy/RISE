@@ -19,6 +19,7 @@
 #include "SMSPhotonMap.h"
 #include "Optics.h"
 #include "BDPTUtilities.h"
+#include "../Interfaces/IScalarPainter.h"
 
 // File-scope diagnostic gate.  Set to 1 to enable targeted per-pixel
 // SMS/Solve/BuildSeedChain trace logging (used while debugging the
@@ -713,51 +714,49 @@ namespace
 		return ( n > 0 && n < RISE_INFINITY ) ? n : Scalar( 1.0 );
 	}
 
-	//////////////////////////////////////////////////////////////////
-	// SMS spectral source term (Stage C slice 2).
-	//
-	// `LightSample::Le` is an RGB radiance the light sampler already
-	// computed (mesh luminary: `IEmitter::emittedRadiance` at the
-	// sampled point).  The NM paths used to project it with
-	// `ColorMath::Luminance`, i.e. reuse ONE Rec.709 luma scalar at
-	// every wavelength.  Now that every other source in the engine
-	// emits the D65-shaped reference illuminant, that projection is
-	// DIFFERENTIALLY wrong: a flat spectrum resolves to
-	// (1.205, 0.948, 0.909) on this film and a coloured light comes
-	// out grey.  Uplift as an ILLUMINANT so the caustic round-trips
-	// to the same RGB the RGB SMS path produces.
-	//
-	// Why the uplift rather than the emitter's own
-	// `emittedRadianceNM`: `LightSample` carries no wavelength-
-	// resolved Le and no `RayIntersectionGeometric` for the sampled
-	// point (only position / normal), so reaching the exact value
-	// would mean widening the struct and the sampler's fill path.
-	// The uplift is exact for a grey/white emitter and a
-	// chroma-preserving approximation otherwise -- the same trade
-	// `FinalGatherShaderOp` and the SSS ops make for a COMPUTED
-	// radiance.  Delta lights do NOT go through here: they have an
-	// `ILight::emittedRadianceNM` and the call sites use it.
-	//
-	// One open hole, stated explicitly (2026-09-02): a mesh luminaire
-	// whose exitance is bound to a `piecewise_linear_function`
-	// (Function1DSpectralPainter -- its RGB `GetColor` is black by
-	// construction, the physical spectrum only exists on the NM path)
-	// has `LightSample::Le` == (0,0,0), because `Le` is filled from the
-	// emitter's RGB `emittedRadiance`.  SMSLeNM's uplift of a black RGB
-	// triple is exactly black, so an SMS caustic cast by that emitter
-	// renders EXACTLY BLACK on the NM path, while direct NEE lights the
-	// same emitter correctly (LightSampler.cpp's spectral NEE loop
-	// calls `pEmitter->emittedRadianceNM(...)` with the full sampled
-	// geometry, reaching the authored spectral curve).  This is not a
-	// NEW regression -- `ColorMath::Luminance(RISEPel(0,0,0))` was also
-	// 0, so the pre-uplift code produced the same black caustic -- it
-	// is the one case where "chroma-preserving approximation" above is
-	// not just approximate but wrong (0 instead of the emitter's true
-	// nonzero spectral Le).  The real fix is widening `LightSample`
-	// with the sampled hit's `RayIntersectionGeometric` (or at least
-	// its normal + the `IEmitter*`) so `emittedRadianceNM` becomes
-	// reachable here too -- the sampler already has both at fill time,
-	// so this is a struct-widening change, not a new capability.
+	// DL-347: a sampled emission point must be re-evaluated toward the
+	// solved chain. Its sampled light-subpath direction is unrelated.
+	inline RayIntersectionGeometric SMSEmitterContext(
+		const LightSample& sample, const Vector3& out, Vector3& normal )
+	{
+		normal = EmitterSides::FaceToward(
+			LightSampler::LuminaryIsTwoSided( sample.pLuminary ), sample.normal, out );
+		RayIntersectionGeometric rig( Ray( sample.position, out ), nullRasterizerState );
+		rig.bHit = true;
+		rig.ptIntersection = sample.position;
+		rig.vNormal = normal;
+		rig.vGeomNormal = normal;
+		rig.ptCoord = sample.ptCoord;
+		rig.ptObjIntersec = sample.ptObjIntersec;
+		rig.onb.CreateFromW( normal );
+		LightSampler::ApplyEmitterSurface( rig, sample.surface );
+		return rig;
+	}
+
+	inline RISEPel SMSAreaLe( const LightSample& sample, const Vector3& out )
+	{
+		if( !sample.pLuminary ) return sample.Le;
+		if( !sample.pLuminary->GetMaterial() ) return RISEPel( 0, 0, 0 );
+		const IEmitter* emitter = sample.pLuminary->GetMaterial()->GetEmitter();
+		if( !emitter ) return RISEPel( 0, 0, 0 );
+		Vector3 normal;
+		const auto rig = SMSEmitterContext( sample, out, normal );
+		return emitter->emittedRadiance( rig, out, normal );
+	}
+
+	inline Scalar SMSAreaLeNM( const LightSample& sample, const Vector3& out, const Scalar nm )
+	{
+		if( !sample.pLuminary || !sample.pLuminary->GetMaterial() ) return 0;
+		const IEmitter* emitter = sample.pLuminary->GetMaterial()->GetEmitter();
+		if( !emitter ) return 0;
+		Vector3 normal;
+		const auto rig = SMSEmitterContext( sample, out, normal );
+		return emitter->emittedRadianceNM( rig, out, normal, nm );
+	}
+
+	// Legacy delta samples without an ILight pointer have only RGB Le.
+	// Preserve the illuminant uplift for that fallback and environment
+	// samples; real area emitters now use their own emittedRadianceNM.
 	inline Scalar SMSLeNM( const RISEPel& Le, const Scalar nm )
 	{
 		RISEPel c = Le;
@@ -923,9 +922,11 @@ namespace
 	//     physical one.  Measured: the light-to-first-vertex Jacobian
 	//     determinant matches finite differences at a matched vertex to
 	//     ~1e-5 relative.
-	//   * Its magnitude is ~eta x (angular error), bounded below by the
-	//     physics rather than by |h|, so the solver's ||C|| threshold
-	//     keeps one meaning across all index pairs.
+	//   * Its magnitude is ~eta x (angular error), so it avoids the
+	//     normalized form's matched-index singularity. Absolute IOR still
+	//     scales this residual: fixed solver and seed-rejection thresholds
+	//     are not invariant under a common scaling of both indices. The
+	//     seed-rejection limitation is recorded in DL49 doc section 11.
 	// Reflection vertices keep the normalized h = wi + wo, which never
 	// vanishes on a physical path.
 	inline bool UseUnnormalizedHalfVector( const RISE::Implementation::ManifoldVertex& v )
@@ -2670,6 +2671,7 @@ bool ManifoldSolver::UpdateVertexOnSurface(
 			vertex.normal = ri.geometric.vNormal;
 			vertex.geomNormal = ri.geometric.UnflippedGeomNormal();	// DL-70: the TRUE outward normal (see ManifoldSolver.h)
 			vertex.uv = ri.geometric.ptCoord;
+			vertex.objectPosition = ri.geometric.ptObjIntersec;
             vertex.alphaEndpoint = endpoint;
             vertex.alphaEndpointPosition = vertex.position;
 			snapped = true;
@@ -2698,6 +2700,7 @@ bool ManifoldSolver::UpdateVertexOnSurface(
 			vertex.normal = ri2.geometric.vNormal;
 			vertex.geomNormal = ri2.geometric.UnflippedGeomNormal();	// DL-70: the TRUE outward normal (see ManifoldSolver.h)
 			vertex.uv = ri2.geometric.ptCoord;
+			vertex.objectPosition = ri2.geometric.ptObjIntersec;
             vertex.alphaEndpoint = endpoint;
             vertex.alphaEndpointPosition = vertex.position;
 			snapped = true;
@@ -2911,6 +2914,7 @@ bool ManifoldSolver::ComputeVertexDerivatives(
 		        vertex.normal = ri.geometric.vNormal;
 		        vertex.geomNormal = ri.geometric.UnflippedGeomNormal();
 		        vertex.uv = ri.geometric.ptCoord;
+		        vertex.objectPosition = ri.geometric.ptObjIntersec;
 		        vertex.alphaEndpoint = endpoint;
 		        vertex.alphaEndpointPosition = vertex.position;
 		    }
@@ -2972,6 +2976,7 @@ bool ManifoldSolver::ComputeVertexDerivatives(
 			        vertex.normal = ri2.geometric.vNormal;
 			        vertex.geomNormal = ri2.geometric.UnflippedGeomNormal();
 			        vertex.uv = ri2.geometric.ptCoord;
+			        vertex.objectPosition = ri2.geometric.ptObjIntersec;
 			        vertex.alphaEndpoint = endpoint;
 			        vertex.alphaEndpointPosition = vertex.position;
 			    }
@@ -4181,6 +4186,7 @@ unsigned int ManifoldSolver::SnellContinueChain(
 		// and always-on; harmless for the FD-probe path which doesn't read
 		// vertex.uv anyway.
 		mv.uv = ri.geometric.ptCoord;
+		mv.objectPosition = ri.geometric.ptObjIntersec;
 		mv.pObject = ri.pObject;
 		mv.pMaterial = pMat;
         mv.retainAlphaEndpoint = retainAlphaEndpoint;
@@ -4189,6 +4195,10 @@ unsigned int ManifoldSolver::SnellContinueChain(
 
 		mv.eta = specInfo.ior;
 		mv.attenuation = specInfo.attenuation;
+		mv.attenuationNM = specInfo.attenuationNM;
+		mv.attenuationAppliesToReflection = specInfo.attenuationAppliesToReflection;
+		mv.hasCustomSpecularFresnel = specInfo.hasCustomSpecularFresnel;
+		mv.attenuationIsInteriorTransmittance = specInfo.attenuationIsInteriorTransmittance;
 		mv.isReflection = !specInfo.canRefract;
 		mv.canRefract = specInfo.canRefract;
 		mv.valid = false;  // Derivatives not yet computed; Solve will handle it
@@ -4667,6 +4677,29 @@ Scalar ManifoldSolver::EvaluateChainCosineProduct(
 
 //////////////////////////////////////////////////////////////////////
 
+Scalar ManifoldSolver::EvaluateVertexFresnel( const ManifoldVertex& v,
+	Scalar cosI, Scalar etaI, Scalar etaT, Scalar nm )
+{
+	if( v.hasCustomSpecularFresnel && v.pMaterial ) {
+		const ISPF* spf = v.pMaterial->GetSPF();
+		Scalar reflectance;
+		if( spf && spf->EvaluateSpecularFresnel( cosI, etaI, etaT, v.isExiting, nm, reflectance ) )
+			return reflectance;
+	}
+	return ComputeDielectricFresnel( cosI, etaI, etaT );
+}
+
+RISEPel ManifoldSolver::EvaluateVertexFresnelRGB( const ManifoldVertex& v,
+	Scalar cosI, Scalar etaI, Scalar etaT )
+{
+	if( !v.hasCustomSpecularFresnel )
+		return RISEPel( ComputeDielectricFresnel( cosI, etaI, etaT ) );
+	return RISEPel(
+		EvaluateVertexFresnel( v, cosI, etaI, etaT, ScalarPainterRGB::kChannelNM[0] ),
+		EvaluateVertexFresnel( v, cosI, etaI, etaT, ScalarPainterRGB::kChannelNM[1] ),
+		EvaluateVertexFresnel( v, cosI, etaI, etaT, ScalarPainterRGB::kChannelNM[2] ) );
+}
+
 RISEPel ManifoldSolver::EvaluateChainThroughput(
 	const Point3& startPoint,
 	const Point3& endPoint,
@@ -4725,39 +4758,36 @@ RISEPel ManifoldSolver::EvaluateChainThroughput(
 		Scalar eta_i, eta_t;
 		GetEffectiveEtas( v, eta_i, eta_t );
 
-		// Three semantically distinct vertex kinds drive three different
-		// throughput laws.  The dispatch is on (canRefract, isReflection):
-		//
-		//   (false, true)   pure mirror — full reflectance from the painter,
-		//                   no Fresnel angle factor.  PerfectReflectorSPF
-		//                   models an idealized 100%-reflective surface;
-		//                   ComputeDielectricFresnel(cosI, 1, 1) would give
-		//                   the wrong answer (=0) here because the dielectric
-		//                   formula is meaningless on a non-refracting medium.
-		//   (true,  true)   dielectric reflection — Fresnel reflection on
-		//                   glass, OR total internal reflection (the latter
-		//                   falls out automatically: ComputeDielectricFresnel
-		//                   returns 1.0 when sin²θ_t ≥ 1).  Reflection at a
-		//                   dielectric interface is uncolored (the painter's
-		//                   refractance only enters via Beer's law during
-		//                   transmission) — matches PerfectRefractorSPF::
-		//                   Scatter, which sets the Fresnel-reflection ray's
-		//                   kray = (Fr, Fr, Fr) without a tau multiplier.
-		//   (true,  false)  refraction — Fresnel transmission (1 − Fr) with
-		//                   the tau (refractance) painter and the (η_i/η_t)²
-		//                   radiance rescale across the dielectric boundary.
+		// Mirrors use their painter reflectance without a dielectric factor.
+		// Refracting interfaces use Fresnel (the native SPF's coating law when
+		// advertised). PerfectRefractor tint applies to transmission only;
+		// generic boundary multipliers may apply to both events. Dielectric
+		// per-unit tau follows its SPF's exiting-transmission convention.
+		RISEPel attenuation = v.attenuation;
+		if( v.isReflection && !v.attenuationAppliesToReflection )
+			attenuation = RISEPel(1,1,1);
+		if( v.attenuationIsInteriorTransmittance ) {
+			attenuation = RISEPel( 1, 1, 1 );
+			if( v.isExiting && !v.isReflection ) {
+				const Scalar distance = Point3Ops::Distance( prevPos, v.position );
+				for( unsigned int c = 0; c < 3; ++c )
+					attenuation[c] = v.attenuation[c] == 1 ? Scalar(1)
+						: std::pow( r_max( Scalar(0), v.attenuation[c] ), distance );
+			}
+		}
+
 		if( v.isReflection )
 		{
-			Scalar R;
+			RISEPel R;
 			if( v.canRefract )
 			{
-				R = ComputeDielectricFresnel( cosI, eta_i, eta_t );
+				R = EvaluateVertexFresnelRGB( v, cosI, eta_i, eta_t );
 			}
 			else
 			{
-				R = 1.0;
+				R = RISEPel(1,1,1);
 			}
-			throughput = throughput * v.attenuation * R;
+			throughput = throughput * attenuation * R;
 		}
 		else
 		{
@@ -4788,10 +4818,10 @@ RISEPel ManifoldSolver::EvaluateChainThroughput(
 			// eta_i is the index on the x-receiver side, eta_t on the
 			// y-source side, in the photon's FORWARD direction.  The
 			// forward rescale is (n_receiver / n_source)^2 = (eta_i / eta_t)^2.
-			const Scalar fr = ComputeDielectricFresnel( cosI, eta_i, eta_t );
+			const RISEPel fr = EvaluateVertexFresnelRGB( v, cosI, eta_i, eta_t );
 			const Scalar eta_ratio = eta_i / eta_t;
 			const Scalar radiance_rescale = eta_ratio * eta_ratio;
-			throughput = throughput * v.attenuation * (1.0 - fr) * radiance_rescale;
+			throughput = throughput * attenuation * (RISEPel(1,1,1) - fr) * radiance_rescale;
 		}
 	}
 
@@ -4830,7 +4860,7 @@ Scalar ManifoldSolver::EvaluateChainThroughputNM(
 		// Exact dielectric Fresnel reflectance — use the chain-topological
 		// flag (see EvaluateChainThroughput RGB variant for full comment).
 		// Pull (η_i, η_t) from the per-vertex fields populated by
-		// BuildSeedChainNM — same air-on-other-side bug fix as the
+		// spectral seed/replay queries — same air-on-other-side fix as the
 		// RGB variant.
 		const Scalar cosI = fabs( Vector3Ops::Dot( wi, v.normal ) );
 		Scalar eta_i, eta_t;
@@ -4841,20 +4871,31 @@ Scalar ManifoldSolver::EvaluateChainThroughputNM(
 		// refraction use Fresnel.  See EvaluateChainThroughput for the
 		// full discussion of why ComputeDielectricFresnel(cosI, 1, 1)
 		// would silently zero the throughput on a mirror.
+		// Cached scalar is queried at this wavelength by the seed/replay
+		// path, never selected from an RGB channel. No painter query or
+		// allocation occurs in this throughput loop.
+		Scalar attenuation = v.isReflection && !v.attenuationAppliesToReflection ? Scalar(1) : v.attenuationNM;
+		if( v.attenuationIsInteriorTransmittance ) {
+			attenuation = v.isExiting && !v.isReflection
+				? ( attenuation == 1 ? Scalar(1)
+					: std::pow( attenuation, Point3Ops::Distance( prevPos, v.position ) ) )
+				: Scalar(1);
+		}
 		if( v.isReflection )
 		{
 			if( v.canRefract )
 			{
-				throughput *= ComputeDielectricFresnel( cosI, eta_i, eta_t );
+				throughput *= attenuation * EvaluateVertexFresnel( v, cosI, eta_i, eta_t, nm );
 			}
-			// else: pure mirror — multiply by 1 (no-op).  Spectral
-			// reflectance painters aren't queried in this NM throughput
-			// path; surface colour is applied at the integrator level.
+			else {
+				throughput *= attenuation;
+			}
 		}
 		else
 		{
-			const Scalar fr = ComputeDielectricFresnel( cosI, eta_i, eta_t );
-			throughput *= (1.0 - fr);
+			const Scalar fr = EvaluateVertexFresnel( v, cosI, eta_i, eta_t, nm );
+			const Scalar eta_ratio = eta_i / eta_t;
+			throughput *= attenuation * (1.0 - fr) * eta_ratio * eta_ratio;
 		}
 	}
 
@@ -5923,7 +5964,8 @@ ManifoldResult ManifoldSolver::Solve(
 
 unsigned int ManifoldSolver::ReversePhotonChainForSeed(
 	const SMSPhoton& photon,
-	std::vector<ManifoldVertex>& chain
+	std::vector<ManifoldVertex>& chain,
+	Scalar nm
 	) const
 {
 	const unsigned int k = photon.chainLen;
@@ -5937,7 +5979,12 @@ unsigned int ManifoldSolver::ReversePhotonChainForSeed(
 	{
 		const SMSPhotonChainVertex& pv = photon.chain[ k - 1 - i ];
 		ManifoldVertex& mv = chain[i];
+		// Output buffers may be reused: discarded solver/IOR/alpha state must
+		// not override the photon reconstruction defaults (DL-439).
+		mv = ManifoldVertex();
 		mv.position    = pv.position;
+		mv.objectPosition = pv.objectPosition;
+		mv.uv = pv.uv;
 		mv.normal      = pv.normal;
 		// Photon record now stores geomNormal alongside shading (see
 		// SMSPhoton.h::SMSPhotonChainVertex).  Fall back to shading only
@@ -5953,6 +6000,8 @@ unsigned int ManifoldSolver::ReversePhotonChainForSeed(
 			RayIntersectionGeometric rigLocal( dummyRay, nullRasterizerState );
 			rigLocal.bHit          = true;
 			rigLocal.ptIntersection = pv.position;
+			rigLocal.ptObjIntersec = pv.objectPosition;
+			rigLocal.ptCoord = pv.uv;
 			rigLocal.vNormal       = pv.normal;
 			// Mirror the geometric normal so any future GetSpecularInfo
 			// implementation that consults vGeomNormal (dielectric side
@@ -5960,11 +6009,22 @@ unsigned int ManifoldSolver::ReversePhotonChainForSeed(
 			// value instead of the (0,0,0) sentinel — falling back to
 			// shading on legacy photons whose geomNormal slot is zero.
 			rigLocal.vGeomNormal   = mv.geomNormal;
-			SpecularInfo spec = pv.pMaterial->GetSpecularInfo( rigLocal, queryIor );
+			SpecularInfo spec = nm > 0 ?
+				pv.pMaterial->GetSpecularInfoNM( rigLocal, queryIor, nm ) :
+				pv.pMaterial->GetSpecularInfo( rigLocal, queryIor );
+			if( nm > 0 ) mv.eta = spec.ior;
 			mv.attenuation = spec.attenuation;
+			mv.attenuationNM = spec.attenuationNM;
+			mv.attenuationAppliesToReflection = spec.attenuationAppliesToReflection;
+			mv.hasCustomSpecularFresnel = spec.hasCustomSpecularFresnel;
+			mv.attenuationIsInteriorTransmittance = spec.attenuationIsInteriorTransmittance;
 			mv.canRefract  = spec.canRefract;
 		} else {
 			mv.attenuation = RISEPel( 1, 1, 1 );
+			mv.attenuationNM = 1;
+			mv.attenuationAppliesToReflection = true;
+			mv.hasCustomSpecularFresnel = false;
+			mv.attenuationIsInteriorTransmittance = false;
 			mv.canRefract  = true;
 		}
 		mv.isReflection = ( ( pv.flags & 0x2 ) != 0 );
@@ -6007,10 +6067,6 @@ bool ManifoldSolver::ComputeTrialContribution(
     ISampler& sampler = alphaSampler ? *alphaSampler : static_cast<ISampler&>(alphaFallback);
 	outContribution = RISEPel( 0, 0, 0 );
 	outDir = Vector3( 0, 0, 0 );
-	(void)geomNormal;  // Reserved for receiver-side path-space cosines —
-	                    // `cosV1atX` already pulls geomNormal off the chain
-	                    // vertex below.  Keeping the parameter explicit so
-	                    // callers must commit to providing both normals.
 
 	if( !mResult.valid || mResult.specularChain.empty() || !pBSDF ) {
 		return false;
@@ -6070,7 +6126,8 @@ bool ManifoldSolver::ComputeTrialContribution(
 	} else {
 		cosAtLight = fabs( Vector3Ops::Dot( lightSample.normal, dirSpecToLight ) );
 		if( cosAtLight <= 0 ) return false;
-		actualLe = lightSample.Le;
+		actualLe = SMSAreaLe( lightSample, dirSpecToLight );
+		if( ColorMath::MaxValue(actualLe) <= 0 ) return false;
 	}
 	(void)cosAtLight;   // Implicit in detDvDy via (I - wo⊗wo) projection.
 
@@ -6089,10 +6146,16 @@ bool ManifoldSolver::ComputeTrialContribution(
 	const Scalar detDvDy = ComputeLightToFirstVertexJacobianDet(
 		mResult.specularChain, pos, lightSample.position, JacobianLightNormal( lightSample, mResult.specularChain ) );
 	const Scalar smsGeometric = G_x_v1 * detDvDy;
+	if( outSmsGeometric ) {
+		*outSmsGeometric = smsGeometric;
+	}
+	const Scalar effectiveGeometric = clampGeometric && config.maxGeometricTerm > 0
+		? std::fmin( smsGeometric, config.maxGeometricTerm )
+		: smsGeometric;
 
 	outContribution = fBSDF
 		* mResult.contribution
-		* actualLe * cosAtShading * smsGeometric
+		* actualLe * cosAtShading * effectiveGeometric
 		/ ( lightSample.pdfPosition * lightSample.pdfSelect );
 
 	return true;
@@ -6103,10 +6166,9 @@ bool ManifoldSolver::ComputeTrialContribution(
 //
 //   Spectral counterpart of ComputeTrialContribution.  Same logic,
 //   per-wavelength throughput via EvaluateChainThroughputNM and
-//   per-wavelength BSDF via valueNM.  Le is luminance-projected
-//   (the spectral path computes a single scalar value per wavelength
-//   and luminance is the appropriate scalar projection of an
-//   RGB Le).
+//   per-wavelength BSDF via valueNM. Area/delta emitters provide their
+//   own wavelength radiance; legacy samples without an emitter pointer
+//   retain the RGB illuminant-uplift fallback.
 //////////////////////////////////////////////////////////////////////
 
 bool ManifoldSolver::ComputeTrialContributionNM(
@@ -6132,7 +6194,6 @@ bool ManifoldSolver::ComputeTrialContributionNM(
     ISampler& sampler = alphaSampler ? *alphaSampler : static_cast<ISampler&>(alphaFallback);
 	outContribution = 0;
 	outDir = Vector3( 0, 0, 0 );
-	(void)geomNormal;  // See ComputeTrialContribution above.
 
 	if( !mResult.valid || mResult.specularChain.empty() || !pBSDF ) {
 		return false;
@@ -6194,7 +6255,9 @@ bool ManifoldSolver::ComputeTrialContributionNM(
 	} else {
 		cosAtLight = fabs( Vector3Ops::Dot( lightSample.normal, dirSpecToLight ) );
 		if( cosAtLight <= 0 ) return false;
-		Le = SMSLeNM( lightSample.Le, nm );
+		Le = lightSample.pLuminary ? SMSAreaLeNM( lightSample, dirSpecToLight, nm )
+			: SMSLeNM( lightSample.Le, nm );
+		if( Le <= 0 ) return false;
 	}
 	(void)cosAtLight;
 
@@ -6212,7 +6275,7 @@ bool ManifoldSolver::ComputeTrialContributionNM(
 	if( outSmsGeometric ) {
 		*outSmsGeometric = smsGeometric;
 	}
-	const Scalar effectiveGeometric = clampGeometric
+	const Scalar effectiveGeometric = clampGeometric && config.maxGeometricTerm > 0
 		? std::fmin( smsGeometric, config.maxGeometricTerm )
 		: smsGeometric;
 
@@ -6746,6 +6809,8 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 				const SMSPhotonChainVertex& pv = ph.chain[ k - 1 - i ];
 				ManifoldVertex& mv = newChain[i];
 				mv.position    = pv.position;
+				mv.objectPosition = pv.objectPosition;
+				mv.uv = pv.uv;
 				mv.normal      = pv.normal;
 				mv.geomNormal  = ( Vector3Ops::SquaredModulus( pv.geomNormal ) > NEARZERO )
 					? pv.geomNormal : pv.normal;
@@ -6766,13 +6831,23 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 					RayIntersectionGeometric rigLocal( dummyRay, nullRasterizerState );
 					rigLocal.bHit = true;
 					rigLocal.ptIntersection = pv.position;
+					rigLocal.ptObjIntersec = pv.objectPosition;
+					rigLocal.ptCoord = pv.uv;
 					rigLocal.vNormal = pv.normal;
 					rigLocal.vGeomNormal = mv.geomNormal;
 					SpecularInfo spec = pv.pMaterial->GetSpecularInfo( rigLocal, queryIor );
 					mv.attenuation = spec.attenuation;
+					mv.attenuationNM = spec.attenuationNM;
+					mv.attenuationAppliesToReflection = spec.attenuationAppliesToReflection;
+					mv.hasCustomSpecularFresnel = spec.hasCustomSpecularFresnel;
+					mv.attenuationIsInteriorTransmittance = spec.attenuationIsInteriorTransmittance;
 					mv.canRefract  = spec.canRefract;
 				} else {
 					mv.attenuation = RISEPel( 1, 1, 1 );
+					mv.attenuationNM = 1;
+					mv.attenuationAppliesToReflection = true;
+					mv.hasCustomSpecularFresnel = false;
+					mv.attenuationIsInteriorTransmittance = false;
 					mv.canRefract  = true;   // safe default: dielectric Fresnel path
 				}
 				// Chain-vertex semantics recovered from the photon record:
@@ -6935,7 +7010,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		const Scalar cosAtShading = fabs( Vector3Ops::Dot( shadingNormal, wiAtShading ) );
 		if( cosAtShading <= 0 ) continue;
 
-		// Direction and distance from last specular vertex to light
+		// Direction from light to last specular vertex and their distance
 		// (needed for cosine evaluation at the light surface).
 		const ManifoldVertex& lastSpec = mResult.specularChain.back();
 		Vector3 dirSpecToLight = Vector3Ops::mkVector3(
@@ -6961,7 +7036,8 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		} else {
 			cosAtLight = fabs( Vector3Ops::Dot( lightSample.normal, dirSpecToLight ) );
 			if( cosAtLight <= 0 ) continue;
-			actualLe = lightSample.Le;
+			actualLe = SMSAreaLe( lightSample, dirSpecToLight );
+			if( ColorMath::MaxValue(actualLe) <= 0 ) continue;
 		}
 
 		// SMS measure-conversion via implicit function theorem.
@@ -7187,10 +7263,11 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 //   choice (manifold_ss.cpp lines 32-42 explicitly disclaim
 //   shape-picking).
 //
-//   Phase 4 of the Mitsuba-faithful SMS port: single-trial, biased
-//   semantics (no Bernoulli).  Phase 5 will layer the geometric
-//   `K = first-success-index` estimator on top, and Phase 7 the
-//   photon-aided trial integration.
+//   Biased mode draws config.multiTrials uniform-area seeds per caster,
+//   sums unique solved roots, and may supplement them with photon seeds.
+//   Unbiased mode uses the geometric Bernoulli reciprocal-probability
+//   estimator with the same uniform-area proposal in every trial. Alpha
+//   coverage also selects that Bernoulli path rather than biased dedupe.
 //
 //   See `docs/SMS_UNIFORM_SEEDING_PLAN.md` for the full plan.
 //////////////////////////////////////////////////////////////////////
@@ -7213,8 +7290,6 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
     const bool alphaCoverage = caster.GetLightSampler() && caster.GetLightSampler()->SceneHasAlphaCoverage();
     const bool biased = config.biased && !alphaCoverage;
 	SMSContribution result;
-	(void)geomNormal;  // currently unused on the uniform path; kept for
-	                    // API symmetry with the snell entry point.
 
 	if( !pMaterial ) return result;
 
@@ -7668,7 +7743,6 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
     const bool alphaCoverage = caster.GetLightSampler() && caster.GetLightSampler()->SceneHasAlphaCoverage();
     const bool biased = config.biased && !alphaCoverage;
 	SMSContributionNM result;
-	(void)geomNormal;  // see EvaluateAtShadingPointUniform.
 
 	if( !pMaterial ) return result;
 
@@ -7746,9 +7820,20 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 				rigLocal.ptIntersection = v.position;
 				rigLocal.vNormal       = v.normal;
 				rigLocal.vGeomNormal   = v.geomNormal;
+				rigLocal.ptCoord       = v.uv;
+				rigLocal.ptObjIntersec = v.objectPosition;
 				SpecularInfo specNM = v.pMaterial->GetSpecularInfoNM( rigLocal, queryIor, nm );
 				v.eta         = specNM.ior;
+				// DL-353: the solve reads the explicit interface pair, not
+				// the legacy single-index field. Match companion replay:
+				// replace the material side; retain the seeded exterior.
+				if( v.isExiting ) v.etaI = specNM.ior;
+				else v.etaT = specNM.ior;
 				v.attenuation = specNM.attenuation;
+				v.attenuationNM = specNM.attenuationNM;
+				v.attenuationAppliesToReflection = specNM.attenuationAppliesToReflection;
+				v.hasCustomSpecularFresnel = specNM.hasCustomSpecularFresnel;
+				v.attenuationIsInteriorTransmittance = specNM.attenuationIsInteriorTransmittance;
 				v.canRefract  = specNM.canRefract;
 			}
 			v.valid = false;
@@ -8181,26 +8266,10 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		+ static_cast<unsigned int>( photonSeeds.size() )
 		+ ( N > 0 ? N - 1 : 0 );
 
-	// Hoisted out of the per-trial loop below: `lightSample` is drawn
-	// ONCE above (before the trial loop), and SMSLeNM's mesh-light
-	// projection depends only on `lightSample.Le` and `nm` — neither of
-	// which varies per trial (unlike `cosAtLight`, which depends on the
-	// per-trial converged chain's last vertex and stays inside the
-	// loop).  Every trial that reaches the non-delta branch, or the
-	// delta-without-`pLight` branch, was recomputing the identical JH
-	// LUT uplift.  Bit-identical to calling SMSLeNM(lightSample.Le, nm)
-	// fresh inside the loop; this only moves WHEN it is computed.
-	//
-	// LAZY: the delta-light-with-`pLight` case (below) never reads
-	// `meshLeNM` at all — it uses `pLight->emittedRadianceNM` instead —
-	// and that is the DOMINANT case for ordinary point/spot lights.
-	// `lightSample.isDelta`/`.pLight` are already fixed for every trial
-	// (set once when `lightSample` was drawn), so the guard is a single
-	// loop-invariant check, not a per-trial branch: skip the LUT lookup
-	// entirely when it can't be used, instead of computing it "hoisted"
-	// but unused.
+	// Only a legacy delta sample without its light pointer uses RGB
+	// uplift. Area emitters must be evaluated per solved-chain direction.
 	Scalar meshLeNM = 0;
-	if( !( lightSample.isDelta && lightSample.pLight ) ) {
+	if( lightSample.isDelta && !lightSample.pLight ) {
 		meshLeNM = SMSLeNM( lightSample.Le, nm );
 	}
 
@@ -8233,68 +8302,8 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 				continue;
 			}
 
-			std::vector<ManifoldVertex> newChain( k );
-			IORStack queryIor( 1.0 );
-			for( unsigned int i = 0; i < k; i++ )
-			{
-				const SMSPhotonChainVertex& pv = ph.chain[ k - 1 - i ];
-				ManifoldVertex& mv = newChain[i];
-				mv.position    = pv.position;
-				mv.normal      = pv.normal;
-				mv.geomNormal  = ( Vector3Ops::SquaredModulus( pv.geomNormal ) > NEARZERO )
-					? pv.geomNormal : pv.normal;
-				mv.pObject     = pv.pObject;
-				mv.pMaterial   = pv.pMaterial;
-				// mv.attenuation is set alongside mv.eta below from the
-				// per-wavelength SpecularInfo (dropping the hardcoded white
-				// that previously bypassed material colour).
-				// Chain-vertex semantics recovered from the photon record;
-				// see the RGB path above for the full rationale.
-				mv.isReflection = ( ( pv.flags & 0x2 ) != 0 );
-				mv.isExiting    = mv.isReflection
-				                ? ( ( pv.flags & 0x1 ) != 0 )    // preserve
-				                : ( ( pv.flags & 0x1 ) == 0 );   // flip
-				mv.valid       = false;
-
-				// Per-wavelength eta override (dispersion).  Also take the
-				// per-wavelength attenuation at this vertex — a coloured or
-				// absorbing glass's caustic otherwise comes out white/too-
-				// bright whenever a multi-trial round discovers a root
-				// through photon-aided seeding.
-				if( pv.pMaterial )
-				{
-					Ray dummyRay( pv.position, pv.normal );
-					RayIntersectionGeometric rigLocal( dummyRay, nullRasterizerState );
-					rigLocal.bHit = true;
-					rigLocal.ptIntersection = pv.position;
-					rigLocal.vNormal = pv.normal;
-					rigLocal.vGeomNormal = mv.geomNormal;
-					SpecularInfo specNM = pv.pMaterial->GetSpecularInfoNM(
-						rigLocal, queryIor, nm );
-					mv.eta = specNM.ior;
-					mv.attenuation = specNM.attenuation;
-					mv.canRefract  = specNM.canRefract;
-				} else {
-					mv.eta = pv.eta;
-					mv.attenuation = RISEPel( 1, 1, 1 );
-					mv.canRefract  = true;
-				}
-				// Photon-aided seed reconstruction does not currently
-				// store the IOR-stack snapshot at each vertex — the
-				// SMSPhoton record only carries `eta` (the surface
-				// material's IOR).  As a result, mv.etaI and mv.etaT
-				// stay at their default 1.0 here, and downstream
-				// math (EvaluateConstraint, BuildJacobian, etc.) falls
-				// back to the air-on-other-side assumption via
-				// GetEffectiveEtas.  Correct for single-dielectric-in-
-				// air photon caustics (the typical SMS photon use
-				// case); WRONG for nested-dielectric scenes seeded via
-				// photons.  Fixing this requires extending SMSPhoton
-				// per-vertex storage with (etaIncidentRGB, etaT) at
-				// emission time — left as a future extension for when
-				// nested-dielectric scenes actually use SMS photon
-				// seeding (PathMLT defaults to photonCount=0).
-			}
+			std::vector<ManifoldVertex> newChain;
+			if( ReversePhotonChainForSeed( ph, newChain, nm ) == 0 ) continue;
 			trialSeed = newChain;
 		}
 
@@ -8361,7 +8370,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		Scalar chainThroughput = EvaluateChainThroughputNM(
 			pos, lightSample.position, mResult.specularChain, nm );
 
-		// Direction from last specular vertex to light (for cosine eval)
+		// Direction from light to last specular vertex (for emission eval)
 		const ManifoldVertex& lastSpec = mResult.specularChain.back();
 		Vector3 dirSpecToLight = Vector3Ops::mkVector3(
 			lastSpec.position, lightSample.position );
@@ -8383,7 +8392,9 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		} else {
 			cosAtLight = fabs( Vector3Ops::Dot( lightSample.normal, dirSpecToLight ) );
 			if( cosAtLight <= 0 ) continue;
-			Le = meshLeNM;	// hoisted -- see the comment above the trial loop
+			Le = lightSample.pLuminary ? SMSAreaLeNM( lightSample, dirSpecToLight, nm )
+			: SMSLeNM( lightSample.Le, nm );
+			if( Le <= 0 ) continue;
 		}
 
 		// SMS measure-conversion factor — must match the RGB path exactly
@@ -8549,10 +8560,17 @@ unsigned int ManifoldSolver::BuildSnellBaseSeed(
 				rig.bHit = true;
 				rig.ptIntersection = chain[i].position;
 				rig.vNormal = chain[i].normal;
+				rig.vGeomNormal = chain[i].geomNormal;
+				rig.ptCoord = chain[i].uv;
+				rig.ptObjIntersec = chain[i].objectPosition;
 
 				SpecularInfo specNM = chain[i].pMaterial->GetSpecularInfoNM(
 					rig, queryIor, nm );
 				chain[i].eta = specNM.ior;
+				chain[i].attenuationNM = specNM.attenuationNM;
+				chain[i].attenuationAppliesToReflection = specNM.attenuationAppliesToReflection;
+				chain[i].hasCustomSpecularFresnel = specNM.hasCustomSpecularFresnel;
+				chain[i].attenuationIsInteriorTransmittance = specNM.attenuationIsInteriorTransmittance;
 				// Also update the wavelength-dependent side of the
 				// (etaI, etaT) pair populated by BuildSeedChain.  The
 				// vertex's "outgoing-medium IOR" for entering, or
@@ -8690,6 +8708,7 @@ SMSChainCoverage ManifoldSolver::ClassifyEmitterHitCoverage(
 			mv.normal = rec.v[i].normal;
 			mv.geomNormal = rec.v[i].geomNormal;
 			mv.uv = rec.v[i].uv;
+			mv.objectPosition = rec.v[i].objectPosition;
 			mv.dpdu = Vector3Ops::Normalize( Vector3Ops::Perpendicular( mv.normal ) );
 			mv.dpdv = Vector3Ops::Normalize( Vector3Ops::Cross( mv.normal, mv.dpdu ) );
 			mv.dndu = Vector3( 0, 0, 0 );

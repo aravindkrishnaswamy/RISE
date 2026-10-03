@@ -168,7 +168,10 @@ fixture preserves the documented approximation rather than correcting it.
 - `SMS/`: specular manifold sampling comparisons and visibility checks,
   including smooth, bump-mapped, and displaced Veach-egg controls
 - `Shaders/`: shader-op and rasterizer behavior checks
-- `Spectral/`: spectral-lighting and dispersive regression scenes
+- `Spectral/`: spectral-lighting and dispersive regression scenes;
+  `spectral_dispersive_caustic_pt_sms_uniform.RISEscene` uses the modern
+  spectral PT rasterizer with uniform SMS, matching the SF11/geometry of
+  the legacy snell-mode `spectral_dispersive_caustic_pt_sms.RISEscene`
 - `Samplers/`: Sobol, ZSobol, and sampler comparison scenes
 - `SubsurfaceScattering/`: focused SSS and PT-vs-BDPT comparison scenes (includes `pathtracing_pel_rasterizer` variants)
 - `UnifiedLighting/`: direct-light sampling and many-light regression scenes

@@ -138,6 +138,7 @@ namespace RISE
 			Vector3				dpdv;			///< Position derivative w.r.t. second surface param (world space)
 			Vector3				dndu;			///< Normal derivative w.r.t. first surface param (world space)
 			Vector3				dndv;			///< Normal derivative w.r.t. second surface param (world space)
+			Point3				objectPosition;	///< Exact hit in the geometry/CSG child frame for Po painters
 			Point2				uv;				///< Surface parameters
 			Scalar				eta;			///< Surface MATERIAL'S IOR at this vertex (e.g. 1.5 for typical glass).  Kept for backward compatibility with callers that just want "the dielectric's nominal IOR".  For half-vector / Snell / Fresnel math, prefer (etaI, etaT) below — they encode the actual interface, including nested-dielectric cases where neither side is air.
 			Scalar				etaI;			///< IOR on the INCOMING (`wi`) side of the interface — Walter et al. 2007 notation η_i.  This is the medium the ray is travelling FROM as it hits this vertex.  Default 1.0 (air).
@@ -147,6 +148,10 @@ namespace RISE
 			///<
 			///< Populated by BuildSeedChain (RGB and NM variants) at the time of each hit, using the same `currentIOR` and IOR-stack the seed-trace already maintains.  Single-IOR scenes (the existing test corpus) get etaI=1.0 (entering) or etaT=1.0 (exiting), matching the old hardcoded defaults — so unchanged behaviour for those scenes.  ValidateChainPhysics may also fall back to `eta` when (etaI, etaT) are at default-1.0 for back-compat with hand-constructed chains.
 			RISEPel				attenuation;	///< Color attenuation at this vertex (e.g., colored glass refractance, mirror reflectance)
+			Scalar				attenuationNM;	///< Cached wavelength-resolved multiplier, filled by spectral seed/reconstruction queries.
+			bool				attenuationAppliesToReflection; ///< Native refractor tint is transmission-only.
+			bool				hasCustomSpecularFresnel; ///< Reuse the material SPF coating law at the solved angle.
+			bool				attenuationIsInteriorTransmittance;	///< Dielectric per-unit-distance tau; exiting transmission only.
 			bool				isReflection;	///< True if the chain ray bounces off (mirror, Fresnel reflection on glass, or TIR); false if it refracts through.
 			bool				canRefract;		///< True if the underlying material can refract (dielectric).  False for pure mirrors / conductors.  Selects the throughput law: dielectrics use Fresnel(cosI, η_i, η_t) (covers reflection, refraction, and TIR); mirrors take full reflectance from the painter without an angle-dependent Fresnel factor.  Default true so hand-constructed test chains and pre-existing back-compat callers behave as dielectrics — the prior implicit assumption.
 			bool				isExiting;		///< True if ray EXITS the object at this vertex (glass→air).  Set at seed-build time via IOR-stack object tracking.  Refraction-direction code uses this (NOT a local dot test) because a double-sided thin-sheet mesh can be crossed twice with the normal pointing in the same direction at both hits.
@@ -173,11 +178,16 @@ namespace RISE
 			geomNormal( Vector3(0,0,0) ),
 			dpdu( Vector3(0,0,0) ), dpdv( Vector3(0,0,0) ),
 			dndu( Vector3(0,0,0) ), dndv( Vector3(0,0,0) ),
+			objectPosition( Point3(0,0,0) ),
 			uv( Point2(0,0) ),
 			eta( 1.0 ),
 			etaI( 1.0 ),
 			etaT( 1.0 ),
 			attenuation( 1.0, 1.0, 1.0 ),
+			attenuationNM( 1.0 ),
+			attenuationAppliesToReflection( true ),
+			hasCustomSpecularFresnel( false ),
+			attenuationIsInteriorTransmittance( false ),
 			isReflection( false ),
 			canRefract( true ),
 			isExiting( false ),
@@ -375,6 +385,7 @@ namespace RISE
 				Point3			position;		///< PT's hit point at this delta vertex
 				Vector3			normal;			///< shading normal (post-modifier), as RayCaster published it
 				Vector3			geomNormal;		///< TRUE outward geometric normal (DL-70)
+				Point3			objectPosition;
 				Point2			uv;
 				const IObject*	pObject;
 				bool			isReflection;	///< the PT path stayed on the incident side here
@@ -414,6 +425,7 @@ namespace RISE
 					w.normal = rig.vNormal;
 					w.geomNormal = rig.UnflippedGeomNormal();
 					w.uv = rig.ptCoord;
+					w.objectPosition = rig.ptObjIntersec;
 					w.pObject = pObj;
 					const Vector3& n = rig.vGeomNormal;
 					w.isReflection = Vector3Ops::Dot( dIn, n ) * Vector3Ops::Dot( dOut, n ) < 0;
@@ -643,7 +655,9 @@ namespace RISE
 				) const;
 
 			/// Computes Fresnel-weighted transmittance/reflectance product
-			/// along a converged specular chain, including Beer's law attenuation.
+			/// along a chain. Boundary multipliers apply per event; dielectric
+			/// tau applies per world-unit distance on exiting transmission,
+			/// matching DielectricSPF. Participating-medium extinction is DL-419.
 			///
 			/// \return Per-channel attenuation factor for the chain
 			RISEPel EvaluateChainThroughput(
@@ -729,8 +743,9 @@ namespace RISE
 			///      lines 32-42).
 			///
 			/// Selected at runtime by `config.seedingMode == eSeedingUniform`.
-			/// Geometric Bernoulli `1/p` (Phase 5) and photon-aided trial
-			/// integration (Phase 7) layer on top of this scaffold.
+			/// Biased mode sums unique roots from multiTrials area seeds and
+			/// optional photon seeds. Unbiased mode (also selected for alpha
+			/// coverage) uses Bernoulli `1/p` with area seeds only.
 			SMSContribution EvaluateAtShadingPointUniform(
 				const Point3& pos,
 				const Vector3& geomNormal,
@@ -869,6 +884,8 @@ namespace RISE
 			///
 			/// Re-queries each vertex's material for `attenuation` /
 			/// `canRefract` (avoids relying on stale photon-deposit data).
+			/// Positive nm also re-queries spectral IOR; zero preserves RGB eta.
+			/// Restores exact UV and object-frame hit coordinates.
 			/// Sets `mv.valid = false` so `Solve` recomputes derivatives.
 			///
 			/// `mv.etaI` / `mv.etaT` stay at the default 1.0 — RISE's
@@ -883,7 +900,8 @@ namespace RISE
 			///         when the photon's chain length is invalid.
 			unsigned int ReversePhotonChainForSeed(
 				const SMSPhoton& photon,
-				std::vector<ManifoldVertex>& chain
+				std::vector<ManifoldVertex>& chain,
+				Scalar nm = 0
 				) const;
 
 			/// Computes a single converged trial's contribution at the
@@ -905,6 +923,9 @@ namespace RISE
 			/// mode), and by both their photon-aided extension paths.
 			/// The spectral counterpart `ComputeTrialContributionNM`
 			/// performs the same logic on `Scalar` per-wavelength.
+			/// outSmsGeometric reports the raw factor for the caller's sum clamp.
+			/// clampGeometric applies a positive maxGeometricTerm to this trial;
+			/// nonpositive limits disable clamping, as in the sum-clamp paths.
 			bool ComputeTrialContribution(
 				const Point3& pos,
 				const Vector3& geomNormal,
@@ -963,6 +984,9 @@ namespace RISE
 
 			/// Subtracts 2x2 blocks: C = A - B.
 			static void Sub2x2( const Scalar* A, const Scalar* B, Scalar* C );
+
+			static Scalar EvaluateVertexFresnel( const ManifoldVertex& v, Scalar cosI, Scalar etaI, Scalar etaT, Scalar nm );
+			static RISEPel EvaluateVertexFresnelRGB( const ManifoldVertex& v, Scalar cosI, Scalar etaI, Scalar etaT );
 
 			/// Exact dielectric Fresnel reflectance (unpolarized average).
 			/// \param cosI     Cosine of incidence angle (positive)

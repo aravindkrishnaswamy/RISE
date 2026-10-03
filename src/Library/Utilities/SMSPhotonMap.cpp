@@ -370,6 +370,8 @@ namespace
 			// Record vertex in photon-direction order.
 			SMSPhotonChainVertex& v = out.chain[specularHits];
 			v.position  = ri.geometric.ptIntersection;
+			v.objectPosition = ri.geometric.ptObjIntersec;
+			v.uv = ri.geometric.ptCoord;
 			v.normal    = ri.geometric.vNormal;
 			// Store geometric face normal alongside the shading normal so
 			// the receiver-side ManifoldSolver reconstruction can populate

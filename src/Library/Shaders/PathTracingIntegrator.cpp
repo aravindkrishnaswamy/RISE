@@ -2326,9 +2326,11 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					}
 					considerEmission = true;
 					smsGuardedEmission = false;
-					// DL-372: a medium vertex breaks the specular chain
-					// SMS models; no exact answer past it (DL-340 keeps
-					// today's rule there).
+					// DL-340: SMS is never evaluated at a medium vertex.
+					// Its phase-sampled emission must retain its MIS partner.
+					bPassedThroughSpecular = false;
+					bHadNonSpecularShading = false;
+					// DL-372: a medium vertex breaks the specular chain.
 					if( smsChain ) {
 						smsChain->broken = true;
 					}
@@ -5992,13 +5994,8 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					//   - the surface hand-off carries this loop's live
 					//     per-type bounce counters, `rayType` and
 					//     `glossyFilterWidth`, and passes
-					//     smsHadNonSpecularShading=true.  NOTE (DL-295 /
-					//     DL-340): that constant is WRONG -- the vertex
-					//     before this hand-off is a MEDIUM scatter, where
-					//     SMS is never evaluated, so it is not an SMS anchor
-					//     and a caster chain it starts has no SMS estimate.
-					//     The no-BSDF and SSS delegations below now forward
-					//     the chain's real state; this one is DL-340's.
+					//     smsHadNonSpecularShading=false (DL-340): the previous
+					//     vertex is a medium scatter, never an SMS anchor.
 					//   - the escape mirrors the enclosing loop's own `!bHit`
 					//     env branch, INCLUDING its `pRadianceMap` fallback:
 					//     an escaping continuation is precisely what that
@@ -6180,7 +6177,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 									walkPdf, 0, true, importance, rayType,
 									diffuseBounces, glossyBounces, transmissionBounces,
 									translucentBounces, walkVolumeBounces, glossyFilterWidth,
-									false, true,
+									false, false,
 									// HWSS geometry is hero-driven.  Let only the hero
 									// continuation populate the shared, wavelength-independent
 									// Accurate guide so companion paths cannot race to define it.

@@ -64,7 +64,12 @@
 //      Lambertian floor through a glass sphere (the seed walk), snell and
 //      uniform, RGB and spectral.  The enclosed/air image-mean ratio must
 //      be 1.  One NON-gated row prints the photon-seeded SMS residual.
-//    Usage: [--unit-only] [--trials K (default 4)] [--only <label substring>]
+//    Part C -- shipped SMS/VCM comparisons on fully covered slab pixels.
+//      Default SMS budgets 4096/16384 spp, full-film VCM 1024/512 spp; SMS
+//      uses the mask bounding rectangle without changing camera/film.
+//      Four controlled replay pairs pin fixture input reproducibility.
+//    Usage: [--unit-only] [--trials K (default/minimum 4; RGB uniform glass minimum 8)] [--only <label substring>]
+//      [--seed-offset N] [--shipped-sms-spp N] [--uniform-sms-spp N] [--replay-only]
 //
 //  Author: RISE debt-cleanup, slice `debt-dl290`
 //  Tabs: 4
@@ -73,6 +78,7 @@
 //
 //////////////////////////////////////////////////////////////////////
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -123,6 +129,11 @@ namespace
 {
 	int passCount = 0;
 	int failCount = 0;
+	unsigned int renderSeedOffset = 0;
+	unsigned int uniformSmsSppOverride = 0;
+	unsigned int shippedSmsSppOverride = 0;
+	bool replayOnly = false;
+	char workerOptionsPath[512] = {};
 
 	void Check( const bool condition, const std::string& label )
 	{
@@ -576,6 +587,48 @@ namespace
 			std::cout << "    NM  " << c.tag << ": receiver ambientIOR " << bsdf->lastAmbient << " (stateful calls " << bsdf->statefulCalls << ")" << std::endl;
 			Check( bsdf->lastAmbient == c.expected, std::string( "A6: ComputeTrialContributionNM receiver ambientIOR, " ) + c.tag );
 			Check( bsdf->statefulCalls == 1 && bsdf->lastStack == c.stack, std::string( "A6: ComputeTrialContributionNM hands the stack to the BSDF, " ) + c.tag );
+		}
+		// DL-434: unfold a planar mirror to a virtual light at (0.6,2,0).
+		// The point-light geometric factor is independently 1 / 4.36.
+		mv.isReflection = true;
+		mv.canRefract = false;
+		mv.valid = true;
+		mv.dpdu = Vector3( 1, 0, 0 );
+		mv.dpdv = Vector3( 0, 0, 1 );
+		mr.specularChain[0] = mv;
+		mr.contribution = RISEPel( 1, 1, 1 );
+		ls.position = Point3( 0.6, 0, 0 );
+		ls.pdfPosition = ls.pdfSelect = 1;
+		const Scalar expectedGeo = 1.0 / ( 0.6 * 0.6 + 2.0 * 2.0 );
+		for( const Scalar cap : { Scalar(-1), Scalar(0), Scalar(0.01), Scalar(1) } ) {
+			ManifoldSolverConfig cfg;
+			cfg.maxGeometricTerm = cap;
+			ManifoldSolver* cappedSolver = new ManifoldSolver( cfg );
+			Scalar rawGeo = -1, cappedGeo = -1;
+			Vector3 dir;
+			RISEPel raw, capped;
+			const bool rgbRaw = cappedSolver->ComputeTrialContribution( pos, Vector3(0,1,0), Vector3(0,1,0), onb, wo, bsdf, ls, mr, *caster,
+				dir, raw, false, &rawGeo );
+			const bool rgbCapped = cappedSolver->ComputeTrialContribution( pos, Vector3(0,1,0), Vector3(0,1,0), onb, wo, bsdf, ls, mr, *caster,
+				dir, capped, true, &cappedGeo );
+			const Scalar expectedRatio = cap > 0 ? std::min( cap, expectedGeo ) / expectedGeo : 1;
+			Check( rgbRaw && rgbCapped && std::isfinite(raw.r) && std::isfinite(capped.r) && raw.r > 0 && capped.r > 0, "A6 clamp: RGB mirror contributions finite and positive" );
+			Check( std::fabs(rawGeo-expectedGeo)<1e-10 && std::fabs(cappedGeo-expectedGeo)<1e-10,
+				"A6 clamp: RGB exports the unclamped virtual-light geometric factor" );
+			Check( raw.r > 0 && std::fabs(capped.r/raw.r-expectedRatio)<1e-10,
+				"A6 clamp: RGB honors positive caps and disables nonpositive caps" );
+			Scalar rawNM = 0, cappedNM = 0;
+			rawGeo = cappedGeo = -1;
+			const bool nmRaw = cappedSolver->ComputeTrialContributionNM( pos, Vector3(0,1,0), Vector3(0,1,0), onb, wo, bsdf, ls, mr, *caster,
+				550, dir, rawNM, false, &rawGeo );
+			const bool nmCapped = cappedSolver->ComputeTrialContributionNM( pos, Vector3(0,1,0), Vector3(0,1,0), onb, wo, bsdf, ls, mr, *caster,
+				550, dir, cappedNM, true, &cappedGeo );
+			Check( nmRaw && nmCapped && std::isfinite(rawNM) && std::isfinite(cappedNM) && rawNM > 0 && cappedNM > 0, "A6 clamp: NM mirror contributions finite and positive" );
+			Check( std::fabs(rawGeo-expectedGeo)<1e-10 && std::fabs(cappedGeo-expectedGeo)<1e-10,
+				"A6 clamp: NM exports the unclamped virtual-light geometric factor" );
+			Check( rawNM > 0 && std::fabs(cappedNM/rawNM-expectedRatio)<1e-10,
+				"A6 clamp: NM honors positive caps and disables nonpositive caps" );
+			safe_release( cappedSolver );
 		}
 		safe_release( bsdf );
 		safe_release( solver );
@@ -1096,8 +1149,16 @@ namespace
 	//! randomized-QMC replicates; see SobolSamplerTestHooks).
 	double RenderMean( const std::string& path, unsigned int seed, Scalar expectedExterior, bool checkSeed,
 		const Point3& camera, const std::string& label, const std::vector<char>* mask = nullptr,
-		std::vector<double>* pixelsOut = nullptr, uint32_t salt = 0 )
+		std::vector<double>* pixelsOut = nullptr, uint32_t salt = 0, bool maskRegion = false )
 	{
+		// Scoped fixture input: scene construction and rasterization both may
+		// draw legacy random values. Restore the caller's cached RNG afterward.
+		struct RngScope {
+			RandomNumberGenerator saved = GlobalRNG();
+			~RngScope() { GlobalRNG() = saved; }
+		} rngScope;
+		std::srand( seed );
+		GlobalRNG() = RandomNumberGenerator( seed );
 		IJobPriv* job = nullptr;
 		if( !RISE_CreateJobPriv( &job ) || !job ) return -1;
 		if( !job->LoadAsciiSceneViaCst( path.c_str() ) ) { safe_release( job ); return -1; }
@@ -1111,8 +1172,22 @@ namespace
 		GlobalLog()->PrintNew( cap, __FILE__, __LINE__, "dl290 capture" );
 		job->GetRasterizer()->AddRasterizerOutput( cap );
 		std::srand( seed );
-		SobolSamplerTestHooks::ValueSalt().store( salt );
-		const bool rendered = job->Rasterize();
+		GlobalRNG() = RandomNumberGenerator( seed );
+		SobolSamplerTestHooks::ValueSalt().store( salt ? salt : SobolSequence::HashCombine( seed, 399u ) );
+		bool rendered;
+		if( maskRegion && mask ) {
+			const unsigned int width = job->GetScene()->GetFilm()->GetWidth();
+			const unsigned int height = job->GetScene()->GetFilm()->GetHeight();
+			unsigned int left=width, top=height, right=0, bottom=0;
+			for( std::size_t i=0; i<mask->size(); ++i ) if( (*mask)[i] ) {
+				const unsigned int x=static_cast<unsigned int>(i%width), y=static_cast<unsigned int>(i/width);
+				left=std::min(left,x); right=std::max(right,x);
+				top=std::min(top,y); bottom=std::max(bottom,y);
+			}
+			// Keep the full film/camera mapping; restrict eye work to the
+			// rectangle containing every measured pixel. VCM remains full-film.
+			rendered = job->RasterizeRegion(left,top,right,bottom);
+		} else rendered = job->Rasterize();
 		SobolSamplerTestHooks::ValueSalt().store( 0u );
 		double mean = -1;
 		if( rendered && !cap->pixels.empty() ) {
@@ -1146,9 +1221,35 @@ namespace
 		return Stats{ m, v.size() > 1 ? std::sqrt( ss / double( v.size() - 1 ) ) : 0.0 };
 	}
 
+
+	// Delta-method SD of a ratio of paired means. Residuals retain
+	// covariance even when the two renderers use different Sobol salts.
+	double PairedRatioMeanSD( const std::vector<double>& denominator,
+		const std::vector<double>& numerator, double ratio, double denominatorMean )
+	{
+		double residualSquares = 0;
+		for( std::size_t i = 0; i < denominator.size(); ++i ) {
+			const double residual = numerator[i] - ratio * denominator[i];
+			residualSquares += residual * residual;
+		}
+		const double n = double(denominator.size());
+		return std::sqrt( residualSquares / ( n * (n-1) ) ) / denominatorMean;
+	}
+
+	void TestPairedRatioUncertainty()
+	{
+		const std::vector<double> a{1,2,3,4}, twice{2,4,6,8}, opposite{4,3,2,1};
+		Check( PairedRatioMeanSD(a,twice,2,2.5) == 0,
+			"DL-399: proportional paired samples have zero ratio uncertainty" );
+		// Var(a)=Var(b)=5/3, Cov(a,b)=-5/3; means=2.5 and n=4.
+		// The ratio variance is (Var(a)+Var(b)-2Cov)/(n*mean^2)=4/15.
+		Check( std::fabs(PairedRatioMeanSD(a,opposite,1,2.5)-std::sqrt(4.0/15.0)) < 1e-12,
+			"DL-399: negative covariance contributes to ratio uncertainty" );
+	}
+
 	void TestRenderedInvariance( const unsigned int trials, const std::string& only )
 	{
-		std::cout << "B: rendered scale invariance, air (1, n) vs enclosed (1.5, 1.5 n), n=" << trials << " per side" << std::endl;
+		std::cout << "B: rendered scale invariance, air (1, n) vs enclosed (1.5, 1.5 n), n=" << trials << " per side (RGB uniform glass minimum 8)" << std::endl;
 		struct Row { Model model; Integrator integrator; unsigned int samples; double band; const char* sms; bool gated = true; unsigned int bounces = 1; };
 		// Bands: several times the measured sd of the ratio (common random
 		// numbers per pair) and far below the pre-fix deviations of the
@@ -1174,7 +1275,7 @@ namespace
 			// k = 1: the sphere's Fresnel REFLECTION chain; k = 2: the
 			// refraction chain through it.
 			{ Model::SMSGlass,     Integrator::PT,         16,  0.01, "snell" },
-			{ Model::SMSGlass,     Integrator::PT,         16,  0.01, "uniform" },
+			{ Model::SMSGlass,     Integrator::PT,         uniformSmsSppOverride ? uniformSmsSppOverride : 16, 0.02, "uniform" },
 			{ Model::SMSGlass,     Integrator::PTSpectral, 64,  0.03, "snell" },
 			{ Model::SMSGlass,     Integrator::PTSpectral, 64,  0.03, "uniform" },
 			{ Model::SMSGlass,     Integrator::PT,         64,  0.02, "uniform", true, 2 },
@@ -1182,8 +1283,16 @@ namespace
 			{ Model::SMSOpenSheet, Integrator::PT,         16,  0.01, "snell" },
 			{ Model::SMSOpenSheet, Integrator::PTSpectral, 64,  0.03, "snell" },
 		};
-		unsigned int seed = 290000;
+		// DL-418/434: RGB uniform glass needs at least eight independently
+		// salted pairs. Reserve the same seed span for every row so filtering
+		// preserves seeds and longer rows never overlap a sibling's range.
+		const unsigned int seedSpan = std::max( trials, 8u );
+		unsigned int rowIndex = 0;
 		for( const Row& row : rows ) {
+			const bool uniformGlass = row.model == Model::SMSGlass && row.integrator == Integrator::PT &&
+				row.sms && std::string(row.sms) == "uniform";
+			const unsigned int rowTrials = uniformGlass ? seedSpan : trials;
+			unsigned int seed = 290000 + renderSeedOffset + rowIndex++ * seedSpan;
 			const std::string label = std::string( "B: " ) + ModelName( row.model ) + "/" + IntegratorName( row.integrator ) +
 				( row.sms ? std::string( "/sms-" ) + row.sms + "/k" + std::to_string( row.bounces ) : std::string() );
 			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
@@ -1194,7 +1303,7 @@ namespace
 			Check( !airPath.empty() && !scaledPath.empty(), label + ": scene files written" );
 			std::vector<double> air, scaled;
 			bool allValid = true;
-			for( unsigned int t = 0; t < trials; ++t ) {
+			for( unsigned int t = 0; t < rowTrials; ++t ) {
 				const unsigned int pairSeed = seed++;
 				const double a = RenderMean( airPath, pairSeed, 1.0, t == 0, camera, label + " air" );
 				const double sc = RenderMean( scaledPath, pairSeed, kScale, t == 0, camera, label + " enclosed" );
@@ -1208,14 +1317,14 @@ namespace
 			if( !allValid ) continue;
 			const Stats sa = Summarize( air ), ss = Summarize( scaled );
 			const double ratio = ss.mean / sa.mean;
-			const double ratioSd = ratio * std::sqrt( ( sa.sd / sa.mean ) * ( sa.sd / sa.mean ) / trials +
-				( ss.sd / ss.mean ) * ( ss.sd / ss.mean ) / trials );
+			const double ratioSd = PairedRatioMeanSD(air,scaled,ratio,sa.mean);
 			std::cout << std::setprecision( 6 ) << "    " << label.substr( 3 )
-				<< " spp=" << row.samples << ": air " << sa.mean << " +/- " << sa.sd
+				<< " spp=" << row.samples << " n=" << rowTrials << ": air " << sa.mean << " +/- " << sa.sd
 				<< "  enclosed " << ss.mean << " +/- " << ss.sd
 				<< "  ratio " << ratio << " +/- " << ratioSd << " (band " << row.band << ")" << std::endl;
 			if( row.gated ) {
 				Check( std::fabs( ratio - 1.0 ) < row.band, label + ": enclosed/air image mean ratio within band of 1" );
+				Check( 3 * ratioSd < row.band, label + ": paired mean precision fits calibrated band" );
 			} else {
 				std::cout << "      (NOT GATED: recorded DL-290 residual -- photon-seeded SMS chains price the caster against air)" << std::endl;
 			}
@@ -1246,9 +1355,7 @@ namespace
 	// themselves (DL-345, filed at merge); on S the references agree to
 	// 1-2 %.  Renders are salted (independent randomized-QMC replicates).
 	//
-	// (HISTORY -- the settings and bands below are SUPERSEDED by DL-345,
-	// 2026-10-02: see the comment on kSmsSpp in TestShippedMatchedIndexScenes.)
-	// Bands, re-derived in review round 3 on the coverage > 0.99 mask from
+	// Historical DL-290 bands, superseded after DL-345 corrected open-sheet crossings:
 	// two salted n = 6 runs: flatslab 0.9998 / 0.9994 (SE 0.0014 / 0.0021),
 	// glassblock 0.8810 / 0.8828 (SE 0.0020 / 0.0026).  With the larger
 	// per-replicate sd (0.0052 / 0.0065) the SE of the gate's own n = 4 mean
@@ -1257,9 +1364,14 @@ namespace
 	// [0.964, 1.036], glassblock [0.842, 1.040].  The 0.02 is the two
 	// references' own agreement on S (VCM vs PT without SMS, 1-2 %); the
 	// upper bound sits above 1 so a genuine SMS improvement cannot fail.
-	// glassblock's centre is 12 % LOW: SMS's own deficit on a DISPLACED slab,
+	// The historical glassblock centre was 12 % LOW on a DISPLACED slab,
 	// present with or without a matched vertex -- DL-352, filed at merge --
-	// not an index effect.  Pre-review readings on S: 0.12 / 0.11.
+	// not an index effect. Historical pre-review readings on S: 0.12 / 0.11.
+	// After master DL-345 corrected open-sheet crossings, the current bands
+	// are [0.885, 1.130] / [0.840, 1.180], with at least eight replicates.
+	// DL-399 retains those updated bands, measures controlled salted mean
+	// uncertainty directly, and raises sampling to fit them. The old
+	// glassblock centre is not claimed as current behavior.
 	std::string ReadFileText( const std::string& path )
 	{
 		std::ifstream ifs( path );
@@ -1313,39 +1425,42 @@ namespace
 	void TestShippedMatchedIndexScenes( const unsigned int trials, const std::string& only )
 	{
 		std::cout << "C: shipped two-sheet SMS scenes vs their VCM _ref twin on the slab pixels S, n=" << ( trials > 8 ? trials : 8 ) << " per side, salted" << std::endl;
-		struct SceneRow { const char* name; double lo, hi; };
+		struct SceneRow { const char* name; double lo, hi; unsigned int smsSpp, vcmSpp; };
 		const SceneRow rows[] = {
-			{ "sms_k2_flatslab",   0.885, 1.130 },
-			{ "sms_k2_glassblock", 0.840, 1.180 },
+			{ "sms_k2_flatslab",   0.885, 1.130, 4096, 1024 },
+			{ "sms_k2_glassblock", 0.840, 1.180, 16384, 512 },
 		};
-		// DL-345 (2026-10-02): the SMS side renders at 2048 spp over >= 8
-		// replicates.  Once the open sheets are crossed by their face the
-		// slab has REAL internal Fresnel reflections (the bottom sheet is no
-		// longer an index-matched entry), and those k >= 4 chains are not
-		// SMS's root, so DL-372's split leaves them to PT, which reaches the
-		// small luminaire through them only rarely: at 256 spp the SMS-on S
-		// mean had an 8-13 % per-replicate sd (n = 8: 0.9587 +/- 0.029, the
-		// old band failing on noise).  Bands re-derived from one salted
-		// n = 16 run at these settings by the rule below: flatslab ratio
-		// 1.0067, per-replicate sd 4.8 % (SMS) / 0.7 % (VCM) -> n = 8 SE
-		// 0.017 -> [0.885, 1.130]; glassblock 1.0120 (DL-352's -12 % is now
-		// carried by PT's kept paths), sd 4.4 % / 5.3 % -> SE 0.025 ->
-		// [0.840, 1.180].  Both still fail the DL-290 Newton cliff
-		// (0.26 / 0.23) and the pre-review 0.11 / 0.12 by a wide margin.
-		const unsigned int kW = 100, kH = 75, kSmsSpp = 2048, kVcmSpp = 512, kMaskSpp = 256;
+		const unsigned int kW = 100, kH = 75, kMaskSpp = 256;
+		// Keep DL-345 physics bands and minimum eight replicates; retain
+		// DL-399 controlled inputs, larger budgets and paired precision checks.
 		const unsigned int partCTrials = trials > 8 ? trials : 8;
 		const uint32_t kMaskSalt = 0x5ca1ab1eu;
 		const char* media = std::getenv( "RISE_MEDIA_PATH" );
 		const std::string root = media ? std::string( media ) : std::string();
-		unsigned int seed = 291000;
+		unsigned int rowIndex = 0;
 		for( const SceneRow& row : rows ) {
+			const unsigned int rowSeed = 291000 + renderSeedOffset + rowIndex++ * partCTrials;
+			unsigned int seed = rowSeed;
 			const std::string label = std::string( "C: " ) + row.name;
 			if( !only.empty() && label.find( only ) == std::string::npos ) continue;
 			const std::string shipped = ReadFileText( root + "scenes/Tests/SMS/" + row.name + ".RISEscene" );
-			const std::string smsText = PatchShippedScene( shipped, kSmsSpp, kW, kH, false );
+			const unsigned int smsSpp = shippedSmsSppOverride ? shippedSmsSppOverride : row.smsSpp;
+			const std::string replayPath = WriteScene(PatchShippedScene(shipped,8,kW,kH,false),"shipped_replay");
+			for(unsigned int t=0;t<4;++t) {
+				std::vector<double> first, second;
+				const unsigned int replaySeed=rowSeed+100+t;
+				const uint32_t replaySalt=SobolSequence::HashCombine(replaySeed,399u);
+				const double a=RenderMean(replayPath,replaySeed,1,false,Point3(0,0,0),label,nullptr,&first,replaySalt);
+				const double b=RenderMean(replayPath,replaySeed,1,false,Point3(0,0,0),label,nullptr,&second,replaySalt);
+				Check(a>0 && b>0 && !first.empty() && !second.empty(),label+": replay finite and lit");
+				Check(first==second,label+": controlled worker/libc/global/Sobol inputs replay exactly");
+			}
+			std::remove(replayPath.c_str());
+			if(replayOnly) continue;
+			const std::string smsText = PatchShippedScene( shipped, smsSpp, kW, kH, false );
 			const std::string maskText = PatchShippedScene( shipped, kMaskSpp, kW, kH, true );
 			const std::string refText = PatchShippedScene(
-				ReadFileText( root + "scenes/Tests/SMS/" + row.name + "_ref.RISEscene" ), kVcmSpp, kW, kH, false );
+				ReadFileText( root + "scenes/Tests/SMS/" + row.name + "_ref.RISEscene" ), row.vcmSpp, kW, kH, false );
 			Check( !smsText.empty() && !refText.empty() && !maskText.empty(), label + ": shipped scene, mask variant and _ref twin read and patched" );
 			if( smsText.empty() || refText.empty() || maskText.empty() ) continue;
 
@@ -1382,7 +1497,7 @@ namespace
 			for( unsigned int t = 0; t < partCTrials; ++t ) {
 				const unsigned int sd = seed++;
 				const uint32_t salt = 0x9E3779B9u * sd;
-				const double a = RenderMean( smsPath, sd, 1.0, false, Point3( 0, 0, 0 ), label + " sms", &S, nullptr, salt );
+				const double a = RenderMean( smsPath, sd, 1.0, false, Point3( 0, 0, 0 ), label + " sms", &S, nullptr, salt, true );
 				const double b = RenderMean( refPath, sd, 1.0, false, Point3( 0, 0, 0 ), label + " ref", &S, nullptr, salt ^ 0x5bd1e995u );
 				if( !( a > 0 ) || !( b > 0 ) ) allValid = false;
 				sms.push_back( a );
@@ -1394,18 +1509,31 @@ namespace
 			if( !allValid ) continue;
 			const Stats sa = Summarize( sms ), sb = Summarize( ref );
 			const double ratio = sa.mean / sb.mean;
-			const double ratioSd = ratio * std::sqrt( ( sa.sd / sa.mean ) * ( sa.sd / sa.mean ) / partCTrials +
-				( sb.sd / sb.mean ) * ( sb.sd / sb.mean ) / partCTrials );
-			std::cout << std::setprecision( 6 ) << "    " << row.name << " on S: SMS(" << kSmsSpp << "spp) " << sa.mean << " +/- " << sa.sd
-				<< "  VCM(" << kVcmSpp << "spp) " << sb.mean << " +/- " << sb.sd
+			const double ratioSd = PairedRatioMeanSD(ref,sms,ratio,sb.mean);
+			std::cout << std::setprecision( 6 ) << "    " << row.name << " on S: SMS(" << smsSpp << "spp) " << sa.mean << " +/- " << sa.sd
+				<< "  VCM(" << row.vcmSpp << "spp) " << sb.mean << " +/- " << sb.sd
 				<< "  ratio " << ratio << " +/- " << ratioSd << " (band " << row.lo << ".." << row.hi << ")" << std::endl;
 			Check( ratio > row.lo && ratio < row.hi, label + ": SMS/VCM ratio on the slab pixels within band" );
+			// Preserve the references' documented 2% disagreement allowance;
+			// the remaining upper margin must cover three measured mean SDs.
+			Check(3*ratioSd+0.02 < row.hi-1.0,label+": measured precision fits unchanged physics band");
 		}
 	}
 }
 
 int main( int argc, char** argv )
 {
+	// Must precede scene loading / the first cached GlobalOptions read.
+	if(!std::getenv("RISE_OPTIONS_FILE")) {
+		std::snprintf(workerOptionsPath,sizeof(workerOptionsPath),"/tmp/exterior_options_%d.txt",int(::getpid()));
+		std::ofstream options(workerOptionsPath); options << "force_number_of_threads 1\n"; options.close();
+		std::atexit([](){std::remove(workerOptionsPath);});
+#ifdef _WIN32
+		_putenv_s("RISE_OPTIONS_FILE",workerOptionsPath);
+#else
+		setenv("RISE_OPTIONS_FILE",workerOptionsPath,1);
+#endif
+	}
 	unsigned int trials = 4;
 	bool unitOnly = false;
 	std::string only;
@@ -1413,9 +1541,13 @@ int main( int argc, char** argv )
 		const std::string a( argv[i] );
 		if( a == "--unit-only" ) unitOnly = true;
 		else if( a == "--only" && i + 1 < argc ) only = argv[++i];
+		else if(a=="--seed-offset" && i+1<argc) renderSeedOffset=std::strtoul(argv[++i],nullptr,10);
+		else if(a=="--uniform-sms-spp" && i+1<argc) uniformSmsSppOverride=std::strtoul(argv[++i],nullptr,10);
+		else if(a=="--shipped-sms-spp" && i+1<argc) shippedSmsSppOverride=std::strtoul(argv[++i],nullptr,10);
+		else if(a=="--replay-only") replayOnly=true;
 		else if( a == "--trials" && i + 1 < argc ) trials = static_cast<unsigned int>( std::atoi( argv[++i] ) );
 	}
-	if( trials < 2 ) trials = 2;
+	if( trials < 4 ) trials = 4;
 
 	std::cout << "=== DL-290 exterior-index invariance (non-SSS boundary models) ===" << std::endl;
 	{
@@ -1444,8 +1576,9 @@ int main( int argc, char** argv )
 	TestSeedWalkOpenSheets();
 	TestSeedWalkKnownFailures();
 	TestNewtonIndexContinuity();
+	TestPairedRatioUncertainty();
 	if( !unitOnly ) {
-		TestRenderedInvariance( trials, only );
+		if(!replayOnly) TestRenderedInvariance( trials, only );
 		TestShippedMatchedIndexScenes( trials, only );
 	}
 	std::cout << "=== " << passCount << " passed, " << failCount << " failed ===" << std::endl;
