@@ -268,14 +268,14 @@ namespace
 		return static_cast<int>( oidn::Quality::High );
 	}
 
-	// OIDN error callback.  Routes OIDN's diagnostics through RISE's
-	// log system instead of stderr.  Registered immediately after the
-	// device is created and before its first commit, so any errors
-	// during commit / setImage / set / execute funnel through here
-	// instead of being silently dropped if the caller forgets to poll
-	// `device.getError()`.  The synchronous `getError()` polls in
-	// Denoise() are kept too — together they catch warnings (callback)
-	// and confirm clean state per call (poll).
+	// OIDN error callback routes subsequent device errors to RISE's log.
+	// Registered AFTER ResolveOidnDevice returns a committed device.
+	// TryCreateOidnDevice polls initial commit errors during resolution;
+	// failed first attempts are consumed so fallback does not spam logs.
+	// Later filter commit / setImage / set / execute errors reach this
+	// callback. Denoise also polls after filter setup and execution.
+	// Callback codes map to errors (Cancelled maps to a warning), not a
+	// promise to capture every verbose diagnostic from the OIDN library.
 	//
 	// Cancellation is intentionally NOT propagated to OIDN — see
 	// docs/OIDN.md (OIDN-P1-3) for the project invariant.  Even if a

@@ -411,18 +411,18 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
 - **Status:** Code complete — pending commit/PR (2026-04-29)
 - **Owner:** Aravind
 - **PR:** —
-- **Why:** Today RISE polls `device.getError()` exactly once after
-  `filter.execute()`. OIDN can emit warnings (deprecated parameter usage,
-  fallback paths, missing prefilter) that we silently lose. With multiple
-  filters (`OIDN-P1-1` below) some of these warnings happen at commit time,
-  before the polled `getError`.
+- **Why (historical motivation):** the original path polled after
+  `filter.execute()`. The callback routes subsequent OIDN error codes
+  through the RISE log; polling also occurs after filter setup. This is
+  not a promise to capture every verbose library diagnostic.
 - **What:**
   - Register `device.setErrorFunction(OidnErrorCallback, nullptr)`
-    immediately after `oidn::newDevice(...)` and before the device's
-    first `commit()` so commit-time failures route through our log
-    system instead of being silently dropped.  Existing
-    `device.getError(...)` polls in `Denoise()` are kept as a per-call
-    "no error since last poll" confirmation.
+    AFTER `ResolveOidnDevice` returns a successfully committed device.
+    `TryCreateOidnDevice` polls initial commit errors during resolution;
+    failed first attempts are consumed deliberately to avoid logging
+    normal fallback as an error. The callback covers subsequent filter
+    setup/execution errors; `Denoise()` also polls after filter setup and
+    execution. Initial device-commit failures do not reach this callback.
   - Severity mapping: `OIDN_ERROR_CANCELLED` → `eLog_Warning` (we
     don't propagate cancel to OIDN per `OIDN-P1-3` invariant, but if
     OIDN signals it for any reason it's not a fatal condition).  All
@@ -1408,10 +1408,12 @@ from a reviewer, or has its priority moved. Most recent first.
   workaround.
 
 ### 2026-04-29 — OIDN-P0-4 code complete; cancel-doesn't-propagate invariant recorded
-- `OidnErrorCallback` (file-static, C-style function pointer) is
-  registered on the OIDN device immediately after `oidn::newDevice`
-  and before its first `commit()`.  Maps OIDN's error codes to a
-  short name + severity and routes through `GlobalLog()->PrintEx(...)`.
+- **Registration correction:** the original before-first-commit wording
+  in this entry was superseded by P0-3 device resolution. The callback
+  is registered only after a working committed device is returned.
+  Initial commit errors are polled/consumed during fallback; subsequent
+  filter setup/execution errors map to a short name + severity through
+  `GlobalLog()->PrintEx(...)`. Verbose diagnostics are a separate surface.
 - Verbose: deferred to OIDN's own `OIDN_VERBOSE` env var.  We do not
   override it via `device.set("verbose", ...)` — keeping it as an
   env-var knob is consistent with OIDN's documented control surface
