@@ -49,7 +49,7 @@ Domain checkpoint at `1c19bbf42`: **3253/0**, including the 328 positive polishe
 
 On arm64, the diagnostic reports bytes: `SpecularInfo` 56, `ManifoldVertex` 336, `SMSChainRecord` 2176, internal `ManifoldSolverConfig` 96, `SMSDomainVertex` 1584, `SMSMediumCapture` 1264, `SMSStartingMedia` 40, and `SMSDomainCounters` 32. Standalone arm64 header probes against committed master `ffc70c1c2` and candidate `f94e5dca3` confirm `SpecularInfo` 56, `ManifoldVertex` 336, `SMSChainRecord` 2176 and `IORStack` 40 in both. Internal `ManifoldSolverConfig` grows 80→96 bytes and `ManifoldSolver` 160→184 bytes. Evidence: `record-size-driver.log`, with zero-warning builds of copied committed headers whose relative includes resolve to the worktree. The config adds internal opt-in/diagnostic fields; the solver adds its warning latch. Capture scratch holds one identity/context per enclosing object, plus temporary scene-object enumeration. This is not the later proposal scratch-budget measurement.
 
-Clean make: **376 compilation actions, exit 0, zero warnings/errors** (`final-clean-library-build.log`). Clean Xcode RISE-GUI Deployment and RISE-GUI-Opto builds: **393 CompileC actions each, exit 0, zero compiler warnings/errors**. Each emits exactly the two documented checkout/tool notices: missing `extlib/oidn/install/lib` linker search path and skipped AppIntents extraction. These are excluded under AGENTS.md's explicit instructions; no compiler warning was suppressed. The initial Xcode source checkpoint matched the helper after removing the redundant polished flag change. Following the participating-medium refusal fix, clean make and clean Xcode Deployment have passed again (376 and 393 actions respectively); the final Opto rebuild has also passed (393 CompileC actions).
+Clean make: **376 compilation actions, exit 0, zero warnings/errors** (`medium-final-library-build.log`). Clean Xcode RISE-GUI Deployment and RISE-GUI-Opto builds: **393 CompileC actions each, exit 0, zero compiler warnings/errors**. Each emits exactly the two documented checkout/tool notices: missing `extlib/oidn/install/lib` linker search path and skipped AppIntents extraction. AGENTS.md explicitly discounts the missing OIDN search path; skipped AppIntents extraction is a tool notice rather than a compiler diagnostic. No compiler warning was suppressed. The initial Xcode source checkpoint matched the helper after removing the redundant polished flag change. Following the participating-medium refusal fix, clean make and clean Xcode Deployment have passed again (376 and 393 actions respectively); the final Opto rebuild has also passed (393 CompileC actions).
 
 ## Acceptance gate
 
@@ -83,3 +83,37 @@ Final off-mode output was compared against all 16 salted committed-master A chec
 The first hygiene run reported 168/1 because generated GUI resource copies lived in `DerivedData-Deployment` and `DerivedData-Opto`, names outside the scanner's existing `DerivedData` exclusion. Products were relocated under `.claude/logs/sms-phase1/DerivedData/{Deployment,Opto}` without changing maintained sources or the test. The preserved failed scan is `SourceHygieneTest-artifact-failure-run.log`; the rebuilt/rerun test passes 169/0. Build stdout remains at its original log path, and `xcode-products-relocation.json` records the artifact relocation.
 
 Fresh estimator/partition, material/medium/API and cost/test/doc reviews remain pending. No phase merge or debt closure is claimed. Review must distinguish this primitive/rejection increment from the later proposal, full ordered scene visibility/acceptance, reference estimator and canonical ownership gates. In particular, final-root refresh currently re-intersects the recorded objects; the later production proposal/validation must establish full scene order and supported intervening hits before pricing a physical estimator contribution.
+
+## Independent review round 1 — not converged
+
+Three fresh, read-only reviewers inspected `77714bd89` after the serial gate.
+The estimator/partition lens found one P1: HWSS legacy-mode provenance is
+call-local. `RayCaster::CastRayHWSS` can fall back to `CastRayNM` for a
+participating medium before either guarded HWSS integrator entry. Shader
+dispatch then invokes `IntegrateFromHitNM` with its default false bypass.
+The same bypass can be lost when a delegated NM path recasts through the
+diffusion-profile or random-walk SSS continuation. These routes need a
+persistent, scoped provenance signal and shader-dispatch regressions; the
+existing direct-integrator composite parity tests do not prove them.
+
+The material/medium lens found one P1: a finite composite sheet and an
+anchor behind it, outside its bounds, with an empty live IOR stack can
+produce `Capture::reconstructible=true`. Bounds cannot certify absence of
+DL-407 open-sheet membership. The capture API has no trustworthy history
+provenance. The user's STOP rule requires a ruling before adopting either
+scene-wide conservative exclusion or a new provenance mechanism. The
+adopted composite rejection contract itself remains unchanged.
+
+The cost/tests/docs lens found zero P1s and two P2s, corrected in this
+review record: cite the final 376-action make log rather than the earlier
+375-action log, and distinguish the AppIntents tool notice from AGENTS'
+explicit OIDN exclusion. It independently recomputed the A/B statistics,
+verified all 16 baseline/candidate and baseline/final hashes and means,
+and checked the numerical red proofs, latest 20 passing gate entries,
+3789/0 domain result, and final Xcode builds.
+
+Both P1s are source-traced findings, not new numerical red proofs. No
+source correction, fresh green gate or clean review round is claimed for
+them yet. Earlier build/test numbers remain checkpoint evidence; they
+do not establish completion of Phase 1. No phase merge, ledger closure
+or new ledger row occurred.
