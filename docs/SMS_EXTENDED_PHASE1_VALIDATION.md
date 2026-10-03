@@ -167,9 +167,9 @@ point-light SMS caustic. A preliminary assertion incorrectly required the
 rejected result to remain lit (three failures); it was corrected without
 changing transport or adding a source. The failure log is retained as
 `round2-scene-policy-dark-control-failure.log`. Composite parity controls
-still require a lit baseline and exact matched RGB/NM outputs. All current
-library source files match the cost checkpoint `6988bd1c9`; later changes
-are test-only. Current domain counters remain **120 attempts / 184 Newton
+still require a lit baseline and exact matched RGB/NM outputs. Library sources at that checkpoint matched cost source `6988bd1c9`.
+The later empty-name correction below changes preparation and opt-in policy
+reads only; it adds no default per-sample work. Current domain counters remain **120 attempts / 184 Newton
 iterations / 118 accepted / 2 rejected**, with no proposal retries, tails
 or owned roots claimed.
 
@@ -200,3 +200,30 @@ nonzero on the preliminary dark-control assertion after finishing cost
 measurement; sources were restored, the test assertion corrected, and
 the rebuilt targeted/full tests passed as reported above. The numerical
 cost data and source restoration are independently retained.
+
+
+### Empty object names — preparation presence is separate from name
+
+The actual object-manager API accepts an empty name. A self-audit found
+that `ExtendedSMSAllowed` inferred absence from an empty first-composite
+name, so an empty-name alias could re-enable mode and skip the warning.
+Committed regression state `10a2c2cdc` built successfully and failed
+**8 passed / 16 failed** over real double-sided open/closed indexed meshes,
+both windings: four cases each of missing warning, missing first-name
+representation, incorrectly active mode, and incorrectly accepted capture.
+`ad02ff7d2` caches an explicit presence bit separately from the display name;
+its rebuilt query-only probe passes **24/0**. An empty first name is logged
+as `composite object ''`. Complete domain now passes **8200/0**; domain
+attempt/Newton/accepted/rejected counters remain **120/184/118/2**.
+
+Evidence: `empty-name-red-build.log`, `empty-name-red.log`,
+`empty-name-green-build.log`, `empty-name-green.log`, and
+`round2-final-domain-green.log`. The cost checkpoint predates this cold
+preparation correction; default per-sample control flow still returns from
+`ExtendedModeActive` on the false opt-in flag before reading scene policy.
+No timing claim covers a composite-enabled scene or the new empty-name
+fixture. The first round-2 full gate was stopped at a completed test
+boundary after this source correction: clean make and both Xcode builds,
+ManifoldSolverTest and SMSUniformDispersionTest (300/0) had passed. Their
+logs remain under `round2-gate`. A full clean gate on the corrected tree
+will be recorded separately under `round2-final-gate` before fresh review.
