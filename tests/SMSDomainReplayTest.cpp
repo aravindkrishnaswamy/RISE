@@ -473,8 +473,13 @@ static void CompositePTCases()
         Check(d.mean==0 || std::fabs(d.mean)<=3*d.sd/2,"composite mode parity within three measured mean SDs");
     }
 }
-int main()
+int main(int argc,char** argv)
 {
+    if(argc>1 && std::string(argv[1])=="--finite-only") {
+        FiniteDielectricCases();
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";
+        return failCount?1:0;
+    }
     ComponentAndCrossingCases();
     NestedAndCompositeCases();
     SolvedRootCases();
