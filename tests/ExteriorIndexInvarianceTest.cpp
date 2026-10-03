@@ -1318,9 +1318,11 @@ namespace
 	// The historical glassblock centre was 12 % LOW on a DISPLACED slab,
 	// present with or without a matched vertex -- DL-352, filed at merge --
 	// not an index effect. Historical pre-review readings on S: 0.12 / 0.11.
-	// DL-399 retains these physics bands but measures today's controlled,
-	// salted mean uncertainty directly and raises sampling to fit them.
-	// The old glassblock centre is not claimed as current behavior.
+	// After master DL-345 corrected open-sheet crossings, the current bands
+	// are [0.885, 1.130] / [0.840, 1.180], with at least eight replicates.
+	// DL-399 retains those updated bands, measures controlled salted mean
+	// uncertainty directly, and raises sampling to fit them. The old
+	// glassblock centre is not claimed as current behavior.
 	std::string ReadFileText( const std::string& path )
 	{
 		std::ifstream ifs( path );
