@@ -2524,10 +2524,14 @@ bool RayCaster::WalkShadowSegment(
 	const bool bDeltaPassThrough,
 	GradedIndexMedium::ShadowSegmentTrack* pGradedTrack,
 	const Point3* pSegmentEnd,
-    ISampler* alphaSampler, MediumBoundaryHits* boundaries, Scalar physicalDistance, Scalar occlusionStart
+    ISampler* alphaSampler, MediumBoundaryHits* boundaries, Scalar physicalDistance, Scalar occlusionStart,
+	unsigned int* pPassThroughCrossings
 	) const
 {
 	transmittance = RISEPel( 1.0, 1.0, 1.0 );
+	if( pPassThroughCrossings ) {
+		*pPassThroughCrossings = 0;
+	}
 
 	// DL-292: every "reached the light" return goes through here, so the
 	// graded-index track (if any) is priced up to the light point exactly
@@ -2632,6 +2636,9 @@ bool RayCaster::WalkShadowSegment(
 				transmittance = transmittance * t;
 			} else {
 				transmittance = transmittance * pSPF->DeltaPassThroughTransmittance( ri.geometric );
+			}
+			if( pPassThroughCrossings ) {
+				( *pPassThroughCrossings )++;
 			}
 			if( !( ColorMath::MaxValue( transmittance ) > NEARZERO ) )
 			{
@@ -3396,8 +3403,10 @@ bool RayCaster::CastShadowRaySampled(const Ray& ray, Scalar distance, ISampler& 
 }
 bool RayCaster::CastShadowRayAutoSampled(const Ray& ray, Scalar distance, bool nmMode,
     Scalar nm, RISEPel& transmittance, bool deltaLight, ISampler& sampler, MediumBoundaryHits* boundaries, Scalar physicalDistance, Scalar occlusionStart,
-    GradedIndexMedium::ShadowSegmentTrack* pGradedTrack, const Point3* pSegmentEnd, bool smsCoversLight) const
+    GradedIndexMedium::ShadowSegmentTrack* pGradedTrack, const Point3* pSegmentEnd, bool smsCoversLight,
+    unsigned int* pPassThroughCrossings) const
 {
+    if (pPassThroughCrossings) *pPassThroughCrossings = 0;
     if (boundaries) boundaries->clear();
     const bool passThrough = deltaLight && bSceneHasDeltaPassThrough && pScene &&
         !pScene->GetCausticPelMap() && !pScene->GetGlobalPelMap() &&
@@ -3408,7 +3417,8 @@ bool RayCaster::CastShadowRayAutoSampled(const Ray& ray, Scalar distance, bool n
     const bool dielectrics = DielectricShadowWalk(deltaLight, smsCoversLight);
     if (dielectrics || passThrough)
         return WalkShadowSegment(ray, distance, nmMode, nm, transmittance,
-            dielectrics, passThrough, pGradedTrack, pSegmentEnd, &sampler, boundaries, physicalDistance, occlusionStart);
+            dielectrics, passThrough, pGradedTrack, pSegmentEnd, &sampler, boundaries, physicalDistance, occlusionStart,
+            pPassThroughCrossings);
     // DL-292: the binary test leaves the track un-Finish()ed -- the caller
     // prices the crossing-free segment with ConnectionScaleToPoint.
     transmittance = RISEPel(1,1,1);
