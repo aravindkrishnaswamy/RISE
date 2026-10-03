@@ -26,6 +26,7 @@
 #include "../Materials/PerfectReflectorMaterial.h"
 #include "../Materials/PolishedMaterial.h"
 #include "../Materials/CompositeMaterial.h"
+#include "../Objects/CSGObject.h"
 #include "IORStackSeeding.h"
 
 bool RISE::Implementation::SMSQueryDomain::Valid() const
@@ -92,6 +93,23 @@ bool RISE::Implementation::SMSDomainReplay::Query(const IMaterial& material,
         && std::isfinite(result.attenuation) && result.attenuation >= 0;
 }
 
+namespace {
+// CSG without a material override inherits its boundary material from an
+// operand. Operand objects are not world-visible, so inspect the graph
+// through its world-visible owner before relying on containment seeding.
+bool HasCompositeBoundary(const RISE::IObject& object)
+{
+    if(const RISE::IMaterial* material = object.GetMaterial())
+        return dynamic_cast<const RISE::Implementation::CompositeMaterial*>(material) != nullptr;
+    if(const auto* csg = dynamic_cast<const RISE::Implementation::CSGObject*>(&object)) {
+        const RISE::IObject* a = csg->GetOperandA();
+        const RISE::IObject* b = csg->GetOperandB();
+        return (a && HasCompositeBoundary(*a)) || (b && HasCompositeBoundary(*b));
+    }
+    return false;
+}
+}
+
 bool RISE::Implementation::SMSDomainReplay::Capture(const IScene& scene,
     const Point3& anchor, const IORStack& live, SMSStartingMedia& result)
 {
@@ -119,7 +137,7 @@ bool RISE::Implementation::SMSDomainReplay::Capture(const IScene& scene,
     // culling would hide every inside-origin ray intersection.
     for(const IObject* object : objects.items) {
         if(!object->IsWorldVisible()
-            || !dynamic_cast<const CompositeMaterial*>(object->GetMaterial())) continue;
+            || !HasCompositeBoundary(*object)) continue;
         if(std::find(keys.begin(), keys.end(), object) != keys.end()) return false;
         const BoundingBox bounds = object->getBoundingBox();
         const bool outside = anchor.x < bounds.ll.x || anchor.x > bounds.ur.x
