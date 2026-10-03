@@ -913,6 +913,9 @@ namespace RISE
 			/// mode), and by both their photon-aided extension paths.
 			/// The spectral counterpart `ComputeTrialContributionNM`
 			/// performs the same logic on `Scalar` per-wavelength.
+			/// outSmsGeometric reports the raw factor for the caller's sum clamp.
+			/// clampGeometric applies a positive maxGeometricTerm to this trial;
+			/// nonpositive limits disable clamping, as in the sum-clamp paths.
 			bool ComputeTrialContribution(
 				const Point3& pos,
 				const Vector3& geomNormal,

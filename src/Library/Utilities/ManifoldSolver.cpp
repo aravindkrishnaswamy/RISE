@@ -6103,10 +6103,16 @@ bool ManifoldSolver::ComputeTrialContribution(
 	const Scalar detDvDy = ComputeLightToFirstVertexJacobianDet(
 		mResult.specularChain, pos, lightSample.position, JacobianLightNormal( lightSample, mResult.specularChain ) );
 	const Scalar smsGeometric = G_x_v1 * detDvDy;
+	if( outSmsGeometric ) {
+		*outSmsGeometric = smsGeometric;
+	}
+	const Scalar effectiveGeometric = clampGeometric && config.maxGeometricTerm > 0
+		? std::fmin( smsGeometric, config.maxGeometricTerm )
+		: smsGeometric;
 
 	outContribution = fBSDF
 		* mResult.contribution
-		* actualLe * cosAtShading * smsGeometric
+		* actualLe * cosAtShading * effectiveGeometric
 		/ ( lightSample.pdfPosition * lightSample.pdfSelect );
 
 	return true;
@@ -6227,7 +6233,7 @@ bool ManifoldSolver::ComputeTrialContributionNM(
 	if( outSmsGeometric ) {
 		*outSmsGeometric = smsGeometric;
 	}
-	const Scalar effectiveGeometric = clampGeometric
+	const Scalar effectiveGeometric = clampGeometric && config.maxGeometricTerm > 0
 		? std::fmin( smsGeometric, config.maxGeometricTerm )
 		: smsGeometric;
 
