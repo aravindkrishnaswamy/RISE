@@ -335,7 +335,7 @@ struct SphereFixture
 		ExpressionProgram::Builder b;  b.EnableContextVars( true );
 		if( !b.Finalize( text, prog ) ) { std::cout << "  expression failed to compile\n"; return nullptr; }
 		std::vector<ParamSpec> params;
-		return new ExpressionPainter( prog, params, 0.0, eSpectrumKind_Radiance );
+		return new ExpressionPainter( prog, params, 0.0, eSpectrumKind_Unbounded );
 	}
 	SphereFixture( const char* expr, double x, double scale )
 	{
