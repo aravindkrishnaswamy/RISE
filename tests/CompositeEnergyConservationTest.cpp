@@ -1494,9 +1494,10 @@ static void SectionK4K6( Fixtures& f )
 	//  indexedmesh_geometry flips both normals toward the ray, so the same
 	//  coated GGX quad must render identically whichever winding faces the
 	//  camera.  Left half: winding facing AWAY from the camera; right half:
-	//  facing it.  A directional light 30 deg off the normal reaches both
-	//  only through NEE (a delta light), so the ratio is read off
-	//  GetBSDF()->value.
+	//  facing it.  A directional light 30 deg off the normal, tilted in
+	//  the vertical plane so the two halves are mirror images of each
+	//  other across x = 0, reaches both only through NEE (a delta light),
+	//  so the ratio is read off GetBSDF()->value.
 	{
 		std::ostringstream sc;
 		sc << "RISE ASCII SCENE 7\n"
@@ -1512,7 +1513,7 @@ static void SectionK4K6( Fixtures& f )
 		   << "\ttriangle 0 1 2\n\ttriangle 0 2 3\n\tdouble_sided TRUE\n\tface_normals TRUE\n}\n\n"
 		   << "standard_object\n{\n\tname objL\n\tgeometry qL\n\tmaterial mat_coat\n}\n\n"
 		   << "standard_object\n{\n\tname objR\n\tgeometry qR\n\tmaterial mat_coat\n}\n\n"
-		   << "directional_light\n{\n\tname key\n\tpower 1.0\n\tcolor 1 1 1\n\tdirection 0.5 0 0.8660254\n}\n\n";
+		   << "directional_light\n{\n\tname key\n\tpower 1.0\n\tcolor 1 1 1\n\tdirection 0 0.5 0.8660254\n}\n\n";
 		for( int r = 0; r < 2; ++r ) {
 			const std::string scene = sc.str() + ( r == 0 ? PtRasterizer( false, 64 ) : BdptRasterizer( false, 64 ) );
 			CapturingRasterizerOutput* cap = 0;
