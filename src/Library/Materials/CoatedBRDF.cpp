@@ -459,7 +459,7 @@ namespace
 // substrate and losing (1 - rho) and a^2 every round trip, while the
 // reservoir lets it escape after one re-randomisation -- a smooth metal
 // (alpha 0.05) at 70-85 deg reads 1.06-1.24 of the composite (DL-423).
-// The furnace of a white metal reads up to 1.007 (the substrate's own
+// The furnace of a white metal reads up to 1.006 (the substrate's own
 // GGX directional albedo is 1.003 at normal incidence, the rest is the
 // tables' escape/return split).
 // The alternatives the derivation rules out, both measured against the

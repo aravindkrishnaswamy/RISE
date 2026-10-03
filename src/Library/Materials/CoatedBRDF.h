@@ -28,6 +28,17 @@
 //  than a coverage fraction.  The algebra above keeps them distinct
 //  while factoring the shared `f_base`.
 //
+//  DL-388 (2026-10-02): the formula above, with `f_base` read at the
+//  OUTER directions, is the Lambertian case only (where it is exact) and
+//  the fabric / weave case (an approximation, DL-417).  Oren-Nayar and
+//  GGX substrates are evaluated in the coat's REFRACTED frame,
+//      c ( f_coat + T T A A [ f_base(wi', wo') + M ] / eta^2 ) + (1 - c) f_base,
+//  with M the recycled field: the old 1/(1 - E_ret R) factor on the
+//  refracted f_base for Oren-Nayar, a lobe reservoir built from the
+//  substrate's own first-bounce return for GGX.  Derivation and
+//  measurements: CoatedBRDF.cpp "SUBSTRATE IN THE COAT'S FRAME" and
+//  docs/DL388_COATED_REFRACTED_FRAME.md.
+//
 //  `f_coat` is a GGX lobe (7.2 types coat_roughness as "GGX alpha on
 //  the coat lobe") with dielectric Fresnel at the microfacet normal
 //  plus a Kulla-Conty multiple-scattering tail via
