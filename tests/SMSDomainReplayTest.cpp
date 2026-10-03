@@ -593,6 +593,9 @@ static void CompositePTCases()
                 std::vector<Scalar> lanesOff,lanesOn;
                 const auto hwssOff=TraceCompositeGrid(loaded,false,startInside,salt,false,&lanesOff);
                 const auto hwssOn=TraceCompositeGrid(loaded,true,startInside,salt,false,&lanesOn);
+                double laneSum=0; bool lanesFinite=true;
+                for(Scalar value : lanesOff) { laneSum+=value; lanesFinite=lanesFinite && std::isfinite(value) && value>=0; }
+                Check(lanesFinite && laneSum>0,"HWSS legacy composite control is finite and lit");
                 Check(lanesOff.size()==64*32*SampledWavelengths::N && lanesOff.size()==lanesOn.size()
                     && std::memcmp(lanesOff.data(),lanesOn.data(),lanesOff.size()*sizeof(Scalar))==0,
                     "HWSS ignores extended mode bit-identically in every lane and NM delegation");
