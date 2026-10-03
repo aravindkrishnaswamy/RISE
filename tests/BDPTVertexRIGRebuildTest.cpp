@@ -720,7 +720,10 @@ void TestPopulateRIG_AmbientIOR()
 // main
 //////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////
-// TestPopulateRIG_SurfaceIdentityFlags (DL-341 review round 2)
+// TestPopulateRIG_SurfaceIdentityFlags (DL-341 review rounds 2 and 5)
+//
+// Round 5 adds a fifth one-hot pass: `bGeomNormalOpposesArrival`, replayed
+// as `arrivalGeomFacing` (-1 / +1, never the live-record 0).
 //
 // The four surface-identity booleans BDPTVertex mirrors.  Same-struct
 // booleans, so per the file header they need distinguishing patterns: four
@@ -734,8 +737,9 @@ void TestPopulateRIG_AmbientIOR()
 void TestPopulateRIG_SurfaceIdentityFlags()
 {
 	std::cout << "Testing PopulateRIGFromVertex surface-identity flags (one-hot passes)..." << std::endl;
-	for( int hot = -1; hot < 4; ++hot ) {
+	for( int hot = -1; hot < 5; ++hot ) {
 		BDPTVertex v = MakeSentinelSurfaceVertex();
+		v.bGeomNormalOpposesArrival = ( hot == 4 );
 		v.bGeomNormalOrientedToRay = ( hot == 0 );
 		v.bGeomNormalRayDerived    = ( hot == 1 );
 		v.bOpenSheet               = ( hot == 2 );
@@ -745,11 +749,17 @@ void TestPopulateRIG_SurfaceIdentityFlags()
 		ri.bGeomNormalRayDerived    = !v.bGeomNormalRayDerived;
 		ri.bOpenSheet               = !v.bOpenSheet;
 		ri.bProvablyNoInterior      = !v.bProvablyNoInterior;
+		ri.arrivalGeomFacing        = 0;
 		PathVertexEval::PopulateRIGFromVertex( v, ri );
 		Check( ri.bGeomNormalOrientedToRay == ( hot == 0 ), "bGeomNormalOrientedToRay should mirror the vertex" );
 		Check( ri.bGeomNormalRayDerived    == ( hot == 1 ), "bGeomNormalRayDerived should mirror the vertex" );
 		Check( ri.bOpenSheet               == ( hot == 2 ), "bOpenSheet should mirror the vertex" );
 		Check( ri.bProvablyNoInterior      == ( hot == 3 ), "bProvablyNoInterior should mirror the vertex" );
+		// Review round 5 (DL-341): the live hit's arrival facing.  A rebuilt
+		// record's ray is aimed per query, so it must NEVER read 0 ("read it
+		// off ray"), and the replayed value must not depend on that ray.
+		Check( ri.arrivalGeomFacing == ( hot == 4 ? -1 : 1 ), "arrivalGeomFacing should replay bGeomNormalOpposesArrival" );
+		Check( ri.GeomNormalOpposesArrival() == ( hot == 4 ), "GeomNormalOpposesArrival() should read the replayed facing, not the query ray" );
 	}
 }
 
