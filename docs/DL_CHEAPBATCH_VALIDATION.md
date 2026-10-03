@@ -648,3 +648,75 @@ rescanned after the correction. Production sources remain identical to
 the successful clean rebuild. The pilot estimates above remain historical
 and are not called the final paired SDs; final measured C values follow
 below. Mutation proof is recorded after committing this correction.
+
+The covariance correction was committed as2c56071d4 before mutation.
+Retaining its helper API and both unit controls, replacing only the helper
+body with the original Part C uncorrelated formula gave99/2 in3.04 s.
+The proportional and anti-correlated checks both failed. Both old/restored
+builds exited0 with zero warnings (27.45/26.85 s). Restoring HEAD passed
+101/0 in0.49 s. Logs: `/tmp/cheapbatch-dl399-covariance-proof.json`.
+The verified paused integration runner then resumed before Exterior's
+first execution. SSS completed406/0; its1344.34-second wrapper wall
+time includes the post-child collection pause for this test-only proof,
+so it is not a renderer-runtime benchmark.
+
+## Final paired Exterior result
+
+The affected target was rebuilt with zero warnings before its first
+integration execution. It passed275/0 in1259.75 s: the24 gated
+Part B rows pass covariance-aware precision checks,16 shipped replay
+checks pass, both shipped physics/precision comparisons pass, and the
+two covariance controls pass. The non-gated photon residual and two
+printed known-failure configurations remain explicitly non-gated.
+
+| Statistic (four independently salted pairs) | Mean ratio | paired mean SD | band / SD |
+|---|---:|---:|---:|
+| RGB uniform glass-sphere k1 (1024 spp) |0.989407|0.00577986|0.020 / SD =3.46|
+| flat-slab (SMS4096 / VCM1024) |1.00333|0.00161672|0.036 / SD =22.27|
+| glass-block (SMS16384 / VCM512) |1.01021|0.00477052|0.040 upper margin / SD =8.38|
+
+After reserving the historical2% reference allowance, flat/glass upper
+margins cover9.90/4.19 paired mean SDs, both above3. These are n=4
+delta-method estimates from paired residuals; they are not a universal
+variance bound or the separate five-default-statistic calibration used
+for DL-332/DL-355. Correcting covariance changes only the reported
+uncertainty and precision guard, not the rendered means.
+
+## Final normal integration gate
+
+The clean library rebuild and all17 sequential test builds exited0 with
+zero compiler warnings. The test-only covariance correction was rebuilt
+before Exterior's first execution; production sources match the clean build.
+All18 serial runs exited0. No render overlapped a build.
+
+| Test / arguments | Result | Wrapper seconds |
+|---|---:|---:|
+| SourceHygieneTest | 167/0 | 1.46 |
+| CstDeriveGoldenTest | 458 MATCH; 0 DRIFT/UNCOVERED/STALE | 30.67 |
+| ManifoldSolverTest | all assertions passed | 0.27 |
+| WeaveGapShadowTransmittanceTest 1000 | 217/0 | 617.93 |
+| SSSExteriorIndexInvarianceTest --seed 0 | 406/0 | 1344.34 |
+| ExteriorIndexInvarianceTest | 275/0 | 1259.75 |
+| PTGuidingMISPartitionTest | 185/0 | 44.5 |
+| MediumInsideOutsideInvariantTest | 52/0 | 445.03 |
+| OIDNAutoDeterminismTest | 163/0 | 141.0 |
+| SMSMediumAnchorTest | 27/0 | 522.24 |
+| SMSEmitterDirectionTest | 168/0 | 56.73 |
+| SMSUniformDispersionTest | 86/0 | 262.04 |
+| SMSUniformDispersionTest --shipped | 10/0 | 0.26 |
+| SSSRadianceScalingTest | 576256/0 | 77.32 |
+| DoubleSidedEmitterTest | 34/0 | 14.94 |
+| FrameStoreTest | 123/0 | 0.73 |
+| RasterizerDefaultsConsistencyTest | 164/0 | 0.28 |
+| AgentEvalCheckTest | 2075/0 | 49.75 |
+
+SSS wrapper1344.34 s includes the collection pause described above;
+its render log spans1126.87 s. Weave base1000 and SSS seed0 repeat earlier
+calibration inputs and are not additional independent calibration samples.
+CST covers465 corpus entries, including7 expected negatives.
+After every render finished, SourceHygiene was rebuilt (exit0, zero warnings)
+and rescanned the final source:167/0 in1.21 s,445 test files.
+Gate logs: `/tmp/cheapbatch-review4-gate.json`; final rescan logs:
+`/tmp/cheapbatch-final-source-build.log`, `/tmp/cheapbatch-final-source-run.log`.
+Final review verdict is reported against the resulting full HEAD; no
+post-verdict edit is used to record that verdict in this committed document.
