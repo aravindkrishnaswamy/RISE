@@ -1195,7 +1195,9 @@ round-1 report of 1.0056 was an unsalted 128-spp artifact.
   zero-variance all-delta cells 0.2 % (the mirror return 0.5 %: BDPT / VCM
   are not zero-variance there, a gate run read 0.24 %); glass/translucent
   2 % (256 spp);
-  nested 3 % (1024 spp, per-branch estimator); light inside 1024 spp, every
+  nested 5 % (1024 spp, per-branch estimator: 144 furnace / sheet ratios
+  over four full runs read sd 0.69 % with a heavy tail -- max +3.47 %, which
+  failed a 3 % band once); light inside 1024 spp, every
   cell the mean of 3 salted renders: 3 % glass/glass (a single render's
   ratio sd is ~0.5 % under PT / BDPT but ~1.1 % under VCM -- 10 repeats,
   the round-7 review; a single VCM render in a 3 % band was a ~2.5 sd gate,

@@ -1513,8 +1513,9 @@ static void SectionD9()
 //  DL-407, not in this matrix).  Bands (every render salted, so each cell
 //  is an independent replicate): zero-variance all-delta cells 0.2 %
 //  (glass/glass, plain glass; furnace and sheets); glass/translucent
-//  furnace / sheet 2 % (256 spp); nested 3 % (1024 spp, per-branch
-//  estimator, ~0.5 % sd per half); the mirror-return sheets 0.5 % (BDPT /
+//  furnace / sheet 2 % (256 spp); nested 5 % (1024 spp, per-branch
+//  estimator: 144 furnace / sheet ratios over four runs had sd 0.69 % but
+//  a heavy tail, max +3.47 %, so 3 % failed one run in four); the mirror-return sheets 0.5 % (BDPT /
 //  VCM are not zero-variance there); light-inside cells 1024 spp, each the
 //  mean of 3 salted renders: glass/glass 3 % (single-render ratio sd
 //  ~0.5 % under PT / BDPT but ~1.1 % under VCM, so the mean's is
@@ -1632,7 +1633,7 @@ static void SectionM()
 					const bool env = ( g != 1 );
 					int spp = ( c.kind == 0 ) ? 128 : ( c.kind == 1 ) ? 256 : 1024;
 					if( g == 1 ) spp = 1024;
-					const double band = ( g == 1 ) ? ( c.kind == 0 ? 0.03 : 0.05 ) : ( c.kind == 0 ) ? 0.002 : ( c.kind == 1 ) ? 0.02 : 0.03;
+					const double band = ( g == 1 ) ? ( c.kind == 0 ? 0.03 : 0.05 ) : ( c.kind == 0 ) ? 0.002 : ( c.kind == 1 ) ? 0.02 : 0.05;
 					std::string geo, objs;
 					const std::string twinMat = ( c.kind == 0 ) ? "mat_glass" : c.mat;
 					if( g < 2 ) {
