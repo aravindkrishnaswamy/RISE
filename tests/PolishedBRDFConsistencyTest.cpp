@@ -95,6 +95,7 @@
 #include <unistd.h>
 
 #include "TestStubObject.h"
+#include "DataDrivenTestTables.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -605,40 +606,11 @@ static void RunSiblingAudit( unsigned int& seed )
 	// The table is reflection-only (DataDrivenBSDF::value is 0 whenever the
 	// view or the light is behind the shading normal), so the back-face row
 	// pins the other half of the contract: nothing to sample, nothing emitted.
-	const double kPI = PI;
 	for( int variant = 0; variant < 2; ++variant ) {
 		char path[256];
 		std::snprintf( path, sizeof(path), "dl325_table%d_%d.bdf", variant, (int)::getpid() );
-		{
-			std::ofstream f( path, std::ios::binary );
-			if( variant == 0 ) {
-				const int hdr[4] = { 0xBDF, 1, 1, 2 };
-				f.write( reinterpret_cast<const char*>( hdr ), sizeof( hdr ) );
-				const double v = 0.4 / kPI;
-				const double rec[21] = { kPI / 2,
-					0.0, kPI / 4, v, v, v,   0.0, kPI / 4, 0, 0, 0,
-					kPI / 4, kPI / 2, v, v, v,   kPI / 4, kPI / 2, 0, 0, 0 };
-				f.write( reinterpret_cast<const char*>( rec ), sizeof( rec ) );
-			} else {
-				const int hdr[4] = { 0xBDF, 1, 2, 3 };		// 2 emitter positions, 3 patches each
-				f.write( reinterpret_cast<const char*>( hdr ), sizeof( hdr ) );
-				const double emitTheta[2] = { kPI / 3, kPI / 2 };
-				for( int e = 0; e < 2; ++e ) {
-					f.write( reinterpret_cast<const char*>( &emitTheta[e] ), sizeof( double ) );
-					// File order is DESCENDING in theta (the loader reverses it).
-					for( int pi = 2; pi >= 0; --pi ) {
-						const double begin = pi * kPI / 6, end = ( pi + 1 ) * kPI / 6;
-						const double rec[10] = {
-							kPI / 2 - end, kPI / 2 - begin,
-							( 0.25 + 0.15 * pi + 0.10 * e ) / kPI,
-							( 0.50 - 0.12 * pi + 0.05 * e ) / kPI,
-							( 0.20 + 0.05 * pi * pi + 0.02 * e ) / kPI,
-							begin, end, 0, 0, 0 };
-						f.write( reinterpret_cast<const char*>( rec ), sizeof( rec ) );
-					}
-				}
-			}
-		}
+		Check( variant == 0 ? DataDrivenTestTables::WriteConstant( path, 0.4 ) : DataDrivenTestTables::WriteVaried( path ),
+		       "gate 6 (DL-325): synthetic .bdf written" );
 		DataDrivenMaterial* dd = new DataDrivenMaterial( path );  dd->addref();
 		Check( dd->GetSPF() != 0, variant == 0 ? "gate 6 (DL-325): datadriven_material (constant table) HAS an SPF"
 		                                       : "gate 6 (DL-325): datadriven_material (varied table) HAS an SPF" );

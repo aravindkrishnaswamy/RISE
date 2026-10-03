@@ -51,6 +51,10 @@
 
 // SPF implementations
 #include "../src/Library/Materials/LambertianSPF.h"
+#include "../src/Library/Materials/DataDrivenMaterial.h"
+#include "DataDrivenTestTables.h"
+#include <cstdio>
+#include <unistd.h>
 #include "../src/Library/Materials/OrenNayarSPF.h"
 #include "../src/Library/Materials/IsotropicPhongSPF.h"
 #include "../src/Library/Materials/CookTorranceSPF.h"
@@ -1028,6 +1032,20 @@ int main()
 
     // Construct SPFs
     LambertianSPF* lambertian = new LambertianSPF( *white );  lambertian->addref();
+
+    // DL-325: datadriven_material's SPF (cosine-weighted sampling of a
+    // tabulated BRDF; single emit, so the aggregate Pdf IS the emitted
+    // ray's density).  Constant table = Lambertian 0.4; the varied table is
+    // chromatic and direction-dependent.
+    char ddPathConst[128], ddPathVaried[128];
+    std::snprintf( ddPathConst,  sizeof( ddPathConst ),  "spfpdf_dd_const_%d.bdf",  (int)getpid() );
+    std::snprintf( ddPathVaried, sizeof( ddPathVaried ), "spfpdf_dd_varied_%d.bdf", (int)getpid() );
+    DataDrivenTestTables::WriteConstant( ddPathConst, 0.4 );
+    DataDrivenTestTables::WriteVaried( ddPathVaried );
+    DataDrivenMaterial* ddConstMat  = new DataDrivenMaterial( ddPathConst );   ddConstMat->addref();
+    DataDrivenMaterial* ddVariedMat = new DataDrivenMaterial( ddPathVaried );  ddVariedMat->addref();
+    std::remove( ddPathConst );
+    std::remove( ddPathVaried );
     OrenNayarSPF* orenNayar = new OrenNayarSPF( *white, *roughnessSc );  orenNayar->addref();
     IsotropicPhongSPF* phong = new IsotropicPhongSPF( *gray, *spec, *highExpSc );  phong->addref();
     CookTorranceSPF* cookTorrance = new CookTorranceSPF( *gray, *spec, *lowSc, *iorScalarTop, *extinctionSc );  cookTorrance->addref();
@@ -1290,6 +1308,8 @@ int main()
 
     SPFEntry spfs[] = {
         { "Lambertian",                        lambertian,  true,  true,  false, false, INTEGRAL_TOL },
+        { "DataDriven_constant0.4",            ddConstMat->GetSPF(),  true,  true,  false, false, INTEGRAL_TOL },
+        { "DataDriven_varied",                 ddVariedMat->GetSPF(), true,  true,  false, false, INTEGRAL_TOL },
         { "OrenNayar",                         orenNayar,   true,  true,  false, false, INTEGRAL_TOL },
 
         //--------------------------------------------------------------

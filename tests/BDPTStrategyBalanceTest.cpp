@@ -154,6 +154,7 @@
 #include "../src/Library/Interfaces/IRasterImage.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
+#include "DataDrivenTestTables.h"
 #include "../src/Library/Utilities/SobolSampler.h"
 
 using namespace RISE;
@@ -2498,23 +2499,6 @@ static const char* kRasterizerVCMSchlickL =
 	"\tcolor_space Rec709RGB_Linear\n"
 	"}\n";
 
-//! Writes a one-emitter, two-patch constant-reflectance .bdf (the DL-285
-//! fixture: value `albedo / pi` on every view/light pair).
-static bool WriteConstantBDF( const char* path, const double albedo )
-{
-	std::ofstream f( path, std::ios::binary );
-	if( !f.is_open() ) return false;
-	const double PI_ = 3.14159265358979323846;
-	const int hdr[4] = { 0xBDF, 1, 1, 2 };
-	f.write( reinterpret_cast<const char*>( hdr ), sizeof( hdr ) );
-	const double v = albedo / PI_;
-	const double rec[21] = { PI_ / 2,
-		0.0, PI_ / 4, v, v, v,   0.0, PI_ / 4, 0, 0, 0,
-		PI_ / 4, PI_ / 2, v, v, v,   PI_ / 4, PI_ / 2, 0, 0, 0 };
-	f.write( reinterpret_cast<const char*>( rec ), sizeof( rec ) );
-	return f.good();
-}
-
 //! Topology L with the schlick_material chunk replaced by `materialChunk`.
 static std::string TopologyLWithMaterial( const std::string& materialChunk )
 {
@@ -2560,7 +2544,7 @@ static void TestDataDrivenSPFDL325()
 	std::cout << "Testing topology AD: datadriven_material (constant 0.4/pi table) vs lambertian_material 0.4 (DL-325)" << std::endl;
 	char bdf[256];
 	std::snprintf( bdf, sizeof( bdf ), "/tmp/dl325_const04_%d.bdf", static_cast<int>( ::getpid() ) );
-	Check( WriteConstantBDF( bdf, 0.4 ), "topology AD: synthetic constant .bdf written" );
+	Check( DataDrivenTestTables::WriteConstant( bdf, 0.4 ), "topology AD: synthetic constant .bdf written" );
 
 	const std::string sceneDD = TopologyLWithMaterial(
 		std::string( "datadriven_material\n{\n\tname mat_schlick\n\tfilename " ) + bdf + "\n}\n" );

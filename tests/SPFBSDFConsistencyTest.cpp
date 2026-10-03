@@ -55,6 +55,10 @@
 
 // SPF implementations
 #include "../src/Library/Materials/LambertianSPF.h"
+#include "../src/Library/Materials/DataDrivenMaterial.h"
+#include "DataDrivenTestTables.h"
+#include <cstdio>
+#include <unistd.h>
 #include "../src/Library/Materials/OrenNayarSPF.h"
 #include "../src/Library/Materials/IsotropicPhongSPF.h"
 #include "../src/Library/Materials/CookTorranceSPF.h"
@@ -1168,6 +1172,22 @@ int main()
     // evaluation diverges at grazing angles, these two estimates can
     // disagree significantly even when the code is correct.
 
+    // DL-325: datadriven_material (a tabulated BRDF).  It used to have a BSDF
+    // and NO SPF, so no row here could exist; DataDrivenSPF samples the table
+    // cosine-weighted and prices kray from DataDrivenBSDF itself.  Two
+    // synthetic tables: a constant one (a Lambertian 0.4) and a chromatic
+    // direction-dependent one (so a kray that disagreed with the table in
+    // SHAPE could not hide behind a flat function).
+    char ddPathConst[128], ddPathVaried[128];
+    std::snprintf( ddPathConst,  sizeof( ddPathConst ),  "spfbsdf_dd_const_%d.bdf",  (int)getpid() );
+    std::snprintf( ddPathVaried, sizeof( ddPathVaried ), "spfbsdf_dd_varied_%d.bdf", (int)getpid() );
+    DataDrivenTestTables::WriteConstant( ddPathConst, 0.4 );
+    DataDrivenTestTables::WriteVaried( ddPathVaried );
+    DataDrivenMaterial* ddConstMat  = new DataDrivenMaterial( ddPathConst );   ddConstMat->addref();
+    DataDrivenMaterial* ddVariedMat = new DataDrivenMaterial( ddPathVaried );  ddVariedMat->addref();
+    std::remove( ddPathConst );
+    std::remove( ddPathVaried );
+
     struct PairedEntry {
         std::string name;
         ISPF* spf;
@@ -1183,6 +1203,8 @@ int main()
         { "CookTorrance",                      cookTorranceSPF, cookTorranceBRDF,   false, FURNACE_TOL },
         { "GGX_Isotropic",                     ggxIsoSPF,       ggxIsoBRDF,         false, FURNACE_TOL },
         { "GGX_Anisotropic",                   ggxAnisoSPF,     ggxAnisoBRDF,       false, FURNACE_TOL },
+        { "DataDriven_constant0.4",            ddConstMat->GetSPF(),  ddConstMat->GetBSDF(),  true,  FURNACE_TOL },
+        { "DataDriven_varied",                 ddVariedMat->GetSPF(), ddVariedMat->GetBSDF(), true,  FURNACE_TOL },
 
         //--------------------------------------------------------------
         // Schlick BRDF (Schlick 1994 approximation)
@@ -1359,6 +1381,8 @@ int main()
         { "CookTorrance",                      cookTorranceSPF, false },
         { "GGX_Isotropic",                     ggxIsoSPF,       false },
         { "GGX_Anisotropic",                   ggxAnisoSPF,     false },
+        { "DataDriven_constant0.4",            ddConstMat->GetSPF(),  false },
+        { "DataDriven_varied",                 ddVariedMat->GetSPF(), false },
         { "Schlick",                           schlickSPF,      false },
         { "WardIsotropicGaussian",             wardIsoSPF,      false },
         { "WardAnisotropicEllipticalGaussian", wardAnisoSPF,    false },
