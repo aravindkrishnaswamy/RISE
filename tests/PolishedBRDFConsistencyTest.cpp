@@ -259,7 +259,7 @@ static void RunRowMaterial( const IMaterial& mat, const std::string& name, const
 
 	char label[256];
 	std::snprintf( label, sizeof(label), "%s th%.0f%s%s", name.c_str(), fx.thetaDeg,
-		fx.tiltDeg != 0 ? " tilt" : "", fx.backface ? " BACKFACE" : "" );
+		fx.tiltDeg != 0 ? ( " tilt" + std::to_string( int( fx.tiltDeg ) ) ).c_str() : "", fx.backface ? " BACKFACE" : "" );
 
 	// ---- SPF side --------------------------------------------------
 	RandomNumberGenerator rng( seed );
@@ -619,6 +619,14 @@ static void RunSiblingAudit( unsigned int& seed )
 			RunRowMaterial( *dd, nm, Fixture{ 0.0,  0.0, false }, 400000, seed++ );
 			RunRowMaterial( *dd, nm, Fixture{ 30.0, 0.0, false }, 400000, seed++ );
 			RunRowMaterial( *dd, nm, Fixture{ 70.0, 0.0, false }, 400000, seed++ );
+			// Tilted SHADING normal (bump / normal map / glint): directions above the
+			// shading plane but below the true surface must be outside BOTH the BSDF's
+			// and the SPF's support (DL-325 review P1) -- else PT's sampled continuation
+			// loses energy NEE and connections still see.
+			const double tilts[4][2] = { { 45, 15 }, { 30, 40 }, { 70, -25 }, { 20, 50 } };
+			for( const auto& tp : tilts ) {
+				RunRowMaterial( *dd, nm, Fixture{ tp[0], tp[1], false }, 400000, seed++ );
+			}
 			if( variant == 0 ) {
 				const RayIntersectionGeometric ri = MakeRI( Fixture{ 30.0, 0.0, false } );
 				double B = 0;
