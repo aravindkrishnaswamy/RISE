@@ -112,13 +112,13 @@ verified all 16 baseline/candidate and baseline/final hashes and means,
 and checked the numerical red proofs, latest 20 passing gate entries,
 3789/0 domain result, and final Xcode builds.
 
-Both P1s are source-traced findings, not new numerical red proofs. No
-source correction, fresh green gate or clean review round is claimed for
-them yet. Earlier build/test numbers remain checkpoint evidence; they
-do not establish completion of Phase 1. No phase merge, ledger closure
-or new ledger row occurred.
+At the round-1 review checkpoint, both P1s were source-traced findings
+without new numerical red proofs or source corrections. Earlier build/test
+numbers remain checkpoint evidence; they do not establish completion of
+Phase 1. Subsequent corrections and proofs are recorded below. No phase
+merge, ledger closure or new ledger row occurred.
 
-## Round 1 corrections in progress
+## Round 1 corrections — targeted proofs complete
 
 The user adopted scene-wide composite rejection from prepared static scene
 data. `ObjectManager::PrepareForRendering` caches the first composite
@@ -132,5 +132,71 @@ only; no ledger row is opened.
 `RuntimeContext` across medium fallback, NM shader dispatch and nested
 diffusion/random-walk SSS recasts, restoring the caller's mode on scope
 exit. Tests use actual shader-dispatch paths and count nested NM calls.
-These corrections require new committed red proofs, green gates and fresh
-review; earlier round-1 findings remain historical evidence.
+The targeted committed red/green proofs are complete; the clean full
+gate and fresh independent review are in progress. Earlier round-1
+findings remain historical evidence.
+
+
+Committed pre-fix source `031292067` (including coherent dependent headers)
+was compiled successfully against the targeted regression harness. The
+prepared-policy probe returned **31 passed / 33 failed**: six missing or
+incorrect warning count/name assertions, three incorrect capture
+acceptances outside composite bounds, and twenty-four wrapped-composite
+RGB/NM image parity failures. The HWSS shader-dispatch probe returned
+**51 passed / 12 failed**, with an image/lane comparison failing for each
+of four salts in global-medium, diffusion SSS and random-walk SSS routes.
+Missing pre-fix mode telemetry is reported as unavailable, not zero loss.
+These are committed Phase 1 helper regressions: master has no extended
+mode or these new APIs, so this pre-fix source checkpoint is the relevant
+baseline. The earlier master-native **14/10** oracle remains separately
+recorded above.
+
+The initial policy red probe contained three feature-availability
+assertions; they were removed before the final **31/33** proof. The final
+proof asserts actual warning, capture and renderer behavior. Logs:
+`round2-final-prior-library-build.log`, `round2-final-prior-domain-build.log`,
+`round2-final-scene-policy-red.log`, and
+`round2-final-hwss-dispatch-red.log`.
+
+Current targeted results: prepared-policy **1168/0**, HWSS dispatch
+**3147/0**, complete domain **8176/0**. The prepared-policy total includes
+four salted NM controls in a composite-free scene: unsupported-photon
+eligibility executes instead of the legacy bypass. Both outputs are finite;
+the legacy baseline is lit. Ordinary PT can be dark after rejecting that
+point-light SMS caustic. A preliminary assertion incorrectly required the
+rejected result to remain lit (three failures); it was corrected without
+changing transport or adding a source. The failure log is retained as
+`round2-scene-policy-dark-control-failure.log`. Composite parity controls
+still require a lit baseline and exact matched RGB/NM outputs. All current
+library source files match the cost checkpoint `6988bd1c9`; later changes
+are test-only. Current domain counters remain **120 attempts / 184 Newton
+iterations / 118 accepted / 2 rejected**, with no proposal retries, tails
+or owned roots claimed.
+
+### Updated interleaved cost checkpoint
+
+Each of four salts used an actual committed-source A/B library and test
+build followed by its render, interleaved A then B. A is master
+`ffc70c1c2`; B is library source `6988bd1c9`. This supersedes the preliminary
+measurement that alternated two saved static executables. Both methods
+matched all sixteen hashes and means exactly. Worker/resolution settings
+remain the explicitly bounded single-worker 64×64/64 spp configuration,
+not an all-core GUI throughput benchmark.
+
+| Fixture | A seconds mean (sample SD) | B seconds mean (sample SD) | Paired change % mean (sample SD) |
+|---|---:|---:|---:|
+| shipped RGB k=1 | 0.956903 (0.012980) | 0.968139 (0.010093) | +1.185 (1.499) |
+| shipped RGB k=2 | 0.732758 (0.004240) | 0.728365 (0.003373) | −0.597 (0.752) |
+| uniform scalar NM | 1.713578 (0.003774) | 1.721044 (0.014080) | +0.436 (0.900) |
+| uniform HWSS | 5.745235 (0.021722) | 5.763783 (0.031801) | +0.324 (0.651) |
+
+No zero-overhead claim is made. Each paired mean is within three measured
+standard errors of zero (n=4); no design cost bound was invented. Evidence:
+`round2-interleaved-cost.json`, the individual
+`round2-interleaved-library-build-*`, `round2-interleaved-test-build-*` and
+`round2-interleaved-*` render logs. All eight library/test build pairs
+passed without compiler diagnostics. The interleaved driver later exited
+nonzero on the preliminary dark-control assertion after finishing cost
+measurement; sources were restored, the test assertion corrected, and
+the rebuilt targeted/full tests passed as reported above. The numerical
+cost data and source restoration are independently retained.
