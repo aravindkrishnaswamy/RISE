@@ -588,6 +588,48 @@ namespace
 			Check( bsdf->lastAmbient == c.expected, std::string( "A6: ComputeTrialContributionNM receiver ambientIOR, " ) + c.tag );
 			Check( bsdf->statefulCalls == 1 && bsdf->lastStack == c.stack, std::string( "A6: ComputeTrialContributionNM hands the stack to the BSDF, " ) + c.tag );
 		}
+		// DL-434: unfold a planar mirror to a virtual light at (0.6,2,0).
+		// The point-light geometric factor is independently 1 / 4.36.
+		mv.isReflection = true;
+		mv.canRefract = false;
+		mv.valid = true;
+		mv.dpdu = Vector3( 1, 0, 0 );
+		mv.dpdv = Vector3( 0, 0, 1 );
+		mr.specularChain[0] = mv;
+		mr.contribution = RISEPel( 1, 1, 1 );
+		ls.position = Point3( 0.6, 0, 0 );
+		ls.pdfPosition = ls.pdfSelect = 1;
+		const Scalar expectedGeo = 1.0 / ( 0.6 * 0.6 + 2.0 * 2.0 );
+		for( const Scalar cap : { Scalar(-1), Scalar(0), Scalar(0.01), Scalar(1) } ) {
+			ManifoldSolverConfig cfg;
+			cfg.maxGeometricTerm = cap;
+			ManifoldSolver* cappedSolver = new ManifoldSolver( cfg );
+			Scalar rawGeo = -1, cappedGeo = -1;
+			Vector3 dir;
+			RISEPel raw, capped;
+			const bool rgbRaw = cappedSolver->ComputeTrialContribution( pos, Vector3(0,1,0), Vector3(0,1,0), onb, wo, bsdf, ls, mr, *caster,
+				dir, raw, false, &rawGeo );
+			const bool rgbCapped = cappedSolver->ComputeTrialContribution( pos, Vector3(0,1,0), Vector3(0,1,0), onb, wo, bsdf, ls, mr, *caster,
+				dir, capped, true, &cappedGeo );
+			const Scalar expectedRatio = cap > 0 ? std::min( cap, expectedGeo ) / expectedGeo : 1;
+			Check( rgbRaw && rgbCapped && std::isfinite(raw.r) && std::isfinite(capped.r) && raw.r > 0 && capped.r > 0, "A6 clamp: RGB mirror contributions finite and positive" );
+			Check( std::fabs(rawGeo-expectedGeo)<1e-10 && std::fabs(cappedGeo-expectedGeo)<1e-10,
+				"A6 clamp: RGB exports the unclamped virtual-light geometric factor" );
+			Check( raw.r > 0 && std::fabs(capped.r/raw.r-expectedRatio)<1e-10,
+				"A6 clamp: RGB honors positive caps and disables nonpositive caps" );
+			Scalar rawNM = 0, cappedNM = 0;
+			rawGeo = cappedGeo = -1;
+			const bool nmRaw = cappedSolver->ComputeTrialContributionNM( pos, Vector3(0,1,0), Vector3(0,1,0), onb, wo, bsdf, ls, mr, *caster,
+				550, dir, rawNM, false, &rawGeo );
+			const bool nmCapped = cappedSolver->ComputeTrialContributionNM( pos, Vector3(0,1,0), Vector3(0,1,0), onb, wo, bsdf, ls, mr, *caster,
+				550, dir, cappedNM, true, &cappedGeo );
+			Check( nmRaw && nmCapped && std::isfinite(rawNM) && std::isfinite(cappedNM) && rawNM > 0 && cappedNM > 0, "A6 clamp: NM mirror contributions finite and positive" );
+			Check( std::fabs(rawGeo-expectedGeo)<1e-10 && std::fabs(cappedGeo-expectedGeo)<1e-10,
+				"A6 clamp: NM exports the unclamped virtual-light geometric factor" );
+			Check( rawNM > 0 && std::fabs(cappedNM/rawNM-expectedRatio)<1e-10,
+				"A6 clamp: NM honors positive caps and disables nonpositive caps" );
+			safe_release( cappedSolver );
+		}
 		safe_release( bsdf );
 		safe_release( solver );
 		safe_release( caster );
