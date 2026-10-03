@@ -6,9 +6,9 @@ Status: implementation and acceptance gate in progress on `sms-ext`; no phase me
 
 `SMSDomainReplay` and `ManifoldSolver::SolveDomain` are isolated native-domain primitives. RGB queries use the authored component; NM queries evaluate both medium sides at the requested wavelength. Starting medium captures preserve identities and intersection context. Reflection preserves membership; transmission uses native closed-object and certified DL-345 sheet crossing policies. Solved roots refresh native tint, absorption, Fresnel and AR coatings from real intersections, retaining caller raster coordinates.
 
-Composite queries fail. Starting composite membership and uncertain DL-407 containment fail eligibility; contribution, PT emitter suppression and delta-light shadow opacity use the same anchor eligibility. A world-visible CSG owner with inherited composite boundaries is inspected through its operands. The conservative bounds rejection may reject anchors outside the actual solid but inside its bounds; it never claims positive composite replay. Positive composite replay needs a separate walker estimator and DL-407 repair.
+Composite queries fail. The adopted interim policy disables extended mode scene-wide when preparation finds a composite, including material wrappers, nested composites and CSG operands. Existing SMS contribution, PT suppression and delta-light shadow behavior then run unchanged. Starting captures decline composite scenes, including empty-stack anchors outside composite bounds. Positive composite replay needs a separate walker estimator and DL-407 repair.
 
-Positive extended production estimators are not enabled in this phase. Default RGB/NM retain the existing estimator; HWSS ignores the extended flag with one warning and its NM delegations retain legacy eligibility. Production channel/medium correctness and HWSS debt closures require their later activation gates. No target row closes merely because these primitives pass.
+Positive extended production estimators are not enabled in this phase. Default RGB/NM retain the existing estimator; HWSS retains legacy eligibility through a scoped mode flag on its NM delegations. Composite preparation emits its own scene policy warning; an active, composite-free extended configuration emits one HWSS warning per prepared solver. Production channel/medium correctness and HWSS debt closures require their later activation gates. No target row closes merely because these primitives pass.
 
 ## Numerical evidence
 
@@ -53,7 +53,7 @@ Clean make: **376 compilation actions, exit 0, zero warnings/errors** (`medium-f
 
 ## Acceptance gate
 
-All 20 required test/mode entries have latest exit **0**, each built individually with checked exit code and no build warnings. Source fixes after the early gate entries affect only opt-in primitives; the unchanged legacy paths were tested throughout, and the final domain executable was rebuilt after every helper fix. Logs are in `.claude/logs/sms-phase1/gate`; `results.json` preserves the initial artifact-only hygiene failure as well as its passing rerun. `final-verification.json` checks the latest result for each entry.
+At the pre-review `77714bd89` checkpoint, all 20 required test/mode entries had latest exit **0**, each built individually with checked exit code and no build warnings. Source fixes after the early gate entries affect only opt-in primitives; the unchanged legacy paths were tested throughout, and the final domain executable was rebuilt after every helper fix. Logs are in `.claude/logs/sms-phase1/gate`; `results.json` preserves the initial artifact-only hygiene failure as well as its passing rerun. `final-verification.json` checks the latest result for each entry.
 
 | Test/mode | Result |
 |---|---:|
@@ -78,11 +78,11 @@ All 20 required test/mode entries have latest exit **0**, each built individuall
 | SMSDomainReplayTest | 3789/0 |
 | SMSLegacyModeTest | 21/0 |
 
-Final off-mode output was compared against all 16 salted committed-master A checkpoints: raw hashes **and means match exactly**. The final HWSS ignore guard emits exactly 16 warnings for 16 extended render instances. The final clean make and Xcode Deployment/Opto builds pass with zero compiler warnings. Both Xcode configurations have the two documented environment/tool notices only.
+The pre-review checkpoint's off-mode output was compared against all 16 salted committed-master A checkpoints: raw hashes **and means match exactly**. That checkpoint's HWSS ignore guard emitted exactly 16 warnings for 16 extended render instances. The final clean make and Xcode Deployment/Opto builds pass with zero compiler warnings. Both Xcode configurations have the two documented environment/tool notices only.
 
 The first hygiene run reported 168/1 because generated GUI resource copies lived in `DerivedData-Deployment` and `DerivedData-Opto`, names outside the scanner's existing `DerivedData` exclusion. Products were relocated under `.claude/logs/sms-phase1/DerivedData/{Deployment,Opto}` without changing maintained sources or the test. The preserved failed scan is `SourceHygieneTest-artifact-failure-run.log`; the rebuilt/rerun test passes 169/0. Build stdout remains at its original log path, and `xcode-products-relocation.json` records the artifact relocation.
 
-Fresh estimator/partition, material/medium/API and cost/test/doc reviews remain pending. No phase merge or debt closure is claimed. Review must distinguish this primitive/rejection increment from the later proposal, full ordered scene visibility/acceptance, reference estimator and canonical ownership gates. In particular, final-root refresh currently re-intersects the recorded objects; the later production proposal/validation must establish full scene order and supported intervening hits before pricing a physical estimator contribution.
+Round 1 completed with two P1s, recorded below. A fresh round on the corrected tree remains pending. No phase merge or debt closure is claimed. Review must distinguish this primitive/rejection increment from the later proposal, full ordered scene visibility/acceptance, reference estimator and canonical ownership gates. In particular, final-root refresh currently re-intersects the recorded objects; the later production proposal/validation must establish full scene order and supported intervening hits before pricing a physical estimator contribution.
 
 ## Independent review round 1 — not converged
 
@@ -117,3 +117,20 @@ source correction, fresh green gate or clean review round is claimed for
 them yet. Earlier build/test numbers remain checkpoint evidence; they
 do not establish completion of Phase 1. No phase merge, ledger closure
 or new ledger row occurred.
+
+## Round 1 corrections in progress
+
+The user adopted scene-wide composite rejection from prepared static scene
+data. `ObjectManager::PrepareForRendering` caches the first composite
+object name and emits one policy warning per preparation. RGB/NM/HWSS
+transport reads that immutable prepared decision rather than probing
+composite membership at each anchor. Composite-free scenes retain the
+extended eligibility path. The future seed-certainty bit is documented
+only; no ledger row is opened.
+
+`SMSLegacyModeScope` carries HWSS legacy-mode provenance in the worker's
+`RuntimeContext` across medium fallback, NM shader dispatch and nested
+diffusion/random-walk SSS recasts, restoring the caller's mode on scope
+exit. Tests use actual shader-dispatch paths and count nested NM calls.
+These corrections require new committed red proofs, green gates and fresh
+review; earlier round-1 findings remain historical evidence.

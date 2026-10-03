@@ -43,6 +43,7 @@
 // Allows regression harnesses to invoke the shipped legacy entry points
 // when this implementation is replaced by committed master sources.
 #define RISE_SMS_DOMAIN_REPLAY 1
+#define RISE_SMS_SCENE_POLICY 1
 
 #include "../Interfaces/IReference.h"
 #include "../Interfaces/IGeometry.h"
@@ -559,6 +560,7 @@ namespace RISE
 		public:
 			ManifoldSolver( const ManifoldSolverConfig& cfg );
             void WarnHWSSLegacyMode();
+            bool ExtendedModeActive(const IScene&) const;
             bool ExtendedAnchorEligible(const IScene&, const IRayCaster&, const Point3&,
                                         const IORStack&, Scalar nm = 0) const;
 

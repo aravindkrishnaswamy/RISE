@@ -15,6 +15,7 @@
 
 #include "pch.h"
 #include "ManifoldSolver.h"
+#include "../Managers/ObjectManager.h"
 #include "../Interfaces/IGeometry.h"		// CanBeAreaLight(): SMS surface seeding shares the sampling contract
 #include "SMSPhotonMap.h"
 #include "Optics.h"
@@ -93,23 +94,6 @@ bool RISE::Implementation::SMSDomainReplay::Query(const IMaterial& material,
         && std::isfinite(result.attenuation) && result.attenuation >= 0;
 }
 
-namespace {
-// CSG without a material override inherits its boundary material from an
-// operand. Operand objects are not world-visible, so inspect the graph
-// through its world-visible owner before relying on containment seeding.
-bool HasCompositeBoundary(const RISE::IObject& object)
-{
-    if(const RISE::IMaterial* material = object.GetMaterial())
-        return dynamic_cast<const RISE::Implementation::CompositeMaterial*>(material) != nullptr;
-    if(const auto* csg = dynamic_cast<const RISE::Implementation::CSGObject*>(&object)) {
-        const RISE::IObject* a = csg->GetOperandA();
-        const RISE::IObject* b = csg->GetOperandB();
-        return (a && HasCompositeBoundary(*a)) || (b && HasCompositeBoundary(*b));
-    }
-    return false;
-}
-}
-
 bool RISE::Implementation::SMSDomainReplay::Capture(const IScene& scene,
     const Point3& anchor, const IORStack& live, SMSStartingMedia& result)
 {
@@ -117,6 +101,8 @@ bool RISE::Implementation::SMSDomainReplay::Capture(const IScene& scene,
     result.environmentIndex = live.EnvironmentIOR();
     if(!std::isfinite(result.environmentIndex) || result.environmentIndex <= 0
         || !scene.GetObjects() || scene.GetGlobalMedium()) return false;
+    const auto* preparedObjects = dynamic_cast<const ObjectManager*>(scene.GetObjects());
+    if(!preparedObjects || !preparedObjects->ExtendedSMSAllowed()) return false;
     struct Objects : IEnumCallback<IObject> {
         std::vector<const IObject*> items;
         bool operator()(const IObject& object) override { items.push_back(&object); return true; }
@@ -133,13 +119,11 @@ bool RISE::Implementation::SMSDomainReplay::Capture(const IScene& scene,
     // preserve it rather than replacing the walk's state with a fresh seed.
     // Participating local media are excluded, including uncertain containment
     // when their boundary does not provide reconstructible IOR membership.
-    // DL-407: composite containment can be missing from the live stack.
-    // Inside an object's world bounds we cannot certify absence of
-    // composite membership. Refuse that uncertainty even when back-face
-    // culling would hide every inside-origin ray intersection.
+    // Composite scenes already declined through the prepared policy above.
+    // Bounds conservatively reject uncertain participating-medium containment.
     for(const IObject* object : objects.items) {
         if(!object->IsWorldVisible()
-            || (!HasCompositeBoundary(*object) && !object->GetInteriorMedium())) continue;
+            || !object->GetInteriorMedium()) continue;
         if(std::find(keys.begin(), keys.end(), object) != keys.end()) return false;
         const BoundingBox bounds = object->getBoundingBox();
         const bool outside = anchor.x < bounds.ll.x || anchor.x > bounds.ur.x
@@ -5000,10 +4984,17 @@ void ManifoldSolver::WarnHWSSLegacyMode()
         GlobalLog()->PrintEasyWarning("Extended SMS is ignored for HWSS until lane geometry and ownership are implemented; using legacy SMS.");
 }
 
+bool ManifoldSolver::ExtendedModeActive(const IScene& scene) const
+{
+    if(!config.extendedMode) return false;
+    const auto* objects = dynamic_cast<const ObjectManager*>(scene.GetObjects());
+    return objects && objects->ExtendedSMSAllowed();
+}
+
 bool ManifoldSolver::ExtendedAnchorEligible(const IScene& scene, const IRayCaster& caster,
     const Point3& point, const IORStack& stack, Scalar nm) const
 {
-    if(!config.extendedMode) return true;
+    if(!ExtendedModeActive(scene)) return true;
     if(config.photonCount || scene.GetGlobalMedium()
         || (caster.GetLightSampler() && caster.GetLightSampler()->SceneHasAlphaCoverage())) return false;
     SMSStartingMedia media;

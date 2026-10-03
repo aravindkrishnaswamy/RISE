@@ -7,6 +7,8 @@
 #include "../src/Library/Interfaces/IObjectPriv.h"
 #include "../src/Library/Interfaces/ISPF.h"
 #include "../src/Library/Shaders/PathTracingIntegrator.h"
+#include "../src/Library/Shaders/PathTracingShaderOp.h"
+#include "../src/Library/Managers/ObjectManager.h"
 #include "../src/Library/Rendering/RayCaster.h"
 #include "../src/Library/Utilities/RuntimeContext.h"
 #include "../src/Library/RISE_API.h"
@@ -57,6 +59,7 @@ struct LoadedScene {
         { std::ofstream out(path); out << text; }
         if(RISE_CreateJobPriv(&job)) Check(job->LoadAsciiSceneViaCst(path.c_str()),"domain fixture parses");
         std::remove(path.c_str());
+        if(job) job->GetScene()->GetObjects()->PrepareForRendering();
     }
     ~LoadedScene() { safe_release(job); }
     const IScene& Scene() const { return *job->GetScene(); }
@@ -480,8 +483,14 @@ static std::vector<RISEColor> TraceCompositeGrid(LoadedScene& loaded, bool exten
     integrator->GetSolver()->SetSpecularCasters(casters);
     if(extended) {
         IORStack missing(1);
+        #ifdef RISE_SMS_SCENE_POLICY
+        Check(!integrator->GetSolver()->ExtendedModeActive(loaded.Scene()),"prepared composite scene disables extended mode");
+        Check(integrator->GetSolver()->ExtendedAnchorEligible(loaded.Scene(),*caster,
+            Point3(0,0,-0.5),missing),"inert composite scene retains legacy coupled switches");
+#else
         if(startInside) Check(!integrator->GetSolver()->ExtendedAnchorEligible(
             loaded.Scene(),*caster,Point3(0,0,-0.5),missing),"production eligibility rejects unseeded composite anchor");
+#endif
     }
     SobolSamplerTestHooks::ValueSalt().store(salt);
     std::vector<RISEColor> pixels;
@@ -514,6 +523,157 @@ static std::vector<RISEColor> TraceCompositeGrid(LoadedScene& loaded, bool exten
     integrator->release(); caster->release(); shader->release();
     return pixels;
 }
+class DispatchSMSOp final : public PathTracingShaderOp {
+public:
+    mutable unsigned nmCalls=0, nestedCalls=0, lostMode=0;
+    DispatchSMSOp(const ManifoldSolverConfig& config,const StabilityConfig& stability)
+        : PathTracingShaderOp(config,stability) { SetMaxPathDepth(12); }
+    void Prepare(const IScene& scene) {
+        std::vector<const IObject*> casters;
+        ManifoldSolver::EnumerateSpecularCasters(scene,casters);
+        pIntegrator->GetSolver()->SetSpecularCasters(casters);
+    }
+    Scalar PerformOperationNM(const RuntimeContext& rc,const RayIntersection& hit,
+        const IRayCaster& caster,const IRayCaster::RAY_STATE& state,Scalar accum,Scalar nm,
+        const IORStack& stack,const ScatteredRayContainer* scat) const override {
+        ++nmCalls;
+        if(state.depth>1) ++nestedCalls;
+#ifdef RISE_SMS_SCENE_POLICY
+        if(!rc.smsForceLegacy) ++lostMode;
+#endif
+        return PathTracingShaderOp::PerformOperationNM(rc,hit,caster,state,accum,nm,stack,scat);
+    }
+};
+static std::string DispatchScene(int kind,const std::string& compositeMaterial="")
+{
+    std::string text=Materials(true)+Mesh(false,false)+
+        "standard_object\n{\n name pane\n geometry shape\n material glass\n}\n"
+        "lambertian_material\n{\n name floor_mat\n reflectance white\n}\n"
+        "clippedplane_geometry\n{\n name floor_geo\n pta -5 -5 0\n ptb -5 5 0\n ptc 5 5 0\n ptd 5 -5 0\n doublesided TRUE\n}\n"
+        "standard_object\n{\n name receiver\n geometry floor_geo\n material floor_mat\n}\n"
+        "omni_light\n{\n name source\n position 0.5 0 -2\n color 1 1 1\n power 40\n}\n";
+    if(kind==0) text+=
+        "homogeneous_medium\n{\n name zero_fog\n absorption 0 0 0\n scattering 0 0 0\n phase isotropic\n}\n"
+        "global_medium\n{\n medium zero_fog\n}\n";
+    if(kind>0) text+=std::string(kind==1?"subsurfacescattering_material":"randomwalk_sss_material")+
+        "\n{\n name subject_mat\n ior 1.3\n absorption 0.1 0.1 0.1\n scattering 4\n g 0\n roughness 0\n}\n"
+        "sphere_geometry\n{\n name subject_geo\n radius 0.25\n}\n"
+        "standard_object\n{\n name subject\n geometry subject_geo\n material subject_mat\n position 0 0 -0.5\n}\n";
+    if(!compositeMaterial.empty()) text+=compositeMaterial+
+        "standard_object\n{\n name remote_composite\n geometry shape\n material wrapped\n position 1000 0 0\n}\n";
+    return text;
+}
+static std::vector<Scalar> DispatchHWSS(LoadedScene& loaded,bool extended,unsigned salt,
+    unsigned& nmCalls,unsigned& nestedCalls,unsigned& lostMode)
+{
+    ManifoldSolverConfig config; config.enabled=true; config.extendedMode=extended;
+    config.seedingMode=ManifoldSolverConfig::eSeedingUniform; config.targetBounces=1;
+    config.biased=true; config.multiTrials=4; config.photonCount=1;
+    StabilityConfig stability; stability.rrMinDepth=20;
+    auto* op=new DispatchSMSOp(config,stability); op->Prepare(loaded.Scene());
+    std::vector<IShaderOp*> ops{op}; IShader* shader=nullptr;
+    Check(RISE_API_CreateStandardShader(&shader,ops),"dispatch HWSS shader created");
+    if(!shader) { op->release(); return {}; }
+    auto* caster=new RayCaster(false,16,*shader,true); caster->AttachScene(&loaded.Scene());
+    SobolSamplerTestHooks::ValueSalt().store(salt);
+    std::vector<Scalar> values;
+    for(unsigned sample=0;sample<128;++sample) {
+        RandomNumberGenerator random(salt+sample); SobolSampler sampler(sample,17);
+        RuntimeContext context(random,RuntimeContext::PASS_NORMAL,false); context.pSampler=&sampler;
+        SampledWavelengths swl=SampledWavelengths::SampleEquidistant(sampler.Get1D(),380,780);
+        Scalar result[SampledWavelengths::N]{}; IRayCaster::RAY_STATE state;
+        IORStack stack(1);
+        caster->CastRayHWSS(context,nullRasterizerState,Ray(Point3(0,0,-0.9),Vector3(0,0,1)),
+            result,state,swl,nullptr,nullptr,stack);
+        for(Scalar lane:result) values.push_back(lane);
+#ifdef RISE_SMS_SCENE_POLICY
+        Check(!context.smsForceLegacy,"HWSS cast restores caller mode after nested shader dispatch");
+#endif
+    }
+    nmCalls=op->nmCalls; nestedCalls=op->nestedCalls; lostMode=op->lostMode;
+    SobolSamplerTestHooks::ValueSalt().store(0);
+    caster->release(); shader->release(); op->release();
+    return values;
+}
+static void HWSSDispatchCases()
+{
+    for(int kind=0;kind<3;++kind) {
+        LoadedScene loaded(DispatchScene(kind));
+        for(unsigned trial=0;trial<4;++trial) {
+            unsigned offNM=0,offNested=0,offLost=0,onNM=0,onNested=0,onLost=0;
+            const unsigned salt=SobolSequence::HashCombine(1700+trial,0x48575353);
+            const auto off=DispatchHWSS(loaded,false,salt,offNM,offNested,offLost);
+            const auto on=DispatchHWSS(loaded,true,salt,onNM,onNested,onLost);
+            bool finite=true; double sum=0;
+            for(Scalar value:off) { finite=finite&&std::isfinite(value); sum+=value; }
+            Check(finite&&sum>0,"dispatch HWSS legacy control is finite and lit");
+            Check(!off.empty()&&off.size()==on.size()&&
+                std::memcmp(off.data(),on.data(),off.size()*sizeof(Scalar))==0,
+                "HWSS medium and SSS shader-dispatch fallback keeps legacy SMS bit-identically");
+            if(kind==0) Check(onNM>0,"global medium exercises direct HWSS to NM shader fallback");
+            else Check(onNested>0,"SSS exercises nested NM shader re-entry");
+#ifdef RISE_SMS_SCENE_POLICY
+            Check(onLost==0,"every dispatched NM continuation inherits HWSS anchor mode");
+#endif
+            std::cout<<"HWSS dispatch kind="<<kind<<" salt="<<salt<<" NM="<<onNM
+                <<" nested="<<onNested<<" lost="<<onLost<<" sum="<<sum<<"\n";
+        }
+    }
+}
+static void PreparedCompositePolicyCases()
+{
+    const std::string wrappers[]={
+        "lambertian_luminaire_material\n{\n name wrapped\n material layers\n exitance white\n scale 0\n}\n",
+        "phong_luminaire_material\n{\n name wrapped\n material layers\n exitance white\n scale 0\n N 10\n}\n",
+        "composite_material\n{\n name nested\n top layers\n bottom inner\n thickness 0.02\n extinction 0\n}\n"
+        "lambertian_luminaire_material\n{\n name wrapped\n material nested\n exitance white\n scale 0\n}\n"};
+    for(const auto& wrapper:wrappers) {
+        LoadedScene loaded(DispatchScene(-1,wrapper));
+        ManifoldSolverConfig config; config.extendedMode=true;
+        auto* solver=new ManifoldSolver(config);
+#ifdef RISE_SMS_SCENE_POLICY
+        Check(!solver->ExtendedModeActive(loaded.Scene()),"prepared wrapped composite disables extended mode scene-wide");
+        const auto* objects=dynamic_cast<const ObjectManager*>(loaded.Scene().GetObjects());
+        Check(objects&&objects->FirstCompositeObject()=="remote_composite","prepared policy names first composite object");
+#else
+        Check(!config.extendedMode,"prepared scene must make requested extended mode inert");
+#endif
+        SMSStartingMedia uncertain; IORStack missing(1);
+        Check(!SMSDomainReplay::Capture(loaded.Scene(),Point3(0,0,0),missing,uncertain),
+            "prepared composite scene declines missing membership even outside composite bounds");
+        solver->release();
+        for(bool nm : {false,true}) for(unsigned trial=0;trial<4;++trial) {
+            const unsigned salt=SobolSequence::HashCombine(2100+trial,0x434f4d50);
+            const auto off=TraceCompositeGrid(loaded,false,false,salt,nm);
+            const auto on=TraceCompositeGrid(loaded,true,false,salt,nm);
+            double sum=0; bool finite=true;
+            for(const auto& pixel:off) {
+                sum+=pixel.base.r+pixel.base.g+pixel.base.b;
+                finite=finite&&std::isfinite(pixel.base.r)&&std::isfinite(pixel.base.g)&&std::isfinite(pixel.base.b);
+            }
+            Check(finite&&sum>0,"remote wrapped composite legacy control is finite and lit");
+            Check(HashPixels(off)==HashPixels(on),"remote wrapped composite keeps RGB/NM legacy rendering bit-identically");
+        }
+    }
+    LoadedScene control(DispatchScene(-1));
+    ManifoldSolverConfig config; config.extendedMode=true; auto* solver=new ManifoldSolver(config);
+#ifdef RISE_SMS_SCENE_POLICY
+    Check(solver->ExtendedModeActive(control.Scene()),"prepared composite-free scene still runs extended mode");
+#endif
+    solver->release();
+    config.photonCount=1; solver=new ManifoldSolver(config);
+    std::vector<IShaderOp*> ops; IShader* shader=nullptr;
+    Check(RISE_API_CreateStandardShader(&shader,ops),"composite-free eligibility control shader");
+    if(shader) {
+        auto* caster=new RayCaster(false,16,*shader,true); caster->AttachScene(&control.Scene());
+        IORStack empty(1);
+        Check(!solver->ExtendedAnchorEligible(control.Scene(),*caster,Point3(0,0,-0.5),empty),
+            "composite-free extended control executes eligibility rejection rather than legacy bypass");
+        caster->release(); shader->release();
+    }
+    solver->release();
+}
+
 static void ParticipatingMediumCases()
 {
     for(bool global : {false,true}) for(bool closed : {false,true})
@@ -681,6 +841,16 @@ int main(int argc,char** argv)
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";
         return failCount?1:0;
     }
+    if(argc>1 && std::string(argv[1])=="--hwss-dispatch-only") {
+        HWSSDispatchCases();
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";
+        return failCount?1:0;
+    }
+    if(argc>1 && std::string(argv[1])=="--scene-policy-only") {
+        PreparedCompositePolicyCases();
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";
+        return failCount?1:0;
+    }
     if(argc>1 && std::string(argv[1])=="--medium-only") {
         ParticipatingMediumCases();
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";
@@ -715,6 +885,8 @@ int main(int argc,char** argv)
     NativeTIRAndSheetCases();
     FiniteDielectricCases();
     CompositePTCases();
+    PreparedCompositePolicyCases();
+    HWSSDispatchCases();
     Check(domainCounters.attempts.load()==domainCounters.acceptedRoots.load()+domainCounters.rejectedRoots.load(),
         "every domain trial is accounted as accepted or rejected");
     std::cout << "DOMAIN counters attempts=" << domainCounters.attempts.load()

@@ -19,6 +19,11 @@
 #include "../Utilities/Profiling.h"
 #include "../Objects/CSGObject.h"   // telling a CSG operand from a container node (both are hidden)
 #include "../Interfaces/ISurfaceSignalProvider.h"	// ProximityDemand: the snapshot's cost gate
+#include "../Materials/CompositeMaterial.h"
+#include "../Materials/LambertianLuminaireMaterial.h"
+#include "../Materials/PhongLuminaireMaterial.h"
+#include "../Materials/CoatedMaterial.h"
+#include "../Materials/FabricMaterial.h"
 #include <atomic>
 #include "../Utilities/ISampler.h"
 #include <cmath>
@@ -31,6 +36,32 @@ using namespace RISE;
 using namespace RISE::Implementation;
 
 namespace {
+
+// Inspect authored material graphs, never sampled specular metadata. A
+// composite nested under a luminaire or another wrapper remains unsupported.
+bool WrapsComposite(const IMaterial* material)
+{
+    if(!material) return false;
+    if(dynamic_cast<const CompositeMaterial*>(material)) return true;
+    if(const auto* m = dynamic_cast<const LambertianLuminaireMaterial*>(material))
+        return WrapsComposite(&m->GetBaseMaterial());
+    if(const auto* m = dynamic_cast<const PhongLuminaireMaterial*>(material))
+        return WrapsComposite(&m->GetBaseMaterial());
+    if(const auto* m = dynamic_cast<const CoatedMaterial*>(material))
+        return WrapsComposite(&m->GetBase());
+    if(const auto* m = dynamic_cast<const FabricMaterial*>(material))
+        return WrapsComposite(&m->GetBase());
+    return false;
+}
+bool ObjectWrapsComposite(const IObject& object)
+{
+    if(WrapsComposite(object.GetMaterial())) return true;
+    if(const auto* csg = dynamic_cast<const CSGObject*>(&object)) {
+        return (csg->GetOperandA() && ObjectWrapsComposite(*csg->GetOperandA()))
+            || (csg->GetOperandB() && ObjectWrapsComposite(*csg->GetOperandB()));
+    }
+    return false;
+}
 
 // Process-wide monotonic source for spatial-structure generation values.
 // Each ObjectManager seeds its generation here at construction and draws
@@ -2053,6 +2084,22 @@ void ObjectManager::PrepareForRendering() const
 	// picking paths) reach PrepareForRendering before RayCaster::AttachScene's
 	// realize pass, and this is the funnel they share.  Idempotent.
 	RealizeAllObjects();
+
+    // One decision per preparation, including hidden CSG operands. No probes
+    // or IOR history can certify their absence under DL-407.
+    smsFirstCompositeObject.clear();
+    for(const auto& item : items) {
+        if(ObjectWrapsComposite(*item.second.first)) {
+            smsFirstCompositeObject = item.first.c_str();
+            break;
+        }
+    }
+    smsPolicyPrepared = true;
+    if(!smsFirstCompositeObject.empty()) {
+        GlobalLog()->PrintEx(eLog_Warning,
+            "Extended SMS is inert for this prepared scene: composite object '%s'; using legacy SMS and suppression.",
+            smsFirstCompositeObject.c_str());
+    }
 
 	// 87 step 2: RE-BAKE the hierarchy, every frame.  This is the whole of
 	// hierarchical animation.  On the animation path EvaluateAtTime runs

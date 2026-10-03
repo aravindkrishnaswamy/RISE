@@ -3798,7 +3798,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		// ============================================================
         Scalar smsDomainNM = 0;
         if constexpr (!Traits::is_pel) smsDomainNM = tag.nm;
-        smsCurrentAnchor = pSolver && (smsIgnoreExtended_ || !pSolver->GetConfig().extendedMode
+        smsCurrentAnchor = pSolver && (rc.smsForceLegacy || smsIgnoreExtended_ || !pSolver->ExtendedModeActive(scene)
             || pSolver->ExtendedAnchorEligible(scene, caster, ri.geometric.ptIntersection, iorStack, smsDomainNM));
 
 		// PART 2: NEE + SMS at diffuse/glossy surfaces
@@ -5607,6 +5607,10 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
     bool smsIgnoreExtended_
 	) const
 {
+    const SMSLegacyModeScope smsMode(rc, smsIgnoreExtended_);
+    if(rc.smsForceLegacy && pSolver && pSolver->ExtendedModeActive(scene)) {
+        pSolver->WarnHWSSLegacyMode();
+    }
 	// Thin forwarder to the shared templated body.  pAOV carries the
 	// denoiser AOV for the spectral (NM) path: NMTag::supports_aov is
 	// true, so IntegrateFromHitTemplated records normal/albedo at the
@@ -5661,7 +5665,8 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 	Scalar castRRCompensation_
 	) const
 {
-    if(pSolver && pSolver->GetConfig().extendedMode) pSolver->WarnHWSSLegacyMode();
+    const SMSLegacyModeScope smsMode(rc, true);
+    if(pSolver && pSolver->ExtendedModeActive(scene)) pSolver->WarnHWSSLegacyMode();
 	// Initialize results
 	for( unsigned int i = 0; i < SampledWavelengths::N; i++ ) {
 		hwssResult[i] = 0;
@@ -7177,7 +7182,8 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 	PixelAOV* pAOV
 	) const
 {
-    if(pSolver && pSolver->GetConfig().extendedMode) pSolver->WarnHWSSLegacyMode();
+    const SMSLegacyModeScope smsMode(rc, true);
+    if(pSolver && pSolver->ExtendedModeActive(scene)) pSolver->WarnHWSSLegacyMode();
 	for( unsigned int i = 0; i < SampledWavelengths::N; i++ ) {
 		result[i] = 0;
 	}

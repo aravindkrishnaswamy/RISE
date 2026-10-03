@@ -3198,6 +3198,7 @@ bool RayCaster::CastRayHWSS(
 	const IORStack& ior_stack
 	) const
 {
+	const SMSLegacyModeScope smsMode(rc, true);
 	for( unsigned int i = 0; i < SampledWavelengths::N; i++ )
 		c[i] = 0;
 

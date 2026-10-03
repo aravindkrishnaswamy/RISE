@@ -417,22 +417,25 @@ After each coherent production increment, apply [the independent review loop](sk
 
 The pre-design master gate for the attenuation integration (`a8fa56224`) is recorded in [DL_CHEAPBATCH_VALIDATION.md](DL_CHEAPBATCH_VALIDATION.md) under "Post-merge master gate". The design import introduced no source changes. Current Phase 1 primitive and rejection evidence is recorded in [SMS_EXTENDED_PHASE1_VALIDATION.md](SMS_EXTENDED_PHASE1_VALIDATION.md); production activation and acceptance remain pending. No ledger row closes on the contract statement.
 
-## Adopted composite exclusion (2026-10-03)
+## Adopted interim composite policy (2026-10-03)
 
 The user ruled that composites are outside the initial extended domain.
-- A `composite_material` object is never an extended-SMS caster. A proposal
-  walk that hits one returns an ordinary zero trial (unsupported hit).
-- An anchor whose starting membership includes a composite is ineligible.
-  An anchor whose membership cannot be reconstructed because of DL-407 is
-  also ineligible. All three switches are off together: no SMS contribution,
-  no PT emitter-hit suppression, and no delta-light shadow opacity.
-- A PT chain crossing a composite is never owned; PT keeps its emitter hit.
-- Phase 1 composite coverage means rejection tests, not positive replay.
-  Use real composite geometry, double-sided indexed meshes with both
-  windings, and a closed-object start-inside case. Verify rejected casters
-  and enclosing media, PT-kept emission, and extended-on/off render parity:
-  bit-identical for deterministic paths, otherwise n >= 4 salted renders
-  within three measured standard deviations.
+For Phase 1, if the prepared scene contains any object whose effective
+material is or wraps `composite_material`, extended mode is inert for the
+entire scene. Static preparation inspects luminaire wrappers, CSG operands
+and nested composites once, and logs one warning naming the first composite
+object found. All three extended switches are off together; the existing
+solver, PT emitter-hit suppression and delta-light shadow handling run
+unchanged, exactly as with extended mode off.
+
+Composite caster queries and isolated seed walks still decline unsupported
+hits as ordinary zero trials. No composite PT chain is owned by extended
+SMS. Composite scenes must match extended-on/off renders: bit-identical
+where deterministic, otherwise at least four salted renders within three
+measured standard deviations. Fixtures include real double-sided indexed
+meshes with both windings and closed-object start-inside geometry, wrapped
+and nested composites, CSG operands, and a composite-free control that
+still activates the extended eligibility path.
 
 Positive composite replay requires a separate later design, a DL-407 fix,
 and an estimator for the composite walker; this design provides none.
@@ -440,6 +443,17 @@ and an estimator for the composite walker; this design provides none.
 seeding skips it. `CompositeSPFImpl::BottomKey` is internal; `ToExternal`
 normalizes bottom membership to the external scene-object identity. Do not
 infer that the synthetic bottom key necessarily escapes into PT.
+
+### Future: path-level membership provenance
+
+A future design may introduce a per-path **seed certain** bit. Clear it at
+the walk root when the seeding probe meets a composite (DL-407). Also clear
+it on any IOR-stack update not made by a traced crossing, unless the
+operation belongs to an audited list covering subsurface jumps, HWSS
+per-lane re-seeding, photon reconstruction and DL-370 handoffs. That
+provenance mechanism needs its own design and independent review before it
+can relax scene-wide rejection. It is not implemented by Phase 1, and no
+ledger row is opened for this note.
 
 Setup branch `sms-ext` imported the contract at `e37b8e288` from master
 `ffc70c1c2`. No implementation phase is claimed complete by this decision.
