@@ -153,6 +153,22 @@ RISEPel DataDrivenBSDF::value( const Vector3& vLightIn, const RayIntersectionGeo
 		return RISEPel(0,0,0);
 	}
 
+	// Geometric-horizon gate (DL-325 review P1), the SAME one LambertianBRDF's
+	// ShouldReflect and DataDrivenSPF apply: a tilted shading normal (bump /
+	// normal map / glint) can put a direction above the shading plane and below
+	// the true surface.  BSDF and SPF must share ONE support or the sampled
+	// continuation loses that energy while NEE / connections still see it.
+	// Ray-anchored (geomN opposes ri.ray.Dir()); a degenerate vGeomNormal falls
+	// back to the shading normal, making the gate a no-op.
+	{
+		const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( ri.vGeomNormal ) > Scalar(1e-12) )
+			? ri.vGeomNormal : ri.vNormal;
+		const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+		if( Vector3Ops::Dot( v, geomN ) <= 0 || Vector3Ops::Dot( r, geomN ) <= 0 ) {
+			return RISEPel(0,0,0);
+		}
+	}
+
 	const Scalar nv_theta = acos( nv );
 	const Scalar nr_theta = acos( nr );
 
