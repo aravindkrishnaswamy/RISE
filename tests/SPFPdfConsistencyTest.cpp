@@ -1567,7 +1567,16 @@ int main()
         // only thing it can correctly do.
         //--------------------------------------------------------------
         { "Coated_Lambertian",                 coatedLamb,  true,  true,  false, false, INTEGRAL_TOL },
-        { "Coated_GGX",                        coatedGgx,   true,  true,  false, true,  INTEGRAL_TOL },
+        //
+        // DL-388 (2026-10-02): half of the substrate branch now samples the
+        // GGX lobe IN THE COAT'S FRAME, and an internal draw outside the
+        // escape cone is trapped by total internal reflection and emits
+        // nothing.  `Pdf` is therefore a SUB-density -- 0.819 at 30 deg,
+        // 0.795 at 60 -- and Part 2's "hemisphere integral ~ 1" holds only
+        // as a sanity bound (0.25) on this row; Part 2b gates the mass
+        // EXACTLY against the measured emission probability (0.01), and
+        // cross-validation stays exact.
+        { "Coated_GGX",                        coatedGgx,   true,  true,  false, true,  0.25 },
 
         //--------------------------------------------------------------
         // fabric_material.  singleLobe / exactSelectedPdf both TRUE, and
@@ -1848,7 +1857,9 @@ int main()
         // BOUNDED rather than skipped: skipping would let the defect
         // grow silently, which is the failure mode this whole broadening
         // exists to prevent.
-        struct NMEntry { const char* name; ISPF* spf; double crossValTol; };
+        //! `integralTol`: Part 2's hemisphere band; INTEGRAL_TOL except on a
+        //! sub-density row (Coated_GGX since DL-388 -- see the RGB table).
+        struct NMEntry { const char* name; ISPF* spf; double crossValTol; double integralTol = INTEGRAL_TOL; };
         const NMEntry nmEntries[] = {
             { "Lambertian",              lambertian,   CROSS_VAL_TOL },
             { "OrenNayar",               orenNayar,    CROSS_VAL_TOL },
@@ -1895,7 +1906,7 @@ int main()
             { "GGX_Anisotropic",         ggxAniso,     CROSS_VAL_TOL },
             { "SubSurfaceScattering",    sss,          CROSS_VAL_TOL },
             { "Coated_Lambertian",       coatedLamb,   CROSS_VAL_TOL },
-            { "Coated_GGX",              coatedGgx,    CROSS_VAL_TOL },
+            { "Coated_GGX",              coatedGgx,    CROSS_VAL_TOL, 0.25 },
             { "Fabric_Lambertian",       fabricLamb,   CROSS_VAL_TOL },
             { "Fabric_GGXaniso_weave45", fabricAniso,  CROSS_VAL_TOL },
 
@@ -1928,7 +1939,7 @@ int main()
                 // diverged from RGB through the tint would diverge here
                 // first (docs/SPECTRAL_ILLUMINANT_CONVENTION.md).
                 NMResult r = TestSPFNM( std::string( e.name ) + " @ " + nmAngleNames[a],
-                                        *e.spf, nmAngles[a], 660.0, INTEGRAL_TOL,
+                                        *e.spf, nmAngles[a], 660.0, e.integralTol,
                                         e.crossValTol );
                 std::cout << "  " << ( r.passed ? "PASS" : "FAIL" ) << "  " << r.name
                           << "  crossValFailures=" << r.crossValFailures

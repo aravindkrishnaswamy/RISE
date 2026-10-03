@@ -225,7 +225,13 @@ static FurnaceResult FurnaceTest(
         }
     }
 
-    result.mcEstimate = (mcCount > 0) ? mcSum / mcCount : 0;
+    // Divide by EVERY attempt, not by the attempts that emitted: E[sum kray]
+    // over all Scatter calls is the integral, and an SPF that legitimately
+    // emits nothing on some calls (a sub-density -- e.g. coated_material's
+    // refracted-frame substrate draw trapped by total internal reflection,
+    // DL-388) would otherwise be over-read by 1 / P(emit).
+    (void)mcCount;
+    result.mcEstimate = mcSum / double( FURNACE_MC_SAMPLES );
 
     // ---- Numerical quadrature via BRDF::value() ----
     // Integrate MaxValue( BRDF::value(wo, ri) ) * cos(theta_o) * sin(theta) * dtheta * dphi
