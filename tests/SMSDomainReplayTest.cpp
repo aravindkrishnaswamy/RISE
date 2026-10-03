@@ -5,6 +5,7 @@
 #include "../src/Library/Interfaces/IScenePriv.h"
 #include "../src/Library/Interfaces/IObjectManager.h"
 #include "../src/Library/Interfaces/IObjectPriv.h"
+#include "../src/Library/Interfaces/ISPF.h"
 #include "../src/Library/Shaders/PathTracingIntegrator.h"
 #include "../src/Library/Rendering/RayCaster.h"
 #include "../src/Library/Utilities/RuntimeContext.h"
@@ -495,6 +496,45 @@ static std::vector<RISEColor> TraceCompositeGrid(LoadedScene& loaded, bool exten
     integrator->release(); caster->release(); shader->release();
     return pixels;
 }
+static void PolishedEventCases()
+{
+    for(bool closed : {false,true}) for(bool reverse : {false,true}) for(bool transformed : {false,true}) {
+        const double offset=transformed?3:0;
+        LoadedScene loaded(Materials(false)+
+            "uniformcolor_painter\n{\n name black\n color 0 0 0\n}\n"
+            "scalar_painter\n{\n name coat_tint\n values 0.2 0.4 0.8\n}\n"
+            "polished_material\n{\n name polished\n reflectance black\n tau coat_tint\n ior triple\n scattering 1000000\n}\n"+Mesh(closed,reverse)+
+            "standard_object\n{\n name caster\n geometry shape\n material polished\n position "+std::to_string(offset)+" 0 0\n}\n");
+        const IObject* object=loaded.Object("caster");
+        if(!object) { Check(false,"polished caster exists"); continue; }
+        for(int side : {-1,1}) {
+            const auto hit=Hit(*object,Point3(offset,0,side*3),Vector3(0,0,-side));
+            IORStack stack(1); stack.SetCurrentObject(object);
+            RandomNumberGenerator random(421); IndependentSampler sampler(random);
+            ScatteredRayContainer native;
+            hit.pMaterial->GetSPF()->Scatter(hit.geometric,sampler,native,stack);
+            Check(native.Count()==1,"black-substrate polished native single delta coat");
+            for(unsigned c=0;c<3;++c) {
+                Scalar ni,nt,weight; bool exiting; IORStack replay(stack);
+                Check(SMSDomainReplay::Cross(*hit.pMaterial,object,hit.geometric,SMSQueryDomain::RGB(c),true,
+                    replay,ni,nt,exiting),"polished reflection domain crossing");
+                Check(SMSDomainReplay::EventWeight(*hit.pMaterial,hit.geometric,stack,SMSQueryDomain::RGB(c),
+                    true,exiting,ni,nt,1,weight),"polished native RGB event query");
+                Check(native.Count()==1 && Near(weight,native[0].kray[c]),"polished RGB coat tint matches native SPF delta weight");
+            }
+            for(double nm : {450.,550.,650.}) {
+                ScatteredRayContainer nativeNM;
+                hit.pMaterial->GetSPF()->ScatterNM(hit.geometric,sampler,nm,nativeNM,stack);
+                Scalar ni,nt,weight; bool exiting; IORStack replay(stack);
+                Check(SMSDomainReplay::Cross(*hit.pMaterial,object,hit.geometric,SMSQueryDomain::NM(nm),true,
+                    replay,ni,nt,exiting),"polished NM reflection domain crossing");
+                Check(SMSDomainReplay::EventWeight(*hit.pMaterial,hit.geometric,stack,SMSQueryDomain::NM(nm),
+                    true,exiting,ni,nt,1,weight),"polished native NM event query");
+                Check(nativeNM.Count()==1 && Near(weight,nativeNM[0].krayNM),"polished NM coat tint matches native SPF delta weight");
+            }
+        }
+    }
+}
 static void CompositeCSGCases()
 {
     for(bool reverse : {false,true}) {
@@ -568,6 +608,11 @@ int main(int argc,char** argv)
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";
         return failCount?1:0;
     }
+    if(argc>1 && std::string(argv[1])=="--polished-only") {
+        PolishedEventCases();
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";
+        return failCount?1:0;
+    }
     if(argc>1 && std::string(argv[1])=="--composite-only") {
         CompositeCSGCases();
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";
@@ -578,6 +623,7 @@ int main(int argc,char** argv)
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";
         return failCount?1:0;
     }
+    PolishedEventCases();
     CompositeCSGCases();
     RasterContextCases();
     ComponentAndCrossingCases();
