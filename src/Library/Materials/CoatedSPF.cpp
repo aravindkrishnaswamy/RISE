@@ -14,6 +14,8 @@
 #include "CoatedSPF.h"
 #include "CoatedLayer.h"
 #include "../Utilities/MicrofacetUtils.h"
+#include "../Utilities/GeometricUtilities.h"
+#include "../Intersection/RayIntersectionGeometric.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -118,9 +120,29 @@ Scalar CoatedSPF::PdfImpl(
 	// separate guard is needed here.
 	const OrthonormalBasis3D coatOnb = pBRDF->ResolveCoatFrame( ri, onb );
 	const Scalar qCoat = MicrofacetUtils::VNDF_Pdf_Aniso( wi, wo, coatOnb, cp.alpha, cp.alpha );
-	const Scalar qBase = ( nm < 0 )
+	const Scalar qBaseOuter = ( nm < 0 )
 		? pBaseSPF->Pdf( ri, wo, ior_stack )
 		: pBaseSPF->PdfNM( ri, wo, nm, ior_stack );
+
+	// DL-388: the substrate branch's refracted-frame half (see ScatterImpl):
+	// the base SPF's density at the internal direction wo' that Snell
+	// pairs with wo, times the solid-angle Jacobian of the refraction,
+	// dw'/dw = cos_o / (eta^2 mu_o')  (from n^2 cos dw being invariant).
+	const Scalar omega  = pBRDF->RefractedSampleFraction();
+	const Scalar omegaC = pBRDF->RecycledSampleFraction();
+	Scalar qBase = qBaseOuter;
+	if( omega > Scalar(0) ) {
+		const RayIntersectionGeometric riIn = pBRDF->MakeSubstrateRecord( ri, onb, cp );
+		const Vector3 woIn = CoatedLayer::RefractIntoCoat( wo, n, cp.eta );
+		const Scalar  muIn = Vector3Ops::Dot( woIn, n );
+		const Scalar  qIn  = ( nm < 0 )
+			? pBaseSPF->Pdf( riIn, woIn, ior_stack )
+			: pBaseSPF->PdfNM( riIn, woIn, nm, ior_stack );
+		const Scalar qRefr = ( muIn > Scalar(0) ) ? qIn * cosWo / ( cp.eta * cp.eta * muIn ) : Scalar(0);
+		// The recycled-term share: a cosine lobe about n (its geometric-
+		// horizon rejections make it a sub-density, like the sampler).
+		qBase = ( Scalar(1) - omega - omegaC ) * qBaseOuter + omega * qRefr + omegaC * ( cosWo * INV_PI );
+	}
 
 	return r_max( Scalar(0), pCoat * qCoat + ( Scalar(1) - pCoat ) * qBase );
 }
@@ -187,7 +209,84 @@ void CoatedSPF::ScatterImpl(
 	ScatteredRay::ScatRayType lobeType = ScatteredRay::eRayReflection;
 	bool sampled = false;
 
-	if( sampler.Get1D() < pCoat )
+	const Scalar uLobe  = sampler.Get1D();
+	const Scalar omega  = pBRDF->RefractedSampleFraction();
+	const Scalar omegaC = pBRDF->RecycledSampleFraction();
+	const Scalar uSub   = ( uLobe - pCoat ) / r_max( Scalar(1e-12), Scalar(1) - pCoat );
+	if( uLobe >= pCoat && omegaC > Scalar(0) && uSub >= omega && uSub < omega + omegaC )
+	{
+		// --- DL-388: the recycled term's technique -- a cosine lobe about
+		//     the macro normal (selection again reuses `uLobe`).  M is a
+		//     broad field the substrate's own sampler cannot reach once its
+		//     lobe is narrow; this caps M's sample weight.  Tagged diffuse:
+		//     it is what the recycled light is.
+		const Point2 ptrand( sampler.Get1D(), sampler.Get1D() );
+		wo = GeometricUtilities::CreateDiffuseVector( onb, ptrand );
+		const bool   valid = ( Vector3Ops::Dot( wo, n ) > 0 ) && ( Vector3Ops::Dot( wo, geomN ) > 0 );
+		const Scalar q = valid ? PdfImpl( ri, wo, nm, ior_stack ) : Scalar(0);
+		if( !valid || q <= Scalar(1e-12) ) {
+			return;
+		}
+		const Scalar cosWo = Vector3Ops::Dot( wo, n );
+		ScatteredRay sub;
+		sub.type    = ScatteredRay::eRayDiffuse;
+		sub.isDelta = false;
+		sub.ray.Set( ri.ptIntersection, wo );
+		sub.pdf     = q;
+		if( nm < 0 ) {
+			sub.kray = pBRDF->value( wo, ri ) * ( cosWo / q );
+		} else {
+			sub.krayNM = pBRDF->valueNM( wo, ri, nm ) * ( cosWo / q );
+		}
+		scattered.AddScatteredRay( sub );
+		return;
+	}
+	if( uLobe >= pCoat && omega > Scalar(0) &&
+	    ( uLobe - pCoat ) < omega * ( Scalar(1) - pCoat ) )
+	{
+		// --- DL-388: substrate lobe sampled IN THE COAT'S FRAME.  The base
+		//     SPF draws an internal direction from the refracted view; it
+		//     is refracted out, or -- outside the escape cone -- trapped by
+		//     total internal reflection, in which case this draw emits
+		//     nothing (PdfImpl reports the matching sub-density).  The
+		//     selection reuses `uLobe` (no extra dimension); omega is 0 for
+		//     every substrate model but the GGX lobe reservoir, so the
+		//     Lambertian / Oren-Nayar / fabric / weave draws are unchanged.
+		const RayIntersectionGeometric riIn = pBRDF->MakeSubstrateRecord( ri, onb, cp );
+		ScatteredRayContainer inner;
+		if( nm < 0 ) {
+			pBaseSPF->Scatter( riIn, sampler, inner, ior_stack );
+		} else {
+			pBaseSPF->ScatterNM( riIn, sampler, nm, inner, ior_stack );
+		}
+		if( inner.Count() == 0 || inner[0].isDelta ) {
+			return;
+		}
+		Scalar cosOut = 0;
+		if( !CoatedLayer::RefractOutOfCoat( Vector3Ops::Normalize( inner[0].ray.Dir() ), n, cp.eta, wo, cosOut ) ) {
+			return;
+		}
+		const bool   valid = ( Vector3Ops::Dot( wo, n ) > 0 ) && ( Vector3Ops::Dot( wo, geomN ) > 0 );
+		const Scalar q = valid ? PdfImpl( ri, wo, nm, ior_stack ) : Scalar(0);
+		if( !valid || q <= Scalar(1e-12) ) {
+			return;
+		}
+		const Scalar cosWo = Vector3Ops::Dot( wo, n );
+		ScatteredRay sub;
+		sub.type    = inner[0].type;
+		sub.isDelta = false;
+		sub.ray.Set( ri.ptIntersection, wo );
+		sub.pdf     = q;
+		if( nm < 0 ) {
+			sub.kray = pBRDF->value( wo, ri ) * ( cosWo / q );
+		} else {
+			sub.krayNM = pBRDF->valueNM( wo, ri, nm ) * ( cosWo / q );
+		}
+		scattered.AddScatteredRay( sub );
+		return;
+	}
+
+	if( uLobe < pCoat )
 	{
 		// --- coat lobe: anisotropic-capable VNDF sampling at the
 		//     isotropic coat alpha (7.2 gives the coat one roughness).

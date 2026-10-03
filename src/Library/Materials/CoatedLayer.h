@@ -169,6 +169,55 @@ namespace RISE
 				return sqrt( r_max( Scalar(0), Scalar(1) - sin2T ) );
 			}
 
+			//! DL-388: refract an OUTER direction `d` (unit, `d . n > 0`)
+			//! into the coat across the smooth interface with normal `n`.
+			//! The tangential component scales by 1/eta and the azimuth is
+			//! kept, so the result is the direction INSIDE the coat that
+			//! Snell pairs with `d`.  For eta >= 1 this always exists, and
+			//! it lies inside the escape cone (cos >= sqrt(1 - 1/eta^2)).
+			inline Vector3 RefractIntoCoat( const Vector3& d, const Vector3& n, const Scalar eta )
+			{
+				const Scalar c  = Vector3Ops::Dot( d, n );
+				const Scalar mu = CosRefracted( c, eta );
+				return Vector3Ops::Normalize( ( d - n * c ) * ( Scalar(1) / eta ) + n * mu );
+			}
+
+			//! DL-388: inverse of RefractIntoCoat.  `dIn` is a direction
+			//! INSIDE the coat leaving the substrate (`dIn . n > 0`).
+			//! Returns false when it is totally internally reflected
+			//! (outside the escape cone); otherwise writes the outer
+			//! direction and its cosine.
+			inline bool RefractOutOfCoat( const Vector3& dIn, const Vector3& n, const Scalar eta, Vector3& out, Scalar& cosOut )
+			{
+				const Scalar mu = Vector3Ops::Dot( dIn, n );
+				if( !( mu > Scalar(0) ) ) {
+					return false;
+				}
+				const Scalar s2 = eta * eta * ( Scalar(1) - mu * mu );
+				if( s2 >= Scalar(1) ) {
+					return false;
+				}
+				cosOut = sqrt( Scalar(1) - s2 );
+				out = Vector3Ops::Normalize( ( dIn - n * mu ) * eta + n * cosOut );
+				return true;
+			}
+
+			//! DL-388: internal Fresnel reflectance at the coat's UNDERSIDE
+			//! for a direction at INTERNAL cosine `mu`: 1 below the critical
+			//! cosine (total internal reflection), else the external Fresnel
+			//! at the outer cosine Snell pairs with `mu` (reciprocity).
+			inline Scalar FresnelInside( const Scalar mu, const Scalar eta )
+			{
+				if( !( eta > Scalar(1) ) ) {
+					return Scalar(0);
+				}
+				const Scalar s2 = eta * eta * ( Scalar(1) - mu * mu );
+				if( s2 >= Scalar(1) ) {
+					return Scalar(1);
+				}
+				return Fresnel( sqrt( Scalar(1) - s2 ), eta );
+			}
+
 			namespace Detail
 			{
 				//! eta domain of the cached r_e table.  1.0 (no
