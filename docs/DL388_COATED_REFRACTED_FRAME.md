@@ -216,6 +216,8 @@ replicate, OIDN off, linear float capture, Rec.709 luminance:
 | `tidal_stones` stones (GGX, coat only where `interior()` > 0, i.e. submerged) | 0.18634 / 0.14275 / 0.16193 | 0.18636 / 0.14274 / 0.16192 | <= 0.01 % | <= 0.8 |
 | same, whole image | 0.08916 | 0.08916 | 0.00 % | 0.2 |
 
+**Review round 2 (2026-10-02) attribution and residual.** On a brass-like substrate under a clear coat the coated BRDF exceeds the independent composite by +5..7 % at 60-85 deg, so roughly a third of the brass box's +21 % rim move is DL-423-class overshoot and the rest is the refracted-frame physics. More generally, DL-423 is larger than its albedo pin suggests: for a smooth metal (F0 0.9, alpha 0.05, coat 1.5) the reservoir places energy in a broad grazing haze -- energy more than 30 deg off the mirror direction reads 0.236 coated vs 0.068 composite at 70 deg (0.255 vs 0.089 at 80 deg) -- and a rendered coated metal sphere (alpha 0.01) reads +14.6 % / +25 % brighter than the composite at its rim (master read -13 % / -9 % there). The absorbing-coat direct path is also DISCONTINUOUS in eta near 1 (22 % jump over delta-eta 1e-5 at alpha 0.1, eta ~1.01415; 18 % at alpha 0.02, eta ~1.0015), likely the window half-width clamp on lopsided bins; the furnace is unaffected and the clear-table path is smooth (DL-426).
+
 The brightening is the expected sign: the outer frame read the GGX diffuse
 lobe's `(1 - A)` at the outer grazing angle.  Every Lambertian-based coat
 (`coated_material.RISEscene`, `rainwet_courtyard_night`) is pixel
