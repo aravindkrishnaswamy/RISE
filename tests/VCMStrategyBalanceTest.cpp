@@ -2212,8 +2212,9 @@ static void TestNarrowFovSplatW()
 // the eye family can cover (any NEE / connection / merge in the light
 // segment, or s=0) ends the usable light subpath; one it cannot cover
 // (a delta light feeding a random-walk entry: rows D1/D2) is kept
-// (VCMIntegrator.cpp, BSSRDFEntryVertexState / LightSegmentEyeCoverable
-// / UsableLightSubpathLength).  Cutting the light family everywhere --
+// (VCMIntegrator.cpp, BSSRDFEntryVertexState; BDPTUtilities::
+// LightSegmentEyeWitness / LightJumpPartition -- per strategy and under
+// the eye depth caps since DL-380).  Cutting the light family everywhere --
 // the first DL-317 fix, 3763e998 -- left that class estimated by
 // nothing (D1/D2 -97%; external review).
 //
@@ -2516,7 +2517,7 @@ static void TestDeltaLitWallDL317()
 // The random-walk entry is now connectible (Sw = the exact-Fresnel
 // RandomWalkEntryBSDF, MIS density the walk's cosine exit), the eye
 // family owns the path, and the light-side jump is cut there
-// (LightSegmentEyeCoverable reads the entry's connectibility).
+// (LightSegmentEyeWitness reads the entry's connectibility).
 //////////////////////////////////////////////////////////////////////
 static void RunDeltaLitSphereRowDL375( const char* name, const char* light, int spp, double band )
 {
@@ -2538,6 +2539,78 @@ static void TestDeltaLitSphereDL375()
 		kLightOmniDL317, 2048, 0.05 );
 	RunDeltaLitSphereRowDL375( "S2 spot lights a directly-seen random-walk sphere (sphere pixels)",
 		kLightSpotDL317, 2048, 0.05 );
+}
+
+//////////////////////////////////////////////////////////////////////
+// DL-380: the D1/D2 wall rows under DEPTH CAPS.  The eye family covers
+// light -> sphere -> walk -> exit -> wall -> camera by NEE / connection /
+// merge at its random-walk entry, which needs TWO eye surface vertices
+// (the wall, then the sphere it jumps from).  At `max_eye_depth 1` it has
+// no strategy, so the light family (splat / connection at the wall) must
+// keep the path; the partition used to decide from vertex types alone and
+// cut it (-98.6% merging on).  E16/L1 is the mirror: the light walk is the
+// truncated one, the eye family owns the path, nothing may be counted
+// twice.  Reference: PT, which has no subpath caps.
+//////////////////////////////////////////////////////////////////////
+static std::string RasterizerDL380( const char* kind, int spp, int eyeDepth, int lightDepth )
+{
+	if( std::strcmp( kind, "pt" ) == 0 ) {
+		return RasterizerDL317( "pt", spp, nullptr );
+	}
+	char buf[1024];
+	std::snprintf( buf, sizeof(buf), "vcm_pel_rasterizer\n{\n\tmax_eye_depth %d\n\tmax_light_depth %d\n"
+		"\tsamples %d\n\tmerge_radius 0.0\n\tvc_enabled true\n\tvm_enabled %s\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n",
+		eyeDepth, lightDepth, spp, std::strcmp( kind, "vcm" ) == 0 ? "true" : "false" );
+	return std::string( "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n" ) + buf
+		+ "\nfile_rasterizeroutput\n{\n\tpattern rendered/vcm_balance_unused\n\ttype EXR\n\tbpp 32\n"
+		"\tcolor_space Rec709RGB_Linear\n}\n";
+}
+
+//! Mean and sd of the wall-pixel mean over `n` independently salted renders.
+static bool WallMeanSdDL380( const std::string& scene, int n, double& mean, double& sd )
+{
+	double sum = 0, sumSq = 0;
+	for( int i = 0; i < n; i++ ) {
+		double w = 0;
+		if( !RenderWallMeanDL317( scene, 1, w ) ) return false;
+		sum += w; sumSq += w * w;
+	}
+	mean = sum / n;
+	sd = n > 1 ? std::sqrt( std::max( 0.0, ( sumSq - n * mean * mean ) / ( n - 1 ) ) ) : 0;
+	return true;
+}
+
+static void RunDepthCappedWallRowDL380( const char* name, const char* light, int eyeDepth, int lightDepth,
+	int spp, int n, double pt, double band )
+{
+	std::cout << "Testing DL-380 " << name << std::endl;
+	const std::string body = std::string( "RISE ASCII SCENE 7\n" ) + kSceneDeltaLitRandomWalkHeadDL317 + light;
+	double on = 0, onSd = 0, off = 0, offSd = 0;
+	const bool ok = WallMeanSdDL380( body + RasterizerDL380( "vcm", spp, eyeDepth, lightDepth ), n, on, onSd )
+		&& WallMeanSdDL380( body + RasterizerDL380( "vcmnovm", spp, eyeDepth, lightDepth ), n, off, offSd );
+	Check( ok, ( std::string( "DL-380 renders produced output: " ) + name ).c_str() );
+	if( !ok ) return;
+	std::printf( "    merging on %.7f (sd %.7f), off %.7f (sd %.7f), n %d\n", on, onSd, off, offSd, n );
+	CheckRatioDL317( std::string( "DL-380 wall-only VCM (merging on) / PT: " ) + name, pt, on, band );
+	CheckRatioDL317( std::string( "DL-380 wall-only VCM (merging off) / PT: " ) + name, pt, off, band );
+}
+
+//! Bands are the DL-317 D1/D2 bands (>= 4.6 sd of the ratio).
+static void TestDepthCappedWallDL380()
+{
+	const int n = 3;
+	double ptOmni = 0, ptSpot = 0, sdOmni = 0, sdSpot = 0;
+	const std::string head = std::string( "RISE ASCII SCENE 7\n" ) + kSceneDeltaLitRandomWalkHeadDL317;
+	const bool ok = WallMeanSdDL380( head + kLightOmniDL317 + RasterizerDL380( "pt", 2048, 16, 16 ), n, ptOmni, sdOmni )
+		&& WallMeanSdDL380( head + kLightSpotDL317 + RasterizerDL380( "pt", 2048, 16, 16 ), n, ptSpot, sdSpot );
+	Check( ok, "DL-380 PT references produced output" );
+	if( !ok ) return;
+	std::printf( "    PT wall reference: D1 omni %.7f (sd %.7f), D2 spot %.7f (sd %.7f), n %d\n",
+		ptOmni, sdOmni, ptSpot, sdSpot, n );
+	RunDepthCappedWallRowDL380( "D1 omni, max_eye_depth 1 / max_light_depth 16", kLightOmniDL317, 1, 16, 2048, n, ptOmni, 0.15 );
+	RunDepthCappedWallRowDL380( "D2 spot, max_eye_depth 1 / max_light_depth 16", kLightSpotDL317, 1, 16, 2048, n, ptSpot, 0.035 );
+	RunDepthCappedWallRowDL380( "D2 spot, max_eye_depth 16 / max_light_depth 1 (light truncated: no double count)",
+		kLightSpotDL317, 16, 1, 2048, n, ptSpot, 0.035 );
 }
 
 static void TestSSSBarrierDL317()
@@ -3031,6 +3104,14 @@ int main( int argc, char** argv )
 		return failCount == 0 ? 0 : 1;
 	}
 
+	// DL-380: the depth-capped by-path partition rows alone.
+	if( argc >= 2 && std::strcmp( argv[1], "--dl380-only" ) == 0 ) {
+		ApplySeedOverride( 2 );
+		TestDepthCappedWallDL380();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+
 	// DL-317: the SSS barrier rows (and topology U) alone.
 	if( argc >= 2 && std::strcmp( argv[1], "--dl317-only" ) == 0 ) {
 		ApplySeedOverride( 2 );
@@ -3204,6 +3285,7 @@ int main( int argc, char** argv )
 	TestNullBSDFMaterialContinuation();
 	TestRoughSSSEmptyContainerU();
 	TestSSSBarrierDL317();
+	TestDepthCappedWallDL380();
 	TestSmoothDiffusionSphereDL333();
 	TestNonfiniteCandidateRejected();
 	TestNarrowFovSplatW();

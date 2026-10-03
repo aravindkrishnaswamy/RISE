@@ -123,7 +123,18 @@ namespace RISE
 			/// side faces still contribute; this is a conservative
 			/// (radius-shrinks-further) bias that matches our intent
 			/// (use area, underestimate density, keep larger radius).
+			/// DL-380: computed over the ORDINARY vertices only -- those
+			/// NOT flagged `kLVF_JumpCover` (stored past an
+			/// eye-coverable light-side subsurface jump, merged only
+			/// where the eye walk's depth caps leave the eye family
+			/// without a strategy), i.e. exactly the store the
+			/// pre-DL-380 partition kept, so the adaptive radius floor
+			/// is unchanged.  Pair it with CountOrdinaryVertices().
 			Scalar ComputeBBoxSurfaceArea() const;
+
+			/// DL-380: number of stored vertices NOT flagged
+			/// `kLVF_JumpCover` (see ComputeBBoxSurfaceArea).
+			std::size_t CountOrdinaryVertices() const;
 
 			/// Clamp outlier throughputs to suppress photon-mapping
 			/// fireflies caused by rare bright photons (notably SSS
@@ -138,6 +149,10 @@ namespace RISE
 			/// practice (PBRT, Mitsuba, SmallVCM stability mode).
 			/// No-op when the store is empty, when `multiplier <= 0`,
 			/// or when the percentile value is sub-numerical.
+			/// DL-380: the percentile is taken over the ORDINARY
+			/// vertices only (see ComputeBBoxSurfaceArea), so the
+			/// threshold is the pre-DL-380 one; every vertex, flagged
+			/// or not, is clamped against it.
 			///
 			/// MUST be called after Concat and before BuildKDTree —
 			/// modifying throughputs after the tree balance does not
