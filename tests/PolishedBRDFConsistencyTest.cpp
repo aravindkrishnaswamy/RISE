@@ -38,8 +38,10 @@
 //       different function than its SPF samples).  Every pair already in
 //       SPFBSDFConsistencyTest's furnace is covered there; the two that
 //       were not are run here: `sheen_material` (gates 1-4, green) and
-//       `datadriven_material`, which has a BSDF and NO SPF at all -- the
-//       sampled function is identically 0 -- pinned as DL-325.
+//       `datadriven_material`, which had a BSDF and NO SPF at all (DL-325,
+//       CLOSED: `DataDrivenSPF` now samples the table) -- run through
+//       gates 1, 2, 4, 5 on a constant and a varied chromatic table, plus
+//       the back-face (blind side) contract.
 //    0. The model's building blocks (post-fix API; the gate-1..5 rows are
 //       the red-proof and compile against the pre-fix tree): the model's
 //       g-form Fresnel equals `Optics::CalculateDielectricReflectanceCosine`,
@@ -93,6 +95,7 @@
 #include <unistd.h>
 
 #include "TestStubObject.h"
+#include "DataDrivenTestTables.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -256,7 +259,7 @@ static void RunRowMaterial( const IMaterial& mat, const std::string& name, const
 
 	char label[256];
 	std::snprintf( label, sizeof(label), "%s th%.0f%s%s", name.c_str(), fx.thetaDeg,
-		fx.tiltDeg != 0 ? " tilt" : "", fx.backface ? " BACKFACE" : "" );
+		fx.tiltDeg != 0 ? ( " tilt" + std::to_string( int( fx.tiltDeg ) ) ).c_str() : "", fx.backface ? " BACKFACE" : "" );
 
 	// ---- SPF side --------------------------------------------------
 	RandomNumberGenerator rng( seed );
@@ -590,33 +593,68 @@ static void RunSiblingAudit( unsigned int& seed )
 		safe_release( white );
 	}
 
-	// datadriven_material: a synthetic constant table (value 0.4/pi on
-	// both hemispheres of the view/light pair), so its BSDF integrates to
-	// exactly 0.4 -- while it has no SPF, i.e. the sampled function is 0.
-	// KNOWN-DEFECT PIN (DL-325): PT terminates at it (direct light only),
-	// BDPT renders it black, VCM prices indirect light into it.
-	{
+	// datadriven_material (DL-325, CLOSED): the material used to have a BSDF
+	// and NO SPF -- the sampled function was identically 0 (PT terminated at
+	// it, BDPT rendered it black).  `DataDrivenSPF` now samples the same
+	// tabulated BRDF (cosine-weighted, kray = f cos / pdf from the BSDF
+	// itself), so it is run through the SAME gates 1, 2, 4, 5 as polished and
+	// sheen, on two synthetic tables:
+	//   constant -- value 0.4/pi on every view/light pair (a Lambertian 0.4);
+	//   varied   -- chromatic, direction-dependent, positive everywhere, so
+	//               a kray that disagreed with the BSDF in SHAPE (not just in
+	//               mass) cannot hide behind a flat function.
+	// The table is reflection-only (DataDrivenBSDF::value is 0 whenever the
+	// view or the light is behind the shading normal), so the back-face row
+	// pins the other half of the contract: nothing to sample, nothing emitted.
+	for( int variant = 0; variant < 2; ++variant ) {
 		char path[256];
-		std::snprintf( path, sizeof(path), "/tmp/dl285_const04_%d.bdf", (int)::getpid() );
-		{
-			std::ofstream f( path, std::ios::binary );
-			const int hdr[4] = { 0xBDF, 1, 1, 2 };
-			f.write( reinterpret_cast<const char*>( hdr ), sizeof( hdr ) );
-			const double v = 0.4 / PI;
-			const double rec[21] = { PI / 2,
-				0.0, PI / 4, v, v, v,   0.0, PI / 4, 0, 0, 0,
-				PI / 4, PI / 2, v, v, v,   PI / 4, PI / 2, 0, 0, 0 };
-			f.write( reinterpret_cast<const char*>( rec ), sizeof( rec ) );
-		}
+		std::snprintf( path, sizeof(path), "dl325_table%d_%d.bdf", variant, (int)::getpid() );
+		Check( variant == 0 ? DataDrivenTestTables::WriteConstant( path, 0.4 ) : DataDrivenTestTables::WriteVaried( path ),
+		       "gate 6 (DL-325): synthetic .bdf written" );
 		DataDrivenMaterial* dd = new DataDrivenMaterial( path );  dd->addref();
-		const RayIntersectionGeometric ri = MakeRI( Fixture{ 30.0, 0.0, false } );
-		double B = 0;
-		SphereQuadrature( Vector3( 0, 0, 1 ), 600, 256, [&]( const Vector3& w, double dOm ) {
-			B += dd->GetBSDF()->value( w, ri )[0] * std::fabs( w.z ) * dOm;
-		} );
-		std::cout << "  datadriven_material: BSDF albedo " << B << ", SPF " << ( dd->GetSPF() ? "present" : "ABSENT (sampled function == 0)" ) << std::endl;
-		Check( std::fabs( B - 0.4 ) < 0.01, "gate 6 (DL-325 pin): datadriven BSDF integrates to its table's 0.4" );
-		Check( dd->GetSPF() == 0, "gate 6 (DL-325 pin): datadriven_material has no SPF -- the known defect; closing DL-325 flips this" );
+		Check( dd->GetSPF() != 0, variant == 0 ? "gate 6 (DL-325): datadriven_material (constant table) HAS an SPF"
+		                                       : "gate 6 (DL-325): datadriven_material (varied table) HAS an SPF" );
+		if( dd->GetSPF() ) {
+			const char* nm = variant == 0 ? "datadriven constant 0.4" : "datadriven varied chromatic";
+			RunRowMaterial( *dd, nm, Fixture{ 0.0,  0.0, false }, 400000, seed++ );
+			RunRowMaterial( *dd, nm, Fixture{ 30.0, 0.0, false }, 400000, seed++ );
+			RunRowMaterial( *dd, nm, Fixture{ 70.0, 0.0, false }, 400000, seed++ );
+			// Tilted SHADING normal (bump / normal map / glint): directions above the
+			// shading plane but below the true surface must be outside BOTH the BSDF's
+			// and the SPF's support (DL-325 review P1) -- else PT's sampled continuation
+			// loses energy NEE and connections still see.
+			const double tilts[4][2] = { { 45, 15 }, { 30, 40 }, { 70, -25 }, { 20, 50 } };
+			for( const auto& tp : tilts ) {
+				RunRowMaterial( *dd, nm, Fixture{ tp[0], tp[1], false }, 400000, seed++ );
+			}
+			if( variant == 0 ) {
+				const RayIntersectionGeometric ri = MakeRI( Fixture{ 30.0, 0.0, false } );
+				double B = 0;
+				SphereQuadrature( Vector3( 0, 0, 1 ), 600, 256, [&]( const Vector3& w, double dOm ) {
+					B += dd->GetBSDF()->value( w, ri )[0] * std::fabs( w.z ) * dOm;
+				} );
+				Check( std::fabs( B - 0.4 ) < 0.01, "gate 6 (DL-325): the constant table's BSDF integrates to 0.4" );
+			}
+			// The blind side: a ray arriving at the BACK of a single-sided
+			// surface has BSDF == 0 everywhere, so the SPF must emit nothing
+			// and report no density.
+			{
+				const RayIntersectionGeometric ri = MakeRI( Fixture{ 30.0, 0.0, true } );
+				const IORStack stack = MakeTestIORStack( g_stub );
+				RandomNumberGenerator rng( seed++ );
+				IndependentSampler sampler( rng );
+				int emitted = 0;  double pdfMass = 0;
+				for( int k = 0; k < 2000; ++k ) {
+					ScatteredRayContainer sc_;
+					dd->GetSPF()->Scatter( ri, sampler, sc_, stack );
+					emitted += int( sc_.Count() );
+				}
+				SphereQuadrature( Vector3( 0, 0, -1 ), 200, 64, [&]( const Vector3& w, double dOm ) {
+					pdfMass += dd->GetSPF()->Pdf( ri, w, stack ) * dOm;
+				} );
+				Check( emitted == 0 && pdfMass == 0.0, "gate 6 (DL-325): back-face hit -- nothing emitted, Pdf == 0 (the BSDF is 0 there)" );
+			}
+		}
 		safe_release( dd );
 		std::remove( path );
 	}

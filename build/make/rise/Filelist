@@ -189,6 +189,7 @@ SRCLIBMATERIALS =\
 	$(PATHLIBRARY)Materials/CookTorranceBRDF.cpp							\
 	$(PATHLIBRARY)Materials/CookTorranceSPF.cpp								\
 	$(PATHLIBRARY)Materials/DataDrivenBSDF.cpp								\
+	$(PATHLIBRARY)Materials/DataDrivenSPF.cpp									\
 	$(PATHLIBRARY)Materials/DielectricSPF.cpp								\
 	$(PATHLIBRARY)Materials/GGXBRDF.cpp										\
 	$(PATHLIBRARY)Materials/GGXSPF.cpp										\

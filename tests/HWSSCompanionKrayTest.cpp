@@ -136,6 +136,10 @@
 #include "../src/Library/Materials/TranslucentSPF.h"
 #include "../src/Library/Materials/GGXSPF.h"
 #include "../src/Library/Materials/LambertianSPF.h"
+#include "../src/Library/Materials/DataDrivenMaterial.h"
+#include "DataDrivenTestTables.h"
+#include <cstdio>
+#include <unistd.h>
 #include "../src/Library/Materials/TranslucentMaterial.h"
 #include "../src/Library/Shaders/BDPTIntegrator.h"
 #include "../src/Library/Shaders/StandardShader.h"
@@ -708,8 +712,19 @@ int main()
 	AshikminShirleyAnisotropicPhongSPF*  asSPFb = new AshikminShirleyAnisotropicPhongSPF( *nu, *nv, *black, *spec ); asSPFb->addref();
 	AshikminShirleyAnisotropicPhongBRDF* asBRDF = new AshikminShirleyAnisotropicPhongBRDF( *nu, *nv, *black, *spec ); asBRDF->addref();
 
+	// DL-325: datadriven_material's SPF on a CHROMATIC, direction-dependent table
+	// (the loader closes the file at construction, so it is removed straight away).
+	// Its response is the BSDF's own JH uplift, so hero and companion differ
+	// (section B's non-vacuity check) and EvaluateKrayNM must reproduce krayNM.
+	char ddPath[128];
+	std::snprintf( ddPath, sizeof( ddPath ), "hwss_dd_varied_%d.bdf", (int)getpid() );
+	Check( DataDrivenTestTables::WriteVaried( ddPath ), "DL-325: synthetic varied .bdf written" );
+	DataDrivenMaterial* ddMat = new DataDrivenMaterial( ddPath ); ddMat->addref();
+	std::remove( ddPath );
+
 	std::vector<Subject> subjects;
 	{
+		subjects.push_back( MakeSubject( "DataDrivenSPF (varied chromatic table)", ddMat->GetSPF(), 0, diff, false, false ) );
 		subjects.push_back( MakeSubject( "SchlickSPF", schSPF, 0, diff, false, false ) );
 		subjects.push_back( MakeSubject( "WardIsotropicGaussianSPF", wiSPF, 0, diff, false, false ) );
 		subjects.push_back( MakeSubject( "WardAnisotropicEllipticalGaussianSPF", waSPF, 0, diff, false, false ) );
