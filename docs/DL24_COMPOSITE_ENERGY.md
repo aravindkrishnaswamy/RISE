@@ -1192,7 +1192,9 @@ round-1 report of 1.0056 was an unsalted 128-spp artifact.
 
   No cell is "top on both faces": that convention belongs to the provably
   open clipped plane alone (DL-407), which is not in the matrix.  Bands:
-  zero-variance all-delta cells 0.2 %; glass/translucent 2 % (256 spp);
+  zero-variance all-delta cells 0.2 % (the mirror return 0.5 %: BDPT / VCM
+  are not zero-variance there, a gate run read 0.24 %); glass/translucent
+  2 % (256 spp);
   nested 3 % (1024 spp, per-branch estimator); light inside 1024 spp, 3 %
   glass/glass (one render), 5 % translucent / nested (mean of 3 salted
   renders; a single render's sd is ~1.5 % per half).  Every regression the

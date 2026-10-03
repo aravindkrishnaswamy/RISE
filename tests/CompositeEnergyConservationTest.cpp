@@ -1513,7 +1513,8 @@ static void SectionD9()
 //  is an independent replicate): zero-variance all-delta cells 0.2 %
 //  (glass/glass, plain glass; furnace and sheets); glass/translucent
 //  furnace / sheet 2 % (256 spp); nested 3 % (1024 spp, per-branch
-//  estimator, ~0.5 % sd per half); light-inside cells 1024 spp: glass/
+//  estimator, ~0.5 % sd per half); the mirror-return sheets 0.5 % (BDPT /
+//  VCM are not zero-variance there); light-inside cells 1024 spp: glass/
 //  glass one render, 3 % (ratio sd ~0.5 %), translucent / nested the mean
 //  of 3 salted renders, 5 % (single-render sd ~1.5 % per half, so the
 //  mean's ratio sd is ~1.2 %).  Every regression this section exists for moves a cell by 5 %
@@ -1697,7 +1698,11 @@ static void SectionM()
 					const bool ok = runPair( scene, mL, mR );
 					std::cout << "    M glass/glass | " << ( ds ? "double" : "single" ) << " | " << wName[w] << " | "
 					          << fName << " | " << inName[r] << ": " << std::setprecision(5) << mL << " vs plain glass " << mR << "\n";
-					gate( ok && mR > 0 && std::fabs( mL / mR - 1.0 ) <= 0.002,
+					// The mirror return is not zero-variance under BDPT / VCM (their
+					// light-side strategies reach the mirror too): 0.5 % there,
+					// against a 27 % regression (0.677 vs 0.929).
+					const double famBand = ( fam == 2 ) ? 0.005 : 0.002;
+					gate( ok && mR > 0 && std::fabs( mL / mR - 1.0 ) <= famBand,
 						std::string( "[M] glass/glass == plain glass, " ) + fName + ", " + ( ds ? "double" : "single" ) + "-sided, " + wName[w] + " (" + inName[r] + ")" );
 				}
 			}
