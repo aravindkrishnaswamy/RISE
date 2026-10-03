@@ -1376,13 +1376,15 @@ static CoatedMaterial* MakeCoated( const IMaterial& base, double sigma, const IP
 //       GGX substrates and two Oren-Nayar ones.  theta 0 / 45 gated at
 //       max(3 %, 5 sem); theta 70 gated for the rough / diffuse-like
 //       rows and PINNED for the smooth glossy ones (DL-423: a smooth
-//       lobe keeps light trapped near the critical angle, which the
-//       reservoir lets escape too readily -- 1.06-1.15 here).
+//       lossy lobe keeps light trapped near the critical angle, which
+//       the reservoir lets escape too readily -- 1.045 / 1.065 here).
 //   K5  white furnace: lossless white GGX metals (F0 1) under a clear
 //       coat must read 1 at every incidence, within MC noise and the
 //       model's documented +0.7 % (the substrate's own GGX directional
-//       albedo is 1.003 at normal incidence).  Pre-DL-388: 1.058 at 0
-//       deg for the smooth one.
+//       albedo is 1.003 at normal incidence), at eta 1.5 and at coat
+//       indices just above the surrounding medium's (1.005 .. 1.13).
+//       Pre-DL-388: 1.058 at 0 deg for the smooth one; first fix 1.160
+//       at eta 1.01 / 80 deg (the clear table's eta blend).
 //   K6  the OIDN albedo AOV is the layered model's own directional
 //       albedo (e_1 + g E / (1 - Q) through the coat) -- it must agree
 //       with the furnace it summarises.
@@ -1445,7 +1447,13 @@ static void SectionK4K6( Fixtures& f )
 						const double floorTol = ( th < 60.0 ) ? 0.03 : ( 0.03 + 0.06 * sg );
 						Check( std::fabs( ratio - 1.0 ) <= std::max( floorTol, 5.0 * semR ), tag + " coated / composite == 1" );
 					} else {
-						Check( ratio >= 0.95 && ratio <= 1.20, tag + " coated / composite inside the DL-423 residual pin [0.95, 1.20]" );
+						// DL-423 residual, measured (8 x 20000 draws per side):
+						// clear coat 1.045 +- 0.004 (glossy) / 1.065 +- 0.012
+						// (smooth metal), sigma_t 0.2 1.015 / 1.019, sigma_t 0.5
+						// 1.009 / 1.007.  Pinned at [0.97, 1.08] widened by the
+						// row's own 5 sem, so a move either way is caught.
+						Check( ratio >= 0.97 - 5.0 * semR && ratio <= 1.08 + 5.0 * semR,
+							tag + " coated / composite inside the DL-423 residual pin [0.97, 1.08] +- 5 sem" );
 					}
 
 					// ---- K6: AOV albedo == the directional albedo it summarises

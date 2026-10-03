@@ -524,6 +524,14 @@ namespace
 	//! the clear table's eta blend (uniform in mu_c) blends aligned steps.
 	constexpr int    kPatchN = 17;
 	constexpr Scalar kPatchW = Scalar(2) / Scalar(kLobeN);
+	//! The patch's displacement reads the spill histogram on sub-bins
+	//! 1/256 wide (a bin's centroid and spread cannot describe a GGX lobe
+	//! -- a narrow core with long tails -- against a square-root edge).
+	//! Only substrates narrower than kPatchAlphaMax get a patch; broader
+	//! lobes are smooth on the node grid and their patch IS the node
+	//! interpolation.
+	constexpr int    kLobeSubBins    = kLobeN * 8;
+	constexpr Scalar kPatchAlphaMax  = Scalar(0.25);
 
 	struct LobeSpillTable
 	{
@@ -531,6 +539,9 @@ namespace
 		std::vector<Scalar> t5;		//!< F = (1 - w.m)^5
 		std::vector<Scalar> tm;		//!< F = 1, times mu_u: the bin's mass centroid is tm / t0
 		std::vector<Scalar> t2;		//!< F = 1, times mu_u^2: the bin's mass spread is t2/t0 - (tm/t0)^2
+		std::vector<Scalar> s0;		//!< F = 1 on kLobeSubBins sub-bins per bin (the critical patch)
+		std::vector<Scalar> s5;		//!< F = (1 - w.m)^5 on the sub-bins
+		std::vector<Scalar> sm;		//!< F = 1, times mu_u, on the sub-bins (their centroids)
 	};
 
 	LobeSpillTable BuildLobeSpillTable()
@@ -541,6 +552,9 @@ namespace
 		T.t5.assign( (std::size_t)kLobeA * kLobeN * kLobeN, Scalar(0) );
 		T.tm.assign( (std::size_t)kLobeA * kLobeN * kLobeN, Scalar(0) );
 		T.t2.assign( (std::size_t)kLobeA * kLobeN * kLobeN, Scalar(0) );
+		T.s0.assign( (std::size_t)kLobeA * kLobeN * kLobeSubBins, Scalar(0) );
+		T.s5.assign( (std::size_t)kLobeA * kLobeN * kLobeSubBins, Scalar(0) );
+		T.sm.assign( (std::size_t)kLobeA * kLobeN * kLobeSubBins, Scalar(0) );
 		OrthonormalBasis3D onb;
 		onb.CreateFromW( Vector3( 0, 0, 1 ) );
 		const Scalar invS2 = Scalar(1) / Scalar( kLobeS * kLobeS );
@@ -556,6 +570,9 @@ namespace
 				Scalar* row5 = &T.t5[ ( (std::size_t)a * kLobeN + j ) * kLobeN ];
 				Scalar* rowm = &T.tm[ ( (std::size_t)a * kLobeN + j ) * kLobeN ];
 				Scalar* row2 = &T.t2[ ( (std::size_t)a * kLobeN + j ) * kLobeN ];
+				Scalar* sub0 = &T.s0[ ( (std::size_t)a * kLobeN + j ) * kLobeSubBins ];
+				Scalar* sub5 = &T.s5[ ( (std::size_t)a * kLobeN + j ) * kLobeSubBins ];
+				Scalar* subm = &T.sm[ ( (std::size_t)a * kLobeN + j ) * kLobeSubBins ];
 				for( int s1 = 0; s1 < kLobeS; ++s1 ) {
 					for( int s2 = 0; s2 < kLobeS; ++s2 ) {
 						const Scalar u1 = ( Scalar(s1) + Scalar(0.5) ) / Scalar(kLobeS);
@@ -576,6 +593,10 @@ namespace
 						row5[k] += wt * om2 * om2 * om;
 						rowm[k] += wt * uz;
 						row2[k] += wt * uz * uz;
+						const int ks = r_min( kLobeSubBins - 1, (int)( uz * Scalar(kLobeSubBins) ) );
+						sub0[ks] += wt;
+						sub5[ks] += wt * om2 * om2 * om;
+						subm[ks] += wt * uz;
 					}
 				}
 				// Calibrate the row's total to the single-scatter albedo
@@ -588,6 +609,7 @@ namespace
 				if( sum > Scalar(0) ) {
 					const Scalar scale = MicrofacetEnergyLUT::LookupEssG2( mu, alpha ) / sum;
 					for( int k = 0; k < kLobeN; ++k ) { row0[k] *= scale; row5[k] *= scale; rowm[k] *= scale; row2[k] *= scale; }
+					for( int k = 0; k < kLobeSubBins; ++k ) { sub0[k] *= scale; sub5[k] *= scale; subm[k] *= scale; }
 				}
 			}
 		}
@@ -675,12 +697,6 @@ namespace
 				phiS[i] = F * a * a;
 				psiS[i] = ( Scalar(1) - F ) * a;
 				ps += phiS[i]; ss += psiS[i];
-				const Scalar wq = Scalar(2) * mu / Scalar(nS);
-				const Scalar om = Scalar(1) - mu;
-				const Scalar sA = Scalar(1) - om * om * om * om * om;
-				const Scalar sM = Scalar(1) - MicrofacetEnergyLUT::LookupEssG2( mu, alpha );
-				b.JAphi += wq * sA * phiS[i];  b.JApsi += wq * sA * psiS[i];
-				b.JMphi += wq * sM * phiS[i];  b.JMpsi += wq * sM * psiS[i];
 			}
 			b.phi[k] = ps / Scalar(kSub);
 			b.psi[k] = ss / Scalar(kSub);
@@ -713,10 +729,21 @@ namespace
 		const int    kCritPts = 16;
 		const Scalar muCrit   = ( eta > Scalar(1) ) ? sqrt( Scalar(1) - Scalar(1) / ( eta * eta ) ) : Scalar(0);
 		const int    kCrit    = r_min( (int)( muCrit * Scalar(kLobeN) ), kLobeN - 1 );
-		auto fineExact = [&]( const Scalar mu, const bool returned ) {
+		auto fineExact = [&]( const Scalar mu, Scalar& ph, Scalar& pv ) {
 			const Scalar F = CoatedLayer::FresnelInside( mu, eta );
 			const Scalar a = opaque ? Scalar(0) : ( ( tau > Scalar(0) ) ? exp( -tau / r_max( mu, Scalar(1e-6) ) ) : Scalar(1) );
-			return returned ? F * a * a : ( Scalar(1) - F ) * a;
+			ph = F * a * a;
+			pv = ( Scalar(1) - F ) * a;
+		};
+		// The coat's weights at one cosine: exact next to mu_c, the fine
+		// grid's linear interpolation elsewhere.
+		auto pointWeights = [&]( Scalar mu, Scalar& ph, Scalar& pv ) {
+			mu = r_min( r_max( mu, Scalar(0) ), Scalar(1) );
+			if( std::fabs( mu - muCrit ) < Scalar(2) / Scalar(nS) ) {
+				fineExact( mu, ph, pv );
+			} else {
+				ph = fine( phiS, mu ); pv = fine( psiS, mu );
+			}
 		};
 		Scalar p0[kLobeN], p5[kLobeN];
 		for( int j = 0; j < kLobeN; ++j ) {
@@ -749,7 +776,9 @@ namespace
 						Scalar sp = 0, sv = 0;
 						for( int q = 0; q < kCritPts; ++q ) {
 							const Scalar mu = c + r * ( Scalar(2) * ( Scalar(q) + Scalar(0.5) ) / Scalar(kCritPts) - Scalar(1) );
-							sp += fineExact( mu, true ); sv += fineExact( mu, false );
+							Scalar fp, fv;
+							pointWeights( mu, fp, fv );
+							sp += fp; sv += fv;
 						}
 						ph = sp / Scalar(kCritPts);
 						pv = sv / Scalar(kCritPts);
@@ -766,41 +795,8 @@ namespace
 			p0[j] = q0; p5[j] = q5;
 		}
 
-		// The critical patch (see kPatchN).  Window averages of the coat's
-		// weights: prefix sums over the fine grid (piecewise constant per
-		// fine cell) away from mu_c, the exact weights near it.
+		// The critical patch (see kPatchN).
 		b.muC = muCrit;
-		Scalar PphiS[kLobeN * 8 + 1], PpsiS[kLobeN * 8 + 1];
-		PphiS[0] = PpsiS[0] = 0;
-		for( int i = 0; i < nS; ++i ) {
-			PphiS[i + 1] = PphiS[i] + phiS[i] / Scalar(nS);
-			PpsiS[i + 1] = PpsiS[i] + psiS[i] / Scalar(nS);
-		}
-		auto prefixAt = [&]( const Scalar* P, const Scalar* arr, const Scalar x ) {
-			const Scalar xs = x * Scalar(nS);
-			const int    i  = r_min( (int)xs, nS - 1 );
-			return P[i] + ( xs - Scalar(i) ) * arr[i] / Scalar(nS);
-		};
-		auto windowAvg = [&]( Scalar lo, Scalar hi, Scalar& ph, Scalar& pv ) {
-			lo = r_min( r_max( lo, Scalar(0) ), Scalar(1) );
-			hi = r_min( r_max( hi, Scalar(0) ), Scalar(1) );
-			if( !( hi > lo + Scalar(1e-12) ) ) {
-				ph = fineExact( lo, true ); pv = fineExact( lo, false );
-				return;
-			}
-			const Scalar near = Scalar(2) / Scalar(nS);
-			if( hi > muCrit - near && lo < muCrit + near ) {
-				Scalar sp = 0, sv = 0;
-				for( int q = 0; q < kCritPts; ++q ) {
-					const Scalar mu = lo + ( hi - lo ) * ( Scalar(q) + Scalar(0.5) ) / Scalar(kCritPts);
-					sp += fineExact( mu, true ); sv += fineExact( mu, false );
-				}
-				ph = sp / Scalar(kCritPts); pv = sv / Scalar(kCritPts);
-				return;
-			}
-			ph = ( prefixAt( PphiS, phiS, hi ) - prefixAt( PphiS, phiS, lo ) ) / ( hi - lo );
-			pv = ( prefixAt( PpsiS, psiS, hi ) - prefixAt( PpsiS, psiS, lo ) ) / ( hi - lo );
-		};
 		// The spill histogram at an arbitrary view mu, by displacement:
 		// the two bracketing view nodes' histograms, each bin a uniform
 		// window with its own centroid and spread, shifted by mu - mu_node.
@@ -820,15 +816,24 @@ namespace
 				for( int k = 0; k < kLobeN; ++k ) {
 					const Scalar t0 = T.t0[oa + k] + ( T.t0[ob + k] - T.t0[oa + k] ) * fa;
 					if( !( t0 > Scalar(0) ) ) continue;
-					const Scalar t5 = T.t5[oa + k] + ( T.t5[ob + k] - T.t5[oa + k] ) * fa;
-					const Scalar tm = T.tm[oa + k] + ( T.tm[ob + k] - T.tm[oa + k] ) * fa;
-					const Scalar t2 = T.t2[oa + k] + ( T.t2[ob + k] - T.t2[oa + k] ) * fa;
-					const Scalar mc = tm / t0;
-					const Scalar r  = sqrt( Scalar(3) * r_max( Scalar(0), t2 / t0 - mc * mc ) );
-					Scalar ph, pv;
-					windowAvg( mc + dmu - r, mc + dmu + r, ph, pv );
-					og0 += wv * t0 * ph;  og5 += wv * t5 * ph;
-					oe0 += wv * t0 * pv;  oe5 += wv * t5 * pv;
+					// The bin's sub-bins, each its mass at its own centroid (a
+					// sub-bin is 1/256 wide; near normal incidence a narrow
+					// lobe spans a fraction of one, mu_u = cos compressing the
+					// angular spread by sin theta, so even a sub-bin-wide
+					// uniform window overstates its spread on the edge).
+					for( int q = 0; q < kLobeSubBins / kLobeN; ++q ) {
+						const int    ks  = k * ( kLobeSubBins / kLobeN ) + q;
+						const std::size_t sa = ( (std::size_t)ia * kLobeN + j ) * kLobeSubBins + ks;
+						const std::size_t sb = ( (std::size_t)( ia + 1 ) * kLobeN + j ) * kLobeSubBins + ks;
+						const Scalar u0 = T.s0[sa] + ( T.s0[sb] - T.s0[sa] ) * fa;
+						if( !( u0 > Scalar(0) ) ) continue;
+						const Scalar u5 = T.s5[sa] + ( T.s5[sb] - T.s5[sa] ) * fa;
+						const Scalar um = T.sm[sa] + ( T.sm[sb] - T.sm[sa] ) * fa;
+						Scalar ph, pv;
+						pointWeights( um / u0 + dmu, ph, pv );
+						og0 += wv * u0 * ph;  og5 += wv * u5 * ph;
+						oe0 += wv * u0 * pv;  oe5 += wv * u5 * pv;
+					}
 				}
 			}
 		};
@@ -839,10 +844,17 @@ namespace
 			const Scalar f = xi - Scalar(i);
 			return arr[i] + ( arr[i + 1] - arr[i] ) * f;
 		};
+		const bool patched = alpha < kPatchAlphaMax;
 		for( int p = 0; p < kPatchN; ++p ) {
-			shiftedSum( r_min( LobePatchNode( muCrit, p ), Scalar(1) ), b.pg0[p], b.pg5[p], b.pe0[p], b.pe5[p] );
+			const Scalar mp = r_min( LobePatchNode( muCrit, p ), Scalar(1) );
+			if( patched ) {
+				shiftedSum( mp, b.pg0[p], b.pg5[p], b.pe0[p], b.pe5[p] );
+			} else {
+				b.pg0[p] = nodeLerp( b.g0, mp );  b.pg5[p] = nodeLerp( b.g5, mp );
+				b.pe0[p] = nodeLerp( b.e0, mp );  b.pe5[p] = nodeLerp( b.e5, mp );
+			}
 		}
-		{
+		if( patched ) {
 			// Join the view-node arrays continuously at the patch's far end
 			// (a correction growing as s^2 from 0 at mu_c).
 			const Scalar muE = muCrit + kPatchW;
@@ -869,17 +881,37 @@ namespace
 			const Scalar f = xi - Scalar(i);
 			return arr[i] + ( arr[i + 1] - arr[i] ) * f;
 		};
+		// The fine cells next to mu_c are SUB-SAMPLED with the exact weights:
+		// Psi rises from 0 at mu_c with a square-root edge that steepens as
+		// eta -> 1 (most of it inside one 1/256 cell at eta 1.06), so one
+		// midpoint sample there misjudges G -- the out-coupling's
+		// normalisation -- and a lossless metal read 1.034 at 86 deg.
 		b.Q0 = b.Q5 = b.E0 = b.E5 = b.G0 = b.G5 = b.H0 = b.H5 = 0;
+		const int kCellSub = 16;
 		for( int i = 0; i < nS; ++i ) {
-			const Scalar mu = ( Scalar(i) + Scalar(0.5) ) / Scalar(nS);
-			const Scalar wq = Scalar(2) * mu / Scalar(nS);
-			const Scalar r0 = interp( p0, mu ), r5 = interp( p5, mu );
-			b.Q0 += wq * r0 * phiS[i];  b.Q5 += wq * r5 * phiS[i];
-			b.E0 += wq * r0 * psiS[i];  b.E5 += wq * r5 * psiS[i];
-			b.G0 += wq * LobeArrLookup( b.g0, b.pg0, muCrit, mu ) * psiS[i];
-			b.G5 += wq * LobeArrLookup( b.g5, b.pg5, muCrit, mu ) * psiS[i];
-			b.H0 += wq * LobeArrLookup( b.e0, b.pe0, muCrit, mu ) * psiS[i];
-			b.H5 += wq * LobeArrLookup( b.e5, b.pe5, muCrit, mu ) * psiS[i];
+			const Scalar center = ( Scalar(i) + Scalar(0.5) ) / Scalar(nS);
+			const bool   crit   = std::fabs( center - muCrit ) < Scalar(2.5) / Scalar(nS);
+			const int    m      = crit ? kCellSub : 1;
+			const Scalar sM     = Scalar(1) - MicrofacetEnergyLUT::LookupEssG2( center, alpha );
+			for( int q = 0; q < m; ++q ) {
+				const Scalar mu = crit ? ( Scalar(i) + ( Scalar(q) + Scalar(0.5) ) / Scalar(m) ) / Scalar(nS) : center;
+				const Scalar wq = Scalar(2) * mu / ( Scalar(nS) * Scalar(m) );
+				Scalar ph = phiS[i], pv = psiS[i];
+				if( crit ) {
+					fineExact( mu, ph, pv );
+				}
+				const Scalar r0 = interp( p0, mu ), r5 = interp( p5, mu );
+				b.Q0 += wq * r0 * ph;  b.Q5 += wq * r5 * ph;
+				b.E0 += wq * r0 * pv;  b.E5 += wq * r5 * pv;
+				b.G0 += wq * LobeArrLookup( b.g0, b.pg0, muCrit, mu ) * pv;
+				b.G5 += wq * LobeArrLookup( b.g5, b.pg5, muCrit, mu ) * pv;
+				b.H0 += wq * LobeArrLookup( b.e0, b.pe0, muCrit, mu ) * pv;
+				b.H5 += wq * LobeArrLookup( b.e5, b.pe5, muCrit, mu ) * pv;
+				const Scalar om = Scalar(1) - mu;
+				const Scalar sA = Scalar(1) - om * om * om * om * om;
+				b.JAphi += wq * sA * ph;  b.JApsi += wq * sA * pv;
+				b.JMphi += wq * sM * ph;  b.JMpsi += wq * sM * pv;
+			}
 		}
 		b.Eavg = MicrofacetEnergyLUT::LookupEavgG2( alpha );
 	}
@@ -988,13 +1020,66 @@ namespace
 		out.Eavg = RISE::MicrofacetEnergyLUT::LookupEavgG2( alpha );
 	}
 
+	//! out = (1 - f) b0 + f b1, array by array (the roughness blend the
+	//! clear table also performs: every array is linear in the spill rows).
+	inline void BlendAlphaBases( LobeBasis& out, const LobeBasis& b0, const LobeBasis& b1, const Scalar f, const Scalar alpha )
+	{
+		const Scalar w0 = Scalar(1) - f;
+		auto mix = [&]( const Scalar a, const Scalar b ) { return w0 * a + f * b; };
+		for( int j = 0; j < kLobeN; ++j ) {
+			out.g0[j] = mix( b0.g0[j], b1.g0[j] );  out.g5[j] = mix( b0.g5[j], b1.g5[j] );
+			out.e0[j] = mix( b0.e0[j], b1.e0[j] );  out.e5[j] = mix( b0.e5[j], b1.e5[j] );
+			out.phi[j] = b0.phi[j];  out.psi[j] = b0.psi[j];		// alpha-independent
+		}
+		for( int p = 0; p < kPatchN; ++p ) {
+			out.pg0[p] = mix( b0.pg0[p], b1.pg0[p] );  out.pg5[p] = mix( b0.pg5[p], b1.pg5[p] );
+			out.pe0[p] = mix( b0.pe0[p], b1.pe0[p] );  out.pe5[p] = mix( b0.pe5[p], b1.pe5[p] );
+		}
+		out.Q0 = mix( b0.Q0, b1.Q0 );  out.Q5 = mix( b0.Q5, b1.Q5 );
+		out.E0 = mix( b0.E0, b1.E0 );  out.E5 = mix( b0.E5, b1.E5 );
+		out.G0 = mix( b0.G0, b1.G0 );  out.G5 = mix( b0.G5, b1.G5 );
+		out.H0 = mix( b0.H0, b1.H0 );  out.H5 = mix( b0.H5, b1.H5 );
+		out.JAphi = mix( b0.JAphi, b1.JAphi );  out.JApsi = mix( b0.JApsi, b1.JApsi );
+		out.JMphi = mix( b0.JMphi, b1.JMphi );  out.JMpsi = mix( b0.JMpsi, b1.JMpsi );
+		out.muC = b0.muC;
+		out.alpha = alpha; out.eta = b0.eta; out.tau = b0.tau; out.valid = true;
+		out.Eavg = RISE::MicrofacetEnergyLUT::LookupEavgG2( alpha );
+	}
+
+	//! An absorbing / tinted coat's basis at a ROUGHNESS NODE, from a
+	//! per-thread 8-entry ring keyed on (node, eta, tau) -- a textured
+	//! roughness keeps hitting the two nodes around it.  Copies out.
+	inline void LobeNodeBasisCached( LobeBasis& out, const int ia, const Scalar eta, const Scalar tau )
+	{
+		static thread_local LobeBasis ring[8];
+		static thread_local int       ringNode[8];
+		static thread_local bool init = false;
+		static thread_local unsigned int next = 0;
+		if( !init ) {
+			for( int i = 0; i < 8; ++i ) { ring[i].valid = false; ringNode[i] = -1; }
+			init = true;
+		}
+		for( int i = 0; i < 8; ++i ) {
+			if( ring[i].valid && ringNode[i] == ia && ring[i].eta == eta && ring[i].tau == tau ) {
+				out = ring[i];
+				return;
+			}
+		}
+		LobeBasis& e = ring[next];
+		ringNode[next] = ia;
+		next = ( next + 1 ) & 7u;
+		BuildLobeBasis( e, LobeAlphaNode( ia ), eta, tau );
+		out = e;
+	}
+
 	//! Per-thread 4-entry memo keyed on (alpha, eta, tau): a coat and a
 	//! substrate with uniform painters ask for the same one to three
 	//! bases (one per channel when tinted) on every evaluation.  A miss
-	//! blends the clear-coat table (tau = 0) or builds the basis (tau > 0,
-	//! ~3.5 us -- a textured roughness under an absorbing coat pays it per
-	//! evaluation).  Returns a COPY so no caller holds a reference into a
-	//! slot a later miss may overwrite.
+	//! blends the clear-coat table (tau = 0), or (tau > 0) blends the two
+	//! roughness-node bases around alpha (LobeNodeBasisCached: a textured
+	//! roughness under an absorbing coat pays a blend, ~1 us, not a build,
+	//! ~10-20 us, until it leaves its roughness cell).  Returns a COPY so
+	//! no caller holds a reference into a slot a later miss may overwrite.
 	inline void LobeBasisCached( LobeBasis& out, const Scalar alpha, const Scalar eta, const Scalar tau )
 	{
 		static thread_local LobeBasis cache[4];
@@ -1015,7 +1100,14 @@ namespace
 		if( !( tau > Scalar(0) ) ) {
 			BlendClearBasis( e, alpha, eta );
 		} else {
-			BuildLobeBasis( e, alpha, eta, tau );
+			Scalar x = ( sqrt( r_max( alpha, Scalar(0) ) ) - kLobeTA0 ) / ( Scalar(1) - kLobeTA0 ) * Scalar(kLobeA - 1);
+			x = r_min( r_max( x, Scalar(0) ), Scalar(kLobeA - 1) );
+			const int    ia = r_min( (int)x, kLobeA - 2 );
+			const Scalar fa = x - Scalar(ia);
+			LobeBasis b0, b1;
+			LobeNodeBasisCached( b0, ia, eta, tau );
+			LobeNodeBasisCached( b1, ia + 1, eta, tau );
+			BlendAlphaBases( e, b0, b1, fa, alpha );
 		}
 		out = e;
 	}
