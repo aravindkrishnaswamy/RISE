@@ -148,14 +148,13 @@ namespace RISE
 						}
 
 						RayIntersectionGeometric rig( r, nullRasterizerState );
-						rig.vNormal = normal;
-						// `UniformRandomPoint` returns the geometric face
-						// normal on luminary meshes; mirror it so any
-						// downstream consumer that reads vGeomNormal sees
-						// a populated value rather than default-zero.
-						rig.vGeomNormal = normal;
-						rig.ptCoord = coord;
-						rig.onb.CreateFromW( rig.vNormal );
+						// DL-298: the shared emitter-record fill -- world
+						// position `P` (this record used to leave it at
+						// (0,0,0), so a `P`-keyed Phong-exponent painter
+						// was read at the origin when sampling the photon
+						// direction), normals, `onb`, UV and `Po`.
+						LightSampler::FillEmitterRecord( rig, r.origin, normal, coord,
+							LightSampler::EmitterObjectPoint( object, r.origin, rig.ptObjIntersec ) );
 
                         // Preserve the original emitter direction-proposal record.
                         // Only coverage receives physical/local/surface context.

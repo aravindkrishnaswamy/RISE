@@ -1408,38 +1408,21 @@ namespace
 				const IEmitter* pEmitter = ls.pLuminary->GetMaterial()->GetEmitter();
 				if( pEmitter ) {
 					RayIntersectionGeometric rig( Ray( ls.position, -dirToLight ), nullRasterizerState );
-					rig.bHit = true;
-					rig.ptIntersection = ls.position;
-					rig.vNormal = ls.normal;
-					// `ls.normal` is `UniformRandomPoint`'s normal: the
-					// INTERPOLATED VERTEX normal on a mesh luminary with
-					// per-vertex normals, the face normal when there are
-					// none (`GeometricUtilities::PointOnTriangle`).  No
-					// Phong/bump modifier runs on an emitter record, so
-					// mirroring it keeps the record self-consistent.
-					rig.vGeomNormal = ls.normal;
-					// DL-44: the sampled emitter UV, so a UV-keyed emission
-					// painter reads the same texel `SampleLight`'s own RGB
-					// evaluation (and, for NM, BDPTIntegrator's light-
-					// subpath rebuilds) did, not the default (0,0).  This
-					// function is templated over `Tag`, so this one line
-					// fixes both `EvaluateNEE` (Pel) and `EvaluateNEENM`.
-					rig.ptCoord = ls.ptCoord;
+					// DL-298: the ONE shared emitter-record fill (world
+					// position, normals, `onb`, UV, `Po`) -- the same function
+					// `SampleLight`'s RGB record, both PT NEE arms, BDPT's NM
+					// hero / HWSS rebuilds and the photon tracers use.  DL-44:
+					// the UV is the sampled emitter UV; this function is
+					// templated over `Tag`, so one call fixes both
+					// `EvaluateNEE` (Pel) and `EvaluateNEENM`.  `Po` is
+					// ungated and ray-free (`LightSampler::EmitterObjectPoint`).
+					LightSampler::FillEmitterRecord( rig, ls.position, ls.normal, ls.ptCoord, ls.ptObjIntersec );
 					// THE FOURTH `ApplyEmitterSurface` consumer of
 					// `SampleLight`'s one probed payload (slice S3,
 					// docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5): VCM's
-					// light-vertex NEE record.  The other three are
-					// LightSampler's own emission record and BDPTIntegrator's
-					// NM hero + HWSS companion rebuilds; the fifth consumer of
-					// the payload, BDPT's `type == LIGHT` root vertex, copies
-					// the fields directly instead of calling the helper.  A no-op when the probe was gated off or
-					// refused, so with the gate closed this record's
-					// rendered contribution is unchanged.
+					// light-vertex NEE record.  A no-op when the probe was
+					// gated off or refused.
 					LightSampler::ApplyEmitterSurface( rig, ls.surface );
-					// `Po` separately and UNCONDITIONALLY -- ray-free and
-					// ungated by design; see
-					// `LightSampler::EmitterObjectPoint`.
-					rig.ptObjIntersec = ls.ptObjIntersec;
 					// DL-320: `ls.normal` is the face `SampleLight` picked for
 					// the light subpath's own continuation; this record looks
 					// toward the eye vertex instead, which a double-sided
@@ -1449,6 +1432,7 @@ namespace
 					if( Vector3Ops::Dot( lsFace, ls.normal ) < 0 ) {
 						rig.vNormal = lsFace;
 						rig.vGeomNormal = lsFace;
+						rig.onb.CreateFromW( lsFace );
 					}
 					Le = EvalEmitterRadiance<Tag>( *pEmitter, rig, -dirToLight, lsFace, tag );
 				}

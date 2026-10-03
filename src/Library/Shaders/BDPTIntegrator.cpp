@@ -6583,18 +6583,15 @@ unsigned int GenerateLightSubpathImpl(
 			const IEmitter* pEmitter = ls.pLuminary->GetMaterial()->GetEmitter();
 			if( pEmitter ) {
 				RayIntersectionGeometric rig( Ray( ls.position, ls.direction ), nullRasterizerState );
-				rig.bHit = true;
-				rig.ptIntersection = ls.position;
-				rig.vNormal = ls.normal;
-				rig.vGeomNormal = ls.normal;
-				// DL-44: the sampled emitter UV, so a UV-keyed emission
-				// painter (checker_painter, an image exitance map) reads the
-				// same texel the RGB hero (`ls.Le`, evaluated inside
-				// `SampleLight`) did, not the default-constructed (0,0).
-				rig.ptCoord = ls.ptCoord;
-				OrthonormalBasis3D onb;
-				onb.CreateFromW( ls.normal );
-				rig.onb = onb;
+				// DL-298: the ONE shared emitter-record fill (world position,
+				// normals, `onb`, UV and `Po`) -- the same function
+				// `SampleLight`'s own RGB record, both PT NEE arms, VCM's NEE
+				// rebuild and the photon tracers use.  DL-44: the UV is the
+				// sampled emitter UV, so a UV-keyed emission painter reads the
+				// same texel the RGB hero (`ls.Le`) did; `Po`, ungated and
+				// ray-free, is `ls.ptObjIntersec` (`(0,0,0)` for a delta
+				// light, an env sample and a CSG-composite luminary).
+				LightSampler::FillEmitterRecord( rig, ls.position, ls.normal, ls.ptCoord, ls.ptObjIntersec );
 				// THE NM HERO twin of LightSampler's own emission record
 				// (slice S3, docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md
 				// §5).  `ls.surface` was probed ONCE inside `SampleLight`
@@ -6603,13 +6600,6 @@ unsigned int GenerateLightSubpathImpl(
 				// against the same live channel.  A no-op when the probe
 				// was gated off or refused.
 				LightSampler::ApplyEmitterSurface( rig, ls.surface );
-				// `Po`, separately and UNCONDITIONALLY: `ls.ptObjIntersec`
-				// is filled without a ray and without the signal gate (see
-				// `LightSampler::EmitterObjectPoint`), because painters
-				// that read `Po` register no signal demand.  `(0,0,0)` --
-				// this record's previous value -- for a delta light, an
-				// env sample, and a CSG-composite luminary.
-				rig.ptObjIntersec = ls.ptObjIntersec;
 				LeNM = pEmitter->emittedRadianceNM( rig, ls.direction, ls.normal, tag.nm );
 			}
 		} else if( ls.pLight ) {
@@ -6791,27 +6781,13 @@ unsigned int GenerateLightSubpathImpl(
 					if( pEm ) {
 						RayIntersectionGeometric rigW(
 							Ray( ls.position, ls.direction ), nullRasterizerState );
-						rigW.bHit = true;
-						rigW.ptIntersection = ls.position;
-						rigW.vNormal = ls.normal;
-						rigW.vGeomNormal = ls.normal;
-						// DL-44: same ungated UV as the hero `rig` above --
-						// see that site's comment.
-						rigW.ptCoord = ls.ptCoord;
-						OrthonormalBasis3D onbW;
-						onbW.CreateFromW( ls.normal );
-						rigW.onb = onbW;
-						// THE HWSS COMPANION twin.  Fixing the hero alone
-						// would leave a hero-live / companion-neutral split
-						// -- the spectral form of the defect slice S3
-						// closes -- so this record gets the SAME probed
-						// payload, and the same ungated `Po`, from the
-						// SAME `ls`.  `vGeomNormal` is set here too (an
-						// earlier draft left it default, unlike the hero
-						// `rig` above) -- `rig` and `rigW` are now built
-						// identically field-for-field.
+						// DL-298: same shared fill as the hero `rig` above
+						// (`rig` and `rigW` are built identically,
+						// field-for-field, by construction) so a hero-live /
+						// companion-neutral split cannot reappear -- the
+						// spectral form of the defect slice S3 closed.
+						LightSampler::FillEmitterRecord( rigW, ls.position, ls.normal, ls.ptCoord, ls.ptObjIntersec );
 						LightSampler::ApplyEmitterSurface( rigW, ls.surface );
-						rigW.ptObjIntersec = ls.ptObjIntersec;
 						LeW = pEm->emittedRadianceNM(
 							rigW, ls.direction, ls.normal, pSwlHWSS->lambda[w] );
 					}

@@ -1062,6 +1062,28 @@ void LightSampler::ApplyEmitterSurface(
 	// NOT `ptObjIntersec`: the call sites set it themselves, ungated.
 }
 
+void LightSampler::FillEmitterRecord(
+	RayIntersectionGeometric&	rig,
+	const Point3&				position,
+	const Vector3&				normal,
+	const Point2&				coord,
+	const Point3&				ptObjIntersec
+	)
+{
+	rig.bHit          = true;
+	rig.ptIntersection = position;
+	rig.vNormal       = normal;
+	// `normal` is `UniformRandomPoint`'s normal (the interpolated vertex
+	// normal on a mesh luminary with per-vertex normals, the face normal
+	// otherwise -- `GeometricUtilities::PointOnTriangle`).  No Phong/bump
+	// modifier runs on an emitter record, so mirroring it keeps the record
+	// self-consistent for the downstream cosines.
+	rig.vGeomNormal   = normal;
+	rig.ptCoord       = coord;
+	rig.onb.CreateFromW( normal );
+	rig.ptObjIntersec = ptObjIntersec;
+}
+
 bool LightSampler::AcceptEmitterAlpha(
     const IObject* luminary, const IObjectManager* objects,
     const Point3& position, const RayIntersectionGeometric& context,
@@ -1804,11 +1826,13 @@ bool LightSampler::SampleLight(
 		// Phong/bump MODIFIER runs on an emitter record either way, so
 		// mirroring it into `vGeomNormal` keeps the record self-consistent --
 		// which is the property the downstream cosines need.
-		rig.vGeomNormal = sample.normal;
-		rig.ptCoord = coord;
-		rig.onb = onb;
+		// DL-298: ONE shared fill (world position `P`, normals, `onb` --
+		// built from `sample.normal`, identical to the local `onb` above --
+		// UV and `Po`), the same function every other emitter-evaluation
+		// record uses.  Before it, this record left `ptIntersection` at the
+		// default (0,0,0), so a `P`-keyed emission painter read the origin.
+		FillEmitterRecord( rig, sample.position, sample.normal, coord, sample.ptObjIntersec );
 		ApplyEmitterSurface( rig, sample.surface );
-		rig.ptObjIntersec = sample.ptObjIntersec;
 
 		if (!AcceptEmitterAlpha(lumEntry.pLum, scene.GetObjects(), sample.position, rig, sampler)) return false;
 		sample.Le = pEmitter->emittedRadiance( rig, sample.direction, sample.normal );
@@ -2765,9 +2789,16 @@ RISEPel LightSampler::EvaluateDirectLighting(
 					// none (see `GeometricUtilities::PointOnTriangle`).
 					// Mirror it so the record is self-consistent; no
 					// modifier runs here to make the two differ.
-					lumri.vGeomNormal = lumNormal;
-					lumri.ptCoord = lumCoord;
-					lumri.onb.CreateFromW( lumNormal );
+					// DL-298: the shared fill -- world position `P`
+					// (the RGB NEE record used to leave it at (0,0,0)),
+					// normals, `onb`, UV, and `Po` (ungated and ray-free,
+					// so it lands whether or not a signal painter exists
+					// anywhere in the process; this also closed a
+					// PRE-EXISTING PT inconsistency where a camera ray that
+					// HIT the emitter read a live `Po` and this record read
+					// (0,0,0)).  CSG composites keep the zero fallback.
+					FillEmitterRecord( lumri, ptOnLum, lumNormal, lumCoord,
+						EmitterObjectPoint( lumEntry.pLum, ptOnLum, lumri.ptObjIntersec ) );
 
 					// THE SHADING PAYLOAD for this sampled point (slice S3
 					// of docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5).
@@ -2826,14 +2857,6 @@ RISEPel LightSampler::EvaluateDirectLighting(
 							ptOnLum, lumWinding, lumSurface );
 						ApplyEmitterSurface( lumri, lumSurface );
 					}
-
-					// `Po` -- UNGATED and ray-free, so it lands whether or
-					// not a signal painter exists anywhere in the process.
-					// This also closes a PRE-EXISTING PT inconsistency: a
-					// camera ray that HIT this emitter read a live `Po`,
-					// this NEE record read `(0,0,0)`.
-					lumri.ptObjIntersec = EmitterObjectPoint(
-						lumEntry.pLum, ptOnLum, lumri.ptObjIntersec );
 
 					const RISEPel Le = AcceptEmitterAlpha(lumEntry.pLum, pPreparedScene ? pPreparedScene->GetObjects() : nullptr, ptOnLum, lumri, sampler, &ri.rast)
                         ? pEmitter->emittedRadiance( lumri, -vToLight, lumNormal ) : RISEPel(0,0,0);
@@ -3529,9 +3552,10 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 		// normal otherwise (see the RGB twin above and
 		// `GeometricUtilities::PointOnTriangle`); mirror it so the record is
 		// self-consistent.
-		lumri.vGeomNormal = lumNormal;
-		lumri.ptCoord = lumCoord;
-		lumri.onb.CreateFromW( lumNormal );
+		// DL-298: the same shared fill as the RGB twin above (world
+		// position, normals, `onb`, UV, `Po`).
+		FillEmitterRecord( lumri, ptOnLum, lumNormal, lumCoord,
+			EmitterObjectPoint( lumEntry.pLum, ptOnLum, lumri.ptObjIntersec ) );
 
 		// THE SHADING PAYLOAD -- the NM twin of the RGB site above, calling
 		// the SAME functions with the same arguments, including the same
@@ -3546,9 +3570,6 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 				ptOnLum, lumWinding, lumSurface );
 			ApplyEmitterSurface( lumri, lumSurface );
 		}
-		lumri.ptObjIntersec = EmitterObjectPoint(
-			lumEntry.pLum, ptOnLum, lumri.ptObjIntersec );
-
 		const Scalar Le = AcceptEmitterAlpha(lumEntry.pLum, pPreparedScene ? pPreparedScene->GetObjects() : nullptr, ptOnLum, lumri, sampler, &ri.rast)
             ? pEmitter->emittedRadianceNM( lumri, -vToLight, lumNormal, nm ) : 0;
 
