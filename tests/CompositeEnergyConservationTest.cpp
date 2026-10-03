@@ -1356,11 +1356,11 @@ static std::string PtRasterizer( bool env, int spp )
 	return s.str();
 }
 
-static std::string BdptRasterizer( bool env, int spp )
+static std::string BdptRasterizer( bool env, int spp, int depth = 8 )
 {
 	std::ostringstream s;
 	s << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
-	  << "bdpt_pel_rasterizer\n{\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tsamples " << spp << "\n\toidn_denoise FALSE\n\tpixel_filter box\n";
+	  << "bdpt_pel_rasterizer\n{\n\tmax_eye_depth " << depth << "\n\tmax_light_depth " << depth << "\n\tsamples " << spp << "\n\toidn_denoise FALSE\n\tpixel_filter box\n";
 	if( env ) s << "\tradiance_map pnt_env\n\tradiance_scale 1.0\n\tradiance_background TRUE\n";
 	s << "}\n\nfile_rasterizeroutput\n{\n\tpattern rendered/composite_energy_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n\n";
 	return s.str();
@@ -1385,19 +1385,22 @@ static std::string BdptRasterizer( bool env, int spp )
 //      no closed form: the inverted box must equal the consistent one,
 //      right / left within 2 % (single 256-spp renders; the reviewer's
 //      salted repeats put the per-half sd near 0.2 %).
+//  BDPT / VCM run at depth 12 (review round 6, P3): at the helpers'
+//  depth 8 the translucent box read ~1.3 % below PT on BOTH boxes alike
+//  (truncation of the box's internal bounces), 0.3 % at depth 12.
 //////////////////////////////////////////////////////////////////////
-static std::string VcmRasterizer( bool env, int spp )
+static std::string VcmRasterizer( bool env, int spp, int depth = 8 )
 {
 	std::ostringstream s;
 	s << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
-	  << "vcm_pel_rasterizer\n{\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tsamples " << spp
+	  << "vcm_pel_rasterizer\n{\n\tmax_eye_depth " << depth << "\n\tmax_light_depth " << depth << "\n\tsamples " << spp
 	  << "\n\tmerge_radius 0.0\n\tvc_enabled true\n\tvm_enabled true\n\toidn_denoise FALSE\n\tpixel_filter box\n";
 	if( env ) s << "\tradiance_map pnt_env\n\tradiance_scale 1.0\n\tradiance_background TRUE\n";
 	s << "}\n\nfile_rasterizeroutput\n{\n\tpattern rendered/composite_energy_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n\n";
 	return s.str();
 }
 
-static std::string WindingBox( const char* name, const std::vector<int>& reversed )
+static std::string WindingBox( const char* name, const std::vector<int>& reversed, bool doubleSided = true )
 {
 	static const int T[12][3] = { {0,2,1},{0,3,2},{4,5,6},{4,6,7},{0,1,5},{0,5,4},{3,7,6},{3,6,2},{0,4,7},{0,7,3},{1,2,6},{1,6,5} };
 	std::ostringstream s;
@@ -1408,7 +1411,7 @@ static std::string WindingBox( const char* name, const std::vector<int>& reverse
 		const bool rev = std::find( reversed.begin(), reversed.end(), i ) != reversed.end();
 		s << "\ttriangle " << T[i][0] << " " << ( rev ? T[i][2] : T[i][1] ) << " " << ( rev ? T[i][1] : T[i][2] ) << "\n";
 	}
-	s << "\tdouble_sided TRUE\n\tface_normals TRUE\n}\n\n";
+	s << "\tdouble_sided " << ( doubleSided ? "TRUE" : "FALSE" ) << "\n\tface_normals TRUE\n}\n\n";
 	return s.str();
 }
 
@@ -1446,7 +1449,7 @@ static void SectionD9()
 					mats + WindingBox( "bg", std::vector<int>() ) + WindingBox( "bw", m.faces ) +
 					"standard_object\n{\n\tname L\n\tgeometry bg\n\tposition -2 0 0\n\tmaterial " + c.mat + "\n}\n\n"
 					"standard_object\n{\n\tname Rr\n\tgeometry bw\n\tposition 2 0 0\n\tmaterial " + c.mat + "\n}\n\n" +
-					( r == 0 ? PtRasterizer( true, c.spp ) : r == 1 ? BdptRasterizer( true, c.spp ) : VcmRasterizer( true, c.spp ) );
+					( r == 0 ? PtRasterizer( true, c.spp ) : r == 1 ? BdptRasterizer( true, c.spp, 12 ) : VcmRasterizer( true, c.spp, 12 ) );
 				CapturingRasterizerOutput* cap = 0;
 				const bool ok = Render( scene, "winding", cap, seed++ );
 				const double mL = ok ? RegionMean( *cap, 2, cap->width / 2 - 2 ) : -1;
@@ -1465,6 +1468,232 @@ static void SectionD9()
 			}
 		}
 	}
+}
+
+//////////////////////////////////////////////////////////////////////
+//  Section M -- DL-341 review round 7 (2026-10-02): THE SIDEDNESS MATRIX.
+//
+//  Rounds 1-6 each found one more geometry on which the composite's frame
+//  went wrong (double-sided closed meshes, open sheets, T-junctions,
+//  Bezier patches, nested tops, inward winding).  This section crosses
+//  every axis at once instead of one fixture per finding:
+//
+//    sidedness  {single, double}
+//    winding    {outward, inward, mixed}   (mixed: every odd triangle
+//               reversed -- each face carries one triangle each way)
+//    geometry   {closed box in a white furnace, camera outside;
+//                closed box with a light INSIDE it, no environment;
+//                open quad sheet in the furnace, camera on its +z side}
+//    material   {composite{glass/glass}, composite{glass/translucent},
+//                nested composite{composite{glass/water}/glass}}
+//    integrator {PT, BDPT, VCM}  (BDPT / VCM at depth 12)
+//
+//  Each render holds the cell's object (left) beside its TWIN (right):
+//    glass/glass -> plain glass on the SAME geometry, sidedness and
+//                   winding (the two-layer stack is index-matched, so it
+//                   must render as one glass interface);
+//    the others  -> the same composite on the double-sided OUTWARD
+//                   version of the geometry (winding must not matter).
+//  Expected value per cell (docs/DL24_COMPOSITE_ENERGY.md section 9.4e):
+//    closed box, furnace   glass/glass 1 and its twin 1; nested 1
+//                          (lossless); glass/translucent == twin
+//    closed box, light in  == twin
+//    open sheet            == twin (glass/glass: 0.467 = F + (1-F)/eta^2,
+//                          the dielectric "separate sheets" convention:
+//                          a ray that crossed is inside the object)
+//  Plus three glass/glass sheet families against plain glass, over
+//  sidedness x winding: one object holding two panes (plain glass: a
+//  slab, 1.0), two separate one-pane objects (0.467), and a sheet over a
+//  mirror (the return trip meets the sheet from behind with the object on
+//  the stack).
+//
+//  EVERY cell follows the plain dielectric's stack convention; none is
+//  "top on both faces" (that is the provably open clipped plane only,
+//  DL-407, not in this matrix).  Bands (every render salted, so each cell
+//  is an independent replicate): zero-variance all-delta cells 0.2 %
+//  (glass/glass, plain glass; furnace and sheets); glass/translucent
+//  furnace / sheet 2 % (256 spp); nested 3 % (1024 spp, per-branch
+//  estimator, ~0.5 % sd per half); light-inside cells 1024 spp, 3 %
+//  glass/glass and 4 % translucent / nested (single-render ratio sd up to
+//  ~1 %).  Every regression this section exists for moves a cell by 5 %
+//  or more (0.444 / 0.467 against 1; 0.222 against 0.105; 0.65 against
+//  0.92).
+//////////////////////////////////////////////////////////////////////
+static std::string MatrixQuad( const char* name, double x0, double x1, double z, int winding, bool doubleSided )
+{
+	std::ostringstream s;
+	s << "indexedmesh_geometry\n{\n\tname " << name << "\n"
+	  << "\tvertex " << x0 << " -3 " << z << "\n\tvertex " << x1 << " -3 " << z << "\n"
+	  << "\tvertex " << x1 << " 3 " << z << "\n\tvertex " << x0 << " 3 " << z << "\n";
+	// winding 0: normal +z (toward the camera); 1: -z; 2: one of each.
+	s << ( winding == 1 ? "\ttriangle 0 2 1\n" : "\ttriangle 0 1 2\n" )
+	  << ( winding == 0 ? "\ttriangle 0 2 3\n" : "\ttriangle 0 3 2\n" );
+	s << "\tdouble_sided " << ( doubleSided ? "TRUE" : "FALSE" ) << "\n\tface_normals TRUE\n}\n\n";
+	return s.str();
+}
+
+static std::string MatrixTwoPane( const char* name, double x0, double x1, int winding, bool doubleSided )
+{
+	// Two quads at z = +0.3 and z = -0.3 in ONE geometry.
+	std::ostringstream s;
+	s << "indexedmesh_geometry\n{\n\tname " << name << "\n";
+	const double zs[2] = { 0.3, -0.3 };
+	for( int i = 0; i < 2; ++i ) {
+		s << "\tvertex " << x0 << " -3 " << zs[i] << "\n\tvertex " << x1 << " -3 " << zs[i] << "\n"
+		  << "\tvertex " << x1 << " 3 " << zs[i] << "\n\tvertex " << x0 << " 3 " << zs[i] << "\n";
+	}
+	for( int i = 0; i < 2; ++i ) {
+		const int b = 4 * i;
+		s << "\ttriangle " << b << " " << ( winding == 1 ? b + 2 : b + 1 ) << " " << ( winding == 1 ? b + 1 : b + 2 ) << "\n"
+		  << "\ttriangle " << b << " " << ( winding == 0 ? b + 2 : b + 3 ) << " " << ( winding == 0 ? b + 3 : b + 2 ) << "\n";
+	}
+	s << "\tdouble_sided " << ( doubleSided ? "TRUE" : "FALSE" ) << "\n\tface_normals TRUE\n}\n\n";
+	return s.str();
+}
+
+static void SectionM()
+{
+	std::cout << "\n[M] Sidedness x winding x geometry x material matrix (DL-341 round 7)\n";
+	const std::string mats =
+		"uniformcolor_painter\n{\n\tname pnt_env\n\tcolor 1.0 1.0 1.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_e\n\tcolor 1.0 1.0 1.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_w8\n\tcolor 0.8 0.8 0.8\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_tr\n\tcolor 0.3 0.3 0.3\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_tt\n\tcolor 0.7 0.7 0.7\n}\n\n"
+		"lambertian_material\n{\n\tname mat_l8\n\treflectance pnt_w8\n}\n\n"
+		"dielectric_material\n{\n\tname mat_glass\n\ttau 1\n\tior 1.5\n}\n\n"
+		"dielectric_material\n{\n\tname mat_glass2\n\ttau 1\n\tior 1.5\n}\n\n"
+		"dielectric_material\n{\n\tname mat_water\n\ttau 1\n\tior 1.33\n}\n\n"
+		"translucent_material\n{\n\tname mat_tr\n\tref pnt_tr\n\ttau pnt_tt\n\text 0\n\tN 10\n\tscattering 0\n}\n\n"
+		"perfectreflector_material\n{\n\tname mat_mir\n\treflectance pnt_e\n}\n\n"
+		"lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_e\n\tscale 20.0\n\tmaterial none\n}\n\n"
+		"composite_material\n{\n\tname mat_gg\n\ttop mat_glass\n\tbottom mat_glass2\n\tthickness 0\n\textinction 0.0\n}\n\n"
+		"composite_material\n{\n\tname mat_gw\n\ttop mat_glass\n\tbottom mat_water\n\tthickness 0\n\textinction 0.0\n}\n\n"
+		"composite_material\n{\n\tname mat_nest\n\ttop mat_gw\n\tbottom mat_glass2\n\tthickness 0\n\textinction 0.0\n}\n\n"
+		"composite_material\n{\n\tname mat_gtr\n\ttop mat_glass\n\tbottom mat_tr\n\tthickness 0.05\n\textinction 0.2\n}\n\n";
+	const std::string head = std::string( "RISE ASCII SCENE 7\n" ) +
+		"film\n{\n\twidth 32\n\theight 16\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 7.0\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n" + mats;
+	const std::string lights =
+		"sphere_geometry\n{\n\tname sg\n\tradius 0.3\n}\n\n"
+		"clippedplane_geometry\n{\n\tname fq\n\tpta -6 -3.5 -4\n\tptb -6 -3.5 4\n\tptc 6 -3.5 4\n\tptd 6 -3.5 -4\n}\n\n"
+		"standard_object\n{\n\tname eL\n\tgeometry sg\n\tposition -2 0 0\n\tmaterial mat_emit\n}\n\n"
+		"standard_object\n{\n\tname eR\n\tgeometry sg\n\tposition 2 0 0\n\tmaterial mat_emit\n}\n\n"
+		"standard_object\n{\n\tname F\n\tgeometry fq\n\tmaterial mat_l8\n}\n\n";
+	auto obj = []( const char* name, const char* geom, const std::string& mat, double x ) {
+		std::ostringstream s;
+		s << "standard_object\n{\n\tname " << name << "\n\tgeometry " << geom << "\n\tposition " << x << " 0 0\n\tmaterial " << mat << "\n}\n\n";
+		return s.str();
+	};
+	auto rast = []( int r, bool env, int spp ) {
+		return r == 0 ? PtRasterizer( env, spp ) : r == 1 ? BdptRasterizer( env, spp, 12 ) : VcmRasterizer( env, spp, 12 );
+	};
+	auto reversedFor = []( int w ) {
+		std::vector<int> v;
+		for( int i = 0; i < 12; ++i ) if( w == 1 || ( w == 2 && ( i & 1 ) ) ) v.push_back( i );
+		return v;
+	};
+	const char* inName[3] = { "PT  ", "BDPT", "VCM " };
+	const char* wName[3] = { "outward", "inward", "mixed" };
+	struct MatCfg { const char* name; const char* mat; int kind; };	// kind 0 glass/glass, 1 translucent, 2 nested
+	const MatCfg cfgs[] = {
+		{ "glass/glass",       "mat_gg",   0 },
+		{ "glass/translucent", "mat_gtr",  1 },
+		{ "nested",            "mat_nest", 2 },
+	};
+	unsigned seed = 131072u;
+	int cells = 0, cellsBad = 0;
+	auto runPair = [&]( const std::string& scene, double& mL, double& mR ) {
+		CapturingRasterizerOutput* cap = 0;
+		// Every render SALTED (an independent randomized-QMC replicate):
+		// unsalted, all cells share one Sobol' pattern and its fixed
+		// left / right offset (~1.3 % on the nested rows) repeats in every
+		// cell instead of averaging out.
+		SobolSamplerTestHooks::ValueSalt().store( 0x9E3779B9u * seed + 0x85EBCA6Bu );
+		const bool ok = Render( scene, "sidedness", cap, seed++ );
+		SobolSamplerTestHooks::ValueSalt().store( 0u );
+		mL = ok ? RegionMean( *cap, 2, cap->width / 2 - 2 ) : -1;
+		mR = ok ? RegionMean( *cap, cap->width / 2 + 2, cap->width - 2 ) : -1;
+		if( cap ) safe_release( cap );
+		return ok;
+	};
+	auto gate = [&]( bool pass, const std::string& msg ) {
+		++cells; if( !pass ) ++cellsBad;
+		Check( pass, msg );
+	};
+	for( const MatCfg& c : cfgs ) {
+		for( int ds = 0; ds < 2; ++ds ) {
+			for( int w = 0; w < 3; ++w ) {
+				for( int g = 0; g < 3; ++g ) {
+					const bool env = ( g != 1 );
+					int spp = ( c.kind == 0 ) ? 128 : ( c.kind == 1 ) ? 256 : 1024;
+					if( g == 1 ) spp = 1024;
+					const double band = ( g == 1 ) ? ( c.kind == 0 ? 0.03 : 0.04 ) : ( c.kind == 0 ) ? 0.002 : ( c.kind == 1 ) ? 0.02 : 0.03;
+					std::string geo, objs;
+					const std::string twinMat = ( c.kind == 0 ) ? "mat_glass" : c.mat;
+					if( g < 2 ) {
+						geo = WindingBox( "bT", reversedFor( w ), ds == 1 ) +
+						      ( c.kind == 0 ? WindingBox( "bR", reversedFor( w ), ds == 1 ) : WindingBox( "bR", std::vector<int>(), true ) );
+						objs = obj( "L", "bT", c.mat, -2 ) + obj( "Rr", "bR", twinMat, 2 );
+					} else {
+						geo = MatrixQuad( "qT", -4, 0, 0, w, ds == 1 ) +
+						      ( c.kind == 0 ? MatrixQuad( "qR", 0, 4, 0, w, ds == 1 ) : MatrixQuad( "qR", 0, 4, 0, 0, true ) );
+						objs = obj( "L", "qT", c.mat, 0 ) + obj( "Rr", "qR", twinMat, 0 );
+					}
+					const char* gName = ( g == 0 ) ? "closed box, furnace" : ( g == 1 ) ? "closed box, light inside" : "open sheet, furnace";
+					for( int r = 0; r < 3; ++r ) {
+						const std::string scene = head + geo + objs + ( g == 1 ? lights : std::string() ) + rast( r, env, spp );
+						double mL = -1, mR = -1;
+						const bool ok = runPair( scene, mL, mR );
+						std::cout << "    M " << c.name << " | " << ( ds ? "double" : "single" ) << " | " << wName[w] << " | "
+						          << gName << " | " << inName[r] << ": " << std::setprecision(5) << mL << " vs twin " << mR << "\n";
+						const std::string tag = std::string( c.name ) + ", " + ( ds ? "double" : "single" ) + "-sided, " + wName[w] + ", " + gName + " (" + inName[r] + ")";
+						gate( ok && mR > 0 && std::fabs( mL / mR - 1.0 ) <= band, "[M] == twin, " + tag );
+						if( g == 0 && c.kind != 1 ) {
+							gate( ok && std::fabs( mL - 1.0 ) <= band, "[M] lossless closed box == 1, " + tag );
+						}
+						if( g == 0 && c.kind == 0 ) {
+							gate( ok && std::fabs( mR - 1.0 ) <= band, "[M] plain-glass twin == 1, " + tag );
+						}
+					}
+				}
+			}
+		}
+	}
+	// Glass/glass sheet families against plain glass.
+	const std::string mirror =
+		"clippedplane_geometry\n{\n\tname mq\n\tpta -6 -4 -2\n\tptb 6 -4 -2\n\tptc 6 4 -2\n\tptd -6 4 -2\n}\n\n"
+		"standard_object\n{\n\tname M\n\tgeometry mq\n\tmaterial mat_mir\n}\n\n";
+	for( int fam = 0; fam < 3; ++fam ) {
+		const char* fName = ( fam == 0 ) ? "two panes, one object" : ( fam == 1 ) ? "two panes, separate objects" : "sheet over a mirror";
+		for( int ds = 0; ds < 2; ++ds ) {
+			for( int w = 0; w < 3; ++w ) {
+				std::string geo, objs;
+				if( fam == 0 ) {
+					geo = MatrixTwoPane( "pL", -4, 0, w, ds == 1 ) + MatrixTwoPane( "pR", 0, 4, w, ds == 1 );
+					objs = obj( "L", "pL", "mat_gg", 0 ) + obj( "Rr", "pR", "mat_glass", 0 );
+				} else if( fam == 1 ) {
+					geo = MatrixQuad( "aL", -4, 0, 0.3, w, ds == 1 ) + MatrixQuad( "bL", -4, 0, -0.3, w, ds == 1 ) +
+					      MatrixQuad( "aR", 0, 4, 0.3, w, ds == 1 ) + MatrixQuad( "bR", 0, 4, -0.3, w, ds == 1 );
+					objs = obj( "La", "aL", "mat_gg", 0 ) + obj( "Lb", "bL", "mat_gg", 0 ) +
+					       obj( "Ra", "aR", "mat_glass", 0 ) + obj( "Rb", "bR", "mat_glass", 0 );
+				} else {
+					geo = MatrixQuad( "qL", -4, 0, 0, w, ds == 1 ) + MatrixQuad( "qR", 0, 4, 0, w, ds == 1 ) + mirror;
+					objs = obj( "L", "qL", "mat_gg", 0 ) + obj( "Rr", "qR", "mat_glass", 0 );
+				}
+				for( int r = 0; r < 3; ++r ) {
+					const std::string scene = head + geo + objs + rast( r, true, 128 );
+					double mL = -1, mR = -1;
+					const bool ok = runPair( scene, mL, mR );
+					std::cout << "    M glass/glass | " << ( ds ? "double" : "single" ) << " | " << wName[w] << " | "
+					          << fName << " | " << inName[r] << ": " << std::setprecision(5) << mL << " vs plain glass " << mR << "\n";
+					gate( ok && mR > 0 && std::fabs( mL / mR - 1.0 ) <= 0.002,
+						std::string( "[M] glass/glass == plain glass, " ) + fName + ", " + ( ds ? "double" : "single" ) + "-sided, " + wName[w] + " (" + inName[r] + ")" );
+				}
+			}
+		}
+	}
+	std::cout << "    M summary: " << ( cells - cellsBad ) << " of " << cells << " matrix checks pass\n";
 }
 
 static void SectionD()
@@ -1913,6 +2142,7 @@ static void SectionD()
 	}
 
 	SectionD9();
+	SectionM();
 }
 
 
@@ -2140,6 +2370,22 @@ int main( int argc, char** argv )
 		SectionT( f );
 		SectionW( f );
 		if( argc > 2 && std::string( argv[2] ) == "--render" ) SectionD();
+		std::cout << "\n" << passCount << " passed, " << failCount << " failed" << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+	if( argc > 2 && std::string( argv[1] ) == "--probe-TEMP" ) {
+		std::ifstream ifs( argv[2] ); std::stringstream ss; ss << ifs.rdbuf();
+		for( int k = 0; k < ( argc > 3 ? atoi( argv[3] ) : 1 ); ++k ) {
+			CapturingRasterizerOutput* cap = 0;
+			SobolSamplerTestHooks::ValueSalt().store( 0x9E3779B9u * (unsigned)( k + 1 ) );
+			const bool ok = Render( ss.str(), "probe", cap, 777u + k );
+			if( ok ) std::cout << "PROBE L " << RegionMean( *cap, 2, cap->width / 2 - 2 ) << " R " << RegionMean( *cap, cap->width / 2 + 2, cap->width - 2 ) << std::endl;
+			if( cap ) safe_release( cap );
+		}
+		return 0;
+	}
+	if( argc > 1 && std::string( argv[1] ) == "--sidedness-only" ) {
+		SectionM();
 		std::cout << "\n" << passCount << " passed, " << failCount << " failed" << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}

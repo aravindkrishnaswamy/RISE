@@ -2150,58 +2150,74 @@ namespace RISE
 	//! walk sees the solid's true sides exactly as a single-sided mesh
 	//! does.
 	//!
-	//! WHEN TO UNFLIP is decided by the WALK'S STACK, not by a geometry
-	//! certificate (review rounds 2 and 3): a record is unflipped only when
-	//! the caller's IOR stack already holds this object -- the ray really
-	//! is inside, it crossed in earlier -- and its reported normal faces
-	//! the arriving ray (round 6, below: a flipped record always does, an
-	//! inward-WOUND double-sided mesh does with no flip at all).  `bOpenSheet` cannot
-	//! decide it (on an indexed mesh it means NOT CERTIFIED watertight, and
-	//! one T-junction un-certifies a closed box: round 3 read 0.466 there),
-	//! and `BezierPatchGeometry` never sets it at all (DL-220), so a single
-	//! open patch read as closed.  With the stack rule an open sheet hit on
-	//! its back with no prior crossing keeps the flipped frame and presents
-	//! its top on both faces, as the base did; a provably open sheet
-	//! (`bProvablyNoInterior`) is never unflipped; hair's ray-derived normal
-	//! has no true side.  BDPT / VCM reprice a connection on a record
-	//! rebuilt by PathVertexEval::PopulateRIGFromVertex (which replays the
-	//! surface-identity flags, BDPTVertex) against the stack
-	//! BuildVertexIORStack rebuilds from the vertex's own `insideObject` --
-	//! the same two inputs Scatter decided from, so the same frame.
+	//! WHICH WAY THE FRAME FACES is decided by the WALK'S STACK, not by a
+	//! geometry certificate, the flip flag or the winding (review rounds
+	//! 2, 3, 6 and 7): outside the object the arriving ray meets the top,
+	//! inside it the bottom -- the rule a plain dielectric already follows,
+	//! so a composite on ANY mesh (single- or double-sided, wound outward,
+	//! inward or mixed, closed or open) follows the dielectric's "separate
+	//! sheets" convention.  `bOpenSheet` cannot decide it (on an indexed
+	//! mesh it means NOT CERTIFIED watertight, and one T-junction
+	//! un-certifies a closed box: round 3 read 0.466 there), and
+	//! `BezierPatchGeometry` never sets it at all (DL-220).  An open sheet
+	//! hit with no prior crossing presents its top whichever face is hit;
+	//! a provably open sheet (`bProvablyNoInterior`) keeps its reported
+	//! side (DL-407); hair's ray-derived normal has no true side.  BDPT /
+	//! VCM reprice a connection on a record rebuilt by
+	//! PathVertexEval::PopulateRIGFromVertex (which replays the
+	//! surface-identity flags and the arrival facing, BDPTVertex) against
+	//! the stack BuildVertexIORStack rebuilds from the vertex's own
+	//! `insideObject` -- the same inputs Scatter decided from, so the same
+	//! frame.
 	//!
 	//! A STACKLESS caller (`IBSDF::value` without a stack, and
 	//! DeltaPassThroughTransmittance, which has none) is never unflipped:
 	//! it sees the reported frame, as before DL-341.  (For the straight
 	//! pass-through the order of the two layers does not change the
 	//! product `t1 * Beer * t2`.)  A camera or light INSIDE a closed
-	//! composite is not seeded (DL-407), so its first inside hits keep the
-	//! flipped frame too.
+	//! composite is not seeded (DL-407), so its first inside hits read as
+	//! outside arrivals and meet the top.
 	static inline const RayIntersectionGeometric& CompositeLayerFrame(
 		const RayIntersectionGeometric& ri,
 		std::optional<RayIntersectionGeometric>& store,
 		const IORStack* pStack
 		)
 	{
-		// Review round 6 (2026-10-02): the unflip test is (stack says
-		// inside) AND (the reported normal faces the ARRIVING ray), not the
-		// geometry's flip flag.  Inside a closed solid the ray that reaches
-		// its boundary is leaving it, so the true outward normal is the one
-		// the arrival travels along; a reported normal that opposes the
-		// arrival points INTO the solid whoever oriented it.  The flag only
-		// covered the geometry's own orient-to-ray flip: a double-sided
-		// mesh wound INWARD reports its inward winding normal on an inside
-		// hit with no flip at all, and an all-inverted composite{glass/glass}
-		// box read 0.467 (back face only 0.507, front only 0.980; master
-		// 1.000).  A flipped record opposes its arrival by construction, so
-		// the flag is kept as a sufficient condition (exactly the round-3
-		// set, immune to a grazing rounding of the dot).  The facing is a
-		// fact of the VERTEX: a record rebuilt for a BDPT / VCM query aims
-		// its ray per query (-wi), so it carries the live hit's answer in
-		// `arrivalGeomFacing` and `GeomNormalOpposesArrival()` reads that.
-		const bool unflip = ri.HasTrueGeomSide() && !ri.bProvablyNoInterior &&
-			pStack && pStack->currentObject() && pStack->containsCurrent() &&
-			( ri.bGeomNormalOrientedToRay || ri.GeomNormalOpposesArrival() );
-		if( !ri.bProvablyNoInterior && !ri.bGeomNormalOrientedToRay && !unflip && ri.arrivalGeomFacing == 0 ) {
+		// Review rounds 6 and 7 (2026-10-02): the frame is oriented BY THE
+		// WALK'S STACK, the plain dielectric's rule.  Outside the object
+		// (the stack lacks O) the arrival must meet the TOP: the geometric
+		// normal faces the arriving ray.  Inside (the stack holds O) the
+		// ray reaching the boundary is leaving the solid: the normal points
+		// ALONG the arrival and the walk meets the bottom first.  A record
+		// whose reported normal disagrees is turned.
+		//
+		// Neither the flip flag nor the winding can decide it.  Round 6
+		// keyed the inside half on (stack holds O) AND (reported normal
+		// opposes the arrival) -- a double-sided mesh wound INWARD reports
+		// its inward winding normal on an inside hit with no flip at all
+		// (all-inverted composite{glass/glass} box 0.467, master 1.000).
+		// Round 7 adds the outside half: on a SINGLE-sided mesh (the ply /
+		// glTF / 3ds / raw default) wound inward, an outside hit is a back
+		// face, was walked from below, and its upward exit treated the
+		// crossing as leaving the object -- O never pushed, so the later
+		// inside hit (no O, round 6 kept it) was walked from above and
+		// carried O out: 1/eta^2 = 0.444 (master 0.979).  The flag stays a
+		// sufficient condition for "opposes" (a flipped record opposes its
+		// arrival by construction; immune to a grazing rounding of the dot).
+		//
+		// The facing is a fact of the VERTEX: a record rebuilt for a BDPT /
+		// VCM query aims its ray per query (-wi), so it carries the live
+		// hit's answer in `arrivalGeomFacing` and `GeomNormalOpposesArrival()`
+		// reads that.  A provably open sheet (`bProvablyNoInterior`, the
+		// clipped plane) and a ray-derived normal (hair) are never turned
+		// (DL-407: the clipped plane presents its reported side), nor is a
+		// stackless caller's record.
+		bool flip = false;
+		if( ri.HasTrueGeomSide() && !ri.bProvablyNoInterior && pStack && pStack->currentObject() ) {
+			const bool opposes = ri.bGeomNormalOrientedToRay || ri.GeomNormalOpposesArrival();
+			flip = pStack->containsCurrent() ? opposes : !opposes;
+		}
+		if( !ri.bProvablyNoInterior && !ri.bGeomNormalOrientedToRay && !flip && ri.arrivalGeomFacing == 0 ) {
 			return ri;
 		}
 		store.emplace( ri );
@@ -2209,7 +2225,7 @@ namespace RISE
 		// Every layer record copied from the frame gets a LIVE walk ray, so
 		// a replayed arrival facing must not reach a nested composite.
 		store->arrivalGeomFacing = 0;
-		if( unflip ) {
+		if( flip ) {
 			store->vGeomNormal = -ri.vGeomNormal;
 			if( Vector3Ops::Dot( store->vNormal, store->vGeomNormal ) < 0 ) {
 				store->vNormal = -store->vNormal;
