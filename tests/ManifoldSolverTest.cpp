@@ -2,14 +2,10 @@
 //
 //  ManifoldSolverTest.cpp - Unit tests for ManifoldSolver
 //
-//    Covers all pure-math methods: 2x2 block utilities, specular
-//    direction computation, derivatives, constraint evaluation,
-//    Jacobian construction, block-tridiagonal solver, chain geometry,
-//    chain throughput, Fresnel, physical validation, and
-//    DeriveNormalized.  Group 15 is the one exception: an end-to-end
-//    `BuildSeedChain`/`SnellContinueChain` scene test (real
-//    Object/ObjectManager/Scene/DielectricMaterial) pinning the DL-70
-//    `bEntering` fix on a double-sided-plane "slab" caster.
+//    Covers pure-math constraints, derivatives, Jacobians, chain geometry,
+//    throughput, Fresnel and physics; scene seed-walk controls exercise
+//    double-sided interfaces and exit refraction. Recorded photon queries
+//    independently pin RGB/NM material UV and object-frame coordinates.
 //
 //////////////////////////////////////////////////////////////////////
 

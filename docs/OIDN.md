@@ -1419,7 +1419,7 @@ from a reviewer, or has its priority moved. Most recent first.
 - `OIDNDenoiser` is now a stateful instance class with private opaque
   pImpl `State` holding the cached `oidn::DeviceRef` / `FilterRef` /
   `BufferRef` handles plus the cache key
-  `(width, height, hasAlbedo, hasNormal, resolvedQuality)`.  Static
+  `(width, height, hasAlbedo, hasNormal, resolvedQuality, prefilter, requestedDevice)`. Static
   helpers (`ImageToFloatBuffer`, `FloatBufferToImage`,
   `CollectFirstHitAOVs`) stay static — none of them touch device state.
 - Cache lifetime: one `OIDNDenoiser*` member on `Rasterizer` base,

@@ -29,12 +29,10 @@ namespace RISE
 	{
 		class AOVBuffers;
 
-		/// Stateful OIDN denoise context.  Caches the OIDN device,
-		/// filter, and per-buffer handles across calls; cross-render
-		/// reuse on the same rasterizer pays the device.commit() and
-		/// filter.commit() cost only once per cache key (resolution ×
-		/// quality × aux presence × backend request).  Held by the Rasterizer base for
-		/// the rasterizer's lifetime.
+		/// Stateful OIDN denoise context. Consecutive calls with unchanged
+		/// configuration and shared-buffer pointers reuse committed handles.
+		/// The device also survives filter-only rebuilds while its requested
+		/// backend is unchanged. Held by Rasterizer for its lifetime.
 		///
 		/// Stateless helpers (ImageToFloatBuffer, FloatBufferToImage,
 		/// CollectFirstHitAOVs) remain static — they don't touch any

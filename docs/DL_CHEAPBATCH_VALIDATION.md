@@ -312,10 +312,10 @@ expose actual configured family rates and the last configured OIDN preset.
 
 New UV regression uses an origin-only low-IOR texel with literal1.78
 elsewhere; four paired salts for each NM/HWSS and uniform/Snell combination
-must match the constant1.78 pixel hash. Initial arithmetic/stripe controls
+must match the constant 1.78 pixel hash. Initial arithmetic/stripe controls
 were rejected because they were not identical physical inputs on every
 path. Final fixed32/0; restoring pre-review solver `ddc418273` while
-retaining new assertions gives16/16 (all16 hash comparisons fail).
+retaining new assertions gives16/16 (all 16 hash comparisons fail).
 Examples: HWSS uniform mean0.446594 vs0.417150 with old query context.
 The dispersion portion resets its salt index to preserve its original
 calibration; UV controls are a separate paired-input contract.
@@ -344,7 +344,7 @@ production source are unchanged; they are not rerun for this test-only
 precondition repair. The stopped attempt is not counted as a pass.
 
 
-## Post-review final integration gate
+## Post-round1 integration gate (before round2 repairs)
 
 Fresh clean library build67.91s and all17 serial test builds succeeded
 with zero warnings. Every integration test was repeated once on the
@@ -388,6 +388,208 @@ SourceHygiene check are recorded before the committed-head fresh review.
 
 Final header-comment dependency rebuild succeeded with zero warnings;
 SourceHygieneTest rebuilt successfully with zero warnings and passed167/0
-again after the worker-setup ordering repair. No behavior changed after
-the post-review integration gate. The branch is committed before fresh
-round2 review; its exact verdict and HEAD are reported in the final answer.
+again after the worker-setup ordering repair. That committed tree was presented to fresh round2 reviewers; their findings
+and the subsequent gate are recorded below.
+
+
+## Independent review round 2 and repairs
+
+Fresh read-only math, test/statistics and public-contract reviewers examined
+`b138872483861433a40223f24651e44aca89bef0`. Math found two P1 query-context
+gaps: uniform/Snell NM records lost exact object-frame Po, and photon
+reconstruction lost UV (and Po in the sibling audit). These are distinct
+from the explicitly stopped nested wavelength/exterior stack DL-391.
+
+DL-395 carries the captured hit Po through seed creation, surface updates
+and PT chain records; photon deposits now retain both UV and Po. All RGB
+and NM photon material queries restore them. The Snell NM photon path
+uses the shared reconstruction helper's wavelength override. Exact captured
+Po is used rather than inverse-transforming world position, which would
+lose the winning-child coordinate frame for CSG. This fixes the origin
+query bug; it does not claim general spatial-IOR Newton/Jacobian support.
+
+The render regression extends the origin-only UV fixture with a Po-origin
+scalar expression: all sampled pane points have literal IOR 1.78, while the
+synthetic origin has 1.1. Four paired salts per NM/HWSS and uniform/Snell
+combination compare exact pixel hashes with constant 1.78, with no noisy
+band. Together UV and Po checks pass 64/0. A deterministic ManifoldSolver
+control invokes the production photon reconstruction at RGB and 450/650nm
+with a context-sensitive scalar material; it asserts restored coordinates,
+RGB attenuation and NM IOR. This directly tests the material query and is
+not a measured photon-map yield or accepted-additional-root render.
+
+Contract review also found the pre-existing OIDN warmed-backend selector
+defect (DL-397, P2): device resolution happened only once regardless of
+later CPU/GPU/Auto requests. The fix releases filter/aux/buffer references
+before replacing the device, retaining staging vectors because their raw
+pointers may already be Denoise inputs. Unchanged requests keep the device
+across quality changes. Read-only diagnostics expose actual resolved
+CPU/GPU and successful device-creation generation. Tests reuse one context
+through Fast/Balanced/High/Fast, comparing presets and exact outputs with
+fresh explicit contexts, then request GPU/CPU/Auto/CPU and compare actual
+backend/output with fresh resolution. The install reports GPU unavailable:
+CPU fallback/re-resolution is verified; an actual GPU-to-CPU transition is
+UNMEASURED. Focused policy/family/cache coverage is 112/0.
+
+The stale Auto enum comment and current log contract were corrected.
+Historical measured wall-clock timings/log quotations remain historical.
+The emitter review's missing pure-SPD light support is recorded as STOPPED
+DL-396 under the user's design/reserved-file rule: selection power must be
+defined consistently across all MIS callers and photon emission, including
+reserved BDPT zero-RGB light coverage. This code-confirmed defect is
+UNMEASURED; the directional regression gates turned RGB-white emitters,
+not a forward-Phong or physical-SPD caustic. Native NM Le evaluation is
+fixed only for emitters that the selector admits.
+
+Two intermediate test compilation attempts were rejected (ScalarTriple
+access and Denoise argument order); no stale test binary was executed after
+either failed build. Successful focused library/test builds have zero
+warnings. Round2 fixes were committed as 628d706ee (DL-395) and 51bbc63f5
+(DL-397) before the source-reversion proof.
+
+
+Round2 source proof restored these three implementation files from
+pre-round2 HEAD b138872483861433a40223f24651e44aca89bef0: ManifoldSolver.cpp,
+SMSPhotonMap.cpp and OIDNDenoiser.cpp. New assertions were retained. The
+new coordinate storage/header layout stayed as compile instrumentation;
+the old solver still neither populated nor queried those fields. The
+photon helper retained only its new wavelength argument/dispatch so the
+old origin query could be tested at 450/650nm; no coordinate restoration
+was retained. OIDN retained only actual-device/generation diagnostics and
+the increment at successful device creation, with its old lifetime cache.
+Thus the original defects remained while the tests could compile.
+
+The restored source library and all three test builds succeeded with zero
+warnings. Photon RGB attenuation asserted at the wrong origin and aborted
+(exit -6); UV/Po controls failed all 16 Po hash comparisons, 48/16 overall
+(20.37 s). Example HWSS/uniform control mean 0.447685 versus old Po mean
+0.418366. OIDN 112 focused checks returned 108/4 (0.48 s), one missed device
+re-resolution per changed request; warmed quality transitions still passed.
+Fixed focused results before reversion were all photon assertions passed,
+64/0 UV/Po and 112/0 OIDN. All three sources were restored from HEAD before
+the final clean rebuild/full gate below.
+
+
+The seed-context sibling audit also files DL-398 as a design STOP under
+the user's scope rule. NM material overrides occur before Solve; Newton
+geometry updates do not re-query indices or attenuation as positions change.
+Thus arbitrary spatial-IOR/attenuation painters are not generally evaluated
+at a moved root. Supporting them needs wavelength/exterior-stack state inside
+the solve, final-root attenuation queries, and index-gradient Jacobian terms,
+consistently in companion replay.
+This is code-confirmed and UNMEASURED; the constant-interior UV/Po controls
+prove seed-query coordinate restoration, not this broader solver contract.
+
+
+## File manifest by item
+
+All paths below are repository-relative. Ledger/validation and tests/README
+are shared records; CLAUDE contains one dated behavior sentence. No Library
+file was added or removed, so the five-project source-list rule is not
+triggered. No reserved implementation file was changed.
+
+| Item | Implementation / test / fixture files |
+|---|---|
+| DL-311 stopped | docs/DEBT_LEDGER.md; this validation record. LightSampler guard and transient test withdrawn. |
+| DL-332 | tests/SSSExteriorIndexInvarianceTest.cpp; shared records. DL-392 helper experiment withdrawn. |
+| DL-355 / 390 | tests/WeaveGapShadowTransmittanceTest.cpp; docs/DL294_NARROW_FOV_SPLAT.md; shared records. |
+| DL-340 | src/Library/Shaders/PathTracingIntegrator.cpp; tests/SMSMediumAnchorTest.cpp; tests/SMSRenderTestSupport.h; shared records. |
+| DL-347 | src/Library/Utilities/ManifoldSolver.cpp; tests/SMSEmitterDirectionTest.cpp; tests/SMSRenderTestSupport.h; shared records. |
+| DL-353 / 394 | src/Library/Utilities/ManifoldSolver.cpp; tests/SMSUniformDispersionTest.cpp; tests/SMSRenderTestSupport.h; scenes/Tests/Spectral/spectral_dispersive_caustic_pt_sms_uniform.RISEscene; scenes/Tests/README.md; tests/data/cst_derive_golden.txt; shared records. |
+| DL-395 | src/Library/Utilities/ManifoldSolver.cpp and .h; SMSPhoton.h; SMSPhotonMap.cpp; tests/ManifoldSolverTest.cpp; tests/SMSUniformDispersionTest.cpp; shared records. |
+| DL-397 | src/Library/Rendering/OIDNDenoiser.cpp and .h; src/Library/Utilities/OidnConfig.h; tests/OIDNAutoDeterminismTest.cpp; docs/OIDN.md; shared records. |
+| DL-399 | tests/ExteriorIndexInvarianceTest.cpp; shared records. |
+| DL-391 / 396 / 398 stopped | docs/DEBT_LEDGER.md; this validation record. No implementation patch for the stopped contracts. |
+
+DL-360 / 393 files (including API comment consistency):
+
+- src/Library/Rendering/OIDNDenoiser.cpp, OIDNDenoiser.h,
+  PixelBasedRasterizerHelper.cpp, PixelBasedRasterizerHelper.h, Rasterizer.h,
+  PathTracingPelRasterizer.cpp, PathTracingPelRasterizer.h,
+  PathTracingSpectralRasterizer.h, BDPTRasterizerBase.cpp,
+  BidirectionalRasterizerBase.h, MLTRasterizer.cpp, MLTRasterizer.h,
+  MLTSpectralRasterizer.cpp, MLTSpectralRasterizer.h.
+- src/Library/Utilities/OidnConfig.h; src/Library/RISE_API.cpp and RISE_API.h;
+  src/Library/Job.cpp and Job.h; src/Library/Interfaces/IJob.h.
+- tests/OIDNAutoDeterminismTest.cpp, SourceHygieneTest.cpp,
+  SMSRenderTestSupport.h; docs/OIDN.md; shared records.
+
+
+## Stopped post-round-2 gate and exterior fixture audit
+
+The clean post-round-2 gate rebuilt the library in 70.88 s with zero
+warnings and built all 17 targets individually with zero warnings.
+Source167/0, CST458 MATCH/0 DRIFT/0 UNCOVERED/0 STALE, all Manifold
+assertions, Weave217/0 (618.04 s) and SSS406/0 (1145.77 s) passed.
+It then stopped at Exterior230/1 (437.40 s): glass-block SMS/VCM
+1.06310 with estimated mean SD0.0565725 exceeded [0.842,1.040].
+This attempt is a failed gate, not an integration pass. Its logs and JSON
+are `/tmp/cheapbatch-review3-gate-*` and `/tmp/cheapbatch-review3-gate.json`.
+
+The DL-399 candidate audit controls worker count before cached options load,
+libc and global Mersenne state before both scene construction and rendering,
+and Sobol value salts for all repeated renders. Four independently salted
+8-spp replay pairs per shipped row compare the full numeric RGB-sum image.
+All glass-block replay pairs passed, but the controlled 256-spp comparison
+gave ratio1.00502, estimated mean SD0.0636306 (111/1 with the new
+precision assertion). The 1024-spp comparison gave1.05370, SD0.0264142
+(110/2). These pilots demonstrate inadequate precision, not a production
+solver defect. No band is justified by repeating the same Sobol pattern.
+
+A higher-budget pilot restricts only SMS eye work to the rectangle containing
+the unchanged slab mask. `RasterizeRegion` preserves the full film and camera
+coordinates; pixel sample keys use absolute film coordinates. OIDN is disabled.
+VCM keeps its complete film, light passes, normalization and auto-radius.
+This changes legacy RNG consumption; cropped and full numeric images are not
+claimed identical. Calibration must measure the cropped fixture directly.
+The initial candidate needed the sampling adjustments recorded below;
+mutation proof and the final clean gate are recorded after calibration.
+
+The first controlled full exterior calibration exposed Part B RGB
+uniform/SMS glass-sphere k1 at16 spp: ratio0.975822, uncorrelated
+mean-SD estimate0.0232611, versus its unchanged0.01 band. Other
+completed Part B rows passed, including NM/uniform0.999912 and
+RGB/uniform k2 ratio1. This calibration is not a successful gate.
+Its Part C flat-slab measurement is retained; repeated glass-block
+work is intentionally avoided because the completed16384-spp pilot
+already measured the same controlled inputs. The next fixture revision
+uses covariance-aware paired uncertainty for Part B, checks precision
+against each gated row's band, and preserves full-suite row seeds when
+filtering focused runs.
+
+The controlled full calibration was intentionally terminated on verified
+own render PID93419 after545.96 s, after flat-slab and glass-block replay
+checks, with two known failures (RGB uniform k1 mean and flat-slab precision).
+It has no full pass count. Logs were renamed
+`/tmp/cheapbatch-dl399-full-calibration-stopped.*` to prevent a green label.
+Flat-slab4096/512 measured ratio1.00050, estimated mean SD0.00551936:
+VCM supplies most variance, so increase only its budget to1024.
+The1024-spp focused RGB uniform k1 run measured0.989407 and covariance-aware
+mean SD0.00577986 (103/2,161.95 s under the old0.01 band).
+Derive a0.02 band (3.46 estimated SDs) from these four salted paired inputs,
+while retaining1024 spp. This band change is measured, not an arbitrary
+widening; the16-spp controlled ratio0.975822 still fails its mean threshold
+and its much larger uncertainty fails the precision threshold.
+Part B pairs use residual variance of scaled_i-ratio*air_i to retain
+covariance; Part C prints the uncorrelated delta-method approximation.
+These n=4 estimates are not claimed as the five-independent-default-statistic
+calibration performed for the user-requested SSS/Weave rows.
+
+## DL-399 accepted sampling calibration
+
+Every row below uses four independently salted pairs. Uncertainty is the
+estimated SD of the ratio of default means, not a single-render SD.
+
+| Row | SMS / reference spp | Ratio | estimated mean SD | Band / SD |
+|---|---:|---:|---:|---:|
+| RGB uniform glass-sphere k1 |1024 /1024|0.989407|0.00577986|0.02 / SD =3.46|
+| shipped flat-slab |4096 /1024|1.00333|0.00185025|0.036 / SD =19.46|
+| shipped glass-block |16384 /512|1.01021|0.00475053|0.040 upper margin / SD =8.42|
+
+Flat-slab focused checks passed112/0 in226.80 s. Glass-block16384
+focused checks passed112/0 in its completed pilot. Both shipped bands
+also leave more than3 SD after reserving the historical2% reference
+allowance (8.65 and4.21 SD). RGB uniform k1's earlier103/2 result
+used0.01; its measured0.02 threshold is validated in the final gate,
+rather than inventing a rerun count. The original low-budget inputs
+are restored only after committing the new assertions, below.
