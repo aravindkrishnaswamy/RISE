@@ -657,6 +657,32 @@ namespace RISE
 				const EmitterSurfacePayload&	payload
 				);
 
+			//! THE ONE EMITTER-EVALUATION RECORD FILL (DL-298).  Every site that
+			//! evaluates an emitter at a SAMPLED point -- `SampleLight`'s own
+			//! `Le`, PT's RGB/NM mesh NEE, BDPT's NM hero / HWSS companion
+			//! rebuilds, VCM's light-vertex NEE, and the legacy / spectral /
+			//! SMS photon-direction samplers -- builds a hand-made
+			//! `RayIntersectionGeometric` because no ray was traced to that
+			//! point.  Each used to fill its own subset, and the subsets
+			//! drifted: the BDPT/VCM rebuilds supplied the physical world
+			//! position `ptIntersection` (the expression VM's `P`) while
+			//! `SampleLight`'s RGB record, both NEE arms and the three photon
+			//! tracers left it at the default `(0,0,0)`, so an emission or
+			//! Phong-exponent painter keyed on `P` read the origin at a
+			//! nonzero sampled point under exactly those paths.  This helper
+			//! is the single place that knows what the sampled point
+			//! determines -- world position, normals, shading basis, UV and
+			//! the object-space point -- so the paths cannot drift again.
+			//! The probed signal payload is deliberately NOT part of it (it
+			//! is gated and carried separately; see `ApplyEmitterSurface`).
+			static void FillEmitterRecord(
+				RayIntersectionGeometric&	rig,
+				const Point3&				position,		///< [in] the sampled point, world space
+				const Vector3&				normal,			///< [in] unit emitting-face normal (mirrored into `vGeomNormal`)
+				const Point2&				coord,			///< [in] sampled surface UV
+				const Point3&				ptObjIntersec	///< [in] object-space point (`EmitterObjectPoint`)
+				);
+
             //! Coverage-only context for sampled emitter endpoints. Known scene,
             //! self and world position never depend on optional signal probes.
             //! NEE can supply its receiver raster; emission has no camera pixel.

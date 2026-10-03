@@ -30,6 +30,7 @@
 #include "../Interfaces/IScenePriv.h"
 #include "../Intersection/RayIntersection.h"
 #include "../Rendering/LuminaryManager.h"
+#include "../Lights/LightSampler.h"
 #include "BoundingBox.h"
 #include "IndependentSampler.h"
 #include "RandomNumbers.h"
@@ -513,11 +514,10 @@ unsigned int SMSPhotonMap::Build(
 			}
 
 			RayIntersectionGeometric rig( r, nullRasterizerState );
-			rig.vNormal = normal;
-			// Luminary normal from UniformRandomPoint is geometric; mirror.
-			rig.vGeomNormal = normal;
-			rig.ptCoord = coord;
-			rig.onb.CreateFromW( rig.vNormal );
+			// DL-298: the shared emitter-record fill (world position `P`,
+			// normals, `onb`, UV, `Po`).
+			LightSampler::FillEmitterRecord( rig, r.origin, normal, coord,
+				LightSampler::EmitterObjectPoint( i->pLum, r.origin, rig.ptObjIntersec ) );
 
 			r.SetDir( pEmitter->getEmmittedPhotonDir( rig, dirRand ) );
 
