@@ -12,6 +12,8 @@
 #include <sstream>
 #include "../src/Library/Utilities/IndependentSampler.h"
 #include "../src/Library/Utilities/Optics.h"
+#include "../src/Library/Painters/UniformColorPainter.h"
+#include "../src/Library/Painters/UniformScalarPainter.h"
 
 static bool Near(double a, double b) { return std::fabs(a-b)<1e-11; }
 static std::string Materials(bool composite)
@@ -49,15 +51,65 @@ struct LoadedScene {
     const IScene& Scene() const { return *job->GetScene(); }
     const IObject* Object(const char* name) const { return Scene().GetObjects()->GetItem(name); }
 };
-static RayIntersection Hit(const IObject& object, Point3 origin, Vector3 direction)
+static RayIntersection Hit(const IObject& object, Point3 origin, Vector3 direction,
+    const RasterizerState& raster=nullRasterizerState)
 {
-    RayIntersection hit(Ray(origin,direction),nullRasterizerState);
+    RayIntersection hit(Ray(origin,direction),raster);
     object.IntersectRay(hit,RISE_INFINITY,true,true,false);
     Check(hit.geometric.bHit,"actual geometry intersection");
     return hit;
 }
 #ifdef RISE_SMS_DOMAIN_REPLAY
 static SMSDomainCounters domainCounters;
+class RasterTintPainter final : public UniformColorPainter {
+public:
+    RasterTintPainter() : UniformColorPainter(RISEPel(0.5)) {}
+    RISEPel GetColor(const RayIntersectionGeometric& hit) const override {
+        return RISEPel(0.2+0.01*hit.rast.x);
+    }
+    Scalar GetColorNM(const RayIntersectionGeometric& hit, Scalar) const override {
+        return 0.2+0.01*hit.rast.y;
+    }
+};
+static void RasterContextCases()
+{
+    LoadedScene loaded(Materials(false)+
+        "clippedplane_geometry\n{\n name shape\n pta -2 -2 0\n ptb -2 2 0\n ptc 2 2 0\n ptd 2 -2 0\n doublesided TRUE\n}\n"
+        "standard_object\n{\n name caster\n geometry shape\n material glass\n}\n");
+    auto* object=loaded.job->GetObjects()->GetItem("caster");
+    if(!object) { Check(false,"raster-context caster"); return; }
+    auto* tint=new RasterTintPainter(); auto* index=new UniformScalarPainter(1.5);
+    IMaterial* material=nullptr;
+    Check(RISE_API_CreatePerfectRefractorMaterial(&material,*tint,*index),"raster-dependent native material created");
+    Check(material&&object->AssignMaterial(*material),"raster-dependent material assigned");
+    safe_release(material); tint->release(); index->release();
+    const Point3 start(0,0,-2), end(1,0,2);
+    RasterizerState raster{}; raster.x=17; raster.y=23;
+    auto hit=Hit(*object,start,Vector3(0,0,1),raster);
+    for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(550)}) {
+        SMSDomainVertex record(hit.geometric); auto& v=record.geometry;
+        v.position=hit.geometric.ptIntersection; v.normal=hit.geometric.vNormal;
+        v.geomNormal=hit.geometric.UnflippedGeomNormal(); v.pObject=object; v.pMaterial=hit.pMaterial;
+        v.isReflection=false; std::vector<SMSDomainVertex> records{record};
+        ManifoldSolverConfig config; config.biased=true; config.solverThreshold=1e-9;
+        config.maxIterations=40; config.domainCounters=&domainCounters;
+        ManifoldSolver* solver=new ManifoldSolver(config);
+        RandomNumberGenerator random(29); IndependentSampler sampler(random); IORStack stack(1);
+        const auto result=solver->SolveDomain(start,Vector3(0,0,1),end,Vector3(0,0,-1),
+            loaded.Scene(),stack,domain,records,sampler,1e-4);
+        Check(result.valid,"raster-context native solve converges");
+        if(result.valid) {
+            const auto& root=result.specularChain[0];
+            const auto incoming=Vector3Ops::Normalize(Vector3Ops::mkVector3(root.position,start));
+            const double f=Optics::CalculateDielectricReflectanceCosine(std::fabs(incoming.z),1,1.5);
+            const double expected=(domain.kind==SMSQueryDomain::RGBComponent?0.37:0.43)*(1-f)/2.25;
+            Check(Near(domain.kind==SMSQueryDomain::RGBComponent?result.contribution[domain.component]:result.contributionNM,
+                expected),"fresh native attenuation retains the caller's pixel context");
+            Check(records[0].context.rast.x==17&&records[0].context.rast.y==23,"full refreshed context retains raster coordinates");
+        }
+        solver->release();
+    }
+}
 static void ComponentAndCrossingCases()
 {
     for(bool closed : {false,true}) for(bool reverse : {false,true}) for(bool transformed : {false,true}) {
@@ -483,6 +535,12 @@ int main(int argc,char** argv)
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";
         return failCount?1:0;
     }
+    if(argc>1 && std::string(argv[1])=="--raster-only") {
+        RasterContextCases();
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";
+        return failCount?1:0;
+    }
+    RasterContextCases();
     ComponentAndCrossingCases();
     NestedAndCompositeCases();
     SolvedRootCases();
