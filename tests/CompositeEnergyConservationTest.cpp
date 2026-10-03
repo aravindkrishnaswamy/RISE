@@ -1480,18 +1480,23 @@ static void SectionK4K6( Fixtures& f )
 	//  the surrounding medium's (1.005 .. 1.13: a lacquer underwater, a
 	//  coat on a coat) at the grazing incidences, where the clear-coat
 	//  basis table used to blend across the critical cosine's infinite
-	//  slope at eta = 1 (eta 1.01: 1.160 at 80 deg pre-fix).
+	//  slope at eta = 1 (eta 1.01: 1.160 at 80 deg pre-fix), and eta 3,
+	//  where the escape cone is narrow and near-normal.
 	{
 		std::cout << "    K5 white furnace, clear coat over white GGX metals (8 x 50000 draws):\n";
 		struct Row { double eta; std::vector<double> thetas; };
 		const Row rows[] = {
-			{ 1.5,   { 0.0, 45.0, 70.0, 85.0 } },
+			{ 1.5,   { 0.0, 45.0, 70.0, 75.0, 85.0 } },
 			{ 1.005, { 70.0, 80.0, 85.0 } },
 			{ 1.01,  { 70.0, 80.0, 85.0 } },
 			{ 1.04,  { 70.0, 80.0, 85.0 } },
 			{ 1.13,  { 70.0, 80.0, 85.0 } },
+			{ 3.0,   { 60.0, 75.0, 79.0, 83.0 } },
 		};
-		const double alphas[] = { 0.05, 0.4 };
+		// alpha 0.002: a lobe narrower than the view-node spacing, whose
+		// return the critical patch carries (pre-patch 1.09 at eta 1.5 /
+		// 75 deg, 1.054 at eta 3 / 79 deg).
+		const double alphas[] = { 0.002, 0.05, 0.4 };
 		for( double al : alphas ) {
 			GGXMaterial* metal = MakeSchlickGgx( 0.0, 1.0, al );
 			for( const Row& rw : rows ) {
