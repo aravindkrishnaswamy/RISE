@@ -446,7 +446,11 @@ namespace
 //     at most g(mu_i): the layer never returns more than the substrate
 //     reflects, for ANY substrate, given g;
 //   * a lossless, albedo-1 substrate of ANY lobe shape is then exactly 1
-//     (E = 1 - Q there, and g = rho - escape = 1 - e_1);
+//     (E = 1 - Q there, and g = rho - escape = 1 - e_1) -- PROVIDED the
+//     tabulated g agrees with the exact single bounce's escape e_1 at the
+//     same direction; near the critical cosine that needs the critical
+//     patch below, and a substrate brighter than physical (E + Q > 1)
+//     is capped by LobeReservoirEscape;
 //   * for a substrate that is ONE separable lobe f_b = s(w) s(u) (a
 //     Lambertian) M is exactly the rest of the interreflection series,
 //     f_b q / (1 - q) -- for a Lambertian the pre-DL-388 1/(1 - E_ret R).
@@ -459,9 +463,10 @@ namespace
 // substrate and losing (1 - rho) and a^2 every round trip, while the
 // reservoir lets it escape after one re-randomisation -- a smooth metal
 // (alpha 0.05) at 70-85 deg reads 1.06-1.24 of the composite (DL-423).
-// The furnace of a white metal reads up to 1.006 (the substrate's own
-// GGX directional albedo is 1.003 at normal incidence, the rest is the
-// tables' escape/return split).
+// The furnace of a lossless white metal reads 0.99-1.01 at every
+// incidence, coat index (1.005-3) and roughness (0.002-0.6) measured
+// (the substrate's own GGX directional albedo is 1.003 at normal
+// incidence; the rest is the tables' residual).
 // The alternatives the derivation rules out, both measured against the
 // DL-24 composite: amplifying f_b itself by 1/(1 - q) (the pre-DL-388
 // shape) recycles the part of a glossy lobe that escapes on the first
@@ -521,7 +526,9 @@ namespace
 	//! with the view -- a reflected lobe moves one-for-one with its view
 	//! cosine near the mirror -- so the step lands where it is, not where
 	//! a linear blend of two nodes' steps puts it).  Anchored to mu_c, so
-	//! the clear table's eta blend (uniform in mu_c) blends aligned steps.
+	//! the clear table's eta blend (uniform in mu_c) blends aligned steps,
+	//! and every hemispherical integral reads g / e through the same
+	//! lookup (G must normalise exactly what value() out-couples).
 	constexpr int    kPatchN = 17;
 	constexpr Scalar kPatchW = Scalar(2) / Scalar(kLobeN);
 	//! The patch's displacement reads the spill histogram on sub-bins
@@ -798,8 +805,8 @@ namespace
 		// The critical patch (see kPatchN).
 		b.muC = muCrit;
 		// The spill histogram at an arbitrary view mu, by displacement:
-		// the two bracketing view nodes' histograms, each bin a uniform
-		// window with its own centroid and spread, shifted by mu - mu_node.
+		// the two bracketing view nodes' sub-bin histograms, each sub-bin's
+		// mass at its own centroid shifted by mu - mu_node.
 		auto shiftedSum = [&]( const Scalar mu, Scalar& og0, Scalar& og5, Scalar& oe0, Scalar& oe5 ) {
 			og0 = og5 = oe0 = oe5 = 0;
 			Scalar xv = mu * Scalar(kLobeN) - Scalar(1);
@@ -920,7 +927,7 @@ namespace
 	//! clearcoat) read their basis from a second once-per-process table
 	//! over (roughness node, coat eta node), blended bilinearly, so a
 	//! TEXTURED substrate roughness costs a blend (~0.3 us) rather than a
-	//! rebuild (~3.5 us).  The roughness blend is exactly what
+	//! rebuild (~9-22 us).  The roughness blend is exactly what
 	//! BuildLobeBasis does (the node arrays are linear in the table rows);
 	//! the eta blend interpolates the coat's own weights between nodes
 	//! spaced UNIFORMLY IN THE CRITICAL COSINE mu_c = sqrt(1 - 1/eta^2),
