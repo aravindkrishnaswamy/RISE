@@ -921,9 +921,11 @@ namespace
 	//     physical one.  Measured: the light-to-first-vertex Jacobian
 	//     determinant matches finite differences at a matched vertex to
 	//     ~1e-5 relative.
-	//   * Its magnitude is ~eta x (angular error), bounded below by the
-	//     physics rather than by |h|, so the solver's ||C|| threshold
-	//     keeps one meaning across all index pairs.
+	//   * Its magnitude is ~eta x (angular error), so it avoids the
+	//     normalized form's matched-index singularity. Absolute IOR still
+	//     scales this residual: fixed solver and seed-rejection thresholds
+	//     are not invariant under a common scaling of both indices. The
+	//     seed-rejection limitation is recorded in DL49 doc section 11.
 	// Reflection vertices keep the normalized h = wi + wo, which never
 	// vanishes on a physical path.
 	inline bool UseUnnormalizedHalfVector( const RISE::Implementation::ManifoldVertex& v )
