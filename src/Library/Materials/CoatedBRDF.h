@@ -28,6 +28,17 @@
 //  than a coverage fraction.  The algebra above keeps them distinct
 //  while factoring the shared `f_base`.
 //
+//  DL-388 (2026-10-02): the formula above, with `f_base` read at the
+//  OUTER directions, is the Lambertian case only (where it is exact) and
+//  the fabric / weave case (an approximation, DL-417).  Oren-Nayar and
+//  GGX substrates are evaluated in the coat's REFRACTED frame,
+//      c ( f_coat + T T A A [ f_base(wi', wo') + M ] / eta^2 ) + (1 - c) f_base,
+//  with M the recycled field: the old 1/(1 - E_ret R) factor on the
+//  refracted f_base for Oren-Nayar, a lobe reservoir built from the
+//  substrate's own first-bounce return for GGX.  Derivation and
+//  measurements: CoatedBRDF.cpp "SUBSTRATE IN THE COAT'S FRAME" and
+//  docs/DL388_COATED_REFRACTED_FRAME.md.
+//
 //  `f_coat` is a GGX lobe (7.2 types coat_roughness as "GGX alpha on
 //  the coat lobe") with dielectric Fresnel at the microfacet normal
 //  plus a Kulla-Conty multiple-scattering tail via
@@ -133,6 +144,8 @@ namespace RISE
 {
 	namespace Implementation
 	{
+		class GGXBRDF;
+
 		class CoatedBRDF :
 			public virtual IBSDF,
 			public virtual Reference
@@ -168,7 +181,58 @@ namespace RISE
 				bool	tinted;
 				Scalar	ri;				///< internal diffuse Fresnel reflectance for `eta`
 				Scalar	re;				///< external diffuse Fresnel average for `eta`
+				Scalar	ambient;		///< DL-388: absolute index of the outside medium (eta * ambient is the coat's)
 			};
+
+			//! DL-388: how the substrate is evaluated under the coat.  Picked
+			//! once, from the substrate BSDF's class (CoatedMaterial's
+			//! allowlist is closed).  See CoatedBRDF.cpp's "SUBSTRATE IN THE
+			//! COAT'S FRAME" block for the derivation.
+			enum SubstrateModel
+			{
+				//! Lambertian: direction-independent, so the outer and the
+				//! refracted frame agree and the pre-DL-388 expression is
+				//! kept verbatim (exact; bit-identical).
+				eSubstrateLambertian,
+				//! Oren-Nayar: refracted frame; the recycled field priced as
+				//! a cosine reservoir (the Lambertian recycling factor).
+				eSubstrateRefractedCosine,
+				//! GGX: refracted frame; the recycled field priced through
+				//! the substrate's own first-bounce return g(mu) (a lobe
+				//! reservoir; exact for a single separable lobe).
+				eSubstrateRefractedLobe,
+				//! fabric / weave: the pre-DL-388 outer-frame model,
+				//! unchanged (DL-417).
+				eSubstrateOuterFrame
+			};
+
+			inline SubstrateModel GetSubstrateModel() const { return substrateModel; }
+
+			//! DL-388: the substrate's shading record INSIDE the coat: a copy
+			//! of `ri` whose view direction is the refraction of the outer
+			//! view, whose frame is the ray-facing `onb`, and whose ambient
+			//! index is the coat's (a substrate reading `ambientIOR`, e.g. a
+			//! GGX conductor, sees the medium it is actually buried in).
+			RayIntersectionGeometric MakeSubstrateRecord(
+				const RayIntersectionGeometric& ri,
+				const OrthonormalBasis3D& onb,
+				const CoatParams& cp
+				) const;
+
+			//! DL-388: fraction of CoatedSPF's substrate branch that samples
+			//! the substrate in the refracted frame (the rest samples it at
+			//! the outer directions, as before).  0 for every model but
+			//! eSubstrateRefractedLobe, so Lambertian / Oren-Nayar / fabric /
+			//! weave sampling is unchanged.
+			Scalar RefractedSampleFraction() const;
+
+			//! DL-388: the share of the substrate branch CoatedSPF samples
+			//! from a cosine lobe about the macro normal, the technique for
+			//! the recycled term M (broad, while the GGX lobe a smooth
+			//! substrate's own sampler draws is narrow -- without it M's
+			//! weight value*cos/pdf is unbounded as alpha -> 0).  Nonzero only
+			//! for the GGX lobe reservoir, like RefractedSampleFraction.
+			Scalar RecycledSampleFraction() const;
 
 			CoatedBRDF(
 				const IBSDF& base,						///< [in] Substrate BSDF (allowlisted -- see CoatedMaterial)
@@ -316,6 +380,15 @@ namespace RISE
 			bool					bBaseFullSphere;	///< DL-23: see the ctor parameter and CoatedBRDF.cpp's transmission section
 			const IPainter*			pCoatNormal;		///< DL-192: optional coat-lobe-only normal map; NULL = none
 			Scalar					coatNormalScale;	///< DL-192: xy scale on the decoded tangent-space normal
+			SubstrateModel			substrateModel;		///< DL-388: see SubstrateModel
+			const GGXBRDF*			pGGXBase;			///< DL-388: pBase as a GGXBRDF when substrateModel is the lobe model (not owned; same object)
+
+			//! DL-388: value()/valueNM() for the two refracted-frame models
+			//! (reflection half-space; the gates are already passed).
+			RISEPel ValueRefracted( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const OrthonormalBasis3D& onb,
+				const Vector3& v, const Vector3& r ) const;
+			Scalar  ValueRefractedNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const OrthonormalBasis3D& onb,
+				const Vector3& v, const Vector3& r, const Scalar nm ) const;
 		};
 	}
 }

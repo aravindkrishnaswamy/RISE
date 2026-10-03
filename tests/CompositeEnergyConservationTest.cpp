@@ -79,6 +79,7 @@
 #include "../src/Library/Materials/DielectricMaterial.h"
 #include "../src/Library/Materials/TranslucentMaterial.h"
 #include "../src/Library/Materials/GGXMaterial.h"
+#include "../src/Library/Materials/OrenNayarMaterial.h"
 #include "../src/Library/Materials/PolishedMaterial.h"
 #include "../src/Library/Materials/CompositeMaterial.h"
 #include "../src/Library/Materials/CompositeSPF.h"
@@ -2179,8 +2180,11 @@ static void SectionD()
 //   K2 (deterministic).  IBSDF::hemisphericalAlbedo against the white-sky
 //      closed form r_e + R T_h^2 / (n^2 (1 - R E_ret)).
 //   K3 (Monte Carlo).  Directional albedo of coated vs the composite of
-//      the same physical layers: Lambertian gated to MC noise, GGX pinned
-//      on its measured residual band (DL-388, see the comment there).
+//      the same physical layers: Lambertian and (since DL-388) a
+//      diffuse-dominant GGX gated to MC noise.
+//   K4-K6 (DL-388).  Glossy-dominant / rough / smooth GGX and Oren-Nayar
+//      substrates against the composite; the white-metal furnace; the
+//      AOV albedo against the directional albedo it summarises.
 //
 //  Optical depth is coat_absorption * coat_thickness (thickness 1 here)
 //  for coated and extinction * thickness for the composite: the same
@@ -2215,16 +2219,215 @@ static WhiteSky WhiteSkyTerms( const double tau, const double n )
 	return w;
 }
 
-static CoatedMaterial* MakeCoated( const IMaterial& base, double sigma, const IPainter& tint )
+static CoatedMaterial* MakeCoated( const IMaterial& base, double sigma, const IPainter& tint, double eta = 1.5 )
 {
 	UniformScalarPainter* w  = new UniformScalarPainter( 1.0 );
-	UniformScalarPainter* n  = new UniformScalarPainter( 1.5 );
+	UniformScalarPainter* n  = new UniformScalarPainter( eta );
 	UniformScalarPainter* a  = new UniformScalarPainter( 0.001 );
 	UniformScalarPainter* th = new UniformScalarPainter( 1.0 );
 	UniformScalarPainter* ab = new UniformScalarPainter( sigma );
 	CoatedMaterial* m = new CoatedMaterial( base, *w, *n, *a, *th, *ab, tint );
 	m->addref();
 	return m;
+}
+
+
+//////////////////////////////////////////////////////////////////////
+//  K4-K6 -- DL-388: the substrate in the coat's REFRACTED frame.
+//
+//  Pre-DL-388 `coated_material` evaluated the substrate at the OUTER
+//  directions with the Lambertian recycling factor -- exact only for a
+//  Lambertian.  A glossy lobe lost T^2/eta^2 of its energy instead of
+//  T^2 (0.70 of the composite on a glossy metal at normal incidence),
+//  and a diffuse lobe's (1 - A) was read at the outer grazing angle.
+//
+//   K4  coated / composite, directional albedo, smooth 1.5 coat
+//       (sigma_t 0, 0.2, 0.5): glossy-dominant, rough, mixed and smooth
+//       GGX substrates and two Oren-Nayar ones.  theta 0 / 45 gated at
+//       max(3 %, 5 sem); theta 70 gated for the rough / diffuse-like
+//       rows and PINNED for the smooth glossy ones (DL-423: a smooth
+//       lossy lobe keeps light trapped near the critical angle, which
+//       the reservoir lets escape too readily -- 1.045 / 1.065 here).
+//   K5  white furnace: lossless white GGX metals (F0 1) under a clear
+//       coat must read 1 at every incidence, within MC noise and the
+//       model's documented +0.7 % (the substrate's own GGX directional
+//       albedo is 1.003 at normal incidence), at eta 1.5 and at coat
+//       indices just above the surrounding medium's (1.005 .. 1.13).
+//       Pre-DL-388: 1.058 at 0 deg for the smooth one; first fix 1.160
+//       at eta 1.01 / 80 deg (the clear table's eta blend).
+//   K6  the OIDN albedo AOV is the layered model's own directional
+//       albedo (e_1 + g E / (1 - Q) through the coat) -- it must agree
+//       with the furnace it summarises.
+//////////////////////////////////////////////////////////////////////
+static GGXMaterial* MakeSchlickGgx( double diffuse, double f0, double alpha )
+{
+	UniformColorPainter* d = new UniformColorPainter( RISEPel( diffuse, diffuse, diffuse ) );  d->addref();
+	UniformColorPainter* s = new UniformColorPainter( RISEPel( f0, f0, f0 ) );                 s->addref();
+	UniformScalarPainter* a = new UniformScalarPainter( alpha );                               a->addref();
+	UniformScalarPainter* n = new UniformScalarPainter( 1.5 );                                 n->addref();
+	UniformScalarPainter* k = new UniformScalarPainter( 0.0 );                                 k->addref();
+	GGXMaterial* g = new GGXMaterial( *d, *s, *a, *a, *n, *k, eFresnelSchlickF0 );
+	g->addref();
+	d->release(); s->release(); a->release(); n->release(); k->release();
+	return g;
+}
+
+static void SectionK4K6( Fixtures& f )
+{
+	UniformScalarPainter* sDelta = new UniformScalarPainter( 1000000.0 );  sDelta->addref();
+	DielectricMaterial* smooth = new DielectricMaterial( *f.s1, *f.s15, *sDelta, false );  smooth->addref();
+
+	// ---- K4: coated vs composite ---------------------------------------
+	{
+		struct Sub { const char* name; IMaterial* m; bool trapsNearCritical; bool isLobe; };
+		UniformColorPainter* onRho = new UniformColorPainter( RISEPel( 0.8, 0.8, 0.8 ) );  onRho->addref();
+		UniformScalarPainter* onSig = new UniformScalarPainter( 0.8 );                     onSig->addref();
+		OrenNayarMaterial* on = new OrenNayarMaterial( *onRho, *onSig );                   on->addref();
+		Sub subs[] = {
+			{ "GGX glossy (diffuse 0, F0 .5, alpha .16)", MakeSchlickGgx( 0.0, 0.5, 0.16 ), true, true },
+			{ "GGX rough glossy (diffuse 0, F0 .5, alpha .5)", MakeSchlickGgx( 0.0, 0.5, 0.5 ), false, true },
+			{ "GGX mixed (diffuse .5, F0 .5, alpha .3)", MakeSchlickGgx( 0.5, 0.5, 0.3 ), false, true },
+			{ "GGX smooth metal (diffuse 0, F0 .9, alpha .05)", MakeSchlickGgx( 0.0, 0.9, 0.05 ), true, true },
+			{ "Oren-Nayar (rho .8, sigma .8)", on, false, false },
+		};
+		const double sigmas[] = { 0.0, 0.2, 0.5 };
+		const double thetas[] = { 0.0, 45.0, 70.0 };
+		std::cout << "    K4 directional albedo, coated vs composite (8 x 20000 draws each; mean +- sem):\n";
+		for( Sub& sb : subs ) {
+			for( double sg : sigmas ) {
+				UniformScalarPainter* ext = new UniformScalarPainter( sg );  ext->addref();
+				CompositeMaterial* comp = MakeComposite( *smooth, *sb.m, 3, 3, 3, 3, 3, 1.0, *ext );
+				CoatedMaterial* coat = MakeCoated( *sb.m, sg, *f.white );
+				for( double th : thetas ) {
+					const FurnaceStats sc = Furnace( *coat->GetSPF(), th, false, false, 8, 20000, 7101u + (unsigned)th );
+					const FurnaceStats sp = Furnace( *comp->GetSPF(), th, false, false, 8, 20000, 9101u + (unsigned)th );
+					const double ratio = sc.mean / sp.mean;
+					const double semR = ratio * std::sqrt( std::pow( sc.sem / sc.mean, 2 ) + std::pow( sp.sem / sp.mean, 2 ) );
+					std::cout << "      " << sb.name << " sigma_t " << std::setprecision(3) << sg << " theta " << (int)th
+					          << ": coated " << std::setprecision(5) << sc.mean << " +- " << sc.sem
+					          << "  composite " << sp.mean << " +- " << sp.sem
+					          << "  coated/composite " << ratio << " +- " << semR << "\n";
+					const std::string tag = std::string( "[K4] " ) + sb.name + " sigma " + std::to_string( sg ) +
+						" theta " + std::to_string( (int)th );
+					if( th < 60.0 || !sb.trapsNearCritical ) {
+						// theta 70 with an absorbing coat carries the composite's
+						// own grazing bias the Lambertian K3 rows also show
+						// (0.977 at 60 deg, sigma_t 2, against an exact closed
+						// form), so its floor widens with sigma_t.
+						const double floorTol = ( th < 60.0 ) ? 0.03 : ( 0.03 + 0.06 * sg );
+						Check( std::fabs( ratio - 1.0 ) <= std::max( floorTol, 5.0 * semR ), tag + " coated / composite == 1" );
+					} else {
+						// DL-423 residual, measured (8 x 20000 draws per side):
+						// clear coat 1.045 +- 0.004 (glossy) / 1.065 +- 0.012
+						// (smooth metal), sigma_t 0.2 1.015 / 1.019, sigma_t 0.5
+						// 1.009 / 1.007.  Pinned at [0.97, 1.08] widened by the
+						// row's own 5 sem, so a move either way is caught.
+						Check( ratio >= 0.97 - 5.0 * semR && ratio <= 1.08 + 5.0 * semR,
+							tag + " coated / composite inside the DL-423 residual pin [0.97, 1.08] +- 5 sem" );
+					}
+
+					// ---- K6: AOV albedo == the directional albedo it summarises
+					//      (GGX only: Oren-Nayar keeps the cosine-reservoir AOV
+					//      summary, R escape / (1 - E_ret R), 2-3 % off its
+					//      refracted-frame directional albedo -- an OIDN guide.)
+					if( th < 60.0 && sb.isLobe ) {
+						const RISEPel aov = coat->GetBSDF()->albedo( MakeIntersection( th * kPi / 180.0 ) );
+						const double rAov = aov[0] / sc.mean;
+						Check( std::fabs( rAov - 1.0 ) <= std::max( 0.02, 5.0 * sc.sem / sc.mean ),
+							std::string( "[K6] " ) + sb.name + " sigma " + std::to_string( sg ) + " theta " +
+							std::to_string( (int)th ) + " albedo() AOV == directional albedo (" + std::to_string( rAov ) + ")" );
+					}
+				}
+				coat->release(); comp->release(); ext->release();
+			}
+		}
+		for( Sub& sb : subs ) sb.m->release();
+		onRho->release(); onSig->release();
+	}
+
+	// ---- K5: white furnace, lossless white metals ----------------------
+	//  eta 1.5 at four incidences, plus coats whose index sits just above
+	//  the surrounding medium's (1.005 .. 1.13: a lacquer underwater, a
+	//  coat on a coat) at the grazing incidences, where the clear-coat
+	//  basis table used to blend across the critical cosine's infinite
+	//  slope at eta = 1 (eta 1.01: 1.160 at 80 deg pre-fix), and eta 3,
+	//  where the escape cone is narrow and near-normal.
+	{
+		std::cout << "    K5 white furnace, clear coat over white GGX metals (8 x 50000 draws):\n";
+		struct Row { double eta; std::vector<double> thetas; };
+		const Row rows[] = {
+			{ 1.5,   { 0.0, 45.0, 70.0, 75.0, 85.0 } },
+			{ 1.005, { 70.0, 80.0, 85.0 } },
+			{ 1.01,  { 70.0, 80.0, 85.0 } },
+			{ 1.04,  { 70.0, 80.0, 85.0 } },
+			{ 1.13,  { 70.0, 80.0, 85.0 } },
+			{ 3.0,   { 60.0, 75.0, 79.0, 83.0 } },
+		};
+		// alpha 0.002: a lobe narrower than the view-node spacing, whose
+		// return the critical patch carries (pre-patch 1.09 at eta 1.5 /
+		// 75 deg, 1.054 at eta 3 / 79 deg).
+		const double alphas[] = { 0.002, 0.05, 0.4 };
+		for( double al : alphas ) {
+			GGXMaterial* metal = MakeSchlickGgx( 0.0, 1.0, al );
+			for( const Row& rw : rows ) {
+				CoatedMaterial* coat = MakeCoated( *metal, 0.0, *f.white, rw.eta );
+				std::cout << "      alpha " << al << " eta " << rw.eta << ":";
+				for( double th : rw.thetas ) {
+					const FurnaceStats sc = Furnace( *coat->GetSPF(), th, false, false, 8, 50000, 5101u + (unsigned)th );
+					std::cout << "  " << (int)th << " deg " << std::setprecision(5) << sc.mean << " +- " << sc.sem;
+					Check( sc.mean <= 1.012 + 4.0 * sc.sem && sc.mean >= 0.985 - 4.0 * sc.sem,
+						std::string( "[K5] white metal alpha " ) + std::to_string( al ) + " eta " + std::to_string( rw.eta ) +
+						" theta " + std::to_string( (int)th ) + " furnace in [0.985, 1.012]" );
+				}
+				std::cout << "\n";
+				coat->release();
+			}
+			metal->release();
+		}
+	}
+
+	// ---- K7: double-sided indexed mesh, front vs back (render) ---------
+	//  The refracted-frame substrate record is built from the RAY-FACING
+	//  frame (CoatedBRDF::MakeSubstrateRecord).  A double_sided
+	//  indexedmesh_geometry flips both normals toward the ray, so the same
+	//  coated GGX quad must render identically whichever winding faces the
+	//  camera.  Left half: winding facing AWAY from the camera; right half:
+	//  facing it.  A directional light 30 deg off the normal, tilted in
+	//  the vertical plane so the two halves are mirror images of each
+	//  other across x = 0, reaches both only through NEE (a delta light),
+	//  so the ratio is read off GetBSDF()->value.
+	{
+		std::ostringstream sc;
+		sc << "RISE ASCII SCENE 7\n"
+		   << "film\n{\n\twidth 32\n\theight 16\n}\n\n"
+		   << "pinhole_camera\n{\n\tlocation 0 0 7.0\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
+		   << "uniformcolor_painter\n{\n\tname pnt_rd\n\tcolor 0.5 0.5 0.5\n}\n\n"
+		   << "uniformcolor_painter\n{\n\tname pnt_rs\n\tcolor 0.5 0.5 0.5\n}\n\n"
+		   << "ggx_material\n{\n\tname mat_base\n\trd pnt_rd\n\trs pnt_rs\n\talphax 0.3\n\talphay 0.3\n\tfresnel_mode schlick_f0\n}\n\n"
+		   << "coated_material\n{\n\tname mat_coat\n\tbase mat_base\n\tcoat_ior 1.5\n\tcoat_roughness 0.02\n}\n\n"
+		   << "indexedmesh_geometry\n{\n\tname qL\n\tvertex -4 -3 0\n\tvertex 0 -3 0\n\tvertex 0 3 0\n\tvertex -4 3 0\n"
+		   << "\ttriangle 0 2 1\n\ttriangle 0 3 2\n\tdouble_sided TRUE\n\tface_normals TRUE\n}\n\n"
+		   << "indexedmesh_geometry\n{\n\tname qR\n\tvertex 0 -3 0\n\tvertex 4 -3 0\n\tvertex 4 3 0\n\tvertex 0 3 0\n"
+		   << "\ttriangle 0 1 2\n\ttriangle 0 2 3\n\tdouble_sided TRUE\n\tface_normals TRUE\n}\n\n"
+		   << "standard_object\n{\n\tname objL\n\tgeometry qL\n\tmaterial mat_coat\n}\n\n"
+		   << "standard_object\n{\n\tname objR\n\tgeometry qR\n\tmaterial mat_coat\n}\n\n"
+		   << "directional_light\n{\n\tname key\n\tpower 1.0\n\tcolor 1 1 1\n\tdirection 0 0.5 0.8660254\n}\n\n";
+		for( int r = 0; r < 2; ++r ) {
+			const std::string scene = sc.str() + ( r == 0 ? PtRasterizer( false, 64 ) : BdptRasterizer( false, 64 ) );
+			CapturingRasterizerOutput* cap = 0;
+			const bool ok = Render( scene, r == 0 ? "k7_pt" : "k7_bdpt", cap, 7070u + r );
+			const double mL = ok ? RegionMean( *cap, 2, cap->width / 2 - 2 ) : -1;
+			const double mR = ok ? RegionMean( *cap, cap->width / 2 + 2, cap->width - 2 ) : -1;
+			std::cout << "    K7 double-sided indexed mesh, coated GGX, " << ( r == 0 ? "PT  " : "BDPT" )
+			          << ": back-wound " << std::setprecision(5) << mL << ", front-wound " << mR
+			          << ", ratio " << ( mR > 0 ? mL / mR : -1 ) << "  (truth 1)\n";
+			Check( ok && mR > 0 && std::fabs( mL / mR - 1.0 ) <= 0.02,
+				std::string( "[K7] double-sided indexed mesh: back-wound == front-wound coated GGX (" ) + ( r == 0 ? "PT" : "BDPT" ) + ")" );
+			if( cap ) safe_release( cap );
+		}
+	}
+
+	smooth->release(); sDelta->release();
 }
 
 static void SectionK( Fixtures& f )
@@ -2336,33 +2539,24 @@ static void SectionK( Fixtures& f )
 					// Lambertian: the coated model is exact, so it must agree
 					// with the composite within MC noise (floor 1 %).
 					//
-					// GGX: KNOWN RESIDUAL, DL-388, pinned in [0.92, 1.02].
-					// coated_material evaluates the substrate BRDF at the
-					// UNREFRACTED (outer) directions, which is exact only for
-					// a Lambertian: GGX's diffuse (1 - A(o)) factor is read at
-					// the outer grazing angle where the light actually leaves
-					// the substrate at the critical angle, so the escape is
-					// undercounted (0.3107 vs 0.3215 at sigma_t 0.2, separable
-					// analysis in docs/DL342_COATED_ABSORBING_COAT.md).  At
-					// sigma_t 0 an over-read recycling term hid it; DL-342's
-					// exact round trip removes that cancellation, so the GGX
-					// rows read 3-6 % LOW of the composite here (they read up
-					// to 4 % HIGH pre-fix, the two errors partly cancelling).
-					if( sb.gateTight ) {
-						Check( std::fabs( ratio - 1.0 ) <= std::max( 0.01, 5.0 * semR ),
-							std::string( "[K3] " ) + sb.name + " sigma " + std::to_string( sg ) + " theta " +
-							std::to_string( (int)th ) + " coated / composite == 1" );
-					} else {
-						Check( ratio >= 0.92 && ratio <= 1.02,
-							std::string( "[K3] " ) + sb.name + " sigma " + std::to_string( sg ) + " theta " +
-							std::to_string( (int)th ) + " coated / composite inside the DL-388 residual pin [0.92, 1.02]" );
-					}
+					// GGX (diffuse-dominant): since DL-388 the same gate.  The
+					// substrate is evaluated in the coat's REFRACTED frame and its
+					// recycled field priced through its own first-bounce return
+					// (CoatedBRDF.cpp, "SUBSTRATE IN THE COAT'S FRAME").  Pre-DL-388
+					// the outer-frame evaluation read the diffuse lobe's (1 - A) at the
+					// outer grazing angle and these rows sat 3-6 % LOW (0.946 at
+					// sigma_t 0.2, theta 0), pinned in [0.92, 1.02].
+					Check( std::fabs( ratio - 1.0 ) <= std::max( 0.01, 5.0 * semR ),
+						std::string( "[K3] " ) + sb.name + " sigma " + std::to_string( sg ) + " theta " +
+						std::to_string( (int)th ) + " coated / composite == 1" );
 				}
 				coat->release(); comp->release(); ext->release();
 			}
 		}
 		ggx->release(); ggxSpec->release(); ggxDiff->release(); smooth->release(); sDelta->release();
 	}
+
+	SectionK4K6( f );
 }
 
 

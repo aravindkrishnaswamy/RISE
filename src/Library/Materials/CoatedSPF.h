@@ -12,6 +12,18 @@
 //
 //    q(wo)  =  p_coat * q_coat(wo)  +  (1 - p_coat) * q_base(wo)
 //
+//  DL-388: for a GGX substrate q_base is itself a three-way mixture: the
+//  base SPF in the coat's REFRACTED frame (CoatedBRDF::
+//  RefractedSampleFraction 0.5), mapped out with the refraction Jacobian
+//  cos_o / (eta^2 mu_o'); a cosine lobe about the macro normal
+//  (RecycledSampleFraction 0.15), the technique for the broad recycled
+//  term, whose sample weight is otherwise unbounded on a smooth
+//  substrate; and the base SPF at the OUTER directions (the remaining
+//  0.35).  A refracted-frame draw outside the escape cone emits nothing,
+//  so `Pdf` is a sub-density there (its full-sphere integral equals the
+//  measured emission probability -- SPFPdfConsistencyTest Part 2b, RGB
+//  and NM).  Every other substrate samples exactly as before.
+//
 //  and the emitted weight is the FULL layered response over that
 //  mixture density:
 //

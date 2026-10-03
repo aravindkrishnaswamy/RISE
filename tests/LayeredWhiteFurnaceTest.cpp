@@ -1793,11 +1793,21 @@ int main()
 	// Re-measured with the same 100k-draw driver; the existing 0.005
 	// comparison tolerance is unchanged. See the DL-37/DL-123 evidence
 	// for old/new curves and the independent bare-substrate gates.
+	//
+	// DL-388 (2026-10-02) moved both pins once more: the substrate is now
+	// evaluated in the coat's REFRACTED frame with its recycled field
+	// priced through its own first-bounce return (CoatedBRDF.cpp,
+	// "SUBSTRATE IN THE COAT'S FRAME").  0-60 deg move by <= 0.8 %; 80 deg
+	// RISES (0.5680 -> 0.6882 white, 0.4547 -> 0.5277 red) because the
+	// outer frame read the GGX diffuse lobe's (1 - A) at the outer 80 deg
+	// angle, where the light really leaves the substrate at ~41 deg inside.
+	// The composite of the same layers is the reference for that claim
+	// (CompositeEnergyConservationTest K3/K4), not this pin.
 
 	{
-		static const double kPredicted14[NUM_THETA] = { 0.8171, 0.8184, 0.8113, 0.5680 };
+		static const double kPredicted14[NUM_THETA] = { 0.8139, 0.8160, 0.8142, 0.6882 };
 		ConfigReport& r = addPredicted( "14. Coated clearcoat / white GGX-PBR",
-		    "measured coated-white regression after DL-123 hemisphericalAlbedo fix; unchanged 0.005 pin tolerance",
+		    "measured coated-white regression after DL-388 refracted-frame substrate; unchanged 0.005 pin tolerance",
 		    kPredicted14, 0.005 );
 		Run( r, *coatedClearcoatWhiteGgx->GetSPF() );
 	}
@@ -1809,9 +1819,9 @@ int main()
 	// substrate.
 
 	{
-		static const double kPredicted15[NUM_THETA] = { 0.5571, 0.5580, 0.5692, 0.4547 };
+		static const double kPredicted15[NUM_THETA] = { 0.5650, 0.5662, 0.5728, 0.5277 };
 		ConfigReport& r = addPredicted( "15. Coated clearcoat / red GGX-PBR",
-		    "measured coated-red regression after DL-123 hemisphericalAlbedo fix; unchanged 0.005 pin tolerance",
+		    "measured coated-red regression after DL-388 refracted-frame substrate; unchanged 0.005 pin tolerance",
 		    kPredicted15, 0.005 );
 		Run( r, *coatedClearcoatRedGgx->GetSPF() );
 	}
