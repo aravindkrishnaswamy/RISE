@@ -702,12 +702,92 @@ namespace
 		b.Eavg = MicrofacetEnergyLUT::LookupEavgG2( alpha );
 	}
 
+	//! CLEAR coats (tau = 0, the common case: add_wetness, glTF / Blender
+	//! clearcoat) read their basis from a second once-per-process table
+	//! over (roughness node, coat eta node), blended bilinearly, so a
+	//! TEXTURED substrate roughness costs a blend (~0.3 us) rather than a
+	//! rebuild (~3.5 us).  The roughness blend is exactly what
+	//! BuildLobeBasis does (the node arrays are linear in the table rows);
+	//! the eta blend interpolates the coat's own weights between nodes
+	//! 0.025 apart.  An absorbing / tinted coat (tau > 0) builds its
+	//! basis directly (memoised below).
+	constexpr int kLobeE = 81;									//!< eta nodes over [1, 3]
+	inline Scalar LobeEtaNode( const int e ) { return Scalar(1) + Scalar(2) * Scalar(e) / Scalar(kLobeE - 1); }
+
+	struct LobeEvalEntry
+	{
+		Scalar g0[kLobeN], g5[kLobeN], e0[kLobeN], e5[kLobeN];
+		Scalar Q0, Q5, E0, E5, G0, G5, H0, H5;
+		Scalar JAphi, JApsi, JMphi, JMpsi;
+	};
+
+	inline const std::vector<LobeEvalEntry>& LobeClearTable()
+	{
+		static const std::vector<LobeEvalEntry> table = []() {
+			std::vector<LobeEvalEntry> t( (std::size_t)kLobeA * kLobeE );
+			LobeBasis b;
+			for( int a = 0; a < kLobeA; ++a ) {
+				for( int e = 0; e < kLobeE; ++e ) {
+					BuildLobeBasis( b, LobeAlphaNode( a ), LobeEtaNode( e ), Scalar(0) );
+					LobeEvalEntry& o = t[ (std::size_t)a * kLobeE + e ];
+					for( int j = 0; j < kLobeN; ++j ) { o.g0[j] = b.g0[j]; o.g5[j] = b.g5[j]; o.e0[j] = b.e0[j]; o.e5[j] = b.e5[j]; }
+					o.Q0 = b.Q0; o.Q5 = b.Q5; o.E0 = b.E0; o.E5 = b.E5;
+					o.G0 = b.G0; o.G5 = b.G5; o.H0 = b.H0; o.H5 = b.H5;
+					o.JAphi = b.JAphi; o.JApsi = b.JApsi; o.JMphi = b.JMphi; o.JMpsi = b.JMpsi;
+				}
+			}
+			return t;
+		}();
+		return table;
+	}
+
+	void BlendClearBasis( LobeBasis& out, const Scalar alpha, const Scalar eta )
+	{
+		using namespace RISE;
+		const std::vector<LobeEvalEntry>& T = LobeClearTable();
+		Scalar x = ( sqrt( r_max( alpha, Scalar(0) ) ) - kLobeTA0 ) / ( Scalar(1) - kLobeTA0 ) * Scalar(kLobeA - 1);
+		x = r_min( r_max( x, Scalar(0) ), Scalar(kLobeA - 1) );
+		const int    ia = r_min( (int)x, kLobeA - 2 );
+		const Scalar fa = x - Scalar(ia);
+		Scalar y = ( eta - Scalar(1) ) / Scalar(2) * Scalar(kLobeE - 1);
+		y = r_min( r_max( y, Scalar(0) ), Scalar(kLobeE - 1) );
+		const int    ie = r_min( (int)y, kLobeE - 2 );
+		const Scalar fe = y - Scalar(ie);
+		const LobeEvalEntry& c00 = T[ (std::size_t)ia * kLobeE + ie ];
+		const LobeEvalEntry& c01 = T[ (std::size_t)ia * kLobeE + ie + 1 ];
+		const LobeEvalEntry& c10 = T[ (std::size_t)( ia + 1 ) * kLobeE + ie ];
+		const LobeEvalEntry& c11 = T[ (std::size_t)( ia + 1 ) * kLobeE + ie + 1 ];
+		const Scalar w00 = ( Scalar(1) - fa ) * ( Scalar(1) - fe ), w01 = ( Scalar(1) - fa ) * fe;
+		const Scalar w10 = fa * ( Scalar(1) - fe ),                 w11 = fa * fe;
+		auto mix = [&]( const Scalar a00, const Scalar a01, const Scalar a10, const Scalar a11 ) {
+			return w00 * a00 + w01 * a01 + w10 * a10 + w11 * a11;
+		};
+		for( int j = 0; j < kLobeN; ++j ) {
+			out.g0[j] = mix( c00.g0[j], c01.g0[j], c10.g0[j], c11.g0[j] );
+			out.g5[j] = mix( c00.g5[j], c01.g5[j], c10.g5[j], c11.g5[j] );
+			out.e0[j] = mix( c00.e0[j], c01.e0[j], c10.e0[j], c11.e0[j] );
+			out.e5[j] = mix( c00.e5[j], c01.e5[j], c10.e5[j], c11.e5[j] );
+			out.phi[j] = out.psi[j] = Scalar(0);		// build-time only; unused by evaluation
+		}
+		out.Q0 = mix( c00.Q0, c01.Q0, c10.Q0, c11.Q0 );  out.Q5 = mix( c00.Q5, c01.Q5, c10.Q5, c11.Q5 );
+		out.E0 = mix( c00.E0, c01.E0, c10.E0, c11.E0 );  out.E5 = mix( c00.E5, c01.E5, c10.E5, c11.E5 );
+		out.G0 = mix( c00.G0, c01.G0, c10.G0, c11.G0 );  out.G5 = mix( c00.G5, c01.G5, c10.G5, c11.G5 );
+		out.H0 = mix( c00.H0, c01.H0, c10.H0, c11.H0 );  out.H5 = mix( c00.H5, c01.H5, c10.H5, c11.H5 );
+		out.JAphi = mix( c00.JAphi, c01.JAphi, c10.JAphi, c11.JAphi );
+		out.JApsi = mix( c00.JApsi, c01.JApsi, c10.JApsi, c11.JApsi );
+		out.JMphi = mix( c00.JMphi, c01.JMphi, c10.JMphi, c11.JMphi );
+		out.JMpsi = mix( c00.JMpsi, c01.JMpsi, c10.JMpsi, c11.JMpsi );
+		out.alpha = alpha; out.eta = eta; out.tau = Scalar(0); out.valid = true;
+		out.Eavg = RISE::MicrofacetEnergyLUT::LookupEavgG2( alpha );
+	}
+
 	//! Per-thread 4-entry memo keyed on (alpha, eta, tau): a coat and a
 	//! substrate with uniform painters ask for the same one to three
-	//! bases (one per channel when tinted) on every evaluation.  A
-	//! textured roughness / coat thickness misses and pays the build
-	//! (~2 us).  Returns a COPY so no caller holds a reference into a slot
-	//! a later miss may overwrite.
+	//! bases (one per channel when tinted) on every evaluation.  A miss
+	//! blends the clear-coat table (tau = 0) or builds the basis (tau > 0,
+	//! ~3.5 us -- a textured roughness under an absorbing coat pays it per
+	//! evaluation).  Returns a COPY so no caller holds a reference into a
+	//! slot a later miss may overwrite.
 	inline void LobeBasisCached( LobeBasis& out, const Scalar alpha, const Scalar eta, const Scalar tau )
 	{
 		static thread_local LobeBasis cache[4];
@@ -725,7 +805,11 @@ namespace
 		}
 		LobeBasis& e = cache[next];
 		next = ( next + 1 ) & 3u;
-		BuildLobeBasis( e, alpha, eta, tau );
+		if( !( tau > Scalar(0) ) ) {
+			BlendClearBasis( e, alpha, eta );
+		} else {
+			BuildLobeBasis( e, alpha, eta, tau );
+		}
 		out = e;
 	}
 
