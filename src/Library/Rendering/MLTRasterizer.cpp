@@ -276,23 +276,19 @@ MLTRasterizer::MLTSample MLTRasterizer::EvaluateSample(
 	// pixel filter could not reconstruct sub-pixel detail, and
 	// (c) produced the pixel-aligned hard edges the user reported.
 	//
-	// The -0.5 offset is the RISE convention for pixel centers:
-	// BoxPixelFilter::warpOnScreen returns `canonical.x + x - 0.5`
-	// for canonical ∈ [0,1), so pixel i's CENTER is at integer x=i.
-	// FilteredFilm::Splat (and our SplatFilm::SplatFiltered) read
-	// `dx = px - screenX`, which only evaluates the filter correctly
-	// when the caller's screenX uses the same pixel-center-at-integer
-	// convention.  Without this offset, MLT's camera rays and splats
-	// land half a pixel toward the +X/+Y corner of each pixel
-	// relative to the other rasterizers — visible as a consistent
-	// shift in side-by-side comparisons.
+	// Film position convention (DL-368, ICamera.h's RasterConvention):
+	// the film is [0, W) x [0, H) in film coordinates (fy = 0 at the
+	// top), pixel (x, row y) covers [x, x+1) x (y, y+1] with its centre
+	// at (x + 0.5, y + 0.5) -- the same convention every other
+	// rasterizer places its eye rays in and FilteredFilm::Splat /
+	// SplatFilm::SplatFiltered / SplatFilm::NearestPixel reconstruct
+	// in, so a uniform film sample needs NO offset.  (Before DL-368 the
+	// convention put centres at integers and this mapping subtracted
+	// 0.5; with that offset kept under the new convention, MLT's camera
+	// rays and splats would land half a pixel toward the -X / -Y
+	// corner relative to the other rasterizers.)
 	//
-	// Ranges after the offset:
-	//   fx ∈ [-0.5, W - 0.5)      fy ∈ [-0.5, H - 0.5)
-	// The round-to-nearest fallback in RunChainSegment guards fx<-0.5
-	// and fy<-0.5 (both impossible for filmSample ∈ [0,1), but the
-	// guard survives any future filmSample pathology from the PSSMLT
-	// sampler as well).
+	// Ranges:  fx in [0, W),  fy in [0, H).
 	const Point2 filmSample = sampler.Get2D();
 	// The lens sample is consumed from the SAME stream so it
 	// advances the PSSMLT primary-sample vector by two more
@@ -327,8 +323,8 @@ MLTRasterizer::MLTSample MLTRasterizer::EvaluateSample(
 	const Point2 cameraLensSample =
 		BDPTCameraUtilities::DrawApertureSample( camera, sampler,
 			BDPTCameraUtilities::APERTURE_CURRENT_STREAM );
-	const Scalar fx = filmSample.x * static_cast<Scalar>( width  ) - static_cast<Scalar>( 0.5 );
-	const Scalar fy = filmSample.y * static_cast<Scalar>( height ) - static_cast<Scalar>( 0.5 );
+	const Scalar fx = filmSample.x * static_cast<Scalar>( width  );
+	const Scalar fy = filmSample.y * static_cast<Scalar>( height );
 	// screenPos in RISE screen convention (y=0 at bottom, fractional).
 	const Point2 screenPos( fx, static_cast<Scalar>( height ) - fy );
 	// cameraRasterPos in image-buffer convention (y=0 at top, fractional).
@@ -650,10 +646,9 @@ void MLTRasterizer::RunChainSegment(
 					splatFilm.SplatFiltered( s.rasterPos.x, s.rasterPos.y,
 						splatColor, *pPixelFilter );
 				} else {
-					// No filter installed — fall back to round-to-nearest
-					// point splat.  floor() here (via unsigned cast on a
-					// truncation) would introduce a consistent half-pixel
-					// bias; adding 0.5 before truncation rounds instead.
+					// No filter installed — fall back to a point splat
+					// into the pixel containing the position (DL-294 /
+					// DL-368 film-membership rule).
 					unsigned int sx = 0, sy = 0;
 					if( SplatFilm::NearestPixel( s.rasterPos.x, s.rasterPos.y, width, height, sx, sy ) ) {
 						splatFilm.Splat( sx, sy, splatColor );

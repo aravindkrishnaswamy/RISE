@@ -17,6 +17,7 @@
 #define DISPLACED_GEOMETRY_
 
 #include "Geometry.h"
+#include "ClippedPlaneGeometry.h"
 #include "../Interfaces/IFunction2D.h"
 #include "../Interfaces/IScalarPainter.h"
 #include "../Interfaces/ITriangleMeshGeometry.h"
@@ -76,6 +77,7 @@ namespace RISE
 			bool                             m_bDoubleSided;
 			bool                             m_bUseFaceNormals;
 			bool                             m_bSeamFold;	//!< tent-fold the UV before evaluating displacement (closed wrap-seam surfaces); FALSE = raw UV (open Cartesian fields)
+			const ClippedPlaneGeometry*      m_pPlaneBase;	//!< DL-345: m_pBase when it is a clipped plane (owned via m_pBase's reference), else null
 
 			// The baked mesh and the realized flag are the deferred-realization
 			// state.  They are `mutable` because Realize() is a const method

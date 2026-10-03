@@ -229,6 +229,7 @@
     <ClCompile Include="..\..\..\src\Library\Materials\CookTorranceBRDF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\CookTorranceSPF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\DataDrivenBSDF.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Materials\DataDrivenSPF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\DielectricSPF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\DonnerJensenSkinDiffusionProfile.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\GGXBRDF.cpp" />
@@ -765,6 +766,7 @@
     <ClInclude Include="..\..\..\src\Library\Materials\CookTorranceSPF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\DataDrivenBSDF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\DataDrivenMaterial.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\DataDrivenSPF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\DielectricMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\DielectricSPF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\GenericHumanTissueMaterial.h" />

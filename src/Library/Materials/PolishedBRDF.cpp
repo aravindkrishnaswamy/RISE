@@ -220,7 +220,7 @@ void PolishedBRDF::Resolve( const RayIntersectionGeometric& ri, const Scalar out
 		const ScalarTriple tauV  = pTau->GetValuesAt( ri );
 		const ScalarTriple iorV  = pNt->GetValuesAt( ri );
 		const ScalarTriple scatV = pScat->GetValuesAt( ri );
-		const RISEPel      rdV   = pRd->GetColor( ri );
+		const RISEPel      rdV   = ReflectanceColor( *pRd, ri );
 		const bool perChannelIOR = pNt->HasPerChannelVariation();
 		perChannelScat = pScat->HasPerChannelVariation();
 		for( int c = 0; c < 3; ++c ) {
@@ -235,7 +235,7 @@ void PolishedBRDF::Resolve( const RayIntersectionGeometric& ri, const Scalar out
 	} else {
 		L.nch = 1;
 		L.tau[0]  = pTau->GetValueAtNM( ri, nm );
-		L.rd[0]   = GuardedGetColorNM( *pRd, ri, nm );
+		L.rd[0]   = ReflectanceColorNM( *pRd, ri, nm );
 		L.eta[0]  = pNt->GetValueAtNM( ri, nm );
 		L.K = 1;
 		L.scat[0] = pScat->GetValueAtNM( ri, nm );
@@ -561,7 +561,7 @@ bool PolishedBRDF::hemisphericalAlbedo( const RayIntersectionGeometric& ri, RISE
 {
 	const ScalarTriple tauV = pTau->GetValuesAt( ri );
 	const ScalarTriple iorV = pNt->GetValuesAt( ri );
-	const RISEPel rdV = pRd->GetColor( ri );
+	const RISEPel rdV = ReflectanceColor( *pRd, ri );
 	const bool perChannelIOR = pNt->HasPerChannelVariation();
 	const Scalar outer = ri.ambientIOR > 0 ? ri.ambientIOR : 1.0;
 	for( int c = 0; c < 3; ++c ) {
@@ -575,6 +575,6 @@ bool PolishedBRDF::hemisphericalAlbedoNM( const RayIntersectionGeometric& ri, co
 {
 	const Scalar outer = ri.ambientIOR > 0 ? ri.ambientIOR : 1.0;
 	const Scalar T = HemisphericalTransmittance( outer, pNt->GetValueAtNM( ri, nm ) );
-	out = pTau->GetValueAtNM( ri, nm ) * ( 1.0 - T ) + GuardedGetColorNM( *pRd, ri, nm ) * T;
+	out = pTau->GetValueAtNM( ri, nm ) * ( 1.0 - T ) + ReflectanceColorNM( *pRd, ri, nm ) * T;
 	return true;
 }

@@ -30,6 +30,7 @@
 #include "../Interfaces/IScenePriv.h"
 #include "../Intersection/RayIntersection.h"
 #include "../Rendering/LuminaryManager.h"
+#include "../Lights/LightSampler.h"
 #include "BoundingBox.h"
 #include "IndependentSampler.h"
 #include "RandomNumbers.h"
@@ -362,7 +363,9 @@ namespace
 			const bool bEntering = bReflection
 			    ? ( cosI < 0 )          // reflection: medium unchanged; keep
 			                             // cosI-based side for Fresnel lookup
-			    : ( !bSameObjectAlreadyPreScatter ); // refraction: pre-scatter stack state
+			    : ( ri.geometric.bProvablyNoInterior
+			        ? ( cosI < 0 )       // DL-345: an open sheet is crossed by its face
+			        : !bSameObjectAlreadyPreScatter ); // refraction: pre-scatter stack state
 
 			// Record vertex in photon-direction order.
 			SMSPhotonChainVertex& v = out.chain[specularHits];
@@ -441,7 +444,8 @@ unsigned int SMSPhotonMap::Build(
 			// DL-320: both faces of a double-sided luminary radiate.
 			const bool twoSided = i->pLum->GetGeometry() && i->pLum->GetGeometry()->IsDoubleSided();
 			const Scalar area = i->pLum->GetArea() * EmitterSides::FaceCount( twoSided );
-			const RISEPel pw = i->pLum->GetMaterial()->GetEmitter()->averageRadiantExitance() * area;
+			// DL-431: the luminary's own surface mean, not the emitter's P = Po = 0 estimate.
+			const RISEPel pw = LightSampler::AverageLuminaryExitance( i->pLum ).average * area;
 			totalExitance += ColorMath::MaxValue( pw );
 		}
 	}
@@ -486,7 +490,7 @@ unsigned int SMSPhotonMap::Build(
 		// seed photon leaves from a face chosen with probability 1/2.
 		const bool twoSided = i->pLum->GetGeometry() && i->pLum->GetGeometry()->IsDoubleSided();
 		const Scalar area = i->pLum->GetArea() * EmitterSides::FaceCount( twoSided );
-		const RISEPel emitterTotal = pEmitter->averageRadiantExitance() * area;
+		const RISEPel emitterTotal = LightSampler::AverageLuminaryExitance( i->pLum ).average * area;
 
 		const unsigned int target = static_cast<unsigned int>(
 			ColorMath::MaxValue( emitterTotal ) / totalExitance * numPhotons );
@@ -513,11 +517,10 @@ unsigned int SMSPhotonMap::Build(
 			}
 
 			RayIntersectionGeometric rig( r, nullRasterizerState );
-			rig.vNormal = normal;
-			// Luminary normal from UniformRandomPoint is geometric; mirror.
-			rig.vGeomNormal = normal;
-			rig.ptCoord = coord;
-			rig.onb.CreateFromW( rig.vNormal );
+			// DL-298: the shared emitter-record fill (world position `P`,
+			// normals, `onb`, UV, `Po`).
+			LightSampler::FillEmitterRecord( rig, r.origin, normal, coord,
+				LightSampler::EmitterObjectPoint( i->pLum, r.origin, rig.ptObjIntersec ) );
 
 			r.SetDir( pEmitter->getEmmittedPhotonDir( rig, dirRand ) );
 

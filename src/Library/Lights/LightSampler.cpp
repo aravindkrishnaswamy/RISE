@@ -95,7 +95,8 @@ static bool ShadowOccludedRGB(
 	const bool bDeltaLight,		// DL-05: see RayCaster::CastShadowRayAuto
     ISampler& sampler, MediumBoundaryHits* boundaries, Scalar physicalDistance = -1,
 	GradedIndexMedium::ShadowSegmentTrack* pGradedTrack = 0,	// DL-292: see RayCaster::CastShadowRayAuto
-	const Point3* pSegmentEnd = 0
+	const Point3* pSegmentEnd = 0,
+	const bool bSMSCoversLight = false	// DL-344: SMS was evaluated at THIS point for this light (see RayCaster::CastShadowRayAuto)
 	)
 {
 	// Delegate to RayCaster::CastShadowRayAuto, the single source of truth for
@@ -104,7 +105,7 @@ static bool ShadowOccludedRGB(
 	const RayCaster* pRC = dynamic_cast<const RayCaster*>( &caster );
 	if( pRC )
 	{
-		return pRC->CastShadowRayAutoSampled( ray, dHowFar, false, 0.0, transmittance, bDeltaLight, sampler, boundaries, physicalDistance, 0, pGradedTrack, pSegmentEnd );
+		return pRC->CastShadowRayAutoSampled( ray, dHowFar, false, 0.0, transmittance, bDeltaLight, sampler, boundaries, physicalDistance, 0, pGradedTrack, pSegmentEnd , bSMSCoversLight );
 	}
 	transmittance = RISEPel( 1.0, 1.0, 1.0 );
 	return caster.CastShadowRaySampled( ray, dHowFar, sampler, boundaries, physicalDistance );
@@ -119,7 +120,8 @@ static bool ShadowOccludedNM(
 	const bool bDeltaLight,		// DL-05: see RayCaster::CastShadowRayAuto
     ISampler& sampler, MediumBoundaryHits* boundaries, Scalar physicalDistance = -1,
 	GradedIndexMedium::ShadowSegmentTrack* pGradedTrack = 0,	// DL-292: see RayCaster::CastShadowRayAuto
-	const Point3* pSegmentEnd = 0
+	const Point3* pSegmentEnd = 0,
+	const bool bSMSCoversLight = false	// DL-344: SMS was evaluated at THIS point for this light (see RayCaster::CastShadowRayAuto)
 	)
 {
 	// Delegate to RayCaster::CastShadowRayAuto (see ShadowOccludedRGB).
@@ -127,7 +129,7 @@ static bool ShadowOccludedNM(
 	if( pRC )
 	{
 		RISEPel t( 1.0, 1.0, 1.0 );
-		const bool occluded = pRC->CastShadowRayAutoSampled( ray, dHowFar, true, nm, t, bDeltaLight, sampler, boundaries, physicalDistance, 0, pGradedTrack, pSegmentEnd );
+		const bool occluded = pRC->CastShadowRayAutoSampled( ray, dHowFar, true, nm, t, bDeltaLight, sampler, boundaries, physicalDistance, 0, pGradedTrack, pSegmentEnd , bSMSCoversLight );
 		transmittance = t.r;	// NM path fills all 3 channels equally
 		return occluded;
 	}
@@ -1060,6 +1062,28 @@ void LightSampler::ApplyEmitterSurface(
 	// NOT `ptObjIntersec`: the call sites set it themselves, ungated.
 }
 
+void LightSampler::FillEmitterRecord(
+	RayIntersectionGeometric&	rig,
+	const Point3&				position,
+	const Vector3&				normal,
+	const Point2&				coord,
+	const Point3&				ptObjIntersec
+	)
+{
+	rig.bHit          = true;
+	rig.ptIntersection = position;
+	rig.vNormal       = normal;
+	// `normal` is `UniformRandomPoint`'s normal (the interpolated vertex
+	// normal on a mesh luminary with per-vertex normals, the face normal
+	// otherwise -- `GeometricUtilities::PointOnTriangle`).  No Phong/bump
+	// modifier runs on an emitter record, so mirroring it keeps the record
+	// self-consistent for the downstream cosines.
+	rig.vGeomNormal   = normal;
+	rig.ptCoord       = coord;
+	rig.onb.CreateFromW( normal );
+	rig.ptObjIntersec = ptObjIntersec;
+}
+
 bool LightSampler::AcceptEmitterAlpha(
     const IObject* luminary, const IObjectManager* objects,
     const Point3& position, const RayIntersectionGeometric& context,
@@ -1074,6 +1098,65 @@ bool LightSampler::AcceptEmitterAlpha(
     alphaRI.signals.ptWorld = position;
     if( raster ) alphaRI.rast = *raster;
     return material->AcceptAlpha(alphaRI, sampler);
+}
+
+LightSampler::LuminaryExitance LightSampler::AverageLuminaryExitance( const IObject* pLum )
+{
+	LuminaryExitance result;
+	result.average = RISEPel( 0, 0, 0 );
+	result.uniform = true;
+
+	const IMaterial* pMaterial = pLum ? pLum->GetMaterial() : 0;
+	const IEmitter* pEmitter = pMaterial ? pMaterial->GetEmitter() : 0;
+	if( !pEmitter ) {
+		return result;
+	}
+	result.average = pEmitter->averageRadiantExitance();
+
+	// A luminary with no directly-owned geometry (a CSG composite) or no area
+	// has no surface to sample: the emitter's own average stands.
+	if( !pLum->GetGeometry() || !( pLum->GetArea() > 0 ) ) {
+		return result;
+	}
+
+	// Deterministic: a 10x10 stratified grid over the two surface coordinates
+	// (the same 100 points -- and the same cell centres -- the emitter's own UV
+	// grid used, which is what makes a UV-keyed painter on a parametric plane
+	// average identically), and a golden-ratio sequence on the third
+	// coordinate, which a triangle mesh uses to pick its triangle by area.
+	// No render RNG is consumed.
+	static const int kGrid = 10;
+	RISEPel sum( 0, 0, 0 );
+	RISEPel first( 0, 0, 0 );
+	bool uniform = true;
+	for( int gy = 0; gy < kGrid; gy++ ) for( int gx = 0; gx < kGrid; gx++ ) {
+		const int k = gy * kGrid + gx;
+		const Scalar z = Scalar( k + 1 ) * Scalar( 0.6180339887498949 );
+		const Point3 prand( ( Scalar( gx ) + Scalar( 0.5 ) ) / Scalar( kGrid ),
+			( Scalar( gy ) + Scalar( 0.5 ) ) / Scalar( kGrid ), z - Scalar( int( z ) ) );
+
+		Point3 position;
+		Vector3 normal;
+		Point2 coord;
+		pLum->UniformRandomPoint( &position, &normal, &coord, prand );
+
+		RayIntersectionGeometric rig( Ray(), nullRasterizerState );
+		FillEmitterRecord( rig, position, normal, coord, EmitterObjectPoint( pLum, position, rig.ptObjIntersec ) );
+
+		const RISEPel v = pEmitter->radiantExitanceAt( rig );
+		if( k == 0 ) {
+			first = v;
+		} else if( !( v.r == first.r && v.g == first.g && v.b == first.b ) ) {
+			uniform = false;
+		}
+		sum = sum + v;
+	}
+
+	if( !uniform ) {
+		result.average = sum * ( Scalar( 1 ) / Scalar( kGrid * kGrid ) );
+		result.uniform = false;
+	}
+	return result;
 }
 
 LightSampler::LightSampler() :
@@ -1266,7 +1349,9 @@ void LightSampler::Prepare(
 			// the one-sided `M * A`.  Any PMF would be unbiased as long as
 			// both sides read the same one; this one is the physical power.
 			const bool twoSided = LuminaryIsTwoSided( luminaries[li].pLum );
-			const RISEPel power = pEmitter->averageRadiantExitance() * area *
+			// DL-431: the surface mean over this luminary's own points, not
+			// the emitter's construction-time estimate at P = Po = 0.
+			const RISEPel power = AverageLuminaryExitance( luminaries[li].pLum ).average * area *
 				EmitterSides::FaceCount( twoSided );
 			const Scalar exitance = ColorMath::MaxValue( power );
 			if( exitance > 0 )
@@ -1802,11 +1887,13 @@ bool LightSampler::SampleLight(
 		// Phong/bump MODIFIER runs on an emitter record either way, so
 		// mirroring it into `vGeomNormal` keeps the record self-consistent --
 		// which is the property the downstream cosines need.
-		rig.vGeomNormal = sample.normal;
-		rig.ptCoord = coord;
-		rig.onb = onb;
+		// DL-298: ONE shared fill (world position `P`, normals, `onb` --
+		// built from `sample.normal`, identical to the local `onb` above --
+		// UV and `Po`), the same function every other emitter-evaluation
+		// record uses.  Before it, this record left `ptIntersection` at the
+		// default (0,0,0), so a `P`-keyed emission painter read the origin.
+		FillEmitterRecord( rig, sample.position, sample.normal, coord, sample.ptObjIntersec );
 		ApplyEmitterSurface( rig, sample.surface );
-		rig.ptObjIntersec = sample.ptObjIntersec;
 
 		if (!AcceptEmitterAlpha(lumEntry.pLum, scene.GetObjects(), sample.position, rig, sampler)) return false;
 		sample.Le = pEmitter->emittedRadiance( rig, sample.direction, sample.normal );
@@ -1961,12 +2048,33 @@ bool LightSampler::SampleEnvLightEmission(
 	return true;
 }
 
+//
+// PdfSelectLight / PdfSelectLuminary -- the selection pmf of SampleLight()
+// (DL-348, 2026-10-02).
+//
+// These are the MIS partner densities of the strategies SampleLight() roots:
+// BDPT/VCM/MLT NEE (s = 1), light tracing (t = 1), the s >= 2 connections
+// and VCM merging all select their light with SampleLight()'s single
+// env-vs-alias roll.  The light BVH is NEVER consulted there -- it drives
+// PT's own NEE only (EvaluateDirectLighting, whose partner is
+// CachedPdfSelectLuminary).  These queries used to return the BVH's
+// shading-point-dependent pmf whenever the BVH was built (`light_bvh`
+// defaults TRUE, built for 2+ lights), so the eye-hits-emitter strategy
+// (VCM EvaluateS0Impl, BDPT s = 0) weighted against a selection density
+// its competitors never used: a partition-of-unity violation, VCM 0.92 /
+// BDPT 0.96 of the closed form with four equal quads under an
+// orthographic camera (VCMStrategyBalanceTest topology Y).  One light
+// (no BVH) and one multi-quad mesh luminary (one table entry) were
+// immune.  The shading point / normal arguments are therefore unused;
+// the signature is kept so callers state where the alternative would
+// have selected from.
+//
 Scalar LightSampler::PdfSelectLight(
-	const IScene& scene,
-	const LuminaryManager::LuminariesList& luminaries,
+	const IScene& /*scene*/,
+	const LuminaryManager::LuminariesList& /*luminaries*/,
 	const ILight& light,
-	const Point3& shadingPoint,
-	const Vector3& shadingNormal
+	const Point3& /*shadingPoint*/,
+	const Vector3& /*shadingNormal*/
 	) const
 {
 	// Find the matching entry in the light table
@@ -1983,14 +2091,9 @@ Scalar LightSampler::PdfSelectLight(
 			// weights that compare "what would the alternative NEE
 			// strategy have produced" against the actual SampleLight
 			// pdf are inconsistent — and VCM env+mesh over-counts at
-			// 128% of PT (Session 9 follow-up bug).  The LightBVH
-			// branch needs the same factor for the same reason.
+			// 128% of PT (Session 9 follow-up bug).  Alias-only:
+			// SampleLight() never consults the light BVH (DL-348).
 			const Scalar aliasShare = Scalar( 1 ) - cachedEnvSelectProb;
-			if( pLightBVH && pLightBVH->IsBuilt() )
-			{
-				return aliasShare *
-					pLightBVH->Pdf( i, shadingPoint, shadingNormal );
-			}
 			return aliasShare *
 				static_cast<Scalar>( aliasTable.Pdf( i ) );
 		}
@@ -2000,11 +2103,11 @@ Scalar LightSampler::PdfSelectLight(
 }
 
 Scalar LightSampler::PdfSelectLuminary(
-	const IScene& scene,
-	const LuminaryManager::LuminariesList& luminaries,
+	const IScene& /*scene*/,
+	const LuminaryManager::LuminariesList& /*luminaries*/,
 	const IObject& luminary,
-	const Point3& shadingPoint,
-	const Vector3& shadingNormal
+	const Point3& /*shadingPoint*/,
+	const Vector3& /*shadingNormal*/
 	) const
 {
 	if( !pPreparedLuminaries )
@@ -2020,13 +2123,8 @@ Scalar LightSampler::PdfSelectLuminary(
 			if( (*pPreparedLuminaries)[lightEntries[i].lumIndex].pLum == &luminary )
 			{
 				// Continuous-PMF rescale — see `PdfSelectLight` above
-				// for the full rationale.
+				// for the full rationale; alias-only (DL-348).
 				const Scalar aliasShare = Scalar( 1 ) - cachedEnvSelectProb;
-				if( pLightBVH && pLightBVH->IsBuilt() )
-				{
-					return aliasShare *
-						pLightBVH->Pdf( i, shadingPoint, shadingNormal );
-				}
 				return aliasShare *
 					static_cast<Scalar>( aliasTable.Pdf( i ) );
 			}
@@ -2199,7 +2297,8 @@ RISEPel LightSampler::EvaluateDirectLighting(
 	const IORStack* pMisIorStack,
 	const Scalar neeTrainingScale,
 	const bool bBsdfSamplingPartnerExists,
-	const IORStack* pGradedIndexStack
+	const IORStack* pGradedIndexStack,
+	const bool bSMSCoversDeltaLights
 	) const
 {
     MediumBoundaryHits boundaryHits;
@@ -2611,7 +2710,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
 			{
 				const Ray rayToLight( ri.ptIntersection, vToLight );
 				if( ShadowOccludedRGB( caster, rayToLight, dist - 0.001, shadowT, true /*DL-05: delta light*/ , sampler, sampledBoundaries, dist,
-						gradedTrack ? &*gradedTrack : 0, &lightPos ) )
+						gradedTrack ? &*gradedTrack : 0, &lightPos, bSMSCoversDeltaLights ) )
 					break;
 			}
 
@@ -2751,9 +2850,16 @@ RISEPel LightSampler::EvaluateDirectLighting(
 					// none (see `GeometricUtilities::PointOnTriangle`).
 					// Mirror it so the record is self-consistent; no
 					// modifier runs here to make the two differ.
-					lumri.vGeomNormal = lumNormal;
-					lumri.ptCoord = lumCoord;
-					lumri.onb.CreateFromW( lumNormal );
+					// DL-298: the shared fill -- world position `P`
+					// (the RGB NEE record used to leave it at (0,0,0)),
+					// normals, `onb`, UV, and `Po` (ungated and ray-free,
+					// so it lands whether or not a signal painter exists
+					// anywhere in the process; this also closed a
+					// PRE-EXISTING PT inconsistency where a camera ray that
+					// HIT the emitter read a live `Po` and this record read
+					// (0,0,0)).  CSG composites keep the zero fallback.
+					FillEmitterRecord( lumri, ptOnLum, lumNormal, lumCoord,
+						EmitterObjectPoint( lumEntry.pLum, ptOnLum, lumri.ptObjIntersec ) );
 
 					// THE SHADING PAYLOAD for this sampled point (slice S3
 					// of docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md §5).
@@ -2812,14 +2918,6 @@ RISEPel LightSampler::EvaluateDirectLighting(
 							ptOnLum, lumWinding, lumSurface );
 						ApplyEmitterSurface( lumri, lumSurface );
 					}
-
-					// `Po` -- UNGATED and ray-free, so it lands whether or
-					// not a signal painter exists anywhere in the process.
-					// This also closes a PRE-EXISTING PT inconsistency: a
-					// camera ray that HIT this emitter read a live `Po`,
-					// this NEE record read `(0,0,0)`.
-					lumri.ptObjIntersec = EmitterObjectPoint(
-						lumEntry.pLum, ptOnLum, lumri.ptObjIntersec );
 
 					const RISEPel Le = AcceptEmitterAlpha(lumEntry.pLum, pPreparedScene ? pPreparedScene->GetObjects() : nullptr, ptOnLum, lumri, sampler, &ri.rast)
                         ? pEmitter->emittedRadiance( lumri, -vToLight, lumNormal ) : RISEPel(0,0,0);
@@ -3140,7 +3238,8 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 	const IORStack* pMisIorStack,
 	const Scalar neeTrainingScale,
 	const bool bBsdfSamplingPartnerExists,
-	const IORStack* pGradedIndexStack
+	const IORStack* pGradedIndexStack,
+	const bool bSMSCoversDeltaLights
 	) const
 {
     MediumBoundaryHits boundaryHits;
@@ -3386,7 +3485,7 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 			{
 				const Ray rayToLight( ri.ptIntersection, vToLight );
 				if( ShadowOccludedNM( caster, rayToLight, dist - 0.001, nm, shadowTNM, true /*DL-05: delta light*/ , sampler, sampledBoundaries, dist,
-						gradedTrack ? &*gradedTrack : 0, &lightPos ) )
+						gradedTrack ? &*gradedTrack : 0, &lightPos, bSMSCoversDeltaLights ) )
 					break;
 			}
 
@@ -3514,9 +3613,10 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 		// normal otherwise (see the RGB twin above and
 		// `GeometricUtilities::PointOnTriangle`); mirror it so the record is
 		// self-consistent.
-		lumri.vGeomNormal = lumNormal;
-		lumri.ptCoord = lumCoord;
-		lumri.onb.CreateFromW( lumNormal );
+		// DL-298: the same shared fill as the RGB twin above (world
+		// position, normals, `onb`, UV, `Po`).
+		FillEmitterRecord( lumri, ptOnLum, lumNormal, lumCoord,
+			EmitterObjectPoint( lumEntry.pLum, ptOnLum, lumri.ptObjIntersec ) );
 
 		// THE SHADING PAYLOAD -- the NM twin of the RGB site above, calling
 		// the SAME functions with the same arguments, including the same
@@ -3531,9 +3631,6 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 				ptOnLum, lumWinding, lumSurface );
 			ApplyEmitterSurface( lumri, lumSurface );
 		}
-		lumri.ptObjIntersec = EmitterObjectPoint(
-			lumEntry.pLum, ptOnLum, lumri.ptObjIntersec );
-
 		const Scalar Le = AcceptEmitterAlpha(lumEntry.pLum, pPreparedScene ? pPreparedScene->GetObjects() : nullptr, ptOnLum, lumri, sampler, &ri.rast)
             ? pEmitter->emittedRadianceNM( lumri, -vToLight, lumNormal, nm ) : 0;
 

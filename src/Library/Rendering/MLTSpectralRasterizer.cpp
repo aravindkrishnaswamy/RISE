@@ -297,13 +297,13 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 
 	// Pick film position + lens position (two independent 2D
 	// primary samples).  See MLTRasterizer::EvaluateSample for
-	// the full rationale on the -0.5 pixel-center offset and on
+	// the film-position convention (DL-368: no offset) and on
 	// seeding localRNG from the lens sample so the PSSMLT stream
 	// drives the camera aperture as an independent dimension.
 	const Point2 filmSample = sampler.Get2D();
 	const Point2 lensSample = sampler.Get2D();
-	const Scalar fx = filmSample.x * static_cast<Scalar>( width  ) - static_cast<Scalar>( 0.5 );
-	const Scalar fy = filmSample.y * static_cast<Scalar>( height ) - static_cast<Scalar>( 0.5 );
+	const Scalar fx = filmSample.x * static_cast<Scalar>( width  );
+	const Scalar fy = filmSample.y * static_cast<Scalar>( height );
 	const Point2 screenPos( fx, static_cast<Scalar>( height ) - fy );
 	const Point2 cameraRasterPos( fx, fy );
 

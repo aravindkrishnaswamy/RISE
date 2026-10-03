@@ -220,7 +220,7 @@ RISEPel OrenNayarBRDF::value( const Vector3& vLightIn, const RayIntersectionGeom
 	// so the flip propagates through automatically.
 	const Vector3 n = ( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) ? -ri.onb.w() : ri.onb.w();
 	ComputeFactor<RISEPel>( L1, L2, vLightIn, ri, n, roughness );
-	const RISEPel rho = pReflectance->GetColor(ri);
+	const RISEPel rho = ReflectanceColor( *pReflectance, ri );
 
 	return (L1*INV_PI*rho) + (L2*INV_PI*(rho*rho));
 }
@@ -232,7 +232,7 @@ Scalar OrenNayarBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeo
 	// Same ray-facing flip as value() above.
 	const Vector3 n = ( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) ? -ri.onb.w() : ri.onb.w();
 	ComputeFactor<Scalar>( L1, L2, vLightIn, ri, n, pRoughness->GetValueAtNM(ri,nm) );
-	const Scalar rho = GuardedGetColorNM( *pReflectance, ri, nm );
+	const Scalar rho = ReflectanceColorNM( *pReflectance, ri, nm );
 
 	return (L1*INV_PI*rho) + (L2*INV_PI*(rho*rho));
 }
@@ -242,7 +242,7 @@ RISEPel OrenNayarBRDF::albedo( const RayIntersectionGeometric& ri ) const
 	// Oren-Nayar is energy-conserving: total reflectance ≈ Rd
 	// regardless of roughness.  The L1 / L2 terms only redistribute
 	// directional scattering shape.
-	return pReflectance->GetColor( ri );
+	return ReflectanceColor( *pReflectance, ri );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -312,7 +312,7 @@ RISEPel OrenNayarBRDF::albedo( const RayIntersectionGeometric& ri ) const
 bool OrenNayarBRDF::hemisphericalAlbedo( const RayIntersectionGeometric& ri, RISEPel& out ) const
 {
 	const ScalarTriple sigma = pRoughness->GetValuesAt( ri );
-	const RISEPel rho = pReflectance->GetColor( ri );
+	const RISEPel rho = ReflectanceColor( *pReflectance, ri );
 
 	for( unsigned int c = 0; c < 3; c++ ) {
 		const Scalar a1 = OrenNayarA1( sigma.v[c] );
@@ -325,7 +325,7 @@ bool OrenNayarBRDF::hemisphericalAlbedo( const RayIntersectionGeometric& ri, RIS
 bool OrenNayarBRDF::hemisphericalAlbedoNM( const RayIntersectionGeometric& ri, const Scalar nm, Scalar& out ) const
 {
 	const Scalar sigma = pRoughness->GetValueAtNM( ri, nm );
-	const Scalar rho = GuardedGetColorNM( *pReflectance, ri, nm );
+	const Scalar rho = ReflectanceColorNM( *pReflectance, ri, nm );
 	const Scalar a1 = OrenNayarA1( sigma );
 	const Scalar a2 = OrenNayarA2( sigma );
 	out = rho * a1 + rho * rho * a2;

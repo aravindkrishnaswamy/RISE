@@ -17,6 +17,8 @@
 #include "../Interfaces/ILog.h"
 #include "../Utilities/Optics.h"
 #include "../Utilities/ThinFilm.h"
+#include "../Utilities/IORStackSeeding.h"
+#include <memory>
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -161,7 +163,8 @@ Scalar DielectricSPF::GenerateScatteredRay(
 	const Scalar scatfunc,
 	const Scalar rIndex,
 	const Scalar nm,
-	const IORStack& ior_stack								///< [in] Index of refraction stack
+	const IORStack& ior_stack,								///< [in] Index of refraction stack
+	const bool bAllocateStacks
 	) const
 {
 	dielectric.type = ScatteredRay::eRayRefraction;
@@ -230,21 +233,33 @@ Scalar DielectricSPF::GenerateScatteredRay(
 	// at the same interface.
 	Scalar Ni = 1.0, Nt = 1.0;
 
+	// DL-345: a PROVABLY OPEN sheet is crossed by its FACE, not by the
+	// stack (IORStackSeeding::ResolveOpenSheetCrossing has the ruling; the
+	// caller's `bFromInside` already applied the same face test).
+	std::unique_ptr<IORStack> pOpenSheetStack;
+	IORStackSeeding::OpenSheetCrossing openSheet = { false, Scalar( 1 ), Scalar( 1 ) };
+	if( ri.bProvablyNoInterior ) {
+		pOpenSheetStack.reset( new IORStack( ior_stack ) );
+		openSheet = IORStackSeeding::ResolveOpenSheetCrossing( ri, rIndex, *pOpenSheetStack );
+	}
+
 	if( bFromInside )
 	{
 		// Determine the exit IOR: the medium the ray enters after leaving
 		// this object.  Pop the current object from a temporary copy of
 		// the stack so that top() reveals the underlying medium's IOR.
-		IORStack exitStack( ior_stack );
-		exitStack.pop();
+		IORStack exitStack( pOpenSheetStack ? *pOpenSheetStack : ior_stack );
+		if( !pOpenSheetStack ) {
+			exitStack.pop();
+		}
 		Scalar exitIOR = exitStack.top();
 		Ni = rIndex;
 		Nt = exitIOR;
 
 		if( Optics::CalculateRefractedRay( -ri.onb.w(), rIndex, exitIOR, refracted ) ) {
-			dielectric.ior_stack = new IORStack( ior_stack );
-			dielectric.ior_stack->pop();
-			GlobalLog()->PrintNew( dielectric.ior_stack, __FILE__, __LINE__, "ior stack" );
+			if( bAllocateStacks ) {
+				dielectric.ior_stack = IORStackSeeding::NewTransmittedStack( ior_stack, pOpenSheetStack.get(), openSheet.etaFrom, false, rIndex );
+			}
 			if( arStack.nLayers > 0 ) {
 				const Scalar cosI = fabs( Vector3Ops::Dot( ri.onb.w(), ri.ray.Dir() ) );
 				const Scalar lam = ( nm > 0.0 ) ? nm : 550.0;
@@ -259,20 +274,20 @@ Scalar DielectricSPF::GenerateScatteredRay(
 	}
 	else
 	{
-		Ni = ior_stack.top();
+		Ni = pOpenSheetStack ? openSheet.etaFrom : ior_stack.top();
 		Nt = rIndex;
 
-		if( Optics::CalculateRefractedRay( ri.onb.w(), ior_stack.top(), rIndex, refracted ) ) {
+		if( Optics::CalculateRefractedRay( ri.onb.w(), Ni, rIndex, refracted ) ) {
 			if( arStack.nLayers > 0 ) {
 				const Scalar cosI = fabs( Vector3Ops::Dot( ri.onb.w(), ri.ray.Dir() ) );
 				const Scalar lam = ( nm > 0.0 ) ? nm : 550.0;
-				ref = ARStackReflectance( arStack, /*fromInside*/ false, cosI, lam, ior_stack.top(), rIndex );
+				ref = ARStackReflectance( arStack, /*fromInside*/ false, cosI, lam, Ni, rIndex );
 			} else {
-				ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), refracted, ri.onb.w(), ior_stack.top(), rIndex );
+				ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), refracted, ri.onb.w(), Ni, rIndex );
 			}
-			dielectric.ior_stack = new IORStack( ior_stack );
-			dielectric.ior_stack->push( rIndex );
-			GlobalLog()->PrintNew( dielectric.ior_stack, __FILE__, __LINE__, "ior stack" );
+			if( bAllocateStacks ) {
+				dielectric.ior_stack = IORStackSeeding::NewTransmittedStack( ior_stack, pOpenSheetStack.get(), openSheet.etaFrom, true, rIndex );
+			}
 		} else {
 			ref = 1.0;
 		}
@@ -408,8 +423,10 @@ Scalar DielectricSPF::GenerateScatteredRay(
 		// re-derivation branch below IS the one place both come from
 		// `geomN`.
 		if( bFromInside ) {
-			fresnel.ior_stack = new IORStack( ior_stack );
-			GlobalLog()->PrintNew( fresnel.ior_stack, __FILE__, __LINE__, "ior stack" );
+			if( bAllocateStacks ) {
+				fresnel.ior_stack = new IORStack( ior_stack );
+				GlobalLog()->PrintNew( fresnel.ior_stack, __FILE__, __LINE__, "ior stack" );
+			}
 			fresnel.ray = Ray( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), ri.onb.w() ) );
 		} else {
 			fresnel.ray = Ray( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), -ri.onb.w() ) );
@@ -538,7 +555,9 @@ void DielectricSPF::DoSingleRGBComponent(
 	// is currently inside, so if this object is in the stack we must be
 	// exiting. This is more robust than the normal-based cosine test at
 	// grazing angles where numerical precision can give wrong results.
-	if( ior_stack.containsCurrent() ) {
+	// DL-345: EXCEPT on a provably open sheet, which is crossed by its
+	// FACE (IORStackSeeding::ResolveOpenSheetCrossing has the ruling).
+	if( ri.bProvablyNoInterior ? IORStackSeeding::OpenSheetBackFace( ri ) : ior_stack.containsCurrent() ) {
 		// We are coming from the inside of the object
 		const Scalar distance = Vector3Ops::Magnitude( Vector3Ops::mkVector3(ri.ray.origin, ri.ptIntersection) );
 		bFromInside = true;
@@ -652,8 +671,9 @@ void DielectricSPF::ScatterNM(
 	bool		bFromInside = false;
 
 	// Use the IOR stack as the authoritative source for inside/outside
-	// determination when available (see DoSingleRGBComponent for details)
-	if( ior_stack.containsCurrent() ) {
+	// determination when available (see DoSingleRGBComponent for details;
+	// DL-345: a provably open sheet is crossed by its face)
+	if( ri.bProvablyNoInterior ? IORStackSeeding::OpenSheetBackFace( ri ) : ior_stack.containsCurrent() ) {
 		// We are coming from the inside of the object
 		const Scalar distance = Vector3Ops::Magnitude( Vector3Ops::mkVector3(ri.ray.origin, ri.ptIntersection) );
 		bFromInside = true;
@@ -698,4 +718,92 @@ Scalar DielectricSPF::PdfNM(
 	) const
 {
 	return 0;
+}
+
+// DL-297.  The `scattering` warp of the delta-tagged transmission, as a
+// density the composite's layered evaluator can connect through (ISPF has
+// the contract).  Only the Phong `cos^N` form has one: a Henyey-Greenstein
+// warp leaves every draw with `alpha >= PI/2` UNPERTURBED (a delta part at
+// the Snell axis), and the RGB pipe's per-channel / dispersive loop emits
+// one transmitted ray per channel about three different axes -- both report
+// "none", and the evaluator keeps pricing them as an ideal refraction.
+Scalar DielectricSPF::DeltaTransmissionWarpExponent(
+	const RayIntersectionGeometric& ri,
+	const Scalar nm
+	) const
+{
+	if( bHG ) {
+		return -1;
+	}
+	Scalar v = 0;
+	if( nm > 0 ) {
+		v = pScat->GetValueAtNM( ri, nm );
+	} else {
+		if( pRIndex->HasPerChannelVariation() || pScat->HasPerChannelVariation() || arStack.nLayers > 0 ) {
+			return -1;
+		}
+		v = pScat->GetValuesAt( ri ).v[0];
+	}
+	// GenerateScatteredRay warps exactly when `scattering < 1e6` (the delta
+	// pass-through convention); `cos^N` is a density for any N > -1.
+	return ( v < 1000000.0 && v > Scalar( -1 ) ) ? v : Scalar( -1 );
+}
+
+Scalar DielectricSPF::DeltaTransmissionWarpPdf(
+	const RayIntersectionGeometric& ri,
+	const Vector3& w,
+	const Scalar nm,
+	const IORStack& ior_stack
+	) const
+{
+	const Scalar N = DeltaTransmissionWarpExponent( ri, nm );
+	if( !( N > Scalar( -1 ) ) ) {
+		return 0;
+	}
+
+	// The warp's AXIS is the transmitted direction GenerateScatteredRay
+	// builds before it perturbs (Snell about the shading normal, re-derived
+	// about the true surface when that is wrong-side -- DL-111).  Running
+	// it with `random.x == 1` draws `alpha == 0`, i.e. no perturbation, so
+	// the returned direction IS that axis and every branch of the real
+	// sampler is reused rather than re-implemented.
+	const bool bFromInside = ri.bProvablyNoInterior ? IORStackSeeding::OpenSheetBackFace( ri ) : ior_stack.containsCurrent();
+	const Scalar rIndex = ( nm > 0 ) ? pRIndex->GetValueAtNM( ri, nm ) : pRIndex->GetValuesAt( ri ).v[0];
+	ScatteredRay dielectric;
+	ScatteredRay fresnel;
+	bool bDielectric = false, bFresnel = false;
+	const Scalar ref = GenerateScatteredRay( dielectric, fresnel, bDielectric, bFresnel, bFromInside, ri, Point2( 1.0, 0.5 ), N, rIndex, nm, ior_stack, false );
+	if( !bDielectric || !( ref < 1.0 ) ) {
+		return 0;
+	}
+	const Vector3 axis = Vector3Ops::Normalize( dielectric.ray.Dir() );
+
+	// The clip half-space, built exactly as GenerateScatteredRay builds it.
+	const Vector3 nShading = ri.onb.w();
+	const Vector3 trueGeomNormal = ri.HasTrueGeomSide() ? ri.UnflippedGeomNormal() : nShading;
+	const Vector3& geomNRaw = ( Vector3Ops::SquaredModulus( trueGeomNormal ) > Scalar(1e-12) )
+		? trueGeomNormal : nShading;
+	const Vector3 geomN = ( Vector3Ops::Dot( geomNRaw, ri.ray.Dir() ) < 0 ) ? geomNRaw : -geomNRaw;
+	const Vector3 throughSurface = -geomN;
+
+	const Vector3 wn = Vector3Ops::Normalize( w );
+	if( !( Vector3Ops::Dot( wn, throughSurface ) > 0 ) ) {
+		return 0;
+	}
+	const Scalar c = Vector3Ops::Dot( wn, axis );
+	if( !( c > 0 ) ) {
+		return 0;
+	}
+	// The azimuth is drawn uniformly on the valid arc of half-width `half`
+	// at this polar angle (GeometricUtilities::PerturbClipped -- the SAME
+	// arc math the sampler used, so the density cannot drift from it).
+	Scalar half = PI;
+	const Scalar down = acos( r_min( Scalar( 1 ), c ) );
+	if( down > 0 ) {
+		GeometricUtilities::PerturbClipped( axis, down, throughSurface, Scalar( 0.5 ), &half );
+	}
+	if( !( half > 0 ) ) {
+		return 0;
+	}
+	return ( N + Scalar( 1 ) ) * pow( c, N ) / ( Scalar( 2 ) * half );
 }

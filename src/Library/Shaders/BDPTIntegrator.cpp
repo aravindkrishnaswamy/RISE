@@ -2039,12 +2039,10 @@ namespace {
 		// half of the ternary doesn't underflow.
 		// The cap is BDPTUtilities::kWalkIterationCap, which also bounds
 		// the per-iteration medium-distance stream layout (DL-283).
-		const unsigned int kCap = BDPTUtilities::kWalkIterationCap;
+		// DL-380: BDPTUtilities::WalkIterationBudget is also what the
+		// by-path subsurface partition reads, so the two cannot drift.
 		const unsigned int maxEyeTotalDepth =
-			( maxEyeDepth >= kCap ||
-			  stabilityConfig.maxVolumeBounce > kCap - maxEyeDepth ) ?
-				kCap :
-				maxEyeDepth + stabilityConfig.maxVolumeBounce;
+			BDPTUtilities::WalkIterationBudget( maxEyeDepth, stabilityConfig.maxVolumeBounce );
 
 		for( unsigned int depth = 0; depth < maxEyeTotalDepth; depth++ )
 		{
@@ -2581,6 +2579,11 @@ namespace {
 			v.scatterIncomingDistance = ri.geometric.range;
 			v.normal = ri.geometric.vNormal;
 			v.geomNormal = ri.geometric.vGeomNormal;
+			v.bGeomNormalOrientedToRay = ri.geometric.bGeomNormalOrientedToRay;
+			v.bGeomNormalRayDerived = ri.geometric.bGeomNormalRayDerived;
+			v.bOpenSheet = ri.geometric.bOpenSheet;
+			v.bProvablyNoInterior = ri.geometric.bProvablyNoInterior;
+			v.bGeomNormalOpposesArrival = ri.geometric.GeomNormalOpposesArrival();
 			v.onb = ri.geometric.onb;
 			v.ptCoord = ri.geometric.ptCoord;
 			v.ptCoord1 = ri.geometric.ptCoord1;
@@ -3043,9 +3046,9 @@ namespace {
 							entryV.ptObjIntersec = bssrdf.ptObjIntersec;
 							entryV.vColor = bssrdf.vColor;
 							entryV.bHasVertexColor = bssrdf.bHasVertexColor;
-							entryV.pMaterial = ri.pMaterial;
+							entryV.pMaterial = bssrdf.ExitMaterial( ri.pMaterial );	// DL-370: the body the walk left
             entryV.acceptedAlphaCoverage = bssrdf.acceptedAlphaCoverage;
-							entryV.pObject = ri.pObject;
+							entryV.pObject = bssrdf.ExitObject( ri.pObject );
 							entryV.pMediumObject = pMedObj_eye;
 							entryV.pMediumVol = pMed_eye;
 							// DL-49: the entry point shares the exit hit's exterior medium
@@ -3800,6 +3803,83 @@ inline bool ConnectionIsVisible( const IRayCaster& caster, const Point3& p1, con
 	return !caster.CastShadowRaySampled( shadowRay, dist - BDPT_RAY_EPSILON, sampler, boundaries, dist, BDPT_RAY_EPSILON );
 }
 
+//////////////////////////////////////////////////////////////////////
+// DL-330: the s == 1 connection to a DELTA light THROUGH thin-weave
+// delta pass-throughs (docs/DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md
+// section 10).
+//
+// A delta pass-through (a `transmission thin` weave's gap) is a DELTA
+// subpath vertex, so in the expanded path space the gap vertices on a
+// straight segment from a point light L to an eye vertex D make every
+// edge of  L - S1 .. Sk - D  non-connectible: the standard s = 1
+// connection D -> L is blocked (binary shadow), and light tracing must
+// pass the gaps and then connect from D or a later vertex.  When the eye
+// side offers no connectible edge either -- the classic case is
+// L - S - D - S - E, the camera seeing through a gap a surface lit only
+// through another gap -- NO BDPT strategy generates the path (no BSDF
+// sample can hit a point light), while PT reaches it with DL-05's
+// see-through NEE and VCM by merging.  Measured on the closed weave
+// sphere: BDPT 6-7 % under PT and VCM.
+//
+// The fix adds the missing strategy WITHOUT a new MIS term: the
+// see-through connection takes MIS weight 1 on paths no standard
+// strategy can generate and 0 on every other (it is skipped there, so it
+// costs nothing), and the standard strategies' weights -- which never
+// counted it -- already sum to 1 on the paths they cover.  A valid
+// partition: weights that depend only on the path and sum to 1 over the
+// techniques that can produce it.
+//
+// "Can generate" is exactly what MISWeight counts: a split at the eye
+// edge (e_j, e_{j-1}) with both ends connectible and non-delta (the
+// camera counts as connectible unless it is a delta-direction camera),
+// not past an eye-side BSSRDF entry, AND within the light walk's depth
+// caps -- that strategy's light subpath is L, S1..Sk, D .. e_j, which the
+// light walk must reach in <= max_light_depth surface hits (each gap
+// counts) and <= WalkIterationBudget iterations (DL-380's lesson: a
+// covering strategy past a cap does not exist).  The light-side edges
+// (L, S1) .. (Sk, D) are never connectible.
+//////////////////////////////////////////////////////////////////////
+//! Returns the largest k (number of gaps on the L -> D segment) for which
+//! a standard strategy covers the path, or -1 when none does at any k.
+//! Covered(k) iff k <= the return value: the first connectible eye split
+//! (largest j) needs the fewest light-walk surface hits and iterations,
+//! and both counts only grow toward the camera.
+inline int DeltaPassThroughCoverSlack(
+	const std::vector<BDPTVertex>& eyeVerts,
+	const unsigned int t,
+	const unsigned int maxLightDepth,
+	const unsigned int lightIterationBudget )
+{
+	long long surface = 0;
+	long long volume = 0;
+	for( unsigned int j = t - 1; j > 0; j-- )
+	{
+		const BDPTVertex& ej = eyeVerts[j];
+		if( ej.isBSSRDFEntry ) {
+			return -1;
+		}
+		if( ej.type == BDPTVertex::SURFACE ) {
+			surface++;
+		} else if( ej.type == BDPTVertex::MEDIUM ) {
+			volume++;
+		}
+		// D = eyeVerts[t-1] is the connection's own endpoint: its
+		// `isDelta` records the eye walk's CONTINUATION past it, which is
+		// not part of this path (MISWeight clears it for an endpoint the
+		// same way).  Every interior vertex's `isDelta` is the path's own
+		// scatter there.
+		const BDPTVertex& prev = eyeVerts[j - 1];
+		const bool ejUsable = ej.isConnectible && ( j == t - 1 || !ej.isDelta );
+		if( ejUsable && prev.isConnectible && !prev.isDelta ) {
+			const long long bySurface = static_cast<long long>( maxLightDepth ) - surface;
+			const long long byIterations = static_cast<long long>( lightIterationBudget ) - surface - volume;
+			const long long slack = bySurface < byIterations ? bySurface : byIterations;
+			return slack < 0 ? -1 : static_cast<int>( slack > 1000000 ? 1000000 : slack );
+		}
+	}
+	return -1;
+}
+
 // Connection-edge transmittance dispatch -> the public (F1-templatized)
 // member overloads.  pt/pt and ray/maxDist forms.
 template<class Tag>
@@ -4148,8 +4228,8 @@ ConnectAndEvaluateImplCore(
 			const LuminaryManager::LuminariesList& luminaries = pLumManager ?
 				const_cast<LuminaryManager*>( pLumManager )->getLuminaries() : emptyList;
 
-			// For BVH PDF, the shading point is the predecessor vertex
-			// (where NEE would have selected this emitter from).
+			// SampleLight()'s selection pmf (alias, shading-point
+			// independent -- DL-348): the s >= 1 strategies root here.
 			const BDPTVertex& predVert_s0 = eyeVerts[t - 2];
 			const Scalar pdfSelect = pLightSampler->PdfSelectLuminary(
 				scene, luminaries, *eyeEnd.pObject,
@@ -4226,31 +4306,24 @@ ConnectAndEvaluateImplCore(
 			// (LuminaryManager refuses it), CanBeAreaLight() == false (an
 			// SDF whose sampling mesh proved it misses renderable surface;
 			// see SDFGeometry.h), or a degenerate zero-area emitter -- and
-			// deliberately NOT `eyeEndPdfRev <= 0`.  The two differ on one
-			// real case: with `light_bvh` enabled (opt-in),
-			// `PdfSelectLuminary` can return 0 for an emitter that IS in the
-			// set (an orientation-zeroed cluster -- NodeImportance's
-			// max(0, cos thetaPrime) drives probL to 0 from THIS shading
-			// point), while the s >= 1 strategies actually root their light
-			// subpaths with the shading-point-independent alias draw, which
-			// is strictly positive for any in-set light.  Keying off the
-			// pdf would then delete EXISTING strategies from the
-			// denominator, pushing the weights' sum above 1 -- an energy
-			// EXCESS, the opposite error to the one being fixed.  Set
-			// membership is the property the s >= 1 family actually depends
-			// on, and it is what PT gates on too
+			// deliberately NOT `eyeEndPdfRev <= 0`.  The two used to differ
+			// when `PdfSelectLuminary` returned the light BVH's
+			// shading-point pmf (zero for an orientation-zeroed cluster);
+			// since DL-348 it returns SampleLight()'s own alias pmf -- the
+			// density the s >= 1 strategies actually root their light
+			// subpaths with, strictly positive for any in-set light -- so
+			// the two agree except for a luminary dropped from the table for
+			// zero average exitance (area > 0, but it emits nothing, so the
+			// difference carries no energy); set membership remains the property
+			// the s >= 1 family depends on, and it is what PT gates on too
 			// (PathTracingIntegrator.cpp:2173, `pEmitGeom &&
 			// pEmitGeom->CanBeAreaLight()` plus its own `area > 0`).
 			//
 			// For an out-of-set emitter this restores agreement with PT
 			// (which skips its emission-MIS block entirely, leaving
 			// emissionMiWeight = 1) and with VCM (`pdfSelect > 0 ?
-			// wCameraJoint / pdfSelect : 0`).  It says nothing about the
-			// zero-pdf-but-in-set case, which the three integrators handle
-			// differently by design and which this flag no longer touches --
-			// PT there falls back to pdfSelect = 1.0 and down-weights
-			// (PathTracingIntegrator.cpp:2206-2213), and BDPT keeps the
-			// treatment it has always had.
+			// wCameraJoint : 0`).  (PT's own zero-BVH-pdf-but-in-set case
+			// is PT's business: its NEE does sample the BVH.)
 			const_cast<BDPTVertex&>( eyeEnd ).lightSamplingStrategyAbsent =
 				( !eyeEndAreaSampleable || area <= 0 );
 		}
@@ -4549,10 +4622,22 @@ ConnectAndEvaluateImplCore(
 	}
 
 	//
-	// Case: s == 1, t > 0
+	// Case: s == 1, t >= 2
 	// Connect the last eye vertex to a new light sample (next event estimation)
 	//
-	if( s == 1 )
+	// DL-354: (s, t) == (1, 1) -- the light vertex on an emitter connected
+	// straight to the camera -- is NOT this case.  It used to enter here,
+	// find eyeVerts[0] (the CAMERA) failing the surface/medium check below
+	// and return invalid, so the strategy was never evaluated while
+	// MISWeight(0, 2) (the camera ray hitting the same emitter) still
+	// counted it in its denominator: a directly visible emitter lost the
+	// (1,1) share of its energy, r^2 / (1 + r^2) with r the light's area
+	// density over the per-pixel camera density at the emitter point --
+	// 40 % at 100 x 75 on `sms_k2_flatslab`'s 0.08-unit luminaire, falling
+	// as 1/(W H)^2 with resolution.  It is now evaluated by the t == 1
+	// case below, whose LIGHT-vertex branch was written for it and was
+	// unreachable.
+	if( s == 1 && t >= 2 )
 	{
 		const BDPTVertex& eyeEnd = eyeVerts[t - 1];
 		const BDPTVertex& lightStart = lightVerts[0];
@@ -4601,6 +4686,8 @@ ConnectAndEvaluateImplCore(
 		// Visibility: for explicit lights, segment to the light surface.
 		// For env, infinite ray in wi from eye — synthesised as a far-
 		// distance point to reuse the ConnectionIsVisible(p,q) helper.
+		bool seeThroughDeltaLight = false;		// DL-330
+		V seeThroughTr = TrOne<Tag>();
 		{
 			Point3 visTarget = lightStart.position;
 			if( envCase_s1 ) {
@@ -4611,7 +4698,47 @@ ConnectAndEvaluateImplCore(
 					eyeEnd.position.z + wiForLight.z * kVisFar );
 			}
 			if( !ConnectionIsVisible( caster, eyeEnd.position, visTarget, sampler, (sceneAlpha ? &boundaryHits : nullptr) ) ) {
-				return result;
+				// DL-330: a delta light behind delta pass-throughs only,
+				// on a path no standard strategy can generate (see
+				// DeltaPassThroughCoverSlack).
+				if( envCase_s1 || !lightStart.isDelta || !lightStart.pLight ) {
+					return result;
+				}
+				const RayCaster* pRC = dynamic_cast<const RayCaster*>( &caster );
+				if( !pRC || !pRC->DeltaPassThroughShadowsActive() ) {
+					return result;
+				}
+				const unsigned int lightBudget = BDPTUtilities::WalkIterationBudget(
+					self.GetMaxLightDepth(), self.GetStabilityConfig().maxVolumeBounce );
+				const int coverSlack = DeltaPassThroughCoverSlack( eyeVerts, t, self.GetMaxLightDepth(), lightBudget );
+				// A walk that reaches the light crossed at most
+				// kShadowWalkMaxCrossings (31) surfaces (IRayCaster.h), so
+				// a slack that large is covered whatever k turns out to
+				// be: skip the walk.
+				if( coverSlack >= static_cast<int>( kShadowWalkMaxCrossings ) ) {
+					return result;
+				}
+				Scalar walkNM = 0;
+				if constexpr( Traits::is_nm ) {
+					walkNM = tag.nm;
+				}
+				RISEPel walkT( 1, 1, 1 );
+				unsigned int k = 0;
+				const Ray walkRay( eyeEnd.position, dirToLight );
+				if( pRC->CastShadowRayAutoSampled( walkRay, dist - BDPT_RAY_EPSILON, Traits::is_nm, walkNM, walkT,
+						true, sampler, (sceneAlpha ? &boundaryHits : nullptr), dist, BDPT_RAY_EPSILON,
+						0, 0, false, &k ) || k == 0 ) {
+					return result;
+				}
+				if( static_cast<int>( k ) <= coverSlack ) {
+					return result;	// a standard strategy generates this path
+				}
+				seeThroughDeltaLight = true;
+				if constexpr( Traits::is_pel ) {
+					seeThroughTr = walkT;
+				} else {
+					seeThroughTr = walkT[0];
+				}
 			}
 		}
 
@@ -4651,7 +4778,8 @@ ConnectAndEvaluateImplCore(
 			woAtEye = Vector3Ops::mkVector3( eyeVerts[t - 2].position, eyeEnd.position );
 			woAtEye = Vector3Ops::Normalize( woAtEye );
 		} else {
-			// t == 1 means connecting camera directly to light, handled by t==0 case above
+			// Unreachable: this case is entered only for t >= 2 (DL-354;
+			// (1, 1) is the t == 1 case below).
 			return result;
 		}
 
@@ -4800,14 +4928,22 @@ ConnectAndEvaluateImplCore(
 			result.guidingValid = true;
 			}
 		} else {
-			result.contribution = VertexThroughput<Tag>( eyeEnd ) * fEye * Le * Tr_conn_s1 * (G / pdfLight);
+			result.contribution = VertexThroughput<Tag>( eyeEnd ) * fEye * Le * Tr_conn_s1 * seeThroughTr * (G / pdfLight);
 			result.needsSplat = false;
 			result.valid = true;
 			if constexpr( Traits::is_pel ) {
-			result.guidingLocalContribution = fEye * Le * Tr_conn_s1 * (G / pdfLight);
+			result.guidingLocalContribution = fEye * Le * Tr_conn_s1 * seeThroughTr * (G / pdfLight);
 			result.guidingEyeVertexIndex = t - 1;
 			result.guidingValid = true;
 			}
+		}
+
+		// DL-330: the see-through connection owns its path outright (no
+		// standard strategy generates it -- see DeltaPassThroughCoverSlack),
+		// so its weight is 1 and the pdfRev bookkeeping below is not needed.
+		if( seeThroughDeltaLight ) {
+			result.misWeight = 1.0;
+			return result;
 		}
 
 		// --- Update pdfRev at connection vertices for correct MIS ---
@@ -4937,6 +5073,13 @@ ConnectAndEvaluateImplCore(
 			return result;
 		}
 
+		// An environment light root has no position to connect to the
+		// camera (the LIGHT branch below returns for it too); reject it
+		// before the projection and the visibility ray (DL-354 review).
+		if( s == 1 && lightEnd.pEnvLight ) {
+			return result;
+		}
+
 		// Only connect surface or medium vertices to camera
 		if( s >= 2 && lightEnd.type != BDPTVertex::SURFACE && lightEnd.type != BDPTVertex::MEDIUM ) {
 			return result;
@@ -5051,12 +5194,20 @@ ConnectAndEvaluateImplCore(
 				Scalar(1.0) : fabs( Vector3Ops::Dot( lightEnd.geomNormal, dirToCam ) );
 			const Scalar G = absCosLight / distSq;
 
+			// DL-354: this branch was unreachable until (1,1) was routed
+			// here, and it never applied the connection's medium
+			// transmittance -- the camera ray hitting the same emitter
+			// (s == 0) does, so a fogged view of a visible emitter would
+			// have been over-bright by the (1,1) share.
+			const V Tr_conn_11 = EvalConnTr<Tag>( self, lightEnd.position, camPos, scene, caster,
+				lightEnd.pMediumObject, lightEnd.pMediumVol, tag, (sceneAlpha ? &boundaryHits : nullptr) );
+
 			// Contribution association preserved per tag (Pel parenthesises the
 			// G*We/pdf factor; NM chains it left-to-right) -- value-identical.
 			if constexpr( Traits::is_pel ) {
-				result.contribution = LeToCam * (G * We / pdfLight);
+				result.contribution = LeToCam * Tr_conn_11 * (G * We / pdfLight);
 			} else {
-				result.contribution = LeToCam * G * We / pdfLight;
+				result.contribution = LeToCam * Tr_conn_11 * G * We / pdfLight;
 			}
 			result.rasterPos = rasterPos;
 			result.needsSplat = true;
@@ -5566,14 +5717,38 @@ EvaluateAllStrategiesImpl(
 	typedef typename ConnectionResultFor<Tag>::type CR;
 	// DL-375: the by-path partition between the two subsurface-jump
 	// families (DL-317's, shared through BDPTUtilities).  A light-side jump
-	// the eye family can cover ends the usable light subpath: no strategy
-	// may use a light vertex at or past it, because the eye family already
+	// the eye family can cover takes every strategy whose light part
+	// crosses it away from the light family, because the eye family already
 	// estimates those paths and nothing MIS-combines the two families.
-	// Without a light-side jump this is lightVerts.size().  BDPT has no
-	// merging.
-	const unsigned int nLight = static_cast<unsigned int>(
-		BDPTUtilities::UsableLightSubpathLength( lightVerts, false ) );
+	// DL-380: "can cover" is decided per PATH under the eye walk's depth
+	// caps (`LightJumpPartition::Keeps`), not from vertex types alone --
+	// a covering eye strategy past `max_eye_depth` does not exist, and the
+	// light family must then keep the path.  BDPT has no merging.
+	const unsigned int nLight = static_cast<unsigned int>( lightVerts.size() );
 	const unsigned int nEye = static_cast<unsigned int>( eyeVerts.size() );
+	// DL-330 (review P1): the see-through s = 1 connection is an eye-family
+	// strategy too, so a light-side jump whose segment from a delta root
+	// is a straight chain of delta pass-throughs IS eye-coverable when the
+	// pass-through shadow walk is live (BDPTUtilities::
+	// LightSegmentEyeWitness); without it both families counted the path.
+	static thread_local BDPTUtilities::LightJumpPartition partition;
+	{
+		const RayCaster* pRCPartition = dynamic_cast<const RayCaster*>( &caster );
+		partition.Build( lightVerts, false,
+			pRCPartition && pRCPartition->DeltaPassThroughShadowsActive() );
+	}
+	const BDPTUtilities::EyeWalkCaps eyeCaps = BDPTUtilities::MakeEyeWalkCaps(
+		self.GetMaxEyeDepth(), self.GetStabilityConfig().maxVolumeBounce );
+	// Eye-walk surface count of eyeVerts[0..t-1], t = 0..nEye.
+	static thread_local std::vector<unsigned int> eyeSurface;
+	eyeSurface.assign( nEye + 1, 0u );
+	for( unsigned int t = 1; t <= nEye; t++ ) {
+		eyeSurface[t] = eyeSurface[t - 1] +
+			( BDPTUtilities::CountsAsSurfaceHit( eyeVerts[t - 1] ) ? 1u : 0u );
+	}
+	auto lightFamilyKeeps = [&]( unsigned int s, unsigned int t, unsigned int volBounces ) {
+		return s == 0 || partition.Keeps( s - 1, eyeSurface[t], volBounces, eyeCaps );
+	};
 
 	std::vector<CR> results;
 	results.reserve( (nLight + 1) * (nEye + 1) );
@@ -5621,6 +5796,9 @@ EvaluateAllStrategiesImpl(
 					(s > 0 ? lightVerts[s-1].volumeBounces : 0) +
 					(t > 0 ? eyeVerts[t-1].volumeBounces : 0);
 				if( volBounces > self.GetStabilityConfig().maxVolumeBounce ) {
+					continue;
+				}
+				if( !lightFamilyKeeps( s, t, volBounces ) ) {
 					continue;
 				}
 
@@ -5731,6 +5909,9 @@ EvaluateAllStrategiesImpl(
 					(s > 0 ? lightVerts[s-1].volumeBounces : 0) +
 					(t > 0 ? eyeVerts[t-1].volumeBounces : 0);
 				if( volBounces > self.GetStabilityConfig().maxVolumeBounce ) {
+					continue;
+				}
+				if( !lightFamilyKeeps( s, t, volBounces ) ) {
 					continue;
 				}
 
@@ -6402,18 +6583,15 @@ unsigned int GenerateLightSubpathImpl(
 			const IEmitter* pEmitter = ls.pLuminary->GetMaterial()->GetEmitter();
 			if( pEmitter ) {
 				RayIntersectionGeometric rig( Ray( ls.position, ls.direction ), nullRasterizerState );
-				rig.bHit = true;
-				rig.ptIntersection = ls.position;
-				rig.vNormal = ls.normal;
-				rig.vGeomNormal = ls.normal;
-				// DL-44: the sampled emitter UV, so a UV-keyed emission
-				// painter (checker_painter, an image exitance map) reads the
-				// same texel the RGB hero (`ls.Le`, evaluated inside
-				// `SampleLight`) did, not the default-constructed (0,0).
-				rig.ptCoord = ls.ptCoord;
-				OrthonormalBasis3D onb;
-				onb.CreateFromW( ls.normal );
-				rig.onb = onb;
+				// DL-298: the ONE shared emitter-record fill (world position,
+				// normals, `onb`, UV and `Po`) -- the same function
+				// `SampleLight`'s own RGB record, both PT NEE arms, VCM's NEE
+				// rebuild and the photon tracers use.  DL-44: the UV is the
+				// sampled emitter UV, so a UV-keyed emission painter reads the
+				// same texel the RGB hero (`ls.Le`) did; `Po`, ungated and
+				// ray-free, is `ls.ptObjIntersec` (`(0,0,0)` for a delta
+				// light, an env sample and a CSG-composite luminary).
+				LightSampler::FillEmitterRecord( rig, ls.position, ls.normal, ls.ptCoord, ls.ptObjIntersec );
 				// THE NM HERO twin of LightSampler's own emission record
 				// (slice S3, docs/SIGNALS_UNDER_BIDIRECTIONAL_TRANSPORT.md
 				// §5).  `ls.surface` was probed ONCE inside `SampleLight`
@@ -6422,13 +6600,6 @@ unsigned int GenerateLightSubpathImpl(
 				// against the same live channel.  A no-op when the probe
 				// was gated off or refused.
 				LightSampler::ApplyEmitterSurface( rig, ls.surface );
-				// `Po`, separately and UNCONDITIONALLY: `ls.ptObjIntersec`
-				// is filled without a ray and without the signal gate (see
-				// `LightSampler::EmitterObjectPoint`), because painters
-				// that read `Po` register no signal demand.  `(0,0,0)` --
-				// this record's previous value -- for a delta light, an
-				// env sample, and a CSG-composite luminary.
-				rig.ptObjIntersec = ls.ptObjIntersec;
 				LeNM = pEmitter->emittedRadianceNM( rig, ls.direction, ls.normal, tag.nm );
 			}
 		} else if( ls.pLight ) {
@@ -6545,6 +6716,14 @@ unsigned int GenerateLightSubpathImpl(
 		// DL-09: the light endpoint's graded medium and index (SeedFromPoint
 		// recorded n at the light point), for s==1 connections.
 		GradedIndexMedium::RecordVertex( iorStack, v.pGradedMedium, v.gradedIOR );
+		// DL-354: the medium enclosing the light point, the start medium
+		// of the (1,1) light-vertex-to-camera connection's transmittance
+		// (the same role a surface vertex's fields play for (s >= 2, 1)).
+		{
+			const IObject* pMedObjRoot = 0;
+			v.pMediumVol = MediumTracking::GetCurrentMediumWithObject( iorStack, &scene, pMedObjRoot );
+			v.pMediumObject = pMedObjRoot;
+		}
 		vertices.push_back( v );
 	}
 
@@ -6602,27 +6781,13 @@ unsigned int GenerateLightSubpathImpl(
 					if( pEm ) {
 						RayIntersectionGeometric rigW(
 							Ray( ls.position, ls.direction ), nullRasterizerState );
-						rigW.bHit = true;
-						rigW.ptIntersection = ls.position;
-						rigW.vNormal = ls.normal;
-						rigW.vGeomNormal = ls.normal;
-						// DL-44: same ungated UV as the hero `rig` above --
-						// see that site's comment.
-						rigW.ptCoord = ls.ptCoord;
-						OrthonormalBasis3D onbW;
-						onbW.CreateFromW( ls.normal );
-						rigW.onb = onbW;
-						// THE HWSS COMPANION twin.  Fixing the hero alone
-						// would leave a hero-live / companion-neutral split
-						// -- the spectral form of the defect slice S3
-						// closes -- so this record gets the SAME probed
-						// payload, and the same ungated `Po`, from the
-						// SAME `ls`.  `vGeomNormal` is set here too (an
-						// earlier draft left it default, unlike the hero
-						// `rig` above) -- `rig` and `rigW` are now built
-						// identically field-for-field.
+						// DL-298: same shared fill as the hero `rig` above
+						// (`rig` and `rigW` are built identically,
+						// field-for-field, by construction) so a hero-live /
+						// companion-neutral split cannot reappear -- the
+						// spectral form of the defect slice S3 closed.
+						LightSampler::FillEmitterRecord( rigW, ls.position, ls.normal, ls.ptCoord, ls.ptObjIntersec );
 						LightSampler::ApplyEmitterSurface( rigW, ls.surface );
-						rigW.ptObjIntersec = ls.ptObjIntersec;
 						LeW = pEm->emittedRadianceNM(
 							rigW, ls.direction, ls.normal, pSwlHWSS->lambda[w] );
 					}
@@ -6657,12 +6822,8 @@ unsigned int GenerateLightSubpathImpl(
 	// Saturating add to avoid underflow when a scene sets maxLightDepth
 	// pathologically high (≥1024).
 	// Cap: BDPTUtilities::kWalkIterationCap (DL-283 stream layout).
-	const unsigned int kCap = BDPTUtilities::kWalkIterationCap;
 	const unsigned int maxLightTotalDepth =
-		( maxLightDepth >= kCap ||
-		  stabilityConfig.maxVolumeBounce > kCap - maxLightDepth ) ?
-			kCap :
-			maxLightDepth + stabilityConfig.maxVolumeBounce;
+		BDPTUtilities::WalkIterationBudget( maxLightDepth, stabilityConfig.maxVolumeBounce );
 
 	for( unsigned int depth = 0; depth < maxLightTotalDepth; depth++ )
 	{
@@ -6909,6 +7070,11 @@ unsigned int GenerateLightSubpathImpl(
 		v.isLightSubpathVertex = true;
 		v.normal = ri.geometric.vNormal;
 		v.geomNormal = ri.geometric.vGeomNormal;
+		v.bGeomNormalOrientedToRay = ri.geometric.bGeomNormalOrientedToRay;
+		v.bGeomNormalRayDerived = ri.geometric.bGeomNormalRayDerived;
+		v.bOpenSheet = ri.geometric.bOpenSheet;
+		v.bProvablyNoInterior = ri.geometric.bProvablyNoInterior;
+		v.bGeomNormalOpposesArrival = ri.geometric.GeomNormalOpposesArrival();
 		v.onb = ri.geometric.onb;
 		v.ptCoord = ri.geometric.ptCoord;
 		v.ptCoord1 = ri.geometric.ptCoord1;
@@ -7359,9 +7525,9 @@ unsigned int GenerateLightSubpathImpl(
 						entryV.ptObjIntersec = bssrdf.ptObjIntersec;
 						entryV.vColor = bssrdf.vColor;
 						entryV.bHasVertexColor = bssrdf.bHasVertexColor;
-						entryV.pMaterial = ri.pMaterial;
+						entryV.pMaterial = bssrdf.ExitMaterial( ri.pMaterial );	// DL-370: the body the walk left
             entryV.acceptedAlphaCoverage = bssrdf.acceptedAlphaCoverage;
-						entryV.pObject = ri.pObject;
+						entryV.pObject = bssrdf.ExitObject( ri.pObject );
 						entryV.pMediumObject = pMedObj_light;
 						entryV.pMediumVol = pMed_light;
 						// DL-49: the entry point shares the exit hit's exterior medium
@@ -8354,6 +8520,40 @@ void BDPTIntegrator::RecomputeSubpathThroughputNM(
 				// for the measured variance cost of keeping
 				// terminate-and-renormalize instead.
 				cumulativeRatio = 0;
+			}
+		}
+		else if( i + 1 < verts.size() && i > 0 &&
+			v.type == BDPTVertex::SURFACE && v.isDelta &&
+			v.pMaterial && v.pMaterial->HasDeltaPassThrough() && v.pMaterial->GetSPF() )
+		{
+			// DL-329.  A delta PASS-THROUGH (a thin weave's gap, and the
+			// fabric / coated wrappers that re-price it) is not
+			// wavelength-independent in general: a TINTED or absorbing
+			// coat over a gapped weave attenuates each wavelength by its
+			// own two-crossing transmittance.  The SPF answers the gap
+			// ray's companion kray through `EvaluateKrayNM` (the only
+			// delta lobe these materials emit is the undeviated
+			// `eRayRefraction` gap ray; any other query declines), so
+			// the companion/hero ratio of those two numbers is exact --
+			// 1 for a bare weave.  Every other delta vertex keeps the
+			// ratio 1 below.
+			const Vector3 dirIn = Vector3Ops::Normalize(
+				Vector3Ops::mkVector3( v.position, verts[i-1].position ) );
+			const Vector3 dirOut = Vector3Ops::Normalize(
+				Vector3Ops::mkVector3( verts[i+1].position, v.position ) );
+			Ray inRay( Point3Ops::mkPoint3( v.position,
+				-dirIn * v.scatterIncomingDistance ), dirIn );
+			RayIntersectionGeometric rig( inRay, nullRasterizerState );
+			PathVertexEval::PopulateRIGFromVertex( v, rig );
+			IORStack vertexIor( 1.0 );
+			BuildVertexIORStack( v, vertexIor );
+			const ISPF* pVertSPF = v.pMaterial->GetSPF();
+			const Scalar krayHero = pVertSPF->EvaluateKrayNM(
+				rig, dirOut, ScatteredRay::eRayRefraction, heroNM, vertexIor );
+			const Scalar krayComp = pVertSPF->EvaluateKrayNM(
+				rig, dirOut, ScatteredRay::eRayRefraction, companionNM, vertexIor );
+			if( krayHero >= 0 && krayComp >= 0 ) {
+				cumulativeRatio = ( krayHero > NEARZERO ) ? cumulativeRatio * ( krayComp / krayHero ) : 0;
 			}
 		}
 		// Delta, medium, endpoints and a BSSRDF EXIT hit: scatter ratio = 1.0

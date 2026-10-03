@@ -273,9 +273,11 @@ void RISE::Implementation::CollectFirstHitAOVRows(
 
 		for( unsigned int x = startX; x <= endX; ++x ) {
 			for( unsigned int s = 0; s < samplesPerPixel; ++s ) {
-				const Point2 ptOnScreen(
-					static_cast<Scalar>( x ) + tl_rng.CanonicalRandom(),
-					static_cast<Scalar>( height - y ) - tl_rng.CanonicalRandom() );
+				// DL-368: the same pixel <-> screen convention the beauty
+				// pass samples in (ICamera.h, RasterConvention).
+				const Scalar su = tl_rng.CanonicalRandom();
+				const Scalar sv = tl_rng.CanonicalRandom();
+				const Point2 ptOnScreen = RasterConvention::PixelToScreen( x, y, height, su, sv );
 				Vector3 sampleNormal( 0, 0, 0 );
 				RISEPel sampleAlbedo( 0, 0, 0 );
 				Scalar sampleDepth = 0;

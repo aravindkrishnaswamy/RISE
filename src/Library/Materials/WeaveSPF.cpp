@@ -255,6 +255,35 @@ Scalar WeaveSPF::DeltaPassThroughTransmittanceNM(
 	return WeaveGapExpectation( *pBRDF, ri );
 }
 
+//! DL-329.  The ISPF 6-parameter overload forwards a DELTA ray here
+//! (`pdfHero <= 0`), so this is the HWSS companion ladder's question for
+//! the gap ray: `ScatterImpl` draws the gap with probability `gap(x)` at
+//! `kray = gap(x) / gap(x) = 1`, and `gap(x)` is read achromatically
+//! (ResolveGap), so a companion wavelength's coefficient over the HERO's
+//! selection probability is the same 1.  The direction check is the
+//! gap's own (undeviated) ray; any other `eRayRefraction` query declines.
+Scalar WeaveSPF::EvaluateKrayNM(
+	const RayIntersectionGeometric& ri,
+	const Vector3& outDir,
+	ScatteredRay::ScatRayType rayType,
+	Scalar /*nm*/,
+	const IORStack& /*ior_stack*/
+	) const
+{
+	if( rayType != ScatteredRay::eRayRefraction ) {
+		return -1;
+	}
+	if( !( WeaveGapExpectation( *pBRDF, ri ) > 0 ) ) {
+		return -1;
+	}
+	const Vector3 d = Vector3Ops::Normalize( outDir );
+	const Vector3 in = Vector3Ops::Normalize( ri.ray.Dir() );
+	if( Scalar( 1 ) - Vector3Ops::Dot( d, in ) > Scalar( 1e-9 ) ) {
+		return -1;
+	}
+	return Scalar( 1 );
+}
+
 void WeaveSPF::ScatterImpl(
 	const RayIntersectionGeometric& ri,
 	ISampler& sampler,

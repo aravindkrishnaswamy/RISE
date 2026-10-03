@@ -67,8 +67,12 @@ pathtracing_spectral_rasterizer
 	oidn_denoise			true
 	oidn_prefilter			accurate
 	# NEE shadow rays pass through the sapphire crystal with Fresnel
-	# transmittance (else binary-blocked -> dial lit only by noisy BSDF
-	# refraction -> denoiser smears the guilloche).  PT-only opt-in.
+	# transmittance -- since 2026-10-02 (DL-344) for the DELTA light
+	# (`dialkey`) only.  The env and the two softboxes reach the dial
+	# through the crystal by BSDF refraction, which already carried that
+	# light; their old NEE see-through counted it twice (whole frame
+	# -2.1 %, dial under the crystal -8 % (blocks to -14 %) when that was
+	# removed; salted n = 4, OIDN off, linear).  PT-only opt-in.
 	transparent_shadows		TRUE
 	radiance_map			pnt_env
 	radiance_scale			0.30
@@ -2087,9 +2091,10 @@ lambertian_material
 # this was also a PT necessity: the lume sits INSIDE the crystal's etched
 # cavities and BINARY NEE shadow rays were blocked by the dielectric shell,
 # leaving a purely-matte fill near-black.  The rasterizer's transparent_shadows
-# TRUE now lights a matte fill through the crystal, so the emission is an
-# aesthetic day-lume choice -- swap the markerlume object to the matte
-# `lume_white` for a subtler, non-glowing marker.)  The NIGHT variant simply
+# TRUE lights a matte fill through the crystal from the DELTA `dialkey` only
+# (DL-344, 2026-10-02); the env and softboxes reach it by BSDF refraction.  The
+# emission remains an aesthetic day-lume choice -- swap the markerlume object to
+# the matte `lume_white` for a subtler, non-glowing marker.)  The NIGHT variant simply
 # raises this scale (and dims the studio).
 lambertian_luminaire_material
 {

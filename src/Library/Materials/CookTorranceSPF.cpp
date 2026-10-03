@@ -157,8 +157,8 @@ void CookTorranceSPF::Scatter(
 	// floored (see ComputeLobeWeights / kSelFloor above) so an authored
 	// pure-black diffuse or specular slot still gets sampled at a rate
 	// that dominates its ~2.5e-5 JH-uplift residual.
-	const Scalar wdRGB = ColorMath::MaxValue( pDiffuse->GetColor(ri) );
-	const Scalar wsRGB = ColorMath::MaxValue( pSpecular->GetColor(ri) );
+	const Scalar wdRGB = ColorMath::MaxValue( ReflectanceColor( *pDiffuse, ri ) );
+	const Scalar wsRGB = ColorMath::MaxValue( ReflectanceColor( *pSpecular, ri ) );
 	const Scalar Eavg = MicrofacetEnergyLUT::LookupEavg( alpha );
 	// H6: direction-aware MS selection weight -- the true MS albedo for
 	// THIS incident direction is F_ms*(1-Ess(cosWi)), not the
@@ -201,7 +201,7 @@ void CookTorranceSPF::Scatter(
 			ScatteredRay diffuse;
 			diffuse.type = ScatteredRay::eRayDiffuse;
 			diffuse.ray.Set( ri.ptIntersection, wo );
-			diffuse.kray = pDiffuse->GetColor(ri) * (1.0 / pDiffuseSelect);
+			diffuse.kray = ReflectanceColor( *pDiffuse, ri ) * (1.0 / pDiffuseSelect);
 			diffuse.pdf = mixPdf;
 			diffuse.isDelta = false;
 			scattered.AddScatteredRay( diffuse );
@@ -246,7 +246,7 @@ void CookTorranceSPF::Scatter(
 						// simplifies to: pSpecular * fresnel * G1(wo)
 						// Divide by selection probability for unbiased single-lobe estimate
 						const Scalar G1wo = MicrofacetUtils::GGX_G1( alpha, cosTheta );
-						const RISEPel specColor = pSpecular->GetColor(ri);
+						const RISEPel specColor = ReflectanceColor( *pSpecular, ri );
 						const RISEPel kray = specColor * fresnel * (G1wo / pSpecSelect);
 
 						// The lobe-selection floor deliberately gives an
@@ -301,7 +301,7 @@ void CookTorranceSPF::Scatter(
 				// specColor INSIDE the average: the tinted per-bounce reflectance specColor*F_avg
 				// compounds across bounces (matches the single-scatter lobe specColor*fresnel).
 				// Pulling it outside the nonlinear Fms over-brightens tinted rough metals.
-				const RISEPel specColor = pSpecular->GetColor(ri);
+				const RISEPel specColor = ReflectanceColor( *pSpecular, ri );
 				const RISEPel F_ms = MicrofacetEnergyLUT::ComputeFms<RISEPel>( specColor * F_avg, Eavg );
 
 				// H6: honest f*cos/pdf estimator (was the hard-coded
@@ -380,12 +380,12 @@ void CookTorranceSPF::ScatterNM(
 	// ComputeLobeWeights above) keeps an authored pure-black diffuse or
 	// specular slot reachable despite its ~2.5e-5 GuardedGetColorNM
 	// leak -- see the P1 note there.
-	const Scalar wdRGB = ColorMath::MaxValue( pDiffuse->GetColor(ri) );
-	const Scalar wsRGB = ColorMath::MaxValue( pSpecular->GetColor(ri) );
+	const Scalar wdRGB = ColorMath::MaxValue( ReflectanceColor( *pDiffuse, ri ) );
+	const Scalar wsRGB = ColorMath::MaxValue( ReflectanceColor( *pSpecular, ri ) );
 	// Per-wavelength VALUE at `nm` -- feeds kray/krayNM only, never the
 	// selection weights or the mixture density.
-	const Scalar wdValNM = GuardedGetColorNM( *pDiffuse, ri, nm );
-	const Scalar wsValNM = GuardedGetColorNM( *pSpecular, ri, nm );
+	const Scalar wdValNM = ReflectanceColorNM( *pDiffuse, ri, nm );
+	const Scalar wsValNM = ReflectanceColorNM( *pSpecular, ri, nm );
 	const Scalar Eavg = MicrofacetEnergyLUT::LookupEavg( alpha );
 	// H6: direction-aware MS selection weight (see Scatter()'s twin comment).
 	const Scalar cosWi = Vector3Ops::Dot( wi, n );
@@ -556,8 +556,8 @@ Scalar CookTorranceSPF::Pdf(
 	// same ComputeLobeWeights() Scatter()/ScatterNM() use, so this
 	// density can never disagree with what they actually sample (see
 	// the P1 note on kSelFloor above).
-	const Scalar wdRGB = ColorMath::MaxValue( pDiffuse->GetColor(ri) );
-	const Scalar wsRGB = ColorMath::MaxValue( pSpecular->GetColor(ri) );
+	const Scalar wdRGB = ColorMath::MaxValue( ReflectanceColor( *pDiffuse, ri ) );
+	const Scalar wsRGB = ColorMath::MaxValue( ReflectanceColor( *pSpecular, ri ) );
 	// H6: direction-aware MS selection weight (see Scatter()'s twin comment).
 	const Scalar cosWi = Vector3Ops::Dot( wi, n );
 	const Scalar Ess_i = MicrofacetEnergyLUT::LookupEss( cosWi, alpha );

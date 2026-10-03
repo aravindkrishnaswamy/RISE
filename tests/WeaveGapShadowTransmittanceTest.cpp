@@ -64,8 +64,9 @@
 //             SSS / polished caster seen with no SMS anchor, the HWSS
 //             SSS and no-BSDF hand-offs with and without an anchor); an
 //             anchored no-gap caster reflection is pinned SUPPRESSED
-//             (DL-339 (a)); perfect refractor planes are printed (the
-//             ior-1.5 open sheet is DL-339 (b)).  Renders here are
+//             (DL-339 (a)); the ior-1.0 perfect refractor plane is
+//             printed and the ior-1.5 open sheet (DL-339 (b)) is SMS-on
+//             vs SMS-off parity since DL-345.  Renders here are
 //             Sobol'-salted per (seed base, index) but NOT reproducible
 //             run to run -- see the band note in the section.
 //    castsshadows  P2-2 (external review): the transparent-shadow walk
@@ -304,9 +305,8 @@ static double Render( const std::string& sceneText, const char* tag, std::vector
 
 //! Render with an EXPLICIT Sobol' salt (P2-2, DL-294): BDPT's and VCM's
 //! Sobol' streams are keyed by pixel/sample index, not by libc `rand()`,
-//! so `Render`'s own `std::srand` increment leaves them BIT-IDENTICAL --
-//! every one of `Render`'s callers that repeats a scene without salting
-//! measures ONE fixed QMC realisation, not a distribution.  `salt` should
+//! so libc seed increments alone would leave them BIT-IDENTICAL.
+//! `Render` salts every call; this helper selects an explicit salt. `salt` should
 //! come from `SobolSequence::HashCombine` over a caller-chosen base so
 //! repeats are independent draws; reset to 0 after so this function's
 //! callers cannot leak a salt into unrelated `Render()` calls elsewhere
@@ -499,6 +499,16 @@ enum LightKind { kOmni, kSpot, kDirectional, kArea, kAreaLarge };
 //! sheet itself -- a gap draw at depth 0 with no SMS anchor anywhere.
 enum CamKind { kTight, kWide, kLookUp };
 
+//! DL-329: when true, ReceiverScene builds the sheet as a double-sided
+//! `indexedmesh_geometry` instead of a double-sided clipped plane.  A
+//! file-scope switch (default false) so no existing call site changes.
+static bool g_meshSheet = false;
+
+//! DL-330 review: when true, ReceiverScene's receiver is a CLOSED sphere
+//! (radius 0.5, centred (0, -0.5, 0), top at the origin) instead of the
+//! open patch -- a random walk needs a closed body (DL-409).
+static bool g_recvSphere = false;
+
 //! @a compositeSheet: the sheet is a `composite_material` of two such
 //! weaves (zero thickness, no extinction), whose only straight exit is
 //! gap -> gap, so the closed form becomes g^2.
@@ -528,13 +538,16 @@ static std::string ReceiverScene( LightKind light, bool withSheet, double gap, C
 			<< "\n\tcolorspace Rec709RGB_Linear\n}\n\n"
 		<< ( recvMaterialChunks.empty()
 			? std::string( "lambertian_material\n{\n\tname mat_recv\n\treflectance pnt_recv\n}\n\n" )
-			: recvMaterialChunks ) <<
-		"clippedplane_geometry\n{\n\tname geo_recv\n"
-		<< ( wide
-			? "\tpta -1 0 1\n\tptb 1 0 1\n\tptc 1 0 -1\n\tptd -1 0 -1\n"
-			: "\tpta -0.1 0 0.1\n\tptb 0.1 0 0.1\n\tptc 0.1 0 -0.1\n\tptd -0.1 0 -0.1\n" ) <<
-			"\tdoublesided TRUE\n}\n\n"
-		"standard_object\n{\n\tname obj_recv\n\tgeometry geo_recv\n\tmaterial mat_recv\n}\n\n";
+			: recvMaterialChunks )
+		<< ( g_recvSphere
+			? std::string( "sphere_geometry\n{\n\tname geo_recv\n\tradius 0.5\n}\n\n"
+				"standard_object\n{\n\tname obj_recv\n\tgeometry geo_recv\n\tmaterial mat_recv\n\tposition 0 -0.5 0\n}\n\n" )
+			: std::string( "clippedplane_geometry\n{\n\tname geo_recv\n" )
+				+ ( wide
+					? "\tpta -1 0 1\n\tptb 1 0 1\n\tptc 1 0 -1\n\tptd -1 0 -1\n"
+					: "\tpta -0.1 0 0.1\n\tptb 0.1 0 0.1\n\tptc 0.1 0 -0.1\n\tptd -0.1 0 -0.1\n" )
+				+ "\tdoublesided TRUE\n}\n\n"
+				"standard_object\n{\n\tname obj_recv\n\tgeometry geo_recv\n\tmaterial mat_recv\n}\n\n" );
 
 	if( withSheet ) {
 		ss
@@ -542,10 +555,24 @@ static std::string ReceiverScene( LightKind light, bool withSheet, double gap, C
 				? std::string( "weave_material\n{\n\tname mat_layer\n\tfabric custom\n\ttransmission thin\n\tgap " ) + std::to_string( gap ) + "\n}\n\n"
 				  "composite_material\n{\n\tname mat_sheet\n\ttop mat_layer\n\tbottom mat_layer\n}\n\n"
 				: std::string( "weave_material\n{\n\tname mat_sheet\n\tfabric custom\n\ttransmission thin\n\tgap " ) + std::to_string( gap ) + "\n}\n\n" ) <<
-			"clippedplane_geometry\n{\n\tname geo_sheet\n"
-				"\tpta -4 " << kSheetY << " 4\n\tptb 4 " << kSheetY << " 4\n"
-				"\tptc 4 " << kSheetY << " -4\n\tptd -4 " << kSheetY << " -4\n"
-				"\tdoublesided TRUE\n}\n\n"
+			( g_meshSheet
+				// DL-329 DOUBLE-SIDED rule: the same 8 x 8 sheet as a
+				// double-sided `indexedmesh_geometry` (two triangles,
+				// shared corners, per-vertex UVs) -- the mesh class
+				// flips BOTH normals toward the ray (DL-70), where the
+				// clipped plane flips only on a back-face hit.
+				? std::string( "indexedmesh_geometry\n{\n\tname geo_sheet\n" )
+					+ "\tvertex -4 " + std::to_string( kSheetY ) + " 4\n"
+					+ "\tvertex 4 " + std::to_string( kSheetY ) + " 4\n"
+					+ "\tvertex 4 " + std::to_string( kSheetY ) + " -4\n"
+					+ "\tvertex -4 " + std::to_string( kSheetY ) + " -4\n"
+					+ "\tuv 0 0\n\tuv 1 0\n\tuv 1 1\n\tuv 0 1\n"
+					+ "\ttriangle 0 1 2\n\ttriangle 0 2 3\n"
+					+ "\tdouble_sided TRUE\n\tface_normals TRUE\n}\n\n"
+				: std::string( "clippedplane_geometry\n{\n\tname geo_sheet\n" )
+					+ "\tpta -4 " + std::to_string( kSheetY ) + " 4\n\tptb 4 " + std::to_string( kSheetY ) + " 4\n"
+					+ "\tptc 4 " + std::to_string( kSheetY ) + " -4\n\tptd -4 " + std::to_string( kSheetY ) + " -4\n"
+					+ "\tdoublesided TRUE\n}\n\n" ) <<
 			"standard_object\n{\n\tname obj_sheet\n\tgeometry geo_sheet\n\tmaterial mat_sheet\n}\n\n";
 	}
 
@@ -729,6 +756,58 @@ static void CheckQueryMatchesSampler( const char* label, const IMaterial& mat )
 	}
 }
 
+//! DL-329: the HWSS companion ladders (PT's IntegrateFromHitHWSS, the
+//! BDPT generators, BDPT's RecomputeSubpathThroughputNM) price a DELTA
+//! gap ray through `ISPF::EvaluateKrayNM` -- the 6-parameter overload
+//! with pdfHero = -1, which forwards to the 5-parameter one.  It must
+//! return exactly the krayNM the SPF's own ScatterNM emits on that ray at
+//! that wavelength.  Before DL-329 every one of these returned -1 and the
+//! integrators fell back to the CONTINUUM BSDF (~0 along the gap).
+//! @a gated false: printed only (CompositeSPF, DL-221).
+static void CheckCompanionKrayMatchesScatter( const char* label, const IMaterial& mat, bool gated )
+{
+	const ISPF* pSPF = mat.GetSPF();
+	if( !pSPF ) return;
+	const double angles[] = { 0.0, 40.0, 75.0, 140.0 };
+	const double nms[] = { 450.0, 550.0, 650.0 };
+	RandomNumberGenerator rng( 4242u );
+	IndependentSampler sampler( rng );
+	IORStack stack( 1.0 );
+	int found = 0, mismatched = 0;
+	double worst = 0;
+	for( double a : angles ) {
+		const double r = a * 3.14159265358979323846 / 180.0;
+		const RayIntersectionGeometric ri = MakeHit( Vector3( std::sin( r ), 0.0, std::cos( r ) ) );
+		const Vector3 dir = Vector3Ops::Normalize( ri.ray.Dir() );
+		for( double nm : nms ) {
+			for( int attempt = 0; attempt < 20000; ++attempt ) {
+				ScatteredRayContainer scattered;
+				pSPF->ScatterNM( ri, sampler, nm, scattered, stack );
+				bool done = false;
+				for( unsigned int j = 0; j < scattered.Count(); ++j ) {
+					const ScatteredRay& sr = scattered[j];
+					if( !sr.isDelta ) continue;
+					if( Vector3Ops::Dot( Vector3Ops::Normalize( sr.ray.Dir() ), dir ) < 1.0 - 1e-9 ) continue;
+					const Scalar k = pSPF->EvaluateKrayNM( ri, sr.ray.Dir(), sr.type, nm, stack, -1.0 );
+					const double rel = std::fabs( k - sr.krayNM ) / std::fmax( 1e-12, std::fabs( sr.krayNM ) );
+					found++;
+					if( !( rel <= 1e-9 ) ) mismatched++;
+					worst = std::fmax( worst, k < 0 ? 1e30 : rel );
+					done = true;
+				}
+				if( done ) break;
+			}
+		}
+	}
+	char buf[256];
+	std::snprintf( buf, sizeof(buf), "query %s: EvaluateKrayNM == ScatterNM's gap-ray krayNM on %d/%d draws (worst rel %.2e)%s",
+		label, found - mismatched, found, worst, gated ? "" : "   [printed, not gated: DL-221]" );
+	std::cout << "  " << buf << std::endl;
+	if( gated ) {
+		Check( found > 0 && mismatched == 0, buf );
+	}
+}
+
 static void TestQueryMatchesSampler()
 {
 	std::cout << "=== query: DeltaPassThroughTransmittance == the SPF's own sampled pass-through ===" << std::endl;
@@ -804,6 +883,14 @@ static void TestQueryMatchesSampler()
 	CheckQueryMatchesSampler( "coated over fabric over weave", *coatFab );
 	CheckQueryMatchesSampler( "luminaire over weave", *lum );
 	CheckQueryMatchesSampler( "composite(weave | fabric-over-weave, gap 0.1 ext 1.5)", *compWW );
+
+	CheckCompanionKrayMatchesScatter( "weave(thin, gap 0.2)", *thin.Material(), true );
+	CheckCompanionKrayMatchesScatter( "fabric(rot 0.6) over weave", *fabThin, true );
+	CheckCompanionKrayMatchesScatter( "coated(clear) over weave", *coatThin, true );
+	CheckCompanionKrayMatchesScatter( "coated(tinted, absorbing) over weave", *coatTint, true );
+	CheckCompanionKrayMatchesScatter( "coated over fabric over weave", *coatFab, true );
+	CheckCompanionKrayMatchesScatter( "luminaire over weave", *lum, true );
+	CheckCompanionKrayMatchesScatter( "composite(weave | fabric-over-weave)", *compWW, false );
 
 	safe_release( compWL ); safe_release( compWW ); safe_release( ext );
 	safe_release( lum ); safe_release( coatFab ); safe_release( coatTint ); safe_release( coatThin );
@@ -927,6 +1014,392 @@ static void TestAreaPartitionGuard()
 	rows.push_back( { "PT RGB", RastPT( 1024 ), 0.05, kWide } );
 	rows.push_back( { "BDPT RGB", RastBDPT( 512 ), -1.0, kWide } );
 	RunReceiverRows( "area", kArea, rows, gaps, 1 );
+}
+
+//////////////////////////////////////////////////////////////////////
+// hwssgap: DL-329 / DL-330.  The area closed form (g * L0) again, now
+// through the SPECTRAL rasterizers.  The path receiver -> gap -> emitter
+// is reached ONLY by a Scatter()-sampled CONTINUATION through the delta
+// gap lobe (the area NEE arm keeps its binary shadow, DL-05 section 2),
+// so every HWSS companion lane is priced by the companion ladder at the
+// gap vertex -- PT's `IntegrateFromHitHWSS` (DL-329: WeaveSPF had no
+// `EvaluateKrayNM`, so a companion fell back to the CONTINUUM weave BSDF
+// at the gap's undeviated direction and read ~0, dropping 3 of 4 lanes)
+// and BDPT's `RecomputeSubpathThroughputNM`.
+//
+// Each row: n salted repeats (WEAVE_GAP_HWSS_N, default 4) of the
+// (L0, L) pair through the SAME rasterizer, the ratio of the repeat
+// means against g, and the per-repeat ratio's sd.  Rows run on the
+// clipped-plane sheet AND (DOUBLE-SIDED rule) on a double-sided
+// `indexedmesh_geometry` sheet.
+//////////////////////////////////////////////////////////////////////
+static void MeanSd( const std::vector<double>& v, double& mean, double& sd );
+static std::string BlackWeaveSheet( double gap );	// defined with the sms section below
+static std::string PerfectRefractorSheet( const char* ior );
+static std::string BlackPainterChunk();
+static std::string BlackWeaveChunk( const char* name, double gap );
+
+static std::string RastBDPTSpectral( unsigned int spp, bool hwss )
+{
+	std::ostringstream ss;
+	ss << "bdpt_spectral_rasterizer\n{\n\tsamples " << spp * SppScale()
+	   << "\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tpixel_filter box\n\toidn_denoise FALSE\n"
+	   << "\tnmbegin 380\n\tnmend 720\n\tnum_wavelengths 8\n\tspectral_samples 1\n"
+	   << "\thwss " << ( hwss ? "true" : "false" ) << "\n}\n\n" << kOutputChunk;
+	return ss.str();
+}
+
+static unsigned int HwssRepeats()
+{
+	const char* s = std::getenv( "WEAVE_GAP_HWSS_N" );
+	const long v = s ? std::strtol( s, nullptr, 10 ) : 4;
+	return v > 1 ? (unsigned int)v : 4u;
+}
+
+struct HwssRow
+{
+	const char* label;
+	std::string rast;
+	bool mesh;
+	double tol;		// two-sided band on mean(L)/mean(L0)/g - 1; < 0 = print only
+	int sheet;		// 0 black-yarn weave (exact g * L0); 1 DL-05's own `fabric custom` sheet (reflective
+					// yarn, NOT an exact closed form); 2 an ior-1.0 perfect refractor (exact 1 * L0)
+};
+
+//! Renders @a row's (L0, L) pair @a n times with independent Sobol' salts
+//! and returns mean(L)/mean(L0); @a sdRatio receives the per-repeat
+//! ratio's sample sd.
+static double HwssRatio( const HwssRow& row, LightKind light, double g, unsigned int n, unsigned int saltBase,
+	double& sdRatio, double& meanL0 )
+{
+	std::vector<double> l0s, ls, rs;
+	const bool savedMesh = g_meshSheet;
+	g_meshSheet = row.mesh;
+	for( unsigned int r = 0; r < n; r++ )
+	{
+		const unsigned int salt = SobolSequence::HashCombine( saltBase + g_seedBase, r );
+		const double L0 = RenderSalted( Assemble( row.rast, ReceiverScene( light, false, 0.0, kWide ) ), "h_l0", salt );
+		const double L  = RenderSalted( Assemble( row.rast, ReceiverScene( light, true, g, kWide, false,
+			row.sheet == 1 ? std::string() : row.sheet == 2 ? PerfectRefractorSheet( "1.0" ) : BlackWeaveSheet( g ) ) ), "h_lg",
+			SobolSequence::HashCombine( salt, 0x51u ) );
+		l0s.push_back( L0 ); ls.push_back( L );
+		if( L0 > 0 ) rs.push_back( L / L0 );
+	}
+	g_meshSheet = savedMesh;
+	double mL0 = 0, sdL0 = 0, mL = 0, sdL = 0, mR = 0;
+	MeanSd( l0s, mL0, sdL0 );
+	MeanSd( ls, mL, sdL );
+	MeanSd( rs, mR, sdRatio );
+	meanL0 = mL0;
+	return mL0 > 0 ? mL / mL0 : -1.0;
+}
+
+static void TestHWSSGapContinuation()
+{
+	std::cout << "=== hwssgap: AREA closed form through the spectral rasterizers (DL-329 / DL-330) ===" << std::endl;
+	// Measurement aids: WEAVE_GAP_HWSS_G overrides the gap (gating then
+	// still applies against the overridden g); WEAVE_GAP_HWSS_ROWS keeps
+	// only rows whose label contains that substring.
+	const char* gEnv = std::getenv( "WEAVE_GAP_HWSS_G" );
+	const double g = gEnv ? std::strtod( gEnv, nullptr ) : 0.3;
+	const char* rowFilter = std::getenv( "WEAVE_GAP_HWSS_ROWS" );
+	// WEAVE_GAP_HWSS_INDEPENDENT=1: SobolSamplerTestHooks::Independent --
+	// i.i.d. draws through the identical code path, the unbiased
+	// reference no Sobol' dimension correlation can reach.
+	const bool independent = std::getenv( "WEAVE_GAP_HWSS_INDEPENDENT" ) != nullptr;
+	SobolSamplerTestHooks::Independent().store( independent );
+	if( independent ) std::cout << "  (SobolSamplerTestHooks::Independent ON)" << std::endl;
+	const unsigned int n = HwssRepeats();
+	// BLACK-yarn sheet (BlackWeaveSheet: no fibre albedo, no Fresnel):
+	// nothing reflects between the receiver and the sheet's underside, so
+	// L = g * L0 EXACTLY.  The `custom` rows are DL-05's own fixture,
+	// whose reflective yarn adds a receiver <-> sheet interreflection
+	// that is NOT negligible on this 2 x 2 patch (printed only).
+	std::vector<HwssRow> rows;
+	// Gated: the two PT hwss=true rows (DL-329 read 0.0765 / 0.0742, -75 %,
+	// here).  Their per-repeat sd at 2048 spp is ~1-2.5 % (a BSDF sample
+	// must find the 0.5 x 0.5 emitter through the gap), so 6 % is >= 4.8
+	// se at n = 4.  PT RGB and hwss=false are not DL-329 targets and carry
+	// 4-6 % per-repeat sd at 1024 spp: printed.
+	rows.push_back( { "PT RGB",                          RastPT( 1024 ),                  false, -1.0, 0 } );
+	rows.push_back( { "PT spectral hwss=false",          RastPTSpectral( 1024, false ),   false, -1.0, 0 } );
+	rows.push_back( { "PT spectral hwss=true",           RastPTSpectral( 2048, true ),    false, 0.06, 0 } );
+	rows.push_back( { "PT spectral hwss=true  (mesh)",   RastPTSpectral( 2048, true ),    true,  0.06, 0 } );
+	rows.push_back( { "BDPT RGB",                        RastBDPT( 512 ),                 false, -1.0, 0 } );
+	rows.push_back( { "BDPT spectral hwss=false",        RastBDPTSpectral( 512, false ),  false, -1.0, 0 } );
+	rows.push_back( { "BDPT spectral hwss=true",         RastBDPTSpectral( 512, true ),   false, -1.0, 0 } );
+	rows.push_back( { "BDPT spectral hwss=true  (mesh)", RastBDPTSpectral( 512, true ),   true,  -1.0, 0 } );
+	rows.push_back( { "VCM RGB",                         RastVCM( 512 ),                  false, -1.0, 0 } );
+	rows.push_back( { "PT RGB            (custom)",      RastPT( 1024 ),                  false, -1.0, 1 } );
+	rows.push_back( { "PT spectral hwss=true (custom)",  RastPTSpectral( 1024, true ),    false, -1.0, 1 } );
+	rows.push_back( { "BDPT RGB          (custom)",      RastBDPT( 512 ),                 false, -1.0, 1 } );
+	rows.push_back( { "PT RGB            (refractor 1.0)", RastPT( 1024 ),                 false, -1.0, 2 } );
+	rows.push_back( { "BDPT RGB          (refractor 1.0)", RastBDPT( 512 ),                false, -1.0, 2 } );
+	unsigned int k = 0;
+	for( const HwssRow& row : rows )
+	{
+		const unsigned int rowSalt = 0xD329u + 0x100u * k++;
+		if( rowFilter && !std::strstr( row.label, rowFilter ) ) continue;
+		double sd = 0, L0 = 0;
+		const double ratio = HwssRatio( row, kArea, g, n, rowSalt, sd, L0 );
+		const double cf = ( row.sheet == 2 ) ? 1.0 : g;
+		char buf[320];
+		std::snprintf( buf, sizeof(buf),
+			"hwssgap %s gap %.2f: L/L0 = %.5f +/- %.5f (sd, n = %u)  (closed form %.5f, rel err %+.3f%%)  L0 = %.6g",
+			row.label, g, ratio, sd, n, cf, 100.0 * ( ratio / cf - 1.0 ), L0 );
+		std::cout << "  " << buf << ( row.tol < 0 ? "   [printed, not gated]" : "" ) << std::endl;
+		if( row.tol >= 0 ) {
+			Check( ratio > 0 && std::fabs( ratio / cf - 1.0 ) <= row.tol, buf );
+		}
+	}
+	SobolSamplerTestHooks::Independent().store( false );
+}
+
+//////////////////////////////////////////////////////////////////////
+// seethrough: DL-330.  The closed-form receiver (kTight, omni overhead)
+// with a SECOND black-yarn gapped weave hung VERTICALLY between the
+// camera and the patch (z = 0.6, x in [-1, 1], y in [-0.5, 1.6]: every
+// camera ray crosses it, no light ray from the omni to the patch does).
+// The only light path is  L - S(horizontal gap) - D(patch) - S(vertical
+// gap) - E:  every edge has a delta end, so before DL-330 NO BDPT
+// strategy generated it (BDPT read 0; no BSDF sample can hit a point
+// light) while PT reads it through DL-05's see-through NEE and VCM by
+// merging.  Closed form: L = g * g * L0 exactly (black yarn: nothing
+// reflects; L0 is the same rasterizer's render with neither sheet).
+// The horizontal sheet is also run as the double-sided mesh.
+//////////////////////////////////////////////////////////////////////
+static std::string VerticalBlackSheetChunks()
+{
+	return "clippedplane_geometry\n{\n\tname geo_vsheet\n"
+		"\tpta -1 -0.5 0.6\n\tptb 1 -0.5 0.6\n\tptc 1 1.6 0.6\n\tptd -1 1.6 0.6\n"
+		"\tdoublesided TRUE\n}\n\n"
+		"standard_object\n{\n\tname obj_vsheet\n\tgeometry geo_vsheet\n\tmaterial mat_sheet\n}\n\n";
+}
+
+static void TestBDPTSeeThroughDeltaLight()
+{
+	std::cout << "=== seethrough: L - gap - patch - gap - camera, omni light (DL-330) ===" << std::endl;
+	const double g = 0.3, cf = g * g;
+	const unsigned int n = 4;
+	struct R { const char* label; std::string rast; bool mesh; double tol; };
+	const R rows[] = {
+		{ "PT RGB",                          RastPT( 16 ),                    false, 0.02 },
+		{ "BDPT RGB",                        RastBDPT( 64 ),                  false, 0.03 },
+		{ "BDPT RGB         (mesh)",         RastBDPT( 64 ),                  true,  0.03 },
+		{ "BDPT spectral hwss=true",         RastBDPTSpectral( 512, true ),   false, 0.04 },
+		{ "BDPT spectral hwss=true  (mesh)", RastBDPTSpectral( 512, true ),   true,  0.04 },
+		{ "VCM RGB",                         RastVCM( 256 ),                  false, -1.0 },
+	};
+	unsigned int k = 0;
+	for( const R& r : rows )
+	{
+		std::vector<double> l0s, ls, rs;
+		g_meshSheet = r.mesh;
+		for( unsigned int rep = 0; rep < n; rep++ ) {
+			const unsigned int salt = SobolSequence::HashCombine( 0xD330u + 0x100u * k + g_seedBase, rep );
+			const double L0 = RenderSalted( Assemble( r.rast, ReceiverScene( kOmni, false, 0.0, kTight ) ), "st_l0", salt );
+			const double L  = RenderSalted( Assemble( r.rast, ReceiverScene( kOmni, true, g, kTight, false,
+				BlackWeaveSheet( g ) + VerticalBlackSheetChunks() ) ), "st_lg", SobolSequence::HashCombine( salt, 0x51u ) );
+			l0s.push_back( L0 ); ls.push_back( L );
+			if( L0 > 0 ) rs.push_back( L / L0 );
+		}
+		g_meshSheet = false;
+		k++;
+		double m0, s0, m1, s1, mr, sr;
+		MeanSd( l0s, m0, s0 ); MeanSd( ls, m1, s1 ); MeanSd( rs, mr, sr );
+		const double ratio = m0 > 0 ? m1 / m0 : -1.0;
+		char buf[320];
+		std::snprintf( buf, sizeof(buf),
+			"seethrough %s: L/L0 = %.5f +/- %.5f (sd, n = %u)  (closed form g^2 = %.5f, rel err %+.3f%%)",
+			r.label, ratio, sr, n, cf, 100.0 * ( ratio / cf - 1.0 ) );
+		std::cout << "  " << buf << ( r.tol < 0 ? "   [printed, not gated]" : "" ) << std::endl;
+		if( r.tol >= 0 ) {
+			Check( ratio > 0 && std::fabs( ratio / cf - 1.0 ) <= r.tol, buf );
+		}
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// sssgap: DL-330 review P1.  An SSS receiver (the kWide patch as
+// `subsurfacescattering_material` or `randomwalk_sss_material`) under the
+// black-yarn gapped sheet, a DELTA light above it, the camera seeing the
+// receiver directly.  BDPT's light family samples  L - gap - B ~jump~ A
+// and splats / connects from A (BDPTUtilities::LightJumpPartition keeps
+// it: no plain split covers [L, gap, B]), while the eye family samples
+// E - A ~jump~ B and reaches L from B only through the see-through
+// connection -- so the partition must hand the path to exactly one of
+// them.  Before the fix both counted it (BDPT 2.06x the closed form).
+// Closed form: L = g * L0 exactly (the sheet attenuates every light path
+// to the receiver by g; whatever the receiver does with the light, it
+// does with and without the sheet).  The random-walk rows use a closed
+// sphere receiver (g_recvSphere).  Default caps, a shallow eye cap
+// (max_eye_depth 1: the eye walk still reaches A and jumps to B, so the
+// eye family owns the path) and a shallow light cap (max_light_depth 1:
+// the light walk cannot reach B behind the gap, the eye family alone).
+//////////////////////////////////////////////////////////////////////
+static std::string RastBDPTDepth( unsigned int spp, unsigned int eyeDepth, unsigned int lightDepth )
+{
+	std::ostringstream ss;
+	ss << "bdpt_pel_rasterizer\n{\n\tsamples " << spp * SppScale()
+	   << "\n\tmax_eye_depth " << eyeDepth << "\n\tmax_light_depth " << lightDepth
+	   << "\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n" << kOutputChunk;
+	return ss.str();
+}
+
+//! @a bootstrap: PSSMLT never reads the Sobol' salt and renders
+//! bit-identically run to run, so a caller that wants INDEPENDENT MLT
+//! draws varies the bootstrap sample count (which reseeds every chain).
+static std::string RastMLT( unsigned int mutations, unsigned int eyeDepth, unsigned int lightDepth,
+	unsigned int bootstrap = 200000 )
+{
+	std::ostringstream ss;
+	ss << "mlt_rasterizer\n{\n\tmax_eye_depth " << eyeDepth << "\n\tmax_light_depth " << lightDepth
+	   << "\n\tbootstrap_samples " << bootstrap << "\n\tchains 256\n\tmutations_per_pixel " << mutations * SppScale()
+	   << "\n\tlarge_step_prob 0.3\n\toidn_denoise FALSE\n}\n\n" << kOutputChunk;
+	return ss.str();
+}
+
+static std::string SSSReceiverChunks( bool randomWalk )
+{
+	return randomWalk
+		? "randomwalk_sss_material\n{\n\tname mat_recv\n\tior 1.3\n\tabsorption 0.1\n\tscattering 10.0\n\tg 0.0\n\troughness 0.3\n}\n\n"
+		: "subsurfacescattering_material\n{\n\tname mat_recv\n\tior 1.3\n\tabsorption 0.1\n\tscattering 1.0\n\tg 0.0\n\troughness 0.3\n}\n\n";
+}
+
+static void TestSSSBehindGap()
+{
+	std::cout << "=== sssgap: SSS receiver behind a gapped weave, delta light (DL-330 review P1) ===" << std::endl;
+	const double g = 0.3;
+	const unsigned int n = 4;
+	struct R { const char* label; LightKind light; bool rw; std::string rast; double tol; };
+	const R rows[] = {
+		{ "spot, diffusion SSS, PT",                 kSpot, false, RastPT( 256 ),              0.06 },
+		{ "spot, diffusion SSS, BDPT 8/8",           kSpot, false, RastBDPTDepth( 256, 8, 8 ), 0.06 },
+		{ "spot, diffusion SSS, BDPT eye 1",         kSpot, false, RastBDPTDepth( 256, 1, 8 ), 0.06 },
+		{ "spot, diffusion SSS, BDPT light 1",       kSpot, false, RastBDPTDepth( 256, 8, 1 ), 0.06 },
+		{ "spot, diffusion SSS, MLT 8/8",            kSpot, false, RastMLT( 256, 8, 8 ),       0.10 },
+		{ "spot, random-walk SSS sphere, PT",        kSpot, true,  RastPT( 256 ),              0.06 },
+		{ "spot, random-walk SSS sphere, BDPT 8/8",  kSpot, true,  RastBDPTDepth( 256, 8, 8 ), 0.06 },
+		{ "spot, random-walk SSS sphere, BDPT eye 1",kSpot, true,  RastBDPTDepth( 256, 1, 8 ), 0.06 },
+		{ "spot, random-walk SSS sphere, MLT 8/8",   kSpot, true,  RastMLT( 256, 8, 8 ),       0.10 },
+		// Omni: measured per-repeat sd 0.3-1.2 % at 1024 spp (the
+		// see-through connection is an NEE estimator), so 6 % is >= 10 se.
+		{ "omni, diffusion SSS, PT",                 kOmni, false, RastPT( 256 ),               0.06 },
+		{ "omni, diffusion SSS, BDPT 8/8",           kOmni, false, RastBDPTDepth( 1024, 8, 8 ), 0.06 },
+		{ "omni, random-walk SSS sphere, BDPT 8/8",  kOmni, true,  RastBDPTDepth( 1024, 8, 8 ), 0.06 },
+	};
+	unsigned int k = 0;
+	for( const R& r : rows )
+	{
+		std::vector<double> l0s, ls, rs;
+		g_recvSphere = r.rw;
+		const bool isMLT = r.rast.find( "mlt_rasterizer" ) != std::string::npos;
+		for( unsigned int rep = 0; rep < n; rep++ ) {
+			const unsigned int salt = SobolSequence::HashCombine( 0xD330Bu + 0x100u * k + g_seedBase, rep );
+			// MLT: an independent draw per render through its bootstrap count.
+			const std::string rast0 = isMLT ? RastMLT( 256, 8, 8, 200000 + 1000 * rep ) : r.rast;
+			const std::string rastG = isMLT ? RastMLT( 256, 8, 8, 200500 + 1000 * rep ) : r.rast;
+			const double L0 = RenderSalted( Assemble( rast0, ReceiverScene( r.light, false, 0.0, kWide, false,
+				std::string(), SSSReceiverChunks( r.rw ) ) ), "sg_l0", salt );
+			const double L  = RenderSalted( Assemble( rastG, ReceiverScene( r.light, true, g, kWide, false,
+				BlackWeaveSheet( g ), SSSReceiverChunks( r.rw ) ) ), "sg_lg", SobolSequence::HashCombine( salt, 0x51u ) );
+			l0s.push_back( L0 ); ls.push_back( L );
+			if( L0 > 0 ) rs.push_back( L / L0 );
+		}
+		g_recvSphere = false;
+		k++;
+		double m0, s0, m1, s1, mr, sr;
+		MeanSd( l0s, m0, s0 ); MeanSd( ls, m1, s1 ); MeanSd( rs, mr, sr );
+		const double ratio = m0 > 0 ? m1 / m0 : -1.0;
+		char buf[320];
+		std::snprintf( buf, sizeof(buf),
+			"sssgap %s: L/L0 = %.5f +/- %.5f (sd, n = %u)  (closed form %.5f, rel err %+.3f%%)  L0 = %.6g",
+			r.label, ratio, sr, n, g, 100.0 * ( ratio / g - 1.0 ), m0 );
+		std::cout << "  " << buf << ( r.tol < 0 ? "   [printed, not gated]" : "" ) << std::endl;
+		if( r.tol >= 0 ) {
+			Check( ratio > 0 && std::fabs( ratio / g - 1.0 ) <= r.tol, buf );
+		}
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// hwsstint: DL-329's CHROMATIC half.  A RED-tinted, absorbing
+// `coated_material` over the black-yarn gapped weave: the gap ray's
+// companion kray is the coat's two-crossing transmittance AT THE
+// COMPANION WAVELENGTH (CoatedSPF::EvaluateKrayNM; BDPT's companion
+// ladder reads its ratio at the gap vertex,
+// RecomputeSubpathThroughputNM).  Reference-free invariant: hwss TRUE
+// must reproduce hwss FALSE's per-channel transmittance L/L0 (the
+// hero-only render prices every wavelength by its own Scatter).  The
+// 4 x 4 emitter (kAreaLarge) keeps the BSDF-sampled gap path cheap.
+//////////////////////////////////////////////////////////////////////
+static std::string TintedCoatOverWeaveSheet()
+{
+	return BlackPainterChunk() + BlackWeaveChunk( "mat_layer", 0.3 )
+		+ "uniformcolor_painter\n{\n\tname pnt_tint\n\tcolor 0.9 0.3 0.1\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+		  "coated_material\n{\n\tname mat_sheet\n\tbase mat_layer\n\tcoat_weight 1.0\n\tcoat_ior 1.5\n"
+		  "\tcoat_roughness 0.05\n\tcoat_thickness 0.2\n\tcoat_absorption 0.5\n\tcoat_tint pnt_tint\n}\n\n";
+}
+
+static void ChannelMeans( const std::vector<RISEColor>& px, double out[3] )
+{
+	out[0] = out[1] = out[2] = 0;
+	for( const RISEColor& c : px ) {
+		out[0] += c.base.r * c.a; out[1] += c.base.g * c.a; out[2] += c.base.b * c.a;
+	}
+	for( int i = 0; i < 3; i++ ) out[i] /= px.empty() ? 1.0 : double( px.size() );
+}
+
+//! Per-channel mean(L)/mean(L0) over @a n salted (L0, L) repeats of the
+//! tinted-coat sheet under @a rast; @a sd receives the per-repeat ratio sd.
+static void TintedChannelTransmittance( const std::string& rast, unsigned int n, unsigned int saltBase,
+	double tr[3], double sd[3] )
+{
+	std::vector<double> l0[3], ls[3], rr[3];
+	for( unsigned int rep = 0; rep < n; rep++ ) {
+		const unsigned int salt = SobolSequence::HashCombine( saltBase + g_seedBase, rep );
+		double a[3], b[3];
+		RenderSalted( Assemble( rast, ReceiverScene( kAreaLarge, false, 0.0, kWide ) ), "t_l0", salt );
+		ChannelMeans( g_lastPixels, a );
+		RenderSalted( Assemble( rast, ReceiverScene( kAreaLarge, true, 0.3, kWide, false, TintedCoatOverWeaveSheet() ) ),
+			"t_lg", SobolSequence::HashCombine( salt, 0x51u ) );
+		ChannelMeans( g_lastPixels, b );
+		for( int c = 0; c < 3; c++ ) {
+			l0[c].push_back( a[c] ); ls[c].push_back( b[c] );
+			if( a[c] > 0 ) rr[c].push_back( b[c] / a[c] );
+		}
+	}
+	for( int c = 0; c < 3; c++ ) {
+		double m0, s0, m1, s1, mr;
+		MeanSd( l0[c], m0, s0 ); MeanSd( ls[c], m1, s1 ); MeanSd( rr[c], mr, sd[c] );
+		tr[c] = m0 > 0 ? m1 / m0 : -1.0;
+	}
+}
+
+static void TestHWSSTintedCoatGap()
+{
+	std::cout << "=== hwsstint: tinted coat over a gapped weave, BDPT HWSS vs PT HWSS per channel (DL-329) ===" << std::endl;
+	const char* nEnv = std::getenv( "WEAVE_GAP_HWSS_N" );
+	const unsigned int n = nEnv ? HwssRepeats() : 8u;
+	// The REFERENCE is PT's own HWSS render: its companion lanes are the
+	// CoatedSPF::EvaluateKrayNM numbers the `query` section pins to
+	// ScatterNM exactly.  The hwss=false renders are printed, not used:
+	// a single-wavelength sample of this saturated red is far outside
+	// Rec.709 and the per-sample conversion does not average to the
+	// bundle's (its blue channel reads > 0 where the bundle's reads 0).
+	double pt[3], ptSd[3], bd[3], bdSd[3], ptOff[3], bdOff[3], tmp[3];
+	TintedChannelTransmittance( RastPTSpectral( 256, true ),    n, 0xD32A0u, pt, ptSd );
+	TintedChannelTransmittance( RastBDPTSpectral( 128, true ),  n, 0xD32A1u, bd, bdSd );
+	TintedChannelTransmittance( RastPTSpectral( 256, false ),   n, 0xD32A2u, ptOff, tmp );
+	TintedChannelTransmittance( RastBDPTSpectral( 128, false ), n, 0xD32A3u, bdOff, tmp );
+	char buf[480];
+	std::snprintf( buf, sizeof(buf),
+		"hwsstint: L/L0 (R, G)  PT hwss=true (%.5f +/- %.5f, %.5f +/- %.5f)  BDPT hwss=true (%.5f +/- %.5f, %.5f +/- %.5f)  "
+		"BDPT/PT (%.4f, %.4f)  [hwss=false: PT (%.5f, %.5f) BDPT (%.5f, %.5f)]  n = %u",
+		pt[0], ptSd[0], pt[1], ptSd[1], bd[0], bdSd[0], bd[1], bdSd[1], bd[0] / pt[0], bd[1] / pt[1],
+		ptOff[0], ptOff[1], bdOff[0], bdOff[1], n );
+	std::cout << "  " << buf << std::endl;
+	Check( std::fabs( bd[0] / pt[0] - 1.0 ) <= 0.04 && std::fabs( bd[1] / pt[1] - 1.0 ) <= 0.06, buf );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1474,15 +1947,18 @@ static void TestSMSEmissionThroughGap()
 		CasterCeilingScene( false, false, false ), 0.035 );
 
 	// Control: an SMS CASTER, where the suppression's premise is SMS's to
-	// honour and this fix changes nothing.  Printed, not gated.  Before
-	// master's DL-290 the ior-1.0 plane read 0 with SMS on; since, it reads
-	// ~1.0 (SMS's matched-index seed walk).  The ior-1.5 OPEN plane reads
-	// ~2.25x in every build -- the open-sheet index convention (DL-339 (b),
-	// DL-345's family); a closed slab of it agrees with PT and VCM.
+	// honour and this fix changes nothing.  The ior-1.0 row is printed, not
+	// gated: before master's DL-290 the plane read 0 with SMS on; since, it
+	// reads ~1.0 (SMS's matched-index seed walk).  The ior-1.5 OPEN plane
+	// read 2.2515 in every build until DL-345 (2026-10-02): the material
+	// decided the receiver's crossing by the IOR stack (an ENTRY, from
+	// below) while SMS decided it by the face (an EXIT); with the sheet
+	// crossed by its face everywhere it reads 1.00044 (SMS-on unchanged at
+	// 0.20261, PT 0.0900 -> 0.2025).  Gated since DL-345 (DL-339 (b)).
 	ParityRow( "area perfectrefractor ior 1 PT RGB (SMS caster -- control, printed)", RastPTSMS( 256, true ), RastPTSMS( 256, false ),
 		ReceiverScene( kAreaLarge, true, g, kWide, false, PerfectRefractorSheet( "1.0" ) ), -1.0 );
-	ParityRow( "area perfectrefractor ior 1.5 PT RGB (SMS caster -- control, printed)", RastPTSMS( 256, true ), RastPTSMS( 256, false ),
-		ReceiverScene( kAreaLarge, true, g, kWide, false, PerfectRefractorSheet( "1.5" ) ), -1.0 );
+	ParityRow( "area perfectrefractor ior 1.5 open sheet PT RGB (DL-339 (b) / DL-345)", RastPTSMS( 256, true ), RastPTSMS( 256, false ),
+		ReceiverScene( kAreaLarge, true, g, kWide, false, PerfectRefractorSheet( "1.5" ) ), 0.03 );
 	SobolSamplerTestHooks::ValueSalt().store( 0u );
 }
 
@@ -1667,7 +2143,8 @@ static void TestTwoLayerLightOutside()
 // world-to-raster inverse (BDPTCameraUtilities::Rasterize) accepted
 // raster x in [0, W) and y in [0, H) -- the camera's NOMINAL film --
 // while every rasterizer samples pixel (x, row y) at screen
-// (x + u - 0.5, H - y + v - 0.5), i.e. the film is x in [-0.5, W - 0.5),
+// (x + u - 0.5, H - y + v - 0.5) (the convention before DL-368, which
+// later moved every rasterizer to the camera's nominal film), i.e. the film is x in [-0.5, W - 0.5),
 // y in [0.5, H + 0.5), and SplatFilm rounds a splat to the nearest
 // pixel CENTRE in that same convention.  The camera rejected the
 // half-pixel strips x in [-0.5, 0) and y in [H, H + 0.5) -- ON that
@@ -1875,6 +2352,60 @@ static void MeasureGaussianSweep()
     }
 }
 
+//! Opt-in (WEAVE_GAP_FILTER=dl330, argv[2] = n): the closed weave sphere
+//! (gap 0.3 and 0.0) lit from outside by the omni light (a DELTA light)
+//! and by a small spherical AREA emitter at the same place, PT / BDPT /
+//! VCM, salted repeats.  Discriminates a delta-light-specific BDPT
+//! coverage gap (light -> gap -> diffuse -> gap -> eye has no BDPT
+//! strategy when the light is a point) from an MIS / contribution bias,
+//! which would not care what kind of light it is.
+static void MeasureDL330( unsigned int nRepeats )
+{
+	std::cout << "=== dl330: closed weave sphere, omni vs small area light (24x24, 512 spp, n = "
+		<< nRepeats << ") ===" << std::endl;
+
+	for( int light = 0; light < 2; light++ ) {
+		for( int gi = 0; gi < 2; gi++ ) {
+			const double gap = gi == 0 ? 0.3 : 0.0;
+			std::string body = LayerScene( kSphere, gap, -3.0, 24 );
+			// Off-axis (3, 0, -2): behind the sphere but OUTSIDE the
+			// frustum, so the area emitter is never seen directly
+			// through two gaps (that term would swamp the comparison).
+			{
+				const std::string onAxis = "\tposition 0 0 -3\n";
+				const size_t p = body.find( onAxis );
+				if( p != std::string::npos ) body.replace( p, onAxis.size(), "\tposition 3 0 -2\n" );
+			}
+			if( light == 1 ) {
+				// Swap the omni for a radius-0.05 sphere emitter of the same
+				// total power: Phi = 4 pi I = 4 pi * 6; a Lambertian sphere
+				// of radius r and exitance M emits 4 pi r^2 M, so
+				// M = 6 / r^2 = 2400 (exitance 1 * scale 2400).
+				const std::string omni = "omni_light\n{\n\tname lgt\n\tposition 3 0 -2\n\tcolor 1.0 1.0 1.0\n\tpower 6.0\n}\n\n";
+				const size_t at = body.find( omni );
+				if( at == std::string::npos ) { std::cout << "  omni chunk not found" << std::endl; return; }
+				body.replace( at, omni.size(),
+					"uniformcolor_painter\n{\n\tname pnt_e\n\tcolor 1 1 1\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+					"lambertian_luminaire_material\n{\n\tname mat_e\n\texitance pnt_e\n\tscale 2400.0\n\tmaterial none\n}\n\n"
+					"sphere_geometry\n{\n\tname g_e\n\tradius 0.05\n}\n\n"
+					"standard_object\n{\n\tname o_e\n\tgeometry g_e\n\tmaterial mat_e\n\tposition 3 0 -2\n}\n\n" );
+			}
+			std::vector<double> pt, bd, vc;
+			for( unsigned int i = 0; i < nRepeats; i++ ) {
+				pt.push_back( Render( Assemble( RastPT( 512 ),   body ), "d330_pt" ) );
+				bd.push_back( Render( Assemble( RastBDPT( 512 ), body ), "d330_bdpt" ) );
+				vc.push_back( Render( Assemble( RastVCM( 512 ),  body ), "d330_vcm" ) );
+			}
+			double mp, sp, mb, sb, mv, sv;
+			MeanSd( pt, mp, sp ); MeanSd( bd, mb, sb ); MeanSd( vc, mv, sv );
+			std::printf( "  | %-6s gap %.1f | PT %.6f +/- %.6f | BDPT %.6f +/- %.6f | VCM %.6f +/- %.6f | BDPT/PT %.4f | VCM/PT %.4f |\n",
+				light == 0 ? "omni" : "area", gap, mp, sp, mb, sb, mv, sv, mb / mp, mv / mp );
+		}
+	}
+
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
+}
+
 static void MeasureDesignDocTable( unsigned int nRepeats )
 {
 	std::cout << "=== table: docs/CLOTH_FABRIC_DESIGN.md section 15 item 27 (24x24, 512 spp, n = "
@@ -1899,6 +2430,12 @@ static void MeasureDesignDocTable( unsigned int nRepeats )
 	};
 	// WEAVE_GAP_TABLE_ROWS (optional): only rows whose label contains it.
 	const char* rowFilter = std::getenv( "WEAVE_GAP_TABLE_ROWS" );
+	// SALTED (DL-330 slice, 2026-10-02): every repeat is an independent
+	// randomized-QMC replicate.  Before, the repeats differed only in libc
+	// `rand()` -- which no Sobol' stream reads -- so the "+/- sd" columns
+	// of section 5's table were ~0 by construction and every BDPT/PT and
+	// VCM/PT ratio there is ONE Sobol' point set, not a distribution.
+
 	for( const T& r : rows )
 	{
 		if( rowFilter && !std::strstr( r.label, rowFilter ) ) continue;
@@ -1914,6 +2451,8 @@ static void MeasureDesignDocTable( unsigned int nRepeats )
 		std::printf( "  | %-34s | PT %.5f +/- %.5f | BDPT %.5f +/- %.5f | VCM %.5f +/- %.5f | BDPT/PT %.4f | VCM/PT %.4f |\n",
 			r.label, mp, sp, mb, sb, mv, sv, mb / mp, mv / mp );
 	}
+
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -2289,6 +2828,15 @@ int main( int argc, char** argv )
 		HashScenes();
 		return 0;
 	}
+	if( filter && std::strstr( filter, "dl330" ) ) {
+		unsigned int n = 4;
+		if( argc > 2 ) {
+			const long v = std::strtol( argv[2], nullptr, 10 );
+			if( v > 0 ) n = (unsigned int)v;
+		}
+		MeasureDL330( n );
+		return 0;
+	}
 	if( filter && std::strstr( filter, "table" ) ) {
 		unsigned int n = 4;
 		if( argc > 2 ) {
@@ -2305,6 +2853,10 @@ int main( int argc, char** argv )
 	if( !filter || std::strstr( filter, "composite" ) )   TestClosedFormComposite();
 	if( !filter || std::strstr( filter, "directional" ) ) TestClosedFormDirectional();
 	if( !filter || std::strstr( filter, "area" ) )        TestAreaPartitionGuard();
+	if( !filter || std::strstr( filter, "hwssgap" ) )     TestHWSSGapContinuation();
+	if( !filter || std::strstr( filter, "hwsstint" ) )    TestHWSSTintedCoatGap();
+	if( !filter || std::strstr( filter, "seethrough" ) )  TestBDPTSeeThroughDeltaLight();
+	if( !filter || std::strstr( filter, "sssgap" ) )      TestSSSBehindGap();
 	if( !filter || std::strstr( filter, "sms" ) )         TestSMSEmissionThroughGap();
 	if( !filter || std::strstr( filter, "castsshadows" ) ) TestCastsShadowsFalseStepOver();
 	if( !filter || std::strstr( filter, "layers" ) )      TestTwoLayerLightOutside();

@@ -1305,7 +1305,7 @@ namespace
 	// themselves (DL-345, filed at merge); on S the references agree to
 	// 1-2 %.  Renders are salted (independent randomized-QMC replicates).
 	//
-	// Historical bands, derived in the DL-290 review round 3 on the coverage > 0.99 mask from
+	// Historical DL-290 bands, superseded after DL-345 corrected open-sheet crossings:
 	// two salted n = 6 runs: flatslab 0.9998 / 0.9994 (SE 0.0014 / 0.0021),
 	// glassblock 0.8810 / 0.8828 (SE 0.0020 / 0.0026).  With the larger
 	// per-replicate sd (0.0052 / 0.0065) the SE of the gate's own n = 4 mean
@@ -1372,13 +1372,16 @@ namespace
 
 	void TestShippedMatchedIndexScenes( const unsigned int trials, const std::string& only )
 	{
-		std::cout << "C: shipped two-sheet SMS scenes vs their VCM _ref twin on the slab pixels S, n=" << trials << " per side, salted" << std::endl;
+		std::cout << "C: shipped two-sheet SMS scenes vs their VCM _ref twin on the slab pixels S, n=" << ( trials > 8 ? trials : 8 ) << " per side, salted" << std::endl;
 		struct SceneRow { const char* name; double lo, hi; unsigned int smsSpp, vcmSpp; };
 		const SceneRow rows[] = {
-			{ "sms_k2_flatslab",   0.964, 1.036, 4096, 1024 },
-			{ "sms_k2_glassblock", 0.842, 1.040, 16384, 512 },
+			{ "sms_k2_flatslab",   0.885, 1.130, 4096, 1024 },
+			{ "sms_k2_glassblock", 0.840, 1.180, 16384, 512 },
 		};
 		const unsigned int kW = 100, kH = 75, kMaskSpp = 256;
+	// Keep DL-345 physics bands and minimum eight replicates; retain
+	// DL-399 controlled inputs, larger budgets and paired precision checks.
+	const unsigned int partCTrials = trials > 8 ? trials : 8;
 		const uint32_t kMaskSalt = 0x5ca1ab1eu;
 		const char* media = std::getenv( "RISE_MEDIA_PATH" );
 		const std::string root = media ? std::string( media ) : std::string();
@@ -1439,7 +1442,7 @@ namespace
 			const std::string refPath = WriteScene( refText, "shipped_ref" );
 			std::vector<double> sms, ref;
 			bool allValid = true;
-			for( unsigned int t = 0; t < trials; ++t ) {
+			for( unsigned int t = 0; t < partCTrials; ++t ) {
 				const unsigned int sd = seed++;
 				const uint32_t salt = 0x9E3779B9u * sd;
 				const double a = RenderMean( smsPath, sd, 1.0, false, Point3( 0, 0, 0 ), label + " sms", &S, nullptr, salt, true );

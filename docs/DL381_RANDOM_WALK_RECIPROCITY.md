@@ -155,3 +155,30 @@ at both ends (moves both families toward physics and each other; changes
 PT's look in a scene-dependent direction).
 
 **Ruling (user, 2026-10-02): status quo.** The Lambertian exit lobe stays; DL-384 is closed. Reopen only with a concrete scene where the scene-dependent error matters.
+
+## DL-368 re-baseline (2026-10-02, `debt-dl354`)
+
+The MC bins photons by RISE's pixel centres, and DL-368 moved them from
+ndc `col/16 - 1` to `(col + 0.5)/16 - 1` (PBRT's convention; every render
+shifted half a pixel).  The tool now uses the new centres and every
+constant above moved, by more than the bands on the sphere (the region is
+edge-dominated, section 3): with the old constants the gate read PT sphere
++9.5 % and BDPT sphere +8.6 % (bands 4 %).  Rerun, 4e8 photons:
+
+| | sphere | wall |
+|---|---|---|
+| physics (mode 0), A / B | 0.12802 ± 0.00047 / 0.12804 | 0.019449 ± 0.00008 / 0.019891 |
+| light model (mode 2), B | 0.11241 ± 0.00050 | 0.020129 ± 0.00012 |
+| eye model (mode 3), A | 0.10568 ± 0.00061 | 0.020096 ± 0.00014 |
+| symmetric (mode 4), A | 0.09156 ± 0.00047 | 0.020484 ± 0.00012 |
+| RISE PT, no glass (gate run, n 4, 1024 spp) | 0.10669 | 0.020131 |
+| RISE BDPT G-RW (gate run, n 4) | 0.11426 | 0.019951 |
+| RISE VCM merging off G-RW (gate run, n 4) | 0.10890 | 0.020019 |
+| RISE BDPT G-RW (`--dl381-probe`, n 6) | 0.11324 (sd 0.0045) | 0.020204 (sd 0.00034) |
+| RISE VCM merging off G-RW (`--dl381-probe`, n 6) | 0.11152 (sd 0.0019) | 0.020435 (sd 0.00064) |
+
+The conclusions stand: PT matches the eye model (+1.0 % / +0.2 %), BDPT
+the light model (gate run +1.6 % / -0.9 %; probe +0.7 % / +0.4 %), VCM
+reads -3.1 % / -0.5 % in the gate run and -0.8 % / +1.5 % in the probe
+(per-render sd 2-4 %, so one n = 4 run moves by ~2 %), and the light model (-12 %) is closer
+to physics than the eye model (-17 %).

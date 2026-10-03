@@ -1523,6 +1523,13 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
 - (NSArray<NSString *> *)paletteKeywordsForCategory:(NSInteger)category
     NS_SWIFT_NAME(paletteKeywords(forCategory:));
 
+/// DL-401: the replacement hint (modern keyword first, then the parameter
+/// translation) when `keyword` is a DEPRECATED chunk type, else nil.
+/// `-paletteKeywordsForCategory:` already sorts deprecated keywords after
+/// the modern ones; the palette badges them with this. Pure descriptor read.
+- (nullable NSString *)paletteDeprecationReplacementForKeyword:(NSString *)keyword
+    NS_SWIFT_NAME(paletteDeprecationReplacement(forKeyword:));
+
 #pragma mark - Environment / IBL section
 
 /// Read the current environment binding.  Returns nil only when there is

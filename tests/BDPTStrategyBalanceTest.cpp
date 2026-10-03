@@ -154,6 +154,7 @@
 #include "../src/Library/Interfaces/IRasterImage.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
+#include "DataDrivenTestTables.h"
 #include "../src/Library/Utilities/SobolSampler.h"
 
 using namespace RISE;
@@ -2449,6 +2450,142 @@ static void TestCompositeMaterial()
 }
 
 //////////////////////////////////////////////////////////////////////
+// Topology AD (DL-325): `datadriven_material` walls and floor on topology
+// L's geometry, camera and emitter, against the SAME scene with
+// `lambertian_material` at the table's albedo.
+//
+// WHAT WAS BROKEN.  `DataDrivenMaterial::GetSPF()` returned 0: the BSDF
+// (`DataDrivenBSDF`, a tabulated reflection function) was evaluable but
+// nothing sampled it, so PT stopped at the surface (next-event estimation
+// only, no indirect light), BDPT's eye walk ended there and rendered it
+// essentially black, and VCM priced indirect light into it only through its
+// connection strategies.  Measured on the DL-285 sibling audit's fixture
+// (this scene, a constant table): PT 0.0375, BDPT 1.81e-6, VCM 0.0387.
+//
+// THE REFERENCE.  A constant table of 0.4/pi on every view/light pair IS a
+// Lambertian surface of albedo 0.4 (value() is exactly 0.4/pi at every angle
+// -- gate 6 of PolishedBRDFConsistencyTest integrates it to 0.4), so the
+// Lambertian render of the same scene is a reference-free oracle for ALL
+// THREE integrators at once:
+//     dd_X / lambertian_X  == 1   for X in {PT, BDPT, VCM}
+// plus the cross-integrator agreement dd_BDPT / dd_PT, dd_VCM / dd_PT.
+// Every figure is the mean of N salted renders (the SAME salts for every
+// scene/integrator, so the gated ratio is not one fixed QMC draw).
+//////////////////////////////////////////////////////////////////////
+static const char* kRasterizerVCMSchlickL =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"vcm_pel_rasterizer\n"
+	"{\n"
+	"\tmax_eye_depth 5\n"
+	"\tmax_light_depth 5\n"
+	"\tsamples 256\n"
+	"\tmerge_radius 0.0\n"
+	"\tvc_enabled true\n"
+	"\tvm_enabled true\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern rendered/bdpt_balance_vcm_unused\n"
+	"\ttype EXR\n"
+	"\tbpp 32\n"
+	"\tcolor_space Rec709RGB_Linear\n"
+	"}\n";
+
+//! Topology L with the schlick_material chunk replaced by `materialChunk`.
+static std::string TopologyLWithMaterial( const std::string& materialChunk )
+{
+	std::string s( kSceneSchlickMultiLobeL );
+	const std::string head = "schlick_material\n{\n\tname mat_schlick\n";
+	const size_t a = s.find( head );
+	const size_t b = ( a == std::string::npos ) ? std::string::npos : s.find( "}\n", a );
+	Check( a != std::string::npos && b != std::string::npos, "topology AD: schlick_material chunk found in topology L" );
+	if( a != std::string::npos && b != std::string::npos ) {
+		s.replace( a, b + 2 - a, materialChunk );
+	}
+	return s;
+}
+
+//! Mean (achromatic) and standard deviation over `n` salted renders.
+static bool SaltedImageMean( const std::string& rasterizer, const std::string& body, int n, unsigned saltBase,
+	double& mean, double& sd )
+{
+	const std::string scene = std::string( "RISE ASCII SCENE 7\n" ) + rasterizer + body;
+	const std::string path = WriteSceneToTempFile( scene.c_str(), "dl325" );
+	if( path.empty() ) return false;
+	double sum = 0, sumSq = 0;
+	bool ok = true;
+	for( int i = 0; i < n && ok; i++ ) {
+		SobolSamplerTestHooks::ValueSalt().store( SobolSequence::HashCombine( saltBase, unsigned( i ) ) );
+		const ImageStats st = RenderAndComputeStats( path.c_str() );
+		ok = st.valid;
+		if( ok ) {
+			const double m = ( st.mean[0] + st.mean[1] + st.mean[2] ) / 3.0;
+			sum += m;  sumSq += m * m;
+		}
+	}
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
+	std::remove( path.c_str() );
+	if( !ok ) return false;
+	mean = sum / n;
+	sd = n > 1 ? std::sqrt( std::max( 0.0, ( sumSq - n * mean * mean ) / ( n - 1 ) ) ) : 0;
+	return std::isfinite( mean );
+}
+
+static void TestDataDrivenSPFDL325()
+{
+	std::cout << "Testing topology AD: datadriven_material (constant 0.4/pi table) vs lambertian_material 0.4 (DL-325)" << std::endl;
+	char bdf[256];
+	{
+		const char* td = std::getenv( "TMPDIR" );
+		std::string dir = ( td && *td ) ? td : "/tmp";
+		if( dir.back() != '/' ) dir += '/';
+		std::snprintf( bdf, sizeof( bdf ), "%sdl325_const04_%d.bdf", dir.c_str(), static_cast<int>( ::getpid() ) );
+	}
+	Check( DataDrivenTestTables::WriteConstant( bdf, 0.4 ), "topology AD: synthetic constant .bdf written" );
+
+	const std::string sceneDD = TopologyLWithMaterial(
+		std::string( "datadriven_material\n{\n\tname mat_schlick\n\tfilename " ) + bdf + "\n}\n" );
+	const std::string sceneLamb = TopologyLWithMaterial(
+		"lambertian_material\n{\n\tname mat_schlick\n\treflectance pnt_rd\n}\n" );
+
+	struct Integrator { const char* name; const char* rasterizer; };
+	const Integrator integrators[3] = {
+		{ "PT",   kRasterizerPTSchlickL },
+		{ "BDPT", kRasterizerBDPTSchlickL },
+		{ "VCM",  kRasterizerVCMSchlickL } };
+	const int N = 4;
+	double ddMean[3] = { 0, 0, 0 }, ddSd[3] = { 0, 0, 0 }, lbMean[3] = { 0, 0, 0 }, lbSd[3] = { 0, 0, 0 };
+	for( int k = 0; k < 3; k++ ) {
+		const bool ok = SaltedImageMean( integrators[k].rasterizer, sceneDD,   N, 0x325Du, ddMean[k], ddSd[k] )
+		             && SaltedImageMean( integrators[k].rasterizer, sceneLamb, N, 0x325Du, lbMean[k], lbSd[k] );
+		Check( ok, ( std::string( "topology AD: renders produced output (" ) + integrators[k].name + ")" ).c_str() );
+		if( !ok ) { std::remove( bdf ); return; }
+		std::printf( "  %-4s datadriven %.6f (sd %.6f)   lambertian %.6f (sd %.6f)   dd/lamb %.5f\n",
+			integrators[k].name, ddMean[k], ddSd[k], lbMean[k], lbSd[k], ddMean[k] / lbMean[k] );
+	}
+	std::remove( bdf );
+
+	for( int k = 0; k < 3; k++ ) {
+		const double r = ddMean[k] / lbMean[k];
+		Check( std::fabs( r - 1.0 ) < 0.02,
+			( std::string( "topology AD (DL-325): datadriven " ) + integrators[k].name +
+			  " matches the same-albedo Lambertian render within 2%" ).c_str() );
+	}
+	Check( std::fabs( ddMean[1] / ddMean[0] - 1.0 ) < 0.03,
+		"topology AD (DL-325): datadriven BDPT / PT within 3%" );
+	Check( std::fabs( ddMean[2] / ddMean[0] - 1.0 ) < 0.04,
+		"topology AD (DL-325): datadriven VCM / PT within 4%" );
+}
+
+//////////////////////////////////////////////////////////////////////
 // Topology L, GUIDED (DL-67, docs/DL67_GUIDED_GENERATING_DENSITY.md).
 //
 // Topology L's geometry and `schlick_material` walls with OpenPGL path
@@ -3675,6 +3812,96 @@ static void TestWeaveGapBoxAreaOutside()
 }
 
 //////////////////////////////////////////////////////////////////////
+// Topologies Q and R, HWSS twins (DL-329).  The closed gapped weave box
+// again, now rendered `hwss TRUE`: the camera's first hit is the front
+// face, and a camera ray that draws the front face's delta GAP lobe
+// continues into the box -- a CONTINUATION through the gap, priced on
+// the companion lanes by the HWSS ladders (PT's IntegrateFromHitHWSS;
+// BDPT's RecomputeSubpathThroughputNM).  Before DL-329 WeaveSPF had no
+// `EvaluateKrayNM`, PT's companion fallback priced the gap ray with the
+// CONTINUUM weave BSDF (~0) and dropped 3 of 4 lanes on every such path:
+// Q read PT-HWSS 0.0200 against pel 0.0319, R 0.0257 against 0.0796.
+// BDPT's ladder already took ratio 1 at a delta vertex, so its twins are
+// controls.
+//////////////////////////////////////////////////////////////////////
+static const char* kRasterizerBDPTWeaveGapPel =
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"bdpt_pel_rasterizer\n{\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tsamples 1024\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n"
+	"file_rasterizeroutput\n{\n\tpattern rendered/bdpt_balance_bdpt_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+
+static const char* kRasterizerBDPTWeaveGapHWSS =
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"bdpt_spectral_rasterizer\n{\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tsamples 1024\n\thwss TRUE\n"
+	"\tnum_wavelengths 160\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n"
+	"file_rasterizeroutput\n{\n\tpattern rendered/bdpt_balance_bdpt_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+
+static double RunBDPTSpectralHWSSProbe( const char* topologyLabel, const std::string& sceneBody )
+{
+	std::cout << "Testing BDPT pel vs BDPT spectral hwss TRUE on " << topologyLabel << std::endl;
+	const std::string scenePel = std::string("RISE ASCII SCENE 7\n") + kRasterizerBDPTWeaveGapPel + sceneBody;
+	const std::string sceneHW  = std::string("RISE ASCII SCENE 7\n") + kRasterizerBDPTWeaveGapHWSS + sceneBody;
+	const std::string pathPel = WriteSceneToTempFile( scenePel.c_str(), "bdptpel_probe" );
+	const std::string pathHW  = WriteSceneToTempFile( sceneHW.c_str(),  "bdpthw_probe" );
+	if( pathPel.empty() || pathHW.empty() ) {
+		Check( false, "temp file write: BDPT spectral HWSS probe" );
+		return -1;
+	}
+	const ImageStats pel  = RenderAndComputeStats( pathPel.c_str() );
+	const ImageStats hwss = RenderAndComputeStats( pathHW.c_str() );
+	PrintStats( "BDPT pel      ", pel );
+	PrintStats( "BDPT spec hwss", hwss );
+	std::remove( pathPel.c_str() );
+	std::remove( pathHW.c_str() );
+	Check( pel.valid && hwss.valid, ( std::string("BDPT pel / spectral hwss TRUE renders produced output: ") + topologyLabel ).c_str() );
+	if( !pel.valid || !hwss.valid ) return -1;
+	const double achroPel = ( pel.mean[0]  + pel.mean[1]  + pel.mean[2]  ) / 3.0;
+	const double achroHW  = ( hwss.mean[0] + hwss.mean[1] + hwss.mean[2] ) / 3.0;
+	if( achroPel <= 1e-6 ) return -1;
+	const double ratio = achroHW / achroPel;
+	std::cout << "    ACHROMATIC mean: BDPT pel = " << achroPel << ", BDPT spectral hwss TRUE = " << achroHW
+	          << ", ratio = " << ratio << "  (" << ( ( ratio - 1.0 ) * 100.0 ) << "%)" << std::endl;
+	return ratio;
+}
+
+static std::string WeaveGapBoxOmniBody()
+{
+	return std::string( kSceneWeaveGapBox ) +
+		"omni_light\n{\n\tname lgt\n\tposition 0 0 -3.0\n\tcolor 1.0 1.0 1.0\n\tpower 6.0\n}\n";
+}
+
+static std::string WeaveGapBoxAreaBody()
+{
+	return std::string( kSceneWeaveGapBox ) +
+		"uniformcolor_painter\n{\n\tname pnt_emit_wg\n\tcolor 1.0 1.0 1.0\n}\n\n"
+		"lambertian_luminaire_material\n{\n\tname mat_emit_wg\n\texitance pnt_emit_wg\n\tscale 2.0\n\tmaterial none\n}\n\n"
+		"clippedplane_geometry\n{\n\tname quad_emit_wg\n"
+			"\tpta -1.4 -1.4 -2.0\n\tptb 1.4 -1.4 -2.0\n\tptc 1.4 1.4 -2.0\n\tptd -1.4 1.4 -2.0\n}\n\n"
+		"standard_object\n{\n\tname obj_emit_wg\n\tgeometry quad_emit_wg\n\tmaterial mat_emit_wg\n}\n";
+}
+
+static void TestWeaveGapBoxHWSS()
+{
+	struct T { const char* label; std::string body; };
+	const T rows[] = {
+		{ "topology Q (DL-329: gapped weave box, omni outside)", WeaveGapBoxOmniBody() },
+		{ "topology R (DL-329: gapped weave box, AREA outside)", WeaveGapBoxAreaBody() },
+	};
+	for( const T& r : rows )
+	{
+		const double pt = RunPTSpectralHWSSProbe( r.label, r.body );
+		if( pt >= 0 ) {
+			Check( pt > 0.97 && pt < 1.03,
+				( std::string( "DL-329: PT spectral hwss TRUE tracks PT pel within 3% through the weave gap: " ) + r.label ).c_str() );
+		}
+		const double bd = RunBDPTSpectralHWSSProbe( r.label, r.body );
+		if( bd >= 0 ) {
+			Check( bd > 0.97 && bd < 1.03,
+				( std::string( "DL-329: BDPT spectral hwss TRUE tracks BDPT pel within 3% through the weave gap: " ) + r.label ).c_str() );
+		}
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
 // Topology Z: the receiver is lit by the BACK face of a double-sided
 // mesh emitter (DL-320, docs/DL320_DOUBLE_SIDED_EMITTER.md).
 //
@@ -3844,13 +4071,19 @@ static void TestNarrowFovSplatW()
 // instead of reading what the rasterizer does.)
 //
 // This topology adds an INTERIOR, non-uniform signal instead: a hard
-// floor edge at world x = 0.  Two scenes share one camera (pinhole,
+// floor edge at world x = 0.00085 -- HALF A PIXEL (0.0017 at the floor)
+// off the optical axis, so it splits a pixel in half.  (It was at x = 0
+// until DL-368 put the axis on a pixel BOUNDARY: there every
+// estimator read 0.0000 at the transition column and the fixture-sanity
+// check failed with PT, BDPT and VCM in agreement.)  Two scenes share one camera (pinhole,
 // fov 2 deg, 32 x 32, box filter) and one floor split at x = 0 -- a
 // reflective LEFT half (rho 0.5) and a BLACK right half (rho 0):
 //
 //   "direct" -- an overhead omni light lights the floor directly; PT's
 //               estimator is ordinary NEE/hit, resolved through the
-//               EYE-RAY sampling convention (x + u - 0.5, H - y + v - 0.5).
+//               EYE-RAY sampling convention (RasterConvention::PixelToScreen,
+//               (x + u, H - 1 - y + v) since DL-368; (x + u - 0.5, H - y + v - 0.5)
+//               when this topology was written).
 //   "splat"  -- topology W's own spot -> mirror -> floor caustic (the
 //               spot points straight up, away from the floor, so NEE
 //               reads exactly 0 and the ONLY estimator BDPT/VCM have is
@@ -3897,8 +4130,8 @@ static const char* kSceneStripeCommon =
 	"uniformcolor_painter\n{\n\tname pnt_floor_right\n\tcolor 0 0 0\n\tcolorspace Rec709RGB_Linear\n}\n\n"
 	"lambertian_material\n{\n\tname mat_floor_left\n\treflectance pnt_floor_left\n}\n\n"
 	"lambertian_material\n{\n\tname mat_floor_right\n\treflectance pnt_floor_right\n}\n\n"
-	"clippedplane_geometry\n{\n\tname geo_floor_left\n\tpta -1 0 1\n\tptb 0 0 1\n\tptc 0 0 -1\n\tptd -1 0 -1\n\tdoublesided TRUE\n}\n\n"
-	"clippedplane_geometry\n{\n\tname geo_floor_right\n\tpta 0 0 1\n\tptb 1 0 1\n\tptc 1 0 -1\n\tptd 0 0 -1\n\tdoublesided TRUE\n}\n\n"
+	"clippedplane_geometry\n{\n\tname geo_floor_left\n\tpta -1 0 1\n\tptb 0.00085 0 1\n\tptc 0.00085 0 -1\n\tptd -1 0 -1\n\tdoublesided TRUE\n}\n\n"
+	"clippedplane_geometry\n{\n\tname geo_floor_right\n\tpta 0.00085 0 1\n\tptb 1 0 1\n\tptc 1 0 -1\n\tptd 0.00085 0 -1\n\tdoublesided TRUE\n}\n\n"
 	"standard_object\n{\n\tname obj_floor_left\n\tgeometry geo_floor_left\n\tmaterial mat_floor_left\n}\n\n"
 	"standard_object\n{\n\tname obj_floor_right\n\tgeometry geo_floor_right\n\tmaterial mat_floor_right\n}\n\n";
 
@@ -4266,6 +4499,60 @@ static void TestRandomWalkSphereEmptyContainerV()
 }
 
 //////////////////////////////////////////////////////////////////////
+// DL-333 / DL-356 consistency pins (2026-10-02): a SMOOTH (roughness 0)
+// diffusion `subsurfacescattering_material` sphere on topology V's
+// Lambertian wall + floor, once as the analytic `sphere_geometry` and
+// once tessellated (`displaced_geometry`, displacement none, detail 64 --
+// an indexed triangle mesh, the class DL-356 suspected through
+// `bOpenSheet` / the probe orientation on meshes).  DL-333 quoted BDPT
+// +7.9 % over PT on the shipped `bdpt_sss_dragon` made smooth; re-measured
+// on master that number does not survive (see docs/MIS_HEURISTICS.md
+// section 4a, "DL-333 / DL-356"): the dragon room's residual comes from
+// its ROMM-authored wall painters converting to NEGATIVE Rec.709
+// reflectance channels (DL-386), plus rare blue fireflies in PT and BDPT
+// alike.  These rows gate that smooth diffusion SSS itself, analytic and
+// meshed, is PT / BDPT / guided-BDPT consistent.  Green on the base as
+// well (a pin, not a red-proof).  Measured (32x32, 1024 spp, salted
+// probe, n = 6 per integrator): BDPT/PT +0.05 % (analytic) / +0.07 %
+// (mesh), per-render sd 0.05-0.08 %; the mean of 3 salted replicates
+// puts the ratio sd near 0.06 %, so the 0.5 % band is ~8 sd.
+//////////////////////////////////////////////////////////////////////
+static std::string SmoothDiffusionSphereScene( bool tessellated )
+{
+	std::string s =
+		"film\n{\n\twidth 32\n\theight 32\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
+		"subsurfacescattering_material\n{\n\tname mat_sss\n\tior 1.3\n\tabsorption 0.1\n"
+			"\tscattering 1.0\n\tg 0.0\n\troughness 0.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_alb_w\n\tcolor 0.5 0.5 0.5\n}\n\n"
+		"lambertian_material\n{\n\tname mat_lamb_w\n\treflectance pnt_alb_w\n}\n\n"
+		"clippedplane_geometry\n{\n\tname quad_wall\n\tpta -1 -1 0\n\tptb 1 -1 0\n\tptc 1 1 0\n\tptd -1 1 0\n}\n\n"
+		"standard_object\n{\n\tname obj_wall\n\tgeometry quad_wall\n\tmaterial mat_lamb_w\n}\n\n"
+		"clippedplane_geometry\n{\n\tname quad_floor\n\tpta -1 -1 0\n\tptb -1 -1 2\n\tptc 1 -1 2\n\tptd 1 -1 0\n}\n\n"
+		"standard_object\n{\n\tname obj_floor\n\tgeometry quad_floor\n\tmaterial mat_lamb_w\n}\n\n"
+		"sphere_geometry\n{\n\tname sph_w\n\tradius 0.55\n}\n\n";
+	if( tessellated ) {
+		s += "displaced_geometry\n{\n\tname sph_w_mesh\n\tbase_geometry sph_w\n\tdetail 64\n"
+			"\tdisplacement none\n\tdisp_scale 0\n}\n\n";
+	}
+	s += std::string( "standard_object\n{\n\tname obj_sph_w\n\tgeometry " ) + ( tessellated ? "sph_w_mesh" : "sph_w" )
+		+ "\n\tmaterial mat_sss\n\tposition 0 -0.45 0.6\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_emit_w\n\tcolor 1.0 1.0 1.0\n}\n\n"
+		"lambertian_luminaire_material\n{\n\tname mat_emit_w\n\texitance pnt_emit_w\n\tscale 0.5\n\tmaterial none\n}\n\n"
+		"clippedplane_geometry\n{\n\tname quad_emit_w\n\tpta -6 -6 4.2\n\tptb -6 6 4.2\n\tptc 6 6 4.2\n\tptd 6 -6 4.2\n}\n\n"
+		"standard_object\n{\n\tname obj_emit_w\n\tgeometry quad_emit_w\n\tmaterial mat_emit_w\n}\n";
+	return s;
+}
+
+static void TestSmoothDiffusionSphereDL333()
+{
+	const std::string analytic = SmoothDiffusionSphereScene( false );
+	const std::string meshed = SmoothDiffusionSphereScene( true );
+	RunSSSTopology( "DL-333 pin: smooth diffusion analytic sphere (depth 16, 1024 spp x 3 salted)", analytic.c_str(), 16, 1024, 3, 0.005 );
+	RunSSSTopology( "DL-333 pin: smooth diffusion tessellated sphere (depth 16, 1024 spp x 3 salted)", meshed.c_str(), 16, 1024, 3, 0.005 );
+}
+
+//////////////////////////////////////////////////////////////////////
 // DL-375: a random-walk sphere lit by a DELTA light (omni / spot).  The
 // fixture is VCMStrategyBalanceTest's DL-317 D1/D2 scene: a Lambertian
 // wall, the sphere in front of it, the light behind the wall plane off its
@@ -4280,7 +4567,7 @@ static void TestRandomWalkSphereEmptyContainerV()
 //     camera.  Before DL-375 only the light-sampled jump family reached
 //     it; now the eye family does (NEE at its random-walk entry), the
 //     light family is cut there by the by-path partition
-//     (BDPTUtilities::UsableLightSubpathLength), and the row checks that
+//     (BDPTUtilities::LightJumpPartition), and the row checks that
 //     the path is counted exactly once.
 //////////////////////////////////////////////////////////////////////
 static const char* kSceneDeltaLitRandomWalkDL375 =
@@ -4387,6 +4674,137 @@ static void TestDeltaLitRandomWalkDL375()
 {
 	RunDeltaLitRandomWalkRowDL375( "omni (S1 sphere / D1 wall)", kLightOmniDL375, 2048, 0.05, 0.05 );
 	RunDeltaLitRandomWalkRowDL375( "spot (S2 sphere / D2 wall)", kLightSpotDL375, 2048, 0.05, 0.05 );
+}
+
+//////////////////////////////////////////////////////////////////////
+// DL-380: the by-path subsurface partition under DEPTH CAPS.  Same
+// fixture, wall pixels only (lit only through the random-walk sphere:
+// light -> sphere -> walk -> exit -> wall -> camera).  The eye family
+// covers that path by NEE at its random-walk entry, which needs TWO eye
+// surface vertices (the wall, then the sphere it jumps from), so at
+// `max_eye_depth 1` it has no strategy and the light family is the only
+// estimator.  The partition used to decide from vertex types alone, cut
+// the light family anyway, and the path was lost (-99.95%).  D2 is
+// referenced to PT (no subpath caps): every path the wall pixels see at
+// first order is reachable through the light family at E1/L16 (a
+// connection at the wall, or a splat).  D1 (the omni) is gated on a
+// DIFFUSION twin against BDPT's own E16 render: on the random walk the
+// light family estimates a slightly different function than the eye
+// family (DL-381/DL-384, a model offset of ~-4 % on this wall), which the
+// noisier omni row exposes against a 5 % band.
+// E16/L1 is the mirror: the LIGHT walk is the truncated one (it stops at
+// the entry), the eye family owns the path, and the row checks nothing
+// is counted twice.  MLT goes through the same EvaluateAllStrategies.
+//////////////////////////////////////////////////////////////////////
+static std::string DL380Rasterizer( const char* kind, int eyeDepth, int lightDepth, int spp )
+{
+	char buf[1024];
+	if( std::strcmp( kind, "pt" ) == 0 ) {
+		return SSSRasterizer( "pt", 16, spp );
+	} else if( std::strcmp( kind, "mlt" ) == 0 ) {
+		std::snprintf( buf, sizeof(buf), "mlt_rasterizer\n{\n\tmax_eye_depth %d\n\tmax_light_depth %d\n"
+			"\tbootstrap_samples 1000000\n\tchains 512\n\tmutations_per_pixel %d\n"
+			"\tlarge_step_prob 0.3\n\toidn_denoise FALSE\n}\n", eyeDepth, lightDepth, spp );
+	} else {
+		std::snprintf( buf, sizeof(buf), "bdpt_pel_rasterizer\n{\n\tmax_eye_depth %d\n\tmax_light_depth %d\n"
+			"\tsamples %d\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n", eyeDepth, lightDepth, spp );
+	}
+	return std::string( "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n" ) + buf +
+		"\nfile_rasterizeroutput\n{\n\tpattern rendered/bdpt_balance_unused\n\ttype EXR\n"
+		"\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+}
+
+//! Mean and sd of the wall-pixel mean over `n` salted renders.
+static bool DL380WallMeanBody( const std::string& rasterizer, const std::string& body, int n, unsigned saltBase,
+	double& mean, double& sd )
+{
+	double sum = 0, sumSq = 0;
+	for( int i = 0; i < n; i++ ) {
+		double s = 0, w = 0;
+		if( !RenderRegionMeansBodyDL375( rasterizer, body, saltBase + unsigned( i ), s, w ) ) return false;
+		sum += w; sumSq += w * w;
+	}
+	mean = sum / n;
+	sd = n > 1 ? std::sqrt( std::max( 0.0, ( sumSq - n * mean * mean ) / ( n - 1 ) ) ) : 0;
+	return true;
+}
+
+static bool DL380WallMean( const std::string& rasterizer, const char* light, int n, unsigned saltBase,
+	double& mean, double& sd )
+{
+	return DL380WallMeanBody( rasterizer, std::string( kSceneDeltaLitRandomWalkDL375 ) + light, n, saltBase, mean, sd );
+}
+
+//! The DL-375 fixture with the sphere a smooth-profile DIFFUSION material
+//! (same coefficients) instead of the random walk.  The diffusion BSSRDF is
+//! reciprocal -- the eye and light families estimate the SAME function --
+//! so a cap that hands the path from one family to the other must leave the
+//! image unchanged.  The random walk is not (DL-381/DL-384: its light family
+//! reads a few percent off the eye family on this scene, a model offset the
+//! partition cannot remove), which is why the D1 row is gated here.
+static std::string DL380DiffusionBody( const char* light )
+{
+	std::string b = kSceneDeltaLitRandomWalkDL375;
+	const std::string mat = "\tmaterial mat_rw\n";
+	const std::size_t at = b.find( mat );
+	if( at != std::string::npos ) {
+		b.replace( at, mat.size(), "\tmaterial mat_diff\n" );
+	}
+	return std::string( "subsurfacescattering_material\n{\n\tname mat_diff\n\tior 1.3\n\tabsorption 0.1\n"
+		"\tscattering 10.0\n\tg 0.0\n\troughness 0.3\n}\n\n" ) + b + light;
+}
+
+static void RunDL380Row( const char* name, const char* light, const char* kind, int eyeDepth, int lightDepth,
+	int spp, int n, double ptMean, double band )
+{
+	std::cout << "Testing DL-380 " << name << std::endl;
+	double m = 0, sd = 0;
+	const bool ok = DL380WallMean( DL380Rasterizer( kind, eyeDepth, lightDepth, spp ), light, n, 380u, m, sd );
+	Check( ok, ( std::string( "DL-380 renders produced output: " ) + name ).c_str() );
+	if( !ok ) return;
+	std::printf( "    wall mean %.7f (sd %.7f, n %d) vs PT %.7f\n", m, sd, n, ptMean );
+	CheckSSSMeanBand( ( std::string( "DL-380 wall pixels / PT: " ) + name ).c_str(), ptMean, m, band );
+}
+
+//! D1 omni on the DIFFUSION twin: BDPT at E1/L16 (the light family owns the
+//! wall path) against BDPT at E16/L16 (the eye family owns it, by NEE at its
+//! entry).  Band 7 %: per-render sd measured 3.4 % (E1, n = 10) and 0.7 %
+//! (E16, n = 6) on the review's runs, so the ratio sd at n = 8 / 4 is
+//! ~1.3 %; measured -0.38 % (n=16, review round 2; +0.1..+0.4 % in gate runs)
+//! plus 4 sd is 6.6 %.
+static void RunDL380DiffusionD1Row()
+{
+	std::cout << "Testing DL-380 D1 omni, diffusion twin: BDPT max_eye_depth 1 / max_light_depth 16 vs 16 / 16" << std::endl;
+	const std::string body = DL380DiffusionBody( kLightOmniDL375 );
+	double e1 = 0, e1Sd = 0, e16 = 0, e16Sd = 0;
+	const bool ok = DL380WallMeanBody( DL380Rasterizer( "bdpt", 1, 16, 2048 ), body, 8, 3800u, e1, e1Sd )
+		&& DL380WallMeanBody( DL380Rasterizer( "bdpt", 16, 16, 2048 ), body, 4, 3810u, e16, e16Sd );
+	Check( ok, "DL-380 diffusion-twin renders produced output" );
+	if( !ok ) return;
+	std::printf( "    wall E1/L16 %.7f (sd %.7f, n 8)  E16/L16 %.7f (sd %.7f, n 4)\n", e1, e1Sd, e16, e16Sd );
+	CheckSSSMeanBand( "DL-380 D1 omni diffusion twin, BDPT E1/L16 / E16/L16 (wall pixels)", e16, e1, 0.07 );
+}
+
+static void TestDepthCappedPartitionDL380( bool withMLT )
+{
+	const int n = 3;
+	double ptSpot = 0, sdSpot = 0;
+	const bool ok = DL380WallMean( DL380Rasterizer( "pt", 16, 16, 2048 ), kLightSpotDL375, n, 380u, ptSpot, sdSpot );
+	Check( ok, "DL-380 PT reference produced output" );
+	if( !ok ) return;
+	std::printf( "    PT wall reference: D2 spot %.7f (sd %.7f), n %d\n", ptSpot, sdSpot, n );
+	if( withMLT ) {
+		// MLT normalizes its image by its bootstrap, which goes through the
+		// same EvaluateAllStrategies; one render, probe band.
+		RunDL380Row( "D2 spot, MLT max_eye_depth 1 / max_light_depth 16", kLightSpotDL375, "mlt", 1, 16, 256, 1, ptSpot, 0.10 );
+		return;
+	}
+	RunDL380DiffusionD1Row();
+	RunDL380Row( "D2 spot, BDPT max_eye_depth 1 / max_light_depth 16", kLightSpotDL375, "bdpt", 1, 16, 2048, n, ptSpot, 0.05 );
+	RunDL380Row( "D2 spot, BDPT max_eye_depth 16 / max_light_depth 1 (light truncated: no double count)",
+		kLightSpotDL375, "bdpt", 16, 1, 2048, n, ptSpot, 0.05 );
+	RunDL380Row( "D2 spot, BDPT max_eye_depth 2 / max_light_depth 16 (eye covers exactly at its cap)",
+		kLightSpotDL375, "bdpt", 2, 16, 2048, n, ptSpot, 0.05 );
 }
 
 // DL-346: a conservative environment-lit medium has L=1 independently
@@ -4693,11 +5111,14 @@ static bool MeasureDL381( const char* kind, int spp, const char* mat, bool glass
 //! INDEPENDENT light tracer of its own model function
 //! (tools/DL381RandomWalkReciprocityMC.cpp, 4e8 photons; constants and
 //! their 16-batch standard errors below).  Exact physics (refracted at both
-//! ends) reads sphere 0.1186 / wall 0.0190: the light family's -11% is
-//! CLOSER to it than PT's -18%, so "fixing" the light family to PT's
+//! ends) reads sphere 0.1280 / wall 0.0194: the light family's -12% is
+//! CLOSER to it than PT's -17%, so "fixing" the light family to PT's
 //! number would move BDPT/VCM AWAY from physics.  A light family that
-//! reproduced PT's function (sphere -7.4%) or a reciprocal both-ends-cosine
-//! model (sphere -18%) fails the sphere band.  Smooth boundary (roughness
+//! reproduced PT's function (sphere -6.0%) or a reciprocal both-ends-cosine
+//! model (sphere -18.5%) fails the sphere band.  (Re-baselined 2026-10-02
+//! for DL-368's pixel-centre convention; the tool bins photons by RISE's
+//! pixel centres, so every constant here moved -- the old ones read
+//! sphere 0.1186 / 0.1052 / 0.0974.)  Smooth boundary (roughness
 //! 0) so the MC needs no microfacet model; the walk itself ignores
 //! roughness.  docs/DL381_RANDOM_WALK_RECIPROCITY.md.
 static void CheckDL381( const char* label, double measured, double reference, double band )
@@ -4711,13 +5132,14 @@ static void CheckDL381( const char* label, double measured, double reference, do
 static void TestRandomWalkReciprocityDL381()
 {
 	struct Row { const char* kind; bool glass; double refS, refW; const char* what; };
-	// MC references (standard error over 16 batches): EYE model, tally A: sphere
-	// 0.097403 (0.00064), wall 0.019723 (0.00014); LIGHT model, tally B:
-	// sphere 0.105191 (0.00047), wall 0.019601 (0.00012).
+	// MC references (standard error over 16 batches; DL-368 pixel centres,
+	// 2026-10-02): EYE model, tally A: sphere 0.105680 (0.00061), wall
+	// 0.020096 (0.00014); LIGHT model, tally B: sphere 0.112412 (0.00050),
+	// wall 0.020129 (0.00012).
 	const Row rows[] = {
-		{ "pt",     false, 0.097403, 0.019723, "PT (eye family, no glass) vs the EYE-model MC" },
-		{ "bdpt",   true,  0.105191, 0.019601, "BDPT G-RW (light family only) vs the LIGHT-model MC" },
-		{ "vcmoff", true,  0.105191, 0.019601, "VCM merging off G-RW (light family only) vs the LIGHT-model MC" },
+		{ "pt",     false, 0.105680, 0.020096, "PT (eye family, no glass) vs the EYE-model MC" },
+		{ "bdpt",   true,  0.112412, 0.020129, "BDPT G-RW (light family only) vs the LIGHT-model MC" },
+		{ "vcmoff", true,  0.112412, 0.020129, "VCM merging off G-RW (light family only) vs the LIGHT-model MC" },
 	};
 	for( const Row& r : rows ) {
 		std::cout << "Testing DL-381 " << r.what << std::endl;
@@ -4734,8 +5156,236 @@ static void TestRandomWalkReciprocityDL381()
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+// DL-354: a SMALL emitter seen directly by the camera, rendered at three
+// pixel sizes.  `sms_k2_flatslab`'s visible luminaire (a 0.08 x 0.08
+// double-sided quad at y = 1.5, ~2.4 x 0.4 px at 100 x 75) with the slab
+// and floor kept, so the fixture is the row's own.  The gated quantity
+// is the ENERGY of a fixed fractional window around the emitter's image
+// (sum of achromatic pixel values times pixel solid angle ~ 1/(W H)),
+// which is resolution independent for a correct estimator.
+//////////////////////////////////////////////////////////////////////
+static std::string DL354Scene( const char* kind, unsigned w, unsigned h, unsigned spp )
+{
+	std::string r = "RISE ASCII SCENE 7\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n";
+	char buf[512];
+	const bool centred = kind[0] && kind[std::strlen( kind ) - 1] == 'c';
+	// "pts" before "pt": "pt" is a prefix of it (and of "ptc").
+	if( std::strncmp( kind, "pts", 3 ) == 0 ) {
+		std::snprintf( buf, sizeof(buf), "pathtracing_spectral_rasterizer\n{\n\tsamples %u\n\thwss FALSE\n\tnum_wavelengths 160\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n", spp );
+	} else if( std::strncmp( kind, "pt", 2 ) == 0 ) {
+		std::snprintf( buf, sizeof(buf), "pathtracing_pel_rasterizer\n{\n\tsamples %u\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n", spp );
+	} else if( std::strncmp( kind, "bdpts", 5 ) == 0 || std::strncmp( kind, "bdpth", 5 ) == 0 ) {
+		std::snprintf( buf, sizeof(buf), "bdpt_spectral_rasterizer\n{\n\tsamples %u\n\thwss %s\n\tnum_wavelengths 160\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n",
+			spp, kind[4] == 'h' ? "TRUE" : "FALSE" );
+	} else if( std::strncmp( kind, "mlt", 3 ) == 0 ) {
+		std::snprintf( buf, sizeof(buf), "mlt_rasterizer\n{\n\tbootstrap_samples 1000000\n\tchains 128\n\tmutations_per_pixel %u\n\tlarge_step_prob 0.3\n\toidn_denoise FALSE\n}\n\n", spp );
+	} else if( std::strncmp( kind, "vcm", 3 ) == 0 ) {
+		std::snprintf( buf, sizeof(buf), "vcm_pel_rasterizer\n{\n\tsamples %u\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n", spp );
+	} else {
+		std::snprintf( buf, sizeof(buf), "bdpt_pel_rasterizer\n{\n\tsamples %u\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n", spp );
+	}
+	r += buf;
+	std::snprintf( buf, sizeof(buf), "film\n{\n\twidth %u\n\theight %u\n}\n\n", w, h );
+	r += buf;
+	r += centred ? "pinhole_camera\n{\n\tlocation 0 2.0 3\n\tlookat 0 1.5 0\n\tup 0 1 0\n\tfov 45.0\n}\n\n"
+		: "pinhole_camera\n{\n\tlocation 0 2.0 3\n\tlookat 0 0.2 0\n\tup 0 1 0\n\tfov 45.0\n}\n\n";
+	r +=
+		"uniformcolor_painter\n{\n\tname pnt_floor\n\tcolor 0.8 0.75 0.65\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_light\n\tcolor 1.0 0.95 0.85\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_glass\n\tcolor 1.0 1.0 1.0\n}\n\n"
+		"lambertian_material\n{\n\tname floor_mat\n\treflectance pnt_floor\n}\n\n"
+		"lambertian_luminaire_material\n{\n\tname light_mat\n\texitance pnt_light\n\tscale 2000.0\n\tmaterial none\n}\n\n"
+		"perfectrefractor_material\n{\n\tname glass_mat\n\trefractance pnt_glass\n\tior 2.2\n}\n\n"
+		"clippedplane_geometry\n{\n\tname plane_base\n\tpta -0.5 -0.5 0\n\tptb 0.5 -0.5 0\n\tptc 0.5 0.5 0\n\tptd -0.5 0.5 0\n}\n\n"
+		"clippedplane_geometry\n{\n\tname floor_geom\n\tpta -4.0 0.0 -4.0\n\tptb -4.0 0.0 4.0\n\tptc 4.0 0.0 4.0\n\tptd 4.0 0.0 -4.0\n}\n\n"
+		"clippedplane_geometry\n{\n\tname light_geom\n\tpta -0.1 0.0 -0.1\n\tptb 0.1 0.0 -0.1\n\tptc 0.1 0.0 0.1\n\tptd -0.1 0.0 0.1\n}\n\n"
+		"standard_object\n{\n\tname floor\n\tgeometry floor_geom\n\tmaterial floor_mat\n}\n\n"
+		"standard_object\n{\n\tname top_plane\n\tgeometry plane_base\n\torientation -90 0 0\n\tposition 0 0.55 0\n\tmaterial glass_mat\n}\n\n"
+		"standard_object\n{\n\tname bot_plane\n\tgeometry plane_base\n\torientation 90 0 0\n\tposition 0 0.45 0\n\tmaterial glass_mat\n}\n\n"
+		"standard_object\n{\n\tname area_light\n\tgeometry light_geom\n\tposition 0 1.5 0\n\tscale 0.4 0.4 0.4\n\tmaterial light_mat\n}\n";
+	return r;
+}
+
+//! Window energy (achromatic sum over the fractional window, times
+//! 100*75/(W*H) so it reads in the row's 100 x 75 "window sum" units) of
+//! `n` salted renders: mean and sd.  Window: x in [0.35, 0.65) W, y in
+//! [0, 0.10) H -- the emitter's image and black background only.
+static bool DL354WindowEnergy( const char* kind, unsigned w, unsigned h, unsigned spp, int n, unsigned saltBase,
+	double& mean, double& sd )
+{
+	const std::string scene = DL354Scene( kind, w, h, spp );
+	const std::string path = WriteSceneToTempFile( scene.c_str(), "dl354" );
+	if( path.empty() ) return false;
+	std::vector<double> vals;
+	for( int i = 0; i < n; i++ ) {
+		SobolSamplerTestHooks::ValueSalt().store( SobolSequence::HashCombine( saltBase, unsigned( i ) ) );
+		IJobPriv* pJob = nullptr;
+		if( !RISE_CreateJobPriv( &pJob ) || !pJob ) break;
+		if( !pJob->LoadAsciiSceneViaCst( path.c_str() ) ) { safe_release( pJob ); break; }
+		pJob->RemoveRasterizerOutputs();
+		CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
+		GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "test capture output" );
+		pJob->GetRasterizer()->AddRasterizerOutput( pCap );
+		std::srand( 0x354u + unsigned( i ) );
+		const bool ok = pJob->Rasterize() && pCap->width == w && pCap->height == h;
+		if( ok ) {
+			const bool c = kind[0] && kind[std::strlen( kind ) - 1] == 'c';
+			const unsigned x0 = unsigned( 0.35 * w ), x1 = unsigned( 0.65 * w );
+			const unsigned y0 = c ? unsigned( 0.40 * h ) : 0u, y1 = c ? unsigned( std::ceil( 0.60 * h ) ) : unsigned( std::ceil( 0.10 * h ) );
+			double s = 0;
+			for( unsigned y = y0; y < y1; y++ ) for( unsigned x = x0; x < x1; x++ ) {
+				const RISEColor& c = pCap->pixels[y * w + x];
+				s += ( c.base.r + c.base.g + c.base.b ) / 3.0 * c.a;
+			}
+			vals.push_back( s * ( 100.0 * 75.0 ) / ( double( w ) * double( h ) ) );
+		}
+		safe_release( pCap );
+		safe_release( pJob );
+		if( !ok ) break;
+	}
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
+	std::remove( path.c_str() );
+	if( int( vals.size() ) != n || n <= 0 ) return false;
+	mean = 0; for( double v : vals ) mean += v; mean /= n;
+	sd = 0; for( double v : vals ) sd += ( v - mean ) * ( v - mean );
+	sd = n > 1 ? std::sqrt( sd / ( n - 1 ) ) : 0.0;
+	return true;
+}
+
+//! DL-354 gate: BDPT (and BDPT spectral, hwss TRUE) vs PT window energy of
+//! the directly visible small luminaire at two pixel sizes.  Pre-fix the
+//! (1,1) strategy was never evaluated while MISWeight(0,2) counted it, so
+//! BDPT read r^2/(1+r^2) low with r the light's area density over the
+//! PER-PIXEL camera density at the emitter: measured (n = 3 salted, 64 spp
+//! BDPT, PT 256 spp) 0.58 at 100 x 75, 0.957 at 200 x 150, 0.997 at
+//! 400 x 300.  Per-render sd ~1.1-1.2 % on both sides at 100 x 75 (n = 6
+//! there: ratio sd ~0.7 %, the 3 % band ~4.4 sd) and ~0.2-0.6 % at
+//! 200 x 150 (n = 3); bands 3 % / 2.5 %.  The spectral row
+//! compares BDPT `hwss TRUE` (256 spp) against a real PT SPECTRAL render
+//! (4096 spp; a review found the first revision's "pts" kind fell through
+//! to the PT pel rasterizer).  Per-render sd: BDPT HWSS 1.2 % (n = 4);
+//! PT spectral 1.0 % and 2.7 % in two salt sets (n = 4, n = 3 -- its hero
+//! wavelength gives the tiny emitter a heavy tail), pooled ~1.8 %.  With
+//! n = 4 renders a side the ratio sd is ~1.1 % and the 5 % band ~4.6 sd;
+//! pre-fix BDPT HWSS read ~394 against PT spectral's ~688 (0.57).
+static void TestSmallVisibleEmitterResolutionSweep()
+{
+	struct Row { const char* kind; const char* ref; unsigned w, h, spp, refSpp; double band; int n; };
+	const Row rows[] = {
+		{ "bdpt",  "pt",  100, 75,  64, 256, 0.03, 6 },
+		{ "bdpt",  "pt",  200, 150, 64, 256, 0.025, 3 },
+		{ "bdpth", "pts", 100, 75, 256, 4096, 0.05, 4 },
+	};
+	for( const Row& r : rows ) {
+		std::printf( "Testing DL-354 small visible emitter: %s vs %s at %u x %u\n", r.kind, r.ref, r.w, r.h );
+		double m = 0, sd = 0, mr = 0, sdr = 0;
+		const bool ok = DL354WindowEnergy( r.kind, r.w, r.h, r.spp, r.n, 0x354B1u, m, sd ) &&
+			DL354WindowEnergy( r.ref, r.w, r.h, r.refSpp, r.n, 0x354B2u, mr, sdr );
+		char buf[256];
+		std::snprintf( buf, sizeof(buf), "DL-354 %s/%s window energy at %u x %u: %.2f (sd %.2f) / %.2f (sd %.2f) = %.4f (band %.1f%%)",
+			r.kind, r.ref, r.w, r.h, m, sd, mr, sdr, mr > 0 ? m / mr : 0.0, 100.0 * r.band );
+		std::cout << "    " << buf << std::endl;
+		Check( ok && mr > 0 && std::fabs( m / mr - 1.0 ) <= r.band, buf );
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// DL-386 (2026-10-02): the `vcm_sss_dragon` room with the dragon replaced
+// by a Lambertian sphere.  Its red and green walls are authored
+// `colorspace ROMMRGB_Linear`, which converts by matrix to Rec.709
+// reflectances with NEGATIVE channels -- red (1.134, -0.100, 0.020),
+// green (-0.233, 0.462, -0.029).  PT and BDPT disagreed on that signed
+// albedo (review on master f03359223: BDPT/PT +0.23 % whole frame,
+// -0.005 % with the negatives clamped); the mechanism was localised only
+// by the clamp, not attributed.  Since DL-386 every material reflectance
+// read clamps negative channels to 0 (IPainter.h `ReflectanceColor`), so
+// the two integrators see the same non-negative albedo.  Whole-frame
+// achromatic mean, salted replicates, the SAME salts for both integrators.
+//////////////////////////////////////////////////////////////////////
+static const char* kSceneRommRoomDL386 =
+	"film\n{\n\twidth 48\n\theight 36\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0.2 0 19.5\n\tlookat 0.2 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_white\n\tcolor 0.73 0.73 0.73\n\tcolorspace ROMMRGB_Linear\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_red\n\tcolor 0.57 0.025 0.025\n\tcolorspace ROMMRGB_Linear\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_green\n\tcolor 0.025 0.38 0.025\n\tcolorspace ROMMRGB_Linear\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_light\n\tcolor 1.0 0.95 0.85\n\tcolorspace ROMMRGB_Linear\n}\n\n"
+	"lambertian_material\n{\n\tname white\n\treflectance pnt_white\n}\n\n"
+	"lambertian_material\n{\n\tname red\n\treflectance pnt_red\n}\n\n"
+	"lambertian_material\n{\n\tname green\n\treflectance pnt_green\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname lum\n\texitance pnt_light\n\tscale 5\n\tmaterial none\n}\n\n"
+	"sphere_geometry\n{\n\tname sph\n\tradius 2.2\n}\n\n"
+	"standard_object\n{\n\tname ball\n\tgeometry sph\n\tposition 1 -1.3 0\n\tmaterial white\n}\n\n"
+	"clippedplane_geometry\n{\n\tname wallgeom\n\tpta -14.1 -14.1 0\n\tptb 14.1 -14.1 0\n\tptc 14.1 14.1 0\n\tptd -14.1 14.1 0\n}\n\n"
+	"standard_object\n{\n\tname rwall\n\tgeometry wallgeom\n\tposition 5.5 0 0\n\torientation 0 -90 0\n\tmaterial red\n}\n\n"
+	"standard_object\n{\n\tname bwall\n\tgeometry wallgeom\n\tposition 0 0 -10.5\n\tmaterial white\n}\n\n"
+	"standard_object\n{\n\tname twall\n\tgeometry wallgeom\n\tposition 0 3.5 0\n\torientation 90 0 0\n\tmaterial white\n}\n\n"
+	"standard_object\n{\n\tname botwall\n\tgeometry wallgeom\n\tposition 0 -3.5 0\n\torientation -90 0 0\n\tmaterial white\n}\n\n"
+	"standard_object\n{\n\tname lwall\n\tgeometry wallgeom\n\tposition -6 0 0\n\torientation 0 90 0\n\tmaterial green\n}\n\n"
+	"clippedplane_geometry\n{\n\tname lightgeom\n\tpta -5.0 -5.0 0\n\tptb 5.0 -5.0 0\n\tptc 5.0 5.0 0\n\tptd -5.0 5.0 0\n}\n\n"
+	"standard_object\n{\n\tname light\n\tgeometry lightgeom\n\tmaterial lum\n\tposition 0 0 -10.0\n}\n";
+
+static bool MeasureRommRoomDL386( const char* kind, int spp, int n, double& mean, double& sd )
+{
+	const std::string scene = std::string( "RISE ASCII SCENE 7\n" ) + SSSRasterizer( kind, 16, spp ) + kSceneRommRoomDL386;
+	const std::string path = WriteSceneToTempFile( scene.c_str(), "dl386_room" );
+	if( path.empty() ) return false;
+	std::vector<double> v;
+	for( int i = 0; i < n; i++ ) {
+		SobolSamplerTestHooks::ValueSalt().store( SobolSequence::HashCombine( 0x386u, unsigned( i ) ) );
+		const ImageStats st = RenderAndComputeStats( path.c_str() );
+		if( !st.valid ) break;
+		v.push_back( ( st.mean[0] + st.mean[1] + st.mean[2] ) / 3.0 );
+	}
+	SobolSamplerTestHooks::ValueSalt().store( 0u );
+	std::remove( path.c_str() );
+	if( int( v.size() ) != n || n < 2 ) return false;
+	double s = 0;
+	for( double x : v ) s += x;
+	mean = s / n;
+	double ss = 0;
+	for( double x : v ) ss += ( x - mean ) * ( x - mean );
+	sd = std::sqrt( ss / ( n - 1 ) );
+	return std::isfinite( mean ) && mean > 0;
+}
+
+static void TestNegativeReflectanceRoomDL386()
+{
+	std::cout << "Testing DL-386 ROMM-walled room, Lambertian sphere (PT vs BDPT, 48x36, 512 spp x 4 salted)" << std::endl;
+	double pt = 0, ptSd = 0, bd = 0, bdSd = 0;
+	const bool okPT = MeasureRommRoomDL386( "pt", 512, 4, pt, ptSd );
+	const bool okBD = MeasureRommRoomDL386( "bdpt", 512, 4, bd, bdSd );
+	Check( okPT && okBD, "DL-386 renders produced output" );
+	if( !okPT || !okBD ) return;
+	const double rel = bd / pt - 1.0;
+	// Standard error of the ratio from the two replicate spreads (n = 4 each).
+	const double se = std::sqrt( ( ptSd / pt ) * ( ptSd / pt ) + ( bdSd / bd ) * ( bdSd / bd ) ) / 2.0;
+	std::printf( "    PT %.7f (sd %.7f)  BDPT %.7f (sd %.7f)  BDPT/PT %+.4f%% (se %.4f%%)\n",
+		pt, ptSd, bd, bdSd, 100.0 * rel, 100.0 * se );
+	Check( std::fabs( rel ) <= 0.0010, "DL-386 BDPT whole-frame mean agrees with PT to 0.10 % on the ROMM-walled room" );
+}
+
 int main( int argc, char** argv )
 {
+	if( argc == 2 && std::strcmp( argv[1], "--dl354-only" ) == 0 ) {
+		TestSmallVisibleEmitterResolutionSweep();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+	// DL-354 probe: `--dl354-probe kind W H spp n` prints the window energy.
+	if( argc == 7 && std::strcmp( argv[1], "--dl354-probe" ) == 0 ) {
+		double m = 0, sd = 0;
+		const bool ok = DL354WindowEnergy( argv[2], unsigned( std::atoi( argv[3] ) ), unsigned( std::atoi( argv[4] ) ),
+			unsigned( std::atoi( argv[5] ) ), std::atoi( argv[6] ), 0x354Au, m, sd );
+		std::printf( "DL354 %s %sx%s spp=%s n=%s ok=%d window %.4f (sd %.4f)\n", argv[2], argv[3], argv[4], argv[5], argv[6], int( ok ), m, sd );
+		return ok ? 0 : 1;
+	}
+ if(argc == 2 && std::strcmp(argv[1],"--dl386-only") == 0) {
+  TestNegativeReflectanceRoomDL386();
+  std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+  return failCount == 0 ? 0 : 1;
+ }
  if(argc == 2 && std::strcmp(argv[1],"--env-medium-only") == 0) {
   TestEnvironmentScatteringMediumDL346();
   std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
@@ -4748,6 +5398,12 @@ int main( int argc, char** argv )
 		TestSchlickMultiLobe();
 		TestGGXLambertianControl();
 		TestCompositeMaterial();
+		TestDataDrivenSPFDL325();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+	if( argc == 2 && std::strcmp(argv[1], "--dl325-only") == 0 ) {
+		TestDataDrivenSPFDL325();
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
@@ -4770,11 +5426,18 @@ int main( int argc, char** argv )
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
+	// DL-380: the depth-capped partition rows (BDPT; --dl380-mlt: the MLT row alone).
+	if( argc == 2 && ( std::strcmp(argv[1], "--dl380-only") == 0 || std::strcmp(argv[1], "--dl380-mlt") == 0 ) ) {
+		TestDepthCappedPartitionDL380( std::strcmp(argv[1], "--dl380-mlt") == 0 );
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
 	if( argc == 2 && std::strcmp(argv[1], "--weave-gap-only") == 0 ) {
 		TestBacklitThinCurtain();
 		TestGappedCurtainAreaLight();
 		TestWeaveGapBoxOmniOutside();
 		TestWeaveGapBoxAreaOutside();
+		TestWeaveGapBoxHWSS();
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
@@ -4788,6 +5451,11 @@ int main( int argc, char** argv )
 	// DL-320: topology Z alone (the focused before/after A/B).
 	if( argc == 2 && std::strcmp(argv[1], "--back-face-only") == 0 ) {
 		TestBackFaceEmitterZ();
+		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+	if( argc == 2 && std::strcmp( argv[1], "--dl333-only" ) == 0 ) {
+		TestSmoothDiffusionSphereDL333();
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
@@ -4844,7 +5512,7 @@ int main( int argc, char** argv )
 	if( argc > 1 ) {
 		if( argc != 3 || std::strcmp(argv[1], "--spectral-only") != 0 ||
 			(std::strcmp(argv[2], "1") != 0 && std::strcmp(argv[2], "2") != 0) ) {
-			std::cerr << "Usage: BDPTStrategyBalanceTest [--spectral-only 1|2 | --spectral-aggregate-unit | --materials-only | --guided-only | --weave-gap-only | --sss-only | --dl375-only | --back-face-only | --narrow-fov-only | --dl377-only | --dl377-mlt | --dl381-only | --dl381-probe kind spp mat glass n]" << std::endl;
+			std::cerr << "Usage: BDPTStrategyBalanceTest [--spectral-only 1|2 | --spectral-aggregate-unit | --materials-only | --dl325-only | --guided-only | --weave-gap-only | --sss-only | --dl375-only | --dl380-only | --dl380-mlt | --back-face-only | --narrow-fov-only | --dl377-only | --dl377-mlt | --dl333-only | --dl386-only | --dl381-only | --dl381-probe kind spp mat glass n | --dl354-only | --dl354-probe kind W H spp n]" << std::endl;
 			return 2;
 		}
 		spectralSampleScale = std::strcmp(argv[2], "2") == 0 ? 2 : 1;
@@ -4871,6 +5539,7 @@ int main( int argc, char** argv )
 	TestSchlickMultiLobe();
 	TestGGXLambertianControl();
 	TestCompositeMaterial();
+	TestDataDrivenSPFDL325();
 	TestSchlickMultiLobeGuided();
 	TestPolishedGuidedAB();
 	TestSpectralHWSSCompanionLadder();
@@ -4884,15 +5553,19 @@ int main( int argc, char** argv )
 	TestGenericHumanTissueOriginFix();
 	TestWeaveGapBoxOmniOutside();
 	TestWeaveGapBoxAreaOutside();
+	TestWeaveGapBoxHWSS();
 	TestRoughSSSEmptyContainerU();
 	TestRandomWalkSphereEmptyContainerV();
+	TestSmoothDiffusionSphereDL333();
 	TestDeltaLitRandomWalkDL375();
+	TestDepthCappedPartitionDL380( false );
  TestEnvironmentScatteringMediumDL346();
 	TestBackFaceEmitterZ();
 	TestNarrowFovSplatW();
 	TestNarrowFovStripeGuard();
 	TestLightSideDiffusionEntryDL377();
 	TestRandomWalkReciprocityDL381();
+	TestSmallVisibleEmitterResolutionSweep();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

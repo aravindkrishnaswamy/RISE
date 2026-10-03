@@ -188,19 +188,20 @@ the SAME integral with no reverse jump density to MIS-combine them;
 keeping both, each closed over itself, counts the path twice.  So the
 partition is BY PATH: a path belongs to the EYE-sampled family whenever
 that family has at least one strategy for it, and to the LIGHT-sampled
-family only when it has none.  Which case holds depends only on the
-light-side segment between the jump and the light root (or the previous
-kept jump), so the light walk decides it
-(`BDPTUtilities::LightSegmentEyeCoverable`, shared by VCM and -- since
-DL-375 -- BDPT and MLT):
+family only when it has none.  Which strategies the eye family has
+depends on the light-side segment between the jump and the light root
+(or the previous kept jump) (`BDPTUtilities::LightSegmentEyeWitness`,
+shared by VCM and -- since DL-375 -- BDPT and MLT):
 the eye family covers the path if it can hit the root (s=0: a non-delta
 light), merge anywhere in the segment (merging on, a non-delta surface,
 including its own entry when that is connectible), or NEE / connect
 across an edge whose two ends are non-delta and connectible (the root
-counts for NEE).  A covered light-side jump ends the usable light
-subpath -- `ConvertLightSubpath` stops there and the splat / connection
-loops stop at `UsableLightSubpathLength` (BDPT: `EvaluateAllStrategies`
-enumerates `s` only up to it); an uncovered one is KEPT:
+counts for NEE) -- and, since DL-380, only if the eye walk's DEPTH CAPS
+let it generate that subpath (below).  A covered light-side jump takes
+every strategy whose light part crosses it away from the light family
+(`BDPTUtilities::LightJumpPartition::Keeps`, checked per (s,t) in BDPT /
+MLT and per splat, connection and merge in VCM); an uncovered one is
+KEPT:
 zero state at the light entry, no merge there (entries are never
 stored), the light-entry onward update (connection at the entry only),
 and Sw evaluated in the direction the entry re-emits toward the eye
@@ -313,6 +314,114 @@ The size of the old dilution scales with the profile area over the
 squared light distance, so room-scale shipped scenes barely moved
 (`vcm_sss_dragon`, `bdpt_sss_different_bsdf`: no significant change).
 
+**DL-333 / DL-356 re-measured (2026-10-02, `debt-dl333`): no residual SSS
+bias.**  The two rows quoted BDPT +7.9 % over PT on `bdpt_sss_dragon` made
+smooth and VCM +21 % (merging on) / +61..71 % (off) on `vcm_sss_dragon`.
+Re-measured on master (salted Sobol', OIDN off, in-process capture; the
+merging-off row also at the DL-317 merge revision and through the CLI):
+
+- Merging OFF, BDPT and smooth diffusion agree with PT to ~0.2 % on the whole
+  frame; the +7.9 % is a firefly tail -- one BDPT render in twelve carried a
+  blue cluster worth +8 % of the frame mean, and PT shows the same tail.
+- Every bidirectional-vs-PT gap left in that ROOM (+1..+3.5 % on all
+  indirectly lit surfaces, a Lambertian sphere for the dragon included) comes
+  from its `colorspace ROMMRGB_Linear` wall painters, whose Rec.709
+  reflectances carry NEGATIVE channels -- red wall (1.134, -0.100, 0.020),
+  green (-0.233, 0.462, -0.029).  Clamping only the negative channels
+  closes it to noise (DL-386, a policy question, not an SSS one; FIXED
+  2026-10-02 by clamping negative reflectance channels at every material
+  read -- `BDPTStrategyBalanceTest --dl386-only`, [DL386_NEGATIVE_REFLECTANCE_CLAMP.md](DL386_NEGATIVE_REFLECTANCE_CLAMP.md)).
+- Merging ON at the scene's authored `merge_radius 0.1` reads +1.5..+3.3 %
+  on the frame and up to ~+15 % on the dragon -- kernel bias of a fixed
+  radius that is wide against the dragon's thin, backlit features: it
+  shrinks with the radius (0.025: +0.4 %), a Lambertian dragon shows it too
+  (+6.7 % on its region), and the automatic radius (DL-319) reads +0.1 %.
+
+Discriminators that rule out the mesh suspects (`bOpenSheet` /
+`BSSRDFEntryFacing`, the probe orientation, `AreaToSolidAngleFactor`): a
+smooth diffusion sphere on Lambertian walls, analytic vs tessellated, reads
+BDPT/PT +0.05 % / +0.07 % and VCM/PT within 0.13 % merging on and off --
+pinned by `BDPTStrategyBalanceTest --dl333-only` and
+`VCMStrategyBalanceTest --dl333-only`.  Lesson: before attributing a
+bidirectional gap to the material on screen, render the same room with that
+material made Lambertian AND look at the walls; a block map of BDPT/PT over
+the whole frame is two renders.
+
+#### 4a.1 The partition under depth caps (DL-380, 2026-10-02)
+
+"The eye family has a strategy for the path" means the EYE WALK can
+generate the covering subpath, and that walk is capped: at most
+`max_eye_depth` surface hits and at most `WalkIterationBudget(
+max_eye_depth, max_volume_bounce)` loop iterations (one per surface hit,
+medium scatter or escape; both generators read the same helper).
+Deciding from vertex types alone cut the light family where the covering
+eye strategy lay past the cap, and the path was estimated by nothing.
+
+A walk counts a surface hit for every SURFACE vertex except a subsurface
+ENTRY (pushed in the same iteration as the hit it jumped from); the
+camera, a light root, medium vertices and an escape do not count.  A
+light-side jump pair counts ONE in either direction (the light walk
+counts the hit where it went in, the eye walk -- arriving at the entry's
+point along a ray -- counts that one).  So with `L(i)` the light walk's
+count of `verts[1..i]` and `D = S + L(k)` the path's count (S: the eye
+part's own count, k: the light part's last vertex; a merge shares its
+vertex, `D = S + L(k) - 1`), the eye walk that covers the light tail
+from split `w` needs `D - L(w-1)` surface hits (one more to hit an area
+root) and the path's medium vertices past `verts[w-1]` in iterations (one
+more to escape to an environment root).  `D` is a property of the PATH,
+so every strategy of one path is partitioned alike.  The largest
+admissible `w` needs the fewest of both, and a later jump's witness
+dominates an earlier one's (its x_o is counted), so one record per light
+vertex decides -- in VCM it is stamped on the stored `LightVertex`
+(`kLVF_JumpCover`, `jumpCoverSurface`, `jumpCoverVolume`) for merges.
+
+The opposite failure -- a path both families keep -- needs the light
+family to keep a path the eye walk can generate; the test is exactly
+that generation test, so it cannot happen at any combination of caps.
+The light caps never enter: the covering eye strategy uses the light
+prefix `verts[0..w-1]`, already generated, and the eye family is never
+cut.  Per-type caps (`max_diffuse_bounce` & co.) are per subpath and
+direction-dependent and stay out of the partition as they stay out of
+every BDPT MIS weight (DL-351).
+
+`BDPTStrategyBalanceTest --dl380-only` / `--dl380-mlt` and
+`VCMStrategyBalanceTest --dl380-only` (the DL-375 D1/D2 walls, wall
+pixels / PT, n = 3 salted renders each, 2048 spp; MLT one render; the
+BDPT D1 row is a diffusion-sphere twin, see below):
+
+| row | before | after |
+|---|---|---|
+| D1 omni, DIFFUSION twin, E1/L16 vs BDPT E16/L16 (n = 8 / 4): BDPT | -99.95% | +0.39% |
+| D2 spot, E1/L16: BDPT | -97.71% | -0.67% |
+| D1 omni, E1/L16: VCM merging on / off | -99.08% / -98.88% | -2.26% / -3.48% |
+| D2 spot, E1/L16: VCM merging on / off | -97.53% / -97.54% | +0.06% / +0.31% |
+| D2 spot, E1/L16: MLT (one render) | -97.41% | +0.58% |
+| D2 spot, E16/L1 (light truncated): BDPT | +0.41% | -0.44% |
+| D2 spot, E16/L1: VCM merging on / off | -2.17% / -2.49% | -2.63% / -1.78% |
+| D2 spot, E2/L16 (eye covers at its cap): BDPT | -3.47% | -2.32% |
+
+The E16/L1 rows are the double-count control (green before and after);
+E2/L16 gains the paths whose eye part sits at the cap.
+
+The BDPT D1 row is gated on a smooth-diffusion twin of the sphere against
+BDPT's OWN E16/L16 render, not on the random walk against PT: at E1 the
+light family owns the wall path and at E16 the eye family does, and only
+a reciprocal model makes the two estimate the same function.  On the
+random walk the light family reads ~-4.2 % +/- 0.6 % against PT at E1
+(16 salted renders, external review; an earlier single-batch -2.78 %
+did not reproduce): not a partition hole, but the random-walk light
+family's model offset (DL-381 -> DL-384) plus DL-351 (MISWeight ignores
+the caps).  The diffusion twin reads +0.39 % (and -1.4 % +/- 1.1 % in the
+review's runs).
+
+VCM's three store statistics -- the pass-0 throughput-clamp median,
+`ClampOutlierThroughputs`' percentile in later progressive passes, and the
+adaptive radius floor's density and bounding box -- are taken over the
+vertices NOT flagged `kLVF_JumpCover`, i.e. the store the pre-DL-380
+partition kept, so none of them moves; every vertex is still clamped
+against the threshold.  (The flagged vertices grow the store by ~7 % on
+`vcm_sss_dragon` and ~62 % on an SSS-walled room.)
+
 ### 5. SMS — no per-strategy MIS reweight
 
 SMS contributions are splat-accumulated as an auxiliary technique.
@@ -398,6 +507,19 @@ Full treatment, including why RISE's pinhole importance carries `cos³`
 where PBRT-v4's raw `We` carries `cos⁴`, is in
 [RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) §6.1; the defect
 that made it matter is debt 28 in the same file's §7.
+
+## The light-selection pmf: one per strategy family (DL-348)
+
+Every BDPT / VCM / MLT strategy that roots a light subpath (NEE, light
+tracing, the s >= 2 connections, merging) selects its light with
+`LightSampler::SampleLight()`, a shading-point-independent env-vs-alias
+roll.  The eye-hits-emitter strategy must therefore reconstruct exactly
+that pmf for its MIS partner: `PdfSelectLuminary` / `PdfSelectLight`
+return `(1 - q_env) a(L)` and never the light BVH's pmf.  The BVH is PT's
+NEE sampler only, so PT's partner (`CachedPdfSelectLuminary`) is
+BVH-based.  Mixing the two families' pmfs breaks the partition; with
+`light_bvh` on (the default) and several lights VCM read 0.92 of the
+closed form until 2026-10-02 -- [DL348_MULTI_LUMINARY_SELECTION_PDF.md](DL348_MULTI_LUMINARY_SELECTION_PDF.md).
 
 ## When BDPT and VCM disagree on the same scene
 

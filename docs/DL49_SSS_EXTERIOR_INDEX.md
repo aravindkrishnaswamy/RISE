@@ -1306,3 +1306,241 @@ pass, `WeaveGapShadowTransmittanceTest` 132/0, `SSSExteriorIndexInvarianceTest`
 227/0, `RefractiveRadianceScalingTest` 60/0, `CstDeriveGoldenTest` 456 MATCH
 / 0 DRIFT, `SourceHygieneTest` 167/0.  (§11.7's red counts, 218/10 and 212/9,
 were taken on the 228-check file.)
+
+## 12. DL-370: touching random-walk bodies (slice `debt-dl370`, 2026-10-02)
+
+### 12.1 The defect
+
+The random walk confines itself to one object (`pObject->IntersectRay`,
+back faces only), so a walk that reached a face it SHARES with a touching
+neighbour left through it as if into the exterior.  `SampleExit` then
+offsets the exit vertex `BSSRDF_RAY_EPSILON` (1e-6) along the outward
+normal -- which puts the NEE and continuation origin INSIDE the neighbour.
+The continuation meets the neighbour's far face from behind with an IOR
+stack that never entered it: the random-walk entry gate rejects a back
+face and `SubSurfaceScatteringSPF` absorbs it (`bAbsorbBackFace`), so the
+path dies.  Discriminator (the decisive one): a closed room of six
+conservative random-walk slabs under the white environment reads 0.6956
+touching, **0.6787 with a 5e-7 gap** (inside the offset) and 1.0002 with a
+2e-6 gap (outside it); 0.9992 with 0.02 gaps.  Depth caps, the DL-315 stack
+guard and albedo were already excluded by the filing review.
+
+### 12.2 Ruling (as shipped after review round 1)
+
+A walk exit whose continuation would start INSIDE another random-walk body
+is not an exit to the exterior: the medium on the far side of that face is
+the neighbour.  At every exit event the walk asks the scene
+(`IObjectManager::RandomWalkObjectContaining`) whether the point the
+continuation would start from -- the exit offset `BSSRDF_RAY_EPSILON` along
+the outward normal, i.e. exactly the point the defect puts inside the
+neighbour -- lies inside another world-visible random-walk object.
+Candidates are the objects whose world box contains the point (the
+`DeepestOtherContainment` box tree); each is then asked ALONE (rounds 3
+and 4, sections 12.6 and 12.7): if it can sign a distance
+(`IObject::SignedDistanceLower` -- an analytic solid, a certified-watertight
+mesh by parity, a CSG composite) its SIGN decides; otherwise (an open or
+uncertified mesh, i.e. most imported meshes) the PARITY of that candidate's
+own crossings along the outward normal AND its reverse decides: inside iff
+both counts are odd.  Neither arm reads the winding.  A hit with no
+interior to be in (`bProvablyNoInterior`, a ray-derived hair normal)
+refuses the candidate.  If a
+neighbour contains the point, the walk CROSSES: a dielectric boundary of
+relative index `n_nb / n_cur` (Snell + exact Fresnel coin, TIR reflects;
+none at all when the indices match -- the "non-interface" of two equal SSS
+bodies), and a transmitted walk resumes at the offset point (shown to be
+inside the neighbour) with the neighbour's coefficients and phase
+asymmetry.  The final exit to the exterior is priced at the body actually
+left (`SampleResult::pExitObject` / `pExitMaterial` / `exitIOR`), which PT
+(NEE self object, entry Sw index) and both BDPT walks (entry vertex
+`pMaterial`/`pObject`, so every re-evaluation reads the exit body's Sw)
+consume.  Nothing draws from the sampler, so a walk that never meets a
+neighbour is unchanged bit for bit (four shipped random-walk scenes,
+single-threaded, 8 spp: identical pixel hashes master vs fix).
+
+**Why per object, and why from the offset point** (review round 1 found
+the first version wrong on both counts).  The first version probed the
+WHOLE scene along the WALK ray for the nearest FRONT face, on the claim
+that the walker's own exit face is a back face and so cannot be returned.
+That is false on a double-sided mesh (the indexed-mesh default and the
+Blender exporter's): it reports every hit facing the ray, so the walker's
+own exit face and a touching neighbour's face tie at the same distance and
+the walker's face, rejected by the identity check, often won -- a
+double-sided mesh room read 0.887, the pair 0.902.  The same probe also
+reported a body coincident with the exit face on the WALKER's own side (an
+inset flush with the surface, a sheet lying on it) and "crossed" into it at
+a point outside it (review fixture 1.0002 -> 0.944; this slice's inset row
+0.892 -> 0.880, sheet row 0.877 -> 0.851).  Probing from the offset point
+fixes the second (anything on the walker's side is behind the ray origin);
+asking each candidate alone fixes the first and a third tie a whole-scene
+ray from the offset point still has: in a closed room the neighbour's far
+face touches a THIRD wall, and a scene ray there tied between leaving the
+neighbour and entering the third wall (an intermediate version read 0.92
+on the touching room while the 5e-7 gap read 1.000).
+
+**Cost.**  Every walk exit event -- including the ones that then reflect at
+the boundary -- whose offset point lies in ANOTHER random-walk object's
+world bounding box pays the containment query (a closed-form signed
+distance for an analytic solid; a closest-point query plus a parity ray
+walk for a certified mesh; one ray per crossing in each direction for an
+uncertified mesh), touching or not; an exit in no such box pays one
+box-tree walk.  User CPU, interleaved, master vs round 4 (n = 3; round 3 at
+n = 5 in brackets): shipped `rwsss_sphere` (one random-walk body; the box
+gate is unchanged since round 2's measurement) 306.95 vs 304.41 s, -0.8 %,
+noise; 32 NON-touching random-walk spheres with overlapping boxes 39.85 +/-
+0.59 vs 42.67 +/- 0.34 s, **+7.1 %** [+6.2 %]; six intersecting
+random-walk dragons (uncertified meshes, so now on the parity arm) 50.44
++/- 0.64 vs 65.03 +/- 0.11 s, **+28.9 %** [+15.2 %], which includes a real
+transport change (the dragons overlap, so more walks now cross and keep
+walking).  Review round 3 split it with a query-only build (the query runs,
+its answer is discarded), user CPU, 3 interleaved reps: 6 intersecting
+dragons query +23.5 % / transport +14.1 % (total +37.6 % on that machine);
+37 intersecting spheres +4.6 % / +6.0 %; 21 non-touching spheres +2.8 % /
++1.0 %; one dragon and `rwsss_sphere` ~0.  So on dense uncertified meshes
+the QUERY dominates.  P3 left: a certified neighbour's sign comes from
+`SignedDistanceLower`, which runs a closest-point query before its parity
+test -- calling the parity test directly would save that.  No sound cheaper pre-test was found: the query sets the
+boundary's own Fresnel (an index-matched neighbour has none), so it cannot
+be deferred past the exterior Fresnel coin, and only the box excludes a
+body cheaply.
+
+**Resume point.**  A first version resumed 1e-6 along the ray from THIS
+body's exit point, which lands in a sub-offset gap for exit cosines below
+~0.5; the neighbour's back-face-only query then falls back to its NEAR
+(front) face as the "exit" and the walk leaves into the gap -- the 5e-7
+pair read 0.931.  The offset point is inside the neighbour by
+construction of the test.
+
+### 12.3 Red-proof (`SSSExteriorIndexInvarianceTest` Part F, salted, n = 4)
+
+Builds of the same test file: master (`b2a4460b9` for F1-F3, `8dcf20d69`
+for F4), an earlier round (round 1 `6f1c7a1fd`, the walk-ray probe, for
+F1-F3; round 2 `c18d75282`, the facing-only per-object test, for F4), and
+the fix.
+
+| row | master | earlier round | fix |
+|---|---|---|---|
+| F room PT, touching (box) | 0.6956 +/- 0.0028 | 0.9986 | 0.9986 +/- 0.0026 |
+| F room PT, 5e-7 gap | 0.6787 +/- 0.0025 | 1.0002 | 1.0005 +/- 0.0011 |
+| F room PT, 0.02 gap (control) | 0.9992 +/- 0.0010 | 0.9992 | 0.9992 +/- 0.0010 |
+| F room BDPT, touching (box) | 0.6914 +/- 0.0009 | 1.0009 | 1.0009 +/- 0.0019 |
+| F room PT, touching double-sided mesh | 0.6946 +/- 0.0026 | **0.8846** | 1.0005 +/- 0.0019 |
+| F room BDPT, touching double-sided mesh | 0.6920 +/- 0.0040 | **0.8868** | 0.9989 +/- 0.0017 |
+| F2 pair PT ior 1.5/1.5 (touching / 2e-6 gap) | 0.8674 | 1.0001 | 1.0002 |
+| F2 pair PT ior 1.5/1.3 (real interface, g 0.3 right) | 0.8656 | 1.0010 | 1.0016 |
+| F2 pair PT-spectral 1.5/1.5 (NM walk) | 0.8647 | 1.0017 | 0.9996 |
+| F2 pair PT double-sided mesh | 0.8682 | **0.9021** | 0.9991 |
+| F2 pair diffusion (printed only, DL-408) | 0.966 | 0.968 | 0.967 |
+| F3 double-sided mesh inset (expected 1) | 0.8923 | **0.8801** | 0.9993 +/- 0.0004 |
+| F3 box inset (expected 1) | 0.8921 | 0.8923 | 0.9999 +/- 0.0003 |
+| F3 open sheet on the face (DL-409 pin 0.8775) | 0.8774 | **0.8510** | 0.8773 +/- 0.0008 |
+| F4 non-touching neighbour, outward uncertified (expected 1) | 0.9999 | 1.0003 | 1.0003 |
+| F4 non-touching neighbour, INWARD uncertified (expected 1) | 1.0006 | **0.8223** | 1.0007 |
+| F4 non-touching neighbour, INWARD certified (pin 0.7658) | 0.7667 | **0.6663** | 0.7671 |
+| F2 pair, right cube outward-wound UNCERTIFIED double-sided mesh | 0.8629 | **0.9061** (round 3) | 0.9992 |
+| F2 pair, right cube INWARD-wound UNCERTIFIED double-sided mesh | 0.8633 | **0.9065** (round 3) | 0.9996 |
+| F4 two disjoint INWARD uncertified boxes in one mesh, walker between (expected 1) | 1.0004 | 0.9995 (round 3) | 1.0003 |
+
+(sd of one render; F2 entries are paired-seed touching/gapped ratios.)
+Master library: 12 Part F rows red (F1-F3); round-1 library: 6 red (bold);
+round-2 library: the two F4 inward rows red (bold, the round-2 fresh
+review's regression); fix: Part F green.  The fix column is round 3 for
+F4 and round 2 for F1-F3 (round 3 re-ran F1-F3 green: e.g. box room
+1.0014, double-sided mesh room 0.9991, mesh pair 0.9978).  The inset rows were red on master too: an inset OVERLAPS
+the cube, a walk in the inset leaves it into the cube, and master's
+continuation died there -- the containment test covers overlap as well as
+contact.  The sheet row is a pin, not a furnace gate: a random walk
+entering an OPEN sheet has no interior to walk in (DL-409, master reads
+0.8775 with or without this fix).
+
+### 12.4 Sibling audit
+
+The pattern is "an SSS exit's outward vertex offset crosses into a
+coincident neighbour".  `BSSRDFSampling::SampleEntryPoint` (the diffusion
+profile, `subsurfacescattering_material`) offsets its exit vertex the same
+way and its probe also sees only its own object; the touching diffusion
+pair reads 0.961 of its 2e-6-gap twin (the gapped side is heavy-tailed on
+a finite cube, sd 0.015).  A diffusion profile cannot hand its transport
+to a neighbour, and the continuation cannot see a coincident face (any
+origin on the shared plane puts both bodies' roots under the self-hit
+floor), so it is filed, not fixed: **DL-408**, which also covers a random
+walk meeting a coincident NON-random-walk neighbour (a diffusion body, an
+opaque table under a wax block), where the walk keeps the old behaviour.
+
+### 12.5 Residuals (disclosed, not fixed)
+
+- DL-408: the diffusion profile and non-random-walk neighbours (above).
+- DL-409: a random walk entering an OPEN sheet (an open double-sided mesh
+  quad lying on a cube's face reads 0.8775 under the white furnace, master
+  and fix alike); not attributed further.
+- Shells of ONE object touching each other: the containing body must be
+  another object (`self` never counts), so a mesh that is two touching
+  closed shells keeps the loss.
+- The walk keeps the ENTRY body's `boundaryFilter`, `maxBounces` and
+  `maxDepth` after crossing (only `randomwalk_sss_material` provides the
+  parameters, and it always reports filter 1 and depth 0).
+- The neighbour's alpha coverage (DL-214) is not consulted by the
+  containment test.
+- An uncertified neighbour is judged by two-way crossing parity, exact for
+  a closed body (barring a ray through an edge or vertex); a point between
+  two disjoint parallel open sheets of ONE object reads inside -- and more
+  generally ANY point inside an open tube, sleeve, lampshade, zero-thickness
+  cup or uncapped cylinder mesh reads inside for most normals (one wall
+  crossing each way).  Review round 3 measured a closed conservative
+  random-walk sphere inside an open, double-sided, ABSORBING random-walk
+  tube mesh (not touching): master 0.4538 -> 0.3370 (-26 %); with a
+  conservative tube 0.4533 -> 0.6091 (master already wrong there, DL-409).
+  Needs a random-walk material on an open mesh.
+- Cost: see section 12.2 (+7.1 % / +28.9 % on dense random-walk scenes
+  with overlapping boxes).
+- A random-walk inward-wound certified mesh loses energy on its own (F4's
+  pinned row reads 0.766 on master and after); an authoring error, not
+  filed separately.
+- DL-411: a random-walk CSG body is not energy-conserving (~0.62 in a white
+  furnace, master and fix, touching or not).
+
+### 12.6 Review round 2 (round-3 fix): the neighbour's winding
+
+Round 2's per-object test trusted the neighbour's TRUE facing, which is
+containment only for a closed, OUTWARD-wound body.  The fresh review built
+a random-walk cube next to a NON-touching random-walk octahedron (a
+double-sided indexed mesh whose box contains part of the cube) and wound
+the octahedron inward: master 0.9989, round 2 **0.8225** (an outside point
+read as inside, so the walk crossed into a body it was not in);
+certified-watertight and inward 0.7658 -> **0.6640**; outward 0.9991 /
+0.9996.  Master's walk never looks at a neighbour, so this was a
+regression.  Round 3 asks the candidate to sign a distance first
+(`IObject::SignedDistanceLower`): an analytic solid in closed form, a
+certified mesh by a parity count of every crossing
+(`TriangleMeshGeometryIndexed::RayParityInsideTest`), a CSG composite by
+its field -- all winding-independent.  A body that cannot sign (open or
+uncertified meshes, sheets) has no certified inside, and parity is
+meaningless on it, so a double-sided one is never crossed into and a
+single-sided one keeps the facing test (it is rendered by its winding).
+F4 transcribes the review's three fixtures as gated rows.
+
+### 12.7 Round 4: uncertified meshes are crossed by two-way parity
+
+Round 3 never crossed into a double-sided body that cannot sign a distance
+-- an open or uncertified mesh, which is most imported meshes (the Blender
+exporter writes double-sided meshes, and DL-143 certifies few real ones) --
+so touching pieces of such a mesh kept the loss (an uncertified outward
+right cube: touching/gapped 0.906).  The coordinator proposed a two-way
+FACING test for them (inside iff the first hit along the outward normal
+AND along its reverse are both left by their true facing, the
+two-direction rule `IORStackSeeding::SeedFromPoint` uses).  It is unsound
+for a NON-CONVEX inward-wound body seen from outside: two disjoint boxes in
+one inward-wound uncertified mesh, flanking a random-walk cube 0.1 away,
+put both first hits on faces the inward winding reads as exits, and the
+walk crosses into a body it is not in -- **0.6957** against master's
+1.0004 (salted, n = 4; F4 row 4).  It also declines an inward-wound body
+from truly inside (pair 0.907).  Round 4 counts CROSSINGS instead: the
+point is inside iff that one candidate is crossed an odd number of times
+along the outward normal AND along its reverse.  This reads no winding, so
+both the notch (two crossings each way) and the inward-wound touching
+neighbour (one each way) come out right; an open sheet (one crossing on
+one side, none on the other) and a ray through a hole are rejected.  Each
+crossing is stepped past by 1e-9 world, which also merges a duplicated
+coincident face into one crossing.  F2 gains outward- and inward-wound
+uncertified touching rows (master 0.863, round 3 0.906, round 4 0.999 /
+1.000), F4 the two-box notch row (two-way facing 0.696, round 4 1.000);
+F1-F4 all green (the certified and box rows unchanged within noise).

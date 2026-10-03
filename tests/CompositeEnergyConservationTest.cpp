@@ -79,6 +79,7 @@
 #include "../src/Library/Materials/DielectricMaterial.h"
 #include "../src/Library/Materials/TranslucentMaterial.h"
 #include "../src/Library/Materials/GGXMaterial.h"
+#include "../src/Library/Materials/OrenNayarMaterial.h"
 #include "../src/Library/Materials/PolishedMaterial.h"
 #include "../src/Library/Materials/CompositeMaterial.h"
 #include "../src/Library/Materials/CompositeSPF.h"
@@ -93,6 +94,7 @@
 #include "../src/Library/Interfaces/IRasterImage.h"
 #include "../src/Library/Interfaces/ILog.h"
 
+#include "../src/Library/Utilities/SobolSampler.h"
 #include "TestStubObject.h"
 
 using namespace RISE;
@@ -569,7 +571,14 @@ static void SectionE2( Fixtures& f )
 	UniformScalarPainter* sDelta = new UniformScalarPainter( 1000000.0 );  sDelta->addref();
 	UniformScalarPainter* sExt   = new UniformScalarPainter( 1.0 );  sExt->addref();
 	DielectricMaterial* smooth = new DielectricMaterial( *f.s1, *f.s15, *sDelta, false );  smooth->addref();
-	CompositeMaterial* m = MakeComposite( *smooth, *smooth, 3, 3, 3, 3, 3, 1.0, *sExt );
+	// The BOTTOM is a denser glass (2.4): since DL-341 the gap -> bottom
+	// interface refracts from the GAP's index (1.5), so a 1.5 bottom is
+	// index-matched and reflects nothing back up -- no walker exit through
+	// the top would exist (the pre-DL-341 bottom refracted from 1.0 and
+	// reflected 4 %).  1.5 -> 2.4 reflects ~5 %.
+	UniformScalarPainter* s24 = new UniformScalarPainter( 2.4 );  s24->addref();
+	DielectricMaterial* dense = new DielectricMaterial( *f.s1, *s24, *sDelta, false );  dense->addref();
+	CompositeMaterial* m = MakeComposite( *smooth, *dense, 3, 3, 3, 3, 3, 1.0, *sExt );
 	const ISPF& spf = *m->GetSPF();
 	const double th = 30.0 * kPi / 180.0;
 	const Vector3 d( std::sin( th ), 0, -std::cos( th ) );
@@ -601,12 +610,12 @@ static void SectionE2( Fixtures& f )
 			if( rel > 1e-6 ) { mism++; worst = std::max( worst, rel ); }
 		}
 	}
-	std::cout << "    glass(1e6)/glass, t 1, grey ext 1.0, theta 30, hero 550 / companion 600: up-going " << up
+	std::cout << "    glass(1e6)/glass(2.4), t 1, grey ext 1.0, theta 30, hero 550 / companion 600: up-going " << up
 	          << ", reconstructed " << recon << ", declined " << declined << " (walker " << walkerDeclined
 	          << "), mismatched " << mism << ", worst rel " << worst << "\n";
 	Check( up > 10000 && recon > 1000 && walkerDeclined > 1000, "[E2] both classes present (direct reflections reconstructed, walker exits declined)" );
 	Check( mism == 0, "[E2] no reconstructed companion weight differs from the grey stack's hero weight" );
-	m->release(); smooth->release(); sDelta->release(); sExt->release();
+	m->release(); smooth->release(); dense->release(); s24->release(); sDelta->release(); sExt->release();
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -663,8 +672,15 @@ static void SectionH( Fixtures& f )
 		  MakeComposite( *tissue, *f.lamb, 3, 3, 3, 3, 3, 0.0, *f.s0 ), 16, true, 0, 0 },
 		{ "H2 composite{dielectric / lossless translucent} (single-emit nested, has a BSDF) / white",
 		  MakeComposite( *inner, *f.lamb, 3, 3, 3, 3, 3, 0.0, *f.s0 ), 32, true, 0, 0 },
-		{ "H3 composite{dielectric / dielectric} (nested, no BSDF) / white -- KNOWN RESIDUAL PIN [0.40, 0.62]: the nested composite is walked FROM BELOW with the outer gap's stack, which already holds the shared object key, and the two-stack convention (defined for from-top walks) leaves its layers reading the wrong side -- see docs/DL24_COMPOSITE_ENERGY.md section 5",
-		  MakeComposite( *innerGG, *f.lamb, 3, 3, 3, 3, 3, 0.0, *f.s0 ), 16, false, 0.40, 0.62 },
+		// H3 was a KNOWN RESIDUAL PIN [0.40, 0.62] until DL-341 (2026-10-02):
+		// the nested composite is walked FROM BELOW with the outer gap's stack,
+		// which holds the shared object key, and the pre-DL-341 two-stack rule
+		// (defined for from-top walks) left its layers reading each other's
+		// side -- a lossless TIR ping-pong dropped at the 256-event cap (base
+		// 0.4795 / 0.5064).  Gated at 1 since the stack convention is defined
+		// for every entry side.
+		{ "H3 composite{dielectric / dielectric} (nested, no BSDF, walked from below) / white",
+		  MakeComposite( *innerGG, *f.lamb, 3, 3, 3, 3, 3, 0.0, *f.s0 ), 16, true, 0, 0 },
 	};
 	for( const Cfg& c : cfgs ) {
 		std::cout << "    " << c.name << "\n      ";
@@ -682,22 +698,24 @@ static void SectionH( Fixtures& f )
 		std::cout << "\n";
 		c.m->release();
 	}
-	// H4 -- the same residual on its own: composite{dielectric/dielectric}
-	// struck FROM INSIDE (a closed object seen from within: the ray
-	// travels upward and the stack already holds the object's entry).
-	// Below the critical angle the stack passes it through (gated at 1);
-	// at 35 deg the two layers read each other's side, total-internally-
-	// reflect forever and the energy is dropped at the walk cap
-	// (pre-existing: the base 5c9eeb96 reads the same 0.086).  Pinned.
+	// H4 -- the from-below case on its own: composite{dielectric/dielectric}
+	// struck FROM INSIDE (a closed object seen from within: the ray travels
+	// upward and the stack already holds the object's entry).  Lossless, so
+	// the full-sphere furnace is 1 at every angle: below the critical angle
+	// most of it leaves through the top, above it (41.8 deg) a genuine TIR
+	// sends it back down through the index-matched bottom.  Until DL-341
+	// (2026-10-02) the 35 deg row read 0.0868 (base 5c9eeb96 0.086): the two
+	// layers read each other's side, total-internally-reflected forever and
+	// the energy was dropped at the walk cap.
 	{
-		std::cout << "    H4 composite{dielectric / dielectric} struck from INSIDE (stack holds the object) -- KNOWN RESIDUAL PIN at 35 deg [0.04, 0.20]\n      ";
+		std::cout << "    H4 composite{dielectric / dielectric} struck from INSIDE (stack holds the object), lossless -> 1\n      ";
 		const ISPF& spf = *innerGG->GetSPF();
-		for( const double thDeg : { 20.0, 35.0 } ) {
+		for( const double thDeg : { 20.0, 35.0, 60.0 } ) {
 			RandomNumberGenerator rng( 4242u );
 			IndependentSampler sampler( rng );
 			const double th = thDeg * kPi / 180.0;
 			const Vector3 d( std::sin( th ), 0, std::cos( th ) );
-			double sum = 0;
+			double sum = 0, sum2 = 0;
 			const int N = 100000;
 			for( int i = 0; i < N; ++i ) {
 				const Point3 p( rng.CanonicalRandom() * 10, rng.CanonicalRandom() * 10, 0 );
@@ -709,17 +727,98 @@ static void SectionH( Fixtures& f )
 				st.push( 1.5 );
 				ScatteredRayContainer sc;
 				spf.Scatter( ri, sampler, sc, st );
-				for( unsigned j = 0; j < sc.Count(); ++j ) sum += ColorMath::MaxValue( sc[j].kray );
+				double v = 0;
+				for( unsigned j = 0; j < sc.Count(); ++j ) v += ColorMath::MaxValue( sc[j].kray );
+				sum += v; sum2 += v * v;
 			}
 			const double rho = sum / N;
-			std::cout << std::fixed << std::setprecision( 4 ) << thDeg << "deg: " << rho << "   ";
-			if( thDeg < 30.0 ) {
-				Check( std::fabs( rho - 1.0 ) <= 0.02, "[H] H4 struck from inside below the critical angle -> 1" );
-			} else {
-				Check( rho >= 0.04 && rho <= 0.20, "[H] H4 (known nested/inside residual) 35 deg inside its pin band" );
+			const double sem = std::sqrt( std::max( 0.0, sum2 / N - rho * rho ) / N );
+			std::cout << std::fixed << std::setprecision( 4 ) << thDeg << "deg: " << rho << " +- " << sem << "   ";
+			Check( std::fabs( rho - 1.0 ) <= std::max( 0.01, 5.0 * sem ),
+				std::string( "[H] H4 struck from inside, lossless -> 1, theta " ) + std::to_string( (int)thDeg ) );
+		}
+		std::cout << "\n";
+	}
+	// H5 (DL-341 review round 1): the NESTED stack of the review's D6 box,
+	// composite{composite{glass/glass}/glass}, full-sphere furnace from
+	// above (jittered) and struck from inside at 20 / 35 / 60 deg.  Lossless:
+	// 1 everywhere.  An SPF-level twin of D6 that separates a biased walk
+	// estimator from a render-level stack / eta^2 defect.
+	{
+		CompositeMaterial* nest = MakeComposite( *innerGG, *f.dSmooth, 3, 3, 3, 3, 3, 0.0, *f.s0 );
+		std::cout << "    H5 composite{composite{glass/glass}/glass}, from above (jittered) and from inside, lossless -> 1\n      ";
+		for( int t = 0; t < 4; t += 2 ) {
+			const FurnaceStats st = JitteredFurnace( *nest->GetSPF(), kThetas[t], 16, 20000, 1311u + t );
+			std::cout << std::fixed << std::setprecision( 4 ) << "above " << kThetas[t] << "deg: " << st.mean << " +- " << st.sem << "   ";
+			Check( std::fabs( st.mean - 1.0 ) <= std::max( 0.005, 5.0 * st.sem ), std::string( "[H] H5 nested from above, theta " ) + std::to_string( (int)kThetas[t] ) );
+		}
+		const ISPF& spf = *nest->GetSPF();
+		for( const double thDeg : { 20.0, 35.0, 60.0 } ) {
+			RandomNumberGenerator rng( 5151u );
+			IndependentSampler sampler( rng );
+			const double th = thDeg * kPi / 180.0;
+			const Vector3 d( std::sin( th ), 0, std::cos( th ) );
+			double sum = 0, sum2 = 0;
+			const int N = 200000;
+			for( int i = 0; i < N; ++i ) {
+				const Point3 p( rng.CanonicalRandom() * 10, rng.CanonicalRandom() * 10, 0 );
+				const RasterizerState rs = { 0, 0 };
+				RayIntersectionGeometric ri( Ray( Point3( p.x - d.x, p.y, -1.0 ), d ), rs );
+				ri.bHit = true; ri.range = 1.0; ri.ptIntersection = p;
+				ri.vNormal = Vector3( 0, 0, 1 ); ri.vGeomNormal = Vector3( 0, 0, 1 ); ri.onb.CreateFromW( Vector3( 0, 0, 1 ) );
+				IORStack stk = MakeTestIORStack( g_stub );
+				stk.push( 1.5 );
+				ScatteredRayContainer sc;
+				spf.Scatter( ri, sampler, sc, stk );
+				double v = 0;
+				for( unsigned j = 0; j < sc.Count(); ++j ) v += ColorMath::MaxValue( sc[j].kray );
+				sum += v; sum2 += v * v;
+			}
+			const double rho = sum / N;
+			const double sem = std::sqrt( std::max( 0.0, sum2 / N - rho * rho ) / N );
+			std::cout << "inside " << thDeg << "deg: " << rho << " +- " << sem << "   ";
+			Check( std::fabs( rho - 1.0 ) <= std::max( 0.005, 5.0 * sem ), std::string( "[H] H5 nested from inside, theta " ) + std::to_string( (int)thDeg ) );
+		}
+		std::cout << "\n";
+		// The same stack under a RADIANCE consumer's eta^2 factor: below its
+		// top the nested stack is index-matched, so sum kray * RadianceEtaScale
+		// must equal one plain glass interface's (F + (1-F)/eta^2 from
+		// above, F + (1-F) eta^2 from inside), angle by angle.
+		std::cout << "      eta^2-weighted, nested | plain glass: ";
+		for( int side = 0; side < 2; ++side ) {
+			for( const double thDeg : { 20.0, 35.0, 60.0 } ) {
+				double acc[2] = { 0, 0 }, acc2[2] = { 0, 0 };
+				const int N = 100000;
+				for( int which = 0; which < 2; ++which ) {
+					const ISPF& sp = which == 0 ? *nest->GetSPF() : *f.dSmooth->GetSPF();
+					RandomNumberGenerator rng( 6161u + (unsigned)thDeg );
+					IndependentSampler sampler( rng );
+					const double th = thDeg * kPi / 180.0;
+					const Vector3 d( std::sin( th ), 0, side == 0 ? -std::cos( th ) : std::cos( th ) );
+					for( int i = 0; i < N; ++i ) {
+						const Point3 p( rng.CanonicalRandom() * 10, rng.CanonicalRandom() * 10, 0 );
+						const RasterizerState rs = { 0, 0 };
+						RayIntersectionGeometric ri( Ray( Point3( p.x - d.x, p.y, -d.z ), d ), rs );
+						ri.bHit = true; ri.range = 1.0; ri.ptIntersection = p;
+						ri.vNormal = Vector3( 0, 0, 1 ); ri.vGeomNormal = Vector3( 0, 0, 1 ); ri.onb.CreateFromW( Vector3( 0, 0, 1 ) );
+						IORStack stk = MakeTestIORStack( g_stub );
+						if( side == 1 ) stk.push( 1.5 );
+						ScatteredRayContainer sc;
+						sp.Scatter( ri, sampler, sc, stk );
+						double v = 0;
+						for( unsigned j = 0; j < sc.Count(); ++j ) v += ColorMath::MaxValue( sc[j].kray ) * RadianceEtaScale( stk, sc[j].ior_stack );
+						acc[which] += v; acc2[which] += v * v;
+					}
+				}
+				const double a = acc[0] / N, b = acc[1] / N;
+				const double sa = std::sqrt( std::max( 0.0, acc2[0] / N - a * a ) / N );
+				std::cout << ( side == 0 ? "above " : "inside " ) << thDeg << ": " << std::setprecision( 4 ) << a << " | " << b << "   ";
+				Check( std::fabs( a - b ) <= std::max( 0.003, 5.0 * sa ),
+					std::string( "[H] H5 nested eta^2-weighted == plain glass, " ) + ( side == 0 ? "above " : "inside " ) + std::to_string( (int)thDeg ) );
 			}
 		}
 		std::cout << "\n";
+		nest->release();
 	}
 	inner->release(); innerGG->release(); tissue->release();
 }
@@ -757,7 +856,7 @@ static RayIntersectionGeometric MakeTiltedIntersection( double thDeg, const Poin
 	return ri;
 }
 
-static RISEPel ReferenceLayerWalk( const ISPF& top, const ISPF& bot, const RayIntersectionGeometric& ri, ISampler& smp )
+static RISEPel ReferenceLayerWalk( const ISPF& top, const ISPF& bot, const RayIntersectionGeometric& ri, ISampler& smp, Vector3* outDir = 0 )
 {
 	const Vector3 n = ri.onb.w();
 	IORStack outside = MakeTestIORStack( g_stub );
@@ -767,6 +866,7 @@ static RISEPel ReferenceLayerWalk( const ISPF& top, const ISPF& bot, const RayIn
 	const ScatteredRay* r = c0.RandomlySelect( smp.Get1D(), false, &q );
 	if( !r || !( q > 0 ) ) return RISEPel( 0, 0, 0 );
 	RISEPel beta = r->kray * ( 1.0 / q );
+	if( outDir ) *outDir = r->ray.Dir();
 	if( Vector3Ops::Dot( r->ray.Dir(), n ) >= 0 ) return beta;
 	IORStack gap( r->ior_stack ? *r->ior_stack : outside );
 	Vector3 w = Vector3Ops::Normalize( r->ray.Dir() );
@@ -781,6 +881,7 @@ static RISEPel ReferenceLayerWalk( const ISPF& top, const ISPF& bot, const RayIn
 		r = c.RandomlySelect( smp.Get1D(), false, &q );
 		if( !r || !( q > 0 ) ) return RISEPel( 0, 0, 0 );
 		beta = beta * r->kray * ( 1.0 / q );
+		if( outDir ) *outDir = r->ray.Dir();
 		const Scalar cosN = Vector3Ops::Dot( r->ray.Dir(), n );
 		if( atBottom ) {
 			if( cosN <= 0 ) return beta;
@@ -860,17 +961,21 @@ static void SectionT( Fixtures& f )
 			}
 		}
 		// A ray that arrives BEHIND the tilted shading normal (tilt 35,
-		// theta 60: d . n_s = +0.087) is classified up-going and takes the
-		// from-below walker, which the independent from-top walk above does
-		// not model.  Pre-existing (the base reads the same ~0.09) and part
-		// of DL-341's stack-gap family; pinned, not gated against the walk.
+		// theta 60: d . n_s = +0.087) is geometrically from ABOVE, so it is
+		// walked naturally from the top (DL-341, 2026-10-02) -- exactly what
+		// the independent walk does.  Until DL-341 it was classified from
+		// below by the shading normal and read 0.0899 / 0.0900 / 0.0904 /
+		// 0.0903 for the four tops (base 0.0907), pinned in [0.06, 0.12].
 		{
 			const FurnaceStats a = TiltedFurnace( m->GetSPF(), 0, 0, 60.0, 35.0, 8, 20000, 7717u + (unsigned)k );
+			const FurnaceStats r = TiltedFurnace( 0, tops[k]->GetSPF(), f.lamb->GetSPF(), 60.0, 35.0, 8, 20000, 8818u + (unsigned)k );
+			const double sig = std::sqrt( a.sem * a.sem + r.sem * r.sem );
 			std::cout << std::fixed << std::setprecision( 4 ) << "    " << names[k]
-			          << ", tilt 35, theta 60 (ray BEHIND the shading normal) -- KNOWN RESIDUAL PIN [0.06, 0.12] (DL-341): composite "
-			          << a.mean << " +- " << a.sem << "\n";
-			Check( a.mean >= 0.06 && a.mean <= 0.12,
-				std::string( "[T] behind-shading-normal arrival (DL-341 residual) inside its pin band, " ) + names[k] );
+			          << ", tilt 35, theta 60 (ray BEHIND the shading normal): composite " << a.mean << " +- " << a.sem
+			          << ", independent walk " << r.mean << " +- " << r.sem
+			          << ", z " << std::setprecision( 2 ) << ( a.mean - r.mean ) / std::max( 1e-12, sig ) << "\n";
+			Check( std::fabs( a.mean - r.mean ) <= 0.001 + 5.0 * sig,
+				std::string( "[T] behind-shading-normal arrival == independent walk (DL-341), " ) + names[k] );
 		}
 		m->release();
 	}
@@ -910,6 +1015,97 @@ static void SectionT( Fixtures& f )
 		m->release();
 	}
 	dScat5->release(); s5->release(); dDelta->release(); s1e6->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+//  Section W -- DL-297: THE SHAPE OF A WARPED COAT'S EXIT.
+//
+//  DielectricSPF with a finite `scattering` warps its delta-tagged
+//  transmission by a clipped Phong cos^N lobe about the Snell direction.
+//  The furnace sections cannot see whether the layered evaluator's term
+//  (a) reproduces that warp: an ideal-Snell connection conserves the same
+//  energy, it just puts it in the wrong DIRECTIONS.  So this section bins
+//  the exit energy by cos(theta_out) -- composite emissions (covered +
+//  direct + walker, the kray of every emitted up-going ray) against the
+//  independent natural layer walk of Section T, which follows the warp
+//  because it calls the top's own Scatter.  Untilted, jittered position,
+//  per-bin band 5 sigma + 0.002.  Pre-fix (ideal-Snell term (a)) the
+//  scattering-0 row at theta 0 read evaluator 0.013 / 0.064 / 0.128 /
+//  0.193 / 0.251 / 0.349 against the walk's 0.123 / 0.136 / 0.150 /
+//  0.167 / 0.185 / 0.239 (the DL-297 ledger row); the parser default
+//  (scattering 10000) is a control that agrees either way.
+//////////////////////////////////////////////////////////////////////
+static const int kWarpBins = 6;
+
+static void WarpHistogram( const ISPF* composite, const ISPF* top, const ISPF* bot, double thDeg,
+	int batches, int perBatch, unsigned seedBase, double mean[kWarpBins], double sem[kWarpBins] )
+{
+	std::vector<double> per[kWarpBins];
+	for( int b = 0; b < batches; ++b ) {
+		RandomNumberGenerator rng( seedBase + 7919u * (unsigned)b );
+		IndependentSampler smp( rng );
+		double acc[kWarpBins] = { 0 };
+		for( int i = 0; i < perBatch; ++i ) {
+			const Point3 p( rng.CanonicalRandom() * 10, rng.CanonicalRandom() * 10, 0 );
+			const RayIntersectionGeometric ri = MakeTiltedIntersection( thDeg, p, 0.0 );
+			if( composite ) {
+				IORStack st = MakeTestIORStack( g_stub );
+				ScatteredRayContainer sc;
+				composite->Scatter( ri, smp, sc, st );
+				for( unsigned j = 0; j < sc.Count(); ++j ) {
+					const Vector3 d = Vector3Ops::Normalize( sc[j].ray.Dir() );
+					if( d.z <= 0 ) continue;
+					acc[ std::min( kWarpBins - 1, (int)( d.z * kWarpBins ) ) ] += ColorMath::MaxValue( sc[j].kray );
+				}
+			} else {
+				Vector3 d( 0, 0, 0 );
+				const RISEPel v = ReferenceLayerWalk( *top, *bot, ri, smp, &d );
+				d = Vector3Ops::Normalize( d );
+				if( d.z > 0 ) {
+					acc[ std::min( kWarpBins - 1, (int)( d.z * kWarpBins ) ) ] += ColorMath::MaxValue( v );
+				}
+			}
+		}
+		for( int k = 0; k < kWarpBins; ++k ) per[k].push_back( acc[k] / perBatch );
+	}
+	for( int k = 0; k < kWarpBins; ++k ) {
+		double m = 0; for( double v : per[k] ) m += v; m /= per[k].size();
+		double var = 0; for( double v : per[k] ) var += ( v - m ) * ( v - m );
+		var /= std::max<size_t>( 1, per[k].size() - 1 );
+		mean[k] = m; sem[k] = std::sqrt( var / per[k].size() );
+	}
+}
+
+static void SectionW( Fixtures& f )
+{
+	std::cout << "\n[W] DL-297: exit-energy histogram by cos(theta_out), 6 bins grazing -> normal, composite{dielectric / white} vs the independent layer walk (16 x 20000 each)\n";
+	UniformScalarPainter* s5 = new UniformScalarPainter( 5.0 );  s5->addref();
+	DielectricMaterial* dScat5 = new DielectricMaterial( *f.s1, *f.s15, *s5, false );  dScat5->addref();
+	const IMaterial* tops[] = { f.dScat0, dScat5, f.dSmooth };
+	const char* names[] = { "scattering 0", "scattering 5", "scattering 10000 (parser default, control)" };
+	for( int k = 0; k < 3; ++k ) {
+		CompositeMaterial* m = MakeComposite( *tops[k], *f.lamb, 3, 3, 3, 3, 3, 0.0, *f.s0 );
+		for( const double th : { 0.0, 45.0 } ) {
+			double am[kWarpBins], as[kWarpBins], rm[kWarpBins], rs[kWarpBins];
+			WarpHistogram( m->GetSPF(), 0, 0, th, 16, 20000, 3301u + (unsigned)th + 31u * (unsigned)k, am, as );
+			WarpHistogram( 0, tops[k]->GetSPF(), f.lamb->GetSPF(), th, 16, 20000, 4403u + (unsigned)th + 37u * (unsigned)k, rm, rs );
+			std::cout << "    " << names[k] << ", theta " << th << "\n      composite:";
+			for( int b = 0; b < kWarpBins; ++b ) std::cout << " " << std::fixed << std::setprecision( 4 ) << am[b];
+			std::cout << "\n      walk     :";
+			for( int b = 0; b < kWarpBins; ++b ) std::cout << " " << std::fixed << std::setprecision( 4 ) << rm[b];
+			std::cout << "\n      z        :";
+			for( int b = 0; b < kWarpBins; ++b ) {
+				const double sig = std::sqrt( as[b] * as[b] + rs[b] * rs[b] );
+				std::cout << " " << std::setprecision( 2 ) << ( am[b] - rm[b] ) / std::max( 1e-12, sig );
+				Check( std::fabs( am[b] - rm[b] ) <= 0.002 + 5.0 * sig,
+					std::string( "[W] warped-coat exit histogram == independent walk, " ) + names[k] +
+					" theta " + std::to_string( (int)th ) + " bin " + std::to_string( b ) );
+			}
+			std::cout << "\n";
+		}
+		m->release();
+	}
+	dScat5->release(); s5->release();
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1161,14 +1357,363 @@ static std::string PtRasterizer( bool env, int spp )
 	return s.str();
 }
 
-static std::string BdptRasterizer( bool env, int spp )
+static std::string BdptRasterizer( bool env, int spp, int depth = 8 )
 {
 	std::ostringstream s;
 	s << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
-	  << "bdpt_pel_rasterizer\n{\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tsamples " << spp << "\n\toidn_denoise FALSE\n\tpixel_filter box\n";
+	  << "bdpt_pel_rasterizer\n{\n\tmax_eye_depth " << depth << "\n\tmax_light_depth " << depth << "\n\tsamples " << spp << "\n\toidn_denoise FALSE\n\tpixel_filter box\n";
 	if( env ) s << "\tradiance_map pnt_env\n\tradiance_scale 1.0\n\tradiance_background TRUE\n";
 	s << "}\n\nfile_rasterizeroutput\n{\n\tpattern rendered/composite_energy_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n\n";
 	return s.str();
+}
+
+//////////////////////////////////////////////////////////////////////
+//  Section D9 -- DL-341 review round 6 (2026-10-02): a closed DOUBLE-SIDED
+//  mesh box WOUND INWARD.  On such a mesh an inside hit is a FRONT face by
+//  winding, so the geometry does not flip the normal and the round-3/4
+//  flip-flag rule never unflipped it: the hit was walked from above while
+//  the stack held the object, and the exit carried an inside stack.  An
+//  all-inverted composite{glass/glass} box read 0.467 in a white furnace
+//  (back face only inverted 0.507, front only 0.980; master 1.000).
+//
+//  Each scene: left half the consistently wound box, right half the same
+//  box with the named faces' winding reversed, both double-sided, under
+//  the white env furnace, camera outside; PT, BDPT and VCM.
+//    - composite{glass/glass} and the plain-glass control are lossless and
+//      all-delta, so every sample is exactly the env radiance: both halves
+//      == 1 within rounding (VCM's merges read 1.00014 on both builds).
+//    - composite{glass/translucent} (thickness 0.05, extinction 0.2) has
+//      no closed form: the inverted box must equal the consistent one,
+//      right / left within 2 % (single 256-spp renders; the reviewer's
+//      salted repeats put the per-half sd near 0.2 %).
+//  BDPT / VCM run at depth 12 (review round 6, P3): at the helpers'
+//  depth 8 the translucent box read ~1.3 % below PT on BOTH boxes alike
+//  (truncation of the box's internal bounces), 0.3 % at depth 12.
+//////////////////////////////////////////////////////////////////////
+static std::string VcmRasterizer( bool env, int spp, int depth = 8 )
+{
+	std::ostringstream s;
+	s << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	  << "vcm_pel_rasterizer\n{\n\tmax_eye_depth " << depth << "\n\tmax_light_depth " << depth << "\n\tsamples " << spp
+	  << "\n\tmerge_radius 0.0\n\tvc_enabled true\n\tvm_enabled true\n\toidn_denoise FALSE\n\tpixel_filter box\n";
+	if( env ) s << "\tradiance_map pnt_env\n\tradiance_scale 1.0\n\tradiance_background TRUE\n";
+	s << "}\n\nfile_rasterizeroutput\n{\n\tpattern rendered/composite_energy_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n\n";
+	return s.str();
+}
+
+static std::string WindingBox( const char* name, const std::vector<int>& reversed, bool doubleSided = true )
+{
+	static const int T[12][3] = { {0,2,1},{0,3,2},{4,5,6},{4,6,7},{0,1,5},{0,5,4},{3,7,6},{3,6,2},{0,4,7},{0,7,3},{1,2,6},{1,6,5} };
+	std::ostringstream s;
+	s << "indexedmesh_geometry\n{\n\tname " << name << "\n"
+	  << "\tvertex -1.95 -3 -0.5\n\tvertex 1.95 -3 -0.5\n\tvertex 1.95 3 -0.5\n\tvertex -1.95 3 -0.5\n"
+	  << "\tvertex -1.95 -3 0.5\n\tvertex 1.95 -3 0.5\n\tvertex 1.95 3 0.5\n\tvertex -1.95 3 0.5\n";
+	for( int i = 0; i < 12; ++i ) {
+		const bool rev = std::find( reversed.begin(), reversed.end(), i ) != reversed.end();
+		s << "\ttriangle " << T[i][0] << " " << ( rev ? T[i][2] : T[i][1] ) << " " << ( rev ? T[i][1] : T[i][2] ) << "\n";
+	}
+	s << "\tdouble_sided " << ( doubleSided ? "TRUE" : "FALSE" ) << "\n\tface_normals TRUE\n}\n\n";
+	return s.str();
+}
+
+static void SectionD9()
+{
+	std::cout << "\n[D9] Inward-wound closed double-sided mesh box (DL-341 round 6)\n";
+	const std::string mats =
+		"uniformcolor_painter\n{\n\tname pnt_env\n\tcolor 1.0 1.0 1.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_tr\n\tcolor 0.3 0.3 0.3\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_tt\n\tcolor 0.7 0.7 0.7\n}\n\n"
+		"dielectric_material\n{\n\tname mat_glass\n\ttau 1\n\tior 1.5\n}\n\n"
+		"dielectric_material\n{\n\tname mat_glass2\n\ttau 1\n\tior 1.5\n}\n\n"
+		"translucent_material\n{\n\tname mat_tr\n\tref pnt_tr\n\ttau pnt_tt\n\text 0\n\tN 10\n\tscattering 0\n}\n\n"
+		"composite_material\n{\n\tname mat_gg\n\ttop mat_glass\n\tbottom mat_glass2\n\tthickness 0\n\textinction 0.0\n}\n\n"
+		"composite_material\n{\n\tname mat_gtr\n\ttop mat_glass\n\tbottom mat_tr\n\tthickness 0.05\n\textinction 0.2\n}\n\n";
+	struct Mode { const char* name; std::vector<int> faces; };
+	const Mode modes[] = {
+		{ "all 12 triangles reversed", { 0,1,2,3,4,5,6,7,8,9,10,11 } },
+		{ "back (-z) face reversed",   { 0,1 } },
+		{ "front (+z) face reversed",  { 2,3 } },
+	};
+	struct MatCfg { const char* name; const char* mat; bool exact; int spp; };
+	const MatCfg cfgs[] = {
+		{ "composite{glass/glass}",       "mat_gg",    true,  128 },
+		{ "plain glass (control)",        "mat_glass", true,  128 },
+		{ "composite{glass/translucent}", "mat_gtr",   false, 256 },
+	};
+	unsigned seed = 98304u;
+	for( const Mode& m : modes ) {
+		for( const MatCfg& c : cfgs ) {
+			for( int r = 0; r < 3; ++r ) {
+				const std::string scene = std::string( "RISE ASCII SCENE 7\n" ) +
+					"film\n{\n\twidth 32\n\theight 16\n}\n\n"
+					"pinhole_camera\n{\n\tlocation 0 0 7.0\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n" +
+					mats + WindingBox( "bg", std::vector<int>() ) + WindingBox( "bw", m.faces ) +
+					"standard_object\n{\n\tname L\n\tgeometry bg\n\tposition -2 0 0\n\tmaterial " + c.mat + "\n}\n\n"
+					"standard_object\n{\n\tname Rr\n\tgeometry bw\n\tposition 2 0 0\n\tmaterial " + c.mat + "\n}\n\n" +
+					( r == 0 ? PtRasterizer( true, c.spp ) : r == 1 ? BdptRasterizer( true, c.spp, 12 ) : VcmRasterizer( true, c.spp, 12 ) );
+				CapturingRasterizerOutput* cap = 0;
+				const bool ok = Render( scene, "winding", cap, seed++ );
+				const double mL = ok ? RegionMean( *cap, 2, cap->width / 2 - 2 ) : -1;
+				const double mR = ok ? RegionMean( *cap, cap->width / 2 + 2, cap->width - 2 ) : -1;
+				if( cap ) safe_release( cap );
+				const char* in = ( r == 0 ) ? "PT  " : ( r == 1 ) ? "BDPT" : "VCM ";
+				std::cout << "    D9 " << m.name << ", " << c.name << ", " << in << ": consistent " << std::setprecision(5)
+				          << mL << " | inverted " << mR << ( c.exact ? "  (truth 1 | 1)\n" : "  (truth: equal)\n" );
+				const std::string tag = std::string( m.name ) + ", " + c.name + " (" + in + ")";
+				if( c.exact ) {
+					Check( ok && std::fabs( mL - 1.0 ) <= 0.002, "[D9] consistent box == 1, " + tag );
+					Check( ok && std::fabs( mR - 1.0 ) <= 0.002, "[D9] inward-wound box == 1, " + tag );
+				} else {
+					Check( ok && mL > 0 && std::fabs( mR / mL - 1.0 ) <= 0.02, "[D9] inward-wound box == consistent box, " + tag );
+				}
+			}
+		}
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+//  Section M -- DL-341 review round 7 (2026-10-02): THE SIDEDNESS MATRIX.
+//
+//  Rounds 1-6 each found one more geometry on which the composite's frame
+//  went wrong (double-sided closed meshes, open sheets, T-junctions,
+//  Bezier patches, nested tops, inward winding).  This section crosses
+//  every axis at once instead of one fixture per finding:
+//
+//    sidedness  {single, double}
+//    winding    {outward, inward, mixed}   (mixed: every odd triangle
+//               reversed -- each face carries one triangle each way)
+//    geometry   {closed box in a white furnace, camera outside;
+//                closed box with a light INSIDE it, no environment;
+//                open quad sheet in the furnace, camera on its +z side}
+//    material   {composite{glass/glass}, composite{glass/translucent},
+//                nested composite{composite{glass/water}/glass}}
+//    integrator {PT, BDPT, VCM}  (BDPT / VCM at depth 12)
+//
+//  Each render holds the cell's object (left) beside its TWIN (right):
+//    glass/glass -> plain glass on the SAME geometry, sidedness and
+//                   winding (the two-layer stack is index-matched, so it
+//                   must render as one glass interface);
+//    the others  -> the same composite on the double-sided OUTWARD
+//                   version of the geometry (winding must not matter).
+//  Expected value per cell (docs/DL24_COMPOSITE_ENERGY.md section 9.4e):
+//    closed box, furnace   glass/glass 1 and its twin 1; nested 1
+//                          (lossless); glass/translucent == twin
+//    closed box, light in  == twin
+//    open sheet            == twin (glass/glass: 0.467 = F + (1-F)/eta^2,
+//                          the dielectric "separate sheets" convention:
+//                          a ray that crossed is inside the object)
+//  Plus three glass/glass sheet families against plain glass, over
+//  sidedness x winding: one object holding two panes (plain glass: a
+//  slab, 1.0), two separate one-pane objects (0.467), and a sheet over a
+//  mirror (the return trip meets the sheet from behind with the object on
+//  the stack).
+//
+//  EVERY cell follows the plain dielectric's stack convention; none is
+//  "top on both faces" (that is the provably open clipped plane only,
+//  DL-407, not in this matrix).  Bands (every render salted, so each cell
+//  is an independent replicate): zero-variance all-delta cells 0.2 %
+//  (glass/glass, plain glass; furnace and sheets); glass/translucent
+//  furnace / sheet 2 % (256 spp); nested 5 % (1024 spp, per-branch
+//  estimator: 144 furnace / sheet ratios over four runs had sd 0.69 % but
+//  a heavy tail, max +3.47 %, so 3 % failed one run in four); the mirror-return sheets 0.5 % (BDPT /
+//  VCM are not zero-variance there); light-inside cells 1024 spp, each the
+//  mean of 3 salted renders: glass/glass 3 % (single-render ratio sd
+//  ~0.5 % under PT / BDPT but ~1.1 % under VCM, so the mean's is
+//  <= ~0.65 %), translucent / nested 5 % (single-render sd ~1.5 % per half,
+//  the mean's ratio sd ~1.2 %).  Every regression this section exists for moves a cell by 5 %
+//  or more (0.444 / 0.467 against 1; 0.222 against 0.105; 0.65 against
+//  0.92).
+//////////////////////////////////////////////////////////////////////
+static std::string MatrixQuad( const char* name, double x0, double x1, double z, int winding, bool doubleSided )
+{
+	std::ostringstream s;
+	s << "indexedmesh_geometry\n{\n\tname " << name << "\n"
+	  << "\tvertex " << x0 << " -3 " << z << "\n\tvertex " << x1 << " -3 " << z << "\n"
+	  << "\tvertex " << x1 << " 3 " << z << "\n\tvertex " << x0 << " 3 " << z << "\n";
+	// winding 0: normal +z (toward the camera); 1: -z; 2: one of each.
+	s << ( winding == 1 ? "\ttriangle 0 2 1\n" : "\ttriangle 0 1 2\n" )
+	  << ( winding == 0 ? "\ttriangle 0 2 3\n" : "\ttriangle 0 3 2\n" );
+	s << "\tdouble_sided " << ( doubleSided ? "TRUE" : "FALSE" ) << "\n\tface_normals TRUE\n}\n\n";
+	return s.str();
+}
+
+static std::string MatrixTwoPane( const char* name, double x0, double x1, int winding, bool doubleSided )
+{
+	// Two quads at z = +0.3 and z = -0.3 in ONE geometry.
+	std::ostringstream s;
+	s << "indexedmesh_geometry\n{\n\tname " << name << "\n";
+	const double zs[2] = { 0.3, -0.3 };
+	for( int i = 0; i < 2; ++i ) {
+		s << "\tvertex " << x0 << " -3 " << zs[i] << "\n\tvertex " << x1 << " -3 " << zs[i] << "\n"
+		  << "\tvertex " << x1 << " 3 " << zs[i] << "\n\tvertex " << x0 << " 3 " << zs[i] << "\n";
+	}
+	for( int i = 0; i < 2; ++i ) {
+		const int b = 4 * i;
+		s << "\ttriangle " << b << " " << ( winding == 1 ? b + 2 : b + 1 ) << " " << ( winding == 1 ? b + 1 : b + 2 ) << "\n"
+		  << "\ttriangle " << b << " " << ( winding == 0 ? b + 2 : b + 3 ) << " " << ( winding == 0 ? b + 3 : b + 2 ) << "\n";
+	}
+	s << "\tdouble_sided " << ( doubleSided ? "TRUE" : "FALSE" ) << "\n\tface_normals TRUE\n}\n\n";
+	return s.str();
+}
+
+static void SectionM()
+{
+	std::cout << "\n[M] Sidedness x winding x geometry x material matrix (DL-341 round 7)\n";
+	const std::string mats =
+		"uniformcolor_painter\n{\n\tname pnt_env\n\tcolor 1.0 1.0 1.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_e\n\tcolor 1.0 1.0 1.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_w8\n\tcolor 0.8 0.8 0.8\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_tr\n\tcolor 0.3 0.3 0.3\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_tt\n\tcolor 0.7 0.7 0.7\n}\n\n"
+		"lambertian_material\n{\n\tname mat_l8\n\treflectance pnt_w8\n}\n\n"
+		"dielectric_material\n{\n\tname mat_glass\n\ttau 1\n\tior 1.5\n}\n\n"
+		"dielectric_material\n{\n\tname mat_glass2\n\ttau 1\n\tior 1.5\n}\n\n"
+		"dielectric_material\n{\n\tname mat_water\n\ttau 1\n\tior 1.33\n}\n\n"
+		"translucent_material\n{\n\tname mat_tr\n\tref pnt_tr\n\ttau pnt_tt\n\text 0\n\tN 10\n\tscattering 0\n}\n\n"
+		"perfectreflector_material\n{\n\tname mat_mir\n\treflectance pnt_e\n}\n\n"
+		"lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_e\n\tscale 20.0\n\tmaterial none\n}\n\n"
+		"composite_material\n{\n\tname mat_gg\n\ttop mat_glass\n\tbottom mat_glass2\n\tthickness 0\n\textinction 0.0\n}\n\n"
+		"composite_material\n{\n\tname mat_gw\n\ttop mat_glass\n\tbottom mat_water\n\tthickness 0\n\textinction 0.0\n}\n\n"
+		"composite_material\n{\n\tname mat_nest\n\ttop mat_gw\n\tbottom mat_glass2\n\tthickness 0\n\textinction 0.0\n}\n\n"
+		"composite_material\n{\n\tname mat_gtr\n\ttop mat_glass\n\tbottom mat_tr\n\tthickness 0.05\n\textinction 0.2\n}\n\n";
+	const std::string head = std::string( "RISE ASCII SCENE 7\n" ) +
+		"film\n{\n\twidth 32\n\theight 16\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 7.0\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n" + mats;
+	const std::string lights =
+		"sphere_geometry\n{\n\tname sg\n\tradius 0.3\n}\n\n"
+		"clippedplane_geometry\n{\n\tname fq\n\tpta -6 -3.5 -4\n\tptb -6 -3.5 4\n\tptc 6 -3.5 4\n\tptd 6 -3.5 -4\n}\n\n"
+		"standard_object\n{\n\tname eL\n\tgeometry sg\n\tposition -2 0 0\n\tmaterial mat_emit\n}\n\n"
+		"standard_object\n{\n\tname eR\n\tgeometry sg\n\tposition 2 0 0\n\tmaterial mat_emit\n}\n\n"
+		"standard_object\n{\n\tname F\n\tgeometry fq\n\tmaterial mat_l8\n}\n\n";
+	auto obj = []( const char* name, const char* geom, const std::string& mat, double x ) {
+		std::ostringstream s;
+		s << "standard_object\n{\n\tname " << name << "\n\tgeometry " << geom << "\n\tposition " << x << " 0 0\n\tmaterial " << mat << "\n}\n\n";
+		return s.str();
+	};
+	auto rast = []( int r, bool env, int spp ) {
+		return r == 0 ? PtRasterizer( env, spp ) : r == 1 ? BdptRasterizer( env, spp, 12 ) : VcmRasterizer( env, spp, 12 );
+	};
+	auto reversedFor = []( int w ) {
+		std::vector<int> v;
+		for( int i = 0; i < 12; ++i ) if( w == 1 || ( w == 2 && ( i & 1 ) ) ) v.push_back( i );
+		return v;
+	};
+	const char* inName[3] = { "PT  ", "BDPT", "VCM " };
+	const char* wName[3] = { "outward", "inward", "mixed" };
+	struct MatCfg { const char* name; const char* mat; int kind; };	// kind 0 glass/glass, 1 translucent, 2 nested
+	const MatCfg cfgs[] = {
+		{ "glass/glass",       "mat_gg",   0 },
+		{ "glass/translucent", "mat_gtr",  1 },
+		{ "nested",            "mat_nest", 2 },
+	};
+	unsigned seed = 131072u;
+	int cells = 0, cellsBad = 0;
+	auto runPair = [&]( const std::string& scene, double& mL, double& mR ) {
+		CapturingRasterizerOutput* cap = 0;
+		// Every render SALTED (an independent randomized-QMC replicate):
+		// unsalted, all cells share one Sobol' pattern and its fixed
+		// left / right offset (~1.3 % on the nested rows) repeats in every
+		// cell instead of averaging out.
+		SobolSamplerTestHooks::ValueSalt().store( 0x9E3779B9u * seed + 0x85EBCA6Bu );
+		const bool ok = Render( scene, "sidedness", cap, seed++ );
+		SobolSamplerTestHooks::ValueSalt().store( 0u );
+		mL = ok ? RegionMean( *cap, 2, cap->width / 2 - 2 ) : -1;
+		mR = ok ? RegionMean( *cap, cap->width / 2 + 2, cap->width - 2 ) : -1;
+		if( cap ) safe_release( cap );
+		return ok;
+	};
+	auto gate = [&]( bool pass, const std::string& msg ) {
+		++cells; if( !pass ) ++cellsBad;
+		Check( pass, msg );
+	};
+	for( const MatCfg& c : cfgs ) {
+		for( int ds = 0; ds < 2; ++ds ) {
+			for( int w = 0; w < 3; ++w ) {
+				for( int g = 0; g < 3; ++g ) {
+					const bool env = ( g != 1 );
+					int spp = ( c.kind == 0 ) ? 128 : ( c.kind == 1 ) ? 256 : 1024;
+					if( g == 1 ) spp = 1024;
+					const double band = ( g == 1 ) ? ( c.kind == 0 ? 0.03 : 0.05 ) : ( c.kind == 0 ) ? 0.002 : ( c.kind == 1 ) ? 0.02 : 0.05;
+					std::string geo, objs;
+					const std::string twinMat = ( c.kind == 0 ) ? "mat_glass" : c.mat;
+					if( g < 2 ) {
+						geo = WindingBox( "bT", reversedFor( w ), ds == 1 ) +
+						      ( c.kind == 0 ? WindingBox( "bR", reversedFor( w ), ds == 1 ) : WindingBox( "bR", std::vector<int>(), true ) );
+						objs = obj( "L", "bT", c.mat, -2 ) + obj( "Rr", "bR", twinMat, 2 );
+					} else {
+						geo = MatrixQuad( "qT", -4, 0, 0, w, ds == 1 ) +
+						      ( c.kind == 0 ? MatrixQuad( "qR", 0, 4, 0, w, ds == 1 ) : MatrixQuad( "qR", 0, 4, 0, 0, true ) );
+						objs = obj( "L", "qT", c.mat, 0 ) + obj( "Rr", "qR", twinMat, 0 );
+					}
+					const char* gName = ( g == 0 ) ? "closed box, furnace" : ( g == 1 ) ? "closed box, light inside" : "open sheet, furnace";
+					for( int r = 0; r < 3; ++r ) {
+						const std::string scene = head + geo + objs + ( g == 1 ? lights : std::string() ) + rast( r, env, spp );
+						// A light inside the box is the noisiest geometry
+						// (single-render ratio sd up to ~1.1 % for glass/glass
+						// under VCM over 10 repeats, ~1.5 % per half for the
+						// translucent / nested boxes): mean of 3 salted
+						// replicates for every light-inside cell.
+						const int nRep = ( g == 1 ) ? 3 : 1;
+						double mL = 0, mR = 0;
+						bool ok = true;
+						for( int k = 0; k < nRep; ++k ) {
+							double l = -1, rr = -1;
+							ok = runPair( scene, l, rr ) && ok;
+							mL += l / nRep; mR += rr / nRep;
+						}
+						std::cout << "    M " << c.name << " | " << ( ds ? "double" : "single" ) << " | " << wName[w] << " | "
+						          << gName << " | " << inName[r] << ": " << std::setprecision(5) << mL << " vs twin " << mR << "\n";
+						const std::string tag = std::string( c.name ) + ", " + ( ds ? "double" : "single" ) + "-sided, " + wName[w] + ", " + gName + " (" + inName[r] + ")";
+						gate( ok && mR > 0 && std::fabs( mL / mR - 1.0 ) <= band, "[M] == twin, " + tag );
+						if( g == 0 && c.kind != 1 ) {
+							gate( ok && std::fabs( mL - 1.0 ) <= band, "[M] lossless closed box == 1, " + tag );
+						}
+						if( g == 0 && c.kind == 0 ) {
+							gate( ok && std::fabs( mR - 1.0 ) <= band, "[M] plain-glass twin == 1, " + tag );
+						}
+					}
+				}
+			}
+		}
+	}
+	// Glass/glass sheet families against plain glass.
+	const std::string mirror =
+		"clippedplane_geometry\n{\n\tname mq\n\tpta -6 -4 -2\n\tptb 6 -4 -2\n\tptc 6 4 -2\n\tptd -6 4 -2\n}\n\n"
+		"standard_object\n{\n\tname M\n\tgeometry mq\n\tmaterial mat_mir\n}\n\n";
+	for( int fam = 0; fam < 3; ++fam ) {
+		const char* fName = ( fam == 0 ) ? "two panes, one object" : ( fam == 1 ) ? "two panes, separate objects" : "sheet over a mirror";
+		for( int ds = 0; ds < 2; ++ds ) {
+			for( int w = 0; w < 3; ++w ) {
+				std::string geo, objs;
+				if( fam == 0 ) {
+					geo = MatrixTwoPane( "pL", -4, 0, w, ds == 1 ) + MatrixTwoPane( "pR", 0, 4, w, ds == 1 );
+					objs = obj( "L", "pL", "mat_gg", 0 ) + obj( "Rr", "pR", "mat_glass", 0 );
+				} else if( fam == 1 ) {
+					geo = MatrixQuad( "aL", -4, 0, 0.3, w, ds == 1 ) + MatrixQuad( "bL", -4, 0, -0.3, w, ds == 1 ) +
+					      MatrixQuad( "aR", 0, 4, 0.3, w, ds == 1 ) + MatrixQuad( "bR", 0, 4, -0.3, w, ds == 1 );
+					objs = obj( "La", "aL", "mat_gg", 0 ) + obj( "Lb", "bL", "mat_gg", 0 ) +
+					       obj( "Ra", "aR", "mat_glass", 0 ) + obj( "Rb", "bR", "mat_glass", 0 );
+				} else {
+					geo = MatrixQuad( "qL", -4, 0, 0, w, ds == 1 ) + MatrixQuad( "qR", 0, 4, 0, w, ds == 1 ) + mirror;
+					objs = obj( "L", "qL", "mat_gg", 0 ) + obj( "Rr", "qR", "mat_glass", 0 );
+				}
+				for( int r = 0; r < 3; ++r ) {
+					const std::string scene = head + geo + objs + rast( r, true, 128 );
+					double mL = -1, mR = -1;
+					const bool ok = runPair( scene, mL, mR );
+					std::cout << "    M glass/glass | " << ( ds ? "double" : "single" ) << " | " << wName[w] << " | "
+					          << fName << " | " << inName[r] << ": " << std::setprecision(5) << mL << " vs plain glass " << mR << "\n";
+					// The mirror return is not zero-variance under BDPT / VCM (their
+					// light-side strategies reach the mirror too): 0.5 % there,
+					// against a 27 % regression (0.677 vs 0.929).
+					const double famBand = ( fam == 2 ) ? 0.005 : 0.002;
+					gate( ok && mR > 0 && std::fabs( mL / mR - 1.0 ) <= famBand,
+						std::string( "[M] glass/glass == plain glass, " ) + fName + ", " + ( ds ? "double" : "single" ) + "-sided, " + wName[w] + " (" + inName[r] + ")" );
+				}
+			}
+		}
+	}
+	std::cout << "    M summary: " << ( cells - cellsBad ) << " of " << cells << " matrix checks pass\n";
 }
 
 static void SectionD()
@@ -1257,14 +1802,18 @@ static void SectionD()
 	}
 
 	// D3: a TRANSMITTING composite, glass / glass with zero gap, under the
-	// same env furnace.  Lossless, so the truth is 1; it reads ~0.49
-	// because the walker's exit through the BOTTOM carries the
-	// inside-the-object stack, so the escaping ray is priced at the
-	// eta^-2 = 0.444 basic-radiance factor of a medium it never entered.
-	// Pre-existing (the base 5c9eeb96 reads 0.484-0.487 across PT/BDPT
-	// pel, spectral and HWSS) and part of DL-341's stack-gap family.
-	// KNOWN RESIDUAL PIN [0.43, 0.54]; the plain glass quad on the right
-	// is printed as a record only.
+	// same env furnace, against the EQUIVALENT PAIR OF SEPARATE SURFACES it
+	// stands for: two separate open glass quads, the second 0.002 below the
+	// first, both facing up.  Under the DL-345 face rule the second sheet is
+	// an index-matched entry, so the pair reads like ONE glass sheet:
+	// F + (1 - F) / eta^2 = 0.467 at normal incidence -- the ray that crossed
+	// is inside the glass, and a white environment of radiance 1 seen inside
+	// a medium of index 1.5 is not an equilibrium (that would be n^2 = 2.25),
+	// so 1 was never the expectation.  The composite must equal the pair.
+	// Until DL-341 (2026-10-02) the composite's BOTTOM refracted 1.0 -> 1.5
+	// (the outside index, not the gap's: a second Fresnel reflection and a
+	// second bend) and read 0.48737 against the pair's 0.46693 (+4.4 %),
+	// pinned in [0.43, 0.54] under a "truth 1" that DL-341 corrects.
 	{
 		const std::string glassComp =
 			"dielectric_material\n{\n\tname mat_glass2\n\ttau 1\n\tior 1.5\n}\n\n"
@@ -1276,8 +1825,10 @@ static void SectionD()
 			kLayers + glassComp +
 			"clippedplane_geometry\n{\n\tname qL\n\tpta -4 -3 0\n\tptb 0 -3 0\n\tptc 0 3 0\n\tptd -4 3 0\n}\n\n"
 			"clippedplane_geometry\n{\n\tname qR\n\tpta 0 -3 0\n\tptb 4 -3 0\n\tptc 4 3 0\n\tptd 0 3 0\n}\n\n"
+			"clippedplane_geometry\n{\n\tname qR2\n\tpta 0 -3 -0.002\n\tptb 4 -3 -0.002\n\tptc 4 3 -0.002\n\tptd 0 3 -0.002\n}\n\n"
 			"standard_object\n{\n\tname objL\n\tgeometry qL\n\tmaterial mat_gg\n}\n\n"
-			"standard_object\n{\n\tname objR\n\tgeometry qR\n\tmaterial mat_glass\n}\n\n";
+			"standard_object\n{\n\tname objR\n\tgeometry qR\n\tmaterial mat_glass\n}\n\n"
+			"standard_object\n{\n\tname objR2\n\tgeometry qR2\n\tmaterial mat_glass2\n}\n\n";
 		for( int r = 0; r < 2; ++r ) {
 			const std::string scene = scene3 + ( r == 0 ? PtRasterizer( true, 64 ) : BdptRasterizer( true, 64 ) );
 			CapturingRasterizerOutput* cap = 0;
@@ -1285,14 +1836,730 @@ static void SectionD()
 			const double mL = ok ? RegionMean( *cap, 2, cap->width / 2 - 2 ) : -1;
 			const double mR = ok ? RegionMean( *cap, cap->width / 2 + 2, cap->width - 2 ) : -1;
 			std::cout << "    D3 transmitting composite glass/glass under env, " << ( r == 0 ? "PT  " : "BDPT" )
-			          << ": composite = " << std::setprecision(5) << mL << " (truth 1; KNOWN RESIDUAL PIN [0.43, 0.54], DL-341)"
-			          << ", plain glass quad (record) = " << mR << "\n";
-			Check( ok && mL >= 0.43 && mL <= 0.54,
-				std::string( "[D3] transmitting composite (DL-341 residual) inside its pin band (" ) + ( r == 0 ? "PT" : "BDPT" ) + ")" );
+			          << ": composite = " << std::setprecision(5) << mL << ", separate glass pair = " << mR
+			          << ", ratio = " << ( mR > 0 ? mL / mR : -1 ) << "  (truth: ratio 1; the pair is F + (1-F)/eta^2 = 0.467 at normal incidence)\n";
+			Check( ok && mR > 0 && std::fabs( mL / mR - 1.0 ) <= 0.015,
+				std::string( "[D3] transmitting composite == the equivalent pair of separate sheets (" ) + ( r == 0 ? "PT" : "BDPT" ) + ")" );
 			if( cap ) safe_release( cap );
 		}
 	}
+
+	// D4: the same stack as a CLOSED object -- a composite{glass/glass} box
+	// beside a plain glass box, both 3.9 x 6 x 1, under the env furnace, the
+	// camera outside.  Every path that enters must leave through the far
+	// faces, which it meets FROM INSIDE (the H4 case at render level: the
+	// stack holds the object, the ray travels up through the bottom first),
+	// so the composite box must render like the glass box it stands for
+	// (second interface index-matched).  Lossless and identical in both, so
+	// the ratio is 1; a box also traps some directions by TIR, the same in
+	// both.  Until DL-341 the composite's exits between ~30 and 42 deg
+	// ping-ponged to the walk cap (0.981).
+	{
+		const std::string glassComp =
+			"dielectric_material\n{\n\tname mat_glass2\n\ttau 1\n\tior 1.5\n}\n\n"
+			"composite_material\n{\n\tname mat_gg\n\ttop mat_glass\n\tbottom mat_glass2\n\tthickness 0\n\textinction 0.0\n}\n\n";
+		const std::string scene4 = std::string( "RISE ASCII SCENE 7\n" ) +
+			"film\n{\n\twidth 32\n\theight 16\n}\n\n"
+			"pinhole_camera\n{\n\tlocation 0 0 7.0\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt_env\n\tcolor 1.0 1.0 1.0\n}\n\n" +
+			kLayers + glassComp +
+			"box_geometry\n{\n\tname bx\n\twidth 3.9\n\theight 6\n\tdepth 1\n}\n\n"
+			"standard_object\n{\n\tname boxL\n\tgeometry bx\n\tposition -2 0 0\n\tmaterial mat_gg\n}\n\n"
+			"standard_object\n{\n\tname boxR\n\tgeometry bx\n\tposition 2 0 0\n\tmaterial mat_glass\n}\n\n";
+		for( int r = 0; r < 2; ++r ) {
+			const std::string scene = scene4 + ( r == 0 ? PtRasterizer( true, 128 ) : BdptRasterizer( true, 128 ) );
+			CapturingRasterizerOutput* cap = 0;
+			const bool ok = Render( scene, r == 0 ? "box_pt" : "box_bdpt", cap, 51200u + r );
+			const double mL = ok ? RegionMean( *cap, 2, cap->width / 2 - 2 ) : -1;
+			const double mR = ok ? RegionMean( *cap, cap->width / 2 + 2, cap->width - 2 ) : -1;
+			std::cout << "    D4 closed composite{glass/glass} box vs glass box under env, " << ( r == 0 ? "PT  " : "BDPT" )
+			          << ": composite = " << std::setprecision(5) << mL << ", glass box = " << mR
+			          << ", ratio = " << ( mR > 0 ? mL / mR : -1 ) << "  (truth: ratio 1)\n";
+			// Every path here is lossless and all-delta, so each sample
+			// carries exactly the env radiance: both boxes read 1.00000
+			// with zero variance and the band only absorbs rounding.  Base
+			// (pre-DL-341) 0.98089 PT / 0.98063 BDPT.
+			Check( ok && mR > 0 && std::fabs( mL / mR - 1.0 ) <= 0.005,
+				std::string( "[D4] closed composite box == the glass box it stands for (" ) + ( r == 0 ? "PT" : "BDPT" ) + ")" );
+			if( cap ) safe_release( cap );
+		}
+	}
+
+	// D5 / D6 (DL-341 review round 1, 2026-10-02): the same closed-box
+	// furnace on the cases the round-0 fix got wrong or never measured.
+	// D5: a DOUBLE-SIDED indexed-mesh box (indexedmesh_geometry's default):
+	// both normals flip toward the ray, so a hit from INSIDE presented the
+	// composite's top; the round-0 fix then popped O and refracted the exit
+	// as an entry -- 0.46687 against base 1.00000 (PT and BDPT).  The left
+	// half is the composite, the right half the same double-sided mesh in
+	// plain glass (a control that must read 1 too).  D6: a NESTED
+	// composite{composite{glass/glass}/glass} box_geometry box beside a
+	// glass box (base 0.971; round 0 1.0056, a gain).  Every path is
+	// lossless and all-delta, so each sample is exactly the env radiance
+	// and the band only absorbs rounding.
+	{
+		const std::string mesh =
+			"indexedmesh_geometry\n{\n\tname mb\n"
+			"\tvertex -1.95 -3 -0.5\n\tvertex 1.95 -3 -0.5\n\tvertex 1.95 3 -0.5\n\tvertex -1.95 3 -0.5\n"
+			"\tvertex -1.95 -3 0.5\n\tvertex 1.95 -3 0.5\n\tvertex 1.95 3 0.5\n\tvertex -1.95 3 0.5\n"
+			"\ttriangle 0 2 1\n\ttriangle 0 3 2\n\ttriangle 4 5 6\n\ttriangle 4 6 7\n\ttriangle 0 1 5\n\ttriangle 0 5 4\n"
+			"\ttriangle 3 7 6\n\ttriangle 3 6 2\n\ttriangle 0 4 7\n\ttriangle 0 7 3\n\ttriangle 1 2 6\n\ttriangle 1 6 5\n"
+			"\tdouble_sided TRUE\n\tface_normals TRUE\n}\n\n";
+		const std::string glassComp =
+			"dielectric_material\n{\n\tname mat_glass2\n\ttau 1\n\tior 1.5\n}\n\n"
+			"composite_material\n{\n\tname mat_gg\n\ttop mat_glass\n\tbottom mat_glass2\n\tthickness 0\n\textinction 0.0\n}\n\n"
+			"composite_material\n{\n\tname mat_nest\n\ttop mat_gg\n\tbottom mat_glass2\n\tthickness 0\n\textinction 0.0\n}\n\n";
+		const std::string head = std::string( "RISE ASCII SCENE 7\n" ) +
+			"film\n{\n\twidth 32\n\theight 16\n}\n\n"
+			"pinhole_camera\n{\n\tlocation 0 0 7.0\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt_env\n\tcolor 1.0 1.0 1.0\n}\n\n" + kLayers + glassComp;
+		const std::string scene5 = head + mesh +
+			"standard_object\n{\n\tname boxL\n\tgeometry mb\n\tposition -2 0 0\n\tmaterial mat_gg\n}\n\n"
+			"standard_object\n{\n\tname boxR\n\tgeometry mb\n\tposition 2 0 0\n\tmaterial mat_glass\n}\n\n";
+		// D5b (review round 3): the same closed box with ONE T-junction (a
+		// vertex in the middle of a top edge, so the mesh is NOT certified
+		// watertight -- `bOpenSheet` -- although it is closed).  Round 3
+		// keyed the unflip on that certificate and read 0.46639 here.
+		const std::string meshTJ =
+			"indexedmesh_geometry\n{\n\tname tb\n"
+			"\tvertex -1.95 -3 -0.5\n\tvertex 1.95 -3 -0.5\n\tvertex 1.95 3 -0.5\n\tvertex -1.95 3 -0.5\n"
+			"\tvertex -1.95 -3 0.5\n\tvertex 1.95 -3 0.5\n\tvertex 1.95 3 0.5\n\tvertex -1.95 3 0.5\n\tvertex 0 -3 0.5\n"
+			"\ttriangle 0 2 1\n\ttriangle 0 3 2\n\ttriangle 4 8 6\n\ttriangle 8 5 6\n\ttriangle 4 6 7\n\ttriangle 0 1 5\n\ttriangle 0 5 4\n"
+			"\ttriangle 3 7 6\n\ttriangle 3 6 2\n\ttriangle 0 4 7\n\ttriangle 0 7 3\n\ttriangle 1 2 6\n\ttriangle 1 6 5\n"
+			"\tdouble_sided TRUE\n\tface_normals TRUE\n}\n\n";
+		const std::string scene5b = head + meshTJ +
+			"standard_object\n{\n\tname boxL\n\tgeometry tb\n\tposition -2 0 0\n\tmaterial mat_gg\n}\n\n"
+			"standard_object\n{\n\tname boxR\n\tgeometry tb\n\tposition 2 0 0\n\tmaterial mat_glass\n}\n\n";
+		const std::string scene6 = head +
+			"box_geometry\n{\n\tname bx\n\twidth 3.9\n\theight 6\n\tdepth 1\n}\n\n"
+			"standard_object\n{\n\tname boxL\n\tgeometry bx\n\tposition -2 0 0\n\tmaterial mat_nest\n}\n\n"
+			"standard_object\n{\n\tname boxR\n\tgeometry bx\n\tposition 2 0 0\n\tmaterial mat_glass\n}\n\n";
+		for( int sc = 0; sc < 3; ++sc ) {
+			for( int r = 0; r < 2; ++r ) {
+				// D5 is zero-variance (one render); D6's nested top runs the
+				// per-branch estimator, so it is n = 4 SALTED renders
+				// (independent randomized-QMC replicates) and gated on
+				// mean +- sem, a band that resolves 0.5 %.
+				const int nRep = ( sc == 1 ) ? 4 : 1;
+				std::vector<double> L, Rr;
+				bool ok = true;
+				for( int k = 0; k < nRep; ++k ) {
+					const int spp = ( sc == 1 ) ? 2048 : 128;
+					const std::string scene = ( sc == 0 ? scene5 : sc == 1 ? scene6 : scene5b ) + ( r == 0 ? PtRasterizer( true, spp ) : BdptRasterizer( true, spp ) );
+					CapturingRasterizerOutput* cap = 0;
+					SobolSamplerTestHooks::ValueSalt().store( sc != 1 ? 0u : 0x9E3779B9u * (unsigned)( k + 1 ) + (unsigned)r );
+					const bool okk = Render( scene, sc != 1 ? ( r == 0 ? "dsbox_pt" : "dsbox_bdpt" ) : ( r == 0 ? "nest_pt" : "nest_bdpt" ), cap, 61440u + 2u * sc + r + 16u * k );
+					SobolSamplerTestHooks::ValueSalt().store( 0u );
+					ok = ok && okk;
+					L.push_back( okk ? RegionMean( *cap, 2, cap->width / 2 - 2 ) : -1 );
+					Rr.push_back( okk ? RegionMean( *cap, cap->width / 2 + 2, cap->width - 2 ) : -1 );
+					if( cap ) safe_release( cap );
+				}
+				double mL = 0, mR = 0; for( int k = 0; k < nRep; ++k ) { mL += L[k]; mR += Rr[k]; }
+				mL /= nRep; mR /= nRep;
+				double vL = 0; for( int k = 0; k < nRep; ++k ) vL += ( L[k] - mL ) * ( L[k] - mL );
+				const double semL = nRep > 1 ? std::sqrt( vL / ( nRep - 1 ) / nRep ) : 0.0;
+				const char* tag = ( sc == 0 ) ? "D5 double-sided mesh box, composite{glass/glass} | plain glass"
+				                : ( sc == 2 ) ? "D5b double-sided mesh box with a T-junction (not certified watertight), composite{glass/glass} | plain glass"
+				                              : "D6 nested composite{composite{glass/glass}/glass} box | glass box";
+				std::cout << "    " << tag << ", " << ( r == 0 ? "PT  " : "BDPT" ) << ": "
+				          << std::setprecision(5) << mL << " (sem " << semL << ", n " << nRep << ") | " << mR << "  (truth 1 | 1)\n";
+				Check( ok && std::fabs( mL - 1.0 ) <= std::max( 0.002, 4.0 * semL ),
+					std::string( "[D5/D6] " ) + tag + ": left == 1 (" + ( r == 0 ? "PT" : "BDPT" ) + ")" );
+				Check( ok && std::fabs( mR - 1.0 ) <= 0.002,
+					std::string( "[D5/D6] " ) + tag + ": glass control == 1 (" + ( r == 0 ? "PT" : "BDPT" ) + ")" );
+				if( sc == 1 ) {
+					Check( semL < 0.00125, std::string( "[D6] the salted band resolves 0.5 % (5 sem < 0.5 %), " ) + ( r == 0 ? "PT" : "BDPT" ) );
+				}
+			}
+		}
+	}
+
+	// D7 (DL-341 review round 2, 2026-10-02): an OPEN double-sided composite
+	// SHEET seen from BEHIND.  Left half: an `indexedmesh_geometry` quad
+	// (double-sided by default, not certified watertight -> `bOpenSheet`);
+	// right half: its `clippedplane_geometry` twin (provably open).  The
+	// camera is at z = -7, behind both.  An open sheet has no inside for the
+	// bottom to face, so both present the composite's TOP to the ray on
+	// either face and the two halves must agree, in PT, BDPT and VCM alike.
+	// Round 2 unflipped the mesh half and walked it from below, delta-tagged:
+	// coat over a 0.8 Lambertian under the env furnace read PT / BDPT / VCM
+	// 0.800 / 0.909 / 1.010 on the mesh against ~0.635 on the plane (BDPT
+	// repriced its connections on a rebuilt record that had lost the flip),
+	// glass/glass 0.977 against 0.487, and an omni light on the camera side
+	// lit the mesh half at 0 against 1.25.  Base: the halves agree.
+	{
+		const std::string mats7 =
+			"uniformcolor_painter\n{\n\tname pnt_env\n\tcolor 1.0 1.0 1.0\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt_w8\n\tcolor 0.8 0.8 0.8\n}\n\n"
+			"lambertian_material\n{\n\tname mat_l8\n\treflectance pnt_w8\n}\n\n"
+			"dielectric_material\n{\n\tname mat_glass\n\ttau 1\n\tior 1.5\n}\n\n"
+			"dielectric_material\n{\n\tname mat_glass2\n\ttau 1\n\tior 1.5\n}\n\n"
+			"composite_material\n{\n\tname mat_cc\n\ttop mat_glass\n\tbottom mat_l8\n\tthickness 0\n\textinction 0.0\n}\n\n"
+			"composite_material\n{\n\tname mat_gg\n\ttop mat_glass\n\tbottom mat_glass2\n\tthickness 0\n\textinction 0.0\n}\n\n";
+		const std::string geo7 =
+			"indexedmesh_geometry\n{\n\tname qm\n\tvertex -4 -3 0\n\tvertex 0 -3 0\n\tvertex 0 3 0\n\tvertex -4 3 0\n"
+			"\ttriangle 0 1 2\n\ttriangle 0 2 3\n\tdouble_sided TRUE\n\tface_normals TRUE\n}\n\n"
+			"clippedplane_geometry\n{\n\tname qc\n\tpta 0 -3 0\n\tptb 4 -3 0\n\tptc 4 3 0\n\tptd 0 3 0\n}\n\n";
+		const std::string cam7 = "film\n{\n\twidth 32\n\theight 16\n}\n\n"
+			"pinhole_camera\n{\n\tlocation 0 0 -7.0\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n";
+		auto vcm = []( bool env, int spp ) {
+			std::ostringstream s;
+			s << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+			  << "vcm_pel_rasterizer\n{\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tsamples " << spp
+			  << "\n\tmerge_radius 0.0\n\tvc_enabled true\n\tvm_enabled true\n\toidn_denoise FALSE\n\tpixel_filter box\n";
+			if( env ) s << "\tradiance_map pnt_env\n\tradiance_scale 1.0\n\tradiance_background TRUE\n";
+			s << "}\n\nfile_rasterizeroutput\n{\n\tpattern rendered/composite_energy_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n\n";
+			return s.str();
+		};
+		struct Cfg7 { const char* name; const char* mat; bool env; };
+		const Cfg7 cfgs[] = {
+			{ "coat over Lambertian 0.8, env furnace", "mat_cc", true },
+			{ "glass/glass, env furnace", "mat_gg", true },
+			{ "coat over Lambertian 0.8, omni on the camera side", "mat_cc", false },
+		};
+		// D7b (review round 3): a single open BEZIER patch (a 4x4 control
+		// net of a flat quad) in place of the mesh.  `BezierPatchGeometry`
+		// never sets `bOpenSheet` (DL-220), so round 3's certificate-keyed
+		// unflip read it as closed: 0.800 against the plane's 0.63, omni 0,
+		// glass/glass 0.977 against 0.467.
+		char bzPath[512];
+		std::snprintf( bzPath, sizeof( bzPath ), "/tmp/composite_energy_sheet_%d.bezier", (int)getpid() );
+		{
+			std::ofstream bz( bzPath );
+			bz << "1\n";
+			for( int j = 0; j < 4; ++j ) for( int i = 0; i < 4; ++i ) bz << ( -4.0 + 4.0 * i / 3.0 ) << " " << ( -3.0 + 2.0 * j ) << " 0\n";
+		}
+		const std::string geoBz = std::string( "bezierpatch_geometry\n{\n\tname qm\n\tfile " ) + bzPath + "\n}\n\n"
+			"clippedplane_geometry\n{\n\tname qc\n\tpta 0 -3 0\n\tptb 4 -3 0\n\tptc 4 3 0\n\tptd 0 3 0\n}\n\n";
+		// The patch's raw normal is -z for this control net (the plane's is
+		// +z), so its BACK face is seen from z = +7: the Bezier variant is
+		// rendered from BOTH sides (g == 1: camera -7, g == 2: camera +7),
+		// one of which is the plane's front and the patch's back.
+		const std::string cam7f = "film\n{\n\twidth 32\n\theight 16\n}\n\n"
+			"pinhole_camera\n{\n\tlocation 0 0 7.0\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n";
+		for( int g = 0; g < 3; ++g )
+		for( const Cfg7& c : cfgs ) {
+			const char* gname = ( g == 0 ) ? "mesh" : ( g == 1 ) ? "Bezier patch, camera -z" : "Bezier patch, camera +z";
+			double perInt[3] = { -1, -1, -1 };
+			for( int r = 0; r < 3; ++r ) {
+				if( !c.env && r == 2 ) continue;	// VCM has no point-light row here
+				std::string scene = std::string( "RISE ASCII SCENE 7\n" ) + ( g == 2 ? cam7f : cam7 ) + mats7 + ( g == 0 ? geo7 : geoBz ) +
+					"standard_object\n{\n\tname M\n\tgeometry qm\n\tmaterial " + c.mat + "\n}\n\n"
+					"standard_object\n{\n\tname C\n\tgeometry qc\n\tmaterial " + c.mat + "\n}\n\n";
+				if( !c.env ) scene += std::string( "omni_light\n{\n\tname ol\n\tpower 200\n\tcolor 1 1 1\n\tposition 0 0 " ) + ( g == 2 ? "5" : "-5" ) + "\n}\n\n";
+				scene += ( r == 0 ) ? PtRasterizer( c.env, 256 ) : ( r == 1 ) ? BdptRasterizer( c.env, 256 ) : vcm( c.env, 256 );
+				CapturingRasterizerOutput* cap = 0;
+				const bool ok = Render( scene, "opensheet", cap, 71680u + 3u * (unsigned)r );
+				// Seen from behind the image is mirrored: its LEFT half is
+				// the clipped plane (world +x), its RIGHT half the mesh.
+				const double leftHalf  = ok ? RegionMean( *cap, 2, cap->width / 2 - 2 ) : -1;
+				const double rightHalf = ok ? RegionMean( *cap, cap->width / 2 + 2, cap->width - 2 ) : -1;
+				// From +z the image's left half is world -x (the mesh / patch).
+				const double mC = ( g == 2 ) ? rightHalf : leftHalf;
+				const double mM = ( g == 2 ) ? leftHalf : rightHalf;
+				const char* in = ( r == 0 ) ? "PT  " : ( r == 1 ) ? "BDPT" : "VCM ";
+				std::cout << "    D7 open double-sided sheet from behind (" << gname << "), " << c.name << ", " << in
+				          << ": " << gname << " = " << std::setprecision(5) << mM << ", clipped plane = " << mC
+				          << ", ratio = " << ( mC > 0 ? mM / mC : -1 ) << "\n";
+				Check( ok && mC > 0 && std::fabs( mM / mC - 1.0 ) <= 0.03,
+					std::string( "[D7] open " ) + gname + " sheet == clipped-plane twin from behind, " + c.name + " (" + in + ")" );
+				perInt[r] = mM;
+				if( cap ) safe_release( cap );
+			}
+			for( int r = 1; r < 3; ++r ) {
+				if( perInt[r] < 0 ) continue;
+				Check( perInt[0] > 0 && std::fabs( perInt[r] / perInt[0] - 1.0 ) <= 0.04,
+					std::string( "[D7] open " ) + gname + " sheet from behind, " + ( r == 1 ? "BDPT" : "VCM" ) + " == PT, " + c.name );
+			}
+		}
+		std::remove( bzPath );
+	}
+	// D8 (DL-341 review round 4, 2026-10-02): a NESTED composite (another
+	// composite as the TOP) and a translucent-topped composite on an OPEN
+	// double-sided sheet -- the mesh quad and its clipped-plane twin side by
+	// side -- seen from BEHIND must read as from the FRONT (an open sheet
+	// presents its top on both faces).  Round 4 kept the outer's record
+	// flipped but left `bGeomNormalOrientedToRay` set, so the inner
+	// composite re-decided the unflip from the walk's internal stack (which
+	// holds O from its own crossing) and unflipped mid-walk:
+	// composite{composite{glass/water}/Lambertian 0.8} back PT 0.374 /
+	// BDPT 0.367 / VCM 0.368 against front 0.684; a translucent top read
+	// UnflippedGeomNormal() and opposed the composite's frame: back 0.711
+	// against front 0.860 (also on master).  Gate: back / front per half,
+	// PT, BDPT and VCM (translucent: PT and BDPT); bands below.
+	{
+		const std::string mats8 =
+			"uniformcolor_painter\n{\n\tname pnt_env\n\tcolor 1.0 1.0 1.0\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt_w8\n\tcolor 0.8 0.8 0.8\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt_tr\n\tcolor 0.3 0.3 0.3\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt_tt\n\tcolor 0.7 0.7 0.7\n}\n\n"
+			"lambertian_material\n{\n\tname mat_l8\n\treflectance pnt_w8\n}\n\n"
+			"dielectric_material\n{\n\tname mat_glass\n\ttau 1\n\tior 1.5\n}\n\n"
+			"dielectric_material\n{\n\tname mat_glass2\n\ttau 1\n\tior 1.5\n}\n\n"
+			"dielectric_material\n{\n\tname mat_water\n\ttau 1\n\tior 1.33\n}\n\n"
+			"translucent_material\n{\n\tname mat_tr\n\tref pnt_tr\n\ttau pnt_tt\n\text 0\n\tN 10\n\tscattering 0\n}\n\n"
+			"composite_material\n{\n\tname mat_gw\n\ttop mat_glass\n\tbottom mat_water\n\tthickness 0\n\textinction 0.0\n}\n\n"
+			"composite_material\n{\n\tname mat_gg\n\ttop mat_glass\n\tbottom mat_glass2\n\tthickness 0\n\textinction 0.0\n}\n\n"
+			"composite_material\n{\n\tname mat_gwl\n\ttop mat_gw\n\tbottom mat_l8\n\tthickness 0\n\textinction 0.0\n}\n\n"
+			"composite_material\n{\n\tname mat_ggl\n\ttop mat_gg\n\tbottom mat_l8\n\tthickness 0\n\textinction 0.0\n}\n\n"
+			"composite_material\n{\n\tname mat_trl\n\ttop mat_tr\n\tbottom mat_l8\n\tthickness 0\n\textinction 0.0\n}\n\n";
+		const std::string geo8 =
+			"indexedmesh_geometry\n{\n\tname qm\n\tvertex -4 -3 0\n\tvertex 0 -3 0\n\tvertex 0 3 0\n\tvertex -4 3 0\n"
+			"\ttriangle 0 1 2\n\ttriangle 0 2 3\n\tdouble_sided TRUE\n\tface_normals TRUE\n}\n\n"
+			"clippedplane_geometry\n{\n\tname qc\n\tpta 0 -3 0\n\tptb 4 -3 0\n\tptc 4 3 0\n\tptd 0 3 0\n}\n\n";
+		auto vcm8 = []( int spp ) {
+			std::ostringstream s;
+			s << "standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+			  << "vcm_pel_rasterizer\n{\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tsamples " << spp
+			  << "\n\tmerge_radius 0.0\n\tvc_enabled true\n\tvm_enabled true\n\toidn_denoise FALSE\n\tpixel_filter box\n"
+			  << "\tradiance_map pnt_env\n\tradiance_scale 1.0\n\tradiance_background TRUE\n"
+			  << "}\n\nfile_rasterizeroutput\n{\n\tpattern rendered/composite_energy_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n\n";
+			return s.str();
+		};
+		// The nested tops run the per-branch estimator, so their single
+		// renders are noisy (a 256-spp front / back pair differed by up to
+		// 3.1 %): 1024 spp and a 5 % band (~5 sigma of the difference);
+		// the broken state reads ~-48 %.  The translucent rows are near
+		// deterministic (0.1 %) and keep 3 % (broken: -17 %).
+		struct Cfg8 { const char* name; const char* mat; int nInt; int spp; double band; };
+		const Cfg8 cfgs[] = {
+			{ "nested composite{composite{glass/water}/Lambertian 0.8}", "mat_gwl", 3, 1024, 0.05 },
+			{ "nested composite{composite{glass/glass}/Lambertian 0.8}", "mat_ggl", 3, 1024, 0.05 },
+			{ "composite{translucent/Lambertian 0.8}", "mat_trl", 2, 256, 0.03 },
+		};
+		for( const Cfg8& c : cfgs ) {
+			for( int r = 0; r < c.nInt; ++r ) {
+				double mesh[2] = { -1, -1 }, plane[2] = { -1, -1 };	// [0] front, [1] back
+				for( int side = 0; side < 2; ++side ) {
+					const char* z = ( side == 0 ) ? "7.0" : "-7.0";
+					const std::string scene = std::string( "RISE ASCII SCENE 7\n" ) +
+						"film\n{\n\twidth 32\n\theight 16\n}\n\n"
+						"pinhole_camera\n{\n\tlocation 0 0 " + z + "\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n" +
+						mats8 + geo8 +
+						"standard_object\n{\n\tname M\n\tgeometry qm\n\tmaterial " + c.mat + "\n}\n\n"
+						"standard_object\n{\n\tname C\n\tgeometry qc\n\tmaterial " + c.mat + "\n}\n\n" +
+						( r == 0 ? PtRasterizer( true, c.spp ) : r == 1 ? BdptRasterizer( true, c.spp ) : vcm8( c.spp ) );
+					CapturingRasterizerOutput* cap = 0;
+					const bool ok = Render( scene, "nested_sheet", cap, 81920u + 7u * (unsigned)r + (unsigned)side );
+					const double lh = ok ? RegionMean( *cap, 2, cap->width / 2 - 2 ) : -1;
+					const double rh = ok ? RegionMean( *cap, cap->width / 2 + 2, cap->width - 2 ) : -1;
+					// From +z the image's left half is world -x (the mesh);
+					// from -z it is mirrored.
+					mesh[side]  = ( side == 0 ) ? lh : rh;
+					plane[side] = ( side == 0 ) ? rh : lh;
+					if( cap ) safe_release( cap );
+				}
+				const char* in = ( r == 0 ) ? "PT  " : ( r == 1 ) ? "BDPT" : "VCM ";
+				std::cout << "    D8 " << c.name << ", " << in << ": mesh front / back " << std::setprecision(5)
+				          << mesh[0] << " / " << mesh[1] << ", clipped plane front / back " << plane[0] << " / " << plane[1] << "\n";
+				Check( mesh[0] > 0 && std::fabs( mesh[1] / mesh[0] - 1.0 ) <= c.band,
+					std::string( "[D8] open mesh sheet, back == front, " ) + c.name + " (" + in + ")" );
+				Check( plane[0] > 0 && std::fabs( plane[1] / plane[0] - 1.0 ) <= c.band,
+					std::string( "[D8] open clipped-plane sheet, back == front, " ) + c.name + " (" + in + ")" );
+			}
+		}
+	}
+
+	SectionD9();
+	SectionM();
 }
+
+
+//////////////////////////////////////////////////////////////////////
+//  Section K -- DL-342: `coated_material` UNDER AN ABSORBING COAT.
+//
+//  The DL-24 composite matches Section G's independent closed form, so
+//  it is the reference.  `coated_material`'s recycling term used to be
+//  r_i * a(mu_bar)^2 with mu_bar the refraction of an outer cosine 0.5,
+//  where the exact round trip is E_ret = INT 2 mu a(mu)^2 F_in(mu) dmu
+//  (the TIR-dominated, LONGEST paths carry most of r_i).  Three gates:
+//
+//   K1 (deterministic, sharp).  For a smooth coat over a Lambertian the
+//      coated value at an off-specular pair IS ClosedFormLayered, exactly,
+//      at every coat optical depth: RGB and NM, grey and tinted coats.
+//   K2 (deterministic).  IBSDF::hemisphericalAlbedo against the white-sky
+//      closed form r_e + R T_h^2 / (n^2 (1 - R E_ret)).
+//   K3 (Monte Carlo).  Directional albedo of coated vs the composite of
+//      the same physical layers: Lambertian and (since DL-388) a
+//      diffuse-dominant GGX gated to MC noise.
+//   K4-K6 (DL-388).  Glossy-dominant / rough / smooth GGX and Oren-Nayar
+//      substrates against the composite; the white-metal furnace; the
+//      AOV albedo against the directional albedo it summarises.
+//
+//  Optical depth is coat_absorption * coat_thickness (thickness 1 here)
+//  for coated and extinction * thickness for the composite: the same
+//  normal-incidence Beer exponent, raised to 1/mu inside the film.
+//////////////////////////////////////////////////////////////////////
+static double FresnelOutside15( const double c, const double n )
+{
+	// Outer->coat unpolarised Fresnel, written out independently.
+	const double s2 = ( 1.0 - c * c ) / ( n * n );
+	const double ct = std::sqrt( std::max( 0.0, 1.0 - s2 ) );
+	const double rs = ( c - n * ct ) / ( c + n * ct );
+	const double rp = ( n * c - ct ) / ( n * c + ct );
+	return 0.5 * ( rs * rs + rp * rp );
+}
+
+struct WhiteSky { double re, entry, ret; };
+
+static WhiteSky WhiteSkyTerms( const double tau, const double n )
+{
+	WhiteSky w = { 0, 0, 0 };
+	const int N = 40000;
+	for( int i = 0; i < N; ++i ) {
+		const double x = ( i + 0.5 ) / N;
+		// outer cosine x: entry
+		const double F = FresnelOutside15( x, n );
+		const double mu = std::sqrt( 1.0 - ( 1.0 - x * x ) / ( n * n ) );
+		w.re    += 2.0 * x * F / N;
+		w.entry += 2.0 * x * ( 1.0 - F ) * std::exp( -tau / mu ) / N;
+		// internal cosine x: one round trip
+		w.ret   += 2.0 * x * std::exp( -2.0 * tau / x ) * FresnelInside15( x, n ) / N;
+	}
+	return w;
+}
+
+static CoatedMaterial* MakeCoated( const IMaterial& base, double sigma, const IPainter& tint, double eta = 1.5 )
+{
+	UniformScalarPainter* w  = new UniformScalarPainter( 1.0 );
+	UniformScalarPainter* n  = new UniformScalarPainter( eta );
+	UniformScalarPainter* a  = new UniformScalarPainter( 0.001 );
+	UniformScalarPainter* th = new UniformScalarPainter( 1.0 );
+	UniformScalarPainter* ab = new UniformScalarPainter( sigma );
+	CoatedMaterial* m = new CoatedMaterial( base, *w, *n, *a, *th, *ab, tint );
+	m->addref();
+	return m;
+}
+
+
+//////////////////////////////////////////////////////////////////////
+//  K4-K6 -- DL-388: the substrate in the coat's REFRACTED frame.
+//
+//  Pre-DL-388 `coated_material` evaluated the substrate at the OUTER
+//  directions with the Lambertian recycling factor -- exact only for a
+//  Lambertian.  A glossy lobe lost T^2/eta^2 of its energy instead of
+//  T^2 (0.70 of the composite on a glossy metal at normal incidence),
+//  and a diffuse lobe's (1 - A) was read at the outer grazing angle.
+//
+//   K4  coated / composite, directional albedo, smooth 1.5 coat
+//       (sigma_t 0, 0.2, 0.5): glossy-dominant, rough, mixed and smooth
+//       GGX substrates and two Oren-Nayar ones.  theta 0 / 45 gated at
+//       max(3 %, 5 sem); theta 70 gated for the rough / diffuse-like
+//       rows and PINNED for the smooth glossy ones (DL-423: a smooth
+//       lossy lobe keeps light trapped near the critical angle, which
+//       the reservoir lets escape too readily -- 1.045 / 1.065 here).
+//   K5  white furnace: lossless white GGX metals (F0 1) under a clear
+//       coat must read 1 at every incidence, within MC noise and the
+//       model's documented +0.7 % (the substrate's own GGX directional
+//       albedo is 1.003 at normal incidence), at eta 1.5 and at coat
+//       indices just above the surrounding medium's (1.005 .. 1.13).
+//       Pre-DL-388: 1.058 at 0 deg for the smooth one; first fix 1.160
+//       at eta 1.01 / 80 deg (the clear table's eta blend).
+//   K6  the OIDN albedo AOV is the layered model's own directional
+//       albedo (e_1 + g E / (1 - Q) through the coat) -- it must agree
+//       with the furnace it summarises.
+//////////////////////////////////////////////////////////////////////
+static GGXMaterial* MakeSchlickGgx( double diffuse, double f0, double alpha )
+{
+	UniformColorPainter* d = new UniformColorPainter( RISEPel( diffuse, diffuse, diffuse ) );  d->addref();
+	UniformColorPainter* s = new UniformColorPainter( RISEPel( f0, f0, f0 ) );                 s->addref();
+	UniformScalarPainter* a = new UniformScalarPainter( alpha );                               a->addref();
+	UniformScalarPainter* n = new UniformScalarPainter( 1.5 );                                 n->addref();
+	UniformScalarPainter* k = new UniformScalarPainter( 0.0 );                                 k->addref();
+	GGXMaterial* g = new GGXMaterial( *d, *s, *a, *a, *n, *k, eFresnelSchlickF0 );
+	g->addref();
+	d->release(); s->release(); a->release(); n->release(); k->release();
+	return g;
+}
+
+static void SectionK4K6( Fixtures& f )
+{
+	UniformScalarPainter* sDelta = new UniformScalarPainter( 1000000.0 );  sDelta->addref();
+	DielectricMaterial* smooth = new DielectricMaterial( *f.s1, *f.s15, *sDelta, false );  smooth->addref();
+
+	// ---- K4: coated vs composite ---------------------------------------
+	{
+		struct Sub { const char* name; IMaterial* m; bool trapsNearCritical; bool isLobe; };
+		UniformColorPainter* onRho = new UniformColorPainter( RISEPel( 0.8, 0.8, 0.8 ) );  onRho->addref();
+		UniformScalarPainter* onSig = new UniformScalarPainter( 0.8 );                     onSig->addref();
+		OrenNayarMaterial* on = new OrenNayarMaterial( *onRho, *onSig );                   on->addref();
+		Sub subs[] = {
+			{ "GGX glossy (diffuse 0, F0 .5, alpha .16)", MakeSchlickGgx( 0.0, 0.5, 0.16 ), true, true },
+			{ "GGX rough glossy (diffuse 0, F0 .5, alpha .5)", MakeSchlickGgx( 0.0, 0.5, 0.5 ), false, true },
+			{ "GGX mixed (diffuse .5, F0 .5, alpha .3)", MakeSchlickGgx( 0.5, 0.5, 0.3 ), false, true },
+			{ "GGX smooth metal (diffuse 0, F0 .9, alpha .05)", MakeSchlickGgx( 0.0, 0.9, 0.05 ), true, true },
+			{ "Oren-Nayar (rho .8, sigma .8)", on, false, false },
+		};
+		const double sigmas[] = { 0.0, 0.2, 0.5 };
+		const double thetas[] = { 0.0, 45.0, 70.0 };
+		std::cout << "    K4 directional albedo, coated vs composite (8 x 20000 draws each; mean +- sem):\n";
+		for( Sub& sb : subs ) {
+			for( double sg : sigmas ) {
+				UniformScalarPainter* ext = new UniformScalarPainter( sg );  ext->addref();
+				CompositeMaterial* comp = MakeComposite( *smooth, *sb.m, 3, 3, 3, 3, 3, 1.0, *ext );
+				CoatedMaterial* coat = MakeCoated( *sb.m, sg, *f.white );
+				for( double th : thetas ) {
+					const FurnaceStats sc = Furnace( *coat->GetSPF(), th, false, false, 8, 20000, 7101u + (unsigned)th );
+					const FurnaceStats sp = Furnace( *comp->GetSPF(), th, false, false, 8, 20000, 9101u + (unsigned)th );
+					const double ratio = sc.mean / sp.mean;
+					const double semR = ratio * std::sqrt( std::pow( sc.sem / sc.mean, 2 ) + std::pow( sp.sem / sp.mean, 2 ) );
+					std::cout << "      " << sb.name << " sigma_t " << std::setprecision(3) << sg << " theta " << (int)th
+					          << ": coated " << std::setprecision(5) << sc.mean << " +- " << sc.sem
+					          << "  composite " << sp.mean << " +- " << sp.sem
+					          << "  coated/composite " << ratio << " +- " << semR << "\n";
+					const std::string tag = std::string( "[K4] " ) + sb.name + " sigma " + std::to_string( sg ) +
+						" theta " + std::to_string( (int)th );
+					if( th < 60.0 || !sb.trapsNearCritical ) {
+						// theta 70 with an absorbing coat carries the composite's
+						// own grazing bias the Lambertian K3 rows also show
+						// (0.977 at 60 deg, sigma_t 2, against an exact closed
+						// form), so its floor widens with sigma_t.
+						const double floorTol = ( th < 60.0 ) ? 0.03 : ( 0.03 + 0.06 * sg );
+						Check( std::fabs( ratio - 1.0 ) <= std::max( floorTol, 5.0 * semR ), tag + " coated / composite == 1" );
+					} else {
+						// DL-423 residual, measured (8 x 20000 draws per side):
+						// clear coat 1.045 +- 0.004 (glossy) / 1.065 +- 0.012
+						// (smooth metal), sigma_t 0.2 1.015 / 1.019, sigma_t 0.5
+						// 1.009 / 1.007.  Pinned at [0.97, 1.08] widened by the
+						// row's own 5 sem, so a move either way is caught.
+						Check( ratio >= 0.97 - 5.0 * semR && ratio <= 1.08 + 5.0 * semR,
+							tag + " coated / composite inside the DL-423 residual pin [0.97, 1.08] +- 5 sem" );
+					}
+
+					// ---- K6: AOV albedo == the directional albedo it summarises
+					//      (GGX only: Oren-Nayar keeps the cosine-reservoir AOV
+					//      summary, R escape / (1 - E_ret R), 2-3 % off its
+					//      refracted-frame directional albedo -- an OIDN guide.)
+					if( th < 60.0 && sb.isLobe ) {
+						const RISEPel aov = coat->GetBSDF()->albedo( MakeIntersection( th * kPi / 180.0 ) );
+						const double rAov = aov[0] / sc.mean;
+						Check( std::fabs( rAov - 1.0 ) <= std::max( 0.02, 5.0 * sc.sem / sc.mean ),
+							std::string( "[K6] " ) + sb.name + " sigma " + std::to_string( sg ) + " theta " +
+							std::to_string( (int)th ) + " albedo() AOV == directional albedo (" + std::to_string( rAov ) + ")" );
+					}
+				}
+				coat->release(); comp->release(); ext->release();
+			}
+		}
+		for( Sub& sb : subs ) sb.m->release();
+		onRho->release(); onSig->release();
+	}
+
+	// ---- K5: white furnace, lossless white metals ----------------------
+	//  eta 1.5 at four incidences, plus coats whose index sits just above
+	//  the surrounding medium's (1.005 .. 1.13: a lacquer underwater, a
+	//  coat on a coat) at the grazing incidences, where the clear-coat
+	//  basis table used to blend across the critical cosine's infinite
+	//  slope at eta = 1 (eta 1.01: 1.160 at 80 deg pre-fix), and eta 3,
+	//  where the escape cone is narrow and near-normal.
+	{
+		std::cout << "    K5 white furnace, clear coat over white GGX metals (8 x 50000 draws):\n";
+		struct Row { double eta; std::vector<double> thetas; };
+		const Row rows[] = {
+			{ 1.5,   { 0.0, 45.0, 70.0, 75.0, 85.0 } },
+			{ 1.005, { 70.0, 80.0, 85.0 } },
+			{ 1.01,  { 70.0, 80.0, 85.0 } },
+			{ 1.04,  { 70.0, 80.0, 85.0 } },
+			{ 1.13,  { 70.0, 80.0, 85.0 } },
+			{ 3.0,   { 60.0, 75.0, 79.0, 83.0 } },
+		};
+		// alpha 0.002: a lobe narrower than the view-node spacing, whose
+		// return the critical patch carries (pre-patch 1.09 at eta 1.5 /
+		// 75 deg, 1.054 at eta 3 / 79 deg).
+		const double alphas[] = { 0.002, 0.05, 0.4 };
+		for( double al : alphas ) {
+			GGXMaterial* metal = MakeSchlickGgx( 0.0, 1.0, al );
+			for( const Row& rw : rows ) {
+				CoatedMaterial* coat = MakeCoated( *metal, 0.0, *f.white, rw.eta );
+				std::cout << "      alpha " << al << " eta " << rw.eta << ":";
+				for( double th : rw.thetas ) {
+					const FurnaceStats sc = Furnace( *coat->GetSPF(), th, false, false, 8, 50000, 5101u + (unsigned)th );
+					std::cout << "  " << (int)th << " deg " << std::setprecision(5) << sc.mean << " +- " << sc.sem;
+					Check( sc.mean <= 1.012 + 4.0 * sc.sem && sc.mean >= 0.985 - 4.0 * sc.sem,
+						std::string( "[K5] white metal alpha " ) + std::to_string( al ) + " eta " + std::to_string( rw.eta ) +
+						" theta " + std::to_string( (int)th ) + " furnace in [0.985, 1.012]" );
+				}
+				std::cout << "\n";
+				coat->release();
+			}
+			metal->release();
+		}
+	}
+
+	// ---- K7: double-sided indexed mesh, front vs back (render) ---------
+	//  The refracted-frame substrate record is built from the RAY-FACING
+	//  frame (CoatedBRDF::MakeSubstrateRecord).  A double_sided
+	//  indexedmesh_geometry flips both normals toward the ray, so the same
+	//  coated GGX quad must render identically whichever winding faces the
+	//  camera.  Left half: winding facing AWAY from the camera; right half:
+	//  facing it.  A directional light 30 deg off the normal, tilted in
+	//  the vertical plane so the two halves are mirror images of each
+	//  other across x = 0, reaches both only through NEE (a delta light),
+	//  so the ratio is read off GetBSDF()->value.
+	{
+		std::ostringstream sc;
+		sc << "RISE ASCII SCENE 7\n"
+		   << "film\n{\n\twidth 32\n\theight 16\n}\n\n"
+		   << "pinhole_camera\n{\n\tlocation 0 0 7.0\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 30.0\n}\n\n"
+		   << "uniformcolor_painter\n{\n\tname pnt_rd\n\tcolor 0.5 0.5 0.5\n}\n\n"
+		   << "uniformcolor_painter\n{\n\tname pnt_rs\n\tcolor 0.5 0.5 0.5\n}\n\n"
+		   << "ggx_material\n{\n\tname mat_base\n\trd pnt_rd\n\trs pnt_rs\n\talphax 0.3\n\talphay 0.3\n\tfresnel_mode schlick_f0\n}\n\n"
+		   << "coated_material\n{\n\tname mat_coat\n\tbase mat_base\n\tcoat_ior 1.5\n\tcoat_roughness 0.02\n}\n\n"
+		   << "indexedmesh_geometry\n{\n\tname qL\n\tvertex -4 -3 0\n\tvertex 0 -3 0\n\tvertex 0 3 0\n\tvertex -4 3 0\n"
+		   << "\ttriangle 0 2 1\n\ttriangle 0 3 2\n\tdouble_sided TRUE\n\tface_normals TRUE\n}\n\n"
+		   << "indexedmesh_geometry\n{\n\tname qR\n\tvertex 0 -3 0\n\tvertex 4 -3 0\n\tvertex 4 3 0\n\tvertex 0 3 0\n"
+		   << "\ttriangle 0 1 2\n\ttriangle 0 2 3\n\tdouble_sided TRUE\n\tface_normals TRUE\n}\n\n"
+		   << "standard_object\n{\n\tname objL\n\tgeometry qL\n\tmaterial mat_coat\n}\n\n"
+		   << "standard_object\n{\n\tname objR\n\tgeometry qR\n\tmaterial mat_coat\n}\n\n"
+		   << "directional_light\n{\n\tname key\n\tpower 1.0\n\tcolor 1 1 1\n\tdirection 0 0.5 0.8660254\n}\n\n";
+		for( int r = 0; r < 2; ++r ) {
+			const std::string scene = sc.str() + ( r == 0 ? PtRasterizer( false, 64 ) : BdptRasterizer( false, 64 ) );
+			CapturingRasterizerOutput* cap = 0;
+			const bool ok = Render( scene, r == 0 ? "k7_pt" : "k7_bdpt", cap, 7070u + r );
+			const double mL = ok ? RegionMean( *cap, 2, cap->width / 2 - 2 ) : -1;
+			const double mR = ok ? RegionMean( *cap, cap->width / 2 + 2, cap->width - 2 ) : -1;
+			std::cout << "    K7 double-sided indexed mesh, coated GGX, " << ( r == 0 ? "PT  " : "BDPT" )
+			          << ": back-wound " << std::setprecision(5) << mL << ", front-wound " << mR
+			          << ", ratio " << ( mR > 0 ? mL / mR : -1 ) << "  (truth 1)\n";
+			Check( ok && mR > 0 && std::fabs( mL / mR - 1.0 ) <= 0.02,
+				std::string( "[K7] double-sided indexed mesh: back-wound == front-wound coated GGX (" ) + ( r == 0 ? "PT" : "BDPT" ) + ")" );
+			if( cap ) safe_release( cap );
+		}
+	}
+
+	smooth->release(); sDelta->release();
+}
+
+static void SectionK( Fixtures& f )
+{
+	std::cout << "\n[K] DL-342: coated_material under an ABSORBING coat (smooth 1.5 coat, thickness 1)\n";
+	const double eta = 1.5;
+	const double sigmas[] = { 0.0, 0.2, 0.5, 1.0, 2.0 };
+
+	// ---- K1: value vs ClosedFormLayered, Lambertian (0.8, 0.2, 0.2) ----
+	{
+		const double pairs[][2] = { { 0, 40 }, { 30, 60 }, { 60, 30 }, { 75, 10 } };
+		double worst = 0;
+		std::cout << "    K1 value / closed form, red Lambertian substrate, off-specular pairs (ch0 rho .8, ch1 rho .2):\n";
+		for( double sg : sigmas ) {
+			CoatedMaterial* m = MakeCoated( *f.lambRed, sg, *f.white );
+			std::cout << "      sigma_t " << std::setprecision(3) << sg << ":";
+			for( const auto& pr : pairs ) {
+				const double ti = pr[0] * kPi / 180.0, to = pr[1] * kPi / 180.0;
+				const Vector3 wo( std::sin( to ) * std::cos( 2.0944 ), std::sin( to ) * std::sin( 2.0944 ), std::cos( to ) );
+				const RayIntersectionGeometric ri = MakeIntersection( ti );
+				const RISEPel v = m->GetBSDF()->value( wo, ri );
+				const double vNM = m->GetBSDF()->valueNM( wo, ri, 550.0 );
+				const double rhoNM = f.lambRed->GetBSDF()->valueNM( wo, ri, 550.0 ) * kPi;
+				const double t0 = ClosedFormLayered( ti, to, 0.8, sg, 1.0, eta );
+				const double t1 = ClosedFormLayered( ti, to, 0.2, sg, 1.0, eta );
+				const double tNM = ClosedFormLayered( ti, to, rhoNM, sg, 1.0, eta );
+				const double e0 = v[0] / t0 - 1.0, e1 = v[1] / t1 - 1.0, eNM = vNM / tNM - 1.0;
+				worst = std::max( worst, std::max( std::fabs( e0 ), std::max( std::fabs( e1 ), std::fabs( eNM ) ) ) );
+				std::cout << "  (" << (int)pr[0] << "," << (int)pr[1] << ") " << std::setprecision(4) << std::showpos
+				          << 100.0 * e0 << "%/" << 100.0 * e1 << "%/NM " << 100.0 * eNM << "%" << std::noshowpos;
+				const std::string tag = std::string( "[K1] sigma " ) + std::to_string( sg ) + " (" +
+					std::to_string( (int)pr[0] ) + "," + std::to_string( (int)pr[1] ) + ") ";
+				Check( std::fabs( e0 ) <= 1e-3, tag + "ch0 coated value == closed form" );
+				Check( std::fabs( e1 ) <= 1e-3, tag + "ch1 coated value == closed form" );
+				Check( std::fabs( eNM ) <= 1e-3, tag + "NM coated value == closed form" );
+			}
+			std::cout << "\n";
+			m->release();
+		}
+		// A tinted, non-absorbing coat: per-channel optical depth -ln(tint).
+		{
+			UniformColorPainter* tint = new UniformColorPainter( RISEPel( 0.9, 0.6, 0.3 ) );  tint->addref();
+			CoatedMaterial* m = MakeCoated( *f.lamb, 0.0, *tint );
+			const double ti = 30.0 * kPi / 180.0, to = 60.0 * kPi / 180.0;
+			const Vector3 wo( std::sin( to ) * std::cos( 2.0944 ), std::sin( to ) * std::sin( 2.0944 ), std::cos( to ) );
+			const RISEPel v = m->GetBSDF()->value( wo, MakeIntersection( ti ) );
+			const double tints[3] = { 0.9, 0.6, 0.3 };
+			std::cout << "      tinted coat (0.9, 0.6, 0.3), white substrate, (30,60):";
+			for( int ch = 0; ch < 3; ++ch ) {
+				const double t = ClosedFormLayered( ti, to, 1.0, -std::log( tints[ch] ), 1.0, eta );
+				const double e = v[ch] / t - 1.0;
+				worst = std::max( worst, std::fabs( e ) );
+				std::cout << " ch" << ch << " " << std::showpos << std::setprecision(4) << 100.0 * e << "%" << std::noshowpos;
+				Check( std::fabs( e ) <= 1e-3, std::string( "[K1] tinted coat ch" ) + std::to_string( ch ) + " coated value == closed form" );
+			}
+			std::cout << "\n";
+			m->release(); tint->release();
+		}
+		std::cout << "      worst |coated/closed form - 1| = " << std::setprecision(3) << 100.0 * worst << "%\n";
+	}
+
+	// ---- K2: hemisphericalAlbedo vs the white-sky closed form ----------
+	{
+		std::cout << "    K2 hemisphericalAlbedo / white-sky closed form, white and red Lambertian:\n      ";
+		for( double sg : sigmas ) {
+			const WhiteSky w = WhiteSkyTerms( sg, eta );
+			for( int sub = 0; sub < 2; ++sub ) {
+				CoatedMaterial* m = MakeCoated( sub == 0 ? (const IMaterial&)*f.lamb : (const IMaterial&)*f.lambRed, sg, *f.white );
+				RISEPel H;
+				const bool ok = m->GetBSDF()->hemisphericalAlbedo( MakeIntersection( 0.3 ), H );
+				const double R = ( sub == 0 ) ? 1.0 : 0.8;
+				const double truth = w.re + R * w.entry * w.entry / ( eta * eta * ( 1.0 - R * w.ret ) );
+				const double e = H[0] / truth - 1.0;
+				std::cout << "s" << sg << ( sub ? "/red " : "/white " ) << std::showpos << std::setprecision(4) << 100.0 * e << "%" << std::noshowpos << "  ";
+				Check( ok && std::fabs( e ) <= 1e-3,
+					std::string( "[K2] hemisphericalAlbedo sigma " ) + std::to_string( sg ) + ( sub ? " red" : " white" ) + " == white-sky closed form" );
+				m->release();
+			}
+		}
+		std::cout << "\n";
+	}
+
+	// ---- K3: directional albedo, coated vs composite (MC) -------------
+	{
+		UniformScalarPainter* sDelta = new UniformScalarPainter( 1000000.0 );  sDelta->addref();
+		DielectricMaterial* smooth = new DielectricMaterial( *f.s1, *f.s15, *sDelta, false );  smooth->addref();
+		UniformColorPainter* ggxDiff = new UniformColorPainter( RISEPel( 0.8, 0.8, 0.8 ) );  ggxDiff->addref();
+		UniformColorPainter* ggxSpec = new UniformColorPainter( RISEPel( 0.04, 0.04, 0.04 ) );  ggxSpec->addref();
+		GGXMaterial* ggx = new GGXMaterial( *ggxDiff, *ggxSpec, *f.sAlpha, *f.sAlpha, *f.s15, *f.s0, eFresnelSchlickF0 );
+		ggx->addref();
+		const double thetas[] = { 0.0, 60.0 };
+		struct Sub { const char* name; const IMaterial* m; bool gateTight; };
+		const Sub subs[] = { { "Lambertian white", f.lamb, true }, { "GGX (diffuse .8, F0 .04, alpha .16)", ggx, false } };
+		std::cout << "    K3 directional albedo, coated vs composite (8 x 20000 draws each; mean +- sem):\n";
+		for( const Sub& sb : subs ) {
+			for( double sg : sigmas ) {
+				UniformScalarPainter* ext = new UniformScalarPainter( sg );  ext->addref();
+				CompositeMaterial* comp = MakeComposite( *smooth, *sb.m, 3, 3, 3, 3, 3, 1.0, *ext );
+				CoatedMaterial* coat = MakeCoated( *sb.m, sg, *f.white );
+				for( double th : thetas ) {
+					const FurnaceStats sc = Furnace( *coat->GetSPF(), th, false, false, 8, 20000, 7001u + (unsigned)th );
+					const FurnaceStats sp = Furnace( *comp->GetSPF(), th, false, false, 8, 20000, 9001u + (unsigned)th );
+					const double ratio = sc.mean / sp.mean;
+					const double semR = ratio * std::sqrt( std::pow( sc.sem / sc.mean, 2 ) + std::pow( sp.sem / sp.mean, 2 ) );
+					std::cout << "      " << sb.name << " sigma_t " << std::setprecision(3) << sg << " theta " << (int)th
+					          << ": coated " << std::setprecision(5) << sc.mean << " +- " << sc.sem
+					          << "  composite " << sp.mean << " +- " << sp.sem
+					          << "  coated/composite " << ratio << " +- " << semR << "\n";
+					// Lambertian: the coated model is exact, so it must agree
+					// with the composite within MC noise (floor 1 %).
+					//
+					// GGX (diffuse-dominant): since DL-388 the same gate.  The
+					// substrate is evaluated in the coat's REFRACTED frame and its
+					// recycled field priced through its own first-bounce return
+					// (CoatedBRDF.cpp, "SUBSTRATE IN THE COAT'S FRAME").  Pre-DL-388
+					// the outer-frame evaluation read the diffuse lobe's (1 - A) at the
+					// outer grazing angle and these rows sat 3-6 % LOW (0.946 at
+					// sigma_t 0.2, theta 0), pinned in [0.92, 1.02].
+					Check( std::fabs( ratio - 1.0 ) <= std::max( 0.01, 5.0 * semR ),
+						std::string( "[K3] " ) + sb.name + " sigma " + std::to_string( sg ) + " theta " +
+						std::to_string( (int)th ) + " coated / composite == 1" );
+				}
+				coat->release(); comp->release(); ext->release();
+			}
+		}
+		ggx->release(); ggxSpec->release(); ggxDiff->release(); smooth->release(); sDelta->release();
+	}
+
+	SectionK4K6( f );
+}
+
 
 int main( int argc, char** argv )
 {
@@ -1305,6 +2572,30 @@ int main( int argc, char** argv )
 	Fixtures f = MakeFixtures();
 
 	const bool skipRender = ( argc > 1 && std::string( argv[1] ) == "--no-render" );
+	if( argc > 1 && std::string( argv[1] ) == "--coated-only" ) {
+		SectionK( f );
+		std::cout << "\n" << passCount << " passed, " << failCount << " failed" << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+	if( argc > 1 && std::string( argv[1] ) == "--stack-only" ) {
+		// DL-341 / DL-297 rows only: H, T, W (and D with --render).
+		SectionH( f );
+		SectionT( f );
+		SectionW( f );
+		if( argc > 2 && std::string( argv[2] ) == "--render" ) SectionD();
+		std::cout << "\n" << passCount << " passed, " << failCount << " failed" << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+	if( argc > 1 && std::string( argv[1] ) == "--sidedness-only" ) {
+		SectionM();
+		std::cout << "\n" << passCount << " passed, " << failCount << " failed" << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
+	if( argc > 1 && std::string( argv[1] ) == "--winding-only" ) {
+		SectionD9();
+		std::cout << "\n" << passCount << " passed, " << failCount << " failed" << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
 	if( argc > 1 && std::string( argv[1] ) == "--tilt-only" ) {
 		SectionT( f );
 		if( argc > 2 && std::string( argv[2] ) == "--render" ) SectionD();
@@ -1320,7 +2611,9 @@ int main( int argc, char** argv )
 	SectionF( f );
 	SectionH( f );
 	SectionT( f );
+	SectionW( f );
 	SectionG( f );
+	SectionK( f );
 	if( !skipRender ) {
 		SectionD();
 	}

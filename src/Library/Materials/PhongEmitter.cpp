@@ -124,6 +124,16 @@ Scalar PhongEmitter::averageRadiantExitanceNM( const Scalar nm ) const
 	return averageSpectrum.ValueAtNM( int(nm) );
 }
 
+RISEPel PhongEmitter::radiantExitanceAt( const RayIntersectionGeometric& ri ) const
+{
+	return pRadEx->GetColor( ri ) * scale;
+}
+
+Scalar PhongEmitter::radiantExitanceAtNM( const RayIntersectionGeometric& ri, const Scalar nm ) const
+{
+	return pRadEx->GetRadianceNM( ri, nm ) * scale;
+}
+
 Vector3 PhongEmitter::getEmmittedPhotonDir( const RayIntersectionGeometric& ri, const Point2& random ) const
 {
 	const ScalarTriple N_t = pPhongN->GetValuesAt(ri);

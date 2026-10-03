@@ -1077,7 +1077,7 @@ void SchlickSPF::Scatter(
 		SchlickDirectionalAlbedo::Lane lanes[3];
 		SchlickDiffuseLanes( rt, it, lanes );
 		const Scalar muI = Vector3Ops::Dot( myonb.w(), Vector3Ops::Normalize( -ri.ray.Dir() ) );
-		d.kray = SchlickCoupledDiffuseKray( lanes, pSpecular->GetColor(ri), pDiffuse->GetColor(ri), muI, cosTheta );
+		d.kray = SchlickCoupledDiffuseKray( lanes, ReflectanceColor( *pSpecular, ri ), ReflectanceColor( *pDiffuse, ri ), muI, cosTheta );
 		d.pdf = (cosTheta > 0) ? cosTheta * INV_PI : 0;
 		d.isDelta = false;
 		scattered.AddScatteredRay( d );
@@ -1091,7 +1091,7 @@ void SchlickSPF::Scatter(
 
 		// Accept-check uses myonb.w() -- see the diffuse-lobe comment above.
 		if( Vector3Ops::Dot( s.ray.Dir(), myonb.w() ) > 0.0 && Vector3Ops::Dot( s.ray.Dir(), geomN ) > 0.0 ) {
-			const RISEPel rho = pSpecular->GetColor(ri);
+			const RISEPel rho = ReflectanceColor( *pSpecular, ri );
 			const Vector3 woNorm = Vector3Ops::Normalize( s.ray.Dir() );
 			// DL-127: `kray` is this lobe's `f_S cos / p_S`, not Schlick's
 			// bare sampling weight -- see SchlickKrayRatioFromH.
@@ -1105,7 +1105,7 @@ void SchlickSPF::Scatter(
 	else
 	{
 		const Point2 ptrand( sampler.Get1D(),sampler.Get1D() );
-		const RISEPel rho = pSpecular->GetColor(ri);
+		const RISEPel rho = ReflectanceColor( *pSpecular, ri );
 
 		for( int i=0; i<3; i++ ) {
 			// DL-101: a FRESH ScatteredRay every iteration.  Before this
@@ -1183,8 +1183,8 @@ void SchlickSPF::ScatterNM(
 		// DL-310: coupled diffuse, spectral twin of Scatter's.
 		SchlickDirectionalAlbedo::Lane lane;
 		SchlickDirectionalAlbedo::PrepareLane( lane, roughnessNM, isotropyNM );
-		d.krayNM = SchlickDirectionalAlbedo::CoupledDiffuseAt( lane, GuardedGetColorNM( *pSpecular, ri, nm ),
-			GuardedGetColorNM( *pDiffuse, ri, nm ),
+		d.krayNM = SchlickDirectionalAlbedo::CoupledDiffuseAt( lane, ReflectanceColorNM( *pSpecular, ri, nm ),
+			ReflectanceColorNM( *pDiffuse, ri, nm ),
 			Vector3Ops::Dot( myonb.w(), Vector3Ops::Normalize( -ri.ray.Dir() ) ), cosTheta );
 		d.pdf = (cosTheta > 0) ? cosTheta * INV_PI : 0;
 		d.isDelta = false;
@@ -1192,7 +1192,7 @@ void SchlickSPF::ScatterNM(
 	}
 
 	if( Vector3Ops::Dot( s.ray.Dir(), myonb.w() ) > 0.0 && Vector3Ops::Dot( s.ray.Dir(), geomN ) > 0.0 ) {
-		const Scalar rho = GuardedGetColorNM( *pSpecular, ri, nm );
+		const Scalar rho = ReflectanceColorNM( *pSpecular, ri, nm );
 		const Vector3 woNorm = Vector3Ops::Normalize( s.ray.Dir() );
 		// DL-127, spectral twin of Scatter's single-lane branch above.
 		const Scalar krayRatio = SchlickKrayRatio( ri, myonb, woNorm, roughnessNM, isotropyNM );
@@ -1244,8 +1244,8 @@ Scalar SchlickSPF::Pdf(
 		}
 	}
 
-	const RISEPel rd = pDiffuse->GetColor(ri);
-	const RISEPel rho = pSpecular->GetColor(ri);
+	const RISEPel rd = ReflectanceColor( *pDiffuse, ri );
+	const RISEPel rho = ReflectanceColor( *pSpecular, ri );
 
 	// DL-310: the diffuse ray's realized weight is its coupled kray at
 	// THIS direction (MaxValue(Rd) wherever no channel can clip).
@@ -1334,11 +1334,11 @@ Scalar SchlickSPF::PdfNM(
 	lobes.count  = 1;
 	lobes.r[0]   = r;
 	lobes.p[0]   = p;
-	lobes.rho[0] = GuardedGetColorNM( *pSpecular, ri, nm );
+	lobes.rho[0] = ReflectanceColorNM( *pSpecular, ri, nm );
 
 	// DL-310: coupled diffuse weight at this direction, and the diffuse
 	// draw's description for the specular coefficient (spectral twin).
-	const Scalar rdNM = GuardedGetColorNM( *pDiffuse, ri, nm );
+	const Scalar rdNM = ReflectanceColorNM( *pDiffuse, ri, nm );
 	SchlickDirectionalAlbedo::Lane lane;
 	SchlickDirectionalAlbedo::PrepareLane( lane, r, p );
 	const Scalar muI = Vector3Ops::Dot( myonb.w(), Vector3Ops::Normalize( -ri.ray.Dir() ) );
@@ -1403,7 +1403,7 @@ Scalar SchlickSPF::SchlickCoupledDiffuseNM(
 	SchlickDirectionalAlbedo::Lane lane;
 	SchlickDirectionalAlbedo::PrepareLane( lane, roughnessNM, pIsotropy->GetValueAtNM( ri, nm ) );
 	return SchlickDirectionalAlbedo::CoupledDiffuseAt( lane,
-		GuardedGetColorNM( *pSpecular, ri, nm ), GuardedGetColorNM( *pDiffuse, ri, nm ),
+		ReflectanceColorNM( *pSpecular, ri, nm ), ReflectanceColorNM( *pDiffuse, ri, nm ),
 		Vector3Ops::Dot( myonb.w(), Vector3Ops::Normalize( -ri.ray.Dir() ) ),
 		Vector3Ops::Dot( myonb.w(), Vector3Ops::Normalize( outDir ) ) );
 }
@@ -1454,7 +1454,7 @@ Scalar SchlickSPF::EvaluateLobeFNM(
 	}
 
 	const Scalar fresnel = ::pow( 1.0 - hdotk, 5 );
-	const Scalar rho = GuardedGetColorNM( *pSpecular, ri, nm );
+	const Scalar rho = ReflectanceColorNM( *pSpecular, ri, nm );
 	const Scalar kray = ( rho + (1.0 - rho) * fresnel ) * krayRatio;
 	const Scalar pdf = ComputeSchlickSpecularPdf( ri, myonb, woNorm, roughnessNM, isotropyNM );
 
@@ -1505,7 +1505,7 @@ Scalar SchlickSPF::EvaluateKrayNM(
 	}
 
 	const Scalar fresnel = ::pow( 1.0 - hdotk, 5 );
-	const Scalar rho = GuardedGetColorNM( *pSpecular, ri, nm );
+	const Scalar rho = ReflectanceColorNM( *pSpecular, ri, nm );
 	return ( rho + (1.0 - rho) * fresnel ) * krayRatio;
 }
 

@@ -378,7 +378,9 @@ cast; the guard is a thread-local read and a compare.
   reproduces it on a sphere (1.138177 vs 0.99986).  Independent of DL-315.
   It is the same double count DL-05 declined for area/env NEE (forcing
   that arm through a weave gap read +103 % on the closed-form area row,
-  which is why DL-05 kept area/env NEE binary).
+  which is why DL-05 kept area/env NEE binary).  **Fixed 2026-10-02
+  (`debt-dl344`)**: the walk now sees through only for delta lights, and
+  not at a PT surface vertex where SMS already estimated that light -- [DL344_TRANSPARENT_SHADOW_PARTITION.md](DL344_TRANSPARENT_SHADOW_PARTITION.md).
 - **Withdrawn: the round-1 "DL-343"** (diffusion reading 0.30 % higher
   with env NEE blocked than in open air).  Not a bias: salted n = 6 per
   side the slab reads open 1.000319 +/- 0.00065, boxed 1.000320 +/-
@@ -394,7 +396,10 @@ cast; the guard is a thread-local read and a compare.
   0.999, four touching walls (open tube) 0.914, the same with 0.02 corner
   gaps 1.000, the closed room touching 0.706, with 0.02 gaps 1.000; BDPT
   gapped 1.000, and BDPT at eye/light depth 32/128/512/2048 all ~0.70 with
-  0 refusals.
+  0 refusals.  **Fixed 2026-10-02 (`debt-dl370`):** the walk now crosses into a
+  touching random-walk neighbour instead of exiting into it
+  ([DL49_SSS_EXTERIOR_INDEX.md](DL49_SSS_EXTERIOR_INDEX.md) section 12);
+  the diffusion-profile sibling and non-random-walk neighbours are DL-408.
 - **The stack guard can still truncate on a small calling thread** (a
   512 KB GUI render thread): counted and logged, section 2.  A render
   thread with an 8 MB stack, or not draining tiles on the caller, would

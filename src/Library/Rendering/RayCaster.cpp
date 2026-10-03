@@ -13,6 +13,7 @@
 
 #include "pch.h"
 #include <atomic>
+#include <memory>
 #include <cstring>   // review-p2d: std::strcmp for the reserved "environment" solo name
 #include "RayCaster.h"
 #include "LuminaryManager.h"
@@ -23,6 +24,7 @@
 #include "../Utilities/MediumTracking.h"
 #include "../Utilities/MediumTransport.h"
 #include "../Utilities/GradedIndexMedium.h"
+#include "../Utilities/IORStackSeeding.h"
 #include "../Utilities/IndependentSampler.h"
 #include "../Utilities/PathGuidingField.h"
 #include "../Utilities/PathTransportUtilities.h"
@@ -2442,9 +2444,14 @@ bool RayCaster::CastOcclusionRay( const Ray& ray, const Scalar dHowFar ) const
 //     and re-emerge) is ignored; only the direct (1-F)-per-interface
 //     transmission is accounted for.
 //   * One REPRESENTATIVE eta per interface is used (see below).
-// It trades a small physical inaccuracy for a large NEE-variance
-// reduction when a lit surface sits under a thin transparent shell
-// (e.g. a watch dial under a sapphire crystal).  Used ONLY by the
+// It is the only PT estimator of a DELTA light (omni / spot /
+// directional) seen through a clear dielectric -- no BSDF-sampled
+// continuation can hit a delta light -- so for those lights it lights a
+// surface under a thin transparent shell (e.g. a watch dial under a
+// sapphire crystal) that binary NEE would leave black.  DL-344: it is
+// NOT used for area / env lights (the continuation already reaches them
+// through the shell at MIS weight 1, so it would count the path twice),
+// nor at a point where SMS was evaluated for the same light.  Used ONLY by the
 // unidirectional PT integrator; BDPT / VCM / MLT keep binary shadows.
 //
 // eta source:
@@ -2517,10 +2524,14 @@ bool RayCaster::WalkShadowSegment(
 	const bool bDeltaPassThrough,
 	GradedIndexMedium::ShadowSegmentTrack* pGradedTrack,
 	const Point3* pSegmentEnd,
-    ISampler* alphaSampler, MediumBoundaryHits* boundaries, Scalar physicalDistance, Scalar occlusionStart
+    ISampler* alphaSampler, MediumBoundaryHits* boundaries, Scalar physicalDistance, Scalar occlusionStart,
+	unsigned int* pPassThroughCrossings
 	) const
 {
 	transmittance = RISEPel( 1.0, 1.0, 1.0 );
+	if( pPassThroughCrossings ) {
+		*pPassThroughCrossings = 0;
+	}
 
 	// DL-292: every "reached the light" return goes through here, so the
 	// graded-index track (if any) is priced up to the light point exactly
@@ -2543,8 +2554,10 @@ bool RayCaster::WalkShadowSegment(
 	// of nested dielectrics.
 	// (counts interface CROSSINGS, not objects: a meniscus shell is 2,
 	// nested glass-in-glass 4; 32 leaves headroom before the safe-but-
-	// darkening conservative block kicks in.)
-	static const unsigned int kMaxCrossings = 32;
+	// darkening conservative block kicks in.)  The last iteration is the
+	// reach-the-light check, so at most kShadowWalkMaxCrossings (31)
+	// surfaces are crossed (IRayCaster.h; DL-330 reads the same pair).
+	static const unsigned int kMaxCrossings = kShadowWalkMaxIterations;
 
 	// Small step-off so the next IntersectRay does not re-hit the
 	// surface we just crossed.  Matches the order of magnitude of the
@@ -2625,6 +2638,9 @@ bool RayCaster::WalkShadowSegment(
 				transmittance = transmittance * t;
 			} else {
 				transmittance = transmittance * pSPF->DeltaPassThroughTransmittance( ri.geometric );
+			}
+			if( pPassThroughCrossings ) {
+				( *pPassThroughCrossings )++;
 			}
 			if( !( ColorMath::MaxValue( transmittance ) > NEARZERO ) )
 			{
@@ -2735,7 +2751,22 @@ bool RayCaster::WalkShadowSegment(
 		// on exit: medium -> outside (outside taken from the stack just
 		// below the current object, falling back to air).
 		Scalar Ni, Nt;
-		if( bEntering )
+		// DL-345: a PROVABLY OPEN sheet is crossed by its face (the sign test
+		// above, which this walk already used) AND its far side is resolved
+		// the way the transmissive SPFs resolve it -- an unpushed exit pops
+		// the sibling sheet the walk entered a slab through unless that
+		// object encloses the crossing (IORStackSeeding::
+		// ResolveOpenSheetCrossing).  `openSheetStack` is the stack after
+		// the crossing, committed below.
+		std::unique_ptr<IORStack> openSheetStack;
+		if( ri.geometric.bProvablyNoInterior ) {
+			openSheetStack.reset( new IORStack( ior_stack ) );
+			const IORStackSeeding::OpenSheetCrossing c =
+				IORStackSeeding::ResolveOpenSheetCrossing( ri.geometric, mediumIOR, *openSheetStack );
+			Ni = c.etaFrom;
+			Nt = c.etaTo;
+		}
+		else if( bEntering )
 		{
 			Ni = ior_stack.top();		// current outside medium (air, or an enclosing dielectric)
 			Nt = mediumIOR;
@@ -2804,7 +2835,9 @@ bool RayCaster::WalkShadowSegment(
 		// interface sees the correct enclosing medium.  The exit pop is
 		// guarded on containsCurrent() for the originates-inside-a-
 		// dielectric case (see the exit-peek note above).
-		if( bEntering ) {
+		if( openSheetStack ) {
+			ior_stack = *openSheetStack;
+		} else if( bEntering ) {
 			ior_stack.push( mediumIOR );
 		} else if( ior_stack.containsCurrent() ) {
 			ior_stack.pop();
@@ -2843,8 +2876,9 @@ bool RayCaster::WalkShadowSegment(
 // CastShadowRayAuto — flag-aware NEE shadow occlusion.
 //
 // One source of truth for "shadow test that honors transparent_shadows":
-// when the flag is on, walk the segment with the Fresnel-transmittance test
-// (clear dielectrics attenuate rather than block); when off, the binary test.
+// when the flag is on AND the caller is a DELTA light (DL-344), walk the
+// segment with the Fresnel-transmittance test (clear dielectrics attenuate
+// rather than block); otherwise the binary test.
 // Used by BOTH the LightSampler NEE evaluators (omni / spot / area) and the
 // directional / ambient Step-1 lights, so the flag applies uniformly across
 // light types.
@@ -2864,7 +2898,8 @@ bool RayCaster::CastShadowRayAuto(
 	RISEPel& transmittance,
 	const bool bDeltaLight,
 	GradedIndexMedium::ShadowSegmentTrack* pGradedTrack,
-	const Point3* pSegmentEnd
+	const Point3* pSegmentEnd,
+	const bool bSMSCoversLight
 	) const
 {
 	// DL-05: may this shadow ray see through a delta pass-through?  Only
@@ -2880,7 +2915,20 @@ bool RayCaster::CastShadowRayAuto(
 		!pScene->GetTranslucentPelMap() && !pScene->GetCausticSpectralMap() &&
 		!pScene->GetGlobalSpectralMap();
 
-	if( bTransparentShadows ) {
+	// DL-344: the `transparent_shadows` dielectric walk, like DL-05's
+	// pass-through, sees through only for a DELTA light.  An area or env
+	// light is already reached THROUGH a clear dielectric by PT's
+	// BSDF-sampled continuation at MIS weight 1 (its partner is reset at
+	// the delta vertex), so letting this arm through as well counts the
+	// path twice (an index-1.0 box read 1.14x open air, an area emitter
+	// 1.98x).  Where SMS was evaluated at the SAME point for this light
+	// (PT's PART-2 surface NEE with a manifold solver; LightSampler's delta
+	// arm says so), SMS estimates its light through the caster and the walk
+	// is off for this ray; everywhere else -- volume in-scattering, the
+	// BSSRDF entry NEE, a directional light SMS never samples -- the walk is
+	// the light's only estimator.  docs/DL344_TRANSPARENT_SHADOW_PARTITION.md.
+	const bool bDielectrics = DielectricShadowWalk( bDeltaLight, bSMSCoversLight );
+	if( bDielectrics ) {
 		return WalkShadowSegment( ray, dHowFar, bNM, nm, transmittance, true, bPassThrough, pGradedTrack, pSegmentEnd );
 	}
 	transmittance = RISEPel( 1.0, 1.0, 1.0 );
@@ -3355,18 +3403,29 @@ bool RayCaster::CastShadowRaySampled(const Ray& ray, Scalar distance, ISampler& 
 {
     return pScene && pScene->GetObjects()->IntersectShadowRaySampled(ray, distance, sampler, boundaries, physicalDistance, occlusionStart);
 }
-bool RayCaster::CastShadowRayAutoSampled(const Ray& ray, Scalar distance, bool nmMode,
-    Scalar nm, RISEPel& transmittance, bool deltaLight, ISampler& sampler, MediumBoundaryHits* boundaries, Scalar physicalDistance, Scalar occlusionStart,
-    GradedIndexMedium::ShadowSegmentTrack* pGradedTrack, const Point3* pSegmentEnd) const
+bool RayCaster::DeltaPassThroughShadowsActive() const
 {
-    if (boundaries) boundaries->clear();
-    const bool passThrough = deltaLight && bSceneHasDeltaPassThrough && pScene &&
+    return bSceneHasDeltaPassThrough && pScene &&
         !pScene->GetCausticPelMap() && !pScene->GetGlobalPelMap() &&
         !pScene->GetTranslucentPelMap() && !pScene->GetCausticSpectralMap() &&
         !pScene->GetGlobalSpectralMap();
-    if (bTransparentShadows || passThrough)
+}
+
+bool RayCaster::CastShadowRayAutoSampled(const Ray& ray, Scalar distance, bool nmMode,
+    Scalar nm, RISEPel& transmittance, bool deltaLight, ISampler& sampler, MediumBoundaryHits* boundaries, Scalar physicalDistance, Scalar occlusionStart,
+    GradedIndexMedium::ShadowSegmentTrack* pGradedTrack, const Point3* pSegmentEnd, bool smsCoversLight,
+    unsigned int* pPassThroughCrossings) const
+{
+    if (pPassThroughCrossings) *pPassThroughCrossings = 0;
+    if (boundaries) boundaries->clear();
+    const bool passThrough = deltaLight && DeltaPassThroughShadowsActive();
+    // DL-344: dielectrics see-through for DELTA lights, except where SMS
+    // was evaluated at this point for this light (see CastShadowRayAuto).
+    const bool dielectrics = DielectricShadowWalk(deltaLight, smsCoversLight);
+    if (dielectrics || passThrough)
         return WalkShadowSegment(ray, distance, nmMode, nm, transmittance,
-            bTransparentShadows, passThrough, pGradedTrack, pSegmentEnd, &sampler, boundaries, physicalDistance, occlusionStart);
+            dielectrics, passThrough, pGradedTrack, pSegmentEnd, &sampler, boundaries, physicalDistance, occlusionStart,
+            pPassThroughCrossings);
     // DL-292: the binary test leaves the track un-Finish()ed -- the caller
     // prices the crossing-free segment with ConnectionScaleToPoint.
     transmittance = RISEPel(1,1,1);

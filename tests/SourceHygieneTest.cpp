@@ -5158,6 +5158,72 @@ int main()
 		       "MakeSampleHitKey) together with this list" );
 	}
 
+	// ---- DL-386: material reflectance reads go through ReflectanceColor ----
+	// A colour authored outside the Rec.709 gamut carries NEGATIVE channels;
+	// by the 2026-10-02 ruling every material read of a reflectance-type
+	// slot clamps them to 0 (values above 1 stay as authored).  The clamp
+	// lives in ONE accessor pair (IPainter.h `ReflectanceColor` /
+	// `ReflectanceColorNM`), so a raw `GetColor(ri)` or `GuardedGetColorNM`
+	// under src/Library/Materials would silently re-open DL-386 for that
+	// slot.  Allowed raw reads: the two EMITTERS (radiance, never clamped by
+	// this rule), the GGX tangent-rotation painter (an angle, read as data)
+	// and CoatedBRDF's coat-normal painter (a normal map).  Raw `GetColorNM`
+	// is allowed only in the three files that clamp it inline (coat tint,
+	// fabric sheen, weave yarn colour).
+	{
+		const fs::path matDir = testsDir.parent_path() / "src" / "Library" / "Materials";
+		std::vector<std::string> rawReads;
+		int matFiles = 0;
+		if( fs::exists( matDir ) ) {
+			for( const auto& e : fs::directory_iterator( matDir ) ) {
+				if( !e.is_regular_file() ) { continue; }
+				const fs::path& f = e.path();
+				if( f.extension() != ".h" && f.extension() != ".cpp" ) { continue; }
+				++matFiles;
+				const std::string fname = f.filename().string();
+				std::ifstream mi( f );
+				const std::string raw( ( std::istreambuf_iterator<char>( mi ) ),
+				                         std::istreambuf_iterator<char>() );
+				const std::string code = StripCommentsPreservingLayout( raw );
+				std::istringstream ls( code );
+				std::string line;
+				int lineNo = 0;
+				while( std::getline( ls, line ) ) {
+					++lineNo;
+					const std::string where = fname + ":" + std::to_string( lineNo );
+					if( line.find( "GuardedGetColorNM(" ) != std::string::npos ) {
+						rawReads.push_back( where + "  GuardedGetColorNM (use ReflectanceColorNM)" );
+					}
+					for( size_t p = line.find( "GetColorNM(" ); p != std::string::npos;
+					     p = line.find( "GetColorNM(", p + 1 ) ) {
+						if( p >= 7 && line.compare( p - 7, 7, "Guarded" ) == 0 ) { continue; }
+						if( fname == "CoatedBRDF.cpp" || fname == "FabricBRDF.cpp" ||
+						    fname == "WeaveBRDF.cpp" ) { continue; }
+						rawReads.push_back( where + "  raw GetColorNM" );
+					}
+					for( size_t p = line.find( "GetColor(" ); p != std::string::npos;
+					     p = line.find( "GetColor(", p + 1 ) ) {
+						size_t q = p + 9;
+						while( q < line.size() && ( line[q] == ' ' || line[q] == '\t' ) ) { ++q; }
+						if( q < line.size() && line[q] == ')' ) { continue; }	// accessor `GetColor()`
+						if( fname == "LambertianEmitter.cpp" || fname == "PhongEmitter.cpp" ) { continue; }
+						if( line.find( "pRotation->GetColor(" ) != std::string::npos ) { continue; }
+						if( line.find( "coatNormalPainter.GetColor(" ) != std::string::npos ) { continue; }
+						rawReads.push_back( where + "  raw GetColor(ri)" );
+					}
+				}
+			}
+		}
+		Check( matFiles > 0, "DL-386: found src/Library/Materials to scan" );
+		for( const std::string& r : rawReads ) {
+			std::cout << "  DL-386 unclamped reflectance read: " << r << std::endl;
+		}
+		Check( rawReads.empty(),
+		       "DL-386: every material reflectance-colour read goes through "
+		       "ReflectanceColor / ReflectanceColorNM (negative channels -> 0); raw "
+		       "reads only for emitters, the GGX rotation painter and the coat normal map" );
+	}
+
 	std::cout << std::endl
 	          << "(scanned " << scanned << " test files) "
 	          << passCount << " passed, " << failCount << " failed." << std::endl;

@@ -380,7 +380,7 @@ namespace
 		{
 			for( unsigned int x = stride / 2; x < width; x += stride )
 			{
-				const Point2 ptOnScreen( x, height - y );
+				const Point2 ptOnScreen = RasterConvention::PixelCentreToScreen( x, y, height );
 				Ray cameraRay;
 				if( !camera.GenerateRay( rc, cameraRay, ptOnScreen ) ) {
 					continue;
@@ -806,16 +806,25 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 	// to median × 20 to control the worst variance while preserving
 	// caustic structure.
 	{
+		// DL-380: the median is taken over the vertices NOT past an
+		// eye-coverable subsurface jump -- exactly the store the pre-DL-380
+		// partition kept -- so the threshold is unchanged; the vertices
+		// past such a jump (now stored, merged only where the eye walk's
+		// depth caps leave the eye family without a strategy) are clamped
+		// against it like every other.
 		const std::size_t storeSize = pLightVertexStore->Size();
-		if( storeSize > 16 ) {
-			std::vector<Scalar> throughputLums;
-			throughputLums.reserve( storeSize );
-			for( std::size_t k = 0; k < storeSize; k++ ) {
-				const LightVertex& lv = pLightVertexStore->Get( k );
-				throughputLums.push_back( ColorMath::MaxValue( lv.throughput ) );
+		std::vector<Scalar> throughputLums;
+		throughputLums.reserve( storeSize );
+		for( std::size_t k = 0; k < storeSize; k++ ) {
+			const LightVertex& lv = pLightVertexStore->Get( k );
+			if( lv.flags & kLVF_JumpCover ) {
+				continue;
 			}
+			throughputLums.push_back( ColorMath::MaxValue( lv.throughput ) );
+		}
+		if( throughputLums.size() > 16 ) {
 			std::sort( throughputLums.begin(), throughputLums.end() );
-			const Scalar medianThroughput = throughputLums[storeSize / 2];
+			const Scalar medianThroughput = throughputLums[throughputLums.size() / 2];
 			const Scalar clampThreshold = medianThroughput * Scalar( 20 );
 
 			unsigned long long clamped = 0;
@@ -1005,10 +1014,15 @@ void VCMRasterizerBase::OnProgressivePassBegin(
 	// would freeze at the initial auto-radius.  The geometric floor
 	// (0.001 * medianSegment, set in PreRenderSetup) is the hard
 	// lower bound to avoid sub-numeric-precision collapse.
-	if( mProgressiveRadiusEnabled && mBaseMergeRadius > 0 && totalStored > 0 ) {
+	// DL-380: density over the ORDINARY vertices (the store the
+	// pre-DL-380 partition kept), so the floor is unchanged by the
+	// jump-cover vertices stored since.
+	const std::size_t ordinaryStored = ( mProgressiveRadiusEnabled && mBaseMergeRadius > 0 && totalStored > 0 )
+		? pLightVertexStore->CountOrdinaryVertices() : 0;
+	if( mProgressiveRadiusEnabled && mBaseMergeRadius > 0 && ordinaryStored > 0 ) {
 		const Scalar surfaceArea = pLightVertexStore->ComputeBBoxSurfaceArea();
 		if( surfaceArea > NEARZERO ) {
-			const Scalar density = static_cast<Scalar>( totalStored ) / surfaceArea;
+			const Scalar density = static_cast<Scalar>( ordinaryStored ) / surfaceArea;
 			if( density > NEARZERO ) {
 				const Scalar rFloorRaw = std::sqrt( mTargetPhotonsPerQuery / ( PI * density ) );
 				const Scalar rFloorCapped = std::min( rFloorRaw, mBaseMergeRadius * Scalar( 0.5 ) );

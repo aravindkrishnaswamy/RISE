@@ -10431,6 +10431,20 @@ bool Job::SetAutoSpectralRasterizer(
 	return true;
 }
 
+// DL-344: with SMS on, the `transparent_shadows` walk is off for an
+// omni / spot light at the surface points where SMS is evaluated (PT's
+// PART-2 NEE): SMS estimates that light through the caster, and the
+// straight walk on top of it counted it twice (PT+SMS, omni through a 1.5
+// glass box: 2.46x).  The gate is per evaluation point (LightSampler's
+// `bSMSCoversDeltaLights`); this only wires the flag and says so.
+static void WireTransparentShadows( RISE::Implementation::RayCaster& caster, const bool transparentShadows, const bool smsEnabled )
+{
+	caster.SetTransparentShadows( transparentShadows );
+	if( transparentShadows && smsEnabled ) {
+		GlobalLog()->PrintEasyWarning( "Job:: with `sms_enabled TRUE`, `transparent_shadows TRUE` does not see omni / spot light through a specular caster at the surface points SMS evaluates (SMS estimates it there; both together count it twice, DL-344); directional lights, volume receivers and subsurface entry points keep the walk" );
+	}
+}
+
 bool Job::SetPathTracingPelRasterizer(
 	const unsigned int numPixelSamples,
 	const char* shader,
@@ -10493,12 +10507,14 @@ bool Job::SetPathTracingPelRasterizer(
 	// Transparent (Fresnel-attenuated) shadow rays — unidirectional PT
 	// opt-in.  Routed through the concrete RayCaster (LightSampler
 	// dynamic_casts to it); off by default.  BDPT/VCM/MLT do NOT wire
-	// this — their NEE stays binary.
+	// this — their NEE stays binary.  DL-344: the walk applies to delta
+	// lights only, and not at a PT surface vertex where SMS already
+	// estimated that delta light (per evaluation point, DL-344 round 3).
 	{
 		RISE::Implementation::RayCaster* pConcreteCaster =
 			dynamic_cast<RISE::Implementation::RayCaster*>( pCaster );
 		if( pConcreteCaster ) {
-			pConcreteCaster->SetTransparentShadows( stabilityConfig.transparentShadows );
+			WireTransparentShadows( *pConcreteCaster, stabilityConfig.transparentShadows, smsConfig.enabled );
 		}
 	}
 
@@ -10600,12 +10616,13 @@ bool Job::SetPathTracingSpectralRasterizer(
 	}
 
 	// Transparent (Fresnel-attenuated) shadow rays — unidirectional PT
-	// opt-in (spectral path).  See the pel PT factory for rationale.
+	// opt-in (spectral path).  See the pel PT factory for rationale
+	// (DL-344: delta lights only; not where SMS ran at that vertex).
 	{
 		RISE::Implementation::RayCaster* pConcreteCaster =
 			dynamic_cast<RISE::Implementation::RayCaster*>( pCaster );
 		if( pConcreteCaster ) {
-			pConcreteCaster->SetTransparentShadows( stabilityConfig.transparentShadows );
+			WireTransparentShadows( *pConcreteCaster, stabilityConfig.transparentShadows, smsConfig.enabled );
 		}
 	}
 
@@ -12728,7 +12745,8 @@ bool Job::LoadAsciiSceneViaCst( const char* filename )
 	}
 
 	std::vector<std::string> diags;
-	RISE::Cst::DeriveToJob( *doc, *this, &diags );
+	// DL-323 follow-through: THE real scene load -- the only DeriveToJob caller that warns about deprecated chunk types.
+	RISE::Cst::DeriveToJob( *doc, *this, &diags, nullptr, nullptr, /*warnDeprecated=*/true );
 	if( !diags.empty() ) {
 		for( size_t i = 0; i < diags.size() && i < 8u; ++i ) {
 			GlobalLog()->PrintEx( eLog_Error, "Job::LoadAsciiSceneViaCst:: derive diagnostic: %s", diags[i].c_str() );

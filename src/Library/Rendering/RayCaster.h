@@ -102,13 +102,23 @@ namespace RISE
 			//! process-wide sampler-rebuild diagnostic counter.
 			void RebuildLightSamplers();
 
-			//! When true, the unidirectional path tracer's NEE shadow
-			//! tests route through CastShadowRayTransmittance (Fresnel-
-			//! attenuated transparent shadows) instead of the binary
-			//! CastShadowRay.  Default false (binary occlusion).  Set by
+			//! When true, the unidirectional path tracer's DELTA-light NEE
+			//! shadow tests (omni / spot / directional) walk clear
+			//! dielectrics with Fresnel transmittance instead of the binary
+			//! CastShadowRay; area / env NEE stays binary (DL-344).  Default
+			//! false (binary occlusion).  Set by
 			//! Job::SetPathTracing{Pel,Spectral}Rasterizer from the scene's
 			//! `transparent_shadows` flag.
 			bool						bTransparentShadows;
+
+			//! DL-344: whether the `transparent_shadows` dielectric walk
+			//! applies to a given shadow ray.
+			//! applies to a given shadow ray: a DELTA light's, and not where
+			//! SMS was evaluated at the same point for that light.
+			bool DielectricShadowWalk( const bool bDeltaLight, const bool bSMSCoversLight ) const
+			{
+				return bTransparentShadows && bDeltaLight && !bSMSCoversLight;
+			}
 
 			//! DL-05: true when some material reachable by a ray hit
 			//! reports IMaterial::HasDeltaPassThrough() (a `transmission
@@ -144,7 +154,8 @@ namespace RISE
 				const bool bDeltaPassThrough,
 				GradedIndexMedium::ShadowSegmentTrack* pGradedTrack,
 				const Point3* pSegmentEnd,
-				ISampler* alphaSampler = 0, MediumBoundaryHits* boundaries = nullptr, Scalar physicalDistance = -1, Scalar occlusionStart = 0
+				ISampler* alphaSampler = 0, MediumBoundaryHits* boundaries = nullptr, Scalar physicalDistance = -1, Scalar occlusionStart = 0,
+				unsigned int* pPassThroughCrossings = 0		///< [out] DL-330: when non-null, the number of delta pass-throughs the walk crossed (written on every return)
 				) const;
 
 			//! Runtime override for the environment radiance scale,
@@ -389,7 +400,9 @@ namespace RISE
             bool CastShadowRayAutoSampled(const Ray& ray, Scalar distance, bool nmMode,
                 Scalar nm, RISEPel& transmittance, bool deltaLight, ISampler& sampler, MediumBoundaryHits* boundaries = nullptr, Scalar physicalDistance = -1, Scalar occlusionStart = 0,
                 GradedIndexMedium::ShadowSegmentTrack* pGradedTrack = 0,	///< [in/out] DL-292: as CastShadowRayAuto's
-                const Point3* pSegmentEnd = 0) const;					///< [in] DL-292: as CastShadowRayAuto's
+                const Point3* pSegmentEnd = 0,							///< [in] DL-292: as CastShadowRayAuto's
+                bool smsCoversLight = false,							///< [in] DL-344: as CastShadowRayAuto's bSMSCoversLight
+                unsigned int* pPassThroughCrossings = 0) const;		///< [out] DL-330: delta pass-throughs crossed (0 when the walk did not run)
 
 			bool CastShadowRayTransmittance(
 				const Ray& ray,										///< [in] Ray to cast (origin = shading point, dir = toward light, normalized)
@@ -401,7 +414,14 @@ namespace RISE
 
 			//! Flag-aware NEE shadow occlusion — the SINGLE entry point that
 			//! routes to the Fresnel-transmittance walk when
-			//! `transparent_shadows` is enabled, else the binary CastShadowRay.
+			//! `transparent_shadows` is enabled AND @a bDeltaLight is true,
+			//! else the binary CastShadowRay.  DL-344: the dielectric
+			//! see-through obeys DL-05's rule below for the same reason --
+			//! PT's continuation already reaches an area / env light through
+			//! a clear dielectric at MIS weight 1, so a see-through area/env
+			//! shadow ray counts the path twice; for a delta light this ray
+			//! is the only estimator (an approximation through a refracting
+			//! interface: straight, Fresnel only, no focusing).
 			//!
 			//! DL-05: when @a bDeltaLight is true -- the caller is a DELTA
 			//! light's shadow test (omni, spot, directional; the LightSampler
@@ -445,12 +465,20 @@ namespace RISE
 				RISEPel& transmittance,								///< [out] Accumulated per-interface Fresnel transmittance (1,1,1 when clear or binary)
 				const bool bDeltaLight,								///< [in] DL-05: the caller is a delta light's shadow test (see above)
 				GradedIndexMedium::ShadowSegmentTrack* pGradedTrack = 0,	///< [in/out] DL-292: when a hit-by-hit walk runs, it records the graded-index factor of the segment on this track (null: not tracked)
-				const Point3* pSegmentEnd = 0						///< [in] DL-292: the light point the track is Finish()ed at (required with a track)
+				const Point3* pSegmentEnd = 0,						///< [in] DL-292: the light point the track is Finish()ed at (required with a track)
+				const bool bSMSCoversLight = false					///< [in] DL-344: SMS was EVALUATED at this shading point and samples this light (only PT's PART-2 surface NEE with a manifold solver, via LightSampler's delta arm); the dielectric walk is then off for this ray
 				) const;
 
 			//! DL-05 read-back (tests): whether the last AttachScene found a
 			//! material with a delta pass-through.
 			bool SceneHasDeltaPassThrough() const { return bSceneHasDeltaPassThrough; }
+
+			//! DL-330: whether a delta light's shadow walk sees through delta
+			//! pass-throughs in this scene -- the scene has one AND carries no
+			//! radiance photon map (CastShadowRayAuto's suppression).  The ONE
+			//! definition CastShadowRayAutoSampled and BDPT's see-through
+			//! connection / jump partition all read.
+			bool DeltaPassThroughShadowsActive() const;
 
 			//! To retreive the current scene
 			/// \return Pointer to currently attached scene, NULL if no scene is currently attached
@@ -492,8 +520,9 @@ namespace RISE
 
 			/// Enables or disables transparent (Fresnel-attenuated) shadow
 			/// rays for NEE.  When enabled, the unidirectional path
-			/// tracer's shadow tests route through
-			/// CastShadowRayTransmittance.  Default disabled (binary).
+			/// tracer's DELTA-light shadow tests (DL-344: omni / spot /
+			/// directional only) route through the Fresnel-transmittance
+			/// walk.  Default disabled (binary).
 			void SetTransparentShadows( const bool enable ) { bTransparentShadows = enable; }
 
 			/// \return Whether transparent shadow rays are enabled.  Read

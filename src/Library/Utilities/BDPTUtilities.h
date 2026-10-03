@@ -27,6 +27,8 @@
 
 #include "Math3D/Math3D.h"
 #include "../Shaders/BDPTVertex.h"
+#include "../Interfaces/IMaterial.h"
+#include "../Interfaces/IRayCaster.h"		// kShadowWalkMaxCrossings (DL-330)
 #include <vector>
 
 namespace RISE
@@ -425,39 +427,182 @@ namespace RISE
 		// the entry's `isConnectible` -- cuts it.
 		//////////////////////////////////////////////////////////////
 
-		/// Does the EYE-sampled family have a strategy for a path whose
-		/// jump the light walk sampled at `verts[p] -> verts[p+1]` (the
-		/// hit where the light went in, then the entry)?  The eye would
-		/// arrive at the entry's point, jump to verts[p] (its own entry
-		/// vertex there -- connectible exactly when verts[p+1] is), and
-		/// must split the light-side segment verts[s..p] somewhere;
-		/// verts[s] is the light root (s == 0) or the previous KEPT
-		/// light entry.  The strategies, with the eye covering
-		/// verts[j..p] and the light verts[s..j-1]:
-		///   s=0 (eye hits the root): root not delta;
-		///   merge at verts[j] (VCM only): merging live, verts[j] a
+		//////////////////////////////////////////////////////////////
+		// DL-380: the partition is a property of the PATH under the
+		// DEPTH CAPS, not of vertex types alone.  "The eye family has a
+		// strategy for this path" means the EYE WALK can generate the
+		// covering subpath, and that walk is capped: at most
+		// `max_eye_depth` surface hits, and at most
+		// `WalkIterationBudget(max_eye_depth, max_volume_bounce)` loop
+		// iterations (one per surface hit, medium scatter, or escape).
+		// Deciding from vertex types alone cut the light family for a
+		// path whose covering eye strategy lay past the eye cap, and
+		// the path was estimated by NOTHING (DL-375's D1 wall at
+		// `max_eye_depth 1`: BDPT -99.95 %, VCM -98.6 %).
+		//
+		// Counting.  A walk counts a surface vertex when it reached it
+		// along a ray: every SURFACE vertex except a BSSRDF / random-walk
+		// ENTRY (pushed in the same iteration as the hit it jumped from).
+		// The camera, a light root, medium vertices and an escape do not
+		// count toward the surface cap.  A light-side jump pair
+		// (x_o = verts[q], entry = verts[q+1]) counts ONE in either walk
+		// direction: the light walk counts x_o, the eye walk -- arriving
+		// at the entry's point along a ray and jumping to x_o -- counts
+		// the entry.  So for a path whose light part is verts[0..k] and
+		// whose eye part has eye-walk surface count S, the eye walk that
+		// covers the light-side tail verts[w..k] (split before verts[w])
+		// counts
+		//     D - L(w-1),   D = S + L(k),   L(i) = light-walk count of verts[1..i]
+		// surface hits, and every medium vertex of the path past
+		// verts[w-1] in iterations.  D is a property of the path, not of
+		// the (s, t) split, so every strategy of one path is partitioned
+		// the same way.  (A merge shares its vertex: D = S + L(k) - 1.)
+		//
+		// Witness.  Among the admissible splits of a jump's segment
+		// (LightSegmentEyeWitness), the LARGEST w needs the fewest eye
+		// surface hits AND the fewest eye medium vertices, so it alone
+		// decides; and a later jump's witness dominates an earlier
+		// one's (it needs strictly fewer of both: x_o is counted), so a
+		// light prefix is decided by the witness of the LAST
+		// witness-bearing jump in it.  The root witness w = 0 (the eye
+		// hits an area light -- that hit counts -- or escapes to an
+		// environment light -- one more iteration) is dominated by any
+		// w >= 1.
+		//
+		// The opposite failure, a path BOTH families keep, needs the
+		// light family to keep a path the eye walk CAN generate; the
+		// test below is that generation test, so it cannot happen at
+		// any combination of caps.  The light caps never enter: a
+		// covering eye strategy uses the light prefix verts[0..w-1]
+		// (w-1 < k, already generated), and the eye family itself is
+		// never cut.  (Per-type caps, `max_diffuse_bounce` & co., are
+		// per subpath and direction-dependent -- DL-351 -- and stay out
+		// of the partition, as they stay out of every BDPT MIS weight.)
+		//////////////////////////////////////////////////////////////
+
+		//! The loop budget of a BDPT/VCM/MLT subpath walk: one iteration
+		//! per surface hit, medium scatter or escape, saturating at
+		//! `kWalkIterationCap` (a `max_volume_bounce` of UINT_MAX means
+		//! "unlimited" and must not wrap).  Shared by both generators and
+		//! the DL-380 partition, which must agree with them exactly.
+		inline unsigned int WalkIterationBudget(
+			const unsigned int maxSurface,
+			const unsigned int maxVolume
+			)
+		{
+			return ( maxSurface >= kWalkIterationCap ||
+				maxVolume > kWalkIterationCap - maxSurface ) ?
+					kWalkIterationCap : maxSurface + maxVolume;
+		}
+
+		//! The eye walk's caps, as the partition needs them.
+		struct EyeWalkCaps
+		{
+			unsigned int maxSurface;		///< max_eye_depth
+			unsigned int maxIterations;		///< WalkIterationBudget( max_eye_depth, max_volume_bounce )
+		};
+
+		inline EyeWalkCaps MakeEyeWalkCaps(
+			const unsigned int maxEyeDepth,
+			const unsigned int maxVolumeBounce
+			)
+		{
+			EyeWalkCaps c;
+			c.maxSurface = maxEyeDepth;
+			c.maxIterations = WalkIterationBudget( maxEyeDepth, maxVolumeBounce );
+			return c;
+		}
+
+		//! Does a walk count `v` against its surface cap?  (See above.)
+		inline bool CountsAsSurfaceHit( const BDPTVertex& v )
+		{
+			return v.type == BDPTVertex::SURFACE && !v.isBSSRDFEntry;
+		}
+
+		/// DL-330 (review P1).  Is verts[1..j-1] a straight chain of delta
+		/// PASS-THROUGHS (thin-weave gap draws) from a delta-position light
+		/// root verts[0] to verts[j]?  That is exactly the light-side shape
+		/// BDPT's see-through s = 1 connection reaches: an eye vertex at
+		/// verts[j] connects to the root through those gaps
+		/// (`CastShadowRayAutoSampled`, which crosses at most
+		/// kShadowWalkMaxCrossings = 31 surfaces).  The chain is
+		/// a function of the path: each gap draw continues the incoming ray
+		/// undeviated, so the segment directions must all equal
+		/// root -> verts[j].
+		inline bool DeltaPassThroughChainToRoot(
+			const std::vector<BDPTVertex>& verts,
+			const std::size_t j
+			)
+		{
+			if( j < 2 || j - 1 > kShadowWalkMaxCrossings || j >= verts.size() ) {
+				return false;
+			}
+			const BDPTVertex& root = verts[0];
+			if( root.type != BDPTVertex::LIGHT || !root.isDelta || !root.pLight || root.pEnvLight ) {
+				return false;
+			}
+			const Vector3 d0 = Vector3Ops::Normalize(
+				Vector3Ops::mkVector3( verts[j].position, root.position ) );
+			for( std::size_t i = 1; i <= j; i++ ) {
+				if( i < j ) {
+					const BDPTVertex& v = verts[i];
+					if( v.type != BDPTVertex::SURFACE || !v.isDelta || !v.pMaterial ||
+						!v.pMaterial->HasDeltaPassThrough() ) {
+						return false;
+					}
+				}
+				const Vector3 di = Vector3Ops::Normalize(
+					Vector3Ops::mkVector3( verts[i].position, verts[i - 1].position ) );
+				if( Vector3Ops::Dot( di, d0 ) < Scalar( 1 ) - Scalar( 1e-9 ) ) {
+					return false;
+				}
+			}
+			return true;
+		}
+
+		/// The largest split index w at which the EYE-sampled family has
+		/// a strategy for a path whose jump the light walk sampled at
+		/// `verts[p] -> verts[p+1]` (the hit where the light went in,
+		/// then the entry), ignoring depth caps.  The eye would arrive at
+		/// the entry's point, jump to verts[p] (its own entry vertex there
+		/// -- connectible exactly when verts[p+1] is), and must split the
+		/// light-side segment verts[s..p] somewhere; verts[s] is the light
+		/// root (s == 0) or the previous KEPT light entry.  The
+		/// strategies, with the eye covering verts[w..p] and the light
+		/// verts[s..w-1]:
+		///   w = 0 (eye hits the root): s == 0, root not delta;
+		///   merge at verts[w] (VCM only): merging live, verts[w] a
 		///     non-delta surface;
-		///   NEE / connection at the edge (j-1, j): verts[j] non-delta
-		///     and connectible, and verts[j-1] the root (NEE reaches any
+		///   NEE / connection at the edge (w-1, w): verts[w] non-delta
+		///     and connectible, and verts[w-1] the root (NEE reaches any
 		///     light) or a non-delta connectible vertex (a kept entry is
 		///     one).
 		/// "Non-delta" is the path's own scatter at that vertex (the
-		/// light walk's sampled lobe), so the predicate is a function of
-		/// the path.
-		inline bool LightSegmentEyeCoverable(
+		/// light walk's sampled lobe), so the witness is a function of
+		/// the path.  Returns -1 when no strategy exists at any depth.
+		///
+		/// @a seeThroughNEE (DL-330 review P1): the eye family also has
+		/// BDPT's see-through s = 1 connection -- NEE from an eye vertex to a
+		/// delta light root across a straight chain of delta pass-throughs
+		/// (DeltaPassThroughChainToRoot), taken whenever no standard
+		/// strategy covers the path.  It is then a witness like any other
+		/// NEE split: the eye covers verts[w..p], the light only the root,
+		/// the gaps being crossed by the connection.  BDPT and MLT pass
+		/// true when the scene's pass-through shadow walk is live
+		/// (`RayCaster::DeltaPassThroughShadowsActive`); VCM, which has no
+		/// such connection, passes false.
+		inline int LightSegmentEyeWitness(
 			const std::vector<BDPTVertex>& verts,
 			const std::size_t s,
 			const std::size_t p,
-			const bool mergingActive
+			const bool mergingActive,
+			const bool seeThroughNEE = false
 			)
 		{
 			if( p + 1 >= verts.size() || p <= s ) {
-				return true;	// malformed: keep the cut (conservative, never double counts)
+				return -1;	// malformed: no entry pair inside the segment
 			}
-			if( s == 0 && verts[0].type == BDPTVertex::LIGHT && !verts[0].isDelta ) {
-				return true;
-			}
-			for( std::size_t j = s + 1; j <= p; j++ ) {
+			for( std::size_t j = p; j > s; j-- ) {
 				const BDPTVertex& b = verts[j];
 				const bool bUsable = ( j == p )
 					? verts[p + 1].isConnectible
@@ -466,45 +611,151 @@ namespace RISE
 					continue;
 				}
 				if( mergingActive && b.type == BDPTVertex::SURFACE ) {
-					return true;
+					return static_cast<int>( j );
 				}
 				const BDPTVertex& a = verts[j - 1];
 				if( j - 1 == 0 && a.type == BDPTVertex::LIGHT ) {
-					return true;
+					return static_cast<int>( j );
 				}
 				if( a.isConnectible && !a.isDelta ) {
-					return true;
+					return static_cast<int>( j );
+				}
+				if( seeThroughNEE && s == 0 && DeltaPassThroughChainToRoot( verts, j ) ) {
+					return static_cast<int>( j );
 				}
 			}
-			return false;
+			if( s == 0 && verts[0].type == BDPTVertex::LIGHT && !verts[0].isDelta ) {
+				return 0;
+			}
+			return -1;
 		}
 
-		/// The number of leading light-subpath vertices usable as a
-		/// strategy endpoint.  Walks the light-side jumps in order; the
-		/// first one the eye family can cover ends the usable subpath
-		/// (nothing at or past it is a strategy).  A jump the eye family
-		/// cannot cover is KEPT -- the light-sampled family is then the
-		/// only estimator of those paths -- and the next segment starts
-		/// at its entry.  The hit where the light walk went INTO the
-		/// material is always usable: it is an ordinary arrival; only
-		/// its continuation was the jump.
-		inline std::size_t UsableLightSubpathLength(
-			const std::vector<BDPTVertex>& lightVerts,
-			const bool mergingActive
+		/// The dominant eye-coverable light-side jump at or before a
+		/// light vertex (see the DL-380 block above), reduced to what the
+		/// cap test needs.
+		struct LightJumpCover
+		{
+			bool			exists;			///< some jump in the prefix has a witness
+			int				surfaceBefore;	///< L(w-1); -1 for an area-light root hit (the hit counts)
+			unsigned int	volumeBefore;	///< medium vertices in verts[0..w-1]
+			bool			escape;			///< the eye escapes to an environment root (one iteration)
+
+			LightJumpCover() : exists( false ), surfaceBefore( 0 ), volumeBefore( 0 ), escape( false ) {}
+		};
+
+		/// Can the eye walk generate a subpath with `eyeSurface` surface
+		/// hits and `eyeVolume` medium scatters (plus an escape)?
+		inline bool EyeWalkCanGenerate(
+			const long long eyeSurface,
+			const long long eyeVolume,
+			const bool escape,
+			const EyeWalkCaps& caps
 			)
 		{
-			std::size_t segmentStart = 0;
-			for( std::size_t i = 1; i < lightVerts.size(); i++ ) {
-				if( !lightVerts[i].isBSSRDFEntry ) {
-					continue;
-				}
-				if( LightSegmentEyeCoverable( lightVerts, segmentStart, i - 1, mergingActive ) ) {
-					return i;
-				}
-				segmentStart = i;
-			}
-			return lightVerts.size();
+			return eyeSurface <= static_cast<long long>( caps.maxSurface ) &&
+				eyeSurface + eyeVolume + ( escape ? 1 : 0 ) <= static_cast<long long>( caps.maxIterations );
 		}
+
+		/// Can the eye walk generate the subpath that covers a jump with
+		/// witness `c`, on a path of eye-walk surface count
+		/// `pathSurface` (D) and `pathVolume` medium vertices?  True means
+		/// the EYE family owns the path and the light family must not
+		/// count it.
+		inline bool EyeFamilyCovers(
+			const LightJumpCover& c,
+			const unsigned int pathSurface,
+			const unsigned int pathVolume,
+			const EyeWalkCaps& caps
+			)
+		{
+			if( !c.exists ) {
+				return false;
+			}
+			return EyeWalkCanGenerate(
+				static_cast<long long>( pathSurface ) - c.surfaceBefore,
+				static_cast<long long>( pathVolume ) - static_cast<long long>( c.volumeBefore ),
+				c.escape, caps );
+		}
+
+		/// Per light subpath: L(k) and the dominant cover at every vertex.
+		/// Reused through thread-local scratch by BDPT and VCM, so `Build`
+		/// never reallocates once warm.
+		class LightJumpPartition
+		{
+		public:
+			LightJumpPartition() : anyJump( false ) {}
+
+			void Build(
+				const std::vector<BDPTVertex>& verts,
+				const bool mergingActive,
+				const bool seeThroughNEE = false	///< DL-330: see LightSegmentEyeWitness
+				)
+			{
+				const std::size_t n = verts.size();
+				surfaceCount.assign( n, 0u );
+				cover.assign( n, LightJumpCover() );
+				anyJump = false;
+				unsigned int L = 0;
+				std::size_t segmentStart = 0;
+				LightJumpCover running;
+				for( std::size_t i = 0; i < n; i++ ) {
+					if( i > 0 && CountsAsSurfaceHit( verts[i] ) ) {
+						L++;
+					}
+					surfaceCount[i] = L;
+					if( i > 0 && verts[i].isBSSRDFEntry ) {
+						anyJump = true;
+						const int w = LightSegmentEyeWitness( verts, segmentStart, i - 1, mergingActive, seeThroughNEE );
+						if( w >= 1 ) {
+							running.exists = true;
+							running.surfaceBefore = static_cast<int>( surfaceCount[w - 1] );
+							running.volumeBefore = verts[w - 1].volumeBounces;
+							running.escape = false;
+						} else if( w == 0 && !running.exists ) {
+							running.exists = true;
+							running.surfaceBefore = verts[0].pEnvLight ? 0 : -1;
+							running.volumeBefore = 0;
+							running.escape = verts[0].pEnvLight != 0;
+						}
+						segmentStart = i;
+					}
+					cover[i] = running;
+				}
+			}
+
+			bool AnyJump() const { return anyJump; }
+
+			//! L(k): light-walk surface count of verts[1..k].
+			unsigned int SurfaceCount( const std::size_t k ) const { return surfaceCount[k]; }
+
+			//! Dominant cover of the jumps whose entry is at or before k.
+			const LightJumpCover& Cover( const std::size_t k ) const { return cover[k]; }
+
+			/// Does the LIGHT family keep the path whose light part ends at
+			/// verts[k] (a connection or splat, or -- `merge` -- a merge AT
+			/// verts[k], which shares that vertex with the eye part)?
+			/// `eyeSurface` is the eye part's own eye-walk surface count,
+			/// `pathVolume` the path's medium-vertex total.
+			bool Keeps(
+				const std::size_t k,
+				const unsigned int eyeSurface,
+				const unsigned int pathVolume,
+				const EyeWalkCaps& caps,
+				const bool merge = false
+				) const
+			{
+				if( !anyJump ) {
+					return true;
+				}
+				const unsigned int D = eyeSurface + surfaceCount[k] - ( merge && surfaceCount[k] > 0 ? 1u : 0u );
+				return !EyeFamilyCovers( cover[k], D, pathVolume, caps );
+			}
+
+		private:
+			std::vector<unsigned int>	surfaceCount;
+			std::vector<LightJumpCover>	cover;
+			bool						anyJump;
+		};
 	}
 }
 

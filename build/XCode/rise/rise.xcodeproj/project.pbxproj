@@ -441,7 +441,9 @@
 		F24B72BB2F52A632008304C4 /* PainterManager.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08CC069C42900069C9E5 /* PainterManager.h */; };
 		F24B72BC2F52A632008304C4 /* ShaderManager.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08CD069C42900069C9E5 /* ShaderManager.h */; };
 		F24B72BD2F52A632008304C4 /* DataDrivenBSDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277344F07ECCEDC00C0B600 /* DataDrivenBSDF.cpp */; };
+		F325A0010000000000DD0021 /* DataDrivenSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F325A0010000000000DD0001 /* DataDrivenSPF.cpp */; };
 		F24B72BE2F52A632008304C4 /* DataDrivenBSDF.h in Sources */ = {isa = PBXBuildFile; fileRef = F277345007ECCEDC00C0B600 /* DataDrivenBSDF.h */; };
+		F325A0010000000000DD0022 /* DataDrivenSPF.h in Sources */ = {isa = PBXBuildFile; fileRef = F325A0010000000000DD0002 /* DataDrivenSPF.h */; };
 		F24B72BF2F52A632008304C4 /* DataDrivenMaterial.h in Sources */ = {isa = PBXBuildFile; fileRef = F277345107ECCEDC00C0B600 /* DataDrivenMaterial.h */; };
 		F24B72C02F52A632008304C4 /* TranslucentBSDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277345207ECCEDC00C0B600 /* TranslucentBSDF.cpp */; };
 		F24B72C12F52A632008304C4 /* TranslucentBSDF.h in Sources */ = {isa = PBXBuildFile; fileRef = F277345307ECCEDC00C0B600 /* TranslucentBSDF.h */; };
@@ -971,7 +973,9 @@
 		F277343407ECCC2F00C0B600 /* IsotropicRGBDetectorSphere.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277342C07ECCC2F00C0B600 /* IsotropicRGBDetectorSphere.cpp */; };
 		F277343507ECCC2F00C0B600 /* IsotropicRGBDetectorSphere.h in Headers */ = {isa = PBXBuildFile; fileRef = F277342D07ECCC2F00C0B600 /* IsotropicRGBDetectorSphere.h */; };
 		F277345407ECCEDC00C0B600 /* DataDrivenBSDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277344F07ECCEDC00C0B600 /* DataDrivenBSDF.cpp */; };
+		F325A0010000000000DD0011 /* DataDrivenSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F325A0010000000000DD0001 /* DataDrivenSPF.cpp */; };
 		F277345507ECCEDC00C0B600 /* DataDrivenBSDF.h in Headers */ = {isa = PBXBuildFile; fileRef = F277345007ECCEDC00C0B600 /* DataDrivenBSDF.h */; };
+		F325A0010000000000DD0012 /* DataDrivenSPF.h in Headers */ = {isa = PBXBuildFile; fileRef = F325A0010000000000DD0002 /* DataDrivenSPF.h */; };
 		F277345607ECCEDC00C0B600 /* DataDrivenMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = F277345107ECCEDC00C0B600 /* DataDrivenMaterial.h */; };
 		F277345707ECCEDC00C0B600 /* TranslucentBSDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277345207ECCEDC00C0B600 /* TranslucentBSDF.cpp */; };
 		F277345807ECCEDC00C0B600 /* TranslucentBSDF.h in Headers */ = {isa = PBXBuildFile; fileRef = F277345307ECCEDC00C0B600 /* TranslucentBSDF.h */; };
@@ -2269,7 +2273,9 @@
 		F277342C07ECCC2F00C0B600 /* IsotropicRGBDetectorSphere.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; name = IsotropicRGBDetectorSphere.cpp; path = DetectorSpheres/IsotropicRGBDetectorSphere.cpp; sourceTree = "<group>"; };
 		F277342D07ECCC2F00C0B600 /* IsotropicRGBDetectorSphere.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; name = IsotropicRGBDetectorSphere.h; path = DetectorSpheres/IsotropicRGBDetectorSphere.h; sourceTree = "<group>"; };
 		F277344F07ECCEDC00C0B600 /* DataDrivenBSDF.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = DataDrivenBSDF.cpp; sourceTree = "<group>"; };
+		F325A0010000000000DD0001 /* DataDrivenSPF.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = DataDrivenSPF.cpp; sourceTree = "<group>"; };
 		F277345007ECCEDC00C0B600 /* DataDrivenBSDF.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = DataDrivenBSDF.h; sourceTree = "<group>"; };
+		F325A0010000000000DD0002 /* DataDrivenSPF.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = DataDrivenSPF.h; sourceTree = "<group>"; };
 		F277345107ECCEDC00C0B600 /* DataDrivenMaterial.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = DataDrivenMaterial.h; sourceTree = "<group>"; };
 		F277345207ECCEDC00C0B600 /* TranslucentBSDF.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = TranslucentBSDF.cpp; sourceTree = "<group>"; };
 		F277345307ECCEDC00C0B600 /* TranslucentBSDF.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = TranslucentBSDF.h; sourceTree = "<group>"; };
@@ -3708,6 +3714,8 @@
 				F277344F07ECCEDC00C0B600 /* DataDrivenBSDF.cpp */,
 				F277345007ECCEDC00C0B600 /* DataDrivenBSDF.h */,
 				F277345107ECCEDC00C0B600 /* DataDrivenMaterial.h */,
+				F325A0010000000000DD0001 /* DataDrivenSPF.cpp */,
+				F325A0010000000000DD0002 /* DataDrivenSPF.h */,
 				F277345207ECCEDC00C0B600 /* TranslucentBSDF.cpp */,
 				F277345307ECCEDC00C0B600 /* TranslucentBSDF.h */,
 				F27F08CF069C42900069C9E5 /* AshikminShirleyAnisotropicPhongBRDF.cpp */,
@@ -5266,6 +5274,7 @@
 				F277343507ECCC2F00C0B600 /* IsotropicRGBDetectorSphere.h in Headers */,
 				F277345507ECCEDC00C0B600 /* DataDrivenBSDF.h in Headers */,
 				F277345607ECCEDC00C0B600 /* DataDrivenMaterial.h in Headers */,
+				F325A0010000000000DD0012 /* DataDrivenSPF.h in Headers */,
 				F2D9B0872F899DBE0077A171 /* PathTracingPelRasterizer.h in Headers */,
 				AA0000030000000000000003 /* AutoRasterizer.h in Headers */,
 				F2D9B0882F899DBE0077A171 /* PathTracingSpectralRasterizer.h in Headers */,
@@ -5754,6 +5763,7 @@
 				F2D9B1262F8E96770077A171 /* WaveletNoise3D.cpp in Sources */,
 				F2D9B1272F8E96770077A171 /* WorleyNoise3D.cpp in Sources */,
 				F277345407ECCEDC00C0B600 /* DataDrivenBSDF.cpp in Sources */,
+				F325A0010000000000DD0011 /* DataDrivenSPF.cpp in Sources */,
 				F277345707ECCEDC00C0B600 /* TranslucentBSDF.cpp in Sources */,
 				F2C5D5F22F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp in Sources */,
 				F27734A007ECD64300C0B600 /* MediaPathLocator.cpp in Sources */,
@@ -6082,7 +6092,9 @@
 				FA1ABSC10000000000000009 /* ScalarPainterManager.h in Sources */,
 				F24B72BC2F52A632008304C4 /* ShaderManager.h in Sources */,
 				F24B72BD2F52A632008304C4 /* DataDrivenBSDF.cpp in Sources */,
+				F325A0010000000000DD0021 /* DataDrivenSPF.cpp in Sources */,
 				F24B72BE2F52A632008304C4 /* DataDrivenBSDF.h in Sources */,
+				F325A0010000000000DD0022 /* DataDrivenSPF.h in Sources */,
 				F2C7C8F52F78B0A70030CB78 /* PathGuidingField.cpp in Sources */,
 				F24B72BF2F52A632008304C4 /* DataDrivenMaterial.h in Sources */,
 				F24B72C02F52A632008304C4 /* TranslucentBSDF.cpp in Sources */,

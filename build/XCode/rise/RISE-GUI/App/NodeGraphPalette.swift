@@ -84,6 +84,8 @@ struct NodeGraphAddNodeSheet: View {
     @State private var category: PaletteCategory = .painter
     @State private var search: String = ""
     @State private var keywords: [String] = []
+    /// DL-401: keyword -> replacement hint for the deprecated chunk types in `keywords`.
+    @State private var deprecatedReplacements: [String: String] = [:]
 
     // Step 2 state -- non-nil `selectedKeyword` means "on the
     // requirement-fill step."
@@ -172,15 +174,26 @@ struct NodeGraphAddNodeSheet: View {
                         Button {
                             selectKeyword(kw)
                         } label: {
+                            // DL-401: a deprecated chunk type (the core already
+                            // sorts these after the modern ones) is dimmed and
+                            // badged "(deprecated -> <modern keyword>)"; the full
+                            // translation hint rides the tooltip.
+                            let replacement = deprecatedReplacements[kw]
                             HStack {
                                 Text(kw)
                                     .font(Theme.mono(11.5))
-                                    .foregroundColor(Theme.textPrimary)
+                                    .foregroundColor(replacement == nil ? Theme.textPrimary : Theme.textFaint)
+                                if let replacement {
+                                    Text("(deprecated \u{2192} \(replacement.split(separator: " ").first.map(String.init) ?? replacement))")
+                                        .font(Theme.mono(9.5))
+                                        .foregroundColor(Theme.warn)
+                                }
                                 Spacer()
                             }
                             .padding(.horizontal, 14)
                             .padding(.vertical, 6)
                             .contentShape(Rectangle())
+                            .help(replacement.map { "Deprecated: use \($0)" } ?? "")
                         }
                         .buttonStyle(.plain)
                     }
@@ -202,8 +215,13 @@ struct NodeGraphAddNodeSheet: View {
     }
 
     private func reloadKeywords() {
-        guard let bridge else { keywords = []; return }
+        guard let bridge else { keywords = []; deprecatedReplacements = [:]; return }
         keywords = bridge.paletteKeywords(forCategory: category.rawValue)
+        var deprecated: [String: String] = [:]
+        for kw in keywords {
+            if let r = bridge.paletteDeprecationReplacement(forKeyword: kw) { deprecated[kw] = r }
+        }
+        deprecatedReplacements = deprecated
     }
 
     private func selectKeyword(_ keyword: String) {

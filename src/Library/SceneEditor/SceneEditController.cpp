@@ -617,8 +617,9 @@ inline bool ParsePropertyBool( const String& valueStr, bool& out )
 // the object on screen during the drag's low-res frames.
 //
 // Derivation (intermediate values in mxTrans's source space —
-// current-pixel-Y-UP per `PixelBasedPelRasterizer.cpp:614`'s
-// `Point2(x, height - y)` feed of `GenerateRay`):
+// current-pixel-Y-UP: the rasterizers feed `GenerateRay` screen points
+// from `RasterConvention::PixelToScreen` (ICamera.h, DL-368), pixel
+// (x, row) at [x, x+1) x [H-1-row, H-row), i.e. y up):
 //
 //   `mxTrans` maps screen point S=(sx,sy_image,0) → world point T.
 //   The ray fired through S has origin O and direction (O - T) (see
@@ -15976,7 +15977,24 @@ SceneEditController::ChunkNodeRequirements( const String& keyword ) const
 
 std::vector<String> SceneEditController::PaletteKeywords( ChunkCategory category ) const
 {
-	return AllKeywordsForCategory( category );
+	// DL-401: DEPRECATED chunk types (descriptor `deprecated`, DL-323
+	// follow-through) sort AFTER every modern keyword -- each group stays
+	// lexicographic, so a search palette still filters a stable order, and
+	// the legacy models stay reachable (they still parse and render) but
+	// never lead the list.  `AllKeywordsForCategory` itself is untouched:
+	// the agent surface and the tests read its plain alphabetical order.
+	std::vector<String> all = AllKeywordsForCategory( category );
+	std::stable_partition( all.begin(), all.end(), []( const String& kw ) {
+		const ChunkDescriptor* d = DescriptorForKeyword( kw );
+		return !( d && d->deprecated );
+	} );
+	return all;
+}
+
+std::string SceneEditController::PaletteKeywordDeprecation( const String& keyword ) const
+{
+	const ChunkDescriptor* d = DescriptorForKeyword( keyword );
+	return ( d && d->deprecated ) ? d->replacement : std::string();
 }
 
 SceneEditController::AgentCommitResult SceneEditController::CreateChunkNode(

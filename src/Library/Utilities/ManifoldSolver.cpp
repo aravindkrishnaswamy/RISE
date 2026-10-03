@@ -4229,7 +4229,23 @@ unsigned int ManifoldSolver::SnellContinueChain(
 		const Vector3& sideN = ( Vector3Ops::SquaredModulus( mv.geomNormal )
 			> NEARZERO ) ? mv.geomNormal : mv.normal;
 		const Scalar cosI = Vector3Ops::Dot( dir, sideN );
-		const bool bEntering = sameObjectAgain ? false : (cosI < 0);
+		// DL-345: a PROVABLY OPEN sheet is crossed by its FACE alone -- the
+		// rule the transmissive SPFs apply (IORStackSeeding::
+		// ResolveOpenSheetCrossing), so this walk and PT's / BDPT's / VCM's
+		// walks bend at the same sheet.  A front hit while the sheet is
+		// already on the stack (the walk left its back region around the
+		// sheet's edge) re-enters: the stale entry is dropped first.
+		const bool bOpenSheetHit = ri.geometric.bProvablyNoInterior;
+		const bool bEntering = bOpenSheetHit ? ( cosI < 0 ) : ( sameObjectAgain ? false : (cosI < 0) );
+		const bool bStaleReentry = bEntering && sameObjectAgain;
+		if( bStaleReentry ) {
+			IORStack outer( seedIor );
+			outer.pop();
+			currentIOR = outer.top();
+			if( !( currentIOR > 0 && currentIOR < RISE_INFINITY ) ) {
+				currentIOR = 1.0;
+			}
+		}
 		mv.isExiting = !bEntering;
 
 		// Populate (etaI, etaT) — Walter et al. 2007 η_i / η_t for the
@@ -4288,9 +4304,20 @@ unsigned int ManifoldSolver::SnellContinueChain(
 			// the direction, and both directions leave through this face.
 			IORStack destIor = seedIor;
 			Scalar destIOR;
+			// The index the crossing refracts FROM.  For an entry and for a
+			// pushed exit it is the walk's own medium; for an UNPUSHED exit
+			// (an open sheet crossed against its normal) it is the sheet's
+			// index -- what `mv.etaI` records and Newton solves with
+			// (DL-290 review P3-1 / DL-345: the walk used to refract with
+			// the stack's index there, so the seed and the constraint
+			// described different interfaces).
+			Scalar etaFrom = currentIOR;
 			if( bEntering ) {
 				destIOR = specInfo.ior;
 				destIor.SetCurrentObject( ri.pObject );
+				if( bStaleReentry ) {
+					destIor.pop();
+				}
 				destIor.push( specInfo.ior );
 			} else if( sameObjectAgain ) {
 				// Only pop if we pushed earlier.  The legacy
@@ -4368,6 +4395,7 @@ unsigned int ManifoldSolver::SnellContinueChain(
 				//    started from air, got it right.  This is the
 				//    receiver stack's own open-sheet convention
 				//    (DL-345), not this branch.
+				etaFrom = specInfo.ior;
 				const IObject* pY = destIor.topObject();
 				if( pY ) {
 					bool yEnclosesCrossing = false;
@@ -4387,7 +4415,10 @@ unsigned int ManifoldSolver::SnellContinueChain(
 			if( !( destIOR > 0 && destIOR < RISE_INFINITY ) ) {
 				destIOR = 1.0;
 			}
-			const Scalar etaRatio = currentIOR / destIOR;
+			if( !( etaFrom > 0 && etaFrom < RISE_INFINITY ) ) {
+				etaFrom = 1.0;
+			}
+			const Scalar etaRatio = etaFrom / destIOR;
 
 			// Orient the normal against the incoming ray (required by the
 			// Snell formula below) -- for an exit, and for the thin-sheet
@@ -5017,6 +5048,39 @@ void ManifoldSolver::ComputeLastBlockLightJacobian(
 		Jy[ 0 * 2 + j ] = s_dot;  // ∂Cs/∂y_j
 		Jy[ 1 * 2 + j ] = t_dot;  // ∂Ct/∂y_j
 	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// JacobianLightNormal (DL-413)
+//
+//   The normal of the light-endpoint tangent plane the chain Jacobian
+//   perturbs y in.  For an AREA light it is the emitter's surface normal:
+//   G_x_v1 * |det dv1/dy| is then dw_x / dA_y in the light's own area
+//   measure, which is what its area pdf divides.  A DELTA (point) light has
+//   no area measure: the estimator is f * I(w) * cos_x * dw_x/dw_y-style,
+//   i.e. a vanishing emitter of radiance I/A facing the chain, whose area
+//   element is perpendicular to the direction it emits along.  So the
+//   plane must be perpendicular to the last segment (v_k -> y): then the
+//   (I - wo wo) projection in ComputeLastBlockLightJacobian is the
+//   identity on it and no cosine at y enters, exactly as a point light's
+//   NEE carries none.  LightSampler::SampleLight stores the light's
+//   random photon direction in `normal` for a delta light, a tangent
+//   plane at a random angle to the true one, which weighted every SMS
+//   sample by |cos| of that angle -- 1/2 on average for an omni light
+//   (row E1 of TransparentShadowPartitionTest read 0.4994).
+//////////////////////////////////////////////////////////////////////
+
+static Vector3 JacobianLightNormal(
+	const LightSample& lightSample,
+	const std::vector<ManifoldVertex>& chain
+	)
+{
+	if( !lightSample.isDelta || chain.empty() ) {
+		return lightSample.normal;
+	}
+	Vector3 d = Vector3Ops::mkVector3( lightSample.position, chain.back().position );
+	const Scalar len = Vector3Ops::NormalizeMag( d );
+	return len > NEARZERO ? d : lightSample.normal;
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -6035,7 +6099,7 @@ bool ManifoldSolver::ComputeTrialContribution(
 	const Scalar cosV1atX = fabs( Vector3Ops::Dot( v1SideN, dirXtoV1 ) );
 	const Scalar G_x_v1 = cosV1atX / ( distXtoV1 * distXtoV1 );
 	const Scalar detDvDy = ComputeLightToFirstVertexJacobianDet(
-		mResult.specularChain, pos, lightSample.position, lightSample.normal );
+		mResult.specularChain, pos, lightSample.position, JacobianLightNormal( lightSample, mResult.specularChain ) );
 	const Scalar smsGeometric = G_x_v1 * detDvDy;
 
 	outContribution = fBSDF
@@ -6156,7 +6220,7 @@ bool ManifoldSolver::ComputeTrialContributionNM(
 	const Scalar cosV1atX = fabs( Vector3Ops::Dot( v1SideN, dirXtoV1 ) );
 	const Scalar G_x_v1 = cosV1atX / ( distXtoV1 * distXtoV1 );
 	const Scalar detDvDy = ComputeLightToFirstVertexJacobianDet(
-		mResult.specularChain, pos, lightSample.position, lightSample.normal );
+		mResult.specularChain, pos, lightSample.position, JacobianLightNormal( lightSample, mResult.specularChain ) );
 	const Scalar smsGeometric = G_x_v1 * detDvDy;
 	if( outSmsGeometric ) {
 		*outSmsGeometric = smsGeometric;
@@ -6956,7 +7020,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		const Scalar G_x_v1 = cosV1atX / (distXtoV1 * distXtoV1);
 
 		const Scalar detDvDy = ComputeLightToFirstVertexJacobianDet(
-			mResult.specularChain, pos, lightSample.position, lightSample.normal );
+			mResult.specularChain, pos, lightSample.position, JacobianLightNormal( lightSample, mResult.specularChain ) );
 
 		const Scalar smsGeometric = G_x_v1 * detDvDy;
 
@@ -8292,7 +8356,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		const Scalar cosV1atX = fabs( Vector3Ops::Dot( v1SideN, dirXtoV1 ) );
 		const Scalar G_x_v1 = cosV1atX / (distXtoV1 * distXtoV1);
 		const Scalar detDvDy = ComputeLightToFirstVertexJacobianDet(
-			mResult.specularChain, pos, lightSample.position, lightSample.normal );
+			mResult.specularChain, pos, lightSample.position, JacobianLightNormal( lightSample, mResult.specularChain ) );
 		const Scalar smsGeometric = G_x_v1 * detDvDy;
 		// Sum-level clamp (matches RGB snell): leave the geometric term
 		// UNCLAMPED here and apply the cap to the SUM across all unique

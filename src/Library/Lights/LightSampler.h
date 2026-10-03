@@ -316,10 +316,12 @@ namespace RISE
 		//! records leave DEFAULT *and* that only a signal consumer reads.
 		//! Everything the sampled point already determines --
 		//! `ptIntersection`, `vNormal`, `vGeomNormal`, `onb`, `ptCoord` -- is
-		//! deliberately NOT carried, so the emission geometry and every pdf
-		//! derived from it (`cosLight`, `pdfPosition`, `pdfDirection`) stay
-		//! bit-for-bit what they are today and the only thing the PROBE can
-		//! move is a signal read.
+		//! deliberately NOT carried on this payload, so the emission geometry
+		//! and every pdf derived from it (`cosLight`, `pdfPosition`,
+		//! `pdfDirection`) cannot be moved by the PROBE -- the only thing it
+		//! can move is a signal read.  Those fields are filled, at every
+		//! record, by `LightSampler::FillEmitterRecord` (DL-298), which is
+		//! ungated and ray-free and carries the physical world position too.
 		//!
 		//! SIZE: 416 bytes (168 + 136 + 104 + a bool, measured at this
 		//! tree's HEAD; an earlier comment said 440).  That is why the call
@@ -657,6 +659,32 @@ namespace RISE
 				const EmitterSurfacePayload&	payload
 				);
 
+			//! THE ONE EMITTER-EVALUATION RECORD FILL (DL-298).  Every site that
+			//! evaluates an emitter at a SAMPLED point -- `SampleLight`'s own
+			//! `Le`, PT's RGB/NM mesh NEE, BDPT's NM hero / HWSS companion
+			//! rebuilds, VCM's light-vertex NEE, and the legacy / spectral /
+			//! SMS photon-direction samplers -- builds a hand-made
+			//! `RayIntersectionGeometric` because no ray was traced to that
+			//! point.  Each used to fill its own subset, and the subsets
+			//! drifted: the BDPT/VCM rebuilds supplied the physical world
+			//! position `ptIntersection` (the expression VM's `P`) while
+			//! `SampleLight`'s RGB record, both NEE arms and the three photon
+			//! tracers left it at the default `(0,0,0)`, so an emission or
+			//! Phong-exponent painter keyed on `P` read the origin at a
+			//! nonzero sampled point under exactly those paths.  This helper
+			//! is the single place that knows what the sampled point
+			//! determines -- world position, normals, shading basis, UV and
+			//! the object-space point -- so the paths cannot drift again.
+			//! The probed signal payload is deliberately NOT part of it (it
+			//! is gated and carried separately; see `ApplyEmitterSurface`).
+			static void FillEmitterRecord(
+				RayIntersectionGeometric&	rig,
+				const Point3&				position,		///< [in] the sampled point, world space
+				const Vector3&				normal,			///< [in] unit emitting-face normal (mirrored into `vGeomNormal`)
+				const Point2&				coord,			///< [in] sampled surface UV
+				const Point3&				ptObjIntersec	///< [in] object-space point (`EmitterObjectPoint`)
+				);
+
             //! Coverage-only context for sampled emitter endpoints. Known scene,
             //! self and world position never depend on optional signal probes.
             //! NEE can supply its receiver raster; emission has no camera pixel.
@@ -733,6 +761,36 @@ namespace RISE
 			//! never NEE-sampled anyway).  See `EmitterSides` in IEmitter.h
 			//! and docs/DL320_DOUBLE_SIDED_EMITTER.md.
 			static bool LuminaryIsTwoSided( const IObject* pLum );
+
+			//! DL-431: the surface-mean radiant exitance of ONE luminary.
+			//!
+			//! `IEmitter::averageRadiantExitance()` is estimated at emitter
+			//! CONSTRUCTION over a default-constructed record, i.e. at
+			//! `P = Po = (0,0,0)` with a 10x10 UV grid, because an emitter does
+			//! not know its geometry.  That is wrong for any emission keyed on
+			//! world / object position, and the average is the light-selection
+			//! importance weight (`Prepare`) and the photon power / budget
+			//! (PhotonTracer, SpectralPhotonTracer, SMSPhotonMap).  This
+			//! helper evaluates the emitter's LOCAL exitance
+			//! (`IEmitter::radiantExitanceAt`) at a deterministic 10x10
+			//! stratified set of `UniformRandomPoint` draws on the luminary
+			//! itself, each through `FillEmitterRecord` so the record carries
+			//! the physical `P` / `Po` / UV / normals.
+			//!
+			//! `uniform` is true when every sample read the identical value
+			//! (a constant, spectral or blackbody exitance -- every shipped
+			//! emitter): `average` is then the emitter's OWN cached average,
+			//! returned verbatim, so a P-independent emitter weights and
+			//! shoots bit for bit as before.  On a clipped plane the sample
+			//! points are exactly the old UV grid's cell centres, so a
+			//! UV-keyed painter averages to the same value as well.
+			//! \sa docs/DL431_EMITTER_AVERAGE_EXITANCE.md
+			struct LuminaryExitance
+			{
+				RISEPel	average;		///< surface-mean exitance (before area / face count)
+				bool	uniform;		///< true: constant over the surface, `average` is the emitter's cached one
+			};
+			static LuminaryExitance AverageLuminaryExitance( const IObject* pLum );
 
 			//
 			// LIGHT SOLO — render with exactly one light enabled.
@@ -858,24 +916,30 @@ namespace RISE
 				LightSample& sample									///< [out] The generated light sample
 				) const;
 
-			/// Returns the probability of selecting a given non-mesh light
+			/// Returns the probability that SampleLight() selects a given
+			/// non-mesh light: (1 - envSelectProb) * alias pmf.  Never the
+			/// light BVH's pmf -- SampleLight() does not use it (DL-348).
 			/// \return Selection probability proportional to exitance
 			Scalar PdfSelectLight(
 				const IScene& scene,								///< [in] The scene containing lights
 				const LuminaryManager::LuminariesList& luminaries,	///< [in] List of mesh luminaries
 				const ILight& light,								///< [in] The light to query
-				const Point3& shadingPoint,							///< [in] Shading point (used for BVH PDF; ignored when BVH inactive)
-				const Vector3& shadingNormal						///< [in] Shading normal (used for BVH PDF; ignored when BVH inactive)
+				const Point3& shadingPoint,							///< [in] Unused (SampleLight's pmf is shading-point independent)
+				const Vector3& shadingNormal						///< [in] Unused
 				) const;
 
-			/// Returns the probability of selecting a given mesh luminary
+			/// Returns the probability that SampleLight() selects a given
+			/// mesh luminary: (1 - envSelectProb) * alias pmf.  The MIS
+			/// partner of BDPT/VCM/MLT's light-rooted strategies; never the
+			/// light BVH's pmf (DL-348).  PT's own NEE partner is
+			/// CachedPdfSelectLuminary.
 			/// \return Selection probability proportional to exitance
 			Scalar PdfSelectLuminary(
 				const IScene& scene,								///< [in] The scene containing lights
 				const LuminaryManager::LuminariesList& luminaries,	///< [in] List of mesh luminaries
 				const IObject& luminary,							///< [in] The luminary to query
-				const Point3& shadingPoint,							///< [in] Shading point (used for BVH PDF; ignored when BVH inactive)
-				const Vector3& shadingNormal						///< [in] Shading normal (used for BVH PDF; ignored when BVH inactive)
+				const Point3& shadingPoint,							///< [in] Unused (SampleLight's pmf is shading-point independent)
+				const Vector3& shadingNormal						///< [in] Unused
 				) const;
 
 			//
@@ -945,7 +1009,16 @@ namespace RISE
 				//! partner pdf stacklessly yet still sits in a graded
 				//! medium.  Exactly no effect unless the stack's innermost
 				//! medium is graded.
-				const IORStack* pGradedIndexStack = 0
+				const IORStack* pGradedIndexStack = 0,
+				//! DL-344: SMS IS evaluated at THIS point (PT's PART-2
+				//! surface NEE with a manifold solver).  Only then is a
+				//! delta light's light through a specular caster SMS's to
+				//! estimate, so the delta arm keeps a binary shadow there
+				//! instead of the `transparent_shadows` walk.  Default
+				//! false: every other caller (volume in-scattering, the
+				//! BSSRDF entry NEE, the legacy chain, BDPT) has no SMS at
+				//! its point, and the walk is the light's only estimator.
+				const bool bSMSCoversDeltaLights = false
 				) const;
 
 			/// Spectral variant of EvaluateDirectLighting.
@@ -967,7 +1040,9 @@ namespace RISE
 				//! DL-171/DL-209 -- see the RGB overload's doc.
 				const bool bBsdfSamplingPartnerExists = true,
 				//! DL-09 -- see the RGB overload's doc.
-				const IORStack* pGradedIndexStack = 0
+				const IORStack* pGradedIndexStack = 0,
+				//! DL-344 -- see the RGB overload's doc.
+				const bool bSMSCoversDeltaLights = false
 				) const;
 
 			/// Returns the alias-table selection probability for a given

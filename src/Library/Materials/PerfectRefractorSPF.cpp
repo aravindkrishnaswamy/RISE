@@ -15,6 +15,8 @@
 #include "pch.h"
 #include "PerfectRefractorSPF.h"
 #include "../Utilities/Optics.h"
+#include "../Utilities/IORStackSeeding.h"
+#include <memory>
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -72,11 +74,18 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 	Vector3	vRefracted = ri.ray.Dir();
 
 	// Use the IOR stack as the authoritative source for inside/outside
-	// determination when available. If the object is NOT in the stack,
-	// we are entering (push). If it IS in the stack, we are exiting (pop).
-	// Note: cosine convention here is opposite to DielectricSPF:
-	//   cosine = dot(normal, ray_dir), so cosine < NEARZERO means entering.
-	const bool bEntering = !ior_stack.containsCurrent();
+	// determination: if the object is NOT in the stack we are entering
+	// (push), if it IS we are exiting (pop) -- EXCEPT on a provably open
+	// sheet (DL-345), which is crossed by its FACE so that a walk and its
+	// reverse refract alike; IORStackSeeding::ResolveOpenSheetCrossing has
+	// the ruling.
+	std::unique_ptr<IORStack> pOpenSheetStack;
+	IORStackSeeding::OpenSheetCrossing openSheet = { false, Scalar( 1 ), Scalar( 1 ) };
+	if( ri.bProvablyNoInterior ) {
+		pOpenSheetStack.reset( new IORStack( ior_stack ) );
+		openSheet = IORStackSeeding::ResolveOpenSheetCrossing( ri, newIOR, *pOpenSheetStack );
+	}
+	const bool bEntering = pOpenSheetStack ? openSheet.bEntering : !ior_stack.containsCurrent();
 
 	// Geometric-horizon reference (DL-111, 2026-09-17).  Identical in
 	// construction and rationale to `DielectricSPF::GenerateScatteredRay`'s
@@ -110,13 +119,11 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 	if( bEntering )
 	{
 		// Going in
-		Ni = ior_stack.top();
+		Ni = pOpenSheetStack ? openSheet.etaFrom : ior_stack.top();
 		Nt = newIOR;
-		if( Optics::CalculateRefractedRay( ri.onb.w(), ior_stack.top(), newIOR, vRefracted ) ) {
-			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), vRefracted, ri.onb.w(), ior_stack.top(), newIOR );
-			specular.ior_stack = new IORStack( ior_stack );
-			specular.ior_stack->push( newIOR );
-			GlobalLog()->PrintNew( specular.ior_stack, __FILE__, __LINE__, "ior stack" );
+		if( Optics::CalculateRefractedRay( ri.onb.w(), Ni, newIOR, vRefracted ) ) {
+			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), vRefracted, ri.onb.w(), Ni, newIOR );
+			specular.ior_stack = IORStackSeeding::NewTransmittedStack( ior_stack, pOpenSheetStack.get(), openSheet.etaFrom, true, newIOR );
 		} else {
 			// TIR, so reflect
 			ref = 1.0;
@@ -144,9 +151,7 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 	}
 	else
 	{
-		specular.ior_stack = new IORStack( ior_stack );
-		specular.ior_stack->pop();
-		GlobalLog()->PrintNew( specular.ior_stack, __FILE__, __LINE__, "ior stack" );
+		specular.ior_stack = IORStackSeeding::NewTransmittedStack( ior_stack, pOpenSheetStack.get(), openSheet.etaFrom, false, newIOR );
 
 		// Coming out, IOR becomes air
 		Ni = newIOR;
@@ -230,9 +235,9 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 	if( ref < 1.0 ) {
 		specular.ray.Set( ri.ptIntersection, vRefracted );
 		if( oneofthree ) {
-			specular.kray[oneofthree-1] = pRefractivity->GetColor(ri)[oneofthree-1] * ((1.0-ref));
+			specular.kray[oneofthree-1] = ReflectanceColor( *pRefractivity, ri )[oneofthree-1] * ((1.0-ref));
 		} else {
-			specular.kray = pRefractivity->GetColor(ri) * (1.0-ref);
+			specular.kray = ReflectanceColor( *pRefractivity, ri ) * (1.0-ref);
 		}
 
 		scattered.AddScatteredRay( specular );
@@ -295,8 +300,18 @@ void PerfectRefractorSPF::ScatterNM(
 	Scalar newIOR = pNt->GetValueAtNM(ri,nm);
 
 	// Use the IOR stack as the authoritative source for inside/outside
-	// determination when available (see DoSingleRGBComponent for details)
-	const bool bEntering = !ior_stack.containsCurrent();
+	// determination: if the object is NOT in the stack we are entering
+	// (push), if it IS we are exiting (pop) -- EXCEPT on a provably open
+	// sheet (DL-345), which is crossed by its FACE so that a walk and its
+	// reverse refract alike; IORStackSeeding::ResolveOpenSheetCrossing has
+	// the ruling.
+	std::unique_ptr<IORStack> pOpenSheetStack;
+	IORStackSeeding::OpenSheetCrossing openSheet = { false, Scalar( 1 ), Scalar( 1 ) };
+	if( ri.bProvablyNoInterior ) {
+		pOpenSheetStack.reset( new IORStack( ior_stack ) );
+		openSheet = IORStackSeeding::ResolveOpenSheetCrossing( ri, newIOR, *pOpenSheetStack );
+	}
+	const bool bEntering = pOpenSheetStack ? openSheet.bEntering : !ior_stack.containsCurrent();
 
 	// Geometric-horizon reference (DL-111, 2026-09-17).  Identical in
 	// construction and rationale to `DielectricSPF::GenerateScatteredRay`'s
@@ -330,13 +345,11 @@ void PerfectRefractorSPF::ScatterNM(
 	if( bEntering )
 	{
 		// Going in
-		Ni = ior_stack.top();
+		Ni = pOpenSheetStack ? openSheet.etaFrom : ior_stack.top();
 		Nt = newIOR;
-		if( Optics::CalculateRefractedRay( ri.onb.w(), ior_stack.top(), newIOR, vRefracted ) ) {
-			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), vRefracted, ri.onb.w(), ior_stack.top(), newIOR );
-			specular.ior_stack = new IORStack( ior_stack );
-			specular.ior_stack->push( newIOR );
-			GlobalLog()->PrintNew( specular.ior_stack, __FILE__, __LINE__, "ior stack" );
+		if( Optics::CalculateRefractedRay( ri.onb.w(), Ni, newIOR, vRefracted ) ) {
+			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), vRefracted, ri.onb.w(), Ni, newIOR );
+			specular.ior_stack = IORStackSeeding::NewTransmittedStack( ior_stack, pOpenSheetStack.get(), openSheet.etaFrom, true, newIOR );
 		} else {
 			// TIR, so reflect
 			ref = 1.0;
@@ -364,9 +377,7 @@ void PerfectRefractorSPF::ScatterNM(
 	}
 	else
 	{
-		specular.ior_stack = new IORStack( ior_stack );
-		specular.ior_stack->pop();
-		GlobalLog()->PrintNew( specular.ior_stack, __FILE__, __LINE__, "ior stack" );
+		specular.ior_stack = IORStackSeeding::NewTransmittedStack( ior_stack, pOpenSheetStack.get(), openSheet.etaFrom, false, newIOR );
 
 		// Coming out, IOR becomes whatever was there before
 		const Scalar exitIOR = specular.ior_stack ? specular.ior_stack->top() : 1.0;
@@ -450,7 +461,7 @@ void PerfectRefractorSPF::ScatterNM(
 
 	if( ref < 1.0 ) {
 		specular.ray.Set( ri.ptIntersection, vRefracted );
-		specular.krayNM = GuardedGetColorNM( *pRefractivity, ri, nm ) * (1.0-ref);
+		specular.krayNM = ReflectanceColorNM( *pRefractivity, ri, nm ) * (1.0-ref);
 
 		scattered.AddScatteredRay( specular );
 	}

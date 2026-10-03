@@ -114,6 +114,7 @@
 #include "IORStack.h"
 #include "GradedIndexMedium.h"
 #include <cstdlib>
+#include <cmath>
 #include "../Interfaces/IScene.h"
 #include "../Interfaces/IObjectManager.h"
 #include "../Interfaces/IMaterial.h"
@@ -583,6 +584,148 @@ namespace RISE
 			// then telescopes from whatever it holds.  No-op unless the
 			// innermost medium is graded.
 			GradedIndexMedium::RecordAt( stack, pos );
+		}
+
+		//! DL-345: does object @a pY ENCLOSE the crossing at @a p (the walk
+		//! travelling along @a dir)?  One ray against ONE object: an EXIT
+		//! hit on Y ahead means the walk is still inside Y after the
+		//! crossing; a miss, an ENTRY hit, or a surface with no true side
+		//! (hair) means Y is not around it.  For a closed, outward-wound Y
+		//! the first hit from inside is always an exit, concave or not.
+		//! The SMS seed walk's unpushed-exit rule (DL-290 section 11) is the
+		//! same probe.
+		inline bool ObjectEnclosesCrossing( const IObject* pY, const Point3& p, const Vector3& dir )
+		{
+			if( !pY ) {
+				return false;
+			}
+			const Scalar scale = Scalar( 1 ) + std::fabs( p.x ) + std::fabs( p.y ) + std::fabs( p.z );
+			const Ray probe( Point3Ops::mkPoint3( p, dir * ( Scalar( 1e-7 ) * scale ) ), dir );
+			RayIntersection pri( probe, nullRasterizerState );
+			pY->IntersectRay( pri, RISE_INFINITY, true, true, false );
+			if( pri.geometric.bHit && pri.geometric.HasTrueGeomSide() ) {
+				return Vector3Ops::Dot( dir, pri.geometric.UnflippedGeomNormal() ) > 0;
+			}
+			return false;
+		}
+
+		//! Result of ResolveOpenSheetCrossing (below).
+		struct OpenSheetCrossing
+		{
+			bool   bEntering;
+			Scalar etaFrom;
+			Scalar etaTo;
+		};
+
+		//! DL-345: one crossing of a PROVABLY OPEN transmissive sheet
+		//! (`RayIntersectionGeometric::bProvablyNoInterior`).
+		//!
+		//! THE RULING.  An open sheet is an interface whose FRONT side (the
+		//! side its TRUE geometric normal points to) is the surrounding
+		//! medium and whose BACK side is the sheet's material.  A crossing
+		//! is decided by its FACE, never by the IOR stack: front -> back
+		//! ENTERS (`etaFrom` = the walk's medium, `etaTo` = the sheet's
+		//! index), back -> front EXITS (`etaFrom` = the sheet's index,
+		//! `etaTo` = the medium beyond).  This is the only rule under which
+		//! a walk and its reverse refract the same way at every sheet, so
+		//! the eye walk (PT, BDPT/VCM eye subpaths), the light walk
+		//! (BDPT/VCM light subpaths, photons) and SMS's seed walk all
+		//! sample ONE path space.  The stack-based rule it replaces for
+		//! these hits ("entering iff not already contained") bent the eye
+		//! walk at the second sheet of a two-sheet slab it crossed and the
+		//! light walk at the other (up to 3x between integrators).
+		//!
+		//! The stack is kept consistent where it can be:
+		//!  - front hit while the sheet is already on the stack (the walk
+		//!    left the back region around the sheet's edge): the stale
+		//!    entry is dropped, then the sheet is pushed;
+		//!  - back hit with the sheet on the stack: popped;
+		//!  - back hit WITHOUT it (an "unpushed exit"): the stack top Y is
+		//!    either a sibling sheet the walk entered a slab through
+		//!    (popped: leaving the slab leaves Y's entry) or a medium that
+		//!    encloses the crossing (kept) -- told apart by
+		//!    ObjectEnclosesCrossing, exactly the SMS seed walk's rule.
+		//!    With no sibling, the walk reached the sheet's back WITHOUT
+		//!    crossing it (a receiver under a lone sheet, seen directly):
+		//!    the crossing still refracts from the sheet's index, and the
+		//!    caller records that on the scattered stack
+		//!    (IORStack::SetCrossingEtaFrom) so RadianceEtaScale prices the
+		//!    refraction actually performed.
+		//!
+		//! @param dest  a COPY of the walk's stack whose current object is
+		//!              the sheet; on return, the stack after transmission.
+		//! @return      whether the crossing enters, and the index pair it refracts between.
+		inline OpenSheetCrossing ResolveOpenSheetCrossing(
+			const RayIntersectionGeometric& ri,
+			const Scalar sheetIOR,
+			IORStack& dest
+			)
+		{
+			OpenSheetCrossing c;
+			const Vector3& d = ri.ray.Dir();
+			const bool bFront = Vector3Ops::Dot( d, ri.UnflippedGeomNormal() ) < 0;
+			if( bFront ) {
+				if( dest.containsCurrent() ) {
+					dest.pop();
+				}
+				c.bEntering = true;
+				c.etaFrom = dest.top();
+				dest.push( sheetIOR );
+				c.etaTo = sheetIOR;
+			} else {
+				if( dest.containsCurrent() ) {
+					dest.pop();
+				} else {
+					const IObject* pSheet = dest.currentObject();
+					const IObject* pY = dest.topObject();
+					if( pY && pY != pSheet && !ObjectEnclosesCrossing( pY, ri.ptIntersection, d ) ) {
+						dest.SetCurrentObject( pY );
+						dest.pop();
+						if( pSheet ) {
+							dest.SetCurrentObject( pSheet );
+						}
+					}
+				}
+				c.bEntering = false;
+				c.etaFrom = sheetIOR;
+				c.etaTo = dest.top();
+			}
+			return c;
+		}
+
+		//! DL-345: true when @a ri struck a provably open sheet from BEHIND
+		//! (the exit side under ResolveOpenSheetCrossing's ruling).
+		inline bool OpenSheetBackFace( const RayIntersectionGeometric& ri )
+		{
+			return Vector3Ops::Dot( ri.ray.Dir(), ri.UnflippedGeomNormal() ) >= 0;
+		}
+
+		//! The stack a transmissive SPF hands its TRANSMITTED ray.  Without
+		//! an open-sheet resolution (@a pOpenSheet null) it is the walk's
+		//! stack pushed (entry) or popped (exit), as before DL-345; with one
+		//! it is the resolved stack, carrying the crossing's `etaFrom` when
+		//! that differs from the walk's own top (see
+		//! IORStack::crossingEtaFrom).  Caller owns the result.
+		inline IORStack* NewTransmittedStack(
+			const IORStack& walk,
+			const IORStack* pOpenSheet,
+			const Scalar openSheetEtaFrom,
+			const bool bEntering,
+			const Scalar objectIOR
+			)
+		{
+			IORStack* p = new IORStack( pOpenSheet ? *pOpenSheet : walk );
+			GlobalLog()->PrintNew( p, __FILE__, __LINE__, "ior stack" );
+			if( pOpenSheet ) {
+				if( openSheetEtaFrom != walk.top() ) {
+					p->SetCrossingEtaFrom( openSheetEtaFrom );
+				}
+			} else if( bEntering ) {
+				p->push( objectIOR );
+			} else {
+				p->pop();
+			}
+			return p;
 		}
 	}
 }

@@ -531,7 +531,9 @@ file for parameter-by-parameter behaviour.
 - `perfectrefractor_material` — perfect refraction with Fresnel split.
 - `dielectric_material` — full Fresnel dielectric with optional
   wavelength-dependent IOR for dispersion.
-- `polished_material` — Lambertian base with a delta specular layer
+- `polished_material` — **DEPRECATED** (use `coated_material` over a
+  `lambertian_material`; see [SCENE_CONVENTIONS.md](SCENE_CONVENTIONS.md)
+  "Deprecated materials"). Lambertian base with a delta specular layer
   weighted by Fresnel.
 
 **Lambertian / matte:**
@@ -548,10 +550,16 @@ file for parameter-by-parameter behaviour.
   material class; resolved at scene-build time in
   [`Job::AddPBRMetallicRoughnessMaterial`](../src/Library/Job.cpp) into
   a painter graph + a single `ggx_material` in `eFresnelSchlickF0` mode.
-- `cooktorrance_material` — Cook-Torrance microfacet.
-- `ward_isotropic_material`, `ward_anisotropic_material` — Ward.
-- `ashikminshirley_anisotropicphong_material` — Ashikhmin-Shirley.
-- `isotropic_phong_material` — classic Phong.
+- **DEPRECATED legacy microfacet/lobe materials** (still load and render
+  exactly as before; a scene load logs one warning per type; replacement
+  and parameter translation in [SCENE_CONVENTIONS.md](SCENE_CONVENTIONS.md)
+  "Deprecated materials"):
+  - `cooktorrance_material` — Cook-Torrance microfacet -> `ggx_material`.
+  - `ward_isotropic_material`, `ward_anisotropic_material` — Ward ->
+    `ggx_material`.
+  - `ashikminshirley_anisotropicphong_material` — Ashikhmin-Shirley ->
+    `ggx_material`.
+  - `isotropic_phong_material` — classic Phong -> `ggx_material`.
 
 **Layered / additive lobes:**
 - `coated_material` — a transparent dielectric film over a
@@ -576,7 +584,8 @@ file for parameter-by-parameter behaviour.
 - `sheen_material` — Charlie sheen lobe, **uncompensated and standalone**
   (intended to layer over a base via `composite_material`, which does
   not actually reach the base — see §6.2). Prefer `fabric_material`.
-- `schlick_material` — Schlick approximation as a standalone material.
+- `schlick_material` — **DEPRECATED** (-> `ggx_material`, see the table
+  above). Schlick approximation as a standalone material.
 
 **Subsurface scattering:**
 - `subsurfacescattering_material` — diffusion-profile BSSRDF (§5).
@@ -597,7 +606,7 @@ file for parameter-by-parameter behaviour.
 - `phong_luminaire_material`
 
 **Data-driven:**
-- `datadriven_material` — measured BRDF (MERL / Matusik).
+- `datadriven_material` — measured BRDF (MERL / Matusik).  Reflection-only tabulated BRDF; its `DataDrivenSPF` samples the table cosine-weighted over the front hemisphere (`kray = pi f` from the BSDF itself, `Pdf = cos/pi`), so PT, BDPT and VCM agree on it (DL-325).
 
 ## 9. Adding a new BSDF — checklist
 

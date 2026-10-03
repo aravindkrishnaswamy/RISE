@@ -1,4 +1,4 @@
-// Original emission records stay unchanged; alpha-only copies use physical P.
+// DL-298: every original manual emission record (SampleLight root, NEE) carries physical world P; the alpha-only copy still adds the optional scene/self payload.
 #include <iostream>
 #include <cmath>
 #include <vector>
@@ -42,10 +42,13 @@ Check(valid&&sample.Le.r>0,"production SampleLight valid");
 if(!expression){Check(recorder->ys.size()==1,"single actual root emission query");std::cout<<"root.record.y="<<recorder->ys.back()<<'\n';}
 RayIntersectionGeometric oldRecord(Ray(sample.position,sample.direction),nullRasterizerState);oldRecord.vNormal=oldRecord.vGeomNormal=sample.normal;oldRecord.ptCoord=sample.ptCoord;oldRecord.onb.CreateFromW(sample.normal);LightSampler::ApplyEmitterSurface(oldRecord,sample.surface);oldRecord.ptObjIntersec=sample.ptObjIntersec;
 const auto oldLe=emitter->GetEmitter()->emittedRadiance(oldRecord,sample.direction,sample.normal);
+RayIntersectionGeometric physRecord(oldRecord);physRecord.ptIntersection=sample.position;
+const auto physLe=emitter->GetEmitter()->emittedRadiance(physRecord,sample.direction,sample.normal);
 std::cout<<"expression="<<expression<<" masked="<<masked<<" actualY="<<sample.position.y<<" baseRecordY="<<oldRecord.ptIntersection.y<<" actualLe="<<sample.Le.r<<" baselineRecordLe="<<oldLe.r<<" ratio="<<sample.Le.r/oldLe.r<<'\n';
-Check(std::fabs(sample.Le.r-oldLe.r)<1e-10,"unchanged Le-record contract vs exact base record");
+Check(std::fabs(sample.Le.r-physLe.r)<1e-10,"root emission record carries physical world P (DL-298)");
+Check(std::fabs(sample.Le.r/oldLe.r-(1+sample.position.y/4))<1e-9&&sample.Le.r/oldLe.r>1.99,"physical-P Le is (1+P.y/4)x the origin-P record (~2x at P.y=4)");
 RayIntersectionGeometric ri(Ray(Point3(0,1,0),Vector3(0,-1,0)),RasterizerState{17,29});ri.ptIntersection=Point3(0,0,0);ri.vNormal=ri.vGeomNormal=Vector3(0,1,0);ri.onb.CreateFromW(ri.vNormal);
-for(bool nm:{false,true}){if(!expression)recorder->ys.clear();RandomNumberGenerator nr(214);IndependentSampler ns(nr);double direct=nm?ls->EvaluateDirectLightingNM(ri,*diffuse->GetBSDF(),diffuse,550,*caster,ns,nullptr,nullptr,false,nullptr):ls->EvaluateDirectLighting(ri,*diffuse->GetBSDF(),diffuse,*caster,ns,nullptr,nullptr,false,nullptr).r;Check(direct>0,"actual NEE remains positive");if(!expression){Check(recorder->ys.size()==1,"single actual NEE emission query");std::cout<<"NEE nm="<<nm<<" record.y="<<recorder->ys.back()<<" contribution="<<direct<<'\n';Check(recorder->ys.back()==oldRecord.ptIntersection.y,"NEE preserves its original P0 record (baseline limitation)");}}
+for(bool nm:{false,true}){if(!expression)recorder->ys.clear();RandomNumberGenerator nr(214);IndependentSampler ns(nr);double direct=nm?ls->EvaluateDirectLightingNM(ri,*diffuse->GetBSDF(),diffuse,550,*caster,ns,nullptr,nullptr,false,nullptr):ls->EvaluateDirectLighting(ri,*diffuse->GetBSDF(),diffuse,*caster,ns,nullptr,nullptr,false,nullptr).r;Check(direct>0,"actual NEE remains positive");if(!expression){Check(recorder->ys.size()==1,"single actual NEE emission query");std::cout<<"NEE nm="<<nm<<" record.y="<<recorder->ys.back()<<" contribution="<<direct<<'\n';Check(std::fabs(recorder->ys.back()-4)<1e-4,"NEE record carries the sampled emitter's physical world P, y~4 (DL-298)");}}
 }
 caster->release();shader->release();scene->release();objects->release();object->release();geometry->release();emitter->release();diffuse->release();white->release();paint->release();
 }
