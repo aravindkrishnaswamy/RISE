@@ -514,6 +514,48 @@ static std::vector<RISEColor> TraceCompositeGrid(LoadedScene& loaded, bool exten
     integrator->release(); caster->release(); shader->release();
     return pixels;
 }
+static void ParticipatingMediumCases()
+{
+    for(bool global : {false,true}) for(bool closed : {false,true})
+        for(bool reverse : {false,true}) for(bool transformed : {false,true}) {
+        const double offset=transformed?3:0;
+        LoadedScene loaded(Materials(false)+
+            "homogeneous_medium\n{\n name fog\n absorption 0.05 0.05 0.05\n scattering 0.6 0.6 0.6\n phase isotropic\n}\n"+
+            (global?"global_medium\n{\n medium fog\n}\n":"")+Mesh(closed,reverse)+
+            "standard_object\n{\n name caster\n geometry shape\n material glass\n position "+std::to_string(offset)+" 0 0\n"+
+            (global?"":" interior_medium fog\n")+"}\n");
+        const IObject* object=loaded.Object("caster");
+        if(!object) { Check(false,"participating-medium caster exists"); continue; }
+        Check(global?loaded.Scene().GetGlobalMedium()!=nullptr:object->GetInteriorMedium()!=nullptr,
+            "real global or object participating medium configured");
+        IORStack live(1); live.SetCurrentObject(object); live.push(1.3);
+        SMSStartingMedia capture;
+        Check(!SMSDomainReplay::Capture(loaded.Scene(),Point3(offset,0,0),live,capture),
+            "participating starting medium is outside extended domain");
+        std::vector<IShaderOp*> ops; IShader* shader=nullptr;
+        Check(RISE_API_CreateStandardShader(&shader,ops),"medium eligibility shader exists");
+        if(!shader) continue;
+        RayCaster* caster=new RayCaster(false,16,*shader,true); caster->AttachScene(&loaded.Scene());
+        ManifoldSolverConfig config; config.extendedMode=true; ManifoldSolver* solver=new ManifoldSolver(config);
+        Check(!solver->ExtendedAnchorEligible(loaded.Scene(),*caster,Point3(offset,0,0),live),
+            "participating starting medium disables coupled extended switches");
+        solver->release(); caster->release(); shader->release();
+        if(global) continue; // Global exclusion is scene-level; Cross has no scene argument.
+        for(int side : {-1,1}) {
+            const auto hit=Hit(*object,Point3(offset,0,side*3),Vector3(0,0,-side));
+            for(auto domain : {SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),
+                SMSQueryDomain::NM(450),SMSQueryDomain::NM(550),SMSQueryDomain::NM(650)}) {
+                for(bool reflection : {false,true}) {
+                    IORStack stack(1); Scalar ni=0,nt=0; bool exiting=false;
+                    const IORStack before(stack);
+                    Check(!SMSDomainReplay::Cross(*hit.pMaterial,object,hit.geometric,domain,reflection,
+                        stack,ni,nt,exiting),"participating-medium caster event is unsupported");
+                    Check(stack.SameInterfaces(before),"unsupported medium event preserves membership");
+                }
+            }
+        }
+    }
+}
 static void PolishedEventCases()
 {
     for(bool closed : {false,true}) for(bool reverse : {false,true}) for(bool transformed : {false,true}) {
@@ -639,6 +681,11 @@ int main(int argc,char** argv)
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";
         return failCount?1:0;
     }
+    if(argc>1 && std::string(argv[1])=="--medium-only") {
+        ParticipatingMediumCases();
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";
+        return failCount?1:0;
+    }
     if(argc>1 && std::string(argv[1])=="--polished-only") {
         PolishedEventCases();
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";
@@ -654,6 +701,7 @@ int main(int argc,char** argv)
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";
         return failCount?1:0;
     }
+    ParticipatingMediumCases();
     PolishedEventCases();
     CompositeCSGCases();
     RasterContextCases();
