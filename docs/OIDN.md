@@ -294,7 +294,7 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
   - `./run_all_tests.sh` clean: **72/72 pass**.
   - 3-render back-to-back on `scenes/Tests/Geometry/shapes.RISEscene`
     (800×800):
-    - Render 1 (cold): logs `OIDN: creating CPU device (one-time per rasterizer)` and `OIDN cache: rebuild filter (800x800 q=FAST aux=albedo+normal)`. Denoise 94.1 ms.
+    - Render 1 (cold): logged `OIDN: creating CPU device (one-time per rasterizer)` (wording at the time; the message now reads "(cached while backend request is unchanged)") and `OIDN cache: rebuild filter (800x800 q=FAST aux=albedo+normal)`. Denoise 94.1 ms.
     - Render 2 (warm): logs `OIDN cache: hit (800x800 q=FAST)`. Denoise 69.7 ms (24 ms / ~26% saved).
     - Render 3 (warm): cache hit, 68.2 ms.
   - The "creating device" line fires exactly once → device + filter

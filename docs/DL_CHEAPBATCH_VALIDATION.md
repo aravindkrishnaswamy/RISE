@@ -1,7 +1,11 @@
 # debt-cheapbatch validation (2026-10-02)
 
-Branched from master `a74c400b2`; changes remain in `debt-cheapbatch`.
+Branched from master `a74c400b2`; merged to master as `a8fa56224` on 2026-10-03.
 Source red proofs, final full-suite variance and serial gates are recorded below.
+
+The `/tmp/...` log and JSON paths cited throughout are scratch files on the
+machine that ran the gates; they were not retained. The pass/fail counts and
+measured values quoted in this document are the durable record.
 
 ## DL-311 stopped experiment
 
