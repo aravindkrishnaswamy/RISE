@@ -509,6 +509,7 @@ static void CompositePTCases()
             "standard_object\n{\n name floor\n geometry receiver\n material receiver_mat\n}\n";
         LoadedScene loaded(scene);
         std::vector<double> differences, offMeans, onMeans;
+        std::vector<double> channelDelta[3], channelOff[3], channelOn[3];
         for(unsigned trial=0;trial<4;++trial) {
             const unsigned salt=SobolSequence::HashCombine(9000+trial,0x534d5344);
             const auto off=TraceCompositeGrid(loaded,false,startInside,salt,nm);
@@ -517,6 +518,13 @@ static void CompositePTCases()
             for(const auto& pixel:off) a+=(pixel.base.r+pixel.base.g+pixel.base.b)/3;
             for(const auto& pixel:on) b+=(pixel.base.r+pixel.base.g+pixel.base.b)/3;
             a/=64; b/=64;
+            for(unsigned c=0;c<3;++c) {
+                double ca=0,cb=0;
+                for(const auto& pixel:off) ca+=pixel.base[c];
+                for(const auto& pixel:on) cb+=pixel.base[c];
+                ca/=64; cb/=64;
+                channelOff[c].push_back(ca); channelOn[c].push_back(cb); channelDelta[c].push_back(cb-ca);
+            }
             Check(off.size()==64 && on.size()==64 && std::isfinite(a) && std::isfinite(b) && a>0 && b>0,
                 "PT keeps composite-crossing emitter paths with extended mode on/off");
             if(!startInside) Check(HashPixels(off)==HashPixels(on),"deterministic composite camera path stays bit-identical");
@@ -527,6 +535,13 @@ static void CompositePTCases()
             << " off=" << a.mean << " sd=" << a.sd << " on=" << b.mean << " sd=" << b.sd
             << " paired delta=" << d.mean << " sd=" << d.sd << " n=4\n";
         Check(d.mean==0 || std::fabs(d.mean)<=3*d.sd/2,"composite mode parity within three measured mean SDs");
+        for(unsigned c=0;c<3;++c) {
+            const auto dc=Summarize(channelDelta[c]), ac=Summarize(channelOff[c]), bc=Summarize(channelOn[c]);
+            std::cout<<"composite channel="<<c<<" nm="<<nm<<" reverse="<<reverse<<" startInside="<<startInside
+                <<" off="<<ac.mean<<" sd="<<ac.sd<<" on="<<bc.mean<<" sd="<<bc.sd
+                <<" paired delta="<<dc.mean<<" sd="<<dc.sd<<" n=4\n";
+            Check(dc.mean==0||std::fabs(dc.mean)<=3*dc.sd/2,"each composite channel matches within three measured mean SDs");
+        }
     }
 }
 int main(int argc,char** argv)
@@ -612,9 +627,13 @@ int main()
         const auto& root=pixelResult.specularChain[0];
         const auto incoming=Vector3Ops::Normalize(Vector3Ops::mkVector3(root.position,start));
         const double f=Optics::CalculateDielectricReflectanceCosine(std::fabs(incoming.z),1,1.5);
-        for(unsigned c=0;c<3;++c) Check(Near(pixelResult.contribution[c],0.37*(1-f)/2.25),
+        RasterizerState actualPixel{}; actualPixel.x=17; actualPixel.y=23;
+        const auto actual=Hit(*pixelObject,start,incoming,actualPixel);
+        const auto nativeRGB=actual.pMaterial->GetSpecularInfo(actual.geometric,stack).attenuation;
+        const double nativeNM=actual.pMaterial->GetSpecularInfoNM(actual.geometric,stack,550).attenuationNM;
+        for(unsigned c=0;c<3;++c) Check(Near(pixelResult.contribution[c],nativeRGB[c]*(1-f)/2.25),
             "master seed/solve preserves native caller pixel tint in RGB");
-        Check(Near(solver->EvaluateChainThroughputNM(start,end,pixelResult.specularChain,550),0.43*(1-f)/2.25),
+        Check(Near(solver->EvaluateChainThroughputNM(start,end,pixelResult.specularChain,550),nativeNM*(1-f)/2.25),
             "master seed/solve preserves native caller pixel tint in NM");
     }
     LoadedScene nested(Materials(false)+Mesh(true,false)+
