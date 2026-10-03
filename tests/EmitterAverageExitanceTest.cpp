@@ -355,6 +355,10 @@ struct SphereFixture
 	~SphereFixture() { geo->release(); lum->release(); base->release(); painter->release(); scene->release(); objects->release(); lights->release(); }
 };
 
+// The tracers' power is flux / numPhotons only after the photon map's own
+// 1/N normalisation, which this ideal sink bypasses: divide by N here.
+static const double kPhotons = 100003.0;
+
 template<class Tracer> static void PhotonRow( const char* label, const char* expr, double x, double controlScale, bool nm )
 {
 	// Control: the SAME photon loop on a constant exitance of 1 (the field's area mean), to
@@ -364,12 +368,12 @@ template<class Tracer> static void PhotonRow( const char* label, const char* exp
 		SphereFixture f( "1.0", x, controlScale );
 		auto* t = new Tracer;  t->AttachScene( f.scene );
 		Check( t->TracePhotons( 100003, 0, false, nullptr ), std::string( label ) + ": control shoot succeeds" );
-		controlFlux = t->flux;  t->release();
+		controlFlux = t->flux / kPhotons;  t->release();
 	}
 	SphereFixture f( expr, x, controlScale );
 	auto* t = new Tracer;  t->AttachScene( f.scene );
 	Check( t->TracePhotons( 100003, 0, false, nullptr ), std::string( label ) + ": shoot succeeds" );
-	const double flux = t->flux, zz = flux > 0 ? t->fluxZ2 / flux : -1.0;
+	const double flux = t->flux / kPhotons, zz = t->flux > 0 ? t->fluxZ2 / t->flux : -1.0;
 	t->release();
 	const double truth = nm ? controlFlux : 4.0 * 3.14159265358979323846;
 	std::printf( "  %-34s flux %.6f  expected %.6f (ratio %.4f)  flux-weighted <z^2> = %.4f (field 0.2000, uniform 0.3333)\n",
