@@ -542,6 +542,53 @@ Scalar CoatedSPF::DeltaPassThroughTransmittanceNM(
 	return baseT * atten * ( ( Scalar(1) - pCoat ) / sel );
 }
 
+// DL-329.  ScatterImpl's substrate-branch delta re-pricing, for ONE
+// known ray at the companion wavelength `nm`: the base answers its own
+// companion kray (a weave's gap: 1), the coat multiplies its bare
+// two-crossing attenuation at `nm` (`cp.tint[0]` is the wavelength's
+// tint in the NM regime, as in ScatterImpl) and divides by `1 - pCoat`.
+Scalar CoatedSPF::EvaluateKrayNM(
+	const RayIntersectionGeometric& ri,
+	const Vector3& outDir,
+	ScatteredRay::ScatRayType rayType,
+	Scalar nm,
+	const IORStack& ior_stack
+	) const
+{
+	// The coat lobe is eRayReflection and the base's continuum rays keep
+	// their own non-refraction types: only a substrate delta ray is here.
+	if( rayType != ScatteredRay::eRayRefraction ) {
+		return -1;
+	}
+	const OrthonormalBasis3D onb = RayFacingONB( ri );
+	const Vector3 n     = onb.w();
+	const Vector3 wi    = Vector3Ops::Normalize( -ri.ray.Dir() );
+	const Scalar  cosWi = Vector3Ops::Dot( wi, n );
+	if( cosWi <= 0 ) {
+		return -1;
+	}
+	const Scalar baseK = pBaseSPF->EvaluateKrayNM( ri, outDir, rayType, nm, ior_stack );
+	if( baseK < 0 ) {
+		return -1;
+	}
+	const Scalar scos = Vector3Ops::Dot( Vector3Ops::Normalize( outDir ), n );
+	if( !pBRDF->BaseScattersFullSphere() || scos >= 0 ) {
+		return 0;		// ScatterImpl zeroes this ray's kray
+	}
+
+	CoatedBRDF::CoatParams cp;
+	pBRDF->ResolveCoat( ri, nm, cp );
+	const Scalar pCoat   = cp.weight * CoatedLayer::Fresnel( cosWi, cp.eta );
+	const Scalar muDelta = -scos;
+	const Scalar Tin  = Scalar(1) - CoatedLayer::Fresnel( cosWi,   cp.eta );
+	const Scalar Tout = Scalar(1) - CoatedLayer::Fresnel( muDelta, cp.eta );
+	const Scalar sel  = r_max( Scalar(1e-12), Scalar(1) - pCoat );
+	const Scalar Ain  = CoatedLayer::PassTransmittance( cosWi,   cp.eta, cp.thickness, cp.absorption, cp.tint[0], cp.tinted );
+	const Scalar Aout = CoatedLayer::PassTransmittance( muDelta, cp.eta, cp.thickness, cp.absorption, cp.tint[0], cp.tinted );
+	const Scalar atten = Ain * Aout * ( Tin * Tout / ( cp.eta * cp.eta ) );
+	return baseK * ( atten / sel );
+}
+
 void CoatedSPF::Scatter(
 	const RayIntersectionGeometric& ri,
 	ISampler& sampler,
@@ -563,7 +610,8 @@ void CoatedSPF::ScatterNM(
 	ScatterImpl( ri, sampler, nm, scattered, ior_stack );
 }
 
-// DELIBERATELY NO EvaluateKrayNM OVERRIDE.
+// DELIBERATELY NO EvaluateKrayNM OVERRIDE FOR CONTINUUM RAYS (the
+// DL-329 override below answers ONLY for a substrate delta ray).
 //
 // An earlier revision of this file had one.  It computed
 // `valueNM(nm) * cos / PdfImpl(nm)` -- but `PdfImpl(nm)` is the

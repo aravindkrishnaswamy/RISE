@@ -441,6 +441,53 @@ Scalar FabricSPF::DeltaPassThroughScale(
 	return ( Scalar(1) - w ) * ( atten / sel );
 }
 
+// DL-329.  Mirrors ScatterImpl's delta branch for ONE known ray: the
+// substrate branch is entered with probability `1 - w`, the base draws
+// the delta ray on the weave-rotated record, and the wrapper reprices it
+// by `SheenTransmit(cosWi) * SheenTransmit(muDelta) / (1 - w)`.  The
+// companion's estimator is its own coefficient over the HERO's selection
+// probabilities; `w` is achromatic (FabricBRDF::ResolveFabric) and the
+// base answers its own part, so evaluating everything at `nm` is exact.
+Scalar FabricSPF::EvaluateKrayNM(
+	const RayIntersectionGeometric& ri,
+	const Vector3& outDir,
+	ScatteredRay::ScatRayType rayType,
+	Scalar nm,
+	const IORStack& ior_stack
+	) const
+{
+	// Only a substrate DELTA ray carries this type here: the sheen lobe
+	// is eRayDiffuse and the base's continuum rays keep their own
+	// (non-refraction) types.
+	if( rayType != ScatteredRay::eRayRefraction ) {
+		return -1;
+	}
+	const OrthonormalBasis3D onb = RayFacingONB( ri );
+	const Vector3 n  = onb.w();
+	const Vector3 wi = Vector3Ops::Normalize( -ri.ray.Dir() );
+	const Scalar cosWi = Vector3Ops::Dot( wi, n );
+	if( cosWi <= 0 ) {
+		return -1;
+	}
+
+	FabricBRDF::FabricParams p;
+	pBRDF->ResolveFabric( ri, nm, p );
+	const WeaveRotatedRI weave( ri, p.weaveAngle );
+
+	const Scalar baseK = pBaseSPF->EvaluateKrayNM( weave.Get(), outDir, rayType, nm, ior_stack );
+	if( baseK < 0 ) {
+		return -1;
+	}
+
+	const Scalar scos    = Vector3Ops::Dot( Vector3Ops::Normalize( outDir ), n );
+	const Scalar muDelta = ( scos < 0 ) ? -scos : scos;
+	const Scalar w       = FabricBRDF::SheenSelectWeight( p.alpha, p.m, cosWi );
+	const Scalar atten   = FabricBRDF::SheenTransmit( p.alpha, p.m, cosWi )
+	                     * FabricBRDF::SheenTransmit( p.alpha, p.m, muDelta );
+	const Scalar sel     = r_max( Scalar(1e-12), Scalar(1) - w );
+	return baseK * ( atten / sel );
+}
+
 RISEPel FabricSPF::DeltaPassThroughTransmittance(
 	const RayIntersectionGeometric& ri
 	) const

@@ -34,6 +34,16 @@ namespace RISE
 
 	namespace Implementation { class LightSampler; }
 
+	//! The shadow walk's budget (RayCaster::WalkShadowSegment, the
+	//! transparent-shadow / delta pass-through walk): at most
+	//! kShadowWalkMaxIterations intersections, and the LAST one must find
+	//! the light, so a segment can cross at most kShadowWalkMaxCrossings
+	//! surfaces before the walk conservatively answers "blocked".  BDPT's
+	//! see-through connection and its jump-partition witness (DL-330) read
+	//! the same numbers so the three cannot disagree.
+	static const unsigned int kShadowWalkMaxIterations = 32;
+	static const unsigned int kShadowWalkMaxCrossings = kShadowWalkMaxIterations - 1;
+
 	//! A ray caster traces a ray generated on the virtual screen and traces it through the 
 	//! scene
 	/// \sa IPixelTracer
