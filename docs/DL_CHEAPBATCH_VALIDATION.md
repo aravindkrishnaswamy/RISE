@@ -1106,3 +1106,33 @@ pilot passes210/0 in414.14s. SF11 centroid shifts now resolve about0.3125
 pixels after the missing radiance scale is restored; constant-index
 controls remain near zero, and the existing dispersion bands are retained.
 The source/test/design tree is frozen for committed baseline/master proofs.
+
+### DL-435 committed red/green proof and measured storage/cost
+
+At committedf3061e1ab, all nine fixed source/header files were replaced
+first by pre-DL-435f045c80e9, then by master115aee62e. Both library
+and individually checked unit/render builds passed with zero warnings.
+Each baseline failed the new deterministic gate16/33 and the sixteen-row
+attenuation matrix74/22. Restoring HEAD rebuilt warning-free and passed
+all manifold assertions (DL-43549/0,0.34s) and the attenuation matrix
+96/0 (6.26s). The master's build/test failure is runtime, not a missing
+API compilation failure; test-only overload/field adapters preserve the
+old-header proof. Exact records: /tmp/rise-dl435-redproof.json.
+
+Measured metadata sizes: pre-DL-435 SpecularInfo48 / ManifoldVertex328
+bytes; fixed56/336 bytes, eight additional bytes per structure. Master
+ManifoldVertex304 predates this batch's existing UV/Po additions and is
+not the appropriate size baseline for DL-435. No extra allocation occurs
+in attenuation evaluation.
+
+The focused varying-position, one-vertex microbenchmark uses200000 calls
+per trial and five trials per mode, consuming each result. Pre-DL-435
+clear/absorbing-labelled cases measure10.50..11.30/9.86..10.53ns per call
+(the defective NM helper ignores attenuation in both). Restored fixed
+code measures11.90..13.18/13.28..14.32ns. An earlier pilot on the same
+repair measured about36..47ns, illustrating execution/scheduling
+sensitivity; these are synthetic loop timings, not a renderer speed
+guarantee or an interleaved whole-render comparison. The fixed cached
+loop performs the missing work. The small n4 render matrix takes6.22s
+on the old library and6.26s restored, also not a statistical cost bound.
+Logs: /tmp/rise-dl435-proof-{pre435,head}-benchmark.log.
