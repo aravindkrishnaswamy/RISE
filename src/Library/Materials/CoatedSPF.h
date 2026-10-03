@@ -57,6 +57,10 @@
 //      a bias, not an approximation.  An earlier revision of this file
 //      shipped exactly that override; it is gone.  The `value`/
 //      `Scatter` agreement above is what makes the default path exact.
+//      EXCEPTION (DL-329, 2026-10-02): a substrate DELTA ray (a thin
+//      weave's gap) has no density and is not in `value` at all, so
+//      the default priced it as ~0; `EvaluateKrayNM` below answers
+//      for that ray type ONLY and still declines every continuum ray.
 //
 //  LOBE BUDGET (7.5).  This SPF emits at most ONE ray per Scatter
 //  call, so the 6-slot ScatteredRayContainer is never a constraint --
@@ -127,10 +131,28 @@ namespace RISE
 				const IORStack& ior_stack
 				) const;
 
-			// NOTE: no EvaluateKrayNM override.  See point 3 in this
-			// file's header -- the ISPF default (-1, "fall back to BSDF
-			// evaluation") is strictly more correct here than anything
-			// this class could compute.
+			// NOTE: no EvaluateKrayNM override for CONTINUUM rays.  See
+			// point 3 in this file's header -- the ISPF default (-1,
+			// "fall back to BSDF evaluation") is strictly more correct
+			// there than anything this class could compute.
+
+			//! DL-329: the companion-wavelength kray of a substrate DELTA
+			//! ray (a thin weave's gap, `eRayRefraction`), as
+			//! `ScatterImpl`'s substrate branch re-prices it: the base's
+			//! own companion kray times the coat's bare two-crossing
+			//! attenuation at `nm` over `1 - pCoat`.  Exact when the coat
+			//! weight and ior are achromatic; with a DISPERSIVE `coat_ior`
+			//! (or a spectral `coat_weight`) the strictly unbiased divisor
+			//! is the HERO's `1 - pCoat`, which these arguments cannot form
+			//! (the DL-216 class; see CompositeSPF's identical note).  -1
+			//! for every continuum ray and whenever the base declines.
+			Scalar EvaluateKrayNM(
+				const RayIntersectionGeometric& ri,
+				const Vector3& outDir,
+				ScatteredRay::ScatRayType rayType,
+				Scalar nm,
+				const IORStack& ior_stack
+				) const;
 
 			//! DL-05: the substrate's delta pass-through (a thin weave's
 			//! gap) as ScatterImpl's substrate branch re-prices it -- the

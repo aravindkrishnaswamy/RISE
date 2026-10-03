@@ -117,14 +117,21 @@
 //  answer for the wrapper too; SMS correctly ignores fabric entirely, on
 //  hair's precedent.  See FabricMaterial.h.
 //
-//  NO EvaluateKrayNM OVERRIDE, deliberately -- CoatedSPF.h point 3's
-//  argument transfers verbatim.  The ISPF default (-1) routes
-//  PathTracingIntegrator to `valueNM * cos / pS->pdf`, i.e. the pdf
-//  stored ON the sampled ray: the true HERO-wavelength mixture density
-//  that actually drew it.  An override could only recompute the density
-//  at the COMPANION wavelength, which differs the moment any substrate
-//  painter is wavelength-dependent -- dividing by the wrong density is
-//  a bias, not an approximation.
+//  `EvaluateKrayNM` ONLY FOR THE SUBSTRATE'S DELTA PASS-THROUGH (DL-329,
+//  2026-10-02).  Every CONTINUUM ray still declines, deliberately --
+//  CoatedSPF.h point 3's argument transfers verbatim: the ISPF default
+//  (-1) routes PathTracingIntegrator to `valueNM * cos / pS->pdf`, i.e.
+//  the pdf stored ON the sampled ray, the true HERO-wavelength mixture
+//  density that actually drew it; an override could only recompute the
+//  density at the COMPANION wavelength, which differs the moment any
+//  substrate painter is wavelength-dependent -- dividing by the wrong
+//  density is a bias, not an approximation.  A thin weave's DELTA gap
+//  ray is not in the aggregate BSDF at all, so that fallback priced it
+//  as ~0 (WeaveSPF.h); this override re-prices it exactly as
+//  `ScatterImpl`'s delta branch does -- the base's own companion kray
+//  times the fuzz layer's two crossings over `1 - w` -- and since
+//  `alpha`, `m` and therefore `w` are achromatic by construction
+//  (FabricBRDF.h), that is exact at every companion wavelength.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -197,6 +204,18 @@ namespace RISE
 			Scalar DeltaPassThroughTransmittanceNM(
 				const RayIntersectionGeometric& ri,
 				const Scalar nm
+				) const;
+
+			//! DL-329: the companion-wavelength kray of a DELTA ray the
+			//! substrate emitted (a thin weave's gap, `eRayRefraction`), as
+			//! `ScatterImpl`'s delta branch re-prices it.  -1 (decline) for
+			//! every continuum ray and whenever the base declines.
+			Scalar EvaluateKrayNM(
+				const RayIntersectionGeometric& ri,
+				const Vector3& outDir,
+				ScatteredRay::ScatRayType rayType,
+				Scalar nm,
+				const IORStack& ior_stack
 				) const;
 
 			inline const FabricBRDF& GetBRDF()    const { return *pBRDF; }

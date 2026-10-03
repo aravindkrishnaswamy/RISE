@@ -3803,6 +3803,83 @@ inline bool ConnectionIsVisible( const IRayCaster& caster, const Point3& p1, con
 	return !caster.CastShadowRaySampled( shadowRay, dist - BDPT_RAY_EPSILON, sampler, boundaries, dist, BDPT_RAY_EPSILON );
 }
 
+//////////////////////////////////////////////////////////////////////
+// DL-330: the s == 1 connection to a DELTA light THROUGH thin-weave
+// delta pass-throughs (docs/DL05_WEAVE_GAP_SHADOW_TRANSMITTANCE.md
+// section 10).
+//
+// A delta pass-through (a `transmission thin` weave's gap) is a DELTA
+// subpath vertex, so in the expanded path space the gap vertices on a
+// straight segment from a point light L to an eye vertex D make every
+// edge of  L - S1 .. Sk - D  non-connectible: the standard s = 1
+// connection D -> L is blocked (binary shadow), and light tracing must
+// pass the gaps and then connect from D or a later vertex.  When the eye
+// side offers no connectible edge either -- the classic case is
+// L - S - D - S - E, the camera seeing through a gap a surface lit only
+// through another gap -- NO BDPT strategy generates the path (no BSDF
+// sample can hit a point light), while PT reaches it with DL-05's
+// see-through NEE and VCM by merging.  Measured on the closed weave
+// sphere: BDPT 6-7 % under PT and VCM.
+//
+// The fix adds the missing strategy WITHOUT a new MIS term: the
+// see-through connection takes MIS weight 1 on paths no standard
+// strategy can generate and 0 on every other (it is skipped there, so it
+// costs nothing), and the standard strategies' weights -- which never
+// counted it -- already sum to 1 on the paths they cover.  A valid
+// partition: weights that depend only on the path and sum to 1 over the
+// techniques that can produce it.
+//
+// "Can generate" is exactly what MISWeight counts: a split at the eye
+// edge (e_j, e_{j-1}) with both ends connectible and non-delta (the
+// camera counts as connectible unless it is a delta-direction camera),
+// not past an eye-side BSSRDF entry, AND within the light walk's depth
+// caps -- that strategy's light subpath is L, S1..Sk, D .. e_j, which the
+// light walk must reach in <= max_light_depth surface hits (each gap
+// counts) and <= WalkIterationBudget iterations (DL-380's lesson: a
+// covering strategy past a cap does not exist).  The light-side edges
+// (L, S1) .. (Sk, D) are never connectible.
+//////////////////////////////////////////////////////////////////////
+//! Returns the largest k (number of gaps on the L -> D segment) for which
+//! a standard strategy covers the path, or -1 when none does at any k.
+//! Covered(k) iff k <= the return value: the first connectible eye split
+//! (largest j) needs the fewest light-walk surface hits and iterations,
+//! and both counts only grow toward the camera.
+inline int DeltaPassThroughCoverSlack(
+	const std::vector<BDPTVertex>& eyeVerts,
+	const unsigned int t,
+	const unsigned int maxLightDepth,
+	const unsigned int lightIterationBudget )
+{
+	long long surface = 0;
+	long long volume = 0;
+	for( unsigned int j = t - 1; j > 0; j-- )
+	{
+		const BDPTVertex& ej = eyeVerts[j];
+		if( ej.isBSSRDFEntry ) {
+			return -1;
+		}
+		if( ej.type == BDPTVertex::SURFACE ) {
+			surface++;
+		} else if( ej.type == BDPTVertex::MEDIUM ) {
+			volume++;
+		}
+		// D = eyeVerts[t-1] is the connection's own endpoint: its
+		// `isDelta` records the eye walk's CONTINUATION past it, which is
+		// not part of this path (MISWeight clears it for an endpoint the
+		// same way).  Every interior vertex's `isDelta` is the path's own
+		// scatter there.
+		const BDPTVertex& prev = eyeVerts[j - 1];
+		const bool ejUsable = ej.isConnectible && ( j == t - 1 || !ej.isDelta );
+		if( ejUsable && prev.isConnectible && !prev.isDelta ) {
+			const long long bySurface = static_cast<long long>( maxLightDepth ) - surface;
+			const long long byIterations = static_cast<long long>( lightIterationBudget ) - surface - volume;
+			const long long slack = bySurface < byIterations ? bySurface : byIterations;
+			return slack < 0 ? -1 : static_cast<int>( slack > 1000000 ? 1000000 : slack );
+		}
+	}
+	return -1;
+}
+
 // Connection-edge transmittance dispatch -> the public (F1-templatized)
 // member overloads.  pt/pt and ray/maxDist forms.
 template<class Tag>
@@ -4609,6 +4686,8 @@ ConnectAndEvaluateImplCore(
 		// Visibility: for explicit lights, segment to the light surface.
 		// For env, infinite ray in wi from eye — synthesised as a far-
 		// distance point to reuse the ConnectionIsVisible(p,q) helper.
+		bool seeThroughDeltaLight = false;		// DL-330
+		V seeThroughTr = TrOne<Tag>();
 		{
 			Point3 visTarget = lightStart.position;
 			if( envCase_s1 ) {
@@ -4619,7 +4698,47 @@ ConnectAndEvaluateImplCore(
 					eyeEnd.position.z + wiForLight.z * kVisFar );
 			}
 			if( !ConnectionIsVisible( caster, eyeEnd.position, visTarget, sampler, (sceneAlpha ? &boundaryHits : nullptr) ) ) {
-				return result;
+				// DL-330: a delta light behind delta pass-throughs only,
+				// on a path no standard strategy can generate (see
+				// DeltaPassThroughCoverSlack).
+				if( envCase_s1 || !lightStart.isDelta || !lightStart.pLight ) {
+					return result;
+				}
+				const RayCaster* pRC = dynamic_cast<const RayCaster*>( &caster );
+				if( !pRC || !pRC->DeltaPassThroughShadowsActive() ) {
+					return result;
+				}
+				const unsigned int lightBudget = BDPTUtilities::WalkIterationBudget(
+					self.GetMaxLightDepth(), self.GetStabilityConfig().maxVolumeBounce );
+				const int coverSlack = DeltaPassThroughCoverSlack( eyeVerts, t, self.GetMaxLightDepth(), lightBudget );
+				// A walk that reaches the light crossed at most
+				// kShadowWalkMaxCrossings (31) surfaces (IRayCaster.h), so
+				// a slack that large is covered whatever k turns out to
+				// be: skip the walk.
+				if( coverSlack >= static_cast<int>( kShadowWalkMaxCrossings ) ) {
+					return result;
+				}
+				Scalar walkNM = 0;
+				if constexpr( Traits::is_nm ) {
+					walkNM = tag.nm;
+				}
+				RISEPel walkT( 1, 1, 1 );
+				unsigned int k = 0;
+				const Ray walkRay( eyeEnd.position, dirToLight );
+				if( pRC->CastShadowRayAutoSampled( walkRay, dist - BDPT_RAY_EPSILON, Traits::is_nm, walkNM, walkT,
+						true, sampler, (sceneAlpha ? &boundaryHits : nullptr), dist, BDPT_RAY_EPSILON,
+						0, 0, false, &k ) || k == 0 ) {
+					return result;
+				}
+				if( static_cast<int>( k ) <= coverSlack ) {
+					return result;	// a standard strategy generates this path
+				}
+				seeThroughDeltaLight = true;
+				if constexpr( Traits::is_pel ) {
+					seeThroughTr = walkT;
+				} else {
+					seeThroughTr = walkT[0];
+				}
 			}
 		}
 
@@ -4809,14 +4928,22 @@ ConnectAndEvaluateImplCore(
 			result.guidingValid = true;
 			}
 		} else {
-			result.contribution = VertexThroughput<Tag>( eyeEnd ) * fEye * Le * Tr_conn_s1 * (G / pdfLight);
+			result.contribution = VertexThroughput<Tag>( eyeEnd ) * fEye * Le * Tr_conn_s1 * seeThroughTr * (G / pdfLight);
 			result.needsSplat = false;
 			result.valid = true;
 			if constexpr( Traits::is_pel ) {
-			result.guidingLocalContribution = fEye * Le * Tr_conn_s1 * (G / pdfLight);
+			result.guidingLocalContribution = fEye * Le * Tr_conn_s1 * seeThroughTr * (G / pdfLight);
 			result.guidingEyeVertexIndex = t - 1;
 			result.guidingValid = true;
 			}
+		}
+
+		// DL-330: the see-through connection owns its path outright (no
+		// standard strategy generates it -- see DeltaPassThroughCoverSlack),
+		// so its weight is 1 and the pdfRev bookkeeping below is not needed.
+		if( seeThroughDeltaLight ) {
+			result.misWeight = 1.0;
+			return result;
 		}
 
 		// --- Update pdfRev at connection vertices for correct MIS ---
@@ -5599,8 +5726,17 @@ EvaluateAllStrategiesImpl(
 	// light family must then keep the path.  BDPT has no merging.
 	const unsigned int nLight = static_cast<unsigned int>( lightVerts.size() );
 	const unsigned int nEye = static_cast<unsigned int>( eyeVerts.size() );
+	// DL-330 (review P1): the see-through s = 1 connection is an eye-family
+	// strategy too, so a light-side jump whose segment from a delta root
+	// is a straight chain of delta pass-throughs IS eye-coverable when the
+	// pass-through shadow walk is live (BDPTUtilities::
+	// LightSegmentEyeWitness); without it both families counted the path.
 	static thread_local BDPTUtilities::LightJumpPartition partition;
-	partition.Build( lightVerts, false );
+	{
+		const RayCaster* pRCPartition = dynamic_cast<const RayCaster*>( &caster );
+		partition.Build( lightVerts, false,
+			pRCPartition && pRCPartition->DeltaPassThroughShadowsActive() );
+	}
 	const BDPTUtilities::EyeWalkCaps eyeCaps = BDPTUtilities::MakeEyeWalkCaps(
 		self.GetMaxEyeDepth(), self.GetStabilityConfig().maxVolumeBounce );
 	// Eye-walk surface count of eyeVerts[0..t-1], t = 0..nEye.
@@ -8408,6 +8544,40 @@ void BDPTIntegrator::RecomputeSubpathThroughputNM(
 				// for the measured variance cost of keeping
 				// terminate-and-renormalize instead.
 				cumulativeRatio = 0;
+			}
+		}
+		else if( i + 1 < verts.size() && i > 0 &&
+			v.type == BDPTVertex::SURFACE && v.isDelta &&
+			v.pMaterial && v.pMaterial->HasDeltaPassThrough() && v.pMaterial->GetSPF() )
+		{
+			// DL-329.  A delta PASS-THROUGH (a thin weave's gap, and the
+			// fabric / coated wrappers that re-price it) is not
+			// wavelength-independent in general: a TINTED or absorbing
+			// coat over a gapped weave attenuates each wavelength by its
+			// own two-crossing transmittance.  The SPF answers the gap
+			// ray's companion kray through `EvaluateKrayNM` (the only
+			// delta lobe these materials emit is the undeviated
+			// `eRayRefraction` gap ray; any other query declines), so
+			// the companion/hero ratio of those two numbers is exact --
+			// 1 for a bare weave.  Every other delta vertex keeps the
+			// ratio 1 below.
+			const Vector3 dirIn = Vector3Ops::Normalize(
+				Vector3Ops::mkVector3( v.position, verts[i-1].position ) );
+			const Vector3 dirOut = Vector3Ops::Normalize(
+				Vector3Ops::mkVector3( verts[i+1].position, v.position ) );
+			Ray inRay( Point3Ops::mkPoint3( v.position,
+				-dirIn * v.scatterIncomingDistance ), dirIn );
+			RayIntersectionGeometric rig( inRay, nullRasterizerState );
+			PathVertexEval::PopulateRIGFromVertex( v, rig );
+			IORStack vertexIor( 1.0 );
+			BuildVertexIORStack( v, vertexIor );
+			const ISPF* pVertSPF = v.pMaterial->GetSPF();
+			const Scalar krayHero = pVertSPF->EvaluateKrayNM(
+				rig, dirOut, ScatteredRay::eRayRefraction, heroNM, vertexIor );
+			const Scalar krayComp = pVertSPF->EvaluateKrayNM(
+				rig, dirOut, ScatteredRay::eRayRefraction, companionNM, vertexIor );
+			if( krayHero >= 0 && krayComp >= 0 ) {
+				cumulativeRatio = ( krayHero > NEARZERO ) ? cumulativeRatio * ( krayComp / krayHero ) : 0;
 			}
 		}
 		// Delta, medium, endpoints and a BSSRDF EXIT hit: scatter ratio = 1.0

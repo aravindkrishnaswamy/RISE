@@ -173,13 +173,23 @@
 //
 //  LOBE BUDGET: exactly ONE ray per `Scatter` call.
 //
-//  NO `EvaluateKrayNM` OVERRIDE, deliberately -- CoatedSPF.h point 3's
-//  argument transfers verbatim.  The ISPF default (-1) routes
-//  PathTracingIntegrator to `valueNM * cos / pS->pdf`, i.e. the pdf
-//  stored ON the sampled ray: the true HERO-wavelength density that
-//  actually drew it.  An override could only recompute the density at
-//  the COMPANION wavelength, and dividing by the wrong density is a
-//  bias, not an approximation.
+//  `EvaluateKrayNM` ONLY FOR THE DELTA GAP LOBE (DL-329, 2026-10-02).
+//  For every CONTINUUM lobe this SPF still declines, deliberately --
+//  CoatedSPF.h point 3's argument transfers verbatim: the ISPF default
+//  (-1) routes PathTracingIntegrator to `valueNM * cos / pS->pdf`, i.e.
+//  the pdf stored ON the sampled ray, the true HERO-wavelength density
+//  that actually drew it; an override could only recompute the density
+//  at the COMPANION wavelength, and dividing by the wrong density is a
+//  bias, not an approximation.  The gap lobe is different: it is a
+//  Dirac, the aggregate BSDF does not contain it, so that fallback
+//  priced a companion lane with the CONTINUUM weave BSDF at the gap's
+//  undeviated direction (~0) and every HWSS path that crossed a gap by
+//  continuation lost 3 of 4 lanes.  The gap's coefficient `gap(x)` and
+//  its selection probability are the same ACHROMATIC number at every
+//  wavelength, so the companion kray is exactly the hero's, 1.  No
+//  `EvaluateLobeFNM` for it: a Dirac has no f in 1/sr, and the one
+//  ratio consumer (`BDPTIntegrator::RecomputeSubpathThroughputNM`)
+//  prices a delta vertex through `EvaluateKrayNM`'s ratio instead.
 //
 //  NO `GetSpecularInfo` OVERRIDE for the two P2-A lobes -- and, P2-B,
 //  none for the new delta gap lobe either (WeaveBRDF.h section 2a: it
@@ -296,6 +306,19 @@ namespace RISE
 			Scalar DeltaPassThroughTransmittanceNM(
 				const RayIntersectionGeometric& ri,
 				const Scalar nm
+				) const;
+
+			//! DL-329: the companion-wavelength kray of the DELTA GAP lobe
+			//! (the only `eRayRefraction` ray this SPF emits, always along
+			//! `ri.ray.Dir()`): exactly 1, the hero's own -- see the file
+			//! header.  -1 (decline) for every continuum lobe, and for a
+			//! gap this hit cannot have drawn.
+			Scalar EvaluateKrayNM(
+				const RayIntersectionGeometric& ri,
+				const Vector3& outDir,
+				ScatteredRay::ScatRayType rayType,
+				Scalar nm,
+				const IORStack& ior_stack
 				) const;
 
 			inline const WeaveBRDF& GetBRDF() const { return *pBRDF; }

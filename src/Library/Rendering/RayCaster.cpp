@@ -2524,10 +2524,14 @@ bool RayCaster::WalkShadowSegment(
 	const bool bDeltaPassThrough,
 	GradedIndexMedium::ShadowSegmentTrack* pGradedTrack,
 	const Point3* pSegmentEnd,
-    ISampler* alphaSampler, MediumBoundaryHits* boundaries, Scalar physicalDistance, Scalar occlusionStart
+    ISampler* alphaSampler, MediumBoundaryHits* boundaries, Scalar physicalDistance, Scalar occlusionStart,
+	unsigned int* pPassThroughCrossings
 	) const
 {
 	transmittance = RISEPel( 1.0, 1.0, 1.0 );
+	if( pPassThroughCrossings ) {
+		*pPassThroughCrossings = 0;
+	}
 
 	// DL-292: every "reached the light" return goes through here, so the
 	// graded-index track (if any) is priced up to the light point exactly
@@ -2550,8 +2554,10 @@ bool RayCaster::WalkShadowSegment(
 	// of nested dielectrics.
 	// (counts interface CROSSINGS, not objects: a meniscus shell is 2,
 	// nested glass-in-glass 4; 32 leaves headroom before the safe-but-
-	// darkening conservative block kicks in.)
-	static const unsigned int kMaxCrossings = 32;
+	// darkening conservative block kicks in.)  The last iteration is the
+	// reach-the-light check, so at most kShadowWalkMaxCrossings (31)
+	// surfaces are crossed (IRayCaster.h; DL-330 reads the same pair).
+	static const unsigned int kMaxCrossings = kShadowWalkMaxIterations;
 
 	// Small step-off so the next IntersectRay does not re-hit the
 	// surface we just crossed.  Matches the order of magnitude of the
@@ -2632,6 +2638,9 @@ bool RayCaster::WalkShadowSegment(
 				transmittance = transmittance * t;
 			} else {
 				transmittance = transmittance * pSPF->DeltaPassThroughTransmittance( ri.geometric );
+			}
+			if( pPassThroughCrossings ) {
+				( *pPassThroughCrossings )++;
 			}
 			if( !( ColorMath::MaxValue( transmittance ) > NEARZERO ) )
 			{
@@ -3394,21 +3403,29 @@ bool RayCaster::CastShadowRaySampled(const Ray& ray, Scalar distance, ISampler& 
 {
     return pScene && pScene->GetObjects()->IntersectShadowRaySampled(ray, distance, sampler, boundaries, physicalDistance, occlusionStart);
 }
-bool RayCaster::CastShadowRayAutoSampled(const Ray& ray, Scalar distance, bool nmMode,
-    Scalar nm, RISEPel& transmittance, bool deltaLight, ISampler& sampler, MediumBoundaryHits* boundaries, Scalar physicalDistance, Scalar occlusionStart,
-    GradedIndexMedium::ShadowSegmentTrack* pGradedTrack, const Point3* pSegmentEnd, bool smsCoversLight) const
+bool RayCaster::DeltaPassThroughShadowsActive() const
 {
-    if (boundaries) boundaries->clear();
-    const bool passThrough = deltaLight && bSceneHasDeltaPassThrough && pScene &&
+    return bSceneHasDeltaPassThrough && pScene &&
         !pScene->GetCausticPelMap() && !pScene->GetGlobalPelMap() &&
         !pScene->GetTranslucentPelMap() && !pScene->GetCausticSpectralMap() &&
         !pScene->GetGlobalSpectralMap();
+}
+
+bool RayCaster::CastShadowRayAutoSampled(const Ray& ray, Scalar distance, bool nmMode,
+    Scalar nm, RISEPel& transmittance, bool deltaLight, ISampler& sampler, MediumBoundaryHits* boundaries, Scalar physicalDistance, Scalar occlusionStart,
+    GradedIndexMedium::ShadowSegmentTrack* pGradedTrack, const Point3* pSegmentEnd, bool smsCoversLight,
+    unsigned int* pPassThroughCrossings) const
+{
+    if (pPassThroughCrossings) *pPassThroughCrossings = 0;
+    if (boundaries) boundaries->clear();
+    const bool passThrough = deltaLight && DeltaPassThroughShadowsActive();
     // DL-344: dielectrics see-through for DELTA lights, except where SMS
     // was evaluated at this point for this light (see CastShadowRayAuto).
     const bool dielectrics = DielectricShadowWalk(deltaLight, smsCoversLight);
     if (dielectrics || passThrough)
         return WalkShadowSegment(ray, distance, nmMode, nm, transmittance,
-            dielectrics, passThrough, pGradedTrack, pSegmentEnd, &sampler, boundaries, physicalDistance, occlusionStart);
+            dielectrics, passThrough, pGradedTrack, pSegmentEnd, &sampler, boundaries, physicalDistance, occlusionStart,
+            pPassThroughCrossings);
     // DL-292: the binary test leaves the track un-Finish()ed -- the caller
     // prices the crossing-free segment with ConnectionScaleToPoint.
     transmittance = RISEPel(1,1,1);

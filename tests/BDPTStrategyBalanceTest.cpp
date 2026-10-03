@@ -3675,6 +3675,96 @@ static void TestWeaveGapBoxAreaOutside()
 }
 
 //////////////////////////////////////////////////////////////////////
+// Topologies Q and R, HWSS twins (DL-329).  The closed gapped weave box
+// again, now rendered `hwss TRUE`: the camera's first hit is the front
+// face, and a camera ray that draws the front face's delta GAP lobe
+// continues into the box -- a CONTINUATION through the gap, priced on
+// the companion lanes by the HWSS ladders (PT's IntegrateFromHitHWSS;
+// BDPT's RecomputeSubpathThroughputNM).  Before DL-329 WeaveSPF had no
+// `EvaluateKrayNM`, PT's companion fallback priced the gap ray with the
+// CONTINUUM weave BSDF (~0) and dropped 3 of 4 lanes on every such path:
+// Q read PT-HWSS 0.0200 against pel 0.0319, R 0.0257 against 0.0796.
+// BDPT's ladder already took ratio 1 at a delta vertex, so its twins are
+// controls.
+//////////////////////////////////////////////////////////////////////
+static const char* kRasterizerBDPTWeaveGapPel =
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"bdpt_pel_rasterizer\n{\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tsamples 1024\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n"
+	"file_rasterizeroutput\n{\n\tpattern rendered/bdpt_balance_bdpt_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+
+static const char* kRasterizerBDPTWeaveGapHWSS =
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"bdpt_spectral_rasterizer\n{\n\tmax_eye_depth 8\n\tmax_light_depth 8\n\tsamples 1024\n\thwss TRUE\n"
+	"\tnum_wavelengths 160\n\tpixel_filter box\n\toidn_denoise FALSE\n}\n\n"
+	"file_rasterizeroutput\n{\n\tpattern rendered/bdpt_balance_bdpt_unused\n\ttype EXR\n\tbpp 32\n\tcolor_space Rec709RGB_Linear\n}\n";
+
+static double RunBDPTSpectralHWSSProbe( const char* topologyLabel, const std::string& sceneBody )
+{
+	std::cout << "Testing BDPT pel vs BDPT spectral hwss TRUE on " << topologyLabel << std::endl;
+	const std::string scenePel = std::string("RISE ASCII SCENE 7\n") + kRasterizerBDPTWeaveGapPel + sceneBody;
+	const std::string sceneHW  = std::string("RISE ASCII SCENE 7\n") + kRasterizerBDPTWeaveGapHWSS + sceneBody;
+	const std::string pathPel = WriteSceneToTempFile( scenePel.c_str(), "bdptpel_probe" );
+	const std::string pathHW  = WriteSceneToTempFile( sceneHW.c_str(),  "bdpthw_probe" );
+	if( pathPel.empty() || pathHW.empty() ) {
+		Check( false, "temp file write: BDPT spectral HWSS probe" );
+		return -1;
+	}
+	const ImageStats pel  = RenderAndComputeStats( pathPel.c_str() );
+	const ImageStats hwss = RenderAndComputeStats( pathHW.c_str() );
+	PrintStats( "BDPT pel      ", pel );
+	PrintStats( "BDPT spec hwss", hwss );
+	std::remove( pathPel.c_str() );
+	std::remove( pathHW.c_str() );
+	Check( pel.valid && hwss.valid, ( std::string("BDPT pel / spectral hwss TRUE renders produced output: ") + topologyLabel ).c_str() );
+	if( !pel.valid || !hwss.valid ) return -1;
+	const double achroPel = ( pel.mean[0]  + pel.mean[1]  + pel.mean[2]  ) / 3.0;
+	const double achroHW  = ( hwss.mean[0] + hwss.mean[1] + hwss.mean[2] ) / 3.0;
+	if( achroPel <= 1e-6 ) return -1;
+	const double ratio = achroHW / achroPel;
+	std::cout << "    ACHROMATIC mean: BDPT pel = " << achroPel << ", BDPT spectral hwss TRUE = " << achroHW
+	          << ", ratio = " << ratio << "  (" << ( ( ratio - 1.0 ) * 100.0 ) << "%)" << std::endl;
+	return ratio;
+}
+
+static std::string WeaveGapBoxOmniBody()
+{
+	return std::string( kSceneWeaveGapBox ) +
+		"omni_light\n{\n\tname lgt\n\tposition 0 0 -3.0\n\tcolor 1.0 1.0 1.0\n\tpower 6.0\n}\n";
+}
+
+static std::string WeaveGapBoxAreaBody()
+{
+	return std::string( kSceneWeaveGapBox ) +
+		"uniformcolor_painter\n{\n\tname pnt_emit_wg\n\tcolor 1.0 1.0 1.0\n}\n\n"
+		"lambertian_luminaire_material\n{\n\tname mat_emit_wg\n\texitance pnt_emit_wg\n\tscale 2.0\n\tmaterial none\n}\n\n"
+		"clippedplane_geometry\n{\n\tname quad_emit_wg\n"
+			"\tpta -1.4 -1.4 -2.0\n\tptb 1.4 -1.4 -2.0\n\tptc 1.4 1.4 -2.0\n\tptd -1.4 1.4 -2.0\n}\n\n"
+		"standard_object\n{\n\tname obj_emit_wg\n\tgeometry quad_emit_wg\n\tmaterial mat_emit_wg\n}\n";
+}
+
+static void TestWeaveGapBoxHWSS()
+{
+	struct T { const char* label; std::string body; };
+	const T rows[] = {
+		{ "topology Q (DL-329: gapped weave box, omni outside)", WeaveGapBoxOmniBody() },
+		{ "topology R (DL-329: gapped weave box, AREA outside)", WeaveGapBoxAreaBody() },
+	};
+	for( const T& r : rows )
+	{
+		const double pt = RunPTSpectralHWSSProbe( r.label, r.body );
+		if( pt >= 0 ) {
+			Check( pt > 0.97 && pt < 1.03,
+				( std::string( "DL-329: PT spectral hwss TRUE tracks PT pel within 3% through the weave gap: " ) + r.label ).c_str() );
+		}
+		const double bd = RunBDPTSpectralHWSSProbe( r.label, r.body );
+		if( bd >= 0 ) {
+			Check( bd > 0.97 && bd < 1.03,
+				( std::string( "DL-329: BDPT spectral hwss TRUE tracks BDPT pel within 3% through the weave gap: " ) + r.label ).c_str() );
+		}
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
 // Topology Z: the receiver is lit by the BACK face of a double-sided
 // mesh emitter (DL-320, docs/DL320_DOUBLE_SIDED_EMITTER.md).
 //
@@ -5204,6 +5294,7 @@ int main( int argc, char** argv )
 		TestGappedCurtainAreaLight();
 		TestWeaveGapBoxOmniOutside();
 		TestWeaveGapBoxAreaOutside();
+		TestWeaveGapBoxHWSS();
 		std::cout << "Passed: " << passCount << "\nFailed: " << failCount << std::endl;
 		return failCount == 0 ? 0 : 1;
 	}
@@ -5318,6 +5409,7 @@ int main( int argc, char** argv )
 	TestGenericHumanTissueOriginFix();
 	TestWeaveGapBoxOmniOutside();
 	TestWeaveGapBoxAreaOutside();
+	TestWeaveGapBoxHWSS();
 	TestRoughSSSEmptyContainerU();
 	TestRandomWalkSphereEmptyContainerV();
 	TestSmoothDiffusionSphereDL333();
