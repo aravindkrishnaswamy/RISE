@@ -1349,10 +1349,10 @@ static WhiteSky WhiteSkyTerms( const double tau, const double n )
 	return w;
 }
 
-static CoatedMaterial* MakeCoated( const IMaterial& base, double sigma, const IPainter& tint )
+static CoatedMaterial* MakeCoated( const IMaterial& base, double sigma, const IPainter& tint, double eta = 1.5 )
 {
 	UniformScalarPainter* w  = new UniformScalarPainter( 1.0 );
-	UniformScalarPainter* n  = new UniformScalarPainter( 1.5 );
+	UniformScalarPainter* n  = new UniformScalarPainter( eta );
 	UniformScalarPainter* a  = new UniformScalarPainter( 0.001 );
 	UniformScalarPainter* th = new UniformScalarPainter( 1.0 );
 	UniformScalarPainter* ab = new UniformScalarPainter( sigma );
@@ -1468,23 +1468,38 @@ static void SectionK4K6( Fixtures& f )
 	}
 
 	// ---- K5: white furnace, lossless white metals ----------------------
+	//  eta 1.5 at four incidences, plus coats whose index sits just above
+	//  the surrounding medium's (1.005 .. 1.13: a lacquer underwater, a
+	//  coat on a coat) at the grazing incidences, where the clear-coat
+	//  basis table used to blend across the critical cosine's infinite
+	//  slope at eta = 1 (eta 1.01: 1.160 at 80 deg pre-fix).
 	{
 		std::cout << "    K5 white furnace, clear coat over white GGX metals (8 x 50000 draws):\n";
+		struct Row { double eta; std::vector<double> thetas; };
+		const Row rows[] = {
+			{ 1.5,   { 0.0, 45.0, 70.0, 85.0 } },
+			{ 1.005, { 70.0, 80.0, 85.0 } },
+			{ 1.01,  { 70.0, 80.0, 85.0 } },
+			{ 1.04,  { 70.0, 80.0, 85.0 } },
+			{ 1.13,  { 70.0, 80.0, 85.0 } },
+		};
 		const double alphas[] = { 0.05, 0.4 };
-		const double thetas[] = { 0.0, 45.0, 70.0, 85.0 };
 		for( double al : alphas ) {
 			GGXMaterial* metal = MakeSchlickGgx( 0.0, 1.0, al );
-			CoatedMaterial* coat = MakeCoated( *metal, 0.0, *f.white );
-			std::cout << "      alpha " << al << ":";
-			for( double th : thetas ) {
-				const FurnaceStats sc = Furnace( *coat->GetSPF(), th, false, false, 8, 50000, 5101u + (unsigned)th );
-				std::cout << "  " << (int)th << " deg " << std::setprecision(5) << sc.mean << " +- " << sc.sem;
-				Check( sc.mean <= 1.012 + 4.0 * sc.sem && sc.mean >= 0.985 - 4.0 * sc.sem,
-					std::string( "[K5] white metal alpha " ) + std::to_string( al ) + " theta " + std::to_string( (int)th ) +
-					" furnace in [0.985, 1.012]" );
+			for( const Row& rw : rows ) {
+				CoatedMaterial* coat = MakeCoated( *metal, 0.0, *f.white, rw.eta );
+				std::cout << "      alpha " << al << " eta " << rw.eta << ":";
+				for( double th : rw.thetas ) {
+					const FurnaceStats sc = Furnace( *coat->GetSPF(), th, false, false, 8, 50000, 5101u + (unsigned)th );
+					std::cout << "  " << (int)th << " deg " << std::setprecision(5) << sc.mean << " +- " << sc.sem;
+					Check( sc.mean <= 1.012 + 4.0 * sc.sem && sc.mean >= 0.985 - 4.0 * sc.sem,
+						std::string( "[K5] white metal alpha " ) + std::to_string( al ) + " eta " + std::to_string( rw.eta ) +
+						" theta " + std::to_string( (int)th ) + " furnace in [0.985, 1.012]" );
+				}
+				std::cout << "\n";
+				coat->release();
 			}
-			std::cout << "\n";
-			coat->release(); metal->release();
+			metal->release();
 		}
 	}
 

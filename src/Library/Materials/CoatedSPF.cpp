@@ -14,6 +14,7 @@
 #include "CoatedSPF.h"
 #include "CoatedLayer.h"
 #include "../Utilities/MicrofacetUtils.h"
+#include "../Utilities/GeometricUtilities.h"
 #include "../Intersection/RayIntersectionGeometric.h"
 
 using namespace RISE;
@@ -127,7 +128,8 @@ Scalar CoatedSPF::PdfImpl(
 	// the base SPF's density at the internal direction wo' that Snell
 	// pairs with wo, times the solid-angle Jacobian of the refraction,
 	// dw'/dw = cos_o / (eta^2 mu_o')  (from n^2 cos dw being invariant).
-	const Scalar omega = pBRDF->RefractedSampleFraction();
+	const Scalar omega  = pBRDF->RefractedSampleFraction();
+	const Scalar omegaC = pBRDF->RecycledSampleFraction();
 	Scalar qBase = qBaseOuter;
 	if( omega > Scalar(0) ) {
 		const RayIntersectionGeometric riIn = pBRDF->MakeSubstrateRecord( ri, onb, cp );
@@ -137,7 +139,9 @@ Scalar CoatedSPF::PdfImpl(
 			? pBaseSPF->Pdf( riIn, woIn, ior_stack )
 			: pBaseSPF->PdfNM( riIn, woIn, nm, ior_stack );
 		const Scalar qRefr = ( muIn > Scalar(0) ) ? qIn * cosWo / ( cp.eta * cp.eta * muIn ) : Scalar(0);
-		qBase = ( Scalar(1) - omega ) * qBaseOuter + omega * qRefr;
+		// The recycled-term share: a cosine lobe about n (its geometric-
+		// horizon rejections make it a sub-density, like the sampler).
+		qBase = ( Scalar(1) - omega - omegaC ) * qBaseOuter + omega * qRefr + omegaC * ( cosWo * INV_PI );
 	}
 
 	return r_max( Scalar(0), pCoat * qCoat + ( Scalar(1) - pCoat ) * qBase );
@@ -205,8 +209,38 @@ void CoatedSPF::ScatterImpl(
 	ScatteredRay::ScatRayType lobeType = ScatteredRay::eRayReflection;
 	bool sampled = false;
 
-	const Scalar uLobe = sampler.Get1D();
-	const Scalar omega = pBRDF->RefractedSampleFraction();
+	const Scalar uLobe  = sampler.Get1D();
+	const Scalar omega  = pBRDF->RefractedSampleFraction();
+	const Scalar omegaC = pBRDF->RecycledSampleFraction();
+	const Scalar uSub   = ( uLobe - pCoat ) / r_max( Scalar(1e-12), Scalar(1) - pCoat );
+	if( uLobe >= pCoat && omegaC > Scalar(0) && uSub >= omega && uSub < omega + omegaC )
+	{
+		// --- DL-388: the recycled term's technique -- a cosine lobe about
+		//     the macro normal (selection again reuses `uLobe`).  M is a
+		//     broad field the substrate's own sampler cannot reach once its
+		//     lobe is narrow; this caps M's sample weight.  Tagged diffuse:
+		//     it is what the recycled light is.
+		const Point2 ptrand( sampler.Get1D(), sampler.Get1D() );
+		wo = GeometricUtilities::CreateDiffuseVector( onb, ptrand );
+		const bool   valid = ( Vector3Ops::Dot( wo, n ) > 0 ) && ( Vector3Ops::Dot( wo, geomN ) > 0 );
+		const Scalar q = valid ? PdfImpl( ri, wo, nm, ior_stack ) : Scalar(0);
+		if( !valid || q <= Scalar(1e-12) ) {
+			return;
+		}
+		const Scalar cosWo = Vector3Ops::Dot( wo, n );
+		ScatteredRay sub;
+		sub.type    = ScatteredRay::eRayDiffuse;
+		sub.isDelta = false;
+		sub.ray.Set( ri.ptIntersection, wo );
+		sub.pdf     = q;
+		if( nm < 0 ) {
+			sub.kray = pBRDF->value( wo, ri ) * ( cosWo / q );
+		} else {
+			sub.krayNM = pBRDF->valueNM( wo, ri, nm ) * ( cosWo / q );
+		}
+		scattered.AddScatteredRay( sub );
+		return;
+	}
 	if( uLobe >= pCoat && omega > Scalar(0) &&
 	    ( uLobe - pCoat ) < omega * ( Scalar(1) - pCoat ) )
 	{

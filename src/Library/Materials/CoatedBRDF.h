@@ -226,6 +226,14 @@ namespace RISE
 			//! weave sampling is unchanged.
 			Scalar RefractedSampleFraction() const;
 
+			//! DL-388: the share of the substrate branch CoatedSPF samples
+			//! from a cosine lobe about the macro normal, the technique for
+			//! the recycled term M (broad, while the GGX lobe a smooth
+			//! substrate's own sampler draws is narrow -- without it M's
+			//! weight value*cos/pdf is unbounded as alpha -> 0).  Nonzero only
+			//! for the GGX lobe reservoir, like RefractedSampleFraction.
+			Scalar RecycledSampleFraction() const;
+
 			CoatedBRDF(
 				const IBSDF& base,						///< [in] Substrate BSDF (allowlisted -- see CoatedMaterial)
 				const IScalarPainter& coatWeight,

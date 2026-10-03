@@ -781,6 +781,9 @@ struct NMResult {
     int    crossValFailures;
     double maxCrossValError;
     double pdfIntegral;
+    double fullSphereIntegral = 0;  //!< sub-density rows only
+    double emissionProb = 0;        //!< sub-density rows only
+    bool   subDensityPassed = true;
     bool   passed;
 };
 
@@ -794,7 +797,12 @@ static NMResult TestSPFNM(
     //! every SPF that satisfies the contract; relaxed ONLY where a
     //! DOCUMENTED pre-existing defect is being bounded rather than
     //! asserted away.  See the `nmEntries` table.
-    double crossValTol
+    double crossValTol,
+    //! When positive, the NM twin of the RGB Part 2b MASS gate:
+    //! `|int PdfNM over the SPHERE - P(ScatterNM + RandomlySelect yield a
+    //! non-delta ray)| <= subDensityTol`.  Set on the sub-density rows,
+    //! whose loose Part 2 band would otherwise leave the NM mass ungated.
+    double subDensityTol = -1.0
     )
 {
     NMResult result;
@@ -855,8 +863,37 @@ static NMResult TestSPFNM(
     }
     result.pdfIntegral = pdfIntegral;
 
+    if( subDensityTol > 0 )
+    {
+        const int SPH_THETA = 200, SPH_PHI = 200;
+        double sph = 0.0;
+        for( int t = 0; t < SPH_THETA; t++ ) {
+            const double theta = ( t + 0.5 ) * PI / SPH_THETA;
+            const double sinT = sin( theta ), cosT = cos( theta );
+            for( int p = 0; p < SPH_PHI; p++ ) {
+                const double phi = ( p + 0.5 ) * TWO_PI / SPH_PHI;
+                const Vector3 wo = Vector3Ops::Normalize( Vector3( sinT * cos( phi ), sinT * sin( phi ), cosT ) );
+                sph += spf.PdfNM( ri, wo, nm, iorStack ) * sinT * ( PI / SPH_THETA ) * ( TWO_PI / SPH_PHI );
+            }
+        }
+        RandomNumberGenerator rngE( SUBDENSITY_SEED );
+        Implementation::IndependentSampler samplerE( rngE );
+        const int NE = 200000;
+        int emitted = 0;
+        for( int i = 0; i < NE; i++ ) {
+            ScatteredRayContainer scattered;
+            spf.ScatterNM( ri, samplerE, nm, scattered, iorStack );
+            ScatteredRay* sel = scattered.RandomlySelect( rngE.CanonicalRandom(), false );
+            if( sel && !sel->isDelta ) emitted++;
+        }
+        result.fullSphereIntegral = sph;
+        result.emissionProb = double( emitted ) / double( NE );
+        result.subDensityPassed = fabs( sph - result.emissionProb ) <= subDensityTol;
+    }
+
     result.passed = ( result.crossValFailures == 0 )
-                 && ( fabs( pdfIntegral - 1.0 ) <= integralTol );
+                 && ( fabs( pdfIntegral - 1.0 ) <= integralTol )
+                 && result.subDensityPassed;
     return result;
 }
 
@@ -1859,7 +1896,8 @@ int main()
         // exists to prevent.
         //! `integralTol`: Part 2's hemisphere band; INTEGRAL_TOL except on a
         //! sub-density row (Coated_GGX since DL-388 -- see the RGB table).
-        struct NMEntry { const char* name; ISPF* spf; double crossValTol; double integralTol = INTEGRAL_TOL; };
+        //! `subDensityTol`: when positive, the NM mass gate (TestSPFNM).
+        struct NMEntry { const char* name; ISPF* spf; double crossValTol; double integralTol = INTEGRAL_TOL; double subDensityTol = -1.0; };
         const NMEntry nmEntries[] = {
             { "Lambertian",              lambertian,   CROSS_VAL_TOL },
             { "OrenNayar",               orenNayar,    CROSS_VAL_TOL },
@@ -1906,7 +1944,7 @@ int main()
             { "GGX_Anisotropic",         ggxAniso,     CROSS_VAL_TOL },
             { "SubSurfaceScattering",    sss,          CROSS_VAL_TOL },
             { "Coated_Lambertian",       coatedLamb,   CROSS_VAL_TOL },
-            { "Coated_GGX",              coatedGgx,    CROSS_VAL_TOL, 0.25 },
+            { "Coated_GGX",              coatedGgx,    CROSS_VAL_TOL, 0.25, SUBDENSITY_TOL },
             { "Fabric_Lambertian",       fabricLamb,   CROSS_VAL_TOL },
             { "Fabric_GGXaniso_weave45", fabricAniso,  CROSS_VAL_TOL },
 
@@ -1940,11 +1978,15 @@ int main()
                 // first (docs/SPECTRAL_ILLUMINANT_CONVENTION.md).
                 NMResult r = TestSPFNM( std::string( e.name ) + " @ " + nmAngleNames[a],
                                         *e.spf, nmAngles[a], 660.0, e.integralTol,
-                                        e.crossValTol );
+                                        e.crossValTol, e.subDensityTol );
                 std::cout << "  " << ( r.passed ? "PASS" : "FAIL" ) << "  " << r.name
                           << "  crossValFailures=" << r.crossValFailures
                           << "  maxRelErr=" << r.maxCrossValError
                           << "  pdfIntegral=" << r.pdfIntegral;
+                if( e.subDensityTol > 0 ) {
+                    std::cout << "  int PdfNM(sphere)=" << r.fullSphereIntegral
+                              << " vs emission " << r.emissionProb;
+                }
                 if( e.crossValTol != CROSS_VAL_TOL ) {
                     std::cout << "   [cross-val bounded at " << e.crossValTol
                               << " -- documented pre-existing RGB/NM gap, see source]";
