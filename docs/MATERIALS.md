@@ -606,7 +606,7 @@ file for parameter-by-parameter behaviour.
 - `phong_luminaire_material`
 
 **Data-driven:**
-- `datadriven_material` — measured BRDF (MERL / Matusik).
+- `datadriven_material` — measured BRDF (MERL / Matusik).  Reflection-only tabulated BRDF; its `DataDrivenSPF` samples the table cosine-weighted over the front hemisphere (`kray = pi f` from the BSDF itself, `Pdf = cos/pi`), so PT, BDPT and VCM agree on it (DL-325).
 
 ## 9. Adding a new BSDF — checklist
 

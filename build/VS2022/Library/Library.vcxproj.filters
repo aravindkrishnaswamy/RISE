@@ -819,6 +819,9 @@
     <ClCompile Include="..\..\..\src\Library\Materials\DataDrivenBSDF.cpp">
       <Filter>Materials\Data Driven</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\DataDrivenSPF.cpp">
+      <Filter>Materials\Data Driven</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Materials\SheenBRDF.cpp">
       <Filter>Materials</Filter>
     </ClCompile>
@@ -2221,6 +2224,9 @@
       <Filter>Materials\Data Driven</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\DataDrivenMaterial.h">
+      <Filter>Materials\Data Driven</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\DataDrivenSPF.h">
       <Filter>Materials\Data Driven</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Scene.h">

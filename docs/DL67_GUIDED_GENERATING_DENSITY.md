@@ -463,8 +463,8 @@ significant change anywhere.
   scenes <= 0.4 pt).  Gated in
   `BDPTStrategyBalanceTest` / `VCMStrategyBalanceTest` topology AB (0.5 %
   band).  Premise 2's audit found one more material that breaks it,
-  in the opposite direction: `datadriven_material` has a BSDF and NO SPF
-  (**DL-325**, open).  Full account: the DL-285 ledger row.
+  in the opposite direction: `datadriven_material` had a BSDF and NO SPF
+  (**DL-325**, closed 2026-10-03: `DataDrivenSPF` samples the table).  Full account: the DL-285 ledger row.
 * `CompositeSPF` (DL-24 / DL-221): its 50/50 placeholder `Pdf()` is a
   variance matter under round 2 (the realization-independence premise no
   longer depends on the SPF), except where it reads 0 at a generated
