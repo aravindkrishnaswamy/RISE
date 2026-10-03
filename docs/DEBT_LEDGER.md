@@ -1986,7 +1986,10 @@ light-directed seeding) confirmed every other site that reads a sampled
 emitter's UV either samples its own local UV directly or reads
 `LightSample::Le` (already correct pre-fix) rather than rebuilding a
 `RayIntersectionGeometric` from `LightSample`, so no sibling of this
-pattern was found unfixed. This slice's own state: main rows unchanged in
+pattern was found unfixed at that slice's closure. DL-347 subsequently
+changed SMS to reconstruct sampled UV/Po/surface context and evaluate
+directional RGB/NM emission toward the chain; the preceding audit is
+historical. This slice's own state: main rows unchanged in
 count (one row struck from open to closed) — recount not performed
 against a fresh table scan of the whole file, since this slice touched
 exactly one row and added none; the next full sweep should fold this

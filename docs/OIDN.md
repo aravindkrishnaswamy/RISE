@@ -263,8 +263,10 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
   caps the achievable fps; caching makes the steady-state denoise cost
   essentially "execute + memcpy."
 - **Cache key:** `(width, height, hasAlbedo, hasNormal, resolvedQuality, prefilter, requestedDevice)`.
-  Mismatch on any → tear down filter and (only if dims change) reallocate
-  buffers, rebuild filter, re-commit.  Match → reuse, skip the commit.
+  Mismatch on any → tear down and rebuild the filter, then re-commit.
+  GPU color/output storage is retained at unchanged dimensions; CPU
+  shared-buffer handles are rebuilt for configuration/pointer changes.
+  Backend changes recreate buffers. Match → reuse, skip the commit.
   Device is created lazily and reused while the requested backend is unchanged.
   Changing Auto/CPU/GPU while idle releases the device, filters and buffers
   and resolves the new request with the same fallback policy.
@@ -1429,9 +1431,10 @@ from a reviewer, or has its priority moved. Most recent first.
   interactive viewport's persistent rasterizer instance reuses the
   same cached state across every viewport-driven re-render.
 - Rebuild semantics: any cache-key mismatch tears down the filter and
-  re-commits.  Buffers are re-allocated only when dimensions change;
-  toggling aux presence keeps existing color/output buffers and just
-  allocates / releases the aux ones.  Device is built lazily on first
+  re-commits. GPU color/output storage is reallocated when dimensions
+  change; toggling aux presence allocates/releases the aux storage.
+  CPU shared-buffer handles are rebuilt for configuration/pointer changes.
+  Backend changes recreate buffers.  Device is built lazily on first
   denoise and survives filter rebuilds while the backend request is unchanged.
   An idle backend-request change rebuilds device, filters and buffers.
 - Device creation logs `OIDN: creating CPU device (cached while backend request is unchanged)`,

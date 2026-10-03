@@ -1581,10 +1581,8 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 	ExpressionMemo::Invalidate();
 
 #ifdef RISE_ENABLE_OIDN
-	// Per-frame timer reset so OidnQuality::Auto's render-seconds-per-
-	// megapixel heuristic decides each frame independently rather than
-	// inflating with cumulative animation time.  See docs/OIDN.md
-	// (OIDN-P0-1) for the heuristic.
+	// Reset per-frame wall-time telemetry instead of accumulating animation
+	// time. Auto quality uses configured work (DL-360), never this timer.
 	BeginRenderTimer();
 #endif
 	// Each frame starts a fresh planned AOV accumulation, whether or not

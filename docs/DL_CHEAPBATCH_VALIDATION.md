@@ -720,3 +720,27 @@ Gate logs: `/tmp/cheapbatch-review4-gate.json`; final rescan logs:
 `/tmp/cheapbatch-final-source-build.log`, `/tmp/cheapbatch-final-source-run.log`.
 Final review verdict is reported against the resulting full HEAD; no
 post-verdict edit is used to record that verdict in this committed document.
+
+## Independent review round 3 comment correction
+
+Fresh physics, test/statistics, and contract reviewers examined
+`33de960d9fde522a67f0e7fb3a01a6bdb8bbadfc`. Contract review found a P1
+stale animation comment in PixelBasedRasterizerHelper.cpp: it still said
+Auto used measured frame seconds. The comment now describes per-frame
+wall-time telemetry and explicitly says Auto uses configured work.
+The code and executable behavior are unchanged. A search of the OIDN
+policy source/comment family found no other current wall-time Auto claim.
+The preceding18-run integration gate remains the behavior gate; this
+comment correction receives a checked warning-free library rebuild and
+SourceHygiene rescan before the next fresh review.
+
+The other round3 P1 was stale DL-44 audit framing in tests/README: it
+claimed current SMS never rebuilds an emission query. README, CLAUDE,
+the DL-44 closure document and ledger historical paragraph now distinguish
+the old audit from DL-347 directional RGB/NM queries with UV/Po/surface
+context. Two P2s are also corrected: the obsolete exact device-log suffix,
+and OIDN buffer documentation that confused CPU shared handles with GPU
+storage. Physics and statistics reviewers reported zero P1/P2 on33de960d9.
+All round3 corrections are comments/documentation only.
+The library rebuild exited0 with zero warnings in36.15 s; checked
+SourceHygiene build exited0 with zero warnings in4.40 s, run167/0.
