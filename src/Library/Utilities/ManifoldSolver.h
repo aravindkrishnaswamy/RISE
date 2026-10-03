@@ -561,7 +561,7 @@ namespace RISE
 			ManifoldSolver( const ManifoldSolverConfig& cfg );
             void WarnHWSSLegacyMode();
             // Effective opt-in after the prepared scene-wide policy. Unknown
-            // or unprepared managers keep the legacy estimator inertly.
+            // or unprepared managers leave extended mode inert.
             bool ExtendedModeActive(const IScene&) const;
             // When extended mode is inert this returns true to preserve the
             // existing contribution/suppression/shadow switches together.
