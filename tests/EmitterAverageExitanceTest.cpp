@@ -73,6 +73,10 @@
 #include "../src/Library/Objects/Object.h"
 #include "../src/Library/Cameras/PinholeCamera.h"
 #include "../src/Library/Scene.h"
+#include "../src/Library/Lights/LightSampler.h"
+#include "../src/Library/Materials/CompositeEmitter.h"
+#include "../src/Library/Materials/LambertianEmitter.h"
+#include "../src/Library/Painters/UniformScalarPainter.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -382,6 +386,69 @@ template<class Tracer> static void PhotonRow( const char* label, const char* exp
 	Check( std::fabs( zz - 0.2 ) < 0.02, std::string( label ) + ": flux follows the field's own spatial distribution" );
 }
 
+
+//////////////////////////////////////////////////////////////////////
+// Row 3: the helper itself.
+//////////////////////////////////////////////////////////////////////
+static const char* kUniformEmit =
+	"uniformcolor_painter\n{\n\tname pnt_ex\n\tcolor 0.3 0.6 0.9\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_ex\n\tscale 10.0\n\tmaterial none\n}\n\n";
+
+static bool LoadEmitterAverages( const char* emitter, LightSampler::LuminaryExitance& out, RISEPel& emitterOwn )
+{
+	const std::string path = WriteSceneToTempFile( Build( emitter, kPT ), "helper" );
+	if( path.empty() ) return false;
+	IJobPriv* pJob = nullptr;
+	if( !RISE_CreateJobPriv( &pJob ) || !pJob ) { std::remove( path.c_str() ); return false; }
+	const bool ok = pJob->LoadAsciiSceneViaCst( path.c_str() );
+	std::remove( path.c_str() );
+	const IObject* pObj = ok ? pJob->GetScene()->GetObjects()->GetItem( "obj_emit" ) : nullptr;
+	if( pObj ) {
+		out = LightSampler::AverageLuminaryExitance( pObj );
+		emitterOwn = pObj->GetMaterial()->GetEmitter()->averageRadiantExitance();
+	}
+	safe_release( pJob );
+	return pObj != nullptr;
+}
+
+static void RunHelper()
+{
+	std::cout << "Row 3: LightSampler::AverageLuminaryExitance\n";
+	LightSampler::LuminaryExitance e;  RISEPel own;
+	// Position-keyed: surface mean of 10 * 1.5 r^2 over the 2x2 quad is 10.
+	Check( LoadEmitterAverages( kLambertP, e, own ), "helper / P-keyed scene loads" );
+	{
+		std::printf( "  P-keyed   average %.6f (emitter's own P=0 estimate %.6f, uniform=%d)\n", e.average.r, own.r, int( e.uniform ) );
+		Check( !e.uniform, "helper / P-keyed field is not uniform" );
+		Check( std::fabs( e.average.r / 10.0 - 1.0 ) < 0.01, "helper / P-keyed average is the surface mean (10)" );
+		Check( own.r < 1e-6, "helper / premise: the emitter's own estimate is the origin value (0)" );
+	}
+	// UV-keyed: the sample points ARE the emitter's own UV grid on a clipped plane.
+	LoadEmitterAverages( kLambertUV, e, own );
+	std::printf( "  UV-keyed  average %.9f (emitter's own %.9f, uniform=%d)\n", e.average.r, own.r, int( e.uniform ) );
+	Check( !e.uniform && std::fabs( e.average.r / own.r - 1.0 ) < 1e-9, "helper / UV-keyed average equals the old UV-grid average" );
+	// Constant: the emitter's own cached average, bit for bit.
+	LoadEmitterAverages( kUniformEmit, e, own );
+	std::printf( "  constant  average %.9f %.9f %.9f (emitter's own %.9f, uniform=%d)\n", e.average.r, e.average.g, e.average.b, own.r, int( e.uniform ) );
+	Check( e.uniform && e.average.r == own.r && e.average.g == own.g && e.average.b == own.b, "helper / constant exitance returns the emitter's own average verbatim" );
+
+	// CompositeEmitter::radiantExitanceAt: top + bottom * exp(-2 t ext) read at the record's point.
+	{
+		IPainter* top = SphereFixture::MakeExpr( "2.0*P.x*P.x" );
+		IPainter* bottom = SphereFixture::MakeExpr( "1.0" );
+		UniformScalarPainter* ext = new UniformScalarPainter( 0.5 );
+		LambertianEmitter* te = new LambertianEmitter( *top, 1.0 );
+		LambertianEmitter* be = new LambertianEmitter( *bottom, 1.0 );
+		CompositeEmitter* ce = new CompositeEmitter( *te, *be, *ext, 1.0 );
+		RayIntersectionGeometric rig( Ray(), nullRasterizerState );
+		rig.ptIntersection = Point3( 1.0, 0, 0 );
+		const double got = ce->radiantExitanceAt( rig ).r, want = 2.0 + std::exp( -1.0 );
+		std::printf( "  composite local exitance %.9f (want %.9f; construction-time average %.9f)\n", got, want, ce->averageRadiantExitance().r );
+		Check( std::fabs( got - want ) < 1e-9, "composite emitter local exitance = top + bottom * exp(-2 t ext) at the record" );
+		ce->release(); be->release(); te->release(); ext->release(); bottom->release(); top->release();
+	}
+}
+
 int main()
 {
 	std::cout << "=== EmitterAverageExitanceTest (DL-431) ===\n";
@@ -390,6 +457,7 @@ int main()
 	PhotonRow<RGBTracer<GlobalPelPhotonMap>>( "RGB, vanishing at the origin", "1.5*(P.x*P.x+P.y*P.y)", 0, 1, false );
 	PhotonRow<RGBTracer<GlobalPelPhotonMap>>( "RGB, origin value 150 (wrong)", "1.5*((P.x+10.0)*(P.x+10.0)+P.y*P.y)", -10, 1, false );
 	PhotonRow<NMTracer<GlobalSpectralPhotonMap>>( "NM, vanishing at the origin", "1.5*(P.x*P.x+P.y*P.y)", 0, 1, true );
+	RunHelper();
 	std::cout << "\nPassed: " << passCount << "  Failed: " << failCount << std::endl;
 	return failCount == 0 ? 0 : 1;
 }
