@@ -830,6 +830,15 @@ by a point light reads 0.137 +/- 0.27 (sd, n = 4) -- unbiased-in-the-limit
 but heavy-tailed, the variance cost of having no connection strategy for
 the class (DL-424).
 
+**Cost.**  Zero where no material can open a gap (the scene flag
+short-circuits; the closed sphere at gap 0, BDPT 24 x 24 x 1024 spp,
+interleaved n = 3: 1.94 / 1.95 s user, base / fix).  Where one can, every
+s = 1 connection to a delta light that the binary test blocks pays one
+pass-through walk unless the cover slack settles it first: the worst case
+measured, the gap-0.3 sphere (every front-shell NEE crosses the back
+shell), reads 1.96 -> 2.27 s user (+15.6 %) for the 7 % of the image BDPT
+was missing.
+
 ### 10.4 Residuals
 
 - **DL-424** (new): VCM has no vertex-connection strategy for
