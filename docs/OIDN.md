@@ -582,24 +582,22 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
       (vs 518 ms accurate, 2.3× speedup as designed).
 
 #### OIDN-P1-2 — Replace `device.newBuffer + memcpy` with `oidnNewSharedBuffer`
-- **Status:** Shipped — 2026-04-29.  `oidn::DeviceRef::newBuffer(void*, size_t)`
-  (the C++ wrapper for `oidnNewSharedBuffer`) wraps host memory
-  directly; the device-side `newBuffer(size_t)` + `buffer.write` /
-  `read` round trip is now skipped on CPU device.  GPU devices
-  (Metal / SYCL / CUDA / HIP) keep the device-owned-buffer path
-  because their memory isn't host-mapped.  Mode is auto-detected
-  by introspecting the actual device type after creation, so
-  `oidn_device auto` correctly picks zero-copy when OIDN falls
-  back to CPU on a Mac without the metal device dylib.
+- **Status:** Shipped — 2026-04-29; ownership corrected by DL-440 on
+  2026-10-03. CPU beauty/output remain shared. Fast aux is input-only and
+  shared too; Accurate aux uses reusable owned buffers and one fresh copy
+  per supplied guide on every call. GPU retains device-owned buffers and
+  uploads/readback. Actual device type selects this path, including CPU
+  fallback from `oidn_device auto`.
 - **Owner:** Aravind
 - **PR:** —
-- **Why:** Today `Denoise()` does up to 4 host-side full-image copies (image
-  → beautyBuf, beautyBuf → colorBuf, outputBuf → denoisedBuf, denoisedBuf →
-  image). At 4K RGB that's ~50 MB per copy. On CPU device, OIDN can directly
-  alias host memory via `oidnNewSharedBuffer`.
-- **What:** When device type is CPU, wrap `beautyBuf` / `albedoBuf` /
-  `normalBuf` / `outputBuf` directly. Skip the intermediate
-  `device.newBuffer + memcpy`. Falls back to the current path on GPU device.
+- **Why (historical motivation):** the April implementation sought to avoid
+  OIDN color/auxiliary uploads and output readback on CPU by wrapping host
+  storage. Image-to-staging and staging-to-image conversions still run.
+  The former ~50 MB estimate per 4K RGB Float3 buffer was incorrect; see
+  the explicit current byte accounting below.
+- **What:** CPU wraps beauty/output and Fast auxiliary inputs directly.
+  DL-440 makes Accurate auxiliary buffers owned and copies their const
+  inputs each call. GPU keeps the device-owned upload/readback path.
 - **Touch:** [OIDNDenoiser.cpp:113](../src/Library/Rendering/OIDNDenoiser.cpp#L113).
 - **Effort:** ~1 hour. Subtle aliasing rules — test in/out buffer overlap.
 - **Verification:** heap profiler before / after on a 4K denoise.
@@ -625,7 +623,9 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
   - Fast CPU skips all input/output copies; Accurate CPU copies each supplied
     auxiliary input and retains shared beauty/output. GPU uploads/readback
     retain their existing behavior.
-  - Build clean, 72/72 tests pass.  Smoke tests on M1 Max:
+  - **Historical 2026-04-29 smoke results, before DL-440:** build clean,
+    72/72 tests pass. These timings do not measure current Accurate copies.
+    Smoke tests on M1 Max:
     - **CPU shared** (`oidn_device cpu`) at 200×150 + glass scene:
       cold-cache 12 ms, warm-cache 5.9 ms.  Log shows
       `[zero-copy shared buffers]` suffix on device creation.
@@ -633,10 +633,15 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
       cold 209 ms (Metal init dominates), warm 5.2 ms.  No
       `[zero-copy]` suffix as expected.
     - **CPU shared + Accurate prefilter**: 24 ms cold (vs 12 ms
-      Fast).  In-place prefilter through shared aliases works.
-  - Memory savings scale with image size: at 4K RGB a single
-    image is ~96 MB; eliminating 4 such copies saves ~380 MB of
-    transient bandwidth per denoise on the CPU path.
+      Fast). The historical prefilter wrote through shared aux aliases;
+      DL-440 withdraws that ownership policy for const caller inputs.
+  - **Current byte accounting, not measured bandwidth:** one 3840×2160
+    Float3 buffer contains `3840 * 2160 * 3 * sizeof(float)` =99,532,800
+    bytes (99.5 MB /94.9 MiB). Fast CPU avoids up to four OIDN copies
+    (398.1 MB logical copy payload); Accurate shares beauty/output but
+    retains up to two owned auxiliary buffers and copies each supplied
+    guide once per call. Image/staging conversions remain. No current
+    whole-render or bandwidth speed bound is claimed.
 
 #### OIDN-P1-3 — Progress monitor (cancel intentionally NOT wired)
 - **Status:** Closed (won't do unless an interactive UI consumer
@@ -1150,7 +1155,8 @@ from a reviewer, or has its priority moved. Most recent first.
   `oidn::DeviceRef::newBuffer(host_ptr, bytes)` (the C++ wrapper for
   `oidnNewSharedBuffer`) on CPU device, eliminating up to 4
   image-sized memcpy operations per Fast denoise (color in, albedo in,
-  normal in, output out — each was ~50 MB at 4K RGB). DL-440 keeps
+  normal in, output out — each is99.5 MB /94.9 MiB at3840×2160 Float3;
+  the former ~50 MB estimate was incorrect). DL-440 keeps
   Accurate auxiliary inputs in owned mutable buffers: up to two extra
   image-sized allocations retained by the cache and two input copies per
   call. No measured end-to-end cost bound is claimed for this correction.
@@ -1159,9 +1165,9 @@ from a reviewer, or has its priority moved. Most recent first.
   more robust than trusting the user's `oidn_device` parameter
   because `Default` silently picks CPU when no GPU backend is
   loadable (e.g., Mac without the metal device dylib — see
-  OIDN-P0-3 install gotcha).  The log line gains a
-  `[zero-copy shared buffers]` suffix when shared mode kicks in,
-  so it's visible at a glance.
+  OIDN-P0-3 install gotcha). The historical log suffix was
+  `[zero-copy shared buffers]`; after DL-440 it is
+  `[shared beauty/output; Fast aux shared]`, explicitly naming the scope.
 - **Cache-key extension for pointer stability:** shared buffers pin
   to a specific host address at filter-commit time; if the caller
   passes a different pointer next call, we must rebuild.  Added
