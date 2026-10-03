@@ -6020,10 +6020,6 @@ bool ManifoldSolver::ComputeTrialContribution(
     ISampler& sampler = alphaSampler ? *alphaSampler : static_cast<ISampler&>(alphaFallback);
 	outContribution = RISEPel( 0, 0, 0 );
 	outDir = Vector3( 0, 0, 0 );
-	(void)geomNormal;  // Reserved for receiver-side path-space cosines —
-	                    // `cosV1atX` already pulls geomNormal off the chain
-	                    // vertex below.  Keeping the parameter explicit so
-	                    // callers must commit to providing both normals.
 
 	if( !mResult.valid || mResult.specularChain.empty() || !pBSDF ) {
 		return false;
@@ -6151,7 +6147,6 @@ bool ManifoldSolver::ComputeTrialContributionNM(
     ISampler& sampler = alphaSampler ? *alphaSampler : static_cast<ISampler&>(alphaFallback);
 	outContribution = 0;
 	outDir = Vector3( 0, 0, 0 );
-	(void)geomNormal;  // See ComputeTrialContribution above.
 
 	if( !mResult.valid || mResult.specularChain.empty() || !pBSDF ) {
 		return false;
