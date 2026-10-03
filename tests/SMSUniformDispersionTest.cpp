@@ -128,6 +128,9 @@ int main( int argc, char** argv )
         }
         const auto stats=Summarize(shifts);
         std::cout << "DL-353 indexedmesh=" << mesh << " hwss=" << hwss << " dispersion=" << dispersion << " centroid shift=" << stats.mean << " sd=" << stats.sd << " n=4" << std::endl;
+        const double meanSD=stats.sd/2.0;
+        Check(dispersion ? std::fabs(stats.mean)-0.02>3*meanSD : 0.005>3*meanSD,
+            "wavelength displacement decision resolves three salted mean SDs");
         if(dispersion) Check(std::fabs(stats.mean)>0.02,"N-SF11 caustic moves with wavelength");
         else Check(std::fabs(stats.mean)<0.005,"constant-index control has no wavelength displacement");
     }
