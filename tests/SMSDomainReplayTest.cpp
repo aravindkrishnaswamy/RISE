@@ -645,6 +645,30 @@ public:
     }
     void Flush() override {}
 };
+static void EmptyCompositeNameCases()
+{
+    auto* log=new CompositePolicyLog(); GlobalLogPriv()->AddPrinter(log);
+    for(bool closed : {false,true}) for(bool reverse : {false,true}) {
+        LoadedScene loaded(Materials(true)+Mesh(closed,reverse)+
+            "standard_object\n{\n name caster\n geometry shape\n material layers\n}\n");
+        auto* object=loaded.job->GetObjects()->GetItem("caster");
+        Check(object&&loaded.job->GetObjects()->AddItem(object,""),"object API accepts an empty name alias");
+        const size_t before=log->messages.size();
+        loaded.Scene().GetObjects()->PrepareForRendering();
+        GlobalLog()->FlushPrinters();
+        Check(log->messages.size()==before+1,"empty-named composite still emits one preparation warning");
+        Check(log->messages.size()>before&&log->messages.back().find("composite object ''")!=std::string::npos,
+            "empty-named first composite is represented in the warning");
+        ManifoldSolverConfig config; config.enabled=true; config.extendedMode=true;
+        auto* solver=new ManifoldSolver(config);
+        Check(!solver->ExtendedModeActive(loaded.Scene()),"empty object name cannot make a composite scene active");
+        IORStack missing(1); SMSStartingMedia capture;
+        Check(!SMSDomainReplay::Capture(loaded.Scene(),Point3(0,0,3),missing,capture),
+            "empty-named composite still declines uncertain starting capture");
+        solver->release();
+    }
+    log->release();
+}
 static void PreparedCompositePolicyCases()
 {
     auto* log=new CompositePolicyLog(); GlobalLogPriv()->AddPrinter(log);
@@ -904,6 +928,11 @@ int main(int argc,char** argv)
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";
         return failCount?1:0;
     }
+    if(argc>1 && std::string(argv[1])=="--empty-name-only") {
+        EmptyCompositeNameCases();
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";
+        return failCount?1:0;
+    }
     if(argc>1 && std::string(argv[1])=="--scene-policy-only") {
         PreparedCompositePolicyCases();
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";
@@ -944,6 +973,7 @@ int main(int argc,char** argv)
     FiniteDielectricCases();
     CompositePTCases();
     PreparedCompositePolicyCases();
+    EmptyCompositeNameCases();
     HWSSDispatchCases();
     Check(domainCounters.attempts.load()==domainCounters.acceptedRoots.load()+domainCounters.rejectedRoots.load(),
         "every domain trial is accounted as accepted or rejected");
