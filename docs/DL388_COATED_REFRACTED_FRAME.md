@@ -104,13 +104,19 @@ nodes (uniform in `sqrt(alpha)`) and 32 view-cosine nodes ending at 1, a
 deterministic VNDF quadrature (`E[F G2/G1]`, 32x32 strata) for the two
 Schlick basis functions `1` and `(1 - w.m)^5` (Schlick's F0 is exact;
 conductor / thin-film are projected on it through `Directional(1)`), each
-row calibrated to `LookupEssG2`, plus the bin's mass centroid.  Per
-`(alpha, eta, tau)` the bins are weighted by `Phi`/`Psi` interpolated at
-the centroid and the hemispherical integrals are taken on a fine sub-grid
-with the exact weights (so `G` is the integral the kernel's out-coupling
-really performs).  Clear coats read that basis from a second table over
-(roughness node, 81 eta nodes), blended bilinearly; absorbing / tinted
-coats build it directly; both sit behind a 4-entry per-thread memo.
+row calibrated to `LookupEssG2`, plus the bin's mass centroid and spread
+and a 256-sub-bin histogram with sub-bin centroids.  Per `(alpha, eta,
+tau)` the bins are weighted by `Phi`/`Psi` at the centroid (the bins next
+to the critical cosine `mu_c` by a uniform window of the bin's own spread,
+with the exact weights), and the hemispherical integrals are taken on a
+fine sub-grid with the exact weights, the cells next to `mu_c`
+sub-sampled (so `G` is the integral the kernel's out-coupling really
+performs).  For roughness below 0.25 a **critical patch** carries `g` and
+`e` on 17 nodes over `[mu_c, mu_c + 1/16]` (section 8).  Clear coats read
+that basis from a second table over (roughness node, 81 eta nodes
+**uniform in `mu_c`**), blended bilinearly; absorbing / tinted coats blend
+the two roughness-node bases around `alpha`, built on demand into an
+8-entry per-thread ring; a 4-entry per-thread memo sits in front.
 Colours (`c`, `F0`, `F_ms`) enter linearly per channel.  The substrate is
 evaluated through its own `value` at a record whose view is refracted and
 whose ambient index is the coat's (`CoatedBRDF::MakeSubstrateRecord`), so a
@@ -118,10 +124,14 @@ GGX conductor sees the medium it is buried in.
 
 **Sampler.**  For GGX, half the substrate branch samples the base SPF in
 the refracted frame and refracts the draw out (`CoatedSPF::ScatterImpl`);
-outside the escape cone the draw is trapped and emits nothing.  `PdfImpl`
-adds `omega q_int(wo') cos_o / (eta^2 mu_o')`.  `kray = value cos / Pdf` as
-before.  The selection reuses the branch uniform, so Lambertian / Oren-Nayar
-/ fabric / weave draw exactly as before.
+outside the escape cone the draw is trapped and emits nothing.  0.15 of it
+samples a cosine lobe about the macro normal -- the technique for the
+recycled term `M`, which the base sampler cannot reach on a smooth lobe
+(section 8) -- and the remaining 0.35 the base SPF at the outer
+directions.  `PdfImpl` is `(0.35 q_outer + 0.5 q_int(wo') cos_o / (eta^2
+mu_o') + 0.15 cos_o / pi)` on the substrate branch.  `kray = value cos /
+Pdf` as before.  The selection reuses the branch uniform, so Lambertian /
+Oren-Nayar / fabric / weave draw exactly as before.
 
 `albedo` (the OIDN AOV) is the reservoir's own directional albedo
 `F + T a (e_1 + g E / (1 - Q))`; `hemisphericalAlbedo` is
@@ -158,7 +168,8 @@ Coated / composite, directional albedo:
 Gates: K3 (diffuse-dominant GGX) `max(1 %, 5 sem)`, as the Lambertian rows;
 K4 theta 0 / 45 `max(3 %, 5 sem)`, theta 70 `max(3 + 6 sigma_t %, 5 sem)`
 except the two lobes that trap light near the critical angle (glossy alpha
-.16, smooth metal), pinned [0.95, 1.20] (DL-423).
+.16, smooth metal), pinned (DL-423; [0.95, 1.20] in round 1, [0.97, 1.08]
++- 5 sem after section 8).
 
 **K5 furnace**, clear coat over white GGX metals (F0 1), 8 x 50000:
 
@@ -185,7 +196,8 @@ EMITTED rather than all attempts, over-reading any sub-density sampler by
 attempt (Fabric_GGXaniso moved 2.24 % -> 0.10 % as a side effect).
 `SPFPdfConsistencyTest` Coated_GGX: Part 2's hemisphere band is a sanity
 bound (0.25); Part 2b gates the mass against the measured emission
-probability (0.8195 vs 0.8211 at 30 deg).  `LayeredWhiteFurnaceTest` pins
+probability (0.8195 vs 0.8211 at 30 deg in round 1; section 8 adds the
+same gate on the NM row).  `LayeredWhiteFurnaceTest` pins
 14 / 15 re-measured (80 deg 0.568 -> 0.688 white, 0.455 -> 0.528 red).
 
 ## 5. Appearance
@@ -219,6 +231,7 @@ Oren-Nayar.
 
 ## 6. Cost
 
+Round-1 numbers (superseded for GGX by the table at the end of section 8).
 `CoatedBRDF::value` / `CoatedSPF::Pdf` / `Scatter` micro-benchmark (best of
 5 x 2e5, this machine, master -> DL-388):
 
@@ -242,12 +255,143 @@ basis build).  One-time: the two tables build in 16 ms on the first coated-GGX e
   angle stays near it (the mirror keeps its polar angle), bouncing between
   total internal reflection and the substrate and losing `1 - rho` and
   `a^2` each round trip, while the reservoir lets it escape after one
-  re-randomisation: smooth metal (alpha .05) +7 % at 70 deg (+24 % at 85,
-  scratch), glossy alpha .16 +4 % at 70 deg, clear coat.  Pinned in K4.
+  re-randomisation: smooth metal (F0 .9, alpha .05) +6.5 % at 70 deg (+24 %
+  at 85, scratch), glossy alpha .16 +4.5 % at 70 deg, clear coat.  Pinned
+  in K4 at [0.97, 1.08] +- 5 sem.  A LOSSLESS substrate is not affected
+  (it sums to 1 however the reservoir equilibrates); that is the
+  energy-gain part section 8 fixed.
 * **DL-417** -- fabric and weave substrates keep the outer-frame model.
 * Approximations inside the GGX summary (recycled term only; the single
   bounce is the substrate's own `value`): anisotropic roughness uses
   `sqrt(alphaX alphaY)`; conductor / thin-film Fresnel is projected on the
-  Schlick basis through `Directional(1)`; the eta axis of the clear-coat
-  table is blended linearly between nodes 0.025 apart.
+  Schlick basis through `Directional(1)`; the clear-coat table is blended
+  linearly in `mu_c` (nodes 0.0118 apart) and in `sqrt(alpha)`, absorbing
+  coats in `sqrt(alpha)`; the critical patch reads the spill histogram at
+  an arbitrary view by displacement (exact for a mirror-like lobe).
+* A white-metal furnace residual of about +1 % remains near the critical
+  angle at a few (alpha, eta, theta) points (worst measured 1.0097 +-
+  0.0014, alpha .002, eta 1.058, 84 deg; 1.0058 +- 0.0004, alpha .05, eta
+  2.58, 45 deg), inside K5's band.
 * A rough coat's transmission is still the macro-surface Fresnel, as before.
+
+## 8. Review round 1 (2026-10-02)
+
+The fresh review found one P1 and two P2s; all fixed in the same slice.
+
+**P1 -- energy > 1 for clear coats with relative index 1-1.06.**  A white
+GGX metal (F0 1, alpha .05) under a smooth clear coat read 1.137 at eta
+1.005 / 80 deg, 1.160 at eta 1.01 / 80 deg, 1.147 at 1.0125, 1.043 at 1.04,
+0.992 at the table node 1.025.  Cause: the clear-coat table blended the
+coat's weights linearly between eta nodes 0.025 apart, while the critical
+cosine `mu_c = sqrt(1 - 1/eta^2)` has infinite slope at eta = 1 -- one cell
+spanned `mu_c` in [0, 0.22], and the blended return `g` overshot the exact
+single bounce, breaking "M never returns more than the substrate
+reflects".  Reachable: PT reads the outside index from the IOR stack, so a
+1.35-1.45 coat underwater has eta 1.02-1.09.  Fix: the 81 eta nodes are
+uniform in `mu_c` over [0, sqrt(8/9)] (a cell moves the step by 0.0118).
+
+**P2-2 -- the direct (absorbing-coat) build read 1.011-1.024 at eta
+1.06-1.2 / 80 deg.**  Cause: the histogram bin holding `mu_c` was priced at
+its mass centroid, and one point cannot price a step that a lobe
+straddles.  Fixed with (a) the bins next to `mu_c` priced by a uniform
+window of the bin's own spread (a new second moment per bin) with the
+exact weights, and (b) the hemispherical integrals sub-sampled (16x) in
+the fine cells next to `mu_c`, where `Psi` rises from 0 with a square-root
+edge that steepens as eta -> 1 (most of it inside one 1/256 cell at eta
+1.06).  K5's band [0.985, 1.012] is kept: post-fix the direct path reads
+0.996-1.004 at eta 1.06-1.2 / 70-85 deg.
+
+**The critical patch (found while measuring P2-1).**  Once the sampler
+below made smooth-substrate means measurable, a lossless white metal of
+alpha <= 0.01 under a 1.5 coat read 1.06-1.09 at 75 deg (1.054 at eta 3 /
+79 deg): the return `g(mu)` of a lobe narrower than the view-node spacing
+follows `Phi(mu)`'s square-root step at `mu_c`, and linear interpolation
+between view nodes 1/32 apart smeared it, so the exact single-bounce
+escape plus the interpolated return exceeded the lobe's albedo.  Each
+basis (roughness < 0.25) now carries `g` / `e` on 17 nodes over `[mu_c,
+mu_c + 1/16]`, clustered quadratically at `mu_c`, built by displacement
+interpolation of a 256-sub-bin spill histogram (each sub-bin's mass at its
+own centroid, shifted with the view -- a mirror-like lobe moves
+one-for-one with its view cosine), joined continuously to the node arrays
+at the far end; `LobeDirection` and every hemispherical integral read
+through the same lookup.  Point masses, not windows: near normal internal
+incidence `mu = cos` compresses a lobe's angular spread by `sin theta`, so
+even a 1/256 window overstated a narrow lobe's spread on the edge (eta 3:
+1.054 with windows, 0.993 with centroids).  Above roughness 0.25 the patch
+is the node interpolation itself.  The eta-3 LOSS the review noted
+(-2.1 % to -3.4 % at 60-75 deg, alpha .05) is gone too (0.998-1.003),
+from the `mu_c`-uniform nodes' resolution near `mu_c` = 0.94.
+
+**P2-1 -- no technique for the recycled term.**  The recycled `M` is broad;
+on a smooth substrate the base sampler draws only the narrow lobe, so `M`'s
+weight `value cos / pdf` was unbounded: alpha .002 at 75 deg, max kray
+31794, top 0.1 % of draws 28 % of the energy.  A cosine lobe now takes 0.15
+of the substrate branch (`CoatedBRDF::RecycledSampleFraction`; 0 for every
+model but the GGX lobe reservoir, so nothing else moves).  `Pdf` adds
+`0.15 cos_o / pi`, `kray = value cos / Pdf` exactly (the reviewer's
+consistency harness: 0 mismatches).  Tail, white metal under a smooth clear
+coat, 400k draws:
+
+| alpha | theta | before: max kray / top-0.1 % share | after |
+|---|---|---|---|
+| 0.002 | 75 | 31794 / 28 % | 6.35 / 0.63 % |
+| 0.01 | 75 | (reviewer: extreme) | 8.06 / 0.80 % |
+| 0.05 | 75 | -- | 6.65 / 0.67 % |
+
+Rendered (the reviewer's 128x128 room, coated alpha .01 sphere, PT 256 spp,
+OIDN off; residual std of luminance against a 5x5 median, per ring):
+
+| ring (radius / width) | master (n=1) | before (n=1) | after (n=5, mean +- sd) |
+|---|---|---|---|
+| 0.38-0.43 | 0.0646 | 0.1655 | 0.078 +- 0.039 |
+| 0.43-0.46 | 0.1382 | 0.1774 | 0.067 +- 0.007 |
+
+**P3s.**  The NM Coated_GGX row of `SPFPdfConsistencyTest` now has the RGB
+row's exact mass gate (`int PdfNM` over the sphere vs the measured NM
+emission probability, 0.01): 0.8216 vs 0.8234 (30 deg), 0.7972 vs 0.7983
+(60 deg).  `LobeReservoirEscape` no longer falls back to `E * 1e6`: it
+returns `E / max(1 - Q, E)`, the exact series whenever a round trip
+conserves energy and 1 (no amplification) when a diffuse colour authored
+above 1 makes `E + Q > 1` -- the role the old `Recycling`'s clamp of R
+played (diffuse 1.5: coated 1.338 vs bare 1.352 at 0 deg; diffuse 3:
+2.602 vs 2.669).  K4's DL-423 pin is [0.97, 1.08] widened by the row's own
+5 sem (measured 1.045 +- 0.004 glossy, 1.065 +- 0.012 smooth metal), was
+[0.95, 1.20].  glTF: the reviewer measured `ClearcoatQuad.gltf` move R
++0.3 %, G/B +9 % (a clearcoat over a PBR GGX base).
+
+**K5 now** (8 x 50000 draws; master = `850fd47ff`, the pre-review fix,
+rebuilt under the new test: 214 passed, 13 failed; now 227 / 0
+coated-only, full suite 397 / 0):
+
+| alpha | eta | theta | before review | now |
+|---|---|---|---|---|
+| 0.05 | 1.005 | 70 / 80 / 85 | **1.021 / 1.137 / 1.086** | 1.000 / 0.999 / 0.996 |
+| 0.05 | 1.01 | 70 / 80 / 85 | **1.025 / 1.162 / 1.138** | 1.000 / 1.000 / 0.995 |
+| 0.05 | 1.04 | 70 / 80 / 85 | 1.016 / **1.043 / 1.030** | 1.002 / 1.000 / 1.000 |
+| 0.05 | 1.13 | 70 / 80 / 85 | 1.014 / 1.018 / 1.014 | 1.001 / 0.998 / 0.998 |
+| 0.05 | 3 | 60 / 75 / 79 / 83 | **0.979 / 0.966** / ... | 0.998 / 1.002 / 1.000 / 1.003 |
+| 0.002 | 1.005 / 1.01 | 80 / 85 | **1.98 / 2.35, 2.37 / 2.45** (heavy-tailed) | 1.001 / 1.004, 1.001 / 1.003 |
+| 0.002 | 3 | 60 / 75 / 79 / 83 | 1.19 / 1.18 / 1.34 / 1.37 (+- 0.1-0.15) | 1.002 / 1.005 / 0.993 / 0.994 |
+| 0.4 | 3 | 60 / 75 / 79 / 83 | 0.984 / 0.986 / 0.989 / 0.990 | 0.999 / 0.999 / 1.000 / 0.999 |
+
+A scan of 40 eta values in [1.0002, 3] x 9 incidences x 7 roughnesses
+(150k draws each) reads at most 1.0115 except one alpha .002 / eta 1.058 /
+86 deg point (1.0188 at 150k draws; 1.0036 +- 0.0019 at 2M).
+
+**Appearance** re-measured (same protocol as section 5): `lacquer_and_rain`
+brass box front +4.01 % (t +156), rim +21.3 %, whole image +0.32 %;
+`tidal_stones` unmoved; Lambertian-coat scenes still pixel bit-identical.
+
+**Cost now** (one harness, same machine, master `1691e3f28` -> now, n = 3,
+spread < 2 %):
+
+| GGX substrate | value | Pdf | textured roughness, absorbing coat |
+|---|---|---|---|
+| clear coat, alpha .05 | 201 -> 208 ns | 81 -> 138 ns | -- |
+| tinted coat | 244 -> 322 ns | 81 -> 138 ns | 0.21 -> 0.30 us / value |
+
+One-time per process: 33 ms of table builds on the first coated-GGX
+evaluation.  An absorbing coat whose roughness leaves its roughness cell
+pays a node build (8.6 us, or ~22 us below roughness 0.25 where the patch
+is built).
+
