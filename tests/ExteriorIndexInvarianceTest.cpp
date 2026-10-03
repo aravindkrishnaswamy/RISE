@@ -130,6 +130,7 @@ namespace
 	int passCount = 0;
 	int failCount = 0;
 	unsigned int renderSeedOffset = 0;
+	unsigned int uniformSmsSppOverride = 0;
 	unsigned int shippedSmsSppOverride = 0;
 	bool replayOnly = false;
 	char workerOptionsPath[512] = {};
@@ -1232,7 +1233,7 @@ namespace
 			// k = 1: the sphere's Fresnel REFLECTION chain; k = 2: the
 			// refraction chain through it.
 			{ Model::SMSGlass,     Integrator::PT,         16,  0.01, "snell" },
-			{ Model::SMSGlass,     Integrator::PT,         1024, 0.02, "uniform" },
+			{ Model::SMSGlass,     Integrator::PT,         uniformSmsSppOverride ? uniformSmsSppOverride : 1024, 0.02, "uniform" },
 			{ Model::SMSGlass,     Integrator::PTSpectral, 64,  0.03, "snell" },
 			{ Model::SMSGlass,     Integrator::PTSpectral, 64,  0.03, "uniform" },
 			{ Model::SMSGlass,     Integrator::PT,         64,  0.02, "uniform", true, 2 },
@@ -1490,6 +1491,7 @@ int main( int argc, char** argv )
 		if( a == "--unit-only" ) unitOnly = true;
 		else if( a == "--only" && i + 1 < argc ) only = argv[++i];
 		else if(a=="--seed-offset" && i+1<argc) renderSeedOffset=std::strtoul(argv[++i],nullptr,10);
+		else if(a=="--uniform-sms-spp" && i+1<argc) uniformSmsSppOverride=std::strtoul(argv[++i],nullptr,10);
 		else if(a=="--shipped-sms-spp" && i+1<argc) shippedSmsSppOverride=std::strtoul(argv[++i],nullptr,10);
 		else if(a=="--replay-only") replayOnly=true;
 		else if( a == "--trials" && i + 1 < argc ) trials = static_cast<unsigned int>( std::atoi( argv[++i] ) );
