@@ -806,13 +806,30 @@ an optional crossing count) and contributes with MIS weight 1 on exactly
 the paths no standard strategy generates, 0 elsewhere (skipped, no walk
 when the cover slack makes the answer certain).  No new MIS term: the
 standard strategies never counted it, so on the paths they cover their
-weights already sum to 1.  "Generates" is MISWeight's own test -- a
-connectible, non-delta eye edge (the connection's endpoint D counts as
-non-delta, as MISWeight treats an endpoint) not past an eye-side BSSRDF
-entry -- under the light walk's depth caps: that strategy's light subpath
-crosses all k gaps, so it exists only if the light walk reaches it in
-`max_light_depth` surface hits and `WalkIterationBudget` iterations
-(DL-380's lesson).  A first draft read the endpoint's own `isDelta` (the
+weights already sum to 1.  "Generates" means BOTH halves of BDPT's
+partition, and the first landing checked only one of them:
+(i) MISWeight's own test within a family -- a connectible, non-delta eye
+edge (the connection's endpoint D counts as non-delta, as MISWeight treats
+an endpoint) not past an eye-side BSSRDF entry -- under the light walk's
+depth caps (that strategy's light subpath crosses all k gaps, so it exists
+only if the light walk reaches it in `max_light_depth` surface hits and
+`WalkIterationBudget` iterations, DL-380's lesson); and (ii) the
+DL-317/375/380 subsurface-JUMP partition between the eye and light
+families.  An eye path that reaches D through an SSS jump (D its entry)
+stops (i)'s scan at the entry, so the see-through fires -- but the light
+family KEPT that path whenever `LightSegmentEyeWitness` found no split in
+`[L, gap.., B]`, which is always the case with a delta root behind gaps:
+both counted it (review P1: an SSS receiver behind a gapped sheet under a
+spot light read BDPT 0.593 / MLT 0.602 against the closed form 0.30, n = 4
+salted).  The see-through is now an eye-family WITNESS in that partition:
+`LightSegmentEyeWitness( ..., seeThroughNEE )` accepts a split at verts[j]
+whose light side verts[1..j-1] is a straight chain of delta pass-throughs
+back to a delta-position root (`DeltaPassThroughChainToRoot`, at most 32
+gaps -- the walk's crossing cap), with the eye-walk caps applied by the
+same `EyeFamilyCovers` test, so the light family cuts exactly the paths
+the see-through owns.  BDPT and MLT pass it when
+`RayCaster::DeltaPassThroughShadowsActive()` (the one definition of "the
+walk is live", photon-map suppression included); VCM passes false.  A first draft read the endpoint's own `isDelta` (the
 eye walk's CONTINUATION past D) and double-counted the class-A paths light
 tracing covers: BDPT/PT 1.10, fixed before commit.  MLT inherits it (it
 drives `BDPTIntegrator`); VCM is unchanged (merging covers the class).
@@ -824,6 +841,9 @@ drives `BDPTIntegrator`); VCM is unchanged (merging covers the class).
 | same, omni off-axis (3,0,-2) | 0.929 | 1.0075 (VCM/PT 1.002) |
 | sphere gap 0.0 (control, no pass-through) | BDPT/PT 1.042 | 1.042 (PT's closed-shell residual, debt 25) |
 | Q (box, omni outside) BDPT/PT, RunTopologyTest | 0.994 (unsalted) | 1.002 |
+| `sssgap` (review P1), SSS receiver behind the gapped sheet, closed form 0.30, salted n = 4: spot diffusion BDPT 8/8 / eye 1 / MLT | 0.593 / 0.597 / 0.602 (first landing) | 0.301 / 0.304 / 0.300 (PT 0.291) |
+| same, spot random-walk SSS sphere BDPT 8/8 / eye 1 / MLT | 0.597 / 0.596 / 0.600 | 0.305 / 0.301 / 0.305 (PT 0.301) |
+| same, omni, diffusion / random-walk sphere, BDPT 8/8 | 0.561 / 0.547 | 0.2999 / 0.3006 |
 
 The `seethrough` VCM row is printed only: merging on a 0.2 x 0.2 patch lit
 by a point light reads 0.137 +/- 0.27 (sd, n = 4) -- unbiased-in-the-limit

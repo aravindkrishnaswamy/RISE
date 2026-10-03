@@ -1212,8 +1212,10 @@ static void TestBDPTSeeThroughDeltaLight()
 // Closed form: L = g * L0 exactly (the sheet attenuates every light path
 // to the receiver by g; whatever the receiver does with the light, it
 // does with and without the sheet).  The random-walk rows use a closed
-// sphere receiver (g_recvSphere).  Default caps and a shallow eye cap
-// (max_eye_depth 1: the eye walk still reaches A and jumps to B).
+// sphere receiver (g_recvSphere).  Default caps, a shallow eye cap
+// (max_eye_depth 1: the eye walk still reaches A and jumps to B, so the
+// eye family owns the path) and a shallow light cap (max_light_depth 1:
+// the light walk cannot reach B behind the gap, the eye family alone).
 //////////////////////////////////////////////////////////////////////
 static std::string RastBDPTDepth( unsigned int spp, unsigned int eyeDepth, unsigned int lightDepth )
 {
@@ -1250,6 +1252,7 @@ static void TestSSSBehindGap()
 		{ "spot, diffusion SSS, PT",                 kSpot, false, RastPT( 256 ),              0.06 },
 		{ "spot, diffusion SSS, BDPT 8/8",           kSpot, false, RastBDPTDepth( 256, 8, 8 ), 0.06 },
 		{ "spot, diffusion SSS, BDPT eye 1",         kSpot, false, RastBDPTDepth( 256, 1, 8 ), 0.06 },
+		{ "spot, diffusion SSS, BDPT light 1",       kSpot, false, RastBDPTDepth( 256, 8, 1 ), 0.06 },
 		{ "spot, diffusion SSS, MLT 8/8",            kSpot, false, RastMLT( 256, 8, 8 ),       0.10 },
 		{ "spot, random-walk SSS sphere, PT",        kSpot, true,  RastPT( 256 ),              0.06 },
 		{ "spot, random-walk SSS sphere, BDPT 8/8",  kSpot, true,  RastBDPTDepth( 256, 8, 8 ), 0.06 },
