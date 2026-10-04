@@ -392,7 +392,9 @@ Synthetic vertices alone are insufficient.
 - `SourceHygieneTest` and `CstDeriveGoldenTest`;
 - plus every test the increment adds.
 
-Shipped SMS scenes must stay bit-identical while the extended mode is off.
+Shipped mode-off images must match bit-identically in float32 across builds.
+Deterministic rejection on/off comparisons within one build retain strict
+internal-double identity (adopted precision contract below).
 
 **Proof per fix:**
 1. Commit.
@@ -481,8 +483,8 @@ The implementation regression now includes actual native RGB/NM reflection
 and transmission, both windings and incidence sides, spatial/ray/raster normal
 fields, coated dielectric and polished siblings, transformed instances, closed
 start-inside and nested exits, and independently shifted endpoint Jacobians.
-Committed-source red/green proofs, replacement gates and fresh review remain
-required before integration.
+Committed-source red/green proofs and the replacement gate now pass; fresh
+review remains required before integration.
 
 **Adopted correction, user ruling 2026-10-04:** reproduce each native
 material's geometric-horizon fallback in the extended event direction,
@@ -492,8 +494,8 @@ proposal, retries and later ownership. Alternatively, conservative exclusion
 of affected modified casters would require a separate scope ruling. Conservative
 exclusion is not adopted. The user authorized reproducing the native fallback
 consistently. The native fallback and indexed/non-indexed atlas repair has committed numerical
-red/green proof at `b61844191`; a displaced-wrapper sibling repair and the
-full replacement gate are underway;
+red/green proof at `b61844191`; the displaced-wrapper sibling repair at
+`761c71b51` and complete replacement gate at `15c9c2710` now pass;
 Phase 2 remains unmerged until its fixes, gate and fresh review converge.
 
 Round 2 also found a separate implementation P1: mesh atlas boundaries authored
@@ -521,8 +523,10 @@ All sixteen images match bit-identically after float32 conversion, alpha
 matches in doubles, and all twelve channel means pass their original
 three-SD comparison (n4). This suggests arithmetic rounding but does not
 prove its cause or satisfy internal-double bit identity. The original internal-double cross-build gate failed; that failed run remains
-recorded as failed. No Phase 2 merge, current full gate or fresh
-review verdict is claimed. See `SMS_EXTENDED_PHASE2_VALIDATION.md`.
+recorded as failed. The subsequent complete replacement gate passes **36373/0**
+across 28 modes, twelve actual Xcode-linked controls and five partial-sanitizer
+modes, with zero compiler diagnostics. No Phase 2 merge or fresh review
+verdict is claimed. See `SMS_EXTENDED_PHASE2_VALIDATION.md`.
 
 **Adopted by the user on 2026-10-04 (“Proceed”):** cross-build shipped
 mode-off image pixels must match bit-identically after float32 conversion.
@@ -530,5 +534,7 @@ Deterministic rejection on/off comparisons within one build remain strict
 in internal doubles. Stochastic comparisons retain n>=4 and their original
 channel-separated three-SD bands. This changes only the cross-build
 acceptance precision; it does not change rendering arithmetic or relax
-within-build composite rejection. A new complete gate and fresh review
-are required before Phase 2 integration.
+within-build composite rejection. The new complete gate passes all sixteen
+float32 comparisons after eight actual source builds, with four salts per
+fixture. NM mode-off cost rises 1.492751 ± 0.465066% in paired measurements;
+no zero-overhead claim is made. Fresh review is required before integration.

@@ -4,12 +4,65 @@ Phase 2 is implemented on `sms-ext-phase2`, based on master
 `08552560b54b517b7a8a0696eb9d317953b26bbe`, but is not yet merged.
 The latest native source is `761c71b51`; its coherent committed repair proof
 passes review **20005/0**, production **177/0** and geometry **4297/0**.
-The new full replacement pipeline stops at the strict mode-off bit-identity
-gate: all sixteen baseline/candidate hashes differ, with reported radiance
-mean differences no larger than 1.7763568394002505e-15. Pixel diagnostics are complete (see the gate-stop section below). Clean make/Xcode regressions and sanitizers in this replacement
-have not started; fresh Round 3 review and integration remain pending.
-The complete `13a31c7d7` gate below is historical evidence for that checkpoint,
-not a passing validation of the latest source.
+The replacement pipeline at acceptance-test commit `15c9c2710` passes under
+the user-adopted float32 cross-build contract. It reports **36373 checks across
+28 modes**, twelve actual Xcode-linked controls, zero compiler diagnostics,
+and five clean partial-sanitizer modes. Fresh Round 3 review and integration
+remain pending. The older failed strict-double run and historical gates below
+remain evidence of their own checkpoints, not substitutes for this gate.
+
+## Current complete replacement gate (2026-10-04)
+
+Evidence: `.claude/logs/sms-phase2-round3-final/`, including
+`final-gate/completed-summary.json`, `final-gate/slab-summary.json`,
+`phase2-interleaved-cost.json` and `current-production-memory.log`.
+All ten native source hashes match checkpoint `761c71b51`; no production
+arithmetic changed in the float32 acceptance amendment.
+
+Clean make compiled 376 units; clean Xcode Deployment and Opto each compiled
+393. All have zero compiler diagnostics. Each Xcode configuration has only
+the two discounted missing-OIDN-search-path and AppIntents notices. Twenty
+executables cover 28 make modes with **36373/0** reported checks. CST separately
+reports **458 MATCH, 0 DRIFT**, 465 corpus scenes, no uncovered or stale entries.
+Each actual Xcode configuration runs geometry4297/0, unsupported457/0,
+delta177/0, production177/0, signed353/0 and review20005/0 controls.
+ASan/UBSan covers the test and five changed production units (ManifoldSolver,
+TriangleMeshGeometry, ObjectManager, PathTracingIntegrator and SMSShaderOp);
+the remaining native library units use their normal LTO build. All five modes
+pass; this is partial instrumentation, not whole-library or leak coverage.
+
+Eight actual interleaved committed-source builds compare master `08552560b`
+and candidate `15c9c2710`, four salts per fixture. All **16 float32 RGBA hashes
+match**; all sixteen internal-double hashes differ. Whole-image means differ
+by at most 1.7763568394002505e-15. All 32 internal-double hashes also match the
+previous diagnostic outputs, linking the direct buffer measurements reported
+below to this run; buffers were not recaptured in this run.
+
+| Fixture | Master seconds mean ± sample SD | Candidate seconds mean ± sample SD | Paired change % mean ± sample SD |
+|---|---:|---:|---:|
+| RGB k1 | 0.944510 ± 0.005872 | 0.953831 ± 0.011585 | +0.993495 ± 1.696787 |
+| RGB k2 | 0.723401 ± 0.002671 | 0.720717 ± 0.003378 | -0.371206 ± 0.174677 |
+| NM | 1.683663 ± 0.020483 | 1.708787 ± 0.021311 | +1.492751 ± 0.465066 |
+| HWSS | 5.658434 ± 0.051974 | 5.716075 ± 0.063540 | +1.019127 ± 0.718024 |
+
+NM shows a small measurable slowdown (3.21 paired sample SDs); these timings
+do not support a zero-overhead claim. Current sizes in bytes are config112,
+root184, counters320, domainvertex1584 and solver216. The solver gains 16
+private bytes relative to the historical checkpoint; public metadata layouts
+are retained. The checked production-only memory run passes177/0 in 25.54s
+wall, 25.25s user and 0.26s system, with maximum RSS **101924864 bytes** and
+peak footprint **81691176 bytes**. These are whole-process observations.
+
+The 18 separate RGB slab comparisons retain four salts, 4096spp, both windings
+and each estimator's own sample SD. All twelve narrow-cone comparisons pass
+the original three-combined-SD bands. The front-wound wide red comparison is
+-0.17389784% (-5.13881272 SDs), previously accepted by the user as variance;
+its original band remains reported and DL-420 stays open. Reverse wide red is
+-0.01395563% (-0.41274280 SDs); all remaining wide channels are reported in
+the summary. The production last-fixture counters report 131605 proposals,
+125049 zero trials, 692802 Newton iterations, 66069 retries, 1957 tail events,
+44 roulette stops, 3300 owned and 125049 rejected. These are per-fixture
+observations, not an aggregate frame guarantee.
 
 Round 1 found two estimator P1s (chart identity and impossible depth);
 a sibling audit found nonpositive solver thresholds. All three have
@@ -287,7 +340,7 @@ Evidence: `.claude/logs/sms-phase2/phase2-interleaved-cost.json` and
 each `phase2-interleaved-{A,B}{0..3}.log`, with checked build exits in
 `cost-driver.log`. No whole-render speedup is inferred from these timings.
 
-## Current-source off-mode cost and output gate
+## Historical 13a31c7d7 off-mode cost and output gate
 
 The replacement gate compares committed master `08552560b` with
 `5f7cdaa06` (native source `13a31c7d7`) using eight actual interleaved
@@ -408,9 +461,9 @@ asserted AssignModifier's return value: it returns false after retaining the
 modifier. The corrected test checks retained identity; those eight initial
 failures are not production red evidence.
 
-These focused numbers do not replace the prior complete 13a31c7d7 gate.
-Committed-source proofs, a full replacement gate, new timing measurements and
-fresh round 3 reviewers remain pending. No row closes and no merge is claimed.
+At this checkpoint, committed-source proofs and replacement gates were pending.
+They subsequently completed as recorded above; fresh Round 3 review remains
+pending. No row closes and no merge is claimed.
 
 ### Committed repair proof and displaced-chart sibling
 
@@ -438,10 +491,10 @@ controls. The native checkpoint builds without diagnostics and reports
 **19985/20**: all twenty failures accept uncertain variable-law atlas roots.
 The sibling repair follows the actual native triangle provider in the hit
 payload, preserving its barycentrics through wrappers. The focused repair
-reports **20005/0** with checked zero-diagnostic library/test builds. New committed proofs,
-the full replacement gate and fresh round 3 review remain required.
+reports **20005/0** with checked zero-diagnostic library/test builds. The subsequent
+committed proof and current complete gate are recorded above; fresh review is pending.
 
-### Latest committed sibling proof and mode-off gate stop
+### Committed sibling proof and historical strict-double gate stop
 
 At native `761c71b51`, coherent pre-fix `1b924f194` reports review
 **19985/20**, production **177/0**. Master reports available review
@@ -463,8 +516,8 @@ Timing measurements from that failed stage remain reported honestly (n4,
 paired percentage change mean and sample SD): RGB k1 **-0.243344 +/- 0.640274%**,
 RGB k2 **-1.054483 +/- 0.827833%**, NM **+1.275654 +/- 0.382115%**,
 HWSS **+0.517435 +/- 0.336988%**. These are completed timing observations,
-not a passing phase gate or a zero-overhead claim. The mode-off bit-identical
-contract remains unchanged; the latest source is unmerged.
+not a passing phase gate or a zero-overhead claim. At that checkpoint the original internal-double cross-build contract remained
+unchanged. The later user-adopted amendment is recorded below; the source is unmerged.
 
 The completed pixel diagnostic rebuilds baseline and candidate coherently,
 uses the same diagnostic test source and four salts, captures 4096 RGBA
@@ -485,7 +538,7 @@ bit-identical float32 image pixels for the cross-build shipped mode-off gate,
 retaining strict internal-double on/off comparisons within the same build
 for deterministic rejection cases. Retain salted n>=4 channel-separated
 original three-SD comparisons where stochastic output differs. The failed
-internal-double gate remains failed; a new full gate and fresh review are
-pending under the adopted rule.
+internal-double gate remains failed. The new complete gate above passes under
+the adopted rule; fresh review remains pending.
 The phase remains on `sms-ext-phase2`; no ledger row closes and no new row
 is opened. Master stays `08552560b54b517b7a8a0696eb9d317953b26bbe` and clean.
