@@ -340,7 +340,9 @@ bool RISE::Implementation::SMSDomainReplay::Cross(const IMaterial& material,
         exiting = !crossing.bEntering;
     } else {
         exiting = next.containsCurrent();
-        etaI = next.top();
+        // Native closed-solid SPFs use the exiting object index even
+        // when pop removes a non-top identity in overlapping volumes.
+        etaI = exiting ? query.index : next.top();
         if(exiting) next.pop();
         etaT = exiting ? next.top() : query.index;
         if(!reflection && !exiting) next.push(query.index);
@@ -378,7 +380,11 @@ bool RISE::Implementation::SMSDomainReplay::EventWeight(const IMaterial& materia
     if(reflection && !query.reflectionTint) attenuation = 1;
     if(query.interiorTransmittance)
         attenuation = exiting && !reflection ? std::pow(attenuation, distance) : Scalar(1);
-    const Scalar etaRatio = etaI/etaT;
+    // SPF direction/Fresnel endpoints and the native consumer radiance
+    // scale differ at a non-top closed exit. Reproduce both conventions;
+    // do not alter the shared native walker to hide the distinction.
+    const Scalar radianceEtaI = hit.bProvablyNoInterior ? etaI : stack.top();
+    const Scalar etaRatio = radianceEtaI/etaT;
     weight = attenuation * (reflection ? fresnel : (1-fresnel)*etaRatio*etaRatio);
     return std::isfinite(weight) && weight >= 0;
 }
@@ -478,6 +484,30 @@ RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::Solve
             const bool seam = meshEdge || (axes.x && std::min(std::fabs(hit.geometric.ptCoord.x),std::fabs(1-hit.geometric.ptCoord.x)) <= band)
                 || (axes.y && std::min(std::fabs(hit.geometric.ptCoord.y),std::fabs(1-hit.geometric.ptCoord.y)) <= band);
             if(seam && (hit.pModifier || !SMSConstantSeamMaterial(*vertex.pMaterial))) return failed;
+            if(nativeObject && !nativeObject->UsesNativeTextureChart()
+                && (hit.pModifier || !SMSConstantSeamMaterial(*vertex.pMaterial))) {
+                // Generated charts can have seams at arbitrary interior UVs.
+                // Probe their actual contexts within the physical matching
+                // band, instead of assuming the geometry's chart describes
+                // the generator. This is a local numerical ambiguity check,
+                // not a global continuity certificate. Continuous fixed UVs
+                // remain supported and material coordinates are never edited.
+                const Scalar displacement=band*Point3Ops::Distance(start,end)/8;
+                if(!(displacement>0) || !std::isfinite(displacement)) return failed;
+                for(const Vector3& tangent : {vertex.dpdu,vertex.dpdv}) for(int sign : {-1,1}) {
+                    const Point3 target=Point3Ops::mkPoint3(vertex.position,tangent*(sign*displacement));
+                    Ray ray(previous,Vector3Ops::Normalize(Vector3Ops::mkVector3(target,previous)));
+                    if(i) ray.Advance(1e-8);
+                    RayIntersection probe(ray,vertices[i].context.rast);
+                    vertex.pObject->IntersectRay(probe,RISE_INFINITY,true,true,false);
+                    if(!probe.geometric.bHit || probe.pObject!=vertex.pObject
+                        || probe.pMaterial!=vertex.pMaterial
+                        || Point3Ops::Distance(SMSReferenceSurfacePoint(*vertex.pObject,probe.geometric),target)>displacement
+                        || !std::isfinite(probe.geometric.ptCoord.x) || !std::isfinite(probe.geometric.ptCoord.y)
+                        || std::hypot(probe.geometric.ptCoord.x-hit.geometric.ptCoord.x,
+                            probe.geometric.ptCoord.y-hit.geometric.ptCoord.y)>band/8) return failed;
+                }
+            }
         }
         if(hit.pModifier) hit.pModifier->Modify(hit.geometric);
         const IORStack before(replay);
