@@ -12,6 +12,8 @@
 #include "../src/Library/Interfaces/ILightManager.h"
 #include "../src/Library/Interfaces/IBSDF.h"
 #include "../src/Library/Interfaces/IUVGenerator.h"
+#include "../src/Library/Geometry/SphericalUVGenerator.h"
+#include "../src/Library/Geometry/CylindricalUVGenerator.h"
 #include "../src/Library/Interfaces/IRayIntersectionModifier.h"
 #include "../src/Library/Interfaces/ITriangleMeshGeometry.h"
 #include "../src/Library/Interfaces/IGeometryManager.h"
@@ -310,6 +312,49 @@ public:
     RISEPel GetColor(const RayIntersectionGeometric& hit) const override { return RISEPel(.5+.1*hit.ptIntersection.x); }
     Scalar GetColorNM(const RayIntersectionGeometric& hit,Scalar) const override { return .5+.1*hit.ptIntersection.x; }
 };
+// Generated charts have their own seams, even where native geometry UVs
+// are continuous. Fixed generated coordinates remain a positive control.
+class InteriorStepUV final : public IUVGenerator, public Reference {
+public:
+    void GenerateUV(const Point3& point,const Vector3&,Point2& uv) const override {
+        uv=Point2(point.x<0?.25:.75,.5);
+    }
+};
+static void GeneratedChartRoots() {
+    for(unsigned kind:{0u,1u,2u,3u}) for(bool reverse:{false,true}) {
+        const std::string geometry=kind==0 || kind==3
+            ? "sphere_geometry\n{\n name sphere\n radius 1\n}\n"
+            : kind==1 ? "cylinder_geometry\n{\n name sphere\n axis y\n radius 1\n height 4\n capped TRUE\n}\n"
+            : UVSeamMesh(reverse,true);
+        Fixture f(Materials()+geometry+Object("caster","sphere","mirror"));
+        auto* tint=new WorldTint();IMaterial* material=nullptr;
+        Check(RISE_API_CreatePerfectReflectorMaterial(&material,*tint),"generated-chart world tint created");
+        if(material) f.job->GetObjects()->GetItem("caster")->AssignMaterial(*material);
+        safe_release(material);tint->release();
+        IUVGenerator* mapping=kind==0 ? static_cast<IUVGenerator*>(new SphericalUVGenerator(1))
+            : kind==1 ? static_cast<IUVGenerator*>(new CylindricalUVGenerator(1,'y',4))
+            : kind==2 ? static_cast<IUVGenerator*>(new InteriorStepUV())
+            : static_cast<IUVGenerator*>(new FixedEndpointUV());
+        f.job->GetObjects()->GetItem("caster")->SetUVGenerator(*mapping);mapping->release();
+        const Point3 start=kind==2?Point3(-.5,0,-3):Point3(-3,.5,0);
+        const Point3 end=kind==2?Point3(.5,0,-3):Point3(-3,-.5,0);
+        ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;
+        auto* solver=new ManifoldSolver(cfg);IORStack air(1);
+        for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
+            RandomNumberGenerator random(217);IndependentSampler sampler(random);unsigned accepted=0;
+            for(unsigned i=0;i<512;++i) {
+                const auto root=solver->ProposeExtendedRoot(start,kind==2?Vector3(0,0,1):Vector3(1,0,0),end,f.Scene(),air,domain,sampler);
+                accepted+=root.accepted;
+                if(root.accepted && kind==3) Check(root.vertices[0].context.ptCoord.x==1,
+                    "continuous generated-chart control preserves actual endpoint UV");
+            }
+            std::cout<<"generated chart kind="<<kind<<" winding="<<reverse<<" accepted="<<accepted<<'\n';
+            Check(kind==3?accepted>0:accepted==0,
+                "generated seam is uncertain while continuous generated chart retains positive coverage");
+        }
+        solver->release();
+    }
+}
 static void InteriorAtlasRoots() {
     for(bool reverse:{false,true}) for(int side:{-1,1}) for(bool varying:{false,true}) for(unsigned geometryKind:{0u,1u,2u}) {
         Fixture f(Materials()+UVSeamMesh(reverse,true)+Object("caster","sphere","mirror"));
@@ -576,6 +621,72 @@ static void NativeClosedHorizonFallbacks() {
             }
         }
         solver->release();
+    }
+}
+// Non-top identity removal occurs in real overlapping closed solids.
+// The native direction/Fresnel and the consumer radiance scale are separate
+// oracles: native SPF kray deliberately excludes the latter.
+static void NativeOverlapExits() {
+    for(bool reverse:{false,true}) for(bool transformed:{false,true})
+        for(const char* material:{"overlap_glass","overlap_dielectric","overlap_coated"}) for(bool tir:{false,true}) {
+        const Scalar scale=transformed?1.5:1,offset=transformed?3:0;
+        std::ostringstream aTransform,bTransform;
+        aTransform<<" scale "<<scale<<' '<<scale<<' '<<scale<<"\n position "<<offset<<" 0 0\n";
+        bTransform<<" scale "<<scale<<' '<<scale<<' '<<scale<<"\n position "<<offset<<" 0 "<<.6*scale<<"\n";
+        Fixture f(Materials()+
+            "perfectrefractor_material\n{\n name overlap_glass\n refractance white\n ior 1.5\n}\n"
+            "dielectric_material\n{\n name overlap_dielectric\n tau 1\n ior 1.5\n scattering 1000000\n}\n"
+            "dielectric_material\n{\n name overlap_coated\n tau 1\n ior 1.5\n scattering 1000000\n ar_layer 1.224744871391589 112.26827987812466 0\n}\n"
+            "perfectrefractor_material\n{\n name overlap_outer\n refractance white\n ior 1.3\n}\n"
+            +Mesh(true,reverse)+Object("a","shape",material,aTransform.str())+Object("b","shape","overlap_outer",bTransform.str()));
+        const Point3 center(offset+.25*scale,.3*scale,scale);
+        const Point3 start(offset+(.25-(tir?.55:.2))*scale,.3*scale,.8*scale);
+        RayIntersection hit(Ray(start,Vector3Ops::Normalize(Vector3Ops::mkVector3(center,start))),nullRasterizerState);
+        f.Scene().GetObjects()->IntersectRay(hit,true,true,false);
+        Check(hit.geometric.bHit && hit.pObject==f.Object("a") && !hit.geometric.bProvablyNoInterior,
+            "overlapping real solids exit the non-top member first");
+        if(!hit.geometric.bHit || hit.pObject!=f.Object("a")) continue;
+        for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
+            IORStack stack(1);stack.SetCurrentObject(f.Object("a"));stack.push(1.5);
+            stack.SetCurrentObject(f.Object("b"));stack.push(1.3);stack.SetCurrentObject(f.Object("a"));
+            RandomNumberGenerator random(984);IndependentSampler sampler(random);ScatteredRayContainer rays;
+            if(domain.kind==SMSQueryDomain::Wavelength) hit.pMaterial->GetSPF()->ScatterNM(hit.geometric,sampler,domain.nm,rays,stack);
+            else hit.pMaterial->GetSPF()->Scatter(hit.geometric,sampler,rays,stack);
+            unsigned nativeTransmissions=0;
+            for(unsigned j=0;j<rays.Count();++j) {
+                const auto& ray=rays[j];
+                const Scalar native=domain.kind==SMSQueryDomain::Wavelength?ray.krayNM:ray.kray[domain.component];
+                if(native<=0 || !ray.isDelta) continue;
+                const bool reflection=ray.type==ScatteredRay::eRayReflection;nativeTransmissions+=!reflection;
+                IORStack replay(stack);Scalar etaI=0,etaT=0;bool exiting=false;
+                const bool crossed=SMSDomainReplay::Cross(*hit.pMaterial,hit.pObject,hit.geometric,domain,reflection,replay,etaI,etaT,exiting);
+                Check(crossed && exiting && etaI==1.5 && etaT==1.3,
+                    "overlap exit directions query the exiting object and remaining destination");
+                Scalar weight=0;
+                Check(crossed && SMSDomainReplay::EventWeight(*hit.pMaterial,hit.geometric,stack,domain,reflection,exiting,etaI,etaT,
+                    Point3Ops::Distance(start,center),weight),"overlap native event weight is available");
+                Check(std::fabs(weight-native*(reflection?1:RadianceEtaScale(stack,ray.ior_stack)))<1e-8,
+                    "overlap event price matches native SPF and consumer eta scale independently");
+                if(!tir) {
+                    ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;auto* solver=new ManifoldSolver(cfg);
+                    SMSDomainVertex record(hit.geometric);record.geometry.position=center;
+                    record.geometry.normal=hit.geometric.vNormal;record.geometry.geomNormal=hit.geometric.UnflippedGeomNormal();
+                    record.geometry.pObject=hit.pObject;record.geometry.pMaterial=hit.pMaterial;record.geometry.isReflection=reflection;
+                    std::vector<SMSDomainVertex> vertices{record};
+                    const Point3 end=Point3Ops::mkPoint3(center,ray.ray.Dir()*(.1*scale));
+                    const auto result=solver->SolveDomain(start,Vector3(0,0,1),end,-ray.ray.Dir(),f.Scene(),stack,domain,vertices,sampler,1e-7,1e-10);
+                    Check(result.valid && Point3Ops::Distance(vertices[0].geometry.position,center)<1e-8*scale,
+                        "overlap solve reproduces the actual native R/T root");
+                    if(result.valid) Check(std::fabs(result.contributionNM-native*(reflection?1:RadianceEtaScale(stack,ray.ior_stack)))<1e-8,
+                        "overlap solved native event price agrees with the separate consumer oracle");
+                    solver->release();
+                }
+            }
+            Check(tir?nativeTransmissions==0:nativeTransmissions>0,"native overlap fixture covers transmission and TIR");
+            if(tir) {IORStack replay(stack);Scalar etaI,etaT;bool exiting;
+                Check(!SMSDomainReplay::Cross(*hit.pMaterial,hit.pObject,hit.geometric,domain,false,replay,etaI,etaT,exiting),
+                    "overlap geometric TIR cannot be proposed as transmission");}
+        }
     }
 }
 class ConstraintOracle : public ManifoldSolver {
@@ -1114,6 +1225,8 @@ int main(int argc,char** argv) {
 #ifdef RISE_SMS_REFERENCE_A
         NativePeriodicRoots();
         InteriorAtlasRoots();
+        GeneratedChartRoots();
+        NativeOverlapExits();
         NativeHorizonFallbacks();
         NativeClosedHorizonFallbacks();
 #else
