@@ -186,6 +186,56 @@ static void CloseRoots() {
         solver->release();
     }
 }
+// A regular native sphere root lies on the 0/1 longitude seam. Independent
+// surface seeds approach the same physical point from both chart sides.
+static void SphereSeamRoots() {
+    Fixture f(Materials()+"sphere_geometry\n{\n name sphere\n radius 1\n}\n"+Object("caster","sphere","mirror"));
+    ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;
+    auto* solver=new ManifoldSolver(cfg);IORStack air(1);
+    RandomNumberGenerator random(217);IndependentSampler sampler(random);
+    std::vector<SMSDomainRoot> roots;
+    for(unsigned i=0;i<128&&roots.size()<20;++i) {
+        auto root=solver->ProposeExtendedRoot(Point3(-3,.5,0),Vector3(1,0,0),Point3(-3,-.5,0),
+            f.Scene(),air,SMSQueryDomain::RGB(0),sampler);
+        if(root.accepted) roots.push_back(std::move(root));
+    }
+    Check(roots.size()==20,"native sphere seam has positive regular root coverage");
+    bool positiveZ=false,negativeZ=false;
+    for(const auto& root:roots) {
+        const auto& vertex=root.vertices[0].geometry;
+        positiveZ|=vertex.position.z>0;negativeZ|=vertex.position.z<0;
+        Check(Point3Ops::Distance(vertex.position,Point3(-1,0,0))<1e-8,"sphere seam root matches analytic reflection point");
+        Check(vertex.uv.x==0&&root.vertices[0].context.ptCoord.x==0,
+            "native sphere seam endpoints use one material-context representative");
+        Check(ManifoldSolver::SameExtendedRoot(roots[0],root,1e-6),
+            "opposite sphere chart sides identify the same physical root");
+    }
+    Check(positiveZ&&negativeZ,"independent seeds exercise both sides of the native sphere seam");
+    if(roots.size()>1) {
+        std::vector<double> values;
+        for(unsigned salt=0;salt<4;++salt) {
+            RandomNumberGenerator discoveryRandom(SobolSequence::HashCombine(17000+salt,0x5345414d));
+            RandomNumberGenerator retryRandom(SobolSequence::HashCombine(17000+salt,0x52455452));
+            IndependentSampler discovery(discoveryRandom),retry(retryRandom);
+            const auto proposal=[&](ISampler& stream){return roots[stream.Get1D()<.5?0:1];};
+            Scalar sum=0;constexpr unsigned N=65536;
+            for(unsigned i=0;i<N;++i) {
+                const auto root=proposal(discovery);
+                const Scalar k=SMSRootReference::Reciprocal(root,retry,proposal,
+                    [](const SMSDomainRoot& a,const SMSDomainRoot& b){return ManifoldSolver::SameExtendedRoot(a,b,1e-6);},64,false,nullptr);
+                sum+=SMSRootReference::Deposit(1,k,1,1,N);
+            }
+            values.push_back(sum);
+        }
+        const Moments m(values);
+        std::cout<<"sphere seam two-native-seed accounting mean="<<m.mean<<" sd="<<m.sd<<" n=4 analytic root count=1 reference sd=0\n";
+        Check(std::fabs(m.mean-1)<=3*m.sd+64*std::numeric_limits<Scalar>::epsilon(),
+            "native chart aliases contribute one physical root in reciprocal accounting");
+        auto changed=roots[0];changed.vertices[0].geometry.uv.x=.5;
+        Check(!ManifoldSolver::SameExtendedRoot(roots[0],changed,1e-6),"non-alias UV contexts remain distinct");
+    }
+    solver->release();
+}
 static std::string QuadMesh(const std::string& name,Scalar z,Scalar x0,Scalar x1,bool reverse) {
     std::ostringstream s;s<<std::setprecision(17);
     s<<"indexedmesh_geometry\n{\n name "<<name<<"\n double_sided TRUE\n face_normals TRUE\n";
@@ -541,6 +591,47 @@ static void UnsupportedCasterSwitches() {
         on->release();off->release();caster->release();shader->release();
     }
 }
+static void ImpossibleDepthSwitches() {
+    for(bool reverse:{false,true}) for(unsigned invalid:{0u,1u}) {
+        std::string text=Materials();
+        text.replace(text.find("values 1.3 1.5 1.9"),std::string("values 1.3 1.5 1.9").size(),"values 1 1 1");
+        Fixture f(text+Mesh(false,reverse)+Object("pane","shape","glass"," position 0 0 1\n")
+            +"lambertian_material\n{\n name diffuse\n reflectance white\n}\n"
+            +PlaneScene("floor",-2)+Object("receiver","floor","diffuse")
+            +"omni_light\n{\n name source\n position 0 0 1\n color 1 1 1\n power 40\n}\n");
+        std::vector<IShaderOp*> ops;IShader* shader=nullptr;
+        Check(RISE_API_CreateStandardShader(&shader,ops),"depth control shader created");
+        if(!shader) continue;
+        auto* caster=new RayCaster(false,16,*shader,true);caster->SetTransparentShadows(true);caster->AttachScene(&f.Scene());
+        ManifoldSolverConfig cfg;cfg.enabled=true;cfg.extendedMode=true;
+        cfg.maxChainDepth=invalid?1:0;cfg.targetBounces=invalid?2:1;
+        StabilityConfig stability;stability.rrMinDepth=20;
+        auto* on=new PathTracingIntegrator(cfg,stability);on->SetMaxPathDepth(8);
+        ManifoldSolverConfig plain;auto* off=new PathTracingIntegrator(plain,stability);off->SetMaxPathDepth(8);IORStack air(1);
+        Check(on->GetSolver()->ExtendedModeActive(f.Scene()),"depth control is composite-free extended mode");
+        for(Scalar nm:{0.,450.,650.}) {
+            Check(!on->GetSolver()->ExtendedAnchorEligible(f.Scene(),*caster,Point3(0,0,-2),air,nm),
+                "impossible chain depth disables the complete anchor in RGB and NM");
+            for(unsigned trial=0;trial<4;++trial) {
+                const unsigned salt=SobolSequence::HashCombine(18000+trial,0x44455054);SobolSamplerTestHooks::ValueSalt().store(salt);
+                std::array<RISEPel,2> values;
+                for(unsigned mode=0;mode<2;++mode) {
+                    RandomNumberGenerator random(salt);SobolSampler sampler(0,7);
+                    RuntimeContext context(random,RuntimeContext::PASS_NORMAL,false);context.pSampler=&sampler;
+                    const Ray ray(Point3(0,0,-1.9),Vector3(0,0,-1));
+                    if(nm==0) values[mode]=(mode?on:off)->IntegrateRay(context,nullRasterizerState,ray,f.Scene(),*caster,sampler,nullptr,nullptr);
+                    else values[mode]=RISEPel((mode?on:off)->IntegrateRayNM(context,nullRasterizerState,ray,nm,f.Scene(),*caster,sampler,nullptr,nullptr));
+                }
+                Check(std::isfinite(values[0].r)&&values[0].r>0,"impossible depth plain PT control remains lit");
+                Check(std::memcmp(&values[0],&values[1],sizeof(RISEPel))==0,
+                    "impossible depth keeps PT light bit-identically with all switches off");
+                std::cout<<"depth winding="<<reverse<<" max="<<cfg.maxChainDepth<<" target="<<cfg.targetBounces
+                    <<" nm="<<nm<<" salt="<<salt<<" PT="<<values[0].r<<" extended="<<values[1].r<<'\n';
+            }
+        }
+        SobolSamplerTestHooks::ValueSalt().store(0);on->release();off->release();caster->release();shader->release();
+    }
+}
 // An extension can forward the actual native composite walker without
 // inheriting CompositeMaterial or any of the built-in wrapper classes.
 class ForwardingMaterial final : public IMaterial, public Reference {
@@ -685,6 +776,15 @@ int main(int argc,char** argv) {
     if(argc==2&&std::string(argv[1])=="--unsupported-only") {synthetic=false;geometry=false;delta=false;slab=false;}
     if(argc==2&&std::string(argv[1])=="--production-only") {synthetic=false;geometry=false;delta=true;unsupported=false;production=true;slab=false;}
     if(argc==2&&std::string(argv[1])=="--slab-only") {synthetic=false;geometry=false;delta=false;unsupported=false;}
+    if(argc==2&&std::string(argv[1])=="--review-only") {
+#ifdef RISE_SMS_REFERENCE_A
+        SphereSeamRoots();
+#else
+        std::cout<<"Estimator A seam helper unavailable on committed baseline.\n";
+#endif
+        ImpossibleDepthSwitches();
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
+    }
     if(argc==2&&std::string(argv[1])=="--signed-only") {
         for(bool uniform:{false,true}) {DeltaLights(false,true,uniform);DeltaLights(true,true,uniform);}
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
@@ -693,13 +793,13 @@ int main(int argc,char** argv) {
 #ifdef RISE_SMS_REFERENCE_A
     std::cout<<"reference bytes config="<<sizeof(ManifoldSolverConfig)<<" root="<<sizeof(SMSDomainRoot)
         <<" counters="<<sizeof(SMSReferenceCounters)<<" vertex="<<sizeof(SMSDomainVertex)<<std::endl;
-    if(synthetic) Synthetic();if(geometry) {Geometry();CloseRoots();WalkEvents();}
+    if(synthetic) Synthetic();if(geometry) {Geometry();CloseRoots();WalkEvents();SphereSeamRoots();}
 #else
     if(synthetic||geometry) std::cout<<"Estimator A is absent on this committed baseline; new helper tests are unavailable, not a numerical red proof.\n";
 #endif
     if(delta) DeltaLights(production);
     if(argc==1) for(bool uniform:{false,true}) {DeltaLights(false,true,uniform);DeltaLights(true,true,uniform);}
-    if(unsupported) {UnsupportedCasterSwitches();CompositeProxyPolicy();}
+    if(unsupported) {UnsupportedCasterSwitches();CompositeProxyPolicy();ImpossibleDepthSwitches();}
     if(slab) SlabRenders();
     std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
 }
