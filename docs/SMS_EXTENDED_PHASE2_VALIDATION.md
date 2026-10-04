@@ -969,3 +969,19 @@ contexts that use it; audited constant isotropic events still check W and
 both normal records. `nearest-frame-r4-result.log` reports **341/10**,
 with only the known alias witness failing. These failed checks are retained
 as regressions, not omitted from the repair record.
+
+On committed repair `6ca64acac`, fresh incremental library/test builds
+(`audited-frame-match-library-build.log`,
+`audited-frame-match-reference-build.log`) exit zero with no compiler
+diagnostics. The restored geometry mode passes **4297/0** in
+`audited-frame-match-geometry-result.log`; Round 5 isolated witnesses report
+**36067/10** in `audited-frame-match-r5-result.log`, with only the ten
+near-commensurate Jacobian checks failing. This verifies the nested
+start-inside regression repair while preserving native modified-frame and
+stacked-sheet positives. Full committed-source rollback proofs, clean make,
+actual Xcode, sanitizer, regression, cost and fresh review gates remain
+required after all Round 5 repairs are complete. Preparation-audit caching,
+non-indexed edge-query cost, worker-local scratch and work counters remain
+outstanding. The derivative contract proposal still awaits a user ruling.
+Main remains clean at `08552560b54b517b7a8a0696eb9d317953b26bbe`;
+no Phase 2 merge, push, new ledger row or ledger closure occurred.
