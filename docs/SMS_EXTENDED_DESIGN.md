@@ -415,7 +415,7 @@ After each coherent production increment, apply [the independent review loop](sk
 
 ## Integration evidence
 
-The pre-design master gate for the attenuation integration (`a8fa56224`) is recorded in [DL_CHEAPBATCH_VALIDATION.md](DL_CHEAPBATCH_VALIDATION.md) under "Post-merge master gate". The design import introduced no source changes. Current Phase 1 primitive and rejection evidence is recorded in [SMS_EXTENDED_PHASE1_VALIDATION.md](SMS_EXTENDED_PHASE1_VALIDATION.md); production activation and acceptance remain pending. Phase 2 implementation and current isolated/production evidence are recorded in [SMS_EXTENDED_PHASE2_VALIDATION.md](SMS_EXTENDED_PHASE2_VALIDATION.md); The user accepted the four-salt wide-spot slab/BDPT discrepancy as variance and authorized continuation. Cone 80/85 remains a reported measurement with the original three-SD band; it supplies no DL-420 closure. The current `13a31c7d7` replacement gate passes 28 make modes (17665 reported checks/0 failures), twelve actual Xcode-linked controls and the disclosed partial ASan/UBSan suite, with zero compiler diagnostics and verified source hashes. Fresh final review and Phase 2 integration remain pending. No ledger row closes on the contract statement.
+The pre-design master gate for the attenuation integration (`a8fa56224`) is recorded in [DL_CHEAPBATCH_VALIDATION.md](DL_CHEAPBATCH_VALIDATION.md) under "Post-merge master gate". The design import introduced no source changes. Current Phase 1 primitive and rejection evidence is recorded in [SMS_EXTENDED_PHASE1_VALIDATION.md](SMS_EXTENDED_PHASE1_VALIDATION.md); production activation and acceptance remain pending. Phase 2 implementation and current isolated/production evidence are recorded in [SMS_EXTENDED_PHASE2_VALIDATION.md](SMS_EXTENDED_PHASE2_VALIDATION.md); The user accepted the four-salt wide-spot slab/BDPT discrepancy as variance and authorized continuation. Cone 80/85 remains a reported measurement with the original three-SD band; it supplies no DL-420 closure. The historical `13a31c7d7` replacement gate passes 28 make modes (17665 reported checks/0 failures), twelve actual Xcode-linked controls and the disclosed partial ASan/UBSan suite, with zero compiler diagnostics and verified source hashes. Fresh final review and Phase 2 integration remain pending. No ledger row closes on the contract statement.
 
 ## Adopted interim composite policy (2026-10-03)
 
@@ -507,3 +507,27 @@ actual native triangle provider rather than the outer geometry recipe. This
 is not an approved deferral or a reason to drop UV context globally. The
 third reviewer found no P1/P2 in cost, tests or document evidence. No Phase 2
 ledger closure follows from the passing pre-review gate.
+
+## Mode-off bit-identity gate stop (2026-10-04)
+
+The latest native repair `761c71b51` has coherent committed proofs (review
+20005/0, production177/0, geometry4297/0), but its replacement pipeline
+stops at the strict shipped mode-off comparison. Eight alternating source
+builds and four salts complete; all sixteen master/candidate hashes differ.
+Reported radiance means differ by no more than 1.7763568394002505e-15.
+Pixel diagnostics measure maximum absolute RGBA difference
+2.4579116519873878e-11 and maximum per-image RMSE2.0080155837659702e-13.
+All sixteen images match bit-identically after float32 conversion, alpha
+matches in doubles, and all twelve channel means pass their original
+three-SD comparison (n4). This suggests arithmetic rounding but does not
+prove its cause or satisfy internal-double bit identity. The original bit-identical
+contract has not been relaxed. No Phase 2 merge, current full gate or fresh
+review verdict is claimed. See `SMS_EXTENDED_PHASE2_VALIDATION.md`.
+
+A concrete acceptance amendment is proposed, **not adopted**: cross-build
+shipped mode-off images must match bit-identically in float32, while
+deterministic rejection on/off comparisons within one build remain strict
+in internal doubles. Stochastic comparisons retain n>=4 and their original
+channel-separated three-SD bands. The user must rule before that amendment
+changes the acceptance test. No implementation contract has been changed
+on the strength of these measurements.

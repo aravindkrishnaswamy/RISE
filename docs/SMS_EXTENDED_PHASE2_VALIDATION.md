@@ -2,10 +2,14 @@
 
 Phase 2 is implemented on `sms-ext-phase2`, based on master
 `08552560b54b517b7a8a0696eb9d317953b26bbe`, but is not yet merged.
-The current native source is `13a31c7d75b2f857c3d26176761694c049cb1046`.
-Its full replacement gate completes with zero failures and zero compiler
-diagnostics; all eight native source/header SHA-256 hashes are verified.
-Fresh Round 2 review and integration remain pending.
+The latest native source is `761c71b51`; its coherent committed repair proof
+passes review **20005/0**, production **177/0** and geometry **4297/0**.
+The new full replacement pipeline stops at the strict mode-off bit-identity
+gate: all sixteen baseline/candidate hashes differ, with reported radiance
+mean differences no larger than 1.7763568394002505e-15. Pixel diagnostics are complete (see the gate-stop section below). Clean make/Xcode regressions and sanitizers in this replacement
+have not started; fresh Round 3 review and integration remain pending.
+The complete `13a31c7d7` gate below is historical evidence for that checkpoint,
+not a passing validation of the latest source.
 
 Round 1 found two estimator P1s (chart identity and impossible depth);
 a sibling audit found nonpositive solver thresholds. All three have
@@ -45,7 +49,7 @@ Reference polishing bypasses the legacy fixed displacement dead zone.
 Geometry uses true surface points after undoing authored object launch
 bias; material queries retain native intersection/raster contexts.
 
-## Current-source replacement gate
+## Historical 13a31c7d7 replacement gate
 
 Native source `13a31c7d7` completes twenty executable builds and 28 make
 mode runs: **17665 reported checks, zero failures**, plus 458 CST matches
@@ -86,7 +90,7 @@ has a checked zero exit and zero compiler diagnostics.
 The clean make build compiles 376 units; clean Xcode Deployment and Opto
 each compile 393. Compiler diagnostics are zero. Each Xcode configuration
 has exactly the two documented environment notices (OIDN search path and
-AppIntents metadata). Raw current-source evidence is under
+AppIntents metadata). Raw evidence for this historical checkpoint is under
 `.claude/logs/sms-phase2-round2-final/`. All twelve actual Xcode-linked controls pass: in each configuration,
 geometry **4297/0**, unsupported/configuration **457/0**, delta queries
 **177/0**, PT production **177/0**, signed emission **353/0** and review
@@ -436,3 +440,51 @@ The sibling repair follows the actual native triangle provider in the hit
 payload, preserving its barycentrics through wrappers. The focused repair
 reports **20005/0** with checked zero-diagnostic library/test builds. New committed proofs,
 the full replacement gate and fresh round 3 review remain required.
+
+### Latest committed sibling proof and mode-off gate stop
+
+At native `761c71b51`, coherent pre-fix `1b924f194` reports review
+**19985/20**, production **177/0**. Master reports available review
+**121/120** and production **127/50**; reference helper absence is still
+explicitly unavailable. Restored native `761c71b51` passes review **20005/0**,
+production **177/0**, and geometry **4297/0**, with checked zero-diagnostic
+library/test builds. Evidence: `.claude/logs/sms-phase2-round3/proofs/`.
+
+The full replacement pipeline completes all eight alternating committed-source
+A/B library/test builds and four salted render sets per variant, then exits1:
+**0 of 16 cross-build off-mode hashes match**. Reported whole-image means
+differ by at most 1.7763568394002505e-15; means alone do not establish
+per-pixel agreement. HEAD sources are restored. No clean make/Xcode,
+regression or sanitizer replacement gate is claimed. Evidence and failure
+disposition are under `.claude/logs/sms-phase2-round3/`, including
+`failed-summary.json` and `failed-stage-cost.json`.
+
+Timing measurements from that failed stage remain reported honestly (n4,
+paired percentage change mean and sample SD): RGB k1 **-0.243344 +/- 0.640274%**,
+RGB k2 **-1.054483 +/- 0.827833%**, NM **+1.275654 +/- 0.382115%**,
+HWSS **+0.517435 +/- 0.336988%**. These are completed timing observations,
+not a passing phase gate or a zero-overhead claim. The mode-off bit-identical
+contract remains unchanged; the latest source is unmerged.
+
+The completed pixel diagnostic rebuilds baseline and candidate coherently,
+uses the same diagnostic test source and four salts, captures 4096 RGBA
+pixels per image, and restores native sources and the original test afterward.
+All library/test builds have zero diagnostics and all diagnostic renders pass.
+The maximum absolute RGBA difference is **2.4579116519873878e-11**; the maximum
+per-image RGBA RMSE is **2.0080155837659702e-13**. Alpha is bit-identical.
+The largest positive ULP distance is **10528773**, so this is not an asserted
+one-ULP bound. All sixteen images have **zero changed RGBA values after
+float32 conversion**, and all twelve channel means pass the original
+three-combined-sample-SD check (n4, both variants report their own SD).
+This establishes the measured precision scale, not the compiler mechanism,
+not a relaxed contract and not bit identity of internal doubles. Complete
+per-image/channel results: `off-mode-diagnostic/comparison.json`.
+
+**Proposed acceptance amendment, not adopted:** use bit-identical float32
+image pixels for the cross-build shipped mode-off gate, retaining strict
+internal-double on/off comparisons within the same build for deterministic
+rejection cases. Retain salted n>=4 channel-separated original three-SD
+comparisons where stochastic output differs. This requires the user's ruling
+before changing any acceptance test or continuing the interrupted gate.
+The phase remains on `sms-ext-phase2`; no ledger row closes and no new row
+is opened. Master stays `08552560b54b517b7a8a0696eb9d317953b26bbe` and clean.
