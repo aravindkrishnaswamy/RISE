@@ -576,3 +576,18 @@ retaining continuous modifier controls and native price/direction oracles.
 Focused validation passes193037/0; v2 preparation completed coherent proofs
 but stopped before full gates. Complete v3 gates pass373510/0 across29 make modes, twelve actual Xcode controls and five partial-sanitizer modes, with zero owned compiler diagnostics; fresh Round 4 is pending.
 No design change, closure or new ledger row follows from this repair.
+
+
+### Phase 2 fresh Round 4 implementation audit (2026-10-04)
+
+Three independent reviewers of936952503 found seven implementation P1s and
+no design defect. The v3 passing gate is historical. Native witnesses and
+repairs address root-family merging/splitting, continuous-normal derivative
+aliasing, Polished sheet indices and native support, authored mesh seams,
+and uncertain start-inside orientation. The original thin close-patch example
+was not reachable through native acceleration; a corrected wide disjoint
+native mesh demonstrates the accepted-root alias numerically. Current fixes
+and their limits are recorded in
+[SMS_EXTENDED_PHASE2_VALIDATION.md](SMS_EXTENDED_PHASE2_VALIDATION.md).
+Complete replacement gates and fresh Round 5 convergence are required before
+Phase 2 integration. Round 5 has not begun; no ledger closure is claimed.

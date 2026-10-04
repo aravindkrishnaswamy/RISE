@@ -714,3 +714,50 @@ numerical ambiguity diagnostic, not certified isolation or continuity.
 Evidence: `.claude/logs/sms-phase2-round4-final-v2/context-sibling-*.log`.
 The passing complete replacement is under
 `.claude/logs/sms-phase2-round4-final-v3/`, followed by fresh external Round 4.
+
+
+## Fresh Round 4 findings and replacement preparation (2026-10-04)
+
+Fresh independent estimator, material and evidence reviewers examined
+936952503 and reported seven implementation P1s, with no design defect.
+The completed v3 gate above is historical evidence for that tree; it does not
+validate the subsequent repairs. Round 5 is the final allowed review round
+and has not been launched. Replacement evidence is being collected under
+`.claude/logs/sms-phase2-round5-final/`.
+
+Native committed witnesses reproduce steep continuous UV family splitting,
+fixed-step normal-Jacobian aliasing, Polished back-face coat-index reversal
+and empty native support, discontinuous authored corner-normal family splitting,
+and closed-mesh start-inside misclassification with opposing corner normals.
+The first combined witness is 81 passed/64 failed at140bb3995. The original
+thin translated close-patch review example fails before root acceptance in
+native acceleration, so it is not a valid accepted-root red proof. Corrected
+wide, disjoint, double-sided native indexed patches at world x=1e6 preserve
+both native roots: testc7a04dbf4 yields143/10 againstb28b2efe1, with both
+accepted roots separated by7.68341124058e-9 but incorrectly matched.
+These failed and partial runs remain under the v3 evidence directory.
+
+Repairs preserve native records and the mode-off geometry/intersection law.
+Polished eligibility enforces native positive incoming shading cosine and
+uses ambient-to-coat indices for reflection on both sheet sides. Prepared
+extended scenes audit mesh geometric orientation against corner normals once;
+uncertain orientation makes anchors ineligible rather than seeding an empty
+stack. Constant-law mesh edges now receive the same context probes as
+modified charts. Measured context slopes constrain final root uncertainty,
+and deterministic polishing resolves smooth steep charts before acceptance.
+Modified Jacobians compare three progressively refined scales and can halve
+the base step up to16 times; unresolved derivatives are rejected. Positional
+root equality uses the joint final-correction/coordinate-roundoff uncertainty,
+with the existing endpoint-scale band as a ceiling. These remain numerical
+diagnostics, not certified root isolation or continuity bounds.
+
+The focused gate atb28b2efe1 passes145/0 and the prior review suite passes
+193037/0; subsequent tests add four-salt finite two-seed reciprocal accounting
+for one and two physical roots, a second translation scale, and all five
+RGB/NM continuous-normal derivative domains. Their current gate is pending.
+The two-seed accounting uses actual accepted native roots with a finite toy
+proposal law; it is not a production render or a measured production density.
+The scene-preparation audit adds one-time mesh traversal and temporary vectors,
+and adaptive modified Jacobians add opt-in solve work. Current cost, memory,
+complete regression and actual Xcode evidence must be regenerated before merge.
+No ledger row is opened or closed by this preparation.
