@@ -15,6 +15,8 @@
 #include "../src/Library/Shaders/PathTracingIntegrator.h"
 #include "../src/Library/Painters/UniformScalarPainter.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
+#include "../src/Library/Rendering/PathTracingPelRasterizer.h"
+#include "../src/Library/Utilities/PathGuidingField.h"
 #include <array>
 #include <sstream>
 #include <iomanip>
@@ -467,13 +469,15 @@ public:
     bool IsPositionIndependent() const override { return false; }
 };
 static void UnsupportedCasterSwitches() {
-    for(bool remote:{false,true}) {
-        Fixture f(Materials()+Mesh(false,false)+Object("pane","shape","glass"," position 0 0 1\n")
+    for(bool csg:{false,true}) for(bool reverse:{false,true}) for(bool remote:{false,true}) {
+        Fixture f(Materials()+Mesh(csg,reverse)+Object("pane","shape","glass",csg?" scale 1 1 0.25\n":" position 0 0 1\n")
+            +(csg?"sphere_geometry\n{\n name tiny\n radius 0.1\n}\n"+Object("other","tiny","glass"," position 4 0 0\n")
+                +"csg_object\n{\n name inherited\n obja pane\n objb other\n operation union\n}\n":"")
             +"lambertian_material\n{\n name diffuse\n reflectance white\n}\n"
             +PlaneScene("floor",-2)+Object("receiver","floor","diffuse")
             +"omni_light\n{\n name source\n position 0 0 1\n color 1 1 1\n power 40\n}\n"
             +(remote?Object("remote_mirror","shape","mirror"," position 1000 0 1\n"):""));
-        auto* index=new UncertifiedIndex();auto* white=new UniformColorPainter(RISEPel(1));IMaterial* material=nullptr;
+        IScalarPainter* index=csg?static_cast<IScalarPainter*>(new UniformScalarPainter(1)):new UncertifiedIndex();auto* white=new UniformColorPainter(RISEPel(1));IMaterial* material=nullptr;
         Check(RISE_API_CreatePerfectRefractorMaterial(&material,*white,*index),"unsupported native refractor created");
         if(material) f.job->GetObjects()->GetItem("pane")->AssignMaterial(*material);
         safe_release(material);index->release();white->release();
@@ -488,7 +492,7 @@ static void UnsupportedCasterSwitches() {
         ManifoldSolverConfig plain;auto* off=new PathTracingIntegrator(plain,stability);off->SetMaxPathDepth(8);
         IORStack air(1);
         Check(!on->GetSolver()->ExtendedAnchorEligible(f.Scene(),*caster,Point3(0,0,-2),air),
-            "uncertified transmissive caster rejects the anchor, including a mixed supported caster set");
+            "unsupported transmissive caster rejects the anchor, including inherited CSG and a mixed supported caster set");
         for(unsigned trial=0;trial<4;++trial) {
             const unsigned salt=SobolSequence::HashCombine(12000+trial,0x554e4345);
             SobolSamplerTestHooks::ValueSalt().store(salt);
@@ -502,19 +506,88 @@ static void UnsupportedCasterSwitches() {
             Check(std::isfinite(values[0].r)&&values[0].r>0,"PT clear-transmission control is finite and lit");
             Check(std::memcmp(&values[0],&values[1],sizeof(RISEPel))==0,
                 "ineligible extended anchor preserves PT light with all three switches off");
-            std::cout<<"unsupported caster remote="<<remote<<" salt="<<salt<<" PT="<<values[0].r<<" extended="<<values[1].r<<'\n';
+            std::cout<<"unsupported caster csg="<<csg<<" winding="<<reverse<<" remote="<<remote<<" salt="<<salt<<" PT="<<values[0].r<<" extended="<<values[1].r<<'\n';
         }
         SobolSamplerTestHooks::ValueSalt().store(0);
         on->release();off->release();caster->release();shader->release();
     }
 }
+static std::string SlabScene(bool reverse, unsigned inner, unsigned outer) {
+    std::string text=Materials();
+    text.replace(text.find("values 1.3 1.5 1.9"),std::string("values 1.3 1.5 1.9").size(),"values 1.5 1.5 1.5");
+    text+="standard_shader\n{\n name global\n shaderop DefaultPathTracing\n}\n"
+        "film\n{\n width 16\n height 16\n}\n"
+        "pinhole_camera\n{\n location 0 0 -1.9\n lookat 0 0 -2\n up 0 1 0\n fov 174.275189547777\n}\n"
+        "lambertian_material\n{\n name diffuse\n reflectance white\n}\n";
+    text+=Mesh(true,reverse)+Object("slab","shape","glass"," scale 3 3 0.25\n")
+        +PlaneScene("floor",-2,-4,4)+Object("receiver","floor","diffuse")
+        +"spot_light\n{\n name source\n position 0.5 0 2\n target 0.5 0 -2\n color 1 1 1\n power 40\n inner "+std::to_string(inner)
+        +"\n outer "+std::to_string(outer)+"\n}\n";
+    return text;
+}
+static std::vector<RISEColor> SlabExtendedRender(const std::string& text, unsigned salt) {
+    Fixture fixture(text);
+    std::vector<IShaderOp*> ops;IShader* shader=nullptr;
+    if(!RISE_API_CreateStandardShader(&shader,ops)) return {};
+    auto* caster=new RayCaster(false,16,*shader,true);caster->SetTransparentShadows(true);
+    caster->AttachScene(&fixture.Scene());
+    ManifoldSolverConfig cfg;cfg.enabled=true;cfg.extendedMode=true;cfg.targetBounces=2;
+    cfg.maxBernoulliTrials=64;cfg.multiTrials=1;
+    StabilityConfig stability;stability.rrMinDepth=20;
+    auto* rasterizer=new PathTracingPelRasterizer(caster,cfg,PathGuidingConfig(),AdaptiveSamplingConfig(),stability,false);
+    rasterizer->SetMaxPathDepth(1);rasterizer->SetInteractiveDenoiseSuppressed(true);
+    ISampling2D* samples=nullptr;IPixelFilter* filter=nullptr;
+    RISE_API_CreateMultiJitteredSampling2D(&samples,1,1);
+    RISE_API_CreateBoxPixelFilter(&filter,1,1);
+    if(!samples||!filter) {safe_release(samples);safe_release(filter);rasterizer->release();caster->release();shader->release();return {};}
+    samples->SetNumSamples(4096);rasterizer->SubSampleRays(samples,filter);
+    auto* capture=new CapturingRasterizerOutput();rasterizer->AddRasterizerOutput(capture);
+    rasterizer->AttachToScene(&fixture.Scene());
+    SobolSamplerTestHooks::ValueSalt().store(salt);
+    rasterizer->RasterizeScene(fixture.Scene(),nullptr,nullptr);
+    SobolSamplerTestHooks::ValueSalt().store(0);
+    const auto pixels=capture->pixels;
+    rasterizer->DetachFromScene(&fixture.Scene());
+    capture->release();samples->release();filter->release();rasterizer->release();caster->release();shader->release();
+    return pixels;
+}
+static void SlabRenders() {
+    Check(ConfigureTestWorker(),"slab render uses one configured worker");
+    for(bool reverse:{false,true}) for(const auto& cone:{std::array<unsigned,2>{30,45},std::array<unsigned,2>{44,45},std::array<unsigned,2>{80,85}}) {
+        std::array<std::vector<double>,3> tested,reference;
+        for(unsigned trial=0;trial<4;++trial) {
+            const unsigned seed=46000+trial;const unsigned salt=SobolSequence::HashCombine(seed,kSaltTag);
+            const auto text=SlabScene(reverse,cone[0],cone[1]);
+            const auto a=SlabExtendedRender(text,salt);
+            const auto referenceText=text+"bdpt_pel_rasterizer\n{\n samples 4096\n max_eye_depth 2\n max_light_depth 4\n rr_min_depth 20\n pixel_filter box\n oidn_denoise FALSE\n pathguiding FALSE\n adaptive_max_samples 0\n}\n";
+            g_seedBase=seed;g_renderIndex=0;const auto b=Render(referenceText,"extended_slab_bdpt");
+            Check(a.size()==256&&b.ok&&b.pixels.size()==256,"extended and matching native BDPT slab renders complete");
+            for(unsigned c=0;c<3;++c) {
+                double av=0,bv=0;
+                for(const auto& pixel:a) av+=pixel.base[c];
+                for(const auto& pixel:b.pixels) bv+=pixel.base[c];
+                tested[c].push_back(av/256);reference[c].push_back(bv/256);
+            }
+        }
+        for(unsigned c=0;c<3;++c) {
+            const Moments a(tested[c]),b(reference[c]);
+            std::cout<<std::setprecision(17)<<"slab winding="<<reverse<<" inner="<<cone[0]<<" outer="<<cone[1]<<" c="<<c
+                <<" extended="<<a.mean<<" sd="<<a.sd<<" BDPT="<<b.mean<<" reference sd="<<b.sd<<" n=4 spp=4096\n";
+            Check(a.mean>0&&b.mean>0&&std::isfinite(a.mean)&&std::isfinite(b.mean),"slab native-domain controls are positive and finite");
+            Check(std::fabs(a.mean-b.mean)<=3*std::hypot(a.sd,b.sd),"extended spot slab agrees with matching BDPT within 3 combined sd");
+        }
+    }
+}
+
 int main(int argc,char** argv) {
-    bool synthetic=true,geometry=true,delta=true,unsupported=true,production=false;
-    if(argc==2&&std::string(argv[1])=="--synthetic-only") {geometry=false;delta=false;unsupported=false;}
-    if(argc==2&&std::string(argv[1])=="--geometry-only") {synthetic=false;delta=false;unsupported=false;}
-    if(argc==2&&std::string(argv[1])=="--delta-only") {synthetic=false;geometry=false;unsupported=false;}
-    if(argc==2&&std::string(argv[1])=="--unsupported-only") {synthetic=false;geometry=false;delta=false;}
-    if(argc==2&&std::string(argv[1])=="--production-only") {synthetic=false;geometry=false;delta=true;unsupported=false;production=true;}
+    bool synthetic=true,geometry=true,delta=true,unsupported=true,production=false,slab=true;
+    Check(ConfigureTestWorker(),"reference renderer uses one configured worker");
+    if(argc==2&&std::string(argv[1])=="--synthetic-only") {geometry=false;delta=false;unsupported=false;slab=false;}
+    if(argc==2&&std::string(argv[1])=="--geometry-only") {synthetic=false;delta=false;unsupported=false;slab=false;}
+    if(argc==2&&std::string(argv[1])=="--delta-only") {synthetic=false;geometry=false;unsupported=false;slab=false;}
+    if(argc==2&&std::string(argv[1])=="--unsupported-only") {synthetic=false;geometry=false;delta=false;slab=false;}
+    if(argc==2&&std::string(argv[1])=="--production-only") {synthetic=false;geometry=false;delta=true;unsupported=false;production=true;slab=false;}
+    if(argc==2&&std::string(argv[1])=="--slab-only") {synthetic=false;geometry=false;delta=false;unsupported=false;}
     std::cout<<std::setprecision(12);
 #ifdef RISE_SMS_REFERENCE_A
     if(synthetic) Synthetic();if(geometry) {Geometry();CloseRoots();WalkEvents();}
@@ -523,5 +596,6 @@ int main(int argc,char** argv) {
 #endif
     if(delta) DeltaLights(production);
     if(unsupported) UnsupportedCasterSwitches();
+    if(slab) SlabRenders();
     std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
 }
