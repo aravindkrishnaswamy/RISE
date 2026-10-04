@@ -1,16 +1,104 @@
 # Extended SMS Phase 2 validation
 
 Phase 2 is implemented on `sms-ext-phase2`, based on master
-`08552560b54b517b7a8a0696eb9d317953b26bbe`, but is not yet merged.
-The latest native source is `5d7b6ff38`, with committed modifier-context tests
-at `32241b5eb`. Focused validation passes **193037/0**, with zero library/test diagnostics.
-The complete replacement gate at `44645f25e` passes **373510/0** across
-29 make modes, twelve actual Xcode-linked controls and five partial-sanitizer
-modes. Coherent ten-path committed red/green proofs and source/test hash checks
-also pass. Fresh Round 4 review and integration remain pending. Earlier gates
-below validate their own checkpoints and do not substitute for this gate.
+`08552560b54b517b7a8a0696eb9d317953b26bbe`, and remains unmerged.
+Current native source is `71c080bd3`; corrected close-root fixtures are
+committed at `a6b4aa37a`. The current composed gate passes **374075/0**
+across 30 make modes, twelve actual Xcode-linked controls and five partial
+sanitizer modes. Fresh external Round 5 is still required. Earlier sections
+are historical checkpoint records; their pending-review statements describe
+those checkpoints and do not supersede the current status.
 
-## Current complete replacement gate at44645f25e (2026-10-04)
+## Current composed gate at a6b4aa37a (2026-10-04)
+
+Evidence: `.claude/logs/sms-phase2-round5-final-v3/`, especially
+`source.json`, `composition.json`, `proofs/results.json`,
+`final-gate/completed-summary.json`, `final-gate/slab-summary.json`,
+`final-gate/xcode-native-control-results.json`, `sanitizer-driver.log`
+and `production-memory.log`. All ten native-source hashes and all three
+pinned test hashes verify. This gate explicitly composes unchanged-source
+results with fresh tests; it is not a claim that every command was rerun.
+
+The preceding v2 pipeline completed clean make (376 compilation actions),
+actual Deployment and Opto (393 each), all 30 make modes, and eight actual
+interleaved source builds. All builds have zero owned diagnostics, with only
+the allowed OIDN search-path and AppIntents notices in each Xcode build.
+However, its Deployment-linked review failed **193299/10**: ten positive
+acceptance checks for close roots at world x=1e6 failed. That pipeline remains
+failed and is not reported as a full green gate. Its raw evidence is retained
+under `.claude/logs/sms-phase2-round5-final-v2/`.
+
+Test-only a6b4aa37a moves the disjoint patches' central edges from ±2e-9 to
+±0.5e-9 relative to their translation. It gives native context probes clearance
+without changing root centers, root separation, matching bands, derivatives,
+or assertions that both roots must be accepted and distinguished. This
+eliminates the ten Deployment fixture failures. The native implementation,
+other test translation units and performance-mode code are unchanged.
+Thus the v2 clean builds, nineteen unchanged executable results, and source
+A/B cost measurements remain valid for identical native sources. The current
+follow-up rebuilds the changed test, runs all ten of its modes and source
+hygiene, recompiles its translation unit with each actual Xcode configuration's
+flags and links 372 actual native objects, and reruns sanitizers and memory.
+
+The composed regression gate is **374075 checks / 0 failures**, twenty
+executables and thirty modes. CST separately reports **458 MATCH, 0 DRIFT**,
+465 corpus scenes, no uncovered or stale entries. Both actual Xcode
+configurations pass geometry4297/0, unsupported457/0, delta177/0,
+production177/0, signed353/0 and review193319/0. Current make review is
+193319/0, modifier-chart164105/0 and focused Round 4 regressions283/0.
+The five partial ASan/UBSan modes pass geometry4297/0, unsupported457/0,
+production177/0, signed353/0 and review193319/0. Instrumentation covers the
+test and five production units: ManifoldSolver, TriangleMeshGeometry,
+ObjectManager, PathTracingIntegrator and SMSShaderOp. Remaining library units
+use native LTO objects; this is neither whole-library nor leak coverage.
+
+Fresh coherent committed proofs restore all ten changed native paths together.
+Pre-R4-fix936952503 gives focused151/132, review193187/132 and production177/0.
+Pre-harmonic-fixd63695cab gives focused273/10, review193309/10 and production177/0.
+Master08552560b gives available review121/120 and production127/50; new absent
+helpers are explicitly unavailable, not numerical reds. Restoreda6b4aa37a
+passes focused283/0, review193319/0, production177/0 and geometry4297/0.
+All proof builds exit zero with zero diagnostics.
+
+Eight actual alternating committed-source library/test builds compare master
+08552560b with d3d5ee127, whose native sources are hash-identical to current.
+Four salts per fixture yield sixteen bit-identical float32 RGBA images;
+all sixteen internal-double hashes differ. Maximum whole-image mean difference
+is 1.7763568394002505e-15. Strict deterministic within-build double parity
+remains required. Evidence: v2 `phase2-interleaved-cost.json` and build/run logs.
+
+| Fixture | Master seconds mean ± sample SD | Candidate seconds mean ± sample SD | Paired change % mean ± sample SD |
+|---|---:|---:|---:|
+| RGB k1 | 0.972532 ± 0.002642 | 0.970548 ± 0.003678 | -0.203938 ± 0.295558 |
+| RGB k2 | 0.736288 ± 0.005560 | 0.734602 ± 0.004135 | -0.226246 ± 0.691925 |
+| NM | 1.732332 ± 0.016117 | 1.743155 ± 0.010949 | +0.628303 ± 0.697886 |
+| HWSS | 5.791303 ± 0.010209 | 5.851994 ± 0.035648 | +1.047475 ± 0.463778 |
+
+These measurements establish neither zero overhead nor a general runtime
+bound. Prepared orientation auditing adds one-time mesh traversal and temporary
+vectors. Modified-interface Jacobians compare four scales, including a
+noncommensurate scale, with up to sixteen base-step refinements. This is opt-in
+solve work; local diagnostics do not certify global continuity or isolation.
+Record sizes in bytes are config112, root184, counters320, domainvertex1592
+and solver216. Public SpecularInfo56, ManifoldVertex336 and SMSChainRecord2176
+remain unchanged. Current production memory passes177/0 in 28.01s wall,
+27.85s user and 0.11s system, with maximum RSS **102760448 bytes** and peak
+footprint **82461224 bytes**. These are whole-process observations.
+The last production fixture reports 131605 proposals, 125049 zero trials,
+692802 Newton iterations, 66069 retries, 1957 tail trials, 44 roulette stops,
+3300 owned and 125049 rejected roots. The owned counter counts accepted
+nonzero physical prices, not every geometrically accepted discovery.
+
+Current slab validation passes80/0 with eighteen channel-separated comparisons,
+four salts at4096spp, both windings and each reference's own sample SD. All
+twelve narrow-cone comparisons pass the original three-combined-SD bands.
+The wide front red difference remains -0.17389784% (-5.13881272 SDs), accepted
+by the user as variance; reverse wide red is -0.01395563% (-0.41274280 SDs).
+Wide results remain measurements, with no band widening or DL-420 closure.
+Scene rejection1168/0, HWSS fallback3147/0 and domain replay8200/0 pass in
+the unchanged-native cost stage. No ledger row closes or opens at this gate.
+
+## Historical complete replacement gate at44645f25e (2026-10-04)
 
 Evidence: `.claude/logs/sms-phase2-round4-final-v3/`, including
 `proofs/results.json`, `final-gate/completed-summary.json`,

@@ -1,6 +1,6 @@
 # Extended SMS: event proposals, channel geometry, and path ownership
 
-**Status: adopted implementation contract, 2026-10-03. Phase 1 domain/replay primitives and interim rejection policy are implemented on `sms-ext`, merged to master at `34bd520ec5e70a5cf96bcf8b8154b1a17888880f`. Phases 2–4 remain pending.**
+**Status: adopted implementation contract, 2026-10-03. Phase 1 domain/replay primitives and interim rejection policy are implemented on `sms-ext`, merged to master at `34bd520ec5e70a5cf96bcf8b8154b1a17888880f`. Phase 2 is implemented on `sms-ext-phase2`, pending final review and merge; Phases 3–4 remain pending.**
 
 Base: master `a8fa56224ff1e4d9284e907fcf1d1d05534530e6`, the reviewed attenuation integration. DL-437 and DL-438 remain open. The user authorized deferring them for that integration and asked for this extended design next. This proposal keeps the native material conventions established by [DL-435](DL435_SPECTRAL_SMS_ATTENUATION.md). It does not replace them with a general participating-medium or absorbing-film model.
 
@@ -598,3 +598,18 @@ normal-Jacobian failures at the finest halved probe period. A fourth
 noncommensurate probe repairs that numerical alias without widening acceptance
 bands. Focused283/0 and review193319/0 are current partial evidence; complete
 replacement gates and fresh review remain required. Round 5 has not begun.
+
+
+### Phase 2 current composed gate (2026-10-04)
+
+Native71c080bd3 and corrected testsa6b4aa37a pass374075/0 across thirty
+make modes, twelve actual Xcode controls and five partial-sanitizer modes.
+The prior v2 pipeline failed ten Deployment positive close-root checks;
+that failure is preserved. Test-only patch-edge clearance fixes the fixture
+without changing separation, thresholds or native production code. Current
+hash-checked evidence composes unchanged native clean builds and eight source
+A/B builds with fresh committed proofs, all changed-test modes, actual Xcode
+controls, partial sanitizers and memory. Details and limits are in
+[SMS_EXTENDED_PHASE2_VALIDATION.md](SMS_EXTENDED_PHASE2_VALIDATION.md).
+Fresh Round 5 is still required before merge; it is the final allowed round.
+No design decision, ledger closure or new row follows from this gate.
