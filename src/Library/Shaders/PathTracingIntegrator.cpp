@@ -1816,7 +1816,8 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 	Scalar bsdfMisPdf_,
 	Scalar castRRCompensation_,
 	bool smsChainUncovered_initial,
-	const SMSChainRecord* pSMSChain_initial
+	const SMSChainRecord* pSMSChain_initial,
+    bool smsIgnoreExtended_
 	) const
 {
 	using Traits = SpectralValueTraits<Tag>;
@@ -1921,6 +1922,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 	// This vertex's SMS inputs (PART 2), committed as the anchor when PART 3
 	// scatters non-delta.
 	bool smsPendingValid = false;
+    bool smsCurrentAnchor = false;
 	Point3 smsPendingPos;
 	Vector3 smsPendingGN, smsPendingSN;
 	std::optional<IORStack> smsPendingStack;
@@ -1952,6 +1954,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 	for( unsigned int depth = startDepth; depth < maxDepth; depth++ )
 	{
 		smsPendingValid = false;	// DL-372: PART 2 of THIS vertex records it
+        smsCurrentAnchor = false;
 
 		// Runaway-throughput guard.  PT can compound per-bounce BSDF
 		// kray amplification (Ward / multi-lobe-select divides by
@@ -3793,6 +3796,11 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 #endif
 
 		// ============================================================
+        Scalar smsDomainNM = 0;
+        if constexpr (!Traits::is_pel) smsDomainNM = tag.nm;
+        smsCurrentAnchor = pSolver && (rc.smsForceLegacy || smsIgnoreExtended_ || !pSolver->ExtendedModeActive(scene)
+            || pSolver->ExtendedAnchorEligible(scene, caster, ri.geometric.ptIntersection, iorStack, smsDomainNM));
+
 		// PART 2: NEE + SMS at diffuse/glossy surfaces
 		// ============================================================
 		if( pLS )
@@ -3836,7 +3844,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				// block below), so an omni / spot light's light through a
 				// specular caster is SMS's; the transparent-shadow walk
 				// must not add it again.  Everywhere else it stays on.
-				/*bSMSCoversDeltaLights*/ pSolver != 0 );
+				/*bSMSCoversDeltaLights*/ smsCurrentAnchor );
 			directAll = ClampContribution( directAll, stabilityConfig.directClamp );
 			// GUI render modes P2b `indirect`: suppress NEE's direct-
 			// lighting contribution at the camera-visible vertex only --
@@ -3873,7 +3881,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		// specular chain is a genuinely multi-bounce transport (the light
 		// energy already traveled through >=1 specular scatter to arrive
 		// here), not the open-air direct connection NEE evaluates.
-		if( pSolver )
+		if( smsCurrentAnchor )
 		{
 			const Vector3 woOutgoing = Vector3(
 				-ri.geometric.ray.Dir().x,
@@ -4629,7 +4637,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				bPassedThroughSpecular = true;
 			} else {
 				bPassedThroughSpecular = false;
-				bHadNonSpecularShading = true;
+				bHadNonSpecularShading = smsCurrentAnchor;
 			}
 			bSMSChainUncovered = nextSMSChainUncovered;
 			// DL-372: a delta lobe extends the chain since the anchor; a
@@ -5595,9 +5603,14 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 	Scalar bsdfMisPdf_,
 	Scalar castRRCompensation_,
 	bool smsChainUncovered_,
-	const SMSChainRecord* pSMSChain_
+	const SMSChainRecord* pSMSChain_,
+    bool smsIgnoreExtended_
 	) const
 {
+    const SMSLegacyModeScope smsMode(rc, smsIgnoreExtended_);
+    if(rc.smsForceLegacy && pSolver && pSolver->ExtendedModeActive(scene)) {
+        pSolver->WarnHWSSLegacyMode();
+    }
 	// Thin forwarder to the shared templated body.  pAOV carries the
 	// denoiser AOV for the spectral (NM) path: NMTag::supports_aov is
 	// true, so IntegrateFromHitTemplated records normal/albedo at the
@@ -5611,7 +5624,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 		glossyBounces, transmissionBounces, translucentBounces,
 		volumeBounces, glossyFilterWidth, smsPassedThroughSpecular_initial,
 		smsHadNonSpecularShading_initial, pAOV, nullptr, NMTag{ nm }, bsdfMisPdf_,
-		castRRCompensation_, smsChainUncovered_, pSMSChain_ );
+		castRRCompensation_, smsChainUncovered_, pSMSChain_, smsIgnoreExtended_ );
 }
 
 
@@ -5652,6 +5665,8 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 	Scalar castRRCompensation_
 	) const
 {
+    const SMSLegacyModeScope smsMode(rc, true);
+    if(pSolver && pSolver->ExtendedModeActive(scene)) pSolver->WarnHWSSLegacyMode();
 	// Initialize results
 	for( unsigned int i = 0; i < SampledWavelengths::N; i++ ) {
 		hwssResult[i] = 0;
@@ -5718,7 +5733,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 						// `startDepth` -- forward the cast-level RR
 						// compensation (see this function's own trailing
 						// parameter doc).
-						castRRCompensation_ );
+						castRRCompensation_ , false, nullptr, true);
 			}
 		}
 		return;
@@ -5771,7 +5786,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 						false, false, pAOV, bsdfMisPdf,
 						// DL-196: this delegation IS `firstHit` at
 						// `startDepth` too (see the Fallback 1 site above).
-						castRRCompensation_ );
+						castRRCompensation_ , false, nullptr, true);
 				}
 			}
 			return;
@@ -6181,7 +6196,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 									// HWSS geometry is hero-driven.  Let only the hero
 									// continuation populate the shared, wavelength-independent
 									// Accurate guide so companion paths cannot race to define it.
-									w == 0 ? pAOV : 0 );
+									w == 0 ? pAOV : 0 , -1, 1, false, nullptr, true);
 								break;
 							}
 
@@ -6465,7 +6480,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					// PART 3 both see it through the next SMS caster).
 					false, bSMSAnchor, pAOV, misBsdfPdfComp[w],
 					1, bSMSChainUncovered,
-					smsChainHWSS ? &*smsChainHWSS : nullptr );
+					smsChainHWSS ? &*smsChainHWSS : nullptr , true);
 			}
 			break;
 		}
@@ -6527,7 +6542,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 						// no-BSDF delegation above.
 						false, bSMSAnchor, pAOV, misBsdfPdfComp[w],
 						1, bSMSChainUncovered,
-						smsChainHWSS ? &*smsChainHWSS : nullptr );
+						smsChainHWSS ? &*smsChainHWSS : nullptr , true);
 				}
 				break;
 			}
@@ -7167,6 +7182,8 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 	PixelAOV* pAOV
 	) const
 {
+    const SMSLegacyModeScope smsMode(rc, true);
+    if(pSolver && pSolver->ExtendedModeActive(scene)) pSolver->WarnHWSSLegacyMode();
 	for( unsigned int i = 0; i < SampledWavelengths::N; i++ ) {
 		result[i] = 0;
 	}
@@ -7474,7 +7491,7 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 							// HWSS geometry is hero-driven. Let only the hero
 							// continuation populate the shared, wavelength-independent
 							// Accurate guide so companion paths cannot race to define it.
-							w == 0 ? pAOV : 0 );
+							w == 0 ? pAOV : 0 , -1, 1, false, nullptr, true);
 						break;
 					}
 

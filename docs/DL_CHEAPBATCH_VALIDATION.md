@@ -1316,3 +1316,27 @@ Callback wording correction verification: non-comment OIDNDenoiser.cpp text and 
 Exact reviewed HEAD `3f6751a775773be0e1d18062ae5824b0c3e81fd5`: fresh transport, tests and API/cost/docs reviewers each report no additional P1/P2. The source/comment/API/cost families are aligned; committed proofs and all prior gates apply. User ruling 2026-10-03: “integrate the reviewed repair and then work on an extended SMS design.” This authorizes deferring open DL-437/DL-438 for this integration and developing their extended design afterward. Other user-stopped/queued limits remain explicit.
 
 The integration ledger now prospectively strikes DL-436/439/440 in addition to the fourteen prior closures, yielding289 unique main rows,46 open and243 closed; highest440/next441 (404/405 unused). The final ledger/disposition-only commit will receive a fresh independent review before no-ff merge; no source/test/build change occurs. Master is still clean at115aee62e at preparation. Merge metadata must identify the exact reviewed tree and fresh verdicts, then the root will run individually built targeted gates on the master merge tree from its own worktree. No push.
+
+### Post-merge master gate
+
+The attenuation repair was integrated with `git merge --no-ff`; master `a8fa56224` has exactly the reviewed `5481c0ead` tree. Two fresh integration reviewers returned zero P1/P2. No push was performed. The post-merge targeted master gate passed all 12 individually built executables and three additional SMS modes, with zero compiler warnings. Builds were checked before running each binary, renders ran sequentially with RISE_MEDIA_PATH set, and the exact master checkout was clean before and after. This design introduces no source changes and claims no extended-SMS render results.
+
+| Master gate | Result |
+|---|---|
+| SourceHygieneTest | 169 passed / 0 failed |
+| CstDeriveGoldenTest | 458 MATCH; 0 DRIFT / UNCOVERED / STALE |
+| ManifoldSolverTest | DL-435/439 388 passed; legacy and photon-context checks pass |
+| ExteriorIndexInvarianceTest --unit-only | 125 / 0 |
+| SMSUniformDispersionTest --attenuation-only | 96 / 0 |
+| SMSUniformDispersionTest --interface-only | 18 / 0 |
+| SMSUniformDispersionTest --coating-only | 72 / 0 |
+| SMSUniformDispersionTest --shipped | 10 / 0 |
+| OIDNAutoDeterminismTest --policy-only | 176 / 0 |
+| SSSRadianceScalingTest | 576256 / 0 |
+| DoubleSidedEmitterTest | 34 / 0 |
+| FrameStoreTest | 123 / 0 |
+| RasterizerDefaultsConsistencyTest | 164 / 0 |
+| AgentEvalCheckTest | 2075 / 0 |
+| PTGuidingMISPartitionTest | 185 / 0 |
+
+Local gate records: `/tmp/rise-cheapbatch-master-gate.json`, driver `/tmp/rise-cheapbatch-master-gate-driver.log`, per-command logs `/tmp/rise-cheapbatch-master-*.log`. Those temporary paths are diagnostic evidence on the originating machine; the results above are the durable record. Earlier full, sanitizer, clean make and Deployment/Opto evidence remains in [DL_CHEAPBATCH_VALIDATION.md](DL_CHEAPBATCH_VALIDATION.md).

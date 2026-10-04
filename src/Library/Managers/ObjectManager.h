@@ -27,6 +27,7 @@
 
 #include <map>
 #include <set>
+#include <string>
 #include <atomic>	// two consumers: the proximity AABB snapshot's publish/read edge, and pBVH's DCLP fix (see its own comment below)
 
 namespace RISE
@@ -39,6 +40,9 @@ namespace RISE
 			public virtual TreeElementProcessor<const IObjectPriv*>
 		{
 		protected:
+			mutable bool smsPolicyPrepared = false;
+			mutable bool smsHasComposite = false;
+			mutable std::string smsFirstCompositeObject;
 			virtual ~ObjectManager();
 
 			// Top-level acceleration: SAH BVH (BVH4-collapsed, SIMD AABB
@@ -516,6 +520,11 @@ namespace RISE
 			void Shutdown();
 
 			void PrepareForRendering() const;
+
+			// Prepared static-scene policy; read-only during worker execution.
+			bool ExtendedSMSAllowed() const { return smsPolicyPrepared && !smsHasComposite; }
+			const std::string& FirstCompositeObject() const { return smsFirstCompositeObject; }
+
 			void InvalidateSpatialStructure() const;
 			unsigned long long GetSpatialStructureGeneration() const { return mSpatialGen; }
 		};

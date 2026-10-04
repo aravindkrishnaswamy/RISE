@@ -40,6 +40,11 @@
 #ifndef MANIFOLD_SOLVER_
 #define MANIFOLD_SOLVER_
 
+// Allows regression harnesses to invoke the shipped legacy entry points
+// when this implementation is replaced by committed master sources.
+#define RISE_SMS_DOMAIN_REPLAY 1
+#define RISE_SMS_SCENE_POLICY 1
+
 #include "../Interfaces/IReference.h"
 #include "../Interfaces/IGeometry.h"
 #include "../Interfaces/IMaterial.h"
@@ -52,6 +57,7 @@
 #include "../Utilities/IORStack.h"
 #include <vector>
 #include <memory>
+#include <atomic>
 #include "../Intersection/RayIntersection.h"
 
 namespace RISE
@@ -83,6 +89,61 @@ namespace RISE
                 return true;
             }
             Scalar Estimate() const { return estimate; }
+        };
+
+        // Extended-domain records are separate from legacy vertex metadata.
+        struct SMSDomainCounters {
+            std::atomic<unsigned long long> attempts{0}, newtonIterations{0};
+            std::atomic<unsigned long long> acceptedRoots{0}, rejectedRoots{0};
+        };
+
+        struct SMSQueryDomain {
+            enum Kind { RGBComponent, Wavelength } kind;
+            unsigned int component;
+            Scalar nm;
+            static SMSQueryDomain RGB(unsigned int c) { return {RGBComponent, c, 0}; }
+            static SMSQueryDomain NM(Scalar wavelength) { return {Wavelength, 0, wavelength}; }
+            bool Valid() const;
+        };
+        struct SMSNativeMaterialQuery {
+            Scalar index = 1;
+            Scalar attenuation = 1;
+            bool reflection = false, transmission = false;
+            bool dielectricInterface = false;
+            bool deltaLimitProxy = false; // adopted finite-Phong dielectric approximation
+            bool interiorTransmittance = false, reflectionTint = false;
+            bool customFresnel = false;
+        };
+        struct SMSMediumCapture {
+            const IObject* identity;
+            const IMaterial* material;
+            RayIntersectionGeometric context;
+            SMSMediumCapture(const IObject* object, const IMaterial* provider,
+                             const RayIntersectionGeometric& hit)
+                : identity(object), material(provider), context(hit) {}
+        };
+        struct SMSStartingMedia {
+            Scalar environmentIndex = 1;
+            std::vector<SMSMediumCapture> enclosing; // outermost first
+            bool reconstructible = false;
+        };
+        class SMSDomainReplay {
+        public:
+            // Neutral refusal for unrecognized providers, composites and spatial IOR.
+            static bool Query(const IMaterial&, const RayIntersectionGeometric&,
+                              const IORStack&, SMSQueryDomain, SMSNativeMaterialQuery&);
+            static bool Capture(const IScene&, const Point3&, const IORStack&, SMSStartingMedia&);
+            static bool BuildStack(const SMSStartingMedia&, SMSQueryDomain, IORStack&);
+            static bool EventWeight(const IMaterial&, const RayIntersectionGeometric&,
+                                    const IORStack&, SMSQueryDomain, bool reflection,
+                                    bool exiting, Scalar etaI, Scalar etaT,
+                                    Scalar segmentLength, Scalar& weight);
+            // Identity is a live scene object, not an opaque stack token. The caller
+            // retains the real hit context, including the open-sheet certificate.
+            // Reflection leaves membership unchanged; transmission applies the native crossing.
+            static bool Cross(const IMaterial&, const IObject*, const RayIntersectionGeometric&,
+                              SMSQueryDomain, bool reflection, IORStack&,
+                              Scalar& etaI, Scalar& etaT, bool& exiting);
         };
 
 		/// Data stored at each specular vertex during the manifold walk.
@@ -199,9 +260,17 @@ namespace RISE
 		};
 
 		/// Configuration for the manifold solver.
+        struct SMSDomainVertex {
+            ManifoldVertex geometry;
+            RayIntersectionGeometric context;
+            explicit SMSDomainVertex(const RayIntersectionGeometric& hit) : context(hit) {}
+        };
+
 		struct ManifoldSolverConfig
 		{
 			bool			enabled;				///< Master switch: when false, no ManifoldSolver is created
+            bool extendedMode;             ///< Internal opt-in; no parser/API exposure.
+            SMSDomainCounters* domainCounters; ///< Optional diagnostics; caller owns lifetime.
 			unsigned int	maxIterations;			///< Newton iteration limit
 			Scalar			solverThreshold;		///< Convergence threshold on ||C||
 			Scalar			uniquenessThreshold;	///< Threshold to distinguish solutions
@@ -331,6 +400,8 @@ namespace RISE
 
 			ManifoldSolverConfig() :
 			enabled( false ),
+            extendedMode( false ),
+            domainCounters( nullptr ),
 			maxIterations( 15 ),
 			solverThreshold( 1e-4 ),
 			uniquenessThreshold( 1e-2 ),
@@ -458,6 +529,7 @@ namespace RISE
 		{
 		protected:
 			ManifoldSolverConfig config;
+            std::atomic<bool> hwssExtendedWarningEmitted{false};
 			LightSampler* pLightSampler;
 
 			/// Optional photon-aided seeding pass.  Set once by the
@@ -487,6 +559,14 @@ namespace RISE
 
 		public:
 			ManifoldSolver( const ManifoldSolverConfig& cfg );
+            void WarnHWSSLegacyMode();
+            // Effective opt-in after the prepared scene-wide policy. Unknown
+            // or unprepared managers leave extended mode inert.
+            bool ExtendedModeActive(const IScene&) const;
+            // When extended mode is inert this returns true to preserve the
+            // existing contribution/suppression/shadow switches together.
+            bool ExtendedAnchorEligible(const IScene&, const IRayCaster&, const Point3&,
+                                        const IORStack&, Scalar nm = 0) const;
 
 			/// Attach a photon-aided seed map.  Must be called AFTER the
 			/// map's Build() has completed (the map is read-only from
@@ -533,6 +613,13 @@ namespace RISE
 				std::vector<ManifoldVertex>& specularChain,
 				ISampler& sampler
 				) const;
+
+            // Domain-isolated solve. Proposals and production estimators are separate.
+            ManifoldResult SolveDomain(const Point3& start, const Vector3& startNormal,
+                const Point3& end, const Vector3& endNormal, const IScene& scene,
+                const IORStack& startingStack, SMSQueryDomain domain,
+                std::vector<SMSDomainVertex>& vertices, ISampler& sampler,
+                Scalar positionTolerance) const;
 
 			/// Traces a seed ray from start toward end, collecting intersections
 			/// with specular objects to build the initial chain.

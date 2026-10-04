@@ -462,7 +462,10 @@ namespace RISE
 				//! reaches it.  Only the HWSS body's per-wavelength
 				//! hand-offs pass it; null (no record) keeps today's
 				//! suppress-everything rule for an inherited anchor.
-				const SMSChainRecord* pSMSChain_ = nullptr
+				const SMSChainRecord* pSMSChain_ = nullptr,
+                //! Internal HWSS hand-off mode; its RuntimeContext scope also
+                //! carries legacy provenance through NM shader/SSS recasts.
+                bool smsIgnoreExtended_ = false
 				) const;
 
 			/// Traces a path starting from a pre-computed surface hit (HWSS).
@@ -600,7 +603,10 @@ namespace RISE
 				Scalar bsdfMisPdf_ = -1,		///< DL-74 -- see IntegrateFromHit
 				Scalar castRRCompensation_ = 1,	///< DL-185 -- see IntegrateFromHit
 				bool smsChainUncovered_ = false,	///< DL-295 -- see IntegrateFromHitNM
-				const SMSChainRecord* pSMSChain_ = nullptr	///< DL-372 -- see IntegrateFromHitNM
+				const SMSChainRecord* pSMSChain_ = nullptr,
+                //! Internal HWSS hand-off mode; its RuntimeContext scope also
+                //! carries legacy provenance through NM shader/SSS recasts.
+                bool smsIgnoreExtended_ = false	///< DL-372 -- see IntegrateFromHitNM
 				) const;
 
 			/// Shared body of IntegrateRay / IntegrateRayNM.

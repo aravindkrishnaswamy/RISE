@@ -101,6 +101,12 @@ namespace RISE
 			  std::stack< IORDATA, std::vector<IORDATA> >( s )
 			{}
 
+            std::vector<const IObject*> ObjectKeys() const {
+                std::vector<const IObject*> result;
+                for(const IORDATA& entry : c)
+                    if(entry.pObj) result.push_back(entry.pObj);
+                return result;
+            }
             Scalar EnvironmentIOR() const { return c.front().ior; }
             bool SameInterfaces(const MyIORStack& other) const {
                 if(c.size() != other.c.size()) return false;
@@ -229,6 +235,10 @@ namespace RISE
 		{
 			return iorstack.top().ior;
 		}
+
+        // Read-only identity snapshot, outermost first. Keys are opaque;
+        // callers must resolve them against scene objects before dereferencing.
+        inline std::vector<const IObject*> ObjectKeys() const { return iorstack.ObjectKeys(); }
 
         // Root index survives a wavelength-specific containment replay.
         inline Scalar EnvironmentIOR() const { return iorstack.EnvironmentIOR(); }

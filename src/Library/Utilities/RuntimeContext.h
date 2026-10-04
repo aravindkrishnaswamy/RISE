@@ -100,6 +100,10 @@ namespace RISE
 		/// chain.
 		mutable bool											bFastPreview;
 
+		// Scoped transport provenance: HWSS and its nested NM shader/SSS
+		// fallbacks must keep legacy SMS until lane ownership is implemented.
+		mutable bool smsForceLegacy = false;
+
 		/// Optional per-render transport settings supplied by an ephemeral
 		/// PathTracingPelRasterizer.  Unlike mutating a scene-owned default
 		/// shader, these values travel with each worker context, so an SSS
@@ -281,6 +285,19 @@ namespace RISE
 
 			return pCache->HasStateChanged( c, pObject, rast );
 		}
+	};
+	// RuntimeContext is worker-local. Restore the caller's mode on every exit,
+	// including nested casts and exceptions; do not copy its owning caches.
+	class SMSLegacyModeScope
+	{
+		const RuntimeContext& context;
+		const bool previous;
+	public:
+		SMSLegacyModeScope(const RuntimeContext& rc, bool force) :
+			context(rc), previous(rc.smsForceLegacy) { context.smsForceLegacy = previous || force; }
+		~SMSLegacyModeScope() { context.smsForceLegacy = previous; }
+		SMSLegacyModeScope(const SMSLegacyModeScope&) = delete;
+		SMSLegacyModeScope& operator=(const SMSLegacyModeScope&) = delete;
 	};
 }
 
