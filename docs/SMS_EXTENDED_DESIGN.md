@@ -554,6 +554,15 @@ continuity. Overlapping exits now use the queried exiting-object index for
 native direction/Fresnel/TIR while independently retaining the native consumer
 radiance scaling from stack tops; native walkers are unchanged. Expanded
 modified multi-vertex Jacobian tests address the evidence reviewer's coverage
-gap. Current focused tests pass28933/0 at native d2508b4dc/tests5d9776ce8;
+gap. The earlier focused tests pass28933/0 at native d2508b4dc/tests5d9776ce8;
 replacement committed proofs, complete gates and fresh Round 4 review remain
 required. The earlier complete gate is historical and no merge is claimed.
+
+The post-modifier UV sibling self-audit reproduces forty uncertain native
+interior-mesh cases, with both actual UV families at one physical root. The
+repair atc5f66dd80 probes actual post-modifier contexts at full and half
+displacement, cancelling continuous UV scale in its midpoint check. Continuous
+modifier controls remain required. This is within the adopted uncertain-root
+contract, not a new regularity certificate or ledger closure. The earlier
+Round 4 preparation was stopped before clean builds; its partial evidence is
+retained. Current focused validation passes90485/0; complete replacement gates and fresh Round 4 remain pending.

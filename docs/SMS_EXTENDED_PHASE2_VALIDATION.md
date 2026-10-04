@@ -2,10 +2,10 @@
 
 Phase 2 is implemented on `sms-ext-phase2`, based on master
 `08552560b54b517b7a8a0696eb9d317953b26bbe`, but is not yet merged.
-The latest native source is `d2508b4dc`, with expanded committed tests at
-`5d9776ce8`. The focused current gate passes **28933/0**, with zero library
-and test diagnostics. Its coherent replacement proof, full gates and fresh
-Round 4 review remain pending. Native `761c71b51` previously passed committed
+The latest native source is `c5f66dd80`, with committed post-modifier UV tests
+at `54b2e58e2`. Focused validation passes **90485/0**, with zero library/test diagnostics.
+Coherent replacement proofs, full gates and fresh Round 4 review remain pending. The earlier `d2508b4dc` focused
+gate passed **28933/0**, with zero library and test diagnostics. Native `761c71b51` previously passed committed
 proof review20005/0, production177/0 and geometry4297/0.
 The replacement pipeline at acceptance-test commit `15c9c2710` passes under
 the user-adopted float32 cross-build contract. It reports **36373 checks across
@@ -564,13 +564,13 @@ Generated UV overrides could bypass native seam guards while raw UV still
 split smooth world-tint roots into separate reciprocal families. Actual
 spherical/cylindrical generators and an interior-valued discontinuous custom
 generator now have rejection witnesses; a continuous fixed-coordinate
-world-tint control stays positive. The repair probes four nearby actual
+world-tint control stays positive. At the d2508b4dc checkpoint, the repair probed four nearby actual
 intersection contexts at one eighth of the physical root matching band,
 rejecting generated UV variation beyond one eighth of the UV matching band.
 It retains the original generated coordinates and performs no UV averaging.
 This is a local numerical ambiguity diagnostic, not a certificate of global
 continuity. Audited constant event laws without modifiers need no probe.
-The added cost is four object intersections per applicable refreshed vertex,
+That checkpoint added four object intersections per applicable refreshed vertex,
 only in active extended solves with authored generators and unaudited context
 laws or modifiers. Mode-off execution does not enter this check.
 
@@ -594,3 +594,37 @@ normals, plus independently solved physical endpoint shifts at h,h/2,h/4,
 retaining the original 1e-5 band. Coherent pre-fix/master proofs and a new full
 replacement gate must complete before fresh Round 4 review and integration.
 Evidence: `.claude/logs/sms-phase2-round3-final/` witness/repair/expanded logs.
+
+## Post-modifier UV sibling audit (2026-10-04)
+
+The Round 4 preparation pipeline at34dda05c4 completed coherent source proofs
+and eight interleaved source builds, but was deliberately stopped before its
+clean make/Xcode stage. It is a partial checkpoint, not a passing full gate.
+Evidence: `.claude/logs/sms-phase2-round4-final/`; the cost rows remain valid
+for that earlier source only. No fresh external Round 4 review ran there.
+
+The native interior-quad witness at54b2e58e2 against d2508b4dc reports
+**131405/40**. All forty discontinuous-modifier cases accepted both .25/.75
+UV families at one physical root, across both mesh windings, both incidence
+sides, transformed instances and RGB/NM domains. Its modifier changes actual
+UVs from true object-local position while leaving normals unchanged; the smooth
+world-tint price does not justify separate physical roots. Continuous UV
+modifier controls remain a required positive test.
+
+The first repair atcc85a9bad rejected the jumps but also rejected steep
+continuous charts (**71221/1840**); that failed run is retained, not a green
+claim. The revised c5f66dd80 check applies the native modifier exactly once
+per intersection context and compares actual full/half-displacement UVs.
+The midpoint second difference cancels a smooth chart's first-order slope,
+while a finite jump remains. The probe displacement and numerical reserve use
+the existing physical/UV matching bands, with no band widening. This remains
+a local diagnostic rather than a global regularity certificate. It adds eight
+actual object intersections, and their native modifier calls where present,
+per applicable refreshed vertex in active extended solves. Audited constant
+laws without modifiers still skip generated-chart probes. Mode-off does not
+enter the check. `.claude/logs/sms-phase2-round4-final-v2/` is the pending
+replacement proof/full-gate location.
+
+The midpoint repair passes **90485/0** focused checks, including all existing
+modified R-T/R-T-R Jacobian and native horizon controls. Build and run evidence:
+`.claude/logs/sms-phase2-round4-final/post-modifier-midpoint-{library,test,green}.log`.
