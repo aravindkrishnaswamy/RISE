@@ -320,6 +320,51 @@ public:
         uv=Point2(point.x<0?.25:.75,.5);
     }
 };
+class PostModifierUV final : public IRayIntersectionModifier, public Reference {
+    const bool discontinuous;
+public:
+    explicit PostModifierUV(bool step) : discontinuous(step) {}
+    void Modify(RayIntersectionGeometric& hit) const override {
+        hit.ptCoord=Point2(discontinuous ? (hit.ptObjIntersec.x<0?.25:.75) : .5,.5);
+    }
+};
+static void PostModifierChartRoots() {
+    for(bool reverse:{false,true}) for(int side:{-1,1}) for(bool transformed:{false,true})
+        for(bool step:{false,true}) {
+        const Scalar scale=transformed?1.5:1,offset=transformed?3:0;
+        const std::string transform=transformed?" scale 1.5 1.5 1.5\n position 3 0 0\n":"";
+        Fixture f(Materials()+QuadMesh("patch",0,-2,2,reverse)+Object("caster","patch","mirror",transform));
+        auto* tint=new WorldTint();IMaterial* material=nullptr;
+        Check(RISE_API_CreatePerfectReflectorMaterial(&material,*tint),"post-modifier world tint created");
+        if(material) f.job->GetObjects()->GetItem("caster")->AssignMaterial(*material);
+        safe_release(material);tint->release();
+        auto* modifier=new PostModifierUV(step);
+        f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);modifier->release();
+        const Point3 start(offset-.5*scale,.3*scale,side*3*scale),end(offset+.5*scale,.3*scale,side*3*scale);
+        ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;
+        auto* solver=new ManifoldSolver(cfg);IORStack air(1);
+        for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
+            RandomNumberGenerator random(217);IndependentSampler sampler(random);
+            unsigned accepted=0;bool lower=false,upper=false;
+            for(unsigned i=0;i<512;++i) {
+                const auto root=solver->ProposeExtendedRoot(start,Vector3(0,0,-side),end,f.Scene(),air,domain,sampler);
+                if(!root.accepted) continue;
+                ++accepted;const auto& vertex=root.vertices[0];
+                lower|=vertex.context.ptCoord.x==.25;upper|=vertex.context.ptCoord.x==.75;
+                Check(Point3Ops::Distance(vertex.geometry.position,Point3(offset,.3*scale,0))<1e-8,
+                    "post-modifier chart proposals converge to the same physical reflection point");
+                Check(vertex.geometry.uv.x==vertex.context.ptCoord.x,
+                    "post-modifier chart stores actual material coordinates");
+                if(!step) Check(vertex.context.ptCoord.x==.5,"continuous UV modifier retains its actual coordinates");
+            }
+            std::cout<<"post-modifier chart winding="<<reverse<<" side="<<side<<" transformed="<<transformed
+                <<" step="<<step<<" accepted="<<accepted<<" lower="<<lower<<" upper="<<upper<<'\n';
+            Check(step?accepted==0:accepted>0,
+                "post-modifier UV discontinuity is uncertain while continuous modifier retains positive coverage");
+        }
+        solver->release();
+    }
+}
 static void GeneratedChartRoots() {
     for(unsigned kind:{0u,1u,2u,3u}) for(bool reverse:{false,true}) {
         const std::string geometry=kind==0 || kind==3
@@ -1288,6 +1333,7 @@ int main(int argc,char** argv) {
         NativePeriodicRoots();
         InteriorAtlasRoots();
         GeneratedChartRoots();
+        PostModifierChartRoots();
         NativeOverlapExits();
         ModifiedWalkJacobians();
         NativeHorizonFallbacks();
