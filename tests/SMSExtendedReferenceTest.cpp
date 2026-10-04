@@ -613,6 +613,7 @@ static void NativeRebuildMesh(Fixture& f, bool indexed, Scalar translation=0, un
     }
     if(mesh) {mesh->DoneIndexedTriangles();f.job->GetObjects()->GetItem("caster")->AssignGeometry(*mesh);safe_release(mesh);}
     if(plain) {plain->DoneTriangles();f.job->GetObjects()->GetItem("caster")->AssignGeometry(*plain);safe_release(plain);}
+    dynamic_cast<const ObjectManager*>(f.Scene().GetObjects())->InvalidateSpatialStructure();
     f.job->GetObjects()->PrepareForRendering();
 }
 static void RoundFourMaterials() {
@@ -677,6 +678,25 @@ static void RoundFourNumerics() {
                 <<" uv="<<a.vertices[0].geometry.uv.x<<','<<b.vertices[0].geometry.uv.x;
             std::cout<<'\n';
             Check(!(a.accepted&&b.accepted)||same,"one smooth steep-chart root cannot create two accepted reciprocal families");
+            if(a.accepted&&b.accepted) {
+                std::vector<double> samples;
+                for(unsigned salt=0;salt<4;++salt) {
+                    RandomNumberGenerator dr(SobolSequence::HashCombine(9031+salt,0x523441)),rr(SobolSequence::HashCombine(9127+salt,0x52344b));
+                    IndependentSampler discovery(dr),retry(rr);Scalar sum=0;
+                    const auto propose=[&](ISampler& sampler){return sampler.Get1D()<.5?a:b;};
+                    const unsigned N=4096;
+                    for(unsigned n=0;n<N;++n) {
+                        const auto root=propose(discovery);
+                        const Scalar k=SMSRootReference::Reciprocal(root,retry,propose,
+                            [](const SMSDomainRoot& x,const SMSDomainRoot& y){return ManifoldSolver::SameExtendedRoot(x,y,1);},64,true);
+                        sum+=SMSRootReference::Deposit(root.result.contributionNM,k,1,1,N);
+                    }
+                    samples.push_back(sum);
+                }
+                const Moments m(samples);
+                std::cout<<"R4 steep UV two-seed reciprocal mean="<<m.mean<<" sd="<<m.sd<<" n=4 N=4096 analytic=1 reference sd=0\n";
+                Check(std::fabs(m.mean-1)<=3*m.sd,"native two-seed same-root accounting contributes one physical event price");
+            }
         }
         solver->release();
     }
@@ -1536,6 +1556,7 @@ int main(int argc,char** argv) {
     }
     if(argc==2&&std::string(argv[1])=="--review-only") {
 #ifdef RISE_SMS_REFERENCE_A
+        RoundFourNumerics();RoundFourMaterials();
         NativePeriodicRoots();
         InteriorAtlasRoots();
         GeneratedChartRoots();
