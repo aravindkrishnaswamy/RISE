@@ -7227,7 +7227,7 @@ bool ManifoldSolver::SameExtendedRoot(const SMSDomainRoot& a, const SMSDomainRoo
     // The endpoint-scale band is a ceiling, not evidence that nearby
     // regular roots coincide. Compare positions at the resolution actually
     // established by both final corrections and coordinate roundoff.
-    const Scalar positionTolerance=std::min(tolerance,8*(a.uncertainty+b.uncertainty));
+    const Scalar positionTolerance=std::min(tolerance,a.uncertainty+b.uncertainty);
     const Scalar normalTolerance = tolerance / scale;
     for(std::size_t i=0; i<a.vertices.size(); ++i) {
         const auto& x = a.vertices[i].geometry; const auto& y = b.vertices[i].geometry;

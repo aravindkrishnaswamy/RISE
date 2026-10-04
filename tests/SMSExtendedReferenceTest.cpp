@@ -656,13 +656,13 @@ static void RoundFourMaterials() {
         Check(!captured,"unaudited opposing corner normals cannot certify empty starting membership inside a closed mesh");
     }
 }
-static void NativeClosePatches(Fixture& f,bool reverse) {
+static void NativeClosePatches(Fixture& f,bool reverse,Scalar offset) {
     ITriangleMeshGeometryIndexed* mesh=nullptr;
     Check(RISE_API_CreateTriangleMeshGeometryIndexed(&mesh,true,true),"R4 native resolvable close patches");
     if(!mesh) return;
     mesh->BeginIndexedTriangles();
     for(int sign:{-1,1}) {
-        const Scalar offset=1000000,centerX=offset+sign*4e-9;
+        const Scalar centerX=offset+sign*4e-9;
         const Point3 center(centerX,.3,0),start(offset,-.2,-30000),end(offset,.8,-30000);
         const Vector3 n=Vector3Ops::Normalize(Vector3Ops::Normalize(Vector3Ops::mkVector3(start,center))
             +Vector3Ops::Normalize(Vector3Ops::mkVector3(end,center)));
@@ -725,13 +725,13 @@ static void RoundFourNumerics() {
         }
         solver->release();
     }
-    for(bool reverse:{false,true}) {
-        Fixture f(Materials()+CloseRootMesh(reverse,10000,1e-9)+Object("caster","shape","mirror"));NativeClosePatches(f,reverse);
+    for(bool reverse:{false,true}) for(Scalar offset:{Scalar(1000000),Scalar(5000000)}) {
+        Fixture f(Materials()+CloseRootMesh(reverse,10000,1e-9)+Object("caster","shape","mirror"));NativeClosePatches(f,reverse,offset);
         ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;cfg.solverThreshold=1e-10;
         auto* solver=new ManifoldSolver(cfg);IORStack air(1);
         for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
             ScriptSampler left({.2,reverse?5./9:11./36,reverse?.25:.4,.1}),right({.2,reverse?5./9:11./36,reverse?.25:.4,.6});
-            const Point3 start(1000000,-.2,-30000),end(1000000,.8,-30000);
+            const Point3 start(offset,-.2,-30000),end(offset,.8,-30000);
             ScriptSampler seedSampler({.2,reverse?5./9:11./36,reverse?.25:.4,.1});
             std::vector<SMSDomainVertex> seed;
             const bool walked=solver->BuildExtendedSeed(start,end,f.Scene(),air,domain,seedSampler,seed);
@@ -742,7 +742,7 @@ static void RoundFourNumerics() {
             const auto a=solver->ProposeExtendedRoot(start,Vector3(0,0,1),end,f.Scene(),air,domain,left);
             const auto b=solver->ProposeExtendedRoot(start,Vector3(0,0,1),end,f.Scene(),air,domain,right);
             const bool same=ManifoldSolver::SameExtendedRoot(a,b,1);
-            std::cout<<"R4 translated close winding="<<reverse<<" domain="<<domain.kind<<":"<<domain.component<<":"<<domain.nm
+            std::cout<<"R4 translated close offset="<<offset<<" winding="<<reverse<<" domain="<<domain.kind<<":"<<domain.component<<":"<<domain.nm
                 <<" accepted="<<a.accepted<<','<<b.accepted<<" solved="<<a.result.valid<<','<<b.result.valid<<" same="<<same;
             if(a.accepted&&b.accepted) std::cout<<" separation="<<Point3Ops::Distance(a.vertices[0].geometry.position,b.vertices[0].geometry.position);
             std::cout<<'\n';
@@ -782,9 +782,11 @@ static void RoundFourNumerics() {
         vertex.geometry.geomNormal=hit.geometric.UnflippedGeomNormal();vertex.geometry.pObject=hit.pObject;
         vertex.geometry.pMaterial=hit.pMaterial;vertex.geometry.isReflection=true;
         std::vector<SMSDomainVertex> records{vertex};ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;
-        NativeConstraintOracle oracle(cfg,&records);RandomNumberGenerator random(21);IndependentSampler sampler(random);
-        const auto result=oracle.SolveDomain(start,Vector3(0,0,-1),end,Vector3(0,0,-1),f.Scene(),air,SMSQueryDomain::RGB(0),records,sampler,1e-7,1e-10);
-        std::cout<<"R4 oscillatory normal winding="<<reverse<<" valid="<<result.valid<<'\n';
+        for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
+        auto domainRecords=records;
+        NativeConstraintOracle oracle(cfg,&domainRecords);RandomNumberGenerator random(21);IndependentSampler sampler(random);
+        const auto result=oracle.SolveDomain(start,Vector3(0,0,-1),end,Vector3(0,0,-1),f.Scene(),air,domain,domainRecords,sampler,1e-7,1e-10);
+        std::cout<<"R4 oscillatory normal domain="<<domain.kind<<":"<<domain.component<<":"<<domain.nm<<" winding="<<reverse<<" valid="<<result.valid<<'\n';
         if(result.valid) {
             std::vector<Scalar> d,u,l;oracle.BuildJacobian(result.specularChain,start,end,d,u,l,true);
             const Scalar h=std::cbrt(std::numeric_limits<Scalar>::epsilon())/1024;
@@ -798,6 +800,7 @@ static void RoundFourNumerics() {
                     Check(!std::isfinite(value)||std::fabs(value-actual)<1e-5,"accepted native normal Jacobian resolves the continuous modifier at refined scale");
                 }
             }
+        }
         }
     }
 }
