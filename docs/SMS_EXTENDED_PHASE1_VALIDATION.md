@@ -1,6 +1,6 @@
 # Extended SMS Phase 1 validation (2026-10-03)
 
-Status: Phase 1 implementation and the final serial acceptance gate pass on `sms-ext`. Fresh round 2 reports zero P1/P2 on `0a2913105`; final ledger/review documentation is awaiting round 3. No phase merge or ledger closure is claimed.
+Status: Phase 1 primitives and interim scene policy merged from `sms-ext` at master `34bd520ec5e70a5cf96bcf8b8154b1a17888880f` after the final serial gate and fresh round 3 returned zero P1/P2. No ledger closure is claimed. This merge-record documentation adds no source change.
 
 ## Scope and rejection contract
 
@@ -294,3 +294,20 @@ later phases. DL-438, DL-391 and the DL-353 remainder now carry their
 primitive red/green evidence in place, without closure or totals changes.
 This ledger/review documentation update will receive fresh round 3 before
 merge; the passing source gate is unchanged.
+
+
+## Round 3 and Phase 1 merge
+
+Fresh estimator/partition, material/medium/API and cost/tests/documentation
+reviewers independently examined `7866181b6`. Each reported **zero P1 and
+zero P2**, reran the six query-only modes with the same passing counts,
+and verified the final ledger annotations distinguish primitive evidence
+from later production gates. They made no edits, builds or renders.
+
+Phase 1 merged from `sms-ext` to master at
+`34bd520ec5e70a5cf96bcf8b8154b1a17888880f`. Main checkout status was empty
+before and after the authorized merge. No rows were opened or closed;
+DL-438, DL-391 and the DL-353 remainder retain their measured primitive
+notes and their production obligations. Source/test trees match the final
+clean gate. The merge-record documentation receives fresh round 4; no
+new source behavior or timing claim is introduced by that record.

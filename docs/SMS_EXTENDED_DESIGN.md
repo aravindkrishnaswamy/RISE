@@ -1,6 +1,6 @@
 # Extended SMS: event proposals, channel geometry, and path ownership
 
-**Status: adopted implementation contract, 2026-10-03. Phase 1 is in progress on `sms-ext`; no implementation phase has merged.**
+**Status: adopted implementation contract, 2026-10-03. Phase 1 domain/replay primitives and interim rejection policy are implemented on `sms-ext`, merged to master at `34bd520ec5e70a5cf96bcf8b8154b1a17888880f`. Phases 2–4 remain pending.**
 
 Base: master `a8fa56224ff1e4d9284e907fcf1d1d05534530e6`, the reviewed attenuation integration. DL-437 and DL-438 remain open. The user authorized deferring them for that integration and asked for this extended design next. This proposal keeps the native material conventions established by [DL-435](DL435_SPECTRAL_SMS_ATTENUATION.md). It does not replace them with a general participating-medium or absorbing-film model.
 
@@ -342,7 +342,7 @@ Keep public knobs minimal: one opt-in extended mode, plus the existing depth and
 
 ## Implementation sequence and acceptance gates
 
-1. **Domain and medium replay.**
+1. **Domain and medium replay — implemented**, master merge `34bd520ec5e70a5cf96bcf8b8154b1a17888880f` (`sms-ext`). Native-domain primitives and conservative eligibility are measured; production activation and ledger closures remain later gates.
    - Build native RGB per-component and NM index oracles.
    - Cover nested outer/inner media, start-inside, open sheets (DL-345 face rule) and composite rejection; check final-root tint and AR coatings.
    - Preserve legacy-neutral providers.
@@ -456,4 +456,4 @@ can relax scene-wide rejection. It is not implemented by Phase 1, and no
 ledger row is opened for this note.
 
 Setup branch `sms-ext` imported the contract at `e37b8e288` from master
-`ffc70c1c2`. No implementation phase is claimed complete by this decision.
+`ffc70c1c2`. The adopted policy and Phase 1 primitives merged at `34bd520ec5e70a5cf96bcf8b8154b1a17888880f`; the decision itself provides no estimator or production debt closure.
