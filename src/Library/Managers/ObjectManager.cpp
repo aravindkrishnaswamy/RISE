@@ -31,6 +31,9 @@
 #include "../Materials/LambertianMaterial.h"
 #include "../Materials/PerfectReflectorMaterial.h"
 #include "../Materials/PolishedMaterial.h"
+#include "../Geometry/TriangleMeshGeometry.h"
+#include "../Geometry/TriangleMeshGeometryIndexed.h"
+#include "../Geometry/DisplacedGeometry.h"
 #include "../Materials/WeaveMaterial.h"
 #include "../Materials/OrenNayarMaterial.h"
 #include "../Materials/CookTorranceMaterial.h"
@@ -162,6 +165,29 @@ bool ObjectHasRejectedTransmissiveCaster(const IObject& object)
     // API, so even individually supported operands cannot give the required
     // positive proposal mass for that effective caster.
     if(dynamic_cast<const CSGObject*>(&object) && ObjectHasClearTransmission(object)) return true;
+    return false;
+}
+// Native mesh intersections may orient their geometric normal to authored
+// shading normals before recording the ray-facing flip. Opposing corners
+// therefore cannot certify winding-derived medium membership. Audit once
+// at preparation; decline extended anchors rather than alter legacy hits.
+bool ObjectHasUncertainSMSNormalOrientation(const IObject& object)
+{
+    const IGeometry* geometry=object.GetGeometry();
+    if(!geometry || !object.GetMaterial() || !SMSDomainReplay::PotentialCaster(*object.GetMaterial())) return false;
+    if(!dynamic_cast<const TriangleMeshGeometryIndexed*>(geometry)
+        && !dynamic_cast<const TriangleMeshGeometry*>(geometry)
+        && !dynamic_cast<const DisplacedGeometry*>(geometry)) return false;
+    IndexTriangleListType indices;VerticesListType positions;NormalsListType normals;TexCoordsListType coords;
+    if(!geometry->TessellateToMesh(indices,positions,normals,coords,1)) return true;
+    for(const auto& t:indices) {
+        const Vector3 face=Vector3Ops::Cross(Vector3Ops::mkVector3(positions[t.iVertices[1]],positions[t.iVertices[0]]),
+            Vector3Ops::mkVector3(positions[t.iVertices[2]],positions[t.iVertices[0]]));
+        for(unsigned k=0;k<3;++k) {
+            const Scalar orientation=Vector3Ops::Dot(face,normals[t.iNormals[k]]);
+            if(!std::isfinite(orientation) || orientation<0) return true;
+        }
+    }
     return false;
 }
 bool ObjectWrapsComposite(const IObject& object)
@@ -2210,9 +2236,12 @@ void ObjectManager::PrepareForRendering() const
     smsPolicyPrepared = true;
     smsExtendedCasters.clear();
     smsRejectedTransmissiveCaster = false;
+    smsUncertainNormalOrientation = false;
     if(!smsHasComposite) {
         for(const auto& item : items) {
             const IObject* object = item.second.first;
+            if(object->IsWorldVisible() && ObjectHasUncertainSMSNormalOrientation(*object))
+                smsUncertainNormalOrientation = true;
             if(object->IsWorldVisible() && ObjectHasRejectedTransmissiveCaster(*object))
                 smsRejectedTransmissiveCaster = true;
             if(object->IsWorldVisible() && object->GetGeometry()

@@ -314,6 +314,7 @@ namespace RISE
         struct SMSDomainVertex {
             ManifoldVertex geometry;
             RayIntersectionGeometric context;
+            Scalar contextSlope = 0; // measured matched-context change per physical displacement
             explicit SMSDomainVertex(const RayIntersectionGeometric& hit) : context(hit) {}
         };
 

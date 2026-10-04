@@ -261,7 +261,8 @@ bool RISE::Implementation::SMSDomainReplay::Capture(const IScene& scene,
     if(!std::isfinite(result.environmentIndex) || result.environmentIndex <= 0
         || !scene.GetObjects() || scene.GetGlobalMedium()) return false;
     const auto* preparedObjects = dynamic_cast<const ObjectManager*>(scene.GetObjects());
-    if(!preparedObjects || !preparedObjects->ExtendedSMSAllowed()) return false;
+    if(!preparedObjects || !preparedObjects->ExtendedSMSAllowed()
+        || preparedObjects->HasUncertainSMSNormalOrientation()) return false;
     struct Objects : IEnumCallback<IObject> {
         std::vector<const IObject*> items;
         bool operator()(const IObject& object) override { items.push_back(&object); return true; }
@@ -473,6 +474,7 @@ RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::Solve
         // context-independent event law. A varying/unaudited seam price or
         // normal modifier cannot establish a unique limiting context: it is
         // an uncertain zero trial. Never invent a UV for a material query.
+        Scalar contextSlope=0;
         if(convergenceThreshold > 0) {
             Point2 axes = SMSPeriodicTextureAxes(*vertex.pObject,hit.geometric.UnflippedGeomNormal());
             const auto* nativeObject=dynamic_cast<const Object*>(vertex.pObject);
@@ -504,7 +506,7 @@ RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::Solve
             const bool seam = meshEdge || (axes.x && std::min(std::fabs(hit.geometric.ptCoord.x),std::fabs(1-hit.geometric.ptCoord.x)) <= band)
                 || (axes.y && std::min(std::fabs(hit.geometric.ptCoord.y),std::fabs(1-hit.geometric.ptCoord.y)) <= band);
             if(seam && (hit.pModifier || !SMSConstantSeamMaterial(*vertex.pMaterial))) return failed;
-            if(hit.pModifier || (nativeObject && !nativeObject->UsesNativeTextureChart()
+            if(meshEdge || hit.pModifier || (nativeObject && !nativeObject->UsesNativeTextureChart()
                 && !SMSConstantSeamMaterial(*vertex.pMaterial))) {
                 // Generated charts and modifier-written matching contexts can jump
                 // inside a native chart.
@@ -536,12 +538,17 @@ RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::Solve
                         normals[probeIndex]=probe.geometric.vNormal;
                         geomNormals[probeIndex]=probe.geometric.UnflippedGeomNormal();
                     }
+                    const bool uvIndependent=!hit.pModifier && SMSConstantSeamMaterial(*vertex.pMaterial);
+                    const Scalar uvChange=uvIndependent?0:std::hypot(coords[0].x-hit.geometric.ptCoord.x,coords[0].y-hit.geometric.ptCoord.y);
+                    const Scalar normalChange=std::max(Vector3Ops::Magnitude(normals[0]-hit.geometric.vNormal),
+                        Vector3Ops::Magnitude(geomNormals[0]-hit.geometric.UnflippedGeomNormal()));
+                    contextSlope=std::max(contextSlope,std::max(uvChange,normalChange)/displacement);
                     // A smooth context's first-order change cancels at the
                     // midpoint, independently of its UV scale. A finite
                     // context jump does not. Reserve the corresponding root-matching
                     // bands; do not bound the context's first derivative.
-                    if(std::hypot(2*coords[1].x-coords[0].x-hit.geometric.ptCoord.x,
-                        2*coords[1].y-coords[0].y-hit.geometric.ptCoord.y)>band/8
+                    if((!uvIndependent && std::hypot(2*coords[1].x-coords[0].x-hit.geometric.ptCoord.x,
+                        2*coords[1].y-coords[0].y-hit.geometric.ptCoord.y)>band/8)
                         || Vector3Ops::Magnitude(normals[1]*2-normals[0]-hit.geometric.vNormal)>band/8
                         || Vector3Ops::Magnitude(geomNormals[1]*2-geomNormals[0]-hit.geometric.UnflippedGeomNormal())>band/8) return failed;
                     const Point3& center=hit.geometric.ptObjIntersec;
@@ -551,6 +558,7 @@ RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::Solve
                     const Vector3 positionDifference(2*positions[1].x-positions[0].x-center.x,
                         2*positions[1].y-positions[0].y-center.y,2*positions[1].z-positions[0].z-center.z);
                     if(Vector3Ops::Magnitude(positionDifference)>band*objectScale/8) return failed;
+                    contextSlope=std::max(contextSlope,Point3Ops::Distance(positions[0],center)/(displacement*objectScale));
                 }
             }
         }
@@ -577,6 +585,7 @@ RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::Solve
         vertex.objectPosition = hit.geometric.ptObjIntersec;
         refreshed.emplace_back(hit.geometric);
         refreshed.back().geometry = vertex;
+        refreshed.back().contextSlope = contextSlope;
         previous = vertex.position;
     }
     std::vector<Scalar> refreshedResidual;
@@ -7123,7 +7132,12 @@ SMSDomainRoot ManifoldSolver::ProposeExtendedRoot(const Point3& start, const Vec
             const Scalar roundoff = std::numeric_limits<Scalar>::epsilon()
                 * std::max({std::fabs(vertex.position.x),std::fabs(vertex.position.y),std::fabs(vertex.position.z),root.scale});
             root.uncertainty = std::max(root.uncertainty,lastStep+roundoff);
-            if(!std::isfinite(lastStep) || root.uncertainty > tolerance/8) {
+            // Geometry alone cannot resolve root equality on a steep native
+            // context chart. Apply the same matching reserve to measured UV,
+            // normal and object-position variation at this correction scale.
+            const Scalar contextUncertainty=(lastStep+roundoff)*root.vertices[i].contextSlope;
+            if(!std::isfinite(lastStep) || root.uncertainty > tolerance/8
+                || !std::isfinite(contextUncertainty) || contextUncertainty > tolerance/(8*root.scale)) {
                 visible=false;break;
             }
         }
