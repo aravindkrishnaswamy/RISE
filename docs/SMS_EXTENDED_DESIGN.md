@@ -591,3 +591,10 @@ and their limits are recorded in
 [SMS_EXTENDED_PHASE2_VALIDATION.md](SMS_EXTENDED_PHASE2_VALIDATION.md).
 Complete replacement gates and fresh Round 5 convergence are required before
 Phase 2 integration. Round 5 has not begun; no ledger closure is claimed.
+
+
+Before launching Round 5, an internal native harmonic audit found ten remaining
+normal-Jacobian failures at the finest halved probe period. A fourth
+noncommensurate probe repairs that numerical alias without widening acceptance
+bands. Focused283/0 and review193319/0 are current partial evidence; complete
+replacement gates and fresh review remain required. Round 5 has not begun.

@@ -761,3 +761,22 @@ The scene-preparation audit adds one-time mesh traversal and temporary vectors,
 and adaptive modified Jacobians add opt-in solve work. Current cost, memory,
 complete regression and actual Xcode evidence must be regenerated before merge.
 No ledger row is opened or closed by this preparation.
+
+
+The first Round 5 preparation completed coherent proofs at5e4e5beb0:
+pre936952503 focused117/122 and review193153/122, production177/0;
+master available review121/120 and production127/50; restored focused239/0,
+review193275/0, production177/0 and geometry4297/0. All builds exited0 with
+zero diagnostics. It deliberately stopped before cost/clean gates for a
+native harmonic audit, so it is not a completed gate or an external round.
+
+Testd63695cab confirms a continuous-normal period equal to the finest
+halved Jacobian probe step still aliases all three scales:273/10 in
+`--r4-only`, in both windings and all five RGB/NM domains. The derivative
+remains−0.324324 versus independently refined−0.524323. Repair71c080bd3
+adds a noncommensurate fourth scale (the finest halved step divided by sqrt2)
+and compares its native branch and derivative as well, retaining bounded
+base-step refinement and the existing convergence reserve. The focused
+mode passes283/0; the expanded review passes193319/0. No continuity
+certificate is claimed. Complete replacement evidence is now under
+`.claude/logs/sms-phase2-round5-final-v2/`; the earlier preparation is preserved.
