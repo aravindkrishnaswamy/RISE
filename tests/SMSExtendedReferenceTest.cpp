@@ -814,7 +814,7 @@ static void RoundFourNumerics() {
 static void NativeNearCommensurateNormal() {
     const Scalar divisor=4*114243;
     for(bool reverse:{false,true}) {
-        Fixture f(Materials()+QuadMesh("patch",0,-2,2,reverse)+Object("caster","patch","mirror"));
+        Fixture f(Materials()+QuadMesh("patch",0,-2,3,reverse)+Object("caster","patch","mirror"));
         auto* modifier=new AliasedNormal(divisor);f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);modifier->release();
         const Point3 start(0,0,3),end(0,0,4),center(0,0,0);IORStack air(1);
         RayIntersection hit(Ray(start,Vector3(0,0,-1)),nullRasterizerState);
@@ -1679,6 +1679,14 @@ int main(int argc,char** argv) {
         PostModifierChartRoots();
 #else
         std::cout<<"Estimator A modifier helper unavailable on committed baseline.\n";
+#endif
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
+    }
+    if(argc==2&&std::string(argv[1])=="--r5-normal-only") {
+#ifdef RISE_SMS_REFERENCE_A
+        NativeNearCommensurateNormal();
+#else
+        std::cout<<"Round 5 normal helper unavailable on committed baseline.\n";
 #endif
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
     }
