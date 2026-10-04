@@ -481,13 +481,15 @@ static void InteriorAtlasRoots() {
 }
 class TiltNormal final : public IRayIntersectionModifier, public Reference {
 public:
-    explicit TiltNormal(int side, bool valid=false, bool varying=false) : side(side), valid(valid), varying(varying) {}
+    explicit TiltNormal(int side, bool valid=false, bool varying=false, unsigned fields=0) : side(side), valid(valid), varying(varying), fields(fields) {}
     void Modify(RayIntersectionGeometric& hit) const override {
         const Scalar angle=(valid?-10:60)*PI/180+(varying?.01*(hit.ptIntersection.x-5)+.025*hit.ray.Dir().x+.0001*hit.rast.x:0);
-        hit.vNormal=Vector3(std::sin(angle),0,side*std::cos(angle));hit.onb.CreateFromW(hit.vNormal);
+        const Vector3 normal(std::sin(angle),0,side*std::cos(angle));
+        if(fields!=1) hit.vNormal=normal;
+        if(fields!=2) hit.onb.CreateFromW(normal);
     }
 private:
-    int side;bool valid,varying;
+    int side;bool valid,varying;unsigned fields;
 };
 static std::string QuadMesh(const std::string& name,Scalar z,Scalar x0,Scalar x1,bool reverse) {
     std::ostringstream s;s<<std::setprecision(17);
@@ -850,7 +852,47 @@ static void NativeNearCommensurateNormal() {
         }
     }
 }
-static void NativeHorizonFallbacks() {
+class InertFrameModifier final : public IRayIntersectionModifier, public Reference {
+public:
+    void Modify(RayIntersectionGeometric&) const override {}
+};
+static void NativeStackedPatchFrames() {
+    for(bool reverse:{false,true}) for(bool indexed:{false,true}) for(int side:{-1,1}) {
+        std::ostringstream mesh;
+        mesh<<"indexedmesh_geometry\n{\n name patch\n double_sided TRUE\n face_normals TRUE\n";
+        for(Scalar z:{Scalar(0),Scalar(.01)}) for(const Point2& xy:{Point2(-2,-2),Point2(2,-2),Point2(2,2),Point2(-2,2)})
+            mesh<<" vertex "<<xy.x<<' '<<xy.y<<' '<<z<<"\n";
+        mesh<<" uv 0 0\n uv 1 0\n uv 1 1\n uv 0 1\n uv 0 0\n uv 1 0\n uv 1 1\n uv 0 1\n";
+        mesh<<(reverse?" triangle 0 2 1\n triangle 0 3 2\n triangle 4 6 5\n triangle 4 7 6\n":" triangle 0 1 2\n triangle 0 2 3\n triangle 4 5 6\n triangle 4 6 7\n")<<"}\n";
+        Fixture f(Materials()+mesh.str()+Object("caster","patch","mirror"));NativeRebuildMesh(f,indexed);
+        auto* modifier=new InertFrameModifier;f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);modifier->release();
+        const Scalar z=side<0?0:.01;const Point3 center(0,.3,z),start(0,.3,z+side*3),end(0,.3,z+side*4);IORStack air(1);
+        RayIntersection hit(Ray(start,Vector3(0,0,-side)),nullRasterizerState);
+        f.Object("caster")->IntersectRay(hit,RISE_INFINITY,true,true,false);
+        Check(hit.geometric.bHit,"stacked patch native closest surface is reachable");
+        if(!hit.geometric.bHit) continue;
+        SMSDomainVertex vertex(hit.geometric);vertex.geometry.position=center;vertex.geometry.normal=hit.geometric.vNormal;
+        vertex.geometry.geomNormal=hit.geometric.UnflippedGeomNormal();vertex.geometry.pObject=hit.pObject;
+        vertex.geometry.pMaterial=hit.pMaterial;vertex.geometry.isReflection=true;
+        ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;
+        auto* solver=new ManifoldSolver(cfg);
+        for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
+            RandomNumberGenerator random(483);IndependentSampler sampler(random);std::vector<SMSDomainVertex> vertices{vertex};
+            const auto result=solver->SolveDomain(start,Vector3(0,0,-side),end,Vector3(0,0,-side),f.Scene(),air,domain,vertices,sampler,1e-7,1e-10);
+            std::cout<<"R5 stacked patches indexed="<<indexed<<" winding="<<reverse<<" side="<<side<<" solved="<<result.valid<<'\n';
+            Check(result.valid,"inert-modifier native frame retains the reachable stacked-patch root");
+            if(result.valid) Check(std::fabs(result.specularChain[0].position.z-z)<1e-7,"frame reconstruction cannot substitute another patch of the object");
+            unsigned accepted=0;
+            for(unsigned trial=0;trial<64 && accepted<2;++trial) {
+                const auto root=solver->ProposeExtendedRoot(start,Vector3(0,0,-side),end,f.Scene(),air,domain,sampler);
+                if(root.accepted) {++accepted;Check(std::fabs(root.vertices[0].geometry.position.z-z)<1e-7,"native stacked-patch proposal preserves its actual visible root");}
+            }
+            Check(accepted==2,"reachable stacked-patch root has positive complete proposal support");
+        }
+        solver->release();
+    }
+}
+static void NativeHorizonFallbacks(unsigned fields=0) {
     for(bool reverse:{false,true}) for(int side:{-1,1}) for(const char* material:{"glass","mirror","coated","polished"})
         for(bool valid:{false,true}) for(bool varying:{false,true}) for(bool transformed:{false,true}) {
         const Scalar scale=transformed?1.5:1,offset=transformed?3:0;
@@ -860,7 +902,7 @@ static void NativeHorizonFallbacks() {
             "uniformcolor_painter\n{\n name black\n color 0 0 0\n}\n"
             "polished_material\n{\n name polished\n reflectance black\n tau 0.7\n ior triple\n scattering 1000000\n}\n"
             +QuadMesh("patch",0,4.8,5.2,reverse)+Object("caster","patch",material,transform));
-        auto* modifier=new TiltNormal(side,valid,varying);
+        auto* modifier=new TiltNormal(side,valid,varying,fields);
         f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);
         Check(f.Object("caster")->GetModifier()==modifier,"native tilt modifier is retained");modifier->release();
         const Point3 start(offset,.3*scale,side*scale),center(offset+5*scale,.3*scale,0);
@@ -1639,6 +1681,10 @@ int main(int argc,char** argv) {
         std::cout<<"Estimator A modifier helper unavailable on committed baseline.\n";
 #endif
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
+    }
+    if(argc==2&&std::string(argv[1])=="--r5-only") {
+        NativeNearCommensurateNormal();NativeStackedPatchFrames();NativeHorizonFallbacks(1);NativeHorizonFallbacks(2);
+        std::cout<<passed<<" passed, "<<failed<<" failed\n";return failed?1:0;
     }
     if(argc==2&&std::string(argv[1])=="--r4-only") {
 #ifdef RISE_SMS_REFERENCE_A
