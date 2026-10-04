@@ -655,3 +655,11 @@ bool DisplacedGeometry::ComputeAnalyticalDerivatives(
 	outDndv = ( N_vplus  - N_vminus ) * inv2eps;
 	return true;
 }
+
+// The realized mesh owns the audit and refreshes it during UpdateVertices.
+bool DisplacedGeometry::HasUncertainSMSNormalOrientation() const
+{
+    Realize();
+    const auto* mesh=dynamic_cast<const TriangleMeshGeometryIndexed*>(m_pMesh);
+    return !mesh || mesh->HasUncertainSMSNormalOrientation();
+}

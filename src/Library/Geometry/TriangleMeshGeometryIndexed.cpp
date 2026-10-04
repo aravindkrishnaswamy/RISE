@@ -254,6 +254,7 @@ Scalar TriangleMeshGeometryIndexed::GetArea( ) const
 
 void TriangleMeshGeometryIndexed::BeginIndexedTriangles( )
 {
+    smsUncertainNormalOrientation=true;
 	safe_release( pPtrBVH );
 	areas.clear();
 	areasCDF.clear();
@@ -271,11 +272,13 @@ void TriangleMeshGeometryIndexed::BeginIndexedTriangles( )
 
 void TriangleMeshGeometryIndexed::AddVertex( const Point3& point )
 {
+    smsUncertainNormalOrientation=true;
 	pPoints.push_back( point );
 }
 
 void TriangleMeshGeometryIndexed::AddNormal( const Vector3& normal )
 {
+    smsUncertainNormalOrientation=true;
 	if( !bUseFaceNormals ) {
 		pNormals.push_back( normal );
 	}
@@ -288,11 +291,13 @@ void TriangleMeshGeometryIndexed::AddTexCoord( const Point2& coord )
 
 void TriangleMeshGeometryIndexed::AddVertices( const VerticesListType& points )
 {
+    smsUncertainNormalOrientation=true;
 	pPoints.insert( pPoints.end(), points.begin(), points.end() );
 }
 
 void TriangleMeshGeometryIndexed::AddNormals( const NormalsListType& normals )
 {
+    smsUncertainNormalOrientation=true;
 	if( !bUseFaceNormals ) {
 		pNormals.insert( pNormals.end(), normals.begin(), normals.end() );
 	}
@@ -344,11 +349,13 @@ void TriangleMeshGeometryIndexed::AddTexCoords1( const TexCoordsListType& coords
 
 void TriangleMeshGeometryIndexed::AddIndexedTriangle( const IndexedTriangle& tri )
 {
+    smsUncertainNormalOrientation=true;
 	indexedtris.push_back( tri );
 }
 
 void TriangleMeshGeometryIndexed::AddIndexedTriangles( const IndexTriangleListType& tris )
 {
+    smsUncertainNormalOrientation=true;
 	indexedtris.insert( indexedtris.end(), tris.begin(), tris.end() );
 }
 
@@ -475,6 +482,9 @@ void TriangleMeshGeometryIndexed::ComputeAreas()
 	areas.clear();
 	areasCDF.clear();
 	totalArea = 0;
+    smsUncertainNormalOrientation = ptr_polygons.empty();
+    ++smsOrientationAudits;
+    smsOrientationTriangleVisits += ptr_polygons.size();
 
 	// Compute triangle areas
 	{
@@ -483,7 +493,16 @@ void TriangleMeshGeometryIndexed::ComputeAreas()
 			const PointerTriangle&	thisTri = (*i);
 			Vector3 vEdgeA = Vector3Ops::mkVector3( *thisTri.pVertices[1], *thisTri.pVertices[0] );
 			Vector3 vEdgeB = Vector3Ops::mkVector3( *thisTri.pVertices[2], *thisTri.pVertices[0] );
-			const Scalar thisArea = (Vector3Ops::Magnitude(Vector3Ops::Cross(vEdgeA,vEdgeB))) * 0.5;
+			const Vector3 face=Vector3Ops::Cross(vEdgeA,vEdgeB);
+            const Scalar faceLength=Vector3Ops::Magnitude(face);
+            // Match the native face-normal tessellation convention, including
+            // its degenerate-face fallback, without materializing arrays.
+            const Vector3 faceNormal=faceLength>NEARZERO?face*(1/faceLength):Vector3(0,0,1);
+            for(unsigned k=0;k<3;++k) {
+                const Scalar orientation=Vector3Ops::Dot(face,thisTri.pNormals[k]?*thisTri.pNormals[k]:faceNormal);
+                if(!std::isfinite(orientation) || orientation<0) smsUncertainNormalOrientation=true;
+            }
+            const Scalar thisArea = faceLength * 0.5;
 			totalArea += thisArea;
 			areas.push_back( thisArea );
 		}
@@ -1915,6 +1934,7 @@ void TriangleMeshGeometryIndexed::Deserialize( IReadBuffer& buffer )
 
 void TriangleMeshGeometryIndexed::ComputeVertexNormals()
 {
+    smsUncertainNormalOrientation=true;
 	pNormals.clear();
 	pNormals.reserve( pPoints.size() );
 	CalculateVertexNormals( indexedtris, pNormals, pPoints );

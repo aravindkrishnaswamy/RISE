@@ -687,9 +687,17 @@ static void NativePreparationAudits() {
         NativeRebuildMesh(f,indexed,0,2,1,true);
         auto* object=f.job->GetObjects()->GetItem("caster");
         f.job->GetObjects()->GetItem("shared")->AssignGeometry(*object->GetGeometry());
+        const auto* cachedIndexed=dynamic_cast<const PreparationIndexedMesh*>(object->GetGeometry());
+        const auto* cachedPlain=dynamic_cast<const PreparationPlainMesh*>(object->GetGeometry());
+        const auto audits=cachedIndexed?cachedIndexed->SMSOrientationAudits():cachedPlain->SMSOrientationAudits();
+        const auto visits=cachedIndexed?cachedIndexed->SMSOrientationTriangleVisits():cachedPlain->SMSOrientationTriangleVisits();
         preparationTessellations=0;
         for(unsigned frame=0;frame<4;++frame) f.job->GetObjects()->PrepareForRendering();
         Check(preparationTessellations==0,"repeated extended-off preparation audits shared meshes without tessellation or array copies");
+        Check((cachedIndexed?cachedIndexed->SMSOrientationAudits():cachedPlain->SMSOrientationAudits())==audits,
+            "shared repeated preparation performs no additional orientation audits");
+        Check((cachedIndexed?cachedIndexed->SMSOrientationTriangleVisits():cachedPlain->SMSOrientationTriangleVisits())==visits,
+            "shared repeated preparation visits no mesh triangles");
         IORStack inside(1);inside.SetCurrentObject(object);inside.push(1.3);SMSStartingMedia captured;
         Check(!SMSDomainReplay::Capture(f.Scene(),Point3(0,0,0),inside,captured),
             "cached opposing winding normals reject start-inside membership");
@@ -699,6 +707,8 @@ static void NativePreparationAudits() {
             native->TriangleMeshGeometryIndexed::TessellateToMesh(t,positions,normals,uv,1);
             for(auto& n:normals) n=-n;
             native->UpdateVertices(positions,normals);
+            Check(native->SMSOrientationAudits()==audits+1 && native->SMSOrientationTriangleVisits()>visits,
+                "actual indexed mutation runs exactly one replacement audit");
             f.job->GetObjects()->PrepareForRendering();
             Check(SMSDomainReplay::Capture(f.Scene(),Point3(0,0,0),inside,captured),
                 "real indexed normal mutation refreshes the cached orientation audit");

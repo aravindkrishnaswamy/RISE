@@ -169,25 +169,18 @@ bool ObjectHasRejectedTransmissiveCaster(const IObject& object)
 }
 // Native mesh intersections may orient their geometric normal to authored
 // shading normals before recording the ray-facing flip. Opposing corners
-// therefore cannot certify winding-derived medium membership. Audit once
-// at preparation; decline extended anchors rather than alter legacy hits.
+// therefore cannot certify winding-derived medium membership. Mesh finalization
+// and mutation own the audit; preparation reads it without copying triangles.
 bool ObjectHasUncertainSMSNormalOrientation(const IObject& object)
 {
     const IGeometry* geometry=object.GetGeometry();
     if(!geometry || !object.GetMaterial() || !SMSDomainReplay::PotentialCaster(*object.GetMaterial())) return false;
-    if(!dynamic_cast<const TriangleMeshGeometryIndexed*>(geometry)
-        && !dynamic_cast<const TriangleMeshGeometry*>(geometry)
-        && !dynamic_cast<const DisplacedGeometry*>(geometry)) return false;
-    IndexTriangleListType indices;VerticesListType positions;NormalsListType normals;TexCoordsListType coords;
-    if(!geometry->TessellateToMesh(indices,positions,normals,coords,1)) return true;
-    for(const auto& t:indices) {
-        const Vector3 face=Vector3Ops::Cross(Vector3Ops::mkVector3(positions[t.iVertices[1]],positions[t.iVertices[0]]),
-            Vector3Ops::mkVector3(positions[t.iVertices[2]],positions[t.iVertices[0]]));
-        for(unsigned k=0;k<3;++k) {
-            const Scalar orientation=Vector3Ops::Dot(face,normals[t.iNormals[k]]);
-            if(!std::isfinite(orientation) || orientation<0) return true;
-        }
-    }
+    if(const auto* mesh=dynamic_cast<const TriangleMeshGeometryIndexed*>(geometry))
+        return mesh->HasUncertainSMSNormalOrientation();
+    if(const auto* mesh=dynamic_cast<const TriangleMeshGeometry*>(geometry))
+        return mesh->HasUncertainSMSNormalOrientation();
+    if(const auto* mesh=dynamic_cast<const DisplacedGeometry*>(geometry))
+        return mesh->HasUncertainSMSNormalOrientation();
     return false;
 }
 bool ObjectWrapsComposite(const IObject& object)
