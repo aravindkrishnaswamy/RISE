@@ -234,6 +234,14 @@ bool RISE::Implementation::SMSDomainReplay::Query(const IMaterial& material,
         ? info.attenuation[domain.component] : info.attenuationNM;
     if(coatTint) result.attenuation = domain.kind == SMSQueryDomain::RGBComponent
         ? coatTint->GetValuesAt(hit)[domain.component] : coatTint->GetValueAtNM(hit, domain.nm);
+    if(polishedReflectionOnly) {
+        // Match PolishedBRDF::Resolve before advertising the delta coat.
+        // Its side convention uses the reported geometric normal, while
+        // its incident support uses the corresponding shading normal.
+        const bool backface=Vector3Ops::Dot(hit.vGeomNormal,hit.ray.Dir())>0;
+        const Vector3 normal=Vector3Ops::Normalize(backface?-hit.vNormal:hit.vNormal);
+        if(!(Vector3Ops::Dot(Vector3Ops::Normalize(-hit.ray.Dir()),normal)>0)) return false;
+    }
     result.reflection = true;
     result.transmission = info.canRefract && !polishedReflectionOnly;
     result.dielectricInterface = index != nullptr;
@@ -333,7 +341,12 @@ bool RISE::Implementation::SMSDomainReplay::Cross(const IMaterial& material,
     if(!Query(material, hit, next, domain, query)
         || (reflection ? !query.reflection : !query.transmission)) return false;
     if(!std::isfinite(next.top()) || next.top() <= 0) return false;
-    if(hit.bProvablyNoInterior) {
+    if(dynamic_cast<const PolishedMaterial*>(&material)) {
+        // The coat is a reflection on the incident ambient side, not a
+        // transmissive open-sheet crossing. Native polished never pops
+        // membership or reverses ambient/coat indices on a back face.
+        exiting=false;etaI=next.top();etaT=query.index;
+    } else if(hit.bProvablyNoInterior) {
         const auto crossing = IORStackSeeding::ResolveOpenSheetCrossing(hit, query.index, next);
         etaI = crossing.etaFrom;
         etaT = crossing.etaTo;
