@@ -746,7 +746,27 @@ static void RoundFourNumerics() {
                 <<" accepted="<<a.accepted<<','<<b.accepted<<" solved="<<a.result.valid<<','<<b.result.valid<<" same="<<same;
             if(a.accepted&&b.accepted) std::cout<<" separation="<<Point3Ops::Distance(a.vertices[0].geometry.position,b.vertices[0].geometry.position);
             std::cout<<'\n';
+            Check(a.accepted&&b.accepted,"both natively reachable disjoint close roots retain positive acceptance");
             Check(!(a.accepted&&b.accepted)||!same,"translated distinct regular patches cannot share an accepted reciprocal family");
+            if(a.accepted&&b.accepted) {
+                std::vector<double> samples;
+                for(unsigned salt=0;salt<4;++salt) {
+                    RandomNumberGenerator dr(SobolSequence::HashCombine(10031+salt,0x523441)),rr(SobolSequence::HashCombine(10127+salt,0x52344b));
+                    IndependentSampler discovery(dr),retry(rr);Scalar sum=0;
+                    const auto propose=[&](ISampler& sampler){return sampler.Get1D()<.5?a:b;};
+                    const unsigned N=4096;
+                    for(unsigned n=0;n<N;++n) {
+                        const auto root=propose(discovery);
+                        const Scalar k=SMSRootReference::Reciprocal(root,retry,propose,
+                            [](const SMSDomainRoot& x,const SMSDomainRoot& y){return ManifoldSolver::SameExtendedRoot(x,y,1);},64,true);
+                        sum+=SMSRootReference::Deposit(root.result.contributionNM,k,1,1,N);
+                    }
+                    samples.push_back(sum);
+                }
+                const Moments m(samples);
+                std::cout<<"R4 close-root two-seed reciprocal mean="<<m.mean<<" sd="<<m.sd<<" n=4 N=4096 analytic=2 reference sd=0\n";
+                Check(std::fabs(m.mean-2)<=3*m.sd,"native two-root accounting retains both physical event prices");
+            }
         }
         solver->release();
     }

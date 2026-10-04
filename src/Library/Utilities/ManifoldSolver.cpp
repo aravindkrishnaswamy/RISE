@@ -7224,6 +7224,10 @@ bool ManifoldSolver::SameExtendedRoot(const SMSDomainRoot& a, const SMSDomainRoo
     if(!std::isfinite(a.uncertainty) || !std::isfinite(b.uncertainty)
         || a.uncertainty < 0 || b.uncertainty < 0
         || a.uncertainty > tolerance/8 || b.uncertainty > tolerance/8) return false;
+    // The endpoint-scale band is a ceiling, not evidence that nearby
+    // regular roots coincide. Compare positions at the resolution actually
+    // established by both final corrections and coordinate roundoff.
+    const Scalar positionTolerance=std::min(tolerance,8*(a.uncertainty+b.uncertainty));
     const Scalar normalTolerance = tolerance / scale;
     for(std::size_t i=0; i<a.vertices.size(); ++i) {
         const auto& x = a.vertices[i].geometry; const auto& y = b.vertices[i].geometry;
@@ -7251,7 +7255,7 @@ bool ManifoldSolver::SameExtendedRoot(const SMSDomainRoot& a, const SMSDomainRoo
             || y.uv.x != b.vertices[i].context.ptCoord.x || y.uv.y != b.vertices[i].context.ptCoord.y
             || x.pObject != y.pObject || x.pMaterial != y.pMaterial || x.isReflection != y.isReflection
             || x.isExiting != y.isExiting || x.etaI != y.etaI || x.etaT != y.etaT
-            || Point3Ops::Distance(x.position,y.position) > tolerance
+            || Point3Ops::Distance(x.position,y.position) > positionTolerance
             || Vector3Ops::Magnitude(x.normal-y.normal) > normalTolerance
             || Vector3Ops::Magnitude(x.geomNormal-y.geomNormal) > normalTolerance
             || uvDistance > normalTolerance
