@@ -651,7 +651,7 @@ static void UnsupportedCasterSwitches() {
     }
 }
 static void ImpossibleDepthSwitches() {
-    for(bool reverse:{false,true}) for(unsigned invalid:{0u,1u}) {
+    for(bool reverse:{false,true}) for(unsigned invalid:{0u,1u,2u,3u}) {
         std::string text=Materials();
         text.replace(text.find("values 1.3 1.5 1.9"),std::string("values 1.3 1.5 1.9").size(),"values 1 1 1");
         Fixture f(text+Mesh(false,reverse)+Object("pane","shape","glass"," position 0 0 1\n")
@@ -663,14 +663,15 @@ static void ImpossibleDepthSwitches() {
         if(!shader) continue;
         auto* caster=new RayCaster(false,16,*shader,true);caster->SetTransparentShadows(true);caster->AttachScene(&f.Scene());
         ManifoldSolverConfig cfg;cfg.enabled=true;cfg.extendedMode=true;
-        cfg.maxChainDepth=invalid?1:0;cfg.targetBounces=invalid?2:1;
+        cfg.maxChainDepth=invalid==0?0:1;cfg.targetBounces=invalid==1?2:1;
+        if(invalid>=2) cfg.solverThreshold=invalid==2?Scalar(0):Scalar(-1);
         StabilityConfig stability;stability.rrMinDepth=20;
         auto* on=new PathTracingIntegrator(cfg,stability);on->SetMaxPathDepth(8);
         ManifoldSolverConfig plain;auto* off=new PathTracingIntegrator(plain,stability);off->SetMaxPathDepth(8);IORStack air(1);
         Check(on->GetSolver()->ExtendedModeActive(f.Scene()),"depth control is composite-free extended mode");
         for(Scalar nm:{0.,450.,650.}) {
             Check(!on->GetSolver()->ExtendedAnchorEligible(f.Scene(),*caster,Point3(0,0,-2),air,nm),
-                "impossible chain depth disables the complete anchor in RGB and NM");
+                "impossible depth or nonpositive threshold disables the complete anchor in RGB and NM");
             for(unsigned trial=0;trial<4;++trial) {
                 const unsigned salt=SobolSequence::HashCombine(18000+trial,0x44455054);SobolSamplerTestHooks::ValueSalt().store(salt);
                 std::array<RISEPel,2> values;
@@ -681,11 +682,11 @@ static void ImpossibleDepthSwitches() {
                     if(nm==0) values[mode]=(mode?on:off)->IntegrateRay(context,nullRasterizerState,ray,f.Scene(),*caster,sampler,nullptr,nullptr);
                     else values[mode]=RISEPel((mode?on:off)->IntegrateRayNM(context,nullRasterizerState,ray,nm,f.Scene(),*caster,sampler,nullptr,nullptr));
                 }
-                Check(std::isfinite(values[0].r)&&values[0].r>0,"impossible depth plain PT control remains lit");
+                Check(std::isfinite(values[0].r)&&values[0].r>0,"impossible solver configuration plain PT control remains lit");
                 Check(std::memcmp(&values[0],&values[1],sizeof(RISEPel))==0,
-                    "impossible depth keeps PT light bit-identically with all switches off");
+                    "impossible solver configuration keeps PT light bit-identically with all switches off");
                 std::cout<<"depth winding="<<reverse<<" max="<<cfg.maxChainDepth<<" target="<<cfg.targetBounces
-                    <<" nm="<<nm<<" salt="<<salt<<" PT="<<values[0].r<<" extended="<<values[1].r<<'\n';
+                    <<" threshold="<<cfg.solverThreshold<<" nm="<<nm<<" salt="<<salt<<" PT="<<values[0].r<<" extended="<<values[1].r<<'\n';
             }
         }
         SobolSamplerTestHooks::ValueSalt().store(0);on->release();off->release();caster->release();shader->release();

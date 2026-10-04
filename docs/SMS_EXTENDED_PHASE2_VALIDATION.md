@@ -4,7 +4,11 @@ Phase 2 is implemented on `sms-ext-phase2`, based on master
 `08552560b54b517b7a8a0696eb9d317953b26bbe`, but is not yet merged. The first independent review round found two
 estimator P1s; the material/API and evidence reviewers found zero P1/P2.
 Production source now includes the fixes and chart audit at `8ad9a40cf`. Committed
-red/green proofs and the complete replacement gate are in progress. The
+chart/depth red/green proofs are complete. The `8ad9a40cf` replacement
+gate was stopped as incomplete after a sibling audit identified
+nonpositive solver thresholds that retain eligibility despite zero
+accepted Newton roots. The threshold fix and its committed proof precede
+the next full replacement gate. The
 completed gate below describes the earlier `89a9ab0a6` source checkpoint,
 not validation of the review fixes. No ledger row closes at this checkpoint.
 
@@ -39,7 +43,7 @@ Reference polishing bypasses the legacy fixed displacement dead zone.
 Geometry uses true surface points after undoing authored object launch
 bias; material queries retain native intersection/raster contexts.
 
-## Completed make regression gate
+## Historical pre-review make regression gate
 
 All executable builds had checked zero exits and zero compiler diagnostics.
 Twenty executables and 27 mode runs completed with zero test failures.
@@ -154,7 +158,7 @@ mean weighted reciprocal estimate; current logs use `maxReciprocal`.
 
 Production logs report proposals, zero trials, Newton iterations, retries,
 tail trials, roulette stops, accepted/owned discoveries and rejected roots.
-Counters are per fixture, not whole-render complexity bounds. The committed
+Counters are per fixture, not whole-render complexity bounds. The historical `89a9ab0a6` committed
 production proof's peak process footprint is **82,379,280 bytes** under
 `/usr/bin/time -l`, including library/test/render state; it is not a
 per-worker scratch bound. Arm64 sizes: config112, root184, reference
@@ -198,7 +202,7 @@ rows stay open. No new ledger row is added. The aborted pre-signed gate,
 cost and sanitizer evidence are preserved under `checkpoint-4e211d99f/`;
 none is substituted for corrected-source evidence.
 
-## Corrected-source off-mode cost and output gate
+## Historical pre-review off-mode cost and output gate
 
 Actual interleaved library/test builds compare master `08552560b` with
 `96b73057ddeea4e7068b3a198bacc4139cb7d17d`, four salted trials per fixture, identical
@@ -216,6 +220,28 @@ work on each side; means and sample SDs are seconds.
 Evidence: `.claude/logs/sms-phase2/phase2-interleaved-cost.json` and
 each `phase2-interleaved-{A,B}{0..3}.log`, with checked build exits in
 `cost-driver.log`. No whole-render speedup is inferred from these timings.
+
+## Current review-fix off-mode cost and output gate
+
+The replacement gate compares committed master `08552560b` with
+`74d4365dd` (native source `8ad9a40cf`) using eight actual interleaved
+library/test builds and four salted trials per fixture. All 16 paired
+output hashes and channel means are identical. Worker policy and sequential
+rendering match; timings are seconds and uncertainties are sample SDs.
+
+| Fixture | Master mean ± SD | Candidate mean ± SD | Paired change % mean ± SD |
+|---|---:|---:|---:|
+| RGB k1 | 0.945636687 ± 0.010939475 | 0.942783167 ± 0.001736797 | -0.290174 ± 1.336248 |
+| RGB k2 | 0.719287781 ± 0.007837574 | 0.716280834 ± 0.005068141 | -0.414833 ± 0.415376 |
+| NM | 1.685690115 ± 0.018286842 | 1.695444927 ± 0.019160919 | 0.580515 ± 0.764642 |
+| HWSS | 5.648385990 ± 0.050602435 | 5.668684760 ± 0.037738600 | 0.361267 ± 0.377854 |
+
+All paired timing changes lie within three sample SDs. These measurements
+do not establish a speedup. Restored composite-policy, HWSS-fallback and
+full-domain controls pass at **1168/0**, **3147/0** and **8200/0**.
+Evidence: `.claude/logs/sms-phase2-round2/phase2-interleaved-cost.json`
+and `cost-driver.log`; every source restore, library build and test build
+has a checked zero exit and zero compiler diagnostics.
 
 ## Review and integration
 
@@ -249,6 +275,10 @@ committed proof reports pre-fix `83615cc34` **175/117**, master **61/60**
 The expanded chart test is red on `d83c71d1e` at **1085/92**; committed
 master reports **61/60** for available depth tests and restored `8ad9a40cf`
 reports **1177/0**, with checked zero-diagnostic builds. Evidence is under
-`.claude/logs/sms-phase2/periodic-review-proofs/`. The full
-replacement gate, fresh Round 2 reviewers and Phase 2 merge remain pending.
+`.claude/logs/sms-phase2/periodic-review-proofs/`. The `8ad9a40cf` full
+replacement gate was aborted with exit143 during the WeaveGap test build
+after the threshold sibling was identified; its completed rows and stop
+reason remain in `.claude/logs/sms-phase2-round2/aborted-summary.json`.
+It is not a passing gate. Threshold reproduction/fix, a full replacement
+gate, fresh Round 2 reviewers and Phase 2 merge remain pending.
 Round 1's clean verdicts do not apply to the changed source.
