@@ -1028,7 +1028,59 @@ helper/native Geometry class name collision; the failed log is retained,
 then the successful build preceded the numerical red run.
 
 The non-indexed primitive provenance witness is committed at `7f33ceecf`;
-its build/run and repair are pending. Worker scratch and work counters are
-still outstanding. These isolated controls do not replace full rollback,
+its build/run and repair are recorded below. These isolated controls do not replace full rollback,
 clean make, actual Xcode, sanitizer, regression, cost or fresh review gates.
 No Phase 2 merge, push, ledger closure or new ledger row is claimed.
+
+
+## Native edge provenance and worker scratch repair (2026-10-04)
+
+The committed provenance witness reports **33/8** before the fix
+(`provenance-witness-red.log`). `e3ca99663` stamps actual primitive and
+barycentric hit provenance in the native non-indexed closest-hit kernel.
+No shading signal provider is advertised. Edge classification now reads
+that hit in constant time instead of scanning every triangle. Fresh builds
+have no diagnostics, and indexed/non-indexed, both-winding, 1/1024-triangle
+controls pass **41/0** (`provenance-green.log`); geometry and review controls
+pass **4297/0** and **193401/0** (`cache-provenance-*.log`).
+
+The scratch repair retains one live and one retry root in the production
+trial scope and uses nested worker-local leases for native Newton, Jacobian,
+residual, factorization and replay buffers. Buffers reserve the configured
+maximum depth, retain capacity between trials, and clear borrowed hit and
+medium records at scope exit. Public proposal results retain their own
+storage. Legacy evaluation uses its existing buffers and does not lease
+extended scratch. This is buffer reuse, not a claim that all native
+metadata/IOR-stack operations allocate nothing.
+
+Actual Object/CSG closest-hit entry points and ObjectManager queries count
+object and scene intersection calls during extended proposal/solve scopes,
+including hidden medium probes within those scopes. These are separate
+query categories. `materialQueries` counts logical SMSDomainReplay material
+queries, not every underlying painter read or every native SPF/BSDF call.
+Eligibility before the estimator scope is excluded. `scratchPeakBytes`
+reports retained leased vector capacities plus frame/root records and frame
+pointer capacity; it excludes IOR-stack auxiliary storage, caller-owned
+results, general metadata and whole-process memory. The full process peak
+is a separate memory gate. Counters remain optional, owned by the caller.
+
+Incremental library/test builds exit zero without warnings
+(`scratch-counters-library-build.log`, `scratch-reference-build-fixed.log`).
+The initial test command used an invalid make target and exited before
+compilation; its log is retained and the corrected target succeeded before
+any tests ran. Focused controls pass **31/0** preparation, **41/0** provenance,
+**36077/0** Round 5, **4297/0** geometry, **193401/0** review and **369/0**
+production (`scratch-*-result.log`). Production uses four salted renders,
+16384 samples per salt, point/spot, reflection/dielectric, both windings,
+RGB and two NM domains. Buffer growth and frame creation stop after the
+first salt. Its first fixture reports 28 buffer growths, six frames and
+201376 retained scratch bytes; later fixtures reuse that capacity. The subsequent legacy control passes **393/0** production checks
+(`scratch-final-production-result.log`), confirming that legacy evaluations
+lease no extended scratch; final preparation/provenance remain **31/0** and
+**41/0**. Compatibility scaffolding lets committed older native
+headers compile these numerical witnesses; it does not certify old solvers.
+
+All paths above refer to `.claude/logs/sms-phase2-round6/`. These focused
+checks precede the fresh complete rollback, default-path interleaved cost,
+clean make, actual Xcode, expanded sanitizer, full regressions and review
+round. No current full gate, Phase 2 merge, push or ledger change is claimed.

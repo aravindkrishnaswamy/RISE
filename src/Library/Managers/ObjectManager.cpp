@@ -1271,6 +1271,7 @@ bool ObjectManager::DeepestOtherContainment(
 
 void ObjectManager::IntersectRay( RayIntersection& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const
 {
+    SMSRecordSceneIntersection();
 	RISE_PROFILE_PHASE(GeomPrimary);
 	RISE_PROFILE_INC(nPrimaryRays);
 

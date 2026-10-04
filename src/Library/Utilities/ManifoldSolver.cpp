@@ -40,6 +40,97 @@
 #include "IORStackSeeding.h"
 #include <typeinfo>
 #include <optional>
+#include <array>
+
+namespace {
+    using RISE::Implementation::SMSReferenceCounters;
+    thread_local SMSReferenceCounters* smsActiveDiagnostics=nullptr;
+    thread_local unsigned smsScratchDepth=0;
+
+    void SMSResetResult(RISE::Implementation::ManifoldResult& result) {
+        std::vector<RISE::Implementation::ManifoldVertex> buffer;
+        buffer.swap(result.specularChain);result=RISE::Implementation::ManifoldResult();
+        buffer.clear();result.specularChain.swap(buffer);
+    }
+    struct SMSWorkerScratchFrame {
+        std::array<std::vector<RISE::Implementation::ManifoldVertex>,4> vertices;
+        std::array<std::vector<RISE::Implementation::SMSDomainVertex>,2> records;
+        std::array<std::vector<RISE::Scalar>,16> scalars;
+        std::array<std::vector<RISE::Scalar>,4> derivatives;
+        std::array<std::unique_ptr<RISE::Implementation::SMSDomainRoot>,2> roots;
+        void Clear() {
+            for(auto& v:vertices) v.clear();for(auto& v:records) v.clear();
+            for(auto& v:scalars) v.clear();for(auto& v:derivatives) v.clear();
+            for(auto& root:roots) if(root) {
+                root->vertices.clear();SMSResetResult(root->result);
+                root->startingStack=RISE::IORStack(1);root->accepted=false;
+            }
+        }
+    };
+    struct SMSWorkerScratchPool {
+        std::vector<std::unique_ptr<SMSWorkerScratchFrame>> frames;
+        std::size_t depth=0,bytes=0;
+    };
+    thread_local SMSWorkerScratchPool smsWorkerScratch;
+    class SMSWorkerScratchLease {
+        SMSWorkerScratchFrame* frame=nullptr;
+        SMSReferenceCounters* previous=nullptr;
+        void Peak() {
+            if(!smsActiveDiagnostics) return;
+            auto& peak=smsActiveDiagnostics->scratchPeakBytes;
+            auto old=peak.load(std::memory_order_relaxed);
+            while(old<smsWorkerScratch.bytes && !peak.compare_exchange_weak(old,smsWorkerScratch.bytes,std::memory_order_relaxed)) {}
+        }
+        template<class T> std::vector<T>& Reserve(std::vector<T>& vector,std::size_t count) {
+            const auto before=vector.capacity();
+            if(before<count) {
+                vector.reserve(count);
+                smsWorkerScratch.bytes+=(vector.capacity()-before)*sizeof(T);
+                if(smsActiveDiagnostics) smsActiveDiagnostics->scratchBufferGrowths.fetch_add(1,std::memory_order_relaxed);
+            }
+            Peak();return vector;
+        }
+    public:
+        SMSWorkerScratchLease(bool enabled,SMSReferenceCounters* counters) {
+            if(!enabled) return;
+            auto& pool=smsWorkerScratch;
+            if(pool.depth==pool.frames.size()) {
+                const auto before=pool.frames.capacity();
+                pool.frames.emplace_back(std::make_unique<SMSWorkerScratchFrame>());
+                pool.bytes+=sizeof(SMSWorkerScratchFrame)+(pool.frames.capacity()-before)*sizeof(pool.frames[0]);
+                if(counters) counters->scratchFrames.fetch_add(1,std::memory_order_relaxed);
+            }
+            frame=pool.frames[pool.depth++].get();++smsScratchDepth;previous=smsActiveDiagnostics;
+            if(counters) smsActiveDiagnostics=counters;
+            Peak();
+        }
+        ~SMSWorkerScratchLease() {
+            if(frame) {frame->Clear();--smsWorkerScratch.depth;--smsScratchDepth;smsActiveDiagnostics=previous;}
+        }
+        SMSWorkerScratchLease(const SMSWorkerScratchLease&)=delete;
+        SMSWorkerScratchLease& operator=(const SMSWorkerScratchLease&)=delete;
+        bool Enabled() const {return frame!=nullptr;}
+        auto& Vertices(unsigned slot,std::size_t count) {return Reserve(frame->vertices[slot],count);}
+        auto& Records(unsigned slot,std::size_t count) {return Reserve(frame->records[slot],count);}
+        auto& Scalars(unsigned slot,std::size_t count) {return Reserve(frame->scalars[slot],count);}
+        auto& Derivatives(std::size_t count) {
+            for(auto& vector:frame->derivatives) Reserve(vector,count);
+            return frame->derivatives;
+        }
+        auto& Root(unsigned slot,RISE::Implementation::SMSQueryDomain domain,const RISE::IORStack& stack,std::size_t count) {
+            auto& root=frame->roots[slot];
+            if(!root) {root=std::make_unique<RISE::Implementation::SMSDomainRoot>(domain,stack);smsWorkerScratch.bytes+=sizeof(*root);}
+            Reserve(root->vertices,count);Reserve(root->result.specularChain,count);Peak();return *root;
+        }
+    };
+}
+void RISE::Implementation::SMSRecordSceneIntersection() {
+    if(smsActiveDiagnostics) smsActiveDiagnostics->sceneIntersectionQueries.fetch_add(1,std::memory_order_relaxed);
+}
+void RISE::Implementation::SMSRecordObjectIntersection() {
+    if(smsActiveDiagnostics) smsActiveDiagnostics->objectIntersectionQueries.fetch_add(1,std::memory_order_relaxed);
+}
+
 
 namespace {
     // Only audited native charts establish periodic equivalence. Authored
@@ -290,6 +381,7 @@ bool RISE::Implementation::SMSDomainReplay::Query(const IMaterial& material,
     const RayIntersectionGeometric& hit, const IORStack& stack,
     SMSQueryDomain domain, SMSNativeMaterialQuery& result)
 {
+    if(smsActiveDiagnostics) smsActiveDiagnostics->materialQueries.fetch_add(1,std::memory_order_relaxed);
     result = SMSNativeMaterialQuery();
     if(!domain.Valid() || !PotentialCaster(material)) return false;
     const IScalarPainter* index = nullptr;
@@ -517,52 +609,66 @@ RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::Solve
     const IScene& scene, const IORStack& startingStack, SMSQueryDomain domain,
     std::vector<SMSDomainVertex>& vertices, ISampler& sampler, Scalar positionTolerance, Scalar convergenceThreshold) const
 {
+    ManifoldResult result;
+    SolveDomainCoreInto(start,startNormal,end,endNormal,scene,startingStack,domain,vertices,
+        sampler,positionTolerance,convergenceThreshold,result);
+    return result;
+}
+
+void RISE::Implementation::ManifoldSolver::SolveDomainCoreInto(
+    const Point3& start, const Vector3& startNormal, const Point3& end, const Vector3& endNormal,
+    const IScene& scene, const IORStack& startingStack, SMSQueryDomain domain,
+    std::vector<SMSDomainVertex>& vertices, ISampler& sampler, Scalar positionTolerance, Scalar convergenceThreshold, ManifoldResult& result) const
+{
+    SMSWorkerScratchLease scratch(true,config.referenceCounters);
+    SMSResetResult(result);
     struct Attempt {
         SMSDomainCounters* counters;
+        ManifoldResult& result;
         bool accepted = false;
         ~Attempt() {
+            if(!accepted) SMSResetResult(result);
             if(counters) (accepted ? counters->acceptedRoots : counters->rejectedRoots)
                 .fetch_add(1, std::memory_order_relaxed);
         }
-    } attempt{config.domainCounters};
+    } attempt{config.domainCounters,result};
     if(attempt.counters) attempt.counters->attempts.fetch_add(1, std::memory_order_relaxed);
-    ManifoldResult failed;
     if(vertices.empty() || vertices.size() > config.maxChainDepth
-        || !std::isfinite(positionTolerance) || positionTolerance < 0) { return failed; }
+        || !std::isfinite(positionTolerance) || positionTolerance < 0) { return; }
     SMSStartingMedia media;
     IORStack replay(startingStack.EnvironmentIOR());
     if(!SMSDomainReplay::Capture(scene, start, startingStack, media)
-        || !SMSDomainReplay::BuildStack(media, domain, replay)) { return failed; }
-    std::vector<ManifoldVertex> chain;
+        || !SMSDomainReplay::BuildStack(media, domain, replay)) { return; }
+    auto& chain=scratch.Vertices(0,config.maxChainDepth);
     chain.reserve(vertices.size());
     for(const SMSDomainVertex& record : vertices) {
         ManifoldVertex vertex = record.geometry;
-        if(!vertex.pMaterial || !vertex.pObject || !SMSAuditedModifier(*vertex.pObject)) { return failed; }
+        if(!vertex.pMaterial || !vertex.pObject || !SMSAuditedModifier(*vertex.pObject)) { return; }
         SMSNativeMaterialQuery query;
         if(!SMSDomainReplay::Query(*vertex.pMaterial, record.context, replay, domain, query)
             || !SMSDomainReplay::Cross(*vertex.pMaterial, vertex.pObject, record.context,
-                domain, vertex.isReflection, replay, vertex.etaI, vertex.etaT, vertex.isExiting)) { return failed; }
+                domain, vertex.isReflection, replay, vertex.etaI, vertex.etaT, vertex.isExiting)) { return; }
         vertex.eta = query.index;
         vertex.canRefract = query.dielectricInterface;
         vertex.normal = SMSNativeEventNormal(*vertex.pMaterial,record.context);
         chain.push_back(vertex);
     }
-    ManifoldResult result = SolveCore(start, startNormal, end, endNormal, chain, sampler, false, convergenceThreshold);
-    if(!result.valid || chain.size() != vertices.size()) { return failed; }
-    if(!SMSDomainReplay::BuildStack(media, domain, replay)) { return failed; }
+    SolveCoreInto(start,startNormal,end,endNormal,chain,sampler,false,convergenceThreshold,result);
+    if(!result.valid || chain.size() != vertices.size()) { return; }
+    if(!SMSDomainReplay::BuildStack(media, domain, replay)) { return; }
     Scalar throughput = 1;
-    std::vector<SMSDomainVertex> refreshed;
+    auto& refreshed=scratch.Records(0,config.maxChainDepth);
     refreshed.reserve(vertices.size());
     Point3 previous = start;
     for(std::size_t i=0; i<chain.size(); ++i) {
         ManifoldVertex& vertex = chain[i];
-        if(vertex.isReflection != vertices[i].geometry.isReflection) { return failed; }
+        if(vertex.isReflection != vertices[i].geometry.isReflection) { return; }
         const Vector3 direction = Vector3Ops::Normalize(Vector3Ops::mkVector3(vertex.position, previous));
         RayIntersection hit(Ray(previous, direction), vertices[i].context.rast);
         if(i != 0) hit.geometric.ray.Advance(1e-8); // native surface-walk self-hit offset
         vertex.pObject->IntersectRay(hit, RISE_INFINITY, true, true, false);
         if(!hit.geometric.bHit || hit.pObject != vertex.pObject || hit.pMaterial != vertex.pMaterial
-            || Point3Ops::Distance(convergenceThreshold > 0 ? SMSReferenceSurfacePoint(*vertex.pObject,hit.geometric) : hit.geometric.ptIntersection, vertex.position) > positionTolerance) { return failed; }
+            || Point3Ops::Distance(convergenceThreshold > 0 ? SMSReferenceSurfacePoint(*vertex.pObject,hit.geometric) : hit.geometric.ptIntersection, vertex.position) > positionTolerance) { return; }
         if(hit.pModifier) hit.pModifier->Modify(hit.geometric);
         const auto finite3=[](const auto& value) {
             return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
@@ -570,7 +676,7 @@ RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::Solve
         if(!finite3(hit.geometric.ptIntersection) || !finite3(hit.geometric.ptObjIntersec)
             || !finite3(hit.geometric.vNormal) || !finite3(hit.geometric.UnflippedGeomNormal())
             || !finite3(hit.geometric.onb.u()) || !finite3(hit.geometric.onb.v()) || !finite3(hit.geometric.onb.w())
-            || !std::isfinite(hit.geometric.ptCoord.x) || !std::isfinite(hit.geometric.ptCoord.y)) return failed;
+            || !std::isfinite(hit.geometric.ptCoord.x) || !std::isfinite(hit.geometric.ptCoord.y)) return;
         // A periodic chart seam is one physical root for an audited
         // context-independent event law. A varying/unaudited seam price or
         // normal modifier cannot establish a unique limiting context: it is
@@ -604,7 +710,7 @@ RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::Solve
             }
             const bool seam = meshEdge || (axes.x && std::min(std::fabs(hit.geometric.ptCoord.x),std::fabs(1-hit.geometric.ptCoord.x)) <= band)
                 || (axes.y && std::min(std::fabs(hit.geometric.ptCoord.y),std::fabs(1-hit.geometric.ptCoord.y)) <= band);
-            if(seam && (hit.pModifier || !SMSConstantSeamMaterial(*vertex.pMaterial))) return failed;
+            if(seam && (hit.pModifier || !SMSConstantSeamMaterial(*vertex.pMaterial))) return;
             if(meshEdge || hit.pModifier || (nativeObject && !nativeObject->UsesNativeTextureChart()
                 && !SMSConstantSeamMaterial(*vertex.pMaterial))) {
                 // Generated charts and modifier-written matching contexts can jump
@@ -615,7 +721,7 @@ RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::Solve
                 // not a global continuity certificate. Continuous fixed UVs
                 // remain supported and material coordinates are never edited.
                 const Scalar displacement=band*Point3Ops::Distance(start,end)/8;
-                if(!(displacement>0) || !std::isfinite(displacement)) return failed;
+                if(!(displacement>0) || !std::isfinite(displacement)) return;
                 for(const Vector3& tangent : {vertex.dpdu,vertex.dpdv}) for(int sign : {-1,1}) {
                     Point2 coords[2];Point3 positions[2];Vector3 normals[2],geomNormals[2];
                     OrthonormalBasis3D frames[2];
@@ -625,14 +731,14 @@ RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::Solve
                         Ray ray(previous,Vector3Ops::Normalize(Vector3Ops::mkVector3(target,previous)));
                         if(i) ray.Advance(1e-8);
                         RayIntersection probe(ray,vertices[i].context.rast);
-                        vertex.pObject->IntersectRay(probe,RISE_INFINITY,true,true,false);
+                                    vertex.pObject->IntersectRay(probe,RISE_INFINITY,true,true,false);
                         if(probe.geometric.bHit && probe.pModifier) probe.pModifier->Modify(probe.geometric);
                         if(!probe.geometric.bHit || probe.pObject!=vertex.pObject
                             || probe.pMaterial!=vertex.pMaterial
                             || Point3Ops::Distance(SMSReferenceSurfacePoint(*vertex.pObject,probe.geometric),target)>displacement
                             || !finite3(probe.geometric.ptIntersection) || !finite3(probe.geometric.ptObjIntersec)
                             || !finite3(probe.geometric.vNormal) || !finite3(probe.geometric.UnflippedGeomNormal())
-                            || !std::isfinite(probe.geometric.ptCoord.x) || !std::isfinite(probe.geometric.ptCoord.y)) return failed;
+                            || !std::isfinite(probe.geometric.ptCoord.x) || !std::isfinite(probe.geometric.ptCoord.y)) return;
                         coords[probeIndex]=probe.geometric.ptCoord;
                         positions[probeIndex]=probe.geometric.ptObjIntersec;
                         normals[probeIndex]=probe.geometric.vNormal;
@@ -650,7 +756,7 @@ RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::Solve
                         const Vector3 a=axis==0?frames[0].u():axis==1?frames[0].v():frames[0].w();
                         const Vector3 b=axis==0?frames[1].u():axis==1?frames[1].v():frames[1].w();
                         const Vector3 center=axis==0?hit.geometric.onb.u():axis==1?hit.geometric.onb.v():hit.geometric.onb.w();
-                        if(!finite3(a)||!finite3(b)||Vector3Ops::Magnitude(b*2-a-center)>band/8) return failed;
+                        if(!finite3(a)||!finite3(b)||Vector3Ops::Magnitude(b*2-a-center)>band/8) return;
                         contextSlope=std::max(contextSlope,Vector3Ops::Magnitude(a-center)/displacement);
                     }
                     // A smooth context's first-order change cancels at the
@@ -660,14 +766,14 @@ RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::Solve
                     if((!uvIndependent && std::hypot(2*coords[1].x-coords[0].x-hit.geometric.ptCoord.x,
                         2*coords[1].y-coords[0].y-hit.geometric.ptCoord.y)>band/8)
                         || Vector3Ops::Magnitude(normals[1]*2-normals[0]-hit.geometric.vNormal)>band/8
-                        || Vector3Ops::Magnitude(geomNormals[1]*2-geomNormals[0]-hit.geometric.UnflippedGeomNormal())>band/8) return failed;
+                        || Vector3Ops::Magnitude(geomNormals[1]*2-geomNormals[0]-hit.geometric.UnflippedGeomNormal())>band/8) return;
                     const Point3& center=hit.geometric.ptObjIntersec;
                     const Scalar objectScale=std::max({Scalar(1),std::fabs(center.x),std::fabs(center.y),std::fabs(center.z),
                         std::fabs(positions[0].x),std::fabs(positions[0].y),std::fabs(positions[0].z),
                         std::fabs(positions[1].x),std::fabs(positions[1].y),std::fabs(positions[1].z)});
                     const Vector3 positionDifference(2*positions[1].x-positions[0].x-center.x,
                         2*positions[1].y-positions[0].y-center.y,2*positions[1].z-positions[0].z-center.z);
-                    if(Vector3Ops::Magnitude(positionDifference)>band*objectScale/8) return failed;
+                    if(Vector3Ops::Magnitude(positionDifference)>band*objectScale/8) return;
                     contextSlope=std::max(contextSlope,Point3Ops::Distance(positions[0],center)/(displacement*objectScale));
                 }
             }
@@ -676,14 +782,14 @@ RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::Solve
         Scalar etaI, etaT; bool exiting;
         if(!SMSDomainReplay::Cross(*vertex.pMaterial, vertex.pObject, hit.geometric, domain,
             vertex.isReflection, replay, etaI, etaT, exiting)
-            || exiting != vertex.isExiting || etaI != vertex.etaI || etaT != vertex.etaT) { return failed; }
+            || exiting != vertex.isExiting || etaI != vertex.etaI || etaT != vertex.etaT) { return; }
         Scalar eventWeight;
         if(!SMSDomainReplay::EventWeight(*vertex.pMaterial, hit.geometric, before, domain,
-            vertex.isReflection, exiting, etaI, etaT, Point3Ops::Distance(previous, vertex.position), eventWeight)) { return failed; }
+            vertex.isReflection, exiting, etaI, etaT, Point3Ops::Distance(previous, vertex.position), eventWeight)) { return; }
         throughput *= eventWeight;
-        if(!std::isfinite(throughput)) { return failed; }
+        if(!std::isfinite(throughput)) { return; }
         SMSNativeMaterialQuery query;
-        if(!SMSDomainReplay::Query(*vertex.pMaterial, hit.geometric, before, domain, query)) { return failed; }
+        if(!SMSDomainReplay::Query(*vertex.pMaterial, hit.geometric, before, domain, query)) { return; }
         vertex.attenuation = RISEPel(query.attenuation);
         vertex.attenuationNM = query.attenuation;
         vertex.attenuationAppliesToReflection = query.reflectionTint;
@@ -698,19 +804,19 @@ RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::Solve
         refreshed.back().contextSlope = contextSlope;
         previous = vertex.position;
     }
-    std::vector<Scalar> refreshedResidual;
+    auto& refreshedResidual=scratch.Scalars(0,2*config.maxChainDepth);
     EvaluateConstraint(chain, start, end, refreshedResidual);
     Scalar residualSquared = 0;
     for(Scalar component : refreshedResidual) residualSquared += component*component;
     if(!std::isfinite(residualSquared) || std::sqrt(residualSquared) > (convergenceThreshold > 0 ? convergenceThreshold : config.solverThreshold)
-        || !ValidateChainPhysics(chain, start, end)) { return failed; }
+        || !ValidateChainPhysics(chain, start, end)) { return; }
     result.specularChain = chain;
     result.contribution = RISEPel(0,0,0);
     result.contributionNM = throughput;
     if(domain.kind == SMSQueryDomain::RGBComponent) result.contribution[domain.component] = throughput;
-    vertices = std::move(refreshed);
+    vertices.assign(std::make_move_iterator(refreshed.begin()),std::make_move_iterator(refreshed.end()));
     attempt.accepted = true;
-    return result;
+    return;
 }
 
 // File-scope diagnostic gate.  Set to 1 to enable targeted per-pixel
@@ -2186,12 +2292,16 @@ void ManifoldSolver::BuildJacobian(
 {
     if(nativeEventConstraints && std::any_of(chain.begin(),chain.end(),SMSNeedsNativeFrame)) {
         const std::size_t k=chain.size();
+        SMSWorkerScratchLease scratch(true,config.referenceCounters);
+        const auto capacity=std::max<std::size_t>(config.maxChainDepth,k);
+        auto& plus=scratch.Vertices(0,capacity);auto& minus=scratch.Vertices(1,capacity);
+        auto& derivatives=scratch.Derivatives(2*capacity);
         diag.assign(4*k,0);upper.assign(k>1?4*(k-1):0,0);lower=upper;
         const Scalar h=std::cbrt(std::numeric_limits<Scalar>::epsilon())*Point3Ops::Distance(fixedStart,fixedEnd);
         for(std::size_t j=0;j<k;++j) for(unsigned column=0;column<2;++column) {
             bool regular=false;
             Scalar finestStep=h;
-            std::array<std::vector<Scalar>,4> derivatives;
+
             // Three halved scales plus a noncommensurate scale detect
             // truncation and harmonic aliasing. Unresolved derivatives invalidate the solve;
             // reference pricing cannot silently use the coarse aliased value.
@@ -2201,7 +2311,7 @@ void ManifoldSolver::BuildJacobian(
                 const Scalar step=h/(std::pow(Scalar(2),base+std::min(refinement,2u))
                     *(refinement==3?std::sqrt(Scalar(2)):Scalar(1)));
                 finestStep=step;
-                auto plus=chain,minus=chain;
+                plus=chain;minus=chain;
                 regular=UpdateVertexOnSurface(plus[j],column?0:step,column?step:0,0,true)
                     && UpdateVertexOnSurface(minus[j],column?0:-step,column?-step:0,0,true);
                 if(regular) {
@@ -3180,7 +3290,9 @@ Scalar ManifoldSolver::ComputeBlockTridiagonalDeterminant(
 {
 	if( k == 0 ) return 1.0;
 
-	std::vector<Scalar> Dp( k * 4 );
+    SMSWorkerScratchLease scratch(smsScratchDepth!=0,smsActiveDiagnostics);
+    std::vector<Scalar> localDp;
+    auto& Dp=scratch.Enabled()?scratch.Scalars(0,4*k):localDp;Dp.resize(4*k);
 	Scalar detProduct = 1.0;
 
 	for( unsigned int i = 0; i < k; i++ )
@@ -3232,8 +3344,11 @@ bool ManifoldSolver::SolveBlockTridiagonal(
 
 	// Modified diagonal blocks and modified rhs
 	// We'll work with arrays of 2x2 blocks (4 scalars each) and 2-vectors
-	std::vector<Scalar> Dp( k * 4 );   // modified diagonal
-	std::vector<Scalar> rp( k * 2 );   // modified rhs
+    SMSWorkerScratchLease scratch(smsScratchDepth!=0,smsActiveDiagnostics);
+    std::vector<Scalar> localDp;
+    auto& Dp=scratch.Enabled()?scratch.Scalars(0,4*k):localDp;Dp.resize(4*k);
+    std::vector<Scalar> localRp;
+    auto& rp=scratch.Enabled()?scratch.Scalars(1,2*k):localRp;rp.resize(2*k);
 
 	// Forward sweep
 	for( unsigned int i = 0; i < k; i++ )
@@ -4120,6 +4235,8 @@ bool ManifoldSolver::NewtonSolve(
 
 	for( unsigned int iter = 0; iter < config.maxIterations; iter++ )
 	{
+        SMSWorkerScratchLease scratch(nativeEventConstraints,config.referenceCounters);
+        const auto capacity=std::max<unsigned>(config.maxChainDepth,k);
         if(config.domainCounters) config.domainCounters->newtonIterations.fetch_add(1, std::memory_order_relaxed);
 #if SMS_SOLVE_DIAG
 		if( config.useLevenbergMarquardt ) {
@@ -4130,7 +4247,8 @@ bool ManifoldSolver::NewtonSolve(
 		}
 #endif
 		// Evaluate constraint
-		std::vector<Scalar> C;
+		std::vector<Scalar> localC;
+        auto& C=scratch.Enabled()?scratch.Scalars(0,2*capacity):localC;
 		EvaluateConstraint( chain, fixedStart, fixedEnd, C );
 
 		// Compute norm of constraint
@@ -4160,7 +4278,10 @@ bool ManifoldSolver::NewtonSolve(
 		// without them.  Original rationale for excluding curvature
 		// (tri-mesh per-triangle discontinuity) is handled by the
 		// mesh Jacobian returning zero dndu/dndv in those cases.
-		std::vector<Scalar> diag, upper_blocks, lower_blocks;
+		std::vector<Scalar> localDiag,localUpper,localLower;
+        auto& diag=scratch.Enabled()?scratch.Scalars(1,4*capacity):localDiag;
+        auto& upper_blocks=scratch.Enabled()?scratch.Scalars(2,4*capacity):localUpper;
+        auto& lower_blocks=scratch.Enabled()?scratch.Scalars(3,4*capacity):localLower;
 		BuildJacobian( chain, fixedStart, fixedEnd, diag, upper_blocks, lower_blocks,
 			/*includeCurvature=*/true );
 
@@ -4190,7 +4311,8 @@ bool ManifoldSolver::NewtonSolve(
 		}
 
 		// Solve for Newton step: J * delta = C  (we solve J * delta = C, then subtract)
-		std::vector<Scalar> delta;
+		std::vector<Scalar> localDelta;
+        auto& delta=scratch.Enabled()?scratch.Scalars(4,2*capacity):localDelta;
 		if( !SolveBlockTridiagonal( diag, upper_blocks, lower_blocks, C, k, delta ) )
 		{
 #if SMS_TRACE_DIAGNOSTIC
@@ -4269,7 +4391,9 @@ bool ManifoldSolver::NewtonSolve(
 		bool improved = false;
 
 		// Save chain state
-		std::vector<ManifoldVertex> savedChain( chain );
+		std::vector<ManifoldVertex> localSaved;
+        auto& savedChain=scratch.Enabled()?scratch.Vertices(0,capacity):localSaved;
+        savedChain=chain;
 
 		for( unsigned int attempt = 0; attempt < 10; attempt++ )
 		{
@@ -4357,7 +4481,8 @@ bool ManifoldSolver::NewtonSolve(
 			if( allValid )
 			{
 				// Check if the norm actually decreased
-				std::vector<Scalar> C_test;
+				std::vector<Scalar> localTest;
+                auto& C_test=scratch.Enabled()?scratch.Scalars(5,2*capacity):localTest;
 				EvaluateConstraint( chain, fixedStart, fixedEnd, C_test );
 				Scalar testNorm2 = 0.0;
 				for( unsigned int i = 0; i < 2*k; i++ )
@@ -4475,7 +4600,9 @@ bool ManifoldSolver::NewtonSolve(
 	// near the solution without reaching the strict threshold.  A
 	// relaxed threshold of 10× catches these near-solutions.
 	{
-		std::vector<Scalar> C_final;
+		SMSWorkerScratchLease finalScratch(nativeEventConstraints,config.referenceCounters);
+        std::vector<Scalar> localFinal;
+        auto& C_final=finalScratch.Enabled()?finalScratch.Scalars(0,2*std::max<unsigned>(config.maxChainDepth,k)):localFinal;
 		EvaluateConstraint( chain, fixedStart, fixedEnd, C_final );
 		Scalar norm2 = 0.0;
 		for( unsigned int i = 0; i < 2 * k; i++ )
@@ -6000,7 +6127,12 @@ Scalar ManifoldSolver::ComputeLightToFirstVertexJacobianDet(
 	if( k == 0 ) return 0;
 
 	// Build full chain Jacobian J_v (block-tridiagonal).
-	std::vector<Scalar> diag, upper, lower;
+    SMSWorkerScratchLease scratch(nativeEventConstraints,config.referenceCounters);
+    const auto capacity=std::max<unsigned>(config.maxChainDepth,k);
+    std::vector<Scalar> localDiag,localUpper,localLower;
+    auto& diag=scratch.Enabled()?scratch.Scalars(0,4*capacity):localDiag;
+    auto& upper=scratch.Enabled()?scratch.Scalars(1,4*capacity):localUpper;
+    auto& lower=scratch.Enabled()?scratch.Scalars(2,4*capacity):localLower;
 	BuildJacobian( chain, shadingPoint, lightPos, diag, upper, lower );
 
 	// Build the light-side Jacobian block at v_k.
@@ -6026,12 +6158,15 @@ Scalar ManifoldSolver::ComputeLightToFirstVertexJacobianDet(
 	Scalar dv1[4];  // row-major: [δv1_s for δy_s, δv1_s for δy_t; δv1_t for δy_s, δv1_t for δy_t]
 
 	for( unsigned int j = 0; j < 2; j++ ) {
-		std::vector<Scalar> rhs( 2 * k, 0.0 );
+        std::vector<Scalar> localRhs;
+        auto& rhs=scratch.Enabled()?scratch.Scalars(3,2*capacity):localRhs;rhs.assign(2*k,0);
 		rhs[ 2 * (k - 1) + 0 ] = -Jy[ 0 * 2 + j ];
 		rhs[ 2 * (k - 1) + 1 ] = -Jy[ 1 * 2 + j ];
 
-		std::vector<Scalar> delta;
-		std::vector<Scalar> diag_copy = diag;  // SolveBlockTridiagonal takes non-const ref
+        std::vector<Scalar> localDelta;
+        auto& delta=scratch.Enabled()?scratch.Scalars(4,2*capacity):localDelta;
+        std::vector<Scalar> localCopy;
+        auto& diag_copy=scratch.Enabled()?scratch.Scalars(5,4*capacity):localCopy;diag_copy=diag;  // SolveBlockTridiagonal takes non-const ref
 		if( !SolveBlockTridiagonal( diag_copy, upper, lower, rhs, k, delta ) ) {
 			return 0;
 		}
@@ -6144,7 +6279,18 @@ ManifoldResult ManifoldSolver::SolveCore(const Point3& shadingPoint, const Vecto
     const Point3& emitterPoint, const Vector3& emitterNormal, std::vector<ManifoldVertex>& specularChain,
     ISampler& sampler, bool estimateLegacyPDF, Scalar convergenceThreshold) const
 {
-	ManifoldResult result;
+    ManifoldResult result;
+    SolveCoreInto(shadingPoint,shadingNormal,emitterPoint,emitterNormal,specularChain,
+        sampler,estimateLegacyPDF,convergenceThreshold,result);
+    return result;
+}
+
+void ManifoldSolver::SolveCoreInto(const Point3& shadingPoint, const Vector3& shadingNormal,
+    const Point3& emitterPoint, const Vector3& emitterNormal, std::vector<ManifoldVertex>& specularChain,
+    ISampler& sampler, bool estimateLegacyPDF, Scalar convergenceThreshold,ManifoldResult& result) const
+{
+    SMSResetResult(result);
+    SMSWorkerScratchLease scratch(nativeEventConstraints,config.referenceCounters);
 
 #if SMS_TRACE_DIAGNOSTIC
 	// Ungated global counters: every Solve call increments one of these
@@ -6194,7 +6340,7 @@ ManifoldResult ManifoldSolver::SolveCore(const Point3& shadingPoint, const Vecto
 #if SMS_TRACE_DIAGNOSTIC
 		g_solveEmpty.fetch_add( 1, std::memory_order_relaxed );
 #endif
-		return result;
+		return;
 	}
 
 	// Quick early-out: build minimal tangent frames from normals
@@ -6219,7 +6365,8 @@ ManifoldResult ManifoldSolver::SolveCore(const Point3& shadingPoint, const Vecto
 	// from the solution than refraction seeds because the straight-line
 	// seed direction doesn't follow the reflected path.
 	{
-		std::vector<Scalar> C0;
+		std::vector<Scalar> localC0;
+        auto& C0=scratch.Enabled()?scratch.Scalars(3,2*std::max<std::size_t>(config.maxChainDepth,specularChain.size())):localC0;
 		EvaluateConstraint( specularChain, shadingPoint, emitterPoint, C0 );
 		Scalar norm2 = 0.0;
 		for( unsigned int i = 0; i < C0.size(); i++ )
@@ -6242,7 +6389,7 @@ ManifoldResult ManifoldSolver::SolveCore(const Point3& shadingPoint, const Vecto
 #if SMS_SOLVE_DIAG
 			g_solveDiag_seedTooFar.fetch_add( 1, std::memory_order_relaxed );
 #endif
-			return result;  // Seed too far from valid path
+			return;  // Seed too far from valid path
 		}
 	}
 
@@ -6265,7 +6412,7 @@ ManifoldResult ManifoldSolver::SolveCore(const Point3& shadingPoint, const Vecto
 #if SMS_SOLVE_DIAG
 				g_solveDiag_derivFail.fetch_add( 1, std::memory_order_relaxed );
 #endif
-				return result;
+				return;
 			}
 		}
 
@@ -6300,7 +6447,7 @@ ManifoldResult ManifoldSolver::SolveCore(const Point3& shadingPoint, const Vecto
 			// phys-fail — we're betting most preserve).
 			g_solveDiag_physicsFail.fetch_add( 1, std::memory_order_relaxed );
 #endif
-			return result;
+			return;
 		}
 	}
 #endif
@@ -6454,7 +6601,8 @@ ManifoldResult ManifoldSolver::SolveCore(const Point3& shadingPoint, const Vecto
 #if SMS_TRACE_DIAGNOSTIC
 	if( traceSolve ) {
 		// Evaluate ||C|| after Newton to see how close it got
-		std::vector<Scalar> Cfinal;
+		std::vector<Scalar> localCfinal;
+        auto& Cfinal=scratch.Enabled()?scratch.Scalars(4,2*std::max<std::size_t>(config.maxChainDepth,specularChain.size())):localCfinal;
 		EvaluateConstraint( specularChain, shadingPoint, emitterPoint, Cfinal );
 		Scalar fn2 = 0;
 		for( std::size_t i = 0; i < Cfinal.size(); i++ ) fn2 += Cfinal[i] * Cfinal[i];
@@ -6483,7 +6631,8 @@ ManifoldResult ManifoldSolver::SolveCore(const Point3& shadingPoint, const Vecto
 		// Bucket the post-Newton ||C|| so we know whether Newton was stuck
 		// near the answer or diverged far.
 		{
-			std::vector<Scalar> Cend;
+			std::vector<Scalar> localCend;
+        auto& Cend=scratch.Enabled()?scratch.Scalars(5,2*std::max<std::size_t>(config.maxChainDepth,specularChain.size())):localCend;
 			EvaluateConstraint( specularChain, shadingPoint, emitterPoint, Cend );
 			Scalar n2 = 0;
 			for( std::size_t ii = 0; ii < Cend.size(); ii++ ) n2 += Cend[ii] * Cend[ii];
@@ -6518,7 +6667,8 @@ ManifoldResult ManifoldSolver::SolveCore(const Point3& shadingPoint, const Vecto
 
 			// PUSHBACK: post-Newton ‖C‖ at the rejected chain.
 			{
-				std::vector<Scalar> Crej;
+				std::vector<Scalar> localCrej;
+        auto& Crej=scratch.Enabled()?scratch.Scalars(6,2*std::max<std::size_t>(config.maxChainDepth,specularChain.size())):localCrej;
 				EvaluateConstraint( specularChain, shadingPoint, emitterPoint, Crej );
 				Scalar n2 = 0;
 				for( std::size_t ii = 0; ii < Crej.size(); ii++ ) n2 += Crej[ii] * Crej[ii];
@@ -6654,7 +6804,7 @@ ManifoldResult ManifoldSolver::SolveCore(const Point3& shadingPoint, const Vecto
 #if SMS_SOLVE_DIAG
 				g_solveDiag_physicsFail.fetch_add( 1, std::memory_order_relaxed );
 #endif
-				return result;
+				return;
 			}
 			// Fall through with the rescued chain.
 		}
@@ -6743,7 +6893,7 @@ ManifoldResult ManifoldSolver::SolveCore(const Point3& shadingPoint, const Vecto
 #if SMS_SOLVE_DIAG
 				g_solveDiag_shortSeg.fetch_add( 1, std::memory_order_relaxed );
 #endif
-				return result;
+				return;
 			}
 		}
 
@@ -6772,7 +6922,10 @@ ManifoldResult ManifoldSolver::SolveCore(const Point3& shadingPoint, const Vecto
 		{
 			const unsigned int k = static_cast<unsigned int>( specularChain.size() );
 
-			std::vector<Scalar> diag, upper_blocks, lower_blocks;
+			std::vector<Scalar> localDiag,localUpper,localLower;
+            auto& diag=scratch.Enabled()?scratch.Scalars(0,4*std::max<unsigned>(config.maxChainDepth,k)):localDiag;
+            auto& upper_blocks=scratch.Enabled()?scratch.Scalars(1,4*std::max<unsigned>(config.maxChainDepth,k)):localUpper;
+            auto& lower_blocks=scratch.Enabled()?scratch.Scalars(2,4*std::max<unsigned>(config.maxChainDepth,k)):localLower;
 			BuildJacobian( specularChain, shadingPoint, emitterPoint,
 				diag, upper_blocks, lower_blocks );
 
@@ -6806,7 +6959,7 @@ ManifoldResult ManifoldSolver::SolveCore(const Point3& shadingPoint, const Vecto
 			result.pdf = 1.0;
 		}
 	}
-	return result;
+	return;
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -7177,6 +7330,7 @@ bool ManifoldSolver::BuildExtendedSeed(const Point3& start, const Point3& end,
     const IScene& scene, const IORStack& live, SMSQueryDomain domain, ISampler& sampler,
     std::vector<SMSDomainVertex>& vertices, const RasterizerState& raster) const
 {
+    SMSWorkerScratchLease scratch(true,config.referenceCounters);
     vertices.clear();
     const auto* objects = dynamic_cast<const ObjectManager*>(scene.GetObjects());
     if(!objects || !objects->ExtendedSMSAllowed() || !domain.Valid() || !config.maxChainDepth
@@ -7258,11 +7412,23 @@ SMSDomainRoot ManifoldSolver::ProposeExtendedRoot(const Point3& start, const Vec
     const Point3& end, const IScene& scene, const IORStack& stack, SMSQueryDomain domain,
     ISampler& sampler, const RasterizerState& raster) const
 {
+    SMSDomainRoot root(domain,stack);
+    ProposeExtendedRootInto(start,startNormal,end,scene,stack,domain,sampler,raster,root);
+    return root;
+}
+
+void ManifoldSolver::ProposeExtendedRootInto(const Point3& start, const Vector3& startNormal,
+    const Point3& end, const IScene& scene, const IORStack& stack, SMSQueryDomain domain,
+    ISampler& sampler, const RasterizerState& raster,SMSDomainRoot& root) const
+{
     if(!nativeEventConstraints) {
         ManifoldSolver native(config,true);
-        return native.ProposeExtendedRoot(start,startNormal,end,scene,stack,domain,sampler,raster);
+        native.ProposeExtendedRootInto(start,startNormal,end,scene,stack,domain,sampler,raster,root);
+        return;
     }
-    SMSDomainRoot root(domain, stack);
+    SMSWorkerScratchLease scratch(true,config.referenceCounters);
+    root.domain=domain;root.startingStack=stack;root.vertices.clear();
+    SMSResetResult(root.result);root.accepted=false;root.uncertainty=0;
     auto* counters = config.referenceCounters;
     if(counters) counters->proposalTrials.fetch_add(1, std::memory_order_relaxed);
     root.scale = Point3Ops::Distance(start,end);
@@ -7272,15 +7438,16 @@ SMSDomainRoot ManifoldSolver::ProposeExtendedRoot(const Point3& start, const Vec
         || !SMSDomainReplay::BuildStack(startingMedia,domain,root.startingStack)
         || !BuildExtendedSeed(start, end, scene, root.startingStack, domain, sampler, root.vertices, raster)) {
         if(counters) counters->zeroTrials.fetch_add(1, std::memory_order_relaxed);
-        return root;
+        return;
     }
     // Root matching resolves geometry at sqrt(machine epsilon) relative to
     // the endpoint scale. Polish the angular constraints more tightly, then
     // reject roots whose inverse-Jacobian correction cannot resolve that band.
     const Scalar tolerance = std::sqrt(std::numeric_limits<Scalar>::epsilon()) * root.scale;
     const Scalar polish = std::min(config.solverThreshold, std::sqrt(std::numeric_limits<Scalar>::epsilon())/64);
-    root.result = SolveDomain(start, startNormal, end, Vector3(0,0,1), scene, root.startingStack,
-        domain, root.vertices, sampler, tolerance, polish);
+    ManifoldSolver replay(config,true,&root.vertices);
+    replay.SolveDomainCoreInto(start,startNormal,end,Vector3(0,0,1),scene,root.startingStack,
+        domain,root.vertices,sampler,tolerance,polish,root.result);
     if(root.result.valid) {
         Scalar contextGain=1;
         for(const auto& vertex:root.vertices) contextGain=std::max(contextGain,vertex.contextSlope*root.scale);
@@ -7289,14 +7456,18 @@ SMSDomainRoot ManifoldSolver::ProposeExtendedRoot(const Point3& start, const Vec
             // This deterministic refinement is part of every proposal and
             // retry, not an extra discovery or a changed event topology.
             const Scalar contextPolish=std::max(std::numeric_limits<Scalar>::epsilon(),polish/contextGain);
-            root.result=SolveDomain(start,startNormal,end,Vector3(0,0,1),scene,root.startingStack,
-                domain,root.vertices,sampler,tolerance,contextPolish);
+            replay.SolveDomainCoreInto(start,startNormal,end,Vector3(0,0,1),scene,root.startingStack,
+                domain,root.vertices,sampler,tolerance,contextPolish,root.result);
         }
     }
     bool visible = root.result.valid;
     if(visible) {
         const auto& chain = root.result.specularChain;
-        std::vector<Scalar> residual, diagonal, upper, lower, correction;
+        auto& residual=scratch.Scalars(0,2*config.maxChainDepth);
+        auto& diagonal=scratch.Scalars(1,4*config.maxChainDepth);
+        auto& upper=scratch.Scalars(2,4*config.maxChainDepth);
+        auto& lower=scratch.Scalars(3,4*config.maxChainDepth);
+        auto& correction=scratch.Scalars(4,2*config.maxChainDepth);
         ManifoldSolver native(config,true,&root.vertices);
         native.EvaluateConstraint(chain,start,end,residual);
         native.BuildJacobian(chain,start,end,diagonal,upper,lower,true);
@@ -7344,7 +7515,7 @@ SMSDomainRoot ManifoldSolver::ProposeExtendedRoot(const Point3& start, const Vec
         counters->zeroTrials.fetch_add(1, std::memory_order_relaxed);
         counters->rejectedRoots.fetch_add(1, std::memory_order_relaxed);
     }
-    return root;
+    return;
 }
 
 bool ManifoldSolver::SameExtendedRoot(const SMSDomainRoot& a, const SMSDomainRoot& b, Scalar tolerance)
@@ -7426,16 +7597,22 @@ RISEPel ManifoldSolver::EvaluateExtendedDelta(const Point3& pos, const Vector3& 
     if(!bsdf || !light.isDelta || !light.pLight || light.pdfSelect <= 0
         || (light.pLight->lightType() != ILight::LightType::Point && light.pLight->lightType() != ILight::LightType::Spot)
         || !ExtendedAnchorEligible(scene,caster,pos,stack,nm)) return total;
+    SMSWorkerScratchLease scratch(true,config.referenceCounters);
+    auto& live=scratch.Root(0,SMSQueryDomain::RGB(0),stack,config.maxChainDepth);
+    auto& retryRoot=scratch.Root(1,SMSQueryDomain::RGB(0),stack,config.maxChainDepth);
     SMSLoopSampler discovery(parent,0x41304449u), retry(parent,0x41305254u);
     const unsigned int trials = config.multiTrials ? config.multiTrials : 1;
     for(unsigned int trial=0; trial<trials; ++trial) {
         const unsigned int component = nm > 0 ? 0 : std::min(2u,static_cast<unsigned int>(discovery.sampler.Get1D()*3));
         const auto domain = nm > 0 ? SMSQueryDomain::NM(nm) : SMSQueryDomain::RGB(component);
-        const auto propose = [&](ISampler& sampler) {
-            return ProposeExtendedRoot(pos,shadingNormal,light.position,scene,stack,domain,sampler,
-                context ? context->rast : nullRasterizerState);
+        const auto propose = [&](ISampler& sampler) -> const SMSDomainRoot& {
+            ProposeExtendedRootInto(pos,shadingNormal,light.position,scene,stack,domain,sampler,
+                context ? context->rast : nullRasterizerState,retryRoot);
+            return retryRoot;
         };
-        const SMSDomainRoot root = propose(discovery.sampler);
+        ProposeExtendedRootInto(pos,shadingNormal,light.position,scene,stack,domain,discovery.sampler,
+            context ? context->rast : nullRasterizerState,live);
+        const SMSDomainRoot& root=live;
         if(!root.accepted) continue;
         const auto& chain = root.result.specularChain;
         Vector3 incoming = Vector3Ops::mkVector3(chain.front().position,pos);

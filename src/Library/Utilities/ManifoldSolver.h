@@ -45,6 +45,7 @@
 #define RISE_SMS_DOMAIN_REPLAY 1
 #define RISE_SMS_SCENE_POLICY 1
 #define RISE_SMS_REFERENCE_A 1
+#define RISE_SMS_SCRATCH_COUNTERS 1
 #define RISE_SMS_NATIVE_EVENT_NORMALS 1
 
 #include "../Interfaces/IReference.h"
@@ -103,8 +104,14 @@ namespace RISE
             std::atomic<unsigned long long> proposalTrials{0}, zeroTrials{0};
             std::atomic<unsigned long long> retryTrials{0}, tailTrials{0}, rouletteStops{0};
             std::atomic<unsigned long long> acceptedDiscoveries{0}, rejectedRoots{0}, ownedRoots{0};
+            std::atomic<unsigned long long> sceneIntersectionQueries{0}, objectIntersectionQueries{0}, materialQueries{0};
+            std::atomic<unsigned long long> scratchBufferGrowths{0}, scratchFrames{0}, scratchPeakBytes{0};
             std::atomic<unsigned long long> retryHistogram[32]{}; // powers of two, last bucket saturates
         };
+
+        // Counts logical scene queries in the active extended diagnostic scope.
+        void SMSRecordSceneIntersection();
+        void SMSRecordObjectIntersection();
 
         // Estimator A's reciprocal is conditional on the SAME channel and
         // endpoint context as discovery. Proposal includes every zero trial.
@@ -125,7 +132,7 @@ namespace RISE
                         if(trials > (budget ? budget : 1024))
                             counters->tailTrials.fetch_add(1, std::memory_order_relaxed);
                     }
-                    const auto candidate = proposal(retrySampler);
+                    decltype(auto) candidate = proposal(retrySampler);
                     if(match(root, candidate)) break;
                     if(roulette) {
                         if(!tail.ContinueAfterFailure(retrySampler)) {
@@ -607,6 +614,12 @@ namespace RISE
                 const IScene&,const IORStack&,SMSQueryDomain,std::vector<SMSDomainVertex>&,ISampler&,Scalar,Scalar) const;
             ManifoldResult SolveCore(const Point3&, const Vector3&, const Point3&, const Vector3&,
                 std::vector<ManifoldVertex>&, ISampler&, bool estimateLegacyPDF, Scalar convergenceThreshold = 0) const;
+            void SolveDomainCoreInto(const Point3&,const Vector3&,const Point3&,const Vector3&,
+                const IScene&,const IORStack&,SMSQueryDomain,std::vector<SMSDomainVertex>&,ISampler&,Scalar,Scalar,ManifoldResult&) const;
+            void SolveCoreInto(const Point3&,const Vector3&,const Point3&,const Vector3&,
+                std::vector<ManifoldVertex>&,ISampler&,bool,Scalar,ManifoldResult&) const;
+            void ProposeExtendedRootInto(const Point3&,const Vector3&,const Point3&,const IScene&,
+                const IORStack&,SMSQueryDomain,ISampler&,const RasterizerState&,SMSDomainRoot&) const;
             RISEPel EvaluateExtendedDelta(const Point3&, const Vector3&, const Vector3&,
                 const OrthonormalBasis3D&, const IMaterial&, const Vector3&, const IScene&,
                 const IRayCaster&, ISampler&, const LightSample&, const IORStack&,

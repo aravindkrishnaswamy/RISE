@@ -15,6 +15,7 @@
 
 #ifndef IRAYINTERSECTION_MODIFIER_
 #define IRAYINTERSECTION_MODIFIER_
+#define RISE_SMS_MODIFIER_DIFFERENTIAL 1
 
 #include "IReference.h"
 #include "../Intersection/RayIntersectionGeometric.h"

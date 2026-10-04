@@ -87,6 +87,30 @@ static std::string SceneObject(const std::string& name,const std::string& geomet
     return "standard_object\n{\n name "+name+"\n geometry "+geometry+"\n material "+material+"\n"+extra+"}\n";
 }
 
+// Compatibility for numerical red proofs with committed pre-contract headers.
+// Older solvers cannot discover this test-only optional capability.
+#ifndef RISE_SMS_MODIFIER_DIFFERENTIAL
+namespace RISE {
+struct SMSIntersectionDifferential {
+    Vector3 worldPoint{0,0,0},objectPoint{0,0,0},normal{0,0,0},geometricNormal{0,0,0};
+    Vector3 frameU{0,0,0},frameV{0,0,0},frameW{0,0,0},rayOrigin{0,0,0},rayDirection{0,0,0};
+    Point2 uv{0,0};
+};
+class ISMSModifierDifferential {
+public:
+    virtual ~ISMSModifierDifferential()=default;
+    virtual bool HasSMSDifferentialContract()const=0;
+    virtual bool SMSFrameDifferential(const RayIntersectionGeometric&,
+        const SMSIntersectionDifferential&,Vector3&,Vector3&)const=0;
+};
+}
+#endif
+// Older geometry headers still compile the native tessellation witness.
+template<class T> static auto OrientationAudits(const T* g,int)->decltype(g->SMSOrientationAudits()) {return g->SMSOrientationAudits();}
+template<class T> static unsigned long long OrientationAudits(const T*,long) {return 0;}
+template<class T> static auto OrientationVisits(const T* g,int)->decltype(g->SMSOrientationTriangleVisits()) {return g->SMSOrientationTriangleVisits();}
+template<class T> static unsigned long long OrientationVisits(const T*,long) {return 0;}
+
 #ifdef RISE_SMS_REFERENCE_A
 struct LawRoot { int id=-1; unsigned channel=0; };
 static LawRoot ThreeEventLaw(ISampler& sampler,unsigned c,bool rare) {
@@ -724,14 +748,14 @@ static void NativePreparationAudits() {
         f.job->GetObjects()->GetItem("shared")->AssignGeometry(*object->GetGeometry());
         const auto* cachedIndexed=dynamic_cast<const PreparationIndexedMesh*>(object->GetGeometry());
         const auto* cachedPlain=dynamic_cast<const PreparationPlainMesh*>(object->GetGeometry());
-        const auto audits=cachedIndexed?cachedIndexed->SMSOrientationAudits():cachedPlain->SMSOrientationAudits();
-        const auto visits=cachedIndexed?cachedIndexed->SMSOrientationTriangleVisits():cachedPlain->SMSOrientationTriangleVisits();
+        const auto audits=cachedIndexed?OrientationAudits(cachedIndexed,0):OrientationAudits(cachedPlain,0);
+        const auto visits=cachedIndexed?OrientationVisits(cachedIndexed,0):OrientationVisits(cachedPlain,0);
         preparationTessellations=0;
         for(unsigned frame=0;frame<4;++frame) f.job->GetObjects()->PrepareForRendering();
         Check(preparationTessellations==0,"repeated extended-off preparation audits shared meshes without tessellation or array copies");
-        Check((cachedIndexed?cachedIndexed->SMSOrientationAudits():cachedPlain->SMSOrientationAudits())==audits,
+        Check((cachedIndexed?OrientationAudits(cachedIndexed,0):OrientationAudits(cachedPlain,0))==audits,
             "shared repeated preparation performs no additional orientation audits");
-        Check((cachedIndexed?cachedIndexed->SMSOrientationTriangleVisits():cachedPlain->SMSOrientationTriangleVisits())==visits,
+        Check((cachedIndexed?OrientationVisits(cachedIndexed,0):OrientationVisits(cachedPlain,0))==visits,
             "shared repeated preparation visits no mesh triangles");
         IORStack inside(1);inside.SetCurrentObject(object);inside.push(1.3);SMSStartingMedia captured;
         Check(!SMSDomainReplay::Capture(f.Scene(),Point3(0,0,0),inside,captured),
@@ -742,7 +766,7 @@ static void NativePreparationAudits() {
             native->TriangleMeshGeometryIndexed::TessellateToMesh(t,positions,normals,uv,1);
             for(auto& n:normals) n=-n;
             native->UpdateVertices(positions,normals);
-            Check(native->SMSOrientationAudits()==audits+1 && native->SMSOrientationTriangleVisits()>visits,
+            Check(OrientationAudits(native,0)==audits+1 && OrientationVisits(native,0)>visits,
                 "actual indexed mutation runs exactly one replacement audit");
             f.job->GetObjects()->PrepareForRendering();
             Check(SMSDomainReplay::Capture(f.Scene(),Point3(0,0,0),inside,captured),
@@ -1510,6 +1534,9 @@ static void DeltaLights(bool production=false, bool signedEmitter=false, bool un
         const Scalar fresnel=glass?Optics::CalculateDielectricReflectanceCosine(1,1,1.5):1;
         std::array<std::vector<double>,3> samples;
         constexpr unsigned N=16384;
+#ifdef RISE_SMS_SCRATCH_COUNTERS
+        unsigned long long warmGrowths=0, warmFrames=0;
+#endif
         for(unsigned salt=0;salt<4;++salt) {
             const unsigned renderSalt=SobolSequence::HashCombine(9100+salt,0x44454c54);
             SobolSamplerTestHooks::ValueSalt().store(renderSalt);
@@ -1547,6 +1574,17 @@ static void DeltaLights(bool production=false, bool signedEmitter=false, bool un
                 }
             }
             for(unsigned c=0;c<(mode==0?3u:1u);++c) samples[c].push_back(static_cast<double>(sums[c]/N));
+#ifdef RISE_SMS_SCRATCH_COUNTERS
+            if(salt==0) {
+                warmGrowths=counters.scratchBufferGrowths.load();
+                warmFrames=counters.scratchFrames.load();
+            } else {
+                Check(counters.scratchBufferGrowths.load()==warmGrowths,
+                    "production trial scratch buffers stop growing after warm-up");
+                Check(counters.scratchFrames.load()==warmFrames,
+                    "production trial nesting reuses warmed worker frames");
+            }
+#endif
         }
         for(unsigned c=0;c<(mode==0?3u:1u);++c) {
             const Scalar imageDistance=1-hit.geometric.ptIntersection.z;
@@ -1563,7 +1601,38 @@ static void DeltaLights(bool production=false, bool signedEmitter=false, bool un
         std::cout<<"delta counters proposals="<<counters.proposalTrials<<" zeros="<<counters.zeroTrials
             <<" newton="<<domainCounters.newtonIterations<<" retries="<<counters.retryTrials
             <<" tails="<<counters.tailTrials<<" roulette="<<counters.rouletteStops
-            <<" owned="<<counters.ownedRoots<<" rejected="<<counters.rejectedRoots<<'\n';
+            <<" owned="<<counters.ownedRoots<<" rejected="<<counters.rejectedRoots
+#ifdef RISE_SMS_SCRATCH_COUNTERS
+            <<" sceneQueries="<<counters.sceneIntersectionQueries
+            <<" objectQueries="<<counters.objectIntersectionQueries
+            <<" domainMaterialQueries="<<counters.materialQueries
+            <<" scratchGrowths="<<counters.scratchBufferGrowths
+            <<" scratchFrames="<<counters.scratchFrames
+            <<" scratchPeakBytes="<<counters.scratchPeakBytes
+#endif
+            <<'\n';
+#ifdef RISE_SMS_SCRATCH_COUNTERS
+        Check(counters.sceneIntersectionQueries>0 && counters.objectIntersectionQueries>0
+            && counters.materialQueries>0,"production extended trials record actual scene, object, and domain material queries");
+        Check(counters.scratchPeakBytes>0,"production extended trials report retained worker scratch capacity");
+        SMSReferenceCounters legacyCounters;
+        ManifoldSolverConfig legacyConfig=cfg;legacyConfig.extendedMode=false;
+        legacyConfig.referenceCounters=&legacyCounters;
+        auto* legacySolver=new ManifoldSolver(legacyConfig);
+        legacySolver->SetSpecularCasters(casters);
+        SobolSampler legacySampler(31,29);
+        if(mode==0) legacySolver->EvaluateAtShadingPoint(hit.geometric.ptIntersection,
+            hit.geometric.UnflippedGeomNormal(),hit.geometric.vNormal,hit.geometric.onb,
+            hit.pMaterial,direction,fixture.Scene(),*caster,legacySampler,&air);
+        else legacySolver->EvaluateAtShadingPointNM(hit.geometric.ptIntersection,
+            hit.geometric.UnflippedGeomNormal(),hit.geometric.vNormal,hit.geometric.onb,
+            hit.pMaterial,direction,fixture.Scene(),*caster,legacySampler,nm,&air);
+        Check(legacyCounters.scratchBufferGrowths==0 && legacyCounters.scratchFrames==0
+            && legacyCounters.scratchPeakBytes==0,"legacy evaluation does not lease extended worker scratch");
+        legacySolver->release();
+#else
+        Check(false,"production extended trials provide measured scratch and query diagnostics");
+#endif
 #endif
         SobolSamplerTestHooks::ValueSalt().store(0);
         integrator->release();solver->release();caster->release();shader->release();
@@ -1836,6 +1905,11 @@ static void SlabRenders() {
 }
 
 int main(int argc,char** argv) {
+#ifdef RISE_SMS_REFERENCE_A
+    std::cout<<"SMS record bytes vertex="<<sizeof(ManifoldVertex)
+        <<" domainVertex="<<sizeof(SMSDomainVertex)<<" root="<<sizeof(SMSDomainRoot)
+        <<" referenceCounters="<<sizeof(SMSReferenceCounters)<<'\n';
+#endif
     bool synthetic=true,geometry=true,delta=true,unsupported=true,production=false,slab=true;
     Check(ConfigureTestWorker(),"reference renderer uses one configured worker");
     if(argc==2&&std::string(argv[1])=="--synthetic-only") {geometry=false;delta=false;unsupported=false;slab=false;}
