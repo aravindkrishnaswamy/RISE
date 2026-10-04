@@ -14,6 +14,7 @@
 #include "../src/Library/Interfaces/IUVGenerator.h"
 #include "../src/Library/Interfaces/IRayIntersectionModifier.h"
 #include "../src/Library/Interfaces/ITriangleMeshGeometry.h"
+#include "../src/Library/Interfaces/IGeometryManager.h"
 #include "../src/Library/Utilities/Optics.h"
 #include "../src/Library/Shaders/PathTracingIntegrator.h"
 #include "../src/Library/Painters/UniformScalarPainter.h"
@@ -310,9 +311,9 @@ public:
     Scalar GetColorNM(const RayIntersectionGeometric& hit,Scalar) const override { return .5+.1*hit.ptIntersection.x; }
 };
 static void InteriorAtlasRoots() {
-    for(bool reverse:{false,true}) for(int side:{-1,1}) for(bool varying:{false,true}) for(bool nonindexed:{false,true}) {
+    for(bool reverse:{false,true}) for(int side:{-1,1}) for(bool varying:{false,true}) for(unsigned geometryKind:{0u,1u,2u}) {
         Fixture f(Materials()+UVSeamMesh(reverse,true)+Object("caster","sphere","mirror"));
-        if(nonindexed) {
+        if(geometryKind==1) {
             const auto* object=f.Object("caster");
             IndexTriangleListType indices;VerticesListType positions;NormalsListType normals;TexCoordsListType coords;
             Check(object->GetGeometry()->TessellateToMesh(indices,positions,normals,coords,1),"atlas indexed source tessellates");
@@ -328,6 +329,17 @@ static void InteriorAtlasRoots() {
                 geometry->DoneTriangles();f.job->GetObjects()->GetItem("caster")->AssignGeometry(*geometry);
                 safe_release(geometry);f.job->GetObjects()->PrepareForRendering();
             }
+        }
+        if(geometryKind==2) {
+            IGeometry* displaced=nullptr;
+            auto* height=new UniformScalarPainter(.1);
+            Check(RISE_API_CreateDisplacedGeometry(&displaced,f.job->GetGeometries()->GetItem("sphere"),
+                1,nullptr,1,true,true,false,height),"displaced atlas sibling created");
+            if(displaced) {
+                displaced->Realize();f.job->GetObjects()->GetItem("caster")->AssignGeometry(*displaced);
+                safe_release(displaced);f.job->GetObjects()->PrepareForRendering();
+            }
+            height->release();
         }
         if(varying) {
             auto* tint=new WorldTint(); IMaterial* material=nullptr;
@@ -345,7 +357,7 @@ static void InteriorAtlasRoots() {
                 auto root=solver->ProposeExtendedRoot(start,Vector3(0,0,-side),end,f.Scene(),air,domain,sampler);
                 accepted+=root.accepted;
             }
-            std::cout<<"interior atlas winding="<<reverse<<" side="<<side<<" varying="<<varying<<" accepted="<<accepted<<'\n';
+            std::cout<<"interior atlas winding="<<reverse<<" side="<<side<<" varying="<<varying<<" geometry="<<geometryKind<<" accepted="<<accepted<<'\n';
             Check(varying?accepted==0:accepted>0,"interior atlas uncertainty rejects variable law while audited constant law remains supported");
         }
         solver->release();
