@@ -43,6 +43,7 @@ namespace RISE
 			mutable bool smsPolicyPrepared = false;
 			mutable bool smsHasComposite = false;
 			mutable std::string smsFirstCompositeObject;
+            mutable std::vector<const IObject*> smsExtendedCasters;
 			virtual ~ObjectManager();
 
 			// Top-level acceleration: SAH BVH (BVH4-collapsed, SIMD AABB
@@ -524,6 +525,7 @@ namespace RISE
 			// Prepared static-scene policy; read-only during worker execution.
 			bool ExtendedSMSAllowed() const { return smsPolicyPrepared && !smsHasComposite; }
 			const std::string& FirstCompositeObject() const { return smsFirstCompositeObject; }
+            const std::vector<const IObject*>& ExtendedSMSCasters() const { return smsExtendedCasters; }
 
 			void InvalidateSpatialStructure() const;
 			unsigned long long GetSpatialStructureGeneration() const { return mSpatialGen; }

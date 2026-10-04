@@ -24,6 +24,7 @@
 #include "../Materials/PhongLuminaireMaterial.h"
 #include "../Materials/CoatedMaterial.h"
 #include "../Materials/FabricMaterial.h"
+#include "../Utilities/ManifoldSolver.h"
 #include <atomic>
 #include "../Utilities/ISampler.h"
 #include <cmath>
@@ -2097,6 +2098,16 @@ void ObjectManager::PrepareForRendering() const
         }
     }
     smsPolicyPrepared = true;
+    smsExtendedCasters.clear();
+    if(!smsHasComposite) {
+        for(const auto& item : items) {
+            const IObject* object = item.second.first;
+            if(object->IsWorldVisible() && object->GetGeometry()
+                && object->GetGeometry()->CanBeAreaLight() && object->GetMaterial()
+                && SMSDomainReplay::PotentialCaster(*object->GetMaterial()))
+                smsExtendedCasters.push_back(object);
+        }
+    }
     if(smsHasComposite) {
         GlobalLog()->PrintEx(eLog_Warning,
             "Extended SMS is inert for this prepared scene: composite object '%s'; using legacy SMS and suppression.",

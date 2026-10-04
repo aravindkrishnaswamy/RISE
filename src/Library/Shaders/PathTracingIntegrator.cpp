@@ -1472,32 +1472,33 @@ namespace
 		typename SpectralValueTraits<Tag>::value_type contribution;
 		Scalar misWeight;
 		bool   valid;
+        bool referenceA;
 	};
 	template<class Tag>
 	inline PTSMSResult<Tag> PTEvaluateSMS(
 		ManifoldSolver* pSolver, const Point3& pos, const Vector3& geomNormal,
 		const Vector3& shadingNormal, const OrthonormalBasis3D& onb,
 		const IMaterial* pMaterial, const Vector3& woOutgoing, const IScene& scene,
-		const IRayCaster& caster, ISampler& sampler, const IORStack& iorStack, const Tag& tag );
+		const IRayCaster& caster, ISampler& sampler, const IORStack& iorStack, const RayIntersectionGeometric& anchorContext, bool forceLegacy, const Tag& tag );
 	template<> inline PTSMSResult<PelTag> PTEvaluateSMS<PelTag>(
 		ManifoldSolver* pSolver, const Point3& pos, const Vector3& geomNormal,
 		const Vector3& shadingNormal, const OrthonormalBasis3D& onb,
 		const IMaterial* pMaterial, const Vector3& woOutgoing, const IScene& scene,
-		const IRayCaster& caster, ISampler& sampler, const IORStack& iorStack, const PelTag& )
+		const IRayCaster& caster, ISampler& sampler, const IORStack& iorStack, const RayIntersectionGeometric& anchorContext, bool forceLegacy, const PelTag& )
 	{
 		ManifoldSolver::SMSContribution sms = pSolver->EvaluateAtShadingPoint(
-			pos, geomNormal, shadingNormal, onb, pMaterial, woOutgoing, scene, caster, sampler, &iorStack );
-		return PTSMSResult<PelTag>{ sms.contribution, sms.misWeight, sms.valid };
+			pos, geomNormal, shadingNormal, onb, pMaterial, woOutgoing, scene, caster, sampler, &iorStack, &anchorContext, forceLegacy );
+		return PTSMSResult<PelTag>{ sms.contribution, sms.misWeight, sms.valid, sms.referenceA };
 	}
 	template<> inline PTSMSResult<NMTag> PTEvaluateSMS<NMTag>(
 		ManifoldSolver* pSolver, const Point3& pos, const Vector3& geomNormal,
 		const Vector3& shadingNormal, const OrthonormalBasis3D& onb,
 		const IMaterial* pMaterial, const Vector3& woOutgoing, const IScene& scene,
-		const IRayCaster& caster, ISampler& sampler, const IORStack& iorStack, const NMTag& tag )
+		const IRayCaster& caster, ISampler& sampler, const IORStack& iorStack, const RayIntersectionGeometric& anchorContext, bool forceLegacy, const NMTag& tag )
 	{
 		ManifoldSolver::SMSContributionNM sms = pSolver->EvaluateAtShadingPointNM(
-			pos, geomNormal, shadingNormal, onb, pMaterial, woOutgoing, scene, caster, sampler, tag.nm, &iorStack );
-		return PTSMSResult<NMTag>{ sms.contribution, sms.misWeight, sms.valid };
+			pos, geomNormal, shadingNormal, onb, pMaterial, woOutgoing, scene, caster, sampler, tag.nm, &iorStack, &anchorContext, forceLegacy );
+		return PTSMSResult<NMTag>{ sms.contribution, sms.misWeight, sms.valid, sms.referenceA };
 	}
 
 	// PART3 bsdfTimesCos VALUE (carried in the iterative state).  Pel:
@@ -3922,7 +3923,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				scene,
 				caster,
 				smsSampler,
-				iorStack,
+				iorStack, ri.geometric, rc.smsForceLegacy || smsIgnoreExtended_,
 				tag );
 
 			if( sms.valid )
@@ -3942,7 +3943,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				// Pre-clamp value captured for the Pel firefly trace below
 				// (compiled out for NM, which had no SMS trace).
 				[[maybe_unused]] const Value smsContribPreClamp = smsContrib;
-				smsContrib = ClampContribution( smsContrib, stabilityConfig.directClamp );
+				if(!sms.referenceA) smsContrib = ClampContribution( smsContrib, stabilityConfig.directClamp );
 				result = result + throughput * smsContrib;
 				if constexpr ( Traits::is_pel ) {
 					if( ff ) {
@@ -6756,7 +6757,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					scene,
 					caster,
 					smsSampler,
-					swl.lambda[w], &iorStack );
+					swl.lambda[w], &iorStack, &ri.geometric, true );
 
 				if( sms.valid )
 				{

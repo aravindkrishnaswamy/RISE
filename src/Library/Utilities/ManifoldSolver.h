@@ -44,6 +44,7 @@
 // when this implementation is replaced by committed master sources.
 #define RISE_SMS_DOMAIN_REPLAY 1
 #define RISE_SMS_SCENE_POLICY 1
+#define RISE_SMS_REFERENCE_A 1
 
 #include "../Interfaces/IReference.h"
 #include "../Interfaces/IGeometry.h"
@@ -97,6 +98,52 @@ namespace RISE
             std::atomic<unsigned long long> acceptedRoots{0}, rejectedRoots{0};
         };
 
+        struct SMSReferenceCounters {
+            std::atomic<unsigned long long> proposalTrials{0}, zeroTrials{0};
+            std::atomic<unsigned long long> retryTrials{0}, tailTrials{0}, rouletteStops{0};
+            std::atomic<unsigned long long> acceptedDiscoveries{0}, rejectedRoots{0}, ownedRoots{0};
+            std::atomic<unsigned long long> retryHistogram[32]{}; // powers of two, last bucket saturates
+        };
+
+        // Estimator A's reciprocal is conditional on the SAME channel and
+        // endpoint context as discovery. Proposal includes every zero trial.
+        // The weighted roulette sum is an estimate even when roulette stops;
+        // discarding it would bias the accepted discovery toward zero.
+        struct SMSRootReference {
+            template<class Root, class Proposal, class Match>
+            static Scalar Reciprocal(const Root& root, ISampler& retrySampler,
+                Proposal&& proposal, Match&& match, unsigned int budget,
+                bool roulette, SMSReferenceCounters* counters = nullptr) {
+                SMSReciprocalTail tail(budget);
+                unsigned long long trials = 0;
+                Scalar uncapped = 1;
+                for(;;) {
+                    ++trials;
+                    if(counters) {
+                        counters->retryTrials.fetch_add(1, std::memory_order_relaxed);
+                        if(trials > (budget ? budget : 1024))
+                            counters->tailTrials.fetch_add(1, std::memory_order_relaxed);
+                    }
+                    const auto candidate = proposal(retrySampler);
+                    if(match(root, candidate)) break;
+                    if(roulette) {
+                        if(!tail.ContinueAfterFailure(retrySampler)) {
+                            if(counters) counters->rouletteStops.fetch_add(1, std::memory_order_relaxed);
+                            break;
+                        }
+                    } else ++uncapped;
+                }
+                if(counters) {
+                    unsigned int bucket = 0;
+                    for(auto n = trials; n > 1 && bucket < 31; n >>= 1) ++bucket;
+                    counters->retryHistogram[bucket].fetch_add(1, std::memory_order_relaxed);
+                }
+                return roulette ? tail.Estimate() : uncapped;
+            }
+            static Scalar Deposit(Scalar physicalContribution, Scalar reciprocal,
+                Scalar channelProbability, Scalar emitterProbability, unsigned int originalTrials);
+        };
+
         struct SMSQueryDomain {
             enum Kind { RGBComponent, Wavelength } kind;
             unsigned int component;
@@ -129,6 +176,9 @@ namespace RISE
         };
         class SMSDomainReplay {
         public:
+            // Static potential, not a sampled zero-lobe classification. A
+            // supported patch must retain proposal mass even if probes miss it.
+            static bool PotentialCaster(const IMaterial&);
             // Neutral refusal for unrecognized providers, composites and spatial IOR.
             static bool Query(const IMaterial&, const RayIntersectionGeometric&,
                               const IORStack&, SMSQueryDomain, SMSNativeMaterialQuery&);
@@ -271,6 +321,8 @@ namespace RISE
 			bool			enabled;				///< Master switch: when false, no ManifoldSolver is created
             bool extendedMode;             ///< Internal opt-in; no parser/API exposure.
             SMSDomainCounters* domainCounters; ///< Optional diagnostics; caller owns lifetime.
+            SMSReferenceCounters* referenceCounters; ///< Optional estimator A diagnostics; caller owns lifetime.
+            Scalar extendedEventFloor;     ///< Positive exploration mass for both supported R/T events.
 			unsigned int	maxIterations;			///< Newton iteration limit
 			Scalar			solverThreshold;		///< Convergence threshold on ||C||
 			Scalar			uniquenessThreshold;	///< Threshold to distinguish solutions
@@ -402,6 +454,8 @@ namespace RISE
 			enabled( false ),
             extendedMode( false ),
             domainCounters( nullptr ),
+            referenceCounters( nullptr ),
+            extendedEventFloor( 0.05 ),
 			maxIterations( 15 ),
 			solverThreshold( 1e-4 ),
 			uniquenessThreshold( 1e-2 ),
@@ -440,6 +494,16 @@ namespace RISE
 			{
 			}
 		};
+
+        struct SMSDomainRoot {
+            SMSQueryDomain domain;
+            IORStack startingStack;
+            std::vector<SMSDomainVertex> vertices;
+            ManifoldResult result;
+            bool accepted = false;
+            Scalar scale = 1;
+            explicit SMSDomainRoot(SMSQueryDomain d, const IORStack& stack) : domain(d), startingStack(stack) {}
+        };
 
 		/// DL-372 / DL-336 split suppression: what PT carries from the SMS
 		/// ANCHOR (the non-delta vertex whose SMS evaluation estimates the
@@ -529,6 +593,12 @@ namespace RISE
 		{
 		protected:
 			ManifoldSolverConfig config;
+            ManifoldResult SolveCore(const Point3&, const Vector3&, const Point3&, const Vector3&,
+                std::vector<ManifoldVertex>&, ISampler&, bool estimateLegacyPDF) const;
+            RISEPel EvaluateExtendedDelta(const Point3&, const Vector3&, const Vector3&,
+                const OrthonormalBasis3D&, const IMaterial&, const Vector3&, const IScene&,
+                const IRayCaster&, ISampler&, const LightSample&, const IORStack&,
+                const RayIntersectionGeometric*, Scalar nm = 0) const;
             std::atomic<bool> hwssExtendedWarningEmitted{false};
 			LightSampler* pLightSampler;
 
@@ -620,6 +690,16 @@ namespace RISE
                 const IORStack& startingStack, SMSQueryDomain domain,
                 std::vector<SMSDomainVertex>& vertices, ISampler& sampler,
                 Scalar positionTolerance) const;
+
+            bool BuildExtendedSeed(const Point3& start, const Point3& end,
+                const IScene&, const IORStack&, SMSQueryDomain, ISampler&,
+                std::vector<SMSDomainVertex>&, const RasterizerState& = nullRasterizerState) const;
+            SMSDomainRoot ProposeExtendedRoot(const Point3& start, const Vector3& startNormal,
+                const Point3& end, const IScene&, const IORStack&, SMSQueryDomain,
+                ISampler&, const RasterizerState& = nullRasterizerState) const;
+            static bool SameExtendedRoot(const SMSDomainRoot&, const SMSDomainRoot&, Scalar tolerance);
+            static Scalar ExtendedReflectionProbability(bool reflection, bool transmission,
+                Scalar fresnel, bool tir, Scalar explorationFloor);
 
 			/// Traces a seed ray from start toward end, collecting intersections
 			/// with specular objects to build the initial chain.
@@ -769,8 +849,9 @@ namespace RISE
 				RISEPel		contribution;	///< Total SMS contribution (BSDF * G * throughput * Le / pdf)
 				Scalar		misWeight;		///< MIS weight for this contribution
 				bool		valid;			///< True if a valid specular path was found
+                bool referenceA;    ///< Standalone delta estimator; its radiance is not clamped.
 
-				SMSContribution() : contribution( RISEPel(0,0,0) ), misWeight( 1.0 ), valid( false ) {}
+				SMSContribution() : contribution( RISEPel(0,0,0) ), misWeight( 1.0 ), valid( false ), referenceA( false ) {}
 			};
 
 			/// Standalone SMS evaluation at a single shading point.
@@ -807,7 +888,8 @@ namespace RISE
 				const IScene& scene,
 				const IRayCaster& caster,
 				ISampler& sampler,
-				const IORStack* pIorStack = nullptr
+				const IORStack* pIorStack = nullptr,
+                const RayIntersectionGeometric* anchorContext = nullptr, bool forceLegacy = false
 				) const;
 
 			/// Uniform-on-shape SMS evaluator (Mitsuba-faithful single- /
@@ -843,7 +925,8 @@ namespace RISE
 				const IScene& scene,
 				const IRayCaster& caster,
 				ISampler& sampler,
-				const IORStack* pIorStack = nullptr
+				const IORStack* pIorStack = nullptr,
+                const RayIntersectionGeometric* anchorContext = nullptr, bool forceLegacy = false
 				) const;
 
 			/// Spectral variant of SMS evaluation.
@@ -852,8 +935,9 @@ namespace RISE
 				Scalar		contribution;
 				Scalar		misWeight;
 				bool		valid;
+                bool referenceA;
 
-				SMSContributionNM() : contribution( 0 ), misWeight( 1.0 ), valid( false ) {}
+				SMSContributionNM() : contribution( 0 ), misWeight( 1.0 ), valid( false ), referenceA( false ) {}
 			};
 
 			/// Spectral counterpart of `EvaluateAtShadingPointUniform`.
@@ -873,7 +957,8 @@ namespace RISE
 				const IRayCaster& caster,
 				ISampler& sampler,
 				const Scalar nm,
-				const IORStack* pIorStack = nullptr
+				const IORStack* pIorStack = nullptr,
+                const RayIntersectionGeometric* anchorContext = nullptr, bool forceLegacy = false
 				) const;
 
 			SMSContributionNM EvaluateAtShadingPointNM(
@@ -887,7 +972,8 @@ namespace RISE
 				const IRayCaster& caster,
 				ISampler& sampler,
 				const Scalar nm,
-				const IORStack* pIorStack = nullptr
+				const IORStack* pIorStack = nullptr,
+                const RayIntersectionGeometric* anchorContext = nullptr, bool forceLegacy = false
 				) const;
 
 			/// Tests whether the external segments of an SMS specular
