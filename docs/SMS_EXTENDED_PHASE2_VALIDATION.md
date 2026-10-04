@@ -982,6 +982,53 @@ stacked-sheet positives. Full committed-source rollback proofs, clean make,
 actual Xcode, sanitizer, regression, cost and fresh review gates remain
 required after all Round 5 repairs are complete. Preparation-audit caching,
 non-indexed edge-query cost, worker-local scratch and work counters remain
-outstanding. The derivative contract proposal still awaits a user ruling.
+outstanding. The user subsequently adopted the derivative contract; its implementation evidence follows below.
 Main remains clean at `08552560b54b517b7a8a0696eb9d317953b26bbe`;
 no Phase 2 merge, push, new ledger row or ledger closure occurred.
+
+
+## Adopted differential contract and preparation repair (2026-10-04)
+
+The user adopted the audited differential contract at `969dd5b77`.
+`268ef013d` adds a separate optional modifier capability in the existing
+header, preserving the original IRayIntersectionModifier vtable. Providers
+supply analytic directional derivatives for both possible native frame
+consumers. Native constraints and emitter-endpoint Jacobians apply the chain
+rule. Four-scale checks now concern raw native geometry/input transport,
+not black-box modified-field derivatives. Uncertified caster modifiers make
+the anchor ineligible; proposal and direct-solve entry points also reject
+unaudited records. The initial shipped modifiers expose no certificate and
+remain ineligible. Audited continuous fixtures remain positive.
+
+Fresh library and reference-test builds exit zero with no diagnostics
+(`differential-library-build.log`, `differential-reference-build.log`).
+Committed native controls pass **36077/0** (`differential-r5-result.log`),
+**4297/0** geometry, **761/0** unsupported/configuration, and **193401/0**
+review controls. The alias witness retains positive solves in all domains
+and windings, with its actual analytic derivative used in the Jacobian.
+Unsupported controls now include an uncertified identity modifier assigned
+after preparation, RGB and two NM domains, both mesh windings and a mixed
+caster set, four salted trials with bit-identical PT output.
+
+The shared-mesh preparation witness is committed at `e46744cb7` and reports
+**15/6** on pre-cache native sources (`preparation-witness-red.log`).
+`167f37d98` folds intrinsic orientation auditing into the existing area pass
+at finalization and actual mutation. Preparation reads the result without
+four-array tessellation or repeated triangle traversal; shared instances
+reuse it and displaced geometry forwards its realized mesh. Fresh builds
+exit zero with no diagnostics (`preparation-cache-final-library-build.log`,
+`preparation-cache-reference-build.log`). The expanded diagnostics/mutation
+control passes **31/0** (`preparation-cache-green.log`). It verifies no new
+audits or triangle visits across four preparations of shared indexed and
+non-indexed meshes, and exactly one replacement audit on indexed normal
+mutation. The area pass performs additional orientation dot products during
+construction/mutation; no whole-render cost claim is made before the full
+interleaved cost gate. An initial test compile failed on the scene Geometry
+helper/native Geometry class name collision; the failed log is retained,
+then the successful build preceded the numerical red run.
+
+The non-indexed primitive provenance witness is committed at `7f33ceecf`;
+its build/run and repair are pending. Worker scratch and work counters are
+still outstanding. These isolated controls do not replace full rollback,
+clean make, actual Xcode, sanitizer, regression, cost or fresh review gates.
+No Phase 2 merge, push, ledger closure or new ledger row is claimed.
