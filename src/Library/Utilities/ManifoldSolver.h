@@ -602,6 +602,7 @@ namespace RISE
             const RasterizerState& NativeRaster(std::size_t i) const {
                 return nativeContexts && i<nativeContexts->size() ? (*nativeContexts)[i].context.rast : nullRasterizerState;
             }
+            bool ComputeNativeVertexFrame(ManifoldVertex&, Scalar projectionDistance) const;
             ManifoldResult SolveDomainCore(const Point3&,const Vector3&,const Point3&,const Vector3&,
                 const IScene&,const IORStack&,SMSQueryDomain,std::vector<SMSDomainVertex>&,ISampler&,Scalar,Scalar) const;
             ManifoldResult SolveCore(const Point3&, const Vector3&, const Point3&, const Vector3&,
