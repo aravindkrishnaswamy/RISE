@@ -23,6 +23,7 @@
 #include "../Geometry/TriangleMeshGeometryIndexed.h"
 #include "../Geometry/TriangleMeshGeometry.h"
 #include "../Painters/UniformColorPainter.h"
+#include "../Interfaces/IRayIntersectionModifier.h"
 #include "../Interfaces/IGeometry.h"		// CanBeAreaLight(): SMS surface seeding shares the sampling contract
 #include "SMSPhotonMap.h"
 #include "Optics.h"
@@ -148,6 +149,97 @@ namespace {
         if(branch) *branch=unsigned(law.reflectionFallback) | (unsigned(law.transmissionFallback)<<1) | (unsigned(law.hasTransmission)<<2);
         v.normal=v.isReflection?law.reflectionNormal:law.transmissionNormal;
         return v;
+    }
+
+    bool SMSAuditedModifier(const RISE::IObject& object) {
+        const auto* modifier=object.GetModifier();
+        const auto* differential=dynamic_cast<const RISE::ISMSModifierDifferential*>(modifier);
+        return !modifier || (differential && differential->HasSMSDifferentialContract());
+    }
+    RISE::Vector3 SMSNormalizedDifferential(const RISE::Vector3& value,
+        const RISE::Vector3& derivative) {
+        const RISE::Scalar length=RISE::Vector3Ops::Magnitude(value);
+        if(!(length>0)) return RISE::Vector3(std::numeric_limits<RISE::Scalar>::quiet_NaN(),0,0);
+        const auto unit=value*(1/length);
+        return (derivative-unit*RISE::Vector3Ops::Dot(unit,derivative))*(1/length);
+    }
+    // Differentiate the residual using the audited modifier differential.
+    // Probe differences describe only the native geometry/input transport;
+    // no difference of post-modifier values prices the Jacobian.
+    bool SMSNativeConstraintDifferential(const RISE::Implementation::ManifoldVertex& center,
+        const RISE::Implementation::ManifoldVertex& plus,
+        const RISE::Implementation::ManifoldVertex& minus,
+        const RISE::Point3& previous,const RISE::Point3& previousPlus,const RISE::Point3& previousMinus,
+        const RISE::Point3& next,const RISE::Point3& nextPlus,const RISE::Point3& nextMinus,
+        RISE::Scalar step,const RISE::RasterizerState& raster,RISE::Scalar& c0,RISE::Scalar& c1) {
+        using namespace RISE;
+        if(!(step>0) || !center.pObject || !SMSAuditedModifier(*center.pObject)) return false;
+        const auto difference=[&](const auto& a,const auto& b) {return Vector3(a.x-b.x,a.y-b.y,a.z-b.z)*(1/(2*step));};
+        unsigned branch=0,plusBranch=0,minusBranch=0;
+        const auto effective=SMSNativeConstraintVertex(center,previous,raster,&branch);
+        const auto ep=SMSNativeConstraintVertex(plus,previousPlus,raster,&plusBranch);
+        const auto em=SMSNativeConstraintVertex(minus,previousMinus,raster,&minusBranch);
+        if(!effective.valid || !ep.valid || !em.valid || branch!=plusBranch || branch!=minusBranch) return false;
+        Vector3 dn=difference(plus.normal,minus.normal);
+        Vector3 dg=difference(plus.geomNormal,minus.geomNormal);
+        if(SMSNeedsNativeFrame(center)) {
+            RayIntersection raw(Ray(previous,Vector3Ops::Normalize(Vector3Ops::mkVector3(center.position,previous))),raster);
+            RayIntersection rp(Ray(previousPlus,Vector3Ops::Normalize(Vector3Ops::mkVector3(plus.position,previousPlus))),raster);
+            RayIntersection rm(Ray(previousMinus,Vector3Ops::Normalize(Vector3Ops::mkVector3(minus.position,previousMinus))),raster);
+            center.pObject->IntersectRay(raw,RISE_INFINITY,true,true,false);
+            center.pObject->IntersectRay(rp,RISE_INFINITY,true,true,false);
+            center.pObject->IntersectRay(rm,RISE_INFINITY,true,true,false);
+            if(!raw.geometric.bHit || !rp.geometric.bHit || !rm.geometric.bHit) return false;
+            SMSIntersectionDifferential input;
+            input.worldPoint=difference(rp.geometric.ptIntersection,rm.geometric.ptIntersection);
+            input.objectPoint=difference(rp.geometric.ptObjIntersec,rm.geometric.ptObjIntersec);
+            input.normal=difference(rp.geometric.vNormal,rm.geometric.vNormal);
+            input.geometricNormal=difference(rp.geometric.UnflippedGeomNormal(),rm.geometric.UnflippedGeomNormal());
+            input.frameU=difference(rp.geometric.onb.u(),rm.geometric.onb.u());
+            input.frameV=difference(rp.geometric.onb.v(),rm.geometric.onb.v());
+            input.frameW=difference(rp.geometric.onb.w(),rm.geometric.onb.w());
+            input.rayOrigin=difference(previousPlus,previousMinus);
+            input.rayDirection=difference(rp.geometric.ray.Dir(),rm.geometric.ray.Dir());
+            input.uv=Point2((rp.geometric.ptCoord.x-rm.geometric.ptCoord.x)/(2*step),
+                (rp.geometric.ptCoord.y-rm.geometric.ptCoord.y)/(2*step));
+            Vector3 normal=input.normal,frameW=input.frameW;
+            if(raw.pModifier) {
+                const auto* provider=dynamic_cast<const ISMSModifierDifferential*>(raw.pModifier);
+                if(!provider || !provider->SMSFrameDifferential(raw.geometric,input,normal,frameW)) return false;
+            }
+            dn=dynamic_cast<const Implementation::PolishedMaterial*>(center.pMaterial)?normal:frameW;
+            dg=input.geometricNormal;
+        }
+        const bool fallback=center.isReflection?(branch&1):(branch&2);
+        if(fallback) {
+            const Vector3 incoming=Vector3Ops::Normalize(Vector3Ops::mkVector3(center.position,previous));
+            dn=Vector3Ops::Dot(center.geomNormal,incoming)<0?dg:-dg;
+        }
+        const Vector3 dx=difference(plus.position,minus.position);
+        const Vector3 dp=difference(previousPlus,previousMinus),dy=difference(nextPlus,nextMinus);
+        const Vector3 vi=Vector3Ops::mkVector3(previous,center.position),vo=Vector3Ops::mkVector3(next,center.position);
+        const Vector3 wi=Vector3Ops::Normalize(vi),wo=Vector3Ops::Normalize(vo);
+        const Vector3 dwi=SMSNormalizedDifferential(vi,dp-dx),dwo=SMSNormalizedDifferential(vo,dy-dx);
+        Vector3 h=wi+wo,dh=dwi+dwo;
+        bool rawHalf=false;
+        if(!center.isReflection) {
+            const Scalar ei=center.etaI,et=center.etaT;
+            h=-(wi*ei+wo*et);dh=-(dwi*ei+dwo*et);
+            // Native replay populated both physical etas. The same residual
+            // convention uses unnormalized half vectors for refraction.
+            rawHalf=true;
+        }
+        if(!rawHalf) {dh=SMSNormalizedDifferential(h,dh);h=Vector3Ops::Normalize(h);}
+        const Vector3 n=effective.normal,u=center.dpdu,du=difference(plus.dpdu,minus.dpdu);
+        const Scalar dot=Vector3Ops::Dot(u,n);
+        const Vector3 tangent=u-n*dot;
+        if(Vector3Ops::Magnitude(tangent)<=NEARZERO) return false;
+        const Vector3 dtangent=du-dn*dot-n*(Vector3Ops::Dot(du,n)+Vector3Ops::Dot(u,dn));
+        const Vector3 a=Vector3Ops::Normalize(tangent),da=SMSNormalizedDifferential(tangent,dtangent);
+        const Vector3 b=Vector3Ops::Cross(n,a),db=Vector3Ops::Cross(dn,a)+Vector3Ops::Cross(n,da);
+        c0=Vector3Ops::Dot(da,h)+Vector3Ops::Dot(a,dh);
+        c1=Vector3Ops::Dot(db,h)+Vector3Ops::Dot(b,dh);
+        return std::isfinite(c0)&&std::isfinite(c1);
     }
     // Object stores a launch point backed off in object space. Newton and
     // Jacobian pricing use the actual surface; material contexts retain the
@@ -445,7 +537,7 @@ RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::Solve
     chain.reserve(vertices.size());
     for(const SMSDomainVertex& record : vertices) {
         ManifoldVertex vertex = record.geometry;
-        if(!vertex.pMaterial || !vertex.pObject) { return failed; }
+        if(!vertex.pMaterial || !vertex.pObject || !SMSAuditedModifier(*vertex.pObject)) { return failed; }
         SMSNativeMaterialQuery query;
         if(!SMSDomainReplay::Query(*vertex.pMaterial, record.context, replay, domain, query)
             || !SMSDomainReplay::Cross(*vertex.pMaterial, vertex.pObject, record.context,
@@ -2114,18 +2206,14 @@ void ManifoldSolver::BuildJacobian(
                 auto plus=chain,minus=chain;
                 regular=UpdateVertexOnSurface(plus[j],column?0:step,column?step:0,0,true)
                     && UpdateVertexOnSurface(minus[j],column?0:-step,column?-step:0,0,true);
-                if(regular) for(std::size_t i=0;i<k;++i) {
-                    unsigned aBranch=0,bBranch=0,centerBranch=0;
-                    const auto a=SMSNativeConstraintVertex(plus[i],i?plus[i-1].position:fixedStart,NativeRaster(i),&aBranch);
-                    const auto b=SMSNativeConstraintVertex(minus[i],i?minus[i-1].position:fixedStart,NativeRaster(i),&bBranch);
-                    const auto center=SMSNativeConstraintVertex(chain[i],i?chain[i-1].position:fixedStart,NativeRaster(i),&centerBranch);
-                    if(!a.valid || !b.valid || !center.valid || aBranch!=centerBranch || bBranch!=centerBranch) regular=false;
-                }
                 if(regular) {
-                    std::vector<Scalar> cp,cm;
-                    EvaluateConstraint(plus,fixedStart,fixedEnd,cp);EvaluateConstraint(minus,fixedStart,fixedEnd,cm);
                     derivatives[refinement].resize(2*k);
-                    for(std::size_t i=0;i<2*k;++i) derivatives[refinement][i]=(cp[i]-cm[i])/(2*step);
+                    for(std::size_t i=0;i<k && regular;++i) {
+                        regular=SMSNativeConstraintDifferential(chain[i],plus[i],minus[i],
+                            i?chain[i-1].position:fixedStart,i?plus[i-1].position:fixedStart,i?minus[i-1].position:fixedStart,
+                            i+1<k?chain[i+1].position:fixedEnd,i+1<k?plus[i+1].position:fixedEnd,i+1<k?minus[i+1].position:fixedEnd,
+                            step,NativeRaster(i),derivatives[refinement][2*i],derivatives[refinement][2*i+1]);
+                    }
                 }
             }
             if(regular) for(std::size_t i=0;i<2*k;++i) {
@@ -5419,6 +5507,7 @@ bool ManifoldSolver::ExtendedAnchorEligible(const IScene& scene, const IRayCaste
     // Finite-Phong dielectric warps retain the adopted delta-limit policy.
     RayIntersectionGeometric context(Ray(point, Vector3(0,0,1)), nullRasterizerState);
     for(const IObject* object : objects->ExtendedSMSCasters()) {
+        if(!SMSAuditedModifier(*object)) return false;
         const auto* dielectric = dynamic_cast<const DielectricMaterial*>(object->GetMaterial());
         if(!dielectric || !dielectric->GetHG()) continue;
         const IScalarPainter& scattering = dielectric->GetScattering();
@@ -5926,10 +6015,9 @@ Scalar ManifoldSolver::ComputeLightToFirstVertexJacobianDet(
         const Scalar h=std::cbrt(std::numeric_limits<Scalar>::epsilon())*Point3Ops::Distance(shadingPoint,lightPos);
         for(unsigned column=0;column<2;++column) {
             const Vector3 tangent=column?frame.v():frame.u();
-            std::vector<Scalar> cp,cm;
-            EvaluateConstraint(chain,shadingPoint,Point3Ops::mkPoint3(lightPos,tangent*h),cp);
-            EvaluateConstraint(chain,shadingPoint,Point3Ops::mkPoint3(lightPos,-tangent*h),cm);
-            for(unsigned row=0;row<2;++row) Jy[2*row+column]=(cp[2*(k-1)+row]-cm[2*(k-1)+row])/(2*h);
+            if(!SMSNativeConstraintDifferential(chain[k-1],chain[k-1],chain[k-1],
+                prevPos,prevPos,prevPos,lightPos,Point3Ops::mkPoint3(lightPos,tangent*h),
+                Point3Ops::mkPoint3(lightPos,-tangent*h),h,NativeRaster(k-1),Jy[column],Jy[2+column])) return 0;
         }
     } else {
         ComputeLastBlockLightJacobian(chain[k-1],prevPos,lightPos,lightNormal,Jy);
@@ -7098,6 +7186,7 @@ bool ManifoldSolver::BuildExtendedSeed(const Point3& start, const Point3& end,
         || config.extendedEventFloor > 0.5) return false;
     const auto& casters = objects->ExtendedSMSCasters();
     if(casters.empty()) return false;
+    for(const auto* caster:casters) if(!SMSAuditedModifier(*caster)) return false;
     SMSStartingMedia media; IORStack stack(live.EnvironmentIOR());
     if(!SMSDomainReplay::Capture(scene, start, live, media)
         || !SMSDomainReplay::BuildStack(media, domain, stack)) return false;

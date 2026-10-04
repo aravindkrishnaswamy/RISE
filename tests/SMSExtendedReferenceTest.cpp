@@ -322,18 +322,38 @@ public:
     }
 };
 static std::string QuadMesh(const std::string& name,Scalar z,Scalar x0,Scalar x1,bool reverse);
-class PostModifierUV final : public IRayIntersectionModifier, public Reference {
+// Audited fixture providers implement the same optional production contract.
+static Vector3 FixtureNormalizedDifferential(const Vector3& value,const Vector3& d) {
+    const Scalar length=Vector3Ops::Magnitude(value);const Vector3 n=value*(1/length);
+    return (d-n*Vector3Ops::Dot(n,d))*(1/length);
+}
+class AuditedIdentityFrameModifier : public IRayIntersectionModifier, public Reference,
+    public ISMSModifierDifferential {
+public:
+    bool HasSMSDifferentialContract() const override {return true;}
+    bool SMSFrameDifferential(const RayIntersectionGeometric&,const SMSIntersectionDifferential& d,
+        Vector3& n,Vector3& w) const override {n=d.normal;w=d.frameW;return true;}
+};
+class PostModifierUV final : public AuditedIdentityFrameModifier {
     const bool discontinuous;
 public:
     explicit PostModifierUV(bool step) : discontinuous(step) {}
+    bool HasSMSDifferentialContract() const override {return !discontinuous;}
     void Modify(RayIntersectionGeometric& hit) const override {
         hit.ptCoord=Point2(discontinuous ? (hit.ptObjIntersec.x<0?.25:.75) : .5,.5);
     }
 };
-class PostModifierNormal final : public IRayIntersectionModifier, public Reference {
+class PostModifierNormal final : public AuditedIdentityFrameModifier {
     const bool discontinuous;
 public:
     explicit PostModifierNormal(bool step) : discontinuous(step) {}
+    bool HasSMSDifferentialContract() const override {return !discontinuous;}
+    bool SMSFrameDifferential(const RayIntersectionGeometric& raw,const SMSIntersectionDifferential& d,
+        Vector3& n,Vector3& w) const override {
+        if(discontinuous) return false;
+        n=FixtureNormalizedDifferential(raw.vNormal*.5+Vector3(std::sqrt(Scalar(3))*.5,0,0),d.normal*.5);
+        w=n;return true;
+    }
     void Modify(RayIntersectionGeometric& hit) const override {
         const Scalar sign=discontinuous && hit.ptObjIntersec.x<0?-1:1;
         hit.vNormal=Vector3Ops::Normalize(hit.vNormal*.5+Vector3(sign*std::sqrt(Scalar(3))*.5,0,0));
@@ -392,7 +412,7 @@ static void PostModifierChartRoots() {
     }
 }
 static void GeneratedChartRoots() {
-    for(unsigned kind:{0u,1u,2u,3u}) for(bool reverse:{false,true}) {
+    for(unsigned kind:{0u,1u,2u,3u,4u}) for(bool reverse:{false,true}) {
         const std::string geometry=kind==0 || kind==3
             ? "sphere_geometry\n{\n name sphere\n radius 1\n}\n"
             : kind==1 ? "cylinder_geometry\n{\n name sphere\n axis y\n radius 1\n height 4\n capped TRUE\n}\n"
@@ -480,7 +500,7 @@ static void InteriorAtlasRoots() {
         solver->release();
     }
 }
-class TiltNormal final : public IRayIntersectionModifier, public Reference {
+class TiltNormal final : public AuditedIdentityFrameModifier {
 public:
     explicit TiltNormal(int side, bool valid=false, bool varying=false, unsigned fields=0) : side(side), valid(valid), varying(varying), fields(fields) {}
     void Modify(RayIntersectionGeometric& hit) const override {
@@ -489,6 +509,14 @@ public:
         if(fields!=1) hit.vNormal=normal;
         if(fields!=2) hit.onb.CreateFromW(normal);
     }
+    bool SMSFrameDifferential(const RayIntersectionGeometric& raw,const SMSIntersectionDifferential& d,
+        Vector3& n,Vector3& w) const override {
+        const Scalar angle=(valid?-10:60)*PI/180+(varying?.01*(raw.ptIntersection.x-5)+.025*raw.ray.Dir().x+.0001*raw.rast.x:0);
+        const Scalar da=varying?.01*d.worldPoint.x+.025*d.rayDirection.x:0;
+        const Vector3 derivative(std::cos(angle)*da,0,-side*std::sin(angle)*da);
+        n=fields==1?d.normal:derivative;w=fields==2?d.frameW:derivative;return true;
+    }
+
 private:
     int side;bool valid,varying;unsigned fields;
 };
@@ -575,16 +603,25 @@ static void CheckNativeHorizonJacobian(const ManifoldSolverConfig& cfg,const Man
 
 }
 // Fresh Round 4 numerical witnesses use actual native proposals/contexts.
-class SteepContinuousUV final : public IRayIntersectionModifier, public Reference {
+class SteepContinuousUV final : public AuditedIdentityFrameModifier {
 public:
     void Modify(RayIntersectionGeometric& hit) const override {
         hit.ptCoord=Point2(.5+1e6*hit.ptObjIntersec.x,.5);
     }
 };
-class AliasedNormal final : public IRayIntersectionModifier, public Reference {
+class AliasedNormal final : public AuditedIdentityFrameModifier {
     Scalar periodDivisor;
 public:
     explicit AliasedNormal(Scalar divisor=1):periodDivisor(divisor) {}
+    bool SMSFrameDifferential(const RayIntersectionGeometric& raw,const SMSIntersectionDifferential& d,
+        Vector3& n,Vector3& w) const override {
+        if(raw.vNormal.z==0) return false;
+        const Scalar period=std::cbrt(std::numeric_limits<Scalar>::epsilon())/periodDivisor;
+        const Scalar sign=raw.vNormal.z<0?-1:1,phase=2*PI*raw.ptObjIntersec.x/period;
+        const Vector3 value(sign*.2*period/(2*PI)*std::sin(phase),0,sign);
+        n=FixtureNormalizedDifferential(value,Vector3(sign*.2*std::cos(phase)*d.objectPoint.x,0,0));
+        w=n;return true;
+    }
     void Modify(RayIntersectionGeometric& hit) const override {
         const Scalar h=std::cbrt(std::numeric_limits<Scalar>::epsilon())/periodDivisor;
         const Scalar a=.2*h/(2*PI);
@@ -863,7 +900,7 @@ static void NativeNearCommensurateNormal() {
         }
     }
 }
-class InertFrameModifier final : public IRayIntersectionModifier, public Reference {
+class InertFrameModifier final : public AuditedIdentityFrameModifier {
 public:
     void Modify(RayIntersectionGeometric&) const override {}
 };
@@ -1143,8 +1180,13 @@ static void CheckJacobian(ConstraintOracle& solver,const SMSDomainRoot& root,con
         }
     }
 }
-class ArrivingRayNormal final : public IRayIntersectionModifier, public Reference {
+class ArrivingRayNormal final : public AuditedIdentityFrameModifier {
 public:
+    bool SMSFrameDifferential(const RayIntersectionGeometric& raw,const SMSIntersectionDifferential& d,
+        Vector3& n,Vector3& w) const override {
+        n=FixtureNormalizedDifferential(raw.vNormal+Vector3(.025*raw.ray.Dir().x,.02*raw.ray.Dir().y,0),
+            d.normal+Vector3(.025*d.rayDirection.x,.02*d.rayDirection.y,0));w=n;return true;
+    }
     void Modify(RayIntersectionGeometric& hit) const override {
         hit.vNormal=Vector3Ops::Normalize(hit.vNormal+Vector3(.025*hit.ray.Dir().x,.02*hit.ray.Dir().y,0));
         hit.onb.CreateFromW(hit.vNormal);
@@ -1459,6 +1501,10 @@ public:
         return native.GetSpecularInfoNM(ri,stack,nm);
     }
 };
+class UncertifiedFrameModifier final : public IRayIntersectionModifier, public Reference {
+public:
+    void Modify(RayIntersectionGeometric&) const override {}
+};
 static void UnsupportedCasterSwitches() {
     for(unsigned kind:{0u,1u,2u,3u}) for(bool reverse:{false,true}) for(bool remote:{false,true}) {
         const bool csg=kind==1;
@@ -1478,6 +1524,11 @@ static void UnsupportedCasterSwitches() {
             if(assigned!=material) assigned->release();
         }
         safe_release(material);index->release();white->release();
+        if(kind==4) {
+            auto* modifier=new UncertifiedFrameModifier;
+            f.job->GetObjects()->GetItem("pane")->AssignModifier(*modifier);modifier->release();
+        }
+
         std::vector<IShaderOp*> ops;IShader* shader=nullptr;
         Check(RISE_API_CreateStandardShader(&shader,ops),"unsupported caster shader created");
         if(!shader) continue;
@@ -1490,6 +1541,9 @@ static void UnsupportedCasterSwitches() {
         IORStack air(1);
         Check(!on->GetSolver()->ExtendedAnchorEligible(f.Scene(),*caster,Point3(0,0,-2),air),
             "unsupported transmissive caster rejects the anchor, including inherited CSG and a mixed supported caster set");
+        for(Scalar nm:{0.,450.,650.}) {
+        Check(!on->GetSolver()->ExtendedAnchorEligible(f.Scene(),*caster,Point3(0,0,-2),air,nm),
+            "unsupported caster disables the complete anchor in RGB and NM");
         for(unsigned trial=0;trial<4;++trial) {
             const unsigned salt=SobolSequence::HashCombine(12000+trial,0x554e4345);
             SobolSamplerTestHooks::ValueSalt().store(salt);
@@ -1497,13 +1551,15 @@ static void UnsupportedCasterSwitches() {
             for(unsigned mode=0;mode<2;++mode) {
                 RandomNumberGenerator random(salt);SobolSampler sampler(0,7);
                 RuntimeContext context(random,RuntimeContext::PASS_NORMAL,false);context.pSampler=&sampler;
-                values[mode]=(mode?on:off)->IntegrateRay(context,nullRasterizerState,
-                    Ray(Point3(0,0,-1.9),Vector3(0,0,-1)),f.Scene(),*caster,sampler,nullptr,nullptr);
+                const Ray ray(Point3(0,0,-1.9),Vector3(0,0,-1));
+                if(nm==0) values[mode]=(mode?on:off)->IntegrateRay(context,nullRasterizerState,ray,f.Scene(),*caster,sampler,nullptr,nullptr);
+                else values[mode]=RISEPel((mode?on:off)->IntegrateRayNM(context,nullRasterizerState,ray,nm,f.Scene(),*caster,sampler,nullptr,nullptr));
             }
             Check(std::isfinite(values[0].r)&&values[0].r>0,"PT clear-transmission control is finite and lit");
             Check(std::memcmp(&values[0],&values[1],sizeof(RISEPel))==0,
                 "ineligible extended anchor preserves PT light with all three switches off");
             std::cout<<"unsupported caster kind="<<kind<<" winding="<<reverse<<" remote="<<remote<<" salt="<<salt<<" PT="<<values[0].r<<" extended="<<values[1].r<<'\n';
+        }
         }
         SobolSamplerTestHooks::ValueSalt().store(0);
         on->release();off->release();caster->release();shader->release();
