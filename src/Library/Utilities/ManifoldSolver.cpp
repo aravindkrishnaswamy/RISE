@@ -449,6 +449,7 @@ RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::Solve
         vertex.pObject->IntersectRay(hit, RISE_INFINITY, true, true, false);
         if(!hit.geometric.bHit || hit.pObject != vertex.pObject || hit.pMaterial != vertex.pMaterial
             || Point3Ops::Distance(convergenceThreshold > 0 ? SMSReferenceSurfacePoint(*vertex.pObject,hit.geometric) : hit.geometric.ptIntersection, vertex.position) > positionTolerance) { return failed; }
+        if(hit.pModifier) hit.pModifier->Modify(hit.geometric);
         // A periodic chart seam is one physical root for an audited
         // context-independent event law. A varying/unaudited seam price or
         // normal modifier cannot establish a unique limiting context: it is
@@ -484,9 +485,9 @@ RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::Solve
             const bool seam = meshEdge || (axes.x && std::min(std::fabs(hit.geometric.ptCoord.x),std::fabs(1-hit.geometric.ptCoord.x)) <= band)
                 || (axes.y && std::min(std::fabs(hit.geometric.ptCoord.y),std::fabs(1-hit.geometric.ptCoord.y)) <= band);
             if(seam && (hit.pModifier || !SMSConstantSeamMaterial(*vertex.pMaterial))) return failed;
-            if(nativeObject && !nativeObject->UsesNativeTextureChart()
-                && (hit.pModifier || !SMSConstantSeamMaterial(*vertex.pMaterial))) {
-                // Generated charts can have seams at arbitrary interior UVs.
+            if(hit.pModifier || (nativeObject && !nativeObject->UsesNativeTextureChart()
+                && !SMSConstantSeamMaterial(*vertex.pMaterial))) {
+                // Generated charts and modifiers can have seams at arbitrary interior UVs.
                 // Probe their actual contexts within the physical matching
                 // band, instead of assuming the geometry's chart describes
                 // the generator. This is a local numerical ambiguity check,
@@ -500,6 +501,7 @@ RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::Solve
                     if(i) ray.Advance(1e-8);
                     RayIntersection probe(ray,vertices[i].context.rast);
                     vertex.pObject->IntersectRay(probe,RISE_INFINITY,true,true,false);
+                    if(probe.geometric.bHit && probe.pModifier) probe.pModifier->Modify(probe.geometric);
                     if(!probe.geometric.bHit || probe.pObject!=vertex.pObject
                         || probe.pMaterial!=vertex.pMaterial
                         || Point3Ops::Distance(SMSReferenceSurfacePoint(*vertex.pObject,probe.geometric),target)>displacement
@@ -509,7 +511,6 @@ RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::Solve
                 }
             }
         }
-        if(hit.pModifier) hit.pModifier->Modify(hit.geometric);
         const IORStack before(replay);
         Scalar etaI, etaT; bool exiting;
         if(!SMSDomainReplay::Cross(*vertex.pMaterial, vertex.pObject, hit.geometric, domain,
