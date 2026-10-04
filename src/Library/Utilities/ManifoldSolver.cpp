@@ -17,6 +17,12 @@
 #include "ManifoldSolver.h"
 #include "../Managers/ObjectManager.h"
 #include "../Geometry/SphereGeometry.h"
+#include "../Geometry/EllipsoidGeometry.h"
+#include "../Geometry/TorusGeometry.h"
+#include "../Geometry/CylinderGeometry.h"
+#include "../Geometry/TriangleMeshGeometryIndexed.h"
+#include "../Geometry/TriangleMeshGeometry.h"
+#include "../Painters/UniformColorPainter.h"
 #include "../Interfaces/IGeometry.h"		// CanBeAreaLight(): SMS surface seeding shares the sampling contract
 #include "SMSPhotonMap.h"
 #include "Optics.h"
@@ -34,6 +40,41 @@
 #include <typeinfo>
 
 namespace {
+    // Only audited native charts establish periodic equivalence. Authored
+    // mesh UVs and Object UV generators retain ordinary context equality.
+    RISE::Point2 SMSPeriodicTextureAxes(const RISE::IObject& object, const RISE::Vector3& normal) {
+        using namespace RISE;
+        using namespace RISE::Implementation;
+        const auto* native = dynamic_cast<const Object*>(&object);
+        const IGeometry* geometry = object.GetGeometry();
+        if(!native || typeid(object) != typeid(Object) || !native->UsesNativeTextureChart() || !geometry) return Point2(0,0);
+        const auto& type = typeid(*geometry);
+        if(type == typeid(SphereGeometry) || type == typeid(EllipsoidGeometry)) return Point2(1,0);
+        if(type == typeid(TorusGeometry)) return Point2(1,1);
+        if(type == typeid(CylinderGeometry)) {
+            const Vector3 localNormal = Vector3Ops::Normalize(Vector3Ops::Transform(
+                Matrix4Ops::Transpose(object.GetFinalTransformMatrix()),normal));
+            return Point2(dynamic_cast<const CylinderGeometry*>(geometry)->TextureLongitudeIsPeriodic(localNormal) ? 1 : 0,0);
+        }
+        return Point2(0,0);
+    }
+    bool SMSConstantSeamMaterial(const RISE::IMaterial& material) {
+        using namespace RISE;
+        using namespace RISE::Implementation;
+        if(const auto* m = dynamic_cast<const PerfectReflectorMaterial*>(&material)) {
+            const IPainter& tint=m->GetReflectance();
+            return typeid(tint) == typeid(UniformColorPainter);
+        }
+        if(const auto* m = dynamic_cast<const PerfectRefractorMaterial*>(&material)) {
+            const IPainter& tint=m->GetRefractivity();
+            return typeid(tint) == typeid(UniformColorPainter);
+        }
+        if(const auto* m = dynamic_cast<const DielectricMaterial*>(&material))
+            return m->GetTransmittance().IsPositionIndependent() && m->GetScattering().IsPositionIndependent();
+        if(const auto* m = dynamic_cast<const PolishedMaterial*>(&material))
+            return m->GetTransmittance().IsPositionIndependent() && m->GetScattering().IsPositionIndependent();
+        return false;
+    }
     // Object stores a launch point backed off in object space. Newton and
     // Jacobian pricing use the actual surface; material contexts retain the
     // native hit record. Undo the KNOWN native convention only in reference
@@ -324,15 +365,24 @@ RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::Solve
         vertex.pObject->IntersectRay(hit, RISE_INFINITY, true, true, false);
         if(!hit.geometric.bHit || hit.pObject != vertex.pObject || hit.pMaterial != vertex.pMaterial
             || Point3Ops::Distance(convergenceThreshold > 0 ? SMSReferenceSurfacePoint(*vertex.pObject,hit.geometric) : hit.geometric.ptIntersection, vertex.position) > positionTolerance) { return failed; }
-        // Native sphere longitude has two chart endpoints for the same
-        // surface point. Select u=0 for the exact u=1 endpoint BEFORE any
-        // modifier/material query, so a discontinuous texture cannot price
-        // one seam root differently according to the Newton approach side.
-        // This is a native sphere chart alias, not a generic mesh UV weld or
-        // a widened positional equivalence band. Legacy solves stay intact.
-        const IGeometry* geometry = vertex.pObject->GetGeometry();
-        if(convergenceThreshold > 0 && geometry && typeid(*geometry) == typeid(SphereGeometry)
-            && hit.geometric.ptCoord.x == 1) hit.geometric.ptCoord.x = 0;
+        // A periodic chart seam is one physical root for an audited
+        // context-independent event law. A varying/unaudited seam price or
+        // normal modifier cannot establish a unique limiting context: it is
+        // an uncertain zero trial. Never invent a UV for a material query.
+        if(convergenceThreshold > 0) {
+            Point2 axes = SMSPeriodicTextureAxes(*vertex.pObject,hit.geometric.UnflippedGeomNormal());
+            const auto* nativeObject=dynamic_cast<const Object*>(vertex.pObject);
+            const IGeometry* geometry=vertex.pObject->GetGeometry();
+            // Authored mesh chart boundaries are NOT periodic aliases. A
+            // varying boundary context remains uncertain, while a certified
+            // constant event law does not depend on its UV representation.
+            if(nativeObject && nativeObject->UsesNativeTextureChart() && geometry
+                && (typeid(*geometry)==typeid(TriangleMeshGeometryIndexed) || typeid(*geometry)==typeid(TriangleMeshGeometry))) axes=Point2(1,1);
+            const Scalar band = std::sqrt(std::numeric_limits<Scalar>::epsilon());
+            const bool seam = (axes.x && std::min(std::fabs(hit.geometric.ptCoord.x),std::fabs(1-hit.geometric.ptCoord.x)) <= band)
+                || (axes.y && std::min(std::fabs(hit.geometric.ptCoord.y),std::fabs(1-hit.geometric.ptCoord.y)) <= band);
+            if(seam && (hit.pModifier || !SMSConstantSeamMaterial(*vertex.pMaterial))) return failed;
+        }
         if(hit.pModifier) hit.pModifier->Modify(hit.geometric);
         const IORStack before(replay);
         Scalar etaI, etaT; bool exiting;
@@ -6894,13 +6944,27 @@ bool ManifoldSolver::SameExtendedRoot(const SMSDomainRoot& a, const SMSDomainRoo
                 &&std::isfinite(v.objectPosition.x)&&std::isfinite(v.objectPosition.y)&&std::isfinite(v.objectPosition.z)
                 &&std::isfinite(v.uv.x)&&std::isfinite(v.uv.y);
         };
-        if(!finiteGeometry(x) || !finiteGeometry(y)
+        const Point2 axes = x.pObject ? SMSPeriodicTextureAxes(*x.pObject,x.geomNormal) : Point2(0,0);
+        const auto coordinateDistance = [](Scalar u, Scalar v, bool periodic) {
+            const Scalar distance = std::fabs(u-v);
+            return periodic ? std::min(distance,std::fabs(1-distance)) : distance;
+        };
+        // Keep the actual UV records. Under this audited material law and
+        // without a normal modifier, UV cannot alter any event/index/price
+        // input. Different mesh charts then do not create physical roots.
+        const bool uvIndependent=x.pMaterial && x.pObject && !x.pObject->GetModifier()
+            && SMSConstantSeamMaterial(*x.pMaterial);
+        const Scalar uvDistance = uvIndependent ? 0 : std::hypot(coordinateDistance(x.uv.x,y.uv.x,axes.x != 0),
+            coordinateDistance(x.uv.y,y.uv.y,axes.y != 0));
+        if(!finiteGeometry(x) || !finiteGeometry(y) || !x.pObject || !x.pMaterial
+            || x.uv.x != a.vertices[i].context.ptCoord.x || x.uv.y != a.vertices[i].context.ptCoord.y
+            || y.uv.x != b.vertices[i].context.ptCoord.x || y.uv.y != b.vertices[i].context.ptCoord.y
             || x.pObject != y.pObject || x.pMaterial != y.pMaterial || x.isReflection != y.isReflection
             || x.isExiting != y.isExiting || x.etaI != y.etaI || x.etaT != y.etaT
             || Point3Ops::Distance(x.position,y.position) > tolerance
             || Vector3Ops::Magnitude(x.normal-y.normal) > normalTolerance
             || Vector3Ops::Magnitude(x.geomNormal-y.geomNormal) > normalTolerance
-            || std::hypot(x.uv.x-y.uv.x,x.uv.y-y.uv.y) > normalTolerance
+            || uvDistance > normalTolerance
             || Point3Ops::Distance(x.objectPosition,y.objectPosition)
                 > normalTolerance*std::max({Scalar(1),std::fabs(x.objectPosition.x),std::fabs(x.objectPosition.y),
                     std::fabs(x.objectPosition.z),std::fabs(y.objectPosition.x),std::fabs(y.objectPosition.y),

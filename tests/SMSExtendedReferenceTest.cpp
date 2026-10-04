@@ -11,6 +11,7 @@
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/Interfaces/ILightManager.h"
 #include "../src/Library/Interfaces/IBSDF.h"
+#include "../src/Library/Interfaces/IUVGenerator.h"
 #include "../src/Library/Utilities/Optics.h"
 #include "../src/Library/Shaders/PathTracingIntegrator.h"
 #include "../src/Library/Painters/UniformScalarPainter.h"
@@ -186,8 +187,9 @@ static void CloseRoots() {
         solver->release();
     }
 }
-// A regular native sphere root lies on the 0/1 longitude seam. Independent
-// surface seeds approach the same physical point from both chart sides.
+// Regular native sphere/ellipsoid/torus/cylinder roots lie at periodic
+// chart seams. Independent seeds approach from both sides. Varying seam
+// contexts are uncertain; authored UV-generator endpoints are preserved.
 class SeamTint final : public UniformColorPainter {
 public:
     SeamTint() : UniformColorPainter(RISEPel(1)) {}
@@ -198,9 +200,29 @@ public:
         return hit.ptCoord.x<.5?.25:.75;
     }
 };
-static void SphereSeamRoots() {
-    for(bool textured:{false,true}) {
-    Fixture f(Materials()+"sphere_geometry\n{\n name sphere\n radius 1\n}\n"+Object("caster","sphere","mirror"));
+class FixedEndpointUV final : public IUVGenerator, public Reference {
+public:
+    void GenerateUV(const Point3&,const Vector3&,Point2& uv) const override { uv=Point2(1,.5); }
+};
+static std::string UVSeamMesh(bool reverse) {
+    std::ostringstream s;
+    s<<"indexedmesh_geometry\n{\n name sphere\n double_sided TRUE\n face_normals TRUE\n";
+    for(Scalar x:{-2.,0.}) s<<" vertex "<<x<<" -2 0\n vertex "<<x+2<<" -2 0\n vertex "<<x+2<<" 2 0\n vertex "<<x<<" 2 0\n";
+    for(unsigned i=0;i<2;++i) s<<" uv 0 0\n uv 1 0\n uv 1 1\n uv 0 1\n";
+    for(unsigned offset:{0u,4u}) {
+        s<<" triangle "<<offset<<' '<<offset+(reverse?2:1)<<' '<<offset+(reverse?1:2)<<'\n';
+        s<<" triangle "<<offset<<' '<<offset+(reverse?3:2)<<' '<<offset+(reverse?2:3)<<'\n';
+    }
+    return s.str()+"}\n";
+}
+static void NativePeriodicRoots() {
+    for(unsigned pricing:{0u,1u,2u}) for(unsigned shape:{0u,1u,2u,3u,4u,5u}) {
+    const bool textured=pricing!=0;
+    const char* geometry[]={"sphere_geometry\n{\n name sphere\n radius 1\n}\n",
+        "ellipsoid_geometry\n{\n name sphere\n radii 1 1 1\n}\n",
+        "torus_geometry\n{\n name sphere\n majorradius 1\n minorratio 0.5\n}\n",
+        "cylinder_geometry\n{\n name sphere\n axis y\n radius 1\n height 4\n capped TRUE\n}\n"};
+    Fixture f(Materials()+(shape<4?geometry[shape]:UVSeamMesh(shape==5))+Object("caster","sphere","mirror"));
     ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;
     auto* solver=new ManifoldSolver(cfg);IORStack air(1);
     if(textured) {
@@ -209,27 +231,40 @@ static void SphereSeamRoots() {
         if(material) f.job->GetObjects()->GetItem("caster")->AssignMaterial(*material);
         safe_release(material);tint->release();
     }
+    if(pricing==2) {
+        auto* mapping=new FixedEndpointUV();f.job->GetObjects()->GetItem("caster")->SetUVGenerator(*mapping);mapping->release();
+    }
     RandomNumberGenerator random(217);IndependentSampler sampler(random);
+    const Scalar sign=shape<2?-1:1, radius=shape==2?1.5:1;
+    const Point3 start=shape<4?Point3(3*sign,.5,0):Point3(-.5,0,-3);
+    const Point3 end=shape<4?Point3(3*sign,-.5,0):Point3(.5,0,-3);
+    const Point3 expected=shape<4?Point3(sign*radius,0,0):Point3(0,0,0);
     std::vector<SMSDomainRoot> roots;
-    for(unsigned i=0;i<128&&roots.size()<20;++i) {
-        auto root=solver->ProposeExtendedRoot(Point3(-3,.5,0),Vector3(1,0,0),Point3(-3,-.5,0),
+    for(unsigned i=0;i<4096&&roots.size()<20;++i) {
+        auto root=solver->ProposeExtendedRoot(start,shape<4?Vector3(-sign,0,0):Vector3(0,0,1),end,
             f.Scene(),air,SMSQueryDomain::RGB(0),sampler);
         if(root.accepted) roots.push_back(std::move(root));
     }
-    Check(roots.size()==20,"native sphere seam has positive regular root coverage");
+    std::cout<<"native periodic seam shape="<<shape<<" pricing="<<pricing<<" accepted="<<roots.size()<<'\n';
+    if(pricing==1) {
+        Check(roots.empty(),"varying periodic seam contexts are uncertain zero proposals");
+        solver->release();continue;
+    }
+    Check(roots.size()==20,"native periodic seam has positive regular root coverage");
     bool positiveZ=false,negativeZ=false;
     for(const auto& root:roots) {
         const auto& vertex=root.vertices[0].geometry;
-        positiveZ|=vertex.position.z>0;negativeZ|=vertex.position.z<0;
-        Check(Point3Ops::Distance(vertex.position,Point3(-1,0,0))<1e-8,"sphere seam root matches analytic reflection point");
-        Check(vertex.uv.x==0&&root.vertices[0].context.ptCoord.x==0,
-            "native sphere seam endpoints use one material-context representative");
-        Check(root.result.contributionNM==(textured?.25:1),
-            "sphere seam material throughput uses the selected native chart representative");
+        const Scalar side=shape<4?vertex.position.z:vertex.position.x;
+        positiveZ|=side>0;negativeZ|=side<0;
+        Check(Point3Ops::Distance(vertex.position,expected)<1e-8,"periodic seam root matches analytic reflection point");
+        Check(vertex.uv.x==root.vertices[0].context.ptCoord.x && (pricing!=2 || vertex.uv.x==1),
+            "periodic matching preserves actual native and override material coordinates");
+        Check(root.result.contributionNM==(textured?.75:1),
+            "periodic seam throughput preserves the actual native or overridden context");
         Check(ManifoldSolver::SameExtendedRoot(roots[0],root,1e-6),
-            "opposite sphere chart sides identify the same physical root");
+            "opposite native periodic chart sides identify the same physical root");
     }
-    Check(positiveZ&&negativeZ,"independent seeds exercise both sides of the native sphere seam");
+    Check(positiveZ&&negativeZ,"independent seeds exercise both sides of a native periodic seam");
     if(roots.size()>1) {
         std::vector<double> values;
         for(unsigned salt=0;salt<4;++salt) {
@@ -247,11 +282,15 @@ static void SphereSeamRoots() {
             values.push_back(sum);
         }
         const Moments m(values);
-        std::cout<<"sphere seam two-native-seed accounting mean="<<m.mean<<" sd="<<m.sd<<" n=4 analytic root count=1 reference sd=0\n";
+        std::cout<<"native periodic seam two-seed accounting shape="<<shape<<" pricing="<<pricing<<" mean="<<m.mean<<" sd="<<m.sd<<" n=4 analytic root count=1 reference sd=0\n";
         Check(std::fabs(m.mean-1)<=3*m.sd+64*std::numeric_limits<Scalar>::epsilon(),
             "native chart aliases contribute one physical root in reciprocal accounting");
         auto changed=roots[0];changed.vertices[0].geometry.uv.x=.5;
-        Check(!ManifoldSolver::SameExtendedRoot(roots[0],changed,1e-6),"non-alias UV contexts remain distinct");
+        Check(!ManifoldSolver::SameExtendedRoot(roots[0],changed,1e-6),
+            "UV records must remain coherent with their real material context");
+        changed.vertices[0].context.ptCoord.x=.5;
+        Check(ManifoldSolver::SameExtendedRoot(roots[0],changed,1e-6)==(pricing==0),
+            "UV equivalence follows the audited constant law; varying override contexts remain distinct");
     }
     solver->release();
     }
@@ -798,7 +837,7 @@ int main(int argc,char** argv) {
     if(argc==2&&std::string(argv[1])=="--slab-only") {synthetic=false;geometry=false;delta=false;unsupported=false;}
     if(argc==2&&std::string(argv[1])=="--review-only") {
 #ifdef RISE_SMS_REFERENCE_A
-        SphereSeamRoots();
+        NativePeriodicRoots();
 #else
         std::cout<<"Estimator A seam helper unavailable on committed baseline.\n";
 #endif
@@ -813,7 +852,7 @@ int main(int argc,char** argv) {
 #ifdef RISE_SMS_REFERENCE_A
     std::cout<<"reference bytes config="<<sizeof(ManifoldSolverConfig)<<" root="<<sizeof(SMSDomainRoot)
         <<" counters="<<sizeof(SMSReferenceCounters)<<" vertex="<<sizeof(SMSDomainVertex)<<std::endl;
-    if(synthetic) Synthetic();if(geometry) {Geometry();CloseRoots();WalkEvents();SphereSeamRoots();}
+    if(synthetic) Synthetic();if(geometry) {Geometry();CloseRoots();WalkEvents();NativePeriodicRoots();}
 #else
     if(synthetic||geometry) std::cout<<"Estimator A is absent on this committed baseline; new helper tests are unavailable, not a numerical red proof.\n";
 #endif

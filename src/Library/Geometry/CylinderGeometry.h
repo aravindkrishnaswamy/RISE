@@ -50,6 +50,12 @@ namespace RISE
 
 		public:
 			CylinderGeometry( const int chAxis, const Scalar dRadius, const Scalar dHeight, const bool capped );
+            // Same cap/side distinction as ComputeSurfaceDerivatives. Caps
+            // use a planar disk chart; only the side longitude is periodic.
+            bool TextureLongitudeIsPeriodic(const Vector3& objectNormal) const {
+                const Scalar axial = m_chAxis == 'x' ? objectNormal.x : m_chAxis == 'y' ? objectNormal.y : objectNormal.z;
+                return !m_bCapped || std::fabs(axial) <= 0.5;
+            }
 
 			// Tessellates the cylinder side to (detail+1) x (detail+1) vertices (duplicating the
 			// u=0/u=1 seam).  When m_bCapped, appends a triangle fan for each end cap so the
