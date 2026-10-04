@@ -2,16 +2,20 @@
 
 Phase 2 is implemented on `sms-ext-phase2`, based on master
 `08552560b54b517b7a8a0696eb9d317953b26bbe`, but is not yet merged.
-The latest native source is `761c71b51`; its coherent committed repair proof
-passes review **20005/0**, production **177/0** and geometry **4297/0**.
+The latest native source is `d2508b4dc`, with expanded committed tests at
+`5d9776ce8`. The focused current gate passes **28933/0**, with zero library
+and test diagnostics. Its coherent replacement proof, full gates and fresh
+Round 4 review remain pending. Native `761c71b51` previously passed committed
+proof review20005/0, production177/0 and geometry4297/0.
 The replacement pipeline at acceptance-test commit `15c9c2710` passes under
 the user-adopted float32 cross-build contract. It reports **36373 checks across
 28 modes**, twelve actual Xcode-linked controls, zero compiler diagnostics,
-and five clean partial-sanitizer modes. Fresh Round 3 review and integration
-remain pending. The older failed strict-double run and historical gates below
+and five clean partial-sanitizer modes. Fresh Round 3 review subsequently found two P1s and one P2, recorded below.
+The passing full gate here validates the earlier source; current replacement
+gates and Round 4 review remain pending. The older failed strict-double run and historical gates below
 remain evidence of their own checkpoints, not substitutes for this gate.
 
-## Current complete replacement gate (2026-10-04)
+## Historical complete replacement gate at15c9c2710 (2026-10-04)
 
 Evidence: `.claude/logs/sms-phase2-round3-final/`, including
 `final-gate/completed-summary.json`, `final-gate/slab-summary.json`,
@@ -542,3 +546,49 @@ internal-double gate remains failed. The new complete gate above passes under
 the adopted rule; fresh review remains pending.
 The phase remains on `sms-ext-phase2`; no ledger row closes and no new row
 is opened. Master stays `08552560b54b517b7a8a0696eb9d317953b26bbe` and clean.
+
+
+## Round 3 findings and current repair (2026-10-04)
+
+Fresh estimator and material reviewers found implementation P1s in generated
+UV seam handling and non-top exits of overlapping native solids. The fresh
+read-only evidence reviewer reproduced the old full gate and cost claims,
+and found a P2 coverage gap: modifier-aware numerical Jacobians had only
+single-vertex tests. No reviewer identified a design defect. Agent-tool
+capacity allowed two fresh reviewers; the third ran concurrently in a fresh
+read-only ephemeral CLI session. No tracked state changed during review.
+
+Generated UV overrides could bypass native seam guards while raw UV still
+split smooth world-tint roots into separate reciprocal families. Actual
+spherical/cylindrical generators and an interior-valued discontinuous custom
+generator now have rejection witnesses; a continuous fixed-coordinate
+world-tint control stays positive. The repair probes four nearby actual
+intersection contexts at one eighth of the physical root matching band,
+rejecting generated UV variation beyond one eighth of the UV matching band.
+It retains the original generated coordinates and performs no UV averaging.
+This is a local numerical ambiguity diagnostic, not a certificate of global
+continuity. Audited constant event laws without modifiers need no probe.
+The added cost is four object intersections per applicable refreshed vertex,
+only in active extended solves with authored generators and unaudited context
+laws or modifiers. Mode-off execution does not enter this check.
+
+At an overlapping closed-object exit, native SPFs use the exiting object's
+queried index for direction, Fresnel and TIR, even when its identity is not
+the stack top. Their consumer's radiance factor uses the incoming and outgoing
+stack tops. The repair reproduces both native conventions separately; it
+does not change native SPF or shared IOR-stack arithmetic. Actual overlapping
+closed double-sided meshes cover both windings, transformed instances,
+RGB/NM, perfect refractor, dielectric and AR-coated dielectric, transmission
+and TIR, direct solved roots and complete visible proposals. Native SPF weights
+and consumer radiance scaling are separate price oracles.
+
+The initial committed witness at77fe155d5 reports25199/630. Ten cylinder
+failures used the continuous side of its chart and are fixture failures,
+excluded from production red evidence. Corrected committed tests at5d9776ce8
+place that fixture at its actual positive-X seam. Repair d2508b4dc with these
+expanded tests passes **28933/0**. The expanded test checks every diagonal and
+off-diagonal block in modified R-T and R-T-R chains with arriving-ray-dependent
+normals, plus independently solved physical endpoint shifts at h,h/2,h/4,
+retaining the original 1e-5 band. Coherent pre-fix/master proofs and a new full
+replacement gate must complete before fresh Round 4 review and integration.
+Evidence: `.claude/logs/sms-phase2-round3-final/` witness/repair/expanded logs.

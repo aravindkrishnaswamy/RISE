@@ -538,3 +538,20 @@ within-build composite rejection. The new complete gate passes all sixteen
 float32 comparisons after eight actual source builds, with four salts per
 fixture. NM mode-off cost rises 1.492751 ± 0.465066% in paired measurements;
 no zero-overhead claim is made. Fresh review is required before integration.
+
+
+### Phase 2 Round 3 implementation audit (2026-10-04)
+
+Two further implementation inconsistencies were found: generated charts
+bypassed seam ambiguity checks, and non-top exits in overlapping closed solids
+used the stack-top index for the native direction and Fresnel law. The existing
+native-law contract covers both repairs. Generated chart contexts now undergo
+local physical-band probes, retaining continuous override controls and actual
+UV records. This numerical diagnostic does not certify arbitrary generator
+continuity. Overlapping exits now use the queried exiting-object index for
+native direction/Fresnel/TIR while independently retaining the native consumer
+radiance scaling from stack tops; native walkers are unchanged. Expanded
+modified multi-vertex Jacobian tests address the evidence reviewer's coverage
+gap. Current focused tests pass28933/0 at native d2508b4dc/tests5d9776ce8;
+replacement committed proofs, complete gates and fresh Round 4 review remain
+required. The earlier complete gate is historical and no merge is claimed.
