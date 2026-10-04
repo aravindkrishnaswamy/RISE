@@ -1,0 +1,62 @@
+{
+  "schema": "rise.fire.r247.source-spatial-review.v1",
+  "status": "accepted_zero_p1_p2_selected_frozen_source_data_only",
+  "reviewed_head": "8a9efa36e",
+  "round": 1,
+  "completion_sha256": "3f18cebb2189563a3b60efeb62acfb9d2ba37d2dc8801eeaced47620400ba281",
+  "reviewers": [
+    {
+      "agent": "r247_source_spatial_arithmetic_r1",
+      "axis": "all470 event/source links/1880ledger source checks/independent closure, units, moments and summaries",
+      "p1": 0,
+      "p2": 0
+    },
+    {
+      "agent": "r247_source_spatial_provenance_r1",
+      "axis": "all runtime/input/output modern identities/preservation/memory/full-window scope",
+      "p1": 0,
+      "p2": 0
+    }
+  ],
+  "rows": 470,
+  "frames_per_variant": 235,
+  "measured_peak_rss_bytes": 456998912,
+  "reader_ceiling_bytes": 1073741824,
+  "full_selected_source_derivation_accepted": true,
+  "full_cumulative_common_region_budget_accepted": false,
+  "physical_acceptance": false,
+  "puffing_cause_localized": false,
+  "remedy_supported": false,
+  "canonical_taller_qualification": false,
+  "original_taller_exit_code": 98,
+  "failed_first_stage_exit_code": 1,
+  "failed_first_stage_preserved": true,
+  "source_output_receipt_false_unchanged": true,
+  "artifacts": [
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_source_spatial.v2/source_spatial_rows.jsonl",
+      "sha256": "2015def8b166fed9e2bf8e680ef119ed6ce0db2bb9603b29b16682169e2e7761"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_source_spatial.v2/source_spatial_rows.jsonl.payload-v2.json",
+      "sha256": "69439313cddcc93ad1d033b7290c0d17851da4beee12e5406181d36b24cc0be8"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_source_spatial.v2/reader_receipt.json",
+      "sha256": "9bbe50bb0b1f643ca27b8d25f8a747ba21335e48016aac5652e6714bcfe7e00d"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_source_spatial.v2/reader_receipt.json.payload-v2.json",
+      "sha256": "9146e8bce82d4a88ef320411324f64352989ba8e037ab7234b4e2f1c59867ed1"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_source_spatial_launch.v2/completion.json",
+      "sha256": "4d2e70e6b54b6a791716fdc07c2124592a76fdd90d202d1ec1f6abc07fd95bab"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_source_spatial_launch.v2/reader.log",
+      "sha256": "5680bb0a145354dbcf100c565e540fcbdce457ab176fe0224b83c9fcc1362dd7"
+    }
+  ],
+  "accepted_utc": "2026-10-04T18:07:12.967398+00:00"
+}

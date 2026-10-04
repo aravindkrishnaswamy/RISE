@@ -1,0 +1,41 @@
+{
+  "schema": "rise.fire.r247.transport-reader-review.v1",
+  "status": "accepted_composition_for_one_full_selected_derivation",
+  "candidate": "9e5974a06",
+  "round": 1,
+  "p1": 0,
+  "p2": 0,
+  "gate_sha256": "b92652d502c57c85ad1ad65d9f740a92451b637bbe77ddc70b5d87299ae8351e",
+  "reviews": [
+    {
+      "agent": "r247_transport_arithmetic_r1",
+      "axis": "arithmetic/contract",
+      "p1": 0,
+      "p2": 0,
+      "evidence": "31RED/200wide selectedscalarchecks/1284uniquefaces/1604associations; independent6x8x83 all12wireviews andnonuniform1664columnassociations exact; corruptedlowercellRED"
+    },
+    {
+      "agent": "r247_transport_provenance_r1",
+      "axis": "lifecycle/provenance/test-integrity",
+      "p1": 0,
+      "p2": 0,
+      "evidence": "All10artifacthashes;31RED;6runtimeidentities; exactsource pairs/threepacket beforefield preflight/samebuffers/capturedloadedcode/outputissuer"
+    },
+    {
+      "agent": "r247_transport_memory_r1",
+      "axis": "memory/costhonesty",
+      "p1": 0,
+      "p2": 0,
+      "evidence": "31RED; allthree1.079GBpackets+544MBresizereserve/conversions/Merkle/finitechecks/metadata/results/finalpublication; currentRSS vspeak/distinct2GiBcap; viewsreleased before nextframe"
+    }
+  ],
+  "launch_authorized": true,
+  "authorized_launch_scope": "One sequential full235wide+235taller selected transport/momentum derivation after hostwide exclusivity inspection",
+  "actual_native_field_packets_read": 0,
+  "empirical_peak_rss_accepted": false,
+  "full_derivation_accepted": false,
+  "physical_acceptance": false,
+  "new_simulation_authorized": false,
+  "canonical_taller_qualification": false,
+  "original_taller_exit_code": 98
+}

@@ -1,0 +1,28 @@
+{
+  "schema": "rise.fire.r247.source-reader-publication-review.v1",
+  "status": "accepted_zero_p1_p2_repaired_composition_only",
+  "reviewed_head": "2b90b99eb",
+  "round": 3,
+  "gate_sha256": "be48ec5d7c74957cc3c17e49312fed5eab53627bffe51177d9515b6c5e838e47",
+  "reviewers": [
+    {
+      "agent": "r247_source_reader_contract_r3",
+      "axis": "generated/captured stream bytes/stable identity/math/test integrity",
+      "p1": 0,
+      "p2": 0
+    },
+    {
+      "agent": "r247_source_reader_provenance_r3",
+      "axis": "failure preservation/actual mutation refusal/atime lifecycle/code and artifact identity",
+      "p1": 0,
+      "p2": 0
+    }
+  ],
+  "synthetic_reds": 18,
+  "failed_original_stage_output_preserved": true,
+  "failed_original_stage_exit_code": 1,
+  "original_taller_exit_code": 98,
+  "full_derivation_accepted": false,
+  "one_separate_repaired_full_launch_accepted": true,
+  "accepted_utc": "2026-10-04T17:59:10.629231+00:00"
+}

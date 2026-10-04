@@ -1,0 +1,48 @@
+{
+  "schema": "rise.fire.r247.source-spatial-launch.v1",
+  "status": "launched_not_result_accepted",
+  "composition_acceptance": "f462097b3",
+  "reviewed_head": "e8fe90721",
+  "launched_utc": "2026-10-04T17:53:21.717303+00:00",
+  "wrapper_initial_pid": 57487,
+  "command": [
+    "/Users/aravind/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+    "/Volumes/SSD/RISE/fire_production_calibration/r247_source_reader_runtime.v1/r247_source_reader.py",
+    "--run",
+    "/Volumes/SSD/RISE/fire_production_calibration/r247_source_spatial.v1"
+  ],
+  "launch_directory": "/Volumes/SSD/RISE/fire_production_calibration/r247_source_spatial_launch.v1",
+  "output": "/Volumes/SSD/RISE/fire_production_calibration/r247_source_spatial.v1",
+  "runtime": [
+    {
+      "source": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r247_source_reader.py",
+      "frozen_path": "/Volumes/SSD/RISE/fire_production_calibration/r247_source_reader_runtime.v1/r247_source_reader.py",
+      "sha256": "4ed37e3cfb873ffe9c6a5c95d8250f53b6899fbe27bad6d4f21286d66684555a"
+    },
+    {
+      "source": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r247_source_admission.py",
+      "frozen_path": "/Volumes/SSD/RISE/fire_production_calibration/r247_source_reader_runtime.v1/r247_source_admission.py",
+      "sha256": "cb25a9a96afb2939846ad4e2b55204c45062c3e5c897eb142df7a8e7fe250545"
+    },
+    {
+      "source": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r247_source_moments.py",
+      "frozen_path": "/Volumes/SSD/RISE/fire_production_calibration/r247_source_reader_runtime.v1/r247_source_moments.py",
+      "sha256": "37b3d1488ac6e114c228a47cdcb5e2be31b658dd36169b3d6639439b61d8a28c"
+    },
+    {
+      "source": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire_payload_merkle.py",
+      "frozen_path": "/Volumes/SSD/RISE/fire_production_calibration/r247_source_reader_runtime.v1/fire_payload_merkle.py",
+      "sha256": "a6219a285792b671d6a33de41c73556d9c970f8aed32c034cacaa0c3ea405ebf"
+    }
+  ],
+  "python_executable_sha256": "ac60cfe0268614638d0ffa35f3b0284fc7b3a11482723793455e17eeb278509e",
+  "exclusivity_checked": true,
+  "only_heavy_job": true,
+  "original_taller_exit_code": 98,
+  "selected_frames_per_variant": 235,
+  "full_derivation_accepted": false,
+  "physical_acceptance": false,
+  "inputs_unchanged": true,
+  "reader_initial_pid": 57488,
+  "initial_observed_complete_rows": 118
+}

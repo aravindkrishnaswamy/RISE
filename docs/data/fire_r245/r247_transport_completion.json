@@ -1,0 +1,61 @@
+{
+  "schema": "rise.fire.r247.transport-completion.v1",
+  "status": "completed_pending_independent_reviews",
+  "completed_utc": "2026-10-04T19:58:10.746523+00:00",
+  "exit_code": 0,
+  "rows": 470,
+  "frames_per_variant": 235,
+  "selected_covered_dt_s": {
+    "wide": 0.3695923899067566,
+    "taller": 0.3695923899067566
+  },
+  "measured_peak_rss_bytes": 1163493376,
+  "reader_ceiling_bytes": 2147483648,
+  "modern_output_pairs_verified": 2,
+  "source_event_links_verified": 470,
+  "wide_selected_ledger_control_checks": 47000,
+  "runtime_identities_verified": 6,
+  "artifacts": [
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_transport.v3/transport_rows.jsonl",
+      "sha256": "1e2bfda1d8dcdf4d8bd8beaee10594c4dffd707d01d208cd8c457a63ceb32c6c"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_transport.v3/transport_rows.jsonl.payload-v2.json",
+      "sha256": "fbf5e0faf9bd93204512329758dd89230b350496d9806255ef31e8641d7e13bc"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_transport.v3/reader_receipt.json",
+      "sha256": "b61c1070157fbe38371c4e0931724a53d158356ac63c704ff7be87051ea5e140"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_transport.v3/reader_receipt.json.payload-v2.json",
+      "sha256": "ea56a2917f621fd6c09edab5090d710568b86a4c73f507489a2e61ec027a09c9"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_transport_launch.v3/completion.json",
+      "sha256": "9393baf8ab70135a16db762309cf5f066bb2f9a5f9935c33f4279d2ce28d62fb"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_transport_launch.v3/pid.json",
+      "sha256": "ac3c3820d41d12f08150defc05c7e598767727133e24ae5ebdd784ea006b4418"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_transport_launch.v3/reader.log",
+      "sha256": "940cbe9ce37faf567b8117d7aa9b828c45eea19aee6c52dad461192d20116964"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_transport_launch.v3/command.json",
+      "sha256": "678f1da809026cf0c351e722abdcb5c9734747f840d015bd662eedc511da21c7"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r247_transport_launch.v3/wrapper.py",
+      "sha256": "8c5d2b32fb0af3feee2c8e50a77c3d194c7ecc3c86718b662a422e7d895bf4f8"
+    }
+  ],
+  "full_derivation_accepted": false,
+  "physical_acceptance": false,
+  "original_taller_exit_code": 98,
+  "failed_stage_b_v1_v2_preserved": true,
+  "canonical_taller_qualification": false
+}
