@@ -27,6 +27,28 @@
 #include "../Utilities/ManifoldSolver.h"
 #include "../Materials/DielectricMaterial.h"
 #include "../Materials/PerfectRefractorMaterial.h"
+#include "../Materials/Material.h"
+#include "../Materials/LambertianMaterial.h"
+#include "../Materials/PerfectReflectorMaterial.h"
+#include "../Materials/PolishedMaterial.h"
+#include "../Materials/WeaveMaterial.h"
+#include "../Materials/OrenNayarMaterial.h"
+#include "../Materials/CookTorranceMaterial.h"
+#include "../Materials/IsotropicPhongMaterial.h"
+#include "../Materials/AshikminShirleyAnisotropicPhongMaterial.h"
+#include "../Materials/SchlickMaterial.h"
+#include "../Materials/WardIsotropicGaussianMaterial.h"
+#include "../Materials/WardAnisotropicEllipticalGaussianMaterial.h"
+#include "../Materials/TranslucentMaterial.h"
+#include "../Materials/HairMaterial.h"
+#include "../Materials/DataDrivenMaterial.h"
+#include "../Materials/DonnerJensenSkinBSSRDFMaterial.h"
+#include "../Materials/SubSurfaceScatteringMaterial.h"
+#include "../Materials/RandomWalkSSSMaterial.h"
+#include "../Materials/GenericHumanTissueMaterial.h"
+#include "../Materials/BioSpecSkinMaterial.h"
+#include "../Materials/GGXMaterial.h"
+#include "../Materials/SheenMaterial.h"
 #include <atomic>
 #include "../Utilities/ISampler.h"
 #include <cmath>
@@ -45,7 +67,8 @@ namespace {
 bool WrapsComposite(const IMaterial* material)
 {
     if(!material) return false;
-    if(dynamic_cast<const CompositeMaterial*>(material)) return true;
+    if(dynamic_cast<const CompositeMaterial*>(material)
+        || dynamic_cast<const CompositeSPF*>(material->GetSPF())) return true;
     if(const auto* m = dynamic_cast<const LambertianLuminaireMaterial*>(material))
         return WrapsComposite(&m->GetBaseMaterial());
     if(const auto* m = dynamic_cast<const PhongLuminaireMaterial*>(material))
@@ -56,6 +79,50 @@ bool WrapsComposite(const IMaterial* material)
         return WrapsComposite(&m->GetBase());
     return false;
 }
+// Optional transmission hints do not certify an extension's metadata. Only
+// exact audited native types can establish absence of an unsupported clear
+// interface. Unknown providers conservatively make anchors ineligible.
+bool AuditedMaterialGraph(const IMaterial& material)
+{
+    const std::type_info& type=typeid(material);
+    if(type==typeid(LambertianLuminaireMaterial))
+        return AuditedMaterialGraph(dynamic_cast<const LambertianLuminaireMaterial&>(material).GetBaseMaterial());
+    if(type==typeid(PhongLuminaireMaterial))
+        return AuditedMaterialGraph(dynamic_cast<const PhongLuminaireMaterial&>(material).GetBaseMaterial());
+    if(type==typeid(CoatedMaterial))
+        return AuditedMaterialGraph(dynamic_cast<const CoatedMaterial&>(material).GetBase());
+    if(type==typeid(FabricMaterial))
+        return AuditedMaterialGraph(dynamic_cast<const FabricMaterial&>(material).GetBase());
+    return type==typeid(NullMaterial)
+        || type==typeid(LambertianMaterial)
+        || type==typeid(PerfectReflectorMaterial)
+        || type==typeid(PerfectRefractorMaterial)
+        || type==typeid(DielectricMaterial)
+        || type==typeid(PolishedMaterial)
+        || type==typeid(CompositeMaterial)
+        || type==typeid(LambertianLuminaireMaterial)
+        || type==typeid(PhongLuminaireMaterial)
+        || type==typeid(CoatedMaterial)
+        || type==typeid(FabricMaterial)
+        || type==typeid(WeaveMaterial)
+        || type==typeid(OrenNayarMaterial)
+        || type==typeid(CookTorranceMaterial)
+        || type==typeid(IsotropicPhongMaterial)
+        || type==typeid(AshikminShirleyAnisotropicPhongMaterial)
+        || type==typeid(SchlickMaterial)
+        || type==typeid(WardIsotropicGaussianMaterial)
+        || type==typeid(WardAnisotropicEllipticalGaussianMaterial)
+        || type==typeid(TranslucentMaterial)
+        || type==typeid(HairMaterial)
+        || type==typeid(DataDrivenMaterial)
+        || type==typeid(DonnerJensenSkinBSSRDFMaterial)
+        || type==typeid(SubSurfaceScatteringMaterial)
+        || type==typeid(RandomWalkSSSMaterial)
+        || type==typeid(GenericHumanTissueMaterial)
+        || type==typeid(BioSpecSkinMaterial)
+        || type==typeid(GGXMaterial)
+        || type==typeid(SheenMaterial);
+}
 // The delta-shadow gate covers clear transmission through every caster,
 // so a transmissive interface outside the proposal domain makes an anchor
 // ineligible. A remote supported caster cannot repair that missing coverage.
@@ -64,6 +131,7 @@ bool WrapsComposite(const IMaterial* material)
 bool ObjectHasClearTransmission(const IObject& object)
 {
     const IMaterial* material = object.GetMaterial();
+    if(material && !AuditedMaterialGraph(*material)) return true;
     const ISPF* spf = material ? material->GetSPF() : nullptr;
     if(dynamic_cast<const DielectricSPF*>(spf) || dynamic_cast<const PerfectRefractorSPF*>(spf)
         || (material && (material->CouldLightPassThrough() || material->HasDeltaPassThrough()))) return true;
@@ -75,6 +143,7 @@ bool ObjectHasClearTransmission(const IObject& object)
 bool ObjectHasRejectedTransmissiveCaster(const IObject& object)
 {
     const IMaterial* material = object.GetMaterial();
+    if(material && !AuditedMaterialGraph(*material)) return true;
     const ISPF* spf = material ? material->GetSPF() : nullptr;
     const bool nativeClear = dynamic_cast<const DielectricSPF*>(spf)
         || dynamic_cast<const PerfectRefractorSPF*>(spf);

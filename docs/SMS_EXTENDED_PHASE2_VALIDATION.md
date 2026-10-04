@@ -127,7 +127,7 @@ BDPT 0.63006257853459957, reference SD 0.00008359126631271482. The
 relative difference is −0.1739%, or −5.138 combined sample SDs. Green and
 blue pass. Bands have not been widened.
 
-This triggers the user's unexpected-bias stop rule. Attribution remains
+At that checkpoint this triggered the user's unexpected-bias stop rule. Attribution remains
 unresolved: it may involve estimator acceptance or the reference's camera
 footprint/transport domain. No outside-contract remedy is implemented and
 no Phase 2 merge or fresh review is claimed. The remaining reversed-winding
@@ -167,3 +167,22 @@ worker check; this is the same 50 physical/accuracy failures as the earlier
 126/50 checkpoint. Build exits are checked and compiler diagnostics are
 zero. Restored candidate results follow after rebuilding HEAD. Evidence is
 `.claude/logs/sms-phase2/caster-proofs/proof-results.json`.
+
+## Neutral providers and forwarded composite walkers
+
+The same caster-set audit covers legacy metadata-only providers. A native
+clear-transmission metadata delegate with neutral optional hints and no
+selected-domain provider fails 173/20 on committed `298bf64ea`: PT reads
+1.41471060526 while extended mode reads zero. Adding a forwarding composite
+SPF extension gives 185/32 on committed `f62eae39a`; its remote closed
+double-sided composite should preserve the positive legacy mirror control.
+The old prepared policy misses its material type and changes the image.
+
+Prepared data now certifies material graphs only for exact audited native
+types, recursing through native wrappers. An unknown provider makes
+extended anchors ineligible; no arbitrary metadata sample certifies
+absence of clear transmission. Queries likewise decline unknown native
+subclasses. A forwarded `CompositeSPF` identifies the real walker from
+static material data and selects the adopted scene-wide legacy policy,
+with the first composite object's name. No virtual API or public metadata
+layout is added. Corrected-source gates and formal proofs remain pending.

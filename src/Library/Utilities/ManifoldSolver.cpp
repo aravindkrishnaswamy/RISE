@@ -30,6 +30,7 @@
 #include "../Objects/CSGObject.h"
 #include "../Objects/Object.h"
 #include "IORStackSeeding.h"
+#include <typeinfo>
 
 namespace {
     // Object stores a launch point backed off in object space. Newton and
@@ -56,6 +57,9 @@ bool RISE::Implementation::SMSQueryDomain::Valid() const
 
 bool RISE::Implementation::SMSDomainReplay::PotentialCaster(const IMaterial& material)
 {
+    const auto& type=typeid(material);
+    if(type!=typeid(DielectricMaterial) && type!=typeid(PerfectRefractorMaterial)
+        && type!=typeid(PolishedMaterial) && type!=typeid(PerfectReflectorMaterial)) return false;
     const IScalarPainter* index = nullptr;
     if(const auto* m = dynamic_cast<const DielectricMaterial*>(&material)) index = &m->GetIOR();
     else if(const auto* m = dynamic_cast<const PerfectRefractorMaterial*>(&material)) index = &m->GetIOR();
@@ -79,7 +83,7 @@ bool RISE::Implementation::SMSDomainReplay::Query(const IMaterial& material,
     SMSQueryDomain domain, SMSNativeMaterialQuery& result)
 {
     result = SMSNativeMaterialQuery();
-    if(!domain.Valid()) return false;
+    if(!domain.Valid() || !PotentialCaster(material)) return false;
     const IScalarPainter* index = nullptr;
     const IScalarPainter* scattering = nullptr;
     const IScalarPainter* coatTint = nullptr;
