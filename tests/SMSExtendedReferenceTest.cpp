@@ -119,7 +119,7 @@ static void Synthetic() {
             totalTails+=counters.tailTrials.load();totalStops+=counters.rouletteStops.load();
             std::cout<<"A-retries rare="<<rare<<" roulette="<<roulette<<" salt="<<salt<<" N="<<N
                 <<" trials="<<counters.retryTrials.load()<<" tails="<<counters.tailTrials.load()
-                <<" stops="<<counters.rouletteStops.load()<<" maxK="<<maxReciprocal<<" maxDeposit="<<maxDeposit<<" histogram=";
+                <<" stops="<<counters.rouletteStops.load()<<" maxReciprocal="<<maxReciprocal<<" maxDeposit="<<maxDeposit<<" histogram=";
             for(const auto& bucket:counters.retryHistogram) std::cout<<bucket.load()<<',';
             std::cout<<'\n';
         }
@@ -604,6 +604,8 @@ int main(int argc,char** argv) {
     if(argc==2&&std::string(argv[1])=="--slab-only") {synthetic=false;geometry=false;delta=false;unsupported=false;}
     std::cout<<std::setprecision(12);
 #ifdef RISE_SMS_REFERENCE_A
+    std::cout<<"reference bytes config="<<sizeof(ManifoldSolverConfig)<<" root="<<sizeof(SMSDomainRoot)
+        <<" counters="<<sizeof(SMSReferenceCounters)<<" vertex="<<sizeof(SMSDomainVertex)<<std::endl;
     if(synthetic) Synthetic();if(geometry) {Geometry();CloseRoots();WalkEvents();}
 #else
     if(synthetic||geometry) std::cout<<"Estimator A is absent on this committed baseline; new helper tests are unavailable, not a numerical red proof.\n";

@@ -1,0 +1,143 @@
+# Extended SMS Phase 2 validation
+
+Phase 2 is stopped at an unexpected slab/reference discrepancy on `sms-ext-phase2`, based on master
+`08552560b54b517b7a8a0696eb9d317953b26bbe`. It is not reviewed or merged.
+No ledger row closes on this checkpoint.
+
+The internal opt-in path samples one channel and one native R/T walk per
+original trial. Point and spot lights use root-level estimator A, independent
+conditional retries and the survival-weighted reciprocal tail. Failed
+proposals remain in the original trial average. Reference deposits divide
+only by the selected channel probability, emitter selection probability and
+original trial count; event and caster probabilities are inside root
+rediscovery. The dedicated `SMSShaderOp` remains legacy.
+
+## Isolated evidence
+
+`SMSExtendedReferenceTest --synthetic-only` passes **33/0** in
+`.claude/logs/sms-phase2-synthetic-powered.log`. Each row uses four independent
+discovery/retry salts. Ordinary laws and uncapped rare-root controls use
+2,000,000 original trials per salt; the rare-root roulette control uses
+100,000,000. The rare probabilities are 1/3 and 1/512, plus zero trials.
+Increasing power retained the original three-sample-SD and 6% accuracy
+checks; exploratory smaller runs were underpowered and are not red proofs
+of a source defect. The weighted tail has unbounded cost and large outliers;
+per-salt logarithmic retry histograms, tail/stopping counts, maximum reciprocal estimate and
+maximum normalized deposit are printed. No speedup is claimed. Historical logs label the maximum reciprocal estimate
+`maxK`; for roulette it is a weighted estimate, not a retry count. The test
+now names it `maxReciprocal`. For the rare-root roulette mixture, all four
+salts put the median retry count in [2,3], the 90th percentile in [4,7],
+the 99th in [8,15] and the 99.9th in [128,255]. These histogram quantiles
+combine both roots; they are not conditional rare-root quantiles. Roulette
+stops affect 0.463–0.467% of completed loops. The maximum weighted
+reciprocal estimate ranges from 1.11 to 1.77 million and the largest
+normalized single deposit from 0.499 to 0.859. Derived values are recorded
+in `.claude/logs/sms-phase2/synthetic-tail-summary.json`.
+
+Geometry passes **3240/0** in
+`.claude/logs/sms-phase2-geometry-final-run.log`: native R/T walks, R–T and
+R–T–R, closed nested exits, start-inside, TIR, both indexed-mesh windings and
+incidence sides, transformed objects, sphere/plane controls and central
+finite-difference constraint Jacobians. Two distinct roots on separate
+patches of one mesh remain distinct at scales 0.01, 1 and 100. Additional
+very thin native patches consistently return zero proposals; this is not
+positive root coverage or a mathematical root-isolation certificate.
+
+Root comparison uses geometry, native UV/object context, event order,
+object/material identities, evaluated interface indices and starting
+membership. It caps the numerical comparison at sqrt(machine epsilon)
+times endpoint distance and rejects large final inverse-Jacobian
+corrections. That correction is a numerical diagnostic, **not a certified
+nonlinear error bound**. Reference Newton polishing bypasses the legacy
+fixed displacement dead zone and compares true surface points, undoing the
+object's authored launch offset only for geometry. Native material contexts
+retain their intersection UV, object position and raster coordinates.
+
+## Production point/spot controls
+
+`--production-only` passes **176/0** in
+`.claude/logs/sms-phase2-production-depth-run.log`. It traces real RGB/NM PT
+camera paths to a Lambertian receiver below an open double-sided indexed
+mesh, both windings, with a pure mirror or index-1.5 refractor. Four salted
+runs of 16,384 original samples use native emitter/BSDF domains, NM at 450
+and 650 nm, and channel-separated RGB means and SDs.
+
+The upward spot illuminates only by reflection. Its analytic virtual-image
+reference is native BSDF times native Fresnel and emitted radiance divided
+by squared virtual-image distance. The point fixture additionally includes
+unoccluded direct light. Reference SD is zero. Receiver depth is one to
+match this analytic transport order; an exploratory depth-eight run also
+included repeated floor/mirror interreflection and was not a matched
+reference. Every channel passes three measured SDs plus ordinary summation
+roundoff. Observable compensated summation preserves the test's roundoff
+bound under make/Opto reassociation.
+
+## Unsupported-caster coupling
+
+An index painter whose values happen to equal one but do not certify
+position independence is outside the initial proposal domain. The prepared
+caster data rejects its anchor switches together, even when a remote
+supported mirror exists. This is anchor ineligibility: PT retains its light
+and SMS is absent. It differs from the adopted composite policy, which
+selects the existing solver and suppression for the entire scene.
+
+The actual PT control passes **24/0** in
+`.claude/logs/sms-phase2-coupling-green-run.log`. Four salts in each of the
+two scenes are bit-identical between plain PT and extended mode, each
+reading 1.41471060526. Committed checkpoint `f925c29c4` reproduces **14/10**:
+PT stays lit at that value while extended mode reads zero. Evidence is
+`.claude/logs/sms-phase2/caster-coupling--unsupported-only-red.log`.
+
+Committed reference checkpoint `60a461692` fails **3226/14** in the current
+geometry suite and **132/44** in the production point/spot suite. These
+measure the earlier coarse root comparison, unresolved-context checks,
+reference geometry/refinement and reversed spot direction, not the absence
+of a newly introduced helper API. Evidence and checked build exits are in
+`.claude/logs/sms-phase2/proof-results.json`.
+
+Committed master `08552560b` fails **126/50** in the same production
+native-API control. This rebuild uses master sources and dependent headers
+coherently; the missing helper tests are not counted as failures. The
+master red log is `.claude/logs/sms-phase2/native-master--production-only-red.log`.
+
+The restored committed-proof runs pass synthetic 33/0, geometry 3240/0,
+delta queries 176/0, production 176/0 and unsupported casters 24/0, with
+zero compiler diagnostics. These are the `0b3caba51` checkpoint counts; a
+later test adds a worker-configuration check and expands the caster cases.
+
+The inherited-CSG extension uses closed double-sided meshes in both
+windings, with and without a remote supported mirror. Although each clear
+operand can be sampled, the effective CSG surface cannot supply uniform
+proposal mass. The expanded committed test checkpoint `6d2c9891d` fails
+77/20; rejecting such effective casters passes 97/0 in
+`.claude/logs/sms-phase2/inherited-csg-green.log`. All four salts per case
+preserve the positive PT control bit for bit. The formal restored-source
+proof for this extension remains pending.
+
+The spot-through-slab fixture compares shared pinhole camera renders with
+matching native BDPT transport, both mesh windings and cones 30/45, 44/45
+and 80/85. It uses four independent salts and channel-separated image
+means, with the reference's own SD. An initial missing-shader setup and an
+orthographic setup without BDPT's light-to-camera strategy were aborted;
+those are invalid references, not source red proofs or passing renders.
+The pinhole run completed the four salts for the front winding's three
+cone settings. Cones 30/45 and 44/45 pass all RGB comparisons. Cone 80/85
+fails red: extended 0.62896691331016075, SD 0.00019614427847902438, versus
+BDPT 0.63006257853459957, reference SD 0.00008359126631271482. The
+relative difference is −0.1739%, or −5.138 combined sample SDs. Green and
+blue pass. Bands have not been widened.
+
+This triggers the user's unexpected-bias stop rule. Attribution remains
+unresolved: it may involve estimator acceptance or the reference's camera
+footprint/transport domain. No outside-contract remedy is implemented and
+no Phase 2 merge or fresh review is claimed. The remaining reversed-winding
+matrix was cancelled after the completed comparison; the process exited
+143. That cancellation is an aborted measurement, not a zero trial or a
+passing full slab suite. The source is unchanged from the tested production
+checkpoint apart from the separately measured CSG gate; the newer weave
+test and diagnostic labels await a checked build and execution. Raw
+evidence is `.claude/logs/sms-phase2/slab-pinhole-run.log`, with derived
+channel statistics in `.claude/logs/sms-phase2/slab-stop-results.json`.
+
+Full regression/build gates, off-mode A/B cost measurements, the expanded
+weave-gap coupling control and independent reviews remain pending.
