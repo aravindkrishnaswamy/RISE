@@ -1,17 +1,18 @@
 # Extended SMS Phase 2 validation
 
 Phase 2 is implemented on `sms-ext-phase2`, based on master
-`08552560b54b517b7a8a0696eb9d317953b26bbe`, but is not yet merged. The first independent review round found two
-estimator P1s; the material/API and evidence reviewers found zero P1/P2.
-Production source includes the chart/depth fixes at `8ad9a40cf` and the
-threshold sibling guard at `13a31c7d7`. Committed
-chart/depth red/green proofs are complete. The `8ad9a40cf` replacement
-gate was stopped as incomplete after a sibling audit identified
-nonpositive solver thresholds that retain eligibility despite zero
-accepted Newton roots. The threshold fix and its committed proof precede
-the next full replacement gate. The
-completed gate below describes the earlier `89a9ab0a6` source checkpoint,
-not validation of the review fixes. No ledger row closes at this checkpoint.
+`08552560b54b517b7a8a0696eb9d317953b26bbe`, but is not yet merged.
+The current native source is `13a31c7d75b2f857c3d26176761694c049cb1046`.
+Its full replacement gate completes with zero failures and zero compiler
+diagnostics; all eight native source/header SHA-256 hashes are verified.
+Fresh Round 2 review and integration remain pending.
+
+Round 1 found two estimator P1s (chart identity and impossible depth);
+a sibling audit found nonpositive solver thresholds. All three have
+committed numerical red/green proofs. The interrupted `8ad9a40cf` gate
+remains explicitly incomplete. Historical `89a9ab0a6` evidence is labelled
+below and is not substituted for current-source validation. No ledger row
+closes at this checkpoint.
 
 ## Implementation and scope
 
@@ -43,6 +44,66 @@ numerical diagnostic, **not a certified nonlinear root-isolation bound**.
 Reference polishing bypasses the legacy fixed displacement dead zone.
 Geometry uses true surface points after undoing authored object launch
 bias; material queries retain native intersection/raster contexts.
+
+## Current-source replacement gate
+
+Native source `13a31c7d7` completes twenty executable builds and 28 make
+mode runs: **17665 reported checks, zero failures**, plus 458 CST matches
+with zero drift across 465 covered corpus scenes. Each executable build
+has a checked zero exit and zero compiler diagnostics.
+
+| Test / mode | Passed / failed |
+|---|---:|
+| ManifoldSolverTest | 388 / 0 |
+| SMSUniformDispersionTest | 300 / 0 |
+| SMSUniformDispersionTest--shipped | 10 / 0 |
+| ExteriorIndexInvarianceTest | 299 / 0 |
+| SMSEmitterDirectionTest | 344 / 0 |
+| SMSMediumAnchorTest | 27 / 0 |
+| TransparentShadowPartitionTest | 42 / 0 |
+| WeaveGapShadowTransmittanceTest | 244 / 0 |
+| OpenSheetIndexConventionTest | 24 / 0 |
+| GradedIndexInteriorFactorTest | 101 / 0 |
+| ManifoldNormalDerivativeTest | 141 / 0 |
+| DoubleSidedEmitterTest | 34 / 0 |
+| AlphaSMSGeometryTest | 216 / 0 |
+| AlphaSMSTransportTest | 20 / 0 |
+| AlphaSMSReciprocalTest | 27 / 0 |
+| PTGuidingMISPartitionTest | 185 / 0 |
+| SourceHygieneTest | 169 / 0 |
+| CstDeriveGoldenTest | 458 matches, 0 drift; 465 corpus scenes |
+| SMSDomainReplayTest | 8200 / 0 |
+| SMSLegacyModeTest | 21 / 0 |
+| SMSExtendedReferenceTest--synthetic-only | 35 / 0 |
+| SMSExtendedReferenceTest--geometry-only | 4297 / 0 |
+| SMSExtendedReferenceTest--delta-only | 177 / 0 |
+| SMSExtendedReferenceTest--production-only | 177 / 0 |
+| SMSExtendedReferenceTest--unsupported-only | 457 / 0 |
+| SMSExtendedReferenceTest--signed-only | 353 / 0 |
+| SMSExtendedReferenceTest--review-only | 1297 / 0 |
+| SMSExtendedReferenceTest--slab-only | 80 / 0 |
+
+The clean make build compiles 376 units; clean Xcode Deployment and Opto
+each compile 393. Compiler diagnostics are zero. Each Xcode configuration
+has exactly the two documented environment notices (OIDN search path and
+AppIntents metadata). Raw current-source evidence is under
+`.claude/logs/sms-phase2-round2-final/`. All twelve actual Xcode-linked controls pass: in each configuration,
+geometry **4297/0**, unsupported/configuration **457/0**, delta queries
+**177/0**, PT production **177/0**, signed emission **353/0** and review
+regressions **1297/0**. Each links 372 actual native Xcode objects; the test
+and make-only Profiling unit use that configuration's actual response
+flags and target26.2. Final compiles/links have zero diagnostics.
+
+Partial ASan/UBSan instruments the test and four changed production units
+(`ManifoldSolver`, `ObjectManager`, `PathTracingIntegrator`, `SMSShaderOp`)
+at O1; unchanged objects use the native make build. Geometry **4297/0**,
+unsupported/configuration **457/0**, production **177/0**, signed emission
+**353/0** and review **1297/0** all pass. This is not whole-library or
+leak-sanitizer coverage. `completed-summary.json` records pipeline exit0,
+28 make modes, twelve actual Xcode controls, zero compiler diagnostics,
+and verified source hashes. `slab-summary.json` retains all eighteen
+channel comparisons; all twelve narrow-cone comparisons pass their
+original three-SD bands. The accepted wide-cone measurement is unchanged.
 
 ## Historical pre-review make regression gate
 
@@ -222,27 +283,31 @@ Evidence: `.claude/logs/sms-phase2/phase2-interleaved-cost.json` and
 each `phase2-interleaved-{A,B}{0..3}.log`, with checked build exits in
 `cost-driver.log`. No whole-render speedup is inferred from these timings.
 
-## Chart/depth checkpoint off-mode cost and output gate
+## Current-source off-mode cost and output gate
 
 The replacement gate compares committed master `08552560b` with
-`74d4365dd` (native source `8ad9a40cf`) using eight actual interleaved
+`5f7cdaa06` (native source `13a31c7d7`) using eight actual interleaved
 library/test builds and four salted trials per fixture. All 16 paired
 output hashes and channel means are identical. Worker policy and sequential
 rendering match; timings are seconds and uncertainties are sample SDs.
 
 | Fixture | Master mean ± SD | Candidate mean ± SD | Paired change % mean ± SD |
 |---|---:|---:|---:|
-| RGB k1 | 0.945636687 ± 0.010939475 | 0.942783167 ± 0.001736797 | -0.290174 ± 1.336248 |
-| RGB k2 | 0.719287781 ± 0.007837574 | 0.716280834 ± 0.005068141 | -0.414833 ± 0.415376 |
-| NM | 1.685690115 ± 0.018286842 | 1.695444927 ± 0.019160919 | 0.580515 ± 0.764642 |
-| HWSS | 5.648385990 ± 0.050602435 | 5.668684760 ± 0.037738600 | 0.361267 ± 0.377854 |
+| RGB k1 | 0.947674541 ± 0.004218858 | 0.969262479 ± 0.004444865 | 2.280967 ± 0.908073 |
+| RGB k2 | 0.724560063 ± 0.005722064 | 0.735456344 ± 0.006017120 | 1.508850 ± 1.186625 |
+| NM | 1.713569437 ± 0.021601537 | 1.714899407 ± 0.009998128 | 0.093451 ± 1.725068 |
+| HWSS | 5.733918198 ± 0.045851410 | 5.753667854 ± 0.021939967 | 0.347747 ± 0.621277 |
 
-All paired timing changes lie within three sample SDs. These measurements
-do not establish a speedup. Restored composite-policy, HWSS-fallback and
-full-domain controls pass at **1168/0**, **3147/0** and **8200/0**.
-Evidence: `.claude/logs/sms-phase2-round2/phase2-interleaved-cost.json`
-and `cost-driver.log`; every source restore, library build and test build
-has a checked zero exit and zero compiler diagnostics.
+All paired timing changes lie within three sample SDs. The measured
+positive changes are retained; these data establish neither zero overhead
+nor a speedup. Evidence:
+`.claude/logs/sms-phase2-round2-final/phase2-interleaved-cost.json`
+and `cost-driver.log`; every A/B library/test build has a checked zero
+exit and zero compiler diagnostics. Current-source restored controls pass:
+**1168/0** composite policy, **3147/0** HWSS fallback, and **8200/0** full
+domain replay. Earlier `8ad9a40cf` checkpoint measurements and controls
+remain archived under `.claude/logs/sms-phase2-round2/`.
+Its interrupted full gate is not substituted for current-source validation.
 
 ## Review and integration
 
@@ -289,6 +354,7 @@ Coherent master reports **121/120** for available configuration controls
 (seam helpers absent), and restored `13a31c7d7` reports **1297/0**. All
 library/test builds have checked zero exits and zero compiler diagnostics;
 evidence is in `.claude/logs/sms-phase2/threshold-proofs/`. The full
-replacement gate under `.claude/logs/sms-phase2-round2-final/`, fresh
-Round 2 reviewers and Phase 2 merge remain pending.
+replacement gate under `.claude/logs/sms-phase2-round2-final/` passes
+with verified native source hashes. Fresh Round 2 reviewers and the
+Phase 2 merge remain pending.
 Round 1's clean verdicts do not apply to the changed source.
