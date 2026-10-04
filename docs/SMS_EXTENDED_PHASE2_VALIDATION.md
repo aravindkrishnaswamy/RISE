@@ -1084,3 +1084,17 @@ All paths above refer to `.claude/logs/sms-phase2-round6/`. These focused
 checks precede the fresh complete rollback, default-path interleaved cost,
 clean make, actual Xcode, expanded sanitizer, full regressions and review
 round. No current full gate, Phase 2 merge, push or ledger change is claimed.
+
+
+The first fresh rollback attempt uses all **19** changed native source/header
+paths coherently. Pre-differential `6ca64acac` builds successfully and reports
+**36067/10**, reproducing the intended alias failures. The following
+pre-scratch `e3ca99663` test build fails because its interface already exists
+but its later feature macro does not: the test shim redeclares the types.
+This compile failure is **not** a red proof. The driver restores committed
+native sources automatically; restored library and test builds exit zero
+without diagnostics. The test shim now detects complete interface types
+and selects a separate fallback only when the native capability is absent.
+Failed logs are preserved under
+`.claude/logs/sms-phase2-round6-final/attempt1-proofs/`. Full gates restart on
+the committed shim repair; the compile failure is not bypassed or counted.

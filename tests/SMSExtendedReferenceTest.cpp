@@ -87,24 +87,27 @@ static std::string SceneObject(const std::string& name,const std::string& geomet
     return "standard_object\n{\n name "+name+"\n geometry "+geometry+"\n material "+material+"\n"+extra+"}\n";
 }
 
-// Compatibility for numerical red proofs with committed pre-contract headers.
-// Older solvers cannot discover this test-only optional capability.
-#ifndef RISE_SMS_MODIFIER_DIFFERENTIAL
-namespace RISE {
-struct SMSIntersectionDifferential {
+// Detect the optional interface itself: committed headers may predate its
+// feature macro. The test-only fallback is invisible to older solvers.
+namespace RISE { struct SMSIntersectionDifferential; class ISMSModifierDifferential; }
+template<class T,class=void> struct SMSCompleteType : std::false_type {};
+template<class T> struct SMSCompleteType<T,std::void_t<decltype(sizeof(T))>> : std::true_type {};
+struct SMSTestDifferentialFallback {
     Vector3 worldPoint{0,0,0},objectPoint{0,0,0},normal{0,0,0},geometricNormal{0,0,0};
     Vector3 frameU{0,0,0},frameV{0,0,0},frameW{0,0,0},rayOrigin{0,0,0},rayDirection{0,0,0};
     Point2 uv{0,0};
 };
-class ISMSModifierDifferential {
+using TestSMSIntersectionDifferential=std::conditional_t<SMSCompleteType<RISE::SMSIntersectionDifferential>::value,
+    RISE::SMSIntersectionDifferential,SMSTestDifferentialFallback>;
+class SMSTestModifierFallback {
 public:
-    virtual ~ISMSModifierDifferential()=default;
+    virtual ~SMSTestModifierFallback()=default;
     virtual bool HasSMSDifferentialContract()const=0;
     virtual bool SMSFrameDifferential(const RayIntersectionGeometric&,
-        const SMSIntersectionDifferential&,Vector3&,Vector3&)const=0;
+        const TestSMSIntersectionDifferential&,Vector3&,Vector3&)const=0;
 };
-}
-#endif
+using TestSMSModifierDifferential=std::conditional_t<SMSCompleteType<RISE::ISMSModifierDifferential>::value,
+    RISE::ISMSModifierDifferential,SMSTestModifierFallback>;
 // Older geometry headers still compile the native tessellation witness.
 template<class T> static auto OrientationAudits(const T* g,int)->decltype(g->SMSOrientationAudits()) {return g->SMSOrientationAudits();}
 template<class T> static unsigned long long OrientationAudits(const T*,long) {return 0;}
@@ -354,10 +357,10 @@ static Vector3 FixtureNormalizedDifferential(const Vector3& value,const Vector3&
     return (d-n*Vector3Ops::Dot(n,d))*(1/length);
 }
 class AuditedIdentityFrameModifier : public IRayIntersectionModifier, public Reference,
-    public ISMSModifierDifferential {
+    public TestSMSModifierDifferential {
 public:
     bool HasSMSDifferentialContract() const override {return true;}
-    bool SMSFrameDifferential(const RayIntersectionGeometric&,const SMSIntersectionDifferential& d,
+    bool SMSFrameDifferential(const RayIntersectionGeometric&,const TestSMSIntersectionDifferential& d,
         Vector3& n,Vector3& w) const override {n=d.normal;w=d.frameW;return true;}
 };
 class PostModifierUV final : public AuditedIdentityFrameModifier {
@@ -374,7 +377,7 @@ class PostModifierNormal final : public AuditedIdentityFrameModifier {
 public:
     explicit PostModifierNormal(bool step) : discontinuous(step) {}
     bool HasSMSDifferentialContract() const override {return !discontinuous;}
-    bool SMSFrameDifferential(const RayIntersectionGeometric& raw,const SMSIntersectionDifferential& d,
+    bool SMSFrameDifferential(const RayIntersectionGeometric& raw,const TestSMSIntersectionDifferential& d,
         Vector3& n,Vector3& w) const override {
         if(discontinuous) return false;
         n=FixtureNormalizedDifferential(raw.vNormal*.5+Vector3(std::sqrt(Scalar(3))*.5,0,0),d.normal*.5);
@@ -535,7 +538,7 @@ public:
         if(fields!=1) hit.vNormal=normal;
         if(fields!=2) hit.onb.CreateFromW(normal);
     }
-    bool SMSFrameDifferential(const RayIntersectionGeometric& raw,const SMSIntersectionDifferential& d,
+    bool SMSFrameDifferential(const RayIntersectionGeometric& raw,const TestSMSIntersectionDifferential& d,
         Vector3& n,Vector3& w) const override {
         const Scalar angle=(valid?-10:60)*PI/180+(varying?.01*(raw.ptIntersection.x-5)+.025*raw.ray.Dir().x+.0001*raw.rast.x:0);
         const Scalar da=varying?.01*d.worldPoint.x+.025*d.rayDirection.x:0;
@@ -639,7 +642,7 @@ class AliasedNormal final : public AuditedIdentityFrameModifier {
     Scalar periodDivisor;
 public:
     explicit AliasedNormal(Scalar divisor=1):periodDivisor(divisor) {}
-    bool SMSFrameDifferential(const RayIntersectionGeometric& raw,const SMSIntersectionDifferential& d,
+    bool SMSFrameDifferential(const RayIntersectionGeometric& raw,const TestSMSIntersectionDifferential& d,
         Vector3& n,Vector3& w) const override {
         if(raw.vNormal.z==0) return false;
         const Scalar period=std::cbrt(std::numeric_limits<Scalar>::epsilon())/periodDivisor;
@@ -1299,7 +1302,7 @@ static void CheckJacobian(ConstraintOracle& solver,const SMSDomainRoot& root,con
 }
 class ArrivingRayNormal final : public AuditedIdentityFrameModifier {
 public:
-    bool SMSFrameDifferential(const RayIntersectionGeometric& raw,const SMSIntersectionDifferential& d,
+    bool SMSFrameDifferential(const RayIntersectionGeometric& raw,const TestSMSIntersectionDifferential& d,
         Vector3& n,Vector3& w) const override {
         n=FixtureNormalizedDifferential(raw.vNormal+Vector3(.025*raw.ray.Dir().x,.02*raw.ray.Dir().y,0),
             d.normal+Vector3(.025*d.rayDirection.x,.02*d.rayDirection.y,0));w=n;return true;
