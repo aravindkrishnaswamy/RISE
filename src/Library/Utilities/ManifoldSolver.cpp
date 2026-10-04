@@ -16,6 +16,7 @@
 #include "pch.h"
 #include "ManifoldSolver.h"
 #include "../Managers/ObjectManager.h"
+#include "../Geometry/SphereGeometry.h"
 #include "../Interfaces/IGeometry.h"		// CanBeAreaLight(): SMS surface seeding shares the sampling contract
 #include "SMSPhotonMap.h"
 #include "Optics.h"
@@ -323,6 +324,15 @@ RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::Solve
         vertex.pObject->IntersectRay(hit, RISE_INFINITY, true, true, false);
         if(!hit.geometric.bHit || hit.pObject != vertex.pObject || hit.pMaterial != vertex.pMaterial
             || Point3Ops::Distance(convergenceThreshold > 0 ? SMSReferenceSurfacePoint(*vertex.pObject,hit.geometric) : hit.geometric.ptIntersection, vertex.position) > positionTolerance) { return failed; }
+        // Native sphere longitude has two chart endpoints for the same
+        // surface point. Select u=0 for the exact u=1 endpoint BEFORE any
+        // modifier/material query, so a discontinuous texture cannot price
+        // one seam root differently according to the Newton approach side.
+        // This is a native sphere chart alias, not a generic mesh UV weld or
+        // a widened positional equivalence band. Legacy solves stay intact.
+        const IGeometry* geometry = vertex.pObject->GetGeometry();
+        if(convergenceThreshold > 0 && geometry && typeid(*geometry) == typeid(SphereGeometry)
+            && hit.geometric.ptCoord.x == 1) hit.geometric.ptCoord.x = 0;
         if(hit.pModifier) hit.pModifier->Modify(hit.geometric);
         const IORStack before(replay);
         Scalar etaI, etaT; bool exiting;
@@ -5038,7 +5048,8 @@ bool ManifoldSolver::ExtendedAnchorEligible(const IScene& scene, const IRayCaste
     const Point3& point, const IORStack& stack, Scalar nm) const
 {
     if(!ExtendedModeActive(scene)) return true;
-    if(!std::isfinite(config.extendedEventFloor) || config.extendedEventFloor <= 0
+    if(!config.maxChainDepth || config.targetBounces > config.maxChainDepth
+        || !std::isfinite(config.extendedEventFloor) || config.extendedEventFloor <= 0
         || config.extendedEventFloor > 0.5 || config.photonCount || scene.GetGlobalMedium()
         || (caster.GetLightSampler() && caster.GetLightSampler()->SceneHasAlphaCoverage())) return false;
     const auto* objects = dynamic_cast<const ObjectManager*>(scene.GetObjects());

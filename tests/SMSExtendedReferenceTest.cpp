@@ -188,10 +188,27 @@ static void CloseRoots() {
 }
 // A regular native sphere root lies on the 0/1 longitude seam. Independent
 // surface seeds approach the same physical point from both chart sides.
+class SeamTint final : public UniformColorPainter {
+public:
+    SeamTint() : UniformColorPainter(RISEPel(1)) {}
+    RISEPel GetColor(const RayIntersectionGeometric& hit) const override {
+        return RISEPel(hit.ptCoord.x<.5?.25:.75);
+    }
+    Scalar GetColorNM(const RayIntersectionGeometric& hit,Scalar) const override {
+        return hit.ptCoord.x<.5?.25:.75;
+    }
+};
 static void SphereSeamRoots() {
+    for(bool textured:{false,true}) {
     Fixture f(Materials()+"sphere_geometry\n{\n name sphere\n radius 1\n}\n"+Object("caster","sphere","mirror"));
     ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;
     auto* solver=new ManifoldSolver(cfg);IORStack air(1);
+    if(textured) {
+        auto* tint=new SeamTint();IMaterial* material=nullptr;
+        Check(RISE_API_CreatePerfectReflectorMaterial(&material,*tint),"discontinuous seam tint material created");
+        if(material) f.job->GetObjects()->GetItem("caster")->AssignMaterial(*material);
+        safe_release(material);tint->release();
+    }
     RandomNumberGenerator random(217);IndependentSampler sampler(random);
     std::vector<SMSDomainRoot> roots;
     for(unsigned i=0;i<128&&roots.size()<20;++i) {
@@ -207,6 +224,8 @@ static void SphereSeamRoots() {
         Check(Point3Ops::Distance(vertex.position,Point3(-1,0,0))<1e-8,"sphere seam root matches analytic reflection point");
         Check(vertex.uv.x==0&&root.vertices[0].context.ptCoord.x==0,
             "native sphere seam endpoints use one material-context representative");
+        Check(root.result.contributionNM==(textured?.25:1),
+            "sphere seam material throughput uses the selected native chart representative");
         Check(ManifoldSolver::SameExtendedRoot(roots[0],root,1e-6),
             "opposite sphere chart sides identify the same physical root");
     }
@@ -235,6 +254,7 @@ static void SphereSeamRoots() {
         Check(!ManifoldSolver::SameExtendedRoot(roots[0],changed,1e-6),"non-alias UV contexts remain distinct");
     }
     solver->release();
+    }
 }
 static std::string QuadMesh(const std::string& name,Scalar z,Scalar x0,Scalar x1,bool reverse) {
     std::ostringstream s;s<<std::setprecision(17);
