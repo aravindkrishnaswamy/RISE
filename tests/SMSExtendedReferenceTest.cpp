@@ -579,9 +579,11 @@ public:
     }
 };
 class AliasedNormal final : public IRayIntersectionModifier, public Reference {
+    Scalar periodDivisor;
 public:
+    explicit AliasedNormal(Scalar divisor=1):periodDivisor(divisor) {}
     void Modify(RayIntersectionGeometric& hit) const override {
-        const Scalar h=std::cbrt(std::numeric_limits<Scalar>::epsilon());
+        const Scalar h=std::cbrt(std::numeric_limits<Scalar>::epsilon())/periodDivisor;
         const Scalar a=.2*h/(2*PI);
         const Scalar sign=Vector3Ops::Dot(hit.vNormal,Vector3(0,0,1))<0?-1:1;
         hit.vNormal=Vector3Ops::Normalize(Vector3(sign*a*std::sin(2*PI*hit.ptObjIntersec.x/h),0,sign));
@@ -770,9 +772,9 @@ static void RoundFourNumerics() {
         }
         solver->release();
     }
-    for(bool reverse:{false,true}) {
+    for(bool reverse:{false,true}) for(Scalar divisor:{Scalar(1),Scalar(4)}) {
         Fixture f(Materials()+QuadMesh("patch",0,-2,2,reverse)+Object("caster","patch","mirror"));
-        auto* modifier=new AliasedNormal();f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);modifier->release();
+        auto* modifier=new AliasedNormal(divisor);f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);modifier->release();
         const Point3 start(-.5,.3,3),end(.5,.3,3),center(0,.3,0);IORStack air(1);
         RayIntersection hit(Ray(start,Vector3Ops::Normalize(Vector3Ops::mkVector3(center,start))),nullRasterizerState);
         f.Object("caster")->IntersectRay(hit,RISE_INFINITY,true,true,false);Check(hit.geometric.bHit,"R4 continuous normal native hit");
@@ -786,10 +788,10 @@ static void RoundFourNumerics() {
         auto domainRecords=records;
         NativeConstraintOracle oracle(cfg,&domainRecords);RandomNumberGenerator random(21);IndependentSampler sampler(random);
         const auto result=oracle.SolveDomain(start,Vector3(0,0,-1),end,Vector3(0,0,-1),f.Scene(),air,domain,domainRecords,sampler,1e-7,1e-10);
-        std::cout<<"R4 oscillatory normal domain="<<domain.kind<<":"<<domain.component<<":"<<domain.nm<<" winding="<<reverse<<" valid="<<result.valid<<'\n';
+        std::cout<<"R4 oscillatory normal divisor="<<divisor<<" domain="<<domain.kind<<":"<<domain.component<<":"<<domain.nm<<" winding="<<reverse<<" valid="<<result.valid<<'\n';
         if(result.valid) {
             std::vector<Scalar> d,u,l;oracle.BuildJacobian(result.specularChain,start,end,d,u,l,true);
-            const Scalar h=std::cbrt(std::numeric_limits<Scalar>::epsilon())/1024;
+            const Scalar h=std::cbrt(std::numeric_limits<Scalar>::epsilon())/(1024*divisor);
             for(unsigned column=0;column<2;++column) {
                 auto plus=result.specularChain,minus=plus;const Vector3 t=column?plus[0].dpdv:plus[0].dpdu;
                 plus[0].position=Point3Ops::mkPoint3(center,t*h);minus[0].position=Point3Ops::mkPoint3(center,-t*h);
