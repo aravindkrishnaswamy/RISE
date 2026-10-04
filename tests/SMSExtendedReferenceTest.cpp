@@ -668,7 +668,9 @@ static void NativeClosePatches(Fixture& f,bool reverse,Scalar offset) {
         const Point3 center(centerX,.3,0),start(offset,-.2,-30000),end(offset,.8,-30000);
         const Vector3 n=Vector3Ops::Normalize(Vector3Ops::Normalize(Vector3Ops::mkVector3(start,center))
             +Vector3Ops::Normalize(Vector3Ops::mkVector3(end,center)));
-        const Scalar x0=sign<0?offset-1:offset+2e-9,x1=sign<0?offset-2e-9:offset+1;
+        // Leave clearance for native context probes on either side of each
+        // root; the two patches remain disjoint across their central gap.
+        const Scalar x0=sign<0?offset-1:offset+.5e-9,x1=sign<0?offset-.5e-9:offset+1;
         const unsigned base=mesh->numPoints();
         for(const Point2& p:{Point2(x0,-1),Point2(x1,-1),Point2(x1,2),Point2(x0,2)}) {
             mesh->AddVertex(Point3(p.x,p.y,-n.x*(p.x-centerX)/n.z));
