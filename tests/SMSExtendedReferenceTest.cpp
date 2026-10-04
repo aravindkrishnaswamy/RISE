@@ -336,14 +336,15 @@ static void GeneratedChartRoots() {
             : kind==2 ? static_cast<IUVGenerator*>(new InteriorStepUV())
             : static_cast<IUVGenerator*>(new FixedEndpointUV());
         f.job->GetObjects()->GetItem("caster")->SetUVGenerator(*mapping);mapping->release();
-        const Point3 start=kind==2?Point3(-.5,0,-3):Point3(-3,.5,0);
-        const Point3 end=kind==2?Point3(.5,0,-3):Point3(-3,-.5,0);
+        const Scalar sign=kind==1?1:-1;
+        const Point3 start=kind==2?Point3(-.5,0,-3):Point3(sign*3,.5,0);
+        const Point3 end=kind==2?Point3(.5,0,-3):Point3(sign*3,-.5,0);
         ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;
         auto* solver=new ManifoldSolver(cfg);IORStack air(1);
         for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
             RandomNumberGenerator random(217);IndependentSampler sampler(random);unsigned accepted=0;
             for(unsigned i=0;i<512;++i) {
-                const auto root=solver->ProposeExtendedRoot(start,kind==2?Vector3(0,0,1):Vector3(1,0,0),end,f.Scene(),air,domain,sampler);
+                const auto root=solver->ProposeExtendedRoot(start,kind==2?Vector3(0,0,1):Vector3(-sign,0,0),end,f.Scene(),air,domain,sampler);
                 accepted+=root.accepted;
                 if(root.accepted && kind==3) Check(root.vertices[0].context.ptCoord.x==1,
                     "continuous generated-chart control preserves actual endpoint UV");
@@ -448,20 +449,22 @@ static void CheckNativeHorizonJacobian(const ManifoldSolverConfig& cfg,const Man
     std::vector<Scalar> diagonal,upper,lower;
     oracle.BuildJacobian(chain,start,end,diagonal,upper,lower,true);
     const Scalar h=1e-4*Point3Ops::Distance(start,end);
-    for(unsigned column=0;column<2;++column) {
-        auto plus=chain,minus=chain;
-        const Vector3 tangent=column?chain[0].dpdv:chain[0].dpdu;
-        plus[0].position=Point3Ops::mkPoint3(plus[0].position,tangent*h);
-        minus[0].position=Point3Ops::mkPoint3(minus[0].position,-tangent*h);
+    for(std::size_t column=0;column<2*chain.size();++column) {
+        auto plus=chain,minus=chain;const std::size_t j=column/2;
+        const Vector3 tangent=column%2?chain[j].dpdv:chain[j].dpdu;
+        plus[j].position=Point3Ops::mkPoint3(plus[j].position,tangent*h);
+        minus[j].position=Point3Ops::mkPoint3(minus[j].position,-tangent*h);
         std::vector<Scalar> a,b;
         oracle.EvaluateConstraint(plus,start,end,a);oracle.EvaluateConstraint(minus,start,end,b);
-        for(unsigned row=0;row<2;++row) {
-            const Scalar observed=(a[row]-b[row])/(2*h),expected=diagonal[2*row+column];
+        for(std::size_t row=0;row<2*chain.size();++row) {
+            const std::size_t i=row/2,index=4*i+2*(row%2)+column%2;
+            const Scalar expected=i==j?diagonal[index]:j==i+1?upper[index]:i==j+1?lower[4*(i-1)+2*(row%2)+column%2]:0;
+            const Scalar observed=(a[row]-b[row])/(2*h);
             Check(std::fabs(observed-expected)<1e-5*std::max(Scalar(1),std::fabs(expected)),
-                "native shading/fallback constraint Jacobian agrees at an independent displacement scale");
+                "every native shading/fallback Jacobian block agrees at an independent displacement scale");
         }
     }
-    const Vector3 lightNormal=Vector3Ops::Normalize(Vector3Ops::mkVector3(end,chain[0].position));
+    const Vector3 lightNormal=Vector3Ops::Normalize(Vector3Ops::mkVector3(end,chain.back().position));
     OrthonormalBasis3D lightFrame;lightFrame.CreateFromW(lightNormal);
     Scalar firstError=0;
     for(unsigned refinement=0;refinement<3;++refinement) {
@@ -679,6 +682,17 @@ static void NativeOverlapExits() {
                         "overlap solve reproduces the actual native R/T root");
                     if(result.valid) Check(std::fabs(result.contributionNM-native*(reflection?1:RadianceEtaScale(stack,ray.ior_stack)))<1e-8,
                         "overlap solved native event price agrees with the separate consumer oracle");
+                    const Scalar u=reverse?.049375:.859375,v=reverse?.625/.975:.025/.375;
+                    Point3 sampled;Vector3 sampledNormal;Point2 sampledUV;
+                    hit.pObject->UniformRandomPoint(&sampled,&sampledNormal,&sampledUV,Point3(u,v,.29));
+                    Check(Point3Ops::Distance(sampled,center)<1e-12*scale,
+                        "scripted overlap surface draw reaches the actual native endpoint");
+                    ScriptSampler rootSampler({.01,u,v,.29,reflection?.001:.999},.999);
+                    const auto root=solver->ProposeExtendedRoot(start,Vector3(0,0,1),end,f.Scene(),stack,domain,rootSampler);
+                    Check(root.accepted && Point3Ops::Distance(root.vertices[0].geometry.position,center)<1e-8*scale,
+                        "complete overlap proposal retains the native solved R/T root and visibility");
+                    if(root.accepted) Check(std::fabs(root.result.contributionNM-native*(reflection?1:RadianceEtaScale(stack,ray.ior_stack)))<1e-8,
+                        "complete overlap proposal matches native price and consumer eta scale");
                     solver->release();
                 }
             }
@@ -714,6 +728,54 @@ static void CheckJacobian(ConstraintOracle& solver,const SMSDomainRoot& root,con
                 std::cout<<"Jacobian row="<<row<<" col="<<column<<" expected="<<expected<<" observed="<<observed<<" count="<<count<<" domain="<<root.domain.component<<'\n';
             Check(std::fabs(observed-expected)<=1e-5*std::max(Scalar(1),std::fabs(expected)),
                 "native mixed-event constraint Jacobian agrees with central differences");
+        }
+    }
+}
+class ArrivingRayNormal final : public IRayIntersectionModifier, public Reference {
+public:
+    void Modify(RayIntersectionGeometric& hit) const override {
+        hit.vNormal=Vector3Ops::Normalize(hit.vNormal+Vector3(.025*hit.ray.Dir().x,.02*hit.ray.Dir().y,0));
+        hit.onb.CreateFromW(hit.vNormal);
+    }
+};
+static void ModifiedWalkJacobians() {
+    for(bool reverse:{false,true}) for(int side:{-1,1}) for(bool transformed:{false,true})
+        for(unsigned count:{2u,3u}) {
+        const Scalar scale=transformed?1.5:1,offset=transformed?3:0;
+        const std::string transform=transformed?" scale 1.5 1.5 1.5\n position 3 0 0\n":"";
+        Fixture f(Materials()+QuadMesh("first",0,-2,2,reverse)+QuadMesh("gate",-side,.3,2,reverse)
+            +QuadMesh("last",-2*side,.6,4,reverse)+Object("a_first","first","mirror",transform)
+            +Object("b_gate","gate","glass",transform)+Object("c_last","last","mirror",transform));
+        auto* modifier=new ArrivingRayNormal();
+        for(const char* name:{"a_first","b_gate","c_last"}) {
+            f.job->GetObjects()->GetItem(name)->AssignModifier(*modifier);
+            Check(f.Object(name)->GetModifier()==modifier,"mixed-event arriving-ray modifier retained");
+        }
+        modifier->release();
+        const Point3 start(offset-scale,0,-2*side*scale);
+        for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
+            ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=count;
+            auto* solver=new ManifoldSolver(cfg);IORStack air(1);
+            const auto draws=[&](){return std::vector<Scalar>{.01,reverse?.0975:.75,reverse?10./19:.1,.6,.99};};
+            ScriptSampler sampler(draws(),.99);std::vector<SMSDomainVertex> vertices;
+            const bool built=solver->BuildExtendedSeed(start,Point3(offset,0,-1.5*side*scale),f.Scene(),air,domain,sampler,vertices);
+            Check(built&&vertices.size()==count,"native double-sided transformed R-T and R-T-R walk has its exact event count");
+            if(built&&vertices.size()==count) {
+                Check(vertices[0].geometry.isReflection&&!vertices[1].geometry.isReflection
+                    &&(count==2||vertices[2].geometry.isReflection),"native proposal records R-T or R-T-R without event relabelling");
+                const Point3 previous=count==2?vertices[0].geometry.position:vertices[1].geometry.position;
+                const auto& last=vertices.back().geometry;
+                Vector3 outgoing=Vector3Ops::Normalize(Vector3Ops::mkVector3(last.position,previous));
+                if(last.isReflection) outgoing=Optics::CalculateReflectedRay(outgoing,last.normal);
+                else {const Vector3 normal=Vector3Ops::Dot(outgoing,last.normal)<0?last.normal:-last.normal;
+                    Check(Optics::CalculateRefractedRay(normal,last.etaI,last.etaT,outgoing),"chosen native transmission is below TIR");}
+                const Point3 end=Point3Ops::mkPoint3(last.position,outgoing*(.3*scale));
+                ScriptSampler rootSampler(draws(),.99);
+                const auto root=solver->ProposeExtendedRoot(start,Vector3(0,0,side),end,f.Scene(),air,domain,rootSampler);
+                Check(root.accepted,"native mixed-event root passes full ordered scene visibility");
+                if(root.accepted) CheckNativeHorizonJacobian(cfg,root.result,root.vertices,start,end,f.Scene(),air,domain,rootSampler);
+            }
+            solver->release();
         }
     }
 }
@@ -1227,6 +1289,7 @@ int main(int argc,char** argv) {
         InteriorAtlasRoots();
         GeneratedChartRoots();
         NativeOverlapExits();
+        ModifiedWalkJacobians();
         NativeHorizonFallbacks();
         NativeClosedHorizonFallbacks();
 #else
