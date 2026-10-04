@@ -7142,6 +7142,18 @@ SMSDomainRoot ManifoldSolver::ProposeExtendedRoot(const Point3& start, const Vec
     const Scalar polish = std::min(config.solverThreshold, std::sqrt(std::numeric_limits<Scalar>::epsilon())/64);
     root.result = SolveDomain(start, startNormal, end, Vector3(0,0,1), scene, root.startingStack,
         domain, root.vertices, sampler, tolerance, polish);
+    if(root.result.valid) {
+        Scalar contextGain=1;
+        for(const auto& vertex:root.vertices) contextGain=std::max(contextGain,vertex.contextSlope*root.scale);
+        if(contextGain>1 && std::isfinite(contextGain)) {
+            // Resolve a smooth but steep context in its own matching band.
+            // This deterministic refinement is part of every proposal and
+            // retry, not an extra discovery or a changed event topology.
+            const Scalar contextPolish=std::max(std::numeric_limits<Scalar>::epsilon(),polish/contextGain);
+            root.result=SolveDomain(start,startNormal,end,Vector3(0,0,1),scene,root.startingStack,
+                domain,root.vertices,sampler,tolerance,contextPolish);
+        }
+    }
     bool visible = root.result.valid;
     if(visible) {
         const auto& chain = root.result.specularChain;

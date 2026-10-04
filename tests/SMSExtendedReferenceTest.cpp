@@ -687,6 +687,13 @@ static void RoundFourNumerics() {
         for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
             ScriptSampler left({.2,reverse?5./9:11./36,reverse?.25:.4,.1}),right({.2,reverse?5./9:11./36,reverse?.25:.4,.6});
             const Point3 start(995000,0,-30000),end(1005000,0,-30000);
+            ScriptSampler seedSampler({.2,reverse?5./9:11./36,reverse?.25:.4,.1});
+            std::vector<SMSDomainVertex> seed;
+            const bool walked=solver->BuildExtendedSeed(start,end,f.Scene(),air,domain,seedSampler,seed);
+            std::cout<<"R4 close walk="<<walked<<" vertices="<<seed.size();
+            if(!seed.empty()) std::cout<<" position="<<seed[0].geometry.position.x<<":"<<seed[0].geometry.position.y<<":"<<seed[0].geometry.position.z
+                <<" native derivative="<<seed[0].context.derivatives.valid<<" bary="<<seed[0].context.signals.baryA<<":"<<seed[0].context.signals.baryB;
+            std::cout<<'\n';
             const auto a=solver->ProposeExtendedRoot(start,Vector3(0,0,1),end,f.Scene(),air,domain,left);
             const auto b=solver->ProposeExtendedRoot(start,Vector3(0,0,1),end,f.Scene(),air,domain,right);
             const bool same=ManifoldSolver::SameExtendedRoot(a,b,1);
