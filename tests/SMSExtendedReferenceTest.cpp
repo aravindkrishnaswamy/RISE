@@ -355,7 +355,7 @@ static void Geometry() {
 #endif
 // Native analytic virtual-image reference for an upward spot reflected by
 // one plane: f * F * Le / (anchor-to-plane + light-to-plane)^2.
-static void DeltaLights(bool production=false, bool signedEmitter=false) {
+static void DeltaLights(bool production=false, bool signedEmitter=false, bool uniform=false) {
     for(bool point:{false,true}) for(bool glass:{false,true}) for(bool winding:{false,true}) for(int mode:{0,1,2}) {
         if(signedEmitter&&mode!=0) continue;
         std::string text=Materials();
@@ -374,6 +374,7 @@ static void DeltaLights(bool production=false, bool signedEmitter=false) {
         auto* caster=new RayCaster(false,16,*shader,true);caster->AttachScene(&fixture.Scene());
         ManifoldSolverConfig cfg;cfg.enabled=true;cfg.extendedMode=true;cfg.targetBounces=1;
         cfg.biased=true;cfg.multiTrials=1;cfg.maxBernoulliTrials=64;
+        cfg.seedingMode=uniform?ManifoldSolverConfig::eSeedingUniform:ManifoldSolverConfig::eSeedingSnell;
 #ifdef RISE_SMS_REFERENCE_A
         SMSReferenceCounters counters;SMSDomainCounters domainCounters;
         cfg.referenceCounters=&counters;cfg.domainCounters=&domainCounters;
@@ -449,7 +450,7 @@ static void DeltaLights(bool production=false, bool signedEmitter=false) {
             const Scalar expected=fresnel*(mode==0?f[c]*le[c]:fnm*lenm*mirrorNM)/(imageDistance*imageDistance)
                 +(production&&point?(mode==0?f[c]*le[c]:fnm*lenm)/std::pow(-1-hit.geometric.ptIntersection.z,2):0);
             const Moments m(samples[c]);
-            std::cout<<std::setprecision(17)<<"delta signed="<<signedEmitter<<" production="<<production<<" point="<<point<<" glass="<<glass<<" winding="<<winding<<" mode="<<mode<<" c="<<c
+            std::cout<<std::setprecision(17)<<"delta uniform="<<uniform<<" signed="<<signedEmitter<<" production="<<production<<" point="<<point<<" glass="<<glass<<" winding="<<winding<<" mode="<<mode<<" c="<<c
                 <<" mean="<<m.mean<<" sd="<<m.sd<<" n=4 N="<<N<<" analytic="<<expected<<" error="<<m.mean-expected<<" mirrorNM="<<mirrorNM<<" reference sd=0\n";
             Check(std::isfinite(m.mean)&&std::fabs(m.mean)>0,"point/spot reference activation is nonzero and finite");
             Check(std::fabs(m.mean-expected)<=3*m.sd+64*std::numeric_limits<Scalar>::epsilon()*std::fabs(expected),
@@ -685,7 +686,7 @@ int main(int argc,char** argv) {
     if(argc==2&&std::string(argv[1])=="--production-only") {synthetic=false;geometry=false;delta=true;unsupported=false;production=true;slab=false;}
     if(argc==2&&std::string(argv[1])=="--slab-only") {synthetic=false;geometry=false;delta=false;unsupported=false;}
     if(argc==2&&std::string(argv[1])=="--signed-only") {
-        DeltaLights(false,true);DeltaLights(true,true);
+        for(bool uniform:{false,true}) {DeltaLights(false,true,uniform);DeltaLights(true,true,uniform);}
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
     }
     std::cout<<std::setprecision(12);
@@ -697,7 +698,7 @@ int main(int argc,char** argv) {
     if(synthetic||geometry) std::cout<<"Estimator A is absent on this committed baseline; new helper tests are unavailable, not a numerical red proof.\n";
 #endif
     if(delta) DeltaLights(production);
-    if(argc==1) {DeltaLights(false,true);DeltaLights(true,true);}
+    if(argc==1) for(bool uniform:{false,true}) {DeltaLights(false,true,uniform);DeltaLights(true,true,uniform);}
     if(unsupported) {UnsupportedCasterSwitches();CompositeProxyPolicy();}
     if(slab) SlabRenders();
     std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
