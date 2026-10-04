@@ -1,6 +1,6 @@
 # Extended SMS Phase 1 validation (2026-10-03)
 
-Status: implementation and acceptance gate in progress on `sms-ext`; no phase merge or ledger closure is claimed.
+Status: Phase 1 implementation and the final serial acceptance gate pass on `sms-ext`; fresh round-2 review remains pending. No phase merge or ledger closure is claimed.
 
 ## Scope and rejection contract
 
@@ -227,3 +227,48 @@ boundary after this source correction: clean make and both Xcode builds,
 ManifoldSolverTest and SMSUniformDispersionTest (300/0) had passed. Their
 logs remain under `round2-gate`. A full clean gate on the corrected tree
 will be recorded separately under `round2-final-gate` before fresh review.
+
+
+## Final round-2 gate before fresh review
+
+The full gate on library source `ad02ff7d2` (documentation checkpoint
+`116cf5fa3`) completed serially with all **20 test/mode entries passing**.
+Each test was built individually, its successful exit and absence of
+compiler diagnostics checked before execution. Clean make compiled **376**
+actions; clean Xcode Deployment and Opto compiled **393** actions each.
+All three builds exited zero with **zero compiler warnings/errors**. Each
+Xcode build has the same OIDN linker-search and AppIntents tool notices
+reported above; neither is a suppressed compiler warning.
+
+| Test/mode | Result |
+|---|---:|
+| ManifoldSolverTest | DL-435 388/0; other unit groups pass, no aggregate emitted |
+| SMSUniformDispersionTest | 300/0 |
+| SMSUniformDispersionTest --shipped | 10/0 |
+| ExteriorIndexInvarianceTest | 299/0 |
+| SMSEmitterDirectionTest | 344/0 |
+| SMSMediumAnchorTest | 27/0 |
+| TransparentShadowPartitionTest | 42/0 |
+| WeaveGapShadowTransmittanceTest | 244/0 |
+| OpenSheetIndexConventionTest | 24/0 |
+| GradedIndexInteriorFactorTest | 101/0 |
+| ManifoldNormalDerivativeTest | 141/0 |
+| DoubleSidedEmitterTest | 34/0 |
+| AlphaSMSGeometryTest | 216/0 |
+| AlphaSMSTransportTest | 20/0 |
+| AlphaSMSReciprocalTest | 27/0 |
+| PTGuidingMISPartitionTest | 185/0 |
+| SourceHygieneTest | 169/0; 455 test files scanned |
+| CstDeriveGoldenTest | 458 match, 0 drift; 465 corpus, 0 uncovered/stale |
+| SMSDomainReplayTest | 8200/0 |
+| SMSLegacyModeTest | 21/0 |
+
+Evidence: `.claude/logs/sms-phase1/round2-final-gate/results.json`,
+individual checked build/run logs in that directory, and
+`round2-final-gate-driver.log`. The final legacy run matches all **16**
+committed-master interleaved A raw hashes **and means exactly**;
+`round2-final-gate/legacy-parity.json` records that independent comparison.
+Final domain counters are **120 attempts / 184 Newton iterations / 118
+accepted / 2 rejected / 0 retries / 0 tail events / 0 owned roots**.
+These remain isolated biased solves, not production estimator evidence.
+Fresh independent round-2 review is the next gate; Phase 1 is not merged.
