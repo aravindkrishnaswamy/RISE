@@ -358,3 +358,20 @@ replacement gate under `.claude/logs/sms-phase2-round2-final/` passes
 with verified native source hashes. Fresh Round 2 reviewers and the
 Phase 2 merge remain pending.
 Round 1's clean verdicts do not apply to the changed source.
+
+## Fresh round 2 disposition (2026-10-04)
+
+All three independent reviewers examined `8f9a63f692b7d042264d989ea3d6f0c5da9441fb`
+after the complete replacement gate. Estimator review found one P1: arbitrary
+interior-valued mesh atlas seams with smooth world-position tint can split one
+physical root's reciprocal-probability family. Material review found one P2
+that conflicts with the adopted design: native wrong-side refractor events
+use geometric-normal fallback, whereas the extended constraint always uses
+the shading normal. Cost/tests/document review found no P1/P2 and independently
+reproduced the documented source hashes, checks and timing statistics.
+
+Neither finding is numerically reproduced or fixed yet. The native-law conflict
+triggers the user's explicit design-stop rule; the proposal and static evidence
+are recorded in `SMS_EXTENDED_DESIGN.md`. The green gate remains evidence for
+the tested checkpoint, not a clean review verdict. Phase 2 is unmerged, Phase 3
+and Phase 4 have not started, and all target ledger rows remain open.
