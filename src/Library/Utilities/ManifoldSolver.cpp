@@ -599,9 +599,7 @@ RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::Solve
                 } else if(typeid(*geometry)==typeid(TriangleMeshGeometryIndexed)) {
                     meshEdge=true; // missing native triangle provenance is uncertain
                 } else if(typeid(*geometry)==typeid(TriangleMeshGeometry)) {
-                    const Point3 surface=Point3Ops::Transform(vertex.pObject->GetFinalInverseTransformMatrix(),
-                        SMSReferenceSurfacePoint(*vertex.pObject,hit.geometric));
-                    meshEdge=dynamic_cast<const TriangleMeshGeometry*>(geometry)->NativeTriangleEdgeDistance(surface)<=band;
+                    meshEdge=dynamic_cast<const TriangleMeshGeometry*>(geometry)->NativeTriangleEdgeDistance(hit.geometric)<=band;
                 }
             }
             const bool seam = meshEdge || (axes.x && std::min(std::fabs(hit.geometric.ptCoord.x),std::fabs(1-hit.geometric.ptCoord.x)) <= band)

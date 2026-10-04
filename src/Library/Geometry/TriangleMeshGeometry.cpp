@@ -701,18 +701,10 @@ SurfaceDerivatives TriangleMeshGeometry::ComputeSurfaceDerivatives( const Point3
 	return TMComputeTriangleDerivatives( *bestTri, objSpaceNormal, bestU, bestV );
 }
 
-Scalar TriangleMeshGeometry::NativeTriangleEdgeDistance(const Point3& point) const
+Scalar TriangleMeshGeometry::NativeTriangleEdgeDistance(const RayIntersectionGeometric& hit) const
 {
-    Scalar nearest=RISE_INFINITY, edge=0;
-    for(const Triangle& triangle:polygons) {
-        Scalar u=0,v=0; bool inside=false;
-        TMBarycentric(triangle.vertices[0],triangle.vertices[1],triangle.vertices[2],point,u,v,inside);
-        if(!inside) continue;
-        const Vector3 normal=Vector3Ops::Normalize(Vector3Ops::Cross(
-            Vector3Ops::mkVector3(triangle.vertices[1],triangle.vertices[0]),
-            Vector3Ops::mkVector3(triangle.vertices[2],triangle.vertices[0])));
-        const Scalar distance=std::fabs(Vector3Ops::Dot(normal,Vector3Ops::mkVector3(point,triangle.vertices[0])));
-        if(distance<nearest) { nearest=distance;edge=std::min({u,v,1-u-v}); }
-    }
-    return edge; // No reconstructible triangle is uncertain, too.
+    const auto& signal=hit.signals;
+    if(signal.pProvider || signal.primId<0 || static_cast<std::size_t>(signal.primId)>=polygons.size()
+        || !std::isfinite(signal.baryA) || !std::isfinite(signal.baryB)) return 0;
+    return std::min({signal.baryA,signal.baryB,1-signal.baryA-signal.baryB});
 }

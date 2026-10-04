@@ -167,6 +167,13 @@ namespace RISE
 				const Scalar&	a = h.alpha;
 				const Scalar&	b = h.beta;
 
+                // Native primitive provenance is independent of shading-signal
+                // support. No provider/bake is advertised by this mesh.
+                ri.signals.pProvider = nullptr;
+                ri.signals.primId = static_cast<int>(elem-polygons.data());
+                ri.signals.baryA = a;
+                ri.signals.baryB = b;
+
 				ri.vNormal = thisTri.normals[0]+
 					(thisTri.normals[1]-thisTri.normals[0])*a+
 					(thisTri.normals[2]-thisTri.normals[0])*b;
