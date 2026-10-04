@@ -1,6 +1,6 @@
 # Extended SMS Phase 1 validation (2026-10-03)
 
-Status: Phase 1 implementation and the final serial acceptance gate pass on `sms-ext`; fresh round-2 review remains pending. No phase merge or ledger closure is claimed.
+Status: Phase 1 implementation and the final serial acceptance gate pass on `sms-ext`. Fresh round 2 reports zero P1/P2 on `0a2913105`; final ledger/review documentation is awaiting round 3. No phase merge or ledger closure is claimed.
 
 ## Scope and rejection contract
 
@@ -272,3 +272,25 @@ Final domain counters are **120 attempts / 184 Newton iterations / 118
 accepted / 2 rejected / 0 retries / 0 tail events / 0 owned roots**.
 These remain isolated biased solves, not production estimator evidence.
 Fresh independent round-2 review is the next gate; Phase 1 is not merged.
+
+
+## Fresh review round 2
+
+Three fresh, read-only reviewers examined committed `0a2913105` against
+master `ffc70c1c2`: estimator/partition, material/medium/API, and
+cost/tests/documentation. All three returned **zero P1 and zero P2**.
+Each independently ran the six permitted query-only modes, obtaining
+finite **504/0**, raster **16/0**, composite/CSG **8/0**, polished **328/0**,
+medium **480/0**, and empty-name **24/0**. No reviewer edited, rebuilt or
+rendered. The evidence reviewer independently recalculated the raw cost
+statistics, numerical red labels, compilation counts and exact legacy
+hash/mean comparisons; historical build/render proofs rely on retained
+logs, not a new reviewer render or sanitizer run.
+
+The scoped HWSS provenance and prepared composite policy resolve round
+1's two P1 findings under the user's adopted interim contract. Production
+proposal/acceptance, estimators, ownership and HWSS channel geometry remain
+later phases. DL-438, DL-391 and the DL-353 remainder now carry their
+primitive red/green evidence in place, without closure or totals changes.
+This ledger/review documentation update will receive fresh round 3 before
+merge; the passing source gate is unchanged.
