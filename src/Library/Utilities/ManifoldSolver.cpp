@@ -450,6 +450,12 @@ RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::Solve
         if(!hit.geometric.bHit || hit.pObject != vertex.pObject || hit.pMaterial != vertex.pMaterial
             || Point3Ops::Distance(convergenceThreshold > 0 ? SMSReferenceSurfacePoint(*vertex.pObject,hit.geometric) : hit.geometric.ptIntersection, vertex.position) > positionTolerance) { return failed; }
         if(hit.pModifier) hit.pModifier->Modify(hit.geometric);
+        const auto finite3=[](const auto& value) {
+            return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+        };
+        if(!finite3(hit.geometric.ptIntersection) || !finite3(hit.geometric.ptObjIntersec)
+            || !finite3(hit.geometric.vNormal) || !finite3(hit.geometric.UnflippedGeomNormal())
+            || !std::isfinite(hit.geometric.ptCoord.x) || !std::isfinite(hit.geometric.ptCoord.y)) return failed;
         // A periodic chart seam is one physical root for an audited
         // context-independent event law. A varying/unaudited seam price or
         // normal modifier cannot establish a unique limiting context: it is
@@ -487,7 +493,8 @@ RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::Solve
             if(seam && (hit.pModifier || !SMSConstantSeamMaterial(*vertex.pMaterial))) return failed;
             if(hit.pModifier || (nativeObject && !nativeObject->UsesNativeTextureChart()
                 && !SMSConstantSeamMaterial(*vertex.pMaterial))) {
-                // Generated charts and modifiers can have seams at arbitrary interior UVs.
+                // Generated charts and modifier-written matching contexts can jump
+                // inside a native chart.
                 // Probe their actual contexts within the physical matching
                 // band, instead of assuming the geometry's chart describes
                 // the generator. This is a local numerical ambiguity check,
@@ -496,7 +503,7 @@ RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::Solve
                 const Scalar displacement=band*Point3Ops::Distance(start,end)/8;
                 if(!(displacement>0) || !std::isfinite(displacement)) return failed;
                 for(const Vector3& tangent : {vertex.dpdu,vertex.dpdv}) for(int sign : {-1,1}) {
-                    Point2 coords[2];
+                    Point2 coords[2];Point3 positions[2];Vector3 normals[2],geomNormals[2];
                     for(unsigned probeIndex=0;probeIndex<2;++probeIndex) {
                         const Scalar fraction=probeIndex?.5:1;
                         const Point3 target=Point3Ops::mkPoint3(vertex.position,tangent*(sign*displacement*fraction));
@@ -508,15 +515,29 @@ RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::Solve
                         if(!probe.geometric.bHit || probe.pObject!=vertex.pObject
                             || probe.pMaterial!=vertex.pMaterial
                             || Point3Ops::Distance(SMSReferenceSurfacePoint(*vertex.pObject,probe.geometric),target)>displacement
+                            || !finite3(probe.geometric.ptIntersection) || !finite3(probe.geometric.ptObjIntersec)
+                            || !finite3(probe.geometric.vNormal) || !finite3(probe.geometric.UnflippedGeomNormal())
                             || !std::isfinite(probe.geometric.ptCoord.x) || !std::isfinite(probe.geometric.ptCoord.y)) return failed;
                         coords[probeIndex]=probe.geometric.ptCoord;
+                        positions[probeIndex]=probe.geometric.ptObjIntersec;
+                        normals[probeIndex]=probe.geometric.vNormal;
+                        geomNormals[probeIndex]=probe.geometric.UnflippedGeomNormal();
                     }
-                    // A smooth chart's first-order change cancels at the
+                    // A smooth context's first-order change cancels at the
                     // midpoint, independently of its UV scale. A finite
-                    // chart jump does not. Reserve the same numerical UV
-                    // matching band; do not bound the chart's first derivative.
+                    // context jump does not. Reserve the corresponding root-matching
+                    // bands; do not bound the context's first derivative.
                     if(std::hypot(2*coords[1].x-coords[0].x-hit.geometric.ptCoord.x,
-                        2*coords[1].y-coords[0].y-hit.geometric.ptCoord.y)>band/8) return failed;
+                        2*coords[1].y-coords[0].y-hit.geometric.ptCoord.y)>band/8
+                        || Vector3Ops::Magnitude(normals[1]*2-normals[0]-hit.geometric.vNormal)>band/8
+                        || Vector3Ops::Magnitude(geomNormals[1]*2-geomNormals[0]-hit.geometric.UnflippedGeomNormal())>band/8) return failed;
+                    const Point3& center=hit.geometric.ptObjIntersec;
+                    const Scalar objectScale=std::max({Scalar(1),std::fabs(center.x),std::fabs(center.y),std::fabs(center.z),
+                        std::fabs(positions[0].x),std::fabs(positions[0].y),std::fabs(positions[0].z),
+                        std::fabs(positions[1].x),std::fabs(positions[1].y),std::fabs(positions[1].z)});
+                    const Vector3 positionDifference(2*positions[1].x-positions[0].x-center.x,
+                        2*positions[1].y-positions[0].y-center.y,2*positions[1].z-positions[0].z-center.z);
+                    if(Vector3Ops::Magnitude(positionDifference)>band*objectScale/8) return failed;
                 }
             }
         }
