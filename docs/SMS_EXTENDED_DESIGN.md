@@ -99,7 +99,7 @@ Medium membership and evaluated index are distinct.
 - A medium whose `ior` is a world-position field (DL-09 `GradedIndexMedium`) is spatial IOR and is ineligible in the first phases.
 
 Sides, TIR and refresh:
-- Use true unflipped geometric normals for side classification. The original shading-normal-only constraint convention is disputed by the Phase 2 round 2 native-SPF counterexample below; modified-interface support requires a contract ruling before implementation continues.
+- Use true unflipped geometric normals for side classification. The original shading-normal-only constraint convention is disputed by the Phase 2 round 2 native-SPF counterexample below; modified-interface support follows the adopted native fallback correction below.
 - A chosen R event must not change `isExiting` to force a usable normal.
 - Rebuild ordered `etaI/etaT` in each requested domain, including HWSS companion replay, and validate native TIR decisions.
 - At TIR, choose only R, with probability one. Never sample an impossible T and silently relabel it R while keeping T's proposal probability.
@@ -480,14 +480,14 @@ is source inspection plus direction arithmetic, not a rendered or committed
 red/green proof. Actual RGB/NM, both-winding and transmission tests remain
 required before any fix can pass a gate.
 
-**Proposed correction, awaiting the user's ruling:** reproduce each native
+**Adopted correction, user ruling 2026-10-04:** reproduce each native
 material's geometric-horizon fallback in the extended event direction,
 constraint/Jacobian and final price, preserving shading-normal behavior where
 the native event accepts it. Branch changes must be validated consistently by
 proposal, retries and later ownership. Alternatively, conservative exclusion
-of affected modified casters requires an explicit scope ruling. Neither option
-is adopted or implemented here. Per the task's design-stop instruction,
-Phase 2 is unmerged and implementation is paused for this decision.
+of affected modified casters requires an explicit scope ruling. The user authorized reproducing the native fallback consistently. Conservative
+exclusion is not adopted. Implementation and numerical proofs are pending;
+Phase 2 remains unmerged until its fixes, gate and fresh review converge.
 
 Round 2 also found a separate implementation P1: mesh atlas boundaries authored
 at interior UV coordinates such as `.25` and `.75` evade the current 0/1 seam

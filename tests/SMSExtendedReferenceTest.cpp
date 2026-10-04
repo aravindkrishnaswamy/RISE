@@ -12,6 +12,7 @@
 #include "../src/Library/Interfaces/ILightManager.h"
 #include "../src/Library/Interfaces/IBSDF.h"
 #include "../src/Library/Interfaces/IUVGenerator.h"
+#include "../src/Library/Interfaces/IRayIntersectionModifier.h"
 #include "../src/Library/Utilities/Optics.h"
 #include "../src/Library/Shaders/PathTracingIntegrator.h"
 #include "../src/Library/Painters/UniformScalarPainter.h"
@@ -204,11 +205,14 @@ class FixedEndpointUV final : public IUVGenerator, public Reference {
 public:
     void GenerateUV(const Point3&,const Vector3&,Point2& uv) const override { uv=Point2(1,.5); }
 };
-static std::string UVSeamMesh(bool reverse) {
+static std::string UVSeamMesh(bool reverse, bool interior=false) {
     std::ostringstream s;
     s<<"indexedmesh_geometry\n{\n name sphere\n double_sided TRUE\n face_normals TRUE\n";
     for(Scalar x:{-2.,0.}) s<<" vertex "<<x<<" -2 0\n vertex "<<x+2<<" -2 0\n vertex "<<x+2<<" 2 0\n vertex "<<x<<" 2 0\n";
-    for(unsigned i=0;i<2;++i) s<<" uv 0 0\n uv 1 0\n uv 1 1\n uv 0 1\n";
+    for(unsigned i=0;i<2;++i) {
+        const Scalar lo=interior?.25:0,hi=interior?.75:1;
+        s<<" uv "<<lo<<" 0\n uv "<<hi<<" 0\n uv "<<hi<<" 1\n uv "<<lo<<" 1\n";
+    }
     for(unsigned offset:{0u,4u}) {
         s<<" triangle "<<offset<<' '<<offset+(reverse?2:1)<<' '<<offset+(reverse?1:2)<<'\n';
         s<<" triangle "<<offset<<' '<<offset+(reverse?3:2)<<' '<<offset+(reverse?2:3)<<'\n';
@@ -295,6 +299,47 @@ static void NativePeriodicRoots() {
     solver->release();
     }
 }
+// A smooth price does not make two authored atlas records two roots.
+// Until context equivalence is certified, an interior-valued chart boundary
+// must be rejected just like an authored 0/1 boundary.
+class WorldTint final : public UniformColorPainter {
+public:
+    WorldTint() : UniformColorPainter(RISEPel(1)) {}
+    RISEPel GetColor(const RayIntersectionGeometric& hit) const override { return RISEPel(.5+.1*hit.ptIntersection.x); }
+    Scalar GetColorNM(const RayIntersectionGeometric& hit,Scalar) const override { return .5+.1*hit.ptIntersection.x; }
+};
+static void InteriorAtlasRoots() {
+    for(bool reverse:{false,true}) for(int side:{-1,1}) for(bool varying:{false,true}) {
+        Fixture f(Materials()+UVSeamMesh(reverse,true)+Object("caster","sphere","mirror"));
+        if(varying) {
+            auto* tint=new WorldTint(); IMaterial* material=nullptr;
+            Check(RISE_API_CreatePerfectReflectorMaterial(&material,*tint),"smooth world tint material created");
+            if(material) f.job->GetObjects()->GetItem("caster")->AssignMaterial(*material);
+            safe_release(material);tint->release();
+        }
+        ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;
+        auto* solver=new ManifoldSolver(cfg); IORStack air(1);
+        const Point3 start(-.5,0,side*3),end(.5,0,side*3);
+        RandomNumberGenerator random(217); IndependentSampler sampler(random);
+        for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
+            unsigned accepted=0;
+            for(unsigned i=0;i<512;++i) {
+                auto root=solver->ProposeExtendedRoot(start,Vector3(0,0,-side),end,f.Scene(),air,domain,sampler);
+                accepted+=root.accepted;
+            }
+            std::cout<<"interior atlas winding="<<reverse<<" side="<<side<<" varying="<<varying<<" accepted="<<accepted<<'\n';
+            Check(varying?accepted==0:accepted>0,"interior atlas uncertainty rejects variable law while audited constant law remains supported");
+        }
+        solver->release();
+    }
+}
+class TiltNormal final : public IRayIntersectionModifier, public Reference {
+public:
+    explicit TiltNormal(int side) : normal(std::sqrt(Scalar(3))/2,0,Scalar(side)/2) {}
+    void Modify(RayIntersectionGeometric& hit) const override { hit.vNormal=normal;hit.onb.CreateFromW(normal); }
+private:
+    Vector3 normal;
+};
 static std::string QuadMesh(const std::string& name,Scalar z,Scalar x0,Scalar x1,bool reverse) {
     std::ostringstream s;s<<std::setprecision(17);
     s<<"indexedmesh_geometry\n{\n name "<<name<<"\n double_sided TRUE\n face_normals TRUE\n";
@@ -303,6 +348,49 @@ static std::string QuadMesh(const std::string& name,Scalar z,Scalar x0,Scalar x1
         <<"\n uv 0 0\n uv 1 0\n uv 1 1\n uv 0 1\n";
     s<<(reverse?" triangle 0 2 1\n triangle 0 3 2\n":" triangle 0 1 2\n triangle 0 2 3\n");
     return s.str()+"}\n";
+}
+static void NativeHorizonFallbacks() {
+    for(bool reverse:{false,true}) for(int side:{-1,1}) for(const char* material:{"glass","mirror"}) {
+        Fixture f(Materials()+QuadMesh("patch",0,4.8,5.2,reverse)+Object("caster","patch",material));
+        auto* modifier=new TiltNormal(side);
+        Check(f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier),"native tilt modifier assigned");modifier->release();
+        const Point3 start(0,.3,side),center(5,.3,0);
+        IORStack air(1);air.SetCurrentObject(f.Object("caster"));
+        RayIntersection hit(Ray(start,Vector3Ops::Normalize(Vector3Ops::mkVector3(center,start))),nullRasterizerState);
+        f.Object("caster")->IntersectRay(hit,RISE_INFINITY,true,true,false);
+        Check(hit.geometric.bHit,"tilted native patch hit");
+        if(!hit.geometric.bHit) continue;
+        hit.pModifier->Modify(hit.geometric);
+        ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;
+        auto* solver=new ManifoldSolver(cfg);
+        RandomNumberGenerator random(182);IndependentSampler sampler(random);
+        for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
+            ScatteredRayContainer rays;
+            if(domain.kind==SMSQueryDomain::Wavelength) hit.pMaterial->GetSPF()->ScatterNM(hit.geometric,sampler,domain.nm,rays,air);
+            else hit.pMaterial->GetSPF()->Scatter(hit.geometric,sampler,rays,air);
+            for(unsigned j=0;j<rays.Count();++j) {
+                const auto& ray=rays[j];
+                const Scalar nativeWeight=domain.kind==SMSQueryDomain::Wavelength?ray.krayNM:ray.kray[domain.component];
+                if(nativeWeight<=0) continue;
+                const bool reflection=ray.type==ScatteredRay::eRayReflection;
+                const Point3 end=Point3Ops::mkPoint3(center,ray.ray.Dir()*5);
+                SMSDomainVertex record(hit.geometric);
+                record.geometry.position=center;record.geometry.normal=hit.geometric.vNormal;
+                record.geometry.geomNormal=hit.geometric.UnflippedGeomNormal();
+                record.geometry.pObject=hit.pObject;record.geometry.pMaterial=hit.pMaterial;
+                record.geometry.isReflection=reflection;
+                std::vector<SMSDomainVertex> vertices;vertices.push_back(record);
+                const auto result=solver->SolveDomain(start,Vector3(1,0,0),end,-ray.ray.Dir(),f.Scene(),air,domain,vertices,sampler,1e-7,1e-10);
+                std::cout<<"native horizon winding="<<reverse<<" side="<<side<<" material="<<material<<" R="<<reflection<<" domain="<<domain.kind<<":"<<domain.component<<":"<<domain.nm<<" native="<<nativeWeight<<" accepted="<<result.valid<<'\n';
+                Check(result.valid,"extended solve represents native corrected delta direction");
+                if(result.valid) {
+                    const Scalar etaScale=reflection?1:RadianceEtaScale(air,ray.ior_stack);
+                    Check(std::fabs(result.contributionNM-nativeWeight*etaScale)<1e-8,"native corrected Fresnel and eta scaling agree at solved root");
+                }
+            }
+        }
+        solver->release();
+    }
 }
 class ConstraintOracle : public ManifoldSolver {
 public:
@@ -839,6 +927,8 @@ int main(int argc,char** argv) {
     if(argc==2&&std::string(argv[1])=="--review-only") {
 #ifdef RISE_SMS_REFERENCE_A
         NativePeriodicRoots();
+        InteriorAtlasRoots();
+        NativeHorizonFallbacks();
 #else
         std::cout<<"Estimator A seam helper unavailable on committed baseline.\n";
 #endif
