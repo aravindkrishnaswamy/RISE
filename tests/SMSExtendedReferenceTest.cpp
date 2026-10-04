@@ -656,6 +656,31 @@ static void RoundFourMaterials() {
         Check(!captured,"unaudited opposing corner normals cannot certify empty starting membership inside a closed mesh");
     }
 }
+static void NativeClosePatches(Fixture& f,bool reverse) {
+    ITriangleMeshGeometryIndexed* mesh=nullptr;
+    Check(RISE_API_CreateTriangleMeshGeometryIndexed(&mesh,true,true),"R4 native resolvable close patches");
+    if(!mesh) return;
+    mesh->BeginIndexedTriangles();
+    for(int sign:{-1,1}) {
+        const Scalar offset=1000000,centerX=offset+sign*4e-9;
+        const Point3 center(centerX,.3,0),start(offset,-.2,-30000),end(offset,.8,-30000);
+        const Vector3 n=Vector3Ops::Normalize(Vector3Ops::Normalize(Vector3Ops::mkVector3(start,center))
+            +Vector3Ops::Normalize(Vector3Ops::mkVector3(end,center)));
+        const Scalar x0=sign<0?offset-1:offset+2e-9,x1=sign<0?offset-2e-9:offset+1;
+        const unsigned base=mesh->numPoints();
+        for(const Point2& p:{Point2(x0,-1),Point2(x1,-1),Point2(x1,2),Point2(x0,2)}) {
+            mesh->AddVertex(Point3(p.x,p.y,-n.x*(p.x-centerX)/n.z));
+            mesh->AddNormal(n);mesh->AddTexCoord(Point2(.5,.5));
+        }
+        for(const std::array<unsigned,3>& corners:{std::array<unsigned,3>{0,1,2},std::array<unsigned,3>{0,2,3}}) {
+            IndexedTriangle triangle;
+            for(unsigned k=0;k<3;++k) triangle.iVertices[k]=triangle.iNormals[k]=triangle.iCoords[k]=base+corners[reverse&&k?k==1?2:1:k];
+            mesh->AddIndexedTriangle(triangle);
+        }
+    }
+    mesh->DoneIndexedTriangles();f.job->GetObjects()->GetItem("caster")->AssignGeometry(*mesh);safe_release(mesh);
+    dynamic_cast<const ObjectManager*>(f.Scene().GetObjects())->InvalidateSpatialStructure();f.job->GetObjects()->PrepareForRendering();
+}
 static void RoundFourNumerics() {
     for(bool reverse:{false,true}) {
         Fixture f(Materials()+QuadMesh("patch",0,-2,2,reverse)+Object("caster","patch","mirror"));
@@ -701,12 +726,12 @@ static void RoundFourNumerics() {
         solver->release();
     }
     for(bool reverse:{false,true}) {
-        Fixture f(Materials()+CloseRootMesh(reverse,10000,1e-9)+Object("caster","shape","mirror"));NativeRebuildMesh(f,true,1000000,0,.0001);
+        Fixture f(Materials()+CloseRootMesh(reverse,10000,1e-9)+Object("caster","shape","mirror"));NativeClosePatches(f,reverse);
         ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;cfg.solverThreshold=1e-10;
         auto* solver=new ManifoldSolver(cfg);IORStack air(1);
         for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
             ScriptSampler left({.2,reverse?5./9:11./36,reverse?.25:.4,.1}),right({.2,reverse?5./9:11./36,reverse?.25:.4,.6});
-            const Point3 start(995000,0,-30000),end(1005000,0,-30000);
+            const Point3 start(1000000,-.2,-30000),end(1000000,.8,-30000);
             ScriptSampler seedSampler({.2,reverse?5./9:11./36,reverse?.25:.4,.1});
             std::vector<SMSDomainVertex> seed;
             const bool walked=solver->BuildExtendedSeed(start,end,f.Scene(),air,domain,seedSampler,seed);
