@@ -354,8 +354,9 @@ static void Geometry() {
 #endif
 // Native analytic virtual-image reference for an upward spot reflected by
 // one plane: f * F * Le / (anchor-to-plane + light-to-plane)^2.
-static void DeltaLights(bool production=false) {
+static void DeltaLights(bool production=false, bool signedEmitter=false) {
     for(bool point:{false,true}) for(bool glass:{false,true}) for(bool winding:{false,true}) for(int mode:{0,1,2}) {
+        if(signedEmitter&&mode!=0) continue;
         std::string text=Materials();
         text.replace(text.find("values 1.3 1.5 1.9"),std::string("values 1.3 1.5 1.9").size(),"values 1.5 1.5 1.5");
         text+=Mesh(false,winding)+Object("caster","shape",glass?"glass":"mirror"," position 0 0 1\n")
@@ -363,6 +364,7 @@ static void DeltaLights(bool production=false) {
             +PlaneScene("receiver_geo",-2)+Object("receiver","receiver_geo","diffuse")
             +(point?"omni_light\n{\n name source\n position 0 0 -1\n color 1 1 1\n power 40\n}\n":
               "spot_light\n{\n name source\n position 0 0 -1\n target 0 0 1\n color 1 1 1\n power 40\n inner 10\n outer 30\n}\n");
+        if(signedEmitter) text.replace(text.rfind("color 1 1 1"),std::string("color 1 1 1").size(),"color 1 -0.5 0.2");
         Fixture fixture(text);
         if(!fixture.job||!fixture.Object("receiver")) {Check(false,"delta fixture prepared");continue;}
         std::vector<IShaderOp*> ops; IShader* shader=nullptr;
@@ -395,6 +397,7 @@ static void DeltaLights(bool production=false) {
         const Scalar fnm=bsdf->valueStatefulNM(direction,hit.geometric,nm,&air);
         const RISEPel le=light->emittedRadiance(direction);
         const Scalar lenm=light->emittedRadianceNM(direction,nm);
+        if(signedEmitter) Check(le[1]<0,"native light preserves authored signed green emission");
         RayIntersection mirrorHit(Ray(Point3(0,0,-1),direction),nullRasterizerState);
         fixture.Object("caster")->IntersectRay(mirrorHit,RISE_INFINITY,true,true,false);
         Check(mirrorHit.geometric.bHit,"analytic caster context is an independent native ray intersection");
@@ -445,10 +448,10 @@ static void DeltaLights(bool production=false) {
             const Scalar expected=fresnel*(mode==0?f[c]*le[c]:fnm*lenm*mirrorNM)/(imageDistance*imageDistance)
                 +(production&&point?(mode==0?f[c]*le[c]:fnm*lenm)/std::pow(-1-hit.geometric.ptIntersection.z,2):0);
             const Moments m(samples[c]);
-            std::cout<<std::setprecision(17)<<"delta production="<<production<<" point="<<point<<" glass="<<glass<<" winding="<<winding<<" mode="<<mode<<" c="<<c
+            std::cout<<std::setprecision(17)<<"delta signed="<<signedEmitter<<" production="<<production<<" point="<<point<<" glass="<<glass<<" winding="<<winding<<" mode="<<mode<<" c="<<c
                 <<" mean="<<m.mean<<" sd="<<m.sd<<" n=4 N="<<N<<" analytic="<<expected<<" error="<<m.mean-expected<<" mirrorNM="<<mirrorNM<<" reference sd=0\n";
-            Check(std::isfinite(m.mean)&&m.mean>0,"point/spot reference activation is positive and finite");
-            Check(std::fabs(m.mean-expected)<=3*m.sd+64*std::numeric_limits<Scalar>::epsilon()*expected,
+            Check(std::isfinite(m.mean)&&std::fabs(m.mean)>0,"point/spot reference activation is nonzero and finite");
+            Check(std::fabs(m.mean-expected)<=3*m.sd+64*std::numeric_limits<Scalar>::epsilon()*std::fabs(expected),
                 "native-domain upward spot agrees with analytic virtual image within 3 sd and floating-point roundoff");
         }
 #ifdef RISE_SMS_REFERENCE_A
@@ -680,6 +683,10 @@ int main(int argc,char** argv) {
     if(argc==2&&std::string(argv[1])=="--unsupported-only") {synthetic=false;geometry=false;delta=false;slab=false;}
     if(argc==2&&std::string(argv[1])=="--production-only") {synthetic=false;geometry=false;delta=true;unsupported=false;production=true;slab=false;}
     if(argc==2&&std::string(argv[1])=="--slab-only") {synthetic=false;geometry=false;delta=false;unsupported=false;}
+    if(argc==2&&std::string(argv[1])=="--signed-only") {
+        DeltaLights(false,true);DeltaLights(true,true);
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
+    }
     std::cout<<std::setprecision(12);
 #ifdef RISE_SMS_REFERENCE_A
     std::cout<<"reference bytes config="<<sizeof(ManifoldSolverConfig)<<" root="<<sizeof(SMSDomainRoot)
