@@ -185,4 +185,14 @@ absence of clear transmission. Queries likewise decline unknown native
 subclasses. A forwarded `CompositeSPF` identifies the real walker from
 static material data and selects the adopted scene-wide legacy policy,
 with the first composite object's name. No virtual API or public metadata
-layout is added. Corrected-source gates and formal proofs remain pending.
+layout is added. Corrected source `7d973fd7f` passes 217/0 in
+`.claude/logs/sms-phase2/provider-guard-green-run.log`. Formal coherent
+proofs reproduce 185/32 on `f62eae39a` and 165/52 on master; restored
+candidate passes 217/0, geometry 3241/0, delta queries 177/0 and production
+177/0. The production proof records 81,740,328 bytes peak process memory
+footprint under `/usr/bin/time -l`; that includes rendering/library/test
+state and is not a per-worker scratch bound. Arm64 record diagnostics are
+config 112, root 184, reference counters 320 and domain vertex 1584 bytes.
+Public legacy vertex/index records retain their Phase 1 layouts. Checked
+library/test builds have zero compiler diagnostics. Evidence is in
+`.claude/logs/sms-phase2/provider-proofs/proof-results.json` and its logs.
