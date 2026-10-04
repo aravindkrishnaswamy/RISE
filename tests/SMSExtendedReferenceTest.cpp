@@ -680,6 +680,41 @@ static void NativeRebuildMesh(Fixture& f, bool indexed, Scalar translation=0, un
     dynamic_cast<const ObjectManager*>(f.Scene().GetObjects())->InvalidateSpatialStructure();
     f.job->GetObjects()->PrepareForRendering();
 }
+static void NativeTriangleProvenance() {
+    for(bool indexed:{false,true}) for(bool reverse:{false,true}) for(unsigned count:{1u,1024u}) {
+        Fixture f(Materials()+QuadMesh("patch",0,-2,2,reverse)+SceneObject("caster","patch","mirror"));
+        ITriangleMeshGeometryIndexed* mesh=nullptr;ITriangleMeshGeometry* plain=nullptr;
+        if(indexed) Check(RISE_API_CreateTriangleMeshGeometryIndexed(&mesh,true,true),"primitive provenance indexed control");
+        else Check(RISE_API_CreateTriangleMeshGeometry(&plain,true),"primitive provenance non-indexed control");
+        if(mesh) mesh->BeginIndexedTriangles();if(plain) plain->BeginTriangles();
+        for(unsigned primitive=0;primitive<count;++primitive) {
+            Triangle t;
+            const Scalar shift=primitive?1000+primitive*4:0;
+            t.vertices[0]=Point3(shift-2,-2,0);t.vertices[1]=Point3(shift+2,-2,0);t.vertices[2]=Point3(shift+2,2,0);
+            if(reverse) std::swap(t.vertices[1],t.vertices[2]);
+            const Vector3 n(0,0,reverse?-1:1);
+            for(unsigned k=0;k<3;++k) {t.normals[k]=n;t.coords[k]=Point2(k==0?0:1,k==2?1:0);}
+            if(plain) plain->AddTriangle(t);
+            if(mesh) {
+                IndexedTriangle index;
+                for(unsigned k=0;k<3;++k) {
+                    index.iVertices[k]=mesh->numPoints();index.iNormals[k]=0;index.iCoords[k]=mesh->numCoords();
+                    mesh->AddVertex(t.vertices[k]);mesh->AddTexCoord(t.coords[k]);
+                }
+                mesh->AddIndexedTriangle(index);
+            }
+        }
+        if(mesh) {mesh->DoneIndexedTriangles();f.job->GetObjects()->GetItem("caster")->AssignGeometry(*mesh);mesh->release();}
+        if(plain) {plain->DoneTriangles();f.job->GetObjects()->GetItem("caster")->AssignGeometry(*plain);plain->release();}
+        RayIntersection hit(Ray(Point3(.2,.1,-2),Vector3(0,0,1)),nullRasterizerState);
+        f.Object("caster")->IntersectRay(hit,RISE_INFINITY,true,true,false);
+        Check(hit.geometric.bHit,"native primitive witness hits the visible triangle");
+        const auto& signal=hit.geometric.signals;
+        Check(signal.primId==0,"native hit retains the actual primitive for constant-time edge classification");
+        const Scalar edge=std::min({signal.baryA,signal.baryB,1-signal.baryA-signal.baryB});
+        Check(std::isfinite(edge)&&std::fabs(edge-.025)<1e-12,"native primitive barycentrics match independent planar edge oracle");
+    }
+}
 static void NativePreparationAudits() {
     for(bool indexed:{false,true}) for(bool reverse:{false,true}) {
         Fixture f(Materials()+Mesh(true,reverse)+SceneObject("caster","shape","glass")
@@ -1814,6 +1849,12 @@ int main(int argc,char** argv) {
         PostModifierChartRoots();
 #else
         std::cout<<"Estimator A modifier helper unavailable on committed baseline.\n";
+#endif
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
+    }
+    if(argc==2&&std::string(argv[1])=="--r5-provenance-only") {
+#ifdef RISE_SMS_REFERENCE_A
+        NativeTriangleProvenance();
 #endif
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
     }
