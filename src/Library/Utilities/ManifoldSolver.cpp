@@ -38,6 +38,7 @@
 #include "../Objects/Object.h"
 #include "IORStackSeeding.h"
 #include <typeinfo>
+#include <optional>
 
 namespace {
     // Only audited native charts establish periodic equivalence. Authored
@@ -74,6 +75,72 @@ namespace {
         if(const auto* m = dynamic_cast<const PolishedMaterial*>(&material))
             return m->GetTransmittance().IsPositionIndependent() && m->GetScattering().IsPositionIndependent();
         return false;
+    }
+    struct SMSDeltaDirections {
+        RISE::Vector3 reflected, transmitted, reflectionNormal, transmissionNormal;
+        RISE::Scalar fresnelCosine=0;
+        bool hasTransmission=false,reflectionFallback=false,transmissionFallback=false;
+    };
+    // Native DL-111 event directions. Reflection changes its direction at
+    // the geometric horizon; transmission fallback also changes BOTH lobe
+    // prices to the geometric incidence. Reflection's normal alone does not
+    // determine its Fresnel incidence.
+    SMSDeltaDirections SMSNativeDirections(const RISE::Vector3& incoming,
+        const RISE::Vector3& shading, const RISE::Vector3& geometric,
+        RISE::Scalar etaI, RISE::Scalar etaT, bool transmission) {
+        using namespace RISE;
+        SMSDeltaDirections law;
+        const Vector3 raw=Vector3Ops::SquaredModulus(geometric)>Scalar(1e-12)?geometric:shading;
+        const Vector3 geom=Vector3Ops::Dot(raw,incoming)<0?raw:-raw;
+        law.reflectionNormal=shading;law.transmissionNormal=shading;
+        law.fresnelCosine=std::fabs(Vector3Ops::Dot(incoming,shading));
+        law.reflected=Optics::CalculateReflectedRay(incoming,shading);
+        if(Vector3Ops::Dot(law.reflected,geom)<=0) {
+            law.reflectionFallback=true;
+            law.reflectionNormal=geom;
+            law.reflected=Optics::CalculateReflectedRay(incoming,geom);
+        }
+        law.transmitted=incoming;
+        if(transmission) {
+            law.hasTransmission=Optics::CalculateRefractedRay(shading,etaI,etaT,law.transmitted);
+            if(law.hasTransmission && Vector3Ops::Dot(law.transmitted,-geom)<=0) {
+                law.transmissionFallback=true;
+                law.transmissionNormal=geom;
+                law.fresnelCosine=std::fabs(Vector3Ops::Dot(incoming,geom));
+                law.transmitted=incoming;
+                law.hasTransmission=Optics::CalculateRefractedRay(geom,etaI,etaT,law.transmitted);
+            }
+        }
+        return law;
+    }
+    bool SMSNeedsNativeFrame(const RISE::Implementation::ManifoldVertex& v) {
+        return v.pObject && (v.pObject->GetModifier()
+            || RISE::Vector3Ops::SquaredModulus(RISE::Vector3Ops::Cross(v.normal,v.geomNormal))
+                > std::numeric_limits<RISE::Scalar>::epsilon());
+    }
+    RISE::Point3 SMSReferenceSurfacePoint(const RISE::IObject&,const RISE::RayIntersectionGeometric&);
+    RISE::Implementation::ManifoldVertex SMSNativeConstraintVertex(
+        const RISE::Implementation::ManifoldVertex& original,const RISE::Point3& previous,
+        const RISE::RasterizerState& raster=RISE::nullRasterizerState,unsigned* branch=nullptr) {
+        using namespace RISE;
+        auto v=original;
+        if(SMSNeedsNativeFrame(v)) {
+            RayIntersection hit(Ray(previous,Vector3Ops::Normalize(Vector3Ops::mkVector3(v.position,previous))),raster);
+            v.pObject->IntersectRay(hit,RISE_INFINITY,true,true,false);
+            const Scalar tolerance=std::sqrt(std::numeric_limits<Scalar>::epsilon())*Point3Ops::Distance(previous,v.position);
+            if(!hit.geometric.bHit || hit.pMaterial!=v.pMaterial
+                || Point3Ops::Distance(SMSReferenceSurfacePoint(*v.pObject,hit.geometric),v.position)>tolerance) {
+                v.valid=false;return v;
+            }
+            if(hit.pModifier) hit.pModifier->Modify(hit.geometric);
+            v.normal=hit.geometric.vNormal;v.geomNormal=hit.geometric.UnflippedGeomNormal();v.valid=true;
+        }
+        const auto law=SMSNativeDirections(Vector3Ops::Normalize(Vector3Ops::mkVector3(v.position,previous)),
+            v.normal,v.geomNormal,v.etaI,v.etaT,v.canRefract && v.pMaterial
+                && typeid(*v.pMaterial)!=typeid(Implementation::PolishedMaterial));
+        if(branch) *branch=unsigned(law.reflectionFallback) | (unsigned(law.transmissionFallback)<<1) | (unsigned(law.hasTransmission)<<2);
+        v.normal=v.isReflection?law.reflectionNormal:law.transmissionNormal;
+        return v;
     }
     // Object stores a launch point backed off in object space. Newton and
     // Jacobian pricing use the actual surface; material contexts retain the
@@ -279,9 +346,8 @@ bool RISE::Implementation::SMSDomainReplay::Cross(const IMaterial& material,
         if(!reflection && !exiting) next.push(query.index);
     }
     if(!std::isfinite(etaI) || etaI <= 0 || !std::isfinite(etaT) || etaT <= 0) return false;
-    Scalar cosT;
-    if(!reflection && !Optics::CalculateRefractedCosine(
-        std::fabs(Vector3Ops::Dot(hit.ray.Dir(), hit.vNormal)), etaI, etaT, cosT))
+    if(!reflection && !SMSNativeDirections(hit.ray.Dir(),hit.vNormal,hit.UnflippedGeomNormal(),
+        etaI,etaT,true).hasTransmission)
         return false; // impossible transmission is a zero trial, never relabeled
     if(!reflection) stack = next;
     return true;
@@ -296,10 +362,12 @@ bool RISE::Implementation::SMSDomainReplay::EventWeight(const IMaterial& materia
     if(!Query(material, hit, stack, domain, query) || !std::isfinite(distance) || distance < 0
         || !std::isfinite(etaI) || etaI <= 0 || !std::isfinite(etaT) || etaT <= 0
         || (reflection ? !query.reflection : !query.transmission)) return false;
-    const Scalar cosine = std::fabs(Vector3Ops::Dot(hit.ray.Dir(), hit.vNormal));
+    const auto law=SMSNativeDirections(hit.ray.Dir(),hit.vNormal,hit.UnflippedGeomNormal(),etaI,etaT,query.transmission);
+    const Scalar cosine=law.fresnelCosine;
     Scalar fresnel = 1;
     if(query.dielectricInterface) {
-        fresnel = Optics::CalculateDielectricReflectanceCosine(cosine, etaI, etaT);
+        fresnel = query.transmission && !law.hasTransmission ? Scalar(1)
+            : Optics::CalculateDielectricReflectanceCosine(cosine, etaI, etaT);
         const Scalar wavelength = domain.kind == SMSQueryDomain::Wavelength ? domain.nm
             : ScalarPainterRGB::kChannelNM[domain.component];
         if(query.customFresnel && (!material.GetSPF()
@@ -316,6 +384,16 @@ bool RISE::Implementation::SMSDomainReplay::EventWeight(const IMaterial& materia
 }
 
 RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::SolveDomain(
+    const Point3& start, const Vector3& startNormal, const Point3& end, const Vector3& endNormal,
+    const IScene& scene, const IORStack& startingStack, SMSQueryDomain domain,
+    std::vector<SMSDomainVertex>& vertices, ISampler& sampler, Scalar positionTolerance, Scalar convergenceThreshold) const
+{
+    ManifoldSolver native(config,true,&vertices);
+    return native.SolveDomainCore(start,startNormal,end,endNormal,scene,startingStack,domain,
+        vertices,sampler,positionTolerance,convergenceThreshold);
+}
+
+RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::SolveDomainCore(
     const Point3& start, const Vector3& startNormal, const Point3& end, const Vector3& endNormal,
     const IScene& scene, const IORStack& startingStack, SMSQueryDomain domain,
     std::vector<SMSDomainVertex>& vertices, ISampler& sampler, Scalar positionTolerance, Scalar convergenceThreshold) const
@@ -379,7 +457,19 @@ RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::Solve
             if(nativeObject && nativeObject->UsesNativeTextureChart() && geometry
                 && (typeid(*geometry)==typeid(TriangleMeshGeometryIndexed) || typeid(*geometry)==typeid(TriangleMeshGeometry))) axes=Point2(1,1);
             const Scalar band = std::sqrt(std::numeric_limits<Scalar>::epsilon());
-            const bool seam = (axes.x && std::min(std::fabs(hit.geometric.ptCoord.x),std::fabs(1-hit.geometric.ptCoord.x)) <= band)
+            bool meshEdge=false;
+            if(nativeObject && nativeObject->UsesNativeTextureChart() && geometry) {
+                if(typeid(*geometry)==typeid(TriangleMeshGeometryIndexed)) {
+                    const auto& signal=hit.geometric.signals;
+                    meshEdge=signal.pProvider!=dynamic_cast<const TriangleMeshGeometryIndexed*>(geometry) || signal.primId<0
+                        || std::min({signal.baryA,signal.baryB,1-signal.baryA-signal.baryB})<=band;
+                } else if(typeid(*geometry)==typeid(TriangleMeshGeometry)) {
+                    const Point3 surface=Point3Ops::Transform(vertex.pObject->GetFinalInverseTransformMatrix(),
+                        SMSReferenceSurfacePoint(*vertex.pObject,hit.geometric));
+                    meshEdge=dynamic_cast<const TriangleMeshGeometry*>(geometry)->NativeTriangleEdgeDistance(surface)<=band;
+                }
+            }
+            const bool seam = meshEdge || (axes.x && std::min(std::fabs(hit.geometric.ptCoord.x),std::fabs(1-hit.geometric.ptCoord.x)) <= band)
                 || (axes.y && std::min(std::fabs(hit.geometric.ptCoord.y),std::fabs(1-hit.geometric.ptCoord.y)) <= band);
             if(seam && (hit.pModifier || !SMSConstantSeamMaterial(*vertex.pMaterial))) return failed;
         }
@@ -1174,13 +1264,17 @@ namespace
 // Construction / Destruction
 //////////////////////////////////////////////////////////////////////
 
-ManifoldSolver::ManifoldSolver( const ManifoldSolverConfig& cfg ) :
+ManifoldSolver::ManifoldSolver(const ManifoldSolverConfig& cfg) : ManifoldSolver(cfg,false) {}
+
+ManifoldSolver::ManifoldSolver( const ManifoldSolverConfig& cfg, bool nativeEvents, const std::vector<SMSDomainVertex>* contexts ) :
 config( cfg ),
+    nativeEventConstraints(nativeEvents),
+    nativeContexts(contexts),
 pLightSampler( 0 ),
 pPhotonMap( 0 ),
 mHasPureMirrorCaster( false )
 {
-	pLightSampler = new LightSampler();
+    if(!nativeEvents) pLightSampler = new LightSampler();
 }
 
 namespace
@@ -1551,7 +1645,13 @@ void ManifoldSolver::EvaluateConstraint(
 
 	for( unsigned int i = 0; i < k; i++ )
 	{
-		const ManifoldVertex& v = chain[i];
+        // Legacy evaluations retain the original reference, with no copy
+        // or allocation of a vertex or its optional endpoint record.
+        std::optional<ManifoldVertex> nativeVertex;
+        if(nativeEventConstraints) nativeVertex.emplace(SMSNativeConstraintVertex(
+            chain[i],i?chain[i-1].position:fixedStart,NativeRaster(i)));
+        const ManifoldVertex& v=nativeVertex?*nativeVertex:chain[i];
+        if(nativeEventConstraints && !v.valid && SMSNeedsNativeFrame(v)) { C[2*i]=C[2*i+1]=1;continue; }
 
 		// Previous and next positions
 		Point3 prevPos = (i == 0) ? fixedStart : chain[i-1].position;
@@ -1885,6 +1985,34 @@ void ManifoldSolver::BuildJacobian(
 	bool includeCurvature
 	) const
 {
+    if(nativeEventConstraints && std::any_of(chain.begin(),chain.end(),SMSNeedsNativeFrame)) {
+        const std::size_t k=chain.size();
+        diag.assign(4*k,0);upper.assign(k>1?4*(k-1):0,0);lower=upper;
+        const Scalar h=std::cbrt(std::numeric_limits<Scalar>::epsilon())*Point3Ops::Distance(fixedStart,fixedEnd);
+        for(std::size_t j=0;j<k;++j) for(unsigned column=0;column<2;++column) {
+            auto plus=chain,minus=chain;
+            const bool ok=UpdateVertexOnSurface(plus[j],column?0:h,column?h:0,0,true)
+                && UpdateVertexOnSurface(minus[j],column?0:-h,column?-h:0,0,true);
+            bool regular=ok && h>0 && std::isfinite(h);
+            if(regular) for(std::size_t i=0;i<k;++i) {
+                unsigned aBranch=0,bBranch=0,centerBranch=0;
+                const auto a=SMSNativeConstraintVertex(plus[i],i?plus[i-1].position:fixedStart,NativeRaster(i),&aBranch);
+                const auto b=SMSNativeConstraintVertex(minus[i],i?minus[i-1].position:fixedStart,NativeRaster(i),&bBranch);
+                const auto center=SMSNativeConstraintVertex(chain[i],i?chain[i-1].position:fixedStart,NativeRaster(i),&centerBranch);
+                if(!a.valid || !b.valid || !center.valid || aBranch!=centerBranch || bBranch!=centerBranch) regular=false;
+            }
+            std::vector<Scalar> cp,cm;
+            if(regular) { EvaluateConstraint(plus,fixedStart,fixedEnd,cp);EvaluateConstraint(minus,fixedStart,fixedEnd,cm); }
+            for(std::size_t i=0;i<k;++i) for(unsigned row=0;row<2;++row) {
+                const Scalar value=regular?(cp[2*i+row]-cm[2*i+row])/(2*h):std::numeric_limits<Scalar>::quiet_NaN();
+                if(i==j) diag[4*i+2*row+column]=value;
+                else if(j==i+1) upper[4*i+2*row+column]=value;
+                else if(i==j+1) lower[4*j+2*row+column]=value;
+            }
+        }
+        return;
+    }
+
 	const unsigned int k = static_cast<unsigned int>( chain.size() );
 
 	diag.resize( k * 4, 0.0 );
@@ -3234,6 +3362,22 @@ bool ManifoldSolver::ComputeVertexDerivatives(
 	Scalar smoothing, bool referenceRefinement
 	) const
 {
+    if(nativeEventConstraints && SMSNeedsNativeFrame(vertex) && smoothing==0) {
+        const Vector3 n=Vector3Ops::Normalize(vertex.geomNormal);
+        // This probe establishes only the physical surface frame. The
+        // constraint replays modifiers on the real incoming ray and raster.
+        RayIntersection hit(Ray(Point3Ops::mkPoint3(vertex.position,n*.05),-n),nullRasterizerState);
+        vertex.pObject->IntersectRay(hit,.1,true,true,false);
+        if(!hit.geometric.bHit) return false;
+        vertex.position=SMSReferenceSurfacePoint(*vertex.pObject,hit.geometric);
+        vertex.normal=hit.geometric.vNormal;vertex.geomNormal=hit.geometric.UnflippedGeomNormal();
+        vertex.uv=hit.geometric.ptCoord;vertex.objectPosition=hit.geometric.ptObjIntersec;
+        OrthonormalBasis3D frame;frame.CreateFromW(vertex.geomNormal);
+        vertex.dpdu=frame.u();vertex.dpdv=frame.v();
+        vertex.dndu=Vector3(0,0,0);vertex.dndv=Vector3(0,0,0);vertex.valid=true;
+        return true;
+    }
+
 	if( !vertex.pObject )
 	{
 		return false;
@@ -5611,7 +5755,19 @@ Scalar ManifoldSolver::ComputeLightToFirstVertexJacobianDet(
 		? shadingPoint
 		: chain[k-2].position;
 	Scalar Jy[4];
-	ComputeLastBlockLightJacobian( chain[k-1], prevPos, lightPos, lightNormal, Jy );
+    if(nativeEventConstraints && std::any_of(chain.begin(),chain.end(),SMSNeedsNativeFrame)) {
+        OrthonormalBasis3D frame;frame.CreateFromW(lightNormal);
+        const Scalar h=std::cbrt(std::numeric_limits<Scalar>::epsilon())*Point3Ops::Distance(shadingPoint,lightPos);
+        for(unsigned column=0;column<2;++column) {
+            const Vector3 tangent=column?frame.v():frame.u();
+            std::vector<Scalar> cp,cm;
+            EvaluateConstraint(chain,shadingPoint,Point3Ops::mkPoint3(lightPos,tangent*h),cp);
+            EvaluateConstraint(chain,shadingPoint,Point3Ops::mkPoint3(lightPos,-tangent*h),cm);
+            for(unsigned row=0;row<2;++row) Jy[2*row+column]=(cp[2*(k-1)+row]-cm[2*(k-1)+row])/(2*h);
+        }
+    } else {
+        ComputeLastBlockLightJacobian(chain[k-1],prevPos,lightPos,lightNormal,Jy);
+    }
 
 	// Solve J_v * δv = -RHS for each of two y-tangent directions.
 	// RHS is zero except for the last 2 entries = Jy column j.
@@ -6808,9 +6964,9 @@ bool ManifoldSolver::BuildExtendedSeed(const Point3& start, const Point3& end,
         Scalar etaI, etaT; bool exiting;
         if(!SMSDomainReplay::Cross(*hit.pMaterial, hit.pObject, hit.geometric, domain,
             true, reflected, etaI, etaT, exiting)) return false;
-        const Scalar cosine = std::fabs(Vector3Ops::Dot(direction, hit.geometric.vNormal));
-        Scalar cosT;
-        const bool tir = query.transmission && !Optics::CalculateRefractedCosine(cosine, etaI, etaT, cosT);
+        const auto law=SMSNativeDirections(direction,hit.geometric.vNormal,hit.geometric.UnflippedGeomNormal(),etaI,etaT,query.transmission);
+        const Scalar cosine=law.fresnelCosine;
+        const bool tir=query.transmission && !law.hasTransmission;
         Scalar fresnel = query.dielectricInterface
             ? Optics::CalculateDielectricReflectanceCosine(cosine, etaI, etaT) : Scalar(1);
         if(query.customFresnel) {
@@ -6837,11 +6993,8 @@ bool ManifoldSolver::BuildExtendedSeed(const Point3& start, const Point3& end,
         vertex.eta = query.index; vertex.etaI = etaI; vertex.etaT = etaT;
         vertex.canRefract = query.dielectricInterface;
         previous = vertex.position;
-        direction = reflection ? Optics::CalculateReflectedRay(direction, vertex.normal) : direction;
-        if(!reflection) {
-            const Vector3 n = Vector3Ops::Dot(direction, vertex.normal) < 0 ? vertex.normal : -vertex.normal;
-            if(!Optics::CalculateRefractedRay(n, etaI, etaT, direction)) return false;
-        }
+        direction=reflection?law.reflected:law.transmitted;
+        if(!reflection && !law.hasTransmission) return false;
         if(Vector3Ops::NormalizeMag(direction) <= 0) return false;
         if(config.targetBounces && vertices.size() == config.targetBounces) break;
     }
@@ -6852,6 +7005,10 @@ SMSDomainRoot ManifoldSolver::ProposeExtendedRoot(const Point3& start, const Vec
     const Point3& end, const IScene& scene, const IORStack& stack, SMSQueryDomain domain,
     ISampler& sampler, const RasterizerState& raster) const
 {
+    if(!nativeEventConstraints) {
+        ManifoldSolver native(config,true);
+        return native.ProposeExtendedRoot(start,startNormal,end,scene,stack,domain,sampler,raster);
+    }
     SMSDomainRoot root(domain, stack);
     auto* counters = config.referenceCounters;
     if(counters) counters->proposalTrials.fetch_add(1, std::memory_order_relaxed);
@@ -6875,8 +7032,9 @@ SMSDomainRoot ManifoldSolver::ProposeExtendedRoot(const Point3& start, const Vec
     if(visible) {
         const auto& chain = root.result.specularChain;
         std::vector<Scalar> residual, diagonal, upper, lower, correction;
-        EvaluateConstraint(chain,start,end,residual);
-        BuildJacobian(chain,start,end,diagonal,upper,lower,true);
+        ManifoldSolver native(config,true,&root.vertices);
+        native.EvaluateConstraint(chain,start,end,residual);
+        native.BuildJacobian(chain,start,end,diagonal,upper,lower,true);
         visible = SolveBlockTridiagonal(diagonal,upper,lower,residual,
             static_cast<unsigned int>(chain.size()),correction);
         if(visible) for(std::size_t i=0; i<chain.size(); ++i) {
@@ -7008,8 +7166,9 @@ RISEPel ManifoldSolver::EvaluateExtendedDelta(const Point3& pos, const Vector3& 
         const Vector3 lightToChain = Vector3Ops::Normalize(Vector3Ops::mkVector3(chain.back().position,light.position));
         const Scalar le = nm > 0 ? light.pLight->emittedRadianceNM(lightToChain,nm)
             : light.pLight->emittedRadiance(lightToChain)[component];
+        ManifoldSolver native(config,true,&root.vertices);
         const Scalar geometry = std::fabs(Vector3Ops::Dot(chain.front().geomNormal,incoming)) / (distance*distance)
-            * ComputeLightToFirstVertexJacobianDet(chain,pos,light.position,JacobianLightNormal(light,chain));
+            * native.ComputeLightToFirstVertexJacobianDet(chain,pos,light.position,JacobianLightNormal(light,chain));
         const Scalar physical = f * std::fabs(Vector3Ops::Dot(shadingNormal,incoming))
             * root.result.contributionNM * le * geometry;
         if(!std::isfinite(physical) || physical == 0) continue;

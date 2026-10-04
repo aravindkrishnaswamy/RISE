@@ -114,6 +114,9 @@ namespace RISE
 			void DoneTriangles( ) override;						// I'm done feeding you a bunch of triangles
 
 			const MyTriangleList	getTriangles() const{ return polygons; }
+            // Extended SMS only: distance in barycentric coordinates to the
+            // closest triangle edge. Does not modify native hit payloads.
+            Scalar NativeTriangleEdgeDistance(const Point3& localPoint) const;
 
 			// From TreeElementProcessor
 			typedef const Triangle*	MYOBJ;

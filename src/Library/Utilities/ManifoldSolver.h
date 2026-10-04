@@ -45,6 +45,7 @@
 #define RISE_SMS_DOMAIN_REPLAY 1
 #define RISE_SMS_SCENE_POLICY 1
 #define RISE_SMS_REFERENCE_A 1
+#define RISE_SMS_NATIVE_EVENT_NORMALS 1
 
 #include "../Interfaces/IReference.h"
 #include "../Interfaces/IGeometry.h"
@@ -594,6 +595,14 @@ namespace RISE
 		{
 		protected:
 			ManifoldSolverConfig config;
+            bool nativeEventConstraints = false; // Private extended solve instance; legacy instances stay false.
+            const std::vector<SMSDomainVertex>* nativeContexts = nullptr; // Borrowed only by a private solve instance.
+            ManifoldSolver(const ManifoldSolverConfig&, bool nativeEvents, const std::vector<SMSDomainVertex>* = nullptr);
+            const RasterizerState& NativeRaster(std::size_t i) const {
+                return nativeContexts && i<nativeContexts->size() ? (*nativeContexts)[i].context.rast : nullRasterizerState;
+            }
+            ManifoldResult SolveDomainCore(const Point3&,const Vector3&,const Point3&,const Vector3&,
+                const IScene&,const IORStack&,SMSQueryDomain,std::vector<SMSDomainVertex>&,ISampler&,Scalar,Scalar) const;
             ManifoldResult SolveCore(const Point3&, const Vector3&, const Point3&, const Vector3&,
                 std::vector<ManifoldVertex>&, ISampler&, bool estimateLegacyPDF, Scalar convergenceThreshold = 0) const;
             RISEPel EvaluateExtendedDelta(const Point3&, const Vector3&, const Vector3&,

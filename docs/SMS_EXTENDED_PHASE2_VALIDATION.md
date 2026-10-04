@@ -375,3 +375,35 @@ triggers the user's explicit design-stop rule; the proposal and static evidence
 are recorded in `SMS_EXTENDED_DESIGN.md`. The green gate remains evidence for
 the tested checkpoint, not a clean review verdict. Phase 2 is unmerged, Phase 3
 and Phase 4 have not started, and all target ledger rows remain open.
+
+### Authorized round 2 repair checkpoint (2026-10-04)
+
+The user approved the native fallback correction after the design stop.
+The repair adds barycentric mesh-edge rejection for unaudited varying contexts,
+including a non-indexed sibling query without changing native intersection
+payloads. It preserves actual UV records and the audited constant-law control.
+Native event directions now follow geometric-horizon reflection correction and
+transmission correction with matching Fresnel/TIR, including coatings. Modified
+surface constraints use actual arriving-ray/raster contexts and a numerical
+Jacobian on a physical surface frame; numerical stencils that cross a native
+branch are rejected. Legacy evaluations retain references to their original
+vertices and create no added vertex copy. The original public constructor
+signature and public SpecularInfo/ManifoldVertex records are retained.
+
+The focused working-tree test passes **19945/0** after the repair. Its native
+controls include RGB/NM, both windings and incidence sides, actual complete
+proposals, valid shading events, world/ray/raster normal fields, coated and
+polished siblings, transformed instances, closed start-inside and nested exits,
+and independently solved endpoint displacements. Endpoint derivative checks
+halve the displacement twice and retain their original 1e-5 band. The 64
+coarse-displacement disagreements converge under those halvings; no band was
+widened. Closed positives use an endpoint 0.02 times instance scale away from
+the interface, avoiding the existing 0.01 minimum-segment boundary; a separate
+0.005 segment remains a rejection control. An earlier fixture incorrectly
+asserted AssignModifier's return value: it returns false after retaining the
+modifier. The corrected test checks retained identity; those eight initial
+failures are not production red evidence.
+
+These focused numbers do not replace the prior complete 13a31c7d7 gate.
+Committed-source proofs, a full replacement gate, new timing measurements and
+fresh round 3 reviewers remain pending. No row closes and no merge is claimed.

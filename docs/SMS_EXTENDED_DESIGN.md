@@ -458,15 +458,15 @@ ledger row is opened for this note.
 Setup branch `sms-ext` imported the contract at `e37b8e288` from master
 `ffc70c1c2`. The adopted policy and Phase 1 primitives merged at `34bd520ec5e70a5cf96bcf8b8154b1a17888880f`; the decision itself provides no estimator or production debt closure.
 
-## Phase 2 review stop: native normal fallback (2026-10-04)
+## Adopted native normal fallback correction (2026-10-04)
 
 Fresh round 2 reviewed committed `8f9a63f692b7d042264d989ea3d6f0c5da9441fb`.
 The material reviewer identified a conflict in the adopted constraint convention:
 `PerfectRefractorSPF::DoSingleRGBComponent` and `ScatterNM` rederive a
 wrong-side reflection about the ray-opposing geometric normal. Wrong-side
 transmission likewise uses geometric-normal refraction and recomputes Fresnel,
-including geometric-interface TIR. Extended proposals and constraints use only
-the shading normal, although modified casters are eligible. The earlier claim
+including geometric-interface TIR. At the reviewed checkpoint, extended proposals and constraints used only
+the shading normal, although modified casters were eligible. The earlier claim
 that this convention covers those native events is therefore withdrawn.
 
 A static counterexample uses a horizontal narrow patch at `(5,0,0)`, receiver
@@ -476,17 +476,22 @@ A static counterexample uses a horizontal narrow patch at `(5,0,0)`, receiver
 `(-0.3204487827,0,-0.9472658432)`, on the wrong geometric side; native
 geometric-normal reflection is `(0.9805806757,0,0.1961161351)` and reaches
 the light. The patch can exclude other shading-constraint solutions. This
-is source inspection plus direction arithmetic, not a rendered or committed
-red/green proof. Actual RGB/NM, both-winding and transmission tests remain
-required before any fix can pass a gate.
+was initially established by source inspection and direction arithmetic.
+The implementation regression now includes actual native RGB/NM reflection
+and transmission, both windings and incidence sides, spatial/ray/raster normal
+fields, coated dielectric and polished siblings, transformed instances, closed
+start-inside and nested exits, and independently shifted endpoint Jacobians.
+Committed-source red/green proofs, replacement gates and fresh review remain
+required before integration.
 
 **Adopted correction, user ruling 2026-10-04:** reproduce each native
 material's geometric-horizon fallback in the extended event direction,
 constraint/Jacobian and final price, preserving shading-normal behavior where
 the native event accepts it. Branch changes must be validated consistently by
 proposal, retries and later ownership. Alternatively, conservative exclusion
-of affected modified casters requires an explicit scope ruling. The user authorized reproducing the native fallback consistently. Conservative
-exclusion is not adopted. Implementation and numerical proofs are pending;
+of affected modified casters would require a separate scope ruling. Conservative
+exclusion is not adopted. The user authorized reproducing the native fallback
+consistently. Implementation is underway; committed proofs and final gates are pending;
 Phase 2 remains unmerged until its fixes, gate and fresh review converge.
 
 Round 2 also found a separate implementation P1: mesh atlas boundaries authored

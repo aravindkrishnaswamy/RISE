@@ -13,6 +13,7 @@
 #include "../src/Library/Interfaces/IBSDF.h"
 #include "../src/Library/Interfaces/IUVGenerator.h"
 #include "../src/Library/Interfaces/IRayIntersectionModifier.h"
+#include "../src/Library/Interfaces/ITriangleMeshGeometry.h"
 #include "../src/Library/Utilities/Optics.h"
 #include "../src/Library/Shaders/PathTracingIntegrator.h"
 #include "../src/Library/Painters/UniformScalarPainter.h"
@@ -309,8 +310,25 @@ public:
     Scalar GetColorNM(const RayIntersectionGeometric& hit,Scalar) const override { return .5+.1*hit.ptIntersection.x; }
 };
 static void InteriorAtlasRoots() {
-    for(bool reverse:{false,true}) for(int side:{-1,1}) for(bool varying:{false,true}) {
+    for(bool reverse:{false,true}) for(int side:{-1,1}) for(bool varying:{false,true}) for(bool nonindexed:{false,true}) {
         Fixture f(Materials()+UVSeamMesh(reverse,true)+Object("caster","sphere","mirror"));
+        if(nonindexed) {
+            const auto* object=f.Object("caster");
+            IndexTriangleListType indices;VerticesListType positions;NormalsListType normals;TexCoordsListType coords;
+            Check(object->GetGeometry()->TessellateToMesh(indices,positions,normals,coords,1),"atlas indexed source tessellates");
+            ITriangleMeshGeometry* geometry=nullptr;
+            Check(RISE_API_CreateTriangleMeshGeometry(&geometry,true),"non-indexed atlas sibling created");
+            if(geometry) {
+                geometry->BeginTriangles();
+                for(const auto& index:indices) {
+                    Triangle triangle;
+                    for(unsigned k=0;k<3;++k) {triangle.vertices[k]=positions[index.iVertices[k]];triangle.normals[k]=normals[index.iNormals[k]];triangle.coords[k]=coords[index.iCoords[k]];}
+                    geometry->AddTriangle(triangle);
+                }
+                geometry->DoneTriangles();f.job->GetObjects()->GetItem("caster")->AssignGeometry(*geometry);
+                safe_release(geometry);f.job->GetObjects()->PrepareForRendering();
+            }
+        }
         if(varying) {
             auto* tint=new WorldTint(); IMaterial* material=nullptr;
             Check(RISE_API_CreatePerfectReflectorMaterial(&material,*tint),"smooth world tint material created");
@@ -335,10 +353,13 @@ static void InteriorAtlasRoots() {
 }
 class TiltNormal final : public IRayIntersectionModifier, public Reference {
 public:
-    explicit TiltNormal(int side) : normal(std::sqrt(Scalar(3))/2,0,Scalar(side)/2) {}
-    void Modify(RayIntersectionGeometric& hit) const override { hit.vNormal=normal;hit.onb.CreateFromW(normal); }
+    explicit TiltNormal(int side, bool valid=false, bool varying=false) : side(side), valid(valid), varying(varying) {}
+    void Modify(RayIntersectionGeometric& hit) const override {
+        const Scalar angle=(valid?-10:60)*PI/180+(varying?.01*(hit.ptIntersection.x-5)+.025*hit.ray.Dir().x+.0001*hit.rast.x:0);
+        hit.vNormal=Vector3(std::sin(angle),0,side*std::cos(angle));hit.onb.CreateFromW(hit.vNormal);
+    }
 private:
-    Vector3 normal;
+    int side;bool valid,varying;
 };
 static std::string QuadMesh(const std::string& name,Scalar z,Scalar x0,Scalar x1,bool reverse) {
     std::ostringstream s;s<<std::setprecision(17);
@@ -349,14 +370,94 @@ static std::string QuadMesh(const std::string& name,Scalar z,Scalar x0,Scalar x1
     s<<(reverse?" triangle 0 2 1\n triangle 0 3 2\n":" triangle 0 1 2\n triangle 0 2 3\n");
     return s.str()+"}\n";
 }
+class NativeConstraintOracle final : public ManifoldSolver {
+public:
+    NativeConstraintOracle(const ManifoldSolverConfig& cfg,const std::vector<SMSDomainVertex>* contexts)
+        #ifdef RISE_SMS_NATIVE_EVENT_NORMALS
+        : ManifoldSolver(cfg,true,contexts)
+#else
+        : ManifoldSolver(cfg)
+#endif
+        { (void)contexts; }
+    using ManifoldSolver::EvaluateConstraint;
+    using ManifoldSolver::BuildJacobian;
+    using ManifoldSolver::ComputeLightToFirstVertexJacobianDet;
+};
+static void CheckNativeHorizonJacobian(const ManifoldSolverConfig& cfg,const ManifoldResult& result,
+    const std::vector<SMSDomainVertex>& vertices,const Point3& start,const Point3& end,
+    const IScene& scene,const IORStack& stack,SMSQueryDomain domain,ISampler& sampler) {
+    NativeConstraintOracle oracle(cfg,&vertices);
+    const auto& chain=result.specularChain;
+    std::vector<Scalar> diagonal,upper,lower;
+    oracle.BuildJacobian(chain,start,end,diagonal,upper,lower,true);
+    const Scalar h=1e-4*Point3Ops::Distance(start,end);
+    for(unsigned column=0;column<2;++column) {
+        auto plus=chain,minus=chain;
+        const Vector3 tangent=column?chain[0].dpdv:chain[0].dpdu;
+        plus[0].position=Point3Ops::mkPoint3(plus[0].position,tangent*h);
+        minus[0].position=Point3Ops::mkPoint3(minus[0].position,-tangent*h);
+        std::vector<Scalar> a,b;
+        oracle.EvaluateConstraint(plus,start,end,a);oracle.EvaluateConstraint(minus,start,end,b);
+        for(unsigned row=0;row<2;++row) {
+            const Scalar observed=(a[row]-b[row])/(2*h),expected=diagonal[2*row+column];
+            Check(std::fabs(observed-expected)<1e-5*std::max(Scalar(1),std::fabs(expected)),
+                "native shading/fallback constraint Jacobian agrees at an independent displacement scale");
+        }
+    }
+    const Vector3 lightNormal=Vector3Ops::Normalize(Vector3Ops::mkVector3(end,chain[0].position));
+    OrthonormalBasis3D lightFrame;lightFrame.CreateFromW(lightNormal);
+    Scalar firstError=0;
+    for(unsigned refinement=0;refinement<3;++refinement) {
+        const Scalar step=h/std::pow(Scalar(2),refinement);
+        Scalar observed[4]{};bool valid=true;
+        for(unsigned column=0;column<2;++column) {
+            const Vector3 tangent=column?lightFrame.v():lightFrame.u();
+            const Point3 plusEnd=Point3Ops::mkPoint3(end,tangent*step),minusEnd=Point3Ops::mkPoint3(end,-tangent*step);
+            auto plus=vertices,minus=vertices;
+            const auto a=oracle.SolveDomain(start,Vector3(1,0,0),plusEnd,lightNormal,scene,stack,domain,plus,sampler,1e-7,1e-10);
+            const auto b=oracle.SolveDomain(start,Vector3(1,0,0),minusEnd,lightNormal,scene,stack,domain,minus,sampler,1e-7,1e-10);
+            valid=valid&&a.valid&&b.valid;
+            if(a.valid&&b.valid) {
+                const Vector3 delta=Vector3Ops::mkVector3(plus[0].geometry.position,minus[0].geometry.position)*(1/(2*step));
+                observed[column]=Vector3Ops::Dot(delta,chain[0].dpdu);
+                observed[2+column]=Vector3Ops::Dot(delta,chain[0].dpdv);
+            }
+        }
+        Check(valid,"independent native endpoint perturbations retain the physical root");
+        if(valid) {
+            const Scalar measured=std::fabs(observed[0]*observed[3]-observed[1]*observed[2]);
+            const Scalar predicted=oracle.ComputeLightToFirstVertexJacobianDet(chain,start,end,lightNormal);
+            const Scalar error=std::fabs(measured-predicted);
+            if(!refinement) firstError=error;
+            if(refinement==2) {
+                if(firstError>1e-5*std::max(Scalar(1),measured)) {
+                    std::cout<<"native endpoint step convergence predicted="<<std::setprecision(17)<<predicted<<" observed="<<measured<<" first error="<<firstError<<" final error="<<error<<" step="<<step<<'\n';
+                    Check(error<firstError/2,"independent endpoint differences converge under two step halvings");
+                }
+                Check(error<1e-5*std::max(Scalar(1),measured),
+                    "native light-to-root Jacobian agrees with independently solved endpoint displacements");
+            }
+        }
+    }
+
+}
 static void NativeHorizonFallbacks() {
-    for(bool reverse:{false,true}) for(int side:{-1,1}) for(const char* material:{"glass","mirror"}) {
-        Fixture f(Materials()+QuadMesh("patch",0,4.8,5.2,reverse)+Object("caster","patch",material));
-        auto* modifier=new TiltNormal(side);
-        Check(f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier),"native tilt modifier assigned");modifier->release();
-        const Point3 start(0,.3,side),center(5,.3,0);
+    for(bool reverse:{false,true}) for(int side:{-1,1}) for(const char* material:{"glass","mirror","coated","polished"})
+        for(bool valid:{false,true}) for(bool varying:{false,true}) for(bool transformed:{false,true}) {
+        const Scalar scale=transformed?1.5:1,offset=transformed?3:0;
+        const std::string transform=transformed?" scale 1.5 1.5 1.5\n position 3 0 0\n":"";
+        Fixture f(Materials()+
+            "dielectric_material\n{\n name coated\n tau 1\n ior triple\n scattering 1000000\n ar_layer 1.224744871391589 112.26827987812466 0\n}\n"
+            "uniformcolor_painter\n{\n name black\n color 0 0 0\n}\n"
+            "polished_material\n{\n name polished\n reflectance black\n tau 0.7\n ior triple\n scattering 1000000\n}\n"
+            +QuadMesh("patch",0,4.8,5.2,reverse)+Object("caster","patch",material,transform));
+        auto* modifier=new TiltNormal(side,valid,varying);
+        f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);
+        Check(f.Object("caster")->GetModifier()==modifier,"native tilt modifier is retained");modifier->release();
+        const Point3 start(offset,.3*scale,side*scale),center(offset+5*scale,.3*scale,0);
         IORStack air(1);air.SetCurrentObject(f.Object("caster"));
-        RayIntersection hit(Ray(start,Vector3Ops::Normalize(Vector3Ops::mkVector3(center,start))),nullRasterizerState);
+        RasterizerState raster=nullRasterizerState;raster.x=17;raster.y=23;
+        RayIntersection hit(Ray(start,Vector3Ops::Normalize(Vector3Ops::mkVector3(center,start))),raster);
         f.Object("caster")->IntersectRay(hit,RISE_INFINITY,true,true,false);
         Check(hit.geometric.bHit,"tilted native patch hit");
         if(!hit.geometric.bHit) continue;
@@ -370,6 +471,7 @@ static void NativeHorizonFallbacks() {
             else hit.pMaterial->GetSPF()->Scatter(hit.geometric,sampler,rays,air);
             for(unsigned j=0;j<rays.Count();++j) {
                 const auto& ray=rays[j];
+                if(!ray.isDelta || (ray.type!=ScatteredRay::eRayReflection && ray.type!=ScatteredRay::eRayRefraction)) continue;
                 const Scalar nativeWeight=domain.kind==SMSQueryDomain::Wavelength?ray.krayNM:ray.kray[domain.component];
                 if(nativeWeight<=0) continue;
                 const bool reflection=ray.type==ScatteredRay::eRayReflection;
@@ -381,11 +483,83 @@ static void NativeHorizonFallbacks() {
                 record.geometry.isReflection=reflection;
                 std::vector<SMSDomainVertex> vertices;vertices.push_back(record);
                 const auto result=solver->SolveDomain(start,Vector3(1,0,0),end,-ray.ray.Dir(),f.Scene(),air,domain,vertices,sampler,1e-7,1e-10);
-                std::cout<<"native horizon winding="<<reverse<<" side="<<side<<" material="<<material<<" R="<<reflection<<" domain="<<domain.kind<<":"<<domain.component<<":"<<domain.nm<<" native="<<nativeWeight<<" accepted="<<result.valid<<'\n';
+                std::cout<<"native horizon winding="<<reverse<<" side="<<side<<" material="<<material<<" valid="<<valid<<" varying="<<varying<<" transformed="<<transformed<<" R="<<reflection<<" domain="<<domain.kind<<":"<<domain.component<<":"<<domain.nm<<" native="<<nativeWeight<<" accepted="<<result.valid<<'\n';
                 Check(result.valid,"extended solve represents native corrected delta direction");
+                unsigned proposals=0;
+                for(unsigned trial=0;trial<512 && proposals<8;++trial) {
+                    auto root=solver->ProposeExtendedRoot(start,Vector3(1,0,0),end,f.Scene(),air,domain,sampler,raster);
+                    if(root.accepted) {
+                        ++proposals;
+                        Check(Point3Ops::Distance(root.vertices[0].geometry.position,center)<1e-7,"native corrected root proposals reach the SPF endpoint");
+                    }
+                }
+                Check(proposals==8,"native horizon fallback has positive complete-proposal coverage");
                 if(result.valid) {
+                    CheckNativeHorizonJacobian(cfg,result,vertices,start,end,f.Scene(),air,domain,sampler);
                     const Scalar etaScale=reflection?1:RadianceEtaScale(air,ray.ior_stack);
                     Check(std::fabs(result.contributionNM-nativeWeight*etaScale)<1e-8,"native corrected Fresnel and eta scaling agree at solved root");
+                }
+            }
+        }
+        solver->release();
+    }
+}
+static void NativeClosedHorizonFallbacks() {
+    for(bool reverse:{false,true}) for(bool transformed:{false,true}) for(bool nested:{false,true}) for(bool valid:{false,true}) {
+        const Scalar scale=transformed?1.5:1,offset=transformed?3:0;
+        std::ostringstream transform;
+        transform<<" scale "<<.2*scale<<' '<<2*scale<<' '<<.05*scale
+            <<"\n position "<<offset+5*scale<<" 0 "<<-.05*scale<<"\n";
+        std::ostringstream enclosure;
+        if(nested) enclosure<<"perfectrefractor_material\n{\n name outer_mat\n refractance white\n ior 1.1\n}\n"
+            <<"sphere_geometry\n{\n name outer_shape\n radius "<<10*scale<<"\n}\n"
+            <<Object("outer","outer_shape","outer_mat"," position "+std::to_string(offset+5*scale)+" 0 0\n");
+        Fixture f(Materials()+Mesh(true,reverse)+Object("caster","shape","glass",transform.str())+enclosure.str());
+        auto* modifier=new TiltNormal(-1,valid,true);
+        f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);modifier->release();
+        const Point3 start(offset+4.9*scale,.3*scale,-.02*scale),center(offset+5*scale,.3*scale,0);
+        RasterizerState raster=nullRasterizerState;raster.x=17;raster.y=23;
+        RayIntersection hit(Ray(start,Vector3Ops::Normalize(Vector3Ops::mkVector3(center,start))),raster);
+        f.Object("caster")->IntersectRay(hit,RISE_INFINITY,true,true,false);
+        Check(hit.geometric.bHit && !hit.geometric.bProvablyNoInterior,"closed tilted start-inside fixture has a real solid exit");
+        if(!hit.geometric.bHit) continue;
+        hit.pModifier->Modify(hit.geometric);
+        ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;
+        auto* solver=new ManifoldSolver(cfg);RandomNumberGenerator random(984);IndependentSampler sampler(random);
+        for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
+            IORStack stack(1);
+            if(nested) {stack.SetCurrentObject(f.Object("outer"));stack.push(1.1);}
+            stack.SetCurrentObject(f.Object("caster"));
+            SMSNativeMaterialQuery query;
+            Check(SMSDomainReplay::Query(*hit.pMaterial,hit.geometric,stack,domain,query),"closed native index query succeeds");
+            stack.push(query.index);
+            ScatteredRayContainer rays;
+            if(domain.kind==SMSQueryDomain::Wavelength) hit.pMaterial->GetSPF()->ScatterNM(hit.geometric,sampler,domain.nm,rays,stack);
+            else hit.pMaterial->GetSPF()->Scatter(hit.geometric,sampler,rays,stack);
+            for(unsigned j=0;j<rays.Count();++j) {
+                const auto& ray=rays[j];
+                const Scalar native=domain.kind==SMSQueryDomain::Wavelength?ray.krayNM:ray.kray[domain.component];
+                if(native<=0 || !ray.isDelta) continue;
+                const bool reflection=ray.type==ScatteredRay::eRayReflection;
+                const Point3 end=Point3Ops::mkPoint3(center,ray.ray.Dir()*(.02*scale));
+                SMSDomainVertex record(hit.geometric);
+                record.geometry.position=center;record.geometry.normal=hit.geometric.vNormal;
+                record.geometry.geomNormal=hit.geometric.UnflippedGeomNormal();
+                record.geometry.pObject=hit.pObject;record.geometry.pMaterial=hit.pMaterial;
+                record.geometry.isReflection=reflection;
+                std::vector<SMSDomainVertex> vertices;vertices.push_back(record);
+                const auto result=solver->SolveDomain(start,Vector3(1,0,0),end,-ray.ray.Dir(),f.Scene(),stack,domain,vertices,sampler,1e-7,1e-10);
+                std::cout<<"closed native horizon winding="<<reverse<<" transformed="<<transformed<<" nested="<<nested<<" valid="<<valid<<" R="<<reflection<<" accepted="<<result.valid<<'\n';
+                Check(result.valid,"native horizon law replays a closed start-inside and nested exit");
+                auto shortVertices=vertices;
+                const Point3 shortEnd=Point3Ops::mkPoint3(center,ray.ray.Dir()*.005);
+                const auto shortResult=solver->SolveDomain(start,Vector3(1,0,0),shortEnd,-ray.ray.Dir(),f.Scene(),stack,domain,shortVertices,sampler,1e-7,1e-10);
+                Check(!shortResult.valid,"native event correction preserves the shared minimum-segment acceptance filter");
+                if(result.valid) {
+                    Check(vertices[0].geometry.isExiting,"closed start-inside root retains native exit membership");
+                    Check(std::fabs(result.contributionNM-native*(reflection?1:RadianceEtaScale(stack,ray.ior_stack)))<1e-8,
+                        "closed and nested native event price agrees with SPF and radiance eta scaling");
+                    CheckNativeHorizonJacobian(cfg,result,vertices,start,end,f.Scene(),stack,domain,sampler);
                 }
             }
         }
@@ -929,6 +1103,7 @@ int main(int argc,char** argv) {
         NativePeriodicRoots();
         InteriorAtlasRoots();
         NativeHorizonFallbacks();
+        NativeClosedHorizonFallbacks();
 #else
         std::cout<<"Estimator A seam helper unavailable on committed baseline.\n";
 #endif
@@ -942,7 +1117,8 @@ int main(int argc,char** argv) {
     std::cout<<std::setprecision(12);
 #ifdef RISE_SMS_REFERENCE_A
     std::cout<<"reference bytes config="<<sizeof(ManifoldSolverConfig)<<" root="<<sizeof(SMSDomainRoot)
-        <<" counters="<<sizeof(SMSReferenceCounters)<<" vertex="<<sizeof(SMSDomainVertex)<<std::endl;
+        <<" counters="<<sizeof(SMSReferenceCounters)<<" vertex="<<sizeof(SMSDomainVertex)
+        <<" solver="<<sizeof(ManifoldSolver)<<std::endl;
     if(synthetic) Synthetic();if(geometry) {Geometry();CloseRoots();WalkEvents();NativePeriodicRoots();}
 #else
     if(synthetic||geometry) std::cout<<"Estimator A is absent on this committed baseline; new helper tests are unavailable, not a numerical red proof.\n";
