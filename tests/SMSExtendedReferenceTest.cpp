@@ -329,9 +329,19 @@ public:
         hit.ptCoord=Point2(discontinuous ? (hit.ptObjIntersec.x<0?.25:.75) : .5,.5);
     }
 };
+class PostModifierNormal final : public IRayIntersectionModifier, public Reference {
+    const bool discontinuous;
+public:
+    explicit PostModifierNormal(bool step) : discontinuous(step) {}
+    void Modify(RayIntersectionGeometric& hit) const override {
+        const Scalar sign=discontinuous && hit.ptObjIntersec.x<0?-1:1;
+        hit.vNormal=Vector3Ops::Normalize(hit.vNormal*.5+Vector3(sign*std::sqrt(Scalar(3))*.5,0,0));
+        hit.onb.CreateFromW(hit.vNormal);hit.ptCoord=Point2(.5,.5);
+    }
+};
 static void PostModifierChartRoots() {
     for(bool reverse:{false,true}) for(int side:{-1,1}) for(bool transformed:{false,true})
-        for(bool step:{false,true}) {
+        for(bool step:{false,true}) for(bool normalJump:{false,true}) {
         const Scalar scale=transformed?1.5:1,offset=transformed?3:0;
         const std::string transform=transformed?" scale 1.5 1.5 1.5\n position 3 0 0\n":"";
         Fixture f(Materials()+QuadMesh("patch",0,-2,2,reverse)+Object("caster","patch","mirror",transform));
@@ -339,7 +349,9 @@ static void PostModifierChartRoots() {
         Check(RISE_API_CreatePerfectReflectorMaterial(&material,*tint),"post-modifier world tint created");
         if(material) f.job->GetObjects()->GetItem("caster")->AssignMaterial(*material);
         safe_release(material);tint->release();
-        auto* modifier=new PostModifierUV(step);
+        IRayIntersectionModifier* modifier=normalJump
+            ? static_cast<IRayIntersectionModifier*>(new PostModifierNormal(step))
+            : static_cast<IRayIntersectionModifier*>(new PostModifierUV(step));
         f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);modifier->release();
         const Point3 start(offset-.5*scale,.3*scale,side*3*scale),end(offset+.5*scale,.3*scale,side*3*scale);
         ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;
@@ -351,17 +363,29 @@ static void PostModifierChartRoots() {
                 const auto root=solver->ProposeExtendedRoot(start,Vector3(0,0,-side),end,f.Scene(),air,domain,sampler);
                 if(!root.accepted) continue;
                 ++accepted;const auto& vertex=root.vertices[0];
-                lower|=vertex.context.ptCoord.x==.25;upper|=vertex.context.ptCoord.x==.75;
+                Check(std::fabs(root.result.contributionNM-(.5+.1*offset))<1e-8,
+                    "post-modifier families retain the same physical event price");
+                if(normalJump && accepted==1) {
+                    ScatteredRayContainer rays;
+                    if(domain.kind==SMSQueryDomain::Wavelength) vertex.geometry.pMaterial->GetSPF()->ScatterNM(
+                        vertex.context,sampler,domain.nm,rays,air);
+                    else vertex.geometry.pMaterial->GetSPF()->Scatter(vertex.context,sampler,rays,air);
+                    Check(rays.Count()==1 && Vector3Ops::Magnitude(rays[0].ray.Dir()-Vector3Ops::Normalize(
+                        Vector3Ops::mkVector3(end,vertex.geometry.position)))<1e-8,
+                        "native geometric-horizon fallback reaches the same reflection endpoint");
+                }
+                lower|=normalJump?vertex.context.vNormal.x<0:vertex.context.ptCoord.x==.25;
+                upper|=normalJump?vertex.context.vNormal.x>0:vertex.context.ptCoord.x==.75;
                 Check(Point3Ops::Distance(vertex.geometry.position,Point3(offset,.3*scale,0))<1e-8,
                     "post-modifier chart proposals converge to the same physical reflection point");
                 Check(vertex.geometry.uv.x==vertex.context.ptCoord.x,
                     "post-modifier chart stores actual material coordinates");
-                if(!step) Check(vertex.context.ptCoord.x==.5,"continuous UV modifier retains its actual coordinates");
+                if(!step || normalJump) Check(vertex.context.ptCoord.x==.5,"continuous UV modifier retains its actual coordinates");
             }
             std::cout<<"post-modifier chart winding="<<reverse<<" side="<<side<<" transformed="<<transformed
-                <<" step="<<step<<" accepted="<<accepted<<" lower="<<lower<<" upper="<<upper<<'\n';
+                <<" step="<<step<<" normal_jump="<<normalJump<<" accepted="<<accepted<<" lower="<<lower<<" upper="<<upper<<'\n';
             Check(step?accepted==0:accepted>0,
-                "post-modifier UV discontinuity is uncertain while continuous modifier retains positive coverage");
+                "post-modifier context discontinuity is uncertain while continuous modifier retains positive coverage");
         }
         solver->release();
     }
@@ -1329,6 +1353,14 @@ int main(int argc,char** argv) {
     if(argc==2&&std::string(argv[1])=="--unsupported-only") {synthetic=false;geometry=false;delta=false;slab=false;}
     if(argc==2&&std::string(argv[1])=="--production-only") {synthetic=false;geometry=false;delta=true;unsupported=false;production=true;slab=false;}
     if(argc==2&&std::string(argv[1])=="--slab-only") {synthetic=false;geometry=false;delta=false;unsupported=false;}
+    if(argc==2&&std::string(argv[1])=="--modifier-chart-only") {
+#ifdef RISE_SMS_REFERENCE_A
+        PostModifierChartRoots();
+#else
+        std::cout<<"Estimator A modifier helper unavailable on committed baseline.\n";
+#endif
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
+    }
     if(argc==2&&std::string(argv[1])=="--review-only") {
 #ifdef RISE_SMS_REFERENCE_A
         NativePeriodicRoots();
