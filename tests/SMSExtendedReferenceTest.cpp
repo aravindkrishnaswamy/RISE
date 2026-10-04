@@ -320,6 +320,7 @@ public:
         uv=Point2(point.x<0?.25:.75,.5);
     }
 };
+static std::string QuadMesh(const std::string& name,Scalar z,Scalar x0,Scalar x1,bool reverse);
 class PostModifierUV final : public IRayIntersectionModifier, public Reference {
     const bool discontinuous;
 public:
