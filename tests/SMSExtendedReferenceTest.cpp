@@ -93,8 +93,8 @@ static void Synthetic() {
             RandomNumberGenerator rr(SobolSequence::HashCombine(8000+salt,0x4b4c4f50));
             IndependentSampler discovery(dr), retry(rr);
             SMSReferenceCounters counters;
-            constexpr unsigned N=2000000;
-            std::array<double,3> sums{};
+            const unsigned N=rare && roulette ? 100000000 : 2000000;
+            std::array<double,3> sums{}; Scalar maxReciprocal=0, maxDeposit=0;
             for(unsigned n=0;n<N;++n) {
                 const unsigned c=std::min(2u,static_cast<unsigned>(discovery.Get1D()*3));
                 const auto proposal=[c,rare](ISampler& s){return ThreeEventLaw(s,c,rare);};
@@ -104,10 +104,16 @@ static void Synthetic() {
                     [](const LawRoot& a,const LawRoot& b){return b.id>=0&&a.id==b.id&&a.channel==b.channel;},
                     64,roulette,&counters);
                 const Scalar physical=root.id==0 ? Scalar(1+c) : Scalar(4+2*c);
-                sums[c]+=SMSRootReference::Deposit(physical,k,Scalar(1)/3,.4,N);
+                const Scalar deposit=SMSRootReference::Deposit(physical,k,Scalar(1)/3,.4,N);
+                sums[c]+=deposit; maxReciprocal=std::max(maxReciprocal,k); maxDeposit=std::max(maxDeposit,deposit);
             }
             for(unsigned c=0;c<3;++c) samples[c].push_back(sums[c]);
             totalTails+=counters.tailTrials.load();totalStops+=counters.rouletteStops.load();
+            std::cout<<"A-retries rare="<<rare<<" roulette="<<roulette<<" salt="<<salt<<" N="<<N
+                <<" trials="<<counters.retryTrials.load()<<" tails="<<counters.tailTrials.load()
+                <<" stops="<<counters.rouletteStops.load()<<" maxK="<<maxReciprocal<<" maxDeposit="<<maxDeposit<<" histogram=";
+            for(const auto& bucket:counters.retryHistogram) std::cout<<bucket.load()<<',';
+            std::cout<<'\n';
         }
         for(unsigned c=0;c<3;++c) {
             const Moments m(samples[c]); const double reference=(5+3*c)/.4;
@@ -128,6 +134,45 @@ static void Synthetic() {
     Check(!std::isfinite(ManifoldSolver::ExtendedReflectionProbability(false,true,1,true,.05)),"TIR never relabels an unsupported reflection");
 }
 
+// Two nearby, regular reflection roots on one disconnected indexed mesh.
+// Their positions and normals fit the legacy one-percent equivalence band.
+static std::string CloseRootMesh(bool reverse, Scalar scale) {
+    std::ostringstream s; s<<std::setprecision(17);
+    s<<"indexedmesh_geometry\n{\n name shape\n double_sided TRUE\n face_normals TRUE\n";
+    for(int side:{-1,1}) {
+        const Scalar x=side*.001;
+        const Point3 center(x,0,0), a(-.5,0,-3), b(.5,0,-3);
+        const Vector3 n=Vector3Ops::Normalize(Vector3Ops::Normalize(Vector3Ops::mkVector3(a,center))
+            +Vector3Ops::Normalize(Vector3Ops::mkVector3(b,center)));
+        for(const Point2 p:{Point2(-.0004,-1),Point2(.0004,-1),Point2(.0004,1),Point2(-.0004,1)})
+            s<<" vertex "<<scale*(x+p.x)<<' '<<scale*p.y<<' '<<scale*(-n.x*p.x/n.z)<<'\n';
+    }
+    for(int i=0;i<8;++i) s<<" uv "<<(i%2)<<' '<<((i/2)%2)<<'\n';
+    for(int offset:{0,4}) {
+        s<<" triangle "<<offset<<' '<<offset+(reverse?2:1)<<' '<<offset+(reverse?1:2)<<'\n';
+        s<<" triangle "<<offset<<' '<<offset+(reverse?3:2)<<' '<<offset+(reverse?2:3)<<'\n';
+    }
+    return s.str()+"}\n";
+}
+static void CloseRoots() {
+    for(bool winding:{false,true}) for(Scalar scale:{.01,1.,100.}) {
+        Fixture f(Materials()+CloseRootMesh(winding,scale)+Object("caster","shape","mirror"));
+        ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;cfg.solverThreshold=1e-10;
+        auto* solver=new ManifoldSolver(cfg);IORStack air(1);
+        ScriptSampler left({.2,.64,.4,.1}),right({.2,.64,.4,.6});
+        const Point3 start(-.5*scale,0,-3*scale),end(.5*scale,0,-3*scale);
+        const auto a=solver->ProposeExtendedRoot(start,Vector3(0,0,1),end,f.Scene(),air,SMSQueryDomain::RGB(0),left);
+        const auto b=solver->ProposeExtendedRoot(start,Vector3(0,0,1),end,f.Scene(),air,SMSQueryDomain::RGB(0),right);
+        Check(a.accepted&&b.accepted,"nearby mesh roots solve independently at changed scene scales");
+        if(a.accepted&&b.accepted) {
+            std::cout<<"close roots scale="<<scale<<" winding="<<winding<<" separation="
+                <<Point3Ops::Distance(a.vertices[0].geometry.position,b.vertices[0].geometry.position)<<'\n';
+            Check(!ManifoldSolver::SameExtendedRoot(a,b,cfg.uniquenessThreshold*a.scale),
+                "production root identity separates nearby physical roots");
+        }
+        solver->release();
+    }
+}
 static void Geometry() {
     for(bool closed:{false,true}) for(bool winding:{false,true}) for(int side:{-1,1})
         for(bool transformed:{false,true}) for(bool inside:{false,true}) {
@@ -180,7 +225,7 @@ int main(int argc,char** argv) {
     if(argc==2&&std::string(argv[1])=="--geometry-only") synthetic=false;
     std::cout<<std::setprecision(12);
 #ifdef RISE_SMS_REFERENCE_A
-    if(synthetic) Synthetic();if(geometry) Geometry();
+    if(synthetic) Synthetic();if(geometry) {Geometry();CloseRoots();}
 #else
     std::cout<<"Estimator A is absent on this committed baseline; new helper tests are unavailable, not a numerical red proof.\n";
 #endif
