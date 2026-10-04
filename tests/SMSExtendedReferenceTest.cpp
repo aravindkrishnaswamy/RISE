@@ -588,6 +588,73 @@ public:
         hit.onb.CreateFromW(hit.vNormal);
     }
 };
+static void NativeRebuildMesh(Fixture& f, bool indexed, Scalar translation=0, unsigned normalsMode=0) {
+    IndexTriangleListType indices;VerticesListType positions;NormalsListType normals;TexCoordsListType coords;
+    Check(f.Object("caster")->GetGeometry()->TessellateToMesh(indices,positions,normals,coords,1),"R4 native mesh tessellation");
+    for(auto& p:positions) p.x+=translation;
+    ITriangleMeshGeometryIndexed* mesh=nullptr;ITriangleMeshGeometry* plain=nullptr;
+    if(indexed) Check(RISE_API_CreateTriangleMeshGeometryIndexed(&mesh,true,normalsMode==0),"R4 double-precision indexed mesh");
+    else Check(RISE_API_CreateTriangleMeshGeometry(&plain,true),"R4 non-indexed mesh");
+    if(mesh) {mesh->BeginIndexedTriangles();mesh->AddVertices(positions);}
+    if(plain) plain->BeginTriangles();
+    for(const auto& index:indices) {
+        Triangle t;
+        for(unsigned k=0;k<3;++k) {t.vertices[k]=positions[index.iVertices[k]];t.coords[k]=coords[index.iCoords[k]];}
+        const Vector3 face=Vector3Ops::Normalize(Vector3Ops::Cross(Vector3Ops::mkVector3(t.vertices[1],t.vertices[0]),Vector3Ops::mkVector3(t.vertices[2],t.vertices[0])));
+        const Scalar cx=(t.vertices[0].x+t.vertices[1].x+t.vertices[2].x)/3;
+        for(unsigned k=0;k<3;++k) t.normals[k]=normalsMode==2?-face:normalsMode==1
+            ? Vector3Ops::Normalize(face*.5+Vector3((cx<0?-1:1)*std::sqrt(Scalar(3))*.5,0,0)):face;
+        if(mesh) {
+            IndexedTriangle out=index;
+            for(unsigned k=0;k<3;++k) {out.iNormals[k]=mesh->numNormals();mesh->AddNormal(t.normals[k]);out.iCoords[k]=mesh->numCoords();mesh->AddTexCoord(t.coords[k]);}
+            mesh->AddIndexedTriangle(out);
+        }
+        if(plain) plain->AddTriangle(t);
+    }
+    if(mesh) {mesh->DoneIndexedTriangles();f.job->GetObjects()->GetItem("caster")->AssignGeometry(*mesh);safe_release(mesh);}
+    if(plain) {plain->DoneTriangles();f.job->GetObjects()->GetItem("caster")->AssignGeometry(*plain);safe_release(plain);}
+    f.job->GetObjects()->PrepareForRendering();
+}
+static void RoundFourMaterials() {
+    const std::string coat="uniformcolor_painter\n{\n name black\n color 0 0 0\n}\npolished_material\n{\n name polish\n reflectance black\n tau 0.7\n ior triple\n scattering 1000000\n}\n";
+    for(int side:{-1,1}) for(Scalar outer:{1.,1.2}) for(bool invalid:{false,true}) {
+        Fixture f(Materials()+coat+PlaneScene("patch",0,-10,10)+Object("caster","patch","polish"));
+        if(invalid) {auto* modifier=new TiltNormal(side,false);f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);modifier->release();}
+        const Point3 start(-std::sqrt(Scalar(3)),0,side),center(0,0,0);
+        RayIntersection hit(Ray(start,Vector3Ops::Normalize(Vector3Ops::mkVector3(center,start))),nullRasterizerState);
+        f.Object("caster")->IntersectRay(hit,RISE_INFINITY,true,true,false);Check(hit.geometric.bHit,"R4 polished clipped-plane hit");
+        if(!hit.geometric.bHit) continue;
+        if(hit.pModifier) hit.pModifier->Modify(hit.geometric);
+        for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
+            IORStack air(outer);air.SetCurrentObject(hit.pObject);RandomNumberGenerator random(12);IndependentSampler sampler(random);ScatteredRayContainer rays;
+            if(domain.kind==SMSQueryDomain::Wavelength) hit.pMaterial->GetSPF()->ScatterNM(hit.geometric,sampler,domain.nm,rays,air);
+            else hit.pMaterial->GetSPF()->Scatter(hit.geometric,sampler,rays,air);
+            Scalar native=0;unsigned count=0;
+            for(unsigned k=0;k<rays.Count();++k) if(rays[k].isDelta&&rays[k].type==ScatteredRay::eRayReflection) {++count;native+=domain.kind==SMSQueryDomain::Wavelength?rays[k].krayNM:rays[k].kray[domain.component];}
+            IORStack replay(air);Scalar ei=0,et=0,weight=0;bool exiting=false;
+            const bool crossed=SMSDomainReplay::Cross(*hit.pMaterial,hit.pObject,hit.geometric,domain,true,replay,ei,et,exiting);
+            const bool priced=crossed&&SMSDomainReplay::EventWeight(*hit.pMaterial,hit.geometric,air,domain,true,exiting,ei,et,1,weight);
+            std::cout<<"R4 polished side="<<side<<" outer="<<outer<<" invalid="<<invalid<<" domain="<<domain.kind<<":"<<domain.component<<":"<<domain.nm<<" native rays="<<count<<" native="<<native<<" priced="<<priced<<" weight="<<weight<<'\n';
+            if(count) Check(priced&&std::fabs(weight-native)<1e-8,"polished coat prices native ambient-to-coat reflection on either sheet face");
+            else Check(!priced||weight==0,"native empty polished support cannot become a positive extended delta event");
+        }
+    }
+    for(bool indexed:{false,true}) for(bool reverse:{false,true}) {
+        Fixture f(Materials()+UVSeamMesh(reverse,true)+Object("caster","sphere","mirror"));NativeRebuildMesh(f,indexed,0,1);
+        ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;auto* solver=new ManifoldSolver(cfg);IORStack air(1);
+        for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
+            unsigned accepted=0;RandomNumberGenerator random(217);IndependentSampler sampler(random);
+            for(unsigned k=0;k<64;++k) accepted+=solver->ProposeExtendedRoot(Point3(-.5,.3,-3),Vector3(0,0,1),Point3(.5,.3,-3),f.Scene(),air,domain,sampler).accepted;
+            std::cout<<"R4 native normal seam indexed="<<indexed<<" winding="<<reverse<<" accepted="<<accepted<<'\n';
+            Check(accepted==0,"discontinuous native corner-normal root has uncertain reciprocal identity");
+        }
+        solver->release();
+        Fixture closed(Materials()+Mesh(true,reverse)+Object("caster","shape","glass"));NativeRebuildMesh(closed,indexed,0,2);
+        SMSStartingMedia capture;const bool captured=SMSDomainReplay::Capture(closed.Scene(),Point3(0,0,0),air,capture);
+        std::cout<<"R4 opposing mesh start-inside indexed="<<indexed<<" winding="<<reverse<<" captured="<<captured<<" members="<<capture.enclosing.size()<<'\n';
+        Check(!captured,"unaudited opposing corner normals cannot certify empty starting membership inside a closed mesh");
+    }
+}
 static void RoundFourNumerics() {
     for(bool reverse:{false,true}) {
         Fixture f(Materials()+QuadMesh("patch",0,-2,2,reverse)+Object("caster","patch","mirror"));
@@ -614,7 +681,7 @@ static void RoundFourNumerics() {
         solver->release();
     }
     for(bool reverse:{false,true}) {
-        Fixture f(Materials()+CloseRootMesh(reverse,10000,1e-9,1000000)+Object("caster","shape","mirror"));
+        Fixture f(Materials()+CloseRootMesh(reverse,10000,1e-9)+Object("caster","shape","mirror"));NativeRebuildMesh(f,true,1000000);
         ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;cfg.solverThreshold=1e-10;
         auto* solver=new ManifoldSolver(cfg);IORStack air(1);
         for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
@@ -1454,7 +1521,7 @@ int main(int argc,char** argv) {
     }
     if(argc==2&&std::string(argv[1])=="--r4-only") {
 #ifdef RISE_SMS_REFERENCE_A
-        RoundFourNumerics();
+        RoundFourNumerics();RoundFourMaterials();
 #else
         std::cout<<"Round 4 helpers unavailable on committed baseline.\n";
 #endif
