@@ -5,7 +5,8 @@ Phase 2 is implemented on `sms-ext-phase2`, based on master
 Current native source is `71c080bd3`; corrected close-root fixtures are
 committed at `a6b4aa37a`. The current composed gate passes **374075/0**
 across 30 make modes, twelve actual Xcode-linked controls and five partial
-sanitizer modes. Fresh external Round 5 is still required. Earlier sections
+sanitizer modes. Fresh external Round 5 completed with five P1 and two P2 findings. Work is
+stopped under the user’s five-round limit; no Phase 2 merge occurred. Earlier sections
 are historical checkpoint records; their pending-review statements describe
 those checkpoints and do not supersede the current status.
 
@@ -868,3 +869,50 @@ base-step refinement and the existing convergence reserve. The focused
 mode passes283/0; the expanded review passes193319/0. No continuity
 certificate is claimed. Complete replacement evidence is now under
 `.claude/logs/sms-phase2-round5-final-v2/`; the earlier preparation is preserved.
+
+
+## Fresh Round 5: stop at the review limit (2026-10-04)
+
+Three fresh independent read-only reviewers examined committed
+`f3ebf3b926505a361636bb8dc93a8619f35fa9b7`. All reviewer processes exited0;
+review convergence failed: estimator reports one P1, material reports two
+P1s, and evidence reports two P1s plus two P2s. No reviewer identifies a
+separate design defect. Raw verdicts, CLI logs and reviewed-head metadata are
+under `.claude/logs/sms-phase2-round5-final-v3/fresh-reviews/`.
+
+The source confirms the evidence P1s: `ObjectManager::PrepareForRendering`
+tessellates/scans eligible meshes on every preparation, including mode-off,
+repeated frames and shared instances. Earlier “one-time” wording means
+preparation work rather than per-anchor work, but understates its repetitions
+and allocations. `ProposeExtendedRoot`/`SolveDomainCore` and adaptive Jacobians
+allocate fresh vectors; the adopted worker-local scratch storage is absent.
+Required ray-intersection, material-query and peak-scratch counters are also
+absent. Whole-process RSS and proposal counters do not satisfy those gates.
+
+The material reviewer traces two additional defects: the fixed0.05 native
+frame probe can replace a lower parallel patch root with the nearer upper
+patch of the same object, eliminating proposal support; native event replay
+reads modified `vNormal` while native SPFs use modified `onb.w()`, so an
+ONB-only modifier can produce mismatched directions/prices and frame identity.
+These source traces are supported by the corresponding implementation and
+native SPF consumers, but new native C++ witnesses have not been executed.
+
+The estimator reviewer numerically evaluates a near-commensurate continuous
+normal field with period cbrt(epsilon)/(4*114243): the four production stencils
+agree near−0.29166666667, while a P/1024 reference gives−0.49166541168,
+with an estimated68.6% inverse-Jacobian overprice. This is a numerical
+native-formula counterexample, not a newly compiled C++ fixture or render.
+It needs committed native reproduction before repair.
+
+The two P2s are an undisclosed non-indexed triangle scan in
+`TriangleMeshGeometry::NativeTriangleEdgeDistance`, and weak harmonic test
+guards: rejected solves skip derivative assertions and nonfinite Jacobians
+explicitly pass. Current logs show positive finite controls, but the guards
+can false-green under a rejection/NaN fault and need strengthening.
+
+The green measured gate above remains valid evidence, not proof that these
+review findings are absent. No production repair, sixth review, ledger closure,
+new row, Phase 2 merge, Phase 3/4 work or push follows. Master remains
+`08552560b54b517b7a8a0696eb9d317953b26bbe`, clean. Phase 1 remains merged at
+`34bd520ec5e70a5cf96bcf8b8154b1a17888880f`. Continuation requires a user ruling
+on the explicit stop when the review loop has not converged after five rounds.

@@ -1,6 +1,6 @@
 # Extended SMS: event proposals, channel geometry, and path ownership
 
-**Status: adopted implementation contract, 2026-10-03. Phase 1 domain/replay primitives and interim rejection policy are implemented on `sms-ext`, merged to master at `34bd520ec5e70a5cf96bcf8b8154b1a17888880f`. Phase 2 is implemented on `sms-ext-phase2`, pending final review and merge; Phases 3–4 remain pending.**
+**Status: adopted implementation contract, 2026-10-03. Phase 1 domain/replay primitives and interim rejection policy are implemented on `sms-ext`, merged to master at `34bd520ec5e70a5cf96bcf8b8154b1a17888880f`. Phase 2 is implemented on `sms-ext-phase2`, unmerged and stopped after nonconvergent Round 5; Phases 3–4 remain pending.**
 
 Base: master `a8fa56224ff1e4d9284e907fcf1d1d05534530e6`, the reviewed attenuation integration. DL-437 and DL-438 remain open. The user authorized deferring them for that integration and asked for this extended design next. This proposal keeps the native material conventions established by [DL-435](DL435_SPECTRAL_SMS_ATTENUATION.md). It does not replace them with a general participating-medium or absorbing-film model.
 
@@ -613,3 +613,16 @@ controls, partial sanitizers and memory. Details and limits are in
 [SMS_EXTENDED_PHASE2_VALIDATION.md](SMS_EXTENDED_PHASE2_VALIDATION.md).
 Fresh Round 5 is still required before merge; it is the final allowed round.
 No design decision, ledger closure or new row follows from this gate.
+
+
+### Phase 2 Round 5 stop (2026-10-04)
+
+Three fresh reviewers of f3ebf3b92 report five implementation P1s and two P2s,
+with no separate design defect. Required worker-local scratch/work counters
+are missing, and preparation-audit cost was understated. Further reports
+concern near-commensurate Jacobian aliasing, fixed-offset surface-frame
+reconstruction and modified ONB replay. Numerical/source-traced findings and
+verification limits are recorded in
+[SMS_EXTENDED_PHASE2_VALIDATION.md](SMS_EXTENDED_PHASE2_VALIDATION.md).
+The user’s five-round stop rule applies. Phase 2 remains unmerged; no sixth
+round, contract amendment, ledger closure or new row is authorized here.
