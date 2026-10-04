@@ -144,7 +144,7 @@ static std::string CloseRootMesh(bool reverse, Scalar scale) {
         const Point3 center(x,0,0), a(-.5,0,-3), b(.5,0,-3);
         const Vector3 n=Vector3Ops::Normalize(Vector3Ops::Normalize(Vector3Ops::mkVector3(a,center))
             +Vector3Ops::Normalize(Vector3Ops::mkVector3(b,center)));
-        for(const Point2 p:{Point2(-.0004,-1),Point2(.0004,-1),Point2(.0004,1),Point2(-.0004,1)})
+        for(const Point2& p:{Point2(-.0004,-1),Point2(.0004,-1),Point2(.0004,1),Point2(-.0004,1)})
             s<<" vertex "<<scale*(x+p.x)<<' '<<scale*p.y<<' '<<scale*(-n.x*p.x/n.z)<<'\n';
     }
     for(int i=0;i<8;++i) s<<" uv "<<(i%2)<<' '<<((i/2)%2)<<'\n';
