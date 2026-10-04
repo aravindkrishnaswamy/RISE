@@ -13,6 +13,8 @@
 #include "../src/Library/Interfaces/IBSDF.h"
 #include "../src/Library/Interfaces/IUVGenerator.h"
 #include "../src/Library/Geometry/SphericalUVGenerator.h"
+#include "../src/Library/Geometry/TriangleMeshGeometry.h"
+#include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
 #include "../src/Library/Geometry/CylindricalUVGenerator.h"
 #include "../src/Library/Interfaces/IRayIntersectionModifier.h"
 #include "../src/Library/Objects/Object.h"
@@ -630,12 +632,32 @@ public:
         hit.onb.CreateFromW(hit.vNormal);
     }
 };
-static void NativeRebuildMesh(Fixture& f, bool indexed, Scalar translation=0, unsigned normalsMode=0, Scalar yScale=1) {
+static unsigned preparationTessellations=0;
+class PreparationIndexedMesh final : public TriangleMeshGeometryIndexed {
+public:
+    explicit PreparationIndexedMesh(bool face):TriangleMeshGeometryIndexed(true,face) {}
+    bool TessellateToMesh(IndexTriangleListType& t,VerticesListType& p,NormalsListType& n,
+        TexCoordsListType& uv,unsigned detail) const override {
+        ++preparationTessellations;return TriangleMeshGeometryIndexed::TessellateToMesh(t,p,n,uv,detail);
+    }
+};
+class PreparationPlainMesh final : public TriangleMeshGeometry {
+public:
+    PreparationPlainMesh():TriangleMeshGeometry(true) {}
+    bool TessellateToMesh(IndexTriangleListType& t,VerticesListType& p,NormalsListType& n,
+        TexCoordsListType& uv,unsigned detail) const override {
+        ++preparationTessellations;return TriangleMeshGeometry::TessellateToMesh(t,p,n,uv,detail);
+    }
+};
+static void NativeRebuildMesh(Fixture& f, bool indexed, Scalar translation=0, unsigned normalsMode=0, Scalar yScale=1, bool preparationProbe=false) {
     IndexTriangleListType indices;VerticesListType positions;NormalsListType normals;TexCoordsListType coords;
     Check(f.Object("caster")->GetGeometry()->TessellateToMesh(indices,positions,normals,coords,1),"R4 native mesh tessellation");
     for(auto& p:positions) {p.x+=translation;p.y*=yScale;}
     ITriangleMeshGeometryIndexed* mesh=nullptr;ITriangleMeshGeometry* plain=nullptr;
-    if(indexed) Check(RISE_API_CreateTriangleMeshGeometryIndexed(&mesh,true,normalsMode==0),"R4 double-precision indexed mesh");
+    if(preparationProbe) {
+        if(indexed) mesh=new PreparationIndexedMesh(normalsMode==0);
+        else plain=new PreparationPlainMesh;
+    } else if(indexed) Check(RISE_API_CreateTriangleMeshGeometryIndexed(&mesh,true,normalsMode==0),"R4 double-precision indexed mesh");
     else Check(RISE_API_CreateTriangleMeshGeometry(&plain,true),"R4 non-indexed mesh");
     if(mesh) {mesh->BeginIndexedTriangles();mesh->AddVertices(positions);}
     if(plain) plain->BeginTriangles();
@@ -657,6 +679,32 @@ static void NativeRebuildMesh(Fixture& f, bool indexed, Scalar translation=0, un
     if(plain) {plain->DoneTriangles();f.job->GetObjects()->GetItem("caster")->AssignGeometry(*plain);safe_release(plain);}
     dynamic_cast<const ObjectManager*>(f.Scene().GetObjects())->InvalidateSpatialStructure();
     f.job->GetObjects()->PrepareForRendering();
+}
+static void NativePreparationAudits() {
+    for(bool indexed:{false,true}) for(bool reverse:{false,true}) {
+        Fixture f(Materials()+Mesh(true,reverse)+SceneObject("caster","shape","glass")
+            +SceneObject("shared","shape","glass"," position 1000 0 0\n"));
+        NativeRebuildMesh(f,indexed,0,2,1,true);
+        auto* object=f.job->GetObjects()->GetItem("caster");
+        f.job->GetObjects()->GetItem("shared")->AssignGeometry(*object->GetGeometry());
+        preparationTessellations=0;
+        for(unsigned frame=0;frame<4;++frame) f.job->GetObjects()->PrepareForRendering();
+        Check(preparationTessellations==0,"repeated extended-off preparation audits shared meshes without tessellation or array copies");
+        IORStack inside(1);inside.SetCurrentObject(object);inside.push(1.3);SMSStartingMedia captured;
+        Check(!SMSDomainReplay::Capture(f.Scene(),Point3(0,0,0),inside,captured),
+            "cached opposing winding normals reject start-inside membership");
+        if(indexed) {
+            auto* native=dynamic_cast<PreparationIndexedMesh*>(const_cast<IGeometry*>(object->GetGeometry()));
+            IndexTriangleListType t;VerticesListType positions;NormalsListType normals;TexCoordsListType uv;
+            native->TriangleMeshGeometryIndexed::TessellateToMesh(t,positions,normals,uv,1);
+            for(auto& n:normals) n=-n;
+            native->UpdateVertices(positions,normals);
+            f.job->GetObjects()->PrepareForRendering();
+            Check(SMSDomainReplay::Capture(f.Scene(),Point3(0,0,0),inside,captured),
+                "real indexed normal mutation refreshes the cached orientation audit");
+            Check(preparationTessellations==0,"normal mutation does not reintroduce preparation tessellation");
+        }
+    }
 }
 static void RoundFourMaterials() {
     const std::string coat="uniformcolor_painter\n{\n name black\n color 0 0 0\n}\npolished_material\n{\n name polish\n reflectance black\n tau 0.7\n ior triple\n scattering 1000000\n}\n";
@@ -1759,6 +1807,12 @@ int main(int argc,char** argv) {
 #endif
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
     }
+    if(argc==2&&std::string(argv[1])=="--r5-preparation-only") {
+#ifdef RISE_SMS_REFERENCE_A
+        NativePreparationAudits();
+#endif
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
+    }
     if(argc==2&&std::string(argv[1])=="--r5-normal-only") {
 #ifdef RISE_SMS_REFERENCE_A
         NativeNearCommensurateNormal();
@@ -1809,7 +1863,7 @@ int main(int argc,char** argv) {
     std::cout<<"reference bytes config="<<sizeof(ManifoldSolverConfig)<<" root="<<sizeof(SMSDomainRoot)
         <<" counters="<<sizeof(SMSReferenceCounters)<<" vertex="<<sizeof(SMSDomainVertex)
         <<" solver="<<sizeof(ManifoldSolver)<<std::endl;
-    if(synthetic) Synthetic();if(geometry) {Geometry();CloseRoots();WalkEvents();NativePeriodicRoots();}
+    if(synthetic) Synthetic();if(geometry) {::Geometry();CloseRoots();WalkEvents();NativePeriodicRoots();}
 #else
     if(synthetic||geometry) std::cout<<"Estimator A is absent on this committed baseline; new helper tests are unavailable, not a numerical red proof.\n";
 #endif
