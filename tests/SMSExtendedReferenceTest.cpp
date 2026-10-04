@@ -588,10 +588,10 @@ public:
         hit.onb.CreateFromW(hit.vNormal);
     }
 };
-static void NativeRebuildMesh(Fixture& f, bool indexed, Scalar translation=0, unsigned normalsMode=0) {
+static void NativeRebuildMesh(Fixture& f, bool indexed, Scalar translation=0, unsigned normalsMode=0, Scalar yScale=1) {
     IndexTriangleListType indices;VerticesListType positions;NormalsListType normals;TexCoordsListType coords;
     Check(f.Object("caster")->GetGeometry()->TessellateToMesh(indices,positions,normals,coords,1),"R4 native mesh tessellation");
-    for(auto& p:positions) p.x+=translation;
+    for(auto& p:positions) {p.x+=translation;p.y*=yScale;}
     ITriangleMeshGeometryIndexed* mesh=nullptr;ITriangleMeshGeometry* plain=nullptr;
     if(indexed) Check(RISE_API_CreateTriangleMeshGeometryIndexed(&mesh,true,normalsMode==0),"R4 double-precision indexed mesh");
     else Check(RISE_API_CreateTriangleMeshGeometry(&plain,true),"R4 non-indexed mesh");
@@ -681,7 +681,7 @@ static void RoundFourNumerics() {
         solver->release();
     }
     for(bool reverse:{false,true}) {
-        Fixture f(Materials()+CloseRootMesh(reverse,10000,1e-9)+Object("caster","shape","mirror"));NativeRebuildMesh(f,true,1000000);
+        Fixture f(Materials()+CloseRootMesh(reverse,10000,1e-9)+Object("caster","shape","mirror"));NativeRebuildMesh(f,true,1000000,0,.0001);
         ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;cfg.solverThreshold=1e-10;
         auto* solver=new ManifoldSolver(cfg);IORStack air(1);
         for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
