@@ -2079,21 +2079,41 @@ void ManifoldSolver::BuildJacobian(
         diag.assign(4*k,0);upper.assign(k>1?4*(k-1):0,0);lower=upper;
         const Scalar h=std::cbrt(std::numeric_limits<Scalar>::epsilon())*Point3Ops::Distance(fixedStart,fixedEnd);
         for(std::size_t j=0;j<k;++j) for(unsigned column=0;column<2;++column) {
-            auto plus=chain,minus=chain;
-            const bool ok=UpdateVertexOnSurface(plus[j],column?0:h,column?h:0,0,true)
-                && UpdateVertexOnSurface(minus[j],column?0:-h,column?-h:0,0,true);
-            bool regular=ok && h>0 && std::isfinite(h);
-            if(regular) for(std::size_t i=0;i<k;++i) {
-                unsigned aBranch=0,bBranch=0,centerBranch=0;
-                const auto a=SMSNativeConstraintVertex(plus[i],i?plus[i-1].position:fixedStart,NativeRaster(i),&aBranch);
-                const auto b=SMSNativeConstraintVertex(minus[i],i?minus[i-1].position:fixedStart,NativeRaster(i),&bBranch);
-                const auto center=SMSNativeConstraintVertex(chain[i],i?chain[i-1].position:fixedStart,NativeRaster(i),&centerBranch);
-                if(!a.valid || !b.valid || !center.valid || aBranch!=centerBranch || bBranch!=centerBranch) regular=false;
+            bool regular=h>0 && std::isfinite(h);
+            std::array<std::vector<Scalar>,3> derivatives;
+            // Three scales detect truncation/aliasing that a single central
+            // difference hides. Unresolved derivatives invalidate the solve;
+            // reference pricing cannot silently use the coarse aliased value.
+            for(unsigned refinement=0;refinement<3 && regular;++refinement) {
+                const Scalar step=h/std::pow(Scalar(2),refinement);
+                auto plus=chain,minus=chain;
+                regular=UpdateVertexOnSurface(plus[j],column?0:step,column?step:0,0,true)
+                    && UpdateVertexOnSurface(minus[j],column?0:-step,column?-step:0,0,true);
+                if(regular) for(std::size_t i=0;i<k;++i) {
+                    unsigned aBranch=0,bBranch=0,centerBranch=0;
+                    const auto a=SMSNativeConstraintVertex(plus[i],i?plus[i-1].position:fixedStart,NativeRaster(i),&aBranch);
+                    const auto b=SMSNativeConstraintVertex(minus[i],i?minus[i-1].position:fixedStart,NativeRaster(i),&bBranch);
+                    const auto center=SMSNativeConstraintVertex(chain[i],i?chain[i-1].position:fixedStart,NativeRaster(i),&centerBranch);
+                    if(!a.valid || !b.valid || !center.valid || aBranch!=centerBranch || bBranch!=centerBranch) regular=false;
+                }
+                if(regular) {
+                    std::vector<Scalar> cp,cm;
+                    EvaluateConstraint(plus,fixedStart,fixedEnd,cp);EvaluateConstraint(minus,fixedStart,fixedEnd,cm);
+                    derivatives[refinement].resize(2*k);
+                    for(std::size_t i=0;i<2*k;++i) derivatives[refinement][i]=(cp[i]-cm[i])/(2*step);
+                }
             }
-            std::vector<Scalar> cp,cm;
-            if(regular) { EvaluateConstraint(plus,fixedStart,fixedEnd,cp);EvaluateConstraint(minus,fixedStart,fixedEnd,cm); }
+            if(regular) for(std::size_t i=0;i<2*k;++i) {
+                const Scalar a=derivatives[0][i],b=derivatives[1][i],c=derivatives[2][i];
+                const Scalar coordinateScale=std::max({Scalar(1),std::fabs(chain[j].position.x),
+                    std::fabs(chain[j].position.y),std::fabs(chain[j].position.z)});
+                const Scalar tolerance=std::sqrt(std::numeric_limits<Scalar>::epsilon())*std::max({Scalar(1),std::fabs(a),std::fabs(b),std::fabs(c)})
+                    +std::numeric_limits<Scalar>::epsilon()*coordinateScale/(h/4);
+                if(!std::isfinite(a) || !std::isfinite(b) || !std::isfinite(c)
+                    || std::fabs(a-b)>tolerance || std::fabs(b-c)>tolerance) regular=false;
+            }
             for(std::size_t i=0;i<k;++i) for(unsigned row=0;row<2;++row) {
-                const Scalar value=regular?(cp[2*i+row]-cm[2*i+row])/(2*h):std::numeric_limits<Scalar>::quiet_NaN();
+                const Scalar value=regular?derivatives[2][2*i+row]:std::numeric_limits<Scalar>::quiet_NaN();
                 if(i==j) diag[4*i+2*row+column]=value;
                 else if(j==i+1) upper[4*i+2*row+column]=value;
                 else if(i==j+1) lower[4*j+2*row+column]=value;
