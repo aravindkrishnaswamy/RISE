@@ -9,6 +9,12 @@
 #include "../src/Library/Managers/ObjectManager.h"
 #include "../src/Library/Rendering/RayCaster.h"
 #include "../src/Library/RISE_API.h"
+#include "../src/Library/Interfaces/ILightManager.h"
+#include "../src/Library/Interfaces/IBSDF.h"
+#include "../src/Library/Utilities/Optics.h"
+#include "../src/Library/Shaders/PathTracingIntegrator.h"
+#include "../src/Library/Painters/UniformScalarPainter.h"
+#include "../src/Library/Painters/UniformColorPainter.h"
 #include <array>
 #include <sstream>
 #include <iomanip>
@@ -144,10 +150,10 @@ static std::string CloseRootMesh(bool reverse, Scalar scale) {
         const Point3 center(x,0,0), a(-.5,0,-3), b(.5,0,-3);
         const Vector3 n=Vector3Ops::Normalize(Vector3Ops::Normalize(Vector3Ops::mkVector3(a,center))
             +Vector3Ops::Normalize(Vector3Ops::mkVector3(b,center)));
-        for(const Point2& p:{Point2(-.0004,-1),Point2(.0004,-1),Point2(.0004,1),Point2(-.0004,1)})
+        for(const Point2& p:{Point2(-.0004,-1),Point2(.0004,-1),Point2(.0004,2),Point2(-.0004,2)})
             s<<" vertex "<<scale*(x+p.x)<<' '<<scale*p.y<<' '<<scale*(-n.x*p.x/n.z)<<'\n';
     }
-    for(int i=0;i<8;++i) s<<" uv "<<(i%2)<<' '<<((i/2)%2)<<'\n';
+    for(int i=0;i<2;++i) s<<" uv 0 0\n uv 1 0\n uv 1 1\n uv 0 1\n";
     for(int offset:{0,4}) {
         s<<" triangle "<<offset<<' '<<offset+(reverse?2:1)<<' '<<offset+(reverse?1:2)<<'\n';
         s<<" triangle "<<offset<<' '<<offset+(reverse?3:2)<<' '<<offset+(reverse?2:3)<<'\n';
@@ -159,10 +165,11 @@ static void CloseRoots() {
         Fixture f(Materials()+CloseRootMesh(winding,scale)+Object("caster","shape","mirror"));
         ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;cfg.solverThreshold=1e-10;
         auto* solver=new ManifoldSolver(cfg);IORStack air(1);
-        ScriptSampler left({.2,.64,.4,.1}),right({.2,.64,.4,.6});
+        ScriptSampler left({.2,winding?5./9:11./36,winding?.25:.4,.1}),right({.2,winding?5./9:11./36,winding?.25:.4,.6});
         const Point3 start(-.5*scale,0,-3*scale),end(.5*scale,0,-3*scale);
         const auto a=solver->ProposeExtendedRoot(start,Vector3(0,0,1),end,f.Scene(),air,SMSQueryDomain::RGB(0),left);
         const auto b=solver->ProposeExtendedRoot(start,Vector3(0,0,1),end,f.Scene(),air,SMSQueryDomain::RGB(0),right);
+        std::cout<<"close solve scale="<<scale<<" winding="<<winding<<" accepted="<<a.accepted<<','<<b.accepted<<" solved="<<a.result.valid<<','<<b.result.valid<<'\n';
         Check(a.accepted&&b.accepted,"nearby mesh roots solve independently at changed scene scales");
         if(a.accepted&&b.accepted) {
             std::cout<<"close roots scale="<<scale<<" winding="<<winding<<" separation="
@@ -170,6 +177,120 @@ static void CloseRoots() {
             Check(!ManifoldSolver::SameExtendedRoot(a,b,cfg.uniquenessThreshold*a.scale),
                 "production root identity separates nearby physical roots");
         }
+        solver->release();
+    }
+}
+static std::string QuadMesh(const std::string& name,Scalar z,Scalar x0,Scalar x1,bool reverse) {
+    std::ostringstream s;s<<std::setprecision(17);
+    s<<"indexedmesh_geometry\n{\n name "<<name<<"\n double_sided TRUE\n face_normals TRUE\n";
+    s<<" vertex "<<x0<<" -2 "<<z<<"\n vertex "<<x1<<" -2 "<<z
+        <<"\n vertex "<<x1<<" 2 "<<z<<"\n vertex "<<x0<<" 2 "<<z
+        <<"\n uv 0 0\n uv 1 0\n uv 1 1\n uv 0 1\n";
+    s<<(reverse?" triangle 0 2 1\n triangle 0 3 2\n":" triangle 0 1 2\n triangle 0 2 3\n");
+    return s.str()+"}\n";
+}
+class ConstraintOracle : public ManifoldSolver {
+public:
+    using ManifoldSolver::ManifoldSolver;
+    using ManifoldSolver::EvaluateConstraint;
+    using ManifoldSolver::BuildJacobian;
+};
+static void CheckJacobian(ConstraintOracle& solver,const SMSDomainRoot& root,const Point3& start,const Point3& end) {
+    const auto& chain=root.result.specularChain;
+    std::vector<Scalar> diagonal,upper,lower;
+    solver.BuildJacobian(chain,start,end,diagonal,upper,lower,true);
+    const std::size_t count=chain.size();const Scalar h=1e-5*root.scale;
+    for(std::size_t column=0;column<2*count;++column) {
+        auto plus=chain,minus=chain;const std::size_t j=column/2;
+        const Vector3 tangent=column%2?chain[j].dpdv:chain[j].dpdu;
+        plus[j].position=Point3Ops::mkPoint3(plus[j].position,tangent*h);
+        minus[j].position=Point3Ops::mkPoint3(minus[j].position,-tangent*h);
+        std::vector<Scalar> a,b;solver.EvaluateConstraint(plus,start,end,a);solver.EvaluateConstraint(minus,start,end,b);
+        for(std::size_t row=0;row<2*count;++row) {
+            const std::size_t i=row/2,offset=4*i+2*(row%2)+column%2;
+            const Scalar expected=i==j?diagonal[offset]:j==i+1?upper[offset]:i==j+1?lower[4*(i-1)+2*(row%2)+column%2]:0;
+            const Scalar observed=(a[row]-b[row])/(2*h);
+            if(std::fabs(observed-expected)>1e-5*std::max(Scalar(1),std::fabs(expected)))
+                std::cout<<"Jacobian row="<<row<<" col="<<column<<" expected="<<expected<<" observed="<<observed<<" count="<<count<<" domain="<<root.domain.component<<'\n';
+            Check(std::fabs(observed-expected)<=1e-5*std::max(Scalar(1),std::fabs(expected)),
+                "native mixed-event constraint Jacobian agrees with central differences");
+        }
+    }
+}
+static void WalkEvents() {
+    for(bool reverse:{false,true}) for(int side:{-1,1}) for(bool transformed:{false,true})
+        for(unsigned count:{2u,3u}) {
+        const Scalar scale=transformed?1.5:1,offset=transformed?3:0;
+        const std::string transform=transformed?" scale 1.5 1.5 1.5\n position 3 0 0\n":"";
+        Fixture f(Materials()+QuadMesh("first",0,-2,2,reverse)+QuadMesh("gate",-side,.3,2,reverse)
+            +QuadMesh("last",-2*side,.6,4,reverse)+Object("a_first","first","mirror",transform)
+            +Object("b_gate","gate","glass",transform)+Object("c_last","last","mirror",transform));
+        const Point3 start(offset-scale,0,-2*side*scale);
+        for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
+            ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=count;
+            auto* solver=new ConstraintOracle(cfg);IORStack air(1);
+            const auto draws=[&](){return std::vector<Scalar>{.01,reverse?.0975:.75,reverse?10./19:.1,.6,.99};};
+            ScriptSampler sampler(draws(),.99);std::vector<SMSDomainVertex> vertices;
+            const bool built=solver->BuildExtendedSeed(start,Point3(offset,0,-1.5*side*scale),f.Scene(),air,domain,sampler,vertices);
+            Check(built&&vertices.size()==count,"native double-sided transformed R-T and R-T-R walk has its exact event count");
+            if(built&&vertices.size()==count) {
+                Check(vertices[0].geometry.isReflection&&!vertices[1].geometry.isReflection
+                    &&(count==2||vertices[2].geometry.isReflection),"native proposal records R-T or R-T-R without event relabelling");
+                const Point3 previous=count==2?vertices[0].geometry.position:vertices[1].geometry.position;
+                const auto& last=vertices.back().geometry;
+                Vector3 outgoing=Vector3Ops::Normalize(Vector3Ops::mkVector3(last.position,previous));
+                if(last.isReflection) outgoing=Optics::CalculateReflectedRay(outgoing,last.normal);
+                else {const Vector3 normal=Vector3Ops::Dot(outgoing,last.normal)<0?last.normal:-last.normal;
+                    Check(Optics::CalculateRefractedRay(normal,last.etaI,last.etaT,outgoing),"chosen native transmission is below TIR");}
+                const Point3 end=Point3Ops::mkPoint3(last.position,outgoing*(.3*scale));
+                ScriptSampler rootSampler(draws(),.99);
+                const auto root=solver->ProposeExtendedRoot(start,Vector3(0,0,side),end,f.Scene(),air,domain,rootSampler);
+                Check(root.accepted,"native mixed-event root passes full ordered scene visibility");
+                if(root.accepted) CheckJacobian(*solver,root,start,end);
+            }
+            solver->release();
+        }
+    }
+    for(bool reverse:{false,true}) for(bool transformed:{false,true}) {
+        const Scalar scale=transformed?1.5:1,offset=transformed?3:0;
+        const std::string transform=transformed?" scale 1.5 1.5 1.5\n position 3 0 0\n":"";
+        Fixture f(Materials()+"perfectrefractor_material\n{\n name dense\n refractance white\n ior 2\n}\n"
+            +Mesh(true,reverse)+Object("a_inner","shape","dense",transform)
+            +Object("z_outer","shape","glass",transformed?" scale 3 3 3\n position 3 0 0\n":" scale 2 2 2\n"));
+        const Point3 start(offset,0,0),end(offset,0,4*scale);
+        IORStack live(1);live.SetCurrentObject(f.Object("z_outer"));live.push(1.3);
+        live.SetCurrentObject(f.Object("a_inner"));live.push(2);const IORStack before(live);
+        for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
+            ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=2;auto* solver=new ConstraintOracle(cfg);
+            const auto draws=[&](){return std::vector<Scalar>{.01,reverse?.19:.75,reverse?5./9:.2,.29,.99,.99};};
+            ScriptSampler sampler(draws(),.99);std::vector<SMSDomainVertex> vertices;
+            const bool built=solver->BuildExtendedSeed(start,end,f.Scene(),live,domain,sampler,vertices);
+            Check(built&&vertices.size()==2,"native nested start-inside proposal exits both closed objects");
+            if(built&&vertices.size()==2) {
+                Check(!vertices[0].geometry.isReflection&&!vertices[1].geometry.isReflection
+                    &&vertices[0].geometry.isExiting&&vertices[1].geometry.isExiting,"nested seed events are traced transmissions and exits");
+                Check(vertices[0].geometry.etaI==2&&vertices[0].geometry.etaT==vertices[1].geometry.etaI
+                    &&vertices[1].geometry.etaT==1,"nested proposal restores enclosing-domain index then environment");
+            }
+            ScriptSampler rootSampler(draws(),.99);const auto root=solver->ProposeExtendedRoot(start,Vector3(0,0,1),end,f.Scene(),live,domain,rootSampler);
+            Check(root.accepted,"nested start-inside root passes solve and ordered acceptance");
+            if(root.accepted) CheckJacobian(*solver,root,start,end);
+            Check(live.SameInterfaces(before),"nested proposals do not mutate the live anchor membership");
+            solver->release();
+        }
+        // At a dense closed-object exit the native TIR law overrides a high
+        // transmission draw, retaining reflection and the same membership.
+        ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;auto* solver=new ManifoldSolver(cfg);
+        IORStack dense(1);dense.SetCurrentObject(f.Object("a_inner"));dense.push(2);
+        // Use the inner-only scene so the enclosing medium is genuinely air.
+        Fixture tir(Materials()+"perfectrefractor_material\n{\n name dense\n refractance white\n ior 2\n}\n"
+            +Mesh(true,reverse)+Object("caster","shape","dense",transform));
+        dense=IORStack(1);dense.SetCurrentObject(tir.Object("caster"));dense.push(2);
+        ScriptSampler sampler({.01,reverse?.19:.75,reverse?5./9:.2,.29,.999},.999);
+        std::vector<SMSDomainVertex> vertices;
+        Check(solver->BuildExtendedSeed(Point3(offset+.8*scale,0,0),Point3(offset,0,3*scale),tir.Scene(),dense,
+            SMSQueryDomain::RGB(2),sampler,vertices)&&vertices.size()==1&&vertices[0].geometry.isReflection,
+            "real transformed closed-mesh TIR is R only even with a transmission draw");
         solver->release();
     }
 }
@@ -206,7 +327,14 @@ static void Geometry() {
         Check(root.accepted,"sphere/plane reflection root passes native solve and ordered scene acceptance");
         if(root.accepted) {
             Check(ManifoldSolver::SameExtendedRoot(root,root,1e-7),"root identity reflexive on actual solved geometry");
-            auto changed=root;changed.domain=SMSQueryDomain::RGB(2);
+            Check(!ManifoldSolver::SameExtendedRoot(root,root,0),"zero numerical resolution is uncertain and rejected");
+            auto changed=root;changed.scale=0;
+            Check(!ManifoldSolver::SameExtendedRoot(root,changed,1e-7),"invalid scene scale is uncertain and rejected");
+            changed=root;changed.vertices[0].geometry.normal.x=std::numeric_limits<Scalar>::quiet_NaN();
+            Check(!ManifoldSolver::SameExtendedRoot(root,changed,1e-7),"nonfinite geometry is uncertain and rejected");
+            changed=root;changed.vertices[0].geometry.uv.x+=.1;
+            Check(!ManifoldSolver::SameExtendedRoot(root,changed,1e-7),"root identity includes native UV context");
+            changed=root;changed.domain=SMSQueryDomain::RGB(2);
             Check(!ManifoldSolver::SameExtendedRoot(root,changed,1e-7),"root identity includes channel");
             changed=root;changed.vertices[0].geometry.isReflection=false;
             Check(!ManifoldSolver::SameExtendedRoot(root,changed,1e-7),"root identity includes event");
@@ -219,15 +347,160 @@ static void Geometry() {
     }
 }
 #endif
+// Native analytic virtual-image reference for an upward spot reflected by
+// one plane: f * F * Le / (anchor-to-plane + light-to-plane)^2.
+static void DeltaLights() {
+    for(bool glass:{false,true}) for(bool winding:{false,true}) for(int mode:{0,1,2}) {
+        std::string text=Materials();
+        text.replace(text.find("values 1.3 1.5 1.9"),std::string("values 1.3 1.5 1.9").size(),"values 1.5 1.5 1.5");
+        text+=Mesh(false,winding)+Object("caster","shape",glass?"glass":"mirror"," position 0 0 1\n")
+            +"lambertian_material\n{\n name diffuse\n reflectance white\n}\n"
+            +PlaneScene("receiver_geo",-2)+Object("receiver","receiver_geo","diffuse")
+            +"spot_light\n{\n name source\n position 0 0 -1\n target 0 0 1\n color 1 1 1\n power 40\n inner 10\n outer 30\n}\n";
+        Fixture fixture(text);
+        if(!fixture.job||!fixture.Object("receiver")) {Check(false,"delta fixture prepared");continue;}
+        std::vector<IShaderOp*> ops; IShader* shader=nullptr;
+        Check(RISE_API_CreateStandardShader(&shader,ops),"delta query shader created");
+        if(!shader) continue;
+        auto* caster=new RayCaster(false,16,*shader,true);caster->AttachScene(&fixture.Scene());
+        ManifoldSolverConfig cfg;cfg.enabled=true;cfg.extendedMode=true;cfg.targetBounces=1;
+        cfg.biased=true;cfg.multiTrials=1;cfg.maxBernoulliTrials=64;
+#ifdef RISE_SMS_REFERENCE_A
+        SMSReferenceCounters counters;SMSDomainCounters domainCounters;
+        cfg.referenceCounters=&counters;cfg.domainCounters=&domainCounters;
+#endif
+        auto* solver=new ManifoldSolver(cfg);
+        std::vector<const IObject*> casters;ManifoldSolver::EnumerateSpecularCasters(fixture.Scene(),casters);
+        solver->SetSpecularCasters(casters);
+        IORStack air(1);
+        RayIntersection hit(Ray(Point3(0,0,-1.9),Vector3(0,0,-1)),nullRasterizerState);
+        fixture.Object("receiver")->IntersectRay(hit,RISE_INFINITY,true,true,false);
+        Check(hit.geometric.bHit,"delta receiver context is an actual intersection");
+        const Scalar nm=mode==1?450:650;
+        const auto* light=fixture.Scene().GetLights()->GetItem("source");
+        const Vector3 direction(0,0,1);
+        const auto* bsdf=hit.pMaterial->GetBSDF();
+        const RISEPel f=bsdf->valueStateful(direction,hit.geometric,&air);
+        const Scalar fnm=bsdf->valueStatefulNM(direction,hit.geometric,nm,&air);
+        const RISEPel le=light->emittedRadiance(direction);
+        const Scalar lenm=light->emittedRadianceNM(direction,nm);
+        RayIntersection mirrorHit(Ray(Point3(0,0,-1),direction),nullRasterizerState);
+        fixture.Object("caster")->IntersectRay(mirrorHit,RISE_INFINITY,true,true,false);
+        Check(mirrorHit.geometric.bHit,"analytic caster context is an independent native ray intersection");
+        const Scalar mirrorNM=glass?1:mirrorHit.pMaterial->GetSpecularInfoNM(mirrorHit.geometric,air,nm).attenuationNM;
+        const Scalar fresnel=glass?Optics::CalculateDielectricReflectanceCosine(1,1,1.5):1;
+        std::array<std::vector<double>,3> samples;
+        constexpr unsigned N=16384;
+        for(unsigned salt=0;salt<4;++salt) {
+            const unsigned renderSalt=SobolSequence::HashCombine(9100+salt,0x44454c54);
+            SobolSamplerTestHooks::ValueSalt().store(renderSalt);
+            std::array<Scalar,3> sums{}, corrections{};
+            const auto add=[&](unsigned c,Scalar value) {
+                // Keep each rounding step observable under make/Opto's
+                // reassociation; otherwise fast-math erases compensation.
+                const volatile Scalar adjusted=value-corrections[c];
+                const volatile Scalar next=sums[c]+adjusted;
+                const volatile Scalar recovered=next-sums[c];
+                corrections[c]=recovered-adjusted;sums[c]=next;
+            };
+            for(unsigned sample=0;sample<N;++sample) {
+                SobolSampler sampler(sample,29);
+                if(mode==0) {
+                    const auto value=solver->EvaluateAtShadingPoint(hit.geometric.ptIntersection,
+                        hit.geometric.UnflippedGeomNormal(),hit.geometric.vNormal,hit.geometric.onb,
+                        hit.pMaterial,direction,fixture.Scene(),*caster,sampler,&air);
+                    for(unsigned c=0;c<3;++c) add(c,value.contribution[c]);
+                } else {
+                    const auto value=solver->EvaluateAtShadingPointNM(hit.geometric.ptIntersection,
+                        hit.geometric.UnflippedGeomNormal(),hit.geometric.vNormal,hit.geometric.onb,
+                        hit.pMaterial,direction,fixture.Scene(),*caster,sampler,nm,&air);
+                    add(0,value.contribution);
+                }
+            }
+            for(unsigned c=0;c<(mode==0?3u:1u);++c) samples[c].push_back(static_cast<double>(sums[c]/N));
+        }
+        for(unsigned c=0;c<(mode==0?3u:1u);++c) {
+            const Scalar imageDistance=1-hit.geometric.ptIntersection.z;
+            const Scalar expected=fresnel*(mode==0?f[c]*le[c]:fnm*lenm*mirrorNM)/(imageDistance*imageDistance);
+            const Moments m(samples[c]);
+            std::cout<<std::setprecision(17)<<"delta glass="<<glass<<" winding="<<winding<<" mode="<<mode<<" c="<<c
+                <<" mean="<<m.mean<<" sd="<<m.sd<<" n=4 N="<<N<<" analytic="<<expected<<" error="<<m.mean-expected<<" mirrorNM="<<mirrorNM<<" reference sd=0\n";
+            Check(std::isfinite(m.mean)&&m.mean>0,"point/spot reference activation is positive and finite");
+            Check(std::fabs(m.mean-expected)<=3*m.sd+64*std::numeric_limits<Scalar>::epsilon()*expected,
+                "native-domain upward spot agrees with analytic virtual image within 3 sd and floating-point roundoff");
+        }
+#ifdef RISE_SMS_REFERENCE_A
+        std::cout<<"delta counters proposals="<<counters.proposalTrials<<" zeros="<<counters.zeroTrials
+            <<" newton="<<domainCounters.newtonIterations<<" retries="<<counters.retryTrials
+            <<" tails="<<counters.tailTrials<<" roulette="<<counters.rouletteStops
+            <<" owned="<<counters.ownedRoots<<" rejected="<<counters.rejectedRoots<<'\n';
+#endif
+        SobolSamplerTestHooks::ValueSalt().store(0);
+        solver->release();caster->release();shader->release();
+    }
+}
+// Its values happen to be one, but its declaration cannot certify the
+// position-independent IOR contract. Rejection must preserve PT's clear hit.
+class UncertifiedIndex final : public UniformScalarPainter {
+public:
+    UncertifiedIndex() : UniformScalarPainter(1) {}
+    bool IsPositionIndependent() const override { return false; }
+};
+static void UnsupportedCasterSwitches() {
+    for(bool remote:{false,true}) {
+        Fixture f(Materials()+Mesh(false,false)+Object("pane","shape","glass"," position 0 0 1\n")
+            +"lambertian_material\n{\n name diffuse\n reflectance white\n}\n"
+            +PlaneScene("floor",-2)+Object("receiver","floor","diffuse")
+            +"omni_light\n{\n name source\n position 0 0 1\n color 1 1 1\n power 40\n}\n"
+            +(remote?Object("remote_mirror","shape","mirror"," position 1000 0 1\n"):""));
+        auto* index=new UncertifiedIndex();auto* white=new UniformColorPainter(RISEPel(1));IMaterial* material=nullptr;
+        Check(RISE_API_CreatePerfectRefractorMaterial(&material,*white,*index),"unsupported native refractor created");
+        if(material) f.job->GetObjects()->GetItem("pane")->AssignMaterial(*material);
+        safe_release(material);index->release();white->release();
+        std::vector<IShaderOp*> ops;IShader* shader=nullptr;
+        Check(RISE_API_CreateStandardShader(&shader,ops),"unsupported caster shader created");
+        if(!shader) continue;
+        auto* caster=new RayCaster(false,16,*shader,true);caster->SetTransparentShadows(true);
+        f.Scene().GetObjects()->PrepareForRendering();caster->AttachScene(&f.Scene());
+        ManifoldSolverConfig config;config.enabled=true;config.extendedMode=true;config.targetBounces=1;
+        config.multiTrials=1;StabilityConfig stability;stability.rrMinDepth=20;
+        auto* on=new PathTracingIntegrator(config,stability);on->SetMaxPathDepth(8);
+        ManifoldSolverConfig plain;auto* off=new PathTracingIntegrator(plain,stability);off->SetMaxPathDepth(8);
+        IORStack air(1);
+        Check(!on->GetSolver()->ExtendedAnchorEligible(f.Scene(),*caster,Point3(0,0,-2),air),
+            "uncertified transmissive caster rejects the anchor, including a mixed supported caster set");
+        for(unsigned trial=0;trial<4;++trial) {
+            const unsigned salt=SobolSequence::HashCombine(12000+trial,0x554e4345);
+            SobolSamplerTestHooks::ValueSalt().store(salt);
+            std::array<RISEPel,2> values;
+            for(unsigned mode=0;mode<2;++mode) {
+                RandomNumberGenerator random(salt);SobolSampler sampler(0,7);
+                RuntimeContext context(random,RuntimeContext::PASS_NORMAL,false);context.pSampler=&sampler;
+                values[mode]=(mode?on:off)->IntegrateRay(context,nullRasterizerState,
+                    Ray(Point3(0,0,-1.9),Vector3(0,0,-1)),f.Scene(),*caster,sampler,nullptr,nullptr);
+            }
+            Check(std::isfinite(values[0].r)&&values[0].r>0,"PT clear-transmission control is finite and lit");
+            Check(std::memcmp(&values[0],&values[1],sizeof(RISEPel))==0,
+                "ineligible extended anchor preserves PT light with all three switches off");
+            std::cout<<"unsupported caster remote="<<remote<<" salt="<<salt<<" PT="<<values[0].r<<" extended="<<values[1].r<<'\n';
+        }
+        SobolSamplerTestHooks::ValueSalt().store(0);
+        on->release();off->release();caster->release();shader->release();
+    }
+}
 int main(int argc,char** argv) {
-    bool synthetic=true,geometry=true;
-    if(argc==2&&std::string(argv[1])=="--synthetic-only") geometry=false;
-    if(argc==2&&std::string(argv[1])=="--geometry-only") synthetic=false;
+    bool synthetic=true,geometry=true,delta=true,unsupported=true;
+    if(argc==2&&std::string(argv[1])=="--synthetic-only") {geometry=false;delta=false;unsupported=false;}
+    if(argc==2&&std::string(argv[1])=="--geometry-only") {synthetic=false;delta=false;unsupported=false;}
+    if(argc==2&&std::string(argv[1])=="--delta-only") {synthetic=false;geometry=false;unsupported=false;}
+    if(argc==2&&std::string(argv[1])=="--unsupported-only") {synthetic=false;geometry=false;delta=false;}
     std::cout<<std::setprecision(12);
 #ifdef RISE_SMS_REFERENCE_A
-    if(synthetic) Synthetic();if(geometry) {Geometry();CloseRoots();}
+    if(synthetic) Synthetic();if(geometry) {Geometry();CloseRoots();WalkEvents();}
 #else
-    std::cout<<"Estimator A is absent on this committed baseline; new helper tests are unavailable, not a numerical red proof.\n";
+    if(synthetic||geometry) std::cout<<"Estimator A is absent on this committed baseline; new helper tests are unavailable, not a numerical red proof.\n";
 #endif
+    if(delta) DeltaLights();
+    if(unsupported) UnsupportedCasterSwitches();
     std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
 }

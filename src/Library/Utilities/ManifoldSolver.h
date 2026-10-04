@@ -502,6 +502,7 @@ namespace RISE
             ManifoldResult result;
             bool accepted = false;
             Scalar scale = 1;
+            Scalar uncertainty = 0; // world-space last Newton correction plus coordinate roundoff
             explicit SMSDomainRoot(SMSQueryDomain d, const IORStack& stack) : domain(d), startingStack(stack) {}
         };
 
@@ -594,7 +595,7 @@ namespace RISE
 		protected:
 			ManifoldSolverConfig config;
             ManifoldResult SolveCore(const Point3&, const Vector3&, const Point3&, const Vector3&,
-                std::vector<ManifoldVertex>&, ISampler&, bool estimateLegacyPDF) const;
+                std::vector<ManifoldVertex>&, ISampler&, bool estimateLegacyPDF, Scalar convergenceThreshold = 0) const;
             RISEPel EvaluateExtendedDelta(const Point3&, const Vector3&, const Vector3&,
                 const OrthonormalBasis3D&, const IMaterial&, const Vector3&, const IScene&,
                 const IRayCaster&, ISampler&, const LightSample&, const IORStack&,
@@ -689,7 +690,7 @@ namespace RISE
                 const Point3& end, const Vector3& endNormal, const IScene& scene,
                 const IORStack& startingStack, SMSQueryDomain domain,
                 std::vector<SMSDomainVertex>& vertices, ISampler& sampler,
-                Scalar positionTolerance) const;
+                Scalar positionTolerance, Scalar convergenceThreshold = 0) const;
 
             bool BuildExtendedSeed(const Point3& start, const Point3& end,
                 const IScene&, const IORStack&, SMSQueryDomain, ISampler&,
@@ -1254,7 +1255,7 @@ namespace RISE
 				std::vector<ManifoldVertex>& chain,
 				const Point3& fixedStart,
 				const Point3& fixedEnd,
-				Scalar smoothing = 0.0
+				Scalar smoothing = 0.0, Scalar convergenceThreshold = 0
 				) const;
 
 			/// Evaluates the 2k-dimensional constraint vector.
@@ -1349,7 +1350,7 @@ namespace RISE
 				ManifoldVertex& vertex,
 				Scalar du,
 				Scalar dv,
-				Scalar smoothing = 0.0
+				Scalar smoothing = 0.0, bool referenceRefinement = false
 				) const;
 
 			/// Fills in surface derivative data (dpdu, dpdv, dndu, dndv)
@@ -1363,7 +1364,7 @@ namespace RISE
 			/// (default) preserves the legacy mesh-FD-probe behaviour.
 			bool ComputeVertexDerivatives(
 				ManifoldVertex& vertex,
-				Scalar smoothing = 0.0
+				Scalar smoothing = 0.0, bool referenceRefinement = false
 				) const;
 
 			/// Make dpdu, dpdv an orthonormal basis of the tangent plane

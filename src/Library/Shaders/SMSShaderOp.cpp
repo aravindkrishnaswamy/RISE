@@ -78,7 +78,7 @@ void SMSShaderOp::PerformOperation(
 		woOutgoing,
 		*pScene,
 		caster,
-		smsSampler, &ior_stack, &ri.geometric, rc.smsForceLegacy );
+		smsSampler, &ior_stack, &ri.geometric, true );
 
 	if( sms.valid )
 	{
@@ -131,7 +131,7 @@ Scalar SMSShaderOp::PerformOperationNM(
 		*pScene,
 		caster,
 		smsSamplerNM,
-		nm, &ior_stack, &ri.geometric, rc.smsForceLegacy );
+		nm, &ior_stack, &ri.geometric, true );
 
 	if( sms.valid )
 	{

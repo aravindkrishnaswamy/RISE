@@ -28,7 +28,25 @@
 #include "../Materials/PolishedMaterial.h"
 #include "../Materials/CompositeMaterial.h"
 #include "../Objects/CSGObject.h"
+#include "../Objects/Object.h"
 #include "IORStackSeeding.h"
+
+namespace {
+    // Object stores a launch point backed off in object space. Newton and
+    // Jacobian pricing use the actual surface; material contexts retain the
+    // native hit record. Undo the KNOWN native convention only in reference
+    // solves, rather than widening their residual or matching tolerances.
+    RISE::Point3 SMSReferenceSurfacePoint(const RISE::IObject& object,
+        const RISE::RayIntersectionGeometric& hit) {
+        using namespace RISE;
+        const auto* native = dynamic_cast<const Implementation::Object*>(&object);
+        if(!native) return hit.ptIntersection;
+        const Vector3 localDirection = Vector3Ops::Normalize(Vector3Ops::Transform(
+            object.GetFinalInverseTransformMatrix(),hit.ray.Dir()));
+        return Point3Ops::Transform(object.GetFinalTransformMatrix(),
+            Point3Ops::mkPoint3(hit.ptObjIntersec,localDirection*native->GetSurfaceIntersecError()));
+    }
+}
 
 bool RISE::Implementation::SMSQueryDomain::Valid() const
 {
@@ -254,7 +272,7 @@ bool RISE::Implementation::SMSDomainReplay::EventWeight(const IMaterial& materia
 RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::SolveDomain(
     const Point3& start, const Vector3& startNormal, const Point3& end, const Vector3& endNormal,
     const IScene& scene, const IORStack& startingStack, SMSQueryDomain domain,
-    std::vector<SMSDomainVertex>& vertices, ISampler& sampler, Scalar positionTolerance) const
+    std::vector<SMSDomainVertex>& vertices, ISampler& sampler, Scalar positionTolerance, Scalar convergenceThreshold) const
 {
     struct Attempt {
         SMSDomainCounters* counters;
@@ -267,53 +285,53 @@ RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::Solve
     if(attempt.counters) attempt.counters->attempts.fetch_add(1, std::memory_order_relaxed);
     ManifoldResult failed;
     if(vertices.empty() || vertices.size() > config.maxChainDepth
-        || !std::isfinite(positionTolerance) || positionTolerance < 0) return failed;
+        || !std::isfinite(positionTolerance) || positionTolerance < 0) { return failed; }
     SMSStartingMedia media;
     IORStack replay(startingStack.EnvironmentIOR());
     if(!SMSDomainReplay::Capture(scene, start, startingStack, media)
-        || !SMSDomainReplay::BuildStack(media, domain, replay)) return failed;
+        || !SMSDomainReplay::BuildStack(media, domain, replay)) { return failed; }
     std::vector<ManifoldVertex> chain;
     chain.reserve(vertices.size());
     for(const SMSDomainVertex& record : vertices) {
         ManifoldVertex vertex = record.geometry;
-        if(!vertex.pMaterial || !vertex.pObject) return failed;
+        if(!vertex.pMaterial || !vertex.pObject) { return failed; }
         SMSNativeMaterialQuery query;
         if(!SMSDomainReplay::Query(*vertex.pMaterial, record.context, replay, domain, query)
             || !SMSDomainReplay::Cross(*vertex.pMaterial, vertex.pObject, record.context,
-                domain, vertex.isReflection, replay, vertex.etaI, vertex.etaT, vertex.isExiting)) return failed;
+                domain, vertex.isReflection, replay, vertex.etaI, vertex.etaT, vertex.isExiting)) { return failed; }
         vertex.eta = query.index;
         vertex.canRefract = query.dielectricInterface;
         chain.push_back(vertex);
     }
-    ManifoldResult result = SolveCore(start, startNormal, end, endNormal, chain, sampler, false);
-    if(!result.valid || chain.size() != vertices.size()) return failed;
-    if(!SMSDomainReplay::BuildStack(media, domain, replay)) return failed;
+    ManifoldResult result = SolveCore(start, startNormal, end, endNormal, chain, sampler, false, convergenceThreshold);
+    if(!result.valid || chain.size() != vertices.size()) { return failed; }
+    if(!SMSDomainReplay::BuildStack(media, domain, replay)) { return failed; }
     Scalar throughput = 1;
     std::vector<SMSDomainVertex> refreshed;
     refreshed.reserve(vertices.size());
     Point3 previous = start;
     for(std::size_t i=0; i<chain.size(); ++i) {
         ManifoldVertex& vertex = chain[i];
-        if(vertex.isReflection != vertices[i].geometry.isReflection) return failed;
+        if(vertex.isReflection != vertices[i].geometry.isReflection) { return failed; }
         const Vector3 direction = Vector3Ops::Normalize(Vector3Ops::mkVector3(vertex.position, previous));
         RayIntersection hit(Ray(previous, direction), vertices[i].context.rast);
         if(i != 0) hit.geometric.ray.Advance(1e-8); // native surface-walk self-hit offset
         vertex.pObject->IntersectRay(hit, RISE_INFINITY, true, true, false);
         if(!hit.geometric.bHit || hit.pObject != vertex.pObject || hit.pMaterial != vertex.pMaterial
-            || Point3Ops::Distance(hit.geometric.ptIntersection, vertex.position) > positionTolerance) return failed;
+            || Point3Ops::Distance(convergenceThreshold > 0 ? SMSReferenceSurfacePoint(*vertex.pObject,hit.geometric) : hit.geometric.ptIntersection, vertex.position) > positionTolerance) { return failed; }
         if(hit.pModifier) hit.pModifier->Modify(hit.geometric);
         const IORStack before(replay);
         Scalar etaI, etaT; bool exiting;
         if(!SMSDomainReplay::Cross(*vertex.pMaterial, vertex.pObject, hit.geometric, domain,
             vertex.isReflection, replay, etaI, etaT, exiting)
-            || exiting != vertex.isExiting || etaI != vertex.etaI || etaT != vertex.etaT) return failed;
+            || exiting != vertex.isExiting || etaI != vertex.etaI || etaT != vertex.etaT) { return failed; }
         Scalar eventWeight;
         if(!SMSDomainReplay::EventWeight(*vertex.pMaterial, hit.geometric, before, domain,
-            vertex.isReflection, exiting, etaI, etaT, Point3Ops::Distance(previous, vertex.position), eventWeight)) return failed;
+            vertex.isReflection, exiting, etaI, etaT, Point3Ops::Distance(previous, vertex.position), eventWeight)) { return failed; }
         throughput *= eventWeight;
-        if(!std::isfinite(throughput)) return failed;
+        if(!std::isfinite(throughput)) { return failed; }
         SMSNativeMaterialQuery query;
-        if(!SMSDomainReplay::Query(*vertex.pMaterial, hit.geometric, before, domain, query)) return failed;
+        if(!SMSDomainReplay::Query(*vertex.pMaterial, hit.geometric, before, domain, query)) { return failed; }
         vertex.attenuation = RISEPel(query.attenuation);
         vertex.attenuationNM = query.attenuation;
         vertex.attenuationAppliesToReflection = query.reflectionTint;
@@ -331,8 +349,8 @@ RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::Solve
     EvaluateConstraint(chain, start, end, refreshedResidual);
     Scalar residualSquared = 0;
     for(Scalar component : refreshedResidual) residualSquared += component*component;
-    if(!std::isfinite(residualSquared) || std::sqrt(residualSquared) > config.solverThreshold
-        || !ValidateChainPhysics(chain, start, end)) return failed;
+    if(!std::isfinite(residualSquared) || std::sqrt(residualSquared) > (convergenceThreshold > 0 ? convergenceThreshold : config.solverThreshold)
+        || !ValidateChainPhysics(chain, start, end)) { return failed; }
     result.specularChain = chain;
     result.contribution = RISEPel(0,0,0);
     result.contributionNM = throughput;
@@ -2880,7 +2898,7 @@ bool ManifoldSolver::UpdateVertexOnSurface(
 	ManifoldVertex& vertex,
 	Scalar du,
 	Scalar dv,
-	Scalar smoothing
+	Scalar smoothing, bool referenceRefinement
 	) const
 {
 	if( !vertex.pObject )
@@ -2956,7 +2974,7 @@ bool ManifoldSolver::UpdateVertexOnSurface(
 	// but always re-snap to the actual surface via intersection so
 	// we get accurate derivatives for the next Newton step.
 	const Scalar stepSize = sqrt( du * du + dv * dv );
-	if( stepSize < 1e-8 && (!vertex.retainAlphaEndpoint || vertex.HasAlphaEndpoint()) )
+	if( !referenceRefinement && stepSize < 1e-8 && (!vertex.retainAlphaEndpoint || vertex.HasAlphaEndpoint()) )
 	{
 		// Negligible step — no change needed
 		vertex.valid = true;
@@ -2989,7 +3007,7 @@ bool ManifoldSolver::UpdateVertexOnSurface(
 			if( ri.pModifier ) {
 				ri.pModifier->Modify( ri.geometric );
 			}
-			vertex.position = ri.geometric.ptIntersection;
+			vertex.position = referenceRefinement ? SMSReferenceSurfacePoint(*vertex.pObject,ri.geometric) : ri.geometric.ptIntersection;
 			vertex.normal = ri.geometric.vNormal;
 			vertex.geomNormal = ri.geometric.UnflippedGeomNormal();	// DL-70: the TRUE outward normal (see ManifoldSolver.h)
 			vertex.uv = ri.geometric.ptCoord;
@@ -3018,7 +3036,7 @@ bool ManifoldSolver::UpdateVertexOnSurface(
 			if( ri2.pModifier ) {
 				ri2.pModifier->Modify( ri2.geometric );
 			}
-			vertex.position = ri2.geometric.ptIntersection;
+			vertex.position = referenceRefinement ? SMSReferenceSurfacePoint(*vertex.pObject,ri2.geometric) : ri2.geometric.ptIntersection;
 			vertex.normal = ri2.geometric.vNormal;
 			vertex.geomNormal = ri2.geometric.UnflippedGeomNormal();	// DL-70: the TRUE outward normal (see ManifoldSolver.h)
 			vertex.uv = ri2.geometric.ptCoord;
@@ -3047,7 +3065,7 @@ bool ManifoldSolver::UpdateVertexOnSurface(
 	}
 
 	// Recompute surface derivatives at the new position
-	vertex.valid = ComputeVertexDerivatives( vertex );
+	vertex.valid = ComputeVertexDerivatives( vertex, 0, referenceRefinement );
 	return vertex.valid;
 }
 
@@ -3149,7 +3167,7 @@ void ManifoldSolver::OrthonormalizeTangentFrame(
 
 bool ManifoldSolver::ComputeVertexDerivatives(
 	ManifoldVertex& vertex,
-	Scalar smoothing
+	Scalar smoothing, bool referenceRefinement
 	) const
 {
 	if( !vertex.pObject )
@@ -3232,7 +3250,7 @@ bool ManifoldSolver::ComputeVertexDerivatives(
 		    // Publish this actual hit BEFORE Newton uses the vertex; never
 		    // associate a neighbouring FD hit with an unchanged endpoint.
 		    if (initializeEndpoint) {
-		        vertex.position = ri.geometric.ptIntersection;
+		        vertex.position = referenceRefinement ? SMSReferenceSurfacePoint(*vertex.pObject,ri.geometric) : ri.geometric.ptIntersection;
 		        vertex.normal = ri.geometric.vNormal;
 		        vertex.geomNormal = ri.geometric.UnflippedGeomNormal();
 		        vertex.uv = ri.geometric.ptCoord;
@@ -3241,7 +3259,7 @@ bool ManifoldSolver::ComputeVertexDerivatives(
 		        vertex.alphaEndpointPosition = vertex.position;
 		    }
 			if( ri.geometric.derivatives.valid ) {
-				vertex.position = ri.geometric.ptIntersection;
+				vertex.position = referenceRefinement ? SMSReferenceSurfacePoint(*vertex.pObject,ri.geometric) : ri.geometric.ptIntersection;
 		        vertex.alphaEndpoint = endpoint;
 		        vertex.alphaEndpointPosition = vertex.position;
 				vertex.normal = ri.geometric.vNormal;
@@ -3294,7 +3312,7 @@ bool ManifoldSolver::ComputeVertexDerivatives(
 			    // Publish this actual hit BEFORE Newton uses the vertex; never
 			    // associate a neighbouring FD hit with an unchanged endpoint.
 			    if (initializeEndpoint) {
-			        vertex.position = ri2.geometric.ptIntersection;
+			        vertex.position = referenceRefinement ? SMSReferenceSurfacePoint(*vertex.pObject,ri2.geometric) : ri2.geometric.ptIntersection;
 			        vertex.normal = ri2.geometric.vNormal;
 			        vertex.geomNormal = ri2.geometric.UnflippedGeomNormal();
 			        vertex.uv = ri2.geometric.ptCoord;
@@ -3303,7 +3321,7 @@ bool ManifoldSolver::ComputeVertexDerivatives(
 			        vertex.alphaEndpointPosition = vertex.position;
 			    }
 				if( ri2.geometric.derivatives.valid ) {
-					vertex.position = ri2.geometric.ptIntersection;
+					vertex.position = referenceRefinement ? SMSReferenceSurfacePoint(*vertex.pObject,ri2.geometric) : ri2.geometric.ptIntersection;
 			        vertex.alphaEndpoint = endpoint;
 			        vertex.alphaEndpointPosition = vertex.position;
 					vertex.normal = ri2.geometric.vNormal;
@@ -3567,9 +3585,10 @@ bool ManifoldSolver::NewtonSolve(
 	std::vector<ManifoldVertex>& chain,
 	const Point3& fixedStart,
 	const Point3& fixedEnd,
-	Scalar smoothing
+	Scalar smoothing, Scalar convergenceThreshold
 	) const
 {
+    const Scalar threshold = convergenceThreshold > 0 ? convergenceThreshold : config.solverThreshold;
 #if SMS_TRACE_DIAGNOSTIC
 	// Per-failure-mode counters.  Each return-false (or accepted-soft) path
 	// in this routine increments exactly one counter.  Periodic dump every
@@ -3662,7 +3681,7 @@ bool ManifoldSolver::NewtonSolve(
 		}
 		const Scalar norm = sqrt( norm2 );
 
-		if( norm < config.solverThreshold )
+		if( norm < threshold )
 		{
 #if SMS_TRACE_DIAGNOSTIC
 			g_newton_strict_converged.fetch_add( 1, std::memory_order_relaxed );
@@ -3804,7 +3823,7 @@ bool ManifoldSolver::NewtonSolve(
 				const Scalar du = -beta * delta[2*i];
 				const Scalar dv = -beta * delta[2*i+1];
 
-				if( !UpdateVertexOnSurface( chain[i], du, dv, smoothing ) )
+				if( !UpdateVertexOnSurface( chain[i], du, dv, smoothing, convergenceThreshold > 0 ) )
 				{
 					allValid = false;
 					break;
@@ -3910,7 +3929,7 @@ bool ManifoldSolver::NewtonSolve(
 			// check at the bottom of NewtonSolve — same threshold, applied
 			// at the earlier exit too.
 			chain = savedChain;
-			if( norm < config.solverThreshold * 10.0 )
+			if( norm < threshold * 10.0 )
 			{
 #if SMS_TRACE_DIAGNOSTIC
 				g_newton_soft_converged.fetch_add( 1, std::memory_order_relaxed );
@@ -3956,7 +3975,7 @@ bool ManifoldSolver::NewtonSolve(
 			// solverThreshold), so we can see if the failure happened
 			// near-converged or far from any solution.
 			{
-				const Scalar thr = config.solverThreshold;
+				const Scalar thr = threshold;
 				int b = 0;
 				if( norm < 10.0   * thr ) b = 0;
 				else if( norm < 100.0  * thr ) b = 1;
@@ -4001,7 +4020,7 @@ bool ManifoldSolver::NewtonSolve(
 		Scalar norm2 = 0.0;
 		for( unsigned int i = 0; i < 2 * k; i++ )
 			norm2 += C_final[i] * C_final[i];
-		if( sqrt(norm2) < config.solverThreshold * 10.0 )
+		if( sqrt(norm2) < threshold * 10.0 )
 		{
 #if SMS_TRACE_DIAGNOSTIC
 			g_newton_soft_converged.fetch_add( 1, std::memory_order_relaxed );
@@ -5631,7 +5650,7 @@ ManifoldResult ManifoldSolver::Solve(
 
 ManifoldResult ManifoldSolver::SolveCore(const Point3& shadingPoint, const Vector3& shadingNormal,
     const Point3& emitterPoint, const Vector3& emitterNormal, std::vector<ManifoldVertex>& specularChain,
-    ISampler& sampler, bool estimateLegacyPDF) const
+    ISampler& sampler, bool estimateLegacyPDF, Scalar convergenceThreshold) const
 {
 	ManifoldResult result;
 
@@ -5741,7 +5760,7 @@ ManifoldResult ManifoldSolver::SolveCore(const Point3& shadingPoint, const Vecto
 		ManifoldVertex& v = specularChain[i];
 		if( !v.valid || (v.retainAlphaEndpoint && !v.HasAlphaEndpoint()) )
 		{
-			if( !ComputeVertexDerivatives( v ) )
+			if( !ComputeVertexDerivatives( v, 0, convergenceThreshold > 0 ) )
 			{
 #if SMS_TRACE_DIAGNOSTIC
 				g_solveDerivFail.fetch_add( 1, std::memory_order_relaxed );
@@ -5938,7 +5957,7 @@ ManifoldResult ManifoldSolver::SolveCore(const Point3& shadingPoint, const Vecto
 
 	// Run Newton solver — Stage 2 of the two-stage solver, or the single
 	// stage when two-stage is disabled / inapplicable.
-	const bool converged = NewtonSolve( specularChain, shadingPoint, emitterPoint );
+	const bool converged = NewtonSolve( specularChain, shadingPoint, emitterPoint, 0, convergenceThreshold );
 
 #if SMS_TRACE_DIAGNOSTIC
 	if( traceSolve ) {
@@ -6724,7 +6743,7 @@ bool ManifoldSolver::BuildExtendedSeed(const Point3& start, const Point3& end,
             reflection, stack, etaI, etaT, exiting)) return false;
         vertices.emplace_back(hit.geometric);
         auto& vertex = vertices.back().geometry;
-        vertex.position = hit.geometric.ptIntersection;
+        vertex.position = SMSReferenceSurfacePoint(*hit.pObject,hit.geometric);
         vertex.normal = hit.geometric.vNormal;
         vertex.geomNormal = hit.geometric.UnflippedGeomNormal();
         vertex.objectPosition = hit.geometric.ptObjIntersec;
@@ -6753,15 +6772,40 @@ SMSDomainRoot ManifoldSolver::ProposeExtendedRoot(const Point3& start, const Vec
     auto* counters = config.referenceCounters;
     if(counters) counters->proposalTrials.fetch_add(1, std::memory_order_relaxed);
     root.scale = Point3Ops::Distance(start,end);
+    SMSStartingMedia startingMedia;
     if(!(root.scale > 0) || !std::isfinite(root.scale)
-        || !BuildExtendedSeed(start, end, scene, stack, domain, sampler, root.vertices, raster)) {
+        || !SMSDomainReplay::Capture(scene,start,stack,startingMedia)
+        || !SMSDomainReplay::BuildStack(startingMedia,domain,root.startingStack)
+        || !BuildExtendedSeed(start, end, scene, root.startingStack, domain, sampler, root.vertices, raster)) {
         if(counters) counters->zeroTrials.fetch_add(1, std::memory_order_relaxed);
         return root;
     }
-    const Scalar tolerance = config.solverThreshold * root.scale;
-    root.result = SolveDomain(start, startNormal, end, Vector3(0,0,1), scene, stack,
-        domain, root.vertices, sampler, tolerance);
+    // Root matching resolves geometry at sqrt(machine epsilon) relative to
+    // the endpoint scale. Polish the angular constraints more tightly, then
+    // reject roots whose inverse-Jacobian correction cannot resolve that band.
+    const Scalar tolerance = std::sqrt(std::numeric_limits<Scalar>::epsilon()) * root.scale;
+    const Scalar polish = std::min(config.solverThreshold, std::sqrt(std::numeric_limits<Scalar>::epsilon())/64);
+    root.result = SolveDomain(start, startNormal, end, Vector3(0,0,1), scene, root.startingStack,
+        domain, root.vertices, sampler, tolerance, polish);
     bool visible = root.result.valid;
+    if(visible) {
+        const auto& chain = root.result.specularChain;
+        std::vector<Scalar> residual, diagonal, upper, lower, correction;
+        EvaluateConstraint(chain,start,end,residual);
+        BuildJacobian(chain,start,end,diagonal,upper,lower,true);
+        visible = SolveBlockTridiagonal(diagonal,upper,lower,residual,
+            static_cast<unsigned int>(chain.size()),correction);
+        if(visible) for(std::size_t i=0; i<chain.size(); ++i) {
+            const auto& vertex = chain[i];
+            const Scalar lastStep = Vector3Ops::Magnitude(vertex.dpdu*correction[2*i]+vertex.dpdv*correction[2*i+1]);
+            const Scalar roundoff = std::numeric_limits<Scalar>::epsilon()
+                * std::max({std::fabs(vertex.position.x),std::fabs(vertex.position.y),std::fabs(vertex.position.z),root.scale});
+            root.uncertainty = std::max(root.uncertainty,lastStep+roundoff);
+            if(!std::isfinite(lastStep) || root.uncertainty > tolerance/8) {
+                visible=false;break;
+            }
+        }
+    }
     Point3 previous = start;
     if(visible) for(const auto& record : root.vertices) {
         const auto& vertex = record.geometry;
@@ -6770,7 +6814,7 @@ SMSDomainRoot ManifoldSolver::ProposeExtendedRoot(const Point3& start, const Vec
         RayIntersection hit(ray,raster);
         scene.GetObjects()->IntersectRay(hit,true,true,false);
         if(!hit.geometric.bHit || hit.pObject != vertex.pObject || hit.pMaterial != vertex.pMaterial
-            || Point3Ops::Distance(hit.geometric.ptIntersection,vertex.position) > tolerance) {
+            || Point3Ops::Distance(SMSReferenceSurfacePoint(*hit.pObject,hit.geometric),vertex.position) > tolerance) {
             visible = false; break;
         }
         previous = vertex.position;
@@ -6793,18 +6837,41 @@ SMSDomainRoot ManifoldSolver::ProposeExtendedRoot(const Point3& start, const Vec
 
 bool ManifoldSolver::SameExtendedRoot(const SMSDomainRoot& a, const SMSDomainRoot& b, Scalar tolerance)
 {
-    if(!a.accepted || !b.accepted || !std::isfinite(tolerance) || tolerance < 0
+    if(!a.accepted || !b.accepted || !a.domain.Valid() || !b.domain.Valid()
+        || !std::isfinite(a.scale) || !std::isfinite(b.scale) || a.scale <= 0 || b.scale <= 0
+        || !std::isfinite(tolerance) || tolerance <= 0
         || a.domain.kind != b.domain.kind || a.domain.component != b.domain.component
         || a.domain.nm != b.domain.nm || !a.startingStack.SameInterfaces(b.startingStack)
         || a.vertices.size() != b.vertices.size() || a.vertices.empty()) return false;
-    const Scalar normalTolerance = tolerance / std::max(a.scale,b.scale);
+    const Scalar scale = std::max(a.scale,b.scale);
+    if(!std::isfinite(scale) || scale <= 0) return false;
+    // A caller cannot widen reference equality to the legacy deduplication
+    // band. Unresolved roots are zero trials in both discovery and retries.
+    tolerance = std::min(tolerance,std::sqrt(std::numeric_limits<Scalar>::epsilon())*scale);
+    if(!std::isfinite(a.uncertainty) || !std::isfinite(b.uncertainty)
+        || a.uncertainty < 0 || b.uncertainty < 0
+        || a.uncertainty > tolerance/8 || b.uncertainty > tolerance/8) return false;
+    const Scalar normalTolerance = tolerance / scale;
     for(std::size_t i=0; i<a.vertices.size(); ++i) {
         const auto& x = a.vertices[i].geometry; const auto& y = b.vertices[i].geometry;
-        if(x.pObject != y.pObject || x.pMaterial != y.pMaterial || x.isReflection != y.isReflection
+        const auto finiteGeometry=[](const ManifoldVertex& v) {
+            return std::isfinite(v.position.x)&&std::isfinite(v.position.y)&&std::isfinite(v.position.z)
+                &&std::isfinite(v.normal.x)&&std::isfinite(v.normal.y)&&std::isfinite(v.normal.z)
+                &&std::isfinite(v.geomNormal.x)&&std::isfinite(v.geomNormal.y)&&std::isfinite(v.geomNormal.z)
+                &&std::isfinite(v.objectPosition.x)&&std::isfinite(v.objectPosition.y)&&std::isfinite(v.objectPosition.z)
+                &&std::isfinite(v.uv.x)&&std::isfinite(v.uv.y);
+        };
+        if(!finiteGeometry(x) || !finiteGeometry(y)
+            || x.pObject != y.pObject || x.pMaterial != y.pMaterial || x.isReflection != y.isReflection
             || x.isExiting != y.isExiting || x.etaI != y.etaI || x.etaT != y.etaT
             || Point3Ops::Distance(x.position,y.position) > tolerance
             || Vector3Ops::Magnitude(x.normal-y.normal) > normalTolerance
-            || Vector3Ops::Magnitude(x.geomNormal-y.geomNormal) > normalTolerance) return false;
+            || Vector3Ops::Magnitude(x.geomNormal-y.geomNormal) > normalTolerance
+            || std::hypot(x.uv.x-y.uv.x,x.uv.y-y.uv.y) > normalTolerance
+            || Point3Ops::Distance(x.objectPosition,y.objectPosition)
+                > normalTolerance*std::max({Scalar(1),std::fabs(x.objectPosition.x),std::fabs(x.objectPosition.y),
+                    std::fabs(x.objectPosition.z),std::fabs(y.objectPosition.x),std::fabs(y.objectPosition.y),
+                    std::fabs(y.objectPosition.z)})) return false;
     }
     return true;
 }
@@ -6837,12 +6904,12 @@ RISEPel ManifoldSolver::EvaluateExtendedDelta(const Point3& pos, const Vector3& 
         RayIntersectionGeometric hit(Ray(pos,-outgoing),context ? context->rast : nullRasterizerState);
         if(context) hit = *context;
         hit.bHit = true; hit.ptIntersection = pos; hit.vNormal = shadingNormal;
-        hit.vGeomNormal = geomNormal; hit.onb = onb; hit.ambientIOR = stack.top();
-        const Scalar f = nm > 0 ? bsdf->valueStatefulNM(incoming,hit,nm,&stack)
-            : bsdf->valueStateful(incoming,hit,&stack)[component];
-        const Vector3 towardLight = Vector3Ops::Normalize(Vector3Ops::mkVector3(light.position,chain.back().position));
-        const Scalar le = nm > 0 ? light.pLight->emittedRadianceNM(towardLight,nm)
-            : light.pLight->emittedRadiance(towardLight)[component];
+        hit.vGeomNormal = geomNormal; hit.onb = onb; hit.ambientIOR = root.startingStack.top();
+        const Scalar f = nm > 0 ? bsdf->valueStatefulNM(incoming,hit,nm,&root.startingStack)
+            : bsdf->valueStateful(incoming,hit,&root.startingStack)[component];
+        const Vector3 lightToChain = Vector3Ops::Normalize(Vector3Ops::mkVector3(chain.back().position,light.position));
+        const Scalar le = nm > 0 ? light.pLight->emittedRadianceNM(lightToChain,nm)
+            : light.pLight->emittedRadiance(lightToChain)[component];
         const Scalar geometry = std::fabs(Vector3Ops::Dot(chain.front().geomNormal,incoming)) / (distance*distance)
             * ComputeLightToFirstVertexJacobianDet(chain,pos,light.position,JacobianLightNormal(light,chain));
         const Scalar physical = f * std::fabs(Vector3Ops::Dot(shadingNormal,incoming))
@@ -6852,7 +6919,7 @@ RISEPel ManifoldSolver::EvaluateExtendedDelta(const Point3& pos, const Vector3& 
             config.referenceCounters->acceptedDiscoveries.fetch_add(1,std::memory_order_relaxed);
             config.referenceCounters->ownedRoots.fetch_add(1,std::memory_order_relaxed);
         }
-        const Scalar tolerance = config.uniquenessThreshold * root.scale;
+        const Scalar tolerance = std::sqrt(std::numeric_limits<Scalar>::epsilon()) * root.scale;
         const Scalar reciprocal = SMSRootReference::Reciprocal(root,retry.sampler,propose,
             [tolerance](const SMSDomainRoot& a, const SMSDomainRoot& b) { return SameExtendedRoot(a,b,tolerance); },
             config.maxBernoulliTrials,true,config.referenceCounters);
