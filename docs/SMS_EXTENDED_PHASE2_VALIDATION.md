@@ -496,7 +496,8 @@ controls. The native checkpoint builds without diagnostics and reports
 The sibling repair follows the actual native triangle provider in the hit
 payload, preserving its barycentrics through wrappers. The focused repair
 reports **20005/0** with checked zero-diagnostic library/test builds. The subsequent
-committed proof and current complete gate are recorded above; fresh review is pending.
+committed proof and historical complete gate are recorded above. Round 3
+subsequently found further defects; the current replacement review is pending.
 
 ### Committed sibling proof and historical strict-double gate stop
 
@@ -543,7 +544,8 @@ retaining strict internal-double on/off comparisons within the same build
 for deterministic rejection cases. Retain salted n>=4 channel-separated
 original three-SD comparisons where stochastic output differs. The failed
 internal-double gate remains failed. The new complete gate above passes under
-the adopted rule; fresh review remains pending.
+the adopted rule. Round 3 subsequently found further defects; current replacement
+gates and Round 4 review remain pending.
 The phase remains on `sms-ext-phase2`; no ledger row closes and no new row
 is opened. Master stays `08552560b54b517b7a8a0696eb9d317953b26bbe` and clean.
 

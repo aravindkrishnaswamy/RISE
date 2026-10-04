@@ -537,7 +537,9 @@ acceptance precision; it does not change rendering arithmetic or relax
 within-build composite rejection. The new complete gate passes all sixteen
 float32 comparisons after eight actual source builds, with four salts per
 fixture. NM mode-off cost rises 1.492751 ± 0.465066% in paired measurements;
-no zero-overhead claim is made. Fresh review is required before integration.
+no zero-overhead claim is made. Round 3 subsequently found further defects,
+recorded below; current replacement gates and Round 4 review are required
+before integration.
 
 
 ### Phase 2 Round 3 implementation audit (2026-10-04)
