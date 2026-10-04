@@ -2081,14 +2081,15 @@ void ManifoldSolver::BuildJacobian(
         for(std::size_t j=0;j<k;++j) for(unsigned column=0;column<2;++column) {
             bool regular=false;
             Scalar finestStep=h;
-            std::array<std::vector<Scalar>,3> derivatives;
-            // Three scales detect truncation/aliasing that a single central
-            // difference hides. Unresolved derivatives invalidate the solve;
+            std::array<std::vector<Scalar>,4> derivatives;
+            // Three halved scales plus a noncommensurate scale detect
+            // truncation and harmonic aliasing. Unresolved derivatives invalidate the solve;
             // reference pricing cannot silently use the coarse aliased value.
             for(unsigned base=0;base<16 && !regular;++base) {
                 regular=h>0 && std::isfinite(h);
-            for(unsigned refinement=0;refinement<3 && regular;++refinement) {
-                const Scalar step=h/std::pow(Scalar(2),base+refinement);
+            for(unsigned refinement=0;refinement<4 && regular;++refinement) {
+                const Scalar step=h/(std::pow(Scalar(2),base+std::min(refinement,2u))
+                    *(refinement==3?std::sqrt(Scalar(2)):Scalar(1)));
                 finestStep=step;
                 auto plus=chain,minus=chain;
                 regular=UpdateVertexOnSurface(plus[j],column?0:step,column?step:0,0,true)
@@ -2108,17 +2109,18 @@ void ManifoldSolver::BuildJacobian(
                 }
             }
             if(regular) for(std::size_t i=0;i<2*k;++i) {
-                const Scalar a=derivatives[0][i],b=derivatives[1][i],c=derivatives[2][i];
+                const Scalar a=derivatives[0][i],b=derivatives[1][i],c=derivatives[2][i],d=derivatives[3][i];
                 const Scalar coordinateScale=std::max({Scalar(1),std::fabs(chain[j].position.x),
                     std::fabs(chain[j].position.y),std::fabs(chain[j].position.z)});
-                const Scalar tolerance=std::sqrt(std::numeric_limits<Scalar>::epsilon())*std::max({Scalar(1),std::fabs(a),std::fabs(b),std::fabs(c)})
+                const Scalar tolerance=std::sqrt(std::numeric_limits<Scalar>::epsilon())*std::max({Scalar(1),std::fabs(a),std::fabs(b),std::fabs(c),std::fabs(d)})
                     +std::numeric_limits<Scalar>::epsilon()*coordinateScale/finestStep;
                 if(!std::isfinite(a) || !std::isfinite(b) || !std::isfinite(c)
-                    || std::fabs(a-b)>tolerance || std::fabs(b-c)>tolerance) regular=false;
+                    || !std::isfinite(d) || std::fabs(a-b)>tolerance || std::fabs(b-c)>tolerance
+                    || std::fabs(c-d)>tolerance) regular=false;
             }
             }
             for(std::size_t i=0;i<k;++i) for(unsigned row=0;row<2;++row) {
-                const Scalar value=regular?derivatives[2][2*i+row]:std::numeric_limits<Scalar>::quiet_NaN();
+                const Scalar value=regular?derivatives[3][2*i+row]:std::numeric_limits<Scalar>::quiet_NaN();
                 if(i==j) diag[4*i+2*row+column]=value;
                 else if(j==i+1) upper[4*i+2*row+column]=value;
                 else if(i==j+1) lower[4*j+2*row+column]=value;
