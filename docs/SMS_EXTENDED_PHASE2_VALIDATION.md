@@ -2,8 +2,8 @@
 
 Phase 2 is implemented on `sms-ext-phase2`, based on master
 `08552560b54b517b7a8a0696eb9d317953b26bbe`, but is not yet merged.
-The latest native source is `c5f66dd80`, with committed post-modifier UV tests
-at `54b2e58e2`. Focused validation passes **90485/0**, with zero library/test diagnostics.
+The latest native source is `5d7b6ff38`, with committed modifier-context tests
+at `32241b5eb`. Focused validation passes **193037/0**, with zero library/test diagnostics.
 Coherent replacement proofs, full gates and fresh Round 4 review remain pending. The earlier `d2508b4dc` focused
 gate passed **28933/0**, with zero library and test diagnostics. Native `761c71b51` previously passed committed
 proof review20005/0, production177/0 and geometry4297/0.
@@ -628,3 +628,34 @@ replacement proof/full-gate location.
 The midpoint repair passes **90485/0** focused checks, including all existing
 modified R-T/R-T-R Jacobian and native horizon controls. Build and run evidence:
 `.claude/logs/sms-phase2-round4-final/post-modifier-midpoint-{library,test,green}.log`.
+
+## Matched normal-context sibling (2026-10-04)
+
+The v2 preparation completed coherent ten-path proofs: pre2509de0fa review
+**130595/850**, isolated pre34dda05c4 modifier review **131405/40**, master
+available review **121/120** and production **127/50**, then restored review
+**90485/0**, production **177/0**, geometry **4297/0**. Every build exited0
+with zero diagnostics. Its pipeline was deliberately stopped before cost or
+clean builds for the remaining matched-context audit; it is not a full gate.
+Evidence: `.claude/logs/sms-phase2-round4-final-v2/proofs/results.json`.
+
+A native mirror with discontinuous shading normals supplies a second concrete
+counterexample. Both normal records fall back to the same native geometric
+reflection direction and smooth event price, but raw-normal root matching
+splits their reciprocal families. Committed test32241b5eb againstc5f66dd80 is
+**246025/40** in `--modifier-chart-only`. All forty discontinuous-normal cases
+accept both families, with explicit native SPF endpoint and event-price oracles;
+continuous tilted-normal modifiers stay positive. Both windings, incidence
+sides, transformed instances and five RGB/NM domains are tested.
+
+Repair5d7b6ff38 uses the same eight post-modifier context probes to check UV,
+shading/geometric normals and object position against their matching bands,
+cancelling smooth first-order variation at full/half displacement. Object
+position retains the relative scale used by root matching. It rejects
+nonfinite contexts before final acceptance and preserves all actual native
+records. No extra intersections are added beyond the UV midpoint repair.
+The full focused review suite passes **193037/0**. This remains a local
+numerical ambiguity diagnostic, not certified isolation or continuity.
+Evidence: `.claude/logs/sms-phase2-round4-final-v2/context-sibling-*.log`.
+The pending complete replacement is under
+`.claude/logs/sms-phase2-round4-final-v3/`, followed by fresh external Round 4.

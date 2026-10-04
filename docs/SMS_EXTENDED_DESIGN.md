@@ -566,3 +566,13 @@ modifier controls remain required. This is within the adopted uncertain-root
 contract, not a new regularity certificate or ledger closure. The earlier
 Round 4 preparation was stopped before clean builds; its partial evidence is
 retained. Current focused validation passes90485/0; complete replacement gates and fresh Round 4 remain pending.
+
+The matched-normal sibling is also reproduced natively: shading normals on
+opposite sides of a modifier discontinuity both use the same native
+geometric-horizon mirror fallback, but raw-normal matching splits one root.
+Test32241b5eb againstc5f66dd80 reports246025/40. Repair5d7b6ff38 extends the
+same post-modifier midpoint probes to every matched geometric context field,
+retaining continuous modifier controls and native price/direction oracles.
+Focused validation passes193037/0; v2 preparation completed coherent proofs
+but stopped before full gates. Complete v3 gates and fresh Round 4 are pending.
+No design change, closure or new ledger row follows from this repair.
