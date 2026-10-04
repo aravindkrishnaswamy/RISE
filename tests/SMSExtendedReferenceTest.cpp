@@ -469,15 +469,17 @@ public:
     bool IsPositionIndependent() const override { return false; }
 };
 static void UnsupportedCasterSwitches() {
-    for(bool csg:{false,true}) for(bool reverse:{false,true}) for(bool remote:{false,true}) {
+    for(unsigned kind:{0u,1u,2u}) for(bool reverse:{false,true}) for(bool remote:{false,true}) {
+        const bool csg=kind==1;
         Fixture f(Materials()+Mesh(csg,reverse)+Object("pane","shape","glass",csg?" scale 1 1 0.25\n":" position 0 0 1\n")
             +(csg?"sphere_geometry\n{\n name tiny\n radius 0.1\n}\n"+Object("other","tiny","glass"," position 4 0 0\n")
                 +"csg_object\n{\n name inherited\n obja pane\n objb other\n operation union\n}\n":"")
+            +(kind==2?"weave_material\n{\n name gap\n fabric custom\n transmission thin\n gap 1\n}\n"+PlaneScene("gap_geo",-.5)+Object("gap","gap_geo","gap"):"")
             +"lambertian_material\n{\n name diffuse\n reflectance white\n}\n"
             +PlaneScene("floor",-2)+Object("receiver","floor","diffuse")
             +"omni_light\n{\n name source\n position 0 0 1\n color 1 1 1\n power 40\n}\n"
             +(remote?Object("remote_mirror","shape","mirror"," position 1000 0 1\n"):""));
-        IScalarPainter* index=csg?static_cast<IScalarPainter*>(new UniformScalarPainter(1)):new UncertifiedIndex();auto* white=new UniformColorPainter(RISEPel(1));IMaterial* material=nullptr;
+        IScalarPainter* index=kind?static_cast<IScalarPainter*>(new UniformScalarPainter(1)):new UncertifiedIndex();auto* white=new UniformColorPainter(RISEPel(1));IMaterial* material=nullptr;
         Check(RISE_API_CreatePerfectRefractorMaterial(&material,*white,*index),"unsupported native refractor created");
         if(material) f.job->GetObjects()->GetItem("pane")->AssignMaterial(*material);
         safe_release(material);index->release();white->release();
@@ -506,7 +508,7 @@ static void UnsupportedCasterSwitches() {
             Check(std::isfinite(values[0].r)&&values[0].r>0,"PT clear-transmission control is finite and lit");
             Check(std::memcmp(&values[0],&values[1],sizeof(RISEPel))==0,
                 "ineligible extended anchor preserves PT light with all three switches off");
-            std::cout<<"unsupported caster csg="<<csg<<" winding="<<reverse<<" remote="<<remote<<" salt="<<salt<<" PT="<<values[0].r<<" extended="<<values[1].r<<'\n';
+            std::cout<<"unsupported caster kind="<<kind<<" winding="<<reverse<<" remote="<<remote<<" salt="<<salt<<" PT="<<values[0].r<<" extended="<<values[1].r<<'\n';
         }
         SobolSamplerTestHooks::ValueSalt().store(0);
         on->release();off->release();caster->release();shader->release();
@@ -533,6 +535,10 @@ static std::vector<RISEColor> SlabExtendedRender(const std::string& text, unsign
     caster->AttachScene(&fixture.Scene());
     ManifoldSolverConfig cfg;cfg.enabled=true;cfg.extendedMode=true;cfg.targetBounces=2;
     cfg.maxBernoulliTrials=64;cfg.multiTrials=1;
+#ifdef RISE_SMS_REFERENCE_A
+    SMSReferenceCounters counters;SMSDomainCounters domainCounters;
+    cfg.referenceCounters=&counters;cfg.domainCounters=&domainCounters;
+#endif
     StabilityConfig stability;stability.rrMinDepth=20;
     auto* rasterizer=new PathTracingPelRasterizer(caster,cfg,PathGuidingConfig(),AdaptiveSamplingConfig(),stability,false);
     rasterizer->SetMaxPathDepth(1);rasterizer->SetInteractiveDenoiseSuppressed(true);
@@ -547,6 +553,13 @@ static std::vector<RISEColor> SlabExtendedRender(const std::string& text, unsign
     rasterizer->RasterizeScene(fixture.Scene(),nullptr,nullptr);
     SobolSamplerTestHooks::ValueSalt().store(0);
     const auto pixels=capture->pixels;
+#ifdef RISE_SMS_REFERENCE_A
+    std::cout<<"slab counters salt="<<salt<<" proposals="<<counters.proposalTrials
+        <<" zeros="<<counters.zeroTrials<<" newton="<<domainCounters.newtonIterations
+        <<" retries="<<counters.retryTrials<<" tails="<<counters.tailTrials
+        <<" roulette="<<counters.rouletteStops<<" owned="<<counters.ownedRoots
+        <<" rejected="<<counters.rejectedRoots<<'\n';
+#endif
     rasterizer->DetachFromScene(&fixture.Scene());
     capture->release();samples->release();filter->release();rasterizer->release();caster->release();shader->release();
     return pixels;
@@ -566,6 +579,7 @@ static void SlabRenders() {
                 double av=0,bv=0;
                 for(const auto& pixel:a) av+=pixel.base[c];
                 for(const auto& pixel:b.pixels) bv+=pixel.base[c];
+                std::cout<<std::setprecision(17)<<"slab trial="<<trial<<" winding="<<reverse<<" inner="<<cone[0]<<" c="<<c<<" extended="<<av/256<<" BDPT="<<bv/256<<std::endl;
                 tested[c].push_back(av/256);reference[c].push_back(bv/256);
             }
         }

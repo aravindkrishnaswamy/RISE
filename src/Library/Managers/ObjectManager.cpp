@@ -61,6 +61,17 @@ bool WrapsComposite(const IMaterial* material)
 // ineligible. A remote supported caster cannot repair that missing coverage.
 // This is distinct from composite mode selection: rejection keeps PT and
 // disables SMS at the anchor; composites retain the entire legacy mode.
+bool ObjectHasClearTransmission(const IObject& object)
+{
+    const IMaterial* material = object.GetMaterial();
+    const ISPF* spf = material ? material->GetSPF() : nullptr;
+    if(dynamic_cast<const DielectricSPF*>(spf) || dynamic_cast<const PerfectRefractorSPF*>(spf)
+        || (material && material->CouldLightPassThrough() && !material->HasDeltaPassThrough())) return true;
+    if(const auto* csg = dynamic_cast<const CSGObject*>(&object))
+        return (csg->GetOperandA() && ObjectHasClearTransmission(*csg->GetOperandA()))
+            || (csg->GetOperandB() && ObjectHasClearTransmission(*csg->GetOperandB()));
+    return false;
+}
 bool ObjectHasRejectedTransmissiveCaster(const IObject& object)
 {
     const IMaterial* material = object.GetMaterial();
@@ -77,9 +88,11 @@ bool ObjectHasRejectedTransmissiveCaster(const IObject& object)
     // establish eligibility for the whole interface.
     if(const auto* dielectric = dynamic_cast<const DielectricMaterial*>(material))
         if(dielectric->GetHG() && !dielectric->GetScattering().IsPositionIndependent()) return true;
-    if(const auto* csg = dynamic_cast<const CSGObject*>(&object))
-        return (csg->GetOperandA() && ObjectHasRejectedTransmissiveCaster(*csg->GetOperandA()))
-            || (csg->GetOperandB() && ObjectHasRejectedTransmissiveCaster(*csg->GetOperandB()));
+    // A CSG hit can inherit a clear operand's material while the container
+    // itself has no material. Its complete surface has no uniform-sampling
+    // API, so even individually supported operands cannot give the required
+    // positive proposal mass for that effective caster.
+    if(dynamic_cast<const CSGObject*>(&object) && ObjectHasClearTransmission(object)) return true;
     return false;
 }
 bool ObjectWrapsComposite(const IObject& object)
