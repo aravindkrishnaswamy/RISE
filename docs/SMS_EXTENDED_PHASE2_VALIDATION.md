@@ -2,11 +2,12 @@
 
 Phase 2 is implemented on `sms-ext-phase2`, based on master
 `08552560b54b517b7a8a0696eb9d317953b26bbe`, and remains unmerged.
-Current native source is `71c080bd3`; corrected close-root fixtures are
-committed at `a6b4aa37a`. The current composed gate passes **374075/0**
+The most recent full composed gate uses native source `71c080bd3` and
+close-root fixtures at `a6b4aa37a`; it passes **374075/0**
 across 30 make modes, twelve actual Xcode-linked controls and five partial
-sanitizer modes. Fresh external Round 5 completed with five P1 and two P2 findings. Work is
-stopped under the user’s five-round limit; no Phase 2 merge occurred. Earlier sections
+sanitizer modes. Fresh external Round 5 completed with five P1 and two P2 findings. The user authorized continuation beyond five rounds. Repairs and isolated
+witnesses have resumed; the changed tree has not passed a new full gate or
+Round 6 review, and no Phase 2 merge occurred. Earlier sections
 are historical checkpoint records; their pending-review statements describe
 those checkpoints and do not supersede the current status.
 
@@ -76,8 +77,10 @@ remains required. Evidence: v2 `phase2-interleaved-cost.json` and build/run logs
 | HWSS | 5.791303 ± 0.010209 | 5.851994 ± 0.035648 | +1.047475 ± 0.463778 |
 
 These measurements establish neither zero overhead nor a general runtime
-bound. Prepared orientation auditing adds one-time mesh traversal and temporary
-vectors. Modified-interface Jacobians compare four scales, including a
+bound. Prepared orientation auditing currently adds mesh traversal and four temporary
+vectors per object on every preparation, including extended-off preparation.
+Shared instances repeat this work. The earlier one-time characterization was
+inaccurate; the Round 5 preparation-cost repair is still outstanding. Modified-interface Jacobians compare four scales, including a
 noncommensurate scale, with up to sixteen base-step refinements. This is opt-in
 solve work; local diagnostics do not certify global continuity or isolation.
 Record sizes in bytes are config112, root184, counters320, domainvertex1592
@@ -916,3 +919,53 @@ new row, Phase 2 merge, Phase 3/4 work or push follows. Master remains
 `08552560b54b517b7a8a0696eb9d317953b26bbe`, clean. Phase 1 remains merged at
 `34bd520ec5e70a5cf96bcf8b8154b1a17888880f`. Continuation requires a user ruling
 on the explicit stop when the review loop has not converged after five rounds.
+
+
+## Resumed Round 5 repair witnesses (2026-10-04)
+
+Evidence under `.claude/logs/sms-phase2-round6/` remains isolated repair
+work, not a sixth external review or a full gate. Tests committed at
+`66772ac50` against the then-current native implementation report
+**18115 passing / 2024 failing** checks in `native-witness-red.log`.
+That fixture's first normal-alias witness was on a diagonal seam and
+therefore rejected; it did not demonstrate an accepted aliased Jacobian.
+`36de2c28c` moves the normal witness into the triangle interior without
+changing its field or derivative oracle. `interior-normal-red.log` reports
+**35/10**, reproducing the accepted derivative mismatch in all five domains
+and both windings.
+
+The material/frame repair at `e81612ee4`, with an indentation-only warning
+fix, reports **35959/50** in `frame-r5-result.log`. Forty remaining failures
+concern stacked-sheet projection/support; ten are the unchanged Jacobian
+alias witness. This result verifies substantial improvement in native ONB
+replay but does not complete either P1. The initial library build had one
+misleading-indentation warning; `frame-library-build-fixed.log` and the
+successful fresh `frame-reference-build.log` have no diagnostics.
+
+The next stacked-sheet repair compares both projection rays before choosing
+the closest eligible surface. Its direct-solve fixture seeds the actual
+traced native point, undoing Object's documented launch backoff, rather
+than assuming the parsed decimal `.01` is represented exactly. Positive
+proposal-support and same-visible-sheet assertions are unchanged.
+The modifier differential proposal in SMS_EXTENDED_DESIGN.md is pending a
+user ruling; no new supported-domain policy is implemented.
+
+The nearest-frame implementation's successful fresh library and test builds
+(`nearest-frame-library-build.log`, `nearest-frame-reference-build-final.log`)
+have no compiler diagnostics. `nearest-frame-r5-result.log` reports
+**36067/10**: all stacked-sheet support/provenance and ONB-only / vNormal-only
+native material checks pass; the ten alias derivative checks still fail.
+Two intermediate test builds failed due to the imported Object class
+colliding with the scene-text helper name and then its member-name repair;
+both failed builds are preserved. No stale binary was run after them.
+The fresh passing build precedes this run. This isolated result is not a
+claim of a full green phase or external review convergence.
+
+The broader geometry mode then reports **3957/20** in
+`nearest-frame-geometry-result.log`: the new full-frame continuity check
+incorrectly rejects twenty nested start-inside roots at mesh UV diagonals.
+The subsequent correction restricts tangent-orientation continuity to
+contexts that use it; audited constant isotropic events still check W and
+both normal records. `nearest-frame-r4-result.log` reports **341/10**,
+with only the known alias witness failing. These failed checks are retained
+as regressions, not omitted from the repair record.

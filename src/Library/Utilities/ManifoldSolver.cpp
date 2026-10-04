@@ -554,7 +554,9 @@ RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::Solve
                     const Scalar normalChange=std::max(Vector3Ops::Magnitude(normals[0]-hit.geometric.vNormal),
                         Vector3Ops::Magnitude(geomNormals[0]-hit.geometric.UnflippedGeomNormal()));
                     contextSlope=std::max(contextSlope,std::max(uvChange,normalChange)/displacement);
-                    for(unsigned axis=0;axis<3;++axis) {
+                    // Audited isotropic events consume W, not the UV-driven
+                    // U/V orientation, which can change across a mesh diagonal.
+                    for(unsigned axis=uvIndependent?2u:0u;axis<3;++axis) {
                         const Vector3 a=axis==0?frames[0].u():axis==1?frames[0].v():frames[0].w();
                         const Vector3 b=axis==0?frames[1].u():axis==1?frames[1].v():frames[1].w();
                         const Vector3 center=axis==0?hit.geometric.onb.u():axis==1?hit.geometric.onb.v():hit.geometric.onb.w();
@@ -3500,41 +3502,47 @@ void ManifoldSolver::OrthonormalizeTangentFrame(
 
 bool ManifoldSolver::ComputeNativeVertexFrame(ManifoldVertex& vertex, Scalar projectionDistance) const
 {
-        const Vector3 n=Vector3Ops::Normalize(vertex.geomNormal);
-        const Scalar roundoff=8*std::numeric_limits<Scalar>::epsilon()*std::max({Scalar(1),
-            std::fabs(vertex.position.x),std::fabs(vertex.position.y),std::fabs(vertex.position.z)});
-        const Scalar allowance=std::max(roundoff,projectionDistance);
-        // A frame probe may project the requested local step, but must not
-        // replace an existing surface point by another patch of this object.
-        // Shorten the interval when a nearer sheet occludes the target.
-        Scalar offset=std::max(Scalar(.05),allowance*2);
-        for(unsigned refinement=0;refinement<64 && offset>=roundoff;++refinement,offset*=.5) {
-            for(int side:{1,-1}) {
-                RayIntersection hit(Ray(Point3Ops::mkPoint3(vertex.position,n*(side*offset)),n*(-side)),nullRasterizerState);
-                vertex.pObject->IntersectRay(hit,offset*2,true,true,false);
-                if(!hit.geometric.bHit) continue;
-                const Point3 surface=SMSReferenceSurfacePoint(*vertex.pObject,hit.geometric);
-                if(Point3Ops::Distance(surface,vertex.position)>allowance) continue;
-                vertex.position=surface;
-                vertex.normal=SMSNativeEventNormal(*vertex.pMaterial,hit.geometric);
-                vertex.geomNormal=hit.geometric.UnflippedGeomNormal();
-                vertex.uv=hit.geometric.ptCoord;vertex.objectPosition=hit.geometric.ptObjIntersec;
-                OrthonormalBasis3D frame;frame.CreateFromW(vertex.geomNormal);
-                vertex.dpdu=frame.u();vertex.dpdv=frame.v();
-                vertex.dndu=Vector3(0,0,0);vertex.dndv=Vector3(0,0,0);vertex.valid=true;
-                return true;
-            }
+    const Vector3 n=Vector3Ops::Normalize(vertex.geomNormal);
+    const Scalar roundoff=8*std::numeric_limits<Scalar>::epsilon()*std::max({Scalar(1),
+        std::fabs(vertex.position.x),std::fabs(vertex.position.y),std::fabs(vertex.position.z)});
+    const Scalar allowance=std::max(roundoff,projectionDistance);
+    // Compare both projections before choosing a surface. A first acceptable
+    // hit can be an occluding sheet even when the other ray reaches the
+    // requested point exactly. Shorten occluded probes without moving it.
+    Scalar offset=std::max(Scalar(.05),allowance*2);
+    for(unsigned refinement=0;refinement<64 && offset>=roundoff;++refinement,offset*=.5) {
+        ManifoldVertex closest=vertex;
+        Scalar closestDistance=RISE_INFINITY;
+        for(int side:{1,-1}) {
+            RayIntersection hit(Ray(Point3Ops::mkPoint3(vertex.position,n*(side*offset)),n*(-side)),nullRasterizerState);
+            vertex.pObject->IntersectRay(hit,offset*2,true,true,false);
+            if(!hit.geometric.bHit) continue;
+            const Point3 surface=SMSReferenceSurfacePoint(*vertex.pObject,hit.geometric);
+            const Scalar distance=Point3Ops::Distance(surface,vertex.position);
+            if(distance>allowance || distance>=closestDistance) continue;
+            closestDistance=distance;
+            closest.position=surface;
+            closest.normal=SMSNativeEventNormal(*vertex.pMaterial,hit.geometric);
+            closest.geomNormal=hit.geometric.UnflippedGeomNormal();
+            closest.uv=hit.geometric.ptCoord;closest.objectPosition=hit.geometric.ptObjIntersec;
+            OrthonormalBasis3D frame;frame.CreateFromW(closest.geomNormal);
+            closest.dpdu=frame.u();closest.dpdv=frame.v();
+            closest.dndu=Vector3(0,0,0);closest.dndv=Vector3(0,0,0);closest.valid=true;
         }
-        return false;
+        if(closestDistance<=allowance) {vertex=std::move(closest);return true;}
     }
+    return false;
+}
 
 bool ManifoldSolver::ComputeVertexDerivatives(
 	ManifoldVertex& vertex,
 	Scalar smoothing, bool referenceRefinement
 	) const
 {
-    if(nativeEventConstraints && SMSNeedsNativeFrame(vertex) && smoothing==0)
-        return ComputeNativeVertexFrame(vertex,0);
+	if(nativeEventConstraints && SMSNeedsNativeFrame(vertex) && smoothing==0)
+	{
+		return ComputeNativeVertexFrame(vertex,0);
+	}
 
 	if( !vertex.pObject )
 	{
@@ -7282,12 +7290,15 @@ bool ManifoldSolver::SameExtendedRoot(const SMSDomainRoot& a, const SMSDomainRoo
                 &&std::isfinite(v.objectPosition.x)&&std::isfinite(v.objectPosition.y)&&std::isfinite(v.objectPosition.z)
                 &&std::isfinite(v.uv.x)&&std::isfinite(v.uv.y);
         };
+        const bool uvIndependent=x.pMaterial && x.pObject && !x.pObject->GetModifier()
+            && SMSConstantSeamMaterial(*x.pMaterial);
         const auto& xc=a.vertices[i].context;const auto& yc=b.vertices[i].context;
         const auto finiteFrame=[](const Vector3& value) {return std::isfinite(value.x)&&std::isfinite(value.y)&&std::isfinite(value.z);};
         for(unsigned axis=0;axis<3;++axis) {
             const Vector3 xv=axis==0?xc.onb.u():axis==1?xc.onb.v():xc.onb.w();
             const Vector3 yv=axis==0?yc.onb.u():axis==1?yc.onb.v():yc.onb.w();
-            if(!finiteFrame(xv)||!finiteFrame(yv)||Vector3Ops::Magnitude(xv-yv)>normalTolerance) return false;
+            if(!finiteFrame(xv)||!finiteFrame(yv)
+                ||((!uvIndependent || axis==2) && Vector3Ops::Magnitude(xv-yv)>normalTolerance)) return false;
         }
         if(!finiteFrame(xc.vNormal)||!finiteFrame(yc.vNormal)
             ||Vector3Ops::Magnitude(xc.vNormal-yc.vNormal)>normalTolerance) return false;
@@ -7299,8 +7310,6 @@ bool ManifoldSolver::SameExtendedRoot(const SMSDomainRoot& a, const SMSDomainRoo
         // Keep the actual UV records. Under this audited material law and
         // without a normal modifier, UV cannot alter any event/index/price
         // input. Different mesh charts then do not create physical roots.
-        const bool uvIndependent=x.pMaterial && x.pObject && !x.pObject->GetModifier()
-            && SMSConstantSeamMaterial(*x.pMaterial);
         const Scalar uvDistance = uvIndependent ? 0 : std::hypot(coordinateDistance(x.uv.x,y.uv.x,axes.x != 0),
             coordinateDistance(x.uv.y,y.uv.y,axes.y != 0));
         if(!finiteGeometry(x) || !finiteGeometry(y) || !x.pObject || !x.pMaterial

@@ -1,6 +1,6 @@
 # Extended SMS: event proposals, channel geometry, and path ownership
 
-**Status: adopted implementation contract, 2026-10-03. Phase 1 domain/replay primitives and interim rejection policy are implemented on `sms-ext`, merged to master at `34bd520ec5e70a5cf96bcf8b8154b1a17888880f`. Phase 2 is implemented on `sms-ext-phase2`, unmerged and stopped after nonconvergent Round 5; Phases 3–4 remain pending.**
+**Status: adopted implementation contract, 2026-10-03. Phase 1 domain/replay primitives and interim rejection policy are implemented on `sms-ext`, merged to master at `34bd520ec5e70a5cf96bcf8b8154b1a17888880f`. Phase 2 is implemented on `sms-ext-phase2`, unmerged; repairs resumed after the user authorized continuation beyond Round 5; Phases 3–4 remain pending.**
 
 Base: master `a8fa56224ff1e4d9284e907fcf1d1d05534530e6`, the reviewed attenuation integration. DL-437 and DL-438 remain open. The user authorized deferring them for that integration and asked for this extended design next. This proposal keeps the native material conventions established by [DL-435](DL435_SPECTRAL_SMS_ATTENUATION.md). It does not replace them with a general participating-medium or absorbing-film model.
 
@@ -624,5 +624,44 @@ concern near-commensurate Jacobian aliasing, fixed-offset surface-frame
 reconstruction and modified ONB replay. Numerical/source-traced findings and
 verification limits are recorded in
 [SMS_EXTENDED_PHASE2_VALIDATION.md](SMS_EXTENDED_PHASE2_VALIDATION.md).
-The user’s five-round stop rule applies. Phase 2 remains unmerged; no sixth
-round, contract amendment, ledger closure or new row is authorized here.
+The initial five-round stop was reported. The user subsequently authorized
+continuation beyond Round 5 and asked for explicit checks against local
+maxima. Phase 2 remains unmerged; no ledger closure or new row is claimed.
+
+
+### Modifier differential contract: proposed decision, not adopted (2026-10-04)
+
+The Round 5 interior normal witness on committed native sources reports
+35 passing checks and 10 failing checks: all five RGB/NM domains and both
+windings accept a root whose Jacobian entry is approximately -0.291667,
+while an independent period/1024 refinement gives -0.491665. The fixture
+uses a smooth sinusoidal normal field; its root is inside a triangle,
+away from the diagonal seam. The raw evidence is
+`.claude/logs/sms-phase2-round6/interior-normal-red.log`, at `36de2c28c`.
+This isolates derivative aliasing from surface projection and frame replay.
+
+The current modifier interface exposes only `Modify(hit)`, with no derivative
+or feature-size bound. Any finite collection of black-box probes can miss a
+smooth field that agrees at the sampled positions but has a different
+root derivative. Adding another step size does not establish the Jacobian
+required by the estimator's change of variables. For example, for any finite
+set of nonzero one-dimensional probe displacements `s_i`, the smooth field
+`f(x) = a*x*product(x*x-s_i*s_i)/product(-s_i*s_i)` vanishes at the root
+and every `+/-s_i`, yet `f'(0)=a`. Thus matching values at every stencil
+point cannot bound the unobserved derivative, even for a continuous field.
+
+**Proposed resolution requiring a user ruling:** accept modified interfaces
+only through an audited differential contract. A provider must expose either
+the actual local differential of the material-consumed frame, or a feature
+bound and error bound sufficient for a resolved numerical differential.
+The contract must cover incoming-ray dependencies and all modified context
+used by the native event, including the distinction between `onb.w()` and
+Polished's `vNormal`. Uncertified contexts are ineligible, with all three
+switches off together and PT retaining their paths. Audited continuous
+modifiers remain positive controls; this is not a blanket modifier ban.
+Existing legacy/off behavior is preserved. Provider API details, lifetime,
+boundary handling and cost require design and review before implementation.
+
+This proposal changes supported-domain requirements, so it has not been
+implemented. Surface/frame corrections and preparation/scratch cost repairs
+can proceed independently. No ledger row is opened or closed by this note.

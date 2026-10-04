@@ -15,6 +15,7 @@
 #include "../src/Library/Geometry/SphericalUVGenerator.h"
 #include "../src/Library/Geometry/CylindricalUVGenerator.h"
 #include "../src/Library/Interfaces/IRayIntersectionModifier.h"
+#include "../src/Library/Objects/Object.h"
 #include "../src/Library/Interfaces/ITriangleMeshGeometry.h"
 #include "../src/Library/Interfaces/IGeometryManager.h"
 #include "../src/Library/Utilities/Optics.h"
@@ -79,7 +80,7 @@ static std::string PlaneScene(const std::string& name, double z, double x0=-2, d
         <<"\n ptb "<<x0<<" 2 "<<z<<"\n ptc "<<x1<<" 2 "<<z<<"\n ptd "<<x1<<" -2 "<<z<<"\n doublesided TRUE\n}\n";
     return s.str();
 }
-static std::string Object(const std::string& name,const std::string& geometry,const std::string& material,
+static std::string SceneObject(const std::string& name,const std::string& geometry,const std::string& material,
     const std::string& extra="") {
     return "standard_object\n{\n name "+name+"\n geometry "+geometry+"\n material "+material+"\n"+extra+"}\n";
 }
@@ -172,7 +173,7 @@ static std::string CloseRootMesh(bool reverse, Scalar scale, Scalar separation=.
 static void CloseRoots() {
     for(bool winding:{false,true}) for(Scalar scale:{.01,1.,100.}) for(Scalar separation:{.001,1e-9}) {
         if(separation < .001 && scale < 1) continue;
-        Fixture f(Materials()+CloseRootMesh(winding,scale,separation)+Object("caster","shape","mirror"));
+        Fixture f(Materials()+CloseRootMesh(winding,scale,separation)+SceneObject("caster","shape","mirror"));
         ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;cfg.solverThreshold=1e-10;
         auto* solver=new ManifoldSolver(cfg);IORStack air(1);
         ScriptSampler left({.2,winding?5./9:11./36,winding?.25:.4,.1}),right({.2,winding?5./9:11./36,winding?.25:.4,.6});
@@ -230,7 +231,7 @@ static void NativePeriodicRoots() {
         "ellipsoid_geometry\n{\n name sphere\n radii 1 1 1\n}\n",
         "torus_geometry\n{\n name sphere\n majorradius 1\n minorratio 0.5\n}\n",
         "cylinder_geometry\n{\n name sphere\n axis y\n radius 1\n height 4\n capped TRUE\n}\n"};
-    Fixture f(Materials()+(shape<4?geometry[shape]:UVSeamMesh(shape==5))+Object("caster","sphere","mirror"));
+    Fixture f(Materials()+(shape<4?geometry[shape]:UVSeamMesh(shape==5))+SceneObject("caster","sphere","mirror"));
     ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;
     auto* solver=new ManifoldSolver(cfg);IORStack air(1);
     if(textured) {
@@ -344,7 +345,7 @@ static void PostModifierChartRoots() {
         for(bool step:{false,true}) for(bool normalJump:{false,true}) {
         const Scalar scale=transformed?1.5:1,offset=transformed?3:0;
         const std::string transform=transformed?" scale 1.5 1.5 1.5\n position 3 0 0\n":"";
-        Fixture f(Materials()+QuadMesh("patch",0,-2,2,reverse)+Object("caster","patch","mirror",transform));
+        Fixture f(Materials()+QuadMesh("patch",0,-2,2,reverse)+SceneObject("caster","patch","mirror",transform));
         auto* tint=new WorldTint();IMaterial* material=nullptr;
         Check(RISE_API_CreatePerfectReflectorMaterial(&material,*tint),"post-modifier world tint created");
         if(material) f.job->GetObjects()->GetItem("caster")->AssignMaterial(*material);
@@ -396,7 +397,7 @@ static void GeneratedChartRoots() {
             ? "sphere_geometry\n{\n name sphere\n radius 1\n}\n"
             : kind==1 ? "cylinder_geometry\n{\n name sphere\n axis y\n radius 1\n height 4\n capped TRUE\n}\n"
             : UVSeamMesh(reverse,true);
-        Fixture f(Materials()+geometry+Object("caster","sphere","mirror"));
+        Fixture f(Materials()+geometry+SceneObject("caster","sphere","mirror"));
         auto* tint=new WorldTint();IMaterial* material=nullptr;
         Check(RISE_API_CreatePerfectReflectorMaterial(&material,*tint),"generated-chart world tint created");
         if(material) f.job->GetObjects()->GetItem("caster")->AssignMaterial(*material);
@@ -428,7 +429,7 @@ static void GeneratedChartRoots() {
 }
 static void InteriorAtlasRoots() {
     for(bool reverse:{false,true}) for(int side:{-1,1}) for(bool varying:{false,true}) for(unsigned geometryKind:{0u,1u,2u}) {
-        Fixture f(Materials()+UVSeamMesh(reverse,true)+Object("caster","sphere","mirror"));
+        Fixture f(Materials()+UVSeamMesh(reverse,true)+SceneObject("caster","sphere","mirror"));
         if(geometryKind==1) {
             const auto* object=f.Object("caster");
             IndexTriangleListType indices;VerticesListType positions;NormalsListType normals;TexCoordsListType coords;
@@ -623,7 +624,7 @@ static void NativeRebuildMesh(Fixture& f, bool indexed, Scalar translation=0, un
 static void RoundFourMaterials() {
     const std::string coat="uniformcolor_painter\n{\n name black\n color 0 0 0\n}\npolished_material\n{\n name polish\n reflectance black\n tau 0.7\n ior triple\n scattering 1000000\n}\n";
     for(int side:{-1,1}) for(Scalar outer:{1.,1.2}) for(bool invalid:{false,true}) {
-        Fixture f(Materials()+coat+PlaneScene("patch",0,-10,10)+Object("caster","patch","polish"));
+        Fixture f(Materials()+coat+PlaneScene("patch",0,-10,10)+SceneObject("caster","patch","polish"));
         if(invalid) {auto* modifier=new TiltNormal(side,false);f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);modifier->release();}
         const Point3 start(-std::sqrt(Scalar(3)),0,side),center(0,0,0);
         RayIntersection hit(Ray(start,Vector3Ops::Normalize(Vector3Ops::mkVector3(center,start))),nullRasterizerState);
@@ -645,7 +646,7 @@ static void RoundFourMaterials() {
         }
     }
     for(bool indexed:{false,true}) for(bool reverse:{false,true}) {
-        Fixture f(Materials()+UVSeamMesh(reverse,true)+Object("caster","sphere","mirror"));NativeRebuildMesh(f,indexed,0,1);
+        Fixture f(Materials()+UVSeamMesh(reverse,true)+SceneObject("caster","sphere","mirror"));NativeRebuildMesh(f,indexed,0,1);
         ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;auto* solver=new ManifoldSolver(cfg);IORStack air(1);
         for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
             unsigned accepted=0;RandomNumberGenerator random(217);IndependentSampler sampler(random);
@@ -654,7 +655,7 @@ static void RoundFourMaterials() {
             Check(accepted==0,"discontinuous native corner-normal root has uncertain reciprocal identity");
         }
         solver->release();
-        Fixture closed(Materials()+Mesh(true,reverse)+Object("caster","shape","glass"));NativeRebuildMesh(closed,indexed,0,2);
+        Fixture closed(Materials()+Mesh(true,reverse)+SceneObject("caster","shape","glass"));NativeRebuildMesh(closed,indexed,0,2);
         SMSStartingMedia capture;const bool captured=SMSDomainReplay::Capture(closed.Scene(),Point3(0,0,0),air,capture);
         std::cout<<"R4 opposing mesh start-inside indexed="<<indexed<<" winding="<<reverse<<" captured="<<captured<<" members="<<capture.enclosing.size()<<'\n';
         Check(!captured,"unaudited opposing corner normals cannot certify empty starting membership inside a closed mesh");
@@ -689,7 +690,7 @@ static void NativeClosePatches(Fixture& f,bool reverse,Scalar offset) {
 }
 static void RoundFourNumerics() {
     for(bool reverse:{false,true}) {
-        Fixture f(Materials()+QuadMesh("patch",0,-2,2,reverse)+Object("caster","patch","mirror"));
+        Fixture f(Materials()+QuadMesh("patch",0,-2,2,reverse)+SceneObject("caster","patch","mirror"));
         auto* modifier=new SteepContinuousUV();f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);modifier->release();
         const Point3 start(-.5,.3,-3),end(.5,.3,-3);IORStack air(1);
         ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;auto* solver=new ManifoldSolver(cfg);
@@ -732,7 +733,7 @@ static void RoundFourNumerics() {
         solver->release();
     }
     for(bool reverse:{false,true}) for(Scalar offset:{Scalar(1000000),Scalar(5000000)}) {
-        Fixture f(Materials()+CloseRootMesh(reverse,10000,1e-9)+Object("caster","shape","mirror"));NativeClosePatches(f,reverse,offset);
+        Fixture f(Materials()+CloseRootMesh(reverse,10000,1e-9)+SceneObject("caster","shape","mirror"));NativeClosePatches(f,reverse,offset);
         ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;cfg.solverThreshold=1e-10;
         auto* solver=new ManifoldSolver(cfg);IORStack air(1);
         for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
@@ -777,14 +778,24 @@ static void RoundFourNumerics() {
         solver->release();
     }
     for(bool reverse:{false,true}) for(Scalar divisor:{Scalar(1),Scalar(4)}) {
-        Fixture f(Materials()+QuadMesh("patch",0,-2,2,reverse)+Object("caster","patch","mirror"));
+        Fixture f(Materials()+QuadMesh("patch",0,-2,2,reverse)+SceneObject("caster","patch","mirror"));
         auto* modifier=new AliasedNormal(divisor);f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);modifier->release();
         const Point3 start(-.5,.3,3),end(.5,.3,3),center(0,.3,0);IORStack air(1);
         RayIntersection hit(Ray(start,Vector3Ops::Normalize(Vector3Ops::mkVector3(center,start))),nullRasterizerState);
         f.Object("caster")->IntersectRay(hit,RISE_INFINITY,true,true,false);Check(hit.geometric.bHit,"R4 continuous normal native hit");
         if(!hit.geometric.bHit) continue;
         hit.pModifier->Modify(hit.geometric);
-        SMSDomainVertex vertex(hit.geometric);vertex.geometry.position=center;vertex.geometry.normal=hit.geometric.vNormal;
+        SMSDomainVertex vertex(hit.geometric);
+        // The scene parser stores mesh coordinates at native precision. Seed
+        // the actual traced surface, rather than an ideal decimal z=.01.
+        const auto* native=dynamic_cast<const RISE::Implementation::Object*>(hit.pObject);
+        Check(native!=nullptr,"stacked patch uses a native object surface convention");
+        if(!native) continue;
+        const Vector3 localDirection=Vector3Ops::Normalize(Vector3Ops::Transform(
+            hit.pObject->GetFinalInverseTransformMatrix(),hit.geometric.ray.Dir()));
+        vertex.geometry.position=Point3Ops::Transform(hit.pObject->GetFinalTransformMatrix(),
+            Point3Ops::mkPoint3(hit.geometric.ptObjIntersec,localDirection*native->GetSurfaceIntersecError()));
+        vertex.geometry.normal=hit.geometric.vNormal;
         vertex.geometry.geomNormal=hit.geometric.UnflippedGeomNormal();vertex.geometry.pObject=hit.pObject;
         vertex.geometry.pMaterial=hit.pMaterial;vertex.geometry.isReflection=true;
         std::vector<SMSDomainVertex> records{vertex};ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;
@@ -814,7 +825,7 @@ static void RoundFourNumerics() {
 static void NativeNearCommensurateNormal() {
     const Scalar divisor=4*114243;
     for(bool reverse:{false,true}) {
-        Fixture f(Materials()+QuadMesh("patch",0,-2,3,reverse)+Object("caster","patch","mirror"));
+        Fixture f(Materials()+QuadMesh("patch",0,-2,3,reverse)+SceneObject("caster","patch","mirror"));
         auto* modifier=new AliasedNormal(divisor);f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);modifier->release();
         const Point3 start(0,0,3),end(0,0,4),center(0,0,0);IORStack air(1);
         RayIntersection hit(Ray(start,Vector3(0,0,-1)),nullRasterizerState);
@@ -864,14 +875,24 @@ static void NativeStackedPatchFrames() {
             mesh<<" vertex "<<xy.x<<' '<<xy.y<<' '<<z<<"\n";
         mesh<<" uv 0 0\n uv 1 0\n uv 1 1\n uv 0 1\n uv 0 0\n uv 1 0\n uv 1 1\n uv 0 1\n";
         mesh<<(reverse?" triangle 0 2 1\n triangle 0 3 2\n triangle 4 6 5\n triangle 4 7 6\n":" triangle 0 1 2\n triangle 0 2 3\n triangle 4 5 6\n triangle 4 6 7\n")<<"}\n";
-        Fixture f(Materials()+mesh.str()+Object("caster","patch","mirror"));NativeRebuildMesh(f,indexed);
+        Fixture f(Materials()+mesh.str()+SceneObject("caster","patch","mirror"));NativeRebuildMesh(f,indexed);
         auto* modifier=new InertFrameModifier;f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);modifier->release();
-        const Scalar z=side<0?0:.01;const Point3 center(0,.3,z),start(0,.3,z+side*3),end(0,.3,z+side*4);IORStack air(1);
+        const Scalar z=side<0?0:.01;const Point3 start(0,.3,z+side*3),end(0,.3,z+side*4);IORStack air(1);
         RayIntersection hit(Ray(start,Vector3(0,0,-side)),nullRasterizerState);
         f.Object("caster")->IntersectRay(hit,RISE_INFINITY,true,true,false);
         Check(hit.geometric.bHit,"stacked patch native closest surface is reachable");
         if(!hit.geometric.bHit) continue;
-        SMSDomainVertex vertex(hit.geometric);vertex.geometry.position=center;vertex.geometry.normal=hit.geometric.vNormal;
+        SMSDomainVertex vertex(hit.geometric);
+        // The scene parser stores mesh coordinates at native precision. Seed
+        // the actual traced surface, rather than an ideal decimal z=.01.
+        const auto* native=dynamic_cast<const RISE::Implementation::Object*>(hit.pObject);
+        Check(native!=nullptr,"stacked patch uses a native object surface convention");
+        if(!native) continue;
+        const Vector3 localDirection=Vector3Ops::Normalize(Vector3Ops::Transform(
+            hit.pObject->GetFinalInverseTransformMatrix(),hit.geometric.ray.Dir()));
+        vertex.geometry.position=Point3Ops::Transform(hit.pObject->GetFinalTransformMatrix(),
+            Point3Ops::mkPoint3(hit.geometric.ptObjIntersec,localDirection*native->GetSurfaceIntersecError()));
+        vertex.geometry.normal=hit.geometric.vNormal;
         vertex.geometry.geomNormal=hit.geometric.UnflippedGeomNormal();vertex.geometry.pObject=hit.pObject;
         vertex.geometry.pMaterial=hit.pMaterial;vertex.geometry.isReflection=true;
         ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;
@@ -901,7 +922,7 @@ static void NativeHorizonFallbacks(unsigned fields=0) {
             "dielectric_material\n{\n name coated\n tau 1\n ior triple\n scattering 1000000\n ar_layer 1.224744871391589 112.26827987812466 0\n}\n"
             "uniformcolor_painter\n{\n name black\n color 0 0 0\n}\n"
             "polished_material\n{\n name polished\n reflectance black\n tau 0.7\n ior triple\n scattering 1000000\n}\n"
-            +QuadMesh("patch",0,4.8,5.2,reverse)+Object("caster","patch",material,transform));
+            +QuadMesh("patch",0,4.8,5.2,reverse)+SceneObject("caster","patch",material,transform));
         auto* modifier=new TiltNormal(side,valid,varying,fields);
         f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);
         Check(f.Object("caster")->GetModifier()==modifier,"native tilt modifier is retained");modifier->release();
@@ -964,8 +985,8 @@ static void NativeClosedHorizonFallbacks() {
         std::ostringstream enclosure;
         if(nested) enclosure<<"perfectrefractor_material\n{\n name outer_mat\n refractance white\n ior 1.1\n}\n"
             <<"sphere_geometry\n{\n name outer_shape\n radius "<<10*scale<<"\n}\n"
-            <<Object("outer","outer_shape","outer_mat"," position "+std::to_string(offset+5*scale)+" 0 0\n");
-        Fixture f(Materials()+Mesh(true,reverse)+Object("caster","shape","glass",transform.str())+enclosure.str());
+            <<SceneObject("outer","outer_shape","outer_mat"," position "+std::to_string(offset+5*scale)+" 0 0\n");
+        Fixture f(Materials()+Mesh(true,reverse)+SceneObject("caster","shape","glass",transform.str())+enclosure.str());
         auto* modifier=new TiltNormal(-1,valid,true);
         f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);modifier->release();
         const Point3 start(offset+4.9*scale,.3*scale,-.02*scale),center(offset+5*scale,.3*scale,0);
@@ -1032,7 +1053,7 @@ static void NativeOverlapExits() {
             "dielectric_material\n{\n name overlap_dielectric\n tau 1\n ior 1.5\n scattering 1000000\n}\n"
             "dielectric_material\n{\n name overlap_coated\n tau 1\n ior 1.5\n scattering 1000000\n ar_layer 1.224744871391589 112.26827987812466 0\n}\n"
             "perfectrefractor_material\n{\n name overlap_outer\n refractance white\n ior 1.3\n}\n"
-            +Mesh(true,reverse)+Object("a","shape",material,aTransform.str())+Object("b","shape","overlap_outer",bTransform.str()));
+            +Mesh(true,reverse)+SceneObject("a","shape",material,aTransform.str())+SceneObject("b","shape","overlap_outer",bTransform.str()));
         const Point3 center(offset+.25*scale,.3*scale,scale);
         const Point3 start(offset+(.25-(tir?.55:.2))*scale,.3*scale,.8*scale);
         RayIntersection hit(Ray(start,Vector3Ops::Normalize(Vector3Ops::mkVector3(center,start))),nullRasterizerState);
@@ -1135,8 +1156,8 @@ static void ModifiedWalkJacobians() {
         const Scalar scale=transformed?1.5:1,offset=transformed?3:0;
         const std::string transform=transformed?" scale 1.5 1.5 1.5\n position 3 0 0\n":"";
         Fixture f(Materials()+QuadMesh("first",0,-2,2,reverse)+QuadMesh("gate",-side,.3,2,reverse)
-            +QuadMesh("last",-2*side,.6,4,reverse)+Object("a_first","first","mirror",transform)
-            +Object("b_gate","gate","glass",transform)+Object("c_last","last","mirror",transform));
+            +QuadMesh("last",-2*side,.6,4,reverse)+SceneObject("a_first","first","mirror",transform)
+            +SceneObject("b_gate","gate","glass",transform)+SceneObject("c_last","last","mirror",transform));
         auto* modifier=new ArrivingRayNormal();
         for(const char* name:{"a_first","b_gate","c_last"}) {
             f.job->GetObjects()->GetItem(name)->AssignModifier(*modifier);
@@ -1176,8 +1197,8 @@ static void WalkEvents() {
         const Scalar scale=transformed?1.5:1,offset=transformed?3:0;
         const std::string transform=transformed?" scale 1.5 1.5 1.5\n position 3 0 0\n":"";
         Fixture f(Materials()+QuadMesh("first",0,-2,2,reverse)+QuadMesh("gate",-side,.3,2,reverse)
-            +QuadMesh("last",-2*side,.6,4,reverse)+Object("a_first","first","mirror",transform)
-            +Object("b_gate","gate","glass",transform)+Object("c_last","last","mirror",transform));
+            +QuadMesh("last",-2*side,.6,4,reverse)+SceneObject("a_first","first","mirror",transform)
+            +SceneObject("b_gate","gate","glass",transform)+SceneObject("c_last","last","mirror",transform));
         const Point3 start(offset-scale,0,-2*side*scale);
         for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
             ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=count;
@@ -1208,8 +1229,8 @@ static void WalkEvents() {
         const Scalar scale=transformed?1.5:1,offset=transformed?3:0;
         const std::string transform=transformed?" scale 1.5 1.5 1.5\n position 3 0 0\n":"";
         Fixture f(Materials()+"perfectrefractor_material\n{\n name dense\n refractance white\n ior 2\n}\n"
-            +Mesh(true,reverse)+Object("a_inner","shape","dense",transform)
-            +Object("z_outer","shape","glass",transformed?" scale 3 3 3\n position 3 0 0\n":" scale 2 2 2\n"));
+            +Mesh(true,reverse)+SceneObject("a_inner","shape","dense",transform)
+            +SceneObject("z_outer","shape","glass",transformed?" scale 3 3 3\n position 3 0 0\n":" scale 2 2 2\n"));
         const Point3 start(offset,0,0),end(offset,0,4*scale);
         IORStack live(1);live.SetCurrentObject(f.Object("z_outer"));live.push(1.3);
         live.SetCurrentObject(f.Object("a_inner"));live.push(2);const IORStack before(live);
@@ -1237,7 +1258,7 @@ static void WalkEvents() {
         IORStack dense(1);dense.SetCurrentObject(f.Object("a_inner"));dense.push(2);
         // Use the inner-only scene so the enclosing medium is genuinely air.
         Fixture tir(Materials()+"perfectrefractor_material\n{\n name dense\n refractance white\n ior 2\n}\n"
-            +Mesh(true,reverse)+Object("caster","shape","dense",transform));
+            +Mesh(true,reverse)+SceneObject("caster","shape","dense",transform));
         dense=IORStack(1);dense.SetCurrentObject(tir.Object("caster"));dense.push(2);
         ScriptSampler sampler({.01,reverse?.19:.75,reverse?5./9:.2,.29,.999},.999);
         std::vector<SMSDomainVertex> vertices;
@@ -1251,7 +1272,7 @@ static void Geometry() {
     for(bool closed:{false,true}) for(bool winding:{false,true}) for(int side:{-1,1})
         for(bool transformed:{false,true}) for(bool inside:{false,true}) {
             if(inside&&!closed) continue;
-            Fixture f(Materials()+Mesh(closed,winding)+Object("caster","shape","glass",
+            Fixture f(Materials()+Mesh(closed,winding)+SceneObject("caster","shape","glass",
                 transformed?" scale 1.5 1.5 1.5\n position 2 0 0\n":""));
             if(!f.job||!f.Object("caster")) {Check(false,"mesh fixture object");continue;}
             const Point3 start(transformed?2:0,0,inside?0:side*4);
@@ -1271,7 +1292,7 @@ static void Geometry() {
         }
     for(bool sphere:{false,true}) {
         const std::string geometry=sphere?"sphere_geometry\n{\n name shape\n radius 1\n}\n":PlaneScene("shape",0);
-        Fixture f(Materials()+geometry+Object("caster","shape","glass"));
+        Fixture f(Materials()+geometry+SceneObject("caster","shape","glass"));
         ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;cfg.solverThreshold=1e-10;
         auto* solver=new ManifoldSolver(cfg);IORStack air(1);
         ScriptSampler s({.2,sphere?.99:.5,.5,.5,.001});
@@ -1307,9 +1328,9 @@ static void DeltaLights(bool production=false, bool signedEmitter=false, bool un
         if(signedEmitter&&mode!=0) continue;
         std::string text=Materials();
         text.replace(text.find("values 1.3 1.5 1.9"),std::string("values 1.3 1.5 1.9").size(),"values 1.5 1.5 1.5");
-        text+=Mesh(false,winding)+Object("caster","shape",glass?"glass":"mirror"," position 0 0 1\n")
+        text+=Mesh(false,winding)+SceneObject("caster","shape",glass?"glass":"mirror"," position 0 0 1\n")
             +"lambertian_material\n{\n name diffuse\n reflectance white\n}\n"
-            +PlaneScene("receiver_geo",-2)+Object("receiver","receiver_geo","diffuse")
+            +PlaneScene("receiver_geo",-2)+SceneObject("receiver","receiver_geo","diffuse")
             +(point?"omni_light\n{\n name source\n position 0 0 -1\n color 1 1 1\n power 40\n}\n":
               "spot_light\n{\n name source\n position 0 0 -1\n target 0 0 1\n color 1 1 1\n power 40\n inner 10\n outer 30\n}\n");
         if(signedEmitter) text.replace(text.rfind("color 1 1 1"),std::string("color 1 1 1").size(),"color 1 -0.5 0.2");
@@ -1441,14 +1462,14 @@ public:
 static void UnsupportedCasterSwitches() {
     for(unsigned kind:{0u,1u,2u,3u}) for(bool reverse:{false,true}) for(bool remote:{false,true}) {
         const bool csg=kind==1;
-        Fixture f(Materials()+Mesh(csg,reverse)+Object("pane","shape","glass",csg?" scale 1 1 0.25\n":" position 0 0 1\n")
-            +(csg?"sphere_geometry\n{\n name tiny\n radius 0.1\n}\n"+Object("other","tiny","glass"," position 4 0 0\n")
+        Fixture f(Materials()+Mesh(csg,reverse)+SceneObject("pane","shape","glass",csg?" scale 1 1 0.25\n":" position 0 0 1\n")
+            +(csg?"sphere_geometry\n{\n name tiny\n radius 0.1\n}\n"+SceneObject("other","tiny","glass"," position 4 0 0\n")
                 +"csg_object\n{\n name inherited\n obja pane\n objb other\n operation union\n}\n":"")
-            +(kind==2?"weave_material\n{\n name gap\n fabric custom\n transmission thin\n gap 1\n}\n"+PlaneScene("gap_geo",-.5)+Object("gap","gap_geo","gap"):"")
+            +(kind==2?"weave_material\n{\n name gap\n fabric custom\n transmission thin\n gap 1\n}\n"+PlaneScene("gap_geo",-.5)+SceneObject("gap","gap_geo","gap"):"")
             +"lambertian_material\n{\n name diffuse\n reflectance white\n}\n"
-            +PlaneScene("floor",-2)+Object("receiver","floor","diffuse")
+            +PlaneScene("floor",-2)+SceneObject("receiver","floor","diffuse")
             +"omni_light\n{\n name source\n position 0 0 1\n color 1 1 1\n power 40\n}\n"
-            +(remote?Object("remote_mirror","shape","mirror"," position 1000 0 1\n"):""));
+            +(remote?SceneObject("remote_mirror","shape","mirror"," position 1000 0 1\n"):""));
         IScalarPainter* index=kind?static_cast<IScalarPainter*>(new UniformScalarPainter(1)):new UncertifiedIndex();auto* white=new UniformColorPainter(RISEPel(1));IMaterial* material=nullptr;
         Check(RISE_API_CreatePerfectRefractorMaterial(&material,*white,*index),"unsupported native refractor created");
         if(material) {
@@ -1492,9 +1513,9 @@ static void ImpossibleSolverSwitches() {
     for(bool reverse:{false,true}) for(unsigned invalid:{0u,1u,2u,3u}) {
         std::string text=Materials();
         text.replace(text.find("values 1.3 1.5 1.9"),std::string("values 1.3 1.5 1.9").size(),"values 1 1 1");
-        Fixture f(text+Mesh(false,reverse)+Object("pane","shape","glass"," position 0 0 1\n")
+        Fixture f(text+Mesh(false,reverse)+SceneObject("pane","shape","glass"," position 0 0 1\n")
             +"lambertian_material\n{\n name diffuse\n reflectance white\n}\n"
-            +PlaneScene("floor",-2)+Object("receiver","floor","diffuse")
+            +PlaneScene("floor",-2)+SceneObject("receiver","floor","diffuse")
             +"omni_light\n{\n name source\n position 0 0 1\n color 1 1 1\n power 40\n}\n");
         std::vector<IShaderOp*> ops;IShader* shader=nullptr;
         Check(RISE_API_CreateStandardShader(&shader,ops),"solver configuration control shader created");
@@ -1546,10 +1567,10 @@ static void CompositeProxyPolicy() {
     for(bool reverse:{false,true}) {
         Fixture fixture(Materials()+Mesh(true,reverse)
             +"composite_material\n{\n name layers\n top glass\n bottom glass\n}\n"
-            +Object("remote_composite","shape","layers"," position 1000 0 0\n")
-            +PlaneScene("mirror_plane",0)+Object("mirror","mirror_plane","mirror")
+            +SceneObject("remote_composite","shape","layers"," position 1000 0 0\n")
+            +PlaneScene("mirror_plane",0)+SceneObject("mirror","mirror_plane","mirror")
             +"lambertian_material\n{\n name diffuse\n reflectance white\n}\n"
-            +PlaneScene("floor",-2)+Object("receiver","floor","diffuse")
+            +PlaneScene("floor",-2)+SceneObject("receiver","floor","diffuse")
             +"omni_light\n{\n name source\n position 0 0 -1\n color 1 1 1\n power 40\n}\n");
         auto* object=fixture.job->GetObjects()->GetItem("remote_composite");
         auto* proxy=new ForwardingMaterial(*object->GetMaterial());object->AssignMaterial(*proxy);proxy->release();
@@ -1587,8 +1608,8 @@ static std::string SlabScene(bool reverse, unsigned inner, unsigned outer) {
         "film\n{\n width 16\n height 16\n}\n"
         "pinhole_camera\n{\n location 0 0 -1.9\n lookat 0 0 -2\n up 0 1 0\n fov 174.275189547777\n}\n"
         "lambertian_material\n{\n name diffuse\n reflectance white\n}\n";
-    text+=Mesh(true,reverse)+Object("slab","shape","glass"," scale 3 3 0.25\n")
-        +PlaneScene("floor",-2,-4,4)+Object("receiver","floor","diffuse")
+    text+=Mesh(true,reverse)+SceneObject("slab","shape","glass"," scale 3 3 0.25\n")
+        +PlaneScene("floor",-2,-4,4)+SceneObject("receiver","floor","diffuse")
         +"spot_light\n{\n name source\n position 0.5 0 2\n target 0.5 0 -2\n color 1 1 1\n power 40\n inner "+std::to_string(inner)
         +"\n outer "+std::to_string(outer)+"\n}\n";
     return text;
