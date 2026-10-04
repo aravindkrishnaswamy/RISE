@@ -468,8 +468,26 @@ public:
     UncertifiedIndex() : UniformScalarPainter(1) {}
     bool IsPositionIndependent() const override { return false; }
 };
+// Legacy metadata extensions can advertise clear transmission without
+// implementing a native extended-domain provider or a transmission hint.
+class LegacyMetadataOnly final : public IMaterial, public Reference {
+    const IMaterial& native;
+protected:
+    ~LegacyMetadataOnly() override { native.release(); }
+public:
+    explicit LegacyMetadataOnly(const IMaterial& m) : native(m) { native.addref(); }
+    IBSDF* GetBSDF() const override { return nullptr; }
+    ISPF* GetSPF() const override { return nullptr; }
+    IEmitter* GetEmitter() const override { return nullptr; }
+    SpecularInfo GetSpecularInfo(const RayIntersectionGeometric& ri,const IORStack& stack) const override {
+        return native.GetSpecularInfo(ri,stack);
+    }
+    SpecularInfo GetSpecularInfoNM(const RayIntersectionGeometric& ri,const IORStack& stack,Scalar nm) const override {
+        return native.GetSpecularInfoNM(ri,stack,nm);
+    }
+};
 static void UnsupportedCasterSwitches() {
-    for(unsigned kind:{0u,1u,2u}) for(bool reverse:{false,true}) for(bool remote:{false,true}) {
+    for(unsigned kind:{0u,1u,2u,3u}) for(bool reverse:{false,true}) for(bool remote:{false,true}) {
         const bool csg=kind==1;
         Fixture f(Materials()+Mesh(csg,reverse)+Object("pane","shape","glass",csg?" scale 1 1 0.25\n":" position 0 0 1\n")
             +(csg?"sphere_geometry\n{\n name tiny\n radius 0.1\n}\n"+Object("other","tiny","glass"," position 4 0 0\n")
@@ -481,7 +499,11 @@ static void UnsupportedCasterSwitches() {
             +(remote?Object("remote_mirror","shape","mirror"," position 1000 0 1\n"):""));
         IScalarPainter* index=kind?static_cast<IScalarPainter*>(new UniformScalarPainter(1)):new UncertifiedIndex();auto* white=new UniformColorPainter(RISEPel(1));IMaterial* material=nullptr;
         Check(RISE_API_CreatePerfectRefractorMaterial(&material,*white,*index),"unsupported native refractor created");
-        if(material) f.job->GetObjects()->GetItem("pane")->AssignMaterial(*material);
+        if(material) {
+            IMaterial* assigned=kind==3 ? static_cast<IMaterial*>(new LegacyMetadataOnly(*material)) : material;
+            f.job->GetObjects()->GetItem("pane")->AssignMaterial(*assigned);
+            if(assigned!=material) assigned->release();
+        }
         safe_release(material);index->release();white->release();
         std::vector<IShaderOp*> ops;IShader* shader=nullptr;
         Check(RISE_API_CreateStandardShader(&shader,ops),"unsupported caster shader created");

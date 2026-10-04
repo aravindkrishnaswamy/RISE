@@ -150,3 +150,20 @@ three-SD comparison in its output and is a reported measurement rather
 than an accuracy assertion. Narrow-cone assertions remain unchanged. The
 wide-cone result does not establish a DL-420 closure. The complete matrix
 will be rerun after the remaining caster gate fixes.
+
+## Unsupported pass-through sibling
+
+A clear native glass pane behind an unsupported weave gap exposed the
+same shadow/proposal coupling defect. Committed checkpoint `f44caa909`
+passes 125/20: ordinary PT is positive while extended mode returns zero.
+The prepared rejection now includes `HasDeltaPassThrough()` as well as
+`CouldLightPassThrough()`. Restored source `72f784927` passes 145/0 in
+`.claude/logs/sms-phase2/weave-green-run.log`, preserving each salted PT
+result bit for bit across both pane windings and the remote-mirror control.
+The coherent restored-source proofs reproduce 105/40 on `6d2c9891d`,
+125/20 on `f44caa909`, and 101/44 on committed master `08552560b`.
+Master's native production point/spot control is 127/50 with the added
+worker check; this is the same 50 physical/accuracy failures as the earlier
+126/50 checkpoint. Build exits are checked and compiler diagnostics are
+zero. Restored candidate results follow after rebuilding HEAD. Evidence is
+`.claude/logs/sms-phase2/caster-proofs/proof-results.json`.
