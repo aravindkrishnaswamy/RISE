@@ -1,9 +1,12 @@
 # Extended SMS Phase 2 validation
 
 Phase 2 is implemented on `sms-ext-phase2`, based on master
-`08552560b54b517b7a8a0696eb9d317953b26bbe`, but is not yet reviewed or
-merged. Production source last changed at `89a9ab0a6`; subsequent commits
-extend tests and documentation. No ledger row closes at this checkpoint.
+`08552560b54b517b7a8a0696eb9d317953b26bbe`, but is not yet merged. The first independent review round found two
+estimator P1s; the material/API and evidence reviewers found zero P1/P2.
+Production source now includes the fixes and chart audit at `8ad9a40cf`. Committed
+red/green proofs and the complete replacement gate are in progress. The
+completed gate below describes the earlier `89a9ab0a6` source checkpoint,
+not validation of the review fixes. No ledger row closes at this checkpoint.
 
 ## Implementation and scope
 
@@ -216,4 +219,36 @@ each `phase2-interleaved-{A,B}{0..3}.log`, with checked build exits in
 
 ## Review and integration
 
-Three fresh independent reviewers and the Phase 2 merge remain pending.
+Round 1 reviewed `83615cc347c4a70062f907f8942f325396ca7c70` read-only.
+The material/medium/API and cost/tests/doc-fidelity reviewers returned zero
+P1/P2. The estimator reviewer found two P1s, both reproduced:
+
+- Raw UV differences split a physical root across native chart seams.
+  The sibling audit reproduced this on an ellipsoid and added sphere,
+  ellipsoid, torus, cylinder and real double-sided indexed-mesh seam
+  controls. Actual native UV records remain intact. Native periodic
+  charts use periodic coordinate distance; an audited constant event law
+  without a normal modifier establishes that UV cannot affect a root's
+  price/index/event inputs. Geometry and context UV records must agree.
+  Varying/unaudited native seam and mesh-boundary contexts remain uncertain
+  zero proposals. Authored UV generators retain their native coordinates
+  and ordinary context comparison for varying laws. This is conservative
+  numerical coverage, not a claim of complete textured-seam coverage.
+- Zero maximum depth or a target greater than the maximum left anchors
+  eligible despite every proposal being zero. The shared eligibility guard
+  now disables contribution, suppression and shadow opacity together.
+  Actual double-sided index-1 panes in both windings compare RGB and NM
+  450/650 PT against the impossible extended configurations, four salts
+  each, with bit-identical output required.
+
+Initial tests were committed at `b26da1d84` and fixes at `d83c71d1e`;
+the broader chart audit at `8ad9a40cf` supersedes the initial sphere-only
+rewrite. Its targeted current-source test reports **1177/0**. The initial
+committed proof reports pre-fix `83615cc34` **175/117**, master **61/60**
+(helper-dependent seam tests unavailable), restored `d83c71d1e` **292/0**.
+The expanded chart test is red on `d83c71d1e` at **1085/92**; committed
+master reports **61/60** for available depth tests and restored `8ad9a40cf`
+reports **1177/0**, with checked zero-diagnostic builds. Evidence is under
+`.claude/logs/sms-phase2/periodic-review-proofs/`. The full
+replacement gate, fresh Round 2 reviewers and Phase 2 merge remain pending.
+Round 1's clean verdicts do not apply to the changed source.
