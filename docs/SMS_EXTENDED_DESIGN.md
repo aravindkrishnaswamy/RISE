@@ -508,7 +508,7 @@ is not an approved deferral or a reason to drop UV context globally. The
 third reviewer found no P1/P2 in cost, tests or document evidence. No Phase 2
 ledger closure follows from the passing pre-review gate.
 
-## Mode-off bit-identity gate stop (2026-10-04)
+## Adopted mode-off precision contract (2026-10-04)
 
 The latest native repair `761c71b51` has coherent committed proofs (review
 20005/0, production177/0, geometry4297/0), but its replacement pipeline
@@ -520,14 +520,15 @@ Pixel diagnostics measure maximum absolute RGBA difference
 All sixteen images match bit-identically after float32 conversion, alpha
 matches in doubles, and all twelve channel means pass their original
 three-SD comparison (n4). This suggests arithmetic rounding but does not
-prove its cause or satisfy internal-double bit identity. The original bit-identical
-contract has not been relaxed. No Phase 2 merge, current full gate or fresh
+prove its cause or satisfy internal-double bit identity. The original internal-double cross-build gate failed; that failed run remains
+recorded as failed. No Phase 2 merge, current full gate or fresh
 review verdict is claimed. See `SMS_EXTENDED_PHASE2_VALIDATION.md`.
 
-A concrete acceptance amendment is proposed, **not adopted**: cross-build
-shipped mode-off images must match bit-identically in float32, while
-deterministic rejection on/off comparisons within one build remain strict
+**Adopted by the user on 2026-10-04 (“Proceed”):** cross-build shipped
+mode-off image pixels must match bit-identically after float32 conversion.
+Deterministic rejection on/off comparisons within one build remain strict
 in internal doubles. Stochastic comparisons retain n>=4 and their original
-channel-separated three-SD bands. The user must rule before that amendment
-changes the acceptance test. No implementation contract has been changed
-on the strength of these measurements.
+channel-separated three-SD bands. This changes only the cross-build
+acceptance precision; it does not change rendering arithmetic or relax
+within-build composite rejection. A new complete gate and fresh review
+are required before Phase 2 integration.

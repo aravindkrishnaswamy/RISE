@@ -1,8 +1,22 @@
-// Build-independent hashes and timing for the extended-mode-off contract.
+// Cross-build float32 pixel hashes, internal-double diagnostics and timing.
+// Adopted 2026-10-04; within-build rejection tests retain HashPixels doubles.
 // Run the same --trial value after each interleaved master/candidate build.
 #include "SMSRenderTestSupport.h"
 #include <iomanip>
 #include <sstream>
+
+static unsigned long long Float32PixelHash(const std::vector<RISEColor>& pixels)
+{
+    static_assert(sizeof(float)==4, "cross-build contract requires float32");
+    unsigned long long h=1469598103934665603ULL;
+    for(const RISEColor& c:pixels) {
+        const float v[4]={static_cast<float>(c.base.r),static_cast<float>(c.base.g),
+            static_cast<float>(c.base.b),static_cast<float>(c.a)};
+        const auto* bytes=reinterpret_cast<const unsigned char*>(v);
+        for(std::size_t k=0;k<sizeof(v);++k) { h^=bytes[k]; h*=1099511628211ULL; }
+    }
+    return h;
+}
 
 int main(int argc,char** argv)
 {
@@ -48,7 +62,7 @@ int main(int argc,char** argv)
             Check(result.ok && result.pixels.size()==4096 && result.mean>0,"shipped legacy SMS finite and lit");
             seconds.push_back(elapsed);
             std::cout<<std::setprecision(17)<<"LEGACY fixture="<<fixture<<" trial="<<trial
-                <<" hash="<<result.hash<<" mean="<<result.mean<<" seconds="<<elapsed<<std::endl;
+                <<" hash="<<result.hash<<" hash_float32="<<Float32PixelHash(result.pixels)<<" mean="<<result.mean<<" seconds="<<elapsed<<std::endl;
         }
         const auto stats=Summarize(seconds);
         std::cout<<"LEGACY timing fixture="<<fixture<<" mean="<<stats.mean<<" sd="<<stats.sd<<" n="<<count<<std::endl;

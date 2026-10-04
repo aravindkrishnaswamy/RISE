@@ -477,14 +477,15 @@ one-ULP bound. All sixteen images have **zero changed RGBA values after
 float32 conversion**, and all twelve channel means pass the original
 three-combined-sample-SD check (n4, both variants report their own SD).
 This establishes the measured precision scale, not the compiler mechanism,
-not a relaxed contract and not bit identity of internal doubles. Complete
+not bit identity of internal doubles. Complete
 per-image/channel results: `off-mode-diagnostic/comparison.json`.
 
-**Proposed acceptance amendment, not adopted:** use bit-identical float32
-image pixels for the cross-build shipped mode-off gate, retaining strict
-internal-double on/off comparisons within the same build for deterministic
-rejection cases. Retain salted n>=4 channel-separated original three-SD
-comparisons where stochastic output differs. This requires the user's ruling
-before changing any acceptance test or continuing the interrupted gate.
+**Adopted acceptance amendment (user, 2026-10-04, “Proceed”):** use
+bit-identical float32 image pixels for the cross-build shipped mode-off gate,
+retaining strict internal-double on/off comparisons within the same build
+for deterministic rejection cases. Retain salted n>=4 channel-separated
+original three-SD comparisons where stochastic output differs. The failed
+internal-double gate remains failed; a new full gate and fresh review are
+pending under the adopted rule.
 The phase remains on `sms-ext-phase2`; no ledger row closes and no new row
 is opened. Master stays `08552560b54b517b7a8a0696eb9d317953b26bbe` and clean.
