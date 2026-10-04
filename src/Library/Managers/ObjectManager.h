@@ -44,6 +44,7 @@ namespace RISE
 			mutable bool smsHasComposite = false;
 			mutable std::string smsFirstCompositeObject;
             mutable std::vector<const IObject*> smsExtendedCasters;
+            mutable bool smsRejectedTransmissiveCaster = false;
 			virtual ~ObjectManager();
 
 			// Top-level acceleration: SAH BVH (BVH4-collapsed, SIMD AABB
@@ -526,6 +527,7 @@ namespace RISE
 			bool ExtendedSMSAllowed() const { return smsPolicyPrepared && !smsHasComposite; }
 			const std::string& FirstCompositeObject() const { return smsFirstCompositeObject; }
             const std::vector<const IObject*>& ExtendedSMSCasters() const { return smsExtendedCasters; }
+            bool HasRejectedTransmissiveCaster() const { return smsRejectedTransmissiveCaster; }
 
 			void InvalidateSpatialStructure() const;
 			unsigned long long GetSpatialStructureGeneration() const { return mSpatialGen; }

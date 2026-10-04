@@ -142,15 +142,15 @@ static void Synthetic() {
 
 // Two nearby, regular reflection roots on one disconnected indexed mesh.
 // Their positions and normals fit the legacy one-percent equivalence band.
-static std::string CloseRootMesh(bool reverse, Scalar scale) {
+static std::string CloseRootMesh(bool reverse, Scalar scale, Scalar separation=.001) {
     std::ostringstream s; s<<std::setprecision(17);
     s<<"indexedmesh_geometry\n{\n name shape\n double_sided TRUE\n face_normals TRUE\n";
     for(int side:{-1,1}) {
-        const Scalar x=side*.001;
+        const Scalar x=side*separation;
         const Point3 center(x,0,0), a(-.5,0,-3), b(.5,0,-3);
         const Vector3 n=Vector3Ops::Normalize(Vector3Ops::Normalize(Vector3Ops::mkVector3(a,center))
             +Vector3Ops::Normalize(Vector3Ops::mkVector3(b,center)));
-        for(const Point2& p:{Point2(-.0004,-1),Point2(.0004,-1),Point2(.0004,2),Point2(-.0004,2)})
+        for(const Point2& p:{Point2(-.4*separation,-1),Point2(.4*separation,-1),Point2(.4*separation,2),Point2(-.4*separation,2)})
             s<<" vertex "<<scale*(x+p.x)<<' '<<scale*p.y<<' '<<scale*(-n.x*p.x/n.z)<<'\n';
     }
     for(int i=0;i<2;++i) s<<" uv 0 0\n uv 1 0\n uv 1 1\n uv 0 1\n";
@@ -161,18 +161,21 @@ static std::string CloseRootMesh(bool reverse, Scalar scale) {
     return s.str()+"}\n";
 }
 static void CloseRoots() {
-    for(bool winding:{false,true}) for(Scalar scale:{.01,1.,100.}) {
-        Fixture f(Materials()+CloseRootMesh(winding,scale)+Object("caster","shape","mirror"));
+    for(bool winding:{false,true}) for(Scalar scale:{.01,1.,100.}) for(Scalar separation:{.001,1e-9}) {
+        if(separation < .001 && scale < 1) continue;
+        Fixture f(Materials()+CloseRootMesh(winding,scale,separation)+Object("caster","shape","mirror"));
         ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;cfg.solverThreshold=1e-10;
         auto* solver=new ManifoldSolver(cfg);IORStack air(1);
         ScriptSampler left({.2,winding?5./9:11./36,winding?.25:.4,.1}),right({.2,winding?5./9:11./36,winding?.25:.4,.6});
         const Point3 start(-.5*scale,0,-3*scale),end(.5*scale,0,-3*scale);
         const auto a=solver->ProposeExtendedRoot(start,Vector3(0,0,1),end,f.Scene(),air,SMSQueryDomain::RGB(0),left);
         const auto b=solver->ProposeExtendedRoot(start,Vector3(0,0,1),end,f.Scene(),air,SMSQueryDomain::RGB(0),right);
-        std::cout<<"close solve scale="<<scale<<" winding="<<winding<<" accepted="<<a.accepted<<','<<b.accepted<<" solved="<<a.result.valid<<','<<b.result.valid<<'\n';
-        Check(a.accepted&&b.accepted,"nearby mesh roots solve independently at changed scene scales");
+        std::cout<<"close solve scale="<<scale<<" input separation="<<separation<<" winding="<<winding<<" accepted="<<a.accepted<<','<<b.accepted<<" solved="<<a.result.valid<<','<<b.result.valid<<'\n';
+        if(separation >= .001)
+            Check(a.accepted&&b.accepted,"nearby mesh roots solve independently at changed scene scales");
+        else Check(!a.accepted&&!b.accepted,"unresolved thin native mesh patches are consistent zero proposals");
         if(a.accepted&&b.accepted) {
-            std::cout<<"close roots scale="<<scale<<" winding="<<winding<<" separation="
+            std::cout<<"close roots scale="<<scale<<" input separation="<<separation<<" winding="<<winding<<" separation="
                 <<Point3Ops::Distance(a.vertices[0].geometry.position,b.vertices[0].geometry.position)<<'\n';
             Check(!ManifoldSolver::SameExtendedRoot(a,b,cfg.uniquenessThreshold*a.scale),
                 "production root identity separates nearby physical roots");
@@ -349,14 +352,15 @@ static void Geometry() {
 #endif
 // Native analytic virtual-image reference for an upward spot reflected by
 // one plane: f * F * Le / (anchor-to-plane + light-to-plane)^2.
-static void DeltaLights() {
-    for(bool glass:{false,true}) for(bool winding:{false,true}) for(int mode:{0,1,2}) {
+static void DeltaLights(bool production=false) {
+    for(bool point:{false,true}) for(bool glass:{false,true}) for(bool winding:{false,true}) for(int mode:{0,1,2}) {
         std::string text=Materials();
         text.replace(text.find("values 1.3 1.5 1.9"),std::string("values 1.3 1.5 1.9").size(),"values 1.5 1.5 1.5");
         text+=Mesh(false,winding)+Object("caster","shape",glass?"glass":"mirror"," position 0 0 1\n")
             +"lambertian_material\n{\n name diffuse\n reflectance white\n}\n"
             +PlaneScene("receiver_geo",-2)+Object("receiver","receiver_geo","diffuse")
-            +"spot_light\n{\n name source\n position 0 0 -1\n target 0 0 1\n color 1 1 1\n power 40\n inner 10\n outer 30\n}\n";
+            +(point?"omni_light\n{\n name source\n position 0 0 -1\n color 1 1 1\n power 40\n}\n":
+              "spot_light\n{\n name source\n position 0 0 -1\n target 0 0 1\n color 1 1 1\n power 40\n inner 10\n outer 30\n}\n");
         Fixture fixture(text);
         if(!fixture.job||!fixture.Object("receiver")) {Check(false,"delta fixture prepared");continue;}
         std::vector<IShaderOp*> ops; IShader* shader=nullptr;
@@ -372,6 +376,11 @@ static void DeltaLights() {
         auto* solver=new ManifoldSolver(cfg);
         std::vector<const IObject*> casters;ManifoldSolver::EnumerateSpecularCasters(fixture.Scene(),casters);
         solver->SetSpecularCasters(casters);
+        StabilityConfig stability;stability.rrMinDepth=20;
+        // Match the analytic single receiver bounce; repeated floor/mirror
+        // interreflection is outside this reference, not estimator bias.
+        auto* integrator=new PathTracingIntegrator(cfg,stability);integrator->SetMaxPathDepth(1);
+        integrator->GetSolver()->SetSpecularCasters(casters);
         IORStack air(1);
         RayIntersection hit(Ray(Point3(0,0,-1.9),Vector3(0,0,-1)),nullRasterizerState);
         fixture.Object("receiver")->IntersectRay(hit,RISE_INFINITY,true,true,false);
@@ -405,7 +414,17 @@ static void DeltaLights() {
             };
             for(unsigned sample=0;sample<N;++sample) {
                 SobolSampler sampler(sample,29);
-                if(mode==0) {
+                if(production) {
+                    RandomNumberGenerator random(renderSalt+sample);
+                    RuntimeContext context(random,RuntimeContext::PASS_NORMAL,false);context.pSampler=&sampler;
+                    const Ray camera(Point3(0,0,-1.9),Vector3(0,0,-1));
+                    if(mode==0) {
+                        const auto value=integrator->IntegrateRay(context,nullRasterizerState,camera,
+                            fixture.Scene(),*caster,sampler,nullptr,nullptr);
+                        for(unsigned c=0;c<3;++c) add(c,value[c]);
+                    } else add(0,integrator->IntegrateRayNM(context,nullRasterizerState,camera,nm,
+                        fixture.Scene(),*caster,sampler,nullptr,nullptr));
+                } else if(mode==0) {
                     const auto value=solver->EvaluateAtShadingPoint(hit.geometric.ptIntersection,
                         hit.geometric.UnflippedGeomNormal(),hit.geometric.vNormal,hit.geometric.onb,
                         hit.pMaterial,direction,fixture.Scene(),*caster,sampler,&air);
@@ -421,9 +440,10 @@ static void DeltaLights() {
         }
         for(unsigned c=0;c<(mode==0?3u:1u);++c) {
             const Scalar imageDistance=1-hit.geometric.ptIntersection.z;
-            const Scalar expected=fresnel*(mode==0?f[c]*le[c]:fnm*lenm*mirrorNM)/(imageDistance*imageDistance);
+            const Scalar expected=fresnel*(mode==0?f[c]*le[c]:fnm*lenm*mirrorNM)/(imageDistance*imageDistance)
+                +(production&&point?(mode==0?f[c]*le[c]:fnm*lenm)/std::pow(-1-hit.geometric.ptIntersection.z,2):0);
             const Moments m(samples[c]);
-            std::cout<<std::setprecision(17)<<"delta glass="<<glass<<" winding="<<winding<<" mode="<<mode<<" c="<<c
+            std::cout<<std::setprecision(17)<<"delta production="<<production<<" point="<<point<<" glass="<<glass<<" winding="<<winding<<" mode="<<mode<<" c="<<c
                 <<" mean="<<m.mean<<" sd="<<m.sd<<" n=4 N="<<N<<" analytic="<<expected<<" error="<<m.mean-expected<<" mirrorNM="<<mirrorNM<<" reference sd=0\n";
             Check(std::isfinite(m.mean)&&m.mean>0,"point/spot reference activation is positive and finite");
             Check(std::fabs(m.mean-expected)<=3*m.sd+64*std::numeric_limits<Scalar>::epsilon()*expected,
@@ -436,7 +456,7 @@ static void DeltaLights() {
             <<" owned="<<counters.ownedRoots<<" rejected="<<counters.rejectedRoots<<'\n';
 #endif
         SobolSamplerTestHooks::ValueSalt().store(0);
-        solver->release();caster->release();shader->release();
+        integrator->release();solver->release();caster->release();shader->release();
     }
 }
 // Its values happen to be one, but its declaration cannot certify the
@@ -489,18 +509,19 @@ static void UnsupportedCasterSwitches() {
     }
 }
 int main(int argc,char** argv) {
-    bool synthetic=true,geometry=true,delta=true,unsupported=true;
+    bool synthetic=true,geometry=true,delta=true,unsupported=true,production=false;
     if(argc==2&&std::string(argv[1])=="--synthetic-only") {geometry=false;delta=false;unsupported=false;}
     if(argc==2&&std::string(argv[1])=="--geometry-only") {synthetic=false;delta=false;unsupported=false;}
     if(argc==2&&std::string(argv[1])=="--delta-only") {synthetic=false;geometry=false;unsupported=false;}
     if(argc==2&&std::string(argv[1])=="--unsupported-only") {synthetic=false;geometry=false;delta=false;}
+    if(argc==2&&std::string(argv[1])=="--production-only") {synthetic=false;geometry=false;delta=true;unsupported=false;production=true;}
     std::cout<<std::setprecision(12);
 #ifdef RISE_SMS_REFERENCE_A
     if(synthetic) Synthetic();if(geometry) {Geometry();CloseRoots();WalkEvents();}
 #else
     if(synthetic||geometry) std::cout<<"Estimator A is absent on this committed baseline; new helper tests are unavailable, not a numerical red proof.\n";
 #endif
-    if(delta) DeltaLights();
+    if(delta) DeltaLights(production);
     if(unsupported) UnsupportedCasterSwitches();
     std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
 }

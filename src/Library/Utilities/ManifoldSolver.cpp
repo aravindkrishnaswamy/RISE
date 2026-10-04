@@ -5037,6 +5037,24 @@ bool ManifoldSolver::ExtendedAnchorEligible(const IScene& scene, const IRayCaste
     if(!std::isfinite(config.extendedEventFloor) || config.extendedEventFloor <= 0
         || config.extendedEventFloor > 0.5 || config.photonCount || scene.GetGlobalMedium()
         || (caster.GetLightSampler() && caster.GetLightSampler()->SceneHasAlphaCoverage())) return false;
+    const auto* objects = dynamic_cast<const ObjectManager*>(scene.GetObjects());
+    if(!objects || objects->HasRejectedTransmissiveCaster()) return false;
+    // HG eligibility is domain-dependent, unlike position independence.
+    // Finite-Phong dielectric warps retain the adopted delta-limit policy.
+    RayIntersectionGeometric context(Ray(point, Vector3(0,0,1)), nullRasterizerState);
+    for(const IObject* object : objects->ExtendedSMSCasters()) {
+        const auto* dielectric = dynamic_cast<const DielectricMaterial*>(object->GetMaterial());
+        if(!dielectric || !dielectric->GetHG()) continue;
+        const IScalarPainter& scattering = dielectric->GetScattering();
+        if(nm > 0) {
+            const Scalar value = scattering.GetValueAtNM(context, nm);
+            if(!std::isfinite(value) || value < 1) return false;
+        } else {
+            const auto values = scattering.GetValuesAt(context);
+            for(unsigned c=0; c<3; ++c)
+                if(!std::isfinite(values[c]) || values[c] < 1) return false;
+        }
+    }
     SMSStartingMedia media;
     if(!SMSDomainReplay::Capture(scene, point, stack, media)) return false;
     const unsigned int components = nm > 0 ? 1 : 3;

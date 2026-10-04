@@ -25,6 +25,8 @@
 #include "../Materials/CoatedMaterial.h"
 #include "../Materials/FabricMaterial.h"
 #include "../Utilities/ManifoldSolver.h"
+#include "../Materials/DielectricMaterial.h"
+#include "../Materials/PerfectRefractorMaterial.h"
 #include <atomic>
 #include "../Utilities/ISampler.h"
 #include <cmath>
@@ -52,6 +54,32 @@ bool WrapsComposite(const IMaterial* material)
         return WrapsComposite(&m->GetBase());
     if(const auto* m = dynamic_cast<const FabricMaterial*>(material))
         return WrapsComposite(&m->GetBase());
+    return false;
+}
+// The delta-shadow gate covers clear transmission through every caster,
+// so a transmissive interface outside the proposal domain makes an anchor
+// ineligible. A remote supported caster cannot repair that missing coverage.
+// This is distinct from composite mode selection: rejection keeps PT and
+// disables SMS at the anchor; composites retain the entire legacy mode.
+bool ObjectHasRejectedTransmissiveCaster(const IObject& object)
+{
+    const IMaterial* material = object.GetMaterial();
+    const ISPF* spf = material ? material->GetSPF() : nullptr;
+    const bool nativeClear = dynamic_cast<const DielectricSPF*>(spf)
+        || dynamic_cast<const PerfectRefractorSPF*>(spf);
+    const bool transmissive = material && (nativeClear
+        || (material->CouldLightPassThrough() && !material->HasDeltaPassThrough()));
+    if(transmissive && (!SMSDomainReplay::PotentialCaster(*material)
+        || object.GetInteriorMedium() || !object.GetGeometry()
+        || !object.GetGeometry()->CanBeAreaLight())) return true;
+    // A partial HG interface has no supported delta-limit query. Its
+    // scattering declaration must certify independence before a value can
+    // establish eligibility for the whole interface.
+    if(const auto* dielectric = dynamic_cast<const DielectricMaterial*>(material))
+        if(dielectric->GetHG() && !dielectric->GetScattering().IsPositionIndependent()) return true;
+    if(const auto* csg = dynamic_cast<const CSGObject*>(&object))
+        return (csg->GetOperandA() && ObjectHasRejectedTransmissiveCaster(*csg->GetOperandA()))
+            || (csg->GetOperandB() && ObjectHasRejectedTransmissiveCaster(*csg->GetOperandB()));
     return false;
 }
 bool ObjectWrapsComposite(const IObject& object)
@@ -2099,9 +2127,12 @@ void ObjectManager::PrepareForRendering() const
     }
     smsPolicyPrepared = true;
     smsExtendedCasters.clear();
+    smsRejectedTransmissiveCaster = false;
     if(!smsHasComposite) {
         for(const auto& item : items) {
             const IObject* object = item.second.first;
+            if(object->IsWorldVisible() && ObjectHasRejectedTransmissiveCaster(*object))
+                smsRejectedTransmissiveCaster = true;
             if(object->IsWorldVisible() && object->GetGeometry()
                 && object->GetGeometry()->CanBeAreaLight() && object->GetMaterial()
                 && SMSDomainReplay::PotentialCaster(*object->GetMaterial()))
