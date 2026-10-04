@@ -247,3 +247,12 @@ work on each side; means and sample SDs are seconds.
 Evidence: `.claude/logs/sms-phase2/phase2-interleaved-cost.json` and
 each `phase2-interleaved-{A,B}{0..3}.log`, with checked build exits in
 `cost-driver.log`. No whole-render speedup is inferred from these timings.
+
+The signed-entry sibling audit adds explicit Snell and uniform routes
+without changing production source. Its committed proof
+(`575485e45`, `.claude/logs/sms-phase2/signed-entry-proofs/`) is
+297/56 at the pre-fix checkpoint, 221/132 at native master, and
+**353/0** after restoring HEAD. The additional master failures again
+include legacy coverage/accuracy differences. Both RGB evaluator twins
+and PT production routes now have native signed-emission coverage.
+The native source is identical to the corrected-source A/B candidate.
