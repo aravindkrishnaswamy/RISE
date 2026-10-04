@@ -228,3 +228,22 @@ footprint is 82,379,280 bytes for the whole test process, not a worker
 scratch bound. Pre-fix cost, sanitizer and aborted full-gate logs are
 preserved under `.claude/logs/sms-phase2/checkpoint-4e211d99f/`; the
 fresh final-source pipeline is running.
+
+## Corrected-source off-mode cost and output gate
+
+Actual interleaved library/test builds compare master `08552560b` with
+`96b73057ddeea4e7068b3a198bacc4139cb7d17d`, four salted trials per fixture, identical
+worker policy and sequential renders. All 16 paired output hashes and
+channel means are identical. Time includes the same native test-render
+work on each side; means and sample SDs are seconds.
+
+| Fixture | Master mean ± SD | Candidate mean ± SD | Paired change % mean ± SD |
+|---|---:|---:|---:|
+| RGB k1 | 0.961168094 ± 0.006179403 | 0.942920094 ± 0.002791386 | -1.895499 ± 0.690842 |
+| RGB k2 | 0.734318333 ± 0.003011683 | 0.726885292 ± 0.008980231 | -1.013908 ± 0.946574 |
+| NM | 1.710615302 ± 0.005328788 | 1.715625479 ± 0.002314363 | 0.293572 ± 0.321692 |
+| HWSS | 5.743522740 ± 0.012806160 | 5.740002062 ± 0.018625509 | -0.061426 ± 0.147112 |
+
+Evidence: `.claude/logs/sms-phase2/phase2-interleaved-cost.json` and
+each `phase2-interleaved-{A,B}{0..3}.log`, with checked build exits in
+`cost-driver.log`. No whole-render speedup is inferred from these timings.
