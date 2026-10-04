@@ -151,7 +151,7 @@ static void Synthetic() {
 
 // Two nearby, regular reflection roots on one disconnected indexed mesh.
 // Their positions and normals fit the legacy one-percent equivalence band.
-static std::string CloseRootMesh(bool reverse, Scalar scale, Scalar separation=.001) {
+static std::string CloseRootMesh(bool reverse, Scalar scale, Scalar separation=.001, Scalar offset=0) {
     std::ostringstream s; s<<std::setprecision(17);
     s<<"indexedmesh_geometry\n{\n name shape\n double_sided TRUE\n face_normals TRUE\n";
     for(int side:{-1,1}) {
@@ -160,7 +160,7 @@ static std::string CloseRootMesh(bool reverse, Scalar scale, Scalar separation=.
         const Vector3 n=Vector3Ops::Normalize(Vector3Ops::Normalize(Vector3Ops::mkVector3(a,center))
             +Vector3Ops::Normalize(Vector3Ops::mkVector3(b,center)));
         for(const Point2& p:{Point2(-.4*separation,-1),Point2(.4*separation,-1),Point2(.4*separation,2),Point2(-.4*separation,2)})
-            s<<" vertex "<<scale*(x+p.x)<<' '<<scale*p.y<<' '<<scale*(-n.x*p.x/n.z)<<'\n';
+            s<<" vertex "<<offset+scale*(x+p.x)<<' '<<scale*p.y<<' '<<scale*(-n.x*p.x/n.z)<<'\n';
     }
     for(int i=0;i<2;++i) s<<" uv 0 0\n uv 1 0\n uv 1 1\n uv 0 1\n";
     for(int offset:{0,4}) {
@@ -605,7 +605,7 @@ static void RoundFourNumerics() {
             const auto a=proposal(-1e-10),b=proposal(1e-10);
             const bool same=ManifoldSolver::SameExtendedRoot(a,b,1);
             std::cout<<std::setprecision(17)<<"R4 steep UV winding="<<reverse<<" domain="<<domain.kind<<":"<<domain.component<<":"<<domain.nm
-                <<" accepted="<<a.accepted<<','<<b.accepted<<" same="<<same;
+                <<" accepted="<<a.accepted<<','<<b.accepted<<" solved="<<a.result.valid<<','<<b.result.valid<<" same="<<same;
             if(a.accepted&&b.accepted) std::cout<<" x="<<a.vertices[0].geometry.position.x<<','<<b.vertices[0].geometry.position.x
                 <<" uv="<<a.vertices[0].geometry.uv.x<<','<<b.vertices[0].geometry.uv.x;
             std::cout<<'\n';
@@ -614,7 +614,7 @@ static void RoundFourNumerics() {
         solver->release();
     }
     for(bool reverse:{false,true}) {
-        Fixture f(Materials()+CloseRootMesh(reverse,10000,1e-9)+Object("caster","shape","mirror"," position 1000000 0 0\n"));
+        Fixture f(Materials()+CloseRootMesh(reverse,10000,1e-9,1000000)+Object("caster","shape","mirror"));
         ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;cfg.solverThreshold=1e-10;
         auto* solver=new ManifoldSolver(cfg);IORStack air(1);
         for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
@@ -624,7 +624,7 @@ static void RoundFourNumerics() {
             const auto b=solver->ProposeExtendedRoot(start,Vector3(0,0,1),end,f.Scene(),air,domain,right);
             const bool same=ManifoldSolver::SameExtendedRoot(a,b,1);
             std::cout<<"R4 translated close winding="<<reverse<<" domain="<<domain.kind<<":"<<domain.component<<":"<<domain.nm
-                <<" accepted="<<a.accepted<<','<<b.accepted<<" same="<<same;
+                <<" accepted="<<a.accepted<<','<<b.accepted<<" solved="<<a.result.valid<<','<<b.result.valid<<" same="<<same;
             if(a.accepted&&b.accepted) std::cout<<" separation="<<Point3Ops::Distance(a.vertices[0].geometry.position,b.vertices[0].geometry.position);
             std::cout<<'\n';
             Check(!(a.accepted&&b.accepted)||!same,"translated distinct regular patches cannot share an accepted reciprocal family");
@@ -634,7 +634,7 @@ static void RoundFourNumerics() {
     for(bool reverse:{false,true}) {
         Fixture f(Materials()+QuadMesh("patch",0,-2,2,reverse)+Object("caster","patch","mirror"));
         auto* modifier=new AliasedNormal();f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);modifier->release();
-        const Point3 start(-.5,0,3),end(.5,0,3),center(0,0,0);IORStack air(1);
+        const Point3 start(-.5,.3,3),end(.5,.3,3),center(0,.3,0);IORStack air(1);
         RayIntersection hit(Ray(start,Vector3Ops::Normalize(Vector3Ops::mkVector3(center,start))),nullRasterizerState);
         f.Object("caster")->IntersectRay(hit,RISE_INFINITY,true,true,false);Check(hit.geometric.bHit,"R4 continuous normal native hit");
         if(!hit.geometric.bHit) continue;
