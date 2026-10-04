@@ -1,0 +1,18 @@
+{
+  "reviewed_commit": "bdb83491",
+  "scope": "metadata/grid/fixed-camera helpers only",
+  "reviewers": [
+    {
+      "name": "r246_manifest_final_contract",
+      "p1": 0,
+      "p2": 0
+    },
+    {
+      "name": "r246_manifest_final_provenance",
+      "p1": 0,
+      "p2": 0
+    }
+  ],
+  "accepted": true,
+  "launch_permitted": false
+}

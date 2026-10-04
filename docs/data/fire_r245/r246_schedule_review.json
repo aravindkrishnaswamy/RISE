@@ -1,0 +1,22 @@
+{
+  "reviewed_commit": "9b01baae",
+  "scope": "internal matched full-window scheduling, scope guards and identity receipts/final manifest",
+  "reviewers": [
+    {
+      "name": "r246_schedule_contract",
+      "p1": 0,
+      "p2": 0
+    },
+    {
+      "name": "r246_schedule_provenance",
+      "p1": 0,
+      "p2": 0
+    }
+  ],
+  "accepted": true,
+  "launch_permitted": false,
+  "taller_full_run_cli_exposed": false,
+  "taller_allocation_exercised": false,
+  "optical_render_control_completed": false,
+  "all_three_log_hashes_independently_verified": true
+}

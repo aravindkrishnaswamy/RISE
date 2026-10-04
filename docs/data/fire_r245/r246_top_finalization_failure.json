@@ -1,0 +1,52 @@
+{
+  "schema": "rise.fire.r246.finalization-failure-diagnosis.v1",
+  "recorded_utc": "2026-10-04T02:24:02.826098+00:00",
+  "verdict": "failed_finalization_recovery_not_yet_accepted",
+  "simulation_directory": "/Volumes/SSD/RISE/fire_production_calibration/r246_tier6_top_double.v1",
+  "completion": {
+    "completed_utc": "2026-10-04T02:05:46.576654+00:00",
+    "exit_code": 98,
+    "launch_sha256": "417fc7bf6c62d3d8180bb67eaf86e3748390cb11f079948ada35758262ab1e1d"
+  },
+  "original_completion_exit_code": 98,
+  "original_output_modified": false,
+  "case_record_id": "805372d567af6fafd03ba0ec96c8fbd30d64fdc21c64117dc2ea5580be9b52a2",
+  "producer_build_id": "2e19f9326f6987bf577a7485b4aee92d3ebb6cb1212d4fe0b2df42f1db2b371b",
+  "frozen_executable_sha256": "56189ad7e4853e3195de6ea24086e76273f1209209ef2fd2a30632ccf8535430",
+  "native_final_checkpoint_inspection": {
+    "exit_code": 0,
+    "accepted_steps": 15315,
+    "sha256": "0632960c2b045c8717e2d655cfc8bb340b918023f0fea1bfa1117a0aeaaca043",
+    "time_s_bits": 4627774245469151232
+  },
+  "observed_frame_rows": 235,
+  "observed_trajectory_rows": 15315,
+  "observed_terminal_time_s": 25.156864278920693,
+  "prescribed_statistics_start_s": 10.531864278900095,
+  "actual_manifest_origin_s": 10.531864278949797,
+  "first_frame_time_s": 10.531864278949797,
+  "manifest_origin_minus_prescribed_s": 4.970246436641901e-11,
+  "deterministic_rejection": "TemporalManifestDomainMatches exact prescribed-discard equality rejects manifest actual first accepted timestamp; shared by finalization/preview/spectrum.",
+  "independent_reviews": [
+    "r246_exit98_contract",
+    "r246_exit98_lifecycle"
+  ],
+  "limitations": [
+    "Native all-frame preflight and all payload seals not yet independently verified.",
+    "Final run seal/diagnostics/summary were not published.",
+    "maximum_velocity_trajectory.csv and host_memory_trajectory.csv lack final payload sidecars; recorded hashes preserve observed sources but do not invent original producer seals.",
+    "Checkpoint precedes post-loop aggregation; derived summary defaults and nonserialized retry/external-fuel fields cannot be labelled as completed original summaries."
+  ],
+  "required_recovery": "Reviewed separate recovery artifact/receipt: exact prescribed schedule plus actual accepted event/history linkage; no tolerance widening, simulation restart, original relabel or overwritten artifacts. Recompute derived values only from recorded operands with provenance; refuse unavailable claims.",
+  "input_sha256": {
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_tier6_top_launch.v1/completion.json": "8d664320d24952999b5d4d97028a05a8b0994392b16074ee027c53ce14e2e017",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_tier6_top_double.v1/window_launch.v1": "bd9df5efcf3d8b2f9e43951b06574fa536b4c793b42453bf0612acdd9cdb751f",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_tier6_top_double.v1/window_launch.v1.payload-v2.json": "0c4c12cfcca64a6bf10dc751139072865a1719a47802aef45372f388ae3e3b5d",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_tier6_top_double.v1/frame_times.csv": "3bb265a8539d5de45356dba419024c077834e3bb4c3770d75c63478006a5a5c8",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_tier6_top_double.v1/sequence_manifest.rise-fire.cbor": "f036ff7f96a3f5827104cdd2f06e8aa068c3e8f097acd7ff3c069bab82fb3cc1",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_tier6_top_double.v1/budgets/maximum_velocity_trajectory.csv": "5e8b6b06360c8557e336a0edefd43527b39c880cc2cb7af85ecf4e07f328754a",
+    "/Volumes/SSD/RISE/fire_production_calibration/r246_tier6_top_double.v1/budgets/host_memory_trajectory.csv": "1d9232934e5a43b603de232634c0b436127318252ae53c0509c02ee7d9778e08"
+  },
+  "external_diagnosis": "/Volumes/SSD/RISE/fire_production_calibration/r246_finalization_failure.v1/diagnosis.json",
+  "external_diagnosis_sha256": "a60918372e5d3441033ab41651d79995ac5b5092a6dc18ef333aa8fe50ffadf2"
+}

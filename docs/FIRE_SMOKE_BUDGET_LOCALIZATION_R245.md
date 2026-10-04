@@ -1,6 +1,17 @@
 # r245 — budget localization after the matched domain experiment
 
-## Current: full budgets reviewed; top spatial exchange localization next
+## Current: full wide/taller data and comparisons reviewed; puffing unresolved
+
+The full r246 top-only run retained15315steps/235frames but originally exited98.
+Separate retained-data recovery, signed budget arithmetic, full recovered preview
+and native/common/display spectra are now accepted after independent reviews.
+Full baseline/wide/taller central-column station/reaction and wide/taller signed
+per-side budget comparisons passed fresh arithmetic/provenance reviews. Physical
+interpretation supports descriptive sensitivity only; puffing remains unresolved.
+Original sourceexit98, unavailable baseline signed budgets and no canonical taller
+qualification remain. Original-region transport/reaction localization precedes
+any supported remedy. See [r246 current evidence](FIRE_SMOKE_TOP_LOCATION_SENSITIVITY_R246.md).
+Sections below retain history.
 
 The full run completed exit 0 at **2026-10-01 05:00:32 UTC
 (September 30, 10:00 PM PDT)**. Native output reports 15,315 accepted steps,

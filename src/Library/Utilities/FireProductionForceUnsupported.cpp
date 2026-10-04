@@ -61,6 +61,14 @@ namespace RISE
 		bytes=0u;return false;
 	}
 
+	bool FireProductionProjectedHeunMetalDeviceWorkingSetLimitBytes(
+		std::uint64_t& bytes,std::string* error )
+	{
+		bytes=0u;
+		if(error)*error="projected-Heun device admission unavailable: Metal is not linked";
+		return false;
+	}
+
 	bool AttemptFireProductionProjectedHeunMetalOwner(
 		const FireProductionProjectedHeunMetalOwnerRequest&,
 		FireProductionProjectedHeunMetalOwnerResult& result,std::string* error )

@@ -1,0 +1,30 @@
+{
+  "schema": "rise.fire.r246.movie-admission-review.v1",
+  "status": "accepted_zero_p1_p2",
+  "reviewed_head": "c3d6a1473",
+  "round": 1,
+  "recovery_accepted": false,
+  "original_exit_code": 98,
+  "gate_sha256": "f4343b773727fe25721eb7e917df2a8a2017472b85a91ddc08d2257773f348e6",
+  "reviewers": [
+    {
+      "agent": "r246_movie_admission_contract_r1",
+      "axis": "contract/test integrity",
+      "p1": 0,
+      "p2": 0,
+      "findings": "Shared config remains exact to publisher; consumed terminal metadata/core, all ordered links, same build and captured GIF/receipt bind; unchanged physical validation and synthetic evidence scope verified."
+    },
+    {
+      "agent": "r246_movie_admission_lifecycle_r1",
+      "axis": "lifecycle/provenance",
+      "p1": 0,
+      "p2": 0,
+      "findings": "Captured buffers and once regular nonaliased movie capture lifetimes/digests consistent; nine hashes and copied CBOR helper verified; original producer and exit98 unchanged."
+    }
+  ],
+  "limitations": [
+    "Synthetic metadata projection, not EXR attestation or full recovery.",
+    "Explicit recovered command composition remains pending; no render launched."
+  ],
+  "accepted_utc": "2026-10-04T10:50:32.150134+00:00"
+}

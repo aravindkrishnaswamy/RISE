@@ -1,0 +1,42 @@
+{
+  "schema": "rise.fire.r246.recovered-full-preview-launch-receipt.v1",
+  "status": "active_full_preview_not_yet_accepted",
+  "launch_directory": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovered_top_preview_launch.v1",
+  "output": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovered_top_preview.v1",
+  "pid": {
+    "wrapper_pid": 45666,
+    "preview_pid": 45667
+  },
+  "launch_sha256": "da39077e5da8768b4cab7d36473da7cc2212cd3294a37ec43f0efecb69a96220",
+  "launch": {
+    "schema": "rise.fire.r246.recovered-full-preview-launch.v1",
+    "command": [
+      "/Volumes/SSD/RISE/fire_production_calibration/r246_recovered_cli_runtime.v1/FireSequenceTest",
+      "--fire-r246-recovered-preview",
+      "/Volumes/SSD/RISE/fire_production_calibration/r246_tier6_top_double.v1",
+      "/Volumes/SSD/RISE/fire_production_calibration/r246_prepared_recovery.v1",
+      "/Volumes/SSD/RISE/fire_production_calibration/r246_preview_source_snapshot.v8",
+      "/Volumes/SSD/RISE/fire_production_calibration/r246_recovered_top_preview.v1"
+    ],
+    "output": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovered_top_preview.v1",
+    "consumer_executable_sha256": "ed7cf2c3dce91d1d801800341381c4dd60b7ffafb10ca431c4c879322e8308b1",
+    "consumer_build_id": "a862d3b95764747c9b363dfda81f0d6be95d64e28c5f22c1e1e168e95a5fdf6b",
+    "embedded_revision": "478fde402e178255e358bd913cd0716b7c699c6c",
+    "embedded_dirty_state": "dirty",
+    "source_producer_build_id": "2e19f9326f6987bf577a7485b4aee92d3ebb6cb1212d4fe0b2df42f1db2b371b",
+    "snapshot_issuer": "86a912441c035d861676f7e7245428a5e2d0fd4095d14e1c72e424cd602c01c8",
+    "consumer_composition_review": "c271acf8c",
+    "full_signed_audit_acceptance": "f70613597",
+    "full_signed_audit_report_sha256": "8105dc52c044e6e39e8937fc36baa2be60f8e2e2a3d9f75a9384fc19646b3e72",
+    "full_frames": 235,
+    "original_exit_code": 98,
+    "canonical_taller_qualification": false,
+    "launched_utc": "2026-10-04T12:45:04.023244+00:00",
+    "wrapper_sha256": "ac95f7c269df71af4aae8c5693d49f33759c4954ed8aaf1fb58599dcace9f3ef"
+  },
+  "limitations": [
+    "Full235-frame launch; actual complete pairs/movie/receipt validation pending",
+    "No spectrum or other heavy job while preview active",
+    "Original sourceexit98 and no canonical taller qualification retained"
+  ]
+}

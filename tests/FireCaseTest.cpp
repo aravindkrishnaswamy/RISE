@@ -94,6 +94,69 @@ namespace
 			"r244 embeds the exact source bytes and complete pilot mask with zero-filled margins");
 		Check(base.derived.perturbationDigest==wide.derived.perturbationDigest,
 			"r244 preserves the active source pattern digest");
+		// Exact r246 record/clock foundation only; no launcher qualification.
+		auto topAuthored=a;topAuthored.domainStudy="r246-lateral-double-top-double-v1";
+		FireCase::RecordV1 top,topDecoded;
+		if(!FireCase::BuildMethaneV1(topAuthored,fuel,{fuel.RecordId()},top,error)){
+			Check(false,"r246 top-only experiment derives");return;
+		}
+		Check(top.derived.nx==104u&&top.derived.ny==104u&&top.derived.nz==160u&&
+			top.derived.cellWidthM==wide.derived.cellWidthM&&
+			top.derived.extentXM==wide.derived.extentXM&&top.derived.extentYM==wide.derived.extentYM&&
+			top.derived.extentZM==2.0*wide.derived.extentZM&&
+			top.derived.flowThroughTimeS==2.0*wide.derived.flowThroughTimeS&&
+			FireCase::ScheduleFlowThroughTimeS(top.derived)==wide.derived.flowThroughTimeS&&
+			top.derived.matchedScheduleFlowThroughTimeS==0x1.0d9da03060ef6p+1&&
+			top.derived.preRollOrDiscardS==wide.derived.preRollOrDiscardS,
+			"r246 separates doubled physical residence from exact original schedule bits");
+		Check(top.caseRecordId!=wide.caseRecordId&&
+			FireCase::ValidateMethaneEnvelopeV1(top.envelopeBytes,fuel,topDecoded,error)&&
+			topDecoded.envelopeBytes==top.envelopeBytes&&
+			topDecoded.derived.matchedScheduleFlowThroughTimeS==wide.derived.flowThroughTimeS,
+			"r246 roundtrip binds geometry and experimental schedule");
+		std::vector<double> topSource;std::vector<std::uint8_t> topPilot;
+		const bool topArrays=FireCase::BuildSourcePattern(topAuthored,top.derived,topSource,error)&&
+			FireCase::BuildPilotMask(topAuthored,top.derived,topPilot,error);
+		bool arraysExact=topArrays&&topSource.size()==wideSource.size()&&
+			std::memcmp(topSource.data(),wideSource.data(),wideSource.size()*sizeof(double))==0&&
+			topPilot.size()==2u*widePilot.size();
+		if(arraysExact)for(std::size_t n=0;n<topPilot.size();++n)
+			arraysExact=arraysExact&&topPilot[n]==(n<widePilot.size()?widePilot[n]:0u);
+		Check(arraysExact,"r246 preserves every common source/pilot value and zero upper pilot layers");
+		Check(FireCase::PilotCommandMaximumStepS(top.derived)==
+			FireCase::PilotCommandMaximumStepS(wide.derived),"r246 pilot maximum step uses original clock");
+		for(const double time:{0.0,0.1,1.0,2.1063728557800188,4.0}){
+			double original=0.0,taller=0.0;
+			Check(FireCase::EvaluatePilotSetpointTemperatureK(wide.derived,true,time,time+0.01,original,error)&&
+				FireCase::EvaluatePilotSetpointTemperatureK(top.derived,true,time,time+0.01,taller,error)&&
+				original==taller,"r246 pilot ramp and deadline exactly match original schedule");
+		}
+		for(unsigned int mutation=0;mutation<3u;++mutation){
+			auto bad=top.derived;
+			if(mutation==0u)bad.nz=80u;
+			if(mutation==1u)bad.matchedScheduleFlowThroughTimeS=std::nextafter(
+				bad.matchedScheduleFlowThroughTimeS,3.0);
+			if(mutation==2u)bad.matchedScheduleFlowThroughTimeS=-1.0;
+			std::vector<double> refused;
+			Check(!FireCase::BuildSourcePattern(topAuthored,bad,refused,error),
+				"r246 refuses mismatched height and altered schedule reference");
+		}
+		Value topPayload;
+		if(RISECBOR64::DecodeCanonical(top.payloadBytes,topPayload,&error)){
+			const auto* derived=topPayload.Find("derived");
+			const auto* schedule=derived?derived->Find("experimental_matched_schedule"):nullptr;
+			Check(schedule!=nullptr,"r246 schedule exception is identity-bearing");
+			if(schedule){
+				const Value mutant=Replace(topPayload,"derived",Replace(*derived,"experimental_matched_schedule",
+					Replace(*schedule,"reference_flow_through_time_s",Value::Float(2.106372855780019))));
+				RISECBOR64::Bytes payload,resealed;
+				Check(RISECBOR64::Encode(mutant,payload,&error)&&RISECBOR64::Encode(Value::MapValue({
+					{"case_record_id",Value::String(RISECBOR64::SHA256Hex(payload))},{"payload",mutant}}),resealed,&error)&&
+					!FireCase::ValidateMethaneEnvelopeV1(resealed,fuel,topDecoded,error),
+					"r246 refuses a resealed one-ULP schedule substitution");
+			}
+		}else Check(false,"r246 payload decodes");
+
 		for(unsigned int mutation=0;mutation<5u;++mutation){
 			auto bad=a;
 			if(mutation==0u)bad.domainStudy="unknown-study";

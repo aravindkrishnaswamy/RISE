@@ -18,7 +18,8 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'tools'))
-from fire_payload_merkle import merkle
+from fire_payload_merkle import FORMAT, merkle, verify
+import r246_budget_admission as recovered_admission
 
 
 def require(condition, message):
@@ -27,17 +28,20 @@ def require(condition, message):
 
 
 def sealed(path, case):
-    payload = path.read_bytes()
-    seal = json.loads(Path(str(path) + '.payload-v2.json').read_text())
+    certificate = Path(str(path)+'.payload-v2.json')
+    cert_raw = recovered_admission.collector.capture(certificate, hashlib.sha256(certificate.read_bytes()).hexdigest())
+    seal = json.loads(cert_raw)
     require(seal['schema'] == 'rise.fire.published-payload.v2' and seal['case_record_id'] == case,
             f'foreign seal: {path}')
-    require(hashlib.sha256(payload).hexdigest() == seal['sha256_v1'] and merkle(payload) == seal['v2'],
-            f'bad payload seal: {path}')
+    payload = recovered_admission.collector.capture(path, seal['sha256_v1'])
+    require(recovered_admission.collector.capture(certificate, hashlib.sha256(cert_raw).hexdigest()) == cert_raw,
+            'seal changed across payload capture')
+    require(seal['v2'].get('digest_format') == FORMAT and verify(payload, seal['v2']), f'bad payload seal: {path}')
     return payload
 
 
-def read_record(path):
-    text = path.read_text()
+def read_record(path, captured=None):
+    text = path.read_text() if captured is None else captured.decode()
     metadata = dict(line[2:].split(' ', 1) for line in text.splitlines() if line.startswith('# ') and ' ' in line[2:])
     rows = list(csv.DictReader(io.StringIO('\n'.join(line for line in text.splitlines() if not line.startswith('#')))))
     require(len(rows) == 30 and [(row['scope'], int(row['field'])) for row in rows] ==
@@ -59,13 +63,16 @@ def enclosed(actual, expected, magnitude, operations, label):
     require(abs(actual-expected) <= bound, f'{label}: {actual} != {expected}; roundoff={bound}')
 
 
-def audit_capsule(directory, frame, metadata, rows, case):
+def audit_capsule(directory, frame, metadata, rows, case, step_digest=None, admitted_frame=None):
     base = directory / f'frame_{frame:05d}'
-    binding = dict(line.split(' ', 1) for line in sealed(Path(str(base)+'.v1'), case).decode().splitlines())
+    binding_raw = sealed(Path(str(base)+'.v1'), case)
+    if admitted_frame is not None:
+        require(hashlib.sha256(binding_raw).hexdigest() == admitted_frame['binding_sha256'], 'exact recovered frame record')
+    binding = dict(line.split(' ', 1) for line in binding_raw.decode().splitlines())
     step_path = directory / f"step_{int(metadata['accepted_step']):06d}.csv"
     require(binding['schema'] == 'rise.fire.accepted-stage-frame.v1' and int(binding['frame']) == frame and
             binding['accepted_step'] == metadata['accepted_step'] and
-            binding['step_record_sha256'] == hashlib.sha256(step_path.read_bytes()).hexdigest(), 'frame/event linkage')
+            binding['step_record_sha256'] == (step_digest if step_digest is not None else hashlib.sha256(step_path.read_bytes()).hexdigest()), 'frame/event linkage')
     packets = {}
     for suffix in ('.flux.bin', '.native.bin', '.beginning.bin'):
         packet = sealed(Path(str(base)+suffix), case)
@@ -214,14 +221,21 @@ def audit_native_history(run, case, records, provenance):
         require(int(diagnostic['step']) == index and float(diagnostic['dt_s']) == float(meta['dt_s']), 'accepted history timestep mismatch')
 
 
-def audit(directory, fixture, completion=None):
-    if not fixture:
+def audit(directory, fixture, completion=None, recovery=None):
+    require(not (fixture and recovery is not None), 'recovered full audit cannot use fixture mode')
+    context = recovered_admission.admit(directory, completion, recovery, globals()) if recovery is not None else None
+    if not fixture and context is None:
         require(completion is not None and json.loads(completion.read_text())["exit_code"] == 0, "full audit requires successful completion receipt")
     paths = sorted(directory.glob('step_*.csv'))
     require(paths, 'missing accepted budgets')
-    records = [read_record(path) for path in paths]
-    case = records[0][0]['case_record_id']
-    if not fixture:
+    case = context['case'] if context else read_record(paths[0])[0]['case_record_id']
+    payloads = [sealed(path, case) for path in paths]
+    records = [read_record(path, raw) for path, raw in zip(paths, payloads)]
+    digests = [hashlib.sha256(raw).hexdigest() for raw in payloads]
+    del payloads
+    if context is not None:
+        require(len(records) == 15315, 'full recovered ledger coverage')
+    if not fixture and context is None:
         require(case == 'a9369e770465bd76e2cc8d5fc3b79e7c2aac038ecb14a0e4424a97ba2f98d586', 'changed wide-domain case')
     time = float(records[0][0]['beginning_time_s']) if fixture else 0.0
     provenance = [(records[0][0][k]) for k in ('case_record_id', 'producer_build_id', 'executable_sha256')]
@@ -229,7 +243,8 @@ def audit(directory, fixture, completion=None):
     statistics_begun = False
     for index, (path, (meta, rows)) in enumerate(zip(paths, records), 1):
         require(path.name == f'step_{index:06d}.csv' and int(meta['accepted_step']) == index, 'missing/duplicate step')
-        sealed(path, case)
+        if context is not None:
+            recovered_admission.ledger_matches(context, index, meta, digests[index-1])
         require(meta['schema'] == 'rise.fire.accepted-stage-budget.v1', 'budget schema')
         require([meta[k] for k in ('case_record_id', 'producer_build_id', 'executable_sha256')] == provenance, 'mixed producers/cases')
         require(float(meta['beginning_time_s']) == time and math.isfinite(float(meta['dt_s'])) and
@@ -292,11 +307,22 @@ def audit(directory, fixture, completion=None):
     frames = sorted(directory.glob('frame_*.v1'))
     for index, path in enumerate(frames):
         require(path.name == f'frame_{index:05d}.v1', 'missing budget frame')
-        binding = dict(line.split(' ', 1) for line in path.read_text().splitlines())
+        binding_raw = sealed(path, case)
+        binding = dict(line.split(' ', 1) for line in binding_raw.decode().splitlines())
         step = int(binding['accepted_step'])
         require(1 <= step <= len(records), 'foreign frame step')
-        summaries.append(audit_capsule(directory, index, *records[step-1], case))
-    if not fixture:
+        if context is not None:
+            require(index < 235 and hashlib.sha256(binding_raw).hexdigest() == context['capsules'][index]['binding_sha256'],
+                    'captured recovered frame pin')
+        summaries.append(audit_capsule(directory, index, *records[step-1], case, digests[step-1],
+                                       context['capsules'][index] if context else None))
+    if context is not None:
+        require(time == 25.156864278920693 and len(frames) == 235, 'complete recovered signed audit window')
+        for frame, data in enumerate(summaries):
+            meta = records[data['accepted_step']-1][0]
+            require(float(context['frames'][frame]['simulation_time_s']) ==
+                    float(meta['beginning_time_s'])+float(meta['dt_s']), 'recovered capsule/VDB accepted event')
+    if not fixture and context is None:
         run = directory.parent
         summary = dict(line.split('=', 1) for line in sealed(run/'production_capstone_summary.txt', case).decode().splitlines())
         require(summary['resolution_tier'] == '6' and summary['target_time_s'] == '25.156864278900095' and
@@ -311,10 +337,22 @@ def audit(directory, fixture, completion=None):
         for frame, data in enumerate(summaries):
             meta = records[data['accepted_step']-1][0]
             require(float(times[frame]['simulation_time_s']) == float(meta['beginning_time_s'])+float(meta['dt_s']), 'budget/VDB time mismatch')
-    return {'status': 'focused_fixture_only' if fixture else 'full_budget_bytes_verified_not_physical_qualification',
+    result = {'status': 'focused_fixture_only' if fixture else 'full_budget_bytes_verified_not_physical_qualification',
             'case': case, 'steps': len(records), 'end_time_s': time, 'frames': summaries,
-            'final_step_sha256': hashlib.sha256(paths[-1].read_bytes()).hexdigest(),
-            'audit_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+            'final_step_sha256': digests[-1],
+            'audit_sha256': context['implementation_sha256']['audit'] if context else hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+    if context is not None:
+        result.update(original_exit_code=98, original_run_success=False, recovery_acceptance_sha256=context['recovery_acceptance_sha256'],
+                      implementation_sha256=context['implementation_sha256'], admitted_inputs_sha256=context['admitted_inputs_sha256'],
+                      canonical_taller_qualification=False, physical_acceptance=False,
+                      observation_limit='Originally unsealed non-clock observations are not authenticated by recovery.')
+    return result
+
+
+def require_fresh_recovered_output(path):
+    require(path.is_absolute() and path.parent.resolve() == path.parent, 'canonical recovered audit output')
+    for member in (path, Path(str(path)+'.payload-v2.json'), Path(str(path)+'.preparation.pending.payload-v2.json')):
+        require(not member.exists() and not member.is_symlink(), 'fresh recovered audit output pair')
 
 
 def main():
@@ -322,10 +360,25 @@ def main():
     parser.add_argument('directory', type=Path)
     parser.add_argument('--fixture', action='store_true')
     parser.add_argument('--completion', type=Path)
+    parser.add_argument('--r246-recovery', type=Path)
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
-    result = audit(args.directory, args.fixture, args.completion)
-    args.output.write_text(json.dumps(result, indent=2, allow_nan=False)+'\n')
+    if args.r246_recovery is not None:
+        require_fresh_recovered_output(args.output)
+    result = audit(args.directory, args.fixture, args.completion, args.r246_recovery)
+    raw = (json.dumps(result, indent=2, allow_nan=False)+'\n').encode()
+    if args.r246_recovery is not None:
+        require_fresh_recovered_output(args.output)
+        with args.output.open('xb') as handle:
+            handle.write(raw)
+        cert = dict(schema='rise.fire.published-payload.v2',case_record_id=result['case'],
+                    sha256_v1=hashlib.sha256(raw).hexdigest(),v2=merkle(raw),
+                    audit_implementation_sha256=result['implementation_sha256'],
+                    provenance='new recovered signed budget audit issuer; not original producer')
+        with Path(str(args.output)+'.payload-v2.json').open('x') as handle:
+            handle.write(json.dumps(cert)+'\n')
+    else:
+        args.output.write_bytes(raw)
     print(f"PASS {result['status']}: {result['steps']} steps, {len(result['frames'])} frames")
 
 

@@ -1,0 +1,24 @@
+{
+  "reviewed_commit": "ecfff6c0",
+  "scope": "separate common layers0..79 reaction integral and accepted station histories; caller provenance and output binding",
+  "reviewers": [
+    {
+      "name": "r246_common_height_contract",
+      "p1": 0,
+      "p2": 0,
+      "verified": "producer arithmetic and units, exact 160-layer shape/timestamps/heights, full-window caller checks, separate labels and all four external log hashes"
+    },
+    {
+      "name": "r246_common_height_provenance",
+      "p1": 0,
+      "p2": 0,
+      "verified": "native signal retained, checkpoint/case/frame/preview input gates, all output hashes and four external log hashes"
+    }
+  ],
+  "accepted": true,
+  "checkpoint_wire_changed": false,
+  "native_signal_replaced": false,
+  "launch_permitted": false,
+  "optical_render_control_completed": false,
+  "physical_qualification_established": false
+}

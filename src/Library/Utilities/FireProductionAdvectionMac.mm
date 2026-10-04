@@ -11432,13 +11432,36 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 		}
 	}
 
+	// Pure allocation accounting for complete-owner composition. Standalone
+	// fixture admission remains in the existing public wrappers below.
+	static bool FireProductionResidentPhysicalFluxMetalAccountingBytes(
+		const FireProductionProjectionShape&,std::uint64_t&,bool);
+	static bool FireProductionResidentEOSCandidateMetalAccountingBytes(
+		const FireProductionProjectionShape&,std::uint64_t&,bool);
+	static bool FireProductionResidentTargetLineageMetalAccountingBytes(
+		const FireProductionProjectionShape&,std::uint64_t&,bool);
+
+	bool FireProductionProjectedHeunMetalDeviceWorkingSetLimitBytes(
+		std::uint64_t& bytes,std::string* error )
+	{
+		bytes=0u;
+		@autoreleasepool {
+			std::string discoveryError;
+			id<MTLDevice> device=DiscoverProductionMetalDevice("complete-owner preallocation",discoveryError);
+			if(!device){if(error)*error=discoveryError;return false;}
+			const std::uint64_t limit=static_cast<std::uint64_t>([device recommendedMaxWorkingSetSize]);
+			if(limit==0u){if(error)*error="projected-Heun Metal device working-set limit is zero";return false;}
+			bytes=limit;return true;
+		}
+	}
+
 	bool FireProductionProjectedHeunMetalOwnerWorkingSetBytes(
 		const FireProductionProjectionShape& shape,std::uint64_t& bytes,const bool prescribedBottomFlux,
 		const bool captureAcceptedBudgetFlux )
 	{
 		bytes=0u;std::uint64_t projection=0u,target=0u,nonpressure=0u;
 		if(!FireProductionProjectionWorkingSetBytes(shape,projection,prescribedBottomFlux)||
-			!FireProductionResidentTargetLineageMetalWorkingSetBytes(shape,target,prescribedBottomFlux)||
+			!FireProductionResidentTargetLineageMetalAccountingBytes(shape,target,prescribedBottomFlux)||
 			!FireProductionNonpressureMomentumRHSMetalWorkingSetBytes(shape,nonpressure,prescribedBottomFlux))return false;
 		auto add=[&](const std::uint64_t value){const std::uint64_t rounded=
 			(value+UINT64_C(16383))&~UINT64_C(16383);
@@ -11754,7 +11777,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 		return FireProductionResidentPhysicalFluxMetalWorkingSetBytes(shape,bytes,false);
 	}
 
-	bool FireProductionResidentPhysicalFluxMetalWorkingSetBytes(
+	static bool FireProductionResidentPhysicalFluxMetalAccountingBytes(
 		const FireProductionProjectionShape& shape,std::uint64_t& bytes,bool hasBurner )
 	{
 		bytes=0u;
@@ -11803,14 +11826,20 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 		const std::uint64_t terminal=(9u+9u+9u+8u+1u+1u+9u+9u+1u+7u)*faces*sizeof(float)+
 			2u*cells*sizeof(float)+
 			2u*sizeof(std::uint64_t)+3u*sizeof(std::uint32_t)+64u;
-		return add(terminal)&&bytes<=(UINT64_C(1)<<31u);
+		return add(terminal);
 	}
 
-	bool FireProductionResidentEOSCandidateMetalWorkingSetBytes(
+	bool FireProductionResidentPhysicalFluxMetalWorkingSetBytes(
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes,bool hasBurner)
+	{
+		return FireProductionResidentPhysicalFluxMetalAccountingBytes(shape,bytes,hasBurner)&&bytes<=(UINT64_C(1)<<31u);
+	}
+
+	static bool FireProductionResidentEOSCandidateMetalAccountingBytes(
 		const FireProductionProjectionShape& shape,std::uint64_t& bytes,
 		const bool prescribedBottomFlux )
 	{
-		if(!FireProductionResidentPhysicalFluxMetalWorkingSetBytes(shape,bytes,prescribedBottomFlux))return false;
+		if(!FireProductionResidentPhysicalFluxMetalAccountingBytes(shape,bytes,prescribedBottomFlux))return false;
 		const std::uint64_t cells=shape.CellCount();
 		const std::uint64_t faces=FireProductionProjectionFaceCount(shape,0u)+
 			FireProductionProjectionFaceCount(shape,1u)+
@@ -11842,8 +11871,14 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			add(sizeof(std::uint64_t))&&add(sizeof(std::uint32_t))&&
 			add(sizeof(std::uint32_t))&&add(cells*sizeof(std::uint32_t))&&add((14u+1023u*8u)*4u*sizeof(float))&&
 			add((14u*cells+faces)*sizeof(float)+cells*sizeof(std::uint32_t)+
-				4u*sizeof(std::uint64_t)+3u*sizeof(std::uint32_t)+64u)&&
-			bytes<=(UINT64_C(1)<<31u);
+				4u*sizeof(std::uint64_t)+3u*sizeof(std::uint32_t)+64u);
+	}
+
+	bool FireProductionResidentEOSCandidateMetalWorkingSetBytes(
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes,bool prescribedBottomFlux)
+	{
+		if(!FireProductionResidentPhysicalFluxMetalWorkingSetBytes(shape,bytes,prescribedBottomFlux))return false;
+		return FireProductionResidentEOSCandidateMetalAccountingBytes(shape,bytes,prescribedBottomFlux)&&bytes<=(UINT64_C(1)<<31u);
 	}
 
 	bool FireProductionResidentTargetLineageLiveIncrementWorkingSetBytes(
@@ -11874,11 +11909,11 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			add(sizeof(std::uint64_t))&&add(sizeof(std::uint64_t));
 	}
 
-	bool FireProductionResidentTargetLineageMetalWorkingSetBytes(
+	static bool FireProductionResidentTargetLineageMetalAccountingBytes(
 		const FireProductionProjectionShape& shape,std::uint64_t& bytes,
 		const bool prescribedBottomFlux )
 	{
-		if(!FireProductionResidentEOSCandidateMetalWorkingSetBytes(shape,bytes,prescribedBottomFlux))return false;
+		if(!FireProductionResidentEOSCandidateMetalAccountingBytes(shape,bytes,prescribedBottomFlux))return false;
 		std::uint64_t increment=0u;
 		if(!FireProductionResidentTargetLineageLiveIncrementWorkingSetBytes(shape,increment)||
 			bytes>std::numeric_limits<std::uint64_t>::max()-increment)return false;
@@ -11902,8 +11937,14 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			add(sizeof(MetalResidentProjectionConsumerParameters))&&
 			add(sizeof(std::uint32_t))&&
 			add(6u*cells*sizeof(float)+7u*sizeof(std::uint64_t)+
-				2u*sizeof(std::uint32_t)+64u)&&add(cells*sizeof(float))&&
-			bytes<=(UINT64_C(1)<<31u);
+				2u*sizeof(std::uint32_t)+64u)&&add(cells*sizeof(float));
+	}
+
+	bool FireProductionResidentTargetLineageMetalWorkingSetBytes(
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes,bool prescribedBottomFlux)
+	{
+		if(!FireProductionResidentEOSCandidateMetalWorkingSetBytes(shape,bytes,prescribedBottomFlux))return false;
+		return FireProductionResidentTargetLineageMetalAccountingBytes(shape,bytes,prescribedBottomFlux)&&bytes<=(UINT64_C(1)<<31u);
 	}
 
 	bool EvaluateFireProductionResidentTransportMetalComparator(

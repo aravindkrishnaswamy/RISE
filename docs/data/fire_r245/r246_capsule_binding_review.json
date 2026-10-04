@@ -1,0 +1,23 @@
+{
+  "schema": "rise.fire.r246.capsule-binding-review.v1",
+  "reviewed_implementation": "b8749c139",
+  "reviewed_head": "109ad4e80",
+  "recovery_accepted": false,
+  "rounds": [
+    {
+      "round": 1,
+      "contract_agent": "r246_capsule_contract_r1",
+      "lifecycle_agent": "r246_capsule_lifecycle_r1",
+      "arithmetic_contract": "zero P1/P2",
+      "lifecycle_provenance": "zero P1/P2"
+    }
+  ],
+  "accepted_scope": "All235 original capsule modern payload seals, native/flux roots, input/candidate identity, selected-ledger event linkage and columns payload hashes.",
+  "gate": "docs/data/fire_r245/r246_capsule_binding_gate.json",
+  "remaining": [
+    "Distinct full recovery artifacts/receipt and available derived summaries",
+    "Strict reviewed full r246 budget audit admission and signed budget arithmetic",
+    "Repaired consumers/preview/spectrum",
+    "Independent physical interpretation and causal localization"
+  ]
+}

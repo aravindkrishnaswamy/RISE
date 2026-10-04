@@ -1,0 +1,23 @@
+{
+  "schema": "rise.fire.r246.recovery-spectrum-input-review.v1",
+  "reviewed_implementation": "0f4a09ea2bda42c7e31fe199c6e4750c1be53f22",
+  "recovery_accepted": false,
+  "rounds": [
+    {
+      "round": 1,
+      "contract_agent": "r246_spectrum_input_contract_r1",
+      "lifecycle_agent": "r246_spectrum_input_lifecycle_r1",
+      "arithmetic_contract": "zero P1/P2",
+      "lifecycle_provenance": "zero P1/P2"
+    }
+  ],
+  "accepted_scope": "Retained spectrum input plumbing and exact typed accepted-history/probe-window consumer gate; no recovered launch command exposed.",
+  "gate": "docs/data/fire_r245/r246_spectrum_input_gate.json",
+  "remaining": [
+    "Preview input snapshots and scene-path binding",
+    "Reviewed recovered consumer command composition and publication identity",
+    "Full recovery acceptance",
+    "Strict full r246 signed-budget admission/audit",
+    "Full preview/spectrum/native/common comparisons and physical interpretation"
+  ]
+}

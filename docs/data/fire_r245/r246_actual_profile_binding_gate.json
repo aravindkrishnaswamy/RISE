@@ -1,0 +1,44 @@
+{
+  "schema": "rise.fire.r246.actual-profile-binding-gate.v1",
+  "status": "accepted_actual_profile_scene_prerequisite",
+  "recovery_accepted": false,
+  "original_exit_code": 98,
+  "implementation_sha256": "6645969a69d9081de8b6dc10cd1edd3015d74c18c640474c075f638a39578a7e",
+  "frozen_runtime": "/Volumes/SSD/RISE/fire_production_calibration/r246_actual_profile_binding_runtime.v3",
+  "executable_sha256": "f176f675513a38a901c09410eb24d8031d6ad10b7f386a293163a08a8c6983af",
+  "embedded_revision": "42f1e628f408ddfa6a8485f781d6fb740f484ba2",
+  "embedded_dirty_state": "dirty",
+  "build_identity_sha256": "8f28cb4d1ff4660fec883e15c471cb0ea88c71090585c06a66b6dd9d55b56bc5",
+  "build_log": "/Volumes/SSD/RISE/fire_production_calibration/r246_actual_profile_binding.v3.build.log",
+  "build_log_sha256": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21",
+  "gate_log": "/Volumes/SSD/RISE/fire_production_calibration/r246_actual_profile_binding.v3.gate.log",
+  "gate_log_sha256": "a37f4cb982c739ca32419bd18866c89b6659c699b5858aaa0de7eb8650c35d08",
+  "gate_exit_code": 0,
+  "controls": {
+    "metadata_green": true,
+    "profile_reds": 5,
+    "scene_green": true,
+    "hardlink_red": true,
+    "symlink_red": true,
+    "occupied_red": true,
+    "original_unchanged": true,
+    "fresh_output_green": true,
+    "occupied_output_red": true,
+    "aliased_output_red": true
+  },
+  "limitations": [
+    "Synthetic metadata derived from existing wide profile sidecars; mutated values are not EXR attestations.",
+    "No render, native fields, preflight or prior full gates repeated.",
+    "Focused gate tests exclusive retained scene-byte publication and occupied/aliased fresh-output refusal plus metadata profile checks; no actual render.",
+    "GIF output publication, recovered CLI composition, full recovery and signed budget audit remain pending."
+  ],
+  "completed_utc": "2026-10-04T08:44:56.104218+00:00",
+  "external_output": "/Volumes/SSD/RISE/fire_production_calibration/r246_actual_profile_binding_validation.v3",
+  "round1": {
+    "reviewed_head": "42f1e628f",
+    "contract": "zero P1/P2",
+    "lifecycle": "P2 occupied hardlink scene output could truncate original target; confirmed and fixed",
+    "fix": "New private output root before preview processing; O_CREAT|O_EXCL scene writer; scene hardlink/symlink/occupied and output root occupied/alias REDs preserve synthetic original."
+  },
+  "reviewed_head": "c420b4f43"
+}

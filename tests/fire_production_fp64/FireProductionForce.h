@@ -680,6 +680,11 @@ namespace RISEFireProductionFP64
 	bool FireProductionProjectedHeunMetalObserverWorkingSetBytes(
 		const FireProductionProjectionShape& shape,std::uint64_t& bytes,bool prescribedBottomFlux=false,bool captureAcceptedBudgetFlux=false );
 
+	//! Allocation-free query of the same default Metal device used by the owner.
+	//! Unsupported/discovery/zero-limit failures return false with bytes reset.
+	bool FireProductionProjectedHeunMetalDeviceWorkingSetLimitBytes(
+		std::uint64_t& bytes,std::string* error=0 );
+
 	bool AttemptFireProductionProjectedHeunMetalOwner(
 		const FireProductionProjectedHeunMetalOwnerRequest& request,
 		FireProductionProjectedHeunMetalOwnerResult& result,

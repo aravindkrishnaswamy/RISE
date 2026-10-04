@@ -1,0 +1,57 @@
+{
+  "schema": "rise.fire.r246.retained-comparison-gate.v1",
+  "status": "candidate_pending_fresh_reviews",
+  "run_exit_code": 0,
+  "controls": {
+    "signed_sine_green": true,
+    "zero_power_null_green": true,
+    "nonzero_constant_null_green": true,
+    "captured_operand_green": true,
+    "loaded_source_red": true,
+    "red": 6
+  },
+  "scope": "Full retained baseline/wide/taller native/common station and reaction; full signed wide/taller per-side statistics budgets",
+  "artifacts": [
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r246_compare_retained.py",
+      "sha256": "58f5b4b04748c3a514a44b0a837a9f7211e8b0a77ea8dff4c33fe0f16af9d685"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/data/fire_r245/r246_retained_comparison_inputs.json",
+      "sha256": "f75c46ca9cb0a69078713543d655a088ec7a135c1e34ab9a0d5597bd02800446"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_retained_comparison_runtime.v4/tools/fire/r246_compare_retained.py",
+      "sha256": "58f5b4b04748c3a514a44b0a837a9f7211e8b0a77ea8dff4c33fe0f16af9d685"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_retained_comparison_runtime.v4/tools/fire_payload_merkle.py",
+      "sha256": "a6219a285792b671d6a33de41c73556d9c970f8aed32c034cacaa0c3ea405ebf"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_retained_comparison.v4/comparison.json",
+      "sha256": "dd2e4327ca129f6659e762b08239120e08ec39b5b1d69f8f3144b458a472929d"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_retained_comparison.v4/station_comparison.csv",
+      "sha256": "b672d7237589145607d1c1dbcef7cf449b4d61213ecca486936aea6560bd8645"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_retained_comparison.v4.log",
+      "sha256": "68becbc38791c45aa4dc342b041271c4ae36a38bdb71f7dbd51361cbe5c155b9"
+    }
+  ],
+  "baseline_signed_budget": "unavailable",
+  "causal_localization": false,
+  "canonical_taller_qualification": false,
+  "original_exit_code": 98,
+  "repairs": [
+    "R1 P2 nonzero constant false spectrum: shift exact first operand before detrending; 300.1 null GREEN.",
+    "R1 P2 loaded/source identity: captured loaded-function/default/constants binding; execute captured exact Merkle verifier and report both captured hashes; loaded-A/captured-B RED."
+  ],
+  "preserved_attempts": [
+    "v1 preliminary",
+    "v2 reviewed candidate",
+    "v3 failed marshal source-equivalence check before reading data; preserved log/runtime"
+  ]
+}

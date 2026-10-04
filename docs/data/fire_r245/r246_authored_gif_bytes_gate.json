@@ -1,0 +1,37 @@
+{
+  "schema": "rise.fire.r246.authored-gif-bytes-gate.v1",
+  "status": "accepted_authored_gif_bytes_prerequisite",
+  "recovery_accepted": false,
+  "original_exit_code": 98,
+  "implementation_sha256": "e4d0ccbf1a1df0a8f50a9550fe40dcea1892a2895405e3f615daa17dd6873c72",
+  "frozen_runtime": "/Volumes/SSD/RISE/fire_production_calibration/r246_authored_gif_bytes_runtime.v1",
+  "executable_sha256": "65612ba0f57e945301c01b299185aeba3cfdc95b1fc42327260456773153fd86",
+  "embedded_revision": "f27b7bafee18428e6cb9bf0e3ec6983daeb022f7",
+  "embedded_dirty_state": "dirty",
+  "build_identity_sha256": "b4887ef7c147ecd297a56bf29cc2835861647981abbb4934fb430323aaebdd6b",
+  "build_log": "/Volumes/SSD/RISE/fire_production_calibration/r246_authored_gif_bytes.v1.build.log",
+  "build_log_sha256": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21",
+  "gate_log": "/Volumes/SSD/RISE/fire_production_calibration/r246_authored_gif_bytes.v1.gate.log",
+  "gate_log_sha256": "9eb2fbf62a9fc7cce0e7ac1d4560f97342a73f83003d4ecabaf51fec8916b7a8",
+  "gate_exit_code": 0,
+  "external_output": "/Volumes/SSD/RISE/fire_production_calibration/r246_authored_gif_bytes_validation.v1",
+  "independent_script_sha256": "33123c917de38604d63e23a34c7af27df0dab950f9c8cb3f92dc3630d4e593b4",
+  "independent_report_sha256": "eb89e4d52808dca946e5bd8ecfcba8b59822912555148286ecc4bafb6a8cf768",
+  "independent_log_sha256": "3a8090d7b6b09969f06627ff79c8cbcc114e0624e4194103d6a0f6496db18c03",
+  "independent_exit_code": 0,
+  "controls": {
+    "captured_lit": 4,
+    "reopened_lit": 0,
+    "occupied_red": true,
+    "original_unchanged": true,
+    "author_occupied_red": true
+  },
+  "limitations": [
+    "Synthetic single-frame 2x2 GIF bytes only; no fire provenance sidecars, EXR attestation, render or physical interpretation.",
+    "Actual GIF physical validator uses one captured byte buffer; focused fixture does not assert plume validation.",
+    "Returned authored bytes are available for forthcoming temporal publisher composition; current temporal caller does not yet retain them.",
+    "Published GIF/sidecar binding, output receipt, recovered command composition, full recovery and signed audit remain pending."
+  ],
+  "completed_utc": "2026-10-04T09:09:34.894360+00:00",
+  "reviewed_head": "536bdf8d7"
+}

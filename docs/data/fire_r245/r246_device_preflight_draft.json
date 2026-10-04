@@ -1,0 +1,15 @@
+{
+  "status": "preliminary_pass_pending_clean_builds_and_fresh_reviews",
+  "scope": "zero_step_device_query_and_refusal_before_initial_fields",
+  "simulation_launched": false,
+  "actual_taller_owner_allocation_exercised": false,
+  "certified_observer_bytes": 20703477760,
+  "queried_metal_limit_bytes": 55662788608,
+  "red_effective_limit_bytes": 20703477759,
+  "gate_exit_code": 0,
+  "build_exit_code": 0,
+  "logs": {
+    "r246_device_build.v1.log": "f0b09dfe3a8b62c50ddbe9fdfbe3bcbb449797751e6a923103ebbafe013e5c2c",
+    "r246_device_gate.v1.log": "dd6c54d0615dbf789c5daf67f211dae8ee62a41f4e9dc4665cb1daad981b0d6f"
+  }
+}

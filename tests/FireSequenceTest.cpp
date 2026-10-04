@@ -37,6 +37,7 @@
 #include <CoreGraphics/CoreGraphics.h>
 #include <ImageIO/ImageIO.h>
 #include <dlfcn.h>
+#include <fcntl.h>
 #include <sys/sysctl.h>
 #include <sys/utsname.h>
 #endif
@@ -52,6 +53,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <limits>
 #include <numeric>
@@ -159,6 +161,43 @@ namespace
 			maximumCentroidDistanceSquared>=4.0;
 	}
 
+	using CapturedPreviewPair=std::array<RISECBOR64::Bytes,4>;
+	using CapturedPreviewPairDigests=std::array<std::string,4>;
+	std::array<std::filesystem::path,4> PreviewPairPaths(
+		const std::filesystem::path& primary,const std::filesystem::path& display)
+	{
+		return {{primary,primary.string()+".provenance.cbor",display,display.string()+".provenance.cbor"}};
+	}
+	CapturedPreviewPairDigests PreviewPairDigests(const CapturedPreviewPair& pair)
+	{
+		CapturedPreviewPairDigests digests;
+		for(std::size_t i=0u;i<pair.size();++i)digests[i]=RISECBOR64::SHA256Hex(pair[i]);
+		return digests;
+	}
+	bool WriteCapturedPreviewPair(const std::filesystem::path& primary,
+		const std::filesystem::path& display,const CapturedPreviewPair& pair,std::string& error)
+	{
+		const auto paths=PreviewPairPaths(primary,display);
+		for(std::size_t i=0u;i<pair.size();++i){
+			if(pair[i].empty()||std::filesystem::is_symlink(std::filesystem::symlink_status(paths[i]))){
+				error="empty captured preview bytes or aliased output";return false;
+			}
+			std::ofstream file(paths[i],std::ios::binary|std::ios::trunc);
+			file.write(reinterpret_cast<const char*>(pair[i].data()),static_cast<std::streamsize>(pair[i].size()));
+			file.close();if(!file){error="captured preview write failed";return false;}
+		}
+		return true;
+	}
+	bool ReadBoundPreviewPair(const std::filesystem::path& primary,
+		const std::filesystem::path& display,const CapturedPreviewPairDigests& expected,
+		CapturedPreviewPair& pair,std::string& error)
+	{
+		const auto paths=PreviewPairPaths(primary,display);
+		for(std::size_t i=0u;i<pair.size();++i)pair[i]=ReadFileBytes(paths[i]);
+		if(PreviewPairDigests(pair)!=expected){error="numbered preview pair changed after verification";return false;}
+		return true;
+	}
+
 #if defined(__APPLE__)
 	bool DecodeFirstLightGIFFrame(CGImageSourceRef source,const std::size_t frame,
 		const unsigned int width,const unsigned int height,std::string& digest,
@@ -200,7 +239,350 @@ namespace
 		digest=RISECBOR64::SHA256Hex(pixels);return true;
 	}
 
-	bool ValidateFireGIF(const std::string& path,
+	bool R246CreateFreshPreviewOutput(const std::filesystem::path& path,std::string& error)
+	{
+		std::error_code ec;
+		if(!std::filesystem::create_directory(path,ec)||ec){error="preview output must be a new directory";return false;}
+		std::filesystem::permissions(path,std::filesystem::perms::owner_all,ec);
+		if(ec){error="preview output permissions failed";return false;}
+		return true;
+	}
+	std::filesystem::path R246FirstLightCapstoneOutput(const std::filesystem::path& source)
+	{
+		return source/"first_light_preview";
+	}
+	bool R246FirstLightOutputReady(const std::filesystem::path& root,std::string& error)
+	{
+		std::error_code ec;std::filesystem::create_directories(root,ec);
+		if(ec||!std::filesystem::is_directory(std::filesystem::symlink_status(root,ec))||ec){error="first-light output root unavailable or aliased";return false;}
+		std::vector<std::filesystem::path> members={root/"methane_preview.exr",root/"methane_preview_display.png",root/"methane_preview_animation.gif"};
+		for(unsigned int frame=0u;frame<8u;++frame)members.push_back(root/("methane_preview_frame000"+std::to_string(frame)+".exr"));
+		for(const auto& path:members)for(const auto& member:std::array<std::filesystem::path,2>{{path,path.string()+".provenance.cbor"}}){
+			const auto status=std::filesystem::symlink_status(member,ec);
+			if(ec&&ec!=std::errc::no_such_file_or_directory){error="first-light output status unavailable";return false;}
+			if(std::filesystem::exists(status)||std::filesystem::is_symlink(status)){error="first-light output member occupied";return false;}
+		}
+		return true;
+	}
+	bool R246WriteNewCapturedBytes(const std::filesystem::path& path,const RISECBOR64::Bytes& bytes,std::string& error)
+	{
+		if(bytes.empty()){error="empty captured artifact";return false;}
+		const int fd=open(path.c_str(),O_WRONLY|O_CREAT|O_EXCL,0600);
+		if(fd<0){error="captured artifact output occupied or unavailable";return false;}
+		std::size_t offset=0u;bool written=true;
+		while(offset<bytes.size()){
+			const auto count=write(fd,bytes.data()+offset,bytes.size()-offset);
+			if(count<0&&errno==EINTR)continue;
+			if(count<=0){written=false;break;}
+			offset+=static_cast<std::size_t>(count);
+		}
+		if(close(fd)!=0)written=false;
+		if(!written){error="captured artifact write failed";return false;}
+		return true;
+	}
+	bool R246MovieSHA(const std::string& value)
+	{
+		return value.size()==64u&&std::all_of(value.begin(),value.end(),[](const char c){return (c>='0'&&c<='9')||(c>='a'&&c<='f');});
+	}
+	RISECBOR64::Value R246MovieTextArray( const std::vector<std::string>& values )
+	{
+		RISECBOR64::Value::Values encoded;
+		for( std::size_t i=0; i<values.size(); ++i ) {
+			encoded.push_back(RISECBOR64::Value::String(values[i]));
+		}
+		return RISECBOR64::Value::ArrayValue(encoded);
+	}
+
+	RISECBOR64::Value R246MovieActiveMediaArray(
+		const std::vector<FrameStoreOutput::ActiveFireMedium>& media )
+	{
+		using RISECBOR64::Value;
+		Value::Values encoded;
+		encoded.reserve(media.size());
+		for( std::size_t i=0; i<media.size(); ++i ) {
+			if( media[i].mediaKind == "sequence_backed" ) {
+				encoded.push_back(Value::MapValue({
+					{ "binding_kind", Value::String(media[i].bindingKind) },
+					{ "binding_owner", Value::String(media[i].bindingOwner) },
+					{ "effective_blur_state", Value::String(media[i].effectiveBlurState) },
+					{ "manager_name", Value::String(media[i].managerName) },
+					{ "media_kind", Value::String(media[i].mediaKind) },
+					{ "optical_record_ids", R246MovieTextArray(media[i].opticalRecordIds) },
+					{ "physical_mapping", Value::String(media[i].physicalMapping) },
+					{ "prepared_input_id", Value::String(media[i].preparedInputId) },
+					{ "prepared_state_generation", Value::Unsigned(media[i].preparedStateGeneration) },
+					{ "selected_base_frame_index", Value::Signed(media[i].selectedBaseFrameIndex) },
+					{ "sequence_id", Value::String(media[i].sequenceId) },
+					{ "source_kind", Value::String(media[i].sourceKind) },
+					{ "whole_file_digest", Value::String(media[i].wholeFileDigest) }
+				}));
+			} else {
+				encoded.push_back(Value::MapValue({
+					{ "authored_config_digest", Value::String(media[i].authoredConfigDigest) },
+					{ "binding_kind", Value::String(media[i].bindingKind) },
+					{ "binding_owner", Value::String(media[i].bindingOwner) },
+					{ "manager_name", Value::String(media[i].managerName) },
+					{ "media_kind", Value::String(media[i].mediaKind) },
+					{ "optical_record_ids", R246MovieTextArray(media[i].opticalRecordIds) }
+				}));
+			}
+		}
+		return Value::ArrayValue(encoded);
+	}
+
+	bool R246MovieFinalizedConfig(const RISECBOR64::Value& resolvedConfig,
+		const FireFrameSequenceEncoding encoding,const unsigned int width,const unsigned int height,
+		const unsigned int framesPerSecond,const unsigned int firstFrame,const std::size_t frameCount,
+		RISECBOR64::Value& finalizedConfig,std::string& error)
+	{
+		using RISECBOR64::Value;
+		if(resolvedConfig.GetType()!=Value::Map||resolvedConfig.Find("output")||width==0u||height==0u||framesPerSecond==0u||frameCount==0u)return false;
+		FireFrameSequenceEncodingDescriptor descriptor;
+		if( !DescribeFireFrameSequenceEncoding(
+			encoding,framesPerSecond,descriptor,error) ) return false;
+		const Value encodingDescriptor = Value::MapValue({
+			{ "alpha_mode", Value::String(descriptor.alphaMode) },
+			{ "backend", Value::String(descriptor.backend) },
+			{ "bits_per_channel", Value::Unsigned(descriptor.bitsPerChannel) },
+			{ "chroma_subsampling", Value::String(descriptor.chromaSubsampling) },
+			{ "codec", Value::String(descriptor.codec) },
+			{ "codec_implementation", Value::String(descriptor.codecImplementation) },
+			{ "codec_options", Value::String(descriptor.codecOptions) },
+			{ "codec_profile", Value::String(descriptor.codecProfile) },
+			{ "codec_tag", Value::String(descriptor.codecTag) },
+			{ "color_primaries", Value::String(descriptor.colorPrimaries) },
+			{ "color_range", Value::String(descriptor.colorRange) },
+			{ "container_format", Value::String(descriptor.containerFormat) },
+			{ "conversion_destination_range", Value::String(
+				descriptor.conversionDestinationRange) },
+			{ "conversion_brightness", Value::Signed(descriptor.conversionBrightness) },
+			{ "conversion_contrast", Value::Signed(descriptor.conversionContrast) },
+			{ "conversion_filter", Value::String(descriptor.conversionFilter) },
+			{ "conversion_matrix", Value::String(descriptor.conversionMatrix) },
+			{ "conversion_saturation", Value::Signed(descriptor.conversionSaturation) },
+			{ "conversion_source_range", Value::String(
+				descriptor.conversionSourceRange) },
+			{ "dimension_rounding", Value::String(descriptor.dimensionRounding) },
+			{ "display_transform", Value::String(descriptor.displayTransform) },
+			{ "encoder_preset", Value::String(descriptor.encoderPreset) },
+			{ "expects_media_data_in_real_time", Value::Bool(
+				descriptor.expectsMediaDataInRealTime) },
+			{ "gop_frames", Value::Unsigned(descriptor.gopFrames) },
+			{ "input_pixel_format", Value::String(descriptor.inputPixelFormat) },
+			{ "max_b_frames", Value::Unsigned(descriptor.maxBFrames) },
+			{ "muxer_flags", Value::String(descriptor.muxerFlags) },
+			{ "output_pixel_format", Value::String(descriptor.outputPixelFormat) },
+			{ "pq_peak_nits", Value::Unsigned(descriptor.pqPeakNits) },
+			{ "rate_control", Value::String(descriptor.rateControl) },
+			{ "reference_white_nits", Value::Unsigned(descriptor.referenceWhiteNits) },
+			{ "schema_version", Value::Unsigned(descriptor.schemaVersion) },
+			{ "transfer_function", Value::String(descriptor.transferFunction) },
+			{ "ycbcr_matrix", Value::String(descriptor.ycbcrMatrix) }
+		});
+		Value::Members resolvedMembers = resolvedConfig.GetMap();
+		const bool gifOutput=encoding==
+			FireFrameSequenceEncoding::AppleImageIOGif_PreviewPlus6EV_8Bit;
+		resolvedMembers.push_back(std::make_pair("output",Value::MapValue({
+			{ "bits_per_channel", Value::Unsigned(descriptor.bitsPerChannel) },
+			{ "codec", Value::String(descriptor.codec) },
+			{ "color_space", Value::String(gifOutput?"srgb":"rec2020_pq") },
+			{ "display_transform", Value::String(descriptor.displayTransform) },
+			{ "encoding", encodingDescriptor },
+			{ "first_frame_index", Value::Unsigned(firstFrame) },
+			{ "format", Value::String(descriptor.containerFormat) },
+			{ "frame_count", Value::Unsigned(frameCount) },
+			{ "frames_per_second", Value::Unsigned(framesPerSecond) },
+			{ "height", Value::Unsigned(height) },
+			{ "width", Value::Unsigned(width) }
+		})));
+		finalizedConfig = Value::MapValue(resolvedMembers);
+		return true;
+	}
+
+	bool R246ExpectedGIFSidecar(
+		const FrameStoreOutput::Metadata& metadata,
+		const FireFrameSequenceEncoding encoding,
+		const std::string& artifactSha256,
+		const unsigned int width,
+		const unsigned int height,
+		const unsigned int framesPerSecond,
+		const std::vector<FireFramePrimary>& frames,
+		RISECBOR64::Bytes& sidecar,
+		std::string& error )
+	{
+		using RISECBOR64::Value;
+		if( !FrameStoreOutput::ValidateFireOutputMetadata(metadata,error) ) return false;
+		if( metadata.renderFidelityStatus != "predictive" &&
+			metadata.renderFidelityStatus != "preview" ) {
+			error = "movie has no predictive or preview fire-render status";
+			return false;
+		}
+		if( frames.empty() || framesPerSecond == 0u || width == 0u || height == 0u ) {
+			error = "movie frame-sequence dimensions, rate, or links are empty";
+			return false;
+		}
+		Value::Values links;
+		links.reserve(frames.size());
+		for( std::size_t i=0; i<frames.size(); ++i ) {
+			if( (i && frames[i].frameIndex != frames[i-1u].frameIndex+1u) ||
+				!R246MovieSHA(frames[i].provenanceId) ||
+				!R246MovieSHA(frames[i].artifactSha256) ) {
+				error = "movie primary links are not contiguous or complete SHA-256 identities";
+				return false;
+			}
+			links.push_back(Value::MapValue({
+				{ "artifact_sha256", Value::String(frames[i].artifactSha256) },
+				{ "frame_index", Value::Unsigned(frames[i].frameIndex) },
+				{ "provenance_id", Value::String(frames[i].provenanceId) }
+			}));
+		}
+
+		Value resolvedConfig;
+		Value rendererBuild;
+		if( metadata.resolvedRenderConfigCoreV1.empty() ||
+			!RISECBOR64::DecodeCanonical(metadata.resolvedRenderConfigCoreV1,
+				resolvedConfig,&error) || resolvedConfig.GetType() != Value::Map ) {
+			error = "resolved render configuration is unavailable or noncanonical: "+error;
+			return false;
+		}
+		if( resolvedConfig.Find("output") ) {
+			error = "resolved render configuration core already contains output settings";
+			return false;
+		}
+		if( metadata.rendererBuildV1.empty() ||
+			!RISECBOR64::DecodeCanonical(metadata.rendererBuildV1,rendererBuild,&error) ||
+			rendererBuild.GetType() != Value::Map ||
+			!R246MovieSHA(metadata.rendererBuildId) ||
+			metadata.rendererBuildId != RISECBOR64::SHA256Hex(metadata.rendererBuildV1) ) {
+			error = "renderer build identity is unavailable or noncanonical";
+			return false;
+		}
+		Value finalizedConfig;
+		if(!R246MovieFinalizedConfig(resolvedConfig,encoding,width,height,framesPerSecond,
+			frames.front().frameIndex,frames.size(),finalizedConfig,error))return false;
+		RISECBOR64::Bytes finalizedConfigBytes;
+		if( !RISECBOR64::Encode(finalizedConfig,finalizedConfigBytes,&error) ) return false;
+
+		const Value payload = Value::MapValue({
+			{ "active_fire_media", R246MovieActiveMediaArray(metadata.activeFireMedia) },
+			{ "active_fire_optics_record_ids", R246MovieTextArray(metadata.activeFireOpticsRecordIds) },
+			{ "artifact_fidelity", Value::String("display_derivative") },
+			{ "artifact_reason_codes", R246MovieTextArray({
+				"display_transform_enabled","integer_output","lossy_output" }) },
+			{ "artifact_sha256", Value::String(artifactSha256) },
+			{ "derivation_kind", Value::String("frame_sequence") },
+			{ "derived_from_frames", Value::ArrayValue(links) },
+			{ "derived_from_primary", Value() },
+			{ "record_kind", Value::String("fire_output_provenance") },
+			{ "render_fidelity_status", Value::String(metadata.renderFidelityStatus) },
+			{ "render_reason_codes", R246MovieTextArray(metadata.renderReasonCodes) },
+			{ "renderer_build_id", Value::String(metadata.rendererBuildId) },
+			{ "renderer_build_v1", rendererBuild },
+			{ "resolved_render_configuration_id", Value::String(
+				RISECBOR64::SHA256Hex(finalizedConfigBytes)) },
+			{ "resolved_render_configuration_v1", finalizedConfig },
+			{ "schema_version", Value::Unsigned(1u) }
+		});
+		RISECBOR64::Bytes payloadBytes;
+		if( !RISECBOR64::Encode(payload,payloadBytes,&error) ) return false;
+		const Value envelope = Value::MapValue({
+			{ "payload", payload },
+			{ "provenance_id", Value::String(RISECBOR64::SHA256Hex(payloadBytes)) }
+		});
+		return RISECBOR64::Encode(envelope,sidecar,&error);
+	}
+
+	RISECBOR64::Bytes R246MovieReceiptBytes(const RISECBOR64::Bytes& gif,const RISECBOR64::Bytes& sidecar,
+		const std::vector<FireFramePrimary>& links,const std::string& rendererBuild)
+	{
+		std::string inventory;for(const auto& link:links)inventory+=std::to_string(link.frameIndex)+":"+link.provenanceId+":"+link.artifactSha256+"\n";
+		const RISECBOR64::Bytes bytes(inventory.begin(),inventory.end());
+		std::ostringstream receipt;receipt<<"schema rise.fire.temporal-preview-movie-receipt.v1\ngif_sha256 "<<RISECBOR64::SHA256Hex(gif)
+			<<"\nsidecar_sha256 "<<RISECBOR64::SHA256Hex(sidecar)<<"\nprimary_links_sha256 "<<RISECBOR64::SHA256Hex(bytes)
+			<<"\nrenderer_build_id "<<rendererBuild<<'\n';const auto text=receipt.str();return RISECBOR64::Bytes(text.begin(),text.end());
+	}
+	bool R246MovieMatchesConsumedPrimary(const RISECBOR64::Bytes& gif,const RISECBOR64::Bytes& sidecar,
+		const RISECBOR64::Bytes& receipt,const RISECBOR64::Value& primary,
+		const std::vector<FireFramePrimary>& frames,const unsigned int width,const unsigned int height,
+		const unsigned int fps,std::string& error)
+	{
+		using V=RISECBOR64::Value;const auto* source=primary.Find("payload");
+		if(!source||source->GetType()!=V::Map||gif.empty()||frames.empty())return false;
+		const auto* config=source->Find("resolved_render_configuration_v1");
+		const auto* build=source->Find("renderer_build_v1");const auto* buildId=source->Find("renderer_build_id");
+		if(!config||config->GetType()!=V::Map||!config->Find("output")||!build||build->GetType()!=V::Map||
+			!buildId||buildId->GetType()!=V::Text||!R246MovieSHA(buildId->GetText()))return false;
+		RISECBOR64::Bytes buildBytes;if(!RISECBOR64::Encode(*build,buildBytes,&error)||
+			!FrameStoreOutput::ValidateRendererBuildIdentityV1(buildBytes,error)||RISECBOR64::SHA256Hex(buildBytes)!=buildId->GetText())return false;
+		V::Members core;for(const auto& member:config->GetMap())if(member.first!="output")core.push_back(member);
+		V movieConfig;if(!R246MovieFinalizedConfig(V::MapValue(core),FireFrameSequenceEncoding::AppleImageIOGif_PreviewPlus6EV_8Bit,
+			width,height,fps,frames.front().frameIndex,frames.size(),movieConfig,error))return false;
+		V::Values links;for(std::size_t i=0u;i<frames.size();++i){
+			if(frames[i].frameIndex!=i||!R246MovieSHA(frames[i].provenanceId)||!R246MovieSHA(frames[i].artifactSha256))return false;
+			links.push_back(V::MapValue({{"artifact_sha256",V::String(frames[i].artifactSha256)},
+				{"frame_index",V::Unsigned(frames[i].frameIndex)},{"provenance_id",V::String(frames[i].provenanceId)}}));
+		}
+		const auto* provenance=primary.Find("provenance_id");const auto* artifact=source->Find("artifact_sha256");
+		if(!provenance||provenance->GetType()!=V::Text||!artifact||artifact->GetType()!=V::Text||
+			provenance->GetText()!=frames.back().provenanceId||artifact->GetText()!=frames.back().artifactSha256)return false;
+		V::Members expected;
+		for(const char* key:{"active_fire_media","active_fire_optics_record_ids","render_fidelity_status","render_reason_codes","renderer_build_id","renderer_build_v1"}){
+			const auto* value=source->Find(key);if(!value)return false;expected.push_back({key,*value});
+		}
+		RISECBOR64::Bytes configBytes;if(!RISECBOR64::Encode(movieConfig,configBytes,&error))return false;
+		for(const auto& member:V::Members{
+			{"artifact_fidelity",V::String("display_derivative")},
+			{"artifact_reason_codes",R246MovieTextArray({"display_transform_enabled","integer_output","lossy_output"})},
+			{"artifact_sha256",V::String(RISECBOR64::SHA256Hex(gif))},{"derivation_kind",V::String("frame_sequence")},
+			{"derived_from_frames",V::ArrayValue(links)},{"derived_from_primary",V()},
+			{"record_kind",V::String("fire_output_provenance")},{"resolved_render_configuration_id",V::String(RISECBOR64::SHA256Hex(configBytes))},
+			{"resolved_render_configuration_v1",movieConfig},{"schema_version",V::Unsigned(1u)}})expected.push_back(member);
+		const auto payload=V::MapValue(expected);RISECBOR64::Bytes payloadBytes,expectedSidecar;
+		if(!RISECBOR64::Encode(payload,payloadBytes,&error)||!RISECBOR64::Encode(V::MapValue({
+			{"payload",payload},{"provenance_id",V::String(RISECBOR64::SHA256Hex(payloadBytes))}}),expectedSidecar,&error))return false;
+		if(sidecar!=expectedSidecar||receipt!=R246MovieReceiptBytes(gif,sidecar,frames,buildId->GetText())){
+			error="captured movie differs from consumed primary metadata, links, encoding or receipt";return false;
+		}
+		return true;
+	}
+
+	bool R246CapturedGIFPairMatches(const RISECBOR64::Bytes& gif,const RISECBOR64::Bytes& sidecar,
+		const RISECBOR64::Bytes& authored,const FrameStoreOutput::Metadata& metadata,
+		const unsigned int width,const unsigned int height,const unsigned int fps,
+		const std::vector<FireFramePrimary>& frames,std::string& error)
+	{
+		if(authored.empty()||gif!=authored){error="published GIF differs from retained ImageIO bytes";return false;}
+		RISECBOR64::Bytes expected;
+		if(!R246ExpectedGIFSidecar(metadata,FireFrameSequenceEncoding::AppleImageIOGif_PreviewPlus6EV_8Bit,
+			RISECBOR64::SHA256Hex(authored),width,height,fps,frames,expected,error))return false;
+		if(sidecar!=expected){error="captured GIF sidecar differs from actual metadata/encoding/primary links";return false;}
+		return true;
+	}
+	bool R246CaptureGIFPair(const std::filesystem::path& path,const RISECBOR64::Bytes& authored,
+		const FrameStoreOutput::Metadata& metadata,const unsigned int width,const unsigned int height,const unsigned int fps,
+		const std::vector<FireFramePrimary>& frames,RISECBOR64::Bytes& gif,RISECBOR64::Bytes& sidecar,std::string& error)
+	{
+		const auto sidecarPath=std::filesystem::path(path.string()+".provenance.cbor");
+		auto regular=[](const std::filesystem::path& member){std::error_code ec;
+			const auto status=std::filesystem::symlink_status(member,ec);
+			return !ec&&std::filesystem::is_regular_file(status)&&std::filesystem::hard_link_count(member,ec)==1u&&!ec;};
+		if(!regular(path)||!regular(sidecarPath))return false;
+		gif=ReadFileBytes(path);sidecar=ReadFileBytes(sidecarPath);
+		return regular(path)&&regular(sidecarPath)&&R246CapturedGIFPairMatches(gif,sidecar,authored,metadata,width,height,fps,frames,error);
+	}
+	bool R246CaptureMovieBundle(const std::filesystem::path& directory,
+		RISECBOR64::Bytes& gif,RISECBOR64::Bytes& sidecar,RISECBOR64::Bytes& receipt,std::string& error)
+	{
+		const std::array<std::filesystem::path,3> paths={{directory/"temporal_fire_preview.gif",
+			directory/"temporal_fire_preview.gif.provenance.cbor",directory/"temporal_preview_movie_receipt.v1"}};
+		auto regular=[&](const auto& path){std::error_code ec;const auto status=std::filesystem::symlink_status(path,ec);
+			return !ec&&std::filesystem::is_regular_file(status)&&std::filesystem::hard_link_count(path,ec)==1u&&!ec;};
+		if(!std::all_of(paths.begin(),paths.end(),regular)){error="movie bundle absent or aliased";return false;}
+		gif=ReadFileBytes(paths[0u]);sidecar=ReadFileBytes(paths[1u]);receipt=ReadFileBytes(paths[2u]);
+		return !gif.empty()&&!sidecar.empty()&&!receipt.empty()&&std::all_of(paths.begin(),paths.end(),regular);
+	}
+	CGImageSourceRef CapturedImageSource(const RISECBOR64::Bytes& bytes);
+	bool ValidateFireGIFBytes(const RISECBOR64::Bytes& encoded,
 		const FireFrameSequenceEncoding encoding,const unsigned int width,
 		const unsigned int height,const unsigned int framesPerSecond,
 		const std::vector<FireFramePrimary>& frames,const bool requireBoundedPlume,
@@ -211,14 +593,10 @@ namespace
 			width==0u||height==0u||framesPerSecond==0u||frames.size()<2u){
 			error="first-light GIF expectations are inconsistent";return false;
 		}
-		const RISECBOR64::Bytes encoded=ReadFileBytes(path);
 		if(encoded.size()<6u||std::string(encoded.begin(),encoded.begin()+6u)!="GIF87a"){
 			error="first-light GIF container revision differs";return false;
 		}
-		CFURLRef url=CFURLCreateFromFileSystemRepresentation(nullptr,
-			reinterpret_cast<const UInt8*>(path.data()),path.size(),false);
-		CGImageSourceRef source=url?CGImageSourceCreateWithURL(url,nullptr):nullptr;
-		if(url)CFRelease(url);
+		CGImageSourceRef source=CapturedImageSource(encoded);
 		if(!source||CGImageSourceGetCount(source)!=frames.size()){
 			if(source)CFRelease(source);error="first-light GIF frame count differs";return false;
 		}
@@ -262,6 +640,12 @@ namespace
 		}
 		return true;
 	}
+	bool ValidateFireGIF(const std::string& path,const FireFrameSequenceEncoding encoding,
+		const unsigned int width,const unsigned int height,const unsigned int fps,
+		const std::vector<FireFramePrimary>& frames,const bool bounded,std::string& error)
+	{
+		return ValidateFireGIFBytes(ReadFileBytes(path),encoding,width,height,fps,frames,bounded,error);
+	}
 	bool ValidateFirstLightGIF(const std::string& path,
 		const FireFrameSequenceEncoding encoding,const unsigned int width,
 		const unsigned int height,const unsigned int framesPerSecond,
@@ -277,19 +661,35 @@ namespace
 		return ValidateFireGIF(path,encoding,width,height,framesPerSecond,frames,false,error);
 	}
 
+	bool ReadCapturedImageBytes(const std::filesystem::path& path,const std::string* expectedDigest,
+		RISECBOR64::Bytes& bytes,std::string& error,const std::function<void()>* afterCapture=nullptr)
+	{
+		bytes=ReadFileBytes(path);if(afterCapture)(*afterCapture)();
+		if(bytes.empty()||(expectedDigest&&RISECBOR64::SHA256Hex(bytes)!=*expectedDigest)){
+			error="image bytes differ from verified display capture";return false;
+		}
+		return true;
+	}
+	CGImageSourceRef CapturedImageSource(const RISECBOR64::Bytes& bytes)
+	{
+		if(bytes.empty()||bytes.size()>static_cast<std::size_t>(std::numeric_limits<CFIndex>::max()))return nullptr;
+		CFDataRef data=CFDataCreate(nullptr,bytes.data(),static_cast<CFIndex>(bytes.size()));
+		CGImageSourceRef source=data?CGImageSourceCreateWithData(data,nullptr):nullptr;
+		if(data)CFRelease(data);return source;
+	}
+
 	bool AuthorFirstLightGIF(const std::vector<std::filesystem::path>& pngFrames,
 		const std::filesystem::path& path,const unsigned int framesPerSecond,
-		std::string& error)
+		std::string& error,const std::vector<std::string>* expectedDisplayDigests=nullptr,
+		const std::function<void()>* afterCapture=nullptr,RISECBOR64::Bytes* authoredBytes=nullptr)
 	{
 		error.clear();
-		if(pngFrames.empty()||framesPerSecond==0u)return false;
-		const std::string outputText=path.string();
-		CFURLRef output=CFURLCreateFromFileSystemRepresentation(nullptr,
-			reinterpret_cast<const UInt8*>(outputText.data()),outputText.size(),false);
-		CGImageDestinationRef destination=output?CGImageDestinationCreateWithURL(
-			output,CFSTR("com.compuserve.gif"),pngFrames.size(),nullptr):nullptr;
-		if(output)CFRelease(output);
-		if(!destination){error="ImageIO GIF destination is unavailable";return false;}
+		if(pngFrames.empty()||framesPerSecond==0u||
+			(expectedDisplayDigests&&expectedDisplayDigests->size()!=pngFrames.size()))return false;
+		CFMutableDataRef encoded=CFDataCreateMutable(nullptr,0);
+		CGImageDestinationRef destination=encoded?CGImageDestinationCreateWithData(
+			encoded,CFSTR("com.compuserve.gif"),pngFrames.size(),nullptr):nullptr;
+		if(!destination){if(encoded)CFRelease(encoded);error="ImageIO GIF destination is unavailable";return false;}
 		int loop=0;CFNumberRef loopNumber=CFNumberCreate(nullptr,kCFNumberIntType,&loop);
 		const void* gifKeys[]={kCGImagePropertyGIFLoopCount};
 		const void* gifValues[]={loopNumber};
@@ -302,15 +702,14 @@ namespace
 		CGImageDestinationSetProperties(destination,global);
 		CFRelease(global);CFRelease(gif);CFRelease(loopNumber);
 		const double delay=1.0/static_cast<double>(framesPerSecond);
-		for(const std::filesystem::path& framePath:pngFrames){
-			const std::string frameText=framePath.string();
-			CFURLRef frameURL=CFURLCreateFromFileSystemRepresentation(nullptr,
-				reinterpret_cast<const UInt8*>(frameText.data()),frameText.size(),false);
-			CGImageSourceRef source=frameURL?CGImageSourceCreateWithURL(frameURL,nullptr):nullptr;
-			if(frameURL)CFRelease(frameURL);
+		for(std::size_t frame=0u;frame<pngFrames.size();++frame){
+			RISECBOR64::Bytes bytes;
+			if(!ReadCapturedImageBytes(pngFrames[frame],expectedDisplayDigests?&(*expectedDisplayDigests)[frame]:nullptr,
+				bytes,error,afterCapture)){CFRelease(destination);CFRelease(encoded);return false;}
+			CGImageSourceRef source=CapturedImageSource(bytes);
 			CGImageRef image=source?CGImageSourceCreateImageAtIndex(source,0u,nullptr):nullptr;
 			if(source)CFRelease(source);
-			if(!image){CFRelease(destination);error="first-light PNG frame decode failed";return false;}
+			if(!image){CFRelease(destination);CFRelease(encoded);error="first-light PNG frame decode failed";return false;}
 			CFNumberRef delayNumber=CFNumberCreate(nullptr,kCFNumberDoubleType,&delay);
 			const void* frameGIFKeys[]={kCGImagePropertyGIFDelayTime};
 			const void* frameGIFValues[]={delayNumber};
@@ -326,9 +725,17 @@ namespace
 		}
 		const bool finalized=CGImageDestinationFinalize(destination);
 		CFRelease(destination);
-		if(!finalized)error="ImageIO could not finalize the first-light GIF";
-		return finalized;
+		RISECBOR64::Bytes bytes;
+		if(finalized&&CFDataGetLength(encoded)>0){
+			const auto* first=CFDataGetBytePtr(encoded);bytes.assign(first,first+CFDataGetLength(encoded));
+		}
+		CFRelease(encoded);
+		if(!finalized||bytes.empty()){error="ImageIO could not finalize the first-light GIF";return false;}
+		if(!R246WriteNewCapturedBytes(path,bytes,error))return false;
+		if(authoredBytes)*authoredBytes=std::move(bytes);
+		return true;
 	}
+
 #endif
 
 	int RunFirstLightPreviewChild(const std::filesystem::path& sourceDirectory,
@@ -340,6 +747,7 @@ namespace
 		return 90;
 #else
 		std::string error;
+		if(!R246FirstLightOutputReady(outputDirectory,error))return 91;
 		const std::filesystem::path manifestPath=
 			sourceDirectory/"sequence_manifest.rise-fire.cbor";
 		const RISECBOR64::Bytes manifestBytes=ReadFileBytes(manifestPath);
@@ -449,6 +857,8 @@ namespace
 		}
 		std::vector<std::filesystem::path> primaryFrames,displayFrames;
 		std::vector<FireFramePrimary> primaryLinks;
+		std::vector<CapturedPreviewPairDigests> verifiedPairDigests;
+		CapturedPreviewPair terminalCaptured;
 		bool animationPairs=pairs;
 		job->release();job=nullptr;
 		for(unsigned int frame=0u;frame<8u;++frame){
@@ -472,8 +882,6 @@ namespace
 					std::numeric_limits<double>::infinity()),std::nextafter(end,
 					std::numeric_limits<double>::infinity()),1u,false,false);
 			std::ostringstream index;index<<std::setw(4)<<std::setfill('0')<<frame;
-			const std::filesystem::path currentPrimary=stage/"first_light_primary.exr";
-			const std::filesystem::path currentDisplay=stage/"first_light_display.png";
 			const std::filesystem::path primary=stage/
 				("animation_primary"+index.str()+".exr");
 			const std::filesystem::path display=stage/
@@ -497,16 +905,9 @@ namespace
 				link.artifactSha256=artifact->GetText();primaryLinks.push_back(link);
 			}
 			if(animationPairs){
-				std::filesystem::copy_file(currentPrimary,primary,
-					std::filesystem::copy_options::overwrite_existing);
-				std::filesystem::copy_file(currentPrimary.string()+".provenance.cbor",
-					primary.string()+".provenance.cbor",
-					std::filesystem::copy_options::overwrite_existing);
-				std::filesystem::copy_file(currentDisplay,display,
-					std::filesystem::copy_options::overwrite_existing);
-				std::filesystem::copy_file(currentDisplay.string()+".provenance.cbor",
-					display.string()+".provenance.cbor",
-					std::filesystem::copy_options::overwrite_existing);
+				const CapturedPreviewPair captured={{framePrimary,framePrimarySidecar,frameDisplay,frameDisplaySidecar}};
+				animationPairs=WriteCapturedPreviewPair(primary,display,captured,frameError);
+				verifiedPairDigests.push_back(PreviewPairDigests(captured));terminalCaptured=captured;
 			}
 			primaryFrames.push_back(primary);displayFrames.push_back(display);
 			if(frame+1u<8u){if(job)job->release();job=nullptr;}
@@ -517,8 +918,12 @@ namespace
 			animationStore->Meta():FrameStore::Metadata();
 		const std::filesystem::path temporaryGIF=stage/"methane_preview_animation.gif.tmp";
 		const std::filesystem::path gifPath=stage/"methane_preview_animation.gif";
+		std::vector<std::string> verifiedDisplayDigests;for(const auto& pair:verifiedPairDigests)verifiedDisplayDigests.push_back(pair[2u]);
+		RISECBOR64::Bytes authoredGIF;
 		const bool gifAuthored=animationPairs&&AuthorFirstLightGIF(
-			displayFrames,temporaryGIF,8u,error);
+			displayFrames,temporaryGIF,8u,error,&verifiedDisplayDigests,nullptr,&authoredGIF)&&
+			ValidateFireGIFBytes(authoredGIF,FireFrameSequenceEncoding::AppleImageIOGif_PreviewPlus6EV_8Bit,
+				64u,64u,8u,primaryLinks,true,error);
 		const bool gifPublished=gifAuthored&&PublishFireFrameSequenceFileTransaction(
 			animationMetadata,
 			FireFrameSequenceEncoding::AppleImageIOGif_PreviewPlus6EV_8Bit,
@@ -528,28 +933,22 @@ namespace
 		if(!pairs||!animationPairs||!gifPublished){
 			std::fprintf(stderr,"first-light animation rejected: %s\n",error.c_str());return 93;
 		}
+		RISECBOR64::Bytes capturedGIF,capturedGIFSidecar;
+		if(!R246CaptureGIFPair(gifPath,authoredGIF,animationMetadata,64u,64u,8u,primaryLinks,capturedGIF,capturedGIFSidecar,error))return 94;
 		std::filesystem::create_directories(outputDirectory);
-		for(const auto& copy:std::vector<std::pair<std::filesystem::path,std::filesystem::path>>{
-			{stage/"first_light_primary.exr",outputDirectory/"methane_preview.exr"},
-			{stage/"first_light_primary.exr.provenance.cbor",
-				outputDirectory/"methane_preview.exr.provenance.cbor"},
-			{stage/"first_light_display.png",outputDirectory/"methane_preview_display.png"},
-			{stage/"first_light_display.png.provenance.cbor",
-				outputDirectory/"methane_preview_display.png.provenance.cbor"},
-			{gifPath,outputDirectory/"methane_preview_animation.gif"},
-			{gifPath.string()+".provenance.cbor",
-				outputDirectory/"methane_preview_animation.gif.provenance.cbor"}})
-			std::filesystem::copy_file(copy.first,copy.second,
-				std::filesystem::copy_options::overwrite_existing);
+		const auto terminalPaths=PreviewPairPaths(outputDirectory/"methane_preview.exr",outputDirectory/"methane_preview_display.png");
+		for(std::size_t member=0u;member<terminalCaptured.size();++member)
+			if(!R246WriteNewCapturedBytes(terminalPaths[member],terminalCaptured[member],error))return 94;
+		if(!R246WriteNewCapturedBytes(outputDirectory/"methane_preview_animation.gif",capturedGIF,error)||
+			!R246WriteNewCapturedBytes(outputDirectory/"methane_preview_animation.gif.provenance.cbor",capturedGIFSidecar,error)||
+			ReadFileBytes(outputDirectory/"methane_preview_animation.gif")!=capturedGIF||
+			ReadFileBytes(outputDirectory/"methane_preview_animation.gif.provenance.cbor")!=capturedGIFSidecar)return 94;
 		if(primaryFrames.size()!=8u)return 94;
 		for(std::size_t frame=0u;frame<primaryFrames.size();++frame){
-			const std::string index="000"+std::to_string(frame);
-			std::filesystem::copy_file(primaryFrames[frame],
-				outputDirectory/("methane_preview_frame"+index+".exr"),
-				std::filesystem::copy_options::overwrite_existing);
-			std::filesystem::copy_file(primaryFrames[frame].string()+".provenance.cbor",
-				outputDirectory/("methane_preview_frame"+index+".exr.provenance.cbor"),
-				std::filesystem::copy_options::overwrite_existing);
+			const std::string index="000"+std::to_string(frame);CapturedPreviewPair captured;
+			if(!ReadBoundPreviewPair(primaryFrames[frame],displayFrames[frame],verifiedPairDigests[frame],captured,error)||
+				!R246WriteNewCapturedBytes(outputDirectory/("methane_preview_frame"+index+".exr"),captured[0u],error)||
+				!R246WriteNewCapturedBytes(outputDirectory/("methane_preview_frame"+index+".exr.provenance.cbor"),captured[1u],error))return 94;
 		}
 		std::string primaryScheduleIdentity;
 		for(const FireFramePrimary& primary:primaryLinks)
@@ -561,34 +960,92 @@ namespace
 			"terminal_primary=%s png=%s gif=%s\n",
 			RISECBOR64::SHA256Hex(primaryScheduleBytes).c_str(),
 			primaryLinks.back().artifactSha256.c_str(),
-			DigestFile(outputDirectory/"methane_preview_display.png").c_str(),
-			DigestFile(outputDirectory/"methane_preview_animation.gif").c_str());
+			RISECBOR64::SHA256Hex(terminalCaptured[2u]).c_str(),
+			RISECBOR64::SHA256Hex(capturedGIF).c_str());
 		return 0;
 #endif
 	}
 
-	bool TemporalManifestDomainMatches(const RISECBOR64::Bytes& bytes,
-		const bool r244LateralDouble,std::string& error)
+	struct R246CapturedEventHistory {
+		const std::vector<double>& steps;
+		const std::vector<double>& frames;
+		double terminal;
+	};
+	bool R246AcceptedEventHistoryMatches(const std::vector<double>& steps,
+		const std::vector<double>& frames,const double manifestOrigin,const double terminal,std::string& error);
+#ifndef RISE_ENABLE_OPENVDB
+	bool R246AcceptedEventHistoryMatches(const std::vector<double>&,
+		const std::vector<double>&,const double,const double,std::string& error)
 	{
+		error="r246 captured history admission requires OpenVDB";return false;
+	}
+#endif
+	bool R246AcceptedSourceHistoryMatches(const std::filesystem::path& sourceDirectory,
+		const RISECBOR64::Bytes& candidateManifest,std::string& error,
+		const std::function<void()>* betweenReads=nullptr,
+		const RISECBOR64::Bytes* candidateCSV=nullptr);
+#ifndef RISE_ENABLE_OPENVDB
+	bool R246AcceptedSourceHistoryMatches(const std::filesystem::path&,
+		const RISECBOR64::Bytes&,std::string& error,const std::function<void()>*,const RISECBOR64::Bytes*)
+	{
+		error="r246 source history admission requires OpenVDB";return false;
+	}
+#endif
+
+	bool TemporalManifestDomainMatches(const RISECBOR64::Bytes& bytes,
+		const bool r244LateralDouble,std::string& error,const bool r246TopDouble=false,
+		const std::filesystem::path* acceptedSourceDirectory=nullptr,
+		const RISECBOR64::Bytes* candidateCSV=nullptr,
+		const R246CapturedEventHistory* capturedHistory=nullptr)
+	{
+		if(r246TopDouble&&!r244LateralDouble){error="r246 domain selector conflict";return false;}
 		RISECBOR64::Value envelope;
 		if(!RISECBOR64::DecodeCanonical(bytes,envelope,&error))return false;
 		const auto* payload=envelope.Find("payload");
 		const auto* embedded=payload?payload->Find("case_record"):nullptr;
 		FireCase::RecordV1 record;
-		return embedded&&embedded->GetType()==RISECBOR64::Value::ByteString&&
+		const bool matches=embedded&&embedded->GetType()==RISECBOR64::Value::ByteString&&
 			FireCase::ValidateMethaneEnvelopeV1(embedded->GetBytes(),
 				FireSimulationMethaneRecord::PhysicalV1(),record,error)&&
-			record.authored.domainStudy==(r244LateralDouble?"r244-lateral-double-v1":"");
+			record.authored.domainStudy==(r246TopDouble?"r246-lateral-double-top-double-v1":
+				(r244LateralDouble?"r244-lateral-double-v1":""))&&
+			(!r246TopDouble||(record.authored.durationS==25.156864278900095&&
+				record.authored.outputFramesPerS==16.0&&
+				FireCase::ScheduleFlowThroughTimeS(record.derived)==0x1.0d9da03060ef6p+1));
+		if(!matches)return false;
+		if(!r246TopDouble)return true;
+		FireSequenceManifest manifest;
+		if(!manifest.LoadCanonicalEnvelope(bytes,".",error)||manifest.Frames().size()!=235u||
+			manifest.Channels().empty()||manifest.Channels().front().name!="carbon"||
+			manifest.TimeMap().firstFrameIndex!=0||
+			(capturedHistory?!R246AcceptedEventHistoryMatches(capturedHistory->steps,capturedHistory->frames,
+				manifest.TimeMap().simulationTimeOrigin,capturedHistory->terminal,error):
+				(acceptedSourceDirectory?!R246AcceptedSourceHistoryMatches(*acceptedSourceDirectory,bytes,error,nullptr,candidateCSV):
+					manifest.TimeMap().simulationTimeOrigin!=10.531864278900095))||
+			manifest.TimeMap().frameStepSeconds!=0.0625||
+			manifest.TimeMap().sceneToSimulationScale!=1.0||
+			manifest.TimeMap().sceneTimeOrigin!=0.0)return false;
+		// Bind actual native placement independently of optional producer labels.
+		const std::array<std::uint64_t,3> grid={{record.derived.nx,record.derived.ny,record.derived.nz}};
+		for(const auto& channel:manifest.Channels())for(std::size_t axis=0u;axis<3u;++axis){
+			const bool velocity=channel.name=="velocity";
+			const double dx=record.derived.cellWidthM;
+			if(channel.dimensions[axis]!=grid[axis]+(velocity?2u:0u)||
+				channel.voxelSizeMeters[axis]!=dx||channel.originMeters[axis]!=(velocity?-dx:0.0)||
+				channel.coreFaceBoundsMeters[axis]!=-0.5*dx||
+				channel.coreFaceBoundsMeters[axis+3u]!=(grid[axis]-0.5)*dx)return false;
+		}
+		return true;
+
 	}
 
-#if defined(__APPLE__)
 	std::string TemporalFirePreviewScene(const FireSequenceChannelDescriptor& channel,
-		const std::filesystem::path& manifestPath,const bool r244LateralDouble)
+		const std::filesystem::path& manifestPath,const bool r244LateralDouble,const bool r246TopDouble=false)
 	{
 		const double width=channel.voxelSizeMeters[0];
 		const double centerX=0.5*static_cast<double>(channel.dimensions[0])*width;
 		const double centerY=0.5*static_cast<double>(channel.dimensions[1])*width;
-		const double depth=r244LateralDouble?static_cast<double>(channel.dimensions[2])*width:
+		const double depth=r244LateralDouble?static_cast<double>(r246TopDouble?80u:channel.dimensions[2])*width:
 			std::max({static_cast<double>(channel.dimensions[0]),
 			static_cast<double>(channel.dimensions[1]),static_cast<double>(channel.dimensions[2])})*width;
 		const double centerZ=0.5*depth;
@@ -613,6 +1070,7 @@ namespace
 		return scene.str();
 	}
 
+#if defined(__APPLE__)
 	std::string TemporalPreviewInventory(const std::filesystem::path& directory,const std::size_t frames)
 	{
 		std::ostringstream inventory;
@@ -632,23 +1090,131 @@ namespace
 	}
 
 #endif
+	bool R246RuntimeManifestMatches(const RISECBOR64::Value& envelope,
+		const FireSequenceManifest& manifest,const std::size_t frame)
+	{
+		using V=RISECBOR64::Value;
+		const auto* payload=envelope.Find("payload");const auto* media=payload?payload->Find("active_fire_media"):nullptr;
+		if(frame>=manifest.Frames().size()||!media||media->GetType()!=V::Array||media->GetArray().size()!=1u)return false;
+		const auto& medium=media->GetArray().front();const auto* sequence=medium.Find("sequence_id");
+		const auto* selected=medium.Find("selected_base_frame_index");const auto* digest=medium.Find("whole_file_digest");
+		return sequence&&sequence->GetText()==manifest.SequenceId()&&selected&&selected->GetType()==V::UnsignedInteger&&
+			selected->GetIntegerArgument()==static_cast<std::uint64_t>(manifest.Frames()[frame].index)&&
+			digest&&digest->GetText()==manifest.Frames()[frame].sha256;
+	}
+
+	bool R246ReadCheckpointSnapshot(const std::filesystem::path& path,
+		RISECBOR64::Bytes& payload,RISECBOR64::Bytes& seal,std::string& error,
+		const std::function<void()>* betweenReads=nullptr)
+	{
+		const auto sidecar=std::filesystem::path(path.string()+".payload-v2.json");
+		const auto pending=std::filesystem::path(path.string()+".preparation.pending.payload-v2.json");
+		auto admitted=[&](){return std::filesystem::is_regular_file(sidecar)&&
+			!std::filesystem::is_symlink(sidecar)&&!std::filesystem::exists(pending)&&
+			!std::filesystem::is_symlink(pending);};
+		if(!admitted()){error="r246 capture requires nonaliased certificate and complete publication";return false;}
+		payload=ReadFileBytes(path);seal=ReadFileBytes(sidecar);
+		if(betweenReads)(*betweenReads)();
+		if(!admitted()||payload.empty()||seal.empty()){
+			error="r246 source lifecycle changed during checkpoint capture";return false;
+		}
+		return true;
+	}
+
+	struct R246CapturedPreviewInputs {
+		const RISECBOR64::Bytes& manifest;
+		const RISECBOR64::Bytes& frameCSV;
+		const R246CapturedEventHistory& history;
+		std::filesystem::path snapshotDirectory;
+	};
+	bool PublishPayloadMerkleSidecar(const std::filesystem::path&,const std::string&,std::string&);
+	bool BuildPayloadMerkleCertificateBytes(const RISECBOR64::Bytes&,const std::string&,std::string&,std::string&);
+	bool R246PreviewSnapshotMatches(const std::filesystem::path& sourceDirectory,
+		const R246CapturedPreviewInputs& input,std::string& error)
+	{
+		const auto pending=input.snapshotDirectory/"preparation.pending";
+		if(std::filesystem::exists(pending)||std::filesystem::is_symlink(pending)){
+			error="r246 preview snapshot publication incomplete";return false;
+		}
+		const auto manifestPath=input.snapshotDirectory/"sequence_manifest.rise-fire.cbor";
+		const auto frames=input.snapshotDirectory/"frames";
+		FireSequenceManifest manifest;
+		if(!std::filesystem::is_symlink(frames)||std::filesystem::weakly_canonical(frames)!=
+			std::filesystem::weakly_canonical(sourceDirectory/"frames")||
+			!manifest.LoadCanonicalEnvelope(input.manifest,input.snapshotDirectory.string(),error)||
+			!TemporalManifestDomainMatches(input.manifest,true,error,true,nullptr,nullptr,&input.history))return false;
+		const auto scene=TemporalFirePreviewScene(manifest.Channels().front(),manifestPath,true,true);
+		const RISECBOR64::Bytes sceneBytes(scene.begin(),scene.end());
+		for(const auto& pair:std::array<std::pair<const char*,const RISECBOR64::Bytes*>,3>{{
+			{"sequence_manifest.rise-fire.cbor",&input.manifest},{"frame_times.csv",&input.frameCSV},{"source_scene.RISEscene",&sceneBytes}}}){
+			const auto path=input.snapshotDirectory/pair.first;RISECBOR64::Bytes captured,seal;
+			std::string expected;
+			if(std::filesystem::is_symlink(path)||!R246ReadCheckpointSnapshot(path,captured,seal,error)||
+				captured!=*pair.second||!BuildPayloadMerkleCertificateBytes(captured,manifest.CaseRecordId(),expected,error)||
+				std::string(seal.begin(),seal.end())!=expected)return false;
+		}
+		if(std::filesystem::exists(pending)||std::filesystem::is_symlink(pending))return false;
+		return true;
+	}
+	bool R246WritePreviewSnapshot(const std::filesystem::path& sourceDirectory,
+		const R246CapturedPreviewInputs& input,std::string& error)
+	{
+		std::error_code createError;
+		if(!std::filesystem::create_directory(input.snapshotDirectory,createError)||createError){
+			error="r246 preview snapshot requires new unoccupied directory";return false;
+		}
+		std::filesystem::permissions(input.snapshotDirectory,std::filesystem::perms::owner_all);
+		const auto pending=input.snapshotDirectory/"preparation.pending";
+		{std::ofstream marker(pending);marker<<"new consumer snapshot pending\n";marker.close();if(!marker)return false;}
+		FireSequenceManifest manifest;
+		if(!manifest.LoadCanonicalEnvelope(input.manifest,input.snapshotDirectory.string(),error)||
+			!TemporalManifestDomainMatches(input.manifest,true,error,true,nullptr,nullptr,&input.history))return false;
+		// Native fields remain original producer inputs. Their existing same-descriptor
+		// digest/OpenVDB loader verifies each use; no field bytes are copied or relabelled.
+		for(const auto& frame:manifest.Frames())if(std::filesystem::path(frame.relativePath).parent_path()!="frames")return false;
+		std::filesystem::create_directory_symlink(std::filesystem::canonical(sourceDirectory/"frames"),input.snapshotDirectory/"frames",createError);
+		if(createError)return false;
+		const auto scene=TemporalFirePreviewScene(manifest.Channels().front(),
+			input.snapshotDirectory/"sequence_manifest.rise-fire.cbor",true,true);
+		const RISECBOR64::Bytes sceneBytes(scene.begin(),scene.end());
+		for(const auto& pair:std::array<std::pair<const char*,const RISECBOR64::Bytes*>,3>{{
+			{"sequence_manifest.rise-fire.cbor",&input.manifest},{"frame_times.csv",&input.frameCSV},{"source_scene.RISEscene",&sceneBytes}}}){
+			const auto path=input.snapshotDirectory/pair.first;std::ofstream output(path,std::ios::binary);
+			output.write(reinterpret_cast<const char*>(pair.second->data()),static_cast<std::streamsize>(pair.second->size()));
+			output.close();if(!output||!PublishPayloadMerkleSidecar(path,manifest.CaseRecordId(),error))return false;
+			std::filesystem::permissions(path,std::filesystem::perms::owner_read);
+			std::filesystem::permissions(path.string()+".payload-v2.json",std::filesystem::perms::owner_read);
+		}
+		std::filesystem::remove(pending,createError);if(createError)return false;
+		return R246PreviewSnapshotMatches(sourceDirectory,input,error);
+	}
+
+#if defined(__APPLE__)
+	bool R246MatchedRenderProfiles(const RISECBOR64::Value&,const RISECBOR64::Value&,
+		const FireSequenceManifest&,std::size_t,bool,std::string&);
+#endif
 	int RunTemporalFirePreviewChild(const std::filesystem::path& sourceDirectory,
-		const std::filesystem::path& outputDirectory,const bool r244LateralDouble=false)
+		const std::filesystem::path& outputDirectory,const bool r244LateralDouble=false,const bool r246TopDouble=false,
+		const R246CapturedPreviewInputs* recovered=nullptr)
 	{
 #if !defined(__APPLE__)
-		(void)sourceDirectory;(void)outputDirectory;(void)r244LateralDouble;
+		(void)sourceDirectory;(void)outputDirectory;(void)r244LateralDouble;(void)r246TopDouble;(void)recovered;
 		std::fprintf(stderr,"temporal fire preview authoring requires macOS ImageIO\n");
 		return 90;
 #else
 		std::string error;
+		if(!R246CreateFreshPreviewOutput(outputDirectory,error))return 91;
 		const std::filesystem::path manifestPath=
-			sourceDirectory/"sequence_manifest.rise-fire.cbor";
-		const RISECBOR64::Bytes manifestBytes=ReadFileBytes(manifestPath);
+			(recovered?recovered->snapshotDirectory:sourceDirectory)/"sequence_manifest.rise-fire.cbor";
+		if(recovered&&(!r244LateralDouble||!r246TopDouble||
+			!R246PreviewSnapshotMatches(sourceDirectory,*recovered,error)))return 91;
+		const RISECBOR64::Bytes manifestBytes=recovered?recovered->manifest:ReadFileBytes(manifestPath);
 		FireSequenceManifest manifest;
 		if(manifestBytes.empty()||!manifest.LoadCanonicalEnvelope(manifestBytes,
-			sourceDirectory.string(),error)||!manifest.PreflightAllFrames(error)||
+			manifestPath.parent_path().string(),error)||!manifest.PreflightAllFrames(error)||
 			manifest.Frames().size()<8u||manifest.Channels().empty()||
-			!TemporalManifestDomainMatches(manifestBytes,r244LateralDouble,error)){
+			!TemporalManifestDomainMatches(manifestBytes,r244LateralDouble,error,r246TopDouble,
+				nullptr,nullptr,recovered?&recovered->history:nullptr)){
 			std::fprintf(stderr,"temporal fire manifest rejected: %s\n",error.c_str());return 91;
 		}
 		const FireSequenceChannelDescriptor& channel=manifest.Channels().front();
@@ -664,7 +1230,7 @@ namespace
 		// The matched domain study keeps the baseline's physical field of view.
 		// Only the burner-centred camera translates when the lateral box widens.
 		if(r244LateralDouble&&(channel.dimensions[0]!=104u||channel.dimensions[1]!=104u||
-			channel.dimensions[2]!=80u))return 91;
+			channel.dimensions[2]!=(r246TopDouble?160u:80u)))return 91;
 
 		std::filesystem::path stage;
 		const std::string stageStem="rise-temporal-fire-"+
@@ -677,17 +1243,23 @@ namespace
 			if(std::filesystem::create_directory(candidate,createError))stage=candidate;
 		}
 		if(stage.empty())return 91;
+		std::filesystem::permissions(stage,std::filesystem::perms::owner_all);
 		setenv("RISE_MEDIA_PATH",(stage.string()+"/").c_str(),1);
 		const std::filesystem::path scenePath=stage/"temporal_fire.RISEscene";
+		const auto sceneText=TemporalFirePreviewScene(channel,manifestPath,r244LateralDouble,r246TopDouble);
+		const RISECBOR64::Bytes sceneBytes(sceneText.begin(),sceneText.end());
 		{
 			std::ofstream scene(scenePath);
-			scene<<TemporalFirePreviewScene(channel,manifestPath,r244LateralDouble);
-			if(!scene.good())return 92;
+			scene<<sceneText;scene.close();if(!scene)return 92;
 		}
+		std::filesystem::permissions(scenePath,std::filesystem::perms::owner_read);
+		if(ReadFileBytes(scenePath)!=sceneBytes)return 92;
 		IJobPriv* job=nullptr;
 		if(!RISE_CreateJobPriv(&job)||!job||!job->LoadAsciiSceneViaCst(scenePath.string().c_str())){
 			if(job)job->release();return 92;
 		}
+		if(ReadFileBytes(scenePath)!=sceneBytes||
+			(recovered&&!R246PreviewSnapshotMatches(sourceDirectory,*recovered,error))){job->release();return 92;}
 		auto waitForPair=[&](const std::string& previousProvenance,
 			RISECBOR64::Bytes& primaryBytes,RISECBOR64::Bytes& primarySidecar,
 			RISECBOR64::Bytes& displayBytes,RISECBOR64::Bytes& displaySidecar,
@@ -714,6 +1286,7 @@ namespace
 		};
 		std::vector<std::filesystem::path> primaryFrames,displayFrames;
 		std::vector<FireFramePrimary> primaryLinks;
+		std::vector<CapturedPreviewPairDigests> pairDigests;
 		std::string previousProvenance;
 		for(std::size_t frame=0u;frame<manifest.Frames().size();++frame){
 			for(const std::filesystem::path& prior:std::array<std::filesystem::path,4>{
@@ -733,6 +1306,13 @@ namespace
 				std::fprintf(stderr,"temporal fire frame %zu rejected: %s\n",frame,
 					error.c_str());job->release();return 93;
 			}
+			if(recovered){
+				RISECBOR64::Value displayEnvelope;
+				if(!RISECBOR64::DecodeCanonical(displaySidecar,displayEnvelope,&error)||
+					!R246MatchedRenderProfiles(envelope,displayEnvelope,manifest,frame,true,error)){
+					job->release();return 93;
+				}
+			}
 			previousProvenance=provenance;
 			const RISECBOR64::Value* payload=envelope.Find("payload");
 			const RISECBOR64::Value* artifact=payload?payload->Find("artifact_sha256"):nullptr;
@@ -740,14 +1320,9 @@ namespace
 			std::ostringstream index;index<<std::setw(5)<<std::setfill('0')<<frame;
 			const std::filesystem::path primary=stage/("temporal_primary_"+index.str()+".exr");
 			const std::filesystem::path display=stage/("temporal_display_"+index.str()+".png");
-			for(const auto& copy:std::array<std::pair<std::filesystem::path,
-				std::filesystem::path>,4>{{
-				{stage/"temporal_primary.exr",primary},
-				{stage/"temporal_primary.exr.provenance.cbor",primary.string()+".provenance.cbor"},
-				{stage/"temporal_display.png",display},
-				{stage/"temporal_display.png.provenance.cbor",display.string()+".provenance.cbor"}}})
-				std::filesystem::copy_file(copy.first,copy.second,
-					std::filesystem::copy_options::overwrite_existing);
+			const CapturedPreviewPair captured={{primaryBytes,primarySidecar,displayBytes,displaySidecar}};
+			if(!WriteCapturedPreviewPair(primary,display,captured,error)){job->release();return 93;}
+			pairDigests.push_back(PreviewPairDigests(captured));
 			FireFramePrimary link;link.frameIndex=frame;link.provenanceId=provenance;
 			link.artifactSha256=artifact->GetText();primaryLinks.push_back(link);
 			primaryFrames.push_back(primary);displayFrames.push_back(display);
@@ -760,52 +1335,59 @@ namespace
 		const FrameStore::Metadata metadata=store?store->Meta():FrameStore::Metadata();
 		const std::filesystem::path temporaryGIF=stage/"temporal_fire_preview.gif.tmp";
 		const std::filesystem::path gifPath=stage/"temporal_fire_preview.gif";
-		const bool authored=AuthorFirstLightGIF(displayFrames,temporaryGIF,framesPerSecond,error);
+		std::vector<std::string> verifiedDisplayDigests;for(const auto& pair:pairDigests)verifiedDisplayDigests.push_back(pair[2u]);
+		RISECBOR64::Bytes authoredGIF;
+		const bool authored=AuthorFirstLightGIF(displayFrames,temporaryGIF,framesPerSecond,error,&verifiedDisplayDigests,nullptr,&authoredGIF)&&
+			ValidateFireGIFBytes(authoredGIF,FireFrameSequenceEncoding::AppleImageIOGif_PreviewPlus6EV_8Bit,
+				64u,64u,framesPerSecond,primaryLinks,false,error);
 		const bool published=authored&&PublishFireFrameSequenceFileTransaction(metadata,
 			FireFrameSequenceEncoding::AppleImageIOGif_PreviewPlus6EV_8Bit,
 			temporaryGIF.string(),gifPath.string(),64u,64u,framesPerSecond,
 			static_cast<unsigned int>(primaryLinks.size()),primaryLinks,ValidateTemporalFireGIF,error);
 		job->release();
 		if(!published){std::fprintf(stderr,"temporal fire GIF rejected: %s\n",error.c_str());return 94;}
+		RISECBOR64::Bytes publishedGIF,publishedGIFSidecar;
+		if(!R246CaptureGIFPair(gifPath,authoredGIF,metadata,64u,64u,framesPerSecond,primaryLinks,publishedGIF,publishedGIFSidecar,error))return 94;
+		if(recovered&&!R246PreviewSnapshotMatches(sourceDirectory,*recovered,error))return 94;
 		std::filesystem::create_directories(outputDirectory);
 		for(std::size_t frame=0u;frame<primaryFrames.size();++frame){
 			std::ostringstream index;index<<std::setw(5)<<std::setfill('0')<<frame;
-			for(const auto& copy:std::array<std::pair<std::filesystem::path,
-				std::filesystem::path>,4>{{
-				{primaryFrames[frame],outputDirectory/("temporal_primary_"+index.str()+".exr")},
-				{primaryFrames[frame].string()+".provenance.cbor",
-					outputDirectory/("temporal_primary_"+index.str()+".exr.provenance.cbor")},
-				{displayFrames[frame],outputDirectory/("temporal_display_"+index.str()+".png")},
-				{displayFrames[frame].string()+".provenance.cbor",
-					outputDirectory/("temporal_display_"+index.str()+".png.provenance.cbor")}}})
-				std::filesystem::copy_file(copy.first,copy.second,
-					std::filesystem::copy_options::overwrite_existing);
+			CapturedPreviewPair captured;
+			if(!ReadBoundPreviewPair(primaryFrames[frame],displayFrames[frame],pairDigests[frame],captured,error)||
+				!WriteCapturedPreviewPair(outputDirectory/("temporal_primary_"+index.str()+".exr"),
+					outputDirectory/("temporal_display_"+index.str()+".png"),captured,error))return 94;
 		}
-		std::filesystem::copy_file(gifPath,outputDirectory/"temporal_fire_preview.gif",
-			std::filesystem::copy_options::overwrite_existing);
-		std::filesystem::copy_file(gifPath.string()+".provenance.cbor",
-			outputDirectory/"temporal_fire_preview.gif.provenance.cbor",
-			std::filesystem::copy_options::overwrite_existing);
+		if(!R246WriteNewCapturedBytes(outputDirectory/"temporal_fire_preview.gif",publishedGIF,error)||
+			!R246WriteNewCapturedBytes(outputDirectory/"temporal_fire_preview.gif.provenance.cbor",publishedGIFSidecar,error))return 94;
 		// Emitted only by the fixed scene producer after all pairs publish.
 		// This receipt is not a signature or an imported-file attestation.
-		std::filesystem::copy_file(scenePath,outputDirectory/"temporal_fire.RISEscene",
-			std::filesystem::copy_options::overwrite_existing);
-		const auto inventory=TemporalPreviewInventory(outputDirectory,primaryFrames.size());
-		if(inventory.empty())return 94;
+		const auto outputScene=outputDirectory/"temporal_fire.RISEscene";
+		if(!R246WriteNewCapturedBytes(outputScene,sceneBytes,error))return 94;
+		std::ostringstream capturedInventory;
+		for(std::size_t frame=0u;frame<pairDigests.size();++frame){capturedInventory<<frame;
+			for(const auto& digest:pairDigests[frame])capturedInventory<<':'<<digest;capturedInventory<<'\n';}
+		const auto inventory=capturedInventory.str();
+		if(inventory.empty()||TemporalPreviewInventory(outputDirectory,primaryFrames.size())!=inventory||
+			ReadFileBytes(outputScene)!=sceneBytes)return 94;
 		std::ofstream receipt(outputDirectory/"temporal_preview_receipt.v1");
 		receipt<<"schema rise.fire.temporal-preview-receipt.v1\nsource_manifest_sha256 "
-			<<DigestFile(manifestPath)<<"\nscene_sha256 "<<DigestFile(scenePath)
+			<<RISECBOR64::SHA256Hex(manifestBytes)<<"\nscene_sha256 "<<RISECBOR64::SHA256Hex(sceneBytes)
 			<<"\nframes "<<primaryFrames.size()<<'\n'<<inventory;
 		receipt.close();if(!receipt)return 94;
+		const auto movieBytes=R246MovieReceiptBytes(publishedGIF,publishedGIFSidecar,primaryLinks,metadata.rendererBuildId);
+		if(!R246WriteNewCapturedBytes(outputDirectory/"temporal_preview_movie_receipt.v1",movieBytes,error)||
+			ReadFileBytes(outputDirectory/"temporal_fire_preview.gif")!=publishedGIF||
+			ReadFileBytes(outputDirectory/"temporal_fire_preview.gif.provenance.cbor")!=publishedGIFSidecar||
+			ReadFileBytes(outputDirectory/"temporal_preview_movie_receipt.v1")!=movieBytes)return 94;
 		std::ofstream summary(outputDirectory/"temporal_preview_summary.txt");
 		summary<<"artifact_fidelity=display_derivative\npreview_label=temporal_fire_preview\n"
-			<<"source_manifest_sha256="<<DigestFile(manifestPath)<<"\nframes="<<primaryLinks.size()<<
+			<<"source_manifest_sha256="<<RISECBOR64::SHA256Hex(manifestBytes)<<"\nframes="<<primaryLinks.size()<<
 			"\nfps="<<framesPerSecond<<"\ngif_sha256="<<
-			DigestFile(outputDirectory/"temporal_fire_preview.gif")<<"\n";
-		summary.close();
+			RISECBOR64::SHA256Hex(publishedGIF)<<"\n";
+		summary.close();if(!summary)return 94;
 		std::printf("TEMPORAL_FIRE_PREVIEW frames=%zu fps=%u manifest=%s gif=%s output=%s\n",
-			primaryLinks.size(),framesPerSecond,DigestFile(manifestPath).c_str(),
-			DigestFile(outputDirectory/"temporal_fire_preview.gif").c_str(),
+			primaryLinks.size(),framesPerSecond,RISECBOR64::SHA256Hex(manifestBytes).c_str(),
+			RISECBOR64::SHA256Hex(publishedGIF).c_str(),
 			(outputDirectory/"temporal_fire_preview.gif").string().c_str());
 		return 0;
 #endif
@@ -977,6 +1559,12 @@ namespace
 		double realizedRadiativeFraction=0.0, acceptedEscapeFactor=0.0;
 		double selectedTimeStepS=0.0,acceptedTimeStepS=0.0;
 		double simulatedTimeS=0.0,flowThroughTimeS=0.0,pilotEnergyJ=0.0;
+		// Diagnostic fields are not part of the legacy checkpoint wire layout.
+		double matchedScheduleFlowThroughTimeS=0.0;
+		double projectionReferenceLengthM=0.0,projectionTolerancePerS=0.0;
+		double velocityToleranceMPerS=0.0,pressureTolerancePa=0.0;
+		std::uint64_t r246PreallocationReserveBytes=0u;
+		bool r246InitialFieldsAllocated=false;
 		double expectedPilotEnergyJ=0.0;
 		double maximumTemperatureK=0.0;
 		double maximumPilotApproachEOSResidual=0.0;
@@ -1176,6 +1764,9 @@ namespace
 		// explicit; the temporal production entry selects this full owner.
 		bool portedProductionTransport=false;
 		bool r244LateralDouble=false;
+		// Explicit taller commands retain full-window scope; campaign launch requires final review.
+		bool r246TopDouble=false,r246FullWindow=false;
+		bool r246MemoryAdmissionRED=false,r246DeviceAdmissionRED=false;
 		bool r245AcceptedBudget=false;
 		bool r245ObservationFixture=false;
 		bool compatibleMomentumDiagnostic=false;
@@ -2713,15 +3304,12 @@ namespace
 #endif
 	}
 
-	bool BuildPayloadMerkleCertificate(const std::filesystem::path& path,
+	bool BuildPayloadMerkleCertificateBytes(const RISECBOR64::Bytes& bytes,
 		const std::string& caseRecordId,std::string& certificateText,std::string& error)
 	{
 		if(caseRecordId.size()!=64u||!std::all_of(caseRecordId.begin(),caseRecordId.end(),
 			[](char c){return (c>='0'&&c<='9')||(c>='a'&&c<='f');})){
 			error="payload publication case identity is invalid";return false;}
-		const auto bytes=ReadFileBytes(path);
-		if(!std::filesystem::is_regular_file(path)||bytes.size()!=std::filesystem::file_size(path)){
-			error="payload publication is incomplete";return false;}
 		FireProductionPayloadDigestV2 digest;
 		if(!FireProductionPayloadDigestCPU(bytes.data(),bytes.size(),8u,digest,&error))return false;
 		std::ostringstream certificate;
@@ -2732,6 +3320,15 @@ namespace
 			<<"\"chunk_bytes\":4096,\"fan_in\":16,\"payload_bytes\":"<<bytes.size()
 			<<",\"root_sha256\":\""<<digest.rootSHA256<<"\"}}\n";
 		certificateText=certificate.str();return true;
+	}
+
+	bool BuildPayloadMerkleCertificate(const std::filesystem::path& path,
+		const std::string& caseRecordId,std::string& certificateText,std::string& error)
+	{
+		const auto bytes=ReadFileBytes(path);
+		if(!std::filesystem::is_regular_file(path)||bytes.size()!=std::filesystem::file_size(path)){
+			error="payload publication is incomplete";return false;}
+		return BuildPayloadMerkleCertificateBytes(bytes,caseRecordId,certificateText,error);
 	}
 
 	bool PublishPayloadMerkleSidecar(const std::filesystem::path& path,
@@ -3229,9 +3826,11 @@ namespace
 	}
 
 	bool CanonicalCapstoneGridForTier(const double resolutionTier,
-		std::array<std::size_t,3>& dimensions,double& cellWidthM,const bool r244LateralDouble=false)
+		std::array<std::size_t,3>& dimensions,double& cellWidthM,const bool r244LateralDouble=false,
+		const bool r246TopDouble=false)
 	{
 		dimensions.fill(0u);cellWidthM=0.0;
+		if(r246TopDouble&&!r244LateralDouble)return false;
 		if(resolutionTier!=6.0&&resolutionTier!=8.0&&resolutionTier!=10.0)return false;
 		const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
 		FireCase::AuthoredV1 authored;
@@ -3239,7 +3838,8 @@ namespace
 		authored.heatReleaseRateKW=CapstoneHeatReleaseRateKW;authored.envelope={{0.0,1.0}};
 		authored.durationS=1.0;authored.outputFramesPerS=1.0;authored.quality="dstar";
 		authored.numericDStarTier=resolutionTier;authored.seed=1234;authored.plumeLaw=true;
-		if(r244LateralDouble)authored.domainStudy="r244-lateral-double-v1";
+		if(r244LateralDouble)authored.domainStudy=r246TopDouble?
+			"r246-lateral-double-top-double-v1":"r244-lateral-double-v1";
 		const RISECBOR64::Bytes aerosol=AerosolRecord(),chem=SyntheticChemRecord();
 		FireCase::RecordV1 record;std::string error;
 		if(!FireCase::BuildMethaneV1(authored,fuel,{
@@ -3254,18 +3854,20 @@ namespace
 	}
 
 	bool ProductionPuffingSpectrumTierMatches(const MethaneRunCheckpoint& checkpoint,
-		const double resolutionTier,const bool r244LateralDouble=false)
+		const double resolutionTier,const bool r244LateralDouble=false,const bool r246TopDouble=false)
 	{
 		std::array<std::size_t,3> dimensions;double cellWidthM=0.0;
-		return CanonicalCapstoneGridForTier(resolutionTier,dimensions,cellWidthM,r244LateralDouble)&&
+		return CanonicalCapstoneGridForTier(resolutionTier,dimensions,cellWidthM,r244LateralDouble,r246TopDouble)&&
 			checkpoint.dimensions==dimensions&&checkpoint.cellWidthM==cellWidthM;
 	}
 
 	bool WriteProductionPuffingSpectrumTierEvidence(std::ostream& output,
-		const MethaneRunCheckpoint& checkpoint,const double resolutionTier,const bool r244LateralDouble=false)
+		const MethaneRunCheckpoint& checkpoint,const double resolutionTier,const bool r244LateralDouble=false,const bool r246TopDouble=false)
 	{
-		if(!ProductionPuffingSpectrumTierMatches(checkpoint,resolutionTier,r244LateralDouble))return false;
-		if(r244LateralDouble)output<<"domain_study r244-lateral-double-v1\n";
+		if(!ProductionPuffingSpectrumTierMatches(checkpoint,resolutionTier,r244LateralDouble,r246TopDouble))return false;
+		if(r244LateralDouble)output<<"domain_study "<<(r246TopDouble?
+			"r246-lateral-double-top-double-v1":"r244-lateral-double-v1")<<'\n';
+		if(r246TopDouble)output<<"centerline_support native_layers_0_159\n";
 		output<<std::setprecision(17)
 			<<"resolution_tier "<<resolutionTier<<"\n"
 			<<"burner_diameter_m "<<CapstonePoolDiameterM<<"\n"
@@ -3275,15 +3877,11 @@ namespace
 	}
 
 #if defined(__APPLE__)
-	bool ReadDisplayLitArea(const std::filesystem::path& path,std::size_t& litPixels,
+	bool ReadDisplayLitAreaBytes(const RISECBOR64::Bytes& bytes,std::size_t& litPixels,
 		unsigned int& width,unsigned int& height)
 	{
 		litPixels=0u;width=0u;height=0u;
-		const std::string native=path.string();
-		CFURLRef url=CFURLCreateFromFileSystemRepresentation(nullptr,
-			reinterpret_cast<const UInt8*>(native.data()),native.size(),false);
-		CGImageSourceRef source=url?CGImageSourceCreateWithURL(url,nullptr):nullptr;
-		if(url)CFRelease(url);
+		CGImageSourceRef source=CapturedImageSource(bytes);
 		CGImageRef image=source?CGImageSourceCreateImageAtIndex(source,0u,nullptr):nullptr;
 		if(source)CFRelease(source);
 		if(!image)return false;
@@ -3307,22 +3905,63 @@ namespace
 		return true;
 	}
 
+	bool R246SyntheticPNG(const bool lit,RISECBOR64::Bytes& bytes)
+	{
+		std::array<unsigned char,16> pixels;
+		for(std::size_t i=0u;i<4u;++i){for(std::size_t c=0u;c<3u;++c)pixels[4u*i+c]=lit?255u:0u;pixels[4u*i+3u]=255u;}
+		CGColorSpaceRef color=CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+		CGDataProviderRef provider=CGDataProviderCreateWithData(nullptr,pixels.data(),pixels.size(),nullptr);
+		CGImageRef image=color&&provider?CGImageCreate(2u,2u,8u,32u,8u,color,
+			kCGImageAlphaPremultipliedLast|kCGBitmapByteOrder32Big,provider,nullptr,false,kCGRenderingIntentDefault):nullptr;
+		if(provider)CFRelease(provider);if(color)CFRelease(color);
+		CFMutableDataRef data=CFDataCreateMutable(nullptr,0);
+		CGImageDestinationRef destination=data?CGImageDestinationCreateWithData(data,CFSTR("public.png"),1u,nullptr):nullptr;
+		bool passed=false;if(image&&destination){CGImageDestinationAddImage(destination,image,nullptr);passed=CGImageDestinationFinalize(destination);}
+		if(passed)bytes.assign(CFDataGetBytePtr(data),CFDataGetBytePtr(data)+CFDataGetLength(data));
+		if(destination)CFRelease(destination);if(data)CFRelease(data);if(image)CFRelease(image);return passed;
+	}
+
+	bool R246SyntheticPlumePNG(const int frame,RISECBOR64::Bytes& bytes)
+	{
+		std::array<unsigned char,64u*64u*4u> pixels{};
+		for(std::size_t y=0u;y<64u;++y)for(std::size_t x=0u;x<64u;++x){
+			const std::size_t offset=4u*(64u*y+x);pixels[offset+3u]=255u;
+			if(frame>=0&&x>=static_cast<std::size_t>(4+frame)&&x<static_cast<std::size_t>(8+frame)&&
+				y>=8u&&y<static_cast<std::size_t>(16+2*frame))pixels[offset+2u]=255u;
+		}
+		CGColorSpaceRef color=CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+		CGDataProviderRef provider=CGDataProviderCreateWithData(nullptr,pixels.data(),pixels.size(),nullptr);
+		CGImageRef image=color&&provider?CGImageCreate(64u,64u,8u,32u,256u,color,
+			kCGImageAlphaPremultipliedLast|kCGBitmapByteOrder32Big,provider,nullptr,false,kCGRenderingIntentDefault):nullptr;
+		if(provider)CFRelease(provider);if(color)CFRelease(color);
+		CFMutableDataRef data=CFDataCreateMutable(nullptr,0);
+		CGImageDestinationRef destination=data?CGImageDestinationCreateWithData(data,CFSTR("public.png"),1u,nullptr):nullptr;
+		bool passed=false;if(image&&destination){CGImageDestinationAddImage(destination,image,nullptr);passed=CGImageDestinationFinalize(destination);}
+		if(passed)bytes.assign(CFDataGetBytePtr(data),CFDataGetBytePtr(data)+CFDataGetLength(data));
+		if(destination)CFRelease(destination);if(data)CFRelease(data);if(image)CFRelease(image);return passed;
+	}
+
 	bool ProductionTemporalFramesComplete(const std::vector<double>& times,
 		const std::uint64_t streamed,const double start,const double duration,const double cadence);
 
 	bool SpectrumFullWindowMatches(const MethaneRunCheckpoint& checkpoint,
 		const FireSequenceManifest& manifest,const FireCase::RecordV1& record,
-		const std::vector<double>& frameTimes)
+		const std::vector<double>& frameTimes,const R246CapturedEventHistory* capturedHistory=nullptr)
 	{
 		const double cadence=0.0625;
 		const double start=record.derived.preRollOrDiscardS;
 		const double duration=std::ceil((40.0/(1.5/std::sqrt(CapstonePoolDiameterM)))/cadence)*cadence;
-		const auto& probes=checkpoint.values.probeTimeS;
-		if(record.authored.durationS!=start+duration||record.authored.outputFramesPerS!=16.0||
+		const auto& probes=checkpoint.values.probeTimeS;std::string error;
+		if(frameTimes.empty()||record.authored.durationS!=start+duration||record.authored.outputFramesPerS!=16.0||
 			manifest.ProducerBuildId()!=checkpoint.producerBuildId||
 			manifest.TimeMap().frameStepSeconds!=cadence||
 			manifest.TimeMap().sceneToSimulationScale!=1.0||
-			!ProductionTemporalFramesComplete(frameTimes,manifest.Frames().size(),start,duration,cadence)||
+			(capturedHistory?
+				(capturedHistory->steps!=checkpoint.values.acceptedTimeStepHistoryS||
+				 capturedHistory->frames!=frameTimes||capturedHistory->terminal!=checkpoint.simulationTimeS||
+				 !R246AcceptedEventHistoryMatches(capturedHistory->steps,frameTimes,
+					manifest.TimeMap().simulationTimeOrigin,checkpoint.simulationTimeS,error)):
+				!ProductionTemporalFramesComplete(frameTimes,manifest.Frames().size(),start,duration,cadence))||
 			manifest.TimeMap().simulationTimeOrigin!=frameTimes.front()||
 			checkpoint.simulationTimeS!=frameTimes.back()||probes.size()<8u||
 			probes.size()!=checkpoint.values.probeCenterlineHeatReleaseW.size()||
@@ -3337,16 +3976,17 @@ namespace
 	// for the full readable configs and input hashes. Camera/time are checked
 	// independently before normalization; every other member remains hash-bound.
 	bool SpectrumRenderProfileMatches(const RISECBOR64::Value& payload,
-		const FireSequenceManifest& manifest,const std::size_t frame,const bool display)
+		const FireSequenceManifest& manifest,const std::size_t frame,const bool display,const bool r246TopDouble=false)
 	{
 		using RISECBOR64::Value;
 		const auto* config=payload.Find("resolved_render_configuration_v1");
 		if(!config||config->GetType()!=Value::Map||manifest.Channels().empty())return false;
 		const auto& channel=manifest.Channels().front();
 		const double width=channel.voxelSizeMeters[0];
+		if(r246TopDouble&&(channel.dimensions!=std::array<std::uint64_t,3>{{104u,104u,160u}}))return false;
 		const bool wide=channel.dimensions[0]==104u&&channel.dimensions[1]==104u&&
-			channel.dimensions[2]==80u;
-		const double depth=(wide?static_cast<double>(channel.dimensions[2]):
+			(channel.dimensions[2]==80u||(r246TopDouble&&channel.dimensions[2]==160u));
+		const double depth=(wide?static_cast<double>(r246TopDouble?80u:channel.dimensions[2]):
 			std::max({static_cast<double>(channel.dimensions[0]),
 			static_cast<double>(channel.dimensions[1]),static_cast<double>(channel.dimensions[2])}))*width;
 		// Reproduce the existing scene writer's default six significant digits.
@@ -3402,25 +4042,52 @@ namespace
 				"467df3e3cab195628b44a30faa081abea05343dbb8d9d7f38b0ad616034198b2");
 	}
 
+	bool R246MatchedRenderProfiles(const RISECBOR64::Value& primary,const RISECBOR64::Value& display,
+		const FireSequenceManifest& manifest,const std::size_t frame,const bool top,std::string& error)
+	{
+		const auto* primaryPayload=primary.Find("payload");const auto* displayPayload=display.Find("payload");
+		if(!primaryPayload||!displayPayload||
+			!SpectrumRenderProfileMatches(*primaryPayload,manifest,frame,false,top)||
+			!SpectrumRenderProfileMatches(*displayPayload,manifest,frame,true,top)||
+			(top&&(!R246RuntimeManifestMatches(primary,manifest,frame)||!R246RuntimeManifestMatches(display,manifest,frame)))){
+			error="actual primary/display profiles or consumed media differ from the matched scene";return false;
+		}
+		return true;
+	}
+
+	struct R246CapturedSceneInput {
+		std::filesystem::path manifestPath;
+		const RISECBOR64::Bytes& manifest;
+	};
 	bool SpectrumPreviewSceneMatches(const std::filesystem::path& directory,
 		const std::filesystem::path& manifestPath,const FireSequenceManifest& manifest,
-		const bool wide,std::string& error)
+		const bool wide,std::string& error,const bool r246TopDouble=false,const std::string* consumedInventory=nullptr,
+		const R246CapturedSceneInput* capturedScene=nullptr)
 	{
-		const auto inventory=TemporalPreviewInventory(directory,manifest.Frames().size());
+		if(r246TopDouble&&!wide)return false;
+		if(capturedScene&&(!r246TopDouble||manifestPath!=capturedScene->manifestPath||capturedScene->manifest.empty())){
+			error="captured spectrum scene path or manifest unavailable";return false;
+		}
+		if(capturedScene){
+			FireSequenceManifest capturedManifest;
+			if(!manifestPath.is_absolute()||!capturedManifest.LoadCanonicalEnvelope(capturedScene->manifest,manifestPath.parent_path().string(),error)||
+				capturedManifest.SequenceId()!=manifest.SequenceId()){error="captured spectrum manifest differs from parsed input";return false;}
+		}
+		const auto inventory=consumedInventory?*consumedInventory:TemporalPreviewInventory(directory,manifest.Frames().size());
 		if(inventory.empty()||manifest.Channels().empty())return false;
 		const RISECBOR64::Bytes inventoryBytes(inventory.begin(),inventory.end());
 		// Historical baseline predates receipts: pin its audited bytes explicitly,
 		// without retrospectively claiming the old producer made an attestation.
 		if(!wide&&manifest.SequenceId()=="feb55253deffaacfdd3279afcce292863c70ca62fa8d2d28637c3ba8e23b28d8"&&
 			RISECBOR64::SHA256Hex(inventoryBytes)=="39d89046c32d00422958716e3c7a3afd1dd4de2f47243bb8803d476eff4dde03")return true;
-		const auto scene=TemporalFirePreviewScene(manifest.Channels().front(),manifestPath,wide);
+		const auto scene=TemporalFirePreviewScene(manifest.Channels().front(),manifestPath,wide,r246TopDouble);
 		const RISECBOR64::Bytes sceneBytes(scene.begin(),scene.end());
 		if(ReadFileBytes(directory/"temporal_fire.RISEscene")!=sceneBytes){
 			error="preview does not bind the canonical generated scene";return false;
 		}
 		std::ostringstream expected;
 		expected<<"schema rise.fire.temporal-preview-receipt.v1\nsource_manifest_sha256 "
-			<<DigestFile(manifestPath)<<"\nscene_sha256 "<<RISECBOR64::SHA256Hex(sceneBytes)
+			<<(capturedScene?RISECBOR64::SHA256Hex(capturedScene->manifest):DigestFile(manifestPath))<<"\nscene_sha256 "<<RISECBOR64::SHA256Hex(sceneBytes)
 			<<"\nframes "<<manifest.Frames().size()<<'\n'<<inventory;
 		const auto text=expected.str();
 		if(ReadFileBytes(directory/"temporal_preview_receipt.v1")!=RISECBOR64::Bytes(text.begin(),text.end())){
@@ -3429,58 +4096,414 @@ namespace
 		return true;
 	}
 
+	int RunR246MovieAdmissionGate(const std::filesystem::path& root)
+	{
+		using V=RISECBOR64::Value;std::string error;if(!R246CreateFreshPreviewOutput(root,error))return 98;
+		const auto fixture=std::filesystem::path("/Volumes/SSD/RISE/fire_production_calibration/r246_gif_publication_validation.v7");
+		const auto gif=ReadFileBytes(fixture/"movie.gif"),sidecar=ReadFileBytes(fixture/"movie.gif.provenance.cbor");
+		V movie;if(!RISECBOR64::DecodeCanonical(sidecar,movie,&error))return 98;const auto* payload=movie.Find("payload");
+		const auto* array=payload?payload->Find("derived_from_frames"):nullptr;const auto* config=payload?payload->Find("resolved_render_configuration_v1"):nullptr;
+		const auto* build=payload?payload->Find("renderer_build_id"):nullptr;
+		if(!array||array->GetType()!=V::Array||!config||config->GetType()!=V::Map||!build||build->GetType()!=V::Text)return 98;
+		std::vector<FireFramePrimary> links;for(const auto& row:array->GetArray()){
+			const auto* index=row.Find("frame_index");const auto* id=row.Find("provenance_id");const auto* artifact=row.Find("artifact_sha256");
+			if(!index||index->GetType()!=V::UnsignedInteger||index->GetIntegerArgument()>std::numeric_limits<unsigned int>::max()||!id||id->GetType()!=V::Text||!artifact||artifact->GetType()!=V::Text)return 98;
+			FireFramePrimary link;link.frameIndex=static_cast<unsigned int>(index->GetIntegerArgument());link.provenanceId=id->GetText();link.artifactSha256=artifact->GetText();links.push_back(link);
+		}
+		if(links.size()!=3u)return 98;
+		V::Members metadata;for(const char* key:{"active_fire_media","active_fire_optics_record_ids","render_fidelity_status","render_reason_codes","renderer_build_id","renderer_build_v1"}){
+			const auto* value=payload->Find(key);if(!value)return 98;metadata.push_back({key,*value});}
+		V::Members primaryConfig;for(const auto& member:config->GetMap())if(member.first!="output")primaryConfig.push_back(member);
+		primaryConfig.push_back({"output",V::MapValue({{"format",V::String("exr")}})});
+		metadata.push_back({"resolved_render_configuration_v1",V::MapValue(primaryConfig)});
+		metadata.push_back({"artifact_sha256",V::String(links.back().artifactSha256)});
+		const auto primary=V::MapValue({{"payload",V::MapValue(metadata)},{"provenance_id",V::String(links.back().provenanceId)}});
+		const auto receipt=R246MovieReceiptBytes(gif,sidecar,links,build->GetText());
+		RISECBOR64::Bytes primaryBytes;if(!RISECBOR64::Encode(primary,primaryBytes,&error))return 98;
+		if(!R246WriteNewCapturedBytes(root/"synthetic_primary.cbor",primaryBytes,error)||
+			!R246WriteNewCapturedBytes(root/"temporal_fire_preview.gif",gif,error)||
+			!R246WriteNewCapturedBytes(root/"temporal_fire_preview.gif.provenance.cbor",sidecar,error)||
+			!R246WriteNewCapturedBytes(root/"temporal_preview_movie_receipt.v1",receipt,error))return 98;
+		const bool green=R246MovieMatchesConsumedPrimary(gif,sidecar,receipt,primary,links,2u,2u,16u,error);
+		auto changedGIF=gif;changedGIF.back()^=1u;auto changedReceipt=receipt;changedReceipt.back()^=1u;
+		const bool gifRed=!R246MovieMatchesConsumedPrimary(changedGIF,sidecar,receipt,primary,links,2u,2u,16u,error);
+		const bool receiptRed=!R246MovieMatchesConsumedPrimary(gif,sidecar,changedReceipt,primary,links,2u,2u,16u,error);
+		auto foreign=links;foreign[0u].provenanceId=std::string(64u,'d');
+		const bool linksRed=!R246MovieMatchesConsumedPrimary(gif,sidecar,receipt,primary,foreign,2u,2u,16u,error);
+		const bool rateRed=!R246MovieMatchesConsumedPrimary(gif,sidecar,receipt,primary,links,2u,2u,32u,error);
+		auto foreignMetadata=metadata;for(auto& member:foreignMetadata)if(member.first=="active_fire_media")member.second=V::ArrayValue({});
+		const auto foreignPrimary=V::MapValue({{"payload",V::MapValue(foreignMetadata)},{"provenance_id",V::String(links.back().provenanceId)}});
+		const bool metadataRed=!R246MovieMatchesConsumedPrimary(gif,sidecar,receipt,foreignPrimary,links,2u,2u,16u,error);
+		RISECBOR64::Bytes capturedGIF,capturedSidecar,capturedReceipt;
+		const bool captureGreen=R246CaptureMovieBundle(root,capturedGIF,capturedSidecar,capturedReceipt,error)&&capturedGIF==gif&&capturedSidecar==sidecar&&capturedReceipt==receipt;
+		const auto receiptPath=root/"temporal_preview_movie_receipt.v1";std::filesystem::rename(receiptPath,root/"receipt_original");
+		std::filesystem::create_hard_link(root/"receipt_original",receiptPath);
+		const bool aliasRed=!R246CaptureMovieBundle(root,capturedGIF,capturedSidecar,capturedReceipt,error);
+		const bool passed=green&&gifRed&&receiptRed&&linksRed&&rateRed&&metadataRed&&captureGreen&&aliasRed;
+		std::printf("R246_MOVIE_ADMISSION passed=%d exact_green=%d gif_red=%d receipt_red=%d links_red=%d rate_red=%d metadata_red=%d capture_green=%d alias_red=%d synthetic_primary_metadata=1 no_exr_attestation=1 no_render=1 recovery_accepted=0\n",passed,green,gifRed,receiptRed,linksRed,rateRed,metadataRed,captureGreen,aliasRed);return passed?0:98;
+	}
+
+	int RunR246CapturedSceneGate(const std::filesystem::path& root)
+	{
+		std::string error;if(!R246CreateFreshPreviewOutput(root,error))return 98;
+		const auto source=std::filesystem::path("/Volumes/SSD/RISE/fire_production_calibration/r246_preview_source_snapshot.v8/sequence_manifest.rise-fire.cbor");
+		const auto bytes=ReadFileBytes(source);FireSequenceManifest manifest;
+		if(RISECBOR64::SHA256Hex(bytes)!="f036ff7f96a3f5827104cdd2f06e8aa068c3e8f097acd7ff3c069bab82fb3cc1"||
+			!manifest.LoadCanonicalEnvelope(bytes,source.parent_path().string(),error))return 98;
+		const auto path=root/"captured_manifest.cbor";
+		const auto scene=TemporalFirePreviewScene(manifest.Channels().front(),path,true,true);
+		const RISECBOR64::Bytes sceneBytes(scene.begin(),scene.end());
+		if(!R246WriteNewCapturedBytes(path,bytes,error)||!R246WriteNewCapturedBytes(root/"temporal_fire.RISEscene",sceneBytes,error))return 98;
+		const std::string inventory="synthetic-consumed-inventory\n";
+		auto receipt=[&](const std::string& digest){std::ostringstream text;
+			text<<"schema rise.fire.temporal-preview-receipt.v1\nsource_manifest_sha256 "<<digest<<"\nscene_sha256 "<<RISECBOR64::SHA256Hex(sceneBytes)
+				<<"\nframes "<<manifest.Frames().size()<<'\n'<<inventory;
+			std::ofstream file(root/"temporal_preview_receipt.v1");file<<text.str();file.close();return static_cast<bool>(file);};
+		const R246CapturedSceneInput captured{path,bytes};
+		if(!receipt(RISECBOR64::SHA256Hex(bytes)))return 98;
+		const bool initialGreen=SpectrumPreviewSceneMatches(root,path,manifest,true,error,true,&inventory,&captured);
+		auto replacement=bytes;replacement.push_back(0u);
+		{std::ofstream file(path,std::ios::binary|std::ios::trunc);file.write(reinterpret_cast<const char*>(replacement.data()),static_cast<std::streamsize>(replacement.size()));file.close();if(!file)return 98;}
+		if(!receipt(RISECBOR64::SHA256Hex(replacement)))return 98;
+		const bool oldMutableGreen=SpectrumPreviewSceneMatches(root,path,manifest,true,error,true,&inventory);
+		const bool capturedRed=!SpectrumPreviewSceneMatches(root,path,manifest,true,error,true,&inventory,&captured);
+		if(!receipt(RISECBOR64::SHA256Hex(bytes)))return 98;
+		const bool sameCaptureGreen=SpectrumPreviewSceneMatches(root,path,manifest,true,error,true,&inventory,&captured);
+		const R246CapturedSceneInput foreignPath{root/"other_manifest.cbor",bytes};
+		const RISECBOR64::Bytes empty;const R246CapturedSceneInput absent{path,empty};
+		const bool pathRed=!SpectrumPreviewSceneMatches(root,path,manifest,true,error,true,&inventory,&foreignPath);
+		const bool emptyRed=!SpectrumPreviewSceneMatches(root,path,manifest,true,error,true,&inventory,&absent);
+		const R246CapturedSceneInput malformed{path,replacement};
+		const bool malformedRed=!SpectrumPreviewSceneMatches(root,path,manifest,true,error,true,&inventory,&malformed);
+		const bool passed=initialGreen&&oldMutableGreen&&capturedRed&&sameCaptureGreen&&pathRed&&emptyRed&&malformedRed;
+		std::printf("R246_CAPTURED_SCENE passed=%d initial_green=%d old_mutable_green=%d captured_red=%d same_capture_green=%d path_red=%d empty_red=%d malformed_red=%d synthetic_receipt_inventory=1 no_native_fields=1 no_render=1 recovery_accepted=0\n",passed,initialGreen,oldMutableGreen,capturedRed,sameCaptureGreen,pathRed,emptyRed,malformedRed);
+		return passed?0:98;
+	}
+
+	bool R246SyntheticGIFClockMatches(const RISECBOR64::Bytes& bytes,const std::size_t count,const unsigned int fps)
+	{
+		CGImageSourceRef source=CapturedImageSource(bytes);if(!source||fps==0u){if(source)CFRelease(source);return false;}
+		bool matches=CGImageSourceGetCount(source)==count;
+		for(std::size_t frame=0u;matches&&frame<count;++frame){
+			CFDictionaryRef props=CGImageSourceCopyPropertiesAtIndex(source,frame,nullptr);
+			CFDictionaryRef gif=props?static_cast<CFDictionaryRef>(CFDictionaryGetValue(props,kCGImagePropertyGIFDictionary)):nullptr;
+			CFNumberRef delay=gif?static_cast<CFNumberRef>(CFDictionaryGetValue(gif,kCGImagePropertyGIFDelayTime)):nullptr;
+			double value=0.0;
+			matches=delay&&CFGetTypeID(delay)==CFNumberGetTypeID()&&CFNumberGetValue(delay,kCFNumberDoubleType,&value)&&
+				std::fabs(value-1.0/static_cast<double>(fps))<=0.011;
+			if(props)CFRelease(props);
+		}
+		CFRelease(source);return matches;
+	}
+	bool R246SyntheticGIFValidator(const std::string& path,const FireFrameSequenceEncoding encoding,
+		const unsigned int width,const unsigned int height,const unsigned int fps,
+		const std::vector<FireFramePrimary>& frames,std::string& error)
+	{
+		const bool matches=encoding==FireFrameSequenceEncoding::AppleImageIOGif_PreviewPlus6EV_8Bit&&width==2u&&height==2u&&
+			R246SyntheticGIFClockMatches(ReadFileBytes(path),frames.size(),fps);
+		if(!matches)error="synthetic GIF clock/container differs";return matches;
+	}
+	struct R246SyntheticABAContext {const RISECBOR64::Bytes& a;const RISECBOR64::Bytes& b;bool substituted=false;};
+	thread_local R246SyntheticABAContext* r246SyntheticABAContext=nullptr;
+	bool R246SyntheticABAGIFValidator(const std::string& path,const FireFrameSequenceEncoding encoding,
+		const unsigned int width,const unsigned int height,const unsigned int fps,
+		const std::vector<FireFramePrimary>& frames,std::string& error)
+	{
+		if(!r246SyntheticABAContext)return false;
+		auto write=[&](const RISECBOR64::Bytes& bytes){std::ofstream file(path,std::ios::binary|std::ios::trunc);
+			file.write(reinterpret_cast<const char*>(bytes.data()),static_cast<std::streamsize>(bytes.size()));file.close();return static_cast<bool>(file);};
+		if(!write(r246SyntheticABAContext->b))return false;
+		const bool accepted=ValidateFireGIF(path,encoding,width,height,fps,frames,false,error);
+		const bool restored=write(r246SyntheticABAContext->a);r246SyntheticABAContext->substituted=accepted&&restored;
+		return accepted&&restored;
+	}
+	int RunR246GIFPublicationGate(const std::filesystem::path& root)
+	{
+		using V=RISECBOR64::Value;std::string error;if(!R246CreateFreshPreviewOutput(root,error))return 98;
+		RISECBOR64::Bytes white,black,authored;
+		if(!R246SyntheticPNG(true,white)||!R246SyntheticPNG(false,black)||
+			!R246WriteNewCapturedBytes(root/"white.png",white,error)||!R246WriteNewCapturedBytes(root/"black.png",black,error))return 98;
+		const std::vector<std::filesystem::path> paths={root/"white.png",root/"black.png",root/"white.png"};
+		const std::vector<std::string> hashes={RISECBOR64::SHA256Hex(white),RISECBOR64::SHA256Hex(black),RISECBOR64::SHA256Hex(white)};
+		if(!AuthorFirstLightGIF(paths,root/"temporary.gif",16u,error,&hashes,nullptr,&authored))return 98;
+		FrameStoreOutput::Metadata metadata;metadata.renderFidelityStatus="preview";
+		metadata.renderReasonCodes={"producer_unqualified","requested_preview"};metadata.activeFireOpticsRecordIds={std::string(64u,'b')};
+		FrameStoreOutput::ActiveFireMedium medium;medium.mediaKind="static_authored";medium.managerName="synthetic_fixture";
+		medium.bindingKind="global_medium";medium.bindingOwner="scene";medium.authoredConfigDigest=std::string(64u,'a');
+		medium.opticalRecordIds=metadata.activeFireOpticsRecordIds;metadata.activeFireMedia={medium};
+		metadata.resolvedRenderConfigCoreV1=FireOutputMetadataTestFixture::ResolvedConfig(2u,2u);
+		metadata.rendererBuildV1=FireOutputMetadataTestFixture::RendererBuild();metadata.rendererBuildId=RISECBOR64::SHA256Hex(metadata.rendererBuildV1);
+		std::vector<FireFramePrimary> links(3u);for(std::size_t frame=0u;frame<links.size();++frame){links[frame].frameIndex=frame;
+			links[frame].provenanceId=std::string(64u,static_cast<char>('1'+frame));links[frame].artifactSha256=std::string(64u,static_cast<char>('4'+frame));}
+		if(!PublishFireFrameSequenceFileTransaction(metadata,FireFrameSequenceEncoding::AppleImageIOGif_PreviewPlus6EV_8Bit,
+			(root/"temporary.gif").string(),(root/"movie.gif").string(),2u,2u,16u,3u,links,R246SyntheticGIFValidator,error))return 98;
+		const auto gif=ReadFileBytes(root/"movie.gif"),sidecar=ReadFileBytes(root/"movie.gif.provenance.cbor");
+		bool passed=R246CapturedGIFPairMatches(gif,sidecar,authored,metadata,2u,2u,16u,links,error)&&R246SyntheticGIFClockMatches(authored,3u,16u);
+		const bool countRed=!R246SyntheticGIFClockMatches(authored,2u,16u),cadenceRed=!R246SyntheticGIFClockMatches(authored,3u,32u);
+		V envelope;if(!RISECBOR64::DecodeCanonical(sidecar,envelope,&error))return 98;
+		auto replace=[](const V& map,const std::string& key,const V& value){auto members=map.GetMap();
+			for(auto& member:members)if(member.first==key){member.second=value;break;}return V::MapValue(members);};
+		auto reseal=[&](const V& payload){RISECBOR64::Bytes pb,out;if(!RISECBOR64::Encode(payload,pb,&error)||
+			!RISECBOR64::Encode(V::MapValue({{"payload",payload},{"provenance_id",V::String(RISECBOR64::SHA256Hex(pb))}}),out,&error))return RISECBOR64::Bytes();
+			return out;};
+		const auto& payload=*envelope.Find("payload");unsigned int reds=0u;
+		for(const auto& mutation:std::vector<std::pair<std::string,V>>{{"artifact_sha256",V::String(std::string(64u,'c'))},
+			{"renderer_build_id",V::String(std::string(64u,'d'))},{"active_fire_media",V::ArrayValue({})},
+			{"derived_from_frames",V::ArrayValue({})},{"artifact_fidelity",V::String("preview_primary")},
+			{"render_reason_codes",V::ArrayValue({})}}){
+			const auto changed=reseal(replace(payload,mutation.first,mutation.second));
+			if(!changed.empty()&&!R246CapturedGIFPairMatches(gif,changed,authored,metadata,2u,2u,16u,links,error))++reds;
+		}
+		auto foreignMetadata=metadata;foreignMetadata.activeFireMedia[0].bindingOwner="foreign_scene";
+		auto foreignLinks=links;foreignLinks[0].provenanceId=std::string(64u,'c');
+		RISECBOR64::Bytes foreignMediaSidecar,foreignLinksSidecar;
+		const bool foreignMediaBuilderGreen=R246ExpectedGIFSidecar(foreignMetadata,FireFrameSequenceEncoding::AppleImageIOGif_PreviewPlus6EV_8Bit,
+			RISECBOR64::SHA256Hex(authored),2u,2u,16u,links,foreignMediaSidecar,error);
+		const bool foreignLinksBuilderGreen=R246ExpectedGIFSidecar(metadata,FireFrameSequenceEncoding::AppleImageIOGif_PreviewPlus6EV_8Bit,
+			RISECBOR64::SHA256Hex(authored),2u,2u,16u,foreignLinks,foreignLinksSidecar,error);
+		const bool foreignMediaRed=foreignMediaBuilderGreen&&!R246CapturedGIFPairMatches(gif,foreignMediaSidecar,authored,metadata,2u,2u,16u,links,error);
+		const bool foreignLinksRed=foreignLinksBuilderGreen&&!R246CapturedGIFPairMatches(gif,foreignLinksSidecar,authored,metadata,2u,2u,16u,links,error);
+		passed=passed&&foreignMediaRed&&foreignLinksRed;
+		std::printf("R246_GIF_FOREIGN valid_media_builder_green=%d bound_media_red=%d valid_links_builder_green=%d bound_links_red=%d\n",
+			foreignMediaBuilderGreen,foreignMediaRed,foreignLinksBuilderGreen,foreignLinksRed);
+		const auto& config=*payload.Find("resolved_render_configuration_v1");
+		const auto& output=*config.Find("output");const auto badOutput=replace(output,"encoding",V::MapValue({}));
+		const auto changedEncoding=reseal(replace(payload,"resolved_render_configuration_v1",replace(config,"output",badOutput)));
+		const bool encodingRed=!R246CapturedGIFPairMatches(gif,changedEncoding,authored,metadata,2u,2u,16u,links,error);
+		auto badGIF=gif;badGIF.back()^=1u;const bool gifRed=!R246CapturedGIFPairMatches(badGIF,sidecar,authored,metadata,2u,2u,16u,links,error);
+		passed=passed&&countRed&&cadenceRed&&reds==6u&&encodingRed&&gifRed&&
+			R246WriteNewCapturedBytes(root/"captured.gif",gif,error)&&R246WriteNewCapturedBytes(root/"captured.gif.provenance.cbor",sidecar,error);
+		std::vector<std::filesystem::path> aPaths,bPaths;std::vector<FireFramePrimary> physicalLinks(8u);
+		for(std::size_t frame=0u;frame<8u;++frame){RISECBOR64::Bytes aPNG,bPNG;
+			if(!R246SyntheticPlumePNG(-1,aPNG)||!R246SyntheticPlumePNG(static_cast<int>(frame),bPNG))return 98;
+			const auto aPath=root/("black64_"+std::to_string(frame)+".png"),bPath=root/("blue64_"+std::to_string(frame)+".png");
+			if(!R246WriteNewCapturedBytes(aPath,aPNG,error)||!R246WriteNewCapturedBytes(bPath,bPNG,error))return 98;
+			aPaths.push_back(aPath);bPaths.push_back(bPath);physicalLinks[frame].frameIndex=frame;
+			physicalLinks[frame].provenanceId=std::string(64u,'c');physicalLinks[frame].artifactSha256=std::string(64u,'d');
+		}
+		RISECBOR64::Bytes aGIF,bGIF;
+		if(!AuthorFirstLightGIF(aPaths,root/"aba_temp.gif",16u,error,nullptr,nullptr,&aGIF)||
+			!AuthorFirstLightGIF(bPaths,root/"blue_valid.gif",16u,error,nullptr,nullptr,&bGIF))return 98;
+		const auto codec=FireFrameSequenceEncoding::AppleImageIOGif_PreviewPlus6EV_8Bit;
+		const bool authoredPhysicalRed=!ValidateFireGIFBytes(aGIF,codec,64u,64u,16u,physicalLinks,false,error);
+		const bool substitutedPhysicalGreen=ValidateFireGIFBytes(bGIF,codec,64u,64u,16u,physicalLinks,false,error)&&
+			ValidateFireGIFBytes(bGIF,codec,64u,64u,16u,physicalLinks,true,error);
+		auto physicalMetadata=metadata;physicalMetadata.resolvedRenderConfigCoreV1=FireOutputMetadataTestFixture::ResolvedConfig(64u,64u);
+		R246SyntheticABAContext context{aGIF,bGIF};r246SyntheticABAContext=&context;
+		const bool oldABAPublicationGreen=PublishFireFrameSequenceFileTransaction(physicalMetadata,codec,
+			(root/"aba_temp.gif").string(),(root/"old_aba.gif").string(),64u,64u,16u,8u,physicalLinks,R246SyntheticABAGIFValidator,error);
+		r246SyntheticABAContext=nullptr;
+		const bool oldCapturedPairGreen=oldABAPublicationGreen&&R246CapturedGIFPairMatches(ReadFileBytes(root/"old_aba.gif"),
+			ReadFileBytes(root/"old_aba.gif.provenance.cbor"),aGIF,physicalMetadata,64u,64u,16u,physicalLinks,error);
+		passed=passed&&authoredPhysicalRed&&substitutedPhysicalGreen&&context.substituted&&oldCapturedPairGreen;
+		std::reverse(bPaths.begin(),bPaths.end());RISECBOR64::Bytes otherValid;
+		if(!AuthorFirstLightGIF(bPaths,root/"other_valid_temp.gif",16u,error,nullptr,nullptr,&otherValid))return 98;
+		const bool bothValid=otherValid!=bGIF&&ValidateFireGIFBytes(otherValid,codec,64u,64u,16u,physicalLinks,true,error);
+		const bool oldValidSubstitutionGreen=PublishFireFrameSequenceFileTransaction(physicalMetadata,codec,
+			(root/"other_valid_temp.gif").string(),(root/"other_valid.gif").string(),64u,64u,16u,8u,physicalLinks,ValidateFirstLightGIF,error);
+		RISECBOR64::Bytes refusedGIF,refusedSidecar;
+		const bool validSubstitutionRed=!R246CaptureGIFPair(root/"other_valid.gif",bGIF,physicalMetadata,64u,64u,16u,physicalLinks,refusedGIF,refusedSidecar,error);
+		passed=passed&&bothValid&&oldValidSubstitutionGreen&&validSubstitutionRed;
+		const auto sourceRoot=root/"existing_capstone_source";std::filesystem::create_directory(sourceRoot);
+		const RISECBOR64::Bytes sourceSentinel={'S'};if(!R246WriteNewCapturedBytes(sourceRoot/"source.checkpoint",sourceSentinel,error))return 98;
+		const bool existingCapstoneGreen=R246FirstLightOutputReady(sourceRoot,error)&&ReadFileBytes(sourceRoot/"source.checkpoint")==sourceSentinel;
+		std::filesystem::create_hard_link(sourceRoot/"source.checkpoint",sourceRoot/"methane_preview_animation.gif");
+		const bool occupiedCapstoneRed=!R246FirstLightOutputReady(sourceRoot,error)&&ReadFileBytes(sourceRoot/"source.checkpoint")==sourceSentinel;
+		std::vector<std::string> originalDisplayHashes;for(auto it=bPaths.rbegin();it!=bPaths.rend();++it)originalDisplayHashes.push_back(DigestFile(*it));
+		RISECBOR64::Bytes refusedAuthor;
+		const bool substitutedDisplayRed=!AuthorFirstLightGIF(bPaths,root/"bound_substituted_input.gif",16u,error,&originalDisplayHashes,nullptr,&refusedAuthor);
+		const auto actualCapstone=root/"actual_capstone_layout";std::filesystem::create_directory(actualCapstone);
+		const auto existingPaths=PreviewPairPaths(actualCapstone/"methane_preview.exr",actualCapstone/"methane_preview_display.png");
+		for(const auto& path:existingPaths)if(!R246WriteNewCapturedBytes(path,sourceSentinel,error))return 98;
+		const bool actualRootRed=!R246FirstLightOutputReady(actualCapstone,error);
+		const bool actualChildGreen=R246FirstLightOutputReady(R246FirstLightCapstoneOutput(actualCapstone),error);
+		const bool priorPairUnchanged=std::all_of(existingPaths.begin(),existingPaths.end(),[&](const auto& path){return ReadFileBytes(path)==sourceSentinel;});
+		passed=passed&&existingCapstoneGreen&&occupiedCapstoneRed&&substitutedDisplayRed&&actualRootRed&&actualChildGreen&&priorPairUnchanged;
+		std::printf("R246_CAPSTONE_COMPOSITION actual_occupied_root_red=%d dedicated_child_green=%d existing_four_members_unchanged=%d\n",actualRootRed,actualChildGreen,priorPairUnchanged);
+		std::printf("R246_FIRST_LIGHT_INPUT existing_source_output_green=%d occupied_member_red=%d unpinned_valid_input_green=%d digest_bound_input_red=%d source_unchanged=1\n",
+			existingCapstoneGreen,occupiedCapstoneRed,bothValid,substitutedDisplayRed);
+		std::printf("R246_GIF_VALID_SUBSTITUTION both_bounded_green=%d old_publication_green=%d captured_pair_red=%d\n",bothValid,oldValidSubstitutionGreen,validSubstitutionRed);
+		std::printf("R246_GIF_PHYSICAL_ABA authored_physical_red=%d substituted_physical_green=%d old_publication_green=%d old_captured_pair_green=%d bound_physical_red=%d synthetic_blue_rectangles=1\n",
+			authoredPhysicalRed,substitutedPhysicalGreen,oldABAPublicationGreen,oldCapturedPairGreen,authoredPhysicalRed);
+		std::printf("R246_GIF_PUBLICATION passed=%d metadata_green=1 resealed_reds=%u encoding_red=%d gif_red=%d count_red=%d cadence_red=%d synthetic_metadata_links=1 no_render=1 recovery_accepted=0\n",
+			passed?1:0,reds,encodingRed,gifRed,countRed,cadenceRed);return passed?0:98;
+	}
+
+	int RunR246AuthoredGIFBytesGate(const std::filesystem::path& root)
+	{
+		std::string error;if(!R246CreateFreshPreviewOutput(root,error))return 98;
+		RISECBOR64::Bytes white,black;
+		if(!R246SyntheticPNG(true,white)||!R246SyntheticPNG(false,black)||
+			!R246WriteNewCapturedBytes(root/"white.png",white,error)||
+			!R246WriteNewCapturedBytes(root/"black.png",black,error))return 98;
+		RISECBOR64::Bytes authoredA,authoredB;
+		const std::vector<std::filesystem::path> whiteFrames={root/"white.png"},blackFrames={root/"black.png"};
+		bool passed=AuthorFirstLightGIF(whiteFrames,root/"authored.gif",16u,error,nullptr,nullptr,&authoredA)&&
+			AuthorFirstLightGIF(blackFrames,root/"black.gif",16u,error,nullptr,nullptr,&authoredB)&&
+			authoredA==ReadFileBytes(root/"authored.gif")&&authoredB==ReadFileBytes(root/"black.gif")&&authoredA!=authoredB;
+		// Replace the mutable authored path after ImageIO has finalized A.
+		std::filesystem::remove(root/"authored.gif");
+		passed=passed&&R246WriteNewCapturedBytes(root/"authored.gif",authoredB,error)&&
+			R246WriteNewCapturedBytes(root/"published.gif",authoredA,error);
+		std::size_t capturedLit=0u,reopenedLit=0u;unsigned int width=0u,height=0u;
+		passed=passed&&ReadDisplayLitAreaBytes(authoredA,capturedLit,width,height)&&capturedLit==4u&&
+			ReadDisplayLitAreaBytes(ReadFileBytes(root/"authored.gif"),reopenedLit,width,height)&&reopenedLit==0u&&
+			ReadFileBytes(root/"published.gif")==authoredA;
+		const bool occupiedRed=!R246WriteNewCapturedBytes(root/"published.gif",authoredB,error);
+		const bool originalUnchanged=ReadFileBytes(root/"published.gif")==authoredA;
+		RISECBOR64::Bytes unavailable;
+		const bool authorOccupiedRed=!AuthorFirstLightGIF(whiteFrames,root/"published.gif",16u,error,nullptr,nullptr,&unavailable)&&unavailable.empty();
+		passed=passed&&occupiedRed&&originalUnchanged&&authorOccupiedRed;
+		std::printf("R246_AUTHORED_GIF_BYTES passed=%d captured_lit=%zu reopened_lit=%zu occupied_red=%d original_unchanged=%d author_occupied_red=%d authored_sha256=%s synthetic_2x2=1 no_render=1 recovery_accepted=0\n",
+			passed?1:0,capturedLit,reopenedLit,occupiedRed,originalUnchanged,authorOccupiedRed,RISECBOR64::SHA256Hex(authoredA).c_str());
+		return passed?0:98;
+	}
+
+	int RunR246CapturedDisplayGate(const std::filesystem::path& root)
+	{
+		if(std::filesystem::exists(root)||std::filesystem::is_symlink(root)||!std::filesystem::create_directory(root))return 98;
+		std::filesystem::permissions(root,std::filesystem::perms::owner_all);
+		RISECBOR64::Bytes a,b;if(!R246SyntheticPNG(true,a)||!R246SyntheticPNG(false,b))return 98;
+		std::size_t litA=0u,litB=0u;unsigned int width=0u,height=0u;
+		bool passed=ReadDisplayLitAreaBytes(a,litA,width,height)&&litA==4u&&width==2u&&height==2u&&
+			ReadDisplayLitAreaBytes(b,litB,width,height)&&litB==0u&&width==2u&&height==2u;
+		auto write=[](const std::filesystem::path& path,const RISECBOR64::Bytes& bytes){
+			std::ofstream file(path,std::ios::binary);file.write(reinterpret_cast<const char*>(bytes.data()),static_cast<std::streamsize>(bytes.size()));file.close();return static_cast<bool>(file);};
+		const auto path=root/"display.png";if(!write(path,a))return 98;
+		const std::string expected=RISECBOR64::SHA256Hex(a);bool substituted=false;
+		const std::function<void()> replace=[&](){substituted=write(path,b);};
+		std::string error;RISECBOR64::Bytes consumed;
+		passed=passed&&ReadCapturedImageBytes(path,&expected,consumed,error,&replace)&&substituted&&consumed==a;
+		std::size_t capturedLit=0u,reopenedLit=0u;
+		passed=passed&&ReadDisplayLitAreaBytes(consumed,capturedLit,width,height)&&capturedLit==4u&&
+			ReadDisplayLitAreaBytes(ReadFileBytes(path),reopenedLit,width,height)&&reopenedLit==0u&&
+			RISECBOR64::SHA256Hex(consumed)==expected&&DigestFile(path)!=expected;
+		const std::vector<std::filesystem::path> paths={path};const std::vector<std::string> digests={expected};
+		const bool changedRed=!AuthorFirstLightGIF(paths,root/"changed.gif",16u,error,&digests);
+		const std::vector<std::string> missing;const bool cardinalityRed=!AuthorFirstLightGIF(paths,root/"missing.gif",16u,error,&missing);
+		if(!write(path,a))return 98;substituted=false;
+		passed=passed&&AuthorFirstLightGIF(paths,root/"captured.gif",16u,error,&digests,&replace)&&substituted;
+		std::size_t gifLit=0u;passed=passed&&ReadDisplayLitAreaBytes(ReadFileBytes(root/"captured.gif"),gifLit,width,height)&&gifLit==4u;
+		passed=passed&&AuthorFirstLightGIF(paths,root/"old_reopened.gif",16u,error);
+		std::size_t oldGifLit=0u;passed=passed&&ReadDisplayLitAreaBytes(ReadFileBytes(root/"old_reopened.gif"),oldGifLit,width,height)&&oldGifLit==0u;
+		const bool emptyRed=!ReadDisplayLitAreaBytes({},litA,width,height);
+		// Byte-only scene/receipt discriminator. No EXR attestation or native VDB
+		// evidence is synthesized or promoted; original producer files stay read-only.
+		const std::filesystem::path manifestPath="/Volumes/SSD/RISE/fire_production_calibration/r246_preview_source_snapshot.v8/sequence_manifest.rise-fire.cbor";
+		const auto bytes=ReadFileBytes(manifestPath);FireSequenceManifest manifest;
+		if(RISECBOR64::SHA256Hex(bytes)!="f036ff7f96a3f5827104cdd2f06e8aa068c3e8f097acd7ff3c069bab82fb3cc1"||
+			!manifest.LoadCanonicalEnvelope(bytes,manifestPath.parent_path().string(),error))return 98;
+		const auto scene=TemporalFirePreviewScene(manifest.Channels().front(),manifestPath,true,true);
+		{std::ofstream file(root/"temporal_fire.RISEscene");file<<scene;if(!file)return 98;}
+		for(std::size_t frame=0u;frame<manifest.Frames().size();++frame){
+			std::ostringstream index;index<<std::setw(5)<<std::setfill('0')<<frame;
+			for(const auto& target:PreviewPairPaths(root/("temporal_primary_"+index.str()+".exr"),root/("temporal_display_"+index.str()+".png")))
+				if(!write(target,{1u}))return 98;
+		}
+		const auto inventory=TemporalPreviewInventory(root,manifest.Frames().size());
+		auto receipt=[&](){std::ofstream file(root/"temporal_preview_receipt.v1");file<<
+			"schema rise.fire.temporal-preview-receipt.v1\nsource_manifest_sha256 "<<RISECBOR64::SHA256Hex(bytes)<<
+			"\nscene_sha256 "<<DigestFile(root/"temporal_fire.RISEscene")<<"\nframes "<<manifest.Frames().size()<<'\n'<<TemporalPreviewInventory(root,manifest.Frames().size());file.close();return static_cast<bool>(file);};
+		passed=passed&&receipt()&&SpectrumPreviewSceneMatches(root,manifestPath,manifest,true,error,true,&inventory);
+		if(!write(root/"temporal_display_00000.png",{2u})||!receipt())return 98;
+		const bool oldInventoryGreen=SpectrumPreviewSceneMatches(root,manifestPath,manifest,true,error,true);
+		const bool boundInventoryRed=!SpectrumPreviewSceneMatches(root,manifestPath,manifest,true,error,true,&inventory);
+		passed=passed&&changedRed&&cardinalityRed&&emptyRed&&oldInventoryGreen&&boundInventoryRed;
+		std::printf("R246_CAPTURED_DISPLAY passed=%d captured_lit=%zu reopened_lit=%zu captured_gif_lit=%zu old_gif_lit=%zu changed_gif_red=%d cardinality_red=%d empty_red=%d old_inventory_green=%d bound_inventory_red=%d png_a_sha256=%s png_b_sha256=%s synthetic_images_and_receipt_bytes_only=1 no_native_fields=1 no_render=1 recovery_accepted=0\n",
+			passed?1:0,capturedLit,reopenedLit,gifLit,oldGifLit,changedRed?1:0,cardinalityRed?1:0,emptyRed?1:0,oldInventoryGreen?1:0,boundInventoryRed?1:0,expected.c_str(),RISECBOR64::SHA256Hex(b).c_str());return passed?0:98;
+	}
+
 	bool SpectrumPreviewFrameMatches(const std::filesystem::path& directory,
-		const FireSequenceManifest& manifest,const std::size_t frame,std::string& error)
+		const FireSequenceManifest& manifest,const std::size_t frame,std::string& error,const bool r246TopDouble=false,CapturedPreviewPair* consumed=nullptr)
 	{
 		using RISECBOR64::Value;
 		if(frame>=manifest.Frames().size())return false;
 		std::ostringstream index;index<<std::setw(5)<<std::setfill('0')<<frame;
 		const auto primary=directory/("temporal_primary_"+index.str()+".exr");
 		const auto display=directory/("temporal_display_"+index.str()+".png");
-		const auto sidecar=ReadFileBytes(primary.string()+".provenance.cbor");
+		CapturedPreviewPair pair;const auto paths=PreviewPairPaths(primary,display);
+		for(std::size_t i=0u;i<pair.size();++i)pair[i]=ReadFileBytes(paths[i]);
+		const auto& sidecar=pair[1u];
 		Value envelope;
-		if(!VerifyFireProvenanceEXR(ReadFileBytes(primary),sidecar,error)||
+		if(!VerifyFireProvenanceEXR(pair[0u],sidecar,error)||
 			!RISECBOR64::DecodeCanonical(sidecar,envelope,&error)||
-			!VerifyVisibleFireDisplayDerivative(ReadFileBytes(display),
-				ReadFileBytes(display.string()+".provenance.cbor"),envelope,error,false,false))return false;
+			!VerifyVisibleFireDisplayDerivative(pair[2u],pair[3u],envelope,error,false,false))return false;
 		const auto* payload=envelope.Find("payload");
 		const auto* fidelity=payload?payload->Find("artifact_fidelity"):nullptr;
 		const auto* media=payload?payload->Find("active_fire_media"):nullptr;
 		if(!fidelity||fidelity->GetText()!="preview_primary"||
 			!media||media->GetType()!=Value::Array||media->GetArray().size()!=1u)return false;
 		Value displayEnvelope;
-		if(!RISECBOR64::DecodeCanonical(ReadFileBytes(display.string()+".provenance.cbor"),displayEnvelope,&error))return false;
-		const auto* displayPayload=displayEnvelope.Find("payload");
-		if(!displayPayload||!SpectrumRenderProfileMatches(*payload,manifest,frame,false)||
-			!SpectrumRenderProfileMatches(*displayPayload,manifest,frame,true)){
-			error="spectrum preview differs from the matched render profile";return false;
-		}
-		const auto& medium=media->GetArray().front();
-		const auto* sequence=medium.Find("sequence_id");
-		const auto* selected=medium.Find("selected_base_frame_index");
-		const auto* digest=medium.Find("whole_file_digest");
-		return sequence&&sequence->GetText()==manifest.SequenceId()&&selected&&
-			selected->GetType()==Value::UnsignedInteger&&
-			selected->GetIntegerArgument()==static_cast<std::uint64_t>(manifest.Frames()[frame].index)&&
-			digest&&digest->GetText()==manifest.Frames()[frame].sha256;
+		if(!RISECBOR64::DecodeCanonical(pair[3u],displayEnvelope,&error))return false;
+		if(!R246MatchedRenderProfiles(envelope,displayEnvelope,manifest,frame,r246TopDouble,error))return false;
+		if(!R246RuntimeManifestMatches(envelope,manifest,frame))return false;
+		if(consumed)*consumed=std::move(pair);return true;
 	}
 
+	bool R246CommonHeightSignal(const MethaneRunCheckpoint& checkpoint,
+		std::vector<double>& heatW,std::string& stationCSV)
+	{
+		heatW.clear();stationCSV.clear();
+		if(!ProductionPuffingSpectrumTierMatches(checkpoint,6.0,true,true))return false;
+		const auto& v=checkpoint.values;const std::size_t count=v.probeTimeS.size();
+		if(count<2u||count>SIZE_MAX/160u||v.probeCenterlineHeatReleaseW.size()!=count)return false;
+		const std::size_t stations=count*160u;
+		if(v.stationProbeTimeS.size()!=stations||v.stationProbeHeightM.size()!=stations||
+			v.stationProbeTemperatureK.size()!=stations||v.stationProbeReactionWPerM3.size()!=stations||
+			v.stationProbeVerticalVelocityMPerS.size()!=stations)return false;
+		const double dx=checkpoint.cellWidthM,volume=dx*dx*dx;
+		std::ostringstream rows;rows<<std::setprecision(17)
+			<<"support,accepted_sample,time_s,layer,height_m,temperature_K,reaction_W_per_m3,vertical_velocity_m_per_s\n";
+		for(std::size_t sample=0u;sample<count;++sample){
+			const double time=v.probeTimeS[sample];
+			if(!std::isfinite(time)||(sample&&time<=v.probeTimeS[sample-1u]))return false;
+			double sum=0.0;
+			for(std::size_t layer=0u;layer<160u;++layer){
+				const std::size_t index=sample*160u+layer;
+				const double reaction=v.stationProbeReactionWPerM3[index];
+				if(v.stationProbeTimeS[index]!=time||v.stationProbeHeightM[index]!=(static_cast<double>(layer)+0.5)*dx||
+					!std::isfinite(reaction)||reaction<0.0||!std::isfinite(v.stationProbeTemperatureK[index])||
+					v.stationProbeTemperatureK[index]<=0.0||!std::isfinite(v.stationProbeVerticalVelocityMPerS[index]))return false;
+				if(layer<80u){
+					sum+=reaction*volume;
+					rows<<"common_layers_0_79,"<<sample<<','<<time<<','<<layer<<','<<v.stationProbeHeightM[index]<<','
+						<<v.stationProbeTemperatureK[index]<<','<<reaction<<','<<v.stationProbeVerticalVelocityMPerS[index]<<'\n';
+				}
+			}
+			if(!std::isfinite(sum))return false;
+			heatW.push_back(sum);
+		}
+		stationCSV=rows.str();return true;
+	}
+
+	struct R246RecoveredSpectrumInputs {
+		const MethaneRunCheckpoint& checkpoint;
+		const RISECBOR64::Bytes& manifest;
+		const RISECBOR64::Bytes& frameCSV;
+		const R246CapturedEventHistory& history;
+		std::filesystem::path previewSnapshotManifestPath;
+	};
 	int RunProductionPuffingSpectrumChild(const double resolutionTier,
 		const std::filesystem::path& checkpointPath,
 		const std::filesystem::path& simulationDirectory,
 		const std::filesystem::path& previewDirectory,
-		const std::filesystem::path& outputDirectory,const bool r244LateralDouble=false)
+		const std::filesystem::path& outputDirectory,const bool r244LateralDouble=false,const bool r246TopDouble=false,
+		const R246RecoveredSpectrumInputs* recovered=nullptr)
 	{
-		MethaneRunCheckpoint checkpoint;std::string error;
-		if(!LoadMethaneRunCheckpoint(checkpointPath,checkpoint,error)||
-			!ProductionPuffingSpectrumTierMatches(checkpoint,resolutionTier,r244LateralDouble)){
+		MethaneRunCheckpoint loadedCheckpoint;std::string error;
+		const auto& checkpoint=recovered?recovered->checkpoint:loadedCheckpoint;
+		if((recovered&&(!r244LateralDouble||!r246TopDouble||resolutionTier!=6.0))||
+			(!recovered&&!LoadMethaneRunCheckpoint(checkpointPath,loadedCheckpoint,error))||
+			!ProductionPuffingSpectrumTierMatches(checkpoint,resolutionTier,r244LateralDouble,r246TopDouble)){
 			std::fprintf(stderr,"puffing spectrum checkpoint rejected: %s\n",error.c_str());return 91;
 		}
-		const auto manifestBytes=ReadFileBytes(simulationDirectory/"sequence_manifest.rise-fire.cbor");
+		const auto manifestBytes=recovered?recovered->manifest:
+			ReadFileBytes(simulationDirectory/"sequence_manifest.rise-fire.cbor");
 		FireSequenceManifest manifest;
 		if(!manifest.LoadCanonicalEnvelope(manifestBytes,simulationDirectory.string(),error)||
 			manifest.CaseRecordId()!=checkpoint.caseRecordId||
-			!TemporalManifestDomainMatches(manifestBytes,r244LateralDouble,error))return 91;
+			!TemporalManifestDomainMatches(manifestBytes,r244LateralDouble,error,r246TopDouble,
+				nullptr,nullptr,recovered?&recovered->history:nullptr))return 91;
 		RISECBOR64::Value envelope;FireCase::RecordV1 caseRecord;
 		if(!RISECBOR64::DecodeCanonical(manifestBytes,envelope,&error))return 91;
 		const auto* payload=envelope.Find("payload");
@@ -3490,11 +4513,14 @@ namespace
 		UniformHannSpectrum centerline;
 		if(!ComputeUniformHannSpectrum(checkpoint.values.probeTimeS,
 			checkpoint.values.probeCenterlineHeatReleaseW,512u,centerline))return 92;
-		std::ifstream frameTimesInput(simulationDirectory/"frame_times.csv");
+		const auto frameCSV=recovered?recovered->frameCSV:ReadFileBytes(simulationDirectory/"frame_times.csv");
+		std::istringstream frameTimesInput(std::string(frameCSV.begin(),frameCSV.end()));
 		std::string line;if(!std::getline(frameTimesInput,line)||
 			line!="frame,simulation_time_s,vdb_sha256")return 93;
 		std::vector<double> litTimeS,litAreaPixels;
 		std::vector<std::string> displayDigests;
+		std::ostringstream consumedInventory;
+		std::vector<FireFramePrimary> consumedPrimaryLinks;RISECBOR64::Value terminalPrimary;std::string consumedRendererBuild;
 		unsigned int displayWidth=0u,displayHeight=0u;
 		while(std::getline(frameTimesInput,line)){
 			if(line.empty())continue;
@@ -3507,33 +4533,57 @@ namespace
 			if(!frameEnd||*frameEnd!='\0'||!timeEnd||*timeEnd!='\0'||
 				frame!=litTimeS.size()||!std::isfinite(timeS)||
 				(!litTimeS.empty()&&!(timeS>litTimeS.back())))return 93;
+			CapturedPreviewPair consumedPair;
 			if(frame>=manifest.Frames().size()||manifest.Frames()[frame].index!=static_cast<std::int64_t>(frame)||
 				vdbDigest!=manifest.Frames()[frame].sha256||
 				DigestFile(simulationDirectory/manifest.Frames()[frame].relativePath)!=vdbDigest||
-				!SpectrumPreviewFrameMatches(previewDirectory,manifest,frame,error)){
+				!SpectrumPreviewFrameMatches(previewDirectory,manifest,frame,error,r246TopDouble,&consumedPair)){
 				std::fprintf(stderr,"puffing spectrum frame %lu provenance rejected: %s\n",frame,error.c_str());
 				return 94;
 			}
-			std::ostringstream name;name<<"temporal_display_"<<std::setw(5)<<
-				std::setfill('0')<<frame<<".png";
-			const std::filesystem::path displayPath=previewDirectory/name.str();
+			consumedInventory<<frame;for(const auto& digest:PreviewPairDigests(consumedPair))consumedInventory<<':'<<digest;
+			consumedInventory<<'\n';
+			if(recovered){
+				if(!RISECBOR64::DecodeCanonical(consumedPair[1u],terminalPrimary,&error))return 94;
+				const auto* source=terminalPrimary.Find("payload");const auto* id=terminalPrimary.Find("provenance_id");
+				const auto* artifact=source?source->Find("artifact_sha256"):nullptr;
+				if(!id||id->GetType()!=RISECBOR64::Value::Text||!artifact||artifact->GetType()!=RISECBOR64::Value::Text)return 94;
+				const auto* build=source->Find("renderer_build_id");
+				if(!build||build->GetType()!=RISECBOR64::Value::Text||(!consumedRendererBuild.empty()&&consumedRendererBuild!=build->GetText()))return 94;
+				consumedRendererBuild=build->GetText();
+				FireFramePrimary link;link.frameIndex=frame;link.provenanceId=id->GetText();link.artifactSha256=artifact->GetText();consumedPrimaryLinks.push_back(link);
+			}
 			std::size_t lit=0u;unsigned int width=0u,height=0u;
-			if(!ReadDisplayLitArea(displayPath,lit,width,height)||width!=64u||height!=64u||
+			if(!ReadDisplayLitAreaBytes(consumedPair[2u],lit,width,height)||width!=64u||height!=64u||
 				(!litTimeS.empty()&&(width!=displayWidth||height!=displayHeight)))return 94;
 			if(litTimeS.empty()){displayWidth=width;displayHeight=height;}
-			const std::string displayDigest=DigestFile(displayPath);
+			const std::string displayDigest=RISECBOR64::SHA256Hex(consumedPair[2u]);
 			if(displayDigest.size()!=64u)return 94;
 			litTimeS.push_back(timeS);litAreaPixels.push_back(static_cast<double>(lit));
 			displayDigests.push_back(displayDigest);
 		}
-		if(!SpectrumFullWindowMatches(checkpoint,manifest,caseRecord,litTimeS))return 93;
+		if(!SpectrumFullWindowMatches(checkpoint,manifest,caseRecord,litTimeS,recovered?&recovered->history:nullptr))return 93;
 		UniformHannSpectrum litArea;
 		if(!ComputeUniformHannSpectrum(litTimeS,litAreaPixels,512u,litArea))return 95;
 		std::error_code directoryError;
+		const auto inventoryText=consumedInventory.str();
+		const auto sceneManifestPath=recovered?recovered->previewSnapshotManifestPath:
+			simulationDirectory/"sequence_manifest.rise-fire.cbor";
+		const R246CapturedSceneInput capturedScene{sceneManifestPath,manifestBytes};
 		if(!SpectrumPreviewSceneMatches(previewDirectory,
-			simulationDirectory/"sequence_manifest.rise-fire.cbor",manifest,r244LateralDouble,error)){
+			sceneManifestPath,manifest,r244LateralDouble,error,r246TopDouble,&inventoryText,recovered?&capturedScene:nullptr)){
 			std::fprintf(stderr,"puffing spectrum scene rejected: %s\n",error.c_str());return 94;
 		}
+		if(recovered){
+			RISECBOR64::Bytes gif,sidecar,receipt;
+			if(!R246CaptureMovieBundle(previewDirectory,gif,sidecar,receipt,error)||
+				!R246MovieMatchesConsumedPrimary(gif,sidecar,receipt,terminalPrimary,consumedPrimaryLinks,64u,64u,16u,error)||
+				!ValidateFireGIFBytes(gif,FireFrameSequenceEncoding::AppleImageIOGif_PreviewPlus6EV_8Bit,64u,64u,16u,consumedPrimaryLinks,false,error))return 94;
+		}
+		std::vector<double> commonHeightHeatW;std::string commonStations;
+		UniformHannSpectrum commonHeightSpectrum;
+		if(r246TopDouble&&(!R246CommonHeightSignal(checkpoint,commonHeightHeatW,commonStations)||
+			!ComputeUniformHannSpectrum(checkpoint.values.probeTimeS,commonHeightHeatW,512u,commonHeightSpectrum)))return 95;
 		std::filesystem::create_directories(outputDirectory,directoryError);
 		if(directoryError)return 96;
 		auto writeSignal=[&](const std::filesystem::path& path,const std::vector<double>& time,
@@ -3547,6 +4597,12 @@ namespace
 			checkpoint.values.probeCenterlineHeatReleaseW,"centerline_heat_release_W")||
 			!writeSignal(outputDirectory/"lit_area_signal.csv",litTimeS,litAreaPixels,
 				"lit_pixels"))return 96;
+		if(r246TopDouble){
+			if(!writeSignal(outputDirectory/"common_height_centerline_signal.csv",checkpoint.values.probeTimeS,
+				commonHeightHeatW,"common_layers_0_79_centerline_heat_release_W"))return 96;
+			std::ofstream stations(outputDirectory/"common_height_stations.csv",std::ios::trunc);
+			stations<<commonStations;stations.close();if(!stations)return 96;
+		}
 		std::ofstream displays(outputDirectory/"display_inputs.csv",std::ios::trunc);
 		displays<<"frame,time_s,lit_pixels,display_sha256\n";
 		for(std::size_t frame=0u;frame<litTimeS.size();++frame)displays<<frame<<','<<
@@ -3561,6 +4617,7 @@ namespace
 				spectrum.amplitude[bin]<<','<<spectrum.power[bin]<<','<<
 				spectrum.powerFraction[bin]<<'\n';
 		};
+		if(r246TopDouble)writeSpectrum("common_height_centerline_heat_release",commonHeightSpectrum);
 		writeSpectrum("centerline_heat_release",centerline);writeSpectrum("display_lit_area",litArea);
 		spectra.close();if(!spectra)return 96;
 		const double expectedHz=1.5/std::sqrt(CapstonePoolDiameterM);
@@ -3574,13 +4631,16 @@ namespace
 		std::ofstream summary(outputDirectory/"puffing_spectrum_evidence.v1",std::ios::trunc);
 		summary<<std::setprecision(17)
 			<<"artifact_fidelity simulation_evidence\n"
-			<<"checkpoint_sha256 "<<DigestFile(checkpointPath)<<"\n"
-			<<"frame_times_sha256 "<<DigestFile(simulationDirectory/"frame_times.csv")<<"\n"
+			<<"checkpoint_sha256 "<<(recovered?"0632960c2b045c8717e2d655cfc8bb340b918023f0fea1bfa1117a0aeaaca043":DigestFile(checkpointPath))<<"\n"
+			<<"frame_times_sha256 "<<RISECBOR64::SHA256Hex(frameCSV)<<"\n"
 			<<"display_inputs_sha256 "<<DigestFile(outputDirectory/"display_inputs.csv")<<"\n"
 			<<"centerline_signal_sha256 "<<DigestFile(outputDirectory/"centerline_signal.csv")<<"\n"
 			<<"lit_area_signal_sha256 "<<DigestFile(outputDirectory/"lit_area_signal.csv")<<"\n"
 			<<"full_spectrum_sha256 "<<DigestFile(outputDirectory/"full_spectrum.csv")<<"\n";
-		if(!WriteProductionPuffingSpectrumTierEvidence(summary,checkpoint,resolutionTier,r244LateralDouble))return 96;
+		if(!WriteProductionPuffingSpectrumTierEvidence(summary,checkpoint,resolutionTier,r244LateralDouble,r246TopDouble))return 96;
+		if(r246TopDouble)summary<<"common_height_support layers_0_79_separate_observation\n"
+			<<"common_height_signal_sha256 "<<DigestFile(outputDirectory/"common_height_centerline_signal.csv")<<'\n'
+			<<"common_height_stations_sha256 "<<DigestFile(outputDirectory/"common_height_stations.csv")<<'\n';
 		summary
 			<<"r57_general_case_admissibility_minimum_cells 4\n"
 			<<"puffing_claim_requires_refined_approximately_ten_cell_class true\n"
@@ -3895,6 +4955,60 @@ namespace
 		ledger=next;pending=R245PendingBudget();return true;
 	}
 
+	bool ProductionOwnerObservationReserveBytes(const PeriodicMACShape& shape,
+		const bool observe,std::uint64_t& bytes)
+	{
+		FireProductionProjectionShape memoryShape;memoryShape.nx=shape.nx;
+		memoryShape.ny=shape.ny;memoryShape.nz=shape.nz;
+		memoryShape.cellWidthM=static_cast<float>(shape.cellWidthM);
+		// All launcher cases retain the prescribed source plane, including
+		// observer-off runs. Its mask/flux bytes are independent of observation.
+		if(!FireProductionProjectedHeunMetalObserverWorkingSetBytes(memoryShape,bytes,true,observe))
+			return false;
+		if(observe){
+			const std::uint64_t cells=memoryShape.CellCount(),faces=
+				FireProductionProjectionFaceCount(memoryShape,0u)+FireProductionProjectionFaceCount(memoryShape,1u)+
+				FireProductionProjectionFaceCount(memoryShape,2u);
+			const std::uint64_t extra=(72u+104u*faces)+(76u*cells+36u*faces+216u)+
+				(112u*cells+4u*faces)+memoryShape.nx*memoryShape.ny;
+			if(bytes>UINT64_MAX-extra)return false;
+			bytes+=extra;
+		}
+		return true;
+	}
+
+	bool R246PreallocationPolicy(const PeriodicMACShape& shape,FireRunHostMemory::Policy& policy,
+		std::uint64_t& initialFields)
+	{
+		// This experiment has a single reviewed geometry; refuse arbitrary grids
+		// before count arithmetic or field allocation. The owner certificate includes
+		// full device work and observation capsules. Enumerate additionally live host
+		// initial fields; the existing general scratch reserve remains unchanged.
+		if(shape.nx!=104u||shape.ny!=104u||shape.nz!=160u)return false;
+		std::uint64_t owner=0u;
+		if(!ProductionOwnerObservationReserveBytes(shape,true,owner)){
+			FireProductionProjectionShape diagnostic;diagnostic.nx=shape.nx;diagnostic.ny=shape.ny;
+			diagnostic.nz=shape.nz;diagnostic.cellWidthM=static_cast<float>(shape.cellWidthM);
+			std::uint64_t projection=0u,target=0u,nonpressure=0u;
+			const bool projectionOK=FireProductionProjectionWorkingSetBytes(diagnostic,projection,true);
+			const bool targetOK=FireProductionResidentTargetLineageMetalWorkingSetBytes(diagnostic,target,true);
+			const bool nonpressureOK=FireProductionNonpressureMomentumRHSMetalWorkingSetBytes(diagnostic,nonpressure,true);
+			std::fprintf(stdout,"R246_COMPONENT_ADMISSION projection_ok=%d projection_bytes=%llu target_ok=%d target_bytes=%llu nonpressure_ok=%d nonpressure_bytes=%llu\n",
+				projectionOK?1:0,static_cast<unsigned long long>(projection),targetOK?1:0,
+				static_cast<unsigned long long>(target),nonpressureOK?1:0,static_cast<unsigned long long>(nonpressure));
+			return false;
+		}
+		const std::uint64_t cells=shape.CellCount(),plane=shape.nx*shape.ny,
+			faces=OpenMACFaceCount3D(shape,0u)+OpenMACFaceCount3D(shape,1u)+OpenMACFaceCount3D(shape,2u);
+		initialFields=cells*(sizeof(MethaneCellState)+sizeof(MethaneReactionStep)+
+			3u*sizeof(float)+sizeof(std::array<float,3>)+sizeof(std::uint8_t))+
+			2u*faces*sizeof(double)+2u*plane*sizeof(double)+(plane+7u)/8u+
+			3u*shape.nz*sizeof(double)+2u*(shape.nx*shape.ny+shape.nx*shape.nz+shape.ny*shape.nz);
+		if(owner>UINT64_MAX-initialFields)return false;
+		policy=FireRunHostMemory::ProductionPolicy(owner+initialFields);
+		return policy.Valid();
+	}
+
 	SolverFrameValues RunMethaneFrameProbe( const unsigned int workerCount=1u,
 		const unsigned int minimumStepCount=1u,const double targetTimeS=0.0,
 		const double caseDurationS=1.0,const double caseFramesPerS=4.0,
@@ -3904,6 +5018,21 @@ namespace
 		const RunPersistenceOptions& persistence=RunPersistenceOptions() )
 	{
 		SolverFrameValues values;
+		if((persistence.r246MemoryAdmissionRED||persistence.r246DeviceAdmissionRED)&&!persistence.r246TopDouble){
+			values.structuredError="r246_memory_fixture_scope_conflict";return values;}
+		if(persistence.r246FullWindow&&!persistence.r246TopDouble){
+			values.structuredError="r246_full_window_selector_conflict";return values;}
+		if(persistence.r246TopDouble&&(!persistence.r244LateralDouble||
+			!persistence.productionMetal||!persistence.portedProductionTransport||persistence.resume||
+			resolutionTier!=6.0||caseDurationS!=25.156864278900095||caseFramesPerS!=16.0||
+			(persistence.r246FullWindow?
+				(minimumStepCount!=1u||targetTimeS!=caseDurationS||!persistence.r245AcceptedBudget||
+				persistence.checkpointPath.empty()||persistence.finalCheckpointPath.empty()||
+				persistence.retainedCheckpointDirectory.empty()||persistence.checkpointCadenceWallS!=300.0||
+				persistence.maximumProductionSourceStepS!=static_cast<double>(static_cast<float>(0.0016462659696117043))||
+				persistence.killAfterFirstCheckpoint||persistence.forceZeroSourceForTest||injectSolverFailure):
+				(minimumStepCount!=0u||targetTimeS!=0.0)))){
+			values.structuredError="r246_engineering_probe_scope_conflict";return values;}
 		if(persistence.r245ObservationFixture&&!persistence.burnerLauncherFixture){
 			values.structuredError="r245_observer_fixture_scope_conflict";return values;}
 		if(persistence.r245AcceptedBudget&&(!persistence.r244LateralDouble||persistence.resume||
@@ -4101,7 +5230,8 @@ namespace
 		authored.numericDStarTier=resolutionTier; authored.seed=1234;
 		authored.outputFramesPerS=caseFramesPerS;
 		authored.plumeLaw=true;
-		if(persistence.r244LateralDouble)authored.domainStudy="r244-lateral-double-v1";
+		if(persistence.r244LateralDouble)authored.domainStudy=persistence.r246TopDouble?
+			"r246-lateral-double-top-double-v1":"r244-lateral-double-v1";
 		FireCase::RecordV1 caseRecord;
 		const RISECBOR64::Bytes aerosol=AerosolRecord();
 		const RISECBOR64::Bytes chem=SyntheticChemRecord();
@@ -4163,6 +5293,36 @@ namespace
 		Check(ComputeMixingTimeS(state,transportEvaluation,FireSimulationTransportRecord::OpenV1(),
 			shape.cellWidthM,rho,9.80665,false,reaction.mixingTimeS,&error),
 			"capstone derives mixing time instead of authoring a closure constant");
+		if(persistence.r246TopDouble){
+			FireRunHostMemory::Policy preallocationPolicy;std::uint64_t initialFields=0u;
+			if(!R246PreallocationPolicy(shape,preallocationPolicy,initialFields)){
+				values.structuredError="r246_preallocation_certificate_refused";return values;}
+			FireProductionProjectionShape deviceShape;
+			deviceShape.nx=shape.nx;deviceShape.ny=shape.ny;deviceShape.nz=shape.nz;
+			deviceShape.cellWidthM=static_cast<float>(shape.cellWidthM);
+			std::uint64_t deviceCertificate=0u,deviceLimit=0u;
+			if(!FireProductionProjectedHeunMetalObserverWorkingSetBytes(deviceShape,deviceCertificate,true,true)||
+				!FireProductionProjectedHeunMetalDeviceWorkingSetLimitBytes(deviceLimit,&error)){
+				values.structuredError="r246_preallocation_device_unavailable:"+error;return values;}
+			// Test-only refusal never changes the queried device limit or real certificate.
+			const std::uint64_t admissionLimit=persistence.r246DeviceAdmissionRED?
+				deviceCertificate-1u:deviceLimit;
+			std::fprintf(stdout,"R246_DEVICE_PREFLIGHT certificate_bytes=%llu device_limit_bytes=%llu admission_limit_bytes=%llu fixture_red=%d before_initial_fields=1\n",
+				static_cast<unsigned long long>(deviceCertificate),static_cast<unsigned long long>(deviceLimit),
+				static_cast<unsigned long long>(admissionLimit),persistence.r246DeviceAdmissionRED?1:0);
+			if(deviceCertificate>admissionLimit){
+				values.structuredError="r246_preallocation_device_refused";return values;}
+			values.r246PreallocationReserveBytes=preallocationPolicy.reserve;
+			auto sample=FireRunHostMemory::Read();
+			if(persistence.r246MemoryAdmissionRED){sample.valid=true;sample.rss=preallocationPolicy.ceiling;}
+			if(preallocationPolicy.Stop(sample)){
+				values.structuredError="r246_preallocation_memory_refused";return values;}
+			std::fprintf(stdout,"R246_PREALLOCATION cells=%zu initial_host_fields_bytes=%llu reserve_bytes=%llu ceiling_bytes=%llu before_initial_fields=1\n",
+				shape.CellCount(),static_cast<unsigned long long>(initialFields),
+				static_cast<unsigned long long>(preallocationPolicy.reserve),
+				static_cast<unsigned long long>(preallocationPolicy.ceiling));
+			values.r246InitialFieldsAllocated=true;
+		}
 		std::vector<MethaneCellState> states(shape.CellCount(),state);
 		auto canonicalizeProductionBinary32State=[&](MethaneCellState& candidate)->bool{
 			ConservativeVector conservative=ToConservativeVector(candidate);
@@ -4260,16 +5420,17 @@ namespace
 		std::vector<std::uint8_t> canonicalPilotMask;
 		Check(FireCase::BuildPilotMask(authored,caseRecord.derived,canonicalPilotMask,error),
 			"capstone installs the canonical r57 intensive pilot annulus");
-		const double pilotEndS=caseRecord.derived.pilotDurationMultiplier*
-			caseRecord.derived.flowThroughTimeS;
-		const double pilotRampEndS=caseRecord.derived.flowThroughTimeS/
+		const double scheduleFlowThroughTimeS=FireCase::ScheduleFlowThroughTimeS(caseRecord.derived);
+		values.matchedScheduleFlowThroughTimeS=scheduleFlowThroughTimeS;
+		const double pilotEndS=caseRecord.derived.pilotDurationMultiplier*scheduleFlowThroughTimeS;
+		const double pilotRampEndS=scheduleFlowThroughTimeS/
 			caseRecord.derived.pilotRampExponentPerFlowThrough;
 		const double pilotCommandMaximumStepS=FireCase::PilotCommandMaximumStepS(
 			caseRecord.derived);
 		Check(pilotCommandMaximumStepS>0.0,
 			"capstone derives the r70 command-ramp step ceiling from the canonical cap");
 		values.maximumTemperatureK=state.temperatureK;
-		values.statisticsStartS=5.0*caseRecord.derived.flowThroughTimeS;
+		values.statisticsStartS=caseRecord.derived.preRollOrDiscardS;
 		values.characteristicDiameterM=caseRecord.derived.characteristicDiameterM;
 		std::vector<double> centerlineTemperatureIntegral(shape.nz,0.0),
 			centerlineVelocityIntegral(shape.nz,0.0),
@@ -4278,6 +5439,10 @@ namespace
 		config.openBoundary.velocityToleranceMPerS=1.0e-3*projectionReferenceVelocityMPerS;
 		config.openBoundary.pressureTolerancePa=ambient.GasDensity()*
 			projectionReferenceVelocityMPerS*config.openBoundary.velocityToleranceMPerS;
+		values.projectionReferenceLengthM=projectionReferenceLengthM;
+		values.projectionTolerancePerS=config.projectionTolerancePerS;
+		values.velocityToleranceMPerS=config.openBoundary.velocityToleranceMPerS;
+		values.pressureTolerancePa=config.openBoundary.pressureTolerancePa;
 		Check(config.openBoundary.velocityToleranceMPerS==
 			config.projectionTolerancePerS*projectionReferenceLengthM&&
 			config.openBoundary.pressureTolerancePa==ambient.GasDensity()*
@@ -4552,22 +5717,10 @@ namespace
 		std::vector<std::vector<unsigned char> > syntheticRetainedPayloads;
 		std::filesystem::path hostMemoryPath;
 		if(hostMemoryMonitored){
-			FireProductionProjectionShape memoryShape;memoryShape.nx=shape.nx;
-			memoryShape.ny=shape.ny;memoryShape.nz=shape.nz;
-			memoryShape.cellWidthM=static_cast<float>(shape.cellWidthM);
 			std::uint64_t ownerBytes=0u;
-			if(!FireProductionProjectedHeunMetalObserverWorkingSetBytes(memoryShape,ownerBytes,persistence.r245AcceptedBudget||persistence.r245ObservationFixture,
-				persistence.r245AcceptedBudget||persistence.r245ObservationFixture)){
+			if(!ProductionOwnerObservationReserveBytes(shape,
+				persistence.r245AcceptedBudget||persistence.r245ObservationFixture,ownerBytes)){
 				values.structuredError="host_memory_certificate_unavailable";return values;}
-			if(persistence.r245AcceptedBudget||persistence.r245ObservationFixture){
-				// Additional simultaneously live host copies: flux+stage packet,
-				// native publication, and selected-frame Q0/source/M0. Sizes follow
-				// their wire layouts; existing 2 GiB scratch and 32 GiB ceiling stay.
-				const std::uint64_t cells=memoryShape.CellCount(),faces=
-					FireProductionProjectionFaceCount(memoryShape,0u)+FireProductionProjectionFaceCount(memoryShape,1u)+
-					FireProductionProjectionFaceCount(memoryShape,2u);
-				ownerBytes+=(72u+26u*faces*4u)+(76u*cells+36u*faces+216u)+(112u*cells+4u*faces)+memoryShape.nx*memoryShape.ny;
-			}
 			hostMemoryPolicy=FireRunHostMemory::ProductionPolicy(ownerBytes);
 			const auto memory=FireRunHostMemory::Read();
 			if(hostMemoryPolicy.Stop(memory)){
@@ -6714,7 +7867,8 @@ namespace
 		const double caseResolutionTier=6.0,const bool casePlumeLaw=false,
 		const std::vector<std::pair<std::string,std::string> >& sequenceFrames={},
 		const double authoredCaseDurationS=0.0,const double authoredCaseFramesPerS=0.0,
-		const bool prescribedProductionBurner=false,const bool r244LateralDouble=false )
+		const bool prescribedProductionBurner=false,const bool r244LateralDouble=false,
+		const bool r246TopDouble=false )
 	{
 		using RISECBOR64::Value;
 		std::string error;
@@ -6743,7 +7897,9 @@ namespace
 		caseAuthored.numericDStarTier=caseGridBound?caseResolutionTier:0.0; caseAuthored.seed=1234;
 		caseAuthored.outputFramesPerS=authoredCaseFramesPerS>0.0?authoredCaseFramesPerS:1.0/frameStepSeconds;
 		caseAuthored.plumeLaw=casePlumeLaw;
-		if(r244LateralDouble)caseAuthored.domainStudy="r244-lateral-double-v1";
+		if(r246TopDouble&&!r244LateralDouble)return {};
+		if(r244LateralDouble)caseAuthored.domainStudy=r246TopDouble?
+			"r246-lateral-double-top-double-v1":"r244-lateral-double-v1";
 		caseAuthored.hasRadiativeFractionOverride=caseHasRadiativeFractionOverride;
 		caseAuthored.radiativeFractionOverride=caseRadiativeFractionOverride;
 		FireCase::RecordV1 caseRecord;
@@ -8386,6 +9542,609 @@ namespace
 	}
 
 
+	struct ProductionTemporalWindowPlan
+	{
+		double scheduleFlowThroughTimeS=0.0,statisticsStartS=0.0;
+		double statisticsDurationS=0.0,targetTimeS=0.0,frameCadenceS=0.0;
+	};
+
+	bool BuildProductionTemporalWindowPlan(const SolverFrameValues& geometry,
+		const double frameCadenceS,const bool r246TopDouble,ProductionTemporalWindowPlan& plan)
+	{
+		plan=ProductionTemporalWindowPlan();
+		if(!geometry.succeeded||frameCadenceS!=0.0625||
+			!(geometry.flowThroughTimeS>0.0)||!std::isfinite(geometry.flowThroughTimeS))return false;
+		const double clock=r246TopDouble?geometry.matchedScheduleFlowThroughTimeS:geometry.flowThroughTimeS;
+		if(r246TopDouble&&(geometry.dimensions!=std::array<std::size_t,3>{{104u,104u,160u}}||
+			clock!=0x1.0d9da03060ef6p+1||geometry.flowThroughTimeS!=2.0*clock||
+			geometry.statisticsStartS!=5.0*clock))return false;
+		plan.scheduleFlowThroughTimeS=clock;
+		plan.statisticsStartS=5.0*clock;
+		plan.statisticsDurationS=std::ceil((40.0/(1.5/std::sqrt(CapstonePoolDiameterM)))/
+			frameCadenceS)*frameCadenceS;
+		plan.targetTimeS=plan.statisticsStartS+plan.statisticsDurationS;
+		plan.frameCadenceS=frameCadenceS;
+		return !r246TopDouble||(plan.statisticsStartS==10.531864278900095&&
+			plan.statisticsDurationS==14.625&&plan.targetTimeS==25.156864278900095);
+	}
+
+	void WriteR246WindowIdentity(std::ostream& output,const SolverFrameValues& geometry,
+		const ProductionTemporalWindowPlan& plan)
+	{
+		output<<std::setprecision(17)<<"domain_study r246-lateral-double-top-double-v1\n"
+			<<"physical_flow_through_time_s "<<geometry.flowThroughTimeS<<'\n'
+			<<"matched_schedule_flow_through_time_s "<<plan.scheduleFlowThroughTimeS<<'\n'
+			<<"matched_schedule_flow_through_time_hex "<<std::hexfloat<<plan.scheduleFlowThroughTimeS
+			<<std::defaultfloat<<'\n'
+			<<"native_centerline_support layers_0_159\ncommon_height_support layers_0_79_separate_observation\n"
+			<<"canonical_taller_qualification false\n";
+	}
+
+	int RunR246LauncherFoundationGate()
+	{
+		const int before=failures;
+		RunPersistenceOptions options;options.productionMetal=true;options.portedProductionTransport=true;
+		options.r244LateralDouble=true;
+		const auto original=RunMethaneFrameProbe(1u,0u,0.0,25.156864278900095,16.0,6.0,
+			CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,options);
+		options.r246TopDouble=true;
+		const auto top=RunMethaneFrameProbe(1u,0u,0.0,25.156864278900095,16.0,6.0,
+			CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,options);
+		std::fprintf(stdout,"R246_PROBE_ERRORS original=%s top=%s\n",original.structuredError.c_str(),top.structuredError.c_str());
+		Check(original.succeeded&&top.succeeded&&top.dimensions==std::array<std::size_t,3>{{104u,104u,160u}}&&
+			top.flowThroughTimeS==2.0*original.flowThroughTimeS&&
+			top.matchedScheduleFlowThroughTimeS==original.flowThroughTimeS&&
+			top.statisticsStartS==original.statisticsStartS&&top.r246InitialFieldsAllocated,
+			"r246 launcher separates physical residence from original scheduling and admits before fields");
+		ProductionTemporalWindowPlan originalWindow,topWindow,invalidWindow;
+		Check(BuildProductionTemporalWindowPlan(original,0.0625,false,originalWindow)&&
+			BuildProductionTemporalWindowPlan(top,0.0625,true,topWindow)&&
+			topWindow.statisticsStartS==originalWindow.statisticsStartS&&
+			topWindow.statisticsDurationS==originalWindow.statisticsDurationS&&
+			topWindow.targetTimeS==originalWindow.targetTimeS&&
+			topWindow.frameCadenceS==originalWindow.frameCadenceS,
+			"r246 full launcher plan preserves original window and cadence using matched clock");
+		SolverFrameValues foreignClock;foreignClock.succeeded=true;foreignClock.dimensions=top.dimensions;
+		foreignClock.statisticsStartS=top.statisticsStartS;foreignClock.flowThroughTimeS=top.flowThroughTimeS;
+		foreignClock.matchedScheduleFlowThroughTimeS=top.flowThroughTimeS;
+		Check(!BuildProductionTemporalWindowPlan(foreignClock,0.0625,true,invalidWindow)&&
+			!BuildProductionTemporalWindowPlan(top,0.125,true,invalidWindow),
+			"r246 full launcher plan refuses physical-clock substitution and foreign cadence");
+		std::ostringstream identityReceipt;WriteR246WindowIdentity(identityReceipt,top,topWindow);
+		Check(identityReceipt.str().find("matched_schedule_flow_through_time_hex 0x1.0d9da03060ef6p+1\n")!=std::string::npos&&
+			identityReceipt.str().find("physical_flow_through_time_s 4.2127457115600375\n")!=std::string::npos&&
+			identityReceipt.str().find("canonical_taller_qualification false\n")!=std::string::npos,
+			"r246 receipt binds exact original clock separately from physical residence and qualification");
+		bool fieldsMatch=original.temperature.size()*2u==top.temperature.size()&&
+			original.reaction.size()*2u==top.reaction.size()&&original.velocity.size()*2u==top.velocity.size()&&
+			original.carbon.size()*2u==top.carbon.size();
+		if(fieldsMatch)for(std::size_t cell=0u;cell<top.temperature.size();++cell){
+			const std::size_t common=cell%original.temperature.size();
+			fieldsMatch=fieldsMatch&&top.temperature[cell]==original.temperature[common]&&
+				top.reaction[cell]==original.reaction[common]&&top.velocity[cell]==original.velocity[common]&&
+				top.carbon[cell]==original.carbon[common];
+		}
+		Check(fieldsMatch,"r246 zero-step common fields match and upper fields are original ambient state");
+		const double referenceVelocity=std::sqrt(9.80665*original.characteristicDiameterM);
+		Check(top.projectionReferenceLengthM==160.0*top.cellWidthM&&
+			original.projectionReferenceLengthM==104.0*original.cellWidthM&&
+			top.projectionTolerancePerS==1.0e-3*referenceVelocity/top.projectionReferenceLengthM&&
+			original.projectionTolerancePerS==1.0e-3*referenceVelocity/original.projectionReferenceLengthM&&
+			top.velocityToleranceMPerS==original.velocityToleranceMPerS&&
+			top.pressureTolerancePa==original.pressureTolerancePa,
+			"r246 keeps geometric divergence derivation and unchanged open-boundary deadbands");
+		FireProductionProjectionShape resource;resource.nx=104u;resource.ny=104u;resource.nz=160u;
+		resource.cellWidthM=static_cast<float>(top.cellWidthM);
+		for(const bool burner:{false,true})for(const bool capture:{false,true}){
+			std::uint64_t owner=0u,observer=0u,fixture=0u;
+			Check(FireProductionProjectedHeunMetalOwnerWorkingSetBytes(resource,owner,burner,capture)&&
+				FireProductionProjectedHeunMetalObserverWorkingSetBytes(resource,observer,burner,capture)&&observer>owner&&
+				!FireProductionResidentPhysicalFluxMetalWorkingSetBytes(resource,fixture,burner)&&
+				!FireProductionResidentEOSCandidateMetalWorkingSetBytes(resource,fixture,burner)&&
+				!FireProductionResidentTargetLineageMetalWorkingSetBytes(resource,fixture,burner),
+				"r246 complete accounting composes while standalone fixture admissions still refuse");
+			std::fprintf(stdout,"R246_RESOURCE_COUNTS burner=%d capture=%d owner=%llu observer=%llu refused_physical_flux_subtotal=%llu\n",
+				burner?1:0,capture?1:0,static_cast<unsigned long long>(owner),static_cast<unsigned long long>(observer),
+				static_cast<unsigned long long>(fixture));
+		}
+		for(const std::size_t nx:{0u,1025u}){
+			auto invalid=resource;invalid.nx=nx;std::uint64_t bytes=0u;
+			Check(!FireProductionProjectedHeunMetalOwnerWorkingSetBytes(invalid,bytes,true,true),
+				"r246 invalid resource shape refuses before allocation accounting");
+		}
+		std::fprintf(stdout,"R246_BOUND_DERIVATION old_length=%.17g top_length=%.17g old_divergence=%.17g top_divergence=%.17g velocity_deadband=%.17g pressure_deadband=%.17g\n",
+			original.projectionReferenceLengthM,top.projectionReferenceLengthM,original.projectionTolerancePerS,
+			top.projectionTolerancePerS,top.velocityToleranceMPerS,top.pressureTolerancePa);
+		std::vector<std::pair<std::string,std::string>> manifestFrames;
+		for(std::size_t frame=0u;frame<235u;++frame){
+			std::ostringstream name;name<<"frames/frame_"<<std::setw(5)<<std::setfill('0')<<frame<<".vdb";
+			manifestFrames.push_back({name.str(),std::string(64u,'0')});
+		}
+		std::array<std::size_t,3> expectedGrid;double expectedDx=0.0;
+		Check(CanonicalCapstoneGridForTier(6.0,expectedGrid,expectedDx,true,true)&&
+			expectedGrid==top.dimensions&&expectedDx==top.cellWidthM&&
+			!CanonicalCapstoneGridForTier(6.0,expectedGrid,expectedDx,false,true),
+			"r246 native grid is explicit and refuses a top-only selector without matched lateral geometry");
+		const std::array<std::uint64_t,3> manifestGrid={{104u,104u,160u}};
+		const auto topManifest=ManifestBytes("","","hold",true,true,manifestGrid,top.cellWidthM,
+			10.531864278900095,0.0625,1.0,0.0,true,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,
+			false,0.0,6.0,true,manifestFrames,25.156864278900095,16.0,true,true,true);
+		FireSequenceManifest loaded;std::string manifestError;
+		Check(loaded.LoadCanonicalEnvelope(topManifest,".",manifestError)&&
+			loaded.CaseRecordId()==top.caseRecordId&&loaded.Frames().size()==235u&&
+			loaded.TimeMap().simulationTimeOrigin==10.531864278900095&&
+			loaded.TimeMap().frameStepSeconds==0.0625&&
+			TemporalManifestDomainMatches(topManifest,true,manifestError,true)&&
+			!TemporalManifestDomainMatches(topManifest,true,manifestError)&&
+			!TemporalManifestDomainMatches(topManifest,false,manifestError,true),
+			"r246 synthetic manifest binds the exact case/full clock and refuses foreign domain labels");
+		RISECBOR64::Value topEnvelope;
+		if(!RISECBOR64::DecodeCanonical(topManifest,topEnvelope,&manifestError))return 91;
+		const auto* topPayload=topEnvelope.Find("payload");if(!topPayload)return 91;
+		using RISECBOR64::Value;
+		auto shiftedFrames=topPayload->Find("frames")->GetArray();
+		for(std::size_t frame=0u;frame<shiftedFrames.size();++frame)
+			shiftedFrames[frame]=ReplaceMember(shiftedFrames[frame],"index",Value::Unsigned(frame+4u));
+		auto shifted=ReplaceMember(*topPayload,"frames",Value::ArrayValue(shiftedFrames));
+		shifted=ReplaceMember(shifted,"time_map",ReplaceMember(*shifted.Find("time_map"),"i0",Value::Unsigned(4u)));
+		shifted=ReplaceMember(shifted,"first_frame_index",Value::Unsigned(4u));
+		shifted=ReplaceMember(shifted,"last_frame_index",Value::Unsigned(238u));
+		const auto shiftedBytes=EnvelopeForPayload(shifted);FireSequenceManifest counterfactual;
+		Check(counterfactual.LoadCanonicalEnvelope(shiftedBytes,".",manifestError)&&
+			!TemporalManifestDomainMatches(shiftedBytes,true,manifestError,true),
+			"r246 resealed shifted frame ordinal range is generically valid but campaign RED");
+		Value::Values reasons;
+		for(const auto& reason:topPayload->Find("producer_reason_codes")->GetArray())
+			if(reason.GetText()!="case_grid_bound")reasons.push_back(reason);
+		auto scaledChannels=topPayload->Find("channels")->GetArray();
+		for(auto& channel:scaledChannels)for(const char* key:{"voxel_size_m","origin_m","core_face_bounds_m"}){
+			auto coordinates=channel.Find(key)->GetArray();
+			for(auto& coordinate:coordinates)coordinate=Value::Float(coordinate.GetFloat()*2.0);
+			channel=ReplaceMember(channel,key,Value::ArrayValue(coordinates));
+		}
+		auto scaled=ReplaceMember(*topPayload,"producer_reason_codes",Value::ArrayValue(reasons));
+		scaled=ReplaceMember(scaled,"channels",Value::ArrayValue(scaledChannels));
+		scaled=ReplaceMember(scaled,"velocity_halo_width_m",
+			Value::Float(topPayload->Find("velocity_halo_width_m")->GetFloat()*2.0));
+		const auto scaledBytes=EnvelopeForPayload(scaled);
+		Check(counterfactual.LoadCanonicalEnvelope(scaledBytes,".",manifestError)&&
+			!TemporalManifestDomainMatches(scaledBytes,true,manifestError,true),
+			"r246 resealed untagged changed lattice is generically valid but campaign RED");
+		MethaneRunCheckpoint nativeFixture;nativeFixture.dimensions=top.dimensions;
+		nativeFixture.cellWidthM=top.cellWidthM;std::ostringstream nativeLabel;
+		Check(ProductionPuffingSpectrumTierMatches(nativeFixture,6.0,true,true)&&
+			!ProductionPuffingSpectrumTierMatches(nativeFixture,6.0,true)&&
+			WriteProductionPuffingSpectrumTierEvidence(nativeLabel,nativeFixture,6.0,true,true)&&
+			nativeLabel.str().find("centerline_support native_layers_0_159\n")!=std::string::npos,
+			"r246 native spectrum support is explicit and cannot reuse the eighty-layer label");
+		auto stationsFixture=nativeFixture;auto& histories=stationsFixture.values;
+		histories.probeTimeS={11.0,12.0};histories.probeCenterlineHeatReleaseW={1.0,2.0};
+		for(const double time:histories.probeTimeS)for(std::size_t layer=0u;layer<160u;++layer){
+			histories.stationProbeTimeS.push_back(time);
+			histories.stationProbeHeightM.push_back((static_cast<double>(layer)+0.5)*top.cellWidthM);
+			histories.stationProbeTemperatureK.push_back(300.0);
+			histories.stationProbeReactionWPerM3.push_back(layer==79u?(time==11.0?1.0:2.0):0.0);
+			histories.stationProbeVerticalVelocityMPerS.push_back(0.0);
+		}
+		std::vector<double> commonSignal,changedUpperSignal;std::string lowStations,changedUpperStations;
+		Check(R246CommonHeightSignal(stationsFixture,commonSignal,lowStations)&&
+			commonSignal==std::vector<double>{top.cellWidthM*top.cellWidthM*top.cellWidthM,
+				2.0*(top.cellWidthM*top.cellWidthM*top.cellWidthM)},
+			"r246 separately labeled common-height observation retains exact timestamps");
+		for(std::size_t sample=0u;sample<2u;++sample)for(std::size_t layer=80u;layer<160u;++layer){
+			histories.stationProbeTemperatureK[sample*160u+layer]=1500.0;
+			histories.stationProbeReactionWPerM3[sample*160u+layer]=100.0;
+			histories.stationProbeVerticalVelocityMPerS[sample*160u+layer]=2.0;
+		}
+		Check(R246CommonHeightSignal(stationsFixture,changedUpperSignal,changedUpperStations)&&
+			commonSignal==changedUpperSignal&&lowStations==changedUpperStations,
+			"r246 upper-only synthetic station changes cannot be labeled as original-region response");
+		histories.stationProbeTimeS[80u]=11.5;
+		Check(!R246CommonHeightSignal(stationsFixture,changedUpperSignal,changedUpperStations),
+			"r246 foreign accepted station timestamp is RED even outside common support");
+		histories.stationProbeTimeS[80u]=11.0;histories.stationProbeHeightM[0u]+=top.cellWidthM;
+		Check(!R246CommonHeightSignal(stationsFixture,changedUpperSignal,changedUpperStations),
+			"r246 relabeled station height is RED");
+		manifestFrames.pop_back();
+		const auto shortenedManifest=ManifestBytes("","","hold",true,true,manifestGrid,top.cellWidthM,
+			10.531864278900095,0.0625,1.0,0.0,true,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,
+			false,0.0,6.0,true,manifestFrames,25.156864278900095,16.0,true,true,true);
+		Check(!TemporalManifestDomainMatches(shortenedManifest,true,manifestError,true),
+			"r246 manifest consumer refuses missing full-window frame even with the unchanged case record");
+#if defined(__APPLE__)
+		FireSequenceChannelDescriptor oldView=loaded.Channels().front();oldView.dimensions[2]=80u;
+		Check(TemporalFirePreviewScene(loaded.Channels().front(),"/synthetic/manifest.cbor",true,true)==
+			TemporalFirePreviewScene(oldView,"/synthetic/manifest.cbor",true),
+			"r246 exact generated camera recipe retains original eighty-layer field of view");
+		const auto receiptFixture=std::filesystem::temp_directory_path()/("r246-scene-receipt-fixture-"+
+			std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+		std::filesystem::create_directory(receiptFixture);
+		const auto fixtureManifest=receiptFixture/"sequence_manifest.rise-fire.cbor";
+		{std::ofstream file(fixtureManifest,std::ios::binary);file.write(
+			reinterpret_cast<const char*>(topManifest.data()),topManifest.size());}
+		for(std::size_t frame=0u;frame<235u;++frame){
+			std::ostringstream index;index<<std::setw(5)<<std::setfill('0')<<frame;
+			for(const std::string& name:{"temporal_primary_"+index.str()+".exr",
+				"temporal_primary_"+index.str()+".exr.provenance.cbor",
+				"temporal_display_"+index.str()+".png","temporal_display_"+index.str()+".png.provenance.cbor"})
+				{std::ofstream file(receiptFixture/name);file<<"synthetic r246 receipt fixture "<<name;}
+		}
+		auto sealFixtureScene=[&](const std::string& scene){
+			{std::ofstream file(receiptFixture/"temporal_fire.RISEscene");file<<scene;}
+			std::ofstream receipt(receiptFixture/"temporal_preview_receipt.v1");
+			receipt<<"schema rise.fire.temporal-preview-receipt.v1\nsource_manifest_sha256 "
+				<<DigestFile(fixtureManifest)<<"\nscene_sha256 "<<DigestFile(receiptFixture/"temporal_fire.RISEscene")
+				<<"\nframes 235\n"<<TemporalPreviewInventory(receiptFixture,235u);
+		};
+		const auto matchedScene=TemporalFirePreviewScene(loaded.Channels().front(),fixtureManifest,true,true);
+		sealFixtureScene(matchedScene);
+		Check(SpectrumPreviewSceneMatches(receiptFixture,fixtureManifest,loaded,true,manifestError,true),
+			"r246 canonical matched scene receipt accepts all synthetic pairs");
+		sealFixtureScene(TemporalFirePreviewScene(loaded.Channels().front(),fixtureManifest,true));
+		Check(!SpectrumPreviewSceneMatches(receiptFixture,fixtureManifest,loaded,true,manifestError,true),
+			"r246 autorefamed taller camera refuses even under recomputed synthetic receipt");
+		sealFixtureScene(matchedScene);
+		{std::ofstream file(receiptFixture/"temporal_primary_00000.exr");file<<"foreign synthetic frame";}
+		Check(!SpectrumPreviewSceneMatches(receiptFixture,fixtureManifest,loaded,true,manifestError,true),
+			"r246 foreign synthetic frame cannot reuse the producer receipt");
+		std::filesystem::remove_all(receiptFixture);
+#endif
+		options.r246MemoryAdmissionRED=true;
+		const auto refused=RunMethaneFrameProbe(1u,0u,0.0,25.156864278900095,16.0,6.0,
+			CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,options);
+		std::fprintf(stdout,"R246_PROBE_RED error=%s\n",refused.structuredError.c_str());
+		Check(refused.structuredError=="r246_preallocation_memory_refused"&&
+			!refused.r246InitialFieldsAllocated&&refused.temperature.empty(),
+			"r246 resource RED refuses before allocating initial fields");
+		options.r246MemoryAdmissionRED=false;
+		options.r246DeviceAdmissionRED=true;
+		const auto deviceRefused=RunMethaneFrameProbe(1u,0u,0.0,25.156864278900095,16.0,6.0,
+			CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,options);
+		Check(deviceRefused.structuredError=="r246_preallocation_device_refused"&&
+			!deviceRefused.r246InitialFieldsAllocated&&deviceRefused.temperature.empty(),
+			"r246 device limit RED refuses before allocating initial fields");
+		options.r246DeviceAdmissionRED=false;
+		RunPersistenceOptions fullOptions=options;
+		fullOptions.r246FullWindow=true;fullOptions.r245AcceptedBudget=true;
+		const auto fullFixture=std::filesystem::temp_directory_path()/"r246-full-scope-refusal-fixture";
+		fullOptions.checkpointPath=fullFixture/"run.checkpoint";
+		fullOptions.finalCheckpointPath=fullFixture/"final.checkpoint";
+		fullOptions.retainedCheckpointDirectory=fullFixture/"history";
+		fullOptions.productionOnsetDiagnosticDirectory=fullFixture/"budgets";
+		fullOptions.temporalSnapshotDirectory=fullFixture/"frames";
+		fullOptions.temporalSnapshotCadenceS=0.0625;fullOptions.checkpointCadenceWallS=300.0;
+		fullOptions.maximumProductionSourceStepS=static_cast<double>(static_cast<float>(0.0016462659696117043));
+		fullOptions.r246DeviceAdmissionRED=true;
+		const auto fullRefused=RunMethaneFrameProbe(1u,1u,25.156864278900095,
+			25.156864278900095,16.0,6.0,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,fullOptions);
+		Check(fullRefused.structuredError=="r246_preallocation_device_refused"&&
+			!fullRefused.r246InitialFieldsAllocated&&fullRefused.temperature.empty(),
+			"r246 full-window contract reaches before-field device refusal without simulation");
+		const auto shortFullRefused=RunMethaneFrameProbe(1u,1u,14.625,
+			25.156864278900095,16.0,6.0,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,fullOptions);
+		Check(shortFullRefused.structuredError=="r246_engineering_probe_scope_conflict",
+			"r246 full-window scope rejects shortened target before any allocation");
+
+		const auto shortened=RunMethaneFrameProbe(1u,0u,0.0,1.0,16.0,6.0,
+			CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,options);
+		Check(shortened.structuredError=="r246_engineering_probe_scope_conflict",
+			"r246 zero-step foundation refuses shortened identity schedule");
+		std::fprintf(stdout,"R246_LAUNCHER_FOUNDATION original_clock=%.17g physical_residence=%.17g reserve=%llu failures=%d scope=zero_step_not_launch_permit\n",
+			top.matchedScheduleFlowThroughTimeS,top.flowThroughTimeS,
+			static_cast<unsigned long long>(top.r246PreallocationReserveBytes),failures-before);
+		return failures==before?0:91;
+	}
+
+	bool ProductionTemporalEnvironmentAccepted();
+
+	int RunR246OwnerAllocationFixture(const std::filesystem::path& root,const std::string& mode)
+	{
+#if !defined(__APPLE__)
+		(void)root;(void)mode;return 90;
+#else
+		if((mode!="off"&&mode!="on"&&mode!="short"&&mode!="trace")||std::filesystem::exists(root))return 91;
+		std::filesystem::create_directories(root);
+		std::ofstream receipt(root/"fixture.txt");
+		receipt<<"schema rise.fire.r246.synthetic-owner-allocation.v1\nartifact_fidelity synthetic_native_operator_fixture\n"
+			<<"accepted_campaign_steps 0\nfull_window_simulation_evidence false\nmode "<<mode<<'\n';
+		// Trace packets accumulate on the CPU; the device observer count does not reserve them.
+		if(mode=="trace"){receipt<<"trace_optin_refused_before_fields true\n";return ClosePublishedStream(receipt)?0:91;}
+		const auto& fuel=FireSimulationMethaneRecord::PhysicalV1();std::string error;
+		FireCase::AuthoredV1 authored;authored.fuelRecordId=fuel.RecordId();authored.poolDiameterM=0.30;
+		authored.heatReleaseRateKW=33.0;authored.envelope={{0.0,1.0}};authored.durationS=25.156864278900095;
+		authored.quality="dstar";authored.numericDStarTier=6.0;authored.seed=1234;authored.outputFramesPerS=16.0;
+		authored.plumeLaw=true;authored.domainStudy="r246-lateral-double-top-double-v1";
+		FireCase::RecordV1 record;
+		if(!FireCase::BuildMethaneV1(authored,fuel,{fuel.RecordId(),FireSimulationTransportRecord::OpenV1().RecordId(),
+			FireSimulationGasOpacityRecord::HITEMPPlanckMeanV1().RecordId()},record,error))return 92;
+		PeriodicMACShape hostShape;hostShape.nx=record.derived.nx;hostShape.ny=record.derived.ny;
+		hostShape.nz=record.derived.nz;hostShape.cellWidthM=record.derived.cellWidthM;
+		FireRunHostMemory::Policy policy;std::uint64_t initial=0,deviceLimit=0,deviceCertificate=0;
+		FireProductionProjectionShape shape;shape.nx=hostShape.nx;shape.ny=hostShape.ny;shape.nz=hostShape.nz;
+		shape.cellWidthM=static_cast<float>(hostShape.cellWidthM);
+		if(!R246PreallocationPolicy(hostShape,policy,initial)||
+			!FireProductionProjectedHeunMetalObserverWorkingSetBytes(shape,deviceCertificate,true,true)||
+			!FireProductionProjectedHeunMetalDeviceWorkingSetLimitBytes(deviceLimit,&error)||
+			deviceCertificate>deviceLimit||policy.Stop(FireRunHostMemory::Read()))return 93;
+		receipt<<"case_id "<<record.caseRecordId<<"\nnative_shape 104,104,160\n"
+			<<"host_reserve_bytes "<<policy.reserve<<"\nhost_ceiling_bytes "<<policy.ceiling
+			<<"\ndevice_admission_bytes "<<deviceCertificate<<"\ndevice_limit_bytes "<<deviceLimit<<'\n';
+		FireProductionProjectedHeunMetalOwnerRequest owner;
+		if(mode=="short"){
+			owner.lineage.eos.physicalFlux.transport.shape=shape;
+			owner.lineage.eos.physicalFlux.bottomFuelMassFluxKGPerM2S.assign(shape.nx*shape.ny,0.0f);
+			owner.captureAcceptedBudgetFlux=true;std::uint64_t count=0;
+			if(!FireProductionProjectedHeunMetalOwnerWorkingSetBytes(shape,count,true,true))return 93;
+			owner.qualificationWorkingSetLimitBytes=count-1;
+			FireProductionProjectedHeunMetalOwnerResult result;
+			const bool accepted=AttemptFireProductionProjectedHeunMetalOwner(owner,result,&error);
+			const bool refused=!accepted&&error=="projected-Heun complete-owner working-set preflight refused"&&
+				result.commandCommitCount==0&&result.conservativeValues.empty()&&result.publicationPayloadRootSHA256.empty();
+			receipt<<"short_certificate_refused_before_fields "<<(refused?"true":"false")<<"\nerror "<<error<<'\n';
+			return refused&&ClosePublishedStream(receipt)?0:94;
+		}
+		const std::size_t cells=shape.CellCount();
+		auto tuple=[&](bool injected,std::array<float,9>& out)->bool{
+			MethaneCellState state;state.temperatureK=300.0;state.producerPrecision=FireStateProducerPrecision::Binary32;
+			double inverse=0.0;for(std::size_t i=0;i<6;++i){const double fraction=injected?fuel.InjectedMassFractions()[i]:fuel.AmbientMassFractions()[i];
+				state.constituent[i]=fraction;const auto* species=fuel.FindSpecies(fuel.SpeciesOrder()[i].c_str());
+				if(!species)return false;inverse+=fraction/species->molecularWeightKGPerKMol;}
+			const double density=fuel.ThermodynamicPressurePa()/(8314.46261815324*300.0*inverse);
+			for(double& value:state.constituent)value*=density;state.rhoTotalZ=injected?density:0.0;
+			if(!fuel.MixtureSensibleEnergyJPerM3(ThermochemicalDensities(state),300.0,state.sensibleEnergyJPerM3,&error))return false;
+			const auto value=ToConservativeVector(state);for(std::size_t i=0;i<9;++i)out[i]=static_cast<float>(value[i]);return true;
+		};
+		std::array<float,9> ambient,injected;if(!tuple(false,ambient)||!tuple(true,injected))return 95;
+		FireProductionResidentStepRequest ordinary;ordinary.force.shape=shape;
+		ordinary.force.timeStepS=0x1p-16f;ordinary.force.gravityMPerS2.fill(0.0f);
+		ordinary.force.boundary.fill(FireProductionProjectionPressureOpen);ordinary.force.boundary[4]=FireProductionProjectionWall;
+		ordinary.force.ambientDensityKGPerM3=0.0f;for(std::size_t i=1;i<=6;++i)ordinary.force.ambientDensityKGPerM3+=ambient[i];
+		ordinary.cellTransport.ambientValues.assign(ambient.begin(),ambient.end());
+		ordinary.cellTransport.conservativeValues.resize(9*cells);
+		for(std::size_t i=0;i<9;++i)std::fill_n(ordinary.cellTransport.conservativeValues.begin()+i*cells,cells,ambient[i]);
+		for(unsigned axis=0;axis<3;++axis){const auto count=FireProductionProjectionFaceCount(shape,axis);
+			ordinary.force.beginningMomentumKGPerM2S[axis].assign(count,0.0f);
+			ordinary.cellTransport.frozenVelocityMPerS[axis].assign(count,0.0f);}
+		FireProductionFrozenMethaneSourceRequest sourceRequest;sourceRequest.shape=shape;sourceRequest.timeStepS=ordinary.force.timeStepS;
+		sourceRequest.beginningTimeS=2.0*record.derived.matchedScheduleFlowThroughTimeS;sourceRequest.pilotEstablished=true;
+		sourceRequest.attemptIdentity=UINT64_C(0x2460000000000001);sourceRequest.caseRecordEnvelope=record.envelopeBytes;
+		sourceRequest.beginningConservativeValues=ordinary.cellTransport.conservativeValues;
+		sourceRequest.pilotCommandMask.assign(cells,0);sourceRequest.mixingTimeS.assign(cells,1.0);
+		sourceRequest.predictiveRadiation=false;sourceRequest.workerCount=1;
+		FireProductionFrozenSourcePacketSeal source;
+		if(!FireSim::FireProductionCanonicalSourceAuthority::Build(sourceRequest,source,&error)){
+			receipt<<"error "<<error<<'\n';return 96;}
+		for(float value:source.SourceDelta())if(value!=0.0f)return 96;
+		ordinary.cellSourceIncrement=source.SourceDelta();
+		const double velocity=std::sqrt(9.80665*record.derived.characteristicDiameterM);
+		const double extent=std::max({record.derived.extentXM,record.derived.extentYM,record.derived.extentZM});
+		if(!BuildProductionProjectedHeunOwnerRequest(ordinary,source,record.envelopeBytes,
+			static_cast<float>(1e-3*velocity/extent),0.0f,owner,error))return 96;
+		owner.qualificationProductionStageTokens=true;owner.captureAcceptedBudgetFlux=mode=="on";
+		owner.lineage.eos.physicalFlux.bottomFuelMassFluxKGPerM2S.assign(shape.nx*shape.ny,0.0f);
+		owner.lineage.eos.physicalFlux.injectedConservative=injected;
+		// Hash typed vector contents and lengths; result hashes allow fresh processes without retained copies.
+		std::string inputHashes,nativeHashes;
+		auto hashInto=[](const auto& values,std::string& hashes){
+			using Element=typename std::decay_t<decltype(values)>::value_type;
+			hashes+=std::to_string(values.size())+":"+RISECBOR64::SHA256Hex(
+				reinterpret_cast<const unsigned char*>(values.data()),values.size()*sizeof(Element))+"\n";};
+		hashInto(source.SourceDelta(),inputHashes);hashInto(sourceRequest.beginningConservativeValues,inputHashes);
+		hashInto(sourceRequest.pilotCommandMask,inputHashes);hashInto(sourceRequest.mixingTimeS,inputHashes);
+		hashInto(owner.lineage.eos.physicalFlux.bottomFuelMassFluxKGPerM2S,inputHashes);hashInto(injected,inputHashes);
+		for(unsigned axis=0;axis<3;++axis){hashInto(owner.beginningMomentumKGPerM2S[axis],inputHashes);
+			hashInto(owner.lineage.eos.physicalFlux.transport.projectedVelocityMPerS[axis],inputHashes);}
+		receipt<<std::setprecision(17)<<"source_begin_time_s "<<sourceRequest.beginningTimeS<<"\nsource_dt_s "<<sourceRequest.timeStepS
+			<<"\nsource_zero true\nsource_packet_identity "<<source.PacketIdentity()<<"\nsource_beginning_state_identity "<<source.BeginningStateIdentity()<<"\nsynthetic_input_sha256 "<<RISECBOR64::SHA256Hex(RISECBOR64::Bytes(inputHashes.begin(),inputHashes.end()))<<'\n';
+		// Release duplicate source-build/ordinary vectors before real native allocation.
+		sourceRequest=FireProductionFrozenMethaneSourceRequest();ordinary=FireProductionResidentStepRequest();source=FireProductionFrozenSourcePacketSeal();
+		FireProductionProjectedHeunMetalOwnerResult result;
+		const bool accepted=AttemptFireProductionProjectedHeunMetalOwner(owner,result,&error);
+		const auto memory=FireRunHostMemory::Read();
+		receipt<<"accepted_native_operator "<<(accepted?"true":"false")<<"\nerror "<<error
+			<<"\nactual_device_peak_bytes "<<result.actualMetalAllocationBytes<<"\ncertified_owner_bytes "<<result.certifiedWorkingSetBytes
+			<<"\nterminal_stagings "<<result.terminalStagingCount<<"\nhost_rss_bytes "<<memory.rss<<"\nhost_footprint_bytes "<<memory.footprint<<'\n';
+		if(!accepted||!result.accepted||!memory.valid||std::max(memory.rss,memory.footprint)>=policy.ceiling||
+			!result.actualMetalAllocationBytes||result.actualMetalAllocationBytes>result.certifiedWorkingSetBytes||
+			result.terminalStagingCount!=1||result.interstageFullGridTransferCount!=0)return 97;
+		for(unsigned stage=0;stage<3;++stage)if(!result.acceptedPicardIterations[stage]||!result.candidatePublicationIdentity[stage]||
+			!result.targetPublicationIdentity[stage])return 97;
+		hashInto(result.conservativeValues,nativeHashes);hashInto(result.temperatureK,nativeHashes);
+		hashInto(result.representedPressureRatio,nativeHashes);hashInto(result.absoluteEOSDeviation,nativeHashes);
+		for(unsigned axis=0;axis<3;++axis){hashInto(result.momentumKGPerM2S[axis],nativeHashes);hashInto(result.velocityMPerS[axis],nativeHashes);
+			hashInto(result.projectionTargetPerS[axis],nativeHashes);hashInto(result.acceptedTargetPerS[axis],nativeHashes);}
+		for(const auto* identities:{&result.projectionPublicationIdentity,&result.transportPublicationIdentity,&result.physicalFluxPublicationIdentity,
+			&result.candidatePublicationIdentity,&result.EOSPublicationIdentity,&result.frozenSourcePublicationIdentity,&result.targetPublicationIdentity})hashInto(*identities,nativeHashes);
+		receipt<<"native_result_sha256 "<<RISECBOR64::SHA256Hex(RISECBOR64::Bytes(nativeHashes.begin(),nativeHashes.end()))
+			<<"\ninput_root "<<result.inputPayloadRootSHA256<<"\npublication_root "<<result.publicationPayloadRootSHA256
+			<<"\nowner_identity "<<result.ownerPublicationIdentity<<"\nbudget_payload_bytes "<<result.acceptedBudgetPayload.size()<<'\n';
+		if(mode=="on"){
+			const std::size_t faces=FireProductionProjectionFaceCount(shape,0)+FireProductionProjectionFaceCount(shape,1)+FireProductionProjectionFaceCount(shape,2);
+			FireProductionPayloadDigestV2 budgetSeal,nativeSeal;
+			if(result.acceptedBudgetStagingCount!=1||result.acceptedBudgetPayload.size()!=72+26*faces*sizeof(float)||
+				!FireProductionPayloadDigestCPU(result.acceptedBudgetPayload.data(),result.acceptedBudgetPayload.size(),1,budgetSeal,&error)||
+				budgetSeal.rootSHA256!=result.acceptedBudgetPayloadRootSHA256||
+				!FireProductionPayloadDigestCPU(result.acceptedBudgetNativePublication.data(),result.acceptedBudgetNativePublication.size(),1,nativeSeal,&error)||
+				nativeSeal.rootSHA256!=result.publicationPayloadRootSHA256)return 98;
+			FireProductionAcceptedStageBudget::Step budgetStep;
+			if(!FireProductionAcceptedStageBudget::Reduce(owner,result,1u,std::vector<unsigned char>(shape.nx*shape.ny,0u),budgetStep,error))return 98;
+			receipt<<"budget_root "<<budgetSeal.rootSHA256<<"\nbudget_seals_verified true\nbudget_operands_and_source_binding_verified true\n";
+		}else if(!result.acceptedBudgetPayload.empty()||result.acceptedBudgetStagingCount)return 98;
+		receipt<<"passed true\n";return ClosePublishedStream(receipt)?0:98;
+#endif
+	}
+
+	int RunR246OpticalConfoundControl(const std::filesystem::path& outputDirectory,
+		const unsigned int selectedVariant=4u)
+	{
+#if !defined(__APPLE__)
+		(void)outputDirectory;(void)selectedVariant;return 90;
+#else
+		if(selectedVariant>4u||std::filesystem::exists(outputDirectory)||std::getenv("RISE_FIRE_CAPSTONE_OUTPUT")||
+			!ProductionTemporalEnvironmentAccepted())return 91;
+		std::filesystem::create_directories(outputDirectory);
+		std::array<std::size_t,3> nativeDimensions;double dx=0.0;
+		if(!CanonicalCapstoneGridForTier(6.0,nativeDimensions,dx,true,true))return 91;
+		openvdb::initialize();
+		std::vector<std::vector<double>> images;
+		std::vector<std::string> lowerHashes,commonObservationHashes;
+		std::ofstream receipt(outputDirectory/"synthetic_optical_control.v1");
+		receipt<<"schema rise.fire.r246.synthetic-optical-control.v1\n"
+			<<"artifact_fidelity synthetic_unit_preview\naccepted_simulation_steps 0\n"
+			<<"rendered_frame_index 0\nfull_window_simulation_evidence false\n"
+			<<"native_layers 160\nunchanged_common_layers 0..79\n";
+		for(unsigned int variant=selectedVariant<4u?selectedVariant:0u;
+			variant<(selectedVariant<4u?selectedVariant+1u:4u);++variant){
+			const auto directory=outputDirectory/(variant==0u?"base":variant==1u?"base_repeat":
+				variant==2u?"upper_emission":"upper_emission_and_extinction");
+			std::filesystem::create_directory(directory);
+			openvdb::GridPtrVec grids;
+			const std::array<const char*,6> names={{"carbon","temperature","reaction","chem_CH","chem_C2","chem_CO2"}};
+			std::vector<openvdb::FloatGrid::Ptr> scalars;
+			for(const char* name:names){
+				auto grid=openvdb::FloatGrid::create(std::strcmp(name,"temperature")==0?300.0f:0.0f);
+				grid->setName(name);grid->setTransform(openvdb::math::Transform::createLinearTransform(dx));
+				grid->insertMeta("RISE_fixture_input_class",openvdb::StringMetadata("synthetic_unit_preview"));
+				grid->tree().setValueOn(openvdb::Coord(0,0,0),grid->background());
+				grid->tree().setValueOn(openvdb::Coord(103,103,159),grid->background());
+				scalars.push_back(grid);grids.push_back(grid);
+			}
+			auto put=[&](int x,int y,int z,const std::array<float,6>& values){
+				for(std::size_t channel=0u;channel<scalars.size();++channel)
+					scalars[channel]->tree().setValueOn(openvdb::Coord(x,y,z),values[channel]);
+			};
+			// Explicit channel values avoid whole-grid normalization of lower chemistry.
+			for(int z=35;z<75;++z)for(int y=47;y<57;++y)for(int x=47;x<57;++x)
+				put(x,y,z,{{0.0f,1500.0f,100.0f,120.0f,50.0f,8.0f}});
+			if(variant>=2u)for(int z=81;z<96;++z)for(int y=90;y<103;++y)for(int x=30;x<74;++x)
+				put(x,y,z,{{0.0f,1500.0f,100.0f,120.0f,50.0f,8.0f}});
+			if(variant==3u)for(int z=80;z<91;++z)for(int y=73;y<87;++y)for(int x=30;x<74;++x)
+				put(x,y,z,{{20.0f,300.0f,0.0f,0.0f,0.0f,0.0f}});
+			auto velocity=openvdb::Vec3fGrid::create(openvdb::Vec3f(0.0f));velocity->setName("velocity");
+			auto transform=openvdb::math::Transform::createLinearTransform(dx);
+			transform->postTranslate(openvdb::Vec3d(-dx));velocity->setTransform(transform);
+			velocity->insertMeta("RISE_fixture_input_class",openvdb::StringMetadata("synthetic_unit_preview"));
+			velocity->tree().setValueOn(openvdb::Coord(1,1,1),openvdb::Vec3f(0.0f));
+			velocity->tree().setValueOn(openvdb::Coord(104,104,160),openvdb::Vec3f(0.0f));grids.push_back(velocity);
+			const auto framePath=directory/"frame.vdb";
+			{openvdb::io::File file(framePath.string());file.write(grids);file.close();}
+			std::string error;
+			if(!CanonicalizeOpenVDBFileIdentity(framePath.string(),error))return 92;
+			// Verify persisted lower optical values and active masks, including velocity.
+			RISECBOR64::Bytes lower;
+			openvdb::io::File stored(framePath.string());stored.open();
+			std::vector<openvdb::FloatGrid::Ptr> storedScalars;
+			for(const char* name:names){
+				auto grid=openvdb::gridPtrCast<openvdb::FloatGrid>(stored.readGrid(name));
+				if(!grid)return 92;storedScalars.push_back(grid);
+				for(int z=0;z<80;++z)for(int y=0;y<104;++y)for(int x=0;x<104;++x){
+					const openvdb::Coord cell(x,y,z);const float value=grid->tree().getValue(cell);
+					std::uint32_t bits=0u;std::memcpy(&bits,&value,sizeof(bits));
+					for(unsigned int b=0u;b<4u;++b)lower.push_back(static_cast<unsigned char>(bits>>(8u*b)));
+					lower.push_back(grid->tree().isValueOn(cell)?1u:0u);
+				}
+			}
+			auto storedVelocity=openvdb::gridPtrCast<openvdb::Vec3fGrid>(stored.readGrid("velocity"));
+			if(!storedVelocity)return 92;
+			for(int z=1;z<=80;++z)for(int y=1;y<=104;++y)for(int x=1;x<=104;++x){
+				const openvdb::Coord cell(x,y,z);const auto value=storedVelocity->tree().getValue(cell);
+				for(unsigned int axis=0u;axis<3u;++axis){const float component=value[axis];std::uint32_t bits=0u;
+					std::memcpy(&bits,&component,sizeof(bits));for(unsigned int b=0u;b<4u;++b)
+						lower.push_back(static_cast<unsigned char>(bits>>(8u*b)));}
+				lower.push_back(storedVelocity->tree().isValueOn(cell)?1u:0u);
+			}
+			MethaneRunCheckpoint syntheticStations;syntheticStations.dimensions=nativeDimensions;
+			syntheticStations.cellWidthM=dx;auto& stationValues=syntheticStations.values;
+			stationValues.probeTimeS={10.531864278900095,10.594364278900095};
+			for(const double time:stationValues.probeTimeS){double nativeHeat=0.0;
+				for(unsigned int z=0u;z<160u;++z){double T=0.0,q=0.0,w=0.0;
+					for(int y=51;y<=52;++y)for(int x=51;x<=52;++x){const openvdb::Coord cell(x,y,z);
+						T+=storedScalars[1]->tree().getValue(cell)/4.0;
+						q+=storedScalars[2]->tree().getValue(cell)/4.0;
+						w+=storedVelocity->tree().getValue(openvdb::Coord(x+1,y+1,z+1))[2]/4.0;}
+					stationValues.stationProbeTimeS.push_back(time);stationValues.stationProbeHeightM.push_back((z+0.5)*dx);
+					stationValues.stationProbeTemperatureK.push_back(T);stationValues.stationProbeReactionWPerM3.push_back(q);
+					stationValues.stationProbeVerticalVelocityMPerS.push_back(w);nativeHeat+=q*dx*dx*dx;
+				}
+				stationValues.probeCenterlineHeatReleaseW.push_back(nativeHeat);
+			}
+			std::vector<double> commonHeat;std::string commonCSV;
+			if(!R246CommonHeightSignal(syntheticStations,commonHeat,commonCSV))return 93;
+			commonCSV.replace(commonCSV.find("accepted_sample"),std::strlen("accepted_sample"),"synthetic_sample");
+			{std::ofstream out(directory/"synthetic_common_stations.csv");out<<commonCSV;}
+			commonObservationHashes.push_back(RISECBOR64::SHA256Hex(RISECBOR64::Bytes(commonCSV.begin(),commonCSV.end())));
+			if(variant&&commonObservationHashes.back()!=commonObservationHashes.front())return 93;
+			receipt<<"variant_"<<variant<<" synthetic_common_stations_sha256 "<<commonObservationHashes.back()
+				<<" common_heat_W "<<std::setprecision(17)<<commonHeat.front()<<" native_heat_W "
+				<<stationValues.probeCenterlineHeatReleaseW.front()<<'\n';
+			stored.close();lowerHashes.push_back(RISECBOR64::SHA256Hex(lower));
+			if(variant&&lowerHashes.back()!=lowerHashes.front())return 93;
+			std::vector<std::pair<std::string,std::string>> frames;
+			for(unsigned int i=0u;i<235u;++i){std::ostringstream name;name<<"frame_"<<std::setw(5)<<std::setfill('0')<<i<<".vdb";
+				std::filesystem::create_hard_link(framePath,directory/name.str());frames.push_back({name.str(),DigestFile(framePath)});}
+			const auto manifestBytes=ManifestBytes("","","hold",true,true,{{104u,104u,160u}},dx,
+				10.531864278900095,0.0625,1.0,0.0,true,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,
+				false,0.0,6.0,true,frames,25.156864278900095,16.0,true,true,true);
+			const auto manifestPath=directory/"synthetic_manifest.cbor";
+			{std::ofstream out(manifestPath,std::ios::binary);out.write(reinterpret_cast<const char*>(manifestBytes.data()),manifestBytes.size());}
+			FireSequenceManifest manifest;
+			if(!TemporalManifestDomainMatches(manifestBytes,true,error,true)||
+				!manifest.LoadCanonicalEnvelope(manifestBytes,directory.string(),error)||!manifest.PreflightAllFrames(error))return 94;
+			const auto scene=TemporalFirePreviewScene(manifest.Channels().front(),manifestPath,true,true);
+			const auto scenePath=directory/"synthetic_control.RISEscene";
+			{std::ofstream out(scenePath);out<<scene;}
+			setenv("RISE_MEDIA_PATH",(directory.string()+"/").c_str(),1);
+			IJobPriv* job=nullptr;
+			if(!RISE_CreateJobPriv(&job)||!job||!job->LoadAsciiSceneViaCst(scenePath.string().c_str())){
+				if(job)job->release();return 95;}
+			if(!job->RasterizeAnimation(0.0,0.0,1u,false,false)){job->release();return 95;}
+			RISECBOR64::Bytes primary,sidecar,display,displaySidecar;RISECBOR64::Value envelope;bool verified=false;
+			for(unsigned int attempt=0u;attempt<6000u&&!verified;++attempt){
+				primary=ReadFileBytes(directory/"temporal_primary.exr");sidecar=ReadFileBytes(directory/"temporal_primary.exr.provenance.cbor");
+				display=ReadFileBytes(directory/"temporal_display.png");displaySidecar=ReadFileBytes(directory/"temporal_display.png.provenance.cbor");
+				verified=VerifyFireProvenanceEXR(primary,sidecar,error)&&RISECBOR64::DecodeCanonical(sidecar,envelope,&error)&&
+					VerifyVisibleFireDisplayDerivative(display,displaySidecar,envelope,error,false,false);
+				if(!verified)std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			}
+			job->release();
+			const auto* payload=envelope.Find("payload");
+			RISECBOR64::Value displayEnvelope;
+			const bool displayDecoded=RISECBOR64::DecodeCanonical(displaySidecar,displayEnvelope,&error);
+			const auto* displayPayload=displayDecoded?displayEnvelope.Find("payload"):nullptr;
+			if(!verified||!payload||!displayPayload||
+				!SpectrumRenderProfileMatches(*payload,manifest,0u,false,true)||
+				!SpectrumRenderProfileMatches(*displayPayload,manifest,0u,true,true)){
+				std::fprintf(stderr,"R246_OPTICAL_PROFILE_ERROR variant=%u %s\n",variant,error.c_str());return 96;}
+			MemoryBuffer* buffer=new MemoryBuffer(reinterpret_cast<char*>(primary.data()),primary.size(),false);
+			IRasterImageReader* reader=nullptr;unsigned int width=0u,height=0u;
+			if(!RISE_API_CreateEXRReader(&reader,*buffer,eColorSpace_Rec709RGB_Linear)||!reader||
+				!reader->BeginRead(width,height)||width!=64u||height!=64u){safe_release(reader);buffer->release();return 96;}
+			std::vector<double> pixels;double sum=0.0;
+			for(unsigned int y=0u;y<height;++y)for(unsigned int x=0u;x<width;++x){RISEColor pixel;reader->ReadColor(pixel,x,y);
+				for(const double value:{pixel.base.r,pixel.base.g,pixel.base.b}){if(!std::isfinite(value)){
+					reader->EndRead();reader->release();buffer->release();return 96;}pixels.push_back(value);sum+=value;}}
+			reader->EndRead();reader->release();buffer->release();images.push_back(pixels);
+			{std::ofstream out(directory/"decoded_linear_rgb.csv");out<<"component,value\n"<<std::setprecision(17);
+				for(std::size_t i=0u;i<pixels.size();++i)out<<i<<','<<pixels[i]<<'\n';
+				if(!ClosePublishedStream(out))return 96;}
+			receipt<<"variant_"<<variant<<" lower_channel_bits_sha256 "<<lowerHashes.back()<<" vdb_sha256 "<<DigestFile(framePath)
+				<<" manifest_sha256 "<<DigestFile(manifestPath)<<" scene_sha256 "<<DigestFile(scenePath)
+				<<" exr_sha256 "<<DigestFile(directory/"temporal_primary.exr")
+				<<" decoded_rgb_sha256 "<<DigestFile(directory/"decoded_linear_rgb.csv")<<" linear_rgb_sum "<<std::setprecision(17)<<sum<<'\n';
+			receipt.flush();std::fprintf(stderr,"R246_OPTICAL variant=%u verified_profile=1 lower_hash=%s linear_rgb_sum=%.17g\n",variant,lowerHashes.back().c_str(),sum);
+		}
+		if(selectedVariant<4u)return ClosePublishedStream(receipt)?0:97;
+		auto difference=[&](unsigned int a,unsigned int b){double total=0.0;for(std::size_t i=0u;i<images[a].size();++i)
+			{total+=std::fabs(images[a][i]-images[b][i]);}
+			return total;};
+		const double repeat=difference(0u,1u),emission=difference(0u,2u),extinction=difference(2u,3u);
+		receipt<<std::setprecision(17)<<"repeat_linear_rgb_l1 "<<repeat<<"\nupper_emission_linear_rgb_l1 "<<emission
+			<<"\nupper_extinction_linear_rgb_l1 "<<extinction<<"\noriginal_region_dynamics_claim false\n";
+		if(repeat!=0.0||!(emission>0.0&&extinction>0.0)||!ClosePublishedStream(receipt))return 97;
+		return 0;
+#endif
+	}
+
 	int RunR244DomainStudyGate()
 	{
 		const int before=failures;
@@ -8532,6 +10291,914 @@ namespace
 		}
 		return true;
 	}
+	// Engineering recovery prerequisite only. Bind the fixed authored schedule
+	// to actual accepted endpoints without changing either clock or adding an epsilon.
+	bool R246AcceptedEventHistoryMatches(const std::vector<double>& steps,
+		const std::vector<double>& frames,const double manifestOrigin,const double terminal,
+		std::string& error)
+	{
+		const double start=10.531864278900095,cadence=0.0625;
+		if(steps.empty()||frames.size()!=235u||manifestOrigin!=frames.front()){
+			error="r246 event history/origin coverage";return false;
+		}
+		double time=0.0;std::size_t frame=0u;
+		for(const double step:steps){
+			if(!std::isfinite(step)||!(step>0.0)||step>std::numeric_limits<float>::max()||
+				static_cast<double>(static_cast<float>(step))!=step){
+				error="r246 accepted timestep is not positive finite binary32";return false;
+			}
+			const double beginning=time;time+=step;
+			if(!std::isfinite(time)||!(time>beginning)||frame==frames.size()){
+				error="r246 accepted history extends beyond full final event";return false;
+			}
+			const double event=start+static_cast<double>(frame)*cadence;
+			if(time<event)continue;
+			// Replay the existing float ceiling, including its binary64 addition.
+			const double remaining=event-beginning;
+			float represented=static_cast<float>(remaining);
+			if(static_cast<double>(represented)<remaining)
+				represented=std::nextafter(represented,std::numeric_limits<float>::infinity());
+			if(!(remaining>0.0)||step!=static_cast<double>(represented)||
+				!std::isfinite(frames[frame])||frames[frame]!=time){
+				error="r246 frame differs from first outward accepted event endpoint";return false;
+			}
+			++frame;
+		}
+		if(frame!=frames.size()||time!=terminal||terminal!=frames.back()){
+			error="r246 accepted terminal/frame history mismatch";return false;
+		}
+		return true;
+	}
+
+	int RunR246AcceptedEventHistoryGate()
+	{
+		std::vector<double> steps={10.5},frames;
+		double time=10.5;
+		for(std::size_t frame=0u;frame<235u;++frame){
+			const double event=10.531864278900095+static_cast<double>(frame)*0.0625;
+			// Independent integer-bit successor oracle for positive float ceiling.
+			float rounded=static_cast<float>(event-time);
+			if(static_cast<double>(rounded)<event-time){
+				std::uint32_t bits=0u;std::memcpy(&bits,&rounded,sizeof(bits));++bits;
+				std::memcpy(&rounded,&bits,sizeof(bits));
+			}
+			steps.push_back(static_cast<double>(rounded));time+=steps.back();frames.push_back(time);
+		}
+		std::string error;
+		bool passed=frames.front()!=10.531864278900095&&
+			R246AcceptedEventHistoryMatches(steps,frames,frames.front(),time,error);
+		auto changed=frames;changed.front()=10.531864278900095;
+		passed=passed&&!R246AcceptedEventHistoryMatches(steps,changed,changed.front(),time,error);
+		changed=frames;changed[117u]=std::nextafter(changed[117u],std::numeric_limits<double>::infinity());
+		passed=passed&&!R246AcceptedEventHistoryMatches(steps,changed,frames.front(),time,error)&&
+			!R246AcceptedEventHistoryMatches(steps,frames,10.531864278900095,time,error)&&
+			!R246AcceptedEventHistoryMatches(steps,frames,frames.front(),std::nextafter(time,0.0),error);
+		changed=frames;changed.pop_back();
+		passed=passed&&!R246AcceptedEventHistoryMatches(steps,changed,frames.front(),time,error);
+		auto changedSteps=steps;changedSteps.push_back(0.0625);
+		passed=passed&&!R246AcceptedEventHistoryMatches(changedSteps,frames,frames.front(),time+0.0625,error);
+		changedSteps=steps;changedSteps[0u]=std::numeric_limits<double>::quiet_NaN();
+		passed=passed&&!R246AcceptedEventHistoryMatches(changedSteps,frames,frames.front(),time,error);
+		changedSteps=steps;changedSteps[118u]=std::nextafter(changedSteps[118u],0.0);
+		passed=passed&&!R246AcceptedEventHistoryMatches(changedSteps,frames,frames.front(),time,error);
+		std::fprintf(stdout,"R246_EVENT_HISTORY_GATE passed=%d synthetic_event_only=1 red_controls=8\n",passed?1:0);
+		return passed?0:98;
+	}
+
+	bool R246LoadCapturedCheckpoint(const RISECBOR64::Bytes& payload,
+		const RISECBOR64::Bytes& seal,MethaneRunCheckpoint& checkpoint,std::string& error)
+	{
+		// Private read-only snapshot: every legacy loader reopen consumes these
+		// captured bytes, never a changing source pair. No producer seal is minted.
+		if(payload.empty()||seal.empty()){
+			error="r246 captured checkpoint requires mandatory certificate bytes";return false;
+		}
+		struct PrivateSnapshot {
+			std::filesystem::path directory;
+			~PrivateSnapshot(){if(!directory.empty()){
+				std::error_code ignored;std::filesystem::remove_all(directory,ignored);}}
+		} snapshot;
+		for(unsigned int attempt=0u;attempt<32u&&snapshot.directory.empty();++attempt){
+			const auto name="rise-r246-private-checkpoint-"+std::to_string(
+				std::chrono::steady_clock::now().time_since_epoch().count())+"-"+std::to_string(attempt);
+			const auto candidate=std::filesystem::temp_directory_path()/name;
+			std::error_code creationError;
+			if(std::filesystem::create_directory(candidate,creationError))snapshot.directory=candidate;
+		}
+		if(snapshot.directory.empty()){error="r246 private checkpoint preparation refused";return false;}
+		std::filesystem::permissions(snapshot.directory,std::filesystem::perms::owner_all);
+		const auto path=snapshot.directory/"captured.checkpoint";
+		const auto sidecar=std::filesystem::path(path.string()+".payload-v2.json");
+		auto write=[&error](const std::filesystem::path& target,const RISECBOR64::Bytes& bytes){
+			std::ofstream output(target,std::ios::binary);output.write(
+				reinterpret_cast<const char*>(bytes.data()),static_cast<std::streamsize>(bytes.size()));
+			output.close();if(!output){error="r246 private snapshot write failed";return false;}
+			std::filesystem::permissions(target,std::filesystem::perms::owner_read);return true;
+		};
+		return write(path,payload)&&write(sidecar,seal)&&
+			LoadMethaneRunCheckpoint(path,checkpoint,error)&&
+			ExistingPayloadCertificateValid(path,checkpoint.caseRecordId,error);
+	}
+
+
+	int RunR246AcceptedEventHistoryInspect(const std::filesystem::path& checkpointPath,
+		const std::filesystem::path& simulationDirectory,
+		const RISECBOR64::Bytes* candidateManifest=nullptr,
+		const RISECBOR64::Bytes* candidateCSV=nullptr)
+	{
+		// No simulation, render, publication or acceptance of the failed run.
+		MethaneRunCheckpoint checkpoint;std::string error;
+		FireSequenceManifest manifest;
+		const auto manifestPath=simulationDirectory/"sequence_manifest.rise-fire.cbor";
+		const auto csvPath=simulationDirectory/"frame_times.csv";
+		const auto manifestBytes=ReadFileBytes(manifestPath);
+		if(candidateManifest&&*candidateManifest!=manifestBytes){
+			std::fprintf(stderr,"r246 candidate differs from consumed source manifest\n");return 98;
+		}
+		const auto csvBytes=ReadFileBytes(csvPath);
+		if(candidateCSV&&*candidateCSV!=csvBytes){
+			std::fprintf(stderr,"r246 candidate differs from consumed source CSV\n");return 98;
+		}
+		const auto checkpointSeal=std::filesystem::path(checkpointPath.string()+".payload-v2.json");
+		if(!std::filesystem::is_regular_file(checkpointSeal)||std::filesystem::is_symlink(checkpointSeal)){
+			std::fprintf(stderr,"r246 event history requires a nonaliased v2 checkpoint seal\n");return 98;
+		}
+		const auto pendingSeal=std::filesystem::path(checkpointPath.string()+".preparation.pending.payload-v2.json");
+		if(std::filesystem::exists(pendingSeal)||std::filesystem::is_symlink(pendingSeal)){
+			std::fprintf(stderr,"r246 event history refuses incomplete source publication\n");return 98;
+		}
+		RISECBOR64::Bytes checkpointBytes,sealBytes;
+		if(!R246ReadCheckpointSnapshot(checkpointPath,checkpointBytes,sealBytes,error))return 98;
+		if(!R246LoadCapturedCheckpoint(checkpointBytes,sealBytes,checkpoint,error)||
+			std::filesystem::exists(pendingSeal)||std::filesystem::is_symlink(pendingSeal)||
+			!manifest.LoadCanonicalEnvelope(manifestBytes,simulationDirectory.string(),error)||
+			checkpoint.caseRecordId!="805372d567af6fafd03ba0ec96c8fbd30d64fdc21c64117dc2ea5580be9b52a2"||
+			manifest.CaseRecordId()!=checkpoint.caseRecordId||manifest.ProducerBuildId()!=checkpoint.producerBuildId||
+			!ProductionPuffingSpectrumTierMatches(checkpoint,6.0,true,true)||manifest.Frames().size()!=235u||
+			manifest.TimeMap().firstFrameIndex!=0||manifest.TimeMap().frameStepSeconds!=0.0625||
+			manifest.TimeMap().sceneToSimulationScale!=1.0||manifest.TimeMap().sceneTimeOrigin!=0.0)return 98;
+		std::istringstream input(std::string(csvBytes.begin(),csvBytes.end()));std::string line;
+		if(!std::getline(input,line)||line!="frame,simulation_time_s,vdb_sha256")return 98;
+		std::vector<double> frames;
+		while(std::getline(input,line)){
+			std::istringstream row(line);std::string ordinal,timeText,digest;
+			if(!std::getline(row,ordinal,',')||!std::getline(row,timeText,',')||!std::getline(row,digest)||
+				frames.size()>=235u||ordinal!=std::to_string(frames.size())||
+				digest!=manifest.Frames()[frames.size()].sha256)return 98;
+			char* end=nullptr;const double value=std::strtod(timeText.c_str(),&end);
+			if(timeText.empty()||!end||*end!='\0'||!std::isfinite(value))return 98;
+			frames.push_back(value);
+		}
+		if(!input.eof()||checkpoint.acceptedSteps!=checkpoint.values.acceptedTimeStepHistoryS.size()||
+			!R246AcceptedEventHistoryMatches(checkpoint.values.acceptedTimeStepHistoryS,frames,
+				manifest.TimeMap().simulationTimeOrigin,checkpoint.simulationTimeS,error)){
+			std::fprintf(stderr,"r246 event history rejected: %s\n",error.c_str());return 98;
+		}
+		std::fprintf(stdout,"R246_EVENT_HISTORY_INSPECT passed=1 recovery_accepted=0 steps=%llu frames=%zu "
+			"first_actual_s=%.17g terminal_actual_s=%.17g checkpoint_sha256=%s manifest_sha256=%s csv_sha256=%s\n",
+			static_cast<unsigned long long>(checkpoint.acceptedSteps),frames.size(),frames.front(),frames.back(),
+			RISECBOR64::SHA256Hex(checkpointBytes).c_str(),RISECBOR64::SHA256Hex(manifestBytes).c_str(),
+			RISECBOR64::SHA256Hex(csvBytes).c_str());
+		return 0;
+	}
+
+	bool R246AcceptedSourceHistoryMatches(const std::filesystem::path& sourceDirectory,
+		const RISECBOR64::Bytes& candidateManifest,std::string& error,
+		const std::function<void()>* betweenReads,const RISECBOR64::Bytes* candidateCSV)
+	{
+		// A source path is evidence, not permission to substitute an arbitrary origin.
+		if(candidateManifest!=ReadFileBytes(sourceDirectory/"sequence_manifest.rise-fire.cbor")){
+			error="r246 candidate differs from initial source manifest";return false;
+		}
+		// Deterministic regression seam; production callers supply no callback.
+		if(betweenReads)(*betweenReads)();
+		if(RunR246AcceptedEventHistoryInspect(sourceDirectory/"production_final.checkpoint",
+			sourceDirectory,&candidateManifest,candidateCSV)!=0){
+			error="r246 source accepted-event history refused";return false;
+		}
+		return true;
+	}
+
+	int RunR246CheckpointSnapshotREDs(const std::filesystem::path& sourceDirectory)
+	{
+		const auto path=sourceDirectory/"production_final.checkpoint";
+		auto bytes=ReadFileBytes(path);const auto seal=ReadFileBytes(path.string()+".payload-v2.json");
+		MethaneRunCheckpoint checkpoint;std::string error;
+		const bool missing=!bytes.empty()&&!seal.empty()&&
+			!R246LoadCapturedCheckpoint(bytes,{},checkpoint,error);
+		if(!bytes.empty())bytes.back()^=1u;
+		const bool replaced=!R246LoadCapturedCheckpoint(bytes,seal,checkpoint,error);
+		std::fprintf(stdout,"R246_CHECKPOINT_SNAPSHOT_REDS passed=%d removed_seal=%d replaced_payload=%d\n",
+			missing&&replaced?1:0,missing?1:0,replaced?1:0);return missing&&replaced?0:98;
+	}
+
+	int RunR246SourceSnapshotInspect(const std::filesystem::path& sourceDirectory,
+		const std::filesystem::path& candidatePath)
+	{
+		// Only this private fixture is replaced between reads; originals stay read-only.
+		const auto candidate=ReadFileBytes(candidatePath);
+		const auto replacement=ReadFileBytes(sourceDirectory/"sequence_manifest.rise-fire.cbor");
+		struct Fixture {
+			std::filesystem::path path;bool owned=false;
+			~Fixture(){if(owned){std::error_code ignored;std::filesystem::remove_all(path,ignored);}}
+		} fixture{std::filesystem::temp_directory_path()/("rise-r246-read-sequence-"+
+			std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()))};
+		if(!std::filesystem::create_directory(fixture.path))return 98;
+		fixture.owned=true;
+		const auto checkpoint=fixture.path/"production_final.checkpoint";
+		std::filesystem::create_symlink(std::filesystem::absolute(sourceDirectory/"production_final.checkpoint"),checkpoint);
+		std::filesystem::copy_file(sourceDirectory/"production_final.checkpoint.payload-v2.json",
+			checkpoint.string()+".payload-v2.json");
+		std::filesystem::copy_file(sourceDirectory/"frame_times.csv",fixture.path/"frame_times.csv");
+		const auto manifestPath=fixture.path/"sequence_manifest.rise-fire.cbor";
+		auto replace=[&manifestPath](const RISECBOR64::Bytes& bytes){
+			std::ofstream output(manifestPath,std::ios::binary|std::ios::trunc);
+			output.write(reinterpret_cast<const char*>(bytes.data()),static_cast<std::streamsize>(bytes.size()));
+			output.close();return static_cast<bool>(output);
+		};
+		if(!replace(candidate))return 98;
+		const bool firstReadEqual=candidate==ReadFileBytes(manifestPath);
+		if(!replace(replacement))return 98;
+		const bool oldSplitReadAccepted=firstReadEqual&&RunR246AcceptedEventHistoryInspect(
+			checkpoint,fixture.path)==0;
+		if(!replace(candidate))return 98;
+		bool replacementWritten=false;
+		const std::function<void()> betweenReads=[&](){replacementWritten=replace(replacement);};
+		std::string error;
+		const bool passed=R246AcceptedSourceHistoryMatches(fixture.path,candidate,error,&betweenReads);
+		std::fprintf(stdout,"R246_STAGED_SECOND_READ initial_candidate_equal=%d old_split_accepts=%d "
+			"replacement_written=%d candidate_bound=%d\n",firstReadEqual?1:0,oldSplitReadAccepted?1:0,
+			replacementWritten?1:0,passed?1:0);
+		std::fprintf(stdout,"R246_SOURCE_SNAPSHOT_INSPECT passed=%d recovery_accepted=0 error=%s\n",
+			passed?1:0,error.c_str());
+		return firstReadEqual&&oldSplitReadAccepted&&replacementWritten&&passed?0:98;
+	}
+
+	int RunR246SourceCaptureREDs(const std::filesystem::path& sourceDirectory)
+	{
+		struct Fixture {
+			std::filesystem::path path;bool owned=false;
+			~Fixture(){if(owned){std::error_code ignored;std::filesystem::remove_all(path,ignored);}}
+		} fixture{std::filesystem::temp_directory_path()/("rise-r246-capture-controls-"+
+			std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()))};
+		if(!std::filesystem::create_directory(fixture.path))return 98;fixture.owned=true;
+		const auto path=fixture.path/"production_final.checkpoint";
+		const auto sidecar=std::filesystem::path(path.string()+".payload-v2.json");
+		const auto pending=std::filesystem::path(path.string()+".preparation.pending.payload-v2.json");
+		std::filesystem::create_symlink(std::filesystem::absolute(sourceDirectory/"production_final.checkpoint"),path);
+		for(const char* name:{"frame_times.csv","sequence_manifest.rise-fire.cbor"})
+			std::filesystem::copy_file(sourceDirectory/name,fixture.path/name);
+		const auto sourceSeal=std::filesystem::absolute(sourceDirectory/"production_final.checkpoint.payload-v2.json");
+		auto repair=[&](){std::filesystem::remove(pending);std::filesystem::remove(sidecar);
+			std::filesystem::copy_file(sourceSeal,sidecar);};
+		auto invalidate=[&](const bool alias){
+			if(alias){std::filesystem::remove(sidecar);std::filesystem::create_symlink(sourceSeal,sidecar);}
+			else{std::ofstream marker(pending);marker<<"synthetic pending publication\n";marker.close();}
+		};
+		bool passed=true;
+		for(const bool alias:{false,true}){
+			repair();invalidate(alias);
+			const auto oldPayload=ReadFileBytes(path),oldSeal=ReadFileBytes(sidecar);
+			repair();std::string error;MethaneRunCheckpoint checkpoint;
+			const auto manifest=ReadFileBytes(fixture.path/"sequence_manifest.rise-fire.cbor");
+			const bool oldAccepted=TemporalManifestDomainMatches(manifest,true,error,true,&fixture.path)&&
+				R246LoadCapturedCheckpoint(oldPayload,oldSeal,checkpoint,error);
+			invalidate(alias);bool repaired=false;
+			const std::function<void()> clearBetweenReads=[&](){repair();repaired=true;};
+			RISECBOR64::Bytes payload,seal;
+			const bool fixedAccepted=R246ReadCheckpointSnapshot(path,payload,seal,error,&clearBetweenReads);
+			passed=passed&&oldAccepted&&!fixedAccepted&&!repaired;
+			repair();bool changed=false;
+			const std::function<void()> invalidateBetweenReads=[&](){invalidate(alias);changed=true;};
+			const bool afterAccepted=R246ReadCheckpointSnapshot(path,payload,seal,error,&invalidateBetweenReads);
+			passed=passed&&changed&&!afterAccepted;
+			std::fprintf(stdout,"R246_CAPTURE_RED mode=%s old_accepts=%d fixed_accepts=%d "
+				"clear_callback_ran=%d after_capture_refused=%d\n",alias?"seal_alias_replaced":"pending_removed",
+				oldAccepted?1:0,fixedAccepted?1:0,repaired?1:0,changed&&!afterAccepted?1:0);
+		}
+		repair();
+		const auto csvPath=fixture.path/"frame_times.csv";
+		const auto candidateCSV=ReadFileBytes(csvPath);
+		auto replacementCSV=candidateCSV;
+		const auto firstNewline=std::find(replacementCSV.begin(),replacementCSV.end(),'\n');
+		const auto firstComma=std::find(firstNewline,replacementCSV.end(),',');
+		if(firstComma==replacementCSV.end())return 98;
+		replacementCSV.insert(firstComma+1,' ');
+		auto replaceCSV=[&](const RISECBOR64::Bytes& value){
+			std::ofstream output(csvPath,std::ios::binary|std::ios::trunc);
+			output.write(reinterpret_cast<const char*>(value.data()),static_cast<std::streamsize>(value.size()));
+			output.close();return static_cast<bool>(output);
+		};
+		const auto candidateManifest=ReadFileBytes(fixture.path/"sequence_manifest.rise-fire.cbor");
+		if(!replaceCSV(replacementCSV))return 98;
+		const bool oldCSVAccepted=RunR246AcceptedEventHistoryInspect(path,fixture.path,&candidateManifest)==0;
+		if(!replaceCSV(candidateCSV))return 98;
+		bool csvReplaced=false;std::string csvError;
+		const std::function<void()> replaceBetweenReads=[&](){csvReplaced=replaceCSV(replacementCSV);};
+		const bool boundCSVAccepted=R246AcceptedSourceHistoryMatches(fixture.path,candidateManifest,
+			csvError,&replaceBetweenReads,&candidateCSV);
+		passed=passed&&oldCSVAccepted&&csvReplaced&&!boundCSVAccepted;
+		std::fprintf(stdout,"R246_CSV_CAPTURE_RED old_accepts=%d replacement_written=%d bound_accepts=%d\n",
+			oldCSVAccepted?1:0,csvReplaced?1:0,boundCSVAccepted?1:0);
+		std::fprintf(stdout,"R246_SOURCE_CAPTURE_REDS passed=%d\n",passed?1:0);return passed?0:98;
+	}
+
+	int RunR246RecoveryOperandExport(const std::filesystem::path& sourceDirectory,
+		const std::filesystem::path& outputDirectory)
+	{
+		// Export retained operands, never post-loop defaults or original success.
+		const auto path=sourceDirectory/"production_final.checkpoint";
+		RISECBOR64::Bytes bytes,seal;std::string error;
+		if(!R246ReadCheckpointSnapshot(path,bytes,seal,error)){
+			std::fprintf(stderr,"R246_OPERANDS_REJECT source_snapshot error=%s\n",error.c_str());return 98;
+		}
+		const auto manifest=ReadFileBytes(sourceDirectory/"sequence_manifest.rise-fire.cbor");
+		const auto csvBytes=ReadFileBytes(sourceDirectory/"frame_times.csv");
+		const std::string sourceSHA=RISECBOR64::SHA256Hex(bytes);
+		if(sourceSHA!="0632960c2b045c8717e2d655cfc8bb340b918023f0fea1bfa1117a0aeaaca043"||
+			RISECBOR64::SHA256Hex(manifest)!="f036ff7f96a3f5827104cdd2f06e8aa068c3e8f097acd7ff3c069bab82fb3cc1"||
+			RISECBOR64::SHA256Hex(csvBytes)!=
+				"3bb265a8539d5de45356dba419024c077834e3bb4c3770d75c63478006a5a5c8"||
+			!TemporalManifestDomainMatches(manifest,true,error,true,&sourceDirectory,&csvBytes)){
+			std::fprintf(stderr,"R246_OPERANDS_REJECT source_binding error=%s\n",error.c_str());return 98;
+		}
+		MethaneRunCheckpoint checkpoint;
+		if(!R246LoadCapturedCheckpoint(bytes,seal,checkpoint,error)||
+			checkpoint.producerBuildId!="2e19f9326f6987bf577a7485b4aee92d3ebb6cb1212d4fe0b2df42f1db2b371b")return 98;
+		const auto& values=checkpoint.values;
+		auto finite=[](const std::vector<double>& v){return std::all_of(v.begin(),v.end(),
+			[](const double x){return std::isfinite(x);});};
+		if(checkpoint.acceptedSteps!=15315u||checkpoint.simulationTimeS!=25.156864278920693||
+			values.statisticsStartS!=10.531864278900095||
+			checkpoint.centerlineTemperatureIntegral.size()!=160u||
+			checkpoint.centerlineVelocityIntegral.size()!=160u||checkpoint.planeHeatReleaseIntegral.size()!=160u||
+			!(checkpoint.centerlineStatisticsDurationS>0.0)||
+			!std::isfinite(checkpoint.centerlineStatisticsDurationS)||
+			values.probeTimeS.empty()||values.probeTimeS.size()!=values.probeCenterlineHeatReleaseW.size()||
+			values.stationProbeTimeS.empty()||values.stationProbeTimeS.size()!=values.stationProbeHeightM.size()||
+			values.stationProbeTimeS.size()!=values.stationProbeTemperatureK.size()||
+			values.stationProbeTimeS.size()!=values.stationProbeReactionWPerM3.size()||
+			values.stationProbeTimeS.size()!=values.stationProbeVerticalVelocityMPerS.size())return 98;
+		for(const auto* vector:std::initializer_list<const std::vector<double>*>{&checkpoint.centerlineTemperatureIntegral,&checkpoint.centerlineVelocityIntegral,
+			&checkpoint.planeHeatReleaseIntegral,&values.probeTimeS,&values.probeCenterlineHeatReleaseW,
+			&values.stationProbeTimeS,&values.stationProbeHeightM,&values.stationProbeTemperatureK,
+			&values.stationProbeReactionWPerM3,&values.stationProbeVerticalVelocityMPerS})if(!finite(*vector))return 98;
+		for(const double v:{values.integratedHeatReleaseJ,values.integratedRadiativeLossJ,
+			values.integratedFuelConsumptionKG})if(!std::isfinite(v)||v<0.0)return 98;
+		RISECBOR64::Bytes readerRecord;std::string readerBuild,readerExecutable;
+		if(!CurrentRendererBuildIdentity(readerRecord,readerBuild)||
+			!CurrentExecutableDigest(readerRecord,readerExecutable,error))return 98;
+		std::error_code directoryError;
+		if(!std::filesystem::create_directory(outputDirectory,directoryError)){
+			std::fprintf(stderr,"R246_OPERANDS_REJECT occupied_or_unavailable_output\n");return 98;
+		}
+		std::ofstream dt(outputDirectory/"accepted_dt.csv");
+		dt<<"step,beginning_time_s,time_s,dt_s\n"<<std::setprecision(17);double time=0.0;
+		for(std::size_t i=0u;i<values.acceptedTimeStepHistoryS.size();++i){
+			const double beginning=time;time+=values.acceptedTimeStepHistoryS[i];
+			dt<<i+1u<<','<<beginning<<','<<time<<','<<values.acceptedTimeStepHistoryS[i]<<'\n';
+		}
+		std::ofstream probes(outputDirectory/"centerline_probes.csv");
+		probes<<"time_s,reaction_w\n"<<std::setprecision(17);
+		for(std::size_t i=0u;i<values.probeTimeS.size();++i)
+			probes<<values.probeTimeS[i]<<','<<values.probeCenterlineHeatReleaseW[i]<<'\n';
+		std::ofstream stations(outputDirectory/"station_probes.csv");
+		stations<<"time_s,height_m,temperature_k,reaction_w_per_m3,vertical_velocity_m_per_s\n"<<std::setprecision(17);
+		for(std::size_t i=0u;i<values.stationProbeTimeS.size();++i)stations<<values.stationProbeTimeS[i]<<','<<
+			values.stationProbeHeightM[i]<<','<<values.stationProbeTemperatureK[i]<<','<<
+			values.stationProbeReactionWPerM3[i]<<','<<values.stationProbeVerticalVelocityMPerS[i]<<'\n';
+		std::ofstream integrals(outputDirectory/"centerline_integrals.csv");
+		integrals<<"z,temperature_k_s,velocity_m,plane_heat_release_j\n"<<std::setprecision(17);
+		for(std::size_t z=0u;z<160u;++z)integrals<<z<<','<<checkpoint.centerlineTemperatureIntegral[z]<<','<<
+			checkpoint.centerlineVelocityIntegral[z]<<','<<checkpoint.planeHeatReleaseIntegral[z]<<'\n';
+		if(!ClosePublishedStream(dt)||!ClosePublishedStream(probes)||!ClosePublishedStream(stations)||
+			!ClosePublishedStream(integrals))return 98;
+		using V=RISECBOR64::Value;V::Members artifacts;
+		for(const char* file:{"accepted_dt.csv","centerline_probes.csv","station_probes.csv","centerline_integrals.csv"}){
+			const auto artifact=outputDirectory/file;
+			if(!PublishPayloadMerkleSidecar(artifact,checkpoint.caseRecordId,error))return 98;
+			artifacts.push_back({file,V::String(DigestFile(artifact))});
+		}
+		const V metadata=V::MapValue({{"schema",V::String("rise.fire.r246.retained-checkpoint-operands.v1")},
+			{"recovery_accepted",V::Bool(false)},{"original_exit_code",V::Unsigned(98u)},
+			{"source_case_record_id",V::String(checkpoint.caseRecordId)},
+			{"source_producer_build_id",V::String(checkpoint.producerBuildId)},
+			{"source_checkpoint_sha256",V::String(sourceSHA)},
+			{"source_checkpoint_seal_sha256",V::String(RISECBOR64::SHA256Hex(seal))},
+			{"reader_build_id",V::String(readerBuild)},{"reader_executable_sha256",V::String(readerExecutable)},
+			{"reader_build_record",V::BytesValue(readerRecord)},
+			{"accepted_steps",V::Unsigned(checkpoint.acceptedSteps)},
+			{"accepted_time_s",V::Float(checkpoint.simulationTimeS)},
+			{"statistics_start_s",V::Float(values.statisticsStartS)},
+			{"sampled_statistics_duration_s",V::Float(checkpoint.centerlineStatisticsDurationS)},
+			{"integrated_hrr_j",V::Float(values.integratedHeatReleaseJ)},
+			{"integrated_radiative_loss_j",V::Float(values.integratedRadiativeLossJ)},
+			{"integrated_fuel_consumption_kg",V::Float(values.integratedFuelConsumptionKG)},
+			{"artifacts_sha256",V::MapValue(artifacts)},
+			{"unavailable",V::ArrayValue({V::String("monitored_vectors_in_checkpoint"),
+				V::String("retry_counters"),V::String("external_fuel_mass"),V::String("post_loop_summary")})}});
+		std::ofstream meta(outputDirectory/"checkpoint_operands.json");WriteJSON(meta,metadata);meta<<'\n';
+		if(!ClosePublishedStream(meta)||!PublishPayloadMerkleSidecar(outputDirectory/"checkpoint_operands.json",
+			checkpoint.caseRecordId,error))return 98;
+		std::fprintf(stdout,"R246_OPERANDS_EXPORTED recovery_accepted=0 steps=%llu station_rows=%zu reader_build=%s\n",
+			static_cast<unsigned long long>(checkpoint.acceptedSteps),values.stationProbeTimeS.size(),readerBuild.c_str());return 0;
+	}
+
+	struct R246PreparedArtifactPin {
+		const char* name;const char* payloadSHA;const char* sealSHA;
+	};
+	const std::array<R246PreparedArtifactPin,4> R246PreparedArtifactPins={{
+		{"recovery_receipt.json","9e76d5221025d615f0475fd67f1cbd818791c66dd6e815aea7a2156c55ca55f2","1274e152945236ec3b00d620c656a94a6807bcb51cd901562658194034ea9d13"},
+		{"retained_summary.json","770fb2d6b65df76ff55ae67d6dbe6ce1bb9b375912fd5620b55f266e69d7c931","9f065df8d9f608ef7d432c2ae9fda0d20f19a12538f791775e52d2343d935f07"},
+		{"native_profile.csv","1752c536ebf0b14c1cf8fc4c69b2c98897f92eb8e3c8a31b7505de936d6d181a","226c77f6553577683618d31bbbf3909c65ca87786f35a2e35bc33c8db8acddce"},
+		{"common_height_profile.csv","0ca30b2d42922d8637b2fee97b9884bca3bbf0a4f5d8aedaa71f7794ec05decc","81491b030150c1fc23bed632f1cccd4569171c7f47084d9219487f42c48f1d47"}}};
+	bool R246PreparedPairMatches(const R246PreparedArtifactPin& pin,const RISECBOR64::Bytes& payload,
+		const RISECBOR64::Bytes& seal,std::string& error)
+	{
+		// Exact admission of the independently reviewed preparation bundle, including
+		// its modern certificate bytes and separate issuer. No permissive JSON parser.
+		if(payload.empty()||seal.empty()||RISECBOR64::SHA256Hex(payload)!=pin.payloadSHA||
+			RISECBOR64::SHA256Hex(seal)!=pin.sealSHA){error="unreviewed r246 prepared artifact/certificate";return false;}
+		return true;
+	}
+	bool R246PreparedArtifactsMatch(const std::filesystem::path& recoveryDirectory,std::string& error)
+	{
+		for(const auto& pin:R246PreparedArtifactPins){
+			RISECBOR64::Bytes payload,seal;
+			if(!R246ReadCheckpointSnapshot(recoveryDirectory/pin.name,payload,seal,error)||
+				!R246PreparedPairMatches(pin,payload,seal,error))return false;
+		}
+		return true;
+	}
+	bool R246AdmitPreparedRecovery(const std::filesystem::path& sourceDirectory,
+		const std::filesystem::path& recoveryDirectory,MethaneRunCheckpoint& checkpoint,
+		FireSequenceManifest& manifest,RISECBOR64::Bytes& manifestBytes,RISECBOR64::Bytes& csvBytes,std::string& error)
+	{
+		if(!R246PreparedArtifactsMatch(recoveryDirectory,error))return false;
+		// The frozen preparation receipt names this original source directory. It is
+		// not authority to adopt a relocated or substituted run with similar fields.
+		if(std::filesystem::weakly_canonical(sourceDirectory)!=std::filesystem::path(
+			"/Volumes/SSD/RISE/fire_production_calibration/r246_tier6_top_double.v1")){
+			error="r246 prepared receipt names a different source";return false;
+		}
+		RISECBOR64::Bytes checkpointBytes,checkpointSeal,windowBytes,windowSeal;
+		if(!R246ReadCheckpointSnapshot(sourceDirectory/"production_final.checkpoint",checkpointBytes,checkpointSeal,error)||
+			RISECBOR64::SHA256Hex(checkpointBytes)!="0632960c2b045c8717e2d655cfc8bb340b918023f0fea1bfa1117a0aeaaca043"||
+			RISECBOR64::SHA256Hex(checkpointSeal)!="7dc0d34973c61f7988e7a3af1e361ca45791afd06827276dab3671581ea62d3d"||
+			!R246ReadCheckpointSnapshot(sourceDirectory/"window_launch.v1",windowBytes,windowSeal,error)||
+			RISECBOR64::SHA256Hex(windowBytes)!="bd9df5efcf3d8b2f9e43951b06574fa536b4c793b42453bf0612acdd9cdb751f"||
+			RISECBOR64::SHA256Hex(windowSeal)!="0c4c12cfcca64a6bf10dc751139072865a1719a47802aef45372f388ae3e3b5d"||
+			!R246LoadCapturedCheckpoint(checkpointBytes,checkpointSeal,checkpoint,error))return false;
+		manifestBytes=ReadFileBytes(sourceDirectory/"sequence_manifest.rise-fire.cbor");
+		csvBytes=ReadFileBytes(sourceDirectory/"frame_times.csv");
+		const auto completion=ReadFileBytes(sourceDirectory.parent_path()/"r246_tier6_top_launch.v1/completion.json");
+		if(RISECBOR64::SHA256Hex(completion)!="8d664320d24952999b5d4d97028a05a8b0994392b16074ee027c53ce14e2e017"||
+			RISECBOR64::SHA256Hex(manifestBytes)!="f036ff7f96a3f5827104cdd2f06e8aa068c3e8f097acd7ff3c069bab82fb3cc1"||
+			RISECBOR64::SHA256Hex(csvBytes)!="3bb265a8539d5de45356dba419024c077834e3bb4c3770d75c63478006a5a5c8"||
+			checkpoint.producerBuildId!="2e19f9326f6987bf577a7485b4aee92d3ebb6cb1212d4fe0b2df42f1db2b371b"||
+			!ProductionPuffingSpectrumTierMatches(checkpoint,6.0,true,true)||
+			!manifest.LoadCanonicalEnvelope(manifestBytes,sourceDirectory.string(),error)||manifest.Frames().size()!=235u||
+			manifest.CaseRecordId()!=checkpoint.caseRecordId||manifest.ProducerBuildId()!=checkpoint.producerBuildId)return false;
+		std::istringstream input(std::string(csvBytes.begin(),csvBytes.end()));std::string line;
+		if(!std::getline(input,line)||line!="frame,simulation_time_s,vdb_sha256")return false;
+		std::vector<double> frames;
+		while(std::getline(input,line)){
+			std::istringstream row(line);std::string ordinal,timeText,digest;
+			if(!std::getline(row,ordinal,',')||!std::getline(row,timeText,',')||!std::getline(row,digest)||
+				frames.size()>=235u||ordinal!=std::to_string(frames.size())||
+				digest!=manifest.Frames()[frames.size()].sha256)return false;
+			char* end=nullptr;const double value=std::strtod(timeText.c_str(),&end);
+			if(timeText.empty()||!end||*end!='\0'||!std::isfinite(value))return false;
+			frames.push_back(value);
+		}
+		const R246CapturedEventHistory history{checkpoint.values.acceptedTimeStepHistoryS,frames,checkpoint.simulationTimeS};
+		return input.eof()&&checkpoint.acceptedSteps==15315u&&
+			checkpoint.acceptedSteps==checkpoint.values.acceptedTimeStepHistoryS.size()&&
+			TemporalManifestDomainMatches(manifestBytes,true,error,true,nullptr,nullptr,&history);
+	}
+	const R246PreparedArtifactPin R246PreviewReceiptPin={"snapshot_receipt.json",
+		"9e9b47bcc8a168139ad686b34386235e43554cda0b20a8656078bab33f9da2eb",
+		"e28d9681dc4413e193b4461a677d90d23251372415080547113c76a786e37b0e"};
+	bool R246CaptureReviewedPreviewReceipt(const std::filesystem::path& path,
+		RISECBOR64::Bytes& receipt,RISECBOR64::Bytes& seal,std::string& error,
+		const std::function<void()>* betweenReads=nullptr)
+	{
+		// Admit only the independently reviewed v8 issuer bytes, including exact
+		// source/consumer identities and scene path. A resealed foreign receipt
+		// is not authority to create another accepted snapshot.
+		auto regularPayload=[&](){return std::filesystem::is_regular_file(path)&&
+			!std::filesystem::is_symlink(std::filesystem::symlink_status(path));};
+		if(!regularPayload()){error="reviewed preview receipt payload is missing or aliased";return false;}
+		if(!R246ReadCheckpointSnapshot(path,receipt,seal,error,betweenReads)||!regularPayload()){
+			error="reviewed preview receipt lifecycle changed during capture";return false;
+		}
+		return R246PreparedPairMatches(R246PreviewReceiptPin,receipt,seal,error);
+	}
+	bool R246AdmitReviewedPreviewSnapshot(const std::filesystem::path& sourceDirectory,
+		const R246CapturedPreviewInputs& input,RISECBOR64::Bytes& receipt,
+		RISECBOR64::Bytes& seal,std::string& error)
+	{
+		const std::filesystem::path accepted=
+			"/Volumes/SSD/RISE/fire_production_calibration/r246_preview_source_snapshot.v8";
+		if(std::filesystem::absolute(input.snapshotDirectory).lexically_normal()!=accepted||
+			std::filesystem::weakly_canonical(input.snapshotDirectory)!=accepted||
+			std::filesystem::is_symlink(std::filesystem::symlink_status(input.snapshotDirectory))){
+			error="reviewed preview receipt names a different snapshot path";return false;
+		}
+		return R246PreviewSnapshotMatches(sourceDirectory,input,error)&&
+			R246CaptureReviewedPreviewReceipt(input.snapshotDirectory/R246PreviewReceiptPin.name,receipt,seal,error)&&
+			R246PreviewSnapshotMatches(sourceDirectory,input,error);
+	}
+	int RunR246ActualProfileBindingGate(const std::filesystem::path& root)
+	{
+#if !defined(__APPLE__)
+		(void)root;std::fprintf(stderr,"actual profile binding gate requires macOS image metadata\n");return 90;
+#else
+		using V=RISECBOR64::Value;std::string error;
+		const std::filesystem::path base="/Volumes/SSD/RISE/fire_production_calibration";
+		const auto manifestBytes=ReadFileBytes(base/"r246_preview_source_snapshot.v8/sequence_manifest.rise-fire.cbor");
+		FireSequenceManifest manifest;V primary,display;
+		const auto primaryBytes=ReadFileBytes(base/"r244_tier6_lateral_preview.v1/temporal_primary_00000.exr.provenance.cbor");
+		const auto displayBytes=ReadFileBytes(base/"r244_tier6_lateral_preview.v1/temporal_display_00000.png.provenance.cbor");
+		if(RISECBOR64::SHA256Hex(manifestBytes)!="f036ff7f96a3f5827104cdd2f06e8aa068c3e8f097acd7ff3c069bab82fb3cc1"||
+			!manifest.LoadCanonicalEnvelope(manifestBytes,base.string(),error)||
+			!RISECBOR64::DecodeCanonical(primaryBytes,primary,&error)||!RISECBOR64::DecodeCanonical(displayBytes,display,&error))return 98;
+		// Only a metadata fixture: existing wide config supplies the unchanged
+		// common-height camera recipe. No mutated value is an EXR attestation.
+		const auto media=V::ArrayValue({V::MapValue({{"sequence_id",V::String(manifest.SequenceId())},
+			{"selected_base_frame_index",V::Unsigned(0u)},{"whole_file_digest",V::String(manifest.Frames().front().sha256)}})});
+		auto bind=[&](const V& envelope){return ReplaceMember(envelope,"payload",
+			ReplaceMember(*envelope.Find("payload"),"active_fire_media",media));};
+		const auto p=bind(primary),d=bind(display);
+		bool passed=R246MatchedRenderProfiles(p,d,manifest,0u,true,error);
+		passed=passed&&!R246MatchedRenderProfiles(primary,d,manifest,0u,true,error)&&
+			!R246MatchedRenderProfiles(p,display,manifest,0u,true,error)&&
+			!R246MatchedRenderProfiles(p,d,manifest,1u,true,error);
+		const auto* config=p.Find("payload")->Find("resolved_render_configuration_v1");
+		auto location=config->Find("camera")->Find("location")->GetArray();location[0]=V::Float(location[0].GetFloat()+1.0);
+		const auto badCamera=ReplaceMember(*config,"camera",ReplaceMember(*config->Find("camera"),"location",V::ArrayValue(location)));
+		const auto badPrimary=ReplaceMember(p,"payload",ReplaceMember(*p.Find("payload"),"resolved_render_configuration_v1",badCamera));
+		passed=passed&&!R246MatchedRenderProfiles(badPrimary,d,manifest,0u,true,error);
+		const auto* displayConfig=d.Find("payload")->Find("resolved_render_configuration_v1");
+		const auto badOutput=ReplaceMember(*displayConfig,"output",ReplaceMember(*displayConfig->Find("output"),"bits_per_channel",V::Unsigned(8u)));
+		const auto badDisplay=ReplaceMember(d,"payload",ReplaceMember(*d.Find("payload"),"resolved_render_configuration_v1",badOutput));
+		passed=passed&&!R246MatchedRenderProfiles(p,badDisplay,manifest,0u,true,error);
+		std::error_code createError;
+		if(!std::filesystem::create_directory(root,createError)||createError)return 98;
+		std::filesystem::permissions(root,std::filesystem::perms::owner_all);
+		const RISECBOR64::Bytes authored={'A'},original={'B'};
+		passed=passed&&R246WriteNewCapturedBytes(root/"original",original,error);
+		std::filesystem::create_hard_link(root/"original",root/"hardlink");
+		std::filesystem::create_symlink(root/"original",root/"symlink");
+		const bool hardlinkRed=!R246WriteNewCapturedBytes(root/"hardlink",authored,error);
+		const bool symlinkRed=!R246WriteNewCapturedBytes(root/"symlink",authored,error);
+		const bool occupiedRed=!R246WriteNewCapturedBytes(root/"original",authored,error);
+		const bool sceneGreen=R246WriteNewCapturedBytes(root/"scene",authored,error)&&ReadFileBytes(root/"scene")==authored;
+		const bool originalUnchanged=ReadFileBytes(root/"original")==original;
+		const bool freshOutputGreen=R246CreateFreshPreviewOutput(root/"output",error);
+		const bool occupiedOutputRed=!R246CreateFreshPreviewOutput(root/"output",error);
+		std::filesystem::create_directory_symlink(root/"output",root/"output_alias");
+		const bool aliasedOutputRed=!R246CreateFreshPreviewOutput(root/"output_alias",error);
+		passed=passed&&freshOutputGreen&&occupiedOutputRed&&aliasedOutputRed;
+		std::printf("R246_PREVIEW_OUTPUT fresh_green=%d occupied_red=%d alias_red=%d\n",freshOutputGreen,occupiedOutputRed,aliasedOutputRed);
+		passed=passed&&hardlinkRed&&symlinkRed&&occupiedRed&&sceneGreen&&originalUnchanged;
+		std::printf("R246_SCENE_PUBLICATION hardlink_red=%d symlink_red=%d occupied_red=%d scene_green=%d original_unchanged=%d\n",
+			hardlinkRed,symlinkRed,occupiedRed,sceneGreen,originalUnchanged);
+		std::printf("R246_ACTUAL_PROFILE_BINDING passed=%d metadata_green=1 profile_reds=5 primary_source_sha256=%s display_source_sha256=%s synthetic_metadata_only=1 no_render=1 no_native_fields=1 recovery_accepted=0\n",
+			passed?1:0,RISECBOR64::SHA256Hex(primaryBytes).c_str(),RISECBOR64::SHA256Hex(displayBytes).c_str());return passed?0:98;
+#endif
+	}
+
+	int RunR246PreviewReceiptAdmissionInspect(const std::filesystem::path& sourceDirectory,
+		const std::filesystem::path& recoveryDirectory,const std::filesystem::path& snapshotDirectory)
+	{
+		MethaneRunCheckpoint checkpoint;FireSequenceManifest manifest;RISECBOR64::Bytes manifestBytes,csvBytes,receipt,seal;
+		std::string error;
+		if(!R246AdmitPreparedRecovery(sourceDirectory,recoveryDirectory,checkpoint,manifest,manifestBytes,csvBytes,error))return 98;
+		std::istringstream csv(std::string(csvBytes.begin(),csvBytes.end()));std::string line;
+		if(!std::getline(csv,line))return 98;std::vector<double> frames;
+		while(std::getline(csv,line)){std::istringstream row(line);std::string ordinal,time;
+			if(!std::getline(row,ordinal,',')||!std::getline(row,time,','))return 98;frames.push_back(std::stod(time));}
+		const R246CapturedEventHistory history{checkpoint.values.acceptedTimeStepHistoryS,frames,checkpoint.simulationTimeS};
+		const R246CapturedPreviewInputs input{manifestBytes,csvBytes,history,snapshotDirectory};
+		if(!R246AdmitReviewedPreviewSnapshot(sourceDirectory,input,receipt,seal,error)){
+			std::fprintf(stderr,"R246_PREVIEW_RECEIPT_ADMISSION rejected=1 error=%s\n",error.c_str());return 98;
+		}
+		RISECBOR64::Bytes build;std::string reader,exe;
+		if(!CurrentRendererBuildIdentity(build,reader)||!CurrentExecutableDigest(build,exe,error)||reader==checkpoint.producerBuildId)return 98;
+		std::printf("R246_PREVIEW_RECEIPT_ADMISSION passed=1 recovery_accepted=0 original_exit_code=98 steps=%llu frames=%zu receipt_sha256=%s snapshot_issuer=86a912441c035d861676f7e7245428a5e2d0fd4095d14e1c72e424cd602c01c8 reader=%s executable=%s no_vdb_fields=1 no_render=1\n",
+			static_cast<unsigned long long>(checkpoint.acceptedSteps),frames.size(),RISECBOR64::SHA256Hex(receipt).c_str(),reader.c_str(),exe.c_str());return 0;
+	}
+	int RunR246PreviewReceiptAdmissionREDs(const std::filesystem::path& snapshotDirectory)
+	{
+		std::string error;RISECBOR64::Bytes receipt,seal;
+		if(!R246CaptureReviewedPreviewReceipt(snapshotDirectory/R246PreviewReceiptPin.name,receipt,seal,error))return 98;
+		bool passed=R246PreparedPairMatches(R246PreviewReceiptPin,receipt,seal,error);
+		passed=passed&&!R246PreparedPairMatches(R246PreviewReceiptPin,{},seal,error)&&
+			!R246PreparedPairMatches(R246PreviewReceiptPin,receipt,{},error);
+		auto changed=receipt;changed.back()^=1u;
+		passed=passed&&!R246PreparedPairMatches(R246PreviewReceiptPin,changed,seal,error);
+		changed=seal;changed.back()^=1u;
+		passed=passed&&!R246PreparedPairMatches(R246PreviewReceiptPin,receipt,changed,error);
+		// A syntactically identical, consistently resealed receipt with a foreign
+		// issuer must fail exact reviewed-issuer admission.
+		std::string foreign(receipt.begin(),receipt.end());const auto issuer=foreign.find("86a912441c035d861676f7e7245428a5e2d0fd4095d14e1c72e424cd602c01c8");
+		if(issuer==std::string::npos)return 98;foreign[issuer]='0';
+		const RISECBOR64::Bytes foreignBytes(foreign.begin(),foreign.end());std::string foreignCertificate;
+		if(!BuildPayloadMerkleCertificateBytes(foreignBytes,
+			"805372d567af6fafd03ba0ec96c8fbd30d64fdc21c64117dc2ea5580be9b52a2",foreignCertificate,error))return 98;
+		passed=passed&&!R246PreparedPairMatches(R246PreviewReceiptPin,foreignBytes,
+			RISECBOR64::Bytes(foreignCertificate.begin(),foreignCertificate.end()),error);
+		const auto root=std::filesystem::temp_directory_path()/("rise-r246-receipt-lifecycle-"+
+			std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+		if(!std::filesystem::create_directory(root))return 98;
+		const auto path=root/R246PreviewReceiptPin.name;const std::filesystem::path sidecar=path.string()+".payload-v2.json";
+		const std::filesystem::path pending=path.string()+".preparation.pending.payload-v2.json";
+		auto write=[](const std::filesystem::path& target,const RISECBOR64::Bytes& bytes){
+			std::ofstream file(target,std::ios::binary);file.write(reinterpret_cast<const char*>(bytes.data()),static_cast<std::streamsize>(bytes.size()));file.close();return static_cast<bool>(file);};
+		if(!write(path,receipt)||!write(sidecar,seal))return 98;
+		RISECBOR64::Bytes captured,capturedSeal;
+		passed=passed&&R246CaptureReviewedPreviewReceipt(path,captured,capturedSeal,error);
+		std::filesystem::remove(sidecar);
+		passed=passed&&!R246CaptureReviewedPreviewReceipt(path,captured,capturedSeal,error);
+		std::filesystem::create_symlink(snapshotDirectory/(std::string(R246PreviewReceiptPin.name)+".payload-v2.json"),sidecar);
+		passed=passed&&!R246CaptureReviewedPreviewReceipt(path,captured,capturedSeal,error);
+		std::filesystem::remove(sidecar);if(!write(sidecar,seal)||!write(pending,{1u}))return 98;
+		passed=passed&&!R246CaptureReviewedPreviewReceipt(path,captured,capturedSeal,error);
+		std::filesystem::remove(pending);std::filesystem::create_symlink(root/"missing",pending);
+		passed=passed&&!R246CaptureReviewedPreviewReceipt(path,captured,capturedSeal,error);std::filesystem::remove(pending);
+		const std::function<void()> invalidate=[&](){write(pending,{1u});};
+		passed=passed&&!R246CaptureReviewedPreviewReceipt(path,captured,capturedSeal,error,&invalidate);
+		std::filesystem::remove(pending);
+		const auto backup=root/"retained_receipt.json";if(!write(backup,receipt))return 98;
+		std::filesystem::remove(path);std::filesystem::create_symlink(backup,path);
+		const bool oldAliasGreen=R246ReadCheckpointSnapshot(path,captured,capturedSeal,error)&&
+			R246PreparedPairMatches(R246PreviewReceiptPin,captured,capturedSeal,error);
+		passed=passed&&oldAliasGreen&&!R246CaptureReviewedPreviewReceipt(path,captured,capturedSeal,error);
+		std::filesystem::remove(path);if(!write(path,receipt))return 98;
+		const std::function<void()> aliasAfterCapture=[&](){std::filesystem::remove(path);std::filesystem::create_symlink(backup,path);};
+		passed=passed&&!R246CaptureReviewedPreviewReceipt(path,captured,capturedSeal,error,&aliasAfterCapture);
+		std::filesystem::remove_all(root);
+		std::printf("R246_PREVIEW_RECEIPT_REDS passed=%d byte_reds=5 lifecycle_reds=7 old_payload_alias_green=%d original_snapshot_untouched=1 no_vdb_fields=1 no_render=1\n",passed?1:0,oldAliasGreen?1:0);
+		return passed?0:98;
+	}
+
+	int RunR246PreviewSnapshotPrepare(const std::filesystem::path& sourceDirectory,
+		const std::filesystem::path& recoveryDirectory,const std::filesystem::path& snapshotDirectory,const bool prepare=true,const bool runtimeControls=false)
+	{
+		MethaneRunCheckpoint checkpoint;FireSequenceManifest manifest;RISECBOR64::Bytes manifestBytes,csvBytes;
+		std::string error;
+		if(!R246AdmitPreparedRecovery(sourceDirectory,recoveryDirectory,checkpoint,manifest,manifestBytes,csvBytes,error))return 98;
+		std::istringstream csv(std::string(csvBytes.begin(),csvBytes.end()));std::string line;
+		if(!std::getline(csv,line))return 98;std::vector<double> frames;
+		while(std::getline(csv,line)){std::istringstream row(line);std::string ordinal,time;
+			if(!std::getline(row,ordinal,',')||!std::getline(row,time,','))return 98;frames.push_back(std::stod(time));}
+		const R246CapturedEventHistory history{checkpoint.values.acceptedTimeStepHistoryS,frames,checkpoint.simulationTimeS};
+		const R246CapturedPreviewInputs input{manifestBytes,csvBytes,history,std::filesystem::absolute(snapshotDirectory)};
+		if(!(prepare?R246WritePreviewSnapshot(sourceDirectory,input,error):R246PreviewSnapshotMatches(sourceDirectory,input,error))){
+			std::fprintf(stderr,"R246_PREVIEW_SNAPSHOT rejected=1 error=%s\n",error.c_str());return 98;
+		}
+		if(runtimeControls){
+			// Synthetic between-read metadata fixture: same canonical loader as Job,
+			// no native-field preflight or render, and no producer input modifications.
+			const auto root=std::filesystem::temp_directory_path()/("rise-r246-runtime-binding-"+
+				std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+			const R246CapturedPreviewInputs fixture{manifestBytes,csvBytes,history,root};
+			if(!R246WritePreviewSnapshot(sourceDirectory,fixture,error))return 98;
+			RISECBOR64::Value decoded;if(!RISECBOR64::DecodeCanonical(manifestBytes,decoded,&error))return 98;
+			auto members=decoded.Find("payload")->GetMap();
+			for(auto& member:members)if(member.first=="time_map"){
+				auto timing=member.second.GetMap();for(auto& value:timing)
+					if(value.first=="t_scene_0")value.second=RISECBOR64::Value::Float(-1.0);
+				member.second=RISECBOR64::Value::MapValue(timing);
+			}
+			const auto alternate=EnvelopeForPayload(RISECBOR64::Value::MapValue(members));
+			const auto path=root/"sequence_manifest.rise-fire.cbor";
+			auto write=[&](const RISECBOR64::Bytes& bytes){
+				std::filesystem::permissions(path,std::filesystem::perms::owner_read|std::filesystem::perms::owner_write);
+				std::ofstream file(path,std::ios::binary);file.write(reinterpret_cast<const char*>(bytes.data()),static_cast<std::streamsize>(bytes.size()));
+				file.close();std::filesystem::permissions(path,std::filesystem::perms::owner_read);return static_cast<bool>(file);
+			};
+			const bool before=R246PreviewSnapshotMatches(sourceDirectory,fixture,error);
+			if(!write(alternate))return 98;FireSequenceManifest consumed;
+			const bool loaded=consumed.LoadCanonicalEnvelope(ReadFileBytes(path),root.string(),error);
+			if(!write(manifestBytes))return 98;
+			const bool after=R246PreviewSnapshotMatches(sourceDirectory,fixture,error);
+			using V=RISECBOR64::Value;
+			auto emitted=[&](const FireSequenceManifest& loadedManifest){return V::MapValue({{"payload",V::MapValue({
+				{"active_fire_media",V::ArrayValue({V::MapValue({{"sequence_id",V::String(loadedManifest.SequenceId())},
+					{"selected_base_frame_index",V::Unsigned(0u)},{"whole_file_digest",V::String(manifest.Frames().front().sha256)}})})}})}});};
+			const bool green=R246RuntimeManifestMatches(emitted(manifest),manifest,0u);
+			const bool oldGreen=before&&loaded&&after&&consumed.SequenceId()!=manifest.SequenceId();
+			const bool fixedRed=oldGreen&&!R246RuntimeManifestMatches(emitted(consumed),manifest,0u);
+			std::filesystem::remove_all(root);
+			std::fprintf(stdout,"R246_RUNTIME_MANIFEST_BINDING green=%d old_unbound_green=%d bound_red=%d synthetic_metadata_only=1 no_native_fields=1 no_render=1\n",green?1:0,oldGreen?1:0,fixedRed?1:0);
+			return green&&oldGreen&&fixedRed?0:98;
+		}
+		if(!prepare){std::fprintf(stdout,"R246_PREVIEW_SNAPSHOT inspected=1 recovery_accepted=0 no_native_fields=1 no_render=1\n");return 0;}
+		RISECBOR64::Bytes build;std::string reader,exe;
+		if(!CurrentRendererBuildIdentity(build,reader)||!CurrentExecutableDigest(build,exe,error)||reader==checkpoint.producerBuildId)return 98;
+		using V=RISECBOR64::Value;
+		const auto receipt=V::MapValue({{"schema",V::String("rise.fire.r246.preview-source-snapshot.v1")},
+			{"recovery_accepted",V::Bool(false)},{"original_exit_code",V::Unsigned(98u)},
+			{"source_producer",V::String(checkpoint.producerBuildId)},{"reader_build",V::String(reader)},
+			{"reader_executable_sha256",V::String(exe)},{"source_manifest_sha256",V::String(RISECBOR64::SHA256Hex(manifestBytes))},
+			{"frame_csv_sha256",V::String(RISECBOR64::SHA256Hex(csvBytes))},
+			{"snapshot_directory",V::String(input.snapshotDirectory.string())},
+			{"scene_sha256",V::String(DigestFile(input.snapshotDirectory/"source_scene.RISEscene"))}});
+		const auto path=input.snapshotDirectory/"snapshot_receipt.json";
+		std::ofstream output(path);WriteJSON(output,receipt);output<<'\n';output.close();
+		if(!output||!PublishPayloadMerkleSidecar(path,checkpoint.caseRecordId,error))return 98;
+		std::filesystem::permissions(path,std::filesystem::perms::owner_read);
+		std::filesystem::permissions(path.string()+".payload-v2.json",std::filesystem::perms::owner_read);
+		std::fprintf(stdout,"R246_PREVIEW_SNAPSHOT prepared=1 recovery_accepted=0 no_native_fields=1 no_render=1 reader=%s\n",reader.c_str());return 0;
+	}
+
+	int RunR246PreviewPairCaptureGate()
+	{
+		const auto root=std::filesystem::temp_directory_path()/("rise-r246-pair-capture-"+
+			std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+		if(!std::filesystem::create_directory(root))return 98;
+		const CapturedPreviewPair a={{{1u,2u},{3u,4u},{5u,6u},{7u,8u}}};
+		const CapturedPreviewPair b={{{11u,12u},{13u,14u},{15u,16u},{17u,18u}}};
+		std::string error;const auto primary=root/"source.exr",display=root/"source.png";
+		bool green=WriteCapturedPreviewPair(primary,display,a,error);
+		CapturedPreviewPair captured;green=green&&ReadBoundPreviewPair(primary,display,PreviewPairDigests(a),captured,error);
+		// Substitute source B after verification and before publication.
+		green=green&&WriteCapturedPreviewPair(primary,display,b,error);
+		const auto oldPaths=PreviewPairPaths(root/"old.exr",root/"old.png");
+		const auto sourcePaths=PreviewPairPaths(primary,display);
+		for(std::size_t i=0u;i<sourcePaths.size();++i)std::filesystem::copy_file(sourcePaths[i],oldPaths[i]);
+		CapturedPreviewPair oldPair;const bool oldGreen=ReadBoundPreviewPair(root/"old.exr",root/"old.png",PreviewPairDigests(b),oldPair,error);
+		const bool boundGreen=WriteCapturedPreviewPair(root/"bound.exr",root/"bound.png",captured,error);
+		CapturedPreviewPair fixedPair;const bool fixedGreen=ReadBoundPreviewPair(root/"bound.exr",root/"bound.png",PreviewPairDigests(a),fixedPair,error);
+		CapturedPreviewPair changed;const bool stagedRed=!ReadBoundPreviewPair(primary,display,PreviewPairDigests(a),changed,error);
+		std::filesystem::remove_all(root);
+		std::printf("R246_PREVIEW_PAIR_CAPTURE green=%d old_copied_b=%d bound_published_a=%d changed_staged_red=%d synthetic_bytes_only=1 no_render=1\n",
+			green?1:0,oldGreen?1:0,boundGreen&&fixedGreen?1:0,stagedRed?1:0);
+		return green&&oldGreen&&boundGreen&&fixedGreen&&stagedRed?0:98;
+	}
+
+	int RunR246RecoveredConsumer(const std::filesystem::path& sourceDirectory,
+		const std::filesystem::path& recoveryDirectory,const std::filesystem::path& snapshotDirectory,
+		const std::filesystem::path& previewDirectory,const std::filesystem::path& outputDirectory,
+		const unsigned int mode)
+	{
+#if !defined(__APPLE__)
+		(void)sourceDirectory;(void)recoveryDirectory;(void)snapshotDirectory;(void)previewDirectory;(void)outputDirectory;(void)mode;return 90;
+#else
+		if(mode>2u)return 98;
+		MethaneRunCheckpoint checkpoint;FireSequenceManifest manifest;RISECBOR64::Bytes manifestBytes,csvBytes,receipt,seal;
+		std::string error;
+		if(!R246AdmitPreparedRecovery(sourceDirectory,recoveryDirectory,checkpoint,manifest,manifestBytes,csvBytes,error)){
+			std::fprintf(stderr,"R246_RECOVERED_CONSUMER admission_refused=1 error=%s\n",error.c_str());return 98;
+		}
+		std::istringstream csv(std::string(csvBytes.begin(),csvBytes.end()));std::string line;
+		if(!std::getline(csv,line)||line!="frame,simulation_time_s,vdb_sha256")return 98;
+		std::vector<double> frames;
+		while(std::getline(csv,line)){
+			std::istringstream row(line);std::string ordinal,timeText,digest;
+			if(!std::getline(row,ordinal,',')||!std::getline(row,timeText,',')||!std::getline(row,digest)||
+				frames.size()>=manifest.Frames().size()||ordinal!=std::to_string(frames.size())||digest!=manifest.Frames()[frames.size()].sha256)return 98;
+			char* end=nullptr;const double time=std::strtod(timeText.c_str(),&end);
+			if(timeText.empty()||!end||*end!='\0'||!std::isfinite(time))return 98;frames.push_back(time);
+		}
+		if(!csv.eof()||frames.size()!=235u)return 98;
+		const R246CapturedEventHistory history{checkpoint.values.acceptedTimeStepHistoryS,frames,checkpoint.simulationTimeS};
+		const R246CapturedPreviewInputs preview{manifestBytes,csvBytes,history,snapshotDirectory};
+		if(!R246AdmitReviewedPreviewSnapshot(sourceDirectory,preview,receipt,seal,error)){
+			std::fprintf(stderr,"R246_RECOVERED_CONSUMER snapshot_refused=1 error=%s\n",error.c_str());return 98;
+		}
+		RISECBOR64::Value envelope;FireCase::RecordV1 record;
+		if(!RISECBOR64::DecodeCanonical(manifestBytes,envelope,&error))return 98;
+		const auto* payload=envelope.Find("payload");const auto* embedded=payload?payload->Find("case_record"):nullptr;
+		if(!embedded||!FireCase::ValidateMethaneEnvelopeV1(embedded->GetBytes(),FireSimulationMethaneRecord::PhysicalV1(),record,error)||
+			!SpectrumFullWindowMatches(checkpoint,manifest,record,frames,&history))return 98;
+		RISECBOR64::Bytes build;std::string reader,executable;
+		if(!CurrentRendererBuildIdentity(build,reader)||!CurrentExecutableDigest(build,executable,error)||
+			reader==checkpoint.producerBuildId||reader=="86a912441c035d861676f7e7245428a5e2d0fd4095d14e1c72e424cd602c01c8")return 98;
+		const auto snapshotManifest=std::filesystem::absolute(snapshotDirectory).lexically_normal()/"sequence_manifest.rise-fire.cbor";
+		if(mode==0u){
+			std::printf("R246_RECOVERED_CONSUMER_COMPOSITION passed=1 mode=inspect steps=%llu frames=%zu probes=%zu manifest=%s csv=%s snapshot_receipt=%s source_producer=%s snapshot_issuer=86a912441c035d861676f7e7245428a5e2d0fd4095d14e1c72e424cd602c01c8 consumer=%s executable=%s snapshot_manifest=%s original_exit_code=98 no_vdb_fields=1 no_render=1 recovery_accepted=0\n",
+				static_cast<unsigned long long>(checkpoint.acceptedSteps),frames.size(),checkpoint.values.probeTimeS.size(),RISECBOR64::SHA256Hex(manifestBytes).c_str(),RISECBOR64::SHA256Hex(csvBytes).c_str(),RISECBOR64::SHA256Hex(receipt).c_str(),checkpoint.producerBuildId.c_str(),reader.c_str(),executable.c_str(),snapshotManifest.string().c_str());return 0;
+		}
+		int result=98;
+		if(mode==1u)result=RunTemporalFirePreviewChild(sourceDirectory,outputDirectory,true,true,&preview);
+		else{
+			if(!R246CreateFreshPreviewOutput(outputDirectory,error))return 98;
+			const R246RecoveredSpectrumInputs spectrum{checkpoint,manifestBytes,csvBytes,history,snapshotManifest};
+			result=RunProductionPuffingSpectrumChild(6.0,sourceDirectory/"production_final.checkpoint",sourceDirectory,previewDirectory,outputDirectory,true,true,&spectrum);
+		}
+		if(result!=0)return result;
+		RISECBOR64::Bytes finalReceipt,finalSeal;
+		if(!R246AdmitReviewedPreviewSnapshot(sourceDirectory,preview,finalReceipt,finalSeal,error)||finalReceipt!=receipt||finalSeal!=seal)return 98;
+		std::ostringstream report;report<<"schema rise.fire.r246.recovered-consumer.v1\nmode "<<(mode==1u?"preview":"spectrum")
+			<<"\noriginal_exit_code 98\nrecovery_accepted false\nsource_producer "<<checkpoint.producerBuildId
+			<<"\nsnapshot_issuer 86a912441c035d861676f7e7245428a5e2d0fd4095d14e1c72e424cd602c01c8\nconsumer_build "<<reader
+			<<"\nconsumer_executable "<<executable<<"\nsource_checkpoint_sha256 0632960c2b045c8717e2d655cfc8bb340b918023f0fea1bfa1117a0aeaaca043"
+			<<"\nsource_manifest_sha256 "<<RISECBOR64::SHA256Hex(manifestBytes)<<"\nsource_frame_csv_sha256 "<<RISECBOR64::SHA256Hex(csvBytes)
+			<<"\nprepared_receipt_sha256 9e76d5221025d615f0475fd67f1cbd818791c66dd6e815aea7a2156c55ca55f2"
+			<<"\nsnapshot_receipt_sha256 "<<RISECBOR64::SHA256Hex(receipt)<<"\nsnapshot_manifest_path "<<snapshotManifest.string()
+			<<"\nunavailable retry_counters external_fuel monitored_vectors original_postloop_summary physical_acceptance\n";
+		const auto text=report.str();const RISECBOR64::Bytes reportBytes(text.begin(),text.end());
+		const auto path=outputDirectory/"recovered_consumer_receipt.v1";
+		if(!R246WriteNewCapturedBytes(path,reportBytes,error)||ReadFileBytes(path)!=reportBytes||
+			!PublishPayloadMerkleSidecar(path,checkpoint.caseRecordId,error))return 98;
+		return 0;
+#endif
+	}
+
+	int RunR246RecoverySpectrumInputInspect(const std::filesystem::path& sourceDirectory,
+		const std::filesystem::path& recoveryDirectory)
+	{
+		MethaneRunCheckpoint checkpoint;FireSequenceManifest manifest;RISECBOR64::Bytes manifestBytes,csvBytes;
+		std::string error;
+		if(!R246AdmitPreparedRecovery(sourceDirectory,recoveryDirectory,checkpoint,manifest,manifestBytes,csvBytes,error))return 98;
+		RISECBOR64::Value envelope;FireCase::RecordV1 record;
+		if(!RISECBOR64::DecodeCanonical(manifestBytes,envelope,&error))return 98;
+		const auto* payload=envelope.Find("payload");const auto* embedded=payload?payload->Find("case_record"):nullptr;
+		if(!embedded||!FireCase::ValidateMethaneEnvelopeV1(embedded->GetBytes(),
+			FireSimulationMethaneRecord::PhysicalV1(),record,error))return 98;
+		std::istringstream input(std::string(csvBytes.begin(),csvBytes.end()));std::string line;
+		if(!std::getline(input,line))return 98;std::vector<double> frames;
+		while(std::getline(input,line)){
+			std::istringstream row(line);std::string ordinal,timeText;
+			if(!std::getline(row,ordinal,',')||!std::getline(row,timeText,','))return 98;
+			frames.push_back(std::stod(timeText));
+		}
+		const R246CapturedEventHistory history{checkpoint.values.acceptedTimeStepHistoryS,frames,checkpoint.simulationTimeS};
+		bool passed=SpectrumFullWindowMatches(checkpoint,manifest,record,frames,&history);
+		// Every mutation changes only retained local operands; original producer files stay untouched.
+		auto changed=frames;changed[117u]=std::nextafter(changed[117u],0.0);
+		passed=passed&&!SpectrumFullWindowMatches(checkpoint,manifest,record,changed,&history);
+		const double first=checkpoint.values.probeTimeS.front();
+		checkpoint.values.probeTimeS.front()=std::nextafter(first,0.0);
+		passed=passed&&!SpectrumFullWindowMatches(checkpoint,manifest,record,frames,&history);
+		checkpoint.values.probeTimeS.front()=first;
+		const double last=checkpoint.values.probeTimeS.back();checkpoint.values.probeTimeS.back()=std::nextafter(last,0.0);
+		passed=passed&&!SpectrumFullWindowMatches(checkpoint,manifest,record,frames,&history);
+		checkpoint.values.probeTimeS.back()=last;
+		const R246CapturedEventHistory foreignTerminal{history.steps,history.frames,std::nextafter(history.terminal,0.0)};
+		passed=passed&&!SpectrumFullWindowMatches(checkpoint,manifest,record,frames,&foreignTerminal);
+		const double signal=checkpoint.values.probeCenterlineHeatReleaseW[117u];
+		checkpoint.values.probeCenterlineHeatReleaseW[117u]=std::numeric_limits<double>::quiet_NaN();
+		passed=passed&&!SpectrumFullWindowMatches(checkpoint,manifest,record,frames,&history);
+		checkpoint.values.probeCenterlineHeatReleaseW[117u]=signal;
+		std::fprintf(stdout,"R246_RECOVERY_SPECTRUM_INPUT passed=%d recovery_accepted=0 original_exit_code=98 "
+			"steps=%llu frames=%zu probes=%zu red_controls=5 no_render=1\n",passed?1:0,
+			static_cast<unsigned long long>(checkpoint.acceptedSteps),frames.size(),checkpoint.values.probeTimeS.size());
+		return passed?0:98;
+	}
+
+	int RunR246RecoveryAdmissionInspect(const std::filesystem::path& sourceDirectory,
+		const std::filesystem::path& recoveryDirectory)
+	{
+		MethaneRunCheckpoint checkpoint;FireSequenceManifest manifest;RISECBOR64::Bytes manifestBytes,csvBytes;
+		std::string error;
+		if(!R246AdmitPreparedRecovery(sourceDirectory,recoveryDirectory,checkpoint,manifest,manifestBytes,csvBytes,error)){
+			std::fprintf(stderr,"R246_RECOVERY_ADMISSION rejected=1 error=%s\n",error.c_str());return 98;
+		}
+		RISECBOR64::Bytes readerRecord;std::string readerBuild,readerExecutable;
+		if(!CurrentRendererBuildIdentity(readerRecord,readerBuild)||
+			!CurrentExecutableDigest(readerRecord,readerExecutable,error)||readerBuild==checkpoint.producerBuildId)return 98;
+		std::fprintf(stdout,"R246_RECOVERY_ADMISSION passed=1 recovery_accepted=0 original_exit_code=98 "
+			"steps=%llu frames=%zu source_producer=%s reader_build=%s reader_executable_sha256=%s\n",
+			static_cast<unsigned long long>(checkpoint.acceptedSteps),manifest.Frames().size(),
+			checkpoint.producerBuildId.c_str(),readerBuild.c_str(),readerExecutable.c_str());return 0;
+	}
+	int RunR246RecoveryAdmissionREDs(const std::filesystem::path& recoveryDirectory)
+	{
+		std::string error;bool passed=R246PreparedArtifactsMatch(recoveryDirectory,error);
+		for(const auto& pin:R246PreparedArtifactPins){
+			RISECBOR64::Bytes payload,seal;
+			if(!R246ReadCheckpointSnapshot(recoveryDirectory/pin.name,payload,seal,error)||payload.empty()||seal.empty())return 98;
+			passed=passed&&R246PreparedPairMatches(pin,payload,seal,error)&&!R246PreparedPairMatches(pin,payload,{},error);
+			auto changed=payload;changed.back()^=1u;
+			passed=passed&&!R246PreparedPairMatches(pin,changed,seal,error);
+			changed=seal;changed.back()^=1u;
+			passed=passed&&!R246PreparedPairMatches(pin,payload,changed,error);
+		}
+		std::fprintf(stdout,"R246_RECOVERY_ADMISSION_REDS passed=%d artifact_reds=12 no_native_fields=1\n",passed?1:0);
+		return passed?0:98;
+	}
+
+	int RunR246ConsumerInputInspect(const std::filesystem::path& sourceDirectory)
+	{
+		// Read-only full native input preflight. No recovery/publication/render path.
+		const auto manifestPath=sourceDirectory/"sequence_manifest.rise-fire.cbor";
+		const auto bytes=ReadFileBytes(manifestPath);std::string error;
+		if(!TemporalManifestDomainMatches(bytes,true,error,true,&sourceDirectory)){
+			std::fprintf(stderr,"R246_CONSUMER_INPUT_REJECT stage=domain_history error=%s\n",error.c_str());return 98;
+		}
+		FireSequenceManifest manifest;
+		if(!manifest.LoadCanonicalEnvelope(bytes,sourceDirectory.string(),error)||
+			!manifest.PreflightAllFrames(error)){
+			std::fprintf(stderr,"R246_CONSUMER_INPUT_REJECT stage=native_frames error=%s\n",error.c_str());return 98;
+		}
+		std::fprintf(stdout,"R246_CONSUMER_INPUT_INSPECT passed=1 recovery_accepted=0 native_frames=%zu manifest_sha256=%s\n",
+			manifest.Frames().size(),RISECBOR64::SHA256Hex(bytes).c_str());return 0;
+	}
+
 	int SealProductionTemporalStop(const std::filesystem::path& outputDirectory,
 		const SolverFrameValues& result,const double targetTimeS)
 	{
@@ -8659,13 +11326,14 @@ namespace
 
 	int RunProductionTemporalCapstoneChild(const double resolutionTier,
 		const double frameCadenceS,const std::filesystem::path& outputDirectory,const bool r244LateralDouble=false,
-		const bool r245AcceptedBudget=false)
+		const bool r245AcceptedBudget=false,const bool r246TopDouble=false)
 	{
 #if !defined(RISE_ENABLE_OPENVDB)
-		(void)resolutionTier;(void)frameCadenceS;(void)outputDirectory;(void)r244LateralDouble;(void)r245AcceptedBudget;return 90;
+		(void)resolutionTier;(void)frameCadenceS;(void)outputDirectory;(void)r244LateralDouble;(void)r245AcceptedBudget;(void)r246TopDouble;return 90;
 #else
 		if(!ProductionTemporalCapstoneTierSupported(resolutionTier)||frameCadenceS!=0.0625||
 			(r245AcceptedBudget&&!r244LateralDouble)||
+			(r246TopDouble&&(!r244LateralDouble||!r245AcceptedBudget))||
 			(r244LateralDouble&&resolutionTier!=6.0)||
 			!std::isfinite(frameCadenceS)||
 			static_cast<double>(static_cast<float>(frameCadenceS))!=frameCadenceS)return 91;
@@ -8677,23 +11345,30 @@ namespace
 		std::filesystem::create_directories(outputDirectory/"budgets",directoryError);
 		if(directoryError)return 92;
 		RunPersistenceOptions geometryOptions;geometryOptions.r244LateralDouble=r244LateralDouble;
-		const SolverFrameValues beginning=RunMethaneFrameProbe(1u,0u,0.0,1.0,1.0,
+		geometryOptions.r246TopDouble=r246TopDouble;
+		geometryOptions.productionMetal=r246TopDouble;
+		geometryOptions.portedProductionTransport=r246TopDouble;
+		const SolverFrameValues beginning=RunMethaneFrameProbe(1u,0u,0.0,
+			r246TopDouble?25.156864278900095:1.0,r246TopDouble?16.0:1.0,
 			resolutionTier,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,geometryOptions);
-		if(!beginning.succeeded||!(beginning.flowThroughTimeS>0.0))return 93;
-		const double expectedPuffingHz=1.5/std::sqrt(CapstonePoolDiameterM);
-		const double statisticsStartS=5.0*beginning.flowThroughTimeS;
-		const double statisticsDurationS=std::ceil((40.0/expectedPuffingHz)/
-			frameCadenceS)*frameCadenceS;
-		const double targetTimeS=statisticsStartS+statisticsDurationS;
-		// Duration is identity-bearing; the geometry probe above used a one-second
-		// case solely to obtain t_ft, not the window's publication authority.
+		ProductionTemporalWindowPlan window;
+		if(!BuildProductionTemporalWindowPlan(beginning,frameCadenceS,r246TopDouble,window))return 93;
+		const double statisticsStartS=window.statisticsStartS;
+		const double statisticsDurationS=window.statisticsDurationS;
+		const double targetTimeS=window.targetTimeS;
+		// The geometry probe uses the original window identity for r246, and a
+		// one-second case for historical paths. The launch case binds publication.
 		RunPersistenceOptions persistence;
 		persistence.productionMetal=true;
 		persistence.portedProductionTransport=true;
 		persistence.r244LateralDouble=r244LateralDouble;
+		persistence.r246TopDouble=r246TopDouble;
 		const SolverFrameValues launchCase=RunMethaneFrameProbe(1u,0u,0.0,targetTimeS,1.0/frameCadenceS,
 			resolutionTier,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,persistence);
-		if(!launchCase.succeeded||launchCase.flowThroughTimeS!=beginning.flowThroughTimeS)return 93;
+		if(!launchCase.succeeded||launchCase.flowThroughTimeS!=beginning.flowThroughTimeS||
+			(r246TopDouble&&(launchCase.caseRecordId!=beginning.caseRecordId||
+			launchCase.matchedScheduleFlowThroughTimeS!=window.scheduleFlowThroughTimeS)))return 93;
+		persistence.r246FullWindow=r246TopDouble;
 		persistence.r245AcceptedBudget=r245AcceptedBudget;
 		persistence.checkpointPath=outputDirectory/"production_run.checkpoint";
 		persistence.finalCheckpointPath=outputDirectory/"production_final.checkpoint";
@@ -8716,7 +11391,8 @@ namespace
 		if(!CurrentRendererBuildIdentity(buildRecord,buildId)||
 			!CurrentExecutableDigest(buildRecord,executableDigest,publicationError))return 92;
 		std::ofstream receipt(outputDirectory/"window_launch.v1");
-		if(r244LateralDouble)receipt<<"domain_study r244-lateral-double-v1\n";
+		if(r246TopDouble)WriteR246WindowIdentity(receipt,launchCase,window);
+		else if(r244LateralDouble)receipt<<"domain_study r244-lateral-double-v1\n";
 		if(r245AcceptedBudget)receipt<<"accepted_stage_budget r245-v1\n";
 		receipt<<std::setprecision(17)<<"schema rise.fire.full-window-launch.v1\n"
 			<<"producer_build_id "<<buildId<<"\nproducer_executable_sha256 "<<executableDigest<<'\n'
@@ -8786,7 +11462,7 @@ namespace
 			const RISECBOR64::Bytes manifest=ManifestBytes("","","hold",true,true,
 				dimensions,result.cellWidthM,frameTimesS.front(),frameCadenceS,1.0,0.0,
 				true,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,0.0,
-				resolutionTier,true,manifestFrames,targetTimeS,1.0/frameCadenceS,true,r244LateralDouble);
+				resolutionTier,true,manifestFrames,targetTimeS,1.0/frameCadenceS,true,r244LateralDouble,r246TopDouble);
 			const std::filesystem::path manifestPath=
 				outputDirectory/"sequence_manifest.rise-fire.cbor";
 			std::ofstream manifestOutput(manifestPath,std::ios::binary|std::ios::trunc);
@@ -8797,7 +11473,8 @@ namespace
 			FireSequenceManifest verified;
 			if(!verified.LoadCanonicalEnvelope(manifest,outputDirectory.string(),error)||
 				verified.CaseRecordId()!=result.caseRecordId||
-				!verified.PreflightAllFrames(error))return 98;
+				!verified.PreflightAllFrames(error)||
+				(r246TopDouble&&!TemporalManifestDomainMatches(manifest,true,error,true)))return 98;
 			manifestDigest=DigestFile(manifestPath);
 		}
 		std::ofstream diagnostics(outputDirectory/"monitored_diagnostics.csv");
@@ -20406,6 +23083,101 @@ int main(int argc,char** argv)
 		std::fprintf(stdout,"R221_SCOPE_RED unbound_probe_and_continuation_refused=1 passed=%d\n",passed?1:0);
 		return passed?0:95;
 	}
+	if(argc==4&&std::strcmp(argv[1],"--fire-r246-owner-allocation-fixture")==0)
+		return RunR246OwnerAllocationFixture(argv[3],argv[2]);
+	if(argc==4&&std::strcmp(argv[1],"--fire-r246-optical-single-control")==0){
+		if(std::strlen(argv[2])!=1u||argv[2][0]<'0'||argv[2][0]>'3')return 91;
+		return RunR246OpticalConfoundControl(argv[3],static_cast<unsigned int>(argv[2][0]-'0'));
+	}
+	if(argc==3&&std::strcmp(argv[1],"--fire-r246-optical-confound-control")==0)
+		return RunR246OpticalConfoundControl(argv[2]);
+	if(argc==2&&std::strcmp(argv[1],"--fire-r246-launcher-foundation-gate")==0)
+		return RunR246LauncherFoundationGate();
+	if(argc==2&&std::strcmp(argv[1],"--fire-r246-launch-contract-gate")==0){
+		const int taller=RunR246LauncherFoundationGate();
+		return taller==0?RunR244DomainStudyGate():taller;
+	}
+	if(argc==3&&std::strcmp(argv[1],"--fire-r246-checkpoint-snapshot-reds")==0)
+		return RunR246CheckpointSnapshotREDs(argv[2]);
+	if(argc==4&&std::strcmp(argv[1],"--fire-r246-source-snapshot-inspect")==0)
+		return RunR246SourceSnapshotInspect(argv[2],argv[3]);
+	if(argc==3&&std::strcmp(argv[1],"--fire-r246-source-capture-reds")==0)
+		return RunR246SourceCaptureREDs(argv[2]);
+	if(argc==3&&std::strcmp(argv[1],"--fire-r246-movie-admission-gate")==0){
+#if defined(__APPLE__)
+		return RunR246MovieAdmissionGate(argv[2]);
+#else
+		return 90;
+#endif
+	}
+	if(argc==3&&std::strcmp(argv[1],"--fire-r246-captured-scene-gate")==0){
+#if defined(__APPLE__)
+		return RunR246CapturedSceneGate(argv[2]);
+#else
+		return 90;
+#endif
+	}
+	if(argc==3&&std::strcmp(argv[1],"--fire-r246-gif-publication-gate")==0){
+#if defined(__APPLE__)
+		return RunR246GIFPublicationGate(argv[2]);
+#else
+		return 90;
+#endif
+	}
+	if(argc==3&&std::strcmp(argv[1],"--fire-r246-authored-gif-bytes-gate")==0){
+#if defined(__APPLE__)
+		return RunR246AuthoredGIFBytesGate(argv[2]);
+#else
+		return 90;
+#endif
+	}
+	if(argc==3&&std::strcmp(argv[1],"--fire-r246-actual-profile-binding-gate")==0)
+		return RunR246ActualProfileBindingGate(argv[2]);
+	if(argc==3&&std::strcmp(argv[1],"--fire-r246-captured-display-gate")==0){
+#if defined(__APPLE__)
+		return RunR246CapturedDisplayGate(argv[2]);
+#else
+		std::fprintf(stderr,"captured display gate requires macOS ImageIO\n");return 90;
+#endif
+	}
+	if(argc==5&&std::strcmp(argv[1],"--fire-r246-preview-receipt-admission-inspect")==0)
+		return RunR246PreviewReceiptAdmissionInspect(argv[2],argv[3],argv[4]);
+	if(argc==3&&std::strcmp(argv[1],"--fire-r246-preview-receipt-admission-reds")==0)
+		return RunR246PreviewReceiptAdmissionREDs(argv[2]);
+	if(argc==2&&std::strcmp(argv[1],"--fire-r246-preview-pair-capture-gate")==0)
+		return RunR246PreviewPairCaptureGate();
+	if(argc==5&&std::strcmp(argv[1],"--fire-r246-preview-runtime-binding-reds")==0)
+		return RunR246PreviewSnapshotPrepare(argv[2],argv[3],argv[4],false,true);
+	if(argc==5&&std::strcmp(argv[1],"--fire-r246-preview-snapshot-inspect")==0)
+		return RunR246PreviewSnapshotPrepare(argv[2],argv[3],argv[4],false);
+	if(argc==5&&std::strcmp(argv[1],"--fire-r246-preview-snapshot-prepare")==0)
+		return RunR246PreviewSnapshotPrepare(argv[2],argv[3],argv[4]);
+	if(argc==5&&std::strcmp(argv[1],"--fire-r246-recovered-consumer-inspect")==0)
+		return RunR246RecoveredConsumer(argv[2],argv[3],argv[4],{}, {},0u);
+	if(argc==6&&std::strcmp(argv[1],"--fire-r246-recovered-preview")==0)
+		return RunR246RecoveredConsumer(argv[2],argv[3],argv[4],{},argv[5],1u);
+	if(argc==7&&std::strcmp(argv[1],"--fire-r246-recovered-spectrum")==0)
+		return RunR246RecoveredConsumer(argv[2],argv[3],argv[4],argv[5],argv[6],2u);
+	if(argc==4&&std::strcmp(argv[1],"--fire-r246-recovery-spectrum-input-inspect")==0)
+		return RunR246RecoverySpectrumInputInspect(argv[2],argv[3]);
+	if(argc==4&&std::strcmp(argv[1],"--fire-r246-recovery-admission-inspect")==0)
+		return RunR246RecoveryAdmissionInspect(argv[2],argv[3]);
+	if(argc==3&&std::strcmp(argv[1],"--fire-r246-recovery-admission-reds")==0)
+		return RunR246RecoveryAdmissionREDs(argv[2]);
+	if(argc==4&&std::strcmp(argv[1],"--fire-r246-recovery-operands")==0)
+		return RunR246RecoveryOperandExport(argv[2],argv[3]);
+	if(argc==3&&std::strcmp(argv[1],"--fire-r246-consumer-input-inspect")==0)
+		return RunR246ConsumerInputInspect(argv[2]);
+	if(argc==2&&std::strcmp(argv[1],"--fire-r246-event-history-gate")==0)
+		return RunR246AcceptedEventHistoryGate();
+	if(argc==4&&std::strcmp(argv[1],"--fire-r246-event-history-inspect")==0)
+		return RunR246AcceptedEventHistoryInspect(argv[2],argv[3]);
+	if(argc==3&&std::strcmp(argv[1],"--fire-r246-top-double")==0)
+		return RunProductionTemporalCapstoneChild(6.0,0.0625,argv[2],true,true,true);
+	if(argc==4&&std::strcmp(argv[1],"--fire-r246-top-preview")==0)
+		return RunTemporalFirePreviewChild(argv[2],argv[3],true,true);
+	if(argc==6&&std::strcmp(argv[1],"--fire-r246-top-spectrum")==0)
+		return RunProductionPuffingSpectrumChild(6.0,argv[2],argv[3],argv[4],argv[5],true,true);
 	if(argc==2&&std::strcmp(argv[1],"--fire-r244-domain-study-gate")==0)
 		return RunR244DomainStudyGate();
 	if(argc==3&&std::strcmp(argv[1],"--fire-r245-lateral-budget")==0)
@@ -22640,7 +25412,7 @@ int main(int argc,char** argv)
 
 #if defined(__APPLE__)
 	if(capstoneArtifactRun&&capstoneOutput&&*capstoneOutput)
-		Check(RunFirstLightPreviewChild(capstoneOutput,capstoneOutput)==0,
+		Check(RunFirstLightPreviewChild(capstoneOutput,R246FirstLightCapstoneOutput(capstoneOutput))==0,
 			"first light publishes eight verified primaries and a visible GIF animation");
 #else
 	Check(!capstoneArtifactRun,

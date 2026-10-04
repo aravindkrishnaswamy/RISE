@@ -1,0 +1,87 @@
+{
+  "schema": "rise.fire.r246.recovered-full-spectrum-completion.v1",
+  "status": "verified_complete_full_spectrum",
+  "completion": {
+    "exit_code": 0,
+    "completed_utc": "2026-10-04T15:52:27.904292+00:00",
+    "original_exit_code": 98
+  },
+  "frames": 235,
+  "native_and_common_probe_samples": 8916,
+  "native_stations": 1426560,
+  "common_stations": 713280,
+  "spectrum_bins": 771,
+  "artifacts": [
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovered_top_spectrum_launch.v1/completion.json",
+      "sha256": "3280b63e01116ea742142a9028c5058a10e20a38c15c7d68b438e55bce534d6a"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovered_top_spectrum_launch.v1/spectrum.log",
+      "sha256": "c3e9d9db3ba5f370fcde02bae7a3823223d84607b61163e6daf6b630bd97960d"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_spectrum_completion_arithmetic.v1/verification.json",
+      "sha256": "a08c4409df06e8e9f2521641620edfba5639e05cb614ad5491770c5fcacb48b1"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_spectrum_completion_provenance.v1/result.json",
+      "sha256": "5cb2cabd21784ba609a0b8ba86b188d81433553819eaa7836f8209c0544a3874"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovered_top_spectrum.v1/centerline_signal.csv",
+      "sha256": "d37261323cfa26519c8b238045de778ac4801a59c6c3edc036c1ed94d2fc5091"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovered_top_spectrum.v1/common_height_centerline_signal.csv",
+      "sha256": "abab7cc10e4e1e46819ba80c7624cae22c924e698d642e28a551aeda6dccdcd1"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovered_top_spectrum.v1/common_height_stations.csv",
+      "sha256": "e97c3fb76782ce34d4b703b796ab3aeca5b03ce1fd12a0d7b806b3d18dc0ffc5"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovered_top_spectrum.v1/display_inputs.csv",
+      "sha256": "dd0b21e15e62d16aef99fc560d4ab3e0af0074bcb8ec3940aa4e902db4f44481"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovered_top_spectrum.v1/full_spectrum.csv",
+      "sha256": "a1a820d5484af359448dac35daf91161b23015e64b5a0bfd64472970b0b5cbf4"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovered_top_spectrum.v1/lit_area_signal.csv",
+      "sha256": "059341ec99cd2acd4e628f666d376b81e1cc0cdf8d36895b64a3808da4da654a"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovered_top_spectrum.v1/puffing_spectrum_evidence.v1",
+      "sha256": "fb78aec8f6b24496976dfd5b7b50e1e15cee507293db2f66233d749f9164f726"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovered_top_spectrum.v1/recovered_consumer_receipt.v1",
+      "sha256": "ed6e51a0af97c625ce9f05d54815c2a8ac37ace2aa98350d0e4463a0112ac33e"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r246_recovered_top_spectrum.v1/recovered_consumer_receipt.v1.payload-v2.json",
+      "sha256": "17c081898335dde6fe5dd1fe2caa381cd4b3c9397710267c30197cf3e2300dc3"
+    }
+  ],
+  "original_exit_code": 98,
+  "physical_acceptance": false,
+  "canonical_taller_qualification": false,
+  "dominant_hz": {
+    "native_centerline": 1.569577991456115,
+    "common_centerline": 1.569577991456115,
+    "display_lit_area": 0.20472756410297152
+  },
+  "expected_nearest_hz": 2.729700854706287,
+  "expected_to_peak_power_ratio": {
+    "native_centerline": 0.1117294379340457,
+    "common_centerline": 0.11172943793404586,
+    "display_lit_area": 0.05627197476424141
+  },
+  "limitations": [
+    "Spectra are descriptive and do not localize puffing causally.",
+    "Full baseline/wide/taller original-region stations/reaction and signed per-side budget comparisons remain pending.",
+    "Original sourceexit98 and unavailable/unsealed observation limitations retained."
+  ]
+}

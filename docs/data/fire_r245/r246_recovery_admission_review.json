@@ -1,0 +1,22 @@
+{
+  "schema": "rise.fire.r246.recovery-admission-review.v1",
+  "reviewed_implementation": "765e7329408b2ae9009b981f5763c9800107d25c",
+  "recovery_accepted": false,
+  "rounds": [
+    {
+      "round": 1,
+      "contract_agent": "r246_native_admission_contract_r1",
+      "lifecycle_agent": "r246_native_admission_lifecycle_r1",
+      "arithmetic_contract": "zero P1/P2",
+      "lifecycle_provenance": "zero P1/P2"
+    }
+  ],
+  "accepted_scope": "Exact reviewed preparation artifact/certificate admission, immutable native checkpoint/source byte capture and typed actual-event history domain binding only.",
+  "gate": "docs/data/fire_r245/r246_recovery_admission_gate.json",
+  "remaining": [
+    "Repaired preview/spectrum consumer integration with captured inputs and honest new identity",
+    "Full recovery acceptance",
+    "Strict reviewed full r246 budget admission and arithmetic audit",
+    "Full preview/spectrum/native/common comparisons and physical interpretation"
+  ]
+}

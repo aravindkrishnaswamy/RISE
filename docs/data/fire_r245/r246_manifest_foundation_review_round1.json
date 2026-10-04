@@ -1,0 +1,30 @@
+{
+  "reviewed_commit": "813bcc5c",
+  "findings": [
+    {
+      "priority": "P2",
+      "reviewer": "r246_manifest_foundation_contract",
+      "finding": "shifted frame ordinals accepted",
+      "fix": "require i0 zero; resealed 4..238 generic positive/campaign RED"
+    },
+    {
+      "priority": "P2",
+      "reviewers": [
+        "r246_manifest_foundation_contract",
+        "r246_manifest_foundation_provenance"
+      ],
+      "finding": "optional grid-bound label could be removed and physical lattice scaled",
+      "fix": "direct all-channel case-derived voxel/placement/core/halo binding; resealed label-removal/scaled-lattice generic positive/campaign RED"
+    }
+  ],
+  "fix_status": "native controls passed pending fresh review",
+  "launch_permitted": false,
+  "logs": {
+    "r246_manifest_build.v3.log": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21",
+    "r246_manifest_build.v4.log": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21",
+    "r246_manifest_gate.v2.log": "e442f39a4ea1e2900513f054f7461d39095bae0ed90ee774cb5f4b1fb6d5b65d",
+    "r246_manifest_gate.v3.log": "dd6c54d0615dbf789c5daf67f211dae8ee62a41f4e9dc4665cb1daad981b0d6f",
+    "r246_manifest_legacy_gate.v2.log": "67b2b84e77a763cd581c688cc12e3239e3c53e5bf398b4b370163da8ca072554"
+  },
+  "retained_failed_gate": "v2 counterfactual did not scale velocity halo with voxel width; corrected fixture v3 passes"
+}

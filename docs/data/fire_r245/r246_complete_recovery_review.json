@@ -1,0 +1,32 @@
+{
+  "schema": "rise.fire.r246.complete-recovery-review.v1",
+  "status": "accepted_zero_p1_p2",
+  "reviewed_head": "6b04c06a2",
+  "round": 1,
+  "accepted_scope": "Complete retained full-window data recovery and reviewed consumer composition only",
+  "original_exit_code": 98,
+  "candidate_sha256": "2e2e9fe96a5deec29b6a88b234aaaa14e670f5b7d8a191f7130f05cd246a424c",
+  "gate_sha256": "3ddaeb8cd9c7a38f9be1fdb406e2abc9268161348e958b40b43a0d54a9fa0397",
+  "reviewers": [
+    {
+      "agent": "r246_complete_recovery_contract_r1",
+      "axis": "arithmetic/contract/test integrity",
+      "p1": 0,
+      "p2": 0,
+      "independent_checks": "50 catalog SHA pins; 11 prerequisite modern seals plus candidate seal; frozen identities; summary arithmetic; coverage and 7 REDs"
+    },
+    {
+      "agent": "r246_complete_recovery_lifecycle_r1",
+      "axis": "lifecycle/provenance",
+      "p1": 0,
+      "p2": 0,
+      "independent_checks": "50 catalog SHA pins; 11 prerequisite modern seals plus candidate seal; captured implementations/constants; aliases/pending/exclusive publication; 7 REDs"
+    }
+  ],
+  "limitations": [
+    "Original producer exit98 preserved; prepared/prerequisite false receipts unchanged",
+    "Signed budget arithmetic, actual preview/spectrum, physical comparison and puffing localization pending",
+    "Canonical taller qualification and unavailable measurements remain unaccepted"
+  ],
+  "accepted_utc": "2026-10-04T11:51:13.207835+00:00"
+}

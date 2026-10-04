@@ -1,0 +1,27 @@
+{
+  "schema": "rise.fire.r247.retained-design-review.v1",
+  "status": "accepted_zero_p1_p2_design_only",
+  "reviewed_head": "5a2e30de7",
+  "round": 1,
+  "design_sha256": "c8017c48caa46aa749db8f75724c117fe5cfc0084c740ca98864fa45eb6fbfea",
+  "coverage_sha256": "e83e8bf9a3244b33111c44b6a9c4043eb201fc23f6a96466edbd5522d8e75b3d",
+  "reviewers": [
+    {
+      "agent": "r247_retained_design_arithmetic_r1",
+      "axis": "retained layout/owned stages/units/geometric arithmetic",
+      "p1": 0,
+      "p2": 0
+    },
+    {
+      "agent": "r247_retained_design_provenance_r1",
+      "axis": "lifecycle/memory/physical inference/coverage",
+      "p1": 0,
+      "p2": 0
+    }
+  ],
+  "implementation_or_full_derivation_accepted": false,
+  "new_simulation_authorized_by_design": false,
+  "remedy_supported": false,
+  "original_exit_code": 98,
+  "accepted_utc": "2026-10-04T16:53:32.743952+00:00"
+}

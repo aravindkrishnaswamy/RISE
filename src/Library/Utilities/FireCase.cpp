@@ -47,7 +47,8 @@ namespace
 		const RISE::FireCase::DerivedV1& derived,RISE::FireCase::DerivedV1& baseline,
 		std::string& error)
 	{
-		if(authored.domainStudy!="r244-lateral-double-v1"||authored.sourceKind!="pool"||
+		if((authored.domainStudy!="r244-lateral-double-v1"&&
+			authored.domainStudy!="r246-lateral-double-top-double-v1")||authored.sourceKind!="pool"||
 			authored.poolDiameterM!=0.30||authored.intensityKind!="hrr"||
 			authored.heatReleaseRateKW!=33.0||authored.quality!="dstar"||
 			authored.numericDStarTier!=6.0||!authored.plumeLaw||
@@ -58,6 +59,15 @@ namespace
 		baseline.ny=baseline.nx;
 		if(!baseline.nx||baseline.nx%2u||derived.nx!=2u*baseline.nx||derived.ny!=2u*baseline.ny)
 			return Fail(error,"r244 domain study requires an integer translated doubled lattice");
+		baseline.nz=CeilCells(5.0*derived.effectiveFlameHeightM,derived.cellWidthM);
+		const bool topStudy=authored.domainStudy=="r246-lateral-double-top-double-v1";
+		if(derived.nz!=(topStudy?2u:1u)*baseline.nz)
+			return Fail(error,"domain study height does not match its selector");
+		baseline.extentZM=baseline.nz*baseline.cellWidthM;
+		baseline.flowThroughTimeS=baseline.extentZM/std::sqrt(9.80665*baseline.characteristicDiameterM);
+		if(topStudy&&derived.matchedScheduleFlowThroughTimeS!=baseline.flowThroughTimeS)
+			return Fail(error,"top study schedule must exactly match the original geometry");
+		baseline.matchedScheduleFlowThroughTimeS=0.0;
 		baseline.extentXM=baseline.nx*baseline.cellWidthM;
 		baseline.extentYM=baseline.ny*baseline.cellWidthM;
 		return true;
@@ -171,6 +181,12 @@ bool RISE::FireCase::BuildPilotMask(const AuthoredV1& authored,
 	return active>0 || Fail(error,"fire case pilot annulus contains no cell centres");
 }
 
+double RISE::FireCase::ScheduleFlowThroughTimeS(const DerivedV1& derived)
+{
+	return derived.matchedScheduleFlowThroughTimeS==0.0 ?
+		derived.flowThroughTimeS : derived.matchedScheduleFlowThroughTimeS;
+}
+
 bool RISE::FireCase::EvaluatePilotSetpointTemperatureK(const DerivedV1& derived,
 	const bool maskCell,const double beginningTimeS,const double endTimeS,
 	double& result,std::string& error)
@@ -182,16 +198,16 @@ bool RISE::FireCase::EvaluatePilotSetpointTemperatureK(const DerivedV1& derived,
 		!FinitePositive(derived.pilotDurationMultiplier) ||
 		!FinitePositive(derived.pilotAmbientTemperatureK) ||
 		!FinitePositive(derived.pilotRampExponentPerFlowThrough) ||
-		!FinitePositive(derived.flowThroughTimeS) ||
+		!FinitePositive(ScheduleFlowThroughTimeS(derived)) ||
 		!std::isfinite(beginningTimeS) || beginningTimeS<0.0 ||
 		!std::isfinite(endTimeS) || endTimeS<beginningTimeS)
 		return Fail(error,"fire case pilot evaluation has invalid inputs");
-	const double pilotEndS=derived.pilotDurationMultiplier*derived.flowThroughTimeS;
+	const double pilotEndS=derived.pilotDurationMultiplier*ScheduleFlowThroughTimeS(derived);
 	if(!std::isfinite(pilotEndS)) return Fail(error,"fire case pilot duration is invalid");
 	if(maskCell && beginningTimeS<pilotEndS && endTimeS>beginningTimeS) {
 		const double commandTimeS=std::min(endTimeS,pilotEndS);
 		const double exponent=std::min(1.0,derived.pilotRampExponentPerFlowThrough*
-			commandTimeS/derived.flowThroughTimeS);
+			commandTimeS/ScheduleFlowThroughTimeS(derived));
 		result=derived.pilotAmbientTemperatureK*std::pow(
 			derived.pilotSetpointTemperatureK/derived.pilotAmbientTemperatureK,exponent);
 	}
@@ -206,8 +222,8 @@ double RISE::FireCase::PilotCommandMaximumStepS(const DerivedV1& derived)
 		!FinitePositive(derived.pilotExpansionVolumeRatioCap)||
 		derived.pilotExpansionVolumeRatioCap<=1.0||
 		!FinitePositive(derived.pilotRampExponentPerFlowThrough)||
-		!FinitePositive(derived.flowThroughTimeS))return 0.0;
-	return derived.flowThroughTimeS*std::log(derived.pilotExpansionVolumeRatioCap)/
+		!FinitePositive(ScheduleFlowThroughTimeS(derived)))return 0.0;
+	return ScheduleFlowThroughTimeS(derived)*std::log(derived.pilotExpansionVolumeRatioCap)/
 		(derived.pilotRampExponentPerFlowThrough*std::log(
 			derived.pilotSetpointTemperatureK/derived.pilotAmbientTemperatureK));
 }
@@ -328,12 +344,18 @@ bool RISE::FireCase::BuildMethaneV1(const AuthoredV1& a,
 	d.nx=CeilCells(requiredX,d.cellWidthM); d.ny=CeilCells(requiredY,d.cellWidthM);
 	d.nz=CeilCells(requiredZ,d.cellWidthM);
 	if(!a.domainStudy.empty()) {
-		if(a.domainStudy!="r244-lateral-double-v1"||a.sourceKind!="pool"||
+		if((a.domainStudy!="r244-lateral-double-v1"&&
+			a.domainStudy!="r246-lateral-double-top-double-v1")||a.sourceKind!="pool"||
 			a.poolDiameterM!=0.30||a.intensityKind!="hrr"||a.heatReleaseRateKW!=33.0||
 			a.quality!="dstar"||a.numericDStarTier!=6.0||!a.plumeLaw||
 			envelope.size()!=1u||envelope.front().value!=1.0||a.seed!=1234u||
 			a.hasRadiativeFractionOverride||d.nx%2u||d.ny%2u)
 			return Fail(error,"r244 domain study is confined to the unchanged steady tier-6 capstone");
+		if(a.domainStudy=="r246-lateral-double-top-double-v1") {
+			d.matchedScheduleFlowThroughTimeS=(d.nz*d.cellWidthM)/
+				std::sqrt(9.80665*d.characteristicDiameterM);
+			d.nz*=2u;
+		}
 		d.nx*=2u; d.ny*=2u;
 		d.pilotMaskRule="r244_integer_translation_of_canonical_first_layer_annulus";
 	}
@@ -341,8 +363,8 @@ bool RISE::FireCase::BuildMethaneV1(const AuthoredV1& a,
 	d.flowThroughTimeS=d.extentZM/std::sqrt(9.80665*d.characteristicDiameterM);
 	const bool constant=std::all_of(envelope.begin(),envelope.end(),
 		[peak](const EnvelopeKnot& k){return k.value==peak;});
-	if(constant) { d.windowKind="discard"; d.preRollOrDiscardS=5.0*d.flowThroughTimeS; }
-	else if(envelope.front().value>0.0) { d.windowKind="pre_roll"; d.preRollOrDiscardS=5.0*d.flowThroughTimeS; }
+	if(constant) { d.windowKind="discard"; d.preRollOrDiscardS=5.0*ScheduleFlowThroughTimeS(d); }
+	else if(envelope.front().value>0.0) { d.windowKind="pre_roll"; d.preRollOrDiscardS=5.0*ScheduleFlowThroughTimeS(d); }
 	else { d.windowKind="none"; d.preRollOrDiscardS=0.0; }
 	std::vector<double> pattern;
 	if(!BuildSourcePattern(a,d,pattern,error)) return false;
@@ -386,7 +408,7 @@ bool RISE::FireCase::BuildMethaneV1(const AuthoredV1& a,
 		{"quality",quality}, {"seed",Value::Unsigned(a.seed)}, {"source",source} };
 	if(!a.domainStudy.empty()) authoredMembers.push_back({"domain_study",Value::String(a.domainStudy)});
 	const Value authored=Value::MapValue(authoredMembers);
-	const Value derived=Value::MapValue({
+	Value::Members derivedMembers={
 		{"ambient_cp_J_per_kg_K",Value::Float(d.ambientCpJPerKGK)},
 		{"ambient_density_kg_per_m3",Value::Float(d.ambientDensityKGPerM3)},
 		{"cell_width_m",Value::Float(d.cellWidthM)}, {"chi_r_effective",Value::Float(d.effectiveRadiativeFraction)},
@@ -417,7 +439,15 @@ bool RISE::FireCase::BuildMethaneV1(const AuthoredV1& a,
 			{"limiter_acceptance",Value::String(d.limiterAcceptanceModelVersion)},
 			{"reaction_energy_headroom",Value::String(
 				d.reactionEnergyHeadroomModelVersion)}})},
-		{"window_kind",Value::String(d.windowKind)} });
+		{"window_kind",Value::String(d.windowKind)} };
+	if(a.domainStudy=="r246-lateral-double-top-double-v1")
+		derivedMembers.push_back({"experimental_matched_schedule",Value::MapValue({
+			{"policy",Value::String("r246_original_80_layer_schedule_v1")},
+			{"reference_domain_cells",Value::ArrayValue({Value::Unsigned(d.nx),
+				Value::Unsigned(d.ny),Value::Unsigned(d.nz/2u)})},
+			{"reference_flow_through_time_s",Value::Float(d.matchedScheduleFlowThroughTimeS)}
+		})});
+	const Value derived=Value::MapValue(derivedMembers);
 	const Value payload=Value::MapValue({{"authored",authored},{"derived",derived},
 		{"record_kind",Value::String("fire-case-v1")},{"referenced_record_ids",Value::ArrayValue(refs)},
 		{"schema_version",Value::Unsigned(1)}});
@@ -463,7 +493,8 @@ bool RISE::FireCase::ValidateMethaneEnvelopeV1(const RISECBOR64::Bytes& bytes,
 		"fire case methane authored schema is not exact v1");
 	AuthoredV1 parsed;
 	if(const Value* study=authored->Find("domain_study")) {
-		if(study->GetType()!=Value::Text||study->GetText()!="r244-lateral-double-v1")
+		if(study->GetType()!=Value::Text||(study->GetText()!="r244-lateral-double-v1"&&
+			study->GetText()!="r246-lateral-double-top-double-v1"))
 			return Fail(error,"fire case domain study is unknown");
 		parsed.domainStudy=study->GetText();
 	}

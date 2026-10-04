@@ -1,6 +1,17 @@
 # r244 — matched tier-6 puffing campaign (in progress)
 
-## CURRENT: r245 descriptive budgets reviewed; top spatial localization next
+## CURRENT: r246 recovery/budgets/preview/spectrum complete; puffing unresolved
+
+The full r246 top-only run retained15315steps/235frames but originally exited98.
+Separate retained-data recovery, signed budget arithmetic, full recovered preview
+and native/common/display spectra are now accepted after independent reviews.
+Full baseline/wide/taller central-column station/reaction and wide/taller signed
+per-side budget comparisons passed fresh arithmetic/provenance reviews. Physical
+interpretation supports descriptive sensitivity only; puffing remains unresolved.
+Original sourceexit98, unavailable baseline signed budgets and no canonical taller
+qualification remain. Original-region transport/reaction localization precedes
+any supported remedy. See [r246 current evidence](FIRE_SMOKE_TOP_LOCATION_SENSITIVITY_R246.md).
+Sections below retain history.
 
 The reviewed r245 observation-only budget run launched from zero at
 2026-09-30 03:24:04 UTC, through the unchanged doubled-domain full window.
