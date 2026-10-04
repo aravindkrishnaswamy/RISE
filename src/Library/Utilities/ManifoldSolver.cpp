@@ -72,7 +72,7 @@ RISE::Scalar RISE::Implementation::SMSRootReference::Deposit(Scalar physicalCont
     Scalar reciprocal, Scalar channelProbability, Scalar emitterProbability, unsigned int originalTrials)
 {
     if(!std::isfinite(physicalContribution) || !std::isfinite(reciprocal)
-        || physicalContribution < 0 || reciprocal < 1 || !originalTrials
+        || reciprocal < 1 || !originalTrials
         || !std::isfinite(channelProbability) || channelProbability <= 0
         || !std::isfinite(emitterProbability) || emitterProbability <= 0) return 0;
     return physicalContribution * reciprocal / (channelProbability * emitterProbability * originalTrials);
@@ -6936,7 +6936,7 @@ RISEPel ManifoldSolver::EvaluateExtendedDelta(const Point3& pos, const Vector3& 
             * ComputeLightToFirstVertexJacobianDet(chain,pos,light.position,JacobianLightNormal(light,chain));
         const Scalar physical = f * std::fabs(Vector3Ops::Dot(shadingNormal,incoming))
             * root.result.contributionNM * le * geometry;
-        if(!std::isfinite(physical) || physical <= 0) continue;
+        if(!std::isfinite(physical) || physical == 0) continue;
         if(config.referenceCounters) {
             config.referenceCounters->acceptedDiscoveries.fetch_add(1,std::memory_order_relaxed);
             config.referenceCounters->ownedRoots.fetch_add(1,std::memory_order_relaxed);
@@ -7024,7 +7024,8 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
         const RISEPel value = EvaluateExtendedDelta(pos,geomNormal,shadingNormal,onb,*pMaterial,
             woOutgoing,scene,caster,sampler,lightSample,stack,anchorContext);
         result.contribution = value;
-        result.valid = ColorMath::MaxValue(value) > 0;
+        result.valid = std::isfinite(value[0]) && std::isfinite(value[1]) && std::isfinite(value[2])
+            && (value[0] != 0 || value[1] != 0 || value[2] != 0);
         result.referenceA = true;
         return result;
     }
@@ -8011,7 +8012,8 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
         const RISEPel value = EvaluateExtendedDelta(pos,geomNormal,shadingNormal,onb,*pMaterial,
             woOutgoing,scene,caster,sampler,lightSample,stack,anchorContext);
         result.contribution = value;
-        result.valid = ColorMath::MaxValue(value) > 0;
+        result.valid = std::isfinite(value[0]) && std::isfinite(value[1]) && std::isfinite(value[2])
+            && (value[0] != 0 || value[1] != 0 || value[2] != 0);
         result.referenceA = true;
         return result;
     }
@@ -8470,7 +8472,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
         const RISEPel value = EvaluateExtendedDelta(pos,geomNormal,shadingNormal,onb,*pMaterial,
             woOutgoing,scene,caster,sampler,lightSample,stack,anchorContext,nm);
         result.contribution = value[0];
-        result.valid = value[0] > 0;
+        result.valid = std::isfinite(value[0]) && value[0] != 0;
         result.referenceA = true;
         return result;
     }
@@ -8891,7 +8893,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
         const RISEPel value = EvaluateExtendedDelta(pos,geomNormal,shadingNormal,onb,*pMaterial,
             woOutgoing,scene,caster,sampler,lightSample,stack,anchorContext,nm);
         result.contribution = value[0];
-        result.valid = value[0] > 0;
+        result.valid = std::isfinite(value[0]) && value[0] != 0;
         result.referenceA = true;
         return result;
     }

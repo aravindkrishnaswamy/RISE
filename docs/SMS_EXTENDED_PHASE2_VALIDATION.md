@@ -196,3 +196,22 @@ config 112, root 184, reference counters 320 and domain vertex 1584 bytes.
 Public legacy vertex/index records retain their Phase 1 layouts. Checked
 library/test builds have zero compiler diagnostics. Evidence is in
 `.claude/logs/sms-phase2/provider-proofs/proof-results.json` and its logs.
+
+## Signed RGB emission self-audit
+
+The committed signed-emission checkpoint `e4ecbb2f1` is **149 passed,
+28 failed** in `.claude/logs/sms-phase2/signed-checkpoint-red.log`.
+Native point and spot lights retain authored `color 1 -0.5 0.2`;
+estimator A had discarded the negative green reflection. The fixtures
+use actual double-sided meshes, both windings, mirror/glass casters,
+query and PT production entry points, four salts and 16,384 samples
+per salt. The reference uses native signed emission with zero reference
+SD and the original three-SD plus floating-point-roundoff band.
+
+Reference deposits now retain finite signed physical contributions. Both
+RGB entry points accept any finite nonzero component; NM uses the same
+nonzero validity rule. Legacy paths and their existing clamps are unchanged.
+The default-source A/B and clean builds recorded at `4e211d99f` preceded
+this correction. Its regression gate was stopped during
+`ExteriorIndexInvarianceTest` and is recorded as aborted, not a pass.
+A fresh final-source gate and committed-source red/green proof follow.

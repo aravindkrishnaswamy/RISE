@@ -133,6 +133,7 @@ static void Synthetic() {
         if(roulette && rare) Check(totalTails>0&&totalStops>0,"rare-root weighted tails are exercised");
     }
     Check(SMSRootReference::Deposit(6,2,.5,.25,4)==24,"reference accounting has exactly channel/emitter/N factors");
+    Check(SMSRootReference::Deposit(-6,2,.5,.25,4)==-24,"reference accounting preserves signed native emission");
     Check(SMSRootReference::Deposit(0,2,.5,.25,4)==0,"zero physical root remains zero");
     Check(ManifoldSolver::ExtendedReflectionProbability(false,true,.6,false,.05)==0,"transmission-only proposal");
     Check(ManifoldSolver::ExtendedReflectionProbability(true,false,.6,false,.05)==1,"mirror-only proposal");
@@ -696,6 +697,7 @@ int main(int argc,char** argv) {
     if(synthetic||geometry) std::cout<<"Estimator A is absent on this committed baseline; new helper tests are unavailable, not a numerical red proof.\n";
 #endif
     if(delta) DeltaLights(production);
+    if(argc==1) {DeltaLights(false,true);DeltaLights(true,true);}
     if(unsupported) {UnsupportedCasterSwitches();CompositeProxyPolicy();}
     if(slab) SlabRenders();
     std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
