@@ -5099,6 +5099,7 @@ bool ManifoldSolver::ExtendedAnchorEligible(const IScene& scene, const IRayCaste
 {
     if(!ExtendedModeActive(scene)) return true;
     if(!config.maxChainDepth || config.targetBounces > config.maxChainDepth
+        || !std::isfinite(config.solverThreshold) || config.solverThreshold <= 0
         || !std::isfinite(config.extendedEventFloor) || config.extendedEventFloor <= 0
         || config.extendedEventFloor > 0.5 || config.photonCount || scene.GetGlobalMedium()
         || (caster.GetLightSampler() && caster.GetLightSampler()->SceneHasAlphaCoverage())) return false;

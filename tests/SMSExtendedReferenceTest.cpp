@@ -650,7 +650,7 @@ static void UnsupportedCasterSwitches() {
         on->release();off->release();caster->release();shader->release();
     }
 }
-static void ImpossibleDepthSwitches() {
+static void ImpossibleSolverSwitches() {
     for(bool reverse:{false,true}) for(unsigned invalid:{0u,1u,2u,3u}) {
         std::string text=Materials();
         text.replace(text.find("values 1.3 1.5 1.9"),std::string("values 1.3 1.5 1.9").size(),"values 1 1 1");
@@ -659,7 +659,7 @@ static void ImpossibleDepthSwitches() {
             +PlaneScene("floor",-2)+Object("receiver","floor","diffuse")
             +"omni_light\n{\n name source\n position 0 0 1\n color 1 1 1\n power 40\n}\n");
         std::vector<IShaderOp*> ops;IShader* shader=nullptr;
-        Check(RISE_API_CreateStandardShader(&shader,ops),"depth control shader created");
+        Check(RISE_API_CreateStandardShader(&shader,ops),"solver configuration control shader created");
         if(!shader) continue;
         auto* caster=new RayCaster(false,16,*shader,true);caster->SetTransparentShadows(true);caster->AttachScene(&f.Scene());
         ManifoldSolverConfig cfg;cfg.enabled=true;cfg.extendedMode=true;
@@ -668,7 +668,7 @@ static void ImpossibleDepthSwitches() {
         StabilityConfig stability;stability.rrMinDepth=20;
         auto* on=new PathTracingIntegrator(cfg,stability);on->SetMaxPathDepth(8);
         ManifoldSolverConfig plain;auto* off=new PathTracingIntegrator(plain,stability);off->SetMaxPathDepth(8);IORStack air(1);
-        Check(on->GetSolver()->ExtendedModeActive(f.Scene()),"depth control is composite-free extended mode");
+        Check(on->GetSolver()->ExtendedModeActive(f.Scene()),"solver configuration control is composite-free extended mode");
         for(Scalar nm:{0.,450.,650.}) {
             Check(!on->GetSolver()->ExtendedAnchorEligible(f.Scene(),*caster,Point3(0,0,-2),air,nm),
                 "impossible depth or nonpositive threshold disables the complete anchor in RGB and NM");
@@ -842,7 +842,7 @@ int main(int argc,char** argv) {
 #else
         std::cout<<"Estimator A seam helper unavailable on committed baseline.\n";
 #endif
-        ImpossibleDepthSwitches();
+        ImpossibleSolverSwitches();
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
     }
     if(argc==2&&std::string(argv[1])=="--signed-only") {
@@ -859,7 +859,7 @@ int main(int argc,char** argv) {
 #endif
     if(delta) DeltaLights(production);
     if(argc==1) for(bool uniform:{false,true}) {DeltaLights(false,true,uniform);DeltaLights(true,true,uniform);}
-    if(unsupported) {UnsupportedCasterSwitches();CompositeProxyPolicy();ImpossibleDepthSwitches();}
+    if(unsupported) {UnsupportedCasterSwitches();CompositeProxyPolicy();ImpossibleSolverSwitches();}
     if(slab) SlabRenders();
     std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
 }
