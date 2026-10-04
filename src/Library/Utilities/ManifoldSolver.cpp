@@ -496,18 +496,27 @@ RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::Solve
                 const Scalar displacement=band*Point3Ops::Distance(start,end)/8;
                 if(!(displacement>0) || !std::isfinite(displacement)) return failed;
                 for(const Vector3& tangent : {vertex.dpdu,vertex.dpdv}) for(int sign : {-1,1}) {
-                    const Point3 target=Point3Ops::mkPoint3(vertex.position,tangent*(sign*displacement));
-                    Ray ray(previous,Vector3Ops::Normalize(Vector3Ops::mkVector3(target,previous)));
-                    if(i) ray.Advance(1e-8);
-                    RayIntersection probe(ray,vertices[i].context.rast);
-                    vertex.pObject->IntersectRay(probe,RISE_INFINITY,true,true,false);
-                    if(probe.geometric.bHit && probe.pModifier) probe.pModifier->Modify(probe.geometric);
-                    if(!probe.geometric.bHit || probe.pObject!=vertex.pObject
-                        || probe.pMaterial!=vertex.pMaterial
-                        || Point3Ops::Distance(SMSReferenceSurfacePoint(*vertex.pObject,probe.geometric),target)>displacement
-                        || !std::isfinite(probe.geometric.ptCoord.x) || !std::isfinite(probe.geometric.ptCoord.y)
-                        || std::hypot(probe.geometric.ptCoord.x-hit.geometric.ptCoord.x,
-                            probe.geometric.ptCoord.y-hit.geometric.ptCoord.y)>band/8) return failed;
+                    Point2 coords[2];
+                    for(unsigned probeIndex=0;probeIndex<2;++probeIndex) {
+                        const Scalar fraction=probeIndex?.5:1;
+                        const Point3 target=Point3Ops::mkPoint3(vertex.position,tangent*(sign*displacement*fraction));
+                        Ray ray(previous,Vector3Ops::Normalize(Vector3Ops::mkVector3(target,previous)));
+                        if(i) ray.Advance(1e-8);
+                        RayIntersection probe(ray,vertices[i].context.rast);
+                        vertex.pObject->IntersectRay(probe,RISE_INFINITY,true,true,false);
+                        if(probe.geometric.bHit && probe.pModifier) probe.pModifier->Modify(probe.geometric);
+                        if(!probe.geometric.bHit || probe.pObject!=vertex.pObject
+                            || probe.pMaterial!=vertex.pMaterial
+                            || Point3Ops::Distance(SMSReferenceSurfacePoint(*vertex.pObject,probe.geometric),target)>displacement
+                            || !std::isfinite(probe.geometric.ptCoord.x) || !std::isfinite(probe.geometric.ptCoord.y)) return failed;
+                        coords[probeIndex]=probe.geometric.ptCoord;
+                    }
+                    // A smooth chart's first-order change cancels at the
+                    // midpoint, independently of its UV scale. A finite
+                    // chart jump does not. Reserve the same numerical UV
+                    // matching band; do not bound the chart's first derivative.
+                    if(std::hypot(2*coords[1].x-coords[0].x-hit.geometric.ptCoord.x,
+                        2*coords[1].y-coords[0].y-hit.geometric.ptCoord.y)>band/8) return failed;
                 }
             }
         }
