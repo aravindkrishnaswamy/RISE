@@ -215,3 +215,16 @@ The default-source A/B and clean builds recorded at `4e211d99f` preceded
 this correction. Its regression gate was stopped during
 `ExteriorIndexInvarianceTest` and is recorded as aborted, not a pass.
 A fresh final-source gate and committed-source red/green proof follow.
+
+The coherent committed-source proof is complete in
+`.claude/logs/sms-phase2/signed-proofs/proof-results.json`: checkpoint
+`e4ecbb2f1` is 149/28 and native master `08552560b` is 111/66 in
+`--signed-only`. The latter combines legacy coverage/accuracy failures and
+is not a count of signed-clamp defects. Restored `89a9ab0a6` passes signed
+177/0, unsupported 217/0, geometry 3241/0, delta 177/0, production 177/0
+and synthetic 35/0. All library/test build exits are checked with zero
+compiler diagnostics. Production's `/usr/bin/time -l` peak memory
+footprint is 82,379,280 bytes for the whole test process, not a worker
+scratch bound. Pre-fix cost, sanitizer and aborted full-gate logs are
+preserved under `.claude/logs/sms-phase2/checkpoint-4e211d99f/`; the
+fresh final-source pipeline is running.
