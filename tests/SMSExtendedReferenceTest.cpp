@@ -791,6 +791,7 @@ static void RoundFourNumerics() {
         NativeConstraintOracle oracle(cfg,&domainRecords);RandomNumberGenerator random(21);IndependentSampler sampler(random);
         const auto result=oracle.SolveDomain(start,Vector3(0,0,-1),end,Vector3(0,0,-1),f.Scene(),air,domain,domainRecords,sampler,1e-7,1e-10);
         std::cout<<"R4 oscillatory normal divisor="<<divisor<<" domain="<<domain.kind<<":"<<domain.component<<":"<<domain.nm<<" winding="<<reverse<<" valid="<<result.valid<<'\n';
+        Check(result.valid,"continuous normal positive control solves");
         if(result.valid) {
             std::vector<Scalar> d,u,l;oracle.BuildJacobian(result.specularChain,start,end,d,u,l,true);
             const Scalar h=std::cbrt(std::numeric_limits<Scalar>::epsilon())/(1024*divisor);
@@ -801,10 +802,51 @@ static void RoundFourNumerics() {
                 for(unsigned row=0;row<2;++row) {
                     const Scalar actual=(a[row]-b[row])/(2*h),value=d[2*row+column];
                     std::cout<<"R4 normal derivative column="<<column<<" row="<<row<<" coarse="<<value<<" refined="<<actual<<'\n';
-                    Check(!std::isfinite(value)||std::fabs(value-actual)<1e-5,"accepted native normal Jacobian resolves the continuous modifier at refined scale");
+                    Check(std::isfinite(value)&&std::fabs(value-actual)<1e-5,"accepted native normal Jacobian is finite and resolves the continuous modifier at refined scale");
                 }
             }
         }
+        }
+    }
+}
+static void NativeNearCommensurateNormal() {
+    const Scalar divisor=4*114243;
+    for(bool reverse:{false,true}) {
+        Fixture f(Materials()+QuadMesh("patch",0,-2,2,reverse)+Object("caster","patch","mirror"));
+        auto* modifier=new AliasedNormal(divisor);f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);modifier->release();
+        const Point3 start(0,0,3),end(0,0,4),center(0,0,0);IORStack air(1);
+        RayIntersection hit(Ray(start,Vector3(0,0,-1)),nullRasterizerState);
+        f.Object("caster")->IntersectRay(hit,RISE_INFINITY,true,true,false);
+        Check(hit.geometric.bHit,"near-commensurate normal native surface is reachable");
+        if(!hit.geometric.bHit) continue;
+        hit.pModifier->Modify(hit.geometric);
+        SMSDomainVertex vertex(hit.geometric);vertex.geometry.position=center;
+        vertex.geometry.normal=hit.geometric.vNormal;vertex.geometry.geomNormal=hit.geometric.UnflippedGeomNormal();
+        vertex.geometry.pObject=hit.pObject;vertex.geometry.pMaterial=hit.pMaterial;vertex.geometry.isReflection=true;
+        ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;
+        for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
+            std::vector<SMSDomainVertex> records{vertex};NativeConstraintOracle oracle(cfg,&records);
+            RandomNumberGenerator random(32);IndependentSampler sampler(random);
+            const auto result=oracle.SolveDomain(start,Vector3(0,0,-1),end,Vector3(0,0,-1),f.Scene(),air,domain,records,sampler,1e-7,1e-10);
+            std::cout<<"R5 near-commensurate domain="<<domain.kind<<":"<<domain.component<<":"<<domain.nm<<" winding="<<reverse<<" solved="<<result.valid<<'\n';
+            if(result.valid) {
+                std::vector<Scalar> d,u,l;oracle.BuildJacobian(result.specularChain,start,end,d,u,l,true);
+                const Scalar h=std::cbrt(std::numeric_limits<Scalar>::epsilon())/(1024*divisor);
+                for(unsigned column=0;column<2;++column) {
+                    auto plus=result.specularChain,minus=plus;const Vector3 tangent=column?plus[0].dpdv:plus[0].dpdu;
+                    plus[0].position=Point3Ops::mkPoint3(center,tangent*h);minus[0].position=Point3Ops::mkPoint3(center,-tangent*h);
+                    std::vector<Scalar>a,b;oracle.EvaluateConstraint(plus,start,end,a);oracle.EvaluateConstraint(minus,start,end,b);
+                    for(unsigned row=0;row<2;++row) {
+                        const Scalar actual=(a[row]-b[row])/(2*h),value=d[2*row+column];
+                        std::cout<<"R5 near-commensurate derivative="<<value<<" reference="<<actual<<'\n';
+                        Check(std::isfinite(value)&&std::fabs(value-actual)<1e-5,"accepted near-commensurate root has an accurate finite native Jacobian");
+                    }
+                }
+            } else {
+                ScriptSampler seed({.2,.25,reverse?0.:1.,.1});
+                const auto root=oracle.ProposeExtendedRoot(start,Vector3(0,0,-1),end,f.Scene(),air,domain,seed);
+                Check(!root.accepted,"unresolved native derivative is a production zero proposal");
+            }
         }
     }
 }
@@ -1600,7 +1642,7 @@ int main(int argc,char** argv) {
     }
     if(argc==2&&std::string(argv[1])=="--r4-only") {
 #ifdef RISE_SMS_REFERENCE_A
-        RoundFourNumerics();RoundFourMaterials();
+        RoundFourNumerics();RoundFourMaterials();NativeNearCommensurateNormal();
 #else
         std::cout<<"Round 4 helpers unavailable on committed baseline.\n";
 #endif
@@ -1608,7 +1650,7 @@ int main(int argc,char** argv) {
     }
     if(argc==2&&std::string(argv[1])=="--review-only") {
 #ifdef RISE_SMS_REFERENCE_A
-        RoundFourNumerics();RoundFourMaterials();
+        RoundFourNumerics();RoundFourMaterials();NativeNearCommensurateNormal();
         NativePeriodicRoots();
         InteriorAtlasRoots();
         GeneratedChartRoots();
