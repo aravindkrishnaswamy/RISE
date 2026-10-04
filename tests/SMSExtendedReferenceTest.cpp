@@ -571,6 +571,97 @@ static void CheckNativeHorizonJacobian(const ManifoldSolverConfig& cfg,const Man
     }
 
 }
+// Fresh Round 4 numerical witnesses use actual native proposals/contexts.
+class SteepContinuousUV final : public IRayIntersectionModifier, public Reference {
+public:
+    void Modify(RayIntersectionGeometric& hit) const override {
+        hit.ptCoord=Point2(.5+1e6*hit.ptObjIntersec.x,.5);
+    }
+};
+class AliasedNormal final : public IRayIntersectionModifier, public Reference {
+public:
+    void Modify(RayIntersectionGeometric& hit) const override {
+        const Scalar h=std::cbrt(std::numeric_limits<Scalar>::epsilon());
+        const Scalar a=.2*h/(2*PI);
+        const Scalar sign=Vector3Ops::Dot(hit.vNormal,Vector3(0,0,1))<0?-1:1;
+        hit.vNormal=Vector3Ops::Normalize(Vector3(sign*a*std::sin(2*PI*hit.ptObjIntersec.x/h),0,sign));
+        hit.onb.CreateFromW(hit.vNormal);
+    }
+};
+static void RoundFourNumerics() {
+    for(bool reverse:{false,true}) {
+        Fixture f(Materials()+QuadMesh("patch",0,-2,2,reverse)+Object("caster","patch","mirror"));
+        auto* modifier=new SteepContinuousUV();f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);modifier->release();
+        const Point3 start(-.5,.3,-3),end(.5,.3,-3);IORStack air(1);
+        ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;auto* solver=new ManifoldSolver(cfg);
+        for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
+            const auto proposal=[&](Scalar x) {
+                const Scalar alpha=reverse?.075-x/4:.5+x/4;
+                const Scalar beta=reverse?.5+x/4:.075-x/4;
+                const Scalar a=1-alpha;
+                ScriptSampler sampler({.2,1-a*a,beta/a,.75});
+                return solver->ProposeExtendedRoot(start,Vector3(0,0,1),end,f.Scene(),air,domain,sampler);
+            };
+            const auto a=proposal(-1e-10),b=proposal(1e-10);
+            const bool same=ManifoldSolver::SameExtendedRoot(a,b,1);
+            std::cout<<std::setprecision(17)<<"R4 steep UV winding="<<reverse<<" domain="<<domain.kind<<":"<<domain.component<<":"<<domain.nm
+                <<" accepted="<<a.accepted<<','<<b.accepted<<" same="<<same;
+            if(a.accepted&&b.accepted) std::cout<<" x="<<a.vertices[0].geometry.position.x<<','<<b.vertices[0].geometry.position.x
+                <<" uv="<<a.vertices[0].geometry.uv.x<<','<<b.vertices[0].geometry.uv.x;
+            std::cout<<'\n';
+            Check(!(a.accepted&&b.accepted)||same,"one smooth steep-chart root cannot create two accepted reciprocal families");
+        }
+        solver->release();
+    }
+    for(bool reverse:{false,true}) {
+        Fixture f(Materials()+CloseRootMesh(reverse,10000,1e-9)+Object("caster","shape","mirror"," position 1000000 0 0\n"));
+        ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;cfg.solverThreshold=1e-10;
+        auto* solver=new ManifoldSolver(cfg);IORStack air(1);
+        for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
+            ScriptSampler left({.2,reverse?5./9:11./36,reverse?.25:.4,.1}),right({.2,reverse?5./9:11./36,reverse?.25:.4,.6});
+            const Point3 start(995000,0,-30000),end(1005000,0,-30000);
+            const auto a=solver->ProposeExtendedRoot(start,Vector3(0,0,1),end,f.Scene(),air,domain,left);
+            const auto b=solver->ProposeExtendedRoot(start,Vector3(0,0,1),end,f.Scene(),air,domain,right);
+            const bool same=ManifoldSolver::SameExtendedRoot(a,b,1);
+            std::cout<<"R4 translated close winding="<<reverse<<" domain="<<domain.kind<<":"<<domain.component<<":"<<domain.nm
+                <<" accepted="<<a.accepted<<','<<b.accepted<<" same="<<same;
+            if(a.accepted&&b.accepted) std::cout<<" separation="<<Point3Ops::Distance(a.vertices[0].geometry.position,b.vertices[0].geometry.position);
+            std::cout<<'\n';
+            Check(!(a.accepted&&b.accepted)||!same,"translated distinct regular patches cannot share an accepted reciprocal family");
+        }
+        solver->release();
+    }
+    for(bool reverse:{false,true}) {
+        Fixture f(Materials()+QuadMesh("patch",0,-2,2,reverse)+Object("caster","patch","mirror"));
+        auto* modifier=new AliasedNormal();f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);modifier->release();
+        const Point3 start(-.5,0,3),end(.5,0,3),center(0,0,0);IORStack air(1);
+        RayIntersection hit(Ray(start,Vector3Ops::Normalize(Vector3Ops::mkVector3(center,start))),nullRasterizerState);
+        f.Object("caster")->IntersectRay(hit,RISE_INFINITY,true,true,false);Check(hit.geometric.bHit,"R4 continuous normal native hit");
+        if(!hit.geometric.bHit) continue;
+        hit.pModifier->Modify(hit.geometric);
+        SMSDomainVertex vertex(hit.geometric);vertex.geometry.position=center;vertex.geometry.normal=hit.geometric.vNormal;
+        vertex.geometry.geomNormal=hit.geometric.UnflippedGeomNormal();vertex.geometry.pObject=hit.pObject;
+        vertex.geometry.pMaterial=hit.pMaterial;vertex.geometry.isReflection=true;
+        std::vector<SMSDomainVertex> records{vertex};ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;
+        NativeConstraintOracle oracle(cfg,&records);RandomNumberGenerator random(21);IndependentSampler sampler(random);
+        const auto result=oracle.SolveDomain(start,Vector3(0,0,-1),end,Vector3(0,0,-1),f.Scene(),air,SMSQueryDomain::RGB(0),records,sampler,1e-7,1e-10);
+        std::cout<<"R4 oscillatory normal winding="<<reverse<<" valid="<<result.valid<<'\n';
+        if(result.valid) {
+            std::vector<Scalar> d,u,l;oracle.BuildJacobian(result.specularChain,start,end,d,u,l,true);
+            const Scalar h=std::cbrt(std::numeric_limits<Scalar>::epsilon())/1024;
+            for(unsigned column=0;column<2;++column) {
+                auto plus=result.specularChain,minus=plus;const Vector3 t=column?plus[0].dpdv:plus[0].dpdu;
+                plus[0].position=Point3Ops::mkPoint3(center,t*h);minus[0].position=Point3Ops::mkPoint3(center,-t*h);
+                std::vector<Scalar>a,b;oracle.EvaluateConstraint(plus,start,end,a);oracle.EvaluateConstraint(minus,start,end,b);
+                for(unsigned row=0;row<2;++row) {
+                    const Scalar actual=(a[row]-b[row])/(2*h),value=d[2*row+column];
+                    std::cout<<"R4 normal derivative column="<<column<<" row="<<row<<" coarse="<<value<<" refined="<<actual<<'\n';
+                    Check(!std::isfinite(value)||std::fabs(value-actual)<1e-5,"accepted native normal Jacobian resolves the continuous modifier at refined scale");
+                }
+            }
+        }
+    }
+}
 static void NativeHorizonFallbacks() {
     for(bool reverse:{false,true}) for(int side:{-1,1}) for(const char* material:{"glass","mirror","coated","polished"})
         for(bool valid:{false,true}) for(bool varying:{false,true}) for(bool transformed:{false,true}) {
@@ -1358,6 +1449,14 @@ int main(int argc,char** argv) {
         PostModifierChartRoots();
 #else
         std::cout<<"Estimator A modifier helper unavailable on committed baseline.\n";
+#endif
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
+    }
+    if(argc==2&&std::string(argv[1])=="--r4-only") {
+#ifdef RISE_SMS_REFERENCE_A
+        RoundFourNumerics();
+#else
+        std::cout<<"Round 4 helpers unavailable on committed baseline.\n";
 #endif
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
     }
