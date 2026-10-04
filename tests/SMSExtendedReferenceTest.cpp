@@ -536,6 +536,56 @@ static void UnsupportedCasterSwitches() {
         on->release();off->release();caster->release();shader->release();
     }
 }
+// An extension can forward the actual native composite walker without
+// inheriting CompositeMaterial or any of the built-in wrapper classes.
+class ForwardingMaterial final : public IMaterial, public Reference {
+    const IMaterial& base;
+protected:
+    ~ForwardingMaterial() override { base.release(); }
+public:
+    explicit ForwardingMaterial(const IMaterial& m) : base(m) { base.addref(); }
+    IBSDF* GetBSDF() const override { return base.GetBSDF(); }
+    ISPF* GetSPF() const override { return base.GetSPF(); }
+    IEmitter* GetEmitter() const override { return base.GetEmitter(); }
+};
+static void CompositeProxyPolicy() {
+    for(bool reverse:{false,true}) {
+        Fixture fixture(Materials()+Mesh(true,reverse)
+            +"composite_material\n{\n name layers\n top glass\n bottom glass\n}\n"
+            +Object("remote_composite","shape","layers"," position 1000 0 0\n")
+            +PlaneScene("mirror_plane",0)+Object("mirror","mirror_plane","mirror")
+            +"lambertian_material\n{\n name diffuse\n reflectance white\n}\n"
+            +PlaneScene("floor",-2)+Object("receiver","floor","diffuse")
+            +"omni_light\n{\n name source\n position 0 0 -1\n color 1 1 1\n power 40\n}\n");
+        auto* object=fixture.job->GetObjects()->GetItem("remote_composite");
+        auto* proxy=new ForwardingMaterial(*object->GetMaterial());object->AssignMaterial(*proxy);proxy->release();
+        fixture.Scene().GetObjects()->PrepareForRendering();
+        std::vector<IShaderOp*> ops;IShader* shader=nullptr;
+        Check(RISE_API_CreateStandardShader(&shader,ops),"composite proxy shader created");
+        if(!shader) continue;
+        auto* caster=new RayCaster(false,16,*shader,true);caster->SetTransparentShadows(true);caster->AttachScene(&fixture.Scene());
+        ManifoldSolverConfig config;config.enabled=true;config.extendedMode=true;config.targetBounces=1;
+        StabilityConfig stability;stability.rrMinDepth=20;
+        auto* on=new PathTracingIntegrator(config,stability);on->SetMaxPathDepth(1);
+        config.extendedMode=false;auto* off=new PathTracingIntegrator(config,stability);off->SetMaxPathDepth(1);
+        Check(!on->GetSolver()->ExtendedModeActive(fixture.Scene()),"forwarded native composite SPF selects scene-wide legacy mode");
+        const auto* objects=dynamic_cast<const ObjectManager*>(fixture.Scene().GetObjects());
+        Check(objects&&objects->FirstCompositeObject()=="remote_composite","forwarded composite policy names its scene object");
+        for(unsigned trial=0;trial<4;++trial) {
+            const unsigned salt=SobolSequence::HashCombine(13000+trial,0x43505258);SobolSamplerTestHooks::ValueSalt().store(salt);
+            std::array<RISEPel,2> values;
+            for(unsigned mode=0;mode<2;++mode) {
+                RandomNumberGenerator random(salt);SobolSampler sampler(0,7);
+                RuntimeContext context(random,RuntimeContext::PASS_NORMAL,false);context.pSampler=&sampler;
+                values[mode]=(mode?on:off)->IntegrateRay(context,nullRasterizerState,
+                    Ray(Point3(0,0,-1.9),Vector3(0,0,-1)),fixture.Scene(),*caster,sampler,nullptr,nullptr);
+            }
+            Check(std::isfinite(values[0].r)&&values[0].r>0,"composite proxy legacy control is finite and lit");
+            Check(std::memcmp(&values[0],&values[1],sizeof(RISEPel))==0,"composite proxy preserves legacy output bit-identically");
+        }
+        SobolSamplerTestHooks::ValueSalt().store(0);on->release();off->release();caster->release();shader->release();
+    }
+}
 static std::string SlabScene(bool reverse, unsigned inner, unsigned outer) {
     std::string text=Materials();
     text.replace(text.find("values 1.3 1.5 1.9"),std::string("values 1.3 1.5 1.9").size(),"values 1.5 1.5 1.5");
@@ -639,7 +689,7 @@ int main(int argc,char** argv) {
     if(synthetic||geometry) std::cout<<"Estimator A is absent on this committed baseline; new helper tests are unavailable, not a numerical red proof.\n";
 #endif
     if(delta) DeltaLights(production);
-    if(unsupported) UnsupportedCasterSwitches();
+    if(unsupported) {UnsupportedCasterSwitches();CompositeProxyPolicy();}
     if(slab) SlabRenders();
     std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
 }
