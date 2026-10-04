@@ -1683,8 +1683,12 @@ int main(int argc,char** argv) {
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
     }
     if(argc==2&&std::string(argv[1])=="--r5-only") {
+#ifdef RISE_SMS_REFERENCE_A
         NativeNearCommensurateNormal();NativeStackedPatchFrames();NativeHorizonFallbacks(1);NativeHorizonFallbacks(2);
-        std::cout<<passed<<" passed, "<<failed<<" failed\n";return failed?1:0;
+#else
+        std::cout<<"Round 5 helpers unavailable on committed baseline.\n";
+#endif
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
     }
     if(argc==2&&std::string(argv[1])=="--r4-only") {
 #ifdef RISE_SMS_REFERENCE_A
