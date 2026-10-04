@@ -1,6 +1,6 @@
 # Extended SMS Phase 2 validation
 
-Phase 2 is stopped at an unexpected slab/reference discrepancy on `sms-ext-phase2`, based on master
+Phase 2 is in progress on `sms-ext-phase2`, based on master
 `08552560b54b517b7a8a0696eb9d317953b26bbe`. It is not reviewed or merged.
 No ledger row closes on this checkpoint.
 
@@ -141,3 +141,12 @@ channel statistics in `.claude/logs/sms-phase2/slab-stop-results.json`.
 
 Full regression/build gates, off-mode A/B cost measurements, the expanded
 weave-gap coupling control and independent reviews remain pending.
+
+## User ruling: resume after the wide-cone measurement
+
+The user accepted this discrepancy as variance and explicitly authorized
+continuing the full task. The wide-cone fixture retains the original
+three-SD comparison in its output and is a reported measurement rather
+than an accuracy assertion. Narrow-cone assertions remain unchanged. The
+wide-cone result does not establish a DL-420 closure. The complete matrix
+will be rerun after the remaining caster gate fixes.

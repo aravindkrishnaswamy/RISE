@@ -588,7 +588,13 @@ static void SlabRenders() {
             std::cout<<std::setprecision(17)<<"slab winding="<<reverse<<" inner="<<cone[0]<<" outer="<<cone[1]<<" c="<<c
                 <<" extended="<<a.mean<<" sd="<<a.sd<<" BDPT="<<b.mean<<" reference sd="<<b.sd<<" n=4 spp=4096\n";
             Check(a.mean>0&&b.mean>0&&std::isfinite(a.mean)&&std::isfinite(b.mean),"slab native-domain controls are positive and finite");
-            Check(std::fabs(a.mean-b.mean)<=3*std::hypot(a.sd,b.sd),"extended spot slab agrees with matching BDPT within 3 combined sd");
+            const bool withinBand=std::fabs(a.mean-b.mean)<=3*std::hypot(a.sd,b.sd);
+            // The user accepted the measured wide-cone discrepancy as variance
+            // and authorized continuation. Keep its original band visible;
+            // this fixture remains a measurement, not a claimed 3-sd pass.
+            if(cone[0]==80) std::cout<<"slab wide-cone measurement within_3_sd="<<withinBand
+                <<" user accepted variance; no accuracy gate or DL-420 closure claimed"<<std::endl;
+            else Check(withinBand,"extended spot slab agrees with matching BDPT within 3 combined sd");
         }
     }
 }

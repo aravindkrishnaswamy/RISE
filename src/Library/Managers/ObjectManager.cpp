@@ -66,7 +66,7 @@ bool ObjectHasClearTransmission(const IObject& object)
     const IMaterial* material = object.GetMaterial();
     const ISPF* spf = material ? material->GetSPF() : nullptr;
     if(dynamic_cast<const DielectricSPF*>(spf) || dynamic_cast<const PerfectRefractorSPF*>(spf)
-        || (material && material->CouldLightPassThrough() && !material->HasDeltaPassThrough())) return true;
+        || (material && (material->CouldLightPassThrough() || material->HasDeltaPassThrough()))) return true;
     if(const auto* csg = dynamic_cast<const CSGObject*>(&object))
         return (csg->GetOperandA() && ObjectHasClearTransmission(*csg->GetOperandA()))
             || (csg->GetOperandB() && ObjectHasClearTransmission(*csg->GetOperandB()));
@@ -79,7 +79,7 @@ bool ObjectHasRejectedTransmissiveCaster(const IObject& object)
     const bool nativeClear = dynamic_cast<const DielectricSPF*>(spf)
         || dynamic_cast<const PerfectRefractorSPF*>(spf);
     const bool transmissive = material && (nativeClear
-        || (material->CouldLightPassThrough() && !material->HasDeltaPassThrough()));
+        || (material->CouldLightPassThrough() || material->HasDeltaPassThrough()));
     if(transmissive && (!SMSDomainReplay::PotentialCaster(*material)
         || object.GetInteriorMedium() || !object.GetGeometry()
         || !object.GetGeometry()->CanBeAreaLight())) return true;
