@@ -459,10 +459,16 @@ RISE::Implementation::ManifoldResult RISE::Implementation::ManifoldSolver::Solve
             const Scalar band = std::sqrt(std::numeric_limits<Scalar>::epsilon());
             bool meshEdge=false;
             if(nativeObject && nativeObject->UsesNativeTextureChart() && geometry) {
-                if(typeid(*geometry)==typeid(TriangleMeshGeometryIndexed)) {
-                    const auto& signal=hit.geometric.signals;
-                    meshEdge=signal.pProvider!=dynamic_cast<const TriangleMeshGeometryIndexed*>(geometry) || signal.primId<0
+                const auto& signal=hit.geometric.signals;
+                // DisplacedGeometry forwards its realized indexed mesh's
+                // actual hit payload. The provider, not the outer recipe,
+                // identifies the triangle whose chart boundary was hit.
+                const auto* indexed=dynamic_cast<const TriangleMeshGeometryIndexed*>(signal.pProvider);
+                if(indexed && typeid(*indexed)==typeid(TriangleMeshGeometryIndexed)) {
+                    meshEdge=signal.primId<0
                         || std::min({signal.baryA,signal.baryB,1-signal.baryA-signal.baryB})<=band;
+                } else if(typeid(*geometry)==typeid(TriangleMeshGeometryIndexed)) {
+                    meshEdge=true; // missing native triangle provenance is uncertain
                 } else if(typeid(*geometry)==typeid(TriangleMeshGeometry)) {
                     const Point3 surface=Point3Ops::Transform(vertex.pObject->GetFinalInverseTransformMatrix(),
                         SMSReferenceSurfacePoint(*vertex.pObject,hit.geometric));

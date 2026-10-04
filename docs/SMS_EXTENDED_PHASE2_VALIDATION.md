@@ -370,9 +370,9 @@ use geometric-normal fallback, whereas the extended constraint always uses
 the shading normal. Cost/tests/document review found no P1/P2 and independently
 reproduced the documented source hashes, checks and timing statistics.
 
-Neither finding is numerically reproduced or fixed yet. The native-law conflict
-triggers the user's explicit design-stop rule; the proposal and static evidence
-are recorded in `SMS_EXTENDED_DESIGN.md`. The green gate remains evidence for
+At that review checkpoint, neither finding had a numerical reproduction or fix.
+The native-law conflict triggered the user's explicit design-stop rule; its
+proposal and static evidence are recorded in `SMS_EXTENDED_DESIGN.md`. The green gate remains evidence for
 the tested checkpoint, not a clean review verdict. Phase 2 is unmerged, Phase 3
 and Phase 4 have not started, and all target ledger rows remain open.
 
@@ -407,3 +407,32 @@ failures are not production red evidence.
 These focused numbers do not replace the prior complete 13a31c7d7 gate.
 Committed-source proofs, a full replacement gate, new timing measurements and
 fresh round 3 reviewers remain pending. No row closes and no merge is claimed.
+
+### Committed repair proof and displaced-chart sibling
+
+The coherent ten-file proof at native `b61844191` completes with checked
+zero-diagnostic library/test builds. Pre-fix `13a31c7d7` reports review
+**6489/1968**, while its existing production control remains **177/0**.
+Committed master reports **121/120** for available review configuration
+controls and **127/50** for production; absent reference helpers are explicitly
+unavailable, not numerical red evidence. Restored `b61844191` reports review
+**19945/0**, production **177/0**, and geometry **4297/0**. Evidence is in
+`.claude/logs/sms-phase2-round3-pre-audit/proofs/`.
+
+The subsequent replacement pipeline was stopped during the cost stage when
+the self-audit found that displaced geometry forwards native indexed-mesh
+barycentric signals but the boundary guard checked only the outer geometry
+type. It exits1 and is incomplete, not passing; completed timing samples
+are historical partial evidence only. The cost driver restored HEAD sources.
+Its logs and explicit abort summary are retained in
+`.claude/logs/sms-phase2-round3-pre-audit/`.
+
+A new displaced atlas witness was committed at `1b924f194` before repair.
+It uses actual nonzero displacement, both windings/incidence sides, all three
+RGB components and NM450/650, varying smooth world tint and constant-law
+controls. The native checkpoint builds without diagnostics and reports
+**19985/20**: all twenty failures accept uncertain variable-law atlas roots.
+The sibling repair follows the actual native triangle provider in the hit
+payload, preserving its barycentrics through wrappers. The focused repair
+reports **20005/0** with checked zero-diagnostic library/test builds. New committed proofs,
+the full replacement gate and fresh round 3 review remain required.

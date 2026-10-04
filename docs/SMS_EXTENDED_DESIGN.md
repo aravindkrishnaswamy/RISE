@@ -491,14 +491,19 @@ the native event accepts it. Branch changes must be validated consistently by
 proposal, retries and later ownership. Alternatively, conservative exclusion
 of affected modified casters would require a separate scope ruling. Conservative
 exclusion is not adopted. The user authorized reproducing the native fallback
-consistently. Implementation is underway; committed proofs and final gates are pending;
+consistently. The native fallback and indexed/non-indexed atlas repair has committed numerical
+red/green proof at `b61844191`; a displaced-wrapper sibling repair and the
+full replacement gate are underway;
 Phase 2 remains unmerged until its fixes, gate and fresh review converge.
 
 Round 2 also found a separate implementation P1: mesh atlas boundaries authored
 at interior UV coordinates such as `.25` and `.75` evade the current 0/1 seam
 check. Smooth world-position tint can then make raw-UV root matching split one
 regular, uniquely priced physical root into two reciprocal-accounting families.
-This needs a chart-boundary-aware fix and committed numerical red/green proof;
-it is not an approved deferral or a reason to drop UV context globally. The
+The native mesh-boundary fix has committed numerical red/green proof. A
+subsequent self-audit reproduced the same gap through displaced indexed-mesh
+wrappers (**19985/20** at committed `1b924f194`); the guard must follow the
+actual native triangle provider rather than the outer geometry recipe. This
+is not an approved deferral or a reason to drop UV context globally. The
 third reviewer found no P1/P2 in cost, tests or document evidence. No Phase 2
 ledger closure follows from the passing pre-review gate.
