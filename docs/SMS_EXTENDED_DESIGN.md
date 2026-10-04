@@ -629,7 +629,7 @@ continuation beyond Round 5 and asked for explicit checks against local
 maxima. Phase 2 remains unmerged; no ledger closure or new row is claimed.
 
 
-### Modifier differential contract: proposed decision, not adopted (2026-10-04)
+### Modifier differential contract: adopted decision (2026-10-04)
 
 The Round 5 interior normal witness on committed native sources reports
 35 passing checks and 10 failing checks: all five RGB/NM domains and both
@@ -650,7 +650,7 @@ set of nonzero one-dimensional probe displacements `s_i`, the smooth field
 and every `+/-s_i`, yet `f'(0)=a`. Thus matching values at every stencil
 point cannot bound the unobserved derivative, even for a continuous field.
 
-**Proposed resolution requiring a user ruling:** accept modified interfaces
+**Adopted by user ruling:** accept modified interfaces
 only through an audited differential contract. A provider must expose either
 the actual local differential of the material-consumed frame, or a feature
 bound and error bound sufficient for a resolved numerical differential.
@@ -662,6 +662,16 @@ modifiers remain positive controls; this is not a blanket modifier ban.
 Existing legacy/off behavior is preserved. Provider API details, lifetime,
 boundary handling and cost require design and review before implementation.
 
-This proposal changes supported-domain requirements, so it has not been
-implemented. Surface/frame corrections and preparation/scratch cost repairs
-can proceed independently. No ledger row is opened or closed by this note.
+The user adopted this supported-domain contract and authorized implementation.
+The initial implementation uses an optional capability in the existing
+modifier header, preserving the original modifier interface and legacy
+behavior. Audited providers supply directional derivatives of vNormal and
+onb.w from the raw native hit differential (world/object points, UV,
+normal/frame and incoming ray); raster state is held fixed. Providers may
+modify these frame/UV fields but must preserve the physical surface and
+geometric normal. Unsupported dependencies or boundaries return uncertified.
+Native constraint and emitter-endpoint derivatives use the chain rule;
+finite differences validate native geometry reconstruction, not a black-box
+modified field. A caster with no audited capability makes the anchor
+ineligible for all three switches; every isolated proposal also checks it.
+No ledger row is opened or closed by this decision.
