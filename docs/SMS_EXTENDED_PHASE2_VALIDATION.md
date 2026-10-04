@@ -3,7 +3,8 @@
 Phase 2 is implemented on `sms-ext-phase2`, based on master
 `08552560b54b517b7a8a0696eb9d317953b26bbe`, but is not yet merged. The first independent review round found two
 estimator P1s; the material/API and evidence reviewers found zero P1/P2.
-Production source now includes the fixes and chart audit at `8ad9a40cf`. Committed
+Production source includes the chart/depth fixes at `8ad9a40cf` and the
+threshold sibling guard at `13a31c7d7`. Committed
 chart/depth red/green proofs are complete. The `8ad9a40cf` replacement
 gate was stopped as incomplete after a sibling audit identified
 nonpositive solver thresholds that retain eligibility despite zero
@@ -221,7 +222,7 @@ Evidence: `.claude/logs/sms-phase2/phase2-interleaved-cost.json` and
 each `phase2-interleaved-{A,B}{0..3}.log`, with checked build exits in
 `cost-driver.log`. No whole-render speedup is inferred from these timings.
 
-## Current review-fix off-mode cost and output gate
+## Chart/depth checkpoint off-mode cost and output gate
 
 The replacement gate compares committed master `08552560b` with
 `74d4365dd` (native source `8ad9a40cf`) using eight actual interleaved
@@ -269,7 +270,7 @@ P1/P2. The estimator reviewer found two P1s, both reproduced:
 
 Initial tests were committed at `b26da1d84` and fixes at `d83c71d1e`;
 the broader chart audit at `8ad9a40cf` supersedes the initial sphere-only
-rewrite. Its targeted current-source test reports **1177/0**. The initial
+rewrite. Its `8ad9a40cf` targeted test reports **1177/0**. The initial
 committed proof reports pre-fix `83615cc34` **175/117**, master **61/60**
 (helper-dependent seam tests unavailable), restored `d83c71d1e` **292/0**.
 The expanded chart test is red on `d83c71d1e` at **1085/92**; committed
@@ -279,6 +280,15 @@ reports **1177/0**, with checked zero-diagnostic builds. Evidence is under
 replacement gate was aborted with exit143 during the WeaveGap test build
 after the threshold sibling was identified; its completed rows and stop
 reason remain in `.claude/logs/sms-phase2-round2/aborted-summary.json`.
-It is not a passing gate. Threshold reproduction/fix, a full replacement
-gate, fresh Round 2 reviewers and Phase 2 merge remain pending.
+It is not a passing gate. The threshold sibling is reproduced and fixed at `13a31c7d7`: zero and
+negative thresholds cannot satisfy any Newton acceptance condition, yet
+previously retained anchor eligibility. Active anchors now require a finite,
+positive solver threshold. The expanded committed checkpoint test reports
+**1237/60**, with plain PT positive and extended PT zero in the new cases.
+Coherent master reports **121/120** for available configuration controls
+(seam helpers absent), and restored `13a31c7d7` reports **1297/0**. All
+library/test builds have checked zero exits and zero compiler diagnostics;
+evidence is in `.claude/logs/sms-phase2/threshold-proofs/`. The full
+replacement gate under `.claude/logs/sms-phase2-round2-final/`, fresh
+Round 2 reviewers and Phase 2 merge remain pending.
 Round 1's clean verdicts do not apply to the changed source.
