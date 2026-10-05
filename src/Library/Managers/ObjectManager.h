@@ -370,6 +370,10 @@ namespace RISE
 				const bool bComputeExitInfo
 				) const;
 
+            // Complete a current direct-object hit with the same scene signal
+            // provenance as traversal. Does not replace primitive payloads.
+            void CompleteShadingSignals(RayIntersectionGeometric&, const IObject*) const;
+
 			bool IntersectShadowRay(
 				const Ray& ray,
 				const Scalar dHowFar,

@@ -241,9 +241,13 @@ Point3                ptWorld;   // the hit in world space (== ri.ptIntersection
 Scalar                time;      // the painter's m_time, see §5.4
 ```
 
-The first three are stamped in one place, `ObjectManager::IntersectRay(
-RayIntersection&, … )`, after traversal, on the winning record, with `pSelf`
-copied from `ri.pObject` so the two identities can never disagree
+The first three are stamped by `ObjectManager::CompleteShadingSignals`.
+`ObjectManager::IntersectRay(RayIntersection&, …)` calls it after traversal
+on the winning record, with `pSelf` copied from `ri.pObject`. Extended SMS
+also calls the same completion routine for current direct-object root,
+modifier and differential hits, using each new hit point rather than seed
+signals. The completion preserves geometry-local primitive payloads. The
+object and self identities therefore cannot disagree
 (`Object::IntersectRay` and `CSGObject::IntersectRay` both set `pObject` to
 themselves; a CSG hit therefore names the composite, and operands — never reached
 by the manager — can never be `pSelf`). All three branches of that function

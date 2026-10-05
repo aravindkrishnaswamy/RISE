@@ -583,10 +583,11 @@ public:
     using ManifoldSolver::EvaluateConstraint;
     using ManifoldSolver::BuildJacobian;
     using ManifoldSolver::ComputeLightToFirstVertexJacobianDet;
+    using ManifoldSolver::UpdateVertexOnSurface;
 };
 static void CheckNativeHorizonJacobian(const ManifoldSolverConfig& cfg,const ManifoldResult& result,
     const std::vector<SMSDomainVertex>& vertices,const Point3& start,const Point3& end,
-    const IScene& scene,const IORStack& stack,SMSQueryDomain domain,ISampler& sampler) {
+    const IScene& scene,const IORStack& stack,SMSQueryDomain domain,ISampler& sampler,bool curved=false) {
     NativeConstraintOracle oracle(cfg,&vertices);
     const auto& chain=result.specularChain;
     std::vector<Scalar> diagonal,upper,lower;
@@ -595,8 +596,14 @@ static void CheckNativeHorizonJacobian(const ManifoldSolverConfig& cfg,const Man
     for(std::size_t column=0;column<2*chain.size();++column) {
         auto plus=chain,minus=chain;const std::size_t j=column/2;
         const Vector3 tangent=column%2?chain[j].dpdv:chain[j].dpdu;
-        plus[j].position=Point3Ops::mkPoint3(plus[j].position,tangent*h);
-        minus[j].position=Point3Ops::mkPoint3(minus[j].position,-tangent*h);
+        if(curved) {
+            Check(oracle.UpdateVertexOnSurface(plus[j],column%2?0:h,column%2?h:0,0,true)
+                &&oracle.UpdateVertexOnSurface(minus[j],column%2?0:-h,column%2?-h:0,0,true),
+                "curved constraint oracle projects independent native displacements");
+        } else {
+            plus[j].position=Point3Ops::mkPoint3(plus[j].position,tangent*h);
+            minus[j].position=Point3Ops::mkPoint3(minus[j].position,-tangent*h);
+        }
         std::vector<Scalar> a,b;
         oracle.EvaluateConstraint(plus,start,end,a);oracle.EvaluateConstraint(minus,start,end,b);
         for(std::size_t row=0;row<2*chain.size();++row) {
@@ -1029,11 +1036,15 @@ public:
     }
 };
 class AuditedLinearNormalUV final : public IUVGenerator, public Reference, public TestSMSUVDifferential {
+    const bool omitNormalDerivative;
 public:
+    mutable Scalar maximumNormalTerm=0;
+    explicit AuditedLinearNormalUV(bool omit=false) : omitNormalDerivative(omit) {}
     bool HasSMSUVDifferentialContract() const override {return true;}
     void GenerateUV(const Point3& p,const Vector3& n,Point2& uv) const override {uv=Point2(.2*p.x*n.z,0);}
     bool SMSUVDifferential(const Point3& p,const Vector3& n,const Vector3& dp,const Vector3& dn,Point2& duv) const override {
-        duv=Point2(.2*(dp.x*n.z+p.x*dn.z),0);return true;
+        maximumNormalTerm=std::max(maximumNormalTerm,std::fabs(p.x*dn.z));
+        duv=Point2(.2*(dp.x*n.z+(omitNormalDerivative?0:p.x*dn.z)),0);return true;
     }
 };
 static void NativeTransformedUVComposition() {
@@ -1062,6 +1073,56 @@ static void NativeTransformedUVComposition() {
             Check(result.valid,"audited object-normal-dependent UV composition retains transformed positive roots");
             if(result.valid) CheckNativeHorizonJacobian(cfg,result,records,start,end,f.Scene(),air,domain,sampler);
         }
+    }
+}
+static void NativeCurvedUVComposition() {
+    for(bool transformed:{false,true}) for(int side:{-1,1}) for(bool fault:{false,true}) {
+        Fixture f(Materials()+"sphere_geometry\n{\n name curved\n radius 1\n}\n"
+            +SceneObject("caster","curved","mirror",transformed?" scale 2 0.8 1.5\n orientation 0 45 0\n":""));
+        auto* modifier=new AnalyticUVNormal;f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);modifier->release();
+        auto* mapping=new AuditedLinearNormalUV(fault);f.job->GetObjects()->GetItem("caster")->SetUVGenerator(*mapping);
+        const Point3 local(.6,.2,std::sqrt(Scalar(.6)));
+        const auto& transform=f.Object("caster")->GetFinalTransformMatrix();
+        const Point3 center=Point3Ops::Transform(transform,local);
+        const Vector3 outward=Vector3Ops::Normalize(Vector3Ops::Transform(Matrix4Ops::Transpose(f.Object("caster")->GetFinalInverseTransformMatrix()),Vector3(local.x,local.y,local.z)));
+        const Point3 start=Point3Ops::mkPoint3(center,outward*(side>0?3:-.3));
+        RayIntersection hit(Ray(start,Vector3Ops::Normalize(Vector3Ops::mkVector3(center,start))),nullRasterizerState);
+        f.Scene().GetObjects()->IntersectRay(hit,true,true,false);
+        Check(hit.geometric.bHit&&hit.pObject==f.Object("caster"),"curved normal-dependent UV oracle reaches its native surface");
+        if(!hit.geometric.bHit) {mapping->release();continue;}
+        hit.pModifier->Modify(hit.geometric);IORStack air(1);
+        RandomNumberGenerator rng(81);IndependentSampler sampler(rng);ScatteredRayContainer rays;
+        hit.pMaterial->GetSPF()->Scatter(hit.geometric,sampler,rays,air);
+        Check(rays.Count()>0,"curved UV fixture has an actual native reflection");
+        if(!rays.Count()) {mapping->release();continue;}
+        const Point3 end=Point3Ops::mkPoint3(center,rays[0].ray.Dir()*(side>0?3:.2));
+        ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;
+        for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
+            mapping->maximumNormalTerm=0;
+            SMSDomainVertex vertex(hit.geometric);vertex.geometry.position=center;vertex.geometry.normal=hit.geometric.vNormal;
+            vertex.geometry.geomNormal=hit.geometric.UnflippedGeomNormal();vertex.geometry.pObject=hit.pObject;
+            vertex.geometry.pMaterial=hit.pMaterial;vertex.geometry.isReflection=true;
+            std::vector<SMSDomainVertex> records{vertex};NativeConstraintOracle oracle(cfg,&records);
+            const auto result=oracle.SolveDomain(start,hit.geometric.vNormal,end,-rays[0].ray.Dir(),f.Scene(),air,domain,records,sampler,1e-7,1e-10);
+            Check(result.valid,"off-axis curved UV composition has a regular solved root");
+            if(!result.valid) continue;
+            std::vector<Scalar> d,u,l;oracle.BuildJacobian(result.specularChain,start,end,d,u,l,true);
+            Scalar error=0;const Scalar h=1e-6;
+            for(unsigned column=0;column<2;++column) {
+                auto plus=result.specularChain,minus=plus;const Vector3 tangent=column?plus[0].dpdv:plus[0].dpdu;
+                Check(oracle.UpdateVertexOnSurface(plus[0],column?0:h,column?h:0,0,true)
+                    &&oracle.UpdateVertexOnSurface(minus[0],column?0:-h,column?-h:0,0,true),"curved oracle independently projects shifted native points");
+                std::vector<Scalar> a,b;oracle.EvaluateConstraint(plus,start,end,a);oracle.EvaluateConstraint(minus,start,end,b);
+                for(unsigned row=0;row<2;++row) error=std::max(error,std::fabs(d[2*row+column]-(a[row]-b[row])/(2*h)));
+            }
+            Check(mapping->maximumNormalTerm>1e-3,"curved UV differential consumes a measurably nonzero p.x*dn.z input");
+            std::cout<<"R7 curved UV transformed="<<transformed<<" side="<<side<<" fault="<<fault
+                <<" domain="<<domain.kind<<":"<<domain.component<<":"<<domain.nm
+                <<" normal_term="<<mapping->maximumNormalTerm<<" jacobian_error="<<error<<'\n';
+            Check(fault?error>1e-4:error<1e-5,"independent curved Jacobian detects an omitted normal derivative and validates full transport");
+            if(!fault) CheckNativeHorizonJacobian(cfg,result,records,start,end,f.Scene(),air,domain,sampler,true);
+        }
+        mapping->release();
     }
 }
 static void NativeNearCommensurateNormal(unsigned generatedUV=0) {
@@ -1140,9 +1201,25 @@ static void NativeWeldCoordinateRange() {
         mesh->release();
     }
 }
+class AuditedSignalContextFrame final : public AuditedIdentityFrameModifier {
+public:
+    mutable unsigned inspected=0;
+    mutable bool missing=false;
+    bool Inspect(const RayIntersectionGeometric& hit) const {
+        ++inspected;
+        const bool valid=hit.signals.pScene&&hit.signals.pSelf
+            &&Point3Ops::Distance(hit.signals.ptWorld,hit.ptIntersection)==0;
+        missing=missing||!valid;return valid;
+    }
+    void Modify(RayIntersectionGeometric& hit) const override {Inspect(hit);}
+    bool SMSFrameDifferential(const RayIntersectionGeometric& raw,const TestSMSIntersectionDifferential& d,
+        Vector3& n,Vector3& w) const override {
+        n=d.normal;w=d.frameW;return Inspect(raw);
+    }
+};
 // The reference price comes from native SPF scattering at an independent
 // scene-manager hit, including the consumer's separate radiance eta factor.
-static void NativeCrossObjectPrices() {
+static void NativeCrossObjectPrices(bool auditModifier=false) {
     for(bool interior:{false,true}) for(bool reflection:{false,true})
         for(bool reverse:{false,true}) for(bool transformed:{false,true}) {
         std::string text=Materials();
@@ -1162,6 +1239,8 @@ static void NativeCrossObjectPrices() {
         const Point3 neighbour=interior?center:Point3Ops::Transform(transform,Point3(1,.3,0));
         std::ostringstream location;location<<std::setprecision(17)<<" position "<<neighbour.x<<' '<<neighbour.y<<' '<<neighbour.z<<"\n";
         Fixture scene(text+SceneObject("neighbour","neighbour_geo","neighbour_mat",location.str()));
+        auto* modifier=auditModifier?new AuditedSignalContextFrame:nullptr;
+        if(modifier) scene.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);
         IORStack air(1);ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;
         for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
             RayIntersection hit(Ray(start,Vector3Ops::Normalize(Vector3Ops::mkVector3(center,start))),nullRasterizerState);
@@ -1170,6 +1249,8 @@ static void NativeCrossObjectPrices() {
             if(!hit.geometric.bHit||hit.pObject!=scene.Object("caster")) continue;
             Check(hit.geometric.signals.pScene==scene.Scene().GetObjects()&&hit.geometric.signals.pSelf==hit.pObject,
                 "signal-price native oracle has scene and self provenance");
+            if(hit.pModifier) hit.pModifier->Modify(hit.geometric);
+            air.SetCurrentObject(hit.pObject);
             RandomNumberGenerator random(71);IndependentSampler sampler(random);ScatteredRayContainer rays;
             if(domain.kind==SMSQueryDomain::Wavelength) hit.pMaterial->GetSPF()->ScatterNM(hit.geometric,sampler,domain.nm,rays,air);
             else hit.pMaterial->GetSPF()->Scatter(hit.geometric,sampler,rays,air);
@@ -1179,18 +1260,27 @@ static void NativeCrossObjectPrices() {
                 if(!ray.isDelta || (ray.type==ScatteredRay::eRayReflection)!=reflection) continue;
                 const Scalar native=domain.kind==SMSQueryDomain::Wavelength?ray.krayNM:ray.kray[domain.component];
                 if(native==0) continue;
-                tested=true;SMSDomainVertex vertex(hit.geometric);
-                vertex.geometry.position=center;vertex.geometry.normal=hit.geometric.vNormal;
-                vertex.geometry.geomNormal=hit.geometric.UnflippedGeomNormal();vertex.geometry.pObject=hit.pObject;
+                tested=true;
+                const Point3 seedPoint=Point3Ops::Transform(transform,Point3(.2,.3,0));
+                RayIntersection seed(Ray(start,Vector3Ops::Normalize(Vector3Ops::mkVector3(seedPoint,start))),nullRasterizerState);
+                scene.Scene().GetObjects()->IntersectRay(seed,true,true,false);
+                Check(seed.geometric.bHit&&seed.pObject==hit.pObject,"signal refresh starts from a different real native seed point");
+                if(!seed.geometric.bHit||seed.pObject!=hit.pObject) continue;
+                if(seed.pModifier) seed.pModifier->Modify(seed.geometric);
+                SMSDomainVertex vertex(seed.geometric);
+                vertex.geometry.position=seedPoint;vertex.geometry.normal=seed.geometric.vNormal;
+                vertex.geometry.geomNormal=seed.geometric.UnflippedGeomNormal();vertex.geometry.pObject=hit.pObject;
                 vertex.geometry.pMaterial=hit.pMaterial;vertex.geometry.isReflection=reflection;
                 std::vector<SMSDomainVertex> records{vertex};NativeConstraintOracle oracle(cfg,&records);
                 const Point3 end=Point3Ops::mkPoint3(center,ray.ray.Dir()*3);
                 const auto result=oracle.SolveDomain(start,hit.geometric.vNormal,end,-ray.ray.Dir(),scene.Scene(),air,domain,records,sampler,1e-7,1e-10);
                 Check(result.valid,"cross-object painter retains a regular native R/T root");
                 const Scalar expected=native*(reflection?1:RadianceEtaScale(air,ray.ior_stack));
-                std::cout<<"R7 signal interior="<<interior<<" reflection="<<reflection<<" winding="<<reverse<<" transformed="<<transformed
+                std::cout<<"R7 signal modifier="<<auditModifier<<" interior="<<interior<<" reflection="<<reflection<<" winding="<<reverse<<" transformed="<<transformed
                     <<" domain="<<domain.kind<<":"<<domain.component<<":"<<domain.nm<<" root_price="<<result.contributionNM<<" native_price="<<expected<<'\n';
                 if(result.valid) {
+                    Check(Point3Ops::Distance(records[0].context.ptIntersection,seed.geometric.ptIntersection)>.1,
+                        "signal root refresh replaces a genuinely different seed context");
                     Check(records[0].context.signals.pScene==scene.Scene().GetObjects()&&records[0].context.signals.pSelf==hit.pObject,
                         "refreshed root retains scene/self signal provenance");
                     Check(Point3Ops::Distance(records[0].context.signals.ptWorld,records[0].context.ptIntersection)==0,
@@ -1199,7 +1289,12 @@ static void NativeCrossObjectPrices() {
                 }
             }
             Check(tested,"native signal-price event is present");
+            if(modifier) {
+                Check(modifier->inspected>1,"native modifier/differential probes inspect actual scene contexts");
+                Check(!modifier->missing,"all direct-object modifier/differential inputs retain current scene signals");
+            }
         }
+        safe_release(modifier);
     }
 }
 class InertFrameModifier final : public AuditedIdentityFrameModifier {
@@ -1667,16 +1762,26 @@ static void Geometry() {
 #endif
 // Native analytic virtual-image reference for an upward spot reflected by
 // one plane: f * F * Le / (anchor-to-plane + light-to-plane)^2.
-static void DeltaLights(bool production=false, bool signedEmitter=false, bool uniform=false) {
+static void DeltaLights(bool production=false, bool signedEmitter=false, bool uniform=false,unsigned signalKind=0) {
     for(bool point:{false,true}) for(bool glass:{false,true}) for(bool winding:{false,true}) for(int mode:{0,1,2}) {
         if(signedEmitter&&mode!=0) continue;
+        if(signalKind&&glass) continue;
         std::string text=Materials();
         text.replace(text.find("values 1.3 1.5 1.9"),std::string("values 1.3 1.5 1.9").size(),"values 1.5 1.5 1.5");
-        text+=Mesh(false,winding)+SceneObject("caster","shape",glass?"glass":"mirror"," position 0 0 1\n")
+        text+=(signalKind?QuadMesh("shape",-1,-2,3,winding):Mesh(false,winding))+SceneObject("caster","shape",glass?"glass":"mirror"," position 0 0 1\n")
             +"lambertian_material\n{\n name diffuse\n reflectance white\n}\n"
             +PlaneScene("receiver_geo",-2)+SceneObject("receiver","receiver_geo","diffuse")
             +(point?"omni_light\n{\n name source\n position 0 0 -1\n color 1 1 1\n power 40\n}\n":
               "spot_light\n{\n name source\n position 0 0 -1\n target 0 0 1\n color 1 1 1\n power 40\n inner 10\n outer 30\n}\n");
+        if(signalKind) {
+            const std::string signal=signalKind==1?"proximity(4)":"interior(1)";
+            const std::string painter="expression_painter\n{\n name signal_tint\n expr vec3(.2+.8*"+signal+",.2+.8*"+signal+",.2+.8*"+signal+")\n}\n";
+            text.insert(text.find("perfectreflector_material"),painter);
+            text+="sphere_geometry\n{\n name neighbour_geo\n radius "+std::string(signalKind==1?".2":"10")+"\n}\n"
+                +SceneObject("neighbour","neighbour_geo","diffuse",signalKind==1?" position 2 0 0\n":" position 0 0 0\n");
+            const std::string original="name mirror\n reflectance white";
+            text.replace(text.find(original),original.size(),"name mirror\n reflectance signal_tint");
+        }
         if(signedEmitter) text.replace(text.rfind("color 1 1 1"),std::string("color 1 1 1").size(),"color 1 -0.5 0.2");
         Fixture fixture(text);
         if(!fixture.job||!fixture.Object("receiver")) {Check(false,"delta fixture prepared");continue;}
@@ -1713,8 +1818,10 @@ static void DeltaLights(bool production=false, bool signedEmitter=false, bool un
         const Scalar lenm=light->emittedRadianceNM(direction,nm);
         if(signedEmitter) Check(le[1]<0,"native light preserves authored signed green emission");
         RayIntersection mirrorHit(Ray(Point3(0,0,-1),direction),nullRasterizerState);
-        fixture.Object("caster")->IntersectRay(mirrorHit,RISE_INFINITY,true,true,false);
+        if(signalKind) fixture.Scene().GetObjects()->IntersectRay(mirrorHit,true,true,false);
+        else fixture.Object("caster")->IntersectRay(mirrorHit,RISE_INFINITY,true,true,false);
         Check(mirrorHit.geometric.bHit,"analytic caster context is an independent native ray intersection");
+        const RISEPel mirrorRGB=glass?RISEPel(1):mirrorHit.pMaterial->GetSpecularInfo(mirrorHit.geometric,air).attenuation;
         const Scalar mirrorNM=glass?1:mirrorHit.pMaterial->GetSpecularInfoNM(mirrorHit.geometric,air,nm).attenuationNM;
         const Scalar fresnel=glass?Optics::CalculateDielectricReflectanceCosine(1,1,1.5):1;
         std::array<std::vector<double>,3> samples;
@@ -1773,10 +1880,10 @@ static void DeltaLights(bool production=false, bool signedEmitter=false, bool un
         }
         for(unsigned c=0;c<(mode==0?3u:1u);++c) {
             const Scalar imageDistance=1-hit.geometric.ptIntersection.z;
-            const Scalar expected=fresnel*(mode==0?f[c]*le[c]:fnm*lenm*mirrorNM)/(imageDistance*imageDistance)
+            const Scalar expected=fresnel*(mode==0?f[c]*le[c]*mirrorRGB[c]:fnm*lenm*mirrorNM)/(imageDistance*imageDistance)
                 +(production&&point?(mode==0?f[c]*le[c]:fnm*lenm)/std::pow(-1-hit.geometric.ptIntersection.z,2):0);
             const Moments m(samples[c]);
-            std::cout<<std::setprecision(17)<<"delta uniform="<<uniform<<" signed="<<signedEmitter<<" production="<<production<<" point="<<point<<" glass="<<glass<<" winding="<<winding<<" mode="<<mode<<" c="<<c
+            std::cout<<std::setprecision(17)<<"delta uniform="<<uniform<<" signed="<<signedEmitter<<" signal="<<signalKind<<" production="<<production<<" point="<<point<<" glass="<<glass<<" winding="<<winding<<" mode="<<mode<<" c="<<c
                 <<" mean="<<m.mean<<" sd="<<m.sd<<" n=4 N="<<N<<" analytic="<<expected<<" error="<<m.mean-expected<<" mirrorNM="<<mirrorNM<<" reference sd=0\n";
             Check(std::isfinite(m.mean)&&std::fabs(m.mean)>0,"point/spot reference activation is nonzero and finite");
             Check(std::fabs(m.mean-expected)<=3*m.sd+64*std::numeric_limits<Scalar>::epsilon()*std::fabs(expected),
@@ -2167,9 +2274,21 @@ int main(int argc,char** argv) {
 #endif
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
     }
+    if(argc==2&&std::string(argv[1])=="--r7-signal-production-only") {
+        DeltaLights(true,false,false,1);DeltaLights(true,false,false,2);
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
+    }
+    if(argc==2&&std::string(argv[1])=="--r7-curved-uv-only") {
+#ifdef RISE_SMS_REFERENCE_A
+        NativeCurvedUVComposition();
+#else
+        Check(false,"curved UV differential witness requires native domain support");
+#endif
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
+    }
     if(argc==2&&std::string(argv[1])=="--r7-signals-only") {
 #ifdef RISE_SMS_REFERENCE_A
-        NativeCrossObjectPrices();
+        NativeCrossObjectPrices();NativeCrossObjectPrices(true);
 #else
         Check(false,"signal price witness requires native domain support");
 #endif

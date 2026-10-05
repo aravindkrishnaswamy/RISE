@@ -169,6 +169,17 @@ namespace {
             return m->GetTransmittance().IsPositionIndependent() && m->GetScattering().IsPositionIndependent();
         return false;
     }
+    bool SMSContextIgnoresUV(const RISE::IObject& object,const RISE::IMaterial& material) {
+        if(!SMSConstantSeamMaterial(material)) return false;
+        const auto* modifier=object.GetModifier();
+        if(!modifier) return true;
+        const auto* audited=dynamic_cast<const RISE::ISMSModifierDifferential*>(modifier);
+        return audited && audited->HasSMSDifferentialContract() && !audited->SMSFrameDependsOnUV();
+    }
+    void SMSCompleteNativeHit(RISE::RayIntersection& hit,const RISE::IObjectManager* objects) {
+        if(const auto* native=dynamic_cast<const RISE::Implementation::ObjectManager*>(objects))
+            native->CompleteShadingSignals(hit.geometric,hit.pObject);
+    }
     struct SMSDeltaDirections {
         RISE::Vector3 reflected, transmitted, reflectionNormal, transmissionNormal;
         RISE::Scalar fresnelCosine=0;
@@ -221,12 +232,14 @@ namespace {
     RISE::Point3 SMSReferenceSurfacePoint(const RISE::IObject&,const RISE::RayIntersectionGeometric&);
     RISE::Implementation::ManifoldVertex SMSNativeConstraintVertex(
         const RISE::Implementation::ManifoldVertex& original,const RISE::Point3& previous,
-        const RISE::RasterizerState& raster=RISE::nullRasterizerState,unsigned* branch=nullptr) {
+        const RISE::RasterizerState& raster=RISE::nullRasterizerState,unsigned* branch=nullptr,
+        const RISE::IObjectManager* objects=nullptr) {
         using namespace RISE;
         auto v=original;
         if(SMSNeedsNativeFrame(v)) {
             RayIntersection hit(Ray(previous,Vector3Ops::Normalize(Vector3Ops::mkVector3(v.position,previous))),raster);
             v.pObject->IntersectRay(hit,RISE_INFINITY,true,true,false);
+            SMSCompleteNativeHit(hit,objects);
             const Scalar tolerance=std::sqrt(std::numeric_limits<Scalar>::epsilon())*Point3Ops::Distance(previous,v.position);
             if(!hit.geometric.bHit || hit.pMaterial!=v.pMaterial
                 || Point3Ops::Distance(SMSReferenceSurfacePoint(*v.pObject,hit.geometric),v.position)>tolerance) {
@@ -271,14 +284,15 @@ namespace {
         const RISE::Implementation::ManifoldVertex& minus,
         const RISE::Point3& previous,const RISE::Point3& previousPlus,const RISE::Point3& previousMinus,
         const RISE::Point3& next,const RISE::Point3& nextPlus,const RISE::Point3& nextMinus,
-        RISE::Scalar step,const RISE::RasterizerState& raster,RISE::Scalar& c0,RISE::Scalar& c1) {
+        RISE::Scalar step,const RISE::RasterizerState& raster,RISE::Scalar& c0,RISE::Scalar& c1,
+        const RISE::IObjectManager* objects=nullptr) {
         using namespace RISE;
         if(!(step>0) || !center.pObject || !SMSAuditedModifier(*center.pObject)) return false;
         const auto difference=[&](const auto& a,const auto& b) {return Vector3(a.x-b.x,a.y-b.y,a.z-b.z)*(1/(2*step));};
         unsigned branch=0,plusBranch=0,minusBranch=0;
-        const auto effective=SMSNativeConstraintVertex(center,previous,raster,&branch);
-        const auto ep=SMSNativeConstraintVertex(plus,previousPlus,raster,&plusBranch);
-        const auto em=SMSNativeConstraintVertex(minus,previousMinus,raster,&minusBranch);
+        const auto effective=SMSNativeConstraintVertex(center,previous,raster,&branch,objects);
+        const auto ep=SMSNativeConstraintVertex(plus,previousPlus,raster,&plusBranch,objects);
+        const auto em=SMSNativeConstraintVertex(minus,previousMinus,raster,&minusBranch,objects);
         if(!effective.valid || !ep.valid || !em.valid || branch!=plusBranch || branch!=minusBranch) return false;
         Vector3 dn=difference(plus.normal,minus.normal);
         Vector3 dg=difference(plus.geomNormal,minus.geomNormal);
@@ -289,6 +303,7 @@ namespace {
             center.pObject->IntersectRay(raw,RISE_INFINITY,true,true,false);
             center.pObject->IntersectRay(rp,RISE_INFINITY,true,true,false);
             center.pObject->IntersectRay(rm,RISE_INFINITY,true,true,false);
+            SMSCompleteNativeHit(raw,objects);SMSCompleteNativeHit(rp,objects);SMSCompleteNativeHit(rm,objects);
             if(!raw.geometric.bHit || !rp.geometric.bHit || !rm.geometric.bHit) return false;
             SMSIntersectionDifferential input;
             input.worldPoint=difference(rp.geometric.ptIntersection,rm.geometric.ptIntersection);
@@ -518,6 +533,7 @@ bool RISE::Implementation::SMSDomainReplay::Capture(const IScene& scene,
         for(const Vector3& direction : directions) {
             RayIntersection hit(Ray(anchor, direction), nullRasterizerState);
             key->IntersectRay(hit, RISE_INFINITY, true, true, false);
+            SMSCompleteNativeHit(hit,scene.GetObjects());
             if(!hit.geometric.bHit) continue;
             if(hit.pModifier) hit.pModifier->Modify(hit.geometric);
             result.enclosing.emplace_back(key, hit.pMaterial, hit.geometric);
@@ -669,7 +685,9 @@ void RISE::Implementation::ManifoldSolver::SolveDomainCoreInto(
         || !SMSDomainReplay::BuildStack(media, domain, replay)) { return; }
     auto& chain=scratch.Vertices(0,config.maxChainDepth);
     chain.reserve(vertices.size());
-    for(const SMSDomainVertex& record : vertices) {
+    for(SMSDomainVertex& record : vertices) {
+        if(const auto* objects=dynamic_cast<const ObjectManager*>(scene.GetObjects()))
+            objects->CompleteShadingSignals(record.context,record.geometry.pObject);
         ManifoldVertex vertex = record.geometry;
         if(!vertex.pMaterial || !vertex.pObject || !SMSAuditedModifier(*vertex.pObject)) { return; }
         SMSNativeMaterialQuery query;
@@ -695,6 +713,7 @@ void RISE::Implementation::ManifoldSolver::SolveDomainCoreInto(
         RayIntersection hit(Ray(previous, direction), vertices[i].context.rast);
         if(i != 0) hit.geometric.ray.Advance(1e-8); // native surface-walk self-hit offset
         vertex.pObject->IntersectRay(hit, RISE_INFINITY, true, true, false);
+        SMSCompleteNativeHit(hit,scene.GetObjects());
         if(!hit.geometric.bHit || hit.pObject != vertex.pObject || hit.pMaterial != vertex.pMaterial
             || Point3Ops::Distance(convergenceThreshold > 0 ? SMSReferenceSurfacePoint(*vertex.pObject,hit.geometric) : hit.geometric.ptIntersection, vertex.position) > positionTolerance) { return; }
         if(hit.pModifier) hit.pModifier->Modify(hit.geometric);
@@ -706,8 +725,8 @@ void RISE::Implementation::ManifoldSolver::SolveDomainCoreInto(
             || !finite3(hit.geometric.onb.u()) || !finite3(hit.geometric.onb.v()) || !finite3(hit.geometric.onb.w())
             || !std::isfinite(hit.geometric.ptCoord.x) || !std::isfinite(hit.geometric.ptCoord.y)) return;
         // A periodic chart seam is one physical root for an audited
-        // context-independent event law. A varying/unaudited seam price or
-        // normal modifier cannot establish a unique limiting context: it is
+        // UV-independent event/frame law. A varying or unaudited UV-dependent
+        // seam context cannot establish a unique limiting value: it is
         // an uncertain zero trial. Never invent a UV for a material query.
         Scalar contextSlope=0;
         if(convergenceThreshold > 0) {
@@ -738,7 +757,8 @@ void RISE::Implementation::ManifoldSolver::SolveDomainCoreInto(
             }
             const bool seam = meshEdge || (axes.x && std::min(std::fabs(hit.geometric.ptCoord.x),std::fabs(1-hit.geometric.ptCoord.x)) <= band)
                 || (axes.y && std::min(std::fabs(hit.geometric.ptCoord.y),std::fabs(1-hit.geometric.ptCoord.y)) <= band);
-            if(seam && (hit.pModifier || !SMSConstantSeamMaterial(*vertex.pMaterial))) return;
+            const bool uvIndependent=SMSContextIgnoresUV(*vertex.pObject,*vertex.pMaterial);
+            if(seam && !uvIndependent) return;
             if(meshEdge || hit.pModifier || (nativeObject && !nativeObject->UsesNativeTextureChart()
                 && !SMSConstantSeamMaterial(*vertex.pMaterial))) {
                 // Generated charts and modifier-written matching contexts can jump
@@ -759,7 +779,8 @@ void RISE::Implementation::ManifoldSolver::SolveDomainCoreInto(
                         Ray ray(previous,Vector3Ops::Normalize(Vector3Ops::mkVector3(target,previous)));
                         if(i) ray.Advance(1e-8);
                         RayIntersection probe(ray,vertices[i].context.rast);
-                                    vertex.pObject->IntersectRay(probe,RISE_INFINITY,true,true,false);
+                        vertex.pObject->IntersectRay(probe,RISE_INFINITY,true,true,false);
+                        SMSCompleteNativeHit(probe,scene.GetObjects());
                         if(probe.geometric.bHit && probe.pModifier) probe.pModifier->Modify(probe.geometric);
                         if(!probe.geometric.bHit || probe.pObject!=vertex.pObject
                             || probe.pMaterial!=vertex.pMaterial
@@ -773,7 +794,6 @@ void RISE::Implementation::ManifoldSolver::SolveDomainCoreInto(
                         geomNormals[probeIndex]=probe.geometric.UnflippedGeomNormal();
                         frames[probeIndex]=probe.geometric.onb;
                     }
-                    const bool uvIndependent=!hit.pModifier && SMSConstantSeamMaterial(*vertex.pMaterial);
                     const Scalar uvChange=uvIndependent?0:std::hypot(coords[0].x-hit.geometric.ptCoord.x,coords[0].y-hit.geometric.ptCoord.y);
                     const Scalar normalChange=std::max(Vector3Ops::Magnitude(normals[0]-hit.geometric.vNormal),
                         Vector3Ops::Magnitude(geomNormals[0]-hit.geometric.UnflippedGeomNormal()));
@@ -1982,7 +2002,7 @@ void ManifoldSolver::EvaluateConstraint(
         // or allocation of a vertex or its optional endpoint record.
         std::optional<ManifoldVertex> nativeVertex;
         if(nativeEventConstraints) nativeVertex.emplace(SMSNativeConstraintVertex(
-            chain[i],i?chain[i-1].position:fixedStart,NativeRaster(i)));
+            chain[i],i?chain[i-1].position:fixedStart,NativeRaster(i),nullptr,NativeSceneObjects(i)));
         const ManifoldVertex& v=nativeVertex?*nativeVertex:chain[i];
         if(nativeEventConstraints && !v.valid && SMSNeedsNativeFrame(v)) { C[2*i]=C[2*i+1]=1;continue; }
 
@@ -2348,7 +2368,7 @@ void ManifoldSolver::BuildJacobian(
                         regular=SMSNativeConstraintDifferential(chain[i],plus[i],minus[i],
                             i?chain[i-1].position:fixedStart,i?plus[i-1].position:fixedStart,i?minus[i-1].position:fixedStart,
                             i+1<k?chain[i+1].position:fixedEnd,i+1<k?plus[i+1].position:fixedEnd,i+1<k?minus[i+1].position:fixedEnd,
-                            step,NativeRaster(i),derivatives[refinement][2*i],derivatives[refinement][2*i+1]);
+                            step,NativeRaster(i),derivatives[refinement][2*i],derivatives[refinement][2*i+1],NativeSceneObjects(i));
                     }
                 }
             }
@@ -6175,7 +6195,7 @@ Scalar ManifoldSolver::ComputeLightToFirstVertexJacobianDet(
             const Vector3 tangent=column?frame.v():frame.u();
             if(!SMSNativeConstraintDifferential(chain[k-1],chain[k-1],chain[k-1],
                 prevPos,prevPos,prevPos,lightPos,Point3Ops::mkPoint3(lightPos,tangent*h),
-                Point3Ops::mkPoint3(lightPos,-tangent*h),h,NativeRaster(k-1),Jy[column],Jy[2+column])) return 0;
+                Point3Ops::mkPoint3(lightPos,-tangent*h),h,NativeRaster(k-1),Jy[column],Jy[2+column],NativeSceneObjects(k-1))) return 0;
         }
     } else {
         ComputeLastBlockLightJacobian(chain[k-1],prevPos,lightPos,lightNormal,Jy);
@@ -7576,8 +7596,8 @@ bool ManifoldSolver::SameExtendedRoot(const SMSDomainRoot& a, const SMSDomainRoo
                 &&std::isfinite(v.objectPosition.x)&&std::isfinite(v.objectPosition.y)&&std::isfinite(v.objectPosition.z)
                 &&std::isfinite(v.uv.x)&&std::isfinite(v.uv.y);
         };
-        const bool uvIndependent=x.pMaterial && x.pObject && !x.pObject->GetModifier()
-            && SMSConstantSeamMaterial(*x.pMaterial);
+        const bool uvIndependent=x.pMaterial && x.pObject
+            && SMSContextIgnoresUV(*x.pObject,*x.pMaterial);
         const auto& xc=a.vertices[i].context;const auto& yc=b.vertices[i].context;
         const auto finiteFrame=[](const Vector3& value) {return std::isfinite(value.x)&&std::isfinite(value.y)&&std::isfinite(value.z);};
         for(unsigned axis=0;axis<3;++axis) {
@@ -7593,8 +7613,8 @@ bool ManifoldSolver::SameExtendedRoot(const SMSDomainRoot& a, const SMSDomainRoo
             const Scalar distance = std::fabs(u-v);
             return periodic ? std::min(distance,std::fabs(1-distance)) : distance;
         };
-        // Keep the actual UV records. Under this audited material law and
-        // without a normal modifier, UV cannot alter any event/index/price
+        // Keep the actual UV records. Under this audited material/modifier
+        // dependency law, UV cannot alter any event/index/price
         // input. Different mesh charts then do not create physical roots.
         const Scalar uvDistance = uvIndependent ? 0 : std::hypot(coordinateDistance(x.uv.x,y.uv.x,axes.x != 0),
             coordinateDistance(x.uv.y,y.uv.y,axes.y != 0));

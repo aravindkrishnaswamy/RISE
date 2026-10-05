@@ -1324,13 +1324,23 @@ void ObjectManager::IntersectRay( RayIntersection& ri, const bool bHitFrontFaces
 		}
 	}
 
+    CompleteShadingSignals(ri.geometric,ri.pObject);
+
+	if( !ri.geometric.bHit ) {
+		RISE_PROFILE_INC(nMisses);
+	}
+}
+
+void ObjectManager::CompleteShadingSignals(RayIntersectionGeometric& geometry,const IObject* object) const
+{
 	// THE CROSS-OBJECT SIGNAL STAMP (docs/CROSS_OBJECT_PROXIMITY_DESIGN.md
-	// §5.1).  ONE site, after traversal, on the WINNING record -- all three
+	// §5.1). ONE shared completion site: traversal passes its winning hit,
+	// and extended SMS passes a freshly intersected direct-object hit. All three
 	// branches above (BVH4, octree, linear) fall through to here, and the
 	// per-candidate `myRI` copy-back happens INSIDE traversal, so nothing
-	// downstream can overwrite what is written here.  `pSelf` is copied from
-	// `ri.pObject` rather than recomputed, so the two identities can never
-	// disagree: `Object::IntersectRay` and `CSGObject::IntersectRay` both set
+	// downstream can overwrite what is written here. The caller passes the
+	// current hit object as `pSelf` rather than recomputing its identity:
+	// `Object::IntersectRay` and `CSGObject::IntersectRay` both set
 	// `pObject` to themselves, so a CSG hit names the COMPOSITE and an operand
 	// -- never reached by the manager -- can never be `pSelf`.
 	//
@@ -1371,13 +1381,10 @@ void ObjectManager::IntersectRay( RayIntersection& ri, const bool bHitFrontFaces
 		EnsureBoxSnapshot();
 	}
 
-	ri.geometric.signals.pScene  = this;
-	ri.geometric.signals.pSelf   = ri.pObject;
-	ri.geometric.signals.ptWorld = ri.geometric.ptIntersection;
+	geometry.signals.pScene  = this;
+	geometry.signals.pSelf   = object;
+	geometry.signals.ptWorld = geometry.ptIntersection;
 
-	if( !ri.geometric.bHit ) {
-		RISE_PROFILE_INC(nMisses);
-	}
 }
 
 bool ObjectManager::IntersectShadowRay( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const

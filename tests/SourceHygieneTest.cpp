@@ -4786,7 +4786,8 @@ int main()
 	// ---- `signals` is written in a CLOSED set of files, and nowhere else ----
 	// docs/CROSS_OBJECT_PROXIMITY_DESIGN.md §5.1.  The cross-object channel
 	// (`pScene` / `pSelf` / `ptWorld`) is stamped ONCE, at the tail of
-	// ObjectManager::IntersectRay, on the winning record -- and the whole
+	// ObjectManager::CompleteShadingSignals, called by scene traversal and
+	// extended SMS direct-object context completion -- and the whole
 	// design rests on one invariant: NOTHING assigns `signals` after that
 	// function returns.  A new assignment anywhere else would silently
 	// overwrite the stamp with a default-constructed channel and turn every
