@@ -859,10 +859,16 @@ static void NativeClosePatches(Fixture& f,bool reverse,Scalar offset) {
     mesh->DoneIndexedTriangles();f.job->GetObjects()->GetItem("caster")->AssignGeometry(*mesh);safe_release(mesh);
     dynamic_cast<const ObjectManager*>(f.Scene().GetObjects())->InvalidateSpatialStructure();f.job->GetObjects()->PrepareForRendering();
 }
-static void RoundFourNumerics() {
+class IrrelevantOscillatoryUV final : public AuditedIdentityFrameModifier {
+public:
+    void Modify(RayIntersectionGeometric& hit) const override {
+        hit.ptCoord=Point2(.5+1e-4*std::sin(2*PI*hit.ptObjIntersec.x/std::ldexp(Scalar(1),-30)),.5);
+    }
+};
+static void RoundFourNumerics(bool irrelevantUVOnly=false) {
     for(bool reverse:{false,true}) {
         Fixture f(Materials()+QuadMesh("patch",0,-2,2,reverse)+SceneObject("caster","patch","mirror"));
-        auto* modifier=new SteepContinuousUV();f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);modifier->release();
+        IRayIntersectionModifier* modifier=irrelevantUVOnly ? static_cast<IRayIntersectionModifier*>(new IrrelevantOscillatoryUV) : static_cast<IRayIntersectionModifier*>(new SteepContinuousUV);f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);modifier->release();
         const Point3 start(-.5,.3,-3),end(.5,.3,-3);IORStack air(1);
         ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;auto* solver=new ManifoldSolver(cfg);
         for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
@@ -903,6 +909,7 @@ static void RoundFourNumerics() {
         }
         solver->release();
     }
+    if(irrelevantUVOnly) return;
     for(bool reverse:{false,true}) for(Scalar offset:{Scalar(1000000),Scalar(5000000)}) {
         Fixture f(Materials()+CloseRootMesh(reverse,10000,1e-9)+SceneObject("caster","shape","mirror"));NativeClosePatches(f,reverse,offset);
         ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;cfg.solverThreshold=1e-10;
@@ -2095,6 +2102,14 @@ int main(int argc,char** argv) {
         NativeTransformedUVComposition();
 #else
         Check(false,"generated UV differential witness requires native domain support");
+#endif
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
+    }
+    if(argc==2&&std::string(argv[1])=="--r7-uv-root-only") {
+#ifdef RISE_SMS_REFERENCE_A
+        RoundFourNumerics(true);
+#else
+        Check(false,"UV physical-root regression requires native domain support");
 #endif
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
     }
