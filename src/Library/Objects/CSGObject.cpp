@@ -11,8 +11,8 @@
 //
 //////////////////////////////////////////////////////////////////////
 
-#include "../Utilities/ManifoldSolver.h"
 #include "pch.h"
+#include "../Utilities/ManifoldSolver.h"
 #include "../Modifiers/ModifierFrame.h"
 #include <cmath>			// std::isfinite / std::fabs (the probe's range2 + margin guards, CSGObject::SelfHitRootFloor's ownership window)
 #include "CSGObject.h"

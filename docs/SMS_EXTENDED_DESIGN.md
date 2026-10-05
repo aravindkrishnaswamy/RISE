@@ -1,6 +1,6 @@
 # Extended SMS: event proposals, channel geometry, and path ownership
 
-**Status: adopted implementation contract, 2026-10-03. Phase 1 domain/replay primitives and interim rejection policy are implemented on `sms-ext`, merged to master at `34bd520ec5e70a5cf96bcf8b8154b1a17888880f`. Phase 2 is implemented on `sms-ext-phase2`, unmerged; the fresh Round 6 review found implementation defects and a reproduced generated-UV differential contract gap, awaiting a user ruling. Phases 3–4 remain pending.**
+**Status: adopted implementation contract, 2026-10-03. Phase 1 domain/replay primitives and interim rejection policy are implemented on `sms-ext`, merged to master at `34bd520ec5e70a5cf96bcf8b8154b1a17888880f`. Phase 2 is implemented on `sms-ext-phase2`, unmerged; the fresh Round 6 review found implementation defects and a reproduced generated-UV differential contract gap, the user adopted the composed-input differential correction on 2026-10-05 and repairs/gates are in progress. Phases 3–4 remain pending.**
 
 Base: master `a8fa56224ff1e4d9284e907fcf1d1d05534530e6`, the reviewed attenuation integration. DL-437 and DL-438 remain open. The user authorized deferring them for that integration and asked for this extended design next. This proposal keeps the native material conventions established by [DL-435](DL435_SPECTRAL_SMS_ATTENUATION.md). It does not replace them with a general participating-medium or absorbing-film model.
 
@@ -778,7 +778,7 @@ analytic-normal repair. Raw evidence is
 `generated-uv-red.log`. This is an executed native Jacobian counterexample;
 no new production radiance/bias measurement is claimed.
 
-**Proposed correction, pending user ruling:** certification must cover the
+**Adopted correction, user ruling 2026-10-05:** certification must cover the
 composed input transport as well as the modifier. A modifier that consumes
 generated UVs requires an audited UV differential (analytic, or a sufficient
 feature/error bound); otherwise that caster makes the extended anchor
@@ -786,9 +786,11 @@ ineligible, with all three switches off and PT keeping its paths. Providers
 must declare relevant input dependencies conservatively. Audited modifiers
 independent of generated UVs remain eligible. Existing legacy/off behavior
 and the scene-wide composite rule remain unchanged. More black-box stencil
-probes cannot certify an arbitrary generator. No implementation of this
-proposed correction precedes the user ruling, and no ledger row is opened
-for it.
+probes cannot certify an arbitrary generator. The user approved this correction ("approved, proceed"). Implementation uses
+a separate optional UV differential capability and a conservative modifier
+UV-dependency declaration; the legacy interfaces remain unchanged. No ledger
+row is opened for this contract decision. Repairs and fresh gates/review are
+required before integration.
 
 Other Round 6 implementation findings require repair: `Object.cpp` and
 `CSGObject.cpp` include the SMS header before the Windows `/Yu` precompiled

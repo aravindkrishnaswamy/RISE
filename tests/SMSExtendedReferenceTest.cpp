@@ -89,7 +89,7 @@ static std::string SceneObject(const std::string& name,const std::string& geomet
 
 // Detect the optional interface itself: committed headers may predate its
 // feature macro. The test-only fallback is invisible to older solvers.
-namespace RISE { struct SMSIntersectionDifferential; class ISMSModifierDifferential; }
+namespace RISE { struct SMSIntersectionDifferential; class ISMSModifierDifferential; class ISMSUVDifferential; }
 template<class T,class=void> struct SMSCompleteType : std::false_type {};
 template<class T> struct SMSCompleteType<T,std::void_t<decltype(sizeof(T))>> : std::true_type {};
 struct SMSTestDifferentialFallback {
@@ -108,6 +108,14 @@ public:
 };
 using TestSMSModifierDifferential=std::conditional_t<SMSCompleteType<RISE::ISMSModifierDifferential>::value,
     RISE::ISMSModifierDifferential,SMSTestModifierFallback>;
+class SMSTestUVDifferentialFallback {
+public:
+    virtual ~SMSTestUVDifferentialFallback()=default;
+    virtual bool HasSMSUVDifferentialContract()const=0;
+    virtual bool SMSUVDifferential(const Point3&,const Vector3&,const Vector3&,const Vector3&,Point2&)const=0;
+};
+using TestSMSUVDifferential=std::conditional_t<SMSCompleteType<RISE::ISMSUVDifferential>::value,
+    RISE::ISMSUVDifferential,SMSTestUVDifferentialFallback>;
 // Older geometry headers still compile the native tessellation witness.
 template<class T> static auto OrientationAudits(const T* g,int)->decltype(g->SMSOrientationAudits()) {return g->SMSOrientationAudits();}
 template<class T> static unsigned long long OrientationAudits(const T*,long) {return 0;}
@@ -360,6 +368,11 @@ class AuditedIdentityFrameModifier : public IRayIntersectionModifier, public Ref
     public TestSMSModifierDifferential {
 public:
     bool HasSMSDifferentialContract() const override {return true;}
+    virtual bool SMSFrameDependsOnUV() const
+#ifdef RISE_SMS_COMPOSED_DIFFERENTIAL
+        override
+#endif
+        {return false;}
     bool SMSFrameDifferential(const RayIntersectionGeometric&,const TestSMSIntersectionDifferential& d,
         Vector3& n,Vector3& w) const override {n=d.normal;w=d.frameW;return true;}
 };
@@ -663,6 +676,7 @@ static unsigned preparationTessellations=0;
 class PreparationIndexedMesh final : public TriangleMeshGeometryIndexed {
 public:
     explicit PreparationIndexedMesh(bool face):TriangleMeshGeometryIndexed(true,face) {}
+    bool WatertightForTest() const {return m_bWatertight;}
     bool TessellateToMesh(IndexTriangleListType& t,VerticesListType& p,NormalsListType& n,
         TexCoordsListType& uv,unsigned detail) const override {
         ++preparationTessellations;return TriangleMeshGeometryIndexed::TessellateToMesh(t,p,n,uv,detail);
@@ -979,15 +993,24 @@ static void RoundFourNumerics() {
         }
     }
 }
-class HarmonicGeneratedUV final : public IUVGenerator, public Reference {
+class HarmonicGeneratedUV : public IUVGenerator, public Reference {
 public:
     void GenerateUV(const Point3& p,const Vector3&,Point2& uv) const override {
         const Scalar period=std::cbrt(std::numeric_limits<Scalar>::epsilon())/(4*114243);
         uv=Point2(.2*period/(2*PI)*std::sin(2*PI*p.x/period),0);
     }
 };
+class AuditedHarmonicGeneratedUV final : public HarmonicGeneratedUV, public TestSMSUVDifferential {
+public:
+    bool HasSMSUVDifferentialContract() const override {return true;}
+    bool SMSUVDifferential(const Point3& p,const Vector3&,const Vector3& dp,const Vector3&,Point2& d) const override {
+        const Scalar period=std::cbrt(std::numeric_limits<Scalar>::epsilon())/(4*114243);
+        d=Point2(.2*std::cos(2*PI*p.x/period)*dp.x,0);return true;
+    }
+};
 class AnalyticUVNormal final : public AuditedIdentityFrameModifier {
 public:
+    bool SMSFrameDependsOnUV() const override {return true;}
     void Modify(RayIntersectionGeometric& hit) const override {
         const Scalar sign=hit.vNormal.z<0?-1:1;
         hit.vNormal=Vector3Ops::Normalize(Vector3(sign*hit.ptCoord.x,0,sign));
@@ -1000,15 +1023,16 @@ public:
         w=n;return true;
     }
 };
-static void NativeNearCommensurateNormal(bool generatedUV=false) {
+static void NativeNearCommensurateNormal(unsigned generatedUV=0) {
     const Scalar divisor=4*114243;
     for(bool reverse:{false,true}) {
         Fixture f(Materials()+QuadMesh("patch",0,-2,3,reverse)+SceneObject("caster","patch","mirror"));
-        IRayIntersectionModifier* modifier=generatedUV ? static_cast<IRayIntersectionModifier*>(new AnalyticUVNormal)
+        IRayIntersectionModifier* modifier=generatedUV && generatedUV!=3 ? static_cast<IRayIntersectionModifier*>(new AnalyticUVNormal)
             : static_cast<IRayIntersectionModifier*>(new AliasedNormal(divisor));
         f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);modifier->release();
         if(generatedUV) {
-            auto* mapping=new HarmonicGeneratedUV;
+            IUVGenerator* mapping=generatedUV==2 ? static_cast<IUVGenerator*>(new AuditedHarmonicGeneratedUV)
+                : static_cast<IUVGenerator*>(new HarmonicGeneratedUV);
             f.job->GetObjects()->GetItem("caster")->SetUVGenerator(*mapping);mapping->release();
         }
         const Point3 start(0,0,3),end(0,0,4),center(0,0,0);IORStack air(1);
@@ -1025,6 +1049,8 @@ static void NativeNearCommensurateNormal(bool generatedUV=false) {
             std::vector<SMSDomainVertex> records{vertex};NativeConstraintOracle oracle(cfg,&records);
             RandomNumberGenerator random(32);IndependentSampler sampler(random);
             const auto result=oracle.SolveDomain(start,Vector3(0,0,-1),end,Vector3(0,0,-1),f.Scene(),air,domain,records,sampler,1e-7,1e-10);
+            if(generatedUV) Check(result.valid==(generatedUV!=1),
+                "uncertified UV dependency rejects while certified composition and UV-independent modifiers retain positive roots");
             std::cout<<"R5 near-commensurate generated_uv="<<generatedUV<<" domain="<<domain.kind<<":"<<domain.component<<":"<<domain.nm<<" winding="<<reverse<<" solved="<<result.valid<<'\n';
             if(result.valid) {
                 std::vector<Scalar> d,u,l;oracle.BuildJacobian(result.specularChain,start,end,d,u,l,true);
@@ -1045,6 +1071,32 @@ static void NativeNearCommensurateNormal(bool generatedUV=false) {
                 Check(!root.accepted,"unresolved native derivative is a production zero proposal");
             }
         }
+    }
+}
+static void NativeWeldCoordinateRange() {
+    for(bool closed:{false,true}) for(bool reverse:{false,true}) for(Scalar translation:{Scalar(0),Scalar(1e14),Scalar(-1e14)}) {
+        Fixture f(Materials()+Mesh(closed,reverse)+SceneObject("caster","shape","glass"));
+        IndexTriangleListType indices;VerticesListType points;NormalsListType normals;TexCoordsListType uv;
+        Check(f.Object("caster")->GetGeometry()->TessellateToMesh(indices,points,normals,uv,1),"weld-range native mesh tessellates");
+        auto* mesh=new PreparationIndexedMesh(true);mesh->BeginIndexedTriangles();
+        for(const auto& t:indices) {
+            IndexedTriangle out;
+            const Vector3 face=Vector3Ops::Normalize(Vector3Ops::Cross(
+                Vector3Ops::mkVector3(points[t.iVertices[1]],points[t.iVertices[0]]),
+                Vector3Ops::mkVector3(points[t.iVertices[2]],points[t.iVertices[0]])));
+            for(unsigned k=0;k<3;++k) {
+                Point3 p=points[t.iVertices[k]];p.x+=translation;
+                out.iVertices[k]=mesh->numPoints();mesh->AddVertex(p);
+                out.iNormals[k]=mesh->numNormals();mesh->AddNormal(face);
+                out.iCoords[k]=mesh->numCoords();mesh->AddTexCoord(uv[t.iCoords[k]]);
+            }
+            mesh->AddIndexedTriangle(out);
+        }
+        mesh->DoneIndexedTriangles();
+        Check(mesh->WatertightForTest()==closed,"position welding certifies the same closed/open mesh at huge positive and negative translations");
+        std::cout<<"R6 weld range closed="<<closed<<" winding="<<reverse<<" translation="<<translation
+            <<" watertight="<<mesh->WatertightForTest()<<'\n';
+        mesh->release();
     }
 }
 class InertFrameModifier final : public AuditedIdentityFrameModifier {
@@ -1698,7 +1750,7 @@ public:
     void Modify(RayIntersectionGeometric&) const override {}
 };
 static void UnsupportedCasterSwitches() {
-    for(unsigned kind:{0u,1u,2u,3u}) for(bool reverse:{false,true}) for(bool remote:{false,true}) {
+    for(unsigned kind:{0u,1u,2u,3u,4u,5u}) for(bool reverse:{false,true}) for(bool remote:{false,true}) {
         const bool csg=kind==1;
         Fixture f(Materials()+Mesh(csg,reverse)+SceneObject("pane","shape","glass",csg?" scale 1 1 0.25\n":" position 0 0 1\n")
             +(csg?"sphere_geometry\n{\n name tiny\n radius 0.1\n}\n"+SceneObject("other","tiny","glass"," position 4 0 0\n")
@@ -1716,16 +1768,21 @@ static void UnsupportedCasterSwitches() {
             if(assigned!=material) assigned->release();
         }
         safe_release(material);index->release();white->release();
-        if(kind==4) {
-            auto* modifier=new UncertifiedFrameModifier;
-            f.job->GetObjects()->GetItem("pane")->AssignModifier(*modifier);modifier->release();
-        }
-
         std::vector<IShaderOp*> ops;IShader* shader=nullptr;
         Check(RISE_API_CreateStandardShader(&shader,ops),"unsupported caster shader created");
         if(!shader) continue;
         auto* caster=new RayCaster(false,16,*shader,true);caster->SetTransparentShadows(true);
         f.Scene().GetObjects()->PrepareForRendering();caster->AttachScene(&f.Scene());
+        if(kind==4) {
+            auto* modifier=new UncertifiedFrameModifier;
+            f.job->GetObjects()->GetItem("pane")->AssignModifier(*modifier);modifier->release();
+        }
+        if(kind==5) {
+            auto* modifier=new AnalyticUVNormal;
+            f.job->GetObjects()->GetItem("pane")->AssignModifier(*modifier);modifier->release();
+            auto* mapping=new HarmonicGeneratedUV;
+            f.job->GetObjects()->GetItem("pane")->SetUVGenerator(*mapping);mapping->release();
+        }
         ManifoldSolverConfig config;config.enabled=true;config.extendedMode=true;config.targetBounces=1;
         config.multiTrials=1;StabilityConfig stability;stability.rrMinDepth=20;
         auto* on=new PathTracingIntegrator(config,stability);on->SetMaxPathDepth(8);
@@ -1736,6 +1793,20 @@ static void UnsupportedCasterSwitches() {
         for(Scalar nm:{0.,450.,650.}) {
         Check(!on->GetSolver()->ExtendedAnchorEligible(f.Scene(),*caster,Point3(0,0,-2),air,nm),
             "unsupported caster disables the complete anchor in RGB and NM");
+        if(kind>=4) {
+            const auto domain=nm==0?SMSQueryDomain::RGB(0):SMSQueryDomain::NM(nm);
+            RandomNumberGenerator random(76);IndependentSampler sampler(random);
+            const Point3 start(0,0,-2),end(0,0,2);
+            const auto root=on->GetSolver()->ProposeExtendedRoot(start,Vector3(0,0,1),end,f.Scene(),air,domain,sampler);
+            Check(!root.accepted,"post-preparation unaudited modifier or composed UV dependency rejects a direct proposal");
+            RayIntersection hit(Ray(start,Vector3(0,0,1)),nullRasterizerState);
+            f.Object("pane")->IntersectRay(hit,RISE_INFINITY,true,true,false);
+            Check(hit.geometric.bHit,"unaudited direct solve uses an actual native pane hit");
+            SMSDomainVertex vertex(hit.geometric);vertex.geometry.pObject=hit.pObject;vertex.geometry.pMaterial=hit.pMaterial;
+            std::vector<SMSDomainVertex> records{vertex};
+            const auto solved=on->GetSolver()->SolveDomain(start,Vector3(0,0,1),end,Vector3(0,0,-1),f.Scene(),air,domain,records,sampler,1e-7);
+            Check(!solved.valid,"post-preparation unaudited input rejects the direct domain solve");
+        }
         for(unsigned trial=0;trial<4;++trial) {
             const unsigned salt=SobolSequence::HashCombine(12000+trial,0x554e4345);
             SobolSamplerTestHooks::ValueSalt().store(salt);
@@ -1978,9 +2049,15 @@ int main(int argc,char** argv) {
     }
     if(argc==2&&std::string(argv[1])=="--r6-generated-uv-only") {
 #ifdef RISE_SMS_REFERENCE_A
-        NativeNearCommensurateNormal(true);
+        for(unsigned mode:{1u,2u,3u}) NativeNearCommensurateNormal(mode);
 #else
         Check(false,"generated UV differential witness requires native domain support");
+#endif
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
+    }
+    if(argc==2&&std::string(argv[1])=="--r6-weld-range-only") {
+#ifdef RISE_SMS_REFERENCE_A
+        NativeWeldCoordinateRange();
 #endif
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
     }

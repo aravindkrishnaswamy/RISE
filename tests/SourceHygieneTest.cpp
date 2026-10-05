@@ -704,6 +704,13 @@ int main()
 
 	std::vector<std::string> offenders;
 	int scanned = 0;
+    // /Yu ignores declarations before the through-header on Windows.
+    for(const char* name : {"Object.cpp","CSGObject.cpp"}) {
+        std::ifstream in(testsDir.parent_path()/"src/Library/Objects"/name);
+        std::string line,firstInclude;
+        while(std::getline(in,line)) if(line.find("#include") == 0) {firstInclude=line;break;}
+        Check(firstInclude=="#include \"pch.h\"",std::string(name)+" preserves Windows PCH through-header declarations");
+    }
 
 	for( const auto& entry : fs::directory_iterator( testsDir ) ) {
 		if( !entry.is_regular_file() ) { continue; }

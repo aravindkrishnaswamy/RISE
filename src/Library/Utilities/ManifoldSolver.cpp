@@ -24,6 +24,7 @@
 #include "../Geometry/TriangleMeshGeometry.h"
 #include "../Painters/UniformColorPainter.h"
 #include "../Interfaces/IRayIntersectionModifier.h"
+#include "../Interfaces/IUVGenerator.h"
 #include "../Interfaces/IGeometry.h"		// CanBeAreaLight(): SMS surface seeding shares the sampling contract
 #include "SMSPhotonMap.h"
 #include "Optics.h"
@@ -245,7 +246,15 @@ namespace {
     bool SMSAuditedModifier(const RISE::IObject& object) {
         const auto* modifier=object.GetModifier();
         const auto* differential=dynamic_cast<const RISE::ISMSModifierDifferential*>(modifier);
-        return !modifier || (differential && differential->HasSMSDifferentialContract());
+        if(!modifier) return true;
+        if(!differential || !differential->HasSMSDifferentialContract()) return false;
+        if(!differential->SMSFrameDependsOnUV()) return true;
+        const auto* native=dynamic_cast<const RISE::Implementation::Object*>(&object);
+        if(!native) return false;
+        const auto* generator=native->SMSUVGenerator();
+        if(!generator) return true; // Audited native geometry chart.
+        const auto* uv=dynamic_cast<const RISE::ISMSUVDifferential*>(generator);
+        return uv && uv->HasSMSUVDifferentialContract();
     }
     RISE::Vector3 SMSNormalizedDifferential(const RISE::Vector3& value,
         const RISE::Vector3& derivative) {
@@ -296,7 +305,19 @@ namespace {
             Vector3 normal=input.normal,frameW=input.frameW;
             if(raw.pModifier) {
                 const auto* provider=dynamic_cast<const ISMSModifierDifferential*>(raw.pModifier);
-                if(!provider || !provider->SMSFrameDifferential(raw.geometric,input,normal,frameW)) return false;
+                if(!provider) return false;
+                if(provider->SMSFrameDependsOnUV()) {
+                    const auto* native=dynamic_cast<const Implementation::Object*>(center.pObject);
+                    if(!native) return false;
+                    if(const auto* generator=native->SMSUVGenerator()) {
+                        const auto* uv=dynamic_cast<const ISMSUVDifferential*>(generator);
+                        if(!uv || !uv->HasSMSUVDifferentialContract()
+                            || !uv->SMSUVDifferential(raw.geometric.ptObjIntersec,
+                                raw.geometric.UnflippedGeomNormal(),input.objectPoint,
+                                input.geometricNormal,input.uv)) return false;
+                    }
+                } else input.uv=Point2(0,0);
+                if(!provider->SMSFrameDifferential(raw.geometric,input,normal,frameW)) return false;
             }
             dn=dynamic_cast<const Implementation::PolishedMaterial*>(center.pMaterial)?normal:frameW;
             dg=input.geometricNormal;

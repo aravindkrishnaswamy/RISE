@@ -16,6 +16,7 @@
 #ifndef IRAYINTERSECTION_MODIFIER_
 #define IRAYINTERSECTION_MODIFIER_
 #define RISE_SMS_MODIFIER_DIFFERENTIAL 1
+#define RISE_SMS_COMPOSED_DIFFERENTIAL 1
 
 #include "IReference.h"
 #include "../Intersection/RayIntersectionGeometric.h"
@@ -46,6 +47,10 @@ namespace RISE
         virtual bool SMSFrameDifferential(const RayIntersectionGeometric& raw,
             const SMSIntersectionDifferential& input,
             Vector3& normal, Vector3& frameW) const = 0;
+        // Conservative default: undeclared dependencies include raw UVs.
+        // False certifies that output normal/frame derivatives do not consume
+        // raw UV values or derivatives, for every supported provider input.
+        virtual bool SMSFrameDependsOnUV() const { return true; }
     };
 
 	//! Has the ability to modify intersection details

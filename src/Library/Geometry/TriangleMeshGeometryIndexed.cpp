@@ -34,6 +34,7 @@
 #include <cmath>
 #include <cassert>
 #include <cstdint>
+#include <limits>
 #include <unordered_map>
 #include <utility>
 #ifdef RISE_ENABLE_MAILBOXING
@@ -664,15 +665,18 @@ namespace
 	//! needs a second geometric test at "the same tolerance the weld
 	//! itself trusted" (the coplanarity test below) doesn't re-derive
 	//! the formula and risk drifting from it.
-	void WeldVertexPositions( const std::vector<Point3>& points, std::vector<unsigned int>& outWeldedId, Scalar* outEps = nullptr )
+	bool WeldVertexPositions( const std::vector<Point3>& points, std::vector<unsigned int>& outWeldedId, Scalar* outEps = nullptr )
 	{
 		outWeldedId.assign( points.size(), 0u );
 		if( points.empty() ) {
 			if( outEps ) { *outEps = Scalar( 1e-9 ); }
-			return;
+			return true;
 		}
 
 		BoundingBox bbox( points[0], points[0] );
+		for( const auto& p : points ) {
+			if( !std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z) ) return false;
+		}
 		for( std::size_t i = 1; i < points.size(); ++i ) {
 			bbox.Include( points[i] );
 		}
@@ -680,10 +684,25 @@ namespace
 		const Scalar diag = Vector3Ops::Magnitude( extents );
 		const Scalar eps = std::max( Scalar( 1e-9 ), Scalar( 1e-6 ) * diag );
 		const Scalar cell = eps;
+		if( !std::isfinite(cell) || !(cell > 0) ) return false;
 		if( outEps ) { *outEps = eps; }
 
+		// Keep the existing grid for representable absolute coordinates. When
+		// translation exceeds its integer range, use a mesh-local origin.
+		// Relative coordinates are bounded by diag/eps <= 1e6. Strict bounds
+		// below also leave room for the signed +/-1 neighbor additions.
+		const auto safeCoordinate = [cell](Scalar v) {
+			const double c=std::floor(double(v/cell));
+			return std::isfinite(c) && c > double(std::numeric_limits<std::int64_t>::min())
+				&& c < double(std::numeric_limits<std::int64_t>::max());
+		};
+		bool localGrid=false;
+		for( const auto& p : points ) {
+			if( !safeCoordinate(p.x) || !safeCoordinate(p.y) || !safeCoordinate(p.z) ) {localGrid=true;break;}
+		}
+		const Point3 origin=localGrid?bbox.ll:Point3(0,0,0);
 		auto cellCoord = [cell]( const Scalar v ) -> std::int64_t {
-			return (std::int64_t)std::floor( (double)( v / cell ) );
+			return static_cast<std::int64_t>(std::floor(double(v/cell)));
 		};
 		// A simple, well-distributed combine for the 3D cell key -- collisions are
 		// fine (unordered_map handles them; a false-positive bucket collision only
@@ -705,9 +724,9 @@ namespace
 
 		for( std::size_t i = 0; i < points.size(); ++i ) {
 			const Point3& p = points[i];
-			const std::int64_t cx = cellCoord( p.x );
-			const std::int64_t cy = cellCoord( p.y );
-			const std::int64_t cz = cellCoord( p.z );
+			const std::int64_t cx = cellCoord( p.x-origin.x );
+			const std::int64_t cy = cellCoord( p.y-origin.y );
+			const std::int64_t cz = cellCoord( p.z-origin.z );
 
 			unsigned int foundId = 0xFFFFFFFFu;
 			for( int dz = -1; dz <= 1 && foundId == 0xFFFFFFFFu; ++dz ) {
@@ -736,6 +755,7 @@ namespace
 			}
 			outWeldedId[i] = foundId;
 		}
+		return true;
 	}
 }
 
@@ -920,7 +940,7 @@ void TriangleMeshGeometryIndexed::ComputeWatertightness()
 
 	std::vector<unsigned int> weldedId;
 	Scalar weldEps = Scalar( 1e-9 );
-	WeldVertexPositions( pPoints, weldedId, &weldEps );
+	if( !WeldVertexPositions( pPoints, weldedId, &weldEps ) ) return;
 
 	// DL-150.  Report the weld's own vertex-count reduction so an author
 	// can see an over-aggressive weld even when the discriminator below
