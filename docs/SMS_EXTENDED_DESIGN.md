@@ -1,6 +1,6 @@
 # Extended SMS: event proposals, channel geometry, and path ownership
 
-**Status: adopted implementation contract, 2026-10-03. Phase 1 domain/replay primitives and interim rejection policy are implemented on `sms-ext`, merged to master at `34bd520ec5e70a5cf96bcf8b8154b1a17888880f`. Phase 2 is implemented on `sms-ext-phase2`, unmerged; the fresh Round 6 review found implementation defects and a reproduced generated-UV differential contract gap, the user adopted the composed-input differential correction on 2026-10-05 and repairs/gates are in progress. Phases 3–4 remain pending.**
+**Status: adopted implementation contract, 2026-10-03. Phase 1 domain/replay primitives and interim rejection policy are implemented on `sms-ext`, merged to master at `34bd520ec5e70a5cf96bcf8b8154b1a17888880f`. Phase 2 is implemented on `sms-ext-phase2`, unmerged; the fresh Round 6 review found implementation defects and a reproduced generated-UV differential contract gap, the user adopted the composed-input differential correction on 2026-10-05, repairs and the composed replacement gate pass at native/test checkpoint `f5f04b1f5`, and fresh Round7 review remains required. Phases 3–4 remain pending.**
 
 Base: master `a8fa56224ff1e4d9284e907fcf1d1d05534530e6`, the reviewed attenuation integration. DL-437 and DL-438 remain open. The user authorized deferring them for that integration and asked for this extended design next. This proposal keeps the native material conventions established by [DL-435](DL435_SPECTRAL_SMS_ATTENUATION.md). It does not replace them with a general participating-medium or absorbing-film model.
 
@@ -792,7 +792,7 @@ UV-dependency declaration; the legacy interfaces remain unchanged. No ledger
 row is opened for this contract decision. Repairs and fresh gates/review are
 required before integration.
 
-Other Round 6 implementation findings require repair: `Object.cpp` and
+Other Round 6 implementation findings at that checkpoint required repair: `Object.cpp` and
 `CSGObject.cpp` include the SMS header before the Windows `/Yu` precompiled
 header; the weld-coordinate conversion can exceed `int64_t` before the
 unsigned hash; and the unsupported-caster loop never executes kind4, so its
@@ -800,3 +800,9 @@ claimed after-final-preparation uncertified-modifier coverage is withdrawn.
 The passing full gate remains valid for its recorded workload and checkpoint;
 it neither covers these missing cases nor establishes review convergence.
 Phase2 remains unmerged. No rows are opened/closed and no changes are pushed.
+
+### Round 6 repairs and completed replacement gate (2026-10-05)
+
+The composed-input correction is implemented through optional `ISMSUVDifferential` and conservative `SMSFrameDependsOnUV`. Generated-UV differentials receive the native object-space point/normal and their transported derivatives. Transformed real-mesh controls cover both windings and incidence sides, all RGB components and NM450/NM650, with independently shifted constraint and emitter endpoint Jacobians. PCH order, safe weld-cell conversion and the actually executed post-preparation rejection cases are repaired. The committed pre-transform proof is281/60; pre-composed UV321/30, unsupported1005/76 and hygiene170/2; restored UV321/0, unsupported1081/0 and hygiene172/0. The fully instrumented committed weld proof reproduces native float-cast overflow, then restores weld37/0 and UV321/0.
+
+The current checkpoint `f5f04b1f5` passes35 make modes /412084 reported checks /0 failures, sixteen actual Xcode-linked controls, eight rebuilt native controls, ten full-project sanitizer modes /236320 checks /0 failures, and clean make/Deployment/Opto with zero owned diagnostics. The gate retains29 completed make modes and resumes six on the same checked binary with unchanged20-native/4-test hashes; the interrupted slab is rerun in full. Four earlier committed rollback scenarios and eight interleaved A/B builds are retained on identical native hashes; current native-master/restored proofs and updated toolchain builds/controls are rerun. The initial rejected Xcode setup retry and sanitizer harness termination mismatch are preserved separately. Full provenance, cost and scope are in [SMS_EXTENDED_PHASE2_VALIDATION.md](SMS_EXTENDED_PHASE2_VALIDATION.md). All12 narrow-cone comparisons retain and pass their original3SD bands; the accepted wide-cone discrepancy supplies no DL-420 closure. Fresh independent Round7 review and integration remain pending. No ledger row is opened or closed.

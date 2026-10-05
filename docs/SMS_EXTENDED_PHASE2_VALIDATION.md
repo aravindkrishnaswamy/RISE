@@ -2,16 +2,9 @@
 
 Phase 2 is implemented on `sms-ext-phase2`, based on master
 `08552560b54b517b7a8a0696eb9d317953b26bbe`, and remains unmerged.
-The most recent full composed gate uses native source `71c080bd3` and
-close-root fixtures at `a6b4aa37a`; it passes **374075/0**
-across 30 make modes, twelve actual Xcode-linked controls and five partial
-sanitizer modes. Fresh external Round 5 completed with five P1 and two P2 findings. The user authorized continuation beyond five rounds. Repairs and isolated
-witnesses have resumed; the changed tree has not passed a new full gate or
-Round 6 review, and no Phase 2 merge occurred. Earlier sections
-are historical checkpoint records; their pending-review statements describe
-those checkpoints and do not supersede the current status.
+The current completed gate freezes native/test checkpoint `f5f04b1f5601dc9ff856e065ad9ae4cba559fb57`: 35 make modes /412084 reported checks /0 failures, sixteen actual Xcode-linked controls, eight rebuilt native controls, and ten sanitizer modes with all374 linked project units instrumented. Both updated Xcode configurations pass clean builds with zero owned diagnostics. Round6 findings are repaired under the user-adopted composed-input correction. Fresh Round7 review and integration remain pending. The gate explicitly composes unchanged-source evidence across the toolchain interruption; its provenance and limits appear in the final section below. Earlier sections are historical checkpoint records; their pending-review statements describe those checkpoints and do not supersede this status.
 
-## Current composed gate at a6b4aa37a (2026-10-04)
+## Historical composed gate at a6b4aa37a (2026-10-04)
 
 Evidence: `.claude/logs/sms-phase2-round5-final-v3/`, especially
 `source.json`, `composition.json`, `proofs/results.json`,
@@ -1291,3 +1284,42 @@ and368-byte SMSReferenceCounters.
 The earlier failures and rebuilt repair proofs remain in the v2 directory.
 Fresh independent review is next; no convergence, Phase2 merge, push, new
 ledger row or closure is claimed by this passing gate alone.
+
+## Adopted composed-input correction and Round 6 repairs (2026-10-05)
+
+User ruling adopted in `3925ad599`: UV-dependent audited modifiers also require an audited generated-UV differential; unaudited composition makes the anchor ineligible, coupling all three switches and retaining PT. Audited UV-independent modifiers remain eligible. `ISMSUVDifferential` is a separate optional capability; `IUVGenerator` and `IRayIntersectionModifier` legacy vtables are unchanged. `ISMSModifierDifferential::SMSFrameDependsOnUV` is optional and appended with conservative default true. Object exposes its borrowed generator through nonvirtual `SMSUVGenerator`.
+
+Self-audit `87c4e5421` corrects generated-UV normal input transport: native Object calls GenerateUV with object-space point and normal. The differential transforms the world geometric normal by the transpose of the final object transform, normalizes it, and transports its derivative. Both windings and incidences under nonuniform scale and rotation now exercise all RGB components and NM450/NM650, including independent constraint and endpoint Jacobians. Uncertified harmonic UV composition is rejected; audited harmonic composition and audited UV-independent normals remain positive.
+
+Round 6 implementation repairs also restore pch.h as the first include in Object.cpp/CSGObject.cpp and add mechanical hygiene controls. Weld cell coordinates are checked for finite/int64-safe conversion; large translated meshes use the same distance and tolerance tests with a mesh-local origin when the absolute grid is unrepresentable. This adds bounded linear preparation passes, with no per-sample loop. Open and closed native meshes at zero and ±1e14 translation cover both windings. Post-preparation unsupported cases now actually execute unaudited modifier kind4 and generated-UV kind5, proving predicate/proposal rejection and exact-double on/off RGB/NM output under four salts.
+
+Coherent proofs disclose their composition in `composition.json`: four completed rollback scenarios at 87c4e5421 are retained after test-only preprocessor-guard repair f5f04b1f5, with all20 native hashes unchanged. A-enabled witness logic is unchanged; the missing-feature master compile guard is fixed. The failed original master compilation and interrupted earlier own build remain preserved and are not numerical red proofs. Native-master and every restored green are rebuilt on current tests. Pre-transform gives281/60, pre-composed UV321/30, unsupported1005/76 and hygiene170/2; pre-differential36067/10, preparation23/8 and provenance33/8; pre-scratch177/24 fails missing diagnostic capability while its radiance checks pass. Current master production127/50 is a numerical red. Restored controls total235851/0 across ten modes. Fresh fully instrumented pre-range UBSan red/current green is recorded separately after the complete sanitizer gate.
+
+No new ledger row, closure or Phase2 convergence is implied by these repair proofs. The completed gate and fresh review results follow below.
+
+## Round 7 composed replacement gate (2026-10-05)
+
+Native/test checkpoint `f5f04b1f5601dc9ff856e065ad9ae4cba559fb57`; master `08552560b54b517b7a8a0696eb9d317953b26bbe` unchanged. Evidence: `.claude/logs/sms-phase2-round7-final/`. The completed tree has the composed gate described below; rollback proof composition is explicitly disclosed above and in composition.json. Source hashes verify all20 native paths and four test sources.
+
+The interruption stopped the original process during the slab mode;29 completed modes are retained on the unchanged20-native/4-test hashes. Six remaining modes use the same previously checked test binary; the slab is rerun in full, preserving the interrupted log. Clean make and both Xcode configurations are rebuilt after user completion of the updated toolchain license and first-launch package setup, with eight additional rebuilt native controls. Pre-interruption A/B evidence is retained on the identical source tree. This is an explicitly composed gate.
+
+| Gate | Result |
+|---|---|
+| Clean make |376 compilation units /0 diagnostics |
+| Actual Xcode Deployment / Opto |393 units each /0 owned diagnostics |
+| Make regressions |20 executables /35 modes /412084 reported checks /0 failures; CST corpus reported separately |
+| Actual Xcode-linked controls |16 runs /401128 checks /0 failures |
+| Rebuilt native controls after toolchain update |8 runs /231382 checks /0 failures |
+| Full ASan/UBSan including float-cast-overflow |374 linked project C++/Objective-C++ units,10 modes /236320 checks /0 failures; third-party libraries uninstrumented |
+| Fully instrumented weld conversion proof |committed eca4f2ecc float-cast UB reproduced; restored weld37/0 and composed UV321/0 |
+| Process memory |production393/0; maximum RSS103071744 bytes; peak footprint82870824 bytes |
+| Scratch output invariant |40 salted production means, maximum0.0 double ULP vs pre-storage-refactor |
+| Mode-off pixels |16 salted comparisons within one F32 ULP,15 images identical /1 NM image one component one ULP |
+
+The first retry compiled Deployment successfully but the strict gate rejected two Xcode startup errors (CoreDevice/CoreSimulator package mismatch). Those logs remain preserved. After the user completed first-launch setup, the successful builds above were rerun from clean products. The intentional UBSan proof initially ended with SIGABRT under the updated runtime while its ignored harness expected exit1; the exact native float-cast diagnostic was preserved, sources were restored, and the repaired harness was rerun. It accepts exit1 or SIGABRT only with that exact diagnostic; restored weld37/0 and composedUV321/0 pass. No numerical band changed.
+
+Paired render-time changes, percent mean ± sample SD, n4, one worker and reserve_count0: RGBk1 +1.514415 ±0.380165; RGBk2 +0.939036 ±0.438353; NM +2.169488 ±0.573695; HWSS +2.018847 ±0.537038. Separate A/B seconds/SDs and image hashes are in phase2-interleaved-cost.json; no zero-overhead claim.
+
+All12 narrow-cone channel comparisons pass their original three-combined-SD bands. Wide-cone measurements outside that band: 1 of6, reported in slab-summary.json. The already accepted wide-cone discrepancy does not widen any band or supply DL-420 closure.
+
+Fresh independent Round7 review is required next. Phase2 remains unmerged; no push, ledger closure or new row is claimed.
