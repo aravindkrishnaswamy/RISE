@@ -1,0 +1,51 @@
+{
+  "schema": "rise.fire.r248.donor-limiter-review.v1",
+  "candidate_commit": "6d5f2781c",
+  "round": 3,
+  "accepted": true,
+  "scope": "pure donor/limiter arithmetic and canonical fixed numeric wire prerequisite only",
+  "reviews": [
+    {
+      "agent": "/root/r248_donor_arithmetic_r3",
+      "P1": 0,
+      "P2": 0,
+      "evidence": [
+        "all11pins/34RED",
+        "6000 exponent/bin ratio GREENs",
+        "288 rows asymmetric bitwise coordinate oracle",
+        "4 additional mutation REDs",
+        "normal binary64 RN proof and coverage"
+      ]
+    },
+    {
+      "agent": "/root/r248_donor_integrity_r2",
+      "fresh_round": 3,
+      "P1": 0,
+      "P2": 0,
+      "evidence": [
+        "all11pins/34RED",
+        "72 random native/common equalheight/alphaedge roundtrips",
+        "7 identicalface mutation REDs",
+        "sharedalpha and lateral subset mutations"
+      ]
+    }
+  ],
+  "prior_rounds_preserved": [
+    "r248_donor_limiter_review_round1.json",
+    "r248_donor_limiter_review_round2.json"
+  ],
+  "native_fields_read": 0,
+  "native_donor_state_authenticated": false,
+  "observer_allocation_accepted": false,
+  "native_observer_parity_accepted": false,
+  "physical_depletion_causality_accepted": false,
+  "new_simulation_launched": false,
+  "remaining": [
+    "full scalar balance numeric family",
+    "spatial reaction/oxygen/fuel numeric family",
+    "whole-region Heun momentum numeric family",
+    "authenticated resident lifetimes/publication chain",
+    "host+Metal live allocation inventory and measured memory",
+    "native enabled-disabled exact accepted-state parity"
+  ]
+}

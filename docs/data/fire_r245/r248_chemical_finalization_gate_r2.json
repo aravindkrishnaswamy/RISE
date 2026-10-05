@@ -1,0 +1,81 @@
+{
+  "schema": "rise.fire.r248.chemical-finalization-gate.v1",
+  "status": "pending_independent_review",
+  "pins": [
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_chemical_finalization_validation.v2/r248_chemical_finalization.py",
+      "sha256": "a937119bd51c78fb782953682f68e0f9a212663f09d9d6183e76bb3392fb73d0"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_chemical_finalization_validation.v2/r248_chemical_finalization_verify.py",
+      "sha256": "263ea6ebf4752899b09a04dcac266461178c42d09008a9f0abc295f2f57603ec"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_chemical_finalization_validation.v2/validation.json",
+      "sha256": "96b6e3f5b382790f376f4b6aa30ecc3c49becb3bd646b8b4fbaa4e42745e41ff"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r248_chemical_binary64.py",
+      "sha256": "80b1644433fd84390c128ccc24db98660194450d7d506fe532967ffa07e77f15"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r248_resident_finalization.py",
+      "sha256": "6a2a873ea422cd291c13fbe1408ebe21129c431671c985ca11695418f9bbc8c2"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/src/Library/Utilities/FireProductionTransport.h",
+      "sha256": "6c7dfcf8070a07454455ce568a6fd1376ffa62efc910bf51e6aba70532321331"
+    }
+  ],
+  "validation": {
+    "independent_rounding_checks": 16192,
+    "paired_field_fixtures": 100,
+    "reds": [
+      "bool",
+      "zero_denominator",
+      "negative_denominator",
+      "numerator_bound",
+      "denominator_bound",
+      "measure_0",
+      "measure_9223372036854775808",
+      "measure_13830554455654793216",
+      "measure_9218868437227405312",
+      "measure_9221120237041090560",
+      "measure_True",
+      "measure_-1",
+      "measure_18446744073709551616",
+      "workspace",
+      "huge_shift",
+      "negative_huge_shift",
+      "bool_shift",
+      "zero_divisor",
+      "negative_dividend",
+      "oversized_dividend",
+      "negative_workspace",
+      "source_nan",
+      "even_coordinate"
+    ],
+    "contract": {
+      "operand_magnitude_bits": 4608,
+      "division_work_magnitude_bits": 6144,
+      "twice_remainder_comparison_max_bits": 6145,
+      "conservative_sum_multiplier_numerator_bits": 4230,
+      "conservative_sum_multiplier_denominator_bits": 2149,
+      "conservative_joint_variance_numerator_bits": 4327,
+      "conservative_joint_variance_denominator_bits": 4265,
+      "generic_max_operand_plus_subnormal_shift_bits": 5682,
+      "conversion": "One exact represented binary64 positive multiplier for sum quantities only",
+      "geometry": "Centroid in caller cell units; variance in caller cell units squared; no dx conversion",
+      "rounded": "One integer RN-even per exact rational; unavailable overflow/empty geometry",
+      "original_2048_4096_finalizer_unchanged": true,
+      "measured_memory": false,
+      "source_authentication": false,
+      "new_simulation": false
+    },
+    "native_source_authentication": false,
+    "measured_memory": false,
+    "new_simulation": false
+  },
+  "scope": "Exact captured caller chemical fields and logical bounded integer RN-even; no native source authentication or measured allocation.",
+  "repair": "Typed division operands/shift and input/forecast workspace bounds refuse before shifts; v1 frozen evidence preserved."
+}

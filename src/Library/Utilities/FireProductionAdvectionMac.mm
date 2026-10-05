@@ -25,8 +25,11 @@
 #include "../Interfaces/IOptions.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <mach/mach.h>
+#include <sys/resource.h>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -178,13 +181,17 @@ kernel void merkle_root(device const uchar* child [[buffer(0)]],device uchar* ro
 )METAL";
 		}
 
+		enum class PayloadMerkleScope : unsigned int { OwnerPublication=0u,StandaloneDigest=1u };
+		std::array<std::atomic<std::uint64_t>,2> PayloadMerkleConstructionAttempts{};
+
 		struct PayloadMerkleContext
 		{
 			id<MTLDevice> device=nil;
 			id<MTLCommandQueue> queue=nil;
 			id<MTLComputePipelineState> leaf=nil,node=nil,root=nil;
 			std::string error;
-			PayloadMerkleContext(){
+			explicit PayloadMerkleContext(const PayloadMerkleScope scope){
+				PayloadMerkleConstructionAttempts[static_cast<unsigned int>(scope)].fetch_add(1u,std::memory_order_relaxed);
 				device=DiscoverProductionMetalDevice("payload-merkle-v2",error);if(!device)return;
 				queue=[device newCommandQueue];NSError* failure=nil;
 				MTLCompileOptions* options=[[MTLCompileOptions alloc] init];
@@ -198,6 +205,20 @@ kernel void merkle_root(device const uchar* child [[buffer(0)]],device uchar* ro
 				if(!queue||!leaf||!node||!root)error="payload-merkle-v2 pipeline: "+MetalString([failure localizedDescription]);
 			}
 		};
+
+
+		// These preserve the two distinct original process-local statics. The owner
+		// and standalone digest call sites below select their own factory only.
+		PayloadMerkleContext& OwnerPublicationMerkleContext()
+		{
+			static PayloadMerkleContext context(PayloadMerkleScope::OwnerPublication);
+			return context;
+		}
+		PayloadMerkleContext& StandaloneDigestMerkleContext()
+		{
+			static PayloadMerkleContext context(PayloadMerkleScope::StandaloneDigest);
+			return context;
+		}
 
 		// Hash a device payload without reading an intermediate tree node on the
 		// host. The command owns every private level until its terminal root copy.
@@ -520,7 +541,7 @@ kernel void merkle_root(device const uchar* child [[buffer(0)]],device uchar* ro
 		}
 
 		bool PackMetalEOSDoubleDoubleThermochemistry(
-			std::array<float,MetalEOSThermochemistryValues>& packed,std::string* error )
+			std::array<float,MetalEOSThermochemistryValues>& packed )
 		{
 			packed.fill(0.0f);const FireSimulationMethaneRecord& fuel=
 				FireSimulationMethaneRecord::PhysicalV1();
@@ -2213,6 +2234,9 @@ kernel void fct_commuting_identity(device const float* beginning [[buffer(0)]],
 			}
 		};
 
+		// Attempts, not successful creation or live-byte counters.
+		std::atomic<std::uint64_t> ResidentContextConstructionAttempts[3]={0u,0u,0u};
+
 		struct SingleStageFCTMetalContext
 		{
 			id<MTLDevice> device;
@@ -2235,6 +2259,7 @@ kernel void fct_commuting_identity(device const float* beginning [[buffer(0)]],
 				buildFaceAlpha(nil),commitScalar(nil),compatibleStageRate(nil),applyMomentumRate(nil),
 				extractGasDensity(nil),fillOne(nil),commutingIdentity(nil)
 			{
+				ResidentContextConstructionAttempts[2].fetch_add(1u,std::memory_order_relaxed);
 				@autoreleasepool {
 					device=MTLCreateSystemDefaultDevice();
 					if(!device){error="production single-stage FCT diagnostic has no Metal device";return;}
@@ -3952,6 +3977,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				ownerResidual(nil),ownerClassResidual(nil),ownerIntegratedOpenHead(nil),
 				ownerIssueStageSeal(nil),ownerIssuePublication(nil)
 			{
+				ResidentContextConstructionAttempts[stageTokens?1u:0u].fetch_add(1u,std::memory_order_relaxed);
 				productionStageTokens=stageTokens;
 				compiledSource=std::string("#define RISE_STAGE_TOKENS ")+(stageTokens?"1\n":"0\n")+Source();
 				// Qualification and production compile the same arithmetic. Only
@@ -7900,7 +7926,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			bool HashPayload(id<MTLCommandBuffer> command,id<MTLBuffer> payload,
 				std::size_t bytes,id<MTLBuffer> root,std::size_t rootOffset,std::string* error)
 			{
-				static PayloadMerkleContext merkle;std::string failure;
+				auto& merkle=OwnerPublicationMerkleContext();std::string failure;
 				if(!merkle.error.empty()||[merkle.device registryID]!=[context_.device registryID]){
 					if(error)*error="owner payload seal device/kernel mismatch: "+merkle.error;return false;}
 				if(!EncodePayloadMerkle(merkle,command,payload,bytes,256u,root,failure,0u,rootOffset)){
@@ -9238,7 +9264,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			std::array<float,14> enthalpy={{}};float feasibility=0.0f,reserve=0.0f;
 			if(!PackMetalResidentTransport(packedTransport,transportMetadata_,error)||
 				!PackMetalMethaneThermochemistry(packedThermo,manifold,lower,upper,error)||
-				!PackMetalEOSDoubleDoubleThermochemistry(packedEOSThermo,error)||
+				!PackMetalEOSDoubleDoubleThermochemistry(packedEOSThermo)||
 				!PackMetalSingleStageFCTCertificate(fctBasis,fctProjector,enthalpy,affine,
 					feasibility,reserve,error))return false;
 			const auto& flux=request_.lineage.eos.physicalFlux;
@@ -11565,15 +11591,266 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 		return passed;
 	}
 
+	bool CaptureFireProductionPreconstructionResources(
+		const FireProductionFrozenSourcePacketSeal& source,
+		FireProductionPreconstructionResourceSample& sample )
+	{
+		sample=FireProductionPreconstructionResourceSample();
+		const auto& shape=source.Shape();
+		auto multiply=[](std::uint64_t a,std::uint64_t b,std::uint64_t& out){
+			if(b!=0u&&a>UINT64_MAX/b)return false;out=a*b;return true;};
+		auto add=[](std::uint64_t a,std::uint64_t& total){
+			if(total>UINT64_MAX-a)return false;total+=a;return true;};
+		std::uint64_t plane=0u,cells=0u;
+		bool layout=source.IsSealed()&&shape.nx>0u&&shape.ny>0u&&shape.nz>0u&&
+			multiply(shape.nx,shape.ny,plane)&&multiply(plane,shape.nz,cells)&&
+			cells<=UINT32_MAX&&std::isfinite(shape.cellWidthM)&&shape.cellWidthM>0.0f;
+		sample.cells=layout?cells:0u;
+		sample.sourceSize={{source.BeginningTemperatureK().size(),source.SourceDelta().size(),
+			source.DivergenceTargetPerS().size(),source.ReactedFuelKGPerM3().size(),
+			source.OxidizedCarbonKGPerM3().size(),source.GrossCarbonFormedKGPerM3().size(),
+			source.GasHeatReleaseWPerM3().size(),source.SootHeatReleaseWPerM3().size(),
+			source.PilotEnergyDeltaJPerM3().size(),source.PilotExpansionIntegral().size(),
+			source.RadiativeCoolingWPerM3().size()}};
+		sample.sourceCapacity={{source.BeginningTemperatureK().capacity(),source.SourceDelta().capacity(),
+			source.DivergenceTargetPerS().capacity(),source.ReactedFuelKGPerM3().capacity(),
+			source.OxidizedCarbonKGPerM3().capacity(),source.GrossCarbonFormedKGPerM3().capacity(),
+			source.GasHeatReleaseWPerM3().capacity(),source.SootHeatReleaseWPerM3().capacity(),
+			source.PilotEnergyDeltaJPerM3().capacity(),source.PilotExpansionIntegral().capacity(),
+			source.RadiativeCoolingWPerM3().capacity()}};
+		std::uint64_t elements=0u,capacity=0u;
+		for(std::size_t i=0u;i<sample.sourceSize.size();++i){
+			const std::uint64_t width=i<3u?sizeof(float):sizeof(double);
+			std::uint64_t expected=0u,bytes=0u,capacityBytes=0u;
+			if(!multiply(cells,i==1u?9u:1u,expected)||sample.sourceSize[i]!=expected||
+				sample.sourceCapacity[i]<sample.sourceSize[i]||
+				!multiply(sample.sourceSize[i],width,bytes)||!add(bytes,elements)||
+				!multiply(sample.sourceCapacity[i],width,capacityBytes)||!add(capacityBytes,capacity))layout=false;
+		}
+		sample.sourceLayoutKnown=layout;
+		if(layout){sample.sourceElementBytes=elements;sample.sourceVectorCapacityBytes=capacity;}
+		@autoreleasepool {
+			try {
+			std::string discoveryError;
+			id<MTLDevice> device=DiscoverProductionMetalDevice("preconstruction-resource-probe",discoveryError);
+			if(device){sample.deviceAllocatedBytes=[device currentAllocatedSize];
+				sample.deviceWorkingSetLimitBytes=[device recommendedMaxWorkingSetSize];
+				sample.deviceMaxBufferLengthBytes=[device maxBufferLength];
+				sample.deviceTelemetryKnown=sample.deviceWorkingSetLimitBytes>0u&&sample.deviceMaxBufferLengthBytes>0u;}
+			} catch(const std::bad_alloc&) {sample.deviceTelemetryKnown=false;}
+		}
+		task_vm_info_data_t info={};mach_msg_type_number_t count=TASK_VM_INFO_COUNT;
+		if(task_info(mach_task_self(),TASK_VM_INFO,reinterpret_cast<task_info_t>(&info),&count)==KERN_SUCCESS&&
+			count>=TASK_VM_INFO_REV1_COUNT){sample.currentRSSBytes=info.resident_size;
+			sample.physicalFootprintBytes=info.phys_footprint;sample.compressedBytes=info.compressed;
+			sample.hostTelemetryKnown=sample.currentRSSBytes>0u;}
+		rusage usage={};if(getrusage(RUSAGE_SELF,&usage)==0&&usage.ru_maxrss>0){
+			sample.processPeakRSSBytes=static_cast<std::uint64_t>(usage.ru_maxrss);sample.peakTelemetryKnown=true;}
+		return sample.sourceLayoutKnown&&sample.hostTelemetryKnown&&sample.peakTelemetryKnown&&sample.deviceTelemetryKnown;
+	}
+
+	// Actual existing adapter factory observation only; no field buffers/commands.
+	static bool FireProductionMerkleContextResourceQualification(const PayloadMerkleScope scope,const unsigned int mode)
+	{
+		FireProductionPreconstructionResourceSample before,after;
+		const std::uint64_t initial=PayloadMerkleConstructionAttempts[static_cast<unsigned int>(scope)].load(std::memory_order_relaxed);
+		std::uint64_t registry=0u,staticMaximum=0u,deviceLimit=0u,threadMinimum=UINT64_MAX;
+		unsigned int slots=0u,refusal=0u;
+		bool entered=false,telemetry=false,slotsKnown=false,worked=false;
+		@autoreleasepool {
+			try {
+				worked=[&](){
+					if(mode>3u){refusal=2u;return false;}
+					const FireProductionFrozenSourcePacketSeal empty;
+					CaptureFireProductionPreconstructionResources(empty,before);
+					auto known=[](const FireProductionPreconstructionResourceSample& sample){
+						return sample.hostTelemetryKnown&&sample.peakTelemetryKnown&&sample.deviceTelemetryKnown;};
+					if(!known(before)){refusal=3u;return false;}
+					const std::uint64_t ceiling=mode==1u?2u:(UINT64_C(2)<<30u);
+					const std::uint64_t reserve=mode==1u?1u:(UINT64_C(32)<<20u);
+					if(std::max(before.currentRSSBytes,before.physicalFootprintBytes)>=ceiling-reserve){
+						refusal=1u;after=before;telemetry=true;return false;}
+					if(mode>=2u){
+						entered=true;auto& context=scope==PayloadMerkleScope::OwnerPublication?OwnerPublicationMerkleContext():StandaloneDigestMerkleContext();
+						if(!context.error.empty()||!context.device||!context.queue){refusal=5u;return false;}
+						registry=[context.device registryID];deviceLimit=[context.device maxThreadgroupMemoryLength];
+						const std::array<id<MTLComputePipelineState>,3> pipelines={{context.leaf,context.node,context.root}};
+						for(id<MTLComputePipelineState> pipeline:pipelines){
+							if(!pipeline){refusal=5u;return false;}++slots;
+							const auto threads=static_cast<std::uint64_t>([pipeline maxTotalThreadsPerThreadgroup]);
+							threadMinimum=std::min(threadMinimum,threads);
+							staticMaximum=std::max(staticMaximum,static_cast<std::uint64_t>([pipeline staticThreadgroupMemoryLength]));
+							if(threads==0u){refusal=6u;return false;}
+						}
+						slotsKnown=registry!=0u&&deviceLimit>0u&&staticMaximum<=deviceLimit;
+						if(!slotsKnown){refusal=6u;return false;}
+					}
+					CaptureFireProductionPreconstructionResources(empty,after);telemetry=known(after);
+					return telemetry&&(mode==0u||slotsKnown)&&after.processPeakRSSBytes<ceiling&&
+						std::max(after.currentRSSBytes,after.physicalFootprintBytes)<ceiling-reserve;
+				}();
+			}catch(const std::bad_alloc&){refusal=4u;worked=false;}
+		}
+		const auto final=PayloadMerkleConstructionAttempts[static_cast<unsigned int>(scope)].load(std::memory_order_relaxed);
+		if(threadMinimum==UINT64_MAX)threadMinimum=0u;
+		const bool published=std::printf("{\"kind\":\"%s\",\"mode\":%u,\"passed\":%s,\"refusal\":%u,\"before_attempts\":%llu,\"after_attempts\":%llu,\"pipeline_slots\":%u,\"slots_known\":%s,\"telemetry_known\":%s,\"factory_entered\":%s,\"registry\":%llu,\"static_threadgroup_max\":%llu,\"device_threadgroup_limit\":%llu,\"pipeline_thread_limit_min\":%llu,\"before_rss\":%llu,\"after_rss\":%llu,\"before_footprint\":%llu,\"after_footprint\":%llu,\"before_device\":%llu,\"after_device\":%llu,\"peak\":%llu}\n",
+			scope==PayloadMerkleScope::OwnerPublication?"owner_merkle":"standalone_merkle",mode,worked?"true":"false",refusal,static_cast<unsigned long long>(initial),static_cast<unsigned long long>(final),
+			slots,slotsKnown?"true":"false",telemetry?"true":"false",entered?"true":"false",static_cast<unsigned long long>(registry),
+			static_cast<unsigned long long>(staticMaximum),static_cast<unsigned long long>(deviceLimit),static_cast<unsigned long long>(threadMinimum),
+			static_cast<unsigned long long>(before.currentRSSBytes),static_cast<unsigned long long>(after.currentRSSBytes),
+			static_cast<unsigned long long>(before.physicalFootprintBytes),static_cast<unsigned long long>(after.physicalFootprintBytes),
+			static_cast<unsigned long long>(before.deviceAllocatedBytes),static_cast<unsigned long long>(after.deviceAllocatedBytes),
+			static_cast<unsigned long long>(after.processPeakRSSBytes))>=0&&std::fflush(stdout)==0;
+		return worked&&published;
+	}
+
+	bool FireProductionOwnerMerkleContextResourceQualification(const unsigned int mode)
+	{
+		return FireProductionMerkleContextResourceQualification(PayloadMerkleScope::OwnerPublication,mode);
+	}
+	bool FireProductionStandaloneMerkleContextResourceQualification(const unsigned int mode)
+	{
+		return FireProductionMerkleContextResourceQualification(PayloadMerkleScope::StandaloneDigest,mode);
+	}
+
+	// Standalone qualification of actual existing context factories. No owner,
+	// field buffer, numerical command or observer pipeline is created here.
+	bool FireProductionResidentContextResourceQualification(const unsigned int mode)
+	{
+		FireProductionPreconstructionResourceSample before,after;
+		std::array<std::uint64_t,3> initial{},final{};
+		for(std::size_t i=0u;i<3u;++i)initial[i]=ResidentContextConstructionAttempts[i].load(std::memory_order_relaxed);
+		std::array<unsigned int,3> pipelineSlots{};
+		std::uint64_t registry=0u,staticThreadgroupMax=0u,deviceThreadgroupLimit=0u;
+		std::uint64_t pipelineThreadLimitMin=UINT64_MAX;
+		bool slotsKnown=false,telemetryKnown=false,created=false;unsigned int refusal=0u;
+		const bool worked=RunProjectedHeunOwnerInAutoreleasePool([&](){
+			if(mode>3u){refusal=2u;return false;}
+			const FireProductionFrozenSourcePacketSeal empty;
+			CaptureFireProductionPreconstructionResources(empty,before);
+			auto known=[](const FireProductionPreconstructionResourceSample& sample){
+				return sample.hostTelemetryKnown&&sample.peakTelemetryKnown&&sample.deviceTelemetryKnown;};
+			if(!known(before)){refusal=3u;return false;}
+			const std::uint64_t ceiling=mode==1u?2u:(UINT64_C(2)<<30u);
+			const std::uint64_t reserve=mode==1u?1u:(UINT64_C(32)<<20u);
+			if(std::max(before.currentRSSBytes,before.physicalFootprintBytes)>=ceiling-reserve){
+				refusal=1u;after=before;telemetryKnown=true;return false;}
+			if(mode>=2u){
+				created=true;
+				ResidentTransportMetalContext& production=ResidentTransportContext(true);
+				ResidentTransportMetalContext& ordinary=ResidentTransportContext(false);
+				SingleStageFCTMetalContext& fct=SingleStageFCTContext();
+				if(!production.Valid()||!ordinary.Valid()||!fct.Valid())return false;
+				registry=[production.device registryID];deviceThreadgroupLimit=[production.device maxThreadgroupMemoryLength];
+				if(registry==0u||[ordinary.device registryID]!=registry||[fct.device registryID]!=registry)return false;
+				auto count=[&](id<MTLComputePipelineState> pipeline,unsigned int& slots){
+					if(!pipeline)return false;++slots;
+					pipelineThreadLimitMin=std::min(pipelineThreadLimitMin,static_cast<std::uint64_t>([pipeline maxTotalThreadsPerThreadgroup]));
+					staticThreadgroupMax=std::max(staticThreadgroupMax,static_cast<std::uint64_t>([pipeline staticThreadgroupMemoryLength]));
+					return [pipeline maxTotalThreadsPerThreadgroup]>0u;};
+				for(unsigned int kind=0u;kind<2u;++kind){const auto& context=kind==0u?ordinary:production;
+					const std::array<id<MTLComputePipelineState>,43> pipelines={{
+					context.evaluate,
+					context.identify,
+					context.physicalFlux,
+					context.advectivePair,
+					context.finalizeAdvective,
+					context.composePair,
+					context.validatePhysical,
+					context.identifyPhysical,
+					context.identifyEOSCandidate,
+					context.buildEOSEndpoints,
+					context.evaluateEOSCandidate,
+					context.finalizeEOSCandidate,
+					context.identifyEOS,
+					context.produceFrozenSource,
+					context.identifyFrozenSource,
+					context.evaluateTargetTerms,
+					context.finalizeTarget,
+					context.identifyTarget,
+					context.identifyProjectionConsumer,
+					context.consumeTarget,
+					context.diagnoseEOSLog,
+					context.ownerIssueBootstrap,
+					context.ownerPackFaces,
+					context.ownerAverageField,
+					context.ownerGasSource,
+					context.ownerPredictMomentum,
+					context.ownerHeunMomentum,
+					context.ownerBindTransport,
+					context.ownerAverageFlux,
+					context.ownerBindAveragedFlux,
+					context.ownerBindCandidate,
+					context.ownerComposeTarget,
+					context.ownerIdentifyTarget,
+					context.ownerNextOpenClass,
+					context.ownerIdentifyEndpointClass,
+					context.ownerIdentifyProducedEndpointClass,
+					context.ownerMinimumField,
+					context.ownerHalfField,
+					context.ownerResidual,
+					context.ownerClassResidual,
+					context.ownerIntegratedOpenHead,
+					context.ownerIssueStageSeal,
+					context.ownerIssuePublication}};
+					for(id<MTLComputePipelineState> pipeline:pipelines)if(!count(pipeline,pipelineSlots[kind]))return false;
+				}
+				const std::array<id<MTLComputePipelineState>,11> pipelines={{fct.buildFluxPair,fct.averageFluxPair,fct.validateFluxPair,fct.buildRatios,fct.buildFaceAlpha,fct.commitScalar,fct.compatibleStageRate,fct.applyMomentumRate,fct.extractGasDensity,fct.fillOne,fct.commutingIdentity}};
+				for(id<MTLComputePipelineState> pipeline:pipelines)if(!count(pipeline,pipelineSlots[2]))return false;
+				slotsKnown=deviceThreadgroupLimit>0u&&staticThreadgroupMax<=deviceThreadgroupLimit;
+			}
+			CaptureFireProductionPreconstructionResources(empty,after);
+			telemetryKnown=known(after);
+			return telemetryKnown&&(mode==0u||slotsKnown)&&after.processPeakRSSBytes<ceiling&&
+				std::max(after.currentRSSBytes,after.physicalFootprintBytes)<ceiling-reserve;
+		},[&](){refusal=4u;return false;});
+		for(std::size_t i=0u;i<3u;++i)final[i]=ResidentContextConstructionAttempts[i].load(std::memory_order_relaxed);
+		if(pipelineThreadLimitMin==UINT64_MAX)pipelineThreadLimitMin=0u;
+		const bool published=std::printf("{\"mode\":%u,\"passed\":%s,\"refusal\":%u,\"before_attempts\":[%llu,%llu,%llu],\"after_attempts\":[%llu,%llu,%llu],\"pipeline_slots\":[%u,%u,%u],\"slots_known\":%s,\"telemetry_known\":%s,\"factory_entered\":%s,\"registry\":%llu,\"static_threadgroup_max\":%llu,\"device_threadgroup_limit\":%llu,\"pipeline_thread_limit_min\":%llu,\"before_rss\":%llu,\"after_rss\":%llu,\"before_footprint\":%llu,\"after_footprint\":%llu,\"before_device\":%llu,\"after_device\":%llu,\"peak\":%llu}\n",
+			mode,worked?"true":"false",refusal,
+			static_cast<unsigned long long>(initial[0]),static_cast<unsigned long long>(initial[1]),static_cast<unsigned long long>(initial[2]),
+			static_cast<unsigned long long>(final[0]),static_cast<unsigned long long>(final[1]),static_cast<unsigned long long>(final[2]),
+			pipelineSlots[0],pipelineSlots[1],pipelineSlots[2],slotsKnown?"true":"false",telemetryKnown?"true":"false",created?"true":"false",
+			static_cast<unsigned long long>(registry),static_cast<unsigned long long>(staticThreadgroupMax),static_cast<unsigned long long>(deviceThreadgroupLimit),
+			static_cast<unsigned long long>(pipelineThreadLimitMin),static_cast<unsigned long long>(before.currentRSSBytes),static_cast<unsigned long long>(after.currentRSSBytes),
+			static_cast<unsigned long long>(before.physicalFootprintBytes),static_cast<unsigned long long>(after.physicalFootprintBytes),
+			static_cast<unsigned long long>(before.deviceAllocatedBytes),static_cast<unsigned long long>(after.deviceAllocatedBytes),static_cast<unsigned long long>(after.processPeakRSSBytes))>=0&&std::fflush(stdout)==0;
+		return worked&&published;
+	}
+
 	bool AttemptFireProductionProjectedHeunMetalOwner(
 		const FireProductionProjectedHeunMetalOwnerRequest& request,
 		FireProductionProjectedHeunMetalOwnerResult& result,std::string* error )
 	{
+		const bool resourceProbeSelected=request.qualificationPreconstructionResourceProbe||
+			request.qualificationPreconstructionSourceElementLimitBytes!=0u;
+		// Reused results cannot retain accepted authority if a reset allocates.
+		if(resourceProbeSelected){result.accepted=false;result.ownerPublicationIdentity=0u;
+			result.publicationPayloadRootSHA256.clear();result.preconstructionResources=FireProductionPreconstructionResourceSample();}
 		return RunProjectedHeunOwnerInAutoreleasePool([&](){
+			if(!request.qualificationPreconstructionResourceProbe&&
+				request.qualificationPreconstructionSourceElementLimitBytes!=0u){
+				result=FireProductionProjectedHeunMetalOwnerResult();
+				if(error)*error="preconstruction element limit requires resource probe";
+				return false;
+			}
+			if(request.qualificationPreconstructionResourceProbe){
+				result=FireProductionProjectedHeunMetalOwnerResult();
+				const bool captured=CaptureFireProductionPreconstructionResources(request.lineage.frozenSource,
+					result.preconstructionResources);
+				if(error)*error=!captured?"preconstruction resource observation unavailable":
+					(request.qualificationPreconstructionSourceElementLimitBytes!=0u&&
+					result.preconstructionResources.sourceElementBytes>request.qualificationPreconstructionSourceElementLimitBytes?
+					"preconstruction source element budget refused":"preconstruction resource probe refuses owner construction");
+				return false;
+			}
 			ResidentProjectedHeunMetalOwner owner(request,request.qualificationProductionStageTokens);
 			return owner.Run(result,error);
 		},[&](){
-			result=FireProductionProjectedHeunMetalOwnerResult();
+			result.accepted=false;result.ownerPublicationIdentity=0u;
+			result.publicationPayloadRootSHA256.clear();
+			if(error)error->clear();
+			try{result=FireProductionProjectedHeunMetalOwnerResult();}catch(const std::bad_alloc&){}
 			if(error)try{*error="projected-Heun resident owner allocation failed";}
 				catch(const std::bad_alloc&){}
 			return false;
@@ -11604,10 +11881,18 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			request.qualificationUnverifiedEndpointClassBuffer||
 			request.qualificationCaptureIterationTrace||
 			request.qualificationProductionStageTokens||
+			request.qualificationPreconstructionResourceProbe||
+			request.qualificationPreconstructionSourceElementLimitBytes!=0u||
 			request.qualificationWorkingSetLimitBytes!=0u;
 		if(qualificationSelected){
-			if(diagnostics)*diagnostics=FireProductionProjectedHeunMetalOwnerResult();
-			if(error)*error="production resident step refuses qualification-only owner controls";
+			if(diagnostics){diagnostics->accepted=false;diagnostics->ownerPublicationIdentity=0u;
+				diagnostics->publicationPayloadRootSHA256.clear();
+				diagnostics->preconstructionResources=FireProductionPreconstructionResourceSample();}
+			if(error)error->clear();
+			try{
+				if(diagnostics)*diagnostics=FireProductionProjectedHeunMetalOwnerResult();
+				if(error)*error="production resident step refuses qualification-only owner controls";
+			}catch(const std::bad_alloc&){}
 			return false;
 		}
 		FireProductionProjectedHeunMetalOwnerResult owner;
@@ -12168,7 +12453,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			MetalManifoldParameters manifoldParameters={};std::array<double,7> lower,upper;
 			if(!PackMetalMethaneThermochemistry(packedThermochemistry,manifoldParameters,
 				lower,upper,error)||!PackMetalEOSDoubleDoubleThermochemistry(
-					packedEOSThermochemistry,error))return false;
+					packedEOSThermochemistry))return false;
 			std::vector<float> packedVelocity;packedVelocity.reserve(allFaces);
 			for(const std::vector<float>& axis:request.transport.projectedVelocityMPerS)
 				packedVelocity.insert(packedVelocity.end(),axis.begin(),axis.end());
@@ -12466,7 +12751,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			MetalManifoldParameters manifoldParameters={};std::array<double,7> lower,upper;
 			if(!PackMetalMethaneThermochemistry(packedThermochemistry,manifoldParameters,
 				lower,upper,error)||!PackMetalEOSDoubleDoubleThermochemistry(
-					packedEOSThermochemistry,error))return false;
+					packedEOSThermochemistry))return false;
 			std::vector<float> fctBasis,fctProjector,affine;
 			std::array<float,14> enthalpyBounds={{}};float feasibility=0.0f,assemblyReserve=0.0f;
 			if(!PackMetalSingleStageFCTCertificate(fctBasis,fctProjector,enthalpyBounds,affine,
@@ -12826,7 +13111,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			MetalManifoldParameters manifoldParameters={};std::array<double,7> lower,upper;
 			if(!PackMetalMethaneThermochemistry(packedThermochemistry,manifoldParameters,
 				lower,upper,error)||!PackMetalEOSDoubleDoubleThermochemistry(
-					packedEOSThermochemistry,error))return false;
+					packedEOSThermochemistry))return false;
 			std::vector<float> fctBasis,fctProjector,affine;
 			std::array<float,14> enthalpyBounds={{}};float feasibility=0.0f,assemblyReserve=0.0f;
 			if(!PackMetalSingleStageFCTCertificate(fctBasis,fctProjector,enthalpyBounds,affine,
@@ -13687,7 +13972,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 		ResidentTransportMetalContext& context=ResidentTransportContext();
 		if(!context.Valid()){if(error)*error=context.error;return false;}
 		std::array<float,MetalEOSThermochemistryValues> thermo;
-		if(!PackMetalEOSDoubleDoubleThermochemistry(thermo,error))return false;
+		if(!PackMetalEOSDoubleDoubleThermochemistry(thermo))return false;
 		std::string source=std::string("#define RISE_STAGE_TOKENS 1\n")+
 			ResidentTransportMetalContext::Source();
 		if(reciprocalMutant){const std::string correct="eos_div(t5,eos_dd(5.0f))";
@@ -13751,7 +14036,7 @@ kernel void r217_energy_enclosure(device const float* state [[buffer(0)]],
 		ResidentTransportMetalContext& context=ResidentTransportContext();
 		if(!context.Valid()){if(error)*error=context.error;return false;}
 		std::array<float,MetalEOSThermochemistryValues> thermo;
-		if(!PackMetalEOSDoubleDoubleThermochemistry(thermo,error))return false;
+		if(!PackMetalEOSDoubleDoubleThermochemistry(thermo))return false;
 		std::string source=std::string("#define RISE_STAGE_TOKENS 1\n")+ResidentTransportMetalContext::Source();
 		if(mutant&&mutant<4u){const std::string from=mutant==1u?
 			"eos_certify_temperature_bin(state,thermo,p,cell,T,obligations)":
@@ -14491,7 +14776,7 @@ kernel void r222_temperature(device const float* state [[buffer(0)]],
 	{
 		result=FireProductionPayloadDigestV2();deviceMS=0.0;
 		@autoreleasepool {
-			static PayloadMerkleContext context;std::string failure=context.error;
+			auto& context=StandaloneDigestMerkleContext();std::string failure=context.error;
 			auto fail=[&](){if(error)*error=failure;return false;};
 			if(!failure.empty())return fail();
 			id<MTLBuffer> upload=[context.device newBufferWithLength:std::max<std::size_t>(1u,bytes.size())

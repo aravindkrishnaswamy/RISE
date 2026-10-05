@@ -1970,14 +1970,98 @@ namespace
 		return passed?0:220;
 	}
 
+	// Actual request-builder qualification seam: capture/refuse before any owner
+	// reset or field copy. This partial family inventory never admits execution.
+	struct ProductionCallerIngressProbe
+	{
+		FireProductionPreconstructionResourceSample source;
+		std::array<std::uint64_t,8> ordinarySize{},ordinaryCapacity{};
+		std::uint64_t ordinaryElementBytes=0u,ordinaryCapacityBytes=0u;
+		std::uint64_t requestCopyElementLowerBoundBytes=0u;
+		std::uint64_t copyElementLimitBytes=0u;
+		FireRunHostMemory::Policy hostPolicy;
+		bool ordinaryLayoutKnown=false,hostPolicyStop=false;
+		unsigned int refusalSite=0u;
+	};
+
+	bool RefuseProductionCallerIngressBeforeCopy(
+		const FireProductionResidentStepRequest& ordinary,
+		const FireProductionFrozenSourcePacketSeal& source,
+		ProductionCallerIngressProbe& observed,std::string& error)
+	{
+		const auto limit=observed.copyElementLimitBytes;
+		const auto policy=observed.hostPolicy;
+		observed=ProductionCallerIngressProbe();observed.copyElementLimitBytes=limit;
+		observed.hostPolicy=policy;
+		auto add=[](std::uint64_t value,std::uint64_t& total){
+			if(total>UINT64_MAX-value)return false;total+=value;return true;};
+		auto multiply=[](std::uint64_t a,std::uint64_t b,std::uint64_t& total){
+			if(b!=0u&&a>UINT64_MAX/b)return false;total=a*b;return true;};
+		try{
+#if defined(__APPLE__)
+			const bool sourceKnown=CaptureFireProductionPreconstructionResources(source,observed.source);
+#else
+			const bool sourceKnown=false;
+#endif
+			const auto& shape=ordinary.force.shape;
+			const auto& sourceShape=source.Shape();
+			bool layout=sourceKnown&&shape.nx==sourceShape.nx&&shape.ny==sourceShape.ny&&
+				shape.nz==sourceShape.nz&&shape.cellWidthM==sourceShape.cellWidthM;
+			const std::array<const std::vector<float>*,8> fields={{
+				&ordinary.cellTransport.conservativeValues,&ordinary.cellSourceIncrement,
+				&ordinary.cellTransport.frozenVelocityMPerS[0],&ordinary.cellTransport.frozenVelocityMPerS[1],
+				&ordinary.cellTransport.frozenVelocityMPerS[2],&ordinary.force.beginningMomentumKGPerM2S[0],
+				&ordinary.force.beginningMomentumKGPerM2S[1],&ordinary.force.beginningMomentumKGPerM2S[2]}};
+			std::array<std::uint64_t,3> faces{};std::uint64_t allFaces=0u;
+			const std::array<std::uint64_t,3> dims={{sourceShape.nx,sourceShape.ny,sourceShape.nz}};
+			for(unsigned int axis=0u;axis<3u;++axis){
+				std::uint64_t plane=0u;
+				if(dims[axis]==UINT64_MAX||!multiply(dims[(axis+1u)%3u],dims[(axis+2u)%3u],plane)||
+					!multiply(dims[axis]+1u,plane,faces[axis])||!add(faces[axis],allFaces))layout=false;
+			}
+			std::uint64_t nineCells=0u;
+			if(!multiply(observed.source.cells,9u,nineCells))layout=false;
+			std::uint64_t elements=0u,capacity=0u;
+			for(std::size_t i=0u;i<fields.size();++i){
+				observed.ordinarySize[i]=fields[i]->size();observed.ordinaryCapacity[i]=fields[i]->capacity();
+				std::uint64_t bytes=0u,capacityBytes=0u;
+				if(fields[i]->size()!=(i<2u?nineCells:faces[(i-2u)%3u])||
+					fields[i]->capacity()<fields[i]->size()||
+					!multiply(fields[i]->size(),sizeof(float),bytes)||!add(bytes,elements)||
+					!multiply(fields[i]->capacity(),sizeof(float),capacityBytes)||!add(capacityBytes,capacity))layout=false;
+			}
+			// Request copies source seal, temperature, sourceDelta, conservative,
+			// projected velocity and beginning momentum. Boundary/tables/envelope/
+			// allocator/capacity/other families are deliberately NOT in this lower bound.
+			std::uint64_t extraCells=0u,extraFaces=0u,lower=observed.source.sourceElementBytes;
+			if(!multiply(observed.source.cells,76u,extraCells)||!multiply(allFaces,8u,extraFaces)||
+				!add(extraCells,lower)||!add(extraFaces,lower))layout=false;
+			observed.ordinaryLayoutKnown=layout;
+			if(layout){observed.ordinaryElementBytes=elements;observed.ordinaryCapacityBytes=capacity;
+				observed.requestCopyElementLowerBoundBytes=lower;}
+			const FireRunHostMemory::Sample sample={observed.source.currentRSSBytes,
+				observed.source.physicalFootprintBytes,observed.source.compressedBytes,observed.source.hostTelemetryKnown};
+			observed.hostPolicyStop=policy.Stop(sample);
+			observed.refusalSite=!layout?1u:(observed.hostPolicyStop?2u:
+				(limit!=0u&&lower>limit?3u:4u));
+			error=observed.refusalSite==1u?"caller ingress layout or telemetry unavailable":
+				(observed.refusalSite==2u?"caller ingress host policy refused":
+				(observed.refusalSite==3u?"caller ingress copy element budget refused":
+				"caller ingress complete inventory unqualified"));
+		}catch(const std::bad_alloc&){observed.refusalSite=5u;error.clear();}
+		return false;
+	}
+
 	bool BuildProductionProjectedHeunOwnerRequest(
 		const RISE::FireProductionResidentStepRequest& ordinary,
 		const RISE::FireProductionFrozenSourcePacketSeal& source,
 		const RISE::RISECBOR64::Bytes& caseRecordEnvelope,
 		const float projectionTolerancePerS,const float endpointVelocityToleranceMPerS,
 		RISE::FireProductionProjectedHeunMetalOwnerRequest& owner,std::string& error,
-		const OpenBoundaryConfig3D* burnerBoundary=nullptr)
+		const OpenBoundaryConfig3D* burnerBoundary=nullptr,
+		ProductionCallerIngressProbe* ingressProbe=nullptr)
 	{
+		if(ingressProbe)return RefuseProductionCallerIngressBeforeCopy(ordinary,source,*ingressProbe,error);
 		owner=RISE::FireProductionProjectedHeunMetalOwnerRequest();
 		if(!source.IsSealed()){error="projected-Heun production source authority is unsealed";
 			return false;}
@@ -2041,6 +2125,119 @@ namespace
 		owner.endpointVelocityToleranceMPerS=endpointVelocityToleranceMPerS;
 		owner.maximumPicardIterations=64u;
 		return !burnerBoundary||BindProductionBurnerBoundary(*burnerBoundary,owner,error);
+	}
+
+#if defined(__APPLE__)
+static bool R248CallerSourceSeal(std::size_t nx,std::size_t ny,std::size_t nz,
+    FireProductionFrozenSourcePacketSeal& seal,std::string& error)
+{
+    const auto& fuel=FireSimulationMethaneRecord::PhysicalV1();
+    const auto& transport=FireSimulationTransportRecord::OpenV1();
+    const auto& opacity=FireSimulationGasOpacityRecord::HITEMPPlanckMeanV1();
+    FireCase::AuthoredV1 authored;authored.fuelRecordId=fuel.RecordId();
+    authored.poolDiameterM=0.03;authored.heatReleaseRateKW=0.10;
+    authored.envelope={{0.0,0.0},{0.5,1.0},{1.0,1.0}};
+    authored.durationS=1.0;authored.quality="draft";authored.seed=200u;authored.outputFramesPerS=4.0;
+    FireCase::RecordV1 record;
+    if(!FireCase::BuildMethaneV1(authored,fuel,
+        {fuel.RecordId(),transport.RecordId(),opacity.RecordId()},record,error))return false;
+    MethaneCellState ambient;ambient.temperatureK=300.0;
+    ambient.producerPrecision=FireStateProducerPrecision::Binary32;
+    double inverse=0.0;for(std::size_t i=0u;i<6u;++i){
+        ambient.constituent[i]=fuel.AmbientMassFractions()[i];
+        const auto* species=fuel.FindSpecies(fuel.SpeciesOrder()[i].c_str());
+        if(!species)return false;inverse+=ambient.constituent[i]/species->molecularWeightKGPerKMol;}
+    const double density=fuel.ThermodynamicPressurePa()/(8314.46261815324*300.0*inverse);
+    for(double& value:ambient.constituent)value*=density;
+    if(!fuel.MixtureSensibleEnergyJPerM3(ThermochemicalDensities(ambient),300.0,
+        ambient.sensibleEnergyJPerM3,&error))return false;
+    FireProductionFrozenMethaneSourceRequest request;
+    request.shape.nx=nx;request.shape.ny=ny;request.shape.nz=nz;request.shape.cellWidthM=0.025f;
+    request.timeStepS=0x1p-16f;request.attemptIdentity=UINT64_C(0x2480000000000001);
+    request.caseRecordEnvelope=record.envelopeBytes;const auto cells=request.shape.CellCount();
+    request.beginningConservativeValues.resize(9u*cells);const auto tuple=ToConservativeVector(ambient);
+    for(std::size_t c=0u;c<9u;++c)std::fill_n(request.beginningConservativeValues.begin()+c*cells,
+        cells,static_cast<float>(tuple[c]));
+    request.pilotCommandMask.assign(cells,0u);request.mixingTimeS.assign(cells,1.0);
+    request.predictiveRadiation=false;request.workerCount=1u;
+    return FireProductionCanonicalSourceAuthority::Build(request,seal,&error)&&
+        FireProductionFrozenSourcePacketSealMatches(seal,&error);
+}
+#endif
+	int RunR248CallerIngressFixture()
+	{
+#if !defined(__APPLE__)
+		return 77;
+#else
+		std::string error;unsigned int green=0u,red=0u;
+		for(const auto& dims:std::array<std::array<std::size_t,3>,3>{{{{4u,4u,4u}},{{6u,8u,5u}},{{8u,8u,8u}}}}){
+			FireProductionFrozenSourcePacketSeal source;
+			if(!R248CallerSourceSeal(dims[0],dims[1],dims[2],source,error))return 91;
+			FireProductionResidentStepRequest ordinary;ordinary.force.shape=source.Shape();
+			const auto cells=source.Shape().CellCount();std::uint64_t faces=0u;
+			ordinary.cellTransport.conservativeValues.assign(9u*cells,0.0f);
+			ordinary.cellSourceIncrement=source.SourceDelta();
+			for(unsigned int axis=0u;axis<3u;++axis){const auto n=FireProductionProjectionFaceCount(source.Shape(),axis);
+				faces+=n;ordinary.cellTransport.frozenVelocityMPerS[axis].assign(n,0.0f);
+				ordinary.force.beginningMomentumKGPerM2S[axis].assign(n,0.0f);}
+			ordinary.cellTransport.conservativeValues.reserve(9u*cells+17u);
+			ordinary.force.beginningMomentumKGPerM2S[1].reserve(ordinary.force.beginningMomentumKGPerM2S[1].size()+19u);
+			std::uint64_t expectedCapacity=ordinary.cellTransport.conservativeValues.capacity()+ordinary.cellSourceIncrement.capacity();
+			for(unsigned int axis=0u;axis<3u;++axis)expectedCapacity+=ordinary.cellTransport.frozenVelocityMPerS[axis].capacity()+ordinary.force.beginningMomentumKGPerM2S[axis].capacity();
+			expectedCapacity*=sizeof(float);
+			FireProductionProjectedHeunMetalOwnerRequest retained;
+			retained.lineage.eos.sourceDelta={23.0f};retained.maximumPicardIterations=7u;
+			const auto* old=retained.lineage.eos.sourceDelta.data();
+			const auto* caller=ordinary.cellTransport.conservativeValues.data();
+			const auto* gas=source.GasHeatReleaseWPerM3().data();
+			ProductionCallerIngressProbe baseline;
+			baseline.hostPolicy={UINT64_C(2)<<30u,UINT64_C(32)<<20u};
+			if(BuildProductionProjectedHeunOwnerRequest(ordinary,source,{},0.0f,0.0f,
+				retained,error,nullptr,&baseline)||baseline.refusalSite!=4u||
+				baseline.source.sourceElementBytes!=108u*cells||
+				baseline.ordinaryElementBytes!=72u*cells+8u*faces||
+				baseline.ordinaryCapacityBytes!=expectedCapacity||baseline.ordinaryCapacityBytes<=baseline.ordinaryElementBytes||
+				baseline.requestCopyElementLowerBoundBytes!=184u*cells+8u*faces||
+				baseline.source.processPeakRSSBytes>=(UINT64_C(2)<<30u))return 92;
+			++green;++red;
+			for(unsigned int mode=1u;mode<=9u;++mode){
+				ProductionCallerIngressProbe probe;probe.hostPolicy=baseline.hostPolicy;
+				if(mode==1u)probe.copyElementLimitBytes=1u;
+				if(mode==2u)probe.hostPolicy={2u,1u};
+				if(mode==3u)probe.hostPolicy={};
+				if(mode==7u)probe.copyElementLimitBytes=baseline.requestCopyElementLowerBoundBytes-1u;
+				if(mode==8u)probe.copyElementLimitBytes=baseline.requestCopyElementLowerBoundBytes;
+				if(mode==9u)probe.copyElementLimitBytes=UINT64_MAX;
+				if(mode==4u)ordinary.cellSourceIncrement.pop_back();
+				if(mode==5u)++ordinary.force.shape.nx;
+				FireProductionFrozenSourcePacketSeal empty;
+				const bool accepted=BuildProductionProjectedHeunOwnerRequest(ordinary,mode==6u?empty:source,
+					{},0.0f,0.0f,retained,error,nullptr,&probe);
+				if(mode==4u)ordinary.cellSourceIncrement.push_back(source.SourceDelta().back());
+				if(mode==5u)--ordinary.force.shape.nx;
+				const unsigned int expected=(mode==1u||mode==7u)?3u:
+					(mode<4u?2u:(mode<7u?1u:4u));
+				if(accepted||probe.refusalSite!=expected||
+					(mode>=4u&&mode<=6u&&(probe.ordinaryLayoutKnown||probe.requestCopyElementLowerBoundBytes!=0u)))return 93;
+				++red;
+			}
+			if(retained.lineage.eos.sourceDelta.data()!=old||retained.lineage.eos.sourceDelta!=std::vector<float>{23.0f}||
+				retained.maximumPicardIterations!=7u||retained.lineage.frozenSource.IsSealed()||
+				ordinary.cellTransport.conservativeValues.data()!=caller||source.GasHeatReleaseWPerM3().data()!=gas||
+				!FireProductionFrozenSourcePacketSealMatches(source,&error))return 94;
+			++green;
+			if(std::printf("R248_CALLER_INGRESS cells=%zu ordinary_elements=%llu ordinary_capacity=%llu copy_lower=%llu rss=%llu footprint=%llu peak=%llu retained_output_unchanged=1 refused_before_copy=1\n",
+				cells,static_cast<unsigned long long>(baseline.ordinaryElementBytes),
+				static_cast<unsigned long long>(baseline.ordinaryCapacityBytes),
+				static_cast<unsigned long long>(baseline.requestCopyElementLowerBoundBytes),
+				static_cast<unsigned long long>(baseline.source.currentRSSBytes),
+				static_cast<unsigned long long>(baseline.source.physicalFootprintBytes),
+				static_cast<unsigned long long>(baseline.source.processPeakRSSBytes))<0)return 95;
+		}
+		if(std::printf("R248_CALLER_INGRESS_SUMMARY green=%u red=%u numerical_owner_work=0 complete_admission=0\n",green,red)<0||
+			std::fflush(stdout)!=0)return 95;
+		return 0;
+#endif
 	}
 
 	bool WriteProductionCrossingConvergence(const std::filesystem::path& auditPath,
@@ -22702,6 +22899,8 @@ static int RunProductionPayloadMerkleFixture(bool metal)
 
 int main(int argc,char** argv)
 {
+	if(argc==2&&std::strcmp(argv[1],"--fire-r248-caller-ingress-fixture")==0)
+		return RunR248CallerIngressFixture();
 	if(argc==2&&std::strcmp(argv[1],"--fire-r245-budget-reducer-gate")==0){
 		const bool passed=FireProductionAcceptedStageBudget::Fixture();
 		std::fprintf(stdout,"R245_BUDGET_REDUCER signed_sides=1 limited_flux=1 counterdiffusion=1 bottom_partition=1 rejected_attempt=1 missing_operands=1 clock=1 passed=%d\n",passed?1:0);

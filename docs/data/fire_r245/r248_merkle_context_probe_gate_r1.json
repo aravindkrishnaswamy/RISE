@@ -1,0 +1,165 @@
+{
+  "schema": "rise.fire.r248.merkle-context-probe-gate.v1",
+  "status": "scoped_controls_pending_review",
+  "pins": [
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/src/Library/Utilities/FireProductionAdvectionMac.mm",
+      "sha256": "560166cbd4dbe562d9d624c3267b61021199b529882cd57156541d24ddbbe15b"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r248_merkle_context_probe.cpp",
+      "sha256": "e12ef5b8cd1613f02ba7a9bda79f7b84d5e00deba7f7d8f60e84f5035917c57d"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r248_merkle_context_probe_verify.py",
+      "sha256": "acdd38522d068a33befef1340bf8825c697fc6e9aae643cf671848448d031279"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/FIRE_SMOKE_MERKLE_CONTEXT_RESOURCE_PROBE_R248.md",
+      "sha256": "bc7f27f1e932fe9014f2a3fc5432c02a162374ebb08ee06e0aaa58c694c3efb8"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_merkle_context_probe.v1/controls/validation.json",
+      "sha256": "642c992c9e5378daaa9ab95273ebe7a06a251dd5691ef6b85e33d844879634a9"
+    }
+  ],
+  "builds": [
+    {
+      "name": "make_clean",
+      "exit_code": 0,
+      "warnings": 0,
+      "allowed_documented_notices": 0,
+      "xcode_destination_selection_notices": 0,
+      "pin": {
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_merkle_context_probe.v1/make_clean.log",
+        "sha256": "09155cd7b2f99672f8f213b798682fc13fdd3602f019b4c35e86d49af827ebe1"
+      }
+    },
+    {
+      "name": "make_all",
+      "exit_code": 0,
+      "warnings": 0,
+      "allowed_documented_notices": 0,
+      "xcode_destination_selection_notices": 0,
+      "pin": {
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_merkle_context_probe.v1/make_all.log",
+        "sha256": "5972e035fc70df5dbccbf3503aadd567be848774e8058799f24533f2f3fdb5a6"
+      }
+    },
+    {
+      "name": "controls",
+      "exit_code": 0,
+      "warnings": 0,
+      "allowed_documented_notices": 0,
+      "xcode_destination_selection_notices": 0,
+      "pin": {
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_merkle_context_probe.v1/controls.log",
+        "sha256": "9dcc6ca6016528117ca12fee718b6c1b6f3bf4c6c7ebc2df7b94d9f1a64eb837"
+      }
+    },
+    {
+      "name": "test_build_repaired",
+      "exit_code": 0,
+      "warnings": 0,
+      "allowed_documented_notices": 0,
+      "xcode_destination_selection_notices": 0,
+      "pin": {
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_merkle_context_probe.v1/test_build_repaired.log",
+        "sha256": "2816c30bf666f29da66e106d51b5724b88b5c10aaa8a7488cd24eed6f8cf9844"
+      }
+    },
+    {
+      "name": "deployment_clean",
+      "exit_code": 0,
+      "warnings": 0,
+      "allowed_documented_notices": 0,
+      "xcode_destination_selection_notices": 0,
+      "pin": {
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_merkle_context_probe.v1/deployment_clean.log",
+        "sha256": "16c98d2c9f63b321396723dbbe78102ce166051ec571673abac9b997580b0cb1"
+      }
+    },
+    {
+      "name": "deployment_build",
+      "exit_code": 0,
+      "warnings": 2,
+      "allowed_documented_notices": 2,
+      "xcode_destination_selection_notices": 0,
+      "pin": {
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_merkle_context_probe.v1/deployment_build.log",
+        "sha256": "a2e52e6a09278ecdbd4fb14bc114d6a3c61904095c370cd718aff1cf592db55c"
+      }
+    },
+    {
+      "name": "opto_clean",
+      "exit_code": 0,
+      "warnings": 0,
+      "allowed_documented_notices": 0,
+      "xcode_destination_selection_notices": 0,
+      "pin": {
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_merkle_context_probe.v1/opto_clean.log",
+        "sha256": "cf4842750c43d3a13560b2a3c8807cdaebb0f512a250cc592ee7efb48fe2e7d2"
+      }
+    },
+    {
+      "name": "opto_build",
+      "exit_code": 0,
+      "warnings": 0,
+      "allowed_documented_notices": 0,
+      "xcode_destination_selection_notices": 0,
+      "pin": {
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_merkle_context_probe.v1/opto_build.log",
+        "sha256": "2d1b0169693d5f40f1292906a5de3378a7edcc8ac9a09c89414ba049d17fbe45"
+      }
+    }
+  ],
+  "green_per_factory_per_mode": 3,
+  "red_per_factory_per_mode": 3,
+  "optimized_python_red": 1,
+  "fingerprint_mismatch_red": 2,
+  "preserved_build_invocation_failure": {
+    "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_merkle_context_probe.v1/test_build.log",
+    "exit_code": 2,
+    "reason": "No rule for mistyped target bin/tests/FireSequenceTest; actual build-test target passed in separate log",
+    "sha256": "a789e4fe2e6a6481f5730b5b969be471f303986493f30d6865cb2ddecb8350ea"
+  },
+  "pipeline_reference_slots": {
+    "owner_merkle": 3,
+    "standalone_merkle": 3
+  },
+  "max_observed_fixture_peak_RSS_bytes": 65830912,
+  "fixture_ceiling_bytes": 2147483648,
+  "fixture_reserve_bytes": 33554432,
+  "validation_artifact_pins": 22,
+  "build_identity": {
+    "head": "2d51658f45deb91d016a98f7c39b9669d4028450",
+    "dirty": true,
+    "embedded_git_identity": false,
+    "python_version": "3.9.6 (default, May 22 2026, 11:13:45) \n[Clang 21.0.0 (clang-2100.1.1.101)]",
+    "python_optimize": 0,
+    "clang": "Apple clang version 21.0.0 (clang-2100.1.1.101)\nTarget: arm64-apple-darwin25.5.0\nThread model: posix\nInstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin\n",
+    "compiler_invocation": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+    "compiler_executable": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang",
+    "sdk_path": "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk",
+    "sdk_metadata": "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/SDKSettings.json",
+    "sdk_scope": "SDKSettings.json only; full SDK tree and driver unqualified"
+  },
+  "self_audit": [
+    "Attempts vs successful initialization/static retry and warm reuse; no semantic field or serialization change claimed beyond inspection",
+    "No numerical commands/field allocation; slot arrays cover all actual constructor fields, not unique allocation IDs",
+    "Publication failure isolated per factory; all verifier acceptance guards explicit and optimization refused before work",
+    "RSS/device snapshots do not establish simultaneous ownership or transient device/compiler/spill bounds",
+    "Both actual lazy Merkle call sites retain distinct file-private statics and attempt counters, not a substitute context; no command/tree-buffer/parity acceptance"
+  ],
+  "complete_resource_admission": false,
+  "complete_live_inventory_qualified": false,
+  "register_spill_bounds_qualified": false,
+  "native_observer_accepted": false,
+  "native_parity_accepted": false,
+  "new_simulation_launched": false,
+  "physical_acceptance": false,
+  "final_build_completion_pin": {
+    "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_merkle_context_probe.v1/build_completion.json",
+    "sha256": "85303cb3959c162de95849d19163bcc2f72aed629d3f7a9dac36119b74ef461f"
+  }
+}

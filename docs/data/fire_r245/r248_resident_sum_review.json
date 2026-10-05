@@ -1,0 +1,44 @@
+{
+  "schema": "rise.fire.r248.resident-sum-review.v1",
+  "candidate_commit": "bb56cb2f2",
+  "round": 1,
+  "status": "accepted_pure_exact_f32_leaf_sum_and_design_plan_only",
+  "reviews": [
+    {
+      "reviewer": "/root/r248_sum_arithmetic_r1",
+      "axis": "independent arithmetic/carry/overflow",
+      "P1": 0,
+      "P2": 0,
+      "evidence": [
+        "all8pins/16RED",
+        "12510 finite rawf32 leaves exactFraction oracle/everyfiniteexponent/signedzero/subnormal/random",
+        "177 shuffledpartitionmerges/canonicalroundtrips",
+        "maxcount309bits fits320",
+        "19limbcarrychain/finaloverflowRED",
+        "14plannerboundary/maxcountcases"
+      ]
+    },
+    {
+      "reviewer": "/root/r248_sum_integrity_r1",
+      "axis": "contract/cost/test-integrity/provenance scope",
+      "P1": 0,
+      "P2": 0,
+      "evidence": [
+        "all8pins/16RED",
+        "36planner cases entries1..UINT32MAX channels1/2/63/64",
+        "100randomFractionleafsums/order/roundtrips",
+        "50 extra limb/count/type/device-limit refusal mutations",
+        "activeactualf32outputscope verified",
+        "bank/threadgroup estimates vs complete liveallocation/registers/spills/measuredRSS/nativekernel/parity pending"
+      ]
+    }
+  ],
+  "native_fields_read": 0,
+  "native_kernel_implemented": false,
+  "native_stage_authenticated": false,
+  "native_allocation_accepted": false,
+  "native_parity_accepted": false,
+  "new_simulation_launched": false,
+  "physical_acceptance": false,
+  "next": "additional exact product/weighted-coordinate/derived-rate numerical reduction contracts then authenticated resident implementation, fullallocationdevicebounds and native state parity"
+}

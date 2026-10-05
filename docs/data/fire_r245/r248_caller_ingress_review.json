@@ -1,0 +1,36 @@
+{
+  "schema": "rise.fire.r248.caller-ingress-review.v1",
+  "reviewed_commit": "47f12b10d",
+  "round": 1,
+  "status": "accepted_scoped_caller_capture_refusal_only",
+  "reviews": [
+    {
+      "agent": "/root/r248_caller_ingress_resource_r1",
+      "axis": "source/resource/arithmetic/cost",
+      "P1": 0,
+      "P2": 0,
+      "gate_pins": 6,
+      "validation_pins": 388,
+      "build_log_pins": 3,
+      "evidence": "Independent 72*C+8*F selected storage and184*C+8*F copy-element lower bound; checked policy/overflow/length boundaries and exact/max unconditional refusal"
+    },
+    {
+      "agent": "/root/r248_caller_ingress_lifecycle_r1",
+      "axis": "lifecycle/refusal/test-integrity/provenance",
+      "P1": 0,
+      "P2": 0,
+      "gate_pins": 6,
+      "validation_pins": 388,
+      "build_log_pins": 3,
+      "evidence": "Pre-reset/copy branch; fixed capture, guarded diagnostic, destination/source retained; actual caller TU ASan/UBSan instrumented, dependencies not relabeled; 6 GREEN/30 RED"
+    }
+  ],
+  "complete_caller_inventory": false,
+  "complete_resource_admission": false,
+  "source_authentication": false,
+  "native_observer": false,
+  "ordinal_history": false,
+  "native_parity": false,
+  "new_simulation": false,
+  "physical_acceptance": false
+}

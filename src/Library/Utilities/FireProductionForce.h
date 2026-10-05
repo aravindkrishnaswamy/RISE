@@ -489,6 +489,27 @@ namespace RISE
 	//! beginning momentum is the sole additional full-grid step input.  The
 	//! qualification switches are RED-only and cannot select an alternate live
 	//! algorithm.
+	//! Fixed-size observation before constructing the owner. Layout/capacity and
+	//! actual process/device telemetry only: no source authentication, complete
+	//! owner admission, copied-source allocation bound or observer qualification.
+	struct FireProductionPreconstructionResourceSample
+	{
+		std::array<std::uint64_t,11> sourceSize{},sourceCapacity{};
+		std::uint64_t cells=0u,sourceElementBytes=0u,sourceVectorCapacityBytes=0u;
+		std::uint64_t currentRSSBytes=0u,physicalFootprintBytes=0u,compressedBytes=0u;
+		std::uint64_t processPeakRSSBytes=0u,deviceAllocatedBytes=0u;
+		std::uint64_t deviceWorkingSetLimitBytes=0u,deviceMaxBufferLengthBytes=0u;
+		bool sourceLayoutKnown=false,hostTelemetryKnown=false,peakTelemetryKnown=false;
+		bool deviceTelemetryKnown=false;
+	};
+#if defined(__APPLE__)
+	//! Does not call owner/context factories or create field buffers. Device
+	//! discovery may initialize driver resources; telemetry samples follow it.
+	bool CaptureFireProductionPreconstructionResources(
+		const FireProductionFrozenSourcePacketSeal& source,
+		FireProductionPreconstructionResourceSample& sample );
+#endif
+
 	struct FireProductionProjectedHeunMetalOwnerRequest
 	{
 		FireProductionResidentTargetLineageComparatorRequest lineage;
@@ -536,6 +557,9 @@ namespace RISE
 		//! Qualification selects the production sealing placement while retaining
 		//! the full owner RED/trace surface. The live entry chooses it internally.
 		bool qualificationProductionStageTokens=false;
+		//! Observation/refusal control before constructor; production refuses it.
+		bool qualificationPreconstructionResourceProbe=false;
+		std::uint64_t qualificationPreconstructionSourceElementLimitBytes=0u;
 		//! Zero uses the certified cap.  A nonzero smaller cap proves that the
 		//! complete-owner working set is refused before Metal work begins.
 		std::uint64_t qualificationWorkingSetLimitBytes;
@@ -566,6 +590,7 @@ namespace RISE
 
 	struct FireProductionProjectedHeunMetalOwnerResult
 	{
+		FireProductionPreconstructionResourceSample preconstructionResources;
 		//! Explicit namespaces: stage tokens are not standalone payload digests.
 		std::string intermediateSealFormat="legacy-resident-fnv64";
 		std::uint32_t intermediateDigestVersion=1u;

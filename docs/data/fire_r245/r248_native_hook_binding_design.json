@@ -1,0 +1,34 @@
+{
+  "schema": "rise.fire.r248.native-hook-binding-design.v1",
+  "status": "design_pending_review",
+  "pins": [
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/FIRE_SMOKE_NATIVE_OBSERVER_HOOK_BINDING_R248.md",
+      "sha256": "1023c5f2d6525ea69fc81029992d499ec08a14d6f80a4555ceda191b598e8d1c"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/src/Library/Utilities/FireProductionAdvectionMac.mm",
+      "sha256": "6a5c4543d3e5b61c76f1458346d91e94291ab10322c3f542e2870ec83f309a3d"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/src/Library/Utilities/FireProductionProjectionMac.mm",
+      "sha256": "c5984e43cf6f75569616122ee15fba55190f1d3834d79628118439b9b7c4f228"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/src/Library/Utilities/FireProductionTransport.h",
+      "sha256": "6c7dfcf8070a07454455ce568a6fd1376ffa62efc910bf51e6aba70532321331"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tests/FireSequenceTest.cpp",
+      "sha256": "3249a19b4bfc9a19c20e2d5d0a74fb2b85b9a7698e17e79f37d18f6c51130725"
+    }
+  ],
+  "native_binding_implemented": false,
+  "native_arithmetic_port_implemented": false,
+  "live_resource_plan_qualified": false,
+  "native_parity_accepted": false,
+  "full_ordinal_chain_accepted": false,
+  "new_simulation_launched": false,
+  "physical_acceptance": false,
+  "repair": "Caller mutable state/statistics precede some acceptance checks; only later actual clock/ordinal update authorizes diagnostic records. No rollback/retry."
+}

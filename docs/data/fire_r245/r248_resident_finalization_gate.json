@@ -1,0 +1,68 @@
+{
+  "schema": "rise.fire.r248.resident-finalization-gate.v1",
+  "status": "candidate_pure_exact_quotient_RNeven_host_reference",
+  "exit_code": 0,
+  "controls": {
+    "status": "pure_exact_quotient_RNeven_host_finalization_only",
+    "red": 22,
+    "operand_bits": 2048,
+    "work_bits": 4096,
+    "native_fields_read": 0,
+    "native_record_authenticated": false,
+    "native_allocation_accepted": false,
+    "new_simulation_launched": false
+  },
+  "artifacts": [
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r248_resident_finalization.py",
+      "sha256": "6a2a873ea422cd291c13fbe1408ebe21129c431671c985ca11695418f9bbc8c2"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_resident_finalization_validation.v1/resident_finalization.frozen.py",
+      "sha256": "6a2a873ea422cd291c13fbe1408ebe21129c431671c985ca11695418f9bbc8c2"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_resident_finalization_validation.v1/stdout.log",
+      "sha256": "dca158e789c1097efaaee565642c508d46d47386262fb3ed21be6ce859375edb"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_resident_finalization_validation.v1/stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_resident_finalization_validation.v1/controls.json",
+      "sha256": "f8c0d01d7a884648a87f31230bdbb9da7ed9067d80233a1093fe6ddd6cbaf48f"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_resident_finalization_validation.v1/contract_layout.json",
+      "sha256": "f4637641bdb858c66132eb34e583c32a70818f234c121983748fb9c1b2ac992c"
+    }
+  ],
+  "dependencies": [
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r248_resident_sum_contract.py",
+      "sha256": "c79be0c3bb79b3939d5c9015ebcee2908abc33a2a15175cb6eac5e57557a1ec2"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r248_resident_product_contract.py",
+      "sha256": "f0095248c77c46ac8a67bed3accb0314599c90933e6f91c1da231e19fb470c93"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r248_resident_compound_contract.py",
+      "sha256": "66abfa13a6590c81f673e9ed62ee5110407e8e847044dc207f0da7ef81a0b828"
+    }
+  ],
+  "native_fields_read": 0,
+  "native_record_authenticated": false,
+  "native_kernel_implemented": false,
+  "native_allocation_accepted": false,
+  "new_simulation_launched": false,
+  "limitations": [
+    "Exact caller canonical record quotient/mean/one represented binary64 multiplier, not native perleaf floating operation replay",
+    "Necessary aggregate decode does not authenticate native factors/cells/stages or publication lineage",
+    "Empty mean and overflow unavailable; signed rounded underflow zero flagged not exact sourcezero",
+    "2048bit operands/4096bit division workspace are logical arithmetic bounds, not measured host RSS/totaldeviceallocation",
+    "Multiplier semantic area/volume/source binding and fullordinalchain plus enabled-disabled native parity pending"
+  ],
+  "next": "incremental native integer observer kernels with authenticated input/target/stage lifetimes and complete allocation/devicebounds, modern publication ordinal chain and exact acceptedstate parity before any full simulation"
+}

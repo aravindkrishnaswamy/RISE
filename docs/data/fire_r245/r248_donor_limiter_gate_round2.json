@@ -1,0 +1,80 @@
+{
+  "schema": "rise.fire.r248.donor-limiter-gate.v1",
+  "status": "candidate_pure_donor_limiter_arithmetic_and_wire_prerequisite",
+  "exit_code": 0,
+  "controls": {
+    "status": "pure_donor_limiter_witness_prerequisite_only",
+    "red": 31,
+    "packet_bytes": 25680,
+    "native_fields_read": 0,
+    "native_donor_state_authenticated": false,
+    "physical_depletion_causality_accepted": false,
+    "new_simulation_launched": false
+  },
+  "artifacts": [
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r248_donor_limiter.py",
+      "sha256": "3d927134527971dac4cabffc68d66362faede0340eb787633168a6808974632e"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_donor_limiter_validation.v2/donor_limiter.frozen.py",
+      "sha256": "3d927134527971dac4cabffc68d66362faede0340eb787633168a6808974632e"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_donor_limiter_validation.v2/stdout.log",
+      "sha256": "0b2832cffc26d1b31122045c4fd577add0295b385594fa6317b771ecaf1a662f"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_donor_limiter_validation.v2/stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_donor_limiter_validation.v2/controls.json",
+      "sha256": "35b44b433c2d3562c73295dc1c6d43e674c30060c69862323555e09df40bedcb"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_donor_limiter_validation.v2/packet_layout.json",
+      "sha256": "2952640eb428479237e9156eee7aa53e14cbdf2a82f8429f3eb3b2fa36f56c79"
+    }
+  ],
+  "dependencies": [
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r248_target_terms.py",
+      "sha256": "35cf1d215582bb34ba4defb2ecf28953d874589075b7faaad07b188258123e4c"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r247_region_transfers.py",
+      "sha256": "4e814f7cb55739cd39d645e2136072c0e2e2bc6b56599e2f19536de3072ed754"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r248_projection_packet.py",
+      "sha256": "5b4ab5b114645c923a1d38375ae9a671050307a849848b5ec2d5827c0c41a817"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r248_projection_accounting.py",
+      "sha256": "7e3d979e6c51a63c95ddf4caf3a9a0c76ea444b18d47fb62b8e52f7902b50bf2"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r248_observer_layout.py",
+      "sha256": "75b93ef64b8bfd1c932972176f634f51f2e1bf94007811c8fd41e4290dd28a72"
+    }
+  ],
+  "native_fields_read": 0,
+  "native_donor_state_authenticated": false,
+  "physical_depletion_causality_accepted": false,
+  "observer_allocation_accepted": false,
+  "new_simulation_launched": false,
+  "remaining_numeric_families": {
+    "full_scalar_balance": false,
+    "spatial_reaction_oxygen_fuel": false,
+    "whole_region_Heun_momentum": false
+  },
+  "limitations": [
+    "Caller donor densities/stage low/anti/shared alpha not native authenticated; no terminal-state donor substitution",
+    "Single stage R0 or R1 witness, no Heun stage averaging/composition",
+    "Fixed bins descriptive; exactzero not causal depletion proof and alpha reduction not defect proof",
+    "25680wire bytes not measured allocation; oracle temporaries scale with selected surface faces",
+    "Other numeric families/authenticated lifetimes/full ordinal chain/parity pending"
+  ],
+  "repair": "R1 two orthogonal P2 findings: interior alpha bins admitted impossible absolute limiter ratios. Exact Fraction joint ratio witness now uses represented binary32 bin endpoints and derived binary64 normal RN leaf+fsum bounds; no epsilon or physical tolerance."
+}

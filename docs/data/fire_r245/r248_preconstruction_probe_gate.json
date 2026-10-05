@@ -1,0 +1,133 @@
+{
+  "schema": "rise.fire.r248.preconstruction-probe-gate.v1",
+  "status": "scoped_controls_pending_review",
+  "pins": [
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/src/Library/Utilities/FireProductionForce.h",
+      "sha256": "bd6a8fe6202501fc167c965065ceb0017c74b7df669419551540a34d5bb3c541"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/src/Library/Utilities/FireProductionAdvectionMac.mm",
+      "sha256": "50f6b5a6c32eff559926d0555863c7989a0b367b93b531e076e2f7c5bfb57903"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tests/fire_production_fp64/FireProductionForce.h",
+      "sha256": "d6881d4ab9058661fc1663c1d703b2b7a52d2964fe0a6f1328f9c29be5a1db42"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tests/fire_production_fp64/SourceManifest.h",
+      "sha256": "864b8d9f64dfb7c932958c666c5c2fbf444e08f51e28a60ae2b1dd27c1acc9af"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tests/fire_production_trace/FireProductionForce.h",
+      "sha256": "8624bb0292a070f1c2c4b0915d55394c7e50e84f48be383f9a3a059b6d9755e8"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tests/fire_production_trace/SourceManifest.h",
+      "sha256": "9e6f008d688da797c21f0b8e5fff647ead0c875eeede68bd0cbbf81cff78bd30"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r248_preconstruction_probe.cpp",
+      "sha256": "793f1093c47099dbe93e49b22e9783a86db890ce9cce4bb33169f72333dd5691"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r248_preconstruction_probe_verify.py",
+      "sha256": "c8f6261cdf5a41bdaa30c44fec2e755d25083e515662c169ba89b38738ee4f06"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/docs/FIRE_SMOKE_PRECONSTRUCTION_RESOURCE_PROBE_R248.md",
+      "sha256": "fe20f0b48749db1116049fd6c718ded3e375ccfb404efa76e06a541bae218768"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_preconstruction_probe.v4/controls_repaired/validation.json",
+      "sha256": "4407691976d814423dada74b09aed11d29b63c9267a25c6a61ef0f7c2449d5ce"
+    }
+  ],
+  "builds": [
+    {
+      "name": "make_clean.log",
+      "exit_code": 0,
+      "warnings": 0,
+      "allowed_documented_notices": 0,
+      "pin": {
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_preconstruction_probe.v3/make_clean.log",
+        "sha256": "09155cd7b2f99672f8f213b798682fc13fdd3602f019b4c35e86d49af827ebe1"
+      }
+    },
+    {
+      "name": "make_all.log",
+      "exit_code": 0,
+      "warnings": 0,
+      "allowed_documented_notices": 0,
+      "pin": {
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_preconstruction_probe.v4/make_all.log",
+        "sha256": "0ddb86ffb0c780d51fc792c1378f859ee6afdb2803e7fd6fa08ca8a78a6b59c7"
+      }
+    },
+    {
+      "name": "firesequence_build.log",
+      "exit_code": 0,
+      "warnings": 0,
+      "allowed_documented_notices": 0,
+      "pin": {
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_preconstruction_probe.v4/firesequence_build.log",
+        "sha256": "bc3807d522658cfa2e3b5328e156aa92dc14925dd3777b2d7ee28e93a2bc7aca"
+      }
+    },
+    {
+      "name": "xcode_deployment.log",
+      "exit_code": 0,
+      "warnings": 2,
+      "allowed_documented_notices": 2,
+      "pin": {
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_preconstruction_probe.v4/xcode_deployment.log",
+        "sha256": "24068a9915ba55bd3cd05853243249eecd075c564959009a72ae723956410c9f"
+      }
+    },
+    {
+      "name": "xcode_opto.log",
+      "exit_code": 0,
+      "warnings": 2,
+      "allowed_documented_notices": 2,
+      "pin": {
+        "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_preconstruction_probe.v4/xcode_opto.log",
+        "sha256": "5feb92f2783a601df54dbf3486ed21535f5addec5acd1dd7ad5dcc85623a1ab4"
+      }
+    }
+  ],
+  "native_control_green": 6,
+  "native_control_red": 17,
+  "modes": [
+    "strict",
+    "native_ASan_UBSan"
+  ],
+  "max_observed_fixture_peak_RSS_bytes": 237158400,
+  "fixture_peak_cap_bytes": 268435456,
+  "validation_artifact_pins": 16,
+  "build_identity": {
+    "head": "18a6aec07d33f55c4039b8e92fc72c6db1a91763",
+    "dirty": true,
+    "embedded_git_identity": false,
+    "clang": "Apple clang version 21.0.0 (clang-2100.1.1.101)\nTarget: arm64-apple-darwin25.5.0\nThread model: posix\nInstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin\n"
+  },
+  "source_layout_authentication": false,
+  "complete_caller_gateway_implemented": false,
+  "complete_live_inventory_qualified": false,
+  "native_observer_accepted": false,
+  "native_parity_accepted": false,
+  "new_simulation_launched": false,
+  "physical_acceptance": false,
+  "preserved_prerequisite_logs": [
+    "r248_preconstruction_probe.v1",
+    "r248_preconstruction_probe.v2",
+    "r248_preconstruction_probe.v3",
+    "r248_preconstruction_probe.v4/controls (fault-injection fixture exit13)"
+  ],
+  "repairs": [
+    "Regenerated required FP64/trace header mirrors and source manifests",
+    "Removed internal unused EOS table pack error parameter and six caller arguments; arithmetic unchanged",
+    "R1 P2: moved probe reset/publication inside pooled bad_alloc recovery; guard production refusal reset/error; invalidate reused accepted authority before allocating reset",
+    "Four real allocation-failure injection controls at result reset and diagnostic publication; initial fixture countdown repaired from2 to1; failed exit13 retained"
+  ],
+  "final_build_scope": "Prior clean make/Deployment/Opto plus final changed-native-source rebuild and test relink; only documented Xcode notices"
+}

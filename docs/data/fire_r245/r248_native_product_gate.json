@@ -1,0 +1,425 @@
+{
+  "schema": "rise.fire.r248.native-product-gate.v1",
+  "status": "reviewed_standalone_synthetic_native_product_only",
+  "green": 18,
+  "red": 10,
+  "artifacts": [
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r248_product.metal",
+      "sha256": "5c88ce2a103b8cd529c197a4942d61e9780fc4b236abb0f08bccea107bfe32c3"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r248_product_native.mm",
+      "sha256": "e6e29ae2f94d6b2f4a6ee8a2160d3d89d9b1eea940f4e2c371d8c149734253b7"
+    },
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r248_product_native_verify.py",
+      "sha256": "2dc03543df60fe9b0544224900c7b15c3c69582c159014cb0227e511fc9ae739"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/build_receipt.json",
+      "sha256": "b876c00c790c5d10ad8914b9eef40a1638e293f8b525c1f787ec8247a744aeda"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/carry_overflow.bin",
+      "sha256": "b76875c50ef704dbbf7f02c982445971d1bbd61aebe2e4b28ddc58a1d66317d5"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/carry_overflow.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/carry_overflow.stdout",
+      "sha256": "75ef2c3d47e361d7315f51af81cfc2537903918698b9fcc614ea374a836371d6"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/controls.json",
+      "sha256": "a2c39257fbc4a37fd0ebf328f423e9df898dec963bf0cb0189dc18a6412086d6"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/count_overflow.bin",
+      "sha256": "ca888f40c3caca805b37a5434c75de5550616e0795e7602fb91156f22dd90851"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/count_overflow.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/count_overflow.stdout",
+      "sha256": "58d6e898b221d0c8b325f2d99da1aa763ff951dc222ca12e836f8eec01ca3d00"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/fifo.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/fifo.stdout",
+      "sha256": "8818a62c23ef681ae134f4e92e7fd876d40b0c672ed80ff3a9d6041ae135e505"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/input_1.bin",
+      "sha256": "4d8d0d85b715bd3a183e84add03330042e20d98bb1668c5cb6e47cf1fde3e2b0"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/input_17.bin",
+      "sha256": "9fc15114c9cb759f475ec70793c6b3263584f7e03feef581380b731f1c33ddd5"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/input_255.bin",
+      "sha256": "dd755ff0054efb623a6d0b36fdcb46ed11685330f244300beb1304b4eb78a018"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/input_256.bin",
+      "sha256": "fb3e871bf0f78e342dd462ee3fab33c961d6f2b4050d24d29512dc25d428220a"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/input_257.bin",
+      "sha256": "3057eea44ce51628dd4d9c3ef4bf304907b1e38883a6ad89462d49e0818b81ae"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/input_65537.bin",
+      "sha256": "4a778967a6d4dd1c6c60af4da11c2d633a604eced263ae16e54821ede0caee2e"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/native_verify.frozen.py",
+      "sha256": "2dc03543df60fe9b0544224900c7b15c3c69582c159014cb0227e511fc9ae739"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/nonfinite_first.bin",
+      "sha256": "fbdd176c1080aa4155e61e398e6ee9bc4f0429f9f50ef242f608de5ee316fa7c"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/nonfinite_first.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/nonfinite_first.stdout",
+      "sha256": "fddfa96e3f457cd8113f2b129b4c905c308d4f872cc99dff6a457c97dd0c6b26"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/nonfinite_second.bin",
+      "sha256": "6946d22df1b988f02e6f2f956194c3ba7a80f3805168d902067482cb9649e645"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/nonfinite_second.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/nonfinite_second.stdout",
+      "sha256": "40ab446f489e41d7eaa4718c7d42c8951d4db4e35bfaf159f7f4b3a780c3b543"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/order.bin",
+      "sha256": "11047585fe102fbb5cadb42446612a578d88c6ef5ed076bb7ac360c4f9e4373d"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/order.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/order.stdout",
+      "sha256": "3b4deb5633bf54943338d12f91268abdc91096df938cbee22a8939fb5f66da25"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/oversized.shader",
+      "sha256": "2cb74edba754a81d121c9db6833704a8e7d417e5b13d1a19f4a52f007d644264"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/oversized.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/oversized.stdout",
+      "sha256": "8818a62c23ef681ae134f4e92e7fd876d40b0c672ed80ff3a9d6041ae135e505"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/preflight.bin",
+      "sha256": "11047585fe102fbb5cadb42446612a578d88c6ef5ed076bb7ac360c4f9e4373d"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/preflight.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/preflight.stdout",
+      "sha256": "9364adf75bf2fba7184fd9795b84f53b969a1898fdc945ae1ba4fd9389684edf"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/product_native",
+      "sha256": "d04215f54eea39074ab78ef9839c74be272104e7d44e43d01f676b3bb3a41d94"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/r248_product.metal",
+      "sha256": "5c88ce2a103b8cd529c197a4942d61e9780fc4b236abb0f08bccea107bfe32c3"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/r248_product_native.mm",
+      "sha256": "e6e29ae2f94d6b2f4a6ee8a2160d3d89d9b1eea940f4e2c371d8c149734253b7"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/report_failure.result",
+      "sha256": "57b06c00004903ae3d34d5c50d996d54ad72090e61a401fe1da8c975551f01a3"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/report_failure.stderr",
+      "sha256": "7677124ccff7d1617913973a7079af94e583fb2c10c1528e4157d214cec6cd04"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/result_17_0.bin",
+      "sha256": "b6c079d92b8f95a0d19814c3640d21467531845365163c68e2325b8a6724fbc3"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/result_17_1.bin",
+      "sha256": "cf6976f2a2d815435305991265fd837a3f22f96be63f8ffb507e2fd80c856207"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/result_17_2.bin",
+      "sha256": "e3a3e4ea751061ea0c2a042d3eb19c9549809857ba9c0a01719fd369a0ab3a9a"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/result_1_0.bin",
+      "sha256": "57b06c00004903ae3d34d5c50d996d54ad72090e61a401fe1da8c975551f01a3"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/result_1_1.bin",
+      "sha256": "c3a2aad3f04f184f9a4be6d5112310d3d37511c0a0e474d20d5e59d19c61c18d"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/result_1_2.bin",
+      "sha256": "a3682b4cfc4dfc66d314740f69f6843491271215a5913b029cfa23587eaa3c80"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/result_255_0.bin",
+      "sha256": "ee6a4edf7f7f0e3538f9c6f6d0a27524877088cce479427673bf59fb6cbc3e16"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/result_255_1.bin",
+      "sha256": "d4a964aeb5b5f06691deb09e0d737d8ef7bf41dfdf312a8255533919f797bb39"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/result_255_2.bin",
+      "sha256": "62e8939714aa339cf960253d23dd15681f9b9987a9a789a4a65b84c1765fe0c1"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/result_256_0.bin",
+      "sha256": "306bb778a89a0b83238284f7d293d96fd16a2f0155ff34b5ede4d29517836c5d"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/result_256_1.bin",
+      "sha256": "3910365e919356fc4b392b97effb81a72888f61047b6a0a64a42aea5b10627a7"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/result_256_2.bin",
+      "sha256": "4760772c3f3cec24f1bdfa2868c500f7fdcfa8919b5e84b6660093ca61ff037a"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/result_257_0.bin",
+      "sha256": "7d14cfa3990822baad0ca5f44cba31527607d0e61aacf52e96c84e66b48113c5"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/result_257_1.bin",
+      "sha256": "f41f88df28e45a35e4c93ea39589916bd087a640e2331663235d57c714178af8"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/result_257_2.bin",
+      "sha256": "2be9ee7847dc7767c641a89ba9f8f10574ef4e4b111f27997e73ed7db8fa2f73"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/result_65537_0.bin",
+      "sha256": "1078a64dc89c0b196975ba07315a8de715369c3e77c2037b570e2d1e0af90d87"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/result_65537_1.bin",
+      "sha256": "61bd97997162f69e240c12ad214e5d7d8adfa17a43bdf9c8f3b740a9f3e40565"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/result_65537_2.bin",
+      "sha256": "3ccc7c5f3b0fe604db80d39111b2e5bd74684c577dbe221876c0b667154818db"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/run_17_0.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/run_17_0.stdout",
+      "sha256": "f3d362b0a6494ad2718a5a74f8dbd628d387b5eea8d8bc7180d4710c7424d3d7"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/run_17_1.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/run_17_1.stdout",
+      "sha256": "fcea2e071564704a6b699329424735b6298fba4cc40314a4b10db72da82bd3a6"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/run_17_2.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/run_17_2.stdout",
+      "sha256": "48dd3f8e8632ae0ffa496ea191b6ab53ce7513d4564874af4cdbc5b75c0ed9ca"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/run_1_0.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/run_1_0.stdout",
+      "sha256": "df02d68d05e7a8cbfeb87c2b3e4c5dd0a5b162dadf2a0bb960850ca8785b0182"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/run_1_1.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/run_1_1.stdout",
+      "sha256": "94b000c83086d73dab5bef3d447ddbd3c60de01f3359003a31a160004dce09bf"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/run_1_2.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/run_1_2.stdout",
+      "sha256": "02e2ad7a65280e005a2f8b7d69eb2c04e8daec6063e1dfb1e69cf4abab87a8c9"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/run_255_0.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/run_255_0.stdout",
+      "sha256": "bdf313ccfb63dc7eedbb3e5198879c152e91c82f2757d8cfa9de402a04464db5"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/run_255_1.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/run_255_1.stdout",
+      "sha256": "12ae20a623b0dadd6322ec5336520e4e7aecd502767d53f5ad7f2a77aee6c8e7"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/run_255_2.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/run_255_2.stdout",
+      "sha256": "5ed203800d3999661a2c8b7693e3f12303316e7b7fd441ff2a416b97adcc38f6"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/run_256_0.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/run_256_0.stdout",
+      "sha256": "945a1a2378c013b61b50ae0a57f4a47ce361e4280b1ddfe994ec8c6ba78cad80"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/run_256_1.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/run_256_1.stdout",
+      "sha256": "9d922097ab8cf372253ce42eae185a5a78c44d2f3f6b52d8076612d342ca9351"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/run_256_2.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/run_256_2.stdout",
+      "sha256": "4e1ee647e090b9a85e5d72ef9acdf70873a3639a2f9ca4bbcd5c0935448c794c"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/run_257_0.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/run_257_0.stdout",
+      "sha256": "8fee400af2f2e0cb6877ddf7ad52396f818eb893d5cdf422c51423b2ff2b2d1b"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/run_257_1.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/run_257_1.stdout",
+      "sha256": "acc2e42b9d64fd0d2bfb9b99236b07cf7ecaa4a9983b61b246d71b6cbd509ffc"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/run_257_2.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/run_257_2.stdout",
+      "sha256": "5f3f0fd196b408e0315f0931282e0045b3f3c1b4cfac8ca74f612a478097455b"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/run_65537_0.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/run_65537_0.stdout",
+      "sha256": "588bf9f95eb9bac6e282f52397a2f6955c973ef106d88cb15400ad5394827697"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/run_65537_1.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/run_65537_1.stdout",
+      "sha256": "cc392d0979e459c0e1889d86d919916319638e84f367cee568241c4c69e081ca"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/run_65537_2.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/run_65537_2.stdout",
+      "sha256": "92b154ae66874ccc482cdffc8b05bd614e7ddabfdb04c36533369e6390939ed9"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/symlink.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/symlink.stdout",
+      "sha256": "8818a62c23ef681ae134f4e92e7fd876d40b0c672ed80ff3a9d6041ae135e505"
+    },
+    {
+      "path": "/Volumes/SSD/RISE/fire_production_calibration/r248_product_native_validation.v1/verification.json",
+      "sha256": "151dca857c0dd4b6bd3200433a8f92f55db06c11b0f1aec62715ef40315e70c6"
+    }
+  ],
+  "dependencies": [
+    {
+      "path": "/Users/aravind/Working/RISE/worktrees/r243-structure-diagnostic/tools/fire/r248_resident_product_contract.py",
+      "sha256": "f0095248c77c46ac8a67bed3accb0314599c90933e6f91c1da231e19fb470c93"
+    }
+  ],
+  "actual_max_peak_RSS_bytes": 17203200,
+  "fixture_budget_bytes": 268435456,
+  "public_input_cap_bytes": 2147483648,
+  "native_kernel_implemented": true,
+  "production_native_fields_read": 0,
+  "native_observer_integrated": false,
+  "full_history_authenticated": false,
+  "native_allocation_inventory_qualified": false,
+  "new_simulation_launched": false,
+  "physical_acceptance": false,
+  "nonregular_controls": [
+    "fifo.shader: FIFO",
+    "symlink.shader: symbolic link to frozen shader"
+  ],
+  "limitations": [
+    "Exact represented factors and coordinate moments; no floating multiply/FMA replay or native stage provenance",
+    "Six sizes times three orders exercised, not production/worstcase resource qualification",
+    "Synthetic partial addition overflow controls intentionally inject arbitrary limb magnitudes/counts; not admitted product factor witnesses",
+    "Queried device limits and direct before-field requested inventory plus actual RSS/peak/device measurements; command/report/compiler/registerspill/wholeowner live bounds incomplete",
+    "Unembedded new dirtyHEAD0ba6a9ff3 compile identity with exact source/binary/toolchain hashes, distinct original producer",
+    "Coordinate2 is caller uint32, not authenticated geometry or support"
+  ],
+  "next": "incremental compound kernel native controls/fresh independent reviews; then authenticated resident observer/full live inventory/publication/state parity prerequisites before full simulation"
+}

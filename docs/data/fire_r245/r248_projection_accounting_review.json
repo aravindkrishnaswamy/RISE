@@ -1,0 +1,32 @@
+{
+  "schema": "rise.fire.r248.projection-accounting-review.v1",
+  "status": "accepted_pure_endpoint_branch_accounting_prerequisite",
+  "candidate": "edf97d9c3",
+  "round": 1,
+  "p1": 0,
+  "p2": 0,
+  "gate_sha256": "efcc92e6e392c99663d6ec91ae1bee85d110887d0af41c67c204a01fab030ce3",
+  "reviews": [
+    {
+      "agent": "r248_projection_contract_r1",
+      "axis": "independent arithmetic and active projection kernel contract",
+      "p1": 0,
+      "p2": 0,
+      "evidence": "15 RED; independent mixed-branch periodic 6x8x83 coordinate oracle 72 native/common whole/central quantity checks; actual early-return and seam semantics"
+    },
+    {
+      "agent": "r248_projection_integrity_r1",
+      "axis": "test integrity/lifecycle/provenance/cost honesty",
+      "p1": 0,
+      "p2": 0,
+      "evidence": "All five hashes and exact frozen stdout; randomized mixed-branch 6x8x5 native/common/central signed/absolute fsum oracle; nonfinite endpoint refusal; scoped unauthenticated/no replay/scaling-memory claims"
+    }
+  ],
+  "native_values_authenticated": false,
+  "boundary_configuration_authenticated": false,
+  "numeric_reduction_layout_complete": false,
+  "observer_allocation_accepted": false,
+  "full_observer_implementation_accepted": false,
+  "new_simulation_launched": false,
+  "physical_acceptance": false
+}

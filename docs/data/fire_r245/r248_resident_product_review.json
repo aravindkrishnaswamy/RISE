@@ -1,0 +1,41 @@
+{
+  "schema": "rise.fire.r248.resident-product-review.v1",
+  "candidate_commit": "149bbab12",
+  "round": 1,
+  "status": "accepted_pure_exact_two_f32_product_coordinate_contract_only",
+  "reviews": [
+    {
+      "reviewer": "/root/r248_product_arithmetic_r1",
+      "axis": "independent rawbit arithmetic/carry/overflow",
+      "P1": 0,
+      "P2": 0,
+      "evidence": [
+        "all7pins/20RED",
+        "18139 rawbitFraction checks allfiniteexponents/signsubnormalmax/uint32coordinate/orders0/1/2",
+        "everylimbcarryboundary/plannertiles/75partitionmerges",
+        "650bitmaxcapacity within656/exacttotals352Broundtrips"
+      ]
+    },
+    {
+      "reviewer": "/root/r248_product_integrity_r1",
+      "axis": "representation/cost/test-integrity/provenance",
+      "P1": 0,
+      "P2": 0,
+      "evidence": [
+        "all7pins/captured executed accepted base/20RED",
+        "29extra malformedwire/type/nonfinite/plannerREDs",
+        "21planner cases/orderzero/coordinatezero/cancellation acrossallorders",
+        "352Boffset/canonicalreserved/count/limb/necessarybounds valid",
+        "schoolbookdigitcarry exactlyUINT32MAX",
+        "estimates not deviceallocation/registerspill/nativeauth/parity; no completefactorreconstruction claim"
+      ]
+    }
+  ],
+  "native_fields_read": 0,
+  "native_kernel_implemented": false,
+  "native_stage_authenticated": false,
+  "native_allocation_accepted": false,
+  "new_simulation_launched": false,
+  "physical_acceptance": false,
+  "next": "exact compound spatial sign composition and derived rate quotient contracts; native implementation/authenticatedlifetimes/allocation/state parity still pending"
+}

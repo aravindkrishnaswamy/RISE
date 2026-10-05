@@ -1,0 +1,35 @@
+{
+  "schema": "rise.fire.r248.native-sum-review.v1",
+  "candidate": "5b9a34992",
+  "round": 3,
+  "status": "accepted_standalone_synthetic_sum_prerequisite_only",
+  "gate_sha256": "03729afa306d9315bacdf0f012cc4b323819a54912c0aaaaa607b616feadce15",
+  "reviews": [
+    {
+      "reviewer": "r248_native_sum_arithmetic_r3",
+      "p1": 0,
+      "p2": 0,
+      "independent_evidence": "52 exact pins; rawbit Fraction oracle every byte of six 176-byte records; 2040 finite-exponent/sign/mantissa leaf cases; 320bit capacity and barrier/index/bank/carry contract"
+    },
+    {
+      "reviewer": "r248_native_sum_integrity_r3",
+      "p1": 0,
+      "p2": 0,
+      "independent_evidence": "52 pins; independent integer decomposition 264 record columns; six RED states including exit9 unsealed output; reproduced POSIX regular-to-FIFO and symlink descriptor refusals"
+    }
+  ],
+  "green": 6,
+  "red": 6,
+  "actual_max_peak_RSS_bytes": 15826944,
+  "preserved_prior_rounds": [
+    "r248_native_sum_review_r1.json",
+    "r248_native_sum_review_r2.json"
+  ],
+  "production_native_fields_read": 0,
+  "native_observer_integrated": false,
+  "full_history_authenticated": false,
+  "native_allocation_inventory_qualified": false,
+  "native_state_parity_accepted": false,
+  "new_simulation_launched": false,
+  "physical_acceptance": false
+}

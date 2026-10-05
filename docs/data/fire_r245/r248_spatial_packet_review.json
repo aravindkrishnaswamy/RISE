@@ -1,0 +1,47 @@
+{
+  "schema": "rise.fire.r248.spatial-witness-packet-review.v1",
+  "candidate_commit": "949426090",
+  "round": 1,
+  "status": "accepted_pure_captured_caller_witness_spatial_codec_only",
+  "reviews": [
+    {
+      "reviewer": "/root/r248_spatial_packet_arithmetic_r1",
+      "axis": "independent arithmetic/wire/representation",
+      "P1": 0,
+      "P2": 0,
+      "evidence": [
+        "all12pins exact",
+        "six complete independent Fraction packet oracles:6x8x83/common80,6x8x5/common3,equal-heightempty,negative,maxsubnormal/minimumdx,emptycommon/nativepositive",
+        "5742numericcolumns/all70368bytes match including all960 populated+padded profile slots",
+        "independent raw-second-moment Fraction variance agrees with centred exact source oracle",
+        "66 extra isolated mutation REDs;42 candidate REDs"
+      ]
+    },
+    {
+      "reviewer": "/root/r248_spatial_packet_integrity_r1",
+      "axis": "lifecycle/test-integrity/provenance limits",
+      "P1": 0,
+      "P2": 0,
+      "evidence": [
+        "all12pins/42candidateREDs",
+        "26 extra header/summary/profile/fraction/padding/witness/type/nonfinite REDs",
+        "noncontiguous vs contiguous exactbytes",
+        "private immutable field snapshots remain stable after original-array mutation",
+        "metadata/results mutation cannot change encoded bytes/admission",
+        "negativezero empty geometry unavailable",
+        "equivalentnumericwitnesses sharepacket/differentdigests limitation documented",
+        "same captured verified helper bytes execute"
+      ]
+    }
+  ],
+  "native_fields_read": 0,
+  "standalone_summary_admission": false,
+  "native_values_authenticated": false,
+  "native_stage_authenticated": false,
+  "full_history_authenticated": false,
+  "native_reduction_replayed": false,
+  "native_allocation_accepted": false,
+  "new_simulation_launched": false,
+  "physical_acceptance": false,
+  "next": "bounded resident numerical reduction contract and authenticated stage/parent/target lifetimes/fullordinalchain/allocation/currentRSS/peak/devicebounds/native parity before full simulation"
+}
