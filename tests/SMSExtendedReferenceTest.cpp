@@ -1140,6 +1140,68 @@ static void NativeWeldCoordinateRange() {
         mesh->release();
     }
 }
+// The reference price comes from native SPF scattering at an independent
+// scene-manager hit, including the consumer's separate radiance eta factor.
+static void NativeCrossObjectPrices() {
+    for(bool interior:{false,true}) for(bool reflection:{false,true})
+        for(bool reverse:{false,true}) for(bool transformed:{false,true}) {
+        std::string text=Materials();
+        text.replace(text.find("values 1.3 1.5 1.9"),std::string("values 1.3 1.5 1.9").size(),"values 1.5 1.5 1.5");
+        text+="expression_painter\n{\n name signal\n expr vec3(.2+.8*"+std::string(interior?"interior(1)":"proximity(4)")+",.2+.8*"+(interior?"interior(1)":"proximity(4)")+",.2+.8*"+(interior?"interior(1)":"proximity(4)")+")\n}\n"
+            "perfectreflector_material\n{\n name signal_mirror\n reflectance signal\n}\n"
+            "perfectrefractor_material\n{\n name signal_glass\n refractance signal\n ior triple\n}\n"
+            "lambertian_material\n{\n name neighbour_mat\n reflectance white\n}\n"
+            "sphere_geometry\n{\n name neighbour_geo\n radius "+std::string(interior?"20":".1")+"\n}\n"
+            +QuadMesh("patch",0,-2,3,reverse)+SceneObject("caster","patch",reflection?"signal_mirror":"signal_glass",
+                transformed?" scale 2 0.8 1.5\n orientation 0 45 0\n":"");
+        Fixture f(text);
+        const auto& transform=f.Object("caster")->GetFinalTransformMatrix();
+        const Point3 center=Point3Ops::Transform(transform,Point3(0,.3,0));
+        const Point3 start=Point3Ops::Transform(transform,Point3(-.5,.3,-3));
+        // Add the neighbour through the scene parser before testing any price.
+        const Point3 neighbour=interior?center:Point3Ops::Transform(transform,Point3(1,.3,0));
+        std::ostringstream location;location<<std::setprecision(17)<<" position "<<neighbour.x<<' '<<neighbour.y<<' '<<neighbour.z<<"\n";
+        Fixture scene(text+SceneObject("neighbour","neighbour_geo","neighbour_mat",location.str()));
+        IORStack air(1);ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;
+        for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
+            RayIntersection hit(Ray(start,Vector3Ops::Normalize(Vector3Ops::mkVector3(center,start))),nullRasterizerState);
+            scene.Scene().GetObjects()->IntersectRay(hit,true,true,false);
+            Check(hit.geometric.bHit&&hit.pObject==scene.Object("caster"),"signal-price independent scene hit reaches the caster");
+            if(!hit.geometric.bHit||hit.pObject!=scene.Object("caster")) continue;
+            Check(hit.geometric.signals.pScene==scene.Scene().GetObjects()&&hit.geometric.signals.pSelf==hit.pObject,
+                "signal-price native oracle has scene and self provenance");
+            RandomNumberGenerator random(71);IndependentSampler sampler(random);ScatteredRayContainer rays;
+            if(domain.kind==SMSQueryDomain::Wavelength) hit.pMaterial->GetSPF()->ScatterNM(hit.geometric,sampler,domain.nm,rays,air);
+            else hit.pMaterial->GetSPF()->Scatter(hit.geometric,sampler,rays,air);
+            bool tested=false;
+            for(unsigned j=0;j<rays.Count();++j) {
+                const auto& ray=rays[j];
+                if(!ray.isDelta || (ray.type==ScatteredRay::eRayReflection)!=reflection) continue;
+                const Scalar native=domain.kind==SMSQueryDomain::Wavelength?ray.krayNM:ray.kray[domain.component];
+                if(native==0) continue;
+                tested=true;SMSDomainVertex vertex(hit.geometric);
+                vertex.geometry.position=center;vertex.geometry.normal=hit.geometric.vNormal;
+                vertex.geometry.geomNormal=hit.geometric.UnflippedGeomNormal();vertex.geometry.pObject=hit.pObject;
+                vertex.geometry.pMaterial=hit.pMaterial;vertex.geometry.isReflection=reflection;
+                std::vector<SMSDomainVertex> records{vertex};NativeConstraintOracle oracle(cfg,&records);
+                const Point3 end=Point3Ops::mkPoint3(center,ray.ray.Dir()*3);
+                const auto result=oracle.SolveDomain(start,hit.geometric.vNormal,end,-ray.ray.Dir(),scene.Scene(),air,domain,records,sampler,1e-7,1e-10);
+                Check(result.valid,"cross-object painter retains a regular native R/T root");
+                const Scalar expected=native*(reflection?1:RadianceEtaScale(air,ray.ior_stack));
+                std::cout<<"R7 signal interior="<<interior<<" reflection="<<reflection<<" winding="<<reverse<<" transformed="<<transformed
+                    <<" domain="<<domain.kind<<":"<<domain.component<<":"<<domain.nm<<" root_price="<<result.contributionNM<<" native_price="<<expected<<'\n';
+                if(result.valid) {
+                    Check(records[0].context.signals.pScene==scene.Scene().GetObjects()&&records[0].context.signals.pSelf==hit.pObject,
+                        "refreshed root retains scene/self signal provenance");
+                    Check(Point3Ops::Distance(records[0].context.signals.ptWorld,records[0].context.ptIntersection)==0,
+                        "refreshed signal world point belongs to the final native context");
+                    Check(std::fabs(result.contributionNM-expected)<1e-7,"final RGB/NM cross-object attenuation agrees with scene-stamped native SPF and eta price");
+                }
+            }
+            Check(tested,"native signal-price event is present");
+        }
+    }
+}
 class InertFrameModifier final : public AuditedIdentityFrameModifier {
 public:
     void Modify(RayIntersectionGeometric&) const override {}
@@ -2102,6 +2164,14 @@ int main(int argc,char** argv) {
         NativeTransformedUVComposition();
 #else
         Check(false,"generated UV differential witness requires native domain support");
+#endif
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
+    }
+    if(argc==2&&std::string(argv[1])=="--r7-signals-only") {
+#ifdef RISE_SMS_REFERENCE_A
+        NativeCrossObjectPrices();
+#else
+        Check(false,"signal price witness requires native domain support");
 #endif
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
     }
