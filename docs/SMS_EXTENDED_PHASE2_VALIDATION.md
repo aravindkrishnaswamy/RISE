@@ -1006,9 +1006,12 @@ Committed native controls pass **36077/0** (`differential-r5-result.log`),
 **4297/0** geometry, **761/0** unsupported/configuration, and **193401/0**
 review controls. The alias witness retains positive solves in all domains
 and windings, with its actual analytic derivative used in the Jacobian.
-Unsupported controls now include an uncertified identity modifier assigned
-after preparation, RGB and two NM domains, both mesh windings and a mixed
-caster set, four salted trials with bit-identical PT output.
+The intended uncertified identity-modifier control did not execute: fresh
+Round6 review found that the kind4 assignment was unreachable in a loop over
+kinds0–3, and the assignment also preceded final preparation. The claimed
+after-preparation modifier coverage is withdrawn; the recorded unsupported
+counts cover the actually executed kinds0–3 only. A reachable post-preparation
+control across RGB/two NM domains, both windings and mixed casters is required.
 
 The shared-mesh preparation witness is committed at `e46744cb7` and reports
 **15/6** on pre-cache native sources (`preparation-witness-red.log`).

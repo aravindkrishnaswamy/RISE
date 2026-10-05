@@ -1,6 +1,6 @@
 # Extended SMS: event proposals, channel geometry, and path ownership
 
-**Status: adopted implementation contract, 2026-10-03. Phase 1 domain/replay primitives and interim rejection policy are implemented on `sms-ext`, merged to master at `34bd520ec5e70a5cf96bcf8b8154b1a17888880f`. Phase 2 is implemented on `sms-ext-phase2`, unmerged; the repaired tree has a fresh complete passing gate and awaits fresh Round 6 review; Phases 3–4 remain pending.**
+**Status: adopted implementation contract, 2026-10-03. Phase 1 domain/replay primitives and interim rejection policy are implemented on `sms-ext`, merged to master at `34bd520ec5e70a5cf96bcf8b8154b1a17888880f`. Phase 2 is implemented on `sms-ext-phase2`, unmerged; the fresh Round 6 review found implementation defects and a reproduced generated-UV differential contract gap, awaiting a user ruling. Phases 3–4 remain pending.**
 
 Base: master `a8fa56224ff1e4d9284e907fcf1d1d05534530e6`, the reviewed attenuation integration. DL-437 and DL-438 remain open. The user authorized deferring them for that integration and asked for this extended design next. This proposal keeps the native material conventions established by [DL-435](DL435_SPECTRAL_SMS_ATTENUATION.md). It does not replace them with a general participating-medium or absorbing-film model.
 
@@ -753,3 +753,48 @@ SD measurement remains disclosed under the original band, with no DL-420
 closure. Full provenance, counts, memory and scope limits are in
 SMS_EXTENDED_PHASE2_VALIDATION.md. Fresh Round6 review remains required;
 Phase2 is unmerged and no ledger row is opened or closed.
+
+### Fresh Round 6: composed input differential stop (2026-10-04)
+
+Three fresh independent reviewers completed on `eca4f2eccb3309bba655cbf49b6b602955894be4`.
+They verified the recorded gate provenance but did not return a clean round.
+The estimator reviewer identified a DESIGN gap: the analytic modifier receives
+numerically differentiated generated UVs, although `IUVGenerator` has no
+audited derivative or feature-bound contract. An analytic modifier therefore
+cannot establish the derivative of its composed input transport.
+
+The committed native witness `3e497f4b5` reproduces this gap in
+`SMSExtendedReferenceTest --r6-generated-uv-only`: **35 passing /10 failing
+checks**, with a successful checked test build and no compiler diagnostics.
+All three RGB domains and NM450/NM650, in both real double-sided indexed-mesh
+windings, accept the root. Its Jacobian entry is approximately **-0.291667**;
+an independent period/1024 residual oracle gives **-0.491665**. A custom UV
+generator supplies `u=A*sin(2*pi*x/P)`, with
+`P=cbrt(epsilon)/(4*114243)` and `A=.2*P/(2*pi)`. The modifier differentiates
+`normalize((u,0,1))` analytically with respect to its supplied UV input.
+Moving the harmonic field upstream of the modifier bypasses the previous
+analytic-normal repair. Raw evidence is
+`.claude/logs/sms-phase2-round6-findings/generated-uv-build.log` and
+`generated-uv-red.log`. This is an executed native Jacobian counterexample;
+no new production radiance/bias measurement is claimed.
+
+**Proposed correction, pending user ruling:** certification must cover the
+composed input transport as well as the modifier. A modifier that consumes
+generated UVs requires an audited UV differential (analytic, or a sufficient
+feature/error bound); otherwise that caster makes the extended anchor
+ineligible, with all three switches off and PT keeping its paths. Providers
+must declare relevant input dependencies conservatively. Audited modifiers
+independent of generated UVs remain eligible. Existing legacy/off behavior
+and the scene-wide composite rule remain unchanged. More black-box stencil
+probes cannot certify an arbitrary generator. No implementation of this
+proposed correction precedes the user ruling, and no ledger row is opened
+for it.
+
+Other Round 6 implementation findings require repair: `Object.cpp` and
+`CSGObject.cpp` include the SMS header before the Windows `/Yu` precompiled
+header; the weld-coordinate conversion can exceed `int64_t` before the
+unsigned hash; and the unsupported-caster loop never executes kind4, so its
+claimed after-final-preparation uncertified-modifier coverage is withdrawn.
+The passing full gate remains valid for its recorded workload and checkpoint;
+it neither covers these missing cases nor establishes review convergence.
+Phase2 remains unmerged. No rows are opened/closed and no changes are pushed.
