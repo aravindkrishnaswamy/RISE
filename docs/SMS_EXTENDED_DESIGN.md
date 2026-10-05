@@ -675,3 +675,27 @@ finite differences validate native geometry reconstruction, not a black-box
 modified field. A caster with no audited capability makes the anchor
 ineligible for all three switches; every isolated proposal also checks it.
 No ledger row is opened or closed by this decision.
+
+
+### Phase 2 fresh Round 6 precision stop (2026-10-04)
+
+The adopted analytic modifier contract and scratch/provenance/preparation
+repairs pass their coherent committed-source controls on `cf76d5d0a`.
+The new full gate stops at mode-off precision: all eight alternating source
+builds and sixteen salted renders complete, but one NM image fails the
+existing float32 bit-identity contract. Exact-binary native pixel captures
+reproduce the hashes and locate one R component at `(38,59)` differing by
+one float32 ULP (5.684341886080802e-14), from underlying double values only
+4.642574878406611e-16 apart. All other fifteen float32 image hashes match.
+The measured candidate cost changes range from +0.069% to +1.185% (n4;
+SD0.595%–1.003%). See SMS_EXTENDED_PHASE2_VALIDATION.md for complete raw
+provenance, counts, timing SDs and limitations.
+
+This run is **failed**, not a passing gate or a review convergence. No
+Phase2 merge, new ledger row, closure or fresh Round6 review occurred.
+The precision policy above remains adopted and unchanged. A proposed
+cross-build bound of one float32 ULP needs an explicit user ruling before
+code can enforce it; deterministic within-build identity and original
+stochastic bands remain unchanged. Alternatively, continue investigation
+and repair under exact float32 identity. No cause is guessed from the
+small measured difference, and no exception is silently granted.

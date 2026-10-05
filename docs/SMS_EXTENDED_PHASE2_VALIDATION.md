@@ -1098,3 +1098,75 @@ and selects a separate fallback only when the native capability is absent.
 Failed logs are preserved under
 `.claude/logs/sms-phase2-round6-final/attempt1-proofs/`. Full gates restart on
 the committed shim repair; the compile failure is not bypassed or counted.
+
+
+## Fresh Round 6 gate: precision stop (2026-10-04)
+
+Candidate native/test commit: `cf76d5d0a675091529a6a288efc0de5c477b11d5`
+on `sms-ext-phase2`; baseline master remains clean at
+`08552560b54b517b7a8a0696eb9d317953b26bbe`. All evidence below lives in
+`.claude/logs/sms-phase2-round6-final/`. No merge or push occurred.
+
+Coherent rollback restores all **19** related source/header paths together.
+Current tests compile without warnings on every completed checkpoint.
+Pre-differential `6ca64acac` reports **36067/10** Round 5, **23/8** preparation,
+and **33/8** provenance. Pre-scratch `e3ca99663` reports **177/24** production:
+its radiance checks pass and the 24 failures are missing scratch/query
+measurement capability, not physical estimator failures. Master production
+reports **127/50**, including real analytic radiance failures. Restored
+candidate controls pass **36077/0**, **31/0**, **41/0**, **193401/0**, **393/0**,
+and **4297/0** for Round 5, preparation, provenance, review, production and
+geometry. The 40 salted production means are bit-identical before and after
+the scratch refactor (`scratch-production-means.json`). Record sizes are
+ManifoldVertex336, SMSDomainVertex1592, SMSDomainRoot184 and
+SMSReferenceCounters368 bytes; the prior counter record is320 bytes.
+
+Eight interleaved actual library/test builds and all sixteen mode-off
+renders complete with no compiler diagnostics. Worker policy is one forced
+worker and reserve_count0, identical for A/B. The original float32 identity
+gate reports **15 passed / 1 failed** (`failed-mode-off-summary.json`).
+Only fixture2, salt/trial1, NM
+`scenes/Tests/Spectral/spectral_dispersive_caustic_pt_sms_uniform.RISEscene`
+has a mismatching float32 hash. Its reported mean is identical:
+1.5160162795669927. The pipeline stops here and restores committed sources;
+clean make, actual Xcode, full regression, sanitizer and process-memory
+stages are **not run** on this candidate. Fresh Round6 reviews are not
+launched because their full gate has not passed.
+
+Paired default cost differences, mean percent ± sample SD (n4):
+
+| Fixture | Candidate versus master |
+|---|---:|
+| RGB, k1 | +1.060071% ±0.711975% |
+| RGB, k2 | +0.069361% ±0.595337% |
+| NM | +1.040116% ±1.003496% |
+| HWSS | +1.185431% ±0.690732% |
+
+Exact master and candidate binaries are preserved. A debugger captures their
+native pixel buffers at HashPixels without recompilation. Both binaries
+were disassembled to verify LTO's begin/end register arguments; empty-vector
+calls are excluded. Earlier diagnostic callback failures are retained in
+attempt1/attempt2 logs and are not passing captures. Successful captures
+reproduce **both recorded double and float32 hashes** for all four fixtures
+at salt1 (`exact-native-pixel-differences.json`). The one changed float32
+component is R at `(38,59)`:
+
+- master double: 8.735136418730979e-7;
+- candidate double: 8.735136414088404e-7;
+- double difference: 4.642574878406611e-16;
+- master float32: 8.735136702853197e-7;
+- candidate float32: 8.735136134419008e-7;
+- float32 difference: 5.684341886080802e-14, exactly one ULP.
+
+The NM image's maximum double RGBA difference is1.4053203045705231e-12 and
+RMSE1.2280086430428958e-14. Its float32 mismatch is one component of one
+pixel; the other three captured images have no float32 mismatches. This
+quantifies a small rounding-boundary difference but does not satisfy the
+adopted bit-identity contract or establish its exact compiler/code cause.
+The strict gate stays **failed**. No row is opened or closed, no precision
+exception is adopted, and no Phase2 completion or fresh-review convergence
+is claimed. The original user's STOP rule and the adopted precision contract
+require a ruling before relaxing that contract; the next proposed choice is
+a cross-build one-ULP float32 bound versus continued investigation under
+exact float32 identity. Within-build deterministic and stochastic contracts
+would remain unchanged under either choice.
