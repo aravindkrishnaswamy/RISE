@@ -91,6 +91,8 @@ warning kind, and the verification commands are in [AGENTS.md](AGENTS.md) →
 
 ## High-Value Facts
 
+- **2026-10-04 (sms-ext-phase2, Phase 2):** `ManifoldSolverConfig::extendedMode` enables native R/T root-level reference evaluation through `ManifoldSolver::EvaluateExtendedDelta` for supported RGB/NM point and spot lights. It uses selected-domain medium replay, native event prices and survival-weighted rediscovery tails. Area-emitter ownership and positive HWSS execution remain later phases; composite scenes retain legacy behavior. Modified interfaces require the separate audited `ISMSModifierDifferential` capability. There is no parser/API exposure. Evidence and scope are in `docs/SMS_EXTENDED_PHASE2_VALIDATION.md`.
+
 - **2026-10-03 (sms-ext, Phase 1):** `ObjectManager::PrepareForRendering` caches composite presence through effective material wrappers and CSG operands and emits one warning naming the first object; `ManifoldSolver::ExtendedModeActive` makes the internal extended opt-in inert for that entire prepared scene while preserving existing SMS and suppression. `SMSLegacyModeScope` preserves HWSS legacy mode through NM medium and SSS shader fallbacks. Positive extended estimators and composite replay are not enabled by this primitive/rejection phase.
 
 - **2026-10-02 (debt-cheapbatch):** OIDN Auto selects quality from a static sample-budget policy and idle backend changes rebuild its device; PT medium scatter clears the SMS anchor, SMS evaluates area emission toward the solved chain, and spectral SMS preserves sampled material coordinates while updating the material-side interface indices at each wavelength.

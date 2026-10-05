@@ -1,6 +1,6 @@
 # Extended SMS: event proposals, channel geometry, and path ownership
 
-**Status: adopted implementation contract, 2026-10-03. Phase 1 domain/replay primitives and interim rejection policy are implemented on `sms-ext`, merged to master at `34bd520ec5e70a5cf96bcf8b8154b1a17888880f`. Phase 2 is implemented on `sms-ext-phase2`, unmerged; repairs resumed after the user authorized continuation beyond Round 5; Phases 3–4 remain pending.**
+**Status: adopted implementation contract, 2026-10-03. Phase 1 domain/replay primitives and interim rejection policy are implemented on `sms-ext`, merged to master at `34bd520ec5e70a5cf96bcf8b8154b1a17888880f`. Phase 2 is implemented on `sms-ext-phase2`, unmerged; the repaired tree has a fresh complete passing gate and awaits fresh Round 6 review; Phases 3–4 remain pending.**
 
 Base: master `a8fa56224ff1e4d9284e907fcf1d1d05534530e6`, the reviewed attenuation integration. DL-437 and DL-438 remain open. The user authorized deferring them for that integration and asked for this extended design next. This proposal keeps the native material conventions established by [DL-435](DL435_SPECTRAL_SMS_ATTENUATION.md). It does not replace them with a general participating-medium or absorbing-film model.
 
@@ -735,3 +735,21 @@ restored full-instrumentation review passes193401/0. A complete fresh gate
 and fresh reviews remain required. Evidence and limits are recorded in
 SMS_EXTENDED_PHASE2_VALIDATION.md. No contract change, ledger row, closure,
 merge or push follows from this implementation repair.
+
+
+### Fresh Phase 2 replacement gate (2026-10-04)
+
+The repaired native/test tree at `746fa42c2` passes the fresh complete gate:
+33 make modes /411404 reported checks, twelve actual Xcode-linked controls,
+eight fully instrumented sanitizer modes, process-memory measurement and
+all sixteen shipped one-ULP comparisons. Clean make and both actual Xcode
+configurations have zero owned diagnostics. The coherent19-path committed
+proofs reproduce their intended reds and restore all focused controls green.
+The40 salted production means are unchanged by scratch storage (0 double
+ULP). Default paired costs are RGBk1 +0.061% ±0.577%, RGBk2 +0.051% ±0.977%,
+NM +1.759% ±0.919% and HWSS +1.616% ±1.028% (n4). All12 narrow-cone slab
+channels pass; the previously accepted wide-cone red −0.174% /−5.139 combined
+SD measurement remains disclosed under the original band, with no DL-420
+closure. Full provenance, counts, memory and scope limits are in
+SMS_EXTENDED_PHASE2_VALIDATION.md. Fresh Round6 review remains required;
+Phase2 is unmerged and no ledger row is opened or closed.

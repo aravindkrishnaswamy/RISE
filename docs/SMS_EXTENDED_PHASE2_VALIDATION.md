@@ -1236,3 +1236,55 @@ recompiles the changed unit and relinks with all other project units
 instrumented; it does not reuse an old binary as a rebuild. A complete fresh
 native/test gate is prepared in `.claude/logs/sms-phase2-round6-final-v3/`.
 Phase2 remains unmerged, with no new ledger row or closure claimed.
+
+
+## Fresh replacement gate on the repaired native tree (2026-10-04)
+
+Native/test/document checkpoint `746fa42c2` on `sms-ext-phase2`; baseline
+master `08552560b` is unchanged and clean. Evidence lives under
+`.claude/logs/sms-phase2-round6-final-v3/`. Source hashes verify all19 changed
+native paths and four changed test sources. The complete pipeline and summary
+both exit0, with all sources restored and a clean implementation worktree.
+This is a fresh gate, rather than reuse of the failed v2 sanitizer run.
+
+| Gate | Result |
+|---|---|
+| Coherent committed-source proofs | pre-differential36067/10, preparation23/8, provenance33/8; pre-scratch177/24 (missing measurement capability, radiance passes); master production127/50; restored36077/0,31/0,41/0,193401/0,393/0,4297/0 |
+| Clean make |376 compilation units, zero diagnostics |
+| Actual Xcode Deployment / Opto |393 compilation units each, zero owned diagnostics; only the documented missing OIDN search-path and AppIntents metadata notices excluded |
+| Make regressions |20 executables /33 modes /411404 reported checks /0 failures; CST458 MATCH /0 DRIFT,465 corpus scenes /0 UNCOVERED /0 STALE separately |
+| Actual Xcode-linked controls |12 runs /399772 reported checks /0 failures;372 Xcode project objects plus Profiling utility compiled with the matching response flags |
+| Full-project ASan/UBSan |374 linked project C++/Objective-C++ units instrumented, eight modes /235642 reported checks /0 failures; third-party libraries uninstrumented |
+| Process memory |production393/0; maximum RSS102612992 bytes; peak footprint82346536 bytes;27.77s real; no swaps |
+| Scratch output invariant |40 salted production means bit-identical before/after scratch storage refactor (maximum0 double ULP); process memory is separate from scratch capacity |
+| Shipped mode-off pixels |eight alternating source/test builds,16 renders, all within the adopted one-ULP bound;15 float32 images identical, NM salt1 has one changed component /one ULP |
+
+Current paired render-time changes, mean percent ± sample SD (n4), with
+identical one-worker/reserve_count0 policy and dump/compare I/O excluded:
+RGBk1 +0.061317 ±0.577191; RGBk2 +0.050677 ±0.976868;
+NM +1.759001 ±0.918555; HWSS +1.616429 ±1.027699.
+The exact hashes and separate A/B timing means/SDs remain in
+`phase2-interleaved-cost.json`; no zero-overhead claim is made.
+
+All12 narrow-cone, both-winding channel comparisons pass their original
+three-combined-SD band, with each reference's own SD. Five of six wide-cone
+channel measurements also lie inside that original band; front winding/red
+is extended0.6289669133101606 ±0.00019614427847928844 versus
+BDPT0.6300625785345996 ±0.00008359126631271482, −0.17389784% and
+−5.13881272 combined SDs. This is the already user-accepted variance
+measurement, disclosed without changing its band; it supplies no DL-420
+closure. `final-gate/slab-summary.json` records all18 comparisons.
+
+Production counters include131605 proposals,125049 zero trials,692802
+Newton iterations,66069 rediscovery trials,1957 tail events,44 roulette
+terminations,3300 accepted/standalone-owned roots and125049 rejections.
+Logical query counts are1329162 scene,3986397 object and677693 domain
+material queries, under the documented scope. Warmed scratch capacity is
+201376 bytes with no additional growth or frame creation in this fixture;
+its allocator/frame/context exclusions remain documented above. Record sizes
+are336-byte ManifoldVertex,1592-byte SMSDomainVertex,184-byte SMSDomainRoot
+and368-byte SMSReferenceCounters.
+
+The earlier failures and rebuilt repair proofs remain in the v2 directory.
+Fresh independent review is next; no convergence, Phase2 merge, push, new
+ledger row or closure is claimed by this passing gate alone.
