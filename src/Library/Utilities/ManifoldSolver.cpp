@@ -311,10 +311,17 @@ namespace {
                     if(!native) return false;
                     if(const auto* generator=native->SMSUVGenerator()) {
                         const auto* uv=dynamic_cast<const ISMSUVDifferential*>(generator);
+                        // Object::IntersectRay generates UVs before promoting
+                        // normals to world space. Reconstruct that exact input
+                        // convention, including the normalization chain rule.
+                        const Matrix4 normalToObject=Matrix4Ops::Transpose(native->GetFinalTransformMatrix());
+                        const Vector3 localNormalValue=Vector3Ops::Transform(normalToObject,raw.geometric.UnflippedGeomNormal());
+                        const Vector3 localNormalDerivative=SMSNormalizedDifferential(localNormalValue,
+                            Vector3Ops::Transform(normalToObject,input.geometricNormal));
                         if(!uv || !uv->HasSMSUVDifferentialContract()
                             || !uv->SMSUVDifferential(raw.geometric.ptObjIntersec,
-                                raw.geometric.UnflippedGeomNormal(),input.objectPoint,
-                                input.geometricNormal,input.uv)) return false;
+                                Vector3Ops::Normalize(localNormalValue),input.objectPoint,
+                                localNormalDerivative,input.uv)) return false;
                     }
                 } else input.uv=Point2(0,0);
                 if(!provider->SMSFrameDifferential(raw.geometric,input,normal,frameW)) return false;

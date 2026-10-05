@@ -23,7 +23,8 @@
 namespace RISE
 {
     // Optional internal capability; the legacy UV-generator vtable is unchanged.
-    // Covers every supported point/normal and declines unaudited boundaries.
+    // Covers every supported object-space point/normal (the same arguments
+    // Object passes to GenerateUV) and declines unaudited boundaries.
     class ISMSUVDifferential
     {
     public:

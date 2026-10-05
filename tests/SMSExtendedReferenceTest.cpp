@@ -1012,17 +1012,51 @@ class AnalyticUVNormal final : public AuditedIdentityFrameModifier {
 public:
     bool SMSFrameDependsOnUV() const override {return true;}
     void Modify(RayIntersectionGeometric& hit) const override {
-        const Scalar sign=hit.vNormal.z<0?-1:1;
-        hit.vNormal=Vector3Ops::Normalize(Vector3(sign*hit.ptCoord.x,0,sign));
+        hit.vNormal=Vector3Ops::Normalize(hit.vNormal+Vector3(hit.ptCoord.x,0,0));
         hit.onb.CreateFromW(hit.vNormal);
     }
     bool SMSFrameDifferential(const RayIntersectionGeometric& raw,const TestSMSIntersectionDifferential& d,
         Vector3& n,Vector3& w) const override {
-        const Scalar sign=raw.vNormal.z<0?-1:1;
-        n=FixtureNormalizedDifferential(Vector3(sign*raw.ptCoord.x,0,sign),Vector3(sign*d.uv.x,0,0));
+        n=FixtureNormalizedDifferential(raw.vNormal+Vector3(raw.ptCoord.x,0,0),d.normal+Vector3(d.uv.x,0,0));
         w=n;return true;
     }
 };
+class AuditedLinearNormalUV final : public IUVGenerator, public Reference, public TestSMSUVDifferential {
+public:
+    bool HasSMSUVDifferentialContract() const override {return true;}
+    void GenerateUV(const Point3& p,const Vector3& n,Point2& uv) const override {uv=Point2(.2*p.x*n.z,0);}
+    bool SMSUVDifferential(const Point3& p,const Vector3& n,const Vector3& dp,const Vector3& dn,Point2& duv) const override {
+        duv=Point2(.2*(dp.x*n.z+p.x*dn.z),0);return true;
+    }
+};
+static void NativeTransformedUVComposition() {
+    for(bool reverse:{false,true}) for(int side:{-1,1}) {
+        Fixture f(Materials()+QuadMesh("patch",0,-2,3,reverse)
+            +SceneObject("caster","patch","mirror"," scale 2 0.8 1.5\n orientation 0 45 0\n"));
+        auto* modifier=new AnalyticUVNormal;f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);modifier->release();
+        auto* mapping=new AuditedLinearNormalUV;f.job->GetObjects()->GetItem("caster")->SetUVGenerator(*mapping);mapping->release();
+        const auto& transform=f.Object("caster")->GetFinalTransformMatrix();
+        const Point3 start=Point3Ops::Transform(transform,Point3(0,0,side*3));
+        const Point3 end=Point3Ops::Transform(transform,Point3(0,0,side*4));
+        const Point3 center=Point3Ops::Transform(transform,Point3(0,0,0));
+        const Vector3 incoming=Vector3Ops::Normalize(Vector3Ops::mkVector3(center,start));
+        RayIntersection hit(Ray(start,incoming),nullRasterizerState);f.Object("caster")->IntersectRay(hit,RISE_INFINITY,true,true,false);
+        Check(hit.geometric.bHit,"transformed composed-UV native surface is reachable");
+        if(!hit.geometric.bHit) continue;
+        hit.pModifier->Modify(hit.geometric);SMSDomainVertex vertex(hit.geometric);
+        vertex.geometry.position=center;vertex.geometry.normal=hit.geometric.vNormal;
+        vertex.geometry.geomNormal=hit.geometric.UnflippedGeomNormal();vertex.geometry.pObject=hit.pObject;
+        vertex.geometry.pMaterial=hit.pMaterial;vertex.geometry.isReflection=true;
+        ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;IORStack air(1);
+        for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
+            std::vector<SMSDomainVertex> records{vertex};NativeConstraintOracle oracle(cfg,&records);
+            RandomNumberGenerator random(77);IndependentSampler sampler(random);
+            const auto result=oracle.SolveDomain(start,incoming,end,incoming,f.Scene(),air,domain,records,sampler,1e-7,1e-10);
+            Check(result.valid,"audited object-normal-dependent UV composition retains transformed positive roots");
+            if(result.valid) CheckNativeHorizonJacobian(cfg,result,records,start,end,f.Scene(),air,domain,sampler);
+        }
+    }
+}
 static void NativeNearCommensurateNormal(unsigned generatedUV=0) {
     const Scalar divisor=4*114243;
     for(bool reverse:{false,true}) {
@@ -2050,6 +2084,7 @@ int main(int argc,char** argv) {
     if(argc==2&&std::string(argv[1])=="--r6-generated-uv-only") {
 #ifdef RISE_SMS_REFERENCE_A
         for(unsigned mode:{1u,2u,3u}) NativeNearCommensurateNormal(mode);
+        NativeTransformedUVComposition();
 #else
         Check(false,"generated UV differential witness requires native domain support");
 #endif
