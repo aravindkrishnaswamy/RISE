@@ -584,6 +584,15 @@ public:
     using ManifoldSolver::BuildJacobian;
     using ManifoldSolver::ComputeLightToFirstVertexJacobianDet;
     using ManifoldSolver::UpdateVertexOnSurface;
+    template<class T> static auto Project(const T& oracle,ManifoldVertex& v,Scalar du,Scalar dv,int)
+        ->decltype(oracle.UpdateVertexOnSurface(v,du,dv,0,true)) {
+        return oracle.UpdateVertexOnSurface(v,du,dv,0,true);
+    }
+    template<class T> static auto Project(const T& oracle,ManifoldVertex& v,Scalar du,Scalar dv,long)
+        ->decltype(oracle.UpdateVertexOnSurface(v,du,dv,0)) {
+        return oracle.UpdateVertexOnSurface(v,du,dv,0);
+    }
+    bool ProjectIndependent(ManifoldVertex& v,Scalar du,Scalar dv) const {return Project(*this,v,du,dv,0);}
 };
 static void CheckNativeHorizonJacobian(const ManifoldSolverConfig& cfg,const ManifoldResult& result,
     const std::vector<SMSDomainVertex>& vertices,const Point3& start,const Point3& end,
@@ -597,8 +606,8 @@ static void CheckNativeHorizonJacobian(const ManifoldSolverConfig& cfg,const Man
         auto plus=chain,minus=chain;const std::size_t j=column/2;
         const Vector3 tangent=column%2?chain[j].dpdv:chain[j].dpdu;
         if(curved) {
-            Check(oracle.UpdateVertexOnSurface(plus[j],column%2?0:h,column%2?h:0,0,true)
-                &&oracle.UpdateVertexOnSurface(minus[j],column%2?0:-h,column%2?-h:0,0,true),
+            Check(oracle.ProjectIndependent(plus[j],column%2?0:h,column%2?h:0)
+                &&oracle.ProjectIndependent(minus[j],column%2?0:-h,column%2?-h:0),
                 "curved constraint oracle projects independent native displacements");
         } else {
             plus[j].position=Point3Ops::mkPoint3(plus[j].position,tangent*h);
@@ -1110,8 +1119,8 @@ static void NativeCurvedUVComposition() {
             Scalar error=0;const Scalar h=1e-6;
             for(unsigned column=0;column<2;++column) {
                 auto plus=result.specularChain,minus=plus;const Vector3 tangent=column?plus[0].dpdv:plus[0].dpdu;
-                Check(oracle.UpdateVertexOnSurface(plus[0],column?0:h,column?h:0,0,true)
-                    &&oracle.UpdateVertexOnSurface(minus[0],column?0:-h,column?-h:0,0,true),"curved oracle independently projects shifted native points");
+                Check(oracle.ProjectIndependent(plus[0],column?0:h,column?h:0)
+                    &&oracle.ProjectIndependent(minus[0],column?0:-h,column?-h:0),"curved oracle independently projects shifted native points");
                 std::vector<Scalar> a,b;oracle.EvaluateConstraint(plus,start,end,a);oracle.EvaluateConstraint(minus,start,end,b);
                 for(unsigned row=0;row<2;++row) error=std::max(error,std::fabs(d[2*row+column]-(a[row]-b[row])/(2*h)));
             }
