@@ -1812,10 +1812,14 @@ static void UnsupportedCasterSwitches() {
             f.job->GetObjects()->GetItem("pane")->AssignModifier(*modifier);modifier->release();
         }
         if(kind==5) {
+#ifdef RISE_SMS_REFERENCE_A
             auto* modifier=new AnalyticUVNormal;
             f.job->GetObjects()->GetItem("pane")->AssignModifier(*modifier);modifier->release();
             auto* mapping=new HarmonicGeneratedUV;
             f.job->GetObjects()->GetItem("pane")->SetUVGenerator(*mapping);mapping->release();
+#else
+            Check(false,"composed UV rejection helper unavailable on committed baseline");
+#endif
         }
         ManifoldSolverConfig config;config.enabled=true;config.extendedMode=true;config.targetBounces=1;
         config.multiTrials=1;StabilityConfig stability;stability.rrMinDepth=20;
@@ -1828,6 +1832,7 @@ static void UnsupportedCasterSwitches() {
         Check(!on->GetSolver()->ExtendedAnchorEligible(f.Scene(),*caster,Point3(0,0,-2),air,nm),
             "unsupported caster disables the complete anchor in RGB and NM");
         if(kind>=4) {
+#ifdef RISE_SMS_REFERENCE_A
             const auto domain=nm==0?SMSQueryDomain::RGB(0):SMSQueryDomain::NM(nm);
             RandomNumberGenerator random(76);IndependentSampler sampler(random);
             const Point3 start(0,0,-2),end(0,0,2);
@@ -1840,6 +1845,9 @@ static void UnsupportedCasterSwitches() {
             std::vector<SMSDomainVertex> records{vertex};
             const auto solved=on->GetSolver()->SolveDomain(start,Vector3(0,0,1),end,Vector3(0,0,-1),f.Scene(),air,domain,records,sampler,1e-7);
             Check(!solved.valid,"post-preparation unaudited input rejects the direct domain solve");
+#else
+            Check(false,"direct proposal rejection helper unavailable on committed baseline");
+#endif
         }
         for(unsigned trial=0;trial<4;++trial) {
             const unsigned salt=SobolSequence::HashCombine(12000+trial,0x554e4345);
