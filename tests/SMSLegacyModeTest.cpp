@@ -1,4 +1,4 @@
-// Cross-build float32 pixel hashes, internal-double diagnostics and timing.
+// Cross-build float32 ULP comparisons, exact hashes, diagnostics and timing.
 // Adopted 2026-10-04; within-build rejection tests retain HashPixels doubles.
 // Run the same --trial value after each interleaved master/candidate build.
 #include "SMSRenderTestSupport.h"
@@ -18,9 +18,51 @@ static unsigned long long Float32PixelHash(const std::vector<RISEColor>& pixels)
     return h;
 }
 
+static unsigned long long Float32ULPDistance(float a, float b)
+{
+    unsigned int x=0,y=0;std::memcpy(&x,&a,4);std::memcpy(&y,&b,4);
+    // Reject NaN/Inf by representation even under fast-math.
+    if((x&0x7f800000u)==0x7f800000u || (y&0x7f800000u)==0x7f800000u)
+        return std::numeric_limits<unsigned long long>::max();
+    const auto ordered=[](unsigned int bits)->unsigned long long {
+        return (bits&0x80000000u)?0x80000000ULL-(bits&0x7fffffffu):0x80000000ULL+bits;
+    };
+    const auto u=ordered(x),v=ordered(y);return u>v?u-v:v-u;
+}
+static void CheckCrossBuildPixels(const std::vector<RISEColor>& pixels,unsigned fixture,unsigned trial)
+{
+    const std::string name="fixture-"+std::to_string(fixture)+"-trial-"+std::to_string(trial)+".f32";
+    std::vector<float> values;values.reserve(pixels.size()*4);
+    for(const auto& c:pixels) {values.push_back(static_cast<float>(c.base.r));values.push_back(static_cast<float>(c.base.g));values.push_back(static_cast<float>(c.base.b));values.push_back(static_cast<float>(c.a));}
+    if(const char* directory=std::getenv("RISE_SMS_LEGACY_DUMP_DIR")) {
+        std::ofstream out(std::string(directory)+"/"+name,std::ios::binary);
+        out.write(reinterpret_cast<const char*>(values.data()),values.size()*sizeof(float));
+        Check(bool(out),"cross-build float32 pixel dump is complete");
+    }
+    if(const char* directory=std::getenv("RISE_SMS_LEGACY_REFERENCE_DIR")) {
+        std::ifstream input(std::string(directory)+"/"+name,std::ios::binary);
+        std::vector<float> reference(values.size());input.read(reinterpret_cast<char*>(reference.data()),reference.size()*sizeof(float));
+        const bool complete=bool(input)&&input.peek()==std::char_traits<char>::eof();
+        Check(complete,"cross-build reference has exactly the expected RGBA pixels");
+        unsigned long long maximum=0;std::size_t changed=0;
+        if(complete) for(std::size_t i=0;i<values.size();++i) {
+            const auto distance=Float32ULPDistance(reference[i],values[i]);maximum=std::max(maximum,distance);if(distance)++changed;
+        }
+        std::cout<<"LEGACY precision fixture="<<fixture<<" trial="<<trial<<" max_float32_ulps="<<maximum<<" changed_components="<<changed<<std::endl;
+        Check(complete&&maximum<=1,"cross-build mode-off RGBA differs by at most one float32 ULP");
+    }
+}
+
 int main(int argc,char** argv)
 {
     Check(ConfigureTestWorker(),"single-worker options configured");
+    const float one=1, next=std::nextafter(one,2.f), second=std::nextafter(next,2.f);
+    Check(Float32ULPDistance(one,one)==0,"ULP comparator preserves equality");
+    Check(Float32ULPDistance(one,next)==1 && Float32ULPDistance(one,second)==2,"ULP comparator accepts one step and detects two steps");
+    Check(Float32ULPDistance(-one,-next)==1,"ULP comparator orders negative values");
+    Check(Float32ULPDistance(-0.f,0.f)==0,"signed zero has zero numeric ULP distance");
+    Check(Float32ULPDistance(one,std::numeric_limits<float>::infinity())>1
+        && Float32ULPDistance(one,std::numeric_limits<float>::quiet_NaN())>1,"ULP comparator rejects nonfinite pixels");
     unsigned first=0, count=4;
     if(argc==3 && std::string(argv[1])=="--trial") {
         first=static_cast<unsigned>(std::stoul(argv[2])); count=1;
@@ -63,6 +105,7 @@ int main(int argc,char** argv)
             seconds.push_back(elapsed);
             std::cout<<std::setprecision(17)<<"LEGACY fixture="<<fixture<<" trial="<<trial
                 <<" hash="<<result.hash<<" hash_float32="<<Float32PixelHash(result.pixels)<<" mean="<<result.mean<<" seconds="<<elapsed<<std::endl;
+            CheckCrossBuildPixels(result.pixels,fixture,trial);
         }
         const auto stats=Summarize(seconds);
         std::cout<<"LEGACY timing fixture="<<fixture<<" mean="<<stats.mean<<" sd="<<stats.sd<<" n="<<count<<std::endl;

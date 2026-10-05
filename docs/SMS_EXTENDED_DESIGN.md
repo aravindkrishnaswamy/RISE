@@ -392,7 +392,8 @@ Synthetic vertices alone are insufficient.
 - `SourceHygieneTest` and `CstDeriveGoldenTest`;
 - plus every test the increment adds.
 
-Shipped mode-off images must match bit-identically in float32 across builds.
+Shipped mode-off RGBA pixels must differ by at most one float32 ULP across builds
+(user ruling 2026-10-04).
 Deterministic rejection on/off comparisons within one build retain strict
 internal-double identity (adopted precision contract below).
 
@@ -528,7 +529,7 @@ across 28 modes, twelve actual Xcode-linked controls and five partial-sanitizer
 modes, with zero compiler diagnostics. No Phase 2 merge or fresh review
 verdict is claimed. See `SMS_EXTENDED_PHASE2_VALIDATION.md`.
 
-**Adopted by the user on 2026-10-04 (“Proceed”):** cross-build shipped
+**Original ruling, superseded by the one-ULP ruling below:** cross-build shipped
 mode-off image pixels must match bit-identically after float32 conversion.
 Deterministic rejection on/off comparisons within one build remain strict
 in internal doubles. Stochastic comparisons retain n>=4 and their original
@@ -699,3 +700,19 @@ code can enforce it; deterministic within-build identity and original
 stochastic bands remain unchanged. Alternatively, continue investigation
 and repair under exact float32 identity. No cause is guessed from the
 small measured difference, and no exception is silently granted.
+
+
+### Adopted cross-build one-ULP bound (2026-10-04)
+
+The user approved the proposed bound (“approved, go!”) after the exact-binary
+pixel evidence above. This replaces strict float32 bit identity for
+cross-build shipped mode-off comparisons with a maximum of **one float32
+ULP per RGBA component**. Nonfinite pixels fail; opposite signed zeros have
+zero numeric distance. Exact hashes remain diagnostics, not the acceptance
+predicate. Full per-pixel comparisons, not image means or hashes alone,
+enforce the bound. Deterministic on/off rejection within one build remains
+bit-identical in internal doubles. All stochastic comparisons retain their
+original salted n>=4, channel-separated three-SD bands. The earlier strict
+gate remains recorded as failed; this approval does not retroactively pass
+it or establish the source of the rounding difference. Fresh gates and
+reviews remain required, with no ledger changes implied by this ruling.

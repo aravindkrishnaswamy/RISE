@@ -1170,3 +1170,17 @@ require a ruling before relaxing that contract; the next proposed choice is
 a cross-build one-ULP float32 bound versus continued investigation under
 exact float32 identity. Within-build deterministic and stochastic contracts
 would remain unchanged under either choice.
+
+
+## Approved one-ULP cross-build policy (2026-10-04)
+
+The user approved the proposed maximum one-float32-ULP cross-build RGBA
+bound. Same-build deterministic rejection remains exact in doubles, and
+stochastic bands are unchanged. SMSLegacyModeTest now writes optional raw
+float32 reference buffers and compares every component against a matching
+master build. Exact hashes remain diagnostics. A representation-based
+ordered ULP metric handles negative values and signed zero, and rejects
+NaN/Inf under fast-math. Unit controls include zero/one/two steps, negative
+values and nonfinite inputs. The earlier strict gate remains failed.
+Fresh comparison/build/regression/sanitizer/review gates follow this adopted
+policy; no merge, closure or fresh-review convergence is claimed here.
