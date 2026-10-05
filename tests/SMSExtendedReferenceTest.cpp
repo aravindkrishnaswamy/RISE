@@ -122,6 +122,16 @@ template<class T> static unsigned long long OrientationAudits(const T*,long) {re
 template<class T> static auto OrientationVisits(const T* g,int)->decltype(g->SMSOrientationTriangleVisits()) {return g->SMSOrientationTriangleVisits();}
 template<class T> static unsigned long long OrientationVisits(const T*,long) {return 0;}
 
+static std::string QuadMesh(const std::string& name,Scalar z,Scalar x0,Scalar x1,bool reverse) {
+    std::ostringstream s;s<<std::setprecision(17);
+    s<<"indexedmesh_geometry\n{\n name "<<name<<"\n double_sided TRUE\n face_normals TRUE\n";
+    s<<" vertex "<<x0<<" -2 "<<z<<"\n vertex "<<x1<<" -2 "<<z
+        <<"\n vertex "<<x1<<" 2 "<<z<<"\n vertex "<<x0<<" 2 "<<z
+        <<"\n uv 0 0\n uv 1 0\n uv 1 1\n uv 0 1\n";
+    s<<(reverse?" triangle 0 2 1\n triangle 0 3 2\n":" triangle 0 1 2\n triangle 0 2 3\n");
+    return s.str()+"}\n";
+}
+
 #ifdef RISE_SMS_REFERENCE_A
 struct LawRoot { int id=-1; unsigned channel=0; };
 static LawRoot ThreeEventLaw(ISampler& sampler,unsigned c,bool rare) {
@@ -358,7 +368,6 @@ public:
         uv=Point2(point.x<0?.25:.75,.5);
     }
 };
-static std::string QuadMesh(const std::string& name,Scalar z,Scalar x0,Scalar x1,bool reverse);
 // Audited fixture providers implement the same optional production contract.
 static Vector3 FixtureNormalizedDifferential(const Vector3& value,const Vector3& d) {
     const Scalar length=Vector3Ops::Magnitude(value);const Vector3 n=value*(1/length);
@@ -562,15 +571,7 @@ public:
 private:
     int side;bool valid,varying;unsigned fields;
 };
-static std::string QuadMesh(const std::string& name,Scalar z,Scalar x0,Scalar x1,bool reverse) {
-    std::ostringstream s;s<<std::setprecision(17);
-    s<<"indexedmesh_geometry\n{\n name "<<name<<"\n double_sided TRUE\n face_normals TRUE\n";
-    s<<" vertex "<<x0<<" -2 "<<z<<"\n vertex "<<x1<<" -2 "<<z
-        <<"\n vertex "<<x1<<" 2 "<<z<<"\n vertex "<<x0<<" 2 "<<z
-        <<"\n uv 0 0\n uv 1 0\n uv 1 1\n uv 0 1\n";
-    s<<(reverse?" triangle 0 2 1\n triangle 0 3 2\n":" triangle 0 1 2\n triangle 0 2 3\n");
-    return s.str()+"}\n";
-}
+
 class NativeConstraintOracle final : public ManifoldSolver {
 public:
     NativeConstraintOracle(const ManifoldSolverConfig& cfg,const std::vector<SMSDomainVertex>* contexts)
