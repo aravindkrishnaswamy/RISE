@@ -689,11 +689,15 @@ namespace
 		// fine (unordered_map handles them; a false-positive bucket collision only
 		// costs an extra distance check, never a wrong weld, since every candidate
 		// found is still distance-checked against `eps` below).
-		auto cellKey = []( std::int64_t x, std::int64_t y, std::int64_t z ) -> std::int64_t {
-			return x * 73856093LL ^ y * 19349663LL ^ z * 83492791LL;
+		auto cellKey = []( std::int64_t x, std::int64_t y, std::int64_t z ) -> std::uint64_t {
+            // Hash products intentionally wrap modulo 2^64. Convert before
+            // multiplication so large translated cells have defined arithmetic.
+			return static_cast<std::uint64_t>(x) * 73856093ULL
+                ^ static_cast<std::uint64_t>(y) * 19349663ULL
+                ^ static_cast<std::uint64_t>(z) * 83492791ULL;
 		};
 
-		std::unordered_map<std::int64_t, std::vector<unsigned int>> grid;
+		std::unordered_map<std::uint64_t, std::vector<unsigned int>> grid;
 		grid.reserve( points.size() );
 		std::vector<Point3> weldedPos;
 		weldedPos.reserve( points.size() );
@@ -709,8 +713,8 @@ namespace
 			for( int dz = -1; dz <= 1 && foundId == 0xFFFFFFFFu; ++dz ) {
 				for( int dy = -1; dy <= 1 && foundId == 0xFFFFFFFFu; ++dy ) {
 					for( int dx = -1; dx <= 1 && foundId == 0xFFFFFFFFu; ++dx ) {
-						const std::int64_t key = cellKey( cx + dx, cy + dy, cz + dz );
-						std::unordered_map<std::int64_t, std::vector<unsigned int>>::const_iterator git = grid.find( key );
+						const std::uint64_t key = cellKey( cx + dx, cy + dy, cz + dz );
+						std::unordered_map<std::uint64_t, std::vector<unsigned int>>::const_iterator git = grid.find( key );
 						if( git == grid.end() ) { continue; }
 						const std::vector<unsigned int>& candidates = git->second;
 						for( std::size_t c = 0; c < candidates.size(); ++c ) {
