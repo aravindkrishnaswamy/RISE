@@ -979,11 +979,38 @@ static void RoundFourNumerics() {
         }
     }
 }
-static void NativeNearCommensurateNormal() {
+class HarmonicGeneratedUV final : public IUVGenerator, public Reference {
+public:
+    void GenerateUV(const Point3& p,const Vector3&,Point2& uv) const override {
+        const Scalar period=std::cbrt(std::numeric_limits<Scalar>::epsilon())/(4*114243);
+        uv=Point2(.2*period/(2*PI)*std::sin(2*PI*p.x/period),0);
+    }
+};
+class AnalyticUVNormal final : public AuditedIdentityFrameModifier {
+public:
+    void Modify(RayIntersectionGeometric& hit) const override {
+        const Scalar sign=hit.vNormal.z<0?-1:1;
+        hit.vNormal=Vector3Ops::Normalize(Vector3(sign*hit.ptCoord.x,0,sign));
+        hit.onb.CreateFromW(hit.vNormal);
+    }
+    bool SMSFrameDifferential(const RayIntersectionGeometric& raw,const TestSMSIntersectionDifferential& d,
+        Vector3& n,Vector3& w) const override {
+        const Scalar sign=raw.vNormal.z<0?-1:1;
+        n=FixtureNormalizedDifferential(Vector3(sign*raw.ptCoord.x,0,sign),Vector3(sign*d.uv.x,0,0));
+        w=n;return true;
+    }
+};
+static void NativeNearCommensurateNormal(bool generatedUV=false) {
     const Scalar divisor=4*114243;
     for(bool reverse:{false,true}) {
         Fixture f(Materials()+QuadMesh("patch",0,-2,3,reverse)+SceneObject("caster","patch","mirror"));
-        auto* modifier=new AliasedNormal(divisor);f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);modifier->release();
+        IRayIntersectionModifier* modifier=generatedUV ? static_cast<IRayIntersectionModifier*>(new AnalyticUVNormal)
+            : static_cast<IRayIntersectionModifier*>(new AliasedNormal(divisor));
+        f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);modifier->release();
+        if(generatedUV) {
+            auto* mapping=new HarmonicGeneratedUV;
+            f.job->GetObjects()->GetItem("caster")->SetUVGenerator(*mapping);mapping->release();
+        }
         const Point3 start(0,0,3),end(0,0,4),center(0,0,0);IORStack air(1);
         RayIntersection hit(Ray(start,Vector3(0,0,-1)),nullRasterizerState);
         f.Object("caster")->IntersectRay(hit,RISE_INFINITY,true,true,false);
@@ -998,7 +1025,7 @@ static void NativeNearCommensurateNormal() {
             std::vector<SMSDomainVertex> records{vertex};NativeConstraintOracle oracle(cfg,&records);
             RandomNumberGenerator random(32);IndependentSampler sampler(random);
             const auto result=oracle.SolveDomain(start,Vector3(0,0,-1),end,Vector3(0,0,-1),f.Scene(),air,domain,records,sampler,1e-7,1e-10);
-            std::cout<<"R5 near-commensurate domain="<<domain.kind<<":"<<domain.component<<":"<<domain.nm<<" winding="<<reverse<<" solved="<<result.valid<<'\n';
+            std::cout<<"R5 near-commensurate generated_uv="<<generatedUV<<" domain="<<domain.kind<<":"<<domain.component<<":"<<domain.nm<<" winding="<<reverse<<" solved="<<result.valid<<'\n';
             if(result.valid) {
                 std::vector<Scalar> d,u,l;oracle.BuildJacobian(result.specularChain,start,end,d,u,l,true);
                 const Scalar h=std::cbrt(std::numeric_limits<Scalar>::epsilon())/(1024*divisor);
@@ -1946,6 +1973,14 @@ int main(int argc,char** argv) {
         NativeNearCommensurateNormal();
 #else
         std::cout<<"Round 5 normal helper unavailable on committed baseline.\n";
+#endif
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
+    }
+    if(argc==2&&std::string(argv[1])=="--r6-generated-uv-only") {
+#ifdef RISE_SMS_REFERENCE_A
+        NativeNearCommensurateNormal(true);
+#else
+        Check(false,"generated UV differential witness requires native domain support");
 #endif
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
     }
