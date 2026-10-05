@@ -1184,3 +1184,55 @@ NaN/Inf under fast-math. Unit controls include zero/one/two steps, negative
 values and nonfinite inputs. The earlier strict gate remains failed.
 Fresh comparison/build/regression/sanitizer/review gates follow this adopted
 policy; no merge, closure or fresh-review convergence is claimed here.
+
+
+## One-ULP gate attempt and sanitizer repair (2026-10-04)
+
+Evidence: `.claude/logs/sms-phase2-round6-final-v2/`. The source/test
+checkpoint starts at `78152901e`. Eight alternating source/test builds and
+sixteen shipped mode-off renders pass the approved per-component bound:
+fifteen float32 images are identical, and NM salt1 changes one component by
+one ULP. No nonfinite pixels pass. Same-binary dump/reference controls give
+18/0 then22/0; injecting a two-ULP reference difference gives21/1 and exit1,
+then the original reference bytes are restored. Timing excludes pixel-dump
+and comparison I/O. Paired render-time differences, mean percent ± sample SD
+(n4, identical one-worker/reserve_count0 policy): RGBk1 +1.098145 ±1.041775,
+RGBk2 +1.394356 ±0.533959, NM +2.045421 ±1.143960 and
+HWSS +2.040712 ±1.144034. No zero-overhead claim is made.
+
+Clean make compiles376 units, and actual Deployment/Opto each compile393,
+with zero owned diagnostics. The regression pipeline initially stops at
+SourceHygieneTest168/1: native nonindexed primitive provenance is absent
+from its writer census. Repair `5c0573137` permits that writer and adds a
+field allowlist restricted to pProvider/primId/baryA/baryB. Rebuilt committed
+master test reproduces168/1; restored test passes170/0. A temporary injected
+pScene write fails the field guard and is restored in finally. All native
+and previously completed test hashes are unchanged, so the resumed test
+pipeline composes the completed prefix with fresh remaining modes, recording
+33 make modes /411404 reported checks /0 failures and twelve actual
+Xcode-linked controls /0 failures. CST separately has458 MATCH /0 DRIFT,
+465 corpus scenes /0 UNCOVERED /0 STALE. The initial hygiene failure stays
+in `results-before-hygiene.json` and `SourceHygieneTest-failed-run.log`.
+
+The partial sanitizer build (test plus nine changed native units) stops on
+an indexed-mesh vector container-overflow report. Rebuilding all374 linked
+project C++/Objective-C++ units with ASan/UBSan, without disabling any
+checks or changing native source, passes geometry4297/0, unsupported761/0,
+production393/0 and signed641/0. This resolves the mixed-instrumentation
+report in this workload; the failed partial run is preserved. Third-party
+libraries remain uninstrumented. The full-instrumentation review mode then
+finds a real signed overflow in WeldVertexPositions's cell-key products at
+large translated coordinates. Therefore this attempt is **not a passing
+full gate**; memory and fresh reviewers have not run.
+
+Repair `7cb140469` makes the hash products and map keys uint64_t, with
+explicit modulo2^64 arithmetic. Cell coordinates, bucket candidate distance
+tests and weld tolerance are unchanged. The hash-constant sibling sweep
+finds no other copy. A rebuilt fully instrumented committed pre-fix
+`5c0573137` checkpoint reproduces UBSan overflow; restored repair passes
+193401/0 with no sanitizer findings (`hash-focused-red-driver.log`,
+`hash-focused-green-driver.log`, `sanitizer-full/pre-fix-*`). This proof
+recompiles the changed unit and relinks with all other project units
+instrumented; it does not reuse an old binary as a rebuild. A complete fresh
+native/test gate is prepared in `.claude/logs/sms-phase2-round6-final-v3/`.
+Phase2 remains unmerged, with no new ledger row or closure claimed.

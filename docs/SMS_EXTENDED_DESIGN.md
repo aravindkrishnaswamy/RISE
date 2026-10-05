@@ -716,3 +716,22 @@ original salted n>=4, channel-separated three-SD bands. The earlier strict
 gate remains recorded as failed; this approval does not retroactively pass
 it or establish the source of the rounding difference. Fresh gates and
 reviews remain required, with no ledger changes implied by this ruling.
+
+
+### One-ULP gate and defined hash arithmetic (2026-10-04)
+
+The approved one-ULP A/B comparison passes all sixteen mode-off renders;
+mean paired overhead is +1.098% to +2.045% (n4, SD0.534%–1.144%). The
+subsequent source-hygiene census repair has committed-master-test168/1 to
+restored170/0 proof, including a primitive-only field guard. The composed
+regression stage passes33 make modes /411404 reported checks and twelve
+actual Xcode-linked controls, with zero failures and owned diagnostics.
+This is not full-gate completion: mixed sanitizer instrumentation first
+reports a vector container overflow; a fully instrumented project build
+resolves that report but reveals real signed overflow in the vertex-weld
+cell hash. The repair uses defined unsigned wrapping, preserving the weld
+coordinates/tolerance and distance acceptance. Rebuilt pre-fix UBSan fails;
+restored full-instrumentation review passes193401/0. A complete fresh gate
+and fresh reviews remain required. Evidence and limits are recorded in
+SMS_EXTENDED_PHASE2_VALIDATION.md. No contract change, ledger row, closure,
+merge or push follows from this implementation repair.
