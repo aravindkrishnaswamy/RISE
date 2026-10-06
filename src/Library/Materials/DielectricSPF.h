@@ -216,6 +216,10 @@ namespace RISE
 
 			//! Returns the spectral PDF for sampling the given outgoing direction (always 0 for delta distributions)
 			Scalar PdfNM( const RayIntersectionGeometric& ri, const Vector3& wo, const Scalar nm, const IORStack& ior_stack ) const override;
+            // Native raw-film query after an actual shading/geometric Snell
+            // calculation succeeded. Does not reclassify raw W cosine as TIR.
+            bool EvaluateSpecularFresnelAfterRefraction(Scalar cosI,Scalar etaI,Scalar etaT,
+                bool exiting,Scalar nm,Scalar& reflectance) const;
 			bool EvaluateSpecularFresnel( Scalar cosI, Scalar etaI, Scalar etaT,
 				bool exiting, Scalar nm, Scalar& reflectance ) const override;
 

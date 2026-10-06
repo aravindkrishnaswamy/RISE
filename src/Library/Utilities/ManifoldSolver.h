@@ -47,6 +47,7 @@
 #define RISE_SMS_REFERENCE_A 1
 #define RISE_SMS_SCRATCH_COUNTERS 1
 #define RISE_SMS_NATIVE_EVENT_NORMALS 1
+#define RISE_SMS_FRESNEL_FALLBACK_DOMAIN 1
 
 #include "../Interfaces/IReference.h"
 #include "../Interfaces/IGeometry.h"
@@ -321,7 +322,7 @@ namespace RISE
         struct SMSDomainVertex {
             ManifoldVertex geometry;
             RayIntersectionGeometric context;
-            Scalar contextSlope = 0; // measured matched-context change per physical displacement
+            Scalar contextSlope = 0; // measured context and normalized event-price change per physical displacement
             explicit SMSDomainVertex(const RayIntersectionGeometric& hit) : context(hit) {}
         };
 
@@ -605,7 +606,8 @@ namespace RISE
 			ManifoldSolverConfig config;
             bool nativeEventConstraints = false; // Private extended solve instance; legacy instances stay false.
             const std::vector<SMSDomainVertex>* nativeContexts = nullptr; // Borrowed only by a private solve instance.
-            ManifoldSolver(const ManifoldSolverConfig&, bool nativeEvents, const std::vector<SMSDomainVertex>* = nullptr);
+            Scalar nativeWavelength = 550; // Immutable private-solve domain, including fallback decisions.
+            ManifoldSolver(const ManifoldSolverConfig&, bool nativeEvents, const std::vector<SMSDomainVertex>* = nullptr, Scalar = 550);
             const RasterizerState& NativeRaster(std::size_t i) const {
                 return nativeContexts && i<nativeContexts->size() ? (*nativeContexts)[i].context.rast : nullRasterizerState;
             }
