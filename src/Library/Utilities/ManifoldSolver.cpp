@@ -388,6 +388,43 @@ namespace {
             center.pObject->IntersectRay(rm,RISE_INFINITY,true,true,false);
             SMSCompleteNativeHit(raw,objects);SMSCompleteNativeHit(rp,objects);SMSCompleteNativeHit(rm,objects);
             if(!raw.geometric.bHit || !rp.geometric.bHit || !rm.geometric.bHit) return false;
+            const auto* geometry=center.pObject->GetGeometry();
+            const bool nativeMesh=dynamic_cast<const Implementation::TriangleMeshGeometryIndexed*>(raw.geometric.signals.pProvider)
+                || (geometry && (typeid(*geometry)==typeid(Implementation::TriangleMeshGeometryIndexed)
+                    || typeid(*geometry)==typeid(Implementation::TriangleMeshGeometry)));
+            if(nativeMesh) {
+                const auto& a=raw.geometric.signals;const auto& b=rp.geometric.signals;const auto& c=rm.geometric.signals;
+                const bool samePrimitive=a.primId>=0 && a.primId==b.primId && a.primId==c.primId
+                    && a.pProvider==b.pProvider && a.pProvider==c.pProvider;
+                if(!samePrimitive) {
+                    // Crossing triangles cannot establish a local derivative by
+                    // agreement of distant probes. A constant native frame is
+                    // the exception: zero primitive derivatives and identical
+                    // sampled frames establish the same flat input transport.
+                    // Native UV charts can change independently of a flat
+                    // normal. Only an audited generated mapping supplies its
+                    // own derivative across a primitive boundary.
+                    const auto* modifier=dynamic_cast<const ISMSModifierDifferential*>(raw.pModifier);
+                    const auto* native=dynamic_cast<const Implementation::Object*>(center.pObject);
+                    if(modifier && modifier->SMSFrameDependsOnUV()
+                        && (!native || !native->SMSUVGenerator())) return false;
+                    const auto flat=[](const RayIntersectionGeometric& hit) {
+                        return hit.derivatives.valid && Vector3Ops::SquaredModulus(hit.derivatives.dndu)==0
+                            && Vector3Ops::SquaredModulus(hit.derivatives.dndv)==0;
+                    };
+                    const auto same=[](const Vector3& x,const Vector3& y) {
+                        return x.x==y.x && x.y==y.y && x.z==y.z;
+                    };
+                    const auto sameFrame=[&](const RayIntersectionGeometric& hit) {
+                        return same(hit.vNormal,raw.geometric.vNormal)
+                            && same(hit.UnflippedGeomNormal(),raw.geometric.UnflippedGeomNormal())
+                            && same(hit.onb.u(),raw.geometric.onb.u()) && same(hit.onb.v(),raw.geometric.onb.v())
+                            && same(hit.onb.w(),raw.geometric.onb.w());
+                    };
+                    if(!flat(raw.geometric) || !flat(rp.geometric) || !flat(rm.geometric)
+                        || !sameFrame(rp.geometric) || !sameFrame(rm.geometric)) return false;
+                }
+            }
             SMSIntersectionDifferential input;
             input.worldPoint=difference(rp.geometric.ptIntersection,rm.geometric.ptIntersection);
             input.objectPoint=difference(rp.geometric.ptObjIntersec,rm.geometric.ptObjIntersec);
@@ -875,8 +912,9 @@ void RISE::Implementation::ManifoldSolver::SolveDomainCoreInto(
                         context.UnflippedGeomNormal(),vertex.etaI,vertex.etaT,vertex.canRefract
                             &&typeid(*vertex.pMaterial)!=typeid(PolishedMaterial),false,vertex.pMaterial,
                         vertex.isExiting,SMSDomainWavelength(domain));
-                    return vertex.isReflection?unsigned(law.reflectionFallback)
-                        :(unsigned(law.transmissionFallback)<<1)|(unsigned(law.hasTransmission)<<2);
+                    return (vertex.isReflection?unsigned(law.reflectionFallback)
+                        :(unsigned(law.transmissionFallback)<<1)|(unsigned(law.hasTransmission)<<2))
+                        |(unsigned(std::fabs(Vector3Ops::Magnitude(SMSNativeEventNormal(*vertex.pMaterial,context))-1)>Scalar(1e-6))<<3);
                 };
                 const unsigned matchedBranch=eventBranch(hit.geometric);
                 // Test the optical discontinuity that selects the native

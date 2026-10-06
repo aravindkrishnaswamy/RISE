@@ -70,12 +70,12 @@ int main(int argc,char** argv)
     const char* paths[]={"scenes/Tests/SMS/sms_k1_refract.RISEscene",
         "scenes/Tests/SMS/sms_k2_glasssphere.RISEscene",
         "scenes/Tests/Spectral/spectral_dispersive_caustic_pt_sms_uniform.RISEscene"};
-    for(unsigned fixture=0;fixture<4;++fixture) {
-        std::string scene=ReadScene(paths[std::min(fixture,2u)]);
+    for(unsigned fixture=0;fixture<5;++fixture) {
+        std::string scene=ReadScene(paths[fixture==4?0:std::min(fixture,2u)]);
         ReplaceFirstChunk(scene,"film","film\n{\n width 64\n height 64\n}\n");
         // Keep the shipped SMS configuration and material domain; bound
         // only the image/sample budget and disable denoising for raw hashes.
-        const std::string type=fixture<2?"pathtracing_pel_rasterizer":"pathtracing_spectral_rasterizer";
+        const std::string type=(fixture<2||fixture==4)?"pathtracing_pel_rasterizer":"pathtracing_spectral_rasterizer";
         const auto begin=scene.find(type), end=scene.find('}',begin);
         Check(begin!=std::string::npos && end!=std::string::npos,"shipped rasterizer found");
         if(begin==std::string::npos || end==std::string::npos) continue;
@@ -94,7 +94,14 @@ int main(int argc,char** argv)
         };
         replace("samples","64"); replace("oidn_denoise","FALSE"); replace("pixel_filter","box");
         if(fixture>=2) replace("hwss",fixture==3?"TRUE":"FALSE");
+        if(fixture==4) {
+            // Exercise the changed default shader-dispatch path while SMS is
+            // off. Keep its actual native advanced-shader composition, camera,
+            // materials and lights identical in the interleaved builds.
+            raster="pixelpel_rasterizer\n{\n max_recursion 8\n samples 64\n lum_samples 1\n pixel_filter box\n oidn_denoise FALSE\n}\n";
+        }
         scene.replace(begin,end-begin+1,raster);
+        if(fixture==4) ReplaceFirstChunk(scene,"standard_shader","advanced_shader\n{\n name global\n shaderop DefaultPathTracing 0 100 =\n shaderop DefaultDirectLighting 0 100 +\n}\n");
         std::vector<double> seconds;
         for(unsigned trial=first;trial<first+count;++trial) {
             g_renderIndex=trial;

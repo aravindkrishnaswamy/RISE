@@ -1952,7 +1952,7 @@ static void NativeFinalNormalizationBranches() {
     std::cout<<"R14 normalization unresolved="<<unresolved<<" regular="<<regular<<'\n';
 }
 static void NativePrimitiveLocalNormals() {
-    for(bool indexed:{false,true}) for(bool reverse:{false,true}) for(int side:{-1,1}) for(bool transformed:{false,true}) for(Scalar width:{Scalar(1e-7),Scalar(1e-3)}) {
+    for(bool uvDriven:{false,true}) for(bool indexed:{false,true}) for(bool reverse:{false,true}) for(int side:{-1,1}) for(bool transformed:{false,true}) for(Scalar width:{Scalar(1e-7),Scalar(1e-3)}) {
         Fixture f(Materials()+QuadMesh("patch",0,-2,2,reverse)+SceneObject("caster","patch","mirror",transformed?" scale 2 0.8 1.5\n orientation 0 45 0\n":""));
         ITriangleMeshGeometryIndexed* mesh=nullptr;ITriangleMeshGeometry* plain=nullptr;
         if(indexed) Check(RISE_API_CreateTriangleMeshGeometryIndexed(&mesh,true,false),"native strip indexed mesh created");
@@ -1965,7 +1965,8 @@ static void NativePrimitiveLocalNormals() {
             if(reverse) std::swap(t.vertices[1],t.vertices[2]);
             for(unsigned k=0;k<3;++k) {
                 const Scalar x=t.vertices[k].x,theta=.1+(x==-width?-.2*width:x==width?.2*width:0);
-                t.normals[k]=Vector3(std::sin(theta),0,std::cos(theta))*(reverse?-1:1);t.coords[k]=Point2((x+2)/4,(t.vertices[k].y+2)/4);
+                t.normals[k]=(uvDriven?Vector3(0,0,1):Vector3(std::sin(theta),0,std::cos(theta)))*(reverse?-1:1);
+                t.coords[k]=Point2(uvDriven?theta:(x+2)/4,(t.vertices[k].y+2)/4);
             }
             if(plain) plain->AddTriangle(t);
             if(mesh) {IndexedTriangle out;for(unsigned k=0;k<3;++k) {out.iVertices[k]=mesh->numPoints();out.iNormals[k]=mesh->numNormals();out.iCoords[k]=mesh->numCoords();mesh->AddVertex(t.vertices[k]);mesh->AddNormal(t.normals[k]);mesh->AddTexCoord(t.coords[k]);}mesh->AddIndexedTriangle(out);}
@@ -1973,10 +1974,12 @@ static void NativePrimitiveLocalNormals() {
         if(mesh) {mesh->DoneIndexedTriangles();f.job->GetObjects()->GetItem("caster")->AssignGeometry(*mesh);safe_release(mesh);}
         if(plain) {plain->DoneTriangles();f.job->GetObjects()->GetItem("caster")->AssignGeometry(*plain);safe_release(plain);}
         dynamic_cast<const ObjectManager*>(f.Scene().GetObjects())->InvalidateSpatialStructure();f.job->GetObjects()->PrepareForRendering();
+        if(uvDriven) {auto* modifier=new AnalyticUVNormal;f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);modifier->release();}
         const auto* object=f.Object("caster");const Point3 center=Point3Ops::Transform(object->GetFinalTransformMatrix(),Point3(0,.3,0));
         const Point3 start=Point3Ops::Transform(object->GetFinalTransformMatrix(),Point3(-.5,.3,3*side));
         RayIntersection hit(Ray(start,Vector3Ops::Normalize(Vector3Ops::mkVector3(center,start))),nullRasterizerState);f.Scene().GetObjects()->IntersectRay(hit,true,true,false);
-        Check(hit.geometric.bHit&&hit.pObject==object&&!hit.pModifier,"native strip root hits interior authored geometry");if(!hit.geometric.bHit) continue;
+        Check(hit.geometric.bHit&&hit.pObject==object&&bool(hit.pModifier)==uvDriven,"native strip root hits interior authored geometry");if(!hit.geometric.bHit) continue;
+        if(hit.pModifier) hit.pModifier->Modify(hit.geometric);
         IORStack air(1);air.SetCurrentObject(object);RandomNumberGenerator random(415);IndependentSampler sampler(random);
         for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
             const auto native=NativeReflectionEvent(hit.geometric,*hit.pMaterial,air,domain,sampler);const Point3 end=Point3Ops::mkPoint3(center,native.second*3);
@@ -1998,7 +2001,7 @@ static void NativePrimitiveLocalNormals() {
                 const Scalar determinant=std::fabs(reference[0]*reference[3]-reference[1]*reference[2]);
                 Check(error<1e-5,"native authored-normal Jacobian matches primitive-local residual probes");
                 Check(std::fabs(result.jacobianDet-determinant)<1e-5,"native root geometry price uses primitive-local derivative determinant");
-                std::cout<<"R14 strip indexed="<<indexed<<" winding="<<reverse<<" side="<<side<<" transformed="<<transformed<<" width="<<width<<" jacobian_error="<<error<<" determinant="<<result.jacobianDet<<" reference="<<determinant<<'\n';
+                std::cout<<"R14 strip uv="<<uvDriven<<" indexed="<<indexed<<" winding="<<reverse<<" side="<<side<<" transformed="<<transformed<<" width="<<width<<" jacobian_error="<<error<<" determinant="<<result.jacobianDet<<" reference="<<determinant<<'\n';
             }
             solver->release();
         }
@@ -2555,7 +2558,8 @@ struct SSSTestShaderOp : PathTracingShaderOp {
         SetMaxPathDepth(5);if(pIntegrator->GetSolver()) pIntegrator->GetSolver()->SetSpecularCasters(objects);
     }
 };
-static void NativeSSSReferenceClamps(bool replacement=false) {
+static void NativeSSSReferenceClamps(bool replacement=false,char blend='=') {
+    const bool replacing=replacement&&blend=='=';
     for(bool randomWalk:{false,true}) for(bool winding:{false,true}) for(bool reference:{true,false}) {
         if(replacement&&!reference) continue;
         std::string text=Materials()+"lambertian_material\n{\n name diffuse\n reflectance white\n}\n"
@@ -2585,7 +2589,8 @@ static void NativeSSSReferenceClamps(bool replacement=false) {
                     if(replacement) {
                         Check(RISE_API_CreateDirectLightingShaderOp(&direct,nullptr),"SSS replacement direct op created");
                         ops.push_back(direct);
-                        Check(RISE_API_CreateAdvancedShader(&shader,ops,{0,0},{16,16},"=="),"SSS native replacing shader created");
+                        const char operations[3]={'=',blend,0};
+                        Check(RISE_API_CreateAdvancedShader(&shader,ops,{0,0},{16,16},operations),"SSS native composed shader created");
                     } else Check(RISE_API_CreateStandardShader(&shader,ops),"SSS native PT shader created");
                     if(!shader) {safe_release(direct);op->release();continue;}
                     auto* caster=new SSSObservedCaster(*shader);caster->AttachScene(&fixture.Scene());
@@ -2619,7 +2624,8 @@ static void NativeSSSReferenceClamps(bool replacement=false) {
                         <<" mode="<<mode<<" salt="<<salt<<" clamped="<<clamped<<" mean="<<sum/512
                         <<" returns="<<caster->positiveReturns<<" referenceReturns="<<caster->referenceReturns<<" trials="<<counters.proposalTrials.load()<<std::endl;
                     Check(caster->positiveReturns>0,"SSS witness has positive actual recursive shader returns");
-                    if(replacement) Check(caster->referenceReturns==0,"ordinary replacement of reference PT cannot retain recursive reference provenance");
+                    if(replacing) Check(caster->referenceReturns==0,"ordinary replacement of reference PT cannot retain recursive reference provenance");
+                    else if(replacement&&mode<3) Check(caster->referenceReturns>0,"additive native shader retains actual mixed reference returns");
                     if(reference&&mode<3) Check(counters.proposalTrials.load()>0,"SSS shader dispatch reaches reference proposals");
                     integrator->release();caster->release();shader->release();safe_release(direct);op->release();
                 }
@@ -2627,7 +2633,12 @@ static void NativeSSSReferenceClamps(bool replacement=false) {
             for(unsigned salt=0;salt<means[0].size();++salt) {
                 Check(means[0][salt]>0,"SSS clamp witness has positive native radiance");
                 if(reference&&mode<3&&!replacement) Check(means[0][salt]==means[1][salt],"SSS reference radiance survives caller indirect clamp");
-                else Check(means[1][salt]<means[0][salt],"ordinary or HWSS legacy SSS continuation retains indirect clamp");
+                else if(replacement&&!replacing&&mode<3) {
+                    // This omni-lit composition also has ordinary-only
+                    // subpaths. Their clamp can reduce the total; the actual
+                    // mixed recursive returns are audited separately above.
+                    Check(means[1][salt]<=means[0][salt],"ordinary-only subpaths in mixed composition retain their clamp");
+                } else Check(means[1][salt]<means[0][salt],"ordinary or HWSS legacy SSS continuation retains indirect clamp");
                 if(mode==3) {
                     Check(means[0][salt]==means[2][salt],"HWSS SSS extended on/off identity without clamps");
                     Check(means[1][salt]==means[3][salt],"HWSS SSS extended on/off identity with clamps");
@@ -3202,6 +3213,7 @@ int main(int argc,char** argv) {
     if(argc==2&&std::string(argv[1])=="--r14-sss-replacement-only") {
 #ifdef RISE_SMS_REFERENCE_A
         NativeSSSReferenceClamps(true);
+        NativeSSSReferenceClamps(true,'+');
 #endif
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
     }
