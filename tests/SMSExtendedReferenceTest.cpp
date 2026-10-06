@@ -1554,6 +1554,7 @@ static void NativeScaledPolishedNormals(bool frame=false) {
                 const bool reflection=ray.type==ScatteredRay::eRayReflection;
                 if(reflection) ++reflected;
                 const Scalar nativeWeight=domain.kind==SMSQueryDomain::Wavelength?ray.krayNM:ray.kray[domain.component];
+                if(nativeWeight==0) continue;
                 IORStack replay(air);Scalar etaI=0,etaT=0,price=0;bool exiting=false;
                 const bool priced=SMSDomainReplay::Cross(*hit.pMaterial,object,hit.geometric,domain,reflection,
                     replay,etaI,etaT,exiting)
@@ -1572,6 +1573,7 @@ static void NativeScaledPolishedNormals(bool frame=false) {
                 const auto result=solver->SolveDomain(start,n,end,-ray.ray.Dir(),f.Scene(),air,domain,vertices,sampler,1e-7,1e-10);
                 Check(result.valid,"scaled-normal polished replay retains the actual native reflected root");
                 if(result.valid) {
+                    Check(Point3Ops::Distance(result.specularChain[0].position,center)<1e-7,"scaled native frame solve retains actual SPF root position");
                     Check(std::fabs(result.contributionNM-expected)<1e-9,"solved polished root matches native nonunit-normal price");
                     CheckNativeHorizonJacobian(cfg,result,vertices,start,end,f.Scene(),air,domain,sampler);
                 }
