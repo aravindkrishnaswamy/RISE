@@ -874,10 +874,23 @@ void RISE::Implementation::ManifoldSolver::SolveDomainCoreInto(
                         :(unsigned(law.transmissionFallback)<<1)|(unsigned(law.hasTransmission)<<2);
                 };
                 const unsigned matchedBranch=eventBranch(hit.geometric);
+                // Test the optical discontinuity that selects the native
+                // fallback. Attenuation painters may use float spectral
+                // reconstruction; their numeric quantization is not a change
+                // in Fresnel support. Their input contexts are checked below.
+                const auto opticalWeight=[&](const RayIntersectionGeometric& context,Scalar& weight) {
+                    const auto* dielectric=dynamic_cast<const DielectricSPF*>(vertex.pMaterial->GetSPF());
+                    if(!dielectric || !dielectric->GetARLayerCount()) {weight=1;return true;}
+                    const auto law=SMSNativeDirections(context.ray.Dir(),SMSNativeEventNormal(*vertex.pMaterial,context),
+                        context.UnflippedGeomNormal(),vertex.etaI,vertex.etaT,vertex.canRefract,true,
+                        vertex.pMaterial,vertex.isExiting,SMSDomainWavelength(domain));
+                    Scalar fresnel=1;
+                    if(law.hasTransmission && !dielectric->EvaluateSpecularFresnelAfterRefraction(law.fresnelCosine,
+                        vertex.etaI,vertex.etaT,vertex.isExiting,SMSDomainWavelength(domain),fresnel)) return false;
+                    weight=vertex.isReflection?fresnel:1-fresnel;return std::isfinite(weight);
+                };
                 Scalar matchedWeight;
-                if(!SMSDomainReplay::EventWeight(*vertex.pMaterial,hit.geometric,replay,domain,
-                    vertex.isReflection,vertex.isExiting,vertex.etaI,vertex.etaT,
-                    Point3Ops::Distance(previous,vertex.position),matchedWeight)) return;
+                if(!opticalWeight(hit.geometric,matchedWeight)) return;
                 for(const Vector3& tangent : {vertex.dpdu,vertex.dpdv}) for(int sign : {-1,1}) {
                     Point2 coords[2];Point3 positions[2];Vector3 normals[2],geomNormals[2];
                     OrthonormalBasis3D frames[2];Scalar weights[2];
@@ -897,9 +910,7 @@ void RISE::Implementation::ManifoldSolver::SolveDomainCoreInto(
                             || !finite3(probe.geometric.ptIntersection) || !finite3(probe.geometric.ptObjIntersec)
                             || !finite3(probe.geometric.vNormal) || !finite3(probe.geometric.UnflippedGeomNormal())
                             || !std::isfinite(probe.geometric.ptCoord.x) || !std::isfinite(probe.geometric.ptCoord.y)) return;
-                        if(!SMSDomainReplay::EventWeight(*vertex.pMaterial,probe.geometric,replay,domain,
-                            vertex.isReflection,vertex.isExiting,vertex.etaI,vertex.etaT,
-                            Point3Ops::Distance(previous,target),weights[probeIndex])) return;
+                        if(!opticalWeight(probe.geometric,weights[probeIndex])) return;
                         coords[probeIndex]=probe.geometric.ptCoord;
                         positions[probeIndex]=probe.geometric.ptObjIntersec;
                         normals[probeIndex]=probe.geometric.vNormal;

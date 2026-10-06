@@ -322,7 +322,7 @@ namespace RISE
         struct SMSDomainVertex {
             ManifoldVertex geometry;
             RayIntersectionGeometric context;
-            Scalar contextSlope = 0; // measured context and normalized event-price change per physical displacement
+            Scalar contextSlope = 0; // measured context and normalized coating-Fresnel price change per physical displacement
             explicit SMSDomainVertex(const RayIntersectionGeometric& hit) : context(hit) {}
         };
 
