@@ -1586,12 +1586,42 @@ static void NativeScaledPolishedNormals(bool frame=false,Scalar magnitude=2) {
     }
 }
 
+static void NativeBoundedNearUnitMirror() {
+    for(bool reverse:{false,true}) for(int side:{-1,1}) for(Scalar magnitude:{.9999995,1.0000005}) {
+        Fixture f(Materials()+QuadMesh("patch",0,-1e-6,1e-6,reverse)+SceneObject("caster","patch","mirror"));
+        auto* modifier=new AuditedScaledNormal(false,true,magnitude,0);
+        f.job->GetObjects()->GetItem("caster")->AssignModifier(*modifier);modifier->release();
+        const auto* object=f.Object("caster");const Point3 center(0,0,0),start(-std::sqrt(Scalar(3)),0,side);
+        RayIntersection hit(Ray(start,Vector3Ops::Normalize(Vector3Ops::mkVector3(center,start))),nullRasterizerState);
+        f.Scene().GetObjects()->IntersectRay(hit,true,true,false);
+        Check(hit.geometric.bHit&&hit.pObject==object,"bounded near-unit mirror contains actual native root");
+        if(!hit.geometric.bHit) continue;
+        modifier->Modify(hit.geometric);IORStack air(1);air.SetCurrentObject(object);
+        RandomNumberGenerator random(893);IndependentSampler sampler(random);ScatteredRayContainer rays;
+        hit.pMaterial->GetSPF()->Scatter(hit.geometric,sampler,rays,air);
+        for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(650)}) {
+            const Point3 end=Point3Ops::mkPoint3(center,rays[0].ray.Dir()*4);
+            SMSDomainVertex record(hit.geometric);record.geometry.position=center;record.geometry.pObject=object;
+            record.geometry.pMaterial=hit.pMaterial;record.geometry.isReflection=true;record.geometry.normal=hit.geometric.onb.w();
+            std::vector<SMSDomainVertex> vertices{record};ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;
+            NativeConstraintOracle oracle(cfg,&vertices);std::vector<Scalar> residual;
+            oracle.EvaluateConstraint({record.geometry},start,end,residual);
+            Check(std::hypot(residual[0],residual[1])<1e-10,"near-unit native outgoing direction has zero reference residual");
+            auto* solver=new ManifoldSolver(cfg);
+            const auto result=solver->SolveDomain(start,Vector3(0,0,side),end,-rays[0].ray.Dir(),f.Scene(),air,domain,vertices,sampler,1e-8,1e-10);
+            Check(result.valid&&Point3Ops::Distance(result.specularChain[0].position,center)<1e-8,
+                "bounded native root survives while spurious half-vector root lies outside the patch");
+            solver->release();
+        }
+    }
+}
+
 static void NativeCoatedScaledTIR() {
     for(bool reverse:{false,true}) for(bool transformed:{false,true}) for(int medium=0;medium<4;++medium) {
         const bool open=medium==0;
         const std::string transform=transformed?" scale 2 0.8 1.5\n orientation 0 45 0\n":"";
         Fixture f(Materials()+"dielectric_material\n{\n name coated_tir\n tau 1\n ior 1.5\n scattering 1e30\n ar_layer 1.224744871391589 112.26827987812466 0\n}\n"
-            +Mesh(!open,reverse)+SceneObject("caster","shape","coated_tir",transform)
+            +(open?PlaneScene("shape",-1):Mesh(true,reverse))+SceneObject("caster","shape","coated_tir",transform)
             +(medium>=2?"perfectrefractor_material\n{\n name outer_mat\n refractance white\n ior 1.1\n}\n"
                 "sphere_geometry\n{\n name outer_shape\n radius 20\n}\n"+SceneObject("outer","outer_shape","outer_mat"):""));
         auto* modifier=new AuditedScaledNormal(false,true,2,0);
@@ -1599,12 +1629,12 @@ static void NativeCoatedScaledTIR() {
         const auto* object=f.Object("caster");
         const Scalar z=open?-1:1;
         const Point3 center=Point3Ops::Transform(object->GetFinalTransformMatrix(),Point3(.2,.3,z));
-        const Vector3 n=Vector3Ops::Normalize(Vector3Ops::Transform(Matrix4Ops::Transpose(object->GetFinalInverseTransformMatrix()),Vector3(0,0,open?(reverse?1:-1):1)));
+        const Vector3 n=Vector3Ops::Normalize(Vector3Ops::Transform(Matrix4Ops::Transpose(object->GetFinalInverseTransformMatrix()),Vector3(0,0,open?-1:1)));
         const Vector3 u=Vector3Ops::Normalize(Vector3Ops::Transform(object->GetFinalTransformMatrix(),Vector3(1,0,0)));
         const Point3 start=Point3Ops::mkPoint3(center,-n*.2-u*(.2*std::tan(61*DEG_TO_RAD)));
         RayIntersection hit(Ray(start,Vector3Ops::Normalize(Vector3Ops::mkVector3(center,start))),nullRasterizerState);
         f.Scene().GetObjects()->IntersectRay(hit,true,true,false);
-        Check(hit.geometric.bHit&&hit.pObject==object,"coated scaled TIR traces actual open/closed indexed boundary");
+        Check(hit.geometric.bHit&&hit.pObject==object,"coated scaled TIR traces actual open-plane/closed-indexed boundary");
         if(!hit.geometric.bHit||hit.pObject!=object) continue;
         modifier->Modify(hit.geometric);
         for(auto domain:{SMSQueryDomain::RGB(0),SMSQueryDomain::RGB(1),SMSQueryDomain::RGB(2),SMSQueryDomain::NM(450),SMSQueryDomain::NM(550),SMSQueryDomain::NM(650)}) {
@@ -1620,6 +1650,7 @@ static void NativeCoatedScaledTIR() {
                 const auto& ray=rays[j];const Scalar native=domain.kind==SMSQueryDomain::Wavelength?ray.krayNM:ray.kray[domain.component];
                 if(native==0||!ray.isDelta) continue;
                 if(ray.type!=ScatteredRay::eRayReflection) {++transmissions;continue;} ++reflections;
+
                 Check(std::fabs(native-1)<1e-12,"native coated TIR has mandatory unit reflection");
                 IORStack replay(stack);Scalar etaI=0,etaT=0,price=0;bool exiting=false;
                 Check(SMSDomainReplay::Cross(*hit.pMaterial,object,hit.geometric,domain,true,replay,etaI,etaT,exiting)
@@ -2648,9 +2679,15 @@ int main(int argc,char** argv) {
 #endif
         std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
     }
-    if(argc==2&&std::string(argv[1])=="--r10-native-events-only") {
+    if(argc==2&&std::string(argv[1])=="--r10-coated-tir-only") {
 #ifdef RISE_SMS_REFERENCE_A
         NativeCoatedScaledTIR();
+#endif
+        std::cout<<passCount<<" passed, "<<failCount<<" failed\n";return failCount?1:0;
+    }
+    if(argc==2&&std::string(argv[1])=="--r10-native-events-only") {
+#ifdef RISE_SMS_REFERENCE_A
+        NativeCoatedScaledTIR();NativeBoundedNearUnitMirror();
         for(Scalar magnitude:{.9999989,.9999991,.9999995,1.0000005,1.0000009,1.0000011}) NativeScaledPolishedNormals(true,magnitude);
 #else
         Check(false,"native event regression requires native domain support");
