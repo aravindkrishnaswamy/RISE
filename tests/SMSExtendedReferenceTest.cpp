@@ -1603,6 +1603,7 @@ static void NativeBoundedNearUnitMirror() {
             const Point3 end=Point3Ops::mkPoint3(center,rays[0].ray.Dir()*4);
             SMSDomainVertex record(hit.geometric);record.geometry.position=center;record.geometry.pObject=object;
             record.geometry.pMaterial=hit.pMaterial;record.geometry.isReflection=true;record.geometry.normal=hit.geometric.onb.w();
+            record.geometry.dpdu=Vector3(1,0,0);record.geometry.dpdv=Vector3(0,1,0);record.geometry.valid=true;
             std::vector<SMSDomainVertex> vertices{record};ManifoldSolverConfig cfg;cfg.extendedMode=true;cfg.targetBounces=1;
             NativeConstraintOracle oracle(cfg,&vertices);std::vector<Scalar> residual;
             oracle.EvaluateConstraint({record.geometry},start,end,residual);
